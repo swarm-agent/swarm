@@ -39,40 +39,43 @@ const (
 	remoteDeployBootstrapSecretName = "remote-deploy-bootstrap.secret"
 	configFileMode                  = 0o600
 
-	startupModeKey        = "startup_mode"
-	devModeKey            = "dev_mode"
-	devRootKey            = "dev_root"
-	swarmModeKey          = "swarm_mode"
-	swarmRoleKey          = "swarm_role"
-	bootstrapModeKey      = "mode"
-	childStartupConfigEnv = "SWARM_CHILD_STARTUP_CONFIG"
+	startupModeKey               = "startup_mode"
+	devModeKey                   = "dev_mode"
+	devRootKey                   = "dev_root"
+	swarmModeKey                 = "swarm_mode"
+	desktopOnboardingCompleteKey = "desktop_onboarding_complete"
+	swarmRoleKey                 = "swarm_role"
+	bootstrapModeKey             = "mode"
+	childStartupConfigEnv        = "SWARM_CHILD_STARTUP_CONFIG"
 )
 
 type FileConfig struct {
-	Path                    string
-	Exists                  bool
-	Mode                    string
-	DevMode                 bool
-	DevRoot                 string
-	Host                    string
-	Port                    int
-	AdvertiseHost           string
-	AdvertisePort           int
-	DesktopPort             int
-	BypassPermissions       bool
-	RetainToolOutputHistory bool
-	SwarmName               string
-	SwarmMode               bool
-	Child                   bool
-	SwarmRole               string
-	NetworkMode             string
-	TailscaleURL            string
-	PeerTransportPort       int
-	ParentSwarmID           string
-	PairingState            string
-	ManagedHostSync         ManagedHostSyncConfig
-	DeployContainer         DeployContainerBootstrap
-	RemoteDeploy            RemoteDeployBootstrap
+	Path                         string
+	Exists                       bool
+	Mode                         string
+	DevMode                      bool
+	DevRoot                      string
+	Host                         string
+	Port                         int
+	AdvertiseHost                string
+	AdvertisePort                int
+	DesktopPort                  int
+	BypassPermissions            bool
+	RetainToolOutputHistory      bool
+	SwarmName                    string
+	SwarmMode                    bool
+	DesktopOnboardingComplete    bool
+	DesktopOnboardingCompleteSet bool
+	Child                        bool
+	SwarmRole                    string
+	NetworkMode                  string
+	TailscaleURL                 string
+	PeerTransportPort            int
+	ParentSwarmID                string
+	PairingState                 string
+	ManagedHostSync              ManagedHostSyncConfig
+	DeployContainer              DeployContainerBootstrap
+	RemoteDeploy                 RemoteDeployBootstrap
 }
 
 type ManagedHostSyncConfig struct {
@@ -204,29 +207,31 @@ func RemoteDeployBootstrapSecretPath(configPath string) string {
 
 func Default(path string) FileConfig {
 	return FileConfig{
-		Path:                    path,
-		Mode:                    ModeInteractive,
-		DevMode:                 false,
-		DevRoot:                 "",
-		Host:                    DefaultHost,
-		Port:                    DefaultPort,
-		AdvertiseHost:           "",
-		AdvertisePort:           DefaultPort,
-		DesktopPort:             DefaultDesktopPort,
-		BypassPermissions:       false,
-		RetainToolOutputHistory: false,
-		SwarmName:               "",
-		SwarmMode:               false,
-		Child:                   false,
-		SwarmRole:               "",
-		NetworkMode:             NetworkModeLAN,
-		TailscaleURL:            "",
-		PeerTransportPort:       DefaultPeerTransportPort,
-		ParentSwarmID:           "",
-		PairingState:            "",
-		ManagedHostSync:         ManagedHostSyncConfig{Mode: "managed"},
-		DeployContainer:         DeployContainerBootstrap{},
-		RemoteDeploy:            RemoteDeployBootstrap{},
+		Path:                         path,
+		Mode:                         ModeInteractive,
+		DevMode:                      false,
+		DevRoot:                      "",
+		Host:                         DefaultHost,
+		Port:                         DefaultPort,
+		AdvertiseHost:                "",
+		AdvertisePort:                DefaultPort,
+		DesktopPort:                  DefaultDesktopPort,
+		BypassPermissions:            false,
+		RetainToolOutputHistory:      false,
+		SwarmName:                    "",
+		SwarmMode:                    false,
+		DesktopOnboardingComplete:    true,
+		DesktopOnboardingCompleteSet: false,
+		Child:                        false,
+		SwarmRole:                    "",
+		NetworkMode:                  NetworkModeLAN,
+		TailscaleURL:                 "",
+		PeerTransportPort:            DefaultPeerTransportPort,
+		ParentSwarmID:                "",
+		PairingState:                 "",
+		ManagedHostSync:              ManagedHostSyncConfig{Mode: "managed"},
+		DeployContainer:              DeployContainerBootstrap{},
+		RemoteDeploy:                 RemoteDeployBootstrap{},
 	}
 }
 
@@ -407,6 +412,10 @@ swarm_name = %s
 # false = standalone local use, true = enable swarm role/pairing/transport settings.
 swarm_mode = %t
 
+# Explicit Desktop onboarding completion marker.
+# false = Desktop must continue onboarding; true = Desktop may open the launcher.
+desktop_onboarding_complete = %t
+
 # Whether this Swarm should bootstrap as a child.
 # false = master/default, true = child.
 child = %t
@@ -468,7 +477,7 @@ remote_deploy_sync_enabled = %t
 remote_deploy_sync_mode = %s
 remote_deploy_sync_owner_swarm_id = %s
 remote_deploy_sync_credential_url = %s
-`, cfg.Mode, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.SwarmName, cfg.SwarmMode, cfg.Child, cfg.SwarmRole, cfg.NetworkMode, cfg.TailscaleURL, cfg.PeerTransportPort, cfg.ParentSwarmID, cfg.PairingState, cfg.ManagedHostSync.Mode, formatCSVList(cfg.ManagedHostSync.Modules), cfg.ManagedHostSync.OwnerSwarmID, cfg.ManagedHostSync.HostAPIBaseURL, cfg.ManagedHostSync.SyncCredentialURL, cfg.ManagedHostSync.SyncAgentURL, cfg.DeployContainer.Enabled, cfg.DeployContainer.HostDriven, cfg.DeployContainer.SyncEnabled, cfg.DeployContainer.SyncMode, formatCSVList(cfg.DeployContainer.SyncModules), cfg.DeployContainer.SyncOwnerSwarmID, cfg.DeployContainer.SyncCredentialURL, cfg.DeployContainer.SyncAgentURL, cfg.DeployContainer.DeploymentID, cfg.DeployContainer.HostAPIBaseURL, cfg.DeployContainer.HostDesktopURL, cfg.DeployContainer.LocalTransportSocketPath, cfg.DeployContainer.BootstrapSecret, cfg.DeployContainer.VerificationCode, cfg.RemoteDeploy.Enabled, cfg.RemoteDeploy.SessionID, cfg.RemoteDeploy.HostAPIBaseURL, cfg.RemoteDeploy.HostDesktopURL, cfg.RemoteDeploy.SyncEnabled, cfg.RemoteDeploy.SyncMode, cfg.RemoteDeploy.SyncOwnerSwarmID, cfg.RemoteDeploy.SyncCredentialURL)
+`, cfg.Mode, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.SwarmName, cfg.SwarmMode, cfg.DesktopOnboardingComplete, cfg.Child, cfg.SwarmRole, cfg.NetworkMode, cfg.TailscaleURL, cfg.PeerTransportPort, cfg.ParentSwarmID, cfg.PairingState, cfg.ManagedHostSync.Mode, formatCSVList(cfg.ManagedHostSync.Modules), cfg.ManagedHostSync.OwnerSwarmID, cfg.ManagedHostSync.HostAPIBaseURL, cfg.ManagedHostSync.SyncCredentialURL, cfg.ManagedHostSync.SyncAgentURL, cfg.DeployContainer.Enabled, cfg.DeployContainer.HostDriven, cfg.DeployContainer.SyncEnabled, cfg.DeployContainer.SyncMode, formatCSVList(cfg.DeployContainer.SyncModules), cfg.DeployContainer.SyncOwnerSwarmID, cfg.DeployContainer.SyncCredentialURL, cfg.DeployContainer.SyncAgentURL, cfg.DeployContainer.DeploymentID, cfg.DeployContainer.HostAPIBaseURL, cfg.DeployContainer.HostDesktopURL, cfg.DeployContainer.LocalTransportSocketPath, cfg.DeployContainer.BootstrapSecret, cfg.DeployContainer.VerificationCode, cfg.RemoteDeploy.Enabled, cfg.RemoteDeploy.SessionID, cfg.RemoteDeploy.HostAPIBaseURL, cfg.RemoteDeploy.HostDesktopURL, cfg.RemoteDeploy.SyncEnabled, cfg.RemoteDeploy.SyncMode, cfg.RemoteDeploy.SyncOwnerSwarmID, cfg.RemoteDeploy.SyncCredentialURL)
 }
 
 func BootstrapExistingConfigError(path string) error {
@@ -642,6 +651,18 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 				return FileConfig{}, nil, fmt.Errorf("line %d: invalid %s %q", lineNumber+1, swarmModeKey, value)
 			}
 			cfg.SwarmMode = swarmMode
+		case desktopOnboardingCompleteKey:
+			if _, exists := rawSeen[key]; exists {
+				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
+			}
+			rawSeen[key] = struct{}{}
+			seen[desktopOnboardingCompleteKey] = struct{}{}
+			onboardingComplete, err := strconv.ParseBool(value)
+			if err != nil {
+				return FileConfig{}, nil, fmt.Errorf("line %d: invalid %s %q", lineNumber+1, desktopOnboardingCompleteKey, value)
+			}
+			cfg.DesktopOnboardingComplete = onboardingComplete
+			cfg.DesktopOnboardingCompleteSet = true
 		case "child":
 			if _, exists := rawSeen[key]; exists {
 				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)

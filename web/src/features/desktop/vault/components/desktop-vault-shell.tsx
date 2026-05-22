@@ -90,6 +90,7 @@ function mapOnboardingBootstrapStatus(onboarding: DesktopOnboardingStatusWire): 
       swarmName: String(onboarding.config?.swarm_name ?? '').trim(),
       child,
       swarmMode,
+      desktopOnboardingComplete: Boolean(onboarding.config?.desktop_onboarding_complete),
       swarmRole,
       swarmID: '',
       mode,

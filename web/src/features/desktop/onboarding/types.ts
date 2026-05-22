@@ -10,6 +10,7 @@ export interface DesktopOnboardingTransportWire {
 export interface DesktopOnboardingConfigWire {
   swarm_name?: string
   swarm_mode?: boolean
+  desktop_onboarding_complete?: boolean
   child?: boolean
   swarm_role?: string
   mode?: string
@@ -147,6 +148,7 @@ export interface DesktopOnboardingConfig {
   swarmName: string
   child: boolean
   swarmMode: boolean
+  desktopOnboardingComplete: boolean
   swarmRole: 'standalone' | 'master' | 'child' | 'managed'
   swarmID: string
   mode: 'lan' | 'tailscale'
@@ -304,6 +306,7 @@ export interface SaveDesktopOnboardingInput {
   localOwnerConfirmation?: string
   swarmName?: string
   swarmMode?: boolean
+  desktopOnboardingComplete?: boolean
   child?: boolean
   mode?: 'lan' | 'tailscale'
   port?: number

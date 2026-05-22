@@ -34,22 +34,23 @@ type onboardingTransportPayload struct {
 }
 
 type onboardingConfigPayload struct {
-	SwarmName         string `json:"swarm_name"`
-	SwarmMode         bool   `json:"swarm_mode"`
-	Child             bool   `json:"child"`
-	SwarmRole         string `json:"swarm_role,omitempty"`
-	Mode              string `json:"mode"`
-	Host              string `json:"host,omitempty"`
-	Port              int    `json:"port"`
-	DesktopPort       int    `json:"desktop_port"`
-	AdvertiseHost     string `json:"advertise_host,omitempty"`
-	AdvertisePort     int    `json:"advertise_port"`
-	TailscaleURL      string `json:"tailscale_url,omitempty"`
-	BypassPermissions bool   `json:"bypass_permissions,omitempty"`
-	DevMode           bool   `json:"dev_mode,omitempty"`
-	PeerTransportPort int    `json:"peer_transport_port"`
-	RestartRequired   bool   `json:"restart_required,omitempty"`
-	RestartReason     string `json:"restart_reason,omitempty"`
+	SwarmName                 string `json:"swarm_name"`
+	SwarmMode                 bool   `json:"swarm_mode"`
+	DesktopOnboardingComplete bool   `json:"desktop_onboarding_complete"`
+	Child                     bool   `json:"child"`
+	SwarmRole                 string `json:"swarm_role,omitempty"`
+	Mode                      string `json:"mode"`
+	Host                      string `json:"host,omitempty"`
+	Port                      int    `json:"port"`
+	DesktopPort               int    `json:"desktop_port"`
+	AdvertiseHost             string `json:"advertise_host,omitempty"`
+	AdvertisePort             int    `json:"advertise_port"`
+	TailscaleURL              string `json:"tailscale_url,omitempty"`
+	BypassPermissions         bool   `json:"bypass_permissions,omitempty"`
+	DevMode                   bool   `json:"dev_mode,omitempty"`
+	PeerTransportPort         int    `json:"peer_transport_port"`
+	RestartRequired           bool   `json:"restart_required,omitempty"`
+	RestartReason             string `json:"restart_reason,omitempty"`
 }
 
 type onboardingHeuristicsPayload struct {
@@ -128,17 +129,18 @@ type onboardingResponse struct {
 }
 
 type onboardingUpdateRequest struct {
-	Username               *string `json:"username,omitempty"`
-	LocalOwnerConfirmation *string `json:"local_owner_confirmation,omitempty"`
-	SwarmName              *string `json:"swarm_name,omitempty"`
-	SwarmMode              *bool   `json:"swarm_mode,omitempty"`
-	Child                  *bool   `json:"child,omitempty"`
-	Mode                   *string `json:"mode,omitempty"`
-	Port                   *int    `json:"port,omitempty"`
-	AdvertiseHost          *string `json:"advertise_host,omitempty"`
-	AdvertisePort          *int    `json:"advertise_port,omitempty"`
-	TailscaleURL           *string `json:"tailscale_url,omitempty"`
-	PeerTransportPort      *int    `json:"peer_transport_port,omitempty"`
+	Username                  *string `json:"username,omitempty"`
+	LocalOwnerConfirmation    *string `json:"local_owner_confirmation,omitempty"`
+	SwarmName                 *string `json:"swarm_name,omitempty"`
+	SwarmMode                 *bool   `json:"swarm_mode,omitempty"`
+	DesktopOnboardingComplete *bool   `json:"desktop_onboarding_complete,omitempty"`
+	Child                     *bool   `json:"child,omitempty"`
+	Mode                      *string `json:"mode,omitempty"`
+	Port                      *int    `json:"port,omitempty"`
+	AdvertiseHost             *string `json:"advertise_host,omitempty"`
+	AdvertisePort             *int    `json:"advertise_port,omitempty"`
+	TailscaleURL              *string `json:"tailscale_url,omitempty"`
+	PeerTransportPort         *int    `json:"peer_transport_port,omitempty"`
 }
 
 const requiredLocalOwnerConfirmation = "desktop"
@@ -364,7 +366,7 @@ func (s *Server) onboardingResponseWithServeDetection(includeSensitive bool, det
 	if err != nil {
 		return onboardingResponse{}, err
 	}
-	needsOnboarding := shouldShowOnboarding(cfg, vaultStatus, credentialList.Total, savedCount) || !identityBootstrapped
+	needsOnboarding := shouldShowOnboarding(cfg, identityBootstrapped)
 	tailscale, _ := detectTailscaleWithStatus()
 	if !needsOnboarding && swarmModeEnabled(cfg) {
 		tailscale.TailnetURL = firstNonEmpty(strings.TrimSpace(cfg.TailscaleURL), strings.TrimSpace(tailscale.TailnetURL))
@@ -375,20 +377,21 @@ func (s *Server) onboardingResponseWithServeDetection(includeSensitive bool, det
 		NeedsOnboarding: needsOnboarding,
 		Identity:        identityPayload,
 		Config: onboardingConfigPayload{
-			SwarmName:         strings.TrimSpace(cfg.SwarmName),
-			SwarmMode:         swarmModeEnabled(cfg),
-			Child:             cfg.Child,
-			SwarmRole:         localSwarmRole(cfg),
-			Mode:              bootstrapNetworkMode(cfg),
-			Host:              strings.TrimSpace(cfg.Host),
-			Port:              cfg.Port,
-			DesktopPort:       cfg.DesktopPort,
-			AdvertiseHost:     strings.TrimSpace(cfg.AdvertiseHost),
-			AdvertisePort:     canonicalAdvertisePort(cfg),
-			TailscaleURL:      strings.TrimSpace(cfg.TailscaleURL),
-			BypassPermissions: cfg.BypassPermissions,
-			DevMode:           cfg.DevMode,
-			PeerTransportPort: cfg.PeerTransportPort,
+			SwarmName:                 strings.TrimSpace(cfg.SwarmName),
+			SwarmMode:                 swarmModeEnabled(cfg),
+			DesktopOnboardingComplete: cfg.DesktopOnboardingComplete,
+			Child:                     cfg.Child,
+			SwarmRole:                 localSwarmRole(cfg),
+			Mode:                      bootstrapNetworkMode(cfg),
+			Host:                      strings.TrimSpace(cfg.Host),
+			Port:                      cfg.Port,
+			DesktopPort:               cfg.DesktopPort,
+			AdvertiseHost:             strings.TrimSpace(cfg.AdvertiseHost),
+			AdvertisePort:             canonicalAdvertisePort(cfg),
+			TailscaleURL:              strings.TrimSpace(cfg.TailscaleURL),
+			BypassPermissions:         cfg.BypassPermissions,
+			DevMode:                   cfg.DevMode,
+			PeerTransportPort:         cfg.PeerTransportPort,
 		},
 		Heuristics: onboardingHeuristicsPayload{
 			MissingSwarmName:    swarmModeEnabled(cfg) && strings.TrimSpace(cfg.SwarmName) == "",
@@ -533,6 +536,11 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 		if !updated.SwarmMode {
 			updated.Child = false
 		}
+		changed = true
+	}
+	if req.DesktopOnboardingComplete != nil {
+		updated.DesktopOnboardingComplete = *req.DesktopOnboardingComplete
+		updated.DesktopOnboardingCompleteSet = true
 		changed = true
 	}
 	if req.Child != nil {
@@ -735,28 +743,21 @@ func (s *Server) readSavedWorkspaceCount(accountScopeID, userID string) (int, er
 	return len(entries), nil
 }
 
-func shouldShowOnboarding(cfg startupconfig.FileConfig, vault auth.VaultStatus, credentialCount, savedCount int) bool {
-	if !swarmModeEnabled(cfg) {
-		return false
+func shouldShowOnboarding(cfg startupconfig.FileConfig, identityBootstrapped bool) bool {
+	if !identityBootstrapped {
+		return true
 	}
 	if strings.TrimSpace(cfg.SwarmName) == "" {
 		return true
 	}
-	return looksLikeFreshDesktopSetup(cfg, vault, credentialCount, savedCount)
-}
-
-func looksLikeFreshDesktopSetup(cfg startupconfig.FileConfig, vault auth.VaultStatus, credentialCount, savedCount int) bool {
-	return swarmModeEnabled(cfg) &&
-		strings.TrimSpace(cfg.SwarmName) == "" &&
-		!cfg.Child &&
-		bootstrapNetworkMode(cfg) == startupconfig.NetworkModeLAN &&
-		!vault.Enabled &&
-		credentialCount == 0 &&
-		savedCount == 0
+	if !cfg.DesktopOnboardingCompleteSet {
+		return false
+	}
+	return !cfg.DesktopOnboardingComplete
 }
 
 func requestChangesSwarmShape(req onboardingUpdateRequest) bool {
-	return req.SwarmMode != nil || req.Child != nil || req.Mode != nil || req.Port != nil || req.AdvertiseHost != nil || req.AdvertisePort != nil || req.TailscaleURL != nil || req.PeerTransportPort != nil
+	return req.SwarmMode != nil || req.DesktopOnboardingComplete != nil || req.Child != nil || req.Mode != nil || req.Port != nil || req.AdvertiseHost != nil || req.AdvertisePort != nil || req.TailscaleURL != nil || req.PeerTransportPort != nil
 }
 
 func defaultOnboardingSwarmName(cfg startupconfig.FileConfig) string {

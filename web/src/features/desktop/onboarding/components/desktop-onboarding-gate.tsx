@@ -166,7 +166,8 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       username: status.identity.bootstrapped ? undefined : normalizedUsername,
       localOwnerConfirmation: status.identity.bootstrapped ? undefined : localOwnerConfirmation,
       swarmName: normalizedName,
-      swarmMode: true,
+      swarmMode: status.config.swarmMode,
+      desktopOnboardingComplete: false,
       child: false,
     })
     let refreshed = await onReload()
@@ -185,6 +186,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   }
 
   const finalizeOnboarding = async () => {
+    await patchDesktopOnboarding({ desktopOnboardingComplete: true })
     const next = await reloadStatus()
     await refreshAuthDependentQueries()
     setStatus(next)

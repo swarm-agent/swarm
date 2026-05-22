@@ -294,6 +294,9 @@ export function buildDesktopOnboardingPayload(input: SaveDesktopOnboardingInput)
   if (Object.prototype.hasOwnProperty.call(input, 'swarmMode')) {
     payload.swarm_mode = input.swarmMode
   }
+  if (Object.prototype.hasOwnProperty.call(input, 'desktopOnboardingComplete')) {
+    payload.desktop_onboarding_complete = input.desktopOnboardingComplete
+  }
   if (Object.prototype.hasOwnProperty.call(input, 'child')) {
     payload.child = input.child
   }
