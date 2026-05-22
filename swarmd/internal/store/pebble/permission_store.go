@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 
+	"swarm/packages/swarmd/internal/privacy"
+
 	"github.com/cockroachdb/pebble"
 )
 
