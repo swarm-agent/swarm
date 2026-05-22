@@ -8,23 +8,24 @@ import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dial
 import { Input } from '../../../components/ui/input'
 import { ModalCloseButton } from '../../../components/ui/modal-close-button'
 import { Select } from '../../../components/ui/select'
+import { fetchSwarmState, type SwarmLocalState } from './api/swarm-state'
 import {
   actOnSwarmLocalContainer,
   deleteSwarmLocalContainers,
-  approveRemoteSwarmPairing,
-  fetchPendingRemoteSwarmPairings,
   fetchSwarmLocalContainers,
   fetchSwarmLocalRuntimeStatus,
-  fetchSwarmState,
   pruneMissingSwarmLocalContainers,
-  removeManagedHostLink,
-  type RemoteSwarmPendingPairing,
   type SwarmLocalContainer,
   type SwarmLocalContainerDeleteResult,
   type SwarmLocalRuntimeStatus,
-  type SwarmLocalState,
-} from '../onboarding/api'
-import type { DesktopOnboardingStatus, DesktopSwarmGroupMember, DesktopSwarmGroupState, DesktopOnboardingConfig, DesktopOnboardingNetwork, DesktopOnboardingPairing } from '../onboarding/types'
+} from './api/local-containers'
+import {
+  approveRemoteSwarmPairing,
+  fetchPendingRemoteSwarmPairings,
+  removeManagedHostLink,
+  type RemoteSwarmPendingPairing,
+} from './api/remote-pairing'
+import type { DesktopOnboardingStatus, DesktopSwarmGroupMember, DesktopSwarmGroupState, DesktopOnboardingConfig, DesktopOnboardingNetwork, DesktopOnboardingPairing } from './types/dashboard-status'
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
 import { saveSwarmSettings } from '../settings/swarm/mutations/save-swarm-settings'
 import type { UISettingsWire } from '../settings/swarm/types/swarm-settings'

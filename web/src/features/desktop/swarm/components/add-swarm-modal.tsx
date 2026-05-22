@@ -10,14 +10,10 @@ import {
 } from '../../../../components/ui/dialog'
 import { Input } from '../../../../components/ui/input'
 import { Select } from '../../../../components/ui/select'
-import {
-  fetchSwarmLocalRuntimeStatus,
-  fetchSwarmState,
-  type SwarmLocalRuntimeStatus,
-  type SwarmLocalState,
-} from '../../onboarding/api'
+import { fetchSwarmState, type SwarmLocalState } from '../api/swarm-state'
+import { fetchSwarmLocalRuntimeStatus, type SwarmLocalRuntimeStatus } from '../api/local-containers'
 import { fetchDesktopUpdateStatus } from '../../update/api'
-import type { DesktopOnboardingStatus } from '../../onboarding/types'
+import type { DesktopOnboardingStatus } from '../types/dashboard-status'
 import {
   fetchDeployContainerPackageDefaults,
   suggestDeployContainerPackages,

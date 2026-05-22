@@ -7,16 +7,15 @@ import {
   DialogBackdrop,
   DialogPanel,
 } from '../../../../components/ui/dialog'
+import { fetchSwarmState, type SwarmLocalState } from '../api/swarm-state'
 import {
   fetchRemoteSwarmCandidates,
-  fetchSwarmState,
   removeManagedHostLink,
   startRemoteSwarmPairing,
   type RemoteSwarmCandidate,
   type RemoteSwarmPairingStartResult,
-  type SwarmLocalState,
-} from '../../onboarding/api'
-import type { DesktopOnboardingStatus } from '../../onboarding/types'
+} from '../api/remote-pairing'
+import type { DesktopOnboardingStatus } from '../types/dashboard-status'
 
 interface LinkSwarmModalProps {
   open: boolean

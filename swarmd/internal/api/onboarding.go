@@ -650,7 +650,14 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 		if s.identitySessions == nil {
 			return onboardingResponse{}, nil, identity.ErrSessionServiceNotConfigured
 		}
-		if _, err := s.identityService.BootstrapFirstIdentity(bootstrapUsername); err != nil {
+		if s.agents == nil {
+			return onboardingResponse{}, nil, errors.New("agent service not configured")
+		}
+		bootstrapResult, err := s.identityService.BootstrapFirstIdentity(bootstrapUsername)
+		if err != nil {
+			return onboardingResponse{}, nil, err
+		}
+		if _, _, _, err := s.agents.RestoreDefaultsForAccount(bootstrapResult.AccountScope.ID); err != nil {
 			return onboardingResponse{}, nil, err
 		}
 		createdSession, err := s.identitySessions.IssueForCurrentSelection()

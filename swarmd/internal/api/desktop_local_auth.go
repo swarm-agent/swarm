@@ -85,6 +85,10 @@ func shouldUseDesktopLocalSessionAuth(r *http.Request) bool {
 	return isSameOriginBrowserRequest(r) && isLocalDesktopBrowserRequest(r)
 }
 
+func shouldAllowDesktopLocalSessionBootstrapRequest(r *http.Request) bool {
+	return isSameOriginBrowserRequest(r) || isLocalTransportRequest(r)
+}
+
 func isLocalDesktopBrowserRequest(r *http.Request) bool {
 	ip := remoteRequestIP(r)
 	if ip == nil {
@@ -183,8 +187,8 @@ func (s *Server) handleDesktopLocalSessionBootstrap(w http.ResponseWriter, r *ht
 		methodNotAllowed(w)
 		return
 	}
-	if !shouldUseDesktopLocalSessionAuth(r) && !isLocalTransportRequest(r) {
-		writeError(w, http.StatusForbidden, errors.New("desktop local session bootstrap requires a same-origin browser request from this machine or the local transport"))
+	if !shouldAllowDesktopLocalSessionBootstrapRequest(r) {
+		writeError(w, http.StatusForbidden, errors.New("desktop local session bootstrap requires a same-origin browser request or the local transport"))
 		return
 	}
 	var err error

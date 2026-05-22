@@ -4006,12 +4006,6 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			}
 		}
 
-		if shouldUseDesktopLocalSessionAuth(r) {
-			if actor, ok := s.actorFromDesktopLocalSession(r); ok {
-				next.ServeHTTP(w, requestWithActorContext(r, actor))
-				return
-			}
-		}
 		if isLocalTransportRequest(r) {
 			if s.identitySessions != nil {
 				if actor, err := s.identitySessions.Validate(productSessionTokenFromRequest(r)); err == nil {
@@ -4126,7 +4120,7 @@ func isAuthExemptRequest(r *http.Request, loopback, trustedNetwork bool) bool {
 	case "/healthz", "/readyz":
 		return true
 	case "/v1/auth/desktop/session":
-		return r.Method == http.MethodGet && shouldUseDesktopLocalSessionAuth(r)
+		return r.Method == http.MethodGet && shouldAllowDesktopLocalSessionBootstrapRequest(r)
 	case "/v1/onboarding":
 		return r.Method == http.MethodGet || (r.Method == http.MethodPost && shouldUseDesktopLocalSessionAuth(r))
 	case "/v1/swarm/state":
