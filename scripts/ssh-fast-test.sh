@@ -171,6 +171,14 @@ if [ ${FROM_ZERO@Q} = 'true' ]; then
   if [ -e ${db_path_quoted} ]; then
     rm -rf -- ${db_path_quoted} 2>/dev/null || sudo -n rm -rf -- ${db_path_quoted}
   fi
+  if [ -f /etc/swarmd/swarm.conf ]; then
+    printf 'ssh-fast-test: resetting desktop_onboarding_complete in /etc/swarmd/swarm.conf\\n'
+    if grep -q '^[[:space:]]*desktop_onboarding_complete[[:space:]]*=' /etc/swarmd/swarm.conf; then
+      sed -i 's/^[[:space:]]*desktop_onboarding_complete[[:space:]]*=.*/desktop_onboarding_complete = false/' /etc/swarmd/swarm.conf 2>/dev/null || sudo -n sed -i 's/^[[:space:]]*desktop_onboarding_complete[[:space:]]*=.*/desktop_onboarding_complete = false/' /etc/swarmd/swarm.conf
+    else
+      printf '\\ndesktop_onboarding_complete = false\\n' >>/etc/swarmd/swarm.conf 2>/dev/null || printf '\\ndesktop_onboarding_complete = false\\n' | sudo -n tee -a /etc/swarmd/swarm.conf >/dev/null
+    fi
+  fi
 fi
 ./rebuild s
 if [ ${RESTART_SERVICE@Q} = 'true' ]; then

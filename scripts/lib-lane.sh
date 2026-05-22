@@ -274,6 +274,7 @@ bypass_permissions = false
 retain_tool_output_history = false
 swarm_name =
 swarm_mode = false
+desktop_onboarding_complete = true
 child = false
 mode = lan
 tailscale_url =
@@ -531,6 +532,15 @@ swarm_mode = ${swarm_mode_value}
 EOF
   fi
 
+  if ! swarm_startup_config_has_key desktop_onboarding_complete; then
+    cat >>"${config_path}" <<'EOF'
+
+# Explicit Desktop onboarding completion marker.
+# false = Desktop must continue onboarding; true = Desktop may open the launcher.
+desktop_onboarding_complete = true
+EOF
+  fi
+
   if ! swarm_startup_config_has_key child; then
     cat >>"${config_path}" <<EOF
 
@@ -746,6 +756,7 @@ swarm_startup_config_validate() {
       valid["retain_tool_output_history"] = 1
       valid["swarm_name"] = 1
       valid["swarm_mode"] = 1
+      valid["desktop_onboarding_complete"] = 1
       valid["child"] = 1
       valid["mode"] = 1
       valid["tailscale_url"] = 1
@@ -879,6 +890,9 @@ swarm_startup_config_validate() {
       }
       if (!("swarm_mode" in seen)) {
         fail(sprintf("invalid startup config %s: missing swarm_mode", config_path))
+      }
+      if (!("desktop_onboarding_complete" in seen)) {
+        fail(sprintf("invalid startup config %s: missing desktop_onboarding_complete", config_path))
       }
       if (!("child" in seen)) {
         fail(sprintf("invalid startup config %s: missing child", config_path))
@@ -1014,6 +1028,9 @@ swarm_startup_config_validate() {
       }
       if (values["swarm_mode"] != "true" && values["swarm_mode"] != "false") {
         fail(sprintf("invalid startup config %s: swarm_mode must be true or false", config_path))
+      }
+      if (values["desktop_onboarding_complete"] != "true" && values["desktop_onboarding_complete"] != "false") {
+        fail(sprintf("invalid startup config %s: desktop_onboarding_complete must be true or false", config_path))
       }
       if (values["child"] != "true" && values["child"] != "false") {
         fail(sprintf("invalid startup config %s: child must be true or false", config_path))
