@@ -1,27 +1,74 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { UserRound } from 'lucide-react'
+import { requestJson } from '../../../../../app/api'
 import { Card } from '../../../../../components/ui/card'
-import { fetchDesktopOnboardingStatus, upgradeAccountToTeam } from '../../../onboarding/api'
+
+interface AccountIdentityWire {
+  bootstrapped?: boolean
+  userID?: string
+  user_id?: string
+  accountScopeID?: string
+  account_scope_id?: string
+  username?: string
+  teamID?: string | null
+  team_id?: string | null
+  teamDisplayName?: string
+  team_display_name?: string
+  teamDefault?: boolean
+  team_default?: boolean
+  membershipRole?: string
+  membership_role?: string
+}
+
+interface AccountIdentity {
+  bootstrapped: boolean
+  userID: string
+  accountScopeID: string
+  username: string
+  teamID: string
+  teamDisplayName: string
+  teamDefault: boolean
+  membershipRole: string
+}
 
 export function AccountSettingsPage() {
   const queryClient = useQueryClient()
   const [teamName, setTeamName] = useState('')
   const query = useQuery({
-    queryKey: ['desktop-onboarding-status', 'account-settings'],
-    queryFn: fetchDesktopOnboardingStatus,
+    queryKey: ['desktop-account-context'],
+    queryFn: async (): Promise<AccountIdentity> => {
+      const account = await requestJson<AccountIdentityWire>('/v1/me')
+      const userID = String(account.userID ?? account.user_id ?? '').trim()
+      return {
+        bootstrapped: Boolean(account.bootstrapped ?? userID !== ''),
+        userID,
+        accountScopeID: String(account.accountScopeID ?? account.account_scope_id ?? '').trim(),
+        username: String(account.username ?? '').trim(),
+        teamID: String(account.teamID ?? account.team_id ?? '').trim(),
+        teamDisplayName: String(account.teamDisplayName ?? account.team_display_name ?? '').trim(),
+        teamDefault: Boolean(account.teamDefault ?? account.team_default),
+        membershipRole: String(account.membershipRole ?? account.membership_role ?? '').trim(),
+      }
+    },
     staleTime: 10_000,
   })
   const upgradeMutation = useMutation({
-    mutationFn: (name: string) => upgradeAccountToTeam(name),
+    mutationFn: (name: string) => requestJson('/v1/account/team/upgrade', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ team_name: name }),
+    }),
     onSuccess: async () => {
       setTeamName('')
-      await queryClient.invalidateQueries({ queryKey: ['desktop-onboarding-status'] })
+      await queryClient.invalidateQueries({ queryKey: ['desktop-account-context'] })
       await query.refetch()
     },
   })
 
-  const identity = query.data?.identity
+  const identity = query.data
   const bootstrapped = Boolean(identity?.bootstrapped && identity.userID.trim() !== '')
   const hasTeam = Boolean(identity?.teamID.trim())
   const trimmedTeamName = teamName.trim()
