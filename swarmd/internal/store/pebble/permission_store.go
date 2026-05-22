@@ -1,12 +1,12 @@
 package pebblestore
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
-
-	"swarm/packages/swarmd/internal/privacy"
 
 	"github.com/cockroachdb/pebble"
 )
@@ -292,7 +292,8 @@ func permissionPolicyKeyForAccount(accountScopeID string) string {
 	if accountScopeID == "" {
 		return KeyPermissionPolicy()
 	}
-	return KeyPermissionPolicy() + "/account/" + privacy.HashPathForKey(accountScopeID)
+	sum := sha256.Sum256([]byte(accountScopeID))
+	return KeyPermissionPolicy() + "/account/" + hex.EncodeToString(sum[:])
 }
 
 func (s *PermissionStore) UpsertRunWait(state RunWaitState) error {
