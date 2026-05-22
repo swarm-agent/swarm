@@ -4,6 +4,7 @@ set -euo pipefail
 usage() {
   cat >&2 <<'USAGE'
 Usage: scripts/ssh-fast-test.sh <ssh-alias> [--remote-dir <path>] [--service <unit>] [--no-restart]
+       scripts/ssh-fast-test.sh <ssh-alias> --from-zero [--remote-dir <path>] [--service <unit>] [--db-path <path>]
 
 Fast SSH testing flow:
   1. find the remote swarm-go checkout unless --remote-dir is provided
@@ -11,8 +12,16 @@ Fast SSH testing flow:
   3. run the checked-in rebuild script from the remote checkout
   4. restart the remote user systemd service unless --no-restart is set
 
-The SSH alias, remote checkout path, and service unit are runtime inputs; do not
-hardcode host-specific values in this script.
+Rebuild-from-zero flow:
+  1. require the local git worktree to be clean so only committed changes sync
+  2. stop the remote user systemd service before rsync
+  3. rsync the committed working tree to the remote checkout
+  4. delete the remote Pebble database path
+  5. run the checked-in rebuild script from the remote checkout
+  6. restart the remote user systemd service
+
+The SSH alias, remote checkout path, service unit, and database path are runtime
+inputs; do not hardcode host-specific values in this script.
 USAGE
 }
 
@@ -29,6 +38,16 @@ quote_remote() {
   printf '%q' "$1"
 }
 
+require_clean_git_tree() {
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail "--from-zero requires a git checkout"
+  if ! git diff --quiet -- || ! git diff --cached --quiet --; then
+    fail "--from-zero requires committed changes only; commit or stash local modifications first"
+  fi
+  if [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+    fail "--from-zero requires committed changes only; commit, stash, or remove untracked files first"
+  fi
+}
+
 if [[ $# -lt 1 ]]; then
   usage
   exit 2
@@ -39,6 +58,8 @@ shift
 REMOTE_DIR=""
 SERVICE_UNIT="swarm.service"
 RESTART_SERVICE="true"
+FROM_ZERO="false"
+DB_PATH="/var/lib/swarmd/swarmd.pebble"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -51,6 +72,15 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || fail "--service requires a value"
       SERVICE_UNIT="$2"
       shift 2
+      ;;
+    --db-path)
+      [[ $# -ge 2 ]] || fail "--db-path requires a value"
+      DB_PATH="$2"
+      shift 2
+      ;;
+    --from-zero|--rebuild-from-zero)
+      FROM_ZERO="true"
+      shift
       ;;
     --no-restart)
       RESTART_SERVICE="false"
@@ -66,11 +96,19 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "${FROM_ZERO}" == "true" && "${RESTART_SERVICE}" != "true" ]]; then
+  fail "--from-zero always restarts the service; remove --no-restart"
+fi
+
 require_command ssh
 require_command rsync
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
+
+if [[ "${FROM_ZERO}" == "true" ]]; then
+  require_clean_git_tree
+fi
 
 if [[ -z "${REMOTE_DIR}" ]]; then
   REMOTE_DIR="$(ssh "${SSH_ALIAS}" 'set -euo pipefail
@@ -91,8 +129,22 @@ exit 1' 2>/dev/null)" || fail "could not find remote swarm-go checkout on ${SSH_
 fi
 
 [[ -n "${REMOTE_DIR}" ]] || fail "empty remote checkout path"
+[[ -n "${DB_PATH}" ]] || fail "empty database path"
 
-printf 'ssh-fast-test: remote=%s dir=%s service=%s\n' "${SSH_ALIAS}" "${REMOTE_DIR}" "${SERVICE_UNIT}"
+remote_dir_quoted="$(quote_remote "${REMOTE_DIR}")"
+service_quoted="$(quote_remote "${SERVICE_UNIT}")"
+db_path_quoted="$(quote_remote "${DB_PATH}")"
+
+printf 'ssh-fast-test: remote=%s dir=%s service=%s mode=%s\n' "${SSH_ALIAS}" "${REMOTE_DIR}" "${SERVICE_UNIT}" "$([[ "${FROM_ZERO}" == "true" ]] && printf from-zero || printf fast)"
+
+if [[ "${FROM_ZERO}" == "true" ]]; then
+  printf 'ssh-fast-test: stopping remote service before sync\n'
+  ssh "${SSH_ALIAS}" "set -euo pipefail
+systemctl --user stop ${service_quoted} >/dev/null 2>&1 || true
+if command -v sudo >/dev/null 2>&1; then
+  sudo -n systemctl stop ${service_quoted} >/dev/null 2>&1 || true
+fi"
+fi
 
 rsync -az --delete \
   --exclude '.git/' \
@@ -112,11 +164,14 @@ rsync -az --delete \
   --exclude 'swarmd/swarmd' \
   ./ "${SSH_ALIAS}:${REMOTE_DIR}/"
 
-remote_dir_quoted="$(quote_remote "${REMOTE_DIR}")"
-service_quoted="$(quote_remote "${SERVICE_UNIT}")"
-
 ssh "${SSH_ALIAS}" "set -euo pipefail
 cd ${remote_dir_quoted}
+if [ ${FROM_ZERO@Q} = 'true' ]; then
+  printf 'ssh-fast-test: deleting remote database %s\\n' ${db_path_quoted}
+  if [ -e ${db_path_quoted} ]; then
+    rm -rf -- ${db_path_quoted} 2>/dev/null || sudo -n rm -rf -- ${db_path_quoted}
+  fi
+fi
 ./rebuild s
 if [ ${RESTART_SERVICE@Q} = 'true' ]; then
   systemctl --user daemon-reload

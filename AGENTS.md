@@ -202,6 +202,14 @@ When a user asks to test through an SSH alias, use the reusable fast-test script
 
 The script must remain generic and host-agnostic. It discovers the remote `swarm-go` checkout, rsyncs the current working tree there while excluding local artifacts, runs the checked-in remote rebuild path (`./rebuild s`), then restarts the user systemd service with `systemctl --user restart`. If discovery cannot find the checkout, pass `--remote-dir <path>` rather than hardcoding a host path in docs or code. If a host uses a non-default unit, pass `--service <unit>`.
 
+For a clean database validation when the user says "Rebuild from 0", first commit intended source changes, then use:
+
+```bash
+./scripts/ssh-fast-test.sh <ssh-alias> --from-zero
+```
+
+`--from-zero` refuses a dirty or untracked local worktree, stops the remote Swarm service before rsync, deletes the remote Pebble DB path, runs `./rebuild s`, and restarts the user systemd service. Use `--db-path <path>` only when the target explicitly uses a different canonical DB path.
+
 Do not replace this flow with ad-hoc `scp`/`rsync` plus manual rebuild steps unless the script itself is broken and you are fixing it. This is the canonical fast manual testing path for "ssh alias" requests.
 
 ## Current Active Testing Focus

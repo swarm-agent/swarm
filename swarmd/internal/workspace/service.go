@@ -645,13 +645,6 @@ func (s *Service) BrowseForPrincipal(principal identity.Principal, path string) 
 	if err != nil {
 		return BrowseResult{}, err
 	}
-	scope, err := s.ScopeForPathForPrincipal(principal, resolved)
-	if err != nil {
-		return BrowseResult{}, err
-	}
-	if !scope.Matched {
-		return BrowseResult{}, errAccountOwnedWorkspaceRequired
-	}
 	if err := ensureWorkspaceDirectory(resolved); err != nil {
 		return BrowseResult{}, err
 	}
@@ -712,13 +705,6 @@ func (s *Service) CreateFolderForPrincipal(principal identity.Principal, parentP
 	parent, err := resolveBrowsePath(parentPath)
 	if err != nil {
 		return CreateFolderResult{}, err
-	}
-	scope, err := s.ScopeForPathForPrincipal(principal, parent)
-	if err != nil {
-		return CreateFolderResult{}, err
-	}
-	if !scope.Matched {
-		return CreateFolderResult{}, errAccountOwnedWorkspaceRequired
 	}
 	if err := ensureWorkspaceDirectory(parent); err != nil {
 		return CreateFolderResult{}, err
