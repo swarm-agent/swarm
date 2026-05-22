@@ -65,8 +65,12 @@ func (s *Server) withDesktopLocalSession(next http.Handler) http.Handler {
 			var err error
 			r, err = s.issueDesktopLocalSession(w, r)
 			if err != nil {
+				if errors.Is(err, identity.ErrProductIdentityRequired) {
+					next.ServeHTTP(w, r)
+					return
+				}
 				status := http.StatusInternalServerError
-				if errors.Is(err, identity.ErrProductIdentityRequired) || errors.Is(err, identity.ErrSessionServiceNotConfigured) {
+				if errors.Is(err, identity.ErrSessionServiceNotConfigured) {
 					status = http.StatusUnauthorized
 				}
 				writeError(w, status, err)

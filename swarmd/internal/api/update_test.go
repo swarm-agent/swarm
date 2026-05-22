@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -119,7 +120,7 @@ func TestStartDetachedUpdateCommandDevRequiresGoBeforeLaunch(t *testing.T) {
 		return updateHelperLaunchCommand{}, nil
 	}
 
-	_, err := server.startDetachedUpdateCommand(updateKindDev, "job-no-go", &updateJobRunner{})
+	_, err := server.startDetachedUpdateCommand(context.Background(), updateKindDev, "job-no-go", &updateJobRunner{})
 	if err == nil {
 		t.Fatalf("startDetachedUpdateCommand succeeded; want Go preflight error")
 	}
@@ -166,7 +167,7 @@ func TestStartDetachedUpdateCommandDevPassesGoEnvToSystemdRun(t *testing.T) {
 		return updateHelperLaunchCommand{CommandPath: "/bin/sleep", Args: []string{"60"}, Env: os.Environ()}, nil
 	}
 
-	details, err := server.startDetachedUpdateCommand(updateKindDev, "job-with-go", &updateJobRunner{})
+	details, err := server.startDetachedUpdateCommand(context.Background(), updateKindDev, "job-with-go", &updateJobRunner{})
 	if err != nil {
 		t.Fatalf("startDetachedUpdateCommand: %v", err)
 	}
