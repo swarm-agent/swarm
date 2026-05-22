@@ -8,14 +8,13 @@ import {
   DialogPanel,
 } from '../../../../components/ui/dialog'
 import {
-  fetchDesktopOnboardingStatus,
   fetchRemoteSwarmCandidates,
   fetchSwarmState,
   removeManagedHostLink,
-  saveDesktopOnboarding,
   startRemoteSwarmPairing,
   type RemoteSwarmCandidate,
   type RemoteSwarmPairingStartResult,
+  type SwarmLocalState,
 } from '../../onboarding/api'
 import type { DesktopOnboardingStatus } from '../../onboarding/types'
 
@@ -53,6 +52,15 @@ function endpointHostLabel(endpoint: string): string {
   } catch {
     return trimmed
   }
+}
+
+function localSwarmRoleFromState(state: SwarmLocalState | null): DesktopOnboardingStatus['config']['swarmRole'] | null {
+  const role = String(state?.node.role ?? '').trim().toLowerCase()
+  if (role === 'managed') return 'managed'
+  if (role === 'child') return 'child'
+  if (role === 'standalone') return 'standalone'
+  if (role === 'master' || role === 'controller' || role === 'parent') return 'master'
+  return null
 }
 
 function localTailscaleServeCommand(status: DesktopOnboardingStatus | null): string {
@@ -109,7 +117,7 @@ export function LinkSwarmModal({
   onboardingStatus,
   onOpenChange,
   onPairingSent,
-  onOnboardingStatusChange,
+  onOnboardingStatusChange: _onOnboardingStatusChange,
 }: LinkSwarmModalProps) {
   // Direction is intentional: this modal runs on the requester, which becomes the Managed Host.
   // The selected remote Swarm is the existing primary/Manager that receives and approves the request.
@@ -125,13 +133,14 @@ export function LinkSwarmModal({
   const [serveRefreshing, setServeRefreshing] = useState(false)
   const [detachBusy, setDetachBusy] = useState(false)
   const [serveCopyState, setServeCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
-  const [modalOnboardingStatus, setModalOnboardingStatus] =
-    useState<DesktopOnboardingStatus | null>(onboardingStatus)
-  const effectiveOnboardingStatus = modalOnboardingStatus ?? onboardingStatus
+  const [modalSwarmState, setModalSwarmState] = useState<SwarmLocalState | null>(null)
+  const effectiveOnboardingStatus = onboardingStatus
+  const modalSwarmRole = localSwarmRoleFromState(modalSwarmState)
+  const effectiveSwarmRole = modalSwarmRole ?? effectiveOnboardingStatus?.config.swarmRole ?? ''
 
-  const alreadyLinkedManagedHost = effectiveOnboardingStatus?.config.swarmRole === 'managed'
-  const linkedManagerID = effectiveOnboardingStatus?.pairing.parentSwarmID || ''
-  const linkedPairingState = effectiveOnboardingStatus?.pairing.pairingState || ''
+  const alreadyLinkedManagedHost = effectiveSwarmRole === 'managed'
+  const linkedManagerID = String(modalSwarmState?.pairing.parent_swarm_id ?? '').trim() || effectiveOnboardingStatus?.pairing.parentSwarmID || ''
+  const linkedPairingState = String(modalSwarmState?.pairing.pairing_state ?? '').trim() || effectiveOnboardingStatus?.pairing.pairingState || ''
   const selectedCandidate = useMemo(
     () =>
       candidates.find((candidate) => candidate.id === selectedCandidateID) ??
@@ -159,20 +168,10 @@ export function LinkSwarmModal({
     setServeRefreshing(true)
     setError(null)
     try {
-      if (effectiveOnboardingStatus?.config.swarmMode && effectiveOnboardingStatus.config.mode === 'tailscale' && !effectiveOnboardingStatus.config.tailscaleURL.trim()) {
-        const detectedURL = effectiveOnboardingStatus.network.tailscale.tailnetURL || effectiveOnboardingStatus.network.tailscale.candidateURL
-        if (detectedURL.trim()) {
-          const saved = await saveDesktopOnboarding({ tailscaleURL: detectedURL.trim() })
-          setModalOnboardingStatus(saved)
-          onOnboardingStatusChange?.(saved)
-          return
-        }
-      }
-      const next = await fetchDesktopOnboardingStatus()
-      setModalOnboardingStatus(next)
-      onOnboardingStatusChange?.(next)
+      const next = await fetchSwarmState()
+      setModalSwarmState(next)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to refresh Tailscale Serve status')
+      setError(err instanceof Error ? err.message : 'Failed to refresh swarm state')
     } finally {
       setServeRefreshing(false)
     }
@@ -197,11 +196,10 @@ export function LinkSwarmModal({
         propagate: false,
         reason: 'Force detached locally from Managed Hosting modal',
       })
-      const next = await fetchDesktopOnboardingStatus()
-      setModalOnboardingStatus(next)
-      onOnboardingStatusChange?.(next)
+      const next = await fetchSwarmState()
+      setModalSwarmState(next)
       await onPairingSent?.('Detached this host locally from its stale Manager link. You can link it again now.')
-      if (next.config.swarmRole !== 'managed') {
+      if (localSwarmRoleFromState(next) !== 'managed') {
         void loadCandidates()
       }
     } catch (err) {
@@ -249,17 +247,16 @@ export function LinkSwarmModal({
     setError(null)
     setListenError(null)
     setServeCopyState('idle')
-    setModalOnboardingStatus(null)
-    void fetchDesktopOnboardingStatus()
+    setModalSwarmState(null)
+    void fetchSwarmState()
       .then((next) => {
-        setModalOnboardingStatus(next)
-        onOnboardingStatusChange?.(next)
-        if (next.config.swarmRole !== 'managed') {
+        setModalSwarmState(next)
+        if (localSwarmRoleFromState(next) !== 'managed') {
           void loadCandidates()
         }
       })
       .catch((err) => {
-        setError(err instanceof Error ? err.message : 'Failed to load Tailscale Serve status')
+        setError(err instanceof Error ? err.message : 'Failed to load swarm state')
       })
   }, [open])
 
@@ -276,17 +273,7 @@ export function LinkSwarmModal({
           setListenError(null)
           setStatus('paired')
           const displayName = selectedName
-          try {
-            const next = await fetchDesktopOnboardingStatus()
-            if (!cancelled) {
-              setModalOnboardingStatus(next)
-              onOnboardingStatusChange?.(next)
-            }
-          } catch (err) {
-            if (!cancelled) {
-              setListenError(err instanceof Error ? err.message : 'Linked, but failed to refresh local status')
-            }
-          }
+          setModalSwarmState(state)
           void onPairingSent?.(`This host is now linked as a Managed Host. You can use it from primary Manager ${displayName}.`)
         } else if (!cancelled) {
           setListenError(null)
@@ -304,7 +291,7 @@ export function LinkSwarmModal({
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [open, status, pairingResult, selectedName, onPairingSent, onOnboardingStatusChange])
+  }, [open, status, pairingResult, selectedName, onPairingSent])
 
   const closeModal = () => {
     if (status !== 'pairing') onOpenChange(false)
