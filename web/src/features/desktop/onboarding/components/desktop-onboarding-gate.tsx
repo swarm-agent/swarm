@@ -4,10 +4,7 @@ import { draftModelQueryOptions, modelOptionsQueryOptions, agentStateQueryOption
 import { Button } from '../../../../components/ui/button'
 import { Card } from '../../../../components/ui/card'
 import { Input } from '../../../../components/ui/input'
-import {
-  fetchDesktopOnboardingStatus,
-  saveDesktopOnboarding,
-} from '../api'
+import { patchDesktopOnboarding } from '../api'
 import type { DesktopOnboardingStatus } from '../types'
 import { startCodexOAuth } from '../../settings/mutations/start-codex-oauth'
 import { getCodexOAuthStatus } from '../../settings/queries/get-codex-oauth-status'
@@ -23,6 +20,7 @@ type CodexOAuthMode = StartCodexOAuthInput['method']
 interface DesktopOnboardingGateProps {
   status: DesktopOnboardingStatus
   restart?: boolean
+  onReload: () => Promise<DesktopOnboardingStatus>
   onComplete: (status: DesktopOnboardingStatus) => void
 }
 
@@ -80,7 +78,7 @@ function suggestedGroupName(status: DesktopOnboardingStatus, swarmName: string):
   return normalizedName ? `${normalizedName} Group` : ''
 }
 
-export function DesktopOnboardingGate({ status: initialStatus, restart = false, onComplete }: DesktopOnboardingGateProps) {
+export function DesktopOnboardingGate({ status: initialStatus, restart = false, onReload, onComplete }: DesktopOnboardingGateProps) {
   const [status, setStatus] = useState(initialStatus)
   const [step, setStep] = useState<OnboardingStep>(() => (restart ? 'identity' : deriveInitialStep(initialStatus)))
   const [submitting, setSubmitting] = useState(false)
@@ -143,7 +141,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   }, [codexOAuthMode, oauthSession])
 
   const reloadStatus = async () => {
-    const next = await fetchDesktopOnboardingStatus()
+    const next = await onReload()
     setStatus(next)
     return next
   }
@@ -164,21 +162,21 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     if (!normalizedGroupName) {
       throw new Error('Group name is required for the first swarm group.')
     }
-    const next = await saveDesktopOnboarding({
+    await patchDesktopOnboarding({
       username: status.identity.bootstrapped ? undefined : normalizedUsername,
       localOwnerConfirmation: status.identity.bootstrapped ? undefined : localOwnerConfirmation,
       swarmName: normalizedName,
       swarmMode: true,
       child: false,
     })
-    let refreshed = next
-    const currentGroupID = next.currentGroupID.trim() || next.groups[0]?.group.id?.trim() || ''
+    let refreshed = await onReload()
+    const currentGroupID = refreshed.currentGroupID.trim() || refreshed.groups[0]?.group.id?.trim() || ''
     await upsertSwarmGroup({
       groupID: currentGroupID || undefined,
       name: normalizedGroupName,
       setCurrent: true,
     })
-    refreshed = await fetchDesktopOnboardingStatus()
+    refreshed = await onReload()
     setStatus(refreshed)
     setUsername(refreshed.identity.username)
     setSwarmName(refreshed.config.swarmName)
