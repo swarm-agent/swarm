@@ -405,10 +405,10 @@ func (r *Runtime) manageThemeSaveSettings(scope WorkspaceScope, settings uisetti
 		return uisettings.UISettings{}, errors.New("manage-theme ui settings service is not configured")
 	}
 	accountScopeID := r.manageThemeAccountScopeID(scope)
-	if accountScopeID != "" {
-		return r.uiSettings.SetForAccount(accountScopeID, settings)
+	if accountScopeID == "" {
+		return uisettings.UISettings{}, errors.New("manage-theme requires an account-scoped principal to save theme settings")
 	}
-	return r.uiSettings.Set(settings)
+	return r.uiSettings.SetForAccount(accountScopeID, settings)
 }
 
 func (r *Runtime) manageThemeWorkspaceSummary(scope WorkspaceScope, args map[string]any) (map[string]any, error) {
