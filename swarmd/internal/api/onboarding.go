@@ -130,7 +130,6 @@ type onboardingResponse struct {
 
 type onboardingUpdateRequest struct {
 	Username                  *string `json:"username,omitempty"`
-	LocalOwnerConfirmation    *string `json:"local_owner_confirmation,omitempty"`
 	SwarmName                 *string `json:"swarm_name,omitempty"`
 	SwarmMode                 *bool   `json:"swarm_mode,omitempty"`
 	DesktopOnboardingComplete *bool   `json:"desktop_onboarding_complete,omitempty"`
@@ -142,8 +141,6 @@ type onboardingUpdateRequest struct {
 	TailscaleURL              *string `json:"tailscale_url,omitempty"`
 	PeerTransportPort         *int    `json:"peer_transport_port,omitempty"`
 }
-
-const requiredLocalOwnerConfirmation = "desktop"
 
 type tailscalePeerStatusWire struct {
 	DNSName        string   `json:"DNSName"`
@@ -510,9 +507,6 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 	}
 	if !identityBootstrapped && (req.SwarmName == nil || strings.TrimSpace(*req.SwarmName) == "") {
 		return onboardingResponse{}, nil, errors.New("swarm name is required for daemon identity")
-	}
-	if !identityBootstrapped && (req.LocalOwnerConfirmation == nil || *req.LocalOwnerConfirmation != requiredLocalOwnerConfirmation) {
-		return onboardingResponse{}, nil, fmt.Errorf("local owner confirmation must be exactly %q", requiredLocalOwnerConfirmation)
 	}
 	if identityBootstrapped && bootstrapUsername != "" {
 		return onboardingResponse{}, nil, identity.ErrBootstrapExists

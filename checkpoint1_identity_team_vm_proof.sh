@@ -339,7 +339,7 @@ initial_status="$(record_request onboarding-initial GET "${DESKTOP_URL}/v1/onboa
 [[ "${initial_status}" == "200" ]] || fail "initial onboarding status ${initial_status}, want 200"
 jq -e '.identity.bootstrapped == false' "${EVIDENCE_DIR}/onboarding-initial.json" >/dev/null || fail "initial onboarding should not be bootstrapped"
 
-bootstrap_status="$(record_request onboarding-bootstrap POST "${DESKTOP_URL}/v1/onboarding" '{"username":"checkpoint1-vm-user","local_owner_confirmation":"desktop","swarm_name":"Checkpoint 1 VM Device"}' "${EVIDENCE_DIR}/onboarding-bootstrap.json")"
+bootstrap_status="$(record_request onboarding-bootstrap POST "${DESKTOP_URL}/v1/onboarding" '{"username":"checkpoint1-vm-user","swarm_name":"Checkpoint 1 VM Device"}' "${EVIDENCE_DIR}/onboarding-bootstrap.json")"
 [[ "${bootstrap_status}" == "200" ]] || fail "onboarding bootstrap status ${bootstrap_status}, want 200"
 jq -e '.identity.bootstrapped == true and .identity.user_id != "" and .identity.account_scope_id != "" and .identity.username == "checkpoint1-vm-user" and ((.identity.team_id // "") == "") and ((.identity.membership_role // "") == "")' "${EVIDENCE_DIR}/onboarding-bootstrap.json" >/dev/null || fail "bootstrap response violates private identity invariants"
 

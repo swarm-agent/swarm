@@ -316,7 +316,7 @@ create_account_probe
 create_db_probe
 start_daemon
 
-bootstrap_a_status="$(record_request onboarding-bootstrap-a POST "${DESKTOP_URL}/v1/onboarding" '{"username":"slice1-account-a","local_owner_confirmation":"desktop","swarm_name":"Slice1 Sessions Device"}' "${EVIDENCE_DIR}/onboarding-bootstrap-a.json" cookie-a)"
+bootstrap_a_status="$(record_request onboarding-bootstrap-a POST "${DESKTOP_URL}/v1/onboarding" '{"username":"slice1-account-a","swarm_name":"Slice1 Sessions Device"}' "${EVIDENCE_DIR}/onboarding-bootstrap-a.json" cookie-a)"
 [[ "${bootstrap_a_status}" == "200" ]] || fail "account A onboarding status ${bootstrap_a_status}, want 200"
 SESSION_A_STATUS="$(record_request auth-session-a GET "${DESKTOP_URL}/v1/auth/desktop/session" "" "${EVIDENCE_DIR}/auth-session-a.json" cookie-a)"
 [[ "${SESSION_A_STATUS}" == "200" ]] || fail "account A desktop session status ${SESSION_A_STATUS}, want 200"

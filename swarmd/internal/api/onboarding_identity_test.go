@@ -47,7 +47,7 @@ func TestOnboardingGetReportsUnbootstrappedIdentityWithoutCreatingRecords(t *tes
 	}
 }
 
-func TestOnboardingPostRequiresUsernameSwarmNameAndConfirmationBeforeBootstrap(t *testing.T) {
+func TestOnboardingPostRequiresUsernameAndSwarmNameBeforeBootstrap(t *testing.T) {
 	server, identityStore := newOnboardingIdentityTestServer(t, false)
 
 	testCases := []struct {
@@ -57,28 +57,13 @@ func TestOnboardingPostRequiresUsernameSwarmNameAndConfirmationBeforeBootstrap(t
 	}{
 		{
 			name:    "missing username",
-			payload: map[string]any{"swarm_name": "Device One", "local_owner_confirmation": requiredLocalOwnerConfirmation},
+			payload: map[string]any{"swarm_name": "Device One"},
 			wantErr: "username",
 		},
 		{
 			name:    "missing swarm name",
-			payload: map[string]any{"username": "alice", "local_owner_confirmation": requiredLocalOwnerConfirmation},
+			payload: map[string]any{"username": "alice"},
 			wantErr: "swarm name",
-		},
-		{
-			name:    "missing confirmation",
-			payload: map[string]any{"username": "alice", "swarm_name": "Device One"},
-			wantErr: "local owner confirmation",
-		},
-		{
-			name:    "empty confirmation",
-			payload: map[string]any{"username": "alice", "swarm_name": "Device One", "local_owner_confirmation": ""},
-			wantErr: "local owner confirmation",
-		},
-		{
-			name:    "wrong confirmation",
-			payload: map[string]any{"username": "alice", "swarm_name": "Device One", "local_owner_confirmation": "Desktop"},
-			wantErr: "local owner confirmation",
 		},
 	}
 	for _, tc := range testCases {
@@ -103,7 +88,7 @@ func TestOnboardingPostBootstrapsIdentityAndIssuesSession(t *testing.T) {
 	server, identityStore := newOnboardingIdentityTestServer(t, false)
 
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, newJSONSameOriginDesktopRequest(t, map[string]any{"username": "Alice", "swarm_name": "Alice Laptop", "local_owner_confirmation": requiredLocalOwnerConfirmation}))
+	server.Handler().ServeHTTP(rec, newJSONSameOriginDesktopRequest(t, map[string]any{"username": "Alice", "swarm_name": "Alice Laptop"}))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("bootstrap status=%d body=%s", rec.Code, rec.Body.String())
 	}

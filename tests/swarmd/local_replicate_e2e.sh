@@ -1117,7 +1117,7 @@ ensure_host_identity_bootstrapped() {
     return 0
   fi
 
-  bootstrap_body="$(jq -nc --arg username "local-replicate-host" --arg swarm_name "${HOST_SWARM_NAME}" '{username:$username, swarm_name:$swarm_name, local_owner_confirmation:"desktop"}')"
+  bootstrap_body="$(jq -nc --arg username "local-replicate-host" --arg swarm_name "${HOST_SWARM_NAME}" '{username:$username, swarm_name:$swarm_name}')"
   bootstrap_response="$(json_request "${HOST_ADMIN_API_URL}" "" POST "/v1/onboarding" "${bootstrap_body}" 30 "${HOST_DESKTOP_SESSION_COOKIE_FILE}")"
   safe_write_artifact "host-onboarding-bootstrap.json" "${bootstrap_response}"
   [[ "$(printf '%s' "${bootstrap_response}" | jq -r '.identity.bootstrapped // false')" == "true" ]] || fail "host onboarding bootstrap did not create product identity"

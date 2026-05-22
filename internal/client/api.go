@@ -73,11 +73,10 @@ type OnboardingStatus struct {
 }
 
 type SaveOnboardingInput struct {
-	Username               string `json:"username,omitempty"`
-	LocalOwnerConfirmation string `json:"local_owner_confirmation,omitempty"`
-	SwarmName              string `json:"swarm_name,omitempty"`
-	SwarmMode              *bool  `json:"swarm_mode,omitempty"`
-	Child                  *bool  `json:"child,omitempty"`
+	Username  string `json:"username,omitempty"`
+	SwarmName string `json:"swarm_name,omitempty"`
+	SwarmMode *bool  `json:"swarm_mode,omitempty"`
+	Child     *bool  `json:"child,omitempty"`
 }
 
 type UpdateStatus struct {

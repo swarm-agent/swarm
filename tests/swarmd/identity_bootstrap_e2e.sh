@@ -214,7 +214,7 @@ stop_daemon() {
 write_tui_session_artifact() {
   local out="${1:-}" phase="${2:-}" status_file="${3:-}" session_file="${4:-}"
   jq -n --arg phase "${phase}" --slurpfile status "${status_file}" --slurpfile session "${session_file}" \
-    '{phase:$phase,local_session_contract:"/v1/auth/desktop/session",identity_bootstrapped:($status[0].identity.bootstrapped // false),user_id:($session[0].user_id // ""),username:($session[0].username // ""),token_redacted:(if ($session[0].token? // "") != "" then "<redacted>" else "" end),startup_user_first:true,onboarding_inputs:["username","swarmName","localOwnerConfirmation=desktop"],team_prompt_on_startup:false,team_context:"validated secondary context only for explicit team-scoped workflows"}' >"${out}"
+    '{phase:$phase,local_session_contract:"/v1/auth/desktop/session",identity_bootstrapped:($status[0].identity.bootstrapped // false),user_id:($session[0].user_id // ""),username:($session[0].username // ""),token_redacted:(if ($session[0].token? // "") != "" then "<redacted>" else "" end),startup_user_first:true,onboarding_inputs:["username","swarmName","swarmName"],team_prompt_on_startup:false,team_context:"validated secondary context only for explicit team-scoped workflows"}' >"${out}"
 }
 
 write_identity_probe
@@ -250,12 +250,10 @@ credential_pre_status="$(record_request guarded-credential-negative POST "${DESK
 [[ "${workspace_pre_status}" == "401" && "${agent_pre_status}" == "401" && "${credential_pre_status}" == "401" ]] || fail "guarded negative statuses workspace=${workspace_pre_status} agent=${agent_pre_status} credential=${credential_pre_status}, want all 401"
 jq -n --argjson workspace "$(cat "${RUN_ROOT}/guarded-workspace-negative.json")" --argjson agent "$(cat "${RUN_ROOT}/guarded-agent-negative.json")" --argjson credential "$(cat "${RUN_ROOT}/guarded-credential-negative.json")" '{workspace:$workspace,agent:$agent,credential:$credential}' >"${EVIDENCE_DIR}/guarded-api-negative.json"
 
-old_shape_status="$(record_request onboarding-old-shape POST "${DESKTOP_URL}/v1/onboarding" '{"swarm_name":"Slice17 Device","local_owner_confirmation":"desktop"}' "${EVIDENCE_DIR}/onboarding-old-shape.json")"
+old_shape_status="$(record_request onboarding-old-shape POST "${DESKTOP_URL}/v1/onboarding" '{"swarm_name":"Slice17 Device"}' "${EVIDENCE_DIR}/onboarding-old-shape.json")"
 [[ "${old_shape_status}" == "400" ]] || fail "old onboarding shape status ${old_shape_status}, want 400"
-wrong_confirm_status="$(record_request onboarding-wrong-confirmation POST "${DESKTOP_URL}/v1/onboarding" '{"username":"slice17-user","swarm_name":"Slice17 Device","local_owner_confirmation":"Desktop"}' "${EVIDENCE_DIR}/onboarding-wrong-confirmation.json")"
-[[ "${wrong_confirm_status}" == "400" ]] || fail "wrong confirmation status ${wrong_confirm_status}, want 400"
 
-bootstrap_status="$(record_request onboarding-bootstrap POST "${DESKTOP_URL}/v1/onboarding" '{"username":"slice17-user","swarm_name":"Slice17 Device","local_owner_confirmation":"desktop"}' "${EVIDENCE_DIR}/onboarding-bootstrap.json")"
+bootstrap_status="$(record_request onboarding-bootstrap POST "${DESKTOP_URL}/v1/onboarding" '{"username":"slice17-user","swarm_name":"Slice17 Device"}' "${EVIDENCE_DIR}/onboarding-bootstrap.json")"
 [[ "${bootstrap_status}" == "200" ]] || fail "onboarding bootstrap status ${bootstrap_status}, want 200"
 jq -e '.identity.bootstrapped == true and .identity.user_id != "" and .identity.username == "slice17-user" and .identity.team_id != ""' "${EVIDENCE_DIR}/onboarding-bootstrap.json" >/dev/null || fail "bootstrap response missing user-first identity"
 
@@ -286,7 +284,7 @@ old_cookie_status="$(record_request old-issued-jwt-after-restart GET "${DESKTOP_
 random_cookie_status="$(record_request old-random-cookie-rejected GET "${DESKTOP_URL}/v1/vault" "" "${EVIDENCE_DIR}/old-random-cookie-rejected.json" "cookie-value:old-random-cookie")"
 [[ "${random_cookie_status}" == "401" ]] || fail "random cookie protected API status ${random_cookie_status}, want 401"
 
-rebootstrap_status="$(record_request onboarding-rebootstrap-rejected POST "${DESKTOP_URL}/v1/onboarding" '{"username":"second-user","swarm_name":"Changed Device","local_owner_confirmation":"desktop"}' "${EVIDENCE_DIR}/onboarding-rebootstrap-rejected.json")"
+rebootstrap_status="$(record_request onboarding-rebootstrap-rejected POST "${DESKTOP_URL}/v1/onboarding" '{"username":"second-user","swarm_name":"Changed Device"}' "${EVIDENCE_DIR}/onboarding-rebootstrap-rejected.json")"
 [[ "${rebootstrap_status}" == "409" ]] || fail "rebootstrap status ${rebootstrap_status}, want 409"
 
 identity_summary "${EVIDENCE_DIR}/identity-summary-after-restart.json"

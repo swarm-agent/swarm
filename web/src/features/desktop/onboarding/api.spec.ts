@@ -3,17 +3,15 @@ import test from 'node:test'
 
 import { buildDesktopOnboardingPayload } from './api'
 
-test('desktop onboarding payload keeps username, swarm name, and local-owner confirmation separate', () => {
+test('desktop onboarding payload keeps username and swarm name separate', () => {
   assert.deepEqual(buildDesktopOnboardingPayload({
     username: 'alice',
     swarmName: 'Alice Laptop',
-    localOwnerConfirmation: 'desktop',
     swarmMode: true,
     child: false,
   }), {
     username: 'alice',
     swarm_name: 'Alice Laptop',
-    local_owner_confirmation: 'desktop',
     swarm_mode: true,
     child: false,
   })
@@ -23,7 +21,6 @@ test('desktop onboarding payload never invents team fields', () => {
   const payload = buildDesktopOnboardingPayload({
     username: 'alice',
     swarmName: 'Alice Laptop',
-    localOwnerConfirmation: 'desktop',
   })
 
   assert.equal(Object.prototype.hasOwnProperty.call(payload, 'team'), false)

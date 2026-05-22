@@ -11,6 +11,7 @@ import { getCodexOAuthStatus } from '../../settings/queries/get-codex-oauth-stat
 import { completeCodexOAuth } from '../../settings/mutations/complete-codex-oauth'
 import { upsertAuthCredential } from '../../settings/mutations/upsert-auth-credential'
 import { verifyAuthCredential } from '../../settings/mutations/verify-auth-credential'
+import { listProviders } from '../../settings/queries/list-providers'
 import type { AuthMethod, CodexOAuthSession, ProviderStatus, StartCodexOAuthInput, UpsertAuthCredentialInput } from '../../settings/types/auth'
 import { upsertSwarmGroup } from '../../swarm/mutations/upsert-swarm-group'
 
@@ -87,11 +88,13 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
 
   const [username, setUsername] = useState(initialStatus.identity.username)
   const [swarmName, setSwarmName] = useState(initialStatus.config.swarmName)
-  const [localOwnerConfirmation, setLocalOwnerConfirmation] = useState('')
 
+  const [providerRecords, setProviderRecords] = useState<ProviderStatus[]>(status.auth.providers)
+  const [providerLoading, setProviderLoading] = useState(false)
+  const [providerError, setProviderError] = useState<string | null>(null)
   const providerOptions = useMemo(
-    () => status.auth.providers.filter((provider) => provider.id !== '' && !provider.runReason.toLowerCase().includes('search-only provider')),
-    [status.auth.providers],
+    () => providerRecords.filter((provider) => provider.id !== '' && !provider.runReason.toLowerCase().includes('search-only provider')),
+    [providerRecords],
   )
   const [providerID, setProviderID] = useState(status.auth.activeProviders[0] || providerOptions[0]?.id || '')
   const [credentialValue, setCredentialValue] = useState('')
@@ -114,6 +117,38 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       setProviderID(status.auth.activeProviders[0] || providerOptions[0]?.id || '')
     }
   }, [providerID, providerOptions, status.auth.activeProviders])
+
+  useEffect(() => {
+    if (step !== 'provider' || !status.identity.bootstrapped) {
+      return
+    }
+
+    let cancelled = false
+    setProviderLoading(true)
+    setProviderError(null)
+    void listProviders()
+      .then((providers) => {
+        if (cancelled) {
+          return
+        }
+        setProviderRecords(providers)
+      })
+      .catch((err) => {
+        if (cancelled) {
+          return
+        }
+        setProviderError(err instanceof Error ? err.message : 'Failed to load providers')
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setProviderLoading(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [step, status.identity.bootstrapped])
 
   useEffect(() => {
     if (codexOAuthMode !== 'browser' || !oauthSession?.sessionID || oauthSession.status === 'success' || oauthSession.status === 'error') {
@@ -156,15 +191,11 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     if (!normalizedName) {
       throw new Error('Swarm name is required.')
     }
-    if (!status.identity.bootstrapped && localOwnerConfirmation !== 'desktop') {
-      throw new Error('Type desktop to confirm creating the local owner identity for this installed daemon.')
-    }
     if (!normalizedGroupName) {
       throw new Error('Group name is required for the first swarm group.')
     }
     await patchDesktopOnboarding({
       username: status.identity.bootstrapped ? undefined : normalizedUsername,
-      localOwnerConfirmation: status.identity.bootstrapped ? undefined : localOwnerConfirmation,
       swarmName: normalizedName,
       swarmMode: status.config.swarmMode,
       desktopOnboardingComplete: false,
@@ -181,7 +212,6 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     setStatus(refreshed)
     setUsername(refreshed.identity.username)
     setSwarmName(refreshed.config.swarmName)
-    setLocalOwnerConfirmation('')
     return refreshed
   }
 
@@ -374,12 +404,6 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
           {step === 'identity' ? (
             <form className="grid gap-6" onSubmit={handleIdentitySubmit}>
               {!status.identity.bootstrapped ? (
-                <div className="rounded-2xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-4 py-4 text-sm leading-6 text-[var(--app-warning)]">
-                  No product user exists yet. Completing onboarding on this installed daemon creates the initial local owner identity for this daemon. This is separate from the swarm/device name below.
-                </div>
-              ) : null}
-
-              {!status.identity.bootstrapped ? (
                 <div className="grid gap-2">
                   <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-username">
                     Username
@@ -389,12 +413,9 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                     autoFocus
                     value={username}
                     onChange={(event) => setUsername(event.target.value)}
-                    placeholder="alice"
+                    placeholder="swarm"
                     autoComplete="username"
                   />
-                  <p className="text-sm leading-6 text-[var(--app-text-muted)]">
-                    This is the product actor name for the local owner user. It is not the swarm or device name.
-                  </p>
                 </div>
               ) : null}
 
@@ -414,24 +435,6 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                 </p>
               </div>
 
-              {!status.identity.bootstrapped ? (
-                <div className="grid gap-2">
-                  <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-confirmation">
-                    Type desktop to confirm local owner bootstrap
-                  </label>
-                  <Input
-                    id="desktop-onboarding-confirmation"
-                    value={localOwnerConfirmation}
-                    onChange={(event) => setLocalOwnerConfirmation(event.target.value)}
-                    placeholder="desktop"
-                    autoComplete="off"
-                  />
-                  <p className="text-sm leading-6 text-[var(--app-text-muted)]">
-                    This confirms that this installed daemon will be initialized with this user as the local owner. No team name or team picker is required.
-                  </p>
-                </div>
-              ) : null}
-
               <div className="flex justify-end">
                 <Button type="submit" disabled={submitting}>
                   {submitting ? 'Saving…' : 'Continue'}
@@ -442,7 +445,19 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
 
           {step === 'provider' ? (
             <div className="grid gap-6">
-              {providerOptions.length > 0 ? (
+              {providerLoading ? (
+                <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-4 text-sm leading-6 text-[var(--app-text-muted)]">
+                  Loading providers…
+                </div>
+              ) : null}
+
+              {providerError ? (
+                <div className="rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-4 py-4 text-sm leading-6 text-[var(--app-danger)]">
+                  {providerError}
+                </div>
+              ) : null}
+
+              {!providerLoading && providerOptions.length > 0 ? (
                 <>
                   <div className="grid gap-2">
                     <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-provider">
@@ -548,11 +563,11 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                     </div>
                   )}
                 </>
-              ) : (
+              ) : !providerLoading ? (
                 <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-4 text-sm leading-6 text-[var(--app-text-muted)]">
                   No providers are available yet. Finish onboarding and connect one later from Settings.
                 </div>
-              )}
+              ) : null}
 
               <div className="flex items-center justify-between gap-3">
                 <Button type="button" variant="outline" onClick={() => setStep('identity')} disabled={submitting}>

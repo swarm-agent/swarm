@@ -303,7 +303,6 @@ export interface DesktopOnboardingStatus {
 
 export interface SaveDesktopOnboardingInput {
   username?: string
-  localOwnerConfirmation?: string
   swarmName?: string
   swarmMode?: boolean
   desktopOnboardingComplete?: boolean

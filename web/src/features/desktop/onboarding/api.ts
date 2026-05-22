@@ -285,9 +285,6 @@ export function buildDesktopOnboardingPayload(input: SaveDesktopOnboardingInput)
   if (Object.prototype.hasOwnProperty.call(input, 'username')) {
     payload.username = input.username
   }
-  if (Object.prototype.hasOwnProperty.call(input, 'localOwnerConfirmation')) {
-    payload.local_owner_confirmation = input.localOwnerConfirmation
-  }
   if (Object.prototype.hasOwnProperty.call(input, 'swarmName')) {
     payload.swarm_name = input.swarmName
   }

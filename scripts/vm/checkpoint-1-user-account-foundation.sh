@@ -236,7 +236,7 @@ start_daemon
 before_status="$(record_request auth-session-before-bootstrap GET "${DESKTOP_URL}/v1/auth/desktop/session" "" "${EVIDENCE_DIR}/auth-session-before-bootstrap.json")"
 [[ "${before_status}" == "401" ]] || fail "desktop session before bootstrap status ${before_status}, want 401"
 
-bootstrap_status="$(record_request onboarding-bootstrap POST "${DESKTOP_URL}/v1/onboarding" '{"username":"checkpoint1","local_owner_confirmation":"desktop","swarm_name":"Checkpoint1 Device"}' "${EVIDENCE_DIR}/onboarding-bootstrap.json")"
+bootstrap_status="$(record_request onboarding-bootstrap POST "${DESKTOP_URL}/v1/onboarding" '{"username":"checkpoint1","swarm_name":"Checkpoint1 Device"}' "${EVIDENCE_DIR}/onboarding-bootstrap.json")"
 [[ "${bootstrap_status}" == "200" ]] || fail "onboarding bootstrap status ${bootstrap_status}, want 200"
 jq -e '.identity.bootstrapped == true and .identity.user_id != "" and .identity.account_scope_id != "" and (.identity.team_id // "") == ""' "${EVIDENCE_DIR}/onboarding-bootstrap.json" >/dev/null || fail "bootstrap response missing canonical user/account identity or includes team_id"
 
