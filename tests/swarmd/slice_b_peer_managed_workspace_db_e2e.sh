@@ -34,7 +34,7 @@ require_command go
 require_command jq
 require_command awk
 
-RUN_ROOT="$(mktemp -d /var/tmp/swarm-slice-b-peer-db-XXXXXX)"
+RUN_ROOT="$(mktemp -d -t swarm-slice-b-peer-db-XXXXXX)"
 cleanup() { rm -rf -- "${RUN_ROOT}"; }
 trap cleanup EXIT
 
@@ -56,7 +56,7 @@ import (
   "path/filepath"
   "strings"
 
-  "swarm-refactor/swarmtui/pkg/startupconfig"
+  "swarm/packages/swarmd/internal/testdeps/startupconfig"
   "swarm/packages/swarmd/internal/api"
   "swarm/packages/swarmd/internal/identity"
   pebblestore "swarm/packages/swarmd/internal/store/pebble"

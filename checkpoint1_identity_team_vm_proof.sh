@@ -39,7 +39,7 @@ require_command awk
 require_command sed
 require_command ss
 
-RUN_ROOT="$(mktemp -d /var/tmp/swarm-checkpoint1-team-live-XXXXXX)"
+RUN_ROOT="$(mktemp -d -t swarm-checkpoint1-team-live-XXXXXX)"
 DAEMON_PID=""
 cleanup() {
   if [[ -n "${DAEMON_PID:-}" ]] && kill -0 "${DAEMON_PID}" 2>/dev/null; then

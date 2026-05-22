@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -11,12 +12,13 @@ func TestPrepareUpdateHelperLaunchUsesSystemdRunScopeForSystemService(t *testing
 	withUpdateHelperLaunchTestHooks(t)
 	t.Setenv(updateHelperUnitEnv, "swarm-update-test")
 	t.Setenv("USER", "swarm")
+	workspaceDir := filepath.Join(string(os.PathSeparator), "srv", "swarm", "swarm-go")
 
 	launch, err := prepareUpdateHelperLaunch(updateHelperLaunchConfig{
 		SwarmPath:    "/usr/local/share/swarm/libexec/swarm",
 		Args:         []string{"main", "update", "dev"},
-		Env:          []string{"SWARM_UPDATE_JOB_ID=job-1", "SWARM_UPDATE_JOB_KIND=dev", "SWARM_ROOT=/home/swarm/swarm-go"},
-		Dir:          "/home/swarm/swarm-go",
+		Env:          []string{"SWARM_UPDATE_JOB_ID=job-1", "SWARM_UPDATE_JOB_KIND=dev", "SWARM_ROOT=" + workspaceDir},
+		Dir:          workspaceDir,
 		LogPath:      "/var/lib/swarmd/update/helpers/job-1.log",
 		SystemdScope: "system",
 		SystemdUnit:  "swarm.service",
@@ -38,8 +40,8 @@ func TestPrepareUpdateHelperLaunchUsesSystemdRunScopeForSystemService(t *testing
 	assertStringInSlice(t, launch.Args, "--uid=swarm")
 	assertStringNotInSlice(t, launch.Args, "--user")
 	assertStringInSlice(t, launch.Args, "--unit=swarm-update-test")
-	assertStringInSlice(t, launch.Args, "--working-directory=/home/swarm/swarm-go")
-	assertStringInSlice(t, launch.Args, "--setenv=SWARM_ROOT=/home/swarm/swarm-go")
+	assertStringInSlice(t, launch.Args, "--working-directory="+workspaceDir)
+	assertStringInSlice(t, launch.Args, "--setenv=SWARM_ROOT="+workspaceDir)
 	assertStringInSlice(t, launch.Args, "--setenv=SWARM_UPDATE_JOB_ID=job-1")
 	assertStringInSlice(t, launch.Args, "--setenv=SWARM_UPDATE_JOB_KIND=dev")
 	assertStringInSlice(t, launch.Args, "/usr/local/share/swarm/libexec/swarm")

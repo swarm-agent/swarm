@@ -16,7 +16,7 @@ async function withFetchStub(run: (calls: Array<{ input: RequestInfo | URL; init
       })
     }
     if (url === '/v1/swarm/managed-workspaces/inventory?target_swarm_id=managed-swarm&limit=200') {
-      return new Response(JSON.stringify({ ok: true, target: { swarm_id: 'managed-swarm', name: 'swarm-bomb-2', online: true }, managed_home: '/home/swarm', saved_workspaces: [{ path: '/home/swarm/swarm-go', workspace_name: 'swarm-go' }] }), {
+      return new Response(JSON.stringify({ ok: true, target: { swarm_id: 'managed-swarm', name: 'swarm-bomb-2', online: true }, managed_home: '/srv/swarm', saved_workspaces: [{ path: '/srv/swarm/swarm-go', workspace_name: 'swarm-go' }] }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })
@@ -163,7 +163,7 @@ test('fetchFlowWorkspaces uses managed host inventory for mirrored child targets
       current: false,
     })
 
-    assert.equal(workspaces[0]?.path, '/home/swarm/swarm-go')
+    assert.equal(workspaces[0]?.path, '/srv/swarm/swarm-go')
     assert.equal(String(calls[0]?.input), '/v1/swarm/managed-workspaces/inventory?target_swarm_id=managed-swarm&limit=200')
   })
 })

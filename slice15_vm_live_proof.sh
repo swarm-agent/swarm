@@ -38,7 +38,7 @@ require_command jq
 require_command awk
 require_command sed
 
-RUN_ROOT="$(mktemp -d /var/tmp/swarm-slice15-live-XXXXXX)"
+RUN_ROOT="$(mktemp -d -t swarm-slice15-live-XXXXXX)"
 cleanup() {
   if [[ -n "${DAEMON_PID:-}" ]] && kill -0 "${DAEMON_PID}" 2>/dev/null; then
     kill "${DAEMON_PID}" 2>/dev/null || true

@@ -41,7 +41,7 @@ fail() {
   exit 1
 }
 
-RUN_ROOT="$(mktemp -d /var/tmp/swarm-slice1-sessions-XXXXXX)"
+RUN_ROOT="$(mktemp -d -t swarm-slice1-sessions-XXXXXX)"
 DAEMON_PID=""
 cleanup() {
   if [[ -n "${DAEMON_PID:-}" ]] && kill -0 "${DAEMON_PID}" 2>/dev/null; then
@@ -339,10 +339,12 @@ preference_payload='{"provider":"fireworks","model":"accounts/fireworks/models/m
 model_pref_status="$(record_request model-preference-a POST "${APP_URL}/v1/model" "${preference_payload}" "${EVIDENCE_DIR}/model-preference-a.json" "token:${TOKEN_A}")"
 [[ "${model_pref_status}" == "200" ]] || fail "model preference status ${model_pref_status}, want 200"
 
-mkdir -p /tmp/slice1-account-a-workspace
-workspace_a_status="$(record_request workspace-add-a POST "${APP_URL}/v1/workspace/add" '{"path":"/tmp/slice1-account-a-workspace","name":"slice1-account-a-workspace","make_current":true}' "${EVIDENCE_DIR}/workspace-add-a.json" "token:${TOKEN_A}")"
+WORKSPACE_A_DIR="${RUN_ROOT}/slice1-account-a-workspace"
+mkdir -p "${WORKSPACE_A_DIR}"
+workspace_payload="$(jq -nc --arg path "${WORKSPACE_A_DIR}" '{path:$path,name:"slice1-account-a-workspace",make_current:true}')"
+workspace_a_status="$(record_request workspace-add-a POST "${APP_URL}/v1/workspace/add" "${workspace_payload}" "${EVIDENCE_DIR}/workspace-add-a.json" "token:${TOKEN_A}")"
 [[ "${workspace_a_status}" == "200" ]] || fail "account A workspace add status ${workspace_a_status}, want 200"
-session_payload='{"title":"Slice 1 account A proof","mode":"auto","workspace_path":"/tmp/slice1-account-a-workspace","workspace_name":"slice1-account-a-workspace","preference":{"provider":"fireworks","model":"accounts/fireworks/models/minimax-m2p7","thinking":"high"}}'
+session_payload="$(jq -nc --arg path "${WORKSPACE_A_DIR}" '{title:"Slice 1 account A proof",mode:"auto",workspace_path:$path,workspace_name:"slice1-account-a-workspace",preference:{provider:"fireworks",model:"accounts/fireworks/models/minimax-m2p7",thinking:"high"}}')"
 create_session_status="$(record_request session-create-a POST "${APP_URL}/v1/sessions" "${session_payload}" "${EVIDENCE_DIR}/session-create-a.json" "token:${TOKEN_A}")"
 [[ "${create_session_status}" == "200" ]] || fail "account A session create status ${create_session_status}, want 200"
 SESSION_ID="$(jq -r '.session.id // empty' "${EVIDENCE_DIR}/session-create-a.json")"
