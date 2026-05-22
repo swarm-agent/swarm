@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -678,7 +679,17 @@ func buildPermissionWorkspaceScope(session pebblestore.SessionSnapshot) tool.Wor
 	for _, root := range session.TemporaryWorkspaceRoots {
 		add(root)
 	}
-	return tool.WorkspaceScope{PrimaryPath: primaryPath, Roots: roots, SessionID: strings.TrimSpace(session.ID)}
+	scope := tool.WorkspaceScope{PrimaryPath: primaryPath, Roots: roots, SessionID: strings.TrimSpace(session.ID)}
+	if userID, accountScopeID := strings.TrimSpace(session.UserID), strings.TrimSpace(session.AccountScopeID); userID != "" && accountScopeID != "" {
+		scope.Principal = identity.Principal{
+			Type:               identity.PrincipalTypeUser,
+			UserID:             userID,
+			AccountScopeID:     accountScopeID,
+			SessionID:          strings.TrimSpace(session.ID),
+			AccountScopeSource: identity.AccountScopeSourceSession,
+		}
+	}
+	return scope
 }
 
 func (s *Service) buildManageSkillPermissionPayload(sessionID string, call tool.Call) (map[string]any, error) {
