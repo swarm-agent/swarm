@@ -1,30 +1,7 @@
-import { apiFetch, readErrorMessage, requestJson } from '../../../app/api'
-import { debugLog, createDebugTimer } from '../../../lib/debug-log'
-import {
-  mapAuthCredential,
-  mapProviderStatus,
-} from '../settings/types/auth'
-import type {
-  AuthCredentialListResponse,
-  AuthCredentialListResponseWire,
-  ProviderStatus,
-  ProvidersResponseWire,
-} from '../settings/types/auth'
-import { mapVaultStatus, type VaultStatus, type VaultStatusWire } from '../vault/types'
+import { requestJson } from '../../../app/api'
 import type { ContainerProfileMount } from '../swarm/types/container-mounts'
 import type {
-  DesktopOnboardingAuth,
-  DesktopOnboardingConfig,
-  DesktopOnboardingDiscoveredSwarmWire,
-  DesktopOnboardingDiscoveredSwarm,
-  DesktopSwarmGroupState,
-  DesktopOnboardingHeuristics,
-  DesktopOnboardingIdentity,
-  DesktopOnboardingNetwork,
-  DesktopOnboardingPairing,
-  DesktopOnboardingStatus,
   DesktopOnboardingStatusWire,
-  DesktopOnboardingTailscale,
   DesktopOnboardingTransport,
   DesktopOnboardingTransportWire,
   SaveDesktopOnboardingInput,
@@ -303,177 +280,6 @@ export interface RemoteSwarmPairingApprovalResult {
   }
 }
 
-async function loadOnboardingProviders(): Promise<ProviderStatus[]> {
-  const response = await apiFetch('/v1/providers', undefined, false)
-  if (response.status === 401) {
-    debugLog('desktop-onboarding-api', 'fetchDesktopOnboardingStatus:providers-unauthorized-fallback')
-    return []
-  }
-  if (!response.ok) {
-    throw new Error(await readErrorMessage(response))
-  }
-  const payload = await response.json() as ProvidersResponseWire
-  return Array.isArray(payload.providers) ? payload.providers.map(mapProviderStatus) : []
-}
-
-async function loadOnboardingCredentials(): Promise<AuthCredentialListResponse> {
-  const response = await apiFetch('/v1/auth/credentials?limit=200', undefined, false)
-  if (response.status === 401) {
-    debugLog('desktop-onboarding-api', 'fetchDesktopOnboardingStatus:credentials-unauthorized-fallback')
-    return {
-      provider: '',
-      query: '',
-      total: 0,
-      records: [],
-      providers: [],
-    }
-  }
-  if (!response.ok) {
-    throw new Error(await readErrorMessage(response))
-  }
-  const payload = await response.json() as AuthCredentialListResponseWire
-  return {
-    provider: String(payload.provider ?? '').trim(),
-    query: String(payload.query ?? '').trim(),
-    total: typeof payload.total === 'number' ? payload.total : 0,
-    records: Array.isArray(payload.records) ? payload.records.map(mapAuthCredential) : [],
-    providers: Array.isArray(payload.providers) ? payload.providers.map((value) => String(value)) : [],
-  }
-}
-
-async function loadOnboardingVault(): Promise<VaultStatus> {
-  const response = await apiFetch('/v1/vault', undefined, false)
-  if (response.status === 401) {
-    debugLog('desktop-onboarding-api', 'fetchDesktopOnboardingStatus:vault-unauthorized-fallback')
-    return mapVaultStatus({})
-  }
-  if (!response.ok) {
-    throw new Error(await readErrorMessage(response))
-  }
-  return mapVaultStatus(await response.json() as VaultStatusWire)
-}
-
-export async function fetchDesktopOnboardingStatus(): Promise<DesktopOnboardingStatus> {
-  const finish = createDebugTimer('desktop-onboarding-api', 'fetchDesktopOnboardingStatus')
-  debugLog('desktop-onboarding-api', 'fetchDesktopOnboardingStatus:request')
-  const [onboarding, swarmState, vault, providers, credentials] = await Promise.all([
-    requestJson<DesktopOnboardingStatusWire>('/v1/onboarding'),
-    fetchSwarmState(),
-    loadOnboardingVault(),
-    loadOnboardingProviders(),
-    loadOnboardingCredentials(),
-  ])
-
-  const mode = normalizeBootstrapMode(onboarding.config?.mode)
-  const swarmMode = Boolean(onboarding.config?.swarm_mode)
-  const child = Boolean(onboarding.config?.child)
-  const tailscale = mapTailscale(onboarding)
-  const lanAddresses = collectTransportValues(swarmState.node.transports, 'lan')
-  const rawSwarmRole = String(onboarding.config?.swarm_role ?? '').trim().toLowerCase()
-  const swarmRole: DesktopOnboardingConfig['swarmRole'] = !swarmMode
-    ? 'standalone'
-    : rawSwarmRole === 'managed'
-      ? 'managed'
-      : child ? 'child' : 'master'
-  const identity: DesktopOnboardingIdentity = {
-    bootstrapped: Boolean(onboarding.identity?.bootstrapped),
-    userID: String(onboarding.identity?.user_id ?? '').trim(),
-    accountScopeID: String(onboarding.identity?.account_scope_id ?? '').trim(),
-    username: String(onboarding.identity?.username ?? '').trim(),
-    teamID: String(onboarding.identity?.team_id ?? '').trim(),
-    teamDisplayName: String(onboarding.identity?.team_display_name ?? '').trim(),
-    teamDefault: Boolean(onboarding.identity?.team_default),
-    membershipRole: String(onboarding.identity?.membership_role ?? '').trim(),
-  }
-  const config: DesktopOnboardingConfig = {
-    swarmName: String(onboarding.config?.swarm_name ?? '').trim(),
-    child,
-    swarmMode,
-    swarmRole,
-    swarmID: String(swarmState.node.swarm_id ?? '').trim(),
-    mode,
-    host: String(onboarding.config?.host ?? '').trim(),
-    port: normalizeAPIPort(onboarding.config?.port),
-    desktopPort: normalizeAPIPort(onboarding.config?.desktop_port ?? 5555),
-    advertiseHost: String(onboarding.config?.advertise_host ?? '').trim(),
-    advertisePort: normalizeAPIPort(onboarding.config?.advertise_port ?? onboarding.config?.port),
-    tailscaleURL: String(onboarding.config?.tailscale_url ?? '').trim(),
-    bypassPermissions: Boolean(onboarding.config?.bypass_permissions),
-    devMode: Boolean(onboarding.config?.dev_mode),
-    localTransportPort: normalizeAPIPort(onboarding.config?.local_transport_port ?? 7790),
-    localTransportActive: Boolean(onboarding.config?.local_transport_active),
-    localTransportWarning: String(onboarding.config?.local_transport_warning ?? '').trim(),
-    peerTransportPort: normalizeAPIPort(onboarding.config?.peer_transport_port ?? 7791),
-    restartRequired: Boolean(onboarding.config?.restart_required),
-    restartReason: String(onboarding.config?.restart_reason ?? '').trim(),
-  }
-  const heuristics: DesktopOnboardingHeuristics = {
-    missingSwarmName: Boolean(onboarding.heuristics?.missing_swarm_name),
-    credentialCount: typeof onboarding.heuristics?.credential_count === 'number' ? onboarding.heuristics.credential_count : credentials.total,
-    savedWorkspaceCount: typeof onboarding.heuristics?.saved_workspace_count === 'number' ? onboarding.heuristics.saved_workspace_count : 0,
-    vaultConfigured: Boolean(onboarding.heuristics?.vault_configured || vault.enabled),
-  }
-  const pairing: DesktopOnboardingPairing = {
-    swarmID: String(swarmState.node.swarm_id ?? '').trim(),
-    pairingState: String(swarmState.pairing?.pairing_state ?? '').trim(),
-    parentSwarmID: String(swarmState.pairing?.parent_swarm_id ?? '').trim(),
-    activeInviteID: String(swarmState.pairing?.active_invite_id ?? '').trim(),
-    lastEnrollmentID: String(swarmState.pairing?.last_enrollment_id ?? '').trim(),
-    lastDecision: String(swarmState.pairing?.last_decision ?? '').trim(),
-    lastDecisionReason: String(swarmState.pairing?.last_decision_reason ?? '').trim(),
-    lastUpdatedByRole: String(swarmState.pairing?.last_updated_by_role ?? '').trim(),
-    rendezvousTransports: Array.isArray(swarmState.pairing?.rendezvous_transports)
-      ? swarmState.pairing.rendezvous_transports.map(mapTransport)
-      : [],
-    managedAuthOwnerSwarmID: String(swarmState.pairing?.managed_auth_owner_swarm_id ?? '').trim(),
-    managedAuthSnapshotHash: String(swarmState.pairing?.managed_auth_snapshot_hash ?? '').trim(),
-    managedAuthAppliedAt: typeof swarmState.pairing?.managed_auth_applied_at === 'number' ? swarmState.pairing.managed_auth_applied_at : 0,
-    managedAuthLastAttemptAt: typeof swarmState.pairing?.managed_auth_last_attempt_at === 'number' ? swarmState.pairing.managed_auth_last_attempt_at : 0,
-    managedAuthLastError: String(swarmState.pairing?.managed_auth_last_error ?? '').trim(),
-  }
-  const auth: DesktopOnboardingAuth = {
-    credentialCount: heuristics.credentialCount,
-    activeProviders: Array.from(new Set(
-      credentials.records
-        .filter((record) => record.active && record.provider.trim() !== '')
-        .map((record) => record.provider.trim()),
-    )),
-    providers,
-  }
-  const network: DesktopOnboardingNetwork = {
-    lanAddresses,
-    tailscale,
-  }
-
-  const result = {
-    ok: Boolean(onboarding.ok),
-    needsOnboarding: Boolean(onboarding.needs_onboarding),
-    identity,
-    config,
-    heuristics,
-    pairing,
-    network,
-    currentGroupID: String(swarmState.current_group_id ?? '').trim(),
-    groups: Array.isArray(swarmState.groups) ? swarmState.groups.map(mapGroupState) : [],
-    discoveredSwarms: Array.isArray(onboarding.discovered_swarms)
-      ? onboarding.discovered_swarms.map(mapDiscoveredSwarm)
-      : [],
-    vault,
-    auth,
-    workspace: {
-      savedCount: heuristics.savedWorkspaceCount,
-    },
-  }
-  finish({
-    needsOnboarding: result.needsOnboarding,
-    providerCount: providers.length,
-    credentialCount: credentials.total,
-    vaultEnabled: vault.enabled,
-    vaultUnlocked: vault.unlocked,
-  })
-  return result
-}
-
 export function buildDesktopOnboardingPayload(input: SaveDesktopOnboardingInput): Record<string, unknown> {
   const payload: Record<string, unknown> = {}
   if (Object.prototype.hasOwnProperty.call(input, 'username')) {
@@ -523,11 +329,6 @@ export async function patchDesktopOnboarding(input: SaveDesktopOnboardingInput):
     },
     body: JSON.stringify(buildDesktopOnboardingPayload(input)),
   })
-}
-
-export async function saveDesktopOnboarding(input: SaveDesktopOnboardingInput): Promise<DesktopOnboardingStatus> {
-  await patchDesktopOnboarding(input)
-  return fetchDesktopOnboardingStatus()
 }
 
 export async function upgradeAccountToTeam(teamName: string): Promise<void> {
@@ -842,14 +643,6 @@ export async function fetchSwarmState(): Promise<SwarmLocalState> {
   return response.state
 }
 
-function normalizeBootstrapMode(mode: string | undefined): 'lan' | 'tailscale' {
-  return String(mode ?? '').trim().toLowerCase() === 'tailscale' ? 'tailscale' : 'lan'
-}
-
-function normalizeAPIPort(port: number | undefined): number {
-  return typeof port === 'number' && Number.isInteger(port) && port >= 1 && port <= 65535 ? port : 7781
-}
-
 function mapTransport(record: DesktopOnboardingTransportWire): DesktopOnboardingTransport {
   return {
     kind: String(record.kind ?? '').trim(),
@@ -933,82 +726,4 @@ function mapSwarmLocalContainerDeleteResult(record: any): SwarmLocalContainerDel
       error: String(item?.error ?? '').trim(),
     })) : [],
   }
-}
-
-function mapDiscoveredSwarm(record: DesktopOnboardingDiscoveredSwarmWire): DesktopOnboardingDiscoveredSwarm {
-  return {
-    id: String(record?.id ?? '').trim(),
-    name: String(record?.name ?? '').trim(),
-    role: String(record?.role ?? 'master').trim() || 'master',
-    endpoint: String(record?.endpoint ?? '').trim(),
-    tailnetURL: String(record?.tailnet_url ?? '').trim(),
-    dnsName: String(record?.dns_name ?? '').trim(),
-    ips: Array.isArray(record?.ips) ? record.ips.map((value) => String(value).trim()).filter((value) => value !== '') : [],
-    online: Boolean(record?.online),
-    source: String(record?.source ?? '').trim(),
-    running: Boolean(record?.running),
-    inCurrentGroup: Boolean(record?.in_current_group),
-    currentRelationship: String(record?.current_relationship ?? '').trim(),
-    transportMode: String(record?.transport_mode ?? '').trim(),
-    rendezvousTransports: Array.isArray(record?.rendezvous_transports) ? record.rendezvous_transports.map(mapTransport) : [],
-  }
-}
-
-function mapTailscale(onboarding: DesktopOnboardingStatusWire): DesktopOnboardingTailscale {
-  const source = onboarding.tailscale ?? onboarding.network?.tailscale ?? {}
-  return {
-    available: Boolean(source.available),
-    connected: Boolean(source.connected),
-    dnsName: String(source.dns_name ?? '').trim(),
-    tailnetName: String(source.tailnet_name ?? '').trim(),
-    tailnetURL: String(source.tailnet_url ?? '').trim(),
-    candidateURL: String(source.candidate_url ?? '').trim(),
-    ips: Array.isArray(source.ips) ? source.ips.map((value) => String(value).trim()).filter((value) => value !== '') : [],
-    authURL: String(source.auth_url ?? '').trim(),
-    error: String(source.error ?? '').trim(),
-    serve: {
-      configured: Boolean(source.serve?.configured),
-      ready: Boolean(source.serve?.ready),
-      mode: String(source.serve?.mode ?? '').trim(),
-      url: String(source.serve?.url ?? '').trim(),
-      proxyTarget: String(source.serve?.proxy_target ?? '').trim(),
-      expectedDesktopProxy: String(source.serve?.expected_desktop_proxy ?? '').trim(),
-      expectedAPIProxy: String(source.serve?.expected_api_proxy ?? '').trim(),
-      expectedPeerTransportProxy: String(source.serve?.expected_peer_transport_proxy ?? '').trim(),
-      command: String(source.serve?.command ?? '').trim(),
-      error: String(source.serve?.error ?? '').trim(),
-    },
-  }
-}
-
-function mapGroupState(record: NonNullable<SwarmLocalState['groups']>[number]): DesktopSwarmGroupState {
-  return {
-    group: {
-      id: String(record.group?.id ?? '').trim(),
-      name: String(record.group?.name ?? '').trim(),
-      networkName: String(record.group?.network_name ?? '').trim(),
-      hostSwarmID: String(record.group?.host_swarm_id ?? '').trim(),
-      createdAt: typeof record.group?.created_at === 'number' ? record.group.created_at : 0,
-      updatedAt: typeof record.group?.updated_at === 'number' ? record.group.updated_at : 0,
-    },
-    members: Array.isArray(record.members)
-      ? record.members.map((member) => ({
-        groupID: String(member.group_id ?? '').trim(),
-        swarmID: String(member.swarm_id ?? '').trim(),
-        name: String(member.name ?? '').trim(),
-        swarmRole: String(member.swarm_role ?? '').trim(),
-        membershipRole: String(member.membership_role ?? '').trim(),
-        createdAt: typeof member.created_at === 'number' ? member.created_at : 0,
-        updatedAt: typeof member.updated_at === 'number' ? member.updated_at : 0,
-      }))
-      : [],
-  }
-}
-
-function collectTransportValues(transports: DesktopOnboardingTransport[], kind: string): string[] {
-  return transports
-    .filter((transport) => transport.kind === kind)
-    .flatMap((transport) => [transport.primary, ...transport.all])
-    .map((value) => value.trim())
-    .filter((value, index, array) => value !== '' && array.indexOf(value) === index)
 }
