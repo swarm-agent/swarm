@@ -9,9 +9,14 @@ import (
 	"testing"
 
 	"swarm/packages/swarmd/internal/appstorage"
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/provider/codex"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
+
+func testImagePrincipal() identity.Principal {
+	return identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-1", AccountScopeID: "account-1"}
+}
 
 type fakeCodexImageClient struct {
 	result        codex.ImageGenerationResult
@@ -23,7 +28,8 @@ type fakeCodexImageClient struct {
 	onGenerateSeq []func(req codex.ImageGenerationRequest)
 }
 
-func (f *fakeCodexImageClient) GenerateImage(_ context.Context, req codex.ImageGenerationRequest) (codex.ImageGenerationResult, error) {
+func (f *fakeCodexImageClient) GenerateImage(ctx context.Context, req codex.ImageGenerationRequest) (codex.ImageGenerationResult, error) {
+	_ = ctx
 	f.request = req
 	f.requests = append(f.requests, req)
 	if len(f.onGenerateSeq) > 0 {
@@ -55,11 +61,12 @@ func TestGenerateWorkspaceImageSessionBackendWritesOnePNGBeforeSuccess(t *testin
 	logPath := filepath.Join(dataHome, "main", "imagegen.log")
 
 	result, err := svc.Generate(context.Background(), GenerateRequest{
-		Provider: ProviderCodexOpenAI,
-		Model:    "gpt-5.5",
-		Prompt:   "make a square",
-		Count:    1,
-		Target:   GenerationTarget{Kind: TargetWorkspaceImage, ThreadID: threadID},
+		Provider:  ProviderCodexOpenAI,
+		Model:     "gpt-5.5",
+		Prompt:    "make a square",
+		Count:     1,
+		Principal: testImagePrincipal(),
+		Target:    GenerationTarget{Kind: TargetWorkspaceImage, ThreadID: threadID},
 	})
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
@@ -75,7 +82,7 @@ func TestGenerateWorkspaceImageSessionBackendWritesOnePNGBeforeSuccess(t *testin
 	if strings.Contains(filepath.Base(asset.Path), "..") || strings.Contains(filepath.Base(asset.Path), string(filepath.Separator)) {
 		t.Fatalf("asset filename was not sanitized: %q", asset.Path)
 	}
-	updated, ok, err := threads.Get(threadID)
+	updated, ok, err := threads.GetForAccount("account-1", threadID)
 	if err != nil || !ok {
 		t.Fatalf("get thread: ok=%v err=%v", ok, err)
 	}
@@ -122,6 +129,7 @@ func TestGenerateWorkspaceImageSessionBackendWritesExactlyThreePNGs(t *testing.T
 		Prompt:        "make three squares",
 		Count:         3,
 		PartialImages: 9,
+		Principal:     testImagePrincipal(),
 		Target:        GenerationTarget{Kind: TargetWorkspaceImage, ThreadID: threadID},
 	})
 	if err != nil {
@@ -146,7 +154,7 @@ func TestGenerateWorkspaceImageSessionBackendWritesExactlyThreePNGs(t *testing.T
 	for _, asset := range result.Assets {
 		assertSavedPNG(t, storagePath, asset.Path)
 	}
-	updated, ok, err := threads.Get(threadID)
+	updated, ok, err := threads.GetForAccount("account-1", threadID)
 	if err != nil || !ok {
 		t.Fatalf("get thread: ok=%v err=%v", ok, err)
 	}
@@ -169,11 +177,12 @@ func TestGenerateRejectsPartialOnlyResultWithoutSaving(t *testing.T) {
 	})
 
 	_, err := svc.Generate(context.Background(), GenerateRequest{
-		Provider: ProviderCodexOpenAI,
-		Model:    "gpt-5.5",
-		Prompt:   "make a square",
-		Count:    1,
-		Target:   GenerationTarget{Kind: TargetWorkspaceImage, ThreadID: threadID},
+		Provider:  ProviderCodexOpenAI,
+		Model:     "gpt-5.5",
+		Prompt:    "make a square",
+		Count:     1,
+		Principal: testImagePrincipal(),
+		Target:    GenerationTarget{Kind: TargetWorkspaceImage, ThreadID: threadID},
 	})
 	if err == nil || !strings.Contains(err.Error(), "no final PNG") {
 		t.Fatalf("Generate error = %v, want no final PNG error", err)
@@ -198,11 +207,12 @@ func TestGenerateUsesProviderResultWithGeneratingStatusWithoutStreamRecovery(t *
 	logPath := filepath.Join(dataHome, "main", "imagegen.log")
 
 	result, err := svc.Generate(context.Background(), GenerateRequest{
-		Provider: ProviderCodexOpenAI,
-		Model:    "gpt-5.5",
-		Prompt:   "make a square",
-		Count:    1,
-		Target:   GenerationTarget{Kind: TargetWorkspaceImage, ThreadID: threadID},
+		Provider:  ProviderCodexOpenAI,
+		Model:     "gpt-5.5",
+		Prompt:    "make a square",
+		Count:     1,
+		Principal: testImagePrincipal(),
+		Target:    GenerationTarget{Kind: TargetWorkspaceImage, ThreadID: threadID},
 	})
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
@@ -241,11 +251,12 @@ func TestGenerateRecoversLatestValidStreamFrameWhenFinalResultMissing(t *testing
 	svc, threads, threadID, storagePath := newImageServiceTestHarnessWithClient(t, client)
 
 	result, err := svc.Generate(context.Background(), GenerateRequest{
-		Provider: ProviderCodexOpenAI,
-		Model:    "gpt-5.5",
-		Prompt:   "make a square",
-		Count:    1,
-		Target:   GenerationTarget{Kind: TargetWorkspaceImage, ThreadID: threadID},
+		Provider:  ProviderCodexOpenAI,
+		Model:     "gpt-5.5",
+		Prompt:    "make a square",
+		Count:     1,
+		Principal: testImagePrincipal(),
+		Target:    GenerationTarget{Kind: TargetWorkspaceImage, ThreadID: threadID},
 	})
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
@@ -254,7 +265,7 @@ func TestGenerateRecoversLatestValidStreamFrameWhenFinalResultMissing(t *testing
 		t.Fatalf("assets len = %d, want 1 stream recovery asset", len(result.Assets))
 	}
 	assertSavedPNG(t, storagePath, result.Assets[0].Path)
-	updated, ok, err := threads.Get(threadID)
+	updated, ok, err := threads.GetForAccount("account-1", threadID)
 	if err != nil || !ok {
 		t.Fatalf("get thread: ok=%v err=%v", ok, err)
 	}
@@ -271,11 +282,12 @@ func TestGenerateRejectsIncompleteMultiImageResponseWithoutSaving(t *testing.T) 
 	svc, threads, threadID, storagePath := newImageServiceTestHarnessWithClient(t, client)
 
 	_, err := svc.Generate(context.Background(), GenerateRequest{
-		Provider: ProviderCodexOpenAI,
-		Model:    "gpt-5.5",
-		Prompt:   "make three squares",
-		Count:    3,
-		Target:   GenerationTarget{Kind: TargetWorkspaceImage, ThreadID: threadID},
+		Provider:  ProviderCodexOpenAI,
+		Model:     "gpt-5.5",
+		Prompt:    "make three squares",
+		Count:     3,
+		Principal: testImagePrincipal(),
+		Target:    GenerationTarget{Kind: TargetWorkspaceImage, ThreadID: threadID},
 	})
 	if err == nil || !strings.Contains(err.Error(), "returned 2 final image") {
 		t.Fatalf("Generate error = %v, want multi-image count mismatch", err)
@@ -287,7 +299,7 @@ func TestGenerateRejectsIncompleteMultiImageResponseWithoutSaving(t *testing.T) 
 	if len(entries) != 0 {
 		t.Fatalf("storage dir file count = %d, want 0 after failure", len(entries))
 	}
-	updated, ok, err := threads.Get(threadID)
+	updated, ok, err := threads.GetForAccount("account-1", threadID)
 	if err != nil || !ok {
 		t.Fatalf("get thread: ok=%v err=%v", ok, err)
 	}
@@ -305,11 +317,12 @@ func TestGenerateRejectsProviderReturningMultipleFinalsForOneSlotWithoutSaving(t
 	})
 
 	_, err := svc.Generate(context.Background(), GenerateRequest{
-		Provider: ProviderCodexOpenAI,
-		Model:    "gpt-5.5",
-		Prompt:   "make one square",
-		Count:    1,
-		Target:   GenerationTarget{Kind: TargetWorkspaceImage, ThreadID: threadID},
+		Provider:  ProviderCodexOpenAI,
+		Model:     "gpt-5.5",
+		Prompt:    "make one square",
+		Count:     1,
+		Principal: testImagePrincipal(),
+		Target:    GenerationTarget{Kind: TargetWorkspaceImage, ThreadID: threadID},
 	})
 	if err == nil || !strings.Contains(err.Error(), "returned 2 final image") {
 		t.Fatalf("Generate error = %v, want one-slot mismatch", err)
@@ -327,11 +340,12 @@ func TestGenerateRejectsNonPNGPayloadBeforeSaving(t *testing.T) {
 	svc, _, threadID, storagePath := newImageServiceTestHarness(t, codex.ImageGenerationResult{CallID: "ig", DecodedPNG: []byte("not-a-png")})
 
 	_, err := svc.Generate(context.Background(), GenerateRequest{
-		Provider: ProviderCodexOpenAI,
-		Model:    "gpt-5.5",
-		Prompt:   "make a square",
-		Count:    1,
-		Target:   GenerationTarget{Kind: TargetWorkspaceImage, ThreadID: threadID},
+		Provider:  ProviderCodexOpenAI,
+		Model:     "gpt-5.5",
+		Prompt:    "make a square",
+		Count:     1,
+		Principal: testImagePrincipal(),
+		Target:    GenerationTarget{Kind: TargetWorkspaceImage, ThreadID: threadID},
 	})
 	if err == nil || !strings.Contains(err.Error(), "not a PNG") {
 		t.Fatalf("Generate error = %v, want non-PNG rejection", err)
@@ -347,17 +361,17 @@ func TestGenerateRejectsNonPNGPayloadBeforeSaving(t *testing.T) {
 
 func TestResolveAssetPathRejectsPathOutsideManagedStorage(t *testing.T) {
 	svc, threads, threadID, _ := newImageServiceTestHarness(t, codex.ImageGenerationResult{CallID: "ig", DecodedPNG: testPNGBytes()})
-	thread, ok, err := threads.Get(threadID)
+	thread, ok, err := threads.GetForAccount("account-1", threadID)
 	if err != nil || !ok {
 		t.Fatalf("get thread: ok=%v err=%v", ok, err)
 	}
 	thread.ImageAssets = []pebblestore.ImageAssetSnapshot{{ID: "asset_escape", Name: "bad.png", Path: filepath.Join(t.TempDir(), "bad.png"), Extension: "png"}}
 	thread.ImageAssetOrder = []string{"asset_escape"}
-	if _, err := threads.Update(thread); err != nil {
+	if _, err := threads.UpdateForAccount("account-1", thread); err != nil {
 		t.Fatalf("update thread: %v", err)
 	}
 
-	_, _, err = svc.ResolveAssetPath(threadID, "asset_escape")
+	_, _, err = svc.ResolveAssetPathForPrincipal(testImagePrincipal(), threadID, "asset_escape")
 	if err == nil || !strings.Contains(err.Error(), "outside managed session storage") {
 		t.Fatalf("ResolveAssetPath error = %v, want managed storage rejection", err)
 	}
@@ -370,11 +384,12 @@ func TestGenerateReturnsProviderResponseOnSuccess(t *testing.T) {
 		ProviderResponse: map[string]any{"id": "resp_raw", "status": "completed"},
 	})
 	result, err := svc.Generate(context.Background(), GenerateRequest{
-		Provider: ProviderCodexOpenAI,
-		Model:    "gpt-5.5",
-		Prompt:   "make a square",
-		Count:    1,
-		Target:   GenerationTarget{Kind: TargetWorkspaceImage, ThreadID: threadID},
+		Provider:  ProviderCodexOpenAI,
+		Model:     "gpt-5.5",
+		Prompt:    "make a square",
+		Count:     1,
+		Principal: testImagePrincipal(),
+		Target:    GenerationTarget{Kind: TargetWorkspaceImage, ThreadID: threadID},
 	})
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
@@ -391,11 +406,11 @@ func TestCodexUnavailableCapabilityRequiresOAuth(t *testing.T) {
 	}
 	defer store.Close()
 	authStore := pebblestore.NewAuthStore(store)
-	if _, err := authStore.SetCodexAPIKey("sk-test"); err != nil {
+	if _, err := authStore.SetCodexAPIKeyForAccount("account-1", "sk-test"); err != nil {
 		t.Fatalf("set key: %v", err)
 	}
 	svc := NewService(&fakeCodexImageClient{}, authStore, nil)
-	caps, err := svc.Capabilities(context.Background())
+	caps, err := svc.Capabilities(identity.ContextWithPrincipal(context.Background(), testImagePrincipal()))
 	if err != nil {
 		t.Fatalf("Capabilities: %v", err)
 	}
@@ -429,7 +444,7 @@ func newImageServiceTestHarnessWithDataHome(t *testing.T, dataHome string, clien
 		t.Fatalf("WorkspaceDataDir: %v", err)
 	}
 	threads := pebblestore.NewImageThreadStore(store)
-	if _, err := threads.Create(pebblestore.ImageThreadSnapshot{
+	if _, err := threads.CreateForAccount("account-1", "user-1", pebblestore.ImageThreadSnapshot{
 		ID:            threadID,
 		WorkspacePath: workspacePath,
 		Title:         "Images",
@@ -438,7 +453,11 @@ func newImageServiceTestHarnessWithDataHome(t *testing.T, dataHome string, clien
 	}); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
-	return NewService(client, nil, threads), threads, threadID, storagePath
+	authStore := pebblestore.NewAuthStoreWithSecretStore(store, store)
+	if _, err := authStore.UpsertCredential(pebblestore.AuthCredentialInput{Provider: "codex", AccountScopeID: "account-1", ID: "test", Type: pebblestore.CodexAuthTypeOAuth, AccessToken: "test-access", RefreshToken: "test-refresh", SetActive: true}); err != nil {
+		t.Fatalf("upsert codex oauth: %v", err)
+	}
+	return NewService(client, authStore, threads), threads, threadID, storagePath
 }
 
 func assertSavedPNG(t *testing.T, storagePath string, assetPath string) {

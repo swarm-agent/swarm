@@ -19,6 +19,10 @@ type authCredentialDeleteCleanup struct {
 }
 
 func (s *Server) cleanupProviderAfterCredentialDeletion(ctx context.Context, provider string) (authCredentialDeleteCleanup, error) {
+	return s.cleanupProviderAfterCredentialDeletionForAccount(ctx, "", provider)
+}
+
+func (s *Server) cleanupProviderAfterCredentialDeletionForAccount(ctx context.Context, accountScopeID, provider string) (authCredentialDeleteCleanup, error) {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	cleanup := authCredentialDeleteCleanup{}
 	if provider == "" {
@@ -47,12 +51,12 @@ func (s *Server) cleanupProviderAfterCredentialDeletion(ctx context.Context, pro
 	}
 
 	if s.model != nil {
-		pref, err := s.model.GetGlobalPreference()
+		pref, err := s.model.GetPreferenceForAccount(accountScopeID)
 		if err != nil {
 			return cleanup, fmt.Errorf("read model preference after credential delete: %w", err)
 		}
 		if strings.EqualFold(strings.TrimSpace(pref.Provider), provider) {
-			_, event, err := s.model.ClearGlobalPreference()
+			_, event, err := s.model.ClearPreferenceForAccount(accountScopeID)
 			if err != nil {
 				return cleanup, fmt.Errorf("clear model preference for provider %s: %w", provider, err)
 			}

@@ -24,6 +24,7 @@ const (
 
 type NotificationRecord struct {
 	ID              string `json:"id"`
+	AccountScopeID  string `json:"account_scope_id,omitempty"`
 	SwarmID         string `json:"swarm_id"`
 	OriginSwarmID   string `json:"origin_swarm_id,omitempty"`
 	SessionID       string `json:"session_id,omitempty"`
@@ -51,11 +52,12 @@ type NotificationRecord struct {
 }
 
 type NotificationSummary struct {
-	SwarmID     string `json:"swarm_id"`
-	TotalCount  int    `json:"total_count"`
-	UnreadCount int    `json:"unread_count"`
-	ActiveCount int    `json:"active_count"`
-	UpdatedAt   int64  `json:"updated_at"`
+	AccountScopeID string `json:"account_scope_id,omitempty"`
+	SwarmID        string `json:"swarm_id"`
+	TotalCount     int    `json:"total_count"`
+	UnreadCount    int    `json:"unread_count"`
+	ActiveCount    int    `json:"active_count"`
+	UpdatedAt      int64  `json:"updated_at"`
 }
 
 type NotificationStore struct {
@@ -67,11 +69,15 @@ func NewNotificationStore(store *Store) *NotificationStore {
 }
 
 func (s *NotificationStore) GetNotification(swarmID, notificationID string) (NotificationRecord, bool, error) {
+	return s.GetNotificationForAccount("", swarmID, notificationID)
+}
+
+func (s *NotificationStore) GetNotificationForAccount(accountScopeID, swarmID, notificationID string) (NotificationRecord, bool, error) {
 	if s == nil || s.store == nil {
 		return NotificationRecord{}, false, errors.New("notification store is not configured")
 	}
 	var record NotificationRecord
-	ok, err := s.store.GetJSON(KeyNotification(swarmID, notificationID), &record)
+	ok, err := s.store.GetJSON(notificationKeyForAccount(accountScopeID, swarmID, notificationID), &record)
 	if err != nil {
 		return NotificationRecord{}, false, err
 	}
@@ -82,6 +88,10 @@ func (s *NotificationStore) GetNotification(swarmID, notificationID string) (Not
 }
 
 func (s *NotificationStore) ListNotifications(swarmID string, limit int) ([]NotificationRecord, error) {
+	return s.ListNotificationsForAccount("", swarmID, limit)
+}
+
+func (s *NotificationStore) ListNotificationsForAccount(accountScopeID, swarmID string, limit int) ([]NotificationRecord, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("notification store is not configured")
 	}
@@ -89,7 +99,7 @@ func (s *NotificationStore) ListNotifications(swarmID string, limit int) ([]Noti
 		limit = 200
 	}
 	out := make([]NotificationRecord, 0, limit)
-	err := s.store.IteratePrefix(NotificationBySwarmPrefix(swarmID), 100000, func(_ string, value []byte) error {
+	err := s.store.IteratePrefix(notificationBySwarmPrefixForAccount(accountScopeID, swarmID), 100000, func(_ string, value []byte) error {
 		recordKey := strings.TrimSpace(string(value))
 		if recordKey == "" {
 			return nil
@@ -125,6 +135,7 @@ func (s *NotificationStore) PutNotification(record NotificationRecord, previous 
 		return errors.New("notification store is not configured")
 	}
 	record = sanitizeNotificationRecord(record)
+	accountScopeID := strings.TrimSpace(record.AccountScopeID)
 	if record.SwarmID == "" || record.ID == "" {
 		return errors.New("notification swarm_id and id are required")
 	}
@@ -135,7 +146,7 @@ func (s *NotificationStore) PutNotification(record NotificationRecord, previous 
 	batch := s.store.NewBatch()
 	defer batch.Close()
 
-	recordKey := KeyNotification(record.SwarmID, record.ID)
+	recordKey := notificationKeyForAccount(accountScopeID, record.SwarmID, record.ID)
 	if err := batch.Set([]byte(recordKey), serialized, nil); err != nil {
 		return fmt.Errorf("set notification record: %w", err)
 	}
@@ -144,10 +155,10 @@ func (s *NotificationStore) PutNotification(record NotificationRecord, previous 
 	if previous != nil {
 		prev := sanitizeNotificationRecord(*previous)
 		if prev.SwarmID != "" && prev.ID != "" {
-			prevIndexKey = KeyNotificationBySwarm(prev.SwarmID, prev.CreatedAt, prev.ID)
+			prevIndexKey = notificationBySwarmKeyForAccount(prev.AccountScopeID, prev.SwarmID, prev.CreatedAt, prev.ID)
 		}
 	}
-	nextIndexKey := KeyNotificationBySwarm(record.SwarmID, record.CreatedAt, record.ID)
+	nextIndexKey := notificationBySwarmKeyForAccount(accountScopeID, record.SwarmID, record.CreatedAt, record.ID)
 	switch {
 	case prevIndexKey != "" && prevIndexKey != nextIndexKey:
 		if err := batch.Delete([]byte(prevIndexKey), nil); err != nil {
@@ -161,7 +172,7 @@ func (s *NotificationStore) PutNotification(record NotificationRecord, previous 
 	}
 
 	if record.PermissionID != "" && record.SessionID != "" {
-		if err := batch.Set([]byte(KeyNotificationPermissionRef(record.SessionID, record.PermissionID)), []byte(record.ID), nil); err != nil {
+		if err := batch.Set([]byte(notificationPermissionRefKeyForAccount(accountScopeID, record.SessionID, record.PermissionID)), []byte(record.ID), nil); err != nil {
 			return fmt.Errorf("set notification permission ref: %w", err)
 		}
 	}
@@ -173,9 +184,14 @@ func (s *NotificationStore) PutNotification(record NotificationRecord, previous 
 }
 
 func (s *NotificationStore) DeleteNotifications(swarmID string) (int, error) {
+	return s.DeleteNotificationsForAccount("", swarmID)
+}
+
+func (s *NotificationStore) DeleteNotificationsForAccount(accountScopeID, swarmID string) (int, error) {
 	if s == nil || s.store == nil {
 		return 0, errors.New("notification store is not configured")
 	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
 	swarmID = strings.TrimSpace(swarmID)
 	if swarmID == "" {
 		return 0, errors.New("notification swarm_id is required")
@@ -187,7 +203,7 @@ func (s *NotificationStore) DeleteNotifications(swarmID string) (int, error) {
 		found     bool
 	}
 	targets := make([]deleteTarget, 0)
-	if err := s.store.IteratePrefix(NotificationBySwarmPrefix(swarmID), 100000, func(indexKey string, value []byte) error {
+	if err := s.store.IteratePrefix(notificationBySwarmPrefixForAccount(accountScopeID, swarmID), 100000, func(indexKey string, value []byte) error {
 		recordKey := strings.TrimSpace(string(value))
 		if recordKey == "" {
 			return nil
@@ -227,7 +243,7 @@ func (s *NotificationStore) DeleteNotifications(swarmID string) (int, error) {
 		if target.found {
 			deleted++
 			if target.record.PermissionID != "" && target.record.SessionID != "" {
-				if err := batch.Delete([]byte(KeyNotificationPermissionRef(target.record.SessionID, target.record.PermissionID)), nil); err != nil {
+				if err := batch.Delete([]byte(notificationPermissionRefKeyForAccount(target.record.AccountScopeID, target.record.SessionID, target.record.PermissionID)), nil); err != nil {
 					return 0, fmt.Errorf("delete notification permission ref: %w", err)
 				}
 			}
@@ -240,10 +256,14 @@ func (s *NotificationStore) DeleteNotifications(swarmID string) (int, error) {
 }
 
 func (s *NotificationStore) LookupPermissionNotificationID(sessionID, permissionID string) (string, bool, error) {
+	return s.LookupPermissionNotificationIDForAccount("", sessionID, permissionID)
+}
+
+func (s *NotificationStore) LookupPermissionNotificationIDForAccount(accountScopeID, sessionID, permissionID string) (string, bool, error) {
 	if s == nil || s.store == nil {
 		return "", false, errors.New("notification store is not configured")
 	}
-	raw, ok, err := s.store.GetBytes(KeyNotificationPermissionRef(sessionID, permissionID))
+	raw, ok, err := s.store.GetBytes(notificationPermissionRefKeyForAccount(accountScopeID, sessionID, permissionID))
 	if err != nil {
 		return "", false, err
 	}
@@ -261,6 +281,7 @@ func (s *NotificationStore) PutSummary(summary NotificationSummary) error {
 	if s == nil || s.store == nil {
 		return errors.New("notification store is not configured")
 	}
+	summary.AccountScopeID = strings.TrimSpace(summary.AccountScopeID)
 	summary.SwarmID = strings.TrimSpace(summary.SwarmID)
 	if summary.SwarmID == "" {
 		return errors.New("notification summary swarm id is required")
@@ -274,27 +295,33 @@ func (s *NotificationStore) PutSummary(summary NotificationSummary) error {
 	if summary.ActiveCount < 0 {
 		summary.ActiveCount = 0
 	}
-	return s.store.PutJSON(KeyNotificationSummary(summary.SwarmID), summary)
+	return s.store.PutJSON(notificationSummaryKeyForAccount(summary.AccountScopeID, summary.SwarmID), summary)
 }
 
 func (s *NotificationStore) GetSummary(swarmID string) (NotificationSummary, bool, error) {
+	return s.GetSummaryForAccount("", swarmID)
+}
+
+func (s *NotificationStore) GetSummaryForAccount(accountScopeID, swarmID string) (NotificationSummary, bool, error) {
 	if s == nil || s.store == nil {
 		return NotificationSummary{}, false, errors.New("notification store is not configured")
 	}
 	var summary NotificationSummary
-	ok, err := s.store.GetJSON(KeyNotificationSummary(swarmID), &summary)
+	ok, err := s.store.GetJSON(notificationSummaryKeyForAccount(accountScopeID, swarmID), &summary)
 	if err != nil {
 		return NotificationSummary{}, false, err
 	}
 	if !ok {
 		return NotificationSummary{}, false, nil
 	}
+	summary.AccountScopeID = strings.TrimSpace(summary.AccountScopeID)
 	summary.SwarmID = strings.TrimSpace(summary.SwarmID)
 	return summary, true, nil
 }
 
 func sanitizeNotificationRecord(record NotificationRecord) NotificationRecord {
 	record.ID = strings.TrimSpace(record.ID)
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
 	record.SwarmID = strings.TrimSpace(record.SwarmID)
 	record.OriginSwarmID = strings.TrimSpace(record.OriginSwarmID)
 	record.SessionID = strings.TrimSpace(record.SessionID)
@@ -333,4 +360,44 @@ func sanitizeNotificationRecord(record NotificationRecord) NotificationRecord {
 		record.OriginSwarmID = record.SwarmID
 	}
 	return record
+}
+
+func notificationKeyForAccount(accountScopeID, swarmID, notificationID string) string {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return KeyNotification(swarmID, notificationID)
+	}
+	return KeyNotificationForAccount(accountScopeID, swarmID, notificationID)
+}
+
+func notificationBySwarmKeyForAccount(accountScopeID, swarmID string, createdAt int64, notificationID string) string {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return KeyNotificationBySwarm(swarmID, createdAt, notificationID)
+	}
+	return KeyNotificationByAccountSwarm(accountScopeID, swarmID, createdAt, notificationID)
+}
+
+func notificationBySwarmPrefixForAccount(accountScopeID, swarmID string) string {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return NotificationBySwarmPrefix(swarmID)
+	}
+	return NotificationByAccountSwarmPrefix(accountScopeID, swarmID)
+}
+
+func notificationPermissionRefKeyForAccount(accountScopeID, sessionID, permissionID string) string {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return KeyNotificationPermissionRef(sessionID, permissionID)
+	}
+	return KeyNotificationPermissionRefForAccount(accountScopeID, sessionID, permissionID)
+}
+
+func notificationSummaryKeyForAccount(accountScopeID, swarmID string) string {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return KeyNotificationSummary(swarmID)
+	}
+	return KeyNotificationSummaryForAccount(accountScopeID, swarmID)
 }

@@ -266,17 +266,33 @@ func (s *PermissionStore) GetSummary(principalID, sessionID string) (PermissionS
 }
 
 func (s *PermissionStore) PutPolicy(payload []byte) error {
+	return s.PutPolicyForAccount("", payload)
+}
+
+func (s *PermissionStore) PutPolicyForAccount(accountScopeID string, payload []byte) error {
 	if s == nil || s.store == nil {
 		return fmt.Errorf("permission store is not configured")
 	}
-	return s.store.PutBytes(KeyPermissionPolicy(), payload)
+	return s.store.PutBytes(permissionPolicyKeyForAccount(accountScopeID), payload)
 }
 
 func (s *PermissionStore) GetPolicy() ([]byte, bool, error) {
+	return s.GetPolicyForAccount("")
+}
+
+func (s *PermissionStore) GetPolicyForAccount(accountScopeID string) ([]byte, bool, error) {
 	if s == nil || s.store == nil {
 		return nil, false, fmt.Errorf("permission store is not configured")
 	}
-	return s.store.GetBytes(KeyPermissionPolicy())
+	return s.store.GetBytes(permissionPolicyKeyForAccount(accountScopeID))
+}
+
+func permissionPolicyKeyForAccount(accountScopeID string) string {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return KeyPermissionPolicy()
+	}
+	return KeyPermissionPolicy() + "/account/" + privacy.HashPathForKey(accountScopeID)
 }
 
 func (s *PermissionStore) UpsertRunWait(state RunWaitState) error {

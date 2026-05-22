@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -254,6 +255,14 @@ func NewService(store *pebblestore.VoiceStore, adapters ...Adapter) *Service {
 	return svc
 }
 
+func requireVoicePrincipal(ctx context.Context) (identity.Principal, error) {
+	principal, ok := identity.PrincipalFromContext(ctx)
+	if !ok || !principal.Valid() {
+		return identity.Principal{}, identity.ErrPrincipalRequired
+	}
+	return principal, nil
+}
+
 func (s *Service) RegisterAdapter(adapter Adapter) {
 	if s == nil || adapter == nil {
 		return
@@ -272,17 +281,21 @@ func (s *Service) RegisterAdapter(adapter Adapter) {
 }
 
 func (s *Service) Status(ctx context.Context) (Status, error) {
-	if err := s.ensureDefaultProfiles(); err != nil {
+	principal, err := requireVoicePrincipal(ctx)
+	if err != nil {
+		return Status{}, err
+	}
+	if err := s.ensureDefaultProfiles(principal); err != nil {
 		return Status{}, err
 	}
 	status := Status{PathID: PathStatus}
-	record, err := s.getConfig()
+	record, err := s.getConfig(principal)
 	if err != nil {
 		return Status{}, err
 	}
 	status.Config = voiceConfigFromRecord(record)
 
-	profiles, err := s.listProfiles(ctx)
+	profiles, err := s.listProfiles(ctx, principal)
 	if err != nil {
 		return Status{}, err
 	}
@@ -344,13 +357,21 @@ func (s *Service) ListSTTProviders(ctx context.Context) ([]STTProviderStatus, er
 }
 
 func (s *Service) ListProfiles(ctx context.Context) ([]VoiceProfileStatus, error) {
-	if err := s.ensureDefaultProfiles(); err != nil {
+	principal, err := requireVoicePrincipal(ctx)
+	if err != nil {
 		return nil, err
 	}
-	return s.listProfiles(ctx)
+	if err := s.ensureDefaultProfiles(principal); err != nil {
+		return nil, err
+	}
+	return s.listProfiles(ctx, principal)
 }
 
 func (s *Service) UpsertProfile(ctx context.Context, input ProfileUpsertInput) (VoiceProfileStatus, error) {
+	principal, err := requireVoicePrincipal(ctx)
+	if err != nil {
+		return VoiceProfileStatus{}, err
+	}
 	if s.store == nil {
 		return VoiceProfileStatus{}, errors.New("voice profile store is not configured")
 	}
@@ -366,7 +387,7 @@ func (s *Service) UpsertProfile(ctx context.Context, input ProfileUpsertInput) (
 		return VoiceProfileStatus{}, fmt.Errorf("unknown voice adapter %q", adapterID)
 	}
 
-	existing, ok, err := s.store.GetProfile(profileID)
+	existing, ok, err := s.store.GetProfileForAccount(principal.AccountScopeID, profileID)
 	if err != nil {
 		return VoiceProfileStatus{}, err
 	}
@@ -382,11 +403,11 @@ func (s *Service) UpsertProfile(ctx context.Context, input ProfileUpsertInput) (
 	record.TTSVoice = strings.TrimSpace(input.TTSVoice)
 	record.Options = copyStringMap(input.Options)
 
-	saved, err := s.store.PutProfile(record)
+	saved, err := s.store.PutProfileForAccount(principal.AccountScopeID, principal.UserID, record)
 	if err != nil {
 		return VoiceProfileStatus{}, err
 	}
-	cfg, err := s.getConfig()
+	cfg, err := s.getConfig(principal)
 	if err != nil {
 		return VoiceProfileStatus{}, err
 	}
@@ -396,6 +417,10 @@ func (s *Service) UpsertProfile(ctx context.Context, input ProfileUpsertInput) (
 }
 
 func (s *Service) DeleteProfile(ctx context.Context, profileID string) (ProfileDeleteResult, error) {
+	principal, err := requireVoicePrincipal(ctx)
+	if err != nil {
+		return ProfileDeleteResult{}, err
+	}
 	if s.store == nil {
 		return ProfileDeleteResult{}, errors.New("voice profile store is not configured")
 	}
@@ -403,16 +428,16 @@ func (s *Service) DeleteProfile(ctx context.Context, profileID string) (ProfileD
 	if profileID == "" {
 		return ProfileDeleteResult{}, errors.New("voice profile id is required")
 	}
-	if _, ok, err := s.store.GetProfile(profileID); err != nil {
+	if _, ok, err := s.store.GetProfileForAccount(principal.AccountScopeID, profileID); err != nil {
 		return ProfileDeleteResult{}, err
 	} else if !ok {
 		return ProfileDeleteResult{}, fmt.Errorf("voice profile %q not found", profileID)
 	}
-	if err := s.store.DeleteProfile(profileID); err != nil {
+	if err := s.store.DeleteProfileForAccount(principal.AccountScopeID, profileID); err != nil {
 		return ProfileDeleteResult{}, err
 	}
 
-	record, err := s.getConfig()
+	record, err := s.getConfig(principal)
 	if err != nil {
 		return ProfileDeleteResult{}, err
 	}
@@ -429,7 +454,7 @@ func (s *Service) DeleteProfile(ctx context.Context, profileID string) (ProfileD
 		hasPatch = true
 	}
 	if hasPatch {
-		if _, err := s.store.UpdateConfig(patch); err != nil {
+		if _, err := s.store.UpdateConfigForAccount(principal.AccountScopeID, principal.UserID, patch); err != nil {
 			return ProfileDeleteResult{}, err
 		}
 	}
@@ -437,7 +462,11 @@ func (s *Service) DeleteProfile(ctx context.Context, profileID string) (ProfileD
 }
 
 func (s *Service) ListDevices(ctx context.Context) ([]Device, error) {
-	record, err := s.getConfig()
+	principal, err := requireVoicePrincipal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	record, err := s.getConfig(principal)
 	if err != nil {
 		return nil, err
 	}
@@ -460,13 +489,17 @@ func (s *Service) ListDevices(ctx context.Context) ([]Device, error) {
 }
 
 func (s *Service) UpdateConfig(ctx context.Context, patch ConfigPatch) (Status, error) {
+	principal, err := requireVoicePrincipal(ctx)
+	if err != nil {
+		return Status{}, err
+	}
 	if s.store == nil {
 		return Status{}, errors.New("voice config store is not configured")
 	}
 	if patch.STTProfile != nil {
 		id := normalizeProfileID(*patch.STTProfile)
 		if id != "" {
-			if _, ok, err := s.store.GetProfile(id); err != nil {
+			if _, ok, err := s.store.GetProfileForAccount(principal.AccountScopeID, id); err != nil {
 				return Status{}, err
 			} else if !ok {
 				return Status{}, fmt.Errorf("unknown stt profile %q", id)
@@ -476,7 +509,7 @@ func (s *Service) UpdateConfig(ctx context.Context, patch ConfigPatch) (Status, 
 	if patch.TTSProfile != nil {
 		id := normalizeProfileID(*patch.TTSProfile)
 		if id != "" {
-			if _, ok, err := s.store.GetProfile(id); err != nil {
+			if _, ok, err := s.store.GetProfileForAccount(principal.AccountScopeID, id); err != nil {
 				return Status{}, err
 			} else if !ok {
 				return Status{}, fmt.Errorf("unknown tts profile %q", id)
@@ -517,7 +550,7 @@ func (s *Service) UpdateConfig(ctx context.Context, patch ConfigPatch) (Status, 
 		}
 	}
 
-	_, err := s.store.UpdateConfig(pebblestore.VoiceConfigPatch{
+	_, err = s.store.UpdateConfigForAccount(principal.AccountScopeID, principal.UserID, pebblestore.VoiceConfigPatch{
 		STTProfile:  patch.STTProfile,
 		STTProvider: patch.STTProvider,
 		STTModel:    patch.STTModel,
@@ -535,17 +568,21 @@ func (s *Service) UpdateConfig(ctx context.Context, patch ConfigPatch) (Status, 
 
 func (s *Service) Transcribe(ctx context.Context, input TranscribeInput) (TranscribeResult, error) {
 	started := time.Now()
-	if len(input.Audio) == 0 {
-		return TranscribeResult{}, errors.New("audio payload is required")
-	}
-	if err := s.ensureDefaultProfiles(); err != nil {
-		return TranscribeResult{}, err
-	}
-	record, err := s.getConfig()
+	principal, err := requireVoicePrincipal(ctx)
 	if err != nil {
 		return TranscribeResult{}, err
 	}
-	selection, err := s.resolveSTTSelection(ctx, record, strings.TrimSpace(input.Profile), strings.TrimSpace(input.Provider))
+	if len(input.Audio) == 0 {
+		return TranscribeResult{}, errors.New("audio payload is required")
+	}
+	if err := s.ensureDefaultProfiles(principal); err != nil {
+		return TranscribeResult{}, err
+	}
+	record, err := s.getConfig(principal)
+	if err != nil {
+		return TranscribeResult{}, err
+	}
+	selection, err := s.resolveSTTSelection(ctx, principal, record, strings.TrimSpace(input.Profile), strings.TrimSpace(input.Provider))
 	if err != nil {
 		return TranscribeResult{}, err
 	}
@@ -587,6 +624,10 @@ func (s *Service) Transcribe(ctx context.Context, input TranscribeInput) (Transc
 
 func (s *Service) TestSTT(ctx context.Context, input TestSTTInput) (TestSTTResult, error) {
 	started := time.Now()
+	principal, err := requireVoicePrincipal(ctx)
+	if err != nil {
+		return TestSTTResult{}, err
+	}
 	seconds := input.Seconds
 	if seconds <= 0 {
 		seconds = 4
@@ -594,7 +635,7 @@ func (s *Service) TestSTT(ctx context.Context, input TestSTTInput) (TestSTTResul
 	if seconds > 15 {
 		seconds = 15
 	}
-	record, err := s.getConfig()
+	record, err := s.getConfig(principal)
 	if err != nil {
 		return TestSTTResult{}, err
 	}
@@ -630,7 +671,11 @@ func (s *Service) TestSTT(ctx context.Context, input TestSTTInput) (TestSTTResul
 
 func (s *Service) Synthesize(ctx context.Context, input SynthesizeInput) (SynthesizeResult, error) {
 	started := time.Now()
-	record, err := s.getConfig()
+	principal, err := requireVoicePrincipal(ctx)
+	if err != nil {
+		return SynthesizeResult{}, err
+	}
+	record, err := s.getConfig(principal)
 	if err != nil {
 		return SynthesizeResult{}, err
 	}
@@ -640,7 +685,7 @@ func (s *Service) Synthesize(ctx context.Context, input SynthesizeInput) (Synthe
 	if providerID == "" {
 		profileID := normalizeProfileID(record.TTSProfile)
 		if profileID != "" && s.store != nil {
-			if profile, ok, profileErr := s.store.GetProfile(profileID); profileErr == nil && ok {
+			if profile, ok, profileErr := s.store.GetProfileForAccount(principal.AccountScopeID, profileID); profileErr == nil && ok {
 				providerID = normalizeProviderID(profile.Adapter)
 				voiceHint = strings.TrimSpace(profile.TTSVoice)
 			}
@@ -688,15 +733,15 @@ func (s *Service) Synthesize(ctx context.Context, input SynthesizeInput) (Synthe
 	}, nil
 }
 
-func (s *Service) listProfiles(ctx context.Context) ([]VoiceProfileStatus, error) {
+func (s *Service) listProfiles(ctx context.Context, principal identity.Principal) ([]VoiceProfileStatus, error) {
 	if s.store == nil {
 		return nil, nil
 	}
-	records, err := s.store.ListProfiles(500)
+	records, err := s.store.ListProfilesForAccount(principal.AccountScopeID, 500)
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := s.getConfig()
+	cfg, err := s.getConfig(principal)
 	if err != nil {
 		return nil, err
 	}
@@ -774,7 +819,7 @@ func (s *Service) sortedProviderOrder() []string {
 	return out
 }
 
-func (s *Service) resolveSTTSelection(ctx context.Context, record pebblestore.VoiceConfigRecord, profileOverride, providerOverride string) (resolvedSTTSelection, error) {
+func (s *Service) resolveSTTSelection(ctx context.Context, principal identity.Principal, record pebblestore.VoiceConfigRecord, profileOverride, providerOverride string) (resolvedSTTSelection, error) {
 	providerOverride = normalizeProviderID(providerOverride)
 	if providerOverride != "" {
 		adapter, ok := s.adapters[providerOverride]
@@ -800,7 +845,7 @@ func (s *Service) resolveSTTSelection(ctx context.Context, record pebblestore.Vo
 		if s.store == nil {
 			return resolvedSTTSelection{}, errors.New("voice profile store is not configured")
 		}
-		profile, ok, err := s.store.GetProfile(profileID)
+		profile, ok, err := s.store.GetProfileForAccount(principal.AccountScopeID, profileID)
 		if err != nil {
 			return resolvedSTTSelection{}, err
 		}
@@ -957,17 +1002,17 @@ func (s *Service) resolveConfiguredTTSProvider(record pebblestore.VoiceConfigRec
 	return "", false, "no configured tts provider"
 }
 
-func (s *Service) ensureDefaultProfiles() error {
+func (s *Service) ensureDefaultProfiles(principal identity.Principal) error {
 	if s == nil || s.store == nil {
 		return nil
 	}
 	if _, ok := s.adapters["whisper-local"]; !ok {
 		return nil
 	}
-	if _, ok, err := s.store.GetProfile("whisper-local"); err != nil {
+	if _, ok, err := s.store.GetProfileForAccount(principal.AccountScopeID, "whisper-local"); err != nil {
 		return err
 	} else if !ok {
-		if _, err := s.store.PutProfile(pebblestore.VoiceProfileRecord{
+		if _, err := s.store.PutProfileForAccount(principal.AccountScopeID, principal.UserID, pebblestore.VoiceProfileRecord{
 			ID:      "whisper-local",
 			Label:   "Local Whisper",
 			Adapter: "whisper-local",
@@ -975,24 +1020,24 @@ func (s *Service) ensureDefaultProfiles() error {
 			return err
 		}
 	}
-	record, err := s.getConfig()
+	record, err := s.getConfig(principal)
 	if err != nil {
 		return err
 	}
 	if normalizeProfileID(record.STTProfile) == "" && normalizeProviderID(record.STTProvider) == "" {
 		defaultProfile := "whisper-local"
-		if _, err := s.store.UpdateConfig(pebblestore.VoiceConfigPatch{STTProfile: &defaultProfile}); err != nil {
+		if _, err := s.store.UpdateConfigForAccount(principal.AccountScopeID, principal.UserID, pebblestore.VoiceConfigPatch{STTProfile: &defaultProfile}); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *Service) getConfig() (pebblestore.VoiceConfigRecord, error) {
+func (s *Service) getConfig(principal identity.Principal) (pebblestore.VoiceConfigRecord, error) {
 	if s == nil || s.store == nil {
 		return pebblestore.VoiceConfigRecord{}, nil
 	}
-	record, _, err := s.store.GetConfig()
+	record, _, err := s.store.GetConfigForAccount(principal.AccountScopeID)
 	if err != nil {
 		return pebblestore.VoiceConfigRecord{}, err
 	}

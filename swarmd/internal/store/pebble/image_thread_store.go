@@ -20,6 +20,8 @@ type ImageAssetSnapshot struct {
 
 type ImageThreadSnapshot struct {
 	ID              string               `json:"id"`
+	UserID          string               `json:"user_id,omitempty"`
+	AccountScopeID  string               `json:"account_scope_id,omitempty"`
 	WorkspacePath   string               `json:"workspace_path"`
 	WorkspaceName   string               `json:"workspace_name"`
 	Title           string               `json:"title"`
@@ -40,9 +42,15 @@ func NewImageThreadStore(store *Store) *ImageThreadStore {
 }
 
 func (s *ImageThreadStore) Create(thread ImageThreadSnapshot) (ImageThreadSnapshot, error) {
+	return s.CreateForAccount(thread.AccountScopeID, thread.UserID, thread)
+}
+
+func (s *ImageThreadStore) CreateForAccount(accountScopeID, userID string, thread ImageThreadSnapshot) (ImageThreadSnapshot, error) {
 	if s == nil || s.store == nil {
 		return ImageThreadSnapshot{}, errors.New("image thread store is not configured")
 	}
+	thread.AccountScopeID = strings.TrimSpace(firstNonEmptyString(accountScopeID, thread.AccountScopeID))
+	thread.UserID = strings.TrimSpace(firstNonEmptyString(userID, thread.UserID))
 	thread = normalizeImageThread(thread)
 	if thread.ID == "" {
 		return ImageThreadSnapshot{}, errors.New("image thread id is required")
@@ -60,13 +68,17 @@ func (s *ImageThreadStore) Create(thread ImageThreadSnapshot) (ImageThreadSnapsh
 	if thread.UpdatedAt == 0 {
 		thread.UpdatedAt = thread.CreatedAt
 	}
-	if err := s.store.PutJSON(KeyImageThread(thread.ID), thread); err != nil {
+	if err := s.store.PutJSON(imageThreadKey(thread.AccountScopeID, thread.ID), thread); err != nil {
 		return ImageThreadSnapshot{}, err
 	}
 	return thread, nil
 }
 
 func (s *ImageThreadStore) Get(threadID string) (ImageThreadSnapshot, bool, error) {
+	return s.GetForAccount("", threadID)
+}
+
+func (s *ImageThreadStore) GetForAccount(accountScopeID, threadID string) (ImageThreadSnapshot, bool, error) {
 	if s == nil || s.store == nil {
 		return ImageThreadSnapshot{}, false, errors.New("image thread store is not configured")
 	}
@@ -75,29 +87,42 @@ func (s *ImageThreadStore) Get(threadID string) (ImageThreadSnapshot, bool, erro
 		return ImageThreadSnapshot{}, false, errors.New("image thread id is required")
 	}
 	var thread ImageThreadSnapshot
-	ok, err := s.store.GetJSON(KeyImageThread(threadID), &thread)
+	ok, err := s.store.GetJSON(imageThreadKey(accountScopeID, threadID), &thread)
 	if err != nil || !ok {
 		return ImageThreadSnapshot{}, ok, err
 	}
-	return normalizeImageThread(thread), true, nil
+	thread = normalizeImageThread(thread)
+	if thread.AccountScopeID == "" {
+		thread.AccountScopeID = strings.TrimSpace(accountScopeID)
+	}
+	return thread, true, nil
 }
 
 func (s *ImageThreadStore) Update(thread ImageThreadSnapshot) (ImageThreadSnapshot, error) {
+	return s.UpdateForAccount(thread.AccountScopeID, thread)
+}
+
+func (s *ImageThreadStore) UpdateForAccount(accountScopeID string, thread ImageThreadSnapshot) (ImageThreadSnapshot, error) {
 	if s == nil || s.store == nil {
 		return ImageThreadSnapshot{}, errors.New("image thread store is not configured")
 	}
+	thread.AccountScopeID = strings.TrimSpace(firstNonEmptyString(accountScopeID, thread.AccountScopeID))
 	thread = normalizeImageThread(thread)
 	if thread.ID == "" {
 		return ImageThreadSnapshot{}, errors.New("image thread id is required")
 	}
 	thread.UpdatedAt = time.Now().UnixMilli()
-	if err := s.store.PutJSON(KeyImageThread(thread.ID), thread); err != nil {
+	if err := s.store.PutJSON(imageThreadKey(thread.AccountScopeID, thread.ID), thread); err != nil {
 		return ImageThreadSnapshot{}, err
 	}
 	return thread, nil
 }
 
 func (s *ImageThreadStore) ListForWorkspace(workspacePath string, limit int) ([]ImageThreadSnapshot, error) {
+	return s.ListForWorkspaceForAccount("", workspacePath, limit)
+}
+
+func (s *ImageThreadStore) ListForWorkspaceForAccount(accountScopeID, workspacePath string, limit int) ([]ImageThreadSnapshot, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("image thread store is not configured")
 	}
@@ -110,12 +135,16 @@ func (s *ImageThreadStore) ListForWorkspace(workspacePath string, limit int) ([]
 	}
 	const iterateAll = int(^uint(0) >> 1)
 	threads := make([]ImageThreadSnapshot, 0)
-	err := s.store.IteratePrefix(ImageThreadPrefix(), iterateAll, func(_ string, value []byte) error {
+	prefix := imageThreadPrefix(accountScopeID)
+	err := s.store.IteratePrefix(prefix, iterateAll, func(_ string, value []byte) error {
 		var thread ImageThreadSnapshot
 		if err := json.Unmarshal(value, &thread); err != nil {
 			return fmt.Errorf("unmarshal image thread: %w", err)
 		}
 		thread = normalizeImageThread(thread)
+		if thread.AccountScopeID == "" {
+			thread.AccountScopeID = strings.TrimSpace(accountScopeID)
+		}
 		if thread.WorkspacePath == workspacePath {
 			threads = append(threads, thread)
 		}
@@ -138,6 +167,8 @@ func (s *ImageThreadStore) ListForWorkspace(workspacePath string, limit int) ([]
 
 func normalizeImageThread(thread ImageThreadSnapshot) ImageThreadSnapshot {
 	thread.ID = strings.TrimSpace(thread.ID)
+	thread.UserID = strings.TrimSpace(thread.UserID)
+	thread.AccountScopeID = strings.TrimSpace(thread.AccountScopeID)
 	thread.WorkspacePath = strings.TrimSpace(thread.WorkspacePath)
 	thread.WorkspaceName = strings.TrimSpace(thread.WorkspaceName)
 	thread.Title = strings.TrimSpace(thread.Title)
@@ -159,4 +190,18 @@ func normalizeImageThread(thread ImageThreadSnapshot) ImageThreadSnapshot {
 	}
 	thread.ImageAssets = assets
 	return thread
+}
+
+func imageThreadKey(accountScopeID, threadID string) string {
+	if strings.TrimSpace(accountScopeID) == "" {
+		return KeyImageThread(threadID)
+	}
+	return KeyImageThreadForAccount(accountScopeID, threadID)
+}
+
+func imageThreadPrefix(accountScopeID string) string {
+	if strings.TrimSpace(accountScopeID) == "" {
+		return ImageThreadPrefix()
+	}
+	return ImageThreadPrefixForAccount(accountScopeID)
 }

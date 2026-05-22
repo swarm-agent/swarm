@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/identity"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -46,16 +46,23 @@ func (a *Adapter) Status(ctx context.Context) (provideriface.Status, error) {
 			AuthMethods: exaAuthMethods(),
 		}, nil
 	}
-	record, ok, err := a.authStore.GetActiveCredential("exa")
+	principal, principalOK := identity.PrincipalFromContext(ctx)
+	if !principalOK {
+		return provideriface.Status{
+			ID:          "exa",
+			Ready:       false,
+			Reason:      "product identity is required",
+			RunReason:   "search-only provider (no model runner)",
+			AuthMethods: exaAuthMethods(),
+		}, nil
+	}
+	record, ok, err := a.authStore.GetActiveCredentialForAccount(principal.AccountScopeID, "exa")
 	if err != nil {
 		return provideriface.Status{}, err
 	}
 	apiKey := ""
 	if ok {
 		apiKey = strings.TrimSpace(record.APIKey)
-	}
-	if apiKey == "" {
-		apiKey = strings.TrimSpace(os.Getenv("EXA_API_KEY"))
 	}
 	if apiKey != "" {
 		return provideriface.Status{

@@ -18,12 +18,16 @@ type ManagedPolicyState struct {
 }
 
 func (s *Service) CurrentPolicy() (Policy, error) {
+	return s.CurrentPolicyForAccount("")
+}
+
+func (s *Service) CurrentPolicyForAccount(accountScopeID string) (Policy, error) {
 	if s == nil {
 		return DefaultPolicy(), nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.loadPolicyLocked()
+	return s.loadPolicyLocked(accountScopeID)
 }
 
 func (s *Service) ExportPolicyState() (ManagedPolicyState, error) {
@@ -47,7 +51,7 @@ func (s *Service) ApplyManagedPolicyState(state ManagedPolicyState) (ManagedPoli
 		policy.UpdatedAt = time.Now().UnixMilli()
 	}
 	s.mu.Lock()
-	if err := s.persistPolicyLocked(policy); err != nil {
+	if err := s.persistPolicyLocked("", policy); err != nil {
 		s.mu.Unlock()
 		return ManagedPolicyState{}, err
 	}
@@ -61,7 +65,11 @@ func (s *Service) ApplyManagedPolicyState(state ManagedPolicyState) (ManagedPoli
 }
 
 func (s *Service) ExplainTool(mode, toolName, toolArguments string, overlay *Policy) (PolicyExplain, error) {
-	policy, err := s.CurrentPolicy()
+	return s.ExplainToolForAccount("", mode, toolName, toolArguments, overlay)
+}
+
+func (s *Service) ExplainToolForAccount(accountScopeID, mode, toolName, toolArguments string, overlay *Policy) (PolicyExplain, error) {
+	policy, err := s.CurrentPolicyForAccount(accountScopeID)
 	if err != nil {
 		return PolicyExplain{}, err
 	}
@@ -75,6 +83,10 @@ func (s *Service) ExplainTool(mode, toolName, toolArguments string, overlay *Pol
 }
 
 func (s *Service) UpsertRule(rule PolicyRule) (PolicyRule, error) {
+	return s.UpsertRuleForAccount("", rule)
+}
+
+func (s *Service) UpsertRuleForAccount(accountScopeID string, rule PolicyRule) (PolicyRule, error) {
 	if s == nil {
 		return PolicyRule{}, errors.New("permission service is not configured")
 	}
@@ -87,7 +99,7 @@ func (s *Service) UpsertRule(rule PolicyRule) (PolicyRule, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	policy, err := s.loadPolicyLocked()
+	policy, err := s.loadPolicyLocked(accountScopeID)
 	if err != nil {
 		return PolicyRule{}, err
 	}
@@ -122,13 +134,17 @@ func (s *Service) UpsertRule(rule PolicyRule) (PolicyRule, error) {
 		policy.Rules = append(policy.Rules, normalized)
 	}
 	policy.UpdatedAt = now
-	if err := s.persistPolicyLocked(policy); err != nil {
+	if err := s.persistPolicyLocked(accountScopeID, policy); err != nil {
 		return PolicyRule{}, err
 	}
 	return normalized, nil
 }
 
 func (s *Service) RemoveRule(ruleID string) (bool, error) {
+	return s.RemoveRuleForAccount("", ruleID)
+}
+
+func (s *Service) RemoveRuleForAccount(accountScopeID, ruleID string) (bool, error) {
 	if s == nil {
 		return false, errors.New("permission service is not configured")
 	}
@@ -140,7 +156,7 @@ func (s *Service) RemoveRule(ruleID string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	policy, err := s.loadPolicyLocked()
+	policy, err := s.loadPolicyLocked(accountScopeID)
 	if err != nil {
 		return false, err
 	}
@@ -159,13 +175,17 @@ func (s *Service) RemoveRule(ruleID string) (bool, error) {
 	}
 	policy.Rules = next
 	policy.UpdatedAt = time.Now().UnixMilli()
-	if err := s.persistPolicyLocked(policy); err != nil {
+	if err := s.persistPolicyLocked(accountScopeID, policy); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
 func (s *Service) ResetPolicy() (Policy, error) {
+	return s.ResetPolicyForAccount("")
+}
+
+func (s *Service) ResetPolicyForAccount(accountScopeID string) (Policy, error) {
 	if s == nil {
 		return Policy{}, errors.New("permission service is not configured")
 	}
@@ -175,7 +195,7 @@ func (s *Service) ResetPolicy() (Policy, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := s.persistPolicyLocked(policy); err != nil {
+	if err := s.persistPolicyLocked(accountScopeID, policy); err != nil {
 		return Policy{}, err
 	}
 	return policy, nil
@@ -290,11 +310,11 @@ func (s *Service) newPolicyRuleID(now int64) string {
 	return fmt.Sprintf("rule_%d_%d", now, seq)
 }
 
-func (s *Service) loadPolicyLocked() (Policy, error) {
+func (s *Service) loadPolicyLocked(accountScopeID string) (Policy, error) {
 	if s.store == nil {
 		return DefaultPolicy(), nil
 	}
-	raw, ok, err := s.store.GetPolicy()
+	raw, ok, err := s.store.GetPolicyForAccount(accountScopeID)
 	if err != nil {
 		return Policy{}, err
 	}
@@ -308,7 +328,7 @@ func (s *Service) loadPolicyLocked() (Policy, error) {
 	return NormalizePolicy(policy), nil
 }
 
-func (s *Service) persistPolicyLocked(policy Policy) error {
+func (s *Service) persistPolicyLocked(accountScopeID string, policy Policy) error {
 	if s.store == nil {
 		return errors.New("permission store is not configured")
 	}
@@ -317,5 +337,5 @@ func (s *Service) persistPolicyLocked(policy Policy) error {
 	if err != nil {
 		return err
 	}
-	return s.store.PutPolicy(raw)
+	return s.store.PutPolicyForAccount(accountScopeID, raw)
 }

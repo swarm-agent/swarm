@@ -85,7 +85,7 @@ func (c *Client) TranscribeAudio(ctx context.Context, audio []byte, model, langu
 			return Transcription{}, fmt.Errorf("codex transcription unauthorized and refresh failed: %w", refreshErr)
 		}
 		accountID := extractAccountIDFromToken(refreshed.AccessToken)
-		record, err = c.authStore.UpdateOAuthCredential(record.Provider, record.ID, refreshed.AccessToken, refreshed.RefreshToken, refreshed.ExpiresAt, accountID)
+		record, err = c.authStore.UpdateOAuthCredentialForAccount(record.AccountScopeID, record.Provider, record.ID, refreshed.AccessToken, refreshed.RefreshToken, refreshed.ExpiresAt, accountID)
 		if err != nil {
 			return Transcription{}, fmt.Errorf("persist refreshed codex oauth: %w", err)
 		}

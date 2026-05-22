@@ -14,14 +14,22 @@ func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	principal, ok := PrincipalFromRequest(r)
+	if !ok || !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
+		writeError(w, http.StatusUnauthorized, errors.New("authenticated account principal is required"))
+		return
+	}
+
 	switch r.Method {
 	case http.MethodGet:
 		req := integrationruntime.Request{
-			Action:    firstNonEmpty(strings.TrimSpace(r.URL.Query().Get("action")), "list"),
-			Resource:  strings.TrimSpace(r.URL.Query().Get("resource")),
-			PackID:    strings.TrimSpace(r.URL.Query().Get("pack_id")),
-			VersionID: strings.TrimSpace(r.URL.Query().Get("version_id")),
-			ID:        strings.TrimSpace(r.URL.Query().Get("id")),
+			AccountScopeID: principal.AccountScopeID,
+			UserID:         principal.UserID,
+			Action:         firstNonEmpty(strings.TrimSpace(r.URL.Query().Get("action")), "list"),
+			Resource:       strings.TrimSpace(r.URL.Query().Get("resource")),
+			PackID:         strings.TrimSpace(r.URL.Query().Get("pack_id")),
+			VersionID:      strings.TrimSpace(r.URL.Query().Get("version_id")),
+			ID:             strings.TrimSpace(r.URL.Query().Get("id")),
 		}
 		if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
 			limit, ok := parsePositiveInt(raw)
@@ -31,6 +39,8 @@ func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
 			}
 			req.Limit = limit
 		}
+		req.AccountScopeID = principal.AccountScopeID
+		req.UserID = principal.UserID
 		response, err := s.integrations.Handle(req)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -43,6 +53,8 @@ func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		req.AccountScopeID = principal.AccountScopeID
+		req.UserID = principal.UserID
 		response, err := s.integrations.Handle(req)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)

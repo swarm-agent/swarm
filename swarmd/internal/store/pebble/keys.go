@@ -9,12 +9,14 @@ import (
 const (
 	KeyAuthCodexDefault                         = "auth/codex/default" // legacy single-record key; retained for migration.
 	KeyAuthAttachDefault                        = "auth/attach/default"
-	KeyAuthVaultMeta                            = "auth/vault/meta"
+	KeyAuthVaultMeta                            = "auth/vault/meta" // legacy singleton key; retained for explicit migration only.
+	KeyAuthVaultMetaAccountPrefix               = "auth/vault/meta_by_account/"
 	KeyAuthCredentialPrefix                     = "auth/credential/"
 	KeyAuthCredentialActivePrefix               = "auth/credential_active/"
 	KeyAuthCredentialTagPrefix                  = "auth/index/auth_tag/"
 	KeyAuthManagedVaultKeyPrefix                = "auth/managed_vault_key/"
 	KeyUISettingsDefault                        = "ui/settings/default"
+	KeyUISettingsAccountPrefix                  = "ui/settings_by_account/"
 	KeyUIChatSettingsDefault                    = "ui/chat_settings/default"
 	KeyIdentityPrefix                           = "identity/"
 	KeyIdentityUserPrefix                       = "identity/user/"
@@ -30,11 +32,15 @@ const (
 	KeyIdentityCurrentSelectionDefault          = "identity/current_selection/default"
 	KeyIdentityCurrentSelectionPrefix           = "identity/current_selection/"
 	KeyIdentityLocalProductJWTSigningKeyDefault = "identity/session/local_product_jwt_signing_key"
-	KeyVoiceConfigDefault                       = "voice/config/default"
-	KeyVoiceProfilePrefix                       = "voice/profile/"
+	KeyVoiceConfigDefault                       = "voice/config/default" // legacy global key; retained for explicit migration only.
+	KeyVoiceConfigAccountPrefix                 = "voice/config_by_account/"
+	KeyVoiceProfilePrefix                       = "voice/profile/" // legacy global prefix; retained for explicit migration only.
+	KeyVoiceProfileAccountPrefix                = "voice/profile_by_account/"
 	KeyVoiceProfileActiveSTT                    = "voice/profile_active/stt"
-	KeyModelPrefGlobal                          = "model_pref/global/default"
-	KeyModelFavoritePrefix                      = "model_favorite/"
+	KeyModelPrefGlobal                          = "model_pref/global/default" // legacy single-record key; retained for explicit migration only.
+	KeyModelPrefAccountPrefix                   = "model_pref/account/"
+	KeyModelFavoritePrefix                      = "model_favorite/" // legacy global favorite prefix; retained for explicit migration only.
+	KeyModelFavoriteAccountPrefix               = "model_favorite/account/"
 	KeyWorktreeGlobalConfig                     = "worktree/global/config"
 	KeyWorktreeConfigPrefix                     = "worktree/config/" // legacy single-workspace config prefix; retained for migration.
 	KeyWorktreeConfigAccountPrefix              = "worktree/config_by_account/"
@@ -45,10 +51,12 @@ const (
 	KeyWorkspaceEntryAccountPrefix              = "workspace/entry_by_account/"
 	KeyWorkspaceTodoItemPrefix                  = "workspace_todo/item/"
 	KeyVideoThreadPrefix                        = "video/thread/"
-	KeyImageThreadPrefix                        = "image/thread/"
+	KeyImageThreadPrefix                        = "image/thread/" // legacy global image thread prefix; retained for explicit migration only.
+	KeyImageThreadAccountPrefix                 = "image/thread_by_account/"
 	KeyModelCatalogMeta                         = "model_catalog/meta"
 	KeyAgentProfilePrefix                       = "agent/profile/"
 	KeyAgentCustomToolPrefix                    = "agent/custom_tool/"
+	KeyAgentCustomToolAccountPrefix             = "agent/custom_tool_by_account/"
 	KeyAgentActivePrimary                       = "agent/active/primary"
 	KeyAgentActiveSubagentPrefix                = "agent/active/subagent/"
 	KeyAgentVersion                             = "agent/version"
@@ -84,6 +92,7 @@ const (
 	KeySwarmMirrorRemoteResourcePrefix          = "swarm/mirror/remote/resource/"
 	KeyNotificationPrefix                       = "notification/"
 	KeyNotificationBySwarmPrefix                = "notification_by_swarm/"
+	KeyNotificationByAccountSwarmPrefix         = "notification_by_account_swarm/"
 	KeyNotificationPermissionRefPrefix          = "notification_permission_ref/"
 	KeyNotificationSummaryPrefix                = "notification_summary/"
 	KeyFlowDefinitionPrefix                     = "flow/definition/"
@@ -127,8 +136,16 @@ func ModelCatalogPrefix(providerID string) string {
 	return fmt.Sprintf("model_catalog/%s/", providerPart)
 }
 
+func KeyModelPreferenceForAccount(accountScopeID string) string {
+	return KeyModelPrefAccountPrefix + keyPart(accountScopeID)
+}
+
 func KeyModelFavorite(providerID, modelID string) string {
 	return fmt.Sprintf("%s%s/%s", KeyModelFavoritePrefix, keyPart(providerID), keyPart(modelID))
+}
+
+func KeyModelFavoriteForAccount(accountScopeID, providerID, modelID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyModelFavoriteAccountPrefix, keyPart(accountScopeID), keyPart(providerID), keyPart(modelID))
 }
 
 func ModelFavoritePrefix(providerID string) string {
@@ -137,6 +154,18 @@ func ModelFavoritePrefix(providerID string) string {
 		return KeyModelFavoritePrefix
 	}
 	return fmt.Sprintf("%s%s/", KeyModelFavoritePrefix, providerPart)
+}
+
+func ModelFavoritePrefixForAccount(accountScopeID, providerID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyModelFavoriteAccountPrefix
+	}
+	providerPart := keyPart(providerID)
+	if providerPart == "" {
+		return fmt.Sprintf("%s%s/", KeyModelFavoriteAccountPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyModelFavoriteAccountPrefix, accountPart, providerPart)
 }
 
 func IdentityPrefix() string {
@@ -371,8 +400,20 @@ func KeyImageThread(threadID string) string {
 	return KeyImageThreadPrefix + keyPart(threadID)
 }
 
+func KeyImageThreadForAccount(accountScopeID, threadID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyImageThreadAccountPrefix, keyPart(accountScopeID), keyPart(threadID))
+}
+
 func ImageThreadPrefix() string {
 	return KeyImageThreadPrefix
+}
+
+func ImageThreadPrefixForAccount(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyImageThreadAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyImageThreadAccountPrefix, accountPart)
 }
 
 func KeyWorktreeConfig(workspacePath string) string {
@@ -409,6 +450,10 @@ func MCPServerPrefix() string {
 
 func KeyAuthCredential(providerID, credentialID string) string {
 	return fmt.Sprintf("%s%s/%s", KeyAuthCredentialPrefix, keyPart(providerID), keyPart(credentialID))
+}
+
+func KeyAuthVaultMetaForAccount(accountScopeID string) string {
+	return KeyAuthVaultMetaAccountPrefix + keyPart(accountScopeID)
 }
 
 func KeyAuthCredentialForAccount(accountScopeID, providerID, credentialID string) string {
@@ -455,12 +500,28 @@ func KeyAuthCredentialActiveForAccount(accountScopeID, providerID string) string
 	return fmt.Sprintf("%s%s/%s", KeyAuthCredentialActivePrefix, keyPart(accountScopeID), keyPart(providerID))
 }
 
+func KeyVoiceConfigForAccount(accountScopeID string) string {
+	return KeyVoiceConfigAccountPrefix + keyPart(accountScopeID)
+}
+
 func KeyVoiceProfile(profileID string) string {
 	return KeyVoiceProfilePrefix + keyPart(profileID)
 }
 
+func KeyVoiceProfileForAccount(accountScopeID, profileID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyVoiceProfileAccountPrefix, keyPart(accountScopeID), keyPart(profileID))
+}
+
 func VoiceProfilePrefix() string {
 	return KeyVoiceProfilePrefix
+}
+
+func VoiceProfilePrefixForAccount(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyVoiceProfileAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyVoiceProfileAccountPrefix, accountPart)
 }
 
 func KeySwarmGroup(groupID string) string {
@@ -675,12 +736,24 @@ func RunPermissionPrefix(sessionID, runID string) string {
 	return fmt.Sprintf("run_perm/%s/%s/", sessionPart, runPart)
 }
 
+func KeyUISettingsForAccount(accountScopeID string) string {
+	return KeyUISettingsAccountPrefix + keyPart(accountScopeID)
+}
+
 func KeyNotification(swarmID, notificationID string) string {
 	return fmt.Sprintf("%s%s/%s", KeyNotificationPrefix, keyPart(swarmID), keyPart(notificationID))
 }
 
+func KeyNotificationForAccount(accountScopeID, swarmID, notificationID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyNotificationPrefix, keyPart(accountScopeID), keyPart(swarmID), keyPart(notificationID))
+}
+
 func KeyNotificationBySwarm(swarmID string, createdAt int64, notificationID string) string {
 	return fmt.Sprintf("%s%s/%020d/%s", KeyNotificationBySwarmPrefix, keyPart(swarmID), createdAt, keyPart(notificationID))
+}
+
+func KeyNotificationByAccountSwarm(accountScopeID, swarmID string, createdAt int64, notificationID string) string {
+	return fmt.Sprintf("%s%s/%s/%020d/%s", KeyNotificationByAccountSwarmPrefix, keyPart(accountScopeID), keyPart(swarmID), createdAt, keyPart(notificationID))
 }
 
 func NotificationBySwarmPrefix(swarmID string) string {
@@ -691,12 +764,32 @@ func NotificationBySwarmPrefix(swarmID string) string {
 	return fmt.Sprintf("%s%s/", KeyNotificationBySwarmPrefix, part)
 }
 
+func NotificationByAccountSwarmPrefix(accountScopeID, swarmID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyNotificationByAccountSwarmPrefix
+	}
+	swarmPart := keyPart(swarmID)
+	if swarmPart == "" {
+		return fmt.Sprintf("%s%s/", KeyNotificationByAccountSwarmPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyNotificationByAccountSwarmPrefix, accountPart, swarmPart)
+}
+
 func KeyNotificationPermissionRef(sessionID, permissionID string) string {
 	return fmt.Sprintf("%s%s/%s", KeyNotificationPermissionRefPrefix, keyPart(sessionID), keyPart(permissionID))
 }
 
+func KeyNotificationPermissionRefForAccount(accountScopeID, sessionID, permissionID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyNotificationPermissionRefPrefix, keyPart(accountScopeID), keyPart(sessionID), keyPart(permissionID))
+}
+
 func KeyNotificationSummary(swarmID string) string {
 	return KeyNotificationSummaryPrefix + keyPart(swarmID)
+}
+
+func KeyNotificationSummaryForAccount(accountScopeID, swarmID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyNotificationSummaryPrefix, keyPart(accountScopeID), keyPart(swarmID))
 }
 
 func KeyFlowDefinition(flowID string) string {
@@ -803,12 +896,24 @@ func KeyAgentCustomTool(name string) string {
 	return KeyAgentCustomToolPrefix + keyPart(name)
 }
 
+func KeyAgentCustomToolForAccount(accountScopeID, name string) string {
+	return fmt.Sprintf("%s%s/%s", KeyAgentCustomToolAccountPrefix, keyPart(accountScopeID), keyPart(name))
+}
+
 func AgentProfilePrefix() string {
 	return KeyAgentProfilePrefix
 }
 
 func AgentCustomToolPrefix() string {
 	return KeyAgentCustomToolPrefix
+}
+
+func AgentCustomToolPrefixForAccount(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyAgentCustomToolAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyAgentCustomToolAccountPrefix, accountPart)
 }
 
 func KeyAgentActiveSubagent(purpose string) string {
@@ -949,6 +1054,186 @@ func IntegrationWorkspaceSessionUpdatedPrefix(workspaceID string) string {
 		return KeyIntegrationWorkspaceSessionUpdatedPrefix
 	}
 	return fmt.Sprintf("%s%s/", KeyIntegrationWorkspaceSessionUpdatedPrefix, part)
+}
+
+func KeyIntegrationPackForAccount(accountScopeID, packID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyIntegrationPackPrefix, keyPart(accountScopeID), keyPart(packID))
+}
+
+func IntegrationPackPrefixForAccount(accountScopeID string) string {
+	part := keyPart(accountScopeID)
+	if part == "" {
+		return KeyIntegrationPackPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyIntegrationPackPrefix, part)
+}
+
+func KeyIntegrationPackVersionForAccount(accountScopeID, packID, versionID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyIntegrationPackVersionPrefix, keyPart(accountScopeID), keyPart(packID), keyPart(versionID))
+}
+
+func IntegrationPackVersionPrefixForAccount(accountScopeID, packID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyIntegrationPackVersionPrefix
+	}
+	packPart := keyPart(packID)
+	if packPart == "" {
+		return fmt.Sprintf("%s%s/", KeyIntegrationPackVersionPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyIntegrationPackVersionPrefix, accountPart, packPart)
+}
+
+func KeyIntegrationToolForAccount(accountScopeID, packID, versionID, toolID string) string {
+	return fmt.Sprintf("%s%s/%s/%s/%s", KeyIntegrationToolPrefix, keyPart(accountScopeID), keyPart(packID), keyPart(versionID), keyPart(toolID))
+}
+
+func IntegrationToolPrefixForAccount(accountScopeID, packID, versionID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyIntegrationToolPrefix
+	}
+	packPart := keyPart(packID)
+	if packPart == "" {
+		return fmt.Sprintf("%s%s/", KeyIntegrationToolPrefix, accountPart)
+	}
+	versionPart := keyPart(versionID)
+	if versionPart == "" {
+		return fmt.Sprintf("%s%s/%s/", KeyIntegrationToolPrefix, accountPart, packPart)
+	}
+	return fmt.Sprintf("%s%s/%s/%s/", KeyIntegrationToolPrefix, accountPart, packPart, versionPart)
+}
+
+func KeyIntegrationAdapterForAccount(accountScopeID, packID, versionID, adapterID string) string {
+	return fmt.Sprintf("%s%s/%s/%s/%s", KeyIntegrationAdapterPrefix, keyPart(accountScopeID), keyPart(packID), keyPart(versionID), keyPart(adapterID))
+}
+
+func IntegrationAdapterPrefixForAccount(accountScopeID, packID, versionID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyIntegrationAdapterPrefix
+	}
+	packPart := keyPart(packID)
+	if packPart == "" {
+		return fmt.Sprintf("%s%s/", KeyIntegrationAdapterPrefix, accountPart)
+	}
+	versionPart := keyPart(versionID)
+	if versionPart == "" {
+		return fmt.Sprintf("%s%s/%s/", KeyIntegrationAdapterPrefix, accountPart, packPart)
+	}
+	return fmt.Sprintf("%s%s/%s/%s/", KeyIntegrationAdapterPrefix, accountPart, packPart, versionPart)
+}
+
+func KeyIntegrationPromptFragmentForAccount(accountScopeID, packID, versionID, fragmentID string) string {
+	return fmt.Sprintf("%s%s/%s/%s/%s", KeyIntegrationPromptFragmentPrefix, keyPart(accountScopeID), keyPart(packID), keyPart(versionID), keyPart(fragmentID))
+}
+
+func IntegrationPromptFragmentPrefixForAccount(accountScopeID, packID, versionID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyIntegrationPromptFragmentPrefix
+	}
+	packPart := keyPart(packID)
+	if packPart == "" {
+		return fmt.Sprintf("%s%s/", KeyIntegrationPromptFragmentPrefix, accountPart)
+	}
+	versionPart := keyPart(versionID)
+	if versionPart == "" {
+		return fmt.Sprintf("%s%s/%s/", KeyIntegrationPromptFragmentPrefix, accountPart, packPart)
+	}
+	return fmt.Sprintf("%s%s/%s/%s/", KeyIntegrationPromptFragmentPrefix, accountPart, packPart, versionPart)
+}
+
+func KeyIntegrationAssignmentForAccount(accountScopeID, assignmentID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyIntegrationAssignmentPrefix, keyPart(accountScopeID), keyPart(assignmentID))
+}
+
+func IntegrationAssignmentPrefixForAccount(accountScopeID string) string {
+	part := keyPart(accountScopeID)
+	if part == "" {
+		return KeyIntegrationAssignmentPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyIntegrationAssignmentPrefix, part)
+}
+
+func KeyIntegrationAssignmentByAgentForAccount(accountScopeID, agentName, assignmentID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyIntegrationAssignmentAgentPrefix, keyPart(accountScopeID), keyPart(agentName), keyPart(assignmentID))
+}
+
+func IntegrationAssignmentByAgentPrefixForAccount(accountScopeID, agentName string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyIntegrationAssignmentAgentPrefix
+	}
+	agentPart := keyPart(agentName)
+	if agentPart == "" {
+		return fmt.Sprintf("%s%s/", KeyIntegrationAssignmentAgentPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyIntegrationAssignmentAgentPrefix, accountPart, agentPart)
+}
+
+func KeyIntegrationAssignmentByPackForAccount(accountScopeID, packID, versionID, assignmentID string) string {
+	return fmt.Sprintf("%s%s/%s/%s/%s", KeyIntegrationAssignmentPackPrefix, keyPart(accountScopeID), keyPart(packID), keyPart(versionID), keyPart(assignmentID))
+}
+
+func IntegrationAssignmentByPackPrefixForAccount(accountScopeID, packID, versionID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyIntegrationAssignmentPackPrefix
+	}
+	packPart := keyPart(packID)
+	if packPart == "" {
+		return fmt.Sprintf("%s%s/", KeyIntegrationAssignmentPackPrefix, accountPart)
+	}
+	versionPart := keyPart(versionID)
+	if versionPart == "" {
+		return fmt.Sprintf("%s%s/%s/", KeyIntegrationAssignmentPackPrefix, accountPart, packPart)
+	}
+	return fmt.Sprintf("%s%s/%s/%s/", KeyIntegrationAssignmentPackPrefix, accountPart, packPart, versionPart)
+}
+
+func KeyIntegrationWorkspaceForAccount(accountScopeID, workspaceID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyIntegrationWorkspacePrefix, keyPart(accountScopeID), keyPart(workspaceID))
+}
+
+func IntegrationWorkspacePrefixForAccount(accountScopeID string) string {
+	part := keyPart(accountScopeID)
+	if part == "" {
+		return KeyIntegrationWorkspacePrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyIntegrationWorkspacePrefix, part)
+}
+
+func KeyIntegrationWorkspaceSessionForAccount(accountScopeID, workspaceID, sessionID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyIntegrationWorkspaceSessionPrefix, keyPart(accountScopeID), keyPart(workspaceID), keyPart(sessionID))
+}
+
+func IntegrationWorkspaceSessionPrefixForAccount(accountScopeID, workspaceID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyIntegrationWorkspaceSessionPrefix
+	}
+	workspacePart := keyPart(workspaceID)
+	if workspacePart == "" {
+		return fmt.Sprintf("%s%s/", KeyIntegrationWorkspaceSessionPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyIntegrationWorkspaceSessionPrefix, accountPart, workspacePart)
+}
+
+func KeyIntegrationWorkspaceSessionUpdatedForAccount(accountScopeID, workspaceID string, updatedAt int64, sessionID string) string {
+	return fmt.Sprintf("%s%s/%s/%020d/%s", KeyIntegrationWorkspaceSessionUpdatedPrefix, keyPart(accountScopeID), keyPart(workspaceID), reverseMillis(updatedAt), keyPart(sessionID))
+}
+
+func IntegrationWorkspaceSessionUpdatedPrefixForAccount(accountScopeID, workspaceID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyIntegrationWorkspaceSessionUpdatedPrefix
+	}
+	workspacePart := keyPart(workspaceID)
+	if workspacePart == "" {
+		return fmt.Sprintf("%s%s/", KeyIntegrationWorkspaceSessionUpdatedPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyIntegrationWorkspaceSessionUpdatedPrefix, accountPart, workspacePart)
 }
 
 func KeySwarmInvite(inviteID string) string {

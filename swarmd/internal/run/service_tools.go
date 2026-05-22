@@ -564,7 +564,7 @@ func (s *Service) executeControlPlaneTool(ctx context.Context, sessionID, sessio
 		result.Output = output
 		return true, result, err
 	case "manage_integrations":
-		output, err := s.executeManageIntegrationsTool(sessionID, call)
+		output, err := s.executeManageIntegrationsTool(ctx, sessionID, call)
 		result.Output = output
 		return true, result, err
 	case "manage_flow":
@@ -801,7 +801,7 @@ func manageFlowApprovalArguments(payload map[string]any) map[string]any {
 	return cloneGenericMap(payload)
 }
 
-func (s *Service) executeManageIntegrationsTool(sessionID string, call tool.Call) (string, error) {
+func (s *Service) executeManageIntegrationsTool(ctx context.Context, sessionID string, call tool.Call) (string, error) {
 	arguments := strings.TrimSpace(call.Arguments)
 	if arguments == "" {
 		arguments = "{}"
@@ -814,6 +814,9 @@ func (s *Service) executeManageIntegrationsTool(sessionID string, call tool.Call
 		return "", fmt.Errorf("session %q not found", sessionID)
 	}
 	scope := buildPermissionWorkspaceScope(session)
+	if principal, ok := identity.PrincipalFromContext(ctx); ok {
+		scope.Principal = principal
+	}
 	if s.tools != nil {
 		output, err := s.tools.ExecuteForWorkspaceScopeWithRuntime(context.Background(), scope, tool.Call{CallID: call.CallID, Name: call.Name, Arguments: arguments})
 		if err != nil {

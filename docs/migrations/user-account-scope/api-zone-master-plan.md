@@ -318,24 +318,26 @@ Explicitly defer until after Slice 2F:
 
 ### Slice 3 — Z5 local usability foundation
 
-Status: **run after local containers are VM-proven, or in parallel only if it does not touch local-container/managed-host state**.
+Status: **active remaining foundation slice before final UserID migration/out-of-box acceptance**.
 
 Goal:
 - Make normal local product settings usable per account before managed hosting/flows.
 
 Scope:
-- Account-scope independent Z5 state:
+- Finish the ready non-managed-host/non-flow Z5 state:
   - vault metadata/status/enable/lock/disable/export/import where needed for local credential usability,
   - model preference and model favorites,
   - static model/catalog proof remains shared and credential-free,
   - provider readiness split: static catalog shared, credential readiness by principal account,
   - voice/STT config/profile/status/test routes.
-- Split account-owned user preferences from device-global machine identity before mutating `/v1/ui/settings` broadly. If the split is not complete, do not finish UI settings in this slice.
+- Record remaining blocked items explicitly so the next step after this slice is the final UserID migration, not managed hosting or flows.
+- Keep `/v1/ui/settings` unfinished unless the account-settings/device-global split is completed cleanly.
 
 Explicitly defer:
 - Custom tools if they require Z3 agent execution binding.
 - Integrations and builder sessions.
 - Image assets/generation if they require workspace/image ownership not proven in the slice.
+- `/v1/ui/settings` until account-owned preferences are separated from device-global machine identity.
 - Child vault sync and deploy credential sync.
 - Managed hosting sync/export/import.
 
@@ -360,12 +362,13 @@ Suggested command shape:
 
 <copy label="targeted Z5 usability tests">cd swarmd && go test ./internal/api ./internal/auth ./internal/model ./internal/voice ./internal/store/pebble -run 'Vault.*Account|Credential.*Account|Model.*Account|Voice.*Account|Provider.*Account|Principal'</copy>
 
-### Slice 4 — out-of-box local product acceptance gate
+### Slice 4 — final UserID migration and out-of-box local product acceptance gate
 
 Status: **required before managed hosting or flows**.
 
 Goal:
-- Prove the local product can be built and manually tested for real local use, with managed hosting and flows still disabled/deferred.
+- Finish the last non-managed-host/non-flow `UserID`/`AccountScopeID` cleanups that are still needed for real local use.
+- Then prove the local product can be built and manually tested for real local use, with managed hosting and flows still disabled/deferred.
 
 Required VM proof:
 - Fresh VM / clean Pebble state.
@@ -442,4 +445,4 @@ Do not launch broad agents for these as standalone “fix it” tasks:
 
 ## Next action
 
-Implement Slice 0 documentation correction, then dispatch Slice 1 core sessions/API usability. After Slice 1 VM proof, dispatch Slice 2 local containers with the extended local container harness. Do not start managed hosting or flows until Slice 4 out-of-box local product acceptance passes.
+Finish the remaining ready Z5 routes first, update the matrix with what is done vs still blocked, then execute the final UserID migration/out-of-box local acceptance gate. Do not start managed hosting or flows until Slice 4 passes.

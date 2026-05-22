@@ -325,11 +325,28 @@ func shouldReconcileBuiltInParallel(profile pebblestore.AgentProfile) bool {
 }
 
 func (s *Service) ListState(limit int) (State, error) {
+	return s.listStateForAccount("", limit)
+}
+
+func (s *Service) ListStateForAccount(accountScopeID string, limit int) (State, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return State{}, errors.New("account scope ID is required")
+	}
+	return s.listStateForAccount(accountScopeID, limit)
+}
+
+func (s *Service) listStateForAccount(accountScopeID string, limit int) (State, error) {
 	profiles, err := s.store.ListProfiles(limit)
 	if err != nil {
 		return State{}, err
 	}
-	customTools, err := s.store.ListCustomTools(limit)
+	var customTools []pebblestore.AgentCustomToolDefinition
+	if strings.TrimSpace(accountScopeID) == "" {
+		customTools, err = s.store.ListCustomTools(limit)
+	} else {
+		customTools, err = s.store.ListCustomToolsForAccount(accountScopeID, limit)
+	}
 	if err != nil {
 		return State{}, err
 	}
@@ -502,11 +519,43 @@ func (s *Service) GetCustomTool(name string) (pebblestore.AgentCustomToolDefinit
 	return s.store.GetCustomTool(name)
 }
 
+func (s *Service) GetCustomToolForAccount(accountScopeID, name string) (pebblestore.AgentCustomToolDefinition, bool, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	name = pebblestore.NormalizeAgentCustomToolName(name)
+	if accountScopeID == "" {
+		return pebblestore.AgentCustomToolDefinition{}, false, errors.New("account scope ID is required")
+	}
+	if name == "" {
+		return pebblestore.AgentCustomToolDefinition{}, false, errors.New("custom tool name is required")
+	}
+	return s.store.GetCustomToolForAccount(accountScopeID, name)
+}
+
 func (s *Service) ListCustomTools(limit int) ([]pebblestore.AgentCustomToolDefinition, error) {
 	return s.store.ListCustomTools(limit)
 }
 
+func (s *Service) ListCustomToolsForAccount(accountScopeID string, limit int) ([]pebblestore.AgentCustomToolDefinition, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, errors.New("account scope ID is required")
+	}
+	return s.store.ListCustomToolsForAccount(accountScopeID, limit)
+}
+
 func (s *Service) PutCustomTool(definition pebblestore.AgentCustomToolDefinition) (pebblestore.AgentCustomToolDefinition, error) {
+	return s.putCustomToolForAccount("", definition)
+}
+
+func (s *Service) PutCustomToolForAccount(accountScopeID string, definition pebblestore.AgentCustomToolDefinition) (pebblestore.AgentCustomToolDefinition, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return pebblestore.AgentCustomToolDefinition{}, errors.New("account scope ID is required")
+	}
+	return s.putCustomToolForAccount(accountScopeID, definition)
+}
+
+func (s *Service) putCustomToolForAccount(accountScopeID string, definition pebblestore.AgentCustomToolDefinition) (pebblestore.AgentCustomToolDefinition, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -521,13 +570,26 @@ func (s *Service) PutCustomTool(definition pebblestore.AgentCustomToolDefinition
 		return pebblestore.AgentCustomToolDefinition{}, errors.New("custom tool command is required")
 	}
 	eventType := "agent.custom_tool.created"
-	if _, ok, err := s.store.GetCustomTool(definition.Name); err != nil {
+	var exists bool
+	var err error
+	if strings.TrimSpace(accountScopeID) == "" {
+		_, exists, err = s.store.GetCustomTool(definition.Name)
+	} else {
+		_, exists, err = s.store.GetCustomToolForAccount(accountScopeID, definition.Name)
+	}
+	if err != nil {
 		return pebblestore.AgentCustomToolDefinition{}, err
-	} else if ok {
+	}
+	if exists {
 		eventType = "agent.custom_tool.updated"
 	}
 	definition.UpdatedAt = time.Now().UnixMilli()
-	if err := s.store.PutCustomTool(definition); err != nil {
+	if strings.TrimSpace(accountScopeID) == "" {
+		err = s.store.PutCustomTool(definition)
+	} else {
+		err = s.store.PutCustomToolForAccount(accountScopeID, definition)
+	}
+	if err != nil {
 		return pebblestore.AgentCustomToolDefinition{}, err
 	}
 	version, err := s.bumpVersionLocked()
@@ -539,9 +601,10 @@ func (s *Service) PutCustomTool(definition pebblestore.AgentCustomToolDefinition
 		return pebblestore.AgentCustomToolDefinition{}, err
 	}
 	if _, err := s.appendEventLocked(eventType, definition.Name, map[string]any{
-		"custom_tool": definition,
-		"state":       state,
-		"version":     version,
+		"account_scope_id": strings.TrimSpace(accountScopeID),
+		"custom_tool":      definition,
+		"state":            state,
+		"version":          version,
 	}); err != nil {
 		return pebblestore.AgentCustomToolDefinition{}, err
 	}
@@ -549,6 +612,18 @@ func (s *Service) PutCustomTool(definition pebblestore.AgentCustomToolDefinition
 }
 
 func (s *Service) DeleteCustomTool(name string) (bool, error) {
+	return s.deleteCustomToolForAccount("", name)
+}
+
+func (s *Service) DeleteCustomToolForAccount(accountScopeID, name string) (bool, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return false, errors.New("account scope ID is required")
+	}
+	return s.deleteCustomToolForAccount(accountScopeID, name)
+}
+
+func (s *Service) deleteCustomToolForAccount(accountScopeID, name string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -556,14 +631,26 @@ func (s *Service) DeleteCustomTool(name string) (bool, error) {
 	if name == "" {
 		return false, errors.New("custom tool name is required")
 	}
-	definition, ok, err := s.store.GetCustomTool(name)
+	var definition pebblestore.AgentCustomToolDefinition
+	var ok bool
+	var err error
+	if strings.TrimSpace(accountScopeID) == "" {
+		definition, ok, err = s.store.GetCustomTool(name)
+	} else {
+		definition, ok, err = s.store.GetCustomToolForAccount(accountScopeID, name)
+	}
 	if err != nil {
 		return false, err
 	}
 	if !ok {
 		return false, nil
 	}
-	if err := s.store.DeleteCustomTool(name); err != nil {
+	if strings.TrimSpace(accountScopeID) == "" {
+		err = s.store.DeleteCustomTool(name)
+	} else {
+		err = s.store.DeleteCustomToolForAccount(accountScopeID, name)
+	}
+	if err != nil {
 		return false, err
 	}
 	version, err := s.bumpVersionLocked()
@@ -575,10 +662,11 @@ func (s *Service) DeleteCustomTool(name string) (bool, error) {
 		return false, err
 	}
 	if _, err := s.appendEventLocked("agent.custom_tool.deleted", name, map[string]any{
-		"deleted":     name,
-		"custom_tool": definition,
-		"state":       state,
-		"version":     version,
+		"account_scope_id": strings.TrimSpace(accountScopeID),
+		"deleted":          name,
+		"custom_tool":      definition,
+		"state":            state,
+		"version":          version,
 	}); err != nil {
 		return false, err
 	}
@@ -586,6 +674,18 @@ func (s *Service) DeleteCustomTool(name string) (bool, error) {
 }
 
 func (s *Service) AssignCustomTool(agentName, toolName string) (pebblestore.AgentProfile, int64, *pebblestore.EventEnvelope, error) {
+	return s.assignCustomToolForAccount("", agentName, toolName)
+}
+
+func (s *Service) AssignCustomToolForAccount(accountScopeID, agentName, toolName string) (pebblestore.AgentProfile, int64, *pebblestore.EventEnvelope, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return pebblestore.AgentProfile{}, 0, nil, errors.New("account scope ID is required")
+	}
+	return s.assignCustomToolForAccount(accountScopeID, agentName, toolName)
+}
+
+func (s *Service) assignCustomToolForAccount(accountScopeID, agentName, toolName string) (pebblestore.AgentProfile, int64, *pebblestore.EventEnvelope, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -597,9 +697,17 @@ func (s *Service) AssignCustomTool(agentName, toolName string) (pebblestore.Agen
 	if toolName == "" {
 		return pebblestore.AgentProfile{}, 0, nil, errors.New("custom tool name is required")
 	}
-	if _, ok, err := s.store.GetCustomTool(toolName); err != nil {
+	var toolOK bool
+	var err error
+	if strings.TrimSpace(accountScopeID) == "" {
+		_, toolOK, err = s.store.GetCustomTool(toolName)
+	} else {
+		_, toolOK, err = s.store.GetCustomToolForAccount(accountScopeID, toolName)
+	}
+	if err != nil {
 		return pebblestore.AgentProfile{}, 0, nil, err
-	} else if !ok {
+	}
+	if !toolOK {
 		return pebblestore.AgentProfile{}, 0, nil, fmt.Errorf("custom tool %q not found", toolName)
 	}
 	profile, ok, err := s.store.GetProfile(agentName)
@@ -644,6 +752,18 @@ func (s *Service) AssignCustomTool(agentName, toolName string) (pebblestore.Agen
 }
 
 func (s *Service) UnassignCustomTool(agentName, toolName string) (pebblestore.AgentProfile, int64, *pebblestore.EventEnvelope, error) {
+	return s.unassignCustomToolForAccount("", agentName, toolName)
+}
+
+func (s *Service) UnassignCustomToolForAccount(accountScopeID, agentName, toolName string) (pebblestore.AgentProfile, int64, *pebblestore.EventEnvelope, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return pebblestore.AgentProfile{}, 0, nil, errors.New("account scope ID is required")
+	}
+	return s.unassignCustomToolForAccount(accountScopeID, agentName, toolName)
+}
+
+func (s *Service) unassignCustomToolForAccount(accountScopeID, agentName, toolName string) (pebblestore.AgentProfile, int64, *pebblestore.EventEnvelope, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1521,11 +1641,20 @@ func (s *Service) bumpVersionLocked() (int64, error) {
 }
 
 func (s *Service) currentStateLocked(limit int) (State, error) {
+	return s.currentStateForAccountLocked("", limit)
+}
+
+func (s *Service) currentStateForAccountLocked(accountScopeID string, limit int) (State, error) {
 	profiles, err := s.store.ListProfiles(limit)
 	if err != nil {
 		return State{}, err
 	}
-	customTools, err := s.store.ListCustomTools(limit)
+	var customTools []pebblestore.AgentCustomToolDefinition
+	if strings.TrimSpace(accountScopeID) == "" {
+		customTools, err = s.store.ListCustomTools(limit)
+	} else {
+		customTools, err = s.store.ListCustomToolsForAccount(accountScopeID, limit)
+	}
 	if err != nil {
 		return State{}, err
 	}

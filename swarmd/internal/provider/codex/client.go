@@ -22,6 +22,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/privacy"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -341,7 +342,7 @@ func (c *Client) createResponse(ctx context.Context, req Request, onEvent func(S
 			return Response{}, fmt.Errorf("codex request unauthorized and refresh failed: %w", refreshErr)
 		}
 		accountID := extractAccountIDFromToken(refreshed.AccessToken)
-		record, err = c.authStore.UpdateOAuthCredential(record.Provider, record.ID, refreshed.AccessToken, refreshed.RefreshToken, refreshed.ExpiresAt, accountID)
+		record, err = c.authStore.UpdateOAuthCredentialForAccount(record.AccountScopeID, record.Provider, record.ID, refreshed.AccessToken, refreshed.RefreshToken, refreshed.ExpiresAt, accountID)
 		if err != nil {
 			return Response{}, fmt.Errorf("persist refreshed codex oauth: %w", err)
 		}
@@ -362,7 +363,11 @@ func (c *Client) createResponse(ctx context.Context, req Request, onEvent func(S
 }
 
 func (c *Client) ensureAuth(ctx context.Context) (pebblestore.CodexAuthRecord, error) {
-	record, ok, err := c.authStore.GetCodexAuthRecord()
+	principal, principalOK := identity.PrincipalFromContext(ctx)
+	if !principalOK || !principal.Valid() {
+		return pebblestore.CodexAuthRecord{}, identity.ErrPrincipalRequired
+	}
+	record, ok, err := c.authStore.GetCodexAuthRecordForAccount(principal.AccountScopeID)
 	if err != nil {
 		return pebblestore.CodexAuthRecord{}, fmt.Errorf("read codex auth: %w", err)
 	}
@@ -382,7 +387,7 @@ func (c *Client) ensureAuth(ctx context.Context) (pebblestore.CodexAuthRecord, e
 				return pebblestore.CodexAuthRecord{}, err
 			}
 			accountID := extractAccountIDFromToken(refreshed.AccessToken)
-			record, err = c.authStore.UpdateOAuthCredential(record.Provider, record.ID, refreshed.AccessToken, refreshed.RefreshToken, refreshed.ExpiresAt, accountID)
+			record, err = c.authStore.UpdateOAuthCredentialForAccount(record.AccountScopeID, record.Provider, record.ID, refreshed.AccessToken, refreshed.RefreshToken, refreshed.ExpiresAt, accountID)
 			if err != nil {
 				return pebblestore.CodexAuthRecord{}, fmt.Errorf("persist refreshed codex oauth: %w", err)
 			}
@@ -396,7 +401,7 @@ func (c *Client) ensureAuth(ctx context.Context) (pebblestore.CodexAuthRecord, e
 	if strings.TrimSpace(record.AccountID) == "" && record.Type == pebblestore.CodexAuthTypeOAuth {
 		accountID := extractAccountIDFromToken(record.AccessToken)
 		if accountID != "" {
-			updated, err := c.authStore.UpdateOAuthCredential(record.Provider, record.ID, record.AccessToken, record.RefreshToken, record.ExpiresAt, accountID)
+			updated, err := c.authStore.UpdateOAuthCredentialForAccount(record.AccountScopeID, record.Provider, record.ID, record.AccessToken, record.RefreshToken, record.ExpiresAt, accountID)
 			if err == nil {
 				record = updated
 			}

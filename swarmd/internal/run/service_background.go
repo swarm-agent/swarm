@@ -367,7 +367,11 @@ func (s *Service) compileRunToolScope(scope RunToolScope) (*permission.Policy, m
 }
 
 func (s *Service) compileAgentToolScope(profile pebblestore.AgentProfile) (*permission.Policy, map[string]bool, error) {
-	_, compiled, disabled, err := s.ResolveAgentToolContract(profile)
+	return s.compileAgentToolScopeForAccount("", profile)
+}
+
+func (s *Service) compileAgentToolScopeForAccount(accountScopeID string, profile pebblestore.AgentProfile) (*permission.Policy, map[string]bool, error) {
+	_, compiled, disabled, err := s.ResolveAgentToolContractForAccount(accountScopeID, profile)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -386,6 +390,10 @@ func mergePermissionPolicies(parts ...*permission.Policy) permission.Policy {
 }
 
 func (s *Service) knownRunToolNames() map[string]struct{} {
+	return s.knownRunToolNamesForAccount("")
+}
+
+func (s *Service) knownRunToolNamesForAccount(accountScopeID string) map[string]struct{} {
 	known := map[string]struct{}{
 		"ask_user":       {},
 		"exit_plan_mode": {},
@@ -393,7 +401,7 @@ func (s *Service) knownRunToolNames() map[string]struct{} {
 		"task":           {},
 	}
 	if s == nil || s.tools == nil {
-		if customTools := s.customAgentToolNameSet(); len(customTools) > 0 {
+		if customTools := s.customAgentToolNameSetForAccount(accountScopeID); len(customTools) > 0 {
 			for name := range customTools {
 				known[name] = struct{}{}
 			}
@@ -407,7 +415,7 @@ func (s *Service) knownRunToolNames() map[string]struct{} {
 		}
 		known[name] = struct{}{}
 	}
-	if customTools := s.customAgentToolNameSet(); len(customTools) > 0 {
+	if customTools := s.customAgentToolNameSetForAccount(accountScopeID); len(customTools) > 0 {
 		for name := range customTools {
 			known[name] = struct{}{}
 		}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/provider/defaults"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -22,7 +23,7 @@ func (a *Adapter) ID() string {
 	return "fireworks"
 }
 
-func (a *Adapter) Status(context.Context) (provideriface.Status, error) {
+func (a *Adapter) Status(ctx context.Context) (provideriface.Status, error) {
 	providerDefaults := defaults.MustLookup("fireworks")
 	if a == nil || a.authStore == nil {
 		return provideriface.Status{
@@ -34,7 +35,18 @@ func (a *Adapter) Status(context.Context) (provideriface.Status, error) {
 			AuthMethods:     fireworksAuthMethods(),
 		}, nil
 	}
-	record, ok, err := a.authStore.GetActiveCredential("fireworks")
+	principal, principalOK := identity.PrincipalFromContext(ctx)
+	if !principalOK {
+		return provideriface.Status{
+			ID:              "fireworks",
+			Ready:           false,
+			Reason:          "product identity is required",
+			DefaultModel:    providerDefaults.PrimaryModel,
+			DefaultThinking: providerDefaults.PrimaryThinking,
+			AuthMethods:     fireworksAuthMethods(),
+		}, nil
+	}
+	record, ok, err := a.authStore.GetActiveCredentialForAccount(principal.AccountScopeID, "fireworks")
 	if err != nil {
 		return provideriface.Status{}, err
 	}

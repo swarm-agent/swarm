@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 
+	"swarm/packages/swarmd/internal/identity"
+
 	"swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -32,6 +34,11 @@ func (s *Server) handleWorkspaceImageThreads(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, errors.New("image thread store is not configured"))
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		workspacePath := strings.TrimSpace(r.URL.Query().Get("workspace_path"))
@@ -42,7 +49,7 @@ func (s *Server) handleWorkspaceImageThreads(w http.ResponseWriter, r *http.Requ
 			writeError(w, http.StatusBadRequest, errors.New("workspace path is required"))
 			return
 		}
-		threads, err := s.imageThreads.ListForWorkspace(workspacePath, 200)
+		threads, err := s.imageThreads.ListForWorkspaceForAccount(principal.AccountScopeID, workspacePath, 200)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -66,7 +73,7 @@ func (s *Server) handleWorkspaceImageThreads(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		metadata := ensureManagedToolStorageMetadata(req.Metadata, storagePath)
-		thread, err := s.imageThreads.Create(pebblestore.ImageThreadSnapshot{
+		thread, err := s.imageThreads.CreateForAccount(principal.AccountScopeID, principal.UserID, pebblestore.ImageThreadSnapshot{
 			ID:              threadID,
 			WorkspacePath:   workspacePath,
 			WorkspaceName:   strings.TrimSpace(req.WorkspaceName),
@@ -91,6 +98,11 @@ func (s *Server) handleWorkspaceImageThread(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, errors.New("image thread store is not configured"))
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
 	threadID, err := parseImageThreadPath(r.URL.Path)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -98,7 +110,7 @@ func (s *Server) handleWorkspaceImageThread(w http.ResponseWriter, r *http.Reque
 	}
 	switch r.Method {
 	case http.MethodGet:
-		thread, ok, err := s.imageThreads.Get(threadID)
+		thread, ok, err := s.imageThreads.GetForAccount(principal.AccountScopeID, threadID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -109,7 +121,7 @@ func (s *Server) handleWorkspaceImageThread(w http.ResponseWriter, r *http.Reque
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "thread": thread})
 	case http.MethodPost:
-		thread, ok, err := s.imageThreads.Get(threadID)
+		thread, ok, err := s.imageThreads.GetForAccount(principal.AccountScopeID, threadID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -142,7 +154,7 @@ func (s *Server) handleWorkspaceImageThread(w http.ResponseWriter, r *http.Reque
 				thread.Metadata = ensureManagedToolStorageMetadata(req.Metadata, storagePath)
 			}
 		}
-		thread, err = s.imageThreads.Update(thread)
+		thread, err = s.imageThreads.UpdateForAccount(principal.AccountScopeID, thread)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return

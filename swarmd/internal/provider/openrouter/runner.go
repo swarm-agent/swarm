@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"swarm/packages/swarmd/internal/identity"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -46,12 +47,9 @@ func (r *Runner) createResponse(ctx context.Context, req provideriface.Request) 
 	if modelID == "" {
 		return provideriface.Response{}, errors.New("model is required")
 	}
-	record, ok, err := r.authStore.GetActiveCredential("openrouter")
+	record, err := r.activeCredential(ctx)
 	if err != nil {
-		return provideriface.Response{}, fmt.Errorf("read openrouter auth: %w", err)
-	}
-	if !ok || strings.TrimSpace(record.APIKey) == "" {
-		return provideriface.Response{}, errors.New("openrouter auth is not configured")
+		return provideriface.Response{}, err
 	}
 	payload := buildChatCompletionRequest(req)
 	decoded, err := r.client.CreateChatCompletion(ctx, record.APIKey, payload)
@@ -76,12 +74,9 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 	if modelID == "" {
 		return provideriface.Response{}, errors.New("model is required")
 	}
-	record, ok, err := r.authStore.GetActiveCredential("openrouter")
+	record, err := r.activeCredential(ctx)
 	if err != nil {
-		return provideriface.Response{}, fmt.Errorf("read openrouter auth: %w", err)
-	}
-	if !ok || strings.TrimSpace(record.APIKey) == "" {
-		return provideriface.Response{}, errors.New("openrouter auth is not configured")
+		return provideriface.Response{}, err
 	}
 	payload := buildChatCompletionRequest(req)
 	decoded, err := r.client.CreateChatCompletionStream(ctx, record.APIKey, payload, func(chunk chatCompletionChunk) error {
@@ -105,6 +100,21 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 		result.Model = modelID
 	}
 	return result, nil
+}
+
+func (r *Runner) activeCredential(ctx context.Context) (pebblestore.AuthCredentialRecord, error) {
+	principal, principalOK := identity.PrincipalFromContext(ctx)
+	if !principalOK {
+		return pebblestore.AuthCredentialRecord{}, identity.ErrPrincipalRequired
+	}
+	record, ok, err := r.authStore.GetActiveCredentialForAccount(principal.AccountScopeID, "openrouter")
+	if err != nil {
+		return pebblestore.AuthCredentialRecord{}, fmt.Errorf("read openrouter auth: %w", err)
+	}
+	if !ok || strings.TrimSpace(record.APIKey) == "" {
+		return pebblestore.AuthCredentialRecord{}, errors.New("openrouter auth is not configured")
+	}
+	return record, nil
 }
 
 func buildChatCompletionRequest(req provideriface.Request) chatCompletionRequest {

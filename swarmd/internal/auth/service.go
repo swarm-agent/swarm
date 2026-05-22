@@ -192,11 +192,33 @@ func (s *Service) VaultStatus() (VaultStatus, error) {
 	return s.authStore.VaultStatus()
 }
 
+func (s *Service) VaultStatusForAccount(accountScopeID string) (VaultStatus, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	if s == nil || s.authStore == nil {
+		return VaultStatus{Enabled: false, Unlocked: true, StorageMode: "pebble/encrypted"}, nil
+	}
+	return s.authStore.VaultStatusForAccount(accountScopeID)
+}
+
 func (s *Service) EnableVault(password string) (VaultStatus, error) {
 	if s == nil || s.authStore == nil {
 		return VaultStatus{}, errors.New("auth store is not configured")
 	}
 	return s.authStore.EnableVault(password)
+}
+
+func (s *Service) EnableVaultForAccount(accountScopeID, password string) (VaultStatus, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	if s == nil || s.authStore == nil {
+		return VaultStatus{}, errors.New("auth store is not configured")
+	}
+	return s.authStore.EnableVaultForAccount(accountScopeID, password)
 }
 
 func (s *Service) UnlockVault(password string) (VaultStatus, error) {
@@ -206,11 +228,33 @@ func (s *Service) UnlockVault(password string) (VaultStatus, error) {
 	return s.authStore.UnlockVault(password)
 }
 
+func (s *Service) UnlockVaultForAccount(accountScopeID, password string) (VaultStatus, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	if s == nil || s.authStore == nil {
+		return VaultStatus{}, errors.New("auth store is not configured")
+	}
+	return s.authStore.UnlockVaultForAccount(accountScopeID, password)
+}
+
 func (s *Service) ConfigureManagedVaultAccess(password, managedVaultKey string) (VaultStatus, error) {
 	if s == nil || s.authStore == nil {
 		return VaultStatus{}, errors.New("auth store is not configured")
 	}
 	return s.authStore.ConfigureManagedVaultAccess(password, managedVaultKey)
+}
+
+func (s *Service) ConfigureManagedVaultAccessForAccount(accountScopeID, password, managedVaultKey string) (VaultStatus, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	if s == nil || s.authStore == nil {
+		return VaultStatus{}, errors.New("auth store is not configured")
+	}
+	return s.authStore.ConfigureManagedVaultAccessForAccount(accountScopeID, password, managedVaultKey)
 }
 
 func (s *Service) PutManagedVaultKey(scopeID, managedVaultKey string) error {
@@ -241,11 +285,33 @@ func (s *Service) LockVault() (VaultStatus, error) {
 	return s.authStore.LockVault()
 }
 
+func (s *Service) LockVaultForAccount(accountScopeID string) (VaultStatus, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	if s == nil || s.authStore == nil {
+		return VaultStatus{}, errors.New("auth store is not configured")
+	}
+	return s.authStore.LockVaultForAccount(accountScopeID)
+}
+
 func (s *Service) DisableVault(password string) (VaultStatus, error) {
 	if s == nil || s.authStore == nil {
 		return VaultStatus{}, errors.New("auth store is not configured")
 	}
 	return s.authStore.DisableVault(password)
+}
+
+func (s *Service) DisableVaultForAccount(accountScopeID, password string) (VaultStatus, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	if s == nil || s.authStore == nil {
+		return VaultStatus{}, errors.New("auth store is not configured")
+	}
+	return s.authStore.DisableVaultForAccount(accountScopeID, password)
 }
 
 func (s *Service) ExportCredentials(bundlePassword, vaultPassword string) ([]byte, int, error) {

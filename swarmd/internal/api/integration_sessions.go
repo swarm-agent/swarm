@@ -9,6 +9,7 @@ import (
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/appstorage"
+	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -71,6 +72,11 @@ func (s *Server) handleIntegrationBuilderSessions(w http.ResponseWriter, r *http
 		writeError(w, http.StatusInternalServerError, errors.New("session service not configured"))
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok || !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
+		writeError(w, http.StatusUnauthorized, errors.New("authenticated account principal is required"))
+		return
+	}
 
 	switch r.Method {
 	case http.MethodGet:
@@ -87,7 +93,7 @@ func (s *Server) handleIntegrationBuilderSessions(w http.ResponseWriter, r *http
 		if limit > scanLimit {
 			scanLimit = limit
 		}
-		sessions, err := s.sessions.ListSessions(scanLimit)
+		sessions, err := s.sessions.ListSessionsForAccount(principal.AccountScopeID, scanLimit)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -108,7 +114,7 @@ func (s *Server) handleIntegrationBuilderSessions(w http.ResponseWriter, r *http
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		session, event, err := s.createIntegrationBuilderChildSession(integrationBuilderSessionCreateOptions{
+		session, event, err := s.createIntegrationBuilderChildSession(principal, integrationBuilderSessionCreateOptions{
 			Title:      req.Title,
 			Mode:       req.Mode,
 			Preference: req.Preference,
@@ -137,6 +143,11 @@ func (s *Server) handleIntegrationWorkspaces(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, errors.New("integration service not configured"))
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok || !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
+		writeError(w, http.StatusUnauthorized, errors.New("authenticated account principal is required"))
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		limit := 100
@@ -148,7 +159,7 @@ func (s *Server) handleIntegrationWorkspaces(w http.ResponseWriter, r *http.Requ
 			}
 			limit = parsed
 		}
-		workspaces, err := s.integrations.ListWorkspaces(limit)
+		workspaces, err := s.integrations.ListWorkspacesForAccount(principal.AccountScopeID, limit)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -160,7 +171,7 @@ func (s *Server) handleIntegrationWorkspaces(w http.ResponseWriter, r *http.Requ
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		workspace, session, children, err := s.openIntegrationWorkspace(req)
+		workspace, session, children, err := s.openIntegrationWorkspace(principal, req)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -188,8 +199,13 @@ func (s *Server) handleIntegrationWorkspaceByID(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, errors.New("workspace_id is required"))
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok || !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
+		writeError(w, http.StatusUnauthorized, errors.New("authenticated account principal is required"))
+		return
+	}
 	if len(parts) == 1 {
-		s.handleIntegrationWorkspaceOpen(w, r, workspaceID)
+		s.handleIntegrationWorkspaceOpen(w, r, principal, workspaceID)
 		return
 	}
 	if parts[1] != "sessions" {
@@ -197,20 +213,20 @@ func (s *Server) handleIntegrationWorkspaceByID(w http.ResponseWriter, r *http.R
 		return
 	}
 	if len(parts) == 2 {
-		s.handleIntegrationWorkspaceSessions(w, r, workspaceID)
+		s.handleIntegrationWorkspaceSessions(w, r, principal, workspaceID)
 		return
 	}
 	if len(parts) == 3 {
-		s.handleIntegrationWorkspaceSessionSwitch(w, r, workspaceID, strings.TrimSpace(parts[2]))
+		s.handleIntegrationWorkspaceSessionSwitch(w, r, principal, workspaceID, strings.TrimSpace(parts[2]))
 		return
 	}
 	writeError(w, http.StatusNotFound, errors.New("integration workspace route not found"))
 }
 
-func (s *Server) handleIntegrationWorkspaceOpen(w http.ResponseWriter, r *http.Request, workspaceID string) {
+func (s *Server) handleIntegrationWorkspaceOpen(w http.ResponseWriter, r *http.Request, principal identity.Principal, workspaceID string) {
 	switch r.Method {
 	case http.MethodGet:
-		workspace, session, children, err := s.integrationWorkspaceSnapshot(workspaceID)
+		workspace, session, children, err := s.integrationWorkspaceSnapshot(principal, workspaceID)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -223,7 +239,7 @@ func (s *Server) handleIntegrationWorkspaceOpen(w http.ResponseWriter, r *http.R
 			return
 		}
 		req.WorkspaceID = firstNonEmpty(strings.TrimSpace(req.WorkspaceID), workspaceID)
-		workspace, session, children, err := s.openIntegrationWorkspace(req)
+		workspace, session, children, err := s.openIntegrationWorkspace(principal, req)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -234,7 +250,7 @@ func (s *Server) handleIntegrationWorkspaceOpen(w http.ResponseWriter, r *http.R
 	}
 }
 
-func (s *Server) handleIntegrationWorkspaceSessions(w http.ResponseWriter, r *http.Request, workspaceID string) {
+func (s *Server) handleIntegrationWorkspaceSessions(w http.ResponseWriter, r *http.Request, principal identity.Principal, workspaceID string) {
 	switch r.Method {
 	case http.MethodGet:
 		limit := 100
@@ -246,7 +262,7 @@ func (s *Server) handleIntegrationWorkspaceSessions(w http.ResponseWriter, r *ht
 			}
 			limit = parsed
 		}
-		children, err := s.integrationWorkspaceChildSessions(workspaceID, limit)
+		children, err := s.integrationWorkspaceChildSessions(principal, workspaceID, limit)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -264,12 +280,12 @@ func (s *Server) handleIntegrationWorkspaceSessions(w http.ResponseWriter, r *ht
 		}
 		switch action {
 		case "new", "create":
-			workspace, ok, err := s.integrations.GetWorkspace(workspaceID)
+			workspace, ok, err := s.integrations.GetWorkspaceForAccount(principal.AccountScopeID, workspaceID)
 			if err != nil || !ok {
 				writeError(w, http.StatusBadRequest, notFoundOrErr("integration workspace", workspaceID, ok, err))
 				return
 			}
-			session, join, event, err := s.createIntegrationWorkspaceChildSession(workspace, req)
+			session, join, event, err := s.createIntegrationWorkspaceChildSession(principal, workspace, req)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
@@ -279,7 +295,7 @@ func (s *Server) handleIntegrationWorkspaceSessions(w http.ResponseWriter, r *ht
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "workspace": workspace, "workspace_session": join, "session": session})
 		case "attach":
-			join, session, err := s.attachIntegrationWorkspaceSession(workspaceID, req.SessionID, req.Title, req.Metadata)
+			join, session, err := s.attachIntegrationWorkspaceSession(principal, workspaceID, req.SessionID, req.Title, req.Metadata)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
@@ -293,16 +309,16 @@ func (s *Server) handleIntegrationWorkspaceSessions(w http.ResponseWriter, r *ht
 	}
 }
 
-func (s *Server) handleIntegrationWorkspaceSessionSwitch(w http.ResponseWriter, r *http.Request, workspaceID, sessionID string) {
+func (s *Server) handleIntegrationWorkspaceSessionSwitch(w http.ResponseWriter, r *http.Request, principal identity.Principal, workspaceID, sessionID string) {
 	if sessionID == "" {
 		writeError(w, http.StatusBadRequest, errors.New("session_id is required"))
 		return
 	}
-	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost && r.Method != http.MethodDelete {
 		methodNotAllowed(w)
 		return
 	}
-	join, ok, err := s.integrations.GetWorkspaceSession(workspaceID, sessionID)
+	join, ok, err := s.integrations.GetWorkspaceSessionForAccount(principal.AccountScopeID, workspaceID, sessionID)
 	if err != nil || !ok {
 		writeError(w, http.StatusBadRequest, notFoundOrErr("integration workspace session", sessionID, ok, err))
 		return
@@ -310,6 +326,18 @@ func (s *Server) handleIntegrationWorkspaceSessionSwitch(w http.ResponseWriter, 
 	session, ok, err := s.sessions.GetSession(sessionID)
 	if err != nil || !ok {
 		writeError(w, http.StatusBadRequest, notFoundOrErr("session", sessionID, ok, err))
+		return
+	}
+	if strings.TrimSpace(session.AccountScopeID) != principal.AccountScopeID {
+		writeError(w, http.StatusForbidden, errors.New("session does not belong to account"))
+		return
+	}
+	if r.Method == http.MethodDelete {
+		if err := s.integrations.DeleteWorkspaceSessionForAccount(principal.AccountScopeID, workspaceID, sessionID); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": sessionID, "workspace_session": join})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "workspace_session": join, "session": session})
@@ -330,8 +358,9 @@ type integrationWorkspaceSessionContext struct {
 	DraftVersionID string
 }
 
-func (s *Server) openIntegrationWorkspace(req integrationWorkspaceOpenRequest) (pebblestore.IntegrationWorkspaceRecord, *pebblestore.SessionSnapshot, []integrationWorkspaceChildSession, error) {
+func (s *Server) openIntegrationWorkspace(principal identity.Principal, req integrationWorkspaceOpenRequest) (pebblestore.IntegrationWorkspaceRecord, *pebblestore.SessionSnapshot, []integrationWorkspaceChildSession, error) {
 	workspace, err := s.integrations.UpsertWorkspaceContext(pebblestore.IntegrationWorkspaceRecord{
+		AccountScopeID: principal.AccountScopeID,
 		WorkspaceID:    req.WorkspaceID,
 		DisplayName:    req.DisplayName,
 		PackID:         req.PackID,
@@ -341,14 +370,14 @@ func (s *Server) openIntegrationWorkspace(req integrationWorkspaceOpenRequest) (
 	if err != nil {
 		return pebblestore.IntegrationWorkspaceRecord{}, nil, nil, err
 	}
-	children, err := s.integrationWorkspaceChildSessions(workspace.WorkspaceID, 100)
+	children, err := s.integrationWorkspaceChildSessions(principal, workspace.WorkspaceID, 100)
 	if err != nil {
 		return pebblestore.IntegrationWorkspaceRecord{}, nil, nil, err
 	}
 	var selected *pebblestore.SessionSnapshot
 	if (req.CreateChild || req.NewChild) || len(children) == 0 {
 		sessionReq := integrationWorkspaceSessionRequest{Title: req.Title, Mode: req.Mode, Preference: req.Preference}
-		session, _, event, err := s.createIntegrationWorkspaceChildSession(workspace, sessionReq)
+		session, _, event, err := s.createIntegrationWorkspaceChildSession(principal, workspace, sessionReq)
 		if err != nil {
 			return pebblestore.IntegrationWorkspaceRecord{}, nil, nil, err
 		}
@@ -356,23 +385,23 @@ func (s *Server) openIntegrationWorkspace(req integrationWorkspaceOpenRequest) (
 			s.hub.Publish(*event)
 		}
 		selected = &session
-		children, err = s.integrationWorkspaceChildSessions(workspace.WorkspaceID, 100)
+		children, err = s.integrationWorkspaceChildSessions(principal, workspace.WorkspaceID, 100)
 		if err != nil {
 			return pebblestore.IntegrationWorkspaceRecord{}, nil, nil, err
 		}
 	} else if len(children) > 0 {
 		selected = &children[0].Session
 	}
-	workspace, _, _ = s.integrations.GetWorkspace(workspace.WorkspaceID)
+	workspace, _, _ = s.integrations.GetWorkspaceForAccount(principal.AccountScopeID, workspace.WorkspaceID)
 	return workspace, selected, children, nil
 }
 
-func (s *Server) integrationWorkspaceSnapshot(workspaceID string) (pebblestore.IntegrationWorkspaceRecord, *pebblestore.SessionSnapshot, []integrationWorkspaceChildSession, error) {
-	workspace, ok, err := s.integrations.GetWorkspace(workspaceID)
+func (s *Server) integrationWorkspaceSnapshot(principal identity.Principal, workspaceID string) (pebblestore.IntegrationWorkspaceRecord, *pebblestore.SessionSnapshot, []integrationWorkspaceChildSession, error) {
+	workspace, ok, err := s.integrations.GetWorkspaceForAccount(principal.AccountScopeID, workspaceID)
 	if err != nil || !ok {
 		return pebblestore.IntegrationWorkspaceRecord{}, nil, nil, notFoundOrErr("integration workspace", workspaceID, ok, err)
 	}
-	children, err := s.integrationWorkspaceChildSessions(workspace.WorkspaceID, 100)
+	children, err := s.integrationWorkspaceChildSessions(principal, workspace.WorkspaceID, 100)
 	if err != nil {
 		return pebblestore.IntegrationWorkspaceRecord{}, nil, nil, err
 	}
@@ -388,11 +417,11 @@ type integrationWorkspaceChildSession struct {
 	Session pebblestore.SessionSnapshot                   `json:"session"`
 }
 
-func (s *Server) integrationWorkspaceChildSessions(workspaceID string, limit int) ([]integrationWorkspaceChildSession, error) {
+func (s *Server) integrationWorkspaceChildSessions(principal identity.Principal, workspaceID string, limit int) ([]integrationWorkspaceChildSession, error) {
 	if s.sessions == nil {
 		return nil, errors.New("session service not configured")
 	}
-	joins, err := s.integrations.ListWorkspaceSessions(workspaceID, limit)
+	joins, err := s.integrations.ListWorkspaceSessionsForAccount(principal.AccountScopeID, workspaceID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -405,13 +434,16 @@ func (s *Server) integrationWorkspaceChildSessions(workspaceID string, limit int
 		if !ok {
 			continue
 		}
+		if strings.TrimSpace(session.AccountScopeID) != principal.AccountScopeID {
+			continue
+		}
 		children = append(children, integrationWorkspaceChildSession{Join: join, Session: session})
 	}
 	return children, nil
 }
 
-func (s *Server) createIntegrationWorkspaceChildSession(workspace pebblestore.IntegrationWorkspaceRecord, req integrationWorkspaceSessionRequest) (pebblestore.SessionSnapshot, pebblestore.IntegrationWorkspaceSessionRecord, *pebblestore.EventEnvelope, error) {
-	session, event, err := s.createIntegrationBuilderChildSession(integrationBuilderSessionCreateOptions{
+func (s *Server) createIntegrationWorkspaceChildSession(principal identity.Principal, workspace pebblestore.IntegrationWorkspaceRecord, req integrationWorkspaceSessionRequest) (pebblestore.SessionSnapshot, pebblestore.IntegrationWorkspaceSessionRecord, *pebblestore.EventEnvelope, error) {
+	session, event, err := s.createIntegrationBuilderChildSession(principal, integrationBuilderSessionCreateOptions{
 		Title:      firstNonEmpty(strings.TrimSpace(req.Title), workspace.DisplayName),
 		Mode:       req.Mode,
 		Preference: req.Preference,
@@ -427,12 +459,13 @@ func (s *Server) createIntegrationWorkspaceChildSession(workspace pebblestore.In
 		return pebblestore.SessionSnapshot{}, pebblestore.IntegrationWorkspaceSessionRecord{}, nil, err
 	}
 	join, err := s.integrations.AttachWorkspaceSession(pebblestore.IntegrationWorkspaceSessionRecord{
-		WorkspaceID: workspace.WorkspaceID,
-		SessionID:   session.ID,
-		Title:       session.Title,
-		Metadata:    integrationWorkspaceSessionMetadata(workspace),
-		UpdatedAt:   time.UnixMilli(session.UpdatedAt).UTC(),
-		CreatedAt:   time.UnixMilli(session.CreatedAt).UTC(),
+		AccountScopeID: principal.AccountScopeID,
+		WorkspaceID:    workspace.WorkspaceID,
+		SessionID:      session.ID,
+		Title:          session.Title,
+		Metadata:       integrationWorkspaceSessionMetadata(workspace),
+		UpdatedAt:      time.UnixMilli(session.UpdatedAt).UTC(),
+		CreatedAt:      time.UnixMilli(session.CreatedAt).UTC(),
 	})
 	if err != nil {
 		return pebblestore.SessionSnapshot{}, pebblestore.IntegrationWorkspaceSessionRecord{}, nil, err
@@ -440,7 +473,7 @@ func (s *Server) createIntegrationWorkspaceChildSession(workspace pebblestore.In
 	return session, join, event, nil
 }
 
-func (s *Server) createIntegrationBuilderChildSession(options integrationBuilderSessionCreateOptions) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, error) {
+func (s *Server) createIntegrationBuilderChildSession(principal identity.Principal, options integrationBuilderSessionCreateOptions) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, error) {
 	if s.sessions == nil {
 		return pebblestore.SessionSnapshot{}, nil, errors.New("session service not configured")
 	}
@@ -455,10 +488,12 @@ func (s *Server) createIntegrationBuilderChildSession(options integrationBuilder
 	metadata := mergeSessionCreateMetadata(integrationBuilderSessionMetadata(), options.Metadata)
 	metadata = mergeSessionCreateMetadata(metadata, integrationWorkspaceContextMetadata(options.Context))
 	session, event, err := s.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
-		Title:         firstNonEmpty(strings.TrimSpace(options.Title), "New integration"),
-		WorkspacePath: workspacePath,
-		WorkspaceName: integrationBuilderWorkspaceName,
-		Mode:          mode,
+		UserID:         principal.UserID,
+		AccountScopeID: principal.AccountScopeID,
+		Title:          firstNonEmpty(strings.TrimSpace(options.Title), "New integration"),
+		WorkspacePath:  workspacePath,
+		WorkspaceName:  integrationBuilderWorkspaceName,
+		Mode:           mode,
 		Preference: &pebblestore.ModelPreference{
 			Provider:    strings.TrimSpace(options.Preference.Provider),
 			Model:       strings.TrimSpace(options.Preference.Model),
@@ -474,17 +509,20 @@ func (s *Server) createIntegrationBuilderChildSession(options integrationBuilder
 	return session, event, nil
 }
 
-func (s *Server) attachIntegrationWorkspaceSession(workspaceID, sessionID, title string, metadata map[string]any) (pebblestore.IntegrationWorkspaceSessionRecord, pebblestore.SessionSnapshot, error) {
+func (s *Server) attachIntegrationWorkspaceSession(principal identity.Principal, workspaceID, sessionID, title string, metadata map[string]any) (pebblestore.IntegrationWorkspaceSessionRecord, pebblestore.SessionSnapshot, error) {
 	if s.sessions == nil {
 		return pebblestore.IntegrationWorkspaceSessionRecord{}, pebblestore.SessionSnapshot{}, errors.New("session service not configured")
 	}
-	workspace, ok, err := s.integrations.GetWorkspace(workspaceID)
+	workspace, ok, err := s.integrations.GetWorkspaceForAccount(principal.AccountScopeID, workspaceID)
 	if err != nil || !ok {
 		return pebblestore.IntegrationWorkspaceSessionRecord{}, pebblestore.SessionSnapshot{}, notFoundOrErr("integration workspace", workspaceID, ok, err)
 	}
 	session, ok, err := s.sessions.GetSession(sessionID)
 	if err != nil || !ok {
 		return pebblestore.IntegrationWorkspaceSessionRecord{}, pebblestore.SessionSnapshot{}, notFoundOrErr("session", sessionID, ok, err)
+	}
+	if strings.TrimSpace(session.AccountScopeID) != principal.AccountScopeID {
+		return pebblestore.IntegrationWorkspaceSessionRecord{}, pebblestore.SessionSnapshot{}, errors.New("session does not belong to account")
 	}
 	updatedMetadata := mergeSessionCreateMetadata(session.Metadata, integrationWorkspaceContextMetadata(integrationWorkspaceSessionContext{WorkspaceID: workspace.WorkspaceID, DisplayName: workspace.DisplayName, PackID: workspace.PackID, DraftVersionID: workspace.DraftVersionID}))
 	updatedSession, event, err := s.sessions.UpdateMetadata(session.ID, updatedMetadata)
@@ -495,11 +533,12 @@ func (s *Server) attachIntegrationWorkspaceSession(workspaceID, sessionID, title
 		s.hub.Publish(*event)
 	}
 	join, err := s.integrations.AttachWorkspaceSession(pebblestore.IntegrationWorkspaceSessionRecord{
-		WorkspaceID: workspace.WorkspaceID,
-		SessionID:   updatedSession.ID,
-		Title:       firstNonEmpty(strings.TrimSpace(title), updatedSession.Title),
-		Metadata:    stringMapFromAny(metadata),
-		UpdatedAt:   time.Now().UTC(),
+		AccountScopeID: principal.AccountScopeID,
+		WorkspaceID:    workspace.WorkspaceID,
+		SessionID:      updatedSession.ID,
+		Title:          firstNonEmpty(strings.TrimSpace(title), updatedSession.Title),
+		Metadata:       stringMapFromAny(metadata),
+		UpdatedAt:      time.Now().UTC(),
 	})
 	if err != nil {
 		return pebblestore.IntegrationWorkspaceSessionRecord{}, pebblestore.SessionSnapshot{}, err
@@ -561,13 +600,16 @@ func isIntegrationBuilderSession(session pebblestore.SessionSnapshot) bool {
 		sessionMetadataEquals(session.Metadata, "session_source", integrationBuilderSessionSource)
 }
 
-func (s *Server) applyIntegrationBuilderRunContext(sessionID string, req *sessionRunRequestAdapter) (runIntegrationContext, error) {
+func (s *Server) applyIntegrationBuilderRunContext(principal identity.Principal, sessionID string, req *sessionRunRequestAdapter) (runIntegrationContext, error) {
 	if s == nil || s.sessions == nil || req == nil {
 		return runIntegrationContext{}, nil
 	}
 	session, ok, err := s.sessions.GetSession(sessionID)
 	if err != nil || !ok {
 		return runIntegrationContext{}, err
+	}
+	if principal.Valid() && strings.TrimSpace(session.AccountScopeID) != principal.AccountScopeID {
+		return runIntegrationContext{}, errors.New("session does not belong to account")
 	}
 	if !isIntegrationBuilderSession(session) {
 		return runIntegrationContext{}, nil

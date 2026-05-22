@@ -266,7 +266,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	toolRuntime.SetManageTodoService(todoSvc)
 	toolRuntime.SetManageIntegrationService(integrationSvc)
 	toolRuntime.SetManageThemeServices(uiSettingsSvc, workspaceSvc)
-	toolRuntime.SetExaConfigResolver(func(context.Context) (tool.ExaRuntimeConfig, error) {
+	toolRuntime.SetExaConfigResolver(func(ctx context.Context) (tool.ExaRuntimeConfig, error) {
 		mcpConfig, err := mcpSvc.ResolveExaRuntimeConfig()
 		if err != nil {
 			return tool.ExaRuntimeConfig{}, err
@@ -276,15 +276,16 @@ func New(cfg config.Config) (*Daemon, error) {
 			ContentsURL: "https://api.exa.ai/contents",
 			MCPURL:      strings.TrimSpace(mcpConfig.URL),
 		}
-		record, ok, err := authStore.GetActiveCredential("exa")
+		principal, principalOK := identityruntime.PrincipalFromContext(ctx)
+		if !principalOK {
+			return tool.ExaRuntimeConfig{}, identityruntime.ErrPrincipalRequired
+		}
+		record, ok, err := authStore.GetActiveCredentialForAccount(principal.AccountScopeID, "exa")
 		if err != nil {
 			return tool.ExaRuntimeConfig{}, err
 		}
 		if ok {
 			cfg.APIKey = strings.TrimSpace(record.APIKey)
-		}
-		if cfg.APIKey == "" {
-			cfg.APIKey = strings.TrimSpace(os.Getenv("EXA_API_KEY"))
 		}
 		if cfg.APIKey != "" {
 			cfg.Enabled = true

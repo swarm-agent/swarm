@@ -268,7 +268,7 @@ func (s *Server) finishCodexOAuthSession(sessionID string, tokens codexruntime.O
 	if connection, verifyErr := s.verifyAuthCredentialConnectionForAccount(context.Background(), session.AccountScopeID, session.Provider, status.ID); verifyErr == nil {
 		status.Connection = connection
 	}
-	if autoDefaults, defaultsErr := s.applyUtilityModelDefaults(session.Provider); defaultsErr != nil {
+	if autoDefaults, defaultsErr := s.applyUtilityModelDefaultsForAccount(session.AccountScopeID, session.UserID, session.Provider); defaultsErr != nil {
 		status.AutoDefaults = &auth.AutoDefaultsStatus{Error: defaultsErr.Error()}
 	} else if autoDefaults != nil {
 		status.AutoDefaults = autoDefaults

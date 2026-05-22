@@ -155,11 +155,15 @@ func (s *Server) applyUtilityAIToBuiltIns(state agentruntime.State, utilityProvi
 }
 
 func (s *Server) resolveAgentProviderDefaults() (string, defaults.ProviderDefaults, bool) {
+	return s.resolveAgentProviderDefaultsForAccount("")
+}
+
+func (s *Server) resolveAgentProviderDefaultsForAccount(accountScopeID string) (string, defaults.ProviderDefaults, bool) {
 	if s == nil {
 		return "", defaults.ProviderDefaults{}, false
 	}
 	if s.model != nil {
-		pref, err := s.model.GetGlobalPreference()
+		pref, err := s.model.GetPreferenceForAccount(accountScopeID)
 		if err == nil {
 			providerID := strings.ToLower(strings.TrimSpace(pref.Provider))
 			if providerID != "" {

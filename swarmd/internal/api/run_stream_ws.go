@@ -912,7 +912,7 @@ func (s *Server) startRunStreamExecution(runID, sessionID string, inbound runStr
 		defer runCancel()
 
 		startSignaled := false
-		integrationCtx, contextErr := s.applyIntegrationBuilderRunContext(sessionID, &sessionRunRequestAdapter{
+		integrationCtx, contextErr := s.applyIntegrationBuilderRunContext(principal, sessionID, &sessionRunRequestAdapter{
 			agentName:       func() string { return inbound.RunRequest.AgentName },
 			setAgentName:    func(value string) { inbound.RunRequest.AgentName = value },
 			instructions:    func() string { return inbound.RunRequest.Instructions },

@@ -423,13 +423,47 @@ func (s *AgentStore) GetCustomTool(name string) (AgentCustomToolDefinition, bool
 	return definition, true, nil
 }
 
+func (s *AgentStore) GetCustomToolForAccount(accountScopeID, name string) (AgentCustomToolDefinition, bool, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return AgentCustomToolDefinition{}, false, fmt.Errorf("account scope ID is required")
+	}
+	definition := AgentCustomToolDefinition{}
+	ok, err := s.store.GetJSON(KeyAgentCustomToolForAccount(accountScopeID, name), &definition)
+	if err != nil || !ok {
+		return definition, ok, err
+	}
+	definition = NormalizeAgentCustomToolDefinition(definition)
+	if definition.Name == "" {
+		definition.Name = NormalizeAgentCustomToolName(name)
+	}
+	return definition, true, nil
+}
+
 func (s *AgentStore) PutCustomTool(definition AgentCustomToolDefinition) error {
 	definition = NormalizeAgentCustomToolDefinition(definition)
 	return s.store.PutJSON(KeyAgentCustomTool(definition.Name), definition)
 }
 
+func (s *AgentStore) PutCustomToolForAccount(accountScopeID string, definition AgentCustomToolDefinition) error {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return fmt.Errorf("account scope ID is required")
+	}
+	definition = NormalizeAgentCustomToolDefinition(definition)
+	return s.store.PutJSON(KeyAgentCustomToolForAccount(accountScopeID, definition.Name), definition)
+}
+
 func (s *AgentStore) DeleteCustomTool(name string) error {
 	return s.store.Delete(KeyAgentCustomTool(name))
+}
+
+func (s *AgentStore) DeleteCustomToolForAccount(accountScopeID, name string) error {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return fmt.Errorf("account scope ID is required")
+	}
+	return s.store.Delete(KeyAgentCustomToolForAccount(accountScopeID, name))
 }
 
 func (s *AgentStore) ListCustomTools(limit int) ([]AgentCustomToolDefinition, error) {
@@ -445,6 +479,40 @@ func (s *AgentStore) ListCustomTools(limit int) ([]AgentCustomToolDefinition, er
 		definition = NormalizeAgentCustomToolDefinition(definition)
 		if definition.Name == "" {
 			definition.Name = decodeKeyTail(key, AgentCustomToolPrefix())
+		}
+		if definition.Name == "" {
+			return nil
+		}
+		out = append(out, definition)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return strings.ToLower(strings.TrimSpace(out[i].Name)) < strings.ToLower(strings.TrimSpace(out[j].Name))
+	})
+	return out, nil
+}
+
+func (s *AgentStore) ListCustomToolsForAccount(accountScopeID string, limit int) ([]AgentCustomToolDefinition, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, fmt.Errorf("account scope ID is required")
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	prefix := AgentCustomToolPrefixForAccount(accountScopeID)
+	out := make([]AgentCustomToolDefinition, 0, limit)
+	err := s.store.IteratePrefix(prefix, limit, func(key string, value []byte) error {
+		var definition AgentCustomToolDefinition
+		if err := json.Unmarshal(value, &definition); err != nil {
+			return fmt.Errorf("decode agent custom tool: %w", err)
+		}
+		definition = NormalizeAgentCustomToolDefinition(definition)
+		if definition.Name == "" {
+			definition.Name = decodeKeyTail(key, prefix)
 		}
 		if definition.Name == "" {
 			return nil

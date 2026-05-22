@@ -8,18 +8,22 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/cockroachdb/pebble"
 )
 
 type VoiceConfigRecord struct {
-	STTProfile  string `json:"stt_profile,omitempty"`
-	STTProvider string `json:"stt_provider,omitempty"`
-	STTModel    string `json:"stt_model,omitempty"`
-	STTLanguage string `json:"stt_language,omitempty"`
-	DeviceID    string `json:"device_id,omitempty"`
-	TTSProfile  string `json:"tts_profile,omitempty"`
-	TTSProvider string `json:"tts_provider,omitempty"`
-	TTSVoice    string `json:"tts_voice,omitempty"`
-	UpdatedAt   int64  `json:"updated_at"`
+	UserID         string `json:"user_id,omitempty"`
+	AccountScopeID string `json:"account_scope_id,omitempty"`
+	STTProfile     string `json:"stt_profile,omitempty"`
+	STTProvider    string `json:"stt_provider,omitempty"`
+	STTModel       string `json:"stt_model,omitempty"`
+	STTLanguage    string `json:"stt_language,omitempty"`
+	DeviceID       string `json:"device_id,omitempty"`
+	TTSProfile     string `json:"tts_profile,omitempty"`
+	TTSProvider    string `json:"tts_provider,omitempty"`
+	TTSVoice       string `json:"tts_voice,omitempty"`
+	UpdatedAt      int64  `json:"updated_at"`
 }
 
 type VoiceConfigPatch struct {
@@ -34,14 +38,16 @@ type VoiceConfigPatch struct {
 }
 
 type VoiceProfileRecord struct {
-	ID          string            `json:"id"`
-	Label       string            `json:"label,omitempty"`
-	Adapter     string            `json:"adapter"`
-	STTModel    string            `json:"stt_model,omitempty"`
-	STTLanguage string            `json:"stt_language,omitempty"`
-	TTSVoice    string            `json:"tts_voice,omitempty"`
-	Options     map[string]string `json:"options,omitempty"`
-	UpdatedAt   int64             `json:"updated_at"`
+	ID             string            `json:"id"`
+	UserID         string            `json:"user_id,omitempty"`
+	AccountScopeID string            `json:"account_scope_id,omitempty"`
+	Label          string            `json:"label,omitempty"`
+	Adapter        string            `json:"adapter"`
+	STTModel       string            `json:"stt_model,omitempty"`
+	STTLanguage    string            `json:"stt_language,omitempty"`
+	TTSVoice       string            `json:"tts_voice,omitempty"`
+	Options        map[string]string `json:"options,omitempty"`
+	UpdatedAt      int64             `json:"updated_at"`
 }
 
 type VoiceStore struct {
@@ -53,6 +59,10 @@ func NewVoiceStore(store *Store) *VoiceStore {
 }
 
 func (s *VoiceStore) GetConfig() (VoiceConfigRecord, bool, error) {
+	return VoiceConfigRecord{}, false, errors.New("legacy global voice config is disabled; account scope is required")
+}
+
+func (s *VoiceStore) getConfigLegacy() (VoiceConfigRecord, bool, error) {
 	if s == nil || s.store == nil {
 		return VoiceConfigRecord{}, false, nil
 	}
@@ -68,7 +78,11 @@ func (s *VoiceStore) GetConfig() (VoiceConfigRecord, bool, error) {
 }
 
 func (s *VoiceStore) UpdateConfig(patch VoiceConfigPatch) (VoiceConfigRecord, error) {
-	record, _, err := s.GetConfig()
+	return VoiceConfigRecord{}, errors.New("legacy global voice config is disabled; account scope is required")
+}
+
+func (s *VoiceStore) updateConfigLegacy(patch VoiceConfigPatch) (VoiceConfigRecord, error) {
+	record, _, err := s.getConfigLegacy()
 	if err != nil {
 		return VoiceConfigRecord{}, err
 	}
@@ -106,7 +120,82 @@ func (s *VoiceStore) UpdateConfig(patch VoiceConfigPatch) (VoiceConfigRecord, er
 	return record, nil
 }
 
+func (s *VoiceStore) GetConfigForAccount(accountScopeID string) (VoiceConfigRecord, bool, error) {
+	if s == nil || s.store == nil {
+		return VoiceConfigRecord{}, false, nil
+	}
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return VoiceConfigRecord{}, false, err
+	}
+	var record VoiceConfigRecord
+	ok, err := s.store.GetJSON(KeyVoiceConfigForAccount(accountScopeID), &record)
+	if err != nil {
+		return VoiceConfigRecord{}, false, err
+	}
+	if !ok {
+		return VoiceConfigRecord{}, false, nil
+	}
+	record = normalizeVoiceConfigRecord(record)
+	record.AccountScopeID = accountScopeID
+	return record, true, nil
+}
+
+func (s *VoiceStore) UpdateConfigForAccount(accountScopeID, userID string, patch VoiceConfigPatch) (VoiceConfigRecord, error) {
+	if s == nil || s.store == nil {
+		return VoiceConfigRecord{}, errors.New("voice store is not configured")
+	}
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return VoiceConfigRecord{}, err
+	}
+	record, _, err := s.GetConfigForAccount(accountScopeID)
+	if err != nil {
+		return VoiceConfigRecord{}, err
+	}
+	record = normalizeVoiceConfigRecord(record)
+	record.AccountScopeID = accountScopeID
+	record.UserID = strings.TrimSpace(userID)
+
+	if patch.STTProfile != nil {
+		record.STTProfile = normalizeVoiceProfileID(*patch.STTProfile)
+	}
+	if patch.STTProvider != nil {
+		record.STTProvider = normalizeVoiceConfigValue(*patch.STTProvider)
+	}
+	if patch.STTModel != nil {
+		record.STTModel = strings.TrimSpace(*patch.STTModel)
+	}
+	if patch.STTLanguage != nil {
+		record.STTLanguage = strings.TrimSpace(*patch.STTLanguage)
+	}
+	if patch.DeviceID != nil {
+		record.DeviceID = strings.TrimSpace(*patch.DeviceID)
+	}
+	if patch.TTSProfile != nil {
+		record.TTSProfile = normalizeVoiceProfileID(*patch.TTSProfile)
+	}
+	if patch.TTSProvider != nil {
+		record.TTSProvider = normalizeVoiceConfigValue(*patch.TTSProvider)
+	}
+	if patch.TTSVoice != nil {
+		record.TTSVoice = strings.TrimSpace(*patch.TTSVoice)
+	}
+	record.UpdatedAt = time.Now().UnixMilli()
+	record = normalizeVoiceConfigRecord(record)
+	record.AccountScopeID = accountScopeID
+	record.UserID = strings.TrimSpace(userID)
+	if err := s.store.PutJSON(KeyVoiceConfigForAccount(accountScopeID), record); err != nil {
+		return VoiceConfigRecord{}, err
+	}
+	return record, nil
+}
+
 func (s *VoiceStore) GetProfile(profileID string) (VoiceProfileRecord, bool, error) {
+	return VoiceProfileRecord{}, false, errors.New("legacy global voice profile is disabled; account scope is required")
+}
+
+func (s *VoiceStore) getProfileLegacy(profileID string) (VoiceProfileRecord, bool, error) {
 	if s == nil || s.store == nil {
 		return VoiceProfileRecord{}, false, nil
 	}
@@ -129,7 +218,37 @@ func (s *VoiceStore) GetProfile(profileID string) (VoiceProfileRecord, bool, err
 	return record, true, nil
 }
 
+func (s *VoiceStore) GetProfileForAccount(accountScopeID, profileID string) (VoiceProfileRecord, bool, error) {
+	if s == nil || s.store == nil {
+		return VoiceProfileRecord{}, false, nil
+	}
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return VoiceProfileRecord{}, false, err
+	}
+	profileID = normalizeVoiceProfileID(profileID)
+	if profileID == "" {
+		return VoiceProfileRecord{}, false, errors.New("voice profile id is required")
+	}
+	var record VoiceProfileRecord
+	ok, err := s.store.GetJSON(KeyVoiceProfileForAccount(accountScopeID, profileID), &record)
+	if err != nil {
+		return VoiceProfileRecord{}, false, err
+	}
+	if !ok {
+		return VoiceProfileRecord{}, false, nil
+	}
+	record = normalizeVoiceProfileRecord(record)
+	record.ID = profileID
+	record.AccountScopeID = accountScopeID
+	return record, true, nil
+}
+
 func (s *VoiceStore) PutProfile(profile VoiceProfileRecord) (VoiceProfileRecord, error) {
+	return VoiceProfileRecord{}, errors.New("legacy global voice profile is disabled; account scope is required")
+}
+
+func (s *VoiceStore) putProfileLegacy(profile VoiceProfileRecord) (VoiceProfileRecord, error) {
 	if s == nil || s.store == nil {
 		return VoiceProfileRecord{}, errors.New("voice store is not configured")
 	}
@@ -147,7 +266,47 @@ func (s *VoiceStore) PutProfile(profile VoiceProfileRecord) (VoiceProfileRecord,
 	return profile, nil
 }
 
+func (s *VoiceStore) PutProfileForAccount(accountScopeID, userID string, profile VoiceProfileRecord) (VoiceProfileRecord, error) {
+	if s == nil || s.store == nil {
+		return VoiceProfileRecord{}, errors.New("voice store is not configured")
+	}
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return VoiceProfileRecord{}, err
+	}
+	profile = normalizeVoiceProfileRecord(profile)
+	if profile.ID == "" {
+		return VoiceProfileRecord{}, errors.New("voice profile id is required")
+	}
+	if profile.Adapter == "" {
+		return VoiceProfileRecord{}, errors.New("voice profile adapter is required")
+	}
+	profile.AccountScopeID = accountScopeID
+	profile.UserID = strings.TrimSpace(userID)
+	profile.UpdatedAt = time.Now().UnixMilli()
+	payload, err := json.Marshal(profile)
+	if err != nil {
+		return VoiceProfileRecord{}, fmt.Errorf("marshal voice profile %q: %w", profile.ID, err)
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if err := batch.Set([]byte(KeyVoiceProfileForAccount(accountScopeID, profile.ID)), payload, nil); err != nil {
+		return VoiceProfileRecord{}, err
+	}
+	if err := batch.Delete([]byte(KeyVoiceProfile(profile.ID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+		return VoiceProfileRecord{}, err
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return VoiceProfileRecord{}, err
+	}
+	return profile, nil
+}
+
 func (s *VoiceStore) DeleteProfile(profileID string) error {
+	return errors.New("legacy global voice profile is disabled; account scope is required")
+}
+
+func (s *VoiceStore) deleteProfileLegacy(profileID string) error {
 	if s == nil || s.store == nil {
 		return nil
 	}
@@ -158,7 +317,29 @@ func (s *VoiceStore) DeleteProfile(profileID string) error {
 	return s.store.Delete(KeyVoiceProfile(profileID))
 }
 
+func (s *VoiceStore) DeleteProfileForAccount(accountScopeID, profileID string) error {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return err
+	}
+	profileID = normalizeVoiceProfileID(profileID)
+	if profileID == "" {
+		return errors.New("voice profile id is required")
+	}
+	if err := s.store.Delete(KeyVoiceProfileForAccount(accountScopeID, profileID)); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+		return err
+	}
+	return nil
+}
+
 func (s *VoiceStore) ListProfiles(limit int) ([]VoiceProfileRecord, error) {
+	return nil, errors.New("legacy global voice profile is disabled; account scope is required")
+}
+
+func (s *VoiceStore) listProfilesLegacy(limit int) ([]VoiceProfileRecord, error) {
 	if s == nil || s.store == nil {
 		return nil, nil
 	}
@@ -184,18 +365,46 @@ func (s *VoiceStore) ListProfiles(limit int) ([]VoiceProfileRecord, error) {
 	if err != nil {
 		return nil, err
 	}
-	sort.Slice(out, func(i, j int) bool {
-		left := strings.ToLower(strings.TrimSpace(out[i].ID))
-		right := strings.ToLower(strings.TrimSpace(out[j].ID))
-		if left == right {
-			return out[i].UpdatedAt > out[j].UpdatedAt
+	return sortVoiceProfileRecords(out), nil
+}
+
+func (s *VoiceStore) ListProfilesForAccount(accountScopeID string, limit int) ([]VoiceProfileRecord, error) {
+	if s == nil || s.store == nil {
+		return nil, nil
+	}
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	out := make([]VoiceProfileRecord, 0, minVoiceInt(limit, 32))
+	err = s.store.IteratePrefix(VoiceProfilePrefixForAccount(accountScopeID), limit, func(key string, value []byte) error {
+		var record VoiceProfileRecord
+		if err := json.Unmarshal(value, &record); err != nil {
+			return fmt.Errorf("decode voice profile: %w", err)
 		}
-		return left < right
+		record = normalizeVoiceProfileRecord(record)
+		if record.ID == "" {
+			record.ID = decodeVoiceProfileIDFromAccountKey(accountScopeID, key)
+		}
+		if record.ID == "" {
+			return nil
+		}
+		record.AccountScopeID = accountScopeID
+		out = append(out, record)
+		return nil
 	})
-	return out, nil
+	if err != nil {
+		return nil, err
+	}
+	return sortVoiceProfileRecords(out), nil
 }
 
 func normalizeVoiceConfigRecord(record VoiceConfigRecord) VoiceConfigRecord {
+	record.UserID = strings.TrimSpace(record.UserID)
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
 	record.STTProfile = normalizeVoiceProfileID(record.STTProfile)
 	record.STTProvider = normalizeVoiceConfigValue(record.STTProvider)
 	record.STTModel = strings.TrimSpace(record.STTModel)
@@ -212,6 +421,8 @@ func normalizeVoiceConfigRecord(record VoiceConfigRecord) VoiceConfigRecord {
 
 func normalizeVoiceProfileRecord(record VoiceProfileRecord) VoiceProfileRecord {
 	record.ID = normalizeVoiceProfileID(record.ID)
+	record.UserID = strings.TrimSpace(record.UserID)
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
 	record.Label = strings.TrimSpace(record.Label)
 	record.Adapter = normalizeVoiceConfigValue(record.Adapter)
 	record.STTModel = strings.TrimSpace(record.STTModel)
@@ -279,7 +490,18 @@ func decodeVoiceProfileIDFromKey(key string) string {
 	if !strings.HasPrefix(key, VoiceProfilePrefix()) {
 		return ""
 	}
-	raw := strings.TrimPrefix(key, VoiceProfilePrefix())
+	return decodeVoiceProfileIDPart(strings.TrimPrefix(key, VoiceProfilePrefix()))
+}
+
+func decodeVoiceProfileIDFromAccountKey(accountScopeID, key string) string {
+	prefix := VoiceProfilePrefixForAccount(accountScopeID)
+	if !strings.HasPrefix(key, prefix) {
+		return ""
+	}
+	return decodeVoiceProfileIDPart(strings.TrimPrefix(key, prefix))
+}
+
+func decodeVoiceProfileIDPart(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return ""
@@ -289,6 +511,18 @@ func decodeVoiceProfileIDFromKey(key string) string {
 		decoded = raw
 	}
 	return normalizeVoiceProfileID(decoded)
+}
+
+func sortVoiceProfileRecords(out []VoiceProfileRecord) []VoiceProfileRecord {
+	sort.Slice(out, func(i, j int) bool {
+		left := strings.ToLower(strings.TrimSpace(out[i].ID))
+		right := strings.ToLower(strings.TrimSpace(out[j].ID))
+		if left == right {
+			return out[i].UpdatedAt > out[j].UpdatedAt
+		}
+		return left < right
+	})
+	return out
 }
 
 func minVoiceInt(a, b int) int {

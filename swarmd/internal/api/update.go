@@ -75,6 +75,11 @@ var (
 )
 
 func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
+	principal, ok := PrincipalFromRequest(r)
+	if !ok || !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 	if s.update == nil {
 		writeError(w, http.StatusInternalServerError, errServiceNotConfigured("update service"))
 		return
@@ -83,12 +88,18 @@ func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	status := s.update.Status(r.Context(), false)
-	s.emitUpdateAvailableNotification(status)
+	ctx := identity.ContextWithPrincipal(r.Context(), principal)
+	status := s.update.Status(ctx, false)
+	s.emitUpdateAvailableNotificationForAccount(principal.AccountScopeID, status)
 	writeJSON(w, http.StatusOK, status)
 }
 
 func (s *Server) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
+	principal, ok := PrincipalFromRequest(r)
+	if !ok || !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 	if s.update == nil {
 		writeError(w, http.StatusInternalServerError, errServiceNotConfigured("update service"))
 		return
@@ -97,7 +108,7 @@ func (s *Server) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	plan, err := s.update.Apply(r.Context())
+	plan, err := s.update.Apply(identity.ContextWithPrincipal(r.Context(), principal))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -155,15 +166,21 @@ func (s *Server) handleUpdateLocalContainers(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) handleUpdateRun(w http.ResponseWriter, r *http.Request) {
+	principal, ok := PrincipalFromRequest(r)
+	if !ok || !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	ctx := identity.ContextWithPrincipal(r.Context(), principal)
 	if s.update == nil {
 		writeError(w, http.StatusInternalServerError, errServiceNotConfigured("update service"))
 		return
 	}
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "job": defaultUpdateJobRunner.Status(s)})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "job": defaultUpdateJobRunner.StatusForAccount(principal.AccountScopeID, s)})
 	case http.MethodPost:
-		job, err := defaultUpdateJobRunner.Start(r.Context(), s)
+		job, err := defaultUpdateJobRunner.Start(ctx, s)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -175,6 +192,11 @@ func (s *Server) handleUpdateRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (r *updateJobRunner) Status(s *Server) desktopUpdateJob {
+	return r.StatusForAccount("", s)
+}
+
+func (r *updateJobRunner) StatusForAccount(accountScopeID string, s *Server) desktopUpdateJob {
+	_ = strings.TrimSpace(accountScopeID)
 	if r == nil {
 		return desktopUpdateJob{Status: updateJobStatusIdle}
 	}
@@ -184,7 +206,7 @@ func (r *updateJobRunner) Status(s *Server) desktopUpdateJob {
 	if persisted, ok := s.readPersistedUpdateJobStatus(); ok {
 		if persisted.Status == updateJobStatusRunning {
 			if kind, err := s.desktopUpdateKind(); err == nil && !updateJobKindMatches(persisted.Kind, kind) {
-				return r.supersedeMismatchedRunningJob(persisted, kind, s)
+				return r.supersedeMismatchedRunningJobForAccount(accountScopeID, persisted, kind, s)
 			}
 		}
 		if strings.TrimSpace(current.ID) == "" || persisted.UpdatedAtUnix >= current.UpdatedAtUnix {
@@ -205,12 +227,14 @@ func (r *updateJobRunner) Start(ctx context.Context, s *Server) (desktopUpdateJo
 	if err != nil {
 		return desktopUpdateJob{}, err
 	}
-	statusSnapshot := r.Status(s)
+	principal, _ := identity.PrincipalFromContext(ctx)
+	accountScopeID := strings.TrimSpace(principal.AccountScopeID)
+	statusSnapshot := r.StatusForAccount(accountScopeID, s)
 	if statusSnapshot.Status == updateJobStatusRunning {
 		if updateJobKindMatches(statusSnapshot.Kind, kind) {
 			return statusSnapshot, nil
 		}
-		r.supersedeMismatchedRunningJob(statusSnapshot, kind, s)
+		r.supersedeMismatchedRunningJobForAccount(accountScopeID, statusSnapshot, kind, s)
 	}
 	now := time.Now().UnixMilli()
 	r.mu.Lock()
@@ -223,7 +247,7 @@ func (r *updateJobRunner) Start(ctx context.Context, s *Server) (desktopUpdateJo
 			if updateJobKindMatches(job.Kind, kind) {
 				return job, nil
 			}
-			r.supersedeMismatchedRunningJob(job, kind, s)
+			r.supersedeMismatchedRunningJobForAccount(accountScopeID, job, kind, s)
 			r.mu.Lock()
 		}
 	}
@@ -240,13 +264,13 @@ func (r *updateJobRunner) Start(ctx context.Context, s *Server) (desktopUpdateJo
 
 	if err := s.writePersistedUpdateJobStatus(job); err != nil {
 		failed := r.finish(job.ID, updateJobStatusFailed, "", err.Error(), s)
-		s.emitUpdateNotification(failed, pebblestore.NotificationSeverityError, "Swarm update failed", err.Error(), "update.failed")
+		s.emitUpdateNotificationForAccount(accountScopeID, failed, pebblestore.NotificationSeverityError, "Swarm update failed", err.Error(), "update.failed")
 		return failed, err
 	}
-	launch, err := s.startDetachedUpdateCommand(kind, job.ID, r)
+	launch, err := s.startDetachedUpdateCommand(ctx, kind, job.ID, r)
 	if err != nil {
 		failed := r.finish(job.ID, updateJobStatusFailed, "", err.Error(), s)
-		s.emitUpdateNotification(failed, pebblestore.NotificationSeverityError, "Swarm update failed", err.Error(), "update.failed")
+		s.emitUpdateNotificationForAccount(accountScopeID, failed, pebblestore.NotificationSeverityError, "Swarm update failed", err.Error(), "update.failed")
 		return failed, err
 	}
 	job = r.updateLaunchDetails(job.ID, launch, s)
@@ -258,6 +282,11 @@ func updateJobKindMatches(existingKind, desiredKind string) bool {
 }
 
 func (r *updateJobRunner) supersedeMismatchedRunningJob(existing desktopUpdateJob, desiredKind string, s *Server) desktopUpdateJob {
+	return r.supersedeMismatchedRunningJobForAccount("", existing, desiredKind, s)
+}
+
+func (r *updateJobRunner) supersedeMismatchedRunningJobForAccount(accountScopeID string, existing desktopUpdateJob, desiredKind string, s *Server) desktopUpdateJob {
+	_ = strings.TrimSpace(accountScopeID)
 	if strings.TrimSpace(existing.ID) == "" {
 		return existing
 	}
@@ -312,7 +341,7 @@ func (r *updateJobRunner) updateLaunchDetails(id string, launch updateLaunchDeta
 	return r.current
 }
 
-func (s *Server) startDetachedUpdateCommand(kind, jobID string, runner *updateJobRunner) (updateLaunchDetails, error) {
+func (s *Server) startDetachedUpdateCommand(ctx context.Context, kind, jobID string, runner *updateJobRunner) (updateLaunchDetails, error) {
 	swarmPath, err := resolveSwarmLauncherPathForUpdate()
 	if err != nil {
 		return updateLaunchDetails{}, err
@@ -388,7 +417,7 @@ func (s *Server) startDetachedUpdateCommand(kind, jobID string, runner *updateJo
 		HelperPID: cmd.Process.Pid,
 		LogPath:   logPath,
 	}
-	go s.watchDetachedUpdateCommand(cmd, strings.TrimSpace(jobID), runner)
+	go s.watchDetachedUpdateCommand(ctx, cmd, strings.TrimSpace(jobID), runner)
 	return details, nil
 }
 
@@ -656,7 +685,7 @@ func updateHelperSystemdScopeUnit(cfg updateHelperLaunchConfig) string {
 	return "swarm-update-" + hex.EncodeToString(sum[:])[:12]
 }
 
-func (s *Server) watchDetachedUpdateCommand(cmd *exec.Cmd, jobID string, runner *updateJobRunner) {
+func (s *Server) watchDetachedUpdateCommand(ctx context.Context, cmd *exec.Cmd, jobID string, runner *updateJobRunner) {
 	if cmd == nil || runner == nil || strings.TrimSpace(jobID) == "" {
 		return
 	}
@@ -665,7 +694,8 @@ func (s *Server) watchDetachedUpdateCommand(cmd *exec.Cmd, jobID string, runner 
 			return
 		}
 		failed := runner.finish(jobID, updateJobStatusFailed, "", fmt.Sprintf("update helper exited early: %v", err), s)
-		s.emitUpdateNotification(failed, pebblestore.NotificationSeverityError, "Swarm update failed", failed.Error, "update.failed")
+		principal, _ := identity.PrincipalFromContext(ctx)
+		s.emitUpdateNotificationForAccount(strings.TrimSpace(principal.AccountScopeID), failed, pebblestore.NotificationSeverityError, "Swarm update failed", failed.Error, "update.failed")
 	}
 }
 
@@ -810,6 +840,10 @@ func resolveSwarmLauncherPath() (string, error) {
 }
 
 func (s *Server) emitUpdateNotification(job desktopUpdateJob, severity, title, body, eventType string) {
+	s.emitUpdateNotificationForAccount("", job, severity, title, body, eventType)
+}
+
+func (s *Server) emitUpdateNotificationForAccount(accountScopeID string, job desktopUpdateJob, severity, title, body, eventType string) {
 	if s == nil || s.notifications == nil {
 		return
 	}
@@ -833,10 +867,10 @@ func (s *Server) emitUpdateNotification(job desktopUpdateJob, severity, title, b
 	if job.Status == updateJobStatusCompleted && severity == pebblestore.NotificationSeverityInfo {
 		return
 	}
-	_, _, _ = s.notifications.UpsertSystemNotification(record)
+	_, _, _ = notificationServiceForAccount(s.notifications, accountScopeID).UpsertSystemNotification(record)
 }
 
-func (s *Server) emitUpdateAvailableNotification(status update.Status) {
+func (s *Server) emitUpdateAvailableNotificationForAccount(accountScopeID string, status update.Status) {
 	if s == nil || s.notifications == nil || !status.UpdateAvailable {
 		return
 	}
@@ -869,7 +903,7 @@ func (s *Server) emitUpdateAvailableNotification(status update.Status) {
 	if record.SwarmID == "" {
 		return
 	}
-	_, _, _ = s.notifications.UpsertSystemNotification(record)
+	_, _, _ = notificationServiceForAccount(s.notifications, accountScopeID).UpsertSystemNotification(record)
 }
 
 func newUpdateJobID(now int64, kind string) string {

@@ -144,7 +144,9 @@ type runService interface {
 	StopSessionRun(sessionID, runID, reason string) error
 	ExecuteToolForSessionScope(ctx context.Context, workspacePath string, call tool.Call) (string, error)
 	ListAgentToolDefinitions() []tool.Definition
+	ListAgentToolDefinitionsForAccount(accountScopeID string) []tool.Definition
 	ResolveAgentToolContract(profile pebblestore.AgentProfile) (runruntime.ResolvedAgentToolContract, *permission.Policy, map[string]bool, error)
+	ResolveAgentToolContractForAccount(accountScopeID string, profile pebblestore.AgentProfile) (runruntime.ResolvedAgentToolContract, *permission.Policy, map[string]bool, error)
 }
 
 type swarmService interface {
@@ -235,11 +237,16 @@ type permissionService interface {
 	WaitForResolution(ctx context.Context, sessionID, permissionID string) (pebblestore.PermissionRecord, error)
 	CancelRunPending(sessionID, runID, reason string) ([]pebblestore.PermissionRecord, error)
 	CurrentPolicy() (permission.Policy, error)
+	CurrentPolicyForAccount(accountScopeID string) (permission.Policy, error)
 	UpsertRule(rule permission.PolicyRule) (permission.PolicyRule, error)
+	UpsertRuleForAccount(accountScopeID string, rule permission.PolicyRule) (permission.PolicyRule, error)
 	RemoveRule(ruleID string) (bool, error)
+	RemoveRuleForAccount(accountScopeID, ruleID string) (bool, error)
 	ResetPolicy() (permission.Policy, error)
+	ResetPolicyForAccount(accountScopeID string) (permission.Policy, error)
 	ApplyManagedPolicyState(state permission.ManagedPolicyState) (permission.ManagedPolicyState, error)
 	ExplainTool(mode, toolName, toolArguments string, overlay *permission.Policy) (permission.PolicyExplain, error)
+	ExplainToolForAccount(accountScopeID, mode, toolName, toolArguments string, overlay *permission.Policy) (permission.PolicyExplain, error)
 	ResolveWithPolicy(sessionID, permissionID, action, reason string) (pebblestore.PermissionRecord, *permission.PolicyRule, error)
 	ResolveWithPolicyAndArguments(sessionID, permissionID, action, reason, approvedArguments string) (pebblestore.PermissionRecord, *permission.PolicyRule, error)
 	StoreMirroredPermission(record pebblestore.PermissionRecord) error
@@ -852,7 +859,8 @@ func (s *Server) handleManageWorktree(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	result, execErr := s.runner.ExecuteToolForSessionScope(r.Context(), resolvedWorkspacePath, tool.Call{Name: "manage-worktree", Arguments: string(callArgs)})
+	ctx := identity.ContextWithPrincipal(r.Context(), principal)
+	result, execErr := s.runner.ExecuteToolForSessionScope(ctx, resolvedWorkspacePath, tool.Call{Name: "manage-worktree", Arguments: string(callArgs)})
 	if execErr != nil {
 		writeError(w, http.StatusBadRequest, execErr)
 		return
@@ -961,7 +969,7 @@ func (s *Server) handleCodexAuth(w http.ResponseWriter, r *http.Request) {
 		if event != nil {
 			s.hub.Publish(*event)
 		}
-		autoDefaults, defaultsErr := s.applyUtilityModelDefaults("codex")
+		autoDefaults, defaultsErr := s.applyUtilityModelDefaultsForAccount(accountScopeID, principal.UserID, "codex")
 		if defaultsErr != nil {
 			status.AutoDefaults = &auth.AutoDefaultsStatus{Error: defaultsErr.Error()}
 		} else if autoDefaults != nil {
@@ -1049,7 +1057,7 @@ func (s *Server) handleAuthCredentials(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		status.Connection = connection
-		autoDefaults, defaultsErr := s.applyUtilityModelDefaults(provider)
+		autoDefaults, defaultsErr := s.applyUtilityModelDefaultsForAccount(accountScopeID, principal.UserID, provider)
 		if defaultsErr != nil {
 			status.AutoDefaults = &auth.AutoDefaultsStatus{Error: defaultsErr.Error()}
 		} else if autoDefaults != nil {
@@ -1147,7 +1155,7 @@ func (s *Server) handleAuthCredentialActive(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	status.Connection = connection
-	autoDefaults, defaultsErr := s.applyUtilityModelDefaults(provider)
+	autoDefaults, defaultsErr := s.applyUtilityModelDefaultsForAccount(accountScopeID, principal.UserID, provider)
 	if defaultsErr != nil {
 		status.AutoDefaults = &auth.AutoDefaultsStatus{Error: defaultsErr.Error()}
 	} else if autoDefaults != nil {
@@ -1189,7 +1197,7 @@ func (s *Server) handleAuthCredentialDelete(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusNotFound, errors.New("credential not found"))
 		return
 	}
-	cleanup, err := s.cleanupProviderAfterCredentialDeletion(r.Context(), provider)
+	cleanup, err := s.cleanupProviderAfterCredentialDeletionForAccount(r.Context(), accountScopeID, provider)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -1227,9 +1235,14 @@ func (s *Server) handleAttachRotate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleModelPreference(w http.ResponseWriter, r *http.Request) {
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
-		pref, err := s.model.GetResolvedGlobalPreference()
+		pref, err := s.model.GetResolvedPreferenceForAccount(principal.AccountScopeID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -1247,7 +1260,7 @@ func (s *Server) handleModelPreference(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		pref, event, err := s.model.SetGlobalPreference(req.Provider, req.Model, req.Thinking, req.ServiceTier, req.ContextMode)
+		pref, event, err := s.model.SetPreferenceForAccount(principal.AccountScopeID, principal.UserID, req.Provider, req.Model, req.Thinking, req.ServiceTier, req.ContextMode)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -1264,6 +1277,10 @@ func (s *Server) handleModelPreference(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
+		return
+	}
+	if _, ok := PrincipalFromRequest(r); !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
 		return
 	}
 
@@ -1339,6 +1356,11 @@ func (s *Server) handleModelFavorites(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("model service not configured"))
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		provider := strings.TrimSpace(r.URL.Query().Get("provider"))
@@ -1352,7 +1374,7 @@ func (s *Server) handleModelFavorites(w http.ResponseWriter, r *http.Request) {
 			}
 			limit = parsed
 		}
-		records, err := s.model.ListFavorites(provider, query, limit)
+		records, err := s.model.ListFavoritesForAccount(principal.AccountScopeID, provider, query, limit)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -1375,7 +1397,7 @@ func (s *Server) handleModelFavorites(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		record, event, err := s.model.UpsertFavorite(req.Provider, req.Model, req.Label, req.Thinking)
+		record, event, err := s.model.UpsertFavoriteForAccount(principal.AccountScopeID, principal.UserID, req.Provider, req.Model, req.Label, req.Thinking)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -1401,6 +1423,11 @@ func (s *Server) handleModelFavoriteDelete(w http.ResponseWriter, r *http.Reques
 		methodNotAllowed(w)
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
 	var req struct {
 		Provider string `json:"provider"`
 		Model    string `json:"model"`
@@ -1409,7 +1436,7 @@ func (s *Server) handleModelFavoriteDelete(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	deleted, event, err := s.model.DeleteFavorite(req.Provider, req.Model)
+	deleted, event, err := s.model.DeleteFavoriteForAccount(principal.AccountScopeID, req.Provider, req.Model)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -3249,7 +3276,7 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		integrationCtx, err := s.applyIntegrationBuilderRunContext(sessionID, &sessionRunRequestAdapter{
+		integrationCtx, err := s.applyIntegrationBuilderRunContext(principal, sessionID, &sessionRunRequestAdapter{
 			agentName:       func() string { return req.AgentName },
 			setAgentName:    func(value string) { req.AgentName = value },
 			instructions:    func() string { return req.Instructions },
@@ -3425,6 +3452,12 @@ func (s *Server) handleSTTTranscribe(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	ctx := identity.ContextWithPrincipal(r.Context(), principal)
 	if s.voice == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("voice service not configured"))
 		return
@@ -3445,7 +3478,7 @@ func (s *Server) handleSTTTranscribe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	result, err := s.voice.Transcribe(context.Background(), voice.TranscribeInput{
+	result, err := s.voice.Transcribe(ctx, voice.TranscribeInput{
 		Profile:  req.Profile,
 		Provider: req.Provider,
 		Model:    req.Model,
@@ -3603,10 +3636,16 @@ func (s *Server) handleUISettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("ui settings service not configured"))
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	accountScopeID := strings.TrimSpace(principal.AccountScopeID)
 
 	switch r.Method {
 	case http.MethodGet:
-		settings, err := s.uiSettings.Get()
+		settings, err := s.uiSettings.GetForAccount(accountScopeID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -3629,7 +3668,7 @@ func (s *Server) handleUISettings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		current, err := s.uiSettings.Get()
+		current, err := s.uiSettings.GetForAccount(accountScopeID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -3647,7 +3686,7 @@ func (s *Server) handleUISettings(w http.ResponseWriter, r *http.Request) {
 			}
 			settings.Swarm.Name = strings.TrimSpace(state.Node.Name)
 		}
-		saved, err := s.uiSettings.Set(settings)
+		saved, err := s.uiSettings.SetForAccount(accountScopeID, settings)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -3663,11 +3702,17 @@ func (s *Server) handleVoiceStatus(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	ctx := identity.ContextWithPrincipal(r.Context(), principal)
 	if s.voice == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("voice service not configured"))
 		return
 	}
-	status, err := s.voice.Status(context.Background())
+	status, err := s.voice.Status(ctx)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -3684,11 +3729,17 @@ func (s *Server) handleVoiceProfiles(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	ctx := identity.ContextWithPrincipal(r.Context(), principal)
 	if s.voice == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("voice service not configured"))
 		return
 	}
-	profiles, err := s.voice.ListProfiles(context.Background())
+	profiles, err := s.voice.ListProfiles(ctx)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -3705,6 +3756,12 @@ func (s *Server) handleVoiceProfileUpsert(w http.ResponseWriter, r *http.Request
 		methodNotAllowed(w)
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	ctx := identity.ContextWithPrincipal(r.Context(), principal)
 	if s.voice == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("voice service not configured"))
 		return
@@ -3722,7 +3779,7 @@ func (s *Server) handleVoiceProfileUpsert(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	profile, err := s.voice.UpsertProfile(context.Background(), voice.ProfileUpsertInput{
+	profile, err := s.voice.UpsertProfile(ctx, voice.ProfileUpsertInput{
 		ID:          req.ID,
 		Label:       req.Label,
 		Adapter:     req.Adapter,
@@ -3747,6 +3804,12 @@ func (s *Server) handleVoiceProfileDelete(w http.ResponseWriter, r *http.Request
 		methodNotAllowed(w)
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	ctx := identity.ContextWithPrincipal(r.Context(), principal)
 	if s.voice == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("voice service not configured"))
 		return
@@ -3758,7 +3821,7 @@ func (s *Server) handleVoiceProfileDelete(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	result, err := s.voice.DeleteProfile(context.Background(), req.ID)
+	result, err := s.voice.DeleteProfile(ctx, req.ID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -3775,6 +3838,12 @@ func (s *Server) handleVoiceConfig(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	ctx := identity.ContextWithPrincipal(r.Context(), principal)
 	if s.voice == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("voice service not configured"))
 		return
@@ -3793,7 +3862,7 @@ func (s *Server) handleVoiceConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	status, err := s.voice.UpdateConfig(context.Background(), voice.ConfigPatch{
+	status, err := s.voice.UpdateConfig(ctx, voice.ConfigPatch{
 		STTProfile:  req.STTProfile,
 		STTProvider: req.STTProvider,
 		STTModel:    req.STTModel,
@@ -3819,11 +3888,17 @@ func (s *Server) handleVoiceDevices(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	ctx := identity.ContextWithPrincipal(r.Context(), principal)
 	if s.voice == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("voice service not configured"))
 		return
 	}
-	devices, err := s.voice.ListDevices(context.Background())
+	devices, err := s.voice.ListDevices(ctx)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -3840,6 +3915,12 @@ func (s *Server) handleVoiceTestSTT(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	ctx := identity.ContextWithPrincipal(r.Context(), principal)
 	if s.voice == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("voice service not configured"))
 		return
@@ -3856,7 +3937,7 @@ func (s *Server) handleVoiceTestSTT(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	result, err := s.voice.TestSTT(context.Background(), voice.TestSTTInput{
+	result, err := s.voice.TestSTT(ctx, voice.TestSTTInput{
 		Profile:  req.Profile,
 		Provider: req.Provider,
 		Model:    req.Model,
@@ -4245,12 +4326,18 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("permission service is not configured"))
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	accountScopeID := strings.TrimSpace(principal.AccountScopeID)
 	path := strings.TrimSpace(r.URL.Path)
 	switch {
 	case path == "/v1/permissions":
 		switch r.Method {
 		case http.MethodGet:
-			policy, err := s.perm.CurrentPolicy()
+			policy, err := s.perm.CurrentPolicyForAccount(accountScopeID)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
@@ -4267,7 +4354,7 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
-			rule, err := s.perm.UpsertRule(permission.PolicyRule{
+			rule, err := s.perm.UpsertRuleForAccount(accountScopeID, permission.PolicyRule{
 				Kind:     permission.PolicyRuleKind(req.Kind),
 				Decision: permission.PolicyDecision(req.Decision),
 				Tool:     req.Tool,
@@ -4334,7 +4421,7 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 			methodNotAllowed(w)
 			return
 		}
-		policy, err := s.perm.ResetPolicy()
+		policy, err := s.perm.ResetPolicyForAccount(accountScopeID)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -4347,7 +4434,7 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 			methodNotAllowed(w)
 			return
 		}
-		explain, err := s.perm.ExplainTool(r.URL.Query().Get("mode"), r.URL.Query().Get("tool"), r.URL.Query().Get("arguments"), nil)
+		explain, err := s.perm.ExplainToolForAccount(accountScopeID, r.URL.Query().Get("mode"), r.URL.Query().Get("tool"), r.URL.Query().Get("arguments"), nil)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -4365,7 +4452,7 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 			methodNotAllowed(w)
 			return
 		}
-		removed, err := s.perm.RemoveRule(ruleID)
+		removed, err := s.perm.RemoveRuleForAccount(accountScopeID, ruleID)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return

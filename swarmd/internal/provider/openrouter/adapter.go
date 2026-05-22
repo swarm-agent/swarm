@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/provider/defaults"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -22,7 +23,7 @@ func (a *Adapter) ID() string {
 	return "openrouter"
 }
 
-func (a *Adapter) Status(context.Context) (provideriface.Status, error) {
+func (a *Adapter) Status(ctx context.Context) (provideriface.Status, error) {
 	providerDefaults := defaults.MustLookup("openrouter")
 	if a == nil || a.authStore == nil {
 		return provideriface.Status{
@@ -34,7 +35,18 @@ func (a *Adapter) Status(context.Context) (provideriface.Status, error) {
 			AuthMethods:     openRouterAuthMethods(),
 		}, nil
 	}
-	record, ok, err := a.authStore.GetActiveCredential("openrouter")
+	principal, principalOK := identity.PrincipalFromContext(ctx)
+	if !principalOK {
+		return provideriface.Status{
+			ID:              "openrouter",
+			Ready:           false,
+			Reason:          "product identity is required",
+			DefaultModel:    providerDefaults.PrimaryModel,
+			DefaultThinking: providerDefaults.PrimaryThinking,
+			AuthMethods:     openRouterAuthMethods(),
+		}, nil
+	}
+	record, ok, err := a.authStore.GetActiveCredentialForAccount(principal.AccountScopeID, "openrouter")
 	if err != nil {
 		return provideriface.Status{}, err
 	}

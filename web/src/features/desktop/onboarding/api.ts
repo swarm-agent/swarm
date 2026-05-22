@@ -1,8 +1,16 @@
-import { requestJson } from '../../../app/api'
+import { apiFetch, readErrorMessage, requestJson } from '../../../app/api'
 import { debugLog, createDebugTimer } from '../../../lib/debug-log'
-import { listAuthCredentials } from '../settings/queries/list-auth-credentials'
-import { listProviders } from '../settings/queries/list-providers'
-import { fetchVaultStatus } from '../vault/api'
+import {
+  mapAuthCredential,
+  mapProviderStatus,
+} from '../settings/types/auth'
+import type {
+  AuthCredentialListResponse,
+  AuthCredentialListResponseWire,
+  ProviderStatus,
+  ProvidersResponseWire,
+} from '../settings/types/auth'
+import { mapVaultStatus, type VaultStatus, type VaultStatusWire } from '../vault/types'
 import type { ContainerProfileMount } from '../swarm/types/container-mounts'
 import type {
   DesktopOnboardingAuth,
@@ -295,15 +303,65 @@ export interface RemoteSwarmPairingApprovalResult {
   }
 }
 
+async function loadOnboardingProviders(): Promise<ProviderStatus[]> {
+  const response = await apiFetch('/v1/providers', undefined, false)
+  if (response.status === 401) {
+    debugLog('desktop-onboarding-api', 'fetchDesktopOnboardingStatus:providers-unauthorized-fallback')
+    return []
+  }
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response))
+  }
+  const payload = await response.json() as ProvidersResponseWire
+  return Array.isArray(payload.providers) ? payload.providers.map(mapProviderStatus) : []
+}
+
+async function loadOnboardingCredentials(): Promise<AuthCredentialListResponse> {
+  const response = await apiFetch('/v1/auth/credentials?limit=200', undefined, false)
+  if (response.status === 401) {
+    debugLog('desktop-onboarding-api', 'fetchDesktopOnboardingStatus:credentials-unauthorized-fallback')
+    return {
+      provider: '',
+      query: '',
+      total: 0,
+      records: [],
+      providers: [],
+    }
+  }
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response))
+  }
+  const payload = await response.json() as AuthCredentialListResponseWire
+  return {
+    provider: String(payload.provider ?? '').trim(),
+    query: String(payload.query ?? '').trim(),
+    total: typeof payload.total === 'number' ? payload.total : 0,
+    records: Array.isArray(payload.records) ? payload.records.map(mapAuthCredential) : [],
+    providers: Array.isArray(payload.providers) ? payload.providers.map((value) => String(value)) : [],
+  }
+}
+
+async function loadOnboardingVault(): Promise<VaultStatus> {
+  const response = await apiFetch('/v1/vault', undefined, false)
+  if (response.status === 401) {
+    debugLog('desktop-onboarding-api', 'fetchDesktopOnboardingStatus:vault-unauthorized-fallback')
+    return mapVaultStatus({})
+  }
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response))
+  }
+  return mapVaultStatus(await response.json() as VaultStatusWire)
+}
+
 export async function fetchDesktopOnboardingStatus(): Promise<DesktopOnboardingStatus> {
   const finish = createDebugTimer('desktop-onboarding-api', 'fetchDesktopOnboardingStatus')
   debugLog('desktop-onboarding-api', 'fetchDesktopOnboardingStatus:request')
   const [onboarding, swarmState, vault, providers, credentials] = await Promise.all([
     requestJson<DesktopOnboardingStatusWire>('/v1/onboarding'),
     fetchSwarmState(),
-    fetchVaultStatus(),
-    listProviders(),
-    listAuthCredentials(),
+    loadOnboardingVault(),
+    loadOnboardingProviders(),
+    loadOnboardingCredentials(),
   ])
 
   const mode = normalizeBootstrapMode(onboarding.config?.mode)

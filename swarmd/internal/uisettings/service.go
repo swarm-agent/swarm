@@ -125,10 +125,14 @@ func (s *Service) SetEventPublisher(events *pebblestore.EventLog, publish func(p
 }
 
 func (s *Service) Get() (UISettings, error) {
+	return s.GetForAccount("")
+}
+
+func (s *Service) GetForAccount(accountScopeID string) (UISettings, error) {
 	if s == nil || s.store == nil {
 		return UISettings{}, fmt.Errorf("ui settings service not configured")
 	}
-	record, ok, err := s.store.Get()
+	record, ok, err := s.store.GetForAccount(strings.TrimSpace(accountScopeID))
 	if err != nil {
 		return UISettings{}, fmt.Errorf("read ui settings: %w", err)
 	}
@@ -139,10 +143,14 @@ func (s *Service) Get() (UISettings, error) {
 }
 
 func (s *Service) Set(settings UISettings) (UISettings, error) {
+	return s.SetForAccount("", settings)
+}
+
+func (s *Service) SetForAccount(accountScopeID string, settings UISettings) (UISettings, error) {
 	if s == nil || s.store == nil {
 		return UISettings{}, fmt.Errorf("ui settings service not configured")
 	}
-	record, err := s.store.Update(pebblestore.UISettingsPatch{
+	record, err := s.store.UpdateForAccount(strings.TrimSpace(accountScopeID), pebblestore.UISettingsPatch{
 		Theme:    themeRecordFromSettings(settings.Theme),
 		Input:    inputRecordFromSettings(settings.Input),
 		Chat:     chatRecordFromSettings(settings.Chat),

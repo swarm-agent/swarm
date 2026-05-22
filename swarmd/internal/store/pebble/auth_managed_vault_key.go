@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/cockroachdb/pebble"
 )
 
 type managedVaultKeyRecord struct {
@@ -75,6 +77,38 @@ func (s *AuthStore) DeleteManagedVaultKey(scopeID string) error {
 		return errors.New("managed vault key scope is required")
 	}
 	return s.secretStore.Delete(KeyAuthManagedVaultKey(scopeID))
+}
+
+func (s *AuthStore) listManagedVaultKeysWithDEK(dek []byte) ([]managedVaultKeyRecord, error) {
+	if len(dek) == 0 {
+		return nil, errors.New("managed vault key decryption key is required")
+	}
+	iter, err := s.secretStore.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte(KeyAuthManagedVaultKeyPrefix),
+		UpperBound: []byte(KeyAuthManagedVaultKeyPrefix + "\xff"),
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+	records := make([]managedVaultKeyRecord, 0)
+	for valid := iter.First(); valid; valid = iter.Next() {
+		payload, err := iter.ValueAndErr()
+		if err != nil {
+			return nil, err
+		}
+		record, err := decodeManagedVaultKeyPayload(dek, append([]byte(nil), payload...))
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(record.ScopeID) != "" {
+			records = append(records, record)
+		}
+	}
+	if err := iter.Error(); err != nil {
+		return nil, err
+	}
+	return records, nil
 }
 
 func encodeManagedVaultKeyPayload(dek []byte, record managedVaultKeyRecord, meta *VaultMetadata) ([]byte, error) {

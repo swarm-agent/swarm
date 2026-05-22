@@ -162,7 +162,7 @@ func (s *Service) SetImageThreadStore(store *pebblestore.ImageThreadStore) {
 	s.imageThreads = store
 }
 
-func (s *Service) Capabilities(context.Context) (Capabilities, error) {
+func (s *Service) Capabilities(ctx context.Context) (Capabilities, error) {
 	codexStatus := ProviderStatus{
 		ID:            ProviderCodexOpenAI,
 		Label:         "Codex Image Gen (OAuth only)",
@@ -173,9 +173,16 @@ func (s *Service) Capabilities(context.Context) (Capabilities, error) {
 	if s == nil || s.codexClient == nil || s.authStore == nil {
 		codexStatus.Ready = false
 		codexStatus.Reason = "codex image provider is not configured"
-	} else {
+	} else if principal, ok := identity.PrincipalFromContext(ctx); !ok || !principal.Valid() {
+		codexStatus.Ready = false
+		codexStatus.Reason = "product identity is required"
+	} else if record, ok, err := s.authStore.GetCodexAuthRecordForAccount(principal.AccountScopeID); err != nil {
+		return Capabilities{}, fmt.Errorf("read codex image auth: %w", err)
+	} else if !ok || strings.TrimSpace(record.AccessToken) == "" || strings.TrimSpace(record.RefreshToken) == "" {
 		codexStatus.Ready = false
 		codexStatus.Reason = "connect Codex with OAuth to enable image generation"
+	} else {
+		codexStatus.Ready = true
 	}
 	geminiStatus := ProviderStatus{
 		ID:           ProviderGoogleGemini,
@@ -186,9 +193,16 @@ func (s *Service) Capabilities(context.Context) (Capabilities, error) {
 	if s == nil || s.geminiImageClient == nil || s.authStore == nil {
 		geminiStatus.Ready = false
 		geminiStatus.Reason = "google gemini image provider is not configured"
-	} else {
+	} else if principal, ok := identity.PrincipalFromContext(ctx); !ok || !principal.Valid() {
+		geminiStatus.Ready = false
+		geminiStatus.Reason = "product identity is required"
+	} else if record, ok, err := s.authStore.GetActiveCredentialForAccount(principal.AccountScopeID, "google"); err != nil {
+		return Capabilities{}, fmt.Errorf("read google image auth: %w", err)
+	} else if !ok || strings.TrimSpace(record.APIKey) == "" {
 		geminiStatus.Ready = false
 		geminiStatus.Reason = "connect a Google API key to enable Gemini image generation"
+	} else {
+		geminiStatus.Ready = true
 	}
 	return Capabilities{Providers: []ProviderStatus{codexStatus, geminiStatus}}, nil
 }
@@ -250,7 +264,20 @@ func (s *Service) generateCodexOpenAI(ctx context.Context, req GenerateRequest, 
 		imageGenerationLogf("stage=preflight reason=codex_client_nil will_save=false")
 		return GenerateResult{}, errors.New("codex image provider is not configured")
 	}
-	session, err := s.openImageSession(req.Target)
+	if s.authStore == nil {
+		return GenerateResult{}, errors.New("codex auth store is not configured")
+	}
+	if !req.Principal.Valid() {
+		return GenerateResult{}, identity.ErrPrincipalRequired
+	}
+	record, ok, err := s.authStore.GetCodexAuthRecordForAccount(req.Principal.AccountScopeID)
+	if err != nil {
+		return GenerateResult{}, fmt.Errorf("read codex image auth: %w", err)
+	}
+	if !ok || strings.TrimSpace(record.AccessToken) == "" || strings.TrimSpace(record.RefreshToken) == "" {
+		return GenerateResult{}, errors.New("connect Codex with OAuth to enable image generation")
+	}
+	session, err := s.openImageSession(req.Principal, req.Target)
 	if err != nil {
 		imageGenerationLogf("stage=open_session thread_id=%q reason=%q will_save=false", strings.TrimSpace(req.Target.ThreadID), err.Error())
 		return GenerateResult{}, err
@@ -263,7 +290,7 @@ func (s *Service) generateCodexOpenAI(ctx context.Context, req GenerateRequest, 
 
 	streamCapture := newImageStreamFrameCapture(0)
 	imageGenerationLogf("stage=provider_call_start thread_id=%q requested_count=%d storage_path=%q", session.thread.ID, count, session.storagePath)
-	generated, err := s.codexClient.GenerateImage(ctx, codex.ImageGenerationRequest{
+	generated, err := s.codexClient.GenerateImage(identity.ContextWithPrincipal(ctx, req.Principal), codex.ImageGenerationRequest{
 		Model:         modelID,
 		Prompt:        prompt,
 		Size:          firstNonEmpty(req.Size, settingString(req.Settings, "size")),
@@ -339,7 +366,10 @@ func completedCodexImages(generated codex.ImageGenerationResult, expectedCount i
 	return finals, nil
 }
 
-func (s *Service) openImageSession(target GenerationTarget) (imageSession, error) {
+func (s *Service) openImageSession(principal identity.Principal, target GenerationTarget) (imageSession, error) {
+	if !principal.Valid() {
+		return imageSession{}, identity.ErrPrincipalRequired
+	}
 	if strings.TrimSpace(target.Kind) != TargetWorkspaceImage {
 		return imageSession{}, errors.New("target.kind must be workspace_image_session")
 	}
@@ -350,7 +380,7 @@ func (s *Service) openImageSession(target GenerationTarget) (imageSession, error
 	if threadID == "" {
 		return imageSession{}, errors.New("thread_id is required")
 	}
-	thread, ok, err := s.imageThreads.Get(threadID)
+	thread, ok, err := s.imageThreads.GetForAccount(principal.AccountScopeID, threadID)
 	if err != nil {
 		return imageSession{}, err
 	}
@@ -367,7 +397,9 @@ func (s *Service) openImageSession(target GenerationTarget) (imageSession, error
 	}
 	thread.Metadata = imageThreadStorageMetadata(thread.Metadata, storagePath)
 	thread.ImageFolders = []string{storagePath}
-	thread, err = s.imageThreads.Update(thread)
+	thread.AccountScopeID = principal.AccountScopeID
+	thread.UserID = firstNonEmpty(thread.UserID, principal.UserID)
+	thread, err = s.imageThreads.UpdateForAccount(principal.AccountScopeID, thread)
 	if err != nil {
 		return imageSession{}, fmt.Errorf("update image session storage metadata: %w", err)
 	}
@@ -441,7 +473,7 @@ func (s *Service) saveGeneratedImages(session imageSession, finalImages []codex.
 		thread.ImageAssetOrder = appendUniqueString(thread.ImageAssetOrder, asset.ID)
 	}
 	imageGenerationLogf("stage=db_update_attempt thread_id=%q new_assets=%d total_thread_assets=%d storage_path=%q", thread.ID, len(assets), len(thread.ImageAssets), storagePath)
-	updated, err := s.imageThreads.Update(thread)
+	updated, err := s.imageThreads.UpdateForAccount(thread.AccountScopeID, thread)
 	if err != nil {
 		imageGenerationLogf("stage=db_update_failed thread_id=%q reason=%q new_assets=%d storage_path=%q", thread.ID, err.Error(), len(assets), storagePath)
 		return nil, pebblestore.ImageThreadSnapshot{}, fmt.Errorf("update image thread asset metadata: %w", err)
@@ -539,7 +571,11 @@ func writePrivateFileAtomic(targetPath string, data []byte) (os.FileInfo, error)
 }
 
 func (s *Service) ResolveAssetPath(threadID, assetID string) (string, pebblestore.ImageAssetSnapshot, error) {
-	session, err := s.openImageSession(GenerationTarget{Kind: TargetWorkspaceImage, ThreadID: threadID})
+	return s.ResolveAssetPathForPrincipal(identity.Principal{}, threadID, assetID)
+}
+
+func (s *Service) ResolveAssetPathForPrincipal(principal identity.Principal, threadID, assetID string) (string, pebblestore.ImageAssetSnapshot, error) {
+	session, err := s.openImageSession(principal, GenerationTarget{Kind: TargetWorkspaceImage, ThreadID: threadID})
 	if err != nil {
 		return "", pebblestore.ImageAssetSnapshot{}, err
 	}
@@ -561,7 +597,11 @@ func (s *Service) ResolveAssetPath(threadID, assetID string) (string, pebblestor
 }
 
 func (s *Service) ResolveSessionStoragePath(threadID string) (string, pebblestore.ImageThreadSnapshot, error) {
-	session, err := s.openImageSession(GenerationTarget{Kind: TargetWorkspaceImage, ThreadID: threadID})
+	return s.ResolveSessionStoragePathForPrincipal(identity.Principal{}, threadID)
+}
+
+func (s *Service) ResolveSessionStoragePathForPrincipal(principal identity.Principal, threadID string) (string, pebblestore.ImageThreadSnapshot, error) {
+	session, err := s.openImageSession(principal, GenerationTarget{Kind: TargetWorkspaceImage, ThreadID: threadID})
 	if err != nil {
 		return "", pebblestore.ImageThreadSnapshot{}, err
 	}

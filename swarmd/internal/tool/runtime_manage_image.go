@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"swarm/packages/swarmd/internal/appstorage"
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -23,7 +24,10 @@ func (r *Runtime) manageImageInspect(ctx context.Context, scope WorkspaceScope) 
 	if r == nil || r.imageGen == nil {
 		return "", errors.New("manage-image image generation service is not configured; background image jobs must run through the workspace-owning daemon")
 	}
-	caps, err := r.imageGen.Capabilities(ctx)
+	if !scope.Principal.Valid() {
+		return "", errors.New("manage-image requires a trusted principal")
+	}
+	caps, err := r.imageGen.Capabilities(identity.ContextWithPrincipal(ctx, scope.Principal))
 	if err != nil {
 		return "", fmt.Errorf("manage-image inspect failed: %w", err)
 	}
@@ -55,6 +59,9 @@ func (r *Runtime) manageImageGenerate(ctx context.Context, scope WorkspaceScope,
 	if r == nil || r.imageGen == nil || r.imageThreads == nil {
 		return "", errors.New("manage-image image service/storage is not configured; background image jobs must run through the workspace-owning daemon")
 	}
+	if !scope.Principal.Valid() {
+		return "", errors.New("manage-image requires a trusted principal")
+	}
 	workspacePath := strings.TrimSpace(scope.PrimaryPath)
 	if workspacePath == "" {
 		return "", errors.New("manage-image requires an active workspace path")
@@ -63,7 +70,7 @@ func (r *Runtime) manageImageGenerate(ctx context.Context, scope WorkspaceScope,
 	if prompt == "" {
 		return "", errors.New("manage-image generate requires prompt")
 	}
-	caps, err := r.imageGen.Capabilities(ctx)
+	caps, err := r.imageGen.Capabilities(identity.ContextWithPrincipal(ctx, scope.Principal))
 	if err != nil {
 		return "", fmt.Errorf("manage-image inspect providers failed: %w", err)
 	}
@@ -87,7 +94,7 @@ func (r *Runtime) manageImageGenerate(ctx context.Context, scope WorkspaceScope,
 		}
 		threadID = thread.ID
 		createdThread = true
-	} else if _, ok, getErr := r.imageThreads.Get(threadID); getErr != nil {
+	} else if _, ok, getErr := r.imageThreads.GetForAccount(scope.Principal.AccountScopeID, threadID); getErr != nil {
 		return "", fmt.Errorf("manage-image get image thread failed: %w", getErr)
 	} else if !ok {
 		return "", errors.New("manage-image image thread not found")
@@ -188,7 +195,7 @@ func (r *Runtime) createManageImageThread(scope WorkspaceScope, args map[string]
 			workspaceName = strings.TrimSpace(info.WorkspaceName)
 		}
 	}
-	thread, err := r.imageThreads.Create(pebblestore.ImageThreadSnapshot{
+	thread, err := r.imageThreads.CreateForAccount(scope.Principal.AccountScopeID, scope.Principal.UserID, pebblestore.ImageThreadSnapshot{
 		ID:            threadID,
 		WorkspacePath: workspacePath,
 		WorkspaceName: workspaceName,

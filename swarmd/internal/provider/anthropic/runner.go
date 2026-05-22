@@ -9,6 +9,7 @@ import (
 
 	anthropicapi "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"swarm/packages/swarmd/internal/identity"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -34,7 +35,7 @@ func (r *Runner) CreateResponse(ctx context.Context, req provideriface.Request) 
 	if r == nil || r.authStore == nil {
 		return provideriface.Response{}, errors.New("anthropic runner auth store is not configured")
 	}
-	client, modelName, params, err := r.buildRequest(req)
+	client, modelName, params, err := r.buildRequest(ctx, req)
 	if err != nil {
 		return provideriface.Response{}, err
 	}
@@ -53,7 +54,7 @@ func (r *Runner) CreateResponseStreaming(ctx context.Context, req provideriface.
 	if r == nil || r.authStore == nil {
 		return provideriface.Response{}, errors.New("anthropic runner auth store is not configured")
 	}
-	client, modelName, params, err := r.buildRequest(req)
+	client, modelName, params, err := r.buildRequest(ctx, req)
 	if err != nil {
 		return provideriface.Response{}, err
 	}
@@ -100,8 +101,12 @@ func (r *Runner) CreateResponseStreaming(ctx context.Context, req provideriface.
 	return response, nil
 }
 
-func (r *Runner) buildRequest(req provideriface.Request) (anthropicapi.Client, string, anthropicapi.MessageNewParams, error) {
-	record, ok, err := r.authStore.GetActiveCredential("anthropic")
+func (r *Runner) buildRequest(ctx context.Context, req provideriface.Request) (anthropicapi.Client, string, anthropicapi.MessageNewParams, error) {
+	principal, principalOK := identity.PrincipalFromContext(ctx)
+	if !principalOK {
+		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, identity.ErrPrincipalRequired
+	}
+	record, ok, err := r.authStore.GetActiveCredentialForAccount(principal.AccountScopeID, "anthropic")
 	if err != nil {
 		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, fmt.Errorf("read anthropic auth: %w", err)
 	}

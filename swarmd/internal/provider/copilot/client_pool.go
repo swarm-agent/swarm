@@ -15,6 +15,7 @@ import (
 
 	sdk "github.com/github/copilot-sdk/go"
 
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -168,7 +169,11 @@ func (m *Manager) resolveActiveAuthBinding(ctx context.Context) (runtimeAuthBind
 		return runtimeAuthBinding{}, errors.New("copilot auth store is not configured")
 	}
 
-	record, ok, err := m.authStore.GetActiveCredential("copilot")
+	principal, principalOK := identity.PrincipalFromContext(ctx)
+	if !principalOK {
+		return runtimeAuthBinding{}, identity.ErrPrincipalRequired
+	}
+	record, ok, err := m.authStore.GetActiveCredentialForAccount(principal.AccountScopeID, "copilot")
 	if err != nil {
 		return runtimeAuthBinding{}, fmt.Errorf("read active Copilot auth source: %w", err)
 	}

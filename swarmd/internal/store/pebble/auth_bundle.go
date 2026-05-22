@@ -66,7 +66,7 @@ func (s *AuthStore) ExportCredentialsForAccount(accountScopeID, bundlePassword, 
 		return nil, 0, errors.New("bundle password is required")
 	}
 
-	status, err := s.VaultStatus()
+	status, err := s.VaultStatusForAccount(accountScopeID)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -74,7 +74,7 @@ func (s *AuthStore) ExportCredentialsForAccount(accountScopeID, bundlePassword, 
 		if vaultPassword == "" {
 			return nil, 0, ErrVaultLocked
 		}
-		if _, err := s.UnlockVault(vaultPassword); err != nil {
+		if _, err := s.UnlockVaultForAccount(accountScopeID, vaultPassword); err != nil {
 			return nil, 0, err
 		}
 	}
@@ -188,24 +188,24 @@ func (s *AuthStore) importCredentialBundleWithManagedVaultForAccount(accountScop
 		return CredentialImportResult{}, err
 	}
 
-	status, err := s.VaultStatus()
+	status, err := s.VaultStatusForAccount(accountScopeID)
 	if err != nil {
 		return CredentialImportResult{}, err
 	}
 	if !status.Enabled {
 		if managedVaultKey != "" {
-			status, err = s.ConfigureManagedVaultAccess(vaultPassword, managedVaultKey)
+			status, err = s.ConfigureManagedVaultAccessForAccount(accountScopeID, vaultPassword, managedVaultKey)
 			if err != nil {
 				return CredentialImportResult{}, err
 			}
 		} else if vaultPassword != "" {
-			status, err = s.EnableVault(vaultPassword)
+			status, err = s.EnableVaultForAccount(accountScopeID, vaultPassword)
 			if err != nil {
 				return CredentialImportResult{}, err
 			}
 		}
 	} else if managedVaultKey != "" {
-		status, err = s.ConfigureManagedVaultAccess(vaultPassword, managedVaultKey)
+		status, err = s.ConfigureManagedVaultAccessForAccount(accountScopeID, vaultPassword, managedVaultKey)
 		if err != nil {
 			return CredentialImportResult{}, err
 		}
@@ -213,7 +213,7 @@ func (s *AuthStore) importCredentialBundleWithManagedVaultForAccount(accountScop
 		if vaultPassword == "" {
 			return CredentialImportResult{}, ErrVaultLocked
 		}
-		status, err = s.UnlockVault(vaultPassword)
+		status, err = s.UnlockVaultForAccount(accountScopeID, vaultPassword)
 		if err != nil {
 			return CredentialImportResult{}, err
 		}
@@ -262,7 +262,7 @@ func (s *AuthStore) importCredentialBundleWithManagedVaultForAccount(accountScop
 			}
 		}
 	}
-	status, err = s.VaultStatus()
+	status, err = s.VaultStatusForAccount(accountScopeID)
 	if err != nil {
 		return CredentialImportResult{}, err
 	}

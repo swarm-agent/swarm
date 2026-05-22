@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/provider/defaults"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -65,7 +66,18 @@ func (a *Adapter) status(ctx context.Context, checkAuth copilotAuthStatusFunc) (
 		}, nil
 	}
 
-	record, ok, err := a.authStore.GetActiveCredential("copilot")
+	principal, principalOK := identity.PrincipalFromContext(ctx)
+	if !principalOK {
+		return provideriface.Status{
+			ID:              "copilot",
+			Ready:           false,
+			Reason:          "product identity is required",
+			DefaultModel:    providerDefaults.PrimaryModel,
+			DefaultThinking: providerDefaults.PrimaryThinking,
+			AuthMethods:     copilotAuthMethods(),
+		}, nil
+	}
+	record, ok, err := a.authStore.GetActiveCredentialForAccount(principal.AccountScopeID, "copilot")
 	if err != nil {
 		return provideriface.Status{}, err
 	}

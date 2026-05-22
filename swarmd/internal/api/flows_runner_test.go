@@ -597,6 +597,14 @@ func (f *fakeFlowRunService) ListAgentToolDefinitions() []tool.Definition {
 	return nil
 }
 
+func (f *fakeFlowRunService) ListAgentToolDefinitionsForAccount(string) []tool.Definition {
+	return nil
+}
+
 func (f *fakeFlowRunService) ResolveAgentToolContract(pebblestore.AgentProfile) (runruntime.ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
+	return runruntime.ResolvedAgentToolContract{}, nil, nil, nil
+}
+
+func (f *fakeFlowRunService) ResolveAgentToolContractForAccount(string, pebblestore.AgentProfile) (runruntime.ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
 	return runruntime.ResolvedAgentToolContract{}, nil, nil, nil
 }

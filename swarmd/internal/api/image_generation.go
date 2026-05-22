@@ -29,7 +29,13 @@ func (s *Server) handleImageGenerationProviders(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusInternalServerError, errors.New("image generation service is not configured"))
 		return
 	}
-	caps, err := s.imageGen.Capabilities(r.Context())
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
+	ctx := identity.ContextWithPrincipal(r.Context(), principal)
+	caps, err := s.imageGen.Capabilities(ctx)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -136,9 +142,14 @@ func (s *Server) handleImageAssets(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("image generation service is not configured"))
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
 	threadID := strings.TrimSpace(r.URL.Query().Get("thread_id"))
 	assetID := strings.TrimSpace(r.URL.Query().Get("asset_id"))
-	assetPath, asset, err := s.imageGen.ResolveAssetPath(threadID, assetID)
+	assetPath, asset, err := s.imageGen.ResolveAssetPathForPrincipal(principal, threadID, assetID)
 	if err != nil {
 		status := http.StatusBadRequest
 		if strings.Contains(err.Error(), "not found") {

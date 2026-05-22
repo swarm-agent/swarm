@@ -38,7 +38,7 @@ func TestManageImageInspectShape(t *testing.T) {
 		DefaultModel: "gemini-test",
 		Models:       []string{"gemini-test"},
 	}}}}, nil)
-	output, err := rt.ExecuteForWorkspaceScopeWithRuntime(context.Background(), WorkspaceScope{PrimaryPath: t.TempDir()}, Call{
+	output, err := rt.ExecuteForWorkspaceScopeWithRuntime(context.Background(), WorkspaceScope{PrimaryPath: t.TempDir(), Principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-1", AccountScopeID: "account-1"}}, Call{
 		CallID:    "manage-image-inspect",
 		Name:      "manage-image",
 		Arguments: `{"action":"inspect"}`,
@@ -137,8 +137,18 @@ func (f *fakeManageImageThreadStore) Create(thread pebblestore.ImageThreadSnapsh
 	return thread, nil
 }
 
+func (f *fakeManageImageThreadStore) CreateForAccount(accountScopeID, userID string, thread pebblestore.ImageThreadSnapshot) (pebblestore.ImageThreadSnapshot, error) {
+	thread.AccountScopeID = accountScopeID
+	thread.UserID = userID
+	return thread, nil
+}
+
 func (f *fakeManageImageThreadStore) Get(threadID string) (pebblestore.ImageThreadSnapshot, bool, error) {
 	return pebblestore.ImageThreadSnapshot{ID: threadID}, true, nil
+}
+
+func (f *fakeManageImageThreadStore) GetForAccount(accountScopeID, threadID string) (pebblestore.ImageThreadSnapshot, bool, error) {
+	return pebblestore.ImageThreadSnapshot{ID: threadID, AccountScopeID: accountScopeID}, true, nil
 }
 
 func TestManageImageWithRealImagegenServiceSavesCompactRefsNoBase64(t *testing.T) {

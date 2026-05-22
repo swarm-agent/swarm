@@ -80,6 +80,14 @@ func (s *AuthStore) VaultStatus() (VaultStatus, error) {
 	return vaultStatusFromState(meta, unlocked), nil
 }
 
+func (s *AuthStore) VaultStatusForAccount(accountScopeID string) (VaultStatus, error) {
+	meta, unlocked, err := s.snapshotVaultStateForAccount(accountScopeID)
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	return vaultStatusFromState(meta, unlocked), nil
+}
+
 func (s *AuthStore) EnableVault(password string) (VaultStatus, error) {
 	return s.enableVaultWithManagedKey(password, "")
 }
@@ -238,6 +246,61 @@ func (s *AuthStore) ConfigureManagedVaultAccess(password, managedKey string) (Va
 	return vaultStatusFromState(&nextMeta, true), nil
 }
 
+func (s *AuthStore) ConfigureManagedVaultAccessForAccount(accountScopeID, password, managedKey string) (VaultStatus, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	password = strings.TrimSpace(password)
+	managedKey = strings.TrimSpace(managedKey)
+	if managedKey == "" {
+		return VaultStatus{}, errors.New("managed vault key is required")
+	}
+
+	meta, _, err := s.snapshotVaultStateForAccount(accountScopeID)
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	if meta == nil || !meta.Enabled {
+		return s.enableVaultWithManagedKeyForAccount(accountScopeID, password, managedKey)
+	}
+
+	dek, err := s.readableDEKForAccount(accountScopeID)
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	nextMeta := *meta
+	if password != "" {
+		salt, err := randomBytes(16)
+		if err != nil {
+			return VaultStatus{}, err
+		}
+		wrappedDEK, err := encryptVaultBlob(deriveVaultKey(password, salt), dek)
+		if err != nil {
+			return VaultStatus{}, err
+		}
+		nextMeta.KDF = "argon2id"
+		nextMeta.SaltBase64 = base64.StdEncoding.EncodeToString(salt)
+		nextMeta.MemoryKiB = vaultArgon2MemoryKiB
+		nextMeta.TimeCost = vaultArgon2Time
+		nextMeta.Parallelism = vaultArgon2Parallelism
+		nextMeta.WrappedDEK = base64.StdEncoding.EncodeToString(wrappedDEK)
+	}
+	managedWrappedDEK, err := encryptVaultBlob(managedVaultKEK(managedKey), dek)
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	nextMeta.ManagedWrappedDEK = base64.StdEncoding.EncodeToString(managedWrappedDEK)
+	nextMeta.UpdatedAt = time.Now().UnixMilli()
+	nextMeta.Enabled = true
+	nextMeta.StorageMode = storageModePebbleVault
+	if err := s.resealCredentialsForAccount(accountScopeID, &nextMeta, dek, storageModePebbleVault); err != nil {
+		return VaultStatus{}, err
+	}
+	s.cacheVaultStateForAccount(accountScopeID, &nextMeta, dek)
+	return vaultStatusFromState(&nextMeta, true), nil
+}
+
 func (s *AuthStore) LockVault() (VaultStatus, error) {
 	meta, _, err := s.snapshotVaultState()
 	if err != nil {
@@ -248,6 +311,27 @@ func (s *AuthStore) LockVault() (VaultStatus, error) {
 	}
 	s.mu.Lock()
 	s.vaultDEK = nil
+	s.mu.Unlock()
+	return vaultStatusFromState(meta, false), nil
+}
+
+func (s *AuthStore) LockVaultForAccount(accountScopeID string) (VaultStatus, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	meta, _, err := s.snapshotVaultStateForAccount(accountScopeID)
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	if meta == nil || !meta.Enabled {
+		return vaultStatusFromState(meta, true), nil
+	}
+	s.mu.Lock()
+	state := s.vaultAccounts[accountScopeID]
+	state.Meta = cloneVaultMetadata(meta)
+	state.DEK = nil
+	s.vaultAccounts[accountScopeID] = state
 	s.mu.Unlock()
 	return vaultStatusFromState(meta, false), nil
 }
@@ -293,8 +377,137 @@ func (s *AuthStore) DisableVault(password string) (VaultStatus, error) {
 	return vaultStatusFromState(nextMeta, true), nil
 }
 
+func (s *AuthStore) EnableVaultForAccount(accountScopeID, password string) (VaultStatus, error) {
+	return s.enableVaultWithManagedKeyForAccount(accountScopeID, password, "")
+}
+
+func (s *AuthStore) enableVaultWithManagedKeyForAccount(accountScopeID, password, managedKey string) (VaultStatus, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	password = strings.TrimSpace(password)
+	managedKey = strings.TrimSpace(managedKey)
+	if password == "" {
+		return VaultStatus{}, errors.New(vaultPasswordRequiredMessage)
+	}
+	meta, _, err := s.snapshotVaultStateForAccount(accountScopeID)
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	if meta != nil && meta.Enabled {
+		return VaultStatus{}, errors.New("vault is already enabled")
+	}
+
+	dek, err := s.accountVaultDEK(meta)
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	salt, err := randomBytes(16)
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	wrappedDEK, err := encryptVaultBlob(deriveVaultKey(password, salt), dek)
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	managedWrappedDEK := ""
+	if managedKey != "" {
+		wrapped, err := encryptVaultBlob(managedVaultKEK(managedKey), dek)
+		if err != nil {
+			return VaultStatus{}, err
+		}
+		managedWrappedDEK = base64.StdEncoding.EncodeToString(wrapped)
+	}
+	nextMeta := &VaultMetadata{
+		Version:           vaultVersion,
+		KDF:               "argon2id",
+		SaltBase64:        base64.StdEncoding.EncodeToString(salt),
+		MemoryKiB:         vaultArgon2MemoryKiB,
+		TimeCost:          vaultArgon2Time,
+		Parallelism:       vaultArgon2Parallelism,
+		WrappedDEK:        base64.StdEncoding.EncodeToString(wrappedDEK),
+		ManagedWrappedDEK: managedWrappedDEK,
+		UpdatedAt:         time.Now().UnixMilli(),
+		Enabled:           true,
+		StorageMode:       storageModePebbleVault,
+		UnlockWarning:     vaultEnableWarning,
+	}
+	if err := s.resealCredentialsForAccount(accountScopeID, nextMeta, dek, storageModePebbleVault); err != nil {
+		return VaultStatus{}, err
+	}
+	s.cacheVaultStateForAccount(accountScopeID, nextMeta, dek)
+	return vaultStatusFromState(nextMeta, true), nil
+}
+
+func (s *AuthStore) UnlockVaultForAccount(accountScopeID, password string) (VaultStatus, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	password = strings.TrimSpace(password)
+	if password == "" {
+		return VaultStatus{}, errors.New(vaultPasswordRequiredMessage)
+	}
+	meta, _, err := s.snapshotVaultStateForAccount(accountScopeID)
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	if meta == nil || !meta.Enabled {
+		return vaultStatusFromState(meta, true), nil
+	}
+	dek, err := unlockVaultDEK(password, meta)
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	s.cacheVaultStateForAccount(accountScopeID, meta, dek)
+	return vaultStatusFromState(meta, true), nil
+}
+
+func (s *AuthStore) DisableVaultForAccount(accountScopeID, password string) (VaultStatus, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	password = strings.TrimSpace(password)
+	meta, _, err := s.snapshotVaultStateForAccount(accountScopeID)
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	if meta == nil || !meta.Enabled {
+		return vaultStatusFromState(meta, true), nil
+	}
+	if password == "" {
+		return VaultStatus{}, errors.New(vaultPasswordRequiredMessage)
+	}
+	dek, err := unlockVaultDEK(password, meta)
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	localRootKey, err := s.loadOrCreateLocalRootKey()
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	localWrappedDEK, err := encryptVaultBlob(localRootKey, dek)
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	nextMeta := &VaultMetadata{
+		Version:         vaultVersion,
+		LocalWrappedDEK: base64.StdEncoding.EncodeToString(localWrappedDEK),
+		UpdatedAt:       time.Now().UnixMilli(),
+		Enabled:         false,
+		StorageMode:     storageModePebbleEncrypted,
+	}
+	if err := s.resealCredentialsForAccount(accountScopeID, nextMeta, dek, storageModePebbleEncrypted); err != nil {
+		return VaultStatus{}, err
+	}
+	s.cacheVaultStateForAccount(accountScopeID, nextMeta, dek)
+	return vaultStatusFromState(nextMeta, true), nil
+}
+
 func (s *AuthStore) encodeStoredCredential(record AuthCredentialRecord) ([]byte, error) {
-	meta, dek, err := s.ensureSecretDEK()
+	meta, dek, err := s.ensureSecretDEKForAccount(record.AccountScopeID)
 	if err != nil {
 		return nil, err
 	}
@@ -305,16 +518,21 @@ func (s *AuthStore) encodeStoredCredential(record AuthCredentialRecord) ([]byte,
 	return encodeSealedCredential(dek, record, mode)
 }
 
-func (s *AuthStore) decodeStoredCredential(payload []byte) (AuthCredentialRecord, error) {
+func (s *AuthStore) decodeStoredCredentialForAccount(accountScopeID string, payload []byte) (AuthCredentialRecord, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return AuthCredentialRecord{}, err
+	}
 	if !isSealedCredentialPayload(payload) {
 		var record AuthCredentialRecord
 		if err := json.Unmarshal(payload, &record); err != nil {
 			return AuthCredentialRecord{}, err
 		}
+		record.AccountScopeID = accountScopeID
 		return record, nil
 	}
 
-	dek, err := s.readableDEK()
+	dek, err := s.readableDEKForAccount(accountScopeID)
 	if err != nil {
 		return AuthCredentialRecord{}, err
 	}
@@ -344,6 +562,41 @@ func (s *AuthStore) snapshotVaultState() (*VaultMetadata, bool, error) {
 		s.vaultMeta = meta
 	}
 	unlocked := len(s.vaultDEK) > 0
+	s.mu.Unlock()
+	return meta, unlocked, nil
+}
+
+func (s *AuthStore) snapshotVaultStateForAccount(accountScopeID string) (*VaultMetadata, bool, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return nil, false, err
+	}
+	s.mu.RLock()
+	if state, ok := s.vaultAccounts[accountScopeID]; ok && state.Meta != nil {
+		meta := *state.Meta
+		unlocked := len(state.DEK) > 0
+		s.mu.RUnlock()
+		return &meta, unlocked, nil
+	}
+	s.mu.RUnlock()
+
+	meta, err := s.readVaultMetaForAccount(accountScopeID)
+	if err != nil {
+		return nil, false, err
+	}
+	if meta == nil {
+		return nil, false, nil
+	}
+	s.mu.Lock()
+	if s.vaultAccounts == nil {
+		s.vaultAccounts = make(map[string]vaultAccountState)
+	}
+	state := s.vaultAccounts[accountScopeID]
+	if state.Meta == nil {
+		state.Meta = cloneVaultMetadata(meta)
+		s.vaultAccounts[accountScopeID] = state
+	}
+	unlocked := len(state.DEK) > 0
 	s.mu.Unlock()
 	return meta, unlocked, nil
 }
@@ -400,6 +653,62 @@ func (s *AuthStore) ensureSecretDEK() (*VaultMetadata, []byte, error) {
 	return meta, append([]byte(nil), dek...), nil
 }
 
+func (s *AuthStore) ensureSecretDEKForAccount(accountScopeID string) (*VaultMetadata, []byte, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return nil, nil, err
+	}
+	meta, unlocked, err := s.snapshotVaultStateForAccount(accountScopeID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if meta == nil {
+		dek, err := randomBytes(int(vaultDerivedKeyLength))
+		if err != nil {
+			return nil, nil, err
+		}
+		localRootKey, err := s.loadOrCreateLocalRootKey()
+		if err != nil {
+			return nil, nil, err
+		}
+		localWrappedDEK, err := encryptVaultBlob(localRootKey, dek)
+		if err != nil {
+			return nil, nil, err
+		}
+		meta = &VaultMetadata{
+			Version:         vaultVersion,
+			LocalWrappedDEK: base64.StdEncoding.EncodeToString(localWrappedDEK),
+			UpdatedAt:       time.Now().UnixMilli(),
+			Enabled:         false,
+			StorageMode:     storageModePebbleEncrypted,
+		}
+		if err := s.persistVaultMetadataForAccount(accountScopeID, meta); err != nil {
+			return nil, nil, err
+		}
+		s.cacheVaultStateForAccount(accountScopeID, meta, dek)
+		return meta, append([]byte(nil), dek...), nil
+	}
+	if meta.Enabled {
+		if !unlocked {
+			return nil, nil, ErrVaultLocked
+		}
+		return meta, s.copyVaultDEKForAccount(accountScopeID), nil
+	}
+	if unlocked {
+		return meta, s.copyVaultDEKForAccount(accountScopeID), nil
+	}
+	localRootKey, err := s.loadOrCreateLocalRootKey()
+	if err != nil {
+		return nil, nil, err
+	}
+	dek, err := unlockLocalDEK(localRootKey, meta)
+	if err != nil {
+		return nil, nil, err
+	}
+	s.cacheVaultStateForAccount(accountScopeID, meta, dek)
+	return meta, append([]byte(nil), dek...), nil
+}
+
 func (s *AuthStore) readableDEK() ([]byte, error) {
 	meta, unlocked, err := s.snapshotVaultState()
 	if err != nil {
@@ -426,6 +735,14 @@ func (s *AuthStore) readableDEK() ([]byte, error) {
 		return nil, err
 	}
 	s.cacheVaultState(meta, dek, localRootKey)
+	return append([]byte(nil), dek...), nil
+}
+
+func (s *AuthStore) readableDEKForAccount(accountScopeID string) ([]byte, error) {
+	_, dek, err := s.ensureSecretDEKForAccount(accountScopeID)
+	if err != nil {
+		return nil, err
+	}
 	return append([]byte(nil), dek...), nil
 }
 
@@ -456,11 +773,108 @@ func (s *AuthStore) initializeEncryptedStore() (*VaultMetadata, []byte, error) {
 	return meta, append([]byte(nil), dek...), nil
 }
 
+func (s *AuthStore) resealCredentialsForAccount(accountScopeID string, meta *VaultMetadata, dek []byte, storageMode string) error {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return err
+	}
+	if meta == nil {
+		return errors.New("vault metadata is required")
+	}
+	if len(dek) == 0 {
+		return errors.New("vault data encryption key is required")
+	}
+	if strings.TrimSpace(storageMode) == "" {
+		storageMode = storageModePebbleEncrypted
+	}
+	records, err := s.listStoredCredentialsWithDEKForAccount(accountScopeID, "", 10_000, meta, dek)
+	if err != nil {
+		return err
+	}
+	batch := s.secretStore.NewBatch()
+	defer batch.Close()
+	metaPayload, err := json.Marshal(meta)
+	if err != nil {
+		return fmt.Errorf("marshal account vault metadata: %w", err)
+	}
+	if err := batch.Set([]byte(KeyAuthVaultMetaForAccount(accountScopeID)), metaPayload, nil); err != nil {
+		return fmt.Errorf("write account vault metadata: %w", err)
+	}
+	for _, record := range records {
+		record.AccountScopeID = accountScopeID
+		payload, err := encodeSealedCredential(dek, record, storageMode)
+		if err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(authCredentialKey(accountScopeID, record.Provider, record.ID)), payload, nil); err != nil {
+			return fmt.Errorf("write account vaulted auth record %s/%s: %w", record.Provider, record.ID, err)
+		}
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return fmt.Errorf("commit account vault metadata: %w", err)
+	}
+	return nil
+}
+
+func (s *AuthStore) readVaultMetaForAccount(accountScopeID string) (*VaultMetadata, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return nil, err
+	}
+	payload, ok, err := s.secretStore.GetBytes(KeyAuthVaultMetaForAccount(accountScopeID))
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
+	var meta VaultMetadata
+	if err := json.Unmarshal(payload, &meta); err != nil {
+		return nil, fmt.Errorf("decode account vault metadata: %w", err)
+	}
+	if strings.TrimSpace(meta.StorageMode) == "" {
+		if meta.Enabled {
+			meta.StorageMode = storageModePebbleVault
+		} else {
+			meta.StorageMode = storageModePebbleEncrypted
+		}
+	}
+	return &meta, nil
+}
+
 func (s *AuthStore) persistVaultMetadata(meta *VaultMetadata) error {
 	if meta == nil {
 		return errors.New("vault metadata is required")
 	}
 	return s.secretStore.PutJSON(KeyAuthVaultMeta, meta)
+}
+
+func (s *AuthStore) persistVaultMetadataForAccount(accountScopeID string, meta *VaultMetadata) error {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return err
+	}
+	if meta == nil {
+		return errors.New("vault metadata is required")
+	}
+	return s.secretStore.PutJSON(KeyAuthVaultMetaForAccount(accountScopeID), meta)
+}
+
+func (s *AuthStore) accountVaultDEK(meta *VaultMetadata) ([]byte, error) {
+	if meta == nil {
+		return randomBytes(int(vaultDerivedKeyLength))
+	}
+	if meta.Enabled {
+		return nil, ErrVaultLocked
+	}
+	if strings.TrimSpace(meta.LocalWrappedDEK) == "" {
+		return randomBytes(int(vaultDerivedKeyLength))
+	}
+	localRootKey, err := s.loadOrCreateLocalRootKey()
+	if err != nil {
+		return nil, err
+	}
+	return unlockLocalDEK(localRootKey, meta)
 }
 
 func (s *AuthStore) listStoredCredentialsWithDEK(provider string, limit int, meta *VaultMetadata, dek []byte) ([]AuthCredentialRecord, error) {
@@ -786,10 +1200,36 @@ func (s *AuthStore) cacheVaultState(meta *VaultMetadata, dek, localRootKey []byt
 	s.mu.Unlock()
 }
 
+func (s *AuthStore) cacheVaultStateForAccount(accountScopeID string, meta *VaultMetadata, dek []byte) {
+	accountScopeID = normalizeAccountScopeID(accountScopeID)
+	if accountScopeID == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.vaultAccounts == nil {
+		s.vaultAccounts = make(map[string]vaultAccountState)
+	}
+	state := vaultAccountState{DEK: append([]byte(nil), dek...)}
+	if meta != nil {
+		state.Meta = cloneVaultMetadata(meta)
+	}
+	s.vaultAccounts[accountScopeID] = state
+	s.mu.Unlock()
+}
+
+func cloneVaultMetadata(meta *VaultMetadata) *VaultMetadata {
+	if meta == nil {
+		return nil
+	}
+	copyMeta := *meta
+	return &copyMeta
+}
+
 func (s *AuthStore) clearVaultMetadataCache() {
 	s.mu.Lock()
 	s.vaultMeta = nil
 	s.vaultDEK = nil
+	s.vaultAccounts = make(map[string]vaultAccountState)
 	s.mu.Unlock()
 }
 
@@ -797,6 +1237,12 @@ func (s *AuthStore) copyVaultDEK() []byte {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return append([]byte(nil), s.vaultDEK...)
+}
+
+func (s *AuthStore) copyVaultDEKForAccount(accountScopeID string) []byte {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]byte(nil), s.vaultAccounts[normalizeAccountScopeID(accountScopeID)].DEK...)
 }
 
 func randomBytes(length int) ([]byte, error) {

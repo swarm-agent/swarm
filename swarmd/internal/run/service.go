@@ -340,10 +340,11 @@ func (s *Service) ExecuteToolForSessionScope(ctx context.Context, workspacePath 
 	if s == nil || s.tools == nil {
 		return "", errors.New("tool runtime is not configured")
 	}
-	scope := tool.WorkspaceScope{PrimaryPath: strings.TrimSpace(workspacePath), Roots: []string{strings.TrimSpace(workspacePath)}}
+	principal, _ := identity.PrincipalFromContext(ctx)
+	scope := tool.WorkspaceScope{PrimaryPath: strings.TrimSpace(workspacePath), Roots: []string{strings.TrimSpace(workspacePath)}, Principal: principal}
 	if s.workspace != nil {
 		if resolved, err := s.workspace.ScopeForPath(workspacePath); err == nil {
-			scope = tool.WorkspaceScope{PrimaryPath: strings.TrimSpace(resolved.ResolvedPath), Roots: []string{strings.TrimSpace(resolved.WorkspacePath), strings.TrimSpace(resolved.ResolvedPath)}}
+			scope = tool.WorkspaceScope{PrimaryPath: strings.TrimSpace(resolved.ResolvedPath), Roots: []string{strings.TrimSpace(resolved.WorkspacePath), strings.TrimSpace(resolved.ResolvedPath)}, Principal: principal}
 		}
 	}
 	return s.tools.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, call)
@@ -814,7 +815,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	}
 	compiledPolicy := options.CompiledPolicy
 	effectiveDisabledTools := cloneDisabledTools(options.DisabledTools)
-	if agentPolicy, agentDisabled, scopeErr := s.compileAgentToolScope(agentProfile); scopeErr != nil {
+	if agentPolicy, agentDisabled, scopeErr := s.compileAgentToolScopeForAccount(options.Principal.AccountScopeID, agentProfile); scopeErr != nil {
 		return RunResult{}, scopeErr
 	} else {
 		if agentPolicy != nil {
@@ -996,8 +997,8 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	messages = trimMessagesToLatestCompactionCheckpoint(messages)
 
 	input := buildInput(messages)
-	rawToolDefinitions := convertToolDefinitions(s.ListAgentToolDefinitions())
-	rawCustomToolDefinitions := convertToolDefinitions(s.customAgentToolDefinitions())
+	rawToolDefinitions := convertToolDefinitions(s.ListAgentToolDefinitionsForAccount(options.Principal.AccountScopeID))
+	rawCustomToolDefinitions := convertToolDefinitions(s.customAgentToolDefinitionsForAccount(options.Principal.AccountScopeID))
 	toolDefinitions := filterToolDefinitions(rawToolDefinitions, effectiveDisabledTools)
 	runRequestDebugEvent("tool_inventory", map[string]any{
 		"session_id":            sessionID,
@@ -1775,6 +1776,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			baseInstructions = s.composeInstructionsForScope(tool.WorkspaceScope{
 				PrimaryPath: workspaceCtx.WorkspacePath,
 				Roots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
+				Principal:   options.Principal,
 			}, agentProfile, options.Instructions)
 			baseInstructions = appendHostRuntimeContext(baseInstructions, workspaceCtx.WorkspacePath, workspaceCtx.WorkspaceRoots)
 		}
@@ -1782,6 +1784,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		runtimeCtx := tool.WithWorkspaceScope(ctx, tool.WorkspaceScope{
 			PrimaryPath: workspaceCtx.WorkspacePath,
 			Roots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
+			Principal:   options.Principal,
 		})
 		executedResults := s.tools.ExecuteBatchStreamingWithProgress(runtimeCtx, workspaceCtx.WorkspacePath, scopeApprovedCalls, func(_ int, call tool.Call, progress tool.Progress) {
 			stage := strings.ToLower(strings.TrimSpace(progress.Stage))

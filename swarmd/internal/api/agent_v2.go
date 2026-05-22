@@ -16,6 +16,11 @@ func (s *Server) handleCustomToolsV2(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("agent service not configured"))
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, errors.New("product identity required"))
+		return
+	}
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
 		return
@@ -25,7 +30,7 @@ func (s *Server) handleCustomToolsV2(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	customTools, err := s.agents.ListCustomTools(limit)
+	customTools, err := s.agents.ListCustomToolsForAccount(principal.AccountScopeID, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -41,6 +46,11 @@ func (s *Server) handleCustomToolByNameV2(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, errors.New("agent service not configured"))
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, errors.New("product identity required"))
+		return
+	}
 	const prefix = "/v2/custom-tools/"
 	name := strings.TrimSpace(strings.Trim(strings.TrimPrefix(r.URL.Path, prefix), "/"))
 	if name == "" {
@@ -50,7 +60,7 @@ func (s *Server) handleCustomToolByNameV2(w http.ResponseWriter, r *http.Request
 
 	switch r.Method {
 	case http.MethodGet:
-		definition, ok, err := s.agents.GetCustomTool(name)
+		definition, ok, err := s.agents.GetCustomToolForAccount(principal.AccountScopeID, name)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -78,7 +88,7 @@ func (s *Server) handleCustomToolByNameV2(w http.ResponseWriter, r *http.Request
 			writeError(w, http.StatusBadRequest, errors.New("custom tool name in path must match payload name"))
 			return
 		}
-		stored, err := s.agents.PutCustomTool(pebblestore.AgentCustomToolDefinition{
+		stored, err := s.agents.PutCustomToolForAccount(principal.AccountScopeID, pebblestore.AgentCustomToolDefinition{
 			Name:        name,
 			Kind:        req.Kind,
 			Description: req.Description,
@@ -93,7 +103,7 @@ func (s *Server) handleCustomToolByNameV2(w http.ResponseWriter, r *http.Request
 			"custom_tool": stored,
 		})
 	case http.MethodDelete:
-		deleted, err := s.agents.DeleteCustomTool(name)
+		deleted, err := s.agents.DeleteCustomToolForAccount(principal.AccountScopeID, name)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -309,7 +319,12 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, errors.New("run service not configured"))
 			return
 		}
-		resolved, compiledPolicy, _, err := s.runner.ResolveAgentToolContract(profile)
+		principal, ok := PrincipalFromRequest(r)
+		if !ok {
+			writeError(w, http.StatusUnauthorized, errors.New("product identity required"))
+			return
+		}
+		resolved, compiledPolicy, _, err := s.runner.ResolveAgentToolContractForAccount(principal.AccountScopeID, profile)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -333,7 +348,12 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 		}
 		switch r.Method {
 		case http.MethodPut:
-			profile, version, _, err := s.agents.AssignCustomTool(agentName, toolName)
+			principal, ok := PrincipalFromRequest(r)
+			if !ok {
+				writeError(w, http.StatusUnauthorized, errors.New("product identity required"))
+				return
+			}
+			profile, version, _, err := s.agents.AssignCustomToolForAccount(principal.AccountScopeID, agentName, toolName)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
@@ -345,7 +365,12 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 				"version":   version,
 			})
 		case http.MethodDelete:
-			profile, version, _, err := s.agents.UnassignCustomTool(agentName, toolName)
+			principal, ok := PrincipalFromRequest(r)
+			if !ok {
+				writeError(w, http.StatusUnauthorized, errors.New("product identity required"))
+				return
+			}
+			profile, version, _, err := s.agents.UnassignCustomToolForAccount(principal.AccountScopeID, agentName, toolName)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
@@ -388,7 +413,9 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			"profile": profile,
 		})
 	case http.MethodPut:
-		if _, ok := s.requireProductActor(w, r); !ok {
+		principal, ok := PrincipalFromRequest(r)
+		if !ok {
+			writeError(w, http.StatusUnauthorized, errors.New("product identity required"))
 			return
 		}
 		var req struct {
@@ -423,7 +450,7 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 		}
 		storedCustomTools := make([]pebblestore.AgentCustomToolDefinition, 0, len(req.CustomTools))
 		for _, definition := range req.CustomTools {
-			stored, err := s.agents.PutCustomTool(definition)
+			stored, err := s.agents.PutCustomToolForAccount(principal.AccountScopeID, definition)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
@@ -458,7 +485,7 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		for _, toolName := range assignedCustomTools {
-			profile, version, _, err = s.agents.AssignCustomTool(name, toolName)
+			profile, version, _, err = s.agents.AssignCustomToolForAccount(principal.AccountScopeID, name, toolName)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return

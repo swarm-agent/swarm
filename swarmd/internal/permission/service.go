@@ -1483,6 +1483,7 @@ func (s *Service) syncNotification(record pebblestore.PermissionRecord, swarmID,
 	}
 	sessionTitle, workspaceName, workspacePath, originLabel := s.permissionNotificationSessionContext(record.SessionID, firstNonEmpty(originSwarmID, swarmID))
 	_, _, _ = s.notifications.UpsertPermissionNotification(notification.PermissionUpsertInput{
+		AccountScopeID:  accountScopeIDForPermissionRecord(s.sessions, record),
 		SwarmID:         swarmID,
 		OriginSwarmID:   firstNonEmpty(originSwarmID, swarmID),
 		SessionID:       record.SessionID,
@@ -1505,6 +1506,17 @@ func (s *Service) syncNotification(record pebblestore.PermissionRecord, swarmID,
 		ReadAt:          readAt,
 		AckedAt:         ackedAt,
 	})
+}
+
+func accountScopeIDForPermissionRecord(sessions sessionLookup, record pebblestore.PermissionRecord) string {
+	if sessions == nil {
+		return ""
+	}
+	session, ok, err := sessions.GetSession(record.SessionID)
+	if err != nil || !ok {
+		return ""
+	}
+	return strings.TrimSpace(session.AccountScopeID)
 }
 
 func (s *Service) localSwarmID() string {

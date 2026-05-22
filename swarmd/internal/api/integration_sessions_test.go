@@ -187,6 +187,12 @@ func (r *recordingRunService) ExecuteToolForSessionScope(_ context.Context, work
 	return "{}", nil
 }
 func (r *recordingRunService) ListAgentToolDefinitions() []tool.Definition { return nil }
+func (r *recordingRunService) ListAgentToolDefinitionsForAccount(accountScopeID string) []tool.Definition {
+	return nil
+}
 func (r *recordingRunService) ResolveAgentToolContract(profile pebblestore.AgentProfile) (runruntime.ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
+	return runruntime.ResolvedAgentToolContract{}, nil, nil, nil
+}
+func (r *recordingRunService) ResolveAgentToolContractForAccount(accountScopeID string, profile pebblestore.AgentProfile) (runruntime.ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
 	return runruntime.ResolvedAgentToolContract{}, nil, nil, nil
 }

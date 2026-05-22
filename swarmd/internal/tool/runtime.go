@@ -192,13 +192,20 @@ type manageWorktreeConfigService interface {
 
 type manageAgentService interface {
 	ListState(limit int) (agentruntime.State, error)
+	ListStateForAccount(accountScopeID string, limit int) (agentruntime.State, error)
 	ReplaceManagedState(state agentruntime.State, syncProfiles, syncCustomTools bool) (agentruntime.State, int64, *pebblestore.EventEnvelope, error)
 	ListCustomTools(limit int) ([]pebblestore.AgentCustomToolDefinition, error)
+	ListCustomToolsForAccount(accountScopeID string, limit int) ([]pebblestore.AgentCustomToolDefinition, error)
 	GetCustomTool(name string) (pebblestore.AgentCustomToolDefinition, bool, error)
+	GetCustomToolForAccount(accountScopeID, name string) (pebblestore.AgentCustomToolDefinition, bool, error)
 	PutCustomTool(definition pebblestore.AgentCustomToolDefinition) (pebblestore.AgentCustomToolDefinition, error)
+	PutCustomToolForAccount(accountScopeID string, definition pebblestore.AgentCustomToolDefinition) (pebblestore.AgentCustomToolDefinition, error)
 	DeleteCustomTool(name string) (bool, error)
+	DeleteCustomToolForAccount(accountScopeID, name string) (bool, error)
 	AssignCustomTool(agentName, toolName string) (pebblestore.AgentProfile, int64, *pebblestore.EventEnvelope, error)
+	AssignCustomToolForAccount(accountScopeID, agentName, toolName string) (pebblestore.AgentProfile, int64, *pebblestore.EventEnvelope, error)
 	UnassignCustomTool(agentName, toolName string) (pebblestore.AgentProfile, int64, *pebblestore.EventEnvelope, error)
+	UnassignCustomToolForAccount(accountScopeID, agentName, toolName string) (pebblestore.AgentProfile, int64, *pebblestore.EventEnvelope, error)
 	GetProfile(name string) (pebblestore.AgentProfile, bool, error)
 	PreviewUpsert(input agentruntime.UpsertInput) (agentruntime.PreviewUpsertResult, error)
 	Upsert(input agentruntime.UpsertInput) (pebblestore.AgentProfile, int64, *pebblestore.EventEnvelope, error)
@@ -215,11 +222,17 @@ type manageImageService interface {
 
 type manageImageThreadService interface {
 	Create(pebblestore.ImageThreadSnapshot) (pebblestore.ImageThreadSnapshot, error)
+	CreateForAccount(accountScopeID, userID string, thread pebblestore.ImageThreadSnapshot) (pebblestore.ImageThreadSnapshot, error)
 	Get(threadID string) (pebblestore.ImageThreadSnapshot, bool, error)
+	GetForAccount(accountScopeID, threadID string) (pebblestore.ImageThreadSnapshot, bool, error)
 }
 
 type manageIntegrationService interface {
 	Handle(integrationruntime.Request) (map[string]any, error)
+}
+
+type manageIntegrationPrincipalAwareService interface {
+	HandleForPrincipal(identity.Principal, integrationruntime.Request) (map[string]any, error)
 }
 
 type manageTodoService interface {
@@ -1298,7 +1311,7 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 	case "manage-agent", "manage_agent":
 		return r.executeManageAgent(scope, args)
 	case "manage-integrations", "manage_integrations":
-		return r.executeManageIntegrations(args)
+		return r.executeManageIntegrations(scope, args)
 	case "manage-flow", "manage_flow":
 		return r.executeManageFlow(scope, args)
 	case "manage-image", "manage_image":
@@ -1322,7 +1335,7 @@ func (r *Runtime) executeCustomTool(ctx context.Context, scope WorkspaceScope, n
 	if r == nil || r.agents == nil {
 		return "", fmt.Errorf("unsupported tool %q", name)
 	}
-	definition, ok, err := r.agents.GetCustomTool(name)
+	definition, ok, err := r.getCustomToolForScope(scope, name)
 	if err != nil {
 		return "", err
 	}
@@ -5407,15 +5420,15 @@ func (r *Runtime) executeManageAgent(scope WorkspaceScope, args map[string]any) 
 	case "delete", "remove":
 		return r.manageAgentDelete(args, confirm)
 	case "create_custom_tool", "create-custom-tool":
-		return r.manageAgentCustomToolUpsert(args, false, confirm)
+		return r.manageAgentCustomToolUpsert(scope, args, false, confirm)
 	case "update_custom_tool", "update-custom-tool":
-		return r.manageAgentCustomToolUpsert(args, true, confirm)
+		return r.manageAgentCustomToolUpsert(scope, args, true, confirm)
 	case "delete_custom_tool", "delete-custom-tool", "remove_custom_tool", "remove-custom-tool":
-		return r.manageAgentDeleteCustomTool(args, confirm)
+		return r.manageAgentDeleteCustomTool(scope, args, confirm)
 	case "assign_custom_tool", "assign-custom-tool":
-		return r.manageAgentAssignCustomTool(args, confirm)
+		return r.manageAgentAssignCustomTool(scope, args, confirm)
 	case "unassign_custom_tool", "unassign-custom-tool":
-		return r.manageAgentUnassignCustomTool(args, confirm)
+		return r.manageAgentUnassignCustomTool(scope, args, confirm)
 	case "activate_primary", "activate-primary":
 		return r.manageAgentActivatePrimary(args, confirm)
 	case "set_active_subagent", "set-active-subagent":
@@ -5427,7 +5440,7 @@ func (r *Runtime) executeManageAgent(scope WorkspaceScope, args map[string]any) 
 	}
 }
 
-func (r *Runtime) executeManageIntegrations(args map[string]any) (string, error) {
+func (r *Runtime) executeManageIntegrations(scope WorkspaceScope, args map[string]any) (string, error) {
 	if r == nil || r.integrations == nil {
 		return "", errors.New("manage-integrations service is not configured")
 	}
@@ -5445,7 +5458,12 @@ func (r *Runtime) executeManageIntegrations(args map[string]any) (string, error)
 		Content:   content,
 		Limit:     limit,
 	}
-	response, err := r.integrations.Handle(request)
+	var response map[string]any
+	if principalAware, ok := r.integrations.(manageIntegrationPrincipalAwareService); ok {
+		response, err = principalAware.HandleForPrincipal(scope.Principal, request)
+	} else {
+		response, err = r.integrations.Handle(request)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -6447,7 +6465,7 @@ func (r *Runtime) manageAgentRemoveActiveSubagent(args map[string]any, confirm b
 	return manageAgentEncodeResponse(response)
 }
 
-func (r *Runtime) manageAgentCustomToolUpsert(args map[string]any, mustExist, confirm bool) (string, error) {
+func (r *Runtime) manageAgentCustomToolUpsert(scope WorkspaceScope, args map[string]any, mustExist, confirm bool) (string, error) {
 	if r == nil || r.agents == nil {
 		return "", errors.New("manage-agent service is not configured")
 	}
@@ -6455,7 +6473,7 @@ func (r *Runtime) manageAgentCustomToolUpsert(args map[string]any, mustExist, co
 	if err != nil {
 		return "", err
 	}
-	current, exists, err := r.agents.GetCustomTool(definition.Name)
+	current, exists, err := r.getCustomToolForScope(scope, definition.Name)
 	if err != nil {
 		return "", err
 	}
@@ -6465,7 +6483,7 @@ func (r *Runtime) manageAgentCustomToolUpsert(args map[string]any, mustExist, co
 	if !mustExist && exists {
 		return "", fmt.Errorf("custom tool %q already exists; use update", definition.Name)
 	}
-	state, err := r.agents.ListState(500)
+	state, err := r.listStateForScope(scope, 500)
 	if err != nil {
 		return "", fmt.Errorf("manage-agent list state failed: %w", err)
 	}
@@ -6487,12 +6505,12 @@ func (r *Runtime) manageAgentCustomToolUpsert(args map[string]any, mustExist, co
 		"after":     manageAgentCustomToolMap(definition),
 	}
 	if confirm {
-		stored, err := r.agents.PutCustomTool(definition)
+		stored, err := r.putCustomToolForScope(scope, definition)
 		if err != nil {
 			return "", err
 		}
 		change["after"] = manageAgentCustomToolMap(stored)
-		updatedState, stateErr := r.agents.ListState(500)
+		updatedState, stateErr := r.listStateForScope(scope, 500)
 		if stateErr != nil {
 			return "", fmt.Errorf("manage-agent list state failed: %w", stateErr)
 		}
@@ -6530,11 +6548,11 @@ func (r *Runtime) manageAgentCustomToolUpsert(args map[string]any, mustExist, co
 	return manageAgentEncodeResponse(response)
 }
 
-func (r *Runtime) manageAgentDeleteCustomTool(args map[string]any, confirm bool) (string, error) {
+func (r *Runtime) manageAgentDeleteCustomTool(scope WorkspaceScope, args map[string]any, confirm bool) (string, error) {
 	if r == nil || r.agents == nil {
 		return "", errors.New("manage-agent service is not configured")
 	}
-	state, err := r.agents.ListState(500)
+	state, err := r.listStateForScope(scope, 500)
 	if err != nil {
 		return "", fmt.Errorf("manage-agent list state failed: %w", err)
 	}
@@ -6542,7 +6560,7 @@ func (r *Runtime) manageAgentDeleteCustomTool(args map[string]any, confirm bool)
 	if err != nil {
 		return "", err
 	}
-	definition, ok, err := r.agents.GetCustomTool(toolName)
+	definition, ok, err := r.getCustomToolForScope(scope, toolName)
 	if err != nil {
 		return "", err
 	}
@@ -6557,14 +6575,14 @@ func (r *Runtime) manageAgentDeleteCustomTool(args map[string]any, confirm bool)
 		"after":     nil,
 	}
 	if confirm {
-		deleted, err := r.agents.DeleteCustomTool(toolName)
+		deleted, err := r.deleteCustomToolForScope(scope, toolName)
 		if err != nil {
 			return "", err
 		}
 		if !deleted {
 			return "", fmt.Errorf("custom tool %q not found", toolName)
 		}
-		updatedState, stateErr := r.agents.ListState(500)
+		updatedState, stateErr := r.listStateForScope(scope, 500)
 		if stateErr != nil {
 			return "", fmt.Errorf("manage-agent list state failed: %w", stateErr)
 		}
@@ -6603,19 +6621,19 @@ func (r *Runtime) manageAgentDeleteCustomTool(args map[string]any, confirm bool)
 	return manageAgentEncodeResponse(response)
 }
 
-func (r *Runtime) manageAgentAssignCustomTool(args map[string]any, confirm bool) (string, error) {
-	return r.manageAgentCustomToolAssignment(args, true, confirm)
+func (r *Runtime) manageAgentAssignCustomTool(scope WorkspaceScope, args map[string]any, confirm bool) (string, error) {
+	return r.manageAgentCustomToolAssignment(scope, args, true, confirm)
 }
 
-func (r *Runtime) manageAgentUnassignCustomTool(args map[string]any, confirm bool) (string, error) {
-	return r.manageAgentCustomToolAssignment(args, false, confirm)
+func (r *Runtime) manageAgentUnassignCustomTool(scope WorkspaceScope, args map[string]any, confirm bool) (string, error) {
+	return r.manageAgentCustomToolAssignment(scope, args, false, confirm)
 }
 
-func (r *Runtime) manageAgentCustomToolAssignment(args map[string]any, assign, confirm bool) (string, error) {
+func (r *Runtime) manageAgentCustomToolAssignment(scope WorkspaceScope, args map[string]any, assign, confirm bool) (string, error) {
 	if r == nil || r.agents == nil {
 		return "", errors.New("manage-agent service is not configured")
 	}
-	state, err := r.agents.ListState(500)
+	state, err := r.listStateForScope(scope, 500)
 	if err != nil {
 		return "", fmt.Errorf("manage-agent list state failed: %w", err)
 	}
@@ -6633,7 +6651,7 @@ func (r *Runtime) manageAgentCustomToolAssignment(args map[string]any, assign, c
 	assignedBefore := manageAgentProfileHasToolAssignment(profile, toolName)
 	var definition *pebblestore.AgentCustomToolDefinition
 	if assign {
-		current, ok, err := r.agents.GetCustomTool(toolName)
+		current, ok, err := r.getCustomToolForScope(scope, toolName)
 		if err != nil {
 			return "", err
 		}
@@ -6645,7 +6663,7 @@ func (r *Runtime) manageAgentCustomToolAssignment(args map[string]any, assign, c
 			return "", fmt.Errorf("custom tool %q is already assigned to agent %s", toolName, profile.Name)
 		}
 	} else {
-		if current, ok, err := r.agents.GetCustomTool(toolName); err != nil {
+		if current, ok, err := r.getCustomToolForScope(scope, toolName); err != nil {
 			return "", err
 		} else if ok {
 			definition = &current
@@ -6681,14 +6699,14 @@ func (r *Runtime) manageAgentCustomToolAssignment(args map[string]any, assign, c
 		var updatedProfile pebblestore.AgentProfile
 		var applyErr error
 		if assign {
-			updatedProfile, _, _, applyErr = r.agents.AssignCustomTool(profile.Name, toolName)
+			updatedProfile, _, _, applyErr = r.assignCustomToolForScope(scope, profile.Name, toolName)
 		} else {
-			updatedProfile, _, _, applyErr = r.agents.UnassignCustomTool(profile.Name, toolName)
+			updatedProfile, _, _, applyErr = r.unassignCustomToolForScope(scope, profile.Name, toolName)
 		}
 		if applyErr != nil {
 			return "", applyErr
 		}
-		updatedState, stateErr := r.agents.ListState(500)
+		updatedState, stateErr := r.listStateForScope(scope, 500)
 		if stateErr != nil {
 			return "", fmt.Errorf("manage-agent list state failed: %w", stateErr)
 		}

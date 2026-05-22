@@ -150,7 +150,7 @@ func (c *Client) GenerateImage(ctx context.Context, req ImageGenerationRequest) 
 			return ImageGenerationResult{}, fmt.Errorf("codex image generation unauthorized and refresh failed: %w", refreshErr)
 		}
 		accountID := extractAccountIDFromToken(refreshed.AccessToken)
-		record, err = c.authStore.UpdateOAuthCredential(record.Provider, record.ID, refreshed.AccessToken, refreshed.RefreshToken, refreshed.ExpiresAt, accountID)
+		record, err = c.authStore.UpdateOAuthCredentialForAccount(record.AccountScopeID, record.Provider, record.ID, refreshed.AccessToken, refreshed.RefreshToken, refreshed.ExpiresAt, accountID)
 		if err != nil {
 			codexImageGenerationLogf("stage=refresh_persist_failed reason=%q will_parse=false", err.Error())
 			return ImageGenerationResult{}, fmt.Errorf("persist refreshed codex oauth: %w", err)

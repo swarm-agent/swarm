@@ -12,6 +12,10 @@ import (
 )
 
 func (s *Server) applyUtilityModelDefaults(preferredProvider string) (*auth.AutoDefaultsStatus, error) {
+	return s.applyUtilityModelDefaultsForAccount("", "", preferredProvider)
+}
+
+func (s *Server) applyUtilityModelDefaultsForAccount(accountScopeID, userID, preferredProvider string) (*auth.AutoDefaultsStatus, error) {
 	if s == nil || s.model == nil || s.agents == nil || s.providers == nil {
 		return nil, nil
 	}
@@ -33,13 +37,13 @@ func (s *Server) applyUtilityModelDefaults(preferredProvider string) (*auth.Auto
 		UtilityThinking: providerDefaults.UtilityThinking,
 	}
 
-	pref, err := s.model.GetGlobalPreference()
+	pref, err := s.model.GetPreferenceForAccount(accountScopeID)
 	if err != nil {
 		return nil, fmt.Errorf("read model preference: %w", err)
 	}
 	firstProviderOnboarding := strings.TrimSpace(pref.Provider) == ""
 	if firstProviderOnboarding {
-		_, event, err := s.model.SetGlobalPreference(providerID, providerDefaults.PrimaryModel, providerDefaults.PrimaryThinking)
+		_, event, err := s.model.SetPreferenceForAccount(accountScopeID, userID, providerID, providerDefaults.PrimaryModel, providerDefaults.PrimaryThinking)
 		if err != nil {
 			return nil, fmt.Errorf("set global model default: %w", err)
 		}

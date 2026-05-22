@@ -27,6 +27,7 @@ const (
 )
 
 type IntegrationPackRecord struct {
+	AccountScopeID  string            `json:"account_scope_id,omitempty"`
 	PackID          string            `json:"pack_id"`
 	Slug            string            `json:"slug,omitempty"`
 	DisplayName     string            `json:"display_name"`
@@ -39,21 +40,23 @@ type IntegrationPackRecord struct {
 }
 
 type IntegrationPackVersionRecord struct {
-	PackID      string            `json:"pack_id"`
-	VersionID   string            `json:"version_id"`
-	Version     string            `json:"version,omitempty"`
-	Status      string            `json:"status"`
-	DisplayName string            `json:"display_name,omitempty"`
-	Description string            `json:"description,omitempty"`
-	ToolIDs     []string          `json:"tool_ids,omitempty"`
-	AdapterIDs  []string          `json:"adapter_ids,omitempty"`
-	PromptIDs   []string          `json:"prompt_ids,omitempty"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
+	AccountScopeID string            `json:"account_scope_id,omitempty"`
+	PackID         string            `json:"pack_id"`
+	VersionID      string            `json:"version_id"`
+	Version        string            `json:"version,omitempty"`
+	Status         string            `json:"status"`
+	DisplayName    string            `json:"display_name,omitempty"`
+	Description    string            `json:"description,omitempty"`
+	ToolIDs        []string          `json:"tool_ids,omitempty"`
+	AdapterIDs     []string          `json:"adapter_ids,omitempty"`
+	PromptIDs      []string          `json:"prompt_ids,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
+	CreatedAt      time.Time         `json:"created_at"`
+	UpdatedAt      time.Time         `json:"updated_at"`
 }
 
 type IntegrationToolRecord struct {
+	AccountScopeID string            `json:"account_scope_id,omitempty"`
 	PackID         string            `json:"pack_id"`
 	VersionID      string            `json:"version_id"`
 	ToolID         string            `json:"tool_id"`
@@ -68,6 +71,7 @@ type IntegrationToolRecord struct {
 }
 
 type IntegrationAdapterRecord struct {
+	AccountScopeID string            `json:"account_scope_id,omitempty"`
 	PackID         string            `json:"pack_id"`
 	VersionID      string            `json:"version_id"`
 	AdapterID      string            `json:"adapter_id"`
@@ -81,28 +85,31 @@ type IntegrationAdapterRecord struct {
 }
 
 type IntegrationPromptFragmentRecord struct {
-	PackID    string            `json:"pack_id"`
-	VersionID string            `json:"version_id"`
-	PromptID  string            `json:"prompt_id"`
-	Title     string            `json:"title,omitempty"`
-	Content   string            `json:"content"`
-	Metadata  map[string]string `json:"metadata,omitempty"`
-	CreatedAt time.Time         `json:"created_at"`
-	UpdatedAt time.Time         `json:"updated_at"`
+	AccountScopeID string            `json:"account_scope_id,omitempty"`
+	PackID         string            `json:"pack_id"`
+	VersionID      string            `json:"version_id"`
+	PromptID       string            `json:"prompt_id"`
+	Title          string            `json:"title,omitempty"`
+	Content        string            `json:"content"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
+	CreatedAt      time.Time         `json:"created_at"`
+	UpdatedAt      time.Time         `json:"updated_at"`
 }
 
 type IntegrationAssignmentRecord struct {
-	AssignmentID string            `json:"assignment_id"`
-	AgentName    string            `json:"agent_name"`
-	PackID       string            `json:"pack_id"`
-	VersionID    string            `json:"version_id"`
-	Status       string            `json:"status"`
-	Metadata     map[string]string `json:"metadata,omitempty"`
-	CreatedAt    time.Time         `json:"created_at"`
-	UpdatedAt    time.Time         `json:"updated_at"`
+	AccountScopeID string            `json:"account_scope_id,omitempty"`
+	AssignmentID   string            `json:"assignment_id"`
+	AgentName      string            `json:"agent_name"`
+	PackID         string            `json:"pack_id"`
+	VersionID      string            `json:"version_id"`
+	Status         string            `json:"status"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
+	CreatedAt      time.Time         `json:"created_at"`
+	UpdatedAt      time.Time         `json:"updated_at"`
 }
 
 type IntegrationWorkspaceRecord struct {
+	AccountScopeID       string            `json:"account_scope_id,omitempty"`
 	WorkspaceID          string            `json:"workspace_id"`
 	DisplayName          string            `json:"display_name"`
 	PackID               string            `json:"pack_id,omitempty"`
@@ -115,12 +122,13 @@ type IntegrationWorkspaceRecord struct {
 }
 
 type IntegrationWorkspaceSessionRecord struct {
-	WorkspaceID string            `json:"workspace_id"`
-	SessionID   string            `json:"session_id"`
-	Title       string            `json:"title,omitempty"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
+	AccountScopeID string            `json:"account_scope_id,omitempty"`
+	WorkspaceID    string            `json:"workspace_id"`
+	SessionID      string            `json:"session_id"`
+	Title          string            `json:"title,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
+	CreatedAt      time.Time         `json:"created_at"`
+	UpdatedAt      time.Time         `json:"updated_at"`
 }
 
 type IntegrationStore struct {
@@ -144,18 +152,30 @@ func (s *IntegrationStore) PutPack(record IntegrationPackRecord) (IntegrationPac
 		record.CreatedAt = now
 	}
 	record.UpdatedAt = now
-	if err := s.store.PutJSON(KeyIntegrationPack(record.PackID), record); err != nil {
+	key := KeyIntegrationPack(record.PackID)
+	if record.AccountScopeID != "" {
+		key = KeyIntegrationPackForAccount(record.AccountScopeID, record.PackID)
+	}
+	if err := s.store.PutJSON(key, record); err != nil {
 		return IntegrationPackRecord{}, err
 	}
 	return record, nil
 }
 
 func (s *IntegrationStore) GetPack(packID string) (IntegrationPackRecord, bool, error) {
+	return s.GetPackForAccount("", packID)
+}
+
+func (s *IntegrationStore) GetPackForAccount(accountScopeID, packID string) (IntegrationPackRecord, bool, error) {
 	if err := s.configured(); err != nil {
 		return IntegrationPackRecord{}, false, err
 	}
+	key := KeyIntegrationPack(packID)
+	if strings.TrimSpace(accountScopeID) != "" {
+		key = KeyIntegrationPackForAccount(accountScopeID, packID)
+	}
 	var record IntegrationPackRecord
-	ok, err := s.store.GetJSON(KeyIntegrationPack(packID), &record)
+	ok, err := s.store.GetJSON(key, &record)
 	if err != nil || !ok {
 		return IntegrationPackRecord{}, ok, err
 	}
@@ -163,6 +183,10 @@ func (s *IntegrationStore) GetPack(packID string) (IntegrationPackRecord, bool, 
 }
 
 func (s *IntegrationStore) DeletePack(packID string) error {
+	return s.DeletePackForAccount("", packID)
+}
+
+func (s *IntegrationStore) DeletePackForAccount(accountScopeID, packID string) error {
 	if err := s.configured(); err != nil {
 		return err
 	}
@@ -170,11 +194,19 @@ func (s *IntegrationStore) DeletePack(packID string) error {
 	if packID == "" {
 		return errors.New("pack_id is required")
 	}
-	return s.store.Delete(KeyIntegrationPack(packID))
+	key := KeyIntegrationPack(packID)
+	if strings.TrimSpace(accountScopeID) != "" {
+		key = KeyIntegrationPackForAccount(accountScopeID, packID)
+	}
+	return s.store.Delete(key)
 }
 
 func (s *IntegrationStore) ListPacks(limit int) ([]IntegrationPackRecord, error) {
-	out, err := listIntegrationRecords(s, IntegrationPackPrefix(), limit, func(value []byte) (IntegrationPackRecord, error) {
+	return s.ListPacksForAccount("", limit)
+}
+
+func (s *IntegrationStore) ListPacksForAccount(accountScopeID string, limit int) ([]IntegrationPackRecord, error) {
+	out, err := listIntegrationRecords(s, IntegrationPackPrefixForAccount(accountScopeID), limit, func(value []byte) (IntegrationPackRecord, error) {
 		var record IntegrationPackRecord
 		if err := json.Unmarshal(value, &record); err != nil {
 			return IntegrationPackRecord{}, fmt.Errorf("decode integration pack: %w", err)
@@ -204,18 +236,30 @@ func (s *IntegrationStore) PutPackVersion(record IntegrationPackVersionRecord) (
 		record.CreatedAt = now
 	}
 	record.UpdatedAt = now
-	if err := s.store.PutJSON(KeyIntegrationPackVersion(record.PackID, record.VersionID), record); err != nil {
+	key := KeyIntegrationPackVersion(record.PackID, record.VersionID)
+	if record.AccountScopeID != "" {
+		key = KeyIntegrationPackVersionForAccount(record.AccountScopeID, record.PackID, record.VersionID)
+	}
+	if err := s.store.PutJSON(key, record); err != nil {
 		return IntegrationPackVersionRecord{}, err
 	}
 	return record, nil
 }
 
 func (s *IntegrationStore) GetPackVersion(packID, versionID string) (IntegrationPackVersionRecord, bool, error) {
+	return s.GetPackVersionForAccount("", packID, versionID)
+}
+
+func (s *IntegrationStore) GetPackVersionForAccount(accountScopeID, packID, versionID string) (IntegrationPackVersionRecord, bool, error) {
 	if err := s.configured(); err != nil {
 		return IntegrationPackVersionRecord{}, false, err
 	}
+	key := KeyIntegrationPackVersion(packID, versionID)
+	if strings.TrimSpace(accountScopeID) != "" {
+		key = KeyIntegrationPackVersionForAccount(accountScopeID, packID, versionID)
+	}
 	var record IntegrationPackVersionRecord
-	ok, err := s.store.GetJSON(KeyIntegrationPackVersion(packID, versionID), &record)
+	ok, err := s.store.GetJSON(key, &record)
 	if err != nil || !ok {
 		return IntegrationPackVersionRecord{}, ok, err
 	}
@@ -223,6 +267,10 @@ func (s *IntegrationStore) GetPackVersion(packID, versionID string) (Integration
 }
 
 func (s *IntegrationStore) DeletePackVersion(packID, versionID string) error {
+	return s.DeletePackVersionForAccount("", packID, versionID)
+}
+
+func (s *IntegrationStore) DeletePackVersionForAccount(accountScopeID, packID, versionID string) error {
 	if err := s.configured(); err != nil {
 		return err
 	}
@@ -231,11 +279,19 @@ func (s *IntegrationStore) DeletePackVersion(packID, versionID string) error {
 	if packID == "" || versionID == "" {
 		return errors.New("pack_id and version_id are required")
 	}
-	return s.store.Delete(KeyIntegrationPackVersion(packID, versionID))
+	key := KeyIntegrationPackVersion(packID, versionID)
+	if strings.TrimSpace(accountScopeID) != "" {
+		key = KeyIntegrationPackVersionForAccount(accountScopeID, packID, versionID)
+	}
+	return s.store.Delete(key)
 }
 
 func (s *IntegrationStore) ListPackVersions(packID string, limit int) ([]IntegrationPackVersionRecord, error) {
-	out, err := listIntegrationRecords(s, IntegrationPackVersionPrefix(packID), limit, func(value []byte) (IntegrationPackVersionRecord, error) {
+	return s.ListPackVersionsForAccount("", packID, limit)
+}
+
+func (s *IntegrationStore) ListPackVersionsForAccount(accountScopeID, packID string, limit int) ([]IntegrationPackVersionRecord, error) {
+	out, err := listIntegrationRecords(s, IntegrationPackVersionPrefixForAccount(accountScopeID, packID), limit, func(value []byte) (IntegrationPackVersionRecord, error) {
 		var record IntegrationPackVersionRecord
 		if err := json.Unmarshal(value, &record); err != nil {
 			return IntegrationPackVersionRecord{}, fmt.Errorf("decode integration pack version: %w", err)
@@ -268,18 +324,30 @@ func (s *IntegrationStore) PutTool(record IntegrationToolRecord) (IntegrationToo
 		record.CreatedAt = now
 	}
 	record.UpdatedAt = now
-	if err := s.store.PutJSON(KeyIntegrationTool(record.PackID, record.VersionID, record.ToolID), record); err != nil {
+	key := KeyIntegrationTool(record.PackID, record.VersionID, record.ToolID)
+	if record.AccountScopeID != "" {
+		key = KeyIntegrationToolForAccount(record.AccountScopeID, record.PackID, record.VersionID, record.ToolID)
+	}
+	if err := s.store.PutJSON(key, record); err != nil {
 		return IntegrationToolRecord{}, err
 	}
 	return record, nil
 }
 
 func (s *IntegrationStore) GetTool(packID, versionID, toolID string) (IntegrationToolRecord, bool, error) {
+	return s.GetToolForAccount("", packID, versionID, toolID)
+}
+
+func (s *IntegrationStore) GetToolForAccount(accountScopeID, packID, versionID, toolID string) (IntegrationToolRecord, bool, error) {
 	if err := s.configured(); err != nil {
 		return IntegrationToolRecord{}, false, err
 	}
+	key := KeyIntegrationTool(packID, versionID, toolID)
+	if strings.TrimSpace(accountScopeID) != "" {
+		key = KeyIntegrationToolForAccount(accountScopeID, packID, versionID, toolID)
+	}
 	var record IntegrationToolRecord
-	ok, err := s.store.GetJSON(KeyIntegrationTool(packID, versionID, toolID), &record)
+	ok, err := s.store.GetJSON(key, &record)
 	if err != nil || !ok {
 		return IntegrationToolRecord{}, ok, err
 	}
@@ -287,6 +355,10 @@ func (s *IntegrationStore) GetTool(packID, versionID, toolID string) (Integratio
 }
 
 func (s *IntegrationStore) DeleteTool(packID, versionID, toolID string) error {
+	return s.DeleteToolForAccount("", packID, versionID, toolID)
+}
+
+func (s *IntegrationStore) DeleteToolForAccount(accountScopeID, packID, versionID, toolID string) error {
 	if err := s.configured(); err != nil {
 		return err
 	}
@@ -296,11 +368,19 @@ func (s *IntegrationStore) DeleteTool(packID, versionID, toolID string) error {
 	if packID == "" || versionID == "" || toolID == "" {
 		return errors.New("pack_id, version_id, and tool_id are required")
 	}
-	return s.store.Delete(KeyIntegrationTool(packID, versionID, toolID))
+	key := KeyIntegrationTool(packID, versionID, toolID)
+	if strings.TrimSpace(accountScopeID) != "" {
+		key = KeyIntegrationToolForAccount(accountScopeID, packID, versionID, toolID)
+	}
+	return s.store.Delete(key)
 }
 
 func (s *IntegrationStore) ListTools(packID, versionID string, limit int) ([]IntegrationToolRecord, error) {
-	out, err := listIntegrationRecords(s, IntegrationToolPrefix(packID, versionID), limit, func(value []byte) (IntegrationToolRecord, error) {
+	return s.ListToolsForAccount("", packID, versionID, limit)
+}
+
+func (s *IntegrationStore) ListToolsForAccount(accountScopeID, packID, versionID string, limit int) ([]IntegrationToolRecord, error) {
+	out, err := listIntegrationRecords(s, IntegrationToolPrefixForAccount(accountScopeID, packID, versionID), limit, func(value []byte) (IntegrationToolRecord, error) {
 		var record IntegrationToolRecord
 		if err := json.Unmarshal(value, &record); err != nil {
 			return IntegrationToolRecord{}, fmt.Errorf("decode integration tool: %w", err)
@@ -330,18 +410,30 @@ func (s *IntegrationStore) PutAdapter(record IntegrationAdapterRecord) (Integrat
 		record.CreatedAt = now
 	}
 	record.UpdatedAt = now
-	if err := s.store.PutJSON(KeyIntegrationAdapter(record.PackID, record.VersionID, record.AdapterID), record); err != nil {
+	key := KeyIntegrationAdapter(record.PackID, record.VersionID, record.AdapterID)
+	if record.AccountScopeID != "" {
+		key = KeyIntegrationAdapterForAccount(record.AccountScopeID, record.PackID, record.VersionID, record.AdapterID)
+	}
+	if err := s.store.PutJSON(key, record); err != nil {
 		return IntegrationAdapterRecord{}, err
 	}
 	return record, nil
 }
 
 func (s *IntegrationStore) GetAdapter(packID, versionID, adapterID string) (IntegrationAdapterRecord, bool, error) {
+	return s.GetAdapterForAccount("", packID, versionID, adapterID)
+}
+
+func (s *IntegrationStore) GetAdapterForAccount(accountScopeID, packID, versionID, adapterID string) (IntegrationAdapterRecord, bool, error) {
 	if err := s.configured(); err != nil {
 		return IntegrationAdapterRecord{}, false, err
 	}
+	key := KeyIntegrationAdapter(packID, versionID, adapterID)
+	if strings.TrimSpace(accountScopeID) != "" {
+		key = KeyIntegrationAdapterForAccount(accountScopeID, packID, versionID, adapterID)
+	}
 	var record IntegrationAdapterRecord
-	ok, err := s.store.GetJSON(KeyIntegrationAdapter(packID, versionID, adapterID), &record)
+	ok, err := s.store.GetJSON(key, &record)
 	if err != nil || !ok {
 		return IntegrationAdapterRecord{}, ok, err
 	}
@@ -349,6 +441,10 @@ func (s *IntegrationStore) GetAdapter(packID, versionID, adapterID string) (Inte
 }
 
 func (s *IntegrationStore) DeleteAdapter(packID, versionID, adapterID string) error {
+	return s.DeleteAdapterForAccount("", packID, versionID, adapterID)
+}
+
+func (s *IntegrationStore) DeleteAdapterForAccount(accountScopeID, packID, versionID, adapterID string) error {
 	if err := s.configured(); err != nil {
 		return err
 	}
@@ -358,11 +454,19 @@ func (s *IntegrationStore) DeleteAdapter(packID, versionID, adapterID string) er
 	if packID == "" || versionID == "" || adapterID == "" {
 		return errors.New("pack_id, version_id, and adapter_id are required")
 	}
-	return s.store.Delete(KeyIntegrationAdapter(packID, versionID, adapterID))
+	key := KeyIntegrationAdapter(packID, versionID, adapterID)
+	if strings.TrimSpace(accountScopeID) != "" {
+		key = KeyIntegrationAdapterForAccount(accountScopeID, packID, versionID, adapterID)
+	}
+	return s.store.Delete(key)
 }
 
 func (s *IntegrationStore) ListAdapters(packID, versionID string, limit int) ([]IntegrationAdapterRecord, error) {
-	out, err := listIntegrationRecords(s, IntegrationAdapterPrefix(packID, versionID), limit, func(value []byte) (IntegrationAdapterRecord, error) {
+	return s.ListAdaptersForAccount("", packID, versionID, limit)
+}
+
+func (s *IntegrationStore) ListAdaptersForAccount(accountScopeID, packID, versionID string, limit int) ([]IntegrationAdapterRecord, error) {
+	out, err := listIntegrationRecords(s, IntegrationAdapterPrefixForAccount(accountScopeID, packID, versionID), limit, func(value []byte) (IntegrationAdapterRecord, error) {
 		var record IntegrationAdapterRecord
 		if err := json.Unmarshal(value, &record); err != nil {
 			return IntegrationAdapterRecord{}, fmt.Errorf("decode integration adapter: %w", err)
@@ -389,18 +493,30 @@ func (s *IntegrationStore) PutPromptFragment(record IntegrationPromptFragmentRec
 		record.CreatedAt = now
 	}
 	record.UpdatedAt = now
-	if err := s.store.PutJSON(KeyIntegrationPromptFragment(record.PackID, record.VersionID, record.PromptID), record); err != nil {
+	key := KeyIntegrationPromptFragment(record.PackID, record.VersionID, record.PromptID)
+	if record.AccountScopeID != "" {
+		key = KeyIntegrationPromptFragmentForAccount(record.AccountScopeID, record.PackID, record.VersionID, record.PromptID)
+	}
+	if err := s.store.PutJSON(key, record); err != nil {
 		return IntegrationPromptFragmentRecord{}, err
 	}
 	return record, nil
 }
 
 func (s *IntegrationStore) GetPromptFragment(packID, versionID, promptID string) (IntegrationPromptFragmentRecord, bool, error) {
+	return s.GetPromptFragmentForAccount("", packID, versionID, promptID)
+}
+
+func (s *IntegrationStore) GetPromptFragmentForAccount(accountScopeID, packID, versionID, promptID string) (IntegrationPromptFragmentRecord, bool, error) {
 	if err := s.configured(); err != nil {
 		return IntegrationPromptFragmentRecord{}, false, err
 	}
+	key := KeyIntegrationPromptFragment(packID, versionID, promptID)
+	if strings.TrimSpace(accountScopeID) != "" {
+		key = KeyIntegrationPromptFragmentForAccount(accountScopeID, packID, versionID, promptID)
+	}
 	var record IntegrationPromptFragmentRecord
-	ok, err := s.store.GetJSON(KeyIntegrationPromptFragment(packID, versionID, promptID), &record)
+	ok, err := s.store.GetJSON(key, &record)
 	if err != nil || !ok {
 		return IntegrationPromptFragmentRecord{}, ok, err
 	}
@@ -408,6 +524,10 @@ func (s *IntegrationStore) GetPromptFragment(packID, versionID, promptID string)
 }
 
 func (s *IntegrationStore) DeletePromptFragment(packID, versionID, promptID string) error {
+	return s.DeletePromptFragmentForAccount("", packID, versionID, promptID)
+}
+
+func (s *IntegrationStore) DeletePromptFragmentForAccount(accountScopeID, packID, versionID, promptID string) error {
 	if err := s.configured(); err != nil {
 		return err
 	}
@@ -417,11 +537,19 @@ func (s *IntegrationStore) DeletePromptFragment(packID, versionID, promptID stri
 	if packID == "" || versionID == "" || promptID == "" {
 		return errors.New("pack_id, version_id, and prompt_id are required")
 	}
-	return s.store.Delete(KeyIntegrationPromptFragment(packID, versionID, promptID))
+	key := KeyIntegrationPromptFragment(packID, versionID, promptID)
+	if strings.TrimSpace(accountScopeID) != "" {
+		key = KeyIntegrationPromptFragmentForAccount(accountScopeID, packID, versionID, promptID)
+	}
+	return s.store.Delete(key)
 }
 
 func (s *IntegrationStore) ListPromptFragments(packID, versionID string, limit int) ([]IntegrationPromptFragmentRecord, error) {
-	out, err := listIntegrationRecords(s, IntegrationPromptFragmentPrefix(packID, versionID), limit, func(value []byte) (IntegrationPromptFragmentRecord, error) {
+	return s.ListPromptFragmentsForAccount("", packID, versionID, limit)
+}
+
+func (s *IntegrationStore) ListPromptFragmentsForAccount(accountScopeID, packID, versionID string, limit int) ([]IntegrationPromptFragmentRecord, error) {
+	out, err := listIntegrationRecords(s, IntegrationPromptFragmentPrefixForAccount(accountScopeID, packID, versionID), limit, func(value []byte) (IntegrationPromptFragmentRecord, error) {
 		var record IntegrationPromptFragmentRecord
 		if err := json.Unmarshal(value, &record); err != nil {
 			return IntegrationPromptFragmentRecord{}, fmt.Errorf("decode integration prompt fragment: %w", err)
@@ -457,20 +585,28 @@ func (s *IntegrationStore) PutAssignment(record IntegrationAssignmentRecord) (In
 	}
 	batch := s.store.NewBatch()
 	defer batch.Close()
-	if previous, ok, err := s.GetAssignment(record.AssignmentID); err != nil {
+	if previous, ok, err := s.GetAssignmentForAccount(record.AccountScopeID, record.AssignmentID); err != nil {
 		return IntegrationAssignmentRecord{}, err
 	} else if ok {
 		if err := deleteAssignmentIndexes(batch, previous); err != nil {
 			return IntegrationAssignmentRecord{}, err
 		}
 	}
-	if err := batch.Set([]byte(KeyIntegrationAssignment(record.AssignmentID)), payload, nil); err != nil {
+	recordKey := KeyIntegrationAssignment(record.AssignmentID)
+	agentKey := KeyIntegrationAssignmentByAgent(record.AgentName, record.AssignmentID)
+	packKey := KeyIntegrationAssignmentByPack(record.PackID, record.VersionID, record.AssignmentID)
+	if record.AccountScopeID != "" {
+		recordKey = KeyIntegrationAssignmentForAccount(record.AccountScopeID, record.AssignmentID)
+		agentKey = KeyIntegrationAssignmentByAgentForAccount(record.AccountScopeID, record.AgentName, record.AssignmentID)
+		packKey = KeyIntegrationAssignmentByPackForAccount(record.AccountScopeID, record.PackID, record.VersionID, record.AssignmentID)
+	}
+	if err := batch.Set([]byte(recordKey), payload, nil); err != nil {
 		return IntegrationAssignmentRecord{}, fmt.Errorf("set integration assignment: %w", err)
 	}
-	if err := batch.Set([]byte(KeyIntegrationAssignmentByAgent(record.AgentName, record.AssignmentID)), []byte(KeyIntegrationAssignment(record.AssignmentID)), nil); err != nil {
+	if err := batch.Set([]byte(agentKey), []byte(recordKey), nil); err != nil {
 		return IntegrationAssignmentRecord{}, fmt.Errorf("set integration assignment agent index: %w", err)
 	}
-	if err := batch.Set([]byte(KeyIntegrationAssignmentByPack(record.PackID, record.VersionID, record.AssignmentID)), []byte(KeyIntegrationAssignment(record.AssignmentID)), nil); err != nil {
+	if err := batch.Set([]byte(packKey), []byte(recordKey), nil); err != nil {
 		return IntegrationAssignmentRecord{}, fmt.Errorf("set integration assignment pack index: %w", err)
 	}
 	if err := batch.Commit(pebble.Sync); err != nil {
@@ -480,11 +616,19 @@ func (s *IntegrationStore) PutAssignment(record IntegrationAssignmentRecord) (In
 }
 
 func (s *IntegrationStore) GetAssignment(assignmentID string) (IntegrationAssignmentRecord, bool, error) {
+	return s.GetAssignmentForAccount("", assignmentID)
+}
+
+func (s *IntegrationStore) GetAssignmentForAccount(accountScopeID, assignmentID string) (IntegrationAssignmentRecord, bool, error) {
 	if err := s.configured(); err != nil {
 		return IntegrationAssignmentRecord{}, false, err
 	}
+	key := KeyIntegrationAssignment(assignmentID)
+	if strings.TrimSpace(accountScopeID) != "" {
+		key = KeyIntegrationAssignmentForAccount(accountScopeID, assignmentID)
+	}
 	var record IntegrationAssignmentRecord
-	ok, err := s.store.GetJSON(KeyIntegrationAssignment(assignmentID), &record)
+	ok, err := s.store.GetJSON(key, &record)
 	if err != nil || !ok {
 		return IntegrationAssignmentRecord{}, ok, err
 	}
@@ -492,28 +636,48 @@ func (s *IntegrationStore) GetAssignment(assignmentID string) (IntegrationAssign
 }
 
 func (s *IntegrationStore) ListAssignments(limit int) ([]IntegrationAssignmentRecord, error) {
-	return s.listAssignmentsByIndex(IntegrationAssignmentPrefix(), limit, false)
+	return s.ListAssignmentsForAccount("", limit)
+}
+
+func (s *IntegrationStore) ListAssignmentsForAccount(accountScopeID string, limit int) ([]IntegrationAssignmentRecord, error) {
+	return s.listAssignmentsByIndex(IntegrationAssignmentPrefixForAccount(accountScopeID), limit, false)
 }
 
 func (s *IntegrationStore) ListAssignmentsByAgent(agentName string, limit int) ([]IntegrationAssignmentRecord, error) {
-	return s.listAssignmentsByIndex(IntegrationAssignmentByAgentPrefix(agentName), limit, true)
+	return s.ListAssignmentsByAgentForAccount("", agentName, limit)
+}
+
+func (s *IntegrationStore) ListAssignmentsByAgentForAccount(accountScopeID, agentName string, limit int) ([]IntegrationAssignmentRecord, error) {
+	return s.listAssignmentsByIndex(IntegrationAssignmentByAgentPrefixForAccount(accountScopeID, agentName), limit, true)
 }
 
 func (s *IntegrationStore) ListAssignmentsByPack(packID, versionID string, limit int) ([]IntegrationAssignmentRecord, error) {
-	return s.listAssignmentsByIndex(IntegrationAssignmentByPackPrefix(packID, versionID), limit, true)
+	return s.ListAssignmentsByPackForAccount("", packID, versionID, limit)
+}
+
+func (s *IntegrationStore) ListAssignmentsByPackForAccount(accountScopeID, packID, versionID string, limit int) ([]IntegrationAssignmentRecord, error) {
+	return s.listAssignmentsByIndex(IntegrationAssignmentByPackPrefixForAccount(accountScopeID, packID, versionID), limit, true)
 }
 
 func (s *IntegrationStore) DeleteAssignment(assignmentID string) error {
+	return s.DeleteAssignmentForAccount("", assignmentID)
+}
+
+func (s *IntegrationStore) DeleteAssignmentForAccount(accountScopeID, assignmentID string) error {
 	if err := s.configured(); err != nil {
 		return err
 	}
-	assignment, ok, err := s.GetAssignment(assignmentID)
+	assignment, ok, err := s.GetAssignmentForAccount(accountScopeID, assignmentID)
 	if err != nil || !ok {
 		return err
 	}
 	batch := s.store.NewBatch()
 	defer batch.Close()
-	if err := batch.Delete([]byte(KeyIntegrationAssignment(assignmentID)), nil); err != nil {
+	assignmentKey := KeyIntegrationAssignment(assignmentID)
+	if strings.TrimSpace(accountScopeID) != "" {
+		assignmentKey = KeyIntegrationAssignmentForAccount(accountScopeID, assignmentID)
+	}
+	if err := batch.Delete([]byte(assignmentKey), nil); err != nil {
 		return fmt.Errorf("delete integration assignment: %w", err)
 	}
 	if err := deleteAssignmentIndexes(batch, assignment); err != nil {
@@ -535,18 +699,30 @@ func (s *IntegrationStore) PutWorkspace(record IntegrationWorkspaceRecord) (Inte
 		record.CreatedAt = now
 	}
 	record.UpdatedAt = now
-	if err := s.store.PutJSON(KeyIntegrationWorkspace(record.WorkspaceID), record); err != nil {
+	key := KeyIntegrationWorkspace(record.WorkspaceID)
+	if record.AccountScopeID != "" {
+		key = KeyIntegrationWorkspaceForAccount(record.AccountScopeID, record.WorkspaceID)
+	}
+	if err := s.store.PutJSON(key, record); err != nil {
 		return IntegrationWorkspaceRecord{}, err
 	}
 	return record, nil
 }
 
 func (s *IntegrationStore) GetWorkspace(workspaceID string) (IntegrationWorkspaceRecord, bool, error) {
+	return s.GetWorkspaceForAccount("", workspaceID)
+}
+
+func (s *IntegrationStore) GetWorkspaceForAccount(accountScopeID, workspaceID string) (IntegrationWorkspaceRecord, bool, error) {
 	if err := s.configured(); err != nil {
 		return IntegrationWorkspaceRecord{}, false, err
 	}
+	key := KeyIntegrationWorkspace(workspaceID)
+	if strings.TrimSpace(accountScopeID) != "" {
+		key = KeyIntegrationWorkspaceForAccount(accountScopeID, workspaceID)
+	}
 	var record IntegrationWorkspaceRecord
-	ok, err := s.store.GetJSON(KeyIntegrationWorkspace(workspaceID), &record)
+	ok, err := s.store.GetJSON(key, &record)
 	if err != nil || !ok {
 		return IntegrationWorkspaceRecord{}, ok, err
 	}
@@ -554,6 +730,10 @@ func (s *IntegrationStore) GetWorkspace(workspaceID string) (IntegrationWorkspac
 }
 
 func (s *IntegrationStore) DeleteWorkspace(workspaceID string) error {
+	return s.DeleteWorkspaceForAccount("", workspaceID)
+}
+
+func (s *IntegrationStore) DeleteWorkspaceForAccount(accountScopeID, workspaceID string) error {
 	if err := s.configured(); err != nil {
 		return err
 	}
@@ -561,11 +741,19 @@ func (s *IntegrationStore) DeleteWorkspace(workspaceID string) error {
 	if workspaceID == "" {
 		return errors.New("workspace_id is required")
 	}
-	return s.store.Delete(KeyIntegrationWorkspace(workspaceID))
+	key := KeyIntegrationWorkspace(workspaceID)
+	if strings.TrimSpace(accountScopeID) != "" {
+		key = KeyIntegrationWorkspaceForAccount(accountScopeID, workspaceID)
+	}
+	return s.store.Delete(key)
 }
 
 func (s *IntegrationStore) ListWorkspaces(limit int) ([]IntegrationWorkspaceRecord, error) {
-	out, err := listIntegrationRecords(s, IntegrationWorkspacePrefix(), limit, func(value []byte) (IntegrationWorkspaceRecord, error) {
+	return s.ListWorkspacesForAccount("", limit)
+}
+
+func (s *IntegrationStore) ListWorkspacesForAccount(accountScopeID string, limit int) ([]IntegrationWorkspaceRecord, error) {
+	out, err := listIntegrationRecords(s, IntegrationWorkspacePrefixForAccount(accountScopeID), limit, func(value []byte) (IntegrationWorkspaceRecord, error) {
 		var record IntegrationWorkspaceRecord
 		if err := json.Unmarshal(value, &record); err != nil {
 			return IntegrationWorkspaceRecord{}, fmt.Errorf("decode integration workspace: %w", err)
@@ -600,34 +788,52 @@ func (s *IntegrationStore) PutWorkspaceSession(record IntegrationWorkspaceSessio
 	}
 	batch := s.store.NewBatch()
 	defer batch.Close()
-	if previous, ok, err := s.GetWorkspaceSession(record.WorkspaceID, record.SessionID); err != nil {
+	if previous, ok, err := s.GetWorkspaceSessionForAccount(record.AccountScopeID, record.WorkspaceID, record.SessionID); err != nil {
 		return IntegrationWorkspaceSessionRecord{}, err
 	} else if ok {
-		if err := batch.Delete([]byte(KeyIntegrationWorkspaceSessionUpdated(previous.WorkspaceID, previous.UpdatedAt.UTC().UnixMilli(), previous.SessionID)), nil); err != nil {
+		previousUpdatedKey := KeyIntegrationWorkspaceSessionUpdated(previous.WorkspaceID, previous.UpdatedAt.UTC().UnixMilli(), previous.SessionID)
+		if previous.AccountScopeID != "" {
+			previousUpdatedKey = KeyIntegrationWorkspaceSessionUpdatedForAccount(previous.AccountScopeID, previous.WorkspaceID, previous.UpdatedAt.UTC().UnixMilli(), previous.SessionID)
+		}
+		if err := batch.Delete([]byte(previousUpdatedKey), nil); err != nil {
 			return IntegrationWorkspaceSessionRecord{}, fmt.Errorf("delete stale workspace session index: %w", err)
 		}
 	}
-	if err := batch.Set([]byte(KeyIntegrationWorkspaceSession(record.WorkspaceID, record.SessionID)), payload, nil); err != nil {
+	recordKey := KeyIntegrationWorkspaceSession(record.WorkspaceID, record.SessionID)
+	updatedKey := KeyIntegrationWorkspaceSessionUpdated(record.WorkspaceID, record.UpdatedAt.UTC().UnixMilli(), record.SessionID)
+	if record.AccountScopeID != "" {
+		recordKey = KeyIntegrationWorkspaceSessionForAccount(record.AccountScopeID, record.WorkspaceID, record.SessionID)
+		updatedKey = KeyIntegrationWorkspaceSessionUpdatedForAccount(record.AccountScopeID, record.WorkspaceID, record.UpdatedAt.UTC().UnixMilli(), record.SessionID)
+	}
+	if err := batch.Set([]byte(recordKey), payload, nil); err != nil {
 		return IntegrationWorkspaceSessionRecord{}, fmt.Errorf("set integration workspace session: %w", err)
 	}
-	if err := batch.Set([]byte(KeyIntegrationWorkspaceSessionUpdated(record.WorkspaceID, record.UpdatedAt.UTC().UnixMilli(), record.SessionID)), []byte(KeyIntegrationWorkspaceSession(record.WorkspaceID, record.SessionID)), nil); err != nil {
+	if err := batch.Set([]byte(updatedKey), []byte(recordKey), nil); err != nil {
 		return IntegrationWorkspaceSessionRecord{}, fmt.Errorf("set integration workspace session updated index: %w", err)
 	}
 	if err := batch.Commit(pebble.Sync); err != nil {
 		return IntegrationWorkspaceSessionRecord{}, fmt.Errorf("commit integration workspace session: %w", err)
 	}
-	if err := s.refreshWorkspaceLatestChild(record.WorkspaceID); err != nil {
+	if err := s.refreshWorkspaceLatestChild(record.AccountScopeID, record.WorkspaceID); err != nil {
 		return IntegrationWorkspaceSessionRecord{}, err
 	}
 	return record, nil
 }
 
 func (s *IntegrationStore) GetWorkspaceSession(workspaceID, sessionID string) (IntegrationWorkspaceSessionRecord, bool, error) {
+	return s.GetWorkspaceSessionForAccount("", workspaceID, sessionID)
+}
+
+func (s *IntegrationStore) GetWorkspaceSessionForAccount(accountScopeID, workspaceID, sessionID string) (IntegrationWorkspaceSessionRecord, bool, error) {
 	if err := s.configured(); err != nil {
 		return IntegrationWorkspaceSessionRecord{}, false, err
 	}
+	key := KeyIntegrationWorkspaceSession(workspaceID, sessionID)
+	if strings.TrimSpace(accountScopeID) != "" {
+		key = KeyIntegrationWorkspaceSessionForAccount(accountScopeID, workspaceID, sessionID)
+	}
 	var record IntegrationWorkspaceSessionRecord
-	ok, err := s.store.GetJSON(KeyIntegrationWorkspaceSession(workspaceID, sessionID), &record)
+	ok, err := s.store.GetJSON(key, &record)
 	if err != nil || !ok {
 		return IntegrationWorkspaceSessionRecord{}, ok, err
 	}
@@ -635,23 +841,59 @@ func (s *IntegrationStore) GetWorkspaceSession(workspaceID, sessionID string) (I
 }
 
 func (s *IntegrationStore) ListWorkspaceSessions(workspaceID string, limit int) ([]IntegrationWorkspaceSessionRecord, error) {
-	return s.listWorkspaceSessionsByIndex(IntegrationWorkspaceSessionUpdatedPrefix(workspaceID), limit)
+	return s.ListWorkspaceSessionsForAccount("", workspaceID, limit)
+}
+
+func (s *IntegrationStore) ListWorkspaceSessionsForAccount(accountScopeID, workspaceID string, limit int) ([]IntegrationWorkspaceSessionRecord, error) {
+	return s.listWorkspaceSessionsByIndex(IntegrationWorkspaceSessionUpdatedPrefixForAccount(accountScopeID, workspaceID), limit)
+}
+
+func (s *IntegrationStore) DeleteWorkspaceSessionForAccount(accountScopeID, workspaceID, sessionID string) error {
+	if err := s.configured(); err != nil {
+		return err
+	}
+	join, ok, err := s.GetWorkspaceSessionForAccount(accountScopeID, workspaceID, sessionID)
+	if err != nil || !ok {
+		return err
+	}
+	recordKey := KeyIntegrationWorkspaceSession(workspaceID, sessionID)
+	updatedKey := KeyIntegrationWorkspaceSessionUpdated(workspaceID, join.UpdatedAt.UTC().UnixMilli(), sessionID)
+	if strings.TrimSpace(accountScopeID) != "" {
+		recordKey = KeyIntegrationWorkspaceSessionForAccount(accountScopeID, workspaceID, sessionID)
+		updatedKey = KeyIntegrationWorkspaceSessionUpdatedForAccount(accountScopeID, workspaceID, join.UpdatedAt.UTC().UnixMilli(), sessionID)
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if err := batch.Delete([]byte(recordKey), nil); err != nil {
+		return fmt.Errorf("delete integration workspace session: %w", err)
+	}
+	if err := batch.Delete([]byte(updatedKey), nil); err != nil {
+		return fmt.Errorf("delete integration workspace session updated index: %w", err)
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return err
+	}
+	return s.refreshWorkspaceLatestChild(accountScopeID, workspaceID)
 }
 
 func (s *IntegrationStore) LatestWorkspaceSession(workspaceID string) (IntegrationWorkspaceSessionRecord, bool, error) {
-	sessions, err := s.ListWorkspaceSessions(workspaceID, 1)
+	return s.LatestWorkspaceSessionForAccount("", workspaceID)
+}
+
+func (s *IntegrationStore) LatestWorkspaceSessionForAccount(accountScopeID, workspaceID string) (IntegrationWorkspaceSessionRecord, bool, error) {
+	sessions, err := s.ListWorkspaceSessionsForAccount(accountScopeID, workspaceID, 1)
 	if err != nil || len(sessions) == 0 {
 		return IntegrationWorkspaceSessionRecord{}, false, err
 	}
 	return sessions[0], true, nil
 }
 
-func (s *IntegrationStore) refreshWorkspaceLatestChild(workspaceID string) error {
-	workspace, ok, err := s.GetWorkspace(workspaceID)
+func (s *IntegrationStore) refreshWorkspaceLatestChild(accountScopeID, workspaceID string) error {
+	workspace, ok, err := s.GetWorkspaceForAccount(accountScopeID, workspaceID)
 	if err != nil || !ok {
 		return err
 	}
-	latest, latestOK, err := s.LatestWorkspaceSession(workspaceID)
+	latest, latestOK, err := s.LatestWorkspaceSessionForAccount(accountScopeID, workspaceID)
 	if err != nil {
 		return err
 	}
@@ -663,7 +905,11 @@ func (s *IntegrationStore) refreshWorkspaceLatestChild(workspaceID string) error
 		workspace.LatestChildSessionAt = time.Time{}
 	}
 	workspace.UpdatedAt = time.Now().UTC()
-	return s.store.PutJSON(KeyIntegrationWorkspace(workspace.WorkspaceID), normalizeIntegrationWorkspace(workspace))
+	workspaceKey := KeyIntegrationWorkspace(workspace.WorkspaceID)
+	if workspace.AccountScopeID != "" {
+		workspaceKey = KeyIntegrationWorkspaceForAccount(workspace.AccountScopeID, workspace.WorkspaceID)
+	}
+	return s.store.PutJSON(workspaceKey, normalizeIntegrationWorkspace(workspace))
 }
 
 func (s *IntegrationStore) configured() error {
@@ -752,12 +998,20 @@ func listIntegrationRecords[T any](s *IntegrationStore, prefix string, limit int
 func deleteAssignmentIndexes(batch *pebble.Batch, assignment IntegrationAssignmentRecord) error {
 	assignment = normalizeIntegrationAssignment(assignment)
 	if assignment.AgentName != "" && assignment.AssignmentID != "" {
-		if err := batch.Delete([]byte(KeyIntegrationAssignmentByAgent(assignment.AgentName, assignment.AssignmentID)), nil); err != nil {
+		key := KeyIntegrationAssignmentByAgent(assignment.AgentName, assignment.AssignmentID)
+		if assignment.AccountScopeID != "" {
+			key = KeyIntegrationAssignmentByAgentForAccount(assignment.AccountScopeID, assignment.AgentName, assignment.AssignmentID)
+		}
+		if err := batch.Delete([]byte(key), nil); err != nil {
 			return fmt.Errorf("delete integration assignment agent index: %w", err)
 		}
 	}
 	if assignment.PackID != "" && assignment.VersionID != "" && assignment.AssignmentID != "" {
-		if err := batch.Delete([]byte(KeyIntegrationAssignmentByPack(assignment.PackID, assignment.VersionID, assignment.AssignmentID)), nil); err != nil {
+		key := KeyIntegrationAssignmentByPack(assignment.PackID, assignment.VersionID, assignment.AssignmentID)
+		if assignment.AccountScopeID != "" {
+			key = KeyIntegrationAssignmentByPackForAccount(assignment.AccountScopeID, assignment.PackID, assignment.VersionID, assignment.AssignmentID)
+		}
+		if err := batch.Delete([]byte(key), nil); err != nil {
 			return fmt.Errorf("delete integration assignment pack index: %w", err)
 		}
 	}
@@ -765,6 +1019,7 @@ func deleteAssignmentIndexes(batch *pebble.Batch, assignment IntegrationAssignme
 }
 
 func normalizeIntegrationPack(record IntegrationPackRecord) IntegrationPackRecord {
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
 	record.PackID = normalizeIntegrationID(record.PackID)
 	record.Slug = normalizeIntegrationID(record.Slug)
 	record.DisplayName = strings.TrimSpace(record.DisplayName)
@@ -778,6 +1033,7 @@ func normalizeIntegrationPack(record IntegrationPackRecord) IntegrationPackRecor
 }
 
 func normalizeIntegrationPackVersion(record IntegrationPackVersionRecord) IntegrationPackVersionRecord {
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
 	record.PackID = normalizeIntegrationID(record.PackID)
 	record.VersionID = normalizeIntegrationID(record.VersionID)
 	record.Version = strings.TrimSpace(record.Version)
@@ -794,6 +1050,7 @@ func normalizeIntegrationPackVersion(record IntegrationPackVersionRecord) Integr
 }
 
 func normalizeIntegrationTool(record IntegrationToolRecord) IntegrationToolRecord {
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
 	record.PackID = normalizeIntegrationID(record.PackID)
 	record.VersionID = normalizeIntegrationID(record.VersionID)
 	record.ToolID = normalizeIntegrationID(record.ToolID)
@@ -809,6 +1066,7 @@ func normalizeIntegrationTool(record IntegrationToolRecord) IntegrationToolRecor
 }
 
 func normalizeIntegrationAdapter(record IntegrationAdapterRecord) IntegrationAdapterRecord {
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
 	record.PackID = normalizeIntegrationID(record.PackID)
 	record.VersionID = normalizeIntegrationID(record.VersionID)
 	record.AdapterID = normalizeIntegrationID(record.AdapterID)
@@ -823,6 +1081,7 @@ func normalizeIntegrationAdapter(record IntegrationAdapterRecord) IntegrationAda
 }
 
 func normalizeIntegrationPromptFragment(record IntegrationPromptFragmentRecord) IntegrationPromptFragmentRecord {
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
 	record.PackID = normalizeIntegrationID(record.PackID)
 	record.VersionID = normalizeIntegrationID(record.VersionID)
 	record.PromptID = normalizeIntegrationID(record.PromptID)
@@ -835,6 +1094,7 @@ func normalizeIntegrationPromptFragment(record IntegrationPromptFragmentRecord) 
 }
 
 func normalizeIntegrationAssignment(record IntegrationAssignmentRecord) IntegrationAssignmentRecord {
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
 	record.AssignmentID = normalizeIntegrationID(record.AssignmentID)
 	record.AgentName = strings.ToLower(strings.TrimSpace(record.AgentName))
 	record.PackID = normalizeIntegrationID(record.PackID)
@@ -847,6 +1107,7 @@ func normalizeIntegrationAssignment(record IntegrationAssignmentRecord) Integrat
 }
 
 func normalizeIntegrationWorkspace(record IntegrationWorkspaceRecord) IntegrationWorkspaceRecord {
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
 	record.WorkspaceID = normalizeIntegrationID(record.WorkspaceID)
 	record.DisplayName = strings.TrimSpace(record.DisplayName)
 	record.PackID = normalizeIntegrationID(record.PackID)
@@ -860,6 +1121,7 @@ func normalizeIntegrationWorkspace(record IntegrationWorkspaceRecord) Integratio
 }
 
 func normalizeIntegrationWorkspaceSession(record IntegrationWorkspaceSessionRecord) IntegrationWorkspaceSessionRecord {
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
 	record.WorkspaceID = normalizeIntegrationID(record.WorkspaceID)
 	record.SessionID = strings.TrimSpace(record.SessionID)
 	record.Title = strings.TrimSpace(record.Title)

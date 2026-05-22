@@ -26,11 +26,19 @@ type ResolvedAgentToolContract struct {
 }
 
 func (s *Service) ListAgentToolDefinitions() []tool.Definition {
+	return s.listAgentToolDefinitionsForAccount("")
+}
+
+func (s *Service) ListAgentToolDefinitionsForAccount(accountScopeID string) []tool.Definition {
+	return s.listAgentToolDefinitionsForAccount(strings.TrimSpace(accountScopeID))
+}
+
+func (s *Service) listAgentToolDefinitionsForAccount(accountScopeID string) []tool.Definition {
 	if s == nil || s.tools == nil {
 		return nil
 	}
 	definitions := s.tools.Definitions()
-	customDefinitions := s.customAgentToolDefinitions()
+	customDefinitions := s.customAgentToolDefinitionsForAccount(accountScopeID)
 	out := make([]tool.Definition, 0, len(definitions)+len(customDefinitions))
 	out = append(out, definitions...)
 	out = append(out, customDefinitions...)
@@ -38,7 +46,11 @@ func (s *Service) ListAgentToolDefinitions() []tool.Definition {
 }
 
 func (s *Service) customAgentToolDefinitions() []tool.Definition {
-	customTools, err := s.listCustomAgentToolsForRun()
+	return s.customAgentToolDefinitionsForAccount("")
+}
+
+func (s *Service) customAgentToolDefinitionsForAccount(accountScopeID string) []tool.Definition {
+	customTools, err := s.listCustomAgentToolsForRun(accountScopeID)
 	if err != nil {
 		runRequestDebugEvent("custom_tool_inventory_error", map[string]any{
 			"stage": "definitions",
@@ -74,7 +86,11 @@ func (s *Service) customAgentToolDefinitions() []tool.Definition {
 }
 
 func (s *Service) customAgentToolNameSet() map[string]struct{} {
-	customTools, err := s.listCustomAgentToolsForRun()
+	return s.customAgentToolNameSetForAccount("")
+}
+
+func (s *Service) customAgentToolNameSetForAccount(accountScopeID string) map[string]struct{} {
+	customTools, err := s.listCustomAgentToolsForRun(accountScopeID)
 	if err != nil {
 		runRequestDebugEvent("custom_tool_inventory_error", map[string]any{
 			"stage": "name_set",
@@ -99,9 +115,13 @@ func (s *Service) customAgentToolNameSet() map[string]struct{} {
 	return out
 }
 
-func (s *Service) listCustomAgentToolsForRun() ([]pebblestore.AgentCustomToolDefinition, error) {
+func (s *Service) listCustomAgentToolsForRun(accountScopeID string) ([]pebblestore.AgentCustomToolDefinition, error) {
 	if s == nil || s.agents == nil {
 		return nil, nil
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID != "" {
+		return s.agents.ListCustomToolsForAccount(accountScopeID, 2000)
 	}
 	return s.agents.ListCustomTools(2000)
 }
@@ -131,8 +151,16 @@ func allowCommitOnlyTools(profile pebblestore.AgentProfile) bool {
 }
 
 func (s *Service) ResolveAgentToolContract(profile pebblestore.AgentProfile) (ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
-	knownTools := s.knownRunToolNames()
-	customTools := s.customAgentToolNameSet()
+	return s.resolveAgentToolContractForAccount("", profile)
+}
+
+func (s *Service) ResolveAgentToolContractForAccount(accountScopeID string, profile pebblestore.AgentProfile) (ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
+	return s.resolveAgentToolContractForAccount(strings.TrimSpace(accountScopeID), profile)
+}
+
+func (s *Service) resolveAgentToolContractForAccount(accountScopeID string, profile pebblestore.AgentProfile) (ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
+	knownTools := s.knownRunToolNamesForAccount(accountScopeID)
+	customTools := s.customAgentToolNameSetForAccount(accountScopeID)
 	if len(knownTools) == 0 {
 		return ResolvedAgentToolContract{}, nil, nil, fmt.Errorf("tool runtime is not configured")
 	}

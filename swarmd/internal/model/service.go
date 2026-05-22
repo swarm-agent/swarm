@@ -74,7 +74,11 @@ func (s *Service) EnsureBootDefaults() error {
 }
 
 func (s *Service) GetGlobalPreference() (pebblestore.ModelPreference, error) {
-	pref, _, err := s.store.GetGlobalPreference()
+	return s.GetPreferenceForAccount("")
+}
+
+func (s *Service) GetPreferenceForAccount(accountScopeID string) (pebblestore.ModelPreference, error) {
+	pref, _, err := s.store.GetPreferenceForAccount(accountScopeID)
 	if err != nil {
 		return pebblestore.ModelPreference{}, fmt.Errorf("read model preference: %w", err)
 	}
@@ -82,7 +86,11 @@ func (s *Service) GetGlobalPreference() (pebblestore.ModelPreference, error) {
 }
 
 func (s *Service) GetResolvedGlobalPreference() (ResolvedPreference, error) {
-	pref, err := s.GetGlobalPreference()
+	return s.GetResolvedPreferenceForAccount("")
+}
+
+func (s *Service) GetResolvedPreferenceForAccount(accountScopeID string) (ResolvedPreference, error) {
+	pref, err := s.GetPreferenceForAccount(accountScopeID)
 	if err != nil {
 		return ResolvedPreference{}, err
 	}
@@ -99,6 +107,10 @@ func (s *Service) ResolvePreference(pref pebblestore.ModelPreference) (ResolvedP
 }
 
 func (s *Service) SetGlobalPreference(provider, modelName, thinking string, codexRuntime ...string) (ResolvedPreference, *pebblestore.EventEnvelope, error) {
+	return s.SetPreferenceForAccount("", "", provider, modelName, thinking, codexRuntime...)
+}
+
+func (s *Service) SetPreferenceForAccount(accountScopeID, userID, provider, modelName, thinking string, codexRuntime ...string) (ResolvedPreference, *pebblestore.EventEnvelope, error) {
 	provider = normalizeProviderID(provider)
 	modelName = strings.TrimSpace(modelName)
 	thinking = strings.ToLower(strings.TrimSpace(thinking))
@@ -128,7 +140,7 @@ func (s *Service) SetGlobalPreference(provider, modelName, thinking string, code
 		contextMode = ""
 	}
 
-	pref, err := s.store.SetGlobalPreference(provider, modelName, thinking, serviceTier, contextMode)
+	pref, err := s.store.SetPreferenceForAccount(strings.TrimSpace(accountScopeID), strings.TrimSpace(userID), provider, modelName, thinking, serviceTier, contextMode)
 	if err != nil {
 		return ResolvedPreference{}, nil, fmt.Errorf("persist model preference: %w", err)
 	}
@@ -137,7 +149,11 @@ func (s *Service) SetGlobalPreference(provider, modelName, thinking string, code
 	if err != nil {
 		return ResolvedPreference{}, nil, fmt.Errorf("marshal model event payload: %w", err)
 	}
-	env, err := s.events.Append("system:model", "model.preference.updated", "global", payload, "", "")
+	entityID := "global"
+	if strings.TrimSpace(accountScopeID) != "" {
+		entityID = "account:" + strings.TrimSpace(accountScopeID)
+	}
+	env, err := s.events.Append("system:model", "model.preference.updated", entityID, payload, "", "")
 	if err != nil {
 		return ResolvedPreference{}, nil, err
 	}
@@ -153,10 +169,14 @@ func (s *Service) SetGlobalPreference(provider, modelName, thinking string, code
 }
 
 func (s *Service) ClearGlobalPreference() (ResolvedPreference, *pebblestore.EventEnvelope, error) {
-	if err := s.store.ClearGlobalPreference(); err != nil {
+	return s.ClearPreferenceForAccount("")
+}
+
+func (s *Service) ClearPreferenceForAccount(accountScopeID string) (ResolvedPreference, *pebblestore.EventEnvelope, error) {
+	if err := s.store.ClearPreferenceForAccount(accountScopeID); err != nil {
 		return ResolvedPreference{}, nil, fmt.Errorf("clear model preference: %w", err)
 	}
-	pref, err := s.GetGlobalPreference()
+	pref, err := s.GetPreferenceForAccount(accountScopeID)
 	if err != nil {
 		return ResolvedPreference{}, nil, err
 	}
@@ -164,7 +184,11 @@ func (s *Service) ClearGlobalPreference() (ResolvedPreference, *pebblestore.Even
 	if err != nil {
 		return ResolvedPreference{}, nil, fmt.Errorf("marshal cleared model event payload: %w", err)
 	}
-	env, err := s.events.Append("system:model", "model.preference.updated", "global", payload, "", "")
+	entityID := "global"
+	if strings.TrimSpace(accountScopeID) != "" {
+		entityID = "account:" + strings.TrimSpace(accountScopeID)
+	}
+	env, err := s.events.Append("system:model", "model.preference.updated", entityID, payload, "", "")
 	if err != nil {
 		return ResolvedPreference{}, nil, err
 	}
@@ -295,6 +319,10 @@ func (s *Service) StartCatalogAutoRefresh(ctx context.Context) {
 }
 
 func (s *Service) ListFavorites(providerID, query string, limit int) ([]pebblestore.ModelFavoriteRecord, error) {
+	return s.ListFavoritesForAccount("", providerID, query, limit)
+}
+
+func (s *Service) ListFavoritesForAccount(accountScopeID, providerID, query string, limit int) ([]pebblestore.ModelFavoriteRecord, error) {
 	providerID = normalizeProviderID(providerID)
 	if s.favorites == nil {
 		return []pebblestore.ModelFavoriteRecord{}, nil
@@ -302,7 +330,7 @@ func (s *Service) ListFavorites(providerID, query string, limit int) ([]pebblest
 	if limit <= 0 {
 		limit = 500
 	}
-	records, err := s.favorites.List(providerID, maxInt(limit*4, 2000))
+	records, err := s.favorites.ListForAccount(accountScopeID, providerID, maxInt(limit*4, 2000))
 	if err != nil {
 		return nil, fmt.Errorf("list model favorites: %w", err)
 	}
@@ -335,11 +363,15 @@ func (s *Service) ListFavorites(providerID, query string, limit int) ([]pebblest
 }
 
 func (s *Service) UpsertFavorite(providerID, modelID, label, thinking string) (pebblestore.ModelFavoriteRecord, *pebblestore.EventEnvelope, error) {
+	return s.UpsertFavoriteForAccount("", "", providerID, modelID, label, thinking)
+}
+
+func (s *Service) UpsertFavoriteForAccount(accountScopeID, userID, providerID, modelID, label, thinking string) (pebblestore.ModelFavoriteRecord, *pebblestore.EventEnvelope, error) {
 	providerID = normalizeProviderID(providerID)
 	if s.favorites == nil {
 		return pebblestore.ModelFavoriteRecord{}, nil, errors.New("model favorites are not configured")
 	}
-	record, err := s.favorites.Upsert(pebblestore.ModelFavoriteRecord{
+	record, err := s.favorites.UpsertForAccount(accountScopeID, userID, pebblestore.ModelFavoriteRecord{
 		Provider: providerID,
 		Model:    modelID,
 		Label:    label,
@@ -360,11 +392,15 @@ func (s *Service) UpsertFavorite(providerID, modelID, label, thinking string) (p
 }
 
 func (s *Service) DeleteFavorite(providerID, modelID string) (bool, *pebblestore.EventEnvelope, error) {
+	return s.DeleteFavoriteForAccount("", providerID, modelID)
+}
+
+func (s *Service) DeleteFavoriteForAccount(accountScopeID, providerID, modelID string) (bool, *pebblestore.EventEnvelope, error) {
 	providerID = normalizeProviderID(providerID)
 	if s.favorites == nil {
 		return false, nil, nil
 	}
-	deleted, err := s.favorites.Delete(providerID, modelID)
+	deleted, err := s.favorites.DeleteForAccount(accountScopeID, providerID, modelID)
 	if err != nil {
 		return false, nil, err
 	}

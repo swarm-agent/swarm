@@ -240,7 +240,7 @@ func (s *Service) generateGoogleGemini(ctx context.Context, req GenerateRequest,
 	if !ok || strings.TrimSpace(record.APIKey) == "" {
 		return GenerateResult{}, errors.New("connect a Google API key to enable Gemini image generation")
 	}
-	session, err := s.openImageSession(req.Target)
+	session, err := s.openImageSession(req.Principal, req.Target)
 	if err != nil {
 		imageGenerationLogf("stage=open_session provider=%q thread_id=%q reason=%q will_save=false", ProviderGoogleGemini, strings.TrimSpace(req.Target.ThreadID), err.Error())
 		return GenerateResult{}, err

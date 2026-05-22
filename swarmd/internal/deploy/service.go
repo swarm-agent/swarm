@@ -4753,14 +4753,18 @@ func (s *Service) UnlockManagedLocalChildVaults(ctx context.Context) error {
 	if s == nil || s.store == nil {
 		return nil
 	}
-	vaultStatus, err := s.auth.VaultStatus()
+	accountScopeID, err := s.accountScopeIDForManagedCredentialSync(ctx)
+	if err != nil {
+		return err
+	}
+	vaultStatus, err := s.auth.VaultStatusForAccount(accountScopeID)
 	if err != nil {
 		return err
 	}
 	if !vaultStatus.Enabled || !vaultStatus.Unlocked {
 		return nil
 	}
-	records, err := s.store.List(500)
+	records, err := s.store.ListForAccount(accountScopeID, 500)
 	if err != nil {
 		return err
 	}
@@ -4789,7 +4793,11 @@ func (s *Service) unlockManagedLocalChildVaultIfNeeded(ctx context.Context, reco
 	if strings.TrimSpace(record.ChildSwarmID) == "" || strings.TrimSpace(record.ChildBackendURL) == "" {
 		return nil
 	}
-	vaultStatus, err := s.auth.VaultStatus()
+	accountScopeID, err := s.accountScopeIDForManagedCredentialSync(ctx)
+	if err != nil {
+		return err
+	}
+	vaultStatus, err := s.auth.VaultStatusForAccount(accountScopeID)
 	if err != nil {
 		return err
 	}

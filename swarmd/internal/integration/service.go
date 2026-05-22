@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -29,29 +30,44 @@ func NewService(store *pebblestore.IntegrationStore) *Service {
 }
 
 type Request struct {
-	Action    string         `json:"action"`
-	Resource  string         `json:"resource,omitempty"`
-	PackID    string         `json:"pack_id,omitempty"`
-	VersionID string         `json:"version_id,omitempty"`
-	ID        string         `json:"id,omitempty"`
-	Content   map[string]any `json:"content,omitempty"`
-	Limit     int            `json:"limit,omitempty"`
+	AccountScopeID string         `json:"-"`
+	UserID         string         `json:"-"`
+	Action         string         `json:"action"`
+	Resource       string         `json:"resource,omitempty"`
+	PackID         string         `json:"pack_id,omitempty"`
+	VersionID      string         `json:"version_id,omitempty"`
+	ID             string         `json:"id,omitempty"`
+	Content        map[string]any `json:"content,omitempty"`
+	Limit          int            `json:"limit,omitempty"`
 }
 
 func (s *Service) Inspect(limit int) (map[string]any, error) {
+	return s.InspectForAccount("", limit)
+}
+
+func (s *Service) HandleForPrincipal(principal identity.Principal, req Request) (map[string]any, error) {
+	if !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
+		return nil, errors.New("authenticated account principal is required")
+	}
+	req.AccountScopeID = principal.AccountScopeID
+	req.UserID = principal.UserID
+	return s.Handle(req)
+}
+
+func (s *Service) InspectForAccount(accountScopeID string, limit int) (map[string]any, error) {
 	if err := s.configured(); err != nil {
 		return nil, err
 	}
 	limit = normalizeLimit(limit)
-	packs, err := s.store.ListPacks(limit)
+	packs, err := s.store.ListPacksForAccount(accountScopeID, limit)
 	if err != nil {
 		return nil, err
 	}
-	workspaces, err := s.store.ListWorkspaces(limit)
+	workspaces, err := s.store.ListWorkspacesForAccount(accountScopeID, limit)
 	if err != nil {
 		return nil, err
 	}
-	assignments, err := s.store.ListAssignments(limit)
+	assignments, err := s.store.ListAssignmentsForAccount(accountScopeID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -92,15 +108,15 @@ func (s *Service) List(req Request) (map[string]any, error) {
 	resource := normalizeResource(req.Resource)
 	limit := normalizeLimit(req.Limit)
 	if resource == "" || resource == "all" {
-		packs, err := s.store.ListPacks(limit)
+		packs, err := s.store.ListPacksForAccount(req.AccountScopeID, limit)
 		if err != nil {
 			return nil, err
 		}
-		workspaces, err := s.store.ListWorkspaces(limit)
+		workspaces, err := s.store.ListWorkspacesForAccount(req.AccountScopeID, limit)
 		if err != nil {
 			return nil, err
 		}
-		assignments, err := s.store.ListAssignments(limit)
+		assignments, err := s.store.ListAssignmentsForAccount(req.AccountScopeID, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -108,7 +124,7 @@ func (s *Service) List(req Request) (map[string]any, error) {
 	}
 	switch resource {
 	case ResourcePack:
-		packs, err := s.store.ListPacks(limit)
+		packs, err := s.store.ListPacksForAccount(req.AccountScopeID, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -118,7 +134,7 @@ func (s *Service) List(req Request) (map[string]any, error) {
 		if packID == "" {
 			return nil, errors.New("pack_id is required to list versions")
 		}
-		versions, err := s.store.ListPackVersions(packID, limit)
+		versions, err := s.store.ListPackVersionsForAccount(req.AccountScopeID, packID, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -128,7 +144,7 @@ func (s *Service) List(req Request) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		tools, err := s.store.ListTools(packID, versionID, limit)
+		tools, err := s.store.ListToolsForAccount(req.AccountScopeID, packID, versionID, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -138,7 +154,7 @@ func (s *Service) List(req Request) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		adapters, err := s.store.ListAdapters(packID, versionID, limit)
+		adapters, err := s.store.ListAdaptersForAccount(req.AccountScopeID, packID, versionID, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -148,19 +164,19 @@ func (s *Service) List(req Request) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		prompts, err := s.store.ListPromptFragments(packID, versionID, limit)
+		prompts, err := s.store.ListPromptFragmentsForAccount(req.AccountScopeID, packID, versionID, limit)
 		if err != nil {
 			return nil, err
 		}
 		return listResponse(resource, promptMaps(prompts)), nil
 	case ResourceWorkspace:
-		workspaces, err := s.store.ListWorkspaces(limit)
+		workspaces, err := s.store.ListWorkspacesForAccount(req.AccountScopeID, limit)
 		if err != nil {
 			return nil, err
 		}
 		return listResponse(resource, workspaceMaps(workspaces)), nil
 	case ResourceAssignment:
-		assignments, err := s.store.ListAssignments(limit)
+		assignments, err := s.store.ListAssignmentsForAccount(req.AccountScopeID, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -179,18 +195,18 @@ func (s *Service) Get(req Request) (map[string]any, error) {
 	switch resource {
 	case ResourcePack:
 		id = firstNonEmpty(id, normalizeID(req.PackID))
-		record, ok, err := s.store.GetPack(id)
+		record, ok, err := s.store.GetPackForAccount(req.AccountScopeID, id)
 		if err != nil || !ok {
 			return nil, notFoundOrErr(resource, id, ok, err)
 		}
-		versions, _ := s.store.ListPackVersions(record.PackID, normalizeLimit(req.Limit))
+		versions, _ := s.store.ListPackVersionsForAccount(req.AccountScopeID, record.PackID, normalizeLimit(req.Limit))
 		out := packMap(record)
 		out["versions"] = versionMaps(versions)
 		return itemResponse("get", resource, out), nil
 	case ResourceVersion:
 		packID := normalizeID(req.PackID)
 		versionID := firstNonEmpty(id, normalizeID(req.VersionID))
-		record, ok, err := s.store.GetPackVersion(packID, versionID)
+		record, ok, err := s.store.GetPackVersionForAccount(req.AccountScopeID, packID, versionID)
 		if err != nil || !ok {
 			return nil, notFoundOrErr(resource, packID+"/"+versionID, ok, err)
 		}
@@ -200,7 +216,7 @@ func (s *Service) Get(req Request) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		record, ok, err := s.store.GetTool(packID, versionID, id)
+		record, ok, err := s.store.GetToolForAccount(req.AccountScopeID, packID, versionID, id)
 		if err != nil || !ok {
 			return nil, notFoundOrErr(resource, id, ok, err)
 		}
@@ -210,7 +226,7 @@ func (s *Service) Get(req Request) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		record, ok, err := s.store.GetAdapter(packID, versionID, id)
+		record, ok, err := s.store.GetAdapterForAccount(req.AccountScopeID, packID, versionID, id)
 		if err != nil || !ok {
 			return nil, notFoundOrErr(resource, id, ok, err)
 		}
@@ -220,14 +236,14 @@ func (s *Service) Get(req Request) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		record, ok, err := s.store.GetPromptFragment(packID, versionID, id)
+		record, ok, err := s.store.GetPromptFragmentForAccount(req.AccountScopeID, packID, versionID, id)
 		if err != nil || !ok {
 			return nil, notFoundOrErr(resource, id, ok, err)
 		}
 		return itemResponse("get", resource, promptMap(record)), nil
 	case ResourceWorkspace:
 		workspaceID := firstNonEmpty(id, normalizeID(stringField(req.Content, "workspace_id")))
-		record, ok, err := s.store.GetWorkspace(workspaceID)
+		record, ok, err := s.store.GetWorkspaceForAccount(req.AccountScopeID, workspaceID)
 		if err != nil || !ok {
 			return nil, notFoundOrErr(resource, workspaceID, ok, err)
 		}
@@ -246,41 +262,53 @@ func (s *Service) Upsert(action string, req Request) (map[string]any, error) {
 	mergeTopLevelIDs(content, req)
 	switch resource {
 	case ResourcePack:
-		record, err := s.store.PutPack(packFromContent(content))
+		record := packFromContent(content)
+		record.AccountScopeID = strings.TrimSpace(req.AccountScopeID)
+		record, err := s.store.PutPack(record)
 		if err != nil {
 			return nil, err
 		}
 		return itemResponse(action, resource, packMap(record)), nil
 	case ResourceVersion:
-		record, err := s.store.PutPackVersion(versionFromContent(content))
+		record := versionFromContent(content)
+		record.AccountScopeID = strings.TrimSpace(req.AccountScopeID)
+		record, err := s.store.PutPackVersion(record)
 		if err != nil {
 			return nil, err
 		}
-		_ = s.updatePackDraftPointer(record.PackID, record.VersionID, record.Status)
+		_ = s.updatePackDraftPointer(req.AccountScopeID, record.PackID, record.VersionID, record.Status)
 		return itemResponse(action, resource, versionMap(record)), nil
 	case ResourceTool:
-		record, err := s.store.PutTool(toolFromContent(content))
+		record := toolFromContent(content)
+		record.AccountScopeID = strings.TrimSpace(req.AccountScopeID)
+		record, err := s.store.PutTool(record)
 		if err != nil {
 			return nil, err
 		}
-		_ = s.addVersionChildID(record.PackID, record.VersionID, "tool", record.ToolID)
+		_ = s.addVersionChildID(req.AccountScopeID, record.PackID, record.VersionID, "tool", record.ToolID)
 		return itemResponse(action, resource, toolMap(record)), nil
 	case ResourceAdapter:
-		record, err := s.store.PutAdapter(adapterFromContent(content))
+		record := adapterFromContent(content)
+		record.AccountScopeID = strings.TrimSpace(req.AccountScopeID)
+		record, err := s.store.PutAdapter(record)
 		if err != nil {
 			return nil, err
 		}
-		_ = s.addVersionChildID(record.PackID, record.VersionID, "adapter", record.AdapterID)
+		_ = s.addVersionChildID(req.AccountScopeID, record.PackID, record.VersionID, "adapter", record.AdapterID)
 		return itemResponse(action, resource, adapterMap(record)), nil
 	case ResourcePromptFragment:
-		record, err := s.store.PutPromptFragment(promptFromContent(content))
+		record := promptFromContent(content)
+		record.AccountScopeID = strings.TrimSpace(req.AccountScopeID)
+		record, err := s.store.PutPromptFragment(record)
 		if err != nil {
 			return nil, err
 		}
-		_ = s.addVersionChildID(record.PackID, record.VersionID, "prompt", record.PromptID)
+		_ = s.addVersionChildID(req.AccountScopeID, record.PackID, record.VersionID, "prompt", record.PromptID)
 		return itemResponse(action, resource, promptMap(record)), nil
 	case ResourceWorkspace:
-		record, err := s.store.PutWorkspace(workspaceFromContent(content))
+		record := workspaceFromContent(content)
+		record.AccountScopeID = strings.TrimSpace(req.AccountScopeID)
+		record, err := s.store.PutWorkspace(record)
 		if err != nil {
 			return nil, err
 		}
@@ -299,11 +327,11 @@ func (s *Service) Delete(req Request) (map[string]any, error) {
 	switch resource {
 	case ResourcePack:
 		id = firstNonEmpty(id, normalizeID(req.PackID))
-		if err := s.store.DeletePack(id); err != nil {
+		if err := s.store.DeletePackForAccount(req.AccountScopeID, id); err != nil {
 			return nil, err
 		}
 	case ResourceVersion:
-		if err := s.store.DeletePackVersion(normalizeID(req.PackID), firstNonEmpty(id, normalizeID(req.VersionID))); err != nil {
+		if err := s.store.DeletePackVersionForAccount(req.AccountScopeID, normalizeID(req.PackID), firstNonEmpty(id, normalizeID(req.VersionID))); err != nil {
 			return nil, err
 		}
 	case ResourceTool:
@@ -311,7 +339,7 @@ func (s *Service) Delete(req Request) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := s.store.DeleteTool(packID, versionID, id); err != nil {
+		if err := s.store.DeleteToolForAccount(req.AccountScopeID, packID, versionID, id); err != nil {
 			return nil, err
 		}
 	case ResourceAdapter:
@@ -319,7 +347,7 @@ func (s *Service) Delete(req Request) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := s.store.DeleteAdapter(packID, versionID, id); err != nil {
+		if err := s.store.DeleteAdapterForAccount(req.AccountScopeID, packID, versionID, id); err != nil {
 			return nil, err
 		}
 	case ResourcePromptFragment:
@@ -327,11 +355,11 @@ func (s *Service) Delete(req Request) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := s.store.DeletePromptFragment(packID, versionID, id); err != nil {
+		if err := s.store.DeletePromptFragmentForAccount(req.AccountScopeID, packID, versionID, id); err != nil {
 			return nil, err
 		}
 	case ResourceWorkspace:
-		if err := s.store.DeleteWorkspace(id); err != nil {
+		if err := s.store.DeleteWorkspaceForAccount(req.AccountScopeID, id); err != nil {
 			return nil, err
 		}
 	default:
@@ -347,7 +375,7 @@ func (s *Service) Handle(req Request) (map[string]any, error) {
 	}
 	switch action {
 	case "inspect":
-		return s.Inspect(req.Limit)
+		return s.InspectForAccount(req.AccountScopeID, req.Limit)
 	case "list":
 		return s.List(req)
 	case "get":
@@ -369,17 +397,25 @@ func (s *Service) UpsertWorkspaceContext(record pebblestore.IntegrationWorkspace
 }
 
 func (s *Service) GetWorkspace(workspaceID string) (pebblestore.IntegrationWorkspaceRecord, bool, error) {
+	return s.GetWorkspaceForAccount("", workspaceID)
+}
+
+func (s *Service) GetWorkspaceForAccount(accountScopeID, workspaceID string) (pebblestore.IntegrationWorkspaceRecord, bool, error) {
 	if err := s.configured(); err != nil {
 		return pebblestore.IntegrationWorkspaceRecord{}, false, err
 	}
-	return s.store.GetWorkspace(workspaceID)
+	return s.store.GetWorkspaceForAccount(accountScopeID, workspaceID)
 }
 
 func (s *Service) ListWorkspaces(limit int) ([]pebblestore.IntegrationWorkspaceRecord, error) {
+	return s.ListWorkspacesForAccount("", limit)
+}
+
+func (s *Service) ListWorkspacesForAccount(accountScopeID string, limit int) ([]pebblestore.IntegrationWorkspaceRecord, error) {
 	if err := s.configured(); err != nil {
 		return nil, err
 	}
-	return s.store.ListWorkspaces(normalizeLimit(limit))
+	return s.store.ListWorkspacesForAccount(accountScopeID, normalizeLimit(limit))
 }
 
 func (s *Service) AttachWorkspaceSession(record pebblestore.IntegrationWorkspaceSessionRecord) (pebblestore.IntegrationWorkspaceSessionRecord, error) {
@@ -390,24 +426,43 @@ func (s *Service) AttachWorkspaceSession(record pebblestore.IntegrationWorkspace
 }
 
 func (s *Service) GetWorkspaceSession(workspaceID, sessionID string) (pebblestore.IntegrationWorkspaceSessionRecord, bool, error) {
+	return s.GetWorkspaceSessionForAccount("", workspaceID, sessionID)
+}
+
+func (s *Service) GetWorkspaceSessionForAccount(accountScopeID, workspaceID, sessionID string) (pebblestore.IntegrationWorkspaceSessionRecord, bool, error) {
 	if err := s.configured(); err != nil {
 		return pebblestore.IntegrationWorkspaceSessionRecord{}, false, err
 	}
-	return s.store.GetWorkspaceSession(workspaceID, sessionID)
+	return s.store.GetWorkspaceSessionForAccount(accountScopeID, workspaceID, sessionID)
 }
 
 func (s *Service) ListWorkspaceSessions(workspaceID string, limit int) ([]pebblestore.IntegrationWorkspaceSessionRecord, error) {
+	return s.ListWorkspaceSessionsForAccount("", workspaceID, limit)
+}
+
+func (s *Service) ListWorkspaceSessionsForAccount(accountScopeID, workspaceID string, limit int) ([]pebblestore.IntegrationWorkspaceSessionRecord, error) {
 	if err := s.configured(); err != nil {
 		return nil, err
 	}
-	return s.store.ListWorkspaceSessions(workspaceID, normalizeLimit(limit))
+	return s.store.ListWorkspaceSessionsForAccount(accountScopeID, workspaceID, normalizeLimit(limit))
+}
+
+func (s *Service) DeleteWorkspaceSessionForAccount(accountScopeID, workspaceID, sessionID string) error {
+	if err := s.configured(); err != nil {
+		return err
+	}
+	return s.store.DeleteWorkspaceSessionForAccount(accountScopeID, workspaceID, sessionID)
 }
 
 func (s *Service) LatestWorkspaceSession(workspaceID string) (pebblestore.IntegrationWorkspaceSessionRecord, bool, error) {
+	return s.LatestWorkspaceSessionForAccount("", workspaceID)
+}
+
+func (s *Service) LatestWorkspaceSessionForAccount(accountScopeID, workspaceID string) (pebblestore.IntegrationWorkspaceSessionRecord, bool, error) {
 	if err := s.configured(); err != nil {
 		return pebblestore.IntegrationWorkspaceSessionRecord{}, false, err
 	}
-	return s.store.LatestWorkspaceSession(workspaceID)
+	return s.store.LatestWorkspaceSessionForAccount(accountScopeID, workspaceID)
 }
 
 func (s *Service) configured() error {
@@ -435,36 +490,36 @@ func itemResponse(action, resource string, item map[string]any) map[string]any {
 
 func schemaMap() map[string]any {
 	return map[string]any{
-		ResourcePack:           []string{"pack_id", "slug", "display_name", "description", "latest_version_id", "draft_version_id", "metadata"},
-		ResourceVersion:        []string{"pack_id", "version_id", "version", "status", "display_name", "description", "tool_ids", "adapter_ids", "prompt_ids", "metadata"},
-		ResourceTool:           []string{"pack_id", "version_id", "tool_id", "name", "description", "adapter_id", "permission_mode", "input_schema", "metadata"},
-		ResourceAdapter:        []string{"pack_id", "version_id", "adapter_id", "type", "display_name", "settings", "credential_refs", "metadata"},
-		ResourcePromptFragment: []string{"pack_id", "version_id", "prompt_id", "title", "content", "metadata"},
-		ResourceWorkspace:      []string{"workspace_id", "display_name", "pack_id", "draft_version_id", "metadata"},
+		ResourcePack:           []string{"account_scope_id", "pack_id", "slug", "display_name", "description", "latest_version_id", "draft_version_id", "metadata"},
+		ResourceVersion:        []string{"account_scope_id", "pack_id", "version_id", "version", "status", "display_name", "description", "tool_ids", "adapter_ids", "prompt_ids", "metadata"},
+		ResourceTool:           []string{"account_scope_id", "pack_id", "version_id", "tool_id", "name", "description", "adapter_id", "permission_mode", "input_schema", "metadata"},
+		ResourceAdapter:        []string{"account_scope_id", "pack_id", "version_id", "adapter_id", "type", "display_name", "settings", "credential_refs", "metadata"},
+		ResourcePromptFragment: []string{"account_scope_id", "pack_id", "version_id", "prompt_id", "title", "content", "metadata"},
+		ResourceWorkspace:      []string{"account_scope_id", "workspace_id", "display_name", "pack_id", "draft_version_id", "metadata"},
 	}
 }
 
 func packMap(record pebblestore.IntegrationPackRecord) map[string]any {
-	return map[string]any{"pack_id": record.PackID, "slug": record.Slug, "display_name": record.DisplayName, "description": record.Description, "latest_version_id": record.LatestVersionID, "draft_version_id": record.DraftVersionID, "metadata": record.Metadata, "created_at": record.CreatedAt, "updated_at": record.UpdatedAt}
+	return map[string]any{"account_scope_id": record.AccountScopeID, "pack_id": record.PackID, "slug": record.Slug, "display_name": record.DisplayName, "description": record.Description, "latest_version_id": record.LatestVersionID, "draft_version_id": record.DraftVersionID, "metadata": record.Metadata, "created_at": record.CreatedAt, "updated_at": record.UpdatedAt}
 }
 func versionMap(record pebblestore.IntegrationPackVersionRecord) map[string]any {
-	return map[string]any{"pack_id": record.PackID, "version_id": record.VersionID, "version": record.Version, "status": record.Status, "display_name": record.DisplayName, "description": record.Description, "tool_ids": record.ToolIDs, "adapter_ids": record.AdapterIDs, "prompt_ids": record.PromptIDs, "metadata": record.Metadata, "created_at": record.CreatedAt, "updated_at": record.UpdatedAt}
+	return map[string]any{"account_scope_id": record.AccountScopeID, "pack_id": record.PackID, "version_id": record.VersionID, "version": record.Version, "status": record.Status, "display_name": record.DisplayName, "description": record.Description, "tool_ids": record.ToolIDs, "adapter_ids": record.AdapterIDs, "prompt_ids": record.PromptIDs, "metadata": record.Metadata, "created_at": record.CreatedAt, "updated_at": record.UpdatedAt}
 }
 func toolMap(record pebblestore.IntegrationToolRecord) map[string]any {
-	return map[string]any{"pack_id": record.PackID, "version_id": record.VersionID, "tool_id": record.ToolID, "name": record.Name, "description": record.Description, "adapter_id": record.AdapterID, "permission_mode": record.PermissionMode, "input_schema": json.RawMessage(record.InputSchema), "metadata": record.Metadata, "created_at": record.CreatedAt, "updated_at": record.UpdatedAt}
+	return map[string]any{"account_scope_id": record.AccountScopeID, "pack_id": record.PackID, "version_id": record.VersionID, "tool_id": record.ToolID, "name": record.Name, "description": record.Description, "adapter_id": record.AdapterID, "permission_mode": record.PermissionMode, "input_schema": json.RawMessage(record.InputSchema), "metadata": record.Metadata, "created_at": record.CreatedAt, "updated_at": record.UpdatedAt}
 }
 func adapterMap(record pebblestore.IntegrationAdapterRecord) map[string]any {
 	keys := sortedKeys(record.CredentialRefs)
-	return map[string]any{"pack_id": record.PackID, "version_id": record.VersionID, "adapter_id": record.AdapterID, "type": record.Type, "display_name": record.DisplayName, "settings": record.Settings, "credential_ref_keys": keys, "credential_ref_count": len(keys), "metadata": record.Metadata, "created_at": record.CreatedAt, "updated_at": record.UpdatedAt}
+	return map[string]any{"account_scope_id": record.AccountScopeID, "pack_id": record.PackID, "version_id": record.VersionID, "adapter_id": record.AdapterID, "type": record.Type, "display_name": record.DisplayName, "settings": record.Settings, "credential_ref_keys": keys, "credential_ref_count": len(keys), "metadata": record.Metadata, "created_at": record.CreatedAt, "updated_at": record.UpdatedAt}
 }
 func promptMap(record pebblestore.IntegrationPromptFragmentRecord) map[string]any {
-	return map[string]any{"pack_id": record.PackID, "version_id": record.VersionID, "prompt_id": record.PromptID, "title": record.Title, "content": record.Content, "metadata": record.Metadata, "created_at": record.CreatedAt, "updated_at": record.UpdatedAt}
+	return map[string]any{"account_scope_id": record.AccountScopeID, "pack_id": record.PackID, "version_id": record.VersionID, "prompt_id": record.PromptID, "title": record.Title, "content": record.Content, "metadata": record.Metadata, "created_at": record.CreatedAt, "updated_at": record.UpdatedAt}
 }
 func workspaceMap(record pebblestore.IntegrationWorkspaceRecord) map[string]any {
-	return map[string]any{"workspace_id": record.WorkspaceID, "display_name": record.DisplayName, "pack_id": record.PackID, "draft_version_id": record.DraftVersionID, "latest_child_session_id": record.LatestChildSessionID, "latest_child_session_at": record.LatestChildSessionAt, "metadata": record.Metadata, "created_at": record.CreatedAt, "updated_at": record.UpdatedAt}
+	return map[string]any{"account_scope_id": record.AccountScopeID, "workspace_id": record.WorkspaceID, "display_name": record.DisplayName, "pack_id": record.PackID, "draft_version_id": record.DraftVersionID, "latest_child_session_id": record.LatestChildSessionID, "latest_child_session_at": record.LatestChildSessionAt, "metadata": record.Metadata, "created_at": record.CreatedAt, "updated_at": record.UpdatedAt}
 }
 func assignmentMap(record pebblestore.IntegrationAssignmentRecord) map[string]any {
-	return map[string]any{"assignment_id": record.AssignmentID, "agent_name": record.AgentName, "pack_id": record.PackID, "version_id": record.VersionID, "status": record.Status, "metadata": record.Metadata, "created_at": record.CreatedAt, "updated_at": record.UpdatedAt}
+	return map[string]any{"account_scope_id": record.AccountScopeID, "assignment_id": record.AssignmentID, "agent_name": record.AgentName, "pack_id": record.PackID, "version_id": record.VersionID, "status": record.Status, "metadata": record.Metadata, "created_at": record.CreatedAt, "updated_at": record.UpdatedAt}
 }
 
 func packMaps(records []pebblestore.IntegrationPackRecord) []map[string]any {
@@ -516,8 +571,8 @@ func workspaceFromContent(content map[string]any) pebblestore.IntegrationWorkspa
 	return pebblestore.IntegrationWorkspaceRecord{WorkspaceID: stringField(content, "workspace_id"), DisplayName: stringField(content, "display_name"), PackID: stringField(content, "pack_id"), DraftVersionID: stringField(content, "draft_version_id"), Metadata: stringMapField(content, "metadata")}
 }
 
-func (s *Service) updatePackDraftPointer(packID, versionID, status string) error {
-	pack, ok, err := s.store.GetPack(packID)
+func (s *Service) updatePackDraftPointer(accountScopeID, packID, versionID, status string) error {
+	pack, ok, err := s.store.GetPackForAccount(accountScopeID, packID)
 	if err != nil || !ok {
 		return err
 	}
@@ -530,8 +585,8 @@ func (s *Service) updatePackDraftPointer(packID, versionID, status string) error
 	return err
 }
 
-func (s *Service) addVersionChildID(packID, versionID, kind, childID string) error {
-	version, ok, err := s.store.GetPackVersion(packID, versionID)
+func (s *Service) addVersionChildID(accountScopeID, packID, versionID, kind, childID string) error {
+	version, ok, err := s.store.GetPackVersionForAccount(accountScopeID, packID, versionID)
 	if err != nil || !ok {
 		return err
 	}

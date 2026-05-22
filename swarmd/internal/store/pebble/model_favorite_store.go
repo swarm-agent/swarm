@@ -9,12 +9,14 @@ import (
 )
 
 type ModelFavoriteRecord struct {
-	Provider  string `json:"provider"`
-	Model     string `json:"model"`
-	Label     string `json:"label,omitempty"`
-	Thinking  string `json:"thinking,omitempty"`
-	CreatedAt int64  `json:"created_at"`
-	UpdatedAt int64  `json:"updated_at"`
+	Provider       string `json:"provider"`
+	Model          string `json:"model"`
+	Label          string `json:"label,omitempty"`
+	Thinking       string `json:"thinking,omitempty"`
+	AccountScopeID string `json:"account_scope_id,omitempty"`
+	UserID         string `json:"user_id,omitempty"`
+	CreatedAt      int64  `json:"created_at"`
+	UpdatedAt      int64  `json:"updated_at"`
 }
 
 type ModelFavoriteStore struct {
@@ -26,6 +28,10 @@ func NewModelFavoriteStore(store *Store) *ModelFavoriteStore {
 }
 
 func (s *ModelFavoriteStore) Upsert(record ModelFavoriteRecord) (ModelFavoriteRecord, error) {
+	return s.UpsertForAccount(record.AccountScopeID, record.UserID, record)
+}
+
+func (s *ModelFavoriteStore) UpsertForAccount(accountScopeID, userID string, record ModelFavoriteRecord) (ModelFavoriteRecord, error) {
 	provider := normalizeFavoritePart(record.Provider)
 	model := strings.TrimSpace(record.Model)
 	if provider == "" {
@@ -36,19 +42,24 @@ func (s *ModelFavoriteStore) Upsert(record ModelFavoriteRecord) (ModelFavoriteRe
 	}
 
 	key := KeyModelFavorite(provider, model)
+	if strings.TrimSpace(accountScopeID) != "" {
+		key = KeyModelFavoriteForAccount(accountScopeID, provider, model)
+	}
 	now := time.Now().UnixMilli()
 
-	existing, ok, err := s.Get(provider, model)
+	existing, ok, err := s.GetForAccount(accountScopeID, provider, model)
 	if err != nil {
 		return ModelFavoriteRecord{}, err
 	}
 
 	next := ModelFavoriteRecord{
-		Provider:  provider,
-		Model:     model,
-		Label:     strings.TrimSpace(record.Label),
-		Thinking:  normalizeThinking(record.Thinking),
-		UpdatedAt: now,
+		Provider:       provider,
+		Model:          model,
+		Label:          strings.TrimSpace(record.Label),
+		Thinking:       normalizeThinking(record.Thinking),
+		AccountScopeID: strings.TrimSpace(accountScopeID),
+		UserID:         strings.TrimSpace(userID),
+		UpdatedAt:      now,
 	}
 	if ok {
 		next.CreatedAt = existing.CreatedAt
@@ -57,6 +68,9 @@ func (s *ModelFavoriteStore) Upsert(record ModelFavoriteRecord) (ModelFavoriteRe
 		}
 		if next.Thinking == "" {
 			next.Thinking = existing.Thinking
+		}
+		if next.UserID == "" {
+			next.UserID = existing.UserID
 		}
 	} else {
 		next.CreatedAt = now
@@ -69,46 +83,72 @@ func (s *ModelFavoriteStore) Upsert(record ModelFavoriteRecord) (ModelFavoriteRe
 }
 
 func (s *ModelFavoriteStore) Get(providerID, modelID string) (ModelFavoriteRecord, bool, error) {
+	return s.GetForAccount("", providerID, modelID)
+}
+
+func (s *ModelFavoriteStore) GetForAccount(accountScopeID, providerID, modelID string) (ModelFavoriteRecord, bool, error) {
 	provider := normalizeFavoritePart(providerID)
 	model := strings.TrimSpace(modelID)
 	if provider == "" || model == "" {
 		return ModelFavoriteRecord{}, false, nil
 	}
+	key := KeyModelFavorite(provider, model)
+	if strings.TrimSpace(accountScopeID) != "" {
+		key = KeyModelFavoriteForAccount(accountScopeID, provider, model)
+	}
 	var out ModelFavoriteRecord
-	ok, err := s.store.GetJSON(KeyModelFavorite(provider, model), &out)
+	ok, err := s.store.GetJSON(key, &out)
 	if err != nil || !ok {
 		return ModelFavoriteRecord{}, ok, err
 	}
 	out.Provider = provider
 	out.Model = model
+	if out.AccountScopeID == "" {
+		out.AccountScopeID = strings.TrimSpace(accountScopeID)
+	}
 	return normalizeFavoriteRecord(out), true, nil
 }
 
 func (s *ModelFavoriteStore) Delete(providerID, modelID string) (bool, error) {
+	return s.DeleteForAccount("", providerID, modelID)
+}
+
+func (s *ModelFavoriteStore) DeleteForAccount(accountScopeID, providerID, modelID string) (bool, error) {
 	provider := normalizeFavoritePart(providerID)
 	model := strings.TrimSpace(modelID)
 	if provider == "" || model == "" {
 		return false, nil
 	}
-	_, ok, err := s.Get(provider, model)
+	_, ok, err := s.GetForAccount(accountScopeID, provider, model)
 	if err != nil {
 		return false, err
 	}
 	if !ok {
 		return false, nil
 	}
-	if err := s.store.Delete(KeyModelFavorite(provider, model)); err != nil {
+	key := KeyModelFavorite(provider, model)
+	if strings.TrimSpace(accountScopeID) != "" {
+		key = KeyModelFavoriteForAccount(accountScopeID, provider, model)
+	}
+	if err := s.store.Delete(key); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
 func (s *ModelFavoriteStore) List(providerID string, limit int) ([]ModelFavoriteRecord, error) {
+	return s.ListForAccount("", providerID, limit)
+}
+
+func (s *ModelFavoriteStore) ListForAccount(accountScopeID, providerID string, limit int) ([]ModelFavoriteRecord, error) {
 	provider := normalizeFavoritePart(providerID)
 	if limit <= 0 {
 		limit = 500
 	}
 	prefix := ModelFavoritePrefix(provider)
+	if strings.TrimSpace(accountScopeID) != "" {
+		prefix = ModelFavoritePrefixForAccount(accountScopeID, provider)
+	}
 	out := make([]ModelFavoriteRecord, 0, minFavorite(limit, 256))
 	err := s.store.IteratePrefix(prefix, limit, func(_ string, value []byte) error {
 		var record ModelFavoriteRecord
@@ -116,6 +156,9 @@ func (s *ModelFavoriteStore) List(providerID string, limit int) ([]ModelFavorite
 			return err
 		}
 		record = normalizeFavoriteRecord(record)
+		if record.AccountScopeID == "" {
+			record.AccountScopeID = strings.TrimSpace(accountScopeID)
+		}
 		if provider != "" && record.Provider != provider {
 			return nil
 		}

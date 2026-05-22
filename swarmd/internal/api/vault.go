@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -19,7 +18,12 @@ func (s *Server) handleVaultStatus(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	status, err := s.auth.VaultStatus()
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
+	status, err := s.auth.VaultStatusForAccount(principal.AccountScopeID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -43,7 +47,12 @@ func (s *Server) handleVaultEnable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	status, err := s.auth.EnableVault(strings.TrimSpace(req.Password))
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
+	status, err := s.auth.EnableVaultForAccount(principal.AccountScopeID, strings.TrimSpace(req.Password))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -67,13 +76,19 @@ func (s *Server) handleVaultUnlock(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	status, err := s.auth.UnlockVault(strings.TrimSpace(req.Password))
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
+	status, err := s.auth.UnlockVaultForAccount(principal.AccountScopeID, strings.TrimSpace(req.Password))
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, err)
 		return
 	}
 	if s.deployContainers != nil {
-		if childErr := s.deployContainers.UnlockManagedLocalChildVaults(context.Background()); childErr != nil {
+		ctx := identity.ContextWithPrincipal(r.Context(), principal)
+		if childErr := s.deployContainers.UnlockManagedLocalChildVaults(ctx); childErr != nil {
 			status.Warning = strings.TrimSpace(childErr.Error())
 		}
 	}
@@ -89,7 +104,12 @@ func (s *Server) handleVaultLock(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	status, err := s.auth.LockVault()
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
+	status, err := s.auth.LockVaultForAccount(principal.AccountScopeID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -113,7 +133,12 @@ func (s *Server) handleVaultDisable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	status, err := s.auth.DisableVault(strings.TrimSpace(req.Password))
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
+	status, err := s.auth.DisableVaultForAccount(principal.AccountScopeID, strings.TrimSpace(req.Password))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -207,7 +232,12 @@ func (s *Server) withVaultGate(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		status, err := s.auth.VaultStatus()
+		principal, ok := PrincipalFromRequest(r)
+		if !ok {
+			next.ServeHTTP(w, r)
+			return
+		}
+		status, err := s.auth.VaultStatusForAccount(principal.AccountScopeID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return

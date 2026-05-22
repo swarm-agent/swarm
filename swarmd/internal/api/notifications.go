@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"swarm/packages/swarmd/internal/identity"
 
 	"swarm/packages/swarmd/internal/notification"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -37,16 +38,75 @@ func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+type accountScopedNotificationService interface {
+	ListNotificationsForAccount(accountScopeID, swarmID string, limit int) ([]pebblestore.NotificationRecord, error)
+	SummaryForAccount(accountScopeID, swarmID string) (pebblestore.NotificationSummary, error)
+	ClearNotificationsForAccount(accountScopeID, swarmID string) (notification.ClearResult, error)
+	UpdateNotificationForAccount(accountScopeID string, input notification.UpdateInput) (pebblestore.NotificationRecord, bool, error)
+	UpsertSystemNotificationForAccount(accountScopeID string, record pebblestore.NotificationRecord) (pebblestore.NotificationRecord, bool, error)
+}
+
+func notificationServiceForAccount(base notificationService, accountScopeID string) notificationService {
+	if base == nil {
+		return nil
+	}
+	if scoped, ok := base.(accountScopedNotificationService); ok {
+		return scopedNotificationService{base: base, scoped: scoped, accountScopeID: strings.TrimSpace(accountScopeID)}
+	}
+	return base
+}
+
+type scopedNotificationService struct {
+	base           notificationService
+	scoped         accountScopedNotificationService
+	accountScopeID string
+}
+
+func (s scopedNotificationService) LocalSwarmID() string { return s.base.LocalSwarmID() }
+
+func (s scopedNotificationService) ListNotifications(swarmID string, limit int) ([]pebblestore.NotificationRecord, error) {
+	return s.scoped.ListNotificationsForAccount(s.accountScopeID, swarmID, limit)
+}
+
+func (s scopedNotificationService) Summary(swarmID string) (pebblestore.NotificationSummary, error) {
+	return s.scoped.SummaryForAccount(s.accountScopeID, swarmID)
+}
+
+func (s scopedNotificationService) ClearNotifications(swarmID string) (notification.ClearResult, error) {
+	return s.scoped.ClearNotificationsForAccount(s.accountScopeID, swarmID)
+}
+
+func (s scopedNotificationService) UpdateNotification(input notification.UpdateInput) (pebblestore.NotificationRecord, bool, error) {
+	return s.scoped.UpdateNotificationForAccount(s.accountScopeID, input)
+}
+
+func (s scopedNotificationService) UpsertSystemNotification(record pebblestore.NotificationRecord) (pebblestore.NotificationRecord, bool, error) {
+	return s.scoped.UpsertSystemNotificationForAccount(s.accountScopeID, record)
+}
+
+func (s *Server) notificationAccountScopeID(w http.ResponseWriter, r *http.Request) (string, bool) {
+	principal, ok := PrincipalFromRequest(r)
+	if !ok || !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return "", false
+	}
+	return strings.TrimSpace(principal.AccountScopeID), true
+}
+
 func (s *Server) handleNotificationList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
+		return
+	}
+	accountScopeID, ok := s.notificationAccountScopeID(w, r)
+	if !ok {
 		return
 	}
 	limit := 200
 	if parsed := parseIntQuery(r, "limit", 0); parsed > 0 {
 		limit = parsed
 	}
-	records, err := s.notifications.ListNotifications(r.URL.Query().Get("swarm_id"), limit)
+	records, err := notificationServiceForAccount(s.notifications, accountScopeID).ListNotifications(r.URL.Query().Get("swarm_id"), limit)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -59,7 +119,11 @@ func (s *Server) handleNotificationSummary(w http.ResponseWriter, r *http.Reques
 		methodNotAllowed(w)
 		return
 	}
-	summary, err := s.notifications.Summary(r.URL.Query().Get("swarm_id"))
+	accountScopeID, ok := s.notificationAccountScopeID(w, r)
+	if !ok {
+		return
+	}
+	summary, err := notificationServiceForAccount(s.notifications, accountScopeID).Summary(r.URL.Query().Get("swarm_id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -72,7 +136,11 @@ func (s *Server) handleNotificationClear(w http.ResponseWriter, r *http.Request)
 		methodNotAllowed(w)
 		return
 	}
-	result, err := s.notifications.ClearNotifications(r.URL.Query().Get("swarm_id"))
+	accountScopeID, ok := s.notificationAccountScopeID(w, r)
+	if !ok {
+		return
+	}
+	result, err := notificationServiceForAccount(s.notifications, accountScopeID).ClearNotifications(r.URL.Query().Get("swarm_id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -83,6 +151,10 @@ func (s *Server) handleNotificationClear(w http.ResponseWriter, r *http.Request)
 func (s *Server) handleNotificationUpdate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
+		return
+	}
+	accountScopeID, ok := s.notificationAccountScopeID(w, r)
+	if !ok {
 		return
 	}
 	notificationID := strings.TrimSpace(r.URL.Path)
@@ -104,7 +176,7 @@ func (s *Server) handleNotificationUpdate(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	record, _, err := s.notifications.UpdateNotification(notification.UpdateInput{
+	record, _, err := notificationServiceForAccount(s.notifications, accountScopeID).UpdateNotification(notification.UpdateInput{
 		SwarmID:        req.SwarmID,
 		NotificationID: notificationID,
 		MarkRead:       req.Read,
@@ -116,7 +188,7 @@ func (s *Server) handleNotificationUpdate(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	summary, err := s.notifications.Summary(record.SwarmID)
+	summary, err := notificationServiceForAccount(s.notifications, accountScopeID).Summary(record.SwarmID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return

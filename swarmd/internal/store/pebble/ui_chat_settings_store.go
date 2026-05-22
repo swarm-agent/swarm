@@ -125,11 +125,19 @@ func NewUISettingsStore(store *Store) *UISettingsStore {
 }
 
 func (s *UISettingsStore) Get() (UISettingsRecord, bool, error) {
+	return s.GetForAccount("")
+}
+
+func (s *UISettingsStore) GetForAccount(accountScopeID string) (UISettingsRecord, bool, error) {
 	if s == nil || s.store == nil {
 		return UISettingsRecord{}, false, nil
 	}
 	var record UISettingsRecord
-	ok, err := s.store.GetJSON(KeyUISettingsDefault, &record)
+	key := KeyUISettingsDefault
+	if accountScopeID = strings.TrimSpace(accountScopeID); accountScopeID != "" {
+		key = KeyUISettingsForAccount(accountScopeID)
+	}
+	ok, err := s.store.GetJSON(key, &record)
 	if err != nil {
 		return UISettingsRecord{}, false, err
 	}
@@ -140,7 +148,11 @@ func (s *UISettingsStore) Get() (UISettingsRecord, bool, error) {
 }
 
 func (s *UISettingsStore) Update(patch UISettingsPatch) (UISettingsRecord, error) {
-	record, ok, err := s.Get()
+	return s.UpdateForAccount("", patch)
+}
+
+func (s *UISettingsStore) UpdateForAccount(accountScopeID string, patch UISettingsPatch) (UISettingsRecord, error) {
+	record, ok, err := s.GetForAccount(accountScopeID)
 	if err != nil {
 		return UISettingsRecord{}, err
 	}
@@ -171,7 +183,11 @@ func (s *UISettingsStore) Update(patch UISettingsPatch) (UISettingsRecord, error
 	record.UpdatedAt = time.Now().UnixMilli()
 	record.Chat.UpdatedAt = record.UpdatedAt
 	record = normalizeUISettingsRecord(record)
-	if err := s.store.PutJSON(KeyUISettingsDefault, record); err != nil {
+	key := KeyUISettingsDefault
+	if accountScopeID = strings.TrimSpace(accountScopeID); accountScopeID != "" {
+		key = KeyUISettingsForAccount(accountScopeID)
+	}
+	if err := s.store.PutJSON(key, record); err != nil {
 		return UISettingsRecord{}, err
 	}
 	_ = s.store.Delete(KeyUIChatSettingsDefault)

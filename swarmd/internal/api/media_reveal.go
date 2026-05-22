@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"swarm/packages/swarmd/internal/identity"
 )
 
 func (s *Server) handleImageStorageReveal(w http.ResponseWriter, r *http.Request) {
@@ -20,18 +22,23 @@ func (s *Server) handleImageStorageReveal(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, errors.New("image generation service is not configured"))
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
 	threadID := strings.TrimSpace(r.URL.Query().Get("thread_id"))
 	assetID := strings.TrimSpace(r.URL.Query().Get("asset_id"))
 	var revealPath string
 	if assetID != "" {
-		assetPath, _, err := s.imageGen.ResolveAssetPath(threadID, assetID)
+		assetPath, _, err := s.imageGen.ResolveAssetPathForPrincipal(principal, threadID, assetID)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
 		revealPath = assetPath
 	} else {
-		storagePath, _, err := s.imageGen.ResolveSessionStoragePath(threadID)
+		storagePath, _, err := s.imageGen.ResolveSessionStoragePathForPrincipal(principal, threadID)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return

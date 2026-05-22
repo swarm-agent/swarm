@@ -72,13 +72,19 @@ type authCredentialActiveRecord struct {
 }
 
 type AuthStore struct {
-	store        *Store
-	secretStore  *Store
-	localKeyPath string
-	mu           sync.RWMutex
-	vaultMeta    *VaultMetadata
-	vaultDEK     []byte
-	localRootKey []byte
+	store         *Store
+	secretStore   *Store
+	localKeyPath  string
+	mu            sync.RWMutex
+	vaultMeta     *VaultMetadata
+	vaultDEK      []byte
+	vaultAccounts map[string]vaultAccountState
+	localRootKey  []byte
+}
+
+type vaultAccountState struct {
+	Meta *VaultMetadata
+	DEK  []byte
 }
 
 func NewAuthStore(store *Store) *AuthStore {
@@ -99,9 +105,10 @@ func NewAuthStoreWithSecretStore(store, secretStore *Store) *AuthStore {
 		}
 	}
 	return &AuthStore{
-		store:        store,
-		secretStore:  secretStore,
-		localKeyPath: localKeyPath,
+		store:         store,
+		secretStore:   secretStore,
+		localKeyPath:  localKeyPath,
+		vaultAccounts: make(map[string]vaultAccountState),
 	}
 }
 
@@ -337,7 +344,7 @@ func (s *AuthStore) GetCredentialForAccount(accountScopeID, provider, credential
 	if !ok {
 		return AuthCredentialRecord{}, false, nil
 	}
-	record, err := s.decodeStoredCredential(payload)
+	record, err := s.decodeStoredCredentialForAccount(accountScopeID, payload)
 	if err != nil {
 		return AuthCredentialRecord{}, false, err
 	}
@@ -559,7 +566,7 @@ func (s *AuthStore) ListCredentialsForAccount(accountScopeID, provider string, l
 
 	records := make([]AuthCredentialRecord, 0, minInt(scanLimit, 256))
 	err = s.secretStore.IteratePrefix(prefix, scanLimit, func(_ string, value []byte) error {
-		record, err := s.decodeStoredCredential(value)
+		record, err := s.decodeStoredCredentialForAccount(accountScopeID, value)
 		if err != nil {
 			return err
 		}
