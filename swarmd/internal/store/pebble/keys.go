@@ -54,12 +54,16 @@ const (
 	KeyImageThreadPrefix                        = "image/thread/" // legacy global image thread prefix; retained for explicit migration only.
 	KeyImageThreadAccountPrefix                 = "image/thread_by_account/"
 	KeyModelCatalogMeta                         = "model_catalog/meta"
-	KeyAgentProfilePrefix                       = "agent/profile/"
+	KeyAgentProfilePrefix                       = "agent/profile/" // legacy global agent profile prefix; retained for explicit migration/system fallback only.
+	KeyAgentProfileAccountPrefix                = "agent/profile_by_account/"
 	KeyAgentCustomToolPrefix                    = "agent/custom_tool/"
 	KeyAgentCustomToolAccountPrefix             = "agent/custom_tool_by_account/"
-	KeyAgentActivePrimary                       = "agent/active/primary"
-	KeyAgentActiveSubagentPrefix                = "agent/active/subagent/"
-	KeyAgentVersion                             = "agent/version"
+	KeyAgentActivePrimary                       = "agent/active/primary" // legacy global active primary; retained for explicit migration/system fallback only.
+	KeyAgentActivePrimaryAccountPrefix          = "agent/active/primary_by_account/"
+	KeyAgentActiveSubagentPrefix                = "agent/active/subagent/" // legacy global active subagent prefix; retained for explicit migration/system fallback only.
+	KeyAgentActiveSubagentAccountPrefix         = "agent/active/subagent_by_account/"
+	KeyAgentVersion                             = "agent/version" // legacy global agent version; retained for explicit migration/system fallback only.
+	KeyAgentVersionAccountPrefix                = "agent/version_by_account/"
 	KeySwarmLocalNodeDefault                    = "swarm/local_node/default"
 	KeySwarmLocalPairingDefault                 = "swarm/local_pairing/default"
 	KeySwarmCurrentGroupDefault                 = "swarm/current_group/default"
@@ -892,6 +896,10 @@ func KeyAgentProfile(name string) string {
 	return KeyAgentProfilePrefix + keyPart(name)
 }
 
+func KeyAgentProfileForAccount(accountScopeID, name string) string {
+	return fmt.Sprintf("%s%s/%s", KeyAgentProfileAccountPrefix, keyPart(accountScopeID), keyPart(name))
+}
+
 func KeyAgentCustomTool(name string) string {
 	return KeyAgentCustomToolPrefix + keyPart(name)
 }
@@ -902,6 +910,14 @@ func KeyAgentCustomToolForAccount(accountScopeID, name string) string {
 
 func AgentProfilePrefix() string {
 	return KeyAgentProfilePrefix
+}
+
+func AgentProfilePrefixForAccount(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyAgentProfileAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyAgentProfileAccountPrefix, accountPart)
 }
 
 func AgentCustomToolPrefix() string {
@@ -916,8 +932,28 @@ func AgentCustomToolPrefixForAccount(accountScopeID string) string {
 	return fmt.Sprintf("%s%s/", KeyAgentCustomToolAccountPrefix, accountPart)
 }
 
+func KeyAgentActivePrimaryForAccount(accountScopeID string) string {
+	return KeyAgentActivePrimaryAccountPrefix + keyPart(accountScopeID)
+}
+
 func KeyAgentActiveSubagent(purpose string) string {
 	return KeyAgentActiveSubagentPrefix + keyPart(purpose)
+}
+
+func KeyAgentActiveSubagentForAccount(accountScopeID, purpose string) string {
+	return fmt.Sprintf("%s%s/%s", KeyAgentActiveSubagentAccountPrefix, keyPart(accountScopeID), keyPart(purpose))
+}
+
+func AgentActiveSubagentPrefixForAccount(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyAgentActiveSubagentAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyAgentActiveSubagentAccountPrefix, accountPart)
+}
+
+func KeyAgentVersionForAccount(accountScopeID string) string {
+	return KeyAgentVersionAccountPrefix + keyPart(accountScopeID)
 }
 
 func KeyIntegrationPack(packID string) string {

@@ -54,7 +54,7 @@ func (s *Server) applyUtilityModelDefaultsForAccount(accountScopeID, userID, pre
 		out.GlobalModel = true
 	}
 
-	state, err := s.agents.ListState(2000)
+	state, err := s.agents.ListStateForAccount(accountScopeID, 2000)
 	if err != nil {
 		return nil, fmt.Errorf("list agent state: %w", err)
 	}
@@ -71,7 +71,7 @@ func (s *Server) applyUtilityModelDefaultsForAccount(accountScopeID, userID, pre
 	agentsSeen := make(map[string]struct{}, len(assignments))
 	subagentsSeen := make(map[string]struct{}, len(assignments))
 	if firstProviderOnboarding {
-		state, err = s.applyUtilityAIToBuiltIns(state, providerID, providerDefaults.UtilityModel, providerDefaults.UtilityThinking, false)
+		state, err = s.applyUtilityAIToBuiltInsForAccount(accountScopeID, state, providerID, providerDefaults.UtilityModel, providerDefaults.UtilityThinking, false)
 		if err != nil {
 			return nil, fmt.Errorf("set utility AI defaults: %w", err)
 		}

@@ -267,7 +267,7 @@ func (s *Service) prepareDelegatedSubagentLaunch(parentSession pebblestore.Sessi
 	if requestedSubagent == "" {
 		requestedSubagent = "explorer"
 	}
-	subagentProfile, err := s.resolveTaskSubagent(requestedSubagent)
+	subagentProfile, err := s.resolveTaskSubagentForAccount(parentSession.AccountScopeID, requestedSubagent)
 	if err != nil {
 		return taskLaunchPrepared{}, err
 	}
@@ -2113,6 +2113,10 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 }
 
 func (s *Service) resolveTaskSubagent(nameOrPurpose string) (pebblestore.AgentProfile, error) {
+	return s.resolveTaskSubagentForAccount("", nameOrPurpose)
+}
+
+func (s *Service) resolveTaskSubagentForAccount(accountScopeID, nameOrPurpose string) (pebblestore.AgentProfile, error) {
 	nameOrPurpose = strings.TrimSpace(nameOrPurpose)
 	if nameOrPurpose == "" {
 		nameOrPurpose = "explorer"
@@ -2125,6 +2129,9 @@ func (s *Service) resolveTaskSubagent(nameOrPurpose string) (pebblestore.AgentPr
 			ExecutionSetting: pebblestore.AgentExecutionSettingRead,
 			Enabled:          true,
 		}), nil
+	}
+	if strings.TrimSpace(accountScopeID) != "" {
+		return s.agents.ResolveSubagentForAccount(accountScopeID, nameOrPurpose)
 	}
 	return s.agents.ResolveSubagent(nameOrPurpose)
 }

@@ -299,8 +299,24 @@ func NewAgentStore(store *Store) *AgentStore {
 }
 
 func (s *AgentStore) GetProfile(name string) (AgentProfile, bool, error) {
+	return s.getProfileForAccount("", name)
+}
+
+func (s *AgentStore) GetProfileForAccount(accountScopeID, name string) (AgentProfile, bool, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return AgentProfile{}, false, fmt.Errorf("account scope ID is required")
+	}
+	return s.getProfileForAccount(accountScopeID, name)
+}
+
+func (s *AgentStore) getProfileForAccount(accountScopeID, name string) (AgentProfile, bool, error) {
 	profile := AgentProfile{}
-	ok, err := s.store.GetJSON(KeyAgentProfile(name), &profile)
+	key := KeyAgentProfile(name)
+	if strings.TrimSpace(accountScopeID) != "" {
+		key = KeyAgentProfileForAccount(accountScopeID, name)
+	}
+	ok, err := s.store.GetJSON(key, &profile)
 	if err != nil || !ok {
 		return profile, ok, err
 	}
@@ -309,20 +325,68 @@ func (s *AgentStore) GetProfile(name string) (AgentProfile, bool, error) {
 }
 
 func (s *AgentStore) PutProfile(profile AgentProfile) error {
+	return s.putProfileForAccount("", profile)
+}
+
+func (s *AgentStore) PutProfileForAccount(accountScopeID string, profile AgentProfile) error {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return fmt.Errorf("account scope ID is required")
+	}
+	return s.putProfileForAccount(accountScopeID, profile)
+}
+
+func (s *AgentStore) putProfileForAccount(accountScopeID string, profile AgentProfile) error {
 	profile = NormalizeAgentProfile(profile)
-	return s.store.PutJSON(KeyAgentProfile(profile.Name), profile)
+	key := KeyAgentProfile(profile.Name)
+	if strings.TrimSpace(accountScopeID) != "" {
+		key = KeyAgentProfileForAccount(accountScopeID, profile.Name)
+	}
+	return s.store.PutJSON(key, profile)
 }
 
 func (s *AgentStore) DeleteProfile(name string) error {
-	return s.store.Delete(KeyAgentProfile(name))
+	return s.deleteProfileForAccount("", name)
+}
+
+func (s *AgentStore) DeleteProfileForAccount(accountScopeID, name string) error {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return fmt.Errorf("account scope ID is required")
+	}
+	return s.deleteProfileForAccount(accountScopeID, name)
+}
+
+func (s *AgentStore) deleteProfileForAccount(accountScopeID, name string) error {
+	key := KeyAgentProfile(name)
+	if strings.TrimSpace(accountScopeID) != "" {
+		key = KeyAgentProfileForAccount(accountScopeID, name)
+	}
+	return s.store.Delete(key)
 }
 
 func (s *AgentStore) ListProfiles(limit int) ([]AgentProfile, error) {
+	return s.listProfilesForAccount("", limit)
+}
+
+func (s *AgentStore) ListProfilesForAccount(accountScopeID string, limit int) ([]AgentProfile, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, fmt.Errorf("account scope ID is required")
+	}
+	return s.listProfilesForAccount(accountScopeID, limit)
+}
+
+func (s *AgentStore) listProfilesForAccount(accountScopeID string, limit int) ([]AgentProfile, error) {
 	if limit <= 0 {
 		limit = 200
 	}
+	prefix := AgentProfilePrefix()
+	if strings.TrimSpace(accountScopeID) != "" {
+		prefix = AgentProfilePrefixForAccount(accountScopeID)
+	}
 	out := make([]AgentProfile, 0, limit)
-	err := s.store.IteratePrefix(AgentProfilePrefix(), limit, func(_ string, value []byte) error {
+	err := s.store.IteratePrefix(prefix, limit, func(_ string, value []byte) error {
 		var profile AgentProfile
 		if err := json.Unmarshal(value, &profile); err != nil {
 			return fmt.Errorf("decode agent profile: %w", err)
@@ -340,14 +404,46 @@ func (s *AgentStore) ListProfiles(limit int) ([]AgentProfile, error) {
 }
 
 func (s *AgentStore) SetActivePrimary(name string) error {
-	return s.store.PutJSON(KeyAgentActivePrimary, map[string]string{"name": strings.TrimSpace(name)})
+	return s.setActivePrimaryForAccount("", name)
+}
+
+func (s *AgentStore) SetActivePrimaryForAccount(accountScopeID, name string) error {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return fmt.Errorf("account scope ID is required")
+	}
+	return s.setActivePrimaryForAccount(accountScopeID, name)
+}
+
+func (s *AgentStore) setActivePrimaryForAccount(accountScopeID, name string) error {
+	key := KeyAgentActivePrimary
+	if strings.TrimSpace(accountScopeID) != "" {
+		key = KeyAgentActivePrimaryForAccount(accountScopeID)
+	}
+	return s.store.PutJSON(key, map[string]string{"name": strings.TrimSpace(name)})
 }
 
 func (s *AgentStore) GetActivePrimary() (string, bool, error) {
+	return s.getActivePrimaryForAccount("")
+}
+
+func (s *AgentStore) GetActivePrimaryForAccount(accountScopeID string) (string, bool, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return "", false, fmt.Errorf("account scope ID is required")
+	}
+	return s.getActivePrimaryForAccount(accountScopeID)
+}
+
+func (s *AgentStore) getActivePrimaryForAccount(accountScopeID string) (string, bool, error) {
 	var payload struct {
 		Name string `json:"name"`
 	}
-	ok, err := s.store.GetJSON(KeyAgentActivePrimary, &payload)
+	key := KeyAgentActivePrimary
+	if strings.TrimSpace(accountScopeID) != "" {
+		key = KeyAgentActivePrimaryForAccount(accountScopeID)
+	}
+	ok, err := s.store.GetJSON(key, &payload)
 	if err != nil || !ok {
 		return "", ok, err
 	}
@@ -355,23 +451,71 @@ func (s *AgentStore) GetActivePrimary() (string, bool, error) {
 }
 
 func (s *AgentStore) SetActiveSubagent(purpose, name string) error {
+	return s.setActiveSubagentForAccount("", purpose, name)
+}
+
+func (s *AgentStore) SetActiveSubagentForAccount(accountScopeID, purpose, name string) error {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return fmt.Errorf("account scope ID is required")
+	}
+	return s.setActiveSubagentForAccount(accountScopeID, purpose, name)
+}
+
+func (s *AgentStore) setActiveSubagentForAccount(accountScopeID, purpose, name string) error {
 	payload := map[string]string{
 		"purpose": strings.TrimSpace(purpose),
 		"name":    strings.TrimSpace(name),
 	}
-	return s.store.PutJSON(KeyAgentActiveSubagent(purpose), payload)
+	key := KeyAgentActiveSubagent(purpose)
+	if strings.TrimSpace(accountScopeID) != "" {
+		key = KeyAgentActiveSubagentForAccount(accountScopeID, purpose)
+	}
+	return s.store.PutJSON(key, payload)
 }
 
 func (s *AgentStore) DeleteActiveSubagent(purpose string) error {
-	return s.store.Delete(KeyAgentActiveSubagent(purpose))
+	return s.deleteActiveSubagentForAccount("", purpose)
+}
+
+func (s *AgentStore) DeleteActiveSubagentForAccount(accountScopeID, purpose string) error {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return fmt.Errorf("account scope ID is required")
+	}
+	return s.deleteActiveSubagentForAccount(accountScopeID, purpose)
+}
+
+func (s *AgentStore) deleteActiveSubagentForAccount(accountScopeID, purpose string) error {
+	key := KeyAgentActiveSubagent(purpose)
+	if strings.TrimSpace(accountScopeID) != "" {
+		key = KeyAgentActiveSubagentForAccount(accountScopeID, purpose)
+	}
+	return s.store.Delete(key)
 }
 
 func (s *AgentStore) GetActiveSubagents(limit int) (map[string]string, error) {
+	return s.getActiveSubagentsForAccount("", limit)
+}
+
+func (s *AgentStore) GetActiveSubagentsForAccount(accountScopeID string, limit int) (map[string]string, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, fmt.Errorf("account scope ID is required")
+	}
+	return s.getActiveSubagentsForAccount(accountScopeID, limit)
+}
+
+func (s *AgentStore) getActiveSubagentsForAccount(accountScopeID string, limit int) (map[string]string, error) {
 	if limit <= 0 {
 		limit = 200
 	}
+	prefix := AgentActiveSubagentPrefix()
+	if strings.TrimSpace(accountScopeID) != "" {
+		prefix = AgentActiveSubagentPrefixForAccount(accountScopeID)
+	}
 	out := make(map[string]string, 8)
-	err := s.store.IteratePrefix(AgentActiveSubagentPrefix(), limit, func(key string, value []byte) error {
+	err := s.store.IteratePrefix(prefix, limit, func(key string, value []byte) error {
 		var payload struct {
 			Purpose string `json:"purpose"`
 			Name    string `json:"name"`
@@ -381,7 +525,7 @@ func (s *AgentStore) GetActiveSubagents(limit int) (map[string]string, error) {
 		}
 		purpose := strings.TrimSpace(payload.Purpose)
 		if purpose == "" {
-			purpose = decodeKeyTail(key, AgentActiveSubagentPrefix())
+			purpose = decodeKeyTail(key, prefix)
 		}
 		if purpose == "" {
 			return nil
@@ -396,10 +540,26 @@ func (s *AgentStore) GetActiveSubagents(limit int) (map[string]string, error) {
 }
 
 func (s *AgentStore) GetVersion() (int64, bool, error) {
+	return s.getVersionForAccount("")
+}
+
+func (s *AgentStore) GetVersionForAccount(accountScopeID string) (int64, bool, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return 0, false, fmt.Errorf("account scope ID is required")
+	}
+	return s.getVersionForAccount(accountScopeID)
+}
+
+func (s *AgentStore) getVersionForAccount(accountScopeID string) (int64, bool, error) {
 	var payload struct {
 		Version int64 `json:"version"`
 	}
-	ok, err := s.store.GetJSON(KeyAgentVersion, &payload)
+	key := KeyAgentVersion
+	if strings.TrimSpace(accountScopeID) != "" {
+		key = KeyAgentVersionForAccount(accountScopeID)
+	}
+	ok, err := s.store.GetJSON(key, &payload)
 	if err != nil || !ok {
 		return 0, ok, err
 	}
@@ -407,7 +567,23 @@ func (s *AgentStore) GetVersion() (int64, bool, error) {
 }
 
 func (s *AgentStore) SetVersion(version int64) error {
-	return s.store.PutJSON(KeyAgentVersion, map[string]int64{"version": version})
+	return s.setVersionForAccount("", version)
+}
+
+func (s *AgentStore) SetVersionForAccount(accountScopeID string, version int64) error {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return fmt.Errorf("account scope ID is required")
+	}
+	return s.setVersionForAccount(accountScopeID, version)
+}
+
+func (s *AgentStore) setVersionForAccount(accountScopeID string, version int64) error {
+	key := KeyAgentVersion
+	if strings.TrimSpace(accountScopeID) != "" {
+		key = KeyAgentVersionForAccount(accountScopeID)
+	}
+	return s.store.PutJSON(key, map[string]int64{"version": version})
 }
 
 func (s *AgentStore) GetCustomTool(name string) (AgentCustomToolDefinition, bool, error) {

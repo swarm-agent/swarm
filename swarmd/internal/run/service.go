@@ -777,7 +777,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		return RunResult{}, err
 	}
 	targetedSubagentViaTask := targetKind == RunTargetKindSubagent && !options.AllowSubagent
-	agentProfile, err := s.resolveAgentProfile(agentName, targetKind, options.IntegrationFlow)
+	agentProfile, err := s.resolveAgentProfileForAccount(options.Principal.AccountScopeID, agentName, targetKind, options.IntegrationFlow)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -2313,7 +2313,11 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 	if s == nil || s.providers == nil || s.sessions == nil {
 		return "", errors.New("run service is not fully configured")
 	}
-	memoryProfile, err := s.resolveTaskSubagent("memory")
+	accountScopeID := ""
+	if sessionSnapshot, ok, err := s.sessions.GetSession(sessionID); err == nil && ok {
+		accountScopeID = sessionSnapshot.AccountScopeID
+	}
+	memoryProfile, err := s.resolveTaskSubagentForAccount(accountScopeID, "memory")
 	if err != nil {
 		return "", fmt.Errorf("resolve memory subagent: %w", err)
 	}
@@ -3194,11 +3198,15 @@ func (s *Service) startMemorySessionTitleFlow(sessionID, firstPrompt string, bas
 	if sessionID == "" {
 		return
 	}
+	accountScopeID := ""
+	if sessionSnapshot, ok, err := s.sessions.GetSession(sessionID); err == nil && ok {
+		accountScopeID = sessionSnapshot.AccountScopeID
+	}
 	firstPrompt = truncateRunes(strings.TrimSpace(firstPrompt), sessionTitlePromptPreviewRunes)
 	if firstPrompt == "" {
 		firstPrompt = sessionTitleDefault
 	}
-	memoryProfile, err := s.resolveTaskSubagent("memory")
+	memoryProfile, err := s.resolveTaskSubagentForAccount(accountScopeID, "memory")
 	if err != nil {
 		s.emitSessionTitleWarning(sessionID, "provisional", err, emit)
 		return

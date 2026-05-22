@@ -577,7 +577,11 @@ func (s *Server) flowV3RecordForDefinition(r *http.Request, definition pebblesto
 	if targetStale {
 		targetStaleReason = fmt.Sprintf("flow target %q was not found", flowV3TargetSelectionLabel(definition.Assignment.Target))
 	}
-	agentDetail, err := s.flowV3AgentDetail(definition.Assignment.Agent)
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		return flowV3Record{}, identity.ErrPrincipalRequired
+	}
+	agentDetail, err := s.flowV3AgentDetail(principal.AccountScopeID, definition.Assignment.Agent)
 	if err != nil {
 		return flowV3Record{}, err
 	}
@@ -663,7 +667,11 @@ func (s *Server) flowV3AssignmentFromRequest(r *http.Request, req flowV3UpsertRe
 	if strings.TrimSpace(agent.ProfileMode) == "" {
 		return flow.Assignment{}, errors.New("agent profile_mode is required")
 	}
-	if _, err := s.requireFlowV3AgentDetail(agent); err != nil {
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		return flow.Assignment{}, identity.ErrPrincipalRequired
+	}
+	if _, err := s.requireFlowV3AgentDetail(principal.AccountScopeID, agent); err != nil {
 		return flow.Assignment{}, err
 	}
 	workspace := normalizeManagementWorkspace(req.Workspace)
@@ -672,10 +680,6 @@ func (s *Server) flowV3AssignmentFromRequest(r *http.Request, req flowV3UpsertRe
 	}
 	if workspace.WorkspacePath == "" || workspace.WorkspacePath == "." {
 		if s.workspace != nil {
-			principal, ok := PrincipalFromRequest(r)
-			if !ok {
-				return flow.Assignment{}, identity.ErrPrincipalRequired
-			}
 			if current, currentOK, err := s.workspace.CurrentBindingForPrincipal(principal); err != nil {
 				return flow.Assignment{}, err
 			} else if currentOK && strings.TrimSpace(current.ResolvedPath) != "" {
@@ -762,7 +766,7 @@ func (s *Server) requireFlowV3TargetDetail(r *http.Request, selection flow.Targe
 	return detail, nil
 }
 
-func (s *Server) flowV3AgentDetail(agent flow.AgentSelection) (*pebblestore.AgentProfile, error) {
+func (s *Server) flowV3AgentDetail(accountScopeID string, agent flow.AgentSelection) (*pebblestore.AgentProfile, error) {
 	if s.agents == nil {
 		return nil, errors.New("agent service not configured")
 	}
@@ -770,7 +774,13 @@ func (s *Server) flowV3AgentDetail(agent flow.AgentSelection) (*pebblestore.Agen
 	if strings.TrimSpace(agent.ProfileName) == "" {
 		return nil, nil
 	}
-	state, err := s.agents.ListState(2000)
+	var state agentruntime.State
+	var err error
+	if strings.TrimSpace(accountScopeID) == "" {
+		state, err = s.agents.ListState(2000)
+	} else {
+		state, err = s.agents.ListStateForAccount(accountScopeID, 2000)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -783,9 +793,9 @@ func (s *Server) flowV3AgentDetail(agent flow.AgentSelection) (*pebblestore.Agen
 	return nil, nil
 }
 
-func (s *Server) requireFlowV3AgentDetail(agent flow.AgentSelection) (*pebblestore.AgentProfile, error) {
+func (s *Server) requireFlowV3AgentDetail(accountScopeID string, agent flow.AgentSelection) (*pebblestore.AgentProfile, error) {
 	agent = normalizeManagementAgentSelection(agent)
-	profile, err := s.flowV3AgentDetail(agent)
+	profile, err := s.flowV3AgentDetail(accountScopeID, agent)
 	if err != nil {
 		return nil, err
 	}

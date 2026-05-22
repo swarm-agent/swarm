@@ -2680,7 +2680,8 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, errors.New("session id is required"))
 			return
 		}
-		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
+		principal, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID)
+		if !ok {
 			return
 		}
 		if r.Method == http.MethodPost && s.proxyRoutedSessionRequest(w, r, sessionID) {
@@ -2706,7 +2707,7 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
-			profile, profileErr := s.agents.ResolvePrimary("")
+			profile, profileErr := s.agents.ResolvePrimaryForAccount(principal.AccountScopeID, "")
 			if profileErr != nil {
 				writeError(w, http.StatusBadRequest, profileErr)
 				return

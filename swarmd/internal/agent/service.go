@@ -127,99 +127,111 @@ func (s *Service) SetEventPublisher(publish func(pebblestore.EventEnvelope)) {
 }
 
 func (s *Service) EnsureDefaults() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	return s.ensureDefaultsForAccount("")
+}
 
-	version, hasVersion, err := s.store.GetVersion()
+func (s *Service) EnsureDefaultsForAccount(accountScopeID string) error {
+	accountScopeID, err := s.requireAccountScopeID(accountScopeID)
 	if err != nil {
 		return err
 	}
-	profiles, err := s.store.ListProfiles(2000)
+	return s.ensureDefaultsForAccount(accountScopeID)
+}
+
+func (s *Service) ensureDefaultsForAccount(accountScopeID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	version, hasVersion, err := s.getVersionForAccountLocked(accountScopeID)
+	if err != nil {
+		return err
+	}
+	profiles, err := s.listProfilesForAccountLocked(accountScopeID, 2000)
 	if err != nil {
 		return err
 	}
 	if !hasVersion && len(profiles) == 0 {
 		now := time.Now().UnixMilli()
 		for _, profile := range defaultProfiles(now) {
-			if err := s.store.PutProfile(profile); err != nil {
+			if err := s.putProfileForAccountLocked(accountScopeID, profile); err != nil {
 				return err
 			}
 		}
-		if err := s.store.SetActivePrimary("swarm"); err != nil {
+		if err := s.setActivePrimaryForAccountLocked(accountScopeID, "swarm"); err != nil {
 			return err
 		}
 		for purpose, profileName := range defaultSubagentAssignments() {
-			if err := s.store.SetActiveSubagent(purpose, profileName); err != nil {
+			if err := s.setActiveSubagentForAccountLocked(accountScopeID, purpose, profileName); err != nil {
 				return err
 			}
 		}
-		return s.store.SetVersion(1)
+		return s.setVersionForAccountLocked(accountScopeID, 1)
 	}
 
 	now := time.Now().UnixMilli()
-	if current, ok, err := s.store.GetProfile("memory"); err != nil {
+	if current, ok, err := s.getProfileForAccountLocked(accountScopeID, "memory"); err != nil {
 		return err
 	} else if ok && shouldReconcileBuiltInMemory(current) {
 		profile := reconcileBuiltInMemory(current, now)
-		if err := s.store.PutProfile(profile); err != nil {
+		if err := s.putProfileForAccountLocked(accountScopeID, profile); err != nil {
 			return err
 		}
 	}
-	if current, ok, err := s.store.GetProfile("commit"); err != nil {
+	if current, ok, err := s.getProfileForAccountLocked(accountScopeID, "commit"); err != nil {
 		return err
 	} else if ok && shouldRemoveBuiltInCommit(current) {
-		if err := s.store.DeleteProfile("commit"); err != nil {
+		if err := s.deleteProfileForAccountLocked(accountScopeID, "commit"); err != nil {
 			return err
 		}
 	}
-	if current, ok, err := s.store.GetProfile("parallel"); err != nil {
+	if current, ok, err := s.getProfileForAccountLocked(accountScopeID, "parallel"); err != nil {
 		return err
 	} else if ok && shouldReconcileBuiltInParallel(current) {
 		current.ExecutionSetting = pebblestore.AgentExecutionSettingReadWrite
 		current.UpdatedAt = now
-		if err := s.store.PutProfile(current); err != nil {
+		if err := s.putProfileForAccountLocked(accountScopeID, current); err != nil {
 			return err
 		}
 	}
 
 	if !hasVersion {
 		version = 1
-		if err := s.store.SetVersion(version); err != nil {
+		if err := s.setVersionForAccountLocked(accountScopeID, version); err != nil {
 			return err
 		}
 	}
 
-	activePrimary, ok, err := s.store.GetActivePrimary()
+	activePrimary, ok, err := s.getActivePrimaryForAccountLocked(accountScopeID)
 	if err != nil {
 		return err
 	}
 	if !ok || strings.TrimSpace(activePrimary) == "" {
-		fallback, err := s.nextPrimaryLocked("")
+		fallback, err := s.nextPrimaryForAccountLocked(accountScopeID, "")
 		if err != nil {
 			return err
 		}
 		if fallback != "" {
-			if err := s.store.SetActivePrimary(fallback); err != nil {
+			if err := s.setActivePrimaryForAccountLocked(accountScopeID, fallback); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
-	valid, err := s.activePrimaryValidLocked(activePrimary)
+	valid, err := s.activePrimaryValidForAccountLocked(accountScopeID, activePrimary)
 	if err != nil {
 		return err
 	}
 	if valid {
 		return nil
 	}
-	fallback, err := s.nextPrimaryLocked(activePrimary)
+	fallback, err := s.nextPrimaryForAccountLocked(accountScopeID, activePrimary)
 	if err != nil {
 		return err
 	}
 	if fallback == "" {
 		return nil
 	}
-	return s.store.SetActivePrimary(fallback)
+	return s.setActivePrimaryForAccountLocked(accountScopeID, fallback)
 }
 
 func defaultMemoryPrompt() string {
@@ -329,46 +341,15 @@ func (s *Service) ListState(limit int) (State, error) {
 }
 
 func (s *Service) ListStateForAccount(accountScopeID string, limit int) (State, error) {
-	accountScopeID = strings.TrimSpace(accountScopeID)
-	if accountScopeID == "" {
-		return State{}, errors.New("account scope ID is required")
+	accountScopeID, err := s.requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return State{}, err
 	}
 	return s.listStateForAccount(accountScopeID, limit)
 }
 
 func (s *Service) listStateForAccount(accountScopeID string, limit int) (State, error) {
-	profiles, err := s.store.ListProfiles(limit)
-	if err != nil {
-		return State{}, err
-	}
-	var customTools []pebblestore.AgentCustomToolDefinition
-	if strings.TrimSpace(accountScopeID) == "" {
-		customTools, err = s.store.ListCustomTools(limit)
-	} else {
-		customTools, err = s.store.ListCustomToolsForAccount(accountScopeID, limit)
-	}
-	if err != nil {
-		return State{}, err
-	}
-	activePrimary, _, err := s.store.GetActivePrimary()
-	if err != nil {
-		return State{}, err
-	}
-	activeSubagent, err := s.store.GetActiveSubagents(200)
-	if err != nil {
-		return State{}, err
-	}
-	version, _, err := s.store.GetVersion()
-	if err != nil {
-		return State{}, err
-	}
-	return State{
-		Profiles:       profiles,
-		CustomTools:    customTools,
-		ActivePrimary:  strings.TrimSpace(activePrimary),
-		ActiveSubagent: activeSubagent,
-		Version:        version,
-	}, nil
+	return s.currentStateForAccountLocked(accountScopeID, limit)
 }
 
 func (s *Service) ReplaceManagedState(state State, syncProfiles, syncCustomTools bool) (State, int64, *pebblestore.EventEnvelope, error) {
@@ -710,7 +691,7 @@ func (s *Service) assignCustomToolForAccount(accountScopeID, agentName, toolName
 	if !toolOK {
 		return pebblestore.AgentProfile{}, 0, nil, fmt.Errorf("custom tool %q not found", toolName)
 	}
-	profile, ok, err := s.store.GetProfile(agentName)
+	profile, ok, err := s.getProfileForAccountLocked(accountScopeID, agentName)
 	if err != nil {
 		return pebblestore.AgentProfile{}, 0, nil, err
 	}
@@ -727,23 +708,24 @@ func (s *Service) assignCustomToolForAccount(accountScopeID, agentName, toolName
 	contract.Tools[toolName] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(true)}
 	profile.ToolContract = pebblestore.NormalizeAgentToolContract(contract)
 	profile.UpdatedAt = time.Now().UnixMilli()
-	if err := s.store.PutProfile(profile); err != nil {
+	if err := s.putProfileForAccountLocked(accountScopeID, profile); err != nil {
 		return pebblestore.AgentProfile{}, 0, nil, err
 	}
-	version, err := s.bumpVersionLocked()
+	version, err := s.bumpVersionForAccountLocked(accountScopeID)
 	if err != nil {
 		return pebblestore.AgentProfile{}, 0, nil, err
 	}
-	state, err := s.currentStateLocked(2000)
+	state, err := s.currentStateForAccountLocked(accountScopeID, 2000)
 	if err != nil {
 		return pebblestore.AgentProfile{}, 0, nil, err
 	}
 	env, err := s.appendEventLocked("agent.custom_tool.assigned", agentName, map[string]any{
-		"agent":     agentName,
-		"tool_name": toolName,
-		"profile":   profile,
-		"state":     state,
-		"version":   version,
+		"account_scope_id": strings.TrimSpace(accountScopeID),
+		"agent":            agentName,
+		"tool_name":        toolName,
+		"profile":          profile,
+		"state":            state,
+		"version":          version,
 	})
 	if err != nil {
 		return pebblestore.AgentProfile{}, 0, nil, err
@@ -775,7 +757,7 @@ func (s *Service) unassignCustomToolForAccount(accountScopeID, agentName, toolNa
 	if toolName == "" {
 		return pebblestore.AgentProfile{}, 0, nil, errors.New("custom tool name is required")
 	}
-	profile, ok, err := s.store.GetProfile(agentName)
+	profile, ok, err := s.getProfileForAccountLocked(accountScopeID, agentName)
 	if err != nil {
 		return pebblestore.AgentProfile{}, 0, nil, err
 	}
@@ -792,23 +774,24 @@ func (s *Service) unassignCustomToolForAccount(accountScopeID, agentName, toolNa
 	delete(contract.Tools, toolName)
 	profile.ToolContract = pebblestore.NormalizeAgentToolContract(contract)
 	profile.UpdatedAt = time.Now().UnixMilli()
-	if err := s.store.PutProfile(profile); err != nil {
+	if err := s.putProfileForAccountLocked(accountScopeID, profile); err != nil {
 		return pebblestore.AgentProfile{}, 0, nil, err
 	}
-	version, err := s.bumpVersionLocked()
+	version, err := s.bumpVersionForAccountLocked(accountScopeID)
 	if err != nil {
 		return pebblestore.AgentProfile{}, 0, nil, err
 	}
-	state, err := s.currentStateLocked(2000)
+	state, err := s.currentStateForAccountLocked(accountScopeID, 2000)
 	if err != nil {
 		return pebblestore.AgentProfile{}, 0, nil, err
 	}
 	env, err := s.appendEventLocked("agent.custom_tool.unassigned", agentName, map[string]any{
-		"agent":     agentName,
-		"tool_name": toolName,
-		"profile":   profile,
-		"state":     state,
-		"version":   version,
+		"account_scope_id": strings.TrimSpace(accountScopeID),
+		"agent":            agentName,
+		"tool_name":        toolName,
+		"profile":          profile,
+		"state":            state,
+		"version":          version,
 	})
 	if err != nil {
 		return pebblestore.AgentProfile{}, 0, nil, err
@@ -817,6 +800,18 @@ func (s *Service) unassignCustomToolForAccount(accountScopeID, agentName, toolNa
 }
 
 func (s *Service) GetProfile(name string) (pebblestore.AgentProfile, bool, error) {
+	return s.getProfileForAccount("", name)
+}
+
+func (s *Service) GetProfileForAccount(accountScopeID, name string) (pebblestore.AgentProfile, bool, error) {
+	accountScopeID, err := s.requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return pebblestore.AgentProfile{}, false, err
+	}
+	return s.getProfileForAccount(accountScopeID, name)
+}
+
+func (s *Service) getProfileForAccount(accountScopeID, name string) (pebblestore.AgentProfile, bool, error) {
 	name = normalizeName(name)
 	if name == "" {
 		return pebblestore.AgentProfile{}, false, errors.New("agent name is required")
@@ -824,10 +819,22 @@ func (s *Service) GetProfile(name string) (pebblestore.AgentProfile, bool, error
 	if IsIntegrationBuilderAgentName(name) {
 		return pebblestore.AgentProfile{}, false, nil
 	}
-	return s.store.GetProfile(name)
+	return s.getProfileForAccountLocked(accountScopeID, name)
 }
 
 func (s *Service) Upsert(input UpsertInput) (pebblestore.AgentProfile, int64, *pebblestore.EventEnvelope, error) {
+	return s.upsertForAccount("", input)
+}
+
+func (s *Service) UpsertForAccount(accountScopeID string, input UpsertInput) (pebblestore.AgentProfile, int64, *pebblestore.EventEnvelope, error) {
+	accountScopeID, err := s.requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return pebblestore.AgentProfile{}, 0, nil, err
+	}
+	return s.upsertForAccount(accountScopeID, input)
+}
+
+func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pebblestore.AgentProfile, int64, *pebblestore.EventEnvelope, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -838,7 +845,7 @@ func (s *Service) Upsert(input UpsertInput) (pebblestore.AgentProfile, int64, *p
 	if IsIntegrationBuilderAgentName(profile.Name) {
 		return pebblestore.AgentProfile{}, 0, nil, fmt.Errorf("agent %q is reserved for the transient integration builder", profile.Name)
 	}
-	existing, ok, err := s.store.GetProfile(profile.Name)
+	existing, ok, err := s.getProfileForAccountLocked(accountScopeID, profile.Name)
 	if err != nil {
 		return pebblestore.AgentProfile{}, 0, nil, err
 	}
@@ -888,14 +895,14 @@ func (s *Service) Upsert(input UpsertInput) (pebblestore.AgentProfile, int64, *p
 	}
 	profile = pebblestore.NormalizeAgentProfile(profile)
 	profile.UpdatedAt = time.Now().UnixMilli()
-	if err := s.store.PutProfile(profile); err != nil {
+	if err := s.putProfileForAccountLocked(accountScopeID, profile); err != nil {
 		return pebblestore.AgentProfile{}, 0, nil, err
 	}
-	version, err := s.bumpVersionLocked()
+	version, err := s.bumpVersionForAccountLocked(accountScopeID)
 	if err != nil {
 		return pebblestore.AgentProfile{}, 0, nil, err
 	}
-	state, err := s.currentStateLocked(2000)
+	state, err := s.currentStateForAccountLocked(accountScopeID, 2000)
 	if err != nil {
 		return pebblestore.AgentProfile{}, 0, nil, err
 	}
@@ -905,9 +912,10 @@ func (s *Service) Upsert(input UpsertInput) (pebblestore.AgentProfile, int64, *p
 	}
 
 	env, err := s.appendEventLocked(eventType, profile.Name, map[string]any{
-		"profile": profile,
-		"state":   state,
-		"version": version,
+		"account_scope_id": strings.TrimSpace(accountScopeID),
+		"profile":          profile,
+		"state":            state,
+		"version":          version,
 	})
 	if err != nil {
 		return pebblestore.AgentProfile{}, 0, nil, err
@@ -916,6 +924,18 @@ func (s *Service) Upsert(input UpsertInput) (pebblestore.AgentProfile, int64, *p
 }
 
 func (s *Service) ActivatePrimary(name string) (string, int64, *pebblestore.EventEnvelope, error) {
+	return s.activatePrimaryForAccount("", name)
+}
+
+func (s *Service) ActivatePrimaryForAccount(accountScopeID, name string) (string, int64, *pebblestore.EventEnvelope, error) {
+	accountScopeID, err := s.requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return "", 0, nil, err
+	}
+	return s.activatePrimaryForAccount(accountScopeID, name)
+}
+
+func (s *Service) activatePrimaryForAccount(accountScopeID, name string) (string, int64, *pebblestore.EventEnvelope, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -923,7 +943,7 @@ func (s *Service) ActivatePrimary(name string) (string, int64, *pebblestore.Even
 	if name == "" {
 		return "", 0, nil, errors.New("agent name is required")
 	}
-	profile, ok, err := s.store.GetProfile(name)
+	profile, ok, err := s.getProfileForAccountLocked(accountScopeID, name)
 	if err != nil {
 		return "", 0, nil, err
 	}
@@ -937,11 +957,11 @@ func (s *Service) ActivatePrimary(name string) (string, int64, *pebblestore.Even
 		return "", 0, nil, fmt.Errorf("agent %q is not a primary agent", name)
 	}
 
-	current, ok, err := s.store.GetActivePrimary()
+	current, ok, err := s.getActivePrimaryForAccountLocked(accountScopeID)
 	if err != nil {
 		return "", 0, nil, err
 	}
-	version, _, err := s.store.GetVersion()
+	version, _, err := s.getVersionForAccountLocked(accountScopeID)
 	if err != nil {
 		return "", 0, nil, err
 	}
@@ -949,21 +969,22 @@ func (s *Service) ActivatePrimary(name string) (string, int64, *pebblestore.Even
 		return name, version, nil, nil
 	}
 
-	if err := s.store.SetActivePrimary(name); err != nil {
+	if err := s.setActivePrimaryForAccountLocked(accountScopeID, name); err != nil {
 		return "", 0, nil, err
 	}
-	version, err = s.bumpVersionLocked()
+	version, err = s.bumpVersionForAccountLocked(accountScopeID)
 	if err != nil {
 		return "", 0, nil, err
 	}
-	state, err := s.currentStateLocked(2000)
+	state, err := s.currentStateForAccountLocked(accountScopeID, 2000)
 	if err != nil {
 		return "", 0, nil, err
 	}
 	env, err := s.appendEventLocked("agent.active.updated", name, map[string]any{
-		"active_primary": name,
-		"state":          state,
-		"version":        version,
+		"account_scope_id": strings.TrimSpace(accountScopeID),
+		"active_primary":   name,
+		"state":            state,
+		"version":          version,
 	})
 	if err != nil {
 		return "", 0, nil, err
@@ -972,6 +993,18 @@ func (s *Service) ActivatePrimary(name string) (string, int64, *pebblestore.Even
 }
 
 func (s *Service) Delete(name string) (DeleteResult, int64, *pebblestore.EventEnvelope, error) {
+	return s.deleteForAccount("", name)
+}
+
+func (s *Service) DeleteForAccount(accountScopeID, name string) (DeleteResult, int64, *pebblestore.EventEnvelope, error) {
+	accountScopeID, err := s.requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return DeleteResult{}, 0, nil, err
+	}
+	return s.deleteForAccount(accountScopeID, name)
+}
+
+func (s *Service) deleteForAccount(accountScopeID, name string) (DeleteResult, int64, *pebblestore.EventEnvelope, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -986,7 +1019,7 @@ func (s *Service) Delete(name string) (DeleteResult, int64, *pebblestore.EventEn
 		return DeleteResult{}, 0, nil, fmt.Errorf("agent %q is protected and cannot be deleted", name)
 	}
 
-	target, ok, err := s.store.GetProfile(name)
+	target, ok, err := s.getProfileForAccountLocked(accountScopeID, name)
 	if err != nil {
 		return DeleteResult{}, 0, nil, err
 	}
@@ -994,29 +1027,29 @@ func (s *Service) Delete(name string) (DeleteResult, int64, *pebblestore.EventEn
 		return DeleteResult{}, 0, nil, fmt.Errorf("agent %q not found", name)
 	}
 	if target.Mode == ModePrimary {
-		fallback, err := s.nextPrimaryLocked(name)
+		fallback, err := s.nextPrimaryForAccountLocked(accountScopeID, name)
 		if err != nil {
 			return DeleteResult{}, 0, nil, err
 		}
 		if fallback == "" {
 			return DeleteResult{}, 0, nil, fmt.Errorf("agent %q is the last primary and cannot be deleted", name)
 		}
-		activePrimary, _, err := s.store.GetActivePrimary()
+		activePrimary, _, err := s.getActivePrimaryForAccountLocked(accountScopeID)
 		if err != nil {
 			return DeleteResult{}, 0, nil, err
 		}
-		validActivePrimary, err := s.activePrimaryValidLocked(activePrimary)
+		validActivePrimary, err := s.activePrimaryValidForAccountLocked(accountScopeID, activePrimary)
 		if err != nil {
 			return DeleteResult{}, 0, nil, err
 		}
 		if strings.EqualFold(strings.TrimSpace(activePrimary), name) || !validActivePrimary {
-			if err := s.store.SetActivePrimary(fallback); err != nil {
+			if err := s.setActivePrimaryForAccountLocked(accountScopeID, fallback); err != nil {
 				return DeleteResult{}, 0, nil, err
 			}
 		}
 	}
 	if target.Mode == ModeSubagent {
-		activeSubagents, err := s.store.GetActiveSubagents(200)
+		activeSubagents, err := s.getActiveSubagentsForAccountLocked(accountScopeID, 200)
 		if err != nil {
 			return DeleteResult{}, 0, nil, err
 		}
@@ -1024,17 +1057,17 @@ func (s *Service) Delete(name string) (DeleteResult, int64, *pebblestore.EventEn
 			if !strings.EqualFold(strings.TrimSpace(assigned), name) {
 				continue
 			}
-			_ = s.store.DeleteActiveSubagent(purpose)
+			_ = s.deleteActiveSubagentForAccountLocked(accountScopeID, purpose)
 		}
 	}
-	if err := s.store.DeleteProfile(name); err != nil {
+	if err := s.deleteProfileForAccountLocked(accountScopeID, name); err != nil {
 		return DeleteResult{}, 0, nil, err
 	}
-	version, err := s.bumpVersionLocked()
+	version, err := s.bumpVersionForAccountLocked(accountScopeID)
 	if err != nil {
 		return DeleteResult{}, 0, nil, err
 	}
-	activePrimary, _, err := s.store.GetActivePrimary()
+	activePrimary, _, err := s.getActivePrimaryForAccountLocked(accountScopeID)
 	if err != nil {
 		return DeleteResult{}, 0, nil, err
 	}
@@ -1042,15 +1075,16 @@ func (s *Service) Delete(name string) (DeleteResult, int64, *pebblestore.EventEn
 		Deleted:       name,
 		ActivePrimary: activePrimary,
 	}
-	state, err := s.currentStateLocked(2000)
+	state, err := s.currentStateForAccountLocked(accountScopeID, 2000)
 	if err != nil {
 		return DeleteResult{}, 0, nil, err
 	}
 	env, err := s.appendEventLocked("agent.profile.deleted", name, map[string]any{
-		"deleted":        result.Deleted,
-		"active_primary": result.ActivePrimary,
-		"state":          state,
-		"version":        version,
+		"account_scope_id": strings.TrimSpace(accountScopeID),
+		"deleted":          result.Deleted,
+		"active_primary":   result.ActivePrimary,
+		"state":            state,
+		"version":          version,
 	})
 	if err != nil {
 		return DeleteResult{}, 0, nil, err
@@ -1059,6 +1093,18 @@ func (s *Service) Delete(name string) (DeleteResult, int64, *pebblestore.EventEn
 }
 
 func (s *Service) RestoreDefaults() (State, int64, *pebblestore.EventEnvelope, error) {
+	return s.restoreDefaultsForAccount("")
+}
+
+func (s *Service) RestoreDefaultsForAccount(accountScopeID string) (State, int64, *pebblestore.EventEnvelope, error) {
+	accountScopeID, err := s.requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return State{}, 0, nil, err
+	}
+	return s.restoreDefaultsForAccount(accountScopeID)
+}
+
+func (s *Service) restoreDefaultsForAccount(accountScopeID string) (State, int64, *pebblestore.EventEnvelope, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1066,45 +1112,46 @@ func (s *Service) RestoreDefaults() (State, int64, *pebblestore.EventEnvelope, e
 	defaults := defaultProfiles(now)
 	restored := make([]string, 0, len(defaults))
 	for _, profile := range defaults {
-		if err := s.store.PutProfile(profile); err != nil {
+		if err := s.putProfileForAccountLocked(accountScopeID, profile); err != nil {
 			return State{}, 0, nil, err
 		}
 		restored = append(restored, profile.Name)
 	}
 
-	activePrimary, _, err := s.store.GetActivePrimary()
+	activePrimary, _, err := s.getActivePrimaryForAccountLocked(accountScopeID)
 	if err != nil {
 		return State{}, 0, nil, err
 	}
-	validActivePrimary, err := s.activePrimaryValidLocked(activePrimary)
+	validActivePrimary, err := s.activePrimaryValidForAccountLocked(accountScopeID, activePrimary)
 	if err != nil {
 		return State{}, 0, nil, err
 	}
 	if !validActivePrimary {
-		if err := s.store.SetActivePrimary("swarm"); err != nil {
+		if err := s.setActivePrimaryForAccountLocked(accountScopeID, "swarm"); err != nil {
 			return State{}, 0, nil, err
 		}
 	}
 	for purpose, profileName := range defaultSubagentAssignments() {
-		if err := s.store.SetActiveSubagent(purpose, profileName); err != nil {
+		if err := s.setActiveSubagentForAccountLocked(accountScopeID, purpose, profileName); err != nil {
 			return State{}, 0, nil, err
 		}
 	}
 
-	version, err := s.bumpVersionLocked()
+	version, err := s.bumpVersionForAccountLocked(accountScopeID)
 	if err != nil {
 		return State{}, 0, nil, err
 	}
-	state, err := s.currentStateLocked(2000)
+	state, err := s.currentStateForAccountLocked(accountScopeID, 2000)
 	if err != nil {
 		return State{}, 0, nil, err
 	}
 	env, err := s.appendEventLocked("agent.defaults.restored", "", map[string]any{
-		"restored":        restored,
-		"active_primary":  state.ActivePrimary,
-		"active_subagent": state.ActiveSubagent,
-		"state":           state,
-		"version":         version,
+		"account_scope_id": strings.TrimSpace(accountScopeID),
+		"restored":         restored,
+		"active_primary":   state.ActivePrimary,
+		"active_subagent":  state.ActiveSubagent,
+		"state":            state,
+		"version":          version,
 	})
 	if err != nil {
 		return State{}, 0, nil, err
@@ -1113,6 +1160,18 @@ func (s *Service) RestoreDefaults() (State, int64, *pebblestore.EventEnvelope, e
 }
 
 func (s *Service) ResetDefaults() (State, int64, *pebblestore.EventEnvelope, error) {
+	return s.resetDefaultsForAccount("")
+}
+
+func (s *Service) ResetDefaultsForAccount(accountScopeID string) (State, int64, *pebblestore.EventEnvelope, error) {
+	accountScopeID, err := s.requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return State{}, 0, nil, err
+	}
+	return s.resetDefaultsForAccount(accountScopeID)
+}
+
+func (s *Service) resetDefaultsForAccount(accountScopeID string) (State, int64, *pebblestore.EventEnvelope, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1123,7 +1182,7 @@ func (s *Service) ResetDefaults() (State, int64, *pebblestore.EventEnvelope, err
 		defaultNames[normalizeName(profile.Name)] = struct{}{}
 	}
 
-	profiles, err := s.store.ListProfiles(2000)
+	profiles, err := s.listProfilesForAccountLocked(accountScopeID, 2000)
 	if err != nil {
 		return State{}, 0, nil, err
 	}
@@ -1133,13 +1192,18 @@ func (s *Service) ResetDefaults() (State, int64, *pebblestore.EventEnvelope, err
 		if _, ok := defaultNames[name]; ok {
 			continue
 		}
-		if err := s.store.DeleteProfile(name); err != nil {
+		if err := s.deleteProfileForAccountLocked(accountScopeID, name); err != nil {
 			return State{}, 0, nil, err
 		}
 		deletedProfiles = append(deletedProfiles, name)
 	}
 
-	customTools, err := s.store.ListCustomTools(2000)
+	var customTools []pebblestore.AgentCustomToolDefinition
+	if strings.TrimSpace(accountScopeID) == "" {
+		customTools, err = s.store.ListCustomTools(2000)
+	} else {
+		customTools, err = s.store.ListCustomToolsForAccount(accountScopeID, 2000)
+	}
 	if err != nil {
 		return State{}, 0, nil, err
 	}
@@ -1149,47 +1213,53 @@ func (s *Service) ResetDefaults() (State, int64, *pebblestore.EventEnvelope, err
 		if name == "" {
 			continue
 		}
-		if err := s.store.DeleteCustomTool(name); err != nil {
+		if strings.TrimSpace(accountScopeID) == "" {
+			err = s.store.DeleteCustomTool(name)
+		} else {
+			err = s.store.DeleteCustomToolForAccount(accountScopeID, name)
+		}
+		if err != nil {
 			return State{}, 0, nil, err
 		}
 		deletedTools = append(deletedTools, name)
 	}
 
-	activeSubagents, err := s.store.GetActiveSubagents(200)
+	activeSubagents, err := s.getActiveSubagentsForAccountLocked(accountScopeID, 200)
 	if err != nil {
 		return State{}, 0, nil, err
 	}
 	for purpose := range activeSubagents {
-		if err := s.store.DeleteActiveSubagent(purpose); err != nil {
+		if err := s.deleteActiveSubagentForAccountLocked(accountScopeID, purpose); err != nil {
 			return State{}, 0, nil, err
 		}
 	}
 
 	resetProfiles := make([]string, 0, len(defaults))
 	for _, profile := range defaults {
-		if err := s.store.PutProfile(profile); err != nil {
+		if err := s.putProfileForAccountLocked(accountScopeID, profile); err != nil {
 			return State{}, 0, nil, err
 		}
 		resetProfiles = append(resetProfiles, profile.Name)
 	}
-	if err := s.store.SetActivePrimary("swarm"); err != nil {
+	if err := s.setActivePrimaryForAccountLocked(accountScopeID, "swarm"); err != nil {
 		return State{}, 0, nil, err
 	}
 	for purpose, profileName := range defaultSubagentAssignments() {
-		if err := s.store.SetActiveSubagent(purpose, profileName); err != nil {
+		if err := s.setActiveSubagentForAccountLocked(accountScopeID, purpose, profileName); err != nil {
 			return State{}, 0, nil, err
 		}
 	}
 
-	version, err := s.bumpVersionLocked()
+	version, err := s.bumpVersionForAccountLocked(accountScopeID)
 	if err != nil {
 		return State{}, 0, nil, err
 	}
-	state, err := s.currentStateLocked(2000)
+	state, err := s.currentStateForAccountLocked(accountScopeID, 2000)
 	if err != nil {
 		return State{}, 0, nil, err
 	}
 	env, err := s.appendEventLocked("agent.defaults.reset", "", map[string]any{
+		"account_scope_id": strings.TrimSpace(accountScopeID),
 		"profiles":         resetProfiles,
 		"deleted_profiles": deletedProfiles,
 		"deleted_tools":    deletedTools,
@@ -1205,6 +1275,18 @@ func (s *Service) ResetDefaults() (State, int64, *pebblestore.EventEnvelope, err
 }
 
 func (s *Service) PreviewUpsert(input UpsertInput) (PreviewUpsertResult, error) {
+	return s.previewUpsertForAccount("", input)
+}
+
+func (s *Service) PreviewUpsertForAccount(accountScopeID string, input UpsertInput) (PreviewUpsertResult, error) {
+	accountScopeID, err := s.requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return PreviewUpsertResult{}, err
+	}
+	return s.previewUpsertForAccount(accountScopeID, input)
+}
+
+func (s *Service) previewUpsertForAccount(accountScopeID string, input UpsertInput) (PreviewUpsertResult, error) {
 	profile, err := normalizeUpsertInput(input)
 	if err != nil {
 		return PreviewUpsertResult{}, err
@@ -1216,7 +1298,7 @@ func (s *Service) PreviewUpsert(input UpsertInput) (PreviewUpsertResult, error) 
 	if name == "" {
 		return PreviewUpsertResult{}, errors.New("agent name is required")
 	}
-	before, ok, err := s.store.GetProfile(name)
+	before, ok, err := s.getProfileForAccountLocked(accountScopeID, name)
 	if err != nil {
 		return PreviewUpsertResult{}, err
 	}
@@ -1275,6 +1357,18 @@ func (s *Service) PreviewUpsert(input UpsertInput) (PreviewUpsertResult, error) 
 }
 
 func (s *Service) SetActiveSubagent(purpose, name string) (map[string]string, int64, *pebblestore.EventEnvelope, error) {
+	return s.setActiveSubagentForAccount("", purpose, name)
+}
+
+func (s *Service) SetActiveSubagentForAccount(accountScopeID, purpose, name string) (map[string]string, int64, *pebblestore.EventEnvelope, error) {
+	accountScopeID, err := s.requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	return s.setActiveSubagentForAccount(accountScopeID, purpose, name)
+}
+
+func (s *Service) setActiveSubagentForAccount(accountScopeID, purpose, name string) (map[string]string, int64, *pebblestore.EventEnvelope, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1286,7 +1380,7 @@ func (s *Service) SetActiveSubagent(purpose, name string) (map[string]string, in
 	if name == "" {
 		return nil, 0, nil, errors.New("agent name is required")
 	}
-	profile, ok, err := s.store.GetProfile(name)
+	profile, ok, err := s.getProfileForAccountLocked(accountScopeID, name)
 	if err != nil {
 		return nil, 0, nil, err
 	}
@@ -1299,27 +1393,28 @@ func (s *Service) SetActiveSubagent(purpose, name string) (map[string]string, in
 	if profile.Mode != ModeSubagent {
 		return nil, 0, nil, fmt.Errorf("agent %q is not a subagent", name)
 	}
-	if err := s.store.SetActiveSubagent(purpose, name); err != nil {
+	if err := s.setActiveSubagentForAccountLocked(accountScopeID, purpose, name); err != nil {
 		return nil, 0, nil, err
 	}
-	assignments, err := s.store.GetActiveSubagents(200)
+	assignments, err := s.getActiveSubagentsForAccountLocked(accountScopeID, 200)
 	if err != nil {
 		return nil, 0, nil, err
 	}
-	version, err := s.bumpVersionLocked()
+	version, err := s.bumpVersionForAccountLocked(accountScopeID)
 	if err != nil {
 		return nil, 0, nil, err
 	}
-	state, err := s.currentStateLocked(2000)
+	state, err := s.currentStateForAccountLocked(accountScopeID, 2000)
 	if err != nil {
 		return nil, 0, nil, err
 	}
 	env, err := s.appendEventLocked("agent.active_subagent.updated", purpose, map[string]any{
-		"purpose":         purpose,
-		"agent":           name,
-		"active_subagent": assignments,
-		"state":           state,
-		"version":         version,
+		"account_scope_id": strings.TrimSpace(accountScopeID),
+		"purpose":          purpose,
+		"agent":            name,
+		"active_subagent":  assignments,
+		"state":            state,
+		"version":          version,
 	})
 	if err != nil {
 		return nil, 0, nil, err
@@ -1328,6 +1423,18 @@ func (s *Service) SetActiveSubagent(purpose, name string) (map[string]string, in
 }
 
 func (s *Service) DeleteActiveSubagent(purpose string) (map[string]string, int64, *pebblestore.EventEnvelope, error) {
+	return s.deleteActiveSubagentForAccount("", purpose)
+}
+
+func (s *Service) DeleteActiveSubagentForAccount(accountScopeID, purpose string) (map[string]string, int64, *pebblestore.EventEnvelope, error) {
+	accountScopeID, err := s.requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	return s.deleteActiveSubagentForAccount(accountScopeID, purpose)
+}
+
+func (s *Service) deleteActiveSubagentForAccount(accountScopeID, purpose string) (map[string]string, int64, *pebblestore.EventEnvelope, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1335,26 +1442,27 @@ func (s *Service) DeleteActiveSubagent(purpose string) (map[string]string, int64
 	if purpose == "" {
 		return nil, 0, nil, errors.New("subagent purpose is required")
 	}
-	if err := s.store.DeleteActiveSubagent(purpose); err != nil {
+	if err := s.deleteActiveSubagentForAccountLocked(accountScopeID, purpose); err != nil {
 		return nil, 0, nil, err
 	}
-	assignments, err := s.store.GetActiveSubagents(200)
+	assignments, err := s.getActiveSubagentsForAccountLocked(accountScopeID, 200)
 	if err != nil {
 		return nil, 0, nil, err
 	}
-	version, err := s.bumpVersionLocked()
+	version, err := s.bumpVersionForAccountLocked(accountScopeID)
 	if err != nil {
 		return nil, 0, nil, err
 	}
-	state, err := s.currentStateLocked(2000)
+	state, err := s.currentStateForAccountLocked(accountScopeID, 2000)
 	if err != nil {
 		return nil, 0, nil, err
 	}
 	env, err := s.appendEventLocked("agent.active_subagent.deleted", purpose, map[string]any{
-		"purpose":         purpose,
-		"active_subagent": assignments,
-		"state":           state,
-		"version":         version,
+		"account_scope_id": strings.TrimSpace(accountScopeID),
+		"purpose":          purpose,
+		"active_subagent":  assignments,
+		"state":            state,
+		"version":          version,
 	})
 	if err != nil {
 		return nil, 0, nil, err
@@ -1363,7 +1471,19 @@ func (s *Service) DeleteActiveSubagent(purpose string) (map[string]string, int64
 }
 
 func (s *Service) ResolvePrimary(name string) (pebblestore.AgentProfile, error) {
-	profile, err := s.resolveProfile(name)
+	return s.resolvePrimaryForAccount("", name)
+}
+
+func (s *Service) ResolvePrimaryForAccount(accountScopeID, name string) (pebblestore.AgentProfile, error) {
+	accountScopeID, err := s.requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return pebblestore.AgentProfile{}, err
+	}
+	return s.resolvePrimaryForAccount(accountScopeID, name)
+}
+
+func (s *Service) resolvePrimaryForAccount(accountScopeID, name string) (pebblestore.AgentProfile, error) {
+	profile, err := s.resolveProfileForAccount(accountScopeID, name)
 	if err != nil {
 		return pebblestore.AgentProfile{}, err
 	}
@@ -1374,7 +1494,15 @@ func (s *Service) ResolvePrimary(name string) (pebblestore.AgentProfile, error) 
 }
 
 func (s *Service) ResolveAgent(name string) (pebblestore.AgentProfile, error) {
-	return s.resolveProfile(name)
+	return s.resolveProfileForAccount("", name)
+}
+
+func (s *Service) ResolveAgentForAccount(accountScopeID, name string) (pebblestore.AgentProfile, error) {
+	accountScopeID, err := s.requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return pebblestore.AgentProfile{}, err
+	}
+	return s.resolveProfileForAccount(accountScopeID, name)
 }
 
 func (s *Service) ResolveIntegrationBuilderAgent(name string) (pebblestore.AgentProfile, error) {
@@ -1385,9 +1513,13 @@ func (s *Service) ResolveIntegrationBuilderAgent(name string) (pebblestore.Agent
 }
 
 func (s *Service) resolveProfile(name string) (pebblestore.AgentProfile, error) {
+	return s.resolveProfileForAccount("", name)
+}
+
+func (s *Service) resolveProfileForAccount(accountScopeID, name string) (pebblestore.AgentProfile, error) {
 	name = normalizeName(name)
 	if name == "" {
-		active, ok, err := s.store.GetActivePrimary()
+		active, ok, err := s.getActivePrimaryForAccountLocked(accountScopeID)
 		if err != nil {
 			return pebblestore.AgentProfile{}, err
 		}
@@ -1401,7 +1533,7 @@ func (s *Service) resolveProfile(name string) (pebblestore.AgentProfile, error) 
 	if IsIntegrationBuilderAgentName(name) {
 		return pebblestore.AgentProfile{}, fmt.Errorf("agent %q not found", name)
 	}
-	profile, ok, err := s.store.GetProfile(name)
+	profile, ok, err := s.getProfileForAccountLocked(accountScopeID, name)
 	if err != nil {
 		return pebblestore.AgentProfile{}, err
 	}
@@ -1415,6 +1547,18 @@ func (s *Service) resolveProfile(name string) (pebblestore.AgentProfile, error) 
 }
 
 func (s *Service) ResolveSubagent(nameOrPurpose string) (pebblestore.AgentProfile, error) {
+	return s.resolveSubagentForAccount("", nameOrPurpose)
+}
+
+func (s *Service) ResolveSubagentForAccount(accountScopeID, nameOrPurpose string) (pebblestore.AgentProfile, error) {
+	accountScopeID, err := s.requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return pebblestore.AgentProfile{}, err
+	}
+	return s.resolveSubagentForAccount(accountScopeID, nameOrPurpose)
+}
+
+func (s *Service) resolveSubagentForAccount(accountScopeID, nameOrPurpose string) (pebblestore.AgentProfile, error) {
 	key := normalizeName(nameOrPurpose)
 	if key == "" {
 		key = "explorer"
@@ -1423,7 +1567,7 @@ func (s *Service) ResolveSubagent(nameOrPurpose string) (pebblestore.AgentProfil
 		return pebblestore.AgentProfile{}, fmt.Errorf("subagent %q not found", strings.TrimSpace(nameOrPurpose))
 	}
 
-	if profile, ok, err := s.store.GetProfile(key); err != nil {
+	if profile, ok, err := s.getProfileForAccountLocked(accountScopeID, key); err != nil {
 		return pebblestore.AgentProfile{}, err
 	} else if ok {
 		if !profile.Enabled {
@@ -1435,7 +1579,7 @@ func (s *Service) ResolveSubagent(nameOrPurpose string) (pebblestore.AgentProfil
 		return profile, nil
 	}
 
-	activeSubagents, err := s.store.GetActiveSubagents(200)
+	activeSubagents, err := s.getActiveSubagentsForAccountLocked(accountScopeID, 200)
 	if err != nil {
 		return pebblestore.AgentProfile{}, err
 	}
@@ -1444,7 +1588,7 @@ func (s *Service) ResolveSubagent(nameOrPurpose string) (pebblestore.AgentProfil
 		return pebblestore.AgentProfile{}, fmt.Errorf("subagent %q not found", strings.TrimSpace(nameOrPurpose))
 	}
 
-	profile, ok, err := s.store.GetProfile(mappedName)
+	profile, ok, err := s.getProfileForAccountLocked(accountScopeID, mappedName)
 	if err != nil {
 		return pebblestore.AgentProfile{}, err
 	}
@@ -1461,11 +1605,23 @@ func (s *Service) ResolveSubagent(nameOrPurpose string) (pebblestore.AgentProfil
 }
 
 func (s *Service) ResolveBackground(name string) (pebblestore.AgentProfile, error) {
+	return s.resolveBackgroundForAccount("", name)
+}
+
+func (s *Service) ResolveBackgroundForAccount(accountScopeID, name string) (pebblestore.AgentProfile, error) {
+	accountScopeID, err := s.requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return pebblestore.AgentProfile{}, err
+	}
+	return s.resolveBackgroundForAccount(accountScopeID, name)
+}
+
+func (s *Service) resolveBackgroundForAccount(accountScopeID, name string) (pebblestore.AgentProfile, error) {
 	name = normalizeName(name)
 	if name == "" {
 		return pebblestore.AgentProfile{}, errors.New("background agent name is required")
 	}
-	profile, ok, err := s.store.GetProfile(name)
+	profile, ok, err := s.getProfileForAccountLocked(accountScopeID, name)
 	if err != nil {
 		return pebblestore.AgentProfile{}, err
 	}
@@ -1625,8 +1781,97 @@ func stringFieldProvided(explicit bool, value string) bool {
 	return strings.TrimSpace(value) != ""
 }
 
+func (s *Service) requireAccountScopeID(accountScopeID string) (string, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return "", errors.New("account scope ID is required")
+	}
+	return accountScopeID, nil
+}
+
+func (s *Service) getProfileForAccountLocked(accountScopeID, name string) (pebblestore.AgentProfile, bool, error) {
+	if strings.TrimSpace(accountScopeID) == "" {
+		return s.store.GetProfile(name)
+	}
+	return s.store.GetProfileForAccount(accountScopeID, name)
+}
+
+func (s *Service) putProfileForAccountLocked(accountScopeID string, profile pebblestore.AgentProfile) error {
+	if strings.TrimSpace(accountScopeID) == "" {
+		return s.store.PutProfile(profile)
+	}
+	return s.store.PutProfileForAccount(accountScopeID, profile)
+}
+
+func (s *Service) deleteProfileForAccountLocked(accountScopeID, name string) error {
+	if strings.TrimSpace(accountScopeID) == "" {
+		return s.store.DeleteProfile(name)
+	}
+	return s.store.DeleteProfileForAccount(accountScopeID, name)
+}
+
+func (s *Service) listProfilesForAccountLocked(accountScopeID string, limit int) ([]pebblestore.AgentProfile, error) {
+	if strings.TrimSpace(accountScopeID) == "" {
+		return s.store.ListProfiles(limit)
+	}
+	return s.store.ListProfilesForAccount(accountScopeID, limit)
+}
+
+func (s *Service) getActivePrimaryForAccountLocked(accountScopeID string) (string, bool, error) {
+	if strings.TrimSpace(accountScopeID) == "" {
+		return s.store.GetActivePrimary()
+	}
+	return s.store.GetActivePrimaryForAccount(accountScopeID)
+}
+
+func (s *Service) setActivePrimaryForAccountLocked(accountScopeID, name string) error {
+	if strings.TrimSpace(accountScopeID) == "" {
+		return s.store.SetActivePrimary(name)
+	}
+	return s.store.SetActivePrimaryForAccount(accountScopeID, name)
+}
+
+func (s *Service) getActiveSubagentsForAccountLocked(accountScopeID string, limit int) (map[string]string, error) {
+	if strings.TrimSpace(accountScopeID) == "" {
+		return s.store.GetActiveSubagents(limit)
+	}
+	return s.store.GetActiveSubagentsForAccount(accountScopeID, limit)
+}
+
+func (s *Service) setActiveSubagentForAccountLocked(accountScopeID, purpose, name string) error {
+	if strings.TrimSpace(accountScopeID) == "" {
+		return s.store.SetActiveSubagent(purpose, name)
+	}
+	return s.store.SetActiveSubagentForAccount(accountScopeID, purpose, name)
+}
+
+func (s *Service) deleteActiveSubagentForAccountLocked(accountScopeID, purpose string) error {
+	if strings.TrimSpace(accountScopeID) == "" {
+		return s.store.DeleteActiveSubagent(purpose)
+	}
+	return s.store.DeleteActiveSubagentForAccount(accountScopeID, purpose)
+}
+
+func (s *Service) getVersionForAccountLocked(accountScopeID string) (int64, bool, error) {
+	if strings.TrimSpace(accountScopeID) == "" {
+		return s.store.GetVersion()
+	}
+	return s.store.GetVersionForAccount(accountScopeID)
+}
+
+func (s *Service) setVersionForAccountLocked(accountScopeID string, version int64) error {
+	if strings.TrimSpace(accountScopeID) == "" {
+		return s.store.SetVersion(version)
+	}
+	return s.store.SetVersionForAccount(accountScopeID, version)
+}
+
 func (s *Service) bumpVersionLocked() (int64, error) {
-	version, ok, err := s.store.GetVersion()
+	return s.bumpVersionForAccountLocked("")
+}
+
+func (s *Service) bumpVersionForAccountLocked(accountScopeID string) (int64, error) {
+	version, ok, err := s.getVersionForAccountLocked(accountScopeID)
 	if err != nil {
 		return 0, err
 	}
@@ -1634,7 +1879,7 @@ func (s *Service) bumpVersionLocked() (int64, error) {
 		version = 0
 	}
 	version++
-	if err := s.store.SetVersion(version); err != nil {
+	if err := s.setVersionForAccountLocked(accountScopeID, version); err != nil {
 		return 0, err
 	}
 	return version, nil
@@ -1645,7 +1890,7 @@ func (s *Service) currentStateLocked(limit int) (State, error) {
 }
 
 func (s *Service) currentStateForAccountLocked(accountScopeID string, limit int) (State, error) {
-	profiles, err := s.store.ListProfiles(limit)
+	profiles, err := s.listProfilesForAccountLocked(accountScopeID, limit)
 	if err != nil {
 		return State{}, err
 	}
@@ -1658,15 +1903,15 @@ func (s *Service) currentStateForAccountLocked(accountScopeID string, limit int)
 	if err != nil {
 		return State{}, err
 	}
-	activePrimary, _, err := s.store.GetActivePrimary()
+	activePrimary, _, err := s.getActivePrimaryForAccountLocked(accountScopeID)
 	if err != nil {
 		return State{}, err
 	}
-	activeSubagent, err := s.store.GetActiveSubagents(200)
+	activeSubagent, err := s.getActiveSubagentsForAccountLocked(accountScopeID, 200)
 	if err != nil {
 		return State{}, err
 	}
-	version, _, err := s.store.GetVersion()
+	version, _, err := s.getVersionForAccountLocked(accountScopeID)
 	if err != nil {
 		return State{}, err
 	}
@@ -1680,11 +1925,15 @@ func (s *Service) currentStateForAccountLocked(accountScopeID string, limit int)
 }
 
 func (s *Service) activePrimaryValidLocked(name string) (bool, error) {
+	return s.activePrimaryValidForAccountLocked("", name)
+}
+
+func (s *Service) activePrimaryValidForAccountLocked(accountScopeID, name string) (bool, error) {
 	name = normalizeName(name)
 	if name == "" {
 		return false, nil
 	}
-	profile, ok, err := s.store.GetProfile(name)
+	profile, ok, err := s.getProfileForAccountLocked(accountScopeID, name)
 	if err != nil {
 		return false, err
 	}
@@ -1698,8 +1947,12 @@ func (s *Service) activePrimaryValidLocked(name string) (bool, error) {
 }
 
 func (s *Service) nextPrimaryLocked(exclude string) (string, error) {
+	return s.nextPrimaryForAccountLocked("", exclude)
+}
+
+func (s *Service) nextPrimaryForAccountLocked(accountScopeID, exclude string) (string, error) {
 	exclude = normalizeName(exclude)
-	profiles, err := s.store.ListProfiles(2000)
+	profiles, err := s.listProfilesForAccountLocked(accountScopeID, 2000)
 	if err != nil {
 		return "", err
 	}

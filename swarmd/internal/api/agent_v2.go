@@ -126,6 +126,11 @@ func (s *Server) handleAgentsV2(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("agent service not configured"))
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, errors.New("product identity required"))
+		return
+	}
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
 		return
@@ -135,7 +140,7 @@ func (s *Server) handleAgentsV2(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	state, err := s.agents.ListState(limit)
+	state, err := s.agents.ListStateForAccount(principal.AccountScopeID, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -150,6 +155,11 @@ func (s *Server) handleAgentsV2(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAgentDefaultsRestoreV2(w http.ResponseWriter, r *http.Request) {
 	if s.agents == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("agent service not configured"))
+		return
+	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, errors.New("product identity required"))
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -179,7 +189,7 @@ func (s *Server) handleAgentDefaultsRestoreV2(w http.ResponseWriter, r *http.Req
 	var state agentruntime.State
 	var err error
 	if hasUtilityOverride {
-		state, err = s.agents.ListState(2000)
+		state, err = s.agents.ListStateForAccount(principal.AccountScopeID, 2000)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -197,14 +207,14 @@ func (s *Server) handleAgentDefaultsRestoreV2(w http.ResponseWriter, r *http.Req
 			thinking = *req.UtilityThinking
 		}
 		overwriteExplicit := req.OverwriteExplicit != nil && *req.OverwriteExplicit
-		state, err = s.applyUtilityAIToBuiltIns(state, provider, model, thinking, overwriteExplicit)
+		state, err = s.applyUtilityAIToBuiltInsForAccount(principal.AccountScopeID, state, provider, model, thinking, overwriteExplicit)
 	} else {
-		state, _, _, err = s.agents.RestoreDefaults()
+		state, _, _, err = s.agents.RestoreDefaultsForAccount(principal.AccountScopeID)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		state, err = s.applyProviderDefaultsToBuiltIns(state)
+		state, err = s.applyProviderDefaultsToBuiltInsForAccount(principal.AccountScopeID, state)
 	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -225,11 +235,16 @@ func (s *Server) handleAgentDefaultsResetV2(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, errors.New("agent service not configured"))
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, errors.New("product identity required"))
+		return
+	}
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
 		return
 	}
-	state, version, _, err := s.agents.ResetDefaults()
+	state, version, _, err := s.agents.ResetDefaultsForAccount(principal.AccountScopeID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -247,6 +262,11 @@ func (s *Server) handleAgentDefaultsResetV2(w http.ResponseWriter, r *http.Reque
 func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 	if s.agents == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("agent service not configured"))
+		return
+	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, errors.New("product identity required"))
 		return
 	}
 	const prefix = "/v2/agents/"
@@ -275,7 +295,7 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		activePrimary, version, _, err := s.agents.ActivatePrimary(req.Name)
+		activePrimary, version, _, err := s.agents.ActivatePrimaryForAccount(principal.AccountScopeID, req.Name)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -298,7 +318,7 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			methodNotAllowed(w)
 			return
 		}
-		profile, ok, err := s.agents.GetProfile(name)
+		profile, ok, err := s.agents.GetProfileForAccount(principal.AccountScopeID, name)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -317,11 +337,6 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 		}
 		if s.runner == nil {
 			writeError(w, http.StatusInternalServerError, errors.New("run service not configured"))
-			return
-		}
-		principal, ok := PrincipalFromRequest(r)
-		if !ok {
-			writeError(w, http.StatusUnauthorized, errors.New("product identity required"))
 			return
 		}
 		resolved, compiledPolicy, _, err := s.runner.ResolveAgentToolContractForAccount(principal.AccountScopeID, profile)
@@ -348,11 +363,6 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 		}
 		switch r.Method {
 		case http.MethodPut:
-			principal, ok := PrincipalFromRequest(r)
-			if !ok {
-				writeError(w, http.StatusUnauthorized, errors.New("product identity required"))
-				return
-			}
 			profile, version, _, err := s.agents.AssignCustomToolForAccount(principal.AccountScopeID, agentName, toolName)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
@@ -365,11 +375,6 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 				"version":   version,
 			})
 		case http.MethodDelete:
-			principal, ok := PrincipalFromRequest(r)
-			if !ok {
-				writeError(w, http.StatusUnauthorized, errors.New("product identity required"))
-				return
-			}
 			profile, version, _, err := s.agents.UnassignCustomToolForAccount(principal.AccountScopeID, agentName, toolName)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
@@ -399,7 +404,7 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		profile, ok, err := s.agents.GetProfile(name)
+		profile, ok, err := s.agents.GetProfileForAccount(principal.AccountScopeID, name)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -413,11 +418,6 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			"profile": profile,
 		})
 	case http.MethodPut:
-		principal, ok := PrincipalFromRequest(r)
-		if !ok {
-			writeError(w, http.StatusUnauthorized, errors.New("product identity required"))
-			return
-		}
 		var req struct {
 			Mode                string                                  `json:"mode"`
 			Description         string                                  `json:"description"`
@@ -457,7 +457,7 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			}
 			storedCustomTools = append(storedCustomTools, stored)
 		}
-		profile, version, _, err := s.agents.Upsert(agentruntime.UpsertInput{
+		profile, version, _, err := s.agents.UpsertForAccount(principal.AccountScopeID, agentruntime.UpsertInput{
 			Name:                name,
 			Mode:                req.Mode,
 			Description:         req.Description,
@@ -499,7 +499,7 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			"assigned_custom_tools": assignedCustomTools,
 		})
 	case http.MethodDelete:
-		result, version, _, err := s.agents.Delete(name)
+		result, version, _, err := s.agents.DeleteForAccount(principal.AccountScopeID, name)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return

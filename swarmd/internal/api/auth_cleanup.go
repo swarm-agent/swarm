@@ -98,7 +98,13 @@ func (s *Server) cleanupProviderAfterCredentialDeletionForAccount(ctx context.Co
 	}
 
 	if s.agents != nil {
-		state, err := s.agents.ListState(2000)
+		var state agentruntime.State
+		var err error
+		if strings.TrimSpace(accountScopeID) == "" {
+			state, err = s.agents.ListState(2000)
+		} else {
+			state, err = s.agents.ListStateForAccount(accountScopeID, 2000)
+		}
 		if err != nil {
 			return cleanup, fmt.Errorf("list agents after credential delete: %w", err)
 		}
@@ -106,15 +112,27 @@ func (s *Server) cleanupProviderAfterCredentialDeletionForAccount(ctx context.Co
 			if !strings.EqualFold(strings.TrimSpace(profile.Provider), provider) {
 				continue
 			}
-			_, _, _, err := s.agents.Upsert(agentruntime.UpsertInput{
-				Name:        profile.Name,
-				Provider:    "",
-				Model:       "",
-				Thinking:    "",
-				ProviderSet: true,
-				ModelSet:    true,
-				ThinkingSet: true,
-			})
+			if strings.TrimSpace(accountScopeID) == "" {
+				_, _, _, err = s.agents.Upsert(agentruntime.UpsertInput{
+					Name:        profile.Name,
+					Provider:    "",
+					Model:       "",
+					Thinking:    "",
+					ProviderSet: true,
+					ModelSet:    true,
+					ThinkingSet: true,
+				})
+			} else {
+				_, _, _, err = s.agents.UpsertForAccount(accountScopeID, agentruntime.UpsertInput{
+					Name:        profile.Name,
+					Provider:    "",
+					Model:       "",
+					Thinking:    "",
+					ProviderSet: true,
+					ModelSet:    true,
+					ThinkingSet: true,
+				})
+			}
 			if err != nil {
 				return cleanup, fmt.Errorf("reset agent %s to inherit after credential delete: %w", profile.Name, err)
 			}

@@ -193,6 +193,10 @@ func normalizeThinkingLevel(value string) string {
 }
 
 func (s *Service) resolveAgentProfile(name, targetKind string, integrationFlow bool) (pebblestore.AgentProfile, error) {
+	return s.resolveAgentProfileForAccount("", name, targetKind, integrationFlow)
+}
+
+func (s *Service) resolveAgentProfileForAccount(accountScopeID, name, targetKind string, integrationFlow bool) (pebblestore.AgentProfile, error) {
 	targetKind = normalizeRunTargetKind(targetKind)
 	if integrationFlow || agentruntime.IsIntegrationBuilderAgentName(name) {
 		if !integrationFlow {
@@ -205,10 +209,13 @@ func (s *Service) resolveAgentProfile(name, targetKind string, integrationFlow b
 	}
 	switch targetKind {
 	case "", RunTargetKindAgent:
-		return s.resolveAgent(name)
+		return s.resolveAgentForAccount(accountScopeID, name)
 	case RunTargetKindSubagent, RunTargetKindBackground:
 		if s.agents == nil {
 			return pebblestore.AgentProfile{}, fmt.Errorf("targeted agent %q cannot resolve without agent service", strings.TrimSpace(name))
+		}
+		if strings.TrimSpace(accountScopeID) != "" {
+			return s.agents.ResolveAgentForAccount(accountScopeID, name)
 		}
 		return s.agents.ResolveAgent(name)
 	default:
@@ -217,7 +224,14 @@ func (s *Service) resolveAgentProfile(name, targetKind string, integrationFlow b
 }
 
 func (s *Service) resolveAgent(name string) (pebblestore.AgentProfile, error) {
+	return s.resolveAgentForAccount("", name)
+}
+
+func (s *Service) resolveAgentForAccount(accountScopeID, name string) (pebblestore.AgentProfile, error) {
 	if s.agents != nil {
+		if strings.TrimSpace(accountScopeID) != "" {
+			return s.agents.ResolveAgentForAccount(accountScopeID, name)
+		}
 		return s.agents.ResolveAgent(name)
 	}
 	return pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{

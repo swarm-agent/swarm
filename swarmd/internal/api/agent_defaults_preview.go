@@ -70,17 +70,25 @@ func (s *Server) providerDefaultsPreviewForState(state agentruntime.State) *prov
 }
 
 func (s *Server) applyProviderDefaultsToBuiltIns(state agentruntime.State) (agentruntime.State, error) {
+	return s.applyProviderDefaultsToBuiltInsForAccount("", state)
+}
+
+func (s *Server) applyProviderDefaultsToBuiltInsForAccount(accountScopeID string, state agentruntime.State) (agentruntime.State, error) {
 	if s == nil {
 		return state, nil
 	}
-	providerID, providerDefaults, ok := s.resolveAgentProviderDefaults()
+	providerID, providerDefaults, ok := s.resolveAgentProviderDefaultsForAccount(accountScopeID)
 	if !ok {
 		return state, nil
 	}
-	return s.applyUtilityAIToBuiltIns(state, providerID, providerDefaults.UtilityModel, providerDefaults.UtilityThinking, false)
+	return s.applyUtilityAIToBuiltInsForAccount(accountScopeID, state, providerID, providerDefaults.UtilityModel, providerDefaults.UtilityThinking, false)
 }
 
 func (s *Server) applyUtilityAIToBuiltIns(state agentruntime.State, utilityProvider, utilityModel, utilityThinking string, overwriteExplicit bool) (agentruntime.State, error) {
+	return s.applyUtilityAIToBuiltInsForAccount("", state, utilityProvider, utilityModel, utilityThinking, overwriteExplicit)
+}
+
+func (s *Server) applyUtilityAIToBuiltInsForAccount(accountScopeID string, state agentruntime.State, utilityProvider, utilityModel, utilityThinking string, overwriteExplicit bool) (agentruntime.State, error) {
 	if s == nil || s.agents == nil {
 		return state, nil
 	}
@@ -119,29 +127,54 @@ func (s *Server) applyUtilityAIToBuiltIns(state agentruntime.State, utilityProvi
 			profile = defaultProfile
 		}
 		enabled := profile.Enabled
-		_, _, _, err := s.agents.Upsert(agentruntime.UpsertInput{
-			Name:                profile.Name,
-			Mode:                profile.Mode,
-			Description:         profile.Description,
-			Provider:            utilityProvider,
-			ProviderSet:         true,
-			Model:               utilityModel,
-			ModelSet:            true,
-			Thinking:            utilityThinking,
-			ThinkingSet:         true,
-			Prompt:              profile.Prompt,
-			ExecutionSetting:    profile.ExecutionSetting,
-			ExitPlanModeEnabled: pebblestore.CloneBoolPtr(profile.ExitPlanModeEnabled),
-			ToolScope:           pebblestore.CloneAgentToolScope(profile.ToolScope),
-			ToolContract:        pebblestore.CloneAgentToolContract(profile.ToolContract),
-			Enabled:             &enabled,
-		})
+		var err error
+		if strings.TrimSpace(accountScopeID) == "" {
+			_, _, _, err = s.agents.Upsert(agentruntime.UpsertInput{
+				Name:                profile.Name,
+				Mode:                profile.Mode,
+				Description:         profile.Description,
+				Provider:            utilityProvider,
+				ProviderSet:         true,
+				Model:               utilityModel,
+				ModelSet:            true,
+				Thinking:            utilityThinking,
+				ThinkingSet:         true,
+				Prompt:              profile.Prompt,
+				ExecutionSetting:    profile.ExecutionSetting,
+				ExitPlanModeEnabled: pebblestore.CloneBoolPtr(profile.ExitPlanModeEnabled),
+				ToolScope:           pebblestore.CloneAgentToolScope(profile.ToolScope),
+				ToolContract:        pebblestore.CloneAgentToolContract(profile.ToolContract),
+				Enabled:             &enabled,
+			})
+		} else {
+			_, _, _, err = s.agents.UpsertForAccount(accountScopeID, agentruntime.UpsertInput{
+				Name:                profile.Name,
+				Mode:                profile.Mode,
+				Description:         profile.Description,
+				Provider:            utilityProvider,
+				ProviderSet:         true,
+				Model:               utilityModel,
+				ModelSet:            true,
+				Thinking:            utilityThinking,
+				ThinkingSet:         true,
+				Prompt:              profile.Prompt,
+				ExecutionSetting:    profile.ExecutionSetting,
+				ExitPlanModeEnabled: pebblestore.CloneBoolPtr(profile.ExitPlanModeEnabled),
+				ToolScope:           pebblestore.CloneAgentToolScope(profile.ToolScope),
+				ToolContract:        pebblestore.CloneAgentToolContract(profile.ToolContract),
+				Enabled:             &enabled,
+			})
+		}
 		if err != nil {
 			return state, err
 		}
 		updated = true
 		if strings.EqualFold(strings.TrimSpace(profile.Mode), agentruntime.ModeSubagent) && !strings.EqualFold(strings.TrimSpace(state.ActiveSubagent[name]), profile.Name) {
-			_, _, _, err = s.agents.SetActiveSubagent(name, profile.Name)
+			if strings.TrimSpace(accountScopeID) == "" {
+				_, _, _, err = s.agents.SetActiveSubagent(name, profile.Name)
+			} else {
+				_, _, _, err = s.agents.SetActiveSubagentForAccount(accountScopeID, name, profile.Name)
+			}
 			if err != nil {
 				return state, err
 			}
@@ -151,7 +184,10 @@ func (s *Server) applyUtilityAIToBuiltIns(state agentruntime.State, utilityProvi
 	if !updated {
 		return state, nil
 	}
-	return s.agents.ListState(2000)
+	if strings.TrimSpace(accountScopeID) == "" {
+		return s.agents.ListState(2000)
+	}
+	return s.agents.ListStateForAccount(accountScopeID, 2000)
 }
 
 func (s *Server) resolveAgentProviderDefaults() (string, defaults.ProviderDefaults, bool) {

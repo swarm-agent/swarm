@@ -869,7 +869,13 @@ func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest,
 	if s.agents == nil {
 		return pebblestore.SessionSnapshot{}, nil, "", "", errors.New("agent service not configured")
 	}
-	profile, profileErr := s.agents.ResolveAgent(strings.TrimSpace(req.AgentName))
+	var profile pebblestore.AgentProfile
+	var profileErr error
+	if principalOK && principal.Valid() {
+		profile, profileErr = s.agents.ResolveAgentForAccount(principal.AccountScopeID, strings.TrimSpace(req.AgentName))
+	} else {
+		profile, profileErr = s.agents.ResolveAgent(strings.TrimSpace(req.AgentName))
+	}
 	if profileErr != nil {
 		return pebblestore.SessionSnapshot{}, nil, "", "", profileErr
 	}

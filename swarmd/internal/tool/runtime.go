@@ -207,12 +207,19 @@ type manageAgentService interface {
 	UnassignCustomTool(agentName, toolName string) (pebblestore.AgentProfile, int64, *pebblestore.EventEnvelope, error)
 	UnassignCustomToolForAccount(accountScopeID, agentName, toolName string) (pebblestore.AgentProfile, int64, *pebblestore.EventEnvelope, error)
 	GetProfile(name string) (pebblestore.AgentProfile, bool, error)
+	GetProfileForAccount(accountScopeID, name string) (pebblestore.AgentProfile, bool, error)
 	PreviewUpsert(input agentruntime.UpsertInput) (agentruntime.PreviewUpsertResult, error)
+	PreviewUpsertForAccount(accountScopeID string, input agentruntime.UpsertInput) (agentruntime.PreviewUpsertResult, error)
 	Upsert(input agentruntime.UpsertInput) (pebblestore.AgentProfile, int64, *pebblestore.EventEnvelope, error)
+	UpsertForAccount(accountScopeID string, input agentruntime.UpsertInput) (pebblestore.AgentProfile, int64, *pebblestore.EventEnvelope, error)
 	ActivatePrimary(name string) (string, int64, *pebblestore.EventEnvelope, error)
+	ActivatePrimaryForAccount(accountScopeID, name string) (string, int64, *pebblestore.EventEnvelope, error)
 	Delete(name string) (agentruntime.DeleteResult, int64, *pebblestore.EventEnvelope, error)
+	DeleteForAccount(accountScopeID, name string) (agentruntime.DeleteResult, int64, *pebblestore.EventEnvelope, error)
 	SetActiveSubagent(purpose, name string) (map[string]string, int64, *pebblestore.EventEnvelope, error)
+	SetActiveSubagentForAccount(accountScopeID, purpose, name string) (map[string]string, int64, *pebblestore.EventEnvelope, error)
 	DeleteActiveSubagent(purpose string) (map[string]string, int64, *pebblestore.EventEnvelope, error)
+	DeleteActiveSubagentForAccount(accountScopeID, purpose string) (map[string]string, int64, *pebblestore.EventEnvelope, error)
 }
 
 type manageImageService interface {
@@ -5412,13 +5419,13 @@ func (r *Runtime) executeManageAgent(scope WorkspaceScope, args map[string]any) 
 	case "inspect", "list":
 		return r.manageAgentInspect(scope)
 	case "get", "read":
-		return r.manageAgentGet(args)
+		return r.manageAgentGet(scope, args)
 	case "create":
-		return r.manageAgentUpsert(args, false, confirm)
+		return r.manageAgentUpsert(scope, args, false, confirm)
 	case "update":
-		return r.manageAgentUpsert(args, true, confirm)
+		return r.manageAgentUpsert(scope, args, true, confirm)
 	case "delete", "remove":
-		return r.manageAgentDelete(args, confirm)
+		return r.manageAgentDelete(scope, args, confirm)
 	case "create_custom_tool", "create-custom-tool":
 		return r.manageAgentCustomToolUpsert(scope, args, false, confirm)
 	case "update_custom_tool", "update-custom-tool":
@@ -5430,11 +5437,11 @@ func (r *Runtime) executeManageAgent(scope WorkspaceScope, args map[string]any) 
 	case "unassign_custom_tool", "unassign-custom-tool":
 		return r.manageAgentUnassignCustomTool(scope, args, confirm)
 	case "activate_primary", "activate-primary":
-		return r.manageAgentActivatePrimary(args, confirm)
+		return r.manageAgentActivatePrimary(scope, args, confirm)
 	case "set_active_subagent", "set-active-subagent":
-		return r.manageAgentSetActiveSubagent(args, confirm)
+		return r.manageAgentSetActiveSubagent(scope, args, confirm)
 	case "remove_active_subagent", "remove-active-subagent", "delete_active_subagent", "delete-active-subagent":
-		return r.manageAgentRemoveActiveSubagent(args, confirm)
+		return r.manageAgentRemoveActiveSubagent(scope, args, confirm)
 	default:
 		return "", fmt.Errorf("manage-agent action %q is unsupported", action)
 	}
@@ -6024,11 +6031,10 @@ func manageSkillInspect(scope WorkspaceScope) (string, error) {
 }
 
 func (r *Runtime) manageAgentInspect(scope WorkspaceScope) (string, error) {
-	_ = scope
 	if r == nil || r.agents == nil {
 		return "", errors.New("manage-agent service is not configured")
 	}
-	state, err := r.agents.ListState(500)
+	state, err := r.listStateForScope(scope, 500)
 	if err != nil {
 		return "", fmt.Errorf("manage-agent inspect failed: %w", err)
 	}
@@ -6073,15 +6079,15 @@ func (r *Runtime) manageAgentInspect(scope WorkspaceScope) (string, error) {
 	return string(encoded), nil
 }
 
-func (r *Runtime) manageAgentGet(args map[string]any) (string, error) {
+func (r *Runtime) manageAgentGet(scope WorkspaceScope, args map[string]any) (string, error) {
 	if r == nil || r.agents == nil {
 		return "", errors.New("manage-agent service is not configured")
 	}
-	state, err := r.agents.ListState(500)
+	state, err := r.listStateForScope(scope, 500)
 	if err != nil {
 		return "", fmt.Errorf("manage-agent get list failed: %w", err)
 	}
-	profile, err := r.lookupManageAgentProfile(args)
+	profile, err := r.lookupManageAgentProfile(scope, args)
 	if err != nil {
 		return "", err
 	}
@@ -6101,7 +6107,7 @@ func (r *Runtime) manageAgentGet(args map[string]any) (string, error) {
 	return manageAgentEncodeResponse(response)
 }
 
-func (r *Runtime) manageAgentUpsert(args map[string]any, mustExist, confirm bool) (string, error) {
+func (r *Runtime) manageAgentUpsert(scope WorkspaceScope, args map[string]any, mustExist, confirm bool) (string, error) {
 	if r == nil || r.agents == nil {
 		return "", errors.New("manage-agent service is not configured")
 	}
@@ -6112,13 +6118,13 @@ func (r *Runtime) manageAgentUpsert(args map[string]any, mustExist, confirm bool
 	if err := validateManageAgentMutationInput(input, mustExist); err != nil {
 		return "", err
 	}
-	preview, err := r.agents.PreviewUpsert(input)
+	preview, err := r.previewUpsertAgentForScope(scope, input)
 	if err != nil {
 		return "", err
 	}
 	if aligned := manageAgentEffectiveExecutionSetting(preview.After); aligned != "" && !strings.EqualFold(strings.TrimSpace(aligned), strings.TrimSpace(preview.After.ExecutionSetting)) {
 		input.ExecutionSetting = aligned
-		preview, err = r.agents.PreviewUpsert(input)
+		preview, err = r.previewUpsertAgentForScope(scope, input)
 		if err != nil {
 			return "", err
 		}
@@ -6129,7 +6135,7 @@ func (r *Runtime) manageAgentUpsert(args map[string]any, mustExist, confirm bool
 	if !mustExist && preview.Exists {
 		return "", fmt.Errorf("agent %q already exists; use update", preview.After.Name)
 	}
-	state, err := r.agents.ListState(500)
+	state, err := r.listStateForScope(scope, 500)
 	if err != nil {
 		return "", fmt.Errorf("manage-agent list state failed: %w", err)
 	}
@@ -6149,11 +6155,11 @@ func (r *Runtime) manageAgentUpsert(args map[string]any, mustExist, confirm bool
 		"after":     manageAgentProfileMap(preview.After, strings.EqualFold(strings.TrimSpace(state.ActivePrimary), strings.TrimSpace(preview.After.Name)), manageAgentPurposesForProfile(state.ActiveSubagent, preview.After.Name)),
 	}
 	if confirm {
-		profile, _, _, err := r.agents.Upsert(input)
+		profile, _, _, err := r.upsertAgentForScope(scope, input)
 		if err != nil {
 			return "", err
 		}
-		updatedState, stateErr := r.agents.ListState(500)
+		updatedState, stateErr := r.listStateForScope(scope, 500)
 		if stateErr != nil {
 			return "", fmt.Errorf("manage-agent list state failed: %w", stateErr)
 		}
@@ -6193,15 +6199,15 @@ func (r *Runtime) manageAgentUpsert(args map[string]any, mustExist, confirm bool
 	return manageAgentEncodeResponse(response)
 }
 
-func (r *Runtime) manageAgentDelete(args map[string]any, confirm bool) (string, error) {
+func (r *Runtime) manageAgentDelete(scope WorkspaceScope, args map[string]any, confirm bool) (string, error) {
 	if r == nil || r.agents == nil {
 		return "", errors.New("manage-agent service is not configured")
 	}
-	state, err := r.agents.ListState(500)
+	state, err := r.listStateForScope(scope, 500)
 	if err != nil {
 		return "", fmt.Errorf("manage-agent list state failed: %w", err)
 	}
-	profile, err := r.lookupManageAgentProfile(args)
+	profile, err := r.lookupManageAgentProfile(scope, args)
 	if err != nil {
 		return "", err
 	}
@@ -6213,11 +6219,11 @@ func (r *Runtime) manageAgentDelete(args map[string]any, confirm bool) (string, 
 		"after":     nil,
 	}
 	if confirm {
-		result, _, _, err := r.agents.Delete(profile.Name)
+		result, _, _, err := r.deleteAgentForScope(scope, profile.Name)
 		if err != nil {
 			return "", err
 		}
-		updatedState, stateErr := r.agents.ListState(500)
+		updatedState, stateErr := r.listStateForScope(scope, 500)
 		if stateErr != nil {
 			return "", fmt.Errorf("manage-agent list state failed: %w", stateErr)
 		}
@@ -6256,15 +6262,15 @@ func (r *Runtime) manageAgentDelete(args map[string]any, confirm bool) (string, 
 	return manageAgentEncodeResponse(response)
 }
 
-func (r *Runtime) manageAgentActivatePrimary(args map[string]any, confirm bool) (string, error) {
+func (r *Runtime) manageAgentActivatePrimary(scope WorkspaceScope, args map[string]any, confirm bool) (string, error) {
 	if r == nil || r.agents == nil {
 		return "", errors.New("manage-agent service is not configured")
 	}
-	state, err := r.agents.ListState(500)
+	state, err := r.listStateForScope(scope, 500)
 	if err != nil {
 		return "", fmt.Errorf("manage-agent list state failed: %w", err)
 	}
-	profile, err := r.lookupManageAgentProfile(args)
+	profile, err := r.lookupManageAgentProfile(scope, args)
 	if err != nil {
 		return "", err
 	}
@@ -6279,11 +6285,11 @@ func (r *Runtime) manageAgentActivatePrimary(args map[string]any, confirm bool) 
 		"after":     strings.TrimSpace(profile.Name),
 	}
 	if confirm {
-		active, _, _, err := r.agents.ActivatePrimary(profile.Name)
+		active, _, _, err := r.activatePrimaryForScope(scope, profile.Name)
 		if err != nil {
 			return "", err
 		}
-		updatedState, stateErr := r.agents.ListState(500)
+		updatedState, stateErr := r.listStateForScope(scope, 500)
 		if stateErr != nil {
 			return "", fmt.Errorf("manage-agent list state failed: %w", stateErr)
 		}
@@ -6321,11 +6327,11 @@ func (r *Runtime) manageAgentActivatePrimary(args map[string]any, confirm bool) 
 	return manageAgentEncodeResponse(response)
 }
 
-func (r *Runtime) manageAgentSetActiveSubagent(args map[string]any, confirm bool) (string, error) {
+func (r *Runtime) manageAgentSetActiveSubagent(scope WorkspaceScope, args map[string]any, confirm bool) (string, error) {
 	if r == nil || r.agents == nil {
 		return "", errors.New("manage-agent service is not configured")
 	}
-	state, err := r.agents.ListState(500)
+	state, err := r.listStateForScope(scope, 500)
 	if err != nil {
 		return "", fmt.Errorf("manage-agent list state failed: %w", err)
 	}
@@ -6333,7 +6339,7 @@ func (r *Runtime) manageAgentSetActiveSubagent(args map[string]any, confirm bool
 	if err != nil {
 		return "", err
 	}
-	profile, ok, err := r.agents.GetProfile(name)
+	profile, ok, err := r.getAgentProfileForScope(scope, name)
 	if err != nil {
 		return "", err
 	}
@@ -6355,11 +6361,11 @@ func (r *Runtime) manageAgentSetActiveSubagent(args map[string]any, confirm bool
 		"after":     afterAssignments,
 	}
 	if confirm {
-		assignments, _, _, err := r.agents.SetActiveSubagent(purpose, profile.Name)
+		assignments, _, _, err := r.setActiveSubagentForScope(scope, purpose, profile.Name)
 		if err != nil {
 			return "", err
 		}
-		updatedState, stateErr := r.agents.ListState(500)
+		updatedState, stateErr := r.listStateForScope(scope, 500)
 		if stateErr != nil {
 			return "", fmt.Errorf("manage-agent list state failed: %w", stateErr)
 		}
@@ -6399,11 +6405,11 @@ func (r *Runtime) manageAgentSetActiveSubagent(args map[string]any, confirm bool
 	return manageAgentEncodeResponse(response)
 }
 
-func (r *Runtime) manageAgentRemoveActiveSubagent(args map[string]any, confirm bool) (string, error) {
+func (r *Runtime) manageAgentRemoveActiveSubagent(scope WorkspaceScope, args map[string]any, confirm bool) (string, error) {
 	if r == nil || r.agents == nil {
 		return "", errors.New("manage-agent service is not configured")
 	}
-	state, err := r.agents.ListState(500)
+	state, err := r.listStateForScope(scope, 500)
 	if err != nil {
 		return "", fmt.Errorf("manage-agent list state failed: %w", err)
 	}
@@ -6423,11 +6429,11 @@ func (r *Runtime) manageAgentRemoveActiveSubagent(args map[string]any, confirm b
 		"after":     afterAssignments,
 	}
 	if confirm {
-		assignments, _, _, err := r.agents.DeleteActiveSubagent(purpose)
+		assignments, _, _, err := r.deleteActiveSubagentForScope(scope, purpose)
 		if err != nil {
 			return "", err
 		}
-		updatedState, stateErr := r.agents.ListState(500)
+		updatedState, stateErr := r.listStateForScope(scope, 500)
 		if stateErr != nil {
 			return "", fmt.Errorf("manage-agent list state failed: %w", stateErr)
 		}
@@ -6641,7 +6647,7 @@ func (r *Runtime) manageAgentCustomToolAssignment(scope WorkspaceScope, args map
 	if err != nil {
 		return "", err
 	}
-	profile, ok, err := r.agents.GetProfile(agentName)
+	profile, ok, err := r.getAgentProfileForScope(scope, agentName)
 	if err != nil {
 		return "", err
 	}
@@ -6750,7 +6756,7 @@ func (r *Runtime) manageAgentCustomToolAssignment(scope WorkspaceScope, args map
 	return manageAgentEncodeResponse(response)
 }
 
-func (r *Runtime) lookupManageAgentProfile(args map[string]any) (pebblestore.AgentProfile, error) {
+func (r *Runtime) lookupManageAgentProfile(scope WorkspaceScope, args map[string]any) (pebblestore.AgentProfile, error) {
 	if r == nil || r.agents == nil {
 		return pebblestore.AgentProfile{}, errors.New("manage-agent service is not configured")
 	}
@@ -6758,7 +6764,7 @@ func (r *Runtime) lookupManageAgentProfile(args map[string]any) (pebblestore.Age
 	if name == "" {
 		return pebblestore.AgentProfile{}, errors.New("manage-agent requires agent or name")
 	}
-	profile, ok, err := r.agents.GetProfile(name)
+	profile, ok, err := r.getAgentProfileForScope(scope, name)
 	if err != nil {
 		return pebblestore.AgentProfile{}, err
 	}

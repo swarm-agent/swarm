@@ -548,6 +548,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		return taskLaunchManifest{}, err
 	}
 
+	parentSession, _, _ := s.sessions.GetSession(sessionID)
 	parentMode := sessionruntime.NormalizeMode(sessionMode)
 	childMode := effectiveTaskChildMode(sessionMode)
 	disabledTools := taskDisabledToolNames(parsed.AllowBash)
@@ -567,7 +568,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		resolvedName := requested
 		resolvedErr := ""
 		if s != nil {
-			if profile, err := s.resolveTaskSubagent(requested); err == nil {
+			if profile, err := s.resolveTaskSubagentForAccount(parentSession.AccountScopeID, requested); err == nil {
 				if strings.TrimSpace(profile.Name) != "" {
 					resolvedName = strings.TrimSpace(profile.Name)
 				}

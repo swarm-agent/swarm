@@ -118,6 +118,11 @@ func (s *Server) existingFlowRunStart(claim pebblestore.FlowRunClaimRecord) (flo
 }
 
 func (s *Server) runAcceptedFlow(ctx context.Context, accepted flow.AcceptedAssignment, request flow.RunRequest) (flow.RunStart, error) {
+	principal, principalOK := identity.PrincipalFromContext(ctx)
+	if !principalOK || !principal.Valid() {
+		principal = peerManagedWorkspacePrincipal()
+		ctx = identity.ContextWithPrincipal(ctx, principal)
+	}
 	if s == nil {
 		return flow.RunStart{}, errors.New("api server is not configured")
 	}
@@ -149,11 +154,11 @@ func (s *Server) runAcceptedFlow(ctx context.Context, accepted flow.AcceptedAssi
 		runID = flowRunID(assignment.FlowID, assignment.Revision, scheduledAt, request.RunNow)
 	}
 	sessionID := flowSessionID(runID)
-	resolvedAgent, err := s.resolveFlowRunAgent(assignment.Agent)
+	resolvedAgent, err := s.resolveFlowRunAgentForAccount(principal.AccountScopeID, assignment.Agent)
 	if err != nil {
 		return flow.RunStart{}, err
 	}
-	pref, err := s.flowRunSessionPreference(resolvedAgent)
+	pref, err := s.flowRunSessionPreferenceForAccount(principal.AccountScopeID, resolvedAgent)
 	if err != nil {
 		return flow.RunStart{}, err
 	}
@@ -203,7 +208,7 @@ func (s *Server) runAcceptedFlow(ctx context.Context, accepted flow.AcceptedAssi
 	if strings.TrimSpace(sessionReq.WorkspaceName) == "" || sessionReq.WorkspaceName == "." || sessionReq.WorkspaceName == string(filepath.Separator) {
 		sessionReq.WorkspaceName = "workspace"
 	}
-	session, _, _, _, err := s.createSessionFromRequestWithSessionID(sessionReq, nil, true, sessionID)
+	session, _, _, _, err := s.createSessionFromRequestWithSessionID(sessionReq, nil, true, sessionID, principal, true)
 	if err != nil {
 		if strings.Contains(err.Error(), "already exists") {
 			return s.existingFlowRunStart(pebblestore.FlowRunClaimRecord{FlowID: assignment.FlowID, Revision: assignment.Revision, ScheduledAt: scheduledAt, RunID: runID})
@@ -234,7 +239,6 @@ func (s *Server) runAcceptedFlow(ctx context.Context, accepted flow.AcceptedAssi
 		return flow.RunStart{}, err
 	}
 	run := func(ctx context.Context) {
-		principal := peerManagedWorkspacePrincipal()
 		runCtx := identity.ContextWithPrincipal(ctx, principal)
 		result, err := s.runner.RunTurnStreaming(runCtx, session.ID, runReq, runruntime.RunStartMeta{
 			RunID:          runID,
@@ -394,21 +398,32 @@ func (s *Server) flowRunSessionPreference(agent resolvedFlowRunAgent) (pref stru
 	ServiceTier string
 	ContextMode string
 }, err error) {
+	return s.flowRunSessionPreferenceForAccount("", agent)
+}
+
+func (s *Server) flowRunSessionPreferenceForAccount(accountScopeID string, agent resolvedFlowRunAgent) (pref struct {
+	Provider    string
+	Model       string
+	Thinking    string
+	ServiceTier string
+	ContextMode string
+}, err error) {
 	profile := agent.Profile
 	pref.Provider = strings.TrimSpace(profile.Provider)
 	pref.Model = strings.TrimSpace(profile.Model)
 	pref.Thinking = strings.TrimSpace(profile.Thinking)
 	if pref.Provider == "" || pref.Model == "" || pref.Thinking == "" {
 		if s != nil && s.model != nil {
-			global, globalErr := s.model.GetGlobalPreference()
-			if globalErr != nil {
-				return pref, fmt.Errorf("flow agent %q execution preference is not configured on target: %w", agent.RuntimeTargetName, globalErr)
+			resolved, resolvedErr := s.model.GetResolvedPreferenceForAccount(accountScopeID)
+			if resolvedErr != nil {
+				return pref, fmt.Errorf("flow agent %q execution preference is not configured on target: %w", agent.RuntimeTargetName, resolvedErr)
 			}
-			pref.Provider = firstNonEmpty(pref.Provider, strings.TrimSpace(global.Provider))
-			pref.Model = firstNonEmpty(pref.Model, strings.TrimSpace(global.Model))
-			pref.Thinking = firstNonEmpty(pref.Thinking, strings.TrimSpace(global.Thinking))
-			pref.ServiceTier = strings.TrimSpace(global.ServiceTier)
-			pref.ContextMode = strings.TrimSpace(global.ContextMode)
+			accountPref := resolved.Preference
+			pref.Provider = firstNonEmpty(pref.Provider, strings.TrimSpace(accountPref.Provider))
+			pref.Model = firstNonEmpty(pref.Model, strings.TrimSpace(accountPref.Model))
+			pref.Thinking = firstNonEmpty(pref.Thinking, strings.TrimSpace(accountPref.Thinking))
+			pref.ServiceTier = strings.TrimSpace(accountPref.ServiceTier)
+			pref.ContextMode = strings.TrimSpace(accountPref.ContextMode)
 		}
 	}
 	if pref.Provider == "" || pref.Model == "" || pref.Thinking == "" {
@@ -429,6 +444,10 @@ func (s *Server) flowRunAgentProfile(agent flow.AgentSelection) (pebblestore.Age
 }
 
 func (s *Server) resolveFlowRunAgent(agent flow.AgentSelection) (resolvedFlowRunAgent, error) {
+	return s.resolveFlowRunAgentForAccount("", agent)
+}
+
+func (s *Server) resolveFlowRunAgentForAccount(accountScopeID string, agent flow.AgentSelection) (resolvedFlowRunAgent, error) {
 	if s == nil || s.agents == nil {
 		return resolvedFlowRunAgent{}, errors.New("agent service not configured")
 	}
@@ -439,7 +458,13 @@ func (s *Server) resolveFlowRunAgent(agent flow.AgentSelection) (resolvedFlowRun
 	if strings.TrimSpace(agent.ProfileMode) == "" {
 		return resolvedFlowRunAgent{}, errors.New("agent profile_mode is required")
 	}
-	profile, err := s.agents.ResolveAgent(agent.ProfileName)
+	var profile pebblestore.AgentProfile
+	var err error
+	if strings.TrimSpace(accountScopeID) != "" {
+		profile, err = s.agents.ResolveAgentForAccount(accountScopeID, agent.ProfileName)
+	} else {
+		profile, err = s.agents.ResolveAgent(agent.ProfileName)
+	}
 	if err != nil {
 		return resolvedFlowRunAgent{}, err
 	}
