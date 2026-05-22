@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	sharedtheme "swarm-refactor/swarmtui/theme"
+	"swarm/packages/swarmd/internal/identity"
 	uisettings "swarm/packages/swarmd/internal/uisettings"
 )
 
@@ -188,6 +189,9 @@ func (r *Runtime) manageThemeDelete(scope WorkspaceScope, args map[string]any, c
 	if r.themeWorkspace == nil {
 		return "", errors.New("manage-theme workspace service is not configured")
 	}
+	if !scope.Principal.Valid() {
+		return "", identity.ErrPrincipalRequired
+	}
 	themeID := manageThemeNormalizeID(firstNonEmptyString(asString(args["theme_id"]), asString(args["theme"]), asString(args["id"])))
 	if themeID == "" {
 		return "", errors.New("manage-theme delete requires theme_id")
@@ -205,12 +209,14 @@ func (r *Runtime) manageThemeDelete(scope WorkspaceScope, args map[string]any, c
 		settings.Theme.ActiveID = sharedtheme.DefaultThemeID()
 	}
 
+	entries, err := r.themeWorkspace.ListKnownForPrincipal(scope.Principal, 500)
+	if err != nil {
+		return "", err
+	}
 	clearedWorkspaces := make([]string, 0)
-	if entries, err := r.themeWorkspace.ListKnown(500); err == nil {
-		for _, entry := range entries {
-			if manageThemeNormalizeID(entry.ThemeID) == themeID {
-				clearedWorkspaces = append(clearedWorkspaces, strings.TrimSpace(entry.Path))
-			}
+	for _, entry := range entries {
+		if manageThemeNormalizeID(entry.ThemeID) == themeID {
+			clearedWorkspaces = append(clearedWorkspaces, strings.TrimSpace(entry.Path))
 		}
 	}
 	change := map[string]any{
@@ -229,7 +235,7 @@ func (r *Runtime) manageThemeDelete(scope WorkspaceScope, args map[string]any, c
 			return "", err
 		}
 		for _, workspacePath := range clearedWorkspaces {
-			if _, err := r.themeWorkspace.SetThemeID(workspacePath, ""); err != nil {
+			if _, err := r.themeWorkspace.SetThemeIDForPrincipal(scope.Principal, workspacePath, ""); err != nil {
 				return "", err
 			}
 		}
@@ -281,7 +287,10 @@ func (r *Runtime) manageThemeSet(scope WorkspaceScope, args map[string]any, conf
 		if r.themeWorkspace == nil {
 			return "", errors.New("manage-theme workspace service is not configured")
 		}
-		scopeInfo, err := r.themeWorkspace.ScopeForPath(workspacePath)
+		if !scope.Principal.Valid() {
+			return "", identity.ErrPrincipalRequired
+		}
+		scopeInfo, err := r.themeWorkspace.ScopeForPathForPrincipal(scope.Principal, workspacePath)
 		if err != nil {
 			return "", err
 		}
@@ -295,7 +304,7 @@ func (r *Runtime) manageThemeSet(scope WorkspaceScope, args map[string]any, conf
 			"after":          map[string]any{"workspace_path": strings.TrimSpace(scopeInfo.WorkspacePath), "theme_id": themeID},
 		}
 		if confirm {
-			resolution, err := r.themeWorkspace.SetThemeID(workspacePath, themeID)
+			resolution, err := r.themeWorkspace.SetThemeIDForPrincipal(scope.Principal, workspacePath, themeID)
 			if err != nil {
 				return "", err
 			}
@@ -422,7 +431,10 @@ func (r *Runtime) manageThemeWorkspaceSummary(scope WorkspaceScope, args map[str
 	if workspacePath == "" {
 		return nil, nil
 	}
-	info, err := r.themeWorkspace.ScopeForPath(workspacePath)
+	if !scope.Principal.Valid() {
+		return nil, identity.ErrPrincipalRequired
+	}
+	info, err := r.themeWorkspace.ScopeForPathForPrincipal(scope.Principal, workspacePath)
 	if err != nil {
 		return nil, err
 	}

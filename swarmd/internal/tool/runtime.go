@@ -262,9 +262,9 @@ type manageThemeUISettingsService interface {
 }
 
 type manageThemeWorkspaceService interface {
-	SetThemeID(path, themeID string) (workspaceruntime.Resolution, error)
-	ScopeForPath(path string) (workspaceruntime.Scope, error)
-	ListKnown(limit int) ([]workspaceruntime.Entry, error)
+	SetThemeIDForPrincipal(principal identity.Principal, path, themeID string) (workspaceruntime.Resolution, error)
+	ScopeForPathForPrincipal(principal identity.Principal, path string) (workspaceruntime.Scope, error)
+	ListKnownForPrincipal(principal identity.Principal, limit int) ([]workspaceruntime.Entry, error)
 }
 
 type manageWorktreeSessionRecord = pebblestore.SessionSnapshot
