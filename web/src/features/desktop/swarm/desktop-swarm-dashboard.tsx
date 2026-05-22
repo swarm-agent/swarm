@@ -161,6 +161,7 @@ function onboardingConfigFromDashboardState(state: SwarmLocalState, settings: UI
     swarmName: String(state.node.name ?? '').trim() || settings?.swarm?.name?.trim() || 'Local swarm',
     child: configRole === 'child' || configRole === 'managed',
     swarmMode: state.node.role !== 'standalone',
+    desktopOnboardingComplete: true,
     swarmRole: configRole,
     swarmID: String(state.node.swarm_id ?? '').trim(),
     mode: state.node.advertise_mode === 'tailscale' ? 'tailscale' : 'lan',
