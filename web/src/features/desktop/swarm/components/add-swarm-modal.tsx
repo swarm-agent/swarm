@@ -11,10 +11,12 @@ import {
 import { Input } from '../../../../components/ui/input'
 import { Select } from '../../../../components/ui/select'
 import {
-  fetchDesktopOnboardingStatus,
   fetchSwarmLocalRuntimeStatus,
+  fetchSwarmState,
   type SwarmLocalRuntimeStatus,
+  type SwarmLocalState,
 } from '../../onboarding/api'
+import { fetchDesktopUpdateStatus } from '../../update/api'
 import type { DesktopOnboardingStatus } from '../../onboarding/types'
 import {
   fetchDeployContainerPackageDefaults,
@@ -158,16 +160,19 @@ const FALLBACK_RUNTIME_STATUS: SwarmLocalRuntimeStatus = {
   warning: 'Could not detect local container runtime.',
 }
 
-function currentGroup(status: DesktopOnboardingStatus | null) {
-  if (!status) return null
-  const currentGroupID = status.currentGroupID.trim()
+type SwarmGroupState = NonNullable<SwarmLocalState['groups']>[number]
+
+function currentGroup(state: SwarmLocalState | null): SwarmGroupState | null {
+  if (!state) return null
+  const groups = state.groups ?? []
+  const currentGroupID = String(state.current_group_id ?? '').trim()
   if (currentGroupID) {
-    const exact = status.groups.find(
-      (group) => group.group.id === currentGroupID,
+    const exact = groups.find(
+      (group) => String(group.group?.id ?? '').trim() === currentGroupID,
     )
     if (exact) return exact
   }
-  return status.groups[0] ?? null
+  return groups[0] ?? null
 }
 
 function buildWorkspaceDrafts(
@@ -206,12 +211,13 @@ export function AddSwarmModal({
   onOpenChange,
   onComplete,
 }: AddSwarmModalProps) {
+  const inheritedDevMode = Boolean(onboardingStatus?.config.devMode)
   const [loading, setLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
-  const [currentOnboardingStatus, setCurrentOnboardingStatus] =
-    useState<DesktopOnboardingStatus | null>(onboardingStatus)
+  const [modalSwarmState, setModalSwarmState] = useState<SwarmLocalState | null>(null)
+  const [devMode, setDevMode] = useState(inheritedDevMode)
   const [workspaceDrafts, setWorkspaceDrafts] = useState<
     ReplicateWorkspaceDraft[]
   >([])
@@ -257,10 +263,10 @@ export function AddSwarmModal({
     [runtimeStatus, selectedRuntime],
   ) as 'podman' | 'docker' | ''
   const group = useMemo(
-    () => currentGroup(currentOnboardingStatus),
-    [currentOnboardingStatus],
+    () => currentGroup(modalSwarmState),
+    [modalSwarmState],
   )
-  const hostSwarmID = group?.group.hostSwarmID || currentOnboardingStatus?.config.swarmID || ''
+  const hostSwarmID = String(group?.group?.host_swarm_id ?? '').trim() || String(modalSwarmState?.node.swarm_id ?? '').trim()
   const hostVaultEnabled = Boolean(vault.enabled)
   const currentSelfTarget = useMemo(
     () => targetHosts.find((target) => target.current || target.kind === 'self') ?? null,
@@ -269,10 +275,12 @@ export function AddSwarmModal({
   const managerName = useMemo(
     () =>
       currentSelfTarget?.name?.trim() ||
-      group?.members.find((member) => member.swarmID === hostSwarmID)?.name ||
-      currentOnboardingStatus?.config.swarmName ||
+      group?.members?.find(
+        (member) => String(member.swarm_id ?? '').trim() === hostSwarmID,
+      )?.name ||
+      modalSwarmState?.node.name ||
       'This host',
-    [currentSelfTarget?.name, group, hostSwarmID, currentOnboardingStatus?.config.swarmName],
+    [currentSelfTarget?.name, group, hostSwarmID, modalSwarmState?.node.name],
   )
   const managedTargetHosts = useMemo(
     () => managedHostTargets(targetHosts),
@@ -298,7 +306,6 @@ export function AddSwarmModal({
         .map((item) => item.workspacePath),
     [workspaceDrafts],
   )
-  const devMode = Boolean(currentOnboardingStatus?.config.devMode)
 
   const invalidateLaunchDraft = () => undefined
 
@@ -356,6 +363,8 @@ export function AddSwarmModal({
     setError(null)
     setStatus(null)
     setSelectedRuntime('')
+    setModalSwarmState(null)
+    setDevMode(inheritedDevMode)
     setTargetHosts([])
     setSelectedTargetHostSwarmID(LOCAL_TARGET_SWARM_ID)
     setSyncEnabled(true)
@@ -377,9 +386,8 @@ export function AddSwarmModal({
         packageManager: FALLBACK_CONTAINER_PACKAGE_MANAGER,
       })),
       fetchSwarmTargets().catch(() => ({ ok: false, targets: [] })),
-      onboardingStatus
-        ? Promise.resolve(onboardingStatus)
-        : fetchDesktopOnboardingStatus().catch(() => null),
+      fetchSwarmState(),
+      fetchDesktopUpdateStatus(),
     ])
       .then(
         ([
@@ -387,7 +395,8 @@ export function AddSwarmModal({
           nextRuntimeStatus,
           nextPackageDefaults,
           nextTargetsResponse,
-          nextOnboardingStatus,
+          nextSwarmState,
+          nextUpdateStatus,
         ]) => {
           if (cancelled) return
           setWorkspaceDrafts(buildWorkspaceDrafts(nextWorkspaces))
@@ -412,7 +421,8 @@ export function AddSwarmModal({
             nextPackageDefaults.packageManager ||
               FALLBACK_CONTAINER_PACKAGE_MANAGER,
           )
-          setCurrentOnboardingStatus(nextOnboardingStatus)
+          setModalSwarmState(nextSwarmState)
+          setDevMode(Boolean(nextUpdateStatus.dev_mode))
           setSwarmName('')
           setSelectedRuntime(
             (nextRuntimeStatus.recommended || '') as 'podman' | 'docker' | '',
@@ -433,7 +443,7 @@ export function AddSwarmModal({
     return () => {
       cancelled = true
     }
-  }, [onboardingStatus, open])
+  }, [inheritedDevMode, open])
 
   const closeModal = () => {
     if (!submitting) onOpenChange(false)
