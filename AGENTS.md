@@ -192,6 +192,18 @@ Flow target/path rules:
 - For managed-host Flow targets, use managed-host peer/session/workspace routing and managed-machine workspace paths. Do not call local container create/update/list or assume `/workspaces` unless the managed host itself explicitly reports that path.
 - For self Flow targets, use the primary-host workspace path directly; do not route through child or managed-host translation.
 
+## SSH Alias Fast Testing
+
+When a user asks to test through an SSH alias, use the reusable fast-test script instead of hand-writing one-off copy/rebuild commands:
+
+```bash
+./scripts/ssh-fast-test.sh <ssh-alias>
+```
+
+The script must remain generic and host-agnostic. It discovers the remote `swarm-go` checkout, rsyncs the current working tree there while excluding local artifacts, runs the checked-in remote rebuild path (`./rebuild s`), then restarts the user systemd service with `systemctl --user restart`. If discovery cannot find the checkout, pass `--remote-dir <path>` rather than hardcoding a host path in docs or code. If a host uses a non-default unit, pass `--service <unit>`.
+
+Do not replace this flow with ad-hoc `scp`/`rsync` plus manual rebuild steps unless the script itself is broken and you are fixing it. This is the canonical fast manual testing path for "ssh alias" requests.
+
 ## Current Active Testing Focus
 
 Keep this section durable and small. It is not a live proof board.
