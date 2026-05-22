@@ -12,22 +12,19 @@ import {
   actOnSwarmLocalContainer,
   deleteSwarmLocalContainers,
   approveRemoteSwarmPairing,
-  fetchDesktopOnboardingStatus,
   fetchPendingRemoteSwarmPairings,
   fetchSwarmLocalContainers,
   fetchSwarmLocalRuntimeStatus,
   fetchSwarmState,
-  patchDesktopOnboarding,
   pruneMissingSwarmLocalContainers,
   removeManagedHostLink,
-  saveDesktopOnboarding,
   type RemoteSwarmPendingPairing,
   type SwarmLocalContainer,
   type SwarmLocalContainerDeleteResult,
   type SwarmLocalRuntimeStatus,
   type SwarmLocalState,
 } from '../onboarding/api'
-import type { DesktopOnboardingStatus, DesktopSwarmGroupMember, DesktopSwarmGroupState } from '../onboarding/types'
+import type { DesktopOnboardingStatus, DesktopSwarmGroupMember, DesktopSwarmGroupState, DesktopOnboardingConfig, DesktopOnboardingNetwork, DesktopOnboardingPairing } from '../onboarding/types'
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
 import { saveSwarmSettings } from '../settings/swarm/mutations/save-swarm-settings'
 import type { UISettingsWire } from '../settings/swarm/types/swarm-settings'
@@ -119,20 +116,154 @@ function hostnameFromURL(raw: string | null | undefined): string {
   }
 }
 
-function displayNameFromHost(host: string | null | undefined): string {
-  const value = String(host ?? '').trim().replace(/\.$/, '')
-  if (!value) {
-    return ''
+function emptyOnboardingNetwork(): DesktopOnboardingNetwork {
+  return {
+    lanAddresses: [],
+    tailscale: {
+      available: false,
+      connected: false,
+      dnsName: '',
+      tailnetName: '',
+      tailnetURL: '',
+      candidateURL: '',
+      ips: [],
+      authURL: '',
+      error: '',
+      serve: {
+        configured: false,
+        ready: false,
+        mode: '',
+        url: '',
+        proxyTarget: '',
+        expectedDesktopProxy: '',
+        expectedAPIProxy: '',
+        expectedPeerTransportProxy: '',
+        command: '',
+        error: '',
+      },
+    },
   }
-  return value.split('.')[0]?.trim() || value
 }
 
-function defaultLocalSwarmName(status: DesktopOnboardingStatus | null, nodeName?: string): string {
-  return String(nodeName ?? '').trim()
-    || status?.config.swarmName.trim()
-    || displayNameFromHost(status?.network.tailscale.dnsName)
-    || displayNameFromHost(hostnameFromURL(status?.network.tailscale.tailnetURL || status?.config.tailscaleURL))
-    || 'Local swarm'
+function onboardingConfigFromDashboardState(state: SwarmLocalState, settings: UISettingsWire | null): DesktopOnboardingConfig {
+  const advertise = String(state.node.advertise_addr ?? '').trim()
+  const advertiseURL = hostnameFromURL(advertise)
+  const swarmRole = String(state.node.role ?? '').trim().toLowerCase()
+  const configRole: DesktopOnboardingConfig['swarmRole'] = swarmRole === 'managed'
+    ? 'managed'
+    : swarmRole === 'child'
+      ? 'child'
+      : swarmRole === 'standalone'
+        ? 'standalone'
+        : 'master'
+
+  return {
+    swarmName: String(state.node.name ?? '').trim() || settings?.swarm?.name?.trim() || 'Local swarm',
+    child: configRole === 'child' || configRole === 'managed',
+    swarmMode: state.node.role !== 'standalone',
+    swarmRole: configRole,
+    swarmID: String(state.node.swarm_id ?? '').trim(),
+    mode: state.node.advertise_mode === 'tailscale' ? 'tailscale' : 'lan',
+    host: '127.0.0.1',
+    port: 7781,
+    desktopPort: 5555,
+    advertiseHost: advertiseURL || advertise,
+    advertisePort: 7781,
+    tailscaleURL: state.node.advertise_mode === 'tailscale' ? advertise : '',
+    bypassPermissions: false,
+    devMode: false,
+    localTransportPort: 7790,
+    localTransportActive: false,
+    localTransportWarning: '',
+    peerTransportPort: 7791,
+    restartRequired: false,
+    restartReason: '',
+  }
+}
+
+function onboardingPairingFromSwarmState(state: SwarmLocalState): DesktopOnboardingPairing {
+  return {
+    swarmID: String(state.node.swarm_id ?? '').trim(),
+    pairingState: String(state.pairing.pairing_state ?? '').trim(),
+    parentSwarmID: String(state.pairing.parent_swarm_id ?? '').trim(),
+    activeInviteID: String(state.pairing.active_invite_id ?? '').trim(),
+    lastEnrollmentID: String(state.pairing.last_enrollment_id ?? '').trim(),
+    lastDecision: String(state.pairing.last_decision ?? '').trim(),
+    lastDecisionReason: String(state.pairing.last_decision_reason ?? '').trim(),
+    lastUpdatedByRole: String(state.pairing.last_updated_by_role ?? '').trim(),
+    rendezvousTransports: state.pairing.rendezvous_transports ?? [],
+    managedAuthOwnerSwarmID: String(state.pairing.managed_auth_owner_swarm_id ?? '').trim(),
+    managedAuthSnapshotHash: String(state.pairing.managed_auth_snapshot_hash ?? '').trim(),
+    managedAuthAppliedAt: typeof state.pairing.managed_auth_applied_at === 'number' ? state.pairing.managed_auth_applied_at : 0,
+    managedAuthLastAttemptAt: typeof state.pairing.managed_auth_last_attempt_at === 'number' ? state.pairing.managed_auth_last_attempt_at : 0,
+    managedAuthLastError: String(state.pairing.managed_auth_last_error ?? '').trim(),
+  }
+}
+
+function groupStateFromSwarmState(state: SwarmLocalState): DesktopSwarmGroupState[] {
+  return (state.groups ?? []).map((record) => ({
+    group: {
+      id: String(record.group?.id ?? '').trim(),
+      name: String(record.group?.name ?? '').trim(),
+      networkName: String(record.group?.network_name ?? '').trim(),
+      hostSwarmID: String(record.group?.host_swarm_id ?? '').trim(),
+      createdAt: typeof record.group?.created_at === 'number' ? record.group.created_at : 0,
+      updatedAt: typeof record.group?.updated_at === 'number' ? record.group.updated_at : 0,
+    },
+    members: (record.members ?? []).map((member) => ({
+      groupID: String(member.group_id ?? '').trim(),
+      swarmID: String(member.swarm_id ?? '').trim(),
+      name: String(member.name ?? '').trim(),
+      swarmRole: String(member.swarm_role ?? '').trim(),
+      membershipRole: String(member.membership_role ?? '').trim(),
+      createdAt: typeof member.created_at === 'number' ? member.created_at : 0,
+      updatedAt: typeof member.updated_at === 'number' ? member.updated_at : 0,
+    })),
+  }))
+}
+
+function dashboardStatusFromSwarmState(state: SwarmLocalState, settings: UISettingsWire | null): DesktopOnboardingStatus {
+  return {
+    ok: true,
+    needsOnboarding: false,
+    identity: {
+      bootstrapped: true,
+      userID: '',
+      accountScopeID: '',
+      username: '',
+      teamID: '',
+      teamDisplayName: '',
+      teamDefault: false,
+      membershipRole: '',
+    },
+    config: onboardingConfigFromDashboardState(state, settings),
+    heuristics: {
+      missingSwarmName: false,
+      credentialCount: 0,
+      savedWorkspaceCount: 0,
+      vaultConfigured: false,
+    },
+    pairing: onboardingPairingFromSwarmState(state),
+    network: emptyOnboardingNetwork(),
+    currentGroupID: String(state.current_group_id ?? '').trim(),
+    groups: groupStateFromSwarmState(state),
+    discoveredSwarms: [],
+    vault: {
+      enabled: false,
+      unlocked: false,
+      unlockRequired: false,
+      storageMode: '',
+      warning: '',
+    },
+    auth: {
+      credentialCount: 0,
+      activeProviders: [],
+      providers: [],
+    },
+    workspace: {
+      savedCount: 0,
+    },
+  }
 }
 
 function swarmRoleLabel(value: string | null | undefined): string {
@@ -1082,11 +1213,12 @@ export function DesktopSwarmDashboard() {
   const [settingsError, setSettingsError] = useState<string | null>(null)
   const [removingManagedHostID, setRemovingManagedHostID] = useState<string | null>(null)
 
-  const applyCoreDashboardState = (state: SwarmLocalState, onboarding: DesktopOnboardingStatus, nextUISettings: UISettingsWire) => {
+  const applyCoreDashboardState = (state: SwarmLocalState, nextUISettings: UISettingsWire) => {
+    const dashboardStatus = dashboardStatusFromSwarmState(state, nextUISettings)
     setSwarmState(state)
-    setOnboardingStatus(onboarding)
+    setOnboardingStatus(dashboardStatus)
     setUISettings(nextUISettings)
-    setLocalNameDraft(state.node.name || onboarding.config.swarmName || '')
+    setLocalNameDraft(state.node.name || nextUISettings.swarm?.name || '')
   }
 
   const applySupplementalDashboardState = (
@@ -1110,9 +1242,8 @@ export function DesktopSwarmDashboard() {
   }
 
   const refresh = async () => {
-    const [state, onboarding, nextUISettings, runtimeStatus, launchedContainers, nextDeployments, nextRemoteSessions, nextPendingPairings, nextTargets, nextMirrorResources, nextFlows] = await Promise.all([
+    const [state, nextUISettings, runtimeStatus, launchedContainers, nextDeployments, nextRemoteSessions, nextPendingPairings, nextTargets, nextMirrorResources, nextFlows] = await Promise.all([
       fetchSwarmState(),
-      fetchDesktopOnboardingStatus(),
       getUISettings(),
       fetchSwarmLocalRuntimeStatus(),
       fetchSwarmLocalContainers(),
@@ -1123,7 +1254,7 @@ export function DesktopSwarmDashboard() {
       fetchSwarmMirrorResources(),
       fetchFlows(),
     ])
-    applyCoreDashboardState(state, onboarding, nextUISettings)
+    applyCoreDashboardState(state, nextUISettings)
     applySupplementalDashboardState(runtimeStatus, launchedContainers, nextDeployments, nextRemoteSessions, nextPendingPairings, nextTargets.targets, nextMirrorResources, nextFlows)
   }
 
@@ -1141,10 +1272,10 @@ export function DesktopSwarmDashboard() {
     setError(null)
     setStatus(null)
 
-    void Promise.all([fetchSwarmState(), fetchDesktopOnboardingStatus(), getUISettings()])
-      .then(([state, onboarding, nextUISettings]) => {
+    void Promise.all([fetchSwarmState(), getUISettings()])
+      .then(([state, nextUISettings]) => {
         if (!cancelled) {
-          applyCoreDashboardState(state, onboarding, nextUISettings)
+          applyCoreDashboardState(state, nextUISettings)
         }
       })
       .catch((err) => {
@@ -1339,7 +1470,7 @@ export function DesktopSwarmDashboard() {
   const localContainersSectionLoading = localContainersLoading || deploymentsLoading
   const staleAttachedLoading = deploymentsLoading
   const localSwarmID = onboardingStatus?.config.swarmID || swarmState?.node.swarm_id || ''
-  const localSwarmName = swarmState?.node.name || onboardingStatus?.config.swarmName || 'Local swarm'
+  const localSwarmName = swarmState?.node.name || uiSettings?.swarm?.name || onboardingStatus?.config.swarmName || 'Local swarm'
   const localSwarmRole = onboardingStatus?.config.swarmRole || swarmState?.node.role || (onboardingStatus?.config.child ? 'child' : 'master')
   const localSwarmRoleLabel = swarmRoleLabel(localSwarmRole)
   const localIsManagedHost = String(localSwarmRole).trim().toLowerCase() === 'managed'
@@ -1685,75 +1816,6 @@ export function DesktopSwarmDashboard() {
   }, [baseDeleteSwarmCandidates, deleteSwarmCandidateContainerIDs])
   const selectedDeleteIDs = useMemo(() => new Set(selectedDeleteContainerIDs), [selectedDeleteContainerIDs])
   const selectedDeleteSwarmIDs = useMemo(() => new Set(selectedDeleteSwarmContainerIDs), [selectedDeleteSwarmContainerIDs])
-
-  const handleEnableSwarmMode = async () => {
-    setBusy(true)
-    setError(null)
-    setStatus(null)
-    try {
-      const currentName = defaultLocalSwarmName(onboardingStatus, swarmState?.node.name)
-      const useTailscale = Boolean(tailscaleCandidate.connected && localTailscaleURL)
-      await saveDesktopOnboarding({
-        swarmName: currentName,
-        swarmMode: true,
-        child: false,
-        mode: useTailscale ? 'tailscale' : 'lan',
-        ...(useTailscale ? { tailscaleURL: localTailscaleURL } : {}),
-      })
-      await refresh()
-      setStatus(useTailscale
-        ? 'Swarm linking is enabled with Tailscale reachability. Use Swarm linking to link another host.'
-        : 'Swarm linking is enabled. Tailscale was not connected, so reachability stayed on LAN for now.')
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to turn on Swarm linking')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const handleDisableSwarmMode = async () => {
-    setBusy(true)
-    setError(null)
-    setStatus(null)
-    try {
-      const currentName = defaultLocalSwarmName(onboardingStatus, swarmState?.node.name)
-      await patchDesktopOnboarding({ swarmMode: false })
-      setOnboardingStatus((current) => current
-        ? { ...current, config: { ...current.config, swarmName: currentName, swarmMode: false } }
-        : current)
-      setLocalNameDraft(currentName)
-      setStatus('Swarm linking is now off. Local containers remain available.')
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to turn off Swarm linking')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const handleUseTailscaleReachability = async () => {
-    if (!onboardingStatus) {
-      return
-    }
-    setBusy(true)
-    setError(null)
-    setStatus(null)
-    try {
-      const currentName = defaultLocalSwarmName(onboardingStatus, swarmState?.node.name)
-      await saveDesktopOnboarding({
-        swarmName: currentName,
-        swarmMode: true,
-        child: false,
-        mode: 'tailscale',
-        tailscaleURL: localTailscaleURL,
-      })
-      await refresh()
-      setStatus('Saved Tailscale reachability. Run the Host Swarm command if you want the desktop available on the tailnet.')
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save Tailscale reachability')
-    } finally {
-      setBusy(false)
-    }
-  }
 
   const handleCopyTailscaleCommand = async (command: string) => {
     try {
@@ -2359,21 +2421,6 @@ export function DesktopSwarmDashboard() {
               Link request{visiblePendingPairings.length > 0 ? ` (${visiblePendingPairings.length})` : ''}
             </Button>
           ) : null}
-          <Button
-            variant="outline"
-            className={isSwarmMode && (visiblePendingPairings.length > 0 || pendingLinkReviewTarget) ? 'col-span-2 w-full sm:col-span-1 sm:w-auto' : 'w-full sm:w-auto'}
-            onClick={() => {
-              if (isSwarmMode) {
-                void handleDisableSwarmMode()
-                return
-              }
-              void handleEnableSwarmMode()
-            }}
-            disabled={managedHostingControlsDisabled}
-            title={managedHostControlTitle || (localIsChild ? 'This host is already linked to a Manager.' : undefined)}
-          >
-            {isSwarmMode ? 'Disable Linking' : 'Enable Linking'}
-          </Button>
         </div>
       </div>
 
@@ -2519,11 +2566,6 @@ export function DesktopSwarmDashboard() {
                     {copyState === 'desktop' ? 'Copied' : 'Copy'}
                   </Button>
                 </div>
-              ) : null}
-              {!localTailscalePrimary && tailscaleCandidate.available ? (
-                <Button type="button" variant="outline" size="sm" className="h-8 text-[11px]" onClick={() => void handleUseTailscaleReachability()} disabled={busy || !localTailscaleURL}>
-                  Use Tailscale for Swarm links
-                </Button>
               ) : null}
             </div>
           </div>
