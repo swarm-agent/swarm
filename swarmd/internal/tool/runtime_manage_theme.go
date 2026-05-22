@@ -14,7 +14,7 @@ func (r *Runtime) manageThemeInspect(scope WorkspaceScope, args map[string]any) 
 	if r == nil || r.uiSettings == nil {
 		return "", errors.New("manage-theme ui settings service is not configured")
 	}
-	settings, err := r.uiSettings.Get()
+	settings, err := r.manageThemeSettings(scope)
 	if err != nil {
 		return "", fmt.Errorf("manage-theme inspect failed: %w", err)
 	}
@@ -23,6 +23,7 @@ func (r *Runtime) manageThemeInspect(scope WorkspaceScope, args map[string]any) 
 		"status":               "ok",
 		"action":               "inspect",
 		"global_theme_id":      manageThemeNormalizeID(settings.Theme.ActiveID),
+		"account_scope_id":     r.manageThemeAccountScopeID(scope),
 		"default_theme_id":     sharedtheme.DefaultThemeID(),
 		"builtin_themes":       manageThemeBuiltinThemeMaps(),
 		"custom_themes":        manageThemeCustomThemeMaps(settings.Theme.CustomThemes),
@@ -38,7 +39,7 @@ func (r *Runtime) manageThemeInspect(scope WorkspaceScope, args map[string]any) 
 }
 
 func (r *Runtime) manageThemeGet(scope WorkspaceScope, args map[string]any) (string, error) {
-	settings, err := r.manageThemeSettings()
+	settings, err := r.manageThemeSettings(scope)
 	if err != nil {
 		return "", err
 	}
@@ -69,7 +70,7 @@ func (r *Runtime) manageThemeGet(scope WorkspaceScope, args map[string]any) (str
 }
 
 func (r *Runtime) manageThemeUpsert(scope WorkspaceScope, args map[string]any, mustExist, confirm bool) (string, error) {
-	settings, err := r.manageThemeSettings()
+	settings, err := r.manageThemeSettings(scope)
 	if err != nil {
 		return "", err
 	}
@@ -143,7 +144,7 @@ func (r *Runtime) manageThemeUpsert(scope WorkspaceScope, args map[string]any, m
 		"after":     manageThemeRecordMap(afterTheme, "custom"),
 	}
 	if confirm {
-		saved, err := r.uiSettings.Set(settings)
+		saved, err := r.manageThemeSaveSettings(scope, settings)
 		if err != nil {
 			return "", err
 		}
@@ -154,6 +155,7 @@ func (r *Runtime) manageThemeUpsert(scope WorkspaceScope, args map[string]any, m
 			"theme":                manageThemeRecordMap(afterTheme, "custom"),
 			"change":               change,
 			"global_theme_id":      manageThemeNormalizeID(saved.Theme.ActiveID),
+			"account_scope_id":     r.manageThemeAccountScopeID(scope),
 			"custom_themes":        manageThemeCustomThemeMaps(saved.Theme.CustomThemes),
 			"path_id":              toolPathID("manage-theme"),
 			"summary":              strings.Replace(summary, "proposed ", "applied ", 1),
@@ -179,7 +181,7 @@ func (r *Runtime) manageThemeUpsert(scope WorkspaceScope, args map[string]any, m
 }
 
 func (r *Runtime) manageThemeDelete(scope WorkspaceScope, args map[string]any, confirm bool) (string, error) {
-	settings, err := r.manageThemeSettings()
+	settings, err := r.manageThemeSettings(scope)
 	if err != nil {
 		return "", err
 	}
@@ -222,7 +224,7 @@ func (r *Runtime) manageThemeDelete(scope WorkspaceScope, args map[string]any, c
 		"cleared_workspaces": append([]string(nil), clearedWorkspaces...),
 	}
 	if confirm {
-		saved, err := r.uiSettings.Set(settings)
+		saved, err := r.manageThemeSaveSettings(scope, settings)
 		if err != nil {
 			return "", err
 		}
@@ -238,6 +240,7 @@ func (r *Runtime) manageThemeDelete(scope WorkspaceScope, args map[string]any, c
 			"theme":                manageThemeRecordMap(before, "custom"),
 			"change":               change,
 			"global_theme_id":      manageThemeNormalizeID(saved.Theme.ActiveID),
+			"account_scope_id":     r.manageThemeAccountScopeID(scope),
 			"custom_themes":        manageThemeCustomThemeMaps(saved.Theme.CustomThemes),
 			"path_id":              toolPathID("manage-theme"),
 			"summary":              fmt.Sprintf("applied delete for custom theme %s", before.ID),
@@ -263,7 +266,7 @@ func (r *Runtime) manageThemeDelete(scope WorkspaceScope, args map[string]any, c
 }
 
 func (r *Runtime) manageThemeSet(scope WorkspaceScope, args map[string]any, confirm bool) (string, error) {
-	settings, err := r.manageThemeSettings()
+	settings, err := r.manageThemeSettings(scope)
 	if err != nil {
 		return "", err
 	}
@@ -327,16 +330,20 @@ func (r *Runtime) manageThemeSet(scope WorkspaceScope, args map[string]any, conf
 	}
 
 	beforeThemeID := manageThemeNormalizeID(settings.Theme.ActiveID)
+	target := "global_theme"
+	if r.manageThemeAccountScopeID(scope) != "" {
+		target = "account_theme"
+	}
 	change := map[string]any{
 		"kind":      "theme_change",
-		"target":    "global_theme",
+		"target":    target,
 		"operation": "set",
 		"before":    map[string]any{"theme_id": beforeThemeID},
 		"after":     map[string]any{"theme_id": themeID},
 	}
 	if confirm {
 		settings.Theme.ActiveID = manageThemeStringFallback(themeID, sharedtheme.DefaultThemeID())
-		saved, err := r.uiSettings.Set(settings)
+		saved, err := r.manageThemeSaveSettings(scope, settings)
 		if err != nil {
 			return "", err
 		}
@@ -345,9 +352,10 @@ func (r *Runtime) manageThemeSet(scope WorkspaceScope, args map[string]any, conf
 			"action":               "set",
 			"applied":              true,
 			"global_theme_id":      manageThemeNormalizeID(saved.Theme.ActiveID),
+			"account_scope_id":     r.manageThemeAccountScopeID(scope),
 			"change":               change,
 			"path_id":              toolPathID("manage-theme"),
-			"summary":              fmt.Sprintf("applied global theme %s", manageThemeNormalizeID(saved.Theme.ActiveID)),
+			"summary":              fmt.Sprintf("applied %s %s", strings.ReplaceAll(target, "_", " "), manageThemeNormalizeID(saved.Theme.ActiveID)),
 			"details_truncated":    false,
 			"prompt_injection_tag": "tool_output_untrusted",
 			"safety":               buildUntrustedSafety(manageThemeSafetyText(change)),
@@ -361,7 +369,7 @@ func (r *Runtime) manageThemeSet(scope WorkspaceScope, args map[string]any, conf
 		"change":               change,
 		"approved_arguments":   cloneStringAnyMap(args),
 		"path_id":              toolPathID("manage-theme"),
-		"summary":              fmt.Sprintf("proposed global theme %s", manageThemeStringFallback(themeID, sharedtheme.DefaultThemeID())),
+		"summary":              fmt.Sprintf("proposed %s %s", strings.ReplaceAll(target, "_", " "), manageThemeStringFallback(themeID, sharedtheme.DefaultThemeID())),
 		"details_truncated":    false,
 		"prompt_injection_tag": "tool_output_untrusted",
 		"safety":               buildUntrustedSafety(manageThemeSafetyText(change)),
@@ -369,15 +377,38 @@ func (r *Runtime) manageThemeSet(scope WorkspaceScope, args map[string]any, conf
 	return manageThemeEncodeResponse(response)
 }
 
-func (r *Runtime) manageThemeSettings() (uisettings.UISettings, error) {
+func (r *Runtime) manageThemeAccountScopeID(scope WorkspaceScope) string {
+	return r.agentAccountScopeID(scope)
+}
+
+func (r *Runtime) manageThemeSettings(scope WorkspaceScope) (uisettings.UISettings, error) {
 	if r == nil || r.uiSettings == nil {
 		return uisettings.UISettings{}, errors.New("manage-theme ui settings service is not configured")
+	}
+	accountScopeID := r.manageThemeAccountScopeID(scope)
+	if accountScopeID != "" {
+		settings, err := r.uiSettings.GetForAccount(accountScopeID)
+		if err != nil {
+			return uisettings.UISettings{}, fmt.Errorf("manage-theme read account settings: %w", err)
+		}
+		return settings, nil
 	}
 	settings, err := r.uiSettings.Get()
 	if err != nil {
 		return uisettings.UISettings{}, fmt.Errorf("manage-theme read settings failed: %w", err)
 	}
 	return settings, nil
+}
+
+func (r *Runtime) manageThemeSaveSettings(scope WorkspaceScope, settings uisettings.UISettings) (uisettings.UISettings, error) {
+	if r == nil || r.uiSettings == nil {
+		return uisettings.UISettings{}, errors.New("manage-theme ui settings service is not configured")
+	}
+	accountScopeID := r.manageThemeAccountScopeID(scope)
+	if accountScopeID != "" {
+		return r.uiSettings.SetForAccount(accountScopeID, settings)
+	}
+	return r.uiSettings.Set(settings)
 }
 
 func (r *Runtime) manageThemeWorkspaceSummary(scope WorkspaceScope, args map[string]any) (map[string]any, error) {

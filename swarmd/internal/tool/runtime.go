@@ -256,7 +256,9 @@ type manageTodoService interface {
 
 type manageThemeUISettingsService interface {
 	Get() (uisettings.UISettings, error)
+	GetForAccount(accountScopeID string) (uisettings.UISettings, error)
 	Set(settings uisettings.UISettings) (uisettings.UISettings, error)
+	SetForAccount(accountScopeID string, settings uisettings.UISettings) (uisettings.UISettings, error)
 }
 
 type manageThemeWorkspaceService interface {
