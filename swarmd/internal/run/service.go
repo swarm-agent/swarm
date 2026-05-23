@@ -962,7 +962,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 		emit(StreamEvent{Type: StreamEventMessageStored, Message: &userMessage})
 		if s.eventPublish != nil && shouldGenerateMemorySessionTitle(sessionSnapshot) {
-			s.startMemorySessionTitleFlow(sessionID, prompt, resolvedPreference.Preference, emit)
+			s.startMemorySessionTitleFlow(sessionID, prompt, resolvedPreference.Preference, options.Principal, emit)
 		}
 	}
 	if targetedSubagentViaTask {
@@ -3190,7 +3190,7 @@ func metadataStringValue(metadata map[string]any, key string) string {
 	}
 }
 
-func (s *Service) startMemorySessionTitleFlow(sessionID, firstPrompt string, basePreference pebblestore.ModelPreference, emit StreamHandler) {
+func (s *Service) startMemorySessionTitleFlow(sessionID, firstPrompt string, basePreference pebblestore.ModelPreference, principal identity.Principal, emit StreamHandler) {
 	if s == nil || s.sessions == nil {
 		return
 	}
@@ -3199,8 +3199,19 @@ func (s *Service) startMemorySessionTitleFlow(sessionID, firstPrompt string, bas
 		return
 	}
 	accountScopeID := ""
-	if sessionSnapshot, ok, err := s.sessions.GetSession(sessionID); err == nil && ok {
-		accountScopeID = sessionSnapshot.AccountScopeID
+	sessionSnapshot, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		s.emitSessionTitleWarning(sessionID, "provisional", err, emit)
+		return
+	}
+	if !ok {
+		s.emitSessionTitleWarning(sessionID, "provisional", fmt.Errorf("session %q was not found", sessionID), emit)
+		return
+	}
+	accountScopeID = sessionSnapshot.AccountScopeID
+	if principal.Valid() && sessionSnapshot.AccountScopeID != principal.AccountScopeID {
+		s.emitSessionTitleWarning(sessionID, "provisional", fmt.Errorf("session account scope %q does not match principal account scope %q", sessionSnapshot.AccountScopeID, principal.AccountScopeID), emit)
+		return
 	}
 	firstPrompt = truncateRunes(strings.TrimSpace(firstPrompt), sessionTitlePromptPreviewRunes)
 	if firstPrompt == "" {
@@ -3211,7 +3222,7 @@ func (s *Service) startMemorySessionTitleFlow(sessionID, firstPrompt string, bas
 		s.emitSessionTitleWarning(sessionID, "provisional", err, emit)
 		return
 	}
-	go s.generateAndApplySessionTitle(sessionID, firstPrompt, "provisional", sessionTitleProvisionalWords, sessionTitleProvisionalWords, basePreference, memoryProfile, emit)
+	go s.generateAndApplySessionTitle(sessionID, firstPrompt, "provisional", sessionTitleProvisionalWords, sessionTitleProvisionalWords, basePreference, memoryProfile, principal, emit)
 	go func() {
 		defer func() {
 			if recovered := recover(); recovered != nil {
@@ -3226,7 +3237,7 @@ func (s *Service) startMemorySessionTitleFlow(sessionID, firstPrompt string, bas
 			s.emitSessionTitleWarning(sessionID, "final", convErr, emit)
 			return
 		}
-		s.generateAndApplySessionTitle(sessionID, conversation, "final", sessionTitleFinalWordsMin, sessionTitleFinalWordsMax, basePreference, memoryProfile, emit)
+		s.generateAndApplySessionTitle(sessionID, conversation, "final", sessionTitleFinalWordsMin, sessionTitleFinalWordsMax, basePreference, memoryProfile, principal, emit)
 	}()
 }
 
@@ -3256,13 +3267,13 @@ func (s *Service) buildSessionTitleConversation(sessionID, fallbackPrompt string
 	return strings.Join(lines, "\n"), nil
 }
 
-func (s *Service) generateAndApplySessionTitle(sessionID, promptContext, stage string, minWords, maxWords int, basePreference pebblestore.ModelPreference, memoryProfile pebblestore.AgentProfile, emit StreamHandler) {
+func (s *Service) generateAndApplySessionTitle(sessionID, promptContext, stage string, minWords, maxWords int, basePreference pebblestore.ModelPreference, memoryProfile pebblestore.AgentProfile, principal identity.Principal, emit StreamHandler) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			s.emitSessionTitleWarning(sessionID, stage, fmt.Errorf("session title apply panic: %v", recovered), emit)
 		}
 	}()
-	title, err := s.generateMemorySessionTitle(promptContext, stage, minWords, maxWords, basePreference, memoryProfile)
+	title, err := s.generateMemorySessionTitle(promptContext, stage, minWords, maxWords, basePreference, memoryProfile, principal)
 	if err != nil {
 		s.emitSessionTitleWarning(sessionID, stage, err, emit)
 		return
@@ -3270,7 +3281,7 @@ func (s *Service) generateAndApplySessionTitle(sessionID, promptContext, stage s
 	s.applySessionTitleUpdate(sessionID, title, stage, emit)
 }
 
-func (s *Service) generateMemorySessionTitle(promptContext, stage string, minWords, maxWords int, basePreference pebblestore.ModelPreference, memoryProfile pebblestore.AgentProfile) (string, error) {
+func (s *Service) generateMemorySessionTitle(promptContext, stage string, minWords, maxWords int, basePreference pebblestore.ModelPreference, memoryProfile pebblestore.AgentProfile, principal identity.Principal) (string, error) {
 	if s == nil || s.providers == nil {
 		return "", errors.New("provider registry is not configured")
 	}
@@ -3329,7 +3340,11 @@ func (s *Service) generateMemorySessionTitle(promptContext, stage string, minWor
 		},
 		ToolChoice: "none",
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), sessionTitleGenerationTimeout)
+	bgCtx := context.Background()
+	if principal.Valid() {
+		bgCtx = identity.ContextWithPrincipal(bgCtx, principal)
+	}
+	ctx, cancel := context.WithTimeout(bgCtx, sessionTitleGenerationTimeout)
 	defer cancel()
 	response, err := runner.CreateResponse(ctx, req)
 	if err != nil {

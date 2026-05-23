@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"swarm/packages/swarmd/internal/identity"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"swarm/packages/swarmd/internal/provider/registry"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -36,7 +37,7 @@ func TestFinalSessionTitleUsesEmitterForHostedMirror(t *testing.T) {
 	}
 
 	var emitted []StreamEvent
-	svc.generateAndApplySessionTitle("session-title", "user: fix the title", "final", 2, 5, pebblestore.ModelPreference{Provider: "static", Model: "title-model"}, pebblestore.AgentProfile{Name: "memory", Provider: "static", Model: "title-model", Enabled: true}, func(event StreamEvent) {
+	svc.generateAndApplySessionTitle("session-title", "user: fix the title", "final", 2, 5, pebblestore.ModelPreference{Provider: "static", Model: "title-model"}, pebblestore.AgentProfile{Name: "memory", Provider: "static", Model: "title-model", Enabled: true}, identity.Principal{}, func(event StreamEvent) {
 		emitted = append(emitted, event)
 		svc.mirrorHostedStreamEvent(event)
 	})
