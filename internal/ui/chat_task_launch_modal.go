@@ -445,10 +445,10 @@ func (p *ChatPage) taskLaunchLaunchIndex(launch map[string]any, fallback int) in
 
 func (p *ChatPage) taskLaunchLaunchAgent(launch map[string]any) string {
 	agent := strings.TrimSpace(firstNonEmptyToolValue(
-		jsonString(launch, "requested_subagent_type"),
 		jsonString(launch, "resolved_agent_name"),
 		jsonString(launch, "agent_type"),
 		jsonString(launch, "subagent"),
+		jsonString(launch, "requested_subagent_type"),
 		jsonString(launch, "requested_subagent"),
 	))
 	if agent == "" {
@@ -457,11 +457,43 @@ func (p *ChatPage) taskLaunchLaunchAgent(launch map[string]any) string {
 	return agent
 }
 
+func (p *ChatPage) taskLaunchLaunchLabel(launch map[string]any) string {
+	label := strings.TrimSpace(firstNonEmptyToolValue(
+		jsonString(launch, "assignment_label"),
+		jsonString(launch, "child_title_preview"),
+		jsonString(launch, "meta_prompt"),
+		p.taskLaunchLaunchAgent(launch),
+	))
+	if label == "" {
+		return "Delegated task"
+	}
+	return label
+}
+
+func (p *ChatPage) taskLaunchLaunchModelLine(launch map[string]any) string {
+	parts := []string{p.taskLaunchLaunchAgent(launch)}
+	provider := strings.TrimSpace(jsonString(launch, "subagent_provider"))
+	model := strings.TrimSpace(jsonString(launch, "subagent_model"))
+	switch {
+	case provider != "" && model != "":
+		parts = append(parts, provider+"/"+model)
+	case model != "":
+		parts = append(parts, model)
+	case provider != "":
+		parts = append(parts, provider)
+	}
+	if mode := strings.TrimSpace(firstNonEmptyToolValue(jsonString(launch, "effective_child_mode"), jsonString(launch, "child_mode"), jsonString(launch, "mode"))); mode != "" {
+		parts = append(parts, mode)
+	}
+	return strings.Join(parts, " · ")
+}
+
 func (p *ChatPage) taskLaunchLaunchAssignment(launch map[string]any) string {
 	return strings.TrimSpace(firstNonEmptyToolValue(
 		jsonString(launch, "meta_prompt"),
 		jsonString(launch, "description"),
 		jsonString(launch, "prompt"),
+		jsonString(launch, "assignment_label"),
 	))
 }
 
@@ -470,38 +502,39 @@ func (p *ChatPage) taskLaunchLaunchTableLines(launches []map[string]any, width i
 		return []chatRenderLine{{Text: "No launches were included in the manifest.", Style: p.theme.TextMuted}}
 	}
 	width = maxInt(24, width)
-	maxAgentRunes := utf8.RuneCountInString("Agent")
+	maxLabelRunes := utf8.RuneCountInString("Assignment")
 	for _, launch := range launches {
-		maxAgentRunes = maxInt(maxAgentRunes, utf8.RuneCountInString(p.taskLaunchLaunchAgent(launch)))
+		maxLabelRunes = maxInt(maxLabelRunes, utf8.RuneCountInString(p.taskLaunchLaunchLabel(launch)))
 	}
-	agentWidth := minInt(maxInt(10, maxAgentRunes), maxInt(10, width/3))
-	prefixWidth := utf8.RuneCountInString(fmt.Sprintf("%-4s %-*s ", "#", agentWidth, "Agent"))
+	labelWidth := minInt(maxInt(10, maxLabelRunes), maxInt(10, width/3))
+	prefixWidth := utf8.RuneCountInString(fmt.Sprintf("%-4s %-*s ", "#", labelWidth, "Assignment"))
 	if prefixWidth >= width-8 {
-		agentWidth = maxInt(8, width-12)
-		prefixWidth = utf8.RuneCountInString(fmt.Sprintf("%-4s %-*s ", "#", agentWidth, "Agent"))
+		labelWidth = maxInt(8, width-12)
+		prefixWidth = utf8.RuneCountInString(fmt.Sprintf("%-4s %-*s ", "#", labelWidth, "Assignment"))
 	}
-	assignmentWidth := maxInt(8, width-prefixWidth)
+	detailsWidth := maxInt(8, width-prefixWidth)
 
 	headerSpans := []chatRenderSpan{
-		{Text: fmt.Sprintf("%-4s %-*s ", "#", agentWidth, "Agent"), Style: p.theme.Secondary.Bold(true)},
-		{Text: "Assignment", Style: p.theme.Secondary.Bold(true)},
+		{Text: fmt.Sprintf("%-4s %-*s ", "#", labelWidth, "Assignment"), Style: p.theme.Secondary.Bold(true)},
+		{Text: "Agent / model", Style: p.theme.Secondary.Bold(true)},
 	}
 	out := []chatRenderLine{{Text: chatRenderSpansText(headerSpans), Style: p.theme.Secondary, Spans: headerSpans}}
 	out = append(out, chatRenderLine{Text: strings.Repeat("─", width), Style: p.theme.Border})
 
 	for i, launch := range launches {
 		idxLabel := fmt.Sprintf("#%d", p.taskLaunchLaunchIndex(launch, i))
-		agent := clampEllipsis(p.taskLaunchLaunchAgent(launch), agentWidth)
+		label := clampEllipsis(p.taskLaunchLaunchLabel(launch), labelWidth)
 		assignment := p.taskLaunchLaunchAssignment(launch)
-		assignmentLines := p.taskLaunchMarkdownSectionLines(assignment, "No launch-specific instructions.")
-		firstPrefix := fmt.Sprintf("%-4s %-*s ", idxLabel, agentWidth, agent)
-		continuationPrefix := fmt.Sprintf("%-4s %-*s ", "", agentWidth, "")
-		for rowIndex, row := range assignmentLines {
+		detailLines := []chatRenderLine{{Text: p.taskLaunchLaunchModelLine(launch), Style: p.theme.TextMuted}}
+		detailLines = append(detailLines, p.taskLaunchMarkdownSectionLines(assignment, "No launch-specific instructions.")...)
+		firstPrefix := fmt.Sprintf("%-4s %-*s ", idxLabel, labelWidth, label)
+		continuationPrefix := fmt.Sprintf("%-4s %-*s ", "", labelWidth, "")
+		for rowIndex, row := range detailLines {
 			prefix := continuationPrefix
 			if rowIndex == 0 {
 				prefix = firstPrefix
 			}
-			wrapped := wrapRenderLineWithCustomPrefixes(prefix, continuationPrefix, row, prefixWidth+assignmentWidth)
+			wrapped := wrapRenderLineWithCustomPrefixes(prefix, continuationPrefix, row, prefixWidth+detailsWidth)
 			out = append(out, wrapped...)
 		}
 		if i < len(launches)-1 {

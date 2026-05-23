@@ -117,7 +117,10 @@ export interface TaskLaunchRow {
   requestedSubagentType: string
   resolvedAgentName: string
   resolvedAgentError: string
+  assignmentLabel: string
   assignment: string
+  subagentProvider: string
+  subagentModel: string
   childTitlePreview: string
   childMode: string
   allowBash: boolean
@@ -1284,19 +1287,24 @@ function parseTaskLaunchRows(payload: Record<string, unknown>): TaskLaunchRow[] 
         mapStringArg(record, 'resolved_agent_name'),
         'subagent',
       )
+      const assignmentLabel = mapStringArg(record, 'assignment_label')
       return {
         index: mapNumberArg(record, 'launch_index') || mapNumberArg(record, 'index') || index + 1,
         requestedSubagentType,
         resolvedAgentName: firstNonEmptyString(mapStringArg(record, 'resolved_agent_name'), requestedSubagentType),
         resolvedAgentError: mapStringArg(record, 'resolved_agent_error'),
+        assignmentLabel,
         assignment: firstNonEmptyString(
+          assignmentLabel,
           mapStringArg(record, 'meta_prompt'),
           mapStringArg(record, 'description'),
           mapStringArg(record, 'prompt'),
           'No launch-specific instructions.',
         ),
-        childTitlePreview: mapStringArg(record, 'child_title_preview'),
-        childMode: mapStringArg(record, 'effective_child_mode'),
+        subagentProvider: mapStringArg(record, 'subagent_provider'),
+        subagentModel: mapStringArg(record, 'subagent_model'),
+        childTitlePreview: firstNonEmptyString(mapStringArg(record, 'child_title_preview'), assignmentLabel),
+        childMode: firstNonEmptyString(mapStringArg(record, 'effective_child_mode'), mapStringArg(record, 'child_mode'), mapStringArg(record, 'mode')),
         allowBash: mapBoolArg(record, 'allow_bash'),
         reportMaxChars: mapNumberArg(record, 'report_max_chars'),
         disabledTools: mapStringArrayArg(record, 'disabled_tools'),

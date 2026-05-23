@@ -1532,6 +1532,8 @@ function TaskLaunchModal({
             <div className="grid min-w-0 gap-2">
               {payload.launches.map((launch) => {
                 const agentName = launch.resolvedAgentName || launch.requestedSubagentType || 'subagent'
+                const assignmentTitle = launch.assignmentLabel || launch.childTitlePreview || launch.assignment || 'Delegated task'
+                const modelLabel = [launch.subagentProvider, launch.subagentModel].filter(Boolean).join(' / ')
                 return (
                   <div
                     key={`${launch.index}:${launch.requestedSubagentType}:${launch.resolvedAgentName}`}
@@ -1541,8 +1543,12 @@ function TaskLaunchModal({
                       <div className="mb-2 inline-flex rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 text-[11px] font-semibold text-[var(--app-text-subtle)]">
                         #{launch.index}
                       </div>
-                      <div className="min-w-0 break-words font-semibold text-[var(--app-text)] [overflow-wrap:anywhere]">{agentName}</div>
-                      <div className="mt-1 text-xs text-[var(--app-text-subtle)]">{launch.childMode || payload.effectiveChildMode || 'subagent'}</div>
+                      <div className="min-w-0 break-words font-semibold text-[var(--app-text)] [overflow-wrap:anywhere]">{assignmentTitle}</div>
+                      <div className="mt-1 min-w-0 break-words text-xs text-[var(--app-text-subtle)] [overflow-wrap:anywhere]">{agentName}</div>
+                      <div className="mt-2 flex min-w-0 flex-wrap gap-1.5 text-[11px] text-[var(--app-text-subtle)]">
+                        <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5">{launch.childMode || payload.effectiveChildMode || 'subagent'}</span>
+                        {modelLabel ? <span className="min-w-0 break-words rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 [overflow-wrap:anywhere]">{modelLabel}</span> : null}
+                      </div>
                     </div>
                     <div className="min-w-0 rounded-lg bg-[var(--app-bg-alt)] px-3 py-2 text-[var(--app-text)]">
                       <ChatMarkdown className="text-sm leading-6 [overflow-wrap:anywhere]" content={launch.assignment || 'No launch-specific instructions.'} />
