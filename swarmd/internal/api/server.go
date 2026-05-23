@@ -2351,7 +2351,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if s.topology != nil {
-				if topologyRoute, ok, err := s.topology.GetSessionRoute(session.ID); err != nil {
+				if topologyRoute, ok, err := s.topology.GetSessionRouteForAccount(principal.AccountScopeID, session.ID); err != nil {
 					if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
 						log.Printf("hosted session create rollback failed session_id=%q err=%v", session.ID, cleanupErr)
 					}

@@ -48,14 +48,14 @@ type peerSessionOpenRequest struct {
 	Principal identity.Principal                     `json:"principal,omitempty"`
 }
 
-func (s *Server) routedSessionTarget(sessionID string) (*swarmTarget, bool, error) {
+func (s *Server) routedSessionTarget(principal identity.Principal, sessionID string) (*swarmTarget, bool, error) {
 	if s == nil || s.topology == nil {
 		return nil, false, nil
 	}
-	if _, err := s.topology.EnsureSnapshot(); err != nil {
-		return nil, false, err
+	if !principal.Valid() {
+		return nil, false, identity.ErrPrincipalRequired
 	}
-	record, ok, err := s.topology.GetSessionRoute(sessionID)
+	record, ok, err := s.topology.GetSessionRouteForAccount(principal.AccountScopeID, sessionID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -76,14 +76,14 @@ func (s *Server) routedSessionTarget(sessionID string) (*swarmTarget, bool, erro
 	if s.isLocalSwarmID(runtimeSwarmID) {
 		return nil, false, nil
 	}
-	runtimeRecord, _, err := s.topology.GetRuntime(runtimeSwarmID)
+	runtimeRecord, _, err := s.topology.GetRuntimeForAccount(principal.AccountScopeID, runtimeSwarmID)
 	if err != nil {
 		return nil, false, err
 	}
 	var binding pebblestore.TopologyWorkspaceBindingRecord
 	if strings.TrimSpace(record.WorkspaceBindingID) != "" {
 		var err error
-		binding, _, err = s.topology.GetWorkspaceBinding(record.WorkspaceBindingID)
+		binding, _, err = s.topology.GetWorkspaceBindingForAccount(principal.AccountScopeID, record.WorkspaceBindingID)
 		if err != nil {
 			return nil, false, err
 		}
@@ -91,8 +91,12 @@ func (s *Server) routedSessionTarget(sessionID string) (*swarmTarget, bool, erro
 	hostSwarmID := firstNonEmpty(strings.TrimSpace(record.HostSwarmID), strings.TrimSpace(binding.DestinationHostSwarmID), strings.TrimSpace(runtimeRecord.OwnerHostSwarmID))
 	backendURL := strings.TrimSpace(record.BackendURL)
 	if hostSwarmID != "" && !s.isLocalSwarmID(hostSwarmID) && isLoopbackBackendURL(backendURL) {
-		if ownerBackendURL := s.ownerHostBackendURLForTarget(swarmTarget{SwarmID: strings.TrimSpace(record.RuntimeSwarmID), HostSwarmID: hostSwarmID}); ownerBackendURL != "" {
-			backendURL = ownerBackendURL
+		if ownerRuntime, ok, err := s.topology.GetRuntimeForAccount(principal.AccountScopeID, hostSwarmID); err != nil {
+			return nil, false, err
+		} else if ok {
+			if ownerBackendURL := strings.TrimSpace(ownerRuntime.BackendURL); ownerBackendURL != "" {
+				backendURL = ownerBackendURL
+			}
 		}
 	}
 	flowRouteDiagLog("routed_session_target_lookup",
@@ -254,7 +258,12 @@ func (s *Server) retireStaleSessionRoutesForChild(childSwarmID, childBackendURL 
 }
 
 func (s *Server) proxyRoutedSessionRequest(w http.ResponseWriter, r *http.Request, sessionID string) bool {
-	target, ok, err := s.routedSessionTarget(sessionID)
+	principal, principalOK := PrincipalFromRequest(r)
+	if !principalOK || !principal.Valid() {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return true
+	}
+	target, ok, err := s.routedSessionTarget(principal, sessionID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return true
@@ -397,10 +406,9 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(childReq.WorkspaceName) == "" {
 		childReq.WorkspaceName = filepath.Base(childWorkspacePath)
 	}
-	principal := req.Principal
-	principalOK := principal.Valid()
-	if !principalOK {
-		principal, principalOK = PrincipalFromRequest(r)
+	principal, principalOK := PrincipalFromRequest(r)
+	if !principalOK || !principal.Valid() {
+		principal, principalOK = s.verifiedPeerSessionOpenPrincipalClaim(req)
 	}
 	if !principalOK || !principal.Valid() {
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
@@ -409,6 +417,19 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 	principal.Type = identity.PrincipalTypeUser
 	principal.UserID = strings.TrimSpace(principal.UserID)
 	principal.AccountScopeID = strings.TrimSpace(principal.AccountScopeID)
+	// req.Principal is retained only as a forwarded claim for old callers.
+	// Account authority on this peer boundary comes from persisted account-owned
+	// session/topology state; a mismatched claim is rejected even when a request
+	// principal was already established by the peer middleware.
+	if req.Principal.Valid() {
+		claim := req.Principal
+		claim.UserID = strings.TrimSpace(claim.UserID)
+		claim.AccountScopeID = strings.TrimSpace(claim.AccountScopeID)
+		if claim.UserID != principal.UserID || claim.AccountScopeID != principal.AccountScopeID {
+			writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+			return
+		}
+	}
 	if routeUserID := strings.TrimSpace(req.Route.UserID); routeUserID != "" && routeUserID != principal.UserID {
 		writeError(w, http.StatusBadRequest, errors.New("route user id does not match principal"))
 		return
@@ -457,6 +478,40 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) verifiedPeerSessionOpenPrincipalClaim(req peerSessionOpenRequest) (identity.Principal, bool) {
+	claim := req.Principal
+	if !claim.Valid() || s == nil || s.topology == nil {
+		return identity.Principal{}, false
+	}
+	claim.Type = identity.PrincipalTypeUser
+	claim.UserID = strings.TrimSpace(claim.UserID)
+	claim.AccountScopeID = strings.TrimSpace(claim.AccountScopeID)
+	sessionID := strings.TrimSpace(req.SessionID)
+	if sessionID == "" {
+		return identity.Principal{}, false
+	}
+	if routeSessionID := strings.TrimSpace(req.Route.SessionID); routeSessionID != "" && routeSessionID != sessionID {
+		return identity.Principal{}, false
+	}
+	if routeUserID := strings.TrimSpace(req.Route.UserID); routeUserID != "" && routeUserID != claim.UserID {
+		return identity.Principal{}, false
+	}
+	if routeAccountScopeID := strings.TrimSpace(req.Route.AccountScopeID); routeAccountScopeID != "" && routeAccountScopeID != claim.AccountScopeID {
+		return identity.Principal{}, false
+	}
+	runtimeSwarmID := strings.TrimSpace(req.Route.ChildSwarmID)
+	if runtimeSwarmID == "" {
+		runtimeSwarmID = strings.TrimSpace(req.Hosted.ChildSwarmID)
+	}
+	if runtimeSwarmID == "" {
+		return identity.Principal{}, false
+	}
+	if _, ok, err := s.topology.GetRuntimeForAccount(claim.AccountScopeID, runtimeSwarmID); err != nil || !ok {
+		return identity.Principal{}, false
+	}
+	return claim, true
+}
+
 func (s *Server) handlePeerSessionAppendMessage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -474,6 +529,9 @@ func (s *Server) handlePeerSessionAppendMessage(w http.ResponseWriter, r *http.R
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if _, _, ok := s.verifySessionOwnershipForRequest(w, r, req.SessionID); !ok {
 		return
 	}
 	message, session, event, err := s.sessions.AppendMessage(req.SessionID, req.Role, req.Content, req.Metadata)
@@ -504,6 +562,9 @@ func (s *Server) handlePeerSessionMode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if _, _, ok := s.verifySessionOwnershipForRequest(w, r, req.SessionID); !ok {
+		return
+	}
 	session, event, err := s.sessions.SetMode(req.SessionID, req.Mode)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -530,6 +591,9 @@ func (s *Server) handlePeerSessionTitle(w http.ResponseWriter, r *http.Request) 
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if _, _, ok := s.verifySessionOwnershipForRequest(w, r, req.SessionID); !ok {
 		return
 	}
 	session, event, err := s.sessions.SetTitle(req.SessionID, req.Title)
@@ -560,6 +624,9 @@ func (s *Server) handlePeerSessionMetadata(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if _, _, ok := s.verifySessionOwnershipForRequest(w, r, req.SessionID); !ok {
+		return
+	}
 	session, event, err := s.sessions.UpdateMetadata(req.SessionID, req.Metadata)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -585,6 +652,9 @@ func (s *Server) handlePeerSessionLifecycle(w http.ResponseWriter, r *http.Reque
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if _, _, ok := s.verifySessionOwnershipForRequest(w, r, req.Lifecycle.SessionID); !ok {
 		return
 	}
 	if err := s.sessions.StoreMirroredLifecycle(req.Lifecycle); err != nil {
@@ -617,6 +687,9 @@ func (s *Server) handlePeerSessionEvent(w http.ResponseWriter, r *http.Request) 
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if _, _, ok := s.verifySessionOwnershipForRequest(w, r, req.SessionID); !ok {
 		return
 	}
 	env, err := s.sessions.StoreMirroredEvent(req.SessionID, req.EventType, req.Payload, req.CausationID, req.CorrelationID)

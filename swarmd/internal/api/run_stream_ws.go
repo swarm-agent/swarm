@@ -552,7 +552,7 @@ func (s *runStreamState) removeSubscriberLocked(subscriberID string) {
 }
 
 func (s *Server) handleRunStreamWebsocket(w http.ResponseWriter, r *http.Request, sessionID string, principal identity.Principal) {
-	remoteTarget, ok, err := s.routedSessionTarget(sessionID)
+	remoteTarget, ok, err := s.routedSessionTarget(principal, sessionID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
@@ -782,7 +782,7 @@ func (s *Server) handleRunStreamStop(conn *transportws.Conn, sessionID string, i
 }
 
 func (s *Server) handleRunStreamControl(w http.ResponseWriter, r *http.Request, sessionID string, principal identity.Principal) {
-	remoteTarget, ok, err := s.routedSessionTarget(sessionID)
+	remoteTarget, ok, err := s.routedSessionTarget(principal, sessionID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return

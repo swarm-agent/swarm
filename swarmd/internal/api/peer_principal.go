@@ -29,20 +29,20 @@ func (s *Server) requestWithPeerSessionPrincipal(r *http.Request) *http.Request 
 	if sessionID == "" {
 		return r
 	}
-	userID := strings.TrimSpace(r.Header.Get("X-Swarm-Principal-User-ID"))
-	accountScopeID := strings.TrimSpace(r.Header.Get("X-Swarm-Principal-Account-Scope-ID"))
+	// Host/container peer auth proves transport identity only. Forwarded
+	// X-Swarm-Principal-* headers are claims, not authority; the receiving
+	// runtime may mint request principal context only from persisted
+	// account-owned session or route state for the addressed session.
+	userID := ""
+	accountScopeID := ""
 	if s.sessions != nil {
 		session, found, err := s.sessions.GetSession(sessionID)
 		if err != nil {
 			return r
 		}
 		if found {
-			sessionUserID := strings.TrimSpace(session.UserID)
-			sessionAccountScopeID := strings.TrimSpace(session.AccountScopeID)
-			if sessionUserID != "" && sessionAccountScopeID != "" {
-				userID = sessionUserID
-				accountScopeID = sessionAccountScopeID
-			}
+			userID = strings.TrimSpace(session.UserID)
+			accountScopeID = strings.TrimSpace(session.AccountScopeID)
 		}
 	}
 	if (userID == "" || accountScopeID == "") && s.sessionRoutes != nil {
