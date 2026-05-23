@@ -337,6 +337,46 @@ func TestPeerSessionEventStoresAndPublishesMirroredRunEvent(t *testing.T) {
 	}
 }
 
+func TestPeerSessionMetadataDerivesPrincipalFromPersistedSessionAndRoute(t *testing.T) {
+	server, sessionSvc, _, routeStore := newRoutedSessionTestServer(t)
+	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "session-peer-metadata", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, WorkspacePath: "/runtime/workspace", WorkspaceName: "workspace", Title: "Peer metadata", Mode: sessionruntime.ModeAuto, CreatedAt: 1, UpdatedAt: 1}); err != nil {
+		t.Fatalf("store session: %v", err)
+	}
+	if _, err := routeStore.Put(pebblestore.SessionRouteRecord{SessionID: "session-peer-metadata", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ChildSwarmID: "child-swarm", ChildBackendURL: "http://127.0.0.1:7782", HostSwarmID: "host-swarm-id", HostWorkspacePath: "/host/workspace", RuntimeWorkspacePath: "/runtime/workspace"}); err != nil {
+		t.Fatalf("put route: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/swarm/peer/sessions/metadata", bytes.NewReader([]byte(`{"session_id":"session-peer-metadata","metadata":{"background_run":{"active":true}}}`)))
+	req = req.WithContext(context.WithValue(req.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: "host-swarm-id"}))
+	rec := httptest.NewRecorder()
+	server.handlePeerSessionMetadata(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	updated, ok, err := sessionSvc.GetSession("session-peer-metadata")
+	if err != nil || !ok {
+		t.Fatalf("get session ok=%t err=%v", ok, err)
+	}
+	if _, ok := updated.Metadata["background_run"]; !ok {
+		t.Fatalf("metadata = %+v", updated.Metadata)
+	}
+}
+
+func TestPeerSessionMetadataRejectsWithoutPersistedRoute(t *testing.T) {
+	server, sessionSvc, _, _ := newRoutedSessionTestServer(t)
+	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "session-peer-metadata-orphan", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, WorkspacePath: "/runtime/workspace", WorkspaceName: "workspace", Title: "Peer metadata", Mode: sessionruntime.ModeAuto, CreatedAt: 1, UpdatedAt: 1}); err != nil {
+		t.Fatalf("store session: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/swarm/peer/sessions/metadata", bytes.NewReader([]byte(`{"session_id":"session-peer-metadata-orphan","metadata":{"background_run":{"active":true}}}`)))
+	req = req.WithContext(context.WithValue(req.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: "host-swarm-id"}))
+	rec := httptest.NewRecorder()
+	server.handlePeerSessionMetadata(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+	}
+}
+
 func TestPeerSessionEventRejectsCrossAccountPrincipal(t *testing.T) {
 	server, sessionSvc, _, _ := newRoutedSessionTestServer(t)
 	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "session-account-a", UserID: "user-a", AccountScopeID: "account-a", WorkspacePath: "/host/workspace", WorkspaceName: "workspace", Title: "Flow live", Mode: sessionruntime.ModeAuto, CreatedAt: 1, UpdatedAt: 1}); err != nil {

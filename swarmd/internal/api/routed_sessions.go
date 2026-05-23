@@ -584,6 +584,7 @@ func (s *Server) handlePeerSessionAppendMessage(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	r = s.requestWithTrustedSessionPrincipal(r, req.SessionID)
 	if _, _, ok := s.verifySessionOwnershipForRequest(w, r, req.SessionID); !ok {
 		return
 	}
@@ -615,6 +616,7 @@ func (s *Server) handlePeerSessionMode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	r = s.requestWithTrustedSessionPrincipal(r, req.SessionID)
 	if _, _, ok := s.verifySessionOwnershipForRequest(w, r, req.SessionID); !ok {
 		return
 	}
@@ -646,6 +648,7 @@ func (s *Server) handlePeerSessionTitle(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	r = s.requestWithTrustedSessionPrincipal(r, req.SessionID)
 	if _, _, ok := s.verifySessionOwnershipForRequest(w, r, req.SessionID); !ok {
 		return
 	}
@@ -677,6 +680,7 @@ func (s *Server) handlePeerSessionMetadata(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	r = s.requestWithTrustedSessionPrincipal(r, req.SessionID)
 	if _, _, ok := s.verifySessionOwnershipForRequest(w, r, req.SessionID); !ok {
 		return
 	}
@@ -707,6 +711,7 @@ func (s *Server) handlePeerSessionLifecycle(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	r = s.requestWithTrustedSessionPrincipal(r, req.Lifecycle.SessionID)
 	if _, _, ok := s.verifySessionOwnershipForRequest(w, r, req.Lifecycle.SessionID); !ok {
 		return
 	}
@@ -742,6 +747,7 @@ func (s *Server) handlePeerSessionEvent(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	r = s.requestWithTrustedSessionPrincipal(r, req.SessionID)
 	if _, _, ok := s.verifySessionOwnershipForRequest(w, r, req.SessionID); !ok {
 		return
 	}

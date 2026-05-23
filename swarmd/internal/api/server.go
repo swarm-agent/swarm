@@ -4013,7 +4013,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 					return
 				}
 			}
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, s.requestWithPeerSessionPrincipal(r))
 			return
 		}
 		if bootstrapAuthed, updatedReq, err := authorizeBootstrapRequest(r); err != nil {
