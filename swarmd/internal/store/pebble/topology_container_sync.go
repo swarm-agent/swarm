@@ -38,6 +38,14 @@ func CanonicalTopologyWorkspaceBindingID(replicationID, sourceWorkspacePath stri
 }
 
 func FindTopologyHostContainerByRefs(topology *TopologyStore, hostSwarmID string, refs ...string) (TopologyHostContainerRecord, bool, error) {
+	return findTopologyHostContainerByRefs(topology, "", hostSwarmID, refs...)
+}
+
+func FindTopologyHostContainerByRefsForAccount(topology *TopologyStore, accountScopeID, hostSwarmID string, refs ...string) (TopologyHostContainerRecord, bool, error) {
+	return findTopologyHostContainerByRefs(topology, strings.TrimSpace(accountScopeID), hostSwarmID, refs...)
+}
+
+func findTopologyHostContainerByRefs(topology *TopologyStore, accountScopeID, hostSwarmID string, refs ...string) (TopologyHostContainerRecord, bool, error) {
 	if topology == nil {
 		return TopologyHostContainerRecord{}, false, nil
 	}
@@ -56,7 +64,16 @@ func FindTopologyHostContainerByRefs(topology *TopologyStore, hostSwarmID string
 			continue
 		}
 		seen[hostContainerID] = struct{}{}
-		record, ok, err := topology.GetHostContainer(hostContainerID)
+		var (
+			record TopologyHostContainerRecord
+			ok     bool
+			err    error
+		)
+		if accountScopeID != "" {
+			record, ok, err = topology.GetHostContainerForAccount(accountScopeID, hostContainerID)
+		} else {
+			record, ok, err = topology.GetHostContainer(hostContainerID)
+		}
 		if err != nil || ok {
 			return record, ok, err
 		}
@@ -65,6 +82,14 @@ func FindTopologyHostContainerByRefs(topology *TopologyStore, hostSwarmID string
 }
 
 func UpsertTopologyHostContainer(topology *TopologyStore, incoming TopologyHostContainerRecord) error {
+	return upsertTopologyHostContainer(topology, "", incoming)
+}
+
+func UpsertTopologyHostContainerForAccount(topology *TopologyStore, accountScopeID string, incoming TopologyHostContainerRecord) error {
+	return upsertTopologyHostContainer(topology, strings.TrimSpace(accountScopeID), incoming)
+}
+
+func upsertTopologyHostContainer(topology *TopologyStore, accountScopeID string, incoming TopologyHostContainerRecord) error {
 	if topology == nil {
 		return nil
 	}
@@ -72,7 +97,16 @@ func UpsertTopologyHostContainer(topology *TopologyStore, incoming TopologyHostC
 	if incoming.HostContainerID == "" {
 		return nil
 	}
-	existing, ok, err := topology.GetHostContainer(incoming.HostContainerID)
+	var (
+		existing TopologyHostContainerRecord
+		ok       bool
+		err      error
+	)
+	if accountScopeID != "" {
+		existing, ok, err = topology.GetHostContainerForAccount(accountScopeID, incoming.HostContainerID)
+	} else {
+		existing, ok, err = topology.GetHostContainer(incoming.HostContainerID)
+	}
 	if err != nil {
 		return err
 	}
@@ -82,11 +116,23 @@ func UpsertTopologyHostContainer(topology *TopologyStore, incoming TopologyHostC
 		}
 		incoming = mergeTopologyHostContainerRecord(existing, incoming)
 	}
-	_, err = topology.PutHostContainer(incoming)
+	if accountScopeID != "" {
+		_, err = topology.PutHostContainerForAccount(accountScopeID, incoming)
+	} else {
+		_, err = topology.PutHostContainer(incoming)
+	}
 	return err
 }
 
 func UpsertTopologyAttachment(topology *TopologyStore, incoming TopologyAttachmentRecord) error {
+	return upsertTopologyAttachment(topology, "", incoming)
+}
+
+func UpsertTopologyAttachmentForAccount(topology *TopologyStore, accountScopeID string, incoming TopologyAttachmentRecord) error {
+	return upsertTopologyAttachment(topology, strings.TrimSpace(accountScopeID), incoming)
+}
+
+func upsertTopologyAttachment(topology *TopologyStore, accountScopeID string, incoming TopologyAttachmentRecord) error {
 	if topology == nil {
 		return nil
 	}
@@ -94,7 +140,16 @@ func UpsertTopologyAttachment(topology *TopologyStore, incoming TopologyAttachme
 	if incoming.AttachmentID == "" {
 		return nil
 	}
-	existing, ok, err := topology.GetAttachment(incoming.AttachmentID)
+	var (
+		existing TopologyAttachmentRecord
+		ok       bool
+		err      error
+	)
+	if accountScopeID != "" {
+		existing, ok, err = topology.GetAttachmentForAccount(accountScopeID, incoming.AttachmentID)
+	} else {
+		existing, ok, err = topology.GetAttachment(incoming.AttachmentID)
+	}
 	if err != nil {
 		return err
 	}
@@ -104,7 +159,11 @@ func UpsertTopologyAttachment(topology *TopologyStore, incoming TopologyAttachme
 		}
 		incoming = mergeTopologyAttachmentRecord(existing, incoming)
 	}
-	_, err = topology.PutAttachment(incoming)
+	if accountScopeID != "" {
+		_, err = topology.PutAttachmentForAccount(accountScopeID, incoming)
+	} else {
+		_, err = topology.PutAttachment(incoming)
+	}
 	return err
 }
 

@@ -25,6 +25,13 @@ func (s *Service) syncTopologyHostContainer(record pebblestore.SwarmLocalContain
 	if s == nil || s.topology == nil {
 		return nil
 	}
+	accountScopeID := strings.TrimSpace(record.AccountScopeID)
+	if accountScopeID == "" {
+		return fmt.Errorf("local container topology sync requires account scope id")
+	}
+	if strings.TrimSpace(record.UserID) == "" {
+		return fmt.Errorf("local container topology sync requires user id")
+	}
 	hostSwarmID, err := s.localHostSwarmID()
 	if err != nil {
 		return err
@@ -34,8 +41,10 @@ func (s *Service) syncTopologyHostContainer(record pebblestore.SwarmLocalContain
 	if hostContainerID == "" {
 		return nil
 	}
-	return pebblestore.UpsertTopologyHostContainer(s.topology, pebblestore.TopologyHostContainerRecord{
+	return pebblestore.UpsertTopologyHostContainerForAccount(s.topology, accountScopeID, pebblestore.TopologyHostContainerRecord{
 		HostContainerID:     hostContainerID,
+		UserID:              strings.TrimSpace(record.UserID),
+		AccountScopeID:      accountScopeID,
 		HostSwarmID:         hostSwarmID,
 		RuntimeContainerRef: runtimeContainerRef,
 		Name:                firstNonEmpty(record.Name, record.ContainerName, record.ID),
@@ -58,22 +67,26 @@ func (s *Service) deleteTopologyHostContainer(record pebblestore.SwarmLocalConta
 	if s == nil || s.topology == nil {
 		return nil
 	}
+	accountScopeID := strings.TrimSpace(record.AccountScopeID)
+	if accountScopeID == "" {
+		return fmt.Errorf("local container topology delete requires account scope id")
+	}
 	hostSwarmID, err := s.localHostSwarmID()
 	if err != nil {
 		return err
 	}
-	hostContainer, ok, err := pebblestore.FindTopologyHostContainerByRefs(s.topology, hostSwarmID, record.ContainerID, record.ContainerName, record.ID)
+	hostContainer, ok, err := pebblestore.FindTopologyHostContainerByRefsForAccount(s.topology, accountScopeID, hostSwarmID, record.ContainerID, record.ContainerName, record.ID)
 	if err != nil || !ok {
 		return err
 	}
-	attachmentRecords, err := s.topology.ListAttachmentsByHostContainer(hostContainer.HostContainerID, 500)
+	attachmentRecords, err := s.topology.ListAttachmentsByHostContainerForAccount(accountScopeID, hostContainer.HostContainerID, 500)
 	if err != nil {
 		return err
 	}
 	for _, attachmentRecord := range attachmentRecords {
-		if err := s.topology.DeleteAttachment(attachmentRecord.AttachmentID); err != nil {
+		if err := s.topology.DeleteAttachmentForAccount(accountScopeID, attachmentRecord.AttachmentID); err != nil {
 			return err
 		}
 	}
-	return s.topology.DeleteHostContainer(hostContainer.HostContainerID)
+	return s.topology.DeleteHostContainerForAccount(accountScopeID, hostContainer.HostContainerID)
 }

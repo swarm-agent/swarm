@@ -72,6 +72,14 @@ func removeTopologyRuntimeNodeObservation(topology *TopologyStore, swarmID strin
 }
 
 func UpsertTopologyRuntimeRecord(topology *TopologyStore, incoming TopologyRuntimeRecord) error {
+	return upsertTopologyRuntimeRecord(topology, "", incoming)
+}
+
+func UpsertTopologyRuntimeRecordForAccount(topology *TopologyStore, accountScopeID string, incoming TopologyRuntimeRecord) error {
+	return upsertTopologyRuntimeRecord(topology, strings.TrimSpace(accountScopeID), incoming)
+}
+
+func upsertTopologyRuntimeRecord(topology *TopologyStore, accountScopeID string, incoming TopologyRuntimeRecord) error {
 	if topology == nil {
 		return nil
 	}
@@ -79,7 +87,16 @@ func UpsertTopologyRuntimeRecord(topology *TopologyStore, incoming TopologyRunti
 	if incoming.SwarmID == "" {
 		return nil
 	}
-	existing, ok, err := topology.GetRuntime(incoming.SwarmID)
+	var (
+		existing TopologyRuntimeRecord
+		ok       bool
+		err      error
+	)
+	if accountScopeID != "" {
+		existing, ok, err = topology.GetRuntimeForAccount(accountScopeID, incoming.SwarmID)
+	} else {
+		existing, ok, err = topology.GetRuntime(incoming.SwarmID)
+	}
 	if err != nil {
 		return err
 	}
@@ -89,7 +106,11 @@ func UpsertTopologyRuntimeRecord(topology *TopologyStore, incoming TopologyRunti
 		}
 		incoming = mergeTopologyRuntimeRecord(existing, incoming)
 	}
-	_, err = topology.PutRuntime(incoming)
+	if accountScopeID != "" {
+		_, err = topology.PutRuntimeForAccount(accountScopeID, incoming)
+	} else {
+		_, err = topology.PutRuntime(incoming)
+	}
 	return err
 }
 

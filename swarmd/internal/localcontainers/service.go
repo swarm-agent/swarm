@@ -950,7 +950,8 @@ func (s *Service) BulkDelete(ctx context.Context, containerIDs []string) (Delete
 }
 
 func (s *Service) deleteContainer(ctx context.Context, principal identity.Principal, containerID string) DeleteItemResult {
-	record, ok, err := s.store.GetForAccount(principal.AccountScopeID, containerID)
+	accountScopeID := strings.TrimSpace(principal.AccountScopeID)
+	record, ok, err := s.store.GetForAccount(accountScopeID, containerID)
 	if err != nil {
 		return DeleteItemResult{ID: strings.TrimSpace(containerID), Error: err.Error()}
 	}
@@ -987,7 +988,7 @@ func (s *Service) deleteContainer(ctx context.Context, principal identity.Princi
 		item.Error = err.Error()
 		return item
 	}
-	if err := s.store.DeleteForAccount(principal.AccountScopeID, record.ID); err != nil {
+	if err := s.store.DeleteForAccount(accountScopeID, record.ID); err != nil {
 		item.Error = err.Error()
 		return item
 	}
@@ -1002,7 +1003,7 @@ func (s *Service) deleteContainer(ctx context.Context, principal identity.Princi
 	for _, attachment := range attachments {
 		if attachment.deploymentID != "" {
 			if _, seen := removedDeployments[attachment.deploymentID]; !seen {
-				if err := s.deployments.DeleteForAccount(principal.AccountScopeID, attachment.deploymentID); err != nil {
+				if err := s.deployments.DeleteForAccount(accountScopeID, attachment.deploymentID); err != nil {
 					item.Error = err.Error()
 					return item
 				}
@@ -1037,7 +1038,7 @@ func (s *Service) deleteContainer(ctx context.Context, principal identity.Princi
 	}
 	if s.authStore != nil {
 		for childSwarmID := range childSwarmIDs {
-			if _, err := s.authStore.DeleteCredentialsByOwnerSwarmIDForAccount(principal.AccountScopeID, childSwarmID); err != nil {
+			if _, err := s.authStore.DeleteCredentialsByOwnerSwarmIDForAccount(accountScopeID, childSwarmID); err != nil {
 				item.Error = err.Error()
 				return item
 			}
@@ -1045,14 +1046,14 @@ func (s *Service) deleteContainer(ctx context.Context, principal identity.Princi
 	}
 	for childSwarmID := range childSwarmIDs {
 		if s.workspace != nil {
-			removed, err := s.workspace.RemoveReplicationLinksByTargetSwarmIDForAccount(principal.AccountScopeID, childSwarmID)
+			removed, err := s.workspace.RemoveReplicationLinksByTargetSwarmIDForAccount(accountScopeID, childSwarmID)
 			if err != nil {
 				item.Error = err.Error()
 				return item
 			}
 			item.RemovedWorkspaceRoutes += removed
 		}
-		removed, err := s.deleteTopologyWorkspaceBindingsByRuntime(childSwarmID)
+		removed, err := s.deleteTopologyWorkspaceBindingsByRuntime(accountScopeID, childSwarmID)
 		if err != nil {
 			item.Error = err.Error()
 			return item
@@ -1062,19 +1063,23 @@ func (s *Service) deleteContainer(ctx context.Context, principal identity.Princi
 	return item
 }
 
-func (s *Service) deleteTopologyWorkspaceBindingsByRuntime(runtimeSwarmID string) (int, error) {
+func (s *Service) deleteTopologyWorkspaceBindingsByRuntime(accountScopeID, runtimeSwarmID string) (int, error) {
 	if s == nil || s.topology == nil {
 		return 0, nil
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return 0, errors.New("account scope id is required")
 	}
 	runtimeSwarmID = strings.TrimSpace(runtimeSwarmID)
 	if runtimeSwarmID == "" {
 		return 0, nil
 	}
-	bindings, err := s.topology.ListWorkspaceBindings(100000)
+	bindings, err := s.topology.ListWorkspaceBindingsForAccount(accountScopeID, 100000)
 	if err != nil {
 		return 0, err
 	}
-	routes, err := s.topology.ListSessionRoutes(100000)
+	routes, err := s.topology.ListSessionRoutesForAccount(accountScopeID, 100000)
 	if err != nil {
 		return 0, err
 	}
@@ -1102,7 +1107,7 @@ func (s *Service) deleteTopologyWorkspaceBindingsByRuntime(runtimeSwarmID string
 		if _, seen := deletedRoutes[strings.ToLower(sessionID)]; seen {
 			continue
 		}
-		if err := s.topology.DeleteSessionRoute(sessionID); err != nil {
+		if err := s.topology.DeleteSessionRouteForAccount(accountScopeID, sessionID); err != nil {
 			return removed, err
 		}
 		deletedRoutes[strings.ToLower(sessionID)] = struct{}{}
@@ -1116,7 +1121,7 @@ func (s *Service) deleteTopologyWorkspaceBindingsByRuntime(runtimeSwarmID string
 		if bindingID == "" {
 			continue
 		}
-		if err := s.topology.DeleteWorkspaceBinding(bindingID); err != nil {
+		if err := s.topology.DeleteWorkspaceBindingForAccount(accountScopeID, bindingID); err != nil {
 			return removed, err
 		}
 		removed++
@@ -1136,22 +1141,26 @@ func (s *Service) findChildAttachments(record pebblestore.SwarmLocalContainerRec
 	if s == nil || s.topology == nil {
 		return nil, nil
 	}
+	accountScopeID := strings.TrimSpace(record.AccountScopeID)
+	if accountScopeID == "" {
+		return nil, errors.New("account scope id is required")
+	}
 	hostSwarmID, err := s.localHostSwarmID()
 	if err != nil {
 		return nil, err
 	}
-	hostContainer, ok, err := pebblestore.FindTopologyHostContainerByRefs(s.topology, hostSwarmID, record.ContainerID, record.ContainerName, record.ID)
+	hostContainer, ok, err := pebblestore.FindTopologyHostContainerByRefsForAccount(s.topology, accountScopeID, hostSwarmID, record.ContainerID, record.ContainerName, record.ID)
 	if err != nil || !ok {
 		return nil, err
 	}
-	attachmentRecords, err := s.topology.ListAttachmentsByHostContainer(hostContainer.HostContainerID, 500)
+	attachmentRecords, err := s.topology.ListAttachmentsByHostContainerForAccount(accountScopeID, hostContainer.HostContainerID, 500)
 	if err != nil {
 		return nil, err
 	}
 	attachments := make([]childAttachment, 0, len(attachmentRecords))
 	for _, attachmentRecord := range attachmentRecords {
 		childDisplayName := strings.TrimSpace(attachmentRecord.RuntimeSwarmID)
-		if runtimeRecord, ok, err := s.topology.GetRuntime(attachmentRecord.RuntimeSwarmID); err != nil {
+		if runtimeRecord, ok, err := s.topology.GetRuntimeForAccount(accountScopeID, attachmentRecord.RuntimeSwarmID); err != nil {
 			return nil, err
 		} else if ok {
 			childDisplayName = firstNonEmpty(runtimeRecord.Name, runtimeRecord.SwarmID)
