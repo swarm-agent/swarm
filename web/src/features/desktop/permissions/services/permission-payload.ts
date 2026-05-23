@@ -93,6 +93,18 @@ export interface WorkspaceScopePayload {
   addToWorkspace: WorkspaceScopeAction
 }
 
+export interface TaskLaunchResolvedTools {
+  preset: string
+  runtimeMode: string
+  effectiveExecutionMode: string
+  allowedTools: string[]
+  disabledTools: string[]
+  profileAllowedTools: string[]
+  profileDisabledTools: string[]
+  launchDisabledTools: string[]
+  bashPrefixes: string[]
+}
+
 export interface TaskLaunchPayload {
   title: string
   subtitle: string
@@ -109,6 +121,7 @@ export interface TaskLaunchPayload {
   resolvedAgentName: string
   resolvedAgentError: string
   disabledTools: string[]
+  resolvedTools: TaskLaunchResolvedTools
   launches: TaskLaunchRow[]
 }
 
@@ -126,6 +139,7 @@ export interface TaskLaunchRow {
   allowBash: boolean
   reportMaxChars: number
   disabledTools: string[]
+  resolvedTools: TaskLaunchResolvedTools
 }
 
 export interface AgentChangeField {
@@ -870,6 +884,7 @@ export function parseTaskLaunchPermission(permission: DesktopPermissionRecord): 
     resolvedAgentName: mapStringArg(payload, 'resolved_agent_name'),
     resolvedAgentError: mapStringArg(payload, 'resolved_agent_error'),
     disabledTools: mapStringArrayArg(payload, 'disabled_tools'),
+    resolvedTools: parseTaskLaunchResolvedTools(payload.resolved_tools),
     launches,
   }
 }
@@ -1271,6 +1286,21 @@ function capitalizeLabel(value: string): string {
   return trimmed.charAt(0).toUpperCase() + trimmed.slice(1)
 }
 
+function parseTaskLaunchResolvedTools(value: unknown): TaskLaunchResolvedTools {
+  const record = asRecord(value) ?? {}
+  return {
+    preset: mapStringArg(record, 'preset'),
+    runtimeMode: mapStringArg(record, 'runtime_mode'),
+    effectiveExecutionMode: mapStringArg(record, 'effective_execution_mode'),
+    allowedTools: mapStringArrayArg(record, 'allowed_tools'),
+    disabledTools: mapStringArrayArg(record, 'disabled_tools'),
+    profileAllowedTools: mapStringArrayArg(record, 'profile_allowed_tools'),
+    profileDisabledTools: mapStringArrayArg(record, 'profile_disabled_tools'),
+    launchDisabledTools: mapStringArrayArg(record, 'launch_disabled_tools'),
+    bashPrefixes: mapStringArrayArg(record, 'bash_prefixes'),
+  }
+}
+
 function parseTaskLaunchRows(payload: Record<string, unknown>): TaskLaunchRow[] {
   const raw = payload.launches
   if (!Array.isArray(raw)) {
@@ -1295,10 +1325,11 @@ function parseTaskLaunchRows(payload: Record<string, unknown>): TaskLaunchRow[] 
         resolvedAgentError: mapStringArg(record, 'resolved_agent_error'),
         assignmentLabel,
         assignment: firstNonEmptyString(
-          assignmentLabel,
           mapStringArg(record, 'meta_prompt'),
+          mapStringArg(record, 'role'),
           mapStringArg(record, 'description'),
           mapStringArg(record, 'prompt'),
+          assignmentLabel,
           'No launch-specific instructions.',
         ),
         subagentProvider: mapStringArg(record, 'subagent_provider'),
@@ -1308,6 +1339,7 @@ function parseTaskLaunchRows(payload: Record<string, unknown>): TaskLaunchRow[] 
         allowBash: mapBoolArg(record, 'allow_bash'),
         reportMaxChars: mapNumberArg(record, 'report_max_chars'),
         disabledTools: mapStringArrayArg(record, 'disabled_tools'),
+        resolvedTools: parseTaskLaunchResolvedTools(record.resolved_tools),
       }
     })
     .filter((entry): entry is TaskLaunchRow => entry !== null)

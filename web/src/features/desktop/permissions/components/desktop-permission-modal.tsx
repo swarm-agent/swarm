@@ -45,6 +45,7 @@ import {
   parseManageImagePermission,
   parsePlanUpdatePermission,
   parseTaskLaunchPermission,
+  type TaskLaunchResolvedTools,
   parseWorkspaceScopePermission,
   permissionDisplayToolName,
   permissionKind,
@@ -1442,6 +1443,20 @@ function WorkspaceScopeModal({
   )
 }
 
+function taskLaunchResolvedToolsSummary(tools: TaskLaunchResolvedTools): string[] {
+  const parts: string[] = []
+  if (tools.preset) parts.push(`preset ${tools.preset}`)
+  if (tools.runtimeMode) parts.push(`runtime ${tools.runtimeMode}`)
+  if (tools.effectiveExecutionMode) parts.push(`effective ${tools.effectiveExecutionMode}`)
+  if (tools.allowedTools.length > 0) parts.push(`allowed ${tools.allowedTools.join(', ')}`)
+  if (tools.disabledTools.length > 0) parts.push(`disabled ${tools.disabledTools.join(', ')}`)
+  if (tools.profileAllowedTools.length > 0) parts.push(`profile allowed ${tools.profileAllowedTools.join(', ')}`)
+  if (tools.profileDisabledTools.length > 0) parts.push(`profile disabled ${tools.profileDisabledTools.join(', ')}`)
+  if (tools.launchDisabledTools.length > 0) parts.push(`launch disabled ${tools.launchDisabledTools.join(', ')}`)
+  if (tools.bashPrefixes.length > 0) parts.push(`bash prefixes ${tools.bashPrefixes.join(', ')}`)
+  return parts
+}
+
 function TaskLaunchModal({
   permission,
   open,
@@ -1469,6 +1484,7 @@ function TaskLaunchModal({
   const payload = parseTaskLaunchPermission(permission)
   const promptWords = countWords(payload.prompt)
   const promptPreview = promptWordPreview(payload.prompt, 18)
+  const topLevelToolSummary = taskLaunchResolvedToolsSummary(payload.resolvedTools)
 
   const resolve = async (action: 'approve' | 'deny') => {
     setLoading(true)
@@ -1534,6 +1550,7 @@ function TaskLaunchModal({
                 const agentName = launch.resolvedAgentName || launch.requestedSubagentType || 'subagent'
                 const assignmentTitle = launch.assignmentLabel || launch.childTitlePreview || launch.assignment || 'Delegated task'
                 const modelLabel = [launch.subagentProvider, launch.subagentModel].filter(Boolean).join(' / ')
+                const toolSummary = taskLaunchResolvedToolsSummary(launch.resolvedTools)
                 return (
                   <div
                     key={`${launch.index}:${launch.requestedSubagentType}:${launch.resolvedAgentName}`}
@@ -1550,9 +1567,22 @@ function TaskLaunchModal({
                         {modelLabel ? <span className="min-w-0 break-words rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 [overflow-wrap:anywhere]">{modelLabel}</span> : null}
                       </div>
                     </div>
-                    <div className="min-w-0 rounded-lg bg-[var(--app-bg-alt)] px-3 py-2 text-[var(--app-text)]">
-                      <ChatMarkdown className="text-sm leading-6 [overflow-wrap:anywhere]" content={launch.assignment || 'No launch-specific instructions.'} />
-                      {launch.resolvedAgentError ? <div className="mt-2 text-sm text-[var(--app-danger)]">{launch.resolvedAgentError}</div> : null}
+                    <div className="grid min-w-0 gap-2 rounded-lg bg-[var(--app-bg-alt)] px-3 py-2 text-[var(--app-text)]">
+                      <div>
+                        <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Assignment</div>
+                        <ChatMarkdown className="text-sm leading-6 [overflow-wrap:anywhere]" content={launch.assignment || 'No launch-specific instructions.'} />
+                      </div>
+                      {toolSummary.length > 0 ? (
+                        <div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2">
+                          <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Resolved tools</div>
+                          <div className="flex min-w-0 flex-wrap gap-1.5 text-[11px] text-[var(--app-text-subtle)]">
+                            {toolSummary.map((item) => (
+                              <span key={item} className="min-w-0 break-words rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 [overflow-wrap:anywhere]">{item}</span>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                      {launch.resolvedAgentError ? <div className="text-sm text-[var(--app-danger)]">{launch.resolvedAgentError}</div> : null}
                     </div>
                   </div>
                 )
@@ -1567,9 +1597,11 @@ function TaskLaunchModal({
           <div className="mb-3 text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Meta</div>
           <div className="flex min-w-0 flex-wrap gap-2 text-xs text-[var(--app-text-subtle)] sm:text-sm">
             <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2.5 py-1">launches {payload.launchCount}</span>
-            <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2.5 py-1">bash {payload.allowBash ? 'yes' : 'no'}</span>
             {payload.reportMaxChars > 0 ? <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2.5 py-1">report {payload.reportMaxChars} chars</span> : null}
             {payload.resolvedAgentName ? <span className="min-w-0 break-words rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2.5 py-1 [overflow-wrap:anywhere]">router {payload.resolvedAgentName}</span> : null}
+            {topLevelToolSummary.map((item) => (
+              <span key={item} className="min-w-0 break-words rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2.5 py-1 [overflow-wrap:anywhere]">{item}</span>
+            ))}
           </div>
           {payload.resolvedAgentError ? <div className="mt-2 text-sm text-[var(--app-danger)]">{payload.resolvedAgentError}</div> : null}
         </section>

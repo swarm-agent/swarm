@@ -62,18 +62,18 @@ func TestTaskLaunchPermissionModalUsesTaskRolesMetaLayout(t *testing.T) {
 		SessionID:     "session-1",
 		ToolName:      "task",
 		Requirement:   "task_launch",
-		ToolArguments: `{"goal":"Inspect repo","description":"Inspect repo","prompt":"Map files and summarize findings. Include architecture, risks, and relevant filepaths.","launch_count":2,"resolved_agent_name":"explorer","launches":[{"launch_index":1,"requested_subagent_type":"explorer","resolved_agent_name":"explorer","meta_prompt":"backend/core service architecture"},{"launch_index":2,"requested_subagent_type":"parallel","resolved_agent_name":"parallel","meta_prompt":"desktop permissions UI"}]}`,
+		ToolArguments: `{"goal":"Inspect repo","description":"Inspect repo","prompt":"Map files and summarize findings. Include architecture, risks, and relevant filepaths.","launch_count":2,"allow_bash":true,"resolved_agent_name":"explorer","resolved_tools":{"preset":"read_only","runtime_mode":"auto","effective_execution_mode":"read","allowed_tools":["read","search"]},"launches":[{"launch_index":1,"requested_subagent_type":"explorer","resolved_agent_name":"explorer","assignment_label":"Backend","meta_prompt":"backend/core service architecture","subagent_provider":"anthropic","subagent_model":"claude-sonnet","resolved_tools":{"preset":"read_only","runtime_mode":"auto","effective_execution_mode":"read","allowed_tools":["read","search"],"disabled_tools":["write"],"launch_disabled_tools":["edit"],"bash_prefixes":["git status"]}},{"launch_index":2,"requested_subagent_type":"parallel","resolved_agent_name":"parallel","meta_prompt":"desktop permissions UI"}]}`,
 		Status:        "pending",
 	})
 
 	lines := page.taskLaunchModalLines(page.pendingPerms[0], 72)
 	text := renderLinesText(lines)
-	for _, want := range []string{"Task", "Agent roles", "Meta", "Prompt", "11 words", "Map files and summarize findings.", "Press p to show the full prompt", "backend/core service architecture", "desktop permissions UI"} {
+	for _, want := range []string{"Task", "Agent roles", "Meta", "Prompt", "11 words", "Map files and summarize findings.", "Press p to show the full prompt", "Backend", "backend/core service architecture", "desktop permissions UI", "anthropic/claude-sonnet", "router explorer", "preset read_only", "effective read", "allowed read, search", "tools: preset read_only", "launch disabled edit", "bash prefixes git status"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected task launch layout to contain %q, got:\n%s", want, text)
 		}
 	}
-	for _, unwanted := range []string{"Readable prompt preview", "Permission:", "Requirement:", "Tool:"} {
+	for _, unwanted := range []string{"Readable prompt preview", "Permission:", "Requirement:", "Tool:", "bash yes"} {
 		if strings.Contains(text, unwanted) {
 			t.Fatalf("expected compact task launch layout without %q, got:\n%s", unwanted, text)
 		}

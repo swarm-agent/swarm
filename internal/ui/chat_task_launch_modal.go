@@ -290,19 +290,13 @@ func (p *ChatPage) taskLaunchModalLines(record ChatPermissionRecord, width int) 
 	resolvedAgent := strings.TrimSpace(jsonString(manifest, "resolved_agent_name"))
 
 	metaParts := []string{fmt.Sprintf("launches %d", launchCount)}
-	if _, ok := manifest["allow_bash"]; ok {
-		value := "no"
-		if jsonBool(manifest, "allow_bash") {
-			value = "yes"
-		}
-		metaParts = append(metaParts, "bash "+value)
-	}
 	if reportMaxChars := jsonInt(manifest, "report_max_chars"); reportMaxChars > 0 {
 		metaParts = append(metaParts, fmt.Sprintf("report %d chars", reportMaxChars))
 	}
 	if resolvedAgent != "" {
 		metaParts = append(metaParts, "router "+resolvedAgent)
 	}
+	metaParts = append(metaParts, taskLaunchResolvedToolsSummary(jsonObject(manifest, "resolved_tools"))...)
 	meta := []chatRenderLine{p.taskLaunchTextLine(strings.Join(metaParts, " · "), p.theme.TextMuted)}
 	sections := []taskLaunchModalSection{
 		{Title: "Task", BorderStyle: p.theme.BorderActive, TitleStyle: p.theme.Primary.Bold(true), Lines: p.taskLaunchMarkdownSectionLines(goal, "No task summary provided.")},
@@ -488,9 +482,45 @@ func (p *ChatPage) taskLaunchLaunchModelLine(launch map[string]any) string {
 	return strings.Join(parts, " · ")
 }
 
+func taskLaunchResolvedToolsSummary(tools map[string]any) []string {
+	if len(tools) == 0 {
+		return nil
+	}
+	parts := make([]string, 0, 9)
+	if preset := jsonString(tools, "preset"); preset != "" {
+		parts = append(parts, "preset "+preset)
+	}
+	if runtimeMode := jsonString(tools, "runtime_mode"); runtimeMode != "" {
+		parts = append(parts, "runtime "+runtimeMode)
+	}
+	if effectiveMode := jsonString(tools, "effective_execution_mode"); effectiveMode != "" {
+		parts = append(parts, "effective "+effectiveMode)
+	}
+	if allowed := jsonStringSlice(tools, "allowed_tools"); len(allowed) > 0 {
+		parts = append(parts, "allowed "+strings.Join(allowed, ", "))
+	}
+	if disabled := jsonStringSlice(tools, "disabled_tools"); len(disabled) > 0 {
+		parts = append(parts, "disabled "+strings.Join(disabled, ", "))
+	}
+	if profileAllowed := jsonStringSlice(tools, "profile_allowed_tools"); len(profileAllowed) > 0 {
+		parts = append(parts, "profile allowed "+strings.Join(profileAllowed, ", "))
+	}
+	if profileDisabled := jsonStringSlice(tools, "profile_disabled_tools"); len(profileDisabled) > 0 {
+		parts = append(parts, "profile disabled "+strings.Join(profileDisabled, ", "))
+	}
+	if launchDisabled := jsonStringSlice(tools, "launch_disabled_tools"); len(launchDisabled) > 0 {
+		parts = append(parts, "launch disabled "+strings.Join(launchDisabled, ", "))
+	}
+	if bashPrefixes := jsonStringSlice(tools, "bash_prefixes"); len(bashPrefixes) > 0 {
+		parts = append(parts, "bash prefixes "+strings.Join(bashPrefixes, ", "))
+	}
+	return parts
+}
+
 func (p *ChatPage) taskLaunchLaunchAssignment(launch map[string]any) string {
 	return strings.TrimSpace(firstNonEmptyToolValue(
 		jsonString(launch, "meta_prompt"),
+		jsonString(launch, "role"),
 		jsonString(launch, "description"),
 		jsonString(launch, "prompt"),
 		jsonString(launch, "assignment_label"),
@@ -526,6 +556,9 @@ func (p *ChatPage) taskLaunchLaunchTableLines(launches []map[string]any, width i
 		label := clampEllipsis(p.taskLaunchLaunchLabel(launch), labelWidth)
 		assignment := p.taskLaunchLaunchAssignment(launch)
 		detailLines := []chatRenderLine{{Text: p.taskLaunchLaunchModelLine(launch), Style: p.theme.TextMuted}}
+		if toolSummary := taskLaunchResolvedToolsSummary(jsonObject(launch, "resolved_tools")); len(toolSummary) > 0 {
+			detailLines = append(detailLines, chatRenderLine{Text: "tools: " + strings.Join(toolSummary, " · "), Style: p.theme.TextMuted})
+		}
 		detailLines = append(detailLines, p.taskLaunchMarkdownSectionLines(assignment, "No launch-specific instructions.")...)
 		firstPrefix := fmt.Sprintf("%-4s %-*s ", idxLabel, labelWidth, label)
 		continuationPrefix := fmt.Sprintf("%-4s %-*s ", "", labelWidth, "")

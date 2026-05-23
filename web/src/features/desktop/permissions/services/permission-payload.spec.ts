@@ -24,6 +24,12 @@ function makePermission(overrides: Partial<DesktopPermissionRecord> = {}): Deskt
       launch_count: 2,
       allow_bash: true,
       effective_child_mode: 'auto',
+      resolved_tools: {
+        preset: 'read_only',
+        runtime_mode: 'auto',
+        effective_execution_mode: 'read',
+        allowed_tools: ['read', 'search'],
+      },
       report_max_chars: 2400,
       disabled_tools: ['write', 'edit'],
       launches: [
@@ -32,9 +38,23 @@ function makePermission(overrides: Partial<DesktopPermissionRecord> = {}): Deskt
           requested_subagent_type: 'explorer',
           resolved_agent_name: 'explorer',
           meta_prompt: 'map repository structure',
+          assignment_label: 'Repo map',
+          subagent_provider: 'anthropic',
+          subagent_model: 'claude-sonnet',
           effective_child_mode: 'auto',
           allow_bash: true,
           disabled_tools: ['write', 'edit'],
+          resolved_tools: {
+            preset: 'read_only',
+            runtime_mode: 'auto',
+            effective_execution_mode: 'read',
+            allowed_tools: ['read', 'search'],
+            disabled_tools: ['write', 'edit'],
+            profile_allowed_tools: ['read'],
+            profile_disabled_tools: ['write'],
+            launch_disabled_tools: ['edit'],
+            bash_prefixes: ['git status'],
+          },
         },
         {
           launch_index: 2,
@@ -190,9 +210,22 @@ function testTaskLaunchPayloadParsing(): void {
   assert(payload.launchCount === 2, 'expected launch count to be parsed')
   assert(payload.allowBash === true, 'expected allowBash to be true')
   assert(payload.effectiveChildMode === 'auto', 'expected effective child mode')
+  assert(payload.resolvedTools.preset === 'read_only', 'expected top-level resolved tool preset')
+  assert(payload.resolvedTools.allowedTools.join(',') === 'read,search', 'expected top-level resolved tools')
   assert(payload.disabledTools.length === 2, 'expected disabled tools at root')
   assert(payload.launches.length === 2, 'expected launch rows to be parsed')
   assert(payload.launches[0]?.requestedSubagentType === 'explorer', 'expected first launch requested subagent type')
+  assert(payload.launches[0]?.assignmentLabel === 'Repo map', 'expected first launch assignment label')
+  assert(payload.launches[0]?.assignment === 'map repository structure', 'expected meta_prompt to win over short assignment label')
+  assert(payload.launches[0]?.subagentProvider === 'anthropic', 'expected resolved provider')
+  assert(payload.launches[0]?.subagentModel === 'claude-sonnet', 'expected resolved model')
+  assert(payload.launches[0]?.resolvedTools.preset === 'read_only', 'expected resolved tool preset')
+  assert(payload.launches[0]?.resolvedTools.effectiveExecutionMode === 'read', 'expected effective execution mode')
+  assert(payload.launches[0]?.resolvedTools.allowedTools.join(',') === 'read,search', 'expected allowed tools')
+  assert(payload.launches[0]?.resolvedTools.profileAllowedTools.join(',') === 'read', 'expected profile allowed tools')
+  assert(payload.launches[0]?.resolvedTools.profileDisabledTools.join(',') === 'write', 'expected profile disabled tools')
+  assert(payload.launches[0]?.resolvedTools.launchDisabledTools.join(',') === 'edit', 'expected launch disabled tools')
+  assert(payload.launches[0]?.resolvedTools.bashPrefixes.join(',') === 'git status', 'expected bash prefixes')
   assert(payload.launches[1]?.assignment === 'extract concise findings', 'expected second launch assignment')
   assert(payload.prompt === 'Map the relevant files and summarize findings.', 'expected full prompt to be parsed')
   assert(payload.summary.includes('Bypass permissions does not skip this review.'), 'expected bypass warning in summary')
