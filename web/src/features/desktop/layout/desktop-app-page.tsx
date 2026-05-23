@@ -1119,7 +1119,7 @@ interface SidebarSessionNode {
   depth: number
   kind: SidebarSessionNodeKind
   label: string | null
-  modelLabel: string | null
+  assignmentLabel: string | null
 }
 
 function buildSidebarSessionTree(sessions: DesktopSessionRecord[], now: number): SidebarSessionNode[] {
@@ -1135,7 +1135,7 @@ function buildSidebarSessionTree(sessions: DesktopSessionRecord[], now: number):
       depth: 0,
       kind: descriptor.kind,
       label: descriptor.label,
-      modelLabel: descriptor.modelLabel,
+      assignmentLabel: descriptor.assignmentLabel,
     })
   }
 
@@ -1275,7 +1275,7 @@ interface SessionRowProps {
   workspaceSlug: string
   depth?: number
   childLabel?: string | null
-  childModelLabel?: string | null
+  childAssignmentLabel?: string | null
   childKind?: SidebarSessionNode['kind']
   agentSummary: SessionAgentSummary
   agentsExpanded: boolean
@@ -1284,13 +1284,13 @@ interface SessionRowProps {
   onToggleAgents: (sessionId: string) => void
 }
 
-function SessionRow({ active, now, session: initialSession, fallbackSwarmName, routeOptions, workspaceSlug, depth = 0, childLabel = null, childModelLabel = null, childKind = 'root', agentSummary, agentsExpanded, onSelect, onPrefetch, onToggleAgents }: SessionRowProps) {
+function SessionRow({ active, now, session: initialSession, fallbackSwarmName, routeOptions, workspaceSlug, depth = 0, childLabel = null, childAssignmentLabel = null, childKind = 'root', agentSummary, agentsExpanded, onSelect, onPrefetch, onToggleAgents }: SessionRowProps) {
   const session = useDesktopStore((state) => state.sessions[initialSession.id] ?? initialSession)
   const activeSession = sessionIsActive(session)
   const originLabel = sessionOriginLabel(session, routeOptions, fallbackSwarmName)
   const backgroundInfo = sessionBackgroundInfo(session, originLabel)
   const timerLabel = activeSession ? sessionTimerLabel(session, now) : ''
-  const bottomLeftLabel = childModelLabel || backgroundInfo?.targetLabel || originLabel
+  const bottomLeftLabel = backgroundInfo?.targetLabel || originLabel
   const bottomRightLabel = backgroundInfo?.active
     ? timerLabel
     : activeSession
@@ -1302,7 +1302,7 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
   const commitMetaLabel = [commitSummary, committedFileSummary, committedDeltaSummary].filter(Boolean).join(' · ')
   const tooltip = sessionStatusTooltip(session)
   const isNestedSession = depth > 0
-  const nestedAssignmentTitle = isNestedSession && childLabel && !childLabel.startsWith('@') && childLabel !== 'child' ? childLabel : ''
+  const nestedAssignmentTitle = isNestedSession && childAssignmentLabel ? childAssignmentLabel : ''
   const rowTitle = nestedAssignmentTitle || session.title || 'New conversation'
   const visibleChildLabel = childLabel && childLabel !== rowTitle ? childLabel : ''
   const nestedToneClass = childKind === 'subagent' ? 'text-sky-300/80' : 'text-[var(--app-text-subtle)]'
@@ -3232,7 +3232,7 @@ export function DesktopAppPage() {
                               workspaceSlug={workspaceSlug}
                               depth={node.depth}
                               childLabel={node.label}
-                              childModelLabel={node.modelLabel}
+                              childAssignmentLabel={node.assignmentLabel}
                               childKind={node.kind}
                               agentSummary={summarizeSubagentDescendants(node)}
                               agentsExpanded={Boolean(expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, selectedSession?.id)}
