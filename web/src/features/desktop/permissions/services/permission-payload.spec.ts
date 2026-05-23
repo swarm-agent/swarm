@@ -114,11 +114,12 @@ function testAgentChangeKindAndPayloadParsing(): void {
       },
       tool_inventory: {
         tools: [
-          { name: 'read', description: 'Read files', group: 'workspace_inspection', kind: 'built_in' },
-          { name: 'bash', description: 'Run shell', group: 'shell', kind: 'built_in' },
+          { name: 'read', contract_name: 'read', description: 'Read files', group: 'workspace_inspection', kind: 'built_in' },
+          { name: 'manage-agent', contract_name: 'manage_agent', description: 'Manage agents', group: 'management', kind: 'built_in' },
+          { name: 'bash', contract_name: 'bash', description: 'Run shell', group: 'shell', kind: 'built_in' },
         ],
         presets: [
-          { id: 'read_only', label: 'Read only', description: 'Read tools only' },
+          { id: 'read_only', label: 'Read only', description: 'Read tools only', enabled_tools: ['read'], disabled_by_default: ['bash'], bash_prefixes: [] },
         ],
       },
     }),
@@ -131,8 +132,11 @@ function testAgentChangeKindAndPayloadParsing(): void {
   assert(payload.execution === 'read', 'expected parsed execution')
   assert(payload.tools === 'removed: bash', 'expected tool contract label')
   assert(payload.profile.name === 'review-bot', 'expected profile snapshot')
-  assert(payload.toolInventory.tools.length === 2, 'expected tool inventory tools')
+  assert(payload.toolInventory.tools.length === 3, 'expected tool inventory tools')
+  assert(payload.toolInventory.tools.some((tool) => tool.contractName === 'manage_agent'), 'expected canonical tool contract name')
   assert(payload.toolInventory.presets[0]?.id === 'read_only', 'expected tool inventory preset')
+  assert(payload.toolInventory.presets[0]?.enabledTools.join(',') === 'read', 'expected preset enabled tools')
+  assert(payload.toolInventory.presets[0]?.disabledByDefault.join(',') === 'bash', 'expected preset disabled tools')
   assert(payload.approvedArguments.action === undefined, 'expected no approved args when absent')
   assert(payload.changes.some((change) => change.label === 'Result'), 'expected result change row')
 }

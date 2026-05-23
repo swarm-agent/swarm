@@ -48,16 +48,20 @@ type agentToolInventory struct {
 }
 
 type agentToolInventoryTool struct {
-	Name        string
-	Description string
-	Group       string
-	Kind        string
+	Name         string
+	ContractName string
+	Description  string
+	Group        string
+	Kind         string
 }
 
 type agentToolInventoryPreset struct {
-	ID          string
-	Label       string
-	Description string
+	ID                string
+	Label             string
+	Description       string
+	EnabledTools      []string
+	DisabledByDefault []string
+	BashPrefixes      []string
 }
 
 type agentToolAccessSummary struct {
@@ -706,35 +710,33 @@ func agentChangeToolAccessSummary(profile map[string]any, inventory agentToolInv
 	}
 	contract := jsonObject(profile, "tool_contract")
 	contractTools := jsonObject(contract, "tools")
-	explicitTools := make(map[string]struct{})
+	summary.Preset = strings.TrimSpace(jsonString(contract, "preset"))
+	if preset, ok := agentChangeInventoryPreset(inventory, summary.Preset); ok {
+		summary.Allowed = append(summary.Allowed, preset.EnabledTools...)
+		summary.Blocked = append(summary.Blocked, preset.DisabledByDefault...)
+		if len(preset.BashPrefixes) > 0 {
+			summary.Restricted = append(summary.Restricted, "bash")
+		}
+	}
 	for name, rawConfig := range contractTools {
 		toolName := strings.TrimSpace(name)
 		config, _ := rawConfig.(map[string]any)
 		if toolName == "" || len(config) == 0 {
 			continue
 		}
-		explicitTools[toolName] = struct{}{}
 		if len(jsonStringSlice(config, "bash_prefixes")) > 0 {
 			summary.Restricted = append(summary.Restricted, toolName)
 		}
 		if _, ok := config["enabled"]; ok {
 			if jsonBool(config, "enabled") {
 				summary.Allowed = append(summary.Allowed, toolName)
+				summary.Blocked = removeStringValue(summary.Blocked, toolName)
 			} else {
 				summary.Blocked = append(summary.Blocked, toolName)
+				summary.Allowed = removeStringValue(summary.Allowed, toolName)
 			}
 		}
 	}
-	for _, tool := range inventory.Tools {
-		toolName := strings.TrimSpace(tool.Name)
-		if toolName == "" {
-			continue
-		}
-		if _, ok := explicitTools[toolName]; !ok {
-			summary.Blocked = append(summary.Blocked, toolName)
-		}
-	}
-	summary.Preset = strings.TrimSpace(jsonString(contract, "preset"))
 	summary.InheritPolicy = jsonBool(contract, "inherit_policy")
 
 	if len(summary.Allowed) == 0 && len(summary.Blocked) == 0 {
@@ -756,6 +758,34 @@ func agentChangeToolAccessSummary(profile map[string]any, inventory agentToolInv
 	summary.Blocked = sortedUniqueStrings(summary.Blocked)
 	summary.Restricted = sortedUniqueStrings(summary.Restricted)
 	return summary
+}
+
+func agentChangeInventoryPreset(inventory agentToolInventory, id string) (agentToolInventoryPreset, bool) {
+	id = strings.ToLower(strings.TrimSpace(id))
+	if id == "" {
+		return agentToolInventoryPreset{}, false
+	}
+	for _, preset := range inventory.Presets {
+		if strings.ToLower(strings.TrimSpace(preset.ID)) == id {
+			return preset, true
+		}
+	}
+	return agentToolInventoryPreset{}, false
+}
+
+func removeStringValue(values []string, remove string) []string {
+	remove = strings.TrimSpace(remove)
+	if remove == "" {
+		return values
+	}
+	out := values[:0]
+	for _, value := range values {
+		if strings.TrimSpace(value) == remove {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
 }
 
 func sortedUniqueStrings(values []string) []string {
@@ -780,15 +810,20 @@ func agentChangeToolInventory(payload map[string]any) agentToolInventory {
 	inventory := jsonObject(payload, "tool_inventory")
 	out := agentToolInventory{}
 	for _, item := range jsonObjectSlice(inventory, "tools") {
-		name := strings.TrimSpace(jsonString(item, "name"))
-		if name == "" {
+		displayName := strings.TrimSpace(jsonString(item, "name"))
+		contractName := strings.TrimSpace(jsonString(item, "contract_name"))
+		if contractName == "" {
+			contractName = displayName
+		}
+		if contractName == "" {
 			continue
 		}
 		out.Tools = append(out.Tools, agentToolInventoryTool{
-			Name:        name,
-			Description: strings.TrimSpace(jsonString(item, "description")),
-			Group:       emptyValue(strings.TrimSpace(jsonString(item, "group")), "other"),
-			Kind:        emptyValue(strings.TrimSpace(jsonString(item, "kind")), "built_in"),
+			Name:         contractName,
+			ContractName: contractName,
+			Description:  strings.TrimSpace(jsonString(item, "description")),
+			Group:        emptyValue(strings.TrimSpace(jsonString(item, "group")), "other"),
+			Kind:         emptyValue(strings.TrimSpace(jsonString(item, "kind")), "built_in"),
 		})
 	}
 	for _, item := range jsonObjectSlice(inventory, "presets") {
@@ -797,9 +832,12 @@ func agentChangeToolInventory(payload map[string]any) agentToolInventory {
 			continue
 		}
 		out.Presets = append(out.Presets, agentToolInventoryPreset{
-			ID:          id,
-			Label:       emptyValue(strings.TrimSpace(jsonString(item, "label")), id),
-			Description: strings.TrimSpace(jsonString(item, "description")),
+			ID:                id,
+			Label:             emptyValue(strings.TrimSpace(jsonString(item, "label")), id),
+			Description:       strings.TrimSpace(jsonString(item, "description")),
+			EnabledTools:      jsonStringSlice(item, "enabled_tools"),
+			DisabledByDefault: jsonStringSlice(item, "disabled_by_default"),
+			BashPrefixes:      jsonStringSlice(item, "bash_prefixes"),
 		})
 	}
 	sort.Slice(out.Tools, func(i, j int) bool {

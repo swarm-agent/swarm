@@ -1745,15 +1745,17 @@ function toolContractFormFromProfile(source: Record<string, unknown>): Pick<Agen
 
 function toolInventoryTools(payload: ReturnType<typeof parseAgentChangePermission>, form: AgentProfileFormState): AgentToolInventory['tools'] {
   const byName = new Map<string, AgentToolInventory['tools'][number]>()
-  payload.toolInventory.tools.forEach((tool) => byName.set(tool.name, tool))
+  payload.toolInventory.tools.forEach((tool) => byName.set(tool.contractName || tool.name, tool))
   Object.keys(form.toolContractTools).forEach((name) => {
-    if (!byName.has(name)) {
-      byName.set(name, { name, description: '', group: 'custom', kind: 'custom' })
+    const contractName = name.trim()
+    if (!contractName) return
+    if (!byName.has(contractName)) {
+      byName.set(contractName, { name: contractName, contractName, description: '', group: 'custom', kind: 'custom' })
     }
   })
   return Array.from(byName.values()).sort((left, right) => {
     const group = left.group.localeCompare(right.group)
-    return group !== 0 ? group : left.name.localeCompare(right.name)
+    return group !== 0 ? group : (left.contractName || left.name).localeCompare(right.contractName || right.name)
   })
 }
 
@@ -1775,12 +1777,8 @@ function deriveExecutionSettingFromTools(tools: Record<string, AgentToolConfigFo
   }) ? 'readwrite' : 'read'
 }
 
-function agentToolContractFromForm(payload: ReturnType<typeof parseAgentChangePermission>, form: AgentProfileFormState): Record<string, unknown> {
+function agentToolContractFromForm(_payload: ReturnType<typeof parseAgentChangePermission>, form: AgentProfileFormState): Record<string, unknown> {
   const tools: Record<string, unknown> = {}
-  const inventoryToolNames = new Set(toolInventoryTools(payload, form).map((tool) => tool.name.trim()).filter(Boolean))
-  inventoryToolNames.forEach((toolName) => {
-    tools[toolName] = { enabled: false }
-  })
   Object.entries(form.toolContractTools).forEach(([name, config]) => {
     const toolName = name.trim()
     if (!toolName) return
@@ -1842,23 +1840,34 @@ function sortedUnique(values: string[]): string[] {
   return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right))
 }
 
+function agentToolInventoryPreset(payload: ReturnType<typeof parseAgentChangePermission>, presetID: string) {
+  const normalized = presetID.trim().toLowerCase()
+  if (!normalized) return null
+  return payload.toolInventory.presets.find((preset) => preset.id.trim().toLowerCase() === normalized) ?? null
+}
+
 function agentToolAccessSummary(payload: ReturnType<typeof parseAgentChangePermission>, form: AgentProfileFormState | null): AgentToolAccessSummary {
   if (form) {
     const allowed: string[] = []
     const blocked: string[] = []
     const restricted: string[] = []
-    const explicitToolNames = new Set(Object.keys(form.toolContractTools).map((name) => name.trim()).filter(Boolean))
+    const activePreset = agentToolInventoryPreset(payload, form.toolContractPreset)
+    allowed.push(...(activePreset?.enabledTools ?? []))
+    blocked.push(...(activePreset?.disabledByDefault ?? []))
+    if ((activePreset?.bashPrefixes.length ?? 0) > 0) restricted.push('bash')
     Object.entries(form.toolContractTools).forEach(([name, config]) => {
       const toolName = name.trim()
       if (!toolName) return
-      if (config.enabled) allowed.push(toolName)
-      else blocked.push(toolName)
-      if (splitCSV(config.bashPrefixes).length > 0) restricted.push(toolName)
-    })
-    toolInventoryTools(payload, form).forEach((tool) => {
-      if (!explicitToolNames.has(tool.name)) {
-        blocked.push(tool.name)
+      if (config.enabled) {
+        allowed.push(toolName)
+        const blockedIndex = blocked.indexOf(toolName)
+        if (blockedIndex >= 0) blocked.splice(blockedIndex, 1)
+      } else {
+        blocked.push(toolName)
+        const allowedIndex = allowed.indexOf(toolName)
+        if (allowedIndex >= 0) allowed.splice(allowedIndex, 1)
       }
+      if (splitCSV(config.bashPrefixes).length > 0) restricted.push(toolName)
     })
     return {
       allowed: sortedUnique(allowed),
@@ -2064,6 +2073,8 @@ function AgentProfileApprovalForm({
   }, [form.provider, modelOptions])
   const activeModels = providers.find(([provider]) => provider === form.provider)?.[1] ?? []
   const inventoryTools = toolInventoryTools(payload, form)
+  const activePreset = agentToolInventoryPreset(payload, form.toolContractPreset)
+  const presetEnabledTools = new Set(activePreset?.enabledTools.map((name) => name.trim()).filter(Boolean) ?? [])
   const [toolsExpanded, setToolsExpanded] = useState(false)
   const setToolEnabled = (toolName: string, enabled: boolean) => {
     const current = form.toolContractTools[toolName]
@@ -2202,21 +2213,22 @@ function AgentProfileApprovalForm({
             inventoryTools.length > 0 ? (
               <div className="grid max-h-56 gap-1.5 overflow-auto border-t border-[var(--app-border)] p-2 sm:grid-cols-2">
                 {inventoryTools.map((tool) => {
-                  const config = form.toolContractTools[tool.name]
-                  const checked = config?.enabled ?? false
+                  const toolName = tool.contractName || tool.name
+                  const config = form.toolContractTools[toolName]
+                  const checked = config?.enabled ?? presetEnabledTools.has(toolName)
                   const bashPrefixes = config?.bashPrefixes ?? ''
                   return (
-                    <div key={`${tool.kind}:${tool.name}`} className="grid gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] p-2">
+                    <div key={`${tool.kind}:${toolName}`} className="grid gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] p-2">
                       <label className="flex items-center gap-2 text-sm text-[var(--app-text)]">
-                        <input type="checkbox" checked={checked} onChange={(event) => setToolEnabled(tool.name, event.target.checked)} disabled={disabled} />
-                        <span className="font-medium">{tool.name}</span>
+                        <input type="checkbox" checked={checked} onChange={(event) => setToolEnabled(toolName, event.target.checked)} disabled={disabled} />
+                        <span className="font-medium">{toolName}</span>
                         <span className="text-xs text-[var(--app-text-muted)]">{tool.group}</span>
                       </label>
                       {tool.description ? <div className="text-xs leading-5 text-[var(--app-text-muted)]">{tool.description}</div> : null}
                       {tool.name === 'bash' || bashPrefixes ? (
                         <input value={bashPrefixes} onChange={(event) => {
                           const nextTools = { ...form.toolContractTools }
-                          nextTools[tool.name] = { enabled: checked || event.target.value.trim() !== '', bashPrefixes: event.target.value }
+                          nextTools[toolName] = { enabled: checked || event.target.value.trim() !== '', bashPrefixes: event.target.value }
                           onChange({ ...form, executionSetting: deriveExecutionSettingFromTools(nextTools), toolContractTools: nextTools })
                         }} disabled={disabled} placeholder="bash prefixes, comma-separated" className="rounded-md border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-1 text-xs text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" />
                       ) : null}

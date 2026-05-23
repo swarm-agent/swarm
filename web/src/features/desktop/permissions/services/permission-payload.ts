@@ -180,6 +180,7 @@ export interface ManageFlowPayload {
 
 export interface AgentToolInventoryTool {
   name: string
+  contractName: string
   description: string
   group: string
   kind: string
@@ -189,6 +190,9 @@ export interface AgentToolInventoryPreset {
   id: string
   label: string
   description: string
+  enabledTools: string[]
+  disabledByDefault: string[]
+  bashPrefixes: string[]
 }
 
 export interface AgentToolInventory {
@@ -1214,10 +1218,12 @@ function parseAgentToolInventory(raw: unknown): AgentToolInventory {
     ? inventory.tools.map((entry) => {
         const record = asRecord(entry)
         if (!record) return null
-        const name = mapStringArg(record, 'name')
-        if (!name) return null
+        const displayName = mapStringArg(record, 'name')
+        const contractName = mapStringArg(record, 'contract_name') || displayName
+        if (!contractName) return null
         return {
-          name,
+          name: contractName,
+          contractName,
           description: mapStringArg(record, 'description'),
           group: mapStringArg(record, 'group') || 'other',
           kind: mapStringArg(record, 'kind') || 'built_in',
@@ -1234,6 +1240,9 @@ function parseAgentToolInventory(raw: unknown): AgentToolInventory {
           id,
           label: mapStringArg(record, 'label') || id,
           description: mapStringArg(record, 'description'),
+          enabledTools: mapStringArrayArg(record, 'enabled_tools'),
+          disabledByDefault: mapStringArrayArg(record, 'disabled_by_default'),
+          bashPrefixes: mapStringArrayArg(record, 'bash_prefixes'),
         }
       }).filter((entry): entry is AgentToolInventoryPreset => entry !== null)
     : []
