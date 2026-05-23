@@ -72,14 +72,6 @@ func removeTopologyRuntimeNodeObservation(topology *TopologyStore, swarmID strin
 }
 
 func UpsertTopologyRuntimeRecord(topology *TopologyStore, incoming TopologyRuntimeRecord) error {
-	return upsertTopologyRuntimeRecord(topology, "", incoming)
-}
-
-func UpsertTopologyRuntimeRecordForAccount(topology *TopologyStore, accountScopeID string, incoming TopologyRuntimeRecord) error {
-	return upsertTopologyRuntimeRecord(topology, strings.TrimSpace(accountScopeID), incoming)
-}
-
-func upsertTopologyRuntimeRecord(topology *TopologyStore, accountScopeID string, incoming TopologyRuntimeRecord) error {
 	if topology == nil {
 		return nil
 	}
@@ -87,16 +79,7 @@ func upsertTopologyRuntimeRecord(topology *TopologyStore, accountScopeID string,
 	if incoming.SwarmID == "" {
 		return nil
 	}
-	var (
-		existing TopologyRuntimeRecord
-		ok       bool
-		err      error
-	)
-	if accountScopeID != "" {
-		existing, ok, err = topology.GetRuntimeForAccount(accountScopeID, incoming.SwarmID)
-	} else {
-		existing, ok, err = topology.GetRuntime(incoming.SwarmID)
-	}
+	existing, ok, err := topology.GetRuntime(incoming.SwarmID)
 	if err != nil {
 		return err
 	}
@@ -106,11 +89,33 @@ func upsertTopologyRuntimeRecord(topology *TopologyStore, accountScopeID string,
 		}
 		incoming = mergeTopologyRuntimeRecord(existing, incoming)
 	}
-	if accountScopeID != "" {
-		_, err = topology.PutRuntimeForAccount(accountScopeID, incoming)
-	} else {
-		_, err = topology.PutRuntime(incoming)
+	_, err = topology.PutRuntime(incoming)
+	return err
+}
+
+func UpsertTopologyRuntimeRecordForAccount(topology *TopologyStore, accountScopeID string, incoming TopologyRuntimeRecord) error {
+	accountScopeID, err := requireTopologyAccountScopeID(accountScopeID)
+	if err != nil {
+		return err
 	}
+	if topology == nil {
+		return nil
+	}
+	incoming = normalizeTopologyRuntimeRecord(incoming)
+	if incoming.SwarmID == "" {
+		return nil
+	}
+	existing, ok, err := topology.GetRuntimeForAccount(accountScopeID, incoming.SwarmID)
+	if err != nil {
+		return err
+	}
+	if ok {
+		if err := ensureTopologyMergeSameAccount(existing.AccountScopeID, incoming.AccountScopeID); err != nil {
+			return err
+		}
+		incoming = mergeTopologyRuntimeRecord(existing, incoming)
+	}
+	_, err = topology.PutRuntimeForAccount(accountScopeID, incoming)
 	return err
 }
 

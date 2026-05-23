@@ -483,3 +483,57 @@ func TestTopologyStoreAccountScopedValidation(t *testing.T) {
 		t.Fatal("expected replace snapshot mismatched account scope error")
 	}
 }
+
+func TestTopologyAccountScopedSyncHelpersRejectEmptyAccountNoFallback(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "topology-sync-no-fallback.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	topology := NewTopologyStore(store)
+	if _, err := topology.PutRuntime(TopologyRuntimeRecord{SwarmID: "global-runtime", UserID: "user-a", AccountScopeID: "account-a", Name: "global-runtime"}); err != nil {
+		t.Fatalf("put global runtime: %v", err)
+	}
+	if _, err := topology.PutHostContainer(TopologyHostContainerRecord{HostContainerID: "global-host:ctr", UserID: "user-a", AccountScopeID: "account-a", HostSwarmID: "global-host", RuntimeContainerRef: "ctr", Name: "global-host"}); err != nil {
+		t.Fatalf("put global host container: %v", err)
+	}
+	if _, err := topology.PutAttachment(TopologyAttachmentRecord{AttachmentID: "global-host:ctr=>global-runtime", UserID: "user-a", AccountScopeID: "account-a", HostContainerID: "global-host:ctr", RuntimeSwarmID: "global-runtime", State: "global"}); err != nil {
+		t.Fatalf("put global attachment: %v", err)
+	}
+
+	if err := UpsertTopologyRuntimeRecordForAccount(topology, "", TopologyRuntimeRecord{SwarmID: "global-runtime", UserID: "user-a", AccountScopeID: "account-a", Name: "must-not-write"}); err == nil {
+		t.Fatal("expected runtime account sync helper to reject empty account scope")
+	}
+	if err := UpsertTopologyHostContainerForAccount(topology, "", TopologyHostContainerRecord{HostContainerID: "global-host:ctr", UserID: "user-a", AccountScopeID: "account-a", HostSwarmID: "global-host", RuntimeContainerRef: "ctr", Name: "must-not-write"}); err == nil {
+		t.Fatal("expected host container account sync helper to reject empty account scope")
+	}
+	if err := UpsertTopologyAttachmentForAccount(topology, "", TopologyAttachmentRecord{AttachmentID: "global-host:ctr=>global-runtime", UserID: "user-a", AccountScopeID: "account-a", HostContainerID: "global-host:ctr", RuntimeSwarmID: "global-runtime", State: "must-not-write"}); err == nil {
+		t.Fatal("expected attachment account sync helper to reject empty account scope")
+	}
+	if _, ok, err := FindTopologyHostContainerByRefsForAccount(topology, "", "global-host", "ctr"); err == nil || ok {
+		t.Fatalf("expected host container lookup helper to reject empty account scope without finding global record: ok=%t err=%v", ok, err)
+	}
+
+	runtimeRecord, ok, err := topology.GetRuntime("global-runtime")
+	if err != nil || !ok {
+		t.Fatalf("get global runtime ok=%t err=%v", ok, err)
+	}
+	if runtimeRecord.Name != "global-runtime" {
+		t.Fatalf("empty account runtime helper touched global record: %+v", runtimeRecord)
+	}
+	hostContainer, ok, err := topology.GetHostContainer("global-host:ctr")
+	if err != nil || !ok {
+		t.Fatalf("get global host container ok=%t err=%v", ok, err)
+	}
+	if hostContainer.Name != "global-host" {
+		t.Fatalf("empty account host container helper touched global record: %+v", hostContainer)
+	}
+	attachment, ok, err := topology.GetAttachment("global-host:ctr=>global-runtime")
+	if err != nil || !ok {
+		t.Fatalf("get global attachment ok=%t err=%v", ok, err)
+	}
+	if attachment.State != "global" {
+		t.Fatalf("empty account attachment helper touched global record: %+v", attachment)
+	}
+}
