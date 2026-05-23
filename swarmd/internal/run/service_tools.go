@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/appstorage"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
@@ -271,14 +270,14 @@ func emitTaskStreamDelta(parentSessionID string, emit StreamHandler, step int, t
 func (s *Service) prepareDelegatedSubagentLaunch(parentSession pebblestore.SessionSnapshot, sessionMode string, launch taskLaunchPrepared, description, targetedSubagentName string) (taskLaunchPrepared, error) {
 	requestedSubagent := strings.TrimSpace(launch.RequestedSubagent)
 	if requestedSubagent == "" {
-		requestedSubagent = "explorer"
+		return taskLaunchPrepared{}, errors.New("task launch requires saved subagent name or purpose")
 	}
 	subagentProfile, err := s.resolveTaskSubagentForAccount(parentSession.AccountScopeID, requestedSubagent)
 	if err != nil {
 		return taskLaunchPrepared{}, err
 	}
 	if strings.TrimSpace(subagentProfile.Name) == "" {
-		subagentProfile.Name = "explorer"
+		return taskLaunchPrepared{}, errors.New("task resolved empty subagent")
 	}
 
 	preference := applyAgentPreferenceOverrides(parentSession.Preference, subagentProfile)
@@ -2152,14 +2151,8 @@ func (s *Service) resolveTaskSubagentForAccount(accountScopeID, nameOrPurpose st
 	if nameOrPurpose == "" {
 		return pebblestore.AgentProfile{}, errors.New("task subagent name or purpose is required")
 	}
-	if s.agents == nil {
-		return pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
-			Name:             strings.ToLower(nameOrPurpose),
-			Mode:             agentruntime.ModeSubagent,
-			Prompt:           "You are a delegated subagent.",
-			ExecutionSetting: pebblestore.AgentExecutionSettingRead,
-			Enabled:          true,
-		}), nil
+	if s == nil || s.agents == nil {
+		return pebblestore.AgentProfile{}, errors.New("saved agent service is not configured")
 	}
 	if strings.TrimSpace(accountScopeID) != "" {
 		return s.agents.ResolveSubagentForAccount(accountScopeID, nameOrPurpose)

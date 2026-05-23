@@ -666,25 +666,20 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		if requestedPrimary == "" {
 			requestedPrimary = requested
 		}
-		resolvedName := requested
-		resolvedErr := ""
-		subagentProfile := pebblestore.AgentProfile{Name: requested}
-		if s != nil {
-			if profile, err := s.resolveTaskSubagentForAccount(parentSession.AccountScopeID, requested); err == nil {
-				subagentProfile = profile
-				if strings.TrimSpace(profile.Name) != "" {
-					resolvedName = strings.TrimSpace(profile.Name)
-				}
-			} else {
-				resolvedErr = strings.TrimSpace(err.Error())
-			}
+		if s == nil {
+			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] cannot resolve subagent %q: run service is not configured", i, requested)
 		}
-		if strings.TrimSpace(resolvedName) == "" {
+		subagentProfile, err := s.resolveTaskSubagentForAccount(parentSession.AccountScopeID, requested)
+		if err != nil {
+			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] cannot resolve subagent %q: %w", i, requested, err)
+		}
+		resolvedName := strings.TrimSpace(subagentProfile.Name)
+		if resolvedName == "" {
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] resolved empty subagent", i)
 		}
 		if i == 0 {
 			resolvedAgentName = resolvedName
-			resolvedAgentError = resolvedErr
+			resolvedAgentError = ""
 		}
 		metaPrompt := strings.TrimSpace(launch.MetaPrompt)
 		if metaPrompt == "" {
@@ -697,7 +692,6 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			Description:           parsed.Description,
 			RequestedSubagentType: requested,
 			ResolvedAgentName:     resolvedName,
-			ResolvedAgentError:    resolvedErr,
 			Action:                parsed.Action,
 			ReportMaxChars:        parsed.ReportMaxChars,
 			MetaPrompt:            metaPrompt,
