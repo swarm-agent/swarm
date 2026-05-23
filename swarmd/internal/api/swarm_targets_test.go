@@ -37,7 +37,7 @@ func TestHandleSwarmTargetsReturnsRenamedSelfTargetImmediately(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodGet, "/v1/swarm/targets", nil)
 	rec := httptest.NewRecorder()
-	server.handleSwarmTargets(rec, req)
+	server.handleSwarmTargets(rec, requestWithTestPrincipal(req))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /v1/swarm/targets status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
@@ -104,7 +104,7 @@ func TestSwarmTargetsForRequestPrefersRegistryNodes(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/swarm/targets?swarm_id=swarm-child-1", nil)
-	targets, current, err := server.swarmTargetsForRequest(req)
+	targets, current, err := server.swarmTargetsForRequest(requestWithTestPrincipal(req))
 	if err != nil {
 		t.Fatalf("targets: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestSwarmTargetsForRequestKeepsMirroredTargetsSharingHostLocalBackend(t *te
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/swarm/targets", nil)
-	targets, _, err := server.swarmTargetsForRequest(req)
+	targets, _, err := server.swarmTargetsForRequest(requestWithTestPrincipal(req))
 	if err != nil {
 		t.Fatalf("targets: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestSwarmTargetsForRequestIncludesTrustedManagedPeerTargets(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/swarm/targets?swarm_id=managed-swarm-1", nil)
-	targets, current, err := server.swarmTargetsForRequest(req)
+	targets, current, err := server.swarmTargetsForRequest(requestWithTestPrincipal(req))
 	if err != nil {
 		t.Fatalf("targets: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestSwarmTargetsForRequestPrefersTrustedManagedPeerOverRegistryNode(t *test
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/swarm/targets", nil)
-	targets, _, err := server.swarmTargetsForRequest(req)
+	targets, _, err := server.swarmTargetsForRequest(requestWithTestPrincipal(req))
 	if err != nil {
 		t.Fatalf("targets: %v", err)
 	}

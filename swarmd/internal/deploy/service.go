@@ -89,6 +89,8 @@ type ContainerPackageManifest struct {
 
 type ContainerDeployment struct {
 	ID                  string                        `json:"id"`
+	UserID              string                        `json:"user_id,omitempty"`
+	AccountScopeID      string                        `json:"account_scope_id,omitempty"`
 	Kind                string                        `json:"kind"`
 	Name                string                        `json:"name"`
 	Status              string                        `json:"status"`
@@ -2415,6 +2417,8 @@ func mapStoredContainerPackageManifest(input pebblestore.ContainerPackageManifes
 func mapContainerRecord(record pebblestore.DeployContainerRecord) ContainerDeployment {
 	return ContainerDeployment{
 		ID:                  record.ID,
+		UserID:              record.UserID,
+		AccountScopeID:      record.AccountScopeID,
 		Kind:                record.Kind,
 		Name:                record.Name,
 		Status:              record.Status,

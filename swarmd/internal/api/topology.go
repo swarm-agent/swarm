@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	topologyruntime "swarm/packages/swarmd/internal/topology"
 )
@@ -142,6 +143,14 @@ func (s *Server) SetTopologyService(service *topologyruntime.Service) {
 	s.topology = service
 }
 
+func topologyPrincipalFromRequest(r *http.Request) (identity.Principal, error) {
+	principal, ok := PrincipalFromRequest(r)
+	if !ok || !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
+		return identity.Principal{}, identity.ErrPrincipalRequired
+	}
+	return principal, nil
+}
+
 func (s *Server) handleSwarmTopologySnapshot(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
@@ -151,11 +160,12 @@ func (s *Server) handleSwarmTopologySnapshot(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, errors.New("topology service not configured"))
 		return
 	}
-	if _, err := s.topology.EnsureSnapshot(); err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+	principal, err := topologyPrincipalFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err)
 		return
 	}
-	snapshot, err := s.topology.Snapshot()
+	snapshot, err := s.topology.SnapshotForAccount(principal.AccountScopeID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -181,16 +191,17 @@ func (s *Server) handleSwarmTopologyHostContainers(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusInternalServerError, errors.New("topology service not configured"))
 		return
 	}
+	principal, err := topologyPrincipalFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err)
+		return
+	}
 	hostSwarmID := strings.TrimSpace(r.URL.Query().Get("host_swarm_id"))
 	if hostSwarmID == "" {
 		writeError(w, http.StatusBadRequest, errors.New("host_swarm_id is required"))
 		return
 	}
-	if _, err := s.topology.EnsureSnapshot(); err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	hostContainers, err := s.topology.ListHostContainersByHost(hostSwarmID, 100000)
+	hostContainers, err := s.topology.ListHostContainersByHostForAccount(principal.AccountScopeID, hostSwarmID, 100000)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -212,16 +223,17 @@ func (s *Server) handleSwarmTopologyRuntimeOwner(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusInternalServerError, errors.New("topology service not configured"))
 		return
 	}
+	principal, err := topologyPrincipalFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err)
+		return
+	}
 	runtimeSwarmID := strings.TrimSpace(r.URL.Query().Get("runtime_swarm_id"))
 	if runtimeSwarmID == "" {
 		writeError(w, http.StatusBadRequest, errors.New("runtime_swarm_id is required"))
 		return
 	}
-	if _, err := s.topology.EnsureSnapshot(); err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	hostContainer, attachment, ok, err := s.topology.ResolveRuntimeHostContainer(runtimeSwarmID)
+	hostContainer, attachment, ok, err := s.topology.ResolveRuntimeHostContainerForAccount(principal.AccountScopeID, runtimeSwarmID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -245,16 +257,17 @@ func (s *Server) handleSwarmTopologyWorkspaceBindings(w http.ResponseWriter, r *
 		writeError(w, http.StatusInternalServerError, errors.New("topology service not configured"))
 		return
 	}
+	principal, err := topologyPrincipalFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err)
+		return
+	}
 	sourceWorkspacePath := strings.TrimSpace(r.URL.Query().Get("source_workspace_path"))
 	if sourceWorkspacePath == "" {
 		writeError(w, http.StatusBadRequest, errors.New("source_workspace_path is required"))
 		return
 	}
-	if _, err := s.topology.EnsureSnapshot(); err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	bindings, err := s.topology.ListWorkspaceBindingsBySourcePath(sourceWorkspacePath, 100000)
+	bindings, err := s.topology.ListWorkspaceBindingsBySourcePathForAccount(principal.AccountScopeID, sourceWorkspacePath, 100000)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -276,16 +289,17 @@ func (s *Server) handleSwarmTopologySessionRoute(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusInternalServerError, errors.New("topology service not configured"))
 		return
 	}
+	principal, err := topologyPrincipalFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err)
+		return
+	}
 	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
 	if sessionID == "" {
 		writeError(w, http.StatusBadRequest, errors.New("session_id is required"))
 		return
 	}
-	if _, err := s.topology.EnsureSnapshot(); err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	route, ok, err := s.topology.GetSessionRoute(sessionID)
+	route, ok, err := s.topology.GetSessionRouteForAccount(principal.AccountScopeID, sessionID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return

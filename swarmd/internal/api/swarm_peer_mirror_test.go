@@ -119,7 +119,7 @@ func TestMirroredManagedHostChildTargetIsSelectableViaOwnerHostGroup(t *testing.
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/swarm/targets?swarm_id=child-swarm-1", nil)
 	rec := httptest.NewRecorder()
-	primary.Handler().ServeHTTP(rec, req)
+	primary.Handler().ServeHTTP(rec, requestWithTestPrincipal(req))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("targets status = %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -176,7 +176,7 @@ func TestSyncMirrorFromTargetAppliesTargetToSwarmTargets(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/swarm/targets", nil)
 	rec := httptest.NewRecorder()
-	primary.Handler().ServeHTTP(rec, req)
+	primary.Handler().ServeHTTP(rec, requestWithTestPrincipal(req))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("targets status = %d body=%s", rec.Code, rec.Body.String())
 	}

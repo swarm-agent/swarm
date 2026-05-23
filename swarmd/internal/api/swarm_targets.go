@@ -13,6 +13,8 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	deployruntime "swarm/packages/swarmd/internal/deploy"
+	"swarm/packages/swarmd/internal/identity"
+	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
@@ -144,7 +146,12 @@ func (s *Server) handleSwarmSelectTarget(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, fmt.Errorf("swarm target %q is not selectable", selectedID))
 		return
 	}
-	if _, err := s.swarmDesktopTargetSelection.Put(selected.SwarmID); err != nil {
+	principal, principalOK := PrincipalFromRequest(r)
+	if !principalOK || !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	if _, err := s.swarmDesktopTargetSelection.PutForAccount(principal.AccountScopeID, principal.UserID, selected.SwarmID); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -185,11 +192,19 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 		return nil, nil, err
 	}
 	trustedPeerTargets := listTrustedPeerTargets(state.TrustedPeers)
-	deployments, err := s.listDeployContainerTargets(r)
+	principal, principalOK := PrincipalFromRequest(r)
+	if !principalOK || !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
+		return nil, nil, identity.ErrPrincipalRequired
+	}
+	localContainerTargets, err := s.listLocalContainerTargetsForAccount(r, principal.AccountScopeID)
 	if err != nil {
 		return nil, nil, err
 	}
-	remoteDeployments, err := s.listRemoteDeployTargets(r)
+	deployments, err := s.listDeployContainerTargetsForAccount(r, principal.AccountScopeID)
+	if err != nil {
+		return nil, nil, err
+	}
+	remoteDeployments, err := s.listRemoteDeployTargetsForAccount(r, principal.AccountScopeID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -201,13 +216,13 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 	currentGroupSwarmIDs := currentSwarmGroupMemberIDs(state)
 	selectedID := requestedSwarmTargetID(r)
 	if selectedID == "" {
-		selectedID, err = s.selectedSwarmDesktopTargetID(localSwarmID)
+		selectedID, err = s.selectedSwarmDesktopTargetIDForAccount(principal.AccountScopeID, principal.UserID, localSwarmID)
 		if err != nil {
 			return nil, nil, err
 		}
 	}
 
-	targets := make([]swarmTarget, 0, len(nodeTargets)+len(trustedPeerTargets)+len(deployments)+len(remoteDeployments)+len(mirroredTargets)+1)
+	targets := make([]swarmTarget, 0, len(nodeTargets)+len(trustedPeerTargets)+len(localContainerTargets)+len(deployments)+len(remoteDeployments)+len(mirroredTargets)+1)
 	targets = append(targets, swarmTarget{
 		SwarmID:      localSwarmID,
 		Name:         firstNonEmpty(strings.TrimSpace(state.Node.Name), strings.TrimSpace(cfg.SwarmName), "Local"),
@@ -248,6 +263,17 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 		targets = append(targets, node)
 		markSwarmTargetSeen(seenTargets, node)
 	}
+	for _, localContainer := range localContainerTargets {
+		if !swarmTargetInCurrentGroup(currentGroupSwarmIDs, localContainer.SwarmID) {
+			continue
+		}
+		if swarmTargetSeen(seenTargets, localContainer) {
+			continue
+		}
+		s.applyCachedSwarmTargetHealth(&localContainer)
+		targets = append(targets, localContainer)
+		markSwarmTargetSeen(seenTargets, localContainer)
+	}
 	for _, deployment := range deployments {
 		if !swarmTargetInCurrentGroup(currentGroupSwarmIDs, deployment.SwarmID) {
 			continue
@@ -271,7 +297,7 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 		markSwarmTargetSeen(seenTargets, deployment)
 	}
 	for _, mirrored := range mirroredTargets {
-		if !swarmTargetInCurrentGroup(currentGroupSwarmIDs, mirrored.SwarmID) && !s.mirroredTargetOwnedByCurrentGroupHost(mirrored, currentGroupSwarmIDs) {
+		if !swarmTargetInCurrentGroup(currentGroupSwarmIDs, mirrored.SwarmID) && !s.mirroredTargetOwnedByCurrentGroupHostForAccount(principal.AccountScopeID, mirrored, currentGroupSwarmIDs) {
 			continue
 		}
 		if swarmTargetSeen(seenTargets, mirrored) {
@@ -313,12 +339,16 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 	return targets, &current, nil
 }
 
-func (s *Server) selectedSwarmDesktopTargetID(localSwarmID string) (string, error) {
+func (s *Server) selectedSwarmDesktopTargetIDForAccount(accountScopeID, userID, localSwarmID string) (string, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return "", identity.ErrPrincipalRequired
+	}
 	localSwarmID = strings.TrimSpace(localSwarmID)
 	if s.swarmDesktopTargetSelection == nil {
 		return localSwarmID, nil
 	}
-	record, ok, err := s.swarmDesktopTargetSelection.Get()
+	record, ok, err := s.swarmDesktopTargetSelection.GetForAccount(accountScopeID)
 	if err != nil {
 		return "", err
 	}
@@ -326,7 +356,7 @@ func (s *Server) selectedSwarmDesktopTargetID(localSwarmID string) (string, erro
 		if localSwarmID == "" {
 			return "", nil
 		}
-		if _, err := s.swarmDesktopTargetSelection.Put(localSwarmID); err != nil {
+		if _, err := s.swarmDesktopTargetSelection.PutForAccount(accountScopeID, userID, localSwarmID); err != nil {
 			return "", err
 		}
 		return localSwarmID, nil
@@ -384,16 +414,54 @@ func (s *Server) listSwarmNodeTargets() ([]swarmTarget, error) {
 	return out, nil
 }
 
-func (s *Server) listDeployContainerTargets(r *http.Request) ([]swarmTarget, error) {
-	if s.deployContainers == nil {
+func (s *Server) listLocalContainerTargetsForAccount(r *http.Request, accountScopeID string) ([]swarmTarget, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, identity.ErrPrincipalRequired
+	}
+	if s.localContainers == nil {
 		return nil, nil
 	}
-	items, err := s.deployContainers.List(r.Context())
+	ctx := context.Background()
+	if r != nil {
+		ctx = r.Context()
+	}
+	items, err := s.localContainers.ListForAccount(ctx, accountScopeID)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]swarmTarget, 0, len(items))
 	for _, item := range items {
+		target, ok := mapLocalContainerTarget(item)
+		if !ok {
+			continue
+		}
+		out = append(out, target)
+	}
+	return out, nil
+}
+
+func (s *Server) listDeployContainerTargetsForAccount(r *http.Request, accountScopeID string) ([]swarmTarget, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, identity.ErrPrincipalRequired
+	}
+	if s.deployContainers == nil {
+		return nil, nil
+	}
+	ctx := context.Background()
+	if r != nil {
+		ctx = r.Context()
+	}
+	items, err := s.deployContainers.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]swarmTarget, 0, len(items))
+	for _, item := range items {
+		if strings.TrimSpace(item.AccountScopeID) != accountScopeID {
+			continue
+		}
 		target, ok := mapDeployContainerTarget(item)
 		if !ok {
 			continue
@@ -403,21 +471,17 @@ func (s *Server) listDeployContainerTargets(r *http.Request) ([]swarmTarget, err
 	return out, nil
 }
 
-func (s *Server) mirroredTargetOwnedByCurrentGroupHost(target swarmTarget, currentGroupSwarmIDs map[string]struct{}) bool {
-	if s == nil || s.topology == nil || len(currentGroupSwarmIDs) == 0 {
+func (s *Server) mirroredTargetOwnedByCurrentGroupHostForAccount(accountScopeID string, target swarmTarget, currentGroupSwarmIDs map[string]struct{}) bool {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if s == nil || s.topology == nil || accountScopeID == "" || len(currentGroupSwarmIDs) == 0 {
 		return false
 	}
 	swarmID := strings.TrimSpace(target.SwarmID)
 	if swarmID == "" {
 		return false
 	}
-	if runtimeRecord, _, err := s.topology.GetRuntime(swarmID); err == nil && swarmTargetInCurrentGroup(currentGroupSwarmIDs, runtimeRecord.OwnerHostSwarmID) {
+	if runtimeRecord, _, err := s.topology.GetRuntimeForAccount(accountScopeID, swarmID); err == nil && swarmTargetInCurrentGroup(currentGroupSwarmIDs, runtimeRecord.OwnerHostSwarmID) {
 		return true
-	}
-	if _, err := s.topology.EnsureSnapshot(); err == nil {
-		if runtimeRecord, _, err := s.topology.GetRuntime(swarmID); err == nil && swarmTargetInCurrentGroup(currentGroupSwarmIDs, runtimeRecord.OwnerHostSwarmID) {
-			return true
-		}
 	}
 	if s.deployContainers == nil {
 		return false
@@ -427,6 +491,9 @@ func (s *Server) mirroredTargetOwnedByCurrentGroupHost(target swarmTarget, curre
 		return false
 	}
 	for _, deployment := range deployments {
+		if strings.TrimSpace(deployment.AccountScopeID) != accountScopeID {
+			continue
+		}
 		if strings.EqualFold(strings.TrimSpace(deployment.ChildSwarmID), swarmID) && swarmTargetInCurrentGroup(currentGroupSwarmIDs, deployment.HostSwarmID) {
 			return true
 		}
@@ -446,7 +513,11 @@ func listTrustedPeerTargets(peers []swarmruntime.TrustedPeer) []swarmTarget {
 	return out
 }
 
-func (s *Server) listRemoteDeployTargets(r *http.Request) ([]swarmTarget, error) {
+func (s *Server) listRemoteDeployTargetsForAccount(r *http.Request, accountScopeID string) ([]swarmTarget, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, identity.ErrPrincipalRequired
+	}
 	if s.remoteDeploys == nil {
 		return nil, nil
 	}
@@ -463,12 +534,11 @@ func (s *Server) listRemoteDeployTargets(r *http.Request) ([]swarmTarget, error)
 		return nil, err
 	}
 	out := make([]swarmTarget, 0, len(items))
-	for _, item := range items {
-		target, ok := mapRemoteDeployTarget(item)
-		if !ok {
-			continue
-		}
-		out = append(out, target)
+	for range items {
+		// Remote deploy sessions do not yet carry account ownership; expose none
+		// through the account-scoped target runtime path rather than falling back
+		// to legacy global remote deploy state.
+		continue
 	}
 	return out, nil
 }
@@ -764,6 +834,28 @@ func (s *Server) resolveMirroredTargetRoute(target *swarmTarget) {
 	if !target.Online {
 		target.Selectable = false
 	}
+}
+
+func mapLocalContainerTarget(item localcontainers.Container) (swarmTarget, bool) {
+	swarmID := strings.TrimSpace(item.ID)
+	if swarmID == "" {
+		return swarmTarget{}, false
+	}
+	status := strings.TrimSpace(item.Status)
+	online := !strings.EqualFold(status, "stopped") && strings.TrimSpace(item.HostAPIBaseURL) != ""
+	return swarmTarget{
+		SwarmID:      swarmID,
+		Name:         firstNonEmpty(strings.TrimSpace(item.Name), strings.TrimSpace(item.ContainerName), swarmID),
+		Role:         "child",
+		Relationship: swarmruntime.RelationshipChild,
+		Kind:         "local-container",
+		AttachStatus: status,
+		Online:       online,
+		Selectable:   online,
+		BackendURL:   strings.TrimSpace(item.HostAPIBaseURL),
+		DesktopURL:   strings.TrimSpace(item.HostAPIBaseURL),
+		LastError:    strings.TrimSpace(item.Warning),
+	}, true
 }
 
 func mapDeployContainerTarget(item deployruntime.ContainerDeployment) (swarmTarget, bool) {

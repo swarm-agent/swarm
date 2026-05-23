@@ -82,7 +82,8 @@ const (
 	KeySwarmInviteTokenPrefix                   = "swarm/invite_token/"
 	KeySwarmEnrollmentPrefix                    = "swarm/enrollment/"
 	KeySwarmTrustedPeerPrefix                   = "swarm/trusted_peer/"
-	KeySwarmDesktopTargetCurrent                = "swarm/desktop_target/current"
+	KeySwarmDesktopTargetCurrent                = "swarm/desktop_target/current" // legacy global current target; retained for explicit migration only.
+	KeySwarmDesktopTargetCurrentAccountPrefix   = "swarm/desktop_target/current_by_account/"
 	KeyTopologyRuntimePrefix                    = "topology/runtime/" // legacy global prefix; retained for explicit migration only.
 	KeyTopologyRuntimeAccountPrefix             = "topology/runtime_by_account/"
 	KeyTopologyHostContainerPrefix              = "topology/host_container/" // legacy global prefix; retained for explicit migration only.
@@ -319,6 +320,18 @@ func KeySessionRoute(sessionID string) string {
 
 func SessionRoutePrefix() string {
 	return "session_route/"
+}
+
+func KeySwarmDesktopTargetCurrentForAccount(accountScopeID string) string {
+	return KeySwarmDesktopTargetCurrentAccountPrefix + keyPart(accountScopeID)
+}
+
+func SwarmDesktopTargetCurrentPrefixForAccount(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeySwarmDesktopTargetCurrentAccountPrefix
+	}
+	return fmt.Sprintf("%s%s", KeySwarmDesktopTargetCurrentAccountPrefix, accountPart)
 }
 
 func KeyTopologyRuntime(swarmID string) string {

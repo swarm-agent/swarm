@@ -19,10 +19,12 @@ func TestSwarmTopologySnapshotUsesSeededCanonicalSnapshot(t *testing.T) {
 	defer func() { _ = store.Close() }()
 
 	topologyStore := pebblestore.NewTopologyStore(store)
-	runtimeRecord, err := topologyStore.PutRuntime(pebblestore.TopologyRuntimeRecord{
-		SwarmID:      "child-1",
-		Name:         "Child One",
-		Relationship: "child",
+	runtimeRecord, err := topologyStore.PutRuntimeForAccount(testAccountScopeID, pebblestore.TopologyRuntimeRecord{
+		SwarmID:        "child-1",
+		UserID:         testUserID,
+		AccountScopeID: testAccountScopeID,
+		Name:           "Child One",
+		Relationship:   "child",
 	})
 	if err != nil {
 		t.Fatalf("put runtime: %v", err)
@@ -38,7 +40,7 @@ func TestSwarmTopologySnapshotUsesSeededCanonicalSnapshot(t *testing.T) {
 	server := NewServer("", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	server.SetTopologyService(topologySvc)
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/swarm/topology", nil)
+	req := requestWithTestPrincipal(httptest.NewRequest(http.MethodGet, "/v1/swarm/topology", nil))
 	rr := httptest.NewRecorder()
 	server.handleSwarmTopologySnapshot(rr, req)
 
@@ -71,16 +73,20 @@ func TestSwarmTopologyRuntimeOwnerUsesSeededCanonicalAttachment(t *testing.T) {
 	defer func() { _ = store.Close() }()
 
 	topologyStore := pebblestore.NewTopologyStore(store)
-	runtimeRecord, err := topologyStore.PutRuntime(pebblestore.TopologyRuntimeRecord{
-		SwarmID:      "child-1",
-		Name:         "Child One",
-		Relationship: "child",
+	runtimeRecord, err := topologyStore.PutRuntimeForAccount(testAccountScopeID, pebblestore.TopologyRuntimeRecord{
+		SwarmID:        "child-1",
+		UserID:         testUserID,
+		AccountScopeID: testAccountScopeID,
+		Name:           "Child One",
+		Relationship:   "child",
 	})
 	if err != nil {
 		t.Fatalf("put runtime: %v", err)
 	}
-	hostContainerRecord, err := topologyStore.PutHostContainer(pebblestore.TopologyHostContainerRecord{
+	hostContainerRecord, err := topologyStore.PutHostContainerForAccount(testAccountScopeID, pebblestore.TopologyHostContainerRecord{
 		HostContainerID:     "manager-1:ctr-1",
+		UserID:              testUserID,
+		AccountScopeID:      testAccountScopeID,
 		HostSwarmID:         "manager-1",
 		RuntimeContainerRef: "ctr-1",
 		ContainerName:       "app",
@@ -88,8 +94,10 @@ func TestSwarmTopologyRuntimeOwnerUsesSeededCanonicalAttachment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("put host container: %v", err)
 	}
-	attachmentRecord, err := topologyStore.PutAttachment(pebblestore.TopologyAttachmentRecord{
+	attachmentRecord, err := topologyStore.PutAttachmentForAccount(testAccountScopeID, pebblestore.TopologyAttachmentRecord{
 		AttachmentID:    "manager-1:ctr-1=>child-1",
+		UserID:          testUserID,
+		AccountScopeID:  testAccountScopeID,
 		HostContainerID: hostContainerRecord.HostContainerID,
 		RuntimeSwarmID:  runtimeRecord.SwarmID,
 		State:           "attached",
@@ -110,7 +118,7 @@ func TestSwarmTopologyRuntimeOwnerUsesSeededCanonicalAttachment(t *testing.T) {
 	server := NewServer("", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	server.SetTopologyService(topologySvc)
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/swarm/topology/runtime-owner?runtime_swarm_id=child-1", nil)
+	req := requestWithTestPrincipal(httptest.NewRequest(http.MethodGet, "/v1/swarm/topology/runtime-owner?runtime_swarm_id=child-1", nil))
 	rr := httptest.NewRecorder()
 	server.handleSwarmTopologyRuntimeOwner(rr, req)
 

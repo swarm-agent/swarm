@@ -142,7 +142,7 @@ func TestManagedHostGitSyncApplyRejectsMissingDestructiveBeforePeer(t *testing.T
 	req := httptest.NewRequest(http.MethodPost, managedHostGitSyncApplyPath, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
+	server.Handler().ServeHTTP(rec, requestWithTestPrincipal(req))
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d want %d body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
@@ -189,7 +189,7 @@ func TestManagedHostGitSyncApplyRoutesThroughTopologyWorkspaceBinding(t *testing
 	req := httptest.NewRequest(http.MethodPost, managedHostGitSyncApplyPath, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
+	server.Handler().ServeHTTP(rec, requestWithTestPrincipal(req))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
