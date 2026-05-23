@@ -3113,6 +3113,11 @@ func (s *Service) finalizeChildAttach(ctx context.Context, cfg startupconfig.Fil
 	pairing.LastDecision = "approved"
 	pairing.LastDecisionReason = ""
 	pairing.LastUpdatedByRole = "child"
+	if s.agents != nil && strings.TrimSpace(pairing.AccountScopeID) != "" {
+		if err := s.agents.EnsureDefaultsForAccount(pairing.AccountScopeID); err != nil {
+			return err
+		}
+	}
 	if _, err := s.swarmStore.PutLocalPairing(pairing); err != nil {
 		return err
 	}
@@ -4050,8 +4055,14 @@ func (s *Service) principalForChildBootstrap(ctx context.Context, cfg startupcon
 		if !cfg.Child || !cfg.DeployContainer.Enabled {
 			return identity.Principal{}, identity.ErrPrincipalRequired
 		}
-		if _, err := s.identity.BootstrapFirstIdentity(firstNonEmpty(strings.TrimSpace(cfg.SwarmName), strings.TrimSpace(cfg.DeployContainer.DeploymentID), "deploy-container-child")); err != nil {
+		bootstrapResult, err := s.identity.BootstrapFirstIdentity(firstNonEmpty(strings.TrimSpace(cfg.SwarmName), strings.TrimSpace(cfg.DeployContainer.DeploymentID), "deploy-container-child"))
+		if err != nil {
 			return identity.Principal{}, err
+		}
+		if s.agents != nil {
+			if _, _, _, err := s.agents.RestoreDefaultsForAccount(bootstrapResult.AccountScope.ID); err != nil {
+				return identity.Principal{}, err
+			}
 		}
 		summary, err = s.identity.StateSummary()
 		if err != nil {
