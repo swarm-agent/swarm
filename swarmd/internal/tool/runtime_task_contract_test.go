@@ -36,43 +36,47 @@ func TestTaskDefinitionRequiresExplicitSavedAgentAssignments(t *testing.T) {
 	if !ok {
 		t.Fatalf("task launches item schema missing: %#v", launches)
 	}
-	allOf, ok := items["allOf"].([]any)
-	if !ok || len(allOf) != 2 {
-		t.Fatalf("task launches must require agent and assignment groups, got %#v", items["allOf"])
+	anyOf, ok := items["anyOf"].([]any)
+	if !ok || len(anyOf) != 6 {
+		t.Fatalf("task launches must require saved-agent plus assignment combinations in one anyOf, got %#v", items["anyOf"])
 	}
-	if !schemaRequirementGroupContains(allOf[0], "subagent_type", "agent", "purpose") {
-		t.Fatalf("task launches missing saved-agent requirement group: %#v", allOf[0])
-	}
-	if !schemaRequirementGroupContains(allOf[1], "meta_prompt", "role") {
-		t.Fatalf("task launches missing assignment requirement group: %#v", allOf[1])
+	for _, agentKey := range []string{"subagent_type", "agent", "purpose"} {
+		for _, assignmentKey := range []string{"meta_prompt", "role"} {
+			if !schemaAnyOfContainsRequiredSet(anyOf, agentKey, assignmentKey) {
+				t.Fatalf("task launches missing required combination %s + %s: %#v", agentKey, assignmentKey, anyOf)
+			}
+		}
 	}
 }
 
-func schemaRequirementGroupContains(group any, required ...string) bool {
-	object, ok := group.(map[string]any)
-	if !ok {
-		return false
+func schemaAnyOfContainsRequiredSet(anyOf []any, required ...string) bool {
+	want := map[string]bool{}
+	for _, value := range required {
+		want[value] = true
 	}
-	anyOf, ok := object["anyOf"].([]any)
-	if !ok {
-		return false
-	}
-	seen := map[string]bool{}
 	for _, item := range anyOf {
 		entry, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
 		values, ok := entry["required"].([]string)
-		if !ok || len(values) != 1 {
+		if !ok || len(values) != len(required) {
 			continue
 		}
-		seen[values[0]] = true
-	}
-	for _, value := range required {
-		if !seen[value] {
-			return false
+		seen := map[string]bool{}
+		for _, value := range values {
+			seen[value] = true
+		}
+		matches := true
+		for value := range want {
+			if !seen[value] {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			return true
 		}
 	}
-	return true
+	return false
 }
