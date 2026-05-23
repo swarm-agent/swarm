@@ -1177,17 +1177,6 @@ func (r *Runtime) Definitions() []Definition {
 								"meta_prompt":   map[string]any{"type": "string", "description": "Required per-child assignment shown in the approval modal."},
 								"role":          map[string]any{"type": "string", "description": "Alias for meta_prompt."},
 							},
-							"allOf": []any{
-								map[string]any{"anyOf": []any{
-									map[string]any{"required": []string{"subagent_type"}},
-									map[string]any{"required": []string{"agent"}},
-									map[string]any{"required": []string{"purpose"}},
-								}},
-								map[string]any{"anyOf": []any{
-									map[string]any{"required": []string{"meta_prompt"}},
-									map[string]any{"required": []string{"role"}},
-								}},
-							},
 							"additionalProperties": false,
 						},
 					},

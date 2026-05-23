@@ -32,8 +32,45 @@ func TestParseTaskCallArgumentsRequiresExplicitLaunchAgent(t *testing.T) {
 	}
 }
 
+func TestParseTaskCallArgumentsRequiresPerLaunchAgentAndAssignment(t *testing.T) {
+	tests := []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{
+			name: "missing assignment",
+			args: map[string]any{
+				"prompt": "inspect the repo",
+				"launches": []any{
+					map[string]any{"subagent_type": "explorer"},
+				},
+			},
+			want: "task launches[0] requires meta_prompt or role assignment",
+		},
+		{
+			name: "missing agent",
+			args: map[string]any{
+				"prompt": "inspect the repo",
+				"launches": []any{
+					map[string]any{"meta_prompt": "map the relevant files"},
+				},
+			},
+			want: "task launches[0] requires subagent_type, agent, or purpose",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseTaskCallArguments(mustJSON(t, tc.args))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q error, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
 func TestParseTaskCallArgumentsRejectsLaunchTimeTrustFields(t *testing.T) {
-	for _, tc := range []struct {
+	tests := []struct {
 		name string
 		args map[string]any
 	}{
@@ -50,36 +87,43 @@ func TestParseTaskCallArgumentsRejectsLaunchTimeTrustFields(t *testing.T) {
 			name: "per launch execution setting",
 			args: map[string]any{
 				"prompt": "inspect the repo",
-				"launches": []any{map[string]any{
-					"subagent_type":     "explorer",
-					"meta_prompt":       "map the relevant files",
-					"execution_setting": "readwrite",
-				}},
+				"launches": []any{
+					map[string]any{
+						"subagent_type":     "explorer",
+						"meta_prompt":       "map the relevant files",
+						"execution_setting": "readwrite",
+					},
+				},
 			},
 		},
 		{
 			name: "per launch tool contract",
 			args: map[string]any{
 				"prompt": "inspect the repo",
-				"launches": []any{map[string]any{
-					"subagent_type": "explorer",
-					"meta_prompt":   "map the relevant files",
-					"tool_contract": map[string]any{"preset": "all"},
-				}},
+				"launches": []any{
+					map[string]any{
+						"subagent_type": "explorer",
+						"meta_prompt":   "map the relevant files",
+						"tool_contract": map[string]any{"preset": "all"},
+					},
+				},
 			},
 		},
 		{
 			name: "per launch tool scope",
 			args: map[string]any{
 				"prompt": "inspect the repo",
-				"launches": []any{map[string]any{
-					"subagent_type": "explorer",
-					"meta_prompt":   "map the relevant files",
-					"tool_scope":    map[string]any{"allow_tools": []any{"bash"}},
-				}},
+				"launches": []any{
+					map[string]any{
+						"subagent_type": "explorer",
+						"meta_prompt":   "map the relevant files",
+						"tool_scope":    map[string]any{"allow_tools": []any{"bash"}},
+					},
+				},
 			},
 		},
-	} {
+	}
+	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := parseTaskCallArguments(mustJSON(t, tc.args))
 			if err == nil || !strings.Contains(err.Error(), "cannot set launch-time trust, execution, or tool field") {

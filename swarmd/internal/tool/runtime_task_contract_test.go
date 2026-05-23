@@ -2,7 +2,7 @@ package tool
 
 import "testing"
 
-func TestTaskDefinitionRequiresExplicitSavedAgentAssignments(t *testing.T) {
+func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(t *testing.T) {
 	rt := NewRuntime(1)
 	var taskDefinition Definition
 	for _, definition := range rt.Definitions() {
@@ -36,43 +36,26 @@ func TestTaskDefinitionRequiresExplicitSavedAgentAssignments(t *testing.T) {
 	if !ok {
 		t.Fatalf("task launches item schema missing: %#v", launches)
 	}
-	allOf, ok := items["allOf"].([]any)
-	if !ok || len(allOf) != 2 {
-		t.Fatalf("task launches must require agent and assignment groups, got %#v", items["allOf"])
+	for _, key := range []string{"subagent_type", "agent", "purpose", "meta_prompt", "role"} {
+		if _, ok := itemsProperty(items, key); !ok {
+			t.Fatalf("task launches item missing property %q", key)
+		}
 	}
-	if !schemaRequirementGroupContains(allOf[0], "subagent_type", "agent", "purpose") {
-		t.Fatalf("task launches missing saved-agent requirement group: %#v", allOf[0])
+	for _, key := range []string{"allOf", "anyOf", "oneOf"} {
+		if _, ok := items[key]; ok {
+			t.Fatalf("task launches provider schema must not enforce runtime-only %s requirements: %#v", key, items[key])
+		}
 	}
-	if !schemaRequirementGroupContains(allOf[1], "meta_prompt", "role") {
-		t.Fatalf("task launches missing assignment requirement group: %#v", allOf[1])
+	if _, ok := items["required"]; ok {
+		t.Fatalf("task launches provider schema must not require agent/assignment fields: %#v", items["required"])
 	}
 }
 
-func schemaRequirementGroupContains(group any, required ...string) bool {
-	object, ok := group.(map[string]any)
+func itemsProperty(items map[string]any, key string) (any, bool) {
+	properties, ok := items["properties"].(map[string]any)
 	if !ok {
-		return false
+		return nil, false
 	}
-	anyOf, ok := object["anyOf"].([]any)
-	if !ok {
-		return false
-	}
-	seen := map[string]bool{}
-	for _, item := range anyOf {
-		entry, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		values, ok := entry["required"].([]string)
-		if !ok || len(values) != 1 {
-			continue
-		}
-		seen[values[0]] = true
-	}
-	for _, value := range required {
-		if !seen[value] {
-			return false
-		}
-	}
-	return true
+	value, ok := properties[key]
+	return value, ok
 }

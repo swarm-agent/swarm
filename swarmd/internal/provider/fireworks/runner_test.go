@@ -1,6 +1,10 @@
 package fireworks
 
-import "testing"
+import (
+	"testing"
+
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
+)
 
 func TestSanitizeFireworksToolParametersDropsNilRequired(t *testing.T) {
 	input := map[string]any{
@@ -66,5 +70,45 @@ func TestSanitizeFireworksToolParametersDefaultsEmptyObjectSchema(t *testing.T) 
 	}
 	if len(properties) != 0 {
 		t.Fatalf("properties = %#v, want empty", properties)
+	}
+}
+
+func TestBuildChatCompletionRequestTaskToolHasNoNestedCombinators(t *testing.T) {
+	req := buildChatCompletionRequest(provideriface.Request{
+		Model: "test-model",
+		Tools: []provideriface.ToolDefinition{{
+			Name: "task",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"prompt": map[string]any{"type": "string"},
+					"launches": map[string]any{
+						"type": "array",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"subagent_type": map[string]any{"type": "string"},
+								"meta_prompt":   map[string]any{"type": "string"},
+							},
+							"additionalProperties": false,
+						},
+					},
+				},
+				"required":             []string{"prompt"},
+				"additionalProperties": false,
+			},
+		}},
+	})
+	if len(req.Tools) != 1 {
+		t.Fatalf("tool count = %d, want 1", len(req.Tools))
+	}
+	parameters := req.Tools[0].Function.Parameters
+	properties := parameters["properties"].(map[string]any)
+	launches := properties["launches"].(map[string]any)
+	items := launches["items"].(map[string]any)
+	for _, key := range []string{"allOf", "anyOf", "oneOf"} {
+		if _, ok := items[key]; ok {
+			t.Fatalf("task launches item schema contains %s: %#v", key, items[key])
+		}
 	}
 }
