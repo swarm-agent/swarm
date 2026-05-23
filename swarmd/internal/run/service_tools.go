@@ -25,6 +25,9 @@ type taskLaunchPrepared struct {
 	LaunchIndex          int
 	RequestedSubagent    string
 	MetaPrompt           string
+	AssignmentLabel      string
+	SubagentProvider     string
+	SubagentModel        string
 	SubagentProfile      pebblestore.AgentProfile
 	ChildSession         pebblestore.SessionSnapshot
 	ChildMode            string
@@ -42,6 +45,9 @@ type taskLaunchOutcome struct {
 	RequestedSubagent  string
 	ResolvedSubagent   string
 	MetaPrompt         string
+	AssignmentLabel    string
+	SubagentProvider   string
+	SubagentModel      string
 	ChildSessionID     string
 	ChildMode          string
 	WorkspacePath      string
@@ -89,6 +95,9 @@ func buildTaskLaunchOutcome(launch taskLaunchPrepared) taskLaunchOutcome {
 		RequestedSubagent:  requested,
 		ResolvedSubagent:   resolved,
 		MetaPrompt:         metaPrompt,
+		AssignmentLabel:    strings.TrimSpace(launch.AssignmentLabel),
+		SubagentProvider:   strings.TrimSpace(launch.SubagentProvider),
+		SubagentModel:      strings.TrimSpace(launch.SubagentModel),
 		ChildSessionID:     strings.TrimSpace(launch.ChildSession.ID),
 		ChildMode:          strings.TrimSpace(launch.ChildMode),
 		WorkspacePath:      strings.TrimSpace(launch.ChildSession.WorkspacePath),
@@ -275,7 +284,9 @@ func (s *Service) prepareDelegatedSubagentLaunch(parentSession pebblestore.Sessi
 		subagentProfile.Name = "explorer"
 	}
 
-	childTitle := fmt.Sprintf("%s #%d (@%s subagent)", truncateRunes(description, 64), launch.LaunchIndex, strings.TrimSpace(subagentProfile.Name))
+	preference := applyAgentPreferenceOverrides(parentSession.Preference, subagentProfile)
+	assignmentLabel := taskAssignmentLabel(launch.AssignmentLabel, launch.MetaPrompt, description, strings.TrimSpace(subagentProfile.Name))
+	childTitle := assignmentLabel
 	childWorkspacePath := strings.TrimSpace(parentSession.WorkspacePath)
 	childWorkspaceName := strings.TrimSpace(parentSession.WorkspaceName)
 	childWorktreeEnabled := false
@@ -287,8 +298,11 @@ func (s *Service) prepareDelegatedSubagentLaunch(parentSession pebblestore.Sessi
 	childMetadata := map[string]any{
 		"workspace_id":       worktreeruntime.WorkspaceIdentityForSession(childSessionID),
 		"runtime_state":      "standby",
-		"title_pending":      true,
+		"title_pending":      false,
 		"title_locked":       true,
+		"assignment_label":   assignmentLabel,
+		"subagent_provider":  strings.TrimSpace(preference.Provider),
+		"subagent_model":     strings.TrimSpace(preference.Model),
 		"parent_session_id":  strings.TrimSpace(parentSession.ID),
 		"parent_title":       strings.TrimSpace(parentSession.Title),
 		"lineage_kind":       "delegated_subagent",
@@ -324,11 +338,8 @@ func (s *Service) prepareDelegatedSubagentLaunch(parentSession pebblestore.Sessi
 		Title:         childTitle,
 		WorkspacePath: childWorkspacePath,
 		WorkspaceName: childWorkspaceName,
-		Preference: func() *pebblestore.ModelPreference {
-			preference := applyAgentPreferenceOverrides(parentSession.Preference, subagentProfile)
-			return &preference
-		}(),
-		Metadata: childMetadata,
+		Preference:    &preference,
+		Metadata:      childMetadata,
 	}
 	if childWorktreeEnabled {
 		createOptions.Worktree = &sessionruntime.CreateSessionWorktree{
@@ -354,6 +365,9 @@ func (s *Service) prepareDelegatedSubagentLaunch(parentSession pebblestore.Sessi
 	}
 
 	launch.RequestedSubagent = requestedSubagent
+	launch.AssignmentLabel = assignmentLabel
+	launch.SubagentProvider = strings.TrimSpace(preference.Provider)
+	launch.SubagentModel = strings.TrimSpace(preference.Model)
 	launch.SubagentProfile = subagentProfile
 	launch.ChildSession = childSession
 	launch.ChildMode = childMode
@@ -1656,6 +1670,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			LaunchIndex:       i + 1,
 			RequestedSubagent: requestedSubagent,
 			MetaPrompt:        metaPrompt,
+			AssignmentLabel:   spec.AssignmentLabel,
 		}, description, strings.TrimSpace(req.TargetedSubagentName))
 		if prepareErr != nil {
 			return "", prepareErr
@@ -1697,6 +1712,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		if len(launches) > 0 {
 			entry["subagent"] = strings.TrimSpace(launches[0].ResolvedSubagent)
 			entry["requested_subagent"] = strings.TrimSpace(launches[0].RequestedSubagent)
+			entry["assignment_label"] = strings.TrimSpace(launches[0].AssignmentLabel)
+			entry["subagent_provider"] = strings.TrimSpace(launches[0].SubagentProvider)
+			entry["subagent_model"] = strings.TrimSpace(launches[0].SubagentModel)
 			entry["child_session_id"] = strings.TrimSpace(launches[0].ChildSessionID)
 			entry["child_mode"] = strings.TrimSpace(launches[0].ChildMode)
 			entry["workspace_path"] = strings.TrimSpace(launches[0].WorkspacePath)
@@ -1721,6 +1739,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				"requested_subagent":   strings.TrimSpace(launch.RequestedSubagent),
 				"subagent":             strings.TrimSpace(launch.ResolvedSubagent),
 				"meta_prompt":          strings.TrimSpace(launch.MetaPrompt),
+				"assignment_label":     strings.TrimSpace(launch.AssignmentLabel),
+				"subagent_provider":    strings.TrimSpace(launch.SubagentProvider),
+				"subagent_model":       strings.TrimSpace(launch.SubagentModel),
 				"child_session_id":     strings.TrimSpace(launch.ChildSessionID),
 				"child_mode":           strings.TrimSpace(launch.ChildMode),
 				"workspace_path":       strings.TrimSpace(launch.WorkspacePath),
@@ -2010,6 +2031,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			"subagent":                   strings.TrimSpace(launch.ResolvedSubagent),
 			"agent_type":                 strings.TrimSpace(launch.ResolvedSubagent),
 			"meta_prompt":                strings.TrimSpace(launch.MetaPrompt),
+			"assignment_label":           strings.TrimSpace(launch.AssignmentLabel),
+			"subagent_provider":          strings.TrimSpace(launch.SubagentProvider),
+			"subagent_model":             strings.TrimSpace(launch.SubagentModel),
 			"session_id":                 strings.TrimSpace(launch.ChildSessionID),
 			"mode":                       strings.TrimSpace(launch.ChildMode),
 			"workspace_path":             strings.TrimSpace(launch.WorkspacePath),
@@ -2093,6 +2117,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		payload["subagent"] = strings.TrimSpace(first.ResolvedSubagent)
 		payload["agent_type"] = strings.TrimSpace(first.ResolvedSubagent)
 		payload["requested_subagent"] = strings.TrimSpace(first.RequestedSubagent)
+		payload["assignment_label"] = strings.TrimSpace(first.AssignmentLabel)
+		payload["subagent_provider"] = strings.TrimSpace(first.SubagentProvider)
+		payload["subagent_model"] = strings.TrimSpace(first.SubagentModel)
 		payload["session_id"] = strings.TrimSpace(first.ChildSessionID)
 		payload["mode"] = strings.TrimSpace(first.ChildMode)
 		payload["workspace_path"] = strings.TrimSpace(first.WorkspacePath)

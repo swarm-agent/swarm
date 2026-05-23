@@ -28,6 +28,7 @@ type taskCallArguments struct {
 type taskLaunchSpec struct {
 	RequestedSubagentType string
 	MetaPrompt            string
+	AssignmentLabel       string
 	SourceArguments       map[string]any
 }
 
@@ -101,6 +102,9 @@ type taskLaunchManifestRow struct {
 	AllowBash             bool           `json:"allow_bash"`
 	ReportMaxChars        int            `json:"report_max_chars"`
 	MetaPrompt            string         `json:"meta_prompt,omitempty"`
+	AssignmentLabel       string         `json:"assignment_label,omitempty"`
+	SubagentProvider      string         `json:"subagent_provider,omitempty"`
+	SubagentModel         string         `json:"subagent_model,omitempty"`
 	ChildTitlePreview     string         `json:"child_title_preview,omitempty"`
 	ChildMode             string         `json:"effective_child_mode"`
 	DisabledTools         []string       `json:"disabled_tools,omitempty"`
@@ -159,7 +163,14 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 				mapString(raw, "agent"),
 				mapString(raw, "purpose"),
 			)),
-			MetaPrompt:      strings.TrimSpace(firstNonEmptyString(mapString(raw, "meta_prompt"), mapString(raw, "role"))),
+			MetaPrompt: strings.TrimSpace(firstNonEmptyString(
+				mapString(raw, "meta_prompt"),
+				mapString(raw, "role"),
+			)),
+			AssignmentLabel: strings.TrimSpace(firstNonEmptyString(
+				mapString(raw, "assignment_label"),
+				mapString(raw, "label"),
+			)),
 			SourceArguments: cloneGenericMap(raw),
 		}
 		if launch.RequestedSubagentType == "" {
@@ -203,6 +214,50 @@ func effectiveTaskChildMode(sessionMode string) string {
 		childMode = sessionruntime.ModeAuto
 	}
 	return childMode
+}
+
+func taskAssignmentLabel(explicitLabel, metaPrompt, description, resolvedSubagent string) string {
+	candidate := strings.TrimSpace(explicitLabel)
+	if candidate == "" {
+		candidate = strings.TrimSpace(metaPrompt)
+	}
+	if candidate == "" {
+		candidate = strings.TrimSpace(description)
+	}
+	if candidate == "" {
+		candidate = strings.TrimSpace(resolvedSubagent)
+	}
+	candidate = strings.NewReplacer("\r", " ", "\n", " ", "\t", " ").Replace(candidate)
+	candidate = strings.Trim(candidate, " \"'`*-:;,.()[]{}")
+	lower := strings.ToLower(candidate)
+	for _, prefix := range []string{"meta-prompt:", "meta prompt:", "assignment:", "label:", "role:", "task:"} {
+		if strings.HasPrefix(lower, prefix) {
+			candidate = strings.TrimSpace(candidate[len(prefix):])
+			candidate = strings.Trim(candidate, " \"'`*-:;,.()[]{}")
+			lower = strings.ToLower(candidate)
+			break
+		}
+	}
+	if strings.HasPrefix(lower, "use the ") && (strings.HasSuffix(lower, " role") || strings.HasSuffix(lower, " role.")) {
+		candidate = strings.TrimSpace(candidate[len("use the "):])
+		candidate = strings.TrimSuffix(candidate, ".")
+		candidate = strings.TrimSuffix(candidate, " role")
+		candidate = strings.TrimSpace(candidate)
+	}
+	fields := strings.Fields(candidate)
+	if len(fields) > 6 {
+		candidate = strings.Join(fields[:6], " ")
+	} else if len(fields) > 0 {
+		candidate = strings.Join(fields, " ")
+	}
+	candidate = truncateRunes(candidate, 48)
+	if candidate == "" {
+		candidate = strings.TrimSpace(resolvedSubagent)
+	}
+	if candidate == "" {
+		candidate = "Delegated task"
+	}
+	return candidate
 }
 
 func taskDisabledToolNames(allowBash bool) []string {
@@ -568,8 +623,10 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		}
 		resolvedName := requested
 		resolvedErr := ""
+		subagentProfile := pebblestore.AgentProfile{Name: requested}
 		if s != nil {
 			if profile, err := s.resolveTaskSubagentForAccount(parentSession.AccountScopeID, requested); err == nil {
+				subagentProfile = profile
 				if strings.TrimSpace(profile.Name) != "" {
 					resolvedName = strings.TrimSpace(profile.Name)
 				}
@@ -588,7 +645,9 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		if metaPrompt == "" {
 			metaPrompt = fmt.Sprintf("Use the %s role.", resolvedName)
 		}
-		childTitle := fmt.Sprintf("%s (@%s subagent)", truncateRunes(parsed.Description, 80), strings.TrimSpace(resolvedName))
+		assignmentLabel := taskAssignmentLabel(launch.AssignmentLabel, metaPrompt, parsed.Description, resolvedName)
+		preference := applyAgentPreferenceOverrides(parentSession.Preference, subagentProfile)
+		childTitle := assignmentLabel
 		launches = append(launches, taskLaunchManifestRow{
 			Description:           parsed.Description,
 			RequestedSubagentType: requested,
@@ -598,6 +657,9 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			AllowBash:             parsed.AllowBash,
 			ReportMaxChars:        parsed.ReportMaxChars,
 			MetaPrompt:            metaPrompt,
+			AssignmentLabel:       assignmentLabel,
+			SubagentProvider:      strings.TrimSpace(preference.Provider),
+			SubagentModel:         strings.TrimSpace(preference.Model),
 			ChildTitlePreview:     childTitle,
 			ChildMode:             childMode,
 			DisabledTools:         disabledTools,
