@@ -132,6 +132,9 @@ func NewTopologyStore(store *Store) *TopologyStore {
 	return &TopologyStore{store: store}
 }
 
+// ReplaceSnapshot rewrites legacy/global topology keys for explicit migration/internal rebuilds only.
+// Account-owned product topology must use ReplaceSnapshotForAccount so an account update
+// cannot delete another account's topology records or fall back to global mutable keys.
 func (s *TopologyStore) ReplaceSnapshot(snapshot TopologySnapshot) error {
 	if s == nil || s.store == nil {
 		return errors.New("topology store is not configured")

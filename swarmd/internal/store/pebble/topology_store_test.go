@@ -303,3 +303,183 @@ func TestTopologyStoreWriterValidation(t *testing.T) {
 		t.Fatal("expected session route validation error")
 	}
 }
+
+func TestTopologyStoreAccountScopedAPIsIsolationNoFallback(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "topology-account.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	topology := NewTopologyStore(store)
+	accountA := "account-a"
+	accountB := "account-b"
+
+	if _, err := topology.PutRuntime(TopologyRuntimeRecord{SwarmID: "legacy-runtime", UserID: "legacy-user", AccountScopeID: accountA, Name: "legacy"}); err != nil {
+		t.Fatalf("put legacy runtime: %v", err)
+	}
+	if _, err := topology.PutHostContainer(TopologyHostContainerRecord{HostContainerID: "legacy-host:ctr", UserID: "legacy-user", AccountScopeID: accountA, HostSwarmID: "legacy-host", RuntimeContainerRef: "ctr", Name: "legacy"}); err != nil {
+		t.Fatalf("put legacy host container: %v", err)
+	}
+	if _, err := topology.PutAttachment(TopologyAttachmentRecord{AttachmentID: "legacy-host:ctr=>legacy-runtime", UserID: "legacy-user", AccountScopeID: accountA, HostContainerID: "legacy-host:ctr", RuntimeSwarmID: "legacy-runtime"}); err != nil {
+		t.Fatalf("put legacy attachment: %v", err)
+	}
+	if _, err := topology.PutWorkspaceBinding(TopologyWorkspaceBindingRecord{BindingID: "legacy-binding", UserID: "legacy-user", AccountScopeID: accountA, SourceWorkspacePath: "/legacy"}); err != nil {
+		t.Fatalf("put legacy workspace binding: %v", err)
+	}
+	if _, err := topology.PutSessionRoute(TopologySessionRouteRecord{SessionID: "legacy-session", UserID: "legacy-user", AccountScopeID: accountA}); err != nil {
+		t.Fatalf("put legacy session route: %v", err)
+	}
+
+	if _, err := topology.PutRuntimeForAccount(accountA, TopologyRuntimeRecord{SwarmID: "shared-runtime", UserID: "user-a", AccountScopeID: accountA, Name: "runtime-a"}); err != nil {
+		t.Fatalf("put account A runtime: %v", err)
+	}
+	if _, err := topology.PutRuntimeForAccount(accountB, TopologyRuntimeRecord{SwarmID: "shared-runtime", UserID: "user-b", AccountScopeID: accountB, Name: "runtime-b"}); err != nil {
+		t.Fatalf("put account B runtime: %v", err)
+	}
+	if _, err := topology.PutHostContainerForAccount(accountA, TopologyHostContainerRecord{HostContainerID: "shared-host:ctr", UserID: "user-a", AccountScopeID: accountA, HostSwarmID: "shared-host", RuntimeContainerRef: "ctr", Name: "host-a"}); err != nil {
+		t.Fatalf("put account A host container: %v", err)
+	}
+	if _, err := topology.PutHostContainerForAccount(accountB, TopologyHostContainerRecord{HostContainerID: "shared-host:ctr", UserID: "user-b", AccountScopeID: accountB, HostSwarmID: "shared-host", RuntimeContainerRef: "ctr", Name: "host-b"}); err != nil {
+		t.Fatalf("put account B host container: %v", err)
+	}
+	if _, err := topology.PutAttachmentForAccount(accountA, TopologyAttachmentRecord{AttachmentID: "shared-host:ctr=>shared-runtime", UserID: "user-a", AccountScopeID: accountA, HostContainerID: "shared-host:ctr", RuntimeSwarmID: "shared-runtime"}); err != nil {
+		t.Fatalf("put account A attachment: %v", err)
+	}
+	if _, err := topology.PutAttachmentForAccount(accountB, TopologyAttachmentRecord{AttachmentID: "shared-host:ctr=>shared-runtime", UserID: "user-b", AccountScopeID: accountB, HostContainerID: "shared-host:ctr", RuntimeSwarmID: "shared-runtime"}); err != nil {
+		t.Fatalf("put account B attachment: %v", err)
+	}
+	if _, err := topology.PutWorkspaceBindingForAccount(accountA, TopologyWorkspaceBindingRecord{BindingID: "shared-binding", UserID: "user-a", AccountScopeID: accountA, SourceWorkspacePath: "/workspace"}); err != nil {
+		t.Fatalf("put account A workspace binding: %v", err)
+	}
+	if _, err := topology.PutWorkspaceBindingForAccount(accountB, TopologyWorkspaceBindingRecord{BindingID: "shared-binding", UserID: "user-b", AccountScopeID: accountB, SourceWorkspacePath: "/workspace"}); err != nil {
+		t.Fatalf("put account B workspace binding: %v", err)
+	}
+	if _, err := topology.PutSessionRouteForAccount(accountA, TopologySessionRouteRecord{SessionID: "shared-session", UserID: "user-a", AccountScopeID: accountA, RuntimeSwarmID: "shared-runtime"}); err != nil {
+		t.Fatalf("put account A session route: %v", err)
+	}
+	if _, err := topology.PutSessionRouteForAccount(accountB, TopologySessionRouteRecord{SessionID: "shared-session", UserID: "user-b", AccountScopeID: accountB, RuntimeSwarmID: "shared-runtime"}); err != nil {
+		t.Fatalf("put account B session route: %v", err)
+	}
+	if _, err := topology.PutRuntimeForAccount(accountA, TopologyRuntimeRecord{SwarmID: "a-only-runtime", UserID: "user-a", AccountScopeID: accountA, Name: "a-only-runtime"}); err != nil {
+		t.Fatalf("put account A only runtime: %v", err)
+	}
+	if _, err := topology.PutHostContainerForAccount(accountA, TopologyHostContainerRecord{HostContainerID: "a-only-host:ctr", UserID: "user-a", AccountScopeID: accountA, HostSwarmID: "a-only-host", RuntimeContainerRef: "ctr", Name: "a-only-host"}); err != nil {
+		t.Fatalf("put account A only host container: %v", err)
+	}
+	if _, err := topology.PutAttachmentForAccount(accountA, TopologyAttachmentRecord{AttachmentID: "a-only-host:ctr=>a-only-runtime", UserID: "user-a", AccountScopeID: accountA, HostContainerID: "a-only-host:ctr", RuntimeSwarmID: "a-only-runtime"}); err != nil {
+		t.Fatalf("put account A only attachment: %v", err)
+	}
+	if _, err := topology.PutWorkspaceBindingForAccount(accountA, TopologyWorkspaceBindingRecord{BindingID: "a-only-binding", UserID: "user-a", AccountScopeID: accountA, SourceWorkspacePath: "/a-only"}); err != nil {
+		t.Fatalf("put account A only workspace binding: %v", err)
+	}
+	if _, err := topology.PutSessionRouteForAccount(accountA, TopologySessionRouteRecord{SessionID: "a-only-session", UserID: "user-a", AccountScopeID: accountA, RuntimeSwarmID: "a-only-runtime"}); err != nil {
+		t.Fatalf("put account A only session route: %v", err)
+	}
+
+	assertNoAccountFallback := func(name string, ok bool, err error) {
+		t.Helper()
+		if err != nil || ok {
+			t.Fatalf("%s fell back to legacy/global record: ok=%t err=%v", name, ok, err)
+		}
+	}
+	_, ok, err := topology.GetRuntimeForAccount(accountA, "legacy-runtime")
+	assertNoAccountFallback("runtime", ok, err)
+	_, ok, err = topology.GetHostContainerForAccount(accountA, "legacy-host:ctr")
+	assertNoAccountFallback("host container", ok, err)
+	_, ok, err = topology.GetAttachmentForAccount(accountA, "legacy-host:ctr=>legacy-runtime")
+	assertNoAccountFallback("attachment", ok, err)
+	_, ok, err = topology.GetWorkspaceBindingForAccount(accountA, "legacy-binding")
+	assertNoAccountFallback("workspace binding", ok, err)
+	_, ok, err = topology.GetSessionRouteForAccount(accountA, "legacy-session")
+	assertNoAccountFallback("session route", ok, err)
+	_, ok, err = topology.GetRuntimeForAccount(accountB, "a-only-runtime")
+	assertNoAccountFallback("cross-account runtime", ok, err)
+	_, ok, err = topology.GetHostContainerForAccount(accountB, "a-only-host:ctr")
+	assertNoAccountFallback("cross-account host container", ok, err)
+	_, ok, err = topology.GetAttachmentForAccount(accountB, "a-only-host:ctr=>a-only-runtime")
+	assertNoAccountFallback("cross-account attachment", ok, err)
+	_, ok, err = topology.GetWorkspaceBindingForAccount(accountB, "a-only-binding")
+	assertNoAccountFallback("cross-account workspace binding", ok, err)
+	_, ok, err = topology.GetSessionRouteForAccount(accountB, "a-only-session")
+	assertNoAccountFallback("cross-account session route", ok, err)
+
+	runtimeA, ok, err := topology.GetRuntimeForAccount(accountA, "shared-runtime")
+	if err != nil || !ok || runtimeA.Name != "runtime-a" || runtimeA.AccountScopeID != accountA {
+		t.Fatalf("account A runtime mismatch ok=%t err=%v record=%+v", ok, err, runtimeA)
+	}
+	runtimeB, ok, err := topology.GetRuntimeForAccount(accountB, "shared-runtime")
+	if err != nil || !ok || runtimeB.Name != "runtime-b" || runtimeB.AccountScopeID != accountB {
+		t.Fatalf("account B runtime mismatch ok=%t err=%v record=%+v", ok, err, runtimeB)
+	}
+	hostA, ok, err := topology.GetHostContainerForAccount(accountA, "shared-host:ctr")
+	if err != nil || !ok || hostA.Name != "host-a" || hostA.AccountScopeID != accountA {
+		t.Fatalf("account A host mismatch ok=%t err=%v record=%+v", ok, err, hostA)
+	}
+	hostB, ok, err := topology.GetHostContainerForAccount(accountB, "shared-host:ctr")
+	if err != nil || !ok || hostB.Name != "host-b" || hostB.AccountScopeID != accountB {
+		t.Fatalf("account B host mismatch ok=%t err=%v record=%+v", ok, err, hostB)
+	}
+
+	snapshotA, err := topology.SnapshotForAccount(accountA)
+	if err != nil {
+		t.Fatalf("snapshot account A: %v", err)
+	}
+	if len(snapshotA.Runtimes) != 2 || snapshotA.Runtimes[0].AccountScopeID != accountA || snapshotA.Runtimes[1].AccountScopeID != accountA {
+		t.Fatalf("unexpected account A runtime snapshot: %+v", snapshotA.Runtimes)
+	}
+	if len(snapshotA.HostContainers) != 2 || snapshotA.HostContainers[0].AccountScopeID != accountA || snapshotA.HostContainers[1].AccountScopeID != accountA {
+		t.Fatalf("unexpected account A host snapshot: %+v", snapshotA.HostContainers)
+	}
+	if len(snapshotA.Attachments) != 2 || snapshotA.Attachments[0].AccountScopeID != accountA || snapshotA.Attachments[1].AccountScopeID != accountA || len(snapshotA.WorkspaceBindings) != 2 || snapshotA.WorkspaceBindings[0].AccountScopeID != accountA || snapshotA.WorkspaceBindings[1].AccountScopeID != accountA || len(snapshotA.SessionRoutes) != 2 || snapshotA.SessionRoutes[0].AccountScopeID != accountA || snapshotA.SessionRoutes[1].AccountScopeID != accountA {
+		t.Fatalf("unexpected account A snapshot: %+v", snapshotA)
+	}
+
+	if err := topology.DeleteRuntimeForAccount(accountB, "shared-runtime"); err != nil {
+		t.Fatalf("delete account B runtime: %v", err)
+	}
+	if _, ok, err := topology.GetRuntimeForAccount(accountB, "shared-runtime"); err != nil || ok {
+		t.Fatalf("account B runtime after delete ok=%t err=%v", ok, err)
+	}
+	if _, ok, err := topology.GetRuntimeForAccount(accountA, "shared-runtime"); err != nil || !ok {
+		t.Fatalf("account B delete affected account A runtime ok=%t err=%v", ok, err)
+	}
+
+	if err := topology.ReplaceSnapshotForAccount(accountA, TopologySnapshot{Runtimes: []TopologyRuntimeRecord{{SwarmID: "replacement-runtime", UserID: "user-a", AccountScopeID: accountA, Name: "replacement"}}}); err != nil {
+		t.Fatalf("replace account A snapshot: %v", err)
+	}
+	if _, ok, err := topology.GetRuntimeForAccount(accountA, "shared-runtime"); err != nil || ok {
+		t.Fatalf("old account A runtime after replace ok=%t err=%v", ok, err)
+	}
+	if replacement, ok, err := topology.GetRuntimeForAccount(accountA, "replacement-runtime"); err != nil || !ok || replacement.Name != "replacement" {
+		t.Fatalf("replacement account A runtime ok=%t err=%v record=%+v", ok, err, replacement)
+	}
+	if _, ok, err := topology.GetHostContainerForAccount(accountB, "shared-host:ctr"); err != nil || !ok {
+		t.Fatalf("account A replace affected account B host container ok=%t err=%v", ok, err)
+	}
+	if _, ok, err := topology.GetRuntime("legacy-runtime"); err != nil || !ok {
+		t.Fatalf("account A replace touched legacy/global runtime ok=%t err=%v", ok, err)
+	}
+}
+
+func TestTopologyStoreAccountScopedValidation(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "topology-account-validation.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	topology := NewTopologyStore(store)
+	if _, err := topology.PutRuntimeForAccount("", TopologyRuntimeRecord{SwarmID: "runtime", UserID: "user-a", AccountScopeID: "account-a"}); err == nil {
+		t.Fatal("expected missing account scope error")
+	}
+	if _, err := topology.PutRuntimeForAccount("account-a", TopologyRuntimeRecord{SwarmID: "runtime", AccountScopeID: "account-a"}); err == nil {
+		t.Fatal("expected missing user id error")
+	}
+	if _, err := topology.PutRuntimeForAccount("account-a", TopologyRuntimeRecord{SwarmID: "runtime", UserID: "user-b", AccountScopeID: "account-b"}); err == nil {
+		t.Fatal("expected mismatched account scope error")
+	}
+	if err := topology.ReplaceSnapshotForAccount("account-a", TopologySnapshot{Runtimes: []TopologyRuntimeRecord{{SwarmID: "runtime", UserID: "user-b", AccountScopeID: "account-b"}}}); err == nil {
+		t.Fatal("expected replace snapshot mismatched account scope error")
+	}
+}

@@ -77,6 +77,9 @@ func UpsertTopologyHostContainer(topology *TopologyStore, incoming TopologyHostC
 		return err
 	}
 	if ok {
+		if err := ensureTopologyMergeSameAccount(existing.AccountScopeID, incoming.AccountScopeID); err != nil {
+			return err
+		}
 		incoming = mergeTopologyHostContainerRecord(existing, incoming)
 	}
 	_, err = topology.PutHostContainer(incoming)
@@ -96,6 +99,9 @@ func UpsertTopologyAttachment(topology *TopologyStore, incoming TopologyAttachme
 		return err
 	}
 	if ok {
+		if err := ensureTopologyMergeSameAccount(existing.AccountScopeID, incoming.AccountScopeID); err != nil {
+			return err
+		}
 		incoming = mergeTopologyAttachmentRecord(existing, incoming)
 	}
 	_, err = topology.PutAttachment(incoming)
@@ -114,8 +120,15 @@ func UpsertTopologyWorkspaceBinding(topology *TopologyStore, incoming TopologyWo
 	if err != nil {
 		return TopologyWorkspaceBindingRecord{}, err
 	}
-	if ok && incoming.CreatedAt <= 0 {
-		incoming.CreatedAt = existing.CreatedAt
+	if ok {
+		if err := ensureTopologyMergeSameAccount(existing.AccountScopeID, incoming.AccountScopeID); err != nil {
+			return TopologyWorkspaceBindingRecord{}, err
+		}
+		if incoming.CreatedAt <= 0 {
+			incoming.CreatedAt = existing.CreatedAt
+		}
+		incoming.UserID = firstNonEmpty(incoming.UserID, existing.UserID)
+		incoming.AccountScopeID = firstNonEmpty(incoming.AccountScopeID, existing.AccountScopeID)
 	}
 	return topology.PutWorkspaceBinding(incoming)
 }
@@ -127,6 +140,8 @@ func RemoveTopologyRuntimeObservedSource(topology *TopologyStore, swarmID, sourc
 func mergeTopologyHostContainerRecord(existing, incoming TopologyHostContainerRecord) TopologyHostContainerRecord {
 	existing = normalizeTopologyHostContainerRecord(existing)
 	incoming = normalizeTopologyHostContainerRecord(incoming)
+	incoming.UserID = firstNonEmpty(incoming.UserID, existing.UserID)
+	incoming.AccountScopeID = firstNonEmpty(incoming.AccountScopeID, existing.AccountScopeID)
 	incoming.HostSwarmID = firstNonEmpty(incoming.HostSwarmID, existing.HostSwarmID)
 	incoming.RuntimeContainerRef = firstNonEmpty(incoming.RuntimeContainerRef, existing.RuntimeContainerRef)
 	incoming.Name = firstNonEmpty(incoming.Name, existing.Name, incoming.HostContainerID)
@@ -158,6 +173,8 @@ func mergeTopologyHostContainerRecord(existing, incoming TopologyHostContainerRe
 func mergeTopologyAttachmentRecord(existing, incoming TopologyAttachmentRecord) TopologyAttachmentRecord {
 	existing = normalizeTopologyAttachmentRecord(existing)
 	incoming = normalizeTopologyAttachmentRecord(incoming)
+	incoming.UserID = firstNonEmpty(incoming.UserID, existing.UserID)
+	incoming.AccountScopeID = firstNonEmpty(incoming.AccountScopeID, existing.AccountScopeID)
 	incoming.HostContainerID = firstNonEmpty(incoming.HostContainerID, existing.HostContainerID)
 	incoming.RuntimeSwarmID = firstNonEmpty(incoming.RuntimeSwarmID, existing.RuntimeSwarmID)
 	incoming.State = firstNonEmpty(incoming.State, existing.State)

@@ -84,6 +84,9 @@ func UpsertTopologyRuntimeRecord(topology *TopologyStore, incoming TopologyRunti
 		return err
 	}
 	if ok {
+		if err := ensureTopologyMergeSameAccount(existing.AccountScopeID, incoming.AccountScopeID); err != nil {
+			return err
+		}
 		incoming = mergeTopologyRuntimeRecord(existing, incoming)
 	}
 	_, err = topology.PutRuntime(incoming)
@@ -93,6 +96,8 @@ func UpsertTopologyRuntimeRecord(topology *TopologyStore, incoming TopologyRunti
 func mergeTopologyRuntimeRecord(existing, incoming TopologyRuntimeRecord) TopologyRuntimeRecord {
 	existing = normalizeTopologyRuntimeRecord(existing)
 	incoming = normalizeTopologyRuntimeRecord(incoming)
+	incoming.UserID = firstNonEmpty(incoming.UserID, existing.UserID)
+	incoming.AccountScopeID = firstNonEmpty(incoming.AccountScopeID, existing.AccountScopeID)
 	incoming.Name = firstNonEmpty(incoming.Name, existing.Name, incoming.SwarmID)
 	incoming.Role = firstNonEmpty(incoming.Role, existing.Role)
 	incoming.Relationship = mergeTopologyRuntimeRelationship(existing.Relationship, incoming.Relationship)
