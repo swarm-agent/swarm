@@ -30,6 +30,7 @@ func (r *Runtime) manageThemeInspect(scope WorkspaceScope, args map[string]any) 
 		"custom_themes":        manageThemeCustomThemeMaps(settings.Theme.CustomThemes),
 		"workspace":            workspaceSummary,
 		"supported_actions":    []string{"inspect", "list", "get", "create", "update", "delete", "set"},
+		"action_contracts":     manageThemeActionContracts(scope),
 		"path_id":              toolPathID("manage-theme"),
 		"summary":              fmt.Sprintf("loaded %d custom themes", len(settings.Theme.CustomThemes)),
 		"details_truncated":    false,
@@ -79,6 +80,12 @@ func (r *Runtime) manageThemeUpsert(scope WorkspaceScope, args map[string]any, m
 	if err != nil {
 		return "", err
 	}
+	if content == nil {
+		content = map[string]any{}
+	}
+	if name := strings.TrimSpace(asString(args["name"])); name != "" && strings.TrimSpace(asString(content["name"])) == "" {
+		content["name"] = name
+	}
 	themeID := manageThemeNormalizeID(firstNonEmptyString(
 		asString(args["theme_id"]),
 		asString(args["theme"]),
@@ -87,7 +94,18 @@ func (r *Runtime) manageThemeUpsert(scope WorkspaceScope, args map[string]any, m
 		asString(content["theme_id"]),
 	))
 	if themeID == "" {
-		return "", errors.New("manage-theme requires theme_id")
+		if !mustExist {
+			return "", errors.New(manageThemeCreateUsage())
+		}
+		return "", errors.New("manage-theme update requires theme_id or content.id")
+	}
+	if !mustExist && strings.TrimSpace(asString(content["name"])) == "" {
+		return "", errors.New(manageThemeCreateUsage())
+	}
+	_, hasPalette := content["palette"]
+	baseThemeExplicit := strings.TrimSpace(firstNonEmptyString(asString(args["base_theme_id"]), asString(content["base_theme_id"]))) != ""
+	if !mustExist && !hasPalette && !baseThemeExplicit {
+		return "", errors.New(manageThemeCreateUsage())
 	}
 	baseThemeID := manageThemeNormalizeID(firstNonEmptyString(
 		asString(args["base_theme_id"]),
@@ -130,13 +148,15 @@ func (r *Runtime) manageThemeUpsert(scope WorkspaceScope, args map[string]any, m
 
 	action := "create"
 	status := "proposed_create"
-	summary := fmt.Sprintf("proposed new custom theme %s", afterTheme.ID)
 	if exists {
 		action = "update"
 		status = "proposed_update"
-		summary = fmt.Sprintf("proposed update for custom theme %s", afterTheme.ID)
 	}
-	change := map[string]any{
+	applyPlan, err := r.manageThemeBuildApplyPlan(scope, args, settings, afterTheme.ID, !mustExist)
+	if err != nil {
+		return "", err
+	}
+	themeChange := map[string]any{
 		"kind":      "theme_change",
 		"target":    "custom_theme",
 		"operation": action,
@@ -144,7 +164,19 @@ func (r *Runtime) manageThemeUpsert(scope WorkspaceScope, args map[string]any, m
 		"before":    manageThemeOptionalRecordMap(before, "custom"),
 		"after":     manageThemeRecordMap(afterTheme, "custom"),
 	}
+	change := manageThemeCombinedChange(action, themeChange, applyPlan.change)
 	if confirm {
+		if applyPlan.target == "account" || applyPlan.target == "global" {
+			settings.Theme.ActiveID = manageThemeStringFallback(applyPlan.themeID, sharedtheme.DefaultThemeID())
+		}
+		var workspaceResolution any
+		if applyPlan.target == "workspace" {
+			resolution, err := r.themeWorkspace.SetThemeIDForPrincipal(scope.Principal, applyPlan.workspacePath, applyPlan.themeID)
+			if err != nil {
+				return "", err
+			}
+			workspaceResolution = resolution
+		}
 		saved, err := r.manageThemeSaveSettings(scope, settings)
 		if err != nil {
 			return "", err
@@ -153,30 +185,38 @@ func (r *Runtime) manageThemeUpsert(scope WorkspaceScope, args map[string]any, m
 			"status":               "ok",
 			"action":               action,
 			"applied":              true,
+			"apply_to":             applyPlan.responseTarget(),
 			"theme":                manageThemeRecordMap(afterTheme, "custom"),
 			"change":               change,
 			"global_theme_id":      manageThemeNormalizeID(saved.Theme.ActiveID),
 			"account_scope_id":     r.manageThemeAccountScopeID(scope),
 			"custom_themes":        manageThemeCustomThemeMaps(saved.Theme.CustomThemes),
 			"path_id":              toolPathID("manage-theme"),
-			"summary":              strings.Replace(summary, "proposed ", "applied ", 1),
+			"summary":              manageThemeUpsertSummary("applied", action, afterTheme.ID, applyPlan),
 			"details_truncated":    false,
 			"prompt_injection_tag": "tool_output_untrusted",
 			"safety":               buildUntrustedSafety(manageThemeSafetyText(change)),
+		}
+		if workspaceResolution != nil {
+			response["workspace"] = workspaceResolution
 		}
 		return manageThemeEncodeResponse(response)
 	}
 	response := map[string]any{
 		"status":               status,
 		"action":               action,
+		"apply_to":             applyPlan.responseTarget(),
 		"theme":                manageThemeRecordMap(afterTheme, "custom"),
 		"change":               change,
 		"approved_arguments":   cloneStringAnyMap(args),
 		"path_id":              toolPathID("manage-theme"),
-		"summary":              summary,
+		"summary":              manageThemeUpsertSummary("proposed", action, afterTheme.ID, applyPlan),
 		"details_truncated":    false,
 		"prompt_injection_tag": "tool_output_untrusted",
 		"safety":               buildUntrustedSafety(manageThemeSafetyText(change)),
+	}
+	if applyPlan.workspacePath != "" {
+		response["workspace_path"] = applyPlan.workspacePath
 	}
 	return manageThemeEncodeResponse(response)
 }
@@ -282,8 +322,21 @@ func (r *Runtime) manageThemeSet(scope WorkspaceScope, args map[string]any, conf
 			return "", err
 		}
 	}
+	applyTo, err := manageThemeNormalizeApplyTo(asString(args["apply_to"]))
+	if err != nil {
+		return "", err
+	}
+	if applyTo == "none" {
+		return "", errors.New("manage-theme set cannot use apply_to=none; use apply_to=workspace, account, or global")
+	}
 	workspacePath := strings.TrimSpace(asString(args["workspace_path"]))
-	if workspacePath != "" {
+	if workspacePath == "" && applyTo == "" {
+		workspacePath = strings.TrimSpace(scope.PrimaryPath)
+	}
+	if applyTo == "workspace" && workspacePath == "" {
+		workspacePath = strings.TrimSpace(scope.PrimaryPath)
+	}
+	if workspacePath != "" && applyTo != "account" && applyTo != "global" {
 		if r.themeWorkspace == nil {
 			return "", errors.New("manage-theme workspace service is not configured")
 		}
@@ -338,6 +391,9 @@ func (r *Runtime) manageThemeSet(scope WorkspaceScope, args map[string]any, conf
 		return manageThemeEncodeResponse(response)
 	}
 
+	if applyTo == "workspace" {
+		return "", errors.New("manage-theme set apply_to=workspace requires workspace_path or an active workspace scope")
+	}
 	beforeThemeID := manageThemeNormalizeID(settings.Theme.ActiveID)
 	target := "global_theme"
 	if r.manageThemeAccountScopeID(scope) != "" {
@@ -388,6 +444,169 @@ func (r *Runtime) manageThemeSet(scope WorkspaceScope, args map[string]any, conf
 
 func (r *Runtime) manageThemeAccountScopeID(scope WorkspaceScope) string {
 	return r.agentAccountScopeID(scope)
+}
+
+type manageThemeApplyPlan struct {
+	target        string
+	themeID       string
+	workspacePath string
+	change        map[string]any
+}
+
+func (p manageThemeApplyPlan) responseTarget() string {
+	return strings.TrimSpace(p.target)
+}
+
+func (r *Runtime) manageThemeBuildApplyPlan(scope WorkspaceScope, args map[string]any, settings uisettings.UISettings, themeID string, defaultWorkspace bool) (manageThemeApplyPlan, error) {
+	applyTo, err := manageThemeNormalizeApplyTo(asString(args["apply_to"]))
+	if err != nil {
+		return manageThemeApplyPlan{}, err
+	}
+	if applyTo == "" && defaultWorkspace {
+		if strings.TrimSpace(scope.PrimaryPath) != "" || strings.TrimSpace(asString(args["workspace_path"])) != "" {
+			applyTo = "workspace"
+		}
+	}
+	if applyTo == "" || applyTo == "none" {
+		return manageThemeApplyPlan{target: "none", themeID: themeID}, nil
+	}
+	if applyTo == "global" || applyTo == "account" {
+		beforeThemeID := manageThemeNormalizeID(settings.Theme.ActiveID)
+		target := "global_theme"
+		if r.manageThemeAccountScopeID(scope) != "" {
+			target = "account_theme"
+		}
+		return manageThemeApplyPlan{
+			target:  applyTo,
+			themeID: themeID,
+			change: map[string]any{
+				"kind":      "theme_change",
+				"target":    target,
+				"operation": "set",
+				"before":    map[string]any{"theme_id": beforeThemeID},
+				"after":     map[string]any{"theme_id": themeID},
+			},
+		}, nil
+	}
+	workspacePath := strings.TrimSpace(asString(args["workspace_path"]))
+	if workspacePath == "" {
+		workspacePath = strings.TrimSpace(scope.PrimaryPath)
+	}
+	if workspacePath == "" {
+		return manageThemeApplyPlan{}, errors.New("manage-theme create apply_to=workspace requires workspace_path or an active workspace scope")
+	}
+	if r.themeWorkspace == nil {
+		return manageThemeApplyPlan{}, errors.New("manage-theme workspace service is not configured")
+	}
+	if !scope.Principal.Valid() {
+		return manageThemeApplyPlan{}, identity.ErrPrincipalRequired
+	}
+	scopeInfo, err := r.themeWorkspace.ScopeForPathForPrincipal(scope.Principal, workspacePath)
+	if err != nil {
+		return manageThemeApplyPlan{}, err
+	}
+	resolvedWorkspacePath := strings.TrimSpace(scopeInfo.WorkspacePath)
+	beforeThemeID := manageThemeNormalizeID(scopeInfo.ThemeID)
+	return manageThemeApplyPlan{
+		target:        "workspace",
+		themeID:       themeID,
+		workspacePath: workspacePath,
+		change: map[string]any{
+			"kind":           "theme_change",
+			"target":         "workspace_theme",
+			"operation":      "set",
+			"workspace_path": resolvedWorkspacePath,
+			"before":         map[string]any{"workspace_path": resolvedWorkspacePath, "theme_id": beforeThemeID},
+			"after":          map[string]any{"workspace_path": resolvedWorkspacePath, "theme_id": themeID},
+		},
+	}, nil
+}
+
+func manageThemeNormalizeApplyTo(raw string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "default":
+		return "", nil
+	case "none", "custom", "save", "saved":
+		return "none", nil
+	case "workspace", "active_workspace", "current_workspace":
+		return "workspace", nil
+	case "account", "settings":
+		return "account", nil
+	case "global":
+		return "global", nil
+	default:
+		return "", fmt.Errorf("manage-theme apply_to must be one of none, workspace, account, or global; got %q", raw)
+	}
+}
+
+func manageThemeCombinedChange(operation string, themeChange, applyChange map[string]any) map[string]any {
+	if applyChange == nil {
+		return themeChange
+	}
+	return map[string]any{
+		"kind":      "theme_change",
+		"operation": operation + "_and_apply",
+		"changes":   []map[string]any{themeChange, applyChange},
+	}
+}
+
+func manageThemeUpsertSummary(prefix, action, themeID string, applyPlan manageThemeApplyPlan) string {
+	base := fmt.Sprintf("%s %s for custom theme %s", prefix, action, themeID)
+	switch applyPlan.target {
+	case "workspace":
+		return fmt.Sprintf("%s and workspace theme for %s", base, strings.TrimSpace(applyPlan.workspacePath))
+	case "account", "global":
+		return fmt.Sprintf("%s and %s theme", base, applyPlan.target)
+	default:
+		return base
+	}
+}
+
+func manageThemeCreateUsage() string {
+	return "manage-theme create requires theme_id or content.id, name or content.name, and content.palette object (or base_theme_id for an inherited palette); to create and apply in one call use apply_to=workspace|account|global|none with confirm=true"
+}
+
+func manageThemeActionContracts(scope WorkspaceScope) map[string]any {
+	activeWorkspace := strings.TrimSpace(scope.PrimaryPath)
+	return map[string]any{
+		"create": map[string]any{
+			"required": []string{"action=create", "theme_id or content.id", "name or content.name", "content.palette object (or base_theme_id for inherited palette)"},
+			"optional": []string{"base_theme_id", "apply_to=workspace|account|global|none", "workspace_path", "confirm"},
+			"default_apply_to": map[string]any{
+				"with_active_workspace":    "workspace",
+				"without_active_workspace": "none",
+			},
+			"example": map[string]any{
+				"action":   "create",
+				"theme_id": "lava",
+				"name":     "Lava",
+				"content": map[string]any{
+					"palette": map[string]any{"background": "#120808", "text": "#ffe8d6", "primary": "#ff6b35"},
+				},
+				"apply_to": "workspace",
+				"confirm":  true,
+			},
+		},
+		"set": map[string]any{
+			"required": []string{"action=set", "theme_id"},
+			"optional": []string{"apply_to=workspace|account|global", "workspace_path", "confirm"},
+			"default_scope": map[string]any{
+				"with_active_workspace":    "workspace",
+				"without_active_workspace": "account/global settings",
+			},
+		},
+		"update": map[string]any{
+			"required": []string{"action=update", "theme_id or content.id"},
+			"optional": []string{"name or content.name", "content.palette", "apply_to=workspace|account|global|none", "workspace_path", "confirm"},
+		},
+		"delete": map[string]any{
+			"required": []string{"action=delete", "theme_id", "confirm to apply"},
+		},
+		"workspace_default": map[string]any{
+			"active_workspace_path": activeWorkspace,
+			"note":                  "workspace-scoped create/set default to the active workspace when available; pass apply_to=account/global to change account settings instead",
+		},
+	}
 }
 
 func (r *Runtime) manageThemeSettings(scope WorkspaceScope) (uisettings.UISettings, error) {

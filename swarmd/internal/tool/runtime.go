@@ -969,22 +969,25 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "manage-theme",
-			Description: "Inspect and manage builtin/custom themes through existing UI settings and workspace theme mutation paths; supports inspect/list/get/create/update/delete/set, and mutating actions return approval-ready previews unless confirm=true",
+			Description: "Inspect and manage builtin/custom themes. Create requires theme_id (or content.id), name (or content.name), and content.palette (or base_theme_id for inherited palette). Mutating actions preview unless confirm=true. create/update can atomically apply with apply_to=workspace|account|global|none; workspace apply defaults to the active workspace when available.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"action":         map[string]any{"type": "string", "description": "Action: inspect|list|get|create|update|delete|set"},
-					"theme_id":       map[string]any{"type": "string", "description": "Theme id for get/update/delete/set"},
-					"name":           map[string]any{"type": "string", "description": "Theme display name for create/update"},
-					"workspace_path": map[string]any{"type": "string", "description": "Optional workspace path for workspace-scoped set/list"},
-					"base_theme_id":  map[string]any{"type": "string", "description": "Optional builtin/custom base theme id for create"},
-					"confirm":        map[string]any{"type": "boolean", "description": "Set true after approval to apply the proposed change"},
+					"theme_id":       map[string]any{"type": "string", "description": "Theme id for get/update/delete/set/create; create also accepts content.id"},
+					"name":           map[string]any{"type": "string", "description": "Theme display name for create/update; create also accepts content.name"},
+					"workspace_path": map[string]any{"type": "string", "description": "Optional workspace path for workspace-scoped operations; defaults to current/active workspace scope when applying to workspace"},
+					"apply_to":       map[string]any{"type": "string", "description": "Optional apply target for create/update/set: workspace|account|global|none. Create defaults to workspace when an active workspace exists; set defaults to active workspace when available; account/global changes account settings."},
+					"base_theme_id":  map[string]any{"type": "string", "description": "Optional builtin/custom base theme id for create/update; allows inherited palette when content.palette is omitted"},
+					"confirm":        map[string]any{"type": "boolean", "description": "Set true after approval to apply the proposed change; with create+apply this applies both save and scope assignment in one confirmed call"},
 					"content": map[string]any{
 						"type":        "object",
-						"description": "Theme payload for create/update with optional palette overrides",
+						"description": "Theme payload for create/update. For create provide id or top-level theme_id, name or top-level name, and palette object unless base_theme_id supplies an inherited palette.",
 						"properties": map[string]any{
-							"id":   map[string]any{"type": "string"},
-							"name": map[string]any{"type": "string"},
+							"id":            map[string]any{"type": "string"},
+							"theme_id":      map[string]any{"type": "string"},
+							"name":          map[string]any{"type": "string"},
+							"base_theme_id": map[string]any{"type": "string"},
 							"palette": map[string]any{
 								"type": "object",
 								"properties": map[string]any{
