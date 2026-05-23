@@ -131,10 +131,16 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 	if arguments == "" {
 		arguments = "{}"
 	}
+	if !strings.HasPrefix(arguments, "{") && containsToolParameterMarkup(arguments) {
+		return taskCallArguments{}, fmt.Errorf("malformed XML markup in tool call")
+	}
 
 	var args map[string]any
 	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
 		return taskCallArguments{}, fmt.Errorf("task arguments invalid: %w", err)
+	}
+	if containsMalformedToolParameterMarkupValue(args) {
+		return taskCallArguments{}, fmt.Errorf("malformed XML markup in tool call")
 	}
 	if err := rejectTaskLaunchTrustFields(args, "task"); err != nil {
 		return taskCallArguments{}, err
@@ -238,6 +244,114 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		ReportMaxChars:  reportMaxChars,
 		SourceArguments: args,
 	}, nil
+}
+
+func rejectMalformedToolCallArguments(call tool.Call) error {
+	if canonicalToolName(call.Name) != "task" {
+		return nil
+	}
+	arguments := strings.TrimSpace(call.Arguments)
+	if arguments == "" {
+		return nil
+	}
+	if !strings.HasPrefix(arguments, "{") && containsToolParameterMarkup(arguments) {
+		return fmt.Errorf("malformed XML markup in tool call")
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil || args == nil {
+		return nil
+	}
+	if containsMalformedToolParameterMarkupValue(args) {
+		return fmt.Errorf("malformed XML markup in tool call")
+	}
+	return nil
+}
+
+func containsMalformedToolParameterMarkupValue(value any) bool {
+	switch typed := value.(type) {
+	case string:
+		return containsMalformedToolParameterMarkup(typed)
+	case map[string]any:
+		for _, entry := range typed {
+			if containsMalformedToolParameterMarkupValue(entry) {
+				return true
+			}
+		}
+	case []any:
+		for _, entry := range typed {
+			if containsMalformedToolParameterMarkupValue(entry) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func containsToolParameterMarkup(value string) bool {
+	lower := strings.ToLower(value)
+	return containsParameterOpenTag(lower) || containsParameterClosingTag(lower)
+}
+
+func containsMalformedToolParameterMarkup(value string) bool {
+	lower := strings.ToLower(value)
+	return containsMalformedParameterClosingTag(lower)
+}
+
+func containsParameterClosingTag(lower string) bool {
+	found, _ := scanParameterClosingTag(lower)
+	return found
+}
+
+func containsMalformedParameterClosingTag(lower string) bool {
+	found, malformed := scanParameterClosingTag(lower)
+	return found && malformed
+}
+
+func scanParameterClosingTag(lower string) (bool, bool) {
+	for offset := 0; offset < len(lower); {
+		idx := strings.Index(lower[offset:], "</")
+		if idx < 0 {
+			return false, false
+		}
+		idx += offset
+		nameStart := idx + len("</")
+		endRel := strings.IndexByte(lower[nameStart:], '>')
+		if endRel < 0 {
+			return strings.Contains(lower[nameStart:], "parameter"), true
+		}
+		tagName := strings.TrimSpace(lower[nameStart : nameStart+endRel])
+		if fields := strings.Fields(tagName); len(fields) > 0 {
+			tagName = fields[0]
+		}
+		if tagName == "parameter" {
+			return true, false
+		}
+		if strings.Contains(tagName, "parameter") {
+			return true, true
+		}
+		offset = nameStart + endRel + 1
+	}
+	return false, false
+}
+
+func containsParameterOpenTag(lower string) bool {
+	for offset := 0; offset < len(lower); {
+		idx := strings.Index(lower[offset:], "<parameter")
+		if idx < 0 {
+			return false
+		}
+		idx += offset
+		after := idx + len("<parameter")
+		if after >= len(lower) {
+			return true
+		}
+		switch lower[after] {
+		case ' ', '\t', '\n', '\r', '>', '/':
+			return true
+		}
+		offset = after
+	}
+	return false
 }
 
 func rejectTaskLaunchTrustFields(args map[string]any, label string) error {

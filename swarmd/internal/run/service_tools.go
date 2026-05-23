@@ -391,6 +391,12 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 
 	if s.permissions == nil {
 		for i := range toolCalls {
+			if err := rejectMalformedToolCallArguments(toolCalls[i]); err != nil {
+				message := fmt.Sprintf("invalid tool arguments: %v", err)
+				results[i].Output = permissionOutputPayload(false, "error", message, toolCalls[i].Name, toolCalls[i].Arguments)
+				results[i].Error = message
+				continue
+			}
 			approvedMask[i] = true
 			approvedCalls = append(approvedCalls, toolCalls[i])
 			approvedIndexes = append(approvedIndexes, i)

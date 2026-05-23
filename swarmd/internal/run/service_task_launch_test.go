@@ -167,6 +167,22 @@ func mustJSON(t *testing.T, value any) string {
 	return string(encoded)
 }
 
+func TestParseTaskCallArgumentsRejectsMalformedParameterMarkupBeforeLaunchValidation(t *testing.T) {
+	_, err := parseTaskCallArguments(mustJSON(t, map[string]any{
+		"description": "Test 2 — Valid multi-subagent launch",
+		"prompt":      "Execute your assigned meta_prompt/role. </怡parameter>",
+		"launches": []any{
+			map[string]any{"subagent_type": "explorer", "meta_prompt": "Map top-level directories."},
+		},
+	}))
+	if err == nil || !strings.Contains(err.Error(), "malformed XML markup in tool call") {
+		t.Fatalf("expected malformed XML markup error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "requires subagent_type, agent, or purpose") {
+		t.Fatalf("expected parser-level error before launch validation, got %v", err)
+	}
+}
+
 func TestPermissionArgumentsForCallRejectsMalformedTaskLaunch(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
@@ -175,11 +191,14 @@ func TestPermissionArgumentsForCallRejectsMalformedTaskLaunch(t *testing.T) {
 		Name: "task",
 		Arguments: mustJSON(t, map[string]any{
 			"description": "Test 2 — Valid multi-subagent launch",
-			"prompt":      "Execute your assigned meta_prompt/role. </parameter> <parameter name=\"launches\" string=\"false\">[{\"subagent_type\":\"explorer\",\"meta_prompt\":\"Map top-level directories.\"}]</parameter>",
+			"prompt":      "Execute your assigned meta_prompt/role. </怡parameter>",
+			"launches": []any{
+				map[string]any{"subagent_type": "reviewer", "meta_prompt": "Map top-level directories."},
+			},
 		}),
 	})
-	if err == nil || !strings.Contains(err.Error(), "requires subagent_type, agent, or purpose") {
-		t.Fatalf("expected malformed task launch validation error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "malformed XML markup in tool call") {
+		t.Fatalf("expected malformed XML markup error, got %v", err)
 	}
 }
 
@@ -219,44 +238,19 @@ func TestPermissionArgumentsForCallFormatsValidTaskLaunchManifest(t *testing.T) 
 	}
 }
 
-func TestGateToolCallsRejectsMalformedTaskLaunchBeforePermission(t *testing.T) {
-	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "state.pebble"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer store.Close()
-	events, err := pebblestore.NewEventLog(store)
-	if err != nil {
-		t.Fatalf("open event log: %v", err)
-	}
-	agents := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
-	if err := agents.EnsureDefaults(); err != nil {
-		t.Fatalf("ensure agent defaults: %v", err)
-	}
-	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
-	parent, _, err := sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
-		Title:         "Parent",
-		WorkspacePath: t.TempDir(),
-		WorkspaceName: "workspace",
-		Mode:          sessionruntime.ModeAuto,
-		Preference: &pebblestore.ModelPreference{
-			Provider: "parent-provider",
-			Model:    "parent-model",
-			Thinking: "high",
-		},
-	})
-	if err != nil {
-		t.Fatalf("create parent session: %v", err)
-	}
-	permissions := permission.NewService(pebblestore.NewPermissionStore(store), events, nil)
-	svc := NewService(sessions, nil, nil, tool.NewRuntime(1), permissions, agents, nil, events)
+func TestGateToolCallsRejectsMalformedTaskLaunchBeforeApproval(t *testing.T) {
+	svc, parentSessionID, permissions, cleanup := newTaskLaunchPermissionServiceWithPermissions(t)
+	defer cleanup()
 
-	results, approvedCalls, _, approvedMask, _, err := svc.gateToolCalls(context.Background(), parent.ID, "run-test", 1, sessionruntime.ModeAuto, []tool.Call{{
+	results, approvedCalls, _, approvedMask, _, err := svc.gateToolCalls(context.Background(), parentSessionID, "run-test", 1, sessionruntime.ModeAuto, []tool.Call{{
 		CallID: "call-bad-task",
 		Name:   "task",
 		Arguments: mustJSON(t, map[string]any{
 			"description": "Test 2 — Valid multi-subagent launch",
-			"prompt":      "Execute your assigned meta_prompt/role. </parameter> <parameter name=\"launches\" string=\"false\">[{\"subagent_type\":\"explorer\",\"meta_prompt\":\"Map top-level directories.\"}]</parameter>",
+			"prompt":      "Execute your assigned meta_prompt/role. </怡parameter>",
+			"launches": []any{
+				map[string]any{"subagent_type": "reviewer", "meta_prompt": "Map top-level directories."},
+			},
 		}),
 	}}, nil, nil)
 	if err != nil {
@@ -265,10 +259,13 @@ func TestGateToolCallsRejectsMalformedTaskLaunchBeforePermission(t *testing.T) {
 	if len(approvedCalls) != 0 || len(approvedMask) != 1 || approvedMask[0] {
 		t.Fatalf("malformed task launch was approved: calls=%d mask=%v", len(approvedCalls), approvedMask)
 	}
-	if len(results) != 1 || !strings.Contains(results[0].Error, "invalid tool arguments") || !strings.Contains(results[0].Error, "requires subagent_type, agent, or purpose") {
-		t.Fatalf("expected validation result error, got %#v", results)
+	if len(results) != 1 || !strings.Contains(results[0].Error, "invalid tool arguments") || !strings.Contains(results[0].Error, "malformed XML markup in tool call") {
+		t.Fatalf("expected parser-level result error, got %#v", results)
 	}
-	pending, err := permissions.ListPending(parent.ID, 10)
+	if strings.Contains(results[0].Error, "requires subagent_type, agent, or purpose") {
+		t.Fatalf("expected parser-level error before launch validation, got %#v", results)
+	}
+	pending, err := permissions.ListPending(parentSessionID, 10)
 	if err != nil {
 		t.Fatalf("list pending permissions: %v", err)
 	}
@@ -487,4 +484,84 @@ func newTaskLaunchPermissionTestService(t *testing.T) (*Service, string, func())
 		t.Fatalf("create parent session: %v", err)
 	}
 	return NewService(sessions, nil, nil, tool.NewRuntime(1), nil, agents, nil, events), parent.ID, cleanup
+}
+
+func TestGateToolCallsRejectsMalformedXMLToolArgumentsWithoutPermissionService(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	if svc.permissions != nil {
+		t.Fatalf("test helper unexpectedly configured permissions")
+	}
+	arguments := mustJSON(t, map[string]any{
+		"prompt": "Execute assigned work. </怡parameter>",
+		"launches": []any{
+			map[string]any{"subagent_type": "reviewer", "meta_prompt": "Map top-level directories."},
+		},
+	})
+
+	results, approvedCalls, _, approvedMask, _, err := svc.gateToolCalls(context.Background(), parentSessionID, "run-test", 1, sessionruntime.ModeAuto, []tool.Call{{
+		CallID:    "call-bad-task-xml",
+		Name:      "task",
+		Arguments: arguments,
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("gate tool calls returned unexpected error: %v", err)
+	}
+	if len(approvedCalls) != 0 || len(approvedMask) != 1 || approvedMask[0] {
+		t.Fatalf("malformed XML task call was approved: calls=%d mask=%v", len(approvedCalls), approvedMask)
+	}
+	if len(results) != 1 || !strings.Contains(results[0].Error, "invalid tool arguments") || !strings.Contains(results[0].Error, "malformed XML markup in tool call") {
+		t.Fatalf("expected parser-level XML error, got %#v", results)
+	}
+	if strings.Contains(results[0].Error, "requires subagent_type, agent, or purpose") {
+		t.Fatalf("expected parser-level error before launch validation, got %#v", results)
+	}
+}
+
+func newTaskLaunchPermissionServiceWithPermissions(t *testing.T) (*Service, string, *permission.Service, func()) {
+	t.Helper()
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "state.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	cleanup := func() { _ = store.Close() }
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		cleanup()
+		t.Fatalf("open event log: %v", err)
+	}
+	agents := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
+	if err := agents.EnsureDefaults(); err != nil {
+		cleanup()
+		t.Fatalf("ensure agent defaults: %v", err)
+	}
+	if _, _, _, err := agents.Upsert(agentruntime.UpsertInput{
+		Name:             "reviewer",
+		Mode:             agentruntime.ModeSubagent,
+		Prompt:           "Review carefully.",
+		ExecutionSetting: pebblestore.AgentExecutionSettingRead,
+		Enabled:          pebblestore.BoolPtr(true),
+	}); err != nil {
+		cleanup()
+		t.Fatalf("create reviewer: %v", err)
+	}
+	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
+	parent, _, err := sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		Title:         "Parent",
+		WorkspacePath: t.TempDir(),
+		WorkspaceName: "workspace",
+		Mode:          sessionruntime.ModeAuto,
+		Preference: &pebblestore.ModelPreference{
+			Provider: "parent-provider",
+			Model:    "parent-model",
+			Thinking: "high",
+		},
+	})
+	if err != nil {
+		cleanup()
+		t.Fatalf("create parent session: %v", err)
+	}
+	permissions := permission.NewService(pebblestore.NewPermissionStore(store), events, nil)
+	svc := NewService(sessions, nil, nil, tool.NewRuntime(1), permissions, agents, nil, events)
+	return svc, parent.ID, permissions, cleanup
 }
