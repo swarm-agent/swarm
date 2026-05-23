@@ -83,11 +83,16 @@ const (
 	KeySwarmEnrollmentPrefix                    = "swarm/enrollment/"
 	KeySwarmTrustedPeerPrefix                   = "swarm/trusted_peer/"
 	KeySwarmDesktopTargetCurrent                = "swarm/desktop_target/current"
-	KeyTopologyRuntimePrefix                    = "topology/runtime/"
-	KeyTopologyHostContainerPrefix              = "topology/host_container/"
-	KeyTopologyAttachmentPrefix                 = "topology/attachment/"
-	KeyTopologyWorkspaceBindingPrefix           = "topology/workspace_binding/"
-	KeyTopologySessionRoutePrefix               = "topology/session_route/"
+	KeyTopologyRuntimePrefix                    = "topology/runtime/" // legacy global prefix; retained for explicit migration only.
+	KeyTopologyRuntimeAccountPrefix             = "topology/runtime_by_account/"
+	KeyTopologyHostContainerPrefix              = "topology/host_container/" // legacy global prefix; retained for explicit migration only.
+	KeyTopologyHostContainerAccountPrefix       = "topology/host_container_by_account/"
+	KeyTopologyAttachmentPrefix                 = "topology/attachment/" // legacy global prefix; retained for explicit migration only.
+	KeyTopologyAttachmentAccountPrefix          = "topology/attachment_by_account/"
+	KeyTopologyWorkspaceBindingPrefix           = "topology/workspace_binding/" // legacy global prefix; retained for explicit migration only.
+	KeyTopologyWorkspaceBindingAccountPrefix    = "topology/workspace_binding_by_account/"
+	KeyTopologySessionRoutePrefix               = "topology/session_route/" // legacy global prefix; retained for explicit migration only.
+	KeyTopologySessionRouteAccountPrefix        = "topology/session_route_by_account/"
 	KeyTopologyMigrationStatusPrefix            = "topology/migration_status/"
 	KeySwarmMirrorLocalSeq                      = "swarm/mirror/local/seq"
 	KeySwarmMirrorLocalEventPrefix              = "swarm/mirror/local/event/"
@@ -324,12 +329,36 @@ func TopologyRuntimePrefix() string {
 	return KeyTopologyRuntimePrefix
 }
 
+func KeyTopologyRuntimeForAccount(accountScopeID, swarmID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyTopologyRuntimeAccountPrefix, keyPart(accountScopeID), keyPart(swarmID))
+}
+
+func TopologyRuntimePrefixForAccount(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyTopologyRuntimeAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyTopologyRuntimeAccountPrefix, accountPart)
+}
+
 func KeyTopologyHostContainer(hostContainerID string) string {
 	return KeyTopologyHostContainerPrefix + keyPart(hostContainerID)
 }
 
 func TopologyHostContainerPrefix() string {
 	return KeyTopologyHostContainerPrefix
+}
+
+func KeyTopologyHostContainerForAccount(accountScopeID, hostContainerID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyTopologyHostContainerAccountPrefix, keyPart(accountScopeID), keyPart(hostContainerID))
+}
+
+func TopologyHostContainerPrefixForAccount(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyTopologyHostContainerAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyTopologyHostContainerAccountPrefix, accountPart)
 }
 
 func KeyTopologyAttachment(attachmentID string) string {
@@ -340,6 +369,18 @@ func TopologyAttachmentPrefix() string {
 	return KeyTopologyAttachmentPrefix
 }
 
+func KeyTopologyAttachmentForAccount(accountScopeID, attachmentID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyTopologyAttachmentAccountPrefix, keyPart(accountScopeID), keyPart(attachmentID))
+}
+
+func TopologyAttachmentPrefixForAccount(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyTopologyAttachmentAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyTopologyAttachmentAccountPrefix, accountPart)
+}
+
 func KeyTopologyWorkspaceBinding(bindingID string) string {
 	return KeyTopologyWorkspaceBindingPrefix + keyPart(bindingID)
 }
@@ -348,12 +389,36 @@ func TopologyWorkspaceBindingPrefix() string {
 	return KeyTopologyWorkspaceBindingPrefix
 }
 
+func KeyTopologyWorkspaceBindingForAccount(accountScopeID, bindingID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyTopologyWorkspaceBindingAccountPrefix, keyPart(accountScopeID), keyPart(bindingID))
+}
+
+func TopologyWorkspaceBindingPrefixForAccount(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyTopologyWorkspaceBindingAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyTopologyWorkspaceBindingAccountPrefix, accountPart)
+}
+
 func KeyTopologySessionRoute(sessionID string) string {
 	return KeyTopologySessionRoutePrefix + keyPart(sessionID)
 }
 
 func TopologySessionRoutePrefix() string {
 	return KeyTopologySessionRoutePrefix
+}
+
+func KeyTopologySessionRouteForAccount(accountScopeID, sessionID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyTopologySessionRouteAccountPrefix, keyPart(accountScopeID), keyPart(sessionID))
+}
+
+func TopologySessionRoutePrefixForAccount(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyTopologySessionRouteAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyTopologySessionRouteAccountPrefix, accountPart)
 }
 
 func KeyTopologyMigrationStatus(statusID string) string {

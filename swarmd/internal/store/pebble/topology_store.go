@@ -19,6 +19,8 @@ const (
 
 type TopologyRuntimeRecord struct {
 	SwarmID              string   `json:"swarm_id"`
+	UserID               string   `json:"user_id,omitempty"`
+	AccountScopeID       string   `json:"account_scope_id,omitempty"`
 	Name                 string   `json:"name"`
 	Role                 string   `json:"role,omitempty"`
 	Relationship         string   `json:"relationship,omitempty"`
@@ -36,6 +38,8 @@ type TopologyRuntimeRecord struct {
 
 type TopologyHostContainerRecord struct {
 	HostContainerID     string                     `json:"host_container_id"`
+	UserID              string                     `json:"user_id,omitempty"`
+	AccountScopeID      string                     `json:"account_scope_id,omitempty"`
 	HostSwarmID         string                     `json:"host_swarm_id"`
 	RuntimeContainerRef string                     `json:"runtime_container_ref"`
 	Name                string                     `json:"name"`
@@ -55,6 +59,8 @@ type TopologyHostContainerRecord struct {
 
 type TopologyAttachmentRecord struct {
 	AttachmentID          string `json:"attachment_id"`
+	UserID                string `json:"user_id,omitempty"`
+	AccountScopeID        string `json:"account_scope_id,omitempty"`
 	HostContainerID       string `json:"host_container_id"`
 	RuntimeSwarmID        string `json:"runtime_swarm_id"`
 	State                 string `json:"state,omitempty"`
@@ -67,6 +73,8 @@ type TopologyAttachmentRecord struct {
 
 type TopologyWorkspaceBindingRecord struct {
 	BindingID                 string                   `json:"binding_id"`
+	UserID                    string                   `json:"user_id,omitempty"`
+	AccountScopeID            string                   `json:"account_scope_id,omitempty"`
 	SourceWorkspacePath       string                   `json:"source_workspace_path"`
 	SourceWorkspaceName       string                   `json:"source_workspace_name,omitempty"`
 	DestinationRuntimeSwarmID string                   `json:"destination_runtime_swarm_id,omitempty"`
@@ -83,6 +91,8 @@ type TopologyWorkspaceBindingRecord struct {
 
 type TopologySessionRouteRecord struct {
 	SessionID            string `json:"session_id"`
+	UserID               string `json:"user_id,omitempty"`
+	AccountScopeID       string `json:"account_scope_id,omitempty"`
 	RuntimeSwarmID       string `json:"runtime_swarm_id,omitempty"`
 	HostSwarmID          string `json:"host_swarm_id,omitempty"`
 	HostContainerID      string `json:"host_container_id,omitempty"`
@@ -943,6 +953,8 @@ func normalizeTopologyRuntimeRecords(records []TopologyRuntimeRecord) []Topology
 
 func normalizeTopologyRuntimeRecord(record TopologyRuntimeRecord) TopologyRuntimeRecord {
 	record.SwarmID = normalizeTopologyKeyValue(record.SwarmID)
+	record.UserID = strings.TrimSpace(record.UserID)
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
 	record.Name = strings.TrimSpace(record.Name)
 	record.Role = strings.ToLower(strings.TrimSpace(record.Role))
 	record.Relationship = strings.ToLower(strings.TrimSpace(record.Relationship))
@@ -980,6 +992,8 @@ func normalizeTopologyHostContainerRecords(records []TopologyHostContainerRecord
 
 func normalizeTopologyHostContainerRecord(record TopologyHostContainerRecord) TopologyHostContainerRecord {
 	record.HostContainerID = normalizeTopologyKeyValue(record.HostContainerID)
+	record.UserID = strings.TrimSpace(record.UserID)
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
 	record.HostSwarmID = strings.TrimSpace(record.HostSwarmID)
 	record.RuntimeContainerRef = strings.TrimSpace(record.RuntimeContainerRef)
 	record.Name = strings.TrimSpace(record.Name)
@@ -1023,6 +1037,8 @@ func normalizeTopologyAttachmentRecords(records []TopologyAttachmentRecord) []To
 
 func normalizeTopologyAttachmentRecord(record TopologyAttachmentRecord) TopologyAttachmentRecord {
 	record.AttachmentID = normalizeTopologyKeyValue(record.AttachmentID)
+	record.UserID = strings.TrimSpace(record.UserID)
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
 	record.HostContainerID = strings.TrimSpace(record.HostContainerID)
 	record.RuntimeSwarmID = strings.TrimSpace(record.RuntimeSwarmID)
 	record.State = strings.ToLower(strings.TrimSpace(record.State))
@@ -1055,6 +1071,8 @@ func normalizeTopologyWorkspaceBindingRecords(records []TopologyWorkspaceBinding
 
 func normalizeTopologyWorkspaceBindingRecord(record TopologyWorkspaceBindingRecord) TopologyWorkspaceBindingRecord {
 	record.BindingID = normalizeTopologyKeyValue(record.BindingID)
+	record.UserID = strings.TrimSpace(record.UserID)
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
 	record.SourceWorkspacePath = strings.TrimSpace(record.SourceWorkspacePath)
 	record.SourceWorkspaceName = strings.TrimSpace(record.SourceWorkspaceName)
 	record.DestinationRuntimeSwarmID = strings.TrimSpace(record.DestinationRuntimeSwarmID)
@@ -1090,6 +1108,8 @@ func normalizeTopologySessionRouteRecords(records []TopologySessionRouteRecord) 
 
 func normalizeTopologySessionRouteRecord(record TopologySessionRouteRecord) TopologySessionRouteRecord {
 	record.SessionID = normalizeTopologyKeyValue(record.SessionID)
+	record.UserID = strings.TrimSpace(record.UserID)
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
 	record.RuntimeSwarmID = strings.TrimSpace(record.RuntimeSwarmID)
 	record.HostSwarmID = strings.TrimSpace(record.HostSwarmID)
 	record.HostContainerID = strings.TrimSpace(record.HostContainerID)

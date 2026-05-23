@@ -1,6 +1,7 @@
 package pebblestore
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"testing"
 )
@@ -16,6 +17,8 @@ func TestTopologyStoreDirectWritersAndSnapshot(t *testing.T) {
 
 	runtimeRecord, err := topology.PutRuntime(TopologyRuntimeRecord{
 		SwarmID:         " child-1 ",
+		UserID:          " user-a ",
+		AccountScopeID:  " account-a ",
 		Name:            " Child One ",
 		Relationship:    "CHILD",
 		ObservedSources: []string{" deploy_container ", "deploy_container"},
@@ -29,12 +32,17 @@ func TestTopologyStoreDirectWritersAndSnapshot(t *testing.T) {
 	if runtimeRecord.Relationship != "child" {
 		t.Fatalf("runtime relationship = %q", runtimeRecord.Relationship)
 	}
+	if runtimeRecord.UserID != "user-a" || runtimeRecord.AccountScopeID != "account-a" {
+		t.Fatalf("runtime account ownership not normalized: %+v", runtimeRecord)
+	}
 	if runtimeRecord.UpdatedAt <= 0 || runtimeRecord.CreatedAt <= 0 {
 		t.Fatalf("runtime timestamps not populated: %+v", runtimeRecord)
 	}
 
 	hostContainerRecord, err := topology.PutHostContainer(TopologyHostContainerRecord{
 		HostContainerID:     " manager-1:ctr-1 ",
+		UserID:              " user-a ",
+		AccountScopeID:      " account-a ",
 		HostSwarmID:         " manager-1 ",
 		RuntimeContainerRef: " ctr-1 ",
 		ContainerName:       " app ",
@@ -55,6 +63,8 @@ func TestTopologyStoreDirectWritersAndSnapshot(t *testing.T) {
 
 	attachmentRecord, err := topology.PutAttachment(TopologyAttachmentRecord{
 		AttachmentID:    " manager-1:ctr-1=>child-1 ",
+		UserID:          " user-a ",
+		AccountScopeID:  " account-a ",
 		HostContainerID: hostContainerRecord.HostContainerID,
 		RuntimeSwarmID:  runtimeRecord.SwarmID,
 		State:           "ATTACHED",
@@ -68,6 +78,8 @@ func TestTopologyStoreDirectWritersAndSnapshot(t *testing.T) {
 
 	bindingRecord, err := topology.PutWorkspaceBinding(TopologyWorkspaceBindingRecord{
 		BindingID:                 " /src|child-1|/dst|child ",
+		UserID:                    " user-a ",
+		AccountScopeID:            " account-a ",
 		SourceWorkspacePath:       " /src ",
 		DestinationRuntimeSwarmID: runtimeRecord.SwarmID,
 		DestinationWorkspacePath:  " /dst ",
@@ -82,6 +94,8 @@ func TestTopologyStoreDirectWritersAndSnapshot(t *testing.T) {
 
 	routeRecord, err := topology.PutSessionRoute(TopologySessionRouteRecord{
 		SessionID:          " session-1 ",
+		UserID:             " user-a ",
+		AccountScopeID:     " account-a ",
 		RuntimeSwarmID:     runtimeRecord.SwarmID,
 		WorkspaceBindingID: bindingRecord.BindingID,
 		BackendURL:         " http://child.example:7781/ ",
@@ -126,6 +140,9 @@ func TestTopologyStoreDirectWritersAndSnapshot(t *testing.T) {
 	if loadedRuntime.Name != "Child One" {
 		t.Fatalf("loaded runtime name = %q", loadedRuntime.Name)
 	}
+	if loadedRuntime.UserID != "user-a" || loadedRuntime.AccountScopeID != "account-a" {
+		t.Fatalf("loaded runtime account ownership = %+v", loadedRuntime)
+	}
 
 	loadedAttachment, ok, err := topology.GetAttachment("manager-1:ctr-1=>child-1")
 	if err != nil || !ok {
@@ -133,6 +150,9 @@ func TestTopologyStoreDirectWritersAndSnapshot(t *testing.T) {
 	}
 	if loadedAttachment.HostContainerID != hostContainerRecord.HostContainerID {
 		t.Fatalf("loaded attachment host container id = %q", loadedAttachment.HostContainerID)
+	}
+	if loadedAttachment.UserID != "user-a" || loadedAttachment.AccountScopeID != "account-a" {
+		t.Fatalf("loaded attachment account ownership = %+v", loadedAttachment)
 	}
 
 	snapshot, err := topology.Snapshot()
@@ -144,6 +164,11 @@ func TestTopologyStoreDirectWritersAndSnapshot(t *testing.T) {
 	}
 	if snapshot.MigrationStatus.Version != "checkpoint1-v1" {
 		t.Fatalf("snapshot migration version = %q", snapshot.MigrationStatus.Version)
+	}
+	if snapshot.HostContainers[0].UserID != "user-a" || snapshot.HostContainers[0].AccountScopeID != "account-a" ||
+		snapshot.WorkspaceBindings[0].UserID != "user-a" || snapshot.WorkspaceBindings[0].AccountScopeID != "account-a" ||
+		snapshot.SessionRoutes[0].UserID != "user-a" || snapshot.SessionRoutes[0].AccountScopeID != "account-a" {
+		t.Fatalf("snapshot account ownership missing: %+v", snapshot)
 	}
 
 	if err := topology.DeleteAttachment(attachmentRecord.AttachmentID); err != nil {
@@ -171,6 +196,86 @@ func TestTopologyStoreDirectWritersAndSnapshot(t *testing.T) {
 	if refreshedStatus.RuntimeCount != 0 || refreshedStatus.HostContainerCount != 0 || refreshedStatus.AttachmentCount != 0 || refreshedStatus.WorkspaceBindingCount != 0 || refreshedStatus.SessionRouteCount != 0 {
 		t.Fatalf("unexpected refreshed migration counts after direct deletes: %+v", refreshedStatus)
 	}
+}
+
+func TestTopologyStoreAccountScopedKeyShape(t *testing.T) {
+	accountScopeID := " Account/A "
+	if got, want := KeyTopologyRuntimeForAccount(accountScopeID, " Child-1 "), "topology/runtime_by_account/account%2Fa/child-1"; got != want {
+		t.Fatalf("runtime account key = %q, want %q", got, want)
+	}
+	if got, want := TopologyRuntimePrefixForAccount(accountScopeID), "topology/runtime_by_account/account%2Fa/"; got != want {
+		t.Fatalf("runtime account prefix = %q, want %q", got, want)
+	}
+	if got, want := TopologyRuntimePrefixForAccount(""), KeyTopologyRuntimeAccountPrefix; got != want {
+		t.Fatalf("empty runtime account prefix = %q, want %q", got, want)
+	}
+
+	if got, want := KeyTopologyHostContainerForAccount(accountScopeID, " Host:Container "), "topology/host_container_by_account/account%2Fa/host:container"; got != want {
+		t.Fatalf("host container account key = %q, want %q", got, want)
+	}
+	if got, want := TopologyHostContainerPrefixForAccount(accountScopeID), "topology/host_container_by_account/account%2Fa/"; got != want {
+		t.Fatalf("host container account prefix = %q, want %q", got, want)
+	}
+
+	if got, want := KeyTopologyAttachmentForAccount(accountScopeID, " Host:Container=>Child "), "topology/attachment_by_account/account%2Fa/host:container=%3Echild"; got != want {
+		t.Fatalf("attachment account key = %q, want %q", got, want)
+	}
+	if got, want := TopologyAttachmentPrefixForAccount(accountScopeID), "topology/attachment_by_account/account%2Fa/"; got != want {
+		t.Fatalf("attachment account prefix = %q, want %q", got, want)
+	}
+
+	if got, want := KeyTopologyWorkspaceBindingForAccount(accountScopeID, " /src|Child|/dst "), "topology/workspace_binding_by_account/account%2Fa/%2Fsrc%7Cchild%7C%2Fdst"; got != want {
+		t.Fatalf("workspace binding account key = %q, want %q", got, want)
+	}
+	if got, want := TopologyWorkspaceBindingPrefixForAccount(accountScopeID), "topology/workspace_binding_by_account/account%2Fa/"; got != want {
+		t.Fatalf("workspace binding account prefix = %q, want %q", got, want)
+	}
+
+	if got, want := KeyTopologySessionRouteForAccount(accountScopeID, " Session-1 "), "topology/session_route_by_account/account%2Fa/session-1"; got != want {
+		t.Fatalf("session route account key = %q, want %q", got, want)
+	}
+	if got, want := TopologySessionRoutePrefixForAccount(accountScopeID), "topology/session_route_by_account/account%2Fa/"; got != want {
+		t.Fatalf("session route account prefix = %q, want %q", got, want)
+	}
+}
+
+func TestTopologyStoreAccountFieldsJSONAndMigrationPolicy(t *testing.T) {
+	records := []struct {
+		name    string
+		payload any
+	}{
+		{name: "runtime", payload: TopologyRuntimeRecord{SwarmID: "runtime-1", UserID: "user-a", AccountScopeID: "account-a"}},
+		{name: "host_container", payload: TopologyHostContainerRecord{HostContainerID: "host-1:ctr-1", UserID: "user-a", AccountScopeID: "account-a"}},
+		{name: "attachment", payload: TopologyAttachmentRecord{AttachmentID: "attach-1", UserID: "user-a", AccountScopeID: "account-a"}},
+		{name: "workspace_binding", payload: TopologyWorkspaceBindingRecord{BindingID: "binding-1", UserID: "user-a", AccountScopeID: "account-a"}},
+		{name: "session_route", payload: TopologySessionRouteRecord{SessionID: "session-1", UserID: "user-a", AccountScopeID: "account-a"}},
+	}
+	for _, tc := range records {
+		t.Run(tc.name, func(t *testing.T) {
+			payload, err := json.Marshal(tc.payload)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if !jsonHasStringField(t, payload, "user_id", "user-a") || !jsonHasStringField(t, payload, "account_scope_id", "account-a") {
+				t.Fatalf("account fields missing from %s JSON: %s", tc.name, string(payload))
+			}
+		})
+	}
+
+	// Migration/backfill policy for Checkpoint 1.1:
+	//   - Source-owned topology rows inherit UserID and AccountScopeID from their source record.
+	//   - Ambiguous or orphaned legacy/global rows remain migration inputs only and are not product-visible.
+	//   - Converted runtime reads must use account-scoped keys/indexes and must not fall back to legacy global mutable keys.
+}
+
+func jsonHasStringField(t *testing.T, payload []byte, field string, want string) bool {
+	t.Helper()
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	got, ok := decoded[field].(string)
+	return ok && got == want
 }
 
 func TestTopologyStoreWriterValidation(t *testing.T) {
