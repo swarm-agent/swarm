@@ -205,6 +205,8 @@ type ContainerAttachApproveInput struct {
 type ContainerAttachFinalizeInput struct {
 	DeploymentID             string                        `json:"deployment_id"`
 	BootstrapSecret          string                        `json:"bootstrap_secret"`
+	UserID                   string                        `json:"user_id,omitempty"`
+	AccountScopeID           string                        `json:"account_scope_id,omitempty"`
 	HostSwarmID              string                        `json:"host_swarm_id"`
 	HostDisplayName          string                        `json:"host_display_name"`
 	HostPublicKey            string                        `json:"host_public_key"`
@@ -299,6 +301,8 @@ type ManagedHostSyncStatus struct {
 type ContainerAttachState struct {
 	DeploymentID             string `json:"deployment_id"`
 	AttachStatus             string `json:"attach_status"`
+	UserID                   string `json:"user_id,omitempty"`
+	AccountScopeID           string `json:"account_scope_id,omitempty"`
 	ChildSwarmID             string `json:"child_swarm_id,omitempty"`
 	ChildDisplayName         string `json:"child_display_name,omitempty"`
 	ChildBackendURL          string `json:"child_backend_url,omitempty"`
@@ -1827,7 +1831,28 @@ func (s *Service) WorkspaceBootstrap(ctx context.Context, input ContainerWorkspa
 	if subtleTrim(record.BootstrapSecret) != subtleTrim(input.BootstrapSecret) {
 		return nil, fmt.Errorf("bootstrap secret mismatch")
 	}
-	return append([]ContainerWorkspaceBootstrap(nil), record.WorkspaceBootstrap...), nil
+	items := append([]ContainerWorkspaceBootstrap(nil), record.WorkspaceBootstrap...)
+	if s.topology != nil {
+		for _, item := range items {
+			if _, err := pebblestore.UpsertTopologyWorkspaceBindingForAccount(s.topology, record.AccountScopeID, pebblestore.TopologyWorkspaceBindingRecord{
+				BindingID:                 pebblestore.CanonicalTopologyWorkspaceBindingID(record.ID, strings.TrimSpace(item.SourceWorkspacePath)),
+				UserID:                    strings.TrimSpace(record.UserID),
+				AccountScopeID:            strings.TrimSpace(record.AccountScopeID),
+				SourceWorkspacePath:       strings.TrimSpace(item.SourceWorkspacePath),
+				SourceWorkspaceName:       strings.TrimSpace(item.SourceWorkspaceName),
+				DestinationRuntimeSwarmID: strings.TrimSpace(record.ChildSwarmID),
+				DestinationHostSwarmID:    strings.TrimSpace(record.HostSwarmID),
+				DestinationWorkspacePath:  strings.TrimSpace(item.TargetWorkspacePath),
+				ReplicationMode:           strings.TrimSpace(item.ReplicationMode),
+				Writable:                  item.Writable,
+				Sync:                      item.Sync,
+				LegacyTargetKind:          "local",
+			}); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return items, nil
 }
 
 func (s *Service) FinalizeAttachFromHost(ctx context.Context, input ContainerAttachFinalizeInput) error {
@@ -2482,6 +2507,8 @@ func mapAttachState(record pebblestore.DeployContainerRecord) ContainerAttachSta
 	return ContainerAttachState{
 		DeploymentID:           record.ID,
 		AttachStatus:           record.AttachStatus,
+		UserID:                 record.UserID,
+		AccountScopeID:         record.AccountScopeID,
 		ChildSwarmID:           record.ChildSwarmID,
 		ChildDisplayName:       record.ChildDisplayName,
 		ChildBackendURL:        record.ChildBackendURL,
@@ -2715,6 +2742,8 @@ func (s *Service) completeHostDrivenLocalAttach(ctx context.Context, startupCfg 
 	finalizeInput := ContainerAttachFinalizeInput{
 		DeploymentID:      record.ID,
 		BootstrapSecret:   record.BootstrapSecret,
+		UserID:            currentRecord.UserID,
+		AccountScopeID:    currentRecord.AccountScopeID,
 		HostSwarmID:       attachState.HostSwarmID,
 		HostDisplayName:   attachState.HostDisplayName,
 		HostPublicKey:     attachState.HostPublicKey,
@@ -3079,6 +3108,8 @@ func (s *Service) finalizeChildAttach(ctx context.Context, cfg startupconfig.Fil
 	}
 	pairing.PairingState = startupconfig.PairingStatePaired
 	pairing.ParentSwarmID = firstNonEmpty(status.HostSwarmID, strings.TrimSpace(cfg.ParentSwarmID))
+	pairing.UserID = firstNonEmpty(strings.TrimSpace(finalizeInput.UserID), strings.TrimSpace(status.UserID))
+	pairing.AccountScopeID = firstNonEmpty(strings.TrimSpace(finalizeInput.AccountScopeID), strings.TrimSpace(status.AccountScopeID))
 	pairing.LastDecision = "approved"
 	pairing.LastDecisionReason = ""
 	pairing.LastUpdatedByRole = "child"
@@ -4076,9 +4107,6 @@ func (s *Service) applyBootstrapWorkspaces(principal identity.Principal, cfg sta
 	if deploymentID == "" {
 		return fmt.Errorf("child deploy bootstrap is missing deployment id")
 	}
-	if strings.EqualFold(strings.TrimSpace(pairing.WorkspaceBootstrapDeploymentID), deploymentID) && pairing.WorkspaceBootstrapAt > 0 {
-		return nil
-	}
 	if len(items) == 0 {
 		updated := pairing
 		updated.WorkspaceBootstrapDeploymentID = deploymentID
@@ -4136,8 +4164,10 @@ func (s *Service) applyBootstrapWorkspaces(principal identity.Principal, cfg sta
 			entry.Directories = append(entry.Directories, targetPath)
 		}
 		if s.topology != nil {
-			_, err := pebblestore.UpsertTopologyWorkspaceBinding(s.topology, pebblestore.TopologyWorkspaceBindingRecord{
+			_, err := pebblestore.UpsertTopologyWorkspaceBindingForAccount(s.topology, principal.AccountScopeID, pebblestore.TopologyWorkspaceBindingRecord{
 				BindingID:                 pebblestore.CanonicalTopologyWorkspaceBindingID(deploymentID, strings.TrimSpace(item.SourceWorkspacePath)),
+				UserID:                    strings.TrimSpace(principal.UserID),
+				AccountScopeID:            strings.TrimSpace(principal.AccountScopeID),
 				SourceWorkspacePath:       strings.TrimSpace(item.SourceWorkspacePath),
 				SourceWorkspaceName:       strings.TrimSpace(item.SourceWorkspaceName),
 				DestinationRuntimeSwarmID: strings.TrimSpace(status.ChildSwarmID),

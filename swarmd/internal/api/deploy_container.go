@@ -523,6 +523,8 @@ func (s *Server) handleDeployContainerAttachFinalize(w http.ResponseWriter, r *h
 	var req struct {
 		DeploymentID             string                                      `json:"deployment_id"`
 		BootstrapSecret          string                                      `json:"bootstrap_secret"`
+		UserID                   string                                      `json:"user_id,omitempty"`
+		AccountScopeID           string                                      `json:"account_scope_id,omitempty"`
 		HostSwarmID              string                                      `json:"host_swarm_id"`
 		HostDisplayName          string                                      `json:"host_display_name"`
 		HostPublicKey            string                                      `json:"host_public_key"`
@@ -551,6 +553,8 @@ func (s *Server) handleDeployContainerAttachFinalize(w http.ResponseWriter, r *h
 	if err := s.deployContainers.FinalizeAttachFromHost(context.Background(), deployruntime.ContainerAttachFinalizeInput{
 		DeploymentID:             req.DeploymentID,
 		BootstrapSecret:          req.BootstrapSecret,
+		UserID:                   req.UserID,
+		AccountScopeID:           req.AccountScopeID,
 		HostSwarmID:              req.HostSwarmID,
 		HostDisplayName:          req.HostDisplayName,
 		HostPublicKey:            req.HostPublicKey,

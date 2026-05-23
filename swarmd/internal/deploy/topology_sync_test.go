@@ -21,6 +21,8 @@ func TestMirrorDeploymentSyncsCanonicalHostContainerAndAttachment(t *testing.T) 
 
 	deployment, err := deploySvc.MirrorDeployment(context.Background(), ContainerDeployment{
 		ID:               "deploy-1",
+		UserID:           "user-1",
+		AccountScopeID:   "account-1",
 		Name:             "managed child",
 		Kind:             "container",
 		Status:           "running",
@@ -57,25 +59,34 @@ func TestMirrorDeploymentSyncsCanonicalHostContainerAndAttachment(t *testing.T) 
 	if hostContainerID == "" {
 		t.Fatal("expected canonical host container id")
 	}
-	hostContainer, ok, err := topologyStore.GetHostContainer(hostContainerID)
+	hostContainer, ok, err := topologyStore.GetHostContainerForAccount("account-1", hostContainerID)
 	if err != nil || !ok {
 		t.Fatalf("get host container ok=%t err=%v", ok, err)
+	}
+	if hostContainer.UserID != "user-1" || hostContainer.AccountScopeID != "account-1" {
+		t.Fatalf("host container account = %q/%q", hostContainer.UserID, hostContainer.AccountScopeID)
 	}
 	if hostContainer.HostSwarmID != "managed-swarm" {
 		t.Fatalf("host container host swarm id = %q", hostContainer.HostSwarmID)
 	}
 
 	attachmentID := pebblestore.CanonicalTopologyAttachmentID(hostContainerID, "child-swarm-1")
-	attachment, ok, err := topologyStore.GetAttachment(attachmentID)
+	attachment, ok, err := topologyStore.GetAttachmentForAccount("account-1", attachmentID)
 	if err != nil || !ok {
 		t.Fatalf("get attachment ok=%t err=%v", ok, err)
+	}
+	if attachment.UserID != "user-1" || attachment.AccountScopeID != "account-1" {
+		t.Fatalf("attachment account = %q/%q", attachment.UserID, attachment.AccountScopeID)
 	}
 	if attachment.DeploymentID != "deploy-1" {
 		t.Fatalf("attachment deployment id = %q", attachment.DeploymentID)
 	}
-	runtimeRecord, ok, err := topologyStore.GetRuntime("child-swarm-1")
+	runtimeRecord, ok, err := topologyStore.GetRuntimeForAccount("account-1", "child-swarm-1")
 	if err != nil || !ok {
 		t.Fatalf("get runtime ok=%t err=%v", ok, err)
+	}
+	if runtimeRecord.UserID != "user-1" || runtimeRecord.AccountScopeID != "account-1" {
+		t.Fatalf("runtime account = %q/%q", runtimeRecord.UserID, runtimeRecord.AccountScopeID)
 	}
 	if runtimeRecord.OwnerHostContainerID != hostContainerID {
 		t.Fatalf("runtime owner host container id = %q", runtimeRecord.OwnerHostContainerID)
@@ -119,7 +130,7 @@ func TestLocalContainerDeleteUsesCanonicalAttachmentsForCleanup(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("put topology host container: %v", err)
 	}
-	if err := pebblestore.UpsertTopologyRuntimeRecord(topologyStore, pebblestore.TopologyRuntimeRecord{SwarmID: "child-swarm", Name: "Child", Relationship: "child", ObservedSources: []string{pebblestore.TopologyRuntimeSourceDeployContainer}}); err != nil {
+	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, "account-1", pebblestore.TopologyRuntimeRecord{SwarmID: "child-swarm", UserID: "user-1", AccountScopeID: "account-1", Name: "Child", Relationship: "child", ObservedSources: []string{pebblestore.TopologyRuntimeSourceDeployContainer}}); err != nil {
 		t.Fatalf("put topology runtime: %v", err)
 	}
 	attachmentID := pebblestore.CanonicalTopologyAttachmentID(pebblestore.CanonicalTopologyHostContainerID("host-swarm", "ctr-1"), "child-swarm")

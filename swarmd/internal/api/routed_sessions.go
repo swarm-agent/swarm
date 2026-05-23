@@ -408,7 +408,12 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 	}
 	principal, principalOK := PrincipalFromRequest(r)
 	if !principalOK || !principal.Valid() {
-		principal, principalOK = s.verifiedPeerSessionOpenPrincipalClaim(req)
+		principal, principalOK = s.verifiedPeerSessionOpenPrincipalClaim(r, req)
+		if principalOK && principal.Valid() {
+			ctx := context.WithValue(r.Context(), productPrincipalRequestContextKey, principal)
+			ctx = identity.ContextWithPrincipal(ctx, principal)
+			r = r.WithContext(ctx)
+		}
 	}
 	if !principalOK || !principal.Valid() {
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
@@ -478,7 +483,7 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) verifiedPeerSessionOpenPrincipalClaim(req peerSessionOpenRequest) (identity.Principal, bool) {
+func (s *Server) verifiedPeerSessionOpenPrincipalClaim(r *http.Request, req peerSessionOpenRequest) (identity.Principal, bool) {
 	claim := req.Principal
 	if !claim.Valid() || s == nil || s.topology == nil {
 		return identity.Principal{}, false
@@ -506,10 +511,58 @@ func (s *Server) verifiedPeerSessionOpenPrincipalClaim(req peerSessionOpenReques
 	if runtimeSwarmID == "" {
 		return identity.Principal{}, false
 	}
-	if _, ok, err := s.topology.GetRuntimeForAccount(claim.AccountScopeID, runtimeSwarmID); err != nil || !ok {
-		return identity.Principal{}, false
+	if _, ok, err := s.topology.GetRuntimeForAccount(claim.AccountScopeID, runtimeSwarmID); err == nil && ok {
+		return claim, true
 	}
-	return claim, true
+	if s.verifiedLocalChildPeerSessionOpenClaim(r, req, claim, runtimeSwarmID) {
+		return claim, true
+	}
+	return identity.Principal{}, false
+}
+
+func (s *Server) verifiedLocalChildPeerSessionOpenClaim(r *http.Request, req peerSessionOpenRequest, claim identity.Principal, runtimeSwarmID string) bool {
+	if s == nil || r == nil || s.swarmStore == nil || !claim.Valid() {
+		return false
+	}
+	// Host/container peer auth proves transport identity only. A forwarded
+	// principal claim is accepted here only after it matches the persisted
+	// local child pairing account and the authenticated peer is the paired
+	// parent for a session explicitly targeting this child runtime.
+	localNode, localOK, err := s.swarmStore.GetLocalNode()
+	if err != nil {
+		return false
+	}
+	if localOK && strings.TrimSpace(localNode.SwarmID) != "" {
+		if !strings.EqualFold(strings.TrimSpace(localNode.SwarmID), runtimeSwarmID) {
+			return false
+		}
+	} else if !s.isLocalSwarmID(runtimeSwarmID) {
+		return false
+	}
+	peerSwarmID, peerOK := authorizedPeerSwarmID(r)
+	if !peerOK || strings.TrimSpace(peerSwarmID) == "" {
+		return false
+	}
+	pairing, ok, err := s.swarmStore.GetLocalPairing()
+	if err != nil || !ok {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(pairing.PairingState), "paired") {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(pairing.ParentSwarmID), strings.TrimSpace(peerSwarmID)) {
+		return false
+	}
+	if strings.TrimSpace(pairing.UserID) != claim.UserID || strings.TrimSpace(pairing.AccountScopeID) != claim.AccountScopeID {
+		return false
+	}
+	if routeHostSwarmID := strings.TrimSpace(req.Route.HostSwarmID); routeHostSwarmID != "" && !strings.EqualFold(routeHostSwarmID, strings.TrimSpace(peerSwarmID)) {
+		return false
+	}
+	if hostedHostSwarmID := strings.TrimSpace(req.Hosted.HostSwarmID); hostedHostSwarmID != "" && !strings.EqualFold(hostedHostSwarmID, strings.TrimSpace(peerSwarmID)) {
+		return false
+	}
+	return true
 }
 
 func (s *Server) handlePeerSessionAppendMessage(w http.ResponseWriter, r *http.Request) {

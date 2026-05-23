@@ -31,6 +31,8 @@ type SwarmLocalNodeRecord struct {
 type SwarmLocalPairingRecord struct {
 	PairingState                   string                 `json:"pairing_state"`
 	ParentSwarmID                  string                 `json:"parent_swarm_id,omitempty"`
+	UserID                         string                 `json:"user_id,omitempty"`
+	AccountScopeID                 string                 `json:"account_scope_id,omitempty"`
 	ActiveInviteID                 string                 `json:"active_invite_id,omitempty"`
 	LastEnrollmentID               string                 `json:"last_enrollment_id,omitempty"`
 	LastDecision                   string                 `json:"last_decision,omitempty"`
@@ -757,6 +759,8 @@ func normalizeSwarmLocalNodeRecord(record SwarmLocalNodeRecord) SwarmLocalNodeRe
 func normalizeSwarmLocalPairingRecord(record SwarmLocalPairingRecord) SwarmLocalPairingRecord {
 	record.PairingState = strings.ToLower(strings.TrimSpace(record.PairingState))
 	record.ParentSwarmID = strings.TrimSpace(record.ParentSwarmID)
+	record.UserID = strings.TrimSpace(record.UserID)
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
 	record.ActiveInviteID = strings.TrimSpace(record.ActiveInviteID)
 	record.LastEnrollmentID = strings.TrimSpace(record.LastEnrollmentID)
 	record.LastDecision = strings.ToLower(strings.TrimSpace(record.LastDecision))

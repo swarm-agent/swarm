@@ -382,6 +382,63 @@ func TestPeerSessionOpenRejectsSpoofedForwardedPrincipalWithoutAccountOwnedRunti
 	}
 }
 
+func TestPeerSessionOpenAcceptsPairedChildPrincipalClaimWithoutLocalTopologyRuntime(t *testing.T) {
+	server, sessionSvc, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	configureRoutedSessionTestServerAsChild(t, server, swarmStore, "child-swarm", "host-swarm-id", testPrincipal().UserID, testPrincipal().AccountScopeID)
+	payload, err := json.Marshal(peerSessionOpenRequest{
+		SessionID: "session-paired-child",
+		Request: func() sessionCreateRequest {
+			req := sessionCreateRequest{Title: "paired child", WorkspacePath: "/workspaces/swarm-go", RuntimeWorkspacePath: "/workspaces/swarm-go", WorkspaceName: "swarm-go", Mode: sessionruntime.ModeAuto}
+			req.Preference.Provider = "codex"
+			req.Preference.Model = "gpt-5.4"
+			req.Preference.Thinking = "medium"
+			return req
+		}(),
+		Hosted:    sessionruntime.HostedSessionDescriptor{HostSwarmID: "host-swarm-id", RuntimeWorkspacePath: "/workspaces/swarm-go", ChildSwarmID: "child-swarm", OwnerTransport: "routed_session_peer"},
+		Route:     pebblestore.SessionRouteRecord{SessionID: "session-paired-child", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ChildSwarmID: "child-swarm", ChildBackendURL: "http://127.0.0.1:7782", HostSwarmID: "host-swarm-id", RuntimeWorkspacePath: "/workspaces/swarm-go"},
+		Principal: testPrincipal(),
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/swarm/peer/sessions/open", bytes.NewReader(payload))
+	req = req.WithContext(context.WithValue(req.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: "host-swarm-id"}))
+	rec := httptest.NewRecorder()
+	server.handlePeerSessionOpen(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	session, ok, err := sessionSvc.GetSession("session-paired-child")
+	if err != nil || !ok {
+		t.Fatalf("get session ok=%t err=%v", ok, err)
+	}
+	if session.UserID != testPrincipal().UserID || session.AccountScopeID != testPrincipal().AccountScopeID {
+		t.Fatalf("session principal = %q/%q", session.UserID, session.AccountScopeID)
+	}
+}
+
+func TestPeerSessionOpenRejectsPairedChildPrincipalClaimForWrongAccount(t *testing.T) {
+	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	configureRoutedSessionTestServerAsChild(t, server, swarmStore, "child-swarm", "host-swarm-id", "user-a", "account-a")
+	payload, err := json.Marshal(peerSessionOpenRequest{
+		SessionID: "session-wrong-account",
+		Request:   sessionCreateRequest{Title: "wrong account", WorkspacePath: "/workspaces/swarm-go", RuntimeWorkspacePath: "/workspaces/swarm-go", WorkspaceName: "swarm-go", Mode: sessionruntime.ModeAuto},
+		Hosted:    sessionruntime.HostedSessionDescriptor{HostSwarmID: "host-swarm-id", RuntimeWorkspacePath: "/workspaces/swarm-go", ChildSwarmID: "child-swarm", OwnerTransport: "routed_session_peer"},
+		Route:     pebblestore.SessionRouteRecord{SessionID: "session-wrong-account", UserID: "user-b", AccountScopeID: "account-b", ChildSwarmID: "child-swarm", ChildBackendURL: "http://127.0.0.1:7782", HostSwarmID: "host-swarm-id", RuntimeWorkspacePath: "/workspaces/swarm-go"},
+		Principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-b", AccountScopeID: "account-b", AccountScopeSource: identity.AccountScopeSourceSession},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/swarm/peer/sessions/open", bytes.NewReader(payload))
+	req = req.WithContext(context.WithValue(req.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: "host-swarm-id"}))
+	rec := httptest.NewRecorder()
+	server.handlePeerSessionOpen(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+	}
+}
+
 func TestStoreMirroredSessionWithEventPublishesCreatedEvent(t *testing.T) {
 	_, sessionSvc, _, _ := newRoutedSessionTestServer(t)
 	session, event, err := sessionSvc.StoreMirroredSessionWithEvent(pebblestore.SessionSnapshot{ID: "session-live-created", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, WorkspacePath: "/host/workspace", WorkspaceName: "workspace", Title: "Flow live", Mode: sessionruntime.ModeAuto, CreatedAt: 1, UpdatedAt: 1})
@@ -1182,7 +1239,42 @@ func TestRemoteDeploySessionUpdateJobReturnsPartialResultOnConflict(t *testing.T
 	}
 }
 
+func configureRoutedSessionTestServerAsChild(t *testing.T, server *Server, swarmStore *pebblestore.SwarmStore, childSwarmID, parentSwarmID, userID, accountScopeID string) {
+	t.Helper()
+	if _, err := swarmStore.PutLocalNode(pebblestore.SwarmLocalNodeRecord{SwarmID: childSwarmID, Name: "child-swarm", Role: "child"}); err != nil {
+		t.Fatalf("put local node: %v", err)
+	}
+	if _, err := swarmStore.PutLocalPairing(pebblestore.SwarmLocalPairingRecord{PairingState: startupconfig.PairingStatePaired, ParentSwarmID: parentSwarmID, UserID: userID, AccountScopeID: accountScopeID}); err != nil {
+		t.Fatalf("put local pairing: %v", err)
+	}
+	server.SetSwarmStore(swarmStore)
+	server.SetSwarmService(fakeRoutedSwarmService{
+		state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: childSwarmID, Name: "child-swarm", Role: "child"}},
+		token: "peer-token",
+	})
+	startupPath := filepath.Join(t.TempDir(), "child-swarm.conf")
+	cfg := startupconfig.Default(startupPath)
+	cfg.SwarmMode = true
+	cfg.Child = true
+	cfg.SwarmName = "child-swarm"
+	cfg.ParentSwarmID = parentSwarmID
+	cfg.PairingState = startupconfig.PairingStatePaired
+	cfg.Host = "127.0.0.1"
+	cfg.AdvertiseHost = "127.0.0.1"
+	cfg.Port = 7782
+	cfg.AdvertisePort = 7782
+	if err := startupconfig.Write(cfg); err != nil {
+		t.Fatalf("write child startup config: %v", err)
+	}
+	server.SetStartupConfigPath(startupPath)
+}
+
 func newRoutedSessionTestServer(t *testing.T) (*Server, *sessionruntime.Service, *permission.Service, *pebblestore.SessionRouteStore) {
+	server, sessionSvc, permissionSvc, routeStore, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	return server, sessionSvc, permissionSvc, routeStore
+}
+
+func newRoutedSessionTestServerWithSwarmStore(t *testing.T) (*Server, *sessionruntime.Service, *permission.Service, *pebblestore.SessionRouteStore, *pebblestore.SwarmStore) {
 	t.Helper()
 	t.Setenv("SWARM_API_NO_AUTH", "1")
 
@@ -1212,10 +1304,12 @@ func newRoutedSessionTestServer(t *testing.T) (*Server, *sessionruntime.Service,
 	}
 	routeStore := pebblestore.NewSessionRouteStore(store)
 	nodeStore := pebblestore.NewSwarmNodeStore(store)
+	swarmStore := pebblestore.NewSwarmStore(store)
 	server := NewServer("test", nil, agentSvc, modelSvc, nil, sessionSvc, nil, nil, nil, nil, permissionSvc, nil, eventLog, stream.NewHub(eventLog))
 	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, routeStore, pebblestore.NewWorkspaceStore(store)))
 	server.SetSessionRouteStore(routeStore)
 	server.SetSwarmNodeStore(nodeStore)
+	server.SetSwarmStore(swarmStore)
 	server.SetSwarmMirrorStore(pebblestore.NewSwarmMirrorStore(store))
 	server.SetSwarmService(fakeRoutedSwarmService{
 		state: swarmruntime.LocalState{
@@ -1241,7 +1335,7 @@ func newRoutedSessionTestServer(t *testing.T) (*Server, *sessionruntime.Service,
 	}
 	server.SetStartupConfigPath(startupPath)
 
-	return server, sessionSvc, permissionSvc, routeStore
+	return server, sessionSvc, permissionSvc, routeStore, swarmStore
 }
 
 func seedRoutedSession(t *testing.T, sessionSvc *sessionruntime.Service) string {
