@@ -1129,7 +1129,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "task",
-			Description: "Delegate a focused task to one or more existing saved subagents in a single approval batch and return a concise, evidence-backed report",
+			Description: "Delegate a focused task to existing saved subagents. Put child launches in the structured launches array, not inside prompt text. Each launch needs a saved agent/purpose and a meta_prompt/role assignment, or the call fails before approval.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1143,11 +1143,11 @@ func (r *Runtime) Definitions() []Definition {
 					},
 					"prompt": map[string]any{
 						"type":        "string",
-						"description": "Shared main task prompt for the delegated run(s). Each child also receives its explicit per-child assignment.",
+						"description": "Shared main task prompt only. Do not embed launch JSON, XML, or parameter tags here; put child launches in the top-level launches array.",
 					},
 					"subagent_type": map[string]any{
 						"type":        "string",
-						"description": "Existing saved subagent name or purpose for the single-launch shorthand. Requires meta_prompt or role.",
+						"description": "Existing saved subagent name or purpose for the single-launch shorthand. Requires a top-level meta_prompt or role.",
 					},
 					"agent": map[string]any{
 						"type":        "string",
@@ -1159,7 +1159,7 @@ func (r *Runtime) Definitions() []Definition {
 					},
 					"meta_prompt": map[string]any{
 						"type":        "string",
-						"description": "Explicit assignment for the single-launch shorthand; required when launches is omitted.",
+						"description": "Explicit assignment for the single-launch shorthand; required when launches is omitted. Do not put this inside prompt.",
 					},
 					"role": map[string]any{
 						"type":        "string",
@@ -1167,14 +1167,14 @@ func (r *Runtime) Definitions() []Definition {
 					},
 					"launches": map[string]any{
 						"type":        "array",
-						"description": "Optional batched child launches for one task approval. Each entry must name an existing saved subagent by subagent_type/agent/purpose and include an explicit meta_prompt/role assignment.",
+						"description": "Structured batched child launches for one task approval. For multi-subagent delegation, use this array; do not paste JSON into prompt. Each entry must name an existing saved subagent by subagent_type/agent/purpose and include an explicit meta_prompt/role assignment.",
 						"items": map[string]any{
 							"type": "object",
 							"properties": map[string]any{
 								"subagent_type": map[string]any{"type": "string", "description": "Existing saved subagent name or purpose for this child."},
 								"agent":         map[string]any{"type": "string", "description": "Alias for subagent_type."},
 								"purpose":       map[string]any{"type": "string", "description": "Alias for subagent_type."},
-								"meta_prompt":   map[string]any{"type": "string", "description": "Required per-child assignment shown in the approval modal."},
+								"meta_prompt":   map[string]any{"type": "string", "description": "Required per-child assignment shown in the approval modal. This must be a field on the launch object, not text embedded in prompt."},
 								"role":          map[string]any{"type": "string", "description": "Alias for meta_prompt."},
 							},
 							"additionalProperties": false,

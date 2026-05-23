@@ -1,12 +1,14 @@
 package run
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -163,6 +165,116 @@ func mustJSON(t *testing.T, value any) string {
 		t.Fatalf("marshal json: %v", err)
 	}
 	return string(encoded)
+}
+
+func TestPermissionArgumentsForCallRejectsMalformedTaskLaunch(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	_, err := svc.permissionArgumentsForCall(parentSessionID, sessionruntime.ModeAuto, tool.Call{
+		Name: "task",
+		Arguments: mustJSON(t, map[string]any{
+			"description": "Test 2 — Valid multi-subagent launch",
+			"prompt":      "Execute your assigned meta_prompt/role. </parameter> <parameter name=\"launches\" string=\"false\">[{\"subagent_type\":\"explorer\",\"meta_prompt\":\"Map top-level directories.\"}]</parameter>",
+		}),
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires subagent_type, agent, or purpose") {
+		t.Fatalf("expected malformed task launch validation error, got %v", err)
+	}
+}
+
+func TestPermissionArgumentsForCallFormatsValidTaskLaunchManifest(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	formatted, err := svc.permissionArgumentsForCall(parentSessionID, sessionruntime.ModeAuto, tool.Call{
+		Name: "task",
+		Arguments: mustJSON(t, map[string]any{
+			"description": "repo map",
+			"prompt":      "inspect the repo",
+			"launches": []any{
+				map[string]any{"subagent_type": "reviewer", "meta_prompt": "map backend files"},
+				map[string]any{"purpose": "purpose-review", "role": "review frontend files"},
+			},
+		}),
+	})
+	if err != nil {
+		t.Fatalf("format permission arguments: %v", err)
+	}
+	var manifest taskLaunchManifest
+	if err := json.Unmarshal([]byte(formatted), &manifest); err != nil {
+		t.Fatalf("formatted manifest json invalid: %v", err)
+	}
+	if manifest.PathID != taskLaunchPermissionPathID {
+		t.Fatalf("path id = %q, want %q", manifest.PathID, taskLaunchPermissionPathID)
+	}
+	if manifest.LaunchCount != 2 || len(manifest.Launches) != 2 {
+		t.Fatalf("launch count = %d len=%d, want 2", manifest.LaunchCount, len(manifest.Launches))
+	}
+	if manifest.Launches[0].MetaPrompt != "map backend files" || manifest.Launches[1].MetaPrompt != "review frontend files" {
+		t.Fatalf("unexpected launch assignments: %#v", manifest.Launches)
+	}
+	if manifest.Launches[0].ResolvedAgentName == "" || manifest.Launches[0].SubagentProvider == "" || manifest.Launches[0].SubagentModel == "" || manifest.Launches[0].ResolvedTools == nil {
+		t.Fatalf("first launch missing resolved display data: %#v", manifest.Launches[0])
+	}
+}
+
+func TestGateToolCallsRejectsMalformedTaskLaunchBeforePermission(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "state.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("open event log: %v", err)
+	}
+	agents := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
+	if err := agents.EnsureDefaults(); err != nil {
+		t.Fatalf("ensure agent defaults: %v", err)
+	}
+	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
+	parent, _, err := sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		Title:         "Parent",
+		WorkspacePath: t.TempDir(),
+		WorkspaceName: "workspace",
+		Mode:          sessionruntime.ModeAuto,
+		Preference: &pebblestore.ModelPreference{
+			Provider: "parent-provider",
+			Model:    "parent-model",
+			Thinking: "high",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create parent session: %v", err)
+	}
+	permissions := permission.NewService(pebblestore.NewPermissionStore(store), events, nil)
+	svc := NewService(sessions, nil, nil, tool.NewRuntime(1), permissions, agents, nil, events)
+
+	results, approvedCalls, _, approvedMask, _, err := svc.gateToolCalls(context.Background(), parent.ID, "run-test", 1, sessionruntime.ModeAuto, []tool.Call{{
+		CallID: "call-bad-task",
+		Name:   "task",
+		Arguments: mustJSON(t, map[string]any{
+			"description": "Test 2 — Valid multi-subagent launch",
+			"prompt":      "Execute your assigned meta_prompt/role. </parameter> <parameter name=\"launches\" string=\"false\">[{\"subagent_type\":\"explorer\",\"meta_prompt\":\"Map top-level directories.\"}]</parameter>",
+		}),
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("gate tool calls returned unexpected error: %v", err)
+	}
+	if len(approvedCalls) != 0 || len(approvedMask) != 1 || approvedMask[0] {
+		t.Fatalf("malformed task launch was approved: calls=%d mask=%v", len(approvedCalls), approvedMask)
+	}
+	if len(results) != 1 || !strings.Contains(results[0].Error, "invalid tool arguments") || !strings.Contains(results[0].Error, "requires subagent_type, agent, or purpose") {
+		t.Fatalf("expected validation result error, got %#v", results)
+	}
+	pending, err := permissions.ListPending(parent.ID, 10)
+	if err != nil {
+		t.Fatalf("list pending permissions: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("expected no pending permission records, got %#v", pending)
+	}
 }
 
 func TestBuildTaskLaunchPermissionPayloadRequiresResolvableSavedAgent(t *testing.T) {

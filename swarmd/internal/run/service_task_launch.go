@@ -407,93 +407,71 @@ func buildTaskLaunchResolvedToolSummary(contract ResolvedAgentToolContract, prof
 	}
 }
 
-func (s *Service) permissionArgumentsForCall(sessionID, sessionMode string, call tool.Call) string {
+func (s *Service) permissionArgumentsForCall(sessionID, sessionMode string, call tool.Call) (string, error) {
 	arguments := strings.TrimSpace(call.Arguments)
+	marshalPayload := func(payload any) (string, error) {
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return "", err
+		}
+		return string(raw), nil
+	}
 	switch canonicalToolName(call.Name) {
 	case "task":
 		payload, err := s.buildTaskLaunchPermissionPayload(sessionID, sessionMode, call)
 		if err != nil {
-			return arguments
+			return "", err
 		}
-		raw, err := json.Marshal(payload)
-		if err != nil {
-			return arguments
-		}
-		return string(raw)
+		return marshalPayload(payload)
 	case "manage_skill":
 		payload, err := s.buildManageSkillPermissionPayload(sessionID, call)
 		if err != nil {
-			return arguments
+			return "", err
 		}
-		raw, err := json.Marshal(payload)
-		if err != nil {
-			return arguments
-		}
-		return string(raw)
+		return marshalPayload(payload)
 	case "manage_agent":
 		payload, err := s.buildManageAgentPermissionPayload(sessionID, call)
 		if err != nil {
-			return arguments
+			return "", err
 		}
-		raw, err := json.Marshal(payload)
-		if err != nil {
-			return arguments
-		}
-		return string(raw)
+		return marshalPayload(payload)
 	case "manage_theme":
 		payload, err := s.buildManageThemePermissionPayload(sessionID, call)
 		if err != nil {
-			return arguments
+			return "", err
 		}
-		raw, err := json.Marshal(payload)
-		if err != nil {
-			return arguments
-		}
-		return string(raw)
+		return marshalPayload(payload)
 	case "manage_image":
 		payload, err := s.buildManageImagePermissionPayload(sessionID, call)
 		if err != nil {
-			return arguments
+			return "", err
 		}
-		raw, err := json.Marshal(payload)
-		if err != nil {
-			return arguments
-		}
-		return string(raw)
+		return marshalPayload(payload)
 	case "plan_manage":
 		payload, ok, err := s.buildPlanManagePermissionPayload(sessionID, call)
-		if err != nil || !ok {
-			return arguments
-		}
-		raw, err := json.Marshal(payload)
 		if err != nil {
-			return arguments
+			return "", err
 		}
-		return string(raw)
+		if !ok {
+			return arguments, nil
+		}
+		return marshalPayload(payload)
 	case "manage_worktree":
-		return arguments
+		return arguments, nil
 	case "manage_flow":
 		payload, err := s.buildManageFlowPermissionPayload(sessionID, call)
 		if err != nil {
-			return arguments
+			return "", err
 		}
-		raw, err := json.Marshal(payload)
-		if err != nil {
-			return arguments
-		}
-		return string(raw)
+		return marshalPayload(payload)
 	case "manage_todos":
 		payload, err := s.buildManageTodosPermissionPayload(sessionID, call)
 		if err != nil {
-			return arguments
+			return "", err
 		}
-		raw, err := json.Marshal(payload)
-		if err != nil {
-			return arguments
-		}
-		return string(raw)
+		return marshalPayload(payload)
 	default:
-		return arguments
+		return arguments, nil
 	}
 }
 

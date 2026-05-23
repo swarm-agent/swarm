@@ -1,6 +1,9 @@
 package tool
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(t *testing.T) {
 	rt := NewRuntime(1)
@@ -21,6 +24,9 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 	}
 	if _, ok := properties["allow_bash"]; ok {
 		t.Fatal("task schema must not expose launch-time allow_bash")
+	}
+	if !definitionTextContains(taskDefinition, "structured launches array") || !definitionTextContains(taskDefinition, "Do not embed launch JSON") || !definitionTextContains(taskDefinition, "not text embedded in prompt") {
+		t.Fatalf("task definition must warn models to use structured launch fields instead of prompt-embedded launch markup: %#v", taskDefinition)
 	}
 	for _, key := range []string{"subagent_type", "agent", "purpose", "meta_prompt", "role"} {
 		if _, ok := properties[key]; !ok {
@@ -58,4 +64,36 @@ func itemsProperty(items map[string]any, key string) (any, bool) {
 	}
 	value, ok := properties[key]
 	return value, ok
+}
+
+func definitionTextContains(definition Definition, needle string) bool {
+	if containsInAny(definition.Description, needle) {
+		return true
+	}
+	return containsInMap(definition.Parameters, needle)
+}
+
+func containsInMap(value map[string]any, needle string) bool {
+	for _, entry := range value {
+		if containsInAny(entry, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsInAny(value any, needle string) bool {
+	switch typed := value.(type) {
+	case string:
+		return strings.Contains(typed, needle)
+	case map[string]any:
+		return containsInMap(typed, needle)
+	case []any:
+		for _, entry := range typed {
+			if containsInAny(entry, needle) {
+				return true
+			}
+		}
+	}
+	return false
 }

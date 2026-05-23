@@ -418,12 +418,20 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 
 	var wg sync.WaitGroup
 	for i := range toolCalls {
+		permissionArguments, err := s.permissionArgumentsForCall(sessionID, sessionMode, toolCalls[i])
+		if err != nil {
+			message := fmt.Sprintf("invalid tool arguments: %v", err)
+			decisions[i].Err = err
+			decisions[i].Result.Output = permissionOutputPayload(false, "error", message, toolCalls[i].Name, toolCalls[i].Arguments)
+			decisions[i].Result.Error = message
+			continue
+		}
 		auth, err := s.permissions.AuthorizeToolCall(permission.AuthorizationInput{
 			SessionID:     sessionID,
 			RunID:         runID,
 			CallID:        toolCalls[i].CallID,
 			ToolName:      toolCalls[i].Name,
-			ToolArguments: s.permissionArgumentsForCall(sessionID, sessionMode, toolCalls[i]),
+			ToolArguments: permissionArguments,
 			Mode:          sessionMode,
 			Overlay:       overlay,
 		})
