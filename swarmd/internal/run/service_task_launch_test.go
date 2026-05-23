@@ -197,6 +197,70 @@ func TestBuildTaskLaunchPermissionPayloadUsesResolvedSavedAgentPreference(t *tes
 	}
 }
 
+func TestBuildTaskLaunchPermissionPayloadIncludesResolvedToolSummary(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{
+		Name: "task",
+		Arguments: mustJSON(t, map[string]any{
+			"description":   "repo map",
+			"prompt":        "inspect the repo",
+			"subagent_type": "reviewer",
+			"meta_prompt":   "map backend files",
+		}),
+	})
+	if err != nil {
+		t.Fatalf("build permission payload: %v", err)
+	}
+	if manifest.ResolvedTools == nil {
+		t.Fatalf("manifest resolved tools is nil")
+	}
+	if manifest.ResolvedTools.Preset != "bash_git_only" {
+		t.Fatalf("manifest resolved tool preset = %q, want bash_git_only", manifest.ResolvedTools.Preset)
+	}
+	if len(manifest.Launches) != 1 || manifest.Launches[0].ResolvedTools == nil {
+		t.Fatalf("launch resolved tools missing: %#v", manifest.Launches)
+	}
+	tools := manifest.Launches[0].ResolvedTools
+	if tools.Preset != "bash_git_only" {
+		t.Fatalf("preset = %q, want bash_git_only", tools.Preset)
+	}
+	if tools.RuntimeMode != pebblestore.AgentExecutionSettingRead {
+		t.Fatalf("runtime mode = %q, want read", tools.RuntimeMode)
+	}
+	if tools.EffectiveExecutionMode != pebblestore.AgentExecutionSettingRead {
+		t.Fatalf("effective execution mode = %q, want read", tools.EffectiveExecutionMode)
+	}
+	for _, want := range []string{"read", "search", "list", "skill_use"} {
+		if !stringSliceContains(tools.AllowedTools, want) {
+			t.Fatalf("allowed tools %v missing %q", tools.AllowedTools, want)
+		}
+	}
+	for _, want := range []string{"bash", "task", "plan_manage", "exit_plan_mode"} {
+		if !stringSliceContains(tools.DisabledTools, want) {
+			t.Fatalf("disabled tools %v missing %q", tools.DisabledTools, want)
+		}
+	}
+	for _, want := range []string{"git status", "git diff --"} {
+		if !stringSliceContains(tools.BashPrefixes, want) {
+			t.Fatalf("bash prefixes %v missing %q", tools.BashPrefixes, want)
+		}
+	}
+	if stringSliceContains(tools.AllowedTools, "bash") {
+		t.Fatalf("allowed tools include bash despite task launch disabled overlay: %v", tools.AllowedTools)
+	}
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func newTaskLaunchPermissionTestService(t *testing.T) (*Service, string, func()) {
 	t.Helper()
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "state.pebble"))
@@ -216,14 +280,21 @@ func newTaskLaunchPermissionTestService(t *testing.T) (*Service, string, func())
 		t.Fatalf("ensure agent defaults: %v", err)
 	}
 	if _, _, _, err := agents.Upsert(agentruntime.UpsertInput{
-		Name:             "reviewer",
-		Mode:             agentruntime.ModeSubagent,
-		Description:      "Review specialist",
-		Provider:         "static",
-		Model:            "review-model",
-		Prompt:           "Review carefully.",
-		ExecutionSetting: pebblestore.AgentExecutionSettingRead,
-		Enabled:          pebblestore.BoolPtr(true),
+		Name:                "reviewer",
+		Mode:                agentruntime.ModeSubagent,
+		Description:         "Review specialist",
+		Provider:            "static",
+		Model:               "review-model",
+		Prompt:              "Review carefully.",
+		ExecutionSetting:    pebblestore.AgentExecutionSettingRead,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false),
+		ToolContract: &pebblestore.AgentToolContract{
+			Preset: "bash_git_only",
+			Tools: map[string]pebblestore.AgentToolConfig{
+				"bash": {BashPrefixes: []string{"git status", "git diff --"}},
+			},
+		},
+		Enabled: pebblestore.BoolPtr(true),
 	}); err != nil {
 		cleanup()
 		t.Fatalf("create reviewer: %v", err)
@@ -259,5 +330,5 @@ func newTaskLaunchPermissionTestService(t *testing.T) (*Service, string, func())
 		cleanup()
 		t.Fatalf("create parent session: %v", err)
 	}
-	return NewService(sessions, nil, nil, nil, nil, agents, nil, events), parent.ID, cleanup
+	return NewService(sessions, nil, nil, tool.NewRuntime(1), nil, agents, nil, events), parent.ID, cleanup
 }

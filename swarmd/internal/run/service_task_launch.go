@@ -32,24 +32,25 @@ type taskLaunchSpec struct {
 }
 
 type taskLaunchManifest struct {
-	PathID              string                  `json:"path_id"`
-	Goal                string                  `json:"goal"`
-	LaunchCount         int                     `json:"launch_count"`
-	Description         string                  `json:"description"`
-	Prompt              string                  `json:"prompt"`
-	SubagentType        string                  `json:"subagent_type"`
-	ResolvedAgentName   string                  `json:"resolved_agent_name"`
-	ResolvedAgentError  string                  `json:"resolved_agent_error,omitempty"`
-	Action              string                  `json:"action"`
-	ReportMaxChars      int                     `json:"report_max_chars"`
-	ParentMode          string                  `json:"parent_mode"`
-	EffectiveChildMode  string                  `json:"effective_child_mode"`
-	DisabledTools       []string                `json:"disabled_tools,omitempty"`
-	TargetWorkspacePath string                  `json:"target_workspace_path,omitempty"`
-	TargetWorkspaceName string                  `json:"target_workspace_name,omitempty"`
-	SourceArguments     map[string]any          `json:"source_arguments,omitempty"`
-	Parent              *taskLaunchParentInfo   `json:"parent,omitempty"`
-	Launches            []taskLaunchManifestRow `json:"launches,omitempty"`
+	PathID              string                         `json:"path_id"`
+	Goal                string                         `json:"goal"`
+	LaunchCount         int                            `json:"launch_count"`
+	Description         string                         `json:"description"`
+	Prompt              string                         `json:"prompt"`
+	SubagentType        string                         `json:"subagent_type"`
+	ResolvedAgentName   string                         `json:"resolved_agent_name"`
+	ResolvedAgentError  string                         `json:"resolved_agent_error,omitempty"`
+	Action              string                         `json:"action"`
+	ReportMaxChars      int                            `json:"report_max_chars"`
+	ParentMode          string                         `json:"parent_mode"`
+	EffectiveChildMode  string                         `json:"effective_child_mode"`
+	DisabledTools       []string                       `json:"disabled_tools,omitempty"`
+	ResolvedTools       *taskLaunchResolvedToolSummary `json:"resolved_tools,omitempty"`
+	TargetWorkspacePath string                         `json:"target_workspace_path,omitempty"`
+	TargetWorkspaceName string                         `json:"target_workspace_name,omitempty"`
+	SourceArguments     map[string]any                 `json:"source_arguments,omitempty"`
+	Parent              *taskLaunchParentInfo          `json:"parent,omitempty"`
+	Launches            []taskLaunchManifestRow        `json:"launches,omitempty"`
 }
 
 type manageFlowPermissionPayload struct {
@@ -92,23 +93,37 @@ type taskLaunchParentInfo struct {
 }
 
 type taskLaunchManifestRow struct {
-	Description           string         `json:"description"`
-	RequestedSubagentType string         `json:"requested_subagent_type"`
-	ResolvedAgentName     string         `json:"resolved_agent_name"`
-	ResolvedAgentError    string         `json:"resolved_agent_error,omitempty"`
-	Action                string         `json:"action"`
-	ReportMaxChars        int            `json:"report_max_chars"`
-	MetaPrompt            string         `json:"meta_prompt,omitempty"`
-	AssignmentLabel       string         `json:"assignment_label,omitempty"`
-	SubagentProvider      string         `json:"subagent_provider,omitempty"`
-	SubagentModel         string         `json:"subagent_model,omitempty"`
-	ChildTitlePreview     string         `json:"child_title_preview,omitempty"`
-	ChildMode             string         `json:"effective_child_mode"`
-	DisabledTools         []string       `json:"disabled_tools,omitempty"`
-	Capabilities          map[string]any `json:"capabilities,omitempty"`
-	TargetWorkspacePath   string         `json:"target_workspace_path,omitempty"`
-	TargetWorkspaceName   string         `json:"target_workspace_name,omitempty"`
-	SourceArguments       map[string]any `json:"source_arguments,omitempty"`
+	Description           string                         `json:"description"`
+	RequestedSubagentType string                         `json:"requested_subagent_type"`
+	ResolvedAgentName     string                         `json:"resolved_agent_name"`
+	ResolvedAgentError    string                         `json:"resolved_agent_error,omitempty"`
+	Action                string                         `json:"action"`
+	ReportMaxChars        int                            `json:"report_max_chars"`
+	MetaPrompt            string                         `json:"meta_prompt,omitempty"`
+	AssignmentLabel       string                         `json:"assignment_label,omitempty"`
+	SubagentProvider      string                         `json:"subagent_provider,omitempty"`
+	SubagentModel         string                         `json:"subagent_model,omitempty"`
+	ChildTitlePreview     string                         `json:"child_title_preview,omitempty"`
+	ChildMode             string                         `json:"effective_child_mode"`
+	DisabledTools         []string                       `json:"disabled_tools,omitempty"`
+	ResolvedTools         *taskLaunchResolvedToolSummary `json:"resolved_tools,omitempty"`
+	Capabilities          map[string]any                 `json:"capabilities,omitempty"`
+	TargetWorkspacePath   string                         `json:"target_workspace_path,omitempty"`
+	TargetWorkspaceName   string                         `json:"target_workspace_name,omitempty"`
+	SourceArguments       map[string]any                 `json:"source_arguments,omitempty"`
+}
+
+type taskLaunchResolvedToolSummary struct {
+	Preset                 string   `json:"preset,omitempty"`
+	RuntimeMode            string   `json:"runtime_mode,omitempty"`
+	EffectiveExecutionMode string   `json:"effective_execution_mode,omitempty"`
+	InheritPolicy          bool     `json:"inherit_policy,omitempty"`
+	AllowedTools           []string `json:"allowed_tools,omitempty"`
+	DisabledTools          []string `json:"disabled_tools,omitempty"`
+	ProfileAllowedTools    []string `json:"profile_allowed_tools,omitempty"`
+	ProfileDisabledTools   []string `json:"profile_disabled_tools,omitempty"`
+	LaunchDisabledTools    []string `json:"launch_disabled_tools,omitempty"`
+	BashPrefixes           []string `json:"bash_prefixes,omitempty"`
 }
 
 func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
@@ -307,6 +322,10 @@ func taskAssignmentLabel(explicitLabel, metaPrompt, description, resolvedSubagen
 
 func taskDisabledToolNames(allowBash bool) []string {
 	disabled := taskDisabledTools(allowBash)
+	return sortedDisabledToolNames(disabled)
+}
+
+func sortedDisabledToolNames(disabled map[string]bool) []string {
 	if len(disabled) == 0 {
 		return nil
 	}
@@ -328,6 +347,64 @@ func taskDisabledToolNames(allowBash bool) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func buildTaskLaunchResolvedToolSummary(contract ResolvedAgentToolContract, profileDisabled map[string]bool, launchDisabled []string, effectiveMode string) *taskLaunchResolvedToolSummary {
+	allowed := append([]string(nil), contract.AvailableTools...)
+	disabled := append([]string(nil), contract.UnavailableTools...)
+	sort.Strings(allowed)
+	sort.Strings(disabled)
+	profileDisabledNames := sortedDisabledToolNames(profileDisabled)
+	launchDisabledNames := append([]string(nil), launchDisabled...)
+	launchDisabledSet := make(map[string]struct{}, len(launchDisabledNames))
+	for _, name := range launchDisabledNames {
+		name = canonicalToolName(name)
+		if name == "" {
+			continue
+		}
+		launchDisabledSet[name] = struct{}{}
+	}
+	combinedDisabled := make(map[string]bool, len(disabled)+len(launchDisabledSet))
+	for _, name := range disabled {
+		name = canonicalToolName(name)
+		if name != "" {
+			combinedDisabled[name] = true
+		}
+	}
+	for name := range launchDisabledSet {
+		combinedDisabled[name] = true
+	}
+	allowedOut := make([]string, 0, len(allowed))
+	for _, name := range allowed {
+		name = canonicalToolName(name)
+		if name == "" {
+			continue
+		}
+		if _, blocked := launchDisabledSet[name]; blocked {
+			continue
+		}
+		allowedOut = append(allowedOut, name)
+	}
+	bashPrefixes := make([]string, 0)
+	if bashTool, ok := contract.Tools["bash"]; ok && bashTool.Enabled && len(bashTool.BashPrefixes) > 0 {
+		bashPrefixes = append(bashPrefixes, bashTool.BashPrefixes...)
+	}
+	sort.Strings(allowedOut)
+	sort.Strings(profileDisabledNames)
+	sort.Strings(launchDisabledNames)
+	sort.Strings(bashPrefixes)
+	return &taskLaunchResolvedToolSummary{
+		Preset:                 strings.TrimSpace(contract.RawPreset),
+		RuntimeMode:            strings.TrimSpace(contract.RuntimeMode),
+		EffectiveExecutionMode: strings.TrimSpace(effectiveMode),
+		InheritPolicy:          contract.InheritPolicy,
+		AllowedTools:           allowedOut,
+		DisabledTools:          sortedDisabledToolNames(combinedDisabled),
+		ProfileAllowedTools:    allowed,
+		ProfileDisabledTools:   profileDisabledNames,
+		LaunchDisabledTools:    launchDisabledNames,
+		BashPrefixes:           bashPrefixes,
+	}
 }
 
 func (s *Service) permissionArgumentsForCall(sessionID, sessionMode string, call tool.Call) string {
@@ -686,6 +763,15 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] requires meta_prompt or role assignment", i)
 		}
 		assignmentLabel := taskAssignmentLabel(launch.AssignmentLabel, metaPrompt, parsed.Description, resolvedName)
+		executionMode, _, modeErr := s.resolveExecutionMode(childMode, subagentProfile)
+		if modeErr != nil {
+			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] cannot resolve subagent %q execution mode: %w", i, requested, modeErr)
+		}
+		toolContract, _, profileDisabledTools, toolErr := s.ResolveAgentToolContractForAccount(parentSession.AccountScopeID, subagentProfile)
+		if toolErr != nil {
+			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] cannot resolve subagent %q tool contract: %w", i, requested, toolErr)
+		}
+		resolvedTools := buildTaskLaunchResolvedToolSummary(toolContract, profileDisabledTools, disabledTools, executionMode)
 		preference := applyAgentPreferenceOverrides(parentSession.Preference, subagentProfile)
 		childTitle := assignmentLabel
 		launches = append(launches, taskLaunchManifestRow{
@@ -701,10 +787,12 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			ChildTitlePreview:     childTitle,
 			ChildMode:             childMode,
 			DisabledTools:         disabledTools,
+			ResolvedTools:         resolvedTools,
 			Capabilities: map[string]any{
 				"allow_bash":            false,
 				"disabled_tools":        disabledTools,
 				"effective_child_mode":  childMode,
+				"resolved_tools":        resolvedTools,
 				"permission_session_id": strings.TrimSpace(sessionID),
 			},
 			SourceArguments: cloneGenericMap(launch.SourceArguments),
@@ -734,6 +822,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		ParentMode:         parentMode,
 		EffectiveChildMode: childMode,
 		DisabledTools:      disabledTools,
+		ResolvedTools:      launches[0].ResolvedTools,
 		SourceArguments:    parsed.SourceArguments,
 		Launches:           launches,
 	}
