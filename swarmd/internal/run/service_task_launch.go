@@ -21,7 +21,6 @@ type taskCallArguments struct {
 	Prompt          string
 	Launches        []taskLaunchSpec
 	ReportMaxChars  int
-	AllowBash       bool
 	SourceArguments map[string]any
 }
 
@@ -42,7 +41,6 @@ type taskLaunchManifest struct {
 	ResolvedAgentName   string                  `json:"resolved_agent_name"`
 	ResolvedAgentError  string                  `json:"resolved_agent_error,omitempty"`
 	Action              string                  `json:"action"`
-	AllowBash           bool                    `json:"allow_bash"`
 	ReportMaxChars      int                     `json:"report_max_chars"`
 	ParentMode          string                  `json:"parent_mode"`
 	EffectiveChildMode  string                  `json:"effective_child_mode"`
@@ -99,7 +97,6 @@ type taskLaunchManifestRow struct {
 	ResolvedAgentName     string         `json:"resolved_agent_name"`
 	ResolvedAgentError    string         `json:"resolved_agent_error,omitempty"`
 	Action                string         `json:"action"`
-	AllowBash             bool           `json:"allow_bash"`
 	ReportMaxChars        int            `json:"report_max_chars"`
 	MetaPrompt            string         `json:"meta_prompt,omitempty"`
 	AssignmentLabel       string         `json:"assignment_label,omitempty"`
@@ -123,6 +120,9 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 	var args map[string]any
 	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
 		return taskCallArguments{}, fmt.Errorf("task arguments invalid: %w", err)
+	}
+	if err := rejectTaskLaunchTrustFields(args, "task"); err != nil {
+		return taskCallArguments{}, err
 	}
 
 	action := strings.ToLower(strings.TrimSpace(mapString(args, "action")))
@@ -156,7 +156,10 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		reportMaxChars = taskReportMaxChars
 	}
 
-	parseLaunchSpec := func(raw map[string]any) taskLaunchSpec {
+	parseLaunchSpec := func(raw map[string]any, label string) (taskLaunchSpec, error) {
+		if err := rejectTaskLaunchTrustFields(raw, label); err != nil {
+			return taskLaunchSpec{}, err
+		}
 		launch := taskLaunchSpec{
 			RequestedSubagentType: strings.TrimSpace(firstNonEmptyString(
 				mapString(raw, "subagent_type"),
@@ -174,27 +177,42 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 			SourceArguments: cloneGenericMap(raw),
 		}
 		if launch.RequestedSubagentType == "" {
-			launch.RequestedSubagentType = "explorer"
+			return taskLaunchSpec{}, fmt.Errorf("%s requires subagent_type, agent, or purpose", label)
 		}
-		return launch
+		if launch.MetaPrompt == "" {
+			return taskLaunchSpec{}, fmt.Errorf("%s requires meta_prompt or role assignment", label)
+		}
+		return launch, nil
 	}
 
 	launches := make([]taskLaunchSpec, 0, 8)
 	if rawLaunches, ok := args["launches"]; ok {
-		switch typed := rawLaunches.(type) {
-		case []any:
-			for _, item := range typed {
-				entry, ok := item.(map[string]any)
-				if !ok {
-					continue
-				}
-				launches = append(launches, parseLaunchSpec(entry))
+		typed, ok := rawLaunches.([]any)
+		if !ok {
+			return taskCallArguments{}, fmt.Errorf("task launches must be an array")
+		}
+		for i, item := range typed {
+			entry, ok := item.(map[string]any)
+			if !ok {
+				return taskCallArguments{}, fmt.Errorf("task launches[%d] must be an object", i)
 			}
+			launch, err := parseLaunchSpec(entry, fmt.Sprintf("task launches[%d]", i))
+			if err != nil {
+				return taskCallArguments{}, err
+			}
+			launches = append(launches, launch)
+		}
+		if len(launches) == 0 {
+			return taskCallArguments{}, fmt.Errorf("task requires at least one launch")
 		}
 	}
 
 	if len(launches) == 0 {
-		launches = append(launches, parseLaunchSpec(args))
+		launch, err := parseLaunchSpec(args, "task launch")
+		if err != nil {
+			return taskCallArguments{}, err
+		}
+		launches = append(launches, launch)
 	}
 
 	return taskCallArguments{
@@ -203,9 +221,36 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		Prompt:          prompt,
 		Launches:        launches,
 		ReportMaxChars:  reportMaxChars,
-		AllowBash:       mapBool(args, "allow_bash"),
 		SourceArguments: args,
 	}, nil
+}
+
+func rejectTaskLaunchTrustFields(args map[string]any, label string) error {
+	for _, key := range []string{
+		"allow_bash",
+		"allow-bash",
+		"execution_setting",
+		"executionSetting",
+		"tool_contract",
+		"toolContract",
+		"tool_scope",
+		"toolScope",
+		"tool_permissions",
+		"toolPermissions",
+		"allow_tools",
+		"allowTools",
+		"deny_tools",
+		"denyTools",
+		"disabled_tools",
+		"disabledTools",
+		"trust",
+		"trusted",
+	} {
+		if _, ok := args[key]; ok {
+			return fmt.Errorf("%s cannot set launch-time trust, execution, or tool field %q; update the saved agent profile instead", label, key)
+		}
+	}
+	return nil
 }
 
 func effectiveTaskChildMode(sessionMode string) string {
@@ -607,7 +652,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 	parentSession, _, _ := s.sessions.GetSession(sessionID)
 	parentMode := sessionruntime.NormalizeMode(sessionMode)
 	childMode := effectiveTaskChildMode(sessionMode)
-	disabledTools := taskDisabledToolNames(parsed.AllowBash)
+	disabledTools := taskDisabledToolNames(false)
 
 	launches := make([]taskLaunchManifestRow, 0, len(parsed.Launches))
 	resolvedAgentName := ""
@@ -616,7 +661,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 	for i, launch := range parsed.Launches {
 		requested := strings.TrimSpace(launch.RequestedSubagentType)
 		if requested == "" {
-			requested = "explorer"
+			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] requires subagent_type, agent, or purpose", i)
 		}
 		if requestedPrimary == "" {
 			requestedPrimary = requested
@@ -635,7 +680,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			}
 		}
 		if strings.TrimSpace(resolvedName) == "" {
-			resolvedName = "explorer"
+			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] resolved empty subagent", i)
 		}
 		if i == 0 {
 			resolvedAgentName = resolvedName
@@ -643,7 +688,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		}
 		metaPrompt := strings.TrimSpace(launch.MetaPrompt)
 		if metaPrompt == "" {
-			metaPrompt = fmt.Sprintf("Use the %s role.", resolvedName)
+			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] requires meta_prompt or role assignment", i)
 		}
 		assignmentLabel := taskAssignmentLabel(launch.AssignmentLabel, metaPrompt, parsed.Description, resolvedName)
 		preference := applyAgentPreferenceOverrides(parentSession.Preference, subagentProfile)
@@ -654,7 +699,6 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			ResolvedAgentName:     resolvedName,
 			ResolvedAgentError:    resolvedErr,
 			Action:                parsed.Action,
-			AllowBash:             parsed.AllowBash,
 			ReportMaxChars:        parsed.ReportMaxChars,
 			MetaPrompt:            metaPrompt,
 			AssignmentLabel:       assignmentLabel,
@@ -664,7 +708,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			ChildMode:             childMode,
 			DisabledTools:         disabledTools,
 			Capabilities: map[string]any{
-				"allow_bash":            parsed.AllowBash,
+				"allow_bash":            false,
 				"disabled_tools":        disabledTools,
 				"effective_child_mode":  childMode,
 				"permission_session_id": strings.TrimSpace(sessionID),
@@ -676,10 +720,10 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		return taskLaunchManifest{}, fmt.Errorf("task requires at least one launch")
 	}
 	if strings.TrimSpace(resolvedAgentName) == "" {
-		resolvedAgentName = "explorer"
+		return taskLaunchManifest{}, fmt.Errorf("task resolved empty primary subagent")
 	}
 	if strings.TrimSpace(requestedPrimary) == "" {
-		requestedPrimary = "explorer"
+		return taskLaunchManifest{}, fmt.Errorf("task requires primary subagent")
 	}
 
 	manifest := taskLaunchManifest{
@@ -692,7 +736,6 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		ResolvedAgentName:  resolvedAgentName,
 		ResolvedAgentError: resolvedAgentError,
 		Action:             parsed.Action,
-		AllowBash:          parsed.AllowBash,
 		ReportMaxChars:     parsed.ReportMaxChars,
 		ParentMode:         parentMode,
 		EffectiveChildMode: childMode,

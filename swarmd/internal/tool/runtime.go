@@ -1129,7 +1129,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "task",
-			Description: "Delegate a focused task to one or more subagents in a single approval batch (prefer explorer for repo scouting) and return a concise, evidence-backed report",
+			Description: "Delegate a focused task to one or more existing saved subagents in a single approval batch and return a concise, evidence-backed report",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1143,30 +1143,53 @@ func (r *Runtime) Definitions() []Definition {
 					},
 					"prompt": map[string]any{
 						"type":        "string",
-						"description": "Shared main task prompt for the delegated run(s). Each child also receives its assigned subagent type and per-launch meta instructions.",
+						"description": "Shared main task prompt for the delegated run(s). Each child also receives its explicit per-child assignment.",
 					},
 					"subagent_type": map[string]any{
 						"type":        "string",
-						"description": "Subagent profile or purpose for the single-launch shorthand (for example explorer, memory, parallel, clone). Prefer explorer when mapping unfamiliar code and identifying candidate filepaths.",
+						"description": "Existing saved subagent name or purpose for the single-launch shorthand. Requires meta_prompt or role.",
+					},
+					"agent": map[string]any{
+						"type":        "string",
+						"description": "Alias for subagent_type in the single-launch shorthand.",
+					},
+					"purpose": map[string]any{
+						"type":        "string",
+						"description": "Alias for subagent_type in the single-launch shorthand.",
+					},
+					"meta_prompt": map[string]any{
+						"type":        "string",
+						"description": "Explicit assignment for the single-launch shorthand; required when launches is omitted.",
+					},
+					"role": map[string]any{
+						"type":        "string",
+						"description": "Alias for meta_prompt in the single-launch shorthand.",
 					},
 					"launches": map[string]any{
 						"type":        "array",
-						"description": "Optional batched child launches for one task approval. Use one entry per subagent when the same parent task should spawn multiple specialized children.",
+						"description": "Optional batched child launches for one task approval. Each entry must name an existing saved subagent by subagent_type/agent/purpose and include an explicit meta_prompt/role assignment.",
 						"items": map[string]any{
 							"type": "object",
 							"properties": map[string]any{
-								"subagent_type": map[string]any{"type": "string", "description": "Assigned child subagent type/profile."},
+								"subagent_type": map[string]any{"type": "string", "description": "Existing saved subagent name or purpose for this child."},
 								"agent":         map[string]any{"type": "string", "description": "Alias for subagent_type."},
 								"purpose":       map[string]any{"type": "string", "description": "Alias for subagent_type."},
-								"meta_prompt":   map[string]any{"type": "string", "description": "Per-child meta instruction or assignment shown in the approval modal."},
+								"meta_prompt":   map[string]any{"type": "string", "description": "Required per-child assignment shown in the approval modal."},
 								"role":          map[string]any{"type": "string", "description": "Alias for meta_prompt."},
+							},
+							"allOf": []any{
+								map[string]any{"anyOf": []any{
+									map[string]any{"required": []string{"subagent_type"}},
+									map[string]any{"required": []string{"agent"}},
+									map[string]any{"required": []string{"purpose"}},
+								}},
+								map[string]any{"anyOf": []any{
+									map[string]any{"required": []string{"meta_prompt"}},
+									map[string]any{"required": []string{"role"}},
+								}},
 							},
 							"additionalProperties": false,
 						},
-					},
-					"allow_bash": map[string]any{
-						"type":        "boolean",
-						"description": "Allow bash for this delegated run (default false).",
 					},
 					"report_max_chars": map[string]any{
 						"type":        "integer",

@@ -79,17 +79,8 @@ type taskLaunchOutcome struct {
 
 func buildTaskLaunchOutcome(launch taskLaunchPrepared) taskLaunchOutcome {
 	resolved := strings.TrimSpace(launch.SubagentProfile.Name)
-	if resolved == "" {
-		resolved = "explorer"
-	}
 	requested := strings.TrimSpace(launch.RequestedSubagent)
-	if requested == "" {
-		requested = "explorer"
-	}
 	metaPrompt := strings.TrimSpace(launch.MetaPrompt)
-	if metaPrompt == "" {
-		metaPrompt = fmt.Sprintf("Use the %s role.", resolved)
-	}
 	return taskLaunchOutcome{
 		LaunchIndex:        launch.LaunchIndex,
 		RequestedSubagent:  requested,
@@ -1637,10 +1628,13 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	reportMaxChars := parsed.ReportMaxChars
 	launchSpecs := append([]taskLaunchSpec(nil), parsed.Launches...)
 	if len(launchSpecs) == 0 {
-		launchSpecs = []taskLaunchSpec{{RequestedSubagentType: "explorer"}}
+		return "", errors.New("task requires at least one validated launch")
 	}
 	if strings.TrimSpace(req.TargetedSubagentName) != "" {
-		launchSpecs = []taskLaunchSpec{{RequestedSubagentType: strings.TrimSpace(req.TargetedSubagentName)}}
+		launchSpecs = []taskLaunchSpec{{
+			RequestedSubagentType: strings.TrimSpace(req.TargetedSubagentName),
+			MetaPrompt:            strings.TrimSpace(parsed.Prompt),
+		}}
 	}
 
 	parentSession := pebblestore.SessionSnapshot{}
@@ -1669,9 +1663,12 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		spec := launchSpecs[i]
 		requestedSubagent := strings.TrimSpace(spec.RequestedSubagentType)
 		if requestedSubagent == "" {
-			requestedSubagent = "explorer"
+			return "", fmt.Errorf("task launches[%d] requires subagent_type, agent, or purpose", i)
 		}
 		metaPrompt := strings.TrimSpace(spec.MetaPrompt)
+		if metaPrompt == "" {
+			return "", fmt.Errorf("task launches[%d] requires meta_prompt or role assignment", i)
+		}
 		launch, prepareErr := s.prepareDelegatedSubagentLaunch(parentSession, sessionMode, taskLaunchPrepared{
 			LaunchIndex:       i + 1,
 			RequestedSubagent: requestedSubagent,
@@ -2153,7 +2150,7 @@ func (s *Service) resolveTaskSubagent(nameOrPurpose string) (pebblestore.AgentPr
 func (s *Service) resolveTaskSubagentForAccount(accountScopeID, nameOrPurpose string) (pebblestore.AgentProfile, error) {
 	nameOrPurpose = strings.TrimSpace(nameOrPurpose)
 	if nameOrPurpose == "" {
-		nameOrPurpose = "explorer"
+		return pebblestore.AgentProfile{}, errors.New("task subagent name or purpose is required")
 	}
 	if s.agents == nil {
 		return pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
