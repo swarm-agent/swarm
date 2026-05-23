@@ -1119,6 +1119,7 @@ interface SidebarSessionNode {
   depth: number
   kind: SidebarSessionNodeKind
   label: string | null
+  modelLabel: string | null
 }
 
 function buildSidebarSessionTree(sessions: DesktopSessionRecord[], now: number): SidebarSessionNode[] {
@@ -1134,6 +1135,7 @@ function buildSidebarSessionTree(sessions: DesktopSessionRecord[], now: number):
       depth: 0,
       kind: descriptor.kind,
       label: descriptor.label,
+      modelLabel: descriptor.modelLabel,
     })
   }
 
@@ -1273,6 +1275,7 @@ interface SessionRowProps {
   workspaceSlug: string
   depth?: number
   childLabel?: string | null
+  childModelLabel?: string | null
   childKind?: SidebarSessionNode['kind']
   agentSummary: SessionAgentSummary
   agentsExpanded: boolean
@@ -1281,13 +1284,13 @@ interface SessionRowProps {
   onToggleAgents: (sessionId: string) => void
 }
 
-function SessionRow({ active, now, session: initialSession, fallbackSwarmName, routeOptions, workspaceSlug, depth = 0, childLabel = null, childKind = 'root', agentSummary, agentsExpanded, onSelect, onPrefetch, onToggleAgents }: SessionRowProps) {
+function SessionRow({ active, now, session: initialSession, fallbackSwarmName, routeOptions, workspaceSlug, depth = 0, childLabel = null, childModelLabel = null, childKind = 'root', agentSummary, agentsExpanded, onSelect, onPrefetch, onToggleAgents }: SessionRowProps) {
   const session = useDesktopStore((state) => state.sessions[initialSession.id] ?? initialSession)
   const activeSession = sessionIsActive(session)
   const originLabel = sessionOriginLabel(session, routeOptions, fallbackSwarmName)
   const backgroundInfo = sessionBackgroundInfo(session, originLabel)
   const timerLabel = activeSession ? sessionTimerLabel(session, now) : ''
-  const bottomLeftLabel = backgroundInfo?.targetLabel || originLabel
+  const bottomLeftLabel = childModelLabel || backgroundInfo?.targetLabel || originLabel
   const bottomRightLabel = backgroundInfo?.active
     ? timerLabel
     : activeSession
@@ -1299,6 +1302,9 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
   const commitMetaLabel = [commitSummary, committedFileSummary, committedDeltaSummary].filter(Boolean).join(' · ')
   const tooltip = sessionStatusTooltip(session)
   const isNestedSession = depth > 0
+  const nestedAssignmentTitle = isNestedSession && childLabel && !childLabel.startsWith('@') && childLabel !== 'child' ? childLabel : ''
+  const rowTitle = nestedAssignmentTitle || session.title || 'New conversation'
+  const visibleChildLabel = childLabel && childLabel !== rowTitle ? childLabel : ''
   const nestedToneClass = childKind === 'subagent' ? 'text-sky-300/80' : 'text-[var(--app-text-subtle)]'
   const hasAgentChildren = agentSummary.total > 0
   const agentDescriptor = agentSummaryDescriptor(agentSummary)
@@ -1341,7 +1347,7 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
               {childKind === 'subagent' ? <Bot size={10} /> : <span className="h-1.5 w-1.5 rounded-full bg-current opacity-70" />}
             </span>
           ) : null}
-          <span className={cn('truncate flex-1 min-w-0 font-medium text-[var(--app-text)]', isNestedSession ? 'text-[13px]' : 'text-sm')}>{session.title || 'New conversation'}</span>
+          <span className={cn('truncate flex-1 min-w-0 font-medium text-[var(--app-text)]', isNestedSession ? 'text-[13px]' : 'text-sm')}>{rowTitle}</span>
         </div>
         <span
           className={cn(
@@ -1363,12 +1369,12 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
             <span className="inline-flex h-4 shrink-0 items-center rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 text-[10px] font-medium leading-none text-[var(--app-text-subtle)]">
               {backgroundInfo.badge}
             </span>
-          ) : childLabel ? (
+          ) : visibleChildLabel ? (
             <span className={cn(
               'shrink-0 truncate text-[11px]',
               childKind === 'subagent' ? 'text-sky-300/90' : 'text-[var(--app-text-subtle)]',
             )}>
-              {childLabel}
+              {visibleChildLabel}
             </span>
           ) : null}
         </div>
@@ -3226,6 +3232,7 @@ export function DesktopAppPage() {
                               workspaceSlug={workspaceSlug}
                               depth={node.depth}
                               childLabel={node.label}
+                              childModelLabel={node.modelLabel}
                               childKind={node.kind}
                               agentSummary={summarizeSubagentDescendants(node)}
                               agentsExpanded={Boolean(expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, selectedSession?.id)}

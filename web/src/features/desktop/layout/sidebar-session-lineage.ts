@@ -5,6 +5,8 @@ export type SidebarSessionNodeKind = 'root' | 'subagent' | 'background'
 export interface SidebarSessionChildDescriptor {
   kind: SidebarSessionNodeKind
   label: string | null
+  assignmentLabel: string | null
+  modelLabel: string | null
 }
 
 export interface SidebarSessionBackgroundInfo {
@@ -103,8 +105,10 @@ export function sessionBackgroundInfo(session: DesktopSessionRecord, fallbackTar
 export function sessionChildDescriptor(session: DesktopSessionRecord): SidebarSessionChildDescriptor {
   const metadata = normalizeMetadataRecord(session.metadata)
   const parentSessionID = sessionParentSessionID(session)
+  const assignmentLabel = metadataString(metadata, 'assignment_label')
+  const modelLabel = [metadataString(metadata, 'subagent_provider'), metadataString(metadata, 'subagent_model')].filter(Boolean).join(' / ')
   if (!parentSessionID) {
-    return { kind: 'root', label: null }
+    return { kind: 'root', label: null, assignmentLabel: assignmentLabel || null, modelLabel: modelLabel || null }
   }
   const requestedSubagent = metadataString(metadata, 'requested_subagent')
   const resolvedSubagent = metadataString(metadata, 'subagent')
@@ -112,16 +116,16 @@ export function sessionChildDescriptor(session: DesktopSessionRecord): SidebarSe
   const lineageLabel = sessionLineageLabel(metadata)
   const subagent = resolvedSubagent || requestedSubagent
   if (sessionHasFlowIdentity(metadata)) {
-    return { kind: 'background', label: 'flow' }
+    return { kind: 'background', label: 'flow', assignmentLabel: assignmentLabel || null, modelLabel: modelLabel || null }
   }
   if (subagent || lineageKind === 'delegated_subagent') {
-    return { kind: 'subagent', label: lineageLabel || '@subagent' }
+    return { kind: 'subagent', label: assignmentLabel || lineageLabel || '@subagent', assignmentLabel: assignmentLabel || null, modelLabel: modelLabel || null }
   }
   if (sessionHasBackgroundLineage(metadata)) {
-    return { kind: 'background', label: sessionBackgroundBadge(metadata) }
+    return { kind: 'background', label: sessionBackgroundBadge(metadata), assignmentLabel: assignmentLabel || null, modelLabel: modelLabel || null }
   }
   if (lineageLabel) {
-    return { kind: lineageLabel.startsWith('@') ? 'subagent' : 'background', label: lineageLabel }
+    return { kind: lineageLabel.startsWith('@') ? 'subagent' : 'background', label: assignmentLabel || lineageLabel, assignmentLabel: assignmentLabel || null, modelLabel: modelLabel || null }
   }
-  return { kind: 'background', label: 'child' }
+  return { kind: 'background', label: assignmentLabel || 'child', assignmentLabel: assignmentLabel || null, modelLabel: modelLabel || null }
 }

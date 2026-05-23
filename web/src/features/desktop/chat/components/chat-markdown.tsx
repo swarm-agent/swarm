@@ -166,6 +166,8 @@ function TaskRowsView({ rows, nowMs }: { rows: TaskToolRow[]; nowMs: number }) {
           ? 'thinking'
           : row.previewKind.trim() || 'live';
         const rowKey = row.childSessionId.trim() || `launch-index:${row.launchIndex || index + 1}`;
+        const primaryLabel = row.assignmentLabel || row.agent || 'subagent';
+        const secondaryLabel = [row.modelLabel, row.agent && row.assignmentLabel ? `@${row.agent}` : ''].filter(Boolean).join(' · ');
         return (
           <div key={`launch:${rowKey}`} className="grid gap-1 text-[var(--app-text-muted)]">
             <div className="flex items-center gap-3">
@@ -174,10 +176,10 @@ function TaskRowsView({ rows, nowMs }: { rows: TaskToolRow[]; nowMs: number }) {
               >
                 {statusLabel}
               </div>
-              <div className="w-20 truncate font-medium text-[var(--app-text)]">
-                {row.agent || 'subagent'}
+              <div className="w-36 truncate font-medium text-[var(--app-text)]" title={secondaryLabel || primaryLabel}>
+                {primaryLabel}
               </div>
-              <div className="flex-1 truncate">{row.tool || '-'}</div>
+              <div className="flex-1 truncate">{secondaryLabel ? `${secondaryLabel} · ` : ''}{row.tool || '-'}</div>
               <div className="text-right text-[var(--app-text-subtle)]">
                 {liveTaskElapsedLabel(row, nowMs)}
               </div>

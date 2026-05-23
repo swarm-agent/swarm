@@ -91,6 +91,7 @@ type ChatSessionTab struct {
 	ParentSessionID string
 	LineageKind     string
 	LineageLabel    string
+	AssignmentLabel string
 	TargetKind      string
 	TargetName      string
 	Depth           int
@@ -111,6 +112,7 @@ type ChatSessionPaletteItem struct {
 	ParentSessionID string
 	LineageKind     string
 	LineageLabel    string
+	AssignmentLabel string
 	TargetKind      string
 	TargetName      string
 	Depth           int
@@ -4797,6 +4799,7 @@ func normalizeChatSessionTabs(tabs []ChatSessionTab, currentID, currentTitle str
 			ParentSessionID: strings.TrimSpace(tab.ParentSessionID),
 			LineageKind:     strings.TrimSpace(tab.LineageKind),
 			LineageLabel:    normalizeSessionLineageLabel(tab.LineageLabel),
+			AssignmentLabel: strings.TrimSpace(tab.AssignmentLabel),
 			TargetKind:      strings.TrimSpace(tab.TargetKind),
 			TargetName:      strings.TrimSpace(tab.TargetName),
 			Depth:           tab.Depth,

@@ -320,7 +320,9 @@ function summarizeToolOutput(
       const launchCount = jsonNum(effective, "launch_count");
       const parts: string[] = [];
       if (description) parts.push(description);
-      if (agentType) parts.push("@" + agentType);
+      const assignmentLabel = jsonStr(effective, "assignment_label");
+      if (assignmentLabel) parts.push(assignmentLabel);
+      else if (agentType) parts.push("@" + agentType);
       if (launchCount > 1) parts.push(`(${launchCount} launches)`);
       if (status) parts.push("(" + status + ")");
       return parts.length ? "task " + parts.join(" ") : "task";
@@ -574,6 +576,8 @@ function buildTaskToolRow(
     jsonStr(payload, "requested_subagent"),
     "subagent",
   );
+  const assignmentLabel = jsonStr(payload, "assignment_label");
+  const modelLabel = [jsonStr(payload, "subagent_provider"), jsonStr(payload, "subagent_model")].filter(Boolean).join(" / ");
   const rawPreviewKind = jsonStr(payload, "current_preview_kind");
   let tool = jsonStr(payload, "current_tool");
   if (!tool && rawPreviewKind.trim().toLowerCase() !== "reasoning") {
@@ -593,6 +597,8 @@ function buildTaskToolRow(
     childSessionId,
     status,
     agent,
+    assignmentLabel,
+    modelLabel,
     tool: normalized.tool || "-",
     time,
     previewKind: normalized.previewKind,
@@ -891,7 +897,9 @@ function extractPreviewLines(
         const status = row.status ? `[${row.status}]` : "";
         const tool = row.tool && row.tool !== "-" ? ` · ${row.tool}` : "";
         const time = row.time ? ` · ${row.time}` : "";
-        pushPreviewLine(out, `${row.agent}${tool}${time} ${status}`.trim(), 6);
+        const label = row.assignmentLabel || row.agent;
+        const model = row.modelLabel ? ` · ${row.modelLabel}` : "";
+        pushPreviewLine(out, `${label}${model}${tool}${time} ${status}`.trim(), 6);
       }
       return out;
     }

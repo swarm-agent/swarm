@@ -81,7 +81,7 @@ test('session lineage ignores self-parent task launch metadata for routed TUI se
   })
 
   assert.equal(sessionParentSessionID(session), '')
-  assert.deepEqual(sessionChildDescriptor(session), { kind: 'root', label: null })
+  assert.deepEqual(sessionChildDescriptor(session), { kind: 'root', label: null, assignmentLabel: null, modelLabel: null })
 })
 
 test('session lineage keeps real background children background-targeted from direct metadata', () => {
@@ -109,7 +109,7 @@ test('session lineage keeps real background children background-targeted from di
   })
 
   assert.equal(sessionParentSessionID(session), 'parent-session')
-  assert.deepEqual(sessionChildDescriptor(session), { kind: 'background', label: 'background' })
+  assert.deepEqual(sessionChildDescriptor(session), { kind: 'background', label: 'background', assignmentLabel: null, modelLabel: null })
 })
 
 test('flow background sessions expose target label and flow badge for sidebar rows', () => {
@@ -142,7 +142,7 @@ test('flow background sessions expose target label and flow badge for sidebar ro
     },
   })
 
-  assert.deepEqual(sessionChildDescriptor(session), { kind: 'root', label: null })
+  assert.deepEqual(sessionChildDescriptor(session), { kind: 'root', label: null, assignmentLabel: null, modelLabel: null })
   assert.deepEqual(sessionBackgroundInfo(session, 'host'), { active: true, badge: 'flow', targetLabel: 'host' })
 })
 
@@ -201,7 +201,7 @@ test('session lineage keeps real subagent children labeled as subagents', () => 
   })
 
   assert.equal(sessionParentSessionID(session), 'parent-session')
-  assert.deepEqual(sessionChildDescriptor(session), { kind: 'subagent', label: '@parallel' })
+  assert.deepEqual(sessionChildDescriptor(session), { kind: 'subagent', label: '@parallel', assignmentLabel: null, modelLabel: null })
 })
 
 test('flow child sessions never collapse into fake subagent lineage even when requested_subagent metadata exists', () => {
@@ -230,5 +230,5 @@ test('flow child sessions never collapse into fake subagent lineage even when re
   })
 
   assert.equal(sessionParentSessionID(session), 'parent-session')
-  assert.deepEqual(sessionChildDescriptor(session), { kind: 'background', label: 'flow' })
+  assert.deepEqual(sessionChildDescriptor(session), { kind: 'background', label: 'flow', assignmentLabel: null, modelLabel: null })
 })

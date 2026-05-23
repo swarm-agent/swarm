@@ -7,12 +7,15 @@ import (
 )
 
 type SessionLineage struct {
-	Background      bool
-	ParentSessionID string
-	LineageKind     string
-	LineageLabel    string
-	TargetKind      string
-	TargetName      string
+	Background       bool
+	ParentSessionID  string
+	LineageKind      string
+	LineageLabel     string
+	AssignmentLabel  string
+	SubagentProvider string
+	SubagentModel    string
+	TargetKind       string
+	TargetName       string
 }
 
 func SessionLineageFromSummary(summary model.SessionSummary) SessionLineage {
@@ -21,12 +24,15 @@ func SessionLineageFromSummary(summary model.SessionSummary) SessionLineage {
 		return SessionLineage{}
 	}
 	lineage := SessionLineage{
-		Background:      sessionLineageMetadataBool(metadata, "background") || strings.EqualFold(sessionLineageMetadataString(metadata, "launch_mode"), "background"),
-		ParentSessionID: sessionLineageMetadataString(metadata, "parent_session_id"),
-		LineageKind:     sessionLineageMetadataString(metadata, "lineage_kind"),
-		LineageLabel:    normalizeSessionLineageLabel(sessionLineageMetadataString(metadata, "lineage_label")),
-		TargetKind:      sessionLineageMetadataString(metadata, "target_kind"),
-		TargetName:      sessionLineageMetadataString(metadata, "target_name"),
+		Background:       sessionLineageMetadataBool(metadata, "background") || strings.EqualFold(sessionLineageMetadataString(metadata, "launch_mode"), "background"),
+		ParentSessionID:  sessionLineageMetadataString(metadata, "parent_session_id"),
+		LineageKind:      sessionLineageMetadataString(metadata, "lineage_kind"),
+		LineageLabel:     normalizeSessionLineageLabel(sessionLineageMetadataString(metadata, "lineage_label")),
+		AssignmentLabel:  sessionLineageMetadataString(metadata, "assignment_label"),
+		SubagentProvider: sessionLineageMetadataString(metadata, "subagent_provider"),
+		SubagentModel:    sessionLineageMetadataString(metadata, "subagent_model"),
+		TargetKind:       sessionLineageMetadataString(metadata, "target_kind"),
+		TargetName:       sessionLineageMetadataString(metadata, "target_name"),
 	}
 	if lineage.LineageLabel == "" {
 		lineage.LineageLabel = normalizeSessionLineageLabel(sessionLineageFirstNonEmpty(
@@ -48,6 +54,7 @@ func SessionLineageFromTab(tab ChatSessionTab) SessionLineage {
 		ParentSessionID: strings.TrimSpace(tab.ParentSessionID),
 		LineageKind:     strings.TrimSpace(tab.LineageKind),
 		LineageLabel:    normalizeSessionLineageLabel(tab.LineageLabel),
+		AssignmentLabel: strings.TrimSpace(tab.AssignmentLabel),
 		TargetKind:      strings.TrimSpace(tab.TargetKind),
 		TargetName:      strings.TrimSpace(tab.TargetName),
 	}
@@ -59,6 +66,7 @@ func SessionLineageFromPaletteItem(item ChatSessionPaletteItem) SessionLineage {
 		ParentSessionID: strings.TrimSpace(item.ParentSessionID),
 		LineageKind:     strings.TrimSpace(item.LineageKind),
 		LineageLabel:    normalizeSessionLineageLabel(item.LineageLabel),
+		AssignmentLabel: strings.TrimSpace(item.AssignmentLabel),
 		TargetKind:      strings.TrimSpace(item.TargetKind),
 		TargetName:      strings.TrimSpace(item.TargetName),
 	}
@@ -66,6 +74,9 @@ func SessionLineageFromPaletteItem(item ChatSessionPaletteItem) SessionLineage {
 
 func SessionLineageDisplay(lineage SessionLineage) string {
 	if strings.TrimSpace(lineage.ParentSessionID) != "" {
+		if label := strings.TrimSpace(lineage.AssignmentLabel); label != "" {
+			return label
+		}
 		if label := normalizeSessionLineageLabel(lineage.LineageLabel); label != "" {
 			return label
 		}
@@ -115,7 +126,7 @@ func sessionListPrimaryLine(prefix, title, lineageLabel, workspace, modelLabel s
 	if lineageLabel = strings.TrimSpace(lineageLabel); lineageLabel != "" {
 		parts = append(parts, lineageLabel)
 	}
-	if title = strings.TrimSpace(title); title != "" {
+	if title = strings.TrimSpace(title); title != "" && !strings.EqualFold(title, lineageLabel) {
 		parts = append(parts, title)
 	}
 	if !compact {

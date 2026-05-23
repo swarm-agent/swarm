@@ -32,6 +32,8 @@ export interface TaskToolRow {
   childSessionId: string;
   status: string;
   agent: string;
+  assignmentLabel: string;
+  modelLabel: string;
   tool: string;
   time: string;
   previewKind: string;

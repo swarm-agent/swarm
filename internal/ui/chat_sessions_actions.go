@@ -88,6 +88,7 @@ func normalizeChatSessionPaletteItems(tabs []ChatSessionTab) []ChatSessionPalett
 			ParentSessionID: strings.TrimSpace(tab.ParentSessionID),
 			LineageKind:     strings.TrimSpace(tab.LineageKind),
 			LineageLabel:    normalizeSessionLineageLabel(tab.LineageLabel),
+			AssignmentLabel: strings.TrimSpace(tab.AssignmentLabel),
 			TargetKind:      strings.TrimSpace(tab.TargetKind),
 			TargetName:      strings.TrimSpace(tab.TargetName),
 			Depth:           tab.Depth,
