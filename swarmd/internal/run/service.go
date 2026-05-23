@@ -3150,15 +3150,22 @@ func sessionTitleGenerationLocked(metadata map[string]any) bool {
 	if len(metadata) == 0 {
 		return false
 	}
-	if metadataBoolValue(metadata, "title_locked") {
+	if metadataBoolValue(metadata, "title_locked") || metadataBoolValue(metadata, "background") {
 		return true
 	}
-	if strings.EqualFold(metadataStringValue(metadata, "title_source"), "flow_task") {
+	if metadataStringValueEquals(metadata, "title_source", "flow_task") ||
+		metadataStringValueEquals(metadata, "lineage_kind", "delegated_subagent") ||
+		metadataStringValueEquals(metadata, "lineage_kind", "flow") ||
+		metadataStringValueEquals(metadata, "launch_source", "task") ||
+		metadataStringValueEquals(metadata, "launch_source", "targeted_subagent") ||
+		metadataStringValueEquals(metadata, "launch_mode", "background") ||
+		metadataStringValueEquals(metadata, "source", "flow") ||
+		metadataStringValueEquals(metadata, "owner_transport", "flow_scheduler") ||
+		metadataStringValue(metadata, "flow_id") != "" {
 		return true
 	}
-	if strings.EqualFold(metadataStringValue(metadata, "source"), "flow") ||
-		strings.EqualFold(metadataStringValue(metadata, "owner_transport"), "flow_scheduler") ||
-		strings.EqualFold(metadataStringValue(metadata, "lineage_kind"), "flow") {
+	if metadataStringValueEquals(metadata, "subagent", "commit") ||
+		metadataStringValueEquals(metadata, "requested_subagent", "commit") {
 		return true
 	}
 	return false
@@ -3182,12 +3189,20 @@ func metadataStringValue(metadata map[string]any, key string) string {
 	if len(metadata) == 0 {
 		return ""
 	}
-	switch typed := metadata[key].(type) {
+	value, ok := metadata[key]
+	if !ok || value == nil {
+		return ""
+	}
+	switch typed := value.(type) {
 	case string:
 		return strings.TrimSpace(typed)
 	default:
 		return strings.TrimSpace(fmt.Sprint(typed))
 	}
+}
+
+func metadataStringValueEquals(metadata map[string]any, key, expected string) bool {
+	return strings.EqualFold(metadataStringValue(metadata, key), expected)
 }
 
 func (s *Service) startMemorySessionTitleFlow(sessionID, firstPrompt string, basePreference pebblestore.ModelPreference, principal identity.Principal, emit StreamHandler) {

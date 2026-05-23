@@ -288,6 +288,7 @@ func (s *Service) prepareDelegatedSubagentLaunch(parentSession pebblestore.Sessi
 		"workspace_id":       worktreeruntime.WorkspaceIdentityForSession(childSessionID),
 		"runtime_state":      "standby",
 		"title_pending":      true,
+		"title_locked":       true,
 		"parent_session_id":  strings.TrimSpace(parentSession.ID),
 		"parent_title":       strings.TrimSpace(parentSession.Title),
 		"lineage_kind":       "delegated_subagent",

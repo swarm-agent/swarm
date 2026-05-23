@@ -646,6 +646,7 @@ func buildBackgroundRunMetadata(existing map[string]any, targetKind, targetName 
 	}
 	metadata["launch_mode"] = "background"
 	metadata["background"] = true
+	metadata["title_locked"] = true
 	if !metadataMarksFlowRun(metadata) {
 		metadata["target_kind"] = strings.TrimSpace(targetKind)
 		metadata["target_name"] = strings.TrimSpace(targetName)
