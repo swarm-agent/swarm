@@ -126,7 +126,7 @@ func TestPushManagedSyncToLocalChildrenPushesAgentsAndCredentials(t *testing.T) 
 		t.Fatalf("put local node: %v", err)
 	}
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
-	if _, _, _, err := agentSvc.Upsert(agentruntime.UpsertInput{Name: "probe", Mode: agentruntime.ModeSubagent, Prompt: "sync me", Enabled: pebblestore.BoolPtr(true)}); err != nil {
+	if _, _, _, err := agentSvc.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "probe", Mode: agentruntime.ModeSubagent, Prompt: "sync me", Enabled: pebblestore.BoolPtr(true)}); err != nil {
 		t.Fatalf("upsert agent: %v", err)
 	}
 	authSvc := authruntime.NewService(pebblestore.NewAuthStore(store), events)
@@ -336,7 +336,7 @@ func TestPushManagedSyncToManagedHostsPushesAgentsAndCredentials(t *testing.T) {
 		t.Fatalf("put trusted peer: %v", err)
 	}
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
-	if _, _, _, err := agentSvc.Upsert(agentruntime.UpsertInput{Name: "managed-probe", Mode: agentruntime.ModeSubagent, Prompt: "sync me", Enabled: pebblestore.BoolPtr(true)}); err != nil {
+	if _, _, _, err := agentSvc.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "managed-probe", Mode: agentruntime.ModeSubagent, Prompt: "sync me", Enabled: pebblestore.BoolPtr(true)}); err != nil {
 		t.Fatalf("upsert agent: %v", err)
 	}
 	authSvc := authruntime.NewService(pebblestore.NewAuthStore(store), events)
@@ -345,7 +345,7 @@ func TestPushManagedSyncToManagedHostsPushesAgentsAndCredentials(t *testing.T) {
 	}
 	permSvc := permission.NewService(pebblestore.NewPermissionStore(store), nil, nil)
 	permSvc.SetBypassPermissions(true)
-	if _, err := permSvc.UpsertRule(permission.PolicyRule{Kind: permission.PolicyRuleKindTool, Decision: permission.PolicyDecisionAllow, Tool: "read"}); err != nil {
+	if _, err := permSvc.UpsertRuleForAccount(testPrincipal().AccountScopeID, permission.PolicyRule{Kind: permission.PolicyRuleKindTool, Decision: permission.PolicyDecisionAllow, Tool: "read"}); err != nil {
 		t.Fatalf("upsert permission rule: %v", err)
 	}
 	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, authSvc, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), permSvc, swarmNodeStore)
@@ -517,6 +517,157 @@ func TestPushManagedSyncToManagedHostsRequiresAck(t *testing.T) {
 	}
 }
 
+func TestManagedHostAgentPermissionAndModelSyncAreAccountScoped(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	swarmStore := pebblestore.NewSwarmStore(store)
+	if _, err := swarmStore.PutLocalPairing(pebblestore.SwarmLocalPairingRecord{UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID}); err != nil {
+		t.Fatalf("put local pairing: %v", err)
+	}
+	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
+	enabled := true
+	if _, _, _, err := agentSvc.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "account-a-agent", Mode: agentruntime.ModeSubagent, Prompt: "sync A", Enabled: &enabled}); err != nil {
+		t.Fatalf("upsert account agent: %v", err)
+	}
+	if _, _, _, err := agentSvc.UpsertForAccount("account-b", agentruntime.UpsertInput{Name: "account-b-agent", Mode: agentruntime.ModeSubagent, Prompt: "do not sync", Enabled: &enabled}); err != nil {
+		t.Fatalf("upsert other account agent: %v", err)
+	}
+	modelSvc := modelruntime.NewService(pebblestore.NewModelStore(store), events, nil)
+	if _, _, err := modelSvc.SetPreferenceForAccount(testPrincipal().AccountScopeID, testPrincipal().UserID, "provider-a", "model-a", "medium"); err != nil {
+		t.Fatalf("set account model preference: %v", err)
+	}
+	if _, _, err := modelSvc.SetPreferenceForAccount("account-b", "user-b", "provider-b", "model-b", "low"); err != nil {
+		t.Fatalf("set other account model preference: %v", err)
+	}
+	permSvc := permission.NewService(pebblestore.NewPermissionStore(store), nil, nil)
+	permSvc.SetBypassPermissions(true)
+	if _, err := permSvc.UpsertRuleForAccount(testPrincipal().AccountScopeID, permission.PolicyRule{Kind: permission.PolicyRuleKindTool, Decision: permission.PolicyDecisionAllow, Tool: "read"}); err != nil {
+		t.Fatalf("upsert account permission: %v", err)
+	}
+	if _, err := permSvc.UpsertRuleForAccount("account-b", permission.PolicyRule{Kind: permission.PolicyRuleKindTool, Decision: permission.PolicyDecisionDeny, Tool: "bash"}); err != nil {
+		t.Fatalf("upsert other account permission: %v", err)
+	}
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, nil, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), modelSvc, permSvc)
+
+	agentBundle, err := deploySvc.SyncManagedHostAgentBundle(testPrincipalContext(), ContainerSyncCredentialRequestInput{})
+	if err != nil {
+		t.Fatalf("sync managed host agent bundle: %v", err)
+	}
+	if len(agentBundle.State.Profiles) != 1 || agentBundle.State.Profiles[0].Name != "account-a-agent" {
+		t.Fatalf("agent bundle profiles = %+v", agentBundle.State.Profiles)
+	}
+	modelBundle, err := deploySvc.SyncManagedHostModelDefaultsBundle(testPrincipalContext(), ContainerSyncCredentialRequestInput{})
+	if err != nil {
+		t.Fatalf("sync managed host model bundle: %v", err)
+	}
+	if modelBundle.Preference.Provider != "provider-a" || modelBundle.Preference.Model != "model-a" || modelBundle.Preference.AccountScopeID != testPrincipal().AccountScopeID {
+		t.Fatalf("model bundle preference = %+v", modelBundle.Preference)
+	}
+	permissionBundle, err := deploySvc.SyncManagedHostPermissionBundle(testPrincipalContext(), ContainerSyncCredentialRequestInput{})
+	if err != nil {
+		t.Fatalf("sync managed host permission bundle: %v", err)
+	}
+	foundRead := false
+	for _, rule := range permissionBundle.State.Policy.Rules {
+		if rule.Kind == permission.PolicyRuleKindTool && rule.Tool == "read" {
+			foundRead = true
+		}
+		if rule.Kind == permission.PolicyRuleKindTool && rule.Tool == "bash" {
+			t.Fatalf("permission bundle included other account rule: %+v", permissionBundle.State)
+		}
+	}
+	if !foundRead {
+		t.Fatalf("permission bundle state = %+v", permissionBundle.State)
+	}
+}
+
+func TestApplyManagedHostInitialSyncBundleAppliesSyncedStateToLinkedAccountOnly(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	swarmStore := pebblestore.NewSwarmStore(store)
+	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
+	modelSvc := modelruntime.NewService(pebblestore.NewModelStore(store), events, nil)
+	permSvc := permission.NewService(pebblestore.NewPermissionStore(store), nil, nil)
+	identitySvc := identity.NewService(pebblestore.NewIdentityStore(store))
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, nil, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), modelSvc, permSvc, identitySvc)
+
+	bundle := ManagedHostInitialSyncBundle{
+		UserID:              testPrincipal().UserID,
+		AccountScopeID:      testPrincipal().AccountScopeID,
+		SyncModules:         []string{workspaceruntime.ReplicationSyncModuleAgents, workspaceruntime.ReplicationSyncModuleModelDefaults, workspaceruntime.ReplicationSyncModulePermissions},
+		AgentBundle:         ContainerSyncAgentBundle{State: agentruntime.State{Profiles: []pebblestore.AgentProfile{{Name: "synced-agent", Mode: agentruntime.ModeSubagent, Prompt: "linked only", Enabled: true}}}, Modules: []string{workspaceruntime.ReplicationSyncModuleAgents}},
+		ModelDefaultsBundle: ContainerSyncModelDefaultsBundle{Preference: pebblestore.ModelPreference{Provider: "provider-linked", Model: "model-linked", Thinking: "medium", UserID: testPrincipal().UserID}, Modules: []string{workspaceruntime.ReplicationSyncModuleModelDefaults}},
+		PermissionBundle:    ContainerSyncPermissionBundle{State: permission.ManagedPolicyState{Policy: permission.Policy{Rules: []permission.PolicyRule{{Kind: permission.PolicyRuleKindTool, Decision: permission.PolicyDecisionAllow, Tool: "read"}}}}},
+	}
+	if _, err := deploySvc.ApplyManagedHostInitialSyncBundle(context.Background(), "manager-swarm", bundle); err != nil {
+		t.Fatalf("ApplyManagedHostInitialSyncBundle() error = %v", err)
+	}
+	linkedState, err := agentSvc.ListStateForAccount(testPrincipal().AccountScopeID, 10)
+	if err != nil {
+		t.Fatalf("list linked agent state: %v", err)
+	}
+	foundSyncedAgent := false
+	for _, profile := range linkedState.Profiles {
+		if profile.Name == "synced-agent" {
+			foundSyncedAgent = true
+		}
+	}
+	if !foundSyncedAgent {
+		t.Fatalf("linked agent state = %+v", linkedState.Profiles)
+	}
+	otherState, err := agentSvc.ListStateForAccount("other-account", 10)
+	if err != nil {
+		t.Fatalf("list other agent state: %v", err)
+	}
+	if len(otherState.Profiles) != 0 {
+		t.Fatalf("other account agent state = %+v", otherState.Profiles)
+	}
+	pref, err := modelSvc.GetPreferenceForAccount(testPrincipal().AccountScopeID)
+	if err != nil {
+		t.Fatalf("get linked model preference: %v", err)
+	}
+	if pref.Provider != "provider-linked" || pref.AccountScopeID != testPrincipal().AccountScopeID {
+		t.Fatalf("linked model preference = %+v", pref)
+	}
+	otherPref, err := modelSvc.GetPreferenceForAccount("other-account")
+	if err != nil {
+		t.Fatalf("get other model preference: %v", err)
+	}
+	if otherPref.Provider == "provider-linked" {
+		t.Fatalf("other model preference was overwritten: %+v", otherPref)
+	}
+	policy, err := permSvc.CurrentPolicyForAccount(testPrincipal().AccountScopeID)
+	if err != nil {
+		t.Fatalf("get linked policy: %v", err)
+	}
+	if len(policy.Rules) != 1 || policy.Rules[0].Tool != "read" {
+		t.Fatalf("linked policy = %+v", policy)
+	}
+	otherPolicy, err := permSvc.CurrentPolicyForAccount("other-account")
+	if err != nil {
+		t.Fatalf("get other policy: %v", err)
+	}
+	for _, rule := range otherPolicy.Rules {
+		if rule.Kind == permission.PolicyRuleKindTool && rule.Tool == "read" {
+			t.Fatalf("other policy included linked account rule: %+v", otherPolicy)
+		}
+	}
+}
+
 func TestSyncManagedHostCredentialBundleIncludesUserAndAccount(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm.pebble"))
 	if err != nil {
@@ -537,7 +688,8 @@ func TestSyncManagedHostCredentialBundleIncludesUserAndAccount(t *testing.T) {
 		t.Fatalf("upsert host credential: %v", err)
 	}
 	modelSvc := modelruntime.NewService(pebblestore.NewModelStore(store), events, nil)
-	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, authSvc, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"), modelSvc)
+	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, authSvc, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), modelSvc)
 
 	bundle, err := deploySvc.ManagedHostInitialSyncBundle(testPrincipalContext(), "https://manager.example", "managed-swarm")
 	if err != nil {

@@ -61,7 +61,7 @@ func TestFlowsV3CreateListGetUpdateRunNowDeleteHistoryAndStatus(t *testing.T) {
 	createRec := httptest.NewRecorder()
 	createReq := httptest.NewRequest(http.MethodPost, "/v3/flows", jsonReader(t, req))
 	createReq.Header.Set("Content-Type", "application/json")
-	server.Handler().ServeHTTP(createRec, createReq)
+	server.Handler().ServeHTTP(createRec, requestWithTestPrincipal(createReq))
 	if createRec.Code != http.StatusCreated {
 		t.Fatalf("create status = %d body=%s", createRec.Code, createRec.Body.String())
 	}
@@ -92,7 +92,7 @@ func TestFlowsV3CreateListGetUpdateRunNowDeleteHistoryAndStatus(t *testing.T) {
 		t.Fatalf("stored assignment agent = %+v", definition.Assignment.Agent)
 	}
 	listRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(listRec, httptest.NewRequest(http.MethodGet, "/v3/flows?limit=200", nil))
+	server.Handler().ServeHTTP(listRec, requestWithTestPrincipal(httptest.NewRequest(http.MethodGet, "/v3/flows?limit=200", nil)))
 	if listRec.Code != http.StatusOK {
 		t.Fatalf("list status = %d body=%s", listRec.Code, listRec.Body.String())
 	}
@@ -104,7 +104,7 @@ func TestFlowsV3CreateListGetUpdateRunNowDeleteHistoryAndStatus(t *testing.T) {
 		t.Fatalf("list payload = %+v", listPayload)
 	}
 	getRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(getRec, httptest.NewRequest(http.MethodGet, "/v3/flows/flow-v3-remote", nil))
+	server.Handler().ServeHTTP(getRec, requestWithTestPrincipal(httptest.NewRequest(http.MethodGet, "/v3/flows/flow-v3-remote", nil)))
 	if getRec.Code != http.StatusOK {
 		t.Fatalf("get status = %d body=%s", getRec.Code, getRec.Body.String())
 	}
@@ -130,7 +130,7 @@ func TestFlowsV3CreateListGetUpdateRunNowDeleteHistoryAndStatus(t *testing.T) {
 	updateRec := httptest.NewRecorder()
 	updateHTTP := httptest.NewRequest(http.MethodPut, "/v3/flows/flow-v3-remote", jsonReader(t, updateReq))
 	updateHTTP.Header.Set("Content-Type", "application/json")
-	server.Handler().ServeHTTP(updateRec, updateHTTP)
+	server.Handler().ServeHTTP(updateRec, requestWithTestPrincipal(updateHTTP))
 	if updateRec.Code != http.StatusOK {
 		t.Fatalf("update status = %d body=%s", updateRec.Code, updateRec.Body.String())
 	}
@@ -158,7 +158,7 @@ func TestFlowsV3CreateListGetUpdateRunNowDeleteHistoryAndStatus(t *testing.T) {
 	unassignRec := httptest.NewRecorder()
 	unassignHTTP := httptest.NewRequest(http.MethodPut, "/v3/flows/flow-v3-remote", jsonReader(t, unassignReq))
 	unassignHTTP.Header.Set("Content-Type", "application/json")
-	server.Handler().ServeHTTP(unassignRec, unassignHTTP)
+	server.Handler().ServeHTTP(unassignRec, requestWithTestPrincipal(unassignHTTP))
 	if unassignRec.Code != http.StatusOK {
 		t.Fatalf("unassign status = %d body=%s", unassignRec.Code, unassignRec.Body.String())
 	}
@@ -189,7 +189,7 @@ func TestFlowsV3CreateListGetUpdateRunNowDeleteHistoryAndStatus(t *testing.T) {
 		t.Fatalf("put mirrored summary: %v", err)
 	}
 	historyRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(historyRec, httptest.NewRequest(http.MethodGet, "/v3/flows/flow-v3-remote/history", nil))
+	server.Handler().ServeHTTP(historyRec, requestWithTestPrincipal(httptest.NewRequest(http.MethodGet, "/v3/flows/flow-v3-remote/history", nil)))
 	if historyRec.Code != http.StatusOK {
 		t.Fatalf("history status = %d body=%s", historyRec.Code, historyRec.Body.String())
 	}
@@ -201,7 +201,7 @@ func TestFlowsV3CreateListGetUpdateRunNowDeleteHistoryAndStatus(t *testing.T) {
 		t.Fatalf("history payload = %+v", historyPayload)
 	}
 	statusRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(statusRec, httptest.NewRequest(http.MethodGet, "/v3/flows/flow-v3-remote/status", nil))
+	server.Handler().ServeHTTP(statusRec, requestWithTestPrincipal(httptest.NewRequest(http.MethodGet, "/v3/flows/flow-v3-remote/status", nil)))
 	if statusRec.Code != http.StatusOK {
 		t.Fatalf("status code = %d body=%s", statusRec.Code, statusRec.Body.String())
 	}
@@ -213,7 +213,7 @@ func TestFlowsV3CreateListGetUpdateRunNowDeleteHistoryAndStatus(t *testing.T) {
 		t.Fatalf("status payload = %+v", statusPayload)
 	}
 	runRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(runRec, httptest.NewRequest(http.MethodPost, "/v3/flows/flow-v3-remote/run-now", nil))
+	server.Handler().ServeHTTP(runRec, requestWithTestPrincipal(httptest.NewRequest(http.MethodPost, "/v3/flows/flow-v3-remote/run-now", nil)))
 	if runRec.Code != http.StatusAccepted {
 		t.Fatalf("run-now status = %d body=%s", runRec.Code, runRec.Body.String())
 	}
@@ -228,7 +228,7 @@ func TestFlowsV3CreateListGetUpdateRunNowDeleteHistoryAndStatus(t *testing.T) {
 		t.Fatalf("run payload = %+v", runPayload)
 	}
 	deleteRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(deleteRec, httptest.NewRequest(http.MethodDelete, "/v3/flows/flow-v3-remote", nil))
+	server.Handler().ServeHTTP(deleteRec, requestWithTestPrincipal(httptest.NewRequest(http.MethodDelete, "/v3/flows/flow-v3-remote", nil)))
 	if deleteRec.Code != http.StatusOK {
 		t.Fatalf("delete status = %d body=%s", deleteRec.Code, deleteRec.Body.String())
 	}
@@ -295,7 +295,7 @@ func TestFlowsV3LocalContainerCRUDSyncsAcrossHTTPBoundary(t *testing.T) {
 	createRec := httptest.NewRecorder()
 	createHTTP := httptest.NewRequest(http.MethodPost, "/v3/flows", jsonReader(t, req))
 	createHTTP.Header.Set("Content-Type", "application/json")
-	server.Handler().ServeHTTP(createRec, createHTTP)
+	server.Handler().ServeHTTP(createRec, requestWithTestPrincipal(createHTTP))
 	if createRec.Code != http.StatusCreated {
 		t.Fatalf("create status = %d body=%s", createRec.Code, createRec.Body.String())
 	}
@@ -305,12 +305,12 @@ func TestFlowsV3LocalContainerCRUDSyncsAcrossHTTPBoundary(t *testing.T) {
 	updateRec := httptest.NewRecorder()
 	updateHTTP := httptest.NewRequest(http.MethodPut, "/v3/flows/flow-v3-local-crud", jsonReader(t, updateReq))
 	updateHTTP.Header.Set("Content-Type", "application/json")
-	server.Handler().ServeHTTP(updateRec, updateHTTP)
+	server.Handler().ServeHTTP(updateRec, requestWithTestPrincipal(updateHTTP))
 	if updateRec.Code != http.StatusOK {
 		t.Fatalf("update status = %d body=%s", updateRec.Code, updateRec.Body.String())
 	}
 	deleteRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(deleteRec, httptest.NewRequest(http.MethodDelete, "/v3/flows/flow-v3-local-crud", nil))
+	server.Handler().ServeHTTP(deleteRec, requestWithTestPrincipal(httptest.NewRequest(http.MethodDelete, "/v3/flows/flow-v3-local-crud", nil)))
 	if deleteRec.Code != http.StatusOK {
 		t.Fatalf("delete status = %d body=%s", deleteRec.Code, deleteRec.Body.String())
 	}
@@ -384,7 +384,7 @@ func TestFlowsV3CreateAllowsLocalContainerTargetWithLocalOwnerHost(t *testing.T)
 	createRec := httptest.NewRecorder()
 	createHTTP := httptest.NewRequest(http.MethodPost, "/v3/flows", jsonReader(t, req))
 	createHTTP.Header.Set("Content-Type", "application/json")
-	server.Handler().ServeHTTP(createRec, createHTTP)
+	server.Handler().ServeHTTP(createRec, requestWithTestPrincipal(createHTTP))
 	if createRec.Code != http.StatusCreated {
 		t.Fatalf("create status = %d body=%s", createRec.Code, createRec.Body.String())
 	}
@@ -439,7 +439,7 @@ func TestFlowsV3ChildListsTargetAcceptedAssignmentsWithoutControllerDefinitions(
 	}
 
 	listRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(listRec, httptest.NewRequest(http.MethodGet, "/v3/flows", nil))
+	server.Handler().ServeHTTP(listRec, requestWithTestPrincipal(httptest.NewRequest(http.MethodGet, "/v3/flows", nil)))
 	if listRec.Code != http.StatusOK {
 		t.Fatalf("list status = %d body=%s", listRec.Code, listRec.Body.String())
 	}
@@ -455,7 +455,7 @@ func TestFlowsV3ChildListsTargetAcceptedAssignmentsWithoutControllerDefinitions(
 	}
 
 	getRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(getRec, httptest.NewRequest(http.MethodGet, "/v3/flows/flow-child-visible", nil))
+	server.Handler().ServeHTTP(getRec, requestWithTestPrincipal(httptest.NewRequest(http.MethodGet, "/v3/flows/flow-child-visible", nil)))
 	if getRec.Code != http.StatusOK {
 		t.Fatalf("get status = %d body=%s", getRec.Code, getRec.Body.String())
 	}
@@ -491,7 +491,7 @@ func TestFlowsV3CreateDoesNotAutoRunOnDemandFlow(t *testing.T) {
 	rec := httptest.NewRecorder()
 	reqHTTP := httptest.NewRequest(http.MethodPost, "/v3/flows", jsonReader(t, req))
 	reqHTTP.Header.Set("Content-Type", "application/json")
-	server.Handler().ServeHTTP(rec, reqHTTP)
+	server.Handler().ServeHTTP(rec, requestWithTestPrincipal(reqHTTP))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create status = %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -539,7 +539,7 @@ func TestFlowsV3CreateSchedulesMultipleTimesAndPreservesTimezone(t *testing.T) {
 	rec := httptest.NewRecorder()
 	reqHTTP := httptest.NewRequest(http.MethodPost, "/v3/flows", jsonReader(t, req))
 	reqHTTP.Header.Set("Content-Type", "application/json")
-	server.Handler().ServeHTTP(rec, reqHTTP)
+	server.Handler().ServeHTTP(rec, requestWithTestPrincipal(reqHTTP))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create status = %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -590,7 +590,7 @@ func TestFlowsV3CreateAcceptsModalWeeklyMultiDayAndRawCron(t *testing.T) {
 	weeklyRec := httptest.NewRecorder()
 	weeklyHTTP := httptest.NewRequest(http.MethodPost, "/v3/flows", jsonReader(t, weeklyReq))
 	weeklyHTTP.Header.Set("Content-Type", "application/json")
-	server.Handler().ServeHTTP(weeklyRec, weeklyHTTP)
+	server.Handler().ServeHTTP(weeklyRec, requestWithTestPrincipal(weeklyHTTP))
 	if weeklyRec.Code != http.StatusCreated {
 		t.Fatalf("weekly create status = %d body=%s", weeklyRec.Code, weeklyRec.Body.String())
 	}
@@ -608,7 +608,7 @@ func TestFlowsV3CreateAcceptsModalWeeklyMultiDayAndRawCron(t *testing.T) {
 	cronRec := httptest.NewRecorder()
 	cronHTTP := httptest.NewRequest(http.MethodPost, "/v3/flows", jsonReader(t, cronReq))
 	cronHTTP.Header.Set("Content-Type", "application/json")
-	server.Handler().ServeHTTP(cronRec, cronHTTP)
+	server.Handler().ServeHTTP(cronRec, requestWithTestPrincipal(cronHTTP))
 	if cronRec.Code != http.StatusCreated {
 		t.Fatalf("cron create status = %d body=%s", cronRec.Code, cronRec.Body.String())
 	}
@@ -650,7 +650,7 @@ func TestFlowsV3CreatePersistsPendingSyncWhenTargetIsUnavailable(t *testing.T) {
 	rec := httptest.NewRecorder()
 	reqHTTP := httptest.NewRequest(http.MethodPost, "/v3/flows", jsonReader(t, req))
 	reqHTTP.Header.Set("Content-Type", "application/json")
-	server.Handler().ServeHTTP(rec, reqHTTP)
+	server.Handler().ServeHTTP(rec, requestWithTestPrincipal(reqHTTP))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create status = %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -692,7 +692,7 @@ func TestFlowsV3CreatePersistsPendingSyncWhenTargetIsUnavailable(t *testing.T) {
 		t.Fatalf("stored assignment status = %+v", status)
 	}
 	getRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(getRec, httptest.NewRequest(http.MethodGet, "/v3/flows/flow-v3-pending-sync", nil))
+	server.Handler().ServeHTTP(getRec, requestWithTestPrincipal(httptest.NewRequest(http.MethodGet, "/v3/flows/flow-v3-pending-sync", nil)))
 	if getRec.Code != http.StatusOK {
 		t.Fatalf("get status = %d body=%s", getRec.Code, getRec.Body.String())
 	}
@@ -716,7 +716,7 @@ func TestFlowsV3RejectsUnknownDisabledAndMismatchedAgents(t *testing.T) {
 		{name: "disabled profile", agent: flow.AgentSelection{ProfileName: "disabled-memory", ProfileMode: "subagent"}, prepare: func(t *testing.T, server *Server) {
 			t.Helper()
 			enabled := false
-			_, _, _, err := server.agents.Upsert(agentruntime.UpsertInput{Name: "disabled-memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "test-model", Thinking: "medium", ProviderSet: true, ModelSet: true, ThinkingSet: true, Enabled: &enabled})
+			_, _, _, err := server.agents.UpsertForAccount(testAccountScopeID, agentruntime.UpsertInput{Name: "disabled-memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "test-model", Thinking: "medium", ProviderSet: true, ModelSet: true, ThinkingSet: true, Enabled: &enabled})
 			if err != nil {
 				t.Fatalf("upsert disabled profile: %v", err)
 			}
@@ -741,7 +741,7 @@ func TestFlowsV3RejectsUnknownDisabledAndMismatchedAgents(t *testing.T) {
 			rec := httptest.NewRecorder()
 			reqHTTP := httptest.NewRequest(http.MethodPost, "/v3/flows", jsonReader(t, req))
 			reqHTTP.Header.Set("Content-Type", "application/json")
-			server.Handler().ServeHTTP(rec, reqHTTP)
+			server.Handler().ServeHTTP(rec, requestWithTestPrincipal(reqHTTP))
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 			}
@@ -777,7 +777,7 @@ func TestFlowsV3RejectsMissingTargetAndBadTarget(t *testing.T) {
 			rec := httptest.NewRecorder()
 			reqHTTP := httptest.NewRequest(http.MethodPost, "/v3/flows", jsonReader(t, req))
 			reqHTTP.Header.Set("Content-Type", "application/json")
-			server.Handler().ServeHTTP(rec, reqHTTP)
+			server.Handler().ServeHTTP(rec, requestWithTestPrincipal(reqHTTP))
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 			}
@@ -813,7 +813,7 @@ func TestFlowsV3DeleteAllowsStaleMissingTarget(t *testing.T) {
 		t.Fatalf("put stale definition: %v", err)
 	}
 	getRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(getRec, httptest.NewRequest(http.MethodGet, "/v3/flows/flow-v3-stale-target", nil))
+	server.Handler().ServeHTTP(getRec, requestWithTestPrincipal(httptest.NewRequest(http.MethodGet, "/v3/flows/flow-v3-stale-target", nil)))
 	if getRec.Code != http.StatusOK {
 		t.Fatalf("get status = %d body=%s", getRec.Code, getRec.Body.String())
 	}
@@ -826,7 +826,7 @@ func TestFlowsV3DeleteAllowsStaleMissingTarget(t *testing.T) {
 	}
 
 	deleteRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(deleteRec, httptest.NewRequest(http.MethodDelete, "/v3/flows/flow-v3-stale-target", nil))
+	server.Handler().ServeHTTP(deleteRec, requestWithTestPrincipal(httptest.NewRequest(http.MethodDelete, "/v3/flows/flow-v3-stale-target", nil)))
 	if deleteRec.Code != http.StatusOK {
 		t.Fatalf("delete status = %d body=%s", deleteRec.Code, deleteRec.Body.String())
 	}

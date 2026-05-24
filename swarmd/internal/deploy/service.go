@@ -1375,7 +1375,7 @@ func (s *Service) SyncAgentBundle(ctx context.Context, input ContainerSyncCreden
 	if !syncProfiles && !syncCustomTools {
 		return ContainerSyncAgentBundle{}, fmt.Errorf("agent sync modules are not enabled for this deployment")
 	}
-	return s.exportManagedAgentBundle(record.SyncModules)
+	return s.exportManagedAgentBundleForAccount(record.AccountScopeID, record.SyncModules)
 }
 
 func (s *Service) SyncSkillBundle(ctx context.Context, input ContainerSyncCredentialRequestInput) (ContainerSyncSkillBundle, error) {
@@ -1443,17 +1443,20 @@ func (s *Service) SyncModelDefaultsBundle(ctx context.Context, input ContainerSy
 	if !workspaceruntime.ReplicationSyncModuleEnabled(record.SyncModules, workspaceruntime.ReplicationSyncModuleModelDefaults) {
 		return ContainerSyncModelDefaultsBundle{}, fmt.Errorf("model default sync module is not enabled for this deployment")
 	}
-	return s.exportManagedModelDefaultsBundle(record.SyncModules)
+	return s.exportManagedModelDefaultsBundleForAccount(record.AccountScopeID, record.SyncModules)
 }
 
 func (s *Service) SyncManagedHostModelDefaultsBundle(ctx context.Context, input ContainerSyncCredentialRequestInput) (ContainerSyncModelDefaultsBundle, error) {
 	if s == nil || s.model == nil {
 		return ContainerSyncModelDefaultsBundle{}, fmt.Errorf("deploy container service is not configured")
 	}
-	_ = ctx
+	principal, err := s.principalForManagedCredentialSync(ctx)
+	if err != nil {
+		return ContainerSyncModelDefaultsBundle{}, err
+	}
 	_ = input
 	modules := workspaceruntime.DefaultReplicationSyncModules()
-	return s.exportManagedModelDefaultsBundle(modules)
+	return s.exportManagedModelDefaultsBundleForAccount(principal.AccountScopeID, modules)
 }
 
 func (s *Service) SyncPermissionBundle(ctx context.Context, input ContainerSyncCredentialRequestInput) (ContainerSyncPermissionBundle, error) {
@@ -1487,7 +1490,7 @@ func (s *Service) SyncPermissionBundle(ctx context.Context, input ContainerSyncC
 			ExportedAt:        time.Now().UnixMilli(),
 		}}, nil
 	}
-	state, err := s.permission.ExportPolicyState()
+	state, err := s.permission.ExportPolicyStateForAccount(record.AccountScopeID)
 	if err != nil {
 		return ContainerSyncPermissionBundle{}, err
 	}
@@ -1530,9 +1533,13 @@ func (s *Service) SyncManagedHostAgentBundle(ctx context.Context, input Containe
 	if s == nil || s.agents == nil {
 		return ContainerSyncAgentBundle{}, fmt.Errorf("deploy container service is not configured")
 	}
-	_ = ctx
+	principal, err := s.principalForManagedCredentialSync(ctx)
+	if err != nil {
+		return ContainerSyncAgentBundle{}, err
+	}
+	_ = input
 	modules := workspaceruntime.DefaultReplicationSyncModules()
-	return s.exportManagedAgentBundle(modules)
+	return s.exportManagedAgentBundleForAccount(principal.AccountScopeID, modules)
 }
 
 func (s *Service) SyncManagedHostSkillBundle(ctx context.Context, input ContainerSyncCredentialRequestInput) (ContainerSyncSkillBundle, error) {
@@ -1548,9 +1555,12 @@ func (s *Service) SyncManagedHostPermissionBundle(ctx context.Context, input Con
 	if s == nil || s.permission == nil {
 		return ContainerSyncPermissionBundle{}, fmt.Errorf("deploy container service is not configured")
 	}
-	_ = ctx
+	principal, err := s.principalForManagedCredentialSync(ctx)
+	if err != nil {
+		return ContainerSyncPermissionBundle{}, err
+	}
 	_ = input
-	state, err := s.permission.ExportPolicyState()
+	state, err := s.permission.ExportPolicyStateForAccount(principal.AccountScopeID)
 	if err != nil {
 		return ContainerSyncPermissionBundle{}, err
 	}
@@ -1584,12 +1594,12 @@ func (s *Service) ManagedHostInitialSyncBundle(ctx context.Context, managerBacke
 		return ManagedHostInitialSyncBundle{}, err
 	}
 	bundle.CredentialBundle = credentialBundle
-	agentBundle, err := s.exportManagedAgentBundle(modules)
+	agentBundle, err := s.exportManagedAgentBundleForAccount(principal.AccountScopeID, modules)
 	if err != nil {
 		return ManagedHostInitialSyncBundle{}, err
 	}
 	bundle.AgentBundle = agentBundle
-	if modelDefaultsBundle, err := s.exportManagedModelDefaultsBundle(modules); err != nil {
+	if modelDefaultsBundle, err := s.exportManagedModelDefaultsBundleForAccount(principal.AccountScopeID, modules); err != nil {
 		return ManagedHostInitialSyncBundle{}, err
 	} else {
 		bundle.ModelDefaultsBundle = modelDefaultsBundle
@@ -1602,7 +1612,7 @@ func (s *Service) ManagedHostInitialSyncBundle(ctx context.Context, managerBacke
 		bundle.SkillBundle = skillBundle
 	}
 	if s.permission != nil {
-		policyState, err := s.permission.ExportPolicyState()
+		policyState, err := s.permission.ExportPolicyStateForAccount(principal.AccountScopeID)
 		if err != nil {
 			return ManagedHostInitialSyncBundle{}, err
 		}
@@ -1668,7 +1678,7 @@ func (s *Service) ApplyManagedHostInitialSyncBundle(ctx context.Context, manager
 		pairing = updatedPairing
 	}
 	if workspaceruntime.ReplicationSyncModuleEnabled(modules, workspaceruntime.ReplicationSyncModuleAgents) || workspaceruntime.ReplicationSyncModuleEnabled(modules, workspaceruntime.ReplicationSyncModuleCustomTools) {
-		if err := s.applyManagedAgentBundle(bundle.AgentBundle, modules); err != nil {
+		if err := s.applyManagedAgentBundleForAccount(pairing.AccountScopeID, bundle.AgentBundle, modules); err != nil {
 			return ManagedHostSyncStatus{}, err
 		}
 	}
@@ -1678,11 +1688,11 @@ func (s *Service) ApplyManagedHostInitialSyncBundle(ctx context.Context, manager
 		}
 	}
 	if s.permission != nil {
-		if err := s.applyManagedPermissionBundle(bundle.PermissionBundle); err != nil {
+		if err := s.applyManagedPermissionBundleForAccount(pairing.AccountScopeID, bundle.PermissionBundle); err != nil {
 			return ManagedHostSyncStatus{}, err
 		}
 	}
-	if err := s.applyManagedModelDefaultsBundle(bundle.ModelDefaultsBundle, modules); err != nil {
+	if err := s.applyManagedModelDefaultsBundleForAccount(pairing.AccountScopeID, bundle.ModelDefaultsBundle, modules); err != nil {
 		return ManagedHostSyncStatus{}, err
 	}
 	if err := s.recordManagedHostBundleApplied(pairing, ownerSwarmID, bundle); err != nil {
@@ -3660,6 +3670,10 @@ func (s *Service) fetchSyncAgentBundle(ctx context.Context, cfg startupconfig.Fi
 }
 
 func (s *Service) exportManagedAgentBundle(modules []string) (ContainerSyncAgentBundle, error) {
+	return s.exportManagedAgentBundleForAccount("", modules)
+}
+
+func (s *Service) exportManagedAgentBundleForAccount(accountScopeID string, modules []string) (ContainerSyncAgentBundle, error) {
 	if s == nil || s.agents == nil {
 		return ContainerSyncAgentBundle{}, fmt.Errorf("deploy container service is not configured")
 	}
@@ -3672,7 +3686,15 @@ func (s *Service) exportManagedAgentBundle(modules []string) (ContainerSyncAgent
 	if !syncProfiles && !syncCustomTools {
 		return ContainerSyncAgentBundle{}, nil
 	}
-	state, err := s.agents.ListState(2000)
+	var (
+		state agentruntime.State
+		err   error
+	)
+	if strings.TrimSpace(accountScopeID) != "" {
+		state, err = s.agents.ListStateForAccount(accountScopeID, 2000)
+	} else {
+		state, err = s.agents.ListState(2000)
+	}
 	if err != nil {
 		return ContainerSyncAgentBundle{}, err
 	}
@@ -3726,6 +3748,10 @@ func (s *Service) ApplyManagedCredentialBundle(ctx context.Context, bundle Conta
 }
 
 func (s *Service) applyManagedAgentBundle(bundle ContainerSyncAgentBundle, modules []string) error {
+	return s.applyManagedAgentBundleForAccount("", bundle, modules)
+}
+
+func (s *Service) applyManagedAgentBundleForAccount(accountScopeID string, bundle ContainerSyncAgentBundle, modules []string) error {
 	if s == nil || s.agents == nil {
 		return fmt.Errorf("deploy container service is not configured")
 	}
@@ -3738,7 +3764,12 @@ func (s *Service) applyManagedAgentBundle(bundle ContainerSyncAgentBundle, modul
 	if !syncProfiles && !syncCustomTools {
 		return nil
 	}
-	_, _, _, err := s.agents.ReplaceManagedState(bundle.State, syncProfiles, syncCustomTools)
+	var err error
+	if strings.TrimSpace(accountScopeID) != "" {
+		_, _, _, err = s.agents.ReplaceManagedStateForAccount(accountScopeID, bundle.State, syncProfiles, syncCustomTools)
+	} else {
+		_, _, _, err = s.agents.ReplaceManagedState(bundle.State, syncProfiles, syncCustomTools)
+	}
 	return err
 }
 
@@ -3753,14 +3784,26 @@ func (s *Service) applyManagedSkillBundle(bundle ContainerSyncSkillBundle, modul
 }
 
 func (s *Service) applyManagedPermissionBundle(bundle ContainerSyncPermissionBundle) error {
+	return s.applyManagedPermissionBundleForAccount("", bundle)
+}
+
+func (s *Service) applyManagedPermissionBundleForAccount(accountScopeID string, bundle ContainerSyncPermissionBundle) error {
 	if s == nil || s.permission == nil {
 		return fmt.Errorf("deploy container service is not configured")
+	}
+	if strings.TrimSpace(accountScopeID) != "" {
+		_, err := s.permission.ApplyManagedPolicyStateForAccount(accountScopeID, bundle.State)
+		return err
 	}
 	_, err := s.permission.ApplyManagedPolicyState(bundle.State)
 	return err
 }
 
 func (s *Service) exportManagedModelDefaultsBundle(modules []string) (ContainerSyncModelDefaultsBundle, error) {
+	return s.exportManagedModelDefaultsBundleForAccount("", modules)
+}
+
+func (s *Service) exportManagedModelDefaultsBundleForAccount(accountScopeID string, modules []string) (ContainerSyncModelDefaultsBundle, error) {
 	if s == nil || s.model == nil {
 		return ContainerSyncModelDefaultsBundle{}, fmt.Errorf("deploy container service is not configured")
 	}
@@ -3771,7 +3814,15 @@ func (s *Service) exportManagedModelDefaultsBundle(modules []string) (ContainerS
 	if !workspaceruntime.ReplicationSyncModuleEnabled(modules, workspaceruntime.ReplicationSyncModuleModelDefaults) {
 		return ContainerSyncModelDefaultsBundle{}, nil
 	}
-	pref, err := s.model.GetGlobalPreference()
+	var (
+		pref pebblestore.ModelPreference
+		err  error
+	)
+	if strings.TrimSpace(accountScopeID) != "" {
+		pref, err = s.model.GetPreferenceForAccount(accountScopeID)
+	} else {
+		pref, err = s.model.GetGlobalPreference()
+	}
 	if err != nil {
 		return ContainerSyncModelDefaultsBundle{}, err
 	}
@@ -3793,6 +3844,10 @@ func (s *Service) ApplyManagedModelDefaultsBundle(ctx context.Context, bundle Co
 }
 
 func (s *Service) applyManagedModelDefaultsBundle(bundle ContainerSyncModelDefaultsBundle, modules []string) error {
+	return s.applyManagedModelDefaultsBundleForAccount("", bundle, modules)
+}
+
+func (s *Service) applyManagedModelDefaultsBundleForAccount(accountScopeID string, bundle ContainerSyncModelDefaultsBundle, modules []string) error {
 	if s == nil || s.model == nil {
 		return fmt.Errorf("deploy container service is not configured")
 	}
@@ -3808,13 +3863,23 @@ func (s *Service) applyManagedModelDefaultsBundle(bundle ContainerSyncModelDefau
 	modelName := strings.TrimSpace(pref.Model)
 	thinking := strings.TrimSpace(pref.Thinking)
 	if provider == "" && modelName == "" {
-		_, _, err := s.model.ClearGlobalPreference()
+		var err error
+		if strings.TrimSpace(accountScopeID) != "" {
+			_, _, err = s.model.ClearPreferenceForAccount(accountScopeID)
+		} else {
+			_, _, err = s.model.ClearGlobalPreference()
+		}
 		return err
 	}
 	if provider == "" || modelName == "" || thinking == "" {
 		return fmt.Errorf("model default sync bundle is missing provider, model, or thinking")
 	}
-	_, _, err := s.model.SetGlobalPreference(provider, modelName, thinking, pref.ServiceTier, pref.ContextMode)
+	var err error
+	if strings.TrimSpace(accountScopeID) != "" {
+		_, _, err = s.model.SetPreferenceForAccount(accountScopeID, strings.TrimSpace(pref.UserID), provider, modelName, thinking, pref.ServiceTier, pref.ContextMode)
+	} else {
+		_, _, err = s.model.SetGlobalPreference(provider, modelName, thinking, pref.ServiceTier, pref.ContextMode)
+	}
 	return err
 }
 
@@ -4802,7 +4867,7 @@ func (s *Service) pushManagedSyncToChild(ctx context.Context, record *pebblestor
 		}
 	}
 	if workspaceruntime.ReplicationSyncModuleEnabled(record.SyncModules, workspaceruntime.ReplicationSyncModuleAgents) || workspaceruntime.ReplicationSyncModuleEnabled(record.SyncModules, workspaceruntime.ReplicationSyncModuleCustomTools) {
-		bundle, err := s.exportManagedAgentBundle(record.SyncModules)
+		bundle, err := s.exportManagedAgentBundleForAccount(record.AccountScopeID, record.SyncModules)
 		if err != nil {
 			return err
 		}
@@ -4811,7 +4876,7 @@ func (s *Service) pushManagedSyncToChild(ctx context.Context, record *pebblestor
 		}
 	}
 	if s.model != nil && workspaceruntime.ReplicationSyncModuleEnabled(record.SyncModules, workspaceruntime.ReplicationSyncModuleModelDefaults) {
-		bundle, err := s.exportManagedModelDefaultsBundle(record.SyncModules)
+		bundle, err := s.exportManagedModelDefaultsBundleForAccount(record.AccountScopeID, record.SyncModules)
 		if err != nil {
 			return err
 		}

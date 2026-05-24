@@ -353,6 +353,18 @@ func (s *Service) listStateForAccount(accountScopeID string, limit int) (State, 
 }
 
 func (s *Service) ReplaceManagedState(state State, syncProfiles, syncCustomTools bool) (State, int64, *pebblestore.EventEnvelope, error) {
+	return s.replaceManagedStateForAccount("", state, syncProfiles, syncCustomTools)
+}
+
+func (s *Service) ReplaceManagedStateForAccount(accountScopeID string, state State, syncProfiles, syncCustomTools bool) (State, int64, *pebblestore.EventEnvelope, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return State{}, 0, nil, errors.New("account scope ID is required")
+	}
+	return s.replaceManagedStateForAccount(accountScopeID, state, syncProfiles, syncCustomTools)
+}
+
+func (s *Service) replaceManagedStateForAccount(accountScopeID string, state State, syncProfiles, syncCustomTools bool) (State, int64, *pebblestore.EventEnvelope, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -360,7 +372,7 @@ func (s *Service) ReplaceManagedState(state State, syncProfiles, syncCustomTools
 		return State{}, 0, nil, errors.New("agent store is not configured")
 	}
 	if syncCustomTools {
-		currentTools, err := s.store.ListCustomTools(2000)
+		currentTools, err := s.listCustomToolsForManagedAccountLocked(accountScopeID, 2000)
 		if err != nil {
 			return State{}, 0, nil, err
 		}
@@ -387,18 +399,18 @@ func (s *Service) ReplaceManagedState(state State, syncProfiles, syncCustomTools
 			if _, ok := desiredTools[name]; ok {
 				continue
 			}
-			if err := s.store.DeleteCustomTool(name); err != nil {
+			if err := s.deleteCustomToolForManagedAccountLocked(accountScopeID, name); err != nil {
 				return State{}, 0, nil, err
 			}
 		}
 		for _, name := range toolNames {
-			if err := s.store.PutCustomTool(desiredTools[name]); err != nil {
+			if err := s.putCustomToolForManagedAccountLocked(accountScopeID, desiredTools[name]); err != nil {
 				return State{}, 0, nil, err
 			}
 		}
 	}
 	if syncProfiles {
-		currentProfiles, err := s.store.ListProfiles(2000)
+		currentProfiles, err := s.listProfilesForManagedAccountLocked(accountScopeID, 2000)
 		if err != nil {
 			return State{}, 0, nil, err
 		}
@@ -426,16 +438,16 @@ func (s *Service) ReplaceManagedState(state State, syncProfiles, syncCustomTools
 			if _, ok := desiredProfiles[name]; ok {
 				continue
 			}
-			if err := s.store.DeleteProfile(name); err != nil {
+			if err := s.deleteProfileForManagedAccountLocked(accountScopeID, name); err != nil {
 				return State{}, 0, nil, err
 			}
 		}
 		for _, name := range profileNames {
-			if err := s.store.PutProfile(desiredProfiles[name]); err != nil {
+			if err := s.putProfileForManagedAccountLocked(accountScopeID, desiredProfiles[name]); err != nil {
 				return State{}, 0, nil, err
 			}
 		}
-		currentAssignments, err := s.store.GetActiveSubagents(200)
+		currentAssignments, err := s.getActiveSubagentsForManagedAccountLocked(accountScopeID, 200)
 		if err != nil {
 			return State{}, 0, nil, err
 		}
@@ -443,7 +455,7 @@ func (s *Service) ReplaceManagedState(state State, syncProfiles, syncCustomTools
 			if _, ok := state.ActiveSubagent[purpose]; ok {
 				continue
 			}
-			if err := s.store.DeleteActiveSubagent(purpose); err != nil {
+			if err := s.deleteActiveSubagentForManagedAccountLocked(accountScopeID, purpose); err != nil {
 				return State{}, 0, nil, err
 			}
 		}
@@ -461,26 +473,30 @@ func (s *Service) ReplaceManagedState(state State, syncProfiles, syncCustomTools
 			if name == "" {
 				continue
 			}
-			if err := s.store.SetActiveSubagent(purpose, name); err != nil {
+			if err := s.setActiveSubagentForManagedAccountLocked(accountScopeID, purpose, name); err != nil {
 				return State{}, 0, nil, err
 			}
 		}
 		activePrimary := normalizeName(state.ActivePrimary)
 		if activePrimary != "" {
-			if err := s.store.SetActivePrimary(activePrimary); err != nil {
+			if err := s.setActivePrimaryForManagedAccountLocked(accountScopeID, activePrimary); err != nil {
 				return State{}, 0, nil, err
 			}
 		}
 	}
-	version, err := s.bumpVersionLocked()
+	version, err := s.bumpVersionForManagedAccountLocked(accountScopeID)
 	if err != nil {
 		return State{}, 0, nil, err
 	}
-	current, err := s.currentStateLocked(2000)
+	current, err := s.currentStateForManagedAccountLocked(accountScopeID, 2000)
 	if err != nil {
 		return State{}, 0, nil, err
 	}
-	env, err := s.appendEventLocked("agent.state.synced", "", map[string]any{
+	entityID := ""
+	if strings.TrimSpace(accountScopeID) != "" {
+		entityID = "account:" + strings.TrimSpace(accountScopeID)
+	}
+	env, err := s.appendEventLocked("agent.state.synced", entityID, map[string]any{
 		"sync_profiles":     syncProfiles,
 		"sync_custom_tools": syncCustomTools,
 		"state":             current,
@@ -490,6 +506,90 @@ func (s *Service) ReplaceManagedState(state State, syncProfiles, syncCustomTools
 		return State{}, 0, nil, err
 	}
 	return current, version, &env, nil
+}
+
+func (s *Service) listCustomToolsForManagedAccountLocked(accountScopeID string, limit int) ([]pebblestore.AgentCustomToolDefinition, error) {
+	if strings.TrimSpace(accountScopeID) != "" {
+		return s.store.ListCustomToolsForAccount(accountScopeID, limit)
+	}
+	return s.store.ListCustomTools(limit)
+}
+
+func (s *Service) putCustomToolForManagedAccountLocked(accountScopeID string, definition pebblestore.AgentCustomToolDefinition) error {
+	if strings.TrimSpace(accountScopeID) != "" {
+		return s.store.PutCustomToolForAccount(accountScopeID, definition)
+	}
+	return s.store.PutCustomTool(definition)
+}
+
+func (s *Service) deleteCustomToolForManagedAccountLocked(accountScopeID, name string) error {
+	if strings.TrimSpace(accountScopeID) != "" {
+		return s.store.DeleteCustomToolForAccount(accountScopeID, name)
+	}
+	return s.store.DeleteCustomTool(name)
+}
+
+func (s *Service) listProfilesForManagedAccountLocked(accountScopeID string, limit int) ([]pebblestore.AgentProfile, error) {
+	if strings.TrimSpace(accountScopeID) != "" {
+		return s.store.ListProfilesForAccount(accountScopeID, limit)
+	}
+	return s.store.ListProfiles(limit)
+}
+
+func (s *Service) putProfileForManagedAccountLocked(accountScopeID string, profile pebblestore.AgentProfile) error {
+	if strings.TrimSpace(accountScopeID) != "" {
+		return s.store.PutProfileForAccount(accountScopeID, profile)
+	}
+	return s.store.PutProfile(profile)
+}
+
+func (s *Service) deleteProfileForManagedAccountLocked(accountScopeID, name string) error {
+	if strings.TrimSpace(accountScopeID) != "" {
+		return s.store.DeleteProfileForAccount(accountScopeID, name)
+	}
+	return s.store.DeleteProfile(name)
+}
+
+func (s *Service) getActiveSubagentsForManagedAccountLocked(accountScopeID string, limit int) (map[string]string, error) {
+	if strings.TrimSpace(accountScopeID) != "" {
+		return s.store.GetActiveSubagentsForAccount(accountScopeID, limit)
+	}
+	return s.store.GetActiveSubagents(limit)
+}
+
+func (s *Service) setActiveSubagentForManagedAccountLocked(accountScopeID, purpose, name string) error {
+	if strings.TrimSpace(accountScopeID) != "" {
+		return s.store.SetActiveSubagentForAccount(accountScopeID, purpose, name)
+	}
+	return s.store.SetActiveSubagent(purpose, name)
+}
+
+func (s *Service) deleteActiveSubagentForManagedAccountLocked(accountScopeID, purpose string) error {
+	if strings.TrimSpace(accountScopeID) != "" {
+		return s.store.DeleteActiveSubagentForAccount(accountScopeID, purpose)
+	}
+	return s.store.DeleteActiveSubagent(purpose)
+}
+
+func (s *Service) setActivePrimaryForManagedAccountLocked(accountScopeID, name string) error {
+	if strings.TrimSpace(accountScopeID) != "" {
+		return s.store.SetActivePrimaryForAccount(accountScopeID, name)
+	}
+	return s.store.SetActivePrimary(name)
+}
+
+func (s *Service) bumpVersionForManagedAccountLocked(accountScopeID string) (int64, error) {
+	if strings.TrimSpace(accountScopeID) != "" {
+		return s.bumpVersionForAccountLocked(accountScopeID)
+	}
+	return s.bumpVersionLocked()
+}
+
+func (s *Service) currentStateForManagedAccountLocked(accountScopeID string, limit int) (State, error) {
+	if strings.TrimSpace(accountScopeID) != "" {
+		return s.currentStateForAccountLocked(accountScopeID, limit)
+	}
+	return s.currentStateLocked(limit)
 }
 
 func (s *Service) GetCustomTool(name string) (pebblestore.AgentCustomToolDefinition, bool, error) {

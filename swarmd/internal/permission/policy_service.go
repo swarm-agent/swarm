@@ -31,7 +31,11 @@ func (s *Service) CurrentPolicyForAccount(accountScopeID string) (Policy, error)
 }
 
 func (s *Service) ExportPolicyState() (ManagedPolicyState, error) {
-	policy, err := s.CurrentPolicy()
+	return s.ExportPolicyStateForAccount("")
+}
+
+func (s *Service) ExportPolicyStateForAccount(accountScopeID string) (ManagedPolicyState, error) {
+	policy, err := s.CurrentPolicyForAccount(accountScopeID)
 	if err != nil {
 		return ManagedPolicyState{}, err
 	}
@@ -43,15 +47,22 @@ func (s *Service) ExportPolicyState() (ManagedPolicyState, error) {
 }
 
 func (s *Service) ApplyManagedPolicyState(state ManagedPolicyState) (ManagedPolicyState, error) {
+	return s.ApplyManagedPolicyStateForAccount("", state)
+}
+
+func (s *Service) ApplyManagedPolicyStateForAccount(accountScopeID string, state ManagedPolicyState) (ManagedPolicyState, error) {
 	if s == nil {
 		return ManagedPolicyState{}, errors.New("permission service is not configured")
+	}
+	if strings.TrimSpace(accountScopeID) == "" {
+		return ManagedPolicyState{}, errors.New("account scope ID is required")
 	}
 	policy := NormalizePolicy(state.Policy)
 	if policy.UpdatedAt <= 0 {
 		policy.UpdatedAt = time.Now().UnixMilli()
 	}
 	s.mu.Lock()
-	if err := s.persistPolicyLocked("", policy); err != nil {
+	if err := s.persistPolicyLocked(accountScopeID, policy); err != nil {
 		s.mu.Unlock()
 		return ManagedPolicyState{}, err
 	}

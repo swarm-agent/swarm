@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -166,7 +167,7 @@ func TestFlowAssignmentDeliveryKeepsUnreachableTargetsPending(t *testing.T) {
 	command := testAPIFlowCommand("cmd-offline", testAPIFlowAssignment("flow-offline", 1), flow.CommandInstall)
 	command.Assignment.Target = flow.TargetSelection{SwarmID: "child-offline", Kind: "local", Name: "offline child"}
 
-	result, err := server.EnqueueAndDeliverFlowAssignmentCommand(t.Context(), command)
+	result, err := server.EnqueueAndDeliverFlowAssignmentCommand(testPrincipalContext(t.Context()), command)
 	if err != nil {
 		t.Fatalf("enqueue deliver: %v", err)
 	}
@@ -225,7 +226,7 @@ func TestFlowAssignmentDeliveryUsesResolvedRemoteTargetSwarm(t *testing.T) {
 	assignment.Target = flow.TargetSelection{SwarmID: "child-remote", Kind: "remote", Name: "pc child", DeploymentID: "pc-child-remote"}
 	command := testAPIFlowCommand("cmd-remote-target", assignment, flow.CommandInstall)
 
-	result, err := server.EnqueueAndDeliverFlowAssignmentCommand(t.Context(), command)
+	result, err := server.EnqueueAndDeliverFlowAssignmentCommand(testPrincipalContext(t.Context()), command)
 	if err != nil {
 		t.Fatalf("enqueue deliver: %v", err)
 	}
@@ -279,6 +280,8 @@ func TestFlowAssignmentDeliveryRoutesMirroredChildThroughManagedHostEvenWhenChil
 	})
 	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
 		SwarmID:          "managed-child",
+		UserID:           testUserID,
+		AccountScopeID:   testAccountScopeID,
 		Name:             "managed child",
 		Relationship:     "child",
 		BackendURL:       "http://127.0.0.1:7782",
@@ -288,23 +291,25 @@ func TestFlowAssignmentDeliveryRoutesMirroredChildThroughManagedHostEvenWhenChil
 		t.Fatalf("upsert child runtime: %v", err)
 	}
 	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
-		SwarmID:      "managed-swarm-1",
-		Name:         "managed host",
-		Relationship: "managed",
-		BackendURL:   managedHost.URL,
-		Status:       "online",
+		SwarmID:        "managed-swarm-1",
+		UserID:         testUserID,
+		AccountScopeID: testAccountScopeID,
+		Name:           "managed host",
+		Relationship:   "managed",
+		BackendURL:     managedHost.URL,
+		Status:         "online",
 	}); err != nil {
 		t.Fatalf("upsert managed runtime: %v", err)
 	}
 	targetBytes, err := json.Marshal(swarmTarget{
 		SwarmID:      "managed-child",
 		Name:         "managed child",
-		Relationship: "child",
-		Kind:         "local",
-		DeploymentID: "managed-deployment",
-		Online:       true,
-		Selectable:   true,
-		BackendURL:   "http://127.0.0.1:7782",
+		Relationship:   "child",
+		Kind:           "local",
+		DeploymentID:   "managed-deployment",
+		Online:         true,
+		Selectable:     true,
+		BackendURL:     "http://127.0.0.1:7782",
 	})
 	if err != nil {
 		t.Fatalf("marshal mirrored target: %v", err)
@@ -319,7 +324,7 @@ func TestFlowAssignmentDeliveryRoutesMirroredChildThroughManagedHostEvenWhenChil
 	assignment := testAPIFlowAssignment("flow-managed-child", 1)
 	assignment.Target = flow.TargetSelection{SwarmID: "managed-child", Kind: "mirrored", Name: "managed child", DeploymentID: "managed-deployment"}
 	command := testAPIFlowCommand("cmd-managed-child", assignment, flow.CommandInstall)
-	result, err := server.EnqueueAndDeliverFlowAssignmentCommand(t.Context(), command)
+	result, err := server.EnqueueAndDeliverFlowAssignmentCommand(testPrincipalContext(t.Context()), command)
 	if err != nil {
 		t.Fatalf("enqueue deliver: %v", err)
 	}
@@ -376,7 +381,7 @@ func TestFlowAssignmentDeliveryTranslatesReplicatedWorkspacePath(t *testing.T) {
 	assignment.Workspace = flow.WorkspaceContext{WorkspacePath: filepath.Join(hostWorkspace, "subdir"), CWD: filepath.Join(hostWorkspace, "subdir", "nested")}
 	command := testAPIFlowCommand("cmd-replicated-workspace", assignment, flow.CommandInstall)
 
-	result, err := server.EnqueueAndDeliverFlowAssignmentCommand(t.Context(), command)
+	result, err := server.EnqueueAndDeliverFlowAssignmentCommand(testPrincipalContext(t.Context()), command)
 	if err != nil {
 		t.Fatalf("enqueue deliver: %v", err)
 	}
@@ -432,7 +437,7 @@ func TestFlowAssignmentDeliveryRequiresValidContainerAck(t *testing.T) {
 	command := testAPIFlowCommand("cmd-invalid-ack", testAPIFlowAssignment("flow-invalid-ack", 1), flow.CommandInstall)
 	command.Assignment.Target = flow.TargetSelection{SwarmID: "child-invalid-ack", Kind: "local", Name: "invalid ack child"}
 
-	result, err := server.EnqueueAndDeliverFlowAssignmentCommand(t.Context(), command)
+	result, err := server.EnqueueAndDeliverFlowAssignmentCommand(testPrincipalContext(t.Context()), command)
 	if err != nil {
 		t.Fatalf("enqueue deliver: %v", err)
 	}
@@ -491,7 +496,7 @@ func TestFlowAssignmentDeliveryStoresRejection(t *testing.T) {
 	command := testAPIFlowCommand("cmd-reject", testAPIFlowAssignment("flow-reject", 1), flow.CommandInstall)
 	command.Assignment.Target = flow.TargetSelection{SwarmID: "child-reject", Kind: "local", Name: "reject child"}
 
-	result, err := server.EnqueueAndDeliverFlowAssignmentCommand(t.Context(), command)
+	result, err := server.EnqueueAndDeliverFlowAssignmentCommand(testPrincipalContext(t.Context()), command)
 	if err != nil {
 		t.Fatalf("enqueue deliver: %v", err)
 	}
@@ -522,14 +527,14 @@ func newFlowPeerTestServer(t *testing.T) (*Server, *pebblestore.FlowStore) {
 		t.Fatalf("new event log: %v", err)
 	}
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), eventLog)
-	if err := agentSvc.EnsureDefaults(); err != nil {
-		t.Fatalf("ensure agent defaults: %v", err)
+	if err := agentSvc.EnsureDefaultsForAccount(testAccountScopeID); err != nil {
+		t.Fatalf("ensure account agent defaults: %v", err)
 	}
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
 	sessionSvc.SetLocalSwarmIDResolver(func() string { return "host-swarm-id" })
 	modelStore := pebblestore.NewModelStore(store)
-	if _, err := modelStore.SetGlobalPreference("test-provider", "test-model", "medium"); err != nil {
-		t.Fatalf("set model preference: %v", err)
+	if _, err := modelStore.SetPreferenceForAccount(testAccountScopeID, testUserID, "test-provider", "test-model", "medium"); err != nil {
+		t.Fatalf("set account model preference: %v", err)
 	}
 	modelSvc := modelruntime.NewService(modelStore, eventLog, nil)
 	workspaceSvc := workspaceruntime.NewService(pebblestore.NewWorkspaceStore(store))
@@ -603,12 +608,15 @@ func (f *fakeFlowDeployService) List(context.Context) ([]deployruntime.Container
 		}
 		out = append(out, deployruntime.ContainerDeployment{
 			ID:               target.DeploymentID,
+			UserID:           testUserID,
+			AccountScopeID:   testAccountScopeID,
 			Name:             target.Name,
 			AttachStatus:     attachStatus,
 			ChildSwarmID:     target.SwarmID,
 			ChildDisplayName: target.Name,
 			ChildBackendURL:  target.BackendURL,
 			ChildDesktopURL:  target.DesktopURL,
+			HostSwarmID:      firstNonEmpty(strings.TrimSpace(target.HostSwarmID), "host-swarm-id"),
 			LastAttachError:  target.LastError,
 		})
 	}

@@ -436,7 +436,11 @@ func (s *Server) flowRunSessionPreferenceForAccount(accountScopeID string, agent
 }
 
 func (s *Server) flowRunAgentProfile(agent flow.AgentSelection) (pebblestore.AgentProfile, error) {
-	resolved, err := s.resolveFlowRunAgent(agent)
+	return s.flowRunAgentProfileForAccount("", agent)
+}
+
+func (s *Server) flowRunAgentProfileForAccount(accountScopeID string, agent flow.AgentSelection) (pebblestore.AgentProfile, error) {
+	resolved, err := s.resolveFlowRunAgentForAccount(accountScopeID, agent)
 	if err != nil {
 		return pebblestore.AgentProfile{}, err
 	}

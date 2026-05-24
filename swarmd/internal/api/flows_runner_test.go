@@ -78,7 +78,7 @@ func TestTargetLocalFlowRunnerLaunchesSavedAgentProfileWithoutToolScope(t *testi
 			}
 
 			scheduledAt := time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC)
-			start, err := server.runAcceptedFlow(t.Context(), accepted, flow.RunRequest{FlowID: assignment.FlowID, Revision: assignment.Revision, ScheduledAt: scheduledAt})
+			start, err := server.runAcceptedFlow(testPrincipalContext(t.Context()), accepted, flow.RunRequest{FlowID: assignment.FlowID, Revision: assignment.Revision, ScheduledAt: scheduledAt})
 			if err != nil {
 				t.Fatalf("run accepted flow: %v", err)
 			}
@@ -123,7 +123,7 @@ func TestTargetLocalFlowRunnerLaunchesSavedAgentProfileWithoutToolScope(t *testi
 			if session.Metadata["swarm_target_name"] != assignment.Target.Name || session.Metadata["target_display_name"] != assignment.Target.Name || session.Metadata["swarm_target_kind"] != assignment.Target.Kind || session.Metadata["swarm_target_swarm_id"] != assignment.Target.SwarmID {
 				t.Fatalf("session sidebar target metadata = %+v", session.Metadata)
 			}
-			resolvedAgent, err := server.resolveFlowRunAgent(assignment.Agent)
+			resolvedAgent, err := server.resolveFlowRunAgentForAccount(testAccountScopeID, assignment.Agent)
 			if err != nil {
 				t.Fatalf("resolve flow run agent: %v", err)
 			}
@@ -133,7 +133,7 @@ func TestTargetLocalFlowRunnerLaunchesSavedAgentProfileWithoutToolScope(t *testi
 			if session.Metadata["title_pending"] != false || session.Metadata["title_locked"] != true || session.Metadata["title_source"] != flowSessionTitleSourceTask || session.Metadata["source"] != "flow" {
 				t.Fatalf("session title metadata = %+v", session.Metadata)
 			}
-			profile, err := server.flowRunAgentProfile(assignment.Agent)
+			profile, err := server.flowRunAgentProfileForAccount(testAccountScopeID, assignment.Agent)
 			if err != nil {
 				t.Fatalf("resolve flow agent profile: %v", err)
 			}
@@ -196,7 +196,7 @@ func TestTargetLocalFlowRunnerHostedSessionStoresRuntimeWorkspace(t *testing.T) 
 		t.Fatalf("put accepted assignment: %v", err)
 	}
 
-	start, err := server.runAcceptedFlow(t.Context(), accepted, flow.RunRequest{FlowID: assignment.FlowID, Revision: assignment.Revision, ScheduledAt: time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC)})
+	start, err := server.runAcceptedFlow(testPrincipalContext(t.Context()), accepted, flow.RunRequest{FlowID: assignment.FlowID, Revision: assignment.Revision, ScheduledAt: time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC)})
 	if err != nil {
 		t.Fatalf("run accepted flow: %v", err)
 	}
@@ -451,7 +451,7 @@ func ensureFlowPrimaryAgentRunnable(t *testing.T, server *Server) {
 		t.Fatal("agent service not configured")
 	}
 	enabled := true
-	_, _, _, err := server.agents.Upsert(agentruntime.UpsertInput{
+	_, _, _, err := server.agents.UpsertForAccount(testAccountScopeID, agentruntime.UpsertInput{
 		Name:        "swarm",
 		Mode:        agentruntime.ModePrimary,
 		Provider:    "test-provider",
@@ -473,7 +473,7 @@ func ensureFlowTestAgent(t *testing.T, server *Server) {
 		t.Fatal("agent service not configured")
 	}
 	enabled := true
-	_, _, _, err := server.agents.Upsert(agentruntime.UpsertInput{
+	_, _, _, err := server.agents.UpsertForAccount(testAccountScopeID, agentruntime.UpsertInput{
 		Name:                "flow-test",
 		Mode:                agentruntime.ModeSubagent,
 		Provider:            "test-provider",
@@ -490,7 +490,7 @@ func ensureFlowTestAgent(t *testing.T, server *Server) {
 	if err != nil {
 		t.Fatalf("upsert flow-test agent: %v", err)
 	}
-	profile, err := server.agents.ResolveSubagent("flow-test")
+	profile, err := server.agents.ResolveSubagentForAccount(testAccountScopeID, "flow-test")
 	if err != nil {
 		t.Fatalf("resolve flow-test agent: %v", err)
 	}
@@ -505,7 +505,7 @@ func ensureFlowMemoryAgentRunnable(t *testing.T, server *Server) {
 		t.Fatal("agent service not configured")
 	}
 	enabled := true
-	_, _, _, err := server.agents.Upsert(agentruntime.UpsertInput{
+	_, _, _, err := server.agents.UpsertForAccount(testAccountScopeID, agentruntime.UpsertInput{
 		Name:        "memory",
 		Provider:    "test-provider",
 		Model:       "test-model",
