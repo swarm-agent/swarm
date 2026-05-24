@@ -1077,6 +1077,11 @@ func (s *Server) handleSwarmRemotePairingApprove(w http.ResponseWriter, r *http.
 		ProxyPathPrefix:      "/v1/swarm/containers/local",
 		RendezvousTransports: append([]onboardingTransportPayload(nil), pending.ManagedRendezvousTransports...),
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok || !principal.Valid() {
+		writeError(w, http.StatusUnauthorized, errors.New("product principal is required for managed pairing approval"))
+		return
+	}
 	managerBackendURL := firstNonEmpty(pending.ManagerEndpoint, normalizeRemoteSwarmEndpoint(firstTransportForKind(pending.ManagerRendezvousTransports, startupconfig.NetworkModeTailscale)))
 	initialSync := deployruntime.ManagedHostInitialSyncBundle{}
 	if syncSvc, ok := s.deployContainers.(interface {
@@ -1085,6 +1090,10 @@ func (s *Server) handleSwarmRemotePairingApprove(w http.ResponseWriter, r *http.
 		bundle, err := syncSvc.ManagedHostInitialSyncBundle(r.Context(), managerBackendURL, pending.ManagedSwarmID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, fmt.Errorf("prepare managed host initial sync: %w", err))
+			return
+		}
+		if strings.TrimSpace(bundle.UserID) != strings.TrimSpace(principal.UserID) || strings.TrimSpace(bundle.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+			writeError(w, http.StatusInternalServerError, errors.New("managed host initial sync identity envelope does not match approving principal"))
 			return
 		}
 		initialSync = bundle

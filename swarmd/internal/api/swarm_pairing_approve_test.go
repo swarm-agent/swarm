@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,8 @@ import (
 	"time"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
+	deployruntime "swarm/packages/swarmd/internal/deploy"
+	"swarm/packages/swarmd/internal/localcontainers"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 )
 
@@ -67,6 +70,7 @@ func TestSwarmRemotePairingApproveManagerApprovesAndReturnsFinalizeMaterial(t *t
 		t.Fatalf("generate managed keypair: %v", err)
 	}
 	manager.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "manager-swarm-1", Name: "Manager A", PublicKey: managerPublicKey, Fingerprint: managerFingerprint}}}
+	manager.SetDeployContainerService(fakeManagedHostInitialSyncDeployService{bundle: deployruntime.ManagedHostInitialSyncBundle{UserID: "user_local_auth_test", AccountScopeID: "acct_local_auth_test", CredentialBundle: deployruntime.ContainerSyncCredentialBundle{UserID: "user_local_auth_test", AccountScopeID: "acct_local_auth_test"}}})
 	setLocalAuthTestStartupConfig(t, manager, func(cfg *startupconfig.FileConfig) {
 		cfg.SwarmMode = true
 		cfg.NetworkMode = startupconfig.NetworkModeTailscale
@@ -90,6 +94,9 @@ func TestSwarmRemotePairingApproveManagerApprovesAndReturnsFinalizeMaterial(t *t
 		}
 		if req.ManagerSwarmID != "manager-swarm-1" || req.PeerAuthToken != "managed-to-manager-token" || req.IncomingPeerAuthToken != offer.Token {
 			t.Fatalf("finalize payload = %+v", req)
+		}
+		if req.InitialSync.UserID != "user_local_auth_test" || req.InitialSync.AccountScopeID != "acct_local_auth_test" {
+			t.Fatalf("initial sync identity = %q/%q", req.InitialSync.UserID, req.InitialSync.AccountScopeID)
 		}
 		finalizeSeen = true
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -146,6 +153,37 @@ func TestSwarmRemotePairingApproveManagerApprovesAndReturnsFinalizeMaterial(t *t
 	}
 	if _, ok := manager.remotePairingPending[requestID]; ok {
 		t.Fatalf("approved pending request was not cleared")
+	}
+}
+
+func TestSwarmRemotePairingApproveRejectsInitialSyncIdentityMismatch(t *testing.T) {
+	manager := newLocalAuthTestServer(t)
+	manager.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "manager-swarm-1", Name: "Manager A"}}}
+	manager.SetDeployContainerService(fakeManagedHostInitialSyncDeployService{bundle: deployruntime.ManagedHostInitialSyncBundle{UserID: "other-user", AccountScopeID: "acct_local_auth_test"}})
+	requestID := "pair-identity-mismatch"
+	manager.remotePairingPending[requestID] = swarmRemotePairingPendingRequest{
+		ID:                        requestID,
+		InviteToken:               "invite-token",
+		ManagerSwarmID:            "manager-swarm-1",
+		ManagedSwarmID:            "managed-swarm-1",
+		ManagedEndpoint:           "http://127.0.0.1:1",
+		CeremonyCode:              "ABC123",
+		ManagerToManagedPeerToken: "manager-to-managed-token",
+		ManagedToManagerPeerToken: "managed-to-manager-token",
+		CreatedAt:                 time.Now(),
+	}
+
+	rec := postRemotePairingJSONWithDesktopSession(t, manager, "/v1/swarm/remote-pairing/approve", map[string]any{
+		"request_id":    requestID,
+		"approve":       true,
+		"confirmed":     true,
+		"ceremony_code": "ABC123",
+	})
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "identity envelope does not match") {
+		t.Fatalf("approve identity mismatch status/body = %d/%s", rec.Code, rec.Body.String())
+	}
+	if _, ok := manager.remotePairingPending[requestID]; !ok {
+		t.Fatalf("identity mismatch cleared pending request")
 	}
 }
 
@@ -225,4 +263,73 @@ func TestSwarmRemotePairingFinalizeRequiresPeerAuth(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("finalize without peer auth status = %d, want %d body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
 	}
+}
+
+type fakeManagedHostInitialSyncDeployService struct {
+	bundle deployruntime.ManagedHostInitialSyncBundle
+	err    error
+}
+
+func (f fakeManagedHostInitialSyncDeployService) RuntimeStatus(context.Context) (deployruntime.ContainerRuntimeStatus, error) {
+	return deployruntime.ContainerRuntimeStatus{}, nil
+}
+
+func (f fakeManagedHostInitialSyncDeployService) List(context.Context) ([]deployruntime.ContainerDeployment, error) {
+	return nil, nil
+}
+
+func (f fakeManagedHostInitialSyncDeployService) Create(context.Context, deployruntime.ContainerCreateInput) (deployruntime.ContainerDeployment, error) {
+	return deployruntime.ContainerDeployment{}, nil
+}
+
+func (f fakeManagedHostInitialSyncDeployService) Act(context.Context, deployruntime.ContainerActionInput) (deployruntime.ContainerDeployment, error) {
+	return deployruntime.ContainerDeployment{}, nil
+}
+
+func (f fakeManagedHostInitialSyncDeployService) Delete(context.Context, []string) (localcontainers.DeleteResult, error) {
+	return localcontainers.DeleteResult{}, nil
+}
+
+func (f fakeManagedHostInitialSyncDeployService) ChildAttachState(context.Context, deployruntime.ContainerAttachStatusInput) (swarmruntime.LocalState, error) {
+	return swarmruntime.LocalState{}, nil
+}
+
+func (f fakeManagedHostInitialSyncDeployService) AttachRequest(context.Context, deployruntime.ContainerAttachRequestInput) (deployruntime.ContainerAttachState, error) {
+	return deployruntime.ContainerAttachState{}, nil
+}
+
+func (f fakeManagedHostInitialSyncDeployService) AttachStatus(context.Context, deployruntime.ContainerAttachStatusInput) (deployruntime.ContainerAttachState, error) {
+	return deployruntime.ContainerAttachState{}, nil
+}
+
+func (f fakeManagedHostInitialSyncDeployService) AttachApprove(context.Context, deployruntime.ContainerAttachApproveInput) (deployruntime.ContainerAttachState, error) {
+	return deployruntime.ContainerAttachState{}, nil
+}
+
+func (f fakeManagedHostInitialSyncDeployService) FinalizeAttachFromHost(context.Context, deployruntime.ContainerAttachFinalizeInput) error {
+	return nil
+}
+
+func (f fakeManagedHostInitialSyncDeployService) SyncCredentialBundle(context.Context, deployruntime.ContainerSyncCredentialRequestInput) (deployruntime.ContainerSyncCredentialBundle, error) {
+	return deployruntime.ContainerSyncCredentialBundle{}, nil
+}
+
+func (f fakeManagedHostInitialSyncDeployService) SyncAgentBundle(context.Context, deployruntime.ContainerSyncCredentialRequestInput) (deployruntime.ContainerSyncAgentBundle, error) {
+	return deployruntime.ContainerSyncAgentBundle{}, nil
+}
+
+func (f fakeManagedHostInitialSyncDeployService) WorkspaceBootstrap(context.Context, deployruntime.ContainerWorkspaceBootstrapRequestInput) ([]deployruntime.ContainerWorkspaceBootstrap, error) {
+	return nil, nil
+}
+
+func (f fakeManagedHostInitialSyncDeployService) AutoAttachChild(context.Context) error {
+	return nil
+}
+
+func (f fakeManagedHostInitialSyncDeployService) UnlockManagedLocalChildVaults(context.Context) error {
+	return nil
+}
+
+func (f fakeManagedHostInitialSyncDeployService) ManagedHostInitialSyncBundle(context.Context, string, string) (deployruntime.ManagedHostInitialSyncBundle, error) {
+	return f.bundle, f.err
 }

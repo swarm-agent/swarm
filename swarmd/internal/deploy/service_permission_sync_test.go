@@ -11,6 +11,7 @@ import (
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	authruntime "swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/identity"
+	modelruntime "swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/permission"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
@@ -513,5 +514,106 @@ func TestPushManagedSyncToManagedHostsRequiresAck(t *testing.T) {
 
 	if err := deploySvc.PushManagedSyncToManagedHosts(testPrincipalContext(), "test"); err == nil {
 		t.Fatalf("PushManagedSyncToManagedHosts() error = nil, want acknowledgement failure")
+	}
+}
+
+func TestSyncManagedHostCredentialBundleIncludesUserAndAccount(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	swarmStore := pebblestore.NewSwarmStore(store)
+	if _, err := swarmStore.PutLocalNode(pebblestore.SwarmLocalNodeRecord{SwarmID: "manager-swarm", Name: "Manager", Role: "master"}); err != nil {
+		t.Fatalf("put local node: %v", err)
+	}
+	authSvc := authruntime.NewService(pebblestore.NewAuthStore(store), events)
+	if _, _, err := authSvc.UpsertCredential(authruntime.CredentialUpsertInput{Provider: "fireworks", AccountScopeID: testPrincipal().AccountScopeID, Type: pebblestore.AuthTypeAPI, APIKey: "sk-test-managed-sync", Active: true}); err != nil {
+		t.Fatalf("upsert host credential: %v", err)
+	}
+	modelSvc := modelruntime.NewService(pebblestore.NewModelStore(store), events, nil)
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, authSvc, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"), modelSvc)
+
+	bundle, err := deploySvc.ManagedHostInitialSyncBundle(testPrincipalContext(), "https://manager.example", "managed-swarm")
+	if err != nil {
+		t.Fatalf("ManagedHostInitialSyncBundle() error = %v", err)
+	}
+	if bundle.UserID != testPrincipal().UserID || bundle.AccountScopeID != testPrincipal().AccountScopeID {
+		t.Fatalf("initial sync identity = %q/%q", bundle.UserID, bundle.AccountScopeID)
+	}
+	if bundle.CredentialBundle.UserID != testPrincipal().UserID || bundle.CredentialBundle.AccountScopeID != testPrincipal().AccountScopeID {
+		t.Fatalf("credential bundle identity = %q/%q", bundle.CredentialBundle.UserID, bundle.CredentialBundle.AccountScopeID)
+	}
+}
+
+func TestApplyManagedHostInitialSyncBundleRequiresIdentityEnvelope(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	swarmStore := pebblestore.NewSwarmStore(store)
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, nil, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"))
+
+	_, err = deploySvc.ApplyManagedHostInitialSyncBundle(context.Background(), "manager-swarm", ManagedHostInitialSyncBundle{AccountScopeID: testPrincipal().AccountScopeID})
+	if err == nil {
+		t.Fatalf("ApplyManagedHostInitialSyncBundle() succeeded without user id")
+	}
+	if _, ok, getErr := swarmStore.GetLocalPairing(); getErr != nil || ok {
+		t.Fatalf("pairing changed after rejected bundle ok=%v err=%v", ok, getErr)
+	}
+}
+
+func TestApplyManagedHostInitialSyncBundleRejectsIdentityMismatchAndPreservesPairing(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	swarmStore := pebblestore.NewSwarmStore(store)
+	authSvc := authruntime.NewService(pebblestore.NewAuthStore(store), events)
+	if _, _, err := authSvc.UpsertCredential(authruntime.CredentialUpsertInput{Provider: "fireworks", AccountScopeID: testPrincipal().AccountScopeID, Type: pebblestore.AuthTypeAPI, APIKey: "sk-test-managed-sync", Active: true}); err != nil {
+		t.Fatalf("upsert host credential: %v", err)
+	}
+	payload, _, err := authSvc.ExportCredentialsForAccount(testPrincipal().AccountScopeID, "bundle-password", "")
+	if err != nil {
+		t.Fatalf("export credentials: %v", err)
+	}
+	original := pebblestore.SwarmLocalPairingRecord{PairingState: "paired", ParentSwarmID: "manager-swarm", UserID: "local-user", AccountScopeID: "local-account"}
+	if _, err := swarmStore.PutLocalPairing(original); err != nil {
+		t.Fatalf("put pairing: %v", err)
+	}
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, authSvc, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"))
+
+	_, err = deploySvc.ApplyManagedHostInitialSyncBundle(context.Background(), "manager-swarm", ManagedHostInitialSyncBundle{
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: testPrincipal().AccountScopeID,
+		CredentialBundle: ContainerSyncCredentialBundle{
+			OwnerSwarmID:   "manager-swarm",
+			UserID:         testPrincipal().UserID,
+			AccountScopeID: testPrincipal().AccountScopeID,
+			BundlePassword: "bundle-password",
+			Bundle:         payload,
+		},
+	})
+	if err == nil {
+		t.Fatalf("ApplyManagedHostInitialSyncBundle() succeeded with mismatched persisted pairing identity")
+	}
+	pairing, ok, err := swarmStore.GetLocalPairing()
+	if err != nil || !ok {
+		t.Fatalf("get pairing ok=%v err=%v", ok, err)
+	}
+	if pairing.UserID != original.UserID || pairing.AccountScopeID != original.AccountScopeID || pairing.ManagedAuthSnapshotHash != "" {
+		t.Fatalf("pairing mutated after rejected bundle: %#v", pairing)
 	}
 }

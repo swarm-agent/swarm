@@ -277,6 +277,8 @@ type ManagedHostInitialSyncBundle struct {
 	SyncMode            string                           `json:"sync_mode,omitempty"`
 	SyncModules         []string                         `json:"sync_modules,omitempty"`
 	OwnerSwarmID        string                           `json:"owner_swarm_id,omitempty"`
+	UserID              string                           `json:"user_id,omitempty"`
+	AccountScopeID      string                           `json:"account_scope_id,omitempty"`
 	HostAPIBaseURL      string                           `json:"host_api_base_url,omitempty"`
 	SyncCredentialURL   string                           `json:"sync_credential_url,omitempty"`
 	SyncAgentURL        string                           `json:"sync_agent_url,omitempty"`
@@ -1505,10 +1507,12 @@ func (s *Service) SyncManagedHostCredentialBundle(ctx context.Context, input Con
 	if err != nil {
 		return ContainerSyncCredentialBundle{}, err
 	}
-	accountScopeID, err := s.accountScopeIDForManagedCredentialSync(ctx)
+	principal, err := s.principalForManagedCredentialSync(ctx)
 	if err != nil {
 		return ContainerSyncCredentialBundle{}, err
 	}
+	accountScopeID := strings.TrimSpace(principal.AccountScopeID)
+	userID := strings.TrimSpace(principal.UserID)
 	payload, exported, err := s.auth.ExportCredentialsForAccount(accountScopeID, bundlePassword, strings.TrimSpace(input.VaultPassword))
 	if err != nil {
 		return ContainerSyncCredentialBundle{}, err
@@ -1517,7 +1521,7 @@ func (s *Service) SyncManagedHostCredentialBundle(ctx context.Context, input Con
 	if err != nil {
 		return ContainerSyncCredentialBundle{}, err
 	}
-	return ContainerSyncCredentialBundle{OwnerSwarmID: ownerSwarmID, AccountScopeID: accountScopeID, BundlePassword: bundlePassword, Bundle: payload, Exported: exported, ExportedAt: time.Now().UnixMilli(), SnapshotHash: metadata.SnapshotHash}, nil
+	return ContainerSyncCredentialBundle{OwnerSwarmID: ownerSwarmID, UserID: userID, AccountScopeID: accountScopeID, BundlePassword: bundlePassword, Bundle: payload, Exported: exported, ExportedAt: time.Now().UnixMilli(), SnapshotHash: metadata.SnapshotHash}, nil
 }
 
 func (s *Service) SyncManagedHostAgentBundle(ctx context.Context, input ContainerSyncCredentialRequestInput) (ContainerSyncAgentBundle, error) {
@@ -1557,10 +1561,16 @@ func (s *Service) ManagedHostInitialSyncBundle(ctx context.Context, managerBacke
 	}
 	modules := workspaceruntime.DefaultReplicationSyncModules()
 	ownerSwarmID := s.localSwarmID()
+	principal, err := s.principalFromManagedPairingApprovalContext(ctx)
+	if err != nil {
+		return ManagedHostInitialSyncBundle{}, err
+	}
 	bundle := ManagedHostInitialSyncBundle{
 		SyncMode:       workspaceruntime.ReplicationSyncModeManaged,
 		SyncModules:    modules,
 		OwnerSwarmID:   ownerSwarmID,
+		UserID:         strings.TrimSpace(principal.UserID),
+		AccountScopeID: strings.TrimSpace(principal.AccountScopeID),
 		HostAPIBaseURL: strings.TrimRight(strings.TrimSpace(managerBackendURL), "/"),
 	}
 	if bundle.HostAPIBaseURL != "" {
@@ -1614,12 +1624,35 @@ func (s *Service) ApplyManagedHostInitialSyncBundle(ctx context.Context, manager
 	if len(modules) == 0 {
 		modules = workspaceruntime.DefaultReplicationSyncModules()
 	}
+	bundleUserID := strings.TrimSpace(bundle.UserID)
+	bundleAccountScopeID := strings.TrimSpace(bundle.AccountScopeID)
+	if bundleUserID == "" {
+		return ManagedHostSyncStatus{}, fmt.Errorf("managed host initial sync user id is required")
+	}
+	if bundleAccountScopeID == "" {
+		return ManagedHostSyncStatus{}, fmt.Errorf("managed host initial sync account scope id is required")
+	}
+	if credentialUserID := strings.TrimSpace(bundle.CredentialBundle.UserID); credentialUserID == "" {
+		bundle.CredentialBundle.UserID = bundleUserID
+	} else if credentialUserID != bundleUserID {
+		return ManagedHostSyncStatus{}, fmt.Errorf("managed host initial sync credential user id does not match identity envelope")
+	}
+	if credentialAccountScopeID := strings.TrimSpace(bundle.CredentialBundle.AccountScopeID); credentialAccountScopeID == "" {
+		bundle.CredentialBundle.AccountScopeID = bundleAccountScopeID
+	} else if credentialAccountScopeID != bundleAccountScopeID {
+		return ManagedHostSyncStatus{}, fmt.Errorf("managed host initial sync credential account scope does not match identity envelope")
+	}
 	pairing, ok, err := s.swarmStore.GetLocalPairing()
 	if err != nil {
 		return ManagedHostSyncStatus{}, err
 	}
 	if !ok {
 		pairing = pebblestore.SwarmLocalPairingRecord{PairingState: startupconfig.PairingStatePaired, ParentSwarmID: strings.TrimSpace(managerSwarmID)}
+	}
+	var bindErr error
+	pairing, bindErr = bindManagedPairingIdentity(pairing, bundleUserID, bundleAccountScopeID)
+	if bindErr != nil {
+		return ManagedHostSyncStatus{}, bindErr
 	}
 	ownerSwarmID := firstNonEmpty(bundle.OwnerSwarmID, strings.TrimSpace(bundle.CredentialBundle.OwnerSwarmID), strings.TrimSpace(managerSwarmID))
 	if workspaceruntime.ReplicationSyncModuleEnabled(modules, workspaceruntime.ReplicationSyncModuleCredentials) {
@@ -1744,8 +1777,45 @@ func principalFromContext(ctx context.Context) (identity.Principal, bool) {
 	return principal, true
 }
 
+func (s *Service) principalFromManagedPairingApprovalContext(ctx context.Context) (identity.Principal, error) {
+	principal, err := s.principalForManagedCredentialSync(ctx)
+	if err != nil {
+		return identity.Principal{}, err
+	}
+	if strings.TrimSpace(principal.UserID) == "" || strings.TrimSpace(principal.AccountScopeID) == "" {
+		return identity.Principal{}, identity.ErrPrincipalRequired
+	}
+	return principal, nil
+}
+
+func (s *Service) principalForManagedCredentialSync(ctx context.Context) (identity.Principal, error) {
+	if principal, ok := principalFromContext(ctx); ok {
+		return principal, nil
+	}
+	if s == nil || s.identity == nil {
+		return identity.Principal{}, identity.ErrPrincipalRequired
+	}
+	summary, err := s.identity.StateSummary()
+	if err != nil {
+		return identity.Principal{}, err
+	}
+	if summary.CurrentUser == nil || summary.AccountScope == nil {
+		return identity.Principal{}, identity.ErrPrincipalRequired
+	}
+	userID := strings.TrimSpace(summary.CurrentUser.ID)
+	accountScopeID := strings.TrimSpace(summary.AccountScope.ID)
+	if userID == "" || accountScopeID == "" || strings.TrimSpace(summary.CurrentUser.AccountScopeID) != accountScopeID {
+		return identity.Principal{}, identity.ErrPrincipalRequired
+	}
+	return identity.Principal{Type: identity.PrincipalTypeUser, UserID: userID, AccountScopeID: accountScopeID, AccountScopeSource: identity.AccountScopeSourceServerState}, nil
+}
+
 func (s *Service) accountScopeIDForManagedCredentialSync(ctx context.Context) (string, error) {
-	return s.accountScopeIDForManagedCredentialSyncPairing(ctx, pebblestore.SwarmLocalPairingRecord{})
+	principal, err := s.principalForManagedCredentialSync(ctx)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(principal.AccountScopeID), nil
 }
 
 func (s *Service) accountScopeIDForManagedCredentialSyncPairing(ctx context.Context, pairing pebblestore.SwarmLocalPairingRecord) (string, error) {
@@ -1757,24 +1827,37 @@ func (s *Service) accountScopeIDForManagedCredentialSyncPairing(ctx context.Cont
 	if accountScopeID := strings.TrimSpace(pairing.AccountScopeID); accountScopeID != "" {
 		return accountScopeID, nil
 	}
-	if principal, ok := principalFromContext(ctx); ok {
-		return strings.TrimSpace(principal.AccountScopeID), nil
-	}
-	if s == nil || s.identity == nil {
-		return "", identity.ErrPrincipalRequired
-	}
-	summary, err := s.identity.StateSummary()
+	principal, err := s.principalForManagedCredentialSync(ctx)
 	if err != nil {
 		return "", err
 	}
-	if summary.CurrentUser == nil || summary.AccountScope == nil {
-		return "", identity.ErrPrincipalRequired
+	return strings.TrimSpace(principal.AccountScopeID), nil
+}
+
+func bindManagedPairingIdentity(pairing pebblestore.SwarmLocalPairingRecord, userID, accountScopeID string) (pebblestore.SwarmLocalPairingRecord, error) {
+	userID = strings.TrimSpace(userID)
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if userID == "" {
+		userID = strings.TrimSpace(pairing.UserID)
 	}
-	accountScopeID := strings.TrimSpace(summary.AccountScope.ID)
-	if accountScopeID == "" || strings.TrimSpace(summary.CurrentUser.AccountScopeID) != accountScopeID {
-		return "", identity.ErrPrincipalRequired
+	if accountScopeID == "" {
+		accountScopeID = strings.TrimSpace(pairing.AccountScopeID)
 	}
-	return accountScopeID, nil
+	if userID == "" {
+		return pairing, fmt.Errorf("managed pairing user id is required")
+	}
+	if accountScopeID == "" {
+		return pairing, fmt.Errorf("managed pairing account scope id is required")
+	}
+	if existingUserID := strings.TrimSpace(pairing.UserID); existingUserID != "" && existingUserID != userID {
+		return pairing, fmt.Errorf("managed pairing user id does not match local pairing")
+	}
+	if existingAccountScopeID := strings.TrimSpace(pairing.AccountScopeID); existingAccountScopeID != "" && existingAccountScopeID != accountScopeID {
+		return pairing, fmt.Errorf("managed pairing account scope does not match local pairing")
+	}
+	pairing.UserID = userID
+	pairing.AccountScopeID = accountScopeID
+	return pairing, nil
 }
 
 func (s *Service) listRecordsForContext(ctx context.Context, limit int) ([]pebblestore.DeployContainerRecord, error) {
@@ -3926,13 +4009,17 @@ func managedHostBundleSnapshotHash(bundle ManagedHostInitialSyncBundle) (string,
 		SyncMode          string   `json:"sync_mode,omitempty"`
 		SyncModules       []string `json:"sync_modules,omitempty"`
 		OwnerSwarmID      string   `json:"owner_swarm_id,omitempty"`
+		UserID            string   `json:"user_id,omitempty"`
+		AccountScopeID    string   `json:"account_scope_id,omitempty"`
 		HostAPIBaseURL    string   `json:"host_api_base_url,omitempty"`
 		SyncCredentialURL string   `json:"sync_credential_url,omitempty"`
 		SyncAgentURL      string   `json:"sync_agent_url,omitempty"`
 		CredentialBundle  struct {
-			OwnerSwarmID string `json:"owner_swarm_id,omitempty"`
-			Exported     int    `json:"exported,omitempty"`
-			SnapshotHash string `json:"snapshot_hash,omitempty"`
+			OwnerSwarmID   string `json:"owner_swarm_id,omitempty"`
+			UserID         string `json:"user_id,omitempty"`
+			AccountScopeID string `json:"account_scope_id,omitempty"`
+			Exported       int    `json:"exported,omitempty"`
+			SnapshotHash   string `json:"snapshot_hash,omitempty"`
 		} `json:"credential_bundle,omitempty"`
 		AgentBundle struct {
 			SnapshotHash string `json:"snapshot_hash,omitempty"`
@@ -3950,14 +4037,18 @@ func managedHostBundleSnapshotHash(bundle ManagedHostInitialSyncBundle) (string,
 		SyncMode:          strings.TrimSpace(bundle.SyncMode),
 		SyncModules:       modules,
 		OwnerSwarmID:      strings.TrimSpace(bundle.OwnerSwarmID),
+		UserID:            strings.TrimSpace(bundle.UserID),
+		AccountScopeID:    strings.TrimSpace(bundle.AccountScopeID),
 		HostAPIBaseURL:    strings.TrimSpace(bundle.HostAPIBaseURL),
 		SyncCredentialURL: strings.TrimSpace(bundle.SyncCredentialURL),
 		SyncAgentURL:      strings.TrimSpace(bundle.SyncAgentURL),
 		CredentialBundle: struct {
-			OwnerSwarmID string `json:"owner_swarm_id,omitempty"`
-			Exported     int    `json:"exported,omitempty"`
-			SnapshotHash string `json:"snapshot_hash,omitempty"`
-		}{OwnerSwarmID: strings.TrimSpace(bundle.CredentialBundle.OwnerSwarmID), Exported: bundle.CredentialBundle.Exported, SnapshotHash: strings.TrimSpace(bundle.CredentialBundle.SnapshotHash)},
+			OwnerSwarmID   string `json:"owner_swarm_id,omitempty"`
+			UserID         string `json:"user_id,omitempty"`
+			AccountScopeID string `json:"account_scope_id,omitempty"`
+			Exported       int    `json:"exported,omitempty"`
+			SnapshotHash   string `json:"snapshot_hash,omitempty"`
+		}{OwnerSwarmID: strings.TrimSpace(bundle.CredentialBundle.OwnerSwarmID), UserID: strings.TrimSpace(bundle.CredentialBundle.UserID), AccountScopeID: strings.TrimSpace(bundle.CredentialBundle.AccountScopeID), Exported: bundle.CredentialBundle.Exported, SnapshotHash: strings.TrimSpace(bundle.CredentialBundle.SnapshotHash)},
 		AgentBundle: struct {
 			SnapshotHash string `json:"snapshot_hash,omitempty"`
 		}{SnapshotHash: strings.TrimSpace(bundle.AgentBundle.SnapshotHash)},
@@ -4010,6 +4101,11 @@ func (s *Service) applyManagedCredentialBundle(ctx context.Context, pairing pebb
 	pairing.ManagedAuthOwnerSwarmID = ownerSwarmID
 	pairing.ManagedAuthLastAttemptAt = time.Now().UnixMilli()
 	if bundleSnapshotHash := strings.TrimSpace(bundle.SnapshotHash); bundleSnapshotHash != "" && strings.EqualFold(strings.TrimSpace(pairing.ManagedAuthSnapshotHash), bundleSnapshotHash) {
+		updatedPairing, err := bindManagedPairingIdentity(pairing, strings.TrimSpace(bundle.UserID), strings.TrimSpace(bundle.AccountScopeID))
+		if err != nil {
+			return pairing, err
+		}
+		pairing = updatedPairing
 		pairing.ManagedAuthLastError = ""
 		if pairing.ManagedAuthAppliedAt <= 0 {
 			pairing.ManagedAuthAppliedAt = pairing.ManagedAuthLastAttemptAt
@@ -4025,6 +4121,11 @@ func (s *Service) applyManagedCredentialBundle(ctx context.Context, pairing pebb
 		return pairing, err
 	}
 	if metadata.SnapshotHash != "" && strings.EqualFold(strings.TrimSpace(pairing.ManagedAuthSnapshotHash), metadata.SnapshotHash) {
+		updatedPairing, err := bindManagedPairingIdentity(pairing, strings.TrimSpace(bundle.UserID), strings.TrimSpace(bundle.AccountScopeID))
+		if err != nil {
+			return pairing, err
+		}
+		pairing = updatedPairing
 		pairing.ManagedAuthLastError = ""
 		if pairing.ManagedAuthAppliedAt <= 0 {
 			pairing.ManagedAuthAppliedAt = pairing.ManagedAuthLastAttemptAt
@@ -4035,23 +4136,12 @@ func (s *Service) applyManagedCredentialBundle(ctx context.Context, pairing pebb
 		}
 		return saved, nil
 	}
-	accountScopeID, err := s.accountScopeIDForManagedCredentialSyncPairing(ctx, pairing)
+	updatedPairing, err := bindManagedPairingIdentity(pairing, strings.TrimSpace(bundle.UserID), strings.TrimSpace(bundle.AccountScopeID))
 	if err != nil {
 		return pairing, err
 	}
-	if bundleAccountScopeID := strings.TrimSpace(bundle.AccountScopeID); bundleAccountScopeID != "" {
-		if accountScopeID != "" && accountScopeID != bundleAccountScopeID {
-			return pairing, fmt.Errorf("credential bundle account scope does not match local pairing")
-		}
-		accountScopeID = bundleAccountScopeID
-		pairing.AccountScopeID = bundleAccountScopeID
-	}
-	if bundleUserID := strings.TrimSpace(bundle.UserID); bundleUserID != "" {
-		if strings.TrimSpace(pairing.UserID) != "" && strings.TrimSpace(pairing.UserID) != bundleUserID {
-			return pairing, fmt.Errorf("credential bundle user id does not match local pairing")
-		}
-		pairing.UserID = bundleUserID
-	}
+	pairing = updatedPairing
+	accountScopeID := strings.TrimSpace(pairing.AccountScopeID)
 	result, err := s.auth.ImportManagedCredentialsWithVaultAccessForAccount(accountScopeID, ownerSwarmID, bundle.BundlePassword, strings.TrimSpace(vaultPassword), strings.TrimSpace(managedVaultKey), bundle.Bundle)
 	if err != nil {
 		return pairing, err
