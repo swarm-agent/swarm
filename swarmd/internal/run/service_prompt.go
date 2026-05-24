@@ -14,7 +14,7 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 )
 
-const autoModePlanManageSaveSnippet = `{"action":"save","plan":"# Plan\n1. ..."}`
+const autoModePlanManageSaveSnippet = `{"action":"save","plan":"# Plan\n1. ...","update_summary":"what changed","update_scope":"phase or section"}`
 
 func masterHarnessPrompt(workspacePath string) string {
 	return masterHarnessPromptWithScope(tool.WorkspaceScope{

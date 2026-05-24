@@ -34,6 +34,10 @@ export interface PlanUpdatePayload {
   priorPlan: string
   plan: string
   diffLines: string[]
+  updateSummary: string
+  updateScope: string
+  updateKind: string
+  checkpoint: boolean
   approvedArguments: Record<string, unknown>
 }
 
@@ -580,6 +584,11 @@ export function parsePlanUpdatePermission(permission: DesktopPermissionRecord): 
     priorPlan: mapStringArg(payload, 'prior_plan'),
     plan: mapStringArg(payload, 'plan'),
     diffLines: mapStringArrayArg(payload, 'diff_lines'),
+    updateSummary:
+      mapStringArg(payload, 'update_summary') || mapStringArg(payload, 'summary'),
+    updateScope: mapStringArg(payload, 'update_scope') || mapStringArg(payload, 'scope'),
+    updateKind: mapStringArg(payload, 'update_kind') || mapStringArg(payload, 'kind'),
+    checkpoint: mapBoolArg(payload, 'checkpoint'),
     approvedArguments: mapObjectArg(payload, 'approved_arguments'),
   }
 }

@@ -1351,15 +1351,7 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 		}
 		items := make([]map[string]any, 0, len(plans))
 		for i := range plans {
-			items = append(items, map[string]any{
-				"id":             plans[i].ID,
-				"title":          plans[i].Title,
-				"status":         plans[i].Status,
-				"approval_state": plans[i].ApprovalState,
-				"active":         plans[i].Active,
-				"updated_at":     plans[i].UpdatedAt,
-				"preview":        truncateRunes(plans[i].Plan, 180),
-			})
+			items = append(items, planManagePlanSummary(plans[i], true))
 		}
 		payload := map[string]any{
 			"tool":              "plan_manage",
@@ -1369,6 +1361,49 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 			"plans":             items,
 			"path_id":           "tool.plan-manage.v3",
 			"summary":           fmt.Sprintf("listed %d plans", len(items)),
+			"details_truncated": false,
+		}
+		return marshalPlanManagePayload(payload)
+	case "history", "revisions":
+		planID := strings.TrimSpace(mapString(args, "plan_id"))
+		if planID == "" {
+			planID = strings.TrimSpace(mapString(args, "id"))
+		}
+		if planID == "" || strings.EqualFold(planID, "active") {
+			active, ok, err := s.sessions.GetActivePlan(sessionID)
+			if err != nil {
+				return "", err
+			}
+			if !ok {
+				payload := map[string]any{"tool": "plan_manage", "action": "history", "status": "empty", "path_id": "tool.plan-manage.v3", "summary": "no active plan", "details_truncated": false}
+				return marshalPlanManagePayload(payload)
+			}
+			planID = strings.TrimSpace(active.ID)
+		}
+		limit := mapInt(args, "limit")
+		if limit <= 0 {
+			limit = 50
+		}
+		if limit > 500 {
+			limit = 500
+		}
+		revisions, err := s.sessions.ListPlanRevisions(sessionID, planID, limit)
+		if err != nil {
+			return "", err
+		}
+		items := make([]map[string]any, 0, len(revisions))
+		for i := range revisions {
+			items = append(items, planManagePlanSummary(revisions[i], false))
+		}
+		payload := map[string]any{
+			"tool":              "plan_manage",
+			"action":            "history",
+			"status":            "ok",
+			"plan_id":           planID,
+			"count":             len(items),
+			"revisions":         items,
+			"path_id":           "tool.plan-manage.v3",
+			"summary":           fmt.Sprintf("listed %d plan revisions", len(items)),
 			"details_truncated": false,
 		}
 		return marshalPlanManagePayload(payload)
@@ -1479,6 +1514,10 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 		}
 		status := strings.TrimSpace(mapString(args, "status"))
 		approvalState := strings.TrimSpace(mapString(args, "approval_state"))
+		updateSummary := strings.TrimSpace(firstNonEmptyString(mapString(args, "update_summary"), mapString(args, "summary")))
+		updateScope := strings.TrimSpace(firstNonEmptyString(mapString(args, "update_scope"), mapString(args, "scope")))
+		updateKind := strings.TrimSpace(firstNonEmptyString(mapString(args, "update_kind"), mapString(args, "kind")))
+		checkpoint := mapBool(args, "checkpoint")
 		if planID != "" {
 			existing, ok, err := s.sessions.GetPlan(sessionID, planID)
 			if err != nil {
@@ -1503,7 +1542,7 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 		if _, hasActivate := args["activate"]; hasActivate {
 			activate = mapBool(args, "activate")
 		}
-		plan, _, err := s.sessions.SavePlan(sessionID, planID, title, planBody, status, approvalState, activate)
+		plan, _, err := s.sessions.SavePlanWithMetadata(sessionID, planID, title, planBody, status, approvalState, activate, sessionruntime.PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: updateScope, UpdateKind: updateKind, Checkpoint: checkpoint})
 		if err != nil {
 			return "", err
 		}
@@ -1565,6 +1604,27 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 		"details_truncated": false,
 	}
 	return marshalPlanManagePayload(payload)
+}
+
+func planManagePlanSummary(plan pebblestore.SessionPlanSnapshot, includePreview bool) map[string]any {
+	item := map[string]any{
+		"id":              plan.ID,
+		"title":           plan.Title,
+		"status":          plan.Status,
+		"approval_state":  plan.ApprovalState,
+		"active":          plan.Active,
+		"updated_at":      plan.UpdatedAt,
+		"version":         plan.Version,
+		"parent_revision": plan.ParentRevision,
+		"update_summary":  plan.UpdateSummary,
+		"update_scope":    plan.UpdateScope,
+		"update_kind":     plan.UpdateKind,
+		"checkpoint":      plan.Checkpoint,
+	}
+	if includePreview {
+		item["preview"] = truncateRunes(plan.Plan, 180)
+	}
+	return item
 }
 
 func marshalPlanManagePayload(payload map[string]any) (string, error) {

@@ -40,6 +40,10 @@ func (p *ChatPage) OpenPlanUpdatePermissionModal(record ChatPermissionRecord) bo
 	p.planUpdatePriorPlan = strings.TrimSpace(mapStringArg(payload, "prior_plan"))
 	p.planUpdatePlan = strings.TrimSpace(mapStringArg(payload, "plan"))
 	p.planUpdateDiffLines = mapStringSliceArg(payload, "diff_lines")
+	p.planUpdateSummary = strings.TrimSpace(firstNonEmptyToolValue(mapStringArg(payload, "update_summary"), mapStringArg(payload, "summary")))
+	p.planUpdateScope = strings.TrimSpace(firstNonEmptyToolValue(mapStringArg(payload, "update_scope"), mapStringArg(payload, "scope")))
+	p.planUpdateKind = strings.TrimSpace(firstNonEmptyToolValue(mapStringArg(payload, "update_kind"), mapStringArg(payload, "kind")))
+	p.planUpdateCheckpoint = mapBoolArg(payload, "checkpoint")
 	p.planUpdateScroll = 0
 	p.planUpdateSelection = chatPlanUpdateSelectConfirm
 	p.planUpdateInput = ""
@@ -57,6 +61,10 @@ func (p *ChatPage) closePlanUpdateModal() {
 	p.planUpdatePriorPlan = ""
 	p.planUpdatePlan = ""
 	p.planUpdateDiffLines = nil
+	p.planUpdateSummary = ""
+	p.planUpdateScope = ""
+	p.planUpdateKind = ""
+	p.planUpdateCheckpoint = false
 	p.planUpdateScroll = 0
 	p.planUpdateSelection = chatPlanUpdateSelectConfirm
 	p.planUpdateInput = ""
@@ -371,7 +379,23 @@ func (p *ChatPage) planUpdateModalLines(width int) []chatRenderLine {
 	}
 	lines = append(lines, chatRenderLine{Text: "", Style: styleForCurrentCellBackground(p.theme.Text)})
 	lines = appendPlain(lines, "Approve this request to revise an existing saved plan.", p.theme.TextMuted)
-	lines = appendPlain(lines, "Review the diff and the resulting plan body before accepting.", p.theme.TextMuted)
+	if strings.TrimSpace(p.planUpdateSummary) != "" || strings.TrimSpace(p.planUpdateScope) != "" || strings.TrimSpace(p.planUpdateKind) != "" || p.planUpdateCheckpoint {
+		lines = append(lines, chatRenderLine{Text: "", Style: styleForCurrentCellBackground(p.theme.Text)})
+		lines = appendPlain(lines, "Update overview:", p.theme.Secondary.Bold(true))
+		if strings.TrimSpace(p.planUpdateSummary) != "" {
+			lines = appendPlain(lines, "Summary: "+p.planUpdateSummary, p.theme.Text)
+		}
+		if strings.TrimSpace(p.planUpdateScope) != "" {
+			lines = appendPlain(lines, "Scope: "+p.planUpdateScope, p.theme.Text)
+		}
+		if strings.TrimSpace(p.planUpdateKind) != "" {
+			lines = appendPlain(lines, "Kind: "+p.planUpdateKind, p.theme.TextMuted)
+		}
+		if p.planUpdateCheckpoint {
+			lines = appendPlain(lines, "Checkpoint: yes", p.theme.TextMuted)
+		}
+	}
+	lines = appendPlain(lines, "Review the targeted summary first, then inspect the diff and resulting plan before accepting.", p.theme.TextMuted)
 	lines = append(lines, chatRenderLine{Text: "", Style: styleForCurrentCellBackground(p.theme.Text)})
 
 	lines = appendPlain(lines, "Diff preview:", p.theme.Secondary.Bold(true))

@@ -686,6 +686,22 @@ func SessionPlanPrefix(sessionID string) string {
 	return fmt.Sprintf("session_plan/%s/", part)
 }
 
+func KeySessionPlanRevision(sessionID, planID string, version int) string {
+	return fmt.Sprintf("session_plan_revision/%s/%s/%020d", keyPart(sessionID), keyPart(planID), version)
+}
+
+func SessionPlanRevisionPrefix(sessionID, planID string) string {
+	sessionPart := keyPart(sessionID)
+	if sessionPart == "" {
+		return "session_plan_revision/"
+	}
+	planPart := keyPart(planID)
+	if planPart == "" {
+		return fmt.Sprintf("session_plan_revision/%s/", sessionPart)
+	}
+	return fmt.Sprintf("session_plan_revision/%s/%s/", sessionPart, planPart)
+}
+
 func KeySessionPlanByAccount(accountScopeID, sessionID, planID string) string {
 	return fmt.Sprintf("session_plan_by_account/%s/%s/%s", keyPart(accountScopeID), keyPart(sessionID), keyPart(planID))
 }

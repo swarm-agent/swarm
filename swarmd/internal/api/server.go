@@ -2931,6 +2931,47 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 
 	if strings.Contains(rest, "/plans/") {
 		parts := strings.Split(strings.Trim(rest, "/"), "/plans/")
+		if len(parts) == 2 && strings.HasSuffix(parts[1], "/history") {
+			sessionID := strings.TrimSpace(parts[0])
+			planID := strings.TrimSpace(strings.TrimSuffix(parts[1], "/history"))
+			if sessionID == "" {
+				writeError(w, http.StatusBadRequest, errors.New("session id is required"))
+				return
+			}
+			if planID == "" {
+				writeError(w, http.StatusBadRequest, errors.New("plan id is required"))
+				return
+			}
+			if r.Method != http.MethodGet {
+				methodNotAllowed(w)
+				return
+			}
+			if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
+				return
+			}
+			limit := 100
+			if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+				parsed, err := strconv.Atoi(raw)
+				if err != nil || parsed <= 0 {
+					writeError(w, http.StatusBadRequest, errors.New("limit must be a positive integer"))
+					return
+				}
+				limit = parsed
+			}
+			revisions, err := s.sessions.ListPlanRevisions(sessionID, planID, limit)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":         true,
+				"session_id": sessionID,
+				"plan_id":    planID,
+				"count":      len(revisions),
+				"revisions":  revisions,
+			})
+			return
+		}
 		if len(parts) == 2 && !strings.Contains(parts[1], "/") {
 			sessionID := strings.TrimSpace(parts[0])
 			planID := strings.TrimSpace(parts[1])
@@ -3014,6 +3055,11 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 				Plan          string `json:"plan"`
 				Status        string `json:"status"`
 				ApprovalState string `json:"approval_state"`
+				UpdateSummary string `json:"update_summary"`
+				UpdateScope   string `json:"update_scope"`
+				Scope         string `json:"scope"`
+				UpdateKind    string `json:"update_kind"`
+				Checkpoint    bool   `json:"checkpoint"`
 				Activate      *bool  `json:"activate"`
 			}
 			if err := decodeJSON(r, &req); err != nil {
@@ -3028,7 +3074,11 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			if req.Activate != nil {
 				activate = *req.Activate
 			}
-			plan, event, err := s.sessions.SavePlan(sessionID, planID, req.Title, req.Plan, req.Status, req.ApprovalState, activate)
+			updateScope := strings.TrimSpace(req.UpdateScope)
+			if updateScope == "" {
+				updateScope = strings.TrimSpace(req.Scope)
+			}
+			plan, event, err := s.sessions.SavePlanWithMetadata(sessionID, planID, req.Title, req.Plan, req.Status, req.ApprovalState, activate, sessionruntime.PlanSaveMetadata{UpdateSummary: req.UpdateSummary, UpdateScope: updateScope, UpdateKind: req.UpdateKind, Checkpoint: req.Checkpoint})
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return

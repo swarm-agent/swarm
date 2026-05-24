@@ -867,14 +867,66 @@ function PlanUpdateFullDiff({ diffLines, priorPlan, plan }: { diffLines: string[
   )
 }
 
-function PlanUpdateReview({ diffLines, priorPlan, plan, priorTitle }: { diffLines: string[]; priorPlan: string; plan: string; priorTitle: string }) {
+function PlanUpdateReview({
+  diffLines,
+  priorPlan,
+  plan,
+  priorTitle,
+  updateSummary,
+  updateScope,
+  updateKind,
+  checkpoint,
+}: {
+  diffLines: string[]
+  priorPlan: string
+  plan: string
+  priorTitle: string
+  updateSummary: string
+  updateScope: string
+  updateKind: string
+  checkpoint: boolean
+}) {
+  const hasOverview =
+    updateSummary.trim() !== '' || updateScope.trim() !== '' || updateKind.trim() !== '' || checkpoint
   return (
     <div className="flex min-h-0 flex-col gap-4">
+      {hasOverview ? (
+        <section className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-3 text-sm leading-6 text-[var(--app-text)] sm:px-4">
+          <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-muted)]">
+            Plan update overview
+          </div>
+          {updateSummary.trim() !== '' ? (
+            <p className="mt-2 whitespace-pre-wrap break-words">{updateSummary}</p>
+          ) : null}
+          <div className="mt-3 flex flex-wrap gap-2 text-xs font-medium">
+            {updateScope.trim() !== '' ? (
+              <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1">
+                Scope: {updateScope}
+              </span>
+            ) : null}
+            {updateKind.trim() !== '' ? (
+              <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1">
+                Kind: {updateKind}
+              </span>
+            ) : null}
+            {checkpoint ? (
+              <span className="rounded-full border border-[var(--app-success-border)] bg-[var(--app-success-bg)] px-2 py-1 text-[var(--app-success)]">
+                Checkpoint
+              </span>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
       <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-sm leading-6 text-[var(--app-text-muted)] sm:px-4">
-        Review the full previous and updated plan bodies first. The diff is secondary, complete, and non-collapsing.
+        Review the targeted summary first, then inspect the diff and resulting plan body before accepting.
       </div>
       <div className="grid min-h-0 gap-4 lg:grid-cols-2">
-        <PlanTextPanel title={priorTitle ? `Previous plan: ${priorTitle}` : 'Previous plan'} text={priorPlan} emptyText="No previous plan text was provided." tone="previous" />
+        <PlanTextPanel
+          title={priorTitle ? `Previous plan: ${priorTitle}` : 'Previous plan'}
+          text={priorPlan}
+          emptyText="No previous plan text was provided."
+          tone="previous"
+        />
         <PlanTextPanel title="Updated plan" text={plan} emptyText="No updated plan text was provided." tone="updated" />
       </div>
       <PlanUpdateFullDiff diffLines={diffLines} priorPlan={priorPlan} plan={plan} />
@@ -956,7 +1008,16 @@ function PlanUpdateModal({
       onDenyShortcut={() => void resolve('deny')}
       shortcutsDisabled={loading}
     >
-      <PlanUpdateReview diffLines={payload.diffLines} priorPlan={payload.priorPlan} plan={payload.plan} priorTitle={payload.priorTitle} />
+      <PlanUpdateReview
+        diffLines={payload.diffLines}
+        priorPlan={payload.priorPlan}
+        plan={payload.plan}
+        priorTitle={payload.priorTitle}
+        updateSummary={payload.updateSummary}
+        updateScope={payload.updateScope}
+        updateKind={payload.updateKind}
+        checkpoint={payload.checkpoint}
+      />
     </ModalShell>
   )
 }

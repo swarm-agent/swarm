@@ -425,6 +425,10 @@ type ChatPage struct {
 	planUpdatePriorPlan   string
 	planUpdatePlan        string
 	planUpdateDiffLines   []string
+	planUpdateSummary     string
+	planUpdateScope       string
+	planUpdateKind        string
+	planUpdateCheckpoint  bool
 	planUpdateScroll      int
 	planUpdateSelection   int
 	planUpdateInput       string

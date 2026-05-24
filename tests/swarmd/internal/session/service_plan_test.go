@@ -71,6 +71,59 @@ func TestServicePlanLifecycle(t *testing.T) {
 	}
 }
 
+func TestServicePlanUpdateLineage(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "session-plan-lineage.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+
+	svc := NewService(pebblestore.NewSessionStore(store), events)
+	created, _, err := svc.CreateSession("Plan Lineage", t.TempDir(), "workspace")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	first, _, err := svc.SavePlanWithMetadata(created.ID, "plan_alpha", "Alpha", "# Alpha\n\n- [ ] one", "draft", "draft", true, PlanSaveMetadata{UpdateSummary: "initial checkpoint", UpdateScope: "phase 1", UpdateKind: "checkpoint", Checkpoint: true})
+	if err != nil {
+		t.Fatalf("save first plan: %v", err)
+	}
+	if first.Version != 1 {
+		t.Fatalf("first version = %d, want 1", first.Version)
+	}
+
+	updated, _, err := svc.SavePlanWithMetadata(created.ID, "plan_alpha", "Alpha", "# Alpha\n\n- [x] one\n- [ ] two", "draft", "draft", true, PlanSaveMetadata{UpdateSummary: "mark phase one complete", UpdateScope: "phase 1", UpdateKind: "scope_update", Checkpoint: true})
+	if err != nil {
+		t.Fatalf("save updated plan: %v", err)
+	}
+	if updated.Version != 2 || updated.ParentRevision != 1 {
+		t.Fatalf("updated lineage version=%d parent=%d, want version=2 parent=1", updated.Version, updated.ParentRevision)
+	}
+	if updated.UpdateSummary != "mark phase one complete" || updated.UpdateScope != "phase 1" || !updated.Checkpoint {
+		t.Fatalf("updated metadata summary=%q scope=%q checkpoint=%v", updated.UpdateSummary, updated.UpdateScope, updated.Checkpoint)
+	}
+	if !strings.Contains(updated.PriorPlan, "- [ ] one") {
+		t.Fatalf("updated prior plan did not preserve previous body: %q", updated.PriorPlan)
+	}
+
+	revisions, err := svc.ListPlanRevisions(created.ID, "plan_alpha", 10)
+	if err != nil {
+		t.Fatalf("list revisions: %v", err)
+	}
+	if len(revisions) != 1 {
+		t.Fatalf("expected 1 archived revision, got %d", len(revisions))
+	}
+	if revisions[0].Version != 1 || !strings.Contains(revisions[0].Plan, "- [ ] one") {
+		t.Fatalf("archived revision version=%d plan=%q", revisions[0].Version, revisions[0].Plan)
+	}
+}
+
 func TestSessionMetadataRoundTrip(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "session-metadata.pebble"))
 	if err != nil {

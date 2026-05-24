@@ -1611,13 +1611,27 @@ func (s *Service) ListTurnUsage(sessionID string, limit int) ([]pebblestore.Sess
 	return s.store.ListTurnUsage(sessionID, limit)
 }
 
+type PlanSaveMetadata struct {
+	UpdateSummary string
+	UpdateScope   string
+	UpdateKind    string
+	Checkpoint    bool
+}
+
 func (s *Service) SavePlan(sessionID, planID, title, plan, status, approvalState string, activate bool) (pebblestore.SessionPlanSnapshot, *pebblestore.EventEnvelope, error) {
+	return s.SavePlanWithMetadata(sessionID, planID, title, plan, status, approvalState, activate, PlanSaveMetadata{})
+}
+
+func (s *Service) SavePlanWithMetadata(sessionID, planID, title, plan, status, approvalState string, activate bool, metadata PlanSaveMetadata) (pebblestore.SessionPlanSnapshot, *pebblestore.EventEnvelope, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	planID = strings.TrimSpace(planID)
 	title = strings.TrimSpace(title)
 	plan = strings.TrimSpace(plan)
 	status = strings.ToLower(strings.TrimSpace(status))
 	approvalState = strings.ToLower(strings.TrimSpace(approvalState))
+	metadata.UpdateSummary = strings.TrimSpace(metadata.UpdateSummary)
+	metadata.UpdateScope = strings.TrimSpace(metadata.UpdateScope)
+	metadata.UpdateKind = strings.TrimSpace(metadata.UpdateKind)
 
 	if sessionID == "" {
 		return pebblestore.SessionPlanSnapshot{}, nil, errors.New("session id is required")
@@ -1661,6 +1675,11 @@ func (s *Service) SavePlan(sessionID, planID, title, plan, status, approvalState
 		Active:         false,
 		CreatedAt:      now,
 		UpdatedAt:      now,
+		UpdateSummary:  metadata.UpdateSummary,
+		UpdateScope:    metadata.UpdateScope,
+		UpdateKind:     metadata.UpdateKind,
+		Checkpoint:     metadata.Checkpoint,
+		Version:        1,
 	}
 	if found {
 		record.CreatedAt = existing.CreatedAt
@@ -1673,12 +1692,26 @@ func (s *Service) SavePlan(sessionID, planID, title, plan, status, approvalState
 		record.PriorTitle = existing.Title
 		record.PriorPlan = existing.Plan
 		record.DiffLines = BuildPlanDiffLines(existing.Plan, plan)
+		if existing.Version <= 0 {
+			existing.Version = 1
+		}
+		record.Version = existing.Version + 1
+		record.ParentRevision = existing.Version
 	}
 	if record.CreatedAt <= 0 {
 		record.CreatedAt = now
 	}
 
-	if err := s.store.PutPlan(record); err != nil {
+	if found {
+		archived := existing
+		archived.Active = false
+		if archived.Version <= 0 {
+			archived.Version = 1
+		}
+		if err := s.store.PutPlanWithArchivedRevision(record, archived); err != nil {
+			return pebblestore.SessionPlanSnapshot{}, nil, err
+		}
+	} else if err := s.store.PutPlan(record); err != nil {
 		return pebblestore.SessionPlanSnapshot{}, nil, err
 	}
 	if activate {
@@ -1689,14 +1722,20 @@ func (s *Service) SavePlan(sessionID, planID, title, plan, status, approvalState
 	}
 
 	payload, err := json.Marshal(map[string]any{
-		"session_id":     sessionID,
-		"plan_id":        planID,
-		"title":          record.Title,
-		"status":         record.Status,
-		"approval_state": record.ApprovalState,
-		"activate":       activate,
-		"updated_at":     now,
-		"updated":        found,
+		"session_id":      sessionID,
+		"plan_id":         planID,
+		"title":           record.Title,
+		"status":          record.Status,
+		"approval_state":  record.ApprovalState,
+		"activate":        activate,
+		"updated_at":      now,
+		"updated":         found,
+		"version":         record.Version,
+		"parent_revision": record.ParentRevision,
+		"update_summary":  record.UpdateSummary,
+		"update_scope":    record.UpdateScope,
+		"update_kind":     record.UpdateKind,
+		"checkpoint":      record.Checkpoint,
 	})
 	if err != nil {
 		return pebblestore.SessionPlanSnapshot{}, nil, err
@@ -1736,6 +1775,23 @@ func (s *Service) ListPlans(sessionID string, limit int) ([]pebblestore.SessionP
 		plans[i].Active = strings.EqualFold(strings.TrimSpace(plans[i].ID), activeID)
 	}
 	return plans, activeID, nil
+}
+
+func (s *Service) ListPlanRevisions(sessionID, planID string, limit int) ([]pebblestore.SessionPlanSnapshot, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	planID = strings.TrimSpace(planID)
+	if sessionID == "" {
+		return nil, errors.New("session id is required")
+	}
+	if planID == "" {
+		return nil, errors.New("plan id is required")
+	}
+	if _, ok, err := s.store.GetSession(sessionID); err != nil {
+		return nil, err
+	} else if !ok {
+		return nil, fmt.Errorf("session %q not found", sessionID)
+	}
+	return s.store.ListPlanRevisions(sessionID, planID, limit)
 }
 
 func (s *Service) GetPlan(sessionID, planID string) (pebblestore.SessionPlanSnapshot, bool, error) {

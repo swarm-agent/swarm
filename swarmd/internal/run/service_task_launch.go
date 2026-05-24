@@ -77,6 +77,10 @@ type planManagePermissionPayload struct {
 	Activate          bool           `json:"activate,omitempty"`
 	Action            string         `json:"action,omitempty"`
 	UpdateType        string         `json:"update_type,omitempty"`
+	UpdateSummary     string         `json:"update_summary,omitempty"`
+	UpdateScope       string         `json:"update_scope,omitempty"`
+	UpdateKind        string         `json:"update_kind,omitempty"`
+	Checkpoint        bool           `json:"checkpoint,omitempty"`
 	ApprovedArguments map[string]any `json:"approved_arguments,omitempty"`
 }
 
@@ -786,6 +790,10 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 	if _, hasActivate := args["activate"]; hasActivate {
 		activate = mapBool(args, "activate")
 	}
+	updateSummary := strings.TrimSpace(firstNonEmptyString(mapString(args, "update_summary"), mapString(args, "summary")))
+	updateScope := strings.TrimSpace(firstNonEmptyString(mapString(args, "update_scope"), mapString(args, "scope")))
+	updateKind := strings.TrimSpace(firstNonEmptyString(mapString(args, "update_kind"), mapString(args, "kind")))
+	checkpoint := mapBool(args, "checkpoint")
 	payload := planManagePermissionPayload{
 		PathID:        "tool.plan-manage-update.v1",
 		Title:         title,
@@ -799,6 +807,10 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 		Activate:      activate,
 		Action:        action,
 		UpdateType:    "existing_plan",
+		UpdateSummary: updateSummary,
+		UpdateScope:   updateScope,
+		UpdateKind:    updateKind,
+		Checkpoint:    checkpoint,
 		ApprovedArguments: map[string]any{
 			"action":         action,
 			"plan_id":        planID,
@@ -807,6 +819,10 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 			"status":         status,
 			"approval_state": approvalState,
 			"activate":       activate,
+			"update_summary": updateSummary,
+			"update_scope":   updateScope,
+			"update_kind":    updateKind,
+			"checkpoint":     checkpoint,
 		},
 	}
 	return payload, true, nil

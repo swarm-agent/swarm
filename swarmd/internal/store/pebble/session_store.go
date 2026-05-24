@@ -87,6 +87,12 @@ type SessionPlanSnapshot struct {
 	PriorTitle     string   `json:"prior_title,omitempty"`
 	PriorPlan      string   `json:"prior_plan,omitempty"`
 	DiffLines      []string `json:"diff_lines,omitempty"`
+	UpdateSummary  string   `json:"update_summary,omitempty"`
+	UpdateScope    string   `json:"update_scope,omitempty"`
+	UpdateKind     string   `json:"update_kind,omitempty"`
+	Version        int      `json:"version,omitempty"`
+	ParentRevision int      `json:"parent_revision,omitempty"`
+	Checkpoint     bool     `json:"checkpoint,omitempty"`
 }
 
 type SessionPlanActive struct {
@@ -802,6 +808,14 @@ func (s *SessionStore) listLatestMessages(sessionID string, limit int) ([]Messag
 }
 
 func (s *SessionStore) PutPlan(plan SessionPlanSnapshot) error {
+	return s.putPlanWithArchivedRevision(plan, nil)
+}
+
+func (s *SessionStore) PutPlanWithArchivedRevision(plan, archived SessionPlanSnapshot) error {
+	return s.putPlanWithArchivedRevision(plan, &archived)
+}
+
+func (s *SessionStore) putPlanWithArchivedRevision(plan SessionPlanSnapshot, archived *SessionPlanSnapshot) error {
 	plan.UserID = strings.TrimSpace(plan.UserID)
 	plan.AccountScopeID = strings.TrimSpace(plan.AccountScopeID)
 	payload, err := json.Marshal(plan)
@@ -810,6 +824,18 @@ func (s *SessionStore) PutPlan(plan SessionPlanSnapshot) error {
 	}
 	batch := s.store.NewBatch()
 	defer batch.Close()
+	if archived != nil {
+		archive := *archived
+		archive.UserID = strings.TrimSpace(archive.UserID)
+		archive.AccountScopeID = strings.TrimSpace(archive.AccountScopeID)
+		archivePayload, err := json.Marshal(archive)
+		if err != nil {
+			return fmt.Errorf("marshal plan revision %q/%q/%d: %w", archive.SessionID, archive.ID, archive.Version, err)
+		}
+		if err := batch.Set([]byte(KeySessionPlanRevision(archive.SessionID, archive.ID, archive.Version)), archivePayload, nil); err != nil {
+			return err
+		}
+	}
 	if err := batch.Set([]byte(KeySessionPlan(plan.SessionID, plan.ID)), payload, nil); err != nil {
 		return err
 	}
@@ -859,6 +885,37 @@ func (s *SessionStore) ListPlans(sessionID string, limit int) ([]SessionPlanSnap
 			return out[i].ID < out[j].ID
 		}
 		return out[i].UpdatedAt > out[j].UpdatedAt
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (s *SessionStore) ListPlanRevisions(sessionID, planID string, limit int) ([]SessionPlanSnapshot, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	out := make([]SessionPlanSnapshot, 0, limit)
+	err := s.store.IteratePrefix(SessionPlanRevisionPrefix(sessionID, planID), 20000, func(_ string, value []byte) error {
+		var plan SessionPlanSnapshot
+		if err := json.Unmarshal(value, &plan); err != nil {
+			return err
+		}
+		if strings.TrimSpace(plan.ID) == "" || strings.TrimSpace(plan.SessionID) == "" {
+			return nil
+		}
+		out = append(out, plan)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Version == out[j].Version {
+			return out[i].UpdatedAt > out[j].UpdatedAt
+		}
+		return out[i].Version > out[j].Version
 	})
 	if len(out) > limit {
 		out = out[:limit]
