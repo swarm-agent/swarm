@@ -273,7 +273,6 @@ desktop_port = 5555
 bypass_permissions = false
 retain_tool_output_history = false
 swarm_name =
-swarm_mode = false
 desktop_onboarding_complete = true
 child = false
 mode = lan
@@ -323,7 +322,7 @@ swarm_startup_config_remove_obsolete_keys() {
         next
       }
       raw_key = trim(substr($0, 1, split_pos - 1))
-      if (raw_key == "deploy_container_sync_skill_url" || raw_key == "deploy_container_sync_permission_url") {
+      if (raw_key == "swarm" "_mode" || raw_key == "deploy_container_sync_skill_url" || raw_key == "deploy_container_sync_permission_url") {
         next
       }
       print
@@ -390,7 +389,7 @@ swarm_startup_config_raw_value() {
 
 swarm_startup_config_migrate_legacy() {
   local config_path
-  local port_value startup_mode_value dev_mode_value swarm_mode_value child_value network_mode_value advertise_host_value tailscale_url_value
+  local port_value startup_mode_value dev_mode_value child_value network_mode_value advertise_host_value tailscale_url_value
   config_path="$(swarm_startup_config_path)"
   swarm_startup_config_ensure
   swarm_startup_config_remove_obsolete_keys
@@ -419,17 +418,6 @@ swarm_startup_config_migrate_legacy() {
       *) child_value="false" ;;
     esac
   fi
-  swarm_mode_value="$(swarm_startup_config_raw_value swarm_mode 2>/dev/null || true)"
-  case "${swarm_mode_value}" in
-    true|false) ;;
-    *)
-      if [[ -n "$(swarm_startup_config_raw_value swarm_role 2>/dev/null || true)" ]]; then
-        swarm_mode_value="true"
-      else
-        swarm_mode_value="false"
-      fi
-      ;;
-  esac
   network_mode_value="$(swarm_startup_config_raw_value mode 2>/dev/null || true)"
   if [[ "${network_mode_value}" != "lan" && "${network_mode_value}" != "tailscale" ]]; then
     case "$(swarm_startup_config_raw_value advertise_mode 2>/dev/null || true)" in
@@ -520,15 +508,6 @@ EOF
 # Human-readable Swarm name shown in onboarding and discovery surfaces.
 # Leave blank to set it later.
 swarm_name =
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key swarm_mode; then
-    cat >>"${config_path}" <<EOF
-
-# Whether this Swarm should participate in shared swarm networking.
-# false = standalone local use, true = enable swarm role/pairing/transport settings.
-swarm_mode = ${swarm_mode_value}
 EOF
   fi
 
@@ -755,7 +734,6 @@ swarm_startup_config_validate() {
       valid["bypass_permissions"] = 1
       valid["retain_tool_output_history"] = 1
       valid["swarm_name"] = 1
-      valid["swarm_mode"] = 1
       valid["desktop_onboarding_complete"] = 1
       valid["child"] = 1
       valid["mode"] = 1
@@ -833,7 +811,7 @@ swarm_startup_config_validate() {
       if (raw_key == "") {
         fail(sprintf("invalid startup config %s: line %d: key must be non-empty", config_path, NR))
       }
-      if (raw_key == "webauth_enabled" || raw_key == "swarm_role" || raw_key == "swarm_id" || raw_key == "advertise_mode" || raw_key == "advertise_addr" || raw_key == "onboarding_state" || raw_key == "network_mode" || raw_key == "tailscale_transport_port" || raw_key == "deploy_container_sync_skill_url" || raw_key == "deploy_container_sync_permission_url") {
+      if (raw_key == "webauth_enabled" || raw_key == "swarm_role" || raw_key == "swarm_id" || raw_key == "swarm" "_mode" || raw_key == "advertise_mode" || raw_key == "advertise_addr" || raw_key == "onboarding_state" || raw_key == "network_mode" || raw_key == "tailscale_transport_port" || raw_key == "deploy_container_sync_skill_url" || raw_key == "deploy_container_sync_permission_url") {
         next
       }
       if (raw_key == "mode" && raw_value != "lan" && raw_value != "tailscale") {
@@ -887,9 +865,6 @@ swarm_startup_config_validate() {
       }
       if (!("swarm_name" in seen)) {
         fail(sprintf("invalid startup config %s: missing swarm_name", config_path))
-      }
-      if (!("swarm_mode" in seen)) {
-        fail(sprintf("invalid startup config %s: missing swarm_mode", config_path))
       }
       if (!("desktop_onboarding_complete" in seen)) {
         fail(sprintf("invalid startup config %s: missing desktop_onboarding_complete", config_path))
@@ -1025,9 +1000,6 @@ swarm_startup_config_validate() {
       }
       if (values["retain_tool_output_history"] != "true" && values["retain_tool_output_history"] != "false") {
         fail(sprintf("invalid startup config %s: retain_tool_output_history must be true or false", config_path))
-      }
-      if (values["swarm_mode"] != "true" && values["swarm_mode"] != "false") {
-        fail(sprintf("invalid startup config %s: swarm_mode must be true or false", config_path))
       }
       if (values["desktop_onboarding_complete"] != "true" && values["desktop_onboarding_complete"] != "false") {
         fail(sprintf("invalid startup config %s: desktop_onboarding_complete must be true or false", config_path))

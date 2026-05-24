@@ -309,7 +309,6 @@ desktop_port = ${HOST_DESKTOP_PORT}
 bypass_permissions = true
 retain_tool_output_history = false
 swarm_name = Live Production Update Host
-swarm_mode = true
 child = false
 mode = lan
 tailscale_url =

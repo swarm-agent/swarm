@@ -310,14 +310,13 @@ func TestCreateRejectsLANWireGuardRemoteDeploy(t *testing.T) {
 		DesktopPort:       15566,
 		PeerTransportPort: 17802,
 		SwarmName:         "Remote Deploy Test Host",
-		SwarmMode:         true,
 		NetworkMode:       startupconfig.NetworkModeTailscale,
 		TailscaleURL:      "https://host.tailnet.ts.net",
 	}); err != nil {
 		t.Fatalf("write startup config: %v", err)
 	}
 	service := NewService(pebblestore.NewRemoteDeploySessionStore(store), pebblestore.NewSwarmNodeStore(store), swarms, swarmStore, nil, nil, nil, startupPath, t.TempDir())
-	state, err := swarms.EnsureLocalState(swarmruntime.EnsureLocalStateInput{Name: "Remote Deploy Test Host", Role: "master", SwarmMode: true})
+	state, err := swarms.EnsureLocalState(swarmruntime.EnsureLocalStateInput{Name: "Remote Deploy Test Host", Role: "master"})
 	if err != nil {
 		t.Fatalf("ensure local state: %v", err)
 	}
@@ -791,7 +790,6 @@ func TestEnsurePendingInviteRestoresMissingHostInvite(t *testing.T) {
 		DesktopPort:       15566,
 		PeerTransportPort: 17802,
 		SwarmName:         "Remote Deploy Test Host",
-		SwarmMode:         true,
 		NetworkMode:       startupconfig.NetworkModeTailscale,
 		TailscaleURL:      "https://host.tailnet.ts.net",
 	}); err != nil {

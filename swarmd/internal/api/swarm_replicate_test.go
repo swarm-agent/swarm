@@ -516,7 +516,6 @@ func newReplicateTestHandler(t *testing.T) (*Server, *fakeReplicateDeployService
 
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
 	cfg := startupconfig.Default(startupPath)
-	cfg.SwarmMode = true
 	cfg.SwarmName = "host-swarm"
 	cfg.Host = "127.0.0.1"
 	cfg.AdvertiseHost = "127.0.0.1"

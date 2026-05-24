@@ -135,7 +135,6 @@ type EnsureLocalStateInput struct {
 	SwarmID       string
 	Name          string
 	Role          string
-	SwarmMode     bool
 	PublicKey     string
 	PrivateKey    string
 	Fingerprint   string
@@ -545,23 +544,9 @@ func (s *Service) EnsureLocalState(input EnsureLocalStateInput) (LocalState, err
 	if err != nil {
 		return LocalState{}, err
 	}
-	if !input.SwarmMode {
-		return LocalState{
-			Node:         toLocalNodeState(nodeRecord),
-			Pairing:      toPairingState(pairingRecord),
-			TrustedPeers: toTrustedPeers(trustedPeers),
-		}, nil
-	}
-	currentGroupID, err := s.EnsureGroupForLocalState(nodeRecord, input.SwarmMode)
+	groups, currentGroupID, err := s.ListGroupsForSwarm(nodeRecord.SwarmID, 500)
 	if err != nil {
 		return LocalState{}, err
-	}
-	groups, storedCurrentGroupID, err := s.ListGroupsForSwarm(nodeRecord.SwarmID, 500)
-	if err != nil {
-		return LocalState{}, err
-	}
-	if currentGroupID == "" {
-		currentGroupID = storedCurrentGroupID
 	}
 	return LocalState{
 		Node:           toLocalNodeState(nodeRecord),

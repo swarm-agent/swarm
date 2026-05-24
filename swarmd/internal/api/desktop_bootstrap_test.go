@@ -303,7 +303,6 @@ func newWorkspaceOverviewTopologyTestServer(t *testing.T) (*Server, string, *peb
 	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, nil, workspaceStore))
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
 	cfg := startupconfig.Default(startupPath)
-	cfg.SwarmMode = true
 	cfg.SwarmName = "host-swarm"
 	if err := startupconfig.Write(cfg); err != nil {
 		t.Fatalf("write startup config: %v", err)

@@ -13,7 +13,6 @@ import (
 func TestOnboardingReportsManagedSwarmRole(t *testing.T) {
 	server := newLocalAuthTestServer(t)
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
-		cfg.SwarmMode = true
 		cfg.Child = true
 		cfg.SwarmRole = startupconfig.SwarmRoleManaged
 		cfg.PairingState = "paired"

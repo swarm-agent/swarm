@@ -189,7 +189,6 @@ api_url=${API_URL}
     advertise_port
     desktop_port
     swarm_name
-    swarm_mode
     child
     mode
     tailscale_url
@@ -493,7 +492,7 @@ if [ -f "$config_path" ]; then
   proof CHILD_CONFIG_HOST "$(conf_value host "$config_path")"
   proof CHILD_CONFIG_ADVERTISE_HOST "$(conf_value advertise_host "$config_path")"
   proof CHILD_CONFIG_MODE "$(conf_value mode "$config_path")"
-  grep -E '^(startup_mode|dev_mode|host|port|advertise_host|advertise_port|desktop_port|swarm_name|swarm_mode|child|mode|tailscale_url|peer_transport_port|remote_deploy_enabled|remote_deploy_session_id|remote_deploy_host_api_base_url|remote_deploy_host_desktop_url|remote_deploy_sync_enabled|remote_deploy_sync_mode|remote_deploy_sync_owner_swarm_id|deploy_container_enabled|deploy_container_host_api_base_url)[[:space:]]*=' "$config_path" || true
+  grep -E '^(startup_mode|dev_mode|host|port|advertise_host|advertise_port|desktop_port|swarm_name|child|mode|tailscale_url|peer_transport_port|remote_deploy_enabled|remote_deploy_session_id|remote_deploy_host_api_base_url|remote_deploy_host_desktop_url|remote_deploy_sync_enabled|remote_deploy_sync_mode|remote_deploy_sync_owner_swarm_id|deploy_container_enabled|deploy_container_host_api_base_url)[[:space:]]*=' "$config_path" || true
 elif [ -d "$config_path" ]; then
   proof CONFIG_FILE 0
   proof CONFIG_PATH_IS_DIRECTORY 1

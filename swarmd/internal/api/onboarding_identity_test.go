@@ -207,7 +207,6 @@ func newOnboardingIdentityTestServerWithCalls(t *testing.T, bootstrap bool) (*Se
 
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
 	cfg := startupconfig.Default(startupPath)
-	cfg.SwarmMode = false
 	cfg.SwarmName = ""
 	if bootstrap {
 		cfg.SwarmName = "Original Device"

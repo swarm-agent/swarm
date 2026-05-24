@@ -702,7 +702,6 @@ func writeFlowReportStartupConfig(t *testing.T, overrides startupconfig.FileConf
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "swarm.conf")
 	cfg := startupconfig.Default(path)
-	cfg.SwarmMode = true
 	cfg.SwarmName = "flow-report-test"
 	cfg.Host = "127.0.0.1"
 	cfg.AdvertiseHost = "127.0.0.1"

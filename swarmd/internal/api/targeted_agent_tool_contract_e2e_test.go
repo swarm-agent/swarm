@@ -679,7 +679,6 @@ func writeLocalStartupConfig(t *testing.T) string {
 	t.Helper()
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
 	cfg := startupconfig.Default(startupPath)
-	cfg.SwarmMode = false
 	cfg.SwarmName = "local-swarm"
 	cfg.Host = "127.0.0.1"
 	cfg.AdvertiseHost = "127.0.0.1"

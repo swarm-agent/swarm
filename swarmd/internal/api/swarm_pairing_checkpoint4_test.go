@@ -24,7 +24,6 @@ func TestSwarmRemotePairingRequestCreatesManagerPendingApproval(t *testing.T) {
 	}
 	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "manager-swarm-1", Name: "Manager A", PublicKey: managerPublicKey, Fingerprint: managerFingerprint}}}
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
-		cfg.SwarmMode = true
 		cfg.Child = false
 		cfg.NetworkMode = startupconfig.NetworkModeTailscale
 		cfg.SwarmName = "Manager A"
@@ -106,7 +105,6 @@ func TestSwarmRemotePairingRequestRejectsCeremonyCodeMismatch(t *testing.T) {
 	}
 	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "manager-swarm-1", Name: "Manager A", PublicKey: managerPublicKey, Fingerprint: managerFingerprint}}}
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
-		cfg.SwarmMode = true
 		cfg.NetworkMode = startupconfig.NetworkModeTailscale
 		cfg.SwarmName = "Manager A"
 		cfg.TailscaleURL = "https://manager-a.example.ts.net"
@@ -159,7 +157,6 @@ func mustManagedPairingOfferForTest(t *testing.T, publicKey, fingerprint string)
 	t.Helper()
 	now := time.Now()
 	offer, err := buildSwarmRemotePairingOffer(startupconfig.FileConfig{
-		SwarmMode:     true,
 		NetworkMode:   startupconfig.NetworkModeTailscale,
 		SwarmName:     "Managed B",
 		TailscaleURL:  "https://managed-b.example.ts.net",

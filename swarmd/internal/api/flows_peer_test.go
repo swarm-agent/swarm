@@ -304,12 +304,12 @@ func TestFlowAssignmentDeliveryRoutesMirroredChildThroughManagedHostEvenWhenChil
 	targetBytes, err := json.Marshal(swarmTarget{
 		SwarmID:      "managed-child",
 		Name:         "managed child",
-		Relationship:   "child",
-		Kind:           "local",
-		DeploymentID:   "managed-deployment",
-		Online:         true,
-		Selectable:     true,
-		BackendURL:     "http://127.0.0.1:7782",
+		Relationship: "child",
+		Kind:         "local",
+		DeploymentID: "managed-deployment",
+		Online:       true,
+		Selectable:   true,
+		BackendURL:   "http://127.0.0.1:7782",
 	})
 	if err != nil {
 		t.Fatalf("marshal mirrored target: %v", err)
@@ -550,7 +550,6 @@ func newFlowPeerTestServer(t *testing.T) (*Server, *pebblestore.FlowStore) {
 	})
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
 	cfg := startupconfig.Default(startupPath)
-	cfg.SwarmMode = true
 	cfg.SwarmName = "host-swarm"
 	cfg.Host = "127.0.0.1"
 	cfg.AdvertiseHost = "127.0.0.1"

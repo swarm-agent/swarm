@@ -12,6 +12,7 @@ import (
 
 	"swarm/packages/swarmd/internal/flow"
 	"swarm/packages/swarmd/internal/flowdiaglog"
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -573,6 +574,9 @@ func (s *Server) resolveFlowAssignmentTarget(ctx context.Context, selection flow
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "/v1/swarm/targets", nil)
 	if err != nil {
 		return swarmTarget{}, flow.ResolvedTarget{}, err
+	}
+	if principal, ok := identity.PrincipalFromContext(ctx); ok && principal.Valid() {
+		req = req.WithContext(context.WithValue(req.Context(), productPrincipalRequestContextKey, principal))
 	}
 	targets, _, err := s.swarmTargetsForRequest(req)
 	if err != nil {

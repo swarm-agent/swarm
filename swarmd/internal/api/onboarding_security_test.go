@@ -118,7 +118,6 @@ func TestSwarmDiscoveryRedactsSensitiveMetadataFromLANPeerWithoutAuth(t *testing
 	server := newLocalAuthTestServer(t)
 	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "discovery-swarm-1", Name: "Discovery Swarm"}}}
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
-		cfg.SwarmMode = true
 		cfg.Child = false
 		cfg.NetworkMode = startupconfig.NetworkModeTailscale
 		cfg.SwarmName = "Discovery Swarm"
@@ -150,7 +149,6 @@ func TestSwarmDiscoveryAllowsIdentityFromTailnetPeer(t *testing.T) {
 	server := newLocalAuthTestServer(t)
 	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "discovery-swarm-1", Name: "Discovery Swarm"}}}
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
-		cfg.SwarmMode = true
 		cfg.Child = false
 		cfg.NetworkMode = startupconfig.NetworkModeTailscale
 		cfg.SwarmName = "Discovery Swarm"
@@ -184,7 +182,6 @@ func TestSwarmDiscoveryAllowsIdentityFromTailnetPeer(t *testing.T) {
 func TestSwarmDiscoveryAllowsSensitiveMetadataWithDesktopSession(t *testing.T) {
 	server := newLocalAuthTestServer(t)
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
-		cfg.SwarmMode = true
 		cfg.Child = false
 		cfg.NetworkMode = startupconfig.NetworkModeTailscale
 		cfg.SwarmName = "Discovery Swarm"

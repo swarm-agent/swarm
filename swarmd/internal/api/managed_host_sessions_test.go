@@ -48,7 +48,7 @@ func TestManagedHostSessionMessageUsesNewPeerAPIWithAuthAndMirrors(t *testing.T)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":      true,
 			"message": pebblestore.MessageSnapshot{ID: "msg_00000000000000000011", SessionID: "managed-session", GlobalSeq: 11, Role: "user", Content: "hello managed", CreatedAt: 123},
-			"session": pebblestore.SessionSnapshot{ID: "managed-session", WorkspacePath: "/managed/workspace", WorkspaceName: "workspace", Title: "Managed", Mode: "auto", Metadata: map[string]any{"swarm_managed_host_session": true}, CreatedAt: 1, UpdatedAt: 123, MessageCount: 1, LastMessageAt: 123},
+			"session": pebblestore.SessionSnapshot{ID: "managed-session", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, WorkspacePath: "/managed/workspace", WorkspaceName: "workspace", Title: "Managed", Mode: "auto", Metadata: map[string]any{"swarm_managed_host_session": true}, CreatedAt: 1, UpdatedAt: 123, MessageCount: 1, LastMessageAt: 123},
 		})
 	}))
 	defer managed.Close()
@@ -238,11 +238,11 @@ func TestManagedHostMirroredRunStreamControlUsesPeerStreamAPIWithSessionID(t *te
 	server.swarmTargetHealth.entries = map[string]swarmTargetHealthEntry{
 		"manual|managed-swarm|" + managed.URL: {online: true, checkedAt: time.Now()},
 	}
-	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "managed-session", WorkspacePath: "/managed/workspace", WorkspaceName: "workspace", Title: "Managed", Mode: "auto", Metadata: map[string]any{"swarm_managed_host_session": true, "swarm_managed_host_swarm_id": "managed-swarm"}, CreatedAt: 1, UpdatedAt: 1}); err != nil {
+	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "managed-session", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, WorkspacePath: "/managed/workspace", WorkspaceName: "workspace", Title: "Managed", Mode: "auto", Metadata: map[string]any{"swarm_managed_host_session": true, "swarm_managed_host_swarm_id": "managed-swarm"}, CreatedAt: 1, UpdatedAt: 1}); err != nil {
 		t.Fatalf("store mirror: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/managed-session/run/stream?swarm_id=managed-swarm", bytes.NewBufferString(`{"type":"run.start","prompt":"hello managed","background":true}`))
+	req := withTestPrincipal(httptest.NewRequest(http.MethodPost, "/v1/sessions/managed-session/run/stream?swarm_id=managed-swarm", bytes.NewBufferString(`{"type":"run.start","prompt":"hello managed","background":true}`)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
@@ -314,16 +314,21 @@ func TestManagedHostRunStreamWebsocketProxyMirrorsUpstreamFrames(t *testing.T) {
 		}
 	}))
 	defer managed.Close()
-	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "managed-session", WorkspacePath: "/managed/workspace", WorkspaceName: "workspace", Title: "Managed", Mode: "auto", Metadata: map[string]any{"swarm_managed_host_session": true, "swarm_managed_host_swarm_id": "managed-swarm", "swarm_managed_host_backend_url": managed.URL}, CreatedAt: 1, UpdatedAt: 1}); err != nil {
+	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "managed-session", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, WorkspacePath: "/managed/workspace", WorkspaceName: "workspace", Title: "Managed", Mode: "auto", Metadata: map[string]any{"swarm_managed_host_session": true, "swarm_managed_host_swarm_id": "managed-swarm", "swarm_managed_host_backend_url": managed.URL}, CreatedAt: 1, UpdatedAt: 1}); err != nil {
 		t.Fatalf("store mirror: %v", err)
 	}
 	seedManagedHostTarget(t, server, managed.URL)
 
-	primary := httptest.NewServer(server.Handler())
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, withTestPrincipal(r))
+	}))
 	defer primary.Close()
 	wsURL := "ws" + strings.TrimPrefix(primary.URL, "http") + "/v1/sessions/managed-session/run/stream?swarm_id=managed-swarm"
-	client, _, err := gorillaws.DefaultDialer.Dial(wsURL, nil)
+	client, resp, err := gorillaws.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
+		if resp != nil {
+			t.Fatalf("dial primary websocket: %v status=%d", err, resp.StatusCode)
+		}
 		t.Fatalf("dial primary websocket: %v", err)
 	}
 	defer client.Close()
@@ -407,16 +412,21 @@ func TestManagedHostRunStreamWebsocketProxyPersistsSessionTitle(t *testing.T) {
 		}
 	}))
 	defer managed.Close()
-	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "managed-session", WorkspacePath: "/managed/workspace", WorkspaceName: "workspace", Title: "Managed", Mode: "auto", Metadata: map[string]any{"swarm_managed_host_session": true, "swarm_managed_host_swarm_id": "managed-swarm", "swarm_managed_host_backend_url": managed.URL}, CreatedAt: 1, UpdatedAt: 1}); err != nil {
+	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "managed-session", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, WorkspacePath: "/managed/workspace", WorkspaceName: "workspace", Title: "Managed", Mode: "auto", Metadata: map[string]any{"swarm_managed_host_session": true, "swarm_managed_host_swarm_id": "managed-swarm", "swarm_managed_host_backend_url": managed.URL}, CreatedAt: 1, UpdatedAt: 1}); err != nil {
 		t.Fatalf("store mirror: %v", err)
 	}
 	seedManagedHostTarget(t, server, managed.URL)
 
-	primary := httptest.NewServer(server.Handler())
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, withTestPrincipal(r))
+	}))
 	defer primary.Close()
 	wsURL := "ws" + strings.TrimPrefix(primary.URL, "http") + "/v1/sessions/managed-session/run/stream?swarm_id=managed-swarm"
-	client, _, err := gorillaws.DefaultDialer.Dial(wsURL, nil)
+	client, resp, err := gorillaws.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
+		if resp != nil {
+			t.Fatalf("dial primary websocket: %v status=%d", err, resp.StatusCode)
+		}
 		t.Fatalf("dial primary websocket: %v", err)
 	}
 	defer client.Close()
@@ -606,14 +616,14 @@ func TestPrimaryResolvePublishesPermissionUpdateToManagedHostEventPath(t *testin
 	}))
 	defer managed.Close()
 
-	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "managed-session", WorkspacePath: "/managed/workspace", WorkspaceName: "workspace", Title: "Managed", Mode: "plan", Metadata: map[string]any{"swarm_managed_host_session": true, "swarm_managed_host_swarm_id": "managed-swarm", "swarm_managed_host_backend_url": managed.URL}, CreatedAt: 1, UpdatedAt: 1}); err != nil {
+	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "managed-session", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, WorkspacePath: "/managed/workspace", WorkspaceName: "workspace", Title: "Managed", Mode: "plan", Metadata: map[string]any{"swarm_managed_host_session": true, "swarm_managed_host_swarm_id": "managed-swarm", "swarm_managed_host_backend_url": managed.URL}, CreatedAt: 1, UpdatedAt: 1}); err != nil {
 		t.Fatalf("store mirror: %v", err)
 	}
 	record, err := permissionSvc.CreatePending(permission.CreateInput{SessionID: "managed-session", RunID: "managed-run", CallID: "call-1", ToolName: "bash", ToolArguments: `{"cmd":"pwd"}`, Requirement: "tool", Mode: "plan"})
 	if err != nil {
 		t.Fatalf("create pending: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/managed-session/permissions/"+record.ID+"/resolve", bytes.NewBufferString(`{"action":"approve","reason":"ok"}`))
+	req := withTestPrincipal(httptest.NewRequest(http.MethodPost, "/v1/sessions/managed-session/permissions/"+record.ID+"/resolve", bytes.NewBufferString(`{"action":"approve","reason":"ok"}`)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)

@@ -7,7 +7,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 )
 
-func TestChatFooterSettingsLine_IncludesSwarmModeAgentModelThinking(t *testing.T) {
+func TestChatFooterSettingsLine_IncludesSwarmNameAgentModelThinking(t *testing.T) {
 	p := NewChatPage(ChatPageOptions{
 		SessionID:      "session-test",
 		ShowHeader:     true,

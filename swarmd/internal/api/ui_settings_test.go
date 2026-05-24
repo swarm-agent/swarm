@@ -31,7 +31,7 @@ func TestUISettingsPostPreservesExistingThinkingTagsWhenChatOmitted(t *testing.T
 	server := NewServer("test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
 	server.SetUISettingsService(settingsSvc)
 	swarmSvc := swarmruntime.NewService(pebblestore.NewSwarmStore(store), events, hub.Publish)
-	localState, err := swarmSvc.EnsureLocalState(swarmruntime.EnsureLocalStateInput{Name: "Local", Role: "master", SwarmMode: true})
+	localState, err := swarmSvc.EnsureLocalState(swarmruntime.EnsureLocalStateInput{Name: "Local", Role: "master"})
 	if err != nil {
 		t.Fatalf("ensure local swarm: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestUISettingsPostPreservesExistingThinkingTagsWhenChatOmitted(t *testing.T
 	if response.Swarm.Name != "Renamed Local" {
 		t.Fatalf("swarm name = %q, want Renamed Local", response.Swarm.Name)
 	}
-	renamedState, err := swarmSvc.EnsureLocalState(swarmruntime.EnsureLocalStateInput{Name: "Startup Config Name", Role: "master", SwarmMode: true})
+	renamedState, err := swarmSvc.EnsureLocalState(swarmruntime.EnsureLocalStateInput{Name: "Startup Config Name", Role: "master"})
 	if err != nil {
 		t.Fatalf("reload local swarm: %v", err)
 	}

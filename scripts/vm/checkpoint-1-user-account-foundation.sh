@@ -84,7 +84,7 @@ COOKIE_JAR="${RUN_ROOT}/cookies.txt"
 LOCAL_TRANSPORT_SOCKET="${SWARM_DATA_DIR}/local-transport/api.sock"
 export SWARM_DATA_DIR APP_URL DB_PATH
 
-STARTUP_CONFIG_TEXT="$(printf 'startup_mode = interactive\nswarm_name = Checkpoint1 Device\nswarm_mode = true\nhost = 127.0.0.1\nport = %s\ndesktop_port = %s\npeer_transport_port = %s\n' "${API_PORT}" "${DESKTOP_PORT}" "${PEER_PORT}")"
+STARTUP_CONFIG_TEXT="$(printf 'startup_mode = interactive\nswarm_name = Checkpoint1 Device\nhost = 127.0.0.1\nport = %s\ndesktop_port = %s\npeer_transport_port = %s\n' "${API_PORT}" "${DESKTOP_PORT}" "${PEER_PORT}")"
 printf '%s\n' "${STARTUP_CONFIG_TEXT}" >"${STARTUP_CONFIG_PATH}"
 
 record_request() {

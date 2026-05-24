@@ -109,7 +109,6 @@ JWT claims are authentication evidence only. They are not the authority for user
 {
   "username": "alice",
   "swarm_name": "Alice Laptop",
-  "swarm_mode": true,
   "child": false
 }
 ```
@@ -117,7 +116,7 @@ JWT claims are authentication evidence only. They are not the authority for user
 Rules:
 
 - `username` is required only when product identity has not been bootstrapped.
-- `swarm_name` remains required for daemon config when swarm mode needs it.
+- `swarm_name` remains required for daemon/device identity.
 - The first successful bootstrap atomically creates exactly one `User`, one default backend `Team`, one owner/admin `TeamMembership`, and one current user selection.
 - The same response issues a long-lived local product JWT session for the created `UserID`.
 - Subsequent attempts to provide `username` to bootstrap again must fail with a clear 4xx error.

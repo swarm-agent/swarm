@@ -42,7 +42,6 @@ const (
 	startupModeKey               = "startup_mode"
 	devModeKey                   = "dev_mode"
 	devRootKey                   = "dev_root"
-	swarmModeKey                 = "swarm_mode"
 	desktopOnboardingCompleteKey = "desktop_onboarding_complete"
 	swarmRoleKey                 = "swarm_role"
 	bootstrapModeKey             = "mode"
@@ -63,7 +62,6 @@ type FileConfig struct {
 	BypassPermissions            bool
 	RetainToolOutputHistory      bool
 	SwarmName                    string
-	SwarmMode                    bool
 	DesktopOnboardingComplete    bool
 	DesktopOnboardingCompleteSet bool
 	Child                        bool
@@ -219,7 +217,6 @@ func Default(path string) FileConfig {
 		BypassPermissions:            false,
 		RetainToolOutputHistory:      false,
 		SwarmName:                    "",
-		SwarmMode:                    false,
 		DesktopOnboardingComplete:    true,
 		DesktopOnboardingCompleteSet: false,
 		Child:                        false,
@@ -273,7 +270,7 @@ func Load(path string) (FileConfig, error) {
 	if _, ok := seen["peer_transport_port"]; !ok {
 		parsed.PeerTransportPort = chooseAvailablePeerTransportPort(parsed)
 	}
-	if err := appendMissingKeys(path, text, info.Mode().Perm(), parsed, seen); err != nil {
+	if err := appendMissingKeys(path, textWithoutLegacyIgnoredEntries(text), info.Mode().Perm(), parsed, seen); err != nil {
 		return FileConfig{}, err
 	}
 	for _, key := range requiredKeys() {
@@ -408,10 +405,6 @@ retain_tool_output_history = %t
 # Leave blank to set it later.
 swarm_name = %s
 
-# Whether this Swarm should participate in shared swarm networking.
-# false = standalone local use, true = enable swarm role/pairing/transport settings.
-swarm_mode = %t
-
 # Explicit Desktop onboarding completion marker.
 # false = Desktop must continue onboarding; true = Desktop may open the launcher.
 desktop_onboarding_complete = %t
@@ -421,7 +414,7 @@ desktop_onboarding_complete = %t
 child = %t
 
 # Optional additive swarm role marker.
-# managed = paired host managed by another Swarm; blank = derive from swarm_mode/child.
+# managed = paired host managed by another Swarm; blank = derive from child/pairing state.
 swarm_role = %s
 
 # Bootstrap network mode.
@@ -477,7 +470,7 @@ remote_deploy_sync_enabled = %t
 remote_deploy_sync_mode = %s
 remote_deploy_sync_owner_swarm_id = %s
 remote_deploy_sync_credential_url = %s
-`, cfg.Mode, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.SwarmName, cfg.SwarmMode, cfg.DesktopOnboardingComplete, cfg.Child, cfg.SwarmRole, cfg.NetworkMode, cfg.TailscaleURL, cfg.PeerTransportPort, cfg.ParentSwarmID, cfg.PairingState, cfg.ManagedHostSync.Mode, formatCSVList(cfg.ManagedHostSync.Modules), cfg.ManagedHostSync.OwnerSwarmID, cfg.ManagedHostSync.HostAPIBaseURL, cfg.ManagedHostSync.SyncCredentialURL, cfg.ManagedHostSync.SyncAgentURL, cfg.DeployContainer.Enabled, cfg.DeployContainer.HostDriven, cfg.DeployContainer.SyncEnabled, cfg.DeployContainer.SyncMode, formatCSVList(cfg.DeployContainer.SyncModules), cfg.DeployContainer.SyncOwnerSwarmID, cfg.DeployContainer.SyncCredentialURL, cfg.DeployContainer.SyncAgentURL, cfg.DeployContainer.DeploymentID, cfg.DeployContainer.HostAPIBaseURL, cfg.DeployContainer.HostDesktopURL, cfg.DeployContainer.LocalTransportSocketPath, cfg.DeployContainer.BootstrapSecret, cfg.DeployContainer.VerificationCode, cfg.RemoteDeploy.Enabled, cfg.RemoteDeploy.SessionID, cfg.RemoteDeploy.HostAPIBaseURL, cfg.RemoteDeploy.HostDesktopURL, cfg.RemoteDeploy.SyncEnabled, cfg.RemoteDeploy.SyncMode, cfg.RemoteDeploy.SyncOwnerSwarmID, cfg.RemoteDeploy.SyncCredentialURL)
+`, cfg.Mode, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.SwarmName, cfg.DesktopOnboardingComplete, cfg.Child, cfg.SwarmRole, cfg.NetworkMode, cfg.TailscaleURL, cfg.PeerTransportPort, cfg.ParentSwarmID, cfg.PairingState, cfg.ManagedHostSync.Mode, formatCSVList(cfg.ManagedHostSync.Modules), cfg.ManagedHostSync.OwnerSwarmID, cfg.ManagedHostSync.HostAPIBaseURL, cfg.ManagedHostSync.SyncCredentialURL, cfg.ManagedHostSync.SyncAgentURL, cfg.DeployContainer.Enabled, cfg.DeployContainer.HostDriven, cfg.DeployContainer.SyncEnabled, cfg.DeployContainer.SyncMode, formatCSVList(cfg.DeployContainer.SyncModules), cfg.DeployContainer.SyncOwnerSwarmID, cfg.DeployContainer.SyncCredentialURL, cfg.DeployContainer.SyncAgentURL, cfg.DeployContainer.DeploymentID, cfg.DeployContainer.HostAPIBaseURL, cfg.DeployContainer.HostDesktopURL, cfg.DeployContainer.LocalTransportSocketPath, cfg.DeployContainer.BootstrapSecret, cfg.DeployContainer.VerificationCode, cfg.RemoteDeploy.Enabled, cfg.RemoteDeploy.SessionID, cfg.RemoteDeploy.HostAPIBaseURL, cfg.RemoteDeploy.HostDesktopURL, cfg.RemoteDeploy.SyncEnabled, cfg.RemoteDeploy.SyncMode, cfg.RemoteDeploy.SyncOwnerSwarmID, cfg.RemoteDeploy.SyncCredentialURL)
 }
 
 func BootstrapExistingConfigError(path string) error {
@@ -640,17 +633,14 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 			rawSeen[key] = struct{}{}
 			seen["swarm_name"] = struct{}{}
 			cfg.SwarmName = value
-		case swarmModeKey:
+		case "swarm" + "_mode":
 			if _, exists := rawSeen[key]; exists {
 				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
 			}
 			rawSeen[key] = struct{}{}
-			seen[swarmModeKey] = struct{}{}
-			swarmMode, err := strconv.ParseBool(value)
-			if err != nil {
-				return FileConfig{}, nil, fmt.Errorf("line %d: invalid %s %q", lineNumber+1, swarmModeKey, value)
+			if _, err := strconv.ParseBool(value); err != nil {
+				return FileConfig{}, nil, fmt.Errorf("line %d: invalid legacy %s %q", lineNumber+1, key, value)
 			}
-			cfg.SwarmMode = swarmMode
 		case desktopOnboardingCompleteKey:
 			if _, exists := rawSeen[key]; exists {
 				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
@@ -1004,6 +994,20 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 	return cfg, seen, nil
 }
 
+func textWithoutLegacyIgnoredEntries(text string) string {
+	lines := strings.Split(text, "\n")
+	kept := make([]string, 0, len(lines))
+	for _, rawLine := range lines {
+		line := strings.TrimSpace(rawLine)
+		key, _, ok := strings.Cut(line, "=")
+		if ok && isLegacyIgnoredKey(strings.TrimSpace(key)) {
+			continue
+		}
+		kept = append(kept, rawLine)
+	}
+	return strings.Join(kept, "\n")
+}
+
 func appendMissingKeys(path, text string, perm os.FileMode, cfg FileConfig, seen map[string]struct{}) error {
 	lines := missingKeyLines(cfg, seen)
 	if len(lines) == 0 {
@@ -1072,13 +1076,6 @@ func missingKeyLines(cfg FileConfig, seen map[string]struct{}) []string {
 			fmt.Sprintf("swarm_name = %s", cfg.SwarmName),
 		)
 	}
-	if _, ok := seen[swarmModeKey]; !ok {
-		lines = append(lines,
-			"# Whether this Swarm should participate in shared swarm networking.",
-			"# false = standalone local use, true = enable swarm role/pairing/transport settings.",
-			fmt.Sprintf("%s = %t", swarmModeKey, cfg.SwarmMode),
-		)
-	}
 	if _, ok := seen["child"]; !ok {
 		lines = append(lines,
 			"# Whether this Swarm should bootstrap as a child.",
@@ -1089,7 +1086,7 @@ func missingKeyLines(cfg FileConfig, seen map[string]struct{}) []string {
 	if _, ok := seen[swarmRoleKey]; !ok {
 		lines = append(lines,
 			"# Optional additive swarm role marker.",
-			"# managed = paired host managed by another Swarm; blank = derive from swarm_mode/child.",
+			"# managed = paired host managed by another Swarm; blank = derive from child/pairing state.",
 			fmt.Sprintf("%s = %s", swarmRoleKey, cfg.SwarmRole),
 		)
 	}
@@ -1221,7 +1218,7 @@ func validate(cfg FileConfig) error {
 }
 
 func requiredKeys() []string {
-	return []string{startupModeKey, devModeKey, devRootKey, "host", "port", "advertise_host", "advertise_port", "desktop_port", "bypass_permissions", "retain_tool_output_history", "swarm_name", swarmModeKey, "child", swarmRoleKey, bootstrapModeKey, "tailscale_url", "peer_transport_port", "parent_swarm_id", "pairing_state", "managed_host_sync_mode", "managed_host_sync_modules", "managed_host_sync_owner_swarm_id", "managed_host_sync_host_api_base_url", "managed_host_sync_credential_url", "managed_host_sync_agent_url", "deploy_container_enabled", "deploy_container_sync_enabled", "deploy_container_sync_mode", "deploy_container_sync_modules", "deploy_container_sync_owner_swarm_id", "deploy_container_sync_credential_url", "deploy_container_sync_agent_url", "deploy_container_deployment_id", "deploy_container_host_api_base_url", "deploy_container_host_desktop_url", "deploy_container_local_transport_socket_path", "deploy_container_bootstrap_secret", "deploy_container_verification_code", "remote_deploy_enabled", "remote_deploy_session_id", "remote_deploy_host_api_base_url", "remote_deploy_host_desktop_url", "remote_deploy_sync_enabled", "remote_deploy_sync_mode", "remote_deploy_sync_owner_swarm_id", "remote_deploy_sync_credential_url"}
+	return []string{startupModeKey, devModeKey, devRootKey, "host", "port", "advertise_host", "advertise_port", "desktop_port", "bypass_permissions", "retain_tool_output_history", "swarm_name", "child", swarmRoleKey, bootstrapModeKey, "tailscale_url", "peer_transport_port", "parent_swarm_id", "pairing_state", "managed_host_sync_mode", "managed_host_sync_modules", "managed_host_sync_owner_swarm_id", "managed_host_sync_host_api_base_url", "managed_host_sync_credential_url", "managed_host_sync_agent_url", "deploy_container_enabled", "deploy_container_sync_enabled", "deploy_container_sync_mode", "deploy_container_sync_modules", "deploy_container_sync_owner_swarm_id", "deploy_container_sync_credential_url", "deploy_container_sync_agent_url", "deploy_container_deployment_id", "deploy_container_host_api_base_url", "deploy_container_host_desktop_url", "deploy_container_local_transport_socket_path", "deploy_container_bootstrap_secret", "deploy_container_verification_code", "remote_deploy_enabled", "remote_deploy_session_id", "remote_deploy_host_api_base_url", "remote_deploy_host_desktop_url", "remote_deploy_sync_enabled", "remote_deploy_sync_mode", "remote_deploy_sync_owner_swarm_id", "remote_deploy_sync_credential_url"}
 }
 
 func allowsEmptyValue(key string) bool {
@@ -1235,7 +1232,7 @@ func allowsEmptyValue(key string) bool {
 
 func isLegacyIgnoredKey(key string) bool {
 	switch key {
-	case "webauth_enabled", "onboarding_state", "swarm_id", "local_transport_port", "tailscale_transport_port", "deploy_container_sync_skill_url", "deploy_container_sync_permission_url":
+	case "webauth_enabled", "onboarding_state", "swarm_id", "swarm" + "_mode", "local_transport_port", "tailscale_transport_port", "deploy_container_sync_skill_url", "deploy_container_sync_permission_url":
 		return true
 	default:
 		return false

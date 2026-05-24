@@ -2487,7 +2487,6 @@ func (s *Service) resolveBootstrapContext() (startupconfig.FileConfig, swarmrunt
 	state, err := s.swarms.EnsureLocalState(swarmruntime.EnsureLocalStateInput{
 		Name:          strings.TrimSpace(cfg.SwarmName),
 		Role:          hostRole(cfg),
-		SwarmMode:     true,
 		AdvertiseMode: cfg.NetworkMode,
 		AdvertiseAddr: strings.TrimSpace(cfg.AdvertiseHost),
 	})
@@ -2539,7 +2538,6 @@ func buildChildContainerEnv(input containerBootstrapEnvInput) []string {
 	cfg.AdvertisePort = input.ChildAdvertisePort
 	cfg.DesktopPort = startupconfig.DefaultDesktopPort
 	cfg.BypassPermissions = input.BypassPermissions
-	cfg.SwarmMode = true
 	cfg.Child = true
 	cfg.NetworkMode = startupconfig.NetworkModeLAN
 	cfg.SwarmName = strings.TrimSpace(input.ChildName)
@@ -2793,7 +2791,6 @@ func (s *Service) prepareChildAttachState(cfg startupconfig.FileConfig) (swarmru
 	state, err := s.swarms.EnsureLocalState(swarmruntime.EnsureLocalStateInput{
 		Name:          strings.TrimSpace(cfg.SwarmName),
 		Role:          "child",
-		SwarmMode:     true,
 		AdvertiseMode: cfg.NetworkMode,
 		AdvertiseAddr: strings.TrimSpace(cfg.AdvertiseHost),
 	})

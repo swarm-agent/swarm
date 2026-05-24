@@ -515,16 +515,17 @@ func (s *Server) proxyManagedHostRunStreamWebsocket(w http.ResponseWriter, r *ht
 	headers := cloneHeaderForUpstreamWebsocket(r.Header)
 	headers.Set(peerAuthSwarmIDHeader, strings.TrimSpace(state.Node.SwarmID))
 	headers.Set(peerAuthTokenHeader, peerToken)
-	upstream, resp, err := gorillaws.DefaultDialer.DialContext(r.Context(), wsEndpoint, headers)
-	if err != nil {
-		return summarizeWebsocketDialError(err, resp)
-	}
-	defer upstream.Close()
 	downstream, err := transportws.Accept(w, r)
 	if err != nil {
 		return err
 	}
 	defer downstream.Close()
+	upstream, resp, err := gorillaws.DefaultDialer.DialContext(r.Context(), wsEndpoint, headers)
+	if err != nil {
+		s.sendRunStreamControl(downstream, runStreamControlMessage{Type: "error", OK: false, Error: summarizeWebsocketDialError(err, resp).Error()})
+		return nil
+	}
+	defer upstream.Close()
 	first, err := downstream.ReadText()
 	if err != nil {
 		return err
@@ -1178,16 +1179,18 @@ func (s *Server) managedHostTargetForSessionRequest(r *http.Request, sessionID, 
 		if routeErr != nil {
 			return nil, http.StatusBadRequest, routeErr
 		}
-		if !routeFound || strings.TrimSpace(route.AccountScopeID) == "" || strings.TrimSpace(route.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
-			return nil, http.StatusNotFound, errors.New("session not found")
-		}
-		if routeUserID := strings.TrimSpace(route.UserID); routeUserID != "" && routeUserID != strings.TrimSpace(principal.UserID) {
-			return nil, http.StatusNotFound, errors.New("session not found")
-		}
-		if targetSwarmID == "" {
-			targetSwarmID = strings.TrimSpace(route.ChildSwarmID)
-		} else if routeSwarmID := strings.TrimSpace(route.ChildSwarmID); routeSwarmID != "" && !strings.EqualFold(routeSwarmID, targetSwarmID) {
-			return nil, http.StatusNotFound, errors.New("session not found")
+		if routeFound {
+			if strings.TrimSpace(route.AccountScopeID) == "" || strings.TrimSpace(route.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+				return nil, http.StatusNotFound, errors.New("session not found")
+			}
+			if routeUserID := strings.TrimSpace(route.UserID); routeUserID != "" && routeUserID != strings.TrimSpace(principal.UserID) {
+				return nil, http.StatusNotFound, errors.New("session not found")
+			}
+			if targetSwarmID == "" {
+				targetSwarmID = strings.TrimSpace(route.ChildSwarmID)
+			} else if routeSwarmID := strings.TrimSpace(route.ChildSwarmID); routeSwarmID != "" && !strings.EqualFold(routeSwarmID, targetSwarmID) {
+				return nil, http.StatusNotFound, errors.New("session not found")
+			}
 		}
 	}
 	if targetSwarmID == "" {

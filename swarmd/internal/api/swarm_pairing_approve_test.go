@@ -72,7 +72,6 @@ func TestSwarmRemotePairingApproveManagerApprovesAndReturnsFinalizeMaterial(t *t
 	manager.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "manager-swarm-1", Name: "Manager A", PublicKey: managerPublicKey, Fingerprint: managerFingerprint}}}
 	manager.SetDeployContainerService(fakeManagedHostInitialSyncDeployService{bundle: deployruntime.ManagedHostInitialSyncBundle{UserID: "user_local_auth_test", AccountScopeID: "acct_local_auth_test", CredentialBundle: deployruntime.ContainerSyncCredentialBundle{UserID: "user_local_auth_test", AccountScopeID: "acct_local_auth_test"}}})
 	setLocalAuthTestStartupConfig(t, manager, func(cfg *startupconfig.FileConfig) {
-		cfg.SwarmMode = true
 		cfg.NetworkMode = startupconfig.NetworkModeTailscale
 		cfg.SwarmName = "Manager A"
 		cfg.TailscaleURL = "https://manager-a.example.ts.net"
@@ -212,7 +211,6 @@ func TestSwarmRemotePairingApproveRequiresExplicitConfirmation(t *testing.T) {
 func TestSwarmRemotePairingFinalizePersistsManagedStartupConfig(t *testing.T) {
 	server := newLocalAuthTestServer(t)
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
-		cfg.SwarmMode = false
 		cfg.Child = false
 		cfg.SwarmRole = ""
 		cfg.ParentSwarmID = ""
@@ -236,8 +234,8 @@ func TestSwarmRemotePairingFinalizePersistsManagedStartupConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load startup config: %v", err)
 	}
-	if !cfg.SwarmMode || !cfg.Child {
-		t.Fatalf("config swarm identity = mode:%t child:%t, want true/true", cfg.SwarmMode, cfg.Child)
+	if !cfg.Child {
+		t.Fatalf("config child = false, want true")
 	}
 	if cfg.SwarmRole != startupconfig.SwarmRoleManaged {
 		t.Fatalf("config SwarmRole = %q, want %q", cfg.SwarmRole, startupconfig.SwarmRoleManaged)

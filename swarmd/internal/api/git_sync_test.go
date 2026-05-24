@@ -277,7 +277,6 @@ func newManagedGitSyncTestServer(t *testing.T) *Server {
 	server.SetSwarmService(fakeRoutedSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "host-swarm-id", Name: "host-swarm", Role: "master"}}, token: "peer-token"})
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
 	cfg := startupconfig.Default(startupPath)
-	cfg.SwarmMode = true
 	cfg.SwarmName = "host-swarm"
 	if err := startupconfig.Write(cfg); err != nil {
 		t.Fatalf("write startup config: %v", err)

@@ -23,7 +23,7 @@ func TestHandleSwarmTargetsReturnsRenamedSelfTargetImmediately(t *testing.T) {
 	defer func() { _ = store.Close() }()
 
 	swarmSvc := swarmruntime.NewService(pebblestore.NewSwarmStore(store), nil, nil)
-	initial, err := swarmSvc.EnsureLocalState(swarmruntime.EnsureLocalStateInput{Name: "Initial Primary", Role: "master", SwarmMode: true})
+	initial, err := swarmSvc.EnsureLocalState(swarmruntime.EnsureLocalStateInput{Name: "Initial Primary", Role: "master"})
 	if err != nil {
 		t.Fatalf("ensure local swarm: %v", err)
 	}

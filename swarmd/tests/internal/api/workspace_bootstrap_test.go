@@ -267,7 +267,6 @@ func newWorkspaceBootstrapTestServer(t *testing.T, eventLog *pebblestore.EventLo
 	server := api.NewServer("test", nil, nil, nil, nil, sessionSvc, workspaceSvc, discoverySvc, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
 	cfg := startupconfig.Default(startupPath)
-	cfg.SwarmMode = true
 	cfg.SwarmName = "test-swarm"
 	cfg.Host = "127.0.0.1"
 	cfg.AdvertiseHost = "127.0.0.1"
@@ -297,6 +296,12 @@ type fakeWorkspaceBootstrapSwarmService struct {
 
 func (f fakeWorkspaceBootstrapSwarmService) EnsureLocalState(input swarmruntime.EnsureLocalStateInput) (swarmruntime.LocalState, error) {
 	return f.state, nil
+}
+
+func (f fakeWorkspaceBootstrapSwarmService) RenameLocalSwarm(input swarmruntime.RenameLocalSwarmInput) (swarmruntime.LocalState, error) {
+	state := f.state
+	state.Node.Name = input.Name
+	return state, nil
 }
 
 func (f fakeWorkspaceBootstrapSwarmService) ListGroupsForSwarm(swarmID string, limit int) ([]swarmruntime.GroupState, string, error) {

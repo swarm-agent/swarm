@@ -1294,7 +1294,6 @@ func configureRoutedSessionTestServerAsChild(t *testing.T, server *Server, swarm
 	})
 	startupPath := filepath.Join(t.TempDir(), "child-swarm.conf")
 	cfg := startupconfig.Default(startupPath)
-	cfg.SwarmMode = true
 	cfg.Child = true
 	cfg.SwarmName = "child-swarm"
 	cfg.ParentSwarmID = parentSwarmID
@@ -1364,7 +1363,6 @@ func newRoutedSessionTestServerWithSwarmStore(t *testing.T) (*Server, *sessionru
 
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
 	cfg := startupconfig.Default(startupPath)
-	cfg.SwarmMode = true
 	cfg.SwarmName = "host-swarm"
 	cfg.Host = "127.0.0.1"
 	cfg.AdvertiseHost = "127.0.0.1"

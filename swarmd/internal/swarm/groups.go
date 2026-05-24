@@ -109,7 +109,14 @@ func (s *Service) ListGroupsForSwarm(swarmID string, limit int) ([]GroupState, s
 		}
 		return groupStates[i].Group.CreatedAt < groupStates[j].Group.CreatedAt
 	})
-	return groupStates, strings.TrimSpace(currentGroupID), nil
+	currentForSwarm := ""
+	for _, state := range groupStates {
+		if strings.EqualFold(state.Group.ID, currentGroupID) {
+			currentForSwarm = strings.TrimSpace(currentGroupID)
+			break
+		}
+	}
+	return groupStates, currentForSwarm, nil
 }
 
 func (s *Service) UpsertGroup(input UpsertGroupInput) (Group, error) {
@@ -296,41 +303,6 @@ func (s *Service) RemoveGroupMember(input RemoveGroupMemberInput) error {
 	}
 	_, _ = s.appendEvent("swarm:group", "swarm.group.member.removed", groupID, map[string]any{"group_id": groupID, "swarm_id": swarmID})
 	return nil
-}
-
-func (s *Service) EnsureGroupForLocalState(localNode pebblestore.SwarmLocalNodeRecord, swarmMode bool) (string, error) {
-	if s == nil || s.store == nil {
-		return "", errors.New("swarm service is not configured")
-	}
-	if !swarmMode {
-		return "", nil
-	}
-	switch strings.ToLower(strings.TrimSpace(localNode.Role)) {
-	case bootstrapRoleMaster:
-		group, err := s.ensureLocalHostGroup(localNode, localNode.Name)
-		if err != nil {
-			return "", err
-		}
-		return group.ID, nil
-	case bootstrapRoleChild:
-		currentGroupID, ok, err := s.store.GetCurrentGroupID()
-		if err != nil {
-			return "", err
-		}
-		if !ok {
-			return "", nil
-		}
-		membership, membershipOK, err := s.store.GetGroupMembership(currentGroupID, localNode.SwarmID)
-		if err != nil {
-			return "", err
-		}
-		if !membershipOK {
-			return "", nil
-		}
-		return membership.GroupID, nil
-	default:
-		return "", nil
-	}
 }
 
 func (s *Service) ensureLocalHostGroup(localNode pebblestore.SwarmLocalNodeRecord, fallbackName string) (pebblestore.SwarmGroupRecord, error) {

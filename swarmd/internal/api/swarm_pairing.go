@@ -761,7 +761,6 @@ func (s *Server) handleSwarmRemotePairingFinalize(w http.ResponseWriter, r *http
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	cfg.SwarmMode = true
 	cfg.Child = true
 	cfg.SwarmRole = startupconfig.SwarmRoleManaged
 	cfg.ParentSwarmID = managerSwarmID
@@ -865,7 +864,6 @@ func (s *Server) handleSwarmManagedHostRemove(w http.ResponseWriter, r *http.Req
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		cfg.SwarmMode = true
 		cfg.Child = false
 		cfg.SwarmRole = ""
 		cfg.ParentSwarmID = ""

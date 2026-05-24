@@ -776,7 +776,6 @@ desktop_port = ${HOST_DESKTOP_PORT}
 bypass_permissions = ${BYPASS_PERMISSIONS}
 retain_tool_output_history = false
 swarm_name = ${HOST_SWARM_NAME}
-swarm_mode = true
 child = false
 mode = lan
 tailscale_url =

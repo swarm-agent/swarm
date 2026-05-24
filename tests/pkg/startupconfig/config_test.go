@@ -9,11 +9,10 @@ import (
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 )
 
-func TestWriteAndLoad_PersistsSwarmMode(t *testing.T) {
+func TestWriteAndLoad_OmitsLegacyModeAndPersistsExplicitState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "swarm.conf")
 	cfg := startupconfig.Default(path)
 	cfg.SwarmName = "my-device"
-	cfg.SwarmMode = true
 	cfg.SwarmRole = startupconfig.SwarmRoleManaged
 	cfg.DevMode = true
 	cfg.DevRoot = filepath.Clean(filepath.Join(t.TempDir(), "repo"))
@@ -37,8 +36,8 @@ func TestWriteAndLoad_PersistsSwarmMode(t *testing.T) {
 		t.Fatalf("ReadFile(%q) error = %v", path, err)
 	}
 	text := string(data)
-	if !strings.Contains(text, "swarm_mode = true") {
-		t.Fatalf("startup config missing swarm_mode=true: %q", text)
+	if strings.Contains(text, "swarm"+"_mode") {
+		t.Fatalf("startup config should not include legacy mode key: %q", text)
 	}
 	if !strings.Contains(text, "swarm_role = managed") {
 		t.Fatalf("startup config missing swarm_role=managed: %q", text)
@@ -53,9 +52,6 @@ func TestWriteAndLoad_PersistsSwarmMode(t *testing.T) {
 	loaded, err := startupconfig.Load(path)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
-	}
-	if !loaded.SwarmMode {
-		t.Fatal("loaded.SwarmMode = false, want true")
 	}
 	if loaded.SwarmRole != startupconfig.SwarmRoleManaged {
 		t.Fatalf("loaded.SwarmRole = %q, want %q", loaded.SwarmRole, startupconfig.SwarmRoleManaged)
@@ -214,7 +210,7 @@ func TestWriteAndLoad_RemoteDeploySecretsUseSeparateSecretFile(t *testing.T) {
 	}
 }
 
-func TestLoad_ParsesSwarmRoleManaged(t *testing.T) {
+func TestLoad_ParsesSwarmRoleManagedAndToleratesLegacyMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "swarm.conf")
 	text := strings.Join([]string{
 		"startup_mode = interactive",
@@ -228,7 +224,7 @@ func TestLoad_ParsesSwarmRoleManaged(t *testing.T) {
 		"bypass_permissions = false",
 		"retain_tool_output_history = false",
 		"swarm_name = child-host",
-		"swarm_mode = true",
+		"swarm" + "_mode = true",
 		"child = true",
 		"swarm_role = managed",
 		"mode = tailscale",
@@ -269,25 +265,41 @@ func TestLoad_ParsesSwarmRoleManaged(t *testing.T) {
 	if loaded.SwarmRole != startupconfig.SwarmRoleManaged {
 		t.Fatalf("loaded.SwarmRole = %q, want %q", loaded.SwarmRole, startupconfig.SwarmRoleManaged)
 	}
-	if !loaded.SwarmMode || !loaded.Child {
-		t.Fatalf("loaded swarm identity = mode:%t child:%t, want true/true", loaded.SwarmMode, loaded.Child)
+	if !loaded.Child {
+		t.Fatal("loaded.Child = false, want true")
+	}
+	migrated, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", path, err)
+	}
+	if strings.Contains(string(migrated), "\n"+"swarm"+"_mode =") {
+		t.Fatalf("legacy swarm mode should not be re-emitted: %q", string(migrated))
 	}
 }
 
 func TestLoad_LegacyConfigWithoutSwarmRoleDefaultsEmpty(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "swarm.conf")
-	cfg := startupconfig.Default(path)
-	cfg.SwarmMode = true
-	cfg.Child = true
-	if err := startupconfig.Write(cfg); err != nil {
-		t.Fatalf("Write() error = %v", err)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile(%q) error = %v", path, err)
-	}
-	legacyText := strings.ReplaceAll(string(data), "# Optional additive swarm role marker.\n# managed = paired host managed by another Swarm; blank = derive from swarm_mode/child.\nswarm_role = \n\n", "")
-	if err := os.WriteFile(path, []byte(legacyText), 0o600); err != nil {
+	text := strings.Join([]string{
+		"startup_mode = interactive",
+		"dev_mode = false",
+		"dev_root = ",
+		"host = 127.0.0.1",
+		"port = 7781",
+		"advertise_host = ",
+		"advertise_port = 7781",
+		"desktop_port = 5555",
+		"bypass_permissions = false",
+		"retain_tool_output_history = false",
+		"swarm_name = child-host",
+		"swarm" + "_mode = false",
+		"child = true",
+		"mode = lan",
+		"tailscale_url = ",
+		"peer_transport_port = 7791",
+		"parent_swarm_id = ",
+		"pairing_state = ",
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
 		t.Fatalf("WriteFile(%q) error = %v", path, err)
 	}
 
@@ -307,11 +319,8 @@ func TestLoad_LegacyConfigWithoutSwarmRoleDefaultsEmpty(t *testing.T) {
 	}
 }
 
-func TestDefault_SwarmModeDisabled(t *testing.T) {
+func TestDefault_SwarmRoleAndDevDefaults(t *testing.T) {
 	cfg := startupconfig.Default(filepath.Join(t.TempDir(), "swarm.conf"))
-	if cfg.SwarmMode {
-		t.Fatal("Default().SwarmMode = true, want false")
-	}
 	if cfg.SwarmRole != "" {
 		t.Fatalf("Default().SwarmRole = %q, want empty", cfg.SwarmRole)
 	}

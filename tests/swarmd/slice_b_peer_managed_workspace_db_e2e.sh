@@ -135,7 +135,6 @@ func main() {
   server.SetSwarmService(fakeSwarm{})
   startupPath := filepath.Join(*root, "swarm.conf")
   cfg := startupconfig.Default(startupPath)
-  cfg.SwarmMode = true
   cfg.SwarmName = "managed-host"
   if err := startupconfig.Write(cfg); err != nil { panic(err) }
   server.SetStartupConfigPath(startupPath)

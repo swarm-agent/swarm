@@ -75,7 +75,6 @@ type OnboardingStatus struct {
 type SaveOnboardingInput struct {
 	Username  string `json:"username,omitempty"`
 	SwarmName string `json:"swarm_name,omitempty"`
-	SwarmMode *bool  `json:"swarm_mode,omitempty"`
 	Child     *bool  `json:"child,omitempty"`
 }
 

@@ -97,7 +97,6 @@ func TestTryRegisterTailscaleRemoteNodeWritesNodeRegistry(t *testing.T) {
 		SwarmID:     "host-swarm",
 		Name:        "Host",
 		Role:        "master",
-		SwarmMode:   true,
 		PublicKey:   "host-pub",
 		Fingerprint: "host-fp",
 		Transports:  []swarmruntime.TransportSummary{{Kind: "tailscale", Primary: "https://host.example", All: []string{"https://host.example"}}},
@@ -193,7 +192,7 @@ func TestRefreshRemoteSessionStateRegistersTailscaleEndpointWithoutEnrollment(t 
 
 	swarmStore := pebblestore.NewSwarmStore(store)
 	swarmSvc := swarmruntime.NewService(swarmStore, nil, nil)
-	if _, err := swarmSvc.EnsureLocalState(swarmruntime.EnsureLocalStateInput{SwarmID: "host-swarm", Name: "Host", Role: "master", SwarmMode: true}); err != nil {
+	if _, err := swarmSvc.EnsureLocalState(swarmruntime.EnsureLocalStateInput{SwarmID: "host-swarm", Name: "Host", Role: "master"}); err != nil {
 		t.Fatalf("ensure host state: %v", err)
 	}
 	svc := NewService(pebblestore.NewRemoteDeploySessionStore(store), pebblestore.NewSwarmNodeStore(store), swarmSvc, swarmStore, nil, nil, nil, "", "")
@@ -267,7 +266,7 @@ func TestRefreshRemoteSessionStateDoesNotResyncPendingEnrollmentAfterTailscaleRe
 		t.Fatalf("put group: %v", err)
 	}
 	swarmSvc := swarmruntime.NewService(swarmStore, nil, nil)
-	if _, err := swarmSvc.EnsureLocalState(swarmruntime.EnsureLocalStateInput{SwarmID: "host-swarm", Name: "Host", Role: "master", SwarmMode: true}); err != nil {
+	if _, err := swarmSvc.EnsureLocalState(swarmruntime.EnsureLocalStateInput{SwarmID: "host-swarm", Name: "Host", Role: "master"}); err != nil {
 		t.Fatalf("ensure host state: %v", err)
 	}
 	invite, err := swarmSvc.EnsureInvite(swarmruntime.EnsureInviteInput{Token: "invite-secret", PrimarySwarmID: "host-swarm", PrimaryName: "Host", GroupID: "group-1", TransportMode: startupconfig.NetworkModeTailscale, TTL: time.Minute})

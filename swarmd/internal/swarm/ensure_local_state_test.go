@@ -16,12 +16,20 @@ func TestEnsureLocalStateUsesInputNameOnlyForInitialBootstrap(t *testing.T) {
 	swarmStore := pebblestore.NewSwarmStore(store)
 	svc := NewService(swarmStore, nil, nil)
 
-	initial, err := svc.EnsureLocalState(EnsureLocalStateInput{Name: "Initial Swarm", Role: "master", SwarmMode: true})
+	initial, err := svc.EnsureLocalState(EnsureLocalStateInput{Name: "Initial Swarm", Role: "master"})
 	if err != nil {
 		t.Fatalf("ensure initial local state: %v", err)
 	}
 	if initial.Node.Name != "Initial Swarm" {
 		t.Fatalf("initial name = %q, want Initial Swarm", initial.Node.Name)
+	}
+	if len(initial.Groups) != 0 || initial.CurrentGroupID != "" {
+		t.Fatalf("initial local state created groups unexpectedly: current=%q groups=%d", initial.CurrentGroupID, len(initial.Groups))
+	}
+	if storedGroups, _, err := svc.ListGroupsForSwarm(initial.Node.SwarmID, 500); err != nil {
+		t.Fatalf("list initial groups: %v", err)
+	} else if len(storedGroups) != 0 {
+		t.Fatalf("stored groups after initial local state = %d, want 0", len(storedGroups))
 	}
 
 	renamed, err := svc.RenameLocalSwarm(RenameLocalSwarmInput{Name: "Renamed Swarm"})
@@ -35,7 +43,7 @@ func TestEnsureLocalStateUsesInputNameOnlyForInitialBootstrap(t *testing.T) {
 		t.Fatalf("swarm id changed on rename: got %q want %q", renamed.Node.SwarmID, initial.Node.SwarmID)
 	}
 
-	reloaded, err := svc.EnsureLocalState(EnsureLocalStateInput{Name: "Startup Config Name", Role: "master", SwarmMode: true})
+	reloaded, err := svc.EnsureLocalState(EnsureLocalStateInput{Name: "Startup Config Name", Role: "master"})
 	if err != nil {
 		t.Fatalf("ensure existing local state: %v", err)
 	}
@@ -44,6 +52,9 @@ func TestEnsureLocalStateUsesInputNameOnlyForInitialBootstrap(t *testing.T) {
 	}
 	if reloaded.Node.SwarmID != initial.Node.SwarmID {
 		t.Fatalf("swarm id changed after re-ensure: got %q want %q", reloaded.Node.SwarmID, initial.Node.SwarmID)
+	}
+	if len(reloaded.Groups) != 0 || reloaded.CurrentGroupID != "" {
+		t.Fatalf("reloaded local state created groups unexpectedly: current=%q groups=%d", reloaded.CurrentGroupID, len(reloaded.Groups))
 	}
 
 	stored, ok, err := swarmStore.GetLocalNode()

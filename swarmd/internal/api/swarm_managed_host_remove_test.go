@@ -21,7 +21,6 @@ func TestSwarmManagedHostRemoveDetachesManagedHostConfig(t *testing.T) {
 		Pairing: swarmruntime.PairingState{PairingState: startupconfig.PairingStatePaired, ParentSwarmID: "manager-swarm-1"},
 	}}
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
-		cfg.SwarmMode = true
 		cfg.Child = true
 		cfg.SwarmRole = startupconfig.SwarmRoleManaged
 		cfg.ParentSwarmID = "manager-swarm-1"
@@ -55,7 +54,6 @@ func TestSwarmManagedHostRemoveRejectsManagerWithoutManagedID(t *testing.T) {
 	server := newLocalAuthTestServer(t)
 	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "manager-swarm-1", Name: "Manager A", Role: "master"}}}
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
-		cfg.SwarmMode = true
 		cfg.Child = false
 		cfg.SwarmRole = ""
 		cfg.PairingState = ""
@@ -82,7 +80,6 @@ func TestSwarmManagedHostRemoveFromManagerCanPropagate(t *testing.T) {
 		ChildSwarmID:   "managed-swarm-1",
 	}}})
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
-		cfg.SwarmMode = true
 		cfg.Child = false
 		cfg.SwarmRole = ""
 	})
@@ -132,7 +129,6 @@ func TestSwarmManagedHostRemoveFromManagerReportsMissingPropagationInputs(t *tes
 		ChildSwarmID:   "managed-swarm-1",
 	}}})
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
-		cfg.SwarmMode = true
 		cfg.Child = false
 		cfg.SwarmRole = ""
 	})
@@ -165,7 +161,6 @@ func TestSwarmManagedHostRemoveRejectsCrossAccountManagedHost(t *testing.T) {
 		ChildSwarmID:   "managed-swarm-1",
 	}}})
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
-		cfg.SwarmMode = true
 		cfg.Child = false
 		cfg.SwarmRole = ""
 	})
@@ -192,7 +187,6 @@ func TestSwarmManagedHostRemoveCascadesAccountCleanup(t *testing.T) {
 	}}}
 	server.SetDeployContainerService(cleanup)
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
-		cfg.SwarmMode = true
 		cfg.Child = false
 		cfg.SwarmRole = ""
 	})

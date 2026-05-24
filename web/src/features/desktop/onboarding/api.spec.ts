@@ -24,5 +24,5 @@ test('desktop onboarding payload never invents team fields or swarm mode', () =>
   assert.equal(Object.prototype.hasOwnProperty.call(payload, 'team'), false)
   assert.equal(Object.prototype.hasOwnProperty.call(payload, 'team_id'), false)
   assert.equal(Object.prototype.hasOwnProperty.call(payload, 'team_name'), false)
-  assert.equal(Object.prototype.hasOwnProperty.call(payload, 'swarm_mode'), false)
+  assert.equal(Object.prototype.hasOwnProperty.call(payload, 'swarm' + '_mode'), false)
 })

@@ -339,7 +339,6 @@ func TestSwarmEnrollRejectsMissingInviteTokenAndAttachToken(t *testing.T) {
 func TestSwarmRemotePairingRequestRequiresAuthOffTailnet(t *testing.T) {
 	server := newLocalAuthTestServer(t)
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
-		cfg.SwarmMode = true
 		cfg.Child = false
 		cfg.NetworkMode = startupconfig.NetworkModeTailscale
 		cfg.SwarmName = "Manager A"
@@ -413,7 +412,6 @@ func newLocalAuthTestServer(t *testing.T) *Server {
 
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
 	cfg := startupconfig.Default(startupPath)
-	cfg.SwarmMode = true
 	cfg.Host = startupconfig.DefaultHost
 	cfg.Port = startupconfig.DefaultPort
 	cfg.DesktopPort = startupconfig.DefaultDesktopPort

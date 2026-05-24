@@ -35,7 +35,6 @@ type onboardingTransportPayload struct {
 
 type onboardingConfigPayload struct {
 	SwarmName                 string `json:"swarm_name"`
-	SwarmMode                 bool   `json:"swarm_mode"`
 	DesktopOnboardingComplete bool   `json:"desktop_onboarding_complete"`
 	Child                     bool   `json:"child"`
 	SwarmRole                 string `json:"swarm_role,omitempty"`
@@ -131,7 +130,6 @@ type onboardingResponse struct {
 type onboardingUpdateRequest struct {
 	Username                  *string `json:"username,omitempty"`
 	SwarmName                 *string `json:"swarm_name,omitempty"`
-	SwarmMode                 *bool   `json:"swarm_mode,omitempty"`
 	DesktopOnboardingComplete *bool   `json:"desktop_onboarding_complete,omitempty"`
 	Child                     *bool   `json:"child,omitempty"`
 	Mode                      *string `json:"mode,omitempty"`
@@ -365,7 +363,7 @@ func (s *Server) onboardingResponseWithServeDetection(includeSensitive bool, det
 	}
 	needsOnboarding := shouldShowOnboarding(cfg, identityBootstrapped)
 	tailscale, _ := detectTailscaleWithStatus()
-	if !needsOnboarding && swarmModeEnabled(cfg) {
+	if !needsOnboarding {
 		tailscale.TailnetURL = firstNonEmpty(strings.TrimSpace(cfg.TailscaleURL), strings.TrimSpace(tailscale.TailnetURL))
 		tailscale.Available = tailscale.Available || tailscale.TailnetURL != "" || bootstrapNetworkMode(cfg) == startupconfig.NetworkModeTailscale
 	}
@@ -375,7 +373,6 @@ func (s *Server) onboardingResponseWithServeDetection(includeSensitive bool, det
 		Identity:        identityPayload,
 		Config: onboardingConfigPayload{
 			SwarmName:                 strings.TrimSpace(cfg.SwarmName),
-			SwarmMode:                 swarmModeEnabled(cfg),
 			DesktopOnboardingComplete: cfg.DesktopOnboardingComplete,
 			Child:                     cfg.Child,
 			SwarmRole:                 localSwarmRole(cfg),
@@ -525,13 +522,6 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 		}
 		changed = true
 	}
-	if req.SwarmMode != nil {
-		updated.SwarmMode = *req.SwarmMode
-		if !updated.SwarmMode {
-			updated.Child = false
-		}
-		changed = true
-	}
 	if req.DesktopOnboardingComplete != nil {
 		updated.DesktopOnboardingComplete = *req.DesktopOnboardingComplete
 		updated.DesktopOnboardingCompleteSet = true
@@ -575,7 +565,7 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 		restartRequired = true
 		restartReasons = append(restartReasons, "peer transport endpoint changed")
 	}
-	if swarmModeEnabled(updated) && bootstrapNetworkMode(updated) == startupconfig.NetworkModeTailscale && strings.TrimSpace(updated.TailscaleURL) == "" {
+	if bootstrapNetworkMode(updated) == startupconfig.NetworkModeTailscale && strings.TrimSpace(updated.TailscaleURL) == "" {
 		if tailscale, _ := detectTailscaleWithStatus(); strings.TrimSpace(tailscale.TailnetURL) != "" {
 			updated.TailscaleURL = strings.TrimSpace(tailscale.TailnetURL)
 			changed = true
@@ -590,16 +580,11 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 		restartRequired = true
 		restartReasons = append(restartReasons, "peer transport port changed")
 	}
-	if !swarmModeEnabled(updated) {
-		updated.Child = false
+	if strings.TrimSpace(updated.SwarmName) == "" && identityBootstrapped {
+		updated.SwarmName = defaultOnboardingSwarmName(updated)
+		changed = true
 	}
-	if swarmModeEnabled(updated) && strings.TrimSpace(updated.SwarmName) == "" && identityBootstrapped {
-		if req.SwarmMode != nil && *req.SwarmMode && req.SwarmName == nil {
-			updated.SwarmName = defaultOnboardingSwarmName(updated)
-			changed = true
-		}
-	}
-	if swarmModeEnabled(updated) && bootstrapNetworkMode(updated) == startupconfig.NetworkModeLAN {
+	if bootstrapNetworkMode(updated) == startupconfig.NetworkModeLAN {
 		updated.AdvertiseHost = firstNonEmpty(
 			strings.TrimSpace(updated.AdvertiseHost),
 			firstString(lanConfigHosts(updated)),
@@ -616,7 +601,7 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 	if !changed && bootstrapUsername == "" {
 		return onboardingResponse{}, nil, errors.New("no onboarding fields were provided")
 	}
-	if !identityBootstrapped && swarmModeEnabled(updated) && strings.TrimSpace(updated.SwarmName) == "" {
+	if !identityBootstrapped && strings.TrimSpace(updated.SwarmName) == "" {
 		return onboardingResponse{}, nil, errors.New("swarm name is required for daemon identity")
 	}
 	if err := startupconfig.Write(updated); err != nil {
@@ -631,7 +616,7 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 			return onboardingResponse{}, nil, err
 		}
 	}
-	if req.SwarmName != nil && !(req.SwarmMode != nil && !*req.SwarmMode) {
+	if req.SwarmName != nil {
 		if s.swarm != nil {
 			if _, err := s.currentSwarmState(updated); err != nil {
 				return onboardingResponse{}, nil, err
@@ -758,7 +743,7 @@ func shouldShowOnboarding(cfg startupconfig.FileConfig, identityBootstrapped boo
 }
 
 func requestChangesSwarmShape(req onboardingUpdateRequest) bool {
-	return req.SwarmMode != nil || req.DesktopOnboardingComplete != nil || req.Child != nil || req.Mode != nil || req.Port != nil || req.AdvertiseHost != nil || req.AdvertisePort != nil || req.TailscaleURL != nil || req.PeerTransportPort != nil
+	return req.DesktopOnboardingComplete != nil || req.Child != nil || req.Mode != nil || req.Port != nil || req.AdvertiseHost != nil || req.AdvertisePort != nil || req.TailscaleURL != nil || req.PeerTransportPort != nil
 }
 
 func defaultOnboardingSwarmName(cfg startupconfig.FileConfig) string {
@@ -799,10 +784,6 @@ func localSwarmRole(cfg startupconfig.FileConfig) string {
 		return bootstrapRoleChild
 	}
 	return bootstrapRoleMaster
-}
-
-func swarmModeEnabled(cfg startupconfig.FileConfig) bool {
-	return cfg.SwarmMode
 }
 
 func bootstrapNetworkMode(cfg startupconfig.FileConfig) string {
@@ -1233,7 +1214,7 @@ func tailscaleServePairingError(serve onboardingTailscaleServePayload) error {
 }
 
 func requireTailscaleServeReadyForPairing(cfg startupconfig.FileConfig, status onboardingResponse) error {
-	if !swarmModeEnabled(cfg) || bootstrapNetworkMode(cfg) != startupconfig.NetworkModeTailscale {
+	if bootstrapNetworkMode(cfg) != startupconfig.NetworkModeTailscale {
 		return nil
 	}
 	if !status.Tailscale.Available || strings.TrimSpace(status.Tailscale.Error) != "" || !status.Tailscale.Connected {
@@ -1345,7 +1326,6 @@ func (s *Server) currentSwarmState(cfg startupconfig.FileConfig) (swarmruntime.L
 	state, err := s.swarm.EnsureLocalState(swarmruntime.EnsureLocalStateInput{
 		Name:          strings.TrimSpace(cfg.SwarmName),
 		Role:          localSwarmRole(cfg),
-		SwarmMode:     swarmModeEnabled(cfg),
 		AdvertiseMode: mode,
 		AdvertiseAddr: advertiseAddr,
 		Transports:    onboardingTransportsToSwarm(transports),

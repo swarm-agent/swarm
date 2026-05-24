@@ -21,7 +21,6 @@ func TestSwarmRemotePairingOfferGeneratesManagedSwarmOffer(t *testing.T) {
 	}
 	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "managed-swarm-1", Name: "State Managed", Role: "standalone", PublicKey: publicKey, Fingerprint: fingerprint}}}
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
-		cfg.SwarmMode = true
 		cfg.Child = false
 		cfg.NetworkMode = startupconfig.NetworkModeTailscale
 		cfg.SwarmName = "Managed Host B"
@@ -85,7 +84,6 @@ func TestSwarmRemotePairingOfferGeneratesManagedSwarmOffer(t *testing.T) {
 func TestSwarmRemotePairingOfferCeremonyCodeChangesWithTranscript(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 	cfg := startupconfig.Default(filepath.Join(t.TempDir(), "swarm.conf"))
-	cfg.SwarmMode = true
 	cfg.NetworkMode = startupconfig.NetworkModeTailscale
 	cfg.SwarmName = "Managed Host B"
 	cfg.TailscaleURL = "https://managed-b.example.ts.net"
@@ -110,7 +108,6 @@ func TestSwarmRemotePairingOfferCeremonyCodeChangesWithTranscript(t *testing.T) 
 func TestSwarmRemotePairingOfferRejectsInvalidTTL(t *testing.T) {
 	server := newLocalAuthTestServer(t)
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
-		cfg.SwarmMode = true
 		cfg.NetworkMode = startupconfig.NetworkModeTailscale
 		cfg.TailscaleURL = "https://managed-b.example.ts.net"
 	})
@@ -126,7 +123,6 @@ func TestSwarmRemotePairingOfferRejectsInvalidTTL(t *testing.T) {
 
 func TestSwarmRemotePairingOfferRequiresReachableEndpoint(t *testing.T) {
 	cfg := startupconfig.Default(filepath.Join(t.TempDir(), "swarm.conf"))
-	cfg.SwarmMode = true
 	cfg.NetworkMode = startupconfig.NetworkModeTailscale
 	state := swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "managed-swarm-1", Name: "Managed Host B", PublicKey: "public-key", Fingerprint: "fingerprint"}}
 
