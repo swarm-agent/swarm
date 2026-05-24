@@ -207,6 +207,43 @@ func TestPushManagedSyncToLocalChildrenPushesAgentsAndCredentials(t *testing.T) 
 	}
 }
 
+func TestApplyManagedCredentialBundleUsesPersistedPairingAccountWhenRequestHasNoPrincipal(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	swarmStore := pebblestore.NewSwarmStore(store)
+	authSvc := authruntime.NewService(pebblestore.NewAuthStore(store), events)
+	if _, _, err := authSvc.UpsertCredential(authruntime.CredentialUpsertInput{Provider: "fireworks", AccountScopeID: testPrincipal().AccountScopeID, Type: pebblestore.AuthTypeAPI, APIKey: "sk-test-managed-sync", Active: true}); err != nil {
+		t.Fatalf("upsert host credential: %v", err)
+	}
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, authSvc, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"))
+	if _, err := swarmStore.PutLocalPairing(pebblestore.SwarmLocalPairingRecord{PairingState: "paired", ParentSwarmID: "host-swarm", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID}); err != nil {
+		t.Fatalf("put pairing: %v", err)
+	}
+
+	bundle, _, err := authSvc.ExportCredentialsForAccount(testPrincipal().AccountScopeID, "bundle-password", "")
+	if err != nil {
+		t.Fatalf("export credentials: %v", err)
+	}
+	if err := deploySvc.ApplyManagedCredentialBundle(context.Background(), ContainerSyncCredentialBundle{OwnerSwarmID: "host-swarm", BundlePassword: "bundle-password", Bundle: bundle}); err != nil {
+		t.Fatalf("ApplyManagedCredentialBundle() error = %v", err)
+	}
+	list, err := authSvc.ListCredentialsForAccount(testPrincipal().AccountScopeID, "fireworks", "", 10)
+	if err != nil {
+		t.Fatalf("list credentials: %v", err)
+	}
+	if list.Total == 0 || len(list.Records) == 0 || !list.Records[0].Active {
+		t.Fatalf("imported credentials = %#v, want active fireworks credential", list)
+	}
+}
+
 func TestPushManagedSyncToManagedHostsPushesAgentsAndCredentials(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm.pebble"))
 	if err != nil {

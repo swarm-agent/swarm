@@ -1739,8 +1739,15 @@ func principalFromContext(ctx context.Context) (identity.Principal, bool) {
 }
 
 func (s *Service) accountScopeIDForManagedCredentialSync(ctx context.Context) (string, error) {
+	return s.accountScopeIDForManagedCredentialSyncPairing(ctx, pebblestore.SwarmLocalPairingRecord{})
+}
+
+func (s *Service) accountScopeIDForManagedCredentialSyncPairing(ctx context.Context, pairing pebblestore.SwarmLocalPairingRecord) (string, error) {
 	if principal, ok := principalFromContext(ctx); ok {
 		return strings.TrimSpace(principal.AccountScopeID), nil
+	}
+	if accountScopeID := strings.TrimSpace(pairing.AccountScopeID); accountScopeID != "" {
+		return accountScopeID, nil
 	}
 	if s == nil || s.identity == nil {
 		return "", identity.ErrPrincipalRequired
@@ -4009,7 +4016,7 @@ func (s *Service) applyManagedCredentialBundle(ctx context.Context, pairing pebb
 		}
 		return saved, nil
 	}
-	accountScopeID, err := s.accountScopeIDForManagedCredentialSync(ctx)
+	accountScopeID, err := s.accountScopeIDForManagedCredentialSyncPairing(ctx, pairing)
 	if err != nil {
 		return pairing, err
 	}

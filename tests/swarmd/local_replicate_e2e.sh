@@ -44,6 +44,7 @@ Options:
   --verify-host-provider-key-sync     Add provider API key on host before deploy, then inspect inside child container for synced credential
   --verify-sync-crud-flow             After attach, prove real Fireworks credential CRUD plus synced agent/tool routed execution on the child
   --prove-routed-ai                   After attach, run an optional final routed AI proof session on the replicated child
+  --ai-diagnostic-interval <seconds>  While routed AI proof runs, refresh latest session/message/permission/log artifacts. Default: 2
   --verify-topology-cleanup           Delete the real child through /v1/deploy/container/delete and prove no stale topology remains
   --sync-verify-timeout <seconds>     Managed sync propagation wait timeout. Default: 45
   --proof-provider <id>               Provider for the routed proof. Default: fireworks
@@ -543,21 +544,32 @@ start_background_routed_run() {
 wait_for_pending_permission() {
   local session_id="${1:-}"
   local tool_name="${2:-}"
+  local run_id="${3:-}"
   [[ -n "${session_id}" ]] || fail "session id is required for pending permission wait"
   [[ -n "${tool_name}" ]] || fail "tool name is required for pending permission wait"
-  local start_ts permission_json match
+  local start_ts permission_json match elapsed
   start_ts="$(date +%s)"
   while :; do
-    permission_json="$(api_get "/v1/sessions/${session_id}/permissions?limit=200")"
-    match="$(printf '%s' "${permission_json}" | jq -c --arg tool_name "${tool_name}" '[.permissions[]? | select((.status // "") == "pending" and (.tool_name // "") == $tool_name)] | sort_by(.created_at // 0) | last // empty')"
+    elapsed="$(( $(date +%s) - start_ts ))"
+    capture_ai_proof_live_snapshot "${session_id}" "${run_id}" "waiting-for-permission:${tool_name}:elapsed-${elapsed}s" "8"
+    permission_json="$(cat "${ARTIFACT_DIR}/ai-proof-permissions.latest.json" 2>/dev/null || true)"
+    if [[ -z "${permission_json}" ]]; then
+      permission_json="$(api_get "/v1/sessions/${session_id}/permissions?limit=200")"
+      write_artifact "ai-proof-permissions.latest.json" "${permission_json}"
+    fi
+    match="$(printf '%s' "${permission_json}" | jq -c --arg tool_name "${tool_name}" '[.permissions[]? | select((.status // "") == "pending" and (.tool_name // "") == $tool_name)] | sort_by(.created_at // 0) | last // empty' 2>/dev/null || true)"
     if [[ -n "${match}" && "${match}" != "null" ]]; then
+      write_ai_diagnostic_status "permission-found:${tool_name}" "${session_id}" "${run_id}" "pending permission is ready"
       printf '%s' "${match}"
       return 0
     fi
-    if (( "$(date +%s)" - start_ts >= PROOF_TIMEOUT_SECONDS )); then
-      fail "timed out waiting for pending permission ${tool_name} on session ${session_id}"
+    if (( elapsed >= PROOF_TIMEOUT_SECONDS )); then
+      write_artifact "ai-proof-timeout-permissions.json" "${permission_json}"
+      capture_session_snapshot "${session_id}" "ai-proof-permission-timeout" 15
+      stop_ai_proof_run "${session_id}" "${run_id}" "permission wait timed out for ${tool_name}"
+      fail "timed out after ${PROOF_TIMEOUT_SECONDS}s waiting for pending permission ${tool_name} on session ${session_id}; see ${ARTIFACT_DIR}/ai-proof-*.latest.* and log tails"
     fi
-    sleep "${POLL_INTERVAL_SECONDS}"
+    sleep "${AI_DIAGNOSTIC_INTERVAL_SECONDS}"
   done
 }
 
@@ -577,15 +589,27 @@ wait_for_assistant_message_content() {
   local session_id="${1:-}"
   local want_content="${2:-}"
   local artifact_prefix="${3:-session-message}"
+  local run_id="${4:-}"
   [[ -n "${session_id}" ]] || fail "session id is required for assistant message wait"
   [[ -n "${want_content}" ]] || fail "wanted assistant message content is required"
-  local start_ts
+  local start_ts elapsed
   start_ts="$(date +%s)"
   while :; do
     local session_json messages_json permissions_json
-    session_json="$(api_get "/v1/sessions/${session_id}")"
-    messages_json="$(api_get "/v1/sessions/${session_id}/messages?limit=200")"
-    permissions_json="$(api_get "/v1/sessions/${session_id}/permissions?limit=50")"
+    elapsed="$(( $(date +%s) - start_ts ))"
+    capture_ai_proof_live_snapshot "${session_id}" "${run_id}" "waiting-for-assistant:elapsed-${elapsed}s" "8"
+    session_json="$(cat "${ARTIFACT_DIR}/ai-proof-session.latest.json" 2>/dev/null || true)"
+    messages_json="$(cat "${ARTIFACT_DIR}/ai-proof-messages.latest.json" 2>/dev/null || true)"
+    permissions_json="$(cat "${ARTIFACT_DIR}/ai-proof-permissions.latest.json" 2>/dev/null || true)"
+    if [[ -z "${session_json}" ]]; then
+      session_json="$(api_get "/v1/sessions/${session_id}")"
+    fi
+    if [[ -z "${messages_json}" ]]; then
+      messages_json="$(api_get "/v1/sessions/${session_id}/messages?limit=200")"
+    fi
+    if [[ -z "${permissions_json}" ]]; then
+      permissions_json="$(api_get "/v1/sessions/${session_id}/permissions?limit=50")"
+    fi
     if printf '%s' "${messages_json}" | jq -e '.messages[]? | select((.role // "") == "assistant" and (.content // "") == "WRONG_AGENT")' >/dev/null 2>&1; then
       write_artifact "${artifact_prefix}-session.wrong-agent.json" "${session_json}"
       write_artifact "${artifact_prefix}-messages.wrong-agent.json" "${messages_json}"
@@ -599,6 +623,7 @@ wait_for_assistant_message_content() {
       write_artifact "${artifact_prefix}-messages.json" "${messages_json}"
       write_artifact "${artifact_prefix}-permissions.json" "${permissions_json}"
       capture_session_snapshot "${session_id}" "${artifact_prefix}" 15
+      write_ai_diagnostic_status "assistant-success" "${session_id}" "${run_id}" "assistant message contained expected token"
       return 0
     fi
     if printf '%s' "${messages_json}" | jq -e '.messages[]? | select((.role // "") == "assistant" and ((.content // "") | contains("[TOOL_CALL]")))' >/dev/null 2>&1; then
@@ -617,15 +642,16 @@ wait_for_assistant_message_content() {
       maybe_capture_routed_run_diagnostic
       fail "routed run completed without assistant message containing ${want_content}"
     fi
-    if (( "$(date +%s)" - start_ts >= PROOF_TIMEOUT_SECONDS )); then
+    if (( elapsed >= PROOF_TIMEOUT_SECONDS )); then
       write_artifact "${artifact_prefix}-session.timeout.json" "${session_json}"
       write_artifact "${artifact_prefix}-messages.timeout.json" "${messages_json}"
       write_artifact "${artifact_prefix}-permissions.timeout.json" "${permissions_json}"
       capture_session_snapshot "${session_id}" "${artifact_prefix}-timeout" 15
+      stop_ai_proof_run "${session_id}" "${run_id}" "assistant wait timed out"
       maybe_capture_routed_run_diagnostic
-      fail "timed out waiting for assistant message containing ${want_content}"
+      fail "timed out after ${PROOF_TIMEOUT_SECONDS}s waiting for assistant message containing ${want_content}; see ${ARTIFACT_DIR}/ai-proof-*.latest.* and log tails"
     fi
-    sleep "${POLL_INTERVAL_SECONDS}"
+    sleep "${AI_DIAGNOSTIC_INTERVAL_SECONDS}"
   done
 }
 
@@ -1462,6 +1488,76 @@ capture_logs() {
   fi
 }
 
+write_ai_diagnostic_status() {
+  local phase="${1:-unknown}"
+  local session_id="${2:-}"
+  local run_id="${3:-}"
+  local detail="${4:-}"
+  [[ -n "${ARTIFACT_DIR:-}" && -d "${ARTIFACT_DIR}" ]] || return 0
+  if command -v jq >/dev/null 2>&1; then
+    safe_write_artifact "ai-proof-status.latest.json" "$(jq -nc \
+      --arg phase "${phase}" \
+      --arg step "${CURRENT_STEP:-}" \
+      --arg session_id "${session_id}" \
+      --arg run_id "${run_id}" \
+      --arg detail "${detail}" \
+      --arg now "$(date -Is)" \
+      --arg proof_timeout_seconds "${PROOF_TIMEOUT_SECONDS:-}" \
+      --arg diagnostic_interval_seconds "${AI_DIAGNOSTIC_INTERVAL_SECONDS:-}" \
+      '{phase:$phase,step:$step,session_id:$session_id,run_id:$run_id,detail:$detail,updated_at:$now,proof_timeout_seconds:($proof_timeout_seconds|tonumber? // null),diagnostic_interval_seconds:($diagnostic_interval_seconds|tonumber? // null)}')"
+  else
+    safe_write_artifact "ai-proof-status.latest.txt" "phase=${phase}
+session_id=${session_id}
+run_id=${run_id}
+detail=${detail}
+step=${CURRENT_STEP:-}
+updated_at=$(date -Is)
+"
+  fi
+}
+
+capture_ai_proof_live_snapshot() {
+  local session_id="${1:-}"
+  local run_id="${2:-}"
+  local phase="${3:-poll}"
+  local max_time="${4:-8}"
+  [[ -n "${session_id}" ]] || return 0
+  [[ -n "${ARTIFACT_DIR:-}" && -d "${ARTIFACT_DIR}" ]] || return 0
+
+  write_ai_diagnostic_status "${phase}" "${session_id}" "${run_id}" "refreshing live routed AI diagnostics"
+  api_request_capture GET "/v1/sessions/${session_id}" "" "${max_time}"
+  safe_write_artifact "ai-proof-session.latest.http.txt" "${JSON_REQUEST_STATUS}"
+  safe_write_artifact "ai-proof-session.latest.json" "${JSON_REQUEST_BODY}"
+
+  api_request_capture GET "/v1/sessions/${session_id}/messages?limit=200" "" "${max_time}"
+  safe_write_artifact "ai-proof-messages.latest.http.txt" "${JSON_REQUEST_STATUS}"
+  safe_write_artifact "ai-proof-messages.latest.json" "${JSON_REQUEST_BODY}"
+
+  api_request_capture GET "/v1/sessions/${session_id}/permissions?limit=200" "" "${max_time}"
+  safe_write_artifact "ai-proof-permissions.latest.http.txt" "${JSON_REQUEST_STATUS}"
+  safe_write_artifact "ai-proof-permissions.latest.json" "${JSON_REQUEST_BODY}"
+
+  api_request_capture GET "/v1/sessions/${session_id}/usage?limit=10" "" "${max_time}"
+  safe_write_artifact "ai-proof-usage.latest.http.txt" "${JSON_REQUEST_STATUS}"
+  safe_write_artifact "ai-proof-usage.latest.json" "${JSON_REQUEST_BODY}"
+
+  capture_logs || true
+}
+
+stop_ai_proof_run() {
+  local session_id="${1:-}"
+  local run_id="${2:-}"
+  local reason="${3:-timeout}"
+  [[ -n "${session_id}" && -n "${run_id}" ]] || return 0
+  [[ -n "${ARTIFACT_DIR:-}" && -d "${ARTIFACT_DIR}" ]] || return 0
+  write_ai_diagnostic_status "stopping-run" "${session_id}" "${run_id}" "${reason}"
+  local payload
+  payload="$(jq -nc --arg run_id "${run_id}" '{type:"run.stop",run_id:$run_id}')"
+  api_request_capture POST "/v1/sessions/${session_id}/run/stream" "${payload}" 10
+  safe_write_artifact "ai-proof-run-stop.http.txt" "${JSON_REQUEST_STATUS}"
+  safe_write_artifact "ai-proof-run-stop.json" "${JSON_REQUEST_BODY}"
+}
+
 capture_session_snapshot() {
   local session_id="${1:-}"
   local artifact_prefix="${2:-session-snapshot}"
@@ -1684,7 +1780,7 @@ run_final_routed_ai_proof() {
   ensure_child_attach_token
   prepare_proof_provider_key_file "PROOF_PROVIDER_KEY_FILE" "PROOF_PROVIDER_KEY_ENV" "PROOF_PROVIDER_KEY_TMP_FILE" "final routed proof provider key" "true"
 
-  local probe_suffix proof_session_create_response proof_prompt proof_run_start_response
+  local probe_suffix proof_session_create_response proof_prompt proof_run_start_response proof_run_id
   local proof_provider_seed_payload proof_provider_seed_response
   local proof_permission_json proof_permission_id proof_permission_resolve
   local proof_provider_label proof_provider_credential_id child_credentials_json start_ts
@@ -1734,9 +1830,12 @@ run_final_routed_ai_proof() {
   set_step "proof:start-final-routed-run"
   proof_run_start_response="$(start_background_routed_run "${PROOF_SESSION_ID}" "${proof_prompt}" "" "exit_plan_mode")"
   write_artifact "final-proof-routed-run-start.json" "${proof_run_start_response}"
+  proof_run_id="$(printf '%s' "${proof_run_start_response}" | jq -r '.run_id // .result.run_id // empty' 2>/dev/null || true)"
+  write_ai_diagnostic_status "run-started" "${PROOF_SESSION_ID}" "${proof_run_id}" "final routed proof background run accepted"
+  capture_ai_proof_live_snapshot "${PROOF_SESSION_ID}" "${proof_run_id}" "after-run-start" 10
 
   set_step "proof:approve-final-exit-plan"
-  proof_permission_json="$(wait_for_pending_permission "${PROOF_SESSION_ID}" "exit_plan_mode")"
+  proof_permission_json="$(wait_for_pending_permission "${PROOF_SESSION_ID}" "exit_plan_mode" "${proof_run_id}")"
   write_artifact "final-proof-routed-exit-plan-pending.json" "${proof_permission_json}"
   proof_permission_id="$(printf '%s' "${proof_permission_json}" | jq -r '.id // empty')"
   [[ -n "${proof_permission_id}" ]] || fail "pending final routed exit_plan_mode permission returned no id"
@@ -1744,7 +1843,7 @@ run_final_routed_ai_proof() {
   write_artifact "final-proof-routed-exit-plan-resolve.json" "${proof_permission_resolve}"
 
   set_step "proof:wait-final-routed-success"
-  wait_for_assistant_message_content "${PROOF_SESSION_ID}" "${PROOF_SUCCESS_TOKEN}" "final-proof-routed-success"
+  wait_for_assistant_message_content "${PROOF_SESSION_ID}" "${PROOF_SUCCESS_TOKEN}" "final-proof-routed-success" "${proof_run_id}"
 
   if [[ -n "${proof_provider_credential_id}" ]]; then
     set_step "proof:cleanup-child-provider"
@@ -1966,16 +2065,19 @@ exercise_sync_crud_flow() {
   PROOF_SESSION_ID="$(printf '%s' "${routed_session_create_response}" | jq -r '.session.id // empty')"
   [[ -n "${PROOF_SESSION_ID}" ]] || fail "routed proof session create returned no session id"
 
-  local routed_run_prompt routed_run_start_response
+  local routed_run_prompt routed_run_start_response routed_run_id
   routed_run_prompt="Call your assigned custom tool now to prove you are ${SYNC_PROBE_AGENT_NAME}. Reply with only the tool output."
   PROOF_RUN_PROMPT="${routed_run_prompt}"
   set_step "proof:start-background-run"
   routed_run_start_response="$(start_background_routed_run "${PROOF_SESSION_ID}" "${routed_run_prompt}" "${SYNC_PROBE_AGENT_NAME}" "${SYNC_PROBE_TOOL_CONTRACT_NAME}")"
   write_artifact "proof-routed-run-start.json" "${routed_run_start_response}"
+  routed_run_id="$(printf '%s' "${routed_run_start_response}" | jq -r '.run_id // .result.run_id // empty' 2>/dev/null || true)"
+  write_ai_diagnostic_status "run-started" "${PROOF_SESSION_ID}" "${routed_run_id}" "sync CRUD routed proof background run accepted"
+  capture_ai_proof_live_snapshot "${PROOF_SESSION_ID}" "${routed_run_id}" "after-run-start" 10
 
   set_step "proof:approve-routed-custom-tool"
   local routed_permission_json routed_permission_id routed_permission_resolve
-  routed_permission_json="$(wait_for_pending_permission "${PROOF_SESSION_ID}" "${SYNC_PROBE_TOOL_NAME}")"
+  routed_permission_json="$(wait_for_pending_permission "${PROOF_SESSION_ID}" "${SYNC_PROBE_TOOL_NAME}" "${routed_run_id}")"
   write_artifact "proof-routed-run-success-permission-pending.json" "${routed_permission_json}"
   routed_permission_id="$(printf '%s' "${routed_permission_json}" | jq -r '.id // empty')"
   [[ -n "${routed_permission_id}" ]] || fail "pending routed custom-tool permission returned no id"
@@ -1983,7 +2085,7 @@ exercise_sync_crud_flow() {
   write_artifact "proof-routed-run-success-permission-resolve.json" "${routed_permission_resolve}"
 
   set_step "proof:wait-routed-success"
-  wait_for_assistant_message_content "${PROOF_SESSION_ID}" "${PROOF_SUCCESS_TOKEN}" "proof-routed-run-success"
+  wait_for_assistant_message_content "${PROOF_SESSION_ID}" "${PROOF_SUCCESS_TOKEN}" "proof-routed-run-success" "${routed_run_id}"
 
   set_step "proof:cleanup-host-state"
   local delete_agent_response delete_tool_response delete_secondary_payload delete_secondary_response
@@ -2455,6 +2557,7 @@ PROOF_PROVIDER_KEY2_ENV=""
 PROOF_PROVIDER_KEY2_FILE=""
 PROOF_PROVIDER_KEY2_TMP_FILE=""
 PROOF_TIMEOUT_SECONDS="90"
+AI_DIAGNOSTIC_INTERVAL_SECONDS="2"
 GROUP_ID=""
 GROUP_NAME=""
 GROUP_NETWORK_NAME=""
@@ -2633,6 +2736,10 @@ while [[ $# -gt 0 ]]; do
       PROOF_TIMEOUT_SECONDS="${2:-}"
       shift 2
       ;;
+    --ai-diagnostic-interval)
+      AI_DIAGNOSTIC_INTERVAL_SECONDS="${2:-}"
+      shift 2
+      ;;
     --group-id)
       GROUP_ID="${2:-}"
       shift 2
@@ -2713,6 +2820,8 @@ done
 [[ "${POLL_INTERVAL_SECONDS}" =~ ^[0-9]+$ ]] || fail "--poll-interval must be a positive integer"
 [[ "${SYNC_VERIFY_TIMEOUT_SECONDS}" =~ ^[0-9]+$ ]] || fail "--sync-verify-timeout must be a positive integer"
 [[ "${PROOF_TIMEOUT_SECONDS}" =~ ^[0-9]+$ ]] || fail "--proof-timeout must be a positive integer"
+[[ "${AI_DIAGNOSTIC_INTERVAL_SECONDS}" =~ ^[0-9]+$ ]] || fail "--ai-diagnostic-interval must be a positive integer"
+(( AI_DIAGNOSTIC_INTERVAL_SECONDS > 0 )) || fail "--ai-diagnostic-interval must be greater than zero"
 [[ "${LOG_TAIL}" =~ ^[0-9]+$ ]] || fail "--log-tail must be a positive integer"
 [[ "${HOST_BACKEND_PORT}" =~ ^[0-9]+$ ]] || fail "--host-port must be a positive integer"
 [[ "${HOST_DESKTOP_PORT}" =~ ^[0-9]+$ ]] || fail "--host-desktop-port must be a positive integer"
