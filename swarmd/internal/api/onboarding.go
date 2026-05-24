@@ -584,7 +584,7 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 		updated.SwarmName = defaultOnboardingSwarmName(updated)
 		changed = true
 	}
-	if bootstrapNetworkMode(updated) == startupconfig.NetworkModeLAN {
+	if requestChangesSwarmReachability(req) && bootstrapNetworkMode(updated) == startupconfig.NetworkModeLAN {
 		updated.AdvertiseHost = firstNonEmpty(
 			strings.TrimSpace(updated.AdvertiseHost),
 			firstString(lanConfigHosts(updated)),
@@ -743,7 +743,11 @@ func shouldShowOnboarding(cfg startupconfig.FileConfig, identityBootstrapped boo
 }
 
 func requestChangesSwarmShape(req onboardingUpdateRequest) bool {
-	return req.DesktopOnboardingComplete != nil || req.Child != nil || req.Mode != nil || req.Port != nil || req.AdvertiseHost != nil || req.AdvertisePort != nil || req.TailscaleURL != nil || req.PeerTransportPort != nil
+	return req.DesktopOnboardingComplete != nil || req.Child != nil || requestChangesSwarmReachability(req)
+}
+
+func requestChangesSwarmReachability(req onboardingUpdateRequest) bool {
+	return req.Mode != nil || req.Port != nil || req.AdvertiseHost != nil || req.AdvertisePort != nil || req.TailscaleURL != nil || req.PeerTransportPort != nil
 }
 
 func defaultOnboardingSwarmName(cfg startupconfig.FileConfig) string {

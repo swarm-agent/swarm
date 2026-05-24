@@ -127,6 +127,35 @@ func TestOnboardingPostBootstrapsIdentityAndIssuesSession(t *testing.T) {
 	}
 }
 
+func TestOnboardingIdentitySaveDoesNotRequireLANAdvertiseHost(t *testing.T) {
+	server, _, _ := newOnboardingIdentityTestServerWithCalls(t, false)
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, newJSONSameOriginDesktopRequest(t, map[string]any{
+		"username":                    "Alice",
+		"swarm_name":                  "Alice Laptop",
+		"desktop_onboarding_complete": false,
+		"child":                       false,
+	}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("identity save status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var status onboardingResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
+		t.Fatalf("decode identity save response: %v", err)
+	}
+	if status.Config.AdvertiseHost != "" {
+		t.Fatalf("identity save configured advertise host %q; standalone onboarding must not require or mutate LAN advertise host", status.Config.AdvertiseHost)
+	}
+	cfg, err := server.loadStartupConfig()
+	if err != nil {
+		t.Fatalf("load startup config: %v", err)
+	}
+	if cfg.AdvertiseHost != "" {
+		t.Fatalf("startup config advertise_host = %q, want empty after identity-only onboarding save", cfg.AdvertiseHost)
+	}
+}
+
 func TestOnboardingPostRejectsRebootstrapAndSwarmNameUpdateDoesNotMutateUsername(t *testing.T) {
 	server, identityStore := newOnboardingIdentityTestServer(t, true)
 
