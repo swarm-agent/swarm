@@ -206,17 +206,60 @@ func (s *Server) handleManagedHostGitSyncApply(w http.ResponseWriter, r *http.Re
 }
 
 func (s *Server) handlePeerGitSyncApply(w http.ResponseWriter, r *http.Request) {
-	writeError(w, http.StatusForbidden, errors.New("peer git sync apply requires persisted peer account binding and is blocked for Z2"))
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if !s.requirePeerAuth(w, r) {
+		return
+	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok || !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
+		writeError(w, http.StatusForbidden, errors.New("peer git sync apply requires persisted peer account binding"))
+		return
+	}
+	var req gitSyncApplyRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, gitSyncApplyResponse{OK: false, Warning: gitSyncDestructiveWarning(), Error: err.Error()})
+		return
+	}
+	targetPath := firstNonEmpty(req.TargetPath, req.Path, req.WorkspacePath, req.DevRoot)
+	owned, err := s.resolveAccountOwnedPath(principal, targetPath)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, gitSyncApplyResponse{OK: false, Warning: gitSyncDestructiveWarning(), Error: err.Error()})
+		return
+	}
+	req.TargetPath = owned.ResolvedPath
+	req.Path = ""
+	req.WorkspacePath = ""
+	req.DevRoot = ""
+	resp, err := applyGitSync(r.Context(), req)
+	if err != nil {
+		resp.OK = false
+		resp.Error = err.Error()
+		writeJSON(w, http.StatusBadRequest, resp)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) applyManagedHostGitSync(ctx context.Context, r *http.Request, req managedHostGitSyncApplyRequest) (managedHostGitSyncApplyResponse, int, error) {
 	if s == nil || s.topology == nil {
 		return managedHostGitSyncApplyResponse{Warning: gitSyncDestructiveWarning()}, http.StatusInternalServerError, errors.New("topology service is not configured")
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok || !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
+		return managedHostGitSyncApplyResponse{Warning: gitSyncDestructiveWarning()}, http.StatusUnauthorized, identity.ErrPrincipalRequired
+	}
 	sourcePath := firstNonEmpty(req.SourceWorkspacePath, req.WorkspacePath, req.Path, req.DevRoot)
 	if sourcePath == "" {
 		return managedHostGitSyncApplyResponse{Warning: gitSyncDestructiveWarning()}, http.StatusBadRequest, errors.New("source_workspace_path is required")
 	}
+	ownedSource, err := s.resolveAccountOwnedPath(principal, sourcePath)
+	if err != nil {
+		return managedHostGitSyncApplyResponse{Warning: gitSyncDestructiveWarning()}, http.StatusBadRequest, err
+	}
+	sourcePath = ownedSource.WorkspacePath
 	if strings.TrimSpace(req.TargetSwarmID) == "" {
 		return managedHostGitSyncApplyResponse{Warning: gitSyncDestructiveWarning()}, http.StatusBadRequest, errors.New("target_swarm_id is required")
 	}
@@ -237,7 +280,7 @@ func (s *Server) applyManagedHostGitSync(ctx context.Context, r *http.Request, r
 		return managedHostGitSyncApplyResponse{Source: source, Warning: gitSyncDestructiveWarning()}, http.StatusConflict, fmt.Errorf("source tree mismatch: got %s want %s", source.Tree, tree)
 	}
 
-	bindings, err := s.managedGitSyncWorkspaceBindings(source.RepoRoot, req.TargetSwarmID)
+	bindings, err := s.managedGitSyncWorkspaceBindingsForAccount(principal.AccountScopeID, source.RepoRoot, req.TargetSwarmID)
 	if err != nil {
 		return managedHostGitSyncApplyResponse{Source: source, Warning: gitSyncDestructiveWarning()}, http.StatusBadRequest, err
 	}
@@ -314,14 +357,15 @@ func (s *Server) applyManagedHostGitSync(ctx context.Context, r *http.Request, r
 	return response, http.StatusOK, nil
 }
 
-func (s *Server) managedGitSyncWorkspaceBindings(sourceRepoRoot, targetSwarmID string) ([]pebblestore.TopologyWorkspaceBindingRecord, error) {
+func (s *Server) managedGitSyncWorkspaceBindingsForAccount(accountScopeID, sourceRepoRoot, targetSwarmID string) ([]pebblestore.TopologyWorkspaceBindingRecord, error) {
 	if s == nil || s.topology == nil {
 		return nil, errors.New("topology service is not configured")
 	}
-	if _, err := s.topology.EnsureSnapshot(); err != nil {
-		return nil, err
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, identity.ErrPrincipalRequired
 	}
-	bindings, err := s.topology.ListWorkspaceBindingsBySourcePath(strings.TrimSpace(sourceRepoRoot), 100000)
+	bindings, err := s.topology.ListWorkspaceBindingsBySourcePathForAccount(accountScopeID, strings.TrimSpace(sourceRepoRoot), 100000)
 	if err != nil {
 		return nil, err
 	}

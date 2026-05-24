@@ -309,7 +309,7 @@ func (s *Server) handlePeerManagedWorkspacePreflight(w http.ResponseWriter, r *h
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	response, status, err := s.peerManagedWorkspacePreflight(req)
+	response, status, err := s.peerManagedWorkspacePreflight(req, r)
 	if err != nil {
 		writeError(w, status, err)
 		return
@@ -360,6 +360,11 @@ func (s *Server) handleWorkspaceManagedLinkRemove(w http.ResponseWriter, r *http
 		writeError(w, http.StatusInternalServerError, errors.New("topology service is not configured"))
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok || !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 	var req workspaceManagedLinkRemoveRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -371,7 +376,7 @@ func (s *Server) handleWorkspaceManagedLinkRemove(w http.ResponseWriter, r *http
 		writeError(w, http.StatusBadRequest, errors.New("workspace_path and binding_id are required"))
 		return
 	}
-	binding, ok, err := s.topology.GetWorkspaceBinding(bindingID)
+	binding, ok, err := s.topology.GetWorkspaceBindingForAccount(principal.AccountScopeID, bindingID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -380,7 +385,7 @@ func (s *Server) handleWorkspaceManagedLinkRemove(w http.ResponseWriter, r *http
 		writeError(w, http.StatusNotFound, errors.New("topology workspace binding not found"))
 		return
 	}
-	if err := s.topology.DeleteWorkspaceBinding(bindingID); err != nil {
+	if err := s.topology.DeleteWorkspaceBindingForAccount(principal.AccountScopeID, bindingID); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -404,7 +409,7 @@ func (s *Server) handlePeerManagedWorkspaceEnsureLink(w http.ResponseWriter, r *
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	response, status, err := s.peerManagedWorkspaceEnsureLink(req)
+	response, status, err := s.peerManagedWorkspaceEnsureLink(r, req)
 	if err != nil {
 		writeError(w, status, err)
 		return
@@ -442,7 +447,7 @@ func (s *Server) handlePeerManagedWorkspaceLinkExisting(w http.ResponseWriter, r
 			DestinationPath:        strings.TrimSpace(req.DestinationPath),
 			GitWorkspace:           true,
 		}},
-	})
+	}, r)
 	if err != nil {
 		writeError(w, status, err)
 		return
@@ -451,7 +456,12 @@ func (s *Server) handlePeerManagedWorkspaceLinkExisting(w http.ResponseWriter, r
 		writeError(w, http.StatusConflict, errors.New("destination no longer matches a linkable existing managed workspace"))
 		return
 	}
-	if _, err := s.workspace.AddForPrincipal(peerManagedWorkspacePrincipal(), preflight.Workspaces[0].DestinationPath, workspaceName, "", false); err != nil {
+	principal, ok := s.peerManagedWorkspacePrincipalForRequest(r)
+	if !ok || !principal.Valid() {
+		writeError(w, http.StatusForbidden, errors.New("managed workspace peer request requires persisted pairing account binding"))
+		return
+	}
+	if _, err := s.workspace.AddForPrincipal(principal, preflight.Workspaces[0].DestinationPath, workspaceName, "", false); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -493,7 +503,7 @@ func (s *Server) handlePeerManagedWorkspaceImportBundle(w http.ResponseWriter, r
 			DestinationPath:        destinationPath,
 			GitWorkspace:           true,
 		}},
-	})
+	}, r)
 	if err != nil {
 		writeError(w, status, err)
 		return
@@ -522,7 +532,12 @@ func (s *Server) handlePeerManagedWorkspaceImportBundle(w http.ResponseWriter, r
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if _, err := s.workspace.AddForPrincipal(peerManagedWorkspacePrincipal(), destinationPath, workspaceName, "", false); err != nil {
+	principal, ok := s.peerManagedWorkspacePrincipalForRequest(r)
+	if !ok || !principal.Valid() {
+		writeError(w, http.StatusForbidden, errors.New("managed workspace peer request requires persisted pairing account binding"))
+		return
+	}
+	if _, err := s.workspace.AddForPrincipal(principal, destinationPath, workspaceName, "", false); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -530,11 +545,15 @@ func (s *Server) handlePeerManagedWorkspaceImportBundle(w http.ResponseWriter, r
 }
 
 func (s *Server) managedWorkspacePreflight(r *http.Request, req managedWorkspacePreflightRequest) (managedWorkspacePreflightResponse, int, error) {
+	principal, ok := PrincipalFromRequest(r)
+	if !ok || !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
+		return managedWorkspacePreflightResponse{}, http.StatusUnauthorized, identity.ErrPrincipalRequired
+	}
 	target, localSwarmID, peerToken, status, err := s.resolveManagedWorkspaceTarget(r, req.TargetSwarmID)
 	if err != nil {
 		return managedWorkspacePreflightResponse{}, status, err
 	}
-	normalized, catalog, status, err := s.normalizeManagedWorkspaceSelections(req.Workspaces)
+	normalized, catalog, status, err := s.normalizeManagedWorkspaceSelectionsForPrincipal(principal, req.Workspaces)
 	if err != nil {
 		return managedWorkspacePreflightResponse{}, status, err
 	}
@@ -575,11 +594,15 @@ func (s *Server) workspaceManagedLinkUpsert(r *http.Request, req workspaceManage
 	if s == nil || s.workspace == nil {
 		return workspaceManagedLinkResponse{}, http.StatusInternalServerError, errors.New("workspace service is not configured")
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok || !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
+		return workspaceManagedLinkResponse{}, http.StatusUnauthorized, identity.ErrPrincipalRequired
+	}
 	workspacePath := strings.TrimSpace(req.WorkspacePath)
 	if workspacePath == "" {
 		return workspaceManagedLinkResponse{}, http.StatusBadRequest, errors.New("workspace_path is required")
 	}
-	normalized, catalog, status, err := s.normalizeManagedWorkspaceSelections([]managedWorkspaceSelectionRequest{{SourceWorkspacePath: workspacePath, DestinationPath: strings.TrimSpace(req.DestinationPath)}})
+	normalized, catalog, status, err := s.normalizeManagedWorkspaceSelectionsForPrincipal(principal, []managedWorkspaceSelectionRequest{{SourceWorkspacePath: workspacePath, DestinationPath: strings.TrimSpace(req.DestinationPath)}})
 	if err != nil {
 		return workspaceManagedLinkResponse{}, status, err
 	}
@@ -610,7 +633,7 @@ func (s *Server) workspaceManagedLinkUpsert(r *http.Request, req workspaceManage
 	if err != nil {
 		return workspaceManagedLinkResponse{}, http.StatusBadGateway, err
 	}
-	binding, err := s.upsertManagedWorkspaceBinding(*target, normalizedWorkspace.SourceWorkspacePath, workspaceName, peerResp.DestinationPath)
+	binding, err := s.upsertManagedWorkspaceBindingForPrincipal(principal, *target, normalizedWorkspace.SourceWorkspacePath, workspaceName, peerResp.DestinationPath)
 	if err != nil {
 		return workspaceManagedLinkResponse{}, http.StatusInternalServerError, err
 	}
@@ -659,7 +682,11 @@ func (s *Server) peerManagedWorkspaceInventory(r *http.Request) (peerManagedWork
 	if err != nil || strings.TrimSpace(home) == "" {
 		return peerManagedWorkspaceInventoryResponse{}, http.StatusInternalServerError, fmt.Errorf("resolve managed host home: %w", err)
 	}
-	saved, err := s.workspace.ListKnownForPrincipal(peerManagedWorkspacePrincipal(), 100000)
+	principal, ok := s.peerManagedWorkspacePrincipalForRequest(r)
+	if !ok || !principal.Valid() {
+		return peerManagedWorkspaceInventoryResponse{}, http.StatusForbidden, errors.New("managed workspace peer request requires persisted pairing account binding")
+	}
+	saved, err := s.workspace.ListKnownForPrincipal(principal, 100000)
 	if err != nil {
 		return peerManagedWorkspaceInventoryResponse{}, http.StatusInternalServerError, err
 	}
@@ -667,7 +694,7 @@ func (s *Server) peerManagedWorkspaceInventory(r *http.Request) (peerManagedWork
 	if err != nil {
 		return peerManagedWorkspaceInventoryResponse{}, http.StatusInternalServerError, err
 	}
-	activeCWDs, err := s.managedWorkspaceActiveCWDs(managedWorkspaceInventoryLimit(r, 200))
+	activeCWDs, err := s.managedWorkspaceActiveCWDsForPrincipal(principal, managedWorkspaceInventoryLimit(r, 200))
 	if err != nil {
 		return peerManagedWorkspaceInventoryResponse{}, http.StatusInternalServerError, err
 	}
@@ -683,7 +710,31 @@ func peerManagedWorkspacePrincipal() identity.Principal {
 	}
 }
 
-func (s *Server) peerManagedWorkspaceEnsureLink(req peerManagedWorkspaceEnsureLinkRequest) (peerManagedWorkspaceEnsureLinkResponse, int, error) {
+func (s *Server) peerManagedWorkspacePrincipalForRequest(r *http.Request) (identity.Principal, bool) {
+	if r != nil {
+		if principal, ok := s.trustedPairingPrincipalForPeerRequest(r); ok && principal.Valid() {
+			return principal, true
+		}
+		if principal, ok := PrincipalFromRequest(r); ok && principal.Valid() {
+			return principal, true
+		}
+	}
+	if s != nil && s.swarmStore != nil {
+		if pairing, ok, err := s.swarmStore.GetLocalPairing(); err == nil && ok {
+			principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: strings.TrimSpace(pairing.UserID), AccountScopeID: strings.TrimSpace(pairing.AccountScopeID), AccountScopeSource: identity.AccountScopeSourceServerState}
+			if principal.Valid() {
+				return principal, true
+			}
+		}
+	}
+	return peerManagedWorkspacePrincipal(), true
+}
+
+func (s *Server) peerManagedWorkspaceEnsureLink(r *http.Request, req peerManagedWorkspaceEnsureLinkRequest) (peerManagedWorkspaceEnsureLinkResponse, int, error) {
+	principal, ok := s.peerManagedWorkspacePrincipalForRequest(r)
+	if !ok || !principal.Valid() {
+		return peerManagedWorkspaceEnsureLinkResponse{}, http.StatusForbidden, errors.New("managed workspace peer request requires persisted pairing account binding")
+	}
 	workspaceName := sanitizeReplicationMountName(firstNonEmpty(strings.TrimSpace(req.WorkspaceName), defaultReplicatedWorkspaceName(req.SourceWorkspacePath)))
 	if workspaceName == "" {
 		workspaceName = "workspace"
@@ -714,18 +765,21 @@ func (s *Server) peerManagedWorkspaceEnsureLink(req peerManagedWorkspaceEnsureLi
 	} else {
 		return peerManagedWorkspaceEnsureLinkResponse{}, http.StatusInternalServerError, statErr
 	}
-	if _, err := s.workspace.AddForPrincipal(peerManagedWorkspacePrincipal(), destination, workspaceName, "", false); err != nil {
+	if _, err := s.workspace.AddForPrincipal(principal, destination, workspaceName, "", false); err != nil {
 		return peerManagedWorkspaceEnsureLinkResponse{}, http.StatusInternalServerError, err
 	}
 	registered = true
 	return peerManagedWorkspaceEnsureLinkResponse{OK: true, DestinationPath: destination, WorkspaceName: workspaceName, Exists: true, Created: created, Registered: registered}, http.StatusOK, nil
 }
 
-func (s *Server) managedWorkspaceActiveCWDs(limit int) ([]managedWorkspaceActiveCWDResponse, error) {
+func (s *Server) managedWorkspaceActiveCWDsForPrincipal(principal identity.Principal, limit int) ([]managedWorkspaceActiveCWDResponse, error) {
 	if s == nil || s.sessions == nil {
 		return nil, nil
 	}
-	sessions, err := s.sessions.ListSessions(limit)
+	if !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
+		return nil, identity.ErrPrincipalRequired
+	}
+	sessions, err := s.sessions.ListSessionsForAccount(principal.AccountScopeID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -787,6 +841,10 @@ func managedWorkspaceInventoryLimit(r *http.Request, fallback int) int {
 }
 
 func (s *Server) managedWorkspaceReplicate(r *http.Request, req managedWorkspaceReplicateRequest) (managedWorkspaceReplicateResponse, int, error) {
+	principal, ok := PrincipalFromRequest(r)
+	if !ok || !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
+		return managedWorkspaceReplicateResponse{}, http.StatusUnauthorized, identity.ErrPrincipalRequired
+	}
 	preflight, status, err := s.managedWorkspacePreflight(r, managedWorkspacePreflightRequest{TargetSwarmID: req.TargetSwarmID, DestinationRoot: req.DestinationRoot, Workspaces: req.Workspaces})
 	if err != nil {
 		return managedWorkspaceReplicateResponse{}, status, err
@@ -833,7 +891,7 @@ func (s *Server) managedWorkspaceReplicate(r *http.Request, req managedWorkspace
 				return managedWorkspaceReplicateResponse{}, http.StatusBadGateway, err
 			}
 		}
-		binding, err := s.upsertManagedWorkspaceBinding(*target, plan.SourceWorkspacePath, plan.SourceWorkspaceName, plan.DestinationPath)
+		binding, err := s.upsertManagedWorkspaceBindingForPrincipal(principal, *target, plan.SourceWorkspacePath, plan.SourceWorkspaceName, plan.DestinationPath)
 		if err != nil {
 			return managedWorkspaceReplicateResponse{}, http.StatusInternalServerError, err
 		}
@@ -925,16 +983,23 @@ func httptestRequestWithTarget(targetSwarmID string) *http.Request {
 	return &http.Request{Method: http.MethodPost, URL: reqURL}
 }
 
-func (s *Server) normalizeManagedWorkspaceSelections(inputs []managedWorkspaceSelectionRequest) ([]workspace.NormalizedReplicationWorkspace, map[string]replicateWorkspaceCatalogEntry, int, error) {
+func (s *Server) normalizeManagedWorkspaceSelectionsForPrincipal(principal identity.Principal, inputs []managedWorkspaceSelectionRequest) ([]workspace.NormalizedReplicationWorkspace, map[string]replicateWorkspaceCatalogEntry, int, error) {
 	if s == nil || s.workspace == nil {
 		return nil, nil, http.StatusInternalServerError, errors.New("workspace service is not configured")
+	}
+	if !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
+		return nil, nil, http.StatusUnauthorized, identity.ErrPrincipalRequired
 	}
 	if len(inputs) == 0 {
 		return nil, nil, http.StatusBadRequest, errors.New("at least one workspace is required")
 	}
 	workspaceInputs := make([]workspace.ReplicationWorkspaceInput, 0, len(inputs))
 	for _, input := range inputs {
-		workspaceInputs = append(workspaceInputs, workspace.ReplicationWorkspaceInput{SourceWorkspacePath: input.SourceWorkspacePath, ReplicationMode: workspace.ReplicationModeBundle})
+		owned, err := s.resolveAccountOwnedPath(principal, input.SourceWorkspacePath)
+		if err != nil {
+			return nil, nil, http.StatusBadRequest, err
+		}
+		workspaceInputs = append(workspaceInputs, workspace.ReplicationWorkspaceInput{SourceWorkspacePath: owned.WorkspacePath, ReplicationMode: workspace.ReplicationModeBundle})
 	}
 	normalized, err := s.workspace.NormalizeReplicationWorkspaces(workspaceInputs)
 	if err != nil {
@@ -945,7 +1010,7 @@ func (s *Server) normalizeManagedWorkspaceSelections(inputs []managedWorkspaceSe
 			return nil, nil, http.StatusBadRequest, fmt.Errorf("managed host replication requires git bundle source workspace %q", item.SourceWorkspacePath)
 		}
 	}
-	catalog, err := s.replicateWorkspaceCatalog(normalized)
+	catalog, err := s.replicateWorkspaceCatalogForPrincipal(principal, normalized)
 	if err != nil {
 		return nil, nil, http.StatusInternalServerError, err
 	}
@@ -1008,7 +1073,7 @@ func postPeerManagedWorkspacePreflight(ctx context.Context, target swarmTarget, 
 	return decoded, nil
 }
 
-func (s *Server) peerManagedWorkspacePreflight(req peerManagedWorkspacePreflightRequest) (peerManagedWorkspacePreflightResponse, int, error) {
+func (s *Server) peerManagedWorkspacePreflight(req peerManagedWorkspacePreflightRequest, requests ...*http.Request) (peerManagedWorkspacePreflightResponse, int, error) {
 	if s == nil || s.workspace == nil {
 		return peerManagedWorkspacePreflightResponse{}, http.StatusInternalServerError, errors.New("workspace service is not configured")
 	}
@@ -1019,7 +1084,11 @@ func (s *Server) peerManagedWorkspacePreflight(req peerManagedWorkspacePreflight
 	if len(req.Workspaces) == 0 {
 		return peerManagedWorkspacePreflightResponse{}, http.StatusBadRequest, errors.New("at least one workspace is required")
 	}
-	known, err := s.knownWorkspacePathSet()
+	var r *http.Request
+	if len(requests) > 0 {
+		r = requests[0]
+	}
+	known, err := s.knownWorkspacePathSet(r)
 	if err != nil {
 		return peerManagedWorkspacePreflightResponse{}, http.StatusInternalServerError, err
 	}
@@ -1042,8 +1111,12 @@ func (s *Server) peerManagedWorkspacePreflight(req peerManagedWorkspacePreflight
 	return peerManagedWorkspacePreflightResponse{OK: ready, Ready: ready, DestinationRoot: root, Workspaces: plans}, http.StatusOK, nil
 }
 
-func (s *Server) knownWorkspacePathSet() (map[string]struct{}, error) {
-	entries, err := s.workspace.ListKnownForPrincipal(peerManagedWorkspacePrincipal(), 100000)
+func (s *Server) knownWorkspacePathSet(r *http.Request) (map[string]struct{}, error) {
+	principal, ok := s.peerManagedWorkspacePrincipalForRequest(r)
+	if !ok || !principal.Valid() {
+		return nil, errors.New("managed workspace peer request requires persisted pairing account binding")
+	}
+	entries, err := s.workspace.ListKnownForPrincipal(principal, 100000)
 	if err != nil {
 		return nil, err
 	}
@@ -1413,14 +1486,19 @@ func managedWorkspacePlanID(source, root, destination, action string) string {
 	return "managed_workspace_" + hex.EncodeToString(sum[:8])
 }
 
-func (s *Server) upsertManagedWorkspaceBinding(target swarmTarget, sourceWorkspacePath, sourceWorkspaceName, destinationPath string) (pebblestore.TopologyWorkspaceBindingRecord, error) {
+func (s *Server) upsertManagedWorkspaceBindingForPrincipal(principal identity.Principal, target swarmTarget, sourceWorkspacePath, sourceWorkspaceName, destinationPath string) (pebblestore.TopologyWorkspaceBindingRecord, error) {
 	if s == nil || s.topology == nil {
 		return pebblestore.TopologyWorkspaceBindingRecord{}, errors.New("topology service is not configured")
+	}
+	if !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, identity.ErrPrincipalRequired
 	}
 	targetSwarmID := strings.TrimSpace(target.SwarmID)
 	sourceWorkspacePath = strings.TrimSpace(sourceWorkspacePath)
 	return s.topology.UpsertWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
 		BindingID:                 pebblestore.CanonicalTopologyWorkspaceBindingID(targetSwarmID, sourceWorkspacePath),
+		UserID:                    strings.TrimSpace(principal.UserID),
+		AccountScopeID:            strings.TrimSpace(principal.AccountScopeID),
 		SourceWorkspacePath:       sourceWorkspacePath,
 		SourceWorkspaceName:       firstNonEmpty(strings.TrimSpace(sourceWorkspaceName), defaultReplicatedWorkspaceName(sourceWorkspacePath)),
 		DestinationRuntimeSwarmID: targetSwarmID,

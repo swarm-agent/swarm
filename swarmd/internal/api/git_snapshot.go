@@ -17,7 +17,7 @@ func (s *Server) handleGitStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	principal, ok := PrincipalFromRequest(r)
-	if !ok {
+	if !ok || !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
 		return
 	}

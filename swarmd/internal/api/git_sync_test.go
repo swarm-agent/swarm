@@ -13,9 +13,11 @@ import (
 	"time"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 	topologyruntime "swarm/packages/swarmd/internal/topology"
+	"swarm/packages/swarmd/internal/workspace"
 )
 
 func TestInspectGitSyncRepoRequiresCleanNamedBranch(t *testing.T) {
@@ -268,9 +270,10 @@ func newManagedGitSyncTestServer(t *testing.T) *Server {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	server := NewServer("test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer("test", nil, nil, nil, nil, nil, workspace.NewService(pebblestore.NewWorkspaceStore(store)), nil, nil, nil, nil, nil, nil, nil)
 	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, nil, nil))
 	server.SetSwarmNodeStore(pebblestore.NewSwarmNodeStore(store))
+	server.SetSwarmStore(pebblestore.NewSwarmStore(store))
 	server.SetSwarmService(fakeRoutedSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "host-swarm-id", Name: "host-swarm", Role: "master"}}, token: "peer-token"})
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
 	cfg := startupconfig.Default(startupPath)
@@ -285,6 +288,9 @@ func newManagedGitSyncTestServer(t *testing.T) *Server {
 
 func seedManagedGitSyncTopologyBinding(t *testing.T, server *Server, sourceRepo, backendURL string) {
 	t.Helper()
+	if _, err := server.workspace.AddForPrincipal(identity.Principal{Type: identity.PrincipalTypeUser, UserID: testUserID, AccountScopeID: testAccountScopeID, AccountScopeSource: identity.AccountScopeSourceServerState}, sourceRepo, "swarm-go", "", false); err != nil {
+		t.Fatalf("add source workspace: %v", err)
+	}
 	if _, err := server.swarmNodes.Put(pebblestore.SwarmNodeRecord{SwarmID: "managed-swarm", Name: "Managed Host", Role: "managed", Kind: "manual", BackendURL: backendURL, Status: "online"}); err != nil {
 		t.Fatalf("put managed node: %v", err)
 	}
@@ -294,6 +300,8 @@ func seedManagedGitSyncTopologyBinding(t *testing.T, server *Server, sourceRepo,
 	}
 	if _, err := server.topology.UpsertWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
 		BindingID:                 pebblestore.CanonicalTopologyWorkspaceBindingID("managed-swarm", sourceRepo),
+		UserID:                    testUserID,
+		AccountScopeID:            testAccountScopeID,
 		SourceWorkspacePath:       sourceRepo,
 		SourceWorkspaceName:       "swarm-go",
 		DestinationRuntimeSwarmID: "managed-swarm",

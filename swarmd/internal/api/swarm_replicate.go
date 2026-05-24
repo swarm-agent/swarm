@@ -218,7 +218,7 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 		targetHost = resolved
 		peerToken = token
 	}
-	workspaceCatalog, err := s.replicateWorkspaceCatalog(normalizedWorkspaces)
+	workspaceCatalog, err := s.replicateWorkspaceCatalogForPrincipal(principal, normalizedWorkspaces)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -810,8 +810,11 @@ func mapReplicateContainerPackagesInput(input swarmReplicateContainerPackagesReq
 	}
 }
 
-func (s *Server) replicateWorkspaceCatalog(workspaces []workspace.NormalizedReplicationWorkspace) (map[string]replicateWorkspaceCatalogEntry, error) {
-	entries, err := s.workspace.ListKnown(100000)
+func (s *Server) replicateWorkspaceCatalogForPrincipal(principal identity.Principal, workspaces []workspace.NormalizedReplicationWorkspace) (map[string]replicateWorkspaceCatalogEntry, error) {
+	if !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
+		return nil, identity.ErrPrincipalRequired
+	}
+	entries, err := s.workspace.ListKnownForPrincipal(principal, 100000)
 	if err != nil {
 		return nil, err
 	}

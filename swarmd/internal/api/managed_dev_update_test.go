@@ -25,9 +25,10 @@ func TestManagedHostUpdateRunRoutesToPeerUpdateRun(t *testing.T) {
 		writeJSON(w, http.StatusAccepted, managedHostPeerUpdateRunResponse{OK: true})
 	}))
 	t.Cleanup(peer.Close)
-	seedManagedGitSyncTopologyBinding(t, server, t.TempDir(), peer.URL)
+	source := initGitCommitTestRepo(t)
+	seedManagedGitSyncTopologyBinding(t, server, source, peer.URL)
 
-	req := httptest.NewRequest(http.MethodPost, managedHostUpdateRunPath, strings.NewReader(`{"target_swarm_id":"managed-swarm"}`))
+	req := requestWithTestPrincipal(httptest.NewRequest(http.MethodPost, managedHostUpdateRunPath, strings.NewReader(`{"target_swarm_id":"managed-swarm"}`)))
 	rec := httptest.NewRecorder()
 	server.handleManagedHostUpdateRun(rec, req)
 	if rec.Code != http.StatusAccepted {

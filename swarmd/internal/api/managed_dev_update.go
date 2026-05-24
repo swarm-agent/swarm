@@ -4,6 +4,8 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+
+	"swarm/packages/swarmd/internal/identity"
 )
 
 const (
@@ -114,6 +116,10 @@ func (s *Server) resolveManagedHostUpdateTarget(r *http.Request, req managedHost
 	if s == nil {
 		return nil, http.StatusInternalServerError, errors.New("server is not configured")
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok || !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
+		return nil, http.StatusUnauthorized, identity.ErrPrincipalRequired
+	}
 	targetSwarmID := strings.TrimSpace(req.TargetSwarmID)
 	if targetSwarmID == "" {
 		return nil, http.StatusBadRequest, errors.New("target_swarm_id is required")
@@ -122,7 +128,55 @@ func (s *Server) resolveManagedHostUpdateTarget(r *http.Request, req managedHost
 	if err != nil {
 		return nil, status, err
 	}
+	if s.topology == nil {
+		return nil, http.StatusInternalServerError, errors.New("topology service is not configured")
+	}
+	if err := s.requireManagedHostUpdateAccountRelation(principal, targetSwarmID); err != nil {
+		return nil, http.StatusNotFound, err
+	}
 	return target, http.StatusOK, nil
+}
+
+func (s *Server) requireManagedHostUpdateAccountRelation(principal identity.Principal, targetSwarmID string) error {
+	if s == nil || s.topology == nil {
+		return errors.New("topology service is not configured")
+	}
+	accountScopeID := strings.TrimSpace(principal.AccountScopeID)
+	if accountScopeID == "" {
+		return identity.ErrPrincipalRequired
+	}
+	targetSwarmID = strings.TrimSpace(targetSwarmID)
+	if targetSwarmID == "" {
+		return errors.New("target_swarm_id is required")
+	}
+	bindings, err := s.topology.ListWorkspaceBindingsForAccount(accountScopeID, 100000)
+	if err != nil {
+		return err
+	}
+	for _, binding := range bindings {
+		runtimeSwarmID := strings.TrimSpace(binding.DestinationRuntimeSwarmID)
+		if runtimeSwarmID == "" {
+			runtimeSwarmID = strings.TrimSpace(binding.DestinationHostSwarmID)
+		}
+		if strings.EqualFold(runtimeSwarmID, targetSwarmID) {
+			return nil
+		}
+	}
+	if s.sessions != nil {
+		sessions, err := s.sessions.ListSessionsForAccount(accountScopeID, 100000)
+		if err != nil {
+			return err
+		}
+		for _, session := range sessions {
+			if sessionUserID := strings.TrimSpace(session.UserID); sessionUserID != "" && sessionUserID != strings.TrimSpace(principal.UserID) {
+				continue
+			}
+			if strings.EqualFold(managedHostSessionStringMetadata(session.Metadata, "swarm_managed_host_swarm_id"), targetSwarmID) {
+				return nil
+			}
+		}
+	}
+	return errors.New("account-owned target or session relation not found")
 }
 
 type managedHostPeerUpdateRunResponse struct {

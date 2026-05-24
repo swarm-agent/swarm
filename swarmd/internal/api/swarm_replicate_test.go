@@ -512,6 +512,7 @@ func newReplicateTestHandler(t *testing.T) (*Server, *fakeReplicateDeployService
 
 	server := NewServer("test", nil, nil, nil, nil, nil, workspaceSvc, nil, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
 	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, nil, nil))
+	server.SetSwarmStore(pebblestore.NewSwarmStore(store))
 
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
 	cfg := startupconfig.Default(startupPath)

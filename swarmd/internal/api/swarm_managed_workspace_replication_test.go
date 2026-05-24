@@ -26,7 +26,7 @@ func TestPeerManagedWorkspaceInventoryReturnsSavedDiscoveredAndCWDs(t *testing.T
 	if err := os.MkdirAll(savedPath, 0o755); err != nil {
 		t.Fatalf("mkdir saved: %v", err)
 	}
-	if _, err := handler.workspace.AddForPrincipal(peerManagedWorkspacePrincipal(), savedPath, "saved-workspace", "", false); err != nil {
+	if _, err := handler.workspace.AddForPrincipal(testPrincipal(), savedPath, "saved-workspace", "", false); err != nil {
 		t.Fatalf("add saved: %v", err)
 	}
 	discoveredPath := filepath.Join(home, "discovered-workspace")
@@ -40,10 +40,15 @@ func TestPeerManagedWorkspaceInventoryReturnsSavedDiscoveredAndCWDs(t *testing.T
 	t.Cleanup(func() { _ = store.Close() })
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), nil)
 	handler.sessions = sessionSvc
-	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "session-1", WorkspacePath: discoveredPath, WorkspaceName: "discovered-workspace", Title: "Active work", UpdatedAt: 42}); err != nil {
+	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "session-1", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, WorkspacePath: discoveredPath, WorkspaceName: "discovered-workspace", Title: "Active work", UpdatedAt: 42}); err != nil {
 		t.Fatalf("store session: %v", err)
 	}
+	if _, err := handler.swarmStore.PutLocalPairing(pebblestore.SwarmLocalPairingRecord{ParentSwarmID: "manager-swarm", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, PairingState: "paired"}); err != nil {
+		t.Fatalf("put local pairing: %v", err)
+	}
 	req := httptest.NewRequest(http.MethodGet, peerManagedWorkspaceInventoryPath, nil)
+	req.Header.Set(peerAuthSwarmIDHeader, "manager-swarm")
+	req.Header.Set(peerAuthTokenHeader, "manager-token")
 	response, status, err := handler.peerManagedWorkspaceInventory(req)
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("inventory status=%d err=%v", status, err)
