@@ -51,6 +51,45 @@ func TestSwarmReplicateLeavesRuntimeEmptyWhenCallerOmitsIt(t *testing.T) {
 	}
 }
 
+func TestSwarmReplicateLocalContainerDoesNotRequireCurrentGroup(t *testing.T) {
+	handler, fakeDeploy, workspacePath := newReplicateTestHandler(t)
+	setReplicateFakeSwarmState(handler, swarmruntime.LocalState{
+		Node: swarmruntime.LocalNodeState{SwarmID: "host-swarm-id", Name: "host-swarm", Role: "master"},
+	})
+
+	recorder := postReplicateRequest(t, handler, map[string]any{
+		"mode":       "local",
+		"swarm_name": "replica-no-group",
+		"runtime":    "podman",
+		"sync": map[string]any{
+			"enabled": true,
+			"mode":    "managed",
+		},
+		"workspaces": []map[string]any{{
+			"source_workspace_path": workspacePath,
+			"replication_mode":      "bundle",
+			"writable":              true,
+		}},
+	})
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if fakeDeploy.lastCreateInput.Name != "replica-no-group" {
+		t.Fatalf("create name = %q, want replica-no-group", fakeDeploy.lastCreateInput.Name)
+	}
+	if fakeDeploy.lastCreateInput.GroupID != "" || fakeDeploy.lastCreateInput.GroupName != "" || fakeDeploy.lastCreateInput.GroupNetworkName != "" {
+		t.Fatalf("create group fields = id %q name %q network %q, want empty", fakeDeploy.lastCreateInput.GroupID, fakeDeploy.lastCreateInput.GroupName, fakeDeploy.lastCreateInput.GroupNetworkName)
+	}
+	var response swarmReplicateResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Swarm.GroupID != "" {
+		t.Fatalf("response group id = %q, want empty", response.Swarm.GroupID)
+	}
+}
+
 func TestSwarmReplicatePassesRequestedRuntimeThroughToDeployCreate(t *testing.T) {
 	handler, fakeDeploy, workspacePath := newReplicateTestHandler(t)
 
