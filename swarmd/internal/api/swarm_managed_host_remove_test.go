@@ -46,8 +46,8 @@ func TestSwarmManagedHostRemoveDetachesManagedHostConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load startup config: %v", err)
 	}
-	if !cfg.SwarmMode || cfg.Child || cfg.SwarmRole != "" || cfg.ParentSwarmID != "" || cfg.PairingState != startupconfig.PairingStateUnpaired {
-		t.Fatalf("config not detached: mode=%t child=%t role=%q parent=%q pairing=%q", cfg.SwarmMode, cfg.Child, cfg.SwarmRole, cfg.ParentSwarmID, cfg.PairingState)
+	if cfg.Child || cfg.SwarmRole != "" || cfg.ParentSwarmID != "" || cfg.PairingState != startupconfig.PairingStateUnpaired {
+		t.Fatalf("config not detached: child=%t role=%q parent=%q pairing=%q", cfg.Child, cfg.SwarmRole, cfg.ParentSwarmID, cfg.PairingState)
 	}
 }
 

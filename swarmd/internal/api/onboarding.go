@@ -391,7 +391,7 @@ func (s *Server) onboardingResponseWithServeDetection(includeSensitive bool, det
 			PeerTransportPort:         cfg.PeerTransportPort,
 		},
 		Heuristics: onboardingHeuristicsPayload{
-			MissingSwarmName:    swarmModeEnabled(cfg) && strings.TrimSpace(cfg.SwarmName) == "",
+			MissingSwarmName:    strings.TrimSpace(cfg.SwarmName) == "",
 			CredentialCount:     credentialList.Total,
 			SavedWorkspaceCount: savedCount,
 			VaultConfigured:     vaultStatus.Enabled,
@@ -792,9 +792,6 @@ func hostnameFromURL(raw string) string {
 }
 
 func localSwarmRole(cfg startupconfig.FileConfig) string {
-	if !swarmModeEnabled(cfg) {
-		return bootstrapRoleStandalone
-	}
 	if strings.EqualFold(strings.TrimSpace(cfg.SwarmRole), startupconfig.SwarmRoleManaged) {
 		return bootstrapRoleManaged
 	}

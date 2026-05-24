@@ -279,10 +279,6 @@ func (s *Server) handleSwarmInvites(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if err := requireSwarmModeEnabled(cfg); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
 	status, err := s.onboardingResponseWithServeDetection(true, false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -342,10 +338,6 @@ func (s *Server) handleSwarmEnroll(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if err := requireSwarmModeEnabled(cfg); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
 	status, err := s.onboardingResponseWithServeDetection(true, false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -400,10 +392,6 @@ func (s *Server) handleSwarmRemotePairingStart(w http.ResponseWriter, r *http.Re
 	cfg, err := s.loadStartupConfig()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	if err := requireSwarmModeEnabled(cfg); err != nil {
-		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	if strings.EqualFold(localSwarmRole(cfg), startupconfig.SwarmRoleManaged) || cfg.Child || strings.EqualFold(strings.TrimSpace(cfg.PairingState), startupconfig.PairingStatePaired) {
@@ -606,10 +594,6 @@ func (s *Server) handleSwarmRemotePairingRequest(w http.ResponseWriter, r *http.
 	logSwarmPairingTiming("remote_pairing.load_startup_config", stepStartedAt, err, "manager_swarm_id", managerSwarmID)
 	if err != nil {
 		fail(http.StatusInternalServerError, err)
-		return
-	}
-	if err := requireSwarmModeEnabled(cfg); err != nil {
-		fail(http.StatusBadRequest, err)
 		return
 	}
 	stepStartedAt = time.Now()
@@ -1246,12 +1230,6 @@ func (s *Server) handleSwarmDiscovery(w http.ResponseWriter, r *http.Request) {
 		SwarmID: strings.TrimSpace(state.Node.SwarmID),
 		Name:    firstNonEmpty(strings.TrimSpace(cfg.SwarmName), strings.TrimSpace(state.Node.Name), "Unnamed swarm"),
 	}
-	if !swarmModeEnabled(cfg) {
-		response.Role = bootstrapRoleStandalone
-		response = redactSensitiveSwarmDiscoveryResponse(response, s.allowSwarmDiscoveryIdentity(r))
-		writeJSON(w, http.StatusOK, response)
-		return
-	}
 	transports := detectedOnboardingTransports(cfg)
 	tailscale := detectTailscale()
 	status := onboardingResponse{Tailscale: tailscale}
@@ -1293,15 +1271,6 @@ func (s *Server) handleSwarmPendingChildren(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, errors.New("swarm service is not configured"))
 		return
 	}
-	cfg, err := s.loadStartupConfig()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	if err := requireSwarmModeEnabled(cfg); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
 	items, err := s.swarm.ListPendingEnrollments(500)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -1317,15 +1286,6 @@ func (s *Server) handleSwarmEnrollmentDecision(w http.ResponseWriter, r *http.Re
 	}
 	if s.swarm == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("swarm service is not configured"))
-		return
-	}
-	cfg, err := s.loadStartupConfig()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	if err := requireSwarmModeEnabled(cfg); err != nil {
-		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	path := strings.Trim(strings.TrimPrefix(strings.TrimSpace(r.URL.Path), "/v1/swarm/enrollment/"), "/")
@@ -1398,9 +1358,6 @@ func normalizeRemoteSwarmEndpoint(endpoint string) string {
 }
 
 func canonicalRemoteSwarmEndpoint(cfg startupconfig.FileConfig, status onboardingResponse) string {
-	if !swarmModeEnabled(cfg) {
-		return ""
-	}
 	switch bootstrapNetworkMode(cfg) {
 	case startupconfig.NetworkModeTailscale:
 		if endpoint := strings.TrimSpace(cfg.TailscaleURL); endpoint != "" {
@@ -1429,13 +1386,6 @@ func canonicalRemoteSwarmEndpoint(cfg startupconfig.FileConfig, status onboardin
 		}
 		return ""
 	}
-}
-
-func requireSwarmModeEnabled(cfg startupconfig.FileConfig) error {
-	if swarmModeEnabled(cfg) {
-		return nil
-	}
-	return errors.New("turn on swarm mode before using swarm networking or pairing")
 }
 
 func postRemoteSwarmJSON(endpoint string, payload any, out any) error {

@@ -15,8 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"swarm-refactor/swarmtui/pkg/startupconfig"
-
 	deployruntime "swarm/packages/swarmd/internal/deploy"
 	"swarm/packages/swarmd/internal/identity"
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
@@ -177,27 +175,11 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stateCfg := cfg
-	stateCfgChanged := false
-	stateSwarmNameGenerated := false
-	if !swarmModeEnabled(stateCfg) {
-		stateCfg.SwarmMode = true
-		stateCfg.Child = false
-		stateCfgChanged = true
-		if strings.TrimSpace(stateCfg.SwarmName) == "" {
-			stateCfg.SwarmName = defaultOnboardingSwarmName(stateCfg)
-			stateSwarmNameGenerated = true
-		}
-	}
-	if stateCfgChanged {
-		if err := startupconfig.Write(stateCfg); err != nil {
+	if strings.TrimSpace(stateCfg.SwarmName) == "" {
+		stateCfg.SwarmName = defaultOnboardingSwarmName(stateCfg)
+		if err := s.persistUISwarmName(stateCfg.SwarmName); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
-		}
-		if stateSwarmNameGenerated {
-			if err := s.persistUISwarmName(stateCfg.SwarmName); err != nil {
-				writeError(w, http.StatusInternalServerError, err)
-				return
-			}
 		}
 	}
 	state, err := s.currentSwarmState(stateCfg)

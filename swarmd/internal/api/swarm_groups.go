@@ -119,10 +119,6 @@ func (s *Server) handleSwarmGroupUpsert(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if err := requireSwarmModeEnabled(cfg); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
 	state, err := s.currentSwarmState(cfg)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -181,10 +177,6 @@ func (s *Server) handleSwarmCurrentGroup(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if err := requireSwarmModeEnabled(cfg); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
 	state, err := s.currentSwarmState(cfg)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -233,10 +225,6 @@ func (s *Server) handleSwarmGroupMemberDelete(w http.ResponseWriter, r *http.Req
 	cfg, err := s.loadStartupConfig()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	if err := requireSwarmModeEnabled(cfg); err != nil {
-		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	state, err := s.currentSwarmState(cfg)

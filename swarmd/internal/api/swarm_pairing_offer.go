@@ -102,10 +102,6 @@ func (s *Server) handleSwarmRemotePairingOffer(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if err := requireSwarmModeEnabled(cfg); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
 	status, err := s.onboardingResponseWithServeDetection(true, false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)

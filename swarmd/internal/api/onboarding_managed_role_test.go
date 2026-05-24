@@ -55,23 +55,18 @@ func TestLocalSwarmRoleLegacyFallbacks(t *testing.T) {
 		want string
 	}{
 		{
-			name: "standalone when swarm off",
-			cfg:  startupconfig.FileConfig{SwarmMode: false, Child: true, SwarmRole: startupconfig.SwarmRoleManaged},
-			want: bootstrapRoleStandalone,
-		},
-		{
-			name: "managed overrides child when swarm on",
-			cfg:  startupconfig.FileConfig{SwarmMode: true, Child: true, SwarmRole: startupconfig.SwarmRoleManaged},
+			name: "managed role overrides child flag",
+			cfg:  startupconfig.FileConfig{Child: true, SwarmRole: startupconfig.SwarmRoleManaged},
 			want: bootstrapRoleManaged,
 		},
 		{
 			name: "legacy child",
-			cfg:  startupconfig.FileConfig{SwarmMode: true, Child: true},
+			cfg:  startupconfig.FileConfig{Child: true},
 			want: bootstrapRoleChild,
 		},
 		{
-			name: "legacy master",
-			cfg:  startupconfig.FileConfig{SwarmMode: true},
+			name: "default master",
+			cfg:  startupconfig.FileConfig{},
 			want: bootstrapRoleMaster,
 		},
 	}
