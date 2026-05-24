@@ -3,6 +3,23 @@
 This Launch Gate proves real primary -> managed-host behavior through swarmd APIs only.
 Remote SSH/deploy paths are out of scope for product-path evidence. Operator shell access is limited to host cleanup, daemon control for cold DB inspection, and log/artifact collection.
 
+## Proof hosts
+
+Use the host that matches the proof being run. Do not silently substitute hosts; record the host in the evidence directory metadata or run notes.
+
+- `testbench` / `swarm-bomb`: original verification host for migration gates and scripts that explicitly require the SSH testbench host. Use it when a harness says it must run on `swarm-bomb` or when replaying older migration evidence.
+- `testbench2`: newer managed-host/parity VM for Gate B managed-host proof and current no-mode/SwarmMode-removal parity checks, unless a specific migration gate explicitly names `testbench` / `swarm-bomb`.
+
+For SwarmMode removal proof, run local targeted tests first, then run clean onboarding proof on the clean VM used for that run, and run Gate B managed-host proof on `testbench2` unless the specific harness requires `testbench` / `swarm-bomb`.
+
+```sh
+# Local source gate: functional code/tests/scripts must not depend on SwarmMode.
+rg --glob '!dist/**' --glob '!.git/**' --glob '!.cache/**' 'swarm_mode|SwarmMode|swarmMode|requireSwarmModeEnabled'
+
+# Local targeted tests before VM proof.
+cd swarmd && go test ./internal/swarm ./internal/api -run 'EnsureLocalState|Group|Pairing|Managed|Onboarding'
+```
+
 ## Matrix
 
 | ID | Area | Required e2e proof | Status in minimal harness |

@@ -20,6 +20,7 @@ import {
 import {
   createSession,
   fetchActiveSessionPlan,
+  fetchSessionPlanHistory,
   resolveSessionPermission,
   saveSessionPlan,
   startSessionRun,
@@ -28,7 +29,7 @@ import {
   updateSessionMode,
   updateSessionPreference,
 } from '../queries/chat-queries'
-import type { AgentStateRecord, ChatMessageRecord, ResolvedSessionPreference, DesktopSessionPlanRecord } from '../types/chat'
+import type { AgentStateRecord, ChatMessageRecord, ResolvedSessionPreference, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
 import type { DesktopSessionRecord } from '../../types/realtime'
 import { Card } from '../../../../components/ui/card'
 import { ChatMarkdown } from './chat-markdown'
@@ -372,10 +373,12 @@ interface CommitModalState {
 interface PlanModalState {
   open: boolean
   loading: boolean
+  historyLoading: boolean
   saving: boolean
   error: string | null
   hasActive: boolean
   plan: DesktopSessionPlanRecord | null
+  revisions: DesktopSessionPlanRevisionRecord[]
 }
 
 function messageSort(left: ChatMessageRecord, right: ChatMessageRecord): number {
@@ -872,10 +875,12 @@ const EMPTY_COMMIT_MODAL_STATE: CommitModalState = {
 const EMPTY_PLAN_MODAL_STATE: PlanModalState = {
   open: false,
   loading: false,
+  historyLoading: false,
   saving: false,
   error: null,
   hasActive: false,
   plan: null,
+  revisions: [],
 }
 
 function commitStatusLabel(state: CommitModalState): string {
@@ -2029,10 +2034,12 @@ export function DesktopChatPanel({
       setPlanModal({
         open: true,
         loading: false,
+        historyLoading: false,
         saving: false,
         error: 'Open or create a session before using /plan.',
         hasActive: false,
         plan: null,
+        revisions: [],
       })
       return
     }
@@ -2041,36 +2048,58 @@ export function DesktopChatPanel({
       ...current,
       open: true,
       loading: true,
+      historyLoading: false,
       saving: false,
       error: null,
     }))
     try {
       const result = await fetchActiveSessionPlan(sessionId)
+      const visiblePlan = result.hasActive
+        ? result.plan
+        : {
+            id: '',
+            title: 'Current Plan',
+            plan: '',
+            status: 'draft',
+            approvalState: '',
+            updatedAt: 0,
+          }
       setPlanModal({
         open: true,
         loading: false,
+        historyLoading: result.hasActive && result.plan.id.trim() !== '',
         saving: false,
         error: null,
         hasActive: result.hasActive,
-        plan: result.hasActive
-          ? result.plan
-          : {
-              id: '',
-              title: 'Current Plan',
-              plan: '',
-              status: 'draft',
-              approvalState: '',
-              updatedAt: 0,
-            },
+        plan: visiblePlan,
+        revisions: [],
       })
+      if (result.hasActive && result.plan.id.trim()) {
+        try {
+          const revisions = await fetchSessionPlanHistory(sessionId, result.plan.id)
+          setPlanModal((current) => ({
+            ...current,
+            historyLoading: false,
+            revisions,
+          }))
+        } catch (historyError) {
+          setPlanModal((current) => ({
+            ...current,
+            historyLoading: false,
+            error: historyError instanceof Error ? historyError.message : 'Failed to load plan revision history',
+          }))
+        }
+      }
     } catch (error) {
       setPlanModal({
         open: true,
         loading: false,
+        historyLoading: false,
         saving: false,
         error: error instanceof Error ? error.message : 'Failed to load current plan',
         hasActive: false,
         plan: null,
+        revisions: [],
       })
     }
   }, [sessionId])
@@ -2354,15 +2383,34 @@ export function DesktopChatPanel({
       setPlanModal({
         open: true,
         loading: false,
+        historyLoading: saved.id.trim() !== '',
         saving: false,
         error: null,
         hasActive: true,
         plan: saved,
+        revisions: [],
       })
+      if (saved.id.trim()) {
+        try {
+          const revisions = await fetchSessionPlanHistory(sessionId, saved.id)
+          setPlanModal((current) => ({
+            ...current,
+            historyLoading: false,
+            revisions,
+          }))
+        } catch (historyError) {
+          setPlanModal((current) => ({
+            ...current,
+            historyLoading: false,
+            error: historyError instanceof Error ? historyError.message : 'Failed to load plan revision history',
+          }))
+        }
+      }
     } catch (error) {
       setPlanModal((current) => ({
         ...current,
         saving: false,
+        historyLoading: false,
         error: error instanceof Error ? error.message : 'Failed to save current plan',
       }))
     }
@@ -3347,6 +3395,8 @@ export function DesktopChatPanel({
       <DesktopPlanModal
         open={planModal.open}
         plan={planModal.plan}
+        revisions={planModal.revisions}
+        historyLoading={planModal.historyLoading}
         saving={planModal.saving || planModal.loading}
         error={planModal.error}
         onOpenChange={(open) => {

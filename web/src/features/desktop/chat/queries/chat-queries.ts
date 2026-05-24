@@ -16,6 +16,7 @@ import type {
   ProviderDefaultsPreviewRecord,
   ResolvedSessionPreference,
   DesktopSessionPlanRecord,
+  DesktopSessionPlanRevisionRecord,
 } from "../types/chat";
 import {
   applyDesktopChatRouteToSession,
@@ -172,7 +173,17 @@ interface SessionPlanWire {
   plan?: string;
   status?: string;
   approval_state?: string;
+  created_at?: number;
   updated_at?: number;
+  prior_title?: string;
+  prior_plan?: string;
+  diff_lines?: string[];
+  update_summary?: string;
+  update_scope?: string;
+  update_kind?: string;
+  version?: number;
+  parent_revision?: number;
+  checkpoint?: boolean;
 }
 
 interface ActiveSessionPlanResponseWire {
@@ -182,6 +193,10 @@ interface ActiveSessionPlanResponseWire {
 
 interface SaveSessionPlanResponseWire {
   plan?: SessionPlanWire | null;
+}
+
+interface SessionPlanHistoryResponseWire {
+  revisions?: SessionPlanWire[] | null;
 }
 
 type ProviderDefaultsPreviewWire = {
@@ -374,6 +389,31 @@ function mapSessionPlan(
     status: String(plan?.status ?? "").trim(),
     approvalState: String(plan?.approval_state ?? "").trim(),
     updatedAt: typeof plan?.updated_at === "number" ? plan.updated_at : 0,
+  };
+}
+
+function mapSessionPlanRevision(
+  plan: SessionPlanWire | null | undefined,
+  index: number,
+): DesktopSessionPlanRevisionRecord {
+  const base = mapSessionPlan(plan);
+  const version = typeof plan?.version === "number" ? plan.version : 0;
+  return {
+    ...base,
+    key: `${base.id || "plan"}:${version}:${index}`,
+    createdAt: typeof plan?.created_at === "number" ? plan.created_at : 0,
+    priorTitle: String(plan?.prior_title ?? ""),
+    priorPlan: String(plan?.prior_plan ?? ""),
+    diffLines: Array.isArray(plan?.diff_lines)
+      ? plan.diff_lines.map((line) => String(line))
+      : [],
+    updateSummary: String(plan?.update_summary ?? "").trim(),
+    updateScope: String(plan?.update_scope ?? "").trim(),
+    updateKind: String(plan?.update_kind ?? "").trim(),
+    version,
+    parentRevision:
+      typeof plan?.parent_revision === "number" ? plan.parent_revision : 0,
+    checkpoint: Boolean(plan?.checkpoint),
   };
 }
 
@@ -1347,6 +1387,20 @@ export async function saveSessionPlan(
     },
   );
   return mapSessionPlan(response.plan);
+}
+
+export async function fetchSessionPlanHistory(
+  sessionId: string,
+  planId: string,
+  signal?: AbortSignal,
+): Promise<DesktopSessionPlanRevisionRecord[]> {
+  const response = await requestJson<SessionPlanHistoryResponseWire>(
+    `/v1/sessions/${encodeURIComponent(sessionId)}/plans/${encodeURIComponent(planId)}/history?limit=100`,
+    { signal },
+  );
+  return Array.isArray(response.revisions)
+    ? response.revisions.map((revision, index) => mapSessionPlanRevision(revision, index))
+    : [];
 }
 
 export async function fetchSessionPendingPermissions(

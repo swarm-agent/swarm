@@ -836,6 +836,17 @@ func (s *SessionStore) putPlanWithArchivedRevision(plan SessionPlanSnapshot, arc
 			return err
 		}
 	}
+	if plan.Version <= 0 {
+		plan.Version = 1
+	}
+	planRevisionPayload, err := json.Marshal(plan)
+	if err != nil {
+		return fmt.Errorf("marshal plan revision %q/%q/%d: %w", plan.SessionID, plan.ID, plan.Version, err)
+	}
+	if err := batch.Set([]byte(KeySessionPlanRevision(plan.SessionID, plan.ID, plan.Version)), planRevisionPayload, nil); err != nil {
+		return err
+	}
+	payload = planRevisionPayload
 	if err := batch.Set([]byte(KeySessionPlan(plan.SessionID, plan.ID)), payload, nil); err != nil {
 		return err
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -1329,8 +1330,16 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 		action = "set-active"
 	case "create":
 		action = "new"
-	case "upsert", "set", "update", "edit", "write-active", "write_active":
+	case "upsert", "set", "write-active", "write_active":
 		action = "save"
+	case "update", "edit":
+		if strings.TrimSpace(mapString(args, "plan")) == "" {
+			action = "patch"
+		} else {
+			action = "save"
+		}
+	case "update-section", "update_section":
+		action = "update_section"
 	}
 	if action == "" {
 		action = "list"
@@ -1393,7 +1402,7 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 		}
 		items := make([]map[string]any, 0, len(revisions))
 		for i := range revisions {
-			items = append(items, planManagePlanSummary(revisions[i], false))
+			items = append(items, planManagePlanRevisionSummary(revisions[i]))
 		}
 		payload := map[string]any{
 			"tool":              "plan_manage",
@@ -1556,12 +1565,48 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 			"details_truncated": false,
 		}
 		return marshalPlanManagePayload(payload)
+	case "patch", "update_section":
+		planID := strings.TrimSpace(mapString(args, "plan_id"))
+		if planID == "" {
+			planID = strings.TrimSpace(mapString(args, "id"))
+		}
+		patch, err := planPatchFromManageArgs(args, action)
+		if err != nil {
+			return "", err
+		}
+		title := strings.TrimSpace(mapString(args, "title"))
+		status := strings.TrimSpace(mapString(args, "status"))
+		approvalState := strings.TrimSpace(mapString(args, "approval_state"))
+		updateSummary := strings.TrimSpace(firstNonEmptyString(mapString(args, "update_summary"), mapString(args, "summary")))
+		updateScope := strings.TrimSpace(firstNonEmptyString(mapString(args, "update_scope"), mapString(args, "scope")))
+		updateKind := strings.TrimSpace(firstNonEmptyString(mapString(args, "update_kind"), mapString(args, "kind")))
+		checkpoint := mapBool(args, "checkpoint")
+		var activate *bool
+		if _, hasActivate := args["activate"]; hasActivate {
+			value := mapBool(args, "activate")
+			activate = &value
+		}
+		plan, _, err := s.sessions.PatchPlan(sessionID, sessionruntime.PlanPatchOptions{PlanID: planID, Title: title, Status: status, ApprovalState: approvalState, Activate: activate, Patch: patch, Metadata: sessionruntime.PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: updateScope, UpdateKind: updateKind, Checkpoint: checkpoint}})
+		if err != nil {
+			return "", err
+		}
+		payload := map[string]any{
+			"tool":              "plan_manage",
+			"action":            action,
+			"status":            "ok",
+			"plan":              plan,
+			"path_id":           "tool.plan-manage.v3",
+			"summary":           fmt.Sprintf("patched plan %s", plan.ID),
+			"details_truncated": false,
+		}
+		return marshalPlanManagePayload(payload)
 	case "new":
 		title := strings.TrimSpace(mapString(args, "title"))
 		if title == "" {
 			title = "New Plan"
 		}
-		plan, _, err := s.sessions.StartNewPlan(sessionID, title)
+		override := mapBool(args, "override")
+		plan, _, err := s.sessions.StartNewPlan(sessionID, title, sessionruntime.StartNewPlanOptions{Override: override})
 		if err != nil {
 			return "", err
 		}
@@ -1569,10 +1614,14 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 			"tool":              "plan_manage",
 			"action":            "new",
 			"status":            "ok",
+			"override":          override,
 			"plan":              plan,
 			"path_id":           "tool.plan-manage.v3",
 			"summary":           fmt.Sprintf("created plan %s", plan.ID),
 			"details_truncated": false,
+		}
+		if override {
+			payload["warning"] = "override=true intentionally created a new active plan even though this session may already have had an active plan"
 		}
 		return marshalPlanManagePayload(payload)
 	default:
@@ -1606,6 +1655,86 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 	return marshalPlanManagePayload(payload)
 }
 
+func planPatchFromManageArgs(args map[string]any, action string) (sessionruntime.PlanPatch, error) {
+	patch := sessionruntime.PlanPatch{
+		Operation:     strings.TrimSpace(firstNonEmptyString(mapString(args, "operation"), mapString(args, "patch_operation"), mapString(args, "op"))),
+		Section:       strings.TrimSpace(firstNonEmptyString(mapString(args, "section"), mapString(args, "update_scope"), mapString(args, "scope"))),
+		OldText:       rawStringArg(args, "old_text"),
+		NewText:       rawStringArg(args, "new_text"),
+		Text:          rawStringArg(args, "text"),
+		ChecklistItem: strings.TrimSpace(firstNonEmptyString(mapString(args, "checklist_item"), mapString(args, "item"))),
+		ReplaceAll:    mapBool(args, "replace_all"),
+	}
+	if action == "update_section" && patch.Operation == "" {
+		patch.Operation = "replace_section"
+	}
+	if patch.Operation == "" {
+		patch.Operation = strings.TrimSpace(mapString(args, "patch_action"))
+	}
+	if value, ok := args["checked"]; ok {
+		checked, ok := value.(bool)
+		if !ok {
+			return sessionruntime.PlanPatch{}, errors.New("plan_manage patch checked must be boolean")
+		}
+		patch.Checked = &checked
+	}
+	if rawPatch, ok := args["patch"]; ok {
+		patchMap, ok := rawPatch.(map[string]any)
+		if !ok {
+			return sessionruntime.PlanPatch{}, errors.New("plan_manage patch must be an object")
+		}
+		nested, err := planPatchFromManageArgs(patchMap, action)
+		if err != nil {
+			return sessionruntime.PlanPatch{}, err
+		}
+		patch = mergePlanPatch(patch, nested)
+	}
+	if patch.IsZero() {
+		return sessionruntime.PlanPatch{}, errors.New("plan_manage patch requires edit fields such as old_text/new_text, section/new_text, text, checklist_item, or checked")
+	}
+	return patch, nil
+}
+
+func mergePlanPatch(base, overlay sessionruntime.PlanPatch) sessionruntime.PlanPatch {
+	if strings.TrimSpace(overlay.Operation) != "" {
+		base.Operation = overlay.Operation
+	}
+	if strings.TrimSpace(overlay.Section) != "" {
+		base.Section = overlay.Section
+	}
+	if !reflect.ValueOf(overlay.OldText).IsZero() {
+		base.OldText = overlay.OldText
+	}
+	if !reflect.ValueOf(overlay.NewText).IsZero() {
+		base.NewText = overlay.NewText
+	}
+	if !reflect.ValueOf(overlay.Text).IsZero() {
+		base.Text = overlay.Text
+	}
+	if strings.TrimSpace(overlay.ChecklistItem) != "" {
+		base.ChecklistItem = overlay.ChecklistItem
+	}
+	if overlay.Checked != nil {
+		base.Checked = overlay.Checked
+	}
+	if overlay.ReplaceAll {
+		base.ReplaceAll = true
+	}
+	return base
+}
+
+func rawStringArg(payload map[string]any, key string) string {
+	value, ok := payload[key]
+	if !ok {
+		return ""
+	}
+	typed, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return typed
+}
+
 func planManagePlanSummary(plan pebblestore.SessionPlanSnapshot, includePreview bool) map[string]any {
 	item := map[string]any{
 		"id":              plan.ID,
@@ -1623,6 +1752,22 @@ func planManagePlanSummary(plan pebblestore.SessionPlanSnapshot, includePreview 
 	}
 	if includePreview {
 		item["preview"] = truncateRunes(plan.Plan, 180)
+	}
+	return item
+}
+
+func planManagePlanRevisionSummary(plan pebblestore.SessionPlanSnapshot) map[string]any {
+	item := planManagePlanSummary(plan, true)
+	item["created_at"] = plan.CreatedAt
+	item["plan"] = plan.Plan
+	if plan.PriorTitle != "" {
+		item["prior_title"] = plan.PriorTitle
+	}
+	if plan.PriorPlan != "" {
+		item["prior_plan"] = plan.PriorPlan
+	}
+	if len(plan.DiffLines) > 0 {
+		item["diff_lines"] = append([]string(nil), plan.DiffLines...)
 	}
 	return item
 }

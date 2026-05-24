@@ -1618,6 +1618,16 @@ type PlanSaveMetadata struct {
 	Checkpoint    bool
 }
 
+type PlanPatchOptions struct {
+	PlanID        string
+	Title         string
+	Status        string
+	ApprovalState string
+	Activate      *bool
+	Patch         PlanPatch
+	Metadata      PlanSaveMetadata
+}
+
 func (s *Service) SavePlan(sessionID, planID, title, plan, status, approvalState string, activate bool) (pebblestore.SessionPlanSnapshot, *pebblestore.EventEnvelope, error) {
 	return s.SavePlanWithMetadata(sessionID, planID, title, plan, status, approvalState, activate, PlanSaveMetadata{})
 }
@@ -1746,6 +1756,62 @@ func (s *Service) SavePlanWithMetadata(sessionID, planID, title, plan, status, a
 		return pebblestore.SessionPlanSnapshot{}, nil, err
 	}
 	return record, &env, nil
+}
+
+func (s *Service) PatchPlan(sessionID string, options PlanPatchOptions) (pebblestore.SessionPlanSnapshot, *pebblestore.EventEnvelope, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	planID := strings.TrimSpace(options.PlanID)
+	if sessionID == "" {
+		return pebblestore.SessionPlanSnapshot{}, nil, errors.New("session id is required")
+	}
+	if options.Patch.IsZero() {
+		return pebblestore.SessionPlanSnapshot{}, nil, errors.New("plan patch requires at least one edit field")
+	}
+	var existing pebblestore.SessionPlanSnapshot
+	var ok bool
+	var err error
+	if planID == "" || strings.EqualFold(planID, "active") {
+		existing, ok, err = s.GetActivePlan(sessionID)
+		if err != nil {
+			return pebblestore.SessionPlanSnapshot{}, nil, err
+		}
+		if !ok {
+			return pebblestore.SessionPlanSnapshot{}, nil, errors.New("plan_manage patch requires an active plan or plan_id")
+		}
+		planID = strings.TrimSpace(existing.ID)
+	} else {
+		existing, ok, err = s.GetPlan(sessionID, planID)
+		if err != nil {
+			return pebblestore.SessionPlanSnapshot{}, nil, err
+		}
+		if !ok {
+			return pebblestore.SessionPlanSnapshot{}, nil, fmt.Errorf("plan %q not found", planID)
+		}
+	}
+	patchedPlan, err := ApplyPlanPatch(existing.Plan, options.Patch)
+	if err != nil {
+		return pebblestore.SessionPlanSnapshot{}, nil, err
+	}
+	if patchedPlan == existing.Plan {
+		return pebblestore.SessionPlanSnapshot{}, nil, errors.New("plan patch produced no changes")
+	}
+	title := strings.TrimSpace(options.Title)
+	if title == "" {
+		title = strings.TrimSpace(existing.Title)
+	}
+	status := strings.TrimSpace(options.Status)
+	if status == "" {
+		status = strings.TrimSpace(existing.Status)
+	}
+	approvalState := strings.TrimSpace(options.ApprovalState)
+	if approvalState == "" {
+		approvalState = strings.TrimSpace(existing.ApprovalState)
+	}
+	activate := true
+	if options.Activate != nil {
+		activate = *options.Activate
+	}
+	return s.SavePlanWithMetadata(sessionID, planID, title, patchedPlan, status, approvalState, activate, options.Metadata)
 }
 
 func (s *Service) ListPlans(sessionID string, limit int) ([]pebblestore.SessionPlanSnapshot, string, error) {
@@ -1894,7 +1960,28 @@ func (s *Service) SetActivePlan(sessionID, planID string) (pebblestore.SessionPl
 	return record, &env, nil
 }
 
-func (s *Service) StartNewPlan(sessionID, title string) (pebblestore.SessionPlanSnapshot, *pebblestore.EventEnvelope, error) {
+type StartNewPlanOptions struct {
+	Override bool
+}
+
+func (s *Service) StartNewPlan(sessionID, title string, options ...StartNewPlanOptions) (pebblestore.SessionPlanSnapshot, *pebblestore.EventEnvelope, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return pebblestore.SessionPlanSnapshot{}, nil, errors.New("session id is required")
+	}
+	allowOverride := false
+	if len(options) > 0 {
+		allowOverride = options[0].Override
+	}
+	if !allowOverride {
+		active, ok, err := s.GetActivePlan(sessionID)
+		if err != nil {
+			return pebblestore.SessionPlanSnapshot{}, nil, err
+		}
+		if ok {
+			return pebblestore.SessionPlanSnapshot{}, nil, fmt.Errorf("session already has active plan %q; update the current plan instead, or call plan_manage new with override=true to intentionally create a replacement plan", active.ID)
+		}
+	}
 	title = strings.TrimSpace(title)
 	if title == "" {
 		title = "New Plan"

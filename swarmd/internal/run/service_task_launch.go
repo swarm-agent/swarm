@@ -737,14 +737,22 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 		action = "set-active"
 	case "create":
 		action = "new"
-	case "upsert", "set", "update", "edit", "write-active", "write_active":
+	case "upsert", "set", "write-active", "write_active":
 		action = "save"
+	case "update", "edit":
+		if strings.TrimSpace(mapString(args, "plan")) == "" {
+			action = "patch"
+		} else {
+			action = "save"
+		}
+	case "update-section", "update_section":
+		action = "update_section"
 	}
-	if action != "save" {
+	if action != "save" && action != "patch" && action != "update_section" {
 		return planManagePermissionPayload{}, false, nil
 	}
 	planBody := strings.TrimSpace(mapString(args, "plan"))
-	if planBody == "" {
+	if action == "save" && planBody == "" {
 		return planManagePermissionPayload{}, false, nil
 	}
 	if s.sessions == nil {
@@ -794,14 +802,25 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 	updateScope := strings.TrimSpace(firstNonEmptyString(mapString(args, "update_scope"), mapString(args, "scope")))
 	updateKind := strings.TrimSpace(firstNonEmptyString(mapString(args, "update_kind"), mapString(args, "kind")))
 	checkpoint := mapBool(args, "checkpoint")
+	previewPlan := planBody
+	if action == "patch" || action == "update_section" {
+		patch, err := planPatchFromManageArgs(args, action)
+		if err != nil {
+			return planManagePermissionPayload{}, false, err
+		}
+		previewPlan, err = sessionruntime.ApplyPlanPatch(existing.Plan, patch)
+		if err != nil {
+			return planManagePermissionPayload{}, false, err
+		}
+	}
 	payload := planManagePermissionPayload{
 		PathID:        "tool.plan-manage-update.v1",
 		Title:         title,
 		PlanID:        planID,
 		PriorTitle:    strings.TrimSpace(existing.Title),
 		PriorPlan:     strings.TrimSpace(existing.Plan),
-		Plan:          planBody,
-		DiffLines:     sessionruntime.BuildPlanDiffLines(existing.Plan, planBody),
+		Plan:          previewPlan,
+		DiffLines:     sessionruntime.BuildPlanDiffLines(existing.Plan, previewPlan),
 		Status:        status,
 		ApprovalState: approvalState,
 		Activate:      activate,
@@ -815,7 +834,6 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 			"action":         action,
 			"plan_id":        planID,
 			"title":          title,
-			"plan":           planBody,
 			"status":         status,
 			"approval_state": approvalState,
 			"activate":       activate,
@@ -824,6 +842,16 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 			"update_kind":    updateKind,
 			"checkpoint":     checkpoint,
 		},
+	}
+	if action == "save" {
+		payload.ApprovedArguments["plan"] = planBody
+	} else {
+		for key, value := range args {
+			switch key {
+			case "patch", "operation", "patch_operation", "patch_action", "section", "old_text", "new_text", "text", "checklist_item", "item", "checked", "replace_all":
+				payload.ApprovedArguments[key] = value
+			}
+		}
 	}
 	return payload, true, nil
 }
@@ -1313,8 +1341,10 @@ func planManageApprovalArguments(payload map[string]any) map[string]any {
 	if activate, ok := payload["activate"].(bool); ok {
 		args["activate"] = activate
 	}
-	if _, ok := args["plan"]; !ok {
-		return nil
+	if action == "save" {
+		if _, ok := args["plan"]; !ok {
+			return nil
+		}
 	}
 	return args
 }

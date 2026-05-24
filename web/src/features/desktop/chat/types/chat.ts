@@ -198,3 +198,17 @@ export interface DesktopSessionPlanRecord {
   approvalState: string;
   updatedAt: number;
 }
+
+export interface DesktopSessionPlanRevisionRecord extends DesktopSessionPlanRecord {
+  key: string;
+  createdAt: number;
+  priorTitle: string;
+  priorPlan: string;
+  diffLines: string[];
+  updateSummary: string;
+  updateScope: string;
+  updateKind: string;
+  version: number;
+  parentRevision: number;
+  checkpoint: boolean;
+}
