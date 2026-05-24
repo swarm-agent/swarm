@@ -304,7 +304,6 @@ export interface DesktopOnboardingStatus {
 export interface SaveDesktopOnboardingInput {
   username?: string
   swarmName?: string
-  swarmMode?: boolean
   desktopOnboardingComplete?: boolean
   child?: boolean
   mode?: 'lan' | 'tailscale'

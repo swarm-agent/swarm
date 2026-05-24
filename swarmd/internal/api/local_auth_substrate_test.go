@@ -491,13 +491,22 @@ func newStaticUpdateService(t *testing.T, updateAvailable bool) *update.Service 
 	return update.NewService("dev", true)
 }
 
+type fakeLocalAuthSwarmCalls struct {
+	ensureLocalState int
+	upsertGroup      int
+}
+
 type fakeLocalAuthSwarmService struct {
 	state                  swarmruntime.LocalState
 	outgoingPeerAuthTokens map[string]string
 	detachCalls            *int
+	calls                  *fakeLocalAuthSwarmCalls
 }
 
 func (f fakeLocalAuthSwarmService) EnsureLocalState(swarmruntime.EnsureLocalStateInput) (swarmruntime.LocalState, error) {
+	if f.calls != nil {
+		f.calls.ensureLocalState++
+	}
 	return f.state, nil
 }
 
@@ -512,6 +521,9 @@ func (f fakeLocalAuthSwarmService) ListGroupsForSwarm(string, int) ([]swarmrunti
 }
 
 func (f fakeLocalAuthSwarmService) UpsertGroup(swarmruntime.UpsertGroupInput) (swarmruntime.Group, error) {
+	if f.calls != nil {
+		f.calls.upsertGroup++
+	}
 	return swarmruntime.Group{}, nil
 }
 

@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/notification"
@@ -85,7 +86,7 @@ func TestOnboardingPostRequiresUsernameAndSwarmNameBeforeBootstrap(t *testing.T)
 }
 
 func TestOnboardingPostBootstrapsIdentityAndIssuesSession(t *testing.T) {
-	server, identityStore := newOnboardingIdentityTestServer(t, false)
+	server, identityStore, swarmCalls := newOnboardingIdentityTestServerWithCalls(t, false)
 
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, newJSONSameOriginDesktopRequest(t, map[string]any{"username": "Alice", "swarm_name": "Alice Laptop"}))
@@ -105,6 +106,9 @@ func TestOnboardingPostBootstrapsIdentityAndIssuesSession(t *testing.T) {
 	}
 	if status.Session == nil || strings.TrimSpace(status.Session.ExpiresAt) == "" {
 		t.Fatalf("bootstrap response missing session metadata: %+v", status.Session)
+	}
+	if swarmCalls.ensureLocalState != 1 || swarmCalls.upsertGroup != 0 {
+		t.Fatalf("identity onboarding called swarm group/linking APIs: ensureLocalState=%d upsertGroup=%d", swarmCalls.ensureLocalState, swarmCalls.upsertGroup)
 	}
 	counts, err := identityStore.IdentityCounts()
 	if err != nil {
@@ -163,6 +167,12 @@ func TestOnboardingPostRejectsRebootstrapAndSwarmNameUpdateDoesNotMutateUsername
 
 func newOnboardingIdentityTestServer(t *testing.T, bootstrap bool) (*Server, *pebblestore.IdentityStore) {
 	t.Helper()
+	server, identityStore, _ := newOnboardingIdentityTestServerWithCalls(t, bootstrap)
+	return server, identityStore
+}
+
+func newOnboardingIdentityTestServerWithCalls(t *testing.T, bootstrap bool) (*Server, *pebblestore.IdentityStore, *fakeLocalAuthSwarmCalls) {
+	t.Helper()
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "onboarding-identity.pebble"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -187,11 +197,13 @@ func newOnboardingIdentityTestServer(t *testing.T, bootstrap bool) (*Server, *pe
 			t.Fatalf("bootstrap identity: %v", err)
 		}
 	}
-	server := NewServer("test", authSvc, nil, nil, nil, nil, workspaceSvc, nil, securitySvc, nil, nil, notificationSvc, eventLog, hub)
+	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), eventLog)
+	server := NewServer("test", authSvc, agentSvc, nil, nil, nil, workspaceSvc, nil, securitySvc, nil, nil, notificationSvc, eventLog, hub)
 	server.SetIdentityService(identitySvc)
 	server.SetIdentitySessionService(identity.NewSessionService(identityStore, pebblestore.NewIdentitySessionStore(store)))
 	server.SetUISettingsService(uisettings.NewService(pebblestore.NewUISettingsStore(store)))
-	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "onboarding-identity-test", Name: "Onboarding Identity Test", Role: "standalone"}}}
+	swarmCalls := &fakeLocalAuthSwarmCalls{}
+	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "onboarding-identity-test", Name: "Onboarding Identity Test", Role: "standalone"}}, calls: swarmCalls}
 
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
 	cfg := startupconfig.Default(startupPath)
@@ -204,7 +216,7 @@ func newOnboardingIdentityTestServer(t *testing.T, bootstrap bool) (*Server, *pe
 		t.Fatalf("write startup config: %v", err)
 	}
 	server.SetStartupConfigPath(startupPath)
-	return server, identityStore
+	return server, identityStore, swarmCalls
 }
 
 func onboardingIdentityTestIDGenerator(prefix string) (string, error) {

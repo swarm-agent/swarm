@@ -11,7 +11,6 @@ import { upsertAuthCredential } from '../../settings/mutations/upsert-auth-crede
 import { verifyAuthCredential } from '../../settings/mutations/verify-auth-credential'
 import { listProviders } from '../../settings/queries/list-providers'
 import type { AuthMethod, CodexOAuthSession, ProviderStatus, StartCodexOAuthInput, UpsertAuthCredentialInput } from '../../settings/types/auth'
-import { upsertSwarmGroup } from '../../swarm/mutations/upsert-swarm-group'
 
 type OnboardingStep = 'identity' | 'provider'
 type CodexOAuthMode = StartCodexOAuthInput['method']
@@ -46,27 +45,6 @@ function credentialLabel(method: AuthMethod | null): string {
     return 'API key'
   }
   return 'Access token'
-}
-
-function currentGroupName(status: DesktopOnboardingStatus): string {
-  const currentGroupID = status.currentGroupID.trim()
-  if (currentGroupID) {
-    const current = status.groups.find((group) => group.group.id === currentGroupID)
-    if (current?.group.name.trim()) {
-      return current.group.name.trim()
-    }
-  }
-  const firstGroupName = status.groups[0]?.group.name?.trim() || ''
-  return firstGroupName
-}
-
-function suggestedGroupName(status: DesktopOnboardingStatus, swarmName: string): string {
-  const existing = currentGroupName(status)
-  if (existing) {
-    return existing
-  }
-  const normalizedName = swarmName.trim()
-  return normalizedName ? `${normalizedName} Group` : ''
 }
 
 export function DesktopOnboardingGate({ status: initialStatus, restart = false, onReload, onComplete }: DesktopOnboardingGateProps) {
@@ -174,31 +152,19 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   const persistIdentity = async () => {
     const normalizedUsername = username.trim()
     const normalizedName = swarmName.trim()
-    const normalizedGroupName = suggestedGroupName(status, normalizedName).trim()
     if (!status.identity.bootstrapped && !normalizedUsername) {
       throw new Error('Username is required for the product owner identity.')
     }
     if (!normalizedName) {
       throw new Error('Swarm name is required.')
     }
-    if (!normalizedGroupName) {
-      throw new Error('Group name is required for the first swarm group.')
-    }
     await patchDesktopOnboarding({
       username: status.identity.bootstrapped ? undefined : normalizedUsername,
       swarmName: normalizedName,
-      swarmMode: status.config.swarmMode,
       desktopOnboardingComplete: false,
       child: false,
     })
-    let refreshed = await onReload()
-    const currentGroupID = refreshed.currentGroupID.trim() || refreshed.groups[0]?.group.id?.trim() || ''
-    await upsertSwarmGroup({
-      groupID: currentGroupID || undefined,
-      name: normalizedGroupName,
-      setCurrent: true,
-    })
-    refreshed = await onReload()
+    const refreshed = await onReload()
     setStatus(refreshed)
     setUsername(refreshed.identity.username)
     setSwarmName(refreshed.config.swarmName)
