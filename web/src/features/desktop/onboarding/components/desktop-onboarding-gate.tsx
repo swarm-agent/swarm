@@ -358,21 +358,25 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
 
           {step === 'identity' ? (
             <form className="grid gap-6" onSubmit={handleIdentitySubmit}>
-              {!status.identity.bootstrapped ? (
-                <div className="grid gap-2">
-                  <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-username">
-                    Username
-                  </label>
-                  <Input
-                    id="desktop-onboarding-username"
-                    autoFocus
-                    value={username}
-                    onChange={(event) => setUsername(event.target.value)}
-                    placeholder="swarm"
-                    autoComplete="username"
-                  />
-                </div>
-              ) : null}
+              <div className="grid gap-2">
+                <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-username">
+                  Username
+                </label>
+                <Input
+                  id="desktop-onboarding-username"
+                  autoFocus={!status.identity.bootstrapped}
+                  value={username}
+                  onChange={(event) => setUsername(event.target.value)}
+                  placeholder="swarm"
+                  autoComplete="username"
+                  disabled={status.identity.bootstrapped}
+                />
+                {status.identity.bootstrapped ? (
+                  <p className="text-sm leading-6 text-[var(--app-text-muted)]">
+                    This is the product owner identity already configured for this Swarm.
+                  </p>
+                ) : null}
+              </div>
 
               <div className="grid gap-2">
                 <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-swarm-name">

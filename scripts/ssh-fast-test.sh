@@ -159,9 +159,9 @@ rsync -az --delete \
   --exclude 'node_modules/' \
   --exclude 'bin/' \
   --exclude '.bin/' \
-  --exclude 'swarm' \
-  --exclude 'swarmtui' \
-  --exclude 'swarmd/swarmd' \
+  --exclude '/swarm' \
+  --exclude '/swarmtui' \
+  --exclude '/swarmd/swarmd' \
   ./ "${SSH_ALIAS}:${REMOTE_DIR}/"
 
 ssh "${SSH_ALIAS}" "set -euo pipefail
