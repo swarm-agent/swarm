@@ -253,6 +253,9 @@ func PrincipalFromRequest(r *http.Request) (identity.Principal, bool) {
 	if ok && principal.Valid() {
 		return principal, true
 	}
+	if principal, ok := identity.PrincipalFromContext(r.Context()); ok && principal.Valid() {
+		return principal, true
+	}
 	actor, ok := productActorFromRequest(r)
 	if !ok {
 		return identity.Principal{}, false

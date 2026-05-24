@@ -11,6 +11,7 @@ import (
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	api "swarm/packages/swarmd/internal/api"
 	"swarm/packages/swarmd/internal/discovery"
+	"swarm/packages/swarmd/internal/identity"
 	providerdefaults "swarm/packages/swarmd/internal/provider/defaults"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -33,6 +34,7 @@ func TestWorkspaceBootstrapReturnsWorkspaceDesktopPayload(t *testing.T) {
 
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
 	workspaceSvc := workspace.NewService(pebblestore.NewWorkspaceStore(store))
+	principal := workspaceBootstrapTestPrincipal()
 	discoverySvc := discovery.NewService()
 	server := newWorkspaceBootstrapTestServer(t, eventLog, sessionSvc, workspaceSvc, discoverySvc)
 	handler := server.Handler()
@@ -46,18 +48,20 @@ func TestWorkspaceBootstrapReturnsWorkspaceDesktopPayload(t *testing.T) {
 		}
 	}
 
-	if _, err := workspaceSvc.Add(workspaceA, "Workspace A", "", true); err != nil {
+	if _, err := workspaceSvc.AddForPrincipal(principal, workspaceA, "Workspace A", "", true); err != nil {
 		t.Fatalf("add workspace a: %v", err)
 	}
-	if _, err := workspaceSvc.Add(workspaceB, "Workspace B", "", false); err != nil {
+	if _, err := workspaceSvc.AddForPrincipal(principal, workspaceB, "Workspace B", "", false); err != nil {
 		t.Fatalf("add workspace b: %v", err)
 	}
 
 	defaults := providerdefaults.MustLookup("codex")
 	sessionA, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
-		Title:         "A1",
-		WorkspacePath: workspaceA,
-		WorkspaceName: "Workspace A",
+		UserID:         principal.UserID,
+		AccountScopeID: principal.AccountScopeID,
+		Title:          "A1",
+		WorkspacePath:  workspaceA,
+		WorkspaceName:  "Workspace A",
 		Preference: &pebblestore.ModelPreference{
 			Provider: defaults.ProviderID,
 			Model:    defaults.PrimaryModel,
@@ -68,9 +72,11 @@ func TestWorkspaceBootstrapReturnsWorkspaceDesktopPayload(t *testing.T) {
 		t.Fatalf("create session a: %v", err)
 	}
 	sessionB, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
-		Title:         "B1",
-		WorkspacePath: workspaceB,
-		WorkspaceName: "Workspace B",
+		UserID:         principal.UserID,
+		AccountScopeID: principal.AccountScopeID,
+		Title:          "B1",
+		WorkspacePath:  workspaceB,
+		WorkspaceName:  "Workspace B",
 		Preference: &pebblestore.ModelPreference{
 			Provider: defaults.ProviderID,
 			Model:    defaults.PrimaryModel,
@@ -148,6 +154,7 @@ func TestWorkspaceBootstrapPrefersStandaloneChildWorkspaceForNestedLink(t *testi
 
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
 	workspaceSvc := workspace.NewService(pebblestore.NewWorkspaceStore(store))
+	principal := workspaceBootstrapTestPrincipal()
 	discoverySvc := discovery.NewService()
 	server := newWorkspaceBootstrapTestServer(t, eventLog, sessionSvc, workspaceSvc, discoverySvc)
 	handler := server.Handler()
@@ -162,24 +169,26 @@ func TestWorkspaceBootstrapPrefersStandaloneChildWorkspaceForNestedLink(t *testi
 		}
 	}
 
-	if _, err := workspaceSvc.Add(swarmWeb, "swarm-web", "", false); err != nil {
+	if _, err := workspaceSvc.AddForPrincipal(principal, swarmWeb, "swarm-web", "", false); err != nil {
 		t.Fatalf("add swarm-web: %v", err)
 	}
-	if _, err := workspaceSvc.Add(swarmGo, "swarm-go", "", true); err != nil {
+	if _, err := workspaceSvc.AddForPrincipal(principal, swarmGo, "swarm-go", "", true); err != nil {
 		t.Fatalf("add swarm-go: %v", err)
 	}
-	if _, err := workspaceSvc.AddDirectory(swarmWeb, swarmGo); err != nil {
+	if _, err := workspaceSvc.AddDirectoryForPrincipal(principal, swarmWeb, swarmGo); err != nil {
 		t.Fatalf("link swarm-go into swarm-web: %v", err)
 	}
-	if _, err := workspaceSvc.AddDirectory(swarmWeb, swarmWebUI); err != nil {
+	if _, err := workspaceSvc.AddDirectoryForPrincipal(principal, swarmWeb, swarmWebUI); err != nil {
 		t.Fatalf("link swarm-web/ui into swarm-web: %v", err)
 	}
 
 	defaults := providerdefaults.MustLookup("codex")
 	swarmGoSession, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
-		Title:         "go-1",
-		WorkspacePath: swarmGo,
-		WorkspaceName: "swarm-go",
+		UserID:         principal.UserID,
+		AccountScopeID: principal.AccountScopeID,
+		Title:          "go-1",
+		WorkspacePath:  swarmGo,
+		WorkspaceName:  "swarm-go",
 		Preference: &pebblestore.ModelPreference{
 			Provider: defaults.ProviderID,
 			Model:    defaults.PrimaryModel,
@@ -190,9 +199,11 @@ func TestWorkspaceBootstrapPrefersStandaloneChildWorkspaceForNestedLink(t *testi
 		t.Fatalf("create swarm-go session: %v", err)
 	}
 	_, _, err = sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
-		Title:         "web-1",
-		WorkspacePath: swarmWeb,
-		WorkspaceName: "swarm-web",
+		UserID:         principal.UserID,
+		AccountScopeID: principal.AccountScopeID,
+		Title:          "web-1",
+		WorkspacePath:  swarmWeb,
+		WorkspaceName:  "swarm-web",
 		Preference: &pebblestore.ModelPreference{
 			Provider: defaults.ProviderID,
 			Model:    defaults.PrimaryModel,
@@ -260,6 +271,21 @@ func TestWorkspaceBootstrapPrefersStandaloneChildWorkspaceForNestedLink(t *testi
 	if sessionsResp.Sessions[0].WorkspacePath != swarmGo {
 		t.Fatalf("session workspace path = %q, want %q", sessionsResp.Sessions[0].WorkspacePath, swarmGo)
 	}
+}
+
+func workspaceBootstrapTestPrincipal() identity.Principal {
+	return identity.Principal{
+		Type:               identity.PrincipalTypeUser,
+		UserID:             "workspace-bootstrap-user",
+		AccountScopeID:     "workspace-bootstrap-account",
+		AccountScopeSource: identity.AccountScopeSourceServerState,
+	}
+}
+
+func workspaceBootstrapRequestWithPrincipal(req *http.Request) *http.Request {
+	principal := workspaceBootstrapTestPrincipal()
+	ctx := identity.ContextWithPrincipal(req.Context(), principal)
+	return req.WithContext(ctx)
 }
 
 func newWorkspaceBootstrapTestServer(t *testing.T, eventLog *pebblestore.EventLog, sessionSvc *sessionruntime.Service, workspaceSvc *workspace.Service, discoverySvc *discovery.Service) *api.Server {
@@ -384,7 +410,7 @@ func doJSONRequest(t *testing.T, handler http.Handler, method, path string, body
 	t.Helper()
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(method, path, nil)
+	request := workspaceBootstrapRequestWithPrincipal(httptest.NewRequest(method, path, nil))
 	handler.ServeHTTP(recorder, request)
 	if out != nil {
 		if err := json.NewDecoder(recorder.Body).Decode(out); err != nil {
@@ -397,7 +423,7 @@ func doJSONRequest(t *testing.T, handler http.Handler, method, path string, body
 func doRequest(t *testing.T, handler http.Handler, method, path string) (int, string) {
 	t.Helper()
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(method, path, nil)
+	request := workspaceBootstrapRequestWithPrincipal(httptest.NewRequest(method, path, nil))
 	handler.ServeHTTP(recorder, request)
 	return recorder.Code, recorder.Body.String()
 }
