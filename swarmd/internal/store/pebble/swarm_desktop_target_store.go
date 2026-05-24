@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/cockroachdb/pebble"
 )
 
 type SwarmDesktopTargetSelectionRecord struct {
@@ -102,6 +104,31 @@ func (s *SwarmDesktopTargetSelectionStore) PutForAccount(accountScopeID, userID,
 		return SwarmDesktopTargetSelectionRecord{}, err
 	}
 	return record, nil
+}
+
+func (s *SwarmDesktopTargetSelectionStore) ClearForAccountIfSwarmID(accountScopeID, swarmID string) (bool, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return false, errors.New("account scope id is required")
+	}
+	swarmID = strings.TrimSpace(swarmID)
+	if swarmID == "" {
+		return false, errors.New("swarm id is required")
+	}
+	if s == nil || s.store == nil {
+		return false, nil
+	}
+	record, ok, err := s.GetForAccount(accountScopeID)
+	if err != nil || !ok {
+		return false, err
+	}
+	if !strings.EqualFold(strings.TrimSpace(record.SwarmID), swarmID) {
+		return false, nil
+	}
+	if err := s.store.Delete(KeySwarmDesktopTargetCurrentForAccount(accountScopeID)); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+		return false, err
+	}
+	return true, nil
 }
 
 func normalizeSwarmDesktopTargetSelectionRecord(record SwarmDesktopTargetSelectionRecord) SwarmDesktopTargetSelectionRecord {

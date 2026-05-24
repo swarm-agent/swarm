@@ -23,14 +23,16 @@ func TestDeleteRemovesMatchingLocalContainerInventoryRecord(t *testing.T) {
 	deploySvc := NewService(deploymentStore, localSvc, nil, nil, nil, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"), topologyStore)
 
 	deployment := pebblestore.DeployContainerRecord{
-		ID:            "pc-child333",
-		Kind:          "container",
-		Name:          "pc child333",
-		Status:        "attached",
-		ContainerName: "pc-child333",
-		ContainerID:   "runtime-child333",
-		AttachStatus:  "attached",
-		ChildSwarmID:  "child-swarm-333",
+		ID:             "pc-child333",
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: testPrincipal().AccountScopeID,
+		Kind:           "container",
+		Name:           "pc child333",
+		Status:         "attached",
+		ContainerName:  "pc-child333",
+		ContainerID:    "runtime-child333",
+		AttachStatus:   "attached",
+		ChildSwarmID:   "child-swarm-333",
 	}
 	if _, err := deploymentStore.Put(deployment); err != nil {
 		t.Fatalf("put deployment: %v", err)
@@ -46,7 +48,7 @@ func TestDeleteRemovesMatchingLocalContainerInventoryRecord(t *testing.T) {
 		t.Fatalf("put local container: %v", err)
 	}
 
-	result, err := deploySvc.Delete(context.Background(), []string{"pc-child333"})
+	result, err := deploySvc.Delete(testPrincipalContext(), []string{"pc-child333"})
 	if err != nil {
 		t.Fatalf("Delete() error = %v, result = %+v", err, result)
 	}
@@ -78,15 +80,17 @@ func TestDeleteMirroredManagedDeploymentSkipsPrimaryLocalInventory(t *testing.T)
 	deploySvc := NewService(deploymentStore, localSvc, nil, swarmStore, nil, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"), nil)
 
 	deployment := pebblestore.DeployContainerRecord{
-		ID:            "managed-child",
-		Kind:          "container",
-		Name:          "managed child",
-		Status:        "attached",
-		ContainerName: "managed-child",
-		ContainerID:   "runtime-managed-child",
-		AttachStatus:  "attached",
-		ChildSwarmID:  "child-swarm-managed",
-		HostSwarmID:   "managed-host-swarm",
+		ID:             "managed-child",
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: testPrincipal().AccountScopeID,
+		Kind:           "container",
+		Name:           "managed child",
+		Status:         "attached",
+		ContainerName:  "managed-child",
+		ContainerID:    "runtime-managed-child",
+		AttachStatus:   "attached",
+		ChildSwarmID:   "child-swarm-managed",
+		HostSwarmID:    "managed-host-swarm",
 	}
 	if _, err := deploymentStore.Put(deployment); err != nil {
 		t.Fatalf("put deployment: %v", err)
@@ -102,7 +106,7 @@ func TestDeleteMirroredManagedDeploymentSkipsPrimaryLocalInventory(t *testing.T)
 		t.Fatalf("put local container: %v", err)
 	}
 
-	result, err := deploySvc.Delete(context.Background(), []string{"managed-child"})
+	result, err := deploySvc.Delete(testPrincipalContext(), []string{"managed-child"})
 	if err != nil {
 		t.Fatalf("Delete() error = %v, result = %+v", err, result)
 	}

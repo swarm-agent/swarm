@@ -979,12 +979,21 @@ func (s *Service) DetachToStandalone(localSwarmID string) error {
 	}
 	pairingRecord.PairingState = startupconfig.PairingStateUnpaired
 	pairingRecord.ParentSwarmID = ""
+	pairingRecord.UserID = ""
+	pairingRecord.AccountScopeID = ""
 	pairingRecord.ActiveInviteID = ""
 	pairingRecord.LastEnrollmentID = ""
 	pairingRecord.LastDecision = ""
 	pairingRecord.LastDecisionReason = ""
 	pairingRecord.LastUpdatedByRole = bootstrapRoleMaster
 	pairingRecord.RendezvousTransports = nil
+	pairingRecord.WorkspaceBootstrapDeploymentID = ""
+	pairingRecord.WorkspaceBootstrapAt = 0
+	pairingRecord.ManagedAuthOwnerSwarmID = ""
+	pairingRecord.ManagedAuthSnapshotHash = ""
+	pairingRecord.ManagedAuthAppliedAt = 0
+	pairingRecord.ManagedAuthLastAttemptAt = 0
+	pairingRecord.ManagedAuthLastError = ""
 	if _, err := s.store.PutLocalPairing(pairingRecord); err != nil {
 		return err
 	}

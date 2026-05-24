@@ -852,6 +852,34 @@ func (s *Service) Delete(ctx context.Context, deploymentIDs []string) (localcont
 	return s.deleteDeployments(ctx, deploymentIDs)
 }
 
+func (s *Service) DeleteManagedHostForAccount(ctx context.Context, accountScopeID, managedSwarmID string) (localcontainers.DeleteResult, error) {
+	if s == nil || s.store == nil {
+		return localcontainers.DeleteResult{}, fmt.Errorf("deploy container service is not configured")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return localcontainers.DeleteResult{}, fmt.Errorf("account scope id is required")
+	}
+	managedSwarmID = strings.TrimSpace(managedSwarmID)
+	if managedSwarmID == "" {
+		return localcontainers.DeleteResult{}, fmt.Errorf("managed swarm id is required")
+	}
+	records, err := s.store.ListForAccount(accountScopeID, 100000)
+	if err != nil {
+		return localcontainers.DeleteResult{}, err
+	}
+	ids := make([]string, 0, len(records))
+	for _, record := range records {
+		if strings.EqualFold(strings.TrimSpace(record.ChildSwarmID), managedSwarmID) || strings.EqualFold(strings.TrimSpace(record.SyncOwnerSwarmID), managedSwarmID) {
+			ids = append(ids, strings.TrimSpace(record.ID))
+		}
+	}
+	if len(ids) == 0 {
+		return localcontainers.DeleteResult{}, nil
+	}
+	return s.deleteDeployments(ctx, ids)
+}
+
 func (s *Service) MirrorDeployment(ctx context.Context, deployment ContainerDeployment) (ContainerDeployment, error) {
 	if s == nil || s.store == nil {
 		return ContainerDeployment{}, fmt.Errorf("deploy container service is not configured")
@@ -1072,12 +1100,12 @@ func (s *Service) deleteDeployment(ctx context.Context, deploymentID string) loc
 			}
 		}
 	}
-	if principal, ok := principalFromContext(ctx); ok {
-		if err := s.store.DeleteForAccount(principal.AccountScopeID, record.ID); err != nil {
-			item.Error = err.Error()
-			return item
-		}
-	} else if err := s.store.Delete(record.ID); err != nil {
+	principal, ok := principalFromContext(ctx)
+	if !ok {
+		item.Error = identity.ErrPrincipalRequired.Error()
+		return item
+	}
+	if err := s.store.DeleteForAccount(principal.AccountScopeID, record.ID); err != nil {
 		item.Error = err.Error()
 		return item
 	}
@@ -1118,21 +1146,19 @@ func (s *Service) deleteDeployment(ctx context.Context, deploymentID string) loc
 			}
 			item.RemovedTrustedPeer = true
 		}
-		if principal, ok := principalFromContext(ctx); ok {
-			if s.auth != nil {
-				if _, err := s.auth.DeleteManagedCredentialsByOwnerSwarmIDForAccount(principal.AccountScopeID, childSwarmID); err != nil && !errors.Is(err, pebblestore.ErrVaultLocked) {
-					item.Error = err.Error()
-					return item
-				}
+		if s.auth != nil {
+			if _, err := s.auth.DeleteManagedCredentialsByOwnerSwarmIDForAccount(principal.AccountScopeID, childSwarmID); err != nil && !errors.Is(err, pebblestore.ErrVaultLocked) {
+				item.Error = err.Error()
+				return item
 			}
-			if s.workspace != nil {
-				removed, err := s.workspace.RemoveReplicationLinksByTargetSwarmIDForAccount(principal.AccountScopeID, childSwarmID)
-				if err != nil {
-					item.Error = err.Error()
-					return item
-				}
-				item.RemovedWorkspaceRoutes += removed
+		}
+		if s.workspace != nil {
+			removed, err := s.workspace.RemoveReplicationLinksByTargetSwarmIDForAccount(principal.AccountScopeID, childSwarmID)
+			if err != nil {
+				item.Error = err.Error()
+				return item
 			}
+			item.RemovedWorkspaceRoutes += removed
 		}
 	}
 	return item

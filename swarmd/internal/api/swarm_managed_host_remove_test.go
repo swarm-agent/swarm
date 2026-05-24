@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,8 @@ import (
 	"testing"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
+	deployruntime "swarm/packages/swarmd/internal/deploy"
+	"swarm/packages/swarmd/internal/localcontainers"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 )
 
@@ -73,6 +76,11 @@ func TestSwarmManagedHostRemoveFromManagerCanPropagate(t *testing.T) {
 		},
 		outgoingPeerAuthTokens: map[string]string{"managed-swarm-1": "manager-to-managed-token"},
 	}
+	server.SetDeployContainerService(&fakeManagedHostRemoveDeployService{deployments: []deployruntime.ContainerDeployment{{
+		ID:             "deploy-a",
+		AccountScopeID: "acct_local_auth_test",
+		ChildSwarmID:   "managed-swarm-1",
+	}}})
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
 		cfg.SwarmMode = true
 		cfg.Child = false
@@ -118,6 +126,11 @@ func TestSwarmManagedHostRemoveFromManagerReportsMissingPropagationInputs(t *tes
 		Node:         swarmruntime.LocalNodeState{SwarmID: "manager-swarm-1", Name: "Manager A", Role: "master"},
 		TrustedPeers: []swarmruntime.TrustedPeer{{SwarmID: "managed-swarm-1", Relationship: swarmruntime.RelationshipManaged}},
 	}}
+	server.SetDeployContainerService(&fakeManagedHostRemoveDeployService{deployments: []deployruntime.ContainerDeployment{{
+		ID:             "deploy-a",
+		AccountScopeID: "acct_local_auth_test",
+		ChildSwarmID:   "managed-swarm-1",
+	}}})
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
 		cfg.SwarmMode = true
 		cfg.Child = false
@@ -138,4 +151,130 @@ func TestSwarmManagedHostRemoveFromManagerReportsMissingPropagationInputs(t *tes
 	if !response.LocalRemoved || response.RemoteError == "" {
 		t.Fatalf("expected local removal with remote propagation error, got %+v", response)
 	}
+}
+
+func TestSwarmManagedHostRemoveRejectsCrossAccountManagedHost(t *testing.T) {
+	server := newLocalAuthTestServer(t)
+	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{
+		Node:         swarmruntime.LocalNodeState{SwarmID: "manager-swarm-1", Name: "Manager A", Role: "master"},
+		TrustedPeers: []swarmruntime.TrustedPeer{{SwarmID: "managed-swarm-1", Relationship: swarmruntime.RelationshipManaged}},
+	}}
+	server.SetDeployContainerService(fakeManagedHostRemoveDeployService{deployments: []deployruntime.ContainerDeployment{{
+		ID:             "deploy-a",
+		AccountScopeID: "account-a",
+		ChildSwarmID:   "managed-swarm-1",
+	}}})
+	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
+		cfg.SwarmMode = true
+		cfg.Child = false
+		cfg.SwarmRole = ""
+	})
+
+	rec := postRemotePairingJSONWithDesktopSession(t, server, "/v1/swarm/managed-host/remove", map[string]any{
+		"managed_swarm_id": "managed-swarm-1",
+		"propagate":        false,
+	})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("remove status = %d, want %d body=%s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+}
+
+func TestSwarmManagedHostRemoveCascadesAccountCleanup(t *testing.T) {
+	server := newLocalAuthTestServer(t)
+	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{
+		Node:         swarmruntime.LocalNodeState{SwarmID: "manager-swarm-1", Name: "Manager A", Role: "master"},
+		TrustedPeers: []swarmruntime.TrustedPeer{{SwarmID: "managed-swarm-1", Relationship: swarmruntime.RelationshipManaged}},
+	}}
+	cleanup := &fakeManagedHostRemoveDeployService{deployments: []deployruntime.ContainerDeployment{{
+		ID:             "deploy-a",
+		AccountScopeID: "acct_local_auth_test",
+		ChildSwarmID:   "managed-swarm-1",
+	}}}
+	server.SetDeployContainerService(cleanup)
+	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
+		cfg.SwarmMode = true
+		cfg.Child = false
+		cfg.SwarmRole = ""
+	})
+
+	rec := postRemotePairingJSONWithDesktopSession(t, server, "/v1/swarm/managed-host/remove", map[string]any{
+		"managed_swarm_id": "managed-swarm-1",
+		"propagate":        false,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("remove status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if cleanup.deletedAccountScopeID != "acct_local_auth_test" || cleanup.deletedManagedSwarmID != "managed-swarm-1" {
+		t.Fatalf("cleanup not account scoped: account=%q swarm=%q", cleanup.deletedAccountScopeID, cleanup.deletedManagedSwarmID)
+	}
+}
+
+type fakeManagedHostRemoveDeployService struct {
+	deployments           []deployruntime.ContainerDeployment
+	deletedAccountScopeID string
+	deletedManagedSwarmID string
+}
+
+func (f fakeManagedHostRemoveDeployService) RuntimeStatus(context.Context) (deployruntime.ContainerRuntimeStatus, error) {
+	return deployruntime.ContainerRuntimeStatus{}, nil
+}
+
+func (f fakeManagedHostRemoveDeployService) List(context.Context) ([]deployruntime.ContainerDeployment, error) {
+	return append([]deployruntime.ContainerDeployment(nil), f.deployments...), nil
+}
+
+func (f fakeManagedHostRemoveDeployService) Create(context.Context, deployruntime.ContainerCreateInput) (deployruntime.ContainerDeployment, error) {
+	return deployruntime.ContainerDeployment{}, nil
+}
+
+func (f fakeManagedHostRemoveDeployService) Act(context.Context, deployruntime.ContainerActionInput) (deployruntime.ContainerDeployment, error) {
+	return deployruntime.ContainerDeployment{}, nil
+}
+
+func (f fakeManagedHostRemoveDeployService) Delete(context.Context, []string) (localcontainers.DeleteResult, error) {
+	return localcontainers.DeleteResult{}, nil
+}
+
+func (f fakeManagedHostRemoveDeployService) ChildAttachState(context.Context, deployruntime.ContainerAttachStatusInput) (swarmruntime.LocalState, error) {
+	return swarmruntime.LocalState{}, nil
+}
+
+func (f fakeManagedHostRemoveDeployService) AttachRequest(context.Context, deployruntime.ContainerAttachRequestInput) (deployruntime.ContainerAttachState, error) {
+	return deployruntime.ContainerAttachState{}, nil
+}
+
+func (f fakeManagedHostRemoveDeployService) AttachStatus(context.Context, deployruntime.ContainerAttachStatusInput) (deployruntime.ContainerAttachState, error) {
+	return deployruntime.ContainerAttachState{}, nil
+}
+
+func (f fakeManagedHostRemoveDeployService) AttachApprove(context.Context, deployruntime.ContainerAttachApproveInput) (deployruntime.ContainerAttachState, error) {
+	return deployruntime.ContainerAttachState{}, nil
+}
+
+func (f fakeManagedHostRemoveDeployService) FinalizeAttachFromHost(context.Context, deployruntime.ContainerAttachFinalizeInput) error {
+	return nil
+}
+
+func (f fakeManagedHostRemoveDeployService) SyncCredentialBundle(context.Context, deployruntime.ContainerSyncCredentialRequestInput) (deployruntime.ContainerSyncCredentialBundle, error) {
+	return deployruntime.ContainerSyncCredentialBundle{}, nil
+}
+
+func (f fakeManagedHostRemoveDeployService) SyncAgentBundle(context.Context, deployruntime.ContainerSyncCredentialRequestInput) (deployruntime.ContainerSyncAgentBundle, error) {
+	return deployruntime.ContainerSyncAgentBundle{}, nil
+}
+
+func (f fakeManagedHostRemoveDeployService) WorkspaceBootstrap(context.Context, deployruntime.ContainerWorkspaceBootstrapRequestInput) ([]deployruntime.ContainerWorkspaceBootstrap, error) {
+	return nil, nil
+}
+
+func (f fakeManagedHostRemoveDeployService) AutoAttachChild(context.Context) error { return nil }
+
+func (f fakeManagedHostRemoveDeployService) UnlockManagedLocalChildVaults(context.Context) error {
+	return nil
+}
+
+func (f *fakeManagedHostRemoveDeployService) DeleteManagedHostForAccount(_ context.Context, accountScopeID, managedSwarmID string) (localcontainers.DeleteResult, error) {
+	f.deletedAccountScopeID = accountScopeID
+	f.deletedManagedSwarmID = managedSwarmID
+	return localcontainers.DeleteResult{Count: 1, Deleted: []string{"deploy-a"}}, nil
 }

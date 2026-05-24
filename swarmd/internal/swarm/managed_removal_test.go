@@ -36,7 +36,7 @@ func TestDetachToStandaloneRemovesManagedGroupMembership(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("get pairing ok=%t err=%v", ok, err)
 	}
-	if pairing.PairingState != startupconfig.PairingStateUnpaired || pairing.ParentSwarmID != "" {
+	if pairing.PairingState != startupconfig.PairingStateUnpaired || pairing.ParentSwarmID != "" || pairing.UserID != "" || pairing.AccountScopeID != "" || pairing.ManagedAuthSnapshotHash != "" || pairing.ManagedAuthOwnerSwarmID != "" {
 		t.Fatalf("pairing = %+v", pairing)
 	}
 	if peers, err := swarmStore.ListTrustedPeers(10); err != nil || len(peers) != 0 {
@@ -81,5 +81,43 @@ func TestRemoveManagedPeerCleansManagerSideRecords(t *testing.T) {
 	}
 	if memberships, err := swarmStore.ListGroupMembershipsBySwarm("managed-swarm", 10); err != nil || len(memberships) != 0 {
 		t.Fatalf("memberships len=%d err=%v", len(memberships), err)
+	}
+}
+
+func TestDetachToStandaloneClearsPairingIdentityAndManagedAuthMetadata(t *testing.T) {
+	store, err := pebblestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	swarmStore := pebblestore.NewSwarmStore(store)
+	svc := NewService(swarmStore, nil, nil)
+	if _, err := swarmStore.PutLocalPairing(pebblestore.SwarmLocalPairingRecord{
+		PairingState:                   startupconfig.PairingStatePaired,
+		ParentSwarmID:                  "manager-swarm",
+		UserID:                         "user-a",
+		AccountScopeID:                 "account-a",
+		WorkspaceBootstrapDeploymentID: "deploy-a",
+		WorkspaceBootstrapAt:           123,
+		ManagedAuthOwnerSwarmID:        "manager-swarm",
+		ManagedAuthSnapshotHash:        "hash-a",
+		ManagedAuthAppliedAt:           456,
+		ManagedAuthLastAttemptAt:       789,
+		ManagedAuthLastError:           "previous error",
+		RendezvousTransports:           []pebblestore.SwarmTransportRecord{{Kind: "tailscale", Primary: "https://manager.example"}},
+	}); err != nil {
+		t.Fatalf("put pairing: %v", err)
+	}
+
+	if err := svc.DetachToStandalone("managed-swarm"); err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	pairing, ok, err := swarmStore.GetLocalPairing()
+	if err != nil || !ok {
+		t.Fatalf("get pairing ok=%t err=%v", ok, err)
+	}
+	if pairing.PairingState != startupconfig.PairingStateUnpaired || pairing.ParentSwarmID != "" || pairing.UserID != "" || pairing.AccountScopeID != "" || pairing.WorkspaceBootstrapDeploymentID != "" || pairing.WorkspaceBootstrapAt != 0 || pairing.ManagedAuthOwnerSwarmID != "" || pairing.ManagedAuthSnapshotHash != "" || pairing.ManagedAuthAppliedAt != 0 || pairing.ManagedAuthLastAttemptAt != 0 || pairing.ManagedAuthLastError != "" || len(pairing.RendezvousTransports) != 0 {
+		t.Fatalf("pairing metadata not cleared: %+v", pairing)
 	}
 }

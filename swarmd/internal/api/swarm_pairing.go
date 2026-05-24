@@ -21,6 +21,8 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	deployruntime "swarm/packages/swarmd/internal/deploy"
+	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/localcontainers"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
@@ -899,6 +901,21 @@ func (s *Server) handleSwarmManagedHostRemove(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, errors.New("managed swarm id is required"))
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	ctx := identity.ContextWithPrincipal(r.Context(), principal)
+	owned, err := s.managedHostBelongsToAccount(ctx, principal.AccountScopeID, managedSwarmID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !owned {
+		writeError(w, http.StatusForbidden, fmt.Errorf("managed host is not owned by account"))
+		return
+	}
 	managedEndpoint := normalizeRemoteSwarmEndpoint(strings.TrimSpace(req.Endpoint))
 	managedTransports := req.Rendezvous
 	var peerAuthToken string
@@ -919,6 +936,25 @@ func (s *Server) handleSwarmManagedHostRemove(w http.ResponseWriter, r *http.Req
 			return
 		} else if ok {
 			peerAuthToken = token
+		}
+	}
+	if s.deployContainers != nil {
+		cleanupSvc, ok := s.deployContainers.(interface {
+			DeleteManagedHostForAccount(context.Context, string, string) (localcontainers.DeleteResult, error)
+		})
+		if !ok {
+			writeError(w, http.StatusInternalServerError, errors.New("deploy container service does not support managed host cleanup"))
+			return
+		}
+		if _, err := cleanupSvc.DeleteManagedHostForAccount(ctx, principal.AccountScopeID, managedSwarmID); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	if s.swarmDesktopTargetSelection != nil {
+		if _, err := s.swarmDesktopTargetSelection.ClearForAccountIfSwarmID(principal.AccountScopeID, managedSwarmID); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
 		}
 	}
 	cleanup, err := s.swarm.RemoveManagedPeer(swarmruntime.RemoveManagedPeerInput{ManagedSwarmID: managedSwarmID})
@@ -949,6 +985,33 @@ func (s *Server) handleSwarmManagedHostRemove(w http.ResponseWriter, r *http.Req
 		}
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) managedHostBelongsToAccount(ctx context.Context, accountScopeID, managedSwarmID string) (bool, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	managedSwarmID = strings.TrimSpace(managedSwarmID)
+	if accountScopeID == "" {
+		return false, identity.ErrPrincipalRequired
+	}
+	if managedSwarmID == "" {
+		return false, errors.New("managed swarm id is required")
+	}
+	if s == nil || s.deployContainers == nil {
+		return false, errors.New("deploy container service is not configured")
+	}
+	deployments, err := s.deployContainers.List(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, deployment := range deployments {
+		if strings.TrimSpace(deployment.AccountScopeID) != "" && strings.TrimSpace(deployment.AccountScopeID) != accountScopeID {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(deployment.ChildSwarmID), managedSwarmID) || strings.EqualFold(strings.TrimSpace(deployment.SyncOwnerSwarmID), managedSwarmID) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *Server) handleSwarmRemotePairingPending(w http.ResponseWriter, r *http.Request) {
