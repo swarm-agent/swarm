@@ -1749,11 +1749,16 @@ func (s *Service) accountScopeIDForManagedCredentialSync(ctx context.Context) (s
 }
 
 func (s *Service) accountScopeIDForManagedCredentialSyncPairing(ctx context.Context, pairing pebblestore.SwarmLocalPairingRecord) (string, error) {
-	if principal, ok := principalFromContext(ctx); ok {
-		return strings.TrimSpace(principal.AccountScopeID), nil
-	}
+	// Managed credential sync for a paired child is authorized by the persisted
+	// local pairing relation. During host-driven child finalization the child can
+	// have a transient locally-bootstrapped principal before the host account is
+	// applied; that local principal is not authority for the host's credential
+	// bundle and must not win over the persisted pairing account.
 	if accountScopeID := strings.TrimSpace(pairing.AccountScopeID); accountScopeID != "" {
 		return accountScopeID, nil
+	}
+	if principal, ok := principalFromContext(ctx); ok {
+		return strings.TrimSpace(principal.AccountScopeID), nil
 	}
 	if s == nil || s.identity == nil {
 		return "", identity.ErrPrincipalRequired

@@ -10,6 +10,7 @@ import (
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	authruntime "swarm/packages/swarmd/internal/auth"
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
@@ -241,6 +242,45 @@ func TestApplyManagedCredentialBundleUsesPersistedPairingAccountWhenRequestHasNo
 	}
 	if list.Total == 0 || len(list.Records) == 0 || !list.Records[0].Active {
 		t.Fatalf("imported credentials = %#v, want active fireworks credential", list)
+	}
+}
+
+func TestApplyManagedCredentialBundleUsesPersistedPairingAccountWhenContextHasBootstrapPrincipal(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	swarmStore := pebblestore.NewSwarmStore(store)
+	authSvc := authruntime.NewService(pebblestore.NewAuthStore(store), events)
+	if _, _, err := authSvc.UpsertCredential(authruntime.CredentialUpsertInput{Provider: "fireworks", AccountScopeID: testPrincipal().AccountScopeID, Type: pebblestore.AuthTypeAPI, APIKey: "sk-test-managed-sync", Active: true}); err != nil {
+		t.Fatalf("upsert host credential: %v", err)
+	}
+	bundle, _, err := authSvc.ExportCredentialsForAccount(testPrincipal().AccountScopeID, "bundle-password", "")
+	if err != nil {
+		t.Fatalf("export credentials: %v", err)
+	}
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, authSvc, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"))
+	if _, err := swarmStore.PutLocalPairing(pebblestore.SwarmLocalPairingRecord{PairingState: "paired", ParentSwarmID: "host-swarm", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID}); err != nil {
+		t.Fatalf("put pairing: %v", err)
+	}
+	bootstrapCtx := identity.ContextWithPrincipal(context.Background(), identity.Principal{Type: identity.PrincipalTypeUser, UserID: "bootstrap-user", AccountScopeID: "bootstrap-account", AccountScopeSource: identity.AccountScopeSourceServerState})
+
+	err = deploySvc.ApplyManagedCredentialBundle(bootstrapCtx, ContainerSyncCredentialBundle{OwnerSwarmID: "host-swarm", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, BundlePassword: "bundle-password", Bundle: bundle})
+	if err != nil {
+		t.Fatalf("ApplyManagedCredentialBundle() error = %v", err)
+	}
+	pairing, ok, err := swarmStore.GetLocalPairing()
+	if err != nil || !ok {
+		t.Fatalf("get pairing ok=%v err=%v", ok, err)
+	}
+	if pairing.AccountScopeID != testPrincipal().AccountScopeID || pairing.UserID != testPrincipal().UserID {
+		t.Fatalf("pairing account changed: %#v", pairing)
 	}
 }
 
