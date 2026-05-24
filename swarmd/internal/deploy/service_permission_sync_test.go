@@ -551,6 +551,71 @@ func TestSyncManagedHostCredentialBundleIncludesUserAndAccount(t *testing.T) {
 	}
 }
 
+func TestApplyManagedHostInitialSyncBundleMaterializesLinkedIdentityIdempotently(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	swarmStore := pebblestore.NewSwarmStore(store)
+	identityStore := pebblestore.NewIdentityStore(store)
+	identitySvc := identity.NewService(identityStore)
+	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
+	modelSvc := modelruntime.NewService(pebblestore.NewModelStore(store), events, nil)
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, nil, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), modelSvc, identitySvc)
+
+	bundle := ManagedHostInitialSyncBundle{UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, SyncModules: []string{workspaceruntime.ReplicationSyncModuleAgents}}
+	if _, err := deploySvc.ApplyManagedHostInitialSyncBundle(context.Background(), "manager-swarm", bundle); err != nil {
+		t.Fatalf("ApplyManagedHostInitialSyncBundle() error = %v", err)
+	}
+	if _, err := deploySvc.ApplyManagedHostInitialSyncBundle(context.Background(), "manager-swarm", bundle); err != nil {
+		t.Fatalf("ApplyManagedHostInitialSyncBundle() refinalize error = %v", err)
+	}
+	user, ok, err := identityStore.GetUser(testPrincipal().UserID)
+	if err != nil || !ok {
+		t.Fatalf("get linked user ok=%v err=%v", ok, err)
+	}
+	if user.AccountScopeID != testPrincipal().AccountScopeID {
+		t.Fatalf("linked user account scope = %q", user.AccountScopeID)
+	}
+	account, ok, err := identityStore.GetAccountScope(testPrincipal().AccountScopeID)
+	if err != nil || !ok {
+		t.Fatalf("get linked account ok=%v err=%v", ok, err)
+	}
+	if account.CreatedByUserID != testPrincipal().UserID || account.UserID != testPrincipal().UserID {
+		t.Fatalf("linked account owner = %q/%q", account.CreatedByUserID, account.UserID)
+	}
+	if _, ok, err := identityStore.GetAccountUser(testPrincipal().AccountScopeID, testPrincipal().UserID); err != nil || !ok {
+		t.Fatalf("get linked account user ok=%v err=%v", ok, err)
+	}
+	selection, ok, err := identityStore.GetCurrentSelection()
+	if err != nil || !ok {
+		t.Fatalf("get current selection ok=%v err=%v", ok, err)
+	}
+	if selection.UserID != testPrincipal().UserID {
+		t.Fatalf("current selection user = %q", selection.UserID)
+	}
+	agentState, err := agentSvc.ListStateForAccount(testPrincipal().AccountScopeID, 0)
+	if err != nil {
+		t.Fatalf("list linked account agents: %v", err)
+	}
+	if len(agentState.Profiles) == 0 {
+		t.Fatalf("linked account agent defaults were not materialized")
+	}
+	pairing, ok, err := swarmStore.GetLocalPairing()
+	if err != nil || !ok {
+		t.Fatalf("get pairing ok=%v err=%v", ok, err)
+	}
+	if pairing.UserID != testPrincipal().UserID || pairing.AccountScopeID != testPrincipal().AccountScopeID {
+		t.Fatalf("pairing identity = %q/%q", pairing.UserID, pairing.AccountScopeID)
+	}
+}
+
 func TestApplyManagedHostInitialSyncBundleRequiresIdentityEnvelope(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm.pebble"))
 	if err != nil {

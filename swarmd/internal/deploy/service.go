@@ -1654,6 +1654,9 @@ func (s *Service) ApplyManagedHostInitialSyncBundle(ctx context.Context, manager
 	if bindErr != nil {
 		return ManagedHostSyncStatus{}, bindErr
 	}
+	if err := s.materializeManagedPairingIdentity(pairing); err != nil {
+		return ManagedHostSyncStatus{}, err
+	}
 	ownerSwarmID := firstNonEmpty(bundle.OwnerSwarmID, strings.TrimSpace(bundle.CredentialBundle.OwnerSwarmID), strings.TrimSpace(managerSwarmID))
 	if workspaceruntime.ReplicationSyncModuleEnabled(modules, workspaceruntime.ReplicationSyncModuleCredentials) {
 		updatedPairing, err := s.applyManagedCredentialBundle(ctx, pairing, ownerSwarmID, bundle.CredentialBundle, "", "")
@@ -1832,6 +1835,34 @@ func (s *Service) accountScopeIDForManagedCredentialSyncPairing(ctx context.Cont
 		return "", err
 	}
 	return strings.TrimSpace(principal.AccountScopeID), nil
+}
+
+func (s *Service) materializeManagedPairingIdentity(pairing pebblestore.SwarmLocalPairingRecord) error {
+	userID := strings.TrimSpace(pairing.UserID)
+	accountScopeID := strings.TrimSpace(pairing.AccountScopeID)
+	if userID == "" {
+		return fmt.Errorf("managed pairing user id is required")
+	}
+	if accountScopeID == "" {
+		return fmt.Errorf("managed pairing account scope id is required")
+	}
+	if s == nil || s.identity == nil {
+		return fmt.Errorf("identity service is not configured")
+	}
+	if _, err := s.identity.EnsureLinkedIdentity(identity.EnsureLinkedIdentityInput{UserID: userID, AccountScopeID: accountScopeID, DisplayName: userID}); err != nil {
+		return fmt.Errorf("materialize managed pairing identity: %w", err)
+	}
+	if s.agents != nil {
+		if err := s.agents.EnsureDefaultsForAccount(accountScopeID); err != nil {
+			return fmt.Errorf("materialize managed pairing agent defaults: %w", err)
+		}
+	}
+	if s.model != nil {
+		if _, err := s.model.GetPreferenceForAccount(accountScopeID); err != nil {
+			return fmt.Errorf("materialize managed pairing model defaults: %w", err)
+		}
+	}
+	return nil
 }
 
 func bindManagedPairingIdentity(pairing pebblestore.SwarmLocalPairingRecord, userID, accountScopeID string) (pebblestore.SwarmLocalPairingRecord, error) {

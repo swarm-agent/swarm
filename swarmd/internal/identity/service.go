@@ -61,6 +61,12 @@ type TeamOptInResult struct {
 	Counts           pebblestore.IdentityCounts         `json:"counts"`
 }
 
+type EnsureLinkedIdentityInput struct {
+	UserID         string
+	AccountScopeID string
+	DisplayName    string
+}
+
 type StateSummary struct {
 	Counts            pebblestore.IdentityCounts          `json:"counts"`
 	CurrentUser       *pebblestore.UserRecord             `json:"current_user,omitempty"`
@@ -145,6 +151,87 @@ func (s *Service) BootstrapFirstIdentity(username string) (BootstrapResult, erro
 			Role:   pebblestore.TeamRoleOwner,
 		},
 	}, nil
+}
+
+// EnsureLinkedIdentity materializes local identity rows for a trusted,
+// persisted account-owned link. It is intentionally not a bootstrap fallback:
+// callers must already have resolved the user/account authority from product
+// state such as a managed-host pairing record.
+func (s *Service) EnsureLinkedIdentity(input EnsureLinkedIdentityInput) (BootstrapResult, error) {
+	if err := s.configured(); err != nil {
+		return BootstrapResult{}, err
+	}
+	userID := strings.TrimSpace(input.UserID)
+	accountScopeID := strings.TrimSpace(input.AccountScopeID)
+	if userID == "" {
+		return BootstrapResult{}, errors.New("linked identity user id is required")
+	}
+	if accountScopeID == "" {
+		return BootstrapResult{}, errors.New("linked identity account scope id is required")
+	}
+	username := pebblestore.NormalizeIdentityUsername(input.DisplayName)
+	if username == "" {
+		username = pebblestore.NormalizeIdentityUsername(userID)
+	}
+	if username == "" {
+		return BootstrapResult{}, errors.New("linked identity username is required")
+	}
+	currentUser, userExists, err := s.store.GetUser(userID)
+	if err != nil {
+		return BootstrapResult{}, err
+	}
+	if userExists && strings.TrimSpace(currentUser.AccountScopeID) != "" && strings.TrimSpace(currentUser.AccountScopeID) != accountScopeID {
+		return BootstrapResult{}, errors.New("linked identity user account scope mismatch")
+	}
+	currentAccount, accountExists, err := s.store.GetAccountScope(accountScopeID)
+	if err != nil {
+		return BootstrapResult{}, err
+	}
+	if accountExists && strings.TrimSpace(currentAccount.CreatedByUserID) != "" && strings.TrimSpace(currentAccount.CreatedByUserID) != userID {
+		return BootstrapResult{}, errors.New("linked identity account owner mismatch")
+	}
+	if !userExists {
+		currentUser, err = s.store.CreateUserIfAbsent(pebblestore.UserRecord{ID: userID, AuthProvider: LocalProductSessionIssuer, AuthSubject: userID, DisplayName: username, AccountScopeID: accountScopeID, Username: username})
+		if err != nil {
+			return BootstrapResult{}, err
+		}
+	} else if strings.TrimSpace(currentUser.AccountScopeID) == "" {
+		currentUser.AccountScopeID = accountScopeID
+		currentUser, err = s.store.PutUser(currentUser)
+		if err != nil {
+			return BootstrapResult{}, err
+		}
+	}
+	if !accountExists {
+		currentAccount, err = s.store.CreateAccountScopeIfAbsent(pebblestore.AccountScopeRecord{ID: accountScopeID, Type: pebblestore.AccountScopeTypePersonal, CreatedByUserID: userID, UserID: userID, Role: pebblestore.AccountRoleOwner})
+		if err != nil {
+			return BootstrapResult{}, err
+		}
+	} else if strings.TrimSpace(currentAccount.UserID) != "" && strings.TrimSpace(currentAccount.UserID) != userID {
+		return BootstrapResult{}, errors.New("linked identity account user mismatch")
+	}
+	accountUser, accountUserExists, err := s.store.GetAccountUser(accountScopeID, userID)
+	if err != nil {
+		return BootstrapResult{}, err
+	}
+	if accountUserExists && strings.TrimSpace(accountUser.Status) != "" && strings.TrimSpace(accountUser.Status) != pebblestore.AccountUserStatusActive {
+		return BootstrapResult{}, errors.New("linked identity account user is not active")
+	}
+	if !accountUserExists {
+		accountUser, err = s.store.CreateAccountUserIfAbsent(pebblestore.AccountUserRecord{ID: accountScopeID + ":" + userID, AccountScopeID: accountScopeID, UserID: userID, Status: pebblestore.AccountUserStatusActive})
+		if err != nil {
+			return BootstrapResult{}, err
+		}
+	}
+	selection, err := s.store.PutCurrentSelection(pebblestore.CurrentSelectionRecord{UserID: userID})
+	if err != nil {
+		return BootstrapResult{}, err
+	}
+	counts, err := s.store.IdentityCounts()
+	if err != nil {
+		return BootstrapResult{}, err
+	}
+	return BootstrapResult{User: currentUser, AccountScope: currentAccount, AccountUser: accountUser, CurrentSelection: selection, Counts: counts, Team: pebblestore.TeamRecord{AccountScopeID: currentAccount.ID, Name: defaultBackendTeamName}, Membership: pebblestore.TeamMembershipRecord{UserID: currentUser.ID, Role: pebblestore.TeamRoleOwner}}, nil
 }
 
 func (s *Service) UpgradeAccountToTeam(actor ActorContext, teamDisplayName string) (TeamOptInResult, error) {
