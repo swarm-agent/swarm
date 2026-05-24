@@ -244,6 +244,8 @@ type ContainerWorkspaceBootstrapRequestInput struct {
 
 type ContainerSyncCredentialBundle struct {
 	OwnerSwarmID   string `json:"owner_swarm_id"`
+	UserID         string `json:"user_id,omitempty"`
+	AccountScopeID string `json:"account_scope_id,omitempty"`
 	BundlePassword string `json:"bundle_password"`
 	Bundle         []byte `json:"bundle"`
 	Exported       int    `json:"exported"`
@@ -1299,6 +1301,8 @@ func (s *Service) SyncCredentialBundle(ctx context.Context, input ContainerSyncC
 	if known := strings.TrimSpace(input.KnownSnapshotHash); known != "" && strings.EqualFold(known, strings.TrimSpace(record.SyncCredentialSnapshotHash)) {
 		return ContainerSyncCredentialBundle{
 			OwnerSwarmID:   record.SyncOwnerSwarmID,
+			UserID:         strings.TrimSpace(record.UserID),
+			AccountScopeID: strings.TrimSpace(record.AccountScopeID),
 			BundlePassword: record.SyncBundlePassword,
 			Exported:       record.SyncBundleExportCount,
 			ExportedAt:     record.SyncBundleExportedAt,
@@ -1321,6 +1325,8 @@ func (s *Service) SyncCredentialBundle(ctx context.Context, input ContainerSyncC
 	}
 	return ContainerSyncCredentialBundle{
 		OwnerSwarmID:   record.SyncOwnerSwarmID,
+		UserID:         strings.TrimSpace(record.UserID),
+		AccountScopeID: strings.TrimSpace(record.AccountScopeID),
 		BundlePassword: record.SyncBundlePassword,
 		Bundle:         payload,
 		Exported:       exported,
@@ -1511,7 +1517,7 @@ func (s *Service) SyncManagedHostCredentialBundle(ctx context.Context, input Con
 	if err != nil {
 		return ContainerSyncCredentialBundle{}, err
 	}
-	return ContainerSyncCredentialBundle{OwnerSwarmID: ownerSwarmID, BundlePassword: bundlePassword, Bundle: payload, Exported: exported, ExportedAt: time.Now().UnixMilli(), SnapshotHash: metadata.SnapshotHash}, nil
+	return ContainerSyncCredentialBundle{OwnerSwarmID: ownerSwarmID, AccountScopeID: accountScopeID, BundlePassword: bundlePassword, Bundle: payload, Exported: exported, ExportedAt: time.Now().UnixMilli(), SnapshotHash: metadata.SnapshotHash}, nil
 }
 
 func (s *Service) SyncManagedHostAgentBundle(ctx context.Context, input ContainerSyncCredentialRequestInput) (ContainerSyncAgentBundle, error) {
@@ -2779,6 +2785,12 @@ func (s *Service) completeHostDrivenLocalAttach(ctx context.Context, startupCfg 
 			return s.failDeploymentAttach(record.ID, err)
 		}
 		finalizeInput.SyncOwnerSwarmID = bundle.OwnerSwarmID
+		if strings.TrimSpace(finalizeInput.UserID) == "" {
+			finalizeInput.UserID = strings.TrimSpace(bundle.UserID)
+		}
+		if strings.TrimSpace(finalizeInput.AccountScopeID) == "" {
+			finalizeInput.AccountScopeID = strings.TrimSpace(bundle.AccountScopeID)
+		}
 		finalizeInput.SyncBundlePassword = bundle.BundlePassword
 		finalizeInput.SyncBundle = bundle.Bundle
 	}
@@ -3230,6 +3242,8 @@ func (s *Service) finalizeChildAttach(ctx context.Context, cfg startupconfig.Fil
 			}
 			bundle := ContainerSyncCredentialBundle{
 				OwnerSwarmID:   strings.TrimSpace(finalizeInput.SyncOwnerSwarmID),
+				UserID:         strings.TrimSpace(finalizeInput.UserID),
+				AccountScopeID: strings.TrimSpace(finalizeInput.AccountScopeID),
 				BundlePassword: strings.TrimSpace(finalizeInput.SyncBundlePassword),
 				Bundle:         append([]byte(nil), finalizeInput.SyncBundle...),
 			}
@@ -4019,6 +4033,19 @@ func (s *Service) applyManagedCredentialBundle(ctx context.Context, pairing pebb
 	accountScopeID, err := s.accountScopeIDForManagedCredentialSyncPairing(ctx, pairing)
 	if err != nil {
 		return pairing, err
+	}
+	if bundleAccountScopeID := strings.TrimSpace(bundle.AccountScopeID); bundleAccountScopeID != "" {
+		if accountScopeID != "" && accountScopeID != bundleAccountScopeID {
+			return pairing, fmt.Errorf("credential bundle account scope does not match local pairing")
+		}
+		accountScopeID = bundleAccountScopeID
+		pairing.AccountScopeID = bundleAccountScopeID
+	}
+	if bundleUserID := strings.TrimSpace(bundle.UserID); bundleUserID != "" {
+		if strings.TrimSpace(pairing.UserID) != "" && strings.TrimSpace(pairing.UserID) != bundleUserID {
+			return pairing, fmt.Errorf("credential bundle user id does not match local pairing")
+		}
+		pairing.UserID = bundleUserID
 	}
 	result, err := s.auth.ImportManagedCredentialsWithVaultAccessForAccount(accountScopeID, ownerSwarmID, bundle.BundlePassword, strings.TrimSpace(vaultPassword), strings.TrimSpace(managedVaultKey), bundle.Bundle)
 	if err != nil {
