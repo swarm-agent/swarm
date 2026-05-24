@@ -9,9 +9,27 @@ import (
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 )
 
+func (s *Server) proxySwarmLocalContainerRequestIfRemote(w http.ResponseWriter, r *http.Request) bool {
+	remoteTarget, err := s.currentRemoteSwarmTargetForRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return true
+	}
+	if remoteTarget == nil {
+		return false
+	}
+	if err := s.proxyRequestToSwarmTarget(w, r, *remoteTarget); err != nil {
+		writeError(w, http.StatusBadGateway, err)
+	}
+	return true
+}
+
 func (s *Server) handleSwarmLocalContainerRuntime(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
+		return
+	}
+	if s.proxySwarmLocalContainerRequestIfRemote(w, r) {
 		return
 	}
 	if s.localContainers == nil {
@@ -41,6 +59,9 @@ func (s *Server) handleSwarmLocalContainers(w http.ResponseWriter, r *http.Reque
 		methodNotAllowed(w)
 		return
 	}
+	if s.proxySwarmLocalContainerRequestIfRemote(w, r) {
+		return
+	}
 	if s.localContainers == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("local container service not configured"))
 		return
@@ -66,6 +87,9 @@ func (s *Server) handleSwarmLocalContainers(w http.ResponseWriter, r *http.Reque
 func (s *Server) handleSwarmLocalContainerUpdateJob(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
+		return
+	}
+	if s.proxySwarmLocalContainerRequestIfRemote(w, r) {
 		return
 	}
 	if s.localContainers == nil {
@@ -111,6 +135,9 @@ func (s *Server) handleSwarmLocalContainerUpdateJob(w http.ResponseWriter, r *ht
 func (s *Server) handleSwarmLocalContainerCreate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
+		return
+	}
+	if s.proxySwarmLocalContainerRequestIfRemote(w, r) {
 		return
 	}
 	if s.localContainers == nil {
@@ -195,6 +222,9 @@ func (s *Server) handleSwarmLocalContainerAction(w http.ResponseWriter, r *http.
 		methodNotAllowed(w)
 		return
 	}
+	if s.proxySwarmLocalContainerRequestIfRemote(w, r) {
+		return
+	}
 	if s.localContainers == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("local container service not configured"))
 		return
@@ -235,6 +265,9 @@ func (s *Server) handleSwarmLocalContainerDelete(w http.ResponseWriter, r *http.
 		methodNotAllowed(w)
 		return
 	}
+	if s.proxySwarmLocalContainerRequestIfRemote(w, r) {
+		return
+	}
 	if s.localContainers == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("local container service not configured"))
 		return
@@ -272,6 +305,9 @@ func (s *Server) handleSwarmLocalContainerDelete(w http.ResponseWriter, r *http.
 func (s *Server) handleSwarmLocalContainerPruneMissing(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
+		return
+	}
+	if s.proxySwarmLocalContainerRequestIfRemote(w, r) {
 		return
 	}
 	if s.localContainers == nil {

@@ -858,6 +858,8 @@ func (s *Service) MirrorDeployment(ctx context.Context, deployment ContainerDepl
 	}
 	record := pebblestore.DeployContainerRecord{
 		ID:                  strings.TrimSpace(deployment.ID),
+		UserID:              strings.TrimSpace(deployment.UserID),
+		AccountScopeID:      strings.TrimSpace(deployment.AccountScopeID),
 		Kind:                firstNonEmpty(strings.TrimSpace(deployment.Kind), "container"),
 		Name:                strings.TrimSpace(deployment.Name),
 		Status:              normalizeDeploymentStatus(deployment.Status),

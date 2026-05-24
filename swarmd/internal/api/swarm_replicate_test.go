@@ -13,6 +13,7 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	deployruntime "swarm/packages/swarmd/internal/deploy"
+	"swarm/packages/swarmd/internal/identity"
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	"swarm/packages/swarmd/internal/security"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -710,6 +711,8 @@ func TestSwarmManagedHostContainerDeleteResolvesCanonicalHostContainerIDs(t *tes
 	server.SetTopologyService(topologySvc)
 	if err := topologySvc.UpsertHostContainer(pebblestore.TopologyHostContainerRecord{
 		HostContainerID:     "managed-swarm-1:ctr-123",
+		UserID:              testPrincipal().UserID,
+		AccountScopeID:      testPrincipal().AccountScopeID,
 		HostSwarmID:         "managed-swarm-1",
 		RuntimeContainerRef: "ctr-123",
 		Name:                "managed-child",
@@ -721,6 +724,8 @@ func TestSwarmManagedHostContainerDeleteResolvesCanonicalHostContainerIDs(t *tes
 	}
 	if err := topologySvc.UpsertAttachment(pebblestore.TopologyAttachmentRecord{
 		AttachmentID:    "managed-swarm-1:ctr-123=>child-swarm-1",
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
 		HostContainerID: "managed-swarm-1:ctr-123",
 		RuntimeSwarmID:  "child-swarm-1",
 		DeploymentID:    "deployment-1",
@@ -729,6 +734,8 @@ func TestSwarmManagedHostContainerDeleteResolvesCanonicalHostContainerIDs(t *tes
 	}
 	fakeDeploy.lastMirroredDeployment = deployruntime.ContainerDeployment{
 		ID:              "deployment-1",
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
 		HostSwarmID:     "managed-swarm-1",
 		HostContainerID: "managed-swarm-1:ctr-123",
 		ContainerID:     "ctr-123",
@@ -743,6 +750,66 @@ func TestSwarmManagedHostContainerDeleteResolvesCanonicalHostContainerIDs(t *tes
 	}
 	if len(fakeDeploy.lastManagedHostCanonicalIDs) != 1 || fakeDeploy.lastManagedHostCanonicalIDs[0] != "managed-child" {
 		t.Fatalf("canonical delete ids = %#v", fakeDeploy.lastManagedHostCanonicalIDs)
+	}
+}
+
+func TestManagedHostTopologyWritesAreAccountOwned(t *testing.T) {
+	server, _, _ := newReplicateTestHandler(t)
+	testDir := t.TempDir()
+	topologyBackingStore, err := pebblestore.Open(filepath.Join(testDir, "managed-host-account-topology.pebble"))
+	if err != nil {
+		t.Fatalf("open topology store: %v", err)
+	}
+	defer func() { _ = topologyBackingStore.Close() }()
+	topologyStore := pebblestore.NewTopologyStore(topologyBackingStore)
+	store, err := pebblestore.Open(filepath.Join(testDir, "deploy-mirror.pebble"))
+	if err != nil {
+		t.Fatalf("open deploy store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+	server.SetDeployContainerService(deployruntime.NewService(pebblestore.NewDeployContainerStore(store), nil, nil, nil, nil, nil, nil, filepath.Join(testDir, "swarm.conf"), topologyStore))
+	server.SetTopologyService(topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil, nil))
+
+	deployment, err := server.mirrorManagedHostDeployment(identity.ContextWithPrincipal(context.Background(), testPrincipal()), deployruntime.ContainerDeployment{
+		ID:                 "deployment-1",
+		Name:               "managed-child",
+		Status:             "running",
+		Runtime:            "podman",
+		ContainerName:      "managed-child",
+		ContainerID:        "ctr-123",
+		HostSwarmID:        "managed-swarm-1",
+		ChildSwarmID:       "child-swarm-1",
+		ChildDisplayName:   "Child One",
+		ChildBackendURL:    "http://child.example:7781",
+		ChildDesktopURL:    "https://child.example",
+		AttachStatus:       "attached",
+		WorkspaceBootstrap: []deployruntime.ContainerWorkspaceBootstrap{{SourceWorkspacePath: "/host/work", SourceWorkspaceName: "work", TargetWorkspacePath: "/managed/work", Writable: true}},
+	}, swarmTarget{SwarmID: "managed-swarm-1", Name: "Managed Host", BackendURL: "http://managed.example:7781", DesktopURL: "https://managed.example"}, deployContainerCreatePayload{DeploymentID: "deployment-1", Name: "managed-child"})
+	if err != nil {
+		t.Fatalf("mirror managed host deployment: %v", err)
+	}
+	if deployment.UserID != testPrincipal().UserID || deployment.AccountScopeID != testPrincipal().AccountScopeID {
+		t.Fatalf("mirrored deployment principal = %q/%q", deployment.UserID, deployment.AccountScopeID)
+	}
+	hostContainerID := pebblestore.CanonicalTopologyHostContainerID("managed-swarm-1", "ctr-123")
+	if _, ok, err := topologyStore.GetHostContainerForAccount(testPrincipal().AccountScopeID, hostContainerID); err != nil || !ok {
+		t.Fatalf("account host container ok=%t err=%v", ok, err)
+	}
+	if _, ok, err := topologyStore.GetHostContainerForAccount("account-b", hostContainerID); err != nil || ok {
+		t.Fatalf("cross-account host container ok=%t err=%v", ok, err)
+	}
+	if _, ok, err := topologyStore.GetAttachmentForAccount(testPrincipal().AccountScopeID, pebblestore.CanonicalTopologyAttachmentID(hostContainerID, "child-swarm-1")); err != nil || !ok {
+		t.Fatalf("account attachment ok=%t err=%v", ok, err)
+	}
+	if _, ok, err := topologyStore.GetRuntimeForAccount(testPrincipal().AccountScopeID, "child-swarm-1"); err != nil || !ok {
+		t.Fatalf("account runtime ok=%t err=%v", ok, err)
+	}
+	bindings, err := topologyStore.ListWorkspaceBindingsForAccount(testPrincipal().AccountScopeID, 10)
+	if err != nil {
+		t.Fatalf("list account workspace bindings: %v", err)
+	}
+	if len(bindings) != 1 || bindings[0].UserID != testPrincipal().UserID || bindings[0].AccountScopeID != testPrincipal().AccountScopeID {
+		t.Fatalf("account workspace bindings = %#v", bindings)
 	}
 }
 
@@ -815,6 +882,8 @@ func TestSwarmManagedHostContainerDeleteResolvesDeploymentIDToManagedLocalIdenti
 	server.SetTopologyService(topologySvc)
 	if err := topologySvc.UpsertHostContainer(pebblestore.TopologyHostContainerRecord{
 		HostContainerID:     "managed-swarm-1:ctr-123",
+		UserID:              testPrincipal().UserID,
+		AccountScopeID:      testPrincipal().AccountScopeID,
 		HostSwarmID:         "managed-swarm-1",
 		RuntimeContainerRef: "ctr-123",
 		Name:                "managed-child",
@@ -826,6 +895,8 @@ func TestSwarmManagedHostContainerDeleteResolvesDeploymentIDToManagedLocalIdenti
 	}
 	if err := topologySvc.UpsertAttachment(pebblestore.TopologyAttachmentRecord{
 		AttachmentID:    "managed-swarm-1:ctr-123=>child-swarm-1",
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
 		HostContainerID: "managed-swarm-1:ctr-123",
 		RuntimeSwarmID:  "child-swarm-1",
 		DeploymentID:    "deployment-1",

@@ -297,6 +297,7 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 		markSwarmTargetSeen(seenTargets, deployment)
 	}
 	for _, mirrored := range mirroredTargets {
+		s.resolveMirroredTargetRouteForAccount(principal.AccountScopeID, &mirrored)
 		if !swarmTargetInCurrentGroup(currentGroupSwarmIDs, mirrored.SwarmID) && !s.mirroredTargetOwnedByCurrentGroupHostForAccount(principal.AccountScopeID, mirrored, currentGroupSwarmIDs) {
 			continue
 		}
@@ -471,6 +472,14 @@ func (s *Server) listDeployContainerTargetsForAccount(r *http.Request, accountSc
 	return out, nil
 }
 
+func swarmTargetOwnedByCurrentGroupHost(currentGroupSwarmIDs map[string]struct{}, target swarmTarget, runtimeRecord pebblestore.TopologyRuntimeRecord) bool {
+	ownerHostSwarmID := strings.TrimSpace(runtimeRecord.OwnerHostSwarmID)
+	if ownerHostSwarmID == "" {
+		ownerHostSwarmID = strings.TrimSpace(target.HostSwarmID)
+	}
+	return swarmTargetInCurrentGroup(currentGroupSwarmIDs, ownerHostSwarmID)
+}
+
 func (s *Server) mirroredTargetOwnedByCurrentGroupHostForAccount(accountScopeID string, target swarmTarget, currentGroupSwarmIDs map[string]struct{}) bool {
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	if s == nil || s.topology == nil || accountScopeID == "" || len(currentGroupSwarmIDs) == 0 {
@@ -480,8 +489,10 @@ func (s *Server) mirroredTargetOwnedByCurrentGroupHostForAccount(accountScopeID 
 	if swarmID == "" {
 		return false
 	}
-	if runtimeRecord, _, err := s.topology.GetRuntimeForAccount(accountScopeID, swarmID); err == nil && swarmTargetInCurrentGroup(currentGroupSwarmIDs, runtimeRecord.OwnerHostSwarmID) {
-		return true
+	if runtimeRecord, ok, err := s.topology.GetRuntimeForAccount(accountScopeID, swarmID); err == nil && ok {
+		return swarmTargetOwnedByCurrentGroupHost(currentGroupSwarmIDs, target, runtimeRecord)
+	} else if err != nil {
+		return false
 	}
 	if s.deployContainers == nil {
 		return false
@@ -804,13 +815,18 @@ func firstTrustedPeerTransportValue(transport swarmruntime.TransportSummary) str
 }
 
 func (s *Server) resolveMirroredTargetRoute(target *swarmTarget) {
+	s.resolveMirroredTargetRouteForAccount("", target)
+}
+
+func (s *Server) resolveMirroredTargetRouteForAccount(accountScopeID string, target *swarmTarget) {
 	if s == nil || target == nil {
 		return
 	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
 	backendURL := strings.TrimSpace(target.BackendURL)
 	hostSwarmID := strings.TrimSpace(target.HostSwarmID)
 	if hostSwarmID == "" {
-		hostSwarmID = s.ownerHostSwarmIDForTarget(*target)
+		hostSwarmID = s.ownerHostSwarmIDForTargetForAccount(accountScopeID, *target)
 		if hostSwarmID != "" {
 			target.HostSwarmID = hostSwarmID
 		}
@@ -819,7 +835,7 @@ func (s *Server) resolveMirroredTargetRoute(target *swarmTarget) {
 		target.Relationship = swarmruntime.RelationshipChild
 	}
 	if hostSwarmID != "" && !s.isLocalSwarmID(hostSwarmID) && isLoopbackBackendURL(backendURL) {
-		if ownerBackendURL := s.backendURLForSwarmID(hostSwarmID); ownerBackendURL != "" {
+		if ownerBackendURL := s.backendURLForSwarmIDForAccount(accountScopeID, hostSwarmID); ownerBackendURL != "" {
 			target.Online = true
 			target.Selectable = true
 			return

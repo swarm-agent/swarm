@@ -287,7 +287,12 @@ func (s *Server) ownerHostBackendURLForTarget(target swarmTarget) string {
 }
 
 func (s *Server) backendURLForSwarmID(swarmID string) string {
+	return s.backendURLForSwarmIDForAccount("", swarmID)
+}
+
+func (s *Server) backendURLForSwarmIDForAccount(accountScopeID, swarmID string) string {
 	swarmID = strings.TrimSpace(swarmID)
+	accountScopeID = strings.TrimSpace(accountScopeID)
 	if swarmID == "" || s == nil {
 		return ""
 	}
@@ -303,6 +308,14 @@ func (s *Server) backendURLForSwarmID(swarmID string) string {
 		}
 	}
 	if s.topology != nil {
+		if accountScopeID != "" {
+			if runtimeRecord, ok, err := s.topology.GetRuntimeForAccount(accountScopeID, swarmID); err == nil && ok {
+				if backendURL := strings.TrimSpace(runtimeRecord.BackendURL); backendURL != "" {
+					return backendURL
+				}
+			}
+			return ""
+		}
 		if runtimeRecord, ok, err := s.topology.GetRuntime(swarmID); err == nil && ok {
 			if backendURL := strings.TrimSpace(runtimeRecord.BackendURL); backendURL != "" {
 				return backendURL
@@ -313,11 +326,24 @@ func (s *Server) backendURLForSwarmID(swarmID string) string {
 }
 
 func (s *Server) ownerHostSwarmIDForTarget(target swarmTarget) string {
+	return s.ownerHostSwarmIDForTargetForAccount("", target)
+}
+
+func (s *Server) ownerHostSwarmIDForTargetForAccount(accountScopeID string, target swarmTarget) string {
 	swarmID := strings.TrimSpace(target.SwarmID)
+	accountScopeID = strings.TrimSpace(accountScopeID)
 	if swarmID == "" || s == nil {
 		return ""
 	}
 	if s.topology != nil {
+		if accountScopeID != "" {
+			if runtimeRecord, ok, err := s.topology.GetRuntimeForAccount(accountScopeID, swarmID); err == nil && ok {
+				if hostSwarmID := strings.TrimSpace(runtimeRecord.OwnerHostSwarmID); hostSwarmID != "" {
+					return hostSwarmID
+				}
+			}
+			return ""
+		}
 		if runtimeRecord, ok, err := s.topology.GetRuntime(swarmID); err == nil && ok {
 			if hostSwarmID := strings.TrimSpace(runtimeRecord.OwnerHostSwarmID); hostSwarmID != "" {
 				return hostSwarmID
@@ -339,6 +365,9 @@ func (s *Server) ownerHostSwarmIDForTarget(target swarmTarget) string {
 		return ""
 	}
 	for _, deployment := range deployments {
+		if accountScopeID != "" && strings.TrimSpace(deployment.AccountScopeID) != accountScopeID {
+			continue
+		}
 		if strings.EqualFold(strings.TrimSpace(deployment.ChildSwarmID), swarmID) {
 			return strings.TrimSpace(deployment.HostSwarmID)
 		}

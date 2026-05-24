@@ -93,6 +93,13 @@ func (s *Service) ListRuntimes(limit int) ([]pebblestore.TopologyRuntimeRecord, 
 	return s.topologyStore.ListRuntimes(limit)
 }
 
+func (s *Service) ListRuntimesForAccount(accountScopeID string, limit int) ([]pebblestore.TopologyRuntimeRecord, error) {
+	if s == nil || s.topologyStore == nil {
+		return nil, fmt.Errorf("topology service is not configured")
+	}
+	return s.topologyStore.ListRuntimesForAccount(accountScopeID, limit)
+}
+
 func (s *Service) ListHostContainersByHost(hostSwarmID string, limit int) ([]pebblestore.TopologyHostContainerRecord, error) {
 	if s == nil || s.topologyStore == nil {
 		return nil, fmt.Errorf("topology service is not configured")
@@ -142,6 +149,9 @@ func (s *Service) UpsertHostContainer(record pebblestore.TopologyHostContainerRe
 	if s == nil || s.topologyStore == nil {
 		return fmt.Errorf("topology service is not configured")
 	}
+	if strings.TrimSpace(record.AccountScopeID) != "" {
+		return pebblestore.UpsertTopologyHostContainerForAccount(s.topologyStore, record.AccountScopeID, record)
+	}
 	return pebblestore.UpsertTopologyHostContainer(s.topologyStore, record)
 }
 
@@ -149,12 +159,18 @@ func (s *Service) UpsertAttachment(record pebblestore.TopologyAttachmentRecord) 
 	if s == nil || s.topologyStore == nil {
 		return fmt.Errorf("topology service is not configured")
 	}
+	if strings.TrimSpace(record.AccountScopeID) != "" {
+		return pebblestore.UpsertTopologyAttachmentForAccount(s.topologyStore, record.AccountScopeID, record)
+	}
 	return pebblestore.UpsertTopologyAttachment(s.topologyStore, record)
 }
 
 func (s *Service) UpsertWorkspaceBinding(record pebblestore.TopologyWorkspaceBindingRecord) (pebblestore.TopologyWorkspaceBindingRecord, error) {
 	if s == nil || s.topologyStore == nil {
 		return pebblestore.TopologyWorkspaceBindingRecord{}, fmt.Errorf("topology service is not configured")
+	}
+	if strings.TrimSpace(record.AccountScopeID) != "" {
+		return pebblestore.UpsertTopologyWorkspaceBindingForAccount(s.topologyStore, record.AccountScopeID, record)
 	}
 	return pebblestore.UpsertTopologyWorkspaceBinding(s.topologyStore, record)
 }
@@ -226,6 +242,13 @@ func (s *Service) ListAttachmentsByHostContainer(hostContainerID string, limit i
 	return s.topologyStore.ListAttachmentsByHostContainer(hostContainerID, limit)
 }
 
+func (s *Service) ListAttachmentsByHostContainerForAccount(accountScopeID, hostContainerID string, limit int) ([]pebblestore.TopologyAttachmentRecord, error) {
+	if s == nil || s.topologyStore == nil {
+		return nil, fmt.Errorf("topology service is not configured")
+	}
+	return s.topologyStore.ListAttachmentsByHostContainerForAccount(accountScopeID, hostContainerID, limit)
+}
+
 func (s *Service) DeleteHostContainer(hostContainerID string) error {
 	if s == nil || s.topologyStore == nil {
 		return fmt.Errorf("topology service is not configured")
@@ -238,6 +261,20 @@ func (s *Service) DeleteAttachment(attachmentID string) error {
 		return fmt.Errorf("topology service is not configured")
 	}
 	return s.topologyStore.DeleteAttachment(attachmentID)
+}
+
+func (s *Service) DeleteHostContainerForAccount(accountScopeID, hostContainerID string) error {
+	if s == nil || s.topologyStore == nil {
+		return fmt.Errorf("topology service is not configured")
+	}
+	return s.topologyStore.DeleteHostContainerForAccount(accountScopeID, hostContainerID)
+}
+
+func (s *Service) DeleteAttachmentForAccount(accountScopeID, attachmentID string) error {
+	if s == nil || s.topologyStore == nil {
+		return fmt.Errorf("topology service is not configured")
+	}
+	return s.topologyStore.DeleteAttachmentForAccount(accountScopeID, attachmentID)
 }
 
 func (s *Service) RemoveRuntimeObservedSource(swarmID, source string) error {
@@ -282,6 +319,13 @@ func (s *Service) ListWorkspaceBindings(limit int) ([]pebblestore.TopologyWorksp
 		return nil, fmt.Errorf("topology service is not configured")
 	}
 	return s.topologyStore.ListWorkspaceBindings(limit)
+}
+
+func (s *Service) ListWorkspaceBindingsForAccount(accountScopeID string, limit int) ([]pebblestore.TopologyWorkspaceBindingRecord, error) {
+	if s == nil || s.topologyStore == nil {
+		return nil, fmt.Errorf("topology service is not configured")
+	}
+	return s.topologyStore.ListWorkspaceBindingsForAccount(accountScopeID, limit)
 }
 
 func (s *Service) ListWorkspaceBindingsBySourcePath(sourceWorkspacePath string, limit int) ([]pebblestore.TopologyWorkspaceBindingRecord, error) {

@@ -202,7 +202,7 @@ func (s *Server) handleWorkspaceOverview(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	topologyRoutesByWorkspace, err := s.workspaceOverviewTopologyRoutesByWorkspace(swarmTargets)
+	topologyRoutesByWorkspace, err := s.workspaceOverviewTopologyRoutesByWorkspace(principal, swarmTargets)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -402,7 +402,7 @@ func (s *Server) workspaceOverviewSessionsByWorkspace(groups []pebblestore.Works
 	return result, nil
 }
 
-func (s *Server) workspaceOverviewTopologyRoutesByWorkspace(swarmTargets []swarmTarget) (map[string][]workspaceOverviewTopologyRoute, error) {
+func (s *Server) workspaceOverviewTopologyRoutesByWorkspace(principal identity.Principal, swarmTargets []swarmTarget) (map[string][]workspaceOverviewTopologyRoute, error) {
 	out := make(map[string][]workspaceOverviewTopologyRoute)
 	if s == nil || s.topology == nil {
 		return out, nil
@@ -410,7 +410,11 @@ func (s *Server) workspaceOverviewTopologyRoutesByWorkspace(swarmTargets []swarm
 	if _, err := s.topology.EnsureSnapshot(); err != nil {
 		return nil, err
 	}
-	bindings, err := s.topology.ListWorkspaceBindings(100000)
+	accountScopeID := strings.TrimSpace(principal.AccountScopeID)
+	if accountScopeID == "" {
+		return out, nil
+	}
+	bindings, err := s.topology.ListWorkspaceBindingsForAccount(accountScopeID, 100000)
 	if err != nil {
 		return nil, err
 	}
@@ -421,7 +425,7 @@ func (s *Server) workspaceOverviewTopologyRoutesByWorkspace(swarmTargets []swarm
 		}
 	}
 	topologyRuntimes := make(map[string]pebblestore.TopologyRuntimeRecord)
-	if runtimes, err := s.topology.ListRuntimes(100000); err == nil {
+	if runtimes, err := s.topology.ListRuntimesForAccount(accountScopeID, 100000); err == nil {
 		for _, runtime := range runtimes {
 			if swarmID := strings.TrimSpace(runtime.SwarmID); swarmID != "" {
 				topologyRuntimes[strings.ToLower(swarmID)] = runtime

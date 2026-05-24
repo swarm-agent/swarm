@@ -300,6 +300,11 @@ func (s *Service) childAttachmentRecordsForDeployment(record pebblestore.DeployC
 }
 
 func (s *Service) canonicalHostContainerIDForDeployment(record pebblestore.DeployContainerRecord) (string, error) {
+	hostSwarmID := firstNonEmpty(strings.TrimSpace(record.HostSwarmID), strings.TrimSpace(record.SyncOwnerSwarmID))
+	runtimeContainerRef := firstNonEmpty(strings.TrimSpace(record.ContainerID), strings.TrimSpace(record.ContainerName), strings.TrimSpace(record.ID))
+	if canonicalID := pebblestore.CanonicalTopologyHostContainerID(hostSwarmID, runtimeContainerRef); canonicalID != "" {
+		return canonicalID, nil
+	}
 	if s == nil || s.topology == nil {
 		return "", nil
 	}
@@ -307,7 +312,6 @@ func (s *Service) canonicalHostContainerIDForDeployment(record pebblestore.Deplo
 	if accountScopeID == "" {
 		return "", fmt.Errorf("deploy topology host container lookup requires account scope id")
 	}
-	hostSwarmID := firstNonEmpty(strings.TrimSpace(record.HostSwarmID), strings.TrimSpace(record.SyncOwnerSwarmID))
 	hostContainer, ok, err := pebblestore.FindTopologyHostContainerByRefsForAccount(s.topology, accountScopeID, hostSwarmID, record.ContainerID, record.ContainerName, record.ID)
 	if err != nil || !ok {
 		return "", err

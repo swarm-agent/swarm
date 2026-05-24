@@ -85,6 +85,8 @@ func TestMirroredManagedHostChildTargetIsSelectableViaOwnerHostGroup(t *testing.
 	setReplicateFakeSwarmState(primary, primaryState)
 	primary.SetDeployContainerService(&fakeReplicateDeployService{lastMirroredDeployment: deployruntime.ContainerDeployment{
 		ID:              "managed-child-deployment",
+		UserID:          testUserID,
+		AccountScopeID:  testAccountScopeID,
 		Name:            "managed-child",
 		AttachStatus:    "attached",
 		HostSwarmID:     "managed-swarm-1",
@@ -108,6 +110,8 @@ func TestMirroredManagedHostChildTargetIsSelectableViaOwnerHostGroup(t *testing.
 		t.Fatalf("upsert mirrored target: %v", err)
 	}
 	if err := primary.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
+		UserID:           testUserID,
+		AccountScopeID:   testAccountScopeID,
 		SwarmID:          "child-swarm-1",
 		Name:             "managed-child",
 		Relationship:     "child",

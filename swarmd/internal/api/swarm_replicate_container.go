@@ -8,9 +8,18 @@ import (
 	"strings"
 
 	deployruntime "swarm/packages/swarmd/internal/deploy"
+	"swarm/packages/swarmd/internal/identity"
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
+
+func principalForContext(ctx context.Context) (identity.Principal, bool) {
+	principal, ok := identity.PrincipalFromContext(ctx)
+	if !ok || !principal.Valid() {
+		return identity.Principal{}, false
+	}
+	return principal, true
+}
 
 func (s *Server) createReplicatedContainer(ctx context.Context, targetHost *swarmTarget, payload deployContainerCreatePayload, targetHostIsLocal bool) (deployruntime.ContainerDeployment, error) {
 	if targetHostIsLocal {
@@ -61,14 +70,14 @@ func (s *Server) createReplicatedContainer(ctx context.Context, targetHost *swar
 		}
 		return response.Deployment, errors.New("managed host container create failed")
 	}
-	deployment, err := s.mirrorManagedHostDeployment(response.Deployment, *targetHost, mirrorPayload)
+	deployment, err := s.mirrorManagedHostDeployment(ctx, response.Deployment, *targetHost, mirrorPayload)
 	if err != nil {
 		return deployment, err
 	}
 	return deployment, nil
 }
 
-func (s *Server) mirrorManagedHostDeployment(deployment deployruntime.ContainerDeployment, target swarmTarget, payload deployContainerCreatePayload) (deployruntime.ContainerDeployment, error) {
+func (s *Server) mirrorManagedHostDeployment(ctx context.Context, deployment deployruntime.ContainerDeployment, target swarmTarget, payload deployContainerCreatePayload) (deployruntime.ContainerDeployment, error) {
 	if s == nil || s.deployContainers == nil {
 		return deployment, errors.New("deploy container service is not configured")
 	}
@@ -77,6 +86,10 @@ func (s *Server) mirrorManagedHostDeployment(deployment deployruntime.ContainerD
 	})
 	if !ok {
 		return deployment, errors.New("deploy container mirror service is not configured")
+	}
+	if principal, ok := principalForContext(ctx); ok {
+		deployment.UserID = firstNonEmptyString(strings.TrimSpace(deployment.UserID), strings.TrimSpace(principal.UserID))
+		deployment.AccountScopeID = firstNonEmptyString(strings.TrimSpace(deployment.AccountScopeID), strings.TrimSpace(principal.AccountScopeID))
 	}
 	deployment.ID = firstNonEmptyString(strings.TrimSpace(deployment.ID), strings.TrimSpace(payload.DeploymentID))
 	deployment.Kind = firstNonEmptyString(strings.TrimSpace(deployment.Kind), "container")
@@ -88,8 +101,8 @@ func (s *Server) mirrorManagedHostDeployment(deployment deployruntime.ContainerD
 	deployment.SyncEnabled = payload.SyncEnabled
 	deployment.SyncMode = strings.TrimSpace(payload.SyncMode)
 	deployment.SyncModules = append([]string(nil), payload.SyncModules...)
-	deployment.WorkspaceBootstrap = append([]deployruntime.ContainerWorkspaceBootstrap(nil), payload.WorkspaceBootstrap...)
-	deployment.ContainerPackages = payload.ContainerPackages
+	deployment.WorkspaceBootstrap = append([]deployruntime.ContainerWorkspaceBootstrap(nil), firstNonEmptyWorkspaceBootstrap(payload.WorkspaceBootstrap, deployment.WorkspaceBootstrap)...)
+	deployment.ContainerPackages = firstNonEmptyContainerPackageManifest(payload.ContainerPackages, deployment.ContainerPackages)
 	deployment.BypassPermissions = payload.BypassPermissions
 	deployment.AlwaysOn = payload.AlwaysOn
 	deployment.HostSwarmID = strings.TrimSpace(target.SwarmID)
@@ -105,7 +118,7 @@ func (s *Server) mirrorManagedHostDeployment(deployment deployruntime.ContainerD
 	if err := s.syncManagedHostCanonicalTopology(deployment); err != nil {
 		return deployment, err
 	}
-	return mirror.MirrorDeployment(context.Background(), deployment)
+	return mirror.MirrorDeployment(ctx, deployment)
 }
 
 func canonicalHostContainerIDForManagedDeployment(deployment deployruntime.ContainerDeployment) string {
@@ -122,8 +135,15 @@ func (s *Server) syncManagedHostCanonicalTopology(deployment deployruntime.Conta
 	if hostContainerID == "" {
 		return nil
 	}
+	userID := strings.TrimSpace(deployment.UserID)
+	accountScopeID := strings.TrimSpace(deployment.AccountScopeID)
+	if userID == "" || accountScopeID == "" {
+		return errors.New("managed host topology sync requires deployment user and account scope")
+	}
 	if err := s.topology.UpsertHostContainer(pebblestore.TopologyHostContainerRecord{
 		HostContainerID:     hostContainerID,
+		UserID:              userID,
+		AccountScopeID:      accountScopeID,
 		HostSwarmID:         strings.TrimSpace(deployment.HostSwarmID),
 		RuntimeContainerRef: firstNonEmptyString(strings.TrimSpace(deployment.ContainerID), strings.TrimSpace(deployment.ContainerName), strings.TrimSpace(deployment.ID)),
 		Name:                firstNonEmptyString(strings.TrimSpace(deployment.Name), strings.TrimSpace(deployment.ContainerName), strings.TrimSpace(deployment.ID)),
@@ -147,6 +167,8 @@ func (s *Server) syncManagedHostCanonicalTopology(deployment deployruntime.Conta
 	}
 	if err := s.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
 		SwarmID:              childSwarmID,
+		UserID:               userID,
+		AccountScopeID:       accountScopeID,
 		Name:                 firstNonEmptyString(strings.TrimSpace(deployment.ChildDisplayName), strings.TrimSpace(deployment.Name), childSwarmID),
 		Role:                 "child",
 		Relationship:         "child",
@@ -164,6 +186,8 @@ func (s *Server) syncManagedHostCanonicalTopology(deployment deployruntime.Conta
 	attachmentID := firstNonEmptyString(strings.TrimSpace(deployment.AttachmentID), pebblestore.CanonicalTopologyAttachmentID(hostContainerID, childSwarmID))
 	return s.topology.UpsertAttachment(pebblestore.TopologyAttachmentRecord{
 		AttachmentID:    attachmentID,
+		UserID:          userID,
+		AccountScopeID:  accountScopeID,
 		HostContainerID: hostContainerID,
 		RuntimeSwarmID:  childSwarmID,
 		State:           firstNonEmptyString(strings.TrimSpace(deployment.AttachStatus), strings.TrimSpace(deployment.Status)),
@@ -174,7 +198,11 @@ func (s *Server) syncManagedHostCanonicalTopology(deployment deployruntime.Conta
 	})
 }
 
-func (s *Server) resolveManagedHostCanonicalDeleteIDs(managedSwarmID string, ids []string) ([]string, error) {
+func (s *Server) resolveManagedHostCanonicalDeleteIDs(ctx context.Context, accountScopeID, managedSwarmID string, ids []string) ([]string, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, errors.New("account scope id is required")
+	}
 	managedSwarmID = strings.TrimSpace(managedSwarmID)
 	if managedSwarmID == "" {
 		return nil, errors.New("managed swarm id is required")
@@ -182,7 +210,7 @@ func (s *Server) resolveManagedHostCanonicalDeleteIDs(managedSwarmID string, ids
 	resolved := make([]string, 0, len(ids))
 	seen := map[string]struct{}{}
 	if s != nil && s.topology != nil {
-		hostContainers, err := s.topology.ListHostContainersByHost(managedSwarmID, 100000)
+		hostContainers, err := s.topology.ListHostContainersByHostForAccount(accountScopeID, managedSwarmID, 100000)
 		if err != nil {
 			return nil, err
 		}
@@ -200,7 +228,7 @@ func (s *Server) resolveManagedHostCanonicalDeleteIDs(managedSwarmID string, ids
 					canonicalID = managedHostLocalDeleteID(hostContainer, candidateID)
 					break
 				}
-				attachments, err := s.topology.ListAttachmentsByHostContainer(hostContainer.HostContainerID, 100)
+				attachments, err := s.topology.ListAttachmentsByHostContainerForAccount(accountScopeID, hostContainer.HostContainerID, 100)
 				if err != nil {
 					return nil, err
 				}
@@ -231,7 +259,7 @@ func (s *Server) resolveManagedHostCanonicalDeleteIDs(managedSwarmID string, ids
 		if !ok {
 			return nil, errors.New("deploy container service does not support deployment listing")
 		}
-		deployments, err := deploymentSvc.List(context.Background())
+		deployments, err := deploymentSvc.List(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -402,7 +430,7 @@ func (s *Server) actTargetHostDeployment(ctx context.Context, deployment deployr
 		return response.Deployment, errors.New("managed host container action failed")
 	}
 	response.Deployment = mergeDeploymentMirrorResponse(deployment, response.Deployment)
-	return s.mirrorManagedHostDeployment(response.Deployment, target, deploymentToMirrorPayload(response.Deployment))
+	return s.mirrorManagedHostDeployment(ctx, response.Deployment, target, deploymentToMirrorPayload(response.Deployment))
 }
 
 func (s *Server) updateTargetHostDeploymentSettings(ctx context.Context, deployment deployruntime.ContainerDeployment, payload deployContainerSettingsPayload) (deployruntime.ContainerDeployment, error) {
@@ -429,7 +457,7 @@ func (s *Server) updateTargetHostDeploymentSettings(ctx context.Context, deploym
 		return response.Deployment, errors.New("managed host container settings update failed")
 	}
 	response.Deployment = mergeDeploymentMirrorResponse(deployment, response.Deployment)
-	return s.mirrorManagedHostDeployment(response.Deployment, target, deploymentToMirrorPayload(response.Deployment))
+	return s.mirrorManagedHostDeployment(ctx, response.Deployment, target, deploymentToMirrorPayload(response.Deployment))
 }
 
 func deploymentToMirrorPayload(deployment deployruntime.ContainerDeployment) deployContainerCreatePayload {
@@ -529,7 +557,12 @@ func (s *Server) handleSwarmManagedHostContainerDelete(w http.ResponseWriter, r 
 		writeError(w, http.StatusBadRequest, errors.New("managed host backend URL is not configured"))
 		return
 	}
-	canonicalDeleteIDs, err := s.resolveManagedHostCanonicalDeleteIDs(target.SwarmID, req.IDs)
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	canonicalDeleteIDs, err := s.resolveManagedHostCanonicalDeleteIDs(identity.ContextWithPrincipal(r.Context(), principal), principal.AccountScopeID, target.SwarmID, req.IDs)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return

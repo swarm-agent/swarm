@@ -182,14 +182,16 @@ func TestWorkspaceOverviewIncludesManagedChildLoopbackRouteViaOwnerHost(t *testi
 		}},
 	})
 	topologyStore := pebblestore.NewTopologyStore(store)
-	if err := pebblestore.UpsertTopologyRuntimeRecord(topologyStore, pebblestore.TopologyRuntimeRecord{SwarmID: "managed-swarm-1", Name: "managed-host", Relationship: "managed", BackendURL: "https://managed.example.test"}); err != nil {
+	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyRuntimeRecord{SwarmID: "managed-swarm-1", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, Name: "managed-host", Relationship: "managed", BackendURL: "https://managed.example.test"}); err != nil {
 		t.Fatalf("upsert host runtime: %v", err)
 	}
-	if err := pebblestore.UpsertTopologyRuntimeRecord(topologyStore, pebblestore.TopologyRuntimeRecord{SwarmID: "child-swarm-1", Name: "heytest", Relationship: "child", BackendURL: "http://127.0.0.1:7782", OwnerHostSwarmID: "managed-swarm-1", Status: "attached"}); err != nil {
+	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyRuntimeRecord{SwarmID: "child-swarm-1", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, Name: "heytest", Relationship: "child", BackendURL: "http://127.0.0.1:7782", OwnerHostSwarmID: "managed-swarm-1", Status: "attached"}); err != nil {
 		t.Fatalf("upsert child runtime: %v", err)
 	}
-	if _, err := pebblestore.UpsertTopologyWorkspaceBinding(topologyStore, pebblestore.TopologyWorkspaceBindingRecord{
+	if _, err := pebblestore.UpsertTopologyWorkspaceBindingForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyWorkspaceBindingRecord{
 		BindingID:                 "binding-managed-child",
+		UserID:                    testPrincipal().UserID,
+		AccountScopeID:            testPrincipal().AccountScopeID,
 		SourceWorkspacePath:       workspacePath,
 		SourceWorkspaceName:       "workspace-one",
 		DestinationRuntimeSwarmID: "child-swarm-1",

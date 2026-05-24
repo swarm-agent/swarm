@@ -50,7 +50,7 @@ func (s *Server) trustedSessionPrincipalForRequest(r *http.Request, sessionID st
 	}
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
-		return identity.Principal{}, false
+		return s.trustedPairingPrincipalForPeerRequest(r)
 	}
 	// Host/container peer auth and the local transport prove transport identity
 	// only. Forwarded X-Swarm-Principal-* headers are claims, not authority;
@@ -102,6 +102,40 @@ func (s *Server) trustedSessionPrincipalForRequest(r *http.Request, sessionID st
 		AccountScopeID:     accountScopeID,
 		AccountScopeSource: identity.AccountScopeSourceSession,
 		SessionID:          sessionID,
+	}
+	if !principal.Valid() {
+		return identity.Principal{}, false
+	}
+	return principal, true
+}
+
+func (s *Server) trustedPairingPrincipalForPeerRequest(r *http.Request) (identity.Principal, bool) {
+	if s == nil || r == nil || s.swarmStore == nil {
+		return identity.Principal{}, false
+	}
+	peerSwarmID, authorizedPeer := authorizedPeerSwarmID(r)
+	if !authorizedPeer && !isLocalTransportRequest(r) {
+		return identity.Principal{}, false
+	}
+	pairing, ok, err := s.swarmStore.GetLocalPairing()
+	if err != nil || !ok {
+		return identity.Principal{}, false
+	}
+	if authorizedPeer {
+		parentSwarmID := strings.TrimSpace(pairing.ParentSwarmID)
+		if parentSwarmID == "" || !strings.EqualFold(strings.TrimSpace(peerSwarmID), parentSwarmID) {
+			return identity.Principal{}, false
+		}
+	}
+	// Peer/local transport authenticates only the channel. The request principal
+	// for non-session managed-host routes is minted from the persisted local
+	// pairing identity established during managed pairing, not from forwarded
+	// X-Swarm-Principal-* header claims.
+	principal := identity.Principal{
+		Type:               identity.PrincipalTypeUser,
+		UserID:             strings.TrimSpace(pairing.UserID),
+		AccountScopeID:     strings.TrimSpace(pairing.AccountScopeID),
+		AccountScopeSource: identity.AccountScopeSourceServerState,
 	}
 	if !principal.Valid() {
 		return identity.Principal{}, false
