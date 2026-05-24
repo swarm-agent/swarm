@@ -9,7 +9,6 @@ export interface DesktopOnboardingTransportWire {
 
 export interface DesktopOnboardingConfigWire {
   swarm_name?: string
-  swarm_mode?: boolean
   desktop_onboarding_complete?: boolean
   child?: boolean
   swarm_role?: string
@@ -147,7 +146,6 @@ export interface DesktopOnboardingTransport {
 export interface DesktopOnboardingConfig {
   swarmName: string
   child: boolean
-  swarmMode: boolean
   desktopOnboardingComplete: boolean
   swarmRole: 'standalone' | 'master' | 'child' | 'managed'
   swarmID: string

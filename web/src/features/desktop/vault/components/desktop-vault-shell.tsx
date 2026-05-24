@@ -53,14 +53,15 @@ function mapDiscoveredSwarm(record: DesktopOnboardingDiscoveredSwarmWire) {
 
 function mapOnboardingBootstrapStatus(onboarding: DesktopOnboardingStatusWire): DesktopOnboardingStatus {
   const mode = normalizeBootstrapMode(onboarding.config?.mode)
-  const swarmMode = Boolean(onboarding.config?.swarm_mode)
   const child = Boolean(onboarding.config?.child)
   const rawSwarmRole = String(onboarding.config?.swarm_role ?? '').trim().toLowerCase()
-  const swarmRole: DesktopOnboardingStatus['config']['swarmRole'] = !swarmMode
-    ? 'standalone'
-    : rawSwarmRole === 'managed'
-      ? 'managed'
-      : child ? 'child' : 'master'
+  const swarmRole: DesktopOnboardingStatus['config']['swarmRole'] = rawSwarmRole === 'managed'
+    ? 'managed'
+    : rawSwarmRole === 'child' || child
+      ? 'child'
+      : rawSwarmRole === 'standalone'
+        ? 'standalone'
+        : 'master'
   const credentialCount = typeof onboarding.heuristics?.credential_count === 'number'
     ? onboarding.heuristics.credential_count
     : typeof onboarding.auth?.credential_count === 'number'
@@ -89,7 +90,6 @@ function mapOnboardingBootstrapStatus(onboarding: DesktopOnboardingStatusWire): 
     config: {
       swarmName: String(onboarding.config?.swarm_name ?? '').trim(),
       child,
-      swarmMode,
       desktopOnboardingComplete: Boolean(onboarding.config?.desktop_onboarding_complete),
       swarmRole,
       swarmID: '',
