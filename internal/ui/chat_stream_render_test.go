@@ -8,6 +8,28 @@ import (
 	"github.com/gdamore/tcell/v2"
 )
 
+func TestApplySessionLifecycleActiveDoesNotClearUserAbortFlag(t *testing.T) {
+	page := NewChatPage(ChatPageOptions{
+		SessionID:      "session-test",
+		SessionMode:    "auto",
+		AuthConfigured: true,
+	})
+	page.runAbort = true
+	page.busy = true
+	page.ownedRunID = "run-1"
+
+	page.ApplySessionLifecycle(ChatSessionLifecycle{
+		SessionID: "session-test",
+		RunID:     "run-1",
+		Active:    true,
+		Phase:     "running",
+	})
+
+	if !page.runAbort {
+		t.Fatal("active lifecycle update cleared runAbort before stop completed")
+	}
+}
+
 func TestApplySessionLifecycleCompletedPreservesLiveAssistantUntilRunSuccess(t *testing.T) {
 	page := NewChatPage(ChatPageOptions{
 		SessionID:      "session-test",

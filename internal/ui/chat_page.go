@@ -2175,7 +2175,6 @@ func (p *ChatPage) ApplySessionLifecycle(lifecycle ChatSessionLifecycle) {
 
 	copy := lifecycle
 	p.lifecycle = &copy
-	p.runAbort = false
 
 	if lifecycle.Active {
 		p.busy = true

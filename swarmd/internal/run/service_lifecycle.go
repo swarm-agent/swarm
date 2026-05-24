@@ -104,8 +104,22 @@ func (s *Service) StopSessionRun(sessionID, runID, reason string) error {
 	active.userStop = true
 	active.stopReason = reason
 	cancel := active.cancel
+
+	now := time.Now().UnixMilli()
+	current.Active = false
+	current.Phase = lifecyclePhaseCancelled
+	current.EndedAt = now
+	current.UpdatedAt = now
+	current.StopReason = reason
+	current.Error = ""
+	if err := s.sessions.UpsertLifecycle(current); err != nil {
+		s.lifecycleMu.Unlock()
+		return err
+	}
+	delete(s.activeRuns, sessionID)
 	s.lifecycleMu.Unlock()
 
+	s.publishLifecycleSnapshot(current)
 	if cancel != nil {
 		cancel()
 	}
