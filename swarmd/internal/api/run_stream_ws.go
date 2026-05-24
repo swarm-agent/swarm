@@ -1,12 +1,10 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"runtime/debug"
@@ -784,13 +782,34 @@ func (s *Server) handleRunStreamStop(conn *transportws.Conn, sessionID string, i
 }
 
 func (s *Server) handleRunStreamControl(w http.ResponseWriter, r *http.Request, sessionID string, principal identity.Principal) {
-	var inbound runStreamInboundMessage
-	body, err := readRequestBody(r)
+	remoteTarget, ok, err := s.routedSessionTarget(principal, sessionID)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeError(w, http.StatusBadGateway, err)
 		return
 	}
-	if err := decodeJSONBytes(body, &inbound); err != nil {
+	if !ok {
+		remoteTarget, err = s.currentRemoteSwarmTargetForRequest(r)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err)
+			return
+		}
+	}
+	if remoteTarget != nil && !s.isManagedHostMirroredSession(sessionID) {
+		if err := s.proxyRequestToSwarmTarget(w, r, *remoteTarget); err != nil {
+			writeError(w, http.StatusBadGateway, err)
+		}
+		return
+	}
+	if s.isManagedHostMirroredSession(sessionID) {
+		s.handleManagedHostSessionRunStreamControl(w, r, sessionID)
+		return
+	}
+	if s.runner == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("run service not configured"))
+		return
+	}
+	var inbound runStreamInboundMessage
+	if err := decodeJSON(r, &inbound); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -799,57 +818,6 @@ func (s *Server) handleRunStreamControl(w http.ResponseWriter, r *http.Request, 
 	inbound.RunID = strings.TrimSpace(inbound.RunID)
 	if !principal.Valid() {
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
-		return
-	}
-
-	if inbound.Type == "run.stop" || inbound.Type == "stop" {
-		if s.isManagedHostMirroredSession(sessionID) {
-			s.handleManagedHostSessionRunStreamControlWithBody(w, r, sessionID, body)
-			return
-		}
-		remoteTarget, ok, err := s.routedSessionTarget(principal, sessionID)
-		if err != nil {
-			writeError(w, http.StatusBadGateway, err)
-			return
-		}
-		if ok && remoteTarget != nil {
-			if err := s.proxyRequestToSwarmTarget(w, cloneRequestWithBody(r, body), *remoteTarget); err != nil {
-				writeError(w, http.StatusBadGateway, err)
-			}
-			return
-		}
-		if s.runner == nil {
-			writeError(w, http.StatusInternalServerError, errors.New("run service not configured"))
-			return
-		}
-		handleLocalRunStreamStop(w, sessionID, inbound, s.runner, s.runStreams)
-		return
-	}
-
-	remoteTarget, ok, err := s.routedSessionTarget(principal, sessionID)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
-		return
-	}
-	if !ok {
-		remoteTarget, err = s.currentRemoteSwarmTargetForRequest(cloneRequestWithBody(r, body))
-		if err != nil {
-			writeError(w, http.StatusBadGateway, err)
-			return
-		}
-	}
-	if remoteTarget != nil && !s.isManagedHostMirroredSession(sessionID) {
-		if err := s.proxyRequestToSwarmTarget(w, cloneRequestWithBody(r, body), *remoteTarget); err != nil {
-			writeError(w, http.StatusBadGateway, err)
-		}
-		return
-	}
-	if s.isManagedHostMirroredSession(sessionID) {
-		s.handleManagedHostSessionRunStreamControlWithBody(w, r, sessionID, body)
-		return
-	}
-	if s.runner == nil {
-		writeError(w, http.StatusInternalServerError, errors.New("run service not configured"))
 		return
 	}
 	switch inbound.Type {
@@ -879,43 +847,27 @@ func (s *Server) handleRunStreamControl(w http.ResponseWriter, r *http.Request, 
 			"owner_transport": "background_api",
 		})
 	case "run.stop", "stop":
-		handleLocalRunStreamStop(w, sessionID, inbound, s.runner, s.runStreams)
+		if inbound.RunID == "" {
+			writeError(w, http.StatusBadRequest, errors.New("run_id is required for stop"))
+			return
+		}
+		s.runStreams.setStopReason(inbound.RunID, "run stopped by user")
+		if err := s.runner.StopSessionRun(sessionID, inbound.RunID, "run stopped by user"); err != nil {
+			status := http.StatusConflict
+			if errors.Is(err, runruntime.ErrSessionRunNotActive) {
+				status = http.StatusConflict
+			}
+			writeError(w, status, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":         true,
+			"session_id": sessionID,
+			"run_id":     inbound.RunID,
+		})
 	default:
 		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported run stream control type %q", inbound.Type))
 	}
-}
-
-func cloneRequestWithBody(r *http.Request, body []byte) *http.Request {
-	if r == nil {
-		return nil
-	}
-	clone := r.Clone(r.Context())
-	clone.Body = io.NopCloser(bytes.NewReader(body))
-	clone.ContentLength = int64(len(body))
-	return clone
-}
-
-func handleLocalRunStreamStop(w http.ResponseWriter, sessionID string, inbound runStreamInboundMessage, runner runService, runStreams *runStreamManager) {
-	if inbound.RunID == "" {
-		writeError(w, http.StatusBadRequest, errors.New("run_id is required for stop"))
-		return
-	}
-	if runStreams != nil {
-		runStreams.setStopReason(inbound.RunID, "run stopped by user")
-	}
-	if err := runner.StopSessionRun(sessionID, inbound.RunID, "run stopped by user"); err != nil {
-		status := http.StatusConflict
-		if errors.Is(err, runruntime.ErrSessionRunNotActive) {
-			status = http.StatusConflict
-		}
-		writeError(w, status, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":         true,
-		"session_id": sessionID,
-		"run_id":     inbound.RunID,
-	})
 }
 
 func (s *Server) isManagedHostMirroredSession(sessionID string) bool {

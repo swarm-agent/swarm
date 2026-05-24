@@ -460,15 +460,6 @@ func (s *Server) handleManagedHostSessionRunStreamWebsocket(w http.ResponseWrite
 }
 
 func (s *Server) handleManagedHostSessionRunStreamControl(w http.ResponseWriter, r *http.Request, sessionID string) {
-	body, err := readRequestBody(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	s.handleManagedHostSessionRunStreamControlWithBody(w, r, sessionID, body)
-}
-
-func (s *Server) handleManagedHostSessionRunStreamControlWithBody(w http.ResponseWriter, r *http.Request, sessionID string, body []byte) {
 	if s.sessions == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("session service not configured"))
 		return
@@ -484,7 +475,7 @@ func (s *Server) handleManagedHostSessionRunStreamControlWithBody(w http.Respons
 		return
 	}
 	var inbound runStreamInboundMessage
-	if err := decodeJSONBytes(body, &inbound); err != nil {
+	if err := decodeJSON(r, &inbound); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
