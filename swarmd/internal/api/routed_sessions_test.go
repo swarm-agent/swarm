@@ -194,6 +194,22 @@ func TestRoutedRunStreamControlProxiesHostedMirrorSession(t *testing.T) {
 	}
 }
 
+func TestRunStreamStopForLocalSessionSkipsCurrentTargetCatalog(t *testing.T) {
+	server, sessionSvc, _, _ := newRoutedSessionTestServer(t)
+	server.runner = &fakeFlowRunService{}
+	server.SetLocalContainerService(failingRunStopTargetCatalogLocalContainers{})
+	sessionID := seedRoutedSession(t, sessionSvc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sessionID+"/run/stream", bytes.NewBufferString(`{"type":"run.stop","run_id":"run-1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
 func TestRoutedSessionTargetRewritesManagedLoopbackBackendToHostBackend(t *testing.T) {
 	server, _, _, _ := newRoutedSessionTestServer(t)
 	managedHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1344,7 +1360,7 @@ func newRoutedSessionTestServerWithSwarmStore(t *testing.T) (*Server, *sessionru
 	routeStore := pebblestore.NewSessionRouteStore(store)
 	nodeStore := pebblestore.NewSwarmNodeStore(store)
 	swarmStore := pebblestore.NewSwarmStore(store)
-	server := NewServer("test", nil, agentSvc, modelSvc, nil, sessionSvc, nil, nil, nil, nil, permissionSvc, nil, eventLog, stream.NewHub(eventLog))
+	server := NewServer(nil, agentSvc, modelSvc, nil, sessionSvc, nil, nil, nil, nil, permissionSvc, nil, eventLog, stream.NewHub(eventLog))
 	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, routeStore, pebblestore.NewWorkspaceStore(store)))
 	server.SetSessionRouteStore(routeStore)
 	server.SetSwarmNodeStore(nodeStore)
@@ -1374,6 +1390,50 @@ func newRoutedSessionTestServerWithSwarmStore(t *testing.T) (*Server, *sessionru
 	server.SetStartupConfigPath(startupPath)
 
 	return server, sessionSvc, permissionSvc, routeStore, swarmStore
+}
+
+type failingRunStopTargetCatalogLocalContainers struct{}
+
+func (failingRunStopTargetCatalogLocalContainers) RuntimeStatus(context.Context) (localcontainers.RuntimeStatus, error) {
+	return localcontainers.RuntimeStatus{PathID: localcontainers.PathRuntimeStatus}, nil
+}
+
+func (failingRunStopTargetCatalogLocalContainers) List(context.Context) ([]localcontainers.Container, error) {
+	return nil, errors.New("local container catalog should not be consulted for run.stop")
+}
+
+func (failingRunStopTargetCatalogLocalContainers) ListForAccount(context.Context, string) ([]localcontainers.Container, error) {
+	return nil, errors.New("local container account catalog should not be consulted for run.stop")
+}
+
+func (failingRunStopTargetCatalogLocalContainers) Create(context.Context, localcontainers.CreateInput) (localcontainers.Container, error) {
+	return localcontainers.Container{}, errors.New("unexpected create")
+}
+
+func (failingRunStopTargetCatalogLocalContainers) Act(context.Context, localcontainers.ActionInput) (localcontainers.Container, error) {
+	return localcontainers.Container{}, errors.New("unexpected act")
+}
+
+func (failingRunStopTargetCatalogLocalContainers) BulkDelete(context.Context, []string) (localcontainers.DeleteResult, error) {
+	return localcontainers.DeleteResult{}, errors.New("unexpected delete")
+}
+
+func (failingRunStopTargetCatalogLocalContainers) PruneMissing(context.Context) (localcontainers.DeleteResult, error) {
+	return localcontainers.DeleteResult{}, nil
+}
+
+func (failingRunStopTargetCatalogLocalContainers) UpdatePlan(context.Context, localcontainers.UpdatePlanInput) (localcontainers.UpdatePlan, error) {
+	return localcontainers.UpdatePlan{}, errors.New("unexpected update plan")
+}
+
+func (failingRunStopTargetCatalogLocalContainers) RunUpdateJob(context.Context, localcontainers.UpdateJobInput) (localcontainers.UpdateJobResult, error) {
+	return localcontainers.UpdateJobResult{}, errors.New("unexpected update job")
+}
+
+func (failingRunStopTargetCatalogLocalContainers) SetHostCallbackURL(string, string) {}
+
+func (failingRunStopTargetCatalogLocalContainers) HostCallbackURL(string) (string, bool) {
+	return "", false
 }
 
 func seedRoutedSession(t *testing.T, sessionSvc *sessionruntime.Service) string {
