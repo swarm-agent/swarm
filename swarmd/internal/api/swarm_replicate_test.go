@@ -1008,7 +1008,7 @@ func TestDeployContainerSyncCredentialsPreservesPeerAuthBeforeTrustedNetworkExem
 	server.SetDeployContainerService(fakeDeploy)
 	server.SetSwarmService(fakeReplicateSwarmService{incomingTokens: map[string]string{"manager-swarm": "manager-token"}})
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/deploy/container/sync/credentials", bytes.NewReader([]byte(`{}`)))
+	req := httptest.NewRequest(http.MethodPost, "/v1/deploy/container/sync/credentials", bytes.NewReader([]byte(`{"known_snapshot_hash":"snapshot-123"}`)))
 	req.RemoteAddr = "100.64.0.1:12345"
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(peerAuthSwarmIDHeader, "manager-swarm")
@@ -1024,6 +1024,9 @@ func TestDeployContainerSyncCredentialsPreservesPeerAuthBeforeTrustedNetworkExem
 	}
 	if got := fakeDeploy.lastSyncCredentialBundleInput.PeerSwarmID; got != "manager-swarm" {
 		t.Fatalf("peer swarm id = %q, want manager-swarm", got)
+	}
+	if got := fakeDeploy.lastSyncCredentialBundleInput.KnownSnapshotHash; got != "snapshot-123" {
+		t.Fatalf("known snapshot hash = %q, want snapshot-123", got)
 	}
 }
 

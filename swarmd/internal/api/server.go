@@ -4371,13 +4371,74 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("permission service is not configured"))
 		return
 	}
-	principal, ok := PrincipalFromRequest(r)
-	if !ok {
-		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+	path := strings.TrimSpace(r.URL.Path)
+	switch path {
+	case "/v1/permissions/bypass":
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		var req struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := decodeJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		cfg, err := s.loadStartupConfig()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if !cfg.Exists {
+			cfg = startupconfig.Default(cfg.Path)
+		}
+		cfg.BypassPermissions = req.Enabled
+		if err := startupconfig.Write(cfg); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		s.SetBypassPermissions(req.Enabled)
+		s.triggerPermissionSyncReconcile()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "bypass_permissions": s.BypassPermissions()})
+		return
+	case "/v1/permissions/managed/apply":
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		var req permission.ManagedPolicyState
+		if err := decodeJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		state, err := s.perm.ApplyManagedPolicyState(req)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "state": state})
 		return
 	}
-	accountScopeID := strings.TrimSpace(principal.AccountScopeID)
-	path := strings.TrimSpace(r.URL.Path)
+	var accountScopeID string
+	switch path {
+	case "/v1/permissions", "/v1/permissions/reset", "/v1/permissions/explain":
+		principal, ok := PrincipalFromRequest(r)
+		if !ok {
+			writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+			return
+		}
+		accountScopeID = strings.TrimSpace(principal.AccountScopeID)
+	default:
+		if strings.HasPrefix(path, "/v1/permissions/") {
+			principal, ok := PrincipalFromRequest(r)
+			if !ok {
+				writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+				return
+			}
+			accountScopeID = strings.TrimSpace(principal.AccountScopeID)
+		}
+	}
 	switch {
 	case path == "/v1/permissions":
 		switch r.Method {
@@ -4414,52 +4475,6 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 		default:
 			methodNotAllowed(w)
 		}
-		return
-	case path == "/v1/permissions/bypass":
-		if r.Method != http.MethodPost {
-			methodNotAllowed(w)
-			return
-		}
-		var req struct {
-			Enabled bool `json:"enabled"`
-		}
-		if err := decodeJSON(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		cfg, err := s.loadStartupConfig()
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
-		if !cfg.Exists {
-			cfg = startupconfig.Default(cfg.Path)
-		}
-		cfg.BypassPermissions = req.Enabled
-		if err := startupconfig.Write(cfg); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
-		s.SetBypassPermissions(req.Enabled)
-		s.triggerPermissionSyncReconcile()
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "bypass_permissions": s.BypassPermissions()})
-		return
-	case path == "/v1/permissions/managed/apply":
-		if r.Method != http.MethodPost {
-			methodNotAllowed(w)
-			return
-		}
-		var req permission.ManagedPolicyState
-		if err := decodeJSON(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		state, err := s.perm.ApplyManagedPolicyState(req)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "state": state})
 		return
 	case path == "/v1/permissions/reset":
 		if r.Method != http.MethodPost {

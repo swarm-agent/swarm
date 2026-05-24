@@ -607,18 +607,20 @@ func (s *Server) handleDeployContainerSyncCredentials(w http.ResponseWriter, r *
 		return
 	}
 	var req struct {
-		DeploymentID    string `json:"deployment_id"`
-		BootstrapSecret string `json:"bootstrap_secret"`
-		VaultPassword   string `json:"vault_password,omitempty"`
+		DeploymentID      string `json:"deployment_id"`
+		BootstrapSecret   string `json:"bootstrap_secret"`
+		VaultPassword     string `json:"vault_password,omitempty"`
+		KnownSnapshotHash string `json:"known_snapshot_hash,omitempty"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	bundle, err := s.deployContainers.SyncCredentialBundle(context.Background(), syncRequestWithPeerAuth(r, deployruntime.ContainerSyncCredentialRequestInput{
-		DeploymentID:    req.DeploymentID,
-		BootstrapSecret: req.BootstrapSecret,
-		VaultPassword:   req.VaultPassword,
+		DeploymentID:      req.DeploymentID,
+		BootstrapSecret:   req.BootstrapSecret,
+		VaultPassword:     req.VaultPassword,
+		KnownSnapshotHash: req.KnownSnapshotHash,
 	}))
 	if err != nil {
 		status := http.StatusBadRequest
