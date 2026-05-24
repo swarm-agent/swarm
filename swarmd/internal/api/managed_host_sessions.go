@@ -114,6 +114,8 @@ type managedHostSessionCreateRequest struct {
 }
 
 type managedHostSessionRoute struct {
+	UserID                string `json:"user_id,omitempty"`
+	AccountScopeID        string `json:"account_scope_id,omitempty"`
 	PrimarySwarmID        string `json:"primary_swarm_id"`
 	PrimaryBackendURL     string `json:"primary_backend_url,omitempty"`
 	ManagedHostSwarmID    string `json:"managed_host_swarm_id"`
@@ -137,6 +139,11 @@ func (s *Server) handleManagedHostSessionOpen(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	principal, principalOK := PrincipalFromRequest(r)
+	if !principalOK || !principal.Valid() {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 	target, localSwarmID, _, status, err := s.resolveManagedHostSessionTarget(r, req.TargetSwarmID)
 	if err != nil {
 		writeError(w, status, err)
@@ -151,6 +158,8 @@ func (s *Server) handleManagedHostSessionOpen(w http.ResponseWriter, r *http.Req
 	}
 	workspaceName := firstNonEmpty(strings.TrimSpace(req.WorkspaceName), filepath.Base(runtimeWorkspacePath))
 	route := managedHostSessionRoute{
+		UserID:                strings.TrimSpace(principal.UserID),
+		AccountScopeID:        strings.TrimSpace(principal.AccountScopeID),
 		PrimarySwarmID:        localSwarmID,
 		PrimaryBackendURL:     hostedSessionHostBackendURLFromServer(s),
 		ManagedHostSwarmID:    strings.TrimSpace(target.SwarmID),
@@ -187,9 +196,15 @@ func (s *Server) handleManagedHostSessionOpen(w http.ResponseWriter, r *http.Req
 	if strings.TrimSpace(mirror.ID) == "" {
 		mirror.ID = sessionID
 	}
+	if err := requireManagedHostSessionMirrorOwnership(&mirror, principal); err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
 	mirror.Metadata = managedHostSessionMetadata(mirror.Metadata, route)
 	routeRecord := pebblestore.SessionRouteRecord{
 		SessionID:            strings.TrimSpace(mirror.ID),
+		UserID:               strings.TrimSpace(principal.UserID),
+		AccountScopeID:       strings.TrimSpace(principal.AccountScopeID),
 		ChildSwarmID:         strings.TrimSpace(route.ManagedHostSwarmID),
 		ChildBackendURL:      strings.TrimSpace(route.ManagedHostBackendURL),
 		HostWorkspacePath:    strings.TrimSpace(route.HostWorkspacePath),
@@ -233,20 +248,7 @@ func (s *Server) handleManagedHostSessionMessage(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusBadRequest, errors.New("session_id is required"))
 		return
 	}
-	targetSwarmID := strings.TrimSpace(req.TargetSwarmID)
-	if targetSwarmID == "" {
-		session, ok, err := s.sessions.GetSession(req.SessionID)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		if !ok {
-			writeError(w, http.StatusBadRequest, errors.New("managed host mirrored session was not found"))
-			return
-		}
-		targetSwarmID = managedHostSessionStringMetadata(session.Metadata, "swarm_managed_host_swarm_id")
-	}
-	target, _, _, status, err := s.resolveManagedHostSessionTarget(r, targetSwarmID)
+	target, status, err := s.managedHostTargetForSessionRequest(r, req.SessionID, req.TargetSwarmID)
 	if err != nil {
 		writeError(w, status, err)
 		return
@@ -313,20 +315,7 @@ func (s *Server) handleManagedHostSessionStop(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, errors.New("session_id is required"))
 		return
 	}
-	targetSwarmID := strings.TrimSpace(req.TargetSwarmID)
-	if targetSwarmID == "" {
-		session, ok, err := s.sessions.GetSession(req.SessionID)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		if !ok {
-			writeError(w, http.StatusBadRequest, errors.New("managed host mirrored session was not found"))
-			return
-		}
-		targetSwarmID = managedHostSessionStringMetadata(session.Metadata, "swarm_managed_host_swarm_id")
-	}
-	target, _, _, status, err := s.resolveManagedHostSessionTarget(r, targetSwarmID)
+	target, status, err := s.managedHostTargetForSessionRequest(r, req.SessionID, req.TargetSwarmID)
 	if err != nil {
 		writeError(w, status, err)
 		return
@@ -356,6 +345,11 @@ func (s *Server) handlePeerManagedHostSessionOpen(w http.ResponseWriter, r *http
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	principal, ok := s.verifiedPeerManagedHostSessionOpenPrincipal(r, req)
+	if !ok || !principal.Valid() {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 	runtimeWorkspacePath := firstNonEmpty(strings.TrimSpace(req.Request.RuntimeWorkspacePath), strings.TrimSpace(req.Request.WorkspacePath), strings.TrimSpace(req.Route.RuntimeWorkspacePath))
 	hostWorkspacePath := firstNonEmpty(strings.TrimSpace(req.Request.HostWorkspacePath), runtimeWorkspacePath, strings.TrimSpace(req.Route.HostWorkspacePath))
 	childReq := sessionCreateRequest{
@@ -369,7 +363,7 @@ func (s *Server) handlePeerManagedHostSessionOpen(w http.ResponseWriter, r *http
 		Metadata:             managedHostSessionMetadata(req.Request.Metadata, req.Route),
 		Preference:           req.Request.Preference,
 	}
-	session, event, warning, modeWarning, err := s.createSessionFromRequestWithSessionID(childReq, nil, true, req.SessionID)
+	session, event, warning, modeWarning, err := s.createSessionFromRequestWithSessionID(childReq, nil, true, req.SessionID, principal, true)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -395,6 +389,10 @@ func (s *Server) handlePeerManagedHostSessionMessage(w http.ResponseWriter, r *h
 	var req managedHostSessionMessageRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	r = s.requestWithTrustedSessionPrincipal(r, req.SessionID)
+	if _, _, ok := s.verifySessionOwnershipForRequest(w, r, req.SessionID); !ok {
 		return
 	}
 	message, session, event, err := s.sessions.AppendMessage(req.SessionID, req.Role, req.Content, req.Metadata)
@@ -423,6 +421,10 @@ func (s *Server) handlePeerManagedHostSessionRun(w http.ResponseWriter, r *http.
 	var req managedHostSessionRunRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	r = s.requestWithTrustedSessionPrincipal(r, req.SessionID)
+	if _, _, ok := s.verifySessionOwnershipForRequest(w, r, req.SessionID); !ok {
 		return
 	}
 	accepted, status, err := s.startPeerManagedHostSessionRun(req)
@@ -697,6 +699,10 @@ func (s *Server) handlePeerManagedHostSessionRunStream(w http.ResponseWriter, r 
 			writeError(w, http.StatusInternalServerError, errors.New("run service not configured"))
 			return
 		}
+		r = s.requestWithTrustedSessionPrincipal(r, sessionID)
+		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
+			return
+		}
 		switch strings.ToLower(strings.TrimSpace(inbound.Type)) {
 		case "run.start", "start":
 			accepted, status, err := s.startPeerManagedHostSessionRun(managedHostSessionRunRequest{SessionID: sessionID, RunRequest: inbound.RunRequest})
@@ -751,6 +757,11 @@ func (s *Server) handlePeerManagedHostSessionRunStream(w http.ResponseWriter, r 
 	sessionID := strings.TrimSpace(inbound.SessionID)
 	if sessionID == "" {
 		s.sendRunStreamControl(conn, runStreamControlMessage{Type: "error", OK: false, Error: "session_id is required"})
+		return
+	}
+	r = s.requestWithTrustedSessionPrincipal(r, sessionID)
+	if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
+		s.sendRunStreamControl(conn, runStreamControlMessage{Type: "error", OK: false, SessionID: sessionID, Error: "session not found"})
 		return
 	}
 	if isManagedHostPermissionControlType(inbound.Type) {
@@ -849,6 +860,10 @@ func (s *Server) handlePeerManagedHostSessionStop(w http.ResponseWriter, r *http
 		writeError(w, http.StatusBadRequest, errors.New("session_id and run_id are required"))
 		return
 	}
+	r = s.requestWithTrustedSessionPrincipal(r, req.SessionID)
+	if _, _, ok := s.verifySessionOwnershipForRequest(w, r, req.SessionID); !ok {
+		return
+	}
 	s.runStreams.setStopReason(req.RunID, "run stopped by user")
 	if err := s.runner.StopSessionRun(req.SessionID, req.RunID, "run stopped by user"); err != nil {
 		writeError(w, http.StatusConflict, err)
@@ -872,6 +887,10 @@ func (s *Server) handlePeerManagedHostSessionEvent(w http.ResponseWriter, r *htt
 	var req managedHostSessionEventRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	r = s.requestWithTrustedSessionPrincipal(r, req.SessionID)
+	if _, _, ok := s.verifySessionOwnershipForRequest(w, r, req.SessionID); !ok {
 		return
 	}
 	env, err := s.sessions.StoreMirroredEvent(req.SessionID, req.EventType, req.Payload, req.CausationID, req.CorrelationID)
@@ -951,7 +970,15 @@ func (s *Server) startManagedHostRunStreamExecution(runID, sessionID string, req
 		defer s.endActiveRun()
 		defer close(started)
 		startSignaled := false
-		principal := s.principalForManagedHostSessionRun(sessionID)
+		principal, principalOK := s.principalForManagedHostSessionRunOK(sessionID)
+		if !principalOK || !principal.Valid() {
+			select {
+			case started <- identity.ErrPrincipalRequired:
+			default:
+			}
+			s.runStreams.publishError(runID, sessionID, identity.ErrPrincipalRequired)
+			return
+		}
 		runCtx := identity.ContextWithPrincipal(s.runCtx, principal)
 		result, err := s.runner.RunTurnStreaming(runCtx, sessionID, request, runruntime.RunStartMeta{RunID: runID, OwnerTransport: "managed_host_peer", Principal: principal}, func(event runruntime.StreamEvent) {
 			if !startSignaled && strings.EqualFold(strings.TrimSpace(event.Type), runruntime.StreamEventSessionLifecycle) && event.Lifecycle != nil && event.Lifecycle.Active {
@@ -995,33 +1022,104 @@ func (s *Server) startManagedHostRunStreamExecution(runID, sessionID string, req
 }
 
 func (s *Server) principalForManagedHostSessionRun(sessionID string) identity.Principal {
-	principal := peerManagedWorkspacePrincipal()
-	if s == nil {
+	if principal, ok := s.principalForManagedHostSessionRunOK(sessionID); ok {
 		return principal
+	}
+	return identity.Principal{}
+}
+
+func (s *Server) principalForManagedHostSessionRunOK(sessionID string) (identity.Principal, bool) {
+	if s == nil {
+		return identity.Principal{}, false
 	}
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
-		return principal
+		return identity.Principal{}, false
 	}
 	if s.sessions != nil {
-		if session, ok, err := s.sessions.GetSession(sessionID); err == nil && ok {
+		if session, ok, err := s.sessions.GetSession(sessionID); err != nil {
+			return identity.Principal{}, false
+		} else if ok {
 			userID := strings.TrimSpace(session.UserID)
 			accountScopeID := strings.TrimSpace(session.AccountScopeID)
 			if userID != "" && accountScopeID != "" {
-				return identity.Principal{Type: identity.PrincipalTypeUser, UserID: userID, AccountScopeID: accountScopeID, AccountScopeSource: identity.AccountScopeSourceSession, SessionID: sessionID}
+				return identity.Principal{Type: identity.PrincipalTypeUser, UserID: userID, AccountScopeID: accountScopeID, AccountScopeSource: identity.AccountScopeSourceSession, SessionID: sessionID}, true
 			}
 		}
 	}
 	if s.sessionRoutes != nil {
-		if route, ok, err := s.sessionRoutes.Get(sessionID); err == nil && ok {
+		if route, ok, err := s.sessionRoutes.Get(sessionID); err != nil {
+			return identity.Principal{}, false
+		} else if ok {
 			userID := strings.TrimSpace(route.UserID)
 			accountScopeID := strings.TrimSpace(route.AccountScopeID)
 			if userID != "" && accountScopeID != "" {
-				return identity.Principal{Type: identity.PrincipalTypeUser, UserID: userID, AccountScopeID: accountScopeID, AccountScopeSource: identity.AccountScopeSourceSession, SessionID: sessionID}
+				return identity.Principal{Type: identity.PrincipalTypeUser, UserID: userID, AccountScopeID: accountScopeID, AccountScopeSource: identity.AccountScopeSourceSession, SessionID: sessionID}, true
 			}
 		}
 	}
-	return principal
+	return identity.Principal{}, false
+}
+
+func requireManagedHostSessionMirrorOwnership(session *pebblestore.SessionSnapshot, principal identity.Principal) error {
+	if session == nil {
+		return errors.New("managed host session response is missing")
+	}
+	if !principal.Valid() {
+		return identity.ErrPrincipalRequired
+	}
+	userID := strings.TrimSpace(principal.UserID)
+	accountScopeID := strings.TrimSpace(principal.AccountScopeID)
+	if strings.TrimSpace(session.UserID) == "" {
+		session.UserID = userID
+	}
+	if strings.TrimSpace(session.AccountScopeID) == "" {
+		session.AccountScopeID = accountScopeID
+	}
+	if strings.TrimSpace(session.UserID) != userID || strings.TrimSpace(session.AccountScopeID) != accountScopeID {
+		return errors.New("managed host session account ownership mismatch")
+	}
+	return nil
+}
+
+func (s *Server) verifiedPeerManagedHostSessionOpenPrincipal(r *http.Request, req peerManagedHostSessionOpenRequest) (identity.Principal, bool) {
+	if s == nil || r == nil || s.swarmStore == nil {
+		return identity.Principal{}, false
+	}
+	userID := strings.TrimSpace(req.Route.UserID)
+	accountScopeID := strings.TrimSpace(req.Route.AccountScopeID)
+	if userID == "" || accountScopeID == "" {
+		return identity.Principal{}, false
+	}
+	sessionID := strings.TrimSpace(req.SessionID)
+	if sessionID == "" {
+		return identity.Principal{}, false
+	}
+	if strings.TrimSpace(req.Route.PrimarySwarmID) == "" {
+		return identity.Principal{}, false
+	}
+	peerSwarmID, authorizedPeer := authorizedPeerSwarmID(r)
+	if !authorizedPeer && !isLocalTransportRequest(r) {
+		return identity.Principal{}, false
+	}
+	pairing, ok, err := s.swarmStore.GetLocalPairing()
+	if err != nil || !ok || !strings.EqualFold(strings.TrimSpace(pairing.PairingState), "paired") {
+		return identity.Principal{}, false
+	}
+	if authorizedPeer {
+		parentSwarmID := strings.TrimSpace(pairing.ParentSwarmID)
+		if parentSwarmID == "" || !strings.EqualFold(parentSwarmID, strings.TrimSpace(peerSwarmID)) {
+			return identity.Principal{}, false
+		}
+	}
+	if strings.TrimSpace(pairing.UserID) != userID || strings.TrimSpace(pairing.AccountScopeID) != accountScopeID {
+		return identity.Principal{}, false
+	}
+	if managedHostSwarmID := strings.TrimSpace(req.Route.ManagedHostSwarmID); managedHostSwarmID != "" && !s.isLocalSwarmID(managedHostSwarmID) {
+		return identity.Principal{}, false
+	}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: userID, AccountScopeID: accountScopeID, AccountScopeSource: identity.AccountScopeSourceSession, SessionID: sessionID}
+	return principal, principal.Valid()
 }
 
 func (s *Server) publishManagedHostSessionEventToPrimary(event runruntime.StreamEvent) error {
@@ -1050,16 +1148,47 @@ func (s *Server) publishManagedHostSessionEventToPrimary(event runruntime.Stream
 }
 
 func (s *Server) managedHostTargetForSessionRequest(r *http.Request, sessionID, targetSwarmID string) (*swarmTarget, int, error) {
+	if s == nil || s.sessions == nil {
+		return nil, http.StatusInternalServerError, errors.New("session service not configured")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, http.StatusBadRequest, errors.New("session_id is required")
+	}
+	principal, principalOK := PrincipalFromRequest(r)
+	if !principalOK || !principal.Valid() {
+		return nil, http.StatusUnauthorized, identity.ErrPrincipalRequired
+	}
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		return nil, http.StatusBadRequest, err
+	}
+	if !ok || strings.TrimSpace(session.AccountScopeID) == "" || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		return nil, http.StatusNotFound, errors.New("session not found")
+	}
+	if sessionUserID := strings.TrimSpace(session.UserID); sessionUserID != "" && sessionUserID != strings.TrimSpace(principal.UserID) {
+		return nil, http.StatusNotFound, errors.New("session not found")
+	}
 	targetSwarmID = strings.TrimSpace(targetSwarmID)
 	if targetSwarmID == "" {
-		session, ok, err := s.sessions.GetSession(sessionID)
-		if err != nil {
-			return nil, http.StatusBadRequest, err
-		}
-		if !ok {
-			return nil, http.StatusBadRequest, errors.New("managed host mirrored session was not found")
-		}
 		targetSwarmID = managedHostSessionStringMetadata(session.Metadata, "swarm_managed_host_swarm_id")
+	}
+	if s.sessionRoutes != nil {
+		route, routeFound, routeErr := s.sessionRoutes.Get(sessionID)
+		if routeErr != nil {
+			return nil, http.StatusBadRequest, routeErr
+		}
+		if !routeFound || strings.TrimSpace(route.AccountScopeID) == "" || strings.TrimSpace(route.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+			return nil, http.StatusNotFound, errors.New("session not found")
+		}
+		if routeUserID := strings.TrimSpace(route.UserID); routeUserID != "" && routeUserID != strings.TrimSpace(principal.UserID) {
+			return nil, http.StatusNotFound, errors.New("session not found")
+		}
+		if targetSwarmID == "" {
+			targetSwarmID = strings.TrimSpace(route.ChildSwarmID)
+		} else if routeSwarmID := strings.TrimSpace(route.ChildSwarmID); routeSwarmID != "" && !strings.EqualFold(routeSwarmID, targetSwarmID) {
+			return nil, http.StatusNotFound, errors.New("session not found")
+		}
 	}
 	if targetSwarmID == "" {
 		return nil, http.StatusBadRequest, errors.New("target_swarm_id is required")

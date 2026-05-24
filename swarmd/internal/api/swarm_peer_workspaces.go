@@ -203,6 +203,9 @@ func (s *Server) handlePeerWorkspaceTransfer(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) requirePeerAuth(w http.ResponseWriter, r *http.Request) bool {
+	if _, ok := authorizedPeerSwarmID(r); ok {
+		return true
+	}
 	if s == nil || s.swarm == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("swarm service is not configured"))
 		return false
@@ -222,6 +225,8 @@ func (s *Server) requirePeerAuth(w http.ResponseWriter, r *http.Request) bool {
 		writeError(w, http.StatusUnauthorized, errors.New("invalid peer auth"))
 		return false
 	}
+	ctx := context.WithValue(r.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: peerID})
+	*r = *r.WithContext(ctx)
 	return true
 }
 

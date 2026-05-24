@@ -21,7 +21,7 @@ import (
 )
 
 func TestManagedHostSessionMessageUsesNewPeerAPIWithAuthAndMirrors(t *testing.T) {
-	server, sessionSvc, _, _ := newRoutedSessionTestServer(t)
+	server, sessionSvc, _, routeStore := newRoutedSessionTestServer(t)
 	var oldPeerHits atomic.Int32
 	var messagePeerHits atomic.Int32
 	managed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -55,11 +55,13 @@ func TestManagedHostSessionMessageUsesNewPeerAPIWithAuthAndMirrors(t *testing.T)
 
 	seedManagedHostTarget(t, server, managed.URL)
 	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{
-		ID:            "managed-session",
-		WorkspacePath: "/managed/workspace",
-		WorkspaceName: "workspace",
-		Title:         "Managed",
-		Mode:          "auto",
+		ID:             "managed-session",
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: testPrincipal().AccountScopeID,
+		WorkspacePath:  "/managed/workspace",
+		WorkspaceName:  "workspace",
+		Title:          "Managed",
+		Mode:           "auto",
 		Metadata: map[string]any{
 			"swarm_managed_host_session":  true,
 			"swarm_managed_host_swarm_id": "managed-swarm",
@@ -69,11 +71,14 @@ func TestManagedHostSessionMessageUsesNewPeerAPIWithAuthAndMirrors(t *testing.T)
 	}); err != nil {
 		t.Fatalf("store mirror: %v", err)
 	}
+	if _, err := routeStore.Put(pebblestore.SessionRouteRecord{SessionID: "managed-session", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ChildSwarmID: "managed-swarm", ChildBackendURL: managed.URL, HostSwarmID: "managed-swarm", HostWorkspacePath: "/host/workspace", RuntimeWorkspacePath: "/managed/workspace"}); err != nil {
+		t.Fatalf("put route: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, managedHostSessionMessagePath, bytes.NewBufferString(`{"session_id":"managed-session","role":"user","content":"hello managed"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
@@ -101,6 +106,8 @@ func TestManagedHostSessionOpenSendsRuntimeWorkspacePathToPeer(t *testing.T) {
 	var openedMetadata atomic.Value
 	if _, err := server.topology.UpsertWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
 		BindingID:                 "managed-binding",
+		UserID:                    testPrincipal().UserID,
+		AccountScopeID:            testPrincipal().AccountScopeID,
 		SourceWorkspacePath:       "/host/workspace",
 		SourceWorkspaceName:       "workspace",
 		DestinationRuntimeSwarmID: "managed-swarm",
@@ -128,7 +135,7 @@ func TestManagedHostSessionOpenSendsRuntimeWorkspacePathToPeer(t *testing.T) {
 		openedMetadata.Store(req.Request.Metadata)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":      true,
-			"session": pebblestore.SessionSnapshot{ID: req.SessionID, WorkspacePath: req.Request.WorkspacePath, WorkspaceName: "workspace", Title: "Managed", Mode: "auto", Metadata: req.Request.Metadata, CreatedAt: 1, UpdatedAt: 2},
+			"session": pebblestore.SessionSnapshot{ID: req.SessionID, UserID: req.Route.UserID, AccountScopeID: req.Route.AccountScopeID, WorkspacePath: req.Request.WorkspacePath, WorkspaceName: "workspace", Title: "Managed", Mode: "auto", Metadata: req.Request.Metadata, CreatedAt: 1, UpdatedAt: 2},
 		})
 	}))
 	defer managed.Close()
@@ -137,7 +144,7 @@ func TestManagedHostSessionOpenSendsRuntimeWorkspacePathToPeer(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, managedHostSessionOpenPath, bytes.NewBufferString(`{"title":"managed","workspace_path":"/host/workspace","host_workspace_path":"/host/workspace","runtime_workspace_path":"/managed/workspace","workspace_name":"workspace","mode":"auto","agent_name":"swarm","preference":{"provider":"codex","model":"gpt-5.5","thinking":"high"},"target_swarm_id":"managed-swarm"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
@@ -180,11 +187,11 @@ func TestManagedHostSessionOpenSendsRuntimeWorkspacePathToPeer(t *testing.T) {
 	if mirrored.Metadata["swarm_route_id"] != "swarm:managed-swarm:/managed/workspace" || mirrored.Metadata[sessionruntime.HostedSessionMetadataHostWorkspacePath] != "/host/workspace" || mirrored.Metadata[sessionruntime.HostedSessionMetadataRuntimeWorkspacePath] != "/managed/workspace" {
 		t.Fatalf("mirrored metadata = %+v", mirrored.Metadata)
 	}
-	routeRecord, ok, err := server.topology.GetSessionRoute(payload.Session.ID)
+	routeRecord, ok, err := server.topology.GetSessionRouteForAccount(testPrincipal().AccountScopeID, payload.Session.ID)
 	if err != nil || !ok {
 		t.Fatalf("get topology session route ok=%t err=%v", ok, err)
 	}
-	if routeRecord.RuntimeSwarmID != "managed-swarm" || routeRecord.BackendURL != managed.URL || routeRecord.WorkspaceBindingID != "managed-binding" {
+	if routeRecord.RuntimeSwarmID != "managed-swarm" || routeRecord.BackendURL != managed.URL || routeRecord.WorkspaceBindingID != "managed-binding" || routeRecord.UserID != testPrincipal().UserID || routeRecord.AccountScopeID != testPrincipal().AccountScopeID {
 		t.Fatalf("topology session route = %+v", routeRecord)
 	}
 	if routeRecord.HostSwarmID != "managed-swarm" || routeRecord.HostWorkspacePath != "/host/workspace" || routeRecord.RuntimeWorkspacePath != "/managed/workspace" {
@@ -194,7 +201,7 @@ func TestManagedHostSessionOpenSendsRuntimeWorkspacePathToPeer(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("get base session route ok=%t err=%v", ok, err)
 	}
-	if baseRoute.ChildSwarmID != "managed-swarm" || baseRoute.ChildBackendURL != managed.URL {
+	if baseRoute.ChildSwarmID != "managed-swarm" || baseRoute.ChildBackendURL != managed.URL || baseRoute.UserID != testPrincipal().UserID || baseRoute.AccountScopeID != testPrincipal().AccountScopeID {
 		t.Fatalf("base session route = %+v", baseRoute)
 	}
 }
@@ -437,7 +444,13 @@ func TestManagedHostRunStreamWebsocketProxyPersistsSessionTitle(t *testing.T) {
 }
 
 func TestPeerManagedHostSessionEventPublishesToPrimaryRunStream(t *testing.T) {
-	server, _, _, _ := newRoutedSessionTestServer(t)
+	server, sessionSvc, _, routeStore := newRoutedSessionTestServer(t)
+	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "managed-session", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, WorkspacePath: "/managed/workspace", WorkspaceName: "workspace", Title: "Managed", Mode: "auto", CreatedAt: 1, UpdatedAt: 1}); err != nil {
+		t.Fatalf("store mirror: %v", err)
+	}
+	if _, err := routeStore.Put(pebblestore.SessionRouteRecord{SessionID: "managed-session", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ChildSwarmID: "managed-swarm", ChildBackendURL: "http://127.0.0.1:7782", HostSwarmID: "managed-swarm", RuntimeWorkspacePath: "/managed/workspace"}); err != nil {
+		t.Fatalf("put route: %v", err)
+	}
 	req := httptest.NewRequest(http.MethodPost, peerManagedHostSessionEventPath, bytes.NewBufferString(`{"session_id":"managed-session","event_type":"assistant.delta","payload":{"type":"assistant.delta","session_id":"managed-session","run_id":"managed-run","delta":"hello"},"causation_id":"managed-run"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(peerAuthSwarmIDHeader, "managed-swarm")
@@ -623,7 +636,13 @@ func TestPrimaryResolvePublishesPermissionUpdateToManagedHostEventPath(t *testin
 }
 
 func TestPeerManagedHostSessionEventStoresMirroredPermission(t *testing.T) {
-	server, _, permissionSvc, _ := newRoutedSessionTestServer(t)
+	server, sessionSvc, permissionSvc, routeStore := newRoutedSessionTestServer(t)
+	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "managed-session", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, WorkspacePath: "/managed/workspace", WorkspaceName: "workspace", Title: "Managed", Mode: "auto", CreatedAt: 1, UpdatedAt: 1}); err != nil {
+		t.Fatalf("store mirror: %v", err)
+	}
+	if _, err := routeStore.Put(pebblestore.SessionRouteRecord{SessionID: "managed-session", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ChildSwarmID: "managed-swarm", ChildBackendURL: "http://127.0.0.1:7782", HostSwarmID: "managed-swarm", RuntimeWorkspacePath: "/managed/workspace"}); err != nil {
+		t.Fatalf("put route: %v", err)
+	}
 	req := httptest.NewRequest(http.MethodPost, peerManagedHostSessionEventPath, bytes.NewBufferString(`{"session_id":"managed-session","event_type":"permission.updated","payload":{"type":"permission.updated","session_id":"managed-session","run_id":"managed-run","permission":{"id":"perm-managed","session_id":"managed-session","run_id":"managed-run","call_id":"call-1","tool_name":"bash","status":"approved","decision":"allow_once","reason":"ok"}}}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(peerAuthSwarmIDHeader, "managed-swarm")
@@ -713,5 +732,78 @@ func TestManagedHostPermissionControlClientResolveUsesRunStreamPath(t *testing.T
 	}
 	if result.Record.Status != pebblestore.PermissionStatusApproved {
 		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestManagedHostSessionOpenRejectsPeerMismatchedSessionOwnership(t *testing.T) {
+	server, _, _, _ := newRoutedSessionTestServer(t)
+	managed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != peerManagedHostSessionOpenPath {
+			http.NotFound(w, r)
+			return
+		}
+		var req peerManagedHostSessionOpenRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":      true,
+			"session": pebblestore.SessionSnapshot{ID: req.SessionID, UserID: "user-b", AccountScopeID: "account-b", WorkspacePath: req.Request.WorkspacePath, WorkspaceName: "workspace", Title: "Managed", Mode: "auto", Metadata: req.Request.Metadata, CreatedAt: 1, UpdatedAt: 2},
+		})
+	}))
+	defer managed.Close()
+
+	seedManagedHostTarget(t, server, managed.URL)
+	req := httptest.NewRequest(http.MethodPost, managedHostSessionOpenPath, bytes.NewBufferString(`{"title":"managed","workspace_path":"/host/workspace","host_workspace_path":"/host/workspace","runtime_workspace_path":"/managed/workspace","workspace_name":"workspace","mode":"auto","agent_name":"swarm","preference":{"provider":"codex","model":"gpt-5.5","thinking":"high"},"target_swarm_id":"managed-swarm"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadGateway, rec.Body.String())
+	}
+}
+
+func TestPeerManagedHostSessionOpenRejectsSpoofedForwardedPrincipalHeaders(t *testing.T) {
+	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	configureRoutedSessionTestServerAsChild(t, server, swarmStore, "managed-swarm", "host-swarm-id", testPrincipal().UserID, testPrincipal().AccountScopeID)
+	payload, err := json.Marshal(peerManagedHostSessionOpenRequest{
+		SessionID: "managed-session",
+		Request:   managedHostSessionCreateRequest{Title: "managed", WorkspacePath: "/managed/workspace", RuntimeWorkspacePath: "/managed/workspace", WorkspaceName: "workspace", Mode: sessionruntime.ModeAuto, AgentName: "swarm"},
+		Route:     managedHostSessionRoute{UserID: "user-b", AccountScopeID: "account-b", PrimarySwarmID: "host-swarm-id", ManagedHostSwarmID: "managed-swarm", RuntimeWorkspacePath: "/managed/workspace"},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, peerManagedHostSessionOpenPath, bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Swarm-Principal-User-ID", testPrincipal().UserID)
+	req.Header.Set("X-Swarm-Principal-Account-Scope-ID", testPrincipal().AccountScopeID)
+	req = req.WithContext(context.WithValue(req.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: "host-swarm-id"}))
+	rec := httptest.NewRecorder()
+	server.handlePeerManagedHostSessionOpen(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+	}
+}
+
+func TestManagedHostSessionMessageRejectsCrossAccountGuessedSessionID(t *testing.T) {
+	server, sessionSvc, _, routeStore := newRoutedSessionTestServer(t)
+	managed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("managed peer should not be called for cross-account session")
+	}))
+	defer managed.Close()
+	seedManagedHostTarget(t, server, managed.URL)
+	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "managed-session", UserID: "user-a", AccountScopeID: "account-a", WorkspacePath: "/managed/workspace", WorkspaceName: "workspace", Title: "Managed", Mode: "auto", Metadata: map[string]any{"swarm_managed_host_session": true, "swarm_managed_host_swarm_id": "managed-swarm"}, CreatedAt: 1, UpdatedAt: 1}); err != nil {
+		t.Fatalf("store mirror: %v", err)
+	}
+	if _, err := routeStore.Put(pebblestore.SessionRouteRecord{SessionID: "managed-session", UserID: "user-a", AccountScopeID: "account-a", ChildSwarmID: "managed-swarm", ChildBackendURL: managed.URL, HostSwarmID: "managed-swarm", RuntimeWorkspacePath: "/managed/workspace"}); err != nil {
+		t.Fatalf("put route: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, managedHostSessionMessagePath, bytes.NewBufferString(`{"session_id":"managed-session","role":"user","content":"hello managed"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, requestWithTestPrincipalForAccount(req, "user-b", "account-b"))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusNotFound, rec.Body.String())
 	}
 }
