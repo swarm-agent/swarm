@@ -165,7 +165,7 @@ func (a *App) drawPermissionsBypassModal() {
 	}
 	theme := a.effectiveThemeOption().Theme
 	modalW := minInt(maxInt(56, w-12), 78)
-	lines := wrapQuitText(permissionsBypassWarningText, modalW-4)
+	lines := ui.Wrap(strings.TrimSpace(permissionsBypassWarningText), modalW-4)
 	modalH := len(lines) + 7
 	modal := ui.Rect{X: (w - modalW) / 2, Y: (h - modalH) / 2, W: modalW, H: modalH}
 	a.permissionsBypassModal.Rect = modal
