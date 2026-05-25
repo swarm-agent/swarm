@@ -52,7 +52,7 @@ func TestServiceResolveCreateHostPortSkipsRunningManagedPairs(t *testing.T) {
 	}
 }
 
-func TestServiceResolveCreateHostPortFailsWhenImmediatePairBelongsToMissingRecord(t *testing.T) {
+func TestServiceResolveCreateHostPortSkipsPairBelongingToMissingRecord(t *testing.T) {
 	basePort := findFreeBasePortSpan(t, 5)
 	backendListener := listenPort(t, basePort+1)
 	defer backendListener.Close()
@@ -70,16 +70,16 @@ func TestServiceResolveCreateHostPortFailsWhenImmediatePairBelongsToMissingRecor
 		HostPort:      basePort + 1,
 	})
 
-	_, err := svc.ResolveCreateHostPort(fmt.Sprintf("http://127.0.0.1:%d", basePort), 0)
-	if err == nil {
-		t.Fatal("ResolveCreateHostPort returned nil error, want backend-port collision")
+	got, err := svc.ResolveCreateHostPort(fmt.Sprintf("http://127.0.0.1:%d", basePort), 0)
+	if err != nil {
+		t.Fatalf("ResolveCreateHostPort returned error: %v", err)
 	}
-	if want := fmt.Sprintf("host port %d is not available", basePort+1); !strings.Contains(err.Error(), want) {
-		t.Fatalf("ResolveCreateHostPort error = %q, want substring %q", err.Error(), want)
+	if want := basePort + 3; got != want {
+		t.Fatalf("ResolveCreateHostPort returned %d, want %d", got, want)
 	}
 }
 
-func TestServiceResolveCreateHostPortFailsWhenNextPairIsBlockedExternally(t *testing.T) {
+func TestServiceResolveCreateHostPortSkipsNextPairBlockedExternally(t *testing.T) {
 	basePort := findFreeBasePortSpan(t, 7)
 	firstBackend := listenPort(t, basePort+1)
 	defer firstBackend.Close()
@@ -101,12 +101,12 @@ func TestServiceResolveCreateHostPortFailsWhenNextPairIsBlockedExternally(t *tes
 		HostPort:      basePort + 1,
 	})
 
-	_, err := svc.ResolveCreateHostPort(fmt.Sprintf("http://127.0.0.1:%d", basePort), 0)
-	if err == nil {
-		t.Fatal("ResolveCreateHostPort returned nil error, want next-pair collision")
+	got, err := svc.ResolveCreateHostPort(fmt.Sprintf("http://127.0.0.1:%d", basePort), 0)
+	if err != nil {
+		t.Fatalf("ResolveCreateHostPort returned error: %v", err)
 	}
-	if want := fmt.Sprintf("host port %d is not available", basePort+3); !strings.Contains(err.Error(), want) {
-		t.Fatalf("ResolveCreateHostPort error = %q, want substring %q", err.Error(), want)
+	if want := basePort + 5; got != want {
+		t.Fatalf("ResolveCreateHostPort returned %d, want %d", got, want)
 	}
 }
 

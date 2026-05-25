@@ -3,14 +3,13 @@ package localcontainers_test
 import (
 	"fmt"
 	"net"
-	"strings"
 	"testing"
 
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 )
 
 func TestResolveHostPortUsesImmediateNextPair(t *testing.T) {
-	basePort := findFreeBasePort(t)
+	basePort := findFreeBasePortSpan(t, 3)
 
 	got, err := localcontainers.ResolveHostPort(fmt.Sprintf("http://127.0.0.1:%d", basePort), 0)
 	if err != nil {
@@ -21,44 +20,32 @@ func TestResolveHostPortUsesImmediateNextPair(t *testing.T) {
 	}
 }
 
-func TestResolveHostPortFailsWhenImmediateBackendPortIsOccupied(t *testing.T) {
-	basePort := findFreeBasePort(t)
+func TestResolveHostPortSkipsImmediateBackendPortWhenOccupied(t *testing.T) {
+	basePort := findFreeBasePortSpan(t, 5)
 	backendListener := listenPort(t, basePort+1)
 	defer backendListener.Close()
 
-	_, err := localcontainers.ResolveHostPort(fmt.Sprintf("http://127.0.0.1:%d", basePort), 0)
-	if err == nil {
-		t.Fatal("ResolveHostPort returned nil error, want backend-port collision")
+	got, err := localcontainers.ResolveHostPort(fmt.Sprintf("http://127.0.0.1:%d", basePort), 0)
+	if err != nil {
+		t.Fatalf("ResolveHostPort returned error: %v", err)
 	}
-	if want := fmt.Sprintf("host port %d is not available", basePort+1); !strings.Contains(err.Error(), want) {
-		t.Fatalf("ResolveHostPort error = %q, want substring %q", err.Error(), want)
+	if want := basePort + 3; got != want {
+		t.Fatalf("ResolveHostPort returned %d, want %d", got, want)
 	}
 }
 
-func TestResolveHostPortFailsWhenImmediateDesktopPortIsOccupied(t *testing.T) {
-	basePort := findFreeBasePort(t)
+func TestResolveHostPortSkipsImmediateDesktopPortWhenOccupied(t *testing.T) {
+	basePort := findFreeBasePortSpan(t, 5)
 	desktopListener := listenPort(t, basePort+2)
 	defer desktopListener.Close()
 
-	_, err := localcontainers.ResolveHostPort(fmt.Sprintf("http://127.0.0.1:%d", basePort), 0)
-	if err == nil {
-		t.Fatal("ResolveHostPort returned nil error, want desktop-port collision")
+	got, err := localcontainers.ResolveHostPort(fmt.Sprintf("http://127.0.0.1:%d", basePort), 0)
+	if err != nil {
+		t.Fatalf("ResolveHostPort returned error: %v", err)
 	}
-	if want := fmt.Sprintf("desktop host port %d is not available", basePort+2); !strings.Contains(err.Error(), want) {
-		t.Fatalf("ResolveHostPort error = %q, want substring %q", err.Error(), want)
+	if want := basePort + 3; got != want {
+		t.Fatalf("ResolveHostPort returned %d, want %d", got, want)
 	}
-}
-
-func findFreeBasePort(t *testing.T) int {
-	t.Helper()
-	for port := 20000; port <= 65000; port++ {
-		if !portAvailable(port) || !portAvailable(port+1) || !portAvailable(port+2) {
-			continue
-		}
-		return port
-	}
-	t.Fatal("failed to find three consecutive free loopback ports")
-	return 0
 }
 
 func portAvailable(port int) bool {

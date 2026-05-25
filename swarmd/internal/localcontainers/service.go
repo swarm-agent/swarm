@@ -2468,9 +2468,13 @@ func resolveDefaultHostPort(hostAPIBaseURL string, managedPairReserved func(int)
 		if err == nil {
 			return port, nil
 		}
-		if managedPairReserved == nil || !managedPairReserved(port) {
-			return 0, err
+		if managedPairReserved != nil && managedPairReserved(port) {
+			continue
 		}
+		if strings.Contains(err.Error(), "port ") && strings.Contains(err.Error(), " is not available") {
+			continue
+		}
+		return 0, err
 	}
 	return 0, errors.New("no available local port pair remains")
 }
