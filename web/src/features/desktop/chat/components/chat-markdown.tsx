@@ -21,6 +21,21 @@ function resolveToolState(toolMessage: StructuredToolMessage): ToolState {
   return toolMessage.state;
 }
 
+function toolAccentWash(color: string, amount = 12): string {
+  return `color-mix(in srgb, ${color} ${amount}%, transparent)`;
+}
+
+function toolSummaryRemainder(summary: string, label: string): string {
+  const trimmed = summary.trim();
+  const normalizedLabel = label.trim().toLowerCase();
+  if (!trimmed || !normalizedLabel) return trimmed;
+  if (trimmed.toLowerCase() === normalizedLabel) return "";
+  if (trimmed.toLowerCase().startsWith(normalizedLabel + " ")) {
+    return trimmed.slice(label.length).trim();
+  }
+  return trimmed;
+}
+
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
@@ -34,30 +49,40 @@ function EditDiffView({ toolMessage }: { toolMessage: StructuredToolMessage }) {
     ? diff.hunks
     : [{ index: 1, oldLines: diff.oldLines, newLines: diff.newLines, oldTruncated: diff.oldTruncated, newTruncated: diff.newTruncated }];
   const showHunkLabels = hunks.length > 1;
+  const removedCount = hunks.reduce((sum, hunk) => sum + hunk.oldLines.length, 0);
+  const addedCount = hunks.reduce((sum, hunk) => sum + hunk.newLines.length, 0);
 
   return (
-    <div className="mt-1.5 space-y-1.5 font-mono text-[12px] leading-5">
+    <div className="mt-2 space-y-2 font-mono text-[12px] leading-5">
+      <div className="flex items-center gap-2 font-sans text-[11px] text-[var(--app-text-subtle)]">
+        <span className="rounded-md bg-[color-mix(in_srgb,var(--app-danger)_12%,transparent)] px-1.5 py-0.5 font-semibold text-[var(--app-danger)]">
+          -{removedCount}
+        </span>
+        <span className="rounded-md bg-[color-mix(in_srgb,var(--app-success)_12%,transparent)] px-1.5 py-0.5 font-semibold text-[var(--app-success)]">
+          +{addedCount}
+        </span>
+      </div>
       {hunks.map((hunk, hunkIndex) => (
-        <div key={`hunk-${hunk.index}-${hunkIndex}`}>
+        <div key={`hunk-${hunk.index}-${hunkIndex}`} className="space-y-0.5">
           {showHunkLabels ? (
-            <div className="text-[11px] uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
+            <div className="font-sans text-[11px] uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
               edit {hunk.index}
             </div>
           ) : null}
           {hunk.oldLines.map((line, i) => (
             <div
               key={`old-${hunk.index}-${i}`}
-              className="text-[var(--app-danger)] whitespace-pre-wrap break-all"
+              className="whitespace-pre-wrap break-all rounded-sm bg-[color-mix(in_srgb,var(--app-danger)_8%,transparent)] px-2 text-[var(--app-danger)]"
             >
-              - {line}
+              <span className="mr-2 select-none opacity-70">-</span>{line}
             </div>
           ))}
           {hunk.newLines.map((line, i) => (
             <div
               key={`new-${hunk.index}-${i}`}
-              className="text-[var(--app-success)] whitespace-pre-wrap break-all"
+              className="whitespace-pre-wrap break-all rounded-sm bg-[color-mix(in_srgb,var(--app-success)_8%,transparent)] px-2 text-[var(--app-success)]"
             >
-              + {line}
+              <span className="mr-2 select-none opacity-70">+</span>{line}
             </div>
           ))}
         </div>
@@ -89,7 +114,8 @@ function PreviewLinesView({
       : "mt-2 min-w-0 space-y-1.5"}
     >
       {commandText ? (
-        <div className="mb-1 min-w-0 text-[11px] leading-5 text-[var(--app-text-muted)]">
+        <div className="mb-1.5 min-w-0 rounded-md bg-[var(--app-surface)] px-2 py-1 text-[11px] leading-5 text-[var(--app-text)]">
+          <span className="mr-1 select-none text-[var(--app-accent)]">$</span>
           <span className="whitespace-pre-wrap break-words font-mono [overflow-wrap:anywhere]">{commandText}</span>
         </div>
       ) : null}
@@ -97,7 +123,7 @@ function PreviewLinesView({
         <div
           key={i}
           className={compact
-            ? "whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
+            ? "whitespace-pre-wrap break-words rounded-sm px-1.5 py-0.5 [overflow-wrap:anywhere] odd:bg-[color-mix(in_srgb,var(--app-text-muted)_6%,transparent)]"
             : "whitespace-pre-wrap break-words rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-[12px] leading-5 text-[var(--app-text)] [overflow-wrap:anywhere]"}
         >
           {line}
@@ -415,7 +441,8 @@ export function ToolMessageView({
   isGroupItem?: boolean;
   nowMs?: number;
 }) {
-  const { icon: ToolIcon } = getToolTheme(toolMessage.tool);
+  const toolTheme = getToolTheme(toolMessage.tool);
+  const ToolIcon = toolTheme.icon;
   const state = resolveToolState(toolMessage);
   const StateIcon =
     state === "error"
@@ -423,39 +450,43 @@ export function ToolMessageView({
       : state === "running"
         ? LoaderCircle
         : CheckCircle2;
+  const label = toolTheme.label || toolMessage.tool || "tool";
+  const summary = toolSummaryRemainder(toolMessage.summary || toolMessage.tool || "tool", label);
+  const accentWash = toolAccentWash(toolTheme.color, 14);
 
   return (
-    <div
-      className={
-        isGroupItem
-          ? "py-2 border-t border-[var(--app-border)] first:border-0 first:pt-0"
-          : "p-3 mb-2 min-w-0 bg-[var(--app-surface-subtle)] border border-[var(--app-border)] rounded-md"
-      }
-    >
+    <div className={isGroupItem ? "py-2" : "mb-2 min-w-0 py-2"}>
       <div className="flex min-w-0 items-center gap-2 text-xs">
-        <ToolIcon size={14} className="text-[var(--app-text-muted)] shrink-0" />
-        <span className="font-semibold text-[var(--app-text)] truncate">
-          {toolMessage.summary || toolMessage.tool || "tool"}
+        <span
+          className="inline-flex h-5 shrink-0 items-center gap-1 rounded-md px-1.5 font-semibold"
+          style={{ color: toolTheme.color, backgroundColor: accentWash }}
+        >
+          <ToolIcon size={12} className="shrink-0" />
+          {label}
         </span>
+        {summary ? (
+          <span className="min-w-0 flex-1 truncate font-medium text-[var(--app-text)]">
+            {summary}
+          </span>
+        ) : null}
         {toolMessage.durationMs > 0 ? (
-          <span className="text-[var(--app-text-subtle)] text-[11px]">
+          <span className="shrink-0 text-[var(--app-text-subtle)] text-[11px]">
             {formatDuration(toolMessage.durationMs)}
           </span>
         ) : null}
-        <div className="ml-auto flex items-center gap-1.5">
-          <StateIcon
-            size={12}
-            className={
-              state === "running"
-                ? "animate-spin text-[var(--app-primary)]"
-                : state === "error"
-                  ? "text-[var(--app-danger)]"
-                  : "text-[var(--app-text-muted)]"
-            }
-          />
-        </div>
+        <StateIcon
+          size={12}
+          className={cn(
+            "shrink-0",
+            state === "running"
+              ? "animate-spin text-[var(--app-primary)]"
+              : state === "error"
+                ? "text-[var(--app-danger)]"
+                : "text-[var(--app-text-subtle)]",
+          )}
+        />
       </div>
-      <div className="min-w-0 pl-[22px]">
+      <div className="min-w-0 pl-1 sm:pl-7">
         {toolMessage.error ? (
           <div className="mt-1 break-words text-[12px] text-[var(--app-danger)]">
             {toolMessage.error}
@@ -500,19 +531,24 @@ export function ToolGroupView({
   messages: StructuredToolMessage[];
 }) {
   const [expanded, setExpanded] = useState(false);
-  const { icon: ToolIcon } = getToolTheme(toolName);
+  const toolTheme = getToolTheme(toolName);
+  const ToolIcon = toolTheme.icon;
   const hasErrors = messages.some((m) => m.error);
   const displayedMessages = expanded ? messages : messages.slice(0, 3);
+  const accentWash = toolAccentWash(toolTheme.color, 14);
 
   return (
-    <div className="mb-2 bg-[var(--app-surface-subtle)] border border-[var(--app-border)] rounded-md p-3">
-      <div className="flex items-center gap-2 text-xs text-[var(--app-text-muted)] mb-2 pb-2 border-b border-[var(--app-border)]">
-        <ToolIcon size={14} className="shrink-0" />
-        <span className="font-semibold text-[var(--app-text)]">
-          {toolName}{" "}
-          <span className="opacity-80 font-normal ml-1">
-            ×{messages.length}
-          </span>
+    <div className="mb-2 py-2">
+      <div className="mb-1.5 flex items-center gap-2 text-xs text-[var(--app-text-muted)]">
+        <span
+          className="inline-flex h-5 shrink-0 items-center gap-1 rounded-md px-1.5 font-semibold"
+          style={{ color: toolTheme.color, backgroundColor: accentWash }}
+        >
+          <ToolIcon size={12} className="shrink-0" />
+          {toolTheme.label || toolName}
+        </span>
+        <span className="text-[11px] text-[var(--app-text-subtle)]">
+          ×{messages.length}
         </span>
         {hasErrors ? (
           <span className="text-[var(--app-danger)] ml-2 text-[10px] font-bold uppercase">
@@ -520,7 +556,7 @@ export function ToolGroupView({
           </span>
         ) : null}
       </div>
-      <div className="grid gap-0">
+      <div className="grid gap-0 pl-1 sm:pl-7">
         {displayedMessages.map((msg, i) => (
           <ToolMessageView
             key={msg.callId || i}
@@ -532,7 +568,7 @@ export function ToolGroupView({
         {messages.length > 3 ? (
           <button
             onClick={() => setExpanded(!expanded)}
-            className="text-left text-[11px] text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:underline pt-2 border-t border-[var(--app-border)] mt-1 block"
+            className="text-left text-[11px] text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:underline pt-1 mt-1 block"
           >
             {expanded
               ? "collapse group"
