@@ -207,6 +207,18 @@ func (s *Service) Summary(sessionID string) (pebblestore.PermissionSummary, erro
 	return s.refreshSummaryLocked(sessionID, now)
 }
 
+func (s *Service) PendingCount(sessionID string) (int, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return 0, errors.New("session id is required")
+	}
+	count, _, _, err := s.store.CountPendingPermissions(sessionID)
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 func (s *Service) ReconcilePendingRuns(reason string) error {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {

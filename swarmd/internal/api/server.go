@@ -229,7 +229,7 @@ type remoteDeployService interface {
 type permissionService interface {
 	ListPermissions(sessionID string, limit int) ([]pebblestore.PermissionRecord, error)
 	ListPending(sessionID string, limit int) ([]pebblestore.PermissionRecord, error)
-	Summary(sessionID string) (pebblestore.PermissionSummary, error)
+	PendingCount(sessionID string) (int, error)
 	CreatePending(input permission.CreateInput) (pebblestore.PermissionRecord, error)
 	Resolve(sessionID, permissionID, action, reason string) (pebblestore.PermissionRecord, error)
 	ResolveWithArguments(sessionID, permissionID, action, reason, approvedArguments string) (pebblestore.PermissionRecord, error)
@@ -2208,44 +2208,10 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, listErr)
 			return
 		}
-		type sessionSummaryResponse struct {
-			pebblestore.SessionSnapshot
-			gitStatusResponseFields
-			GitCommitDetected      bool `json:"git_commit_detected,omitempty"`
-			GitCommitCount         int  `json:"git_commit_count,omitempty"`
-			PendingPermissionCount int  `json:"pending_permission_count"`
-		}
-		responseSessions := make([]sessionSummaryResponse, 0, len(sessions))
-		for _, session := range sessions {
-			if flowRouteDiagMetadataMarksFlow(session.Metadata) {
-				flowRouteDiagLog("sessions_list_flow_session",
-					"session_id", session.ID,
-					"flow_id", flowRouteDiagMetadataValue(session.Metadata, "flow_id"),
-					"workspace_path", session.WorkspacePath,
-					"metadata_target_swarm_id", flowRouteDiagMetadataValue(session.Metadata, "target_swarm_id"),
-					"metadata_swarm_target_swarm_id", flowRouteDiagMetadataValue(session.Metadata, "swarm_target_swarm_id"),
-					"metadata_routed_child_swarm_id", flowRouteDiagMetadataValue(session.Metadata, sessionruntime.HostedSessionMetadataChildSwarmID),
-					"metadata_target_kind", flowRouteDiagMetadataValue(session.Metadata, "target_kind"),
-					"metadata_target_name", flowRouteDiagMetadataValue(session.Metadata, "target_name"),
-				)
-			}
-			pendingPermissionCount := 0
-			if s.perm != nil {
-				summary, err := s.perm.Summary(session.ID)
-				if err != nil {
-					writeError(w, http.StatusInternalServerError, err)
-					return
-				}
-				pendingPermissionCount = summary.PendingCount
-			}
-			fields := gitStatusResponseForSession(session)
-			responseSessions = append(responseSessions, sessionSummaryResponse{
-				SessionSnapshot:         session,
-				gitStatusResponseFields: fields,
-				GitCommitDetected:       gitCommitDetectedForSession(session, fields),
-				GitCommitCount:          gitCommitCountForSession(session, fields),
-				PendingPermissionCount:  pendingPermissionCount,
-			})
+		responseSessions, enrichErr := s.enrichSessionSummariesForList(sessions)
+		if enrichErr != nil {
+			writeError(w, http.StatusInternalServerError, enrichErr)
+			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":       true,
@@ -2429,6 +2395,102 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	default:
 		methodNotAllowed(w)
 	}
+}
+
+type sessionSummaryResponse struct {
+	pebblestore.SessionSnapshot
+	gitStatusResponseFields
+	GitCommitDetected      bool `json:"git_commit_detected,omitempty"`
+	GitCommitCount         int  `json:"git_commit_count,omitempty"`
+	PendingPermissionCount int  `json:"pending_permission_count"`
+}
+
+const sessionListPermissionParallelism = 16
+
+func (s *Server) enrichSessionSummariesForList(sessions []pebblestore.SessionSnapshot) ([]sessionSummaryResponse, error) {
+	responseSessions := make([]sessionSummaryResponse, len(sessions))
+	if len(sessions) == 0 {
+		return responseSessions, nil
+	}
+
+	workerCount := sessionListPermissionParallelism
+	if workerCount > len(sessions) {
+		workerCount = len(sessions)
+	}
+	if workerCount < 1 {
+		workerCount = 1
+	}
+
+	type jobResult struct {
+		index int
+		item  sessionSummaryResponse
+		err   error
+	}
+	jobs := make(chan int, len(sessions))
+	results := make(chan jobResult, len(sessions))
+
+	var wg sync.WaitGroup
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for index := range jobs {
+				session := sessions[index]
+				if flowRouteDiagMetadataMarksFlow(session.Metadata) {
+					flowRouteDiagLog("sessions_list_flow_session",
+						"session_id", session.ID,
+						"flow_id", flowRouteDiagMetadataValue(session.Metadata, "flow_id"),
+						"workspace_path", session.WorkspacePath,
+						"metadata_target_swarm_id", flowRouteDiagMetadataValue(session.Metadata, "target_swarm_id"),
+						"metadata_swarm_target_swarm_id", flowRouteDiagMetadataValue(session.Metadata, "swarm_target_swarm_id"),
+						"metadata_routed_child_swarm_id", flowRouteDiagMetadataValue(session.Metadata, sessionruntime.HostedSessionMetadataChildSwarmID),
+						"metadata_target_kind", flowRouteDiagMetadataValue(session.Metadata, "target_kind"),
+						"metadata_target_name", flowRouteDiagMetadataValue(session.Metadata, "target_name"),
+					)
+				}
+				pendingPermissionCount := 0
+				if s.perm != nil {
+					count, err := s.perm.PendingCount(session.ID)
+					if err != nil {
+						results <- jobResult{err: err}
+						continue
+					}
+					pendingPermissionCount = count
+				}
+				fields := gitStatusResponseForSession(session)
+				results <- jobResult{
+					index: index,
+					item: sessionSummaryResponse{
+						SessionSnapshot:         session,
+						gitStatusResponseFields: fields,
+						GitCommitDetected:       gitCommitDetectedForSession(session, fields),
+						GitCommitCount:          gitCommitCountForSession(session, fields),
+						PendingPermissionCount:  pendingPermissionCount,
+					},
+				}
+			}
+		}()
+	}
+
+	for i := range sessions {
+		jobs <- i
+	}
+	close(jobs)
+
+	var firstErr error
+	for i := 0; i < len(sessions); i++ {
+		result := <-results
+		if result.err != nil {
+			firstErr = result.err
+			continue
+		}
+		responseSessions[result.index] = result.item
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return responseSessions, nil
 }
 
 func hostedSessionOpenError(target swarmTarget, err error) error {
