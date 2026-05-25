@@ -17,7 +17,6 @@ var ErrAlreadyRunning = errors.New("swarmd already running")
 type Metadata struct {
 	PID               int    `json:"pid"`
 	ProcessStartTicks uint64 `json:"process_start_ticks,omitempty"`
-	Mode              string `json:"mode"`
 	ListenAddr        string `json:"listen_addr"`
 	StartedAt         int64  `json:"started_at"`
 }

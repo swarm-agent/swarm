@@ -549,7 +549,7 @@ func newReplicateTestHandler(t *testing.T) (*Server, *fakeReplicateDeployService
 		t.Fatalf("add workspace: %v", err)
 	}
 
-	server := NewServer("test", nil, nil, nil, nil, nil, workspaceSvc, nil, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
+	server := NewServer(nil, nil, nil, nil, nil, workspaceSvc, nil, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
 	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, nil, nil))
 	server.SetSwarmStore(pebblestore.NewSwarmStore(store))
 
@@ -1113,7 +1113,7 @@ func TestDeployContainerSyncCredentialsPreservesPeerAuthBeforeTrustedNetworkExem
 	if err != nil {
 		t.Fatalf("event log: %v", err)
 	}
-	server := NewServer("test", nil, nil, nil, nil, nil, nil, nil, security.NewService(pebblestore.NewClientAuthStore(store), events), nil, nil, nil, events, stream.NewHub(events))
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, security.NewService(pebblestore.NewClientAuthStore(store), events), nil, nil, nil, events, stream.NewHub(events))
 	fakeDeploy := &fakeReplicateDeployService{}
 	server.SetDeployContainerService(fakeDeploy)
 	server.SetSwarmService(fakeReplicateSwarmService{incomingTokens: map[string]string{"manager-swarm": "manager-token"}})

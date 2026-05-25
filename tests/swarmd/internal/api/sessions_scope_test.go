@@ -31,7 +31,7 @@ func TestListSessionsScopesToCWD(t *testing.T) {
 	workspaceStore := pebblestore.NewWorkspaceStore(store)
 	workspaceSvc := workspaceruntime.NewService(workspaceStore)
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
-	server := NewServer("test", nil, nil, nil, nil, sessionSvc, workspaceSvc, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
+	server := NewServer(nil, nil, nil, nil, sessionSvc, workspaceSvc, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
 	handler := server.Handler()
 
 	root := t.TempDir()
@@ -86,7 +86,7 @@ func TestListSessionsScopesToWorkspaceWhenCWDMatchesSavedWorkspace(t *testing.T)
 	}
 
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
-	server := NewServer("test", nil, nil, nil, nil, sessionSvc, workspaceSvc, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
+	server := NewServer(nil, nil, nil, nil, sessionSvc, workspaceSvc, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
 	handler := server.Handler()
 
 	rootSession := createSessionViaAPI(t, handler, root)
@@ -129,7 +129,7 @@ func TestListSessionsScopesToExactCWDWhenNoWorkspaceMatches(t *testing.T) {
 	workspaceStore := pebblestore.NewWorkspaceStore(store)
 	workspaceSvc := workspaceruntime.NewService(workspaceStore)
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
-	server := NewServer("test", nil, nil, nil, nil, sessionSvc, workspaceSvc, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
+	server := NewServer(nil, nil, nil, nil, sessionSvc, workspaceSvc, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
 	handler := server.Handler()
 
 	root := t.TempDir()
@@ -182,7 +182,7 @@ func TestListSessionsExactPathBypassesWorkspaceScope(t *testing.T) {
 	}
 
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
-	server := NewServer("test", nil, nil, nil, nil, sessionSvc, workspaceSvc, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
+	server := NewServer(nil, nil, nil, nil, sessionSvc, workspaceSvc, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
 	handler := server.Handler()
 
 	_ = createSessionViaAPI(t, handler, root)
@@ -227,7 +227,7 @@ func TestResolveWorkspaceReturnsCanonicalWorkspacePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new event log: %v", err)
 	}
-	server := NewServer("test", nil, nil, nil, nil, nil, workspaceSvc, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
+	server := NewServer(nil, nil, nil, nil, nil, workspaceSvc, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
 	handler := server.Handler()
 
 	var resp struct {

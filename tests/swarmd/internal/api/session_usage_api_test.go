@@ -25,7 +25,7 @@ func TestSessionUsageEndpointReturnsSummaryAndTurnRecords(t *testing.T) {
 	}
 
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
-	server := NewServer("test", nil, nil, nil, nil, sessionSvc, nil, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
+	server := NewServer(nil, nil, nil, nil, sessionSvc, nil, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
 	handler := server.Handler()
 
 	session, _, err := sessionSvc.CreateSession("Usage", t.TempDir(), "workspace")

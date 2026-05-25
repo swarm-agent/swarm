@@ -117,7 +117,6 @@ func New(cfg config.Config) (*Daemon, error) {
 
 	lk, err := lock.Acquire(cfg.LockPath, lock.Metadata{
 		PID:        os.Getpid(),
-		Mode:       cfg.Mode,
 		ListenAddr: cfg.ListenAddr,
 		StartedAt:  time.Now().UnixMilli(),
 	})
@@ -385,7 +384,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	modelSvc.StartCatalogAutoRefresh(bgCtx)
 
-	apiServer := api.NewServer(cfg.Mode, authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
+	apiServer := api.NewServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
 	apiServer.SetIdentityService(identitySvc)
 	apiServer.SetIdentitySessionService(identitySessionSvc)
 	apiServer.SetBypassPermissions(cfg.BypassPermissions)

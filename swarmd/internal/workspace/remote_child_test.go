@@ -19,7 +19,6 @@ func withRemoteChildWorkspaceRootPath(t *testing.T, path string) {
 
 func explicitChildContainerStartupConfig() startupconfig.FileConfig {
 	cfg := startupconfig.Default("")
-	cfg.Mode = startupconfig.ModeBox
 	cfg.Child = true
 	cfg.DeployContainer.Enabled = true
 	return cfg
@@ -27,7 +26,6 @@ func explicitChildContainerStartupConfig() startupconfig.FileConfig {
 
 func plainLaptopStartupConfig() startupconfig.FileConfig {
 	cfg := startupconfig.Default("")
-	cfg.Mode = startupconfig.ModeInteractive
 	cfg.Child = false
 	return cfg
 }

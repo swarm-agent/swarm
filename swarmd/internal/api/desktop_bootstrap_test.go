@@ -42,10 +42,14 @@ func TestWorkspaceOverviewIncludesTopologyRoutesFromWorkspaceBindings(t *testing
 		}},
 	})
 	topologyStore := pebblestore.NewTopologyStore(store)
-	if err := pebblestore.UpsertTopologyRuntimeRecord(topologyStore, pebblestore.TopologyRuntimeRecord{SwarmID: "managed-swarm-1", Name: "managed-host", Relationship: "managed", BackendURL: "https://managed.example.test", ObservedSources: []string{pebblestore.TopologyRuntimeSourceDeployContainer}}); err != nil {
+	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyRuntimeRecord{
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: testPrincipal().AccountScopeID, SwarmID: "managed-swarm-1", Name: "managed-host", Relationship: "managed", BackendURL: "https://managed.example.test", ObservedSources: []string{pebblestore.TopologyRuntimeSourceDeployContainer}}); err != nil {
 		t.Fatalf("upsert topology runtime: %v", err)
 	}
-	if _, err := pebblestore.UpsertTopologyWorkspaceBinding(topologyStore, pebblestore.TopologyWorkspaceBindingRecord{
+	if _, err := pebblestore.UpsertTopologyWorkspaceBindingForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyWorkspaceBindingRecord{
+		UserID:                    testPrincipal().UserID,
+		AccountScopeID:            testPrincipal().AccountScopeID,
 		BindingID:                 "binding-1",
 		SourceWorkspacePath:       workspacePath,
 		SourceWorkspaceName:       "workspace-one",
@@ -130,7 +134,9 @@ func TestWorkspaceOverviewSkipsStaleTopologyBindings(t *testing.T) {
 		{BindingID: "binding-live", SourceWorkspacePath: workspacePath, DestinationRuntimeSwarmID: "live-swarm", DestinationWorkspacePath: "/workspaces/live", Writable: true},
 		{BindingID: "binding-stale", SourceWorkspacePath: workspacePath, DestinationRuntimeSwarmID: "missing-swarm", DestinationWorkspacePath: "/workspaces/stale", Writable: true},
 	} {
-		if _, err := pebblestore.UpsertTopologyWorkspaceBinding(topologyStore, binding); err != nil {
+		binding.UserID = testPrincipal().UserID
+		binding.AccountScopeID = testPrincipal().AccountScopeID
+		if _, err := pebblestore.UpsertTopologyWorkspaceBindingForAccount(topologyStore, testPrincipal().AccountScopeID, binding); err != nil {
 			t.Fatalf("upsert binding %q: %v", binding.BindingID, err)
 		}
 	}
@@ -248,7 +254,9 @@ func TestWorkspaceOverviewSkipsOfflineTopologyBindings(t *testing.T) {
 		}},
 	})
 	topologyStore := pebblestore.NewTopologyStore(store)
-	if _, err := pebblestore.UpsertTopologyWorkspaceBinding(topologyStore, pebblestore.TopologyWorkspaceBindingRecord{
+	if _, err := pebblestore.UpsertTopologyWorkspaceBindingForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyWorkspaceBindingRecord{
+		UserID:                    testPrincipal().UserID,
+		AccountScopeID:            testPrincipal().AccountScopeID,
 		BindingID:                 "binding-offline",
 		SourceWorkspacePath:       workspacePath,
 		DestinationRuntimeSwarmID: "offline-swarm",
@@ -298,7 +306,7 @@ func newWorkspaceOverviewTopologyTestServer(t *testing.T) (*Server, string, *peb
 	if err != nil {
 		t.Fatalf("new event log: %v", err)
 	}
-	server := NewServer("test", nil, nil, nil, nil, sessionSvc, workspaceSvc, nil, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
+	server := NewServer(nil, nil, nil, nil, sessionSvc, workspaceSvc, nil, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
 	server.SetSwarmMirrorStore(pebblestore.NewSwarmMirrorStore(store))
 	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, nil, workspaceStore))
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")

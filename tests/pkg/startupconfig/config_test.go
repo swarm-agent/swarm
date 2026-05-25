@@ -36,6 +36,9 @@ func TestWriteAndLoad_OmitsLegacyModeAndPersistsExplicitState(t *testing.T) {
 		t.Fatalf("ReadFile(%q) error = %v", path, err)
 	}
 	text := string(data)
+	if strings.Contains(text, "startup"+"_mode") {
+		t.Fatalf("startup config should not include startup mode key: %q", text)
+	}
 	if strings.Contains(text, "swarm"+"_mode") {
 		t.Fatalf("startup config should not include legacy mode key: %q", text)
 	}
@@ -210,10 +213,9 @@ func TestWriteAndLoad_RemoteDeploySecretsUseSeparateSecretFile(t *testing.T) {
 	}
 }
 
-func TestLoad_ParsesSwarmRoleManagedAndToleratesLegacyMode(t *testing.T) {
+func TestLoad_ParsesSwarmRoleManagedAndIgnoresLegacyStartupMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "swarm.conf")
 	text := strings.Join([]string{
-		"startup_mode = interactive",
 		"dev_mode = false",
 		"dev_root = ",
 		"host = 127.0.0.1",
@@ -272,6 +274,9 @@ func TestLoad_ParsesSwarmRoleManagedAndToleratesLegacyMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile(%q) error = %v", path, err)
 	}
+	if strings.Contains(string(migrated), "\n"+"startup"+"_mode =") {
+		t.Fatalf("legacy startup mode should not be re-emitted: %q", string(migrated))
+	}
 	if strings.Contains(string(migrated), "\n"+"swarm"+"_mode =") {
 		t.Fatalf("legacy swarm mode should not be re-emitted: %q", string(migrated))
 	}
@@ -280,7 +285,6 @@ func TestLoad_ParsesSwarmRoleManagedAndToleratesLegacyMode(t *testing.T) {
 func TestLoad_LegacyConfigWithoutSwarmRoleDefaultsEmpty(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "swarm.conf")
 	text := strings.Join([]string{
-		"startup_mode = interactive",
 		"dev_mode = false",
 		"dev_root = ",
 		"host = 127.0.0.1",

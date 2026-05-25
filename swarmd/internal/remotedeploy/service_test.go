@@ -303,7 +303,6 @@ func TestCreateRejectsLANWireGuardRemoteDeploy(t *testing.T) {
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
 	if err := startupconfig.Write(startupconfig.FileConfig{
 		Path:              startupPath,
-		Mode:              "box",
 		Host:              "127.0.0.1",
 		Port:              17792,
 		AdvertisePort:     17792,
@@ -783,7 +782,6 @@ func TestEnsurePendingInviteRestoresMissingHostInvite(t *testing.T) {
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
 	if err := startupconfig.Write(startupconfig.FileConfig{
 		Path:              startupPath,
-		Mode:              "box",
 		Host:              "127.0.0.1",
 		Port:              17792,
 		AdvertisePort:     17792,

@@ -178,7 +178,6 @@ func TestSyncManagedCredentialsOncePullsUpdatedSnapshot(t *testing.T) {
 
 	startupPath := filepath.Join(t.TempDir(), "swarm-child.conf")
 	cfg := startupconfig.Default(startupPath)
-	cfg.Mode = startupconfig.ModeBox
 	cfg.Child = true
 	cfg.ParentSwarmID = ownerSwarmID
 	cfg.PairingState = startupconfig.PairingStatePaired

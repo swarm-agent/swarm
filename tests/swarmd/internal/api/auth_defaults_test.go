@@ -62,7 +62,7 @@ func TestAuthCredentialUpsertAppliesUtilityDefaultsOnce(t *testing.T) {
 	providers.RegisterRunner(stubRunner{id: "codex"})
 	providers.RegisterRunner(stubRunner{id: "google"})
 
-	server := NewServer("test", authSvc, agentSvc, modelSvc, nil, nil, nil, nil, nil, providers, nil, eventLog, hub)
+	server := NewServer(authSvc, agentSvc, modelSvc, nil, nil, nil, nil, nil, providers, nil, eventLog, hub)
 	handler := server.Handler()
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/credentials",
@@ -304,7 +304,7 @@ func TestAuthCredentialUpsertCodexFirstProviderEnforcesSparkUtilityDefaults(t *t
 	providers.RegisterRunner(stubRunner{id: "codex"})
 	providers.RegisterRunner(stubRunner{id: "google"})
 
-	server := NewServer("test", authSvc, agentSvc, modelSvc, nil, nil, nil, nil, nil, providers, nil, eventLog, hub)
+	server := NewServer(authSvc, agentSvc, modelSvc, nil, nil, nil, nil, nil, providers, nil, eventLog, hub)
 	handler := server.Handler()
 
 	// Simulate profiles that already have provider/model set before first auth onboarding.

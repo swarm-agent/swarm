@@ -34,7 +34,7 @@ func TestSessionModeAndPermissionsAPIEndToEnd(t *testing.T) {
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
 	permSvc := permission.NewService(pebblestore.NewPermissionStore(store), eventLog, hub.Publish)
 
-	server := NewServer("test", nil, nil, nil, nil, sessionSvc, nil, nil, nil, nil, permSvc, eventLog, hub)
+	server := NewServer(nil, nil, nil, nil, sessionSvc, nil, nil, nil, nil, permSvc, eventLog, hub)
 	handler := server.Handler()
 
 	workspacePath := t.TempDir()

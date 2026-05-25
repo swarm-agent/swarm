@@ -13,7 +13,7 @@ import (
 )
 
 func TestRemoteDeploySSHSessionCreateAndStartAreRetired(t *testing.T) {
-	server := NewServer("test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, stream.NewHub(nil))
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, stream.NewHub(nil))
 
 	cases := []struct {
 		name   string

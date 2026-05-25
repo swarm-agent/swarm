@@ -24,7 +24,7 @@ func TestIntegrationsAPIDraftCRUDRedactsCredentialRefs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("event log: %v", err)
 	}
-	server := NewServer("test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, stream.NewHub(events))
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, stream.NewHub(events))
 	server.SetIntegrationService(integrationruntime.NewService(pebblestore.NewIntegrationStore(store)))
 
 	postIntegration(t, server, map[string]any{"action": "create", "resource": "pack", "content": map[string]any{"pack_id": "Demo", "display_name": "Demo"}})

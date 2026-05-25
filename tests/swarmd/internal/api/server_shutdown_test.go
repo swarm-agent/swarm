@@ -61,7 +61,7 @@ func (r *shutdownTestRunner) streamCanceledWith() error {
 }
 
 func TestServerReadyReturnsServiceUnavailableDuringShutdown(t *testing.T) {
-	server := NewServer("test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	server.BeginShutdown()
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
@@ -75,7 +75,7 @@ func TestServerReadyReturnsServiceUnavailableDuringShutdown(t *testing.T) {
 
 func TestServerRunRejectsNewTurnsDuringShutdown(t *testing.T) {
 	runner := newShutdownTestRunner()
-	server := NewServer("test", nil, nil, nil, runner, &sessionruntime.Service{}, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, nil, nil, runner, &sessionruntime.Service{}, nil, nil, nil, nil, nil, nil, nil)
 	server.BeginShutdown()
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/session-1/run", bytes.NewBufferString(`{"prompt":"hi"}`))
@@ -92,7 +92,7 @@ func TestServerRunRejectsNewTurnsDuringShutdown(t *testing.T) {
 
 func TestServerCancelInFlightRunsStopsRunStream(t *testing.T) {
 	runner := newShutdownTestRunner()
-	server := NewServer("test", nil, nil, nil, runner, &sessionruntime.Service{}, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, nil, nil, runner, &sessionruntime.Service{}, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/session-1/run/stream", bytes.NewBufferString(`{"prompt":"hi"}`))
 	rec := httptest.NewRecorder()
@@ -133,7 +133,7 @@ func TestServerCancelInFlightRunsStopsRunStream(t *testing.T) {
 
 func TestServerActiveRunCountTracksSynchronousRuns(t *testing.T) {
 	runner := newShutdownTestRunner()
-	server := NewServer("test", nil, nil, nil, runner, &sessionruntime.Service{}, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, nil, nil, runner, &sessionruntime.Service{}, nil, nil, nil, nil, nil, nil, nil)
 
 	block := make(chan struct{})
 	started := make(chan struct{}, 1)
@@ -179,7 +179,7 @@ func TestServerActiveRunCountTracksSynchronousRuns(t *testing.T) {
 }
 
 func TestSystemShutdownEndpointMarksServerAndInvokesHandler(t *testing.T) {
-	server := NewServer("test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	reasons := make(chan string, 1)
 	server.SetShutdownHandler(func(reason string) {
 		reasons <- reason
@@ -210,7 +210,7 @@ func TestSystemShutdownEndpointMarksServerAndInvokesHandler(t *testing.T) {
 }
 
 func TestSystemShutdownEndpointMethodNotAllowed(t *testing.T) {
-	server := NewServer("test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/system/shutdown", nil)
 	rec := httptest.NewRecorder()

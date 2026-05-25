@@ -14,18 +14,8 @@ import (
 	"swarm-refactor/swarmtui/pkg/storagecontract"
 )
 
-const (
-	ModeSingle = "single"
-	ModeBox    = "box"
-
-	StartupModeInteractive = startupconfig.ModeInteractive
-	StartupModeBox         = startupconfig.ModeBox
-)
-
 type Config struct {
-	StartupMode             string
 	ConfigPath              string
-	Mode                    string
 	ListenAddr              string
 	DesktopPort             int
 	PeerTransportPort       int
@@ -55,10 +45,6 @@ func Parse(args []string) (Config, error) {
 	defaultDataDir := storageDefaults.DataDir
 	defaultDBPath := storageDefaults.DBPath
 	defaultLockPath := storageDefaults.LockPath
-	defaultMode, err := runtimeModeForStartupMode(startupCfg.Mode)
-	if err != nil {
-		return Config{}, err
-	}
 	defaultListenAddr := net.JoinHostPort(startupCfg.Host, strconv.Itoa(startupCfg.Port))
 
 	bootstrapArgs, filteredArgs, err := parseBootstrapArgs(args, startupCfg.Exists)
@@ -78,16 +64,13 @@ func Parse(args []string) (Config, error) {
 	fs.SetOutput(os.Stderr)
 
 	cfg := Config{
-		StartupMode:             startupCfg.Mode,
 		ConfigPath:              configPath,
-		Mode:                    defaultMode,
 		ListenAddr:              defaultListenAddr,
 		DesktopPort:             startupCfg.DesktopPort,
 		PeerTransportPort:       startupCfg.PeerTransportPort,
 		BypassPermissions:       startupCfg.BypassPermissions,
 		RetainToolOutputHistory: startupCfg.RetainToolOutputHistory,
 	}
-	fs.StringVar(&cfg.Mode, "mode", defaultMode, "runtime mode: single or box")
 	fs.StringVar(&cfg.ListenAddr, "listen", defaultListenAddr, "HTTP listen address")
 	fs.IntVar(&cfg.DesktopPort, "desktop-port", startupCfg.DesktopPort, "desktop HTTP listen port (0 disables desktop listener)")
 	fs.BoolVar(&cfg.BypassPermissions, "bypass-permissions", startupCfg.BypassPermissions, "bypass normal tool permission prompts (exit_plan_mode still requires approval)")
@@ -104,10 +87,6 @@ func Parse(args []string) (Config, error) {
 		return Config{}, err
 	}
 
-	if err := validateRuntimeMode(cfg.Mode); err != nil {
-		return Config{}, err
-	}
-
 	if cfg.DesktopPort < 0 || cfg.DesktopPort > 65535 {
 		return Config{}, fmt.Errorf("invalid desktop port %d (expected 0-65535)", cfg.DesktopPort)
 	}
@@ -121,7 +100,7 @@ func Parse(args []string) (Config, error) {
 	}
 
 	if !startupCfg.Exists {
-		startupCfg, err = startupConfigFromRuntime(configPath, cfg.Mode, cfg.ListenAddr, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory)
+		startupCfg, err = startupConfigFromRuntime(configPath, cfg.ListenAddr, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory)
 		if err != nil {
 			return Config{}, err
 		}
@@ -132,7 +111,6 @@ func Parse(args []string) (Config, error) {
 		if err := startupconfig.Write(startupCfg); err != nil {
 			return Config{}, err
 		}
-		cfg.StartupMode = startupCfg.Mode
 		cfg.RetainToolOutputHistory = startupCfg.RetainToolOutputHistory
 	}
 
@@ -247,42 +225,7 @@ func detectedWorkspaceRoots(start string) []string {
 	}
 }
 
-func validateRuntimeMode(mode string) error {
-	switch mode {
-	case ModeSingle, ModeBox:
-		return nil
-	default:
-		return fmt.Errorf("invalid mode %q (expected %q or %q)", mode, ModeSingle, ModeBox)
-	}
-}
-
-func runtimeModeForStartupMode(startupMode string) (string, error) {
-	switch startupMode {
-	case StartupModeInteractive:
-		return ModeSingle, nil
-	case StartupModeBox:
-		return ModeBox, nil
-	default:
-		return "", fmt.Errorf("invalid startup mode %q (expected %q or %q)", startupMode, StartupModeInteractive, StartupModeBox)
-	}
-}
-
-func startupModeForRuntimeMode(runtimeMode string) (string, error) {
-	switch runtimeMode {
-	case ModeSingle:
-		return StartupModeInteractive, nil
-	case ModeBox:
-		return StartupModeBox, nil
-	default:
-		return "", fmt.Errorf("invalid mode %q (expected %q or %q)", runtimeMode, ModeSingle, ModeBox)
-	}
-}
-
-func startupConfigFromRuntime(path, mode, listenAddr string, desktopPort int, bypassPermissions, retainToolOutputHistory bool) (startupconfig.FileConfig, error) {
-	startupMode, err := startupModeForRuntimeMode(mode)
-	if err != nil {
-		return startupconfig.FileConfig{}, err
-	}
+func startupConfigFromRuntime(path, listenAddr string, desktopPort int, bypassPermissions, retainToolOutputHistory bool) (startupconfig.FileConfig, error) {
 	if strings.TrimSpace(listenAddr) == "" {
 		return startupconfig.FileConfig{}, errors.New("listen address must not be empty")
 	}
@@ -295,7 +238,6 @@ func startupConfigFromRuntime(path, mode, listenAddr string, desktopPort int, by
 		return startupconfig.FileConfig{}, fmt.Errorf("invalid listen port %q", portText)
 	}
 	cfg := startupconfig.Default(path)
-	cfg.Mode = startupMode
 	cfg.Host = host
 	cfg.Port = port
 	cfg.DesktopPort = desktopPort
@@ -308,11 +250,6 @@ func startupConfigFromRuntime(path, mode, listenAddr string, desktopPort int, by
 }
 
 func validateStartupConfig(cfg startupconfig.FileConfig) error {
-	switch cfg.Mode {
-	case StartupModeInteractive, StartupModeBox:
-	default:
-		return fmt.Errorf("invalid mode %q (expected %q or %q)", cfg.Mode, StartupModeInteractive, StartupModeBox)
-	}
 	if strings.TrimSpace(cfg.Host) == "" {
 		return errors.New("host must not be empty")
 	}
@@ -371,11 +308,8 @@ func parseBootstrapArgs(args []string, startupExists bool) (startupconfig.Bootst
 				return startupconfig.BootstrapFlags{}, nil, errors.New("missing value for --mode")
 			}
 			value := args[i+1]
-			if startupExists || !isBootstrapNetworkMode(value) {
-				filtered = append(filtered, arg)
-				i++
-				filtered = append(filtered, value)
-				continue
+			if !isBootstrapNetworkMode(value) {
+				return startupconfig.BootstrapFlags{}, nil, fmt.Errorf("invalid --mode %q (expected %q or %q)", value, startupconfig.NetworkModeLAN, startupconfig.NetworkModeTailscale)
 			}
 			i++
 			bootstrap.Mode = value
@@ -415,9 +349,8 @@ func parseBootstrapArgs(args []string, startupExists bool) (startupconfig.Bootst
 				continue
 			}
 			if value, ok := consumeInlineFlag(arg, "--mode="); ok {
-				if startupExists || !isBootstrapNetworkMode(value) {
-					filtered = append(filtered, arg)
-					continue
+				if !isBootstrapNetworkMode(value) {
+					return startupconfig.BootstrapFlags{}, nil, fmt.Errorf("invalid --mode %q (expected %q or %q)", value, startupconfig.NetworkModeLAN, startupconfig.NetworkModeTailscale)
 				}
 				bootstrap.Mode = value
 				bootstrap.ModeSet = true

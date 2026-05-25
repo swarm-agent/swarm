@@ -37,7 +37,7 @@ func TestProviderDefaultsPreviewWarnsOnlyForStaleInheritedUtilityAgents(t *testi
 		t.Fatalf("SetGlobalPreference() error = %v", err)
 	}
 
-	server := api.NewServer("test", nil, agentSvc, modelSvc, nil, nil, nil, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
+	server := api.NewServer(nil, agentSvc, modelSvc, nil, nil, nil, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
 	handler := server.Handler()
 
 	req := httptest.NewRequest(http.MethodGet, "/v2/agents", nil)
@@ -126,7 +126,7 @@ func TestRestoreDefaultsSetsUtilityAIBaselineAndPreservesCustomProfiles(t *testi
 		t.Fatalf("SetGlobalPreference() error = %v", err)
 	}
 
-	server := api.NewServer("test", nil, agentSvc, modelSvc, nil, nil, nil, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
+	server := api.NewServer(nil, agentSvc, modelSvc, nil, nil, nil, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
 	handler := server.Handler()
 
 	req := httptest.NewRequest(http.MethodPost, "/v2/agents/defaults/restore", nil)
@@ -245,7 +245,7 @@ func TestSetUtilityAIFillsBlankAgentsAndPreservesPerAgentOverrides(t *testing.T)
 		t.Fatalf("set memory override: %v", err)
 	}
 
-	server := api.NewServer("test", nil, agentSvc, modelSvc, nil, nil, nil, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
+	server := api.NewServer(nil, agentSvc, modelSvc, nil, nil, nil, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
 	handler := server.Handler()
 	req := httptest.NewRequest(http.MethodPost, "/v2/agents/defaults/restore", strings.NewReader(`{"utility_provider":"codex","utility_model":"gpt-5.4","utility_thinking":"low"}`))
 	rec := httptest.NewRecorder()

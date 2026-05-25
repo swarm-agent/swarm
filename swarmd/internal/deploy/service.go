@@ -2531,7 +2531,6 @@ type containerBootstrapEnvInput struct {
 func buildChildContainerEnv(input containerBootstrapEnvInput) []string {
 	childConfigPath := filepath.Join(os.TempDir(), "swarm-child.conf")
 	cfg := startupconfig.Default(childConfigPath)
-	cfg.Mode = startupconfig.ModeBox
 	cfg.Host = startupconfig.DefaultHost
 	cfg.Port = startupconfig.DefaultPort
 	cfg.AdvertiseHost = strings.TrimSpace(input.ChildAdvertiseHost)

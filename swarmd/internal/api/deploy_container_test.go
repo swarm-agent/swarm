@@ -14,7 +14,7 @@ import (
 )
 
 func TestDeployContainerAttachApproveAcceptsPeerAuthTokens(t *testing.T) {
-	server := NewServer("test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, stream.NewHub(nil))
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, stream.NewHub(nil))
 	fakeDeploy := &fakeReplicateDeployService{}
 	server.SetDeployContainerService(fakeDeploy)
 
@@ -55,7 +55,7 @@ func TestDeployContainerAttachApproveAcceptsPeerAuthTokens(t *testing.T) {
 }
 
 func TestDeployContainerManagedCredentialsApplyAcknowledgesBundle(t *testing.T) {
-	server := NewServer("test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, stream.NewHub(nil))
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, stream.NewHub(nil))
 	fakeDeploy := &fakeReplicateDeployService{}
 	server.SetDeployContainerService(fakeDeploy)
 
@@ -87,7 +87,7 @@ func TestDeployContainerManagedCredentialsApplyAcknowledgesBundle(t *testing.T) 
 }
 
 func TestDeployContainerManagedAgentsApplyAcknowledgesBundle(t *testing.T) {
-	server := NewServer("test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, stream.NewHub(nil))
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, stream.NewHub(nil))
 	fakeDeploy := &fakeReplicateDeployService{}
 	server.SetDeployContainerService(fakeDeploy)
 

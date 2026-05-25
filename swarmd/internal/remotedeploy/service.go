@@ -3034,7 +3034,6 @@ func (s *Service) renderChildStartupConfig(record pebblestore.RemoteDeploySessio
 	}
 	childPorts := remoteChildPorts(record.ID)
 	cfg := startupconfig.Default(remoteStartupConfigPath(record))
-	cfg.Mode = startupconfig.ModeBox
 	cfg.Host = childHost
 	cfg.Port = childPorts.Backend
 	cfg.AdvertiseHost = childAdvertiseHost

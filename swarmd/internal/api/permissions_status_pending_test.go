@@ -30,7 +30,7 @@ func TestSessionPermissionsStatusPendingBypassesHistoricalLimit(t *testing.T) {
 	hub := stream.NewHub(nil)
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
 	permSvc := permission.NewService(pebblestore.NewPermissionStore(store), eventLog, hub.Publish)
-	server := NewServer("test", nil, nil, nil, nil, sessionSvc, nil, nil, nil, nil, permSvc, nil, eventLog, hub)
+	server := NewServer(nil, nil, nil, nil, sessionSvc, nil, nil, nil, nil, permSvc, nil, eventLog, hub)
 	handler := server.Handler()
 
 	session, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{

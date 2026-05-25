@@ -538,7 +538,7 @@ func newFlowPeerTestServer(t *testing.T) (*Server, *pebblestore.FlowStore) {
 	}
 	modelSvc := modelruntime.NewService(modelStore, eventLog, nil)
 	workspaceSvc := workspaceruntime.NewService(pebblestore.NewWorkspaceStore(store))
-	server := NewServer("test", nil, agentSvc, modelSvc, nil, sessionSvc, workspaceSvc, nil, nil, nil, nil, nil, eventLog, stream.NewHub(eventLog))
+	server := NewServer(nil, agentSvc, modelSvc, nil, sessionSvc, workspaceSvc, nil, nil, nil, nil, nil, eventLog, stream.NewHub(eventLog))
 	server.SetSwarmMirrorStore(pebblestore.NewSwarmMirrorStore(store))
 	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, nil, pebblestore.NewWorkspaceStore(store)))
 	flows := pebblestore.NewFlowStore(store)

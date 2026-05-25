@@ -31,7 +31,7 @@ func TestAgentsAPIV2List(t *testing.T) {
 		t.Fatalf("EnsureDefaults() error = %v", err)
 	}
 
-	server := NewServer("test", nil, agentSvc, nil, nil, nil, nil, nil, nil, nil, nil, eventLog, hub)
+	server := NewServer(nil, agentSvc, nil, nil, nil, nil, nil, nil, nil, nil, eventLog, hub)
 	handler := server.Handler()
 
 	req := httptest.NewRequest(http.MethodGet, "/v2/agents", nil)

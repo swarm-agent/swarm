@@ -28,7 +28,7 @@ func TestUISettingsPostPreservesExistingThinkingTagsWhenChatOmitted(t *testing.T
 	hub := stream.NewHub(nil)
 	settingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
 	settingsSvc.SetEventPublisher(events, hub.Publish)
-	server := NewServer("test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
 	server.SetUISettingsService(settingsSvc)
 	swarmSvc := swarmruntime.NewService(pebblestore.NewSwarmStore(store), events, hub.Publish)
 	localState, err := swarmSvc.EnsureLocalState(swarmruntime.EnsureLocalStateInput{Name: "Local", Role: "master"})
@@ -107,7 +107,7 @@ func TestUISettingsPostPreservesThemeWhenUpdatesOnlyPayloadSent(t *testing.T) {
 	hub := stream.NewHub(nil)
 	settingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
 	settingsSvc.SetEventPublisher(events, hub.Publish)
-	server := NewServer("test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
 	server.SetUISettingsService(settingsSvc)
 
 	_, err = settingsSvc.Set(uisettings.UISettings{
@@ -165,7 +165,7 @@ func TestUISettingsPostPersistsImageDefaultModel(t *testing.T) {
 	hub := stream.NewHub(nil)
 	settingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
 	settingsSvc.SetEventPublisher(events, hub.Publish)
-	server := NewServer("test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
 	server.SetUISettingsService(settingsSvc)
 
 	reqBody := []byte(`{"tools":{"image":{"default_model":"gemini-nano-banana-pro"}}}`)
@@ -208,7 +208,7 @@ func TestUISettingsPostPreservesExistingThinkingTagsWhenThemeOnlyPayloadSent(t *
 	hub := stream.NewHub(nil)
 	settingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
 	settingsSvc.SetEventPublisher(events, hub.Publish)
-	server := NewServer("test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
 	server.SetUISettingsService(settingsSvc)
 
 	_, err = settingsSvc.Set(uisettings.UISettings{
@@ -257,7 +257,7 @@ func TestUISettingsPostPreservesExistingWorkspaceRoutesWhenChatPatchOmitsThem(t 
 	hub := stream.NewHub(nil)
 	settingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
 	settingsSvc.SetEventPublisher(events, hub.Publish)
-	server := NewServer("test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
 	server.SetUISettingsService(settingsSvc)
 
 	_, err = settingsSvc.Set(uisettings.UISettings{

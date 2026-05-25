@@ -112,7 +112,6 @@ type Server struct {
 	imageThreads                *pebblestore.ImageThreadStore
 	imageGen                    *imagegen.Service
 	integrations                *integrationruntime.Service
-	mode                        string
 	dataDir                     string
 	startupConfigPath           string
 	startedAt                   time.Time
@@ -287,7 +286,7 @@ type mcpService interface {
 	SetEnabled(id string, enabled bool) (mcpruntime.Server, *pebblestore.EventEnvelope, error)
 }
 
-func NewServer(mode string, authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *model.Service, runSvc runService, sessionSvc *sessionruntime.Service, workspaceSvc *workspace.Service, discoverySvc *discovery.Service, securitySvc *security.Service, providers *registry.Registry, permSvc permissionService, notificationSvc notificationService, events *pebblestore.EventLog, hub *stream.Hub) *Server {
+func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *model.Service, runSvc runService, sessionSvc *sessionruntime.Service, workspaceSvc *workspace.Service, discoverySvc *discovery.Service, securitySvc *security.Service, providers *registry.Registry, permSvc permissionService, notificationSvc notificationService, events *pebblestore.EventLog, hub *stream.Hub) *Server {
 	runCtx, runCancel := context.WithCancel(context.Background())
 	server := &Server{
 		auth:                 authSvc,
@@ -304,7 +303,6 @@ func NewServer(mode string, authSvc *auth.Service, agentSvc *agentruntime.Servic
 		notifications:        notificationSvc,
 		hub:                  hub,
 		events:               events,
-		mode:                 mode,
 		startedAt:            time.Now(),
 		codexOAuthSessions:   make(map[string]*codexOAuthSession),
 		desktopLocalSessions: newDesktopLocalSessionManager(),
@@ -658,7 +656,6 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	status := map[string]any{
 		"ok":                 true,
-		"mode":               s.mode,
 		"bypass_permissions": s.BypassPermissions(),
 		"uptime_ms":          time.Since(s.startedAt).Milliseconds(),
 		"global_sequence":    s.events.CurrentSequence(),

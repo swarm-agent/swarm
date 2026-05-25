@@ -223,11 +223,11 @@ func newMirrorTestServer(t *testing.T) (*Server, func()) {
 		t.Fatalf("add workspace: %v", err)
 	}
 	startupPath := filepath.Join(dir, "startup.json")
-	if err := startupconfig.Write(startupconfig.FileConfig{Path: startupPath, Mode: startupconfig.ModeInteractive, Host: "127.0.0.1", Port: startupconfig.DefaultPort, AdvertiseHost: "127.0.0.1", AdvertisePort: startupconfig.DefaultPort, DesktopPort: startupconfig.DefaultDesktopPort, PeerTransportPort: startupconfig.DefaultPeerTransportPort, SwarmName: "host-swarm", NetworkMode: startupconfig.NetworkModeTailscale}); err != nil {
+	if err := startupconfig.Write(startupconfig.FileConfig{Path: startupPath, Host: "127.0.0.1", Port: startupconfig.DefaultPort, AdvertiseHost: "127.0.0.1", AdvertisePort: startupconfig.DefaultPort, DesktopPort: startupconfig.DefaultDesktopPort, PeerTransportPort: startupconfig.DefaultPeerTransportPort, SwarmName: "host-swarm", NetworkMode: startupconfig.NetworkModeTailscale}); err != nil {
 		_ = store.Close()
 		t.Fatalf("write startup config: %v", err)
 	}
-	server := NewServer("test", nil, nil, nil, nil, nil, workspaceSvc, nil, nil, nil, nil, nil, events, stream.NewHub(events))
+	server := NewServer(nil, nil, nil, nil, nil, workspaceSvc, nil, nil, nil, nil, nil, events, stream.NewHub(events))
 	server.SetStartupConfigPath(startupPath)
 	server.SetSwarmMirrorStore(pebblestore.NewSwarmMirrorStore(store))
 	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, nil, workspaceStore))

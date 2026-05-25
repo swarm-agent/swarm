@@ -44,7 +44,7 @@ func TestCredentialDeleteCleanupClearsSessionPreferencesForDeletedProvider(t *te
 	providers := registry.New(testProviderAdapter{status: provideriface.Status{ID: "codex", Ready: false, Reason: "auth missing"}})
 	providers.RegisterRunner(testProviderRunner{id: "codex"})
 
-	server := NewServer("test", authSvc, agentSvc, modelSvc, nil, sessionSvc, nil, nil, nil, providers, nil, nil, eventLog, hub)
+	server := NewServer(authSvc, agentSvc, modelSvc, nil, sessionSvc, nil, nil, nil, providers, nil, nil, eventLog, hub)
 	server.SetStartupConfigPath(writeAuthCleanupStartupConfig(t))
 
 	ctx := context.Background()

@@ -29,7 +29,7 @@ func TestSwarmTopologyRoutesUseAccountScopedReadsNoGlobalFallback(t *testing.T) 
 		t.Fatalf("put account B runtime: %v", err)
 	}
 
-	server := NewServer("", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	server.SetTopologyService(topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil, nil))
 
 	req := requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodGet, "/v1/swarm/topology", nil), "user-a", "account-a")
@@ -65,7 +65,7 @@ func TestSwarmTopologyRuntimeOwnerCrossAccountMissDoesNotFallback(t *testing.T) 
 		t.Fatalf("put global attachment: %v", err)
 	}
 
-	server := NewServer("", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	server.SetTopologyService(topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil, nil))
 
 	req := requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodGet, "/v1/swarm/topology/runtime-owner?runtime_swarm_id=runtime-a", nil), "user-b", "account-b")

@@ -25,7 +25,7 @@ func TestSessionPlanHistoryEndpointReturnsSamePlanRevisionDiffs(t *testing.T) {
 		t.Fatalf("open event log: %v", err)
 	}
 	sessionSvc := sessionruntime.NewService(sessions, events)
-	server := NewServer("test", nil, nil, nil, nil, sessionSvc, nil, nil, nil, nil, nil, nil, events, stream.NewHub(events))
+	server := NewServer(nil, nil, nil, nil, sessionSvc, nil, nil, nil, nil, nil, nil, events, stream.NewHub(events))
 
 	snapshot, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
 		SessionID:      "session-plan-history-test",

@@ -227,7 +227,7 @@ func newOnboardingIdentityTestServerWithCalls(t *testing.T, bootstrap bool) (*Se
 		}
 	}
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), eventLog)
-	server := NewServer("test", authSvc, agentSvc, nil, nil, nil, workspaceSvc, nil, securitySvc, nil, nil, notificationSvc, eventLog, hub)
+	server := NewServer(authSvc, agentSvc, nil, nil, nil, workspaceSvc, nil, securitySvc, nil, nil, notificationSvc, eventLog, hub)
 	server.SetIdentityService(identitySvc)
 	server.SetIdentitySessionService(identity.NewSessionService(identityStore, pebblestore.NewIdentitySessionStore(store)))
 	server.SetUISettingsService(uisettings.NewService(pebblestore.NewUISettingsStore(store)))

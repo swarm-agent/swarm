@@ -26,7 +26,7 @@ func TestSessionPlansAPIEndToEnd(t *testing.T) {
 	}
 	hub := stream.NewHub(eventLog)
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
-	server := NewServer("test", nil, nil, nil, nil, sessionSvc, nil, nil, nil, nil, nil, eventLog, hub)
+	server := NewServer(nil, nil, nil, nil, sessionSvc, nil, nil, nil, nil, nil, eventLog, hub)
 	handler := server.Handler()
 
 	session := createSessionViaAPI(t, handler, t.TempDir())

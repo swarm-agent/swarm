@@ -148,7 +148,7 @@ func newIntegrationSessionTestServer(t *testing.T, runner runService) (*Server, 
 		t.Fatalf("event log: %v", err)
 	}
 	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
-	server := NewServer("desktop", nil, nil, nil, runner, sessions, nil, nil, nil, nil, nil, nil, events, stream.NewHub(events))
+	server := NewServer(nil, nil, nil, runner, sessions, nil, nil, nil, nil, nil, nil, events, stream.NewHub(events))
 	startupPath := filepath.Join(t.TempDir(), "startup.json")
 	cfg := startupconfig.Default(startupPath)
 	cfg.SwarmName = "local-swarm"

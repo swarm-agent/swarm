@@ -37,7 +37,7 @@ func TestSwarmTopologySnapshotUsesSeededCanonicalSnapshot(t *testing.T) {
 	}
 
 	topologySvc := topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil, nil)
-	server := NewServer("", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	server.SetTopologyService(topologySvc)
 
 	req := requestWithTestPrincipal(httptest.NewRequest(http.MethodGet, "/v1/swarm/topology", nil))
@@ -115,7 +115,7 @@ func TestSwarmTopologyRuntimeOwnerUsesSeededCanonicalAttachment(t *testing.T) {
 	}
 
 	topologySvc := topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil, nil)
-	server := NewServer("", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	server.SetTopologyService(topologySvc)
 
 	req := requestWithTestPrincipal(httptest.NewRequest(http.MethodGet, "/v1/swarm/topology/runtime-owner?runtime_swarm_id=child-1", nil))

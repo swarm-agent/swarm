@@ -298,7 +298,7 @@ func newDesktopJWTServerFromStore(t *testing.T, store *pebblestore.Store) *Serve
 		t.Fatalf("ensure attach auth: %v", err)
 	}
 	identityStore := pebblestore.NewIdentityStore(store)
-	server := NewServer("test", auth.NewService(pebblestore.NewAuthStore(store), events), nil, nil, nil, nil, nil, nil, securitySvc, nil, nil, nil, events, stream.NewHub(events))
+	server := NewServer(auth.NewService(pebblestore.NewAuthStore(store), events), nil, nil, nil, nil, nil, nil, securitySvc, nil, nil, nil, events, stream.NewHub(events))
 	server.SetIdentityService(identity.NewService(identityStore))
 	server.SetIdentitySessionService(identity.NewSessionService(identityStore, pebblestore.NewIdentitySessionStore(store)))
 	return server

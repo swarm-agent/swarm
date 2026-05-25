@@ -270,7 +270,7 @@ func newManagedGitSyncTestServer(t *testing.T) *Server {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	server := NewServer("test", nil, nil, nil, nil, nil, workspace.NewService(pebblestore.NewWorkspaceStore(store)), nil, nil, nil, nil, nil, nil, nil)
+	server := NewServer(nil, nil, nil, nil, nil, workspace.NewService(pebblestore.NewWorkspaceStore(store)), nil, nil, nil, nil, nil, nil, nil)
 	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, nil, nil))
 	server.SetSwarmNodeStore(pebblestore.NewSwarmNodeStore(store))
 	server.SetSwarmStore(pebblestore.NewSwarmStore(store))

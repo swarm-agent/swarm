@@ -206,7 +206,7 @@ func newProtectedIdentityGuardTestServer(t *testing.T, bootstrap bool) (*Server,
 			t.Fatalf("bootstrap identity: %v", err)
 		}
 	}
-	server := NewServer("test", authSvc, agentSvc, nil, nil, nil, workspaceSvc, nil, securitySvc, nil, nil, notificationSvc, eventLog, hub)
+	server := NewServer(authSvc, agentSvc, nil, nil, nil, workspaceSvc, nil, securitySvc, nil, nil, notificationSvc, eventLog, hub)
 	server.SetIdentityService(identitySvc)
 	server.SetIdentitySessionService(identity.NewSessionService(identityStore, pebblestore.NewIdentitySessionStore(store)))
 	server.SetUISettingsService(uisettings.NewService(pebblestore.NewUISettingsStore(store)))
