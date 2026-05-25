@@ -735,7 +735,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				terminalErrText = strings.TrimSpace(snapshot.StopReason)
 			}
 		}
-		if runErr == nil {
+		if runErr == nil || errors.Is(runErr, context.Canceled) {
 			return
 		}
 		if terminalErrText == "" {
@@ -932,6 +932,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	defer runCancel()
 	s.attachLifecycleCancel(sessionID, runID, runCancel)
 	ctx = runCtx
+	runnerCtx = runCtx
 	if runningSnapshot, changed, err := s.transitionSessionLifecycle(sessionID, runID, lifecyclePhaseRunning); err == nil && changed {
 		emitLifecycleSnapshot(emit, runningSnapshot)
 	}
@@ -1454,6 +1455,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		})
 
 		response, err := providerRunner.CreateResponseStreaming(runnerCtx, stepRequest, func(event provideriface.StreamEvent) {
+			if ctx.Err() != nil {
+				return
+			}
 			switch event.Type {
 			case provideriface.StreamEventOutputTextDelta:
 				emit(StreamEvent{Type: StreamEventAssistantDelta, Step: step, Delta: event.Delta})
@@ -1466,6 +1470,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				}
 			}
 		})
+		if stopErr := ctx.Err(); stopErr != nil {
+			return RunResult{}, stopErr
+		}
 		if err != nil {
 			if isContextOverflowDiagnostic(err.Error()) {
 				assistantDraft := strings.TrimSpace(strings.Join(assistantFragments, "\n\n"))
