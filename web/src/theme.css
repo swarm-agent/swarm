@@ -52,6 +52,16 @@
   --app-info: #93c5fd;
   --app-info-bg: rgba(59, 130, 246, 0.14);
   --app-info-border: rgba(59, 130, 246, 0.32);
+  --app-code-bg: var(--app-bg-inset);
+  --app-code-text: var(--app-text);
+  --app-code-keyword: #fbbf24;
+  --app-code-string: #86efac;
+  --app-code-number: #93c5fd;
+  --app-code-comment: var(--app-text-subtle);
+  --app-code-function: var(--app-primary);
+  --app-code-type: #c4b5fd;
+  --app-code-operator: var(--app-text-muted);
+  --app-code-path: var(--app-text-accent);
   --button-soft-bg: rgba(255, 255, 255, 0.04);
   --button-soft-bg-hover: rgba(255, 255, 255, 0.08);
   --button-soft-border: rgba(255, 255, 255, 0.08);

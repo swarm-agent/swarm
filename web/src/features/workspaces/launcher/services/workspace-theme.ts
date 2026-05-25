@@ -12,6 +12,16 @@ interface WorkspaceThemeBasePalette {
   primary: string
   warning: string
   error: string
+  codeBackground?: string
+  codeText?: string
+  codeKeyword?: string
+  codeString?: string
+  codeNumber?: string
+  codeComment?: string
+  codeFunction?: string
+  codeType?: string
+  codeOperator?: string
+  codePath?: string
 }
 
 interface WorkspaceThemePalette {
@@ -54,6 +64,16 @@ interface WorkspaceThemePalette {
   infoBorder: string
   shadowColor: string
   backdrop: string
+  codeBackground: string
+  codeText: string
+  codeKeyword: string
+  codeString: string
+  codeNumber: string
+  codeComment: string
+  codeFunction: string
+  codeType: string
+  codeOperator: string
+  codePath: string
 }
 
 export type { WorkspaceThemeOption }
@@ -357,6 +377,16 @@ export function setWorkspaceThemeCustomOptions(customThemes: Array<Record<string
       primary,
       warning: typeof palette.warning === 'string' ? palette.warning : '#D08770',
       error: typeof palette.error === 'string' ? palette.error : '#BF616A',
+      codeBackground: typeof palette.code_background === 'string' ? palette.code_background : undefined,
+      codeText: typeof palette.code_text === 'string' ? palette.code_text : undefined,
+      codeKeyword: typeof palette.code_keyword === 'string' ? palette.code_keyword : undefined,
+      codeString: typeof palette.code_string === 'string' ? palette.code_string : undefined,
+      codeNumber: typeof palette.code_number === 'string' ? palette.code_number : undefined,
+      codeComment: typeof palette.code_comment === 'string' ? palette.code_comment : undefined,
+      codeFunction: typeof palette.code_function === 'string' ? palette.code_function : undefined,
+      codeType: typeof palette.code_type === 'string' ? palette.code_type : undefined,
+      codeOperator: typeof palette.code_operator === 'string' ? palette.code_operator : undefined,
+      codePath: typeof palette.code_path === 'string' ? palette.code_path : undefined,
     }
     customOptions.push({
       id,
@@ -474,6 +504,16 @@ function completePalette(base: WorkspaceThemeBasePalette): WorkspaceThemePalette
     infoBorder: mixHex(base.border, info, 0.5),
     shadowColor: toAlphaColor(accentAnchor, lightBackground ? 0.18 : 0.42),
     backdrop: toAlphaColor(base.background, lightBackground ? 0.62 : 0.74),
+    codeBackground: base.codeBackground ?? mixHex(base.background, accentAnchor, lightBackground ? 0.03 : 0.08),
+    codeText: base.codeText ?? base.text,
+    codeKeyword: base.codeKeyword ?? mixHex(base.primary, base.warning, 0.32),
+    codeString: base.codeString ?? base.warning,
+    codeNumber: base.codeNumber ?? mixHex(base.warning, base.primary, 0.25),
+    codeComment: base.codeComment ?? mixHex(base.textMuted, base.background, lightBackground ? 0.18 : 0.2),
+    codeFunction: base.codeFunction ?? base.primary,
+    codeType: base.codeType ?? mixHex(base.primary, accentAnchor, lightBackground ? 0.1 : 0.22),
+    codeOperator: base.codeOperator ?? mixHex(base.textMuted, base.primary, 0.24),
+    codePath: base.codePath ?? mixHex(base.primary, base.text, 0.24),
   }
 }
 
@@ -568,6 +608,16 @@ export function createWorkspaceThemeStyle(themeId: string | null | undefined, pr
     [`${prefix}-info-border`]: palette.infoBorder,
     [`${prefix}-shadow-color`]: palette.shadowColor,
     [`${prefix}-backdrop`]: palette.backdrop,
+    [`${prefix}-code-bg`]: palette.codeBackground,
+    [`${prefix}-code-text`]: palette.codeText,
+    [`${prefix}-code-keyword`]: palette.codeKeyword,
+    [`${prefix}-code-string`]: palette.codeString,
+    [`${prefix}-code-number`]: palette.codeNumber,
+    [`${prefix}-code-comment`]: palette.codeComment,
+    [`${prefix}-code-function`]: palette.codeFunction,
+    [`${prefix}-code-type`]: palette.codeType,
+    [`${prefix}-code-operator`]: palette.codeOperator,
+    [`${prefix}-code-path`]: palette.codePath,
   }
 }
 
@@ -616,6 +666,16 @@ const APP_THEME_VARIABLE_NAMES = [
   '--button-soft-border',
   '--button-soft-border-hover',
   '--button-soft-text',
+  '--app-code-bg',
+  '--app-code-text',
+  '--app-code-keyword',
+  '--app-code-string',
+  '--app-code-number',
+  '--app-code-comment',
+  '--app-code-function',
+  '--app-code-type',
+  '--app-code-operator',
+  '--app-code-path',
 ] as const
 
 function buildAppThemeVariables(palette: WorkspaceThemePalette): Record<(typeof APP_THEME_VARIABLE_NAMES)[number], string> {
@@ -664,6 +724,16 @@ function buildAppThemeVariables(palette: WorkspaceThemePalette): Record<(typeof 
     '--button-soft-border': palette.border,
     '--button-soft-border-hover': palette.borderStrong,
     '--button-soft-text': palette.text,
+    '--app-code-bg': palette.codeBackground,
+    '--app-code-text': palette.codeText,
+    '--app-code-keyword': palette.codeKeyword,
+    '--app-code-string': palette.codeString,
+    '--app-code-number': palette.codeNumber,
+    '--app-code-comment': palette.codeComment,
+    '--app-code-function': palette.codeFunction,
+    '--app-code-type': palette.codeType,
+    '--app-code-operator': palette.codeOperator,
+    '--app-code-path': palette.codePath,
   }
 }
 

@@ -9,6 +9,7 @@ import type {
   TaskToolRow,
 } from "../types/chat";
 import { getToolTheme, type ToolState } from "../services/tool-theme";
+import { ToolSyntaxLine, inferToolSyntaxLanguage, pathFromToolSummary } from "../services/tool-syntax";
 
 interface ChatMarkdownProps {
   content: string;
@@ -45,6 +46,7 @@ function formatDuration(ms: number): string {
 function EditDiffView({ toolMessage }: { toolMessage: StructuredToolMessage }) {
   const diff = toolMessage.editDiff;
   if (!diff) return null;
+  const language = inferToolSyntaxLanguage(pathFromToolSummary(toolMessage.summary));
   const hunks = diff.hunks.length > 0
     ? diff.hunks
     : [{ index: 1, oldLines: diff.oldLines, newLines: diff.newLines, oldTruncated: diff.oldTruncated, newTruncated: diff.newTruncated }];
@@ -63,7 +65,7 @@ function EditDiffView({ toolMessage }: { toolMessage: StructuredToolMessage }) {
         </span>
       </div>
       {hunks.map((hunk, hunkIndex) => (
-        <div key={`hunk-${hunk.index}-${hunkIndex}`} className="space-y-0.5">
+        <div key={`hunk-${hunk.index}-${hunkIndex}`} className="overflow-hidden rounded-md">
           {showHunkLabels ? (
             <div className="font-sans text-[11px] uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
               edit {hunk.index}
@@ -72,17 +74,17 @@ function EditDiffView({ toolMessage }: { toolMessage: StructuredToolMessage }) {
           {hunk.oldLines.map((line, i) => (
             <div
               key={`old-${hunk.index}-${i}`}
-              className="whitespace-pre-wrap break-all rounded-sm bg-[color-mix(in_srgb,var(--app-danger)_8%,transparent)] px-2 text-[var(--app-danger)]"
+              className="whitespace-pre-wrap break-all bg-[color-mix(in_srgb,var(--app-danger)_8%,transparent)] px-2 text-[var(--app-danger)]"
             >
-              <span className="mr-2 select-none opacity-70">-</span>{line}
+              <span className="mr-2 select-none opacity-70">-</span><ToolSyntaxLine text={line} language={language} />
             </div>
           ))}
           {hunk.newLines.map((line, i) => (
             <div
               key={`new-${hunk.index}-${i}`}
-              className="whitespace-pre-wrap break-all rounded-sm bg-[color-mix(in_srgb,var(--app-success)_8%,transparent)] px-2 text-[var(--app-success)]"
+              className="whitespace-pre-wrap break-all bg-[color-mix(in_srgb,var(--app-success)_8%,transparent)] px-2 text-[var(--app-success)]"
             >
-              <span className="mr-2 select-none opacity-70">+</span>{line}
+              <span className="mr-2 select-none opacity-70">+</span><ToolSyntaxLine text={line} language={language} />
             </div>
           ))}
         </div>
@@ -97,10 +99,14 @@ function PreviewLinesView({
   lines,
   compact = true,
   commandText = "",
+  language = "",
+  shell = false,
 }: {
   lines: string[];
   compact?: boolean;
   commandText?: string;
+  language?: string;
+  shell?: boolean;
 }) {
   if (lines.length === 0 && !commandText) return null;
 
@@ -116,7 +122,7 @@ function PreviewLinesView({
       {commandText ? (
         <div className="mb-1.5 min-w-0 rounded-md bg-[var(--app-surface)] px-2 py-1 text-[11px] leading-5 text-[var(--app-text)]">
           <span className="mr-1 select-none text-[var(--app-accent)]">$</span>
-          <span className="whitespace-pre-wrap break-words font-mono [overflow-wrap:anywhere]">{commandText}</span>
+          <ToolSyntaxLine text={commandText} shell className="whitespace-pre-wrap break-words font-mono [overflow-wrap:anywhere]" />
         </div>
       ) : null}
       {display.map((line, i) => (
@@ -126,7 +132,7 @@ function PreviewLinesView({
             ? "whitespace-pre-wrap break-words rounded-sm px-1.5 py-0.5 [overflow-wrap:anywhere] odd:bg-[color-mix(in_srgb,var(--app-text-muted)_6%,transparent)]"
             : "whitespace-pre-wrap break-words rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-[12px] leading-5 text-[var(--app-text)] [overflow-wrap:anywhere]"}
         >
-          {line}
+          <ToolSyntaxLine text={line} language={language} shell={shell} />
         </div>
       ))}
       {isLarge ? (
@@ -279,7 +285,7 @@ function SearchLineList({ group }: { group: SearchToolLineGroup }) {
                 <span />
               )}
               <span className="min-w-0 whitespace-pre-wrap break-words font-mono text-[var(--app-text-muted)] [overflow-wrap:anywhere]">
-                {item.text || (item.line > 0 ? "line match" : "file match")}
+                <ToolSyntaxLine text={item.text || (item.line > 0 ? "line match" : "file match")} language={inferToolSyntaxLanguage(group.query)} />
               </span>
             </div>
           ))}
@@ -453,6 +459,8 @@ export function ToolMessageView({
   const label = toolTheme.label || toolMessage.tool || "tool";
   const summary = toolSummaryRemainder(toolMessage.summary || toolMessage.tool || "tool", label);
   const accentWash = toolAccentWash(toolTheme.color, 14);
+  const previewLanguage = inferToolSyntaxLanguage(toolMessage.target || pathFromToolSummary(toolMessage.summary));
+  const shellPreview = toolMessage.tool.trim().toLowerCase() === "bash";
 
   return (
     <div className={isGroupItem ? "py-2" : "mb-2 min-w-0 py-2"}>
@@ -513,6 +521,8 @@ export function ToolMessageView({
             lines={toolMessage.previewLines}
             commandText={toolMessage.commandText}
             compact={toolMessage.tool !== 'exit_plan_mode' && toolMessage.tool !== 'permission'}
+            language={previewLanguage}
+            shell={shellPreview}
           />
         ) : null}
         {toolMessage.tool.trim().toLowerCase() === 'manage-image' || toolMessage.tool.trim().toLowerCase() === 'manage_image' ? (
