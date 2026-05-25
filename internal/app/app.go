@@ -261,7 +261,6 @@ type App struct {
 	voiceCapture           activeVoiceCapture
 	voiceCaptureCh         chan voiceCaptureEvent
 	pasteActive            bool
-	quitModal              quitModalState
 	permissionsBypassModal permissionsBypassModalState
 	permissionsPolicyModal permissionsPolicyModalState
 
@@ -467,9 +466,6 @@ func (a *App) Run() error {
 			} else {
 				a.home.Draw(a.screen)
 			}
-			if a.quitModalActive() {
-				a.drawQuitModal()
-			}
 			if a.permissionsPolicyModalActive() {
 				a.drawPermissionsPolicyModal()
 			}
@@ -546,12 +542,6 @@ func (a *App) Run() error {
 					continue
 				}
 			}
-			if a.quitModalActive() {
-				if a.handleQuitModalMouse(e) {
-					dirty = true
-					continue
-				}
-			}
 			if a.quitRequested {
 				continue
 			}
@@ -604,12 +594,6 @@ func (a *App) Run() error {
 			}
 			if a.permissionsPolicyModalActive() {
 				if a.handlePermissionsPolicyModalKey(e) {
-					dirty = true
-					continue
-				}
-			}
-			if a.quitModalActive() {
-				if a.handleQuitModalKey(e) {
 					dirty = true
 					continue
 				}
