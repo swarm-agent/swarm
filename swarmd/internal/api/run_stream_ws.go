@@ -385,6 +385,20 @@ func (m *runStreamManager) unsubscribe(runID, subscriberID string) {
 	state.mu.Unlock()
 }
 
+func runStreamOwnerTransport(request runruntime.RunRequest) string {
+	if request.Background {
+		return "background_api"
+	}
+	return "ws"
+}
+
+func runStreamLifecycleIsBackground(lifecycle *pebblestore.SessionLifecycleSnapshot) bool {
+	if lifecycle == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(lifecycle.OwnerTransport), "background_api")
+}
+
 func (m *runStreamManager) publishRuntimeEvent(runID string, event runruntime.StreamEvent) {
 	msg := runStreamWireEvent{
 		Type:         strings.TrimSpace(event.Type),
@@ -411,7 +425,7 @@ func (m *runStreamManager) publishRuntimeEvent(runID string, event runruntime.St
 		Lifecycle:    event.Lifecycle,
 	}
 	if event.Lifecycle != nil {
-		msg.Background = strings.EqualFold(strings.TrimSpace(event.Lifecycle.OwnerTransport), "background_api")
+		msg.Background = runStreamLifecycleIsBackground(event.Lifecycle)
 	}
 	m.publish(runID, msg)
 }
@@ -938,7 +952,7 @@ func (s *Server) startRunStreamExecution(runID, sessionID string, inbound runStr
 		runCtx = identity.ContextWithPrincipal(runCtx, principal)
 		result, err := s.runner.RunTurnStreaming(runCtx, sessionID, inbound.RunRequest, runruntime.RunStartMeta{
 			RunID:           runID,
-			OwnerTransport:  "background_api",
+			OwnerTransport:  runStreamOwnerTransport(inbound.RunRequest),
 			IntegrationFlow: integrationCtx.IntegrationFlow,
 			Principal:       principal,
 		}, func(event runruntime.StreamEvent) {

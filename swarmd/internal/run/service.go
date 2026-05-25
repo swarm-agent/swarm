@@ -953,16 +953,24 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	}
 
 	var (
-		userMessage pebblestore.MessageSnapshot
-		userEvent   *pebblestore.EventEnvelope
+		userMessage         pebblestore.MessageSnapshot
+		userEvent           *pebblestore.EventEnvelope
+		titleEligible       bool
+		titleEligibilityErr error
 	)
+	if !manualCompact && s.eventPublish != nil {
+		titleEligible, titleEligibilityErr = s.shouldGenerateMemorySessionTitleForNextUserMessage(sessionID, sessionSnapshot)
+	}
 	if !manualCompact {
 		userMessage, _, userEvent, err = s.sessions.AppendMessage(sessionID, "user", prompt, runMessageMetadataWith(runMessageMetadata, map[string]any{"source": messageMetadataSourceRunTurn}))
 		if err != nil {
 			return RunResult{}, err
 		}
 		emit(StreamEvent{Type: StreamEventMessageStored, Message: &userMessage})
-		if s.eventPublish != nil && shouldGenerateMemorySessionTitle(sessionSnapshot) {
+		if titleEligibilityErr != nil {
+			s.emitSessionTitleWarning(sessionID, "provisional", titleEligibilityErr, emit)
+		}
+		if titleEligible {
 			s.startMemorySessionTitleFlow(sessionID, prompt, resolvedPreference.Preference, options.Principal, emit)
 		}
 	}
@@ -3149,6 +3157,40 @@ func shouldGenerateMemorySessionTitle(session pebblestore.SessionSnapshot) bool 
 	title := strings.ToLower(strings.TrimSpace(session.Title))
 	if strings.Contains(title, " subagent)") && strings.Contains(title, "(@") {
 		return false
+	}
+	return true
+}
+
+func (s *Service) shouldGenerateMemorySessionTitleForNextUserMessage(sessionID string, session pebblestore.SessionSnapshot) (bool, error) {
+	if session.MessageCount <= 0 {
+		return shouldGenerateMemorySessionTitle(session), nil
+	}
+	probe := session
+	probe.MessageCount = 0
+	if !shouldGenerateMemorySessionTitle(probe) {
+		return false, nil
+	}
+	if s == nil || s.sessions == nil {
+		return false, errors.New("session service is not configured")
+	}
+	messages, err := s.sessions.ListMessages(sessionID, 0, session.MessageCount)
+	if err != nil {
+		return false, err
+	}
+	return shouldGenerateMemorySessionTitleWithPriorMessages(probe, messages), nil
+}
+
+func shouldGenerateMemorySessionTitleWithPriorMessages(session pebblestore.SessionSnapshot, messages []pebblestore.MessageSnapshot) bool {
+	probe := session
+	probe.MessageCount = 0
+	if !shouldGenerateMemorySessionTitle(probe) {
+		return false
+	}
+	for _, message := range messages {
+		role := strings.ToLower(strings.TrimSpace(message.Role))
+		if role != "" && role != "system" {
+			return false
+		}
 	}
 	return true
 }

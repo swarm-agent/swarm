@@ -36,3 +36,14 @@ func TestBuildBackgroundRunMetadataSetsTargetForOrdinaryBackgroundRuns(t *testin
 		t.Fatalf("ordinary background target metadata = %+v", metadata)
 	}
 }
+
+func TestEffectiveRunOwnerTransportKeepsForegroundWebSocketNonBackground(t *testing.T) {
+	service := &Service{}
+
+	if got := service.effectiveRunOwnerTransport(RunOptions{OwnerTransport: "ws"}, func(StreamEvent) {}); got != "ws" {
+		t.Fatalf("foreground websocket owner transport = %q, want ws", got)
+	}
+	if got := service.effectiveRunOwnerTransport(RunOptions{Background: true}, func(StreamEvent) {}); got != "background_api" {
+		t.Fatalf("background websocket owner transport = %q, want background_api", got)
+	}
+}

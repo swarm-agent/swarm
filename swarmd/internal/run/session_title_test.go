@@ -32,3 +32,57 @@ func TestShouldGenerateMemorySessionTitleAllowsUnownedUntitledSession(t *testing
 		t.Fatal("expected title generation for ordinary empty session")
 	}
 }
+
+func TestShouldGenerateMemorySessionTitleAllowsForegroundWebSocketSession(t *testing.T) {
+	session := pebblestore.SessionSnapshot{
+		Title: "New Session",
+		Metadata: map[string]any{
+			"owner_transport": "ws",
+		},
+	}
+
+	if !shouldGenerateMemorySessionTitle(session) {
+		t.Fatal("expected foreground websocket session to remain eligible for title generation")
+	}
+}
+
+func TestShouldGenerateMemorySessionTitleSkipsBackgroundMetadata(t *testing.T) {
+	metadata := map[string]any{
+		"owner_transport": "background_api",
+		"launch_mode":     "background",
+		"background":      true,
+		"title_locked":    true,
+	}
+
+	if shouldGenerateMemorySessionTitle(pebblestore.SessionSnapshot{Title: "New Session", Metadata: metadata}) {
+		t.Fatal("expected background session metadata to disable title generation")
+	}
+}
+
+func TestShouldGenerateMemorySessionTitleAllowsSystemPrelude(t *testing.T) {
+	session := pebblestore.SessionSnapshot{
+		Title:        "New Session",
+		MessageCount: 1,
+	}
+	messages := []pebblestore.MessageSnapshot{
+		{Role: "system", Content: "Session mode changed to auto."},
+	}
+
+	if !shouldGenerateMemorySessionTitleWithPriorMessages(session, messages) {
+		t.Fatal("expected system-only prelude to remain eligible for title generation")
+	}
+}
+
+func TestShouldGenerateMemorySessionTitleRejectsPriorConversation(t *testing.T) {
+	session := pebblestore.SessionSnapshot{
+		Title:        "New Session",
+		MessageCount: 1,
+	}
+	messages := []pebblestore.MessageSnapshot{
+		{Role: "user", Content: "previous turn"},
+	}
+
+	if shouldGenerateMemorySessionTitleWithPriorMessages(session, messages) {
+		t.Fatal("expected prior user message to disable title generation")
+	}
+}
