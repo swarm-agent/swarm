@@ -1396,10 +1396,10 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
               <button
                 type="button"
                 className={cn(
-                  'inline-flex h-5 shrink-0 items-center gap-1 rounded-full border px-1.5 transition-colors',
+                  'inline-flex h-4 shrink-0 items-center gap-1 border-0 bg-transparent p-0 font-mono tabular-nums text-[10px] leading-4 transition-colors',
                   agentsExpanded
-                    ? 'border-sky-400/25 bg-sky-400/10 text-[var(--app-text)]'
-                    : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-subtle)] hover:border-[var(--app-border-strong)] hover:text-[var(--app-text)]',
+                    ? 'text-[var(--app-text)]'
+                    : 'text-[var(--app-text-subtle)] hover:text-[var(--app-text)]',
                 )}
                 onClick={(event) => {
                   event.preventDefault()
