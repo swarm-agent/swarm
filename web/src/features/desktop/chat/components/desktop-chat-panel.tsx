@@ -1449,6 +1449,12 @@ export function DesktopChatPanel({
     getItemKey: (index) => desktopChatVirtualItemKey(renderItemKey(renderItems[index], index), thinkingTagsEnabled),
     overscan: 6,
   })
+  rowVirtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
+    if (shouldStickToBottomRef.current) {
+      return true
+    }
+    return item.start < (instance.scrollOffset ?? 0) && instance.scrollDirection === 'backward'
+  }
   const virtualItems = rowVirtualizer.getVirtualItems()
 
   const selectableAgents = useMemo(
