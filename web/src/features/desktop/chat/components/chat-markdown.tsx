@@ -494,7 +494,7 @@ export function ToolMessageView({
           )}
         />
       </div>
-      <div className="min-w-0 pl-1 sm:pl-7">
+      <div className="min-w-0">
         {toolMessage.error ? (
           <div className="mt-1 break-words text-[12px] text-[var(--app-danger)]">
             {toolMessage.error}
@@ -566,7 +566,7 @@ export function ToolGroupView({
           </span>
         ) : null}
       </div>
-      <div className="grid gap-0 pl-1 sm:pl-7">
+      <div className="grid gap-0">
         {displayedMessages.map((msg, i) => (
           <ToolMessageView
             key={msg.callId || i}
