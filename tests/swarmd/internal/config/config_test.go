@@ -47,8 +47,11 @@ func TestParse_UsesSystemStorageDefaultsAndWritesNoStartupMode(t *testing.T) {
 	if strings.Contains(text, "startup"+"_mode") {
 		t.Fatalf("startup config should not include startup mode: %q", text)
 	}
-	if !strings.Contains(text, "dev_mode = false") || !strings.Contains(text, "mode = lan") {
+	if !strings.Contains(text, "dev_mode = false") {
 		t.Fatalf("startup config missing expected no-mode defaults: %q", text)
+	}
+	if strings.Contains(text, "\nmode =") {
+		t.Fatalf("startup config should not include network mode: %q", text)
 	}
 	for _, forbidden := range []string{home, filepath.Join(home, ".local"), filepath.Join(home, ".config")} {
 		for _, path := range []string{cfg.DataDir, cfg.DBPath, cfg.LockPath, cfg.ConfigPath} {
@@ -98,7 +101,7 @@ func TestParse_RetainToolOutputHistoryFromStartupConfig(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
-	content := "mode = lan\nhost = 127.0.0.1\nport = 7781\ndesktop_port = 5555\nretain_tool_output_history = true\n"
+	content := "host = 127.0.0.1\nport = 7781\ndesktop_port = 5555\nretain_tool_output_history = true\n"
 	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}

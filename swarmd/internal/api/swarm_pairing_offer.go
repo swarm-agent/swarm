@@ -155,7 +155,7 @@ func buildSwarmRemotePairingOffer(cfg startupconfig.FileConfig, status onboardin
 		Endpoint:             endpoint,
 		EndpointCandidates:   remotePairingOfferEndpointCandidates(cfg, status, endpoint),
 		APIPort:              canonicalAdvertisePort(cfg),
-		TransportMode:        bootstrapNetworkMode(cfg),
+		TransportMode:        firstTransportKind(transports),
 		RendezvousTransports: append([]onboardingTransportPayload(nil), transports...),
 		CreatedAt:            createdAt,
 		ExpiresAt:            now.Add(ttl).Unix(),
@@ -237,6 +237,9 @@ func remotePairingOfferEndpointCandidates(cfg startupconfig.FileConfig, status o
 		add(remotePairingOfferEndpointCandidate("tailscale_https", tailscalePeerURL(dnsName), apiPort))
 	}
 	for _, transport := range detectedOnboardingTransports(cfg) {
+		if strings.TrimSpace(transport.Kind) != startupconfig.NetworkModeTailscale {
+			continue
+		}
 		kind := firstNonEmpty(strings.TrimSpace(transport.Kind), "transport")
 		for _, value := range append([]string{transport.Primary}, transport.All...) {
 			if endpoint := remotePairingOfferAPIEndpoint(value, apiPort); endpoint != "" {

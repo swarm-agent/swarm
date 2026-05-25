@@ -17,7 +17,6 @@ func TestWriteAndLoad_OmitsLegacyModeAndPersistsExplicitState(t *testing.T) {
 	cfg.DevMode = true
 	cfg.DevRoot = filepath.Clean(filepath.Join(t.TempDir(), "repo"))
 	cfg.Child = true
-	cfg.NetworkMode = startupconfig.NetworkModeTailscale
 	cfg.TailscaleURL = "https://my-device.example.ts.net"
 
 	if err := startupconfig.Write(cfg); err != nil {

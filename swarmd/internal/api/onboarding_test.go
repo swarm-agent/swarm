@@ -75,8 +75,8 @@ func TestTailscaleServeCommandUsesDesktopPort(t *testing.T) {
 }
 
 func TestRequireTailscaleServeReadyForPairingRejectsMissingServe(t *testing.T) {
-	cfg := startupconfig.FileConfig{NetworkMode: startupconfig.NetworkModeTailscale, Host: "127.0.0.1", DesktopPort: 5555}
-	err := requireTailscaleServeReadyForPairing(cfg, onboardingResponse{Tailscale: onboardingTailscalePayload{Serve: onboardingTailscaleServePayload{Command: tailscaleServeCommand(cfg)}}})
+	cfg := startupconfig.FileConfig{Host: "127.0.0.1", DesktopPort: 5555}
+	err := requireTailscaleServeReadyForPairing(cfg, onboardingResponse{Tailscale: onboardingTailscalePayload{TailnetURL: "https://host.tailnet.example", Serve: onboardingTailscaleServePayload{Command: tailscaleServeCommand(cfg)}}})
 	if err == nil {
 		t.Fatal("expected missing Tailscale Serve to reject pairing")
 	}
@@ -86,7 +86,7 @@ func TestRequireTailscaleServeReadyForPairingRejectsMissingServe(t *testing.T) {
 }
 
 func TestRequireTailscaleServeReadyForPairingAcceptsDesktopServe(t *testing.T) {
-	cfg := startupconfig.FileConfig{NetworkMode: startupconfig.NetworkModeTailscale, Host: "127.0.0.1", DesktopPort: 5555}
+	cfg := startupconfig.FileConfig{Host: "127.0.0.1", DesktopPort: 5555}
 	serve := detectTailscaleServe(cfg, onboardingTailscalePayload{})
 	serve.Configured = true
 	serve.Ready = true
@@ -97,21 +97,17 @@ func TestRequireTailscaleServeReadyForPairingAcceptsDesktopServe(t *testing.T) {
 	}
 }
 
-func TestDetectedCurrentSwarmStateTransportsSkipsTailscaleInLANMode(t *testing.T) {
+func TestDetectedCurrentSwarmStateTransportsUsesTailscaleOnly(t *testing.T) {
 	transports := detectedCurrentSwarmStateTransports(startupconfig.FileConfig{
-		NetworkMode:   startupconfig.NetworkModeLAN,
 		AdvertiseHost: "192.0.2.10",
 		TailscaleURL:  "https://saved.tailnet.example",
 	})
 
-	if len(transports) != 1 {
-		t.Fatalf("transports = %d, want 1: %#v", len(transports), transports)
+	if len(transports) != 1 || transports[0].Kind != startupconfig.NetworkModeTailscale {
+		t.Fatalf("transports = %#v, want one tailscale transport", transports)
 	}
-	if transports[0].Kind != startupconfig.NetworkModeLAN {
-		t.Fatalf("transport kind = %q, want %q", transports[0].Kind, startupconfig.NetworkModeLAN)
-	}
-	if transports[0].Primary != "192.0.2.10" {
-		t.Fatalf("transport primary = %q, want 192.0.2.10", transports[0].Primary)
+	if transports[0].Primary != "https://saved.tailnet.example" {
+		t.Fatalf("tailscale transport = %q, want configured URL", transports[0].Primary)
 	}
 }
 
@@ -125,7 +121,6 @@ func TestDetectedTailscaleOnboardingTransportsUsesConfigOnly(t *testing.T) {
 	}
 
 	transports := detectedTailscaleOnboardingTransports(startupconfig.FileConfig{
-		NetworkMode:  startupconfig.NetworkModeTailscale,
 		TailscaleURL: "https://child.tailnet.example",
 	})
 
@@ -172,7 +167,6 @@ esac
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
 		cfg.SwarmName = "standalone"
 		cfg.Child = false
-		cfg.NetworkMode = startupconfig.NetworkModeLAN
 		cfg.Host = "127.0.0.1"
 		cfg.Port = 7781
 		cfg.DesktopPort = 5555
@@ -212,7 +206,6 @@ esac
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
 		cfg.SwarmName = "test69"
 		cfg.Child = true
-		cfg.NetworkMode = startupconfig.NetworkModeTailscale
 		cfg.Host = "127.0.0.1"
 		cfg.Port = 20606
 		cfg.DesktopPort = 25606

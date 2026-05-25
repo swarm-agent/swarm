@@ -624,7 +624,7 @@ func (s *Server) handleSwarmRemotePairingRequest(w http.ResponseWriter, r *http.
 	managedPublicKey := strings.TrimSpace(offer.PublicKey)
 	managedFingerprint := firstNonEmpty(strings.TrimSpace(offer.Fingerprint), swarmruntime.FingerprintPublicKey(managedPublicKey))
 	managedEndpoint := normalizeRemoteSwarmEndpoint(offer.Endpoint)
-	transportMode := firstNonEmpty(strings.TrimSpace(req.TransportMode), strings.TrimSpace(offer.TransportMode), bootstrapNetworkMode(cfg))
+	transportMode := firstNonEmpty(strings.TrimSpace(req.TransportMode), strings.TrimSpace(offer.TransportMode), firstTransportKind(offer.RendezvousTransports), startupconfig.NetworkModeTailscale)
 	if managedSwarmID == "" {
 		fail(http.StatusBadRequest, errors.New("managed swarm identity is required"))
 		return
@@ -1233,7 +1233,7 @@ func (s *Server) handleSwarmDiscovery(w http.ResponseWriter, r *http.Request) {
 	status := onboardingResponse{Tailscale: tailscale}
 	response.Role = localSwarmRole(cfg)
 	response.Endpoint = canonicalRemoteSwarmEndpoint(cfg, status)
-	response.TransportMode = bootstrapNetworkMode(cfg)
+	response.TransportMode = firstTransportKind(transports)
 	response.RendezvousTransports = transports
 	response = redactSensitiveSwarmDiscoveryResponse(response, s.allowSwarmDiscoveryIdentity(r))
 	writeJSON(w, http.StatusOK, response)
@@ -1356,34 +1356,16 @@ func normalizeRemoteSwarmEndpoint(endpoint string) string {
 }
 
 func canonicalRemoteSwarmEndpoint(cfg startupconfig.FileConfig, status onboardingResponse) string {
-	switch bootstrapNetworkMode(cfg) {
-	case startupconfig.NetworkModeTailscale:
-		if endpoint := strings.TrimSpace(cfg.TailscaleURL); endpoint != "" {
-			return normalizeRemoteSwarmEndpoint(endpoint)
-		}
-		if endpoint := strings.TrimSpace(status.Tailscale.TailnetURL); endpoint != "" {
-			return normalizeRemoteSwarmEndpoint(endpoint)
-		}
-		if dnsName := strings.TrimSpace(status.Tailscale.DNSName); dnsName != "" {
-			return "https://" + dnsName
-		}
-		return ""
-	default:
-		if host := strings.TrimSpace(cfg.AdvertiseHost); host != "" {
-			if strings.HasPrefix(host, "https://") || strings.HasPrefix(host, "http://") {
-				return strings.TrimSuffix(host, "/")
-			}
-			return "http://" + net.JoinHostPort(host, fmt.Sprintf("%d", canonicalAdvertisePort(cfg)))
-		}
-		transports := detectedOnboardingTransports(cfg)
-		if endpoint := firstTransportForKind(transports, startupconfig.NetworkModeLAN); endpoint != "" {
-			if strings.HasPrefix(endpoint, "https://") || strings.HasPrefix(endpoint, "http://") {
-				return strings.TrimSuffix(endpoint, "/")
-			}
-			return "http://" + net.JoinHostPort(endpoint, fmt.Sprintf("%d", canonicalAdvertisePort(cfg)))
-		}
-		return ""
+	if endpoint := strings.TrimSpace(cfg.TailscaleURL); endpoint != "" {
+		return normalizeRemoteSwarmEndpoint(endpoint)
 	}
+	if endpoint := strings.TrimSpace(status.Tailscale.TailnetURL); endpoint != "" {
+		return normalizeRemoteSwarmEndpoint(endpoint)
+	}
+	if dnsName := strings.TrimSpace(status.Tailscale.DNSName); dnsName != "" {
+		return "https://" + dnsName
+	}
+	return ""
 }
 
 func postRemoteSwarmJSON(endpoint string, payload any, out any) error {

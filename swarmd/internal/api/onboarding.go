@@ -237,15 +237,9 @@ func fetchRemoteSwarmDiscovery(seed remoteSwarmDiscoverySeed) (swarmDiscoveryRes
 }
 
 func remoteSwarmProbeEndpoint(mode, dnsName string, ips []string) string {
-	mode = strings.TrimSpace(mode)
 	dnsName = strings.TrimSpace(dnsName)
 	if dnsName != "" {
 		return normalizeRemoteSwarmEndpoint(dnsName)
-	}
-	if mode == startupconfig.NetworkModeLAN {
-		if ip := strings.TrimSpace(firstString(ips)); ip != "" {
-			return normalizeRemoteSwarmEndpoint(ip)
-		}
 	}
 	return ""
 }
@@ -365,7 +359,7 @@ func (s *Server) onboardingResponseWithServeDetection(includeSensitive bool, det
 	tailscale, _ := detectTailscaleWithStatus()
 	if !needsOnboarding {
 		tailscale.TailnetURL = firstNonEmpty(strings.TrimSpace(cfg.TailscaleURL), strings.TrimSpace(tailscale.TailnetURL))
-		tailscale.Available = tailscale.Available || tailscale.TailnetURL != "" || bootstrapNetworkMode(cfg) == startupconfig.NetworkModeTailscale
+		tailscale.Available = tailscale.Available || tailscale.TailnetURL != ""
 	}
 	response := onboardingResponse{
 		OK:              true,
@@ -376,7 +370,6 @@ func (s *Server) onboardingResponseWithServeDetection(includeSensitive bool, det
 			DesktopOnboardingComplete: cfg.DesktopOnboardingComplete,
 			Child:                     cfg.Child,
 			SwarmRole:                 localSwarmRole(cfg),
-			Mode:                      bootstrapNetworkMode(cfg),
 			Host:                      strings.TrimSpace(cfg.Host),
 			Port:                      cfg.Port,
 			DesktopPort:               cfg.DesktopPort,
@@ -533,13 +526,7 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 		changed = true
 	}
 	if req.Mode != nil {
-		updated.NetworkMode = strings.ToLower(strings.TrimSpace(*req.Mode))
-		if !isValidBootstrapNetworkMode(updated.NetworkMode) {
-			return onboardingResponse{}, nil, fmt.Errorf("mode must be %q or %q", startupconfig.NetworkModeLAN, startupconfig.NetworkModeTailscale)
-		}
-		changed = true
-		restartRequired = true
-		restartReasons = append(restartReasons, "reachability mode changed")
+		return onboardingResponse{}, nil, errors.New("mode was removed; use tailscale_url for explicit pairing endpoint configuration")
 	}
 	if req.Port != nil {
 		updated.Port = *req.Port
@@ -565,7 +552,7 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 		restartRequired = true
 		restartReasons = append(restartReasons, "peer transport endpoint changed")
 	}
-	if bootstrapNetworkMode(updated) == startupconfig.NetworkModeTailscale && strings.TrimSpace(updated.TailscaleURL) == "" {
+	if strings.TrimSpace(updated.TailscaleURL) == "" {
 		if tailscale, _ := detectTailscaleWithStatus(); strings.TrimSpace(tailscale.TailnetURL) != "" {
 			updated.TailscaleURL = strings.TrimSpace(tailscale.TailnetURL)
 			changed = true
@@ -584,20 +571,6 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 		updated.SwarmName = defaultOnboardingSwarmName(updated)
 		changed = true
 	}
-	if requestChangesSwarmReachability(req) && bootstrapNetworkMode(updated) == startupconfig.NetworkModeLAN {
-		updated.AdvertiseHost = firstNonEmpty(
-			strings.TrimSpace(updated.AdvertiseHost),
-			firstString(lanConfigHosts(updated)),
-			firstString(detectLANAddresses()),
-		)
-		if updated.AdvertisePort < 1 || updated.AdvertisePort > 65535 {
-			updated.AdvertisePort = updated.Port
-		}
-		if strings.TrimSpace(updated.AdvertiseHost) == "" {
-			return onboardingResponse{}, nil, errors.New("could not determine a LAN advertise host; enter one explicitly")
-		}
-	}
-
 	if !changed && bootstrapUsername == "" {
 		return onboardingResponse{}, nil, errors.New("no onboarding fields were provided")
 	}
@@ -747,7 +720,7 @@ func requestChangesSwarmShape(req onboardingUpdateRequest) bool {
 }
 
 func requestChangesSwarmReachability(req onboardingUpdateRequest) bool {
-	return req.Mode != nil || req.Port != nil || req.AdvertiseHost != nil || req.AdvertisePort != nil || req.TailscaleURL != nil || req.PeerTransportPort != nil
+	return req.Port != nil || req.AdvertiseHost != nil || req.AdvertisePort != nil || req.TailscaleURL != nil || req.PeerTransportPort != nil
 }
 
 func defaultOnboardingSwarmName(cfg startupconfig.FileConfig) string {
@@ -790,49 +763,17 @@ func localSwarmRole(cfg startupconfig.FileConfig) string {
 	return bootstrapRoleMaster
 }
 
-func bootstrapNetworkMode(cfg startupconfig.FileConfig) string {
-	mode := strings.ToLower(strings.TrimSpace(cfg.NetworkMode))
-	if mode == "" {
-		return startupconfig.NetworkModeLAN
-	}
-	return mode
-}
-
-func isValidBootstrapNetworkMode(mode string) bool {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case startupconfig.NetworkModeLAN, startupconfig.NetworkModeTailscale:
-		return true
-	default:
-		return false
-	}
-}
-
 func tailscaleCandidateURL(cfg startupconfig.FileConfig, tailscale onboardingTailscalePayload) string {
 	return firstNonEmpty(strings.TrimSpace(cfg.TailscaleURL), strings.TrimSpace(tailscale.TailnetURL))
 }
 
 func detectedOnboardingTransports(cfg startupconfig.FileConfig) []onboardingTransportPayload {
-	transports := make([]onboardingTransportPayload, 0, 2)
-	transports = append(transports, detectedLANOnboardingTransports(cfg)...)
-	transports = append(transports, detectedTailscaleOnboardingTransports(cfg)...)
-	return transports
+	return detectedTailscaleOnboardingTransports(cfg)
 }
 
 func detectedCurrentSwarmStateTransports(cfg startupconfig.FileConfig) []onboardingTransportPayload {
-	if bootstrapNetworkMode(cfg) == startupconfig.NetworkModeLAN {
-		return detectedLANOnboardingTransports(cfg)
-	}
 	return detectedOnboardingTransports(cfg)
 }
-
-func detectedLANOnboardingTransports(cfg startupconfig.FileConfig) []onboardingTransportPayload {
-	lan := lanCandidateHosts(cfg)
-	if len(lan) > 0 {
-		return []onboardingTransportPayload{{Kind: startupconfig.NetworkModeLAN, Primary: lan[0], All: lan}}
-	}
-	return nil
-}
-
 func detectedTailscaleOnboardingTransports(cfg startupconfig.FileConfig) []onboardingTransportPayload {
 	tailscaleURL := strings.TrimSpace(cfg.TailscaleURL)
 	if tailscaleURL == "" {
@@ -845,42 +786,11 @@ func detectedTailscaleOnboardingTransports(cfg startupconfig.FileConfig) []onboa
 	}}
 }
 
-func lanCandidateHosts(cfg startupconfig.FileConfig) []string {
-	return orderedUniqueTransportStrings(append(lanConfigHosts(cfg), detectLANAddresses()...))
-}
-
-func lanConfigHosts(cfg startupconfig.FileConfig) []string {
-	values := make([]string, 0, 2)
-	if host := strings.TrimSpace(cfg.AdvertiseHost); isUsableLANHost(host) {
-		values = append(values, host)
-	}
-	if host := strings.TrimSpace(cfg.Host); isUsableLANHost(host) {
-		values = append(values, host)
-	}
-	return values
-}
-
 func canonicalAdvertisePort(cfg startupconfig.FileConfig) int {
 	if cfg.AdvertisePort >= 1 && cfg.AdvertisePort <= 65535 {
 		return cfg.AdvertisePort
 	}
 	return cfg.Port
-}
-
-func isUsableLANHost(value string) bool {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return false
-	}
-	switch strings.ToLower(value) {
-	case "localhost", "0.0.0.0", "::", "::1", "[::]", "[::1]":
-		return false
-	}
-	ipText := strings.TrimPrefix(strings.TrimSuffix(value, "]"), "[")
-	if ip := net.ParseIP(ipText); ip != nil && (ip.IsLoopback() || ip.IsUnspecified()) {
-		return false
-	}
-	return true
 }
 
 func firstString(values []string) string {
@@ -1218,7 +1128,7 @@ func tailscaleServePairingError(serve onboardingTailscaleServePayload) error {
 }
 
 func requireTailscaleServeReadyForPairing(cfg startupconfig.FileConfig, status onboardingResponse) error {
-	if bootstrapNetworkMode(cfg) != startupconfig.NetworkModeTailscale {
+	if canonicalRemoteSwarmEndpoint(cfg, status) == "" {
 		return nil
 	}
 	if !status.Tailscale.Available || strings.TrimSpace(status.Tailscale.Error) != "" || !status.Tailscale.Connected {
@@ -1322,15 +1232,11 @@ func (s *Server) currentSwarmState(cfg startupconfig.FileConfig) (swarmruntime.L
 		return swarmruntime.LocalState{}, errors.New("swarm service is not configured")
 	}
 	transports := detectedCurrentSwarmStateTransports(cfg)
-	mode := bootstrapNetworkMode(cfg)
-	advertiseAddr := firstTransportForKind(transports, mode)
-	if mode == startupconfig.NetworkModeLAN {
-		advertiseAddr = firstNonEmpty(strings.TrimSpace(cfg.AdvertiseHost), advertiseAddr)
-	}
+	advertiseAddr := firstTransportForKind(transports, startupconfig.NetworkModeTailscale)
 	state, err := s.swarm.EnsureLocalState(swarmruntime.EnsureLocalStateInput{
 		Name:          strings.TrimSpace(cfg.SwarmName),
 		Role:          localSwarmRole(cfg),
-		AdvertiseMode: mode,
+		AdvertiseMode: firstTransportKind(transports),
 		AdvertiseAddr: advertiseAddr,
 		Transports:    onboardingTransportsToSwarm(transports),
 	})
@@ -1338,6 +1244,20 @@ func (s *Server) currentSwarmState(cfg startupconfig.FileConfig) (swarmruntime.L
 		return swarmruntime.LocalState{}, err
 	}
 	return state, nil
+}
+
+func firstTransportKind(transports []onboardingTransportPayload) string {
+	for _, transport := range transports {
+		if strings.TrimSpace(transport.Kind) == startupconfig.NetworkModeTailscale {
+			return startupconfig.NetworkModeTailscale
+		}
+	}
+	for _, transport := range transports {
+		if kind := strings.TrimSpace(transport.Kind); kind != "" {
+			return kind
+		}
+	}
+	return ""
 }
 
 func firstTransportForKind(transports []onboardingTransportPayload, kind string) string {

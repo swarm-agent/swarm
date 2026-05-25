@@ -309,7 +309,6 @@ func TestCreateRejectsLANWireGuardRemoteDeploy(t *testing.T) {
 		DesktopPort:       15566,
 		PeerTransportPort: 17802,
 		SwarmName:         "Remote Deploy Test Host",
-		NetworkMode:       startupconfig.NetworkModeTailscale,
 		TailscaleURL:      "https://host.tailnet.ts.net",
 	}); err != nil {
 		t.Fatalf("write startup config: %v", err)
@@ -370,7 +369,6 @@ func TestRenderChildStartupConfigIgnoresRemoteAdvertiseHostForTailscale(t *testi
 	for _, needle := range []string{
 		"host = 127.0.0.1",
 		"advertise_host = 127.0.0.1",
-		"mode = tailscale",
 		"tailscale_url = https://host.tailnet.ts.net",
 		"remote_deploy_enabled = true",
 		"remote_deploy_host_api_base_url = https://host.tailnet.ts.net",
@@ -786,7 +784,6 @@ func TestEnsurePendingInviteRestoresMissingHostInvite(t *testing.T) {
 		DesktopPort:       15566,
 		PeerTransportPort: 17802,
 		SwarmName:         "Remote Deploy Test Host",
-		NetworkMode:       startupconfig.NetworkModeTailscale,
 		TailscaleURL:      "https://host.tailnet.ts.net",
 	}); err != nil {
 		t.Fatalf("write startup config: %v", err)

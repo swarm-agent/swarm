@@ -72,7 +72,6 @@ func TestSwarmRemotePairingApproveManagerApprovesAndReturnsFinalizeMaterial(t *t
 	manager.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "manager-swarm-1", Name: "Manager A", PublicKey: managerPublicKey, Fingerprint: managerFingerprint}}}
 	manager.SetDeployContainerService(fakeManagedHostInitialSyncDeployService{bundle: deployruntime.ManagedHostInitialSyncBundle{UserID: "user_local_auth_test", AccountScopeID: "acct_local_auth_test", CredentialBundle: deployruntime.ContainerSyncCredentialBundle{UserID: "user_local_auth_test", AccountScopeID: "acct_local_auth_test"}}})
 	setLocalAuthTestStartupConfig(t, manager, func(cfg *startupconfig.FileConfig) {
-		cfg.NetworkMode = startupconfig.NetworkModeTailscale
 		cfg.SwarmName = "Manager A"
 		cfg.TailscaleURL = "https://manager-a.example.ts.net"
 	})
@@ -215,7 +214,6 @@ func TestSwarmRemotePairingFinalizePersistsManagedStartupConfig(t *testing.T) {
 		cfg.SwarmRole = ""
 		cfg.ParentSwarmID = ""
 		cfg.PairingState = ""
-		cfg.NetworkMode = startupconfig.NetworkModeTailscale
 		cfg.TailscaleURL = "https://managed-b.example.ts.net"
 	})
 
@@ -246,8 +244,8 @@ func TestSwarmRemotePairingFinalizePersistsManagedStartupConfig(t *testing.T) {
 	if cfg.PairingState != startupconfig.PairingStatePaired {
 		t.Fatalf("config PairingState = %q, want paired", cfg.PairingState)
 	}
-	if cfg.NetworkMode != startupconfig.NetworkModeTailscale || cfg.TailscaleURL != "https://managed-b.example.ts.net" {
-		t.Fatalf("config transport changed unexpectedly: mode=%q tailscale=%q", cfg.NetworkMode, cfg.TailscaleURL)
+	if cfg.TailscaleURL != "https://managed-b.example.ts.net" {
+		t.Fatalf("config tailscale URL changed unexpectedly: %q", cfg.TailscaleURL)
 	}
 }
 

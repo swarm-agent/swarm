@@ -40,7 +40,6 @@ const (
 	devRootKey                   = "dev_root"
 	desktopOnboardingCompleteKey = "desktop_onboarding_complete"
 	swarmRoleKey                 = "swarm_role"
-	bootstrapModeKey             = "mode"
 	childStartupConfigEnv        = "SWARM_CHILD_STARTUP_CONFIG"
 )
 
@@ -61,7 +60,6 @@ type FileConfig struct {
 	DesktopOnboardingCompleteSet bool
 	Child                        bool
 	SwarmRole                    string
-	NetworkMode                  string
 	TailscaleURL                 string
 	PeerTransportPort            int
 	ParentSwarmID                string
@@ -115,8 +113,6 @@ type BootstrapFlags struct {
 	SwarmNameSet     bool
 	Child            bool
 	ChildSet         bool
-	Mode             string
-	ModeSet          bool
 	AdvertiseHost    string
 	AdvertiseHostSet bool
 	AdvertisePort    int
@@ -126,15 +122,12 @@ type BootstrapFlags struct {
 }
 
 func (b BootstrapFlags) HasAny() bool {
-	return b.SwarmNameSet || b.ChildSet || b.ModeSet || b.AdvertiseHostSet || b.AdvertisePortSet || b.TailscaleURLSet
+	return b.SwarmNameSet || b.ChildSet || b.AdvertiseHostSet || b.AdvertisePortSet || b.TailscaleURLSet
 }
 
 func (b BootstrapFlags) Validate() error {
 	if b.SwarmNameSet && strings.TrimSpace(b.SwarmName) == "" {
 		return errors.New("invalid --swarm-name: value must be non-empty")
-	}
-	if b.ModeSet && !isValidNetworkMode(strings.TrimSpace(b.Mode)) {
-		return fmt.Errorf("invalid --mode %q (expected %q or %q)", b.Mode, NetworkModeLAN, NetworkModeTailscale)
 	}
 	if b.AdvertiseHostSet {
 		normalizedHost, err := normalizeAdvertiseHost(b.AdvertiseHost)
@@ -163,9 +156,6 @@ func (cfg FileConfig) ApplyBootstrap(flags BootstrapFlags) (FileConfig, error) {
 	}
 	if flags.ChildSet {
 		cfg.Child = flags.Child
-	}
-	if flags.ModeSet {
-		cfg.NetworkMode = normalizeNetworkMode(flags.Mode)
 	}
 	if flags.AdvertiseHostSet {
 		normalizedHost, err := normalizeAdvertiseHost(flags.AdvertiseHost)
@@ -215,7 +205,6 @@ func Default(path string) FileConfig {
 		DesktopOnboardingCompleteSet: false,
 		Child:                        false,
 		SwarmRole:                    "",
-		NetworkMode:                  NetworkModeLAN,
 		TailscaleURL:                 "",
 		PeerTransportPort:            DefaultPeerTransportPort,
 		ParentSwarmID:                "",
@@ -404,11 +393,6 @@ child = %t
 # managed = paired host managed by another Swarm; blank = derive from child/pairing state.
 swarm_role = %s
 
-# Bootstrap network mode.
-# lan = connect over the local network.
-# tailscale = connect over a Tailscale URL.
-mode = %s
-
 # Canonical persisted Tailscale URL for bootstrap and pairing flows.
 # Leave blank when not using a manual Tailscale address.
 tailscale_url = %s
@@ -457,7 +441,7 @@ remote_deploy_sync_enabled = %t
 remote_deploy_sync_mode = %s
 remote_deploy_sync_owner_swarm_id = %s
 remote_deploy_sync_credential_url = %s
-`, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.SwarmName, cfg.DesktopOnboardingComplete, cfg.Child, cfg.SwarmRole, cfg.NetworkMode, cfg.TailscaleURL, cfg.PeerTransportPort, cfg.ParentSwarmID, cfg.PairingState, cfg.ManagedHostSync.Mode, formatCSVList(cfg.ManagedHostSync.Modules), cfg.ManagedHostSync.OwnerSwarmID, cfg.ManagedHostSync.HostAPIBaseURL, cfg.ManagedHostSync.SyncCredentialURL, cfg.ManagedHostSync.SyncAgentURL, cfg.DeployContainer.Enabled, cfg.DeployContainer.HostDriven, cfg.DeployContainer.SyncEnabled, cfg.DeployContainer.SyncMode, formatCSVList(cfg.DeployContainer.SyncModules), cfg.DeployContainer.SyncOwnerSwarmID, cfg.DeployContainer.SyncCredentialURL, cfg.DeployContainer.SyncAgentURL, cfg.DeployContainer.DeploymentID, cfg.DeployContainer.HostAPIBaseURL, cfg.DeployContainer.HostDesktopURL, cfg.DeployContainer.LocalTransportSocketPath, cfg.DeployContainer.BootstrapSecret, cfg.DeployContainer.VerificationCode, cfg.RemoteDeploy.Enabled, cfg.RemoteDeploy.SessionID, cfg.RemoteDeploy.HostAPIBaseURL, cfg.RemoteDeploy.HostDesktopURL, cfg.RemoteDeploy.SyncEnabled, cfg.RemoteDeploy.SyncMode, cfg.RemoteDeploy.SyncOwnerSwarmID, cfg.RemoteDeploy.SyncCredentialURL)
+`, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.SwarmName, cfg.DesktopOnboardingComplete, cfg.Child, cfg.SwarmRole, cfg.TailscaleURL, cfg.PeerTransportPort, cfg.ParentSwarmID, cfg.PairingState, cfg.ManagedHostSync.Mode, formatCSVList(cfg.ManagedHostSync.Modules), cfg.ManagedHostSync.OwnerSwarmID, cfg.ManagedHostSync.HostAPIBaseURL, cfg.ManagedHostSync.SyncCredentialURL, cfg.ManagedHostSync.SyncAgentURL, cfg.DeployContainer.Enabled, cfg.DeployContainer.HostDriven, cfg.DeployContainer.SyncEnabled, cfg.DeployContainer.SyncMode, formatCSVList(cfg.DeployContainer.SyncModules), cfg.DeployContainer.SyncOwnerSwarmID, cfg.DeployContainer.SyncCredentialURL, cfg.DeployContainer.SyncAgentURL, cfg.DeployContainer.DeploymentID, cfg.DeployContainer.HostAPIBaseURL, cfg.DeployContainer.HostDesktopURL, cfg.DeployContainer.LocalTransportSocketPath, cfg.DeployContainer.BootstrapSecret, cfg.DeployContainer.VerificationCode, cfg.RemoteDeploy.Enabled, cfg.RemoteDeploy.SessionID, cfg.RemoteDeploy.HostAPIBaseURL, cfg.RemoteDeploy.HostDesktopURL, cfg.RemoteDeploy.SyncEnabled, cfg.RemoteDeploy.SyncMode, cfg.RemoteDeploy.SyncOwnerSwarmID, cfg.RemoteDeploy.SyncCredentialURL)
 }
 
 func BootstrapExistingConfigError(path string) error {
@@ -520,21 +504,12 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 			if cfg.DevRoot != "" {
 				cfg.DevRoot = filepath.Clean(cfg.DevRoot)
 			}
-		case bootstrapModeKey:
-			if isValidNetworkMode(value) {
-				if _, exists := seen[bootstrapModeKey]; exists {
-					return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-				}
-				seen[bootstrapModeKey] = struct{}{}
-				cfg.NetworkMode = normalizeNetworkMode(value)
-				continue
-			}
+		case "mode":
 			if legacyStartupModeSeen {
 				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate legacy startup mode", lineNumber+1)
 			}
 			legacyStartupModeSeen = true
-			// Legacy mode values are inert startup-mode input. Bootstrap network
-			// mode uses mode=lan|tailscale above.
+			// Legacy mode values are inert input only; they no longer control daemon behavior.
 		case "host":
 			if _, exists := rawSeen[key]; exists {
 				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
@@ -653,28 +628,12 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 			rawSeen[key] = struct{}{}
 			seen[swarmRoleKey] = struct{}{}
 			cfg.SwarmRole = normalizeSwarmRole(value)
-		case "network_mode":
-			if _, exists := seen[bootstrapModeKey]; exists {
-				continue
-			}
+		case "network_mode", "advertise_mode":
 			if legacyBootstrapModeSeen {
 				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate legacy bootstrap mode", lineNumber+1)
 			}
 			legacyBootstrapModeSeen = true
-			cfg.NetworkMode = normalizeNetworkMode(value)
-		case "advertise_mode":
-			if _, exists := seen[bootstrapModeKey]; exists {
-				continue
-			}
-			if legacyBootstrapModeSeen {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate legacy bootstrap mode", lineNumber+1)
-			}
-			legacyBootstrapModeSeen = true
-			normalizedMode, err := normalizeLegacyAdvertiseMode(value)
-			if err != nil {
-				return FileConfig{}, nil, fmt.Errorf("line %d: invalid advertise_mode %q: %v", lineNumber+1, value, err)
-			}
-			cfg.NetworkMode = normalizedMode
+			// Legacy bootstrap network mode is ignored; runtime reachability no longer has a mode selector.
 		case "advertise_addr":
 			switch {
 			case strings.TrimSpace(value) == "":
@@ -1072,14 +1031,6 @@ func missingKeyLines(cfg FileConfig, seen map[string]struct{}) []string {
 			fmt.Sprintf("%s = %s", swarmRoleKey, cfg.SwarmRole),
 		)
 	}
-	if _, ok := seen[bootstrapModeKey]; !ok {
-		lines = append(lines,
-			"# Bootstrap network mode.",
-			"# lan = connect over the local network.",
-			"# tailscale = connect over a Tailscale URL.",
-			fmt.Sprintf("%s = %s", bootstrapModeKey, cfg.NetworkMode),
-		)
-	}
 	if _, ok := seen["tailscale_url"]; !ok {
 		lines = append(lines,
 			"# Canonical persisted Tailscale URL for bootstrap and pairing flows.",
@@ -1185,7 +1136,7 @@ func validate(cfg FileConfig) error {
 }
 
 func requiredKeys() []string {
-	return []string{devModeKey, devRootKey, "host", "port", "advertise_host", "advertise_port", "desktop_port", "bypass_permissions", "retain_tool_output_history", "swarm_name", "child", swarmRoleKey, bootstrapModeKey, "tailscale_url", "peer_transport_port", "parent_swarm_id", "pairing_state", "managed_host_sync_mode", "managed_host_sync_modules", "managed_host_sync_owner_swarm_id", "managed_host_sync_host_api_base_url", "managed_host_sync_credential_url", "managed_host_sync_agent_url", "deploy_container_enabled", "deploy_container_sync_enabled", "deploy_container_sync_mode", "deploy_container_sync_modules", "deploy_container_sync_owner_swarm_id", "deploy_container_sync_credential_url", "deploy_container_sync_agent_url", "deploy_container_deployment_id", "deploy_container_host_api_base_url", "deploy_container_host_desktop_url", "deploy_container_local_transport_socket_path", "deploy_container_bootstrap_secret", "deploy_container_verification_code", "remote_deploy_enabled", "remote_deploy_session_id", "remote_deploy_host_api_base_url", "remote_deploy_host_desktop_url", "remote_deploy_sync_enabled", "remote_deploy_sync_mode", "remote_deploy_sync_owner_swarm_id", "remote_deploy_sync_credential_url"}
+	return []string{devModeKey, devRootKey, "host", "port", "advertise_host", "advertise_port", "desktop_port", "bypass_permissions", "retain_tool_output_history", "swarm_name", "child", swarmRoleKey, "tailscale_url", "peer_transport_port", "parent_swarm_id", "pairing_state", "managed_host_sync_mode", "managed_host_sync_modules", "managed_host_sync_owner_swarm_id", "managed_host_sync_host_api_base_url", "managed_host_sync_credential_url", "managed_host_sync_agent_url", "deploy_container_enabled", "deploy_container_sync_enabled", "deploy_container_sync_mode", "deploy_container_sync_modules", "deploy_container_sync_owner_swarm_id", "deploy_container_sync_credential_url", "deploy_container_sync_agent_url", "deploy_container_deployment_id", "deploy_container_host_api_base_url", "deploy_container_host_desktop_url", "deploy_container_local_transport_socket_path", "deploy_container_bootstrap_secret", "deploy_container_verification_code", "remote_deploy_enabled", "remote_deploy_session_id", "remote_deploy_host_api_base_url", "remote_deploy_host_desktop_url", "remote_deploy_sync_enabled", "remote_deploy_sync_mode", "remote_deploy_sync_owner_swarm_id", "remote_deploy_sync_credential_url"}
 }
 
 func allowsEmptyValue(key string) bool {
@@ -1320,10 +1271,6 @@ func formatCSVList(values []string) string {
 	return strings.Join(normalized, ",")
 }
 
-func normalizeNetworkMode(value string) string {
-	return strings.ToLower(strings.TrimSpace(value))
-}
-
 func decodeEnvMultiline(value string) string {
 	value = strings.ReplaceAll(value, "\r\n", "\n")
 	return strings.ReplaceAll(value, `\n`, "\n")
@@ -1347,26 +1294,6 @@ func normalizeAdvertiseHost(value string) (string, error) {
 		value = strings.TrimSuffix(strings.TrimPrefix(value, "["), "]")
 	}
 	return value, nil
-}
-
-func isValidNetworkMode(value string) bool {
-	switch normalizeNetworkMode(value) {
-	case NetworkModeLAN, NetworkModeTailscale:
-		return true
-	default:
-		return false
-	}
-}
-
-func normalizeLegacyAdvertiseMode(value string) (string, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "local", "lan":
-		return NetworkModeLAN, nil
-	case "tailscale":
-		return NetworkModeTailscale, nil
-	default:
-		return "", fmt.Errorf("expected %q, %q, or %q", "local", NetworkModeLAN, NetworkModeTailscale)
-	}
 }
 
 func normalizePairingState(value string) string {

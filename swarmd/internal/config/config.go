@@ -304,16 +304,7 @@ func parseBootstrapArgs(args []string, startupExists bool) (startupconfig.Bootst
 			bootstrap.AdvertisePort = parsed
 			bootstrap.AdvertisePortSet = true
 		case "--mode":
-			if i+1 >= len(args) {
-				return startupconfig.BootstrapFlags{}, nil, errors.New("missing value for --mode")
-			}
-			value := args[i+1]
-			if !isBootstrapNetworkMode(value) {
-				return startupconfig.BootstrapFlags{}, nil, fmt.Errorf("invalid --mode %q (expected %q or %q)", value, startupconfig.NetworkModeLAN, startupconfig.NetworkModeTailscale)
-			}
-			i++
-			bootstrap.Mode = value
-			bootstrap.ModeSet = true
+			return startupconfig.BootstrapFlags{}, nil, errors.New("--mode was removed; use --tailscale-url for explicit pairing endpoint configuration")
 		default:
 			if value, ok := consumeInlineFlag(arg, "--swarm-name="); ok {
 				bootstrap.SwarmName = value
@@ -348,27 +339,13 @@ func parseBootstrapArgs(args []string, startupExists bool) (startupconfig.Bootst
 				bootstrap.AdvertisePortSet = true
 				continue
 			}
-			if value, ok := consumeInlineFlag(arg, "--mode="); ok {
-				if !isBootstrapNetworkMode(value) {
-					return startupconfig.BootstrapFlags{}, nil, fmt.Errorf("invalid --mode %q (expected %q or %q)", value, startupconfig.NetworkModeLAN, startupconfig.NetworkModeTailscale)
-				}
-				bootstrap.Mode = value
-				bootstrap.ModeSet = true
-				continue
+			if _, ok := consumeInlineFlag(arg, "--mode="); ok {
+				return startupconfig.BootstrapFlags{}, nil, errors.New("--mode was removed; use --tailscale-url for explicit pairing endpoint configuration")
 			}
 			filtered = append(filtered, arg)
 		}
 	}
 	return bootstrap, filtered, nil
-}
-
-func isBootstrapNetworkMode(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case startupconfig.NetworkModeLAN, startupconfig.NetworkModeTailscale:
-		return true
-	default:
-		return false
-	}
 }
 
 func consumeInlineFlag(arg, prefix string) (string, bool) {

@@ -2596,8 +2596,8 @@ func (s *Service) resolveBootstrapContext() (startupconfig.FileConfig, swarmrunt
 	state, err := s.swarms.EnsureLocalState(swarmruntime.EnsureLocalStateInput{
 		Name:          strings.TrimSpace(cfg.SwarmName),
 		Role:          hostRole(cfg),
-		AdvertiseMode: cfg.NetworkMode,
-		AdvertiseAddr: strings.TrimSpace(cfg.AdvertiseHost),
+		AdvertiseMode: "",
+		AdvertiseAddr: "",
 	})
 	if err != nil {
 		return startupconfig.FileConfig{}, swarmruntime.LocalState{}, err
@@ -3041,7 +3041,6 @@ func (s *Service) renderChildStartupConfig(record pebblestore.RemoteDeploySessio
 	cfg.DesktopPort = childPorts.Desktop
 	cfg.PeerTransportPort = childPorts.PeerTransport
 	cfg.Child = true
-	cfg.NetworkMode = transportMode
 	cfg.TailscaleURL = firstNonEmpty(map[bool]string{true: strings.TrimSpace(record.MasterEndpoint)}[transportMode == startupconfig.NetworkModeTailscale && strings.TrimSpace(record.MasterEndpoint) != ""])
 	cfg.BypassPermissions = record.BypassPermissions
 	cfg.SwarmName = strings.TrimSpace(record.Name)

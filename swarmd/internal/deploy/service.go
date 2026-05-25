@@ -2394,7 +2394,7 @@ func (s *Service) finalizeApprovedAttach(record *pebblestore.DeployContainerReco
 		Fingerprint:           record.ChildFingerprint,
 		Relationship:          swarmruntime.RelationshipChild,
 		ParentSwarmID:         hostState.Node.SwarmID,
-		TransportMode:         firstNonEmpty(startupCfg.NetworkMode, startupconfig.NetworkModeLAN),
+		TransportMode:         firstNonEmpty(firstTransportKindFromSwarm(hostState.Node.Transports), startupconfig.NetworkModeTailscale),
 		OutgoingPeerAuthToken: strings.TrimSpace(hostToChildPeerAuthToken),
 		IncomingPeerAuthHash:  swarmruntime.HashPeerAuthToken(childToHostPeerAuthToken),
 		ApprovedAt:            time.Now().UnixMilli(),
@@ -2487,8 +2487,8 @@ func (s *Service) resolveBootstrapContext() (startupconfig.FileConfig, swarmrunt
 	state, err := s.swarms.EnsureLocalState(swarmruntime.EnsureLocalStateInput{
 		Name:          strings.TrimSpace(cfg.SwarmName),
 		Role:          hostRole(cfg),
-		AdvertiseMode: cfg.NetworkMode,
-		AdvertiseAddr: strings.TrimSpace(cfg.AdvertiseHost),
+		AdvertiseMode: firstTransportKindFromSwarm(nil),
+		AdvertiseAddr: "",
 	})
 	if err != nil {
 		return startupconfig.FileConfig{}, swarmruntime.LocalState{}, err
@@ -2538,7 +2538,6 @@ func buildChildContainerEnv(input containerBootstrapEnvInput) []string {
 	cfg.DesktopPort = startupconfig.DefaultDesktopPort
 	cfg.BypassPermissions = input.BypassPermissions
 	cfg.Child = true
-	cfg.NetworkMode = startupconfig.NetworkModeLAN
 	cfg.SwarmName = strings.TrimSpace(input.ChildName)
 	cfg.ParentSwarmID = strings.TrimSpace(input.HostState.Node.SwarmID)
 	cfg.PairingState = startupconfig.PairingStateBootstrapReady
@@ -2789,8 +2788,8 @@ func (s *Service) prepareChildAttachState(cfg startupconfig.FileConfig) (swarmru
 	state, err := s.swarms.EnsureLocalState(swarmruntime.EnsureLocalStateInput{
 		Name:          strings.TrimSpace(cfg.SwarmName),
 		Role:          "child",
-		AdvertiseMode: cfg.NetworkMode,
-		AdvertiseAddr: strings.TrimSpace(cfg.AdvertiseHost),
+		AdvertiseMode: firstTransportKindFromSwarm(nil),
+		AdvertiseAddr: "",
 	})
 	if err != nil {
 		return swarmruntime.LocalState{}, err
@@ -3318,7 +3317,7 @@ func (s *Service) finalizeChildAttach(ctx context.Context, cfg startupconfig.Fil
 		Fingerprint:           firstNonEmpty(strings.TrimSpace(status.HostFingerprint), existingPeer.Fingerprint),
 		Relationship:          swarmruntime.RelationshipParent,
 		ParentSwarmID:         "",
-		TransportMode:         firstNonEmpty(cfg.NetworkMode, existingPeer.TransportMode, startupconfig.NetworkModeLAN),
+		TransportMode:         firstNonEmpty(existingPeer.TransportMode, startupconfig.NetworkModeTailscale),
 		OutgoingPeerAuthToken: outgoingPeerAuthToken,
 		IncomingPeerAuthHash:  incomingPeerAuthHash,
 		ApprovedAt:            time.Now().UnixMilli(),
@@ -5241,6 +5240,15 @@ func encodeEnvMultiline(value string) string {
 
 func subtleTrim(value string) string {
 	return strings.TrimSpace(value)
+}
+
+func firstTransportKindFromSwarm(transports []swarmruntime.TransportSummary) string {
+	for _, transport := range transports {
+		if kind := strings.TrimSpace(transport.Kind); kind != "" {
+			return kind
+		}
+	}
+	return ""
 }
 
 func firstNonEmpty(values ...string) string {

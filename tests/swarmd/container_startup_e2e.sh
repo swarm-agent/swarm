@@ -92,7 +92,7 @@ run_case() {
   local auth_url
   auth_url="$(wait_for_auth_url "${CONTAINER_NAME}" || true)"
 
-  assert_contains "${config}" "mode = lan" "${CONTAINER_NAME} config"
+  assert_not_contains "${config}" "mode =" "${CONTAINER_NAME} config"
   assert_contains "${config}" "host = 127.0.0.1" "${CONTAINER_NAME} config"
   assert_contains "${config}" "port = 7781" "${CONTAINER_NAME} config"
   assert_contains "${config}" "desktop_port = 5555" "${CONTAINER_NAME} config"

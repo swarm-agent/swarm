@@ -223,7 +223,7 @@ func newMirrorTestServer(t *testing.T) (*Server, func()) {
 		t.Fatalf("add workspace: %v", err)
 	}
 	startupPath := filepath.Join(dir, "startup.json")
-	if err := startupconfig.Write(startupconfig.FileConfig{Path: startupPath, Host: "127.0.0.1", Port: startupconfig.DefaultPort, AdvertiseHost: "127.0.0.1", AdvertisePort: startupconfig.DefaultPort, DesktopPort: startupconfig.DefaultDesktopPort, PeerTransportPort: startupconfig.DefaultPeerTransportPort, SwarmName: "host-swarm", NetworkMode: startupconfig.NetworkModeTailscale}); err != nil {
+	if err := startupconfig.Write(startupconfig.FileConfig{Path: startupPath, Host: "127.0.0.1", Port: startupconfig.DefaultPort, AdvertiseHost: "127.0.0.1", AdvertisePort: startupconfig.DefaultPort, DesktopPort: startupconfig.DefaultDesktopPort, PeerTransportPort: startupconfig.DefaultPeerTransportPort, SwarmName: "host-swarm"}); err != nil {
 		_ = store.Close()
 		t.Fatalf("write startup config: %v", err)
 	}

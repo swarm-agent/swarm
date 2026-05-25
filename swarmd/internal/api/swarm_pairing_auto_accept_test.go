@@ -16,7 +16,6 @@ func TestSwarmEnrollWithPeerAuthTokenDoesNotAutoApprove(t *testing.T) {
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
 		cfg.Child = false
 		cfg.SwarmName = "Manager A"
-		cfg.NetworkMode = startupconfig.NetworkModeTailscale
 	})
 
 	rec := postRemotePairingJSONWithDesktopSession(t, server, "/v1/swarm/enroll", map[string]any{
@@ -55,7 +54,6 @@ func TestSwarmRemotePairingStartRejectsAlreadyManagedHost(t *testing.T) {
 		cfg.SwarmRole = startupconfig.SwarmRoleManaged
 		cfg.ParentSwarmID = "old-manager-swarm"
 		cfg.PairingState = startupconfig.PairingStatePaired
-		cfg.NetworkMode = startupconfig.NetworkModeTailscale
 		cfg.SwarmName = "Managed B"
 		cfg.TailscaleURL = "https://managed-b.example.ts.net"
 	})

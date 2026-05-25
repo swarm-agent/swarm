@@ -340,7 +340,6 @@ func TestSwarmRemotePairingRequestRequiresAuthOffTailnet(t *testing.T) {
 	server := newLocalAuthTestServer(t)
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
 		cfg.Child = false
-		cfg.NetworkMode = startupconfig.NetworkModeTailscale
 		cfg.SwarmName = "Manager A"
 		cfg.TailscaleURL = "https://manager-a.example.ts.net"
 	})

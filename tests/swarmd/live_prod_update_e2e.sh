@@ -309,7 +309,6 @@ bypass_permissions = true
 retain_tool_output_history = false
 swarm_name = Live Production Update Host
 child = false
-mode = lan
 tailscale_url =
 peer_transport_port = ${HOST_PEER_TRANSPORT_PORT}
 parent_swarm_id =

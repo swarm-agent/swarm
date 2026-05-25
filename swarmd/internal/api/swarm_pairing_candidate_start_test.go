@@ -19,7 +19,6 @@ func TestSwarmRemotePairingStartPostsManagedRequestToManager(t *testing.T) {
 	manager.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "manager-swarm-1", Name: "Manager A", PublicKey: managerPublicKey, Fingerprint: managerFingerprint}}}
 	setLocalAuthTestStartupConfig(t, manager, func(cfg *startupconfig.FileConfig) {
 		cfg.Child = false
-		cfg.NetworkMode = startupconfig.NetworkModeTailscale
 		cfg.SwarmName = "Manager A"
 		cfg.TailscaleURL = "https://manager-a.example.ts.net"
 	})
@@ -49,7 +48,6 @@ func TestSwarmRemotePairingStartPostsManagedRequestToManager(t *testing.T) {
 	managed.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "managed-swarm-1", Name: "Managed B", PublicKey: managedPublicKey, Fingerprint: managedFingerprint}}}
 	setLocalAuthTestStartupConfig(t, managed, func(cfg *startupconfig.FileConfig) {
 		cfg.Child = false
-		cfg.NetworkMode = startupconfig.NetworkModeTailscale
 		cfg.SwarmName = "Managed B"
 		cfg.TailscaleURL = remoteManager.URL
 	})
@@ -110,7 +108,6 @@ func TestSwarmRemotePairingStartDoesNotRejectUnservedTailscaleRequester(t *testi
 	manager.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "manager-swarm-1", Name: "Manager A", PublicKey: managerPublicKey, Fingerprint: managerFingerprint}}}
 	setLocalAuthTestStartupConfig(t, manager, func(cfg *startupconfig.FileConfig) {
 		cfg.Child = false
-		cfg.NetworkMode = startupconfig.NetworkModeTailscale
 		cfg.SwarmName = "Manager A"
 		cfg.TailscaleURL = "https://manager-a.example.ts.net"
 	})
@@ -140,7 +137,6 @@ func TestSwarmRemotePairingStartDoesNotRejectUnservedTailscaleRequester(t *testi
 	managed.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "managed-swarm-1", Name: "Managed B", PublicKey: managedPublicKey, Fingerprint: managedFingerprint}}}
 	setLocalAuthTestStartupConfig(t, managed, func(cfg *startupconfig.FileConfig) {
 		cfg.Child = false
-		cfg.NetworkMode = startupconfig.NetworkModeTailscale
 		cfg.SwarmName = "Managed B"
 		cfg.TailscaleURL = "https://managed-b.example.ts.net"
 		cfg.DesktopPort = 5555
@@ -163,7 +159,6 @@ func TestRemotePairingOfferExemptOnlyFromTailscaleOrLoopback(t *testing.T) {
 	server := newLocalAuthTestServer(t)
 	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "managed-swarm-1", Name: "Managed B", PublicKey: "public-key", Fingerprint: "fingerprint"}}}
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
-		cfg.NetworkMode = startupconfig.NetworkModeTailscale
 		cfg.SwarmName = "Managed B"
 		cfg.TailscaleURL = "https://managed-b.example.ts.net"
 	})

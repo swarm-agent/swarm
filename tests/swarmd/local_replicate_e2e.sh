@@ -776,7 +776,6 @@ bypass_permissions = ${BYPASS_PERMISSIONS}
 retain_tool_output_history = false
 swarm_name = ${HOST_SWARM_NAME}
 child = false
-mode = lan
 tailscale_url =
 local_transport_port = $((HOST_BACKEND_PORT + 9))
 peer_transport_port = $((HOST_BACKEND_PORT + 10))

@@ -299,7 +299,6 @@ func newWorkspaceBootstrapTestServer(t *testing.T, eventLog *pebblestore.EventLo
 	cfg.Port = 7781
 	cfg.AdvertisePort = 7781
 	cfg.DesktopPort = 5555
-	cfg.NetworkMode = startupconfig.NetworkModeLAN
 	if err := startupconfig.Write(cfg); err != nil {
 		t.Fatalf("write startup config: %v", err)
 	}

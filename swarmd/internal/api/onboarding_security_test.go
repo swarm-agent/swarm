@@ -119,7 +119,6 @@ func TestSwarmDiscoveryRedactsSensitiveMetadataFromLANPeerWithoutAuth(t *testing
 	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "discovery-swarm-1", Name: "Discovery Swarm"}}}
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
 		cfg.Child = false
-		cfg.NetworkMode = startupconfig.NetworkModeTailscale
 		cfg.SwarmName = "Discovery Swarm"
 		cfg.TailscaleURL = "https://example.tailnet.ts.net"
 	})
@@ -150,7 +149,6 @@ func TestSwarmDiscoveryAllowsIdentityFromTailnetPeer(t *testing.T) {
 	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "discovery-swarm-1", Name: "Discovery Swarm"}}}
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
 		cfg.Child = false
-		cfg.NetworkMode = startupconfig.NetworkModeTailscale
 		cfg.SwarmName = "Discovery Swarm"
 		cfg.TailscaleURL = "https://example.tailnet.ts.net"
 	})
@@ -183,7 +181,6 @@ func TestSwarmDiscoveryAllowsSensitiveMetadataWithDesktopSession(t *testing.T) {
 	server := newLocalAuthTestServer(t)
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
 		cfg.Child = false
-		cfg.NetworkMode = startupconfig.NetworkModeTailscale
 		cfg.SwarmName = "Discovery Swarm"
 		cfg.TailscaleURL = "https://example.tailnet.ts.net"
 	})
