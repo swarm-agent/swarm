@@ -1946,6 +1946,9 @@ func (p *ChatPage) applyRunStreamEvent(event ChatRunStreamEvent, atUnix int64) {
 			return
 		}
 		msg := *event.Message
+		if shouldSuppressModeTransitionSystemRecord(msg) {
+			return
+		}
 		role := strings.ToLower(strings.TrimSpace(msg.Role))
 		switch role {
 		case "user":
@@ -1991,6 +1994,9 @@ func (p *ChatPage) applyRunStreamEvent(event ChatRunStreamEvent, atUnix int64) {
 			return
 		}
 		msg := *event.Message
+		if shouldSuppressModeTransitionSystemRecord(msg) {
+			return
+		}
 		role := strings.ToLower(strings.TrimSpace(msg.Role))
 		switch role {
 		case "assistant":
@@ -2953,6 +2959,9 @@ func cloneChatUsageSummary(summary *ChatUsageSummary) *ChatUsageSummary {
 }
 
 func (p *ChatPage) ingestMessageRecord(message ChatMessageRecord) {
+	if shouldSuppressModeTransitionSystemRecord(message) {
+		return
+	}
 	role := strings.ToLower(strings.TrimSpace(message.Role))
 	createdAt := message.CreatedAt
 	if createdAt <= 0 {

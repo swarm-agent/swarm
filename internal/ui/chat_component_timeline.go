@@ -68,6 +68,9 @@ func (p *ChatPage) buildTimelineLines(width int) []chatRenderLine {
 	}
 	lines := make([]chatRenderLine, 0, len(p.timeline)*3)
 	for _, message := range p.timeline {
+		if shouldSuppressModeTransitionSystemItem(message) {
+			continue
+		}
 		role := strings.ToLower(strings.TrimSpace(message.Role))
 		switch role {
 		case "user":

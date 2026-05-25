@@ -75,6 +75,9 @@ func (p *ChatPage) cachedTimelineMessageLines(index, width int) []chatRenderLine
 	p.ensureTimelineRenderCacheLen()
 
 	message := p.timeline[index]
+	if shouldSuppressModeTransitionSystemItem(message) {
+		return nil
+	}
 	if p.shouldBypassTimelineMessageCache(message) {
 		lines := p.renderTimelineMessageLines(message, width)
 		if len(lines) > 0 {
@@ -230,6 +233,9 @@ func (p *ChatPage) buildTimelineRenderBlocks(width int) []chatTimelineRenderBloc
 
 	blocks := make([]chatTimelineRenderBlock, 0, len(p.timeline)+4)
 	for i := range p.timeline {
+		if shouldSuppressModeTransitionSystemItem(p.timeline[i]) {
+			continue
+		}
 		blocks = appendTimelineRenderBlock(blocks, p.cachedTimelineMessageLines(i, width))
 	}
 
