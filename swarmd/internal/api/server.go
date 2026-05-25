@@ -598,6 +598,9 @@ func (s *Server) LocalTransportHandler() http.Handler {
 }
 
 func hostedSessionHostBackendURL(cfg startupconfig.FileConfig) string {
+	if endpoint := canonicalRemoteSwarmEndpoint(cfg, onboardingResponse{}); endpoint != "" {
+		return endpoint
+	}
 	host := strings.TrimSpace(cfg.AdvertiseHost)
 	if host == "" {
 		host = strings.TrimSpace(cfg.Host)

@@ -100,6 +100,7 @@ func TestManagedHostSessionMessageUsesNewPeerAPIWithAuthAndMirrors(t *testing.T)
 
 func TestManagedHostSessionOpenSendsRuntimeWorkspacePathToPeer(t *testing.T) {
 	server, sessionSvc, _, routeStore := newRoutedSessionTestServer(t)
+	var openedPrimaryBackendURL atomic.Value
 	var openedWorkspacePath atomic.Value
 	var openedHostWorkspacePath atomic.Value
 	var openedRuntimeWorkspacePath atomic.Value
@@ -129,6 +130,7 @@ func TestManagedHostSessionOpenSendsRuntimeWorkspacePathToPeer(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
+		openedPrimaryBackendURL.Store(req.Route.PrimaryBackendURL)
 		openedWorkspacePath.Store(req.Request.WorkspacePath)
 		openedHostWorkspacePath.Store(req.Request.HostWorkspacePath)
 		openedRuntimeWorkspacePath.Store(req.Request.RuntimeWorkspacePath)
@@ -140,6 +142,18 @@ func TestManagedHostSessionOpenSendsRuntimeWorkspacePathToPeer(t *testing.T) {
 	}))
 	defer managed.Close()
 
+	startupPath := t.TempDir() + "/swarm.conf"
+	cfg := startupconfig.Default(startupPath)
+	cfg.Host = "127.0.0.1"
+	cfg.AdvertiseHost = "127.0.0.1"
+	cfg.Port = 7781
+	cfg.AdvertisePort = 7781
+	cfg.SwarmName = "host-swarm"
+	cfg.TailscaleURL = "https://primary.tailnet.test"
+	if err := startupconfig.Write(cfg); err != nil {
+		t.Fatalf("write startup config: %v", err)
+	}
+	server.SetStartupConfigPath(startupPath)
 	seedManagedHostTarget(t, server, managed.URL)
 	req := httptest.NewRequest(http.MethodPost, managedHostSessionOpenPath, bytes.NewBufferString(`{"title":"managed","workspace_path":"/host/workspace","host_workspace_path":"/host/workspace","runtime_workspace_path":"/managed/workspace","workspace_name":"workspace","mode":"auto","agent_name":"swarm","preference":{"provider":"codex","model":"gpt-5.5","thinking":"high"},"target_swarm_id":"managed-swarm"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -148,6 +162,9 @@ func TestManagedHostSessionOpenSendsRuntimeWorkspacePathToPeer(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got, _ := openedPrimaryBackendURL.Load().(string); got != "https://primary.tailnet.test" {
+		t.Fatalf("primary backend url = %q, want tailscale endpoint", got)
 	}
 	if got, _ := openedWorkspacePath.Load().(string); got != "/managed/workspace" {
 		t.Fatalf("peer workspace path = %q, want /managed/workspace", got)
@@ -162,7 +179,7 @@ func TestManagedHostSessionOpenSendsRuntimeWorkspacePathToPeer(t *testing.T) {
 	if metadata["swarm_route_id"] != "swarm:managed-swarm:/managed/workspace" || metadata["swarm_route_label"] != "Managed Host" || metadata["swarm_route_target_kind"] != "host" || metadata["swarm_route_target_relationship"] != swarmruntime.RelationshipManaged || metadata["owner_transport"] != "managed_host_peer" {
 		t.Fatalf("route metadata = %+v", metadata)
 	}
-	if metadata[sessionruntime.HostedSessionMetadataEnabled] != true || metadata[sessionruntime.HostedSessionMetadataHostSwarmID] != "host-swarm-id" || metadata[sessionruntime.HostedSessionMetadataHostBackendURL] != "http://127.0.0.1:7781" || metadata[sessionruntime.HostedSessionMetadataHostWorkspacePath] != "/host/workspace" || metadata[sessionruntime.HostedSessionMetadataRuntimeWorkspacePath] != "/managed/workspace" || metadata[sessionruntime.HostedSessionMetadataChildSwarmID] != "managed-swarm" {
+	if metadata[sessionruntime.HostedSessionMetadataEnabled] != true || metadata[sessionruntime.HostedSessionMetadataHostSwarmID] != "host-swarm-id" || metadata[sessionruntime.HostedSessionMetadataHostBackendURL] != "https://primary.tailnet.test" || metadata[sessionruntime.HostedSessionMetadataHostWorkspacePath] != "/host/workspace" || metadata[sessionruntime.HostedSessionMetadataRuntimeWorkspacePath] != "/managed/workspace" || metadata[sessionruntime.HostedSessionMetadataChildSwarmID] != "managed-swarm" {
 		t.Fatalf("hosted metadata = %+v", metadata)
 	}
 	var payload struct {
