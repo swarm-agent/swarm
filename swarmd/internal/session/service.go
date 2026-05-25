@@ -60,6 +60,9 @@ type SessionCodexConfigUpdate = SessionPreferenceUpdate
 const (
 	ModePlan = "plan"
 	ModeAuto = "auto"
+
+	planModeReentrySystemMessage = "Session mode changed to plan. The user explicitly re-entered plan mode; immediately follow plan-mode behavior for the next turn, use plan_manage to inspect or revise the active plan, and call exit_plan_mode only after presenting an actionable plan for approval."
+	autoModeReentrySystemMessage = "Session mode changed to auto. The user explicitly exited plan mode; immediately follow auto-mode behavior for the next turn, do not call exit_plan_mode, and use plan_manage to inspect or revise any active plan."
 )
 
 func NewService(store *pebblestore.SessionStore, events *pebblestore.EventLog) *Service {
@@ -983,7 +986,8 @@ func (s *Service) SetMode(sessionID, mode string) (pebblestore.SessionSnapshot, 
 		return pebblestore.SessionSnapshot{}, nil, fmt.Errorf("session %q not found", sessionID)
 	}
 	session.Mode = NormalizeMode(session.Mode)
-	if session.Mode == mode {
+	previousMode := session.Mode
+	if previousMode == mode {
 		return session, nil, nil
 	}
 	session.Mode = mode
@@ -1005,7 +1009,81 @@ func (s *Service) SetMode(sessionID, mode string) (pebblestore.SessionSnapshot, 
 	if err != nil {
 		return pebblestore.SessionSnapshot{}, nil, err
 	}
+	if message, ok := modeTransitionSystemMessage(previousMode, mode); ok {
+		if session, err = s.appendSystemMessageLocked(session, message, map[string]any{
+			"source":        "session_mode_transition",
+			"previous_mode": previousMode,
+			"mode":          mode,
+		}); err != nil {
+			return pebblestore.SessionSnapshot{}, nil, err
+		}
+	}
 	return session, &env, nil
+}
+
+func modeTransitionSystemMessage(previousMode, mode string) (string, bool) {
+	previousMode = NormalizeMode(previousMode)
+	mode = NormalizeMode(mode)
+	if previousMode == mode {
+		return "", false
+	}
+	if mode == ModePlan {
+		return planModeReentrySystemMessage, true
+	}
+	if previousMode == ModePlan && mode == ModeAuto {
+		return autoModeReentrySystemMessage, true
+	}
+	return "", false
+}
+
+func (s *Service) appendSystemMessageLocked(session pebblestore.SessionSnapshot, content string, metadata map[string]any) (pebblestore.SessionSnapshot, error) {
+	sessionID := strings.TrimSpace(session.ID)
+	content = strings.TrimSpace(content)
+	if sessionID == "" {
+		return pebblestore.SessionSnapshot{}, errors.New("session id is required")
+	}
+	if content == "" {
+		return pebblestore.SessionSnapshot{}, errors.New("message content is required")
+	}
+	cleanMetadata := cloneSessionMetadataMap(metadata)
+	payload := map[string]any{
+		"session_id": sessionID,
+		"role":       "system",
+		"content":    content,
+	}
+	if len(cleanMetadata) > 0 {
+		payload["metadata"] = cleanMetadata
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return pebblestore.SessionSnapshot{}, err
+	}
+	stream := "session:" + sessionID
+	env, err := s.events.Append(stream, "session.message.appended", sessionID, payloadBytes, "", "")
+	if err != nil {
+		return pebblestore.SessionSnapshot{}, err
+	}
+	message := pebblestore.MessageSnapshot{
+		ID:             fmt.Sprintf("msg_%020d", env.GlobalSeq),
+		SessionID:      sessionID,
+		UserID:         session.UserID,
+		AccountScopeID: session.AccountScopeID,
+		GlobalSeq:      env.GlobalSeq,
+		Role:           "system",
+		Content:        content,
+		Metadata:       cleanMetadata,
+		CreatedAt:      env.TsUnixMs,
+	}
+	if err := s.store.PutMessage(message); err != nil {
+		return pebblestore.SessionSnapshot{}, err
+	}
+	session.MessageCount++
+	session.UpdatedAt = env.TsUnixMs
+	session.LastMessageAt = env.TsUnixMs
+	if err := s.store.UpdateSession(session); err != nil {
+		return pebblestore.SessionSnapshot{}, err
+	}
+	return session, nil
 }
 
 func (s *Service) GetCodexConfig(sessionID string) (pebblestore.ModelPreference, error) {
