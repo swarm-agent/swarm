@@ -21,6 +21,7 @@ func main() {
 func run(args []string) error {
 	artifactRoot := ""
 	applyRelease := false
+	installService := true
 	lane := "main"
 	plan := client.UpdateApplyPlan{}
 	parentPID := 0
@@ -38,6 +39,10 @@ func run(args []string) error {
 			artifactRoot = strings.TrimSpace(args[i])
 		case "--apply-release":
 			applyRelease = true
+		case "--service", "--systemd":
+			installService = true
+		case "--no-service", "--no-systemd", "--files-only":
+			installService = false
 		case "--lane":
 			if i+1 >= len(args) {
 				return fmt.Errorf("missing value for %s", args[i])
@@ -117,10 +122,14 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := launcher.InstallInstalledService(); err != nil {
-		return err
+	if installService {
+		if err := launcher.InstallInstalledService(); err != nil {
+			return err
+		}
+		fmt.Println("installed runtime, launchers, and swarm.service:")
+	} else {
+		fmt.Println("installed runtime and launchers; no service installed or started:")
 	}
-	fmt.Println("installed runtime, launchers, and swarm.service:")
 	for _, name := range []string{"swarm", "swarmdev", "rebuild", "swarmsetup"} {
 		target := report.Links[name]
 		fmt.Printf("  %s -> %s\n", filepath.Join(report.BinHome, name), target)
@@ -134,8 +143,8 @@ func run(args []string) error {
 
 func usage() {
 	fmt.Fprint(os.Stderr, `Usage:
-  swarmsetup
-  swarmsetup --artifact-root /path/to/dist
+  swarmsetup [--service|--no-service]
+  swarmsetup --artifact-root /path/to/dist [--service|--no-service]
   swarmsetup --apply-release --lane main --target-version <tag> --asset-name <name> --asset-url <url> --sha256 <digest> [--parent-pid <pid>] [--relaunch-arg <arg>...]
 `)
 }

@@ -28,9 +28,16 @@ Fast lane for Linux x86_64:
 curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/install.sh | sh
 ```
 
+For automation, choose the service behavior explicitly:
+
+```bash
+sh install.sh --yes --service
+sh install.sh --yes --no-service
+```
+
 That command fetches the latest stable GitHub release asset, extracts it, and runs the bundled installer. You do not need to clone or download this repository to install Swarm.
 
-The installer prints an install plan, places launchers in `/usr/local/bin`, installs Swarm runtime artifacts under `/usr/local/share/swarm/{bin,libexec,lib,share}`, writes `swarm.service`, and enables/starts the daemon. Because those are system locations, `install.sh` may prompt for sudo during provisioning. Swarm-owned subdirectories are created for the installing user so the daemon still runs as that user.
+The installer prints an install plan, places launchers in `/usr/local/bin`, and installs Swarm runtime artifacts under `/usr/local/share/swarm/{bin,libexec,lib,share}`. It then offers three explicit choices: install/start the systemd service, install files only with no service, or cancel. Because these are system locations, `install.sh` may prompt for sudo during provisioning. Swarm-owned subdirectories are created for the installing user so the daemon still runs as that user when started by systemd or another supervisor.
 
 If your shell does not already include the launcher directory on `PATH`, run Swarm with:
 
@@ -59,11 +66,17 @@ From a source checkout, the setup helper can build and install local development
 
 ## Quick start
 
-Install Swarm and verify the daemon:
+Install Swarm with the systemd service and verify the daemon:
 
 ```bash
-swarm install
+swarm install --service
 swarm status
+```
+
+To install files only and manage the daemon with your own supervisor:
+
+```bash
+swarm install --no-service
 ```
 
 Open controller clients against the running daemon:

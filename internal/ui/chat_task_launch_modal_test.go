@@ -68,7 +68,7 @@ func TestTaskLaunchPermissionModalUsesDesktopLikeLayout(t *testing.T) {
 
 	lines := page.taskLaunchModalLines(page.pendingPerms[0], 72)
 	text := renderLinesText(lines)
-	for _, want := range []string{"[^ 2 launches]", "[! read-only tools]", "[# Router: explorer]", "SUBAGENTS", "(1) explorer · read-only tools", "backend/core service architecture", "(2) parallel", "desktop permissions UI", "FULL PROMPT", "11 words", "Map files and summarize findings.", "[p] Show full prompt"} {
+	for _, want := range []string{"[^ 2 launches]", "[! read-only tools]", "[# Router: explorer]", "SUBAGENTS", "(1) explorer · read-only tools", "backend/core service architecture", "(2) parallel", "desktop permissions UI", "FULL PROMPT", "Prompt · 11 words", "Map files and summarize findings.", "[Ctrl+P] Show full prompt", "┌─ Prompt"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected task launch layout to contain %q, got:\n%s", want, text)
 		}
@@ -98,18 +98,18 @@ func TestTaskLaunchPermissionModalPromptToggleShowsFullPrompt(t *testing.T) {
 	})
 
 	collapsed := renderLinesText(page.taskLaunchModalLines(page.pendingPerms[0], 72))
-	if !strings.Contains(collapsed, "[p] Show full prompt") {
+	if !strings.Contains(collapsed, "[Ctrl+P] Show full prompt") {
 		t.Fatalf("expected collapsed prompt hint, got:\n%s", collapsed)
 	}
 	if strings.Contains(collapsed, "fortythree fortyfour") {
 		t.Fatalf("expected collapsed prompt to hide full prompt tail, got:\n%s", collapsed)
 	}
 
-	if !page.handleTaskLaunchModalKey(tcell.NewEventKey(tcell.KeyRune, 'p', tcell.ModNone)) {
-		t.Fatalf("expected p to toggle task launch prompt")
+	if !page.handleTaskLaunchModalKey(tcell.NewEventKey(tcell.KeyCtrlP, 0, tcell.ModNone)) {
+		t.Fatalf("expected Ctrl+P to toggle task launch prompt")
 	}
 	expanded := renderLinesText(page.taskLaunchModalLines(page.pendingPerms[0], 72))
-	for _, want := range []string{"[p] Hide full prompt", "fortythree", "fortyfour"} {
+	for _, want := range []string{"[Ctrl+P] Hide full prompt", "fortythree", "fortyfour", "┌─ Prompt", "└"} {
 		if !strings.Contains(expanded, want) {
 			t.Fatalf("expected expanded prompt to contain %q, got:\n%s", want, expanded)
 		}

@@ -19,7 +19,7 @@ Implemented in this iteration:
 
 ## Run
 
-For product installs, use the root launcher service lifecycle: `swarm install`, `swarm status`, `swarm start`, `swarm stop`, `swarm restart`, and `swarm uninstall`. Controller clients attach with `swarm session` or `swarm open`; closing a controller does not stop the daemon.
+For product installs, use the root launcher lifecycle. `swarm install --service` installs and starts the systemd service, while `swarm install --no-service` installs runtime files only for operators who manage the daemon with their own supervisor. The explicit service lifecycle commands are `swarm status`, `swarm start`, `swarm stop`, `swarm restart`, and `swarm uninstall`. Controller clients attach with `swarm session` or `swarm open`; closing a controller does not stop the daemon.
 
 The commands below are development helpers for running `swarmd` from a source checkout.
 

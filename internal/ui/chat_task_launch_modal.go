@@ -101,7 +101,7 @@ func (p *ChatPage) handleTaskLaunchModalKey(ev *tcell.EventKey) bool {
 	case p.keybinds.Match(ev, KeybindChatJumpEnd):
 		p.taskLaunchScroll = 1 << 30
 		return true
-	case ev.Key() == tcell.KeyRune && (ev.Rune() == 'p' || ev.Rune() == 'P') && strings.TrimSpace(p.taskLaunchInput) == "":
+	case ev.Key() == tcell.KeyCtrlP:
 		p.taskLaunchPromptExpanded = !p.taskLaunchPromptExpanded
 		p.taskLaunchScroll = 1 << 30
 		if p.taskLaunchPromptExpanded {
@@ -246,7 +246,7 @@ func (p *ChatPage) drawTaskLaunchModal(s tcell.Screen, screen Rect) {
 	}
 
 	helpY := modal.Y + modal.H - 3
-	help := "PgUp/PgDn scroll • p prompt • Enter launch • Esc deny"
+	help := "PgUp/PgDn scroll • Ctrl+P prompt • Enter launch • Esc deny"
 	helpWidth := modal.W - 4
 	if maxScroll > 0 {
 		scrollLabel := fmt.Sprintf("scroll %d/%d", p.taskLaunchScroll+1, maxScroll+1)
@@ -287,7 +287,7 @@ func (p *ChatPage) taskLaunchModalLines(record ChatPermissionRecord, width int) 
 	out = append(out, p.taskLaunchLaunchCardLines(launches, maxInt(16, width))...)
 	out = append(out, chatRenderLine{Text: "", Style: p.theme.TextMuted})
 	out = append(out, p.taskLaunchDividerLine("Full prompt", width))
-	out = append(out, p.taskLaunchPromptSectionLines(prompt)...)
+	out = append(out, p.taskLaunchPromptSectionLines(prompt, width)...)
 	return out
 }
 
@@ -423,21 +423,31 @@ func (p *ChatPage) taskLaunchPromptToggleLine() chatRenderLine {
 	if p.taskLaunchPromptExpanded {
 		label = "Hide full prompt"
 	}
-	return chatRenderLine{Text: "[p] " + label, Style: p.theme.Primary}
+	return chatRenderLine{Text: "[Ctrl+P] " + label, Style: p.theme.Primary}
 }
 
-func (p *ChatPage) taskLaunchPromptSectionLines(prompt string) []chatRenderLine {
+func (p *ChatPage) taskLaunchPromptSectionLines(prompt string, width int) []chatRenderLine {
 	prompt = strings.TrimSpace(strings.ReplaceAll(prompt, "\r\n", "\n"))
 	if prompt == "" {
 		return []chatRenderLine{{Text: "No prompt was included in the manifest.", Style: p.theme.TextMuted}}
 	}
+	width = maxInt(24, width)
+	innerWidth := maxInt(1, width-4)
 	preview := taskLaunchPromptPreview(prompt, 42)
-	previewLine := chatRenderLine{Text: fmt.Sprintf("%d words · %s", taskLaunchPromptWordCount(prompt), preview), Style: p.theme.TextMuted}
-	if !p.taskLaunchPromptExpanded {
-		return []chatRenderLine{previewLine, p.taskLaunchPromptToggleLine()}
+	summary := fmt.Sprintf("%d words", taskLaunchPromptWordCount(prompt))
+	body := []chatRenderLine{{Text: preview, Style: p.theme.TextMuted}}
+	if p.taskLaunchPromptExpanded {
+		body = p.taskLaunchMarkdownSectionLines(prompt, "No prompt was included in the manifest.")
 	}
-	lines := []chatRenderLine{previewLine, p.taskLaunchPromptToggleLine(), chatRenderLine{Text: "", Style: p.theme.TextMuted}}
-	lines = append(lines, p.taskLaunchMarkdownSectionLines(prompt, "No prompt was included in the manifest.")...)
+
+	lines := []chatRenderLine{p.taskLaunchPromptToggleLine()}
+	lines = append(lines, p.taskLaunchSectionBorderLine('┌', '┐', "Prompt · "+summary, width, p.theme.Border, p.theme.Accent.Bold(true)))
+	for _, row := range body {
+		for _, wrapped := range wrapRenderLineWithCustomPrefixes("", "", row, innerWidth) {
+			lines = append(lines, p.taskLaunchSectionContentLine(wrapped, innerWidth, p.theme.Border))
+		}
+	}
+	lines = append(lines, p.taskLaunchSectionBorderLine('└', '┘', "", width, p.theme.Border, p.theme.Accent.Bold(true)))
 	return lines
 }
 

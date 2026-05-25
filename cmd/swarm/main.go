@@ -238,12 +238,12 @@ func run(argv0 string, args []string) error {
 }
 
 func runInstallCommand(args []string) error {
-	assumeYes, handled, err := parseYesOnly(args, "swarm install [--yes]")
+	assumeYes, service, handled, err := parseInstallArgs(args)
 	if err != nil || handled {
 		return err
 	}
 	fmt.Println("Swarm install plan")
-	for _, line := range launcher.InstalledServicePlan() {
+	for _, line := range launcher.InstalledInstallPlan(launcher.InstallServiceOptions{Service: service}) {
 		fmt.Printf("  %s\n", line)
 	}
 	if !assumeYes {
@@ -251,10 +251,15 @@ func runInstallCommand(args []string) error {
 			return err
 		}
 	}
-	if err := launcher.InstallInstalledService(); err != nil {
+	if err := launcher.InstallInstalledDaemon(launcher.InstallServiceOptions{Service: service}); err != nil {
 		return err
 	}
-	fmt.Println("Swarm service installed, enabled, and started.")
+	if service {
+		fmt.Println("Swarm service installed, enabled, and started.")
+	} else {
+		fmt.Println("Swarm runtime and launchers installed. No daemon service was installed or started.")
+		fmt.Println("Configure your supervisor to run: /usr/local/bin/swarm server run")
+	}
 	return nil
 }
 
@@ -393,6 +398,37 @@ func runSessionCommand(profile launcher.Profile, args []string) error {
 	default:
 		return launcher.RunCtl(profile, append([]string{"session"}, args...), false)
 	}
+}
+
+func parseInstallArgs(args []string) (bool, bool, bool, error) {
+	assumeYes := false
+	service := true
+	serviceSet := false
+	usage := "swarm install [--yes] [--service|--no-service]"
+	for _, arg := range args {
+		switch arg {
+		case "--yes", "-y":
+			assumeYes = true
+		case "--service", "--systemd":
+			if serviceSet && !service {
+				return false, false, false, errors.New("choose only one of --service or --no-service")
+			}
+			service = true
+			serviceSet = true
+		case "--no-service", "--no-systemd", "--files-only":
+			if serviceSet && service {
+				return false, false, false, errors.New("choose only one of --service or --no-service")
+			}
+			service = false
+			serviceSet = true
+		case "help", "-h", "--help":
+			fmt.Println("usage: " + usage)
+			return false, false, true, nil
+		default:
+			return false, false, false, fmt.Errorf("usage: %s", usage)
+		}
+	}
+	return assumeYes, service, false, nil
 }
 
 func parseYesOnly(args []string, usage string) (bool, bool, error) {
@@ -593,7 +629,7 @@ func usage() {
 	fmt.Print(`swarm launcher
 
 Usage:
-  swarm install [--yes]
+  swarm install [--yes] [--service|--no-service]
   swarm uninstall [--purge] [--yes]
   swarm start|stop|restart|status
   swarm open

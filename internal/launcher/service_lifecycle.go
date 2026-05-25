@@ -28,18 +28,30 @@ type UninstallOptions struct {
 	Purge bool
 }
 
+type InstallServiceOptions struct {
+	Service bool
+}
+
 func systemdSystemUnitPath() string {
 	return filepath.Join(string(filepath.Separator), "etc", "systemd", "system", InstalledServiceUnit)
 }
 
 func InstalledServicePlan() []string {
+	return InstalledInstallPlan(InstallServiceOptions{Service: true})
+}
+
+func InstalledInstallPlan(opts InstallServiceOptions) []string {
+	serviceLine := "Service: none; install runtime/files only and exit without starting Swarm"
+	if opts.Service {
+		serviceLine = "Service: " + systemdSystemUnitPath() + ", enabled and started with systemd"
+	}
 	return []string{
 		"Runtime: " + systemInstallRoot(),
 		"Launchers: " + filepath.Join(systemBinDir(), "swarm") + ", " + filepath.Join(systemBinDir(), "swarmdev") + ", " + filepath.Join(systemBinDir(), "rebuild") + ", " + filepath.Join(systemBinDir(), "swarmsetup"),
 		"Daemon config: /etc/swarmd",
 		"Daemon data: /var/lib/swarmd",
 		"Daemon runtime: /run/swarmd",
-		"Service: " + systemdSystemUnitPath(),
+		serviceLine,
 	}
 }
 
@@ -154,13 +166,20 @@ func DesktopURL(profile Profile, port int) string {
 }
 
 func InstallInstalledService() error {
+	return InstallInstalledDaemon(InstallServiceOptions{Service: true})
+}
+
+func InstallInstalledDaemon(opts InstallServiceOptions) error {
 	if err := EnsureInstalledRuntimeReady(); err != nil {
 		return err
 	}
-	if err := requireSystemdHost(); err != nil {
+	if err := EnsureSystemInstallReady(); err != nil {
 		return err
 	}
-	if err := EnsureSystemInstallReady(); err != nil {
+	if !opts.Service {
+		return nil
+	}
+	if err := requireSystemdHost(); err != nil {
 		return err
 	}
 	if err := EnsureSystemdServiceUnit(); err != nil {

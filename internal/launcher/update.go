@@ -472,6 +472,63 @@ func installRuntimeTreeFromArtifact(runtimeRoot, artifactRoot string) error {
 	return nil
 }
 
+func chownTreeToInstallOwner(root string) error {
+	if os.Geteuid() != 0 {
+		return nil
+	}
+	uidText, gidText := installOwnerIDs()
+	uid, err := strconv.Atoi(uidText)
+	if err != nil {
+		return fmt.Errorf("resolve install owner uid %q: %w", uidText, err)
+	}
+	gid, err := strconv.Atoi(gidText)
+	if err != nil {
+		return fmt.Errorf("resolve install owner gid %q: %w", gidText, err)
+	}
+	if err := chownPathToOwner(root, uid, gid); err != nil {
+		return err
+	}
+	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		return chownPathToOwner(path, uid, gid)
+	})
+}
+
+func chownPathToInstallOwner(path string) error {
+	if os.Geteuid() != 0 {
+		return nil
+	}
+	uidText, gidText := installOwnerIDs()
+	uid, err := strconv.Atoi(uidText)
+	if err != nil {
+		return fmt.Errorf("resolve install owner uid %q: %w", uidText, err)
+	}
+	gid, err := strconv.Atoi(gidText)
+	if err != nil {
+		return fmt.Errorf("resolve install owner gid %q: %w", gidText, err)
+	}
+	return chownPathToOwner(path, uid, gid)
+}
+
+func chownPathToOwner(path string, uid, gid int) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		if err := os.Lchown(path, uid, gid); err != nil {
+			return fmt.Errorf("chown symlink %s: %w", path, err)
+		}
+		return nil
+	}
+	if err := os.Chown(path, uid, gid); err != nil {
+		return fmt.Errorf("chown %s: %w", path, err)
+	}
+	return nil
+}
+
 func validateInstalledRuntime(runtimeRoot, version string) error {
 	runtimeRoot = filepath.Clean(strings.TrimSpace(runtimeRoot))
 	if runtimeRoot == "" {

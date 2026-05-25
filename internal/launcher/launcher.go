@@ -974,6 +974,9 @@ func InstallRuntimeFromArtifact(artifactRoot string) (InstallReport, error) {
 	if err := os.MkdirAll(versionsDir, 0o755); err != nil {
 		return InstallReport{}, err
 	}
+	if err := chownPathToInstallOwner(versionsDir); err != nil {
+		return InstallReport{}, err
+	}
 	version, err := readBuildInfoVersion(filepath.Join(artifactRoot, "build-info.txt"))
 	if err != nil {
 		return InstallReport{}, err
@@ -989,6 +992,9 @@ func InstallRuntimeFromArtifact(artifactRoot string) (InstallReport, error) {
 		return InstallReport{}, err
 	}
 	if err := os.WriteFile(filepath.Join(stagedRuntime, ".version"), []byte(version+"\n"), 0o644); err != nil {
+		return InstallReport{}, err
+	}
+	if err := chownTreeToInstallOwner(stagedRuntime); err != nil {
 		return InstallReport{}, err
 	}
 	if err := validateInstalledRuntime(stagedRuntime, version); err != nil {

@@ -6,14 +6,17 @@ DEFAULT_VERSION=""
 INSTALL_VERSION=""
 ARTIFACT_ROOT=""
 ASSUME_YES=0
+SERVICE_MODE=""
 
 usage() {
   cat <<'EOF'
 Usage:
-  sh install.sh [--yes] [--version <tag>] [--artifact-root <path>]
+  sh install.sh [--yes] [--service|--no-service] [--version <tag>] [--artifact-root <path>]
 
 Options:
   --yes, -y              Run without the confirmation prompt.
+  --service, --systemd   Install, enable, and start swarm.service with systemd.
+  --no-service           Install files only; do not install/start a service.
   --version <tag>        Install a specific release tag.
   --artifact-root <path> Install from an extracted release artifact.
 
@@ -32,6 +35,22 @@ while [ "$#" -gt 0 ]; do
       ;;
     --yes|-y)
       ASSUME_YES=1
+      shift
+      ;;
+    --service|--systemd)
+      if [ -n "$SERVICE_MODE" ] && [ "$SERVICE_MODE" != "systemd" ]; then
+        echo "choose only one of --service or --no-service" >&2
+        exit 2
+      fi
+      SERVICE_MODE="systemd"
+      shift
+      ;;
+    --no-service|--no-systemd|--files-only)
+      if [ -n "$SERVICE_MODE" ] && [ "$SERVICE_MODE" != "none" ]; then
+        echo "choose only one of --service or --no-service" >&2
+        exit 2
+      fi
+      SERVICE_MODE="none"
       shift
       ;;
     -h|--help)
@@ -173,6 +192,20 @@ EOF
   rm -f "$tmp_path"
 }
 
+service_plan_label() {
+  case "$SERVICE_MODE" in
+    systemd)
+      printf '%s\n' '/etc/systemd/system/swarm.service, enabled and started with systemd'
+      ;;
+    none)
+      printf '%s\n' 'none; install runtime/files only and exit without starting Swarm'
+      ;;
+    *)
+      printf '%s\n' 'choose at prompt: systemd service or no service/install files only'
+      ;;
+  esac
+}
+
 print_install_plan() {
   version="$1"
   source_label="$2"
@@ -186,22 +219,65 @@ Swarm install plan
   Daemon data: /var/lib/swarmd
   Daemon runtime: /run/swarmd
   Daemon cache/logs: /var/cache/swarmd, /var/log/swarmd
-  Service: /etc/systemd/system/swarm.service, enabled and started with systemd
+  Service: $(service_plan_label)
 
 Reinstall preserves /etc/swarmd and /var/lib/swarmd by default.
 EOF
 }
 
+read_prompt_answer() {
+  prompt="$1"
+  PROMPT_ANSWER=""
+  if [ -t 0 ]; then
+    printf '%s' "$prompt"
+    read PROMPT_ANSWER
+    return 0
+  fi
+  if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    printf '%s' "$prompt" >/dev/tty
+    read PROMPT_ANSWER </dev/tty
+    return 0
+  fi
+  return 1
+}
+
+choose_service_mode() {
+  if [ -n "$SERVICE_MODE" ]; then
+    return 0
+  fi
+  if ! read_prompt_answer 'Choose install type: [1] systemd service, [2] no service/files only, [3] cancel: '; then
+    echo "install requires a service choice; rerun with --service or --no-service" >&2
+    return 1
+  fi
+  answer="$PROMPT_ANSWER"
+  case "$answer" in
+    1|systemd|service|s|S|"")
+      SERVICE_MODE="systemd"
+      ;;
+    2|none|no-service|no|n|N)
+      SERVICE_MODE="none"
+      ;;
+    3|cancel|c|C|q|Q)
+      echo "install cancelled"
+      return 1
+      ;;
+    *)
+      echo "invalid install choice: $answer" >&2
+      return 1
+      ;;
+  esac
+}
+
 confirm_install_plan() {
+  choose_service_mode
   if [ "$ASSUME_YES" -eq 1 ]; then
     return 0
   fi
-  if [ ! -t 0 ]; then
+  if ! read_prompt_answer 'Continue with this install? [y/N] '; then
     echo "install requires confirmation; rerun with --yes for non-interactive install" >&2
     return 1
   fi
-  printf 'Continue with this install? [y/N] '
-  read answer
+  answer="$PROMPT_ANSWER"
   case "$answer" in
     y|Y|yes|YES|Yes)
       return 0
@@ -244,8 +320,10 @@ enable_start_service() {
 provision_system_paths() {
   provision_system_dir 0755 /usr/local/bin
   provision_system_dir 0755 /usr/local/share
-  provision_system_dir 0755 "/etc"/tmpfiles.d
-  provision_system_dir 0755 "/etc"/systemd/system
+  if [ "$SERVICE_MODE" = "systemd" ]; then
+    provision_system_dir 0755 "/etc"/tmpfiles.d
+    provision_system_dir 0755 "/etc"/systemd/system
+  fi
 
   provision_owned_dir 0755 /usr/local/share/swarm/bin
   provision_owned_dir 0755 /usr/local/share/swarm/libexec
@@ -262,7 +340,9 @@ provision_system_paths() {
   provision_owned_dir 0700 /run/swarmd/ports
   provision_owned_dir 0755 /var/log/swarmd
   provision_owned_dir 0755 /var/log/swarmd/dev
-  provision_tmpfiles_config
+  if [ "$SERVICE_MODE" = "systemd" ]; then
+    provision_tmpfiles_config
+  fi
 }
 
 bin_home() {
@@ -311,7 +391,7 @@ verify_installed_runtime() {
     fi
   done
 
-  if [ ! -f /etc/systemd/system/swarm.service ]; then
+  if [ "$SERVICE_MODE" = "systemd" ] && [ ! -f /etc/systemd/system/swarm.service ]; then
     echo "installed systemd service unit is missing: /etc/systemd/system/swarm.service" >&2
     return 1
   fi
@@ -342,13 +422,20 @@ current_shell_name() {
 print_path_refresh_instructions() {
   target="$(bin_home)"
 
-  if bin_home_on_path; then
+  if [ "$SERVICE_MODE" = "none" ]; then
+    if bin_home_on_path; then
+      printf '\nSwarm runtime and launchers installed. No daemon service was installed or started.\n'
+      print_no_service_commands
+      return 0
+    fi
+    printf '\nSwarm runtime and launchers installed. No daemon service was installed or started.\n'
+  elif bin_home_on_path; then
     printf '\nSwarm installed and daemon service started.\n'
     print_service_commands
     return 0
+  else
+    printf '\nSwarm installed and daemon service started.\n'
   fi
-
-  printf '\nSwarm installed and daemon service started.\n'
   printf '\nThis shell does not have %s on PATH yet.\n' "$target"
 
   if [ "$(current_shell_name)" = "fish" ]; then
@@ -363,15 +450,28 @@ print_path_refresh_instructions() {
     printf '  exec "$SHELL" -l\n'
   fi
 
-  printf '\nThen manage or attach to Swarm with:\n'
-  printf '  swarm status\n'
-  printf '  swarm open\n'
-  printf '  swarm session\n'
-  printf '  swarm stop\n'
-  printf '  swarm restart\n'
-  printf '  swarm uninstall\n'
+  if [ "$SERVICE_MODE" = "none" ]; then
+    print_no_service_commands
+  else
+    printf '\nThen manage or attach to Swarm with:\n'
+    printf '  swarm status\n'
+    printf '  swarm open\n'
+    printf '  swarm session\n'
+    printf '  swarm stop\n'
+    printf '  swarm restart\n'
+    printf '  swarm uninstall\n'
+    printf '\nIf PATH still fails, run it directly:\n'
+    printf '  %s status\n' "$target/swarm"
+  fi
+}
+
+print_no_service_commands() {
+  printf '\nNo service manager was configured. To run Swarm, configure your supervisor to execute:\n'
+  printf '  /usr/local/bin/swarm server run\n'
+  printf '\nOr install/start the systemd service later with:\n'
+  printf '  swarm install --service\n'
   printf '\nIf PATH still fails, run it directly:\n'
-  printf '  %s status\n' "$target/swarm"
+  printf '  /usr/local/bin/swarm server run\n'
 }
 
 print_service_commands() {
@@ -393,7 +493,11 @@ run_bundle_install() {
   platform_dir="$(printf '%s/%s\n' "$artifact_root" "linux-amd64")"
   installer="$(printf '%s/%s\n' "$platform_dir" "root/swarmsetup")"
   log_path="$2"
-  "$installer" --artifact-root "$artifact_root" >"$log_path" 2>&1
+  if [ "$SERVICE_MODE" = "none" ]; then
+    "$installer" --artifact-root "$artifact_root" --no-service >"$log_path" 2>&1
+  else
+    "$installer" --artifact-root "$artifact_root" --service >"$log_path" 2>&1
+  fi
 }
 
 validate_artifact_root() {
@@ -452,7 +556,9 @@ if [ -n "$script_dir" ] && [ -x "$bundle_installer" ] && [ -f "$bundle_index" ];
   version="$(read_build_info_version "$script_dir" 2>/dev/null || true)"
   print_install_plan "$version" "artifact root: $script_dir"
   confirm_install_plan
-  require_systemd
+  if [ "$SERVICE_MODE" = "systemd" ]; then
+    require_systemd
+  fi
   print_installing "$version"
   tmp_dir="$(mktemp -d)"
   trap 'rm -rf "$tmp_dir"' EXIT INT TERM
@@ -461,13 +567,21 @@ if [ -n "$script_dir" ] && [ -x "$bundle_installer" ] && [ -f "$bundle_index" ];
     exit 1
   fi
   print_ok
-  printf 'installing runtime, service unit, and starting service... '
+  if [ "$SERVICE_MODE" = "none" ]; then
+    printf 'installing runtime and launchers... '
+  else
+    printf 'installing runtime, service unit, and starting service... '
+  fi
   if ! run_bundle_install "$script_dir" "$tmp_dir/swarmsetup.log"; then
     cat "$tmp_dir/swarmsetup.log" >&2
     exit 1
   fi
   print_ok
-  printf 'verifying launcher and service unit... '
+  if [ "$SERVICE_MODE" = "none" ]; then
+    printf 'verifying launcher and runtime... '
+  else
+    printf 'verifying launcher and service unit... '
+  fi
   if ! verify_installed_runtime; then
     exit 1
   fi
@@ -509,7 +623,9 @@ trap 'rm -rf "$tmp_dir"' EXIT INT TERM
 
 print_install_plan "$release_version" "GitHub release: $asset_name"
 confirm_install_plan
-require_systemd
+if [ "$SERVICE_MODE" = "systemd" ]; then
+  require_systemd
+fi
 print_installing "$release_version"
 printf 'downloading release... '
 curl -fsSL "$asset_url" -o "$archive_path"
@@ -529,13 +645,21 @@ if ! provision_system_paths; then
   exit 1
 fi
 print_ok
-printf 'installing runtime, service unit, and starting service... '
+if [ "$SERVICE_MODE" = "none" ]; then
+  printf 'installing runtime and launchers... '
+else
+  printf 'installing runtime, service unit, and starting service... '
+fi
 if ! run_bundle_install "$artifact_root" "$tmp_dir/swarmsetup.log"; then
   cat "$tmp_dir/swarmsetup.log" >&2
   exit 1
 fi
 print_ok
-printf 'verifying launcher and service unit... '
+if [ "$SERVICE_MODE" = "none" ]; then
+  printf 'verifying launcher and runtime... '
+else
+  printf 'verifying launcher and service unit... '
+fi
 if ! verify_installed_runtime; then
   exit 1
 fi
