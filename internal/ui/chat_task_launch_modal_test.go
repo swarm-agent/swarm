@@ -38,18 +38,18 @@ func TestTaskLaunchPermissionModalDrawsOnNarrowScreen(t *testing.T) {
 	page.Draw(screen)
 
 	text := dumpScreenText(screen, width, height)
-	if !strings.Contains(text, "Review Task Launch") {
+	if !strings.Contains(text, "Launch subagent") {
 		t.Fatalf("expected task launch modal header on narrow screen, got:\n%s", text)
 	}
-	if !strings.Contains(text, "Enter approve") && !strings.Contains(text, "Enter Approve") {
-		t.Fatalf("expected task launch modal approval hint on narrow screen, got:\n%s", text)
+	if !strings.Contains(text, "Enter launch") && !strings.Contains(text, "Enter Launch") {
+		t.Fatalf("expected task launch modal launch hint on narrow screen, got:\n%s", text)
 	}
 	if !strings.Contains(text, "PgUp/PgDn") {
 		t.Fatalf("expected task launch modal to show PgUp/PgDn scroll hint, got:\n%s", text)
 	}
 }
 
-func TestTaskLaunchPermissionModalUsesTaskRolesMetaLayout(t *testing.T) {
+func TestTaskLaunchPermissionModalUsesDesktopLikeLayout(t *testing.T) {
 	page := NewChatPage(ChatPageOptions{
 		SessionID:      "session-1",
 		ShowHeader:     true,
@@ -68,12 +68,12 @@ func TestTaskLaunchPermissionModalUsesTaskRolesMetaLayout(t *testing.T) {
 
 	lines := page.taskLaunchModalLines(page.pendingPerms[0], 72)
 	text := renderLinesText(lines)
-	for _, want := range []string{"Task", "Agent roles", "Meta", "Prompt", "11 words", "Map files and summarize findings.", "Press p to show the full prompt", "Backend", "backend/core service architecture", "desktop permissions UI", "anthropic/claude-sonnet", "router explorer", "preset read_only", "effective read", "allowed read, search", "tools: preset read_only", "launch disabled edit", "bash prefixes git status"} {
+	for _, want := range []string{"[^ 2 launches]", "[! read-only tools]", "[# Router: explorer]", "SUBAGENTS", "(1) explorer · read-only tools", "backend/core service architecture", "(2) parallel", "desktop permissions UI", "FULL PROMPT", "11 words", "Map files and summarize findings.", "[p] Show full prompt"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected task launch layout to contain %q, got:\n%s", want, text)
 		}
 	}
-	for _, unwanted := range []string{"Readable prompt preview", "Permission:", "Requirement:", "Tool:", "bash yes"} {
+	for _, unwanted := range []string{"Agent roles", "Meta", "Permission:", "Requirement:", "Tool:", "bash yes", "launch disabled edit", "bash prefixes git status"} {
 		if strings.Contains(text, unwanted) {
 			t.Fatalf("expected compact task launch layout without %q, got:\n%s", unwanted, text)
 		}
@@ -93,23 +93,23 @@ func TestTaskLaunchPermissionModalPromptToggleShowsFullPrompt(t *testing.T) {
 		SessionID:     "session-1",
 		ToolName:      "task",
 		Requirement:   "task_launch",
-		ToolArguments: `{"goal":"Inspect repo","description":"Inspect repo","prompt":"Map files and summarize findings. Include architecture, risks, and relevant filepaths.","launch_count":1,"resolved_agent_name":"explorer","launches":[{"launch_index":1,"requested_subagent_type":"explorer","resolved_agent_name":"explorer","meta_prompt":"backend/core service architecture"}]}`,
+		ToolArguments: `{"goal":"Inspect repo","description":"Inspect repo","prompt":"one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twentyone twentytwo twentythree twentyfour twentyfive twentysix twentyseven twentyeight twentynine thirty thirtyone thirtytwo thirtythree thirtyfour thirtyfive thirtysix thirtyseven thirtyeight thirtynine forty fortyone fortytwo fortythree fortyfour","launch_count":1,"resolved_agent_name":"explorer","launches":[{"launch_index":1,"requested_subagent_type":"explorer","resolved_agent_name":"explorer","meta_prompt":"backend/core service architecture"}]}`,
 		Status:        "pending",
 	})
 
 	collapsed := renderLinesText(page.taskLaunchModalLines(page.pendingPerms[0], 72))
-	if !strings.Contains(collapsed, "Press p to show the full prompt") {
+	if !strings.Contains(collapsed, "[p] Show full prompt") {
 		t.Fatalf("expected collapsed prompt hint, got:\n%s", collapsed)
 	}
-	if strings.Contains(collapsed, "Include architecture, risks, and relevant filepaths") {
-		t.Fatalf("expected collapsed prompt to hide full prompt body, got:\n%s", collapsed)
+	if strings.Contains(collapsed, "fortythree fortyfour") {
+		t.Fatalf("expected collapsed prompt to hide full prompt tail, got:\n%s", collapsed)
 	}
 
 	if !page.handleTaskLaunchModalKey(tcell.NewEventKey(tcell.KeyRune, 'p', tcell.ModNone)) {
 		t.Fatalf("expected p to toggle task launch prompt")
 	}
 	expanded := renderLinesText(page.taskLaunchModalLines(page.pendingPerms[0], 72))
-	for _, want := range []string{"Press p to hide the full prompt", "Include architecture", "relevant filepaths"} {
+	for _, want := range []string{"[p] Hide full prompt", "fortythree", "fortyfour"} {
 		if !strings.Contains(expanded, want) {
 			t.Fatalf("expected expanded prompt to contain %q, got:\n%s", want, expanded)
 		}

@@ -170,11 +170,11 @@ func (p *ChatPage) drawTaskLaunchModal(s tcell.Screen, screen Rect) {
 	FillRect(s, modal, p.theme.Panel)
 	onPanel := func(style tcell.Style) tcell.Style { return styleWithBackgroundFrom(style, p.theme.Panel) }
 	DrawBox(s, modal, onPanel(p.theme.BorderActive))
-	DrawText(s, modal.X+2, modal.Y+1, modal.W-4, onPanel(p.theme.Warning.Bold(true)), "Review Task Launch")
-	hint := "Enter approve · Esc deny"
+	headerManifest := decodePermissionArguments(record.ToolArguments)
+	DrawText(s, modal.X+2, modal.Y+1, modal.W-4, onPanel(p.theme.Warning.Bold(true)), clampEllipsis(taskLaunchModalTitleFromManifest(headerManifest), modal.W-4))
+	hint := "Enter launch · Esc deny"
 	DrawTextRight(s, modal.X+modal.W-2, modal.Y+1, modal.W/2, onPanel(p.theme.TextMuted), clampEllipsis(hint, modal.W/2))
-	subtitle := "Review the launch details and per-launch assignments before allowing delegation."
-	DrawText(s, modal.X+2, modal.Y+2, modal.W-4, onPanel(p.theme.TextMuted), clampEllipsis(subtitle, modal.W-4))
+	DrawText(s, modal.X+2, modal.Y+2, modal.W-4, onPanel(p.theme.TextMuted), clampEllipsis(taskLaunchModalSubtitleFromManifest(headerManifest), modal.W-4))
 
 	bodyRect := Rect{X: modal.X + 2, Y: modal.Y + 3, W: modal.W - 4, H: modal.H - (inputRows + 6)}
 	maxScroll := maxInt(0, len(lines)-bodyRect.H)
@@ -200,11 +200,11 @@ func (p *ChatPage) drawTaskLaunchModal(s tcell.Screen, screen Rect) {
 	textX := modal.X + 2
 	textW := modal.W - 4
 	if textW > 0 {
-		inputLabel := "Message to agent (optional):"
+		inputLabel := "Message to agent (optional)"
 		DrawText(s, modal.X+2, inputY-1, modal.W-4, onPanel(p.theme.TextMuted), clampEllipsis(inputLabel, modal.W-4))
 		visibleLines := p.taskLaunchInputVisibleLines(maxInt(1, textW), inputRows)
 		if strings.TrimSpace(p.taskLaunchInput) == "" {
-			DrawText(s, textX, inputY, textW, onPanel(p.theme.TextMuted), clampEllipsis("Type a note to send back with this action...", textW))
+			DrawText(s, textX, inputY, textW, onPanel(p.theme.TextMuted), clampEllipsis("Add any notes for the agents before launch...", textW))
 		} else {
 			for i := 0; i < len(visibleLines) && i < inputRows; i++ {
 				DrawText(s, textX, inputY+i, textW, onPanel(p.theme.Text), visibleLines[i])
@@ -246,7 +246,7 @@ func (p *ChatPage) drawTaskLaunchModal(s tcell.Screen, screen Rect) {
 	}
 
 	helpY := modal.Y + modal.H - 3
-	help := "PgUp/PgDn scroll • p prompt • Enter approve • Esc deny"
+	help := "PgUp/PgDn scroll • p prompt • Enter launch • Esc deny"
 	helpWidth := modal.W - 4
 	if maxScroll > 0 {
 		scrollLabel := fmt.Sprintf("scroll %d/%d", p.taskLaunchScroll+1, maxScroll+1)
@@ -261,19 +261,12 @@ func (p *ChatPage) drawTaskLaunchModal(s tcell.Screen, screen Rect) {
 
 	actionY := modal.Y + modal.H - 2
 	actionX := modal.X + 2
-	p.taskLaunchApproveRect, actionX = drawPermissionActionButton(s, actionX, actionY, modal.X+modal.W-2, "Enter Approve", p.theme.Success)
-	p.taskLaunchDenyRect, _ = drawPermissionActionButton(s, actionX, actionY, modal.X+modal.W-2, "Esc Deny", p.theme.Error)
+	p.taskLaunchApproveRect, actionX = drawPermissionActionButton(s, actionX, actionY, modal.X+modal.W-2, "Enter Launch", p.theme.Success)
+	p.taskLaunchDenyRect, _ = drawPermissionActionButton(s, actionX, actionY, modal.X+modal.W-2, "Esc Deny", p.theme.Secondary)
 	if p.taskLaunchApproveRect.W == 0 && p.taskLaunchDenyRect.W == 0 {
-		compactHint := "Enter approve · Esc deny"
+		compactHint := "Enter launch · Esc deny"
 		DrawText(s, modal.X+2, actionY, modal.W-4, onPanel(p.theme.TextMuted), clampEllipsis(compactHint, modal.W-4))
 	}
-}
-
-type taskLaunchModalSection struct {
-	Title       string
-	BorderStyle tcell.Style
-	TitleStyle  tcell.Style
-	Lines       []chatRenderLine
 }
 
 func (p *ChatPage) taskLaunchModalLines(record ChatPermissionRecord, width int) []chatRenderLine {
@@ -283,35 +276,18 @@ func (p *ChatPage) taskLaunchModalLines(record ChatPermissionRecord, width int) 
 		return []chatRenderLine{{Text: "Unable to decode task launch manifest.", Style: p.theme.Error}}
 	}
 
-	goal := strings.TrimSpace(firstNonEmptyToolValue(jsonString(manifest, "goal"), jsonString(manifest, "description")))
 	prompt := strings.TrimSpace(jsonString(manifest, "prompt"))
 	launches := p.taskLaunchOrderedLaunches(jsonObjectSlice(manifest, "launches"))
 	launchCount := maxInt(len(launches), jsonInt(manifest, "launch_count"))
-	resolvedAgent := strings.TrimSpace(jsonString(manifest, "resolved_agent_name"))
-
-	metaParts := []string{fmt.Sprintf("launches %d", launchCount)}
-	if reportMaxChars := jsonInt(manifest, "report_max_chars"); reportMaxChars > 0 {
-		metaParts = append(metaParts, fmt.Sprintf("report %d chars", reportMaxChars))
-	}
-	if resolvedAgent != "" {
-		metaParts = append(metaParts, "router "+resolvedAgent)
-	}
-	metaParts = append(metaParts, taskLaunchResolvedToolsSummary(jsonObject(manifest, "resolved_tools"))...)
-	meta := []chatRenderLine{p.taskLaunchTextLine(strings.Join(metaParts, " · "), p.theme.TextMuted)}
-	sections := []taskLaunchModalSection{
-		{Title: "Task", BorderStyle: p.theme.BorderActive, TitleStyle: p.theme.Primary.Bold(true), Lines: p.taskLaunchMarkdownSectionLines(goal, "No task summary provided.")},
-		{Title: "Agent roles", BorderStyle: p.theme.Border, TitleStyle: p.theme.Secondary.Bold(true), Lines: p.taskLaunchLaunchTableLines(launches, maxInt(16, width-4))},
-		{Title: "Meta", BorderStyle: p.theme.Border, TitleStyle: p.theme.TextMuted.Bold(true), Lines: meta},
-		{Title: p.taskLaunchPromptSectionTitle(prompt), BorderStyle: p.theme.Border, TitleStyle: p.theme.Primary.Bold(true), Lines: p.taskLaunchPromptSectionLines(prompt)},
-	}
 
 	out := make([]chatRenderLine, 0, 96)
-	for i, section := range sections {
-		if i > 0 {
-			out = append(out, chatRenderLine{Text: "", Style: p.theme.TextMuted})
-		}
-		out = append(out, p.taskLaunchSectionBoxLines(section, width)...)
-	}
+	out = append(out, p.taskLaunchSummaryChipLines(manifest, launchCount, width)...)
+	out = append(out, chatRenderLine{Text: "", Style: p.theme.TextMuted})
+	out = append(out, p.taskLaunchDividerLine("Subagents", width))
+	out = append(out, p.taskLaunchLaunchCardLines(launches, maxInt(16, width))...)
+	out = append(out, chatRenderLine{Text: "", Style: p.theme.TextMuted})
+	out = append(out, p.taskLaunchDividerLine("Full prompt", width))
+	out = append(out, p.taskLaunchPromptSectionLines(prompt)...)
 	return out
 }
 
@@ -333,6 +309,103 @@ func (p *ChatPage) taskLaunchKeyValueLine(label, value string, valueStyle tcell.
 	return chatRenderLine{Text: chatRenderSpansText(spans), Style: valueStyle, Spans: spans}
 }
 
+func taskLaunchModalTitleFromManifest(manifest map[string]any) string {
+	launchCount := maxInt(jsonInt(manifest, "launch_count"), len(jsonObjectSlice(manifest, "launches")))
+	if launchCount < 1 {
+		launchCount = 1
+	}
+	prefix := "Launch subagent"
+	if launchCount != 1 {
+		prefix = fmt.Sprintf("Launch %d subagents", launchCount)
+	}
+	task := taskLaunchPromptPreview(firstNonEmptyToolValue(jsonString(manifest, "description"), jsonString(manifest, "goal"), jsonString(manifest, "prompt")), 10)
+	if task == "" || task == "No prompt text." {
+		return prefix
+	}
+	return prefix + ": " + task
+}
+
+func taskLaunchModalSubtitleFromManifest(manifest map[string]any) string {
+	parts := []string{"Review before launch"}
+	if reportMaxChars := jsonInt(manifest, "report_max_chars"); reportMaxChars > 0 {
+		parts = append(parts, fmt.Sprintf("report %d chars", reportMaxChars))
+	}
+	return strings.Join(parts, " · ")
+}
+
+func (p *ChatPage) taskLaunchSummaryChipLines(manifest map[string]any, launchCount, width int) []chatRenderLine {
+	launchNoun := "launch"
+	if launchCount != 1 {
+		launchNoun = "launches"
+	}
+	launchLabel := fmt.Sprintf("^ %d %s", launchCount, launchNoun)
+	chips := []string{"[" + launchLabel + "]"}
+	if toolsLabel := taskLaunchToolsSummary(jsonObject(manifest, "resolved_tools")); toolsLabel != "" {
+		chips = append(chips, "[! "+toolsLabel+"]")
+	}
+	if resolvedAgent := strings.TrimSpace(jsonString(manifest, "resolved_agent_name")); resolvedAgent != "" {
+		chips = append(chips, "[# Router: "+resolvedAgent+"]")
+	}
+
+	lines := make([]chatRenderLine, 0, len(chips))
+	current := ""
+	for _, chip := range chips {
+		if current == "" {
+			current = chip
+			continue
+		}
+		candidate := current + "  " + chip
+		if utf8.RuneCountInString(candidate) <= width {
+			current = candidate
+			continue
+		}
+		lines = append(lines, chatRenderLine{Text: current, Style: p.theme.TextMuted})
+		current = chip
+	}
+	if current != "" {
+		lines = append(lines, chatRenderLine{Text: current, Style: p.theme.TextMuted})
+	}
+	return lines
+}
+
+func taskLaunchToolsSummary(tools map[string]any) string {
+	execution := strings.TrimSpace(firstNonEmptyToolValue(jsonString(tools, "effective_execution_mode"), jsonString(tools, "runtime_mode")))
+	if execution != "" {
+		if execution == "read" {
+			return "read-only tools"
+		}
+		return execution + " tools"
+	}
+	if preset := strings.TrimSpace(jsonString(tools, "preset")); preset != "" {
+		return strings.ReplaceAll(preset, "_", " ") + " tools"
+	}
+	if allowed := jsonStringSlice(tools, "allowed_tools"); len(allowed) > 0 {
+		return fmt.Sprintf("%d allowed tool%s", len(allowed), pluralSuffix(len(allowed)))
+	}
+	return ""
+}
+
+func pluralSuffix(count int) string {
+	if count == 1 {
+		return ""
+	}
+	return "s"
+}
+
+func (p *ChatPage) taskLaunchDividerLine(title string, width int) chatRenderLine {
+	label := strings.ToUpper(strings.TrimSpace(title))
+	if label == "" {
+		label = "SECTION"
+	}
+	prefix := "─ " + label + " "
+	remaining := maxInt(0, width-utf8.RuneCountInString(prefix))
+	spans := []chatRenderSpan{
+		{Text: prefix, Style: p.theme.TextMuted.Bold(true)},
+		{Text: strings.Repeat("─", remaining), Style: p.theme.Border},
+	}
+	return chatRenderLine{Text: chatRenderSpansText(spans), Style: p.theme.Border, Spans: spans}
+}
+
 func (p *ChatPage) taskLaunchMarkdownSectionLines(body, empty string) []chatRenderLine {
 	body = strings.TrimSpace(strings.ReplaceAll(body, "\r\n", "\n"))
 	if body == "" {
@@ -345,12 +418,12 @@ func (p *ChatPage) taskLaunchMarkdownSectionLines(body, empty string) []chatRend
 	return rows
 }
 
-func (p *ChatPage) taskLaunchPromptSectionTitle(prompt string) string {
-	count := taskLaunchPromptWordCount(prompt)
-	if count == 1 {
-		return "Prompt · 1 word"
+func (p *ChatPage) taskLaunchPromptToggleLine() chatRenderLine {
+	label := "Show full prompt"
+	if p.taskLaunchPromptExpanded {
+		label = "Hide full prompt"
 	}
-	return fmt.Sprintf("Prompt · %d words", count)
+	return chatRenderLine{Text: "[p] " + label, Style: p.theme.Primary}
 }
 
 func (p *ChatPage) taskLaunchPromptSectionLines(prompt string) []chatRenderLine {
@@ -358,16 +431,12 @@ func (p *ChatPage) taskLaunchPromptSectionLines(prompt string) []chatRenderLine 
 	if prompt == "" {
 		return []chatRenderLine{{Text: "No prompt was included in the manifest.", Style: p.theme.TextMuted}}
 	}
-	preview := taskLaunchPromptPreview(prompt, 14)
+	preview := taskLaunchPromptPreview(prompt, 42)
+	previewLine := chatRenderLine{Text: fmt.Sprintf("%d words · %s", taskLaunchPromptWordCount(prompt), preview), Style: p.theme.TextMuted}
 	if !p.taskLaunchPromptExpanded {
-		return []chatRenderLine{
-			{Text: fmt.Sprintf("%d words · %s", taskLaunchPromptWordCount(prompt), preview), Style: p.theme.TextMuted},
-			{Text: "Press p to show the full prompt.", Style: p.theme.Primary},
-		}
+		return []chatRenderLine{previewLine, p.taskLaunchPromptToggleLine()}
 	}
-	lines := []chatRenderLine{{Text: fmt.Sprintf("%d words · %s", taskLaunchPromptWordCount(prompt), preview), Style: p.theme.TextMuted}}
-	lines = append(lines, chatRenderLine{Text: "Press p to hide the full prompt.", Style: p.theme.Primary})
-	lines = append(lines, chatRenderLine{Text: "", Style: p.theme.TextMuted})
+	lines := []chatRenderLine{previewLine, p.taskLaunchPromptToggleLine(), chatRenderLine{Text: "", Style: p.theme.TextMuted}}
 	lines = append(lines, p.taskLaunchMarkdownSectionLines(prompt, "No prompt was included in the manifest.")...)
 	return lines
 }
@@ -451,19 +520,6 @@ func (p *ChatPage) taskLaunchLaunchAgent(launch map[string]any) string {
 	return agent
 }
 
-func (p *ChatPage) taskLaunchLaunchLabel(launch map[string]any) string {
-	label := strings.TrimSpace(firstNonEmptyToolValue(
-		jsonString(launch, "assignment_label"),
-		jsonString(launch, "child_title_preview"),
-		jsonString(launch, "meta_prompt"),
-		p.taskLaunchLaunchAgent(launch),
-	))
-	if label == "" {
-		return "Delegated task"
-	}
-	return label
-}
-
 func (p *ChatPage) taskLaunchLaunchModelLine(launch map[string]any) string {
 	parts := []string{p.taskLaunchLaunchAgent(launch)}
 	provider := strings.TrimSpace(jsonString(launch, "subagent_provider"))
@@ -482,41 +538,6 @@ func (p *ChatPage) taskLaunchLaunchModelLine(launch map[string]any) string {
 	return strings.Join(parts, " · ")
 }
 
-func taskLaunchResolvedToolsSummary(tools map[string]any) []string {
-	if len(tools) == 0 {
-		return nil
-	}
-	parts := make([]string, 0, 9)
-	if preset := jsonString(tools, "preset"); preset != "" {
-		parts = append(parts, "preset "+preset)
-	}
-	if runtimeMode := jsonString(tools, "runtime_mode"); runtimeMode != "" {
-		parts = append(parts, "runtime "+runtimeMode)
-	}
-	if effectiveMode := jsonString(tools, "effective_execution_mode"); effectiveMode != "" {
-		parts = append(parts, "effective "+effectiveMode)
-	}
-	if allowed := jsonStringSlice(tools, "allowed_tools"); len(allowed) > 0 {
-		parts = append(parts, "allowed "+strings.Join(allowed, ", "))
-	}
-	if disabled := jsonStringSlice(tools, "disabled_tools"); len(disabled) > 0 {
-		parts = append(parts, "disabled "+strings.Join(disabled, ", "))
-	}
-	if profileAllowed := jsonStringSlice(tools, "profile_allowed_tools"); len(profileAllowed) > 0 {
-		parts = append(parts, "profile allowed "+strings.Join(profileAllowed, ", "))
-	}
-	if profileDisabled := jsonStringSlice(tools, "profile_disabled_tools"); len(profileDisabled) > 0 {
-		parts = append(parts, "profile disabled "+strings.Join(profileDisabled, ", "))
-	}
-	if launchDisabled := jsonStringSlice(tools, "launch_disabled_tools"); len(launchDisabled) > 0 {
-		parts = append(parts, "launch disabled "+strings.Join(launchDisabled, ", "))
-	}
-	if bashPrefixes := jsonStringSlice(tools, "bash_prefixes"); len(bashPrefixes) > 0 {
-		parts = append(parts, "bash prefixes "+strings.Join(bashPrefixes, ", "))
-	}
-	return parts
-}
-
 func (p *ChatPage) taskLaunchLaunchAssignment(launch map[string]any) string {
 	return strings.TrimSpace(firstNonEmptyToolValue(
 		jsonString(launch, "meta_prompt"),
@@ -527,75 +548,63 @@ func (p *ChatPage) taskLaunchLaunchAssignment(launch map[string]any) string {
 	))
 }
 
-func (p *ChatPage) taskLaunchLaunchTableLines(launches []map[string]any, width int) []chatRenderLine {
+func (p *ChatPage) taskLaunchLaunchCardLines(launches []map[string]any, width int) []chatRenderLine {
 	if len(launches) == 0 {
 		return []chatRenderLine{{Text: "No launches were included in the manifest.", Style: p.theme.TextMuted}}
 	}
 	width = maxInt(24, width)
-	maxLabelRunes := utf8.RuneCountInString("Assignment")
-	for _, launch := range launches {
-		maxLabelRunes = maxInt(maxLabelRunes, utf8.RuneCountInString(p.taskLaunchLaunchLabel(launch)))
-	}
-	labelWidth := minInt(maxInt(10, maxLabelRunes), maxInt(10, width/3))
-	prefixWidth := utf8.RuneCountInString(fmt.Sprintf("%-4s %-*s ", "#", labelWidth, "Assignment"))
-	if prefixWidth >= width-8 {
-		labelWidth = maxInt(8, width-12)
-		prefixWidth = utf8.RuneCountInString(fmt.Sprintf("%-4s %-*s ", "#", labelWidth, "Assignment"))
-	}
-	detailsWidth := maxInt(8, width-prefixWidth)
-
-	headerSpans := []chatRenderSpan{
-		{Text: fmt.Sprintf("%-4s %-*s ", "#", labelWidth, "Assignment"), Style: p.theme.Secondary.Bold(true)},
-		{Text: "Agent / model", Style: p.theme.Secondary.Bold(true)},
-	}
-	out := []chatRenderLine{{Text: chatRenderSpansText(headerSpans), Style: p.theme.Secondary, Spans: headerSpans}}
-	out = append(out, chatRenderLine{Text: strings.Repeat("─", width), Style: p.theme.Border})
-
+	innerWidth := maxInt(1, width-4)
+	out := make([]chatRenderLine, 0, len(launches)*8)
 	for i, launch := range launches {
-		idxLabel := fmt.Sprintf("#%d", p.taskLaunchLaunchIndex(launch, i))
-		label := clampEllipsis(p.taskLaunchLaunchLabel(launch), labelWidth)
-		assignment := p.taskLaunchLaunchAssignment(launch)
-		detailLines := []chatRenderLine{{Text: p.taskLaunchLaunchModelLine(launch), Style: p.theme.TextMuted}}
-		if toolSummary := taskLaunchResolvedToolsSummary(jsonObject(launch, "resolved_tools")); len(toolSummary) > 0 {
-			detailLines = append(detailLines, chatRenderLine{Text: "tools: " + strings.Join(toolSummary, " · "), Style: p.theme.TextMuted})
+		idx := p.taskLaunchLaunchIndex(launch, i)
+		agentName := p.taskLaunchLaunchAgent(launch)
+		requested := strings.TrimSpace(firstNonEmptyToolValue(jsonString(launch, "requested_subagent_type"), jsonString(launch, "requested_subagent"), jsonString(launch, "subagent_type")))
+		requestedLabel := ""
+		if requested != "" && requested != agentName {
+			requestedLabel = "via " + requested
 		}
-		detailLines = append(detailLines, p.taskLaunchMarkdownSectionLines(assignment, "No launch-specific instructions.")...)
-		firstPrefix := fmt.Sprintf("%-4s %-*s ", idxLabel, labelWidth, label)
-		continuationPrefix := fmt.Sprintf("%-4s %-*s ", "", labelWidth, "")
-		for rowIndex, row := range detailLines {
-			prefix := continuationPrefix
-			if rowIndex == 0 {
-				prefix = firstPrefix
+		modelLabel := p.taskLaunchLaunchModelLine(launch)
+		if strings.HasPrefix(modelLabel, agentName+" · ") {
+			modelLabel = strings.TrimPrefix(modelLabel, agentName+" · ")
+		} else if modelLabel == agentName {
+			modelLabel = ""
+		}
+		metaParts := make([]string, 0, 3)
+		if requestedLabel != "" {
+			metaParts = append(metaParts, requestedLabel)
+		}
+		if modelLabel != "" {
+			metaParts = append(metaParts, modelLabel)
+		}
+		toolLabel := taskLaunchToolsSummary(jsonObject(launch, "resolved_tools"))
+
+		out = append(out, p.taskLaunchCardBorderLine('┌', '┐', width))
+		headerSpans := []chatRenderSpan{
+			{Text: fmt.Sprintf("(%d) ", idx), Style: p.theme.TextMuted.Bold(true)},
+			{Text: agentName, Style: p.theme.Text.Bold(true)},
+		}
+		if toolLabel != "" {
+			headerSpans = append(headerSpans, chatRenderSpan{Text: " · " + toolLabel, Style: p.theme.TextMuted})
+		}
+		out = append(out, p.taskLaunchCardContentLine(chatRenderLine{Text: chatRenderSpansText(headerSpans), Style: p.theme.Text, Spans: headerSpans}, innerWidth))
+		if len(metaParts) > 0 {
+			out = append(out, p.taskLaunchCardContentLine(chatRenderLine{Text: strings.Join(metaParts, " · "), Style: p.theme.TextMuted}, innerWidth))
+		}
+		assignment := p.taskLaunchMarkdownSectionLines(p.taskLaunchLaunchAssignment(launch), "No launch-specific instructions.")
+		if len(assignment) > 0 {
+			out = append(out, p.taskLaunchCardContentLine(chatRenderLine{Text: "", Style: p.theme.TextMuted}, innerWidth))
+		}
+		for _, row := range assignment {
+			for _, wrapped := range wrapRenderLineWithCustomPrefixes("", "", row, innerWidth) {
+				out = append(out, p.taskLaunchCardContentLine(wrapped, innerWidth))
 			}
-			wrapped := wrapRenderLineWithCustomPrefixes(prefix, continuationPrefix, row, prefixWidth+detailsWidth)
-			out = append(out, wrapped...)
 		}
+		out = append(out, p.taskLaunchCardBorderLine('└', '┘', width))
 		if i < len(launches)-1 {
-			out = append(out, chatRenderLine{Text: strings.Repeat("·", width), Style: p.theme.TextMuted})
+			out = append(out, chatRenderLine{Text: "", Style: p.theme.TextMuted})
 		}
 	}
 	return out
-}
-
-func (p *ChatPage) taskLaunchSectionBoxLines(section taskLaunchModalSection, width int) []chatRenderLine {
-	width = maxInt(12, width)
-	innerWidth := maxInt(1, width-4)
-	lines := make([]chatRenderLine, 0, len(section.Lines)+2)
-	lines = append(lines, p.taskLaunchSectionBorderLine('┌', '┐', section.Title, width, section.BorderStyle, section.TitleStyle))
-	if len(section.Lines) == 0 {
-		section.Lines = []chatRenderLine{{Text: "", Style: p.theme.Text}}
-	}
-	for _, line := range section.Lines {
-		if chatRenderLineText(line) == "" {
-			lines = append(lines, p.taskLaunchSectionContentLine(chatRenderLine{Text: "", Style: p.theme.Text}, innerWidth, section.BorderStyle))
-			continue
-		}
-		for _, wrapped := range wrapRenderLineWithCustomPrefixes("", "", line, innerWidth) {
-			lines = append(lines, p.taskLaunchSectionContentLine(wrapped, innerWidth, section.BorderStyle))
-		}
-	}
-	lines = append(lines, p.taskLaunchSectionBorderLine('└', '┘', "", width, section.BorderStyle, section.TitleStyle))
-	return lines
 }
 
 func (p *ChatPage) taskLaunchSectionBorderLine(left, right rune, title string, width int, borderStyle, titleStyle tcell.Style) chatRenderLine {
@@ -644,6 +653,41 @@ func (p *ChatPage) taskLaunchSectionContentLine(line chatRenderLine, innerWidth 
 		spans = append(spans, chatRenderSpan{Text: strings.Repeat(" ", padWidth), Style: padStyle})
 	}
 	spans = append(spans, chatRenderSpan{Text: " │", Style: borderStyle})
+	return chatRenderLine{Text: chatRenderSpansText(spans), Style: padStyle, Spans: spans}
+}
+
+func (p *ChatPage) taskLaunchCardBorderLine(left, right rune, width int) chatRenderLine {
+	width = maxInt(4, width)
+	text := string(left) + strings.Repeat("─", maxInt(0, width-2)) + string(right)
+	return chatRenderLine{Text: text, Style: p.theme.Border}
+}
+
+func (p *ChatPage) taskLaunchCardContentLine(line chatRenderLine, innerWidth int) chatRenderLine {
+	if innerWidth < 1 {
+		innerWidth = 1
+	}
+	body := cloneRenderSpans(line.Spans)
+	if len(body) == 0 && line.Text != "" {
+		body = []chatRenderSpan{{Text: line.Text, Style: line.Style}}
+	}
+	if renderSpansRuneCount(body) > innerWidth {
+		body, _ = splitRenderSpansByRunes(body, innerWidth)
+	}
+	padWidth := innerWidth - renderSpansRuneCount(body)
+	if padWidth < 0 {
+		padWidth = 0
+	}
+	padStyle := line.Style
+	if padStyle == tcell.StyleDefault {
+		padStyle = p.theme.Text
+	}
+	spans := make([]chatRenderSpan, 0, len(body)+3)
+	spans = append(spans, chatRenderSpan{Text: "│ ", Style: p.theme.Border})
+	spans = append(spans, body...)
+	if padWidth > 0 {
+		spans = append(spans, chatRenderSpan{Text: strings.Repeat(" ", padWidth), Style: padStyle})
+	}
+	spans = append(spans, chatRenderSpan{Text: " │", Style: p.theme.Border})
 	return chatRenderLine{Text: chatRenderSpansText(spans), Style: padStyle, Spans: spans}
 }
 
