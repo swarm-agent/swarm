@@ -10,12 +10,15 @@ func TestThemeCatalogIncludesRequiredThemes(t *testing.T) {
 
 	hasNord := false
 	hasCrimson := false
+	hasCastor := false
 	for _, item := range themes {
 		switch item.ID {
 		case "nord":
 			hasNord = true
 		case "crimson":
 			hasCrimson = true
+		case "castor":
+			hasCastor = true
 		}
 	}
 	if !hasNord {
@@ -24,6 +27,9 @@ func TestThemeCatalogIncludesRequiredThemes(t *testing.T) {
 	if !hasCrimson {
 		t.Fatalf("ThemeCatalog() missing crimson")
 	}
+	if !hasCastor {
+		t.Fatalf("ThemeCatalog() missing castor")
+	}
 }
 
 func TestResolveTheme_DefaultAndAliases(t *testing.T) {
@@ -31,8 +37,8 @@ func TestResolveTheme_DefaultAndAliases(t *testing.T) {
 	if !ok {
 		t.Fatalf("ResolveTheme(%q) failed", DefaultThemeID())
 	}
-	if defaultTheme.ID != "crimson" {
-		t.Fatalf("default theme id = %q, want crimson", defaultTheme.ID)
+	if defaultTheme.ID != "castor" {
+		t.Fatalf("default theme id = %q, want castor", defaultTheme.ID)
 	}
 
 	if _, ok := ResolveTheme("Nord"); !ok {

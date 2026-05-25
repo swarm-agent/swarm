@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	defaultThemeID         = "crimson"
+	defaultThemeID         = "castor"
 	defaultSwarmingTitle   = "Swarming"
 	defaultSwarmingStatus  = "swarming"
 	defaultSwarmName       = "Local"

@@ -59,6 +59,31 @@ var builtinThemeCatalog = []ThemeOption{
 		PromptCursorBG: "#D6D0C4",
 		PromptCursorFG: "#000000",
 	}),
+	newBuiltinThemeOption("castor", "Castor", ThemePalette{
+		Background:     "#36272B",
+		Panel:          "#402E33",
+		Element:        "#402E33",
+		Border:         "#6B4D55",
+		BorderActive:   "#8C6570",
+		Text:           "#F7ECEF",
+		TextMuted:      "#CBB1B8",
+		Primary:        "#FF6B81",
+		Secondary:      "#FF8597",
+		Accent:         "#FF9F80",
+		Success:        "#8CE6A4",
+		Warning:        "#FFD275",
+		Error:          "#FF5E6C",
+		PromptCursorBG: "#FF6B81",
+		PromptCursorFG: "#36272B",
+		CodeBackground: "#2D1F23",
+		CodeKeyword:    "#FF6B81",
+		CodeType:       "#FFA6B5",
+		CodeString:     "#8CE6A4",
+		CodeNumber:     "#FFD275",
+		CodeComment:    "#BFA3AA",
+		CodeFunction:   "#FF9F80",
+		CodeOperator:   "#FF8597",
+	}),
 	newBuiltinThemeOption("crimson", "Crimson", ThemePalette{
 		Background:     "#1E1418",
 		Panel:          "#26191E",
@@ -417,7 +442,7 @@ var builtinThemeCatalog = []ThemeOption{
 }
 
 func DefaultThemeID() string {
-	return "crimson"
+	return "castor"
 }
 
 func BuiltinThemeCatalog() []ThemeOption {
