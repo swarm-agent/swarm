@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ChangeEvent } from 'react'
-import { Copy, Check, AlertCircle, ChevronDown } from 'lucide-react'
+import { Copy, Check, AlertCircle, ChevronDown, Rocket, LockKeyhole, Server } from 'lucide-react'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { Button } from '../../../../components/ui/button'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -45,6 +45,7 @@ import {
   parseManageImagePermission,
   parsePlanUpdatePermission,
   parseTaskLaunchPermission,
+  type TaskLaunchPayload,
   type TaskLaunchResolvedTools,
   parseWorkspaceScopePermission,
   permissionDisplayToolName,
@@ -125,6 +126,7 @@ function ModalShell({
   sessionMode,
   widthClassName,
   bodyClassName,
+  headerExtra,
   footer,
   children,
   onOpenChange,
@@ -141,6 +143,7 @@ function ModalShell({
   sessionMode: string
   widthClassName: string
   bodyClassName?: string
+  headerExtra?: React.ReactNode
   footer?: React.ReactNode
   children: React.ReactNode
   onOpenChange: (open: boolean) => void
@@ -186,8 +189,8 @@ function ModalShell({
           widthClassName,
         )}
       >
-        <div className="shrink-0 flex items-start justify-between gap-2 border-b border-[var(--app-border)] px-3 py-2.5 sm:items-center sm:gap-3 sm:px-5 sm:py-3">
-          <div className="min-w-0 flex flex-col gap-1 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-3 sm:gap-y-1">
+        <div className="shrink-0 flex items-start justify-between gap-3 border-b border-[var(--app-border)] px-3 py-4 sm:px-5 sm:py-5">
+          <div className="min-w-0 flex flex-col gap-1.5">
             <h2 className="text-sm font-semibold tracking-tight text-[var(--app-text)] sm:text-base">{title}</h2>
             {subtitle?.trim() ? <span className="text-xs leading-5 text-[var(--app-text-muted)] sm:text-sm">{subtitle}</span> : null}
             {showSessionMeta ? (
@@ -198,6 +201,7 @@ function ModalShell({
             ) : pendingCount > 1 ? (
               <span className="text-xs text-[var(--app-text-subtle)]">{pendingCount} pending</span>
             ) : null}
+            {headerExtra ? <div className="mt-2">{headerExtra}</div> : null}
           </div>
           <ModalCloseButton onClick={handleRequestClose} aria-label="Close permission modal" />
         </div>
@@ -225,6 +229,7 @@ function PermissionActionBar({
   notePlaceholder = 'Optional note to send back with this action…',
   shortcutHint = 'Enter approves · Esc denies',
   compactDesktop = false,
+  denyVariant = 'ghost',
 }: {
   onApprove: () => void
   onDeny: () => void
@@ -242,6 +247,7 @@ function PermissionActionBar({
   notePlaceholder?: string
   shortcutHint?: string
   compactDesktop?: boolean
+  denyVariant?: 'secondary' | 'ghost' | 'outline'
 }) {
   const [noteOpen, setNoteOpen] = useState(false)
   const showPersistentGroup = showPersistentActions && (onAlwaysDeny || onAlwaysAllow)
@@ -249,7 +255,7 @@ function PermissionActionBar({
   const hasNote = Boolean(note?.trim())
 
   return (
-    <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 pb-[max(0.5rem,var(--app-safe-area-bottom))] shadow-[0_-18px_36px_rgba(0,0,0,0.16)] sm:px-5 sm:py-3 sm:pb-3">
+    <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-3 pb-[max(0.75rem,var(--app-safe-area-bottom))] shadow-[0_-18px_36px_rgba(0,0,0,0.12)] sm:px-5 sm:py-4 sm:pb-4">
       <div
         className={cn(
           'min-w-0',
@@ -282,7 +288,7 @@ function PermissionActionBar({
         ) : null}
         <div
           className={cn(
-            'flex touch-manipulation flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end',
+            'flex touch-manipulation flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end',
             showNoteToggle && !compactDesktop ? (noteOpen ? 'pt-3 sm:pt-4' : 'sm:pt-4') : null,
             compactDesktop ? 'sm:shrink-0 sm:flex-nowrap sm:self-end' : null,
           )}
@@ -299,7 +305,7 @@ function PermissionActionBar({
           </Button>
           <Button
             type="button"
-            variant="ghost"
+            variant={denyVariant}
             onClick={onDeny}
             disabled={loading}
             title="Esc"
@@ -323,7 +329,7 @@ function PermissionActionBar({
           ) : null}
         </div>
       </div>
-      {shortcutHint ? <div className="mt-1.5 hidden text-center text-[11px] text-[var(--app-text-subtle)] sm:block sm:text-right">{shortcutHint}</div> : null}
+      {shortcutHint ? <div className="mt-2 text-center text-[11px] text-[var(--app-text-subtle)] sm:text-right">{shortcutHint}</div> : null}
     </div>
   )
 }
@@ -1504,18 +1510,43 @@ function WorkspaceScopeModal({
   )
 }
 
-function taskLaunchResolvedToolsSummary(tools: TaskLaunchResolvedTools): string[] {
-  const parts: string[] = []
-  if (tools.preset) parts.push(`preset ${tools.preset}`)
-  if (tools.runtimeMode) parts.push(`runtime ${tools.runtimeMode}`)
-  if (tools.effectiveExecutionMode) parts.push(`effective ${tools.effectiveExecutionMode}`)
-  if (tools.allowedTools.length > 0) parts.push(`allowed ${tools.allowedTools.join(', ')}`)
-  if (tools.disabledTools.length > 0) parts.push(`disabled ${tools.disabledTools.join(', ')}`)
-  if (tools.profileAllowedTools.length > 0) parts.push(`profile allowed ${tools.profileAllowedTools.join(', ')}`)
-  if (tools.profileDisabledTools.length > 0) parts.push(`profile disabled ${tools.profileDisabledTools.join(', ')}`)
-  if (tools.launchDisabledTools.length > 0) parts.push(`launch disabled ${tools.launchDisabledTools.join(', ')}`)
-  if (tools.bashPrefixes.length > 0) parts.push(`bash prefixes ${tools.bashPrefixes.join(', ')}`)
-  return parts
+function taskLaunchExecutionLabel(tools: TaskLaunchResolvedTools, fallback = ''): string {
+  return tools.effectiveExecutionMode || tools.runtimeMode || fallback || 'subagent'
+}
+
+function taskLaunchToolsSummary(tools: TaskLaunchResolvedTools): string {
+  const execution = taskLaunchExecutionLabel(tools, '')
+  if (execution) {
+    return execution === 'read' ? 'read-only tools' : `${execution} tools`
+  }
+  if (tools.preset) {
+    return `${tools.preset.replace(/_/g, ' ')} tools`
+  }
+  if (tools.allowedTools.length > 0) {
+    return `${tools.allowedTools.length} allowed tool${tools.allowedTools.length === 1 ? '' : 's'}`
+  }
+  return ''
+}
+
+function taskLaunchModalTitle(payload: TaskLaunchPayload): string {
+  const task = promptWordPreview(payload.description || payload.prompt, 10)
+  const prefix = payload.launchCount === 1 ? 'Launch subagent' : `Launch ${payload.launchCount} subagents`
+  return task ? `${prefix}: ${task}` : prefix
+}
+
+function taskLaunchSubtitle(payload: TaskLaunchPayload): string {
+  const parts = ['Review before launch']
+  if (payload.reportMaxChars > 0) parts.push(`report ${payload.reportMaxChars} chars`)
+  return parts.join(' · ')
+}
+
+function HeaderChip({ icon: Icon, children }: { icon: typeof Rocket, children: React.ReactNode }) {
+  return (
+    <span className="inline-flex h-9 items-center gap-2 rounded-xl border border-[var(--app-border)] bg-[color-mix(in_oklab,var(--app-surface)_92%,var(--app-bg-alt))] px-3 text-xs font-medium leading-none text-[var(--app-text-muted)]">
+      <Icon className="size-4 text-[var(--app-text-subtle)]" aria-hidden="true" />
+      <span className="whitespace-nowrap">{children}</span>
+    </span>
+  )
 }
 
 function TaskLaunchModal({
@@ -1544,8 +1575,11 @@ function TaskLaunchModal({
 
   const payload = parseTaskLaunchPermission(permission)
   const promptWords = countWords(payload.prompt)
-  const promptPreview = promptWordPreview(payload.prompt, 18)
-  const topLevelToolSummary = taskLaunchResolvedToolsSummary(payload.resolvedTools)
+  const promptPreview = promptWordPreview(payload.prompt, 42)
+  const modalTitle = taskLaunchModalTitle(payload)
+  const launchSummary = `${payload.launchCount} launch${payload.launchCount === 1 ? '' : 'es'}`
+  const toolsSummary = taskLaunchToolsSummary(payload.resolvedTools)
+  const routerSummary = payload.resolvedAgentName ? `Router: ${payload.resolvedAgentName}` : ''
 
   const resolve = async (action: 'approve' | 'deny') => {
     setLoading(true)
@@ -1559,24 +1593,28 @@ function TaskLaunchModal({
   return (
     <ModalShell
       open={open}
-      title={payload.title}
-      subtitle={payload.subtitle || 'Review the delegated task before spawning subagents'}
+      title={modalTitle}
+      subtitle={taskLaunchSubtitle(payload)}
       pendingCount={pendingCount}
       sessionMode={sessionMode}
       widthClassName="w-[min(100%,calc(100vw-12px))] sm:w-[min(980px,calc(100vw-48px))] xl:w-[min(1040px,calc(100vw-64px))]"
-      bodyClassName="px-3 py-3 sm:px-4 sm:py-4"
+      bodyClassName="px-3 py-4 sm:px-5 sm:py-5"
+      showSessionMeta={false}
+      headerExtra={
+        <div className="flex flex-nowrap items-center gap-2 overflow-x-auto pb-0.5">
+          <HeaderChip icon={Rocket}>{launchSummary}</HeaderChip>
+          {toolsSummary ? <HeaderChip icon={LockKeyhole}>{toolsSummary}</HeaderChip> : null}
+          {routerSummary ? <HeaderChip icon={Server}>{routerSummary}</HeaderChip> : null}
+        </div>
+      }
       footer={
         <PermissionActionBar
           loading={loading}
           onApprove={() => void resolve('approve')}
           onDeny={() => void resolve('deny')}
           approveLabel="Launch subagents"
-          note={note}
-          onNoteChange={setNote}
-          noteLabel="Message to agent"
-          notePlaceholder="Optional note for the agents before launch…"
+          denyVariant="secondary"
           shortcutHint="Enter launches · Esc denies"
-          compactDesktop
         />
       }
       onOpenChange={onOpenChange}
@@ -1590,84 +1628,55 @@ function TaskLaunchModal({
         void resolve('deny')
       }}
     >
-      <div className="grid min-w-0 gap-3 sm:gap-4">
-        <section className="min-w-0 rounded-2xl border border-[var(--app-border-accent)] bg-[var(--app-surface-subtle)] p-3 sm:p-4">
-          <div className="mb-3 text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-primary)]">Task</div>
-          <div className="min-w-0 rounded-xl bg-[var(--app-bg-alt)] p-3 text-sm leading-6 text-[var(--app-text)]">
-            <ChatMarkdown className="[overflow-wrap:anywhere]" content={payload.description || 'Delegated task'} />
-          </div>
-        </section>
+      <div className="grid min-w-0 gap-5">
+        {payload.resolvedAgentError ? <div className="rounded-xl border border-[var(--app-danger)]/40 bg-[var(--app-danger)]/10 px-3 py-2 text-sm text-[var(--app-danger)]">{payload.resolvedAgentError}</div> : null}
 
-        <section className="min-w-0 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 sm:p-4">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Agent roles</div>
-            <div className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2.5 py-1 text-[11px] font-medium text-[var(--app-text-subtle)]">
-              {payload.launchCount} launch{payload.launchCount === 1 ? '' : 'es'}
-            </div>
-          </div>
+        <section className="min-w-0">
+          <div className="mb-3 text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Subagents</div>
           {payload.launches.length > 0 ? (
-            <div className="grid min-w-0 gap-2">
+            <div className="grid max-h-[min(52dvh,34rem)] gap-3 overflow-y-auto overscroll-contain pr-1 sm:max-h-[min(56dvh,36rem)]">
               {payload.launches.map((launch) => {
                 const agentName = launch.resolvedAgentName || launch.requestedSubagentType || 'subagent'
-                const assignmentTitle = launch.assignmentLabel || launch.childTitlePreview || launch.assignment || 'Delegated task'
+                const requestedLabel = launch.requestedSubagentType && launch.requestedSubagentType !== agentName ? launch.requestedSubagentType : ''
                 const modelLabel = [launch.subagentProvider, launch.subagentModel].filter(Boolean).join(' / ')
-                const toolSummary = taskLaunchResolvedToolsSummary(launch.resolvedTools)
+                const toolLabel = taskLaunchToolsSummary(launch.resolvedTools)
                 return (
-                  <div
+                  <article
                     key={`${launch.index}:${launch.requestedSubagentType}:${launch.resolvedAgentName}`}
-                    className="grid min-w-0 gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-sm sm:grid-cols-[minmax(8rem,12rem)_minmax(0,1fr)] sm:gap-4"
+                    className="flex min-w-0 gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 sm:gap-4 sm:p-4"
                   >
-                    <div className="min-w-0">
-                      <div className="mb-2 inline-flex rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 text-[11px] font-semibold text-[var(--app-text-subtle)]">
-                        #{launch.index}
+                    <span className="flex size-7 shrink-0 items-center justify-center rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] text-xs font-semibold text-[var(--app-text-muted)]">
+                      {launch.index}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+                        <div className="truncate text-sm font-semibold text-[var(--app-text)] sm:text-base">{agentName}</div>
+                        {toolLabel ? (
+                          <span className="text-xs font-normal text-[var(--app-text-subtle)] before:mr-2 before:text-[var(--app-text-subtle)] before:content-['·']">
+                            {toolLabel}
+                          </span>
+                        ) : null}
                       </div>
-                      <div className="min-w-0 break-words font-semibold text-[var(--app-text)] [overflow-wrap:anywhere]">{assignmentTitle}</div>
-                      <div className="mt-1 min-w-0 break-words text-xs text-[var(--app-text-subtle)] [overflow-wrap:anywhere]">{agentName}</div>
-                      <div className="mt-2 flex min-w-0 flex-wrap gap-1.5 text-[11px] text-[var(--app-text-subtle)]">
-                        <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5">{launch.childMode || payload.effectiveChildMode || 'subagent'}</span>
-                        {modelLabel ? <span className="min-w-0 break-words rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 [overflow-wrap:anywhere]">{modelLabel}</span> : null}
-                      </div>
-                    </div>
-                    <div className="grid min-w-0 gap-2 rounded-lg bg-[var(--app-bg-alt)] px-3 py-2 text-[var(--app-text)]">
-                      <div>
-                        <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Assignment</div>
-                        <ChatMarkdown className="text-sm leading-6 [overflow-wrap:anywhere]" content={launch.assignment || 'No launch-specific instructions.'} />
-                      </div>
-                      {toolSummary.length > 0 ? (
-                        <div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2">
-                          <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Resolved tools</div>
-                          <div className="flex min-w-0 flex-wrap gap-1.5 text-[11px] text-[var(--app-text-subtle)]">
-                            {toolSummary.map((item) => (
-                              <span key={item} className="min-w-0 break-words rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 [overflow-wrap:anywhere]">{item}</span>
-                            ))}
-                          </div>
+                      {[requestedLabel ? `via ${requestedLabel}` : '', modelLabel].filter(Boolean).length > 0 ? (
+                        <div className="mt-1 min-w-0 break-words text-xs leading-5 text-[var(--app-text-subtle)] [overflow-wrap:anywhere]">
+                          {[requestedLabel ? `via ${requestedLabel}` : '', modelLabel].filter(Boolean).join(' · ')}
                         </div>
                       ) : null}
-                      {launch.resolvedAgentError ? <div className="text-sm text-[var(--app-danger)]">{launch.resolvedAgentError}</div> : null}
+                      <div className="mt-3 min-w-0 text-sm leading-6 text-[var(--app-text)]">
+                        <ChatMarkdown className="[overflow-wrap:anywhere]" content={launch.assignment || 'No launch-specific instructions.'} />
+                        {launch.resolvedAgentError ? <div className="mt-2 text-sm text-[var(--app-danger)]">{launch.resolvedAgentError}</div> : null}
+                      </div>
                     </div>
-                  </div>
+                  </article>
                 )
               })}
             </div>
           ) : (
-            <div className="rounded-xl bg-[var(--app-bg-alt)] px-3 py-2 text-sm text-[var(--app-text-muted)]">No launches were included in the manifest.</div>
+            <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-sm text-[var(--app-text-muted)]">No launches were included in the manifest.</div>
           )}
         </section>
 
-        <section className="min-w-0 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 sm:p-4">
-          <div className="mb-3 text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Meta</div>
-          <div className="flex min-w-0 flex-wrap gap-2 text-xs text-[var(--app-text-subtle)] sm:text-sm">
-            <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2.5 py-1">launches {payload.launchCount}</span>
-            {payload.reportMaxChars > 0 ? <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2.5 py-1">report {payload.reportMaxChars} chars</span> : null}
-            {payload.resolvedAgentName ? <span className="min-w-0 break-words rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2.5 py-1 [overflow-wrap:anywhere]">router {payload.resolvedAgentName}</span> : null}
-            {topLevelToolSummary.map((item) => (
-              <span key={item} className="min-w-0 break-words rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2.5 py-1 [overflow-wrap:anywhere]">{item}</span>
-            ))}
-          </div>
-          {payload.resolvedAgentError ? <div className="mt-2 text-sm text-[var(--app-danger)]">{payload.resolvedAgentError}</div> : null}
-        </section>
-
-        <section className="min-w-0 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 sm:p-4">
+        <section className="min-w-0 border-t border-[var(--app-border)] pt-5">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Full prompt</div>
             <Button
@@ -1680,16 +1689,29 @@ function TaskLaunchModal({
               {promptExpanded ? 'Hide full prompt' : 'Show full prompt'}
             </Button>
           </div>
-          <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3 text-sm text-[var(--app-text)]">
-            <div className="text-xs text-[var(--app-text-subtle)]">
-              {promptWords} {promptWords === 1 ? 'word' : 'words'} · {promptPreview || 'No prompt text.'}
-            </div>
+          <div className="max-h-[min(24dvh,14rem)] overflow-y-auto rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3 text-sm leading-6 text-[var(--app-text)] sm:max-h-[min(28dvh,16rem)] sm:p-4">
             {promptExpanded ? (
-              <div className="mt-3 max-h-[34vh] overflow-y-auto rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-sm leading-6">
-                <ChatMarkdown className="[overflow-wrap:anywhere]" content={payload.prompt || 'No prompt was included in the manifest.'} />
+              <ChatMarkdown className="[overflow-wrap:anywhere]" content={payload.prompt || 'No prompt was included in the manifest.'} />
+            ) : (
+              <div className="text-[var(--app-text-muted)]">
+                <span className="text-xs text-[var(--app-text-subtle)]">{promptWords} {promptWords === 1 ? 'word' : 'words'} · </span>
+                {promptPreview || 'No prompt text.'}
               </div>
-            ) : null}
+            )}
           </div>
+        </section>
+
+        <section className="min-w-0">
+          <label className="grid gap-2">
+            <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Message to agent (optional)</span>
+            <Textarea
+              value={note}
+              onChange={(event) => setNote(event.target.value)}
+              placeholder="Add any notes for the agents before launch..."
+              className="min-h-[5rem] resize-none bg-[var(--app-bg-alt)]"
+              rows={3}
+            />
+          </label>
         </section>
       </div>
     </ModalShell>
