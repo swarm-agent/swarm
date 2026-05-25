@@ -384,7 +384,7 @@ function testGenericBashPermissionFormatsCommandAsCodeBlock(): void {
   })
 
   const body = buildGenericPermissionMarkdown(permission)
-  assert(body.includes('Tool: bash · Requirement: bash · Mode: auto'), 'expected permission metadata')
+  assert(!body.includes('Tool: bash · Requirement: bash · Mode: auto'), 'expected permission metadata to stay out of markdown body')
   assert(body.includes('**Command**\n\n```bash\n'), 'expected bash code fence')
   assert(body.includes(command), 'expected unwrapped command body')
   assert(!body.includes(`\`${command}\``), 'expected wrapping backticks to be removed')

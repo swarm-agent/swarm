@@ -1924,13 +1924,9 @@ export function buildGenericPermissionMarkdown(permission: DesktopPermissionReco
     sections.push(permission.reason.trim())
   }
 
-  const details = [
-    `Tool: ${permissionDisplayToolName(permission.toolName)}`,
-    `Requirement: ${permissionRequirementLabel(permission.requirement)}`,
-    permission.mode.trim() ? `Mode: ${permission.mode.trim()}` : '',
-  ].filter(Boolean).join(' · ')
-
-  sections.push(bashPrefix ? `${details} · Always allow prefix: \`${bashPrefix}\`` : details)
+  if (bashPrefix) {
+    sections.push(`Reusable approval prefix: \`${bashPrefix}\``)
+  }
 
   if (permission.toolArguments.trim()) {
     sections.push(buildPermissionArgumentsMarkdown(permission))

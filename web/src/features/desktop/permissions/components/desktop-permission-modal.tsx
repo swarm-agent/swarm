@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ChangeEvent } from 'react'
-import { Copy, Check, AlertCircle, ChevronDown, Rocket, LockKeyhole, Server } from 'lucide-react'
+import { Copy, Check, AlertCircle, ChevronDown, Rocket, LockKeyhole, Server, type LucideIcon } from 'lucide-react'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { Button } from '../../../../components/ui/button'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -7,6 +7,7 @@ import { Textarea } from '../../../../components/ui/textarea'
 import { cn } from '../../../../lib/cn'
 import { requestJson } from '../../../../app/api'
 import { ChatMarkdown } from '../../chat/components/chat-markdown'
+import { getToolTheme } from '../../chat/services/tool-theme'
 import type { ModelOptionRecord } from '../../chat/types/chat'
 import { modelOptionsQueryOptions } from '../../../queries/query-options'
 import { useQuery } from '@tanstack/react-query'
@@ -50,6 +51,7 @@ import {
   parseWorkspaceScopePermission,
   permissionDisplayToolName,
   permissionKind,
+  permissionRequirementLabel,
 } from '../services/permission-payload'
 
 interface DesktopPermissionModalProps {
@@ -116,6 +118,15 @@ function usePermissionKeyboardShortcuts({
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [disabled, onDeny, onPrimary, open])
+}
+
+function toolAccentWash(color: string, amount = 12): string {
+  return `color-mix(in srgb, ${color} ${amount}%, transparent)`
+}
+
+function permissionModeLabel(mode: string, fallback = 'plan'): string {
+  const trimmed = mode.trim()
+  return trimmed || fallback
 }
 
 function ModalShell({
@@ -387,6 +398,12 @@ function GenericPermissionModal({
   }
 
   const body = buildGenericPermissionMarkdown(permission)
+  const toolName = permissionDisplayToolName(permission.toolName)
+  const toolTheme = getToolTheme(toolName)
+  const ToolIcon = toolTheme.icon
+  const modeLabel = permissionModeLabel(permission.mode || sessionMode)
+  const requirementLabel = permissionRequirementLabel(permission.requirement)
+  const accentWash = toolAccentWash(toolTheme.color, 14)
 
   const resolve = async (
     action: 'approve' | 'deny' | 'approve_always' | 'always_allow' | 'always_deny',
@@ -408,11 +425,19 @@ function GenericPermissionModal({
   return (
     <ModalShell
       open={open}
-      title="Permission request"
+      title={`${toolName} permission`}
+      subtitle="Review the requested tool call before it runs"
       pendingCount={pendingCount}
       sessionMode={sessionMode}
-      widthClassName="w-full sm:w-[min(920px,calc(100vw-32px))]"
-      bodyClassName="py-2.5 sm:py-3"
+      widthClassName="w-[min(100%,calc(100vw-12px))] sm:w-[min(980px,calc(100vw-48px))] xl:w-[min(1040px,calc(100vw-64px))]"
+      bodyClassName="px-3 py-4 sm:px-5 sm:py-5"
+      headerExtra={
+        <div className="flex flex-nowrap items-center gap-2 overflow-x-auto pb-0.5">
+          <HeaderChip icon={ToolIcon}>{toolName}</HeaderChip>
+          <HeaderChip icon={LockKeyhole}>{requirementLabel}</HeaderChip>
+          <HeaderChip icon={Rocket}>mode {modeLabel}</HeaderChip>
+        </div>
+      }
       footer={
         <PermissionActionBar
           loading={loading}
@@ -433,13 +458,34 @@ function GenericPermissionModal({
       onDenyShortcut={() => void resolve('deny')}
       shortcutsDisabled={loading}
     >
-      <div className="grid gap-3">
-        <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2.5 text-sm leading-6">
-          <ChatMarkdown content={body} />
-        </div>
+      <div className="grid min-w-0 gap-4">
+        <section className="min-w-0 overflow-hidden rounded-2xl border border-[color-mix(in_oklab,var(--app-border)_78%,transparent)] bg-[linear-gradient(135deg,color-mix(in_oklab,var(--app-surface)_96%,var(--app-bg-alt)),color-mix(in_oklab,var(--app-bg-alt)_92%,transparent))] shadow-[0_18px_42px_rgba(0,0,0,0.10)]">
+          <div className="flex min-w-0 items-center gap-3 border-b border-[var(--app-border)] bg-[color-mix(in_oklab,var(--app-surface)_86%,transparent)] px-3 py-3 sm:px-4">
+            <span
+              className="flex size-9 shrink-0 items-center justify-center rounded-xl"
+              style={{ color: toolTheme.color, backgroundColor: accentWash }}
+            >
+              <ToolIcon className="size-4" aria-hidden="true" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-semibold text-[var(--app-text)]">{toolName}</div>
+              <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-[var(--app-text-subtle)]">
+                <span>{requirementLabel}</span>
+                <span aria-hidden="true">·</span>
+                <span>mode {modeLabel}</span>
+              </div>
+            </div>
+          </div>
+          <div className="max-h-[min(54dvh,34rem)] min-w-0 overflow-y-auto overscroll-contain px-3 py-3 sm:max-h-[min(58dvh,38rem)] sm:px-4 sm:py-4">
+            <ChatMarkdown
+              content={body}
+              className="text-sm leading-6 [&_pre]:border-[color-mix(in_oklab,var(--app-border)_70%,transparent)] [&_pre]:bg-[color-mix(in_oklab,var(--app-bg-inset)_88%,black)] [&_pre]:shadow-inner [&_pre_code]:text-[13px]"
+            />
+          </div>
+        </section>
         {persistentAllowed ? (
-          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-xs text-[var(--app-text-muted)]">
-            <span className="font-medium text-[var(--app-text-subtle)]">Always allow prefix</span>
+          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-[color-mix(in_oklab,var(--app-primary)_24%,var(--app-border))] bg-[color-mix(in_oklab,var(--app-primary)_7%,var(--app-surface-subtle))] px-3 py-2.5 text-xs text-[var(--app-text-muted)]">
+            <span className="font-medium text-[var(--app-text-subtle)]">Reusable approval</span>
             <span className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[var(--app-text)] [overflow-wrap:anywhere]">{persistentRuleDescription || 'available after approval'}</span>
           </div>
         ) : null}
@@ -1540,7 +1586,7 @@ function taskLaunchSubtitle(payload: TaskLaunchPayload): string {
   return parts.join(' · ')
 }
 
-function HeaderChip({ icon: Icon, children }: { icon: typeof Rocket, children: React.ReactNode }) {
+function HeaderChip({ icon: Icon, children }: { icon: LucideIcon, children: React.ReactNode }) {
   return (
     <span className="inline-flex h-9 items-center gap-2 rounded-xl border border-[var(--app-border)] bg-[color-mix(in_oklab,var(--app-surface)_92%,var(--app-bg-alt))] px-3 text-xs font-medium leading-none text-[var(--app-text-muted)]">
       <Icon className="size-4 text-[var(--app-text-subtle)]" aria-hidden="true" />
