@@ -117,10 +117,10 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := launcher.EnsureSystemdServiceUnit(); err != nil {
+	if err := launcher.InstallInstalledService(); err != nil {
 		return err
 	}
-	fmt.Println("installed launchers:")
+	fmt.Println("installed runtime, launchers, and swarm.service:")
 	for _, name := range []string{"swarm", "swarmdev", "rebuild", "swarmsetup"} {
 		target := report.Links[name]
 		fmt.Printf("  %s -> %s\n", filepath.Join(report.BinHome, name), target)

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"os"
@@ -49,6 +50,17 @@ func run(argv0 string, args []string) error {
 	if err != nil {
 		return err
 	}
+	if len(args) > 0 {
+		switch args[0] {
+		case "help", "-h", "--help":
+			usage()
+			return nil
+		case "install":
+			return runInstallCommand(args[1:])
+		case "uninstall":
+			return runUninstallCommand(args[1:])
+		}
+	}
 	profile, err := launcher.LoadRuntimeProfile(lane, bypassOverride)
 	if err != nil {
 		return err
@@ -89,15 +101,25 @@ func run(argv0 string, args []string) error {
 			return errors.New("missing swarmctl auth arguments")
 		}
 		return launcher.RunCtl(profile, args[1:], true)
+	case "start":
+		return runStartCommand(profile, args[1:])
+	case "stop":
+		return runStopCommand(args[1:])
+	case "restart":
+		return runRestartCommand(profile, args[1:])
+	case "status":
+		return runStatusCommand(profile, args[1:])
+	case "open":
+		return runOpenCommand(profile, args[1:])
+	case "session":
+		return runSessionCommand(profile, args[1:])
 	case "server":
 		if len(args) < 2 {
-			return errors.New("usage: swarm [main|dev] server <on|off|run|status>")
+			return errors.New("usage: swarm [main|dev] server <run|status>")
 		}
 		switch args[1] {
-		case "on":
-			return launcher.StartBackend(profile, launcher.StartBackendOptions{BuildIfMissing: false, Bootstrap: bootstrap})
-		case "off":
-			return launcher.StopBackend(profile)
+		case "on", "off":
+			return errors.New("swarm server on/off were removed; manage the installed daemon with swarm start or swarm stop")
 		case "run":
 			return launcher.RunBackend(profile, launcher.StartBackendOptions{BuildIfMissing: false, Bootstrap: bootstrap})
 		case "status":
@@ -105,7 +127,7 @@ func run(argv0 string, args []string) error {
 			fmt.Printf("status=%s\nhealth=%s\nlane=%s\nlisten=%s\nurl=%s\npid=%s\n", status.Status, status.Health, profile.Lane, profile.Listen, profile.URL, status.PID)
 			return nil
 		default:
-			return errors.New("usage: swarm [main|dev] server <on|off|run|status>")
+			return errors.New("usage: swarm [main|dev] server <run|status>")
 		}
 	case "backend-up":
 		return launcher.StartBackend(profile, launcher.StartBackendOptions{BuildIfMissing: false, Bootstrap: bootstrap})
@@ -190,7 +212,7 @@ func run(argv0 string, args []string) error {
 	default:
 		// treat all args as tui args
 	}
-	if err := launcher.StartBackend(profile, launcher.StartBackendOptions{BuildIfMissing: false, Bootstrap: bootstrap}); err != nil {
+	if err := launcher.EnsureInstalledDaemonReady(profile); err != nil {
 		return err
 	}
 	if err := launcher.RecordPortFile(profile); err != nil {
@@ -215,6 +237,214 @@ func run(argv0 string, args []string) error {
 	return nil
 }
 
+func runInstallCommand(args []string) error {
+	assumeYes, handled, err := parseYesOnly(args, "swarm install [--yes]")
+	if err != nil || handled {
+		return err
+	}
+	fmt.Println("Swarm install plan")
+	for _, line := range launcher.InstalledServicePlan() {
+		fmt.Printf("  %s\n", line)
+	}
+	if !assumeYes {
+		if err := confirm("Continue with this install? [y/N] "); err != nil {
+			return err
+		}
+	}
+	if err := launcher.InstallInstalledService(); err != nil {
+		return err
+	}
+	fmt.Println("Swarm service installed, enabled, and started.")
+	return nil
+}
+
+func runUninstallCommand(args []string) error {
+	opts := launcher.UninstallOptions{}
+	assumeYes := false
+	for _, arg := range args {
+		switch arg {
+		case "--purge":
+			opts.Purge = true
+		case "--yes", "-y":
+			assumeYes = true
+		case "help", "-h", "--help":
+			fmt.Println("usage: swarm uninstall [--purge] [--yes]")
+			return nil
+		default:
+			return fmt.Errorf("usage: swarm uninstall [--purge] [--yes]")
+		}
+	}
+	fmt.Println("Swarm uninstall plan")
+	for _, line := range launcher.UninstallPlan(opts) {
+		fmt.Printf("  %s\n", line)
+	}
+	if opts.Purge {
+		fmt.Println("WARNING: --purge deletes daemon config, data, cache, and logs.")
+	}
+	if !assumeYes {
+		if err := confirm("Continue with this uninstall? [y/N] "); err != nil {
+			return err
+		}
+	}
+	if err := launcher.UninstallInstalledService(opts); err != nil {
+		return err
+	}
+	fmt.Println("Swarm service uninstalled.")
+	if !opts.Purge {
+		fmt.Println("Preserved daemon data under /etc/swarmd, /var/lib/swarmd, /var/cache/swarmd, and /var/log/swarmd.")
+	}
+	return nil
+}
+
+func runStartCommand(profile launcher.Profile, args []string) error {
+	if handled, err := parseNoArgs(args, "swarm start"); err != nil || handled {
+		return err
+	}
+	if err := launcher.StartInstalledService(); err != nil {
+		return err
+	}
+	if err := launcher.WaitForInstalledDaemonReady(profile); err != nil {
+		return err
+	}
+	fmt.Println("Swarm service started.")
+	return nil
+}
+
+func runStopCommand(args []string) error {
+	if handled, err := parseNoArgs(args, "swarm stop"); err != nil || handled {
+		return err
+	}
+	if err := launcher.StopInstalledService(); err != nil {
+		return err
+	}
+	fmt.Println("Swarm service stopped.")
+	return nil
+}
+
+func runRestartCommand(profile launcher.Profile, args []string) error {
+	if handled, err := parseNoArgs(args, "swarm restart"); err != nil || handled {
+		return err
+	}
+	if err := launcher.RestartInstalledService(); err != nil {
+		return err
+	}
+	if err := launcher.WaitForInstalledDaemonReady(profile); err != nil {
+		return err
+	}
+	fmt.Println("Swarm service restarted.")
+	return nil
+}
+
+func runStatusCommand(profile launcher.Profile, args []string) error {
+	if handled, err := parseNoArgs(args, "swarm status"); err != nil || handled {
+		return err
+	}
+	status := launcher.InstalledServiceStatusForProfile(profile)
+	fmt.Printf("service=%s\n", status.Unit)
+	fmt.Printf("scope=%s\n", status.Scope)
+	fmt.Printf("unit_path=%s\n", status.UnitPath)
+	fmt.Printf("installed=%t\n", status.Installed)
+	fmt.Printf("enabled=%s\n", status.Enabled)
+	fmt.Printf("active=%s\n", status.Active)
+	fmt.Printf("daemon_status=%s\n", status.Daemon.Status)
+	fmt.Printf("daemon_health=%s\n", status.Daemon.Health)
+	fmt.Printf("url=%s\n", profile.URL)
+	if status.Daemon.PID != "" {
+		fmt.Printf("pid=%s\n", status.Daemon.PID)
+	}
+	if !status.Installed {
+		fmt.Printf("guidance=%s\n", status.InstallGuidance)
+	} else if status.Daemon.Health != "healthy" {
+		fmt.Printf("guidance=%s\n", status.StartGuidance)
+	}
+	return nil
+}
+
+func runOpenCommand(profile launcher.Profile, args []string) error {
+	if handled, err := parseNoArgs(args, "swarm open"); err != nil || handled {
+		return err
+	}
+	if err := launcher.EnsureInstalledDaemonReady(profile); err != nil {
+		return err
+	}
+	url := launcher.DesktopURL(profile, 0)
+	if err := launcher.OpenBrowser(url); err != nil {
+		return fmt.Errorf("open %s: %w", url, err)
+	}
+	fmt.Printf("Opened %s\n", url)
+	return nil
+}
+
+func runSessionCommand(profile launcher.Profile, args []string) error {
+	if err := launcher.EnsureInstalledDaemonReady(profile); err != nil {
+		return err
+	}
+	if len(args) == 0 {
+		return launcher.RunTUI(profile, nil)
+	}
+	switch args[0] {
+	case "tui", "open":
+		return launcher.RunTUI(profile, args[1:])
+	case "create", "list", "get", "messages", "send", "run":
+		return launcher.RunCtl(profile, append([]string{"session"}, args...), false)
+	case "help", "-h", "--help":
+		fmt.Println("usage: swarm session [tui|open|create|list|get|messages|send|run] [session-args...]")
+		return nil
+	default:
+		return launcher.RunCtl(profile, append([]string{"session"}, args...), false)
+	}
+}
+
+func parseYesOnly(args []string, usage string) (bool, bool, error) {
+	assumeYes := false
+	for _, arg := range args {
+		switch arg {
+		case "--yes", "-y":
+			assumeYes = true
+		case "help", "-h", "--help":
+			fmt.Println("usage: " + usage)
+			return false, true, nil
+		default:
+			return false, false, fmt.Errorf("usage: %s", usage)
+		}
+	}
+	return assumeYes, false, nil
+}
+
+func parseNoArgs(args []string, usage string) (bool, error) {
+	if len(args) == 0 {
+		return false, nil
+	}
+	if len(args) == 1 && (args[0] == "help" || args[0] == "-h" || args[0] == "--help") {
+		fmt.Println("usage: " + usage)
+		return true, nil
+	}
+	return false, fmt.Errorf("usage: %s", usage)
+}
+
+func confirm(prompt string) error {
+	if !stdinIsTerminal() {
+		return errors.New("confirmation required; rerun with --yes for non-interactive operation")
+	}
+	fmt.Print(prompt)
+	reader := bufio.NewReader(os.Stdin)
+	answer, err := reader.ReadString('\n')
+	if err != nil {
+		return err
+	}
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "y", "yes":
+		return nil
+	default:
+		return errors.New("cancelled")
+	}
+}
+
+func stdinIsTerminal() bool {
+	info, err := os.Stdin.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
 func runDesktop(profile launcher.Profile, args []string) error {
 	port := profile.DesktopPort
 	for len(args) > 0 {
@@ -236,7 +466,14 @@ func runDesktop(profile launcher.Profile, args []string) error {
 			return fmt.Errorf("unsupported --desktop argument: %s", args[0])
 		}
 	}
-	return launcher.RunDesktop(profile, port)
+	if err := launcher.EnsureInstalledDaemonReady(profile); err != nil {
+		return err
+	}
+	url := launcher.DesktopURL(profile, port)
+	if err := launcher.OpenBrowser(url); err != nil {
+		return fmt.Errorf("open %s: %w", url, err)
+	}
+	return nil
 }
 
 func emitDirectLANDesktopWarning(profile launcher.Profile) {
@@ -276,12 +513,7 @@ func parseLaunchFlags(args []string) (*bool, startupconfig.BootstrapFlags, []str
 			bootstrap.Child = true
 			bootstrap.ChildSet = true
 		case "--mode":
-			if i+1 >= len(args) {
-				return nil, startupconfig.BootstrapFlags{}, nil, errors.New("missing value for --mode")
-			}
-			i++
-			bootstrap.Mode = args[i]
-			bootstrap.ModeSet = true
+			return nil, startupconfig.BootstrapFlags{}, nil, errors.New("--mode was removed; Swarm now runs as an installed always-on daemon")
 		case "--advertise-host":
 			if i+1 >= len(args) {
 				return nil, startupconfig.BootstrapFlags{}, nil, errors.New("missing value for --advertise-host")
@@ -322,10 +554,8 @@ func parseLaunchFlags(args []string) (*bool, startupconfig.BootstrapFlags, []str
 				bootstrap.ChildSet = true
 				continue
 			}
-			if value, ok := consumeInlineFlag(arg, "--mode="); ok {
-				bootstrap.Mode = value
-				bootstrap.ModeSet = true
-				continue
+			if _, ok := consumeInlineFlag(arg, "--mode="); ok {
+				return nil, startupconfig.BootstrapFlags{}, nil, errors.New("--mode was removed; Swarm now runs as an installed always-on daemon")
 			}
 			if value, ok := consumeInlineFlag(arg, "--advertise-host="); ok {
 				bootstrap.AdvertiseHost = value
@@ -363,9 +593,14 @@ func usage() {
 	fmt.Print(`swarm launcher
 
 Usage:
+  swarm install [--yes]
+  swarm uninstall [--purge] [--yes]
+  swarm start|stop|restart|status
+  swarm open
+  swarm session [tui|open|create|list|get|messages|send|run] [session-args...]
   swarm [main|dev] [run] [--swarm-name NAME] [--child] [--advertise-host HOST] [--advertise-port PORT] [--tailscale-url URL] [tui-args...]
   swarm [main|dev] --desktop [--port N]
-  swarm [main|dev] server <on|off|run|status>
+  swarm [main|dev] server <run|status>
   swarm [main|dev] ctl <swarmctl-args...>
   swarm [main|dev] auth <swarmctl-auth-args...>
   swarm [main|dev] backend-up
@@ -382,7 +617,8 @@ Usage:
 Alias:
   swarmdev [run] [--swarm-name NAME] [--child] [--advertise-host HOST] [--advertise-port PORT] [--tailscale-url URL] [tui-args...]
   swarmdev --desktop [--port N]
-  swarmdev server <on|off|run|status>
+  swarmdev server <run|status>
+  swarmdev status|open|session
   swarmdev ctl <swarmctl-args...>
   swarmdev auth <swarmctl-auth-args...>
   swarmdev backend-up|down|restart|rebuild|build|info

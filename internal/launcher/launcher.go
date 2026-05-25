@@ -1570,6 +1570,7 @@ func RunCtl(profile Profile, rawArgs []string, auth bool) error {
 	extraEnv := map[string]string{}
 	if os.Getenv("SWARMD_TOKEN") == "" {
 		extraEnv[localTransportSocketEnv] = LocalTransportSocketPath(profile)
+		extraEnv["DATA_DIR"] = profile.DataDir
 	}
 	hasAddr := false
 	for _, arg := range args {

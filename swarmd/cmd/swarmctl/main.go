@@ -670,6 +670,7 @@ func callbackErrorHTML(message string) string {
 }
 
 func getJSON(rawURL string, out any) error {
+	maybeSetDefaultLocalTransportSocket()
 	client := localTransportHTTPClient()
 	if client == nil {
 		client = &http.Client{Timeout: 120 * time.Second}
@@ -689,6 +690,7 @@ func getJSON(rawURL string, out any) error {
 }
 
 func postJSON(rawURL string, input any, out any) error {
+	maybeSetDefaultLocalTransportSocket()
 	payload, err := json.Marshal(input)
 	if err != nil {
 		return err
@@ -758,17 +760,22 @@ func defaultLocalTransportSocketPath() string {
 	return filepath.Join(dataHome, "swarmd", lane, "local-transport", "api.sock")
 }
 
+func maybeSetDefaultLocalTransportSocket() {
+	if strings.TrimSpace(os.Getenv(localTransportSocketEnv)) != "" {
+		return
+	}
+	if socketPath := strings.TrimSpace(defaultLocalTransportSocketPath()); socketPath != "" {
+		if info, err := os.Stat(socketPath); err == nil && !info.IsDir() {
+			_ = os.Setenv(localTransportSocketEnv, socketPath)
+		}
+	}
+}
+
 func addAttachTokenHeader(req *http.Request) {
 	if req == nil {
 		return
 	}
-	if strings.TrimSpace(os.Getenv(localTransportSocketEnv)) == "" {
-		if socketPath := strings.TrimSpace(defaultLocalTransportSocketPath()); socketPath != "" {
-			if info, err := os.Stat(socketPath); err == nil && !info.IsDir() {
-				_ = os.Setenv(localTransportSocketEnv, socketPath)
-			}
-		}
-	}
+	maybeSetDefaultLocalTransportSocket()
 	token := strings.TrimSpace(os.Getenv("SWARMD_TOKEN"))
 	if token == "" {
 		return

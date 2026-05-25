@@ -5,11 +5,17 @@ REPO="swarm-agent/swarm"
 DEFAULT_VERSION=""
 INSTALL_VERSION=""
 ARTIFACT_ROOT=""
+ASSUME_YES=0
 
 usage() {
   cat <<'EOF'
 Usage:
-  sh install.sh [--version <tag>] [--artifact-root <path>]
+  sh install.sh [--yes] [--version <tag>] [--artifact-root <path>]
+
+Options:
+  --yes, -y              Run without the confirmation prompt.
+  --version <tag>        Install a specific release tag.
+  --artifact-root <path> Install from an extracted release artifact.
 
 EOF
 }
@@ -23,6 +29,10 @@ while [ "$#" -gt 0 ]; do
     --artifact-root)
       ARTIFACT_ROOT="${2:-}"
       shift 2
+      ;;
+    --yes|-y)
+      ASSUME_YES=1
+      shift
       ;;
     -h|--help)
       usage
@@ -163,6 +173,74 @@ EOF
   rm -f "$tmp_path"
 }
 
+print_install_plan() {
+  version="$1"
+  source_label="$2"
+  cat <<EOF
+Swarm install plan
+  Source: ${source_label}
+  Version: ${version:-unknown}
+  Runtime: /usr/local/share/swarm
+  Launchers: /usr/local/bin/swarm, /usr/local/bin/swarmdev, /usr/local/bin/rebuild, /usr/local/bin/swarmsetup
+  Daemon config: /etc/swarmd
+  Daemon data: /var/lib/swarmd
+  Daemon runtime: /run/swarmd
+  Daemon cache/logs: /var/cache/swarmd, /var/log/swarmd
+  Service: /etc/systemd/system/swarm.service, enabled and started with systemd
+
+Reinstall preserves /etc/swarmd and /var/lib/swarmd by default.
+EOF
+}
+
+confirm_install_plan() {
+  if [ "$ASSUME_YES" -eq 1 ]; then
+    return 0
+  fi
+  if [ ! -t 0 ]; then
+    echo "install requires confirmation; rerun with --yes for non-interactive install" >&2
+    return 1
+  fi
+  printf 'Continue with this install? [y/N] '
+  read answer
+  case "$answer" in
+    y|Y|yes|YES|Yes)
+      return 0
+      ;;
+    *)
+      echo "install cancelled"
+      return 1
+      ;;
+  esac
+}
+
+require_systemd() {
+  if ! command -v systemctl >/dev/null 2>&1; then
+    echo "systemctl not found; Swarm installs as an always-on systemd service." >&2
+    echo "Install systemd/systemctl support or install manually on a supported Linux host." >&2
+    return 1
+  fi
+  if [ ! -d /run/systemd/system ]; then
+    echo "systemd is not running as the system manager; cannot enable/start swarm.service." >&2
+    echo "Run install.sh on a systemd host or provision /etc/systemd/system/swarm.service manually, then run: systemctl enable --now swarm.service" >&2
+    return 1
+  fi
+}
+
+enable_start_service() {
+  require_systemd
+  printf 'enabling and starting swarm.service... '
+  if ! run_privileged systemctl daemon-reload; then
+    echo "failed to reload systemd after installing swarm.service" >&2
+    return 1
+  fi
+  if ! run_privileged systemctl enable --now swarm.service; then
+    echo "failed to enable/start swarm.service" >&2
+    echo "Remediation: inspect with 'systemctl status swarm.service' and retry with 'sudo systemctl enable --now swarm.service'." >&2
+    return 1
+  fi
+  print_ok
+}
+
 provision_system_paths() {
   provision_system_dir 0755 /usr/local/bin
   provision_system_dir 0755 /usr/local/share
@@ -226,12 +304,17 @@ verify_installed_runtime() {
     fi
   done
 
-  for rel in lib/libfff_c.so share/index.html build-info.txt; do
+  for rel in current/build-info.txt current/share/index.html current/lib/libfff_c.so; do
     if [ ! -f "$root/$rel" ]; then
       echo "installed runtime file is missing: $root/$rel" >&2
       return 1
     fi
   done
+
+  if [ ! -f /etc/systemd/system/swarm.service ]; then
+    echo "installed systemd service unit is missing: /etc/systemd/system/swarm.service" >&2
+    return 1
+  fi
 }
 
 bin_home_on_path() {
@@ -260,11 +343,12 @@ print_path_refresh_instructions() {
   target="$(bin_home)"
 
   if bin_home_on_path; then
-    printf '\nStart Swarm:\n  swarm\n'
+    printf '\nSwarm installed and daemon service started.\n'
+    print_service_commands
     return 0
   fi
 
-  printf '\nSwarm installed.\n'
+  printf '\nSwarm installed and daemon service started.\n'
   printf '\nThis shell does not have %s on PATH yet.\n' "$target"
 
   if [ "$(current_shell_name)" = "fish" ]; then
@@ -279,10 +363,25 @@ print_path_refresh_instructions() {
     printf '  exec "$SHELL" -l\n'
   fi
 
-  printf '\nThen start Swarm:\n'
-  printf '  swarm\n'
-  printf '\nIf that still fails, run it directly:\n'
-  printf '  %s\n' "$target/swarm"
+  printf '\nThen manage or attach to Swarm with:\n'
+  printf '  swarm status\n'
+  printf '  swarm open\n'
+  printf '  swarm session\n'
+  printf '  swarm stop\n'
+  printf '  swarm restart\n'
+  printf '  swarm uninstall\n'
+  printf '\nIf PATH still fails, run it directly:\n'
+  printf '  %s status\n' "$target/swarm"
+}
+
+print_service_commands() {
+  printf '\nNext commands:\n'
+  printf '  swarm status\n'
+  printf '  swarm open\n'
+  printf '  swarm session\n'
+  printf '  swarm stop\n'
+  printf '  swarm restart\n'
+  printf '  swarm uninstall\n'
 }
 
 finish_install() {
@@ -295,6 +394,36 @@ run_bundle_install() {
   installer="$(printf '%s/%s\n' "$platform_dir" "root/swarmsetup")"
   log_path="$2"
   "$installer" --artifact-root "$artifact_root" >"$log_path" 2>&1
+}
+
+validate_artifact_root() {
+  artifact_root="$1"
+  platform_dir="$(printf '%s/%s\n' "$artifact_root" "linux-amd64")"
+  for rel in \
+    root/swarm \
+    root/swarmdev \
+    root/rebuild \
+    root/swarmsetup \
+    root/swarmtui \
+    swarmd/swarmd \
+    swarmd/swarmctl \
+    swarmd/swarm-fff-search
+  do
+    if [ ! -x "$platform_dir/$rel" ]; then
+      echo "artifact root is missing executable: $platform_dir/$rel" >&2
+      return 1
+    fi
+  done
+  for rel in \
+    swarmd/libfff_c.so \
+    ../web/index.html \
+    ../build-info.txt
+  do
+    if [ ! -f "$platform_dir/$rel" ]; then
+      echo "artifact root is missing file: $platform_dir/$rel" >&2
+      return 1
+    fi
+  done
 }
 
 need_cmd uname
@@ -319,7 +448,11 @@ platform_dir="$(printf '%s/%s\n' "$script_dir" "linux-amd64")"
 bundle_installer="$(printf '%s/%s\n' "$platform_dir" "root")/swarmsetup"
 bundle_index="$(printf '%s/%s\n' "$script_dir" "web")/index.html"
 if [ -n "$script_dir" ] && [ -x "$bundle_installer" ] && [ -f "$bundle_index" ]; then
+  validate_artifact_root "$script_dir"
   version="$(read_build_info_version "$script_dir" 2>/dev/null || true)"
+  print_install_plan "$version" "artifact root: $script_dir"
+  confirm_install_plan
+  require_systemd
   print_installing "$version"
   tmp_dir="$(mktemp -d)"
   trap 'rm -rf "$tmp_dir"' EXIT INT TERM
@@ -328,13 +461,13 @@ if [ -n "$script_dir" ] && [ -x "$bundle_installer" ] && [ -f "$bundle_index" ];
     exit 1
   fi
   print_ok
-  printf 'installing runtime... '
+  printf 'installing runtime, service unit, and starting service... '
   if ! run_bundle_install "$script_dir" "$tmp_dir/swarmsetup.log"; then
     cat "$tmp_dir/swarmsetup.log" >&2
     exit 1
   fi
   print_ok
-  printf 'linking launcher... '
+  printf 'verifying launcher and service unit... '
   if ! verify_installed_runtime; then
     exit 1
   fi
@@ -374,6 +507,9 @@ archive_path="$tmp_dir/$asset_name"
 extract_dir="$tmp_dir/extract"
 trap 'rm -rf "$tmp_dir"' EXIT INT TERM
 
+print_install_plan "$release_version" "GitHub release: $asset_name"
+confirm_install_plan
+require_systemd
 print_installing "$release_version"
 printf 'downloading release... '
 curl -fsSL "$asset_url" -o "$archive_path"
@@ -386,19 +522,20 @@ if [ ! -d "$artifact_root" ]; then
   echo "downloaded archive missing expected root $artifact_root" >&2
   exit 1
 fi
+validate_artifact_root "$artifact_root"
 
 printf 'provisioning system paths... '
 if ! provision_system_paths; then
   exit 1
 fi
 print_ok
-printf 'installing runtime... '
+printf 'installing runtime, service unit, and starting service... '
 if ! run_bundle_install "$artifact_root" "$tmp_dir/swarmsetup.log"; then
   cat "$tmp_dir/swarmsetup.log" >&2
   exit 1
 fi
 print_ok
-printf 'linking launcher... '
+printf 'verifying launcher and service unit... '
 if ! verify_installed_runtime; then
   exit 1
 fi
