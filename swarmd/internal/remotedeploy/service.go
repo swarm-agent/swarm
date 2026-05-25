@@ -3901,7 +3901,6 @@ export SWARMD_LISTEN="$listen_addr"
 export SWARM_DESKTOP_PORT="$desktop_port"
 export SWARM_CONTAINER_OFFLINE="$offline_mode"
 export TS_HOSTNAME="$ts_hostname"
-export SWARM_STARTUP_MODE=box
 if [ "$runtime" = "podman" ]; then
   runtime_bin=podman
 else
@@ -3924,7 +3923,6 @@ run_args=(run --rm --name "$container_name" --network host
   -e "SWARM_DESKTOP_PORT=$desktop_port"
   -e "SWARM_CONTAINER_OFFLINE=$offline_mode"
   -e "TS_HOSTNAME=$ts_hostname"
-  -e "SWARM_STARTUP_MODE=box"
 )
 run_args+=(--volume "$remote_root:$remote_root")
 run_args+=(--volume "$config_home:$config_home")
@@ -5725,7 +5723,6 @@ export SWARMD_LISTEN="$listen_addr"
 export SWARM_DESKTOP_PORT="$desktop_port"
 export SWARM_CONTAINER_OFFLINE="$offline_mode"
 export TS_HOSTNAME="$ts_hostname"
-export SWARM_STARTUP_MODE=box
 if [ "$runtime" = "podman" ]; then
   runtime_bin=podman
 else
@@ -5753,7 +5750,6 @@ run_args=(
   -e "SWARM_DESKTOP_PORT=$desktop_port"
   -e "SWARM_CONTAINER_OFFLINE=$offline_mode"
   -e "TS_HOSTNAME=$ts_hostname"
-  -e "SWARM_STARTUP_MODE=box"
 )
 if [ -n "${TS_AUTHKEY:-}" ]; then
   run_args+=(-e TS_AUTHKEY)

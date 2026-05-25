@@ -80,7 +80,7 @@ COOKIE_A="${RUN_ROOT}/account-a.cookies"
 COOKIE_B="${RUN_ROOT}/account-b.cookies"
 export SWARM_DATA_DIR APP_URL DB_PATH
 
-STARTUP_CONFIG_TEXT="$(printf 'startup_mode = interactive\nswarm_name = Slice1 Sessions Device\nhost = 127.0.0.1\nport = %s\ndesktop_port = %s\npeer_transport_port = %s\n' "${API_PORT}" "${DESKTOP_PORT}" "${PEER_PORT}")"
+STARTUP_CONFIG_TEXT="$(printf 'swarm_name = Slice1 Sessions Device\nhost = 127.0.0.1\nport = %s\ndesktop_port = %s\npeer_transport_port = %s\n' "${API_PORT}" "${DESKTOP_PORT}" "${PEER_PORT}")"
 printf '%s\n' "${STARTUP_CONFIG_TEXT}" >"${STARTUP_CONFIG_PATH}"
 
 sanitize_request_body() {

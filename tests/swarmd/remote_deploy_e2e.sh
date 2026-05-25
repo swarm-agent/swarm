@@ -376,7 +376,6 @@ host_lane_port_offset() {
 write_host_startup_config() {
   mkdir -p "$(dirname -- "${HOST_STARTUP_CONFIG}")"
   cat >"${HOST_STARTUP_CONFIG}" <<EOF
-startup_mode = box
 dev_mode = false
 host = ${HOST_BIND_HOST}
 port = ${HOST_BACKEND_PORT}

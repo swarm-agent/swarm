@@ -299,7 +299,6 @@ func writeStartupConfig(t *testing.T, path string, cfg startupconfig.FileConfig)
 		t.Fatalf("mkdir config dir: %v", err)
 	}
 	lines := []string{
-		"startup_mode = interactive",
 		"dev_mode = " + boolString(cfg.DevMode),
 		"host = 127.0.0.1",
 		"port = 7781",

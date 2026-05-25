@@ -2558,7 +2558,6 @@ func buildChildContainerEnv(input containerBootstrapEnvInput) []string {
 		BootstrapSecret:          strings.TrimSpace(input.BootstrapSecret),
 	}
 	env := []string{
-		"SWARM_STARTUP_MODE=box",
 		"SWARM_CONTAINER_OFFLINE=true",
 		// Keep the child listener on all container interfaces so the host-published
 		// loopback ports stay reachable from the parent, even when child->parent

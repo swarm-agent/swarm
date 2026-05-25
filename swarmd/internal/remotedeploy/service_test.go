@@ -495,8 +495,6 @@ func TestRemoteInstallerScriptLaunchesRemoteContainerWithoutPersistence(t *testi
 		`export TS_OUTBOUND_HTTP_PROXY_LISTEN="$tailscale_proxy_addr"`,
 		`export SWARM_TAILSCALE_OUTBOUND_PROXY="http://$tailscale_proxy_addr"`,
 		`export SWARM_DESKTOP_PORT="$desktop_port"`,
-		`export SWARM_STARTUP_MODE=box`,
-		`-e "SWARM_STARTUP_MODE=box"`,
 		`run_args+=(--volume '/workspaces:/workspaces')`,
 		`run_args+=(-e TS_AUTHKEY)`,
 		`run_args+=(-e SWARM_REMOTE_SYNC_VAULT_PASSWORD)`,

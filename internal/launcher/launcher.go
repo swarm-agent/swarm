@@ -409,7 +409,6 @@ func (p Profile) EnvMap() map[string]string {
 		"SWARM_STATE_HOME":         p.SwarmState,
 		"SWARM_CONFIG_HOME":        p.ConfigHome,
 		"SWARM_STARTUP_CONFIG":     p.Startup.Path,
-		"SWARM_STARTUP_MODE":       p.Startup.Mode,
 		"SWARM_BYPASS_PERMISSIONS": boolString(p.Bypass),
 		"SWARMD_LISTEN":            p.Listen,
 		"SWARMD_URL":               p.URL,
@@ -1281,9 +1280,6 @@ func backendPathAndArgs(profile Profile, opts StartBackendOptions) (string, []st
 		}
 		if opts.Bootstrap.ChildSet {
 			args = append(args, "--child="+boolString(opts.Bootstrap.Child))
-		}
-		if opts.Bootstrap.ModeSet {
-			args = append(args, "--mode", strings.TrimSpace(opts.Bootstrap.Mode))
 		}
 		if opts.Bootstrap.AdvertiseHostSet {
 			args = append(args, "--advertise-host", strings.TrimSpace(opts.Bootstrap.AdvertiseHost))

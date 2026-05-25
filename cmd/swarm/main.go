@@ -169,7 +169,7 @@ func run(argv0 string, args []string) error {
 		if err := launcher.RecordPortFile(profile); err != nil {
 			return err
 		}
-		fmt.Printf("lane=%s\nlisten=%s\nurl=%s\nport=%d\nstate_root=%s\npid_file=%s\nlog_file=%s\nport_record=%s\nstartup_config=%s\nstartup_mode=%s\nbypass_permissions=%t\nswarm_bin_dir=%s\n",
+		fmt.Printf("lane=%s\nlisten=%s\nurl=%s\nport=%d\nstate_root=%s\npid_file=%s\nlog_file=%s\nport_record=%s\nstartup_config=%s\nbypass_permissions=%t\nswarm_bin_dir=%s\n",
 			profile.Lane,
 			profile.Listen,
 			profile.URL,
@@ -179,7 +179,6 @@ func run(argv0 string, args []string) error {
 			profile.LogFile,
 			profile.PortRecord,
 			profile.Startup.Path,
-			profile.Startup.Mode,
 			profile.Bypass,
 			profile.BinDir,
 		)
@@ -364,7 +363,7 @@ func usage() {
 	fmt.Print(`swarm launcher
 
 Usage:
-  swarm [main|dev] [run] [--swarm-name NAME] [--child] [--mode lan|tailscale] [--advertise-host HOST] [--advertise-port PORT] [--tailscale-url URL] [tui-args...]
+  swarm [main|dev] [run] [--swarm-name NAME] [--child] [--advertise-host HOST] [--advertise-port PORT] [--tailscale-url URL] [tui-args...]
   swarm [main|dev] --desktop [--port N]
   swarm [main|dev] server <on|off|run|status>
   swarm [main|dev] ctl <swarmctl-args...>
@@ -381,7 +380,7 @@ Usage:
   swarm help
 
 Alias:
-  swarmdev [run] [--swarm-name NAME] [--child] [--mode lan|tailscale] [--advertise-host HOST] [--advertise-port PORT] [--tailscale-url URL] [tui-args...]
+  swarmdev [run] [--swarm-name NAME] [--child] [--advertise-host HOST] [--advertise-port PORT] [--tailscale-url URL] [tui-args...]
   swarmdev --desktop [--port N]
   swarmdev server <on|off|run|status>
   swarmdev ctl <swarmctl-args...>

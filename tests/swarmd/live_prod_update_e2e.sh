@@ -298,7 +298,6 @@ prepare_isolated_root() {
 write_startup_config() {
   mkdir -p "$(dirname -- "${HOST_STARTUP_CONFIG}")"
   cat >"${HOST_STARTUP_CONFIG}" <<EOF
-startup_mode = box
 dev_mode = false
 dev_root =
 host = 127.0.0.1

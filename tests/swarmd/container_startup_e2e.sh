@@ -3,16 +3,15 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 IMAGE_NAME="swarm-container-mvp:latest"
-INTERACTIVE_NAME="swarm-container-mvp-interactive"
-BOX_NAME="swarm-container-mvp-box"
-INTERACTIVE_TS_VOL="swarm-mvp-ts-state-interactive"
-INTERACTIVE_DATA_VOL="swarm-mvp-data-interactive"
-BOX_TS_VOL="swarm-mvp-ts-state-box"
-BOX_DATA_VOL="swarm-mvp-data-box"
+CONTAINER_NAME="swarm-container-mvp-no-mode"
+TS_VOL="swarm-mvp-ts-state-no-mode"
+DATA_VOL="swarm-mvp-data-no-mode"
+CONFIG_VOL="swarm-mvp-config-no-mode"
+CACHE_VOL="swarm-mvp-cache-no-mode"
+LOG_VOL="swarm-mvp-logs-no-mode"
 
 cleanup() {
-  podman rm -f "${INTERACTIVE_NAME}" >/dev/null 2>&1 || true
-  podman rm -f "${BOX_NAME}" >/dev/null 2>&1 || true
+  podman rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
 }
 
 extract_auth_url() {
@@ -39,12 +38,12 @@ wait_for_auth_url() {
 wait_for_config() {
   local name="$1"
   for _ in $(seq 1 30); do
-    if podman exec "${name}" sh -lc 'test -f "$(cd && pwd)/.config/swarm/swarm.conf"' >/dev/null 2>&1; then
+    if podman exec "${name}" sh -lc 'test -f /etc/swarmd/swarm.conf' >/dev/null 2>&1; then
       return 0
     fi
     sleep 1
   done
-  echo "timed out waiting for swarm.conf in ${name}" >&2
+  echo "timed out waiting for /etc/swarmd/swarm.conf in ${name}" >&2
   return 1
 }
 
@@ -58,43 +57,51 @@ assert_contains() {
   fi
 }
 
-run_case() {
-  local name="$1"
-  local ts_vol="$2"
-  local data_vol="$3"
-  local startup_mode="$4"
-  local expected_config_mode="$5"
-  local expected_runtime_mode="$6"
+assert_not_contains() {
+  local haystack="$1"
+  local needle="$2"
+  local context="$3"
+  if [[ "${haystack}" == *"${needle}"* ]]; then
+    echo "assertion failed: expected ${context} not to contain: ${needle}" >&2
+    return 1
+  fi
+}
 
-  podman rm -f "${name}" >/dev/null 2>&1 || true
-  podman volume rm "${ts_vol}" >/dev/null 2>&1 || true
-  podman volume rm "${data_vol}" >/dev/null 2>&1 || true
+run_case() {
+  podman rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+  podman volume rm "${TS_VOL}" "${DATA_VOL}" "${CONFIG_VOL}" "${CACHE_VOL}" "${LOG_VOL}" >/dev/null 2>&1 || true
 
   podman run -d \
-    --name "${name}" \
-    -v "${ts_vol}:/var/lib/tailscale" \
-    -v "${data_vol}:/var/lib/swarmd" \
-    -e SWARM_STARTUP_MODE="${startup_mode}" \
+    --name "${CONTAINER_NAME}" \
+    -v "${TS_VOL}:/var/lib/tailscale" \
+    -v "${DATA_VOL}:/var/lib/swarmd" \
+    -v "${CONFIG_VOL}:/etc/swarmd" \
+    -v "${CACHE_VOL}:/var/cache/swarmd" \
+    -v "${LOG_VOL}:/var/log/swarmd" \
     localhost/${IMAGE_NAME} >/dev/null
 
-  wait_for_config "${name}"
+  wait_for_config "${CONTAINER_NAME}"
   sleep 2
 
   local config
-  config="$(podman exec "${name}" sh -lc 'cat "$(cd && pwd)/.config/swarm/swarm.conf"')"
+  config="$(podman exec "${CONTAINER_NAME}" sh -lc 'cat /etc/swarmd/swarm.conf')"
   local processes
-  processes="$(podman exec "${name}" sh -lc 'ps -ef | grep -E "swarmd|tailscaled" | grep -v grep')"
+  processes="$(podman exec "${CONTAINER_NAME}" sh -lc 'ps -ef | grep -E "swarmd|tailscaled" | grep -v grep')"
+  local logs
+  logs="$(podman logs "${CONTAINER_NAME}" 2>&1 || true)"
   local auth_url
-  auth_url="$(wait_for_auth_url "${name}" || true)"
+  auth_url="$(wait_for_auth_url "${CONTAINER_NAME}" || true)"
 
-  assert_contains "${config}" "mode = ${expected_config_mode}" "${name} config"
-  assert_contains "${config}" "host = 127.0.0.1" "${name} config"
-  assert_contains "${config}" "port = 7781" "${name} config"
-  assert_contains "${config}" "desktop_port = 5555" "${name} config"
-  assert_contains "${processes}" "--mode=${expected_runtime_mode}" "${name} process list"
-  assert_contains "${processes}" "tailscaled --tun=userspace-networking" "${name} process list"
+  assert_contains "${config}" "mode = lan" "${CONTAINER_NAME} config"
+  assert_contains "${config}" "host = 127.0.0.1" "${CONTAINER_NAME} config"
+  assert_contains "${config}" "port = 7781" "${CONTAINER_NAME} config"
+  assert_contains "${config}" "desktop_port = 5555" "${CONTAINER_NAME} config"
+  assert_not_contains "${config}" "startup_mode" "${CONTAINER_NAME} config"
+  assert_not_contains "${processes}" "--mode=" "${CONTAINER_NAME} process list"
+  assert_not_contains "${logs}" "startup mode" "${CONTAINER_NAME} logs"
+  assert_contains "${processes}" "tailscaled --tun=userspace-networking" "${CONTAINER_NAME} process list"
 
-  printf '=== %s ===\n' "${name}"
+  printf '=== %s ===\n' "${CONTAINER_NAME}"
   printf 'auth_url=%s\n' "${auth_url}"
   printf '%s\n' "${config}"
   printf '%s\n' "${processes}"
@@ -102,7 +109,7 @@ run_case() {
 }
 
 cleanup
+trap cleanup EXIT
 cd "${ROOT_DIR}"
 podman build -f deploy/container-mvp/Containerfile -t "${IMAGE_NAME}" . >/dev/null
-run_case "${INTERACTIVE_NAME}" "${INTERACTIVE_TS_VOL}" "${INTERACTIVE_DATA_VOL}" "single" "interactive" "single"
-run_case "${BOX_NAME}" "${BOX_TS_VOL}" "${BOX_DATA_VOL}" "box" "box" "box"
+run_case

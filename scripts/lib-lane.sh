@@ -262,7 +262,6 @@ swarm_startup_config_ensure() {
   swarm_provision_system_paths "$(swarm_lane_default)"
   mkdir -p "$(dirname -- "${config_path}")"
   cat >"${config_path}" <<'EOF'
-startup_mode = interactive
 dev_mode = false
 dev_root =
 host = 127.0.0.1
@@ -322,7 +321,7 @@ swarm_startup_config_remove_obsolete_keys() {
         next
       }
       raw_key = trim(substr($0, 1, split_pos - 1))
-      if (raw_key == "swarm" "_mode" || raw_key == "deploy_container_sync_skill_url" || raw_key == "deploy_container_sync_permission_url") {
+      if (raw_key == "startup" "_mode" || raw_key == "swarm" "_mode" || raw_key == "deploy_container_sync_skill_url" || raw_key == "deploy_container_sync_permission_url") {
         next
       }
       print
@@ -389,7 +388,7 @@ swarm_startup_config_raw_value() {
 
 swarm_startup_config_migrate_legacy() {
   local config_path
-  local port_value startup_mode_value dev_mode_value child_value network_mode_value advertise_host_value tailscale_url_value
+  local port_value dev_mode_value child_value network_mode_value advertise_host_value tailscale_url_value
   config_path="$(swarm_startup_config_path)"
   swarm_startup_config_ensure
   swarm_startup_config_remove_obsolete_keys
@@ -398,14 +397,6 @@ swarm_startup_config_migrate_legacy() {
   if [[ ! "${port_value}" =~ ^[0-9]+$ ]]; then
     port_value="7781"
   fi
-  startup_mode_value="$(swarm_startup_config_raw_value startup_mode 2>/dev/null || true)"
-  if [[ -z "${startup_mode_value}" ]]; then
-    startup_mode_value="$(swarm_startup_config_raw_value mode 2>/dev/null || true)"
-  fi
-  case "${startup_mode_value}" in
-    interactive|box) ;;
-    *) startup_mode_value="interactive" ;;
-  esac
   dev_mode_value="$(swarm_startup_config_raw_value dev_mode 2>/dev/null || true)"
   case "${dev_mode_value}" in
     true|false) ;;
@@ -436,16 +427,6 @@ swarm_startup_config_migrate_legacy() {
     else
       advertise_host_value="${legacy_advertise_addr}"
     fi
-  fi
-
-  if ! swarm_startup_config_has_key startup_mode; then
-    cat >>"${config_path}" <<EOF
-
-# Swarm startup mode.
-# interactive = normal local use; Swarm runs when you launch it.
-# box = always-on box mode; Swarm should be treated as an always-running service.
-startup_mode = ${startup_mode_value}
-EOF
   fi
 
   if ! swarm_startup_config_has_key dev_mode; then
@@ -723,7 +704,6 @@ swarm_startup_config_validate() {
       exit 1
     }
     BEGIN {
-      valid["startup_mode"] = 1
       valid["dev_mode"] = 1
       valid["dev_root"] = 1
       valid["host"] = 1
@@ -832,9 +812,6 @@ swarm_startup_config_validate() {
     END {
       if (had_error) {
         exit 1
-      }
-      if (!("startup_mode" in seen)) {
-        fail(sprintf("invalid startup config %s: missing startup_mode", config_path))
       }
       if (!("dev_mode" in seen)) {
         fail(sprintf("invalid startup config %s: missing dev_mode", config_path))
@@ -968,9 +945,6 @@ swarm_startup_config_validate() {
       if (!("remote_deploy_sync_credential_url" in seen)) {
         fail(sprintf("invalid startup config %s: missing remote_deploy_sync_credential_url", config_path))
       }
-      if (values["startup_mode"] != "interactive" && values["startup_mode"] != "box") {
-        fail(sprintf("invalid startup config %s: invalid startup_mode \"%s\"", config_path, values["startup_mode"]))
-      }
       if (values["dev_mode"] != "true" && values["dev_mode"] != "false") {
         fail(sprintf("invalid startup config %s: dev_mode must be true or false", config_path))
       }
@@ -1092,12 +1066,6 @@ swarm_startup_config_value() {
       }
     }
   ' "${config_path}"
-}
-
-swarm_startup_mode() {
-  local mode
-  mode="$(swarm_startup_config_value startup_mode)" || return 1
-  printf "%s\n" "${mode}"
 }
 
 swarm_startup_host() {
@@ -1229,7 +1197,6 @@ swarm_lane_export_profile() {
     return 1
   fi
 
-  local startup_mode
   local dev_mode
   local dev_root
   local bypass_permissions
@@ -1246,7 +1213,6 @@ swarm_lane_export_profile() {
   local daemon_ports_root
   daemon_ports_root="$(swarm_daemon_ports_root)"
 
-  startup_mode="$(swarm_startup_mode)" || return 1
   dev_mode="$(swarm_startup_dev_mode)" || return 1
   dev_root="$(swarm_startup_dev_root)" || return 1
   bypass_permissions="$(swarm_startup_bypass_permissions)" || return 1
@@ -1257,7 +1223,6 @@ swarm_lane_export_profile() {
   export SWARM_STATE_HOME="${daemon_state_root}"
   export SWARM_CONFIG_HOME="${daemon_config_root}"
   export SWARM_STARTUP_CONFIG="$(swarm_startup_config_path)"
-  export SWARM_STARTUP_MODE="${startup_mode}"
   export SWARM_DEV_MODE="${dev_mode}"
   export SWARM_DEV_ROOT="${dev_root}"
   export SWARM_BYPASS_PERMISSIONS="${bypass_permissions}"

@@ -180,7 +180,6 @@ api_url=${API_URL}
 
   local keys key value summary
   keys=(
-    startup_mode
     dev_mode
     dev_root
     host
@@ -492,7 +491,7 @@ if [ -f "$config_path" ]; then
   proof CHILD_CONFIG_HOST "$(conf_value host "$config_path")"
   proof CHILD_CONFIG_ADVERTISE_HOST "$(conf_value advertise_host "$config_path")"
   proof CHILD_CONFIG_MODE "$(conf_value mode "$config_path")"
-  grep -E '^(startup_mode|dev_mode|host|port|advertise_host|advertise_port|desktop_port|swarm_name|child|mode|tailscale_url|peer_transport_port|remote_deploy_enabled|remote_deploy_session_id|remote_deploy_host_api_base_url|remote_deploy_host_desktop_url|remote_deploy_sync_enabled|remote_deploy_sync_mode|remote_deploy_sync_owner_swarm_id|deploy_container_enabled|deploy_container_host_api_base_url)[[:space:]]*=' "$config_path" || true
+  grep -E '^(dev_mode|host|port|advertise_host|advertise_port|desktop_port|swarm_name|child|mode|tailscale_url|peer_transport_port|remote_deploy_enabled|remote_deploy_session_id|remote_deploy_host_api_base_url|remote_deploy_host_desktop_url|remote_deploy_sync_enabled|remote_deploy_sync_mode|remote_deploy_sync_owner_swarm_id|deploy_container_enabled|deploy_container_host_api_base_url)[[:space:]]*=' "$config_path" || true
 elif [ -d "$config_path" ]; then
   proof CONFIG_FILE 0
   proof CONFIG_PATH_IS_DIRECTORY 1
@@ -529,11 +528,9 @@ section "REMOTE_CONTAINER_LOG_MARKERS"
 container_auth_present=0
 container_tailnet_present=0
 container_remote_url_present=0
-container_startup_mode=""
 if [ -n "$container_name" ]; then
   container_logs="$(run_runtime logs --tail "$tail_lines" "$container_name" 2>&1 || true)"
   printf '%s\n' "$container_logs" | grep -E 'TAILSCALE_AUTH_URL=|SWARM_TAILNET_URL=|SWARM_REMOTE_URL=|NeedsLogin|error|failed|panic|ready|listen' || true
-  container_startup_mode="$(printf '%s\n' "$container_logs" | sed -n 's/^\[swarm-container\] startup mode=\([^ ]*\).*/\1/p' | tail -n 1)"
   if printf '%s\n' "$container_logs" | grep -q '^TAILSCALE_AUTH_URL='; then
     container_auth_present=1
   fi
@@ -544,7 +541,6 @@ if [ -n "$container_name" ]; then
     container_remote_url_present=1
   fi
 fi
-proof CONTAINER_STARTUP_MODE "$container_startup_mode"
 proof CONTAINER_LOG_AUTH_URL_PRESENT "$container_auth_present"
 proof CONTAINER_LOG_TAILNET_URL_PRESENT "$container_tailnet_present"
 proof CONTAINER_LOG_REMOTE_URL_PRESENT "$container_remote_url_present"
@@ -710,7 +706,7 @@ diagnose() {
   local transport status api_auth_present api_tailnet_present
   local container_found container_running container_session_id mismatch
   local config_file container_config_file config_path_is_dir config_host config_advertise
-  local startup_mode ts_state ts_auth_present ts_up_process child_master_code child_master_exit local_transport_code
+  local ts_state ts_auth_present ts_up_process child_master_code child_master_exit local_transport_code
   local log_auth_present container_log_auth_present
 
   transport="$(api_session_value '.transport_mode // empty')"
@@ -727,7 +723,6 @@ diagnose() {
   config_path_is_dir="$(proof_value CONFIG_PATH_IS_DIRECTORY)"
   config_host="$(proof_value CHILD_CONFIG_HOST)"
   config_advertise="$(proof_value CHILD_CONFIG_ADVERTISE_HOST)"
-  startup_mode="$(proof_value CONTAINER_STARTUP_MODE)"
   if [[ "${container_config_file}" == "1" ]]; then
     config_host="$(proof_value CONTAINER_CHILD_CONFIG_HOST)"
     config_advertise="$(proof_value CONTAINER_CHILD_CONFIG_ADVERTISE_HOST)"
@@ -751,7 +746,6 @@ diagnose() {
   log "container_config_file=${container_config_file:-unknown}"
   log "child_config_host=${config_host:-unknown}"
   log "child_config_advertise_host=${config_advertise:-unknown}"
-  log "container_startup_mode=${startup_mode:-unknown}"
   log "tailscale_backend_state=${ts_state:-unknown}"
   log "tailscale_auth_url_in_child=${ts_auth_present:-unknown}"
   log "tailscale_up_process_present=${ts_up_process:-unknown}"
@@ -803,11 +797,6 @@ diagnose() {
 
   if [[ "${transport}" == "tailscale" && "${ts_state}" == "NeedsLogin" && "${ts_up_process}" == "0" ]]; then
     log "FAIL: no live tailscale up process is holding the login attempt open."
-    hard_failure=1
-  fi
-
-  if [[ "${transport}" == "tailscale" && "${startup_mode}" != "box" ]]; then
-    log "FAIL: remote child container was launched without SWARM_STARTUP_MODE=box."
     hard_failure=1
   fi
 

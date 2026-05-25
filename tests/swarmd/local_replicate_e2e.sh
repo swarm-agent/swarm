@@ -765,7 +765,6 @@ write_host_startup_config() {
   fi
   mkdir -p "$(dirname -- "${HOST_STARTUP_CONFIG}")"
   cat >"${HOST_STARTUP_CONFIG}" <<EOF
-startup_mode = box
 dev_mode = ${dev_mode_value}
 dev_root = ${dev_root_value}
 host = ${HOST_BIND_HOST}
@@ -815,7 +814,6 @@ export SWARM_LANE_PORT="${SWARM_LANE_PORT}"
 export SWARM_STATE_HOME="${SWARM_STATE_HOME}"
 export SWARM_CONFIG_HOME="${SWARM_CONFIG_HOME}"
 export SWARM_STARTUP_CONFIG="${SWARM_STARTUP_CONFIG}"
-export SWARM_STARTUP_MODE="${SWARM_STARTUP_MODE}"
 export SWARM_DEV_MODE="${SWARM_DEV_MODE}"
 export SWARM_DEV_ROOT="${SWARM_DEV_ROOT}"
 export SWARM_BYPASS_PERMISSIONS="${SWARM_BYPASS_PERMISSIONS}"
@@ -976,7 +974,6 @@ prepare_isolated_host() {
   export SWARM_STATE_HOME="${HOST_DAEMON_RUNTIME_ROOT}"
   export SWARM_CONFIG_HOME="${HOST_DAEMON_CONFIG_ROOT}"
   export SWARM_STARTUP_CONFIG="${HOST_STARTUP_CONFIG}"
-  export SWARM_STARTUP_MODE="box"
   export SWARM_DEV_MODE="${DEV_MODE}"
   export SWARM_DEV_ROOT="${ROOT_DIR}"
   export SWARM_BYPASS_PERMISSIONS="${BYPASS_PERMISSIONS}"

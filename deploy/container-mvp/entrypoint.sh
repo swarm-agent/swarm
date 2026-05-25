@@ -6,7 +6,6 @@ TS_STATE_DIR="${TS_STATE_DIR:?TS_STATE_DIR must be set}"
 TS_STATE_FILE="${TS_STATE_FILE:-${TS_STATE_DIR}/tailscaled.state}"
 TS_HOSTNAME="${TS_HOSTNAME:-swarm-box}"
 TS_OUTBOUND_HTTP_PROXY_LISTEN="${TS_OUTBOUND_HTTP_PROXY_LISTEN:-}"
-SWARM_STARTUP_MODE="${SWARM_STARTUP_MODE:-}"
 SWARM_CONTAINER_OFFLINE="${SWARM_CONTAINER_OFFLINE:-}"
 SWARMD_DATA_DIR="${SWARMD_DATA_DIR:-/var/lib/swarmd}"
 SWARMD_CONFIG_DIR="${SWARMD_CONFIG_DIR:-/etc/swarmd}"
@@ -153,7 +152,7 @@ start_swarmd() {
   if [ -n "${SWARM_CHILD_STARTUP_CONFIG:-}" ]; then
     child_cfg_state="yes"
   fi
-  echo "[swarm-container] startup mode=${SWARM_STARTUP_MODE:-} listen=${SWARMD_LISTEN} desktop_port=${SWARM_DESKTOP_PORT} offline=${offline_state}"
+  echo "[swarm-container] listen=${SWARMD_LISTEN} desktop_port=${SWARM_DESKTOP_PORT} offline=${offline_state}"
   echo "[swarm-container] child startup config env present=${child_cfg_state}"
   if [ -n "${SWARM_CHILD_STARTUP_CONFIG:-}" ]; then
     echo "[swarm-container] child bootstrap summary deployment_id=$(child_cfg_value deploy_container_deployment_id) swarm_name=$(child_cfg_value swarm_name) parent_swarm_id=$(child_cfg_value parent_swarm_id) pairing_state=$(child_cfg_value pairing_state)"
@@ -168,10 +167,6 @@ start_swarmd() {
     --data-dir="${SWARMD_DATA_DIR}" \
     --db-path="${SWARMD_DATA_DIR}/swarmd.pebble" \
     --lock-path="${SWARMD_LOCK_PATH}"
-
-  if [ -n "${SWARM_STARTUP_MODE}" ]; then
-    set -- "$@" --mode="${SWARM_STARTUP_MODE}"
-  fi
 
   run_as_swarm_user env SWARM_WEB_DIST_DIR="${SWARM_WEB_DIST_DIR}" "$@" &
   SWARMD_PID=$!
