@@ -75,7 +75,7 @@ PEER_PORT="$((API_PORT + 2))"
 API_URL="http://127.0.0.1:${API_PORT}"
 DESKTOP_URL="http://127.0.0.1:${DESKTOP_PORT}"
 COOKIE_JAR="${RUN_ROOT}/cookies.txt"
-STARTUP_CONFIG_TEXT="$(printf 'startup_mode = interactive\nhost = 127.0.0.1\nport = %s\ndesktop_port = %s\npeer_transport_port = %s\n' "${API_PORT}" "${DESKTOP_PORT}" "${PEER_PORT}")"
+STARTUP_CONFIG_TEXT="$(printf 'swarm_name = Checkpoint1 Device\nhost = 127.0.0.1\nport = %s\ndesktop_port = %s\npeer_transport_port = %s\n' "${API_PORT}" "${DESKTOP_PORT}" "${PEER_PORT}")"
 
 cat >"${DB_PROBE}" <<'GOEOF'
 package main

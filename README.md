@@ -12,10 +12,9 @@ This repository is under active development. The README below is intentionally c
 
 ## What Swarm does
 
-- Runs a local backend daemon (`swarmd`) for workspace, session, model, auth, permission, and UI settings state.
-- Opens a terminal UI with slash commands for workspaces, sessions, providers, models, auth, permissions, themes, keybinds, updates, and related coding workflow controls.
-- Opens a browser desktop UI with the installed launcher via `swarm --desktop`.
-- Supports main and dev runtime lanes so an installed release and a development lane can use separate ports and state.
+- Installs a local backend daemon (`swarmd`) that stays running for workspace, session, model, auth, permission, and UI settings state.
+- Opens controller clients that attach to the daemon: `swarm session` for the terminal UI and `swarm open` for the desktop UI.
+- Keeps daemon lifecycle explicit with `swarm install`, `swarm status`, `swarm start`, `swarm stop`, `swarm restart`, and `swarm uninstall`.
 - Stores runtime data under system locations instead of repository-local mutable state.
 - Uses attach-token authenticated local API endpoints for non-health daemon access.
 - Includes provider adapters and auth/status plumbing for Anthropic, Codex, Google, Fireworks, OpenRouter, and Exa search support. Copilot is not currently available as a selectable or runnable provider.
@@ -31,7 +30,7 @@ curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/install.sh |
 
 That command fetches the latest stable GitHub release asset, extracts it, and runs the bundled installer. You do not need to clone or download this repository to install Swarm.
 
-The installer places launchers in `/usr/local/bin` and installs Swarm runtime artifacts under `/usr/local/share/swarm/{bin,libexec,lib,share}`. Because those are system locations, `install.sh` may prompt for sudo during provisioning. Swarm-owned subdirectories are created for the installing user so the daemon still runs as that user.
+The installer prints an install plan, places launchers in `/usr/local/bin`, installs Swarm runtime artifacts under `/usr/local/share/swarm/{bin,libexec,lib,share}`, writes `swarm.service`, and enables/starts the daemon. Because those are system locations, `install.sh` may prompt for sudo during provisioning. Swarm-owned subdirectories are created for the installing user so the daemon still runs as that user.
 
 If your shell does not already include the launcher directory on `PATH`, run Swarm with:
 
@@ -60,24 +59,27 @@ From a source checkout, the setup helper can build and install local development
 
 ## Quick start
 
-Open the main terminal UI:
+Install Swarm and verify the daemon:
 
 ```bash
-swarm
+swarm install
+swarm status
 ```
 
-Open the desktop UI:
+Open controller clients against the running daemon:
 
 ```bash
-swarm --desktop
+swarm session
+swarm open
 ```
 
-Manage the local backend without opening a UI:
+Manage the daemon explicitly:
 
 ```bash
-swarm server on
-swarm server status
-swarm server off
+swarm start
+swarm stop
+swarm restart
+swarm uninstall
 ```
 
 Use the development lane:
@@ -123,7 +125,7 @@ Swarm is split into a launcher, a terminal UI, a daemon, and a web frontend:
 
 | Area | Path | Purpose |
 | --- | --- | --- |
-| Launcher CLI | `cmd/swarm/`, `internal/launcher/` | Starts/stops lanes, records port metadata, launches TUI or desktop, runs update helpers. |
+| Launcher CLI | `cmd/swarm/`, `internal/launcher/` | Manages the installed daemon service, records port metadata, launches TUI or desktop controllers, runs update helpers. |
 | Installer | `cmd/swarmsetup/` | Installs launchers and release artifacts into system locations. |
 | Terminal UI | `cmd/swarmtui/`, `internal/app/`, `internal/ui/` | tcell app, slash commands, modals, settings, model/auth/workspace/session UI. |
 | Daemon | `swarmd/` | HTTP/WebSocket API, provider runtime, sessions, workspaces, permissions, Pebble-backed persistence. |
@@ -158,7 +160,7 @@ Linux defaults:
 
 - `/usr/local/bin` for launchers.
 - `/usr/local/share/swarm/{bin,libexec,lib,share}` for runtime files.
-- `/etc/swarmd` for daemon and startup configuration.
+- `/etc/swarmd` for daemon configuration.
 - `/var/lib/swarmd` for daemon data, databases, secrets, generated artifacts, reports, worktrees, and remote-deploy session data.
 - `/var/cache/swarmd` for daemon caches.
 - `/run/swarmd` for volatile runtime files, sockets, locks, and PID files.

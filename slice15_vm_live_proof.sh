@@ -160,7 +160,7 @@ record_request() {
   printf '%s' "${status}"
 }
 
-STARTUP_CONFIG_TEXT="$(printf 'startup_mode = interactive\nhost = 127.0.0.1\nport = %s\ndesktop_port = %s\npeer_transport_port = %s\n' "${API_PORT}" "${DESKTOP_PORT}" "${PEER_PORT}")"
+STARTUP_CONFIG_TEXT="$(printf 'swarm_name = Slice15 Device\nhost = 127.0.0.1\nport = %s\ndesktop_port = %s\npeer_transport_port = %s\n' "${API_PORT}" "${DESKTOP_PORT}" "${PEER_PORT}")"
 start_daemon
 
 workspace_before_status="$(record_request create-workspace-before-bootstrap POST "${DESKTOP_URL}/v1/workspace/add" "{\"path\":\"${WORKSPACE_DIR}\"}" "${EVIDENCE_DIR}/create-workspace-before-bootstrap.json")"

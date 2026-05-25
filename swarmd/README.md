@@ -4,7 +4,7 @@ Initial backend slice for the Swarm V2 refactor.
 
 Implemented in this iteration:
 
-- daemon bootstrap with `--mode=single|box`
+- installed always-on daemon bootstrap managed by explicit service commands
 - lockfile guard (single authority per machine/account)
 - Pebble-backed persistence
 - Codex auth persistence (`auth/codex/default`, API key or OAuth tokens, unencrypted profile)
@@ -18,6 +18,10 @@ Implemented in this iteration:
 - WebSocket channel with `ping`, `subscribe`, `unsubscribe`, and replay support
 
 ## Run
+
+For product installs, use the root launcher service lifecycle: `swarm install`, `swarm status`, `swarm start`, `swarm stop`, `swarm restart`, and `swarm uninstall`. Controller clients attach with `swarm session` or `swarm open`; closing a controller does not stop the daemon.
+
+The commands below are development helpers for running `swarmd` from a source checkout.
 
 `FFF` via the vendored Go/Cgo binding is the canonical in-app search backend for Swarm. The `search` tool uses it directly for ranked file search and content search, so Linux amd64 glibc hosts need the bundled `libfff_c.so` runtime available.
 
