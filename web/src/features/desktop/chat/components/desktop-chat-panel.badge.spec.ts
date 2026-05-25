@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import type { DesktopSessionRecord } from '../../types/realtime'
 import type { ChatMessageRecord } from '../types/chat'
-import { formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, isSilentSpeechRecognitionError, metadataTodoSummary, resolveMessageAssistantLabel, resolveSessionEffectiveAgentName, savedRuleCountdownSeconds, sessionUsesReadOnlyFlowIdentity, shouldShowScrollLockReturnButton, visibleDesktopChatMessages } from './desktop-chat-panel'
+import { desktopChatVirtualItemKey, formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, isSilentSpeechRecognitionError, metadataTodoSummary, resolveMessageAssistantLabel, resolveSessionEffectiveAgentName, savedRuleCountdownSeconds, sessionUsesReadOnlyFlowIdentity, shouldShowScrollLockReturnButton, visibleDesktopChatMessages } from './desktop-chat-panel'
 
 test('formatAgentTodoBadge shows progress-first badge with active count', () => {
   assert.equal(formatAgentTodoBadge({ taskCount: 6, openCount: 2, inProgressCount: 1, activeText: '' }), '4/6 complete • 1 active')
@@ -178,4 +178,13 @@ test('desktop chat shows the context compact checkpoint and hides the duplicate 
   assert.equal(isDesktopCompactionCheckpointMessage(checkpoint), true)
   assert.equal(isDesktopManualCompactionAckMessage(ack), true)
   assert.deepEqual(visibleDesktopChatMessages([checkpoint, ack]).map((message) => message.id), ['checkpoint'])
+})
+
+
+test('thinking tags visibility is part of desktop virtual item keys', () => {
+  const baseKey = 'message-reasoning-1'
+
+  assert.equal(desktopChatVirtualItemKey(baseKey, true), 'thinking-tags:on:message-reasoning-1')
+  assert.equal(desktopChatVirtualItemKey(baseKey, false), 'thinking-tags:off:message-reasoning-1')
+  assert.notEqual(desktopChatVirtualItemKey(baseKey, true), desktopChatVirtualItemKey(baseKey, false))
 })

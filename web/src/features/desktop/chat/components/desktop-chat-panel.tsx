@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type DragEvent as ReactDragEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type DragEvent as ReactDragEvent, type ReactNode } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronDown, Clock3, Home, ListChecks, LoaderCircle, MessageSquareText, Mic, Minimize2, Plus, Save, Send, Settings2, ShieldAlert, Sparkles, Square } from 'lucide-react'
@@ -534,6 +534,14 @@ function renderItemKey(item: RenderItem | undefined, index: number): string {
     default:
       return `render-item:${index}`
   }
+}
+
+export function desktopChatThinkingTagsMeasurementKey(thinkingTagsEnabled: boolean): string {
+  return thinkingTagsEnabled ? 'thinking-tags:on' : 'thinking-tags:off'
+}
+
+export function desktopChatVirtualItemKey(baseKey: string, thinkingTagsEnabled: boolean): string {
+  return `${desktopChatThinkingTagsMeasurementKey(thinkingTagsEnabled)}:${baseKey}`
 }
 
 function estimateRenderItemSize(item: RenderItem | undefined, thinkingTagsEnabled = true): number {
@@ -1416,8 +1424,9 @@ export function DesktopChatPanel({
     }
     return items
   }, [displayedMessages, liveAssistantDraft, liveAssistantDraftKey, liveToolMessage, retainedAssistantSegments, sessionId, shouldRenderLiveAssistantDraft, shouldRenderLiveToolMessage])
+  const thinkingTagsMeasurementKey = desktopChatThinkingTagsMeasurementKey(thinkingTagsEnabled)
   const renderMeasurementKey = useMemo(
-    () => renderItems.map((item) => {
+    () => [thinkingTagsMeasurementKey, ...renderItems.map((item) => {
       switch (item.type) {
         case 'message':
           return item.virtualKey
@@ -1430,14 +1439,14 @@ export function DesktopChatPanel({
         default:
           return 'unknown'
       }
-    }).join('|'),
-    [renderItems],
+    })].join('|'),
+    [renderItems, thinkingTagsMeasurementKey],
   )
   const rowVirtualizer = useVirtualizer({
     count: renderItems.length,
     getScrollElement: () => scrollerRef.current,
     estimateSize: (index) => estimateRenderItemSize(renderItems[index], thinkingTagsEnabled),
-    getItemKey: (index) => renderItemKey(renderItems[index], index),
+    getItemKey: (index) => desktopChatVirtualItemKey(renderItemKey(renderItems[index], index), thinkingTagsEnabled),
     overscan: 6,
   })
   const virtualItems = rowVirtualizer.getVirtualItems()
@@ -1889,7 +1898,7 @@ export function DesktopChatPanel({
     }
   }, [lastSavedRuleExpiresAt, lastSavedRulePreview])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     rowVirtualizer.measure()
   }, [rowVirtualizer, thinkingTagsEnabled])
 
@@ -3057,7 +3066,7 @@ export function DesktopChatPanel({
                   style={{ transform: `translateY(${virtualItem.start}px)` }}
                   data-global-seq={message.globalSeq}
                 >
-                  <article className="w-full min-w-0 max-w-[980px] border-l-2 border-[var(--app-border)] pl-4 opacity-80">
+                  <article className="w-full min-w-0 max-w-[980px] opacity-80">
                     <div className="mb-1 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
                       {reasoningLabel}
                     </div>
