@@ -37,6 +37,11 @@ function toolSummaryRemainder(summary: string, label: string): string {
   return trimmed;
 }
 
+function formatTodoCounts(summary: NonNullable<StructuredToolMessage["todoData"]>["summary"]): string {
+  if (!summary) return "";
+  return `${summary.openCount} open · ${summary.taskCount} total · ${summary.inProgressCount} in progress`;
+}
+
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
@@ -457,7 +462,8 @@ export function ToolMessageView({
         ? LoaderCircle
         : CheckCircle2;
   const label = toolTheme.label || toolMessage.tool || "tool";
-  const summary = toolSummaryRemainder(toolMessage.summary || toolMessage.tool || "tool", label);
+  const todoCounts = formatTodoCounts(toolMessage.todoData?.summary ?? null);
+  const summary = todoCounts || toolSummaryRemainder(toolMessage.summary || toolMessage.tool || "tool", label);
   const accentWash = toolAccentWash(toolTheme.color, 14);
   const previewLanguage = inferToolSyntaxLanguage(toolMessage.target || pathFromToolSummary(toolMessage.summary));
   const shellPreview = toolMessage.tool.trim().toLowerCase() === "bash";

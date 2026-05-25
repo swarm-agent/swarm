@@ -4,6 +4,8 @@ import type {
   SearchToolFileGroup,
   SearchToolLineGroup,
   StructuredToolMessage,
+  TodoToolData,
+  TodoToolSummaryCounts,
 } from "../types/chat";
 
 interface ToolHistoryPayload {
@@ -344,38 +346,17 @@ function summarizeToolOutput(
       if (threadId) parts.push(`session ${threadId}`);
       return parts.join(" · ");
     }
-    case "manage_todos": {
-      const action = jsonStr(effective, "action");
-      const ownerKind = jsonStr(effective, "owner_kind");
-      const ownerSuffix = ownerKind ? ` [${ownerKind}]` : "";
-      let summary = `manage_todos${ownerSuffix}`;
+    case "manage_todos":
+    case "manage-todos": {
+      const todoData = extractTodoToolData(effective);
+      if (!todoData) return "todo";
+      const action = todoData.action;
+      const ownerSuffix = todoData.ownerKind ? ` [${todoData.ownerKind}]` : "";
+      let summary = `todo${ownerSuffix}`;
       if (action) summary += ` ${action}`;
-      const notes: string[] = [];
-      const summaryPayload =
-        effective.summary &&
-        typeof effective.summary === "object" &&
-        !Array.isArray(effective.summary)
-          ? (effective.summary as Record<string, unknown>)
-          : null;
-      const openCount = summaryPayload
-        ? jsonNum(summaryPayload, "open_count")
-        : 0;
-      const taskCount = summaryPayload
-        ? jsonNum(summaryPayload, "task_count")
-        : 0;
-      const inProgressCount = summaryPayload
-        ? jsonNum(summaryPayload, "in_progress_count")
-        : 0;
-      if (openCount > 0 || taskCount > 0 || inProgressCount > 0) {
-        notes.push(`${openCount} open · ${taskCount} total`);
-        if (inProgressCount > 0) notes.push(`${inProgressCount} in progress`);
-      }
+      const notes = todoSummaryNotes(todoData.summary);
       if (action === "batch") {
-        const count = Math.max(
-          jsonObjectSlice(effective, "operations").length,
-          jsonNum(effective, "operation_count"),
-        );
-        if (count > 0) notes.unshift(`${count} ops`);
+        if (todoData.operationCount > 0) notes.unshift(`${todoData.operationCount} ops`);
         return notes.length ? `${summary} (${notes.join(", ")})` : summary;
       }
       const item =
@@ -413,6 +394,47 @@ function summarizeToolOutput(
     default:
       return toolName || "tool";
   }
+}
+
+function extractTodoToolData(
+  payload: Record<string, unknown> | null,
+): TodoToolData | null {
+  if (!payload) return null;
+  const summaryPayload = todoSummaryPayload(payload);
+  return {
+    action: jsonStr(payload, "action"),
+    ownerKind: jsonStr(payload, "owner_kind"),
+    operationCount: Math.max(
+      jsonObjectSlice(payload, "operations").length,
+      jsonNum(payload, "operation_count"),
+    ),
+    summary: summaryPayload
+      ? {
+          taskCount: jsonNum(summaryPayload, "task_count"),
+          openCount: jsonNum(summaryPayload, "open_count"),
+          inProgressCount: jsonNum(summaryPayload, "in_progress_count"),
+        }
+      : null,
+  };
+}
+
+function todoSummaryPayload(
+  payload: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const summary = payload.summary;
+  return summary && typeof summary === "object" && !Array.isArray(summary)
+    ? (summary as Record<string, unknown>)
+    : null;
+}
+
+function todoSummaryNotes(
+  summary: TodoToolSummaryCounts | null,
+): string[] {
+  if (!summary) return [];
+  const notes: string[] = [];
+  notes.push(`${summary.openCount} open · ${summary.taskCount} total`);
+  notes.push(`${summary.inProgressCount} in progress`);
+  return notes;
 }
 
 function formatBytes(bytes: number): string {
@@ -1451,9 +1473,14 @@ export function buildStructuredToolMessage(
   const summary = summarizeToolOutput(toolName, outputJson, argumentsJson);
   const editDiff =
     toolName.toLowerCase() === "edit" ? extractEditDiff(outputJson) : null;
+  const normalizedToolName = toolName.toLowerCase();
   const searchData =
-    toolName.toLowerCase() === "search"
+    normalizedToolName === "search"
       ? extractSearchToolData(outputJson, argumentsJson)
+      : null;
+  const todoData =
+    normalizedToolName === "manage_todos" || normalizedToolName === "manage-todos"
+      ? extractTodoToolData(outputJson ?? argumentsJson)
       : null;
   const previewLines = searchData
     ? []
@@ -1488,6 +1515,7 @@ export function buildStructuredToolMessage(
     state: input.state ?? (error ? "error" : "done"),
     editDiff,
     searchData,
+    todoData,
     previewLines,
     taskRows,
   };

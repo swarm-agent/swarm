@@ -74,6 +74,19 @@ export interface SearchToolData {
   files: SearchToolFileGroup[];
 }
 
+export interface TodoToolSummaryCounts {
+  taskCount: number;
+  openCount: number;
+  inProgressCount: number;
+}
+
+export interface TodoToolData {
+  action: string;
+  ownerKind: string;
+  operationCount: number;
+  summary: TodoToolSummaryCounts | null;
+}
+
 export interface StructuredToolMessage {
   pathId: "run.tool-history.v2";
   tool: string;
@@ -90,6 +103,7 @@ export interface StructuredToolMessage {
   state: ToolMessageState;
   editDiff: EditDiffPreview | null;
   searchData?: SearchToolData | null;
+  todoData?: TodoToolData | null;
   previewLines: string[];
   taskRows: TaskToolRow[];
 }

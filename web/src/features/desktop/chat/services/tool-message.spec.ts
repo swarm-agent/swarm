@@ -123,7 +123,7 @@ function testManageTodosListShowsItems(): void {
   });
   assert(Boolean(message), "expected structured manage_todos message");
   assert(
-    message?.summary === "manage_todos [user] list",
+    message?.summary === "todo [user] list",
     `unexpected manage_todos summary: ${message?.summary}`,
   );
   assert(
@@ -158,8 +158,14 @@ function testManageTodosSummaryShowsCounts(): void {
   });
   assert(Boolean(message), "expected structured manage_todos summary message");
   assert(
-    message?.summary === "manage_todos summary (3 open · 5 total, 1 in progress)",
+    message?.summary === "todo summary (3 open · 5 total, 1 in progress)",
     `unexpected manage_todos counts summary: ${message?.summary}`,
+  );
+  assert(
+    message?.todoData?.summary?.openCount === 3 &&
+      message.todoData.summary.taskCount === 5 &&
+      message.todoData.summary.inProgressCount === 1,
+    `unexpected todoData counts: ${JSON.stringify(message?.todoData)}`,
   );
   assert(
     message?.previewLines.includes(
@@ -237,8 +243,15 @@ function testManageTodosBatchShowsOnlyChangedItems(): void {
   });
   assert(Boolean(message), "expected structured manage_todos batch message");
   assert(
-    message?.summary === "manage_todos batch (2 ops, 4 open · 6 total, 2 in progress)",
+    message?.summary === "todo batch (2 ops, 4 open · 6 total, 2 in progress)",
     `unexpected manage_todos batch summary: ${message?.summary}`,
+  );
+  assert(
+    message?.todoData?.operationCount === 2 &&
+      message.todoData.summary?.openCount === 4 &&
+      message.todoData.summary.taskCount === 6 &&
+      message.todoData.summary.inProgressCount === 2,
+    `unexpected todoData batch counts: ${JSON.stringify(message?.todoData)}`,
   );
   assert(
     message?.previewLines.some((line) => line.includes("Focused changed item")) === true,
