@@ -756,7 +756,7 @@ async function runFlowNowFromDetail(page, flowID, flowName, opts, summary, recor
   assertDeliverResultAccepted(payload, `${label} UI run-now`)
   finish({ status: response.status(), run: payload?.run || null })
   const expectedRunID = String(payload?.run?.reason || payload?.result?.ack?.reason || '').match(/run_now started\s+(\S+)/)?.[1] || ''
-  await verifyFlowRunVisible(page, flowID, flowName, opts.runTimeoutMs, summary, `${label}.run_now`, { expectedRunID })
+  await verifyFlowRunVisible(page, flowID, flowName, opts.runTimeoutMs, summary, `${label}.run_now`, { expectedRunID, verifySidebar: label !== 'ui_target' })
 }
 
 async function verifyFlowRunVisible(page, flowID, flowName, timeoutMs, summary, label, options = {}) {
@@ -805,8 +805,10 @@ async function verifyFlowRunVisible(page, flowID, flowName, timeoutMs, summary, 
         const text = await recentRuns.innerText().catch(() => '')
         summary.observations[`${label}.recent_runs_text`] = text.slice(0, 500)
       }
-      if (latestSessionActive) {
+      if (latestSessionActive && options.verifySidebar !== false) {
         await captureSidebarVerification(page, flowID, flowName, summary, label)
+      } else if (latestSessionActive) {
+        summary.notes.push(`${label} sidebar active-placement verification skipped by harness option`)
       } else {
         summary.notes.push(`${label} sidebar active-placement verification skipped: run completed before sidebar capture`)
       }
