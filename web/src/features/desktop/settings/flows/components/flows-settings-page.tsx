@@ -550,8 +550,17 @@ function targetToSelection(target?: FlowSwarmTarget): CreateFlowInput['target'] 
   }
 }
 
+function workspaceBindingID(workspace: FlowWorkspaceEntry): string {
+  return workspace.topologyRoutes.find((route) => route.workspaceBindingId.trim())?.workspaceBindingId.trim() || ''
+}
+
+function workspaceRuntimePath(workspace: FlowWorkspaceEntry): string {
+  return workspace.topologyRoutes.find((route) => route.runtimeWorkspacePath.trim())?.runtimeWorkspacePath.trim() || ''
+}
+
 function workspaceOptionKey(workspace: FlowWorkspaceEntry): string {
-  return workspace.path
+  const bindingID = workspaceBindingID(workspace)
+  return bindingID ? `binding:${bindingID}` : workspace.path
 }
 
 function workspaceOptionLabel(workspace: FlowWorkspaceEntry): string {
@@ -965,6 +974,9 @@ export function formToCreateInput(form: AddFlowForm, targets: FlowTargetOption[]
   const workspaceOption = workspaces.find((option) => option.key === form.workspacePath)
   const agentOption = agents.find((option) => option.key === form.agentKey)
   const workspacePath = workspaceOption?.workspace.path.trim() || form.workspacePath.trim()
+  const workspaceName = workspaceOption?.workspace.workspaceName.trim() || workspacePath.replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean).pop() || ''
+  const workspaceBindingId = workspaceOption ? workspaceBindingID(workspaceOption.workspace) : ''
+  const runtimeWorkspacePath = workspaceOption ? workspaceRuntimePath(workspaceOption.workspace) : ''
   const task = form.task.trim() || 'Run the configured task prompt.'
   const cronExpression = form.scheduleMode === 'cron' ? form.cronExpression.trim() : ''
   return {
@@ -978,6 +990,9 @@ export function formToCreateInput(form: AddFlowForm, targets: FlowTargetOption[]
     workspace: {
       workspace_path: workspacePath,
       host_workspace_path: workspacePath,
+      runtime_workspace_path: runtimeWorkspacePath || undefined,
+      workspace_binding_id: workspaceBindingId || undefined,
+      workspace_name: workspaceName || undefined,
       cwd: workspacePath,
     },
     schedule: {

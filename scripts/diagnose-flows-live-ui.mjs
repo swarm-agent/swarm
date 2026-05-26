@@ -57,12 +57,13 @@ Live instance:
 Flow settings:
   --agent <name>               Saved agent profile name on target. Default: memory.
   --agent-kind <kind>          Saved profile mode (primary, subagent, background). Default: background.
-  --workspace <path|.>         Workspace sent to Flow create. Default: .
+  --workspace <path|.|auto>    Workspace sent to Flow create. Use auto for the only topology-bound workspace. Default: .
   --target-kind <kind>         self, local, remote, or another target kind. Default depends on phase.
   --target-name <name>         Match target display name for API target phases.
   --target-swarm-id <id>       Match exact target swarm_id for API target phases.
   --target-deployment-id <id>  Match exact deployment_id for API target phases.
   --prompt <text>              Prompt used by run-now smoke.
+  --expect-message <text>      Require the completed run session messages to contain this text.
   --schedule-prompt <text>     Prompt used by scheduled smoke.
   --schedule-delay-minutes <n> Schedule API smoke at the next UTC HH:MM after this delay. Default: 1.
   --no-run-now                 Skip run-now execution.
@@ -119,6 +120,7 @@ function parseArgs(argv) {
     targetSwarmID: process.env.SWARM_FLOW_TARGET_SWARM_ID || '',
     targetDeploymentID: process.env.SWARM_FLOW_TARGET_DEPLOYMENT_ID || '',
     prompt: process.env.SWARM_FLOW_PROMPT || 'Flow smoke: reply with exactly "flow smoke ok". Do not modify files.',
+    expectMessage: process.env.SWARM_FLOW_EXPECT_MESSAGE || '',
     schedulePrompt: process.env.SWARM_FLOW_SCHEDULE_PROMPT || 'Scheduled Flow smoke: reply with exactly "scheduled flow smoke ok". Do not modify files.',
     scheduleDelayMinutes: Number(process.env.SWARM_FLOW_SCHEDULE_DELAY_MINUTES || '') || 1,
     runNow: true,
@@ -184,6 +186,10 @@ function parseArgs(argv) {
         opts.prompt = requireValue(argv, index, arg)
         index += 1
         break
+      case '--expect-message':
+        opts.expectMessage = requireValue(argv, index, arg)
+        index += 1
+        break
       case '--schedule-prompt':
         opts.schedulePrompt = requireValue(argv, index, arg)
         index += 1
@@ -244,6 +250,7 @@ function parseArgs(argv) {
   opts.targetName = String(opts.targetName || '').trim()
   opts.targetSwarmID = String(opts.targetSwarmID || '').trim()
   opts.targetDeploymentID = String(opts.targetDeploymentID || '').trim()
+  opts.expectMessage = String(opts.expectMessage || '').trim()
   if (opts.scheduleDelayMinutes < 1) {
     opts.scheduleDelayMinutes = 1
   }
@@ -569,6 +576,8 @@ function summarizeWorkspace(value) {
     workspace_path: String(value.workspace_path || ''),
     host_workspace_path: String(value.host_workspace_path || ''),
     runtime_workspace_path: String(value.runtime_workspace_path || ''),
+    workspace_binding_id: String(value.workspace_binding_id || ''),
+    workspace_name: String(value.workspace_name || ''),
     cwd: String(value.cwd || ''),
     worktree_mode: String(value.worktree_mode || ''),
   }
@@ -706,6 +715,30 @@ async function selectOptionIfAvailable(locator, value) {
   return true
 }
 
+async function optionsForSelect(locator) {
+  return locator.evaluate((element) => Array.from(element.options || []).map((option) => ({ value: option.value, text: option.textContent || '' })))
+}
+
+async function selectWorkspaceOption(locator, requestedValue, target, summary, label) {
+  const requested = String(requestedValue || '').trim()
+  const options = await optionsForSelect(locator)
+  summary.observations[`${label}.workspace_options`] = options
+  if (requested) {
+    const exact = options.find((option) => option.value === requested || option.text === requested)
+    if (exact) {
+      await locator.selectOption(exact.value)
+      return exact.value
+    }
+  }
+  const bindingOptions = options.filter((option) => option.value.startsWith('binding:'))
+  if (bindingOptions.length === 1) {
+    await locator.selectOption(bindingOptions[0].value)
+    return bindingOptions[0].value
+  }
+  const targetLabel = [target?.name, target?.swarm_id].filter(Boolean).join(' / ') || '<unknown target>'
+  fail(`${label} could not select an unambiguous topology-bound workspace for ${targetLabel}; requested=${requested || '<none>'} binding_options=${bindingOptions.map((option) => `${option.value} ${option.text}`).join(' | ') || '<none>'}`)
+}
+
 async function createFlowViaUI(page, opts, summary, recorder, input = {}) {
   const label = input.label || opts.phase || 'host'
   const flowName = input.flowName || `Flow smoke ${label} ${timestamp()}`
@@ -715,11 +748,18 @@ async function createFlowViaUI(page, opts, summary, recorder, input = {}) {
   await page.locator(selectors.addName).fill(flowName)
   await selectOptionIfPresent(page.locator(selectors.addAgent), input.agentKey || opts.agent, 'agent')
   await selectOptionIfPresent(page.locator(selectors.addTarget), input.targetKey || 'local', 'target')
+  const workspaceLocator = page.locator(selectors.addWorkspace)
   if (input.workspaceKey) {
-    await page.locator(selectors.addWorkspace).waitFor({ state: 'attached', timeout: 30000 })
-    await page.waitForFunction(({ selector, value }) => Array.from(document.querySelector(selector)?.options || []).some((option) => option.value === value), { selector: selectors.addWorkspace, value: input.workspaceKey }, { timeout: 30000 })
+    await workspaceLocator.waitFor({ state: 'attached', timeout: 30000 })
+    if (!input.workspaceKeyAuto) {
+      await page.waitForFunction(({ selector, value }) => Array.from(document.querySelector(selector)?.options || []).some((option) => option.value === value), { selector: selectors.addWorkspace, value: input.workspaceKey }, { timeout: 30000 })
+    }
   }
-  await selectOptionIfPresent(page.locator(selectors.addWorkspace), input.workspaceKey || '.', 'workspace')
+  if (input.workspaceKeyAuto) {
+    await selectWorkspaceOption(workspaceLocator, input.workspaceKey, input.target, summary, label)
+  } else {
+    await selectOptionIfPresent(workspaceLocator, input.workspaceKey || '.', 'workspace')
+  }
   await selectOptionIfAvailable(page.locator(selectors.addCadence), 'On demand')
   await page.locator(selectors.addTask).fill(input.prompt || opts.prompt)
 
@@ -756,7 +796,7 @@ async function runFlowNowFromDetail(page, flowID, flowName, opts, summary, recor
   assertDeliverResultAccepted(payload, `${label} UI run-now`)
   finish({ status: response.status(), run: payload?.run || null })
   const expectedRunID = String(payload?.run?.reason || payload?.result?.ack?.reason || '').match(/run_now started\s+(\S+)/)?.[1] || ''
-  await verifyFlowRunVisible(page, flowID, flowName, opts.runTimeoutMs, summary, `${label}.run_now`, { expectedRunID, verifySidebar: label !== 'ui_target' })
+  await verifyFlowRunVisible(page, flowID, flowName, opts.runTimeoutMs, summary, `${label}.run_now`, { expectedRunID, verifySidebar: label !== 'ui_target', requireSuccess: Boolean(opts.expectMessage), expectedMessage: opts.expectMessage })
 }
 
 async function verifyFlowRunVisible(page, flowID, flowName, timeoutMs, summary, label, options = {}) {
@@ -787,7 +827,14 @@ async function verifyFlowRunVisible(page, flowID, flowName, timeoutMs, summary, 
     const latestRun = expectedRunID
       ? flowRuns.find((run) => String(run.run_id || '').trim() === expectedRunID)
       : flowRuns[0] || history[0]
+    if (latestRun && String(latestRun.status || '').trim() === 'failed') {
+      fail(`${label} failed: ${JSON.stringify(summarizeRun(latestRun))}`)
+    }
     if (latestRun && String(latestRun.session_id || '').trim() && (!requireControllerSession || matchingSessions.length > 0)) {
+      if (options.requireSuccess && String(latestRun.status || '').trim() !== 'success') {
+        await delay(3000)
+        continue
+      }
       const duplicateCompletedRuns = flowRuns.filter((run) => String(run.run_id || '').trim() !== String(latestRun.run_id || '').trim())
       if (duplicateCompletedRuns.length > 0) {
         fail(`${label} produced duplicate history entries for one run-now command: ${JSON.stringify(duplicateCompletedRuns.map(summarizeRun))}`)
@@ -795,10 +842,22 @@ async function verifyFlowRunVisible(page, flowID, flowName, timeoutMs, summary, 
       const latestSessionID = String(latestRun.session_id || '').trim()
       const latestSession = matchingSessions.find((session) => String(session?.id || '').trim() === latestSessionID) || matchingSessions[0] || null
       const latestSessionActive = Boolean(latestSession?.lifecycle?.active)
+      let messagePayload = null
+      const expectedMessage = String(options.expectedMessage || '').trim()
+      if (expectedMessage) {
+        messagePayload = await pageJSON(page, `/v1/sessions/${encodeURIComponent(latestSessionID)}/messages?limit=100`, {}, summary)
+        const messageText = JSON.stringify(messagePayload)
+        summary.observations[`${label}.messages`] = compactPayload(messagePayload) || messagePayload
+        if (!messageText.includes(expectedMessage)) {
+          fail(`${label} completed but session messages did not contain ${JSON.stringify(expectedMessage)}`)
+        }
+      }
       summary.observations[`${label}.verified`] = {
         run: summarizeRun(latestRun),
         session: latestSession ? summarizeSession(latestSession) : null,
         controller_session_required: requireControllerSession,
+        expected_message: expectedMessage,
+        expected_message_found: expectedMessage ? true : undefined,
       }
       const recentRuns = page.locator(selectors.recentRuns).first()
       if (await recentRuns.isVisible({ timeout: 1000 }).catch(() => false)) {
@@ -983,7 +1042,7 @@ async function runUITargetSmoke(page, opts, summary, recorder) {
   const target = await resolveHarnessTarget(page, opts, summary)
   const targetKey = target.swarm_id ? `swarm:${target.swarm_id}` : target.deployment_id ? `deployment:${target.deployment_id}` : `target:${target.kind}:${target.name}`
   const flowName = `Flow smoke ui-target ${timestamp()}`
-  const { flowID } = await createFlowViaUI(page, opts, summary, recorder, { label: 'ui_target', flowName, targetKey, workspaceKey: opts.workspace, prompt: opts.prompt })
+  const { flowID } = await createFlowViaUI(page, opts, summary, recorder, { label: 'ui_target', flowName, targetKey, target, workspaceKey: opts.workspace, workspaceKeyAuto: opts.workspace === 'auto', prompt: opts.prompt })
   if (opts.runNow) {
     await runFlowNowFromDetail(page, flowID, flowName, opts, summary, recorder, 'ui_target')
   }

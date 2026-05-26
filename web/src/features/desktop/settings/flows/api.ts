@@ -2,6 +2,7 @@ import { requestJson } from '../../../../app/api'
 import { fetchSwarmTargets, type SwarmTarget, type SwarmTargetsResponse } from '../../swarm/api/swarm-targets'
 import { listWorkspaces } from '../../../workspaces/launcher/queries/list-workspaces'
 import { fetchManagedWorkspaceInventory } from '../../swarm/api/managed-workspace-replication'
+import { fetchSwarmTopologySnapshot, type SwarmTopologyWorkspaceBindingRecord } from '../../swarm/api/swarm-topology'
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
 import type { AgentProfileRecord } from '../../../desktop/chat/types/chat'
 
@@ -35,6 +36,8 @@ export interface FlowWorkspaceContext {
   workspace_path?: string
   host_workspace_path?: string
   runtime_workspace_path?: string
+  workspace_binding_id?: string
+  workspace_name?: string
   cwd?: string
   worktree_mode?: string
 }
@@ -130,6 +133,8 @@ export interface FlowWorkspaceDetail {
   workspace_path: string
   host_workspace_path?: string
   runtime_workspace_path?: string
+  workspace_binding_id?: string
+  workspace_name?: string
   cwd?: string
   worktree_mode?: string
 }
@@ -262,6 +267,60 @@ export async function fetchFlowSwarmTargets(): Promise<FlowSwarmTarget[]> {
   return Array.isArray(response.targets) ? response.targets : []
 }
 
+function workspaceEntryFromBinding(binding: SwarmTopologyWorkspaceBindingRecord): FlowWorkspaceEntry | null {
+  const bindingID = binding.binding_id?.trim()
+  const sourcePath = binding.source_workspace_path?.trim()
+  const runtimePath = binding.destination_workspace_path?.trim()
+  if (!bindingID || !sourcePath || !runtimePath) {
+    return null
+  }
+  const workspaceName = binding.source_workspace_name?.trim() || sourcePath.replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean).pop() || sourcePath
+  return {
+    path: sourcePath,
+    workspaceName,
+    themeId: '',
+    directories: [],
+    isGitRepo: false,
+    sortIndex: 0,
+    addedAt: binding.created_at || 0,
+    updatedAt: binding.updated_at || 0,
+    lastSelectedAt: 0,
+    active: false,
+    worktreeEnabled: false,
+    topologyRoutes: [{
+      routeId: bindingID,
+      routeSource: 'topology/workspace_binding',
+      workspaceBindingId: bindingID,
+      runtimeSwarmId: binding.destination_runtime_swarm_id?.trim() || '',
+      runtimeSwarmName: '',
+      runtimeKind: binding.legacy_target_kind?.trim() || '',
+      runtimeRelationship: '',
+      runtimeBackendUrl: '',
+      hostSwarmId: binding.destination_host_swarm_id?.trim() || '',
+      hostSwarmName: '',
+      hostWorkspacePath: sourcePath,
+      hostWorkspaceName: workspaceName,
+      runtimeWorkspacePath: runtimePath,
+      containerId: binding.destination_container_id?.trim() || '',
+      replicationMode: binding.replication_mode?.trim() || '',
+      writable: Boolean(binding.writable),
+      sync: { enabled: false, mode: '', modules: [] },
+      createdAt: binding.created_at || 0,
+      updatedAt: binding.updated_at || 0,
+    }],
+  }
+}
+
+function bindingMatchesFlowTarget(binding: SwarmTopologyWorkspaceBindingRecord, target: FlowSwarmTarget): boolean {
+  const targetSwarmID = target.swarm_id?.trim()
+  const targetDeploymentID = target.deployment_id?.trim()
+  const bindingID = binding.binding_id?.trim()
+  if (targetSwarmID && binding.destination_runtime_swarm_id?.trim() === targetSwarmID) {
+    return true
+  }
+  return Boolean(targetDeploymentID && bindingID && (bindingID === targetDeploymentID || bindingID.includes(`:${targetDeploymentID}:`)))
+}
+
 export async function fetchFlowWorkspaces(target?: FlowSwarmTarget | null, signal?: AbortSignal): Promise<FlowWorkspaceEntry[]> {
   if (!target) {
     return []
@@ -274,6 +333,14 @@ export async function fetchFlowWorkspaces(target?: FlowSwarmTarget | null, signa
   const usesLocalWorkspaceList = kind === 'self' || relationship === 'self' || (kind === 'local' && relationship === 'child')
   if (usesLocalWorkspaceList) {
     return listWorkspaces(200)
+  }
+  const topology = await fetchSwarmTopologySnapshot().catch(() => null)
+  const bindingWorkspaces = (topology?.workspace_bindings || [])
+    .filter((binding) => bindingMatchesFlowTarget(binding, target))
+    .map(workspaceEntryFromBinding)
+    .filter((entry): entry is FlowWorkspaceEntry => Boolean(entry))
+  if (bindingWorkspaces.length > 0) {
+    return bindingWorkspaces
   }
   const targetSwarmID = target.host_swarm_id?.trim() || target.swarm_id?.trim()
   if (!targetSwarmID) {
