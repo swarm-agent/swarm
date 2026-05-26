@@ -368,6 +368,41 @@ func (s *Server) handlePeerManagedHostSessionOpen(w http.ResponseWriter, r *http
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	routeRecord := pebblestore.SessionRouteRecord{
+		SessionID:            strings.TrimSpace(session.ID),
+		UserID:               strings.TrimSpace(principal.UserID),
+		AccountScopeID:       strings.TrimSpace(principal.AccountScopeID),
+		ChildSwarmID:         strings.TrimSpace(req.Route.ManagedHostSwarmID),
+		ChildBackendURL:      strings.TrimSpace(req.Route.ManagedHostBackendURL),
+		HostSwarmID:          strings.TrimSpace(req.Route.PrimarySwarmID),
+		HostWorkspacePath:    strings.TrimSpace(req.Route.HostWorkspacePath),
+		RuntimeWorkspacePath: runtimeWorkspacePath,
+		CreatedAt:            session.CreatedAt,
+		UpdatedAt:            session.UpdatedAt,
+	}
+	if s.sessionRoutes == nil {
+		if cleanupErr := s.sessions.DeleteSession(session.ID); cleanupErr != nil {
+			log.Printf("managed-host peer session route rollback failed session_id=%q err=%v", session.ID, cleanupErr)
+		}
+		writeError(w, http.StatusInternalServerError, errors.New("session route store not configured"))
+		return
+	}
+	if _, err := s.sessionRoutes.Put(routeRecord); err != nil {
+		if cleanupErr := s.sessions.DeleteSession(session.ID); cleanupErr != nil {
+			log.Printf("managed-host peer session route rollback failed session_id=%q err=%v", session.ID, cleanupErr)
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if strings.TrimSpace(routeRecord.ChildBackendURL) != "" {
+		if err := s.upsertTopologySessionRoute(routeRecord); err != nil {
+			if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
+				log.Printf("managed-host peer session route rollback failed session_id=%q err=%v", session.ID, cleanupErr)
+			}
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+	}
 	if event != nil && s.hub != nil {
 		s.hub.Publish(*event)
 	}

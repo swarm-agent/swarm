@@ -2031,7 +2031,18 @@ func (s *Service) FinalizeAttachFromHost(ctx context.Context, input ContainerAtt
 	if s == nil || s.swarms == nil || s.swarmStore == nil {
 		return fmt.Errorf("deploy container service is not configured")
 	}
-	_ = ctx
+	if strings.TrimSpace(input.UserID) != "" || strings.TrimSpace(input.AccountScopeID) != "" {
+		principal := identity.Principal{
+			Type:               identity.PrincipalTypeUser,
+			UserID:             strings.TrimSpace(input.UserID),
+			AccountScopeID:     strings.TrimSpace(input.AccountScopeID),
+			AccountScopeSource: identity.AccountScopeSourceServerState,
+		}
+		if !principal.Valid() {
+			return identity.ErrPrincipalRequired
+		}
+		ctx = identity.ContextWithPrincipal(ctx, principal)
+	}
 	cfg, err := s.loadStartupConfig()
 	if err != nil {
 		return err
@@ -2992,6 +3003,14 @@ func (s *Service) fetchLocalChildAttachState(ctx context.Context, endpoint, depl
 }
 
 func (s *Service) postLocalAttachFinalize(ctx context.Context, endpoint, token string, payload ContainerAttachFinalizeInput) error {
+	if principal, ok := principalFromContext(ctx); ok {
+		if strings.TrimSpace(payload.UserID) == "" {
+			payload.UserID = strings.TrimSpace(principal.UserID)
+		}
+		if strings.TrimSpace(payload.AccountScopeID) == "" {
+			payload.AccountScopeID = strings.TrimSpace(principal.AccountScopeID)
+		}
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -3425,15 +3444,17 @@ func (s *Service) finalizeChildAttach(ctx context.Context, cfg startupconfig.Fil
 			if err != nil {
 				return err
 			}
-			if err := s.applyManagedPermissionBundle(bundle); err != nil {
+			if err := s.applyManagedPermissionBundleForAccount(pairing.AccountScopeID, bundle); err != nil {
 				return err
 			}
 		}
 	}
 	if principal.Valid() {
 		if cfg.DeployContainer.HostDriven {
-			if err := s.applyBootstrapWorkspaces(principal, cfg, status, pairing, finalizeInput.WorkspaceBootstrap); err != nil {
-				return err
+			if len(finalizeInput.WorkspaceBootstrap) > 0 {
+				if err := s.applyBootstrapWorkspaces(principal, cfg, status, pairing, finalizeInput.WorkspaceBootstrap); err != nil {
+					return err
+				}
 			}
 		} else {
 			if err := s.provisionBootstrapWorkspaces(ctx, principal, cfg, state, status, pairing); err != nil {
@@ -4018,7 +4039,7 @@ func (s *Service) syncDeployContainerFromHost(ctx context.Context, cfg startupco
 		if err != nil {
 			return s.recordManagedCredentialSyncFailure(pairing, err)
 		}
-		if err := s.applyManagedPermissionBundle(bundle); err != nil {
+		if err := s.applyManagedPermissionBundleForAccount(pairing.AccountScopeID, bundle); err != nil {
 			return s.recordManagedCredentialSyncFailure(pairing, err)
 		}
 	}
@@ -4087,7 +4108,7 @@ func (s *Service) syncManagedHostFromManager(ctx context.Context, cfg startupcon
 			return s.recordManagedCredentialSyncFailure(pairing, err)
 		}
 		permissionBundle = bundle
-		if err := s.applyManagedPermissionBundle(bundle); err != nil {
+		if err := s.applyManagedPermissionBundleForAccount(pairing.AccountScopeID, bundle); err != nil {
 			return s.recordManagedCredentialSyncFailure(pairing, err)
 		}
 	}

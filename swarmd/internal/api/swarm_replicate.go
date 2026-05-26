@@ -356,6 +356,8 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 			CreatedAt:        time.Now().UnixMilli(),
 		}
 		binding.UpdatedAt = binding.CreatedAt
+		binding.UserID = strings.TrimSpace(principal.UserID)
+		binding.AccountScopeID = strings.TrimSpace(principal.AccountScopeID)
 		storedBinding, err := s.topology.UpsertWorkspaceBinding(binding)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)

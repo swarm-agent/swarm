@@ -423,7 +423,7 @@ func TestPeerSessionOpenRejectsSpoofedForwardedPrincipalWithoutAccountOwnedRunti
 }
 
 func TestPeerSessionOpenAcceptsPairedChildPrincipalClaimWithoutLocalTopologyRuntime(t *testing.T) {
-	server, sessionSvc, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	server, sessionSvc, _, routeStore, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
 	configureRoutedSessionTestServerAsChild(t, server, swarmStore, "child-swarm", "host-swarm-id", testPrincipal().UserID, testPrincipal().AccountScopeID)
 	payload, err := json.Marshal(peerSessionOpenRequest{
 		SessionID: "session-paired-child",
@@ -454,6 +454,21 @@ func TestPeerSessionOpenAcceptsPairedChildPrincipalClaimWithoutLocalTopologyRunt
 	}
 	if session.UserID != testPrincipal().UserID || session.AccountScopeID != testPrincipal().AccountScopeID {
 		t.Fatalf("session principal = %q/%q", session.UserID, session.AccountScopeID)
+	}
+	route, ok, err := routeStore.Get("session-paired-child")
+	if err != nil || !ok {
+		t.Fatalf("get session route ok=%t err=%v", ok, err)
+	}
+	if route.UserID != testPrincipal().UserID || route.AccountScopeID != testPrincipal().AccountScopeID || route.ChildSwarmID != "child-swarm" || route.HostSwarmID != "host-swarm-id" {
+		t.Fatalf("session route = %+v", route)
+	}
+
+	messageReq := httptest.NewRequest(http.MethodPost, "/v1/swarm/peer/sessions/message", bytes.NewBufferString(`{"session_id":"session-paired-child","role":"user","content":"hello"}`))
+	messageReq = messageReq.WithContext(context.WithValue(messageReq.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: "host-swarm-id"}))
+	messageRec := httptest.NewRecorder()
+	server.handlePeerSessionAppendMessage(messageRec, messageReq)
+	if messageRec.Code != http.StatusOK {
+		t.Fatalf("message status = %d, want %d, body=%s", messageRec.Code, http.StatusOK, messageRec.Body.String())
 	}
 }
 

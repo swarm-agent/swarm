@@ -975,7 +975,9 @@ func cloneHeaderExcludingAuth(src http.Header) http.Header {
 		if strings.EqualFold(key, "Authorization") ||
 			strings.EqualFold(key, "X-Swarm-Token") ||
 			strings.EqualFold(key, peerAuthSwarmIDHeader) ||
-			strings.EqualFold(key, peerAuthTokenHeader) {
+			strings.EqualFold(key, peerAuthTokenHeader) ||
+			strings.EqualFold(key, "X-Swarm-Principal-User-ID") ||
+			strings.EqualFold(key, "X-Swarm-Principal-Account-Scope-ID") {
 			continue
 		}
 		copied := append([]string(nil), values...)

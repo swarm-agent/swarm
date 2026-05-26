@@ -111,6 +111,8 @@ func (s *Server) proxyWebsocketToSwarmTarget(w http.ResponseWriter, r *http.Requ
 		return err
 	}
 	headers := cloneHeaderForUpstreamWebsocket(r.Header)
+	headers.Del("X-Swarm-Principal-User-ID")
+	headers.Del("X-Swarm-Principal-Account-Scope-ID")
 	headers.Set(peerAuthSwarmIDHeader, strings.TrimSpace(state.Node.SwarmID))
 	headers.Set(peerAuthTokenHeader, peerToken)
 	upstream, resp, err := gorillaws.DefaultDialer.DialContext(r.Context(), wsEndpoint, headers)

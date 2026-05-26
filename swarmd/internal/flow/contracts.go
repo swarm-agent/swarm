@@ -138,6 +138,8 @@ type WorkspaceContext struct {
 	WorkspacePath        string `json:"workspace_path,omitempty"`
 	HostWorkspacePath    string `json:"host_workspace_path,omitempty"`
 	RuntimeWorkspacePath string `json:"runtime_workspace_path,omitempty"`
+	WorkspaceBindingID   string `json:"workspace_binding_id,omitempty"`
+	WorkspaceName        string `json:"workspace_name,omitempty"`
 	CWD                  string `json:"cwd,omitempty"`
 	WorktreeMode         string `json:"worktree_mode,omitempty"`
 }

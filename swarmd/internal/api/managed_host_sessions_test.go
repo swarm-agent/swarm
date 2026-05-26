@@ -519,6 +519,77 @@ func TestPeerManagedHostSessionMessageRequiresPeerAuth(t *testing.T) {
 	}
 }
 
+func TestPeerManagedHostSessionOpenPersistsTrustedRouteForFollowupMessage(t *testing.T) {
+	server, sessionSvc, _, routeStore, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	configureRoutedSessionTestServerAsChild(t, server, swarmStore, "managed-swarm", "host-swarm-id", testPrincipal().UserID, testPrincipal().AccountScopeID)
+
+	openPayload, err := json.Marshal(peerManagedHostSessionOpenRequest{
+		SessionID: "managed-session",
+		Request: func() managedHostSessionCreateRequest {
+			req := managedHostSessionCreateRequest{
+				Title:                "managed",
+				WorkspacePath:        "/managed/workspace",
+				HostWorkspacePath:    "/managed/workspace",
+				RuntimeWorkspacePath: "/managed/workspace",
+				WorkspaceName:        "workspace",
+				Mode:                 sessionruntime.ModeAuto,
+				AgentName:            "swarm",
+			}
+			req.Preference.Provider = "codex"
+			req.Preference.Model = "gpt-5.4"
+			req.Preference.Thinking = "medium"
+			return req
+		}(),
+		Route: managedHostSessionRoute{
+			UserID:                testPrincipal().UserID,
+			AccountScopeID:        testPrincipal().AccountScopeID,
+			PrimarySwarmID:        "host-swarm-id",
+			PrimaryBackendURL:     "http://primary.example.test",
+			ManagedHostSwarmID:    "managed-swarm",
+			ManagedHostBackendURL: "http://127.0.0.1:7782",
+			HostWorkspacePath:     "/host/workspace",
+			RuntimeWorkspacePath:  "/managed/workspace",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal open: %v", err)
+	}
+	openReq := httptest.NewRequest(http.MethodPost, peerManagedHostSessionOpenPath, bytes.NewReader(openPayload))
+	openReq.Header.Set("Content-Type", "application/json")
+	openReq.Header.Set(peerAuthSwarmIDHeader, "host-swarm-id")
+	openReq.Header.Set(peerAuthTokenHeader, "peer-token")
+	openRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(openRec, openReq)
+	if openRec.Code != http.StatusOK {
+		t.Fatalf("open status = %d, want %d, body=%s", openRec.Code, http.StatusOK, openRec.Body.String())
+	}
+
+	route, ok, err := routeStore.Get("managed-session")
+	if err != nil || !ok {
+		t.Fatalf("route persisted ok=%t err=%v", ok, err)
+	}
+	if route.UserID != testPrincipal().UserID || route.AccountScopeID != testPrincipal().AccountScopeID || route.ChildSwarmID != "managed-swarm" || route.HostSwarmID != "host-swarm-id" {
+		t.Fatalf("route = %+v", route)
+	}
+
+	messageReq := httptest.NewRequest(http.MethodPost, peerManagedHostSessionMessagePath, bytes.NewBufferString(`{"session_id":"managed-session","role":"user","content":"hello"}`))
+	messageReq.Header.Set("Content-Type", "application/json")
+	messageReq.Header.Set(peerAuthSwarmIDHeader, "host-swarm-id")
+	messageReq.Header.Set(peerAuthTokenHeader, "peer-token")
+	messageRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(messageRec, messageReq)
+	if messageRec.Code != http.StatusOK {
+		t.Fatalf("message status = %d, want %d, body=%s", messageRec.Code, http.StatusOK, messageRec.Body.String())
+	}
+	messages, err := sessionSvc.ListMessages("managed-session", 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Content != "hello" {
+		t.Fatalf("messages = %+v", messages)
+	}
+}
+
 func seedManagedHostTarget(t *testing.T, server *Server, backendURL string) {
 	t.Helper()
 	nodes := server.swarmNodes

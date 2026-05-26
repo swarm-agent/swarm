@@ -471,9 +471,35 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 		if routeRecord.UpdatedAt == 0 {
 			routeRecord.UpdatedAt = session.UpdatedAt
 		}
-		if err := s.upsertTopologySessionRoute(routeRecord); err != nil {
+		if s.sessionRoutes == nil {
+			if cleanupErr := s.sessions.DeleteSession(session.ID); cleanupErr != nil {
+				log.Printf("peer session route rollback failed session_id=%q err=%v", session.ID, cleanupErr)
+			}
+			writeError(w, http.StatusInternalServerError, errors.New("session route store not configured"))
+			return
+		}
+		if _, err := s.sessionRoutes.Put(routeRecord); err != nil {
+			if cleanupErr := s.sessions.DeleteSession(session.ID); cleanupErr != nil {
+				log.Printf("peer session route rollback failed session_id=%q err=%v", session.ID, cleanupErr)
+			}
 			writeError(w, http.StatusInternalServerError, err)
 			return
+		}
+		if err := s.upsertTopologySessionRoute(routeRecord); err != nil {
+			if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
+				log.Printf("peer session route rollback failed session_id=%q err=%v", session.ID, cleanupErr)
+			}
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if s.shouldForwardPeerSessionOpenToRoutedChild(routeRecord) {
+			if err := s.forwardPeerSessionOpenToRoutedChild(r.Context(), req, routeRecord); err != nil {
+				if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
+					log.Printf("peer session child forward rollback failed session_id=%q err=%v", session.ID, cleanupErr)
+				}
+				writeError(w, http.StatusBadGateway, err)
+				return
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -481,6 +507,72 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 		"session": session,
 		"warning": strings.TrimSpace(strings.Join([]string{warning, modeWarning}, " ")),
 	})
+}
+
+func (s *Server) shouldForwardPeerSessionOpenToRoutedChild(route pebblestore.SessionRouteRecord) bool {
+	if s == nil {
+		return false
+	}
+	childSwarmID := strings.TrimSpace(route.ChildSwarmID)
+	childBackendURL := strings.TrimSpace(route.ChildBackendURL)
+	if childSwarmID == "" || childBackendURL == "" {
+		return false
+	}
+	return !s.isLocalSwarmID(childSwarmID)
+}
+
+func (s *Server) forwardPeerSessionOpenToRoutedChild(ctx context.Context, req peerSessionOpenRequest, route pebblestore.SessionRouteRecord) error {
+	if s == nil {
+		return errors.New("server is not configured")
+	}
+	route.SessionID = strings.TrimSpace(route.SessionID)
+	route.ChildSwarmID = strings.TrimSpace(route.ChildSwarmID)
+	route.ChildBackendURL = strings.TrimSpace(route.ChildBackendURL)
+	route.HostSwarmID = strings.TrimSpace(route.HostSwarmID)
+	route.HostWorkspacePath = strings.TrimSpace(route.HostWorkspacePath)
+	route.RuntimeWorkspacePath = strings.TrimSpace(route.RuntimeWorkspacePath)
+	if route.SessionID == "" || route.ChildSwarmID == "" || route.ChildBackendURL == "" {
+		return errors.New("routed child session open requires session id, child swarm id, and child backend url")
+	}
+	forwardReq := req
+	forwardReq.SessionID = route.SessionID
+	forwardReq.Route = route
+	forwardReq.Hosted.ChildSwarmID = route.ChildSwarmID
+	if route.HostSwarmID != "" {
+		forwardReq.Hosted.HostSwarmID = route.HostSwarmID
+	}
+	if route.HostWorkspacePath != "" {
+		forwardReq.Hosted.HostWorkspacePath = route.HostWorkspacePath
+	}
+	if route.RuntimeWorkspacePath != "" {
+		forwardReq.Hosted.RuntimeWorkspacePath = route.RuntimeWorkspacePath
+		forwardReq.Request.WorkspacePath = route.RuntimeWorkspacePath
+		forwardReq.Request.HostWorkspacePath = route.RuntimeWorkspacePath
+		forwardReq.Request.RuntimeWorkspacePath = route.RuntimeWorkspacePath
+	}
+	childTarget := swarmTarget{
+		SwarmID:      route.ChildSwarmID,
+		Name:         route.ChildSwarmID,
+		Role:         "child",
+		Relationship: "child",
+		Kind:         "container",
+		HostSwarmID:  route.HostSwarmID,
+		Online:       true,
+		Selectable:   true,
+		BackendURL:   route.ChildBackendURL,
+	}
+	flowRouteDiagLog("peer_session_open_forward_child", "session_id", route.SessionID, "child_swarm_id", route.ChildSwarmID, "child_backend_url", route.ChildBackendURL, "host_swarm_id", route.HostSwarmID, "runtime_workspace_path", route.RuntimeWorkspacePath)
+	var childResp struct {
+		OK      bool                        `json:"ok"`
+		Session pebblestore.SessionSnapshot `json:"session"`
+		Warning string                      `json:"warning,omitempty"`
+	}
+	if err := s.postPeerJSONToSwarmTarget(ctx, childTarget, "/v1/swarm/peer/sessions/open", forwardReq, &childResp); err != nil {
+		flowRouteDiagLog("peer_session_open_forward_child_failed", "session_id", route.SessionID, "child_swarm_id", route.ChildSwarmID, "child_backend_url", route.ChildBackendURL, "error", err)
+		return err
+	}
+	flowRouteDiagLog("peer_session_open_forward_child_success", "session_id", route.SessionID, "child_swarm_id", route.ChildSwarmID, "child_session_id", childResp.Session.ID, "warning", childResp.Warning)
+	return nil
 }
 
 func (s *Server) verifiedPeerSessionOpenPrincipalClaim(r *http.Request, req peerSessionOpenRequest) (identity.Principal, bool) {

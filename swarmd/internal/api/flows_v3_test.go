@@ -49,6 +49,8 @@ func TestFlowsV3CreateListGetUpdateRunNowDeleteHistoryAndStatus(t *testing.T) {
 	if _, err := server.swarmNodes.Put(pebblestore.SwarmNodeRecord{SwarmID: "child-remote", Name: "pc child", Role: swarmruntime.RelationshipChild, Kind: "remote", DeploymentID: "pc-child-remote", BackendURL: child.URL, Status: "online"}); err != nil {
 		t.Fatalf("seed remote swarm node: %v", err)
 	}
+	workspace := t.TempDir()
+	seedFlowTopologyWorkspaceBinding(t, server, workspace, filepath.Base(workspace), "pc-child-remote", "remote", "child-remote", "/workspaces/remote")
 	req := flowV3UpsertRequest{
 		FlowID:  "flow-v3-remote",
 		Name:    "Remote V3 flow",
@@ -56,7 +58,7 @@ func TestFlowsV3CreateListGetUpdateRunNowDeleteHistoryAndStatus(t *testing.T) {
 		Target:  flow.TargetSelection{SwarmID: "child-remote", Kind: "remote", DeploymentID: "pc-child-remote", Name: "pc child"},
 		Agent:   flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
 		Workspace: flow.WorkspaceContext{
-			WorkspacePath: t.TempDir(),
+			WorkspacePath: workspace,
 		},
 		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceOnDemand},
 		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
@@ -125,7 +127,7 @@ func TestFlowsV3CreateListGetUpdateRunNowDeleteHistoryAndStatus(t *testing.T) {
 		Target:  flow.TargetSelection{SwarmID: "child-remote", Kind: "remote", DeploymentID: "pc-child-remote", Name: "pc child"},
 		Agent:   flow.AgentSelection{ProfileName: "swarm", ProfileMode: "primary"},
 		Workspace: flow.WorkspaceContext{
-			WorkspacePath: t.TempDir(),
+			WorkspacePath: filepath.Join(workspace, "updated"),
 		},
 		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceOnDemand},
 		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
@@ -285,6 +287,7 @@ func TestFlowsV3LocalContainerCRUDSyncsAcrossHTTPBoundary(t *testing.T) {
 		Selectable:   true,
 		BackendURL:   child.URL,
 	}}})
+	seedFlowTopologyWorkspaceBinding(t, server, workspace, filepath.Base(workspace), "pc-child-local", "local", "child-local", "/workspaces/local")
 	req := flowV3UpsertRequest{
 		FlowID:  "flow-v3-local-crud",
 		Name:    "Local V3 flow",
@@ -374,6 +377,7 @@ func TestFlowsV3CreateAllowsLocalContainerTargetWithLocalOwnerHost(t *testing.T)
 		Selectable:   true,
 		BackendURL:   child.URL,
 	}}})
+	seedFlowTopologyWorkspaceBinding(t, server, workspace, filepath.Base(workspace), "pc-local-container", "local", "local-container-swarm", "/workspaces/local-container")
 	req := flowV3UpsertRequest{
 		FlowID:  "flow-v3-local-container-owner-host",
 		Name:    "Local container owner-host flow",
@@ -642,6 +646,8 @@ func TestFlowsV3CreatePersistsPendingSyncWhenTargetIsUnavailable(t *testing.T) {
 		Selectable:   false,
 		LastError:    "child is stopped",
 	}}})
+	workspace := t.TempDir()
+	seedFlowTopologyWorkspaceBinding(t, server, workspace, filepath.Base(workspace), "pc-offline", "local", "child-offline", "/workspaces/offline")
 	req := flowV3UpsertRequest{
 		FlowID:  "flow-v3-pending-sync",
 		Name:    "Pending sync flow",
@@ -649,7 +655,7 @@ func TestFlowsV3CreatePersistsPendingSyncWhenTargetIsUnavailable(t *testing.T) {
 		Target:  flow.TargetSelection{SwarmID: "child-offline", Kind: "local", DeploymentID: "pc-offline", Name: "offline child"},
 		Agent:   flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
 		Workspace: flow.WorkspaceContext{
-			WorkspacePath: t.TempDir(),
+			WorkspacePath: workspace,
 		},
 		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceOnDemand},
 		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
@@ -798,6 +804,98 @@ func TestFlowsV3RejectsMissingTargetAndBadTarget(t *testing.T) {
 
 func boolPtr(value bool) *bool {
 	return &value
+}
+
+func TestFlowsV3CreateResolvesWorkspaceBindingByName(t *testing.T) {
+	server, flows := newFlowPeerTestServer(t)
+	ensureFlowTestAgent(t, server)
+	server.SetDeployContainerService(&fakeFlowDeployService{targets: []swarmTarget{{
+		SwarmID:      "managed-swarm",
+		Name:         "managed",
+		Relationship: "child",
+		Kind:         "local",
+		DeploymentID: "managed-deployment",
+		Online:       true,
+		Selectable:   true,
+	}}})
+	seedFlowTopologyWorkspaceBinding(t, server, "/home/installer/workspaces/swarm-go-6", "swarm-go", "managed-deployment", "local", "managed-swarm", "/workspaces/swarm-go")
+	req := flowV3UpsertRequest{
+		FlowID:  "flow-v3-binding-name",
+		Name:    "Binding name flow",
+		Enabled: boolPtr(true),
+		Target:  flow.TargetSelection{SwarmID: "managed-swarm", Kind: "local", DeploymentID: "managed-deployment", Name: "managed"},
+		Agent:   flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
+		Workspace: flow.WorkspaceContext{
+			WorkspacePath:     "/home/installer/swarm-go",
+			WorkspaceName:     "swarm-go",
+			HostWorkspacePath: "/home/installer/swarm-go",
+		},
+		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceOnDemand},
+		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
+		Intent:        flow.PromptIntent{Prompt: "Resolve by workspace name."},
+	}
+	rec := httptest.NewRecorder()
+	reqHTTP := httptest.NewRequest(http.MethodPost, "/v3/flows", jsonReader(t, req))
+	reqHTTP.Header.Set("Content-Type", "application/json")
+	server.Handler().ServeHTTP(rec, requestWithTestPrincipal(reqHTTP))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	definition, ok, err := flows.GetDefinitionForAccount(testAccountScopeID, "flow-v3-binding-name")
+	if err != nil || !ok {
+		t.Fatalf("get definition ok=%v err=%v", ok, err)
+	}
+	workspace := definition.Assignment.Workspace
+	if workspace.WorkspaceBindingID == "" || workspace.HostWorkspacePath != "/home/installer/workspaces/swarm-go-6" || workspace.RuntimeWorkspacePath != "/workspaces/swarm-go" {
+		t.Fatalf("stored workspace = %+v", workspace)
+	}
+	outbox, err := flows.ListOutboxCommandsForAccount(testAccountScopeID, "flow-v3-binding-name", "", 10)
+	if err != nil || len(outbox) != 1 {
+		t.Fatalf("outbox len=%d err=%v", len(outbox), err)
+	}
+	if outbox[0].Command.Assignment.Workspace.WorkspacePath != "/workspaces/swarm-go" || outbox[0].Command.Assignment.Workspace.RuntimeWorkspacePath != "/workspaces/swarm-go" {
+		t.Fatalf("delivered workspace = %+v", outbox[0].Command.Assignment.Workspace)
+	}
+}
+
+func TestFlowsV3CreateRejectsAmbiguousWorkspaceNameBinding(t *testing.T) {
+	server, _ := newFlowPeerTestServer(t)
+	ensureFlowTestAgent(t, server)
+	server.SetDeployContainerService(&fakeFlowDeployService{targets: []swarmTarget{{
+		SwarmID:      "managed-swarm",
+		Name:         "managed",
+		Relationship: "child",
+		Kind:         "local",
+		DeploymentID: "managed-deployment",
+		Online:       true,
+		Selectable:   true,
+	}}})
+	seedFlowTopologyWorkspaceBinding(t, server, "/source/one", "swarm-go", "managed-deployment", "local", "managed-swarm", "/workspaces/one")
+	seedFlowTopologyWorkspaceBinding(t, server, "/source/two", "swarm-go", "managed-deployment", "local", "managed-swarm", "/workspaces/two")
+	req := flowV3UpsertRequest{
+		FlowID:  "flow-v3-binding-ambiguous",
+		Name:    "Ambiguous binding flow",
+		Enabled: boolPtr(true),
+		Target:  flow.TargetSelection{SwarmID: "managed-swarm", Kind: "local", DeploymentID: "managed-deployment", Name: "managed"},
+		Agent:   flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
+		Workspace: flow.WorkspaceContext{
+			WorkspacePath: "/home/installer/swarm-go",
+			WorkspaceName: "swarm-go",
+		},
+		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceOnDemand},
+		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
+		Intent:        flow.PromptIntent{Prompt: "Reject ambiguous binding."},
+	}
+	rec := httptest.NewRecorder()
+	reqHTTP := httptest.NewRequest(http.MethodPost, "/v3/flows", jsonReader(t, req))
+	reqHTTP.Header.Set("Content-Type", "application/json")
+	server.Handler().ServeHTTP(rec, requestWithTestPrincipal(reqHTTP))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("create status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "matches multiple topology bindings") {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
 }
 
 func TestFlowsV3DeleteAllowsStaleMissingTarget(t *testing.T) {

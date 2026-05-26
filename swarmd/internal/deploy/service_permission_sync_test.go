@@ -327,6 +327,97 @@ func TestApplyManagedCredentialBundleUsesPersistedPairingAccountWhenContextHasBo
 	}
 }
 
+func TestPostLocalAttachFinalizeAddsContextPrincipalToPayload(t *testing.T) {
+	var got ContainerAttachFinalizeInput
+	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode finalize payload: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	}))
+	defer child.Close()
+
+	deploySvc := &Service{client: child.Client()}
+	if err := deploySvc.postLocalAttachFinalize(testPrincipalContext(), child.URL, "", ContainerAttachFinalizeInput{DeploymentID: "deployment-1"}); err != nil {
+		t.Fatalf("postLocalAttachFinalize() error = %v", err)
+	}
+	if got.UserID != testPrincipal().UserID || got.AccountScopeID != testPrincipal().AccountScopeID {
+		t.Fatalf("finalize principal = %q/%q, want %q/%q", got.UserID, got.AccountScopeID, testPrincipal().UserID, testPrincipal().AccountScopeID)
+	}
+}
+
+func TestFinalizeAttachFromHostUsesInputPrincipalForHostDrivenSync(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	authSvc := authruntime.NewService(pebblestore.NewAuthStore(store), events)
+	if _, _, err := authSvc.UpsertCredential(authruntime.CredentialUpsertInput{Provider: "fireworks", AccountScopeID: testPrincipal().AccountScopeID, Type: pebblestore.AuthTypeAPI, APIKey: "sk-test-managed-sync", Active: true}); err != nil {
+		t.Fatalf("upsert host credential: %v", err)
+	}
+	bundle, _, err := authSvc.ExportCredentialsForAccount(testPrincipal().AccountScopeID, "bundle-password", "")
+	if err != nil {
+		t.Fatalf("export credentials: %v", err)
+	}
+
+	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
+	cfg := startupconfig.Default(startupPath)
+	cfg.Child = true
+	cfg.SwarmName = "child"
+	cfg.BypassPermissions = true
+	cfg.DeployContainer.Enabled = true
+	cfg.DeployContainer.HostDriven = true
+	cfg.DeployContainer.SyncEnabled = true
+	cfg.DeployContainer.SyncModules = []string{workspaceruntime.ReplicationSyncModuleCredentials}
+	cfg.DeployContainer.DeploymentID = "deployment-1"
+	cfg.DeployContainer.BootstrapSecret = "bootstrap-secret"
+	if err := startupconfig.Write(cfg); err != nil {
+		t.Fatalf("write startup config: %v", err)
+	}
+
+	swarmStore := pebblestore.NewSwarmStore(store)
+	if _, err := swarmStore.PutLocalNode(pebblestore.SwarmLocalNodeRecord{SwarmID: "child-swarm", Name: "Child", Role: "child"}); err != nil {
+		t.Fatalf("put local node: %v", err)
+	}
+	swarmSvc := swarmruntime.NewService(swarmStore, events, nil)
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, swarmSvc, swarmStore, authSvc, nil, nil, startupPath)
+	err = deploySvc.FinalizeAttachFromHost(context.Background(), ContainerAttachFinalizeInput{
+		DeploymentID:             "deployment-1",
+		BootstrapSecret:          "bootstrap-secret",
+		UserID:                   testPrincipal().UserID,
+		AccountScopeID:           testPrincipal().AccountScopeID,
+		HostSwarmID:              "host-swarm",
+		HostToChildPeerAuthToken: "host-to-child-token",
+		ChildToHostPeerAuthToken: "child-to-host-token",
+		SyncOwnerSwarmID:         "host-swarm",
+		SyncBundlePassword:       "bundle-password",
+		SyncBundle:               bundle,
+	})
+	if err != nil {
+		t.Fatalf("FinalizeAttachFromHost() error = %v", err)
+	}
+	pairing, ok, err := swarmStore.GetLocalPairing()
+	if err != nil || !ok {
+		t.Fatalf("get pairing ok=%v err=%v", ok, err)
+	}
+	if pairing.UserID != testPrincipal().UserID || pairing.AccountScopeID != testPrincipal().AccountScopeID {
+		t.Fatalf("pairing principal = %q/%q, want %q/%q", pairing.UserID, pairing.AccountScopeID, testPrincipal().UserID, testPrincipal().AccountScopeID)
+	}
+	list, err := authSvc.ListCredentialsForAccount(testPrincipal().AccountScopeID, "fireworks", "", 10)
+	if err != nil {
+		t.Fatalf("list credentials: %v", err)
+	}
+	if list.Total == 0 || len(list.Records) == 0 || !list.Records[0].Active {
+		t.Fatalf("imported credentials = %#v, want active fireworks credential", list)
+	}
+}
+
 func TestApplyManagedCredentialBundleRejectsBundleAccountMismatch(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm.pebble"))
 	if err != nil {
