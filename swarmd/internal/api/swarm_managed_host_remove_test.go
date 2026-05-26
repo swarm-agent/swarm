@@ -50,6 +50,48 @@ func TestSwarmManagedHostRemoveDetachesManagedHostConfig(t *testing.T) {
 	}
 }
 
+func TestSwarmManagedHostRemoveDetachesBootstrapPreparedManagerPeer(t *testing.T) {
+	var detachCalls int
+	server := newLocalAuthTestServer(t)
+	server.swarm = fakeLocalAuthSwarmService{
+		state:       swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "managed-swarm-1", Name: "Managed B", Role: ""}},
+		detachCalls: &detachCalls,
+	}
+	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
+		cfg.Child = false
+		cfg.SwarmRole = ""
+		cfg.ParentSwarmID = ""
+		cfg.PairingState = ""
+	})
+
+	rec := postRemotePairingJSONWithDesktopSession(t, server, "/v1/swarm/managed-host/remove", map[string]any{
+		"manager_swarm_id": "manager-swarm-1",
+		"managed_swarm_id": "managed-swarm-1",
+		"propagate":        false,
+		"reason":           "manager rejected link request",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("remove status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if detachCalls != 1 {
+		t.Fatalf("detach calls = %d, want 1", detachCalls)
+	}
+	var response swarmManagedHostRemoveResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !response.OK || !response.LocalRemoved || response.Pairing.PairingState != startupconfig.PairingStateUnpaired {
+		t.Fatalf("response = %+v", response)
+	}
+	cfg, err := server.loadStartupConfig()
+	if err != nil {
+		t.Fatalf("load startup config: %v", err)
+	}
+	if cfg.Child || cfg.SwarmRole != "" || cfg.ParentSwarmID != "" || cfg.PairingState != startupconfig.PairingStateUnpaired {
+		t.Fatalf("config not detached: child=%t role=%q parent=%q pairing=%q", cfg.Child, cfg.SwarmRole, cfg.ParentSwarmID, cfg.PairingState)
+	}
+}
+
 func TestSwarmManagedHostRemoveRejectsManagerWithoutManagedID(t *testing.T) {
 	server := newLocalAuthTestServer(t)
 	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "manager-swarm-1", Name: "Manager A", Role: "master"}}}

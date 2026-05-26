@@ -65,3 +65,33 @@ func TestEnsureLocalStateUsesInputNameOnlyForInitialBootstrap(t *testing.T) {
 		t.Fatalf("stored name = %q, want Renamed Swarm", stored.Name)
 	}
 }
+
+func TestEnsureLocalStateIgnoresManagedRoleInputWhenDBUnpaired(t *testing.T) {
+	store, err := pebblestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	swarmStore := pebblestore.NewSwarmStore(store)
+	svc := NewService(swarmStore, nil, nil)
+
+	state, err := svc.EnsureLocalState(EnsureLocalStateInput{Name: "Local", Role: RelationshipManaged})
+	if err != nil {
+		t.Fatalf("ensure local state: %v", err)
+	}
+	if state.Node.Role != bootstrapRoleMaster {
+		t.Fatalf("role from clean DB with managed input = %q, want %q", state.Node.Role, bootstrapRoleMaster)
+	}
+	if state.Pairing.PairingState != "unpaired" || state.Pairing.ParentSwarmID != "" {
+		t.Fatalf("pairing = %+v, want standalone/unpaired", state.Pairing)
+	}
+
+	stored, ok, err := swarmStore.GetLocalNode()
+	if err != nil || !ok {
+		t.Fatalf("get local node ok=%t err=%v", ok, err)
+	}
+	if stored.Role != bootstrapRoleMaster {
+		t.Fatalf("stored role = %q, want %q", stored.Role, bootstrapRoleMaster)
+	}
+}

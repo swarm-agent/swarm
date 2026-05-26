@@ -48,7 +48,10 @@ func TestSwarmEnrollWithPeerAuthTokenDoesNotAutoApprove(t *testing.T) {
 
 func TestSwarmRemotePairingStartRejectsAlreadyManagedHost(t *testing.T) {
 	managed := newLocalAuthTestServer(t)
-	managed.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "managed-swarm-1", Name: "Managed B", PublicKey: "managed-public-key", Fingerprint: "managed-fingerprint"}}}
+	managed.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{
+		Node:    swarmruntime.LocalNodeState{SwarmID: "managed-swarm-1", Name: "Managed B", PublicKey: "managed-public-key", Fingerprint: "managed-fingerprint", Role: startupconfig.SwarmRoleManaged},
+		Pairing: swarmruntime.PairingState{PairingState: startupconfig.PairingStatePaired, ParentSwarmID: "old-manager-swarm"},
+	}}
 	setLocalAuthTestStartupConfig(t, managed, func(cfg *startupconfig.FileConfig) {
 		cfg.Child = true
 		cfg.SwarmRole = startupconfig.SwarmRoleManaged

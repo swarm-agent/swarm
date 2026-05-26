@@ -497,7 +497,9 @@ func (s *Service) EnsureLocalState(input EnsureLocalStateInput) (LocalState, err
 	if strings.TrimSpace(nodeRecord.Name) == "" {
 		nodeRecord.Name = strings.TrimSpace(input.Name)
 	}
-	nodeRecord.Role = strings.ToLower(strings.TrimSpace(input.Role))
+	if strings.TrimSpace(nodeRecord.Role) == "" {
+		nodeRecord.Role = bootstrapRoleMaster
+	}
 	publicKey := firstNonEmpty(strings.TrimSpace(input.PublicKey), strings.TrimSpace(nodeRecord.PublicKey))
 	privateKey := firstNonEmpty(strings.TrimSpace(input.PrivateKey), strings.TrimSpace(nodeRecord.PrivateKey))
 	fingerprint := firstNonEmpty(strings.TrimSpace(input.Fingerprint), strings.TrimSpace(nodeRecord.Fingerprint))
@@ -534,8 +536,19 @@ func (s *Service) EnsureLocalState(input EnsureLocalStateInput) (LocalState, err
 		return LocalState{}, err
 	}
 	if !ok {
-		pairingRecord = pebblestore.SwarmLocalPairingRecord{PairingState: startupconfig.PairingStateUnpaired}
+		pairingRecord = pebblestore.SwarmLocalPairingRecord{PairingState: startupconfig.PairingStateUnpaired, LastUpdatedByRole: bootstrapRoleMaster}
 		pairingRecord, err = s.store.PutLocalPairing(pairingRecord)
+		if err != nil {
+			return LocalState{}, err
+		}
+	}
+	desiredRole := bootstrapRoleMaster
+	if strings.EqualFold(strings.TrimSpace(pairingRecord.PairingState), startupconfig.PairingStatePaired) && strings.TrimSpace(pairingRecord.ParentSwarmID) != "" {
+		desiredRole = RelationshipManaged
+	}
+	if !strings.EqualFold(strings.TrimSpace(nodeRecord.Role), desiredRole) {
+		nodeRecord.Role = desiredRole
+		nodeRecord, err = s.store.PutLocalNode(nodeRecord)
 		if err != nil {
 			return LocalState{}, err
 		}
@@ -914,7 +927,7 @@ func (s *Service) DecideEnrollment(input DecideEnrollmentInput) (Enrollment, []T
 	return toEnrollment(record), trustedPeers, nil
 }
 
-func (s *Service) UpdateLocalPairingFromConfig(cfg startupconfig.FileConfig, transports []TransportSummary) (PairingState, error) {
+func (s *Service) UpdateLocalPairingFromConfig(_ startupconfig.FileConfig, transports []TransportSummary) (PairingState, error) {
 	if s == nil || s.store == nil {
 		return PairingState{}, errors.New("swarm service is not configured")
 	}
@@ -925,23 +938,15 @@ func (s *Service) UpdateLocalPairingFromConfig(cfg startupconfig.FileConfig, tra
 	if !ok {
 		record = pebblestore.SwarmLocalPairingRecord{PairingState: startupconfig.PairingStateUnpaired}
 	}
-	if cfg.Child {
-		if strings.TrimSpace(record.PairingState) == "" || strings.EqualFold(strings.TrimSpace(record.PairingState), startupconfig.PairingStateUnpaired) {
-			record.PairingState = startupconfig.PairingStatePendingApproval
-		}
-		if strings.TrimSpace(record.LastUpdatedByRole) == "" {
-			record.LastUpdatedByRole = bootstrapRoleChild
-		}
-	} else {
+	if strings.TrimSpace(record.PairingState) == "" {
 		record.PairingState = startupconfig.PairingStateUnpaired
-		record.ParentSwarmID = ""
-		record.ActiveInviteID = ""
-		record.LastEnrollmentID = ""
-		record.LastDecision = ""
-		record.LastDecisionReason = ""
+	}
+	if strings.TrimSpace(record.LastUpdatedByRole) == "" {
 		record.LastUpdatedByRole = bootstrapRoleMaster
 	}
-	record.RendezvousTransports = toStoreTransports(transports)
+	if transports := toStoreTransports(transports); len(transports) > 0 {
+		record.RendezvousTransports = transports
+	}
 	record, err = s.store.PutLocalPairing(record)
 	if err != nil {
 		return PairingState{}, err

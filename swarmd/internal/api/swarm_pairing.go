@@ -350,7 +350,7 @@ func (s *Server) handleSwarmEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 	childSwarmID := firstNonEmpty(strings.TrimSpace(req.ChildSwarmID), strings.TrimSpace(state.Node.SwarmID))
 	childName := firstNonEmpty(strings.TrimSpace(req.ChildName), status.Config.SwarmName)
-	childRole := firstNonEmpty(strings.TrimSpace(req.ChildRole), localSwarmRole(cfg), bootstrapRoleChild)
+	childRole := firstNonEmpty(strings.TrimSpace(req.ChildRole), strings.TrimSpace(state.Node.Role), bootstrapRoleChild)
 	childPublicKey := strings.TrimSpace(req.ChildPublicKey)
 	if childPublicKey == "" {
 		childPublicKey = strings.TrimSpace(state.Node.PublicKey)
@@ -394,16 +394,16 @@ func (s *Server) handleSwarmRemotePairingStart(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if strings.EqualFold(localSwarmRole(cfg), startupconfig.SwarmRoleManaged) || cfg.Child || strings.EqualFold(strings.TrimSpace(cfg.PairingState), startupconfig.PairingStatePaired) {
-		writeError(w, http.StatusConflict, errors.New("this host is already linked to a Manager; detach it locally before starting a new managed pairing"))
-		return
-	}
-	status, err := s.onboardingResponse(true)
+	state, err := s.currentSwarmState(cfg)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	state, err := s.currentSwarmState(cfg)
+	if dbBackedLocalManagedLinkState(state).Managed {
+		writeError(w, http.StatusConflict, errors.New("this host is already linked to a Manager; detach it locally before starting a new managed pairing"))
+		return
+	}
+	status, err := s.onboardingResponse(true)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -832,11 +832,12 @@ func (s *Server) handleSwarmManagedHostRemove(w http.ResponseWriter, r *http.Req
 		return
 	}
 	localSwarmID := strings.TrimSpace(state.Node.SwarmID)
-	localRole := localSwarmRole(cfg)
-	response := swarmManagedHostRemoveResponse{OK: true, Role: localRole}
+	localLinkState := dbBackedLocalManagedLinkState(state)
+	response := swarmManagedHostRemoveResponse{OK: true, Role: localLinkState.Role}
 
-	if strings.EqualFold(localRole, startupconfig.SwarmRoleManaged) || cfg.Child {
-		managerSwarmID := firstNonEmpty(strings.TrimSpace(req.ManagerSwarmID), strings.TrimSpace(state.Pairing.ParentSwarmID), strings.TrimSpace(cfg.ParentSwarmID))
+	directedLocalManagedCleanup := strings.TrimSpace(req.ManagerSwarmID) != "" && (strings.TrimSpace(req.ManagedSwarmID) == "" || strings.EqualFold(strings.TrimSpace(req.ManagedSwarmID), localSwarmID))
+	if localLinkState.Managed || directedLocalManagedCleanup {
+		managerSwarmID := firstNonEmpty(strings.TrimSpace(req.ManagerSwarmID), localLinkState.ManagerSwarmID)
 		managerTransports := req.Rendezvous
 		if len(managerTransports) == 0 {
 			managerTransports = swarmTransportsToOnboarding(state.Pairing.RendezvousTransports)
@@ -1048,12 +1049,17 @@ func (s *Server) handleSwarmRemotePairingApprove(w http.ResponseWriter, r *http.
 		return
 	}
 	if !req.Approve {
+		cleanupErr := cleanupRejectedRemoteSwarmPairing(pending, strings.TrimSpace(req.Reason))
+		if cleanupErr != nil {
+			log.Printf("managed pairing rejection cleanup failed request_id=%s manager_swarm_id=%s managed_swarm_id=%s err=%v", requestID, pending.ManagerSwarmID, pending.ManagedSwarmID, cleanupErr)
+		}
 		delete(s.remotePairingPending, requestID)
 		_ = s.publishSwarmPairingEvent("swarm.managed_pairing.rejected", pending.ManagedSwarmID, map[string]any{
 			"request_id":       pending.ID,
 			"manager_swarm_id": pending.ManagerSwarmID,
 			"managed_swarm_id": pending.ManagedSwarmID,
 			"reason":           strings.TrimSpace(req.Reason),
+			"cleanup_error":    errorString(cleanupErr),
 		})
 		writeJSON(w, http.StatusOK, swarmRemotePairingApprovalResponse{OK: true, Status: startupconfig.PairingStateRejected, RequestID: requestID})
 		return
@@ -1159,6 +1165,39 @@ func (s *Server) handleSwarmRemotePairingApprove(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, swarmRemotePairingApprovalResponse{OK: true, Status: startupconfig.PairingStatePaired, RequestID: requestID, Invite: invite, Pairing: pairing, Enrollment: enrollment, Routing: &routing})
 }
 
+func cleanupRejectedRemoteSwarmPairing(pending swarmRemotePairingPendingRequest, reason string) error {
+	managerSwarmID := strings.TrimSpace(pending.ManagerSwarmID)
+	managedSwarmID := strings.TrimSpace(pending.ManagedSwarmID)
+	managedEndpoint := normalizeRemoteSwarmEndpoint(pending.ManagedEndpoint)
+	managerToManagedPeerToken := strings.TrimSpace(pending.ManagerToManagedPeerToken)
+	if managerSwarmID == "" {
+		return errors.New("manager swarm id is required")
+	}
+	if managedSwarmID == "" {
+		return errors.New("managed swarm id is required")
+	}
+	if managedEndpoint == "" {
+		return errors.New("managed endpoint is required")
+	}
+	if managerToManagedPeerToken == "" {
+		return errors.New("manager-to-managed peer auth token is required")
+	}
+	var response swarmManagedHostRemoveResponse
+	return postRemoteSwarmJSONWithTransportFallbackAndHeaders(managedEndpoint, "/v1/swarm/managed-host/remove", pending.ManagedRendezvousTransports, swarmManagedHostRemoveRequest{
+		ManagedSwarmID: managedSwarmID,
+		ManagerSwarmID: managerSwarmID,
+		Reason:         firstNonEmpty(strings.TrimSpace(reason), "Managed Host link request rejected"),
+		Propagate:      false,
+	}, &response, map[string]string{peerAuthSwarmIDHeader: managerSwarmID, peerAuthTokenHeader: managerToManagedPeerToken})
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
 func finalizeApprovedRemoteSwarmPairing(pending swarmRemotePairingPendingRequest, initialSync deployruntime.ManagedHostInitialSyncBundle) error {
 	managerSwarmID := strings.TrimSpace(pending.ManagerSwarmID)
 	managedEndpoint := normalizeRemoteSwarmEndpoint(pending.ManagedEndpoint)
@@ -1231,7 +1270,7 @@ func (s *Server) handleSwarmDiscovery(w http.ResponseWriter, r *http.Request) {
 	transports := detectedOnboardingTransports(cfg)
 	tailscale := detectTailscale()
 	status := onboardingResponse{Tailscale: tailscale}
-	response.Role = localSwarmRole(cfg)
+	response.Role = dbBackedLocalManagedLinkState(state).Role
 	response.Endpoint = canonicalRemoteSwarmEndpoint(cfg, status)
 	response.TransportMode = firstTransportKind(transports)
 	response.RendezvousTransports = transports

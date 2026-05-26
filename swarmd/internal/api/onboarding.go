@@ -332,6 +332,10 @@ func (s *Server) onboardingResponse(includeSensitive bool) (onboardingResponse, 
 }
 
 func (s *Server) onboardingResponseWithServeDetection(includeSensitive bool, detectServe bool) (onboardingResponse, error) {
+	return s.onboardingResponseWithServeDetectionAndLocalLinkState(includeSensitive, detectServe, nil)
+}
+
+func (s *Server) onboardingResponseWithServeDetectionAndLocalLinkState(includeSensitive bool, detectServe bool, localLinkState *localManagedLinkState) (onboardingResponse, error) {
 	cfg, err := s.loadStartupConfig()
 	if err != nil {
 		return onboardingResponse{}, err
@@ -361,6 +365,13 @@ func (s *Server) onboardingResponseWithServeDetection(includeSensitive bool, det
 		tailscale.TailnetURL = firstNonEmpty(strings.TrimSpace(cfg.TailscaleURL), strings.TrimSpace(tailscale.TailnetURL))
 		tailscale.Available = tailscale.Available || tailscale.TailnetURL != ""
 	}
+	if localLinkState == nil {
+		resolvedLocalLinkState, err := s.onboardingLocalManagedLinkState(cfg)
+		if err != nil {
+			return onboardingResponse{}, err
+		}
+		localLinkState = &resolvedLocalLinkState
+	}
 	response := onboardingResponse{
 		OK:              true,
 		NeedsOnboarding: needsOnboarding,
@@ -368,8 +379,8 @@ func (s *Server) onboardingResponseWithServeDetection(includeSensitive bool, det
 		Config: onboardingConfigPayload{
 			SwarmName:                 strings.TrimSpace(cfg.SwarmName),
 			DesktopOnboardingComplete: cfg.DesktopOnboardingComplete,
-			Child:                     cfg.Child,
-			SwarmRole:                 localSwarmRole(cfg),
+			Child:                     localLinkState.Managed,
+			SwarmRole:                 localLinkState.Role,
 			Host:                      strings.TrimSpace(cfg.Host),
 			Port:                      cfg.Port,
 			DesktopPort:               cfg.DesktopPort,
@@ -589,11 +600,15 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 			return onboardingResponse{}, nil, err
 		}
 	}
+	var responseLocalLinkState *localManagedLinkState
 	if req.SwarmName != nil {
 		if s.swarm != nil {
-			if _, err := s.currentSwarmState(updated); err != nil {
+			state, err := s.currentSwarmState(updated)
+			if err != nil {
 				return onboardingResponse{}, nil, err
 			}
+			linkState := dbBackedLocalManagedLinkState(state)
+			responseLocalLinkState = &linkState
 		}
 		if err := s.persistUISwarmName(updated.SwarmName); err != nil {
 			return onboardingResponse{}, nil, err
@@ -625,7 +640,7 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 		issued = &createdSession
 		identityPayload = actorOnboardingIdentityPayload(createdSession.Actor)
 	}
-	response, err := s.onboardingResponse(includeSensitive)
+	response, err := s.onboardingResponseWithServeDetectionAndLocalLinkState(includeSensitive, true, responseLocalLinkState)
 	if err != nil {
 		return onboardingResponse{}, nil, err
 	}
@@ -753,14 +768,36 @@ func hostnameFromURL(raw string) string {
 	return strings.TrimSpace(parsed.Hostname())
 }
 
-func localSwarmRole(cfg startupconfig.FileConfig) string {
-	if strings.EqualFold(strings.TrimSpace(cfg.SwarmRole), startupconfig.SwarmRoleManaged) {
-		return bootstrapRoleManaged
+type localManagedLinkState struct {
+	Role           string
+	Managed        bool
+	ManagerSwarmID string
+}
+
+func (s *Server) onboardingLocalManagedLinkState(cfg startupconfig.FileConfig) (localManagedLinkState, error) {
+	if s.swarm == nil {
+		return localManagedLinkState{Role: bootstrapRoleMaster}, nil
 	}
-	if cfg.Child {
-		return bootstrapRoleChild
+	state, err := s.currentSwarmState(cfg)
+	if err != nil {
+		return localManagedLinkState{}, err
 	}
-	return bootstrapRoleMaster
+	return dbBackedLocalManagedLinkState(state), nil
+}
+
+func dbBackedLocalManagedLinkState(state swarmruntime.LocalState) localManagedLinkState {
+	link := localManagedLinkState{Role: bootstrapRoleMaster}
+	if dbPairingIsActiveManaged(state.Pairing) {
+		link.Role = bootstrapRoleManaged
+		link.Managed = true
+		link.ManagerSwarmID = strings.TrimSpace(state.Pairing.ParentSwarmID)
+		return link
+	}
+	return link
+}
+
+func dbPairingIsActiveManaged(pairing swarmruntime.PairingState) bool {
+	return strings.EqualFold(strings.TrimSpace(pairing.PairingState), startupconfig.PairingStatePaired) && strings.TrimSpace(pairing.ParentSwarmID) != ""
 }
 
 func tailscaleCandidateURL(cfg startupconfig.FileConfig, tailscale onboardingTailscalePayload) string {
@@ -1235,7 +1272,7 @@ func (s *Server) currentSwarmState(cfg startupconfig.FileConfig) (swarmruntime.L
 	advertiseAddr := firstTransportForKind(transports, startupconfig.NetworkModeTailscale)
 	state, err := s.swarm.EnsureLocalState(swarmruntime.EnsureLocalStateInput{
 		Name:          strings.TrimSpace(cfg.SwarmName),
-		Role:          localSwarmRole(cfg),
+		Role:          bootstrapRoleMaster,
 		AdvertiseMode: firstTransportKind(transports),
 		AdvertiseAddr: advertiseAddr,
 		Transports:    onboardingTransportsToSwarm(transports),

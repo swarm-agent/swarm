@@ -99,6 +99,56 @@ func TestSwarmRemotePairingStartPostsManagedRequestToManager(t *testing.T) {
 	}
 }
 
+func TestSwarmRemotePairingStartIgnoresStaleManagedConfigWhenDBUnpaired(t *testing.T) {
+	manager := newLocalAuthTestServer(t)
+	managerPublicKey, _, managerFingerprint, err := swarmruntime.GenerateNodeKeypair()
+	if err != nil {
+		t.Fatalf("generate manager keypair: %v", err)
+	}
+	manager.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "manager-swarm-1", Name: "Manager A", PublicKey: managerPublicKey, Fingerprint: managerFingerprint}}}
+	remoteManager := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/swarm/discovery" {
+			writeJSON(w, http.StatusOK, swarmDiscoveryResponse{
+				OK:                   true,
+				SwarmID:              "manager-swarm-1",
+				Name:                 "Manager A",
+				Role:                 bootstrapRoleMaster,
+				Endpoint:             "https://manager-a.example.ts.net",
+				TransportMode:        startupconfig.NetworkModeTailscale,
+				RendezvousTransports: []onboardingTransportPayload{{Kind: startupconfig.NetworkModeTailscale, Primary: "https://manager-a.example.ts.net", All: []string{"https://manager-a.example.ts.net"}}},
+			})
+			return
+		}
+		manager.Handler().ServeHTTP(w, r)
+	}))
+	defer remoteManager.Close()
+
+	managedPublicKey, _, managedFingerprint, err := swarmruntime.GenerateNodeKeypair()
+	if err != nil {
+		t.Fatalf("generate managed keypair: %v", err)
+	}
+	managed := newLocalAuthTestServer(t)
+	managed.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{
+		Node:    swarmruntime.LocalNodeState{SwarmID: "managed-swarm-1", Name: "Managed B", PublicKey: managedPublicKey, Fingerprint: managedFingerprint, Role: bootstrapRoleMaster},
+		Pairing: swarmruntime.PairingState{PairingState: startupconfig.PairingStateUnpaired},
+	}}
+	setLocalAuthTestStartupConfig(t, managed, func(cfg *startupconfig.FileConfig) {
+		cfg.Child = true
+		cfg.SwarmRole = startupconfig.SwarmRoleManaged
+		cfg.PairingState = startupconfig.PairingStatePaired
+		cfg.ParentSwarmID = "stale-manager-swarm"
+		cfg.SwarmName = "Managed B"
+		cfg.TailscaleURL = remoteManager.URL
+	})
+
+	rec := postRemotePairingJSONWithDesktopSession(t, managed, "/v1/swarm/remote-pairing/start", map[string]any{
+		"endpoint": remoteManager.URL,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("candidate start status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
 func TestSwarmRemotePairingStartDoesNotRejectUnservedTailscaleRequester(t *testing.T) {
 	manager := newLocalAuthTestServer(t)
 	managerPublicKey, _, managerFingerprint, err := swarmruntime.GenerateNodeKeypair()
