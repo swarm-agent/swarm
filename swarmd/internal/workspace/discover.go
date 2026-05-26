@@ -17,7 +17,6 @@ type DiscoverEntry struct {
 	Path         string `json:"path"`
 	Name         string `json:"name"`
 	IsGitRepo    bool   `json:"is_git_repo"`
-	HasClaude    bool   `json:"has_claude"`
 	HasSwarm     bool   `json:"has_swarm"`
 	LastModified int64  `json:"last_modified,omitempty"`
 }
@@ -197,28 +196,25 @@ func shouldSkipWorkspaceDiscoverDir(name string) bool {
 
 func buildWorkspaceDiscoverEntry(fullPath, name string, info fs.FileInfo) *DiscoverEntry {
 	clean := filepath.Clean(fullPath)
-	isGitRepo, hasClaude, hasSwarm := detectWorkspaceSignals(clean)
-	if !isGitRepo && !hasClaude && !hasSwarm {
+	isGitRepo, hasSwarm := detectWorkspaceSignals(clean)
+	if !isGitRepo && !hasSwarm {
 		return nil
 	}
 	return &DiscoverEntry{
 		Path:         clean,
 		Name:         strings.TrimSpace(name),
 		IsGitRepo:    isGitRepo,
-		HasClaude:    hasClaude,
 		HasSwarm:     hasSwarm,
 		LastModified: info.ModTime().UnixMilli(),
 	}
 }
 
-func detectWorkspaceSignals(path string) (isGitRepo bool, hasClaude bool, hasSwarm bool) {
+func detectWorkspaceSignals(path string) (isGitRepo bool, hasSwarm bool) {
 	clean := filepath.Clean(path)
 	gitPath := filepath.Join(clean, ".git")
-	claudeDir := filepath.Join(clean, ".claude")
-	claudeMD := filepath.Join(clean, "CLAUDE.md")
 	swarmDir := filepath.Join(clean, ".swarm")
 	agentsMD := filepath.Join(clean, "AGENTS.md")
-	return pathExists(gitPath), pathExists(claudeDir) || fileExists(claudeMD), pathExists(swarmDir) || fileExists(agentsMD)
+	return pathExists(gitPath), pathExists(swarmDir) || fileExists(agentsMD)
 }
 
 func pathExists(path string) bool {

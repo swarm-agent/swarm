@@ -264,6 +264,6 @@ func normalizeReplicationWorkspacePath(path string) (resolvedPath string, gitWor
 	if err := ensureWorkspaceDirectory(resolvedPath); err != nil {
 		return "", false, err
 	}
-	gitWorkspace, _, _ = detectWorkspaceSignals(resolvedPath)
+	gitWorkspace, _ = detectWorkspaceSignals(resolvedPath)
 	return resolvedPath, gitWorkspace, nil
 }

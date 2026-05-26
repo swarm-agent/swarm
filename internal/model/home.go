@@ -222,7 +222,7 @@ func MockHome() HomeModel {
 			{Name: "sdk", Path: displayPath(sdkPath), ResolvedPath: sdkPath, Branch: "feat/sdk-streaming", DirtyCount: 1, ModifiedCount: 1, Upstream: "origin/feat/sdk-streaming", HasGit: true, AgentsToken: "none", IsWorkspace: true},
 			{Name: "infra", Path: displayPath(infraPath), ResolvedPath: infraPath, Branch: "ops/latency-tracing", DirtyCount: 0, Upstream: "origin/ops/latency-tracing", HasGit: true, AgentsToken: "none", IsWorkspace: true},
 			{Name: "docs", Path: displayPath(docsPath), ResolvedPath: docsPath, Branch: "docs/architecture-v2", DirtyCount: 3, StagedCount: 1, ModifiedCount: 1, UntrackedCount: 1, Upstream: "origin/docs/architecture-v2", HasGit: true, AgentsToken: "none", IsWorkspace: true},
-			{Name: "playground", Path: displayPath(playgroundPath), ResolvedPath: playgroundPath, Branch: "tui/control-plane", DirtyCount: 7, StagedCount: 2, ModifiedCount: 3, UntrackedCount: 1, ConflictCount: 1, AheadCount: 3, BehindCount: 1, Upstream: "origin/tui/control-plane", HasGit: true, AgentsToken: "agents+claude", IsWorkspace: true},
+			{Name: "playground", Path: displayPath(playgroundPath), ResolvedPath: playgroundPath, Branch: "tui/control-plane", DirtyCount: 7, StagedCount: 2, ModifiedCount: 3, UntrackedCount: 1, ConflictCount: 1, AheadCount: 3, BehindCount: 1, Upstream: "origin/tui/control-plane", HasGit: true, AgentsToken: "agents", IsWorkspace: true},
 		},
 		PromptHint:   "",
 		QuickActions: []string{"Agent: swarm", "Model: gpt-5.4", "Thinking: xhigh"},

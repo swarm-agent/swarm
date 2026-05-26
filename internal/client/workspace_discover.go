@@ -11,7 +11,6 @@ type WorkspaceDiscoverEntry struct {
 	Path         string `json:"path"`
 	Name         string `json:"name"`
 	IsGitRepo    bool   `json:"is_git_repo"`
-	HasClaude    bool   `json:"has_claude"`
 	HasSwarm     bool   `json:"has_swarm"`
 	LastModified int64  `json:"last_modified,omitempty"`
 }

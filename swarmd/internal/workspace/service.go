@@ -72,7 +72,6 @@ type BrowseEntry struct {
 	Name        string `json:"name"`
 	IsDirectory bool   `json:"is_directory"`
 	IsGitRepo   bool   `json:"is_git_repo"`
-	HasClaude   bool   `json:"has_claude"`
 	HasSwarm    bool   `json:"has_swarm"`
 }
 
@@ -448,7 +447,7 @@ func (s *Service) ListKnown(limit int) ([]Entry, error) {
 	}
 	out := make([]Entry, 0, len(entries))
 	for _, entry := range entries {
-		isGitRepo, _, _ := detectWorkspaceSignals(entry.Path)
+		isGitRepo, _ := detectWorkspaceSignals(entry.Path)
 		out = append(out, Entry{
 			Path:             entry.Path,
 			WorkspaceName:    entry.Name,
@@ -484,7 +483,7 @@ func (s *Service) ListKnownForPrincipal(principal identity.Principal, limit int)
 	}
 	out := make([]Entry, 0, len(entries))
 	for _, entry := range entries {
-		isGitRepo, _, _ := detectWorkspaceSignals(entry.Path)
+		isGitRepo, _ := detectWorkspaceSignals(entry.Path)
 		active := false
 		if ok && entry.Path == current.Path {
 			active = true
@@ -662,13 +661,12 @@ func (s *Service) BrowseForPrincipal(principal identity.Principal, path string) 
 			continue
 		}
 		fullPath := filepath.Join(resolved, name)
-		isGitRepo, hasClaude, hasSwarm := detectWorkspaceSignals(fullPath)
+		isGitRepo, hasSwarm := detectWorkspaceSignals(fullPath)
 		items = append(items, BrowseEntry{
 			Path:        fullPath,
 			Name:        name,
 			IsDirectory: true,
 			IsGitRepo:   isGitRepo,
-			HasClaude:   hasClaude,
 			HasSwarm:    hasSwarm,
 		})
 	}

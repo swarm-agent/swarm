@@ -176,7 +176,7 @@ func (p *HomePage) handleTopTarget(target clickTarget) {
 	case "open-agents":
 		d := p.primaryDirectory()
 		if d.AgentsToken == "" || d.AgentsToken == "-" || d.AgentsToken == "none" {
-			p.statusLine = "context sources: no AGENTS.md/CLAUDE.md in scope"
+			p.statusLine = "context sources: no AGENTS.md in workspace roots"
 		} else {
 			p.statusLine = fmt.Sprintf("context sources: %s", d.AgentsToken)
 		}

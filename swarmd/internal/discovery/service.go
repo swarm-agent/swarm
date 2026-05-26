@@ -149,12 +149,10 @@ func (s *Service) ScanScope(primaryPath string, roots []string) (Report, error) 
 		}
 	}
 
-	// Project walk-up chain for AGENTS.md and CLAUDE.md (nearest directory first).
+	// Workspace instruction files are explicit per-root only. Do not walk parent
+	// directories into broader scopes such as a user's home directory.
 	for _, root := range scopeRoots {
-		for _, dir := range walkupDirs(root) {
-			appendRule(filepath.Join(dir, "AGENTS.md"), "workspace-local", "project-chain", precedenceWorkspaceLocal)
-			appendRule(filepath.Join(dir, "CLAUDE.md"), "workspace-local", "project-chain", precedenceWorkspaceLocal)
-		}
+		appendRule(filepath.Join(root, "AGENTS.md"), "workspace-local", "workspace-root", precedenceWorkspaceLocal)
 	}
 
 	// Swarm-managed daemon defaults.
@@ -178,7 +176,6 @@ func (s *Service) ScanScope(primaryPath string, roots []string) (Report, error) 
 	for _, root := range scopeRoots {
 		appendSkillScan(filepath.Join(root, ".agents", "skills"), "workspace-local", "agents-project-skills", precedenceWorkspaceLocal)
 		appendSkillScan(filepath.Join(root, ".swarm", "skills"), "workspace-local", "swarm-project-skills", precedenceWorkspaceLocal)
-		appendSkillScan(filepath.Join(root, ".claude", "skills"), "workspace-local", "claude-project-skills", precedenceWorkspaceLocal)
 	}
 
 	active, overrides := resolveSkillCandidates(candidates)
@@ -207,20 +204,6 @@ func resolvePath(input string) (string, error) {
 		return abs, nil
 	}
 	return resolved, nil
-}
-
-func walkupDirs(start string) []string {
-	out := make([]string, 0, 16)
-	current := filepath.Clean(start)
-	for {
-		out = append(out, current)
-		parent := filepath.Dir(current)
-		if parent == current {
-			break
-		}
-		current = parent
-	}
-	return out
 }
 
 func normalizeScopeRoots(primary string, roots []string) ([]string, error) {

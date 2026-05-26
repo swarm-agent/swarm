@@ -8349,23 +8349,16 @@ func parseGitCount(value string) int {
 
 func contextAgentsToken(rules []client.RuleSource) string {
 	hasAgents := false
-	hasClaude := false
 	for _, rule := range rules {
-		switch strings.ToLower(strings.TrimSpace(rule.Name)) {
-		case "agents.md":
+		if strings.EqualFold(strings.TrimSpace(rule.Name), "AGENTS.md") {
 			hasAgents = true
-		case "claude.md":
-			hasClaude = true
+			break
 		}
 	}
 
 	switch {
-	case hasAgents && hasClaude:
-		return "agents+claude"
 	case hasAgents:
 		return "agents"
-	case hasClaude:
-		return "claude"
 	case len(rules) > 0:
 		return fmt.Sprintf("%d rules", len(rules))
 	default:

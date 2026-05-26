@@ -155,9 +155,6 @@ func isWorkspaceLike(path string, depth int) bool {
 	if fileExists(filepath.Join(path, "AGENTS.md")) {
 		return true
 	}
-	if fileExists(filepath.Join(path, "CLAUDE.md")) {
-		return true
-	}
 	if dirHas(path, ".swarm") {
 		return true
 	}
