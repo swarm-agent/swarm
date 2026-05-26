@@ -58,6 +58,12 @@ func TestBuildChildContainerEnvKeepsPublishedPortsReachableWithLocalTransport(t 
 	if got := cfg.DeployContainer.LocalTransportSocketPath; got != childLocalTransportSocketPath {
 		t.Fatalf("child local transport socket path = %q, want %q", got, childLocalTransportSocketPath)
 	}
+	if cfg.ParentSwarmID != "" {
+		t.Fatalf("child startup config env parent_swarm_id = %q, want empty", cfg.ParentSwarmID)
+	}
+	if cfg.PairingState != "" {
+		t.Fatalf("child startup config env pairing_state = %q, want empty", cfg.PairingState)
+	}
 	if got := cfg.DeployContainer.SyncAgentURL; got != "http://127.0.0.1:8781/v1/deploy/container/sync/agents" {
 		t.Fatalf("child sync agent url = %q, want %q", got, "http://127.0.0.1:8781/v1/deploy/container/sync/agents")
 	}

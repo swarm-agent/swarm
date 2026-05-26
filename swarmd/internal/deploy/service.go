@@ -345,6 +345,7 @@ type Service struct {
 	containers                   *localcontainers.Service
 	swarms                       *swarmruntime.Service
 	swarmStore                   *pebblestore.SwarmStore
+	allowStartupConfigBootstrap  bool
 	swarmNodeStore               *pebblestore.SwarmNodeStore
 	topology                     *pebblestore.TopologyStore
 	auth                         *auth.Service
@@ -388,22 +389,23 @@ func NewService(store *pebblestore.DeployContainerStore, containers *localcontai
 		}
 	}
 	return &Service{
-		store:                     store,
-		containers:                containers,
-		swarms:                    swarms,
-		swarmStore:                swarmStore,
-		swarmNodeStore:            swarmNodeStore,
-		topology:                  topologyStore,
-		auth:                      authSvc,
-		agents:                    agentSvc,
-		discovery:                 discoverySvc,
-		permission:                permissionSvc,
-		model:                     modelSvc,
-		workspace:                 workspaceSvc,
-		identity:                  identitySvc,
-		startupPath:               strings.TrimSpace(startupPath),
-		client:                    newBootstrapClient(),
-		pendingSyncVaultPasswords: make(map[string]pendingSyncVaultPassword),
+		store:                       store,
+		containers:                  containers,
+		swarms:                      swarms,
+		swarmStore:                  swarmStore,
+		swarmNodeStore:              swarmNodeStore,
+		topology:                    topologyStore,
+		auth:                        authSvc,
+		agents:                      agentSvc,
+		discovery:                   discoverySvc,
+		permission:                  permissionSvc,
+		model:                       modelSvc,
+		workspace:                   workspaceSvc,
+		identity:                    identitySvc,
+		startupPath:                 strings.TrimSpace(startupPath),
+		client:                      newBootstrapClient(),
+		allowStartupConfigBootstrap: swarms != nil,
+		pendingSyncVaultPasswords:   make(map[string]pendingSyncVaultPassword),
 	}
 }
 
@@ -2539,8 +2541,6 @@ func buildChildContainerEnv(input containerBootstrapEnvInput) []string {
 	cfg.BypassPermissions = input.BypassPermissions
 	cfg.Child = true
 	cfg.SwarmName = strings.TrimSpace(input.ChildName)
-	cfg.ParentSwarmID = strings.TrimSpace(input.HostState.Node.SwarmID)
-	cfg.PairingState = startupconfig.PairingStateBootstrapReady
 	cfg.DeployContainer = startupconfig.DeployContainerBootstrap{
 		Enabled:                  true,
 		HostDriven:               input.HostDriven,
@@ -2785,31 +2785,12 @@ type localChildSwarmStateResponse struct {
 }
 
 func (s *Service) prepareChildAttachState(cfg startupconfig.FileConfig) (swarmruntime.LocalState, error) {
-	state, err := s.swarms.EnsureLocalState(swarmruntime.EnsureLocalStateInput{
+	return s.swarms.EnsureLocalState(swarmruntime.EnsureLocalStateInput{
 		Name:          strings.TrimSpace(cfg.SwarmName),
 		Role:          "child",
 		AdvertiseMode: firstTransportKindFromSwarm(nil),
 		AdvertiseAddr: "",
 	})
-	if err != nil {
-		return swarmruntime.LocalState{}, err
-	}
-	if s.swarmStore != nil {
-		pairing, ok, err := s.swarmStore.GetLocalPairing()
-		if err != nil {
-			return swarmruntime.LocalState{}, err
-		}
-		if !ok {
-			pairing = pebblestore.SwarmLocalPairingRecord{}
-		}
-		pairing.PairingState = startupconfig.PairingStatePendingApproval
-		pairing.ParentSwarmID = strings.TrimSpace(cfg.ParentSwarmID)
-		pairing.LastUpdatedByRole = "child"
-		if _, err := s.swarmStore.PutLocalPairing(pairing); err != nil {
-			return swarmruntime.LocalState{}, err
-		}
-	}
-	return state, nil
 }
 
 func shouldUseHostDrivenLocalAttach(cfg startupconfig.FileConfig, state swarmruntime.LocalState) bool {
@@ -3938,30 +3919,24 @@ func (s *Service) SyncManagedCredentialsOnce(ctx context.Context) error {
 	if s == nil || s.auth == nil || s.swarmStore == nil {
 		return fmt.Errorf("deploy container service is not configured")
 	}
-	cfg, err := s.loadStartupConfig()
-	if err != nil {
-		return err
-	}
-	if !cfg.Child {
-		return nil
-	}
 	pairing, ok, err := s.swarmStore.GetLocalPairing()
 	if err != nil {
 		return err
 	}
-	if !ok {
-		pairing = pebblestore.SwarmLocalPairingRecord{}
-	}
-	if !strings.EqualFold(strings.TrimSpace(pairing.PairingState), startupconfig.PairingStatePaired) {
+	if !ok || !dbPairingIsActiveManaged(pairing) {
 		return nil
 	}
+	cfg, err := s.loadStartupConfig()
+	if err != nil {
+		return err
+	}
 	switch {
-	case strings.EqualFold(strings.TrimSpace(cfg.SwarmRole), startupconfig.SwarmRoleManaged):
+	case dbPairingIsManagedHost(pairing):
 		return s.syncManagedHostFromManager(ctx, cfg, pairing)
-	case cfg.DeployContainer.Enabled && cfg.DeployContainer.SyncEnabled:
+	case cfg.DeployContainer.Enabled && cfg.DeployContainer.SyncEnabled && s.allowStartupConfigBootstrap:
 		return s.syncDeployContainerFromHost(ctx, cfg, pairing)
-	case cfg.RemoteDeploy.Enabled && cfg.RemoteDeploy.SyncEnabled:
-		ownerSwarmID := firstNonEmpty(strings.TrimSpace(cfg.RemoteDeploy.SyncOwnerSwarmID), strings.TrimSpace(pairing.ParentSwarmID), strings.TrimSpace(cfg.ParentSwarmID))
+	case cfg.RemoteDeploy.Enabled && cfg.RemoteDeploy.SyncEnabled && s.allowStartupConfigBootstrap:
+		ownerSwarmID := strings.TrimSpace(pairing.ParentSwarmID)
 		if ownerSwarmID == "" {
 			return nil
 		}
@@ -3983,12 +3958,20 @@ func (s *Service) SyncManagedCredentialsOnce(ctx context.Context) error {
 	}
 }
 
+func dbPairingIsActiveManaged(pairing pebblestore.SwarmLocalPairingRecord) bool {
+	return strings.EqualFold(strings.TrimSpace(pairing.PairingState), startupconfig.PairingStatePaired) && strings.TrimSpace(pairing.ParentSwarmID) != ""
+}
+
+func dbPairingIsManagedHost(pairing pebblestore.SwarmLocalPairingRecord) bool {
+	return dbPairingIsActiveManaged(pairing) && strings.EqualFold(strings.TrimSpace(pairing.LastUpdatedByRole), "managed")
+}
+
 func (s *Service) syncDeployContainerFromHost(ctx context.Context, cfg startupconfig.FileConfig, pairing pebblestore.SwarmLocalPairingRecord) error {
 	cfg.DeployContainer.SyncModules = workspaceruntime.NormalizeReplicationSyncModules(cfg.DeployContainer.SyncModules)
 	if len(cfg.DeployContainer.SyncModules) == 0 {
 		cfg.DeployContainer.SyncModules = workspaceruntime.DefaultReplicationSyncModules()
 	}
-	ownerSwarmID := firstNonEmpty(strings.TrimSpace(cfg.DeployContainer.SyncOwnerSwarmID), strings.TrimSpace(pairing.ParentSwarmID), strings.TrimSpace(cfg.ParentSwarmID))
+	ownerSwarmID := strings.TrimSpace(pairing.ParentSwarmID)
 	if ownerSwarmID == "" {
 		return nil
 	}
@@ -4043,7 +4026,7 @@ func (s *Service) syncDeployContainerFromHost(ctx context.Context, cfg startupco
 }
 
 func (s *Service) syncManagedHostFromManager(ctx context.Context, cfg startupconfig.FileConfig, pairing pebblestore.SwarmLocalPairingRecord) error {
-	managerSwarmID := firstNonEmpty(strings.TrimSpace(cfg.ManagedHostSync.OwnerSwarmID), strings.TrimSpace(pairing.ParentSwarmID), strings.TrimSpace(cfg.ParentSwarmID))
+	managerSwarmID := strings.TrimSpace(pairing.ParentSwarmID)
 	if managerSwarmID == "" {
 		return nil
 	}

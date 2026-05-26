@@ -927,7 +927,7 @@ func (s *Service) DecideEnrollment(input DecideEnrollmentInput) (Enrollment, []T
 	return toEnrollment(record), trustedPeers, nil
 }
 
-func (s *Service) UpdateLocalPairingFromConfig(_ startupconfig.FileConfig, transports []TransportSummary) (PairingState, error) {
+func (s *Service) UpdateLocalPairingFromConfig(_ startupconfig.FileConfig, _ []TransportSummary) (PairingState, error) {
 	if s == nil || s.store == nil {
 		return PairingState{}, errors.New("swarm service is not configured")
 	}
@@ -936,20 +936,10 @@ func (s *Service) UpdateLocalPairingFromConfig(_ startupconfig.FileConfig, trans
 		return PairingState{}, err
 	}
 	if !ok {
-		record = pebblestore.SwarmLocalPairingRecord{PairingState: startupconfig.PairingStateUnpaired}
+		return PairingState{PairingState: startupconfig.PairingStateUnpaired, LastUpdatedByRole: bootstrapRoleMaster}, nil
 	}
 	if strings.TrimSpace(record.PairingState) == "" {
 		record.PairingState = startupconfig.PairingStateUnpaired
-	}
-	if strings.TrimSpace(record.LastUpdatedByRole) == "" {
-		record.LastUpdatedByRole = bootstrapRoleMaster
-	}
-	if transports := toStoreTransports(transports); len(transports) > 0 {
-		record.RendezvousTransports = transports
-	}
-	record, err = s.store.PutLocalPairing(record)
-	if err != nil {
-		return PairingState{}, err
 	}
 	return toPairingState(record), nil
 }
