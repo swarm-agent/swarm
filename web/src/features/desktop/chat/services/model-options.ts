@@ -4,6 +4,7 @@ const CODEX_CONTEXT_MODE_1M = '1m'
 const CODEX_GPT54_DEFAULT_CONTEXT_WINDOW = 272_000
 const CODEX_GPT54_1M_CONTEXT_WINDOW = 1_050_000
 const CODEX_GPT55_DEFAULT_CONTEXT_WINDOW = 272_000
+const FIREWORKS_MODEL_PREFIX = 'accounts/fireworks/models/'
 
 const MODEL_PRESETS_BY_PROVIDER: Record<string, string[]> = {
   codex: [
@@ -62,7 +63,12 @@ export function displayModelName(provider: string, model: string, contextMode: s
   if (trimmedModel === '') {
     return ''
   }
-  return codex1MEnabled(provider, trimmedModel, contextMode) ? `${trimmedModel} (1m)` : trimmedModel
+  const normalizedProvider = normalizeProviderID(provider)
+  let displayName = trimmedModel
+  if (normalizedProvider === 'fireworks' && trimmedModel.toLowerCase().startsWith(FIREWORKS_MODEL_PREFIX)) {
+    displayName = trimmedModel.slice(FIREWORKS_MODEL_PREFIX.length).trim()
+  }
+  return codex1MEnabled(provider, trimmedModel, contextMode) ? `${displayName} (1m)` : displayName
 }
 
 export function effectiveContextWindow(provider: string, model: string, contextMode: string, fallback: number): number {
