@@ -164,16 +164,23 @@ rsync -az --delete \
   --exclude '/swarmd/swarmd' \
   ./ "${SSH_ALIAS}:${REMOTE_DIR}/"
 
-ssh "${SSH_ALIAS}" "set -euo pipefail
-cd ${remote_dir_quoted}
-if [ ${FROM_ZERO@Q} = 'true' ]; then
-  printf 'ssh-fast-test: deleting remote database %s\\n' ${db_path_quoted}
-  if [ -e ${db_path_quoted} ]; then
-    rm -rf -- ${db_path_quoted} 2>/dev/null || sudo -n rm -rf -- ${db_path_quoted}
+ssh "${SSH_ALIAS}" 'bash -s' -- "${REMOTE_DIR}" "${FROM_ZERO}" "${DB_PATH}" "${RESTART_SERVICE}" "${SERVICE_UNIT}" <<'REMOTE_SSH_FAST_TEST'
+set -euo pipefail
+remote_dir="$1"
+from_zero="$2"
+db_path="$3"
+restart_service="$4"
+service_unit="$5"
+
+cd "${remote_dir}"
+if [ "${from_zero}" = 'true' ]; then
+  printf 'ssh-fast-test: deleting remote database %s\n' "${db_path}"
+  if [ -e "${db_path}" ]; then
+    rm -rf -- "${db_path}" 2>/dev/null || sudo -n rm -rf -- "${db_path}"
   fi
   if [ -f /etc/swarmd/swarm.conf ]; then
-    printf 'ssh-fast-test: scrubbing stale managed/link config in /etc/swarmd/swarm.conf\\n'
-    tmp_conf=\"\$(mktemp)\"
+    printf 'ssh-fast-test: scrubbing stale managed/link config in /etc/swarmd/swarm.conf\n'
+    tmp_conf="$(mktemp)"
     awk '
 BEGIN {
   keys[++n] = "desktop_onboarding_complete"; repl["desktop_onboarding_complete"] = "desktop_onboarding_complete = false"
@@ -189,7 +196,7 @@ BEGIN {
   keys[++n] = "managed_host_sync_agent_url"; repl["managed_host_sync_agent_url"] = "managed_host_sync_agent_url ="
 }
 {
-  line = \$0
+  line = $0
   key = line
   sub(/^[[:space:]]*/, "", key)
   sub(/[[:space:]]*=.*/, "", key)
@@ -208,15 +215,16 @@ END {
     }
   }
 }
-' /etc/swarmd/swarm.conf >\"\${tmp_conf}\"
-    cp \"\${tmp_conf}\" /etc/swarmd/swarm.conf 2>/dev/null || sudo -n cp \"\${tmp_conf}\" /etc/swarmd/swarm.conf
-    rm -f \"\${tmp_conf}\"
+' /etc/swarmd/swarm.conf >"${tmp_conf}"
+    cp "${tmp_conf}" /etc/swarmd/swarm.conf 2>/dev/null || sudo -n cp "${tmp_conf}" /etc/swarmd/swarm.conf
+    rm -f "${tmp_conf}"
   fi
 fi
 ./rebuild s
-if [ ${RESTART_SERVICE@Q} = 'true' ]; then
+if [ "${restart_service}" = 'true' ]; then
   systemctl --user daemon-reload
-  systemctl --user restart ${service_quoted}
+  systemctl --user restart "${service_unit}"
   sleep 2
-  systemctl --user --no-pager --full status ${service_quoted} | sed -n '1,18p'
-fi"
+  systemctl --user --no-pager --full status "${service_unit}" | sed -n '1,18p'
+fi
+REMOTE_SSH_FAST_TEST
