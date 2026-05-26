@@ -165,6 +165,13 @@ func TestWorkspaceOverviewSkipsStaleTopologyBindings(t *testing.T) {
 
 func TestWorkspaceOverviewIncludesManagedChildLoopbackRouteViaOwnerHost(t *testing.T) {
 	server, workspacePath, store := newWorkspaceOverviewTopologyTestServer(t)
+	managedWorkspacePath := filepath.Join(t.TempDir(), "swarm-go")
+	if err := os.MkdirAll(managedWorkspacePath, 0o755); err != nil {
+		t.Fatalf("mkdir managed workspace: %v", err)
+	}
+	if _, err := server.workspace.AddForPrincipal(testPrincipal(), managedWorkspacePath, "swarm-go", "", true); err != nil {
+		t.Fatalf("add managed workspace: %v", err)
+	}
 	setReplicateFakeSwarmState(server, swarmruntime.LocalState{
 		Node:           swarmruntime.LocalNodeState{SwarmID: "host-swarm-id", Name: "host-swarm", Role: "master"},
 		CurrentGroupID: "group-1",
@@ -222,15 +229,29 @@ func TestWorkspaceOverviewIncludesManagedChildLoopbackRouteViaOwnerHost(t *testi
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode overview: %v", err)
 	}
-	if len(response.Workspaces) != 1 || len(response.Workspaces[0].TopologyRoutes) != 1 {
-		t.Fatalf("overview response=%+v", response)
+	if len(response.Workspaces) != 2 {
+		t.Fatalf("workspace count=%d response=%+v", len(response.Workspaces), response)
 	}
-	route := response.Workspaces[0].TopologyRoutes[0]
+	var route workspaceOverviewTopologyRoute
+	for _, workspace := range response.Workspaces {
+		if workspace.Path == managedWorkspacePath {
+			if len(workspace.TopologyRoutes) != 1 {
+				t.Fatalf("managed workspace route count=%d routes=%+v", len(workspace.TopologyRoutes), workspace.TopologyRoutes)
+			}
+			route = workspace.TopologyRoutes[0]
+		}
+	}
+	if route.RouteID == "" {
+		t.Fatalf("managed workspace route not found in response=%+v", response)
+	}
 	if route.RuntimeSwarmID != "child-swarm-1" || route.RuntimeSwarmName != "heytest" || route.RuntimeBackendURL != "http://127.0.0.1:7782" {
 		t.Fatalf("runtime route fields = %+v", route)
 	}
 	if route.HostSwarmID != "managed-swarm-1" || route.HostSwarmName != "managed-host" || route.RuntimeKind != "mirrored" {
 		t.Fatalf("host route fields = %+v", route)
+	}
+	if route.HostWorkspacePath != managedWorkspacePath || route.HostWorkspaceName != "swarm-go" {
+		t.Fatalf("managed workspace fields = %+v", route)
 	}
 }
 

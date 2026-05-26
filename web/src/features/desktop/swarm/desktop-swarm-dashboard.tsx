@@ -31,7 +31,7 @@ import { saveSwarmSettings } from '../settings/swarm/mutations/save-swarm-settin
 import type { UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import { AddSwarmModal } from './components/add-swarm-modal'
 import { fetchSwarmTargets, type SwarmTarget } from './api/swarm-targets'
-import { deleteSwarmMirrorResources, fetchSwarmMirrorResources, type SwarmMirrorResources, type SwarmMirrorWorkspaceResource } from './api/swarm-mirror'
+import { deleteSwarmMirrorResources, fetchSwarmMirrorResources, type SwarmMirrorResource, type SwarmMirrorResources, type SwarmMirrorWorkspaceResource } from './api/swarm-mirror'
 import { LinkSwarmModal } from './components/link-swarm-modal'
 import { ManagedHostLinkRequestModal, activePendingPairings, managedHostTargetFromPairingResult } from './components/managed-host-link-request-modal'
 import { fetchFlows, updateFlow, type FlowSummaryRecord } from '../settings/flows/api'
@@ -420,6 +420,14 @@ function deploymentMatchesContainer(deployment: DeployContainerDeployment, conta
     || (deploymentContainerID !== '' && deploymentContainerID === container.containerID.trim())
     || (deploymentContainerName !== '' && deploymentContainerName === container.containerName.trim())
   )
+}
+
+function deploymentMatchesMirroredContainer(deployment: DeployContainerDeployment, mirrored: SwarmMirrorResource<SwarmLocalContainer>): boolean {
+  if (!deployment || !mirrored) {
+    return false
+  }
+  const container = mirrorResourceLocalContainer(mirrored.resource)
+  return deploymentMatchesContainer(deployment, container)
 }
 
 function urlForHostPort(protocol: string, host: string, port: number): string {
@@ -1714,6 +1722,10 @@ export function DesktopSwarmDashboard() {
         if (attachStatus !== 'attached') {
           return false
         }
+        const mirroredContainer = mirrorResources.containers.find((container) => deploymentMatchesMirroredContainer(deployment, container)) ?? null
+        if (mirroredContainer) {
+          return false
+        }
         const deploymentGroupID = String(deployment.group_id ?? '').trim()
         const matchedContainer = localContainers.find((container) => deploymentMatchesContainer(deployment, container)) ?? null
         const outsideCurrentGroup = currentGroupID !== '' && deploymentGroupID !== '' && deploymentGroupID !== currentGroupID
@@ -1721,7 +1733,7 @@ export function DesktopSwarmDashboard() {
         return outsideCurrentGroup || missingContainerRecord
       })
       .sort((left, right) => right.updated_at - left.updated_at)
-  ), [currentGroupID, deployments, localContainers])
+  ), [currentGroupID, deployments, localContainers, mirrorResources.containers])
   const flowsByLocalContainerID = useMemo(() => {
     const mapped = new Map<string, FlowSummaryRecord[]>()
     localContainers.forEach((container) => {
