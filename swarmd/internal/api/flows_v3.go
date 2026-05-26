@@ -273,7 +273,7 @@ func (s *Server) handleFlowV3RunNow(w http.ResponseWriter, r *http.Request, flow
 		return
 	}
 	commandID := newFlowCommandID(flowID, definition.Revision, flow.CommandRunNow)
-	command := flow.AssignmentCommand{CommandID: commandID, FlowID: definition.FlowID, Revision: definition.Revision, Action: flow.CommandRunNow, CreatedAt: time.Now().UTC(), Assignment: definition.Assignment}
+	command := flow.AssignmentCommand{AccountScopeID: definition.AccountScopeID, UserID: definition.UserID, CommandID: commandID, FlowID: definition.FlowID, Revision: definition.Revision, Action: flow.CommandRunNow, CreatedAt: time.Now().UTC(), Assignment: definition.Assignment}
 	result, err := s.EnqueueAndDeliverFlowAssignmentCommand(r.Context(), command)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -289,6 +289,10 @@ func (s *Server) handleFlowV3RunNow(w http.ResponseWriter, r *http.Request, flow
 }
 
 func (s *Server) createFlowV3(r *http.Request, req flowV3UpsertRequest) (flowV3Record, flowAssignmentDeliverResult, error) {
+	principal, ok := PrincipalFromRequest(r)
+	if !ok || !principal.Valid() {
+		return flowV3Record{}, flowAssignmentDeliverResult{}, identity.ErrPrincipalRequired
+	}
 	flowID := strings.TrimSpace(req.FlowID)
 	if flowID == "" {
 		flowID = "flow-" + randomHex(8)
@@ -307,11 +311,11 @@ func (s *Server) createFlowV3(r *http.Request, req flowV3UpsertRequest) (flowV3R
 	if err != nil {
 		return flowV3Record{}, flowAssignmentDeliverResult{}, err
 	}
-	definition, err := s.flows.PutDefinition(pebblestore.FlowDefinitionRecord{FlowID: assignment.FlowID, Revision: assignment.Revision, Assignment: assignment, NextDueAt: nextDueAt})
+	definition, err := s.flows.PutDefinition(pebblestore.FlowDefinitionRecord{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, FlowID: assignment.FlowID, Revision: assignment.Revision, Assignment: assignment, NextDueAt: nextDueAt})
 	if err != nil {
 		return flowV3Record{}, flowAssignmentDeliverResult{}, err
 	}
-	command := flow.AssignmentCommand{CommandID: newFlowCommandID(definition.FlowID, definition.Revision, flow.CommandInstall), FlowID: definition.FlowID, Revision: definition.Revision, Action: flow.CommandInstall, CreatedAt: now, Assignment: definition.Assignment}
+	command := flow.AssignmentCommand{AccountScopeID: definition.AccountScopeID, UserID: definition.UserID, CommandID: newFlowCommandID(definition.FlowID, definition.Revision, flow.CommandInstall), FlowID: definition.FlowID, Revision: definition.Revision, Action: flow.CommandInstall, CreatedAt: now, Assignment: definition.Assignment}
 	result, err := s.createFlowV3InstallResult(r, command)
 	if err != nil {
 		if cleanupErr := s.flows.DeleteDefinition(definition.FlowID); cleanupErr != nil {
@@ -370,6 +374,10 @@ func errString(err error) string {
 }
 
 func (s *Server) updateFlowV3(r *http.Request, flowID string, req flowV3UpsertRequest) (flowV3Record, flowAssignmentDeliverResult, error) {
+	principal, principalOK := PrincipalFromRequest(r)
+	if !principalOK || !principal.Valid() {
+		return flowV3Record{}, flowAssignmentDeliverResult{}, identity.ErrPrincipalRequired
+	}
 	existing, ok, err := s.flows.GetDefinition(flowID)
 	if err != nil {
 		return flowV3Record{}, flowAssignmentDeliverResult{}, err
@@ -387,7 +395,7 @@ func (s *Server) updateFlowV3(r *http.Request, flowID string, req flowV3UpsertRe
 	if err != nil {
 		return flowV3Record{}, flowAssignmentDeliverResult{}, err
 	}
-	updatedDefinition, err := s.flows.PutDefinition(pebblestore.FlowDefinitionRecord{FlowID: assignment.FlowID, Revision: assignment.Revision, Assignment: assignment, NextDueAt: nextDueAt, CreatedAt: existing.CreatedAt})
+	updatedDefinition, err := s.flows.PutDefinition(pebblestore.FlowDefinitionRecord{AccountScopeID: existing.AccountScopeID, UserID: existing.UserID, FlowID: assignment.FlowID, Revision: assignment.Revision, Assignment: assignment, NextDueAt: nextDueAt, CreatedAt: existing.CreatedAt})
 	if err != nil {
 		return flowV3Record{}, flowAssignmentDeliverResult{}, err
 	}
@@ -395,7 +403,7 @@ func (s *Server) updateFlowV3(r *http.Request, flowID string, req flowV3UpsertRe
 	if req.UnassignTarget {
 		commandAssignment.Target = normalizeFlowTargetSelection(previousAssignment.Target)
 	}
-	command := flow.AssignmentCommand{CommandID: newFlowCommandID(updatedDefinition.FlowID, updatedDefinition.Revision, flow.CommandUpdate), FlowID: updatedDefinition.FlowID, Revision: updatedDefinition.Revision, Action: flow.CommandUpdate, CreatedAt: now, Assignment: commandAssignment}
+	command := flow.AssignmentCommand{AccountScopeID: updatedDefinition.AccountScopeID, UserID: updatedDefinition.UserID, CommandID: newFlowCommandID(updatedDefinition.FlowID, updatedDefinition.Revision, flow.CommandUpdate), FlowID: updatedDefinition.FlowID, Revision: updatedDefinition.Revision, Action: flow.CommandUpdate, CreatedAt: now, Assignment: commandAssignment}
 	result, err := s.EnqueueAndDeliverFlowAssignmentCommand(r.Context(), command)
 	if err != nil {
 		if _, restoreErr := s.flows.PutDefinition(existing); restoreErr != nil {
@@ -423,7 +431,7 @@ func (s *Server) deleteFlowV3(r *http.Request, flowID string) (flowV3Record, flo
 	}
 	deletedDefinition := definition
 	deletedDefinition.DeletedAt = time.Now().UTC()
-	command := flow.AssignmentCommand{CommandID: newFlowCommandID(definition.FlowID, definition.Revision, flow.CommandDelete), FlowID: definition.FlowID, Revision: definition.Revision, Action: flow.CommandDelete, CreatedAt: deletedDefinition.DeletedAt, Assignment: definition.Assignment}
+	command := flow.AssignmentCommand{AccountScopeID: definition.AccountScopeID, UserID: definition.UserID, CommandID: newFlowCommandID(definition.FlowID, definition.Revision, flow.CommandDelete), FlowID: definition.FlowID, Revision: definition.Revision, Action: flow.CommandDelete, CreatedAt: deletedDefinition.DeletedAt, Assignment: definition.Assignment}
 	result, err := s.EnqueueAndDeliverFlowAssignmentCommand(r.Context(), command)
 	staleTarget := flowV3IsMissingTargetError(err)
 	if err != nil && !staleTarget {

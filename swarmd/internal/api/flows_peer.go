@@ -208,15 +208,17 @@ func (s *Server) enqueueFlowAssignmentCommandForTarget(command flow.AssignmentCo
 	)
 	command.Assignment.Target = targetSelection
 	record := pebblestore.FlowOutboxCommandRecord{
-		CommandID:     key.CommandID,
-		FlowID:        key.FlowID,
-		Revision:      key.Revision,
-		TargetSwarmID: resolved.SwarmID,
-		Target:        targetSelection,
-		Command:       command,
-		Status:        pebblestore.FlowOutboxStatusPending,
-		NextAttemptAt: now,
-		CreatedAt:     now,
+		AccountScopeID: command.AccountScopeID,
+		UserID:         command.UserID,
+		CommandID:      key.CommandID,
+		FlowID:         key.FlowID,
+		Revision:       key.Revision,
+		TargetSwarmID:  resolved.SwarmID,
+		Target:         targetSelection,
+		Command:        command,
+		Status:         pebblestore.FlowOutboxStatusPending,
+		NextAttemptAt:  now,
+		CreatedAt:      now,
 	}
 	stored, err := s.flows.PutOutboxCommand(record, nil)
 	if err != nil {
@@ -225,6 +227,8 @@ func (s *Server) enqueueFlowAssignmentCommandForTarget(command flow.AssignmentCo
 	}
 	flowdiaglog.Printf("controller_enqueue_outbox_saved", "flow_id=%q command_id=%q action=%q revision=%d controller_db_path=%q target_swarm_id=%q outbox_status=%q", stored.FlowID, stored.CommandID, stored.Command.Action, stored.Revision, s.flows.StorePath(), stored.TargetSwarmID, stored.Status)
 	_, err = s.flows.PutAssignmentStatus(pebblestore.FlowAssignmentStatusRecord{
+		AccountScopeID:  command.AccountScopeID,
+		UserID:          command.UserID,
 		FlowID:          key.FlowID,
 		TargetSwarmID:   resolved.SwarmID,
 		Target:          targetSelection,
@@ -514,6 +518,8 @@ func (s *Server) applyFlowAssignmentAck(record pebblestore.FlowOutboxCommandReco
 		return pebblestore.FlowOutboxCommandRecord{}, pebblestore.FlowAssignmentStatusRecord{}, err
 	}
 	state := pebblestore.FlowAssignmentStatusRecord{
+		AccountScopeID:   record.AccountScopeID,
+		UserID:           record.UserID,
 		FlowID:           record.FlowID,
 		TargetSwarmID:    firstNonEmpty(strings.TrimSpace(ack.TargetSwarmID), record.TargetSwarmID),
 		Target:           record.Target,
@@ -548,6 +554,8 @@ func (s *Server) markFlowAssignmentPending(record pebblestore.FlowOutboxCommandR
 		return pebblestore.FlowOutboxCommandRecord{}, pebblestore.FlowAssignmentStatusRecord{}, err
 	}
 	state := pebblestore.FlowAssignmentStatusRecord{
+		AccountScopeID:  record.AccountScopeID,
+		UserID:          record.UserID,
 		FlowID:          record.FlowID,
 		TargetSwarmID:   record.TargetSwarmID,
 		Target:          record.Target,
@@ -596,6 +604,8 @@ func (s *Server) resolveFlowAssignmentTarget(ctx context.Context, selection flow
 }
 
 func normalizeAPIFlowAssignmentCommand(command flow.AssignmentCommand) flow.AssignmentCommand {
+	command.AccountScopeID = strings.TrimSpace(command.AccountScopeID)
+	command.UserID = strings.TrimSpace(command.UserID)
 	command.CommandID = strings.TrimSpace(command.CommandID)
 	command.FlowID = strings.TrimSpace(command.FlowID)
 	if command.FlowID == "" {
@@ -620,6 +630,8 @@ func normalizeAPIFlowAssignmentCommand(command flow.AssignmentCommand) flow.Assi
 }
 
 func normalizeAPIFlowOutboxCommand(record pebblestore.FlowOutboxCommandRecord) pebblestore.FlowOutboxCommandRecord {
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
+	record.UserID = strings.TrimSpace(record.UserID)
 	record.Command = normalizeAPIFlowAssignmentCommand(record.Command)
 	record.CommandID = strings.TrimSpace(firstNonEmpty(record.CommandID, record.Command.CommandID))
 	record.FlowID = strings.TrimSpace(firstNonEmpty(record.FlowID, record.Command.FlowID, record.Command.Assignment.FlowID))

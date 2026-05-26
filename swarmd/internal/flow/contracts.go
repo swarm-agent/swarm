@@ -184,12 +184,14 @@ type Assignment struct {
 }
 
 type AssignmentCommand struct {
-	CommandID  string        `json:"command_id"`
-	FlowID     string        `json:"flow_id"`
-	Revision   int64         `json:"revision"`
-	Action     CommandAction `json:"action"`
-	CreatedAt  time.Time     `json:"created_at"`
-	Assignment Assignment    `json:"assignment,omitempty"`
+	AccountScopeID string        `json:"account_scope_id"`
+	UserID         string        `json:"user_id"`
+	CommandID      string        `json:"command_id"`
+	FlowID         string        `json:"flow_id"`
+	Revision       int64         `json:"revision"`
+	Action         CommandAction `json:"action"`
+	CreatedAt      time.Time     `json:"created_at"`
+	Assignment     Assignment    `json:"assignment,omitempty"`
 }
 
 type CommandKey struct {
@@ -238,6 +240,8 @@ type FlowAssignmentTransport interface {
 }
 
 type AcceptedAssignment struct {
+	AccountScopeID string `json:"account_scope_id"`
+	UserID         string `json:"user_id"`
 	Assignment
 	AcceptedAt time.Time `json:"accepted_at"`
 }
@@ -262,12 +266,14 @@ func (r RunRequest) ClaimKey() RunClaimKey {
 }
 
 type RunStart struct {
-	FlowID      string    `json:"flow_id"`
-	Revision    int64     `json:"revision"`
-	ScheduledAt time.Time `json:"scheduled_at"`
-	SessionID   string    `json:"session_id"`
-	RunID       string    `json:"run_id"`
-	Status      string    `json:"status"`
+	AccountScopeID string    `json:"account_scope_id"`
+	UserID         string    `json:"user_id"`
+	FlowID         string    `json:"flow_id"`
+	Revision       int64     `json:"revision"`
+	ScheduledAt    time.Time `json:"scheduled_at"`
+	SessionID      string    `json:"session_id"`
+	RunID          string    `json:"run_id"`
+	Status         string    `json:"status"`
 }
 
 // FlowRunner is implemented on the target daemon. It launches accepted Flows from

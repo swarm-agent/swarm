@@ -52,23 +52,27 @@ func (s *FlowSchedulerStore) ClaimRun(ctx context.Context, claim flow.RunClaim) 
 		return flow.RunClaim{}, false, errors.New("flow scheduler store is not configured")
 	}
 	record, inserted, err := s.flows.ClaimRun(FlowRunClaimRecord{
-		FlowID:      claim.FlowID,
-		Revision:    claim.Revision,
-		ScheduledAt: claim.ScheduledAt,
-		RunID:       claim.RunID,
-		ClaimedAt:   claim.ClaimedAt,
-		LeaseUntil:  claim.LeaseUntil,
+		AccountScopeID: claim.AccountScopeID,
+		UserID:         claim.UserID,
+		FlowID:         claim.FlowID,
+		Revision:       claim.Revision,
+		ScheduledAt:    claim.ScheduledAt,
+		RunID:          claim.RunID,
+		ClaimedAt:      claim.ClaimedAt,
+		LeaseUntil:     claim.LeaseUntil,
 	})
 	if err != nil {
 		return flow.RunClaim{}, false, err
 	}
 	return flow.RunClaim{
-		FlowID:      record.FlowID,
-		Revision:    record.Revision,
-		ScheduledAt: record.ScheduledAt,
-		RunID:       record.RunID,
-		ClaimedAt:   record.ClaimedAt,
-		LeaseUntil:  record.LeaseUntil,
+		AccountScopeID: record.AccountScopeID,
+		UserID:         record.UserID,
+		FlowID:         record.FlowID,
+		Revision:       record.Revision,
+		ScheduledAt:    record.ScheduledAt,
+		RunID:          record.RunID,
+		ClaimedAt:      record.ClaimedAt,
+		LeaseUntil:     record.LeaseUntil,
 	}, inserted, nil
 }
 
@@ -79,7 +83,14 @@ func (s *FlowSchedulerStore) DeleteDue(ctx context.Context, flowID string, revis
 	if s == nil || s.flows == nil {
 		return errors.New("flow scheduler store is not configured")
 	}
-	return s.flows.DeleteDue(FlowDueRecord{FlowID: flowID, Revision: revision, DueAt: scheduledAt, ScheduledAt: scheduledAt})
+	accepted, ok, err := s.flows.GetAcceptedAssignment(flowID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("accepted flow assignment owner is required to delete due run")
+	}
+	return s.flows.DeleteDue(FlowDueRecord{AccountScopeID: accepted.AccountScopeID, UserID: accepted.UserID, FlowID: flowID, Revision: revision, DueAt: scheduledAt, ScheduledAt: scheduledAt})
 }
 
 func (s *FlowSchedulerStore) ScheduleNext(ctx context.Context, assignment flow.AcceptedAssignment, after time.Time) (time.Time, bool, error) {
@@ -94,10 +105,12 @@ func (s *FlowSchedulerStore) ScheduleNext(ctx context.Context, assignment flow.A
 		return next, ok, err
 	}
 	_, err = s.flows.PutDue(FlowDueRecord{
-		FlowID:      assignment.FlowID,
-		Revision:    assignment.Revision,
-		DueAt:       next,
-		ScheduledAt: next,
+		AccountScopeID: assignment.AccountScopeID,
+		UserID:         assignment.UserID,
+		FlowID:         assignment.FlowID,
+		Revision:       assignment.Revision,
+		DueAt:          next,
+		ScheduledAt:    next,
 	})
 	if err != nil {
 		return time.Time{}, false, err

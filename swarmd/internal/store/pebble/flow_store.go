@@ -29,16 +29,20 @@ const (
 )
 
 type FlowDefinitionRecord struct {
-	FlowID     string          `json:"flow_id"`
-	Revision   int64           `json:"revision"`
-	Assignment flow.Assignment `json:"assignment"`
-	NextDueAt  time.Time       `json:"next_due_at,omitempty"`
-	CreatedAt  time.Time       `json:"created_at"`
-	UpdatedAt  time.Time       `json:"updated_at"`
-	DeletedAt  time.Time       `json:"deleted_at,omitempty"`
+	AccountScopeID string          `json:"account_scope_id"`
+	UserID         string          `json:"user_id"`
+	FlowID         string          `json:"flow_id"`
+	Revision       int64           `json:"revision"`
+	Assignment     flow.Assignment `json:"assignment"`
+	NextDueAt      time.Time       `json:"next_due_at,omitempty"`
+	CreatedAt      time.Time       `json:"created_at"`
+	UpdatedAt      time.Time       `json:"updated_at"`
+	DeletedAt      time.Time       `json:"deleted_at,omitempty"`
 }
 
 type FlowAssignmentStatusRecord struct {
+	AccountScopeID   string                `json:"account_scope_id"`
+	UserID           string                `json:"user_id"`
 	FlowID           string                `json:"flow_id"`
 	TargetSwarmID    string                `json:"target_swarm_id"`
 	Target           flow.TargetSelection  `json:"target"`
@@ -53,22 +57,26 @@ type FlowAssignmentStatusRecord struct {
 }
 
 type FlowOutboxCommandRecord struct {
-	CommandID     string                 `json:"command_id"`
-	FlowID        string                 `json:"flow_id"`
-	Revision      int64                  `json:"revision"`
-	TargetSwarmID string                 `json:"target_swarm_id"`
-	Target        flow.TargetSelection   `json:"target"`
-	Command       flow.AssignmentCommand `json:"command"`
-	Status        string                 `json:"status"`
-	AttemptCount  int                    `json:"attempt_count,omitempty"`
-	NextAttemptAt time.Time              `json:"next_attempt_at,omitempty"`
-	LastAttemptAt time.Time              `json:"last_attempt_at,omitempty"`
-	LastError     string                 `json:"last_error,omitempty"`
-	CreatedAt     time.Time              `json:"created_at"`
-	UpdatedAt     time.Time              `json:"updated_at"`
+	AccountScopeID string                 `json:"account_scope_id"`
+	UserID         string                 `json:"user_id"`
+	CommandID      string                 `json:"command_id"`
+	FlowID         string                 `json:"flow_id"`
+	Revision       int64                  `json:"revision"`
+	TargetSwarmID  string                 `json:"target_swarm_id"`
+	Target         flow.TargetSelection   `json:"target"`
+	Command        flow.AssignmentCommand `json:"command"`
+	Status         string                 `json:"status"`
+	AttemptCount   int                    `json:"attempt_count,omitempty"`
+	NextAttemptAt  time.Time              `json:"next_attempt_at,omitempty"`
+	LastAttemptAt  time.Time              `json:"last_attempt_at,omitempty"`
+	LastError      string                 `json:"last_error,omitempty"`
+	CreatedAt      time.Time              `json:"created_at"`
+	UpdatedAt      time.Time              `json:"updated_at"`
 }
 
 type FlowRunSummaryRecord struct {
+	AccountScopeID     string    `json:"account_scope_id"`
+	UserID             string    `json:"user_id"`
 	RunID              string    `json:"run_id"`
 	FlowID             string    `json:"flow_id"`
 	Revision           int64     `json:"revision"`
@@ -87,33 +95,91 @@ type FlowRunSummaryRecord struct {
 }
 
 type FlowCommandLedgerRecord struct {
-	CommandID string                `json:"command_id"`
-	FlowID    string                `json:"flow_id"`
-	Revision  int64                 `json:"revision"`
-	Action    flow.CommandAction    `json:"action"`
-	Status    flow.AssignmentStatus `json:"status"`
-	Ack       flow.AssignmentAck    `json:"ack"`
-	AppliedAt time.Time             `json:"applied_at"`
+	AccountScopeID string                `json:"account_scope_id"`
+	UserID         string                `json:"user_id"`
+	CommandID      string                `json:"command_id"`
+	FlowID         string                `json:"flow_id"`
+	Revision       int64                 `json:"revision"`
+	Action         flow.CommandAction    `json:"action"`
+	Status         flow.AssignmentStatus `json:"status"`
+	Ack            flow.AssignmentAck    `json:"ack"`
+	AppliedAt      time.Time             `json:"applied_at"`
 }
 
 type FlowDueRecord struct {
-	FlowID      string    `json:"flow_id"`
-	Revision    int64     `json:"revision"`
-	DueAt       time.Time `json:"due_at"`
-	ScheduledAt time.Time `json:"scheduled_at"`
+	AccountScopeID string    `json:"account_scope_id"`
+	UserID         string    `json:"user_id"`
+	FlowID         string    `json:"flow_id"`
+	Revision       int64     `json:"revision"`
+	DueAt          time.Time `json:"due_at"`
+	ScheduledAt    time.Time `json:"scheduled_at"`
 }
 
 type FlowRunClaimRecord struct {
-	FlowID      string    `json:"flow_id"`
-	Revision    int64     `json:"revision"`
-	ScheduledAt time.Time `json:"scheduled_at"`
-	RunID       string    `json:"run_id"`
-	ClaimedAt   time.Time `json:"claimed_at"`
-	LeaseUntil  time.Time `json:"lease_until,omitempty"`
+	AccountScopeID string    `json:"account_scope_id"`
+	UserID         string    `json:"user_id"`
+	FlowID         string    `json:"flow_id"`
+	Revision       int64     `json:"revision"`
+	ScheduledAt    time.Time `json:"scheduled_at"`
+	RunID          string    `json:"run_id"`
+	ClaimedAt      time.Time `json:"claimed_at"`
+	LeaseUntil     time.Time `json:"lease_until,omitempty"`
 }
 
 type FlowStore struct {
 	store *Store
+}
+
+func validateFlowOwner(accountScopeID, userID string) error {
+	if strings.TrimSpace(accountScopeID) == "" || strings.TrimSpace(userID) == "" {
+		return errors.New("flow account_scope_id and user_id are required")
+	}
+	return nil
+}
+
+func ApplyFlowOwnerToRecord[T interface {
+	FlowDefinitionRecord | FlowAssignmentStatusRecord | FlowOutboxCommandRecord | FlowRunSummaryRecord | FlowCommandLedgerRecord | FlowDueRecord | FlowRunClaimRecord
+}](record T, accountScopeID, userID string) T {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	userID = strings.TrimSpace(userID)
+	switch typed := any(record).(type) {
+	case FlowDefinitionRecord:
+		typed.AccountScopeID = accountScopeID
+		typed.UserID = userID
+		return any(typed).(T)
+	case FlowAssignmentStatusRecord:
+		typed.AccountScopeID = accountScopeID
+		typed.UserID = userID
+		return any(typed).(T)
+	case FlowOutboxCommandRecord:
+		typed.AccountScopeID = accountScopeID
+		typed.UserID = userID
+		return any(typed).(T)
+	case FlowRunSummaryRecord:
+		typed.AccountScopeID = accountScopeID
+		typed.UserID = userID
+		return any(typed).(T)
+	case FlowCommandLedgerRecord:
+		typed.AccountScopeID = accountScopeID
+		typed.UserID = userID
+		return any(typed).(T)
+	case FlowDueRecord:
+		typed.AccountScopeID = accountScopeID
+		typed.UserID = userID
+		return any(typed).(T)
+	case FlowRunClaimRecord:
+		typed.AccountScopeID = accountScopeID
+		typed.UserID = userID
+		return any(typed).(T)
+	default:
+		return record
+	}
+}
+
+func ApplyFlowOwnerToAcceptedAssignment(record flow.AcceptedAssignment, accountScopeID, userID string) flow.AcceptedAssignment {
+	record.AccountScopeID = strings.TrimSpace(accountScopeID)
+	record.UserID = strings.TrimSpace(userID)
+	return record
 }
 
 func NewFlowStore(store *Store) *FlowStore {
@@ -125,6 +191,9 @@ func (s *FlowStore) PutDefinition(record FlowDefinitionRecord) (FlowDefinitionRe
 		return FlowDefinitionRecord{}, errors.New("flow store is not configured")
 	}
 	record = normalizeFlowDefinitionRecord(record)
+	if err := validateFlowOwner(record.AccountScopeID, record.UserID); err != nil {
+		return FlowDefinitionRecord{}, err
+	}
 	if record.FlowID == "" {
 		return FlowDefinitionRecord{}, errors.New("flow_id is required")
 	}
@@ -224,6 +293,9 @@ func (s *FlowStore) PutAssignmentStatus(record FlowAssignmentStatusRecord) (Flow
 		return FlowAssignmentStatusRecord{}, errors.New("flow store is not configured")
 	}
 	record = normalizeFlowAssignmentStatusRecord(record)
+	if err := validateFlowOwner(record.AccountScopeID, record.UserID); err != nil {
+		return FlowAssignmentStatusRecord{}, err
+	}
 	if record.FlowID == "" || record.TargetSwarmID == "" {
 		return FlowAssignmentStatusRecord{}, errors.New("flow_id and target_swarm_id are required")
 	}
@@ -277,6 +349,9 @@ func (s *FlowStore) PutOutboxCommand(record FlowOutboxCommandRecord, previous *F
 		return FlowOutboxCommandRecord{}, errors.New("flow store is not configured")
 	}
 	record = normalizeFlowOutboxCommandRecord(record)
+	if err := validateFlowOwner(record.AccountScopeID, record.UserID); err != nil {
+		return FlowOutboxCommandRecord{}, err
+	}
 	if record.CommandID == "" || record.FlowID == "" || record.Revision <= 0 {
 		return FlowOutboxCommandRecord{}, errors.New("command_id, flow_id, and revision are required")
 	}
@@ -432,6 +507,9 @@ func (s *FlowStore) PutMirroredRunSummary(record FlowRunSummaryRecord) (FlowRunS
 		return FlowRunSummaryRecord{}, errors.New("flow store is not configured")
 	}
 	record = normalizeFlowRunSummaryRecord(record)
+	if err := validateFlowOwner(record.AccountScopeID, record.UserID); err != nil {
+		return FlowRunSummaryRecord{}, err
+	}
 	if record.RunID == "" || record.FlowID == "" {
 		return FlowRunSummaryRecord{}, errors.New("run_id and flow_id are required")
 	}
@@ -457,6 +535,9 @@ func (s *FlowStore) PutAcceptedAssignment(record flow.AcceptedAssignment) (flow.
 		return flow.AcceptedAssignment{}, errors.New("flow store is not configured")
 	}
 	record = normalizeAcceptedAssignment(record)
+	if err := validateFlowOwner(record.AccountScopeID, record.UserID); err != nil {
+		return flow.AcceptedAssignment{}, err
+	}
 	if record.FlowID == "" || record.Revision <= 0 {
 		return flow.AcceptedAssignment{}, errors.New("flow_id and revision are required")
 	}
@@ -496,6 +577,17 @@ func (s *FlowStore) ApplyTargetAssignmentCommand(command flow.AssignmentCommand,
 	if err != nil {
 		return flow.AssignmentAck{}, false, err
 	}
+	commandOwnerAccountScopeID := strings.TrimSpace(command.AccountScopeID)
+	commandOwnerUserID := strings.TrimSpace(command.UserID)
+	if hasCurrent {
+		commandOwnerAccountScopeID = firstNonEmptyString(commandOwnerAccountScopeID, current.AccountScopeID)
+		commandOwnerUserID = firstNonEmptyString(commandOwnerUserID, current.UserID)
+	}
+	if err := validateFlowOwner(commandOwnerAccountScopeID, commandOwnerUserID); err != nil {
+		return flow.AssignmentAck{}, false, err
+	}
+	command.AccountScopeID = commandOwnerAccountScopeID
+	command.UserID = commandOwnerUserID
 	maxAppliedRevision, err := s.maxAppliedTargetAssignmentRevision(key.FlowID)
 	if err != nil {
 		return flow.AssignmentAck{}, false, err
@@ -513,13 +605,15 @@ func (s *FlowStore) ApplyTargetAssignmentCommand(command flow.AssignmentCommand,
 			ack.AcceptedRevision = maxAppliedRevision
 		}
 		_, inserted, err := s.PutCommandLedger(FlowCommandLedgerRecord{
-			CommandID: key.CommandID,
-			FlowID:    key.FlowID,
-			Revision:  key.Revision,
-			Action:    command.Action,
-			Status:    status,
-			Ack:       ack,
-			AppliedAt: now,
+			AccountScopeID: command.AccountScopeID,
+			UserID:         command.UserID,
+			CommandID:      key.CommandID,
+			FlowID:         key.FlowID,
+			Revision:       key.Revision,
+			Action:         command.Action,
+			Status:         status,
+			Ack:            ack,
+			AppliedAt:      now,
 		})
 		return ack, inserted, err
 	}
@@ -620,6 +714,9 @@ func (s *FlowStore) PutCommandLedger(record FlowCommandLedgerRecord) (FlowComman
 		return FlowCommandLedgerRecord{}, false, errors.New("flow store is not configured")
 	}
 	record = normalizeFlowCommandLedgerRecord(record)
+	if err := validateFlowOwner(record.AccountScopeID, record.UserID); err != nil {
+		return FlowCommandLedgerRecord{}, false, err
+	}
 	if record.CommandID == "" || record.FlowID == "" || record.Revision <= 0 {
 		return FlowCommandLedgerRecord{}, false, errors.New("command_id, flow_id, and revision are required")
 	}
@@ -677,6 +774,9 @@ func (s *FlowStore) PutDue(record FlowDueRecord) (FlowDueRecord, error) {
 		return FlowDueRecord{}, errors.New("flow store is not configured")
 	}
 	record = normalizeFlowDueRecord(record)
+	if err := validateFlowOwner(record.AccountScopeID, record.UserID); err != nil {
+		return FlowDueRecord{}, err
+	}
 	if record.FlowID == "" || record.Revision <= 0 || record.DueAt.IsZero() {
 		return FlowDueRecord{}, errors.New("flow_id, revision, and due_at are required")
 	}
@@ -729,6 +829,9 @@ func (s *FlowStore) ClaimRun(record FlowRunClaimRecord) (FlowRunClaimRecord, boo
 		return FlowRunClaimRecord{}, false, errors.New("flow store is not configured")
 	}
 	record = normalizeFlowRunClaimRecord(record)
+	if err := validateFlowOwner(record.AccountScopeID, record.UserID); err != nil {
+		return FlowRunClaimRecord{}, false, err
+	}
 	if record.FlowID == "" || record.Revision <= 0 || record.ScheduledAt.IsZero() || record.RunID == "" {
 		return FlowRunClaimRecord{}, false, errors.New("flow_id, revision, scheduled_at, and run_id are required")
 	}
@@ -767,6 +870,9 @@ func (s *FlowStore) PutTargetRun(record FlowRunSummaryRecord) (FlowRunSummaryRec
 		return FlowRunSummaryRecord{}, errors.New("flow store is not configured")
 	}
 	record = normalizeFlowRunSummaryRecord(record)
+	if err := validateFlowOwner(record.AccountScopeID, record.UserID); err != nil {
+		return FlowRunSummaryRecord{}, err
+	}
 	if record.RunID == "" || record.FlowID == "" {
 		return FlowRunSummaryRecord{}, errors.New("run_id and flow_id are required")
 	}
@@ -1100,6 +1206,8 @@ func inferLegacyFlowAgentProfile(targetName, targetKind string) (string, string,
 }
 
 func normalizeFlowDefinitionRecord(record FlowDefinitionRecord) FlowDefinitionRecord {
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
+	record.UserID = strings.TrimSpace(record.UserID)
 	record.FlowID = strings.TrimSpace(firstNonEmptyString(record.FlowID, record.Assignment.FlowID))
 	record.Assignment = normalizeFlowAssignment(record.Assignment)
 	if record.Assignment.FlowID == "" {
@@ -1119,6 +1227,8 @@ func normalizeFlowDefinitionRecord(record FlowDefinitionRecord) FlowDefinitionRe
 }
 
 func normalizeFlowAssignmentStatusRecord(record FlowAssignmentStatusRecord) FlowAssignmentStatusRecord {
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
+	record.UserID = strings.TrimSpace(record.UserID)
 	record.FlowID = strings.TrimSpace(record.FlowID)
 	record.TargetSwarmID = strings.TrimSpace(record.TargetSwarmID)
 	record.CommandID = strings.TrimSpace(record.CommandID)
@@ -1133,6 +1243,8 @@ func normalizeFlowAssignmentStatusRecord(record FlowAssignmentStatusRecord) Flow
 }
 
 func normalizeFlowOutboxCommandRecord(record FlowOutboxCommandRecord) FlowOutboxCommandRecord {
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
+	record.UserID = strings.TrimSpace(record.UserID)
 	record.CommandID = strings.TrimSpace(record.CommandID)
 	record.FlowID = strings.TrimSpace(firstNonEmptyString(record.FlowID, record.Command.FlowID, record.Command.Assignment.FlowID))
 	if record.Revision == 0 {
@@ -1145,6 +1257,12 @@ func normalizeFlowOutboxCommandRecord(record FlowOutboxCommandRecord) FlowOutbox
 	}
 	record.LastError = strings.TrimSpace(record.LastError)
 	record.Command = normalizeFlowAssignmentCommand(record.Command)
+	if record.Command.AccountScopeID == "" {
+		record.Command.AccountScopeID = record.AccountScopeID
+	}
+	if record.Command.UserID == "" {
+		record.Command.UserID = record.UserID
+	}
 	record.Command.CommandID = strings.TrimSpace(firstNonEmptyString(record.Command.CommandID, record.CommandID))
 	record.Command.FlowID = strings.TrimSpace(firstNonEmptyString(record.Command.FlowID, record.FlowID))
 	record.Command.Revision = firstNonZeroInt64(record.Command.Revision, record.Revision)
@@ -1156,6 +1274,8 @@ func normalizeFlowOutboxCommandRecord(record FlowOutboxCommandRecord) FlowOutbox
 }
 
 func normalizeFlowRunSummaryRecord(record FlowRunSummaryRecord) FlowRunSummaryRecord {
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
+	record.UserID = strings.TrimSpace(record.UserID)
 	record.RunID = strings.TrimSpace(record.RunID)
 	record.FlowID = strings.TrimSpace(record.FlowID)
 	record.Status = strings.TrimSpace(strings.ToLower(record.Status))
@@ -1184,6 +1304,8 @@ func normalizeFlowRunSummaryRecord(record FlowRunSummaryRecord) FlowRunSummaryRe
 }
 
 func normalizeFlowCommandLedgerRecord(record FlowCommandLedgerRecord) FlowCommandLedgerRecord {
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
+	record.UserID = strings.TrimSpace(record.UserID)
 	record.CommandID = strings.TrimSpace(record.CommandID)
 	record.FlowID = strings.TrimSpace(record.FlowID)
 	if record.Status == "" {
@@ -1199,6 +1321,8 @@ func normalizeFlowCommandLedgerRecord(record FlowCommandLedgerRecord) FlowComman
 }
 
 func normalizeFlowDueRecord(record FlowDueRecord) FlowDueRecord {
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
+	record.UserID = strings.TrimSpace(record.UserID)
 	record.FlowID = strings.TrimSpace(record.FlowID)
 	record.DueAt = record.DueAt.UTC()
 	record.ScheduledAt = record.ScheduledAt.UTC()
@@ -1209,6 +1333,8 @@ func normalizeFlowDueRecord(record FlowDueRecord) FlowDueRecord {
 }
 
 func normalizeFlowRunClaimRecord(record FlowRunClaimRecord) FlowRunClaimRecord {
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
+	record.UserID = strings.TrimSpace(record.UserID)
 	record.FlowID = strings.TrimSpace(record.FlowID)
 	record.RunID = strings.TrimSpace(record.RunID)
 	record.ScheduledAt = record.ScheduledAt.UTC()
@@ -1218,6 +1344,8 @@ func normalizeFlowRunClaimRecord(record FlowRunClaimRecord) FlowRunClaimRecord {
 }
 
 func normalizeAcceptedAssignment(record flow.AcceptedAssignment) flow.AcceptedAssignment {
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
+	record.UserID = strings.TrimSpace(record.UserID)
 	record.Assignment = normalizeFlowAssignment(record.Assignment)
 	record.AcceptedAt = record.AcceptedAt.UTC()
 	if record.AcceptedAt.IsZero() {

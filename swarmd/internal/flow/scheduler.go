@@ -14,12 +14,14 @@ type DueRun struct {
 }
 
 type RunClaim struct {
-	FlowID      string    `json:"flow_id"`
-	Revision    int64     `json:"revision"`
-	ScheduledAt time.Time `json:"scheduled_at"`
-	RunID       string    `json:"run_id"`
-	ClaimedAt   time.Time `json:"claimed_at"`
-	LeaseUntil  time.Time `json:"lease_until,omitempty"`
+	AccountScopeID string    `json:"account_scope_id"`
+	UserID         string    `json:"user_id"`
+	FlowID         string    `json:"flow_id"`
+	Revision       int64     `json:"revision"`
+	ScheduledAt    time.Time `json:"scheduled_at"`
+	RunID          string    `json:"run_id"`
+	ClaimedAt      time.Time `json:"claimed_at"`
+	LeaseUntil     time.Time `json:"lease_until,omitempty"`
 }
 
 type SchedulerStore interface {
@@ -86,11 +88,13 @@ func (s Scheduler) runDue(ctx context.Context, item DueRun, now time.Time) (RunS
 		runID = fmt.Sprintf("flow-%s-%d-%d", assignment.Assignment.FlowID, assignment.Assignment.Revision, scheduledAt.UnixMilli())
 	}
 	claim := RunClaim{
-		FlowID:      assignment.Assignment.FlowID,
-		Revision:    assignment.Assignment.Revision,
-		ScheduledAt: scheduledAt,
-		RunID:       runID,
-		ClaimedAt:   now.UTC(),
+		AccountScopeID: assignment.AccountScopeID,
+		UserID:         assignment.UserID,
+		FlowID:         assignment.Assignment.FlowID,
+		Revision:       assignment.Assignment.Revision,
+		ScheduledAt:    scheduledAt,
+		RunID:          runID,
+		ClaimedAt:      now.UTC(),
 	}
 	if s.LeaseFor > 0 {
 		claim.LeaseUntil = claim.ClaimedAt.Add(s.LeaseFor).UTC()
@@ -109,6 +113,12 @@ func (s Scheduler) runDue(ctx context.Context, item DueRun, now time.Time) (RunS
 	}
 	if start.RunID == "" {
 		start.RunID = storedClaim.RunID
+	}
+	if start.AccountScopeID == "" {
+		start.AccountScopeID = claim.AccountScopeID
+	}
+	if start.UserID == "" {
+		start.UserID = claim.UserID
 	}
 	if start.FlowID == "" {
 		start.FlowID = claim.FlowID

@@ -9,15 +9,30 @@ import (
 	"swarm/packages/swarmd/internal/flow"
 )
 
+func TestFlowStoreRejectsUnownedFlowWrites(t *testing.T) {
+	store := openFlowTestStore(t)
+	flows := NewFlowStore(store)
+	assignment := testFlowAssignment("flow-unowned", 1)
+	if _, err := flows.PutDefinition(FlowDefinitionRecord{Assignment: assignment}); err == nil {
+		t.Fatal("expected unowned definition write to fail")
+	}
+	if _, err := flows.PutAcceptedAssignment(flow.AcceptedAssignment{Assignment: assignment}); err == nil {
+		t.Fatal("expected unowned accepted assignment write to fail")
+	}
+	if _, err := flows.PutDue(FlowDueRecord{FlowID: assignment.FlowID, Revision: assignment.Revision, DueAt: time.Now().UTC()}); err == nil {
+		t.Fatal("expected unowned due write to fail")
+	}
+}
+
 func TestFlowStoreControllerRecordsRoundTripAndOrdering(t *testing.T) {
 	store := openFlowTestStore(t)
 	flows := NewFlowStore(store)
 
 	assignment := testFlowAssignment("flow-1", 1)
-	definition, err := flows.PutDefinition(FlowDefinitionRecord{
+	definition, err := flows.PutDefinition(ownedFlowDefinition(FlowDefinitionRecord{
 		Assignment: assignment,
 		NextDueAt:  time.Date(2025, 1, 2, 14, 30, 0, 0, time.UTC),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("put definition: %v", err)
 	}
@@ -39,13 +54,13 @@ func TestFlowStoreControllerRecordsRoundTripAndOrdering(t *testing.T) {
 		t.Fatalf("loaded normalized schedule times = %+v", loaded.Assignment.Schedule.Times)
 	}
 
-	if _, err := flows.PutAssignmentStatus(FlowAssignmentStatusRecord{
+	if _, err := flows.PutAssignmentStatus(ownedFlowAssignmentStatus(FlowAssignmentStatusRecord{
 		FlowID:           "flow-1",
 		TargetSwarmID:    "target-1",
 		DesiredRevision:  1,
 		AcceptedRevision: 1,
 		Status:           flow.AssignmentAccepted,
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("put assignment status: %v", err)
 	}
 	statuses, err := flows.ListAssignmentStatuses("flow-1", 10)
@@ -57,7 +72,7 @@ func TestFlowStoreControllerRecordsRoundTripAndOrdering(t *testing.T) {
 	}
 
 	command1 := testAssignmentCommand("cmd-1", assignment)
-	outbox1, err := flows.PutOutboxCommand(FlowOutboxCommandRecord{
+	outbox1, err := flows.PutOutboxCommand(ownedFlowOutboxCommand(FlowOutboxCommandRecord{
 		CommandID:     "cmd-1",
 		FlowID:        "flow-1",
 		Revision:      1,
@@ -65,12 +80,12 @@ func TestFlowStoreControllerRecordsRoundTripAndOrdering(t *testing.T) {
 		Command:       command1,
 		Status:        FlowOutboxStatusPending,
 		NextAttemptAt: time.Date(2025, 1, 2, 10, 0, 0, 0, time.UTC),
-	}, nil)
+	}), nil)
 	if err != nil {
 		t.Fatalf("put outbox1: %v", err)
 	}
 	command2 := testAssignmentCommand("cmd-2", assignment)
-	if _, err := flows.PutOutboxCommand(FlowOutboxCommandRecord{
+	if _, err := flows.PutOutboxCommand(ownedFlowOutboxCommand(FlowOutboxCommandRecord{
 		CommandID:     "cmd-2",
 		FlowID:        "flow-1",
 		Revision:      1,
@@ -78,7 +93,7 @@ func TestFlowStoreControllerRecordsRoundTripAndOrdering(t *testing.T) {
 		Command:       command2,
 		Status:        FlowOutboxStatusPending,
 		NextAttemptAt: time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC),
-	}, nil); err != nil {
+	}), nil); err != nil {
 		t.Fatalf("put outbox2: %v", err)
 	}
 	pending, err := flows.ListOutboxCommands(FlowOutboxStatusPending, 10)
@@ -114,12 +129,12 @@ func TestFlowSchedulerStoreListsAcceptedDueAndSchedulesNext(t *testing.T) {
 	store := openFlowTestStore(t)
 	flows := NewFlowStore(store)
 	assignment := testFlowAssignment("flow-scheduler", 3)
-	accepted, err := flows.PutAcceptedAssignment(flow.AcceptedAssignment{Assignment: assignment})
+	accepted, err := flows.PutAcceptedAssignment(ownedAcceptedAssignment(flow.AcceptedAssignment{Assignment: assignment}))
 	if err != nil {
 		t.Fatalf("put accepted: %v", err)
 	}
 	dueAt := time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC)
-	if _, err := flows.PutDue(FlowDueRecord{FlowID: accepted.FlowID, Revision: accepted.Revision, DueAt: dueAt}); err != nil {
+	if _, err := flows.PutDue(ownedFlowDue(FlowDueRecord{FlowID: accepted.FlowID, Revision: accepted.Revision, DueAt: dueAt})); err != nil {
 		t.Fatalf("put due: %v", err)
 	}
 
@@ -132,7 +147,7 @@ func TestFlowSchedulerStoreListsAcceptedDueAndSchedulesNext(t *testing.T) {
 		t.Fatalf("scheduler due = %+v", due)
 	}
 
-	claim, inserted, err := schedulerStore.ClaimRun(t.Context(), flow.RunClaim{FlowID: accepted.FlowID, Revision: accepted.Revision, ScheduledAt: dueAt, RunID: "run-1"})
+	claim, inserted, err := schedulerStore.ClaimRun(t.Context(), flow.RunClaim{AccountScopeID: testFlowAccountScopeID, UserID: testFlowUserID, FlowID: accepted.FlowID, Revision: accepted.Revision, ScheduledAt: dueAt, RunID: "run-1"})
 	if err != nil || !inserted || claim.RunID != "run-1" {
 		t.Fatalf("claim inserted=%v claim=%+v err=%v", inserted, claim, err)
 	}
@@ -158,7 +173,7 @@ func TestFlowStoreNormalizesPersistedScheduleTimes(t *testing.T) {
 	assignment.Schedule.Time = "17:00"
 	assignment.Schedule.Times = []string{"17:00", "09:00", "17:00"}
 
-	definition, err := flows.PutDefinition(FlowDefinitionRecord{Assignment: assignment})
+	definition, err := flows.PutDefinition(ownedFlowDefinition(FlowDefinitionRecord{Assignment: assignment}))
 	if err != nil {
 		t.Fatalf("put definition: %v", err)
 	}
@@ -186,7 +201,7 @@ func TestFlowStoreRejectsRuntimeAgentFieldsInDefinitionJSON(t *testing.T) {
 	assignment := testFlowAssignment("flow-runtime-agent", 1)
 	assignment.Agent = flow.AgentSelection{ProfileName: "memory", ProfileMode: "background", TargetKind: "background", TargetName: "memory"}
 
-	definition, err := flows.PutDefinition(FlowDefinitionRecord{Assignment: assignment})
+	definition, err := flows.PutDefinition(ownedFlowDefinition(FlowDefinitionRecord{Assignment: assignment}))
 	if err != nil {
 		t.Fatalf("put definition: %v", err)
 	}
@@ -294,7 +309,7 @@ func TestFlowStoreTargetIdempotencyDueClaimsAndRunHistory(t *testing.T) {
 	flows := NewFlowStore(store)
 	assignment := testFlowAssignment("flow-1", 7)
 
-	accepted, err := flows.PutAcceptedAssignment(flow.AcceptedAssignment{Assignment: assignment})
+	accepted, err := flows.PutAcceptedAssignment(ownedAcceptedAssignment(flow.AcceptedAssignment{Assignment: assignment}))
 	if err != nil {
 		t.Fatalf("put accepted: %v", err)
 	}
@@ -317,6 +332,7 @@ func TestFlowStoreTargetIdempotencyDueClaimsAndRunHistory(t *testing.T) {
 		Status:    flow.AssignmentAccepted,
 		Ack:       flow.AssignmentAck{CommandID: "cmd-1", FlowID: "flow-1", AcceptedRevision: 7, Status: flow.AssignmentAccepted},
 	}
+	ledger = ownedFlowCommandLedger(ledger)
 	first, inserted, err := flows.PutCommandLedger(ledger)
 	if err != nil || !inserted {
 		t.Fatalf("put ledger inserted=%v err=%v", inserted, err)
@@ -330,9 +346,9 @@ func TestFlowStoreTargetIdempotencyDueClaimsAndRunHistory(t *testing.T) {
 		t.Fatalf("duplicate ledger inserted=%v second=%+v first=%+v", inserted, second, first)
 	}
 
-	due1 := FlowDueRecord{FlowID: "flow-1", Revision: 7, DueAt: time.Date(2025, 1, 2, 10, 0, 0, 0, time.UTC)}
-	due2 := FlowDueRecord{FlowID: "flow-1", Revision: 7, DueAt: time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC)}
-	due3 := FlowDueRecord{FlowID: "flow-1", Revision: 7, DueAt: time.Date(2025, 1, 3, 9, 0, 0, 0, time.UTC)}
+	due1 := ownedFlowDue(FlowDueRecord{FlowID: "flow-1", Revision: 7, DueAt: time.Date(2025, 1, 2, 10, 0, 0, 0, time.UTC)})
+	due2 := ownedFlowDue(FlowDueRecord{FlowID: "flow-1", Revision: 7, DueAt: time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC)})
+	due3 := ownedFlowDue(FlowDueRecord{FlowID: "flow-1", Revision: 7, DueAt: time.Date(2025, 1, 3, 9, 0, 0, 0, time.UTC)})
 	for _, due := range []FlowDueRecord{due1, due2, due3} {
 		if _, err := flows.PutDue(due); err != nil {
 			t.Fatalf("put due %+v: %v", due, err)
@@ -346,7 +362,7 @@ func TestFlowStoreTargetIdempotencyDueClaimsAndRunHistory(t *testing.T) {
 		t.Fatalf("due order = %+v", due)
 	}
 
-	claim := FlowRunClaimRecord{FlowID: "flow-1", Revision: 7, ScheduledAt: due2.DueAt, RunID: "run-1"}
+	claim := ownedFlowRunClaim(FlowRunClaimRecord{FlowID: "flow-1", Revision: 7, ScheduledAt: due2.DueAt, RunID: "run-1"})
 	storedClaim, claimed, err := flows.ClaimRun(claim)
 	if err != nil || !claimed {
 		t.Fatalf("claim run claimed=%v err=%v", claimed, err)
@@ -361,8 +377,8 @@ func TestFlowStoreTargetIdempotencyDueClaimsAndRunHistory(t *testing.T) {
 	}
 
 	runs := []FlowRunSummaryRecord{
-		{RunID: "run-old", FlowID: "flow-1", Revision: 7, ScheduledAt: due1.DueAt, StartedAt: time.Date(2025, 1, 2, 10, 1, 0, 0, time.UTC), FinishedAt: time.Date(2025, 1, 2, 10, 2, 0, 0, time.UTC), Status: FlowRunStatusSuccess},
-		{RunID: "run-new", FlowID: "flow-1", Revision: 7, ScheduledAt: due3.DueAt, StartedAt: time.Date(2025, 1, 3, 9, 1, 0, 0, time.UTC), FinishedAt: time.Date(2025, 1, 3, 9, 2, 0, 0, time.UTC), Status: FlowRunStatusFailed},
+		ownedFlowRunSummary(FlowRunSummaryRecord{RunID: "run-old", FlowID: "flow-1", Revision: 7, ScheduledAt: due1.DueAt, StartedAt: time.Date(2025, 1, 2, 10, 1, 0, 0, time.UTC), FinishedAt: time.Date(2025, 1, 2, 10, 2, 0, 0, time.UTC), Status: FlowRunStatusSuccess}),
+		ownedFlowRunSummary(FlowRunSummaryRecord{RunID: "run-new", FlowID: "flow-1", Revision: 7, ScheduledAt: due3.DueAt, StartedAt: time.Date(2025, 1, 3, 9, 1, 0, 0, time.UTC), FinishedAt: time.Date(2025, 1, 3, 9, 2, 0, 0, time.UTC), Status: FlowRunStatusFailed}),
 	}
 	for _, run := range runs {
 		if _, err := flows.PutTargetRun(run); err != nil {
@@ -394,6 +410,45 @@ func TestFlowStoreTargetIdempotencyDueClaimsAndRunHistory(t *testing.T) {
 	if len(pendingReports) != 1 || pendingReports[0].RunID != "run-old" {
 		t.Fatalf("pending reports after reported = %+v", pendingReports)
 	}
+}
+
+const (
+	testFlowAccountScopeID = "account-1"
+	testFlowUserID         = "user-1"
+)
+
+func ownedFlowDefinition(record FlowDefinitionRecord) FlowDefinitionRecord {
+	return ApplyFlowOwnerToRecord(record, testFlowAccountScopeID, testFlowUserID)
+}
+
+func ownedFlowAssignmentStatus(record FlowAssignmentStatusRecord) FlowAssignmentStatusRecord {
+	return ApplyFlowOwnerToRecord(record, testFlowAccountScopeID, testFlowUserID)
+}
+
+func ownedFlowOutboxCommand(record FlowOutboxCommandRecord) FlowOutboxCommandRecord {
+	record.Command.AccountScopeID = testFlowAccountScopeID
+	record.Command.UserID = testFlowUserID
+	return ApplyFlowOwnerToRecord(record, testFlowAccountScopeID, testFlowUserID)
+}
+
+func ownedFlowRunSummary(record FlowRunSummaryRecord) FlowRunSummaryRecord {
+	return ApplyFlowOwnerToRecord(record, testFlowAccountScopeID, testFlowUserID)
+}
+
+func ownedFlowCommandLedger(record FlowCommandLedgerRecord) FlowCommandLedgerRecord {
+	return ApplyFlowOwnerToRecord(record, testFlowAccountScopeID, testFlowUserID)
+}
+
+func ownedFlowDue(record FlowDueRecord) FlowDueRecord {
+	return ApplyFlowOwnerToRecord(record, testFlowAccountScopeID, testFlowUserID)
+}
+
+func ownedFlowRunClaim(record FlowRunClaimRecord) FlowRunClaimRecord {
+	return ApplyFlowOwnerToRecord(record, testFlowAccountScopeID, testFlowUserID)
+}
+
+func ownedAcceptedAssignment(record flow.AcceptedAssignment) flow.AcceptedAssignment {
+	return ApplyFlowOwnerToAcceptedAssignment(record, testFlowAccountScopeID, testFlowUserID)
 }
 
 func openFlowTestStore(t *testing.T) *Store {

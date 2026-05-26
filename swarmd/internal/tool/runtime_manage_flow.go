@@ -226,7 +226,7 @@ func (r *Runtime) manageFlowUpsert(scope WorkspaceScope, args map[string]any, mu
 	if err != nil {
 		return "", err
 	}
-	proposed := pebblestore.FlowDefinitionRecord{FlowID: flowID, Revision: assignment.Revision, Assignment: assignment, NextDueAt: nextDueAt, CreatedAt: createdAt}
+	proposed := pebblestore.FlowDefinitionRecord{AccountScopeID: scope.Principal.AccountScopeID, UserID: scope.Principal.UserID, FlowID: flowID, Revision: assignment.Revision, Assignment: assignment, NextDueAt: nextDueAt, CreatedAt: createdAt}
 	before := any(nil)
 	if exists {
 		before, _ = r.manageFlowRecordMap(existing, true)
@@ -285,7 +285,7 @@ func (r *Runtime) manageFlowDelete(args map[string]any, confirm bool) (string, e
 		if err := r.flows.DeleteAcceptedAssignment(flowID); err != nil {
 			return "", err
 		}
-		_ = r.flows.DeleteDue(pebblestore.FlowDueRecord{FlowID: flowID, Revision: existing.Revision, DueAt: existing.NextDueAt, ScheduledAt: existing.NextDueAt})
+		_ = r.flows.DeleteDue(pebblestore.FlowDueRecord{AccountScopeID: existing.AccountScopeID, UserID: existing.UserID, FlowID: flowID, Revision: existing.Revision, DueAt: existing.NextDueAt, ScheduledAt: existing.NextDueAt})
 		return encodeManageFlowResponse(map[string]any{"status": "ok", "action": "delete", "applied": true, "flow_id": flowID, "change": change, "path_id": toolPathID("manage-flow"), "summary": fmt.Sprintf("applied delete for flow %s", flowID), "details_truncated": false, "prompt_injection_tag": "tool_output_untrusted", "safety": buildUntrustedSafety("")})
 	}
 	return encodeManageFlowResponse(map[string]any{"status": "proposed_delete", "action": "delete", "applied": false, "flow": before, "change": change, "approved_arguments": manageFlowApprovedArguments(args), "path_id": toolPathID("manage-flow"), "summary": fmt.Sprintf("proposed delete for flow %s", flowID), "details_truncated": false, "prompt_injection_tag": "tool_output_untrusted", "safety": buildUntrustedSafety(existing.Assignment.Intent.Prompt)})
@@ -296,12 +296,12 @@ func (r *Runtime) manageFlowApplyDefinition(record pebblestore.FlowDefinitionRec
 	if err != nil {
 		return pebblestore.FlowDefinitionRecord{}, err
 	}
-	accepted := flow.AcceptedAssignment{Assignment: applied.Assignment, AcceptedAt: time.Now().UTC()}
+	accepted := flow.AcceptedAssignment{AccountScopeID: applied.AccountScopeID, UserID: applied.UserID, Assignment: applied.Assignment, AcceptedAt: time.Now().UTC()}
 	if _, err := r.flows.PutAcceptedAssignment(accepted); err != nil {
 		return pebblestore.FlowDefinitionRecord{}, err
 	}
 	if !applied.NextDueAt.IsZero() {
-		if _, err := r.flows.PutDue(pebblestore.FlowDueRecord{FlowID: applied.FlowID, Revision: applied.Revision, DueAt: applied.NextDueAt, ScheduledAt: applied.NextDueAt}); err != nil {
+		if _, err := r.flows.PutDue(pebblestore.FlowDueRecord{AccountScopeID: applied.AccountScopeID, UserID: applied.UserID, FlowID: applied.FlowID, Revision: applied.Revision, DueAt: applied.NextDueAt, ScheduledAt: applied.NextDueAt}); err != nil {
 			return pebblestore.FlowDefinitionRecord{}, err
 		}
 	}
@@ -402,7 +402,7 @@ func (r *Runtime) manageFlowDefinitionOrAccepted(flowID string) (pebblestore.Flo
 	if err != nil || !ok {
 		return pebblestore.FlowDefinitionRecord{}, false, err
 	}
-	return pebblestore.FlowDefinitionRecord{FlowID: accepted.FlowID, Revision: accepted.Revision, Assignment: accepted.Assignment, CreatedAt: accepted.AcceptedAt, UpdatedAt: accepted.AcceptedAt}, true, nil
+	return pebblestore.FlowDefinitionRecord{AccountScopeID: accepted.AccountScopeID, UserID: accepted.UserID, FlowID: accepted.FlowID, Revision: accepted.Revision, Assignment: accepted.Assignment, CreatedAt: accepted.AcceptedAt, UpdatedAt: accepted.AcceptedAt}, true, nil
 }
 
 func (r *Runtime) manageFlowMergedRecords(definitions []pebblestore.FlowDefinitionRecord, accepted []flow.AcceptedAssignment) []map[string]any {
@@ -417,7 +417,7 @@ func (r *Runtime) manageFlowMergedRecords(definitions []pebblestore.FlowDefiniti
 			continue
 		}
 		if _, exists := byID[assignment.FlowID]; !exists {
-			byID[assignment.FlowID] = pebblestore.FlowDefinitionRecord{FlowID: assignment.FlowID, Revision: assignment.Revision, Assignment: assignment.Assignment, CreatedAt: assignment.AcceptedAt, UpdatedAt: assignment.AcceptedAt}
+			byID[assignment.FlowID] = pebblestore.FlowDefinitionRecord{AccountScopeID: assignment.AccountScopeID, UserID: assignment.UserID, FlowID: assignment.FlowID, Revision: assignment.Revision, Assignment: assignment.Assignment, CreatedAt: assignment.AcceptedAt, UpdatedAt: assignment.AcceptedAt}
 		}
 	}
 	out := make([]map[string]any, 0, len(byID))

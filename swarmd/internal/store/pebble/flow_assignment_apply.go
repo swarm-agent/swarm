@@ -14,8 +14,11 @@ import (
 
 func (s *FlowStore) acceptTargetAssignmentCommand(command flow.AssignmentCommand, baseAck flow.AssignmentAck, assignment flow.Assignment, now time.Time) (flow.AssignmentAck, bool, error) {
 	flowdiaglog.Printf("store_accept_command_start", "flow_id=%q command_id=%q action=%q revision=%d target_swarm_id=%q db_path=%q accepted_key=%q", command.FlowID, command.CommandID, command.Action, command.Revision, baseAck.TargetSwarmID, s.StorePath(), KeyFlowTargetAccepted(command.FlowID))
-	accepted := flow.AcceptedAssignment{Assignment: assignment, AcceptedAt: now}
+	accepted := flow.AcceptedAssignment{AccountScopeID: command.AccountScopeID, UserID: command.UserID, Assignment: assignment, AcceptedAt: now}
 	accepted = normalizeAcceptedAssignment(accepted)
+	if err := validateFlowOwner(accepted.AccountScopeID, accepted.UserID); err != nil {
+		return flow.AssignmentAck{}, false, err
+	}
 	ack := baseAck
 	ack.AcceptedRevision = accepted.Revision
 	ack.Status = flow.AssignmentAccepted
@@ -40,19 +43,24 @@ func (s *FlowStore) acceptTargetDeleteCommand(command flow.AssignmentCommand, ba
 }
 
 func (s *FlowStore) putTargetCommandAcceptance(command flow.AssignmentCommand, ack flow.AssignmentAck, accepted flow.AcceptedAssignment, now time.Time) error {
+	if err := validateFlowOwner(accepted.AccountScopeID, accepted.UserID); err != nil {
+		return err
+	}
 	key := command.IdempotencyKey()
 	dueKeys, err := s.dueKeysForFlow(accepted.FlowID)
 	if err != nil {
 		return err
 	}
 	ledger := normalizeFlowCommandLedgerRecord(FlowCommandLedgerRecord{
-		CommandID: key.CommandID,
-		FlowID:    key.FlowID,
-		Revision:  key.Revision,
-		Action:    command.Action,
-		Status:    ack.Status,
-		Ack:       ack,
-		AppliedAt: now,
+		AccountScopeID: command.AccountScopeID,
+		UserID:         command.UserID,
+		CommandID:      key.CommandID,
+		FlowID:         key.FlowID,
+		Revision:       key.Revision,
+		Action:         command.Action,
+		Status:         ack.Status,
+		Ack:            ack,
+		AppliedAt:      now,
 	})
 	acceptedKey := KeyFlowTargetAccepted(accepted.FlowID)
 	ledgerKey := KeyFlowTargetCommandLedger(key.FlowID, key.Revision, key.CommandID)
@@ -83,7 +91,7 @@ func (s *FlowStore) putTargetCommandAcceptance(command flow.AssignmentCommand, a
 	if next, ok, err := flow.NextFire(accepted.Assignment, now); err != nil {
 		return err
 	} else if ok {
-		due := normalizeFlowDueRecord(FlowDueRecord{FlowID: accepted.FlowID, Revision: accepted.Revision, DueAt: next, ScheduledAt: next})
+		due := normalizeFlowDueRecord(FlowDueRecord{AccountScopeID: accepted.AccountScopeID, UserID: accepted.UserID, FlowID: accepted.FlowID, Revision: accepted.Revision, DueAt: next, ScheduledAt: next})
 		duePayload, err := json.Marshal(due)
 		if err != nil {
 			return fmt.Errorf("marshal flow due record: %w", err)
@@ -104,19 +112,24 @@ func (s *FlowStore) putTargetCommandAcceptance(command flow.AssignmentCommand, a
 }
 
 func (s *FlowStore) putTargetCommandDelete(command flow.AssignmentCommand, ack flow.AssignmentAck, now time.Time) error {
+	if err := validateFlowOwner(command.AccountScopeID, command.UserID); err != nil {
+		return err
+	}
 	key := command.IdempotencyKey()
 	dueKeys, err := s.dueKeysForFlow(key.FlowID)
 	if err != nil {
 		return err
 	}
 	ledger := normalizeFlowCommandLedgerRecord(FlowCommandLedgerRecord{
-		CommandID: key.CommandID,
-		FlowID:    key.FlowID,
-		Revision:  key.Revision,
-		Action:    command.Action,
-		Status:    ack.Status,
-		Ack:       ack,
-		AppliedAt: now,
+		AccountScopeID: command.AccountScopeID,
+		UserID:         command.UserID,
+		CommandID:      key.CommandID,
+		FlowID:         key.FlowID,
+		Revision:       key.Revision,
+		Action:         command.Action,
+		Status:         ack.Status,
+		Ack:            ack,
+		AppliedAt:      now,
 	})
 	acceptedKey := KeyFlowTargetAccepted(key.FlowID)
 	ledgerKey := KeyFlowTargetCommandLedger(key.FlowID, key.Revision, key.CommandID)
@@ -196,6 +209,8 @@ func (s *FlowStore) maxAppliedTargetAssignmentRevision(flowID string) (int64, er
 }
 
 func normalizeFlowAssignmentCommand(command flow.AssignmentCommand) flow.AssignmentCommand {
+	command.AccountScopeID = strings.TrimSpace(command.AccountScopeID)
+	command.UserID = strings.TrimSpace(command.UserID)
 	command.CommandID = strings.TrimSpace(command.CommandID)
 	command.FlowID = strings.TrimSpace(command.FlowID)
 	if command.FlowID == "" {

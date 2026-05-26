@@ -74,11 +74,13 @@ func (s *Server) RunAcceptedFlowNowAt(ctx context.Context, accepted flow.Accepte
 		runID = flowRunNowCommandRunID(assignment.FlowID, assignment.Revision, scheduledAt, trimmedCommandID)
 	}
 	claim, inserted, err := s.flows.ClaimRun(pebblestore.FlowRunClaimRecord{
-		FlowID:      assignment.FlowID,
-		Revision:    assignment.Revision,
-		ScheduledAt: scheduledAt,
-		RunID:       runID,
-		ClaimedAt:   time.Now().UTC(),
+		AccountScopeID: accepted.AccountScopeID,
+		UserID:         accepted.UserID,
+		FlowID:         assignment.FlowID,
+		Revision:       assignment.Revision,
+		ScheduledAt:    scheduledAt,
+		RunID:          runID,
+		ClaimedAt:      time.Now().UTC(),
 	})
 	if err != nil {
 		return flow.RunStart{}, err
@@ -99,21 +101,25 @@ func (s *Server) existingFlowRunStart(claim pebblestore.FlowRunClaimRecord) (flo
 			return flow.RunStart{}, err
 		} else if ok {
 			return flow.RunStart{
-				FlowID:      run.FlowID,
-				Revision:    run.Revision,
-				ScheduledAt: run.ScheduledAt,
-				SessionID:   run.SessionID,
-				RunID:       run.RunID,
-				Status:      run.Status,
+				AccountScopeID: run.AccountScopeID,
+				UserID:         run.UserID,
+				FlowID:         run.FlowID,
+				Revision:       run.Revision,
+				ScheduledAt:    run.ScheduledAt,
+				SessionID:      run.SessionID,
+				RunID:          run.RunID,
+				Status:         run.Status,
 			}, nil
 		}
 	}
 	return flow.RunStart{
-		FlowID:      claim.FlowID,
-		Revision:    claim.Revision,
-		ScheduledAt: claim.ScheduledAt,
-		RunID:       claim.RunID,
-		Status:      pebblestore.FlowRunStatusClaimed,
+		AccountScopeID: claim.AccountScopeID,
+		UserID:         claim.UserID,
+		FlowID:         claim.FlowID,
+		Revision:       claim.Revision,
+		ScheduledAt:    claim.ScheduledAt,
+		RunID:          claim.RunID,
+		Status:         pebblestore.FlowRunStatusClaimed,
 	}, nil
 }
 
@@ -211,7 +217,7 @@ func (s *Server) runAcceptedFlow(ctx context.Context, accepted flow.AcceptedAssi
 	session, _, _, _, err := s.createSessionFromRequestWithSessionID(sessionReq, nil, true, sessionID, principal, true)
 	if err != nil {
 		if strings.Contains(err.Error(), "already exists") {
-			return s.existingFlowRunStart(pebblestore.FlowRunClaimRecord{FlowID: assignment.FlowID, Revision: assignment.Revision, ScheduledAt: scheduledAt, RunID: runID})
+			return s.existingFlowRunStart(pebblestore.FlowRunClaimRecord{AccountScopeID: accepted.AccountScopeID, UserID: accepted.UserID, FlowID: assignment.FlowID, Revision: assignment.Revision, ScheduledAt: scheduledAt, RunID: runID})
 		}
 		return flow.RunStart{}, err
 	}
@@ -228,12 +234,14 @@ func (s *Server) runAcceptedFlow(ctx context.Context, accepted flow.AcceptedAssi
 	}
 	startedAt := time.Now().UTC()
 	start := flow.RunStart{
-		FlowID:      assignment.FlowID,
-		Revision:    assignment.Revision,
-		ScheduledAt: scheduledAt,
-		SessionID:   session.ID,
-		RunID:       runID,
-		Status:      pebblestore.FlowRunStatusRunning,
+		AccountScopeID: accepted.AccountScopeID,
+		UserID:         accepted.UserID,
+		FlowID:         assignment.FlowID,
+		Revision:       assignment.Revision,
+		ScheduledAt:    scheduledAt,
+		SessionID:      session.ID,
+		RunID:          runID,
+		Status:         pebblestore.FlowRunStatusRunning,
 	}
 	if err := s.putFlowRunSummary(start, startedAt, time.Time{}, ""); err != nil {
 		return flow.RunStart{}, err
@@ -332,17 +340,19 @@ func (s *Server) putFlowRunSummary(start flow.RunStart, startedAt, finishedAt ti
 		"target_swarm_id", targetSwarmID,
 	)
 	record, err := s.flows.PutTargetRun(pebblestore.FlowRunSummaryRecord{
-		RunID:         strings.TrimSpace(start.RunID),
-		FlowID:        strings.TrimSpace(start.FlowID),
-		Revision:      start.Revision,
-		ScheduledAt:   start.ScheduledAt,
-		StartedAt:     startedAt,
-		FinishedAt:    finishedAt,
-		DurationMS:    durationMS,
-		Status:        status,
-		Summary:       summary,
-		SessionID:     strings.TrimSpace(start.SessionID),
-		TargetSwarmID: targetSwarmID,
+		AccountScopeID: strings.TrimSpace(start.AccountScopeID),
+		UserID:         strings.TrimSpace(start.UserID),
+		RunID:          strings.TrimSpace(start.RunID),
+		FlowID:         strings.TrimSpace(start.FlowID),
+		Revision:       start.Revision,
+		ScheduledAt:    start.ScheduledAt,
+		StartedAt:      startedAt,
+		FinishedAt:     finishedAt,
+		DurationMS:     durationMS,
+		Status:         status,
+		Summary:        summary,
+		SessionID:      strings.TrimSpace(start.SessionID),
+		TargetSwarmID:  targetSwarmID,
 	})
 	if err != nil {
 		return err
