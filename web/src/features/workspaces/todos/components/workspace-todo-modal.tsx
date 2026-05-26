@@ -1,6 +1,6 @@
-import { useMemo, useState, type DragEvent, useRef, useEffect, useLayoutEffect, type FocusEvent } from 'react'
+import { useMemo, useState, type DragEvent, useRef, useEffect, useLayoutEffect, type FocusEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, ChevronDown, Copy, GripVertical, ListChecks, Play, Plus, Trash2, X } from 'lucide-react'
+import { Check, Copy, GripVertical, ListChecks, MoreHorizontal, Play, Plus, Trash2, X } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { Input } from '../../../../components/ui/input'
@@ -38,8 +38,7 @@ const TODO_DRAG_MIME = 'application/x-swarm-workspace-todo'
 const BULK_MENU_WIDTH = 180
 
 function formatSummary(summary: WorkspaceTodoSummary): string {
-  if (summary.taskCount <= 0) return 'No tasks'
-  return `${summary.openCount} open • ${summary.inProgressCount} in progress • ${summary.taskCount} total`
+  return `${summary.openCount} open · ${summary.inProgressCount} in progress · ${summary.taskCount} total`
 }
 
 function formatPriorityLabel(priority: WorkspaceTodoPriority): string {
@@ -79,6 +78,7 @@ export function WorkspaceTodoModal({
   const [focusedTodoID, setFocusedTodoID] = useState<string | null>(null)
   const [focusedTodoDraft, setFocusedTodoDraft] = useState('')
   const [copyFeedback, setCopyFeedback] = useState<{ id: string; status: 'copied' | 'error' } | null>(null)
+  const [mobileActionTodoID, setMobileActionTodoID] = useState<string | null>(null)
   const addInputRef = useRef<HTMLInputElement>(null)
   const bulkTriggerRef = useRef<HTMLButtonElement | null>(null)
   const bulkMenuRef = useRef<HTMLDivElement | null>(null)
@@ -223,6 +223,7 @@ export function WorkspaceTodoModal({
       setConfirmDeleteAllOwner(null)
       clearFocusedTodo()
       setCopyFeedback(null)
+      setMobileActionTodoID(null)
     }
   }, [open])
 
@@ -297,7 +298,7 @@ export function WorkspaceTodoModal({
     void moveTask(sourceID, targetItem.priority, targetItem.ownerKind, targetItem.id)
   }
 
-  const handlePriorityDrop = (event: DragEvent<HTMLDivElement>, priority: WorkspaceTodoPriority, ownerKind: WorkspaceTodoOwnerKind) => {
+  const handlePriorityDrop = (event: DragEvent<HTMLElement>, priority: WorkspaceTodoPriority, ownerKind: WorkspaceTodoOwnerKind) => {
     event.preventDefault()
     const sourceID = event.dataTransfer.getData(TODO_DRAG_MIME).trim()
     if (!sourceID) return
@@ -310,6 +311,7 @@ export function WorkspaceTodoModal({
   const renderTodoRow = (item: WorkspaceTodoItem, options: { allowDrag: boolean; childCount?: number }) => {
     const isFocused = focusedTodoID === item.id
     const copyStatus = copyFeedback?.id === item.id ? copyFeedback.status : null
+    const mobileActionsOpen = mobileActionTodoID === item.id
     const metaParts: string[] = []
 
     if (item.group.trim()) {
@@ -321,6 +323,49 @@ export function WorkspaceTodoModal({
     if (item.ownerKind === 'user' && item.tags.length > 0) {
       metaParts.push(item.tags.map((tag) => `#${tag}`).join(' '))
     }
+
+    const actionButtons = (
+      <>
+        <button
+          type="button"
+          onClick={() => void handleCopyTodo(item)}
+          className={`flex size-7 items-center justify-center rounded transition-colors hover:bg-[var(--app-surface-subtle)] ${
+            copyStatus === 'copied'
+              ? 'text-[var(--app-text)]'
+              : copyStatus === 'error'
+                ? 'text-[var(--app-text-muted)]'
+                : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+          }`}
+          title={copyStatus === 'copied' ? 'Copied' : copyStatus === 'error' ? 'Copy failed' : 'Copy task'}
+          aria-label={copyStatus === 'copied' ? 'Copied' : copyStatus === 'error' ? 'Copy failed' : 'Copy task'}
+        >
+          {copyStatus === 'copied' ? <Check size={14} className="shrink-0" /> : copyStatus === 'error' ? <X size={14} className="shrink-0" /> : <Copy size={14} className="shrink-0" />}
+        </button>
+        <button
+          type="button"
+          onClick={() => onToggleInProgress(item, !item.inProgress)}
+          className={`flex size-7 items-center justify-center rounded transition-colors hover:bg-[var(--app-surface-subtle)] ${
+            item.inProgress ? 'text-[var(--app-primary)]' : 'text-[var(--app-text-subtle)] hover:text-[var(--app-text-muted)]'
+          }`}
+          title={item.inProgress ? 'Clear in-progress' : 'Mark in progress'}
+        >
+          <Play size={14} className={item.inProgress ? 'shrink-0 fill-current' : 'shrink-0'} />
+        </button>
+        <button
+          type="button"
+          onClick={() => onDelete(item)}
+          className="flex size-7 items-center justify-center rounded text-[var(--app-text-muted)] transition-colors hover:bg-[var(--app-surface-subtle)] hover:text-[var(--app-text)]"
+          title="Delete task"
+        >
+          <Trash2 size={14} className="shrink-0" />
+        </button>
+        {options.allowDrag ? (
+          <div className={`flex size-7 items-center justify-center rounded text-[var(--app-text-muted)] transition-colors ${isFocused ? 'opacity-30' : 'cursor-grab hover:bg-[var(--app-surface-subtle)] hover:text-[var(--app-text)]'}`}>
+            <GripVertical size={14} className="shrink-0" />
+          </div>
+        ) : null}
+      </>
+    )
 
     return (
       <div
@@ -340,12 +385,8 @@ export function WorkspaceTodoModal({
         onDrop={options.allowDrag ? (event) => handleItemDrop(event, item) : undefined}
         onBlurCapture={(event) => handleTodoBlur(event, item)}
         className={[
-          'group flex items-start gap-3 rounded-lg px-2 py-2',
-          item.inProgress
-            ? 'border border-[var(--app-primary)]/40 bg-[var(--app-surface)]'
-            : 'border border-transparent hover:bg-[var(--app-surface)]/60',
+          'group relative flex min-h-[52px] items-start gap-3 border-b border-[var(--app-border)] bg-transparent px-2 py-3 transition-colors hover:bg-[var(--app-surface-subtle)]/60 focus-within:bg-[var(--app-surface-subtle)]/60',
           draggedTodoID === item.id ? 'opacity-60' : '',
-          isFocused ? 'bg-[var(--app-surface-subtle)]/60' : '',
         ].filter(Boolean).join(' ')}
       >
         <div className="flex shrink-0 items-center justify-center pt-1">
@@ -362,7 +403,7 @@ export function WorkspaceTodoModal({
           </button>
         </div>
 
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 pr-1">
           {isFocused ? (
             <>
               <Textarea
@@ -393,11 +434,11 @@ export function WorkspaceTodoModal({
               type="button"
               onClick={() => focusTodo(item)}
               onFocus={() => focusTodo(item)}
-              className="block w-full rounded-lg px-1 py-1 text-left transition hover:bg-[var(--app-surface-subtle)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
+              className="block w-full rounded px-1 py-0.5 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
               title="Focus to view and edit the full todo"
             >
               <span
-                className={`line-clamp-3 whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm leading-5 ${
+                className={`whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm leading-5 ${
                   item.done ? 'text-[var(--app-text-muted)] line-through' : 'font-medium text-[var(--app-text)]'
                 }`}
               >
@@ -405,50 +446,30 @@ export function WorkspaceTodoModal({
               </span>
               {metaParts.length > 0 ? (
                 <span className="mt-1 block text-[11px] text-[var(--app-text-subtle)]">
-                  {metaParts.join(' • ')}
+                  {metaParts.join(' · ')}
                 </span>
               ) : null}
             </button>
           )}
         </div>
 
-        <div className="flex shrink-0 items-center gap-1 self-start">
+        <div className="hidden shrink-0 items-center gap-0.5 self-start opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 sm:flex">
+          {actionButtons}
+        </div>
+        <div className="relative shrink-0 self-start sm:hidden">
           <button
             type="button"
-            onClick={() => void handleCopyTodo(item)}
-            className={`flex size-6 items-center justify-center rounded transition-colors hover:bg-[var(--app-surface-subtle)] ${
-              copyStatus === 'copied'
-                ? 'text-emerald-500'
-                : copyStatus === 'error'
-                  ? 'text-red-500'
-                  : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
-            }`}
-            title={copyStatus === 'copied' ? 'Copied' : copyStatus === 'error' ? 'Copy failed' : 'Copy task'}
-            aria-label={copyStatus === 'copied' ? 'Copied' : copyStatus === 'error' ? 'Copy failed' : 'Copy task'}
+            onClick={() => setMobileActionTodoID((current) => (current === item.id ? null : item.id))}
+            className="flex size-8 items-center justify-center rounded text-[var(--app-text-muted)] transition-colors hover:bg-[var(--app-surface-subtle)] hover:text-[var(--app-text)]"
+            aria-expanded={mobileActionsOpen}
+            aria-label="Task actions"
+            title="Task actions"
           >
-            {copyStatus === 'copied' ? <Check size={14} className="shrink-0" /> : copyStatus === 'error' ? <X size={14} className="shrink-0" /> : <Copy size={14} className="shrink-0" />}
+            <MoreHorizontal size={16} className="shrink-0" />
           </button>
-          <button
-            type="button"
-            onClick={() => onToggleInProgress(item, !item.inProgress)}
-            className={`flex size-6 items-center justify-center rounded transition-colors hover:bg-[var(--app-surface-subtle)] ${
-              item.inProgress ? 'text-[var(--app-primary)]' : 'text-[var(--app-text-subtle)] hover:text-[var(--app-text-muted)]'
-            }`}
-            title={item.inProgress ? 'Clear in-progress' : 'Mark in progress'}
-          >
-            <Play size={14} className={item.inProgress ? 'shrink-0 fill-current' : 'shrink-0'} />
-          </button>
-          <button
-            type="button"
-            onClick={() => onDelete(item)}
-            className="flex size-6 items-center justify-center rounded text-[var(--app-text-muted)] transition-colors hover:bg-[var(--app-surface-subtle)] hover:text-red-500"
-            title="Delete task"
-          >
-            <Trash2 size={14} className="shrink-0" />
-          </button>
-          {options.allowDrag ? (
-            <div className={`flex size-6 items-center justify-center rounded text-[var(--app-text-muted)] transition-colors ${isFocused ? 'opacity-30' : 'cursor-grab hover:bg-[var(--app-surface-subtle)] hover:text-[var(--app-text)]'}`}>
-              <GripVertical size={14} className="shrink-0" />
+          {mobileActionsOpen ? (
+            <div className="absolute right-0 top-9 z-10 flex items-center gap-1 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-1 shadow-lg shadow-black/20">
+              {actionButtons}
             </div>
           ) : null}
         </div>
@@ -527,11 +548,31 @@ export function WorkspaceTodoModal({
     userGrouped[item.priority].push(item)
   }
 
+  const renderFlatSection = (key: string, title: string, count: number, children: ReactNode, dropProps?: { priority: WorkspaceTodoPriority; ownerKind: WorkspaceTodoOwnerKind }) => (
+    <section
+      key={key}
+      className="mt-7"
+      onDragOver={dropProps ? (event) => {
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'move'
+      } : undefined}
+      onDrop={dropProps ? (event) => handlePriorityDrop(event, dropProps.priority, dropProps.ownerKind) : undefined}
+    >
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <h4 className="text-sm font-semibold text-[var(--app-text)]">{title}</h4>
+        <span className="text-xs text-[var(--app-text-muted)]">{count}</span>
+      </div>
+      <div className="border-t border-[var(--app-border)]">
+        {children}
+      </div>
+    </section>
+  )
+
   return (
     <Dialog className={open ? undefined : 'hidden'} aria-hidden={!open}>
       <DialogBackdrop onClick={() => onOpenChange(false)} />
       <DialogPanel className="mx-auto mt-[5vh] flex max-h-[min(85vh,900px)] min-h-[400px] max-w-[min(900px,calc(100vw-32px))] flex-col overflow-hidden rounded-2xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] p-0 shadow-2xl sm:max-w-[min(900px,calc(100vw-48px))]">
-        <div className="flex shrink-0 items-center justify-between gap-4 border-b border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-6 py-4">
+        <div className="flex shrink-0 flex-col gap-4 border-b border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 items-center gap-3">
             <div className="flex size-9 items-center justify-center rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text)]">
               <ListChecks size={18} />
@@ -541,7 +582,24 @@ export function WorkspaceTodoModal({
               <p className="text-xs text-[var(--app-text-muted)]">{formatSummary(summary)}</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => setIsAdding(!isAdding)}
+              className="h-8 gap-1.5"
+            >
+              {isAdding ? <X size={14} /> : <Plus size={14} />}
+              {isAdding ? 'Cancel' : 'Add task'}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onOpenChange(false)}
+              className="h-8 px-3"
+            >
+              Close
+            </Button>
             <button
               ref={bulkTriggerRef}
               type="button"
@@ -549,28 +607,14 @@ export function WorkspaceTodoModal({
                 setBulkMenuOpen((prev) => !prev)
                 setConfirmDeleteAllOwner(null)
               }}
-              className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-xl border border-[var(--app-border)] bg-transparent px-3 text-sm font-medium text-[var(--app-text)] transition duration-150 hover:bg-[var(--app-surface-subtle)] active:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--app-bg)] disabled:cursor-not-allowed disabled:opacity-60"
+              className="inline-flex size-8 items-center justify-center rounded-xl text-[var(--app-text-muted)] transition-colors hover:bg-[var(--app-surface-subtle)] hover:text-[var(--app-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] disabled:cursor-not-allowed disabled:opacity-40"
               disabled={saving || items.length === 0}
+              aria-expanded={bulkMenuOpen}
+              aria-label="More todo actions"
+              title="More todo actions"
             >
-              <Trash2 size={14} />
-              <ChevronDown size={14} className={bulkMenuOpen ? 'rotate-180 transition-transform' : 'transition-transform'} />
+              <MoreHorizontal size={16} />
             </button>
-            <Button
-              variant={isAdding ? 'primary' : 'outline'}
-              size="sm"
-              onClick={() => setIsAdding(!isAdding)}
-              className="h-8 gap-1.5"
-            >
-              {isAdding ? <X size={14} /> : <Plus size={14} />}
-              {isAdding ? 'Cancel' : 'Add Task'}
-            </Button>
-            <Button
-              size="sm"
-              onClick={() => onOpenChange(false)}
-              className="h-8 border border-[var(--app-primary)] bg-transparent px-3 text-[var(--app-primary)] hover:border-[var(--app-primary)] hover:bg-[var(--app-surface-subtle)] active:bg-[var(--app-surface-hover)]"
-            >
-              Close
-            </Button>
           </div>
         </div>
 
@@ -607,7 +651,7 @@ export function WorkspaceTodoModal({
           </div>
         ) : null}
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
           {summary.taskCount === 0 && !isAdding ? (
             <div className="flex h-full flex-col items-center justify-center gap-3 text-[var(--app-text-muted)] opacity-70">
               <ListChecks size={32} />
@@ -615,74 +659,45 @@ export function WorkspaceTodoModal({
               <Button variant="outline" size="sm" onClick={() => setIsAdding(true)}>Create the first task</Button>
             </div>
           ) : (
-            <div className="space-y-6">
-              <section className="space-y-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)]/40 px-4 py-4">
-                <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <h3 className="text-sm font-semibold text-[var(--app-text)]">{userSection.title}</h3>
+                  <p className="mt-1 text-xs text-[var(--app-text-muted)]">{userSection.description}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleCreate('user')}
+                  disabled={saving || draftText.trim() === ''}
+                  className="self-start text-xs font-medium text-[var(--app-text-muted)] transition hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Add from draft as todo
+                </button>
+              </div>
+
+              {userInProgressItems.length > 0 ? renderFlatSection(
+                'user-in-progress',
+                'In Progress',
+                userInProgressItems.length,
+                <div>{userInProgressItems.map((item) => renderTodoRow(item, { allowDrag: false }))}</div>,
+              ) : null}
+
+              {PRIORITY_GROUPS.map((priority) => {
+                const visibleItems = userGrouped[priority]
+                return renderFlatSection(
+                  `user-${priority}`,
+                  formatPriorityLabel(priority),
+                  visibleItems.length,
                   <div>
-                    <h3 className="text-sm font-semibold text-[var(--app-text)]">{userSection.title}</h3>
-                    <p className="text-xs text-[var(--app-text-muted)]">{userSection.description}</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide text-[var(--app-text-muted)]">
-                      {formatSummary(userSection.summary)}
-                    </span>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handleCreate('user')}
-                      disabled={saving || draftText.trim() === ''}
-                      className="h-7 px-2 text-xs"
-                    >
-                      Add from draft as todo
-                    </Button>
-                  </div>
-                </div>
-
-                {userInProgressItems.length > 0 ? (
-                  <div className="rounded-xl border border-[var(--app-primary)]/40 bg-[var(--app-surface)] px-3 py-3">
-                    <div className="flex items-center justify-between gap-3 pb-3">
-                      <h4 className="text-sm font-semibold text-[var(--app-text)]">In Progress</h4>
-                      <span className="rounded-full border border-[var(--app-primary)]/40 bg-[var(--app-surface-subtle)] px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide text-[var(--app-primary)]">
-                        pinned
-                      </span>
-                    </div>
-                    <div className="space-y-2">
-                      {userInProgressItems.map((item) => renderTodoRow(item, { allowDrag: false }))}
-                    </div>
-                  </div>
-                ) : null}
-
-                <div className="divide-y divide-[var(--app-border)] border-y border-[var(--app-border)]">
-                  {PRIORITY_GROUPS.map((priority) => {
-                    const visibleItems = userGrouped[priority]
-                    return (
-                      <div
-                        key={`user-${priority}`}
-                        onDragOver={(event) => {
-                          event.preventDefault()
-                          event.dataTransfer.dropEffect = 'move'
-                        }}
-                        onDrop={(event) => handlePriorityDrop(event, priority, 'user')}
-                        className="py-3"
-                      >
-                        <div className="flex items-center justify-between gap-3 px-1 pb-3">
-                          <h4 className="text-sm font-semibold text-[var(--app-text)]">{formatPriorityLabel(priority)}</h4>
-                          <span className="text-xs text-[var(--app-text-muted)]">{visibleItems.length}</span>
-                        </div>
-                        <div>
-                          {visibleItems.length === 0 ? (
-                            <div className="px-1 py-2 text-sm text-[var(--app-text-muted)]">{userSection.emptyText}</div>
-                          ) : (
-                            visibleItems.map((item) => renderTodoRow(item, { allowDrag: true }))
-                          )}
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </section>
-
+                    {visibleItems.length === 0 ? (
+                      <div className="border-b border-[var(--app-border)] px-2 py-3 text-sm text-[var(--app-text-muted)]">{userSection.emptyText}</div>
+                    ) : (
+                      visibleItems.map((item) => renderTodoRow(item, { allowDrag: true }))
+                    )}
+                  </div>,
+                  { priority, ownerKind: 'user' },
+                )
+              })}
             </div>
           )}
         </div>
