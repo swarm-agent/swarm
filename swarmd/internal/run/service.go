@@ -2338,8 +2338,13 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 		return "", errors.New("run service is not fully configured")
 	}
 	accountScopeID := ""
-	if sessionSnapshot, ok, err := s.sessions.GetSession(sessionID); err == nil && ok {
-		accountScopeID = sessionSnapshot.AccountScopeID
+	if principal, ok := identity.PrincipalFromContext(ctx); ok && principal.Valid() {
+		accountScopeID = strings.TrimSpace(principal.AccountScopeID)
+	}
+	if accountScopeID == "" {
+		if sessionSnapshot, ok, err := s.sessions.GetSession(sessionID); err == nil && ok {
+			accountScopeID = strings.TrimSpace(sessionSnapshot.AccountScopeID)
+		}
 	}
 	memoryProfile, err := s.resolveTaskSubagentForAccount(accountScopeID, "memory")
 	if err != nil {
