@@ -773,9 +773,10 @@ async function verifyFlowRunVisible(page, flowID, flowName, timeoutMs, summary, 
     const history = Array.isArray(historyPayload.history) ? historyPayload.history : []
     const sessions = Array.isArray(sessionsPayload.sessions) ? sessionsPayload.sessions : []
     const flowRuns = history.filter((run) => String(run.flow_id || '').trim() === flowID)
+    const flowSessionIDs = new Set(flowRuns.map((run) => String(run.session_id || '').trim()).filter(Boolean))
     const matchingSessions = sessions.filter((session) => {
       const metadata = session?.metadata && typeof session.metadata === 'object' ? session.metadata : {}
-      return String(metadata.flow_id || '').trim() === flowID || String(session?.title || '').includes(flowName)
+      return flowSessionIDs.has(String(session?.id || '').trim()) || String(metadata.flow_id || '').trim() === flowID || String(session?.title || '').includes(flowName)
     })
     last = {
       status: compactPayload(statusPayload),
