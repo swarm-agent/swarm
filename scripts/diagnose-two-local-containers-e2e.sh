@@ -168,6 +168,9 @@ api_request_capture() {
     -H "Referer: ${PRIMARY_URL}/"
     -H 'Sec-Fetch-Site: same-origin'
     -c "${COOKIE_FILE}" -b "${COOKIE_FILE}" -X "${method}")
+  if [[ -n "${SWARMD_TOKEN:-}" ]]; then
+    args+=(-H "Authorization: Bearer ${SWARMD_TOKEN}")
+  fi
   if [[ -n "${body}" ]]; then
     payload_file="$(mktemp)"
     printf '%s' "${body}" >"${payload_file}"
