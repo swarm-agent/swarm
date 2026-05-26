@@ -697,6 +697,15 @@ async function selectOptionIfPresent(locator, value, label) {
   }
 }
 
+async function selectOptionIfAvailable(locator, value) {
+  const available = await locator.evaluate((element, optionValue) => Array.from(element.options || []).some((option) => option.value === optionValue || option.textContent === optionValue), value)
+  if (!available) {
+    return false
+  }
+  await locator.selectOption(value)
+  return true
+}
+
 async function createFlowViaUI(page, opts, summary, recorder, input = {}) {
   const label = input.label || opts.phase || 'host'
   const flowName = input.flowName || `Flow smoke ${label} ${timestamp()}`
@@ -711,7 +720,7 @@ async function createFlowViaUI(page, opts, summary, recorder, input = {}) {
     await page.waitForFunction(({ selector, value }) => Array.from(document.querySelector(selector)?.options || []).some((option) => option.value === value), { selector: selectors.addWorkspace, value: input.workspaceKey }, { timeout: 30000 })
   }
   await selectOptionIfPresent(page.locator(selectors.addWorkspace), input.workspaceKey || '.', 'workspace')
-  await selectOptionIfPresent(page.locator(selectors.addCadence), 'On demand', 'cadence')
+  await selectOptionIfAvailable(page.locator(selectors.addCadence), 'On demand')
   await page.locator(selectors.addTask).fill(input.prompt || opts.prompt)
 
   const createResponsePromise = page.waitForResponse((response) => requestPath(response.url()) === '/v3/flows' && response.request().method() === 'POST', { timeout: 60000 })
