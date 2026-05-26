@@ -30,7 +30,7 @@ import {
   updateSessionPreference,
 } from '../queries/chat-queries'
 import type { AgentStateRecord, ChatMessageRecord, ResolvedSessionPreference, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
-import type { DesktopSessionRecord } from '../../types/realtime'
+import type { DesktopLiveAssistantSegment, DesktopSessionRecord } from '../../types/realtime'
 import { Card } from '../../../../components/ui/card'
 import { ChatMarkdown } from './chat-markdown'
 import { buildStructuredToolMessage } from '../services/tool-message'
@@ -675,6 +675,35 @@ function hasCanonicalLiveToolReplacement(
   })
 }
 
+function normalizeAssistantReplayContent(value: string): string {
+  return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim()
+}
+
+export function retainedAssistantSegmentsWithoutCanonicalReplay(
+  segments: DesktopLiveAssistantSegment[],
+  messages: ChatMessageRecord[],
+): DesktopLiveAssistantSegment[] {
+  if (segments.length === 0) {
+    return segments
+  }
+
+  const canonicalAssistantContents = new Set(
+    messages
+      .filter((message) => message.role.trim().toLowerCase() === 'assistant')
+      .map((message) => normalizeAssistantReplayContent(message.content))
+      .filter((content) => content !== ''),
+  )
+
+  if (canonicalAssistantContents.size === 0) {
+    return segments
+  }
+
+  return segments.filter((segment) => {
+    const content = normalizeAssistantReplayContent(segment.content)
+    return content !== '' && !canonicalAssistantContents.has(content)
+  })
+}
+
 function emptyPreference(): ResolvedSessionPreference {
   return {
     preference: {
@@ -1312,6 +1341,10 @@ export function DesktopChatPanel({
   const displayedMessages = useMemo(() => visibleDesktopChatMessages(messages), [messages])
   const liveAssistantDraft = liveSession?.live.assistantDraft ?? ''
   const retainedAssistantSegments = liveSession?.live.retainedAssistantSegments ?? []
+  const renderableRetainedAssistantSegments = useMemo(
+    () => retainedAssistantSegmentsWithoutCanonicalReplay(retainedAssistantSegments, displayedMessages),
+    [displayedMessages, retainedAssistantSegments],
+  )
   const liveToolMessage = useMemo(() => buildLiveToolMessage(liveSession), [liveSession])
   const shouldRenderLiveToolMessage = useMemo(
     () => liveToolMessage !== null && !hasCanonicalLiveToolReplacement(displayedMessages, liveToolMessage),
@@ -1411,10 +1444,8 @@ export function DesktopChatPanel({
       message,
       virtualKey: message.id === handoffMessageId ? handoff?.key : undefined,
     }))
-    for (const segment of retainedAssistantSegments) {
-      if (segment.content.trim() !== '') {
-        items.push({ type: 'live-assistant', id: segment.id, content: segment.content })
-      }
+    for (const segment of renderableRetainedAssistantSegments) {
+      items.push({ type: 'live-assistant', id: segment.id, content: segment.content })
     }
     if (shouldRenderLiveToolMessage && liveToolMessage) {
       items.push({ type: 'live-tool', toolMessage: liveToolMessage })
@@ -1423,7 +1454,7 @@ export function DesktopChatPanel({
       items.push({ type: 'live-assistant', id: liveAssistantDraftKey, content: liveAssistantDraft })
     }
     return items
-  }, [displayedMessages, liveAssistantDraft, liveAssistantDraftKey, liveToolMessage, retainedAssistantSegments, sessionId, shouldRenderLiveAssistantDraft, shouldRenderLiveToolMessage])
+  }, [displayedMessages, liveAssistantDraft, liveAssistantDraftKey, liveToolMessage, renderableRetainedAssistantSegments, sessionId, shouldRenderLiveAssistantDraft, shouldRenderLiveToolMessage])
   const thinkingTagsMeasurementKey = desktopChatThinkingTagsMeasurementKey(thinkingTagsEnabled)
   const renderMeasurementKey = useMemo(
     () => [thinkingTagsMeasurementKey, ...renderItems.map((item) => {

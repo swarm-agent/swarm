@@ -1,9 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import type { DesktopSessionRecord } from '../../types/realtime'
+import type { DesktopLiveAssistantSegment, DesktopSessionRecord } from '../../types/realtime'
 import type { ChatMessageRecord } from '../types/chat'
-import { desktopChatVirtualItemKey, formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, isSilentSpeechRecognitionError, metadataTodoSummary, resolveMessageAssistantLabel, resolveSessionEffectiveAgentName, savedRuleCountdownSeconds, sessionUsesReadOnlyFlowIdentity, shouldShowScrollLockReturnButton, visibleDesktopChatMessages } from './desktop-chat-panel'
+import { desktopChatVirtualItemKey, formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, isSilentSpeechRecognitionError, metadataTodoSummary, resolveMessageAssistantLabel, resolveSessionEffectiveAgentName, retainedAssistantSegmentsWithoutCanonicalReplay, savedRuleCountdownSeconds, sessionUsesReadOnlyFlowIdentity, shouldShowScrollLockReturnButton, visibleDesktopChatMessages } from './desktop-chat-panel'
 
 test('formatAgentTodoBadge shows progress-first badge with active count', () => {
   assert.equal(formatAgentTodoBadge({ taskCount: 6, openCount: 2, inProgressCount: 1, activeText: '' }), '4/6 complete • 1 active')
@@ -160,6 +160,44 @@ test('resolveMessageAssistantLabel uses per-turn message metadata before current
   assert.equal(resolveMessageAssistantLabel(makeMessage({ metadata: { agent_name: 'swarm', model: 'gpt-5.4' } }), 'explorer'), 'swarm')
   assert.equal(resolveMessageAssistantLabel(makeMessage({ metadata: { agent_name: 'reviewer', model: 'claude-sonnet' } }), 'swarm'), 'reviewer')
   assert.equal(resolveMessageAssistantLabel(makeMessage(), 'explorer'), 'explorer')
+})
+
+test('desktop chat suppresses retained assistant replay segments once canonical messages load', () => {
+  const segments: DesktopLiveAssistantSegment[] = [
+    { id: 'live-assistant:1:1:0', content: 'First streamed answer.\n\nSecond sentence.', createdAt: 1, seq: 1 },
+    { id: 'live-assistant:2:2:1', content: 'Still streaming after tool.', createdAt: 2, seq: 2 },
+  ]
+  const messages = [
+    makeMessage({
+      id: 'stored-assistant',
+      globalSeq: 10,
+      role: 'assistant',
+      content: ' First streamed answer.\r\n\r\nSecond sentence. ',
+    }),
+    makeMessage({
+      id: 'stored-tool',
+      globalSeq: 11,
+      role: 'tool',
+      content: 'tool output',
+    }),
+  ]
+
+  assert.deepEqual(
+    retainedAssistantSegmentsWithoutCanonicalReplay(segments, messages).map((segment) => segment.id),
+    ['live-assistant:2:2:1'],
+  )
+})
+
+test('desktop chat keeps retained assistant replay segments until matching canonical assistant exists', () => {
+  const segments: DesktopLiveAssistantSegment[] = [
+    { id: 'live-assistant:1:1:0', content: 'First streamed answer.', createdAt: 1, seq: 1 },
+  ]
+
+  assert.deepEqual(retainedAssistantSegmentsWithoutCanonicalReplay(segments, []).map((segment) => segment.id), ['live-assistant:1:1:0'])
+  assert.deepEqual(
+    retainedAssistantSegmentsWithoutCanonicalReplay(segments, [makeMessage({ role: 'tool', content: 'First streamed answer.' })]).map((segment) => segment.id),
+    ['live-assistant:1:1:0'],
+  )
 })
 
 test('desktop chat shows the context compact checkpoint and hides the duplicate ack', () => {
