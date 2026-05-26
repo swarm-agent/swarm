@@ -207,17 +207,17 @@ function TaskRowsView({ rows, nowMs }: { rows: TaskToolRow[]; nowMs: number }) {
         const secondaryLabel = [row.modelLabel, row.agent && row.assignmentLabel ? `@${row.agent}` : ''].filter(Boolean).join(' · ');
         return (
           <div key={`launch:${rowKey}`} className="grid gap-1 text-[var(--app-text-muted)]">
-            <div className="flex items-center gap-3">
+            <div className="grid min-w-0 grid-cols-[1.5rem_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-0.5 sm:grid-cols-[1.5rem_9rem_minmax(0,1fr)_auto]">
               <div
-                className={`w-6 font-bold ${statusLabel === 'OK' ? 'text-[var(--app-success)]' : statusLabel === 'ER' ? 'text-[var(--app-danger)]' : 'text-[var(--app-primary)]'}`}
+                className={`col-start-1 row-start-1 font-bold ${statusLabel === 'OK' ? 'text-[var(--app-success)]' : statusLabel === 'ER' ? 'text-[var(--app-danger)]' : 'text-[var(--app-primary)]'}`}
               >
                 {statusLabel}
               </div>
-              <div className="w-36 truncate font-medium text-[var(--app-text)]" title={secondaryLabel || primaryLabel}>
+              <div className="col-start-2 row-start-1 min-w-0 truncate font-medium text-[var(--app-text)]" title={secondaryLabel || primaryLabel}>
                 {primaryLabel}
               </div>
-              <div className="flex-1 truncate">{secondaryLabel ? `${secondaryLabel} · ` : ''}{row.tool || '-'}</div>
-              <div className="text-right text-[var(--app-text-subtle)]">
+              <div className="col-start-2 col-span-2 row-start-2 min-w-0 truncate sm:col-start-3 sm:col-span-1 sm:row-start-1">{secondaryLabel ? `${secondaryLabel} · ` : ''}{row.tool || '-'}</div>
+              <div className="col-start-3 row-start-1 shrink-0 text-right text-[var(--app-text-subtle)] sm:col-start-4">
                 {liveTaskElapsedLabel(row, nowMs)}
               </div>
             </div>
