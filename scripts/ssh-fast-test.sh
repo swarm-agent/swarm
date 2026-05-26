@@ -222,9 +222,16 @@ END {
 fi
 ./rebuild s
 if [ "${restart_service}" = 'true' ]; then
-  systemctl --user daemon-reload
-  systemctl --user restart "${service_unit}"
-  sleep 2
-  systemctl --user --no-pager --full status "${service_unit}" | sed -n '1,18p'
+  if systemctl --user cat "${service_unit}" >/dev/null 2>&1; then
+    systemctl --user daemon-reload
+    systemctl --user restart "${service_unit}"
+    sleep 2
+    systemctl --user --no-pager --full status "${service_unit}" | sed -n '1,18p'
+  else
+    sudo -n systemctl daemon-reload
+    sudo -n systemctl restart "${service_unit}"
+    sleep 2
+    sudo -n systemctl --no-pager --full status "${service_unit}" | sed -n '1,18p'
+  fi
 fi
 REMOTE_SSH_FAST_TEST
