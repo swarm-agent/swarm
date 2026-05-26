@@ -195,7 +195,7 @@ func TestCatchUpPolicies(t *testing.T) {
 }
 
 func TestSchedulerClaimsDueRunsOnceAndSchedulesNext(t *testing.T) {
-	assignment := AcceptedAssignment{Assignment: testScheduleAssignment(ScheduleSpec{Cadence: "Daily", Time: "09:00", Timezone: "UTC"})}
+	assignment := AcceptedAssignment{AccountScopeID: "account-1", UserID: "user-1", Assignment: testScheduleAssignment(ScheduleSpec{Cadence: "Daily", Time: "09:00", Timezone: "UTC"})}
 	assignment.FlowID = "flow-1"
 	assignment.Revision = 2
 	dueAt := time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC)
@@ -220,6 +220,9 @@ func TestSchedulerClaimsDueRunsOnceAndSchedulesNext(t *testing.T) {
 	}
 	if !runner.lastRequest.Background {
 		t.Fatalf("scheduler run request was not background: %+v", runner.lastRequest)
+	}
+	if runner.lastAssignment.AccountScopeID != "account-1" || runner.lastAssignment.UserID != "user-1" {
+		t.Fatalf("runner assignment owner = %+v", runner.lastAssignment)
 	}
 	if len(store.deleted) != 1 || store.deleted[0].FlowID != "flow-1" {
 		t.Fatalf("deleted due = %+v", store.deleted)
@@ -282,8 +285,9 @@ func (s *fakeSchedulerStore) ClaimRun(_ context.Context, claim RunClaim) (RunCla
 	return claim, true, nil
 }
 
-func (s *fakeSchedulerStore) DeleteDue(_ context.Context, flowID string, revision int64, scheduledAt time.Time) error {
+func (s *fakeSchedulerStore) DeleteDue(_ context.Context, accountScopeID, flowID string, revision int64, scheduledAt time.Time) error {
 	s.deleted = append(s.deleted, RunClaimKey{FlowID: flowID, Revision: revision, ScheduledAt: scheduledAt.UTC()})
+	_ = accountScopeID
 	return nil
 }
 
@@ -296,13 +300,16 @@ func (s *fakeSchedulerStore) ScheduleNext(_ context.Context, assignment Accepted
 }
 
 type fakeFlowRunner struct {
-	calls       int
-	lastRequest RunRequest
+	calls          int
+	lastAssignment AcceptedAssignment
+	lastRequest    RunRequest
 }
 
-func (r *fakeFlowRunner) RunAcceptedFlow(_ context.Context, assignment AcceptedAssignment, request RunRequest) (RunStart, error) {
+func (r *fakeFlowRunner) RunAcceptedFlow(ctx context.Context, assignment AcceptedAssignment, request RunRequest) (RunStart, error) {
 	r.calls++
+	r.lastAssignment = assignment
 	r.lastRequest = request
+	_ = ctx
 	return RunStart{
 		FlowID:      assignment.FlowID,
 		Revision:    assignment.Revision,

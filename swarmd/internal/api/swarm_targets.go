@@ -529,27 +529,20 @@ func (s *Server) listRemoteDeployTargetsForAccount(r *http.Request, accountScope
 	if accountScopeID == "" {
 		return nil, identity.ErrPrincipalRequired
 	}
-	if s.remoteDeploys == nil {
+	if s == nil || s.topology == nil {
 		return nil, nil
 	}
-	ctx := context.Background()
-	if r != nil {
-		ctx = r.Context()
-	}
-	// Swarm target resolution runs on the TUI startup path. Bound remote deploy
-	// refresh work so stale SSH sessions cannot make the local backend look dead.
-	ctx, cancel := context.WithTimeout(ctx, swarmTargetRemoteListTimeout)
-	defer cancel()
-	items, err := s.remoteDeploys.ListCached(ctx)
+	runtimes, err := s.topology.ListRuntimesForAccount(accountScopeID, 100000)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]swarmTarget, 0, len(items))
-	for range items {
-		// Remote deploy sessions do not yet carry account ownership; expose none
-		// through the account-scoped target runtime path rather than falling back
-		// to legacy global remote deploy state.
-		continue
+	out := make([]swarmTarget, 0, len(runtimes))
+	for _, runtime := range runtimes {
+		target, ok := mapTopologyRuntimeTarget(runtime)
+		if !ok || !strings.EqualFold(strings.TrimSpace(target.Kind), "remote") {
+			continue
+		}
+		out = append(out, target)
 	}
 	return out, nil
 }
@@ -921,6 +914,42 @@ func mapRemoteDeployTarget(item remotedeploy.Session) (swarmTarget, bool) {
 		BackendURL:   backendURL,
 		DesktopURL:   backendURL,
 		LastError:    strings.TrimSpace(item.LastError),
+	}, true
+}
+
+func mapTopologyRuntimeTarget(item pebblestore.TopologyRuntimeRecord) (swarmTarget, bool) {
+	swarmID := strings.TrimSpace(item.SwarmID)
+	backendURL := strings.TrimSpace(item.BackendURL)
+	if swarmID == "" || backendURL == "" {
+		return swarmTarget{}, false
+	}
+	status := strings.TrimSpace(item.Status)
+	online := status == "" || swarmNodeStatusOnline(status)
+	role := firstNonEmpty(strings.TrimSpace(item.Role), strings.TrimSpace(item.Relationship), "child")
+	kind := strings.TrimSpace(item.Transport)
+	if kind == "" {
+		switch strings.ToLower(strings.TrimSpace(item.Relationship)) {
+		case swarmruntime.RelationshipChild:
+			kind = "remote"
+		case swarmruntime.RelationshipManaged, swarmruntime.RelationshipManager:
+			kind = "host"
+		default:
+			kind = strings.TrimSpace(item.Relationship)
+		}
+	}
+	return swarmTarget{
+		SwarmID:      swarmID,
+		Name:         firstNonEmpty(strings.TrimSpace(item.Name), swarmID),
+		Role:         role,
+		Relationship: strings.TrimSpace(item.Relationship),
+		Kind:         kind,
+		DeploymentID: strings.TrimSpace(item.OwnerHostContainerID),
+		AttachStatus: firstNonEmpty(status, "attached"),
+		HostSwarmID:  strings.TrimSpace(item.OwnerHostSwarmID),
+		Online:       online,
+		Selectable:   online,
+		BackendURL:   backendURL,
+		DesktopURL:   firstNonEmpty(strings.TrimSpace(item.DesktopURL), backendURL),
 	}, true
 }
 

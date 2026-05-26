@@ -16,20 +16,20 @@ func TestRunAcceptedFlowNowInitialSessionSnapshotUsesFlowNameTitle(t *testing.T)
 	server.runner = runner
 	assignment := testAPIFlowAssignment("flow-summary-created-title", 1)
 	assignment.Intent.Tasks = []flow.TaskStep{{ID: "task", Title: "Run smoke prompt", Action: "write"}}
-	accepted, err := flows.PutAcceptedAssignment(flow.AcceptedAssignment{Assignment: assignment})
+	accepted, err := flows.PutAcceptedAssignment(ownedTestAcceptedAssignment(assignment))
 	if err != nil {
 		t.Fatalf("put accepted assignment: %v", err)
 	}
 	if accepted.Assignment.Name != "Memory sweep" || flowRunSessionTitle(accepted.Assignment) != "Memory sweep" {
 		t.Fatalf("accepted assignment title source = name %q title %q, want flow name", accepted.Assignment.Name, flowRunSessionTitle(accepted.Assignment))
 	}
-	start := flow.RunStart{
+	start := ownedTestRunStart(flow.RunStart{
 		FlowID:      assignment.FlowID,
 		Revision:    assignment.Revision,
 		ScheduledAt: time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC),
 		SessionID:   "session-summary-created-title",
 		RunID:       "run-summary-created-title",
-	}
+	})
 	session, _, err := server.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
 		SessionID:     start.SessionID,
 		Title:         flowRunSessionTitle(accepted.Assignment),
@@ -49,7 +49,7 @@ func TestRunAcceptedFlowNowInitialSessionSnapshotUsesFlowNameTitle(t *testing.T)
 		t.Fatalf("created title = %q, want flow name", session.Title)
 	}
 	startedAt := start.ScheduledAt.Add(time.Second)
-	if _, err := flows.PutTargetRun(pebblestore.FlowRunSummaryRecord{
+	if _, err := flows.PutTargetRun(ownedTestRunSummary(pebblestore.FlowRunSummaryRecord{
 		RunID:       start.RunID,
 		FlowID:      start.FlowID,
 		Revision:    start.Revision,
@@ -57,7 +57,7 @@ func TestRunAcceptedFlowNowInitialSessionSnapshotUsesFlowNameTitle(t *testing.T)
 		StartedAt:   startedAt,
 		Status:      pebblestore.FlowRunStatusRunning,
 		SessionID:   start.SessionID,
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("put target run: %v", err)
 	}
 	reportedSession, _, err := server.flowRunReportSessionPayload(startedRunSummary(t, flows, start.RunID))
@@ -81,7 +81,7 @@ func TestRunAcceptedFlowNowInitialSessionSnapshotUsesFlowNameTitle(t *testing.T)
 
 func startedRunSummary(t *testing.T, flows *pebblestore.FlowStore, runID string) pebblestore.FlowRunSummaryRecord {
 	t.Helper()
-	summary, ok, err := flows.GetTargetRun(runID)
+	summary, ok, err := flows.GetTargetRunForAccount(testAccountScopeID, runID)
 	if err != nil || !ok {
 		t.Fatalf("get target run ok=%v err=%v", ok, err)
 	}

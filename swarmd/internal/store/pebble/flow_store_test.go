@@ -40,7 +40,7 @@ func TestFlowStoreControllerRecordsRoundTripAndOrdering(t *testing.T) {
 		t.Fatalf("definition identity = %s/%d", definition.FlowID, definition.Revision)
 	}
 
-	loaded, ok, err := flows.GetDefinition("flow-1")
+	loaded, ok, err := flows.GetDefinitionForAccount(testFlowAccountScopeID, "flow-1")
 	if err != nil || !ok {
 		t.Fatalf("get definition ok=%v err=%v", ok, err)
 	}
@@ -63,7 +63,7 @@ func TestFlowStoreControllerRecordsRoundTripAndOrdering(t *testing.T) {
 	})); err != nil {
 		t.Fatalf("put assignment status: %v", err)
 	}
-	statuses, err := flows.ListAssignmentStatuses("flow-1", 10)
+	statuses, err := flows.ListAssignmentStatusesForAccount(testFlowAccountScopeID, "flow-1", 10)
 	if err != nil {
 		t.Fatalf("list assignment statuses: %v", err)
 	}
@@ -117,10 +117,10 @@ func TestFlowStoreControllerRecordsRoundTripAndOrdering(t *testing.T) {
 		t.Fatalf("pending after update = %+v", pending)
 	}
 
-	if err := flows.DeleteDefinition("flow-1"); err != nil {
+	if err := flows.DeleteDefinitionForAccount(testFlowAccountScopeID, "flow-1"); err != nil {
 		t.Fatalf("delete definition: %v", err)
 	}
-	if _, ok, err := flows.GetDefinition("flow-1"); err != nil || ok {
+	if _, ok, err := flows.GetDefinitionForAccount(testFlowAccountScopeID, "flow-1"); err != nil || ok {
 		t.Fatalf("definition after delete ok=%v err=%v", ok, err)
 	}
 }
@@ -151,7 +151,7 @@ func TestFlowSchedulerStoreListsAcceptedDueAndSchedulesNext(t *testing.T) {
 	if err != nil || !inserted || claim.RunID != "run-1" {
 		t.Fatalf("claim inserted=%v claim=%+v err=%v", inserted, claim, err)
 	}
-	if err := schedulerStore.DeleteDue(t.Context(), accepted.FlowID, accepted.Revision, dueAt); err != nil {
+	if err := schedulerStore.DeleteDue(t.Context(), accepted.AccountScopeID, accepted.FlowID, accepted.Revision, dueAt); err != nil {
 		t.Fatalf("delete due: %v", err)
 	}
 	if _, ok, err := schedulerStore.ScheduleNext(t.Context(), accepted, dueAt); err != nil || !ok {
@@ -183,7 +183,7 @@ func TestFlowStoreNormalizesPersistedScheduleTimes(t *testing.T) {
 	if definition.Assignment.Schedule.Time != "09:00" {
 		t.Fatalf("definition normalized schedule time = %q", definition.Assignment.Schedule.Time)
 	}
-	loaded, ok, err := flows.GetDefinition(definition.FlowID)
+	loaded, ok, err := flows.GetDefinitionForAccount(testFlowAccountScopeID, definition.FlowID)
 	if err != nil || !ok {
 		t.Fatalf("get definition ok=%v err=%v", ok, err)
 	}
@@ -205,7 +205,7 @@ func TestFlowStoreRejectsRuntimeAgentFieldsInDefinitionJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("put definition: %v", err)
 	}
-	loaded, ok, err := flows.GetDefinition(definition.FlowID)
+	loaded, ok, err := flows.GetDefinitionForAccount(testFlowAccountScopeID, definition.FlowID)
 	if err != nil || !ok {
 		t.Fatalf("get definition ok=%v err=%v", ok, err)
 	}
@@ -215,7 +215,7 @@ func TestFlowStoreRejectsRuntimeAgentFieldsInDefinitionJSON(t *testing.T) {
 	if loaded.Assignment.Agent.TargetKind != "background" || loaded.Assignment.Agent.TargetName != "memory" {
 		t.Fatalf("loaded derived agent = %+v", loaded.Assignment.Agent)
 	}
-	payload, ok, err := store.GetBytes(KeyFlowDefinition(definition.FlowID))
+	payload, ok, err := store.GetBytes(KeyFlowDefinitionForAccount(testFlowAccountScopeID, definition.FlowID))
 	if err != nil || !ok {
 		t.Fatalf("get raw definition ok=%v err=%v", ok, err)
 	}
@@ -229,10 +229,10 @@ func TestFlowStoreRejectsRuntimeAgentFieldsInDefinitionJSON(t *testing.T) {
 		t.Fatalf("raw definition missing durable profile selector: %s", payload)
 	}
 	badJSON := []byte(`{"flow_id":"bad-flow","revision":1,"assignment":{"flow_id":"bad-flow","revision":1,"name":"Bad","enabled":true,"target":{"swarm_id":"target-1","kind":"remote"},"agent":{"target_kind":"background","target_name":"memory"},"workspace":{"workspace_path":"workspace/project"},"schedule":{"cadence":"on_demand","timezone":"UTC"},"catch_up_policy":{"mode":"once"},"intent":{"prompt":"x"}}}`)
-	if err := store.PutBytes(KeyFlowDefinition("bad-flow"), badJSON); err != nil {
+	if err := store.PutBytes(KeyFlowDefinitionForAccount(testFlowAccountScopeID, "bad-flow"), ownedRawFlowPayload(badJSON)); err != nil {
 		t.Fatalf("put raw bad definition: %v", err)
 	}
-	loadedBad, ok, err := flows.GetDefinition("bad-flow")
+	loadedBad, ok, err := flows.GetDefinitionForAccount(testFlowAccountScopeID, "bad-flow")
 	if err != nil || !ok {
 		t.Fatalf("get repaired bad definition ok=%v err=%v", ok, err)
 	}
@@ -245,17 +245,17 @@ func TestFlowStoreRepairsLegacyAgentPayloadWithRuntimeAndModelFields(t *testing.
 	store := openFlowTestStore(t)
 	flows := NewFlowStore(store)
 	legacyJSON := []byte(`{"flow_id":"legacy-flow","revision":3,"assignment":{"flow_id":"legacy-flow","revision":3,"name":"Legacy","enabled":true,"target":{"swarm_id":"target-1","kind":"remote","name":"Laptop"},"agent":{"target_kind":"background","target_name":"memory","model":"gpt-5","service_tier":"priority"},"workspace":{"workspace_path":"workspace/project"},"schedule":{"cadence":"on_demand","timezone":"UTC"},"catch_up_policy":{"mode":"once"},"intent":{"prompt":"repair me"}},"created_at":"2025-01-01T00:00:00Z","updated_at":"2025-01-01T00:00:00Z"}`)
-	if err := store.PutBytes(KeyFlowDefinition("legacy-flow"), legacyJSON); err != nil {
+	if err := store.PutBytes(KeyFlowDefinitionForAccount(testFlowAccountScopeID, "legacy-flow"), ownedRawFlowPayload(legacyJSON)); err != nil {
 		t.Fatalf("put raw legacy definition: %v", err)
 	}
-	loaded, ok, err := flows.GetDefinition("legacy-flow")
+	loaded, ok, err := flows.GetDefinitionForAccount(testFlowAccountScopeID, "legacy-flow")
 	if err != nil || !ok {
 		t.Fatalf("get repaired definition ok=%v err=%v", ok, err)
 	}
 	if loaded.Assignment.Agent.ProfileName != "memory" || loaded.Assignment.Agent.ProfileMode != "background" {
 		t.Fatalf("repaired agent = %+v", loaded.Assignment.Agent)
 	}
-	payload, ok, err := store.GetBytes(KeyFlowDefinition("legacy-flow"))
+	payload, ok, err := store.GetBytes(KeyFlowDefinitionForAccount(testFlowAccountScopeID, "legacy-flow"))
 	if err != nil || !ok {
 		t.Fatalf("get repaired payload ok=%v err=%v", ok, err)
 	}
@@ -267,20 +267,20 @@ func TestFlowStoreRepairsLegacyOutboxAgentPayloadWithRuntimeFields(t *testing.T)
 	flows := NewFlowStore(store)
 	legacyJSON := []byte(`{"command_id":"flow-6699b3e358c33c74-1-install-0cb0a20bc6e2","flow_id":"flow-6699b3e358c33c74","revision":1,"target_swarm_id":"target-1","target":{"swarm_id":"target-1","kind":"remote"},"command":{"command_id":"flow-6699b3e358c33c74-1-install-0cb0a20bc6e2","flow_id":"flow-6699b3e358c33c74","revision":1,"action":"install","created_at":"2025-01-01T00:00:00Z","assignment":{"flow_id":"flow-6699b3e358c33c74","revision":1,"name":"Legacy outbox","enabled":true,"target":{"swarm_id":"target-1","kind":"remote"},"agent":{"target_kind":"background","target_name":"memory","model":"gpt-5","service_tier":"priority"},"workspace":{"workspace_path":"workspace/project"},"schedule":{"cadence":"on_demand","timezone":"UTC"},"catch_up_policy":{"mode":"once"},"intent":{"prompt":"repair outbox"}}},"status":"pending","created_at":"2025-01-01T00:00:00Z","updated_at":"2025-01-01T00:00:00Z"}`)
 	commandID := "flow-6699b3e358c33c74-1-install-0cb0a20bc6e2"
-	if err := store.PutBytes(KeyFlowOutbox(commandID), legacyJSON); err != nil {
+	if err := store.PutBytes(KeyFlowOutboxForAccount(testFlowAccountScopeID, "flow-6699b3e358c33c74", commandID), ownedRawFlowPayload(legacyJSON)); err != nil {
 		t.Fatalf("put raw legacy outbox: %v", err)
 	}
-	if err := store.PutBytes(KeyFlowOutboxStatus(FlowOutboxStatusPending, 0, commandID), []byte(KeyFlowOutbox(commandID))); err != nil {
+	if err := store.PutBytes(KeyFlowOutboxStatusForAccount(testFlowAccountScopeID, "flow-6699b3e358c33c74", FlowOutboxStatusPending, 0, commandID), []byte(KeyFlowOutboxForAccount(testFlowAccountScopeID, "flow-6699b3e358c33c74", commandID))); err != nil {
 		t.Fatalf("put outbox status index: %v", err)
 	}
-	loaded, ok, err := flows.GetOutboxCommand(commandID)
+	loaded, ok, err := flows.GetOutboxCommandForAccount(testFlowAccountScopeID, "flow-6699b3e358c33c74", commandID)
 	if err != nil || !ok {
 		t.Fatalf("get repaired outbox ok=%v err=%v", ok, err)
 	}
 	if loaded.Command.Assignment.Agent.ProfileName != "memory" || loaded.Command.Assignment.Agent.ProfileMode != "background" {
 		t.Fatalf("repaired outbox agent = %+v", loaded.Command.Assignment.Agent)
 	}
-	payload, ok, err := store.GetBytes(KeyFlowOutbox(commandID))
+	payload, ok, err := store.GetBytes(KeyFlowOutboxForAccount(testFlowAccountScopeID, "flow-6699b3e358c33c74", commandID))
 	if err != nil || !ok {
 		t.Fatalf("get repaired outbox payload ok=%v err=%v", ok, err)
 	}
@@ -292,6 +292,15 @@ func TestFlowStoreRepairsLegacyOutboxAgentPayloadWithRuntimeFields(t *testing.T)
 	if len(listed) != 1 || listed[0].CommandID != commandID || listed[0].Command.Assignment.Agent.ProfileName != "memory" {
 		t.Fatalf("listed repaired outbox = %+v", listed)
 	}
+}
+
+func ownedRawFlowPayload(payload []byte) []byte {
+	text := strings.TrimSpace(string(payload))
+	if strings.HasPrefix(text, "{") {
+		text = strings.TrimPrefix(text, "{")
+		return []byte(`{"account_scope_id":"` + testFlowAccountScopeID + `","user_id":"` + testFlowUserID + `",` + text)
+	}
+	return payload
 }
 
 func assertFlowAgentPayloadRepaired(t *testing.T, payload []byte) {
@@ -316,7 +325,7 @@ func TestFlowStoreTargetIdempotencyDueClaimsAndRunHistory(t *testing.T) {
 	if accepted.AcceptedAt.IsZero() {
 		t.Fatalf("accepted_at was not filled")
 	}
-	loadedAccepted, ok, err := flows.GetAcceptedAssignment("flow-1")
+	loadedAccepted, ok, err := flows.GetAcceptedAssignmentForAccount(testFlowAccountScopeID, "flow-1")
 	if err != nil || !ok {
 		t.Fatalf("get accepted ok=%v err=%v", ok, err)
 	}
@@ -385,7 +394,7 @@ func TestFlowStoreTargetIdempotencyDueClaimsAndRunHistory(t *testing.T) {
 			t.Fatalf("put target run %+v: %v", run, err)
 		}
 	}
-	history, err := flows.ListTargetRuns("flow-1", 10)
+	history, err := flows.ListTargetRunsForAccount(testFlowAccountScopeID, "flow-1", 10)
 	if err != nil {
 		t.Fatalf("list target runs: %v", err)
 	}

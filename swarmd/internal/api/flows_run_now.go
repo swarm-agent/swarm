@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/flow"
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -19,13 +20,13 @@ func (s *Server) applyFlowRunNowCommand(ctx context.Context, command flow.Assign
 		return flow.AssignmentAck{}, false, err
 	}
 	key := command.IdempotencyKey()
-	if existing, ok, err := s.flows.GetCommandLedger(key.FlowID, key.Revision, key.CommandID); err != nil || ok {
+	if existing, ok, err := s.flows.GetCommandLedgerForAccount(command.AccountScopeID, key.FlowID, key.Revision, key.CommandID); err != nil || ok {
 		if err != nil {
 			return flow.AssignmentAck{}, false, err
 		}
 		return existing.Ack, false, nil
 	}
-	accepted, ok, err := s.flows.GetAcceptedAssignment(key.FlowID)
+	accepted, ok, err := s.flows.GetAcceptedAssignmentForAccount(command.AccountScopeID, key.FlowID)
 	if err != nil {
 		return flow.AssignmentAck{}, false, err
 	}
@@ -50,13 +51,15 @@ func (s *Server) applyFlowRunNowCommand(ctx context.Context, command flow.Assign
 			ack.AcceptedRevision = accepted.Revision
 		}
 		_, inserted, err := s.flows.PutCommandLedger(pebblestore.FlowCommandLedgerRecord{
-			CommandID: key.CommandID,
-			FlowID:    key.FlowID,
-			Revision:  key.Revision,
-			Action:    command.Action,
-			Status:    status,
-			Ack:       ack,
-			AppliedAt: now,
+			AccountScopeID: command.AccountScopeID,
+			UserID:         command.UserID,
+			CommandID:      key.CommandID,
+			FlowID:         key.FlowID,
+			Revision:       key.Revision,
+			Action:         command.Action,
+			Status:         status,
+			Ack:            ack,
+			AppliedAt:      now,
 		})
 		return ack, inserted, err
 	}
@@ -77,18 +80,29 @@ func (s *Server) applyFlowRunNowCommand(ctx context.Context, command flow.Assign
 	ack.AcceptedRevision = accepted.Revision
 	ack.Status = flow.AssignmentAccepted
 	ledger, inserted, err := s.flows.PutCommandLedger(pebblestore.FlowCommandLedgerRecord{
-		CommandID: key.CommandID,
-		FlowID:    key.FlowID,
-		Revision:  key.Revision,
-		Action:    command.Action,
-		Status:    ack.Status,
-		Ack:       ack,
-		AppliedAt: now,
+		AccountScopeID: command.AccountScopeID,
+		UserID:         command.UserID,
+		CommandID:      key.CommandID,
+		FlowID:         key.FlowID,
+		Revision:       key.Revision,
+		Action:         command.Action,
+		Status:         ack.Status,
+		Ack:            ack,
+		AppliedAt:      now,
 	})
 	if err != nil || !inserted {
 		return ledger.Ack, inserted, err
 	}
-	start, err := s.RunAcceptedFlowNowAt(ctx, accepted, scheduledAt, key.CommandID)
+	principal := identity.Principal{
+		Type:               identity.PrincipalTypeUser,
+		UserID:             strings.TrimSpace(accepted.UserID),
+		AccountScopeID:     strings.TrimSpace(accepted.AccountScopeID),
+		AccountScopeSource: identity.AccountScopeSourceServerState,
+	}
+	if !principal.Valid() {
+		return reject(flow.AssignmentRejected, identity.ErrPrincipalRequired.Error())
+	}
+	start, err := s.RunAcceptedFlowNowAt(identity.ContextWithPrincipal(ctx, principal), accepted, scheduledAt, key.CommandID)
 	if err != nil {
 		return reject(flow.AssignmentRejected, err.Error())
 	}

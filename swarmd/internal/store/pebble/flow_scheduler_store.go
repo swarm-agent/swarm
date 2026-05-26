@@ -3,6 +3,7 @@ package pebblestore
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"swarm/packages/swarmd/internal/flow"
@@ -32,12 +33,15 @@ func (s *FlowSchedulerStore) ListDue(ctx context.Context, now time.Time, limit i
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		accepted, ok, err := s.flows.GetAcceptedAssignment(record.FlowID)
+		accepted, ok, err := s.flows.GetAcceptedAssignmentForAccount(record.AccountScopeID, record.FlowID)
 		if err != nil {
 			return nil, err
 		}
 		if !ok || accepted.Revision != record.Revision {
 			continue
+		}
+		if strings.TrimSpace(accepted.AccountScopeID) == "" || strings.TrimSpace(accepted.UserID) == "" {
+			return nil, errors.New("accepted flow assignment owner is required")
 		}
 		out = append(out, flow.DueRun{Assignment: accepted, ScheduledAt: record.ScheduledAt})
 	}
@@ -76,18 +80,22 @@ func (s *FlowSchedulerStore) ClaimRun(ctx context.Context, claim flow.RunClaim) 
 	}, inserted, nil
 }
 
-func (s *FlowSchedulerStore) DeleteDue(ctx context.Context, flowID string, revision int64, scheduledAt time.Time) error {
+func (s *FlowSchedulerStore) DeleteDue(ctx context.Context, accountScopeID, flowID string, revision int64, scheduledAt time.Time) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if s == nil || s.flows == nil {
 		return errors.New("flow scheduler store is not configured")
 	}
-	accepted, ok, err := s.flows.GetAcceptedAssignment(flowID)
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return errors.New("account_scope_id is required to delete due run")
+	}
+	accepted, ok, err := s.flows.GetAcceptedAssignmentForAccount(accountScopeID, flowID)
 	if err != nil {
 		return err
 	}
-	if !ok {
+	if !ok || strings.TrimSpace(accepted.UserID) == "" {
 		return errors.New("accepted flow assignment owner is required to delete due run")
 	}
 	return s.flows.DeleteDue(FlowDueRecord{AccountScopeID: accepted.AccountScopeID, UserID: accepted.UserID, FlowID: flowID, Revision: revision, DueAt: scheduledAt, ScheduledAt: scheduledAt})

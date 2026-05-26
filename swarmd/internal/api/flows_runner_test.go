@@ -72,7 +72,7 @@ func TestTargetLocalFlowRunnerLaunchesSavedAgentProfileWithoutToolScope(t *testi
 			assignment.Workspace.CWD = assignment.Workspace.WorkspacePath
 			assignment.Workspace.WorktreeMode = runruntime.RunWorktreeModeOff
 			assignment.Intent.Mode = "auto"
-			accepted, err := flows.PutAcceptedAssignment(flow.AcceptedAssignment{Assignment: assignment})
+			accepted, err := flows.PutAcceptedAssignment(ownedTestAcceptedAssignment(assignment))
 			if err != nil {
 				t.Fatalf("put accepted assignment: %v", err)
 			}
@@ -191,7 +191,7 @@ func TestTargetLocalFlowRunnerHostedSessionStoresRuntimeWorkspace(t *testing.T) 
 		CWD:                  "/workspaces/swarm",
 		WorktreeMode:         runruntime.RunWorktreeModeOff,
 	}
-	accepted, err := flows.PutAcceptedAssignment(flow.AcceptedAssignment{Assignment: assignment})
+	accepted, err := flows.PutAcceptedAssignment(ownedTestAcceptedAssignment(assignment))
 	if err != nil {
 		t.Fatalf("put accepted assignment: %v", err)
 	}
@@ -254,11 +254,11 @@ func TestRunAcceptedFlowNowUsesTargetLocalAcceptedAssignment(t *testing.T) {
 	assignment.Agent = flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"}
 	assignment.Workspace.WorkspacePath = t.TempDir()
 	assignment.Workspace.WorktreeMode = runruntime.RunWorktreeModeOff
-	if _, err := flows.PutAcceptedAssignment(flow.AcceptedAssignment{Assignment: assignment}); err != nil {
+	if _, err := flows.PutAcceptedAssignment(ownedTestAcceptedAssignment(assignment)); err != nil {
 		t.Fatalf("put accepted assignment: %v", err)
 	}
 
-	start, err := server.RunAcceptedFlowNow(t.Context(), assignment.FlowID)
+	start, err := server.RunAcceptedFlowNow(testPrincipalContext(t.Context()), assignment.FlowID)
 	if err != nil {
 		t.Fatalf("run now: %v", err)
 	}
@@ -306,11 +306,11 @@ func TestRunAcceptedFlowNowReturnsAfterStartingBackgroundSession(t *testing.T) {
 	assignment.Agent = flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"}
 	assignment.Workspace.WorkspacePath = t.TempDir()
 	assignment.Workspace.WorktreeMode = runruntime.RunWorktreeModeOff
-	if _, err := flows.PutAcceptedAssignment(flow.AcceptedAssignment{Assignment: assignment}); err != nil {
+	if _, err := flows.PutAcceptedAssignment(ownedTestAcceptedAssignment(assignment)); err != nil {
 		t.Fatalf("put accepted assignment: %v", err)
 	}
 
-	start, err := server.RunAcceptedFlowNow(t.Context(), assignment.FlowID)
+	start, err := server.RunAcceptedFlowNow(testPrincipalContext(t.Context()), assignment.FlowID)
 	if err != nil {
 		t.Fatalf("run now: %v", err)
 	}
@@ -322,7 +322,7 @@ func TestRunAcceptedFlowNowReturnsAfterStartingBackgroundSession(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("background run did not start")
 	}
-	runs, err := flows.ListTargetRuns(assignment.FlowID, 10)
+	runs, err := flows.ListTargetRunsForAccount(testAccountScopeID, assignment.FlowID, 10)
 	if err != nil {
 		t.Fatalf("list target runs: %v", err)
 	}
@@ -346,19 +346,21 @@ func TestFlowRunNowCommandReplaysUseOriginalCommandCreatedAt(t *testing.T) {
 	assignment.Agent = flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"}
 	assignment.Workspace.WorkspacePath = t.TempDir()
 	assignment.Workspace.WorktreeMode = runruntime.RunWorktreeModeOff
-	accepted, err := flows.PutAcceptedAssignment(flow.AcceptedAssignment{Assignment: assignment})
+	accepted, err := flows.PutAcceptedAssignment(ownedTestAcceptedAssignment(assignment))
 	if err != nil {
 		t.Fatalf("put accepted assignment: %v", err)
 	}
 
 	commandCreatedAt := time.Date(2025, 1, 2, 10, 0, 0, 0, time.UTC)
 	command := testAPIFlowCommand("cmd-run-now-replay", accepted.Assignment, flow.CommandRunNow)
+	command.AccountScopeID = accepted.AccountScopeID
+	command.UserID = accepted.UserID
 	command.CreatedAt = commandCreatedAt
 
 	firstDone := make(chan struct{})
 	go func() {
 		defer close(firstDone)
-		if _, _, err := server.applyFlowRunNowCommand(t.Context(), command, commandCreatedAt.Add(5*time.Second)); err != nil {
+		if _, _, err := server.applyFlowRunNowCommand(testPrincipalContext(t.Context()), command, commandCreatedAt.Add(5*time.Second)); err != nil {
 			t.Errorf("first run-now command: %v", err)
 		}
 	}()
@@ -369,7 +371,7 @@ func TestFlowRunNowCommandReplaysUseOriginalCommandCreatedAt(t *testing.T) {
 		t.Fatal("first run-now command did not start")
 	}
 
-	secondAck, secondInserted, err := server.applyFlowRunNowCommand(t.Context(), command, commandCreatedAt.Add(12*time.Second))
+	secondAck, secondInserted, err := server.applyFlowRunNowCommand(testPrincipalContext(t.Context()), command, commandCreatedAt.Add(12*time.Second))
 	if err != nil {
 		t.Fatalf("second run-now command: %v", err)
 	}
@@ -388,7 +390,7 @@ func TestFlowRunNowCommandReplaysUseOriginalCommandCreatedAt(t *testing.T) {
 		t.Fatalf("runner call count = %d, want 1", got)
 	}
 	eventuallyFlowRunStatus(t, flows, assignment.FlowID, pebblestore.FlowRunStatusSuccess)
-	runs, err := flows.ListTargetRuns(assignment.FlowID, 10)
+	runs, err := flows.ListTargetRunsForAccount(testAccountScopeID, assignment.FlowID, 10)
 	if err != nil {
 		t.Fatalf("list target runs: %v", err)
 	}
@@ -429,7 +431,7 @@ func eventuallyFlowRunStatus(t *testing.T, flows *pebblestore.FlowStore, flowID,
 	deadline := time.Now().Add(5 * time.Second)
 	var last []pebblestore.FlowRunSummaryRecord
 	for time.Now().Before(deadline) {
-		runs, err := flows.ListTargetRuns(flowID, 10)
+		runs, err := flows.ListTargetRunsForAccount(testAccountScopeID, flowID, 10)
 		if err != nil {
 			t.Fatalf("list target runs: %v", err)
 		}

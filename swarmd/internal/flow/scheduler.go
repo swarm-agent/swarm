@@ -27,16 +27,19 @@ type RunClaim struct {
 type SchedulerStore interface {
 	ListDue(ctx context.Context, now time.Time, limit int) ([]DueRun, error)
 	ClaimRun(ctx context.Context, claim RunClaim) (RunClaim, bool, error)
-	DeleteDue(ctx context.Context, flowID string, revision int64, scheduledAt time.Time) error
+	DeleteDue(ctx context.Context, accountScopeID, flowID string, revision int64, scheduledAt time.Time) error
 	ScheduleNext(ctx context.Context, assignment AcceptedAssignment, after time.Time) (time.Time, bool, error)
 }
 
+type RunContextFunc func(context.Context, AcceptedAssignment) (context.Context, error)
+
 type Scheduler struct {
-	Store    SchedulerStore
-	Runner   FlowRunner
-	Now      func() time.Time
-	NewRunID func(DueRun) string
-	LeaseFor time.Duration
+	Store      SchedulerStore
+	Runner     FlowRunner
+	Now        func() time.Time
+	NewRunID   func(DueRun) string
+	RunContext func(context.Context, AcceptedAssignment) (context.Context, error)
+	LeaseFor   time.Duration
 }
 
 func (s Scheduler) Tick(ctx context.Context, limit int) ([]RunStart, error) {
@@ -72,9 +75,25 @@ func (s Scheduler) Tick(ctx context.Context, limit int) ([]RunStart, error) {
 
 func (s Scheduler) runDue(ctx context.Context, item DueRun, now time.Time) (RunStart, bool, error) {
 	assignment := item.Assignment
+	assignment.AccountScopeID = strings.TrimSpace(assignment.AccountScopeID)
+	assignment.UserID = strings.TrimSpace(assignment.UserID)
+	if assignment.AccountScopeID == "" || assignment.UserID == "" {
+		return RunStart{}, false, errors.New("due flow account_scope_id and user_id are required")
+	}
 	assignment.Assignment.FlowID = strings.TrimSpace(assignment.Assignment.FlowID)
 	if assignment.Assignment.FlowID == "" || assignment.Assignment.Revision <= 0 {
 		return RunStart{}, false, errors.New("due flow_id and revision are required")
+	}
+	runCtx := ctx
+	if s.RunContext != nil {
+		var err error
+		runCtx, err = s.RunContext(ctx, assignment)
+		if err != nil {
+			return RunStart{}, false, err
+		}
+		if runCtx == nil {
+			return RunStart{}, false, errors.New("flow scheduler run context is required")
+		}
 	}
 	scheduledAt := item.ScheduledAt.UTC()
 	if scheduledAt.IsZero() {
@@ -107,7 +126,7 @@ func (s Scheduler) runDue(ctx context.Context, item DueRun, now time.Time) (RunS
 		return RunStart{}, false, nil
 	}
 	request := RunRequest{FlowID: claim.FlowID, Revision: claim.Revision, ScheduledAt: claim.ScheduledAt, RunID: storedClaim.RunID, Background: true}
-	start, err := s.Runner.RunAcceptedFlow(ctx, assignment, request)
+	start, err := s.Runner.RunAcceptedFlow(runCtx, assignment, request)
 	if err != nil {
 		return RunStart{}, true, err
 	}
@@ -129,7 +148,7 @@ func (s Scheduler) runDue(ctx context.Context, item DueRun, now time.Time) (RunS
 	if start.ScheduledAt.IsZero() {
 		start.ScheduledAt = claim.ScheduledAt
 	}
-	if err := s.Store.DeleteDue(ctx, claim.FlowID, claim.Revision, claim.ScheduledAt); err != nil {
+	if err := s.Store.DeleteDue(ctx, claim.AccountScopeID, claim.FlowID, claim.Revision, claim.ScheduledAt); err != nil {
 		return start, true, err
 	}
 	if _, _, err := s.Store.ScheduleNext(ctx, assignment, claim.ScheduledAt); err != nil {

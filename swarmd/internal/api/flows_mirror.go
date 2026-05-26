@@ -43,7 +43,7 @@ func (s *Server) buildCanonicalFlowSessionMirror(summary pebblestore.FlowRunSumm
 		assignment.Revision = firstNonZeroInt64(summary.Revision, definition.Revision)
 	}
 
-	target, targetFound := s.resolveFlowMirrorTarget(summary, assignment.Target)
+	target, targetFound := s.resolveFlowMirrorTargetForAccount(summary.AccountScopeID, summary, assignment.Target)
 	targetSwarmID := firstNonEmpty(strings.TrimSpace(summary.TargetSwarmID), strings.TrimSpace(target.SwarmID), strings.TrimSpace(assignment.Target.SwarmID))
 	flowRouteDiagLog("controller_build_flow_mirror",
 		"flow_id", flowID,
@@ -63,7 +63,7 @@ func (s *Server) buildCanonicalFlowSessionMirror(summary pebblestore.FlowRunSumm
 	if reportedSession != nil && strings.TrimSpace(reportedSession.WorkspacePath) != "" {
 		runtimeWorkspacePath = strings.TrimSpace(reportedSession.WorkspacePath)
 	}
-	if translated := s.resolveControllerFlowWorkspacePath(runtimeWorkspacePath, targetSwarmID, assignment.Target); translated != "" {
+	if translated := s.resolveControllerFlowWorkspacePathForAccount(summary.AccountScopeID, runtimeWorkspacePath, targetSwarmID, assignment.Target); translated != "" {
 		hostWorkspacePath = translated
 	}
 	if hostWorkspacePath == "" {
@@ -92,21 +92,23 @@ func (s *Server) buildCanonicalFlowSessionMirror(summary pebblestore.FlowRunSumm
 	if reportedSession != nil {
 		metadata = cloneFlowReportMetadata(reportedSession.Metadata)
 	}
-	resolvedAgent, err := s.resolveFlowRunAgent(assignment.Agent)
+	resolvedAgent, err := s.resolveFlowRunAgentForAccount(definition.AccountScopeID, assignment.Agent)
 	if err != nil {
 		return flowSessionMirror{}, false, err
 	}
 	metadata = canonicalFlowMirrorMetadata(metadata, assignment, resolvedAgent, summary, target, targetFound, targetSwarmID, hostWorkspacePath, runtimeWorkspacePath, s.flowLocalSwarmID())
 
 	mirroredSession := pebblestore.SessionSnapshot{
-		ID:            sessionID,
-		WorkspacePath: hostWorkspacePath,
-		WorkspaceName: filepath.Base(hostWorkspacePath),
-		Title:         flowRunSessionTitle(assignment),
-		Mode:          sessionruntime.ModeAuto,
-		Metadata:      metadata,
-		CreatedAt:     createdAt,
-		UpdatedAt:     updatedAt,
+		ID:             sessionID,
+		AccountScopeID: strings.TrimSpace(summary.AccountScopeID),
+		UserID:         strings.TrimSpace(summary.UserID),
+		WorkspacePath:  hostWorkspacePath,
+		WorkspaceName:  filepath.Base(hostWorkspacePath),
+		Title:          flowRunSessionTitle(assignment),
+		Mode:           sessionruntime.ModeAuto,
+		Metadata:       metadata,
+		CreatedAt:      createdAt,
+		UpdatedAt:      updatedAt,
 	}
 	if reportedSession != nil {
 		mirroredSession.Preference = reportedSession.Preference
@@ -119,10 +121,28 @@ func (s *Server) buildCanonicalFlowSessionMirror(summary pebblestore.FlowRunSumm
 		mirroredSession.TemporaryWorkspaceRoots = append([]string(nil), reportedSession.TemporaryWorkspaceRoots...)
 	}
 
+	reportedMessages = canonicalFlowMirrorMessages(sessionID, reportedMessages)
+	for i := range reportedMessages {
+		if strings.TrimSpace(reportedMessages[i].AccountScopeID) == "" {
+			reportedMessages[i].AccountScopeID = strings.TrimSpace(summary.AccountScopeID)
+		}
+		if strings.TrimSpace(reportedMessages[i].UserID) == "" {
+			reportedMessages[i].UserID = strings.TrimSpace(summary.UserID)
+		}
+	}
+	reportedLifecycle := canonicalFlowMirrorLifecycle(sessionID, reportedSession, summary)
+	if reportedLifecycle != nil {
+		if strings.TrimSpace(reportedLifecycle.AccountScopeID) == "" {
+			reportedLifecycle.AccountScopeID = strings.TrimSpace(summary.AccountScopeID)
+		}
+		if strings.TrimSpace(reportedLifecycle.UserID) == "" {
+			reportedLifecycle.UserID = strings.TrimSpace(summary.UserID)
+		}
+	}
 	mirror := flowSessionMirror{
 		Session:              mirroredSession,
-		ReportedMessages:     canonicalFlowMirrorMessages(sessionID, reportedMessages),
-		ReportedLifecycle:    canonicalFlowMirrorLifecycle(sessionID, reportedSession, summary),
+		ReportedMessages:     reportedMessages,
+		ReportedLifecycle:    reportedLifecycle,
 		Target:               target,
 		TargetFound:          targetFound,
 		TargetSwarmID:        targetSwarmID,
@@ -133,6 +153,8 @@ func (s *Server) buildCanonicalFlowSessionMirror(summary pebblestore.FlowRunSumm
 		mirror.HasRoute = true
 		mirror.Route = pebblestore.SessionRouteRecord{
 			SessionID:            sessionID,
+			AccountScopeID:       strings.TrimSpace(summary.AccountScopeID),
+			UserID:               strings.TrimSpace(summary.UserID),
 			ChildSwarmID:         targetSwarmID,
 			ChildBackendURL:      strings.TrimSpace(target.BackendURL),
 			HostWorkspacePath:    hostWorkspacePath,

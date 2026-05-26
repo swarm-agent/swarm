@@ -15,6 +15,7 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm/packages/swarmd/internal/flow"
+	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tailscalehttp"
@@ -156,6 +157,11 @@ func (s *Server) reportFlowRunSummaryNonFatal(ctx context.Context, summary pebbl
 	if s == nil {
 		return
 	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("warning: flow run summary report panicked flow_id=%q run_id=%q: %v", strings.TrimSpace(summary.FlowID), strings.TrimSpace(summary.RunID), recovered)
+		}
+	}()
 	reportCtx, cancel := flowReportContext(ctx)
 	err := s.reportFlowRunSummary(reportCtx, summary)
 	cancel()
@@ -175,7 +181,11 @@ func (s *Server) mirrorFlowRunSessionFromReport(summary pebblestore.FlowRunSumma
 	if strings.TrimSpace(summary.SessionID) == "" || flowID == "" {
 		return nil
 	}
-	definition, ok, err := s.flows.GetDefinition(flowID)
+	accountScopeID := strings.TrimSpace(summary.AccountScopeID)
+	if accountScopeID == "" {
+		return errors.New("flow report account_scope_id is required")
+	}
+	definition, ok, err := s.flows.GetDefinitionForAccount(accountScopeID, flowID)
 	if err != nil || !ok {
 		return err
 	}
@@ -300,6 +310,10 @@ func flowRunActiveLifecycleSnapshot(summary pebblestore.FlowRunSummaryRecord) (p
 }
 
 func (s *Server) resolveFlowMirrorTarget(summary pebblestore.FlowRunSummaryRecord, selection flow.TargetSelection) (swarmTarget, bool) {
+	return s.resolveFlowMirrorTargetForAccount(summary.AccountScopeID, summary, selection)
+}
+
+func (s *Server) resolveFlowMirrorTargetForAccount(accountScopeID string, summary pebblestore.FlowRunSummaryRecord, selection flow.TargetSelection) (swarmTarget, bool) {
 	if s == nil {
 		return swarmTarget{}, false
 	}
@@ -310,6 +324,13 @@ func (s *Server) resolveFlowMirrorTarget(summary pebblestore.FlowRunSummaryRecor
 	req, err := http.NewRequest(http.MethodGet, "/v1/swarm/targets", nil)
 	if err != nil {
 		return swarmTarget{}, false
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID != "" {
+		principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: strings.TrimSpace(summary.UserID), AccountScopeID: accountScopeID, AccountScopeSource: identity.AccountScopeSourceServerState}
+		if principal.Valid() {
+			req = req.WithContext(context.WithValue(req.Context(), productPrincipalRequestContextKey, principal))
+		}
 	}
 	targets, _, err := s.swarmTargetsForRequest(req)
 	if err != nil {
@@ -345,6 +366,10 @@ func cloneFlowReportMetadata(metadata map[string]any) map[string]any {
 }
 
 func (s *Server) resolveControllerFlowWorkspacePath(runtimeWorkspacePath, targetSwarmID string, selection flow.TargetSelection) string {
+	return s.resolveControllerFlowWorkspacePathForAccount("", runtimeWorkspacePath, targetSwarmID, selection)
+}
+
+func (s *Server) resolveControllerFlowWorkspacePathForAccount(accountScopeID, runtimeWorkspacePath, targetSwarmID string, selection flow.TargetSelection) string {
 	if s == nil || s.topology == nil {
 		return ""
 	}
@@ -354,11 +379,21 @@ func (s *Server) resolveControllerFlowWorkspacePath(runtimeWorkspacePath, target
 	}
 	targetSwarmID = firstNonEmpty(strings.TrimSpace(targetSwarmID), strings.TrimSpace(selection.SwarmID))
 	deploymentID := strings.TrimSpace(selection.DeploymentID)
-	bindings, err := s.topology.ListWorkspaceBindings(100000)
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	var bindings []pebblestore.TopologyWorkspaceBindingRecord
+	var err error
+	if accountScopeID != "" {
+		bindings, err = s.topology.ListWorkspaceBindingsForAccount(accountScopeID, 100000)
+	} else {
+		bindings, err = s.topology.ListWorkspaceBindings(100000)
+	}
 	if err != nil {
 		return ""
 	}
 	for _, binding := range bindings {
+		if accountScopeID != "" && strings.TrimSpace(binding.AccountScopeID) != accountScopeID {
+			continue
+		}
 		if !flowWorkspaceBindingMatchesTarget(binding, targetSwarmID, deploymentID) {
 			continue
 		}
@@ -459,7 +494,7 @@ func (s *Server) markFlowRunReported(record pebblestore.FlowRunSummaryRecord) {
 	if s == nil || s.flows == nil || strings.TrimSpace(record.RunID) == "" {
 		return
 	}
-	current, ok, err := s.flows.GetTargetRun(record.RunID)
+	current, ok, err := s.flows.GetTargetRunForAccount(record.AccountScopeID, record.RunID)
 	if err != nil || !ok {
 		return
 	}
@@ -473,7 +508,7 @@ func (s *Server) markFlowRunReportFailure(record pebblestore.FlowRunSummaryRecor
 	if s == nil || s.flows == nil || reportErr == nil || strings.TrimSpace(record.RunID) == "" {
 		return
 	}
-	current, ok, err := s.flows.GetTargetRun(record.RunID)
+	current, ok, err := s.flows.GetTargetRunForAccount(record.AccountScopeID, record.RunID)
 	if err != nil || !ok {
 		return
 	}

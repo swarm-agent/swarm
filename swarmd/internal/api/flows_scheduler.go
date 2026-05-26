@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/flow"
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -25,9 +26,10 @@ func (s *Server) StartFlowScheduler(ctx context.Context) {
 		ctx = context.Background()
 	}
 	scheduler := flow.Scheduler{
-		Store:    pebblestore.NewFlowSchedulerStore(s.flows),
-		Runner:   s.NewTargetLocalFlowRunner(),
-		LeaseFor: flowSchedulerRunLease,
+		Store:      pebblestore.NewFlowSchedulerStore(s.flows),
+		Runner:     s.NewTargetLocalFlowRunner(),
+		RunContext: flowSchedulerPrincipalContext,
+		LeaseFor:   flowSchedulerRunLease,
 	}
 	s.runFlowSchedulerTick(ctx, scheduler)
 	ticker := time.NewTicker(flowSchedulerInterval)
@@ -56,11 +58,25 @@ func (s *Server) RunFlowSchedulerTick(ctx context.Context, limit int) ([]flow.Ru
 		ctx = context.Background()
 	}
 	scheduler := flow.Scheduler{
-		Store:    pebblestore.NewFlowSchedulerStore(s.flows),
-		Runner:   s.NewTargetLocalFlowRunner(),
-		LeaseFor: flowSchedulerRunLease,
+		Store:      pebblestore.NewFlowSchedulerStore(s.flows),
+		Runner:     s.NewTargetLocalFlowRunner(),
+		RunContext: flowSchedulerPrincipalContext,
+		LeaseFor:   flowSchedulerRunLease,
 	}
 	return scheduler.Tick(ctx, limit)
+}
+
+func flowSchedulerPrincipalContext(ctx context.Context, accepted flow.AcceptedAssignment) (context.Context, error) {
+	principal := identity.Principal{
+		Type:               identity.PrincipalTypeUser,
+		UserID:             strings.TrimSpace(accepted.UserID),
+		AccountScopeID:     strings.TrimSpace(accepted.AccountScopeID),
+		AccountScopeSource: identity.AccountScopeSourceServerState,
+	}
+	if !principal.Valid() {
+		return nil, identity.ErrPrincipalRequired
+	}
+	return identity.ContextWithPrincipal(ctx, principal), nil
 }
 
 func (s *Server) runFlowSchedulerTick(ctx context.Context, scheduler flow.Scheduler) {

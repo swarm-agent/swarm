@@ -13,7 +13,7 @@ import (
 )
 
 func (s *FlowStore) acceptTargetAssignmentCommand(command flow.AssignmentCommand, baseAck flow.AssignmentAck, assignment flow.Assignment, now time.Time) (flow.AssignmentAck, bool, error) {
-	flowdiaglog.Printf("store_accept_command_start", "flow_id=%q command_id=%q action=%q revision=%d target_swarm_id=%q db_path=%q accepted_key=%q", command.FlowID, command.CommandID, command.Action, command.Revision, baseAck.TargetSwarmID, s.StorePath(), KeyFlowTargetAccepted(command.FlowID))
+	flowdiaglog.Printf("store_accept_command_start", "flow_id=%q command_id=%q action=%q revision=%d target_swarm_id=%q db_path=%q accepted_key=%q", command.FlowID, command.CommandID, command.Action, command.Revision, baseAck.TargetSwarmID, s.StorePath(), KeyFlowTargetAcceptedForAccount(command.AccountScopeID, command.FlowID))
 	accepted := flow.AcceptedAssignment{AccountScopeID: command.AccountScopeID, UserID: command.UserID, Assignment: assignment, AcceptedAt: now}
 	accepted = normalizeAcceptedAssignment(accepted)
 	if err := validateFlowOwner(accepted.AccountScopeID, accepted.UserID); err != nil {
@@ -23,20 +23,20 @@ func (s *FlowStore) acceptTargetAssignmentCommand(command flow.AssignmentCommand
 	ack.AcceptedRevision = accepted.Revision
 	ack.Status = flow.AssignmentAccepted
 	if err := s.putTargetCommandAcceptance(command, ack, accepted, now); err != nil {
-		flowdiaglog.Printf("store_accept_command_failed", "flow_id=%q command_id=%q action=%q revision=%d target_swarm_id=%q db_path=%q accepted_key=%q err=%q", command.FlowID, command.CommandID, command.Action, command.Revision, baseAck.TargetSwarmID, s.StorePath(), KeyFlowTargetAccepted(command.FlowID), err.Error())
+		flowdiaglog.Printf("store_accept_command_failed", "flow_id=%q command_id=%q action=%q revision=%d target_swarm_id=%q db_path=%q accepted_key=%q err=%q", command.FlowID, command.CommandID, command.Action, command.Revision, baseAck.TargetSwarmID, s.StorePath(), KeyFlowTargetAcceptedForAccount(command.AccountScopeID, command.FlowID), err.Error())
 		return flow.AssignmentAck{}, false, err
 	}
 	return ack, true, nil
 }
 
 func (s *FlowStore) acceptTargetDeleteCommand(command flow.AssignmentCommand, baseAck flow.AssignmentAck, now time.Time) (flow.AssignmentAck, bool, error) {
-	flowdiaglog.Printf("store_delete_command_start", "flow_id=%q command_id=%q action=%q revision=%d target_swarm_id=%q db_path=%q accepted_key=%q", command.FlowID, command.CommandID, command.Action, command.Revision, baseAck.TargetSwarmID, s.StorePath(), KeyFlowTargetAccepted(command.FlowID))
+	flowdiaglog.Printf("store_delete_command_start", "flow_id=%q command_id=%q action=%q revision=%d target_swarm_id=%q db_path=%q accepted_key=%q", command.FlowID, command.CommandID, command.Action, command.Revision, baseAck.TargetSwarmID, s.StorePath(), KeyFlowTargetAcceptedForAccount(command.AccountScopeID, command.FlowID))
 	key := command.IdempotencyKey()
 	ack := baseAck
 	ack.AcceptedRevision = key.Revision
 	ack.Status = flow.AssignmentAccepted
 	if err := s.putTargetCommandDelete(command, ack, now); err != nil {
-		flowdiaglog.Printf("store_delete_command_failed", "flow_id=%q command_id=%q action=%q revision=%d target_swarm_id=%q db_path=%q accepted_key=%q err=%q", command.FlowID, command.CommandID, command.Action, command.Revision, baseAck.TargetSwarmID, s.StorePath(), KeyFlowTargetAccepted(command.FlowID), err.Error())
+		flowdiaglog.Printf("store_delete_command_failed", "flow_id=%q command_id=%q action=%q revision=%d target_swarm_id=%q db_path=%q accepted_key=%q err=%q", command.FlowID, command.CommandID, command.Action, command.Revision, baseAck.TargetSwarmID, s.StorePath(), KeyFlowTargetAcceptedForAccount(command.AccountScopeID, command.FlowID), err.Error())
 		return flow.AssignmentAck{}, false, err
 	}
 	return ack, true, nil
@@ -47,7 +47,7 @@ func (s *FlowStore) putTargetCommandAcceptance(command flow.AssignmentCommand, a
 		return err
 	}
 	key := command.IdempotencyKey()
-	dueKeys, err := s.dueKeysForFlow(accepted.FlowID)
+	dueKeys, err := s.dueKeysForFlow(accepted.AccountScopeID, accepted.FlowID)
 	if err != nil {
 		return err
 	}
@@ -62,8 +62,8 @@ func (s *FlowStore) putTargetCommandAcceptance(command flow.AssignmentCommand, a
 		Ack:            ack,
 		AppliedAt:      now,
 	})
-	acceptedKey := KeyFlowTargetAccepted(accepted.FlowID)
-	ledgerKey := KeyFlowTargetCommandLedger(key.FlowID, key.Revision, key.CommandID)
+	acceptedKey := KeyFlowTargetAcceptedForAccount(accepted.AccountScopeID, accepted.FlowID)
+	ledgerKey := KeyFlowTargetCommandLedgerForAccount(command.AccountScopeID, key.FlowID, key.Revision, key.CommandID)
 	flowdiaglog.Printf("store_accept_prepare_keys", "flow_id=%q command_id=%q revision=%d db_path=%q accepted_key=%q ledger_key=%q stale_due_keys=%d", accepted.FlowID, key.CommandID, key.Revision, s.StorePath(), acceptedKey, ledgerKey, len(dueKeys))
 	acceptedPayload, err := json.Marshal(accepted)
 	if err != nil {
@@ -96,7 +96,7 @@ func (s *FlowStore) putTargetCommandAcceptance(command flow.AssignmentCommand, a
 		if err != nil {
 			return fmt.Errorf("marshal flow due record: %w", err)
 		}
-		dueKey := KeyFlowTargetDue(due.DueAt.UTC().UnixMilli(), due.FlowID, due.Revision)
+		dueKey := KeyFlowTargetDueForAccount(due.AccountScopeID, due.DueAt.UTC().UnixMilli(), due.FlowID, due.Revision)
 		flowdiaglog.Printf("store_accept_due_prepare_key", "flow_id=%q command_id=%q db_path=%q due_key=%q", accepted.FlowID, key.CommandID, s.StorePath(), dueKey)
 		if err := batch.Set([]byte(dueKey), duePayload, nil); err != nil {
 			return fmt.Errorf("set flow due record: %w", err)
@@ -106,7 +106,7 @@ func (s *FlowStore) putTargetCommandAcceptance(command flow.AssignmentCommand, a
 		flowdiaglog.Printf("store_accept_commit_failed", "flow_id=%q command_id=%q db_path=%q accepted_key=%q ledger_key=%q err=%q", accepted.FlowID, key.CommandID, s.StorePath(), acceptedKey, ledgerKey, err.Error())
 		return err
 	}
-	_, exists, verifyErr := s.GetAcceptedAssignment(accepted.FlowID)
+	_, exists, verifyErr := s.GetAcceptedAssignmentForAccount(accepted.AccountScopeID, accepted.FlowID)
 	flowdiaglog.Printf("store_accept_commit_verified", "flow_id=%q command_id=%q revision=%d db_path=%q accepted_key=%q ledger_key=%q accepted_exists_after_commit=%t verify_err=%q", accepted.FlowID, key.CommandID, accepted.Revision, s.StorePath(), acceptedKey, ledgerKey, exists, flowStoreErrString(verifyErr))
 	return nil
 }
@@ -116,7 +116,7 @@ func (s *FlowStore) putTargetCommandDelete(command flow.AssignmentCommand, ack f
 		return err
 	}
 	key := command.IdempotencyKey()
-	dueKeys, err := s.dueKeysForFlow(key.FlowID)
+	dueKeys, err := s.dueKeysForFlow(command.AccountScopeID, key.FlowID)
 	if err != nil {
 		return err
 	}
@@ -131,8 +131,8 @@ func (s *FlowStore) putTargetCommandDelete(command flow.AssignmentCommand, ack f
 		Ack:            ack,
 		AppliedAt:      now,
 	})
-	acceptedKey := KeyFlowTargetAccepted(key.FlowID)
-	ledgerKey := KeyFlowTargetCommandLedger(key.FlowID, key.Revision, key.CommandID)
+	acceptedKey := KeyFlowTargetAcceptedForAccount(command.AccountScopeID, key.FlowID)
+	ledgerKey := KeyFlowTargetCommandLedgerForAccount(command.AccountScopeID, key.FlowID, key.Revision, key.CommandID)
 	flowdiaglog.Printf("store_delete_prepare_keys", "flow_id=%q command_id=%q revision=%d db_path=%q accepted_key=%q ledger_key=%q stale_due_keys=%d", key.FlowID, key.CommandID, key.Revision, s.StorePath(), acceptedKey, ledgerKey, len(dueKeys))
 	ledgerPayload, err := json.Marshal(ledger)
 	if err != nil {
@@ -157,24 +157,25 @@ func (s *FlowStore) putTargetCommandDelete(command flow.AssignmentCommand, ack f
 		flowdiaglog.Printf("store_delete_commit_failed", "flow_id=%q command_id=%q db_path=%q accepted_key=%q ledger_key=%q err=%q", key.FlowID, key.CommandID, s.StorePath(), acceptedKey, ledgerKey, err.Error())
 		return err
 	}
-	_, exists, verifyErr := s.GetAcceptedAssignment(key.FlowID)
+	_, exists, verifyErr := s.GetAcceptedAssignmentForAccount(command.AccountScopeID, key.FlowID)
 	flowdiaglog.Printf("store_delete_commit_verified", "flow_id=%q command_id=%q revision=%d db_path=%q accepted_key=%q ledger_key=%q accepted_exists_after_commit=%t verify_err=%q", key.FlowID, key.CommandID, key.Revision, s.StorePath(), acceptedKey, ledgerKey, exists, flowStoreErrString(verifyErr))
 	return nil
 }
 
-func (s *FlowStore) dueKeysForFlow(flowID string) ([]string, error) {
+func (s *FlowStore) dueKeysForFlow(accountScopeID, flowID string) ([]string, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
 	flowID = strings.TrimSpace(flowID)
-	if flowID == "" {
+	if accountScopeID == "" || flowID == "" {
 		return nil, nil
 	}
 	keys := make([]string, 0, 4)
-	err := s.store.IteratePrefix(FlowTargetDuePrefix(), 100000, func(key string, value []byte) error {
+	err := s.store.IteratePrefix(FlowTargetDuePrefixForAccount(), 100000, func(key string, value []byte) error {
 		var record FlowDueRecord
 		if err := json.Unmarshal(value, &record); err != nil {
 			return fmt.Errorf("decode flow due record: %w", err)
 		}
 		record = normalizeFlowDueRecord(record)
-		if record.FlowID == flowID {
+		if record.AccountScopeID == accountScopeID && record.FlowID == flowID {
 			keys = append(keys, key)
 		}
 		return nil
@@ -182,18 +183,22 @@ func (s *FlowStore) dueKeysForFlow(flowID string) ([]string, error) {
 	return keys, err
 }
 
-func (s *FlowStore) maxAppliedTargetAssignmentRevision(flowID string) (int64, error) {
+func (s *FlowStore) maxAppliedTargetAssignmentRevisionForAccount(accountScopeID, flowID string) (int64, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
 	flowID = strings.TrimSpace(flowID)
-	if flowID == "" {
+	if accountScopeID == "" || flowID == "" {
 		return 0, nil
 	}
 	var maxRevision int64
-	err := s.store.IteratePrefix(FlowTargetCommandLedgerPrefix(flowID), 100000, func(_ string, value []byte) error {
+	err := s.store.IteratePrefix(FlowTargetCommandLedgerPrefixForAccount(accountScopeID, flowID), 100000, func(_ string, value []byte) error {
 		var record FlowCommandLedgerRecord
 		if err := json.Unmarshal(value, &record); err != nil {
 			return fmt.Errorf("decode flow command ledger: %w", err)
 		}
 		record = normalizeFlowCommandLedgerRecord(record)
+		if record.AccountScopeID != accountScopeID {
+			return fmt.Errorf("flow command ledger %q account_scope_id mismatch", record.CommandID)
+		}
 		switch record.Status {
 		case flow.AssignmentAccepted, flow.AssignmentOutOfOrder:
 			if record.Revision > maxRevision {

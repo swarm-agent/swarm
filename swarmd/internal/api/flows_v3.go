@@ -217,15 +217,32 @@ func (s *Server) handleFlowV3History(w http.ResponseWriter, r *http.Request, flo
 		methodNotAllowed(w)
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok || !principal.Valid() {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 	limit, err := positiveQueryLimit(r, 100)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	history, err := s.flows.ListMirroredRunSummaries(flowID, limit)
+	history, err := s.flows.ListMirroredRunSummariesForAccount(principal.AccountScopeID, flowID, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
+	}
+	if _, ok, err := s.flows.GetDefinitionForAccount(principal.AccountScopeID, flowID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	} else if !ok {
+		if _, acceptedOK, acceptedErr := s.flows.GetAcceptedAssignmentForAccount(principal.AccountScopeID, flowID); acceptedErr != nil {
+			writeError(w, http.StatusInternalServerError, acceptedErr)
+			return
+		} else if !acceptedOK {
+			writeError(w, http.StatusNotFound, fmt.Errorf("flow %q was not found", flowID))
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, flowV3HistoryResponse{OK: true, FlowID: flowID, History: history})
 }
@@ -235,25 +252,42 @@ func (s *Server) handleFlowV3Status(w http.ResponseWriter, r *http.Request, flow
 		methodNotAllowed(w)
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok || !principal.Valid() {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 	limit, err := positiveQueryLimit(r, 100)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	statuses, err := s.flows.ListAssignmentStatuses(flowID, limit)
+	statuses, err := s.flows.ListAssignmentStatusesForAccount(principal.AccountScopeID, flowID, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	outbox, err := s.flows.ListOutboxCommands("", limit)
+	outbox, err := s.flows.ListOutboxCommandsForAccount(principal.AccountScopeID, flowID, "", limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	history, err := s.flows.ListMirroredRunSummaries(flowID, limit)
+	history, err := s.flows.ListMirroredRunSummariesForAccount(principal.AccountScopeID, flowID, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
+	}
+	if _, ok, err := s.flows.GetDefinitionForAccount(principal.AccountScopeID, flowID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	} else if !ok {
+		if _, acceptedOK, acceptedErr := s.flows.GetAcceptedAssignmentForAccount(principal.AccountScopeID, flowID); acceptedErr != nil {
+			writeError(w, http.StatusInternalServerError, acceptedErr)
+			return
+		} else if !acceptedOK {
+			writeError(w, http.StatusNotFound, fmt.Errorf("flow %q was not found", flowID))
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, flowV3StatusResponse{OK: true, FlowID: flowID, AssignmentStatuses: statuses, Outbox: flowV3OutboxForFlow(outbox, flowID), History: history})
 }
@@ -263,7 +297,12 @@ func (s *Server) handleFlowV3RunNow(w http.ResponseWriter, r *http.Request, flow
 		methodNotAllowed(w)
 		return
 	}
-	definition, ok, err := s.flows.GetDefinition(flowID)
+	principal, ok := PrincipalFromRequest(r)
+	if !ok || !principal.Valid() {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	definition, ok, err := s.flows.GetDefinitionForAccount(principal.AccountScopeID, flowID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -297,7 +336,7 @@ func (s *Server) createFlowV3(r *http.Request, req flowV3UpsertRequest) (flowV3R
 	if flowID == "" {
 		flowID = "flow-" + randomHex(8)
 	}
-	if _, exists, err := s.flows.GetDefinition(flowID); err != nil {
+	if _, exists, err := s.flows.GetDefinitionForAccount(principal.AccountScopeID, flowID); err != nil {
 		return flowV3Record{}, flowAssignmentDeliverResult{}, err
 	} else if exists {
 		return flowV3Record{}, flowAssignmentDeliverResult{}, fmt.Errorf("flow %q already exists", flowID)
@@ -318,7 +357,7 @@ func (s *Server) createFlowV3(r *http.Request, req flowV3UpsertRequest) (flowV3R
 	command := flow.AssignmentCommand{AccountScopeID: definition.AccountScopeID, UserID: definition.UserID, CommandID: newFlowCommandID(definition.FlowID, definition.Revision, flow.CommandInstall), FlowID: definition.FlowID, Revision: definition.Revision, Action: flow.CommandInstall, CreatedAt: now, Assignment: definition.Assignment}
 	result, err := s.createFlowV3InstallResult(r, command)
 	if err != nil {
-		if cleanupErr := s.flows.DeleteDefinition(definition.FlowID); cleanupErr != nil {
+		if cleanupErr := s.flows.DeleteDefinitionForAccount(principal.AccountScopeID, definition.FlowID); cleanupErr != nil {
 			return flowV3Record{}, flowAssignmentDeliverResult{}, fmt.Errorf("%w; cleanup flow definition: %v", err, cleanupErr)
 		}
 		return flowV3Record{}, flowAssignmentDeliverResult{}, err
@@ -378,7 +417,7 @@ func (s *Server) updateFlowV3(r *http.Request, flowID string, req flowV3UpsertRe
 	if !principalOK || !principal.Valid() {
 		return flowV3Record{}, flowAssignmentDeliverResult{}, identity.ErrPrincipalRequired
 	}
-	existing, ok, err := s.flows.GetDefinition(flowID)
+	existing, ok, err := s.flows.GetDefinitionForAccount(principal.AccountScopeID, flowID)
 	if err != nil {
 		return flowV3Record{}, flowAssignmentDeliverResult{}, err
 	}
@@ -422,7 +461,11 @@ func (s *Server) updateFlowV3(r *http.Request, flowID string, req flowV3UpsertRe
 }
 
 func (s *Server) deleteFlowV3(r *http.Request, flowID string) (flowV3Record, flowAssignmentDeliverResult, error) {
-	definition, ok, err := s.flows.GetDefinition(flowID)
+	principal, principalOK := PrincipalFromRequest(r)
+	if !principalOK || !principal.Valid() {
+		return flowV3Record{}, flowAssignmentDeliverResult{}, identity.ErrPrincipalRequired
+	}
+	definition, ok, err := s.flows.GetDefinitionForAccount(principal.AccountScopeID, flowID)
 	if err != nil {
 		return flowV3Record{}, flowAssignmentDeliverResult{}, err
 	}
@@ -444,15 +487,15 @@ func (s *Server) deleteFlowV3(r *http.Request, flowID string) (flowV3Record, flo
 		record, _, err := s.flowV3Detail(r, definition.FlowID)
 		return record, result, err
 	}
-	if err := s.flows.DeleteDefinition(definition.FlowID); err != nil {
+	if err := s.flows.DeleteDefinitionForAccount(principal.AccountScopeID, definition.FlowID); err != nil {
 		return flowV3Record{}, flowAssignmentDeliverResult{}, err
 	}
-	if err := s.flows.DeleteAcceptedAssignment(definition.FlowID); err != nil {
+	if err := s.flows.DeleteAcceptedAssignmentForAccount(principal.AccountScopeID, definition.FlowID); err != nil {
 		return flowV3Record{}, flowAssignmentDeliverResult{}, err
 	}
-	statuses, _ := s.flows.ListAssignmentStatuses(definition.FlowID, 100)
-	outbox, _ := s.flows.ListOutboxCommands("", 100)
-	history, _ := s.flows.ListMirroredRunSummaries(definition.FlowID, 100)
+	statuses, _ := s.flows.ListAssignmentStatusesForAccount(principal.AccountScopeID, definition.FlowID, 100)
+	outbox, _ := s.flows.ListOutboxCommandsForAccount(principal.AccountScopeID, definition.FlowID, "", 100)
+	history, _ := s.flows.ListMirroredRunSummariesForAccount(principal.AccountScopeID, definition.FlowID, 100)
 	record, recordErr := s.flowV3RecordForDefinition(r, deletedDefinition, statuses, history, flowV3OutboxForFlow(outbox, definition.FlowID))
 	if staleTarget {
 		record.TargetStale = true
@@ -462,19 +505,23 @@ func (s *Server) deleteFlowV3(r *http.Request, flowID string) (flowV3Record, flo
 }
 
 func (s *Server) flowV3Detail(r *http.Request, flowID string) (flowV3Record, bool, error) {
-	definition, ok, err := s.flowV3DefinitionOrAccepted(flowID)
+	principal, principalOK := PrincipalFromRequest(r)
+	if !principalOK || !principal.Valid() {
+		return flowV3Record{}, false, identity.ErrPrincipalRequired
+	}
+	definition, ok, err := s.flowV3DefinitionOrAccepted(principal.AccountScopeID, flowID)
 	if err != nil || !ok {
 		return flowV3Record{}, ok, err
 	}
-	statuses, err := s.flows.ListAssignmentStatuses(flowID, 100)
+	statuses, err := s.flows.ListAssignmentStatusesForAccount(principal.AccountScopeID, flowID, 100)
 	if err != nil {
 		return flowV3Record{}, false, err
 	}
-	history, err := s.flows.ListMirroredRunSummaries(flowID, 100)
+	history, err := s.flows.ListMirroredRunSummariesForAccount(principal.AccountScopeID, flowID, 100)
 	if err != nil {
 		return flowV3Record{}, false, err
 	}
-	outbox, err := s.flows.ListOutboxCommands("", 100)
+	outbox, err := s.flows.ListOutboxCommandsForAccount(principal.AccountScopeID, flowID, "", 100)
 	if err != nil {
 		return flowV3Record{}, false, err
 	}
@@ -483,11 +530,15 @@ func (s *Server) flowV3Detail(r *http.Request, flowID string) (flowV3Record, boo
 }
 
 func (s *Server) flowV3ListRecords(r *http.Request, limit int) ([]flowV3Record, error) {
-	definitions, err := s.flows.ListDefinitions(limit)
+	principal, principalOK := PrincipalFromRequest(r)
+	if !principalOK || !principal.Valid() {
+		return nil, identity.ErrPrincipalRequired
+	}
+	definitions, err := s.flows.ListDefinitionsForAccount(principal.AccountScopeID, limit)
 	if err != nil {
 		return nil, err
 	}
-	accepted, err := s.flows.ListAcceptedAssignments(limit)
+	accepted, err := s.flows.ListAcceptedAssignmentsForAccount(principal.AccountScopeID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -535,12 +586,12 @@ func (s *Server) flowV3ListRecords(r *http.Request, limit int) ([]flowV3Record, 
 	return items, nil
 }
 
-func (s *Server) flowV3DefinitionOrAccepted(flowID string) (pebblestore.FlowDefinitionRecord, bool, error) {
-	definition, ok, err := s.flows.GetDefinition(flowID)
+func (s *Server) flowV3DefinitionOrAccepted(accountScopeID, flowID string) (pebblestore.FlowDefinitionRecord, bool, error) {
+	definition, ok, err := s.flows.GetDefinitionForAccount(accountScopeID, flowID)
 	if err != nil || ok {
 		return definition, ok, err
 	}
-	accepted, acceptedOK, err := s.flows.GetAcceptedAssignment(flowID)
+	accepted, acceptedOK, err := s.flows.GetAcceptedAssignmentForAccount(accountScopeID, flowID)
 	if err != nil || !acceptedOK {
 		return pebblestore.FlowDefinitionRecord{}, acceptedOK, err
 	}
@@ -556,20 +607,22 @@ func flowV3DefinitionFromAccepted(accepted flow.AcceptedAssignment) pebblestore.
 		accepted.AcceptedAt = time.Now().UTC()
 	}
 	return pebblestore.FlowDefinitionRecord{
-		FlowID:     assignment.FlowID,
-		Revision:   assignment.Revision,
-		Assignment: assignment,
-		CreatedAt:  accepted.AcceptedAt,
-		UpdatedAt:  accepted.AcceptedAt,
+		AccountScopeID: accepted.AccountScopeID,
+		UserID:         accepted.UserID,
+		FlowID:         assignment.FlowID,
+		Revision:       assignment.Revision,
+		Assignment:     assignment,
+		CreatedAt:      accepted.AcceptedAt,
+		UpdatedAt:      accepted.AcceptedAt,
 	}
 }
 
 func (s *Server) flowV3Summary(r *http.Request, definition pebblestore.FlowDefinitionRecord) (flowV3Record, error) {
-	statuses, err := s.flows.ListAssignmentStatuses(definition.FlowID, 20)
+	statuses, err := s.flows.ListAssignmentStatusesForAccount(definition.AccountScopeID, definition.FlowID, 20)
 	if err != nil {
 		return flowV3Record{}, err
 	}
-	history, err := s.flows.ListMirroredRunSummaries(definition.FlowID, 20)
+	history, err := s.flows.ListMirroredRunSummariesForAccount(definition.AccountScopeID, definition.FlowID, 20)
 	if err != nil {
 		return flowV3Record{}, err
 	}

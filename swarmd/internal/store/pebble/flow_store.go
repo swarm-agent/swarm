@@ -187,6 +187,10 @@ func NewFlowStore(store *Store) *FlowStore {
 }
 
 func (s *FlowStore) PutDefinition(record FlowDefinitionRecord) (FlowDefinitionRecord, error) {
+	return s.PutDefinitionForAccount(record)
+}
+
+func (s *FlowStore) PutDefinitionForAccount(record FlowDefinitionRecord) (FlowDefinitionRecord, error) {
 	if s == nil || s.store == nil {
 		return FlowDefinitionRecord{}, errors.New("flow store is not configured")
 	}
@@ -208,21 +212,29 @@ func (s *FlowStore) PutDefinition(record FlowDefinitionRecord) (FlowDefinitionRe
 		record.CreatedAt = now
 	}
 	record.UpdatedAt = now
-	if err := s.store.PutJSON(KeyFlowDefinition(record.FlowID), record); err != nil {
+	if err := s.store.PutJSON(KeyFlowDefinitionForAccount(record.AccountScopeID, record.FlowID), record); err != nil {
 		return FlowDefinitionRecord{}, err
 	}
 	return record, nil
 }
 
 func (s *FlowStore) GetDefinition(flowID string) (FlowDefinitionRecord, bool, error) {
+	return FlowDefinitionRecord{}, false, errors.New("account_scope_id is required for flow definition reads")
+}
+
+func (s *FlowStore) GetDefinitionForAccount(accountScopeID, flowID string) (FlowDefinitionRecord, bool, error) {
 	if s == nil || s.store == nil {
 		return FlowDefinitionRecord{}, false, errors.New("flow store is not configured")
 	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
 	flowID = strings.TrimSpace(flowID)
+	if accountScopeID == "" {
+		return FlowDefinitionRecord{}, false, errors.New("account_scope_id is required")
+	}
 	if flowID == "" {
 		return FlowDefinitionRecord{}, false, errors.New("flow_id is required")
 	}
-	payload, ok, err := s.store.GetBytes(KeyFlowDefinition(flowID))
+	payload, ok, err := s.store.GetBytes(KeyFlowDefinitionForAccount(accountScopeID, flowID))
 	if err != nil || !ok {
 		return FlowDefinitionRecord{}, ok, err
 	}
@@ -230,28 +242,43 @@ func (s *FlowStore) GetDefinition(flowID string) (FlowDefinitionRecord, bool, er
 	if err != nil {
 		return FlowDefinitionRecord{}, false, fmt.Errorf("decode flow definition: %w", err)
 	}
+	record = normalizeFlowDefinitionRecord(record)
+	if record.AccountScopeID != accountScopeID {
+		return FlowDefinitionRecord{}, false, errors.New("flow definition account_scope_id mismatch")
+	}
 	if repaired {
-		if err := s.store.PutJSON(KeyFlowDefinition(flowID), record); err != nil {
+		if err := s.store.PutJSON(KeyFlowDefinitionForAccount(accountScopeID, flowID), record); err != nil {
 			return FlowDefinitionRecord{}, false, err
 		}
 	}
-	return normalizeFlowDefinitionRecord(record), true, nil
+	return record, true, nil
 }
 
 func (s *FlowStore) ListDefinitions(limit int) ([]FlowDefinitionRecord, error) {
+	return nil, errors.New("account_scope_id is required for flow definition lists")
+}
+
+func (s *FlowStore) ListDefinitionsForAccount(accountScopeID string, limit int) ([]FlowDefinitionRecord, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("flow store is not configured")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, errors.New("account_scope_id is required")
 	}
 	if limit <= 0 {
 		limit = 200
 	}
 	out := make([]FlowDefinitionRecord, 0, min(limit, 16))
-	err := s.store.IteratePrefix(FlowDefinitionPrefix(), limit, func(key string, value []byte) error {
+	err := s.store.IteratePrefix(FlowDefinitionPrefixForAccount(accountScopeID), limit, func(key string, value []byte) error {
 		record, repaired, err := decodeFlowDefinitionRecordPayload(value)
 		if err != nil {
 			return fmt.Errorf("decode flow definition: %w", err)
 		}
 		record = normalizeFlowDefinitionRecord(record)
+		if record.AccountScopeID != accountScopeID {
+			return fmt.Errorf("flow definition %q account_scope_id mismatch", record.FlowID)
+		}
 		if repaired {
 			if err := s.store.PutJSON(key, record); err != nil {
 				return err
@@ -278,14 +305,22 @@ func (s *FlowStore) ListDefinitions(limit int) ([]FlowDefinitionRecord, error) {
 }
 
 func (s *FlowStore) DeleteDefinition(flowID string) error {
+	return errors.New("account_scope_id is required for flow definition deletes")
+}
+
+func (s *FlowStore) DeleteDefinitionForAccount(accountScopeID, flowID string) error {
 	if s == nil || s.store == nil {
 		return errors.New("flow store is not configured")
 	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
 	flowID = strings.TrimSpace(flowID)
+	if accountScopeID == "" {
+		return errors.New("account_scope_id is required")
+	}
 	if flowID == "" {
 		return errors.New("flow_id is required")
 	}
-	return s.store.Delete(KeyFlowDefinition(flowID))
+	return s.store.Delete(KeyFlowDefinitionForAccount(accountScopeID, flowID))
 }
 
 func (s *FlowStore) PutAssignmentStatus(record FlowAssignmentStatusRecord) (FlowAssignmentStatusRecord, error) {
@@ -300,38 +335,61 @@ func (s *FlowStore) PutAssignmentStatus(record FlowAssignmentStatusRecord) (Flow
 		return FlowAssignmentStatusRecord{}, errors.New("flow_id and target_swarm_id are required")
 	}
 	record.UpdatedAt = time.Now().UTC()
-	if err := s.store.PutJSON(KeyFlowAssignmentStatus(record.FlowID, record.TargetSwarmID), record); err != nil {
+	if err := s.store.PutJSON(KeyFlowAssignmentStatusForAccount(record.AccountScopeID, record.FlowID, record.TargetSwarmID), record); err != nil {
 		return FlowAssignmentStatusRecord{}, err
 	}
 	return record, nil
 }
 
 func (s *FlowStore) GetAssignmentStatus(flowID, targetSwarmID string) (FlowAssignmentStatusRecord, bool, error) {
+	return FlowAssignmentStatusRecord{}, false, errors.New("account_scope_id is required for flow assignment status reads")
+}
+
+func (s *FlowStore) GetAssignmentStatusForAccount(accountScopeID, flowID, targetSwarmID string) (FlowAssignmentStatusRecord, bool, error) {
 	if s == nil || s.store == nil {
 		return FlowAssignmentStatusRecord{}, false, errors.New("flow store is not configured")
 	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return FlowAssignmentStatusRecord{}, false, errors.New("account_scope_id is required")
+	}
 	var record FlowAssignmentStatusRecord
-	ok, err := s.store.GetJSON(KeyFlowAssignmentStatus(flowID, targetSwarmID), &record)
+	ok, err := s.store.GetJSON(KeyFlowAssignmentStatusForAccount(accountScopeID, flowID, targetSwarmID), &record)
 	if err != nil || !ok {
 		return FlowAssignmentStatusRecord{}, ok, err
 	}
-	return normalizeFlowAssignmentStatusRecord(record), true, nil
+	record = normalizeFlowAssignmentStatusRecord(record)
+	if record.AccountScopeID != accountScopeID {
+		return FlowAssignmentStatusRecord{}, false, errors.New("flow assignment status account_scope_id mismatch")
+	}
+	return record, true, nil
 }
 
 func (s *FlowStore) ListAssignmentStatuses(flowID string, limit int) ([]FlowAssignmentStatusRecord, error) {
+	return nil, errors.New("account_scope_id is required for flow assignment status lists")
+}
+
+func (s *FlowStore) ListAssignmentStatusesForAccount(accountScopeID, flowID string, limit int) ([]FlowAssignmentStatusRecord, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("flow store is not configured")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, errors.New("account_scope_id is required")
 	}
 	if limit <= 0 {
 		limit = 200
 	}
 	out := make([]FlowAssignmentStatusRecord, 0, min(limit, 16))
-	err := s.store.IteratePrefix(FlowAssignmentStatusPrefix(flowID), limit, func(_ string, value []byte) error {
+	err := s.store.IteratePrefix(FlowAssignmentStatusPrefixForAccount(accountScopeID, flowID), limit, func(_ string, value []byte) error {
 		var record FlowAssignmentStatusRecord
 		if err := json.Unmarshal(value, &record); err != nil {
 			return fmt.Errorf("decode flow assignment status: %w", err)
 		}
 		record = normalizeFlowAssignmentStatusRecord(record)
+		if record.AccountScopeID != accountScopeID {
+			return fmt.Errorf("flow assignment status %q account_scope_id mismatch", record.FlowID)
+		}
 		if record.FlowID != "" && record.TargetSwarmID != "" {
 			out = append(out, record)
 		}
@@ -369,15 +427,15 @@ func (s *FlowStore) PutOutboxCommand(record FlowOutboxCommandRecord, previous *F
 	}
 	batch := s.store.NewBatch()
 	defer batch.Close()
-	recordKey := KeyFlowOutbox(record.CommandID)
+	recordKey := KeyFlowOutboxForAccount(record.AccountScopeID, record.FlowID, record.CommandID)
 	if err := batch.Set([]byte(recordKey), payload, nil); err != nil {
 		return FlowOutboxCommandRecord{}, fmt.Errorf("set flow outbox command: %w", err)
 	}
 	if previous != nil {
 		prev := normalizeFlowOutboxCommandRecord(*previous)
 		if prev.CommandID != "" {
-			prevIndex := KeyFlowOutboxStatus(prev.Status, prev.NextAttemptAt.UTC().UnixMilli(), prev.CommandID)
-			nextIndex := KeyFlowOutboxStatus(record.Status, record.NextAttemptAt.UTC().UnixMilli(), record.CommandID)
+			prevIndex := KeyFlowOutboxStatusForAccount(prev.AccountScopeID, prev.FlowID, prev.Status, prev.NextAttemptAt.UTC().UnixMilli(), prev.CommandID)
+			nextIndex := KeyFlowOutboxStatusForAccount(record.AccountScopeID, record.FlowID, record.Status, record.NextAttemptAt.UTC().UnixMilli(), record.CommandID)
 			if prevIndex != nextIndex {
 				if err := batch.Delete([]byte(prevIndex), nil); err != nil {
 					return FlowOutboxCommandRecord{}, fmt.Errorf("delete stale flow outbox status index: %w", err)
@@ -385,7 +443,7 @@ func (s *FlowStore) PutOutboxCommand(record FlowOutboxCommandRecord, previous *F
 			}
 		}
 	}
-	if err := batch.Set([]byte(KeyFlowOutboxStatus(record.Status, record.NextAttemptAt.UTC().UnixMilli(), record.CommandID)), []byte(recordKey), nil); err != nil {
+	if err := batch.Set([]byte(KeyFlowOutboxStatusForAccount(record.AccountScopeID, record.FlowID, record.Status, record.NextAttemptAt.UTC().UnixMilli(), record.CommandID)), []byte(recordKey), nil); err != nil {
 		return FlowOutboxCommandRecord{}, fmt.Errorf("set flow outbox status index: %w", err)
 	}
 	if err := batch.Commit(pebble.Sync); err != nil {
@@ -395,14 +453,23 @@ func (s *FlowStore) PutOutboxCommand(record FlowOutboxCommandRecord, previous *F
 }
 
 func (s *FlowStore) GetOutboxCommand(commandID string) (FlowOutboxCommandRecord, bool, error) {
+	return FlowOutboxCommandRecord{}, false, errors.New("account_scope_id and flow_id are required for flow outbox reads")
+}
+
+func (s *FlowStore) GetOutboxCommandForAccount(accountScopeID, flowID, commandID string) (FlowOutboxCommandRecord, bool, error) {
 	if s == nil || s.store == nil {
 		return FlowOutboxCommandRecord{}, false, errors.New("flow store is not configured")
 	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	flowID = strings.TrimSpace(flowID)
 	commandID = strings.TrimSpace(commandID)
+	if accountScopeID == "" || flowID == "" {
+		return FlowOutboxCommandRecord{}, false, errors.New("account_scope_id and flow_id are required")
+	}
 	if commandID == "" {
 		return FlowOutboxCommandRecord{}, false, errors.New("command_id is required")
 	}
-	key := KeyFlowOutbox(commandID)
+	key := KeyFlowOutboxForAccount(accountScopeID, flowID, commandID)
 	payload, ok, err := s.store.GetBytes(key)
 	if err != nil || !ok {
 		return FlowOutboxCommandRecord{}, ok, err
@@ -411,12 +478,16 @@ func (s *FlowStore) GetOutboxCommand(commandID string) (FlowOutboxCommandRecord,
 	if err != nil {
 		return FlowOutboxCommandRecord{}, false, fmt.Errorf("decode flow outbox command: %w", err)
 	}
+	record = normalizeFlowOutboxCommandRecord(record)
+	if record.AccountScopeID != accountScopeID || record.FlowID != flowID {
+		return FlowOutboxCommandRecord{}, false, errors.New("flow outbox command owner mismatch")
+	}
 	if repaired {
 		if err := s.store.PutJSON(key, record); err != nil {
 			return FlowOutboxCommandRecord{}, false, err
 		}
 	}
-	return normalizeFlowOutboxCommandRecord(record), true, nil
+	return record, true, nil
 }
 
 func (s *FlowStore) CountOutboxCommands(status string) (int, error) {
@@ -424,7 +495,7 @@ func (s *FlowStore) CountOutboxCommands(status string) (int, error) {
 		return 0, errors.New("flow store is not configured")
 	}
 	count := 0
-	err := s.store.IteratePrefix(FlowOutboxStatusPrefix(status), 100000, func(_ string, _ []byte) error {
+	err := s.store.IteratePrefix(FlowOutboxStatusPrefixForAccount("", "", status), 100000, func(_ string, _ []byte) error {
 		count++
 		return nil
 	})
@@ -432,14 +503,47 @@ func (s *FlowStore) CountOutboxCommands(status string) (int, error) {
 }
 
 func (s *FlowStore) ListOutboxCommands(status string, limit int) ([]FlowOutboxCommandRecord, error) {
+	return s.listOutboxCommandsForAccount("", "", status, limit, false)
+}
+
+func (s *FlowStore) ListOutboxCommandsForAccount(accountScopeID, flowID, status string, limit int) ([]FlowOutboxCommandRecord, error) {
+	return s.listOutboxCommandsForAccount(accountScopeID, flowID, status, limit, true)
+}
+
+func (s *FlowStore) listOutboxCommandsForAccount(accountScopeID, flowID, status string, limit int, requireAccount bool) ([]FlowOutboxCommandRecord, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("flow store is not configured")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	flowID = strings.TrimSpace(flowID)
+	if requireAccount && accountScopeID == "" {
+		return nil, errors.New("account_scope_id is required")
 	}
 	if limit <= 0 {
 		limit = 200
 	}
+	if requireAccount && status == "" {
+		out := make([]FlowOutboxCommandRecord, 0, min(limit, 16))
+		for _, candidateStatus := range []string{FlowOutboxStatusPending, FlowOutboxStatusDelivered, FlowOutboxStatusRejected, FlowOutboxStatusUnreachable} {
+			records, err := s.listOutboxCommandsForAccount(accountScopeID, flowID, candidateStatus, limit, true)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, records...)
+		}
+		sort.Slice(out, func(i, j int) bool {
+			if out[i].NextAttemptAt.Equal(out[j].NextAttemptAt) {
+				return out[i].CommandID < out[j].CommandID
+			}
+			return out[i].NextAttemptAt.Before(out[j].NextAttemptAt)
+		})
+		if len(out) > limit {
+			out = out[:limit]
+		}
+		return out, nil
+	}
 	out := make([]FlowOutboxCommandRecord, 0, min(limit, 16))
-	err := s.store.IteratePrefix(FlowOutboxStatusPrefix(status), 100000, func(_ string, value []byte) error {
+	err := s.store.IteratePrefix(FlowOutboxStatusPrefixForAccount(accountScopeID, flowID, status), 100000, func(_ string, value []byte) error {
 		if len(out) >= limit {
 			return nil
 		}
@@ -455,12 +559,19 @@ func (s *FlowStore) ListOutboxCommands(status string, limit int) ([]FlowOutboxCo
 		if err != nil {
 			return fmt.Errorf("decode flow outbox command: %w", err)
 		}
+		record = normalizeFlowOutboxCommandRecord(record)
+		if requireAccount && record.AccountScopeID != accountScopeID {
+			return fmt.Errorf("flow outbox command %q account_scope_id mismatch", record.CommandID)
+		}
+		if flowID != "" && record.FlowID != flowID {
+			return fmt.Errorf("flow outbox command %q flow_id mismatch", record.CommandID)
+		}
 		if repaired {
 			if err := s.store.PutJSON(recordKey, record); err != nil {
 				return err
 			}
 		}
-		out = append(out, normalizeFlowOutboxCommandRecord(record))
+		out = append(out, record)
 		return nil
 	})
 	if err != nil {
@@ -479,22 +590,35 @@ func (s *FlowStore) ListOutboxCommands(status string, limit int) ([]FlowOutboxCo
 }
 
 func (s *FlowStore) DeleteOutboxCommand(commandID string, previous *FlowOutboxCommandRecord) error {
+	if previous == nil {
+		return errors.New("previous flow outbox command owner is required")
+	}
+	prev := normalizeFlowOutboxCommandRecord(*previous)
+	return s.DeleteOutboxCommandForAccount(prev.AccountScopeID, prev.FlowID, commandID, previous)
+}
+
+func (s *FlowStore) DeleteOutboxCommandForAccount(accountScopeID, flowID, commandID string, previous *FlowOutboxCommandRecord) error {
 	if s == nil || s.store == nil {
 		return errors.New("flow store is not configured")
 	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	flowID = strings.TrimSpace(flowID)
 	commandID = strings.TrimSpace(commandID)
+	if accountScopeID == "" || flowID == "" {
+		return errors.New("account_scope_id and flow_id are required")
+	}
 	if commandID == "" {
 		return errors.New("command_id is required")
 	}
 	batch := s.store.NewBatch()
 	defer batch.Close()
-	if err := batch.Delete([]byte(KeyFlowOutbox(commandID)), nil); err != nil {
+	if err := batch.Delete([]byte(KeyFlowOutboxForAccount(accountScopeID, flowID, commandID)), nil); err != nil {
 		return fmt.Errorf("delete flow outbox command: %w", err)
 	}
 	if previous != nil {
 		prev := normalizeFlowOutboxCommandRecord(*previous)
 		if prev.CommandID != "" {
-			if err := batch.Delete([]byte(KeyFlowOutboxStatus(prev.Status, prev.NextAttemptAt.UTC().UnixMilli(), prev.CommandID)), nil); err != nil {
+			if err := batch.Delete([]byte(KeyFlowOutboxStatusForAccount(prev.AccountScopeID, prev.FlowID, prev.Status, prev.NextAttemptAt.UTC().UnixMilli(), prev.CommandID)), nil); err != nil {
 				return fmt.Errorf("delete flow outbox status index: %w", err)
 			}
 		}
@@ -513,14 +637,22 @@ func (s *FlowStore) PutMirroredRunSummary(record FlowRunSummaryRecord) (FlowRunS
 	if record.RunID == "" || record.FlowID == "" {
 		return FlowRunSummaryRecord{}, errors.New("run_id and flow_id are required")
 	}
-	return s.putRunSummary(record, KeyFlowMirroredRun(record.FlowID, record.StartedAt.UTC().UnixMilli(), record.RunID))
+	return s.putRunSummary(record, KeyFlowMirroredRunForAccount(record.AccountScopeID, record.FlowID, record.StartedAt.UTC().UnixMilli(), record.RunID))
 }
 
 func (s *FlowStore) ListMirroredRunSummaries(flowID string, limit int) ([]FlowRunSummaryRecord, error) {
+	return nil, errors.New("account_scope_id is required for mirrored flow run summary lists")
+}
+
+func (s *FlowStore) ListMirroredRunSummariesForAccount(accountScopeID, flowID string, limit int) ([]FlowRunSummaryRecord, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("flow store is not configured")
 	}
-	return s.listRunSummaries(FlowMirroredRunPrefix(flowID), limit)
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, errors.New("account_scope_id is required")
+	}
+	return s.listRunSummaries(FlowMirroredRunPrefixForAccount(accountScopeID, flowID), limit)
 }
 
 func (s *FlowStore) StorePath() string {
@@ -541,7 +673,7 @@ func (s *FlowStore) PutAcceptedAssignment(record flow.AcceptedAssignment) (flow.
 	if record.FlowID == "" || record.Revision <= 0 {
 		return flow.AcceptedAssignment{}, errors.New("flow_id and revision are required")
 	}
-	if err := s.store.PutJSON(KeyFlowTargetAccepted(record.FlowID), record); err != nil {
+	if err := s.store.PutJSON(KeyFlowTargetAcceptedForAccount(record.AccountScopeID, record.FlowID), record); err != nil {
 		return flow.AcceptedAssignment{}, err
 	}
 	return record, nil
@@ -556,7 +688,7 @@ func (s *FlowStore) ApplyTargetAssignmentCommand(command flow.AssignmentCommand,
 		return flow.AssignmentAck{}, false, err
 	}
 	key := command.IdempotencyKey()
-	if existing, ok, err := s.GetCommandLedger(key.FlowID, key.Revision, key.CommandID); err != nil || ok {
+	if existing, ok, err := s.GetCommandLedgerForAccount(command.AccountScopeID, key.FlowID, key.Revision, key.CommandID); err != nil || ok {
 		if err != nil {
 			return flow.AssignmentAck{}, false, err
 		}
@@ -573,7 +705,7 @@ func (s *FlowStore) ApplyTargetAssignmentCommand(command flow.AssignmentCommand,
 		TargetSwarmID: targetSwarmID,
 		TargetClock:   now,
 	}
-	current, hasCurrent, err := s.GetAcceptedAssignment(key.FlowID)
+	current, hasCurrent, err := s.GetAcceptedAssignmentForAccount(command.AccountScopeID, key.FlowID)
 	if err != nil {
 		return flow.AssignmentAck{}, false, err
 	}
@@ -588,7 +720,7 @@ func (s *FlowStore) ApplyTargetAssignmentCommand(command flow.AssignmentCommand,
 	}
 	command.AccountScopeID = commandOwnerAccountScopeID
 	command.UserID = commandOwnerUserID
-	maxAppliedRevision, err := s.maxAppliedTargetAssignmentRevision(key.FlowID)
+	maxAppliedRevision, err := s.maxAppliedTargetAssignmentRevisionForAccount(command.AccountScopeID, key.FlowID)
 	if err != nil {
 		return flow.AssignmentAck{}, false, err
 	}
@@ -656,31 +788,54 @@ func (s *FlowStore) ApplyTargetAssignmentCommand(command flow.AssignmentCommand,
 }
 
 func (s *FlowStore) GetAcceptedAssignment(flowID string) (flow.AcceptedAssignment, bool, error) {
+	return flow.AcceptedAssignment{}, false, errors.New("account_scope_id is required for accepted flow assignment reads")
+}
+
+func (s *FlowStore) GetAcceptedAssignmentForAccount(accountScopeID, flowID string) (flow.AcceptedAssignment, bool, error) {
 	if s == nil || s.store == nil {
 		return flow.AcceptedAssignment{}, false, errors.New("flow store is not configured")
 	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return flow.AcceptedAssignment{}, false, errors.New("account_scope_id is required")
+	}
 	var record flow.AcceptedAssignment
-	ok, err := s.store.GetJSON(KeyFlowTargetAccepted(flowID), &record)
+	ok, err := s.store.GetJSON(KeyFlowTargetAcceptedForAccount(accountScopeID, flowID), &record)
 	if err != nil || !ok {
 		return flow.AcceptedAssignment{}, ok, err
 	}
-	return normalizeAcceptedAssignment(record), true, nil
+	record = normalizeAcceptedAssignment(record)
+	if record.AccountScopeID != accountScopeID {
+		return flow.AcceptedAssignment{}, false, errors.New("accepted flow assignment account_scope_id mismatch")
+	}
+	return record, true, nil
 }
 
 func (s *FlowStore) ListAcceptedAssignments(limit int) ([]flow.AcceptedAssignment, error) {
+	return nil, errors.New("account_scope_id is required for accepted flow assignment lists")
+}
+
+func (s *FlowStore) ListAcceptedAssignmentsForAccount(accountScopeID string, limit int) ([]flow.AcceptedAssignment, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("flow store is not configured")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, errors.New("account_scope_id is required")
 	}
 	if limit <= 0 {
 		limit = 200
 	}
 	out := make([]flow.AcceptedAssignment, 0, min(limit, 16))
-	err := s.store.IteratePrefix(FlowTargetAcceptedPrefix(), limit, func(_ string, value []byte) error {
+	err := s.store.IteratePrefix(FlowTargetAcceptedPrefixForAccount(accountScopeID), limit, func(_ string, value []byte) error {
 		var record flow.AcceptedAssignment
 		if err := json.Unmarshal(value, &record); err != nil {
 			return fmt.Errorf("decode accepted flow assignment: %w", err)
 		}
 		record = normalizeAcceptedAssignment(record)
+		if record.AccountScopeID != accountScopeID {
+			return fmt.Errorf("accepted flow assignment %q account_scope_id mismatch", record.FlowID)
+		}
 		if record.FlowID != "" {
 			out = append(out, record)
 		}
@@ -699,14 +854,22 @@ func (s *FlowStore) ListAcceptedAssignments(limit int) ([]flow.AcceptedAssignmen
 }
 
 func (s *FlowStore) DeleteAcceptedAssignment(flowID string) error {
+	return errors.New("account_scope_id is required for accepted flow assignment deletes")
+}
+
+func (s *FlowStore) DeleteAcceptedAssignmentForAccount(accountScopeID, flowID string) error {
 	if s == nil || s.store == nil {
 		return errors.New("flow store is not configured")
 	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
 	flowID = strings.TrimSpace(flowID)
+	if accountScopeID == "" {
+		return errors.New("account_scope_id is required")
+	}
 	if flowID == "" {
 		return errors.New("flow_id is required")
 	}
-	return s.store.Delete(KeyFlowTargetAccepted(flowID))
+	return s.store.Delete(KeyFlowTargetAcceptedForAccount(accountScopeID, flowID))
 }
 
 func (s *FlowStore) PutCommandLedger(record FlowCommandLedgerRecord) (FlowCommandLedgerRecord, bool, error) {
@@ -720,7 +883,7 @@ func (s *FlowStore) PutCommandLedger(record FlowCommandLedgerRecord) (FlowComman
 	if record.CommandID == "" || record.FlowID == "" || record.Revision <= 0 {
 		return FlowCommandLedgerRecord{}, false, errors.New("command_id, flow_id, and revision are required")
 	}
-	key := KeyFlowTargetCommandLedger(record.FlowID, record.Revision, record.CommandID)
+	key := KeyFlowTargetCommandLedgerForAccount(record.AccountScopeID, record.FlowID, record.Revision, record.CommandID)
 	var existing FlowCommandLedgerRecord
 	ok, err := s.store.GetJSON(key, &existing)
 	if err != nil {
@@ -739,31 +902,55 @@ func (s *FlowStore) PutCommandLedger(record FlowCommandLedgerRecord) (FlowComman
 }
 
 func (s *FlowStore) GetCommandLedger(flowID string, revision int64, commandID string) (FlowCommandLedgerRecord, bool, error) {
+	return FlowCommandLedgerRecord{}, false, errors.New("account_scope_id is required for flow command ledger reads")
+}
+
+func (s *FlowStore) GetCommandLedgerForAccount(accountScopeID, flowID string, revision int64, commandID string) (FlowCommandLedgerRecord, bool, error) {
 	if s == nil || s.store == nil {
 		return FlowCommandLedgerRecord{}, false, errors.New("flow store is not configured")
 	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return FlowCommandLedgerRecord{}, false, errors.New("account_scope_id is required")
+	}
 	var record FlowCommandLedgerRecord
-	ok, err := s.store.GetJSON(KeyFlowTargetCommandLedger(flowID, revision, commandID), &record)
+	ok, err := s.store.GetJSON(KeyFlowTargetCommandLedgerForAccount(accountScopeID, flowID, revision, commandID), &record)
 	if err != nil || !ok {
 		return FlowCommandLedgerRecord{}, ok, err
 	}
-	return normalizeFlowCommandLedgerRecord(record), true, nil
+	record = normalizeFlowCommandLedgerRecord(record)
+	if record.AccountScopeID != accountScopeID {
+		return FlowCommandLedgerRecord{}, false, errors.New("flow command ledger account_scope_id mismatch")
+	}
+	return record, true, nil
 }
 
 func (s *FlowStore) ListCommandLedger(flowID string, limit int) ([]FlowCommandLedgerRecord, error) {
+	return nil, errors.New("account_scope_id is required for flow command ledger lists")
+}
+
+func (s *FlowStore) ListCommandLedgerForAccount(accountScopeID, flowID string, limit int) ([]FlowCommandLedgerRecord, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("flow store is not configured")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, errors.New("account_scope_id is required")
 	}
 	if limit <= 0 {
 		limit = 200
 	}
 	out := make([]FlowCommandLedgerRecord, 0, min(limit, 16))
-	err := s.store.IteratePrefix(FlowTargetCommandLedgerPrefix(flowID), limit, func(_ string, value []byte) error {
+	err := s.store.IteratePrefix(FlowTargetCommandLedgerPrefixForAccount(accountScopeID, flowID), limit, func(_ string, value []byte) error {
 		var record FlowCommandLedgerRecord
 		if err := json.Unmarshal(value, &record); err != nil {
 			return fmt.Errorf("decode flow command ledger: %w", err)
 		}
-		out = append(out, normalizeFlowCommandLedgerRecord(record))
+		record = normalizeFlowCommandLedgerRecord(record)
+		if record.AccountScopeID != accountScopeID {
+			return fmt.Errorf("flow command ledger %q account_scope_id mismatch", record.CommandID)
+		}
+		out = append(out, record)
 		return nil
 	})
 	return out, err
@@ -780,22 +967,27 @@ func (s *FlowStore) PutDue(record FlowDueRecord) (FlowDueRecord, error) {
 	if record.FlowID == "" || record.Revision <= 0 || record.DueAt.IsZero() {
 		return FlowDueRecord{}, errors.New("flow_id, revision, and due_at are required")
 	}
-	if err := s.store.PutJSON(KeyFlowTargetDue(record.DueAt.UTC().UnixMilli(), record.FlowID, record.Revision), record); err != nil {
+	if err := s.store.PutJSON(KeyFlowTargetDueForAccount(record.AccountScopeID, record.DueAt.UTC().UnixMilli(), record.FlowID, record.Revision), record); err != nil {
 		return FlowDueRecord{}, err
 	}
 	return record, nil
 }
 
 func (s *FlowStore) ListDue(now time.Time, limit int) ([]FlowDueRecord, error) {
+	return s.ListDueForAccount("", now, limit)
+}
+
+func (s *FlowStore) ListDueForAccount(accountScopeID string, now time.Time, limit int) ([]FlowDueRecord, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("flow store is not configured")
 	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
 	if limit <= 0 {
 		limit = 200
 	}
 	now = now.UTC()
 	out := make([]FlowDueRecord, 0, min(limit, 16))
-	err := s.store.IteratePrefix(FlowTargetDuePrefix(), 100000, func(_ string, value []byte) error {
+	err := s.store.IteratePrefix(FlowTargetDuePrefixForAccount(), 100000, func(_ string, value []byte) error {
 		if len(out) >= limit {
 			return nil
 		}
@@ -804,6 +996,9 @@ func (s *FlowStore) ListDue(now time.Time, limit int) ([]FlowDueRecord, error) {
 			return fmt.Errorf("decode flow due record: %w", err)
 		}
 		record = normalizeFlowDueRecord(record)
+		if accountScopeID != "" && record.AccountScopeID != accountScopeID {
+			return nil
+		}
 		if record.DueAt.IsZero() || record.DueAt.After(now) {
 			return nil
 		}
@@ -821,7 +1016,7 @@ func (s *FlowStore) DeleteDue(record FlowDueRecord) error {
 	if record.FlowID == "" || record.Revision <= 0 || record.DueAt.IsZero() {
 		return errors.New("flow_id, revision, and due_at are required")
 	}
-	return s.store.Delete(KeyFlowTargetDue(record.DueAt.UTC().UnixMilli(), record.FlowID, record.Revision))
+	return s.store.Delete(KeyFlowTargetDueForAccount(record.AccountScopeID, record.DueAt.UTC().UnixMilli(), record.FlowID, record.Revision))
 }
 
 func (s *FlowStore) ClaimRun(record FlowRunClaimRecord) (FlowRunClaimRecord, bool, error) {
@@ -835,7 +1030,7 @@ func (s *FlowStore) ClaimRun(record FlowRunClaimRecord) (FlowRunClaimRecord, boo
 	if record.FlowID == "" || record.Revision <= 0 || record.ScheduledAt.IsZero() || record.RunID == "" {
 		return FlowRunClaimRecord{}, false, errors.New("flow_id, revision, scheduled_at, and run_id are required")
 	}
-	key := KeyFlowTargetRunClaim(record.FlowID, record.Revision, record.ScheduledAt.UTC().UnixMilli())
+	key := KeyFlowTargetRunClaimForAccount(record.AccountScopeID, record.FlowID, record.Revision, record.ScheduledAt.UTC().UnixMilli())
 	var existing FlowRunClaimRecord
 	ok, err := s.store.GetJSON(key, &existing)
 	if err != nil {
@@ -854,15 +1049,27 @@ func (s *FlowStore) ClaimRun(record FlowRunClaimRecord) (FlowRunClaimRecord, boo
 }
 
 func (s *FlowStore) GetRunClaim(flowID string, revision int64, scheduledAt time.Time) (FlowRunClaimRecord, bool, error) {
+	return FlowRunClaimRecord{}, false, errors.New("account_scope_id is required for flow run claim reads")
+}
+
+func (s *FlowStore) GetRunClaimForAccount(accountScopeID, flowID string, revision int64, scheduledAt time.Time) (FlowRunClaimRecord, bool, error) {
 	if s == nil || s.store == nil {
 		return FlowRunClaimRecord{}, false, errors.New("flow store is not configured")
 	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return FlowRunClaimRecord{}, false, errors.New("account_scope_id is required")
+	}
 	var record FlowRunClaimRecord
-	ok, err := s.store.GetJSON(KeyFlowTargetRunClaim(flowID, revision, scheduledAt.UTC().UnixMilli()), &record)
+	ok, err := s.store.GetJSON(KeyFlowTargetRunClaimForAccount(accountScopeID, flowID, revision, scheduledAt.UTC().UnixMilli()), &record)
 	if err != nil || !ok {
 		return FlowRunClaimRecord{}, ok, err
 	}
-	return normalizeFlowRunClaimRecord(record), true, nil
+	record = normalizeFlowRunClaimRecord(record)
+	if record.AccountScopeID != accountScopeID {
+		return FlowRunClaimRecord{}, false, errors.New("flow run claim account_scope_id mismatch")
+	}
+	return record, true, nil
 }
 
 func (s *FlowStore) PutTargetRun(record FlowRunSummaryRecord) (FlowRunSummaryRecord, error) {
@@ -880,7 +1087,7 @@ func (s *FlowStore) PutTargetRun(record FlowRunSummaryRecord) (FlowRunSummaryRec
 	if err != nil {
 		return FlowRunSummaryRecord{}, fmt.Errorf("marshal target flow run: %w", err)
 	}
-	recordKey := KeyFlowTargetRun(record.RunID)
+	recordKey := KeyFlowTargetRunForAccount(record.AccountScopeID, record.RunID)
 	var existing FlowRunSummaryRecord
 	existingOK, err := s.store.GetJSON(recordKey, &existing)
 	if err != nil {
@@ -890,8 +1097,8 @@ func (s *FlowStore) PutTargetRun(record FlowRunSummaryRecord) (FlowRunSummaryRec
 	defer batch.Close()
 	if existingOK {
 		existing = normalizeFlowRunSummaryRecord(existing)
-		oldIndex := KeyFlowTargetRunByFlow(existing.FlowID, existing.StartedAt.UTC().UnixMilli(), existing.RunID)
-		newIndex := KeyFlowTargetRunByFlow(record.FlowID, record.StartedAt.UTC().UnixMilli(), record.RunID)
+		oldIndex := KeyFlowTargetRunByFlowForAccount(existing.AccountScopeID, existing.FlowID, existing.StartedAt.UTC().UnixMilli(), existing.RunID)
+		newIndex := KeyFlowTargetRunByFlowForAccount(record.AccountScopeID, record.FlowID, record.StartedAt.UTC().UnixMilli(), record.RunID)
 		if oldIndex != newIndex {
 			if err := batch.Delete([]byte(oldIndex), nil); err != nil {
 				return FlowRunSummaryRecord{}, fmt.Errorf("delete stale target flow run index: %w", err)
@@ -901,7 +1108,7 @@ func (s *FlowStore) PutTargetRun(record FlowRunSummaryRecord) (FlowRunSummaryRec
 	if err := batch.Set([]byte(recordKey), payload, nil); err != nil {
 		return FlowRunSummaryRecord{}, fmt.Errorf("set target flow run: %w", err)
 	}
-	if err := batch.Set([]byte(KeyFlowTargetRunByFlow(record.FlowID, record.StartedAt.UTC().UnixMilli(), record.RunID)), []byte(recordKey), nil); err != nil {
+	if err := batch.Set([]byte(KeyFlowTargetRunByFlowForAccount(record.AccountScopeID, record.FlowID, record.StartedAt.UTC().UnixMilli(), record.RunID)), []byte(recordKey), nil); err != nil {
 		return FlowRunSummaryRecord{}, fmt.Errorf("set target flow run by flow: %w", err)
 	}
 	if err := batch.Commit(pebble.Sync); err != nil {
@@ -911,19 +1118,35 @@ func (s *FlowStore) PutTargetRun(record FlowRunSummaryRecord) (FlowRunSummaryRec
 }
 
 func (s *FlowStore) GetTargetRun(runID string) (FlowRunSummaryRecord, bool, error) {
+	return FlowRunSummaryRecord{}, false, errors.New("account_scope_id is required for target flow run reads")
+}
+
+func (s *FlowStore) GetTargetRunForAccount(accountScopeID, runID string) (FlowRunSummaryRecord, bool, error) {
 	if s == nil || s.store == nil {
 		return FlowRunSummaryRecord{}, false, errors.New("flow store is not configured")
 	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return FlowRunSummaryRecord{}, false, errors.New("account_scope_id is required")
+	}
 	var record FlowRunSummaryRecord
-	ok, err := s.store.GetJSON(KeyFlowTargetRun(runID), &record)
+	ok, err := s.store.GetJSON(KeyFlowTargetRunForAccount(accountScopeID, runID), &record)
 	if err != nil || !ok {
 		return FlowRunSummaryRecord{}, ok, err
 	}
-	return normalizeFlowRunSummaryRecord(record), true, nil
+	record = normalizeFlowRunSummaryRecord(record)
+	if record.AccountScopeID != accountScopeID {
+		return FlowRunSummaryRecord{}, false, errors.New("target flow run account_scope_id mismatch")
+	}
+	return record, true, nil
 }
 
 func (s *FlowStore) ListTargetRuns(flowID string, limit int) ([]FlowRunSummaryRecord, error) {
-	return s.listTargetRuns(flowID, limit, false, func(FlowRunSummaryRecord) bool { return true })
+	return nil, errors.New("account_scope_id is required for target flow run lists")
+}
+
+func (s *FlowStore) ListTargetRunsForAccount(accountScopeID, flowID string, limit int) ([]FlowRunSummaryRecord, error) {
+	return s.listTargetRuns(accountScopeID, flowID, limit, false, func(FlowRunSummaryRecord) bool { return true })
 }
 
 func (s *FlowStore) ListPendingTargetRunReports(now time.Time, limit int) ([]FlowRunSummaryRecord, error) {
@@ -931,7 +1154,7 @@ func (s *FlowStore) ListPendingTargetRunReports(now time.Time, limit int) ([]Flo
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	return s.listTargetRuns("", limit, true, func(record FlowRunSummaryRecord) bool {
+	return s.listTargetRuns("", "", limit, true, func(record FlowRunSummaryRecord) bool {
 		if !record.ReportedAt.IsZero() {
 			return false
 		}
@@ -942,7 +1165,7 @@ func (s *FlowStore) ListPendingTargetRunReports(now time.Time, limit int) ([]Flo
 	})
 }
 
-func (s *FlowStore) listTargetRuns(flowID string, limit int, scanAll bool, include func(FlowRunSummaryRecord) bool) ([]FlowRunSummaryRecord, error) {
+func (s *FlowStore) listTargetRuns(accountScopeID, flowID string, limit int, scanAll bool, include func(FlowRunSummaryRecord) bool) ([]FlowRunSummaryRecord, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("flow store is not configured")
 	}
@@ -950,9 +1173,9 @@ func (s *FlowStore) listTargetRuns(flowID string, limit int, scanAll bool, inclu
 		limit = 200
 	}
 	out := make([]FlowRunSummaryRecord, 0, min(limit, 16))
-	prefix := FlowTargetRunByFlowPrefix(flowID)
+	prefix := FlowTargetRunByFlowPrefixForAccount(accountScopeID, flowID)
 	if scanAll {
-		prefix = KeyFlowTargetRunByFlowPrefix
+		prefix = KeyFlowTargetRunByFlowAccountPrefix
 	}
 	err := s.store.IteratePrefix(prefix, 100000, func(_ string, value []byte) error {
 		if len(out) >= limit {

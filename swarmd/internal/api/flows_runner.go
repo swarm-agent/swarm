@@ -43,7 +43,11 @@ func (s *Server) RunAcceptedFlowNow(ctx context.Context, flowID string) (flow.Ru
 	if flowID == "" {
 		return flow.RunStart{}, errors.New("flow_id is required")
 	}
-	accepted, ok, err := s.flows.GetAcceptedAssignment(flowID)
+	principal, principalOK := identity.PrincipalFromContext(ctx)
+	if !principalOK || !principal.Valid() {
+		return flow.RunStart{}, identity.ErrPrincipalRequired
+	}
+	accepted, ok, err := s.flows.GetAcceptedAssignmentForAccount(principal.AccountScopeID, flowID)
 	if err != nil {
 		return flow.RunStart{}, err
 	}
@@ -97,7 +101,7 @@ func (s *Server) existingFlowRunStart(claim pebblestore.FlowRunClaimRecord) (flo
 		return flow.RunStart{}, errors.New("flow store is not configured")
 	}
 	if strings.TrimSpace(claim.RunID) != "" {
-		if run, ok, err := s.flows.GetTargetRun(claim.RunID); err != nil {
+		if run, ok, err := s.flows.GetTargetRunForAccount(claim.AccountScopeID, claim.RunID); err != nil {
 			return flow.RunStart{}, err
 		} else if ok {
 			return flow.RunStart{
@@ -125,9 +129,16 @@ func (s *Server) existingFlowRunStart(claim pebblestore.FlowRunClaimRecord) (flo
 
 func (s *Server) runAcceptedFlow(ctx context.Context, accepted flow.AcceptedAssignment, request flow.RunRequest) (flow.RunStart, error) {
 	principal, principalOK := identity.PrincipalFromContext(ctx)
+	accepted.AccountScopeID = strings.TrimSpace(accepted.AccountScopeID)
+	accepted.UserID = strings.TrimSpace(accepted.UserID)
 	if !principalOK || !principal.Valid() {
-		principal = peerManagedWorkspacePrincipal()
-		ctx = identity.ContextWithPrincipal(ctx, principal)
+		return flow.RunStart{}, identity.ErrPrincipalRequired
+	}
+	if accepted.AccountScopeID == "" || accepted.UserID == "" {
+		return flow.RunStart{}, errors.New("accepted flow assignment account_scope_id and user_id are required")
+	}
+	if principal.AccountScopeID != accepted.AccountScopeID || principal.UserID != accepted.UserID {
+		return flow.RunStart{}, errors.New("flow run principal does not match accepted assignment owner")
 	}
 	if s == nil {
 		return flow.RunStart{}, errors.New("api server is not configured")
@@ -474,11 +485,10 @@ func (s *Server) resolveFlowRunAgentForAccount(accountScopeID string, agent flow
 	}
 	var profile pebblestore.AgentProfile
 	var err error
-	if strings.TrimSpace(accountScopeID) != "" {
-		profile, err = s.agents.ResolveAgentForAccount(accountScopeID, agent.ProfileName)
-	} else {
-		profile, err = s.agents.ResolveAgent(agent.ProfileName)
+	if strings.TrimSpace(accountScopeID) == "" {
+		return resolvedFlowRunAgent{}, errors.New("account_scope_id is required for flow agent resolution")
 	}
+	profile, err = s.agents.ResolveAgentForAccount(accountScopeID, agent.ProfileName)
 	if err != nil {
 		return resolvedFlowRunAgent{}, err
 	}

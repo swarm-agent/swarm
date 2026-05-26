@@ -21,7 +21,7 @@ import (
 
 func TestPeerFlowReportStoresMirroredSummary(t *testing.T) {
 	server, flows := newFlowPeerTestServer(t)
-	report := pebblestore.FlowRunSummaryRecord{
+	report := ownedTestRunSummary(pebblestore.FlowRunSummaryRecord{
 		RunID:       "run-report-1",
 		FlowID:      "flow-report",
 		Revision:    3,
@@ -31,7 +31,7 @@ func TestPeerFlowReportStoresMirroredSummary(t *testing.T) {
 		Status:      pebblestore.FlowRunStatusSuccess,
 		Summary:     "finished",
 		SessionID:   "session-report-1",
-	}
+	})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, flowPeerReportPath, jsonReader(t, flowRunReportRequest{Summary: report}))
@@ -42,7 +42,7 @@ func TestPeerFlowReportStoresMirroredSummary(t *testing.T) {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 
-	history, err := flows.ListMirroredRunSummaries("flow-report", 10)
+	history, err := flows.ListMirroredRunSummariesForAccount(testAccountScopeID, "flow-report", 10)
 	if err != nil {
 		t.Fatalf("list mirrored summaries: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestPeerFlowReportFromLocalChildForwardsThroughManagedHostToController(t *t
 		token: "peer-token",
 	})
 
-	report := flowRunReportRequest{Summary: pebblestore.FlowRunSummaryRecord{
+	report := flowRunReportRequest{Summary: ownedTestRunSummary(pebblestore.FlowRunSummaryRecord{
 		RunID:         "run-local-child-report",
 		FlowID:        "flow-local-child-report",
 		Revision:      1,
@@ -97,7 +97,7 @@ func TestPeerFlowReportFromLocalChildForwardsThroughManagedHostToController(t *t
 		FinishedAt:    time.Date(2025, 1, 2, 9, 2, 0, 0, time.UTC),
 		Status:        pebblestore.FlowRunStatusSuccess,
 		SessionID:     "session-local-child-report",
-	}}
+	})}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, flowPeerReportPath, jsonReader(t, report))
 	managedHost.Handler().ServeHTTP(rec, req)
@@ -111,6 +111,7 @@ func TestPeerFlowReportFromLocalChildForwardsThroughManagedHostToController(t *t
 
 func TestPeerFlowReportMirrorsSessionIntoControllerWorkspace(t *testing.T) {
 	server, flows := newFlowPeerTestServer(t)
+	ensureFlowMemoryAgentRunnable(t, server)
 	hostWorkspace := filepath.Join(t.TempDir(), "swarm-go")
 	if err := os.MkdirAll(hostWorkspace, 0o755); err != nil {
 		t.Fatalf("create workspace: %v", err)
@@ -132,7 +133,7 @@ func TestPeerFlowReportMirrorsSessionIntoControllerWorkspace(t *testing.T) {
 	assignment := testAPIFlowAssignment("flow-report-session", 2)
 	assignment.Target = flow.TargetSelection{SwarmID: "target-swarm-1", Kind: "local", DeploymentID: "pc-container", Name: "pc container"}
 	assignment.Workspace = flow.WorkspaceContext{WorkspacePath: "/workspaces/swarm-go"}
-	if _, err := flows.PutDefinition(pebblestore.FlowDefinitionRecord{FlowID: assignment.FlowID, Revision: assignment.Revision, Assignment: assignment}); err != nil {
+	if _, err := flows.PutDefinitionForAccount(pebblestore.FlowDefinitionRecord{AccountScopeID: testAccountScopeID, UserID: testUserID, FlowID: assignment.FlowID, Revision: assignment.Revision, Assignment: assignment}); err != nil {
 		t.Fatalf("put definition: %v", err)
 	}
 
@@ -170,14 +171,16 @@ func TestPeerFlowReportMirrorsSessionIntoControllerWorkspace(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, flowPeerReportPath, jsonReader(t, flowRunReportRequest{
 		Summary: pebblestore.FlowRunSummaryRecord{
-			RunID:       "run-report-session",
-			FlowID:      assignment.FlowID,
-			Revision:    assignment.Revision,
-			ScheduledAt: time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC),
-			StartedAt:   time.Date(2025, 1, 2, 9, 1, 0, 0, time.UTC),
-			FinishedAt:  time.Date(2025, 1, 2, 9, 2, 0, 0, time.UTC),
-			Status:      pebblestore.FlowRunStatusSuccess,
-			SessionID:   "session-report-session",
+			AccountScopeID: testAccountScopeID,
+			UserID:         testUserID,
+			RunID:          "run-report-session",
+			FlowID:         assignment.FlowID,
+			Revision:       assignment.Revision,
+			ScheduledAt:    time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC),
+			StartedAt:      time.Date(2025, 1, 2, 9, 1, 0, 0, time.UTC),
+			FinishedAt:     time.Date(2025, 1, 2, 9, 2, 0, 0, time.UTC),
+			Status:         pebblestore.FlowRunStatusSuccess,
+			SessionID:      "session-report-session",
 		},
 		Session:  &reportedSession,
 		Messages: reportedMessages,
@@ -248,6 +251,7 @@ func TestPeerFlowReportMirrorsSessionIntoControllerWorkspace(t *testing.T) {
 
 func TestPeerFlowReportMirrorsRunningSessionIntoControllerWorkspace(t *testing.T) {
 	server, flows := newFlowPeerTestServer(t)
+	ensureFlowMemoryAgentRunnable(t, server)
 	hostWorkspace := filepath.Join(t.TempDir(), "swarm-go")
 	if err := os.MkdirAll(hostWorkspace, 0o755); err != nil {
 		t.Fatalf("create workspace: %v", err)
@@ -269,7 +273,7 @@ func TestPeerFlowReportMirrorsRunningSessionIntoControllerWorkspace(t *testing.T
 	assignment := testAPIFlowAssignment("flow-report-running-session", 2)
 	assignment.Target = flow.TargetSelection{SwarmID: "target-swarm-1", Kind: "local", DeploymentID: "pc-container", Name: "pc container"}
 	assignment.Workspace = flow.WorkspaceContext{WorkspacePath: "/workspaces/swarm-go"}
-	if _, err := flows.PutDefinition(pebblestore.FlowDefinitionRecord{FlowID: assignment.FlowID, Revision: assignment.Revision, Assignment: assignment}); err != nil {
+	if _, err := flows.PutDefinitionForAccount(pebblestore.FlowDefinitionRecord{AccountScopeID: testAccountScopeID, UserID: testUserID, FlowID: assignment.FlowID, Revision: assignment.Revision, Assignment: assignment}); err != nil {
 		t.Fatalf("put definition: %v", err)
 	}
 
@@ -301,13 +305,15 @@ func TestPeerFlowReportMirrorsRunningSessionIntoControllerWorkspace(t *testing.T
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, flowPeerReportPath, jsonReader(t, flowRunReportRequest{
 		Summary: pebblestore.FlowRunSummaryRecord{
-			RunID:       "run-running-report",
-			FlowID:      assignment.FlowID,
-			Revision:    assignment.Revision,
-			ScheduledAt: time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC),
-			StartedAt:   startedAt,
-			Status:      pebblestore.FlowRunStatusRunning,
-			SessionID:   "session-running-report",
+			AccountScopeID: testAccountScopeID,
+			UserID:         testUserID,
+			RunID:          "run-running-report",
+			FlowID:         assignment.FlowID,
+			Revision:       assignment.Revision,
+			ScheduledAt:    time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC),
+			StartedAt:      startedAt,
+			Status:         pebblestore.FlowRunStatusRunning,
+			SessionID:      "session-running-report",
 		},
 		Session: &reportedSession,
 	}))
@@ -348,6 +354,7 @@ func TestPeerFlowReportMirrorsRunningSessionIntoControllerWorkspace(t *testing.T
 
 func TestPeerFlowReportMirrorsRemoteChildSessionWithCanonicalTargetIdentity(t *testing.T) {
 	server, flows := newFlowPeerTestServer(t)
+	ensureFlowMemoryAgentRunnable(t, server)
 	hostWorkspace := filepath.Join(t.TempDir(), "swarm-go")
 	if err := os.MkdirAll(hostWorkspace, 0o755); err != nil {
 		t.Fatalf("create workspace: %v", err)
@@ -356,6 +363,20 @@ func TestPeerFlowReportMirrorsRemoteChildSessionWithCanonicalTargetIdentity(t *t
 		t.Fatalf("add workspace: %v", err)
 	}
 	seedFlowTopologyWorkspaceBinding(t, server, hostWorkspace, "swarm-go", "swarm-child-4-e2727893", "remote", "child-4-swarm", "/workspaces/swarm-go")
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
+		AccountScopeID:       testAccountScopeID,
+		UserID:               testUserID,
+		SwarmID:              "child-4-swarm",
+		Name:                 "swarm child 4",
+		Relationship:         swarmruntime.RelationshipChild,
+		Transport:            "remote",
+		BackendURL:           "http://child-4.example:7781",
+		Status:               "attached",
+		OwnerHostSwarmID:     "host-swarm-id",
+		OwnerHostContainerID: "swarm-child-4-e2727893",
+	}); err != nil {
+		t.Fatalf("seed remote runtime: %v", err)
+	}
 	server.SetRemoteDeployService(&fakeRemoteDeployService{sessions: []remotedeploy.Session{{
 		ID:             "swarm-child-4-e2727893",
 		Name:           "swarm child 4",
@@ -366,7 +387,7 @@ func TestPeerFlowReportMirrorsRemoteChildSessionWithCanonicalTargetIdentity(t *t
 	assignment := testAPIFlowAssignment("flow-child-4-report", 9)
 	assignment.Target = flow.TargetSelection{SwarmID: "child-4-swarm", Kind: "remote", DeploymentID: "swarm-child-4-e2727893", Name: "swarm child 4"}
 	assignment.Workspace = flow.WorkspaceContext{WorkspacePath: hostWorkspace, RuntimeWorkspacePath: "/workspaces/swarm-go", HostWorkspacePath: hostWorkspace}
-	if _, err := flows.PutDefinition(pebblestore.FlowDefinitionRecord{FlowID: assignment.FlowID, Revision: assignment.Revision, Assignment: assignment}); err != nil {
+	if _, err := flows.PutDefinitionForAccount(pebblestore.FlowDefinitionRecord{AccountScopeID: testAccountScopeID, UserID: testUserID, FlowID: assignment.FlowID, Revision: assignment.Revision, Assignment: assignment}); err != nil {
 		t.Fatalf("put definition: %v", err)
 	}
 
@@ -387,14 +408,16 @@ func TestPeerFlowReportMirrorsRemoteChildSessionWithCanonicalTargetIdentity(t *t
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, flowPeerReportPath, jsonReader(t, flowRunReportRequest{
 		Summary: pebblestore.FlowRunSummaryRecord{
-			RunID:         "run-child-4-report",
-			FlowID:        assignment.FlowID,
-			Revision:      assignment.Revision,
-			ScheduledAt:   time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC),
-			StartedAt:     time.Date(2025, 1, 2, 9, 1, 0, 0, time.UTC),
-			Status:        pebblestore.FlowRunStatusRunning,
-			SessionID:     "session-child-4-report",
-			TargetSwarmID: "child-4-swarm",
+			AccountScopeID: testAccountScopeID,
+			UserID:         testUserID,
+			RunID:          "run-child-4-report",
+			FlowID:         assignment.FlowID,
+			Revision:       assignment.Revision,
+			ScheduledAt:    time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC),
+			StartedAt:      time.Date(2025, 1, 2, 9, 1, 0, 0, time.UTC),
+			Status:         pebblestore.FlowRunStatusRunning,
+			SessionID:      "session-child-4-report",
+			TargetSwarmID:  "child-4-swarm",
 		},
 		Session: &reportedSession,
 	}))
@@ -451,11 +474,13 @@ func TestCanonicalFlowMirrorMetadataUsesSavedProfileIdentityNotRuntimeTargetIden
 			RuntimeWorkspacePath: "/workspaces/swarm",
 		},
 	}, resolved, pebblestore.FlowRunSummaryRecord{
-		RunID:         "run-flow-metadata",
-		FlowID:        "flow-metadata",
-		Revision:      4,
-		ScheduledAt:   time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC),
-		TargetSwarmID: "child-4-swarm",
+		AccountScopeID: testAccountScopeID,
+		UserID:         testUserID,
+		RunID:          "run-flow-metadata",
+		FlowID:         "flow-metadata",
+		Revision:       4,
+		ScheduledAt:    time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC),
+		TargetSwarmID:  "child-4-swarm",
 	}, swarmTarget{SwarmID: "child-4-swarm", Kind: "remote", Name: "swarm child 4", DeploymentID: "deploy-4"}, true, "child-4-swarm", "/host/workspace", "/workspaces/swarm", "host-swarm-id")
 	if metadata["flow_agent_kind"] != "background" || metadata["flow_agent_name"] != "memory" {
 		t.Fatalf("saved profile metadata = %+v", metadata)
@@ -480,11 +505,11 @@ func TestFlowRunSummaryReportingIsNonFatalWhenControllerUnreachable(t *testing.T
 		token: "peer-token",
 	})
 
-	err := server.putFlowRunSummary(flowRunStartForReportTest(), time.Date(2025, 1, 2, 9, 1, 0, 0, time.UTC), time.Date(2025, 1, 2, 9, 2, 0, 0, time.UTC), "")
+	err := server.putFlowRunSummary(ownedTestRunStart(flowRunStartForReportTest()), time.Date(2025, 1, 2, 9, 1, 0, 0, time.UTC), time.Date(2025, 1, 2, 9, 2, 0, 0, time.UTC), "")
 	if err != nil {
 		t.Fatalf("put flow run summary: %v", err)
 	}
-	stored, ok, err := flows.GetTargetRun("run-report-nonfatal")
+	stored, ok, err := flows.GetTargetRunForAccount(testAccountScopeID, "run-report-nonfatal")
 	if err != nil || !ok {
 		t.Fatalf("target run ok=%v err=%v", ok, err)
 	}
@@ -525,13 +550,13 @@ func TestFlowRunSummaryReportsFromManagedHostUsingManagedSyncController(t *testi
 		token: "peer-token",
 	})
 
-	if err := server.putFlowRunSummary(flow.RunStart{
+	if err := server.putFlowRunSummary(ownedTestRunStart(flow.RunStart{
 		RunID:       "run-managed-host-report",
 		FlowID:      "flow-managed-host-report",
 		Revision:    1,
 		ScheduledAt: time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC),
 		Status:      pebblestore.FlowRunStatusRunning,
-	}, time.Date(2025, 1, 2, 9, 1, 0, 0, time.UTC), time.Time{}, ""); err != nil {
+	}), time.Date(2025, 1, 2, 9, 1, 0, 0, time.UTC), time.Time{}, ""); err != nil {
 		t.Fatalf("put/report managed host summary: %v", err)
 	}
 	if got.Summary.RunID != "run-managed-host-report" || got.Summary.TargetSwarmID != "managed-host-swarm" || got.Summary.Status != pebblestore.FlowRunStatusRunning {
@@ -587,14 +612,14 @@ func TestFlowRunSummaryReportsRunningSessionToController(t *testing.T) {
 		token: "peer-token",
 	})
 
-	if err := server.putFlowRunSummary(flow.RunStart{
+	if err := server.putFlowRunSummary(ownedTestRunStart(flow.RunStart{
 		RunID:       "run-report-controller",
 		FlowID:      "flow-report-controller",
 		Revision:    4,
 		ScheduledAt: time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC),
 		SessionID:   localSession.ID,
 		Status:      pebblestore.FlowRunStatusRunning,
-	}, time.Date(2025, 1, 2, 9, 1, 0, 0, time.UTC), time.Time{}, ""); err != nil {
+	}), time.Date(2025, 1, 2, 9, 1, 0, 0, time.UTC), time.Time{}, ""); err != nil {
 		t.Fatalf("put/report running summary: %v", err)
 	}
 	if got.Summary.RunID != "run-report-controller" || got.Summary.TargetSwarmID != "target-swarm" || got.Summary.Status != pebblestore.FlowRunStatusRunning || !got.Summary.FinishedAt.IsZero() {
@@ -609,7 +634,7 @@ func TestFlowRunSummaryReportsRunningSessionToController(t *testing.T) {
 	if len(got.Messages) != 1 || got.Messages[0].Content != "controller payload" {
 		t.Fatalf("got messages = %+v", got.Messages)
 	}
-	stored, ok, err := flows.GetTargetRun("run-report-controller")
+	stored, ok, err := flows.GetTargetRunForAccount(testAccountScopeID, "run-report-controller")
 	if err != nil || !ok {
 		t.Fatalf("get target run ok=%v err=%v", ok, err)
 	}
@@ -643,7 +668,7 @@ func TestFlowRunReportDeliveryRetriesPendingSummaries(t *testing.T) {
 		state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "target-swarm", Name: "target", Role: "child"}, Pairing: swarmruntime.PairingState{ParentSwarmID: "controller-swarm"}},
 		token: "peer-token",
 	})
-	if _, err := flows.PutTargetRun(pebblestore.FlowRunSummaryRecord{
+	if _, err := flows.PutTargetRun(ownedTestRunSummary(pebblestore.FlowRunSummaryRecord{
 		RunID:       "run-retry",
 		FlowID:      "flow-retry",
 		Revision:    1,
@@ -651,12 +676,12 @@ func TestFlowRunReportDeliveryRetriesPendingSummaries(t *testing.T) {
 		StartedAt:   time.Date(2025, 1, 2, 9, 1, 0, 0, time.UTC),
 		FinishedAt:  time.Date(2025, 1, 2, 9, 2, 0, 0, time.UTC),
 		Status:      pebblestore.FlowRunStatusSuccess,
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("put target run: %v", err)
 	}
 
 	server.runFlowReportDelivery(context.Background())
-	failed, ok, err := flows.GetTargetRun("run-retry")
+	failed, ok, err := flows.GetTargetRunForAccount(testAccountScopeID, "run-retry")
 	if err != nil || !ok {
 		t.Fatalf("get failed retry ok=%v err=%v", ok, err)
 	}
@@ -669,7 +694,7 @@ func TestFlowRunReportDeliveryRetriesPendingSummaries(t *testing.T) {
 	}
 
 	server.runFlowReportDelivery(context.Background())
-	reported, ok, err := flows.GetTargetRun("run-retry")
+	reported, ok, err := flows.GetTargetRunForAccount(testAccountScopeID, "run-retry")
 	if err != nil || !ok {
 		t.Fatalf("get reported retry ok=%v err=%v", ok, err)
 	}

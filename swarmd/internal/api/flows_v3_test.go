@@ -13,6 +13,7 @@ import (
 	"swarm/packages/swarmd/internal/flow"
 	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	swarmruntime "swarm/packages/swarmd/internal/swarm"
 )
 
 func TestFlowsV3CreateListGetUpdateRunNowDeleteHistoryAndStatus(t *testing.T) {
@@ -45,6 +46,9 @@ func TestFlowsV3CreateListGetUpdateRunNowDeleteHistoryAndStatus(t *testing.T) {
 		RemoteTailnetURL: child.URL,
 		RemoteEndpoint:   child.URL,
 	}}})
+	if _, err := server.swarmNodes.Put(pebblestore.SwarmNodeRecord{SwarmID: "child-remote", Name: "pc child", Role: swarmruntime.RelationshipChild, Kind: "remote", DeploymentID: "pc-child-remote", BackendURL: child.URL, Status: "online"}); err != nil {
+		t.Fatalf("seed remote swarm node: %v", err)
+	}
 	req := flowV3UpsertRequest{
 		FlowID:  "flow-v3-remote",
 		Name:    "Remote V3 flow",
@@ -84,7 +88,7 @@ func TestFlowsV3CreateListGetUpdateRunNowDeleteHistoryAndStatus(t *testing.T) {
 	if createPayload.Flow.AgentDetail == nil || createPayload.Flow.AgentDetail.Name != "flow-test" || createPayload.Flow.AgentDetail.Mode != agentruntime.ModeSubagent {
 		t.Fatalf("agent detail = %+v", createPayload.Flow.AgentDetail)
 	}
-	definition, ok, err := flows.GetDefinition("flow-v3-remote")
+	definition, ok, err := flows.GetDefinitionForAccount(testAccountScopeID, "flow-v3-remote")
 	if err != nil || !ok {
 		t.Fatalf("get definition ok=%v err=%v", ok, err)
 	}
@@ -144,7 +148,7 @@ func TestFlowsV3CreateListGetUpdateRunNowDeleteHistoryAndStatus(t *testing.T) {
 	if updatePayload.Flow.Definition.Agent.ProfileName != "swarm" || updatePayload.Flow.Definition.Agent.ProfileMode != "primary" {
 		t.Fatalf("updated agent = %+v", updatePayload.Flow.Definition.Agent)
 	}
-	updatedDefinition, ok, err := flows.GetDefinition("flow-v3-remote")
+	updatedDefinition, ok, err := flows.GetDefinitionForAccount(testAccountScopeID, "flow-v3-remote")
 	if err != nil || !ok {
 		t.Fatalf("get updated definition ok=%v err=%v", ok, err)
 	}
@@ -172,19 +176,21 @@ func TestFlowsV3CreateListGetUpdateRunNowDeleteHistoryAndStatus(t *testing.T) {
 	if unassignPayload.Result == nil || unassignPayload.Result.Outbox.TargetSwarmID != "child-remote" || unassignPayload.Result.Outbox.Command.Assignment.Target.SwarmID != "child-remote" {
 		t.Fatalf("unassign delivery result = %+v", unassignPayload.Result)
 	}
-	if storedUnassign, ok, err := flows.GetDefinition("flow-v3-remote"); err != nil || !ok || storedUnassign.Assignment.Enabled || flowV3HasTargetSelection(storedUnassign.Assignment.Target) {
+	if storedUnassign, ok, err := flows.GetDefinitionForAccount(testAccountScopeID, "flow-v3-remote"); err != nil || !ok || storedUnassign.Assignment.Enabled || flowV3HasTargetSelection(storedUnassign.Assignment.Target) {
 		t.Fatalf("stored unassign definition = %+v ok=%v err=%v", storedUnassign, ok, err)
 	}
 	if _, err := flows.PutMirroredRunSummary(pebblestore.FlowRunSummaryRecord{
-		RunID:         "run-v3-1",
-		FlowID:        "flow-v3-remote",
-		Revision:      2,
-		ScheduledAt:   time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC),
-		StartedAt:     time.Date(2025, 1, 2, 9, 0, 1, 0, time.UTC),
-		FinishedAt:    time.Date(2025, 1, 2, 9, 0, 3, 0, time.UTC),
-		Status:        pebblestore.FlowRunStatusSuccess,
-		Summary:       "done",
-		TargetSwarmID: "child-remote",
+		AccountScopeID: testAccountScopeID,
+		UserID:         testUserID,
+		RunID:          "run-v3-1",
+		FlowID:         "flow-v3-remote",
+		Revision:       2,
+		ScheduledAt:    time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC),
+		StartedAt:      time.Date(2025, 1, 2, 9, 0, 1, 0, time.UTC),
+		FinishedAt:     time.Date(2025, 1, 2, 9, 0, 3, 0, time.UTC),
+		Status:         pebblestore.FlowRunStatusSuccess,
+		Summary:        "done",
+		TargetSwarmID:  "child-remote",
 	}); err != nil {
 		t.Fatalf("put mirrored summary: %v", err)
 	}
@@ -239,10 +245,10 @@ func TestFlowsV3CreateListGetUpdateRunNowDeleteHistoryAndStatus(t *testing.T) {
 	if deletePayload.Flow.Definition.FlowID != "flow-v3-remote" || deletePayload.Flow.Definition.DeletedAt.IsZero() {
 		t.Fatalf("delete payload = %+v", deletePayload.Flow.Definition)
 	}
-	if _, ok, err := flows.GetDefinition("flow-v3-remote"); err != nil || ok {
+	if _, ok, err := flows.GetDefinitionForAccount(testAccountScopeID, "flow-v3-remote"); err != nil || ok {
 		t.Fatalf("definition after delete ok=%v err=%v", ok, err)
 	}
-	if _, ok, err := flows.GetAcceptedAssignment("flow-v3-remote"); err != nil || ok {
+	if _, ok, err := flows.GetAcceptedAssignmentForAccount(testAccountScopeID, "flow-v3-remote"); err != nil || ok {
 		t.Fatalf("accepted after delete ok=%v err=%v", ok, err)
 	}
 }
@@ -323,10 +329,10 @@ func TestFlowsV3LocalContainerCRUDSyncsAcrossHTTPBoundary(t *testing.T) {
 	if delivered[0].Assignment.Target.SwarmID != "child-local" || delivered[0].Assignment.Target.Kind != "local" || delivered[0].Assignment.Target.DeploymentID != "pc-child-local" {
 		t.Fatalf("delivered target = %+v", delivered[0].Assignment.Target)
 	}
-	if _, ok, err := flows.GetAcceptedAssignment("flow-v3-local-crud"); err != nil || ok {
+	if _, ok, err := flows.GetAcceptedAssignmentForAccount(testAccountScopeID, "flow-v3-local-crud"); err != nil || ok {
 		t.Fatalf("accepted after delete ok=%v err=%v", ok, err)
 	}
-	status, ok, err := flows.GetAssignmentStatus("flow-v3-local-crud", "child-local")
+	status, ok, err := flows.GetAssignmentStatusForAccount(testAccountScopeID, "flow-v3-local-crud", "child-local")
 	if err != nil || !ok {
 		t.Fatalf("assignment status ok=%v err=%v", ok, err)
 	}
@@ -397,10 +403,10 @@ func TestFlowsV3CreateAllowsLocalContainerTargetWithLocalOwnerHost(t *testing.T)
 	if delivered[0].Action != flow.CommandInstall || delivered[0].Assignment.Target.SwarmID != "local-container-swarm" || delivered[0].Assignment.Target.Kind != "local" {
 		t.Fatalf("delivered command = %+v", delivered[0])
 	}
-	if _, ok, err := flows.GetDefinition("flow-v3-local-container-owner-host"); err != nil || !ok {
+	if _, ok, err := flows.GetDefinitionForAccount(testAccountScopeID, "flow-v3-local-container-owner-host"); err != nil || !ok {
 		t.Fatalf("stored definition ok=%v err=%v", ok, err)
 	}
-	status, ok, err := flows.GetAssignmentStatus("flow-v3-local-container-owner-host", "local-container-swarm")
+	status, ok, err := flows.GetAssignmentStatusForAccount(testAccountScopeID, "flow-v3-local-container-owner-host", "local-container-swarm")
 	if err != nil || !ok {
 		t.Fatalf("assignment status ok=%v err=%v", ok, err)
 	}
@@ -414,6 +420,8 @@ func TestFlowsV3ChildListsTargetAcceptedAssignmentsWithoutControllerDefinitions(
 	ensureFlowTestAgent(t, server)
 	acceptedAt := time.Date(2026, 5, 11, 4, 52, 43, 0, time.UTC)
 	accepted := flow.AcceptedAssignment{
+		AccountScopeID: testAccountScopeID,
+		UserID:         testUserID,
 		Assignment: flow.Assignment{
 			FlowID:   "flow-child-visible",
 			Revision: 1,
@@ -430,11 +438,11 @@ func TestFlowsV3ChildListsTargetAcceptedAssignmentsWithoutControllerDefinitions(
 		},
 		AcceptedAt: acceptedAt,
 	}
-	ack, inserted, err := flows.ApplyTargetAssignmentCommand(flow.AssignmentCommand{CommandID: "cmd-install", FlowID: accepted.FlowID, Revision: accepted.Revision, Action: flow.CommandInstall, CreatedAt: acceptedAt, Assignment: accepted.Assignment}, "child-local", acceptedAt)
+	ack, inserted, err := flows.ApplyTargetAssignmentCommand(flow.AssignmentCommand{AccountScopeID: testAccountScopeID, UserID: testUserID, CommandID: "cmd-install", FlowID: accepted.FlowID, Revision: accepted.Revision, Action: flow.CommandInstall, CreatedAt: acceptedAt, Assignment: accepted.Assignment}, "child-local", acceptedAt)
 	if err != nil || !inserted || ack.Status != flow.AssignmentAccepted {
 		t.Fatalf("accept target command inserted=%v ack=%+v err=%v", inserted, ack, err)
 	}
-	if _, ok, err := flows.GetDefinition("flow-child-visible"); err != nil || ok {
+	if _, ok, err := flows.GetDefinitionForAccount(testAccountScopeID, "flow-child-visible"); err != nil || ok {
 		t.Fatalf("controller definition ok=%v err=%v", ok, err)
 	}
 
@@ -508,7 +516,7 @@ func TestFlowsV3CreateDoesNotAutoRunOnDemandFlow(t *testing.T) {
 	if got := runner.callCount(); got != 0 {
 		t.Fatalf("runner call count = %d, want 0", got)
 	}
-	definition, ok, err := flows.GetDefinition("flow-v3-one-shot")
+	definition, ok, err := flows.GetDefinitionForAccount(testAccountScopeID, "flow-v3-one-shot")
 	if err != nil || !ok {
 		t.Fatalf("get definition ok=%v err=%v", ok, err)
 	}
@@ -557,7 +565,7 @@ func TestFlowsV3CreateSchedulesMultipleTimesAndPreservesTimezone(t *testing.T) {
 		!(payload.Flow.Definition.Schedule.Times[0] == "17:00" && payload.Flow.Definition.Schedule.Times[1] == "09:00") {
 		t.Fatalf("schedule times = %+v", payload.Flow.Definition.Schedule.Times)
 	}
-	definition, ok, err := flows.GetDefinition("flow-v3-multi-time")
+	definition, ok, err := flows.GetDefinitionForAccount(testAccountScopeID, "flow-v3-multi-time")
 	if err != nil || !ok {
 		t.Fatalf("get definition ok=%v err=%v", ok, err)
 	}
@@ -594,7 +602,7 @@ func TestFlowsV3CreateAcceptsModalWeeklyMultiDayAndRawCron(t *testing.T) {
 	if weeklyRec.Code != http.StatusCreated {
 		t.Fatalf("weekly create status = %d body=%s", weeklyRec.Code, weeklyRec.Body.String())
 	}
-	weeklyDefinition, ok, err := flows.GetDefinition("flow-v3-weekly-multi-day")
+	weeklyDefinition, ok, err := flows.GetDefinitionForAccount(testAccountScopeID, "flow-v3-weekly-multi-day")
 	if err != nil || !ok {
 		t.Fatalf("weekly get definition ok=%v err=%v", ok, err)
 	}
@@ -612,7 +620,7 @@ func TestFlowsV3CreateAcceptsModalWeeklyMultiDayAndRawCron(t *testing.T) {
 	if cronRec.Code != http.StatusCreated {
 		t.Fatalf("cron create status = %d body=%s", cronRec.Code, cronRec.Body.String())
 	}
-	cronDefinition, ok, err := flows.GetDefinition("flow-v3-raw-cron")
+	cronDefinition, ok, err := flows.GetDefinitionForAccount(testAccountScopeID, "flow-v3-raw-cron")
 	if err != nil || !ok {
 		t.Fatalf("cron get definition ok=%v err=%v", ok, err)
 	}
@@ -670,21 +678,21 @@ func TestFlowsV3CreatePersistsPendingSyncWhenTargetIsUnavailable(t *testing.T) {
 	if len(payload.Flow.AssignmentStatuses) == 0 || !payload.Flow.AssignmentStatuses[0].PendingSync {
 		t.Fatalf("assignment statuses = %+v", payload.Flow.AssignmentStatuses)
 	}
-	definition, ok, err := flows.GetDefinition("flow-v3-pending-sync")
+	definition, ok, err := flows.GetDefinitionForAccount(testAccountScopeID, "flow-v3-pending-sync")
 	if err != nil || !ok {
 		t.Fatalf("get definition ok=%v err=%v", ok, err)
 	}
 	if definition.Assignment.Name != "Pending sync flow" {
 		t.Fatalf("stored definition = %+v", definition.Assignment)
 	}
-	pending, err := flows.ListOutboxCommands(pebblestore.FlowOutboxStatusPending, 10)
+	pending, err := flows.ListOutboxCommandsForAccount(testAccountScopeID, "", pebblestore.FlowOutboxStatusPending, 10)
 	if err != nil {
 		t.Fatalf("list pending outbox: %v", err)
 	}
 	if len(pending) != 1 || pending[0].FlowID != "flow-v3-pending-sync" {
 		t.Fatalf("pending outbox = %+v", pending)
 	}
-	status, ok, err := flows.GetAssignmentStatus("flow-v3-pending-sync", "child-offline")
+	status, ok, err := flows.GetAssignmentStatusForAccount(testAccountScopeID, "flow-v3-pending-sync", "child-offline")
 	if err != nil || !ok {
 		t.Fatalf("get assignment status ok=%v err=%v", ok, err)
 	}
@@ -809,7 +817,7 @@ func TestFlowsV3DeleteAllowsStaleMissingTarget(t *testing.T) {
 		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
 		Intent:        flow.PromptIntent{Prompt: "Clean up stale flow."},
 	}
-	if _, err := flows.PutDefinition(pebblestore.FlowDefinitionRecord{FlowID: assignment.FlowID, Revision: assignment.Revision, Assignment: assignment}); err != nil {
+	if _, err := flows.PutDefinitionForAccount(pebblestore.FlowDefinitionRecord{AccountScopeID: testAccountScopeID, UserID: testUserID, FlowID: assignment.FlowID, Revision: assignment.Revision, Assignment: assignment}); err != nil {
 		t.Fatalf("put stale definition: %v", err)
 	}
 	getRec := httptest.NewRecorder()
@@ -837,7 +845,7 @@ func TestFlowsV3DeleteAllowsStaleMissingTarget(t *testing.T) {
 	if !deletePayload.Flow.TargetStale || !strings.Contains(deletePayload.Flow.TargetStaleReason, "swarm-missing") {
 		t.Fatalf("delete stale markers = stale:%v reason:%q", deletePayload.Flow.TargetStale, deletePayload.Flow.TargetStaleReason)
 	}
-	if _, ok, err := flows.GetDefinition("flow-v3-stale-target"); err != nil || ok {
+	if _, ok, err := flows.GetDefinitionForAccount(testAccountScopeID, "flow-v3-stale-target"); err != nil || ok {
 		t.Fatalf("definition after stale delete ok=%v err=%v", ok, err)
 	}
 }

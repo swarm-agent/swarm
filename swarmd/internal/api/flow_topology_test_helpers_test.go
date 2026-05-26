@@ -13,6 +13,8 @@ func seedFlowTopologyWorkspaceBinding(t *testing.T, server *Server, hostWorkspac
 		t.Fatalf("topology service not configured")
 	}
 	if _, err := server.topology.UpsertWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
+		AccountScopeID:            testAccountScopeID,
+		UserID:                    testUserID,
 		BindingID:                 pebblestore.CanonicalTopologyWorkspaceBindingID(deploymentID, hostWorkspace),
 		SourceWorkspacePath:       hostWorkspace,
 		SourceWorkspaceName:       workspaceName,

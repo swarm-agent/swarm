@@ -101,11 +101,11 @@ func (s *Server) handlePeerFlowApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if normalizeAPIFlowAssignmentCommand(command).Action == flow.CommandDelete {
-		_, exists, verifyErr := s.flows.GetAcceptedAssignment(command.FlowID)
-		flowdiaglog.Printf("peer_apply_delete_verify", "flow_id=%q command_id=%q action=%q target_swarm_id=%q db_path=%q accepted_key=%q accepted_exists_after_delete=%t ack_status=%q ack_revision=%d inserted=%t verify_err=%q", command.FlowID, command.CommandID, command.Action, targetSwarmID, s.flows.StorePath(), pebblestore.KeyFlowTargetAccepted(command.FlowID), exists, ack.Status, ack.AcceptedRevision, inserted, errString(verifyErr))
+		_, exists, verifyErr := s.flows.GetAcceptedAssignmentForAccount(command.AccountScopeID, command.FlowID)
+		flowdiaglog.Printf("peer_apply_delete_verify", "flow_id=%q command_id=%q action=%q target_swarm_id=%q db_path=%q accepted_key=%q accepted_exists_after_delete=%t ack_status=%q ack_revision=%d inserted=%t verify_err=%q", command.FlowID, command.CommandID, command.Action, targetSwarmID, s.flows.StorePath(), pebblestore.KeyFlowTargetAcceptedForAccount(command.AccountScopeID, command.FlowID), exists, ack.Status, ack.AcceptedRevision, inserted, errString(verifyErr))
 	} else {
-		accepted, exists, verifyErr := s.flows.GetAcceptedAssignment(command.FlowID)
-		flowdiaglog.Printf("peer_apply_accept_verify", "flow_id=%q command_id=%q action=%q target_swarm_id=%q db_path=%q accepted_key=%q accepted_exists_after_apply=%t accepted_revision=%d ack_status=%q ack_revision=%d inserted=%t verify_err=%q", command.FlowID, command.CommandID, command.Action, targetSwarmID, s.flows.StorePath(), pebblestore.KeyFlowTargetAccepted(command.FlowID), exists, accepted.Revision, ack.Status, ack.AcceptedRevision, inserted, errString(verifyErr))
+		accepted, exists, verifyErr := s.flows.GetAcceptedAssignmentForAccount(command.AccountScopeID, command.FlowID)
+		flowdiaglog.Printf("peer_apply_accept_verify", "flow_id=%q command_id=%q action=%q target_swarm_id=%q db_path=%q accepted_key=%q accepted_exists_after_apply=%t accepted_revision=%d ack_status=%q ack_revision=%d inserted=%t verify_err=%q", command.FlowID, command.CommandID, command.Action, targetSwarmID, s.flows.StorePath(), pebblestore.KeyFlowTargetAcceptedForAccount(command.AccountScopeID, command.FlowID), exists, accepted.Revision, ack.Status, ack.AcceptedRevision, inserted, errString(verifyErr))
 	}
 	writeJSON(w, http.StatusOK, flowAssignmentApplyResponse{OK: true, Ack: ack, Inserted: inserted})
 }
@@ -180,7 +180,7 @@ func (s *Server) DeliverPendingFlowAssignmentCommands(ctx context.Context, limit
 
 func (s *Server) enqueueFlowAssignmentCommandForTarget(command flow.AssignmentCommand, target swarmTarget, resolved flow.ResolvedTarget) (pebblestore.FlowOutboxCommandRecord, error) {
 	command = normalizeAPIFlowAssignmentCommand(command)
-	command.Assignment.Workspace = s.flowWorkspaceForTarget(command.Assignment.Workspace, target, resolved)
+	command.Assignment.Workspace = s.flowWorkspaceForTargetForAccount(command.AccountScopeID, command.Assignment.Workspace, target, resolved)
 	if err := command.ValidateIdempotencyKey(); err != nil {
 		return pebblestore.FlowOutboxCommandRecord{}, err
 	}
@@ -665,6 +665,10 @@ func normalizeFlowTargetSelection(selection flow.TargetSelection) flow.TargetSel
 }
 
 func (s *Server) flowWorkspaceForTarget(workspace flow.WorkspaceContext, target swarmTarget, resolved flow.ResolvedTarget) flow.WorkspaceContext {
+	return s.flowWorkspaceForTargetForAccount("", workspace, target, resolved)
+}
+
+func (s *Server) flowWorkspaceForTargetForAccount(accountScopeID string, workspace flow.WorkspaceContext, target swarmTarget, resolved flow.ResolvedTarget) flow.WorkspaceContext {
 	workspace.WorkspacePath = strings.TrimSpace(workspace.WorkspacePath)
 	workspace.HostWorkspacePath = strings.TrimSpace(workspace.HostWorkspacePath)
 	workspace.RuntimeWorkspacePath = strings.TrimSpace(workspace.RuntimeWorkspacePath)
@@ -681,7 +685,7 @@ func (s *Server) flowWorkspaceForTarget(workspace flow.WorkspaceContext, target 
 	if workspace.WorkspacePath == "" || s == nil || s.workspace == nil || isSelfFlowTarget(target, resolved) {
 		return workspace
 	}
-	translated := s.resolveReplicatedFlowWorkspacePath(hostWorkspacePath, target, resolved)
+	translated := s.resolveReplicatedFlowWorkspacePathForAccount(accountScopeID, hostWorkspacePath, target, resolved)
 	if translated == "" || translated == workspace.WorkspacePath {
 		if translated != "" {
 			workspace.RuntimeWorkspacePath = translated
@@ -695,6 +699,10 @@ func (s *Server) flowWorkspaceForTarget(workspace flow.WorkspaceContext, target 
 }
 
 func (s *Server) resolveReplicatedFlowWorkspacePath(hostWorkspacePath string, target swarmTarget, resolved flow.ResolvedTarget) string {
+	return s.resolveReplicatedFlowWorkspacePathForAccount("", hostWorkspacePath, target, resolved)
+}
+
+func (s *Server) resolveReplicatedFlowWorkspacePathForAccount(accountScopeID, hostWorkspacePath string, target swarmTarget, resolved flow.ResolvedTarget) string {
 	if s == nil || s.topology == nil {
 		return ""
 	}
@@ -704,13 +712,23 @@ func (s *Server) resolveReplicatedFlowWorkspacePath(hostWorkspacePath string, ta
 	}
 	targetSwarmID := firstNonEmpty(strings.TrimSpace(resolved.SwarmID), strings.TrimSpace(target.SwarmID))
 	deploymentID := firstNonEmpty(strings.TrimSpace(resolved.DeploymentID), strings.TrimSpace(target.DeploymentID))
-	bindings, err := s.topology.ListWorkspaceBindings(100000)
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	var bindings []pebblestore.TopologyWorkspaceBindingRecord
+	var err error
+	if accountScopeID != "" {
+		bindings, err = s.topology.ListWorkspaceBindingsForAccount(accountScopeID, 100000)
+	} else {
+		bindings, err = s.topology.ListWorkspaceBindings(100000)
+	}
 	if err != nil {
 		return ""
 	}
 	bestSource := ""
 	bestTarget := ""
 	for _, binding := range bindings {
+		if accountScopeID != "" && strings.TrimSpace(binding.AccountScopeID) != accountScopeID {
+			continue
+		}
 		if !flowWorkspaceBindingMatchesTarget(binding, targetSwarmID, deploymentID) {
 			continue
 		}

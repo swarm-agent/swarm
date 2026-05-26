@@ -65,7 +65,7 @@ func TestPeerFlowApplyIsIdempotentAndRejectsOutOfOrder(t *testing.T) {
 		t.Fatalf("second payload = %+v", secondPayload)
 	}
 
-	accepted, ok, err := flows.GetAcceptedAssignment("flow-apply")
+	accepted, ok, err := flows.GetAcceptedAssignmentForAccount(testAccountScopeID, "flow-apply")
 	if err != nil || !ok {
 		t.Fatalf("accepted ok=%v err=%v", ok, err)
 	}
@@ -144,7 +144,7 @@ func TestPeerFlowApplyAcksLocalTargetSwarmInsteadOfSender(t *testing.T) {
 	if payload.Ack.TargetSwarmID != "child-swarm" {
 		t.Fatalf("ack target swarm = %q, want child-swarm", payload.Ack.TargetSwarmID)
 	}
-	accepted, ok, err := flows.GetAcceptedAssignment("flow-apply-child")
+	accepted, ok, err := flows.GetAcceptedAssignmentForAccount(testAccountScopeID, "flow-apply-child")
 	if err != nil || !ok {
 		t.Fatalf("accepted ok=%v err=%v", ok, err)
 	}
@@ -184,7 +184,7 @@ func TestFlowAssignmentDeliveryKeepsUnreachableTargetsPending(t *testing.T) {
 	if len(pending) != 1 || pending[0].CommandID != "cmd-offline" {
 		t.Fatalf("pending outbox = %+v", pending)
 	}
-	stored, ok, err := flows.GetAssignmentStatus("flow-offline", "child-offline")
+	stored, ok, err := flows.GetAssignmentStatusForAccount(testAccountScopeID, "flow-offline", "child-offline")
 	if err != nil || !ok {
 		t.Fatalf("assignment status ok=%v err=%v", ok, err)
 	}
@@ -214,6 +214,20 @@ func TestFlowAssignmentDeliveryUsesResolvedRemoteTargetSwarm(t *testing.T) {
 		}})
 	}))
 	defer child.Close()
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
+		AccountScopeID:       testAccountScopeID,
+		UserID:               testUserID,
+		SwarmID:              "child-remote",
+		Name:                 "pc child",
+		Relationship:         swarmruntime.RelationshipChild,
+		Transport:            "remote",
+		BackendURL:           child.URL,
+		Status:               "attached",
+		OwnerHostSwarmID:     "host-swarm-id",
+		OwnerHostContainerID: "pc-child-remote",
+	}); err != nil {
+		t.Fatalf("upsert remote runtime: %v", err)
+	}
 	server.SetRemoteDeployService(&fakeRemoteDeployService{sessions: []remotedeploy.Session{{
 		ID:               "pc-child-remote",
 		Name:             "pc child",
@@ -450,10 +464,10 @@ func TestFlowAssignmentDeliveryRequiresValidContainerAck(t *testing.T) {
 	if result.Outbox.Status != pebblestore.FlowOutboxStatusPending {
 		t.Fatalf("outbox status = %q", result.Outbox.Status)
 	}
-	if _, ok, err := flows.GetAcceptedAssignment("flow-invalid-ack"); err != nil || ok {
+	if _, ok, err := flows.GetAcceptedAssignmentForAccount(testAccountScopeID, "flow-invalid-ack"); err != nil || ok {
 		t.Fatalf("primary accepted assignment ok=%v err=%v", ok, err)
 	}
-	stored, ok, err := flows.GetAssignmentStatus("flow-invalid-ack", "child-invalid-ack")
+	stored, ok, err := flows.GetAssignmentStatusForAccount(testAccountScopeID, "flow-invalid-ack", "child-invalid-ack")
 	if err != nil || !ok {
 		t.Fatalf("assignment status ok=%v err=%v", ok, err)
 	}
@@ -506,7 +520,7 @@ func TestFlowAssignmentDeliveryStoresRejection(t *testing.T) {
 	if result.Outbox.Status != pebblestore.FlowOutboxStatusRejected {
 		t.Fatalf("outbox status = %q", result.Outbox.Status)
 	}
-	stored, ok, err := flows.GetAssignmentStatus("flow-reject", "child-reject")
+	stored, ok, err := flows.GetAssignmentStatusForAccount(testAccountScopeID, "flow-reject", "child-reject")
 	if err != nil || !ok {
 		t.Fatalf("assignment status ok=%v err=%v", ok, err)
 	}
@@ -540,7 +554,8 @@ func newFlowPeerTestServer(t *testing.T) (*Server, *pebblestore.FlowStore) {
 	workspaceSvc := workspaceruntime.NewService(pebblestore.NewWorkspaceStore(store))
 	server := NewServer(nil, agentSvc, modelSvc, nil, sessionSvc, workspaceSvc, nil, nil, nil, nil, nil, eventLog, stream.NewHub(eventLog))
 	server.SetSwarmMirrorStore(pebblestore.NewSwarmMirrorStore(store))
-	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, nil, pebblestore.NewWorkspaceStore(store)))
+	server.SetSwarmNodeStore(pebblestore.NewSwarmNodeStore(store))
+	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, server.swarmNodes, nil, nil, nil, nil, pebblestore.NewWorkspaceStore(store)))
 	flows := pebblestore.NewFlowStore(store)
 	server.SetFlowStore(flows)
 	server.SetSessionRouteStore(pebblestore.NewSessionRouteStore(store))
@@ -581,12 +596,14 @@ func testAPIFlowAssignment(flowID string, revision int64) flow.Assignment {
 
 func testAPIFlowCommand(commandID string, assignment flow.Assignment, action flow.CommandAction) flow.AssignmentCommand {
 	return flow.AssignmentCommand{
-		CommandID:  commandID,
-		FlowID:     assignment.FlowID,
-		Revision:   assignment.Revision,
-		Action:     action,
-		CreatedAt:  time.Date(2025, 1, 2, 8, 0, 0, 0, time.UTC),
-		Assignment: assignment,
+		AccountScopeID: testAccountScopeID,
+		UserID:         testUserID,
+		CommandID:      commandID,
+		FlowID:         assignment.FlowID,
+		Revision:       assignment.Revision,
+		Action:         action,
+		CreatedAt:      time.Date(2025, 1, 2, 8, 0, 0, 0, time.UTC),
+		Assignment:     assignment,
 	}
 }
 

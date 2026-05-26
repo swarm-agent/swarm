@@ -106,16 +106,27 @@ const (
 	KeyNotificationPermissionRefPrefix          = "notification_permission_ref/"
 	KeyNotificationSummaryPrefix                = "notification_summary/"
 	KeyFlowDefinitionPrefix                     = "flow/definition/"
+	KeyFlowDefinitionAccountPrefix              = "flow/definition_by_account/"
 	KeyFlowAssignmentStatusPrefix               = "flow/assignment_status/"
+	KeyFlowAssignmentStatusAccountPrefix        = "flow/assignment_status_by_account/"
 	KeyFlowOutboxPrefix                         = "flow/outbox/"
+	KeyFlowOutboxAccountPrefix                  = "flow/outbox_by_account/"
 	KeyFlowOutboxStatusPrefix                   = "flow/outbox_status/"
+	KeyFlowOutboxStatusAccountPrefix            = "flow/outbox_status_by_account/"
 	KeyFlowMirroredRunPrefix                    = "flow/mirrored_run/"
+	KeyFlowMirroredRunAccountPrefix             = "flow/mirrored_run_by_account/"
 	KeyFlowTargetAcceptedPrefix                 = "flow_target/accepted/"
+	KeyFlowTargetAcceptedAccountPrefix          = "flow_target/accepted_by_account/"
 	KeyFlowTargetCommandLedgerPrefix            = "flow_target/command_ledger/"
+	KeyFlowTargetCommandLedgerAccountPrefix     = "flow_target/command_ledger_by_account/"
 	KeyFlowTargetDuePrefix                      = "flow_target/due/"
+	KeyFlowTargetDueAccountPrefix               = "flow_target/due_by_account/"
 	KeyFlowTargetRunPrefix                      = "flow_target/run/"
+	KeyFlowTargetRunAccountPrefix               = "flow_target/run_by_account/"
 	KeyFlowTargetRunByFlowPrefix                = "flow_target/run_by_flow/"
+	KeyFlowTargetRunByFlowAccountPrefix         = "flow_target/run_by_flow_by_account/"
 	KeyFlowTargetRunClaimPrefix                 = "flow_target/run_claim/"
+	KeyFlowTargetRunClaimAccountPrefix          = "flow_target/run_claim_by_account/"
 	KeyIntegrationPackPrefix                    = "integration/pack/"
 	KeyIntegrationPackVersionPrefix             = "integration/pack_version/"
 	KeyIntegrationToolPrefix                    = "integration/tool/"
@@ -894,12 +905,28 @@ func KeyFlowDefinition(flowID string) string {
 	return KeyFlowDefinitionPrefix + keyPart(flowID)
 }
 
+func KeyFlowDefinitionForAccount(accountScopeID, flowID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyFlowDefinitionAccountPrefix, keyPart(accountScopeID), keyPart(flowID))
+}
+
 func FlowDefinitionPrefix() string {
 	return KeyFlowDefinitionPrefix
 }
 
+func FlowDefinitionPrefixForAccount(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyFlowDefinitionAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyFlowDefinitionAccountPrefix, accountPart)
+}
+
 func KeyFlowAssignmentStatus(flowID, targetSwarmID string) string {
 	return fmt.Sprintf("%s%s/%s", KeyFlowAssignmentStatusPrefix, keyPart(flowID), keyPart(targetSwarmID))
+}
+
+func KeyFlowAssignmentStatusForAccount(accountScopeID, flowID, targetSwarmID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyFlowAssignmentStatusAccountPrefix, keyPart(accountScopeID), keyPart(flowID), keyPart(targetSwarmID))
 }
 
 func FlowAssignmentStatusPrefix(flowID string) string {
@@ -910,12 +937,44 @@ func FlowAssignmentStatusPrefix(flowID string) string {
 	return fmt.Sprintf("%s%s/", KeyFlowAssignmentStatusPrefix, part)
 }
 
+func FlowAssignmentStatusPrefixForAccount(accountScopeID, flowID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyFlowAssignmentStatusAccountPrefix
+	}
+	flowPart := keyPart(flowID)
+	if flowPart == "" {
+		return fmt.Sprintf("%s%s/", KeyFlowAssignmentStatusAccountPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyFlowAssignmentStatusAccountPrefix, accountPart, flowPart)
+}
+
 func KeyFlowOutbox(commandID string) string {
 	return KeyFlowOutboxPrefix + keyPart(commandID)
 }
 
+func KeyFlowOutboxForAccount(accountScopeID, flowID, commandID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyFlowOutboxAccountPrefix, keyPart(accountScopeID), keyPart(flowID), keyPart(commandID))
+}
+
+func FlowOutboxPrefixForAccount(accountScopeID, flowID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyFlowOutboxAccountPrefix
+	}
+	flowPart := keyPart(flowID)
+	if flowPart == "" {
+		return fmt.Sprintf("%s%s/", KeyFlowOutboxAccountPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyFlowOutboxAccountPrefix, accountPart, flowPart)
+}
+
 func KeyFlowOutboxStatus(status string, nextAttemptAt int64, commandID string) string {
 	return fmt.Sprintf("%s%s/%020d/%s", KeyFlowOutboxStatusPrefix, keyPart(status), nextAttemptAt, keyPart(commandID))
+}
+
+func KeyFlowOutboxStatusForAccount(accountScopeID, flowID, status string, nextAttemptAt int64, commandID string) string {
+	return fmt.Sprintf("%s%s/%s/%s/%020d/%s", KeyFlowOutboxStatusAccountPrefix, keyPart(status), keyPart(accountScopeID), keyPart(flowID), nextAttemptAt, keyPart(commandID))
 }
 
 func FlowOutboxStatusPrefix(status string) string {
@@ -926,8 +985,28 @@ func FlowOutboxStatusPrefix(status string) string {
 	return fmt.Sprintf("%s%s/", KeyFlowOutboxStatusPrefix, part)
 }
 
+func FlowOutboxStatusPrefixForAccount(accountScopeID, flowID, status string) string {
+	statusPart := keyPart(status)
+	if statusPart == "" {
+		return KeyFlowOutboxStatusAccountPrefix
+	}
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return fmt.Sprintf("%s%s/", KeyFlowOutboxStatusAccountPrefix, statusPart)
+	}
+	flowPart := keyPart(flowID)
+	if flowPart == "" {
+		return fmt.Sprintf("%s%s/%s/", KeyFlowOutboxStatusAccountPrefix, statusPart, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/%s/", KeyFlowOutboxStatusAccountPrefix, statusPart, accountPart, flowPart)
+}
+
 func KeyFlowMirroredRun(flowID string, startedAt int64, runID string) string {
 	return fmt.Sprintf("%s%s/%020d/%s", KeyFlowMirroredRunPrefix, keyPart(flowID), reverseMillis(startedAt), keyPart(runID))
+}
+
+func KeyFlowMirroredRunForAccount(accountScopeID, flowID string, startedAt int64, runID string) string {
+	return fmt.Sprintf("%s%s/%s/%020d/%s", KeyFlowMirroredRunAccountPrefix, keyPart(accountScopeID), keyPart(flowID), reverseMillis(startedAt), keyPart(runID))
 }
 
 func FlowMirroredRunPrefix(flowID string) string {
@@ -938,16 +1017,44 @@ func FlowMirroredRunPrefix(flowID string) string {
 	return fmt.Sprintf("%s%s/", KeyFlowMirroredRunPrefix, part)
 }
 
+func FlowMirroredRunPrefixForAccount(accountScopeID, flowID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyFlowMirroredRunAccountPrefix
+	}
+	flowPart := keyPart(flowID)
+	if flowPart == "" {
+		return fmt.Sprintf("%s%s/", KeyFlowMirroredRunAccountPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyFlowMirroredRunAccountPrefix, accountPart, flowPart)
+}
+
 func KeyFlowTargetAccepted(flowID string) string {
 	return KeyFlowTargetAcceptedPrefix + keyPart(flowID)
+}
+
+func KeyFlowTargetAcceptedForAccount(accountScopeID, flowID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyFlowTargetAcceptedAccountPrefix, keyPart(accountScopeID), keyPart(flowID))
 }
 
 func FlowTargetAcceptedPrefix() string {
 	return KeyFlowTargetAcceptedPrefix
 }
 
+func FlowTargetAcceptedPrefixForAccount(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyFlowTargetAcceptedAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyFlowTargetAcceptedAccountPrefix, accountPart)
+}
+
 func KeyFlowTargetCommandLedger(flowID string, revision int64, commandID string) string {
 	return fmt.Sprintf("%s%s/%020d/%s", KeyFlowTargetCommandLedgerPrefix, keyPart(flowID), revision, keyPart(commandID))
+}
+
+func KeyFlowTargetCommandLedgerForAccount(accountScopeID, flowID string, revision int64, commandID string) string {
+	return fmt.Sprintf("%s%s/%s/%020d/%s", KeyFlowTargetCommandLedgerAccountPrefix, keyPart(accountScopeID), keyPart(flowID), revision, keyPart(commandID))
 }
 
 func FlowTargetCommandLedgerPrefix(flowID string) string {
@@ -958,20 +1065,48 @@ func FlowTargetCommandLedgerPrefix(flowID string) string {
 	return fmt.Sprintf("%s%s/", KeyFlowTargetCommandLedgerPrefix, part)
 }
 
+func FlowTargetCommandLedgerPrefixForAccount(accountScopeID, flowID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyFlowTargetCommandLedgerAccountPrefix
+	}
+	flowPart := keyPart(flowID)
+	if flowPart == "" {
+		return fmt.Sprintf("%s%s/", KeyFlowTargetCommandLedgerAccountPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyFlowTargetCommandLedgerAccountPrefix, accountPart, flowPart)
+}
+
 func KeyFlowTargetDue(dueAt int64, flowID string, revision int64) string {
 	return fmt.Sprintf("%s%020d/%s/%020d", KeyFlowTargetDuePrefix, dueAt, keyPart(flowID), revision)
+}
+
+func KeyFlowTargetDueForAccount(accountScopeID string, dueAt int64, flowID string, revision int64) string {
+	return fmt.Sprintf("%s%020d/%s/%s/%020d", KeyFlowTargetDueAccountPrefix, dueAt, keyPart(accountScopeID), keyPart(flowID), revision)
 }
 
 func FlowTargetDuePrefix() string {
 	return KeyFlowTargetDuePrefix
 }
 
+func FlowTargetDuePrefixForAccount() string {
+	return KeyFlowTargetDueAccountPrefix
+}
+
 func KeyFlowTargetRun(runID string) string {
 	return KeyFlowTargetRunPrefix + keyPart(runID)
 }
 
+func KeyFlowTargetRunForAccount(accountScopeID, runID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyFlowTargetRunAccountPrefix, keyPart(accountScopeID), keyPart(runID))
+}
+
 func KeyFlowTargetRunByFlow(flowID string, startedAt int64, runID string) string {
 	return fmt.Sprintf("%s%s/%020d/%s", KeyFlowTargetRunByFlowPrefix, keyPart(flowID), reverseMillis(startedAt), keyPart(runID))
+}
+
+func KeyFlowTargetRunByFlowForAccount(accountScopeID, flowID string, startedAt int64, runID string) string {
+	return fmt.Sprintf("%s%s/%s/%020d/%s", KeyFlowTargetRunByFlowAccountPrefix, keyPart(accountScopeID), keyPart(flowID), reverseMillis(startedAt), keyPart(runID))
 }
 
 func FlowTargetRunByFlowPrefix(flowID string) string {
@@ -982,8 +1117,24 @@ func FlowTargetRunByFlowPrefix(flowID string) string {
 	return fmt.Sprintf("%s%s/", KeyFlowTargetRunByFlowPrefix, part)
 }
 
+func FlowTargetRunByFlowPrefixForAccount(accountScopeID, flowID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyFlowTargetRunByFlowAccountPrefix
+	}
+	flowPart := keyPart(flowID)
+	if flowPart == "" {
+		return fmt.Sprintf("%s%s/", KeyFlowTargetRunByFlowAccountPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyFlowTargetRunByFlowAccountPrefix, accountPart, flowPart)
+}
+
 func KeyFlowTargetRunClaim(flowID string, revision int64, scheduledAt int64) string {
 	return fmt.Sprintf("%s%s/%020d/%020d", KeyFlowTargetRunClaimPrefix, keyPart(flowID), revision, scheduledAt)
+}
+
+func KeyFlowTargetRunClaimForAccount(accountScopeID, flowID string, revision int64, scheduledAt int64) string {
+	return fmt.Sprintf("%s%s/%s/%020d/%020d", KeyFlowTargetRunClaimAccountPrefix, keyPart(accountScopeID), keyPart(flowID), revision, scheduledAt)
 }
 
 func KeyAgentProfile(name string) string {
