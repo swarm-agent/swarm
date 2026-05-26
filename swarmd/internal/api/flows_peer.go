@@ -367,6 +367,8 @@ func (s *Server) proxyPeerFlowApplyToLocalChild(w http.ResponseWriter, r *http.R
 	if !ok {
 		return false
 	}
+	proxied := command
+	proxied.Assignment.Workspace = s.flowWorkspaceForTargetForAccount(proxied.AccountScopeID, proxied.Assignment.Workspace, target, resolvedFlowTarget(proxied.Assignment.Target, target))
 	flowRouteDiagLog("peer_apply_proxy_to_local_child",
 		"peer_header_swarm_id", peerSwarmID,
 		"flow_id", command.FlowID,
@@ -375,13 +377,16 @@ func (s *Server) proxyPeerFlowApplyToLocalChild(w http.ResponseWriter, r *http.R
 		"requested_target_swarm_id", selection.SwarmID,
 		"local_child_swarm_id", target.SwarmID,
 		"local_child_backend_url_present", strings.TrimSpace(target.BackendURL) != "",
+		"proxied_workspace_path", proxied.Assignment.Workspace.WorkspacePath,
+		"proxied_runtime_workspace_path", proxied.Assignment.Workspace.RuntimeWorkspacePath,
 	)
 	var resp flowAssignmentApplyResponse
-	if err := s.postPeerJSONToSwarmTarget(r.Context(), target, flowPeerApplyPath, command, &resp); err != nil {
+	if err := s.postPeerJSONToSwarmTarget(r.Context(), target, flowPeerApplyPath, proxied, &resp); err != nil {
 		flowdiaglog.Printf("peer_apply_proxy_to_local_child_failed", "flow_id=%q command_id=%q peer_header_swarm_id=%q requested_target_swarm_id=%q local_child_swarm_id=%q err=%q", command.FlowID, command.CommandID, peerSwarmID, selection.SwarmID, target.SwarmID, err.Error())
 		writeError(w, http.StatusBadGateway, err)
 		return true
 	}
+	resp.Ack.TargetSwarmID = strings.TrimSpace(selection.SwarmID)
 	writeJSON(w, http.StatusOK, resp)
 	return true
 }
@@ -394,6 +399,7 @@ func (s *Server) localFlowChildTargetForMirroredApply(selection flow.TargetSelec
 	if err != nil {
 		return swarmTarget{}, false
 	}
+	swarmID := strings.TrimSpace(selection.SwarmID)
 	deploymentID := strings.TrimSpace(selection.DeploymentID)
 	name := strings.TrimSpace(selection.Name)
 	for _, item := range items {
@@ -403,13 +409,10 @@ func (s *Server) localFlowChildTargetForMirroredApply(selection flow.TargetSelec
 		if strings.TrimSpace(item.ChildBackendURL) == "" || strings.TrimSpace(item.ChildSwarmID) == "" {
 			continue
 		}
-		if deploymentID != "" && !strings.EqualFold(strings.TrimSpace(item.ID), deploymentID) && !strings.EqualFold(strings.TrimSpace(item.ContainerName), deploymentID) {
-			continue
-		}
-		if deploymentID == "" && name != "" && !strings.EqualFold(strings.TrimSpace(item.Name), name) && !strings.EqualFold(strings.TrimSpace(item.ContainerName), name) && !strings.EqualFold(strings.TrimSpace(item.ChildDisplayName), name) {
-			continue
-		}
-		if deploymentID == "" && name == "" {
+		matchesSwarmID := swarmID != "" && strings.EqualFold(strings.TrimSpace(item.ChildSwarmID), swarmID)
+		matchesDeploymentID := deploymentID != "" && (strings.EqualFold(strings.TrimSpace(item.ID), deploymentID) || strings.EqualFold(strings.TrimSpace(item.ContainerName), deploymentID) || strings.EqualFold(strings.TrimSpace(item.HostContainerID), deploymentID))
+		matchesName := name != "" && (strings.EqualFold(strings.TrimSpace(item.Name), name) || strings.EqualFold(strings.TrimSpace(item.ContainerName), name) || strings.EqualFold(strings.TrimSpace(item.ChildDisplayName), name))
+		if !matchesSwarmID && !matchesDeploymentID && !matchesName {
 			continue
 		}
 		return mapDeployContainerTarget(item)
@@ -669,11 +672,7 @@ func (s *Server) flowWorkspaceForTarget(workspace flow.WorkspaceContext, target 
 }
 
 func (s *Server) flowWorkspaceForTargetForAccount(accountScopeID string, workspace flow.WorkspaceContext, target swarmTarget, resolved flow.ResolvedTarget) flow.WorkspaceContext {
-	workspace.WorkspacePath = strings.TrimSpace(workspace.WorkspacePath)
-	workspace.HostWorkspacePath = strings.TrimSpace(workspace.HostWorkspacePath)
-	workspace.RuntimeWorkspacePath = strings.TrimSpace(workspace.RuntimeWorkspacePath)
-	workspace.CWD = strings.TrimSpace(workspace.CWD)
-	workspace.WorktreeMode = strings.TrimSpace(workspace.WorktreeMode)
+	workspace = normalizeManagementWorkspace(workspace)
 	hostWorkspacePath := firstNonEmpty(workspace.HostWorkspacePath, workspace.WorkspacePath)
 	runtimeWorkspacePath := firstNonEmpty(workspace.RuntimeWorkspacePath, workspace.WorkspacePath)
 	if workspace.HostWorkspacePath == "" {
@@ -682,8 +681,23 @@ func (s *Server) flowWorkspaceForTargetForAccount(accountScopeID string, workspa
 	if workspace.RuntimeWorkspacePath == "" {
 		workspace.RuntimeWorkspacePath = runtimeWorkspacePath
 	}
-	if workspace.WorkspacePath == "" || s == nil || s.workspace == nil || isSelfFlowTarget(target, resolved) {
+	if workspace.WorkspacePath == "" || isSelfFlowTarget(target, resolved) {
 		return workspace
+	}
+	if strings.TrimSpace(workspace.WorkspaceBindingID) != "" && s != nil && s.topology != nil && strings.TrimSpace(accountScopeID) != "" {
+		binding, ok, err := s.topology.GetWorkspaceBindingForAccount(accountScopeID, workspace.WorkspaceBindingID)
+		if err == nil && ok {
+			source := strings.TrimSpace(binding.SourceWorkspacePath)
+			targetPath := strings.TrimSpace(binding.DestinationWorkspacePath)
+			if source != "" && targetPath != "" && flowWorkspaceBindingMatchesTarget(binding, firstNonEmpty(strings.TrimSpace(resolved.SwarmID), strings.TrimSpace(target.SwarmID)), firstNonEmpty(strings.TrimSpace(resolved.DeploymentID), strings.TrimSpace(target.DeploymentID))) {
+				workspace.CWD = translateFlowSubpath(source, targetPath, workspace.CWD)
+				workspace.WorkspacePath = targetPath
+				workspace.RuntimeWorkspacePath = targetPath
+				workspace.HostWorkspacePath = source
+				workspace.WorkspaceName = firstNonEmpty(workspace.WorkspaceName, strings.TrimSpace(binding.SourceWorkspaceName), baseNameForPath(source))
+				return workspace
+			}
+		}
 	}
 	translated := s.resolveReplicatedFlowWorkspacePathForAccount(accountScopeID, hostWorkspacePath, target, resolved)
 	if translated == "" || translated == workspace.WorkspacePath {

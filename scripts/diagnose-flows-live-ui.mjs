@@ -48,6 +48,7 @@ Target phases:
   --phase container            Local container child target via API checks; requires an online /v1/swarm/targets kind=local child.
   --phase ssh                  SSH/remote child target via API checks; requires an online /v1/swarm/targets kind=remote child.
   --phase target               Generic API target smoke; provide --target-kind/--target-name/--target-swarm-id.
+  --phase ui-target            UI create + Run once against a selected target/workspace.
 
 Live instance:
   --url <url>                  Desktop URL. Default: SWARM_DESKTOP_URL or http://127.0.0.1:<desktop_port>.
@@ -233,8 +234,8 @@ function parseArgs(argv) {
   }
 
   opts.phase = String(opts.phase || '').trim().toLowerCase()
-  if (!['host', 'container', 'ssh', 'target'].includes(opts.phase)) {
-    fail('--phase must be host, container, ssh, or target')
+  if (!['host', 'container', 'ssh', 'target', 'ui-target'].includes(opts.phase)) {
+    fail('--phase must be host, container, ssh, target, or ui-target')
   }
   opts.agent = String(opts.agent || '').trim() || 'memory'
   opts.agentKind = normalizeAgentKind(opts.agentKind)
@@ -696,23 +697,28 @@ async function selectOptionIfPresent(locator, value, label) {
   }
 }
 
-async function createHostFlowViaUI(page, opts, summary, recorder) {
-  const flowName = `Flow smoke host ${timestamp()}`
-  const finish = recorder.start('host.ui.create_flow', { flow_name: flowName })
+async function createFlowViaUI(page, opts, summary, recorder, input = {}) {
+  const label = input.label || opts.phase || 'host'
+  const flowName = input.flowName || `Flow smoke ${label} ${timestamp()}`
+  const finish = recorder.start(`${label}.ui.create_flow`, { flow_name: flowName })
   await page.locator(selectors.addOpen).click()
   await page.locator(selectors.addModal).waitFor({ state: 'visible', timeout: 15000 })
   await page.locator(selectors.addName).fill(flowName)
-  await selectOptionIfPresent(page.locator(selectors.addAgent), opts.agent, 'agent')
-  await selectOptionIfPresent(page.locator(selectors.addTarget), 'local', 'target')
-  await selectOptionIfPresent(page.locator(selectors.addWorkspace), '.', 'workspace')
+  await selectOptionIfPresent(page.locator(selectors.addAgent), input.agentKey || opts.agent, 'agent')
+  await selectOptionIfPresent(page.locator(selectors.addTarget), input.targetKey || 'local', 'target')
+  if (input.workspaceKey) {
+    await page.locator(selectors.addWorkspace).waitFor({ state: 'attached', timeout: 30000 })
+    await page.waitForFunction(({ selector, value }) => Array.from(document.querySelector(selector)?.options || []).some((option) => option.value === value), { selector: selectors.addWorkspace, value: input.workspaceKey }, { timeout: 30000 })
+  }
+  await selectOptionIfPresent(page.locator(selectors.addWorkspace), input.workspaceKey || '.', 'workspace')
   await selectOptionIfPresent(page.locator(selectors.addCadence), 'On demand', 'cadence')
-  await page.locator(selectors.addTask).fill(opts.prompt)
+  await page.locator(selectors.addTask).fill(input.prompt || opts.prompt)
 
   const createResponsePromise = page.waitForResponse((response) => requestPath(response.url()) === '/v3/flows' && response.request().method() === 'POST', { timeout: 60000 })
   await page.locator(selectors.addSubmit).click()
   const createResponse = await createResponsePromise
   const createPayload = await createResponse.json().catch(() => null)
-  summary.observations.host_create_response = compactPayload(createPayload)
+  summary.observations[`${label}_create_response`] = compactPayload(createPayload)
   if (!createResponse.ok()) {
     fail(`UI create Flow failed with status ${createResponse.status()}`)
   }
@@ -727,21 +733,21 @@ async function createHostFlowViaUI(page, opts, summary, recorder) {
   return { flowID, flowName }
 }
 
-async function runFlowNowFromDetail(page, flowID, flowName, opts, summary, recorder) {
-  const finish = recorder.start('host.ui.run_now', { flow_id: flowID })
+async function runFlowNowFromDetail(page, flowID, flowName, opts, summary, recorder, label = 'host') {
+  const finish = recorder.start(`${label}.ui.run_now`, { flow_id: flowID })
   const responsePromise = page.waitForResponse((response) => requestPath(response.url()) === `/v3/flows/${encodeURIComponent(flowID)}/run-now` && response.request().method() === 'POST', { timeout: opts.runTimeoutMs })
   await page.locator(selectors.runNow).click()
   const response = await responsePromise
   const payload = await response.json().catch(() => null)
-  summary.observations.host_run_now_response = compactPayload(payload)
+  summary.observations[`${label}_run_now_response`] = compactPayload(payload)
   if (!response.ok()) {
     const reason = payload?.error || `HTTP ${response.status()}`
     fail(`Run now failed before verification: ${reason}`)
   }
-  assertDeliverResultAccepted(payload, 'host UI run-now')
+  assertDeliverResultAccepted(payload, `${label} UI run-now`)
   finish({ status: response.status(), run: payload?.run || null })
   const expectedRunID = String(payload?.run?.reason || payload?.result?.ack?.reason || '').match(/run_now started\s+(\S+)/)?.[1] || ''
-  await verifyFlowRunVisible(page, flowID, flowName, opts.runTimeoutMs, summary, 'host.run_now', { expectedRunID })
+  await verifyFlowRunVisible(page, flowID, flowName, opts.runTimeoutMs, summary, `${label}.run_now`, { expectedRunID })
 }
 
 async function verifyFlowRunVisible(page, flowID, flowName, timeoutMs, summary, label, options = {}) {
@@ -961,6 +967,16 @@ function baseCreateInput({ name, target, agent, agentKind, workspace, prompt, ca
   }
 }
 
+async function runUITargetSmoke(page, opts, summary, recorder) {
+  const target = await resolveHarnessTarget(page, opts, summary)
+  const targetKey = target.swarm_id ? `swarm:${target.swarm_id}` : target.deployment_id ? `deployment:${target.deployment_id}` : `target:${target.kind}:${target.name}`
+  const flowName = `Flow smoke ui-target ${timestamp()}`
+  const { flowID } = await createFlowViaUI(page, opts, summary, recorder, { label: 'ui_target', flowName, targetKey, workspaceKey: opts.workspace, prompt: opts.prompt })
+  if (opts.runNow) {
+    await runFlowNowFromDetail(page, flowID, flowName, opts, summary, recorder, 'ui_target')
+  }
+}
+
 async function runAPITargetSmoke(page, opts, summary, recorder) {
   const target = await resolveHarnessTarget(page, opts, summary)
   if (opts.runNow) {
@@ -1104,15 +1120,17 @@ async function main() {
     await maybeScreenshot(page, artifactDir, '01-flows-page', summary)
 
     if (opts.phase === 'host') {
-      const { flowID, flowName } = await createHostFlowViaUI(page, opts, summary, recorder)
+      const { flowID, flowName } = await createFlowViaUI(page, opts, summary, recorder, { label: 'host' })
       await maybeScreenshot(page, artifactDir, '02-host-flow-detail', summary)
       if (opts.runNow) {
-        await runFlowNowFromDetail(page, flowID, flowName, opts, summary, recorder)
+        await runFlowNowFromDetail(page, flowID, flowName, opts, summary, recorder, 'host')
         await maybeScreenshot(page, artifactDir, '03-host-run-now-result', summary)
       }
       if (opts.schedule) {
         await runAPITargetSmoke(page, { ...opts, runNow: false, schedule: true }, summary, recorder)
       }
+    } else if (opts.phase === 'ui-target') {
+      await runUITargetSmoke(page, opts, summary, recorder)
     } else {
       await runAPITargetSmoke(page, opts, summary, recorder)
     }

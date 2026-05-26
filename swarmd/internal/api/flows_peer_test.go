@@ -258,6 +258,7 @@ func TestFlowAssignmentDeliveryUsesResolvedRemoteTargetSwarm(t *testing.T) {
 func TestFlowAssignmentDeliveryRoutesMirroredChildThroughManagedHostEvenWhenChildHealthIsOffline(t *testing.T) {
 	server, _ := newFlowPeerTestServer(t)
 	managedHostHits := 0
+	var delivered flow.AssignmentCommand
 	managedHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != flowPeerApplyPath {
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -270,7 +271,6 @@ func TestFlowAssignmentDeliveryRoutesMirroredChildThroughManagedHostEvenWhenChil
 		if got := r.Header.Get(peerAuthTokenHeader); got != "peer-token" {
 			t.Fatalf("peer auth token = %q, want peer-token", got)
 		}
-		var delivered flow.AssignmentCommand
 		if err := json.NewDecoder(r.Body).Decode(&delivered); err != nil {
 			t.Fatalf("decode managed host command: %v", err)
 		}
@@ -319,8 +319,9 @@ func TestFlowAssignmentDeliveryRoutesMirroredChildThroughManagedHostEvenWhenChil
 		SwarmID:      "managed-child",
 		Name:         "managed child",
 		Relationship: "child",
-		Kind:         "local",
+		Kind:         "mirrored",
 		DeploymentID: "managed-deployment",
+		HostSwarmID:  "managed-swarm-1",
 		Online:       true,
 		Selectable:   true,
 		BackendURL:   "http://127.0.0.1:7782",
@@ -335,8 +336,16 @@ func TestFlowAssignmentDeliveryRoutesMirroredChildThroughManagedHostEvenWhenChil
 		"mirrored|managed-child|http://127.0.0.1:7782": {online: false, checkedAt: time.Now()},
 	}
 
+	seedFlowTopologyWorkspaceBinding(t, server, "/home/installer/workspaces/swarm-go-9", "swarm-go-9", "managed-deployment", "local", "managed-child", "/workspaces/swarm-go")
 	assignment := testAPIFlowAssignment("flow-managed-child", 1)
 	assignment.Target = flow.TargetSelection{SwarmID: "managed-child", Kind: "mirrored", Name: "managed child", DeploymentID: "managed-deployment"}
+	assignment.Workspace = flow.WorkspaceContext{
+		WorkspacePath:        "/home/installer/workspaces/swarm-go-9",
+		HostWorkspacePath:    "/home/installer/workspaces/swarm-go-9",
+		RuntimeWorkspacePath: "/workspaces/swarm-go",
+		WorkspaceBindingID:   pebblestore.CanonicalTopologyWorkspaceBindingID("managed-deployment", "/home/installer/workspaces/swarm-go-9"),
+		WorkspaceName:        "swarm-go-9",
+	}
 	command := testAPIFlowCommand("cmd-managed-child", assignment, flow.CommandInstall)
 	result, err := server.EnqueueAndDeliverFlowAssignmentCommand(testPrincipalContext(t.Context()), command)
 	if err != nil {
@@ -347,6 +356,12 @@ func TestFlowAssignmentDeliveryRoutesMirroredChildThroughManagedHostEvenWhenChil
 	}
 	if !result.Delivered || result.Ack.Status != flow.AssignmentAccepted || result.Ack.TargetSwarmID != "managed-child" {
 		t.Fatalf("result = %+v", result)
+	}
+	if delivered.Assignment.Workspace.WorkspacePath != "/workspaces/swarm-go" || delivered.Assignment.Workspace.RuntimeWorkspacePath != "/workspaces/swarm-go" {
+		t.Fatalf("delivered workspace = %+v", delivered.Assignment.Workspace)
+	}
+	if delivered.Assignment.Workspace.HostWorkspacePath != "/home/installer/workspaces/swarm-go-9" {
+		t.Fatalf("delivered host workspace = %q", delivered.Assignment.Workspace.HostWorkspacePath)
 	}
 }
 
