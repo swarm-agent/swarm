@@ -208,6 +208,10 @@ func (p *ChatPage) SessionID() string {
 }
 
 func (p *ChatPage) OpenCurrentPlanModal(plan ChatSessionPlan) bool {
+	return p.OpenCurrentPlanModalWithPlans(plan, nil, strings.TrimSpace(plan.ID))
+}
+
+func (p *ChatPage) OpenCurrentPlanModalWithPlans(plan ChatSessionPlan, plans []ChatSessionPlan, activePlanID string) bool {
 	if p == nil {
 		return false
 	}
@@ -217,7 +221,7 @@ func (p *ChatPage) OpenCurrentPlanModal(plan ChatSessionPlan) bool {
 	if p.planExitModalActive() {
 		p.closePlanExitModal()
 	}
-	p.openPlanEditorModal(plan)
+	p.openPlanEditorModalWithPlans(plan, plans, activePlanID)
 	return true
 }
 

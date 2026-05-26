@@ -10,7 +10,30 @@ import (
 )
 
 func (p *ChatPage) openPlanEditorModal(plan ChatSessionPlan) {
+	p.openPlanEditorModalWithPlans(plan, nil, strings.TrimSpace(plan.ID))
+}
+
+func (p *ChatPage) openPlanEditorModalWithPlans(plan ChatSessionPlan, plans []ChatSessionPlan, activePlanID string) {
 	planID := strings.TrimSpace(plan.ID)
+	activePlanID = strings.TrimSpace(activePlanID)
+	if activePlanID == "" {
+		activePlanID = planID
+	}
+	normalizedPlans := normalizePlanEditorPlans(plans, plan, activePlanID)
+	selected := 0
+	if planID != "" {
+		for i, candidate := range normalizedPlans {
+			if strings.TrimSpace(candidate.ID) == planID {
+				selected = i
+				break
+			}
+		}
+	}
+	if len(normalizedPlans) > 0 {
+		plan = normalizedPlans[selected]
+	}
+	plan = normalizePlanEditorPlan(plan, activePlanID)
+	planID = strings.TrimSpace(plan.ID)
 	title := strings.TrimSpace(plan.Title)
 	if title == "" {
 		title = "Plan"
@@ -24,7 +47,12 @@ func (p *ChatPage) openPlanEditorModal(plan ChatSessionPlan) {
 		Plan:          body,
 		Status:        strings.TrimSpace(plan.Status),
 		ApprovalState: strings.TrimSpace(plan.ApprovalState),
+		Active:        plan.Active,
 	}
+	p.planEditorPlans = normalizedPlans
+	p.planEditorActivePlanID = activePlanID
+	p.planEditorPlanSelection = selected
+	p.planEditorPlanScroll = 0
 	p.planEditorInput = body
 	p.planEditorEditing = false
 	p.planEditorConfirmSave = false
@@ -41,6 +69,108 @@ func (p *ChatPage) openPlanEditorModal(plan ChatSessionPlan) {
 	}
 }
 
+func normalizePlanEditorPlans(plans []ChatSessionPlan, current ChatSessionPlan, activePlanID string) []ChatSessionPlan {
+	activePlanID = strings.TrimSpace(activePlanID)
+	out := make([]ChatSessionPlan, 0, len(plans)+1)
+	seen := make(map[string]bool, len(plans)+1)
+	for _, plan := range plans {
+		normalized := normalizePlanEditorPlan(plan, activePlanID)
+		id := strings.TrimSpace(normalized.ID)
+		if id == "" && strings.TrimSpace(normalized.Title) == "" && strings.TrimSpace(normalized.Plan) == "" {
+			continue
+		}
+		key := id
+		if key == "" {
+			key = strings.TrimSpace(normalized.Title)
+		}
+		if key != "" && seen[key] {
+			continue
+		}
+		if key != "" {
+			seen[key] = true
+		}
+		out = append(out, normalized)
+	}
+	current = normalizePlanEditorPlan(current, activePlanID)
+	currentID := strings.TrimSpace(current.ID)
+	if currentID != "" && !seen[currentID] {
+		out = append([]ChatSessionPlan{current}, out...)
+	}
+	if len(out) == 0 {
+		out = append(out, current)
+	}
+	return out
+}
+
+func normalizePlanEditorPlan(plan ChatSessionPlan, activePlanID string) ChatSessionPlan {
+	plan.ID = strings.TrimSpace(plan.ID)
+	plan.Title = strings.TrimSpace(plan.Title)
+	if plan.Title == "" {
+		plan.Title = "Plan"
+	}
+	plan.Plan = strings.ReplaceAll(plan.Plan, "\r\n", "\n")
+	plan.Plan = strings.ReplaceAll(plan.Plan, "\r", "\n")
+	plan.Status = strings.TrimSpace(plan.Status)
+	plan.ApprovalState = strings.TrimSpace(plan.ApprovalState)
+	if plan.ID != "" && strings.TrimSpace(activePlanID) == plan.ID {
+		plan.Active = true
+	}
+	return plan
+}
+
+func (p *ChatPage) selectedPlanEditorPlan() ChatSessionPlan {
+	if p == nil || len(p.planEditorPlans) == 0 {
+		return p.planEditorPlan
+	}
+	idx := p.planEditorPlanSelection
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(p.planEditorPlans) {
+		idx = len(p.planEditorPlans) - 1
+	}
+	return p.planEditorPlans[idx]
+}
+
+func (p *ChatPage) planEditorSelectedPlanActive() bool {
+	plan := p.selectedPlanEditorPlan()
+	id := strings.TrimSpace(plan.ID)
+	return plan.Active || (id != "" && id == strings.TrimSpace(p.planEditorActivePlanID))
+}
+
+func (p *ChatPage) selectPlanEditorPlan(delta int) bool {
+	if p == nil || len(p.planEditorPlans) == 0 || p.planEditorEditing || p.planEditorConfirmSave {
+		return false
+	}
+	next := p.planEditorPlanSelection + delta
+	if next < 0 {
+		next = 0
+	}
+	if next >= len(p.planEditorPlans) {
+		next = len(p.planEditorPlans) - 1
+	}
+	if next == p.planEditorPlanSelection {
+		return false
+	}
+	p.planEditorPlanSelection = next
+	p.loadSelectedPlanEditorPlan()
+	if p.planEditorSelectedPlanActive() {
+		p.statusLine = fmt.Sprintf("current plan: %s", planEditorFallback(strings.TrimSpace(p.planEditorPlan.Title), strings.TrimSpace(p.planEditorPlan.ID)))
+	} else {
+		p.statusLine = "Press a to activate as current plan"
+	}
+	return true
+}
+
+func (p *ChatPage) loadSelectedPlanEditorPlan() {
+	plan := normalizePlanEditorPlan(p.selectedPlanEditorPlan(), p.planEditorActivePlanID)
+	p.planEditorPlan = plan
+	p.planEditorInput = plan.Plan
+	p.planEditorInputScroll = 0
+	p.planEditorScroll = 0
+	p.planEditorSelection = chatPlanEditorSelectSave
+}
+
 func (p *ChatPage) planEditorModalActive() bool {
 	return p.planEditorVisible
 }
@@ -48,6 +178,10 @@ func (p *ChatPage) planEditorModalActive() bool {
 func (p *ChatPage) closePlanEditorModal() {
 	p.planEditorVisible = false
 	p.planEditorPlan = ChatSessionPlan{}
+	p.planEditorPlans = nil
+	p.planEditorActivePlanID = ""
+	p.planEditorPlanSelection = 0
+	p.planEditorPlanScroll = 0
 	p.planEditorInput = ""
 	p.planEditorEditing = false
 	p.planEditorConfirmSave = false
@@ -187,16 +321,24 @@ func (p *ChatPage) handlePlanEditorModalKey(ev *tcell.EventKey) bool {
 		p.planEditorSelection = (p.planEditorSelection + 2) % 3
 		return true
 	case p.keybinds.Match(ev, KeybindPlanExitMoveUp):
-		p.shiftPlanEditorScroll(-1)
+		if !p.selectPlanEditorPlan(-1) {
+			p.shiftPlanEditorScroll(-1)
+		}
 		return true
 	case p.keybinds.Match(ev, KeybindPlanExitMoveDown):
-		p.shiftPlanEditorScroll(1)
+		if !p.selectPlanEditorPlan(1) {
+			p.shiftPlanEditorScroll(1)
+		}
 		return true
 	case p.keybinds.Match(ev, KeybindPlanExitMoveUpAlt):
-		p.shiftPlanEditorScroll(-1)
+		if !p.selectPlanEditorPlan(-1) {
+			p.shiftPlanEditorScroll(-1)
+		}
 		return true
 	case p.keybinds.Match(ev, KeybindPlanExitMoveDownAlt):
-		p.shiftPlanEditorScroll(1)
+		if !p.selectPlanEditorPlan(1) {
+			p.shiftPlanEditorScroll(1)
+		}
 		return true
 	case p.keybinds.Match(ev, KeybindPlanExitPageUp):
 		p.shiftPlanEditorScroll(-6)
@@ -227,6 +369,15 @@ func (p *ChatPage) handlePlanEditorModalKey(ev *tcell.EventKey) bool {
 		switch r {
 		case 'c':
 			p.resolvePlanEditorModal(chatPlanEditorActionCopy)
+			return true
+		case 'a':
+			if !p.planEditorSelectedPlanActive() {
+				plan := p.selectedPlanEditorPlan()
+				if strings.TrimSpace(plan.ID) != "" {
+					p.pendingChatAction = &ChatAction{Kind: ChatActionActivatePlan, Plan: plan}
+					p.statusLine = "activating current plan..."
+				}
+			}
 			return true
 		case 'e':
 			p.planEditorEditing = true
@@ -310,27 +461,51 @@ func (p *ChatPage) drawPlanEditorModal(s tcell.Screen, screen Rect) {
 		leftRect := Rect{X: bodyRect.X, Y: bodyRect.Y, W: leftW, H: bodyRect.H}
 		rightRect := Rect{X: leftRect.X + leftRect.W + 2, Y: bodyRect.Y, W: rightW, H: bodyRect.H}
 
-		DrawText(s, leftRect.X, leftRect.Y, leftRect.W, onPanel(p.theme.Secondary.Bold(true)), "Plan details")
-		title := strings.TrimSpace(p.planEditorPlan.Title)
-		if title == "" {
-			title = "Plan"
+		DrawText(s, leftRect.X, leftRect.Y, leftRect.W, onPanel(p.theme.Secondary.Bold(true)), "Plans")
+		listY := leftRect.Y + 2
+		listH := maxInt(1, leftRect.H-5)
+		plans := p.planEditorPlans
+		if len(plans) == 0 {
+			plans = []ChatSessionPlan{p.planEditorPlan}
 		}
-		detailLines := []string{
-			fmt.Sprintf("Title: %s", title),
-			fmt.Sprintf("Plan ID: %s", planEditorFallback(strings.TrimSpace(p.planEditorPlan.ID), "none")),
-			fmt.Sprintf("Status: %s", planEditorFallback(strings.TrimSpace(p.planEditorPlan.Status), "draft")),
-			fmt.Sprintf("Approval: %s", planEditorFallback(strings.TrimSpace(p.planEditorPlan.ApprovalState), "pending")),
-			"",
-			"Tips:",
-			"- Edit directly in the right pane",
-			"- Use Copy to grab the full plan",
-			"- Use Save to persist it to the session",
+		if p.planEditorPlanSelection < 0 {
+			p.planEditorPlanSelection = 0
 		}
-		for i, line := range detailLines {
-			if leftRect.Y+2+i >= leftRect.Y+leftRect.H {
-				break
+		if p.planEditorPlanSelection >= len(plans) {
+			p.planEditorPlanSelection = len(plans) - 1
+		}
+		if p.planEditorPlanSelection < p.planEditorPlanScroll {
+			p.planEditorPlanScroll = p.planEditorPlanSelection
+		}
+		if p.planEditorPlanSelection >= p.planEditorPlanScroll+listH {
+			p.planEditorPlanScroll = p.planEditorPlanSelection - listH + 1
+		}
+		if p.planEditorPlanScroll < 0 {
+			p.planEditorPlanScroll = 0
+		}
+		for row := 0; row < listH && p.planEditorPlanScroll+row < len(plans); row++ {
+			idx := p.planEditorPlanScroll + row
+			plan := plans[idx]
+			prefix := "  "
+			style := onPanel(p.theme.Text)
+			if idx == p.planEditorPlanSelection {
+				prefix = "› "
+				style = onPanel(p.theme.Warning.Bold(true))
+			} else if plan.Active || strings.TrimSpace(plan.ID) == strings.TrimSpace(p.planEditorActivePlanID) {
+				prefix = "* "
+				style = onPanel(p.theme.Success)
 			}
-			DrawText(s, leftRect.X, leftRect.Y+2+i, leftRect.W, onPanel(p.theme.Text), clampEllipsis(line, leftRect.W))
+			title := planEditorFallback(strings.TrimSpace(plan.Title), strings.TrimSpace(plan.ID))
+			DrawText(s, leftRect.X, listY+row, leftRect.W, style, clampEllipsis(prefix+title, leftRect.W))
+		}
+		if len(plans) == 0 {
+			DrawText(s, leftRect.X, listY, leftRect.W, onPanel(p.theme.TextMuted), "No saved plans")
+		}
+		hintY := leftRect.Y + leftRect.H - 2
+		if !p.planEditorSelectedPlanActive() {
+			DrawText(s, leftRect.X, hintY, leftRect.W, onPanel(p.theme.Warning), clampEllipsis("Press a to activate as current plan", leftRect.W))
+		} else {
+			DrawText(s, leftRect.X, hintY, leftRect.W, onPanel(p.theme.TextMuted), clampEllipsis("↑/↓ choose plan", leftRect.W))
 		}
 
 		DrawText(s, rightRect.X, rightRect.Y, rightRect.W, onPanel(p.theme.Secondary.Bold(true)), "Plan editor")
@@ -366,7 +541,10 @@ func (p *ChatPage) drawPlanEditorModal(s tcell.Screen, screen Rect) {
 	}
 
 	helpY := modal.Y + modal.H - 3
-	helpText := "↑/↓ scroll • Tab/←/→ buttons • C copy • E edit"
+	helpText := "↑/↓ plans • Tab/←/→ buttons • C copy • E edit"
+	if !p.planEditorSelectedPlanActive() {
+		helpText = "Press a to activate as current plan"
+	}
 	if p.planEditorEditing {
 		helpText = "Editing plan • Enter saves • Ctrl+J newline • Esc cancels"
 	}

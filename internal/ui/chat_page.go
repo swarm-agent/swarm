@@ -455,17 +455,21 @@ type ChatPage struct {
 	manageFlowCancelRect  Rect
 	manageFlowConfirmRect Rect
 
-	planEditorVisible     bool
-	planEditorPlan        ChatSessionPlan
-	planEditorInput       string
-	planEditorEditing     bool
-	planEditorConfirmSave bool
-	planEditorSelection   int
-	planEditorScroll      int
-	planEditorInputScroll int
-	planEditorCancelRect  Rect
-	planEditorCopyRect    Rect
-	planEditorSaveRect    Rect
+	planEditorVisible       bool
+	planEditorPlan          ChatSessionPlan
+	planEditorPlans         []ChatSessionPlan
+	planEditorActivePlanID  string
+	planEditorPlanSelection int
+	planEditorPlanScroll    int
+	planEditorInput         string
+	planEditorEditing       bool
+	planEditorConfirmSave   bool
+	planEditorSelection     int
+	planEditorScroll        int
+	planEditorInputScroll   int
+	planEditorCancelRect    Rect
+	planEditorCopyRect      Rect
+	planEditorSaveRect      Rect
 
 	manageTodosPermission  string
 	manageTodosScroll      int

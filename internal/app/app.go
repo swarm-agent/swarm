@@ -2379,10 +2379,19 @@ func (a *App) handlePlanCommand(args []string) {
 			a.home.SetStatus(fmt.Sprintf("/plan failed: %v", err))
 			return
 		}
+		plans, activeID, listErr := a.api.ListSessionPlans(ctx, sessionID, 100)
+		if listErr != nil {
+			a.home.SetStatus(fmt.Sprintf("/plan failed: %v", listErr))
+			return
+		}
 		if !ok {
 			plan = client.SessionPlan{Title: "Current Plan", Status: "draft"}
 		}
-		if !a.chat.OpenCurrentPlanModal(ui.ChatSessionPlan{ID: strings.TrimSpace(plan.ID), Title: strings.TrimSpace(plan.Title), Plan: plan.Plan, Status: strings.TrimSpace(plan.Status), ApprovalState: strings.TrimSpace(plan.ApprovalState)}) {
+		uiPlans := make([]ui.ChatSessionPlan, 0, len(plans))
+		for _, candidate := range plans {
+			uiPlans = append(uiPlans, ui.ChatSessionPlan{ID: strings.TrimSpace(candidate.ID), Title: strings.TrimSpace(candidate.Title), Plan: candidate.Plan, Status: strings.TrimSpace(candidate.Status), ApprovalState: strings.TrimSpace(candidate.ApprovalState), Active: candidate.Active})
+		}
+		if !a.chat.OpenCurrentPlanModalWithPlans(ui.ChatSessionPlan{ID: strings.TrimSpace(plan.ID), Title: strings.TrimSpace(plan.Title), Plan: plan.Plan, Status: strings.TrimSpace(plan.Status), ApprovalState: strings.TrimSpace(plan.ApprovalState), Active: ok}, uiPlans, activeID) {
 			a.home.SetStatus("current plan modal is unavailable while another modal is open")
 			return
 		}
@@ -4240,6 +4249,35 @@ func (a *App) handleChatAction(action ui.ChatAction) {
 		if err != nil {
 			a.home.SetStatus(fmt.Sprintf("open session failed: %v", err))
 		}
+	case ui.ChatActionActivatePlan:
+		if a.api == nil {
+			a.home.SetStatus("activate plan failed: api client is not configured")
+			return
+		}
+		if a.chat == nil {
+			a.home.SetStatus("activate plan failed: chat is unavailable")
+			return
+		}
+		sessionID := strings.TrimSpace(a.chat.SessionID())
+		if sessionID == "" {
+			a.home.SetStatus("activate plan failed: session id is unavailable")
+			return
+		}
+		planID := strings.TrimSpace(action.Plan.ID)
+		if planID == "" {
+			a.home.SetStatus("activate plan failed: plan id is unavailable")
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		plan, err := a.api.SetActiveSessionPlan(ctx, sessionID, planID)
+		if err != nil {
+			a.home.SetStatus(fmt.Sprintf("activate plan failed: %v", err))
+			return
+		}
+		a.chat.SetActivePlan(chatPlanLabel(plan))
+		a.home.SetStatus(fmt.Sprintf("active plan: %s", plan.ID))
+		a.chat.AppendSystemMessage(fmt.Sprintf("Active plan set to %s (%s).", plan.ID, emptyFallback(plan.Title, "untitled")))
 	case ui.ChatActionSavePlan:
 		if a.api == nil {
 			a.home.SetStatus("save plan failed: api client is not configured")

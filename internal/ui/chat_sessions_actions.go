@@ -8,6 +8,7 @@ const (
 	ChatActionOpenSession             ChatActionKind = "open-session"
 	ChatActionCopyText                ChatActionKind = "copy-text"
 	ChatActionSavePlan                ChatActionKind = "save-plan"
+	ChatActionActivatePlan            ChatActionKind = "activate-plan"
 	ChatActionOpenAgentsModal         ChatActionKind = "open-agents-modal"
 	ChatActionOpenModelsModal         ChatActionKind = "open-models-modal"
 	ChatActionCycleThinking           ChatActionKind = "cycle-thinking"
@@ -21,6 +22,7 @@ type ChatSessionPlan struct {
 	Plan          string
 	Status        string
 	ApprovalState string
+	Active        bool
 }
 
 type ChatAction struct {
