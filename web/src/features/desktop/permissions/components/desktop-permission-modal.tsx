@@ -420,7 +420,12 @@ function GenericPermissionModal({
   const persistentAllowed = genericPermissionSupportsPersistentActions(permission)
   const persistentRulePreview = alwaysPreview || genericPermissionPersistentRulePreview(permission)
   const persistentRuleDescription = persistentRulePreview
-    || (alwaysPreviewError ? `Unable to preview reusable rule: ${alwaysPreviewError}` : 'Loading reusable policy rule preview…')
+    || (alwaysPreviewError ? `Unable to preview always-allow rule: ${alwaysPreviewError}` : 'Loading always-allow rule preview…')
+  const isBashPermission = permissionDisplayToolName(permission.toolName) === 'bash'
+  const persistentRuleLabel = isBashPermission ? 'Always allow prefix:' : 'Always allow rule:'
+  const persistentRuleHint = isBashPermission
+    ? 'Future bash commands starting with this prefix will be approved automatically.'
+    : 'Future matching requests will be approved automatically.'
 
   return (
     <ModalShell
@@ -484,9 +489,12 @@ function GenericPermissionModal({
           </div>
         </section>
         {persistentAllowed ? (
-          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-[color-mix(in_oklab,var(--app-primary)_24%,var(--app-border))] bg-[color-mix(in_oklab,var(--app-primary)_7%,var(--app-surface-subtle))] px-3 py-2.5 text-xs text-[var(--app-text-muted)]">
-            <span className="font-medium text-[var(--app-text-subtle)]">Reusable approval</span>
-            <span className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[var(--app-text)] [overflow-wrap:anywhere]">{persistentRuleDescription || 'available after approval'}</span>
+          <div className="grid gap-1.5 rounded-xl border border-[color-mix(in_oklab,var(--app-primary)_24%,var(--app-border))] bg-[color-mix(in_oklab,var(--app-primary)_7%,var(--app-surface-subtle))] px-3 py-2.5 text-xs text-[var(--app-text-muted)]">
+            <div className="flex min-w-0 flex-wrap items-baseline gap-2">
+              <span className="font-medium text-[var(--app-text-subtle)]">{persistentRuleLabel}</span>
+              <span className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[var(--app-text)] [overflow-wrap:anywhere]">{persistentRuleDescription || 'available after approval'}</span>
+            </div>
+            <div className="text-[var(--app-text-subtle)]">{persistentRuleHint}</div>
           </div>
         ) : null}
       </div>

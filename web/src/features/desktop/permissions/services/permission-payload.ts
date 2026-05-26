@@ -1925,7 +1925,11 @@ export function buildGenericPermissionMarkdown(permission: DesktopPermissionReco
   }
 
   if (bashPrefix) {
-    sections.push(`Reusable approval prefix: \`${bashPrefix}\``)
+    sections.push([
+      `Always allow prefix: \`${bashPrefix}\``,
+      '',
+      'Future bash commands starting with this prefix will be approved automatically.',
+    ].join('\n'))
   }
 
   if (permission.toolArguments.trim()) {
