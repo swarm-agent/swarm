@@ -37,6 +37,11 @@ Options:
   --ai-model <model>               AI model for proof. Default: accounts/fireworks/models/minimax-m2p5
   --ai-thinking <level>            AI thinking level. Default: low
   --ai-timeout-seconds <seconds>   AI proof timeout per container. Default: 240
+  --flow-proof                     Create/run Flow proofs for self, first local container, managed host, and first managed container targets.
+  --flow-agent-name <name>          Flow agent profile. Default: swarm
+  --flow-agent-mode <mode>          Flow agent mode/profile_mode. Default: primary
+  --flow-timeout-seconds <seconds>  Flow proof timeout per run. Default: 420
+  --flow-cron-min-lead-seconds <n>  Minimum lead before near-term cron minute. Default: 10
   --timeout-seconds <seconds>      Target readiness timeout per container. Default: 180
   --help                          Show this help.
 
@@ -45,7 +50,8 @@ Environment equivalents:
   SWARM_MANAGED_SWARM_ID, SWARM_MANAGED_NAME, SWARM_SOURCE_WORKSPACE_PATH,
   SWARM_TWO_LOCAL_CONTAINER_PREFIX, SWARM_TWO_LOCAL_ARTIFACT_DIR,
   SWARM_FIREWORKS_KEY_PATH, SWARM_TWO_LOCAL_AI_PROOF, SWARM_TWO_LOCAL_AI_PROVIDER,
-  SWARM_TWO_LOCAL_AI_MODEL, SWARM_TWO_LOCAL_AI_THINKING
+  SWARM_TWO_LOCAL_AI_MODEL, SWARM_TWO_LOCAL_AI_THINKING, SWARM_TWO_LOCAL_FLOW_PROOF,
+  SWARM_TWO_LOCAL_FLOW_AGENT_NAME, SWARM_TWO_LOCAL_FLOW_AGENT_MODE
 
 No unit tests are run by this harness.
 EOF
@@ -79,6 +85,11 @@ AI_PROVIDER="${SWARM_TWO_LOCAL_AI_PROVIDER:-fireworks}"
 AI_MODEL="${SWARM_TWO_LOCAL_AI_MODEL:-accounts/fireworks/models/minimax-m2p5}"
 AI_THINKING="${SWARM_TWO_LOCAL_AI_THINKING:-low}"
 AI_TIMEOUT_SECONDS="${SWARM_TWO_LOCAL_AI_TIMEOUT_SECONDS:-240}"
+FLOW_PROOF="${SWARM_TWO_LOCAL_FLOW_PROOF:-false}"
+FLOW_AGENT_NAME="${SWARM_TWO_LOCAL_FLOW_AGENT_NAME:-swarm}"
+FLOW_AGENT_MODE="${SWARM_TWO_LOCAL_FLOW_AGENT_MODE:-primary}"
+FLOW_TIMEOUT_SECONDS="${SWARM_TWO_LOCAL_FLOW_TIMEOUT_SECONDS:-420}"
+FLOW_CRON_MIN_LEAD_SECONDS="${SWARM_TWO_LOCAL_FLOW_CRON_MIN_LEAD_SECONDS:-10}"
 FROM_ZERO="false"
 LINK_COMMAND=""
 CLEANUP="false"
@@ -87,6 +98,7 @@ API_STATUS=""
 API_BODY=""
 CREATED_DEPLOYMENTS=()
 CREATED_CHILDREN=()
+CREATED_FLOWS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -113,6 +125,11 @@ while [[ $# -gt 0 ]]; do
     --ai-model) AI_MODEL="${2:-}"; shift 2 ;;
     --ai-thinking) AI_THINKING="${2:-}"; shift 2 ;;
     --ai-timeout-seconds) AI_TIMEOUT_SECONDS="${2:-}"; shift 2 ;;
+    --flow-proof) FLOW_PROOF="true"; shift ;;
+    --flow-agent-name) FLOW_AGENT_NAME="${2:-}"; shift 2 ;;
+    --flow-agent-mode) FLOW_AGENT_MODE="${2:-}"; shift 2 ;;
+    --flow-timeout-seconds) FLOW_TIMEOUT_SECONDS="${2:-}"; shift 2 ;;
+    --flow-cron-min-lead-seconds) FLOW_CRON_MIN_LEAD_SECONDS="${2:-}"; shift 2 ;;
     --help|-h) usage; exit 0 ;;
     *) fail "unknown argument: $1" ;;
   esac
@@ -125,6 +142,10 @@ require_command ssh
 [[ "${MANAGED_COUNT}" =~ ^[0-9]+$ && "${MANAGED_COUNT}" -gt 0 ]] || fail "--managed-count must be a positive integer"
 [[ "${TIMEOUT_SECONDS}" =~ ^[0-9]+$ && "${TIMEOUT_SECONDS}" -gt 0 ]] || fail "--timeout-seconds must be a positive integer"
 [[ "${AI_TIMEOUT_SECONDS}" =~ ^[0-9]+$ && "${AI_TIMEOUT_SECONDS}" -gt 0 ]] || fail "--ai-timeout-seconds must be a positive integer"
+[[ "${FLOW_TIMEOUT_SECONDS}" =~ ^[0-9]+$ && "${FLOW_TIMEOUT_SECONDS}" -gt 0 ]] || fail "--flow-timeout-seconds must be a positive integer"
+[[ "${FLOW_CRON_MIN_LEAD_SECONDS}" =~ ^[0-9]+$ && "${FLOW_CRON_MIN_LEAD_SECONDS}" -gt 0 ]] || fail "--flow-cron-min-lead-seconds must be a positive integer"
+[[ -n "${FLOW_AGENT_NAME}" ]] || fail "--flow-agent-name is required"
+[[ -n "${FLOW_AGENT_MODE}" ]] || fail "--flow-agent-mode is required"
 [[ -n "${PRIMARY_SSH}" ]] || fail "--primary-ssh is required"
 [[ -n "${MANAGED_SSH}" ]] || fail "--managed-ssh is required"
 [[ -n "${SOURCE_WORKSPACE_PATH}" ]] || fail "--source-workspace-path is required"
@@ -174,6 +195,11 @@ cleanup_created() {
     return 0
   fi
   set +e
+  for flow_id in "${CREATED_FLOWS[@]}"; do
+    [[ -n "${flow_id}" ]] || continue
+    api_json PUT "/v3/flows/${flow_id}" "$(jq -nc '{enabled:false,target:{},unassign_target:true}')" "${ARTIFACT_DIR}/cleanup_flow_${flow_id}_disable.json" 60 || true
+    api_json DELETE "/v3/flows/${flow_id}" "" "${ARTIFACT_DIR}/cleanup_flow_${flow_id}_delete.json" 60 || true
+  done
   if [[ "${#CREATED_DEPLOYMENTS[@]}" -gt 0 ]]; then
     printf '%s\n' "${CREATED_DEPLOYMENTS[@]}" | jq -R . | jq -s '{ids:.}' >"${ARTIFACT_DIR}/cleanup_delete_request.json"
     api_json POST "/v1/deploy/container/delete" "$(cat "${ARTIFACT_DIR}/cleanup_delete_request.json")" "${ARTIFACT_DIR}/cleanup_delete_response.json" 180
@@ -366,6 +392,170 @@ wait_for_child_target() {
   done
 }
 
+
+flow_target_expr() {
+  jq -c '{swarm_id:(.swarm_id // ""),kind:(.kind // ""),deployment_id:(.deployment_id // ""),name:(.name // "")} | with_entries(select(.value != ""))' "${1:-}"
+}
+
+flow_workspace_expr() {
+  local workspace_path="${1:-}" runtime_workspace_path="${2:-}" binding_id="${3:-}"
+  jq -nc \
+    --arg workspace_path "${workspace_path}" \
+    --arg host_workspace_path "${SOURCE_WORKSPACE_PATH}" \
+    --arg runtime_workspace_path "${runtime_workspace_path}" \
+    --arg workspace_binding_id "${binding_id}" \
+    --arg workspace_name "$(basename "${SOURCE_WORKSPACE_PATH}")" \
+    '{workspace_path:$workspace_path,host_workspace_path:$host_workspace_path,workspace_name:$workspace_name,cwd:$workspace_path} + (if $runtime_workspace_path != "" then {runtime_workspace_path:$runtime_workspace_path} else {} end) + (if $workspace_binding_id != "" then {workspace_binding_id:$workspace_binding_id} else {} end)'
+}
+
+next_cron_schedule_json() {
+  local now_epoch now_seconds due_epoch minute hour
+  now_epoch="$(date -u +%s)"
+  now_seconds="$(date -u +%S)"
+  due_epoch=$((now_epoch - now_seconds + 60))
+  if (( due_epoch - now_epoch < FLOW_CRON_MIN_LEAD_SECONDS )); then
+    due_epoch=$((due_epoch + 60))
+  fi
+  minute="$(date -u -d "@${due_epoch}" +%M)"
+  hour="$(date -u -d "@${due_epoch}" +%H)"
+  jq -nc --arg cron "${minute} ${hour} * * *" --arg due_at "$(date -u -d "@${due_epoch}" +%Y-%m-%dT%H:%M:%SZ)" '{cadence:"daily",timezone:"UTC",cron:$cron,due_at:$due_at}'
+}
+
+run_flow_proof_run() {
+  local label="${1:-}" target_json="${2:-}" workspace_json="${3:-}" run_kind="${4:-}" out_dir="${5:-}"
+  local token flow_id prompt schedule_json enabled flow_body status session_id deadline latest_run_id
+  mkdir -p -- "${out_dir}"
+  token="TWO_LOCAL_FLOW_${label}_${run_kind}_OK"
+  flow_id="flow-${label}-${run_kind}-$(date +%Y%m%d-%H%M%S)-${RANDOM}"
+  prompt="Flow perimeter proof for ${label} ${run_kind}. Reply with exactly: ${token}"
+  if [[ "${run_kind}" == "cron" ]]; then
+    schedule_json="$(next_cron_schedule_json)"
+    enabled="true"
+    jq -r '.due_at' <<<"${schedule_json}" >"${out_dir}/cron_due_at.txt"
+    schedule_json="$(jq -c 'del(.due_at)' <<<"${schedule_json}")"
+  else
+    schedule_json='{"cadence":"on_demand","timezone":"UTC"}'
+    enabled="false"
+  fi
+  flow_body="$(jq -nc \
+    --arg flow_id "${flow_id}" \
+    --arg name "Two-local Flow proof ${label} ${run_kind}" \
+    --argjson enabled "${enabled}" \
+    --argjson target "${target_json}" \
+    --arg agent_name "${FLOW_AGENT_NAME}" \
+    --arg agent_mode "${FLOW_AGENT_MODE}" \
+    --argjson workspace "${workspace_json}" \
+    --argjson schedule "${schedule_json}" \
+    --arg prompt "${prompt}" \
+    '{flow_id:$flow_id,name:$name,enabled:$enabled,target:$target,agent:{profile_name:$agent_name,profile_mode:$agent_mode},workspace:$workspace,schedule:$schedule,catch_up_policy:{mode:"once"},intent:{prompt:$prompt,mode:"two_local_flow_proof"}}')"
+  printf '%s\n' "${target_json}" >"${out_dir}/target.json"
+  printf '%s\n' "${workspace_json}" >"${out_dir}/workspace.json"
+  printf '%s\n' "${flow_body}" >"${out_dir}/flow_create_request.json"
+  log "Flow proof ${label} ${run_kind}: creating ${flow_id}"
+  api_json POST "/v3/flows" "${flow_body}" "${out_dir}/flow_create_response.json" 90
+  [[ "$(json_get "${out_dir}/flow_create_response.json" '.ok // false')" == "true" ]] || fail "Flow proof ${label} ${run_kind} create ok=false"
+  CREATED_FLOWS+=("${flow_id}")
+  if [[ "${run_kind}" == "run_now" ]]; then
+    api_json POST "/v3/flows/${flow_id}/run-now" "" "${out_dir}/flow_run_now_response.json" 90
+    [[ "$(json_get "${out_dir}/flow_run_now_response.json" '.ok // false')" == "true" ]] || fail "Flow proof ${label} run-now ok=false"
+    latest_run_id="$(jq -r '(.run.reason // .result.ack.reason // "") | capture("run_now started (?<id>[^ ]+)")? | .id // empty' "${out_dir}/flow_run_now_response.json")"
+  fi
+  deadline=$((SECONDS + FLOW_TIMEOUT_SECONDS))
+  while :; do
+    api_json GET "/v3/flows/${flow_id}/status?limit=100" "" "${out_dir}/flow_status_poll.json" 30
+    api_json GET "/v3/flows/${flow_id}/history?limit=100" "" "${out_dir}/flow_history_poll.json" 30
+    if [[ -n "${latest_run_id}" ]]; then
+      status="$(jq -r --arg run_id "${latest_run_id}" '[.history[]? | select((.run_id // "") == $run_id)] | last | .status // empty' "${out_dir}/flow_history_poll.json")"
+      session_id="$(jq -r --arg run_id "${latest_run_id}" '[.history[]? | select((.run_id // "") == $run_id)] | last | .session_id // empty' "${out_dir}/flow_history_poll.json")"
+    else
+      status="$(jq -r '[.history[]? | select((.status // "") == "success" or (.status // "") == "failed")] | sort_by(.started_at // .scheduled_at // "") | last | .status // empty' "${out_dir}/flow_history_poll.json")"
+      session_id="$(jq -r '[.history[]? | select((.status // "") == "success" or (.status // "") == "failed")] | sort_by(.started_at // .scheduled_at // "") | last | .session_id // empty' "${out_dir}/flow_history_poll.json")"
+    fi
+    if [[ "${status}" == "success" && -n "${session_id}" ]]; then
+      cp -- "${out_dir}/flow_status_poll.json" "${out_dir}/flow_status.json"
+      cp -- "${out_dir}/flow_history_poll.json" "${out_dir}/flow_history.json"
+      printf '%s\n' "${session_id}" >"${out_dir}/flow_session_id.txt"
+      break
+    fi
+    if [[ "${status}" == "failed" ]]; then
+      cp -- "${out_dir}/flow_status_poll.json" "${out_dir}/flow_status.json"
+      cp -- "${out_dir}/flow_history_poll.json" "${out_dir}/flow_history.json"
+      fail "Flow proof ${label} ${run_kind} failed: $(jq -c '[.history[]? | select((.status // "") == "failed")] | last' "${out_dir}/flow_history.json")"
+    fi
+    [[ "${SECONDS}" -lt "${deadline}" ]] || { cp -- "${out_dir}/flow_status_poll.json" "${out_dir}/flow_status.json"; cp -- "${out_dir}/flow_history_poll.json" "${out_dir}/flow_history.json"; fail "Flow proof ${label} ${run_kind} timed out waiting for success"; }
+    sleep 5
+  done
+  api_json GET "/v1/sessions/${session_id}" "" "${out_dir}/flow_session.json" 30 || true
+  api_json GET "/v1/sessions/${session_id}/metadata" "" "${out_dir}/flow_session_metadata.json" 30 || true
+  api_json GET "/v1/sessions/${session_id}/messages?limit=100" "" "${out_dir}/flow_messages.json" 30
+  api_json GET "/v1/swarm/topology/session-route?session_id=$(urlencode "${session_id}")" "" "${out_dir}/flow_session_route.json" 30 || true
+  if ! jq -e --arg token "${token}" '[.messages[]? | select(((.content // "") | contains($token)))] | length > 0' "${out_dir}/flow_messages.json" >/dev/null; then
+    fail "Flow proof ${label} ${run_kind} completed but messages did not contain ${token}"
+  fi
+  if [[ "${run_kind}" == "cron" ]]; then
+    api_json PUT "/v3/flows/${flow_id}" "$(jq -nc '{enabled:false}')" "${out_dir}/flow_disable_response.json" 60 || true
+  fi
+  jq -nc \
+    --arg flow_id "${flow_id}" \
+    --arg label "${label}" \
+    --arg run_kind "${run_kind}" \
+    --arg session_id "${session_id}" \
+    --arg token "${token}" \
+    '{ok:true,flow_id:$flow_id,label:$label,run_kind:$run_kind,session_id:$session_id,proof_token:$token}' \
+    >"${out_dir}/summary.json"
+}
+
+run_flow_proof_target() {
+  local label="${1:-}" target_json="${2:-}" workspace_json="${3:-}" out_dir="${4:-}"
+  mkdir -p -- "${out_dir}"
+  run_flow_proof_run "${label}" "${target_json}" "${workspace_json}" run_now "${out_dir}/run-now"
+  run_flow_proof_run "${label}" "${target_json}" "${workspace_json}" cron "${out_dir}/cron"
+  jq -s '{ok:true,runs:.}' "${out_dir}/run-now/summary.json" "${out_dir}/cron/summary.json" >"${out_dir}/summary.json"
+}
+
+run_flow_proofs() {
+  if [[ "${FLOW_PROOF}" != "true" ]]; then
+    return 0
+  fi
+  log "running Flow proofs across self, managed host, primary local container(s), and managed local container(s)"
+  local flow_dir self_target self_workspace managed_target managed_workspace summary_file
+  flow_dir="${ARTIFACT_DIR}/flow-proofs"
+  mkdir -p -- "${flow_dir}"
+  self_target='{"kind":"self"}'
+  self_workspace="$(flow_workspace_expr "${SOURCE_WORKSPACE_PATH}" "" "")"
+  run_flow_proof_target self "${self_target}" "${self_workspace}" "${flow_dir}/self"
+  managed_target="$(flow_target_expr "${ARTIFACT_DIR}/managed_target.json")"
+  managed_workspace="$(flow_workspace_expr "${SOURCE_WORKSPACE_PATH}" "" "")"
+  run_flow_proof_target managed_host "${managed_target}" "${managed_workspace}" "${flow_dir}/managed-host"
+  # The first successful primary/managed container proof covers the two container target classes.
+  # Extra containers are still created and readiness-checked; avoid multiplying expensive AI Flow runs.
+  for summary_file in "${ARTIFACT_DIR}"/primary-*/summary.json; do
+    [[ -f "${summary_file}" ]] || continue
+    local item_dir label target_json workspace_json runtime_workspace_path binding_id
+    item_dir="$(dirname "${summary_file}")"
+    label="primary_container_$(basename "${item_dir}" | sed 's/^primary-//')"
+    target_json="$(flow_target_expr "${item_dir}/target.json")"
+    runtime_workspace_path="$(json_get "${summary_file}" '.runtime_workspace_path // empty')"
+    binding_id="$(json_get "${summary_file}" '.binding_id // empty')"
+    workspace_json="$(flow_workspace_expr "${SOURCE_WORKSPACE_PATH}" "${runtime_workspace_path}" "${binding_id}")"
+    run_flow_proof_target "${label}" "${target_json}" "${workspace_json}" "${flow_dir}/${label}"
+    break
+  done
+  for summary_file in "${ARTIFACT_DIR}"/managed-*/summary.json; do
+    [[ -f "${summary_file}" ]] || continue
+    local item_dir label target_json workspace_json runtime_workspace_path binding_id
+    item_dir="$(dirname "${summary_file}")"
+    label="managed_container_$(basename "${item_dir}" | sed 's/^managed-//')"
+    target_json="$(flow_target_expr "${item_dir}/target.json")"
+    runtime_workspace_path="$(json_get "${summary_file}" '.runtime_workspace_path // empty')"
+    binding_id="$(json_get "${summary_file}" '.binding_id // empty')"
+    workspace_json="$(flow_workspace_expr "${SOURCE_WORKSPACE_PATH}" "${runtime_workspace_path}" "${binding_id}")"
+    run_flow_proof_target "${label}" "${target_json}" "${workspace_json}" "${flow_dir}/${label}"
+    break
+  done
+  find "${flow_dir}" -mindepth 2 -maxdepth 2 -name summary.json -print0 | sort -z | xargs -0 jq -s '{ok:true,targets:.}' >"${flow_dir}/summary.json"
+}
+
 capture_runtime_ps() {
   api_json GET "/v1/deploy/container" "" "${ARTIFACT_DIR}/deployments_after_create.json" 30 || true
   api_json GET "/v1/swarm/targets" "" "${ARTIFACT_DIR}/targets_after_create.json" 30 || true
@@ -409,6 +599,11 @@ for ((i = 1; i <= MANAGED_COUNT; i++)); do
 done
 
 capture_runtime_ps
+run_flow_proofs
+if [[ ! -f "${ARTIFACT_DIR}/flow-proofs/summary.json" ]]; then
+  mkdir -p -- "${ARTIFACT_DIR}/flow-proofs"
+  printf '{"ok":true,"skipped":true}\n' >"${ARTIFACT_DIR}/flow-proofs/summary.json"
+fi
 
 summary_items="${ARTIFACT_DIR}/summary_items.json"
 : >"${summary_items}"
@@ -427,7 +622,9 @@ jq -s \
   --arg ai_proof "${AI_PROOF}" \
   --arg ai_provider "${AI_PROVIDER}" \
   --arg ai_model "${AI_MODEL}" \
-  '{ok:true,primary_ssh:$primary_ssh,managed_ssh:$managed_ssh,managed_swarm_id:$managed_swarm_id,managed_name:$managed_name,source_workspace_path:$source_workspace_path,artifact_dir:$artifact_dir,ai_proof:($ai_proof == "true"),ai_provider:$ai_provider,ai_model:$ai_model,containers:.}' \
+  --arg flow_proof "${FLOW_PROOF}" \
+  --slurpfile flow_summary "${ARTIFACT_DIR}/flow-proofs/summary.json" \
+  '{ok:true,primary_ssh:$primary_ssh,managed_ssh:$managed_ssh,managed_swarm_id:$managed_swarm_id,managed_name:$managed_name,source_workspace_path:$source_workspace_path,artifact_dir:$artifact_dir,ai_proof:($ai_proof == "true"),ai_provider:$ai_provider,ai_model:$ai_model,flow_proof:($flow_proof == "true"),flow_proofs:($flow_summary[0] // null),containers:.}' \
   "${summary_items}" >"${ARTIFACT_DIR}/summary.json"
 
 log "PASS two-local-containers diagnostic"
