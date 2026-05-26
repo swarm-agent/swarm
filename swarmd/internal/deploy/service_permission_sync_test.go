@@ -630,6 +630,87 @@ func TestManagedHostAgentPermissionAndModelSyncAreAccountScoped(t *testing.T) {
 	}
 }
 
+func TestDeployContainerRuntimeSyncAppliesAgentsAndModelDefaultsToPairedAccount(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	swarmStore := pebblestore.NewSwarmStore(store)
+	pairing := pebblestore.SwarmLocalPairingRecord{
+		PairingState:   startupconfig.PairingStatePaired,
+		ParentSwarmID:  "host-swarm",
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: testPrincipal().AccountScopeID,
+	}
+	if _, err := swarmStore.PutLocalPairing(pairing); err != nil {
+		t.Fatalf("put pairing: %v", err)
+	}
+	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
+	modelSvc := modelruntime.NewService(pebblestore.NewModelStore(store), events, nil)
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, nil, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), modelSvc)
+
+	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/deploy/container/sync/agents":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "bundle": ContainerSyncAgentBundle{State: agentruntime.State{Profiles: []pebblestore.AgentProfile{{Name: "synced-agent", Mode: agentruntime.ModeSubagent, Prompt: "account scoped", Enabled: true}}}, Modules: []string{workspaceruntime.ReplicationSyncModuleAgents}}})
+		case "/v1/deploy/container/sync/model-defaults":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "bundle": ContainerSyncModelDefaultsBundle{Preference: pebblestore.ModelPreference{Provider: "provider-linked", Model: "model-linked", Thinking: "medium", UserID: testPrincipal().UserID}, Modules: []string{workspaceruntime.ReplicationSyncModuleModelDefaults}}})
+		default:
+			t.Fatalf("unexpected sync path %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(child.Close)
+
+	cfg := startupconfig.Default(filepath.Join(t.TempDir(), "swarm.conf"))
+	cfg.DeployContainer.SyncModules = []string{workspaceruntime.ReplicationSyncModuleAgents, workspaceruntime.ReplicationSyncModuleModelDefaults}
+	cfg.DeployContainer.HostAPIBaseURL = child.URL
+	if err := deploySvc.syncDeployContainerFromHost(context.Background(), cfg, pairing); err != nil {
+		t.Fatalf("syncDeployContainerFromHost() error = %v", err)
+	}
+
+	linkedState, err := agentSvc.ListStateForAccount(testPrincipal().AccountScopeID, 10)
+	if err != nil {
+		t.Fatalf("list linked agent state: %v", err)
+	}
+	foundSyncedAgent := false
+	for _, profile := range linkedState.Profiles {
+		if profile.Name == "synced-agent" {
+			foundSyncedAgent = true
+		}
+	}
+	if !foundSyncedAgent {
+		t.Fatalf("linked account agent state = %+v", linkedState.Profiles)
+	}
+	globalState, err := agentSvc.ListState(10)
+	if err != nil {
+		t.Fatalf("list global agent state: %v", err)
+	}
+	for _, profile := range globalState.Profiles {
+		if profile.Name == "synced-agent" {
+			t.Fatalf("synced agent was written globally: %+v", globalState.Profiles)
+		}
+	}
+	pref, err := modelSvc.GetPreferenceForAccount(testPrincipal().AccountScopeID)
+	if err != nil {
+		t.Fatalf("get linked model preference: %v", err)
+	}
+	if pref.Provider != "provider-linked" || pref.Model != "model-linked" || pref.AccountScopeID != testPrincipal().AccountScopeID {
+		t.Fatalf("linked model preference = %+v", pref)
+	}
+	globalPref, err := modelSvc.GetGlobalPreference()
+	if err != nil {
+		t.Fatalf("get global model preference: %v", err)
+	}
+	if globalPref.Provider == "provider-linked" {
+		t.Fatalf("model preference was written globally: %+v", globalPref)
+	}
+}
+
 func TestApplyManagedHostInitialSyncBundleAppliesSyncedStateToLinkedAccountOnly(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm.pebble"))
 	if err != nil {

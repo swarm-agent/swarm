@@ -3398,7 +3398,7 @@ func (s *Service) finalizeChildAttach(ctx context.Context, cfg startupconfig.Fil
 			if err != nil {
 				return err
 			}
-			if err := s.applyManagedAgentBundle(bundle, cfg.DeployContainer.SyncModules); err != nil {
+			if err := s.applyManagedAgentBundleForAccount(pairing.AccountScopeID, bundle, cfg.DeployContainer.SyncModules); err != nil {
 				return err
 			}
 		}
@@ -3416,7 +3416,7 @@ func (s *Service) finalizeChildAttach(ctx context.Context, cfg startupconfig.Fil
 			if err != nil {
 				return err
 			}
-			if err := s.applyManagedModelDefaultsBundle(bundle, cfg.DeployContainer.SyncModules); err != nil {
+			if err := s.applyManagedModelDefaultsBundleForAccount(pairing.AccountScopeID, bundle, cfg.DeployContainer.SyncModules); err != nil {
 				return err
 			}
 		}
@@ -3991,7 +3991,7 @@ func (s *Service) syncDeployContainerFromHost(ctx context.Context, cfg startupco
 		if err != nil {
 			return s.recordManagedCredentialSyncFailure(pairing, err)
 		}
-		if err := s.applyManagedAgentBundle(bundle, cfg.DeployContainer.SyncModules); err != nil {
+		if err := s.applyManagedAgentBundleForAccount(pairing.AccountScopeID, bundle, cfg.DeployContainer.SyncModules); err != nil {
 			return s.recordManagedCredentialSyncFailure(pairing, err)
 		}
 	}
@@ -4009,7 +4009,7 @@ func (s *Service) syncDeployContainerFromHost(ctx context.Context, cfg startupco
 		if err != nil {
 			return s.recordManagedCredentialSyncFailure(pairing, err)
 		}
-		if err := s.applyManagedModelDefaultsBundle(bundle, cfg.DeployContainer.SyncModules); err != nil {
+		if err := s.applyManagedModelDefaultsBundleForAccount(pairing.AccountScopeID, bundle, cfg.DeployContainer.SyncModules); err != nil {
 			return s.recordManagedCredentialSyncFailure(pairing, err)
 		}
 	}
@@ -4054,7 +4054,7 @@ func (s *Service) syncManagedHostFromManager(ctx context.Context, cfg startupcon
 			return s.recordManagedCredentialSyncFailure(pairing, err)
 		}
 		agentBundle = bundle
-		if err := s.applyManagedAgentBundle(bundle, modules); err != nil {
+		if err := s.applyManagedAgentBundleForAccount(pairing.AccountScopeID, bundle, modules); err != nil {
 			return s.recordManagedCredentialSyncFailure(pairing, err)
 		}
 	}
@@ -4076,7 +4076,7 @@ func (s *Service) syncManagedHostFromManager(ctx context.Context, cfg startupcon
 			return s.recordManagedCredentialSyncFailure(pairing, err)
 		}
 		modelDefaultsBundle = bundle
-		if err := s.applyManagedModelDefaultsBundle(bundle, modules); err != nil {
+		if err := s.applyManagedModelDefaultsBundleForAccount(pairing.AccountScopeID, bundle, modules); err != nil {
 			return s.recordManagedCredentialSyncFailure(pairing, err)
 		}
 	}
