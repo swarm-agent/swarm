@@ -125,23 +125,18 @@ func (s *Service) GetConfigForPrincipal(principal identity.Principal, workspaceP
 	if err := requirePrincipal(principal); err != nil {
 		return Config{}, err
 	}
-	canonical, err := s.resolveWorkspaceConfigPathForPrincipal(principal, workspacePath)
+	canonical, matched, err := s.resolveWorkspaceConfigPathForPrincipalOptional(principal, workspacePath)
 	if err != nil {
 		return Config{}, err
+	}
+	if !matched {
+		return defaultConfigForWorkspace(canonical), nil
 	}
 	record, _, err := s.store.GetConfigForAccount(principal.AccountScopeID, canonical)
 	if err != nil {
 		return Config{}, fmt.Errorf("read worktree config: %w", err)
 	}
-	useCurrentBranch := record.UseCurrentBranch != nil && *record.UseCurrentBranch
-	return Config{
-		WorkspacePath:    canonical,
-		Enabled:          record.Enabled,
-		UseCurrentBranch: useCurrentBranch,
-		BaseBranch:       strings.TrimSpace(record.BaseBranch),
-		BranchName:       normalizeWorktreeBranchPrefix(record.BranchName),
-		UpdatedAt:        record.UpdatedAt,
-	}, nil
+	return configFromRecord(canonical, record), nil
 }
 
 func (s *Service) SetConfig(workspacePath string, enabled, useCurrentBranch bool, baseBranch, branchName string) (Config, *pebblestore.EventEnvelope, error) {
@@ -422,44 +417,78 @@ func (s *Service) resolveWorkspaceConfigPath(workspacePath string) (string, erro
 }
 
 func (s *Service) resolveWorkspaceConfigPathForPrincipal(principal identity.Principal, workspacePath string) (string, error) {
-	if err := requirePrincipal(principal); err != nil {
+	canonical, matched, err := s.resolveWorkspaceConfigPathForPrincipalOptional(principal, workspacePath)
+	if err != nil {
 		return "", err
+	}
+	if !matched {
+		return "", errAccountOwnedWorkspaceRequired
+	}
+	return canonical, nil
+}
+
+func (s *Service) resolveWorkspaceConfigPathForPrincipalOptional(principal identity.Principal, workspacePath string) (string, bool, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return "", false, err
 	}
 	trimmed := strings.TrimSpace(workspacePath)
 	if trimmed == "" {
 		if s == nil || s.workspace == nil {
-			return "", errors.New("workspace path is required")
+			return "", false, errors.New("workspace path is required")
 		}
 		current, ok, err := s.workspace.CurrentBindingForPrincipal(principal)
 		if err != nil {
-			return "", fmt.Errorf("resolve current workspace: %w", err)
+			return "", false, fmt.Errorf("resolve current workspace: %w", err)
 		}
 		if !ok {
-			return "", errors.New("workspace path is required")
+			return "", false, errors.New("workspace path is required")
 		}
 		trimmed = strings.TrimSpace(current.ResolvedPath)
 	}
 	if trimmed == "" {
-		return "", errors.New("workspace path is required")
+		return "", false, errors.New("workspace path is required")
 	}
 	if s != nil && s.workspace != nil {
 		scope, err := s.workspace.ScopeForPathForPrincipal(principal, trimmed)
 		if err != nil {
-			return "", fmt.Errorf("resolve workspace scope: %w", err)
+			return "", false, fmt.Errorf("resolve workspace scope: %w", err)
 		}
 		if scope.Matched && strings.TrimSpace(scope.WorkspacePath) != "" {
-			return strings.TrimSpace(scope.WorkspacePath), nil
+			return strings.TrimSpace(scope.WorkspacePath), true, nil
 		}
-		return "", errAccountOwnedWorkspaceRequired
+		resolved := strings.TrimSpace(scope.ResolvedPath)
+		if resolved == "" {
+			resolved, err = filepath.Abs(trimmed)
+			if err != nil {
+				return "", false, fmt.Errorf("resolve workspace path: %w", err)
+			}
+		}
+		return filepath.Clean(resolved), false, nil
 	}
 	resolved, err := filepath.Abs(trimmed)
 	if err != nil {
-		return "", fmt.Errorf("resolve workspace path: %w", err)
+		return "", false, fmt.Errorf("resolve workspace path: %w", err)
 	}
-	return filepath.Clean(resolved), nil
+	return filepath.Clean(resolved), true, nil
 }
 
 func (s *Service) migrateLegacyConfig() {}
+
+func defaultConfigForWorkspace(workspacePath string) Config {
+	return configFromRecord(workspacePath, pebblestore.WorktreeConfigRecord{WorkspacePath: workspacePath})
+}
+
+func configFromRecord(workspacePath string, record pebblestore.WorktreeConfigRecord) Config {
+	useCurrentBranch := record.UseCurrentBranch != nil && *record.UseCurrentBranch
+	return Config{
+		WorkspacePath:    workspacePath,
+		Enabled:          record.Enabled,
+		UseCurrentBranch: useCurrentBranch,
+		BaseBranch:       strings.TrimSpace(record.BaseBranch),
+		BranchName:       normalizeWorktreeBranchPrefix(record.BranchName),
+		UpdatedAt:        record.UpdatedAt,
+	}
+}
 
 func requirePrincipal(principal identity.Principal) error {
 	if !principal.Valid() {

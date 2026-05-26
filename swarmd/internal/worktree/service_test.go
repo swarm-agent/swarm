@@ -7,6 +7,9 @@ import (
 	"testing"
 
 	"swarm/packages/swarmd/internal/appstorage"
+	"swarm/packages/swarmd/internal/identity"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 )
 
 func TestDeterministicSessionWorktreePathUsesPrivateWorkspaceCache(t *testing.T) {
@@ -99,5 +102,45 @@ func TestEnsureWorktreeParentUsesPrivatePermissions(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != appstorage.PrivateDirPerm {
 		t.Fatalf("worktree parent permissions = %#o, want %#o", got, appstorage.PrivateDirPerm)
+	}
+}
+
+func TestGetConfigForPrincipalAllowsUnmatchedDirectory(t *testing.T) {
+	store, err := pebblestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	workspaceSvc := workspaceruntime.NewService(pebblestore.NewWorkspaceStore(store))
+	svc := NewService(pebblestore.NewWorktreeStore(store), workspaceSvc, nil)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-1", AccountScopeID: "account-1"}
+	unmatched := t.TempDir()
+
+	cfg, err := svc.GetConfigForPrincipal(principal, unmatched)
+	if err != nil {
+		t.Fatalf("GetConfigForPrincipal: %v", err)
+	}
+	if cfg.Enabled {
+		t.Fatalf("Enabled = true, want false for unmatched directory")
+	}
+	if cfg.WorkspacePath != unmatched {
+		t.Fatalf("WorkspacePath = %q, want %q", cfg.WorkspacePath, unmatched)
+	}
+}
+
+func TestSetConfigForPrincipalRequiresAccountOwnedWorkspace(t *testing.T) {
+	store, err := pebblestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	workspaceSvc := workspaceruntime.NewService(pebblestore.NewWorkspaceStore(store))
+	svc := NewService(pebblestore.NewWorktreeStore(store), workspaceSvc, nil)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-1", AccountScopeID: "account-1"}
+
+	if _, _, err := svc.SetConfigForPrincipal(principal, t.TempDir(), true, true, "", ""); err == nil || !strings.Contains(err.Error(), errAccountOwnedWorkspaceRequired.Error()) {
+		t.Fatalf("SetConfigForPrincipal error = %v, want %v", err, errAccountOwnedWorkspaceRequired)
 	}
 }
