@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
@@ -22,8 +23,12 @@ func resolveRunWorkspaceContext(execCtx resolvedRunExecutionContext) runWorkspac
 	}
 }
 
-func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot) (tool.WorkspaceScope, error) {
+func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, principal identity.Principal) (tool.WorkspaceScope, error) {
 	workspacePath := strings.TrimSpace(session.WorkspacePath)
+	principal, err := principalForRunWorkspaceScope(session, principal)
+	if err != nil {
+		return tool.WorkspaceScope{}, err
+	}
 	if session.WorktreeEnabled {
 		resolvedPath, err := normalizeRunScopePath(workspacePath)
 		if err != nil {
@@ -42,21 +47,24 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot) 
 		return tool.WorkspaceScope{
 			PrimaryPath: resolvedPath,
 			Roots:       roots,
+			Principal:   principal,
+			SessionID:   strings.TrimSpace(session.ID),
 		}, nil
 	}
-	scope := tool.WorkspaceScope{}
 	if s != nil && s.workspace != nil {
-		resolved, err := s.workspace.ScopeForPath(workspacePath)
-		if err == nil {
-			scope = tool.WorkspaceScope{
-				PrimaryPath: resolved.WorkspacePath,
-				Roots:       append([]string(nil), resolved.Directories...),
-			}
+		resolved, err := s.workspace.ScopeForPathForPrincipal(principal, workspacePath)
+		if err != nil {
+			return tool.WorkspaceScope{}, fmt.Errorf("resolve account-scoped workspace scope: %w", err)
 		}
-	}
-	if strings.TrimSpace(scope.PrimaryPath) != "" {
-		scope.Roots = mergeSessionWorkspaceRoots(scope.Roots, session.TemporaryWorkspaceRoots)
-		return scope, nil
+		if strings.TrimSpace(resolved.WorkspacePath) != "" {
+			roots := mergeSessionWorkspaceRoots(resolved.Directories, session.TemporaryWorkspaceRoots)
+			return tool.WorkspaceScope{
+				PrimaryPath: strings.TrimSpace(resolved.WorkspacePath),
+				Roots:       roots,
+				Principal:   principal,
+				SessionID:   strings.TrimSpace(session.ID),
+			}, nil
+		}
 	}
 	resolvedPath, err := normalizeRunScopePath(workspacePath)
 	if err != nil {
@@ -66,6 +74,29 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot) 
 	return tool.WorkspaceScope{
 		PrimaryPath: resolvedPath,
 		Roots:       roots,
+		Principal:   principal,
+		SessionID:   strings.TrimSpace(session.ID),
+	}, nil
+}
+
+func principalForRunWorkspaceScope(session pebblestore.SessionSnapshot, principal identity.Principal) (identity.Principal, error) {
+	if principal.Valid() {
+		if strings.TrimSpace(principal.SessionID) == "" {
+			principal.SessionID = strings.TrimSpace(session.ID)
+		}
+		return principal, nil
+	}
+	userID := strings.TrimSpace(session.UserID)
+	accountScopeID := strings.TrimSpace(session.AccountScopeID)
+	if userID == "" || accountScopeID == "" {
+		return identity.Principal{}, fmt.Errorf("run workspace scope requires principal: %w", identity.ErrPrincipalRequired)
+	}
+	return identity.Principal{
+		Type:               identity.PrincipalTypeUser,
+		UserID:             userID,
+		AccountScopeID:     accountScopeID,
+		SessionID:          strings.TrimSpace(session.ID),
+		AccountScopeSource: identity.AccountScopeSourceSession,
 	}, nil
 }
 

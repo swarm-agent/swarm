@@ -149,6 +149,9 @@ func (s *Service) SetEventPublisher(events *pebblestore.EventLog, publish func(p
 	s.publish = publish
 }
 
+// Resolve is a legacy, principal-less resolver retained only for explicit
+// bootstrap/migration callers. Runtime and authenticated paths must use
+// ResolveForPrincipal so account-scoped workspace directories are authoritative.
 func (s *Service) Resolve(cwd string) (Resolution, error) {
 	scope, err := s.legacyScopeForPath(cwd)
 	if err != nil {
@@ -532,6 +535,10 @@ func (s *Service) CurrentBindingForPrincipal(principal identity.Principal) (Reso
 	return resolutionForWorkspace(binding.Path, binding.Path, binding.Path, binding.Name, themeID), true, nil
 }
 
+// ScopeForPath is a legacy, principal-less resolver. Do not use it from run,
+// tool, API, or other principal-backed runtime paths; use
+// ScopeForPathForPrincipal instead so account-scoped linked directories are
+// included and legacy global entries are not consulted.
 func (s *Service) ScopeForPath(path string) (Scope, error) {
 	return s.legacyScopeForPath(path)
 }
@@ -583,6 +590,8 @@ func (s *Service) ScopeForPathForPrincipal(principal identity.Principal, path st
 	return scopeForWorkspace(path, resolved, entry.Path, name, normalizeWorkspaceThemeID(entry.ThemeID), directories, true), nil
 }
 
+// ScopeForWorkspace reads only legacy global workspace entries. Principal-backed
+// callers must use ScopeForWorkspaceForPrincipal.
 func (s *Service) ScopeForWorkspace(path string) (Scope, error) {
 	resolved, err := resolvePath(path)
 	if err != nil {
@@ -849,6 +858,9 @@ func (s *Service) ensureRemoteChildWorkspaceEntries() error {
 	return identity.ErrPrincipalRequired
 }
 
+// legacyScopeForPath deliberately consults only pre-account global workspace
+// entries. It must remain unexported and must never be used as a fallback from
+// principal-backed runtime resolution.
 func (s *Service) legacyScopeForPath(path string) (Scope, error) {
 	resolved, err := resolvePath(path)
 	if err != nil {

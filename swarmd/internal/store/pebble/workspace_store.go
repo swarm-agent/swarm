@@ -387,6 +387,9 @@ func (s *WorkspaceStore) GetCurrentForAccount(accountScopeID, userID string) (Wo
 	return binding, true, nil
 }
 
+// Principal-less workspace mutations are intentionally disabled. Runtime and
+// API callers must use the ForAccount methods so saved linked directories are
+// isolated by account scope instead of drifting back to legacy global keys.
 func (s *WorkspaceStore) SetCurrent(path, name string) (WorkspaceBinding, error) {
 	return WorkspaceBinding{}, fmt.Errorf("legacy global workspace current is disabled; account scope is required")
 }
@@ -566,6 +569,8 @@ func (s *WorkspaceStore) ListReplicationLinks(path string) ([]WorkspaceReplicati
 	return nil, fmt.Errorf("legacy global workspace replication links are disabled; account scope is required")
 }
 
+// AddDirectory is disabled for legacy global workspaces. Use
+// AddDirectoryForAccount for persistent linked roots.
 func (s *WorkspaceStore) AddDirectory(path, directory string) (WorkspaceEntry, error) {
 	return WorkspaceEntry{}, fmt.Errorf("legacy global workspace directory add is disabled; account scope is required")
 }

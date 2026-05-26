@@ -8,6 +8,7 @@ import (
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/discovery"
+	"swarm/packages/swarmd/internal/identity"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -247,7 +248,7 @@ func (s *Service) resolveAgentForAccount(accountScopeID, name string) (pebblesto
 }
 
 func (s *Service) composeInstructions(workspacePath string, agentProfile pebblestore.AgentProfile, userInstructions string) string {
-	scope, err := s.resolveRunWorkspaceScope(pebblestore.SessionSnapshot{WorkspacePath: workspacePath})
+	scope, err := s.resolveRunWorkspaceScope(pebblestore.SessionSnapshot{WorkspacePath: workspacePath}, identity.Principal{})
 	if err != nil {
 		scope = tool.WorkspaceScope{
 			PrimaryPath: workspacePath,

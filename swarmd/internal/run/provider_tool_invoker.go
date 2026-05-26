@@ -194,6 +194,7 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 					config.sessionMode,
 					workspaceCtx.OriginWorkspacePath,
 					config.workspaceName,
+					principal,
 					&workspaceCtx,
 					[]tool.Call{call},
 					config.emit,
@@ -207,6 +208,8 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 					runtimeCtx := tool.WithWorkspaceScope(ctx, tool.WorkspaceScope{
 						PrimaryPath: workspaceCtx.WorkspacePath,
 						Roots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
+						Principal:   principal,
+						SessionID:   strings.TrimSpace(config.sessionID),
 					})
 					executed := s.tools.ExecuteBatchStreamingWithProgress(runtimeCtx, workspaceCtx.WorkspacePath, scopeApprovedCalls, func(_ int, current tool.Call, progress tool.Progress) {
 						if config.emit == nil {

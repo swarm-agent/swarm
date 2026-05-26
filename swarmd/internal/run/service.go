@@ -343,8 +343,12 @@ func (s *Service) ExecuteToolForSessionScope(ctx context.Context, workspacePath 
 	principal, _ := identity.PrincipalFromContext(ctx)
 	scope := tool.WorkspaceScope{PrimaryPath: strings.TrimSpace(workspacePath), Roots: []string{strings.TrimSpace(workspacePath)}, Principal: principal}
 	if s.workspace != nil {
-		if resolved, err := s.workspace.ScopeForPath(workspacePath); err == nil {
-			scope = tool.WorkspaceScope{PrimaryPath: strings.TrimSpace(resolved.ResolvedPath), Roots: []string{strings.TrimSpace(resolved.WorkspacePath), strings.TrimSpace(resolved.ResolvedPath)}, Principal: principal}
+		if resolved, err := s.workspace.ScopeForPathForPrincipal(principal, workspacePath); err == nil {
+			roots := mergeSessionWorkspaceRoots(resolved.Directories, nil)
+			if len(roots) == 0 {
+				roots = []string{strings.TrimSpace(resolved.WorkspacePath)}
+			}
+			scope = tool.WorkspaceScope{PrimaryPath: strings.TrimSpace(resolved.ResolvedPath), Roots: roots, Principal: principal}
 		}
 	}
 	return s.tools.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, call)
@@ -838,7 +842,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 		effectiveDisabledTools = mergeDisabledTools(effectiveDisabledTools, disabled)
 	}
-	resolvedExecutionContext, err := s.resolveRunExecutionContext(sessionSnapshot, options.ExecutionContextOrDefault())
+	resolvedExecutionContext, err := s.resolveRunExecutionContext(sessionSnapshot, options.ExecutionContextOrDefault(), options.Principal)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -856,6 +860,8 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	baseInstructions := s.composeInstructionsForScope(tool.WorkspaceScope{
 		PrimaryPath: workspaceCtx.WorkspacePath,
 		Roots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
+		Principal:   options.Principal,
+		SessionID:   strings.TrimSpace(sessionSnapshot.ID),
 	}, agentProfile, options.Instructions)
 	baseInstructions = appendHostRuntimeContext(baseInstructions, workspaceCtx.WorkspacePath, workspaceCtx.WorkspaceRoots)
 
@@ -1749,6 +1755,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			executionMode,
 			workspaceCtx.OriginWorkspacePath,
 			sessionSnapshot.WorkspaceName,
+			options.Principal,
 			&workspaceCtx,
 			runtimeCalls,
 			emit,
@@ -1792,6 +1799,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				PrimaryPath: workspaceCtx.WorkspacePath,
 				Roots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
 				Principal:   options.Principal,
+				SessionID:   strings.TrimSpace(sessionSnapshot.ID),
 			}, agentProfile, options.Instructions)
 			baseInstructions = appendHostRuntimeContext(baseInstructions, workspaceCtx.WorkspacePath, workspaceCtx.WorkspaceRoots)
 		}
@@ -1800,6 +1808,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			PrimaryPath: workspaceCtx.WorkspacePath,
 			Roots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
 			Principal:   options.Principal,
+			SessionID:   strings.TrimSpace(sessionSnapshot.ID),
 		})
 		executedResults := s.tools.ExecuteBatchStreamingWithProgress(runtimeCtx, workspaceCtx.WorkspacePath, scopeApprovedCalls, func(_ int, call tool.Call, progress tool.Progress) {
 			stage := strings.ToLower(strings.TrimSpace(progress.Stage))

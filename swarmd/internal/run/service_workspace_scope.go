@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -40,6 +41,7 @@ func (s *Service) gateWorkspaceScopeCalls(
 	sessionMode string,
 	workspaceOwnerPath,
 	workspaceName string,
+	principal identity.Principal,
 	workspaceCtx *runWorkspaceContext,
 	calls []tool.Call,
 	emit StreamHandler,
@@ -52,6 +54,8 @@ func (s *Service) gateWorkspaceScopeCalls(
 	hostScope := tool.WorkspaceScope{
 		PrimaryPath: strings.TrimSpace(workspaceCtx.OriginWorkspacePath),
 		Roots:       append([]string(nil), workspaceCtx.OriginWorkspaceRoots...),
+		Principal:   principal,
+		SessionID:   strings.TrimSpace(sessionID),
 	}
 	for i := range calls {
 		results[i] = tool.Result{
@@ -80,6 +84,7 @@ func (s *Service) gateWorkspaceScopeCalls(
 			sessionMode,
 			workspaceOwnerPath,
 			workspaceName,
+			principal,
 			call,
 			request,
 			emit,
@@ -92,7 +97,7 @@ func (s *Service) gateWorkspaceScopeCalls(
 			continue
 		}
 
-		changed, err := s.applyWorkspaceScopeApproval(sessionID, workspaceOwnerPath, workspaceName, decision, request, workspaceCtx)
+		changed, err := s.applyWorkspaceScopeApproval(sessionID, workspaceOwnerPath, workspaceName, principal, decision, request, workspaceCtx)
 		if err != nil {
 			results[i] = workspaceScopeErrorResult(call, fmt.Errorf("workspace scope approval failed: %w", err))
 			continue
@@ -103,6 +108,8 @@ func (s *Service) gateWorkspaceScopeCalls(
 		hostScope = tool.WorkspaceScope{
 			PrimaryPath: strings.TrimSpace(workspaceCtx.OriginWorkspacePath),
 			Roots:       append([]string(nil), workspaceCtx.OriginWorkspaceRoots...),
+			Principal:   principal,
+			SessionID:   strings.TrimSpace(sessionID),
 		}
 		approvedCalls = append(approvedCalls, call)
 		approvedIndexes = append(approvedIndexes, i)
@@ -119,6 +126,7 @@ func (s *Service) requestWorkspaceScopePermission(
 	sessionMode string,
 	workspaceOwnerPath,
 	workspaceName string,
+	principal identity.Principal,
 	call tool.Call,
 	request tool.ScopeExpansionRequest,
 	emit StreamHandler,
@@ -138,7 +146,7 @@ func (s *Service) requestWorkspaceScopePermission(
 		return workspaceScopeErrorResult(call, err), "", false, nil
 	}
 
-	target := s.resolveWorkspaceScopePermissionTarget(workspaceOwnerPath, workspaceName)
+	target := s.resolveWorkspaceScopePermissionTarget(workspaceOwnerPath, workspaceName, principal)
 	waitStarted := time.Now()
 	record, err := s.permissions.CreatePending(permission.CreateInput{
 		SessionID:     strings.TrimSpace(permissionSessionID),
@@ -204,15 +212,16 @@ func (s *Service) applyWorkspaceScopeApproval(
 	sessionID,
 	workspaceOwnerPath,
 	workspaceName string,
+	principal identity.Principal,
 	decision workspaceScopeApprovalDecision,
 	request tool.ScopeExpansionRequest,
 	workspaceCtx *runWorkspaceContext,
 ) (bool, error) {
 	switch decision {
 	case "", workspaceScopeDecisionSessionAllow:
-		return s.applyTemporaryWorkspaceScopeAccess(sessionID, request, workspaceCtx)
+		return s.applyTemporaryWorkspaceScopeAccess(sessionID, principal, request, workspaceCtx)
 	case workspaceScopeDecisionAddDir:
-		return s.applyPersistentWorkspaceScopeAccess(sessionID, workspaceOwnerPath, workspaceName, request, workspaceCtx)
+		return s.applyPersistentWorkspaceScopeAccess(sessionID, workspaceOwnerPath, workspaceName, principal, request, workspaceCtx)
 	default:
 		return false, fmt.Errorf("unsupported workspace scope decision %q", strings.TrimSpace(string(decision)))
 	}
@@ -220,6 +229,7 @@ func (s *Service) applyWorkspaceScopeApproval(
 
 func (s *Service) applyTemporaryWorkspaceScopeAccess(
 	sessionID string,
+	principal identity.Principal,
 	request tool.ScopeExpansionRequest,
 	workspaceCtx *runWorkspaceContext,
 ) (bool, error) {
@@ -238,13 +248,14 @@ func (s *Service) applyTemporaryWorkspaceScopeAccess(
 	if err != nil {
 		return false, err
 	}
-	return s.syncWorkspaceScopeFromSession(sessionSnapshot, workspaceCtx)
+	return s.syncWorkspaceScopeFromSession(sessionSnapshot, principal, workspaceCtx)
 }
 
 func (s *Service) applyPersistentWorkspaceScopeAccess(
 	sessionID,
 	workspaceOwnerPath,
 	workspaceName string,
+	principal identity.Principal,
 	request tool.ScopeExpansionRequest,
 	workspaceCtx *runWorkspaceContext,
 ) (bool, error) {
@@ -255,13 +266,17 @@ func (s *Service) applyPersistentWorkspaceScopeAccess(
 		return false, errors.New("workspace context is required")
 	}
 
-	target := s.resolveWorkspaceScopePermissionTarget(workspaceOwnerPath, workspaceName)
+	principal, err := principalForRunWorkspaceScope(pebblestore.SessionSnapshot{ID: strings.TrimSpace(sessionID)}, principal)
+	if err != nil {
+		return false, err
+	}
+	target := s.resolveWorkspaceScopePermissionTarget(workspaceOwnerPath, workspaceName, principal)
 	if !target.Exists || strings.TrimSpace(target.Path) == "" {
 		return false, errors.New("no saved workspace is active; temporary session access is the only available action")
 	}
 
-	if _, err := s.workspace.AddDirectory(target.Path, request.DirectoryPath); err != nil {
-		scope, scopeErr := s.workspace.ScopeForPath(request.DirectoryPath)
+	if _, err := s.workspace.AddDirectoryForPrincipal(principal, target.Path, request.DirectoryPath); err != nil {
+		scope, scopeErr := s.workspace.ScopeForPathForPrincipal(principal, request.DirectoryPath)
 		if scopeErr != nil || !scope.Matched || strings.TrimSpace(scope.WorkspacePath) != strings.TrimSpace(target.Path) {
 			return false, err
 		}
@@ -274,11 +289,12 @@ func (s *Service) applyPersistentWorkspaceScopeAccess(
 	if !ok {
 		return false, fmt.Errorf("session %q not found", strings.TrimSpace(sessionID))
 	}
-	return s.syncWorkspaceScopeFromSession(sessionSnapshot, workspaceCtx)
+	return s.syncWorkspaceScopeFromSession(sessionSnapshot, principal, workspaceCtx)
 }
 
 func (s *Service) syncWorkspaceScopeFromSession(
 	sessionSnapshot pebblestore.SessionSnapshot,
+	principal identity.Principal,
 	workspaceCtx *runWorkspaceContext,
 ) (bool, error) {
 	if workspaceCtx == nil {
@@ -288,7 +304,7 @@ func (s *Service) syncWorkspaceScopeFromSession(
 	beforePrimary := strings.TrimSpace(workspaceCtx.OriginWorkspacePath)
 	beforeRoots := append([]string(nil), workspaceCtx.OriginWorkspaceRoots...)
 
-	scope, err := s.resolveRunWorkspaceScope(sessionSnapshot)
+	scope, err := s.resolveRunWorkspaceScope(sessionSnapshot, principal)
 	if err != nil {
 		return false, err
 	}
@@ -309,7 +325,7 @@ func (s *Service) syncWorkspaceScopeFromSession(
 	return beforePrimary != workspaceCtx.OriginWorkspacePath || !sameTrimmedStrings(beforeRoots, workspaceCtx.OriginWorkspaceRoots), nil
 }
 
-func (s *Service) resolveWorkspaceScopePermissionTarget(workspaceOwnerPath, workspaceName string) workspaceScopePermissionTarget {
+func (s *Service) resolveWorkspaceScopePermissionTarget(workspaceOwnerPath, workspaceName string, principal identity.Principal) workspaceScopePermissionTarget {
 	target := workspaceScopePermissionTarget{
 		Exists: false,
 		Path:   strings.TrimSpace(workspaceOwnerPath),
@@ -318,7 +334,7 @@ func (s *Service) resolveWorkspaceScopePermissionTarget(workspaceOwnerPath, work
 	if s == nil || s.workspace == nil {
 		return target
 	}
-	scope, err := s.workspace.ScopeForPath(workspaceOwnerPath)
+	scope, err := s.workspace.ScopeForPathForPrincipal(principal, workspaceOwnerPath)
 	if err != nil || !scope.Matched {
 		return target
 	}

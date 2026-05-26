@@ -423,7 +423,7 @@ func (s *Service) knownRunToolNamesForAccount(accountScopeID string) map[string]
 	return known
 }
 
-func (s *Service) resolveRunExecutionContext(session pebblestore.SessionSnapshot, requested RunExecutionContext) (resolvedRunExecutionContext, error) {
+func (s *Service) resolveRunExecutionContext(session pebblestore.SessionSnapshot, requested RunExecutionContext, principal identity.Principal) (resolvedRunExecutionContext, error) {
 	requested.WorktreeMode = normalizeRunWorktreeMode(requested.WorktreeMode)
 	if requested.WorktreeMode == "" {
 		return resolvedRunExecutionContext{}, fmt.Errorf("unsupported worktree_mode %q", strings.TrimSpace(requested.WorktreeMode))
@@ -498,7 +498,7 @@ func (s *Service) resolveRunExecutionContext(session pebblestore.SessionSnapshot
 	if err != nil {
 		return resolvedRunExecutionContext{}, err
 	}
-	baseRoots, err := s.resolveExecutionRoots(resolvedWorkspacePath, worktreeEnabled, session.TemporaryWorkspaceRoots)
+	baseRoots, err := s.resolveExecutionRoots(session, resolvedWorkspacePath, worktreeEnabled, session.TemporaryWorkspaceRoots, principal)
 	if err != nil {
 		return resolvedRunExecutionContext{}, err
 	}
@@ -534,7 +534,7 @@ func (s *Service) resolveRunExecutionContext(session pebblestore.SessionSnapshot
 	}, nil
 }
 
-func (s *Service) resolveExecutionRoots(workspacePath string, worktreeEnabled bool, temporaryRoots []string) ([]string, error) {
+func (s *Service) resolveExecutionRoots(session pebblestore.SessionSnapshot, workspacePath string, worktreeEnabled bool, temporaryRoots []string, principal identity.Principal) ([]string, error) {
 	workspacePath = strings.TrimSpace(workspacePath)
 	if workspacePath == "" {
 		return nil, errors.New("workspace path is required")
@@ -542,11 +542,16 @@ func (s *Service) resolveExecutionRoots(workspacePath string, worktreeEnabled bo
 	if worktreeEnabled {
 		return normalizeExecutionRoots(workspacePath, mergeSessionWorkspaceRoots([]string{workspacePath}, temporaryRoots)), nil
 	}
+	principal, err := principalForRunWorkspaceScope(session, principal)
+	if err != nil {
+		return nil, err
+	}
 	if s != nil && s.workspace != nil {
-		resolved, err := s.workspace.ScopeForPath(workspacePath)
-		if err == nil {
-			return normalizeExecutionRoots(workspacePath, mergeSessionWorkspaceRoots(resolved.Directories, temporaryRoots)), nil
+		resolved, err := s.workspace.ScopeForPathForPrincipal(principal, workspacePath)
+		if err != nil {
+			return nil, fmt.Errorf("resolve account-scoped execution roots: %w", err)
 		}
+		return normalizeExecutionRoots(workspacePath, mergeSessionWorkspaceRoots(resolved.Directories, temporaryRoots)), nil
 	}
 	return normalizeExecutionRoots(workspacePath, mergeSessionWorkspaceRoots([]string{workspacePath}, temporaryRoots)), nil
 }

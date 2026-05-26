@@ -53,6 +53,9 @@ If a rule below conflicts with convenience, the rule wins.
   - Patch releases auto-increment. Minor or major bumps are manual and must be expressed by intentionally tagging the promoted `main` commit with the desired stable version.
   - Never fall back to `0.0.0-dev+<shortsha>` for real `main` releases, and do not prompt for version input during the normal `main` release flow.
 - Do not run `go test` or other test suites unless the user explicitly asks for tests.
+- Never run the full test suite or broad package/repository-wide test commands unless the user explicitly requests that exact broad validation.
+  - Forbidden by default examples: `go test ./...`, `go test ./internal/...`, package-wide commands such as `go test ./internal/run`, npm full-suite commands, and any equivalent broad validation.
+  - If validation is needed, ask first or use the narrowest compile-only/check command that does not execute a test suite.
 - For non-commit work, do not run validation unless the user explicitly asks for it.
 - Vulnerability/CVE scanning is mandatory before every commit.
 - Immediately before any commit, run:
