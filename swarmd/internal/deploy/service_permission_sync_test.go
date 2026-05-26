@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"swarm-refactor/swarmtui/pkg/startupconfig"
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	authruntime "swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/identity"
@@ -206,6 +207,47 @@ func TestPushManagedSyncToLocalChildrenPushesAgentsAndCredentials(t *testing.T) 
 	}
 	if record.SyncLastAppliedAt == 0 || record.SyncLastError != "" {
 		t.Fatalf("sync status not acknowledged: applied_at=%d error=%q", record.SyncLastAppliedAt, record.SyncLastError)
+	}
+}
+
+func TestSyncManagedCredentialsOnceIgnoresStaleManagedConfigWhenDBUnpaired(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	swarmStore := pebblestore.NewSwarmStore(store)
+	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
+	cfg := startupconfig.Default(startupPath)
+	cfg.Child = true
+	cfg.SwarmRole = startupconfig.SwarmRoleManaged
+	cfg.ParentSwarmID = "stale-manager-swarm"
+	cfg.PairingState = startupconfig.PairingStatePaired
+	cfg.ManagedHostSync = startupconfig.ManagedHostSyncConfig{
+		Mode:              "managed",
+		Modules:           []string{workspaceruntime.ReplicationSyncModuleCredentials},
+		OwnerSwarmID:      "stale-manager-swarm",
+		HostAPIBaseURL:    "http://127.0.0.1:1",
+		SyncCredentialURL: "http://127.0.0.1:1/v1/deploy/container/sync/credentials",
+	}
+	if err := startupconfig.Write(cfg); err != nil {
+		t.Fatalf("write startup config: %v", err)
+	}
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, authruntime.NewService(pebblestore.NewAuthStore(store), nil), nil, nil, startupPath)
+
+	if err := deploySvc.SyncManagedCredentialsOnce(context.Background()); err != nil {
+		t.Fatalf("SyncManagedCredentialsOnce() error = %v", err)
+	}
+	if _, ok, err := swarmStore.GetLocalPairing(); err != nil || ok {
+		t.Fatalf("stale config created or mutated pairing ok=%v err=%v", ok, err)
+	}
+	status, err := deploySvc.ManagedHostSyncStatus()
+	if err != nil {
+		t.Fatalf("ManagedHostSyncStatus() error = %v", err)
+	}
+	if status.OwnerSwarmID != "" || status.Current || status.SnapshotHash != "" {
+		t.Fatalf("status used stale config as managed authority: %+v", status)
 	}
 }
 

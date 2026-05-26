@@ -534,6 +534,10 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 	if req.Child != nil {
 		updated.Child = *req.Child
 		turnedOffChildMode = cfg.Child && !updated.Child
+		if turnedOffChildMode {
+			updated = startupconfig.ScrubManagedLinkState(updated)
+			updated.PairingState = startupconfig.PairingStateUnpaired
+		}
 		changed = true
 	}
 	if req.Mode != nil {

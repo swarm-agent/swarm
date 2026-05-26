@@ -188,6 +188,15 @@ func RemoteDeployBootstrapSecretPath(configPath string) string {
 	return filepath.Join(filepath.Dir(configPath), remoteDeployBootstrapSecretName)
 }
 
+func ScrubManagedLinkState(cfg FileConfig) FileConfig {
+	cfg.Child = false
+	cfg.SwarmRole = ""
+	cfg.ParentSwarmID = ""
+	cfg.PairingState = ""
+	cfg.ManagedHostSync = ManagedHostSyncConfig{}
+	return cfg
+}
+
 func Default(path string) FileConfig {
 	return FileConfig{
 		Path:                         path,

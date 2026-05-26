@@ -865,9 +865,7 @@ func (s *Server) handleSwarmManagedHostRemove(w http.ResponseWriter, r *http.Req
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		cfg.Child = false
-		cfg.SwarmRole = ""
-		cfg.ParentSwarmID = ""
+		cfg = startupconfig.ScrubManagedLinkState(cfg)
 		cfg.PairingState = startupconfig.PairingStateUnpaired
 		if err := startupconfig.Write(cfg); err != nil {
 			writeError(w, http.StatusInternalServerError, err)

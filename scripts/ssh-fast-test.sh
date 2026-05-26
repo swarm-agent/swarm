@@ -172,12 +172,45 @@ if [ ${FROM_ZERO@Q} = 'true' ]; then
     rm -rf -- ${db_path_quoted} 2>/dev/null || sudo -n rm -rf -- ${db_path_quoted}
   fi
   if [ -f /etc/swarmd/swarm.conf ]; then
-    printf 'ssh-fast-test: resetting desktop_onboarding_complete in /etc/swarmd/swarm.conf\\n'
-    if grep -q '^[[:space:]]*desktop_onboarding_complete[[:space:]]*=' /etc/swarmd/swarm.conf; then
-      sed -i 's/^[[:space:]]*desktop_onboarding_complete[[:space:]]*=.*/desktop_onboarding_complete = false/' /etc/swarmd/swarm.conf 2>/dev/null || sudo -n sed -i 's/^[[:space:]]*desktop_onboarding_complete[[:space:]]*=.*/desktop_onboarding_complete = false/' /etc/swarmd/swarm.conf
-    else
-      printf '\\ndesktop_onboarding_complete = false\\n' >>/etc/swarmd/swarm.conf 2>/dev/null || printf '\\ndesktop_onboarding_complete = false\\n' | sudo -n tee -a /etc/swarmd/swarm.conf >/dev/null
-    fi
+    printf 'ssh-fast-test: scrubbing stale managed/link config in /etc/swarmd/swarm.conf\\n'
+    tmp_conf=\"\$(mktemp)\"
+    awk '
+BEGIN {
+  keys[++n] = "desktop_onboarding_complete"; repl["desktop_onboarding_complete"] = "desktop_onboarding_complete = false"
+  keys[++n] = "child"; repl["child"] = "child = false"
+  keys[++n] = "swarm_role"; repl["swarm_role"] = "swarm_role ="
+  keys[++n] = "parent_swarm_id"; repl["parent_swarm_id"] = "parent_swarm_id ="
+  keys[++n] = "pairing_state"; repl["pairing_state"] = "pairing_state ="
+  keys[++n] = "managed_host_sync_mode"; repl["managed_host_sync_mode"] = "managed_host_sync_mode ="
+  keys[++n] = "managed_host_sync_modules"; repl["managed_host_sync_modules"] = "managed_host_sync_modules ="
+  keys[++n] = "managed_host_sync_owner_swarm_id"; repl["managed_host_sync_owner_swarm_id"] = "managed_host_sync_owner_swarm_id ="
+  keys[++n] = "managed_host_sync_host_api_base_url"; repl["managed_host_sync_host_api_base_url"] = "managed_host_sync_host_api_base_url ="
+  keys[++n] = "managed_host_sync_credential_url"; repl["managed_host_sync_credential_url"] = "managed_host_sync_credential_url ="
+  keys[++n] = "managed_host_sync_agent_url"; repl["managed_host_sync_agent_url"] = "managed_host_sync_agent_url ="
+}
+{
+  line = \$0
+  key = line
+  sub(/^[[:space:]]*/, "", key)
+  sub(/[[:space:]]*=.*/, "", key)
+  if (key in repl) {
+    print repl[key]
+    seen[key] = 1
+    next
+  }
+  print line
+}
+END {
+  for (i = 1; i <= n; i++) {
+    key = keys[i]
+    if (!(key in seen)) {
+      print repl[key]
+    }
+  }
+}
+' /etc/swarmd/swarm.conf >\"\${tmp_conf}\"
+    cp \"\${tmp_conf}\" /etc/swarmd/swarm.conf 2>/dev/null || sudo -n cp \"\${tmp_conf}\" /etc/swarmd/swarm.conf
+    rm -f \"\${tmp_conf}\"
   fi
 fi
 ./rebuild s

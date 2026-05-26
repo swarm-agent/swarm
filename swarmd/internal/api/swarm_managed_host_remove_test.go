@@ -25,6 +25,14 @@ func TestSwarmManagedHostRemoveDetachesManagedHostConfig(t *testing.T) {
 		cfg.SwarmRole = startupconfig.SwarmRoleManaged
 		cfg.ParentSwarmID = "manager-swarm-1"
 		cfg.PairingState = startupconfig.PairingStatePaired
+		cfg.ManagedHostSync = startupconfig.ManagedHostSyncConfig{
+			Mode:              "managed",
+			Modules:           []string{"credentials", "agents"},
+			OwnerSwarmID:      "manager-swarm-1",
+			HostAPIBaseURL:    "https://manager.example.test",
+			SyncCredentialURL: "https://manager.example.test/v1/deploy/container/sync/credentials",
+			SyncAgentURL:      "https://manager.example.test/v1/deploy/container/sync/agents",
+		}
 	})
 
 	rec := postRemotePairingJSONWithDesktopSession(t, server, "/v1/swarm/managed-host/remove", map[string]any{
@@ -48,6 +56,9 @@ func TestSwarmManagedHostRemoveDetachesManagedHostConfig(t *testing.T) {
 	if cfg.Child || cfg.SwarmRole != "" || cfg.ParentSwarmID != "" || cfg.PairingState != startupconfig.PairingStateUnpaired {
 		t.Fatalf("config not detached: child=%t role=%q parent=%q pairing=%q", cfg.Child, cfg.SwarmRole, cfg.ParentSwarmID, cfg.PairingState)
 	}
+	if cfg.ManagedHostSync.Mode != "" || len(cfg.ManagedHostSync.Modules) != 0 || cfg.ManagedHostSync.OwnerSwarmID != "" || cfg.ManagedHostSync.HostAPIBaseURL != "" || cfg.ManagedHostSync.SyncCredentialURL != "" || cfg.ManagedHostSync.SyncAgentURL != "" {
+		t.Fatalf("managed sync config not scrubbed: %+v", cfg.ManagedHostSync)
+	}
 }
 
 func TestSwarmManagedHostRemoveDetachesBootstrapPreparedManagerPeer(t *testing.T) {
@@ -58,10 +69,18 @@ func TestSwarmManagedHostRemoveDetachesBootstrapPreparedManagerPeer(t *testing.T
 		detachCalls: &detachCalls,
 	}
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
-		cfg.Child = false
-		cfg.SwarmRole = ""
-		cfg.ParentSwarmID = ""
-		cfg.PairingState = ""
+		cfg.Child = true
+		cfg.SwarmRole = startupconfig.SwarmRoleManaged
+		cfg.ParentSwarmID = "stale-manager-swarm"
+		cfg.PairingState = startupconfig.PairingStatePaired
+		cfg.ManagedHostSync = startupconfig.ManagedHostSyncConfig{
+			Mode:              "managed",
+			Modules:           []string{"credentials", "agents"},
+			OwnerSwarmID:      "stale-manager-swarm",
+			HostAPIBaseURL:    "https://stale-manager.example.test",
+			SyncCredentialURL: "https://stale-manager.example.test/v1/deploy/container/sync/credentials",
+			SyncAgentURL:      "https://stale-manager.example.test/v1/deploy/container/sync/agents",
+		}
 	})
 
 	rec := postRemotePairingJSONWithDesktopSession(t, server, "/v1/swarm/managed-host/remove", map[string]any{
@@ -89,6 +108,9 @@ func TestSwarmManagedHostRemoveDetachesBootstrapPreparedManagerPeer(t *testing.T
 	}
 	if cfg.Child || cfg.SwarmRole != "" || cfg.ParentSwarmID != "" || cfg.PairingState != startupconfig.PairingStateUnpaired {
 		t.Fatalf("config not detached: child=%t role=%q parent=%q pairing=%q", cfg.Child, cfg.SwarmRole, cfg.ParentSwarmID, cfg.PairingState)
+	}
+	if cfg.ManagedHostSync.Mode != "" || len(cfg.ManagedHostSync.Modules) != 0 || cfg.ManagedHostSync.OwnerSwarmID != "" || cfg.ManagedHostSync.HostAPIBaseURL != "" || cfg.ManagedHostSync.SyncCredentialURL != "" || cfg.ManagedHostSync.SyncAgentURL != "" {
+		t.Fatalf("managed sync config not scrubbed: %+v", cfg.ManagedHostSync)
 	}
 }
 
