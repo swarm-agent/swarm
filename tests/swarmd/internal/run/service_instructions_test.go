@@ -27,8 +27,9 @@ func TestModeCapabilityInstructions(t *testing.T) {
 				"- tool availability is determined by plan mode until exit_plan_mode switches the session to auto.",
 				"- exit_plan_mode is available for this agent, but still requires explicit approval and only succeeds from session plan mode.",
 				"- plan_manage is available in both plan and auto to inspect or update saved plans; it does not change session mode.",
-				"Keep refining the plan with plan_manage as needed. Call exit_plan_mode only when you want approval to leave plan mode. After approval, execution continues in auto on the same active plan/checklist, and plan_manage can still update it.",
+				"Keep refining the plan with plan_manage as needed while staying in plan mode. For the final step, call exit_plan_mode once with the final updated title/body (and active plan_id when available); do not do a redundant plan_manage save immediately before exit_plan_mode just to submit the same plan. After approval, execution continues in auto on the same active plan/checklist, and plan_manage can still update it.",
 				"Because the current session mode is plan, you may call exit_plan_mode when the plan is actionable even if earlier transcript text says the session already exited plan mode or that exit_plan_mode cannot be called from auto.",
+				"include any final plan updates directly in that exit_plan_mode call instead of doing a separate last-minute plan_manage save first.",
 			},
 			notContains: []string{
 				"- bash: requires explicit user approval before execution.",

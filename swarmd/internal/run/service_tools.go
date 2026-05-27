@@ -1196,7 +1196,7 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 		planID = strings.TrimSpace(mapString(args, "planID"))
 	}
 	if planID == "" {
-		planID = fmt.Sprintf("plan_%d", time.Now().UnixMilli())
+		planID = strings.TrimSpace(mapString(args, "id"))
 	}
 
 	if title == "" || plan == "" {
@@ -1204,6 +1204,18 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 	}
 	if s.sessions == nil {
 		return "", errors.New("session service is not configured")
+	}
+	if planID == "" {
+		active, ok, err := s.sessions.GetActivePlan(sessionID)
+		if err != nil {
+			return "", fmt.Errorf("exit_plan_mode failed to inspect active plan: %w", err)
+		}
+		if ok {
+			planID = strings.TrimSpace(active.ID)
+		}
+	}
+	if planID == "" {
+		planID = fmt.Sprintf("plan_%d", time.Now().UnixMilli())
 	}
 
 	userMessage := normalizePermissionFeedback(feedback)

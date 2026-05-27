@@ -781,6 +781,30 @@ func TestToolRuntimeSafetyStubExitPlanModePathID(t *testing.T) {
 	}
 }
 
+func TestToolRuntimeSafetyExitPlanModeDefinitionExposesPlanID(t *testing.T) {
+	rt := NewRuntime(2)
+	for _, def := range rt.Definitions() {
+		if def.Name != "exit_plan_mode" {
+			continue
+		}
+		props, ok := def.Parameters["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("exit_plan_mode properties missing or wrong type: %#v", def.Parameters["properties"])
+		}
+		for _, key := range []string{"title", "plan", "plan_id", "id"} {
+			if _, ok := props[key]; !ok {
+				t.Fatalf("exit_plan_mode definition missing %q property", key)
+			}
+		}
+		if desc := strings.TrimSpace(def.Description); !strings.Contains(desc, "final updated title/body") || !strings.Contains(desc, "active plan is reused") {
+			t.Fatalf("exit_plan_mode description missing one-step active-plan guidance: %q", desc)
+		}
+		return
+	}
+
+	t.Fatal("exit_plan_mode definition not found")
+}
+
 func TestToolRuntimeSafetyPlanManageDefinitionExposesSaveFields(t *testing.T) {
 	rt := NewRuntime(2)
 	for _, def := range rt.Definitions() {

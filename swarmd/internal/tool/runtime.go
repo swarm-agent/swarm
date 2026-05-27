@@ -1095,12 +1095,14 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "exit_plan_mode",
-			Description: "Submit a plan for approval so the session can leave plan mode and continue execution",
+			Description: "Submit the final plan for approval so the session can leave plan mode and continue execution. Pass the final updated title/body in this call; when plan_id is omitted the active plan is reused when one exists.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"title": map[string]any{"type": "string", "description": "Plan title"},
-					"plan":  map[string]any{"type": "string", "description": "Full markdown plan body"},
+					"title":   map[string]any{"type": "string", "description": "Final plan title"},
+					"plan":    map[string]any{"type": "string", "description": "Final full markdown plan body. Include any last updates here instead of first calling plan_manage save."},
+					"plan_id": map[string]any{"type": "string", "description": "Existing active plan id to update and submit. Optional; when omitted, the current active plan is reused if one exists."},
+					"id":      map[string]any{"type": "string", "description": "Alias for plan_id."},
 				},
 				"required":             []string{"title", "plan"},
 				"additionalProperties": false,

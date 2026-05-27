@@ -558,6 +558,119 @@ func TestExecuteControlPlaneToolExitPlanModeSwitchesSessionMode(t *testing.T) {
 	}
 }
 
+func TestExecuteControlPlaneToolExitPlanModeReusesActivePlanForOneStepUpdate(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "exit-plan-active.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
+	session, _, err := sessionSvc.CreateSession("plan-mode-active", t.TempDir(), "workspace")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	initial, _, err := sessionSvc.SavePlan(session.ID, "", "Draft Plan", "# Plan\n\n- [ ] draft", "draft", "draft", true)
+	if err != nil {
+		t.Fatalf("save initial active plan: %v", err)
+	}
+
+	svc := &Service{sessions: sessionSvc}
+	handled, result, err := svc.executeControlPlaneTool(context.Background(), session.ID, sessionruntime.ModePlan, pebblestore.AgentProfile{}, 1, tool.Call{
+		CallID:    "exit_active_1",
+		Name:      "exit_plan_mode",
+		Arguments: `{"title":"Final Plan","plan":"# Plan\n\n- [ ] final updated task"}`,
+	}, "", nil)
+	if err != nil {
+		t.Fatalf("execute control-plane exit_plan_mode: %v", err)
+	}
+	if !handled {
+		t.Fatalf("expected exit_plan_mode to be handled by control-plane path")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(result.Output), &payload); err != nil {
+		t.Fatalf("decode exit_plan_mode output: %v", err)
+	}
+	if got, _ := payload["plan_id"].(string); got != initial.ID {
+		t.Fatalf("exit plan id = %q, want active plan %q", got, initial.ID)
+	}
+	active, ok, err := sessionSvc.GetActivePlan(session.ID)
+	if err != nil || !ok {
+		t.Fatalf("get active plan after exit: ok=%v err=%v", ok, err)
+	}
+	if active.ID != initial.ID {
+		t.Fatalf("active plan id = %q, want %q", active.ID, initial.ID)
+	}
+	if active.Title != "Final Plan" || !strings.Contains(active.Plan, "final updated task") || strings.Contains(active.Plan, "draft") {
+		t.Fatalf("active plan was not updated in one exit_plan_mode call: title=%q body=%q", active.Title, active.Plan)
+	}
+	if active.Status != "approved" || active.ApprovalState != "approved" {
+		t.Fatalf("active status/approval = %q/%q, want approved/approved", active.Status, active.ApprovalState)
+	}
+	if active.Version != 2 || active.ParentRevision != 1 {
+		t.Fatalf("active revision = version %d parent %d, want 2/1", active.Version, active.ParentRevision)
+	}
+	mode, err := sessionSvc.GetMode(session.ID)
+	if err != nil {
+		t.Fatalf("get mode: %v", err)
+	}
+	if mode != sessionruntime.ModeAuto {
+		t.Fatalf("mode = %q, want auto", mode)
+	}
+}
+
+func TestExecuteControlPlaneToolExitPlanModeUsesExplicitPlanIDForOneStepUpdate(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "exit-plan-explicit.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
+	session, _, err := sessionSvc.CreateSession("plan-mode-explicit", t.TempDir(), "workspace")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	initial, _, err := sessionSvc.SavePlan(session.ID, "", "Draft Plan", "# Plan\n\n- [ ] draft", "draft", "draft", true)
+	if err != nil {
+		t.Fatalf("save initial active plan: %v", err)
+	}
+
+	svc := &Service{sessions: sessionSvc}
+	_, result, err := svc.executeControlPlaneTool(context.Background(), session.ID, sessionruntime.ModePlan, pebblestore.AgentProfile{}, 1, tool.Call{
+		CallID:    "exit_explicit_1",
+		Name:      "exit_plan_mode",
+		Arguments: `{"title":"Explicit Final","plan_id":"` + initial.ID + `","plan":"# Plan\n\n- [ ] explicit final"}`,
+	}, "", nil)
+	if err != nil {
+		t.Fatalf("execute control-plane exit_plan_mode: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(result.Output), &payload); err != nil {
+		t.Fatalf("decode exit_plan_mode output: %v", err)
+	}
+	if got, _ := payload["plan_id"].(string); got != initial.ID {
+		t.Fatalf("exit plan id = %q, want %q", got, initial.ID)
+	}
+	active, ok, err := sessionSvc.GetActivePlan(session.ID)
+	if err != nil || !ok {
+		t.Fatalf("get active plan after exit: ok=%v err=%v", ok, err)
+	}
+	if active.ID != initial.ID || active.Title != "Explicit Final" || !strings.Contains(active.Plan, "explicit final") {
+		t.Fatalf("explicit plan update mismatch: %#v", active)
+	}
+}
+
 func TestExecuteControlPlaneToolExitPlanModeNormalizesDefaultApprovalFeedback(t *testing.T) {
 	svc, store := newTestService(t)
 	ctx := context.Background()
