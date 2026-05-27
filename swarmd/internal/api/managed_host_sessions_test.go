@@ -18,7 +18,121 @@ import (
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
+	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
+
+func TestManagedHostSessionOpenAcceptsButDoesNotForwardWorktreeMode(t *testing.T) {
+	server, _, _, _ := newRoutedSessionTestServer(t)
+	var peerWorktreeMode atomic.Value
+	managed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != peerManagedHostSessionOpenPath {
+			http.NotFound(w, r)
+			return
+		}
+		var raw map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		requestBody, _ := raw["request"].(map[string]any)
+		if rawMode, ok := requestBody["worktree_mode"]; ok {
+			peerWorktreeMode.Store(rawMode)
+		}
+		encoded, err := json.Marshal(raw)
+		if err != nil {
+			t.Fatalf("marshal raw request: %v", err)
+		}
+		var req peerManagedHostSessionOpenRequest
+		if err := json.Unmarshal(encoded, &req); err != nil {
+			t.Fatalf("decode typed request: %v", err)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":      true,
+			"session": pebblestore.SessionSnapshot{ID: req.SessionID, UserID: req.Route.UserID, AccountScopeID: req.Route.AccountScopeID, WorkspacePath: req.Request.WorkspacePath, WorkspaceName: "workspace", Title: "Managed", Mode: "auto", Metadata: req.Request.Metadata, CreatedAt: 1, UpdatedAt: 2},
+		})
+	}))
+	defer managed.Close()
+	seedManagedHostTarget(t, server, managed.URL)
+
+	req := httptest.NewRequest(http.MethodPost, managedHostSessionOpenPath, bytes.NewBufferString(`{"title":"managed","workspace_path":"/host/workspace","host_workspace_path":"/host/workspace","runtime_workspace_path":"/managed/workspace","workspace_name":"workspace","mode":"auto","agent_name":"swarm","worktree_mode":"on","preference":{"provider":"codex","model":"gpt-5.5","thinking":"high"},"target_swarm_id":"managed-swarm"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := peerWorktreeMode.Load(); got != nil {
+		t.Fatalf("peer worktree_mode = %v, want omitted so peer-local config decides allocation", got)
+	}
+}
+
+func TestPeerManagedHostSessionOpenInheritsPeerLocalWorktreeConfig(t *testing.T) {
+	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	configureRoutedSessionTestServerAsChild(t, server, swarmStore, "managed-swarm", "host-swarm-id", testPrincipal().UserID, testPrincipal().AccountScopeID)
+	server.SetWorktreeService(&fakeWorktreeService{
+		config: worktreeruntime.Config{Enabled: true, UseCurrentBranch: true},
+		allocation: worktreeruntime.Allocation{
+			RepoRoot:      "/managed/workspace",
+			WorkspacePath: "/managed/workspace/.swarm/worktrees/session-managed-worktree",
+			BaseBranch:    "main",
+			BranchName:    "agent/session-managed-worktree",
+			WorkspaceID:   "ws_session_managed_worktree",
+		},
+	})
+	payload, err := json.Marshal(peerManagedHostSessionOpenRequest{
+		SessionID: "managed-worktree-session",
+		Request: func() managedHostSessionCreateRequest {
+			req := managedHostSessionCreateRequest{
+				Title:                "managed worktree",
+				WorkspacePath:        "/managed/workspace",
+				HostWorkspacePath:    "/managed/workspace",
+				RuntimeWorkspacePath: "/managed/workspace",
+				WorkspaceName:        "workspace",
+				Mode:                 sessionruntime.ModeAuto,
+				AgentName:            "swarm",
+			}
+			req.Preference.Provider = "codex"
+			req.Preference.Model = "gpt-5.5"
+			req.Preference.Thinking = "high"
+			return req
+		}(),
+		Route: managedHostSessionRoute{
+			UserID:                testPrincipal().UserID,
+			AccountScopeID:        testPrincipal().AccountScopeID,
+			PrimarySwarmID:        "host-swarm-id",
+			PrimaryBackendURL:     "https://primary.tailnet.test",
+			ManagedHostSwarmID:    "managed-swarm",
+			ManagedHostBackendURL: "http://127.0.0.1:7782",
+			HostWorkspacePath:     "/host/workspace",
+			RuntimeWorkspacePath:  "/managed/workspace",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal open: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, peerManagedHostSessionOpenPath, bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(peerAuthSwarmIDHeader, "host-swarm-id")
+	req.Header.Set(peerAuthTokenHeader, "peer-token")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var response struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Session.WorkspacePath != "/managed/workspace/.swarm/worktrees/session-managed-worktree" {
+		t.Fatalf("session workspace_path = %q", response.Session.WorkspacePath)
+	}
+	if !response.Session.WorktreeEnabled || response.Session.WorktreeRootPath != "/managed/workspace" || response.Session.WorktreeBranch != "agent/session-managed-worktree" {
+		t.Fatalf("session worktree fields enabled=%t root=%q branch=%q", response.Session.WorktreeEnabled, response.Session.WorktreeRootPath, response.Session.WorktreeBranch)
+	}
+}
 
 func TestManagedHostSessionMessageUsesNewPeerAPIWithAuthAndMirrors(t *testing.T) {
 	server, sessionSvc, _, routeStore := newRoutedSessionTestServer(t)

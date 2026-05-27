@@ -43,6 +43,7 @@ type managedHostSessionOpenRequest struct {
 	WorkspaceName        string         `json:"workspace_name"`
 	Mode                 string         `json:"mode"`
 	AgentName            string         `json:"agent_name"`
+	WorktreeMode         string         `json:"worktree_mode,omitempty"`
 	Metadata             map[string]any `json:"metadata"`
 	Preference           struct {
 		Provider    string `json:"provider"`
