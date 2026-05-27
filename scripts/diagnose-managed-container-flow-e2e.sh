@@ -238,13 +238,19 @@ api_json POST "/v3/flows" "${flow_body}" "${EVIDENCE_DIR}/flow_create_response.j
 [[ "$(json_get "${EVIDENCE_DIR}/flow_create_response.json" '.ok // false')" == "true" ]] || fail "flow create ok=false"
 api_json POST "/v3/flows/${FLOW_ID}/run-now" "" "${EVIDENCE_DIR}/flow_run_now_response.json" 90
 [[ "$(json_get "${EVIDENCE_DIR}/flow_run_now_response.json" '.ok // false')" == "true" ]] || fail "flow run-now ok=false"
+latest_run_id="$(jq -r '(.last_run.run_id // (.flow.last_run.run_id // "") // ((.run.reason // .result.ack.reason // "") | capture("run_now started (?<id>[^ ]+)")? | .id) // empty)' "${EVIDENCE_DIR}/flow_run_now_response.json")"
 
 run_deadline=$((SECONDS + TIMEOUT_SECONDS))
 while :; do
   api_json GET "/v3/flows/${FLOW_ID}/status?limit=100" "" "${EVIDENCE_DIR}/flow_status_poll.json" 30
   api_json GET "/v3/flows/${FLOW_ID}/history?limit=100" "" "${EVIDENCE_DIR}/flow_history_poll.json" 30
-  status="$(jq -r '[.history[]? | select((.status // "") == "success" or (.status // "") == "failed")] | sort_by(.started_at // .scheduled_at // "") | last | .status // empty' "${EVIDENCE_DIR}/flow_history_poll.json")"
-  session_id="$(jq -r '[.history[]? | select((.status // "") == "success" or (.status // "") == "failed")] | sort_by(.started_at // .scheduled_at // "") | last | .session_id // empty' "${EVIDENCE_DIR}/flow_history_poll.json")"
+  if [[ -n "${latest_run_id}" ]]; then
+    status="$(jq -r --arg run_id "${latest_run_id}" '[.history[]? | select((.run_id // "") == $run_id)] | last | .status // empty' "${EVIDENCE_DIR}/flow_history_poll.json")"
+    session_id="$(jq -r --arg run_id "${latest_run_id}" '[.history[]? | select((.run_id // "") == $run_id)] | last | .session_id // empty' "${EVIDENCE_DIR}/flow_history_poll.json")"
+  else
+    status="$(jq -r '[.history[]?] | sort_by(.started_at // .scheduled_at // "") | last | .status // empty' "${EVIDENCE_DIR}/flow_history_poll.json")"
+    session_id="$(jq -r '[.history[]?] | sort_by(.started_at // .scheduled_at // "") | last | .session_id // empty' "${EVIDENCE_DIR}/flow_history_poll.json")"
+  fi
   if [[ "${status}" == "success" && -n "${session_id}" ]]; then
     cp -- "${EVIDENCE_DIR}/flow_status_poll.json" "${EVIDENCE_DIR}/flow_status.json"
     cp -- "${EVIDENCE_DIR}/flow_history_poll.json" "${EVIDENCE_DIR}/flow_history.json"

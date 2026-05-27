@@ -110,6 +110,6 @@ func (s *Server) applyFlowRunNowCommand(ctx context.Context, command flow.Assign
 	ledger.Ack = ack
 	ledger.Status = ack.Status
 	ledger.AppliedAt = now
-	stored, _, err := s.flows.PutCommandLedger(ledger)
+	stored, err := s.flows.UpdateCommandLedger(ledger)
 	return stored.Ack, inserted, err
 }

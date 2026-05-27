@@ -901,6 +901,37 @@ func (s *FlowStore) PutCommandLedger(record FlowCommandLedgerRecord) (FlowComman
 	return record, true, nil
 }
 
+func (s *FlowStore) UpdateCommandLedger(record FlowCommandLedgerRecord) (FlowCommandLedgerRecord, error) {
+	if s == nil || s.store == nil {
+		return FlowCommandLedgerRecord{}, errors.New("flow store is not configured")
+	}
+	record = normalizeFlowCommandLedgerRecord(record)
+	if err := validateFlowOwner(record.AccountScopeID, record.UserID); err != nil {
+		return FlowCommandLedgerRecord{}, err
+	}
+	if record.CommandID == "" || record.FlowID == "" || record.Revision <= 0 {
+		return FlowCommandLedgerRecord{}, errors.New("command_id, flow_id, and revision are required")
+	}
+	key := KeyFlowTargetCommandLedgerForAccount(record.AccountScopeID, record.FlowID, record.Revision, record.CommandID)
+	existing, ok, err := s.GetCommandLedgerForAccount(record.AccountScopeID, record.FlowID, record.Revision, record.CommandID)
+	if err != nil {
+		return FlowCommandLedgerRecord{}, err
+	}
+	if !ok {
+		return FlowCommandLedgerRecord{}, errors.New("flow command ledger record was not found")
+	}
+	if existing.CommandID != record.CommandID || existing.FlowID != record.FlowID || existing.Revision != record.Revision {
+		return FlowCommandLedgerRecord{}, errors.New("flow command ledger id mismatch")
+	}
+	if record.AppliedAt.IsZero() {
+		record.AppliedAt = time.Now().UTC()
+	}
+	if err := s.store.PutJSON(key, record); err != nil {
+		return FlowCommandLedgerRecord{}, err
+	}
+	return record, nil
+}
+
 func (s *FlowStore) GetCommandLedger(flowID string, revision int64, commandID string) (FlowCommandLedgerRecord, bool, error) {
 	return FlowCommandLedgerRecord{}, false, errors.New("account_scope_id is required for flow command ledger reads")
 }

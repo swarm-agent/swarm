@@ -19,18 +19,18 @@ const (
 
 type manageFlowService interface {
 	PutDefinition(record pebblestore.FlowDefinitionRecord) (pebblestore.FlowDefinitionRecord, error)
-	GetDefinition(flowID string) (pebblestore.FlowDefinitionRecord, bool, error)
-	ListDefinitions(limit int) ([]pebblestore.FlowDefinitionRecord, error)
-	DeleteDefinition(flowID string) error
+	GetDefinitionForAccount(accountScopeID, flowID string) (pebblestore.FlowDefinitionRecord, bool, error)
+	ListDefinitionsForAccount(accountScopeID string, limit int) ([]pebblestore.FlowDefinitionRecord, error)
+	DeleteDefinitionForAccount(accountScopeID, flowID string) error
 	PutAcceptedAssignment(record flow.AcceptedAssignment) (flow.AcceptedAssignment, error)
-	GetAcceptedAssignment(flowID string) (flow.AcceptedAssignment, bool, error)
-	ListAcceptedAssignments(limit int) ([]flow.AcceptedAssignment, error)
-	DeleteAcceptedAssignment(flowID string) error
+	GetAcceptedAssignmentForAccount(accountScopeID, flowID string) (flow.AcceptedAssignment, bool, error)
+	ListAcceptedAssignmentsForAccount(accountScopeID string, limit int) ([]flow.AcceptedAssignment, error)
+	DeleteAcceptedAssignmentForAccount(accountScopeID, flowID string) error
 	PutDue(record pebblestore.FlowDueRecord) (pebblestore.FlowDueRecord, error)
 	DeleteDue(record pebblestore.FlowDueRecord) error
-	ListMirroredRunSummaries(flowID string, limit int) ([]pebblestore.FlowRunSummaryRecord, error)
-	ListAssignmentStatuses(flowID string, limit int) ([]pebblestore.FlowAssignmentStatusRecord, error)
-	ListOutboxCommands(status string, limit int) ([]pebblestore.FlowOutboxCommandRecord, error)
+	ListMirroredRunSummariesForAccount(accountScopeID, flowID string, limit int) ([]pebblestore.FlowRunSummaryRecord, error)
+	ListAssignmentStatusesForAccount(accountScopeID, flowID string, limit int) ([]pebblestore.FlowAssignmentStatusRecord, error)
+	ListOutboxCommandsForAccount(accountScopeID, flowID, status string, limit int) ([]pebblestore.FlowOutboxCommandRecord, error)
 }
 
 type manageFlowWorkspaceService interface {
@@ -63,32 +63,47 @@ func (r *Runtime) executeManageFlow(scope WorkspaceScope, args map[string]any) (
 	case "inspect", "list":
 		return r.manageFlowInspect(scope, args)
 	case "get", "read":
-		return r.manageFlowGet(args)
+		return r.manageFlowGet(scope, args)
 	case "history":
-		return r.manageFlowHistory(args)
+		return r.manageFlowHistory(scope, args)
 	case "status":
-		return r.manageFlowStatus(args)
+		return r.manageFlowStatus(scope, args)
 	case "create":
 		return r.manageFlowUpsert(scope, args, false, confirm)
 	case "update":
 		return r.manageFlowUpsert(scope, args, true, confirm)
 	case "delete", "remove":
-		return r.manageFlowDelete(args, confirm)
+		return r.manageFlowDelete(scope, args, confirm)
 	default:
 		return "", fmt.Errorf("manage-flow action %q is unsupported", action)
 	}
+}
+
+func (r *Runtime) manageFlowAccountScopeID(scope WorkspaceScope) (string, error) {
+	if !scope.Principal.Valid() {
+		return "", errors.New("principal is required for manage-flow")
+	}
+	accountScopeID := strings.TrimSpace(scope.Principal.AccountScopeID)
+	if accountScopeID == "" {
+		return "", errors.New("account_scope_id is required for manage-flow")
+	}
+	return accountScopeID, nil
 }
 
 func (r *Runtime) manageFlowInspect(scope WorkspaceScope, args map[string]any) (string, error) {
 	if r == nil || r.flows == nil {
 		return "", errors.New("manage-flow service is not configured")
 	}
+	accountScopeID, err := r.manageFlowAccountScopeID(scope)
+	if err != nil {
+		return "", err
+	}
 	limit := clampManageFlowLimit(asInt(args["limit"], manageFlowDefaultLimit))
-	definitions, err := r.flows.ListDefinitions(limit)
+	definitions, err := r.flows.ListDefinitionsForAccount(accountScopeID, limit)
 	if err != nil {
 		return "", fmt.Errorf("manage-flow inspect definitions failed: %w", err)
 	}
-	accepted, err := r.flows.ListAcceptedAssignments(limit)
+	accepted, err := r.flows.ListAcceptedAssignmentsForAccount(accountScopeID, limit)
 	if err != nil {
 		return "", fmt.Errorf("manage-flow inspect accepted assignments failed: %w", err)
 	}
@@ -122,8 +137,8 @@ func (r *Runtime) manageFlowInspect(scope WorkspaceScope, args map[string]any) (
 	return encodeManageFlowResponse(response)
 }
 
-func (r *Runtime) manageFlowGet(args map[string]any) (string, error) {
-	record, ok, err := r.manageFlowDefinitionOrAccepted(manageFlowIDFromArgs(args))
+func (r *Runtime) manageFlowGet(scope WorkspaceScope, args map[string]any) (string, error) {
+	record, ok, err := r.manageFlowDefinitionOrAccepted(scope, manageFlowIDFromArgs(args))
 	if err != nil || !ok {
 		if err != nil {
 			return "", err
@@ -146,7 +161,7 @@ func (r *Runtime) manageFlowGet(args map[string]any) (string, error) {
 	})
 }
 
-func (r *Runtime) manageFlowHistory(args map[string]any) (string, error) {
+func (r *Runtime) manageFlowHistory(scope WorkspaceScope, args map[string]any) (string, error) {
 	if r == nil || r.flows == nil {
 		return "", errors.New("manage-flow service is not configured")
 	}
@@ -154,15 +169,19 @@ func (r *Runtime) manageFlowHistory(args map[string]any) (string, error) {
 	if flowID == "" {
 		return "", errors.New("flow_id is required")
 	}
+	accountScopeID, err := r.manageFlowAccountScopeID(scope)
+	if err != nil {
+		return "", err
+	}
 	limit := clampManageFlowLimit(asInt(args["limit"], 100))
-	history, err := r.flows.ListMirroredRunSummaries(flowID, limit)
+	history, err := r.flows.ListMirroredRunSummariesForAccount(accountScopeID, flowID, limit)
 	if err != nil {
 		return "", err
 	}
 	return encodeManageFlowResponse(map[string]any{"status": "ok", "action": "history", "flow_id": flowID, "history": history, "count": len(history), "path_id": toolPathID("manage-flow"), "summary": fmt.Sprintf("returned %d history records for %s", len(history), flowID), "details_truncated": false, "prompt_injection_tag": "tool_output_untrusted", "safety": buildUntrustedSafety("")})
 }
 
-func (r *Runtime) manageFlowStatus(args map[string]any) (string, error) {
+func (r *Runtime) manageFlowStatus(scope WorkspaceScope, args map[string]any) (string, error) {
 	if r == nil || r.flows == nil {
 		return "", errors.New("manage-flow service is not configured")
 	}
@@ -170,16 +189,20 @@ func (r *Runtime) manageFlowStatus(args map[string]any) (string, error) {
 	if flowID == "" {
 		return "", errors.New("flow_id is required")
 	}
+	accountScopeID, err := r.manageFlowAccountScopeID(scope)
+	if err != nil {
+		return "", err
+	}
 	limit := clampManageFlowLimit(asInt(args["limit"], 100))
-	statuses, err := r.flows.ListAssignmentStatuses(flowID, limit)
+	statuses, err := r.flows.ListAssignmentStatusesForAccount(accountScopeID, flowID, limit)
 	if err != nil {
 		return "", err
 	}
-	outbox, err := r.flows.ListOutboxCommands("", limit)
+	outbox, err := r.flows.ListOutboxCommandsForAccount(accountScopeID, "", "", limit)
 	if err != nil {
 		return "", err
 	}
-	history, err := r.flows.ListMirroredRunSummaries(flowID, limit)
+	history, err := r.flows.ListMirroredRunSummariesForAccount(accountScopeID, flowID, limit)
 	if err != nil {
 		return "", err
 	}
@@ -201,7 +224,7 @@ func (r *Runtime) manageFlowUpsert(scope WorkspaceScope, args map[string]any, mu
 	if flowID == "" {
 		flowID = manageFlowGeneratedID(mapString(content, "name"))
 	}
-	existing, exists, err := r.manageFlowDefinitionOrAccepted(flowID)
+	existing, exists, err := r.manageFlowDefinitionOrAccepted(scope, flowID)
 	if err != nil {
 		return "", err
 	}
@@ -258,7 +281,7 @@ func (r *Runtime) manageFlowUpsert(scope WorkspaceScope, args map[string]any, mu
 	return encodeManageFlowResponse(map[string]any{"status": status, "action": action, "applied": false, "flow": after, "change": change, "approved_arguments": manageFlowApprovedArguments(args), "path_id": toolPathID("manage-flow"), "summary": summary, "details_truncated": false, "prompt_injection_tag": "tool_output_untrusted", "safety": buildUntrustedSafety(assignment.Intent.Prompt)})
 }
 
-func (r *Runtime) manageFlowDelete(args map[string]any, confirm bool) (string, error) {
+func (r *Runtime) manageFlowDelete(scope WorkspaceScope, args map[string]any, confirm bool) (string, error) {
 	if r == nil || r.flows == nil {
 		return "", errors.New("manage-flow service is not configured")
 	}
@@ -266,7 +289,7 @@ func (r *Runtime) manageFlowDelete(args map[string]any, confirm bool) (string, e
 	if flowID == "" {
 		return "", errors.New("flow_id is required")
 	}
-	existing, ok, err := r.manageFlowDefinitionOrAccepted(flowID)
+	existing, ok, err := r.manageFlowDefinitionOrAccepted(scope, flowID)
 	if err != nil {
 		return "", err
 	}
@@ -279,10 +302,10 @@ func (r *Runtime) manageFlowDelete(args map[string]any, confirm bool) (string, e
 	}
 	change := map[string]any{"kind": "flow_change", "target": "flow", "operation": "delete", "before": before, "after": nil, "approval_summary": manageFlowApprovalSummary("delete", before)}
 	if confirm {
-		if err := r.flows.DeleteDefinition(flowID); err != nil {
+		if err := r.flows.DeleteDefinitionForAccount(existing.AccountScopeID, flowID); err != nil {
 			return "", err
 		}
-		if err := r.flows.DeleteAcceptedAssignment(flowID); err != nil {
+		if err := r.flows.DeleteAcceptedAssignmentForAccount(existing.AccountScopeID, flowID); err != nil {
 			return "", err
 		}
 		_ = r.flows.DeleteDue(pebblestore.FlowDueRecord{AccountScopeID: existing.AccountScopeID, UserID: existing.UserID, FlowID: flowID, Revision: existing.Revision, DueAt: existing.NextDueAt, ScheduledAt: existing.NextDueAt})
@@ -386,19 +409,23 @@ func (r *Runtime) manageFlowAssignmentFromContent(scope WorkspaceScope, content 
 	return assignment, nil
 }
 
-func (r *Runtime) manageFlowDefinitionOrAccepted(flowID string) (pebblestore.FlowDefinitionRecord, bool, error) {
+func (r *Runtime) manageFlowDefinitionOrAccepted(scope WorkspaceScope, flowID string) (pebblestore.FlowDefinitionRecord, bool, error) {
 	if r == nil || r.flows == nil {
 		return pebblestore.FlowDefinitionRecord{}, false, errors.New("manage-flow service is not configured")
+	}
+	accountScopeID, err := r.manageFlowAccountScopeID(scope)
+	if err != nil {
+		return pebblestore.FlowDefinitionRecord{}, false, err
 	}
 	flowID = strings.TrimSpace(flowID)
 	if flowID == "" {
 		return pebblestore.FlowDefinitionRecord{}, false, errors.New("flow_id is required")
 	}
-	definition, ok, err := r.flows.GetDefinition(flowID)
+	definition, ok, err := r.flows.GetDefinitionForAccount(accountScopeID, flowID)
 	if err != nil || ok {
 		return definition, ok, err
 	}
-	accepted, ok, err := r.flows.GetAcceptedAssignment(flowID)
+	accepted, ok, err := r.flows.GetAcceptedAssignmentForAccount(accountScopeID, flowID)
 	if err != nil || !ok {
 		return pebblestore.FlowDefinitionRecord{}, false, err
 	}
@@ -444,9 +471,9 @@ func (r *Runtime) manageFlowRecordMap(record pebblestore.FlowDefinitionRecord, d
 	}
 	view := map[string]any{"flow_id": record.FlowID, "revision": firstNonZeroInt64(record.Revision, assignment.Revision), "name": assignment.Name, "enabled": assignment.Enabled, "target": assignment.Target, "agent": assignment.Agent, "workspace": assignment.Workspace, "schedule": assignment.Schedule, "catch_up_policy": assignment.CatchUpPolicy, "intent": assignment.Intent, "next_due_at": nextDueAt, "created_at": record.CreatedAt, "updated_at": record.UpdatedAt, "deleted_at": record.DeletedAt}
 	if detailed && r != nil && r.flows != nil {
-		history, _ := r.flows.ListMirroredRunSummaries(record.FlowID, 20)
-		statuses, _ := r.flows.ListAssignmentStatuses(record.FlowID, 20)
-		outbox, _ := r.flows.ListOutboxCommands("", 100)
+		history, _ := r.flows.ListMirroredRunSummariesForAccount(record.AccountScopeID, record.FlowID, 20)
+		statuses, _ := r.flows.ListAssignmentStatusesForAccount(record.AccountScopeID, record.FlowID, 20)
+		outbox, _ := r.flows.ListOutboxCommandsForAccount(record.AccountScopeID, "", "", 100)
 		view["history"] = history
 		view["history_count"] = len(history)
 		view["assignment_statuses"] = statuses

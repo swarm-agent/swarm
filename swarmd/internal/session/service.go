@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -694,14 +695,23 @@ func (s *Service) UpsertLifecycle(snapshot pebblestore.SessionLifecycleSnapshot)
 	if err != nil {
 		return err
 	}
+	var hostedDescriptor HostedSessionDescriptor
+	shouldSyncHosted := false
 	if ok && s.hosted != nil && !hostedSyncOptional(session.Metadata) {
 		if descriptor, hosted := s.hostedDescriptor(session.Metadata); hosted {
-			if err := s.hosted.UpsertLifecycle(context.Background(), descriptor, snapshot); err != nil {
-				return err
-			}
+			hostedDescriptor = descriptor
+			shouldSyncHosted = true
 		}
 	}
-	return s.store.UpsertSessionLifecycle(snapshot)
+	if err := s.store.UpsertSessionLifecycle(snapshot); err != nil {
+		return err
+	}
+	if shouldSyncHosted {
+		if err := s.hosted.UpsertLifecycle(context.Background(), hostedDescriptor, snapshot); err != nil {
+			log.Printf("warning: hosted session lifecycle sync failed session_id=%q run_id=%q host_swarm_id=%q child_swarm_id=%q err=%v", snapshot.SessionID, snapshot.RunID, hostedDescriptor.HostSwarmID, hostedDescriptor.ChildSwarmID, err)
+		}
+	}
+	return nil
 }
 
 func (s *Service) ListActiveLifecycles(limit int) ([]pebblestore.SessionLifecycleSnapshot, error) {

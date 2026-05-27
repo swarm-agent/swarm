@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/flow"
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 	"testing"
@@ -27,7 +28,7 @@ func TestManageFlowDefinitionAndInspect(t *testing.T) {
 		t.Fatal("manage-flow definition not found")
 	}
 
-	out, err := rt.ExecuteForWorkspaceScopeWithRuntime(context.Background(), WorkspaceScope{PrimaryPath: t.TempDir()}, Call{Name: "manage-flow", Arguments: `{"action":"inspect"}`})
+	out, err := rt.ExecuteForWorkspaceScopeWithRuntime(context.Background(), manageFlowTestScope(t.TempDir()), Call{Name: "manage-flow", Arguments: `{"action":"inspect"}`})
 	if err != nil {
 		t.Fatalf("inspect: %v output=%s", err, out)
 	}
@@ -68,7 +69,7 @@ func TestManageFlowPreviewAndConfirmCreate(t *testing.T) {
 	rt, flows := newManageFlowTestRuntime(t)
 	workspacePath := t.TempDir()
 	args := `{"action":"create","flow_id":"daily-agents","content":{"name":"Daily AGENTS.md refresh","target":{"kind":"self"},"agent":{"profile_name":"memory","profile_mode":"background"},"workspace":{"workspace_path":"` + filepath.ToSlash(workspacePath) + `"},"schedule":{"cadence":"daily","time":"09:00","timezone":"UTC"},"catch_up_policy":{"mode":"once"},"intent":{"prompt":"Check git diffs daily and update AGENTS.md when durable agent guidance changes."}}}`
-	out, err := rt.ExecuteForWorkspaceScopeWithRuntime(context.Background(), WorkspaceScope{PrimaryPath: workspacePath}, Call{Name: "manage-flow", Arguments: args})
+	out, err := rt.ExecuteForWorkspaceScopeWithRuntime(context.Background(), manageFlowTestScope(workspacePath), Call{Name: "manage-flow", Arguments: args})
 	if err != nil {
 		t.Fatalf("preview create: %v output=%s", err, out)
 	}
@@ -79,7 +80,7 @@ func TestManageFlowPreviewAndConfirmCreate(t *testing.T) {
 	if preview["status"] != "proposed_create" || preview["applied"] != false {
 		t.Fatalf("preview status/applied = %v/%v", preview["status"], preview["applied"])
 	}
-	if _, ok, err := flows.GetDefinition("daily-agents"); err != nil || ok {
+	if _, ok, err := flows.GetDefinitionForAccount("account-1", "daily-agents"); err != nil || ok {
 		t.Fatalf("preview should not persist ok=%v err=%v", ok, err)
 	}
 
@@ -88,14 +89,14 @@ func TestManageFlowPreviewAndConfirmCreate(t *testing.T) {
 	if err := json.Unmarshal(rawApproved, &approved); err != nil {
 		t.Fatalf("decode approved args: %v", err)
 	}
-	confirmed, err := rt.ExecuteForWorkspaceScopeWithRuntime(context.Background(), WorkspaceScope{PrimaryPath: workspacePath}, Call{Name: "manage_flow", Arguments: string(rawApproved)})
+	confirmed, err := rt.ExecuteForWorkspaceScopeWithRuntime(context.Background(), manageFlowTestScope(workspacePath), Call{Name: "manage_flow", Arguments: string(rawApproved)})
 	if err != nil {
 		t.Fatalf("confirm create: %v output=%s approved=%v", err, confirmed, approved)
 	}
-	if _, ok, err := flows.GetDefinition("daily-agents"); err != nil || !ok {
+	if _, ok, err := flows.GetDefinitionForAccount("account-1", "daily-agents"); err != nil || !ok {
 		t.Fatalf("confirmed definition ok=%v err=%v", ok, err)
 	}
-	if _, ok, err := flows.GetAcceptedAssignment("daily-agents"); err != nil || !ok {
+	if _, ok, err := flows.GetAcceptedAssignmentForAccount("account-1", "daily-agents"); err != nil || !ok {
 		t.Fatalf("confirmed accepted assignment ok=%v err=%v", ok, err)
 	}
 }
@@ -104,16 +105,20 @@ func TestManageFlowConfirmDelete(t *testing.T) {
 	rt, flows := newManageFlowTestRuntime(t)
 	assignment := flow.Assignment{FlowID: "flow-delete", Revision: 1, Name: "Delete me", Enabled: true, Target: flow.TargetSelection{Kind: "self"}, Agent: flow.AgentSelection{ProfileName: "memory", ProfileMode: "background"}, Workspace: flow.WorkspaceContext{WorkspacePath: t.TempDir()}, Schedule: flow.ScheduleSpec{Cadence: flow.CadenceOnDemand}, CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce}, Intent: flow.PromptIntent{Prompt: "Run once."}}
 	assignment.Agent = flow.NormalizeAgentSelection(assignment.Agent)
-	if _, err := flows.PutDefinition(pebblestore.FlowDefinitionRecord{FlowID: assignment.FlowID, Revision: assignment.Revision, Assignment: assignment}); err != nil {
+	if _, err := flows.PutDefinition(pebblestore.FlowDefinitionRecord{AccountScopeID: "account-1", UserID: "user-1", FlowID: assignment.FlowID, Revision: assignment.Revision, Assignment: assignment}); err != nil {
 		t.Fatalf("seed definition: %v", err)
 	}
-	out, err := rt.ExecuteForWorkspaceScopeWithRuntime(context.Background(), WorkspaceScope{PrimaryPath: assignment.Workspace.WorkspacePath}, Call{Name: "manage-flow", Arguments: `{"action":"delete","flow_id":"flow-delete","confirm":true}`})
+	out, err := rt.ExecuteForWorkspaceScopeWithRuntime(context.Background(), manageFlowTestScope(assignment.Workspace.WorkspacePath), Call{Name: "manage-flow", Arguments: `{"action":"delete","flow_id":"flow-delete","confirm":true}`})
 	if err != nil {
 		t.Fatalf("delete: %v output=%s", err, out)
 	}
-	if _, ok, err := flows.GetDefinition("flow-delete"); err != nil || ok {
+	if _, ok, err := flows.GetDefinitionForAccount("account-1", "flow-delete"); err != nil || ok {
 		t.Fatalf("definition after delete ok=%v err=%v", ok, err)
 	}
+}
+
+func manageFlowTestScope(path string) WorkspaceScope {
+	return WorkspaceScope{PrimaryPath: path, Principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-1", AccountScopeID: "account-1"}}
 }
 
 func newManageFlowTestRuntime(t *testing.T) (*Runtime, *pebblestore.FlowStore) {
