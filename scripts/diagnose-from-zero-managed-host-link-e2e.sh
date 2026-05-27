@@ -122,6 +122,34 @@ find "$HOME" /opt /srv /tmp -maxdepth 4 -type d -name swarm-go 2>/dev/null \
 exit 1'
 }
 
+bootstrap_remote_identity() {
+  local alias="${1:-}" api_url="${2:-}" swarm_name="${3:-swarm}" username="${4:-diagnostic}"
+  local body_b64
+  body_b64="$(jq -nc --arg username "${username}" --arg swarm_name "${swarm_name}" '{username:$username,swarm_name:$swarm_name,desktop_onboarding_complete:true}' | base64 -w0)"
+  ssh "${alias}" 'bash -s' -- "${api_url}" "${body_b64}" <<'REMOTE_BOOTSTRAP'
+set -euo pipefail
+api_url="${1%/}"
+body_b64="$2"
+cookie_file="$(mktemp)"
+body_file="$(mktemp)"
+trap 'rm -f -- "${cookie_file}" "${body_file}"' EXIT
+printf '%s' "${body_b64}" | base64 -d >"${body_file}"
+http_code="$(curl -sS --connect-timeout 3 --max-time 60 -o /dev/null -w '%{http_code}' \
+  -H 'Accept: application/json' \
+  -H 'Content-Type: application/json' \
+  -H "Origin: ${api_url}" \
+  -H "Referer: ${api_url}/" \
+  -H 'Sec-Fetch-Site: same-origin' \
+  -c "${cookie_file}" -b "${cookie_file}" \
+  --data-binary "@${body_file}" \
+  "${api_url}/v1/onboarding")"
+case "${http_code}" in
+  2*) exit 0 ;;
+  *) printf 'identity bootstrap HTTP %s on %s\n' "${http_code}" "${api_url}" >&2; exit 22 ;;
+esac
+REMOTE_BOOTSTRAP
+}
+
 remote_api_json() {
   local alias="${1:-}" api_url="${2:-}" method="${3:-GET}" path="${4:-}" body="${5:-}" output_file="${6:-}" max_time="${7:-30}"
   local body_b64 response_file status_file ssh_status
@@ -248,6 +276,10 @@ fi
 
 wait_remote_ready "${PRIMARY_SSH}" "${PRIMARY_API_URL}" primary
 wait_remote_ready "${MANAGED_SSH}" "${MANAGED_API_URL}" managed
+
+log "bootstrapping product identity on primary and managed hosts"
+bootstrap_remote_identity "${PRIMARY_SSH}" "${PRIMARY_API_URL}" "${WORKSPACE_NAME}-primary" "diagnostic-primary"
+bootstrap_remote_identity "${MANAGED_SSH}" "${MANAGED_API_URL}" "${WORKSPACE_NAME}-managed" "diagnostic-managed"
 
 remote_api_json "${PRIMARY_SSH}" "${PRIMARY_API_URL}" GET "/v1/swarm/discovery" "" "${ARTIFACT_DIR}/primary_discovery.json" 30
 remote_api_json "${MANAGED_SSH}" "${MANAGED_API_URL}" GET "/v1/swarm/discovery" "" "${ARTIFACT_DIR}/managed_discovery.json" 30
