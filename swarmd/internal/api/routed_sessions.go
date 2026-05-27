@@ -443,7 +443,8 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("route account scope id does not match principal"))
 		return
 	}
-	session, _, warning, modeWarning, err := s.createSessionFromRequestWithSessionID(childReq, req.Hosted.WithMetadata(nil), false, req.SessionID, principal, true)
+	allowWorktree := peerSessionOpenAllowsWorktree(childReq.WorktreeMode)
+	session, _, warning, modeWarning, err := s.createSessionFromRequestWithSessionID(childReq, req.Hosted.WithMetadata(nil), allowWorktree, req.SessionID, principal, true)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -1039,6 +1040,11 @@ func (s *Server) resolveRemoteHostBackendURL(ctx context.Context, target swarmTa
 		}
 	}
 	return ""
+}
+
+func peerSessionOpenAllowsWorktree(rawMode string) bool {
+	mode := runruntime.NormalizeRunWorktreeMode(rawMode)
+	return mode == runruntime.RunWorktreeModeOn || mode == runruntime.RunWorktreeModeInherit
 }
 
 func matchesRemoteDeployTarget(item remotedeploy.Session, target swarmTarget) bool {

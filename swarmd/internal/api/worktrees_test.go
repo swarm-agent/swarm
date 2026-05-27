@@ -18,9 +18,10 @@ import (
 )
 
 type fakeWorktreeService struct {
-	config  worktreeruntime.Config
-	managed []worktreeruntime.ManagedWorktree
-	prune   worktreeruntime.PruneResult
+	config     worktreeruntime.Config
+	allocation worktreeruntime.Allocation
+	managed    []worktreeruntime.ManagedWorktree
+	prune      worktreeruntime.PruneResult
 }
 
 func (f *fakeWorktreeService) GetConfig(workspacePath string) (worktreeruntime.Config, error) {
@@ -43,7 +44,20 @@ func (f *fakeWorktreeService) SetConfigForPrincipal(principal identity.Principal
 }
 
 func (f *fakeWorktreeService) AllocateDetachedWorkspace(workspacePath, nameSeed string) (worktreeruntime.Allocation, error) {
-	return worktreeruntime.Allocation{}, nil
+	allocation := f.allocation
+	if strings.TrimSpace(allocation.WorkspacePath) == "" {
+		allocation.WorkspacePath = workspacePath
+	}
+	if strings.TrimSpace(allocation.RepoRoot) == "" {
+		allocation.RepoRoot = workspacePath
+	}
+	if strings.TrimSpace(allocation.BaseBranch) == "" {
+		allocation.BaseBranch = "main"
+	}
+	if strings.TrimSpace(allocation.WorkspaceID) == "" {
+		allocation.WorkspaceID = "ws_test"
+	}
+	return allocation, nil
 }
 
 func (f *fakeWorktreeService) AllocateDetachedWorkspaceForPrincipal(principal identity.Principal, workspacePath, nameSeed string) (worktreeruntime.Allocation, error) {
@@ -51,7 +65,17 @@ func (f *fakeWorktreeService) AllocateDetachedWorkspaceForPrincipal(principal id
 }
 
 func (f *fakeWorktreeService) AllocateDetachedWorkspaceRequested(workspacePath, nameSeed, baseBranch, branchName string) (worktreeruntime.Allocation, error) {
-	return worktreeruntime.Allocation{}, nil
+	allocation, err := f.AllocateDetachedWorkspace(workspacePath, nameSeed)
+	if err != nil {
+		return worktreeruntime.Allocation{}, err
+	}
+	if strings.TrimSpace(baseBranch) != "" {
+		allocation.BaseBranch = strings.TrimSpace(baseBranch)
+	}
+	if strings.TrimSpace(branchName) != "" {
+		allocation.BranchName = strings.TrimSpace(branchName)
+	}
+	return allocation, nil
 }
 
 func (f *fakeWorktreeService) AllocateDetachedWorkspaceRequestedForPrincipal(principal identity.Principal, workspacePath, nameSeed, baseBranch, branchName string) (worktreeruntime.Allocation, error) {

@@ -26,6 +26,7 @@ import (
 	"swarm/packages/swarmd/internal/stream"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 	topologyruntime "swarm/packages/swarmd/internal/topology"
+	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
 func TestPeerSessionOpenPersistsRouteForManagedHostContainer(t *testing.T) {
@@ -469,6 +470,107 @@ func TestPeerSessionOpenAcceptsPairedChildPrincipalClaimWithoutLocalTopologyRunt
 	server.handlePeerSessionAppendMessage(messageRec, messageReq)
 	if messageRec.Code != http.StatusOK {
 		t.Fatalf("message status = %d, want %d, body=%s", messageRec.Code, http.StatusOK, messageRec.Body.String())
+	}
+}
+
+func TestPeerSessionOpenAllowsRequestedWorktreeForPairedLocalChild(t *testing.T) {
+	server, sessionSvc, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	configureRoutedSessionTestServerAsChild(t, server, swarmStore, "child-swarm", "host-swarm-id", testPrincipal().UserID, testPrincipal().AccountScopeID)
+	server.SetWorktreeService(&fakeWorktreeService{
+		config: worktreeruntime.Config{Enabled: true, UseCurrentBranch: true},
+		allocation: worktreeruntime.Allocation{
+			WorkspacePath: "/var/cache/swarmd/workspaces/swarm-go-test/worktrees/ws_peer_open",
+			RepoRoot:      "/var/cache/swarmd/workspaces/swarm-go-test",
+			BaseBranch:    "main",
+			BranchName:    "agent/session-paired-worktree",
+			WorkspaceID:   "ws_peer_open",
+		},
+	})
+
+	payload, err := json.Marshal(peerSessionOpenRequest{
+		SessionID: "session-paired-worktree",
+		Request: func() sessionCreateRequest {
+			req := sessionCreateRequest{Title: "paired child worktree", WorkspacePath: "/workspaces/swarm-go", RuntimeWorkspacePath: "/workspaces/swarm-go", WorkspaceName: "swarm-go", Mode: sessionruntime.ModeAuto, WorktreeMode: "on"}
+			req.Preference.Provider = "codex"
+			req.Preference.Model = "gpt-5.4"
+			req.Preference.Thinking = "medium"
+			return req
+		}(),
+		Hosted:    sessionruntime.HostedSessionDescriptor{HostSwarmID: "host-swarm-id", RuntimeWorkspacePath: "/workspaces/swarm-go", ChildSwarmID: "child-swarm", OwnerTransport: "routed_session_peer"},
+		Route:     pebblestore.SessionRouteRecord{SessionID: "session-paired-worktree", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ChildSwarmID: "child-swarm", ChildBackendURL: "http://127.0.0.1:7782", HostSwarmID: "host-swarm-id", RuntimeWorkspacePath: "/workspaces/swarm-go"},
+		Principal: testPrincipal(),
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/swarm/peer/sessions/open", bytes.NewReader(payload))
+	req = req.WithContext(context.WithValue(req.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: "host-swarm-id"}))
+	rec := httptest.NewRecorder()
+	server.handlePeerSessionOpen(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	session, ok, err := sessionSvc.GetSession("session-paired-worktree")
+	if err != nil || !ok {
+		t.Fatalf("get session ok=%t err=%v", ok, err)
+	}
+	if !session.WorktreeEnabled {
+		t.Fatalf("WorktreeEnabled = false, session = %+v", session)
+	}
+	if session.WorkspacePath != "/var/cache/swarmd/workspaces/swarm-go-test/worktrees/ws_peer_open" {
+		t.Fatalf("workspace path = %q", session.WorkspacePath)
+	}
+	if session.WorktreeRootPath != "/var/cache/swarmd/workspaces/swarm-go-test" || session.WorktreeBranch != "agent/session-paired-worktree" {
+		t.Fatalf("worktree fields = root %q branch %q", session.WorktreeRootPath, session.WorktreeBranch)
+	}
+}
+
+func TestPeerSessionOpenAllowsInheritedWorktreeForPairedLocalChildWhenEnabled(t *testing.T) {
+	server, sessionSvc, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	configureRoutedSessionTestServerAsChild(t, server, swarmStore, "child-swarm", "host-swarm-id", testPrincipal().UserID, testPrincipal().AccountScopeID)
+	server.SetWorktreeService(&fakeWorktreeService{
+		config: worktreeruntime.Config{Enabled: true, UseCurrentBranch: true},
+		allocation: worktreeruntime.Allocation{
+			WorkspacePath: "/var/cache/swarmd/workspaces/swarm-go-test/worktrees/ws_peer_inherit",
+			RepoRoot:      "/var/cache/swarmd/workspaces/swarm-go-test",
+			BaseBranch:    "main",
+			BranchName:    "agent/session-paired-inherit",
+			WorkspaceID:   "ws_peer_inherit",
+		},
+	})
+
+	payload, err := json.Marshal(peerSessionOpenRequest{
+		SessionID: "session-paired-inherit",
+		Request: func() sessionCreateRequest {
+			req := sessionCreateRequest{Title: "paired child inherited worktree", WorkspacePath: "/workspaces/swarm-go", RuntimeWorkspacePath: "/workspaces/swarm-go", WorkspaceName: "swarm-go", Mode: sessionruntime.ModeAuto, WorktreeMode: "inherit"}
+			req.Preference.Provider = "codex"
+			req.Preference.Model = "gpt-5.4"
+			req.Preference.Thinking = "medium"
+			return req
+		}(),
+		Hosted:    sessionruntime.HostedSessionDescriptor{HostSwarmID: "host-swarm-id", RuntimeWorkspacePath: "/workspaces/swarm-go", ChildSwarmID: "child-swarm", OwnerTransport: "routed_session_peer"},
+		Route:     pebblestore.SessionRouteRecord{SessionID: "session-paired-inherit", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ChildSwarmID: "child-swarm", ChildBackendURL: "http://127.0.0.1:7782", HostSwarmID: "host-swarm-id", RuntimeWorkspacePath: "/workspaces/swarm-go"},
+		Principal: testPrincipal(),
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/swarm/peer/sessions/open", bytes.NewReader(payload))
+	req = req.WithContext(context.WithValue(req.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: "host-swarm-id"}))
+	rec := httptest.NewRecorder()
+	server.handlePeerSessionOpen(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	session, ok, err := sessionSvc.GetSession("session-paired-inherit")
+	if err != nil || !ok {
+		t.Fatalf("get session ok=%t err=%v", ok, err)
+	}
+	if !session.WorktreeEnabled {
+		t.Fatalf("WorktreeEnabled = false, session = %+v", session)
+	}
+	if session.WorkspacePath != "/var/cache/swarmd/workspaces/swarm-go-test/worktrees/ws_peer_inherit" {
+		t.Fatalf("workspace path = %q", session.WorkspacePath)
 	}
 }
 
