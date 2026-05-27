@@ -46,8 +46,16 @@ func (f *fakeWorktreeService) AllocateDetachedWorkspace(workspacePath, nameSeed 
 	return worktreeruntime.Allocation{}, nil
 }
 
+func (f *fakeWorktreeService) AllocateDetachedWorkspaceForPrincipal(principal identity.Principal, workspacePath, nameSeed string) (worktreeruntime.Allocation, error) {
+	return f.AllocateDetachedWorkspace(workspacePath, nameSeed)
+}
+
 func (f *fakeWorktreeService) AllocateDetachedWorkspaceRequested(workspacePath, nameSeed, baseBranch, branchName string) (worktreeruntime.Allocation, error) {
 	return worktreeruntime.Allocation{}, nil
+}
+
+func (f *fakeWorktreeService) AllocateDetachedWorkspaceRequestedForPrincipal(principal identity.Principal, workspacePath, nameSeed, baseBranch, branchName string) (worktreeruntime.Allocation, error) {
+	return f.AllocateDetachedWorkspaceRequested(workspacePath, nameSeed, baseBranch, branchName)
 }
 
 func (f *fakeWorktreeService) AttachBranch(workspacePath, sessionID, title string) (string, error) {

@@ -1189,18 +1189,18 @@ func (s *Server) applySessionCreateWorktree(createOptions *sessionruntime.Create
 			return "", nil
 		}
 		return s.allocateSessionCreateDetachedWorkspace(createOptions, sessionID, func() (worktreeruntime.Allocation, error) {
-			return s.worktrees.AllocateDetachedWorkspace(createOptions.WorkspacePath, sessionID)
+			return s.worktrees.AllocateDetachedWorkspaceForPrincipal(principal, createOptions.WorkspacePath, sessionID)
 		})
 	case runruntime.RunWorktreeModeOff:
 		return "", nil
 	case runruntime.RunWorktreeModeOn:
 		if config.Enabled {
 			return s.allocateSessionCreateDetachedWorkspace(createOptions, sessionID, func() (worktreeruntime.Allocation, error) {
-				return s.worktrees.AllocateDetachedWorkspace(createOptions.WorkspacePath, sessionID)
+				return s.worktrees.AllocateDetachedWorkspaceForPrincipal(principal, createOptions.WorkspacePath, sessionID)
 			})
 		}
 		return s.allocateSessionCreateDetachedWorkspace(createOptions, sessionID, func() (worktreeruntime.Allocation, error) {
-			return s.worktrees.AllocateDetachedWorkspaceRequested(createOptions.WorkspacePath, sessionID, "", "")
+			return s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(principal, createOptions.WorkspacePath, sessionID, "", "")
 		})
 	default:
 		return "", errors.New("unsupported worktree_mode " + strconv.Quote(strings.TrimSpace(rawRequestedMode)))

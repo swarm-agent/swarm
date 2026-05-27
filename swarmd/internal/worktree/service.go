@@ -181,13 +181,31 @@ func (s *Service) AllocateDetachedWorkspace(workspacePath, nameSeed string) (All
 	return Allocation{}, identity.ErrPrincipalRequired
 }
 
+func (s *Service) AllocateDetachedWorkspaceForPrincipal(principal identity.Principal, workspacePath, nameSeed string) (Allocation, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return Allocation{}, err
+	}
+	config, err := s.GetConfigForPrincipal(principal, workspacePath)
+	if err != nil {
+		return Allocation{}, err
+	}
+	return s.allocateSessionWorkspace(config.WorkspacePath, config.UseCurrentBranch, config.BaseBranch, config.BranchName, nameSeed)
+}
+
 func (s *Service) AllocateDetachedWorkspaceRequested(workspacePath, nameSeed, baseBranch, branchName string) (Allocation, error) {
-	workspacePath = strings.TrimSpace(workspacePath)
-	if workspacePath == "" {
-		return Allocation{}, errors.New("workspace path is required")
+	return Allocation{}, identity.ErrPrincipalRequired
+}
+
+func (s *Service) AllocateDetachedWorkspaceRequestedForPrincipal(principal identity.Principal, workspacePath, nameSeed, baseBranch, branchName string) (Allocation, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return Allocation{}, err
+	}
+	canonical, err := s.resolveWorkspaceConfigPathForPrincipal(principal, workspacePath)
+	if err != nil {
+		return Allocation{}, err
 	}
 	useCurrentBranch := strings.TrimSpace(baseBranch) == ""
-	return s.allocateSessionWorkspace(workspacePath, useCurrentBranch, baseBranch, branchName, nameSeed)
+	return s.allocateSessionWorkspace(canonical, useCurrentBranch, baseBranch, branchName, nameSeed)
 }
 
 func (s *Service) allocateSessionWorkspace(workspacePath string, useCurrentBranch bool, baseBranch, configuredBranchName, sessionID string) (Allocation, error) {
