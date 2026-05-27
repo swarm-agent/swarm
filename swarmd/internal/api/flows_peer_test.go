@@ -336,14 +336,14 @@ func TestFlowAssignmentDeliveryRoutesMirroredChildThroughManagedHostEvenWhenChil
 		"mirrored|managed-child|http://127.0.0.1:7782": {online: false, checkedAt: time.Now()},
 	}
 
-	seedFlowTopologyWorkspaceBinding(t, server, "/home/installer/workspaces/swarm-go-9", "swarm-go-9", "managed-deployment", "local", "managed-child", "/workspaces/swarm-go")
+	seedFlowTopologyWorkspaceBinding(t, server, "/workspace-fixtures/installer/workspaces/swarm-go-9", "swarm-go-9", "managed-deployment", "local", "managed-child", "/workspaces/swarm-go")
 	assignment := testAPIFlowAssignment("flow-managed-child", 1)
 	assignment.Target = flow.TargetSelection{SwarmID: "managed-child", Kind: "mirrored", Name: "managed child", DeploymentID: "managed-deployment"}
 	assignment.Workspace = flow.WorkspaceContext{
-		WorkspacePath:        "/home/installer/workspaces/swarm-go-9",
-		HostWorkspacePath:    "/home/installer/workspaces/swarm-go-9",
+		WorkspacePath:        "/workspace-fixtures/installer/workspaces/swarm-go-9",
+		HostWorkspacePath:    "/workspace-fixtures/installer/workspaces/swarm-go-9",
 		RuntimeWorkspacePath: "/workspaces/swarm-go",
-		WorkspaceBindingID:   pebblestore.CanonicalTopologyWorkspaceBindingID("managed-deployment", "/home/installer/workspaces/swarm-go-9"),
+		WorkspaceBindingID:   pebblestore.CanonicalTopologyWorkspaceBindingID("managed-deployment", "/workspace-fixtures/installer/workspaces/swarm-go-9"),
 		WorkspaceName:        "swarm-go-9",
 	}
 	command := testAPIFlowCommand("cmd-managed-child", assignment, flow.CommandInstall)
@@ -360,7 +360,7 @@ func TestFlowAssignmentDeliveryRoutesMirroredChildThroughManagedHostEvenWhenChil
 	if delivered.Assignment.Workspace.WorkspacePath != "/workspaces/swarm-go" || delivered.Assignment.Workspace.RuntimeWorkspacePath != "/workspaces/swarm-go" {
 		t.Fatalf("delivered workspace = %+v", delivered.Assignment.Workspace)
 	}
-	if delivered.Assignment.Workspace.HostWorkspacePath != "/home/installer/workspaces/swarm-go-9" {
+	if delivered.Assignment.Workspace.HostWorkspacePath != "/workspace-fixtures/installer/workspaces/swarm-go-9" {
 		t.Fatalf("delivered host workspace = %q", delivered.Assignment.Workspace.HostWorkspacePath)
 	}
 }

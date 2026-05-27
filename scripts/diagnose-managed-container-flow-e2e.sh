@@ -90,7 +90,7 @@ require_command jq
 [[ "${TIMEOUT_SECONDS}" =~ ^[0-9]+$ ]] || fail "--timeout-seconds must be numeric"
 PRIMARY_URL="${PRIMARY_URL%/}"
 if [[ -z "${EVIDENCE_DIR}" ]]; then
-  EVIDENCE_DIR="${ROOT_DIR}/tmp/managed-container-flow-diagnostics/$(date +%Y%m%d-%H%M%S)"
+  EVIDENCE_DIR="${ROOT_DIR}/.tmp/managed-container-flow-diagnostics/$(date +%Y%m%d-%H%M%S)"
 fi
 mkdir -p -- "${EVIDENCE_DIR}"
 COOKIE_FILE="${EVIDENCE_DIR}/primary.cookies"

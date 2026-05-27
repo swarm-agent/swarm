@@ -23,7 +23,7 @@ Options:
   --flow-model <model>             Model to set before the Flow. Default: accounts/fireworks/models/kimi-k2p6
   --flow-thinking <level>          Thinking level to set before the Flow. Default: low
   --fireworks-key-path <path>      Fireworks API key file to seed if no active credential exists.
-                                  If omitted, auto-detects exactly one /tmp/*fireworks*.key file.
+                                  If omitted, auto-detects exactly one key file under ${TMPDIR:-/tmp} matching *fireworks*.key.
   --runtime <podman|docker>        Optional requested runtime passed to replicate.
   --timeout-seconds <seconds>      Wait timeout for container/Flow success. Default: 420
   --cleanup                        Disable/delete the created Flow/container on exit.
@@ -100,7 +100,7 @@ require_command jq
 [[ "${TIMEOUT_SECONDS}" =~ ^[0-9]+$ && "${TIMEOUT_SECONDS}" -gt 0 ]] || fail "--timeout-seconds must be a positive integer"
 PRIMARY_URL="${PRIMARY_URL%/}"
 if [[ -z "${ARTIFACT_DIR}" ]]; then
-  ARTIFACT_DIR="${ROOT_DIR}/tmp/single-local-container-flow-diagnostics/$(date +%Y%m%d-%H%M%S)"
+  ARTIFACT_DIR="${ROOT_DIR}/.tmp/single-local-container-flow-diagnostics/$(date +%Y%m%d-%H%M%S)"
 fi
 mkdir -p -- "${ARTIFACT_DIR}"
 COOKIE_FILE="${ARTIFACT_DIR}/primary.cookies"
@@ -177,7 +177,7 @@ seed_fireworks_credential_if_needed() {
   fi
   local key_path="${FIREWORKS_KEY_PATH}"
   if [[ -z "${key_path}" ]]; then
-    mapfile -t candidates < <(find /tmp -maxdepth 1 -type f -iname '*fireworks*.key' 2>/dev/null | sort)
+    mapfile -t candidates < <(find "${TMPDIR:-/tmp}" -maxdepth 1 -type f -iname '*fireworks*.key' 2>/dev/null | sort)
     if [[ "${#candidates[@]}" -eq 1 ]]; then
       key_path="${candidates[0]}"
     else

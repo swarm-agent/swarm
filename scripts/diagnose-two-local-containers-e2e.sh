@@ -164,7 +164,7 @@ require_command ssh
 [[ -n "${SOURCE_WORKSPACE_PATH}" ]] || fail "--source-workspace-path is required"
 PRIMARY_URL="${PRIMARY_URL%/}"
 if [[ -z "${ARTIFACT_DIR}" ]]; then
-  ARTIFACT_DIR="${ROOT_DIR}/tmp/two-local-containers-diagnostics/$(date +%Y%m%d-%H%M%S)"
+  ARTIFACT_DIR="${ROOT_DIR}/.tmp/two-local-containers-diagnostics/$(date +%Y%m%d-%H%M%S)"
 fi
 mkdir -p -- "${ARTIFACT_DIR}"
 COOKIE_FILE="${ARTIFACT_DIR}/primary.cookies"

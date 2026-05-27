@@ -99,7 +99,7 @@ require_command base64
 PRIMARY_API_URL="${PRIMARY_API_URL%/}"
 MANAGED_API_URL="${MANAGED_API_URL%/}"
 if [[ -z "${ARTIFACT_DIR}" ]]; then
-  ARTIFACT_DIR="${ROOT_DIR}/tmp/from-zero-managed-host-link/$(date +%Y%m%d-%H%M%S)"
+  ARTIFACT_DIR="${ROOT_DIR}/.tmp/from-zero-managed-host-link/$(date +%Y%m%d-%H%M%S)"
 fi
 mkdir -p -- "${ARTIFACT_DIR}"
 

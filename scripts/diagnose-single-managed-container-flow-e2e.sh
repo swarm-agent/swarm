@@ -96,7 +96,7 @@ require_command jq
 [[ "${TIMEOUT_SECONDS}" =~ ^[0-9]+$ && "${TIMEOUT_SECONDS}" -gt 0 ]] || fail "--timeout-seconds must be a positive integer"
 PRIMARY_URL="${PRIMARY_URL%/}"
 if [[ -z "${ARTIFACT_DIR}" ]]; then
-  ARTIFACT_DIR="${ROOT_DIR}/tmp/single-managed-container-flow-diagnostics/$(date +%Y%m%d-%H%M%S)"
+  ARTIFACT_DIR="${ROOT_DIR}/.tmp/single-managed-container-flow-diagnostics/$(date +%Y%m%d-%H%M%S)"
 fi
 mkdir -p -- "${ARTIFACT_DIR}"
 COOKIE_FILE="${ARTIFACT_DIR}/primary.cookies"
@@ -157,7 +157,7 @@ seed_fireworks_credential_if_needed() {
   fi
   local key_path="${FIREWORKS_KEY_PATH}"
   if [[ -z "${key_path}" ]]; then
-    mapfile -t candidates < <(find /tmp -maxdepth 1 -type f -iname '*fireworks*.key' 2>/dev/null | sort)
+    mapfile -t candidates < <(find "${TMPDIR:-/tmp}" -maxdepth 1 -type f -iname '*fireworks*.key' 2>/dev/null | sort)
     [[ "${#candidates[@]}" -eq 1 ]] || fail "no active fireworks credential and auto-detect found ${#candidates[@]} key files; pass --fireworks-key-path"
     key_path="${candidates[0]}"
   fi

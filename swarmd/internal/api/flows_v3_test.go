@@ -818,7 +818,7 @@ func TestFlowsV3CreateResolvesWorkspaceBindingByName(t *testing.T) {
 		Online:       true,
 		Selectable:   true,
 	}}})
-	seedFlowTopologyWorkspaceBinding(t, server, "/home/installer/workspaces/swarm-go-6", "swarm-go", "managed-deployment", "local", "managed-swarm", "/workspaces/swarm-go")
+	seedFlowTopologyWorkspaceBinding(t, server, "/workspace-fixtures/installer/workspaces/swarm-go-6", "swarm-go", "managed-deployment", "local", "managed-swarm", "/workspaces/swarm-go")
 	req := flowV3UpsertRequest{
 		FlowID:  "flow-v3-binding-name",
 		Name:    "Binding name flow",
@@ -826,9 +826,9 @@ func TestFlowsV3CreateResolvesWorkspaceBindingByName(t *testing.T) {
 		Target:  flow.TargetSelection{SwarmID: "managed-swarm", Kind: "local", DeploymentID: "managed-deployment", Name: "managed"},
 		Agent:   flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
 		Workspace: flow.WorkspaceContext{
-			WorkspacePath:     "/home/installer/swarm-go",
+			WorkspacePath:     "/workspace-fixtures/installer/swarm-go",
 			WorkspaceName:     "swarm-go",
-			HostWorkspacePath: "/home/installer/swarm-go",
+			HostWorkspacePath: "/workspace-fixtures/installer/swarm-go",
 		},
 		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceOnDemand},
 		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
@@ -846,7 +846,7 @@ func TestFlowsV3CreateResolvesWorkspaceBindingByName(t *testing.T) {
 		t.Fatalf("get definition ok=%v err=%v", ok, err)
 	}
 	workspace := definition.Assignment.Workspace
-	if workspace.WorkspaceBindingID == "" || workspace.HostWorkspacePath != "/home/installer/workspaces/swarm-go-6" || workspace.RuntimeWorkspacePath != "/workspaces/swarm-go" {
+	if workspace.WorkspaceBindingID == "" || workspace.HostWorkspacePath != "/workspace-fixtures/installer/workspaces/swarm-go-6" || workspace.RuntimeWorkspacePath != "/workspaces/swarm-go" {
 		t.Fatalf("stored workspace = %+v", workspace)
 	}
 	outbox, err := flows.ListOutboxCommandsForAccount(testAccountScopeID, "flow-v3-binding-name", "", 10)
@@ -879,7 +879,7 @@ func TestFlowsV3CreateRejectsAmbiguousWorkspaceNameBinding(t *testing.T) {
 		Target:  flow.TargetSelection{SwarmID: "managed-swarm", Kind: "local", DeploymentID: "managed-deployment", Name: "managed"},
 		Agent:   flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
 		Workspace: flow.WorkspaceContext{
-			WorkspacePath: "/home/installer/swarm-go",
+			WorkspacePath: "/workspace-fixtures/installer/swarm-go",
 			WorkspaceName: "swarm-go",
 		},
 		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceOnDemand},
