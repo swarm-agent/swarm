@@ -323,6 +323,15 @@ while :; do
   sleep 3
 done
 
+workspace_add_body="$(jq -nc \
+  --arg path "${SOURCE_WORKSPACE_PATH}" \
+  --arg name "${WORKSPACE_NAME}" \
+  '{path:$path,name:$name,make_current:true}')"
+printf '%s\n' "${workspace_add_body}" >"${ARTIFACT_DIR}/workspace_add_request.json"
+log "registering source workspace on primary: ${SOURCE_WORKSPACE_PATH}"
+remote_api_json "${PRIMARY_SSH}" "${PRIMARY_API_URL}" POST "/v1/workspace/add" "${workspace_add_body}" "${ARTIFACT_DIR}/workspace_add_response.json" 60
+[[ "$(json_get "${ARTIFACT_DIR}/workspace_add_response.json" '.ok // false')" == "true" ]] || fail "workspace add ok=false"
+
 upsert_body="$(jq -nc \
   --arg workspace_path "${SOURCE_WORKSPACE_PATH}" \
   --arg target_swarm_id "${managed_swarm_id}" \
