@@ -1221,3 +1221,29 @@ func TestDeployContainerSettingsForMirroredManagedDeploymentForwardsToManagedHos
 		t.Fatalf("mirrored bypass_permissions = false, want true")
 	}
 }
+
+func TestBuildReplicationPlanMountsCanonicalWorkspaceCacheForWorktrees(t *testing.T) {
+	workspacePath := "/src/repo"
+	workspaces := []workspaceruntime.NormalizedReplicationWorkspace{
+		{SourceWorkspacePath: workspacePath, ReplicationMode: workspaceruntime.ReplicationModeBundle, Writable: true},
+	}
+	catalog := map[string]replicateWorkspaceCatalogEntry{
+		workspacePath: {Name: "repo", Directories: []string{workspacePath}, Active: true},
+	}
+
+	mounts, _, _ := buildReplicationPlan(workspaces, catalog, workspaceruntime.NormalizedReplicationSync{})
+
+	var cacheMount localcontainers.Mount
+	for _, mount := range mounts {
+		if mount.SourcePath == replicateWorkspaceCacheRoot || mount.TargetPath == replicateWorkspaceCacheRoot {
+			cacheMount = mount
+			break
+		}
+	}
+	if cacheMount.SourcePath != replicateWorkspaceCacheRoot || cacheMount.TargetPath != replicateWorkspaceCacheRoot {
+		t.Fatalf("canonical workspace cache mount missing from replication plan: %+v", mounts)
+	}
+	if cacheMount.Mode != pebblestore.ContainerMountModeReadWrite {
+		t.Fatalf("workspace cache mount mode = %q, want %q", cacheMount.Mode, pebblestore.ContainerMountModeReadWrite)
+	}
+}

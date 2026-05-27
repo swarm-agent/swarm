@@ -43,6 +43,7 @@ type managedHostSessionOpenRequest struct {
 	WorkspaceName        string         `json:"workspace_name"`
 	Mode                 string         `json:"mode"`
 	AgentName            string         `json:"agent_name"`
+	WorktreeMode         string         `json:"worktree_mode,omitempty"`
 	Metadata             map[string]any `json:"metadata"`
 	Preference           struct {
 		Provider    string `json:"provider"`
@@ -103,6 +104,7 @@ type managedHostSessionCreateRequest struct {
 	WorkspaceName        string         `json:"workspace_name"`
 	Mode                 string         `json:"mode"`
 	AgentName            string         `json:"agent_name"`
+	WorktreeMode         string         `json:"worktree_mode,omitempty"`
 	Metadata             map[string]any `json:"metadata"`
 	Preference           struct {
 		Provider    string `json:"provider"`
@@ -178,6 +180,7 @@ func (s *Server) handleManagedHostSessionOpen(w http.ResponseWriter, r *http.Req
 			WorkspaceName:        workspaceName,
 			Mode:                 req.Mode,
 			AgentName:            req.AgentName,
+			WorktreeMode:         req.WorktreeMode,
 			Metadata:             managedHostSessionMetadata(req.Metadata, route),
 			Preference:           req.Preference,
 		},
@@ -195,6 +198,9 @@ func (s *Server) handleManagedHostSessionOpen(w http.ResponseWriter, r *http.Req
 	mirror := peerResp.Session
 	if strings.TrimSpace(mirror.ID) == "" {
 		mirror.ID = sessionID
+	}
+	if strings.TrimSpace(mirror.WorkspacePath) != "" {
+		route.RuntimeWorkspacePath = strings.TrimSpace(mirror.WorkspacePath)
 	}
 	if err := requireManagedHostSessionMirrorOwnership(&mirror, principal); err != nil {
 		writeError(w, http.StatusBadGateway, err)
@@ -360,6 +366,7 @@ func (s *Server) handlePeerManagedHostSessionOpen(w http.ResponseWriter, r *http
 		WorkspaceName:        req.Request.WorkspaceName,
 		Mode:                 req.Request.Mode,
 		AgentName:            req.Request.AgentName,
+		WorktreeMode:         req.Request.WorktreeMode,
 		Metadata:             managedHostSessionMetadata(req.Request.Metadata, req.Route),
 		Preference:           req.Request.Preference,
 	}
@@ -376,7 +383,7 @@ func (s *Server) handlePeerManagedHostSessionOpen(w http.ResponseWriter, r *http
 		ChildBackendURL:      strings.TrimSpace(req.Route.ManagedHostBackendURL),
 		HostSwarmID:          strings.TrimSpace(req.Route.PrimarySwarmID),
 		HostWorkspacePath:    strings.TrimSpace(req.Route.HostWorkspacePath),
-		RuntimeWorkspacePath: runtimeWorkspacePath,
+		RuntimeWorkspacePath: firstNonEmpty(strings.TrimSpace(session.WorkspacePath), runtimeWorkspacePath),
 		CreatedAt:            session.CreatedAt,
 		UpdatedAt:            session.UpdatedAt,
 	}

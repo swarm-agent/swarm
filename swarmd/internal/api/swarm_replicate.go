@@ -23,7 +23,10 @@ import (
 	"swarm/packages/swarmd/internal/workspace"
 )
 
-const replicateWorkspaceMountRoot = "/workspaces"
+const (
+	replicateWorkspaceMountRoot = "/workspaces"
+	replicateWorkspaceCacheRoot = "/var/cache/swarmd/workspaces"
+)
 
 type swarmReplicateContainerPackageRequest struct {
 	Name   string `json:"name"`
@@ -838,12 +841,13 @@ func buildReplicationPlan(workspaces []workspace.NormalizedReplicationWorkspace,
 	if len(workspaces) == 0 {
 		return nil, nil, nil
 	}
-	mounts := make([]localcontainers.Mount, 0, len(workspaces)*2)
+	mounts := make([]localcontainers.Mount, 0, len(workspaces)*2+1)
 	childPaths := make(map[string]string, len(workspaces))
 	bootstraps := make([]deployruntime.ContainerWorkspaceBootstrap, 0, len(workspaces))
 	selectedWorkspaceTargets := assignReplicationWorkspaceTargets(workspaces, workspaceCatalog)
 	selectedWorkspaceTargetsBySource := make(map[string]replicationTargetAssignment, len(selectedWorkspaceTargets))
 	usedTargets := make(map[string]int, len(workspaces)*2)
+	mounts = append(mounts, replicationWorkspaceCacheMount())
 	for _, assigned := range selectedWorkspaceTargets {
 		selectedWorkspaceTargetsBySource[assigned.SourcePath] = assigned
 		if target := strings.TrimSpace(assigned.TargetPath); target != "" {
@@ -916,6 +920,14 @@ func buildReplicationPlan(workspaces []workspace.NormalizedReplicationWorkspace,
 		bootstraps[0].MakeCurrent = true
 	}
 	return mounts, childPaths, bootstraps
+}
+
+func replicationWorkspaceCacheMount() localcontainers.Mount {
+	return localcontainers.Mount{
+		SourcePath: replicateWorkspaceCacheRoot,
+		TargetPath: replicateWorkspaceCacheRoot,
+		Mode:       pebblestore.ContainerMountModeReadWrite,
+	}
 }
 
 func assignReplicationWorkspaceTargets(workspaces []workspace.NormalizedReplicationWorkspace, workspaceCatalog map[string]replicateWorkspaceCatalogEntry) []replicationTargetAssignment {

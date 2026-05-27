@@ -18,6 +18,7 @@ import (
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
+	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
 func TestManagedHostSessionMessageUsesNewPeerAPIWithAuthAndMirrors(t *testing.T) {
@@ -903,5 +904,121 @@ func TestManagedHostSessionMessageRejectsCrossAccountGuessedSessionID(t *testing
 	server.Handler().ServeHTTP(rec, requestWithTestPrincipalForAccount(req, "user-b", "account-b"))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+func TestManagedHostSessionOpenPropagatesWorktreeModeToPeer(t *testing.T) {
+	server, _, _, _ := newRoutedSessionTestServer(t)
+	var openedWorktreeMode atomic.Value
+	managed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != peerManagedHostSessionOpenPath {
+			http.NotFound(w, r)
+			return
+		}
+		var req peerManagedHostSessionOpenRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		openedWorktreeMode.Store(req.Request.WorktreeMode)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true,
+			"session": pebblestore.SessionSnapshot{
+				ID:               req.SessionID,
+				UserID:           req.Route.UserID,
+				AccountScopeID:   req.Route.AccountScopeID,
+				WorkspacePath:    "/var/cache/swarmd/workspaces/managed-repo/worktrees/ws_managed_open",
+				WorkspaceName:    "workspace",
+				Title:            "Managed",
+				Mode:             "auto",
+				Metadata:         req.Request.Metadata,
+				WorktreeEnabled:  true,
+				WorktreeRootPath: "/var/cache/swarmd/workspaces/managed-repo",
+				WorktreeBranch:   "agent/managed-open",
+				CreatedAt:        1,
+				UpdatedAt:        2,
+			},
+		})
+	}))
+	defer managed.Close()
+
+	seedManagedHostTarget(t, server, managed.URL)
+	req := httptest.NewRequest(http.MethodPost, managedHostSessionOpenPath, bytes.NewBufferString(`{"title":"managed","workspace_path":"/host/workspace","host_workspace_path":"/host/workspace","runtime_workspace_path":"/managed/workspace","workspace_name":"workspace","mode":"auto","agent_name":"swarm","worktree_mode":"on","preference":{"provider":"codex","model":"gpt-5.5","thinking":"high"},"target_swarm_id":"managed-swarm"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got, _ := openedWorktreeMode.Load().(string); got != "on" {
+		t.Fatalf("peer worktree_mode = %q, want on", got)
+	}
+	var payload struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !payload.Session.WorktreeEnabled || payload.Session.WorkspacePath != "/var/cache/swarmd/workspaces/managed-repo/worktrees/ws_managed_open" || payload.Session.WorktreeRootPath != "/var/cache/swarmd/workspaces/managed-repo" || payload.Session.WorktreeBranch != "agent/managed-open" {
+		t.Fatalf("mirrored worktree fields = %+v", payload.Session)
+	}
+}
+
+func TestPeerManagedHostSessionOpenAllocatesRequestedWorktree(t *testing.T) {
+	server, sessionSvc, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	configureRoutedSessionTestServerAsChild(t, server, swarmStore, "managed-swarm", "host-swarm-id", testPrincipal().UserID, testPrincipal().AccountScopeID)
+	server.SetWorktreeService(&fakeWorktreeService{
+		config: worktreeruntime.Config{Enabled: true, UseCurrentBranch: true},
+		allocation: worktreeruntime.Allocation{
+			WorkspacePath: "/var/cache/swarmd/workspaces/managed-repo/worktrees/ws_peer_managed_open",
+			RepoRoot:      "/var/cache/swarmd/workspaces/managed-repo",
+			BaseBranch:    "main",
+			BranchName:    "agent/managed-peer-open",
+			WorkspaceID:   "ws_peer_managed_open",
+		},
+	})
+
+	payload, err := json.Marshal(peerManagedHostSessionOpenRequest{
+		SessionID: "managed-worktree-session",
+		Request: func() managedHostSessionCreateRequest {
+			req := managedHostSessionCreateRequest{Title: "managed", WorkspacePath: "/managed/workspace", HostWorkspacePath: "/managed/workspace", RuntimeWorkspacePath: "/managed/workspace", WorkspaceName: "workspace", Mode: sessionruntime.ModeAuto, AgentName: "swarm", WorktreeMode: "on"}
+			req.Preference.Provider = "codex"
+			req.Preference.Model = "gpt-5.4"
+			req.Preference.Thinking = "medium"
+			return req
+		}(),
+		Route: managedHostSessionRoute{
+			UserID:                testPrincipal().UserID,
+			AccountScopeID:        testPrincipal().AccountScopeID,
+			PrimarySwarmID:        "host-swarm-id",
+			PrimaryBackendURL:     "http://primary.example.test",
+			ManagedHostSwarmID:    "managed-swarm",
+			ManagedHostBackendURL: "http://127.0.0.1:7782",
+			HostWorkspacePath:     "/host/workspace",
+			RuntimeWorkspacePath:  "/managed/workspace",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal open: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, peerManagedHostSessionOpenPath, bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(peerAuthSwarmIDHeader, "host-swarm-id")
+	req.Header.Set(peerAuthTokenHeader, "peer-token")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	session, ok, err := sessionSvc.GetSession("managed-worktree-session")
+	if err != nil || !ok {
+		t.Fatalf("get session ok=%t err=%v", ok, err)
+	}
+	if !session.WorktreeEnabled {
+		t.Fatalf("WorktreeEnabled = false, session = %+v", session)
+	}
+	if session.WorkspacePath != "/var/cache/swarmd/workspaces/managed-repo/worktrees/ws_peer_managed_open" || session.WorktreeRootPath != "/var/cache/swarmd/workspaces/managed-repo" || session.WorktreeBranch != "agent/managed-peer-open" {
+		t.Fatalf("worktree fields = %+v", session)
 	}
 }
