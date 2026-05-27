@@ -2139,22 +2139,24 @@ func isContextOverflowDiagnostic(detail string) bool {
 const memoryCompactionToolName = "compact"
 
 type memoryCompactionToolStream struct {
-	Emit      StreamHandler
-	Step      int
-	Origin    string
-	CallID    string
-	StartedAt time.Time
-	Started   bool
-	Output    string
-	Finalized bool
+	Emit         StreamHandler
+	Step         int
+	Origin       string
+	Attempt      int
+	CompactIndex int
+	CallID       string
+	StartedAt    time.Time
+	Started      bool
+	Output       string
+	Finalized    bool
 }
 
-func memoryCompactionToolCallID(origin string, attempt int) string {
+func memoryCompactionToolCallID(origin string, compactIndex int) string {
 	origin = normalizeContextCompactionOrigin(origin)
-	if attempt <= 0 {
-		attempt = 1
+	if compactIndex <= 0 {
+		compactIndex = 1
 	}
-	return fmt.Sprintf("context-compact:%s:%d", origin, attempt)
+	return fmt.Sprintf("context-compact:%s:%d", origin, compactIndex)
 }
 
 func memoryCompactionToolArguments(origin string, attempt int) string {
@@ -2186,12 +2188,24 @@ func memoryCompactionOriginLabel(origin string) string {
 }
 
 func newMemoryCompactionToolStream(emit StreamHandler, step int, origin string, attempt int) *memoryCompactionToolStream {
-	return &memoryCompactionToolStream{
-		Emit:   emit,
-		Step:   step,
-		Origin: normalizeContextCompactionOrigin(origin),
-		CallID: memoryCompactionToolCallID(origin, attempt),
+	if attempt <= 0 {
+		attempt = 1
 	}
+	return &memoryCompactionToolStream{
+		Emit:    emit,
+		Step:    step,
+		Origin:  normalizeContextCompactionOrigin(origin),
+		Attempt: attempt,
+		CallID:  memoryCompactionToolCallID(origin, attempt),
+	}
+}
+
+func (stream *memoryCompactionToolStream) SetCompactIndex(compactIndex int) {
+	if stream == nil || compactIndex <= 0 || stream.Started || stream.Finalized {
+		return
+	}
+	stream.CompactIndex = compactIndex
+	stream.CallID = memoryCompactionToolCallID(stream.Origin, compactIndex)
 }
 
 func persistMemoryCompactionToolMessage(sessionSvc *sessionruntime.Service, sessionID string, events *[]pebblestore.EventEnvelope, toolMessages *[]pebblestore.MessageSnapshot, stream *memoryCompactionToolStream) (*pebblestore.MessageSnapshot, error) {
@@ -2209,7 +2223,7 @@ func persistMemoryCompactionToolMessage(sessionSvc *sessionruntime.Service, sess
 	call := tool.Call{
 		CallID:    strings.TrimSpace(stream.CallID),
 		Name:      memoryCompactionToolName,
-		Arguments: memoryCompactionToolArguments(stream.Origin, 0),
+		Arguments: memoryCompactionToolArguments(stream.Origin, stream.Attempt),
 	}
 	result := tool.Result{
 		CallID:     strings.TrimSpace(stream.CallID),
@@ -2257,7 +2271,7 @@ func (stream *memoryCompactionToolStream) EmitProgress(summary string) {
 			Step:      stream.Step,
 			ToolName:  memoryCompactionToolName,
 			CallID:    stream.CallID,
-			Arguments: memoryCompactionToolArguments(stream.Origin, 0),
+			Arguments: memoryCompactionToolArguments(stream.Origin, stream.Attempt),
 			Output:    summary,
 			Summary:   memoryCompactionOriginLabel(stream.Origin),
 		})
@@ -2610,6 +2624,7 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 		return "", err
 	}
 	compactIndex := nextMemoryCompactionIndex(messages)
+	toolStream.SetCompactIndex(compactIndex)
 	transcript := buildMemoryCompactionTranscript(messages, assistantDraft)
 	if strings.TrimSpace(transcript) == "" {
 		err := errors.New("memory compaction transcript is empty")

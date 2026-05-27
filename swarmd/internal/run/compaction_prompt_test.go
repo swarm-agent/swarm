@@ -91,6 +91,21 @@ func TestNextMemoryCompactionIndex(t *testing.T) {
 	}
 }
 
+func TestMemoryCompactionToolCallIDUsesCompactIndex(t *testing.T) {
+	messages := []pebblestore.MessageSnapshot{
+		{Role: "system", Content: "[context-compact] index=2 origin=manual\n\nCompacted recap:\none"},
+	}
+	stream := newMemoryCompactionToolStream(nil, 1, contextCompactionOriginManual, 1)
+	stream.SetCompactIndex(nextMemoryCompactionIndex(messages))
+
+	if got, want := stream.CallID, "context-compact:manual:3"; got != want {
+		t.Fatalf("manual compact CallID = %q, want %q", got, want)
+	}
+	if got, want := stream.Attempt, 1; got != want {
+		t.Fatalf("manual compact attempt = %d, want %d", got, want)
+	}
+}
+
 func TestBuildManualCompactionAssistantTextIncludesUserVisibleRecap(t *testing.T) {
 	text := buildManualCompactionAssistantText("important compact summary", 3, "Plan title (plan_1)")
 	for _, want := range []string{
