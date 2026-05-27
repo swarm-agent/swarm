@@ -136,7 +136,8 @@ func (s *Service) maybeAutoCompactRunContext(ctx context.Context, sessionID, run
 		return nil, nil, nil, nil
 	}
 
-	emitMemoryCompactionStatus(emit, step, formatThresholdCompactionStatus(usageSummary, thresholdPercent))
+	emitMemoryCompactionStatus(emit, step, memoryCompactionOriginLabel(contextCompactionOriginThreshold))
+	var compactionToolStream *memoryCompactionToolStream
 	compactedSummary, compactErr := s.compactRunContextWithMemory(
 		ctx,
 		sessionID,
@@ -150,11 +151,18 @@ func (s *Service) maybeAutoCompactRunContext(ctx context.Context, sessionID, run
 		step,
 		1,
 		emit,
+		&compactionToolStream,
 	)
 	if compactErr != nil {
 		return nil, nil, nil, fmt.Errorf("threshold auto compact failed: %w", compactErr)
 	}
-	resetSummary, _, compactEvents, compactErr := s.applyContextCompactionArtifacts(
+	compactEvents := make([]pebblestore.EventEnvelope, 0, 4)
+	if toolMessage, persistErr := persistMemoryCompactionToolMessage(s.sessions, sessionID, &compactEvents, nil, compactionToolStream); persistErr != nil {
+		return nil, nil, nil, persistErr
+	} else if toolMessage != nil {
+		emit(StreamEvent{Type: StreamEventMessageStored, Step: step, Message: toolMessage})
+	}
+	resetSummary, _, artifactEvents, compactErr := s.applyContextCompactionArtifacts(
 		sessionID,
 		compactedSummary,
 		contextCompactionOriginThreshold,
@@ -167,6 +175,7 @@ func (s *Service) maybeAutoCompactRunContext(ctx context.Context, sessionID, run
 	if compactErr != nil {
 		return nil, nil, nil, fmt.Errorf("threshold auto compact bookkeeping failed: %w", compactErr)
 	}
+	compactEvents = append(compactEvents, artifactEvents...)
 	var activePlan *pebblestore.SessionPlanSnapshot
 	plan, ok, planErr := s.sessions.GetActivePlan(sessionID)
 	if planErr != nil {

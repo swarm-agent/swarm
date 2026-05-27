@@ -1078,6 +1078,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	if manualCompact {
 		stepsCompleted = 1
 		emit(StreamEvent{Type: StreamEventStepStarted, Step: stepsCompleted})
+		var compactionToolStream *memoryCompactionToolStream
 		compactedSummary, compactErr := s.compactRunContextWithMemory(
 			ctx,
 			sessionID,
@@ -1091,9 +1092,15 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			stepsCompleted,
 			1,
 			emit,
+			&compactionToolStream,
 		)
 		if compactErr != nil {
 			return RunResult{}, fmt.Errorf("manual compact failed: %w", compactErr)
+		}
+		if toolMessage, persistErr := persistMemoryCompactionToolMessage(s.sessions, sessionID, &events, &toolMessages, compactionToolStream); persistErr != nil {
+			return RunResult{}, persistErr
+		} else if toolMessage != nil {
+			emit(StreamEvent{Type: StreamEventMessageStored, Step: stepsCompleted, Message: toolMessage})
 		}
 		resetSummary, compactIndex, compactEvents, compactErr := s.applyContextCompactionArtifacts(
 			sessionID,
@@ -1181,6 +1188,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			return false, nil
 		}
 		contextCompactionAttempts++
+		var compactionToolStream *memoryCompactionToolStream
 		compactedSummary, compactErr := s.compactRunContextWithMemory(
 			ctx,
 			sessionID,
@@ -1194,9 +1202,15 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			step,
 			contextCompactionAttempts,
 			emit,
+			&compactionToolStream,
 		)
 		if compactErr != nil {
 			return false, fmt.Errorf("context overflow compact continuation failed: %w", compactErr)
+		}
+		if toolMessage, persistErr := persistMemoryCompactionToolMessage(s.sessions, sessionID, &events, &toolMessages, compactionToolStream); persistErr != nil {
+			return false, persistErr
+		} else if toolMessage != nil {
+			emit(StreamEvent{Type: StreamEventMessageStored, Step: step, Message: toolMessage})
 		}
 		resetSummary, _, compactEvents, compactErr := s.applyContextCompactionArtifacts(
 			sessionID,
@@ -2122,6 +2136,201 @@ func isContextOverflowDiagnostic(detail string) bool {
 	}
 }
 
+const memoryCompactionToolName = "compact"
+
+type memoryCompactionToolStream struct {
+	Emit      StreamHandler
+	Step      int
+	Origin    string
+	CallID    string
+	StartedAt time.Time
+	Started   bool
+	Output    string
+	Finalized bool
+}
+
+func memoryCompactionToolCallID(origin string, attempt int) string {
+	origin = normalizeContextCompactionOrigin(origin)
+	if attempt <= 0 {
+		attempt = 1
+	}
+	return fmt.Sprintf("context-compact:%s:%d", origin, attempt)
+}
+
+func memoryCompactionToolArguments(origin string, attempt int) string {
+	payload := map[string]any{
+		"origin": normalizeContextCompactionOrigin(origin),
+		"label":  memoryCompactionOriginLabel(origin),
+	}
+	if attempt > 0 {
+		payload["attempt"] = attempt
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "{}"
+	}
+	return string(encoded)
+}
+
+func memoryCompactionOriginLabel(origin string) string {
+	switch normalizeContextCompactionOrigin(origin) {
+	case contextCompactionOriginManual:
+		return "Manual compact"
+	case contextCompactionOriginThreshold:
+		return "Auto compact"
+	case contextCompactionOriginOverflow:
+		return "Overflow compact"
+	default:
+		return "Compact"
+	}
+}
+
+func newMemoryCompactionToolStream(emit StreamHandler, step int, origin string, attempt int) *memoryCompactionToolStream {
+	return &memoryCompactionToolStream{
+		Emit:   emit,
+		Step:   step,
+		Origin: normalizeContextCompactionOrigin(origin),
+		CallID: memoryCompactionToolCallID(origin, attempt),
+	}
+}
+
+func persistMemoryCompactionToolMessage(sessionSvc *sessionruntime.Service, sessionID string, events *[]pebblestore.EventEnvelope, toolMessages *[]pebblestore.MessageSnapshot, stream *memoryCompactionToolStream) (*pebblestore.MessageSnapshot, error) {
+	if sessionSvc == nil || stream == nil || !stream.Finalized {
+		return nil, nil
+	}
+	output := strings.TrimSpace(stream.Output)
+	if output == "" {
+		return nil, nil
+	}
+	durationMS := int64(0)
+	if !stream.StartedAt.IsZero() {
+		durationMS = time.Since(stream.StartedAt).Milliseconds()
+	}
+	call := tool.Call{
+		CallID:    strings.TrimSpace(stream.CallID),
+		Name:      memoryCompactionToolName,
+		Arguments: memoryCompactionToolArguments(stream.Origin, 0),
+	}
+	result := tool.Result{
+		CallID:     strings.TrimSpace(stream.CallID),
+		Name:       memoryCompactionToolName,
+		Output:     output,
+		DurationMS: durationMS,
+	}
+	message, _, event, err := sessionSvc.AppendMessage(sessionID, "tool", formatToolHistory(call, result), nil)
+	if err != nil {
+		return nil, err
+	}
+	if toolMessages != nil {
+		*toolMessages = append(*toolMessages, message)
+	}
+	if events != nil && event != nil {
+		*events = append(*events, *event)
+	}
+	return &message, nil
+}
+
+func (stream *memoryCompactionToolStream) emitStatus(summary string) {
+	summary = strings.TrimSpace(summary)
+	if stream == nil || stream.Emit == nil || summary == "" {
+		return
+	}
+	stream.Emit(StreamEvent{
+		Type:    StreamEventSessionStatus,
+		Status:  "compacting",
+		Step:    stream.Step,
+		Summary: memoryCompactionOriginLabel(stream.Origin),
+	})
+}
+
+func (stream *memoryCompactionToolStream) EmitProgress(summary string) {
+	summary = strings.TrimSpace(summary)
+	if stream == nil || stream.Emit == nil || summary == "" || stream.Finalized {
+		return
+	}
+	stream.emitStatus(summary)
+	if !stream.Started {
+		stream.Started = true
+		stream.StartedAt = time.Now()
+		stream.Emit(StreamEvent{
+			Type:      StreamEventToolStarted,
+			Step:      stream.Step,
+			ToolName:  memoryCompactionToolName,
+			CallID:    stream.CallID,
+			Arguments: memoryCompactionToolArguments(stream.Origin, 0),
+			Output:    summary,
+			Summary:   memoryCompactionOriginLabel(stream.Origin),
+		})
+		stream.Output = summary
+		return
+	}
+	stream.Emit(StreamEvent{
+		Type:     StreamEventToolDelta,
+		Step:     stream.Step,
+		ToolName: memoryCompactionToolName,
+		CallID:   stream.CallID,
+		Output:   "\n" + summary,
+		Summary:  memoryCompactionOriginLabel(stream.Origin),
+	})
+	if stream.Output == "" {
+		stream.Output = summary
+	} else {
+		stream.Output += "\n" + summary
+	}
+}
+
+func (stream *memoryCompactionToolStream) Complete(summary string) {
+	stream.complete(summary, "")
+}
+
+func (stream *memoryCompactionToolStream) Fail(err error) {
+	message := "context compaction failed"
+	if err != nil && strings.TrimSpace(err.Error()) != "" {
+		message = strings.TrimSpace(err.Error())
+	}
+	stream.complete(message, message)
+}
+
+func (stream *memoryCompactionToolStream) complete(summary, errorText string) {
+	summary = strings.TrimSpace(summary)
+	errorText = strings.TrimSpace(errorText)
+	if stream == nil || stream.Emit == nil || stream.Finalized {
+		return
+	}
+	if summary == "" {
+		if errorText != "" {
+			summary = errorText
+		} else {
+			summary = "context compacted by memory agent; resuming run"
+		}
+	}
+	if !stream.Started {
+		stream.EmitProgress(summary)
+	}
+	output := strings.TrimSpace(stream.Output)
+	if output == "" {
+		output = summary
+	} else if summary != "" && !strings.Contains(output, summary) {
+		output += "\n" + summary
+	}
+	durationMS := int64(0)
+	if !stream.StartedAt.IsZero() {
+		durationMS = time.Since(stream.StartedAt).Milliseconds()
+	}
+	stream.Finalized = true
+	stream.Emit(StreamEvent{
+		Type:       StreamEventToolCompleted,
+		Step:       stream.Step,
+		ToolName:   memoryCompactionToolName,
+		CallID:     stream.CallID,
+		Output:     summarizeToolOutput(memoryCompactionToolName, output, maxToolPreviewChars, 2),
+		RawOutput:  output,
+		Error:      errorText,
+		DurationMS: durationMS,
+		Summary:    memoryCompactionOriginLabel(stream.Origin),
+	})
+}
+
 func emitMemoryCompactionStatus(emit StreamHandler, step int, summary string) {
 	summary = strings.TrimSpace(summary)
 	if emit == nil || summary == "" {
@@ -2234,7 +2443,7 @@ func (s *Service) applyContextCompactionArtifacts(sessionID, compactSummary, ori
 		})
 	}
 
-	emitMemoryCompactionStatus(emit, step, fmt.Sprintf("context checkpoint saved (%s #%d); usage counters reset", "Compact", compactIndex))
+	emitMemoryCompactionStatus(emit, step, memoryCompactionOriginLabel(origin))
 	return &resetSummaryCopy, compactIndex, events, nil
 }
 
@@ -2333,9 +2542,24 @@ func compactedActivePlanLabel(activePlan *pebblestore.SessionPlanSnapshot) strin
 	}
 }
 
-func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, runPrompt, assistantDraft string, basePreference pebblestore.ModelPreference, contextWindow, maxOutputTokens int, returnFullCompactionResponse bool, origin string, step, attempt int, emit StreamHandler) (string, error) {
+func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, runPrompt, assistantDraft string, basePreference pebblestore.ModelPreference, contextWindow, maxOutputTokens int, returnFullCompactionResponse bool, origin string, step, attempt int, emit StreamHandler, streamOut ...**memoryCompactionToolStream) (string, error) {
+	toolStream := newMemoryCompactionToolStream(emit, step, origin, attempt)
+	if len(streamOut) > 0 && streamOut[0] != nil {
+		*streamOut[0] = toolStream
+	}
+	emitProgress := func(summary string) {
+		toolStream.EmitProgress(summary)
+	}
+	finishSuccess := func(summary string) {
+		toolStream.Complete(summary)
+	}
+	finishFailure := func(err error) {
+		toolStream.Fail(err)
+	}
 	if s == nil || s.providers == nil || s.sessions == nil {
-		return "", errors.New("run service is not fully configured")
+		err := errors.New("run service is not fully configured")
+		finishFailure(err)
+		return "", err
 	}
 	accountScopeID := ""
 	if principal, ok := identity.PrincipalFromContext(ctx); ok && principal.Valid() {
@@ -2348,35 +2572,49 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 	}
 	memoryProfile, err := s.resolveTaskSubagentForAccount(accountScopeID, "memory")
 	if err != nil {
-		return "", fmt.Errorf("resolve memory subagent: %w", err)
+		err = fmt.Errorf("resolve memory subagent: %w", err)
+		finishFailure(err)
+		return "", err
 	}
 	preference := applyAgentPreferenceOverrides(basePreference, memoryProfile)
 	providerID := strings.ToLower(strings.TrimSpace(preference.Provider))
 	if providerID == "" {
-		return "", errors.New("resolved memory compact provider is empty")
+		err := errors.New("resolved memory compact provider is empty")
+		finishFailure(err)
+		return "", err
 	}
 	runner, ok := s.providers.GetRunner(providerID)
 	if !ok {
-		return "", fmt.Errorf("memory compact provider %q is not runnable", providerID)
+		err := fmt.Errorf("memory compact provider %q is not runnable", providerID)
+		finishFailure(err)
+		return "", err
 	}
 	modelName := strings.TrimSpace(preference.Model)
 	if modelName == "" {
-		return "", errors.New("resolved memory compact model is empty")
+		err := errors.New("resolved memory compact model is empty")
+		finishFailure(err)
+		return "", err
 	}
 	thinking := normalizeThinkingWithProvider(providerID, preference.Thinking)
 	contextWindow, maxOutputTokens = s.resolveMemoryCompactionLimits(providerID, modelName, preference.ContextMode, contextWindow, maxOutputTokens)
 	messages, err := s.listMessagesForMemoryCompaction(sessionID)
 	if err != nil {
-		return "", fmt.Errorf("list session messages for compaction: %w", err)
+		err = fmt.Errorf("list session messages for compaction: %w", err)
+		finishFailure(err)
+		return "", err
 	}
 	activePlan, planErr := s.activePlanForCompaction(sessionID)
 	if planErr != nil {
-		return "", fmt.Errorf("load active plan for compaction: %w", planErr)
+		err := fmt.Errorf("load active plan for compaction: %w", planErr)
+		finishFailure(err)
+		return "", err
 	}
 	compactIndex := nextMemoryCompactionIndex(messages)
 	transcript := buildMemoryCompactionTranscript(messages, assistantDraft)
 	if strings.TrimSpace(transcript) == "" {
-		return "", errors.New("memory compaction transcript is empty")
+		err := errors.New("memory compaction transcript is empty")
+		finishFailure(err)
+		return "", err
 	}
 	summaryMaxRunes := memoryCompactionSummaryMaxRunes
 	if returnFullCompactionResponse {
@@ -2411,13 +2649,13 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 	})
 
 	if inputBudgetTokens > 0 && oneShotTokens > 0 && !shouldAttemptOneShotMemoryCompaction(inputBudgetTokens, oneShotTokens) {
-		emitMemoryCompactionStatus(emit, step, "full chat is too large for one-shot compaction; using chunked compaction")
+		emitProgress("full chat is too large for one-shot compaction; using chunked compaction")
 	}
 	if inputBudgetTokens > 0 && oneShotTokens > 0 && shouldAttemptOneShotMemoryCompaction(inputBudgetTokens, oneShotTokens) {
 		oneShotStatus := fmt.Sprintf("compacting full chat with memory agent (one shot, attempt %d)", attempt)
-		emitMemoryCompactionStatus(emit, step, oneShotStatus)
+		emitProgress(oneShotStatus)
 		oneShotResult, reqErr := executeMemoryCompactionRequest(ctx, runner, modelName, thinking, preference.ContextMode, instructions, oneShotPrompt, contextWindow, summaryMaxRunes, func(message string) {
-			emitMemoryCompactionStatus(emit, step, oneShotStatus+"; "+strings.TrimSpace(message))
+			emitProgress(oneShotStatus + "; " + strings.TrimSpace(message))
 		})
 		if reqErr == nil {
 			runCompactionDebugEvent("memory_compaction_one_shot_success", map[string]any{
@@ -2426,7 +2664,7 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 				"model":      modelName,
 				"attempt":    attempt,
 			})
-			emitMemoryCompactionStatus(emit, step, "context compacted by memory agent; resuming run")
+			finishSuccess("context compacted by memory agent; resuming run")
 			return oneShotResult.trimmedSummary(), nil
 		}
 		if isMemoryCompactionEmptySummaryError(reqErr) {
@@ -2438,7 +2676,7 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 				"error":      strings.TrimSpace(reqErr.Error()),
 				"detail":     oneShotResult.diagnosticDetail(),
 			})
-			emitMemoryCompactionStatus(emit, step, "one-shot compaction returned no usable summary; retrying with chunked fallback")
+			emitProgress("one-shot compaction returned no usable summary; retrying with chunked fallback")
 		} else if !oneShotResult.indicatesOverflow() && !isContextOverflowDiagnostic(reqErr.Error()) {
 			runCompactionDebugEvent("memory_compaction_one_shot_failed", map[string]any{
 				"session_id": strings.TrimSpace(sessionID),
@@ -2448,7 +2686,9 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 				"error":      strings.TrimSpace(reqErr.Error()),
 				"detail":     oneShotResult.diagnosticDetail(),
 			})
-			return "", fmt.Errorf("memory compaction one-shot failed: %w", reqErr)
+			err := fmt.Errorf("memory compaction one-shot failed: %w", reqErr)
+			finishFailure(err)
+			return "", err
 		} else {
 			runCompactionDebugEvent("memory_compaction_one_shot_overflow", map[string]any{
 				"session_id": strings.TrimSpace(sessionID),
@@ -2458,7 +2698,7 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 				"error":      strings.TrimSpace(reqErr.Error()),
 				"detail":     oneShotResult.diagnosticDetail(),
 			})
-			emitMemoryCompactionStatus(emit, step, "one-shot compaction overflowed; retrying with chunked fallback")
+			emitProgress("one-shot compaction overflowed; retrying with chunked fallback")
 		}
 	} else if inputBudgetTokens > 0 && oneShotTokens > 0 {
 		runCompactionDebugEvent("memory_compaction_one_shot_skipped", map[string]any{
@@ -2469,7 +2709,7 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 			"effective_input_budget":    inputBudgetTokens,
 			"estimated_one_shot_tokens": oneShotTokens,
 		})
-		emitMemoryCompactionStatus(emit, step, "transcript too large for one-shot compaction; using chunked fallback")
+		emitProgress("transcript too large for one-shot compaction; using chunked fallback")
 	}
 	chunkRunes := deriveMemoryCompactionChunkRunes(runPrompt, instructions, inputBudgetTokens)
 	if chunkRunes <= 0 {
@@ -2482,7 +2722,9 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 		overlapRunes := deriveMemoryCompactionOverlapRunes(chunkRunes)
 		chunks := splitCompactionTranscript(transcript, chunkRunes, overlapRunes)
 		if len(chunks) == 0 {
-			return "", errors.New("memory compaction transcript is empty")
+			err := errors.New("memory compaction transcript is empty")
+			finishFailure(err)
+			return "", err
 		}
 		runCompactionDebugEvent("memory_compaction_chunk_plan", map[string]any{
 			"session_id":             strings.TrimSpace(sessionID),
@@ -2499,7 +2741,7 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 		overflowRetry := false
 		for i := range chunks {
 			chunkStatus := fmt.Sprintf("compacting full chat with memory agent (%d/%d, attempt %d)", i+1, len(chunks), attempt)
-			emitMemoryCompactionStatus(emit, step, chunkStatus)
+			emitProgress(chunkStatus)
 			promptText := buildMemoryCompactionPrompt(memoryCompactionPromptOptions{
 				RunPrompt:      runPrompt,
 				RollingSummary: rollingSummary,
@@ -2512,7 +2754,7 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 				ActivePlan:     activePlan,
 			})
 			chunkResult, reqErr := executeMemoryCompactionRequest(ctx, runner, modelName, thinking, preference.ContextMode, instructions, promptText, contextWindow, summaryMaxRunes, func(message string) {
-				emitMemoryCompactionStatus(emit, step, chunkStatus+"; "+strings.TrimSpace(message))
+				emitProgress(chunkStatus + "; " + strings.TrimSpace(message))
 			})
 			if reqErr != nil {
 				if chunkResult.indicatesOverflow() || isContextOverflowDiagnostic(reqErr.Error()) {
@@ -2520,7 +2762,9 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 					lastErr = fmt.Errorf("memory compaction chunk %d/%d overflowed: %w", i+1, len(chunks), reqErr)
 					break
 				}
-				return "", fmt.Errorf("memory compaction chunk %d/%d failed: %w", i+1, len(chunks), reqErr)
+				err := fmt.Errorf("memory compaction chunk %d/%d failed: %w", i+1, len(chunks), reqErr)
+				finishFailure(err)
+				return "", err
 			}
 			rollingSummary = chunkResult.trimmedSummary()
 		}
@@ -2535,7 +2779,7 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 				"overlap_runes": overlapRunes,
 				"chunk_count":   len(chunks),
 			})
-			emitMemoryCompactionStatus(emit, step, "context compacted by memory agent; resuming run")
+			finishSuccess("context compacted by memory agent; resuming run")
 			return rollingSummary, nil
 		}
 		nextChunkRunes := nextMemoryCompactionChunkRunes(transcript, chunkRunes)
@@ -2553,12 +2797,16 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 			break
 		}
 		chunkRunes = nextChunkRunes
-		emitMemoryCompactionStatus(emit, step, fmt.Sprintf("compaction overflow retry; shrinking chunk size and retrying (%d chars)", chunkRunes))
+		emitProgress(fmt.Sprintf("compaction overflow retry; shrinking chunk size and retrying (%d chars)", chunkRunes))
 	}
 	if lastErr != nil {
-		return "", fmt.Errorf("memory compaction transcript still exceeds %s input budget after one-shot and %d chunked attempt(s): %w", modelName, chunkAttemptsUsed, lastErr)
+		err := fmt.Errorf("memory compaction transcript still exceeds %s input budget after one-shot and %d chunked attempt(s): %w", modelName, chunkAttemptsUsed, lastErr)
+		finishFailure(err)
+		return "", err
 	}
-	return "", errors.New("memory compaction failed: no usable chunk plan")
+	finalErr := errors.New("memory compaction failed: no usable chunk plan")
+	finishFailure(finalErr)
+	return "", finalErr
 }
 
 func (s *Service) listMessagesForMemoryCompaction(sessionID string) ([]pebblestore.MessageSnapshot, error) {

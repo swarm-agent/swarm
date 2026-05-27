@@ -131,6 +131,10 @@ function summarizeToolOutput(
   const tool = toolName.toLowerCase();
 
   switch (tool) {
+    case "compact": {
+      const label = jsonStr(argumentsJson, "label") || "Compact";
+      return label;
+    }
     case "read": {
       const path = jsonStr(effective, "path");
       const lineStart = jsonNum(effective, "line_start");
@@ -833,6 +837,13 @@ function extractPreviewLines(
   if (!effective) return [];
 
   switch (tool) {
+    case "compact": {
+      const lines: string[] = [];
+      for (const line of previewTextLines(outputText, 6)) {
+        pushPreviewLine(lines, line, 6);
+      }
+      return lines;
+    }
     case "bash": {
       const lines: string[] = [];
       const stdout =

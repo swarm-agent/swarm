@@ -951,6 +951,11 @@ function renderWorkspaceGitBar(args: {
 }
 
 function sidebarSummaryLabel(session: DesktopSessionRecord): string {
+  const compactLabel = sidebarCompactionLabel(session)
+  if (compactLabel) {
+    return compactLabel
+  }
+
   const summary = session.live.summary?.trim() ?? ''
   if (!summary) {
     return ''
@@ -979,6 +984,24 @@ function sidebarSummaryLabel(session: DesktopSessionRecord): string {
   }
 
   return summary
+}
+
+function sidebarCompactionLabel(session: DesktopSessionRecord): string {
+  const toolName = session.live.toolName?.trim().toLowerCase() ?? ''
+  const summary = session.live.summary?.trim().toLowerCase() ?? ''
+  if (toolName !== 'compact' && summary !== 'manual compact' && summary !== 'overflow compact' && summary !== 'auto compact' && summary !== 'compact') {
+    return ''
+  }
+  switch (summary) {
+    case 'manual compact':
+      return 'Manual compact'
+    case 'overflow compact':
+      return 'Overflow compact'
+    case 'auto compact':
+      return 'Auto compact'
+    default:
+      return 'Compact'
+  }
 }
 
 function sessionIsActive(session: DesktopSessionRecord): boolean {
@@ -1082,7 +1105,8 @@ function sessionActivityLabel(session: DesktopSessionRecord): string {
     case 'starting':
       return 'Starting'
     case 'running':
-      return session.live.toolName?.trim()
+      return sidebarCompactionLabel(session)
+        || session.live.toolName?.trim()
         || sidebarSummaryLabel(session)
         || 'running'
     default:
