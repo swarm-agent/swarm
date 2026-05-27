@@ -5,7 +5,7 @@ usage() {
   cat <<'EOF'
 Usage: scripts/diagnose-single-managed-host-flow-e2e.sh [options]
 
-SSH-only focused live E2E diagnostic: from a primary/testbench checkout, create
+SSH-only focused live E2E diagnostic: from a primary checkout, create
 exactly one /v3/flows Flow targeting one already-linked managed host, run it once
 with /run-now, and verify the proof token appears in the resulting session messages.
 
@@ -20,8 +20,10 @@ Options:
   --flow-agent-name <name>         Saved agent profile_name. Default: swarm
   --flow-agent-mode <mode>         Saved agent profile_mode. Default: primary
   --flow-provider <provider>       Model provider to set before the Flow. Default: fireworks
-  --flow-model <model>             Model to set before the Flow. Default: accounts/fireworks/models/minimax-m2p5
+  --flow-model <model>             Model to set before the Flow. Default: accounts/fireworks/models/kimi-k2p6
   --flow-thinking <level>          Thinking level to set before the Flow. Default: low
+  --fireworks-key-path <path>      Fireworks API key file to seed on the primary if no active credential exists.
+                                  If omitted, auto-detects exactly one /tmp/*fireworks*.key file.
   --skip-model-config              Do not POST /v1/model before creating the Flow.
   --timeout-seconds <seconds>      Wait timeout for Flow success. Default: 420
   --cleanup                        Disable/delete the created Flow on exit.
@@ -32,7 +34,7 @@ Environment equivalents:
   SWARM_SOURCE_WORKSPACE_PATH, SWARM_SINGLE_MANAGED_HOST_FLOW_ARTIFACT_DIR,
   SWARM_SINGLE_FLOW_AGENT_NAME, SWARM_SINGLE_FLOW_AGENT_MODE,
   SWARM_SINGLE_FLOW_PROVIDER, SWARM_SINGLE_FLOW_MODEL, SWARM_SINGLE_FLOW_THINKING,
-  SWARM_SINGLE_FLOW_TIMEOUT_SECONDS, SWARMD_TOKEN
+  SWARM_FIREWORKS_KEY_PATH, SWARM_SINGLE_FLOW_TIMEOUT_SECONDS, SWARMD_TOKEN
 EOF
 }
 
@@ -51,8 +53,9 @@ ARTIFACT_DIR="${SWARM_SINGLE_MANAGED_HOST_FLOW_ARTIFACT_DIR:-}"
 FLOW_AGENT_NAME="${SWARM_SINGLE_FLOW_AGENT_NAME:-swarm}"
 FLOW_AGENT_MODE="${SWARM_SINGLE_FLOW_AGENT_MODE:-primary}"
 FLOW_PROVIDER="${SWARM_SINGLE_FLOW_PROVIDER:-fireworks}"
-FLOW_MODEL="${SWARM_SINGLE_FLOW_MODEL:-accounts/fireworks/models/minimax-m2p5}"
+FLOW_MODEL="${SWARM_SINGLE_FLOW_MODEL:-accounts/fireworks/models/kimi-k2p6}"
 FLOW_THINKING="${SWARM_SINGLE_FLOW_THINKING:-low}"
+FIREWORKS_KEY_PATH="${SWARM_FIREWORKS_KEY_PATH:-}"
 TIMEOUT_SECONDS="${SWARM_SINGLE_FLOW_TIMEOUT_SECONDS:-420}"
 CONFIGURE_MODEL="true"
 CLEANUP="false"
@@ -73,6 +76,7 @@ while [[ $# -gt 0 ]]; do
     --flow-provider) FLOW_PROVIDER="${2:-}"; shift 2 ;;
     --flow-model) FLOW_MODEL="${2:-}"; shift 2 ;;
     --flow-thinking) FLOW_THINKING="${2:-}"; shift 2 ;;
+    --fireworks-key-path) FIREWORKS_KEY_PATH="${2:-}"; shift 2 ;;
     --skip-model-config) CONFIGURE_MODEL="false"; shift ;;
     --timeout-seconds) TIMEOUT_SECONDS="${2:-}"; shift 2 ;;
     --cleanup) CLEANUP="true"; shift ;;
@@ -159,6 +163,37 @@ configure_model_defaults() {
   api_json POST "/v1/model" "${body}" "${ARTIFACT_DIR}/model_config_response.json" 60
 }
 
+seed_fireworks_credential_if_needed() {
+  if [[ "${FLOW_PROVIDER}" != "fireworks" ]]; then
+    printf '{"skipped":true,"reason":"provider is not fireworks"}\n' >"${ARTIFACT_DIR}/fireworks_credential_seed.json"
+    return 0
+  fi
+
+  api_json GET "/v1/auth/credentials?provider=fireworks&limit=20" "" "${ARTIFACT_DIR}/fireworks_credentials_before.json" 30
+  if jq -e '[.credentials[]? | select((.active // false) == true)] | length > 0' "${ARTIFACT_DIR}/fireworks_credentials_before.json" >/dev/null; then
+    printf '{"skipped":true,"reason":"active fireworks credential already exists"}\n' >"${ARTIFACT_DIR}/fireworks_credential_seed.json"
+    return 0
+  fi
+
+  local key_path="${FIREWORKS_KEY_PATH}"
+  if [[ -z "${key_path}" ]]; then
+    mapfile -t candidates < <(find /tmp -maxdepth 1 -type f -iname '*fireworks*.key' 2>/dev/null | sort)
+    if [[ "${#candidates[@]}" -eq 1 ]]; then
+      key_path="${candidates[0]}"
+    else
+      fail "no active fireworks credential and auto-detect found ${#candidates[@]} key files; pass --fireworks-key-path or set SWARM_FIREWORKS_KEY_PATH"
+    fi
+  fi
+  [[ -s "${key_path}" ]] || fail "fireworks key file is missing or empty: ${key_path}"
+
+  local key body
+  key="$(tr -d '\r\n' <"${key_path}")"
+  [[ -n "${key}" ]] || fail "fireworks key file is empty after trimming: ${key_path}"
+  body="$(jq -nc --arg api_key "${key}" '{provider:"fireworks",type:"api",label:"single-managed-host-flow diagnostic fireworks",api_key:$api_key,active:true}')"
+  api_json POST "/v1/auth/credentials" "${body}" "${ARTIFACT_DIR}/fireworks_credential_seed_response.json" 90
+  jq -nc --arg key_path "${key_path}" '{ok:true,key_path:$key_path,response_file:"fireworks_credential_seed_response.json"}' >"${ARTIFACT_DIR}/fireworks_credential_seed.json"
+}
+
 resolve_managed_target() {
   api_json GET "/v1/swarm/targets" "" "${ARTIFACT_DIR}/targets.json" 30
   if [[ -n "${MANAGED_SWARM_ID}" ]]; then
@@ -208,6 +243,7 @@ resolve_workspace_json() {
 log "single-managed-host-flow diagnostic: primary=${PRIMARY_URL} workspace=${WORKSPACE_PATH} artifacts=${ARTIFACT_DIR}"
 api_json GET "/v1/auth/desktop/session" "" "${ARTIFACT_DIR}/desktop_session.json" 20
 api_json GET "/readyz" "" "${ARTIFACT_DIR}/readyz.json" 20
+seed_fireworks_credential_if_needed
 configure_model_defaults
 resolve_managed_target
 
