@@ -150,6 +150,10 @@ curl -sS --connect-timeout 3 --max-time 20 \
   -H 'Sec-Fetch-Site: same-origin' \
   -c "${cookie_file}" -b "${cookie_file}" \
   "${api_url}/v1/auth/desktop/session" >/dev/null || true
+auth_token=""
+if [ -s "${cookie_file}" ]; then
+  auth_token="$(awk '$6 == "swarm_desktop_session" { value=$7 } END { print value }' "${cookie_file}")"
+fi
 args=(-sS --connect-timeout 3 --max-time "${max_time}" -o "${response_file}" -w '%{http_code}'
   -H 'Accept: application/json'
   -H "Origin: ${api_url}"
@@ -157,6 +161,9 @@ args=(-sS --connect-timeout 3 --max-time "${max_time}" -o "${response_file}" -w 
   -H 'Sec-Fetch-Site: same-origin'
   -c "${cookie_file}" -b "${cookie_file}"
   -X "${method}")
+if [ -n "${auth_token}" ]; then
+  args+=(-H "Authorization: Bearer ${auth_token}")
+fi
 if [ -n "${body_b64}" ]; then
   body_file="$(mktemp)"
   printf '%s' "${body_b64}" | base64 -d >"${body_file}"
