@@ -331,7 +331,7 @@ func applyExecutionSettingBaseline(target map[string]ResolvedAgentTool, setting 
 
 func applyNamedAgentPreset(target map[string]ResolvedAgentTool, knownTools map[string]struct{}, preset string) error {
 	preset = strings.ToLower(strings.TrimSpace(preset))
-	if preset == "" {
+	if preset == "" || preset == "custom" {
 		return nil
 	}
 	for name := range knownTools {

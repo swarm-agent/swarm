@@ -1,5 +1,5 @@
 import type { QueryClient } from '@tanstack/react-query'
-import { fetchAgentState, fetchDraftModelPreference, fetchModelOptions, fetchSessionMessages, fetchSessionPreference } from '../desktop/chat/queries/chat-queries'
+import { fetchAgentState, fetchAgentToolContract, fetchDraftModelPreference, fetchModelOptions, fetchSessionMessages, fetchSessionPreference } from '../desktop/chat/queries/chat-queries'
 import { getUISettings } from '../desktop/settings/swarm/queries/get-ui-settings'
 import { fetchWorkspaceOverview } from '../workspaces/launcher/queries/fetch-workspace-overview'
 
@@ -77,6 +77,16 @@ export function agentStateQueryOptions() {
     queryKey: ['agent-state'] as const,
     queryFn: ({ signal }: { signal?: AbortSignal }) => fetchAgentState(signal),
     staleTime: 5 * 60_000,
+  }
+}
+
+export function agentToolContractQueryOptions(name: string) {
+  const normalizedName = name.trim()
+  return {
+    queryKey: ['agent-tool-contract', normalizedName] as const,
+    queryFn: ({ signal }: { signal?: AbortSignal }) => fetchAgentToolContract(normalizedName, signal),
+    staleTime: 30_000,
+    enabled: normalizedName !== '',
   }
 }
 

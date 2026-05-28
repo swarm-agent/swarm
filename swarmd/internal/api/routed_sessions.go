@@ -446,7 +446,8 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("route account scope id does not match principal"))
 		return
 	}
-	allowWorktree := peerSessionOpenAllowsWorktree(childReq.WorktreeMode)
+	forwardToRoutedChild := s.shouldForwardPeerSessionOpenToRoutedChild(req.Route)
+	allowWorktree := peerSessionOpenAllowsWorktree(childReq.WorktreeMode) && !forwardToRoutedChild
 	session, _, warning, modeWarning, err := s.createSessionFromRequestWithSessionID(childReq, req.Hosted.WithMetadata(nil), allowWorktree, req.SessionID, principal, true)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -496,7 +497,7 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		if s.shouldForwardPeerSessionOpenToRoutedChild(routeRecord) {
+		if forwardToRoutedChild {
 			if err := s.forwardPeerSessionOpenToRoutedChild(r.Context(), req, routeRecord); err != nil {
 				if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
 					log.Printf("peer session child forward rollback failed session_id=%q err=%v", session.ID, cleanupErr)
@@ -1062,6 +1063,29 @@ func matchesRemoteDeployTarget(item remotedeploy.Session, target swarmTarget) bo
 
 func (s *Server) createSessionFromRequest(req sessionCreateRequest, principal identity.Principal, principalOK bool, overrideMetadata map[string]any, allowWorktree bool) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, string, string, error) {
 	return s.createSessionFromRequestWithSessionID(req, overrideMetadata, allowWorktree, "", principal, principalOK)
+}
+
+func (s *Server) applyRoutedSessionWorktreeIntent(principal identity.Principal, principalOK bool, req sessionCreateRequest) sessionCreateRequest {
+	if strings.TrimSpace(req.WorktreeMode) != "" {
+		return req
+	}
+	if !principalOK || !principal.Valid() || s == nil || s.worktrees == nil {
+		return req
+	}
+	workspacePath := firstNonEmpty(strings.TrimSpace(req.HostWorkspacePath), strings.TrimSpace(req.WorkspacePath), strings.TrimSpace(req.RuntimeWorkspacePath))
+	if workspacePath == "" {
+		return req
+	}
+	config, err := s.worktrees.GetConfigForPrincipal(principal, workspacePath)
+	if err != nil || !config.Enabled {
+		return req
+	}
+	useCurrentBranch := config.UseCurrentBranch
+	req.WorktreeMode = runruntime.RunWorktreeModeOn
+	req.WorktreeUseCurrentBranch = &useCurrentBranch
+	req.WorktreeBaseBranch = strings.TrimSpace(config.BaseBranch)
+	req.WorktreeBranchName = strings.TrimSpace(config.BranchName)
+	return req
 }
 
 func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest, overrideMetadata map[string]any, allowWorktree bool, sessionIDOverride string, principalAndOK ...any) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, string, string, error) {

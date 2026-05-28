@@ -151,6 +151,40 @@ export interface AgentToolScopeRecord {
   inheritPolicy: boolean;
 }
 
+export interface AgentToolContractToolRecord {
+  enabled?: boolean;
+  bashPrefixes: string[];
+}
+
+export interface AgentToolContractRecord {
+  preset: string;
+  inheritPolicy: boolean;
+  tools: Record<string, AgentToolContractToolRecord>;
+}
+
+export interface ResolvedAgentToolRecord {
+  enabled: boolean;
+  bashPrefixes: string[];
+  source: string;
+}
+
+export interface ResolvedAgentToolContractRecord {
+  runtimeMode: string;
+  rawPreset: string;
+  inheritPolicy: boolean;
+  availableTools: string[];
+  unavailableTools: string[];
+  tools: Record<string, ResolvedAgentToolRecord>;
+}
+
+export interface AgentToolContractRuntimeRecord {
+  agent: string;
+  rawToolContract: AgentToolContractRecord | null;
+  resolved: ResolvedAgentToolContractRecord | null;
+  compiledPolicy?: unknown;
+  toolInventory: AgentToolInventoryRecord | null;
+}
+
 export interface AgentProfileRecord {
   name: string;
   mode: string;
@@ -162,6 +196,7 @@ export interface AgentProfileRecord {
   executionSetting: "read" | "readwrite" | "";
   exitPlanModeEnabled: boolean;
   toolScope: AgentToolScopeRecord | null;
+  toolContract: AgentToolContractRecord | null;
   enabled: boolean;
   protected: boolean;
   updatedAt: number;
@@ -185,12 +220,35 @@ export interface ProviderDefaultsPreviewRecord {
   overwriteExplicit?: boolean;
 }
 
+export interface AgentToolInventoryToolRecord {
+  name: string;
+  contractName: string;
+  description: string;
+  group: string;
+  kind: string;
+}
+
+export interface AgentToolInventoryPresetRecord {
+  id: string;
+  label: string;
+  description: string;
+  enabledTools: string[];
+  disabledByDefault: string[];
+  bashPrefixes: string[];
+}
+
+export interface AgentToolInventoryRecord {
+  tools: AgentToolInventoryToolRecord[];
+  presets: AgentToolInventoryPresetRecord[];
+}
+
 export interface AgentStateRecord {
   profiles: AgentProfileRecord[];
   activePrimary: string;
   activeSubagent: Record<string, string>;
   version: number;
   providerDefaultsPreview: ProviderDefaultsPreviewRecord | null;
+  toolInventory: AgentToolInventoryRecord | null;
 }
 
 export interface ModelOptionRecord {

@@ -7508,6 +7508,13 @@ type manageAgentToolPresetDefinition struct {
 func manageAgentToolPresets() []manageAgentToolPresetDefinition {
 	return []manageAgentToolPresetDefinition{
 		{
+			ID:                "custom",
+			Label:             "Custom",
+			Description:       "Fully custom tool contract controlled by explicit per-tool allow/block choices.",
+			EnabledTools:      []string{},
+			DisabledByDefault: []string{},
+		},
+		{
 			ID:                "read_only",
 			Label:             "Read only",
 			Description:       "Inspect workspace files and web content without file mutation or shell execution.",

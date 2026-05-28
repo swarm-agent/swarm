@@ -11,6 +11,10 @@ import type {
 } from "../../types/realtime";
 import type {
   AgentStateRecord,
+  AgentToolInventoryRecord,
+  AgentToolContractRecord,
+  AgentToolContractRuntimeRecord,
+  ResolvedAgentToolContractRecord,
   ChatMessageRecord,
   ModelOptionRecord,
   ProviderDefaultsPreviewRecord,
@@ -217,6 +221,60 @@ type ProviderDefaultsPreviewWire = {
   overwrite_explicit?: boolean;
 };
 
+type AgentToolContractWire = {
+  preset?: string;
+  inherit_policy?: boolean;
+  tools?: Record<
+    string,
+    {
+      enabled?: boolean;
+      bash_prefixes?: string[];
+    }
+  >;
+};
+
+type ResolvedAgentToolContractWire = {
+  runtime_mode?: string;
+  raw_preset?: string;
+  inherit_policy?: boolean;
+  available_tools?: string[];
+  unavailable_tools?: string[];
+  tools?: Record<
+    string,
+    {
+      enabled?: boolean;
+      bash_prefixes?: string[];
+      source?: string;
+    }
+  >;
+};
+
+type AgentToolContractResponseWire = {
+  agent?: string;
+  raw_tool_contract?: AgentToolContractWire | null;
+  resolved?: ResolvedAgentToolContractWire | null;
+  compiled_policy?: unknown;
+  tool_inventory?: AgentToolInventoryWire | null;
+};
+
+type AgentToolInventoryWire = {
+  tools?: Array<{
+    name?: string;
+    contract_name?: string;
+    description?: string;
+    group?: string;
+    kind?: string;
+  }>;
+  presets?: Array<{
+    id?: string;
+    label?: string;
+    description?: string;
+    enabled_tools?: string[];
+    disabled_by_default?: string[];
+    bash_prefixes?: string[];
+  }>;
+};
+
 type AgentStateWire = {
   state?: {
     profiles?: Array<{
@@ -236,17 +294,7 @@ type AgentStateWire = {
         bash_prefixes?: string[];
         inherit_policy?: boolean;
       } | null;
-      tool_contract?: {
-        preset?: string;
-        inherit_policy?: boolean;
-        tools?: Record<
-          string,
-          {
-            enabled?: boolean;
-            bash_prefixes?: string[];
-          }
-        >;
-      } | null;
+      tool_contract?: AgentToolContractWire | null;
       enabled?: boolean;
       protected?: boolean;
       updated_at?: number;
@@ -256,6 +304,7 @@ type AgentStateWire = {
     version?: number;
   };
   provider_defaults_preview?: ProviderDefaultsPreviewWire | null;
+  tool_inventory?: AgentToolInventoryWire | null;
 };
 
 type RestoreAgentDefaultsWire = {
@@ -861,6 +910,115 @@ export async function updateDraftModelPreference(
   };
 }
 
+function mapStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((entry) => String(entry).trim()).filter(Boolean)
+    : [];
+}
+
+function mapAgentToolInventory(
+  inventory?: AgentToolInventoryWire | null,
+): AgentToolInventoryRecord | null {
+  if (!inventory || typeof inventory !== "object") {
+    return null;
+  }
+  const tools = Array.isArray(inventory.tools)
+    ? inventory.tools
+        .map((tool) => {
+          const name = String(tool.name ?? "").trim();
+          const contractName = String(tool.contract_name ?? name).trim();
+          if (!contractName) {
+            return null;
+          }
+          return {
+            name: name || contractName,
+            contractName,
+            description: String(tool.description ?? "").trim(),
+            group: String(tool.group ?? "other").trim() || "other",
+            kind: String(tool.kind ?? "built_in").trim() || "built_in",
+          };
+        })
+        .filter((tool): tool is AgentToolInventoryRecord["tools"][number] => tool !== null)
+    : [];
+  const presets = Array.isArray(inventory.presets)
+    ? inventory.presets
+        .map((preset) => {
+          const id = String(preset.id ?? "").trim();
+          if (!id) {
+            return null;
+          }
+          return {
+            id,
+            label: String(preset.label ?? id).trim() || id,
+            description: String(preset.description ?? "").trim(),
+            enabledTools: mapStringArray(preset.enabled_tools),
+            disabledByDefault: mapStringArray(preset.disabled_by_default),
+            bashPrefixes: mapStringArray(preset.bash_prefixes),
+          };
+        })
+        .filter((preset): preset is AgentToolInventoryRecord["presets"][number] => preset !== null)
+    : [];
+  return { tools, presets };
+}
+
+function mapAgentToolContract(
+  contract?: AgentToolContractWire | null,
+): AgentToolContractRecord | null {
+  if (!contract || typeof contract !== "object") {
+    return null;
+  }
+  const tools: AgentToolContractRecord["tools"] = {};
+  if (contract.tools && typeof contract.tools === "object") {
+    for (const [name, config] of Object.entries(contract.tools)) {
+      const toolName = name.trim();
+      if (!toolName || !config || typeof config !== "object") {
+        continue;
+      }
+      const enabled =
+        typeof config.enabled === "boolean" ? config.enabled : undefined;
+      tools[toolName] = {
+        ...(enabled === undefined ? {} : { enabled }),
+        bashPrefixes: mapStringArray(config.bash_prefixes),
+      };
+    }
+  }
+  return {
+    preset: String(contract.preset ?? "").trim(),
+    inheritPolicy: Boolean(contract.inherit_policy),
+    tools,
+  };
+}
+
+function mapResolvedAgentToolContract(
+  resolved?: ResolvedAgentToolContractWire | null,
+): ResolvedAgentToolContractRecord | null {
+  if (!resolved || typeof resolved !== "object") {
+    return null;
+  }
+  const tools: ResolvedAgentToolContractRecord["tools"] = {};
+  if (resolved.tools && typeof resolved.tools === "object") {
+    for (const [name, config] of Object.entries(resolved.tools)) {
+      const toolName = name.trim();
+      if (!toolName || !config || typeof config !== "object") {
+        continue;
+      }
+      tools[toolName] = {
+        enabled: Boolean(config.enabled),
+        bashPrefixes: mapStringArray(config.bash_prefixes),
+        source: String(config.source ?? "").trim(),
+      };
+    }
+  }
+  return {
+    runtimeMode: String(resolved.runtime_mode ?? "").trim(),
+    rawPreset: String(resolved.raw_preset ?? "").trim(),
+    inheritPolicy: Boolean(resolved.inherit_policy),
+    availableTools: mapStringArray(resolved.available_tools),
+    unavailableTools: mapStringArray(resolved.unavailable_tools),
+    tools,
+  };
+}
+
 export async function fetchAgentState(
   signal?: AbortSignal,
 ): Promise<AgentStateRecord> {
@@ -885,41 +1043,6 @@ export async function fetchAgentState(
           })() as "read" | "readwrite" | "",
           exitPlanModeEnabled: Boolean(profile.exit_plan_mode_enabled),
           toolScope: (() => {
-            if (
-              profile.tool_contract &&
-              typeof profile.tool_contract === "object"
-            ) {
-              const tools =
-                profile.tool_contract.tools &&
-                typeof profile.tool_contract.tools === "object"
-                  ? profile.tool_contract.tools
-                  : {};
-              const allowTools: string[] = [];
-              const denyTools: string[] = [];
-              let bashPrefixes: string[] = [];
-              for (const [name, config] of Object.entries(tools)) {
-                if (config && typeof config === "object") {
-                  if (Array.isArray(config.bash_prefixes) && name === "bash") {
-                    bashPrefixes = config.bash_prefixes
-                      .map((value) => String(value).trim())
-                      .filter(Boolean);
-                  }
-                  if (config.enabled === true && name !== "bash") {
-                    allowTools.push(name);
-                  }
-                  if (config.enabled === false) {
-                    denyTools.push(name);
-                  }
-                }
-              }
-              return {
-                preset: String(profile.tool_contract.preset ?? "").trim(),
-                allowTools,
-                denyTools,
-                bashPrefixes,
-                inheritPolicy: Boolean(profile.tool_contract.inherit_policy),
-              };
-            }
             if (profile.tool_scope && typeof profile.tool_scope === "object") {
               return {
                 preset: String(profile.tool_scope.preset ?? "").trim(),
@@ -943,6 +1066,7 @@ export async function fetchAgentState(
             }
             return null;
           })(),
+          toolContract: mapAgentToolContract(profile.tool_contract),
           enabled: Boolean(profile.enabled),
           protected: Boolean((profile as { protected?: boolean }).protected),
           updatedAt:
@@ -956,6 +1080,24 @@ export async function fetchAgentState(
     providerDefaultsPreview: mapProviderDefaultsPreview(
       response.provider_defaults_preview,
     ),
+    toolInventory: mapAgentToolInventory(response.tool_inventory),
+  };
+}
+
+export async function fetchAgentToolContract(
+  name: string,
+  signal?: AbortSignal,
+): Promise<AgentToolContractRuntimeRecord> {
+  const response = await requestJson<AgentToolContractResponseWire>(
+    `/v2/agents/${encodeURIComponent(name.trim())}/tool-contract`,
+    { signal },
+  );
+  return {
+    agent: String(response.agent ?? name).trim(),
+    rawToolContract: mapAgentToolContract(response.raw_tool_contract),
+    resolved: mapResolvedAgentToolContract(response.resolved),
+    compiledPolicy: response.compiled_policy,
+    toolInventory: mapAgentToolInventory(response.tool_inventory),
   };
 }
 
@@ -1039,6 +1181,7 @@ function mapAgentDefaultsState(
           })() as "read" | "readwrite" | "",
           exitPlanModeEnabled: Boolean(profile.exit_plan_mode_enabled),
           toolScope: null,
+          toolContract: null,
           enabled: Boolean(profile.enabled),
           protected: Boolean((profile as { protected?: boolean }).protected),
           updatedAt:
@@ -1051,6 +1194,7 @@ function mapAgentDefaultsState(
     providerDefaultsPreview: mapProviderDefaultsPreview(
       response.provider_defaults_preview,
     ),
+    toolInventory: null,
   };
 }
 

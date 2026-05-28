@@ -182,6 +182,7 @@ const EMPTY_AGENT_STATE: AgentStateRecord = {
   activeSubagent: {},
   version: 0,
   providerDefaultsPreview: null,
+  toolInventory: null,
 }
 
 function metadataRecord(value: unknown): Record<string, unknown> | null {

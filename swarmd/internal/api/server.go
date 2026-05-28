@@ -2251,6 +2251,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 					proxyTarget.BackendURL = backendURL
 				}
 			}
+			req = s.applyRoutedSessionWorktreeIntent(principal, principalOK, req)
 			routeMetadata := map[string]any{
 				"swarm_route_id":          "swarm:" + strings.TrimSpace(remoteTarget.SwarmID) + ":" + strings.TrimSpace(req.RuntimeWorkspacePath),
 				"swarm_route_label":       firstNonEmpty(strings.TrimSpace(remoteTarget.Name), strings.TrimSpace(remoteTarget.SwarmID)),

@@ -8,6 +8,7 @@ import { cn } from '../../../../lib/cn'
 import { requestJson } from '../../../../app/api'
 import { ChatMarkdown } from '../../chat/components/chat-markdown'
 import { getToolTheme } from '../../chat/services/tool-theme'
+import { AGENT_TOOL_PRESET_OPTIONS, CUSTOM_AGENT_TOOL_PRESET_ID } from '../../chat/services/agent-tool-presets'
 import type { ModelOptionRecord } from '../../chat/types/chat'
 import { modelOptionsQueryOptions } from '../../../queries/query-options'
 import { useQuery } from '@tanstack/react-query'
@@ -562,6 +563,7 @@ function flowAgentFromContent(content: Record<string, unknown>): FlowAgentProfil
     executionSetting: '',
     exitPlanModeEnabled: false,
     toolScope: null,
+    toolContract: null,
     enabled: true,
     protected: false,
     updatedAt: 0,
@@ -1973,42 +1975,108 @@ interface AgentToolAccessSummary {
   catalogCount: number
 }
 
+interface ToolAccessList {
+  allowed: string[]
+  blocked: string[]
+}
+
 function sortedUnique(values: string[]): string[] {
   return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right))
+}
+
+function sameStringSet(left: string[], right: string[]): boolean {
+  const leftSet = new Set(left.map((value) => value.trim()).filter(Boolean))
+  const rightSet = new Set(right.map((value) => value.trim()).filter(Boolean))
+  if (leftSet.size !== rightSet.size) return false
+  for (const value of leftSet) {
+    if (!rightSet.has(value)) return false
+  }
+  return true
+}
+
+function toolAccessForPreset(preset: AgentToolInventory['presets'][number] | null | undefined): ToolAccessList {
+  return {
+    allowed: sortedUnique(preset?.enabledTools ?? []),
+    blocked: sortedUnique(preset?.disabledByDefault ?? []),
+  }
+}
+
+function effectiveToolAccess(preset: AgentToolInventory['presets'][number] | null | undefined, overrides: Record<string, AgentToolConfigFormState>, fallbackNames: string[] = []): ToolAccessList {
+  const allowed = new Set(toolAccessForPreset(preset).allowed)
+  const blocked = new Set(toolAccessForPreset(preset).blocked)
+  fallbackNames.forEach((name) => {
+    const toolName = name.trim()
+    if (toolName && !allowed.has(toolName) && !blocked.has(toolName)) blocked.add(toolName)
+  })
+  Object.entries(overrides).forEach(([name, config]) => {
+    const toolName = name.trim()
+    if (!toolName) return
+    if (config.enabled) {
+      allowed.add(toolName)
+      blocked.delete(toolName)
+    } else {
+      blocked.add(toolName)
+      allowed.delete(toolName)
+    }
+  })
+  return { allowed: sortedUnique(Array.from(allowed)), blocked: sortedUnique(Array.from(blocked)) }
+}
+
+function matchedToolPresetID(access: ToolAccessList, presets: AgentToolInventory['presets']): string {
+  const matched = presets.find((preset) => preset.id !== CUSTOM_AGENT_TOOL_PRESET_ID && sameStringSet(preset.enabledTools, access.allowed) && sameStringSet(preset.disabledByDefault, access.blocked))
+  return matched?.id ?? CUSTOM_AGENT_TOOL_PRESET_ID
+}
+
+function customToolsFromAccess(access: ToolAccessList): Record<string, AgentToolConfigFormState> {
+  const tools: Record<string, AgentToolConfigFormState> = {}
+  access.allowed.forEach((name) => { tools[name] = { enabled: true, bashPrefixes: '' } })
+  access.blocked.forEach((name) => { tools[name] = { enabled: false, bashPrefixes: '' } })
+  return tools
 }
 
 function agentToolInventoryPreset(payload: ReturnType<typeof parseAgentChangePermission>, presetID: string) {
   const normalized = presetID.trim().toLowerCase()
   if (!normalized) return null
-  return payload.toolInventory.presets.find((preset) => preset.id.trim().toLowerCase() === normalized) ?? null
+  return payload.toolInventory.presets.find((preset) => preset.id.trim().toLowerCase() === normalized)
+    ?? AGENT_TOOL_PRESET_OPTIONS.find((preset) => preset.id === normalized)
+    ?? null
+}
+
+function agentToolInventoryPresetOptions(payload: ReturnType<typeof parseAgentChangePermission>): AgentToolInventory['presets'] {
+  const byID = new Map<string, AgentToolInventory['presets'][number]>()
+  AGENT_TOOL_PRESET_OPTIONS.forEach((preset) => byID.set(preset.id, preset))
+  payload.toolInventory.presets.forEach((preset) => {
+    if (preset.id.trim()) byID.set(preset.id.trim(), preset)
+  })
+  return Array.from(byID.values()).sort((left, right) => {
+    if (left.id === CUSTOM_AGENT_TOOL_PRESET_ID) return 1
+    if (right.id === CUSTOM_AGENT_TOOL_PRESET_ID) return -1
+    return left.label.localeCompare(right.label)
+  })
+}
+
+function presetDisplayLabel(preset: { id: string; label: string }): string {
+  return preset.label.trim() && preset.label !== preset.id ? `${preset.label} (${preset.id})` : preset.id
 }
 
 function agentToolAccessSummary(payload: ReturnType<typeof parseAgentChangePermission>, form: AgentProfileFormState | null): AgentToolAccessSummary {
   if (form) {
-    const allowed: string[] = []
-    const blocked: string[] = []
     const restricted: string[] = []
     const activePreset = agentToolInventoryPreset(payload, form.toolContractPreset)
-    allowed.push(...(activePreset?.enabledTools ?? []))
-    blocked.push(...(activePreset?.disabledByDefault ?? []))
+    const access = effectiveToolAccess(
+      activePreset,
+      form.toolContractTools,
+      payload.toolInventory.tools.map((tool) => tool.contractName || tool.name),
+    )
     if ((activePreset?.bashPrefixes.length ?? 0) > 0) restricted.push('bash')
     Object.entries(form.toolContractTools).forEach(([name, config]) => {
       const toolName = name.trim()
       if (!toolName) return
-      if (config.enabled) {
-        allowed.push(toolName)
-        const blockedIndex = blocked.indexOf(toolName)
-        if (blockedIndex >= 0) blocked.splice(blockedIndex, 1)
-      } else {
-        blocked.push(toolName)
-        const allowedIndex = allowed.indexOf(toolName)
-        if (allowedIndex >= 0) allowed.splice(allowedIndex, 1)
-      }
       if (splitCSV(config.bashPrefixes).length > 0) restricted.push(toolName)
     })
     return {
-      allowed: sortedUnique(allowed),
-      blocked: sortedUnique(blocked),
+      allowed: access.allowed,
+      blocked: access.blocked,
       restricted: sortedUnique(restricted),
       preset: form.toolContractPreset.trim(),
       inheritPolicy: form.toolContractInheritPolicy,
@@ -2077,10 +2145,16 @@ function AgentToolAccessSummaryCard({
   onToolToggle?: (toolName: string, enabled: boolean) => void
 }) {
   const summary = agentToolAccessSummary(payload, form)
-  const hasExplicitTools = summary.allowed.length > 0 || summary.blocked.length > 0
+  const overrideAllowed = form
+    ? Object.entries(form.toolContractTools).filter(([, config]) => config.enabled).map(([name]) => name.trim()).filter(Boolean)
+    : []
+  const overrideBlocked = form
+    ? Object.entries(form.toolContractTools).filter(([, config]) => !config.enabled).map(([name]) => name.trim()).filter(Boolean)
+    : []
+  const activePreset = agentToolInventoryPreset(payload, summary.preset)
+  const presetName = activePreset ? presetDisplayLabel(activePreset) : summary.preset ? `preset ${summary.preset}` : ''
   const policyText = [
-    summary.preset ? `preset ${summary.preset}` : '',
-    summary.inheritPolicy ? 'inherits policy' : '',
+    presetName,
     summary.catalogCount > 0 ? `${summary.catalogCount} catalog tools` : '',
   ].filter(Boolean).join(' · ')
 
@@ -2092,26 +2166,50 @@ function AgentToolAccessSummaryCard({
       </div>
       <div className="grid gap-2">
         <ToolAccessRow
-          label="Allowed"
+          label={presetName ? `${presetName} enabled` : 'Preset enabled'}
           count={summary.allowed.length}
           items={summary.allowed}
-          emptyText={hasExplicitTools ? 'No explicit allows' : 'Controlled by preset / inherited policy'}
+          emptyText="No preset-enabled tools"
           tone="allow"
           onItemClick={onToolToggle ? (item) => onToolToggle(item, false) : undefined}
           disabled={disabled}
           itemTitle="Click to block this tool"
         />
         <ToolAccessRow
-          label="Not allowed"
+          label={presetName ? `${presetName} disabled` : 'Preset disabled'}
           count={summary.blocked.length}
           items={summary.blocked}
-          emptyText={hasExplicitTools ? 'None blocked' : 'No explicit blocks'}
+          emptyText="No preset-disabled tools"
           tone="block"
           onItemClick={onToolToggle ? (item) => onToolToggle(item, true) : undefined}
           disabled={disabled}
           itemTitle="Click to allow this tool"
         />
       </div>
+      {overrideAllowed.length > 0 || overrideBlocked.length > 0 ? (
+        <div className="grid gap-2 border-t border-[var(--app-border)] pt-2">
+          <ToolAccessRow
+            label="Override allow"
+            count={overrideAllowed.length}
+            items={sortedUnique(overrideAllowed)}
+            emptyText="No explicit allow overrides"
+            tone="allow"
+            onItemClick={onToolToggle ? (item) => onToolToggle(item, false) : undefined}
+            disabled={disabled}
+            itemTitle="Click to block this tool"
+          />
+          <ToolAccessRow
+            label="Override block"
+            count={overrideBlocked.length}
+            items={sortedUnique(overrideBlocked)}
+            emptyText="No explicit block overrides"
+            tone="block"
+            onItemClick={onToolToggle ? (item) => onToolToggle(item, true) : undefined}
+            disabled={disabled}
+            itemTitle="Click to allow this tool"
+          />
+        </div>
+      ) : null}
       {summary.restricted.length > 0 ? (
         <div className="text-xs text-[var(--app-warning)]">Restricted prefixes: {summary.restricted.join(', ')}</div>
       ) : null}
@@ -2210,18 +2308,43 @@ function AgentProfileApprovalForm({
   }, [form.provider, modelOptions])
   const activeModels = providers.find(([provider]) => provider === form.provider)?.[1] ?? []
   const inventoryTools = toolInventoryTools(payload, form)
+  const presetOptions = agentToolInventoryPresetOptions(payload)
   const activePreset = agentToolInventoryPreset(payload, form.toolContractPreset)
-  const presetEnabledTools = new Set(activePreset?.enabledTools.map((name) => name.trim()).filter(Boolean) ?? [])
   const [toolsExpanded, setToolsExpanded] = useState(false)
-  const setToolEnabled = (toolName: string, enabled: boolean) => {
-    const current = form.toolContractTools[toolName]
-    const nextTools = {
-      ...form.toolContractTools,
-      [toolName]: { enabled, bashPrefixes: current?.bashPrefixes ?? '' },
+  const setToolPreset = (presetID: string) => {
+    const preset = agentToolInventoryPreset(payload, presetID)
+    if (!preset || preset.id === CUSTOM_AGENT_TOOL_PRESET_ID) {
+      const access = effectiveToolAccess(
+        activePreset,
+        form.toolContractTools,
+        inventoryTools.map((tool) => tool.contractName || tool.name),
+      )
+      onChange({
+        ...form,
+        toolContractPreset: CUSTOM_AGENT_TOOL_PRESET_ID,
+        toolContractTools: customToolsFromAccess(access),
+      })
+      return
     }
+    onChange({ ...form, toolContractPreset: preset.id, toolContractTools: {} })
+  }
+  const setToolEnabled = (toolName: string, enabled: boolean) => {
+    const access = effectiveToolAccess(
+      activePreset,
+      form.toolContractTools,
+      inventoryTools.map((tool) => tool.contractName || tool.name),
+    )
+    access.allowed = access.allowed.filter((name) => name !== toolName)
+    access.blocked = access.blocked.filter((name) => name !== toolName)
+    if (enabled) access.allowed.push(toolName)
+    else access.blocked.push(toolName)
+    access.allowed = sortedUnique(access.allowed)
+    access.blocked = sortedUnique(access.blocked)
+    const nextTools = customToolsFromAccess(access)
     onChange({
       ...form,
       executionSetting: deriveExecutionSettingFromTools(nextTools),
+      toolContractPreset: matchedToolPresetID(access, presetOptions),
       toolContractTools: nextTools,
     })
   }
@@ -2324,6 +2447,24 @@ function AgentProfileApprovalForm({
         </label>
       </div>
       <div className="grid gap-2 border-t border-[var(--app-border)] pt-3">
+        <div className="grid gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3">
+          <label className="grid gap-1.5 text-sm">
+            <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Tool preset</span>
+            <div className="relative">
+              <select value={form.toolContractPreset || CUSTOM_AGENT_TOOL_PRESET_ID} onChange={(event: ChangeEvent<HTMLSelectElement>) => setToolPreset(event.target.value)} disabled={disabled} className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 pr-8 text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]">
+                <option value="">Choose a preset</option>
+                {presetOptions.map((preset) => <option key={preset.id} value={preset.id}>{presetDisplayLabel(preset)}</option>)}
+              </select>
+              <ChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
+            </div>
+          </label>
+          <AgentToolAccessSummaryCard
+            payload={payload}
+            form={form}
+            disabled={disabled}
+            onToolToggle={setToolEnabled}
+          />
+        </div>
         <div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)]">
           <div className="flex flex-wrap items-center justify-between gap-3 px-3 py-2">
             <div className="flex min-w-0 items-center gap-2">
@@ -2352,7 +2493,7 @@ function AgentProfileApprovalForm({
                 {inventoryTools.map((tool) => {
                   const toolName = tool.contractName || tool.name
                   const config = form.toolContractTools[toolName]
-                  const checked = config?.enabled ?? presetEnabledTools.has(toolName)
+                  const checked = effectiveToolAccess(activePreset, form.toolContractTools, inventoryTools.map((entry) => entry.contractName || entry.name)).allowed.includes(toolName)
                   const bashPrefixes = config?.bashPrefixes ?? ''
                   return (
                     <div key={`${tool.kind}:${toolName}`} className="grid gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] p-2">

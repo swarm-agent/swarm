@@ -4,9 +4,11 @@ import { ChevronDown, Plus, Settings2, Trash2 } from "lucide-react";
 import { requestJson } from "../../../../../app/api";
 import { Dialog, DialogBackdrop, DialogPanel } from "../../../../../components/ui/dialog";
 import { ModalCloseButton } from "../../../../../components/ui/modal-close-button";
+import { cn } from "../../../../../lib/cn";
 import {
   modelOptionsQueryOptions,
   agentStateQueryOptions,
+  agentToolContractQueryOptions,
 } from "../../../../queries/query-options";
 import {
   resetAgentDefaults,
@@ -16,8 +18,16 @@ import type {
   AgentProfileRecord,
   AgentStateRecord,
   ModelOptionRecord,
+  AgentToolContractRuntimeRecord,
+  AgentToolContractToolRecord,
+  AgentToolInventoryPresetRecord,
   ProviderDefaultsPreviewRecord,
 } from "../../../chat/types/chat";
+import {
+  AGENT_TOOL_PRESET_OPTIONS,
+  CUSTOM_AGENT_TOOL_PRESET_ID,
+  agentToolPresetByID,
+} from "../../../chat/services/agent-tool-presets";
 
 interface AgentFormState {
   name: string;
@@ -29,11 +39,9 @@ interface AgentFormState {
   prompt: string;
   executionSetting: "read" | "readwrite" | "";
   exitPlanModeEnabled: boolean;
-  toolScopePreset: string;
-  toolScopeAllowTools: string;
-  toolScopeDenyTools: string;
-  toolScopeBashPrefixes: string;
-  toolScopeInheritPolicy: boolean;
+  toolContractPreset: string;
+  toolContractInheritPolicy: boolean;
+  toolContractTools: Record<string, AgentToolContractToolRecord>;
   enabled: boolean;
 }
 
@@ -41,6 +49,37 @@ interface UtilityAIFormState {
   provider: string;
   model: string;
   thinking: string;
+}
+
+const CUSTOM_AGENT_TOOL_PRESET = AGENT_TOOL_PRESET_OPTIONS.find(
+  (preset) => preset.id === CUSTOM_AGENT_TOOL_PRESET_ID,
+)!;
+
+type ToolAccessTone = "allow" | "block";
+
+interface ToolAccessList {
+  allowed: string[];
+  blocked: string[];
+}
+
+function sortedUnique(values: string[]): string[] {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean))).sort(
+    (left, right) => left.localeCompare(right),
+  );
+}
+
+function sameStringSet(left: string[], right: string[]): boolean {
+  const leftSet = new Set(left.map((value) => value.trim()).filter(Boolean));
+  const rightSet = new Set(right.map((value) => value.trim()).filter(Boolean));
+  if (leftSet.size !== rightSet.size) {
+    return false;
+  }
+  for (const value of leftSet) {
+    if (!rightSet.has(value)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function displayListLabel(values: string[], fallback: string): string {
@@ -64,6 +103,182 @@ const UTILITY_THINKING_OPTIONS = [
   { value: "xhigh", label: "X-High" },
 ];
 
+function presetLabel(preset: { id: string; label: string }): string {
+  return preset.label.trim() && preset.label !== preset.id
+    ? `${preset.label} (${preset.id})`
+    : preset.id;
+}
+
+function mergedPresetOptions(
+  runtime: AgentToolContractRuntimeRecord | undefined,
+  presets: AgentToolInventoryPresetRecord[] | undefined,
+  activePreset: string,
+): AgentToolInventoryPresetRecord[] {
+  const byID = new Map<string, AgentToolInventoryPresetRecord>();
+  for (const preset of AGENT_TOOL_PRESET_OPTIONS) {
+    byID.set(preset.id, preset);
+  }
+  for (const preset of presets ?? []) {
+    if (preset.id.trim()) {
+      byID.set(preset.id.trim(), preset);
+    }
+  }
+  const runtimePreset = runtime?.resolved?.rawPreset || runtime?.rawToolContract?.preset || "";
+  for (const presetID of [activePreset, runtimePreset]) {
+    const trimmed = presetID.trim();
+    if (trimmed && !byID.has(trimmed)) {
+      byID.set(trimmed, {
+        id: trimmed,
+        label: trimmed,
+        description: "Custom preset from saved runtime contract.",
+        enabledTools: [],
+        disabledByDefault: [],
+        bashPrefixes: [],
+      });
+    }
+  }
+  return Array.from(byID.values()).sort((left, right) => {
+    if (left.id === CUSTOM_AGENT_TOOL_PRESET_ID) return 1;
+    if (right.id === CUSTOM_AGENT_TOOL_PRESET_ID) return -1;
+    return left.label.localeCompare(right.label);
+  });
+}
+
+function toolAccessForPreset(
+  preset: AgentToolInventoryPresetRecord | null | undefined,
+): ToolAccessList {
+  return {
+    allowed: sortedUnique(preset?.enabledTools ?? []),
+    blocked: sortedUnique(preset?.disabledByDefault ?? []),
+  };
+}
+
+function effectiveToolAccess(
+  preset: AgentToolInventoryPresetRecord | null | undefined,
+  overrides: AgentFormState["toolContractTools"],
+  fallbackNames: string[] = [],
+): ToolAccessList {
+  const allowed = new Set(toolAccessForPreset(preset).allowed);
+  const blocked = new Set(toolAccessForPreset(preset).blocked);
+  for (const name of fallbackNames) {
+    const toolName = name.trim();
+    if (!toolName || allowed.has(toolName) || blocked.has(toolName)) {
+      continue;
+    }
+    blocked.add(toolName);
+  }
+  for (const [name, config] of Object.entries(overrides)) {
+    const toolName = name.trim();
+    if (!toolName || typeof config.enabled !== "boolean") {
+      continue;
+    }
+    if (config.enabled) {
+      allowed.add(toolName);
+      blocked.delete(toolName);
+    } else {
+      blocked.add(toolName);
+      allowed.delete(toolName);
+    }
+  }
+  return {
+    allowed: sortedUnique(Array.from(allowed)),
+    blocked: sortedUnique(Array.from(blocked)),
+  };
+}
+
+function matchedToolPresetID(
+  access: ToolAccessList,
+  presets: AgentToolInventoryPresetRecord[],
+): string {
+  const matched = presets.find((preset) => {
+    if (preset.id === CUSTOM_AGENT_TOOL_PRESET_ID) {
+      return false;
+    }
+    return (
+      sameStringSet(preset.enabledTools, access.allowed) &&
+      sameStringSet(preset.disabledByDefault, access.blocked)
+    );
+  });
+  return matched?.id ?? CUSTOM_AGENT_TOOL_PRESET_ID;
+}
+
+function customToolsFromAccess(access: ToolAccessList): AgentFormState["toolContractTools"] {
+  const tools: AgentFormState["toolContractTools"] = {};
+  for (const name of access.allowed) {
+    tools[name] = { enabled: true, bashPrefixes: [] };
+  }
+  for (const name of access.blocked) {
+    tools[name] = { enabled: false, bashPrefixes: [] };
+  }
+  return tools;
+}
+
+function ToolAccessRow({
+  label,
+  count,
+  items,
+  emptyText,
+  tone,
+  onItemClick,
+  disabled = false,
+  itemTitle,
+}: {
+  label: string;
+  count: number;
+  items: string[];
+  emptyText: string;
+  tone: ToolAccessTone;
+  onItemClick?: (item: string) => void;
+  disabled?: boolean;
+  itemTitle?: string;
+}) {
+  const toneClassName =
+    tone === "allow"
+      ? "border-[var(--app-success-border)] bg-[var(--app-success-bg)] text-[var(--app-success)]"
+      : "border-[color-mix(in_srgb,var(--app-danger)_45%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-danger)_10%,transparent)] text-[var(--app-danger)]";
+  return (
+    <div className="grid gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 sm:grid-cols-[8rem_1fr] sm:items-start">
+      <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-muted)]">
+        <span>{label}</span>
+        <span className="rounded-md border border-[var(--app-border)] px-1.5 py-0.5 text-[10px] leading-none text-[var(--app-text-muted)]">
+          {count}
+        </span>
+      </div>
+      {items.length > 0 ? (
+        <div className="flex min-w-0 flex-wrap gap-1.5">
+          {items.map((item) =>
+            onItemClick ? (
+              <button
+                key={item}
+                type="button"
+                onClick={() => onItemClick(item)}
+                disabled={disabled}
+                title={itemTitle}
+                className={cn(
+                  "rounded-md border px-2 py-0.5 text-left text-xs leading-5",
+                  toneClassName,
+                  !disabled && "hover:border-[var(--app-primary)]",
+                )}
+              >
+                {item}
+              </button>
+            ) : (
+              <span
+                key={item}
+                className={cn("rounded-md border px-2 py-0.5 text-xs leading-5", toneClassName)}
+              >
+                {item}
+              </span>
+            ),
+          )}
+        </div>
+      ) : (
+        <div className="text-xs leading-5 text-[var(--app-text-muted)]">{emptyText}</div>
+      )}
+    </div>
+  );
+}
+
 function emptyAgentForm(): AgentFormState {
   return {
     name: "",
@@ -75,11 +290,9 @@ function emptyAgentForm(): AgentFormState {
     prompt: "",
     executionSetting: "readwrite",
     exitPlanModeEnabled: false,
-    toolScopePreset: "",
-    toolScopeAllowTools: "",
-    toolScopeDenyTools: "",
-    toolScopeBashPrefixes: "",
-    toolScopeInheritPolicy: false,
+    toolContractPreset: "",
+    toolContractInheritPolicy: false,
+    toolContractTools: {},
     enabled: true,
   };
 }
@@ -89,6 +302,18 @@ function agentRuntimeSummary(profile: AgentProfileRecord): string {
     return "plan -> auto";
   }
   return profile.executionSetting || "unset";
+}
+
+function agentProviderModelSummary(
+  profile: AgentProfileRecord,
+  fallback = "Provider/model inherited",
+): string {
+  const provider = profile.provider.trim();
+  const model = profile.model.trim();
+  if (provider && model) {
+    return `${provider}/${model}`;
+  }
+  return fallback;
 }
 
 function utilityAIForProfiles(
@@ -135,6 +360,25 @@ function modelOptionKey(provider: string, model: string, contextMode = ""): stri
   return `${provider}:${model}:${contextMode.trim().toLowerCase()}`;
 }
 
+function legacyToolScopeTools(
+  profile: AgentProfileRecord,
+): Record<string, AgentToolContractToolRecord> {
+  const tools: Record<string, AgentToolContractToolRecord> = {};
+  for (const tool of profile.toolScope?.allowTools ?? []) {
+    tools[tool] = { enabled: true, bashPrefixes: [] };
+  }
+  for (const tool of profile.toolScope?.denyTools ?? []) {
+    tools[tool] = { enabled: false, bashPrefixes: [] };
+  }
+  if ((profile.toolScope?.bashPrefixes ?? []).length > 0) {
+    tools.bash = {
+      enabled: true,
+      bashPrefixes: profile.toolScope?.bashPrefixes ?? [],
+    };
+  }
+  return tools;
+}
+
 function profileToForm(
   profile: AgentProfileRecord | null | undefined,
 ): AgentFormState {
@@ -151,11 +395,12 @@ function profileToForm(
     prompt: profile.prompt,
     executionSetting: profile.executionSetting,
     exitPlanModeEnabled: profile.exitPlanModeEnabled,
-    toolScopePreset: profile.toolScope?.preset ?? "",
-    toolScopeAllowTools: (profile.toolScope?.allowTools ?? []).join(", "),
-    toolScopeDenyTools: (profile.toolScope?.denyTools ?? []).join(", "),
-    toolScopeBashPrefixes: (profile.toolScope?.bashPrefixes ?? []).join(", "),
-    toolScopeInheritPolicy: Boolean(profile.toolScope?.inheritPolicy),
+    toolContractPreset:
+      profile.toolContract?.preset ?? profile.toolScope?.preset ?? "",
+    toolContractInheritPolicy: Boolean(
+      profile.toolContract?.inheritPolicy ?? profile.toolScope?.inheritPolicy,
+    ),
+    toolContractTools: profile.toolContract?.tools ?? legacyToolScopeTools(profile),
     enabled: profile.enabled,
   };
 }
@@ -165,24 +410,27 @@ async function upsertAgent(input: AgentFormState): Promise<string> {
     string,
     { enabled?: boolean; bash_prefixes?: string[] }
   > = {};
-  for (const value of input.toolScopeAllowTools
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean)) {
-    toolContractTools[value] = { enabled: true };
-  }
-  for (const value of input.toolScopeDenyTools
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean)) {
-    toolContractTools[value] = { enabled: false };
-  }
-  const bashPrefixes = input.toolScopeBashPrefixes
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
-  if (bashPrefixes.length > 0) {
-    toolContractTools.bash = { enabled: true, bash_prefixes: bashPrefixes };
+  for (const [name, config] of Object.entries(input.toolContractTools)) {
+    const toolName = name.trim();
+    if (!toolName) {
+      continue;
+    }
+    const bashPrefixes = config.bashPrefixes
+      .map((value) => value.trim())
+      .filter(Boolean);
+    const toolConfig: { enabled?: boolean; bash_prefixes?: string[] } = {};
+    if (typeof config.enabled === "boolean") {
+      toolConfig.enabled = config.enabled;
+    }
+    if (bashPrefixes.length > 0) {
+      toolConfig.bash_prefixes = bashPrefixes;
+      if (toolConfig.enabled === undefined) {
+        toolConfig.enabled = true;
+      }
+    }
+    if (toolConfig.enabled !== undefined || toolConfig.bash_prefixes) {
+      toolContractTools[toolName] = toolConfig;
+    }
   }
 
   const response = await requestJson<{ profile?: { name?: string } }>(
@@ -204,12 +452,12 @@ async function upsertAgent(input: AgentFormState): Promise<string> {
           : input.executionSetting,
         exit_plan_mode_enabled: input.exitPlanModeEnabled,
         tool_contract: {
-          preset: input.toolScopePreset.trim() || undefined,
+          preset: input.toolContractPreset.trim() || undefined,
           tools:
             Object.keys(toolContractTools).length > 0
               ? toolContractTools
               : undefined,
-          inherit_policy: input.toolScopeInheritPolicy,
+          inherit_policy: input.toolContractInheritPolicy,
         },
         enabled: input.enabled,
       }),
@@ -710,6 +958,45 @@ export function AgentsSettingsPage() {
         : null,
     [profiles, selectedKey],
   );
+  const selectedToolContractName =
+    viewMode === "edit" && selectedKey !== NEW_AGENT_KEY
+      ? selectedProfile?.name.trim() || ""
+      : "";
+  const {
+    data: toolContractRuntime,
+    isFetching: toolContractFetching,
+    error: toolContractError,
+  } = useQuery(agentToolContractQueryOptions(selectedToolContractName));
+  const toolPresetOptions = useMemo(
+    () =>
+      mergedPresetOptions(
+        toolContractRuntime,
+        toolContractRuntime?.toolInventory?.presets ?? agentState?.toolInventory?.presets,
+        form.toolContractPreset,
+      ),
+    [agentState?.toolInventory?.presets, form.toolContractPreset, toolContractRuntime],
+  );
+  const activeToolPreset =
+    toolPresetOptions.find(
+      (preset) => preset.id === form.toolContractPreset.trim(),
+    ) ??
+    agentToolPresetByID(form.toolContractPreset) ??
+    CUSTOM_AGENT_TOOL_PRESET;
+  const runtimeToolNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const name of Object.keys(toolContractRuntime?.resolved?.tools ?? {})) {
+      if (name.trim()) names.add(name.trim());
+    }
+    for (const tool of toolContractRuntime?.toolInventory?.tools ?? agentState?.toolInventory?.tools ?? []) {
+      const toolName = (tool.contractName || tool.name).trim();
+      if (toolName) names.add(toolName);
+    }
+    return Array.from(names).sort((left, right) => left.localeCompare(right));
+  }, [agentState?.toolInventory?.tools, toolContractRuntime]);
+  const effectiveToolContractAccess = useMemo(
+    () => effectiveToolAccess(activeToolPreset, form.toolContractTools, runtimeToolNames),
+    [activeToolPreset, form.toolContractTools, runtimeToolNames],
+  );
 
   useEffect(() => {
     if (selectedKey === NEW_AGENT_KEY) {
@@ -803,6 +1090,64 @@ export function AgentsSettingsPage() {
     setViewMode("list");
     setStatus(null);
     setError(null);
+  };
+
+  const setToolContractPreset = (presetID: string) => {
+    setForm((current) => {
+      const preset =
+        toolPresetOptions.find((option) => option.id === presetID) ??
+        agentToolPresetByID(presetID) ??
+        CUSTOM_AGENT_TOOL_PRESET;
+      if (preset.id === CUSTOM_AGENT_TOOL_PRESET_ID) {
+        const currentAccess = effectiveToolAccess(
+          activeToolPreset,
+          current.toolContractTools,
+          runtimeToolNames,
+        );
+        return {
+          ...current,
+          toolContractPreset: CUSTOM_AGENT_TOOL_PRESET_ID,
+          toolContractTools: customToolsFromAccess(currentAccess),
+        };
+      }
+      return {
+        ...current,
+        toolContractPreset: preset.id,
+        toolContractTools: {},
+      };
+    });
+  };
+
+  const setToolAccess = (toolName: string, enabled: boolean) => {
+    const normalized = toolName.trim();
+    if (!normalized) {
+      return;
+    }
+    setForm((current) => {
+      const currentPreset =
+        toolPresetOptions.find((option) => option.id === current.toolContractPreset) ??
+        agentToolPresetByID(current.toolContractPreset) ??
+        CUSTOM_AGENT_TOOL_PRESET;
+      const nextAccess = effectiveToolAccess(
+        currentPreset,
+        current.toolContractTools,
+        runtimeToolNames,
+      );
+      nextAccess.allowed = nextAccess.allowed.filter((name) => name !== normalized);
+      nextAccess.blocked = nextAccess.blocked.filter((name) => name !== normalized);
+      if (enabled) {
+        nextAccess.allowed.push(normalized);
+      } else {
+        nextAccess.blocked.push(normalized);
+      }
+      nextAccess.allowed = sortedUnique(nextAccess.allowed);
+      nextAccess.blocked = sortedUnique(nextAccess.blocked);
+      return {
+        ...current,
+        toolContractPreset: matchedToolPresetID(nextAccess, toolPresetOptions),
+        toolContractTools: customToolsFromAccess(nextAccess),
+      };
+    });
   };
 
   const handleSaveWithPrompt = async (newPrompt: string) => {
@@ -1178,7 +1523,7 @@ export function AgentsSettingsPage() {
             ) : null}
           </div>
 
-          <div className="grid grid-cols-1 gap-8 lg:grid-cols-3 lg:gap-12">
+          <div className="flex flex-col gap-8">
             <div className="flex flex-col gap-4">
               <h3 className="text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)] m-0">
                 Primary Agents
@@ -1204,6 +1549,9 @@ export function AgentsSettingsPage() {
                         )}
                       </div>
                       <span className="w-full truncate text-xs font-medium text-[var(--app-text-muted)]">
+                        {agentProviderModelSummary(profile)}
+                      </span>
+                      <span className="mt-1 w-full truncate text-[11px] text-[var(--app-text-muted)] opacity-80">
                         {agentRuntimeSummary(profile)}
                       </span>
                       {profile.description && (
@@ -1242,10 +1590,11 @@ export function AgentsSettingsPage() {
                       </div>
                       <span className="w-full truncate text-xs font-medium text-[var(--app-text-muted)]">
                         {utilityTagged
-                          ? profile.provider.trim() && profile.model.trim()
-                            ? `${profile.provider}/${profile.model}`
-                            : utilityLabel
-                          : agentRuntimeSummary(profile)}
+                          ? agentProviderModelSummary(profile, utilityLabel)
+                          : agentProviderModelSummary(profile)}
+                      </span>
+                      <span className="mt-1 w-full truncate text-[11px] text-[var(--app-text-muted)] opacity-80">
+                        {agentRuntimeSummary(profile)}
                       </span>
                       {profile.description && (
                         <span className="mt-1.5 line-clamp-1 w-full text-xs text-[var(--app-text-muted)] opacity-80">
@@ -1274,6 +1623,9 @@ export function AgentsSettingsPage() {
                         {profile.name}
                       </div>
                       <span className="w-full truncate text-xs font-medium text-[var(--app-text-muted)]">
+                        {agentProviderModelSummary(profile)}
+                      </span>
+                      <span className="mt-1 w-full truncate text-[11px] text-[var(--app-text-muted)] opacity-80">
                         {agentRuntimeSummary(profile)}
                       </span>
                       {profile.description && (
@@ -1612,84 +1964,101 @@ export function AgentsSettingsPage() {
 
               <div className="border-t border-[var(--app-border)] px-4 py-4">
                 <div className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
-                  <Settings2 size={14} /> Advanced tool scope
+                  <Settings2 size={14} /> Tool contract
                 </div>
                 <p className="mb-4 text-xs text-[var(--app-text-muted)]">
-                  {form.exitPlanModeEnabled
-                    ? "Optional narrowing overlay for the plan/auto runtime contract. It can only remove capability; it never expands it."
-                    : "Optional narrowing overlay. This can only remove capability from the base execution setting; it never expands it."}
+                  Canonical runtime contract for this agent. Runtime data is loaded
+                  from /v2/agents/{selectedToolContractName || form.name || "{name}"}
+                  /tool-contract.
                 </p>
-                <div className="grid grid-cols-1 gap-3">
-                  <input
-                    type="text"
-                    value={form.toolScopePreset}
-                    onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                      setForm((current) => ({
-                        ...current,
-                        toolScopePreset: event.target.value,
-                      }))
-                    }
-                    disabled={busy}
-                    placeholder="Preset (optional)"
-                    autoComplete="off"
-                    className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 text-sm text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)]"
-                  />
-                  <input
-                    type="text"
-                    value={form.toolScopeAllowTools}
-                    onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                      setForm((current) => ({
-                        ...current,
-                        toolScopeAllowTools: event.target.value,
-                      }))
-                    }
-                    disabled={busy}
-                    placeholder="Allow tools (comma-separated)"
-                    autoComplete="off"
-                    className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 text-sm text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)]"
-                  />
-                  <input
-                    type="text"
-                    value={form.toolScopeDenyTools}
-                    onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                      setForm((current) => ({
-                        ...current,
-                        toolScopeDenyTools: event.target.value,
-                      }))
-                    }
-                    disabled={busy}
-                    placeholder="Deny tools (comma-separated)"
-                    autoComplete="off"
-                    className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 text-sm text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)]"
-                  />
-                  <input
-                    type="text"
-                    value={form.toolScopeBashPrefixes}
-                    onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                      setForm((current) => ({
-                        ...current,
-                        toolScopeBashPrefixes: event.target.value,
-                      }))
-                    }
-                    disabled={busy}
-                    placeholder="Bash prefixes (comma-separated)"
-                    autoComplete="off"
-                    className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 text-sm text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)]"
-                  />
-                  <label className="inline-flex items-center gap-2 text-sm text-[var(--app-text)]">
-                    <input
-                      type="checkbox"
-                      checked={form.toolScopeInheritPolicy}
-                      onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                        setForm((current) => ({
-                          ...current,
-                          toolScopeInheritPolicy: event.target.checked,
-                        }))
-                      }
-                      disabled={busy}
-                    />
-                    Apply stored permission policy in addition to this overlay
-                  </label>
+                <div className="space-y-3">
+                  <div className="flex items-start gap-3">
+                    <label className="w-1/4 shrink-0 pt-2 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
+                      Preset
+                    </label>
+                    <div className="min-w-0 flex-1 space-y-2">
+                      <div className="relative">
+                        <select
+                          value={form.toolContractPreset || CUSTOM_AGENT_TOOL_PRESET_ID}
+                          onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+                            setToolContractPreset(event.target.value)
+                          }
+                          disabled={busy}
+                          className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <option value="">Choose a preset</option>
+                          {toolPresetOptions.map((preset) => (
+                            <option key={preset.id} value={preset.id}>
+                              {presetLabel(preset)}
+                            </option>
+                          ))}
+                        </select>
+                        <ChevronDown
+                          size={14}
+                          className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]"
+                        />
+                      </div>
+                      <div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 text-xs text-[var(--app-text-muted)]">
+                        <div className="font-semibold text-[var(--app-text)]">
+                          {presetLabel(activeToolPreset)}
+                        </div>
+                        {activeToolPreset.description ? (
+                          <div className="mt-1">{activeToolPreset.description}</div>
+                        ) : null}
+                        {activeToolPreset.bashPrefixes.length > 0 ? (
+                          <div className="mt-2 text-[var(--app-warning)]">
+                            Bash prefixes: {activeToolPreset.bashPrefixes.join(", ")}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <div className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
+                      Runtime
+                    </div>
+                    <div className="min-w-0 flex-1 text-xs text-[var(--app-text-muted)]">
+                      {toolContractFetching
+                        ? "Loading resolved runtime contract…"
+                        : toolContractError
+                          ? `Failed to load runtime contract: ${toolContractError instanceof Error ? toolContractError.message : "unknown error"}`
+                          : toolContractRuntime?.resolved
+                            ? `${toolContractRuntime.resolved.availableTools.length} enabled, ${toolContractRuntime.resolved.unavailableTools.length} disabled. Runtime mode: ${toolContractRuntime.resolved.runtimeMode || "unset"}.`
+                            : selectedToolContractName
+                              ? "No runtime contract returned."
+                              : "Save the agent before runtime resolution is available."}
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <div className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
+                      Tools
+                    </div>
+                    <div className="min-w-0 flex-1 space-y-2">
+                      <ToolAccessRow
+                        label="Allowed"
+                        count={effectiveToolContractAccess.allowed.length}
+                        items={effectiveToolContractAccess.allowed}
+                        emptyText="No tools are allowed"
+                        tone="allow"
+                        onItemClick={(item) => setToolAccess(item, false)}
+                        disabled={busy}
+                        itemTitle="Click to block this tool"
+                      />
+                      <ToolAccessRow
+                        label="Blocked"
+                        count={effectiveToolContractAccess.blocked.length}
+                        items={effectiveToolContractAccess.blocked}
+                        emptyText="No tools are blocked"
+                        tone="block"
+                        onItemClick={(item) => setToolAccess(item, true)}
+                        disabled={busy}
+                        itemTitle="Click to allow this tool"
+                      />
+                      <div className="text-xs text-[var(--app-text-muted)]">
+                        Click a tool chip to move it between allowed and blocked. Any combination that does not match a preset is saved as Custom.
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
