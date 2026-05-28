@@ -3702,6 +3702,36 @@ func (p *ChatPage) latestToolStreamEntryForEntry(entry chatToolStreamEntry) chat
 	return p.latestToolStreamEntry(entry.CallID, entry.ToolName)
 }
 
+func (p *ChatPage) hasManagedToolTimelineEntry(entry chatToolStreamEntry) bool {
+	if p == nil {
+		return false
+	}
+	entryKey := strings.TrimSpace(entry.EntryKey)
+	callID := strings.TrimSpace(entry.CallID)
+	toolName := strings.TrimSpace(entry.ToolName)
+	if entryKey == "" && callID == "" {
+		return false
+	}
+	for i := len(p.timeline) - 1; i >= 0; i-- {
+		item := p.timeline[i]
+		if !isManagedToolTimelineMessage(item) {
+			continue
+		}
+		if entryKey != "" {
+			if toolTimelineMessageEntryKey(item) == entryKey {
+				return true
+			}
+			continue
+		}
+		if callID != "" && toolTimelineMessageCallID(item) == callID {
+			if toolName == "" || strings.EqualFold(toolTimelineMessageToolName(item), toolName) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (p *ChatPage) upsertToolStreamEntry(entry chatToolStreamEntry) {
 	if strings.TrimSpace(entry.ToolName) == "" {
 		entry.ToolName = "tool"

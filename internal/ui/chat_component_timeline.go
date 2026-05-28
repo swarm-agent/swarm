@@ -99,7 +99,7 @@ func (p *ChatPage) buildTimelineLines(width int) []chatRenderLine {
 		liveTools := p.liveToolEntries(2)
 		renderedLiveTools := 0
 		for _, entry := range liveTools {
-			if shouldSuppressLiveToolEntry(entry) {
+			if p.shouldSuppressLiveToolEntry(entry) {
 				continue
 			}
 			lines = append(lines, p.renderLiveToolEntryLines(entry, width)...)
@@ -377,8 +377,11 @@ func (p *ChatPage) liveToolEntries(limit int) []chatToolStreamEntry {
 	return running
 }
 
-func shouldSuppressLiveToolEntry(entry chatToolStreamEntry) bool {
+func (p *ChatPage) shouldSuppressLiveToolEntry(entry chatToolStreamEntry) bool {
 	if isManagedTaskToolEntry(entry) {
+		return true
+	}
+	if p.hasManagedToolTimelineEntry(entry) {
 		return true
 	}
 	return isLiveBashToolEntry(entry) && strings.TrimSpace(entry.Output) != ""

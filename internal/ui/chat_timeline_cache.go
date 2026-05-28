@@ -242,7 +242,7 @@ func (p *ChatPage) buildTimelineRenderBlocks(width int) []chatTimelineRenderBloc
 	if p.liveRunVisible() {
 		liveTools := p.liveToolEntries(2)
 		for _, entry := range liveTools {
-			if shouldSuppressLiveToolEntry(entry) {
+			if p.shouldSuppressLiveToolEntry(entry) {
 				continue
 			}
 			blocks = appendTimelineRenderBlock(blocks, p.withTimelineSpacer(p.renderLiveToolEntryLines(entry, width)))
