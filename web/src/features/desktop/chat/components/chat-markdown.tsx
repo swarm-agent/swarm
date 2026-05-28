@@ -167,16 +167,85 @@ function taskStatusLabel(row: TaskToolRow): string {
       return "OK";
     case "error":
     case "failed":
-      return "ER";
+      return "ERR";
     case "running":
     case "active":
     case "in_progress":
-      return "RN";
+      return "RUN";
     case "pending":
     case "":
-      return "..";
+      return "WAIT";
     default:
-      return status.slice(0, 2).toUpperCase();
+      return status.slice(0, 4).toUpperCase();
+  }
+}
+
+function taskStatusKind(row: TaskToolRow): "success" | "error" | "running" | "pending" | "other" {
+  const status = row.status.trim().toLowerCase();
+  switch (status) {
+    case "done":
+    case "ok":
+    case "success":
+    case "completed":
+    case "complete":
+      return "success";
+    case "error":
+    case "failed":
+      return "error";
+    case "running":
+    case "active":
+    case "in_progress":
+      return "running";
+    case "pending":
+    case "":
+      return "pending";
+    default:
+      return "other";
+  }
+}
+
+function taskStatusText(kind: ReturnType<typeof taskStatusKind>): string {
+  switch (kind) {
+    case "success":
+      return "done";
+    case "error":
+      return "error";
+    case "running":
+      return "running";
+    case "pending":
+      return "queued";
+    default:
+      return "active";
+  }
+}
+
+function taskStatusTextClass(kind: ReturnType<typeof taskStatusKind>): string {
+  switch (kind) {
+    case "success":
+      return "text-[var(--app-success)]";
+    case "error":
+      return "text-[var(--app-danger)]";
+    case "running":
+      return "text-[var(--app-primary)]";
+    case "pending":
+      return "text-[var(--app-text-subtle)]";
+    default:
+      return "text-[var(--app-text-muted)]";
+  }
+}
+
+function taskStatusBadgeClass(kind: ReturnType<typeof taskStatusKind>): string {
+  switch (kind) {
+    case "success":
+      return "border-[color-mix(in_srgb,var(--app-success)_32%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-success)_10%,transparent)] text-[var(--app-success)]";
+    case "error":
+      return "border-[color-mix(in_srgb,var(--app-danger)_36%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-danger)_10%,transparent)] text-[var(--app-danger)]";
+    case "running":
+      return "border-[color-mix(in_srgb,var(--app-primary)_40%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-primary)_12%,transparent)] text-[var(--app-primary)]";
+    case "pending":
+      return "border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-text-muted)_7%,transparent)] text-[var(--app-text-subtle)]";
+    default:
+      return "border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)]";
   }
 }
 
@@ -194,46 +263,141 @@ function liveTaskElapsedLabel(row: TaskToolRow, nowMs: number): string {
   return fallbackMs > 0 ? formatDuration(fallbackMs) : row.time || '-';
 }
 
+function taskPreviewLabel(row: TaskToolRow): string {
+  const previewKind = row.previewKind.trim().toLowerCase();
+  if (previewKind === 'reasoning') return 'thinking';
+  return row.previewKind.trim() || 'live';
+}
+
+function TaskAgentListRow({
+  row,
+  index,
+  nowMs,
+  dense,
+}: {
+  row: TaskToolRow;
+  index: number;
+  nowMs: number;
+  dense: boolean;
+}) {
+  const kind = taskStatusKind(row);
+  const statusLabel = taskStatusLabel(row);
+  const primaryLabel = row.assignmentLabel || row.agent || 'subagent';
+  const agentLabel = row.agent && row.assignmentLabel ? `@${row.agent}` : row.agent;
+  const secondaryLabel = [agentLabel, row.modelLabel].filter(Boolean).join(' · ');
+  const elapsedLabel = liveTaskElapsedLabel(row, nowMs);
+  const toolLabel = row.tool && row.tool !== '-' ? row.tool : taskStatusText(kind);
+  const previewText = row.previewText.trim();
+  const rowNumber = row.launchIndex || index + 1;
+
+  return (
+    <div className={cn(
+      "group min-w-0 border-t border-[var(--app-border)] transition-colors hover:bg-[color-mix(in_srgb,var(--app-text-muted)_5%,transparent)]",
+      kind === "running" ? "bg-[color-mix(in_srgb,var(--app-primary)_5%,transparent)]" : "",
+    )}>
+      <div className={cn(
+        "grid min-w-0 grid-cols-[3.25rem_minmax(0,1fr)_4.25rem] items-center gap-x-2 gap-y-1 px-3 sm:grid-cols-[2.5rem_3.75rem_minmax(0,1.5fr)_minmax(0,0.9fr)_4.75rem] sm:gap-x-3",
+        dense ? "py-1.5" : "py-2",
+      )}>
+        <div className="hidden font-mono text-[10px] text-[var(--app-text-subtle)] tabular-nums sm:col-start-1 sm:row-start-1 sm:block">
+          {rowNumber.toString().padStart(2, '0')}
+        </div>
+        <div className={cn("col-start-1 row-start-1 inline-flex h-6 w-fit items-center gap-1 rounded-md border px-1.5 font-mono text-[10px] font-bold tracking-[0.08em] sm:col-start-2", taskStatusBadgeClass(kind))}>
+          <span className={cn("h-1.5 w-1.5 rounded-full bg-current", kind === "running" ? "animate-pulse" : "opacity-70")} />
+          {statusLabel}
+        </div>
+        <div className="col-start-2 row-start-1 min-w-0 sm:col-start-3">
+          <div className="min-w-0 truncate text-[12px] font-semibold text-[var(--app-text)]" title={primaryLabel}>
+            {primaryLabel}
+          </div>
+          {secondaryLabel ? (
+            <div className="mt-0.5 min-w-0 truncate text-[10px] text-[var(--app-text-subtle)]" title={secondaryLabel}>
+              {secondaryLabel}
+            </div>
+          ) : null}
+        </div>
+        <div className="col-start-2 col-span-2 row-start-2 min-w-0 truncate font-mono text-[11px] text-[var(--app-text-muted)] sm:col-start-4 sm:col-span-1 sm:row-start-1" title={toolLabel}>
+          {toolLabel}
+        </div>
+        <div className={cn("col-start-3 row-start-1 text-right font-mono text-[11px] tabular-nums sm:col-start-5", taskStatusTextClass(kind))}>
+          {elapsedLabel}
+        </div>
+      </div>
+      {previewText && !dense ? (
+        <div className="grid min-w-0 grid-cols-[3.25rem_minmax(0,1fr)] gap-x-2 px-3 pb-2 sm:grid-cols-[2.5rem_3.75rem_minmax(0,1fr)] sm:gap-x-3">
+          <div />
+          <div className="hidden sm:block" />
+          <div className="col-start-2 min-w-0 truncate border-l border-[var(--app-border)] pl-2 text-[11px] leading-4 text-[var(--app-text-subtle)] sm:col-start-3">
+            <span className="mr-1 font-mono uppercase tracking-[0.08em] text-[9px]">
+              {taskPreviewLabel(row)}:
+            </span>
+            {previewText}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function TaskRowsView({ rows, nowMs }: { rows: TaskToolRow[]; nowMs: number }) {
   if (rows.length === 0) return null;
 
+  const counts = rows.reduce(
+    (acc, row) => {
+      const kind = taskStatusKind(row);
+      acc.total += 1;
+      if (kind === "running") acc.running += 1;
+      else if (kind === "success") acc.done += 1;
+      else if (kind === "error") acc.error += 1;
+      else acc.pending += 1;
+      return acc;
+    },
+    { total: 0, running: 0, done: 0, error: 0, pending: 0 },
+  );
+  const dense = rows.length >= 50;
+
   return (
-    <div className="mt-1.5 grid gap-1 font-mono text-[11px] leading-[18px]">
-      {rows.map((row, index) => {
-        const statusLabel = taskStatusLabel(row);
-        const previewLabel = row.previewKind.trim().toLowerCase() === 'reasoning'
-          ? 'thinking'
-          : row.previewKind.trim() || 'live';
-        const rowKey = row.childSessionId.trim() || `launch-index:${row.launchIndex || index + 1}`;
-        const primaryLabel = row.assignmentLabel || row.agent || 'subagent';
-        const secondaryLabel = [row.modelLabel, row.agent && row.assignmentLabel ? `@${row.agent}` : ''].filter(Boolean).join(' · ');
-        return (
-          <div key={`launch:${rowKey}`} className="grid gap-1 text-[var(--app-text-muted)]">
-            <div className="grid min-w-0 grid-cols-[1.5rem_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-0.5 sm:grid-cols-[1.5rem_9rem_minmax(0,1fr)_auto]">
-              <div
-                className={`col-start-1 row-start-1 font-bold ${statusLabel === 'OK' ? 'text-[var(--app-success)]' : statusLabel === 'ER' ? 'text-[var(--app-danger)]' : 'text-[var(--app-primary)]'}`}
-              >
-                {statusLabel}
-              </div>
-              <div className="col-start-2 row-start-1 min-w-0 truncate font-medium text-[var(--app-text)]" title={secondaryLabel || primaryLabel}>
-                {primaryLabel}
-              </div>
-              <div className="col-start-2 col-span-2 row-start-2 min-w-0 truncate sm:col-start-3 sm:col-span-1 sm:row-start-1">{secondaryLabel ? `${secondaryLabel} · ` : ''}{row.tool || '-'}</div>
-              <div className="col-start-3 row-start-1 shrink-0 text-right text-[var(--app-text-subtle)] sm:col-start-4">
-                {liveTaskElapsedLabel(row, nowMs)}
-              </div>
+    <div className="mt-2 min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-sm">
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-bg-alt)_72%,transparent)] px-3 py-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <LoaderCircle size={14} className={counts.running > 0 ? "animate-spin text-[var(--app-primary)]" : "text-[var(--app-text-subtle)]"} />
+          <div className="min-w-0">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="truncate text-xs font-bold uppercase tracking-[0.12em] text-[var(--app-text)]">
+                Subagent stream
+              </span>
+
             </div>
-            {row.previewText ? (
-              <div className="ml-9 border-l-[1.5px] border-[var(--app-border)] pl-3 whitespace-pre-wrap break-all text-[var(--app-text-subtle)]">
-                <span className="mr-1 uppercase tracking-[0.08em] text-[10px] text-[var(--app-text-subtle)]">
-                  {previewLabel}:
-                </span>
-                {row.previewText}
-              </div>
-            ) : null}
+            <div className="mt-0.5 text-[11px] text-[var(--app-text-subtle)]">
+              {counts.total} launched · {counts.running} running · {counts.done} done{counts.error > 0 ? ` · ${counts.error} errors` : ''}
+            </div>
           </div>
-        );
-      })}
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5 font-mono text-[10px]">
+          <span className="rounded-md bg-[color-mix(in_srgb,var(--app-primary)_12%,transparent)] px-1.5 py-0.5 text-[var(--app-primary)]">RUN {counts.running}</span>
+          <span className="rounded-md bg-[color-mix(in_srgb,var(--app-success)_12%,transparent)] px-1.5 py-0.5 text-[var(--app-success)]">OK {counts.done}</span>
+          {counts.pending > 0 ? <span className="rounded-md bg-[color-mix(in_srgb,var(--app-text-muted)_10%,transparent)] px-1.5 py-0.5 text-[var(--app-text-subtle)]">WAIT {counts.pending}</span> : null}
+          {counts.error > 0 ? <span className="rounded-md bg-[color-mix(in_srgb,var(--app-danger)_12%,transparent)] px-1.5 py-0.5 text-[var(--app-danger)]">ERR {counts.error}</span> : null}
+        </div>
+      </div>
+      <div className="hidden min-w-0 grid-cols-[2.5rem_3.75rem_minmax(0,1.5fr)_minmax(0,0.9fr)_4.75rem] items-center gap-x-3 border-b border-[var(--app-border)] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)] sm:grid">
+        <div className="min-w-0 font-mono tabular-nums">#</div>
+        <div className="min-w-0">Status</div>
+        <div className="min-w-0">Subagent</div>
+        <div className="min-w-0">Current</div>
+        <div className="min-w-0 text-right">Time</div>
+      </div>
+      <div className="min-w-0">
+        {rows.map((row, index) => (
+          <TaskAgentListRow
+            key={row.childSessionId.trim() || `launch-index:${row.launchIndex || index + 1}`}
+            row={row}
+            index={index}
+            nowMs={nowMs}
+            dense={dense}
+          />
+        ))}
+      </div>
     </div>
   );
 }

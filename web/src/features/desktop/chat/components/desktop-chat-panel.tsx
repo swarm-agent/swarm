@@ -544,27 +544,37 @@ export function desktopChatVirtualItemKey(baseKey: string, thinkingTagsEnabled: 
   return `${desktopChatThinkingTagsMeasurementKey(thinkingTagsEnabled)}:${baseKey}`
 }
 
+function estimateTaskToolSize(rowCount: number): number {
+  if (rowCount <= 0) {
+    return 104
+  }
+  const header = 94
+  const rowHeight = rowCount >= 50 ? 34 : 52
+  return Math.min(920, header + (rowCount * rowHeight))
+}
+
 function estimateRenderItemSize(item: RenderItem | undefined, thinkingTagsEnabled = true): number {
   if (!item) {
     return 96
   }
   switch (item.type) {
     case 'live-tool': {
-      const base = item.toolMessage.tool === 'task' && item.toolMessage.taskRows.length > 0 ? 168 : 104
-      const detailLines = item.toolMessage.previewLines.length + item.toolMessage.taskRows.length
-      return Math.min(520, base + (Math.max(detailLines - 1, 0) * 22))
+      if (item.toolMessage.tool === 'task' && item.toolMessage.taskRows.length > 0) {
+        return estimateTaskToolSize(item.toolMessage.taskRows.length)
+      }
+      const detailLines = item.toolMessage.previewLines.length
+      return Math.min(520, 104 + (Math.max(detailLines - 1, 0) * 22))
     }
     case 'live-assistant':
       return Math.min(640, 88 + (Math.ceil(Math.max(item.content.length, 1) / 100) * 22))
     case 'message': {
       if (item.message.role === 'tool' && item.message.toolMessage) {
         const toolMessage = item.message.toolMessage
-        const base = toolMessage.tool === 'task' && toolMessage.taskRows.length > 0
-          ? 168
-          : toolMessage.searchData
-            ? 180
-            : 104
-        const detailLines = toolMessage.previewLines.length + toolMessage.taskRows.length + (toolMessage.searchData ? Math.min(toolMessage.searchData.files.length, 6) * 2 : 0)
+        if (toolMessage.tool === 'task' && toolMessage.taskRows.length > 0) {
+          return estimateTaskToolSize(toolMessage.taskRows.length)
+        }
+        const base = toolMessage.searchData ? 180 : 104
+        const detailLines = toolMessage.previewLines.length + (toolMessage.searchData ? Math.min(toolMessage.searchData.files.length, 6) * 2 : 0)
         return Math.min(520, base + (Math.max(detailLines - 1, 0) * 22))
       }
       if (item.message.role === 'reasoning') {
