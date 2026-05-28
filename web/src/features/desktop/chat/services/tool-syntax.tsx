@@ -22,6 +22,7 @@ interface ToolSyntaxLineProps {
   text: string;
   language?: string;
   shell?: boolean;
+  plain?: boolean;
   className?: string;
 }
 
@@ -202,9 +203,9 @@ function roleClassName(role: ToolSyntaxRole): string {
   }
 }
 
-function syntaxSpans(text: string, language?: string, shell?: boolean): ToolSyntaxSpan[] {
+export function syntaxSpans(text: string, language?: string, shell?: boolean, plain?: boolean): ToolSyntaxSpan[] {
   if (!text) return [];
-  if (text.length > MAX_HIGHLIGHT_CHARS) return [{ text, role: "plain" }];
+  if (plain || text.length > MAX_HIGHLIGHT_CHARS) return [{ text, role: "plain" }];
   const lang = normalizeLanguage(language);
   if (shell || lang === "bash" || lang === "shell") return highlightShell(text);
   if (!lang) return highlightCode(text, "");
@@ -219,8 +220,8 @@ function renderSyntaxSpans(spans: ToolSyntaxSpan[]): ReactNode[] {
   ));
 }
 
-function ToolSyntaxLineInner({ text, language, shell, className }: ToolSyntaxLineProps) {
-  const spans = syntaxSpans(text, language, shell);
+function ToolSyntaxLineInner({ text, language, shell, plain, className }: ToolSyntaxLineProps) {
+  const spans = syntaxSpans(text, language, shell, plain);
   return <span className={className}>{renderSyntaxSpans(spans)}</span>;
 }
 

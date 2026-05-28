@@ -106,12 +106,14 @@ function PreviewLinesView({
   commandText = "",
   language = "",
   shell = false,
+  plain = false,
 }: {
   lines: string[];
   compact?: boolean;
   commandText?: string;
   language?: string;
   shell?: boolean;
+  plain?: boolean;
 }) {
   if (lines.length === 0 && !commandText) return null;
 
@@ -137,7 +139,7 @@ function PreviewLinesView({
             ? "whitespace-pre-wrap break-words rounded-sm px-1.5 py-0.5 [overflow-wrap:anywhere] odd:bg-[color-mix(in_srgb,var(--app-text-muted)_6%,transparent)]"
             : "whitespace-pre-wrap break-words rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-[12px] leading-5 text-[var(--app-text)] [overflow-wrap:anywhere]"}
         >
-          <ToolSyntaxLine text={line} language={language} shell={shell} />
+          <ToolSyntaxLine text={line} language={language} shell={shell} plain={plain} />
         </div>
       ))}
       {isLarge ? (
@@ -389,6 +391,24 @@ function ImageToolAction({ toolMessage }: { toolMessage: StructuredToolMessage }
   );
 }
 
+function shouldRenderPreviewAsPlain(toolName: string): boolean {
+  switch (toolName.trim().toLowerCase()) {
+    case "manage_todos":
+    case "manage-todos":
+    case "manage-image":
+    case "manage_image":
+    case "websearch":
+    case "webfetch":
+    case "task":
+    case "exit-plan-mode":
+    case "exit_plan_mode":
+    case "permission":
+      return true;
+    default:
+      return false;
+  }
+}
+
 function parseToolJSON(value: string): Record<string, unknown> | null {
   const trimmed = value.trim();
   if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return null;
@@ -467,6 +487,7 @@ export function ToolMessageView({
   const accentWash = toolAccentWash(toolTheme.color, 14);
   const previewLanguage = inferToolSyntaxLanguage(toolMessage.target || pathFromToolSummary(toolMessage.summary));
   const shellPreview = toolMessage.tool.trim().toLowerCase() === "bash";
+  const plainPreview = shouldRenderPreviewAsPlain(toolMessage.tool);
 
   return (
     <div className={isGroupItem ? "py-2" : "mb-2 min-w-0 py-2"}>
@@ -529,6 +550,7 @@ export function ToolMessageView({
             compact={toolMessage.tool !== 'exit_plan_mode' && toolMessage.tool !== 'permission'}
             language={previewLanguage}
             shell={shellPreview}
+            plain={plainPreview}
           />
         ) : null}
         {toolMessage.tool.trim().toLowerCase() === 'manage-image' || toolMessage.tool.trim().toLowerCase() === 'manage_image' ? (
