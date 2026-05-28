@@ -226,10 +226,8 @@ export function AddSwarmModal({
   const [swarmName, setSwarmName] = useState('')
   const [targetHosts, setTargetHosts] = useState<SwarmTarget[]>([])
   const [selectedTargetHostSwarmID, setSelectedTargetHostSwarmID] = useState(LOCAL_TARGET_SWARM_ID)
-  const [syncEnabled, setSyncEnabled] = useState(true)
   const [syncVaultPassword, setSyncVaultPassword] = useState('')
   const [bypassPermissions, setBypassPermissions] = useState(false)
-  const [alwaysOn, setAlwaysOn] = useState(true)
   const [containerPackageBaseImage, setContainerPackageBaseImage] = useState(
     FALLBACK_CONTAINER_PACKAGE_BASE_IMAGE,
   )
@@ -363,10 +361,8 @@ export function AddSwarmModal({
     setDevMode(inheritedDevMode)
     setTargetHosts([])
     setSelectedTargetHostSwarmID(LOCAL_TARGET_SWARM_ID)
-    setSyncEnabled(true)
     setSyncVaultPassword('')
     setBypassPermissions(false)
-    setAlwaysOn(true)
     setContainerPackageBaseImage(FALLBACK_CONTAINER_PACKAGE_BASE_IMAGE)
     setContainerPackageManager(FALLBACK_CONTAINER_PACKAGE_MANAGER)
     setContainerPackages(DEFAULT_CONTAINER_PACKAGES)
@@ -519,7 +515,7 @@ export function AddSwarmModal({
       setError('Select at least one workspace to add.')
       return
     }
-    if (syncEnabled && hostVaultEnabled && !syncVaultPassword.trim()) {
+    if (hostVaultEnabled && !syncVaultPassword.trim()) {
       setError('Vault password is required to sync from a vaulted host.')
       return
     }
@@ -540,13 +536,13 @@ export function AddSwarmModal({
           : undefined,
         runtime: runtimeChoice,
         bypassPermissions,
-        alwaysOn,
+        alwaysOn: true,
         sync: {
-          enabled: syncEnabled,
+          enabled: true,
           mode: 'managed',
-          modules: syncEnabled ? syncModules : [],
+          modules: syncModules,
           vaultPassword:
-            syncEnabled && hostVaultEnabled ? syncVaultPassword.trim() : '',
+            hostVaultEnabled ? syncVaultPassword.trim() : '',
         },
         workspaces: selected.map((item) => ({
           sourceWorkspacePath: item.workspacePath,
@@ -616,19 +612,21 @@ export function AddSwarmModal({
     'grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-none'
   const optionClassName = (active: boolean) =>
     `rounded-lg border px-3 py-2 text-left transition ${active ? 'border-[var(--app-primary)] bg-transparent text-[var(--app-text)]' : 'border-[var(--app-border)] bg-transparent text-[var(--app-text-muted)]'}`
+  const infoCardClassName =
+    'rounded-lg border border-[var(--app-border)] bg-transparent px-3 py-2 text-left text-[var(--app-text)]'
   const launchPendingReason = (() => {
     if (loading) return 'Loading launch options…'
     if (!swarmName.trim()) return 'Please enter a container name.'
     if (!runtimeChoice)
       return runtimeStatus.warning || 'Please choose an available runtime.'
     if (selectedWorkspaceCountValue === 0) return 'Please select a workspace.'
-    if (syncEnabled && hostVaultEnabled && !syncVaultPassword.trim())
+    if (hostVaultEnabled && !syncVaultPassword.trim())
       return 'Please enter the vault password to enable sync.'
     return null
   })()
   const footerStatusText =
     launchPendingReason ||
-    `${selectedWorkspaceCountValue} selected workspace${selectedWorkspaceCountValue === 1 ? '' : 's'} will be added to ${launchTargetIsManaged ? launchTargetLabel : 'a local container'} using ${runtimeChoice || 'the selected runtime'} with sync ${syncEnabled ? 'enabled' : 'disabled'}.`
+    `${selectedWorkspaceCountValue} selected workspace${selectedWorkspaceCountValue === 1 ? '' : 's'} will be added to ${launchTargetIsManaged ? launchTargetLabel : 'a local container'} using ${runtimeChoice || 'the selected runtime'} with built-in sync and always-on enabled.`
 
   return (
     <Dialog>
@@ -975,8 +973,8 @@ export function AddSwarmModal({
                   Ready Check
                 </div>
                 <div className="text-xs text-[var(--app-text-muted)]">
-                  Smart defaults are selected. Adjust only what you need before
-                  launch.
+                  Containers include always-on restart and Swarm Sync so the main
+                  swarm can keep managing them after launch.
                 </div>
               </div>
               <Badge tone={runtimeChoice ? 'live' : 'warning'}>
@@ -984,65 +982,38 @@ export function AddSwarmModal({
               </Badge>
             </div>
             <div className="grid gap-2 sm:grid-cols-3">
-              <button
-                type="button"
-                role="switch"
-                aria-checked={alwaysOn}
-                data-testid="add-swarm-always-on"
-                className={optionClassName(alwaysOn)}
-                onClick={() =>
-                  !submitting && setAlwaysOn((current) => !current)
-                }
-                disabled={submitting}
-              >
+              <div className={infoCardClassName} data-testid="add-swarm-always-on">
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <div className="text-sm font-semibold text-[var(--app-text)]">
-                      Always On
+                      Always On included
                     </div>
                     <div className="mt-1 text-xs text-[var(--app-text-muted)]">
-                      {alwaysOn
-                        ? 'Restart attached swarms on host startup.'
-                        : 'Manual start after host restart.'}
+                      Required so the container restarts with its host and stays reachable from the main swarm.
                     </div>
                   </div>
-                  {alwaysOn ? (
-                    <Check
-                      size={15}
-                      className="shrink-0 text-[var(--app-primary)]"
-                    />
-                  ) : null}
+                  <Check
+                    size={15}
+                    className="shrink-0 text-[var(--app-primary)]"
+                  />
                 </div>
-              </button>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={syncEnabled}
-                className={optionClassName(syncEnabled)}
-                onClick={() =>
-                  !submitting && setSyncEnabled((current) => !current)
-                }
-                disabled={submitting}
-              >
+              </div>
+              <div className={infoCardClassName}>
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <div className="text-sm font-semibold text-[var(--app-text)]">
-                      Swarm Sync
+                      Swarm Sync included
                     </div>
                     <div className="mt-1 text-xs text-[var(--app-text-muted)]">
-                      {syncEnabled
-                        ? 'Continuously follows manager swarm changes.'
-                        : 'Standalone managed swarm auth.'}
+                      Required so the main swarm can sync credentials, agents, tools, and workspace management into this container.
                     </div>
                   </div>
-                  {syncEnabled ? (
-                    <Check
-                      size={15}
-                      className="shrink-0 text-[var(--app-primary)]"
-                    />
-                  ) : null}
+                  <Check
+                    size={15}
+                    className="shrink-0 text-[var(--app-primary)]"
+                  />
                 </div>
-              </button>
+              </div>
               <button
                 type="button"
                 role="switch"
@@ -1056,14 +1027,12 @@ export function AddSwarmModal({
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <div className="text-sm font-semibold text-[var(--app-text)]">
-                      Permission sync & bypass override
+                      Turn permissions off for this container only
                     </div>
                     <div className="mt-1 text-xs text-[var(--app-text-muted)]">
-                      {!syncEnabled
-                        ? 'Swarm Sync is off — host permission policy will not sync.'
-                        : bypassPermissions
-                          ? 'Bypass override on — host permission policy will not sync to this managed swarm.'
-                          : 'Permissions sync on — host policy syncs to this managed swarm.'}
+                      {bypassPermissions
+                        ? 'Permission policy sync is off for this container. Swarm Sync stays on for everything else.'
+                        : 'Permission policy sync is on. Turn this on only if this container should manage its own permissions.'}
                     </div>
                   </div>
                   {bypassPermissions ? (
@@ -1075,7 +1044,7 @@ export function AddSwarmModal({
                 </div>
               </button>
             </div>
-            {syncEnabled && hostVaultEnabled ? (
+            {hostVaultEnabled ? (
               <div className="rounded-lg border border-[var(--app-border)] bg-transparent p-3">
                 <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">
                   Vault password
@@ -1119,23 +1088,21 @@ export function AddSwarmModal({
                 <span className="font-medium text-[var(--app-text)]">
                   Always On:
                 </span>{' '}
-                {alwaysOn ? 'Enabled' : 'Disabled'}
+                Enabled
               </div>
               <div>
                 <span className="font-medium text-[var(--app-text)]">
                   Swarm Sync:
                 </span>{' '}
-                {syncEnabled ? 'Enabled' : 'Disabled'}
+                Enabled
               </div>
               <div>
                 <span className="font-medium text-[var(--app-text)]">
                   Permissions:
                 </span>{' '}
-                {!syncEnabled
-                  ? 'Not synced'
-                  : bypassPermissions
-                    ? 'Bypass override enabled'
-                    : 'Synced; bypass override available'}
+                {bypassPermissions
+                  ? 'Off for this container only'
+                  : 'Synced from main swarm'}
               </div>
               <div>
                 <span className="font-medium text-[var(--app-text)]">
@@ -1171,7 +1138,7 @@ export function AddSwarmModal({
                 !runtimeChoice ||
                 !swarmName.trim() ||
                 selectedWorkspaceCountValue === 0 ||
-                (syncEnabled && hostVaultEnabled && !syncVaultPassword.trim())
+                (hostVaultEnabled && !syncVaultPassword.trim())
               }
             >
               {submitting ? (

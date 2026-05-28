@@ -168,6 +168,10 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 		Mode:    req.Sync.Mode,
 		Modules: req.Sync.Modules,
 	})
+	if targetMode == workspace.ReplicationTargetModeLocal && !syncConfig.Enabled {
+		writeError(w, http.StatusBadRequest, errors.New("container replication requires Swarm Sync"))
+		return
+	}
 
 	cfg, err := s.loadStartupConfig()
 	if err != nil {
@@ -252,7 +256,7 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 		Name:               swarmName,
 		Runtime:            strings.TrimSpace(req.Runtime),
 		BypassPermissions:  req.BypassPermissions,
-		AlwaysOn:           req.AlwaysOn,
+		AlwaysOn:           true,
 		GroupID:            groupID,
 		GroupName:          groupName,
 		GroupNetworkName:   groupNetworkName,

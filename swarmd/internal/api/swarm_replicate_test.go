@@ -98,6 +98,7 @@ func TestSwarmReplicatePassesRequestedRuntimeThroughToDeployCreate(t *testing.T)
 		"swarm_name":         "replica-b",
 		"runtime":            "docker",
 		"bypass_permissions": true,
+		"always_on":          false,
 		"sync": map[string]any{
 			"enabled": true,
 			"mode":    "managed",
@@ -118,6 +119,9 @@ func TestSwarmReplicatePassesRequestedRuntimeThroughToDeployCreate(t *testing.T)
 	if !fakeDeploy.lastCreateInput.BypassPermissions {
 		t.Fatalf("create bypass = %t, want true", fakeDeploy.lastCreateInput.BypassPermissions)
 	}
+	if !fakeDeploy.lastCreateInput.AlwaysOn {
+		t.Fatalf("create always_on = false, want true")
+	}
 	var response struct {
 		Swarm struct {
 			BypassPermissions bool `json:"bypass_permissions"`
@@ -128,6 +132,35 @@ func TestSwarmReplicatePassesRequestedRuntimeThroughToDeployCreate(t *testing.T)
 	}
 	if !response.Swarm.BypassPermissions {
 		t.Fatalf("response swarm bypass_permissions = %t, want true", response.Swarm.BypassPermissions)
+	}
+}
+
+func TestSwarmReplicateLocalContainerRequiresSync(t *testing.T) {
+	handler, fakeDeploy, workspacePath := newReplicateTestHandler(t)
+
+	recorder := postReplicateRequest(t, handler, map[string]any{
+		"mode":       "local",
+		"swarm_name": "replica-no-sync",
+		"runtime":    "podman",
+		"sync": map[string]any{
+			"enabled": false,
+			"mode":    "managed",
+		},
+		"workspaces": []map[string]any{{
+			"source_workspace_path": workspacePath,
+			"replication_mode":      "bundle",
+			"writable":              true,
+		}},
+	})
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "container replication requires Swarm Sync") {
+		t.Fatalf("body %q does not mention required sync", recorder.Body.String())
+	}
+	if fakeDeploy.lastCreateInput.Name != "" {
+		t.Fatalf("deploy create was called: %#v", fakeDeploy.lastCreateInput)
 	}
 }
 
