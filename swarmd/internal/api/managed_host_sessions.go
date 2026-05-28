@@ -97,15 +97,19 @@ type peerManagedHostSessionOpenRequest struct {
 }
 
 type managedHostSessionCreateRequest struct {
-	Title                string         `json:"title"`
-	WorkspacePath        string         `json:"workspace_path"`
-	HostWorkspacePath    string         `json:"host_workspace_path,omitempty"`
-	RuntimeWorkspacePath string         `json:"runtime_workspace_path,omitempty"`
-	WorkspaceName        string         `json:"workspace_name"`
-	Mode                 string         `json:"mode"`
-	AgentName            string         `json:"agent_name"`
-	Metadata             map[string]any `json:"metadata"`
-	Preference           struct {
+	Title                    string         `json:"title"`
+	WorkspacePath            string         `json:"workspace_path"`
+	HostWorkspacePath        string         `json:"host_workspace_path,omitempty"`
+	RuntimeWorkspacePath     string         `json:"runtime_workspace_path,omitempty"`
+	WorkspaceName            string         `json:"workspace_name"`
+	Mode                     string         `json:"mode"`
+	AgentName                string         `json:"agent_name"`
+	WorktreeMode             string         `json:"worktree_mode,omitempty"`
+	WorktreeUseCurrentBranch *bool          `json:"worktree_use_current_branch,omitempty"`
+	WorktreeBaseBranch       string         `json:"worktree_base_branch,omitempty"`
+	WorktreeBranchName       string         `json:"worktree_branch_name,omitempty"`
+	Metadata                 map[string]any `json:"metadata"`
+	Preference               struct {
 		Provider    string `json:"provider"`
 		Model       string `json:"model"`
 		Thinking    string `json:"thinking"`
@@ -158,6 +162,24 @@ func (s *Server) handleManagedHostSessionOpen(w http.ResponseWriter, r *http.Req
 		return
 	}
 	workspaceName := firstNonEmpty(strings.TrimSpace(req.WorkspaceName), filepath.Base(runtimeWorkspacePath))
+	worktreeMode := runruntime.RunWorktreeModeOff
+	worktreeUseCurrentBranch := (*bool)(nil)
+	worktreeBaseBranch := ""
+	worktreeBranchName := ""
+	if s.worktrees != nil {
+		config, err := s.worktrees.GetConfigForPrincipal(principal, workspacePath)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if config.Enabled {
+			worktreeMode = runruntime.RunWorktreeModeOn
+			useCurrentBranch := config.UseCurrentBranch
+			worktreeUseCurrentBranch = &useCurrentBranch
+			worktreeBaseBranch = strings.TrimSpace(config.BaseBranch)
+			worktreeBranchName = strings.TrimSpace(config.BranchName)
+		}
+	}
 	route := managedHostSessionRoute{
 		UserID:                strings.TrimSpace(principal.UserID),
 		AccountScopeID:        strings.TrimSpace(principal.AccountScopeID),
@@ -172,15 +194,19 @@ func (s *Server) handleManagedHostSessionOpen(w http.ResponseWriter, r *http.Req
 	peerReq := peerManagedHostSessionOpenRequest{
 		SessionID: sessionID,
 		Request: managedHostSessionCreateRequest{
-			Title:                req.Title,
-			WorkspacePath:        runtimeWorkspacePath,
-			HostWorkspacePath:    runtimeWorkspacePath,
-			RuntimeWorkspacePath: runtimeWorkspacePath,
-			WorkspaceName:        workspaceName,
-			Mode:                 req.Mode,
-			AgentName:            req.AgentName,
-			Metadata:             managedHostSessionMetadata(req.Metadata, route),
-			Preference:           req.Preference,
+			Title:                    req.Title,
+			WorkspacePath:            runtimeWorkspacePath,
+			HostWorkspacePath:        runtimeWorkspacePath,
+			RuntimeWorkspacePath:     runtimeWorkspacePath,
+			WorkspaceName:            workspaceName,
+			Mode:                     req.Mode,
+			AgentName:                req.AgentName,
+			WorktreeMode:             worktreeMode,
+			WorktreeUseCurrentBranch: worktreeUseCurrentBranch,
+			WorktreeBaseBranch:       worktreeBaseBranch,
+			WorktreeBranchName:       worktreeBranchName,
+			Metadata:                 managedHostSessionMetadata(req.Metadata, route),
+			Preference:               req.Preference,
 		},
 		Route: route,
 	}
@@ -354,15 +380,19 @@ func (s *Server) handlePeerManagedHostSessionOpen(w http.ResponseWriter, r *http
 	runtimeWorkspacePath := firstNonEmpty(strings.TrimSpace(req.Request.RuntimeWorkspacePath), strings.TrimSpace(req.Request.WorkspacePath), strings.TrimSpace(req.Route.RuntimeWorkspacePath))
 	hostWorkspacePath := firstNonEmpty(strings.TrimSpace(req.Request.HostWorkspacePath), runtimeWorkspacePath, strings.TrimSpace(req.Route.HostWorkspacePath))
 	childReq := sessionCreateRequest{
-		Title:                req.Request.Title,
-		WorkspacePath:        runtimeWorkspacePath,
-		HostWorkspacePath:    hostWorkspacePath,
-		RuntimeWorkspacePath: runtimeWorkspacePath,
-		WorkspaceName:        req.Request.WorkspaceName,
-		Mode:                 req.Request.Mode,
-		AgentName:            req.Request.AgentName,
-		Metadata:             managedHostSessionMetadata(req.Request.Metadata, req.Route),
-		Preference:           req.Request.Preference,
+		Title:                    req.Request.Title,
+		WorkspacePath:            runtimeWorkspacePath,
+		HostWorkspacePath:        hostWorkspacePath,
+		RuntimeWorkspacePath:     runtimeWorkspacePath,
+		WorkspaceName:            req.Request.WorkspaceName,
+		Mode:                     req.Request.Mode,
+		AgentName:                req.Request.AgentName,
+		WorktreeMode:             firstNonEmpty(strings.TrimSpace(req.Request.WorktreeMode), runruntime.RunWorktreeModeOff),
+		WorktreeUseCurrentBranch: req.Request.WorktreeUseCurrentBranch,
+		WorktreeBaseBranch:       req.Request.WorktreeBaseBranch,
+		WorktreeBranchName:       req.Request.WorktreeBranchName,
+		Metadata:                 managedHostSessionMetadata(req.Request.Metadata, req.Route),
+		Preference:               req.Request.Preference,
 	}
 	session, event, warning, modeWarning, err := s.createSessionFromRequestWithSessionID(childReq, nil, true, req.SessionID, principal, true)
 	if err != nil {

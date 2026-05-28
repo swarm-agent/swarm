@@ -800,10 +800,6 @@ func (s *Server) handleWorktrees(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		if err := s.syncManagedHostWorktreeConfigForPrincipal(r.Context(), r, principal, workspacePath, &managedHostWorktreeConfig{Enabled: config.Enabled, UseCurrentBranch: config.UseCurrentBranch, BaseBranch: config.BaseBranch, BranchName: config.BranchName}); err != nil {
-			writeError(w, http.StatusBadGateway, err)
-			return
-		}
 		if event != nil && s.hub != nil {
 			s.hub.Publish(*event)
 		}

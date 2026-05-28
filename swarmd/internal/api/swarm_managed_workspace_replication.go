@@ -179,31 +179,22 @@ type peerManagedWorkspacePreflightResponse struct {
 	Workspaces      []managedWorkspacePlanResponse `json:"workspaces"`
 }
 
-type managedHostWorktreeConfig struct {
-	Enabled          bool   `json:"enabled"`
-	UseCurrentBranch bool   `json:"use_current_branch"`
-	BaseBranch       string `json:"base_branch,omitempty"`
-	BranchName       string `json:"branch_name,omitempty"`
-}
-
 type peerManagedWorkspaceLinkExistingRequest struct {
-	DestinationRoot        string                     `json:"destination_root"`
-	DestinationPath        string                     `json:"destination_path"`
-	WorkspaceName          string                     `json:"workspace_name"`
-	SourceWorkspacePath    string                     `json:"source_workspace_path"`
-	SourceWorkspaceName    string                     `json:"source_workspace_name,omitempty"`
-	SourceHomeRelativePath string                     `json:"source_home_relative_path,omitempty"`
-	WorktreeConfig         *managedHostWorktreeConfig `json:"worktree_config,omitempty"`
+	DestinationRoot        string `json:"destination_root"`
+	DestinationPath        string `json:"destination_path"`
+	WorkspaceName          string `json:"workspace_name"`
+	SourceWorkspacePath    string `json:"source_workspace_path"`
+	SourceWorkspaceName    string `json:"source_workspace_name,omitempty"`
+	SourceHomeRelativePath string `json:"source_home_relative_path,omitempty"`
 }
 
 type peerManagedWorkspaceEnsureLinkRequest struct {
-	DestinationRoot        string                     `json:"destination_root"`
-	DestinationPath        string                     `json:"destination_path,omitempty"`
-	WorkspaceName          string                     `json:"workspace_name"`
-	SourceWorkspacePath    string                     `json:"source_workspace_path"`
-	SourceHomeRelativePath string                     `json:"source_home_relative_path,omitempty"`
-	Provision              bool                       `json:"provision"`
-	WorktreeConfig         *managedHostWorktreeConfig `json:"worktree_config,omitempty"`
+	DestinationRoot        string `json:"destination_root"`
+	DestinationPath        string `json:"destination_path,omitempty"`
+	WorkspaceName          string `json:"workspace_name"`
+	SourceWorkspacePath    string `json:"source_workspace_path"`
+	SourceHomeRelativePath string `json:"source_home_relative_path,omitempty"`
+	Provision              bool   `json:"provision"`
 }
 
 type peerManagedWorkspaceEnsureLinkResponse struct {
@@ -474,10 +465,6 @@ func (s *Server) handlePeerManagedWorkspaceLinkExisting(w http.ResponseWriter, r
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if err := s.applyPeerManagedHostWorktreeConfig(principal, preflight.Workspaces[0].DestinationPath, req.WorktreeConfig); err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
 	writeJSON(w, http.StatusOK, peerManagedWorkspaceLinkExistingResponse{OK: true, DestinationPath: preflight.Workspaces[0].DestinationPath, WorkspaceName: workspaceName})
 }
 
@@ -551,15 +538,6 @@ func (s *Server) handlePeerManagedWorkspaceImportBundle(w http.ResponseWriter, r
 		return
 	}
 	if _, err := s.workspace.AddForPrincipal(principal, destinationPath, workspaceName, "", false); err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	worktreeConfig, err := managedHostWorktreeConfigFromJSONValue(r.FormValue("worktree_config"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	if err := s.applyPeerManagedHostWorktreeConfig(principal, destinationPath, worktreeConfig); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -644,10 +622,6 @@ func (s *Server) workspaceManagedLinkUpsert(r *http.Request, req workspaceManage
 	if req.Provision != nil {
 		provision = *req.Provision
 	}
-	worktreeConfig, err := s.managedHostWorktreeConfigForPrincipal(principal, normalizedWorkspace.SourceWorkspacePath)
-	if err != nil {
-		return workspaceManagedLinkResponse{}, http.StatusInternalServerError, err
-	}
 	peerResp, err := ensureManagedWorkspaceLinkOnPeer(r.Context(), *target, localSwarmID, peerToken, peerManagedWorkspaceEnsureLinkRequest{
 		DestinationRoot:        strings.TrimSpace(req.DestinationRoot),
 		DestinationPath:        strings.TrimSpace(req.DestinationPath),
@@ -655,7 +629,6 @@ func (s *Server) workspaceManagedLinkUpsert(r *http.Request, req workspaceManage
 		SourceWorkspacePath:    normalizedWorkspace.SourceWorkspacePath,
 		SourceHomeRelativePath: sourceHomeRelativePath(normalizedWorkspace.SourceWorkspacePath),
 		Provision:              provision,
-		WorktreeConfig:         worktreeConfig,
 	})
 	if err != nil {
 		return workspaceManagedLinkResponse{}, http.StatusBadGateway, err
@@ -757,102 +730,6 @@ func (s *Server) peerManagedWorkspacePrincipalForRequest(r *http.Request) (ident
 	return peerManagedWorkspacePrincipal(), true
 }
 
-func (s *Server) syncManagedHostWorktreeConfigForPrincipal(ctx context.Context, r *http.Request, principal identity.Principal, sourceWorkspacePath string, config *managedHostWorktreeConfig) error {
-	if config == nil || s == nil || s.topology == nil {
-		return nil
-	}
-	if !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
-		return identity.ErrPrincipalRequired
-	}
-	bindings, err := s.topology.ListWorkspaceBindingsBySourcePathForAccount(principal.AccountScopeID, sourceWorkspacePath, 100000)
-	if err != nil {
-		return err
-	}
-	if len(bindings) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(bindings))
-	for _, binding := range bindings {
-		targetSwarmID := firstNonEmpty(strings.TrimSpace(binding.DestinationRuntimeSwarmID), strings.TrimSpace(binding.DestinationHostSwarmID))
-		destinationPath := strings.TrimSpace(binding.DestinationWorkspacePath)
-		if targetSwarmID == "" || destinationPath == "" {
-			continue
-		}
-		key := strings.ToLower(targetSwarmID) + "\x00" + filepath.Clean(destinationPath)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		target, resolvedLocalSwarmID, peerToken, status, err := s.resolveManagedWorkspaceTarget(r, targetSwarmID)
-		if err != nil {
-			return fmt.Errorf("resolve managed workspace target %q: %w", targetSwarmID, err)
-		}
-		localSwarmID := strings.TrimSpace(resolvedLocalSwarmID)
-		if status < http.StatusOK || status >= http.StatusMultipleChoices {
-			return fmt.Errorf("resolve managed workspace target %q returned status %d", targetSwarmID, status)
-		}
-		if target == nil {
-			continue
-		}
-		if _, err := ensureManagedWorkspaceLinkOnPeer(ctx, *target, localSwarmID, peerToken, peerManagedWorkspaceEnsureLinkRequest{
-			DestinationRoot:        filepath.Dir(destinationPath),
-			DestinationPath:        destinationPath,
-			WorkspaceName:          firstNonEmpty(strings.TrimSpace(binding.SourceWorkspaceName), filepath.Base(destinationPath)),
-			SourceWorkspacePath:    strings.TrimSpace(binding.SourceWorkspacePath),
-			SourceHomeRelativePath: sourceHomeRelativePath(binding.SourceWorkspacePath),
-			Provision:              false,
-			WorktreeConfig:         config,
-		}); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (s *Server) managedHostWorktreeConfigForPrincipal(principal identity.Principal, workspacePath string) (*managedHostWorktreeConfig, error) {
-	if s == nil || s.worktrees == nil {
-		return nil, nil
-	}
-	if !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
-		return nil, identity.ErrPrincipalRequired
-	}
-	config, err := s.worktrees.GetConfigForPrincipal(principal, workspacePath)
-	if err != nil {
-		return nil, err
-	}
-	return &managedHostWorktreeConfig{
-		Enabled:          config.Enabled,
-		UseCurrentBranch: config.UseCurrentBranch,
-		BaseBranch:       strings.TrimSpace(config.BaseBranch),
-		BranchName:       strings.TrimSpace(config.BranchName),
-	}, nil
-}
-
-func managedHostWorktreeConfigFromJSONValue(raw string) (*managedHostWorktreeConfig, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil, nil
-	}
-	var config managedHostWorktreeConfig
-	if err := json.Unmarshal([]byte(raw), &config); err != nil {
-		return nil, fmt.Errorf("decode worktree_config: %w", err)
-	}
-	config.BaseBranch = strings.TrimSpace(config.BaseBranch)
-	config.BranchName = strings.TrimSpace(config.BranchName)
-	return &config, nil
-}
-
-func (s *Server) applyPeerManagedHostWorktreeConfig(principal identity.Principal, workspacePath string, config *managedHostWorktreeConfig) error {
-	if config == nil || s == nil || s.worktrees == nil {
-		return nil
-	}
-	if !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
-		return identity.ErrPrincipalRequired
-	}
-	_, _, err := s.worktrees.SetConfigForPrincipal(principal, workspacePath, config.Enabled, config.UseCurrentBranch, config.BaseBranch, config.BranchName)
-	return err
-}
-
 func (s *Server) peerManagedWorkspaceEnsureLink(r *http.Request, req peerManagedWorkspaceEnsureLinkRequest) (peerManagedWorkspaceEnsureLinkResponse, int, error) {
 	principal, ok := s.peerManagedWorkspacePrincipalForRequest(r)
 	if !ok || !principal.Valid() {
@@ -889,9 +766,6 @@ func (s *Server) peerManagedWorkspaceEnsureLink(r *http.Request, req peerManaged
 		return peerManagedWorkspaceEnsureLinkResponse{}, http.StatusInternalServerError, statErr
 	}
 	if _, err := s.workspace.AddForPrincipal(principal, destination, workspaceName, "", false); err != nil {
-		return peerManagedWorkspaceEnsureLinkResponse{}, http.StatusInternalServerError, err
-	}
-	if err := s.applyPeerManagedHostWorktreeConfig(principal, destination, req.WorktreeConfig); err != nil {
 		return peerManagedWorkspaceEnsureLinkResponse{}, http.StatusInternalServerError, err
 	}
 	registered = true
@@ -1007,17 +881,13 @@ func (s *Server) managedWorkspaceReplicate(r *http.Request, req managedWorkspace
 	}
 	results := make([]managedWorkspaceResultResponse, 0, len(preflight.Workspaces))
 	for _, plan := range preflight.Workspaces {
-		worktreeConfig, err := s.managedHostWorktreeConfigForPrincipal(principal, plan.SourceWorkspacePath)
-		if err != nil {
-			return managedWorkspaceReplicateResponse{}, http.StatusInternalServerError, err
-		}
 		switch plan.Action {
 		case managedWorkspaceActionImportBundle:
-			if err := importManagedWorkspaceBundleToPeer(r.Context(), *target, localSwarmID, peerToken, req.DestinationRoot, plan, worktreeConfig); err != nil {
+			if err := importManagedWorkspaceBundleToPeer(r.Context(), *target, localSwarmID, peerToken, req.DestinationRoot, plan); err != nil {
 				return managedWorkspaceReplicateResponse{}, http.StatusBadGateway, err
 			}
 		case managedWorkspaceActionLinkExisting:
-			if err := linkExistingManagedWorkspaceOnPeer(r.Context(), *target, localSwarmID, peerToken, req.DestinationRoot, plan, worktreeConfig); err != nil {
+			if err := linkExistingManagedWorkspaceOnPeer(r.Context(), *target, localSwarmID, peerToken, req.DestinationRoot, plan); err != nil {
 				return managedWorkspaceReplicateResponse{}, http.StatusBadGateway, err
 			}
 		}
@@ -1459,7 +1329,7 @@ func ensureManagedWorkspaceLinkOnPeer(ctx context.Context, target swarmTarget, l
 	return decoded, nil
 }
 
-func linkExistingManagedWorkspaceOnPeer(ctx context.Context, target swarmTarget, localSwarmID, peerToken, destinationRoot string, plan managedWorkspacePlanResponse, worktreeConfig *managedHostWorktreeConfig) error {
+func linkExistingManagedWorkspaceOnPeer(ctx context.Context, target swarmTarget, localSwarmID, peerToken, destinationRoot string, plan managedWorkspacePlanResponse) error {
 	payload := peerManagedWorkspaceLinkExistingRequest{
 		DestinationRoot:        destinationRoot,
 		DestinationPath:        plan.DestinationPath,
@@ -1467,7 +1337,6 @@ func linkExistingManagedWorkspaceOnPeer(ctx context.Context, target swarmTarget,
 		SourceWorkspacePath:    plan.SourceWorkspacePath,
 		SourceWorkspaceName:    plan.SourceWorkspaceName,
 		SourceHomeRelativePath: sourceHomeRelativePath(plan.SourceWorkspacePath),
-		WorktreeConfig:         worktreeConfig,
 	}
 	var body bytes.Buffer
 	if err := json.NewEncoder(&body).Encode(payload); err != nil {
@@ -1501,7 +1370,7 @@ func linkExistingManagedWorkspaceOnPeer(ctx context.Context, target swarmTarget,
 	return nil
 }
 
-func importManagedWorkspaceBundleToPeer(ctx context.Context, target swarmTarget, localSwarmID, peerToken, destinationRoot string, plan managedWorkspacePlanResponse, worktreeConfig *managedHostWorktreeConfig) error {
+func importManagedWorkspaceBundleToPeer(ctx context.Context, target swarmTarget, localSwarmID, peerToken, destinationRoot string, plan managedWorkspacePlanResponse) error {
 	bundlePath, err := managedWorkspaceCreateGitBundle(ctx, plan.SourceWorkspacePath)
 	if err != nil {
 		return err
@@ -1514,13 +1383,6 @@ func importManagedWorkspaceBundleToPeer(ctx context.Context, target swarmTarget,
 	_ = writer.WriteField("workspace_name", plan.SourceWorkspaceName)
 	_ = writer.WriteField("destination_root", destinationRoot)
 	_ = writer.WriteField("destination_path", plan.DestinationPath)
-	if worktreeConfig != nil {
-		encoded, err := json.Marshal(worktreeConfig)
-		if err != nil {
-			return err
-		}
-		_ = writer.WriteField("worktree_config", string(encoded))
-	}
 	part, err := writer.CreateFormFile("bundle", filepath.Base(bundlePath))
 	if err != nil {
 		return err

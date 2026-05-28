@@ -22,16 +22,19 @@ import (
 )
 
 type sessionCreateRequest struct {
-	Title                string         `json:"title"`
-	WorkspacePath        string         `json:"workspace_path"`
-	HostWorkspacePath    string         `json:"host_workspace_path"`
-	RuntimeWorkspacePath string         `json:"runtime_workspace_path"`
-	WorkspaceName        string         `json:"workspace_name"`
-	Mode                 string         `json:"mode"`
-	AgentName            string         `json:"agent_name"`
-	WorktreeMode         string         `json:"worktree_mode,omitempty"`
-	Metadata             map[string]any `json:"metadata"`
-	Preference           struct {
+	Title                    string         `json:"title"`
+	WorkspacePath            string         `json:"workspace_path"`
+	HostWorkspacePath        string         `json:"host_workspace_path"`
+	RuntimeWorkspacePath     string         `json:"runtime_workspace_path"`
+	WorkspaceName            string         `json:"workspace_name"`
+	Mode                     string         `json:"mode"`
+	AgentName                string         `json:"agent_name"`
+	WorktreeMode             string         `json:"worktree_mode,omitempty"`
+	WorktreeUseCurrentBranch *bool          `json:"worktree_use_current_branch,omitempty"`
+	WorktreeBaseBranch       string         `json:"worktree_base_branch,omitempty"`
+	WorktreeBranchName       string         `json:"worktree_branch_name,omitempty"`
+	Metadata                 map[string]any `json:"metadata"`
+	Preference               struct {
 		Provider    string `json:"provider"`
 		Model       string `json:"model"`
 		Thinking    string `json:"thinking"`
@@ -1095,6 +1098,9 @@ func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest,
 		createOptions.AccountScopeID = principal.AccountScopeID
 	}
 	requestedWorktreeMode := strings.TrimSpace(req.WorktreeMode)
+	requestedWorktreeBaseBranch := strings.TrimSpace(req.WorktreeBaseBranch)
+	requestedWorktreeBranchName := strings.TrimSpace(req.WorktreeBranchName)
+	requestedWorktreeUseCurrentBranch := req.WorktreeUseCurrentBranch
 	modeWarning := ""
 	if s.agents == nil {
 		return pebblestore.SessionSnapshot{}, nil, "", "", errors.New("agent service not configured")
@@ -1137,7 +1143,7 @@ func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest,
 	}, createMetadata)
 	warning := ""
 	if allowWorktree {
-		nextWarning, worktreeErr := s.applySessionCreateWorktree(&createOptions, sessionID, requestedWorktreeMode, principal, principalOK)
+		nextWarning, worktreeErr := s.applySessionCreateWorktree(&createOptions, sessionID, requestedWorktreeMode, requestedWorktreeUseCurrentBranch, requestedWorktreeBaseBranch, requestedWorktreeBranchName, principal, principalOK)
 		if worktreeErr != nil {
 			return pebblestore.SessionSnapshot{}, nil, "", "", worktreeErr
 		}
@@ -1162,7 +1168,7 @@ func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest,
 	return session, event, warning, modeWarning, nil
 }
 
-func (s *Server) applySessionCreateWorktree(createOptions *sessionruntime.CreateSessionOptions, sessionID, rawRequestedMode string, principal identity.Principal, principalOK bool) (string, error) {
+func (s *Server) applySessionCreateWorktree(createOptions *sessionruntime.CreateSessionOptions, sessionID, rawRequestedMode string, requestedUseCurrentBranch *bool, requestedBaseBranch, requestedBranchName string, principal identity.Principal, principalOK bool) (string, error) {
 	if createOptions == nil {
 		return "", nil
 	}
@@ -1200,6 +1206,16 @@ func (s *Server) applySessionCreateWorktree(createOptions *sessionruntime.Create
 	case runruntime.RunWorktreeModeOff:
 		return "", nil
 	case runruntime.RunWorktreeModeOn:
+		if requestedUseCurrentBranch != nil || strings.TrimSpace(requestedBaseBranch) != "" || strings.TrimSpace(requestedBranchName) != "" {
+			baseBranch := strings.TrimSpace(requestedBaseBranch)
+			if requestedUseCurrentBranch != nil && *requestedUseCurrentBranch {
+				baseBranch = ""
+			}
+			branchName := strings.TrimSpace(requestedBranchName)
+			return s.allocateSessionCreateDetachedWorkspace(createOptions, sessionID, func() (worktreeruntime.Allocation, error) {
+				return s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(principal, createOptions.WorkspacePath, sessionID, baseBranch, branchName)
+			})
+		}
 		if config.Enabled {
 			return s.allocateSessionCreateDetachedWorkspace(createOptions, sessionID, func() (worktreeruntime.Allocation, error) {
 				return s.worktrees.AllocateDetachedWorkspaceForPrincipal(principal, createOptions.WorkspacePath, sessionID)

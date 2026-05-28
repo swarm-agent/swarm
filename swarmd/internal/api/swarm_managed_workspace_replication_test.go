@@ -16,7 +16,6 @@ import (
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/workspace"
-	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
 func TestPeerManagedWorkspaceInventoryReturnsSavedDiscoveredAndCWDs(t *testing.T) {
@@ -291,55 +290,6 @@ func TestPeerManagedWorkspaceImportBundleRequiresExactDestination(t *testing.T) 
 	}
 }
 
-func TestPeerManagedWorkspaceEnsureLinkStoresReceivedWorktreeConfig(t *testing.T) {
-	handler, _, _ := newReplicateTestHandler(t)
-	worktrees := &fakeWorktreeService{}
-	handler.SetWorktreeService(worktrees)
-	root := t.TempDir()
-	destination := filepath.Join(root, "workspace-one")
-	if err := os.MkdirAll(destination, 0o755); err != nil {
-		t.Fatalf("mkdir destination: %v", err)
-	}
-	initGitRepoForManagedWorkspaceTest(t, destination)
-
-	response, status, err := handler.peerManagedWorkspaceEnsureLink(httptest.NewRequest(http.MethodPost, peerManagedWorkspaceEnsureLinkPath, nil), peerManagedWorkspaceEnsureLinkRequest{
-		DestinationRoot:     root,
-		DestinationPath:     destination,
-		WorkspaceName:       "workspace-one",
-		SourceWorkspacePath: "/primary/workspace-one",
-		Provision:           false,
-		WorktreeConfig:      &managedHostWorktreeConfig{Enabled: true, UseCurrentBranch: true, BaseBranch: "ignored", BranchName: "agent/custom"},
-	})
-	if err != nil || status != http.StatusOK {
-		t.Fatalf("ensure link status=%d err=%v", status, err)
-	}
-	if !response.Registered || filepath.Clean(response.DestinationPath) != filepath.Clean(destination) {
-		t.Fatalf("response=%+v", response)
-	}
-	if !worktrees.config.Enabled || !worktrees.config.UseCurrentBranch || worktrees.config.WorkspacePath != destination || worktrees.config.BranchName != "agent/custom" {
-		t.Fatalf("worktree config was not stored on peer: %+v", worktrees.config)
-	}
-}
-
-func TestPeerManagedWorkspaceImportBundleStoresReceivedWorktreeConfig(t *testing.T) {
-	handler, _, workspacePath := newReplicateTestHandler(t)
-	worktrees := &fakeWorktreeService{}
-	handler.SetWorktreeService(worktrees)
-	setReplicateFakeSwarmState(handler, swarmStateWithManagedPeer("", ""))
-	initGitRepoForManagedWorkspaceTest(t, workspacePath)
-	bundlePath := createManagedWorkspaceTestBundle(t, workspacePath)
-	root := t.TempDir()
-	destination := filepath.Join(root, "workspace-one")
-
-	recorder := postPeerManagedImportBundleWithWorktreeConfig(t, handler, root, destination, "workspace-one", bundlePath, &managedHostWorktreeConfig{Enabled: true, UseCurrentBranch: false, BaseBranch: "main", BranchName: "agent/imported"})
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
-	if !worktrees.config.Enabled || worktrees.config.UseCurrentBranch || worktrees.config.WorkspacePath != destination || worktrees.config.BaseBranch != "main" || worktrees.config.BranchName != "agent/imported" {
-		t.Fatalf("worktree config was not stored on peer import: %+v", worktrees.config)
-	}
-}
-
 func TestPeerManagedWorkspaceImportBundleClonesExactDestination(t *testing.T) {
 	handler, _, workspacePath := newReplicateTestHandler(t)
 	setReplicateFakeSwarmState(handler, swarmStateWithManagedPeer("", ""))
@@ -361,89 +311,6 @@ func TestPeerManagedWorkspaceImportBundleClonesExactDestination(t *testing.T) {
 	}
 	if filepath.Clean(response.DestinationPath) != filepath.Clean(destination) {
 		t.Fatalf("destination=%q want %q", response.DestinationPath, destination)
-	}
-}
-
-func TestWorkspaceManagedLinkUpsertSendsWorktreeConfigToPeer(t *testing.T) {
-	handler, _, workspacePath := newReplicateTestHandler(t)
-	initGitRepoForManagedWorkspaceTest(t, workspacePath)
-	handler.SetWorktreeService(&fakeWorktreeService{config: worktreeruntime.Config{Enabled: true, UseCurrentBranch: false, BaseBranch: "main", BranchName: "agent/source"}})
-	root := t.TempDir()
-	var received peerManagedWorkspaceEnsureLinkRequest
-	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/readyz" || r.URL.Path == "/healthz" {
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-			return
-		}
-		if r.URL.Path != peerManagedWorkspaceEnsureLinkPath {
-			t.Fatalf("unexpected peer path %q", r.URL.Path)
-		}
-		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
-			t.Fatalf("decode ensure link: %v", err)
-		}
-		writeJSON(w, http.StatusOK, peerManagedWorkspaceEnsureLinkResponse{OK: true, DestinationPath: filepath.Join(root, "workspace-one"), WorkspaceName: "workspace-one", Exists: true, Registered: true})
-	}))
-	t.Cleanup(remote.Close)
-	setReplicateFakeSwarmState(handler, swarmStateWithManagedPeer(remote.URL, "host-to-managed-token"))
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/workspace/managed-links/upsert", bytes.NewBufferString(`{"workspace_path":"`+workspacePath+`","target_swarm_id":"managed-swarm-1","destination_root":"`+root+`","workspace_name":"workspace-one"}`))
-	req.Header.Set("Content-Type", "application/json")
-	recorder := httptest.NewRecorder()
-	handler.Handler().ServeHTTP(recorder, withTestPrincipal(req))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
-	if received.WorktreeConfig == nil || !received.WorktreeConfig.Enabled || received.WorktreeConfig.UseCurrentBranch || received.WorktreeConfig.BaseBranch != "main" || received.WorktreeConfig.BranchName != "agent/source" {
-		t.Fatalf("worktree config not sent to peer: %+v", received.WorktreeConfig)
-	}
-}
-
-func TestWorktreePostSyncsExistingManagedHostBindings(t *testing.T) {
-	handler, _, workspacePath := newReplicateTestHandler(t)
-	initGitRepoForManagedWorkspaceTest(t, workspacePath)
-	handler.SetWorktreeService(&fakeWorktreeService{})
-	destination := filepath.Join(t.TempDir(), "managed-workspace")
-	if _, err := handler.topology.UpsertWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
-		BindingID:                 pebblestore.CanonicalTopologyWorkspaceBindingID("managed-swarm-1", workspacePath),
-		UserID:                    testPrincipal().UserID,
-		AccountScopeID:            testPrincipal().AccountScopeID,
-		SourceWorkspacePath:       workspacePath,
-		SourceWorkspaceName:       "workspace-one",
-		DestinationRuntimeSwarmID: "managed-swarm-1",
-		DestinationHostSwarmID:    "managed-swarm-1",
-		DestinationWorkspacePath:  destination,
-		LegacyTargetKind:          managedWorkspaceTargetKind,
-	}); err != nil {
-		t.Fatalf("upsert binding: %v", err)
-	}
-	var received peerManagedWorkspaceEnsureLinkRequest
-	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/readyz" || r.URL.Path == "/healthz" {
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-			return
-		}
-		if r.URL.Path != peerManagedWorkspaceEnsureLinkPath {
-			t.Fatalf("unexpected peer path %q", r.URL.Path)
-		}
-		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
-			t.Fatalf("decode ensure link: %v", err)
-		}
-		writeJSON(w, http.StatusOK, peerManagedWorkspaceEnsureLinkResponse{OK: true, DestinationPath: destination, WorkspaceName: "workspace-one", Exists: true, Registered: true})
-	}))
-	t.Cleanup(remote.Close)
-	setReplicateFakeSwarmState(handler, swarmStateWithManagedPeer(remote.URL, "host-to-managed-token"))
-	req := httptest.NewRequest(http.MethodPost, "/v1/worktrees", bytes.NewBufferString(`{"workspace_path":"`+workspacePath+`","enabled":true,"use_current_branch":false,"base_branch":"main","branch_name":"agent/post"}`))
-	req.Header.Set("Content-Type", "application/json")
-	recorder := httptest.NewRecorder()
-	handler.Handler().ServeHTTP(recorder, withTestPrincipal(req))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
-	if filepath.Clean(received.DestinationPath) != filepath.Clean(destination) || received.Provision {
-		t.Fatalf("sync request did not target existing managed workspace: %+v", received)
-	}
-	if received.WorktreeConfig == nil || !received.WorktreeConfig.Enabled || received.WorktreeConfig.BaseBranch != "main" || received.WorktreeConfig.BranchName != "agent/post" {
-		t.Fatalf("worktree config not synced: %+v", received.WorktreeConfig)
 	}
 }
 
@@ -509,10 +376,6 @@ func postManagedWorkspacePreflightRequest(t *testing.T, server *Server, body map
 }
 
 func postPeerManagedImportBundle(t *testing.T, server *Server, root, destination, name, bundlePath string) *httptest.ResponseRecorder {
-	return postPeerManagedImportBundleWithWorktreeConfig(t, server, root, destination, name, bundlePath, nil)
-}
-
-func postPeerManagedImportBundleWithWorktreeConfig(t *testing.T, server *Server, root, destination, name, bundlePath string, worktreeConfig *managedHostWorktreeConfig) *httptest.ResponseRecorder {
 	t.Helper()
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -520,13 +383,6 @@ func postPeerManagedImportBundleWithWorktreeConfig(t *testing.T, server *Server,
 	_ = writer.WriteField("workspace_name", name)
 	_ = writer.WriteField("destination_root", root)
 	_ = writer.WriteField("destination_path", destination)
-	if worktreeConfig != nil {
-		encoded, err := json.Marshal(worktreeConfig)
-		if err != nil {
-			t.Fatalf("marshal worktree config: %v", err)
-		}
-		_ = writer.WriteField("worktree_config", string(encoded))
-	}
 	part, err := writer.CreateFormFile("bundle", filepath.Base(bundlePath))
 	if err != nil {
 		t.Fatalf("form file: %v", err)
