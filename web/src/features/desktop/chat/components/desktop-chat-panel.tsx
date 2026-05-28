@@ -550,7 +550,11 @@ function estimateTaskToolSize(rowCount: number): number {
     return 104
   }
   const header = 94
-  const rowHeight = rowCount >= 50 ? 34 : 52
+  if (rowCount > 10) {
+    const compactRowHeight = 40
+    return Math.min(720, header + (rowCount * compactRowHeight))
+  }
+  const rowHeight = 52
   return Math.min(920, header + (rowCount * rowHeight))
 }
 

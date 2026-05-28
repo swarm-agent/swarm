@@ -99,6 +99,17 @@ function EditDiffView({ toolMessage }: { toolMessage: StructuredToolMessage }) {
 }
 
 const PREVIEW_LIMIT = 8;
+const TASK_SWARM_THRESHOLD = 10;
+const TASK_SWARM_TITLE_MAX = 72;
+const TASK_SWARM_AGENT_MAX = 30;
+const TASK_SWARM_TOOL_MAX = 34;
+
+function truncateMiddle(text: string, maxLength: number): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= maxLength) return trimmed;
+  if (maxLength <= 1) return "…";
+  return `${trimmed.slice(0, maxLength - 1)}…`;
+}
 
 function PreviewLinesView({
   lines,
@@ -339,10 +350,8 @@ function TaskAgentListRow({
   );
 }
 
-function TaskRowsView({ rows, nowMs }: { rows: TaskToolRow[]; nowMs: number }) {
-  if (rows.length === 0) return null;
-
-  const counts = rows.reduce(
+function taskRowsCounts(rows: TaskToolRow[]) {
+  return rows.reduce(
     (acc, row) => {
       const kind = taskStatusKind(row);
       acc.total += 1;
@@ -354,32 +363,124 @@ function TaskRowsView({ rows, nowMs }: { rows: TaskToolRow[]; nowMs: number }) {
     },
     { total: 0, running: 0, done: 0, error: 0, pending: 0 },
   );
+}
+
+function TaskRowsHeader({
+  counts,
+  swarm,
+}: {
+  counts: ReturnType<typeof taskRowsCounts>;
+  swarm: boolean;
+}) {
+  return (
+    <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-bg-alt)_72%,transparent)] px-3 py-2">
+      <div className="flex min-w-0 items-center gap-2">
+        <LoaderCircle size={14} className={counts.running > 0 ? "animate-spin text-[var(--app-primary)]" : "text-[var(--app-text-subtle)]"} />
+        <div className="min-w-0">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="truncate text-xs font-bold uppercase tracking-[0.12em] text-[var(--app-text)]">
+              {swarm ? "Swarm mode" : "Subagent stream"}
+            </span>
+          </div>
+          <div className="mt-0.5 text-[11px] text-[var(--app-text-subtle)]">
+            {counts.total} launched · {counts.running} running · {counts.done} done{counts.error > 0 ? ` · ${counts.error} errors` : ''}
+          </div>
+        </div>
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5 font-mono text-[10px]">
+        <span className="rounded-md bg-[color-mix(in_srgb,var(--app-primary)_12%,transparent)] px-1.5 py-0.5 text-[var(--app-primary)]">RUN {counts.running}</span>
+        <span className="rounded-md bg-[color-mix(in_srgb,var(--app-success)_12%,transparent)] px-1.5 py-0.5 text-[var(--app-success)]">OK {counts.done}</span>
+        {counts.pending > 0 ? <span className="rounded-md bg-[color-mix(in_srgb,var(--app-text-muted)_10%,transparent)] px-1.5 py-0.5 text-[var(--app-text-subtle)]">WAIT {counts.pending}</span> : null}
+        {counts.error > 0 ? <span className="rounded-md bg-[color-mix(in_srgb,var(--app-danger)_12%,transparent)] px-1.5 py-0.5 text-[var(--app-danger)]">ERR {counts.error}</span> : null}
+      </div>
+    </div>
+  );
+}
+
+function TaskSwarmCompactRow({
+  row,
+  index,
+  nowMs,
+}: {
+  row: TaskToolRow;
+  index: number;
+  nowMs: number;
+}) {
+  const kind = taskStatusKind(row);
+  const statusLabel = taskStatusLabel(row);
+  const rowNumber = row.launchIndex || index + 1;
+  const agent = truncateMiddle(row.agent || 'subagent', TASK_SWARM_AGENT_MAX);
+  const agentLabel = agent.startsWith('@') ? agent : `@${agent}`;
+  const toolLabel = truncateMiddle(row.tool && row.tool !== '-' ? row.tool : taskStatusText(kind), TASK_SWARM_TOOL_MAX);
+  const elapsedLabel = liveTaskElapsedLabel(row, nowMs);
+  const title = row.assignmentLabel && row.assignmentLabel !== row.agent
+    ? truncateMiddle(row.assignmentLabel, TASK_SWARM_TITLE_MAX)
+    : '';
+
+  return (
+    <div className={cn(
+      "min-w-0 rounded-lg border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-bg-alt)_34%,transparent)] px-2 py-1.5",
+      kind === "running" ? "border-[color-mix(in_srgb,var(--app-primary)_34%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-primary)_6%,transparent)]" : "",
+    )}>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="shrink-0 font-mono text-[10px] text-[var(--app-text-subtle)] tabular-nums">
+          {rowNumber.toString().padStart(2, '0')}
+        </span>
+        <span className={cn("inline-flex h-5 shrink-0 items-center gap-1 rounded-md border px-1.5 font-mono text-[9px] font-bold tracking-[0.08em]", taskStatusBadgeClass(kind))}>
+          <span className={cn("h-1.5 w-1.5 rounded-full bg-current", kind === "running" ? "animate-pulse" : "opacity-70")} />
+          {statusLabel}
+        </span>
+        <span className="min-w-0 truncate text-[11px] font-semibold text-[var(--app-text)]">
+          {agentLabel}
+        </span>
+        <span className="min-w-0 truncate font-mono text-[10px] text-[var(--app-text-muted)]">
+          {toolLabel}
+        </span>
+        <span className={cn("ml-auto shrink-0 font-mono text-[10px] tabular-nums", taskStatusTextClass(kind))}>
+          {elapsedLabel}
+        </span>
+      </div>
+      {title ? (
+        <div className="mt-1 min-w-0 truncate pl-[4.8rem] text-[10px] leading-4 text-[var(--app-text-subtle)] sm:pl-[5.25rem]">
+          {title}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function TaskSwarmRowsView({ rows, nowMs }: { rows: TaskToolRow[]; nowMs: number }) {
+  const counts = taskRowsCounts(rows);
+  return (
+    <div className="mt-2 min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-sm">
+      <TaskRowsHeader counts={counts} swarm />
+      <div className="grid min-w-0 grid-cols-1 gap-1.5 p-2 md:grid-cols-2 xl:grid-cols-3">
+        {rows.map((row, index) => (
+          <TaskSwarmCompactRow
+            key={row.childSessionId.trim() || `launch-index:${row.launchIndex || index + 1}`}
+            row={row}
+            index={index}
+            nowMs={nowMs}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TaskRowsView({ rows, nowMs }: { rows: TaskToolRow[]; nowMs: number }) {
+  if (rows.length === 0) return null;
+
+  if (rows.length > TASK_SWARM_THRESHOLD) {
+    return <TaskSwarmRowsView rows={rows} nowMs={nowMs} />;
+  }
+
+  const counts = taskRowsCounts(rows);
   const dense = rows.length >= 50;
 
   return (
     <div className="mt-2 min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-sm">
-      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-bg-alt)_72%,transparent)] px-3 py-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <LoaderCircle size={14} className={counts.running > 0 ? "animate-spin text-[var(--app-primary)]" : "text-[var(--app-text-subtle)]"} />
-          <div className="min-w-0">
-            <div className="flex min-w-0 items-center gap-2">
-              <span className="truncate text-xs font-bold uppercase tracking-[0.12em] text-[var(--app-text)]">
-                Subagent stream
-              </span>
-
-            </div>
-            <div className="mt-0.5 text-[11px] text-[var(--app-text-subtle)]">
-              {counts.total} launched · {counts.running} running · {counts.done} done{counts.error > 0 ? ` · ${counts.error} errors` : ''}
-            </div>
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-1.5 font-mono text-[10px]">
-          <span className="rounded-md bg-[color-mix(in_srgb,var(--app-primary)_12%,transparent)] px-1.5 py-0.5 text-[var(--app-primary)]">RUN {counts.running}</span>
-          <span className="rounded-md bg-[color-mix(in_srgb,var(--app-success)_12%,transparent)] px-1.5 py-0.5 text-[var(--app-success)]">OK {counts.done}</span>
-          {counts.pending > 0 ? <span className="rounded-md bg-[color-mix(in_srgb,var(--app-text-muted)_10%,transparent)] px-1.5 py-0.5 text-[var(--app-text-subtle)]">WAIT {counts.pending}</span> : null}
-          {counts.error > 0 ? <span className="rounded-md bg-[color-mix(in_srgb,var(--app-danger)_12%,transparent)] px-1.5 py-0.5 text-[var(--app-danger)]">ERR {counts.error}</span> : null}
-        </div>
-      </div>
+      <TaskRowsHeader counts={counts} swarm={false} />
       <div className="hidden min-w-0 grid-cols-[2.5rem_3.75rem_minmax(0,1.5fr)_minmax(0,0.9fr)_4.75rem] items-center gap-x-3 border-b border-[var(--app-border)] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)] sm:grid">
         <div className="min-w-0 font-mono tabular-nums">#</div>
         <div className="min-w-0">Status</div>
@@ -648,8 +749,11 @@ export function ToolMessageView({
         ? LoaderCircle
         : CheckCircle2;
   const label = toolTheme.label || toolMessage.tool || "tool";
+  const isTaskSwarm = toolMessage.tool === "task" && toolMessage.taskRows.length > TASK_SWARM_THRESHOLD;
   const todoCounts = formatTodoCounts(toolMessage.todoData?.summary ?? null);
-  const summary = todoCounts || toolSummaryRemainder(toolMessage.summary || toolMessage.tool || "tool", label);
+  const summary = isTaskSwarm
+    ? ""
+    : todoCounts || toolSummaryRemainder(toolMessage.summary || toolMessage.tool || "tool", label);
   const accentWash = toolAccentWash(toolTheme.color, 14);
   const previewLanguage = inferToolSyntaxLanguage(toolMessage.target || pathFromToolSummary(toolMessage.summary));
   const shellPreview = toolMessage.tool.trim().toLowerCase() === "bash";

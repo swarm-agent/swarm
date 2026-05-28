@@ -64,9 +64,41 @@ function testPlanManageUsesFlatPreview(): void {
   assert(!markup.includes("border border-[var(--app-border)]"), "plan_manage preview should be flat, not bordered");
 }
 
+function testTaskSwarmUsesCompactPreview(): void {
+  const longAssignment = "Coordinate an extremely detailed research and implementation assignment that would normally push the desktop task header sideways";
+  const message = buildStructuredToolMessage({
+    tool: "task",
+    callId: "call_task_swarm",
+    outputText: JSON.stringify({
+      tool: "task",
+      description: longAssignment,
+      launch_count: 12,
+      launches: Array.from({ length: 12 }, (_, index) => ({
+        launch_index: index + 1,
+        status: index % 3 === 0 ? "running" : "done",
+        resolved_agent_name: index % 2 === 0 ? "explorer" : "parallel",
+        assignment_label: `${longAssignment} ${index + 1}`,
+        current_tool: index % 3 === 0 ? "search" : "read",
+        current_tool_ms: 1200 + index,
+      })),
+    }),
+  });
+  assert(Boolean(message), "expected structured task swarm message");
+
+  const markup = renderToolMarkup(message!);
+  assert(markup.includes("Swarm mode"), "expected desktop swarm mode header");
+  assert(markup.includes("@explorer"), "expected compact row agent label");
+  assert(markup.includes("search"), "expected compact row current tool");
+  assert(markup.includes("RUN"), "expected compact row status");
+  assert(!markup.includes("Subagent stream"), "swarm mode should not render normal task table header");
+  assert(!markup.includes("Current"), "swarm mode should not render detailed current column header");
+  assert(!markup.includes(`task ${longAssignment}`), "swarm mode should suppress long task header summary");
+}
+
 function main(): void {
   testDeniedExitPlanPermissionUsesFlatPreview();
   testPlanManageUsesFlatPreview();
+  testTaskSwarmUsesCompactPreview();
   console.log("chat-markdown preview tests passed");
 }
 
