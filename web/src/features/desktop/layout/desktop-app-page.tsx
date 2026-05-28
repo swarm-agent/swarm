@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, Link } from '@tanstack/react-router'
-import { Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, LayoutGrid, Link2, ListChecks, LoaderCircle, Menu, Pause, Play, Plug, Plus, RefreshCcw, Settings, Workflow, X, XCircle } from 'lucide-react'
+import { Bell, Bot, Box, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, LayoutGrid, Link2, ListChecks, LoaderCircle, Menu, Pause, Play, Plus, RefreshCcw, Settings, Workflow, X, XCircle } from 'lucide-react'
 import { debugLog } from '../../../lib/debug-log'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -2432,16 +2432,6 @@ export function DesktopAppPage() {
     handleOpenSettingsTab('swarm')
   }, [handleOpenSettingsTab])
 
-  const handleOpenTools = useCallback(() => {
-    setMobileSidebarOpen(false)
-    void navigate({ to: '/tools' })
-  }, [navigate])
-
-  const handleOpenIntegrations = useCallback(() => {
-    setMobileSidebarOpen(false)
-    void navigate({ to: '/integrations' })
-  }, [navigate])
-
   useEffect(() => {
     if (!updateAvailable) {
       return
@@ -2866,16 +2856,38 @@ export function DesktopAppPage() {
                         swarmMenu.open && 'bg-[var(--app-surface-active)] text-[var(--app-text)]',
                       )}
                     >
-                      <button
-                        type="button"
-                        className="grid min-h-[30px] min-w-0 grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-l-md px-2 text-left font-inherit hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                        onClick={handleOpenSwarmDashboard}
-                        aria-label="Open swarm settings"
-                        title={swarmTargetSummary}
-                      >
-                        <Bot size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                        <span className="min-w-0 truncate">{swarmTargetCountLabel}</span>
-                      </button>
+                      {routeWorkspaceSlug ? (
+                        <Link
+                          to="/$workspaceSlug/settings"
+                          params={{ workspaceSlug: routeWorkspaceSlug }}
+                          search={{ tab: 'swarm' }}
+                          className="grid min-h-[30px] min-w-0 grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-l-md px-2 text-left font-inherit hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                          onClick={() => {
+                            setQuickSettingsTab(null)
+                            setMobileSidebarOpen(false)
+                          }}
+                          aria-label="Open swarm settings"
+                          title={swarmTargetSummary}
+                        >
+                          <Box size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                          <span className="min-w-0 truncate">{swarmTargetCountLabel}</span>
+                        </Link>
+                      ) : (
+                        <Link
+                          to="/settings"
+                          search={{ tab: 'swarm' }}
+                          className="grid min-h-[30px] min-w-0 grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-l-md px-2 text-left font-inherit hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                          onClick={() => {
+                            setQuickSettingsTab(null)
+                            setMobileSidebarOpen(false)
+                          }}
+                          aria-label="Open swarm settings"
+                          title={swarmTargetSummary}
+                        >
+                          <Box size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                          <span className="min-w-0 truncate">{swarmTargetCountLabel}</span>
+                        </Link>
+                      )}
                       <button
                         type="button"
                         className="grid min-h-[30px] place-items-center rounded-r-md hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
@@ -2944,16 +2956,19 @@ export function DesktopAppPage() {
                         workspaceMenuOpen && 'bg-[var(--app-surface-active)] text-[var(--app-text)]',
                       )}
                     >
-                      <button
-                        type="button"
+                      <Link
+                        to="/"
                         className="grid min-h-[30px] min-w-0 grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-l-md px-2 text-left font-inherit hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                        onClick={handleOpenWorkspaceLauncher}
+                        onClick={() => {
+                          setMobileSidebarOpen(false)
+                          setActiveSession(null)
+                        }}
                         aria-label="Open workspace settings"
                         title="Workspace settings"
                       >
                         <Home size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
                         <span className="min-w-0 truncate">{workspaceCount} workspaces</span>
-                      </button>
+                      </Link>
                       <button
                         type="button"
                         className="grid min-h-[30px] place-items-center rounded-r-md hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
@@ -2997,14 +3012,17 @@ export function DesktopAppPage() {
                             </div>
                           )
                         })}
-                        <button
-                          type="button"
+                        <Link
+                          to="/"
                           className="mt-1 flex min-h-[30px] w-full items-center gap-2 px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                          onClick={handleOpenWorkspaceLauncher}
+                          onClick={() => {
+                            setMobileSidebarOpen(false)
+                            setActiveSession(null)
+                          }}
                         >
                           <Home size={14} className="shrink-0" />
                           Workspace settings
-                        </button>
+                        </Link>
                       </div>
                     ) : null}
                   </div>
@@ -3016,16 +3034,38 @@ export function DesktopAppPage() {
                         flowMenuOpen && 'bg-[var(--app-surface-active)] text-[var(--app-text)]',
                       )}
                     >
-                      <button
-                        type="button"
-                        className="grid min-h-[30px] min-w-0 grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-l-md px-2 text-left font-inherit hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                        onClick={handleOpenFlowsSettings}
-                        aria-label="Open flow settings"
-                        title={flowSummary}
-                      >
-                        <Workflow size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                        <span className="min-w-0 truncate">{flowCount} flows</span>
-                      </button>
+                      {routeWorkspaceSlug ? (
+                        <Link
+                          to="/$workspaceSlug/flow"
+                          params={{ workspaceSlug: routeWorkspaceSlug }}
+                          className="grid min-h-[30px] min-w-0 grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-l-md px-2 text-left font-inherit hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                          onClick={() => {
+                            setFlowMenuOpen(false)
+                            setWorkspaceMenuOpen(false)
+                            setMobileSidebarOpen(false)
+                          }}
+                          aria-label="Open flow settings"
+                          title={flowSummary}
+                        >
+                          <Workflow size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                          <span className="min-w-0 truncate">{flowCount} flows</span>
+                        </Link>
+                      ) : (
+                        <Link
+                          to="/flow"
+                          className="grid min-h-[30px] min-w-0 grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-l-md px-2 text-left font-inherit hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                          onClick={() => {
+                            setFlowMenuOpen(false)
+                            setWorkspaceMenuOpen(false)
+                            setMobileSidebarOpen(false)
+                          }}
+                          aria-label="Open flow settings"
+                          title={flowSummary}
+                        >
+                          <Workflow size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                          <span className="min-w-0 truncate">{flowCount} flows</span>
+                        </Link>
+                      )}
                       <button
                         type="button"
                         className="grid min-h-[30px] place-items-center rounded-r-md hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:cursor-progress disabled:opacity-70"
@@ -3072,49 +3112,81 @@ export function DesktopAppPage() {
                         })}
                         {sidebarFlows.length > 8 ? <div className="px-2 py-1 text-[11px] text-[var(--app-text-subtle)]">+{sidebarFlows.length - 8} more on the Flow page</div> : null}
                         {flowMenuError ? <div className="mx-1 mt-1 border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2 py-1.5 text-[11px] text-[var(--app-warning)]">{flowMenuError}</div> : null}
-                        <button
-                          type="button"
-                          className="mt-1 flex min-h-[30px] w-full items-center gap-2 px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                          onClick={handleOpenFlowsSettings}
-                        >
-                          <Workflow size={14} className="shrink-0" />
-                          Add / manage flows
-                        </button>
+                        {routeWorkspaceSlug ? (
+                          <Link
+                            to="/$workspaceSlug/flow"
+                            params={{ workspaceSlug: routeWorkspaceSlug }}
+                            className="mt-1 flex min-h-[30px] w-full items-center gap-2 px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                            onClick={() => {
+                              setFlowMenuOpen(false)
+                              setWorkspaceMenuOpen(false)
+                              setMobileSidebarOpen(false)
+                            }}
+                          >
+                            <Workflow size={14} className="shrink-0" />
+                            Add / manage flows
+                          </Link>
+                        ) : (
+                          <Link
+                            to="/flow"
+                            className="mt-1 flex min-h-[30px] w-full items-center gap-2 px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                            onClick={() => {
+                              setFlowMenuOpen(false)
+                              setWorkspaceMenuOpen(false)
+                              setMobileSidebarOpen(false)
+                            }}
+                          >
+                            <Workflow size={14} className="shrink-0" />
+                            Add / manage flows
+                          </Link>
+                        )}
                       </div>
                     ) : null}
                   </div>
 
                   <div className="grid gap-0.5 pt-1">
-                    <button
-                      type="button"
+                    <Link
+                      to="/tools"
                       className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
-                      onClick={handleOpenIntegrations}
-                      aria-label="Open Integrations"
-                      title="Integrations"
-                    >
-                      <Plug size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                      <span className="min-w-0 truncate">Integrations</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
-                      onClick={handleOpenTools}
+                      onClick={() => setMobileSidebarOpen(false)}
                       aria-label="Open Swarm Tools"
                       title="Tools"
                     >
                       <LayoutGrid size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
                       <span className="min-w-0 truncate">Tools</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
-                      onClick={() => handleOpenSettingsTab('agents')}
-                      aria-label="Open agent settings"
-                      title="Settings"
-                    >
-                      <Settings size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                      <span className="min-w-0 truncate">Settings</span>
-                    </button>
+                    </Link>
+                    {routeWorkspaceSlug ? (
+                      <Link
+                        to="/$workspaceSlug/settings"
+                        params={{ workspaceSlug: routeWorkspaceSlug }}
+                        search={{ tab: 'agents' }}
+                        className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
+                        onClick={() => {
+                          setQuickSettingsTab(null)
+                          setMobileSidebarOpen(false)
+                        }}
+                        aria-label="Open agent settings"
+                        title="Settings"
+                      >
+                        <Settings size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                        <span className="min-w-0 truncate">Settings</span>
+                      </Link>
+                    ) : (
+                      <Link
+                        to="/settings"
+                        search={{ tab: 'agents' }}
+                        className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
+                        onClick={() => {
+                          setQuickSettingsTab(null)
+                          setMobileSidebarOpen(false)
+                        }}
+                        aria-label="Open agent settings"
+                        title="Settings"
+                      >
+                        <Settings size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                        <span className="min-w-0 truncate">Settings</span>
+                      </Link>
+                    )}
                   </div>
               </div>
             </div>
