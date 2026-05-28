@@ -457,88 +457,87 @@ func (p *ChatPage) renderTaskToolTableLines(message chatMessageItem, payload map
 	if width < 30 {
 		width = 30
 	}
-	agentWidth := 8
-	statusWidth := 2
-	toolWidth := 8
-	timeWidth := 5
-	for _, row := range rows {
-		agentWidth = maxInt(agentWidth, minInt(18, utf8.RuneCountInString(strings.TrimSpace(row.Agent))))
-		toolWidth = maxInt(toolWidth, minInt(18, utf8.RuneCountInString(strings.TrimSpace(row.Tool))))
-		timeWidth = maxInt(timeWidth, minInt(8, utf8.RuneCountInString(strings.TrimSpace(row.Time))))
+	if len(rows) > 10 {
+		return p.renderTaskToolSwarmCompactLines(rows, width)
 	}
-	fixed := agentWidth + statusWidth + toolWidth + timeWidth + 9
-	if fixed >= width {
-		over := fixed - width + 1
-		for over > 0 && agentWidth > 6 {
-			agentWidth--
-			over--
+	return p.renderTaskToolStackedLines(rows, width)
+}
+
+func (p *ChatPage) renderTaskToolStackedLines(rows []taskToolTableRow, width int) []chatRenderLine {
+	out := make([]chatRenderLine, 0, len(rows)*3+1)
+	out = append(out, chatRenderLine{Text: clampEllipsis(fmt.Sprintf("Subagents · %d running", len(rows)), width), Style: p.theme.Secondary.Bold(true)})
+	for i, row := range rows {
+		out = append(out, p.taskToolTitleLines(row, i, width)...)
+		detail := strings.TrimSpace(strings.Join(taskToolDetailParts(row), " · "))
+		if detail != "" {
+			for _, line := range wrapWithCustomPrefixes("  ", "  ", detail, width) {
+				out = append(out, chatRenderLine{Text: line, Style: p.theme.TextMuted})
+			}
 		}
-		for over > 0 && toolWidth > 6 {
-			toolWidth--
-			over--
-		}
-		for over > 0 && timeWidth > 4 {
-			timeWidth--
-			over--
-		}
-	}
-	headerSpans := []chatRenderSpan{
-		{Text: p.toolTableHeaderCell("Agent", agentWidth), Style: p.theme.Secondary.Bold(true)},
-		{Text: " │ ", Style: p.theme.Border},
-		{Text: p.toolTableHeaderCell("St", statusWidth), Style: p.theme.Secondary.Bold(true)},
-		{Text: " │ ", Style: p.theme.Border},
-		{Text: p.toolTableHeaderCell("Tool", toolWidth), Style: p.theme.Secondary.Bold(true)},
-		{Text: " │ ", Style: p.theme.Border},
-		{Text: p.toolTableHeaderCell("Time", timeWidth), Style: p.theme.Secondary.Bold(true)},
-	}
-	out := []chatRenderLine{{Text: chatRenderSpansText(headerSpans), Style: p.theme.Secondary, Spans: headerSpans}}
-	out = append(out, chatRenderLine{Text: strings.Repeat("─", minInt(width, agentWidth+statusWidth+toolWidth+timeWidth+9)), Style: p.theme.Border})
-	for _, row := range rows {
-		statusStyle := p.toolTableStatusStyle(row.Status)
-		spans := []chatRenderSpan{
-			{Text: fitLeft(emptyValue(row.Agent, "-"), agentWidth), Style: p.theme.Text},
-			{Text: " │ ", Style: p.theme.Border},
-			{Text: fitLeft(taskToolStatusLabel(row.Status), statusWidth), Style: statusStyle},
-			{Text: " │ ", Style: p.theme.Border},
-			{Text: fitLeft(emptyValue(row.Tool, "-"), toolWidth), Style: p.theme.Text},
-			{Text: " │ ", Style: p.theme.Border},
-			{Text: fitRight(emptyValue(row.Time, "-"), timeWidth), Style: p.theme.TextMuted},
-		}
-		out = append(out, chatRenderLine{Text: chatRenderSpansText(spans), Style: p.theme.TextMuted, Spans: spans})
 		if preview := strings.TrimSpace(row.PreviewText); preview != "" {
 			previewLabel := strings.TrimSpace(row.PreviewKind)
 			if previewLabel == "" {
 				previewLabel = "live"
 			}
-			labelStyle := p.theme.Secondary
-			switch strings.ToLower(previewLabel) {
-			case "assistant":
-				labelStyle = p.theme.Accent
-			case "thinking":
-				labelStyle = p.theme.Warning
-			case "tool":
-				labelStyle = p.theme.TextMuted
-			}
 			prefix := fmt.Sprintf("  %s: ", previewLabel)
-			for _, line := range wrapRenderLineWithCustomPrefixes(
-				prefix,
-				strings.Repeat(" ", len([]rune(prefix))),
-				chatRenderLine{Style: p.theme.TextMuted, Spans: []chatRenderSpan{{Text: preview, Style: p.theme.TextMuted}}},
-				maxInt(24, width),
-			) {
-				if len(line.Spans) > 0 {
-					line.Spans[0].Style = labelStyle
-					line.Text = chatRenderSpansText(line.Spans)
-				}
-				out = append(out, line)
+			for _, line := range wrapWithCustomPrefixes(prefix, strings.Repeat(" ", utf8.RuneCountInString(prefix)), preview, width) {
+				out = append(out, chatRenderLine{Text: line, Style: p.theme.TextMuted})
 			}
 		}
 	}
 	return out
 }
 
-func (p *ChatPage) toolTableHeaderCell(label string, width int) string {
-	return fitLeft(label, width)
+func (p *ChatPage) renderTaskToolSwarmCompactLines(rows []taskToolTableRow, width int) []chatRenderLine {
+	out := make([]chatRenderLine, 0, len(rows)*2+1)
+	out = append(out, chatRenderLine{Text: clampEllipsis(fmt.Sprintf("Swarm mode · %d subagents", len(rows)), width), Style: p.theme.Secondary.Bold(true)})
+	for i, row := range rows {
+		out = append(out, p.taskToolTitleLines(row, i, width)...)
+		detail := strings.TrimSpace(strings.Join(taskToolDetailParts(row), " · "))
+		if detail != "" {
+			for _, line := range wrapWithCustomPrefixes("     ", "     ", detail, width) {
+				out = append(out, chatRenderLine{Text: line, Style: p.theme.TextMuted})
+			}
+		}
+	}
+	return out
+}
+
+func (p *ChatPage) taskToolTitleLines(row taskToolTableRow, index, width int) []chatRenderLine {
+	rowNumber := row.LaunchIndex
+	if rowNumber <= 0 {
+		rowNumber = index + 1
+	}
+	prefix := fmt.Sprintf("%02d %s ", rowNumber, taskToolStatusLabel(row.Status))
+	continuation := strings.Repeat(" ", utf8.RuneCountInString(prefix))
+	title := emptyValue(row.Title, row.Agent)
+	wrapped := wrapWithCustomPrefixes(prefix, continuation, title, width)
+	out := make([]chatRenderLine, 0, len(wrapped))
+	style := p.theme.Text
+	if normalizeTaskToolStatus(row.Status) == "running" {
+		style = p.thinkingPulseStyle()
+	}
+	for _, line := range wrapped {
+		out = append(out, chatRenderLine{Text: line, Style: style})
+	}
+	return out
+}
+
+func taskToolDetailParts(row taskToolTableRow) []string {
+	parts := make([]string, 0, 4)
+	if agent := strings.TrimSpace(row.Agent); agent != "" && agent != strings.TrimSpace(row.Title) {
+		parts = append(parts, "@"+agent)
+	}
+	if model := strings.TrimSpace(row.Model); model != "" {
+		parts = append(parts, model)
+	}
+	if tool := strings.TrimSpace(row.Tool); tool != "" && tool != "-" {
+		parts = append(parts, tool)
+	}
+	if tm := strings.TrimSpace(row.Time); tm != "" {
+		parts = append(parts, tm)
+	}
+	return parts
 }
 
 func (p *ChatPage) toolTableStatusStyle(status string) tcell.Style {

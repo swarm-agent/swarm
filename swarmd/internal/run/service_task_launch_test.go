@@ -158,6 +158,17 @@ func TestParseTaskCallArgumentsValidLaunches(t *testing.T) {
 	}
 }
 
+func TestTaskAssignmentLabelPreservesMoreTitleContext(t *testing.T) {
+	label := taskAssignmentLabel("", "Write a quick poem about the sea with a bright moon and quiet tide", "", "memory")
+	want := "Write a quick poem about the sea with a bright moon and quiet tide"
+	if label != want {
+		t.Fatalf("label = %q, want %q", label, want)
+	}
+	if strings.Contains(label, "...") {
+		t.Fatalf("label should preserve 12-word title without ellipsis: %q", label)
+	}
+}
+
 func mustJSON(t *testing.T, value any) string {
 	t.Helper()
 	encoded, err := json.Marshal(value)

@@ -423,12 +423,12 @@ func taskAssignmentLabel(explicitLabel, metaPrompt, description, resolvedSubagen
 		candidate = strings.TrimSpace(candidate)
 	}
 	fields := strings.Fields(candidate)
-	if len(fields) > 6 {
-		candidate = strings.Join(fields[:6], " ")
+	if len(fields) > 16 {
+		candidate = strings.Join(fields[:16], " ")
 	} else if len(fields) > 0 {
 		candidate = strings.Join(fields, " ")
 	}
-	candidate = truncateRunes(candidate, 48)
+	candidate = truncateRunes(candidate, 128)
 	if candidate == "" {
 		candidate = strings.TrimSpace(resolvedSubagent)
 	}

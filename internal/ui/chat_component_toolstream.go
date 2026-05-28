@@ -2426,8 +2426,11 @@ func taskLaunchPreviewLine(payload map[string]any, maxRunes int) string {
 }
 
 type taskToolTableRow struct {
+	LaunchIndex        int
 	Status             string
 	Agent              string
+	Title              string
+	Model              string
 	Tool               string
 	Time               string
 	PreviewKind        string
@@ -2465,6 +2468,10 @@ func taskToolLaunchRow(payload map[string]any) taskToolTableRow {
 	if payload == nil {
 		return taskToolTableRow{}
 	}
+	launchIndex := jsonInt(payload, "launch_index")
+	if launchIndex <= 0 {
+		launchIndex = jsonInt(payload, "index")
+	}
 	status := normalizeTaskToolStatus(jsonString(payload, "status"))
 	agent := strings.TrimSpace(firstNonEmptyToolValue(
 		jsonString(payload, "resolved_agent_name"),
@@ -2473,6 +2480,8 @@ func taskToolLaunchRow(payload map[string]any) taskToolTableRow {
 		jsonString(payload, "subagent"),
 		jsonString(payload, "requested_subagent"),
 	))
+	title := strings.TrimSpace(firstNonEmptyToolValue(jsonString(payload, "assignment_label"), jsonString(payload, "meta_prompt"), agent))
+	model := taskToolModelLabel(payload)
 	rawPreviewKind := strings.TrimSpace(jsonString(payload, "current_preview_kind"))
 	toolName := strings.TrimSpace(jsonString(payload, "current_tool"))
 	if toolName == "" && !strings.EqualFold(rawPreviewKind, "reasoning") {
@@ -2487,8 +2496,11 @@ func taskToolLaunchRow(payload map[string]any) taskToolTableRow {
 	previewText := strings.TrimSpace(jsonString(payload, "current_preview_text"))
 	toolName, previewKind, previewText := normalizeTaskToolDisplay(toolName, rawPreviewKind, previewText)
 	return taskToolTableRow{
+		LaunchIndex:        launchIndex,
 		Status:             status,
 		Agent:              emptyValue(agent, "subagent"),
+		Title:              emptyValue(title, "subagent"),
+		Model:              model,
 		Tool:               emptyValue(toolName, "-"),
 		Time:               timeLabel,
 		PreviewKind:        previewKind,
@@ -2498,9 +2510,29 @@ func taskToolLaunchRow(payload map[string]any) taskToolTableRow {
 	}
 }
 
+func taskToolModelLabel(payload map[string]any) string {
+	if payload == nil {
+		return ""
+	}
+	provider := strings.TrimSpace(jsonString(payload, "subagent_provider"))
+	model := strings.TrimSpace(jsonString(payload, "subagent_model"))
+	switch {
+	case provider != "" && model != "":
+		return provider + "/" + model
+	case provider != "":
+		return provider
+	default:
+		return model
+	}
+}
+
 func taskToolPayloadRow(payload map[string]any, startedAt int64, state string) taskToolTableRow {
 	if payload == nil {
 		return taskToolTableRow{}
+	}
+	launchIndex := jsonInt(payload, "launch_index")
+	if launchIndex <= 0 {
+		launchIndex = jsonInt(payload, "index")
 	}
 	status := normalizeTaskToolStatus(firstNonEmptyToolValue(jsonString(payload, "status"), state))
 	agent := strings.TrimSpace(firstNonEmptyToolValue(
@@ -2510,6 +2542,8 @@ func taskToolPayloadRow(payload map[string]any, startedAt int64, state string) t
 		jsonString(payload, "subagent"),
 		jsonString(payload, "requested_subagent"),
 	))
+	title := strings.TrimSpace(firstNonEmptyToolValue(jsonString(payload, "assignment_label"), jsonString(payload, "meta_prompt"), agent))
+	model := taskToolModelLabel(payload)
 	rawPreviewKind := strings.TrimSpace(jsonString(payload, "current_preview_kind"))
 	toolName := strings.TrimSpace(jsonString(payload, "current_tool"))
 	timeLabel := toolDurationLabel(int64(jsonInt(payload, "current_tool_ms")))
@@ -2528,8 +2562,11 @@ func taskToolPayloadRow(payload map[string]any, startedAt int64, state string) t
 	launchStartedAt := int64(jsonInt(payload, "launch_started_at_ms"))
 	currentToolStarted := int64(jsonInt(payload, "current_tool_started_at_ms"))
 	return taskToolTableRow{
+		LaunchIndex:        launchIndex,
 		Status:             status,
 		Agent:              emptyValue(agent, "subagent"),
+		Title:              emptyValue(title, "subagent"),
+		Model:              model,
 		Tool:               emptyValue(toolName, "-"),
 		Time:               timeLabel,
 		PreviewKind:        previewKind,
