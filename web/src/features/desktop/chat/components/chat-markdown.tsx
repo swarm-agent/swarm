@@ -564,6 +564,8 @@ function shouldRenderPreviewAsPlain(toolName: string): boolean {
     case "websearch":
     case "webfetch":
     case "task":
+    case "plan-manage":
+    case "plan_manage":
     case "exit-plan-mode":
     case "exit_plan_mode":
     case "permission":
@@ -711,7 +713,7 @@ export function ToolMessageView({
           <PreviewLinesView
             lines={toolMessage.previewLines}
             commandText={toolMessage.commandText}
-            compact={toolMessage.tool !== 'exit_plan_mode' && toolMessage.tool !== 'permission'}
+            compact
             language={previewLanguage}
             shell={shellPreview}
             plain={plainPreview}
