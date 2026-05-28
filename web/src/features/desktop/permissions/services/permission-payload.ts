@@ -427,6 +427,8 @@ export function normalizePermissionToolName(raw: string): string {
       return 'exit_plan_mode'
     case 'managetodos':
       return 'manage_todos'
+    case 'planmanage':
+      return 'plan_manage'
     case 'manageimage':
       return 'manage_image'
     case 'manageflow':
@@ -540,9 +542,11 @@ export function permissionDisplayToolName(raw: string): string {
     case 'ask_user':
       return 'ask-user'
     case 'exit_plan_mode':
-      return 'exit_plan_mode'
+      return 'plan'
     case 'manage_todos':
       return 'manage_todos'
+    case 'plan_manage':
+      return 'plan'
     case 'manage_image':
       return 'manage-image'
     case 'manage_flow':

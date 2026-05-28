@@ -175,6 +175,9 @@ func formatUnifiedToolEntry(entry chatToolStreamEntry) string {
 	if manageTodos := formatManageTodosToolEntry(entry, maxInt(chatToolPreviewMaxRunes, 640)); manageTodos != "" {
 		return manageTodos
 	}
+	if planManage := formatPlanManageToolEntry(entry, maxInt(chatToolPreviewMaxRunes, 640)); planManage != "" {
+		return planManage
+	}
 	headline := toolMessageHeadline(entry, chatToolPreviewMaxRunes)
 	if headline == "" {
 		headline = "tool"
@@ -495,6 +498,46 @@ func isManageTodosPayload(entry chatToolStreamEntry, payload map[string]any) boo
 		}
 	}
 	return false
+}
+
+func formatPlanManageToolEntry(entry chatToolStreamEntry, maxRunes int) string {
+	payload := parseToolJSON(strings.TrimSpace(entry.Output))
+	if payload == nil {
+		payload = parseToolJSON(strings.TrimSpace(entry.Raw))
+	}
+	if payload == nil || !isPlanManagePayload(entry, payload) {
+		return ""
+	}
+
+	headline := summarizePlanManageToolPayload(payload)
+	if headline == "" {
+		headline = "plan"
+	}
+	lines := []string{headline}
+	for _, line := range structuredPlanManagePreviewLines(payload, maxInt(maxRunes, 160), 6) {
+		if strings.EqualFold(strings.TrimSpace(line), strings.TrimSpace(headline)) {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	if errText := strings.TrimSpace(entry.Error); errText != "" && len(lines) == 1 {
+		lines = append(lines, clampEllipsis("error: "+errText, maxRunes))
+	}
+	return clampEllipsis(strings.Join(lines, "\n"), maxInt(maxRunes, 640))
+}
+
+func isPlanManagePayload(entry chatToolStreamEntry, payload map[string]any) bool {
+	if payload == nil {
+		return false
+	}
+	toolName := strings.ToLower(strings.TrimSpace(entry.ToolName))
+	if toolName == "plan_manage" || toolName == "plan-manage" {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(jsonString(payload, "tool")), "plan_manage") {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(jsonString(payload, "path_id")), "tool.plan-manage.v3")
 }
 
 func structuredWebSearchTimelineLines(payload map[string]any, maxRunes, maxLines int) []string {
@@ -1119,6 +1162,8 @@ func structuredToolPreviewLines(toolName, raw string, maxRunes, maxLines int) []
 		return structuredWebFetchPreviewLines(payload, maxRunes, maxLines)
 	case "manage_todos":
 		return structuredManageTodosPreviewLines(payload, maxRunes, maxLines)
+	case "plan-manage", "plan_manage":
+		return structuredPlanManagePreviewLines(payload, maxRunes, maxLines)
 	case "task":
 		return structuredTaskPreviewLines(payload, maxRunes, maxLines)
 	case "exit-plan-mode", "exit_plan_mode", "permission":
@@ -2580,6 +2625,9 @@ func toolPreviewLineLimit(entry chatToolStreamEntry) int {
 	if strings.EqualFold(strings.TrimSpace(entry.ToolName), "manage_todos") {
 		return 6
 	}
+	if strings.EqualFold(strings.TrimSpace(entry.ToolName), "plan_manage") || strings.EqualFold(strings.TrimSpace(entry.ToolName), "plan-manage") {
+		return 6
+	}
 	if isExitPlanToolEntry(entry) {
 		return 5
 	}
@@ -2705,9 +2753,9 @@ func summarizeExitPlanToolPayload(toolName string, payload map[string]any) strin
 		action = "updated"
 	}
 	if title := strings.TrimSpace(details.Title); title != "" {
-		return "exit_plan_mode " + action + " · " + title
+		return "plan " + action + " · " + title
 	}
-	return "exit_plan_mode " + action
+	return "plan " + action
 }
 
 func isExitPlanPermissionPayload(payload map[string]any) bool {
@@ -3078,6 +3126,8 @@ func summarizeStructuredToolPreview(toolName, raw string) string {
 		return summarizeTaskToolPayload(payload)
 	case "manage_todos":
 		return summarizeManageTodosToolPayload(payload)
+	case "plan-manage", "plan_manage":
+		return summarizePlanManageToolPayload(payload)
 	case "ask-user", "ask_user":
 		rows := askUserSummaryRows(payload)
 		if len(rows) > 0 {
@@ -3150,6 +3200,191 @@ func normalizePermissionAction(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func summarizePlanManageToolPayload(payload map[string]any) string {
+	if payload == nil {
+		return ""
+	}
+	action := normalizePlanManageAction(strings.TrimSpace(jsonString(payload, "action")))
+	plan := jsonObject(payload, "plan")
+	title := strings.TrimSpace(jsonString(plan, "title"))
+	planID := strings.TrimSpace(firstNonEmptyToolValue(jsonString(plan, "id"), jsonString(payload, "plan_id"), jsonString(payload, "active_plan_id")))
+	status := strings.TrimSpace(jsonString(payload, "status"))
+	if status == "" {
+		status = strings.TrimSpace(jsonString(plan, "status"))
+	}
+
+	summary := "plan"
+	if action != "" {
+		summary += " " + planManageActionDisplay(action)
+	}
+	notes := make([]string, 0, 3)
+	switch action {
+	case "list":
+		count := maxInt(len(jsonObjectSlice(payload, "plans")), jsonInt(payload, "count"))
+		notes = append(notes, toolCountLabel(count, "plan", "plans"))
+		if planID != "" {
+			notes = append(notes, "active "+planID)
+		}
+	case "history":
+		count := maxInt(len(jsonObjectSlice(payload, "revisions")), jsonInt(payload, "count"))
+		notes = append(notes, toolCountLabel(count, "revision", "revisions"))
+		if planID != "" {
+			notes = append(notes, planID)
+		}
+	case "get-active":
+		if strings.EqualFold(status, "empty") {
+			notes = append(notes, "no active plan")
+		}
+	case "get":
+		if strings.EqualFold(status, "not_found") {
+			notes = append(notes, "not found")
+		}
+	}
+	if title != "" {
+		notes = append([]string{clampEllipsis(title, 80)}, notes...)
+	} else if planID != "" && action != "list" && action != "history" {
+		notes = append([]string{planID}, notes...)
+	}
+	if len(notes) > 0 {
+		return toolSummaryWithNotes(summary, notes...)
+	}
+	if fallback := strings.TrimSpace(jsonString(payload, "summary")); fallback != "" {
+		return "plan · " + clampEllipsis(fallback, 120)
+	}
+	return summary
+}
+
+func structuredPlanManagePreviewLines(payload map[string]any, maxRunes, maxLines int) []string {
+	if payload == nil || maxLines <= 0 {
+		return nil
+	}
+	lines := make([]string, 0, maxLines)
+	push := func(text string) {
+		text = strings.TrimSpace(text)
+		if text == "" || len(lines) >= maxLines {
+			return
+		}
+		lines = append(lines, clampEllipsis(text, maxRunes))
+	}
+
+	action := normalizePlanManageAction(strings.TrimSpace(jsonString(payload, "action")))
+	if action != "" {
+		push("action: " + planManageActionDisplay(action))
+	}
+	if status := strings.TrimSpace(jsonString(payload, "status")); status != "" {
+		push("status: " + status)
+	}
+	if plan := jsonObject(payload, "plan"); len(plan) > 0 {
+		if title := strings.TrimSpace(jsonString(plan, "title")); title != "" {
+			push("title: " + title)
+		}
+		if planID := strings.TrimSpace(jsonString(plan, "id")); planID != "" {
+			push("plan: " + planID)
+		}
+		if update := strings.TrimSpace(jsonString(plan, "update_summary")); update != "" {
+			push("update: " + update)
+		}
+		if preview := firstPlanPreviewLine(jsonString(plan, "plan")); preview != "" {
+			push(preview)
+		}
+	}
+	if activeID := strings.TrimSpace(jsonString(payload, "active_plan_id")); activeID != "" {
+		push("active: " + activeID)
+	}
+	for _, plan := range jsonObjectSlice(payload, "plans") {
+		push(planListPreviewLine(plan))
+	}
+	for _, revision := range jsonObjectSlice(payload, "revisions") {
+		push(planRevisionPreviewLine(revision))
+	}
+	if len(lines) == 0 {
+		if summary := strings.TrimSpace(jsonString(payload, "summary")); summary != "" {
+			push(summary)
+		}
+	}
+	return lines
+}
+
+func normalizePlanManageAction(action string) string {
+	action = strings.ToLower(strings.TrimSpace(action))
+	switch action {
+	case "active", "current":
+		return "get-active"
+	case "activate", "use":
+		return "set-active"
+	case "revisions":
+		return "history"
+	case "update_section":
+		return "update-section"
+	default:
+		return action
+	}
+}
+
+func planManageActionDisplay(action string) string {
+	switch normalizePlanManageAction(action) {
+	case "get-active":
+		return "active"
+	case "set-active":
+		return "activate"
+	case "update-section":
+		return "update section"
+	default:
+		return strings.ReplaceAll(strings.TrimSpace(action), "_", " ")
+	}
+}
+
+func firstPlanPreviewLine(planBody string) string {
+	for _, line := range strings.Split(strings.ReplaceAll(planBody, "\r\n", "\n"), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		return line
+	}
+	return ""
+}
+
+func planListPreviewLine(plan map[string]any) string {
+	if len(plan) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, 4)
+	if jsonBool(plan, "active") {
+		parts = append(parts, "active")
+	}
+	if title := strings.TrimSpace(jsonString(plan, "title")); title != "" {
+		parts = append(parts, title)
+	}
+	if id := strings.TrimSpace(jsonString(plan, "id")); id != "" {
+		parts = append(parts, id)
+	}
+	if status := strings.TrimSpace(jsonString(plan, "status")); status != "" {
+		parts = append(parts, status)
+	}
+	return strings.Join(parts, " · ")
+}
+
+func planRevisionPreviewLine(revision map[string]any) string {
+	if len(revision) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, 4)
+	if version := jsonInt(revision, "version"); version > 0 {
+		parts = append(parts, fmt.Sprintf("v%d", version))
+	}
+	if title := strings.TrimSpace(jsonString(revision, "title")); title != "" {
+		parts = append(parts, title)
+	}
+	if update := strings.TrimSpace(jsonString(revision, "update_summary")); update != "" {
+		parts = append(parts, update)
+	}
+	if id := strings.TrimSpace(jsonString(revision, "id")); id != "" && len(parts) == 0 {
+		parts = append(parts, id)
+	}
+	return strings.Join(parts, " · ")
 }
 
 func summarizeManageTodosToolPayload(payload map[string]any) string {
@@ -3406,7 +3641,7 @@ func preferredStructuredToolText(toolName, output, raw string) string {
 	output = strings.TrimSpace(output)
 	raw = strings.TrimSpace(raw)
 	switch toolName {
-	case "websearch", "search", "manage_todos":
+	case "websearch", "search", "manage_todos", "plan_manage", "plan-manage":
 		switch {
 		case output == "":
 			return raw
@@ -3487,6 +3722,16 @@ func structuredPayloadRichness(toolName string, payload map[string]any) int {
 		if summary := jsonObject(payload, "summary"); len(summary) > 0 {
 			score += 4
 			score += jsonInt(summary, "task_count")
+		}
+	case "plan_manage", "plan-manage":
+		if plan := jsonObject(payload, "plan"); len(plan) > 0 {
+			score += 20
+			score += len([]rune(strings.TrimSpace(jsonString(plan, "title"))))
+		}
+		score += len(jsonObjectSlice(payload, "plans")) * 8
+		score += len(jsonObjectSlice(payload, "revisions")) * 6
+		if summary := strings.TrimSpace(jsonString(payload, "summary")); summary != "" {
+			score += len([]rune(summary))
 		}
 	}
 	if score == 0 {

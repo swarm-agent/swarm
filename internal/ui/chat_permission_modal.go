@@ -228,6 +228,22 @@ func permissionPrimaryRequestSummary(toolName string, payload map[string]any) st
 			return "manage-flow " + firstNonEmptyString(action, "change")
 		}
 		return "manage-flow " + firstNonEmptyString(action, "change") + " " + flowID
+	case "plan_manage":
+		action := planManageActionDisplay(jsonString(payload, "action"))
+		if action == "" {
+			action = "update"
+		}
+		plan := jsonObject(payload, "plan")
+		title := strings.TrimSpace(jsonString(plan, "title"))
+		planID := strings.TrimSpace(firstNonEmptyString(jsonString(plan, "id"), jsonString(payload, "plan_id"), jsonString(payload, "active_plan_id")))
+		switch {
+		case title != "":
+			return "plan " + action + " " + title
+		case planID != "":
+			return "plan " + action + " " + planID
+		default:
+			return "plan " + action
+		}
 	case "manage_todos":
 		action := strings.TrimSpace(jsonString(payload, "action"))
 		text := strings.TrimSpace(jsonString(payload, "text"))
@@ -352,6 +368,8 @@ func permissionPreferredArgumentKeys(toolName string) []string {
 		return []string{"action", "theme", "workspace_path", "change", "summary"}
 	case "manage_todos":
 		return []string{"action", "owner_kind", "operations", "text", "id", "done", "priority", "group", "tags", "in_progress", "ordered_ids", "workspace_path"}
+	case "plan_manage":
+		return []string{"action", "title", "plan_id", "id", "plan", "status", "approval_state", "update_summary", "update_scope", "operation", "section", "old_text", "new_text", "checklist_item", "checked"}
 	case "manage_flow":
 		return []string{"action", "flow_id", "name", "approval_summary", "change", "approved_arguments", "preview", "content"}
 	default:
@@ -623,6 +641,8 @@ func normalizePermissionToolName(raw string) string {
 		return "exit_plan_mode"
 	case "managetodos":
 		return "manage_todos"
+	case "planmanage":
+		return "plan_manage"
 	case "manageflow":
 		return "manage_flow"
 	case "managetheme":
@@ -640,9 +660,11 @@ func permissionDisplayToolName(raw string) string {
 	case "ask_user":
 		return "ask-user"
 	case "exit_plan_mode":
-		return "exit_plan_mode"
+		return "plan"
 	case "manage_todos":
 		return "manage_todos"
+	case "plan_manage":
+		return "plan"
 	case "manage_flow":
 		return "manage-flow"
 	case "manage_theme":

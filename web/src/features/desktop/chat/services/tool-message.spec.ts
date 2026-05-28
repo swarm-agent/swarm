@@ -21,12 +21,13 @@ function testExitPlanApprovedShowsMetadata(): void {
   });
   assert(Boolean(message), "expected structured tool message");
   assert(
-    message?.summary === "exit-plan-mode approved · Implementation Plan",
+    message?.summary === "plan approved · Implementation Plan",
     `unexpected summary: ${message?.summary}`,
   );
   assert(
-    message?.previewLines.includes("plan: plan_123") === true,
-    `missing plan id preview: ${message?.previewLines.join(" | ")}`,
+    message?.previewLines.includes("action: approved") === true &&
+      message?.previewLines.includes("plan: plan_123") === true,
+    `missing action/plan id preview: ${message?.previewLines.join(" | ")}`,
   );
   assert(
     message?.previewLines.includes("next mode: auto") === true,
@@ -59,7 +60,7 @@ function testExitPlanDeniedPermissionShowsFeedbackAndPlan(): void {
   });
   assert(Boolean(message), "expected structured permission message");
   assert(
-    message?.summary === "exit-plan-mode denied · Deployment Plan",
+    message?.summary === "plan denied · Deployment Plan",
     `unexpected permission summary: ${message?.summary}`,
   );
   assert(
@@ -593,6 +594,29 @@ function testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads(): voi
   assert(finalMessage?.taskRows[1]?.childSessionId === 'child-2', 'expected second child session id to persist')
 }
 
+function testPlanManageShowsPlanLabelAndAction(): void {
+  const message = buildStructuredToolMessage({
+    tool: "plan_manage",
+    callId: "call_plan_1",
+    outputText: JSON.stringify({
+      tool: "plan_manage",
+      action: "save",
+      status: "ok",
+      plan: {
+        id: "plan_123",
+        title: "Implementation Plan",
+        plan: "# Plan\n1. Patch tool stream\n2. Test",
+        update_summary: "polish tool stream",
+      },
+    }),
+  });
+  assert(Boolean(message), "expected structured plan message");
+  assert(message?.summary === "plan save (Implementation Plan)", `unexpected plan summary: ${message?.summary}`);
+  assert(message?.previewLines.includes("action: save") === true, `missing plan action: ${message?.previewLines.join(" | ")}`);
+  assert(message?.previewLines.includes("title: Implementation Plan") === true, `missing plan title: ${message?.previewLines.join(" | ")}`);
+  assert(message?.previewLines.includes("update: polish tool stream") === true, `missing plan update: ${message?.previewLines.join(" | ")}`);
+}
+
 function main(): void {
   testExitPlanApprovedShowsMetadata();
   testExitPlanDeniedPermissionShowsFeedbackAndPlan();
@@ -610,7 +634,9 @@ function main(): void {
   testBashToolMessageShowsCommandAsMetadata();
   testSearchToolPreservesContentMatchText();
   testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads();
+  testPlanManageShowsPlanLabelAndAction();
   console.log("tool-message tests passed");
 }
 
 main();
+

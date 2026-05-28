@@ -350,6 +350,10 @@ function summarizeToolOutput(
       if (threadId) parts.push(`session ${threadId}`);
       return parts.join(" · ");
     }
+    case "plan_manage":
+    case "plan-manage": {
+      return summarizePlanManageToolOutput(effective);
+    }
     case "manage_todos":
     case "manage-todos": {
       const todoData = extractTodoToolData(effective);
@@ -392,12 +396,158 @@ function summarizeToolOutput(
       );
       if (exitPlanSummary) return exitPlanSummary;
       const title = jsonStr(effective, "title");
-      if (title) return "exit-plan-mode: " + clamp(title, 80);
-      return tool === "permission" ? "permission" : "exit-plan-mode";
+      if (title) return "plan " + clamp(title, 80);
+      return tool === "permission" ? "permission" : "plan";
     }
     default:
       return toolName || "tool";
   }
+}
+
+function jsonRecord(
+  obj: Record<string, unknown> | null,
+  key: string,
+): Record<string, unknown> | null {
+  if (!obj) return null;
+  const value = obj[key];
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function normalizePlanManageAction(action: string): string {
+  switch (action.trim().toLowerCase()) {
+    case "active":
+    case "current":
+      return "get-active";
+    case "activate":
+    case "use":
+      return "set-active";
+    case "revisions":
+      return "history";
+    case "update_section":
+      return "update-section";
+    default:
+      return action.trim().toLowerCase();
+  }
+}
+
+function planManageActionDisplay(action: string): string {
+  switch (normalizePlanManageAction(action)) {
+    case "get-active":
+      return "active";
+    case "set-active":
+      return "activate";
+    case "update-section":
+      return "update section";
+    default:
+      return normalizePlanManageAction(action).replace(/_/g, " ");
+  }
+}
+
+function firstPlanPreviewLine(planBody: string): string {
+  return planBody
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .find(Boolean) ?? "";
+}
+
+function summarizePlanManageToolOutput(payload: Record<string, unknown>): string {
+  const action = normalizePlanManageAction(jsonStr(payload, "action"));
+  const plan = jsonRecord(payload, "plan");
+  const title = jsonStr(plan, "title");
+  const planId = firstNonEmpty(
+    jsonStr(plan, "id"),
+    jsonStr(payload, "plan_id"),
+    jsonStr(payload, "active_plan_id"),
+  );
+  const status = jsonStr(payload, "status") || jsonStr(plan, "status");
+  let summary = "plan";
+  if (action) summary += ` ${planManageActionDisplay(action)}`;
+
+  const notes: string[] = [];
+  if (title) notes.push(clamp(title, 80));
+  else if (planId && action !== "list" && action !== "history") notes.push(planId);
+
+  if (action === "list") {
+    const count = Math.max(jsonObjectSlice(payload, "plans").length, jsonNum(payload, "count"));
+    notes.push(countLabel(count, "plan", "plans"));
+    if (planId) notes.push(`active ${planId}`);
+  } else if (action === "history") {
+    const count = Math.max(jsonObjectSlice(payload, "revisions").length, jsonNum(payload, "count"));
+    notes.push(countLabel(count, "revision", "revisions"));
+    if (planId) notes.push(planId);
+  } else if (action === "get-active" && status.toLowerCase() === "empty") {
+    notes.push("no active plan");
+  } else if (action === "get" && status.toLowerCase() === "not_found") {
+    notes.push("not found");
+  }
+
+  if (notes.length) return `${summary} (${notes.join(", ")})`;
+  const fallback = jsonStr(payload, "summary");
+  return fallback ? `plan · ${clamp(fallback, 120)}` : summary;
+}
+
+function planListPreviewLine(plan: Record<string, unknown>): string {
+  const parts: string[] = [];
+  if (jsonBool(plan, "active")) parts.push("active");
+  const title = jsonStr(plan, "title");
+  const id = jsonStr(plan, "id");
+  const status = jsonStr(plan, "status");
+  if (title) parts.push(title);
+  if (id) parts.push(id);
+  if (status) parts.push(status);
+  return parts.join(" · ");
+}
+
+function planRevisionPreviewLine(revision: Record<string, unknown>): string {
+  const parts: string[] = [];
+  const version = jsonNum(revision, "version");
+  if (version > 0) parts.push(`v${version}`);
+  const title = jsonStr(revision, "title");
+  const update = jsonStr(revision, "update_summary");
+  const id = jsonStr(revision, "id");
+  if (title) parts.push(title);
+  if (update) parts.push(update);
+  if (!parts.length && id) parts.push(id);
+  return parts.join(" · ");
+}
+
+function buildPlanManagePreviewLines(
+  payload: Record<string, unknown> | null,
+  maxLines: number,
+): string[] {
+  if (!payload || maxLines <= 0) return [];
+  const out: string[] = [];
+  const action = normalizePlanManageAction(jsonStr(payload, "action"));
+  if (action) pushPreviewLine(out, `action: ${planManageActionDisplay(action)}`, maxLines);
+  const status = jsonStr(payload, "status");
+  if (status) pushPreviewLine(out, `status: ${status}`, maxLines);
+
+  const plan = jsonRecord(payload, "plan");
+  if (plan) {
+    const title = jsonStr(plan, "title");
+    const planId = jsonStr(plan, "id");
+    const update = jsonStr(plan, "update_summary");
+    const preview = firstPlanPreviewLine(jsonStr(plan, "plan"));
+    if (title) pushPreviewLine(out, `title: ${title}`, maxLines);
+    if (planId) pushPreviewLine(out, `plan: ${planId}`, maxLines);
+    if (update) pushPreviewLine(out, `update: ${update}`, maxLines);
+    if (preview) pushPreviewLine(out, preview, maxLines);
+  }
+
+  const activeId = jsonStr(payload, "active_plan_id");
+  if (activeId) pushPreviewLine(out, `active: ${activeId}`, maxLines);
+  for (const item of jsonObjectSlice(payload, "plans")) {
+    pushPreviewLine(out, planListPreviewLine(item), maxLines);
+  }
+  for (const item of jsonObjectSlice(payload, "revisions")) {
+    pushPreviewLine(out, planRevisionPreviewLine(item), maxLines);
+  }
+  if (!out.length) pushPreviewLine(out, jsonStr(payload, "summary"), maxLines);
+  return out;
 }
 
 function extractTodoToolData(
@@ -963,6 +1113,9 @@ function extractPreviewLines(
       }
       return out;
     }
+    case "plan_manage":
+    case "plan-manage":
+      return buildPlanManagePreviewLines(effective, 6);
     case "exit-plan-mode":
     case "exit_plan_mode":
     case "permission":
@@ -1440,9 +1593,8 @@ function summarizeExitPlanToolOutput(
   const details = extractExitPlanDetails(toolName, outputJson, argumentsJson);
   if (!details) return "";
   const action = details.action || "updated";
-  if (details.title)
-    return `exit-plan-mode ${action} · ${clamp(details.title, 80)}`;
-  return `exit-plan-mode ${action}`;
+  if (details.title) return `plan ${action} · ${clamp(details.title, 80)}`;
+  return `plan ${action}`;
 }
 
 function extractExitPlanPreviewLines(
@@ -1453,7 +1605,7 @@ function extractExitPlanPreviewLines(
   const details = extractExitPlanDetails(toolName, outputJson, argumentsJson);
   if (!details) return [];
   const lines: string[] = [];
-  pushPreviewLine(lines, `status: ${details.action || "updated"}`, 5);
+  pushPreviewLine(lines, `action: ${details.action || "updated"}`, 5);
   if (details.title) pushPreviewLine(lines, `title: ${details.title}`, 5);
   if (details.planId) pushPreviewLine(lines, `plan: ${details.planId}`, 5);
   if (details.targetMode)
