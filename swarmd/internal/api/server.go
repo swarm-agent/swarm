@@ -2628,6 +2628,10 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
 			return
 		}
+		if r.Method == http.MethodPost && s.isManagedHostMirroredSession(sessionID) {
+			s.handleManagedHostSessionCanonicalMessage(w, r, sessionID)
+			return
+		}
 		if r.Method == http.MethodPost && s.proxyRoutedSessionRequest(w, r, sessionID) {
 			return
 		}
@@ -3363,10 +3367,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if strings.HasSuffix(rest, "/run") {
-		if s.runner == nil {
-			writeError(w, http.StatusInternalServerError, errors.New("run service not configured"))
-			return
-		}
 		if r.Method != http.MethodPost {
 			methodNotAllowed(w)
 			return
@@ -3381,7 +3381,15 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
+		if s.isManagedHostMirroredSession(sessionID) {
+			s.handleManagedHostSessionCanonicalRun(w, r, sessionID)
+			return
+		}
 		if s.proxyRoutedSessionRequest(w, r, sessionID) {
+			return
+		}
+		if s.runner == nil {
+			writeError(w, http.StatusInternalServerError, errors.New("run service not configured"))
 			return
 		}
 		if s.isShuttingDown() {

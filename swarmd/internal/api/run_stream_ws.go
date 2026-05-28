@@ -578,7 +578,11 @@ func (s *Server) handleRunStreamWebsocket(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-	if remoteTarget != nil && !s.isManagedHostMirroredSession(sessionID) {
+	if s.isManagedHostMirroredSession(sessionID) {
+		s.handleManagedHostSessionRunStreamWebsocket(w, r, sessionID)
+		return
+	}
+	if remoteTarget != nil {
 		if err := s.proxyRequestToSwarmTarget(w, r, *remoteTarget); err != nil {
 			if errors.Is(err, transportws.ErrUpgradeRequired) {
 				writeError(w, http.StatusUpgradeRequired, errors.New("websocket upgrade required"))
@@ -586,10 +590,6 @@ func (s *Server) handleRunStreamWebsocket(w http.ResponseWriter, r *http.Request
 			}
 			writeError(w, http.StatusBadGateway, err)
 		}
-		return
-	}
-	if s.isManagedHostMirroredSession(sessionID) {
-		s.handleManagedHostSessionRunStreamWebsocket(w, r, sessionID)
 		return
 	}
 	if s.runner == nil {
@@ -808,14 +808,14 @@ func (s *Server) handleRunStreamControl(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 	}
-	if remoteTarget != nil && !s.isManagedHostMirroredSession(sessionID) {
+	if s.isManagedHostMirroredSession(sessionID) {
+		s.handleManagedHostSessionRunStreamControl(w, r, sessionID)
+		return
+	}
+	if remoteTarget != nil {
 		if err := s.proxyRequestToSwarmTarget(w, r, *remoteTarget); err != nil {
 			writeError(w, http.StatusBadGateway, err)
 		}
-		return
-	}
-	if s.isManagedHostMirroredSession(sessionID) {
-		s.handleManagedHostSessionRunStreamControl(w, r, sessionID)
 		return
 	}
 	if s.runner == nil {

@@ -275,6 +275,28 @@ func (s *Server) handleManagedHostSessionMessage(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusBadRequest, errors.New("session_id is required"))
 		return
 	}
+	s.handleManagedHostSessionMessageRequest(w, r, req)
+}
+
+func (s *Server) handleManagedHostSessionCanonicalMessage(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if s.sessions == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("session service not configured"))
+		return
+	}
+	var req managedHostSessionMessageRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	req.SessionID = strings.TrimSpace(sessionID)
+	s.handleManagedHostSessionMessageRequest(w, r, req)
+}
+
+func (s *Server) handleManagedHostSessionMessageRequest(w http.ResponseWriter, r *http.Request, req managedHostSessionMessageRequest) {
 	target, status, err := s.managedHostTargetForSessionRequest(r, req.SessionID, req.TargetSwarmID)
 	if err != nil {
 		writeError(w, status, err)
@@ -315,6 +337,29 @@ func (s *Server) handleManagedHostSessionRun(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, errors.New("session_id is required"))
 		return
 	}
+	s.handleManagedHostSessionRunRequest(w, r, req)
+}
+
+func (s *Server) handleManagedHostSessionCanonicalRun(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if s.sessions == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("session service not configured"))
+		return
+	}
+	var req managedHostSessionRunRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	req.SessionID = strings.TrimSpace(sessionID)
+	req.Type = "run.start"
+	s.handleManagedHostSessionRunRequest(w, r, req)
+}
+
+func (s *Server) handleManagedHostSessionRunRequest(w http.ResponseWriter, r *http.Request, req managedHostSessionRunRequest) {
 	target, status, err := s.managedHostTargetForSessionRequest(r, req.SessionID, req.TargetSwarmID)
 	if err != nil {
 		writeError(w, status, err)
