@@ -1530,13 +1530,18 @@ export function DesktopAppPage() {
     () => (routeWorkspaceSlug ? resolveWorkspaceBySlug(workspaces, routeWorkspaceSlug) : null),
     [routeWorkspaceSlug, workspaces],
   )
+  const dismissDesktopToast = useCallback(() => {
+    setDesktopToast(null)
+    saveStoredValue(DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY, null)
+  }, [])
+
   useEffect(() => {
     if (!desktopToast) {
       return
     }
-    const timer = window.setTimeout(() => setDesktopToast(null), 5_000)
+    const timer = window.setTimeout(dismissDesktopToast, 5_000)
     return () => window.clearTimeout(timer)
-  }, [desktopToast])
+  }, [desktopToast, dismissDesktopToast])
 
   const temporaryRouteWorkspace = useMemo<WorkspaceEntry | null>(() => {
     const candidatePath = activeWorkspacePath?.trim() ?? ''
@@ -3584,7 +3589,7 @@ export function DesktopAppPage() {
       {desktopToast ? (
         <div className="pointer-events-none absolute right-6 top-6 z-[70] max-w-md" role="status" aria-live="polite">
           <Card className={cn(
-            'border p-4 shadow-2xl',
+            'pointer-events-auto border p-4 shadow-2xl',
             desktopToast.tone === 'success'
               ? 'border-[var(--app-success)] bg-[color-mix(in_srgb,var(--app-success)_12%,var(--app-surface))] text-[var(--app-text)]'
               : desktopToast.tone === 'error'
@@ -3593,7 +3598,15 @@ export function DesktopAppPage() {
           )}>
             <div className="flex items-start gap-3 text-sm">
               {desktopToast.tone === 'success' ? <CheckCircle2 className="mt-0.5 shrink-0 text-[var(--app-success)]" size={18} /> : desktopToast.tone === 'error' ? <XCircle className="mt-0.5 shrink-0 text-[var(--app-error)]" size={18} /> : <Bell className="mt-0.5 shrink-0 text-[var(--app-primary)]" size={18} />}
-              <div className="min-w-0 font-medium">{desktopToast.message}</div>
+              <div className="min-w-0 flex-1 font-medium">{desktopToast.message}</div>
+              <button
+                type="button"
+                className="-m-1 ml-1 grid h-7 w-7 shrink-0 place-items-center rounded-full text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus)]"
+                aria-label="Dismiss notification"
+                onClick={dismissDesktopToast}
+              >
+                <X size={16} aria-hidden="true" />
+              </button>
             </div>
           </Card>
         </div>
