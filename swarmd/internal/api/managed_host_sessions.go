@@ -34,17 +34,20 @@ const (
 )
 
 type managedHostSessionOpenRequest struct {
-	TargetSwarmID        string         `json:"target_swarm_id"`
-	Title                string         `json:"title"`
-	WorkspacePath        string         `json:"workspace_path"`
-	HostWorkspacePath    string         `json:"host_workspace_path"`
-	RuntimeWorkspacePath string         `json:"runtime_workspace_path"`
-	WorkspaceName        string         `json:"workspace_name"`
-	Mode                 string         `json:"mode"`
-	AgentName            string         `json:"agent_name"`
-	WorktreeMode         string         `json:"worktree_mode,omitempty"`
-	Metadata             map[string]any `json:"metadata"`
-	Preference           struct {
+	TargetSwarmID            string         `json:"target_swarm_id"`
+	Title                    string         `json:"title"`
+	WorkspacePath            string         `json:"workspace_path"`
+	HostWorkspacePath        string         `json:"host_workspace_path"`
+	RuntimeWorkspacePath     string         `json:"runtime_workspace_path"`
+	WorkspaceName            string         `json:"workspace_name"`
+	Mode                     string         `json:"mode"`
+	AgentName                string         `json:"agent_name"`
+	WorktreeMode             string         `json:"worktree_mode,omitempty"`
+	WorktreeUseCurrentBranch *bool          `json:"worktree_use_current_branch,omitempty"`
+	WorktreeBaseBranch       string         `json:"worktree_base_branch,omitempty"`
+	WorktreeBranchName       string         `json:"worktree_branch_name,omitempty"`
+	Metadata                 map[string]any `json:"metadata"`
+	Preference               struct {
 		Provider    string `json:"provider"`
 		Model       string `json:"model"`
 		Thinking    string `json:"thinking"`
@@ -176,15 +179,18 @@ func (s *Server) handleManagedHostSessionOpen(w http.ResponseWriter, r *http.Req
 	peerReq := peerManagedHostSessionOpenRequest{
 		SessionID: sessionID,
 		Request: managedHostSessionCreateRequest{
-			Title:               req.Title,
-			WorkspacePath:       sourceWorkspacePath,
-			SourceWorkspacePath: sourceWorkspacePath,
-			WorkspaceName:       workspaceName,
-			Mode:                req.Mode,
-			AgentName:           req.AgentName,
-			WorktreeMode:        worktreeMode,
-			Metadata:            managedHostSessionMetadata(req.Metadata, route),
-			Preference:          req.Preference,
+			Title:                    req.Title,
+			WorkspacePath:            sourceWorkspacePath,
+			SourceWorkspacePath:      sourceWorkspacePath,
+			WorkspaceName:            workspaceName,
+			Mode:                     req.Mode,
+			AgentName:                req.AgentName,
+			WorktreeMode:             worktreeMode,
+			WorktreeUseCurrentBranch: req.WorktreeUseCurrentBranch,
+			WorktreeBaseBranch:       strings.TrimSpace(req.WorktreeBaseBranch),
+			WorktreeBranchName:       strings.TrimSpace(req.WorktreeBranchName),
+			Metadata:                 managedHostSessionMetadata(req.Metadata, route),
+			Preference:               req.Preference,
 		},
 		Route: route,
 	}

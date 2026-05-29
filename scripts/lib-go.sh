@@ -15,13 +15,15 @@ swarm_find_go_bin() {
     fi
   fi
 
-  local candidate parent_root
+  local candidate parent_root goroot_dir
   parent_root="$(cd -- "${root}/.." && pwd)"
   for candidate in \
-    "${root}/.tools/go/bin/go" \
-    "${parent_root}/.tools/go/bin/go"
+    "${root}"/.tools/go*/bin/go \
+    "${parent_root}"/.tools/go*/bin/go
   do
-    if [[ -x "${candidate}" ]]; then
+    [[ -x "${candidate}" ]] || continue
+    goroot_dir="$("${candidate}" env GOROOT 2>/dev/null || true)"
+    if [[ -n "${goroot_dir}" && -d "${goroot_dir}" ]]; then
       printf "%s\n" "${candidate}"
       return 0
     fi

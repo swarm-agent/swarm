@@ -153,6 +153,7 @@ rsync -az --delete \
   --exclude 'tmp/' \
   --exclude '.swarm/' \
   --exclude '.swarm-prof/' \
+  --exclude '.tools/go' \
   --exclude 'dist/' \
   --exclude 'web/dist/' \
   --exclude 'web/node_modules/' \

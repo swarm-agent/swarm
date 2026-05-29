@@ -1265,13 +1265,14 @@ function sessionRequestBody(input: {
   route?: DesktopChatRoute | null;
   worktreeMode?: string;
 }): Record<string, unknown> {
+  const managedHost = isManagedHostDesktopChatRoute(input.route)
+  const hostWorkspacePath = input.route?.hostWorkspacePath?.trim() || input.workspacePath
+  const runtimeWorkspacePath = input.route?.runtimeWorkspacePath?.trim() || input.workspacePath
   return {
     title: input.title ?? "",
-    workspace_path: input.workspacePath,
-    host_workspace_path:
-      input.route?.hostWorkspacePath ?? input.workspacePath,
-    runtime_workspace_path:
-      input.route?.runtimeWorkspacePath ?? input.workspacePath,
+    workspace_path: managedHost ? hostWorkspacePath : input.workspacePath,
+    host_workspace_path: hostWorkspacePath,
+    runtime_workspace_path: runtimeWorkspacePath,
     workspace_name: input.workspaceName,
     mode: input.mode,
     agent_name: input.agentName?.trim() ?? "",

@@ -1235,23 +1235,16 @@ func (s *Server) applySessionCreateWorktree(createOptions *sessionruntime.Create
 	case runruntime.RunWorktreeModeOff:
 		return "", nil
 	case runruntime.RunWorktreeModeOn:
-		if requestedUseCurrentBranch != nil || strings.TrimSpace(requestedBaseBranch) != "" || strings.TrimSpace(requestedBranchName) != "" {
-			baseBranch := strings.TrimSpace(requestedBaseBranch)
-			if requestedUseCurrentBranch != nil && *requestedUseCurrentBranch {
-				baseBranch = ""
-			}
-			branchName := strings.TrimSpace(requestedBranchName)
-			return s.allocateSessionCreateDetachedWorkspace(createOptions, sessionID, func() (worktreeruntime.Allocation, error) {
-				return s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(principal, createOptions.WorkspacePath, sessionID, baseBranch, branchName)
-			})
+		baseBranch := strings.TrimSpace(requestedBaseBranch)
+		if requestedUseCurrentBranch != nil && *requestedUseCurrentBranch {
+			baseBranch = ""
 		}
-		if config.Enabled {
-			return s.allocateSessionCreateDetachedWorkspace(createOptions, sessionID, func() (worktreeruntime.Allocation, error) {
-				return s.worktrees.AllocateDetachedWorkspaceForPrincipal(principal, createOptions.WorkspacePath, sessionID)
-			})
+		if requestedUseCurrentBranch != nil && !*requestedUseCurrentBranch && baseBranch == "" {
+			return "", errors.New("worktree_base_branch is required when worktree_use_current_branch is false")
 		}
+		branchName := strings.TrimSpace(requestedBranchName)
 		return s.allocateSessionCreateDetachedWorkspace(createOptions, sessionID, func() (worktreeruntime.Allocation, error) {
-			return s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(principal, createOptions.WorkspacePath, sessionID, "", "")
+			return s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(principal, createOptions.WorkspacePath, sessionID, baseBranch, branchName)
 		})
 	default:
 		return "", errors.New("unsupported worktree_mode " + strconv.Quote(strings.TrimSpace(rawRequestedMode)))

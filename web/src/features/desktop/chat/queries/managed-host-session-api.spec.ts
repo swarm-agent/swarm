@@ -64,7 +64,7 @@ async function withFetchStub(
   }
 }
 
-test('managed host chat create/run/message use managed-host endpoints', async () => {
+test('managed host chat create with worktree on uses source workspace and managed-host endpoints', async () => {
   const { createSession, sendSessionMessage, startSessionRun, stopSessionRun } = await import('./chat-queries')
 
   await withFetchStub(async (calls) => {
@@ -75,6 +75,7 @@ test('managed host chat create/run/message use managed-host endpoints', async ()
       agentName: 'swarm',
       preference: { provider: 'codex', model: 'gpt-5.4', thinking: 'medium', serviceTier: '', contextMode: '' },
       route: managedHostRoute,
+      worktreeMode: 'on',
     })
     await sendSessionMessage('managed-session', 'user', 'hello managed', managedHostRoute)
     await startSessionRun({ sessionId: 'managed-session', route: managedHostRoute, prompt: 'hello managed', agentName: 'swarm' })
@@ -90,7 +91,10 @@ test('managed host chat create/run/message use managed-host endpoints', async ()
 
     const openBody = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>
     assert.equal(openBody.target_swarm_id, 'managed-swarm')
+    assert.equal(openBody.workspace_path, '/workspaces/host-swarm')
+    assert.equal(openBody.host_workspace_path, '/workspaces/host-swarm')
     assert.equal(openBody.runtime_workspace_path, '/managed/workspace')
+    assert.equal(openBody.worktree_mode, 'on')
 
     const messageBody = JSON.parse(String(calls[1]?.init?.body ?? '{}')) as Record<string, unknown>
     assert.equal(messageBody.target_swarm_id, 'managed-swarm')

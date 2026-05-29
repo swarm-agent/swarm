@@ -21,7 +21,7 @@ import (
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
-func TestManagedHostSessionOpenForwardsExplicitWorktreeModeOnly(t *testing.T) {
+func TestManagedHostSessionOpenForwardsExplicitWorktreeIntentFromAPI(t *testing.T) {
 	server, _, _, _ := newRoutedSessionTestServer(t)
 	server.SetWorktreeService(&fakeWorktreeService{config: worktreeruntime.Config{Enabled: true, UseCurrentBranch: true, BaseBranch: "main", BranchName: "agent/primary-config-must-not-leak"}})
 	var peerRequest map[string]any
@@ -51,7 +51,7 @@ func TestManagedHostSessionOpenForwardsExplicitWorktreeModeOnly(t *testing.T) {
 	defer managed.Close()
 	seedManagedHostTarget(t, server, managed.URL)
 
-	req := httptest.NewRequest(http.MethodPost, managedHostSessionOpenPath, bytes.NewBufferString(`{"title":"managed","workspace_path":"/host/workspace","host_workspace_path":"/primary/guessed-host-path","runtime_workspace_path":"/primary/guessed-runtime-path","workspace_name":"workspace","mode":"auto","agent_name":"swarm","worktree_mode":"on","preference":{"provider":"codex","model":"gpt-5.5","thinking":"high"},"target_swarm_id":"managed-swarm"}`))
+	req := httptest.NewRequest(http.MethodPost, managedHostSessionOpenPath, bytes.NewBufferString(`{"title":"managed","workspace_path":"/host/workspace","host_workspace_path":"/primary/guessed-host-path","runtime_workspace_path":"/primary/guessed-runtime-path","workspace_name":"workspace","mode":"auto","agent_name":"swarm","worktree_mode":"on","worktree_use_current_branch":false,"worktree_base_branch":"release/api-request","worktree_branch_name":"agent/api-request","preference":{"provider":"codex","model":"gpt-5.5","thinking":"high"},"target_swarm_id":"managed-swarm"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
@@ -59,7 +59,7 @@ func TestManagedHostSessionOpenForwardsExplicitWorktreeModeOnly(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if peerRequest["worktree_mode"] != runruntime.RunWorktreeModeOn || peerRequest["worktree_use_current_branch"] != nil || peerRequest["worktree_base_branch"] != nil || peerRequest["worktree_branch_name"] != nil {
+	if peerRequest["worktree_mode"] != runruntime.RunWorktreeModeOn || peerRequest["worktree_use_current_branch"] != false || peerRequest["worktree_base_branch"] != "release/api-request" || peerRequest["worktree_branch_name"] != "agent/api-request" {
 		t.Fatalf("peer worktree request = %+v", peerRequest)
 	}
 	if peerRequest["workspace_path"] != "/host/workspace" || peerRequest["source_workspace_path"] != "/host/workspace" || peerRequest["host_workspace_path"] != nil || peerRequest["runtime_workspace_path"] != nil {

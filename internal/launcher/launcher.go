@@ -558,23 +558,36 @@ func boolString(v bool) string {
 
 func FindGoBin(root string) (string, error) {
 	if v := strings.TrimSpace(os.Getenv("GO_BIN")); v != "" {
-		if isExecutable(v) {
+		if usableGoBin(v) {
 			return v, nil
 		}
 	}
-	candidates := []string{
-		filepath.Join(root, ".tools", "go", "bin", "go"),
-		filepath.Join(filepath.Dir(root), ".tools", "go", "bin", "go"),
-	}
-	for _, candidate := range candidates {
-		if isExecutable(candidate) {
-			return candidate, nil
+	roots := []string{filepath.Join(root, ".tools"), filepath.Join(filepath.Dir(root), ".tools")}
+	seen := map[string]bool{}
+	for _, toolsRoot := range roots {
+		matches, _ := filepath.Glob(filepath.Join(toolsRoot, "go*", "bin", "go"))
+		for _, candidate := range matches {
+			if seen[candidate] {
+				continue
+			}
+			seen[candidate] = true
+			if usableGoBin(candidate) {
+				return candidate, nil
+			}
 		}
 	}
-	if path, err := exec.LookPath("go"); err == nil {
+	if path, err := exec.LookPath("go"); err == nil && usableGoBin(path) {
 		return path, nil
 	}
 	return "", errors.New("missing Go toolchain")
+}
+
+func usableGoBin(path string) bool {
+	if !isExecutable(path) {
+		return false
+	}
+	goRoot := ResolveGoRoot(path)
+	return goRoot != "" && dirExists(goRoot)
 }
 
 func BuildToolBinaries(root string, skip map[string]bool) error {
