@@ -64,9 +64,9 @@ const (
 	contextCompactionOriginThreshold      = "threshold"
 	contextCompactionOriginOverflow       = "overflow"
 
-	taskReportMinChars               = 400
-	taskReportDefaultChars           = 1800
-	taskReportMaxChars               = 12000
+	taskReportDefaultChars           = 12000 // roughly a 2k-word inline report excerpt
+	taskReportAggregateMaxChars      = 40000 // keep multi-subagent result payloads below context-stuffing territory
+	taskReportAggregateSummaryChars  = 800
 	taskReportPreviewChars           = 320
 	taskDelegationContextMaxChars    = 4000
 	taskDelegationTranscriptMaxChars = 12000
@@ -515,7 +515,6 @@ func (s *Service) runTargetedSubagent(ctx context.Context, parentSession pebbles
 	delegatedPrompt := buildTaskDelegationPrompt(taskDelegationPromptConfig{
 		Description:          description,
 		Prompt:               prompt,
-		ReportMaxChars:       taskReportDefaultChars,
 		ParentSession:        parentSession,
 		ParentMessages:       parentMessages,
 		PermissionSessionID:  firstNonEmptyString(strings.TrimSpace(options.PermissionSessionID), strings.TrimSpace(parentSession.ID)),

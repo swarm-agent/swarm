@@ -20,7 +20,6 @@ type taskCallArguments struct {
 	Description     string
 	Prompt          string
 	Launches        []taskLaunchSpec
-	ReportMaxChars  int
 	SourceArguments map[string]any
 }
 
@@ -41,7 +40,6 @@ type taskLaunchManifest struct {
 	ResolvedAgentName   string                         `json:"resolved_agent_name"`
 	ResolvedAgentError  string                         `json:"resolved_agent_error,omitempty"`
 	Action              string                         `json:"action"`
-	ReportMaxChars      int                            `json:"report_max_chars"`
 	ParentMode          string                         `json:"parent_mode"`
 	EffectiveChildMode  string                         `json:"effective_child_mode"`
 	DisabledTools       []string                       `json:"disabled_tools,omitempty"`
@@ -102,7 +100,6 @@ type taskLaunchManifestRow struct {
 	ResolvedAgentName     string                         `json:"resolved_agent_name"`
 	ResolvedAgentError    string                         `json:"resolved_agent_error,omitempty"`
 	Action                string                         `json:"action"`
-	ReportMaxChars        int                            `json:"report_max_chars"`
 	MetaPrompt            string                         `json:"meta_prompt,omitempty"`
 	AssignmentLabel       string                         `json:"assignment_label,omitempty"`
 	SubagentProvider      string                         `json:"subagent_provider,omitempty"`
@@ -170,17 +167,6 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		return taskCallArguments{}, fmt.Errorf("task requires prompt")
 	}
 
-	reportMaxChars := mapInt(args, "report_max_chars")
-	if reportMaxChars <= 0 {
-		reportMaxChars = taskReportDefaultChars
-	}
-	if reportMaxChars < taskReportMinChars {
-		reportMaxChars = taskReportMinChars
-	}
-	if reportMaxChars > taskReportMaxChars {
-		reportMaxChars = taskReportMaxChars
-	}
-
 	parseLaunchSpec := func(raw map[string]any, label string) (taskLaunchSpec, error) {
 		if err := rejectTaskLaunchTrustFields(raw, label); err != nil {
 			return taskLaunchSpec{}, err
@@ -245,7 +231,6 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		Description:     description,
 		Prompt:          prompt,
 		Launches:        launches,
-		ReportMaxChars:  reportMaxChars,
 		SourceArguments: args,
 	}, nil
 }
@@ -915,7 +900,6 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			RequestedSubagentType: requested,
 			ResolvedAgentName:     resolvedName,
 			Action:                parsed.Action,
-			ReportMaxChars:        parsed.ReportMaxChars,
 			MetaPrompt:            metaPrompt,
 			AssignmentLabel:       assignmentLabel,
 			SubagentProvider:      strings.TrimSpace(preference.Provider),
@@ -954,7 +938,6 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		ResolvedAgentName:  resolvedAgentName,
 		ResolvedAgentError: resolvedAgentError,
 		Action:             parsed.Action,
-		ReportMaxChars:     parsed.ReportMaxChars,
 		ParentMode:         parentMode,
 		EffectiveChildMode: childMode,
 		DisabledTools:      disabledTools,

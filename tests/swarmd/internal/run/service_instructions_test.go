@@ -135,9 +135,8 @@ func TestDefaultInstructions_IncludeParallelAndDelegationGuidance(t *testing.T) 
 
 func TestBuildTaskDelegationPrompt_IncludesExplorerAndPathGuidance(t *testing.T) {
 	out := buildTaskDelegationPrompt(taskDelegationPromptConfig{
-		Description:    "scope repo",
-		Prompt:         "inspect the runtime",
-		ReportMaxChars: 1200,
+		Description: "scope repo",
+		Prompt:      "inspect the runtime",
 		ParentSession: pebblestore.SessionSnapshot{
 			ID:                 "session-1",
 			Title:              "Investigate @explorer",

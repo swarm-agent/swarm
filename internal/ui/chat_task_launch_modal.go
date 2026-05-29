@@ -327,9 +327,6 @@ func taskLaunchModalTitleFromManifest(manifest map[string]any) string {
 
 func taskLaunchModalSubtitleFromManifest(manifest map[string]any) string {
 	parts := []string{"Review before launch"}
-	if reportMaxChars := jsonInt(manifest, "report_max_chars"); reportMaxChars > 0 {
-		parts = append(parts, fmt.Sprintf("report %d chars", reportMaxChars))
-	}
 	return strings.Join(parts, " · ")
 }
 

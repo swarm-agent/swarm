@@ -462,7 +462,7 @@ func TestPermissionArgumentsForTaskUseStructuredLaunchManifest(t *testing.T) {
 	raw := svc.permissionArgumentsForCall(parentSession.ID, sessionruntime.ModePlan, tool.Call{
 		CallID:    "task_manifest_1",
 		Name:      "task",
-		Arguments: `{"description":"Inspect repo","prompt":"Find the key files and summarize.","allow_bash":true,"report_max_chars":2400,"launches":[{"subagent_type":"explorer","meta_prompt":"map repository structure"},{"subagent_type":"memory","meta_prompt":"extract concise findings"}]}`,
+		Arguments: `{"description":"Inspect repo","prompt":"Find the key files and summarize.","allow_bash":true,"launches":[{"subagent_type":"explorer","meta_prompt":"map repository structure"},{"subagent_type":"memory","meta_prompt":"extract concise findings"}]}`,
 	})
 
 	var payload map[string]any

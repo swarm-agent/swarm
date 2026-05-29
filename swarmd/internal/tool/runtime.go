@@ -145,7 +145,7 @@ type Runtime struct {
 	maxParallel       int
 	httpClient        *http.Client
 	exaConfigResolver func(context.Context) (ExaRuntimeConfig, error)
-	sessions          manageWorktreeSessionService
+	sessions          manageSessionService
 	workspace         manageWorktreeWorkspaceService
 	worktrees         manageWorktreeConfigService
 	agents            manageAgentService
@@ -175,8 +175,9 @@ type WorkspaceScope struct {
 	Principal   identity.Principal
 }
 
-type manageWorktreeSessionService interface {
+type manageSessionService interface {
 	GetSession(sessionID string) (pebblestore.SessionSnapshot, bool, error)
+	ListMessages(sessionID string, afterGlobalSeq uint64, limit int) ([]pebblestore.MessageSnapshot, error)
 	ListTopSessionsByWorkspace(workspacePaths []string, perWorkspaceLimit int) ([]pebblestore.WorkspaceSessionList, error)
 }
 
@@ -386,7 +387,7 @@ func (r *Runtime) SetExaConfigResolver(resolver func(context.Context) (ExaRuntim
 	r.exaConfigResolver = resolver
 }
 
-func (r *Runtime) SetManageWorktreeServices(sessions manageWorktreeSessionService, workspace manageWorktreeWorkspaceService, worktrees manageWorktreeConfigService) {
+func (r *Runtime) SetManageWorktreeServices(sessions manageSessionService, workspace manageWorktreeWorkspaceService, worktrees manageWorktreeConfigService) {
 	if r == nil {
 		return
 	}
@@ -1196,10 +1197,6 @@ func (r *Runtime) Definitions() []Definition {
 							},
 							"additionalProperties": false,
 						},
-					},
-					"report_max_chars": map[string]any{
-						"type":        "integer",
-						"description": "Max chars returned in delegated report excerpt before truncation/persistence.",
 					},
 				},
 				"required":             []string{"prompt"},
@@ -5452,6 +5449,8 @@ func (r *Runtime) executeManageAgent(scope WorkspaceScope, args map[string]any) 
 	switch action {
 	case "inspect", "list":
 		return r.manageAgentInspect(scope)
+	case "transcript", "session_transcript", "session-transcript":
+		return r.manageAgentSessionTranscript(scope, args)
 	case "get", "read":
 		return r.manageAgentGet(scope, args)
 	case "create":
@@ -6091,8 +6090,8 @@ func (r *Runtime) manageAgentInspect(scope WorkspaceScope) (string, error) {
 		"active_primary":    strings.TrimSpace(state.ActivePrimary),
 		"active_subagent":   cloneStringMap(state.ActiveSubagent),
 		"version":           state.Version,
-		"supported_actions": []string{"inspect", "list", "get", "create", "update", "delete", "activate_primary", "set_active_subagent", "remove_active_subagent", "create_custom_tool", "update_custom_tool", "delete_custom_tool", "assign_custom_tool", "unassign_custom_tool"},
-		"instructions":      "Use manage-agent to inspect and manage saved agents and custom tools. Call inspect/list first, then get before mutating an agent profile. Inspect output includes tool_inventory.tools and tool_inventory.presets; each preset lists the concrete tools it grants. For create/update, prefer object-form `content`, choose the smallest preset/bundle that fits the requested job, and avoid overscoping. Use explicit `tool_contract.tools.{tool}.enabled` overrides only when the user request needs narrower or slightly broader access than a preset; override names must come from tool_inventory.tools[].contract_name/name. Do not enable bash unless it is limited by explicit bash_prefixes. Do not use inherit_policy for model-created profiles. Custom tool actions use `content={name,kind,description?,command}` and assignment actions use top-level `agent` plus `tool_name`. Mutating actions return approval-ready previews unless confirm=true.",
+		"supported_actions": []string{"inspect", "list", "get", "transcript", "session_transcript", "create", "update", "delete", "activate_primary", "set_active_subagent", "remove_active_subagent", "create_custom_tool", "update_custom_tool", "delete_custom_tool", "assign_custom_tool", "unassign_custom_tool"},
+		"instructions":      "Use manage-agent to inspect and manage saved agents, custom tools, and subagent transcripts. Call inspect/list first, then get before mutating an agent profile. Use action=transcript/session_transcript with session_id from a task report_ref to read a child subagent transcript when inline task output was truncated or omitted. Inspect output includes tool_inventory.tools and tool_inventory.presets; each preset lists the concrete tools it grants. For create/update, prefer object-form `content`, choose the smallest preset/bundle that fits the requested job, and avoid overscoping. Use explicit `tool_contract.tools.{tool}.enabled` overrides only when the user request needs narrower or slightly broader access than a preset; override names must come from tool_inventory.tools[].contract_name/name. Do not enable bash unless it is limited by explicit bash_prefixes. Do not use inherit_policy for model-created profiles. Custom tool actions use `content={name,kind,description?,command}` and assignment actions use top-level `agent` plus `tool_name`. Mutating actions return approval-ready previews unless confirm=true.",
 		"examples": []map[string]any{
 			{"action": "inspect"},
 			{"action": "get", "agent": strings.TrimSpace(state.ActivePrimary)},
@@ -6137,6 +6136,65 @@ func (r *Runtime) manageAgentGet(scope WorkspaceScope, args map[string]any) (str
 		"details_truncated":    false,
 		"prompt_injection_tag": "tool_output_untrusted",
 		"safety":               buildUntrustedSafety(strings.TrimSpace(profile.Prompt)),
+	}
+	return manageAgentEncodeResponse(response)
+}
+
+func (r *Runtime) manageAgentSessionTranscript(scope WorkspaceScope, args map[string]any) (string, error) {
+	if r == nil || r.sessions == nil {
+		return "", errors.New("manage-agent session transcript service is not configured")
+	}
+	sessionID := strings.TrimSpace(firstNonEmptyString(asString(args["session_id"]), asString(args["child_session_id"]), asString(args["id"])))
+	if sessionID == "" {
+		return "", errors.New("manage-agent transcript requires session_id")
+	}
+	limit := clampInt(asInt(args["limit"], 200), 1, 1000)
+	afterGlobalSeq := uint64(0)
+	if rawAfter := asInt(args["after_global_seq"], 0); rawAfter > 0 {
+		afterGlobalSeq = uint64(rawAfter)
+	}
+	session, ok, err := r.sessions.GetSession(sessionID)
+	if err != nil {
+		return "", fmt.Errorf("manage-agent transcript session lookup failed: %w", err)
+	}
+	if !ok {
+		return "", fmt.Errorf("session %q not found", sessionID)
+	}
+	if scopeAccount := strings.TrimSpace(scope.Principal.AccountScopeID); scopeAccount != "" && strings.TrimSpace(session.AccountScopeID) != "" && !strings.EqualFold(scopeAccount, strings.TrimSpace(session.AccountScopeID)) {
+		return "", fmt.Errorf("session %q is not in the active account scope", sessionID)
+	}
+	messages, err := r.sessions.ListMessages(sessionID, afterGlobalSeq, limit)
+	if err != nil {
+		return "", fmt.Errorf("manage-agent transcript list messages failed: %w", err)
+	}
+	rows := make([]map[string]any, 0, len(messages))
+	for _, message := range messages {
+		rows = append(rows, map[string]any{
+			"id":         strings.TrimSpace(message.ID),
+			"global_seq": message.GlobalSeq,
+			"role":       strings.TrimSpace(message.Role),
+			"content":    strings.TrimSpace(message.Content),
+			"metadata":   cloneMapStringAny(message.Metadata),
+			"created_at": message.CreatedAt,
+		})
+	}
+	response := map[string]any{
+		"status":               "ok",
+		"action":               "transcript",
+		"session_id":           sessionID,
+		"session":              manageAgentSessionSummaryMap(session),
+		"messages":             rows,
+		"count":                len(rows),
+		"limit":                limit,
+		"after_global_seq":     afterGlobalSeq,
+		"path_id":              toolPathID("manage-agent"),
+		"summary":              fmt.Sprintf("loaded %d transcript message(s) for session %s", len(rows), sessionID),
+		"details_truncated":    len(rows) >= limit,
+		"prompt_injection_tag": "tool_output_untrusted",
+		"safety":               buildUntrustedSafety(manageAgentTranscriptSafetyText(messages)),
+	}
+	if len(rows) >= limit && len(messages) > 0 {
+		response["next_after_global_seq"] = messages[len(messages)-1].GlobalSeq
 	}
 	return manageAgentEncodeResponse(response)
 }
@@ -7690,6 +7748,47 @@ func manageAgentSafetyText(value any) string {
 		return ""
 	}
 	return string(raw)
+}
+
+func manageAgentTranscriptSafetyText(messages []pebblestore.MessageSnapshot) string {
+	var b strings.Builder
+	for _, message := range messages {
+		b.WriteString(strings.TrimSpace(message.Role))
+		b.WriteString(": ")
+		b.WriteString(strings.TrimSpace(message.Content))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func manageAgentSessionSummaryMap(session pebblestore.SessionSnapshot) map[string]any {
+	return map[string]any{
+		"id":                 strings.TrimSpace(session.ID),
+		"title":              strings.TrimSpace(session.Title),
+		"mode":               strings.TrimSpace(session.Mode),
+		"workspace_path":     strings.TrimSpace(session.WorkspacePath),
+		"workspace_name":     strings.TrimSpace(session.WorkspaceName),
+		"message_count":      session.MessageCount,
+		"last_message_at":    session.LastMessageAt,
+		"parent_session_id":  mapString(session.Metadata, "parent_session_id"),
+		"lineage_kind":       mapString(session.Metadata, "lineage_kind"),
+		"lineage_label":      mapString(session.Metadata, "lineage_label"),
+		"requested_subagent": mapString(session.Metadata, "requested_subagent"),
+		"subagent":           mapString(session.Metadata, "subagent"),
+	}
+}
+
+func cloneMapStringAny(input map[string]any) map[string]any {
+	if len(input) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(input))
+	for key, value := range input {
+		if key = strings.TrimSpace(key); key != "" {
+			out[key] = value
+		}
+	}
+	return out
 }
 
 func manageAgentEncodeResponse(payload map[string]any) (string, error) {

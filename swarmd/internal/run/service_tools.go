@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"swarm/packages/swarmd/internal/appstorage"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -70,11 +69,18 @@ type taskLaunchOutcome struct {
 	CurrentPreviewText string
 	ReportChars        int
 	ReportExcerpt      string
-	ReportFile         string
-	ReportPersistErr   string
+	ReportRef          *taskReportRef
 	ReportTruncated    bool
 	Summary            string
 	Error              string
+}
+
+type taskReportRef struct {
+	SessionID string `json:"session_id"`
+	MessageID string `json:"message_id"`
+	GlobalSeq uint64 `json:"global_seq"`
+	Role      string `json:"role"`
+	Source    string `json:"source"`
 }
 
 func buildTaskLaunchOutcome(launch taskLaunchPrepared) taskLaunchOutcome {
@@ -1855,7 +1861,6 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	if strings.TrimSpace(req.PromptOverride) != "" {
 		prompt = strings.TrimSpace(req.PromptOverride)
 	}
-	reportMaxChars := parsed.ReportMaxChars
 	launchSpecs := append([]taskLaunchSpec(nil), parsed.Launches...)
 	if len(launchSpecs) == 0 {
 		return "", errors.New("task requires at least one validated launch")
@@ -1992,11 +1997,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				"tool_order":           append([]string(nil), launch.ToolOrder...),
 				"error":                strings.TrimSpace(launch.Error),
 			}
-			if reportFile := strings.TrimSpace(launch.ReportFile); reportFile != "" {
-				launchRow["report_file"] = reportFile
-			}
-			if reportPersistErr := strings.TrimSpace(launch.ReportPersistErr); reportPersistErr != "" {
-				launchRow["report_persist_err"] = reportPersistErr
+			if launch.ReportRef != nil {
+				launchRow["report_ref"] = launch.ReportRef
+				launchRow["report_persisted"] = true
 			}
 			launchRows = append(launchRows, launchRow)
 		}
@@ -2040,7 +2043,6 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		delegatedPrompt := buildTaskDelegationPrompt(taskDelegationPromptConfig{
 			Description:          description,
 			Prompt:               perLaunchPrompt,
-			ReportMaxChars:       reportMaxChars,
 			ParentSession:        parentSession,
 			ParentMessages:       parentMessages,
 			PermissionSessionID:  req.PermissionSessionID,
@@ -2156,6 +2158,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		if report == "" {
 			report = "Subagent completed without a textual report."
 		}
+		reportRef := taskReportRefFromMessage(subResult.AssistantMessage)
 		nowMS := time.Now().UnixMilli()
 		if outcome.LaunchStartedAtMS <= 0 {
 			outcome.LaunchStartedAtMS = nowMS
@@ -2168,14 +2171,10 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		outcome.CurrentPreviewText = ""
 		outcome.ReportChars = len([]rune(report))
 		outcome.ReportExcerpt = report
-		if outcome.ReportChars > reportMaxChars {
+		outcome.ReportRef = reportRef
+		if outcome.ReportChars > taskReportDefaultChars {
 			outcome.ReportTruncated = true
-			outcome.ReportExcerpt = truncateRunes(report, reportMaxChars)
-			if path, writeErr := persistTaskReport(parentSession.WorkspacePath, parentSession.ID, fmt.Sprintf("%s-launch-%d", taskCallID, outcome.LaunchIndex), outcome.ResolvedSubagent, description, report); writeErr != nil {
-				outcome.ReportPersistErr = strings.TrimSpace(writeErr.Error())
-			} else {
-				outcome.ReportFile = strings.TrimSpace(path)
-			}
+			outcome.ReportExcerpt = truncateRunes(report, taskReportDefaultChars)
 		}
 		outcome.Summary = summarizePlainToolOutput(report, taskReportPreviewChars, 2)
 		if outcome.Summary == "" {
@@ -2199,6 +2198,8 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	var firstErr error
 	launchPayloads := make([]map[string]any, 0, len(outcomes))
 	summaryParts := make([]string, 0, len(outcomes))
+	inlineReportChars := 0
+	aggregateReportBudgetExceeded := false
 	for i := range outcomes {
 		launch := outcomes[i]
 		err := runErrs[i]
@@ -2234,8 +2235,8 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 		reportExcerpt := strings.TrimSpace(launch.ReportExcerpt)
 		reportTruncated := launch.ReportTruncated
-		if launch.ReportChars > 0 && reportMaxChars > 0 && len([]rune(reportExcerpt)) > reportMaxChars {
-			reportExcerpt = truncateRunes(reportExcerpt, reportMaxChars)
+		if launch.ReportChars > 0 && len([]rune(reportExcerpt)) > taskReportDefaultChars {
+			reportExcerpt = truncateRunes(reportExcerpt, taskReportDefaultChars)
 			reportTruncated = true
 			reportTruncatedAny = true
 		}
@@ -2293,14 +2294,24 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			"tool_order":                 append([]string(nil), launch.ToolOrder...),
 		}
 		if reportExcerpt != "" {
-			launchPayload["report_excerpt"] = reportExcerpt
-			launchPayload["report"] = reportExcerpt
+			excerptChars := len([]rune(reportExcerpt))
+			if inlineReportChars+excerptChars > taskReportAggregateMaxChars {
+				aggregateReportBudgetExceeded = true
+				reportTruncatedAny = true
+				launchPayload["report_excerpt"] = truncateRunes(firstNonEmptyString(launchSummary, reportExcerpt), taskReportAggregateSummaryChars)
+				launchPayload["report"] = launchPayload["report_excerpt"]
+				launchPayload["report_truncated"] = true
+				launchPayload["report_omitted_for_context"] = true
+				launchPayload["report_omission_reason"] = "aggregate subagent reports exceeded inline context budget; inspect report_ref/child session transcript for the full report"
+			} else {
+				launchPayload["report_excerpt"] = reportExcerpt
+				launchPayload["report"] = reportExcerpt
+				inlineReportChars += excerptChars
+			}
 		}
-		if reportFile := strings.TrimSpace(launch.ReportFile); reportFile != "" {
-			launchPayload["report_file"] = reportFile
-		}
-		if reportPersistErr := strings.TrimSpace(launch.ReportPersistErr); reportPersistErr != "" {
-			launchPayload["report_persist_err"] = reportPersistErr
+		if launch.ReportRef != nil {
+			launchPayload["report_ref"] = launch.ReportRef
+			launchPayload["report_persisted"] = true
 		}
 		launchPayloads = append(launchPayloads, launchPayload)
 		outcomes[i] = launch
@@ -2313,6 +2324,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	aggregateSummary := strings.TrimSpace(strings.Join(summaryParts, " | "))
 	if aggregateSummary == "" {
 		aggregateSummary = fmt.Sprintf("%d launch(es) completed", len(outcomes))
+	}
+	if aggregateReportBudgetExceeded {
+		aggregateSummary += " | warning: aggregate subagent reports exceeded inline context budget; inspect report_ref child session transcripts for full reports"
 	}
 	lineageUpdate(overallStatus, outcomes, map[string]any{
 		"success_count":  successCount,
@@ -2344,6 +2358,11 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		"path_id":                 "tool.task.v1",
 		"details_truncated":       false,
 		"report_truncated":        reportTruncatedAny,
+		"report_inline_chars":     inlineReportChars,
+	}
+	if aggregateReportBudgetExceeded {
+		payload["report_context_warning"] = "aggregate subagent reports exceeded inline context budget; summaries/excerpts are returned inline and full reports remain in child session transcripts via report_ref"
+		payload["report_context_budget_chars"] = taskReportAggregateMaxChars
 	}
 	if len(outcomes) > 0 {
 		first := outcomes[0]
@@ -2394,7 +2413,6 @@ func (s *Service) resolveTaskSubagentForAccount(accountScopeID, nameOrPurpose st
 type taskDelegationPromptConfig struct {
 	Description          string
 	Prompt               string
-	ReportMaxChars       int
 	ParentSession        pebblestore.SessionSnapshot
 	ParentMessages       []pebblestore.MessageSnapshot
 	PermissionSessionID  string
@@ -2404,21 +2422,13 @@ type taskDelegationPromptConfig struct {
 func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 	description := strings.TrimSpace(config.Description)
 	prompt := strings.TrimSpace(config.Prompt)
-	reportMaxChars := config.ReportMaxChars
 	if description == "" {
 		description = "delegated task"
 	}
-	if reportMaxChars <= 0 {
-		reportMaxChars = taskReportDefaultChars
-	}
-
 	var b strings.Builder
 	b.WriteString("Delegated task context:\n")
 	b.WriteString("- description: ")
 	b.WriteString(description)
-	b.WriteString("\n")
-	b.WriteString("- final report max chars: ")
-	b.WriteString(fmt.Sprintf("%d", reportMaxChars))
 	b.WriteString("\n")
 	if targeted := strings.TrimSpace(config.TargetedSubagentName); targeted != "" {
 		b.WriteString("- launch source: targeted_subagent\n")
@@ -2695,77 +2705,18 @@ func taskDisabledTools(allowBash bool) map[string]bool {
 	return disabled
 }
 
-func persistTaskReport(workspacePath, sessionID, launchID, subagentName, description, content string) (string, error) {
-	workspacePath = strings.TrimSpace(workspacePath)
-	if workspacePath == "" {
-		return "", errors.New("workspace path is empty")
+func taskReportRefFromMessage(message pebblestore.MessageSnapshot) *taskReportRef {
+	sessionID := strings.TrimSpace(message.SessionID)
+	if sessionID == "" || message.GlobalSeq == 0 {
+		return nil
 	}
-	safeSessionID := sanitizeTaskReportName(sessionID)
-	if safeSessionID == "" {
-		return "", errors.New("session id is empty")
+	return &taskReportRef{
+		SessionID: sessionID,
+		MessageID: strings.TrimSpace(message.ID),
+		GlobalSeq: message.GlobalSeq,
+		Role:      strings.TrimSpace(message.Role),
+		Source:    "child_session_transcript",
 	}
-	safeLaunchID := sanitizeTaskReportName(launchID)
-	if safeLaunchID == "" {
-		return "", errors.New("launch id is empty")
-	}
-
-	reportDir, err := appstorage.WorkspaceDataDir(workspacePath, "reports", safeSessionID)
-	if err != nil {
-		return "", fmt.Errorf("create report directory: %w", err)
-	}
-	reportPath := filepath.Join(reportDir, safeLaunchID+".md")
-
-	generatedAt := time.Now().UTC()
-	var b strings.Builder
-	b.WriteString("# Subagent Report\n\n")
-	b.WriteString("- subagent: ")
-	b.WriteString(strings.TrimSpace(subagentName))
-	b.WriteString("\n")
-	b.WriteString("- description: ")
-	b.WriteString(strings.TrimSpace(description))
-	b.WriteString("\n")
-	b.WriteString("- generated_at_utc: ")
-	b.WriteString(generatedAt.Format(time.RFC3339))
-	b.WriteString("\n\n---\n\n")
-	b.WriteString(strings.TrimSpace(content))
-	b.WriteString("\n")
-
-	if err := appstorage.WritePrivateFile(reportPath, []byte(b.String())); err != nil {
-		return "", fmt.Errorf("write report file: %w", err)
-	}
-
-	return filepath.ToSlash(filepath.Join("reports", safeSessionID, safeLaunchID+".md")), nil
-}
-
-func sanitizeTaskReportName(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	if value == "" {
-		return ""
-	}
-	var b strings.Builder
-	lastDash := false
-	for _, r := range value {
-		switch {
-		case r >= 'a' && r <= 'z':
-			b.WriteRune(r)
-			lastDash = false
-		case r >= '0' && r <= '9':
-			b.WriteRune(r)
-			lastDash = false
-		case r == '-', r == '_':
-			if !lastDash && b.Len() > 0 {
-				b.WriteRune('-')
-				lastDash = true
-			}
-		default:
-			if !lastDash && b.Len() > 0 {
-				b.WriteRune('-')
-				lastDash = true
-			}
-		}
-	}
-	result := strings.Trim(b.String(), "-")
-	return result
 }
 
 func emptyToolName(name string) string {

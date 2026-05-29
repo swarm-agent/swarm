@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -336,5 +337,70 @@ func TestManageAgentCreateRequiresPresetForNonPlanAgent(t *testing.T) {
 	}
 	if errText := strings.TrimSpace(results[0].Error); !strings.Contains(errText, "requires content.tool_contract.preset") {
 		t.Fatalf("error = %q, want missing preset error", errText)
+	}
+}
+
+func TestManageAgentTranscriptReadsSessionMessages(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := pebblestore.Open(filepath.Join(workspace, "state.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("open event log: %v", err)
+	}
+	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
+	child, _, err := sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		SessionID:     "child-session-1",
+		Title:         "subagent report",
+		WorkspacePath: workspace,
+		WorkspaceName: "workspace",
+		Preference: &pebblestore.ModelPreference{
+			Provider: "test-provider",
+			Model:    "test-model",
+			Thinking: "medium",
+		},
+		Metadata: map[string]any{
+			"parent_session_id":  "parent-session-1",
+			"lineage_kind":       "delegated_subagent",
+			"lineage_label":      "@explorer",
+			"requested_subagent": "explorer",
+			"subagent":           "explorer",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create child session: %v", err)
+	}
+	if _, _, _, err := sessions.AppendMessage(child.ID, "assistant", "full report body", map[string]any{"source": "subagent_final"}); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	rt := NewRuntime(2)
+	rt.SetManageWorktreeServices(sessions, nil, nil)
+	results := rt.ExecuteBatch(context.Background(), workspace, []Call{{
+		CallID:    "manage-agent-transcript",
+		Name:      "manage-agent",
+		Arguments: mustManageAgentArgsJSON(t, map[string]any{"action": "transcript", "session_id": child.ID}),
+	}})
+	if len(results) != 1 {
+		t.Fatalf("expected one result, got %d", len(results))
+	}
+	if errText := strings.TrimSpace(results[0].Error); errText != "" {
+		t.Fatalf("unexpected manage-agent error: %s", errText)
+	}
+	payload := decodeManageAgentResultJSON(t, results[0].Output)
+	if payload["action"] != "transcript" || payload["session_id"] != child.ID {
+		t.Fatalf("unexpected transcript payload: %#v", payload)
+	}
+	messages, ok := payload["messages"].([]any)
+	if !ok || len(messages) == 0 {
+		t.Fatalf("messages missing: %#v", payload["messages"])
+	}
+	last, ok := messages[len(messages)-1].(map[string]any)
+	if !ok || last["content"] != "full report body" || last["role"] != "assistant" {
+		t.Fatalf("unexpected transcript message: %#v", last)
 	}
 }
