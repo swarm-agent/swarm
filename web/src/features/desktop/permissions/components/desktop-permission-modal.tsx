@@ -852,7 +852,7 @@ function promptWordPreview(text: string, maxWords: number): string {
 }
 
 function PlanTextPanel({ title, text, emptyText, tone }: { title: string; text: string; emptyText: string; tone: 'previous' | 'updated' }) {
-  const body = text || emptyText
+  const hasText = text.trim() !== ''
   return (
     <section className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)]">
       <div className="shrink-0 border-b border-[var(--app-border)] px-3 py-2 sm:px-4">
@@ -865,9 +865,13 @@ function PlanTextPanel({ title, text, emptyText, tone }: { title: string; text: 
           {title}
         </div>
       </div>
-      <pre className="min-h-[220px] flex-1 overflow-auto whitespace-pre-wrap break-words bg-[var(--app-bg-alt)] px-3 py-3 font-mono text-[12px] leading-5 text-[var(--app-text)] [overflow-wrap:anywhere] sm:text-[13px]">
-        {body}
-      </pre>
+      <div className="min-h-[360px] flex-1 overflow-auto bg-[var(--app-bg-alt)] px-3 py-3 text-[var(--app-text)] sm:px-4">
+        {hasText ? (
+          <ChatMarkdown content={text} className="text-base leading-7 [overflow-wrap:anywhere]" />
+        ) : (
+          <div className="text-sm text-[var(--app-text-muted)]">{emptyText}</div>
+        )}
+      </div>
     </section>
   )
 }
@@ -929,6 +933,8 @@ function PlanUpdateFullDiff({ diffLines, priorPlan, plan }: { diffLines: string[
   )
 }
 
+type PlanUpdateReviewView = 'previous' | 'updated' | 'diff'
+
 function PlanUpdateReview({
   diffLines,
   priorPlan,
@@ -948,50 +954,71 @@ function PlanUpdateReview({
   updateKind: string
   checkpoint: boolean
 }) {
+  const [selectedView, setSelectedView] = useState<PlanUpdateReviewView>('updated')
   const hasOverview =
     updateSummary.trim() !== '' || updateScope.trim() !== '' || updateKind.trim() !== '' || checkpoint
+  const viewOptions: Array<{ id: PlanUpdateReviewView; label: string }> = [
+    { id: 'updated', label: 'Updated plan' },
+    { id: 'previous', label: 'Previous plan' },
+    { id: 'diff', label: 'Diff' },
+  ]
+
   return (
     <div className="flex min-h-0 flex-col gap-4">
-      {hasOverview ? (
-        <section className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-3 text-sm leading-6 text-[var(--app-text)] sm:px-4">
-          <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-muted)]">
-            Plan update overview
+      <section className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-3 text-sm leading-6 text-[var(--app-text)] sm:px-4">
+        {hasOverview ? (
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
+              Plan update overview
+            </div>
+            {updateSummary.trim() !== '' ? (
+              <p className="mt-2 whitespace-pre-wrap break-words text-[var(--app-text)]">{updateSummary}</p>
+            ) : null}
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--app-text-muted)]">
+              {updateScope.trim() !== '' ? (
+                <span>
+                  <span className="text-[var(--app-text-subtle)]">Scope</span> {updateScope}
+                </span>
+              ) : null}
+              {updateKind.trim() !== '' ? (
+                <span>
+                  <span className="text-[var(--app-text-subtle)]">Kind</span> {updateKind}
+                </span>
+              ) : null}
+              {checkpoint ? <span className="text-[var(--app-success)]">Checkpoint</span> : null}
+            </div>
           </div>
-          {updateSummary.trim() !== '' ? (
-            <p className="mt-2 whitespace-pre-wrap break-words">{updateSummary}</p>
-          ) : null}
-          <div className="mt-3 flex flex-wrap gap-2 text-xs font-medium">
-            {updateScope.trim() !== '' ? (
-              <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1">
-                Scope: {updateScope}
-              </span>
-            ) : null}
-            {updateKind.trim() !== '' ? (
-              <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1">
-                Kind: {updateKind}
-              </span>
-            ) : null}
-            {checkpoint ? (
-              <span className="rounded-full border border-[var(--app-success-border)] bg-[var(--app-success-bg)] px-2 py-1 text-[var(--app-success)]">
-                Checkpoint
-              </span>
-            ) : null}
-          </div>
-        </section>
-      ) : null}
-      <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-sm leading-6 text-[var(--app-text-muted)] sm:px-4">
-        Review the targeted summary first, then inspect the diff and resulting plan body before accepting.
-      </div>
-      <div className="grid min-h-0 gap-4 lg:grid-cols-2">
+        ) : null}
+        <div className={cn('flex flex-wrap gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-1', hasOverview && 'mt-3')}>
+          {viewOptions.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              className={cn(
+                'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                selectedView === option.id
+                  ? 'bg-[var(--app-bg)] text-[var(--app-text)] shadow-sm'
+                  : 'text-[var(--app-text-muted)] hover:bg-[var(--app-bg-alt)] hover:text-[var(--app-text)]',
+              )}
+              onClick={() => setSelectedView(option.id)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </section>
+      {selectedView === 'previous' ? (
         <PlanTextPanel
           title={priorTitle ? `Previous plan: ${priorTitle}` : 'Previous plan'}
           text={priorPlan}
           emptyText="No previous plan text was provided."
           tone="previous"
         />
+      ) : selectedView === 'diff' ? (
+        <PlanUpdateFullDiff diffLines={diffLines} priorPlan={priorPlan} plan={plan} />
+      ) : (
         <PlanTextPanel title="Updated plan" text={plan} emptyText="No updated plan text was provided." tone="updated" />
-      </div>
-      <PlanUpdateFullDiff diffLines={diffLines} priorPlan={priorPlan} plan={plan} />
+      )}
     </div>
   )
 }
