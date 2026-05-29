@@ -95,10 +95,65 @@ function testTaskSwarmUsesCompactPreview(): void {
   assert(!markup.includes(`task ${longAssignment}`), "swarm mode should suppress long task header summary");
 }
 
+function testTaskHeaderDoesNotShiftBetweenLaunchAssignments(): void {
+  const description = "Map backend and UI task stream behavior";
+  const firstMessage = buildStructuredToolMessage({
+    tool: "task",
+    callId: "call_task_stable_title",
+    outputText: JSON.stringify({
+      tool: "task",
+      description,
+      launch_count: 3,
+      status: "running",
+      assignment_label: "Backend explorer title",
+      launches: [{
+        launch_index: 1,
+        status: "running",
+        resolved_agent_name: "explorer",
+        assignment_label: "Backend explorer title",
+        current_tool: "search",
+      }],
+    }),
+    state: "running",
+  });
+  const secondMessage = buildStructuredToolMessage({
+    tool: "task",
+    callId: "call_task_stable_title",
+    outputText: JSON.stringify({
+      tool: "task",
+      description,
+      launch_count: 3,
+      status: "running",
+      assignment_label: "Frontend explorer title",
+      launches: [{
+        launch_index: 2,
+        status: "running",
+        resolved_agent_name: "parallel",
+        assignment_label: "Frontend explorer title",
+        current_tool: "read",
+      }],
+    }),
+    state: "running",
+  });
+
+  assert(Boolean(firstMessage), "expected first task message");
+  assert(Boolean(secondMessage), "expected second task message");
+  assert(firstMessage!.summary === secondMessage!.summary, `task header shifted: ${firstMessage!.summary} -> ${secondMessage!.summary}`);
+  assert(firstMessage!.summary === `task ${description} (3 launches) (running)`, "expected task summary to use stable parent description only");
+
+  const firstMarkup = renderToolMarkup(firstMessage!);
+  const secondMarkup = renderToolMarkup(secondMessage!);
+  assert(firstMarkup.includes(description), "expected stable description in first header");
+  assert(secondMarkup.includes(description), "expected stable description in second header");
+  assert(!firstMarkup.includes("Backend explorer title</span><svg"), "first header should not end with launch assignment title");
+  assert(!secondMarkup.includes("Frontend explorer title</span><svg"), "second header should not end with launch assignment title");
+}
+
 function main(): void {
   testDeniedExitPlanPermissionUsesFlatPreview();
   testPlanManageUsesFlatPreview();
   testTaskSwarmUsesCompactPreview();
+  testTaskHeaderDoesNotShiftBetweenLaunchAssignments();
   console.log("chat-markdown preview tests passed");
 }
 

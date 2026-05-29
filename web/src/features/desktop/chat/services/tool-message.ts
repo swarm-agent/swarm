@@ -325,10 +325,11 @@ function summarizeToolOutput(
         jsonStr(effective, "subagent");
       const launchCount = jsonNum(effective, "launch_count");
       const parts: string[] = [];
-      if (description) parts.push(description);
-      const assignmentLabel = jsonStr(effective, "assignment_label");
-      if (assignmentLabel) parts.push(assignmentLabel);
-      else if (agentType) parts.push("@" + agentType);
+      if (description) {
+        parts.push(description);
+      } else if (agentType) {
+        parts.push("@" + agentType);
+      }
       if (launchCount > 1) parts.push(`(${launchCount} launches)`);
       if (status) parts.push("(" + status + ")");
       return parts.length ? "task " + parts.join(" ") : "task";
