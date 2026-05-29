@@ -769,6 +769,32 @@ func (s *Server) peerManagedWorkspaceEnsureLink(r *http.Request, req peerManaged
 		return peerManagedWorkspaceEnsureLinkResponse{}, http.StatusInternalServerError, err
 	}
 	registered = true
+	if s.topology != nil {
+		localSwarmID := ""
+		if cfg, err := s.loadStartupConfig(); err == nil {
+			if state, stateErr := s.currentSwarmState(cfg); stateErr == nil {
+				localSwarmID = strings.TrimSpace(state.Node.SwarmID)
+			}
+		}
+		if localSwarmID == "" {
+			return peerManagedWorkspaceEnsureLinkResponse{}, http.StatusInternalServerError, errors.New("managed host local swarm id is unavailable")
+		}
+		if _, err := s.topology.UpsertWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
+			BindingID:                 pebblestore.CanonicalTopologyWorkspaceBindingID(localSwarmID, strings.TrimSpace(req.SourceWorkspacePath)),
+			UserID:                    principal.UserID,
+			AccountScopeID:            principal.AccountScopeID,
+			SourceWorkspacePath:       strings.TrimSpace(req.SourceWorkspacePath),
+			SourceWorkspaceName:       workspaceName,
+			DestinationRuntimeSwarmID: localSwarmID,
+			DestinationHostSwarmID:    localSwarmID,
+			DestinationWorkspacePath:  destination,
+			ReplicationMode:           workspace.ReplicationModeBundle,
+			Writable:                  true,
+			LegacyTargetKind:          managedWorkspaceTargetKind,
+		}); err != nil {
+			return peerManagedWorkspaceEnsureLinkResponse{}, http.StatusInternalServerError, err
+		}
+	}
 	return peerManagedWorkspaceEnsureLinkResponse{OK: true, DestinationPath: destination, WorkspaceName: workspaceName, Exists: true, Created: created, Registered: registered}, http.StatusOK, nil
 }
 

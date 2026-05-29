@@ -436,6 +436,49 @@ func runGitForManagedWorkspaceTest(t *testing.T, dir string, args ...string) {
 	}
 }
 
+func TestPeerManagedWorkspaceEnsureLinkPersistsPeerLocalBinding(t *testing.T) {
+	handler, _, _ := newReplicateTestHandler(t)
+	setReplicateFakeSwarmState(handler, swarmStateWithManagedPeer("", ""))
+	root := t.TempDir()
+	destination := filepath.Join(root, "swarm-go")
+	if err := os.MkdirAll(destination, 0o755); err != nil {
+		t.Fatalf("mkdir destination: %v", err)
+	}
+	if _, err := handler.swarmStore.PutLocalPairing(pebblestore.SwarmLocalPairingRecord{ParentSwarmID: "manager-swarm", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, PairingState: "paired"}); err != nil {
+		t.Fatalf("put local pairing: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, peerManagedWorkspaceEnsureLinkPath, nil)
+	req.Header.Set(peerAuthSwarmIDHeader, "manager-swarm")
+	req.Header.Set(peerAuthTokenHeader, "manager-token")
+	response, status, err := handler.peerManagedWorkspaceEnsureLink(req, peerManagedWorkspaceEnsureLinkRequest{
+		DestinationRoot:     root,
+		DestinationPath:     destination,
+		WorkspaceName:       "swarm-go",
+		SourceWorkspacePath: "/srv/primary/swarm-go",
+		Provision:           false,
+	})
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("ensure link status=%d err=%v", status, err)
+	}
+	if !response.Registered || filepath.Clean(response.DestinationPath) != filepath.Clean(destination) {
+		t.Fatalf("response=%+v", response)
+	}
+	bindings, err := handler.topology.ListWorkspaceBindingsBySourcePathForAccount(testPrincipal().AccountScopeID, "/srv/primary/swarm-go", 10)
+	if err != nil {
+		t.Fatalf("list bindings: %v", err)
+	}
+	if len(bindings) != 1 {
+		t.Fatalf("bindings=%+v", bindings)
+	}
+	binding := bindings[0]
+	if binding.DestinationRuntimeSwarmID != "host-swarm-id" || binding.DestinationHostSwarmID != "host-swarm-id" {
+		t.Fatalf("binding swarm ids runtime=%q host=%q", binding.DestinationRuntimeSwarmID, binding.DestinationHostSwarmID)
+	}
+	if filepath.Clean(binding.DestinationWorkspacePath) != filepath.Clean(destination) {
+		t.Fatalf("binding destination=%q want %q", binding.DestinationWorkspacePath, destination)
+	}
+}
+
 func TestPeerManagedWorkspacePreflightDetectsExistingGitDirectory(t *testing.T) {
 	handler, _, _ := newReplicateTestHandler(t)
 	root := t.TempDir()

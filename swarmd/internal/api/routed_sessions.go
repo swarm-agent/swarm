@@ -523,6 +523,11 @@ func (s *Server) shouldForwardPeerSessionOpenToRoutedChild(route pebblestore.Ses
 	if childSwarmID == "" || childBackendURL == "" {
 		return false
 	}
+	hostSwarmID := strings.TrimSpace(route.HostSwarmID)
+	if hostSwarmID != "" && !s.isLocalSwarmID(hostSwarmID) {
+		log.Printf("routed child session open not forwarded by non-owner host session_id=%q child_swarm_id=%q owner_host_swarm_id=%q", strings.TrimSpace(route.SessionID), childSwarmID, hostSwarmID)
+		return false
+	}
 	return !s.isLocalSwarmID(childSwarmID)
 }
 

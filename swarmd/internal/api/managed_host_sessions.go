@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"path/filepath"
 	"strings"
 
 	gorillaws "github.com/gorilla/websocket"
@@ -98,7 +97,8 @@ type peerManagedHostSessionOpenRequest struct {
 
 type managedHostSessionCreateRequest struct {
 	Title                    string         `json:"title"`
-	WorkspacePath            string         `json:"workspace_path"`
+	WorkspacePath            string         `json:"workspace_path,omitempty"`
+	SourceWorkspacePath      string         `json:"source_workspace_path,omitempty"`
 	HostWorkspacePath        string         `json:"host_workspace_path,omitempty"`
 	RuntimeWorkspacePath     string         `json:"runtime_workspace_path,omitempty"`
 	WorkspaceName            string         `json:"workspace_name"`
@@ -126,6 +126,7 @@ type managedHostSessionRoute struct {
 	ManagedHostSwarmID    string `json:"managed_host_swarm_id"`
 	ManagedHostName       string `json:"managed_host_name,omitempty"`
 	ManagedHostBackendURL string `json:"managed_host_backend_url,omitempty"`
+	SourceWorkspacePath   string `json:"source_workspace_path,omitempty"`
 	HostWorkspacePath     string `json:"host_workspace_path,omitempty"`
 	RuntimeWorkspacePath  string `json:"runtime_workspace_path,omitempty"`
 }
@@ -155,31 +156,13 @@ func (s *Server) handleManagedHostSessionOpen(w http.ResponseWriter, r *http.Req
 		return
 	}
 	sessionID := sessionruntime.NewSessionID()
-	workspacePath := firstNonEmpty(strings.TrimSpace(req.HostWorkspacePath), strings.TrimSpace(req.WorkspacePath), strings.TrimSpace(req.RuntimeWorkspacePath))
-	runtimeWorkspacePath := firstNonEmpty(strings.TrimSpace(req.RuntimeWorkspacePath), strings.TrimSpace(req.WorkspacePath), workspacePath)
-	if runtimeWorkspacePath == "" {
+	sourceWorkspacePath := strings.TrimSpace(req.WorkspacePath)
+	if sourceWorkspacePath == "" {
 		writeError(w, http.StatusBadRequest, errors.New("workspace_path is required"))
 		return
 	}
-	workspaceName := firstNonEmpty(strings.TrimSpace(req.WorkspaceName), filepath.Base(runtimeWorkspacePath))
-	worktreeMode := runruntime.RunWorktreeModeOff
-	worktreeUseCurrentBranch := (*bool)(nil)
-	worktreeBaseBranch := ""
-	worktreeBranchName := ""
-	if s.worktrees != nil {
-		config, err := s.worktrees.GetConfigForPrincipal(principal, workspacePath)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
-		if config.Enabled {
-			worktreeMode = runruntime.RunWorktreeModeOn
-			useCurrentBranch := config.UseCurrentBranch
-			worktreeUseCurrentBranch = &useCurrentBranch
-			worktreeBaseBranch = strings.TrimSpace(config.BaseBranch)
-			worktreeBranchName = strings.TrimSpace(config.BranchName)
-		}
-	}
+	workspaceName := strings.TrimSpace(req.WorkspaceName)
+	worktreeMode := firstNonEmpty(strings.TrimSpace(req.WorktreeMode), runruntime.RunWorktreeModeOff)
 	route := managedHostSessionRoute{
 		UserID:                strings.TrimSpace(principal.UserID),
 		AccountScopeID:        strings.TrimSpace(principal.AccountScopeID),
@@ -188,25 +171,20 @@ func (s *Server) handleManagedHostSessionOpen(w http.ResponseWriter, r *http.Req
 		ManagedHostSwarmID:    strings.TrimSpace(target.SwarmID),
 		ManagedHostName:       firstNonEmpty(strings.TrimSpace(target.Name), strings.TrimSpace(target.SwarmID)),
 		ManagedHostBackendURL: strings.TrimSpace(target.BackendURL),
-		HostWorkspacePath:     workspacePath,
-		RuntimeWorkspacePath:  runtimeWorkspacePath,
+		SourceWorkspacePath:   sourceWorkspacePath,
 	}
 	peerReq := peerManagedHostSessionOpenRequest{
 		SessionID: sessionID,
 		Request: managedHostSessionCreateRequest{
-			Title:                    req.Title,
-			WorkspacePath:            runtimeWorkspacePath,
-			HostWorkspacePath:        runtimeWorkspacePath,
-			RuntimeWorkspacePath:     runtimeWorkspacePath,
-			WorkspaceName:            workspaceName,
-			Mode:                     req.Mode,
-			AgentName:                req.AgentName,
-			WorktreeMode:             worktreeMode,
-			WorktreeUseCurrentBranch: worktreeUseCurrentBranch,
-			WorktreeBaseBranch:       worktreeBaseBranch,
-			WorktreeBranchName:       worktreeBranchName,
-			Metadata:                 managedHostSessionMetadata(req.Metadata, route),
-			Preference:               req.Preference,
+			Title:               req.Title,
+			WorkspacePath:       sourceWorkspacePath,
+			SourceWorkspacePath: sourceWorkspacePath,
+			WorkspaceName:       workspaceName,
+			Mode:                req.Mode,
+			AgentName:           req.AgentName,
+			WorktreeMode:        worktreeMode,
+			Metadata:            managedHostSessionMetadata(req.Metadata, route),
+			Preference:          req.Preference,
 		},
 		Route: route,
 	}
@@ -227,21 +205,26 @@ func (s *Server) handleManagedHostSessionOpen(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
-	mirror.Metadata = managedHostSessionMetadata(mirror.Metadata, route)
+	realizedRoute := managedHostSessionRouteFromMirrorMetadata(mirror.Metadata, route)
+	mirror.Metadata = managedHostSessionMetadata(mirror.Metadata, realizedRoute)
 	routeRecord := pebblestore.SessionRouteRecord{
 		SessionID:            strings.TrimSpace(mirror.ID),
 		UserID:               strings.TrimSpace(principal.UserID),
 		AccountScopeID:       strings.TrimSpace(principal.AccountScopeID),
-		ChildSwarmID:         strings.TrimSpace(route.ManagedHostSwarmID),
-		ChildBackendURL:      strings.TrimSpace(route.ManagedHostBackendURL),
-		HostWorkspacePath:    strings.TrimSpace(route.HostWorkspacePath),
-		RuntimeWorkspacePath: strings.TrimSpace(route.RuntimeWorkspacePath),
+		ChildSwarmID:         strings.TrimSpace(realizedRoute.ManagedHostSwarmID),
+		ChildBackendURL:      strings.TrimSpace(realizedRoute.ManagedHostBackendURL),
+		HostSwarmID:          strings.TrimSpace(realizedRoute.ManagedHostSwarmID),
+		HostWorkspacePath:    strings.TrimSpace(realizedRoute.HostWorkspacePath),
+		RuntimeWorkspacePath: strings.TrimSpace(realizedRoute.RuntimeWorkspacePath),
+		WorkspaceBindingID:   managedHostSessionStringMetadata(mirror.Metadata, "swarm_managed_host_workspace_binding_id"),
 		CreatedAt:            mirror.CreatedAt,
 		UpdatedAt:            mirror.UpdatedAt,
 	}
-	if err := s.upsertTopologySessionRoute(routeRecord); err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
+	if s.sessionRoutes != nil {
+		if _, err := s.sessionRoutes.Put(routeRecord); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 	}
 	mirrored, event, err := s.sessions.StoreMirroredSessionWithEvent(mirror)
 	if err != nil {
@@ -422,21 +405,24 @@ func (s *Server) handlePeerManagedHostSessionOpen(w http.ResponseWriter, r *http
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
 		return
 	}
-	runtimeWorkspacePath := firstNonEmpty(strings.TrimSpace(req.Request.RuntimeWorkspacePath), strings.TrimSpace(req.Request.WorkspacePath), strings.TrimSpace(req.Route.RuntimeWorkspacePath))
-	hostWorkspacePath := firstNonEmpty(strings.TrimSpace(req.Request.HostWorkspacePath), runtimeWorkspacePath, strings.TrimSpace(req.Route.HostWorkspacePath))
+	realized, err := s.realizePeerManagedHostSessionRoute(req, principal)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	childReq := sessionCreateRequest{
 		Title:                    req.Request.Title,
-		WorkspacePath:            runtimeWorkspacePath,
-		HostWorkspacePath:        hostWorkspacePath,
-		RuntimeWorkspacePath:     runtimeWorkspacePath,
-		WorkspaceName:            req.Request.WorkspaceName,
+		WorkspacePath:            realized.RuntimeWorkspacePath,
+		HostWorkspacePath:        realized.HostWorkspacePath,
+		RuntimeWorkspacePath:     realized.RuntimeWorkspacePath,
+		WorkspaceName:            firstNonEmpty(strings.TrimSpace(req.Request.WorkspaceName), strings.TrimSpace(realized.Binding.SourceWorkspaceName)),
 		Mode:                     req.Request.Mode,
 		AgentName:                req.Request.AgentName,
 		WorktreeMode:             firstNonEmpty(strings.TrimSpace(req.Request.WorktreeMode), runruntime.RunWorktreeModeOff),
 		WorktreeUseCurrentBranch: req.Request.WorktreeUseCurrentBranch,
 		WorktreeBaseBranch:       req.Request.WorktreeBaseBranch,
 		WorktreeBranchName:       req.Request.WorktreeBranchName,
-		Metadata:                 managedHostSessionMetadata(req.Request.Metadata, req.Route),
+		Metadata:                 managedHostSessionMetadata(req.Request.Metadata, realized.Route),
 		Preference:               req.Request.Preference,
 	}
 	session, event, warning, modeWarning, err := s.createSessionFromRequestWithSessionID(childReq, nil, true, req.SessionID, principal, true)
@@ -444,15 +430,48 @@ func (s *Server) handlePeerManagedHostSessionOpen(w http.ResponseWriter, r *http
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	realized.RuntimeCWD = strings.TrimSpace(session.WorkspacePath)
+	if session.WorktreeEnabled {
+		realized.HostWorktreePath = strings.TrimSpace(session.WorkspacePath)
+		realized.RuntimeWorktreePath = strings.TrimSpace(session.WorkspacePath)
+		realized.Route.HostWorkspacePath = realized.HostWorktreePath
+		realized.Route.RuntimeWorkspacePath = realized.RuntimeWorktreePath
+	} else {
+		realized.RuntimeCWD = realized.RuntimeWorkspacePath
+	}
+	if err := validateRealizedPeerManagedHostSessionRoute(realized, session.WorktreeEnabled); err != nil {
+		if cleanupErr := s.sessions.DeleteSession(session.ID); cleanupErr != nil {
+			log.Printf("managed-host peer session realization rollback failed session_id=%q err=%v", session.ID, cleanupErr)
+		}
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	session.Metadata = managedHostSessionMetadata(session.Metadata, realized.Route)
+	if session.WorktreeEnabled {
+		session.Metadata["swarm_managed_host_host_worktree_path"] = realized.HostWorktreePath
+		session.Metadata["swarm_managed_host_runtime_worktree_path"] = realized.RuntimeWorktreePath
+	}
+	session.Metadata["swarm_managed_host_workspace_binding_id"] = realized.BindingID
+	session.Metadata["swarm_managed_host_runtime_cwd"] = realized.RuntimeCWD
+	if updated, _, updateErr := s.sessions.UpdateMetadata(session.ID, session.Metadata); updateErr != nil {
+		if cleanupErr := s.sessions.DeleteSession(session.ID); cleanupErr != nil {
+			log.Printf("managed-host peer session metadata rollback failed session_id=%q err=%v", session.ID, cleanupErr)
+		}
+		writeError(w, http.StatusInternalServerError, updateErr)
+		return
+	} else {
+		session = updated
+	}
 	routeRecord := pebblestore.SessionRouteRecord{
 		SessionID:            strings.TrimSpace(session.ID),
 		UserID:               strings.TrimSpace(principal.UserID),
 		AccountScopeID:       strings.TrimSpace(principal.AccountScopeID),
-		ChildSwarmID:         strings.TrimSpace(req.Route.ManagedHostSwarmID),
-		ChildBackendURL:      strings.TrimSpace(req.Route.ManagedHostBackendURL),
-		HostSwarmID:          strings.TrimSpace(req.Route.PrimarySwarmID),
-		HostWorkspacePath:    strings.TrimSpace(req.Route.HostWorkspacePath),
-		RuntimeWorkspacePath: runtimeWorkspacePath,
+		ChildSwarmID:         strings.TrimSpace(realized.Route.ManagedHostSwarmID),
+		ChildBackendURL:      strings.TrimSpace(realized.Route.ManagedHostBackendURL),
+		HostSwarmID:          strings.TrimSpace(realized.Route.ManagedHostSwarmID),
+		HostWorkspacePath:    realized.HostWorkspacePath,
+		RuntimeWorkspacePath: realized.RuntimeCWD,
+		WorkspaceBindingID:   realized.BindingID,
 		CreatedAt:            session.CreatedAt,
 		UpdatedAt:            session.UpdatedAt,
 	}
@@ -944,15 +963,74 @@ func (s *Server) startPeerManagedHostSessionRun(req managedHostSessionRunRequest
 	if normalized := runruntime.NormalizeRunTargetKind(req.RunRequest.TargetKind); req.RunRequest.TargetKind != "" && normalized == "" {
 		return managedHostSessionRunAccepted{}, http.StatusBadRequest, errors.New("unsupported target_kind")
 	}
+	preparedRequest, err := s.managedHostRunRequestWithRealizedRuntimeCWD(req.SessionID, req.RunRequest)
+	if err != nil {
+		return managedHostSessionRunAccepted{}, http.StatusBadRequest, err
+	}
 	state, err := s.runStreams.newRun(req.SessionID)
 	if err != nil {
 		return managedHostSessionRunAccepted{}, http.StatusInternalServerError, err
 	}
-	started := s.startManagedHostRunStreamExecution(state.runID, req.SessionID, req.RunRequest)
+	started := s.startManagedHostRunStreamExecution(state.runID, req.SessionID, preparedRequest)
 	if startErr := <-started; startErr != nil {
 		return managedHostSessionRunAccepted{}, http.StatusBadRequest, startErr
 	}
-	return managedHostSessionRunAccepted{OK: true, SessionID: req.SessionID, RunID: state.runID, Status: "accepted", Background: req.RunRequest.Background, TargetKind: strings.TrimSpace(req.RunRequest.TargetKind), TargetName: strings.TrimSpace(req.RunRequest.TargetName), OwnerTransport: "managed_host_peer"}, http.StatusAccepted, nil
+	return managedHostSessionRunAccepted{OK: true, SessionID: req.SessionID, RunID: state.runID, Status: "accepted", Background: preparedRequest.Background, TargetKind: strings.TrimSpace(preparedRequest.TargetKind), TargetName: strings.TrimSpace(preparedRequest.TargetName), OwnerTransport: "managed_host_peer"}, http.StatusAccepted, nil
+}
+
+func (s *Server) managedHostRunRequestWithRealizedRuntimeCWD(sessionID string, request runruntime.RunRequest) (runruntime.RunRequest, error) {
+	if s == nil || s.sessions == nil {
+		return runruntime.RunRequest{}, errors.New("session service not configured")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return runruntime.RunRequest{}, errors.New("session_id is required")
+	}
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		return runruntime.RunRequest{}, err
+	}
+	if !ok {
+		return runruntime.RunRequest{}, errors.New("session not found")
+	}
+	runtimeCWD := strings.TrimSpace(session.WorkspacePath)
+	if runtimeCWD == "" {
+		return runruntime.RunRequest{}, errors.New("managed-host session is missing realized runtime cwd")
+	}
+	metadataRuntimeCWD := strings.TrimSpace(managedHostSessionStringMetadata(session.Metadata, "swarm_managed_host_runtime_cwd"))
+	if metadataRuntimeCWD == "" {
+		return runruntime.RunRequest{}, errors.New("managed-host session metadata is missing realized runtime cwd")
+	}
+	if metadataRuntimeCWD != runtimeCWD {
+		return runruntime.RunRequest{}, errors.New("managed-host session workspace path does not match realized runtime cwd")
+	}
+	runtimeWorktreePath := strings.TrimSpace(managedHostSessionStringMetadata(session.Metadata, "swarm_managed_host_runtime_worktree_path"))
+	if session.WorktreeEnabled {
+		if runtimeWorktreePath == "" {
+			return runruntime.RunRequest{}, errors.New("managed-host worktree session is missing realized runtime worktree path")
+		}
+		if runtimeCWD != runtimeWorktreePath {
+			return runruntime.RunRequest{}, errors.New("managed-host runtime cwd does not match runtime worktree path")
+		}
+	} else if runtimeWorkspacePath := strings.TrimSpace(managedHostSessionStringMetadata(session.Metadata, "swarm_managed_host_runtime_workspace_path")); runtimeWorkspacePath != "" && runtimeCWD != runtimeWorkspacePath {
+		return runruntime.RunRequest{}, errors.New("managed-host runtime cwd does not match runtime workspace path")
+	}
+	ctx := runruntime.RunExecutionContext{
+		WorkspacePath: runtimeCWD,
+		CWD:           runtimeCWD,
+		WorktreeMode:  runruntime.RunWorktreeModeOff,
+	}
+	if request.ExecutionContext != nil {
+		requested := *request.ExecutionContext
+		if workspacePath := strings.TrimSpace(requested.WorkspacePath); workspacePath != "" && workspacePath != runtimeCWD {
+			return runruntime.RunRequest{}, errors.New("managed-host run workspace_path does not match realized runtime cwd")
+		}
+		if cwd := strings.TrimSpace(requested.CWD); cwd != "" && cwd != runtimeCWD {
+			return runruntime.RunRequest{}, errors.New("managed-host run cwd does not match realized runtime cwd")
+		}
+	}
+	request.ExecutionContext = &ctx
+	return request.Normalized(), nil
 }
 
 func (s *Server) handlePeerManagedHostSessionStop(w http.ResponseWriter, r *http.Request) {
@@ -1194,6 +1272,114 @@ func requireManagedHostSessionMirrorOwnership(session *pebblestore.SessionSnapsh
 	return nil
 }
 
+type peerManagedHostSessionRealization struct {
+	Route                managedHostSessionRoute
+	Binding              pebblestore.TopologyWorkspaceBindingRecord
+	BindingID            string
+	SourceWorkspacePath  string
+	HostWorkspacePath    string
+	RuntimeWorkspacePath string
+	HostWorktreePath     string
+	RuntimeWorktreePath  string
+	RuntimeCWD           string
+}
+
+func (s *Server) realizePeerManagedHostSessionRoute(req peerManagedHostSessionOpenRequest, principal identity.Principal) (peerManagedHostSessionRealization, error) {
+	if s == nil || s.topology == nil {
+		return peerManagedHostSessionRealization{}, errors.New("topology service is not configured")
+	}
+	if !principal.Valid() {
+		return peerManagedHostSessionRealization{}, identity.ErrPrincipalRequired
+	}
+	sourceWorkspacePath := firstNonEmpty(strings.TrimSpace(req.Request.SourceWorkspacePath), strings.TrimSpace(req.Route.SourceWorkspacePath), strings.TrimSpace(req.Request.WorkspacePath))
+	if sourceWorkspacePath == "" {
+		return peerManagedHostSessionRealization{}, errors.New("source_workspace_path is required")
+	}
+	bindings, err := s.topology.ListWorkspaceBindingsBySourcePathForAccount(principal.AccountScopeID, sourceWorkspacePath, 1000)
+	if err != nil {
+		return peerManagedHostSessionRealization{}, err
+	}
+	managedHostSwarmID := strings.TrimSpace(req.Route.ManagedHostSwarmID)
+	if managedHostSwarmID == "" {
+		return peerManagedHostSessionRealization{}, errors.New("managed_host_swarm_id is required")
+	}
+	var matches []pebblestore.TopologyWorkspaceBindingRecord
+	for _, binding := range bindings {
+		if strings.TrimSpace(binding.BindingID) == "" {
+			continue
+		}
+		if binding.AccountScopeID != "" && strings.TrimSpace(binding.AccountScopeID) != principal.AccountScopeID {
+			continue
+		}
+		destinationRuntimeSwarmID := strings.TrimSpace(binding.DestinationRuntimeSwarmID)
+		destinationHostSwarmID := strings.TrimSpace(binding.DestinationHostSwarmID)
+		if destinationRuntimeSwarmID != "" && !strings.EqualFold(destinationRuntimeSwarmID, managedHostSwarmID) {
+			continue
+		}
+		if destinationHostSwarmID != "" && !strings.EqualFold(destinationHostSwarmID, managedHostSwarmID) {
+			continue
+		}
+		if strings.TrimSpace(binding.DestinationWorkspacePath) == "" {
+			continue
+		}
+		matches = append(matches, binding)
+	}
+	if len(matches) == 0 {
+		return peerManagedHostSessionRealization{}, fmt.Errorf("managed-host workspace binding for source workspace %q on swarm %q was not found", sourceWorkspacePath, managedHostSwarmID)
+	}
+	if len(matches) > 1 {
+		return peerManagedHostSessionRealization{}, fmt.Errorf("managed-host workspace binding for source workspace %q on swarm %q is ambiguous", sourceWorkspacePath, managedHostSwarmID)
+	}
+	binding := matches[0]
+	hostWorkspacePath := strings.TrimSpace(binding.DestinationWorkspacePath)
+	runtimeWorkspacePath := strings.TrimSpace(binding.DestinationWorkspacePath)
+	if hostWorkspacePath == "" || runtimeWorkspacePath == "" {
+		return peerManagedHostSessionRealization{}, errors.New("managed-host workspace binding is missing realized workspace path")
+	}
+	realizedRoute := managedHostSessionRoute{
+		UserID:                strings.TrimSpace(req.Route.UserID),
+		AccountScopeID:        strings.TrimSpace(req.Route.AccountScopeID),
+		PrimarySwarmID:        strings.TrimSpace(req.Route.PrimarySwarmID),
+		PrimaryBackendURL:     strings.TrimSpace(req.Route.PrimaryBackendURL),
+		ManagedHostSwarmID:    managedHostSwarmID,
+		ManagedHostName:       strings.TrimSpace(req.Route.ManagedHostName),
+		ManagedHostBackendURL: strings.TrimSpace(req.Route.ManagedHostBackendURL),
+		SourceWorkspacePath:   sourceWorkspacePath,
+		HostWorkspacePath:     hostWorkspacePath,
+		RuntimeWorkspacePath:  runtimeWorkspacePath,
+	}
+	return peerManagedHostSessionRealization{Route: realizedRoute, Binding: binding, BindingID: strings.TrimSpace(binding.BindingID), SourceWorkspacePath: sourceWorkspacePath, HostWorkspacePath: hostWorkspacePath, RuntimeWorkspacePath: runtimeWorkspacePath, RuntimeCWD: runtimeWorkspacePath}, nil
+}
+
+func validateRealizedPeerManagedHostSessionRoute(realized peerManagedHostSessionRealization, worktreeEnabled bool) error {
+	if strings.TrimSpace(realized.BindingID) == "" {
+		return errors.New("managed-host realization is missing workspace binding id")
+	}
+	if strings.TrimSpace(realized.SourceWorkspacePath) == "" {
+		return errors.New("managed-host realization is missing source workspace path")
+	}
+	if strings.TrimSpace(realized.HostWorkspacePath) == "" {
+		return errors.New("managed-host realization is missing host workspace path")
+	}
+	if strings.TrimSpace(realized.RuntimeWorkspacePath) == "" {
+		return errors.New("managed-host realization is missing runtime workspace path")
+	}
+	if strings.TrimSpace(realized.RuntimeCWD) == "" {
+		return errors.New("managed-host realization is missing runtime cwd")
+	}
+	if worktreeEnabled {
+		if strings.TrimSpace(realized.HostWorktreePath) == "" || strings.TrimSpace(realized.RuntimeWorktreePath) == "" {
+			return errors.New("managed-host worktree realization is missing host/runtime worktree path")
+		}
+		if strings.TrimSpace(realized.RuntimeCWD) != strings.TrimSpace(realized.RuntimeWorktreePath) {
+			return errors.New("managed-host runtime cwd does not match runtime worktree path")
+		}
+	} else if strings.TrimSpace(realized.RuntimeCWD) != strings.TrimSpace(realized.RuntimeWorkspacePath) {
+		return errors.New("managed-host runtime cwd does not match runtime workspace path")
+	}
+	return nil
+}
+
 func (s *Server) verifiedPeerManagedHostSessionOpenPrincipal(r *http.Request, req peerManagedHostSessionOpenRequest) (identity.Principal, bool) {
 	if s == nil || r == nil || s.swarmStore == nil {
 		return identity.Principal{}, false
@@ -1281,10 +1467,12 @@ func (s *Server) managedHostTargetForSessionRequest(r *http.Request, sessionID, 
 	if sessionUserID := strings.TrimSpace(session.UserID); sessionUserID != "" && sessionUserID != strings.TrimSpace(principal.UserID) {
 		return nil, http.StatusNotFound, errors.New("session not found")
 	}
-	targetSwarmID = strings.TrimSpace(targetSwarmID)
-	if targetSwarmID == "" {
-		targetSwarmID = managedHostSessionStringMetadata(session.Metadata, "swarm_managed_host_swarm_id")
-	}
+	requestedTargetSwarmID := strings.TrimSpace(targetSwarmID)
+	metadataManagedHostSwarmID := managedHostSessionStringMetadata(session.Metadata, "swarm_managed_host_swarm_id")
+	ownerSwarmID := strings.TrimSpace(metadataManagedHostSwarmID)
+	var ownerBackendURL string
+	var routeChildSwarmID string
+	var routeHostSwarmID string
 	if s.sessionRoutes != nil {
 		route, routeFound, routeErr := s.sessionRoutes.Get(sessionID)
 		if routeErr != nil {
@@ -1297,17 +1485,32 @@ func (s *Server) managedHostTargetForSessionRequest(r *http.Request, sessionID, 
 			if routeUserID := strings.TrimSpace(route.UserID); routeUserID != "" && routeUserID != strings.TrimSpace(principal.UserID) {
 				return nil, http.StatusNotFound, errors.New("session not found")
 			}
-			if targetSwarmID == "" {
-				targetSwarmID = strings.TrimSpace(route.ChildSwarmID)
-			} else if routeSwarmID := strings.TrimSpace(route.ChildSwarmID); routeSwarmID != "" && !strings.EqualFold(routeSwarmID, targetSwarmID) {
-				return nil, http.StatusNotFound, errors.New("session not found")
+			routeChildSwarmID = strings.TrimSpace(route.ChildSwarmID)
+			routeHostSwarmID = strings.TrimSpace(route.HostSwarmID)
+			if routeHostSwarmID != "" && !s.isLocalSwarmID(routeHostSwarmID) {
+				ownerSwarmID = routeHostSwarmID
+			} else if ownerSwarmID == "" {
+				ownerSwarmID = routeChildSwarmID
+			}
+			if strings.EqualFold(ownerSwarmID, routeChildSwarmID) || routeHostSwarmID == "" || s.isLocalSwarmID(routeHostSwarmID) {
+				ownerBackendURL = strings.TrimSpace(route.ChildBackendURL)
 			}
 		}
 	}
-	if targetSwarmID == "" {
-		return nil, http.StatusBadRequest, errors.New("target_swarm_id is required")
+	if ownerSwarmID == "" {
+		ownerSwarmID = requestedTargetSwarmID
 	}
-	target, _, _, status, err := s.resolveManagedHostSessionTarget(requestWithSwarmTargetQuery(r, targetSwarmID), targetSwarmID)
+	if ownerSwarmID == "" {
+		return nil, http.StatusBadRequest, errors.New("managed host owner route is missing")
+	}
+	if requestedTargetSwarmID != "" && !strings.EqualFold(requestedTargetSwarmID, ownerSwarmID) && !strings.EqualFold(requestedTargetSwarmID, routeChildSwarmID) {
+		return nil, http.StatusNotFound, errors.New("session not found")
+	}
+	log.Printf("managed-host session target resolved session_id=%q requested_swarm_id=%q metadata_owner_swarm_id=%q route_child_swarm_id=%q route_host_swarm_id=%q selected_owner_swarm_id=%q owner_backend_url_present=%t", sessionID, requestedTargetSwarmID, metadataManagedHostSwarmID, routeChildSwarmID, routeHostSwarmID, ownerSwarmID, ownerBackendURL != "")
+	if ownerBackendURL != "" {
+		return &swarmTarget{SwarmID: ownerSwarmID, Name: ownerSwarmID, Role: swarmruntime.RelationshipManaged, Relationship: swarmruntime.RelationshipManaged, Kind: "manual", Online: true, Selectable: true, BackendURL: ownerBackendURL}, http.StatusOK, nil
+	}
+	target, _, _, status, err := s.resolveManagedHostSessionTarget(requestWithSwarmTargetQuery(r, ownerSwarmID), ownerSwarmID)
 	if err != nil {
 		return nil, status, err
 	}
@@ -1411,12 +1614,20 @@ func managedHostSessionStringMetadata(metadata map[string]any, key string) strin
 	return ""
 }
 
+func managedHostSessionRouteFromMirrorMetadata(metadata map[string]any, route managedHostSessionRoute) managedHostSessionRoute {
+	route.SourceWorkspacePath = firstNonEmpty(strings.TrimSpace(route.SourceWorkspacePath), managedHostSessionStringMetadata(metadata, "swarm_managed_host_source_workspace_path"))
+	route.HostWorkspacePath = managedHostSessionStringMetadata(metadata, "swarm_managed_host_host_workspace_path")
+	route.RuntimeWorkspacePath = managedHostSessionStringMetadata(metadata, "swarm_managed_host_runtime_workspace_path")
+	return route
+}
+
 func managedHostSessionMetadata(metadata map[string]any, route managedHostSessionRoute) map[string]any {
 	primarySwarmID := strings.TrimSpace(route.PrimarySwarmID)
 	primaryBackendURL := strings.TrimSpace(route.PrimaryBackendURL)
 	managedHostSwarmID := strings.TrimSpace(route.ManagedHostSwarmID)
 	managedHostName := strings.TrimSpace(route.ManagedHostName)
 	managedHostBackendURL := strings.TrimSpace(route.ManagedHostBackendURL)
+	sourceWorkspacePath := strings.TrimSpace(route.SourceWorkspacePath)
 	hostWorkspacePath := strings.TrimSpace(route.HostWorkspacePath)
 	runtimeWorkspacePath := strings.TrimSpace(route.RuntimeWorkspacePath)
 	routeID := ""
@@ -1430,6 +1641,7 @@ func managedHostSessionMetadata(metadata map[string]any, route managedHostSessio
 		"swarm_managed_host_swarm_id":                            managedHostSwarmID,
 		"swarm_managed_host_name":                                managedHostName,
 		"swarm_managed_host_backend_url":                         managedHostBackendURL,
+		"swarm_managed_host_source_workspace_path":               sourceWorkspacePath,
 		"swarm_managed_host_host_workspace_path":                 hostWorkspacePath,
 		"swarm_managed_host_runtime_workspace_path":              runtimeWorkspacePath,
 		"owner_transport":                                        "managed_host_peer",
