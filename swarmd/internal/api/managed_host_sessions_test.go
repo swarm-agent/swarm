@@ -67,6 +67,63 @@ func TestManagedHostSessionOpenForwardsExplicitWorktreeIntentFromAPI(t *testing.
 	}
 }
 
+func TestManagedHostSessionOpenMirrorsUnderSourceWorkspacePath(t *testing.T) {
+	server, _, _, routeStore := newRoutedSessionTestServer(t)
+	managed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != peerManagedHostSessionOpenPath {
+			http.NotFound(w, r)
+			return
+		}
+		var req peerManagedHostSessionOpenRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		realizedRoute := req.Route
+		realizedRoute.HostWorkspacePath = "/managed/workspace"
+		realizedRoute.RuntimeWorkspacePath = "/managed/workspace"
+		metadata := managedHostSessionMetadata(req.Request.Metadata, realizedRoute)
+		metadata["swarm_managed_host_workspace_binding_id"] = "binding:managed"
+		metadata["swarm_managed_host_runtime_cwd"] = "/managed/workspace"
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":      true,
+			"session": pebblestore.SessionSnapshot{ID: req.SessionID, UserID: req.Route.UserID, AccountScopeID: req.Route.AccountScopeID, WorkspacePath: "/managed/workspace", WorkspaceName: "workspace", Title: "Managed", Mode: "auto", Metadata: metadata, CreatedAt: 1, UpdatedAt: 2},
+		})
+	}))
+	defer managed.Close()
+	seedManagedHostTarget(t, server, managed.URL)
+
+	req := httptest.NewRequest(http.MethodPost, managedHostSessionOpenPath, bytes.NewBufferString(`{"title":"managed","workspace_path":"/source/workspace","workspace_name":"workspace","mode":"auto","agent_name":"swarm","target_swarm_id":"managed-swarm"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var response struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Session.WorkspacePath != "/source/workspace" {
+		t.Fatalf("primary mirrored workspace path = %q, want source workspace", response.Session.WorkspacePath)
+	}
+	if got := managedHostSessionStringMetadata(response.Session.Metadata, sessionruntime.HostedSessionMetadataHostWorkspacePath); got != "/source/workspace" {
+		t.Fatalf("host workspace metadata = %q, want source workspace", got)
+	}
+	if got := managedHostSessionStringMetadata(response.Session.Metadata, "swarm_managed_host_host_workspace_path"); got != "/managed/workspace" {
+		t.Fatalf("managed host physical workspace metadata = %q, want managed path", got)
+	}
+	if route, ok, err := routeStore.Get(response.Session.ID); err != nil {
+		t.Fatalf("get route: %v", err)
+	} else if !ok {
+		t.Fatalf("route not stored")
+	} else if route.HostWorkspacePath != "/source/workspace" || route.RuntimeWorkspacePath != "/managed/workspace" {
+		t.Fatalf("route host/runtime = %q/%q, want source/managed", route.HostWorkspacePath, route.RuntimeWorkspacePath)
+	}
+}
+
 func TestPeerManagedHostSessionOpenDefaultsWorktreeModeOffDespiteStaleLocalConfig(t *testing.T) {
 	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
 	configureRoutedSessionTestServerAsChild(t, server, swarmStore, "managed-swarm", "host-swarm-id", testPrincipal().UserID, testPrincipal().AccountScopeID)
@@ -395,8 +452,8 @@ func TestManagedHostSessionOpenSendsOnlyLogicalIntentToPeer(t *testing.T) {
 	if metadata[sessionruntime.HostedSessionMetadataEnabled] != true || metadata[sessionruntime.HostedSessionMetadataHostSwarmID] != "host-swarm-id" || metadata[sessionruntime.HostedSessionMetadataHostBackendURL] != "https://primary.tailnet.test" || metadata[sessionruntime.HostedSessionMetadataChildSwarmID] != "managed-swarm" {
 		t.Fatalf("hosted metadata = %+v", metadata)
 	}
-	if _, ok := metadata[sessionruntime.HostedSessionMetadataHostWorkspacePath]; ok {
-		t.Fatalf("hosted metadata leaked host workspace path before realization: %+v", metadata)
+	if metadata[sessionruntime.HostedSessionMetadataHostWorkspacePath] != "/host/workspace" {
+		t.Fatalf("hosted source workspace path metadata = %+v", metadata)
 	}
 	if _, ok := metadata[sessionruntime.HostedSessionMetadataRuntimeWorkspacePath]; ok {
 		t.Fatalf("hosted metadata leaked runtime workspace path before realization: %+v", metadata)
@@ -410,14 +467,14 @@ func TestManagedHostSessionOpenSendsOnlyLogicalIntentToPeer(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if strings.TrimSpace(payload.Session.ID) == "" || payload.Session.WorkspacePath != "/managed/workspace" {
+	if strings.TrimSpace(payload.Session.ID) == "" || payload.Session.WorkspacePath != "/host/workspace" {
 		t.Fatalf("mirrored session payload = %+v", payload.Session)
 	}
 	mirrored, ok, err := sessionSvc.GetSession(payload.Session.ID)
 	if err != nil {
 		t.Fatalf("get mirrored session: %v", err)
 	}
-	if !ok || mirrored.WorkspacePath != "/managed/workspace" {
+	if !ok || mirrored.WorkspacePath != "/host/workspace" {
 		t.Fatalf("mirrored session = %+v ok=%v", mirrored, ok)
 	}
 	if mirrored.Metadata["swarm_route_id"] != "swarm:managed-swarm:/managed/workspace" || mirrored.Metadata[sessionruntime.HostedSessionMetadataHostWorkspacePath] != "/host/workspace" || mirrored.Metadata[sessionruntime.HostedSessionMetadataRuntimeWorkspacePath] != "/managed/workspace" {

@@ -298,11 +298,17 @@ func (s *Service) SyncHostedMirrorOpenState(sessionID string, source pebblestore
 		next.WorktreeBranch = ""
 	}
 	if descriptor, hosted := HostedSessionFromMetadata(next.Metadata); hosted {
-		runtimeWorkspacePath := strings.TrimSpace(source.WorkspacePath)
+		runtimeWorkspacePath := ""
+		if source.WorktreeEnabled {
+			runtimeWorkspacePath = strings.TrimSpace(source.WorkspacePath)
+		}
 		if runtimeWorkspacePath == "" {
 			if sourceDescriptor, ok := HostedSessionFromMetadata(source.Metadata); ok {
 				runtimeWorkspacePath = strings.TrimSpace(sourceDescriptor.RuntimeWorkspacePath)
 			}
+		}
+		if runtimeWorkspacePath == "" {
+			runtimeWorkspacePath = strings.TrimSpace(source.WorkspacePath)
 		}
 		if runtimeWorkspacePath != "" {
 			descriptor.RuntimeWorkspacePath = runtimeWorkspacePath

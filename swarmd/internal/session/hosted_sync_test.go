@@ -239,6 +239,87 @@ func TestExistingControllerMirroredRoutedSessionStaysInHostWorkspaceWithoutLocal
 	}
 }
 
+func TestSyncHostedMirrorOpenStateKeepsControllerWorkspaceAndSyncsRuntimeMetadata(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "controller-open-state-sync.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+	eventLog, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	svc := NewService(pebblestore.NewSessionStore(store), eventLog)
+
+	controllerDescriptor := HostedSessionDescriptor{
+		HostSwarmID:          "host-swarm",
+		HostBackendURL:       "http://127.0.0.1:8781",
+		HostWorkspacePath:    "/host/workspace",
+		RuntimeWorkspacePath: "/runtime/workspace",
+		ChildSwarmID:         "child-swarm",
+	}
+	initial, _, err := svc.CreateSessionWithOptions(CreateSessionOptions{
+		SessionID:     "session-routed-open",
+		Title:         "Routed Session",
+		WorkspacePath: "/host/workspace",
+		WorkspaceName: "workspace",
+		Mode:          ModeAuto,
+		Preference: &pebblestore.ModelPreference{
+			Provider: "codex",
+			Model:    "gpt-5.4",
+			Thinking: "medium",
+		},
+		Metadata: controllerDescriptor.WithMetadata(nil),
+	})
+	if err != nil {
+		t.Fatalf("create controller session: %v", err)
+	}
+	if initial.WorkspacePath != "/host/workspace" {
+		t.Fatalf("initial workspace path = %q, want host workspace", initial.WorkspacePath)
+	}
+
+	childDescriptor := controllerDescriptor
+	childDescriptor.RuntimeWorkspacePath = "/runtime/workspace/.swarm/worktrees/session-routed-open"
+	updated, err := svc.SyncHostedMirrorOpenState("session-routed-open", childDescriptor.apply(pebblestore.SessionSnapshot{
+		ID:                 "session-routed-open",
+		WorkspacePath:      "/runtime/workspace/.swarm/worktrees/session-routed-open",
+		WorkspaceName:      "workspace",
+		Title:              "Routed Session",
+		Mode:               ModeAuto,
+		WorktreeEnabled:    true,
+		WorktreeRootPath:   "/runtime/workspace",
+		WorktreeBaseBranch: "dev",
+		WorktreeBranch:     "agent/session-routed-open",
+		UpdatedAt:          time.Now().UnixMilli(),
+		CreatedAt:          time.Now().UnixMilli(),
+	}))
+	if err != nil {
+		t.Fatalf("sync open state: %v", err)
+	}
+	if updated.WorkspacePath != "/host/workspace" {
+		t.Fatalf("updated workspace path = %q, want controller host workspace", updated.WorkspacePath)
+	}
+	if !updated.WorktreeEnabled || updated.WorktreeRootPath != "/runtime/workspace" || updated.WorktreeBranch != "agent/session-routed-open" {
+		t.Fatalf("worktree fields not mirrored correctly: %+v", updated)
+	}
+	descriptor, hosted := HostedSessionFromMetadata(updated.Metadata)
+	if !hosted {
+		t.Fatal("updated session lost hosted metadata")
+	}
+	if descriptor.RuntimeWorkspacePath != "/runtime/workspace/.swarm/worktrees/session-routed-open" {
+		t.Fatalf("runtime workspace metadata = %q, want child realized worktree", descriptor.RuntimeWorkspacePath)
+	}
+	cached, ok, err := svc.GetSession("session-routed-open")
+	if err != nil || !ok {
+		t.Fatalf("get cached session ok=%v err=%v", ok, err)
+	}
+	if cached.WorkspacePath != "/host/workspace" {
+		t.Fatalf("cached workspace path = %q, want host workspace", cached.WorkspacePath)
+	}
+}
+
 func TestHostOwnedRoutedSessionDoesNotHostedSyncBackToItself(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "host-owned-routed-session.pebble"))
 	if err != nil {

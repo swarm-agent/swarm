@@ -2351,6 +2351,23 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 				rollbackHostedCreate(hostedSessionOpenError(*remoteTarget, err))
 				return
 			}
+			if syncedRoute, changed := syncRoutedSessionRouteWithRealizedSession(routeRecord, childResp.Session); changed {
+				routeRecord = syncedRoute
+				if _, err := s.sessionRoutes.Put(routeRecord); err != nil {
+					if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
+						log.Printf("hosted session route sync rollback failed session_id=%q err=%v", session.ID, cleanupErr)
+					}
+					writeError(w, http.StatusInternalServerError, err)
+					return
+				}
+				if err := s.upsertTopologySessionRoute(routeRecord); err != nil {
+					if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
+						log.Printf("hosted session topology route sync rollback failed session_id=%q err=%v", session.ID, cleanupErr)
+					}
+					writeError(w, http.StatusInternalServerError, err)
+					return
+				}
+			}
 			syncedSession, syncErr := s.sessions.SyncHostedMirrorOpenState(session.ID, childResp.Session)
 			if syncErr != nil {
 				log.Printf("hosted session create mirror sync failed session_id=%q err=%v", session.ID, syncErr)
@@ -3496,7 +3513,7 @@ func (s *Server) localCanonicalSessionForRoutedFetch(sessionID string) (pebblest
 	if err != nil || !ok {
 		return pebblestore.SessionSnapshot{}, ok, err
 	}
-	if !sessionHasCanonicalFlowMirrorMetadata(session.Metadata) {
+	if !sessionHasCanonicalFlowMirrorMetadata(session.Metadata) && !sessionHasControllerOwnedRoutedMirrorMetadata(session.Metadata) {
 		return pebblestore.SessionSnapshot{}, false, nil
 	}
 	return session, true, nil
@@ -3510,6 +3527,17 @@ func sessionHasCanonicalFlowMirrorMetadata(metadata map[string]any) bool {
 		strings.EqualFold(strings.TrimSpace(fmt.Sprint(metadata["source"])), "flow") &&
 		strings.EqualFold(strings.TrimSpace(fmt.Sprint(metadata["lineage_kind"])), "flow") &&
 		strings.EqualFold(strings.TrimSpace(fmt.Sprint(metadata["owner_transport"])), "flow_scheduler") &&
+		strings.TrimSpace(fmt.Sprint(metadata[sessionruntime.HostedSessionMetadataHostWorkspacePath])) != "" &&
+		strings.TrimSpace(fmt.Sprint(metadata[sessionruntime.HostedSessionMetadataRuntimeWorkspacePath])) != "" &&
+		strings.TrimSpace(fmt.Sprint(metadata[sessionruntime.HostedSessionMetadataChildSwarmID])) != ""
+}
+
+func sessionHasControllerOwnedRoutedMirrorMetadata(metadata map[string]any) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	ownerTransport := strings.TrimSpace(fmt.Sprint(metadata["owner_transport"]))
+	return strings.EqualFold(ownerTransport, "routed_session_peer") &&
 		strings.TrimSpace(fmt.Sprint(metadata[sessionruntime.HostedSessionMetadataHostWorkspacePath])) != "" &&
 		strings.TrimSpace(fmt.Sprint(metadata[sessionruntime.HostedSessionMetadataRuntimeWorkspacePath])) != "" &&
 		strings.TrimSpace(fmt.Sprint(metadata[sessionruntime.HostedSessionMetadataChildSwarmID])) != ""

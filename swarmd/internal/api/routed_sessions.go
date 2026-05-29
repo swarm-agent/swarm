@@ -498,12 +498,37 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if forwardToRoutedChild {
-			if err := s.forwardPeerSessionOpenToRoutedChild(r.Context(), req, routeRecord); err != nil {
+			childSession, err := s.forwardPeerSessionOpenToRoutedChild(r.Context(), req, routeRecord)
+			if err != nil {
 				if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
 					log.Printf("peer session child forward rollback failed session_id=%q err=%v", session.ID, cleanupErr)
 				}
 				writeError(w, http.StatusBadGateway, err)
 				return
+			}
+			if syncedRoute, changed := syncRoutedSessionRouteWithRealizedSession(routeRecord, childSession); changed {
+				routeRecord = syncedRoute
+				if _, err := s.sessionRoutes.Put(routeRecord); err != nil {
+					if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
+						log.Printf("peer session route sync rollback failed session_id=%q err=%v", session.ID, cleanupErr)
+					}
+					writeError(w, http.StatusInternalServerError, err)
+					return
+				}
+				if err := s.upsertTopologySessionRoute(routeRecord); err != nil {
+					if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
+						log.Printf("peer session topology route sync rollback failed session_id=%q err=%v", session.ID, cleanupErr)
+					}
+					writeError(w, http.StatusInternalServerError, err)
+					return
+				}
+			}
+			if childSession.ID != "" {
+				if syncedSession, syncErr := s.sessions.SyncHostedMirrorOpenState(session.ID, childSession); syncErr != nil {
+					log.Printf("peer session child open state sync failed session_id=%q err=%v", session.ID, syncErr)
+				} else {
+					session = syncedSession
+				}
 			}
 		}
 	}
@@ -531,9 +556,9 @@ func (s *Server) shouldForwardPeerSessionOpenToRoutedChild(route pebblestore.Ses
 	return !s.isLocalSwarmID(childSwarmID)
 }
 
-func (s *Server) forwardPeerSessionOpenToRoutedChild(ctx context.Context, req peerSessionOpenRequest, route pebblestore.SessionRouteRecord) error {
+func (s *Server) forwardPeerSessionOpenToRoutedChild(ctx context.Context, req peerSessionOpenRequest, route pebblestore.SessionRouteRecord) (pebblestore.SessionSnapshot, error) {
 	if s == nil {
-		return errors.New("server is not configured")
+		return pebblestore.SessionSnapshot{}, errors.New("server is not configured")
 	}
 	route.SessionID = strings.TrimSpace(route.SessionID)
 	route.ChildSwarmID = strings.TrimSpace(route.ChildSwarmID)
@@ -542,7 +567,7 @@ func (s *Server) forwardPeerSessionOpenToRoutedChild(ctx context.Context, req pe
 	route.HostWorkspacePath = strings.TrimSpace(route.HostWorkspacePath)
 	route.RuntimeWorkspacePath = strings.TrimSpace(route.RuntimeWorkspacePath)
 	if route.SessionID == "" || route.ChildSwarmID == "" || route.ChildBackendURL == "" {
-		return errors.New("routed child session open requires session id, child swarm id, and child backend url")
+		return pebblestore.SessionSnapshot{}, errors.New("routed child session open requires session id, child swarm id, and child backend url")
 	}
 	forwardReq := req
 	forwardReq.SessionID = route.SessionID
@@ -579,10 +604,29 @@ func (s *Server) forwardPeerSessionOpenToRoutedChild(ctx context.Context, req pe
 	}
 	if err := s.postPeerJSONToSwarmTarget(ctx, childTarget, "/v1/swarm/peer/sessions/open", forwardReq, &childResp); err != nil {
 		flowRouteDiagLog("peer_session_open_forward_child_failed", "session_id", route.SessionID, "child_swarm_id", route.ChildSwarmID, "child_backend_url", route.ChildBackendURL, "error", err)
-		return err
+		return pebblestore.SessionSnapshot{}, err
 	}
 	flowRouteDiagLog("peer_session_open_forward_child_success", "session_id", route.SessionID, "child_swarm_id", route.ChildSwarmID, "child_session_id", childResp.Session.ID, "warning", childResp.Warning)
-	return nil
+	return childResp.Session, nil
+}
+
+func syncRoutedSessionRouteWithRealizedSession(route pebblestore.SessionRouteRecord, session pebblestore.SessionSnapshot) (pebblestore.SessionRouteRecord, bool) {
+	if !session.WorktreeEnabled {
+		return route, false
+	}
+	realizedPath := strings.TrimSpace(session.WorkspacePath)
+	if descriptor, ok := sessionruntime.HostedSessionFromMetadata(session.Metadata); ok {
+		realizedPath = firstNonEmpty(strings.TrimSpace(descriptor.RuntimeWorkspacePath), realizedPath)
+	}
+	if realizedPath == "" || realizedPath == strings.TrimSpace(route.RuntimeWorkspacePath) {
+		return route, false
+	}
+	route.RuntimeWorkspacePath = realizedPath
+	now := time.Now().UnixMilli()
+	if now > route.UpdatedAt {
+		route.UpdatedAt = now
+	}
+	return route, true
 }
 
 func (s *Server) verifiedPeerSessionOpenPrincipalClaim(r *http.Request, req peerSessionOpenRequest) (identity.Principal, bool) {
@@ -1106,7 +1150,7 @@ func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest,
 	}
 	createMetadata := mergeSessionCreateMetadata(req.Metadata, overrideMetadata)
 	workspacePath := strings.TrimSpace(req.HostWorkspacePath)
-	if _, hosted := sessionruntime.HostedSessionFromMetadata(createMetadata); hosted {
+	if _, hosted := sessionruntime.HostedSessionFromMetadata(createMetadata); hosted && !allowWorktree {
 		workspacePath = firstNonEmpty(strings.TrimSpace(req.RuntimeWorkspacePath), workspacePath)
 	}
 	createOptions := sessionruntime.CreateSessionOptions{
@@ -1178,7 +1222,7 @@ func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest,
 		}
 		warning = nextWarning
 		if descriptor, hosted := sessionruntime.HostedSessionFromMetadata(createOptions.Metadata); hosted && strings.TrimSpace(createOptions.WorkspacePath) != "" {
-			if strings.TrimSpace(descriptor.RuntimeWorkspacePath) == "" {
+			if createOptions.Worktree != nil || strings.TrimSpace(descriptor.RuntimeWorkspacePath) == "" {
 				descriptor.RuntimeWorkspacePath = strings.TrimSpace(createOptions.WorkspacePath)
 			}
 			createOptions.Metadata = descriptor.WithMetadata(createOptions.Metadata)

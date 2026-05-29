@@ -220,7 +220,7 @@ func (s *Server) handleManagedHostSessionOpen(w http.ResponseWriter, r *http.Req
 		ChildSwarmID:         strings.TrimSpace(realizedRoute.ManagedHostSwarmID),
 		ChildBackendURL:      strings.TrimSpace(realizedRoute.ManagedHostBackendURL),
 		HostSwarmID:          strings.TrimSpace(realizedRoute.ManagedHostSwarmID),
-		HostWorkspacePath:    strings.TrimSpace(realizedRoute.HostWorkspacePath),
+		HostWorkspacePath:    firstNonEmpty(strings.TrimSpace(realizedRoute.SourceWorkspacePath), strings.TrimSpace(route.SourceWorkspacePath)),
 		RuntimeWorkspacePath: strings.TrimSpace(realizedRoute.RuntimeWorkspacePath),
 		WorkspaceBindingID:   managedHostSessionStringMetadata(mirror.Metadata, "swarm_managed_host_workspace_binding_id"),
 		CreatedAt:            mirror.CreatedAt,
@@ -1636,6 +1636,7 @@ func managedHostSessionMetadata(metadata map[string]any, route managedHostSessio
 	sourceWorkspacePath := strings.TrimSpace(route.SourceWorkspacePath)
 	hostWorkspacePath := strings.TrimSpace(route.HostWorkspacePath)
 	runtimeWorkspacePath := strings.TrimSpace(route.RuntimeWorkspacePath)
+	primaryWorkspacePath := firstNonEmpty(sourceWorkspacePath, hostWorkspacePath)
 	routeID := ""
 	if managedHostSwarmID != "" && runtimeWorkspacePath != "" {
 		routeID = "swarm:" + managedHostSwarmID + ":" + runtimeWorkspacePath
@@ -1658,7 +1659,7 @@ func managedHostSessionMetadata(metadata map[string]any, route managedHostSessio
 		sessionruntime.HostedSessionMetadataEnabled:              true,
 		sessionruntime.HostedSessionMetadataHostSwarmID:          primarySwarmID,
 		sessionruntime.HostedSessionMetadataHostBackendURL:       primaryBackendURL,
-		sessionruntime.HostedSessionMetadataHostWorkspacePath:    hostWorkspacePath,
+		sessionruntime.HostedSessionMetadataHostWorkspacePath:    primaryWorkspacePath,
 		sessionruntime.HostedSessionMetadataRuntimeWorkspacePath: runtimeWorkspacePath,
 		sessionruntime.HostedSessionMetadataChildSwarmID:         managedHostSwarmID,
 	}

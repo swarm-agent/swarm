@@ -195,6 +195,220 @@ func TestRoutedRunStreamControlProxiesHostedMirrorSession(t *testing.T) {
 	}
 }
 
+func TestManagedHostContainerWorktreeSessionEndToEndSyncsRealizedWorktreeRoute(t *testing.T) {
+	primary, _, _, routeStore := newRoutedSessionTestServer(t)
+	createManagedHostContainerRouteSyncFixture(t, primary, nil, routeStore)
+
+	body := bytes.NewBufferString(`{"title":"managed container worktree","mode":"auto","workspace_path":"/workspaces/swarm-go","host_workspace_path":"/workspaces/swarm-go","runtime_workspace_path":"/workspaces/swarm-go","workspace_name":"swarm-go","agent_name":"swarm","worktree_mode":"on","worktree_branch_name":"agent/session-container-worktree","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions?swarm_id=managed-container-swarm", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	primary.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("session create status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var response struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode session response: %v", err)
+	}
+	if !response.Session.WorktreeEnabled {
+		t.Fatalf("mirrored session did not reflect child worktree enabled state: %+v", response.Session)
+	}
+	realizedWorktreePath := firstNonEmpty(strings.TrimSpace(response.Session.WorkspacePath), "/workspaces/swarm-go/.swarm/worktrees/session-container-worktree")
+	if realizedWorktreePath == "/workspaces/swarm-go" {
+		realizedWorktreePath = "/workspaces/swarm-go/.swarm/worktrees/session-container-worktree"
+	}
+	route, ok, err := routeStore.Get(response.Session.ID)
+	if err != nil || !ok {
+		t.Fatalf("get primary route ok=%t err=%v", ok, err)
+	}
+	if route.RuntimeWorkspacePath != realizedWorktreePath {
+		t.Fatalf("primary route runtime workspace path = %q, want child-realized worktree %q", route.RuntimeWorkspacePath, realizedWorktreePath)
+	}
+	topologyRoute, ok, err := primary.topology.GetSessionRouteForAccount(testPrincipal().AccountScopeID, response.Session.ID)
+	if err != nil || !ok {
+		t.Fatalf("get topology route ok=%t err=%v", ok, err)
+	}
+	if topologyRoute.RuntimeWorkspacePath != realizedWorktreePath {
+		t.Fatalf("topology route runtime workspace path = %q, want child-realized worktree %q", topologyRoute.RuntimeWorkspacePath, realizedWorktreePath)
+	}
+}
+
+func TestManagedHostContainerWorktreeOffStaysOnRequestedWorkspace(t *testing.T) {
+	primary, sessionSvc, _, routeStore := newRoutedSessionTestServer(t)
+	createManagedHostContainerRouteSyncFixture(t, primary, nil, routeStore)
+	if _, err := primary.swarmDesktopTargetSelection.PutForAccount(testPrincipal().AccountScopeID, testPrincipal().UserID, "managed-container-swarm"); err != nil {
+		t.Fatalf("select managed container target: %v", err)
+	}
+
+	body := bytes.NewBufferString(`{"title":"managed container regular","mode":"auto","workspace_path":"/workspaces/swarm-go","host_workspace_path":"/workspaces/swarm-go","runtime_workspace_path":"/workspaces/swarm-go","workspace_name":"swarm-go","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	primary.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("session create status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var response struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode session response: %v", err)
+	}
+	if response.Session.WorktreeEnabled {
+		t.Fatalf("worktree should be off for explicit worktree_mode=off: %+v", response.Session)
+	}
+	if response.Session.WorkspacePath != "/workspaces/swarm-go" {
+		t.Fatalf("session workspace path = %q, want /workspaces/swarm-go", response.Session.WorkspacePath)
+	}
+	route, ok, err := routeStore.Get(response.Session.ID)
+	if err != nil || !ok {
+		t.Fatalf("get primary route ok=%t err=%v", ok, err)
+	}
+	if route.RuntimeWorkspacePath != "/workspaces/swarm-go" {
+		t.Fatalf("primary route runtime workspace path = %q, want /workspaces/swarm-go", route.RuntimeWorkspacePath)
+	}
+	topologyRoute, ok, err := primary.topology.GetSessionRouteForAccount(testPrincipal().AccountScopeID, response.Session.ID)
+	if err != nil || !ok {
+		t.Fatalf("get topology route ok=%t err=%v", ok, err)
+	}
+	if topologyRoute.RuntimeWorkspacePath != "/workspaces/swarm-go" {
+		t.Fatalf("topology route runtime workspace path = %q, want /workspaces/swarm-go", topologyRoute.RuntimeWorkspacePath)
+	}
+
+	fetchReq := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+response.Session.ID, nil)
+	fetchRec := httptest.NewRecorder()
+	primary.Handler().ServeHTTP(fetchRec, withTestPrincipal(fetchReq))
+	if fetchRec.Code != http.StatusOK {
+		t.Fatalf("session fetch status = %d, want %d, body=%s", fetchRec.Code, http.StatusOK, fetchRec.Body.String())
+	}
+	var fetched struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(fetchRec.Body.Bytes(), &fetched); err != nil {
+		t.Fatalf("decode fetch response: %v", err)
+	}
+	if fetched.Session.WorkspacePath != "/workspaces/swarm-go" || fetched.Session.WorktreeEnabled {
+		t.Fatalf("fetched session = %+v, want regular /workspaces/swarm-go", fetched.Session)
+	}
+	stored, ok, err := sessionSvc.GetSession(response.Session.ID)
+	if err != nil || !ok {
+		t.Fatalf("get stored session ok=%t err=%v", ok, err)
+	}
+	if stored.WorkspacePath != "/workspaces/swarm-go" || stored.WorktreeEnabled {
+		t.Fatalf("stored session = %+v, want regular /workspaces/swarm-go", stored)
+	}
+}
+
+func createManagedHostContainerRouteSyncFixture(t *testing.T, primary *Server, childWorktrees *fakeWorktreeService, routeStore *pebblestore.SessionRouteStore) {
+	t.Helper()
+	if childWorktrees == nil {
+		childWorktrees = &fakeWorktreeService{
+			config: worktreeruntime.Config{Enabled: false, UseCurrentBranch: true},
+			allocation: worktreeruntime.Allocation{
+				RepoRoot:      "/workspaces/swarm-go",
+				WorkspacePath: "/workspaces/swarm-go/.swarm/worktrees/session-container-worktree",
+				BaseBranch:    "main",
+				BranchName:    "agent/session-container-worktree",
+				WorkspaceID:   "ws_container_worktree",
+			},
+		}
+	}
+	child, _, _, _, childSwarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	configureRoutedSessionTestServerAsChild(t, child, childSwarmStore, "managed-container-swarm", "managed-swarm", testPrincipal().UserID, testPrincipal().AccountScopeID)
+	child.SetWorktreeService(childWorktrees)
+	childHandler := child.Handler()
+	childHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		childHandler.ServeHTTP(w, withTestPrincipal(r))
+	}))
+	t.Cleanup(childHTTP.Close)
+
+	ctx := identity.ContextWithPrincipal(context.Background(), testPrincipal())
+
+	managedStore, err := pebblestore.Open(filepath.Join(t.TempDir(), "managed.pebble"))
+	if err != nil {
+		t.Fatalf("open managed store: %v", err)
+	}
+	t.Cleanup(func() { _ = managedStore.Close() })
+	managedSwarmStore := pebblestore.NewSwarmStore(managedStore)
+	if _, err := managedSwarmStore.PutLocalPairing(pebblestore.SwarmLocalPairingRecord{ParentSwarmID: "host-swarm-id", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, PairingState: startupconfig.PairingStatePaired}); err != nil {
+		t.Fatalf("put managed pairing: %v", err)
+	}
+	managed := &Server{startupConfigPath: filepath.Join(t.TempDir(), "managed.conf")}
+	managed.SetSwarmStore(managedSwarmStore)
+	managed.SetSwarmService(fakeRoutedSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "managed-swarm", Name: "managed", Role: "managed"}}, token: "peer-token"})
+	managed.SetLocalContainerService(&recordingLocalContainerService{containersByAccount: map[string][]localcontainers.Container{
+		testPrincipal().AccountScopeID: {{ID: "managed-container-swarm", Name: "managed container", Status: "running", HostAPIBaseURL: childHTTP.URL}},
+	}})
+	managedMux := http.NewServeMux()
+	managedMux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	managedMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	managedMux.HandleFunc("/v1/me", func(w http.ResponseWriter, r *http.Request) {
+		actor := testActorContext()
+		writeJSON(w, http.StatusOK, map[string]any{"type": actor.Principal.Type, "bootstrapped": true, "userID": actor.UserID, "user_id": actor.UserID, "accountScopeID": actor.AccountScopeID, "account_scope_id": actor.AccountScopeID, "account_scope": actor.AccountScope, "user": actor.User, "account_user": actor.AccountUser, "teamID": actor.TeamID, "team_id": actor.TeamID, "team": actor.Team, "membership": actor.Membership, "selection": actor.Selection})
+	})
+	managed.registerSwarmRoutes(managedMux)
+	managed.registerPeerRoutes(managedMux)
+	managedHandler := managed.withJSON(managedMux)
+	managedHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		managedHandler.ServeHTTP(w, withTestPrincipal(r))
+	}))
+	t.Cleanup(managedHTTP.Close)
+
+	primary.SetSwarmService(fakeRoutedSwarmService{state: swarmruntime.LocalState{
+		Node: swarmruntime.LocalNodeState{SwarmID: "host-swarm-id", Name: "host", Role: "master"},
+		TrustedPeers: []swarmruntime.TrustedPeer{{
+			SwarmID: "managed-swarm", Name: "managed", Role: swarmruntime.RelationshipManaged, Relationship: swarmruntime.RelationshipManaged,
+			RendezvousTransports: []swarmruntime.TransportSummary{{Kind: startupconfig.NetworkModeTailscale, Primary: managedHTTP.URL}},
+		}},
+		Groups: []swarmruntime.GroupState{{Group: swarmruntime.Group{ID: "group-1", HostSwarmID: "host-swarm-id"}, Members: []swarmruntime.GroupMember{
+			{GroupID: "group-1", SwarmID: "host-swarm-id", MembershipRole: swarmruntime.GroupMembershipRoleHost},
+			{GroupID: "group-1", SwarmID: "managed-swarm", MembershipRole: swarmruntime.GroupMembershipRoleMember},
+			{GroupID: "group-1", SwarmID: "managed-container-swarm", MembershipRole: swarmruntime.GroupMembershipRoleMember},
+		}}},
+		CurrentGroupID: "group-1",
+	}, token: "peer-token"})
+	if err := primary.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
+		SwarmID:        "managed-swarm",
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: testPrincipal().AccountScopeID,
+		Name:           "managed",
+		Relationship:   swarmruntime.RelationshipManaged,
+		BackendURL:     managedHTTP.URL,
+		Status:         "online",
+	}); err != nil {
+		t.Fatalf("upsert managed runtime: %v", err)
+	}
+	if err := primary.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
+		SwarmID:              "managed-container-swarm",
+		UserID:               testPrincipal().UserID,
+		AccountScopeID:       testPrincipal().AccountScopeID,
+		Name:                 "managed container",
+		Role:                 "child",
+		Relationship:         swarmruntime.RelationshipChild,
+		BackendURL:           childHTTP.URL,
+		Status:               "attached",
+		OwnerHostSwarmID:     "managed-swarm",
+		OwnerHostContainerID: "managed-container-swarm",
+	}); err != nil {
+		t.Fatalf("upsert child runtime: %v", err)
+	}
+
+	createContainerReq := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/swarm/containers/local/create?swarm_id=managed-swarm", bytes.NewBufferString(`{"name":"managed-container-swarm","runtime":"docker","host_api_base_url":"`+childHTTP.URL+`","image":"swarm-child:test"}`))
+	createContainerReq.Header.Set("Content-Type", "application/json")
+	createContainerRec := httptest.NewRecorder()
+	primary.Handler().ServeHTTP(createContainerRec, withTestPrincipal(createContainerReq))
+	if createContainerRec.Code != http.StatusOK {
+		t.Fatalf("container create status = %d, want %d, body=%s", createContainerRec.Code, http.StatusOK, createContainerRec.Body.String())
+	}
+}
+
 func TestRoutedSessionTargetRewritesManagedLoopbackBackendToHostBackend(t *testing.T) {
 	server, _, _, _ := newRoutedSessionTestServer(t)
 	managedHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1467,6 +1681,7 @@ func newRoutedSessionTestServerWithSwarmStore(t *testing.T) (*Server, *sessionru
 	server.SetSwarmNodeStore(nodeStore)
 	server.SetSwarmStore(swarmStore)
 	server.SetSwarmMirrorStore(pebblestore.NewSwarmMirrorStore(store))
+	server.SetSwarmDesktopTargetSelectionStore(pebblestore.NewSwarmDesktopTargetSelectionStore(store))
 	server.SetSwarmService(fakeRoutedSwarmService{
 		state: swarmruntime.LocalState{
 			Node: swarmruntime.LocalNodeState{
@@ -1613,8 +1828,8 @@ func (f fakeRoutedSwarmService) OutgoingPeerAuthToken(string) (string, bool, err
 	return f.token, true, nil
 }
 
-func (f fakeRoutedSwarmService) ValidateIncomingPeerAuth(string, string) (bool, error) {
-	return true, nil
+func (f fakeRoutedSwarmService) ValidateIncomingPeerAuth(_ string, token string) (bool, error) {
+	return strings.TrimSpace(token) == strings.TrimSpace(f.token), nil
 }
 
 func (f fakeRoutedSwarmService) UpsertGroupMember(swarmruntime.UpsertGroupMemberInput) (swarmruntime.GroupMember, error) {

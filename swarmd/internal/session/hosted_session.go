@@ -144,13 +144,17 @@ func adaptHostedSessionForLocalRuntime(session pebblestore.SessionSnapshot, loca
 	hostWorkspacePath := strings.TrimSpace(descriptor.HostWorkspacePath)
 	runtimeWorkspacePath := strings.TrimSpace(descriptor.RuntimeWorkspacePath)
 	localSwarmID = strings.TrimSpace(localSwarmID)
-	if session.WorktreeEnabled && strings.TrimSpace(session.WorkspacePath) != "" {
+	if strings.EqualFold(strings.TrimSpace(descriptor.OwnerTransport), "managed_host_peer") && hostWorkspacePath != "" {
+		session.WorkspacePath = hostWorkspacePath
 		return session
 	}
 	if localSwarmID != "" && strings.EqualFold(strings.TrimSpace(descriptor.HostSwarmID), localSwarmID) {
 		if hostWorkspacePath != "" {
 			session.WorkspacePath = hostWorkspacePath
 		}
+		return session
+	}
+	if session.WorktreeEnabled && strings.TrimSpace(session.WorkspacePath) != "" {
 		return session
 	}
 	if localSwarmID == "" && hostWorkspacePath != "" && strings.TrimSpace(session.WorkspacePath) == hostWorkspacePath {
