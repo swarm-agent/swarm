@@ -1296,7 +1296,7 @@ func TestManagedHostRunRequestUsesRealizedRuntimeCWD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepare run request: %v", err)
 	}
-	if prepared.ExecutionContext == nil || prepared.ExecutionContext.WorkspacePath != runtimeCWD || prepared.ExecutionContext.CWD != runtimeCWD || prepared.ExecutionContext.WorktreeMode != runruntime.RunWorktreeModeOff {
+	if prepared.ExecutionContext == nil || prepared.ExecutionContext.WorkspacePath != runtimeCWD || prepared.ExecutionContext.CWD != runtimeCWD || prepared.ExecutionContext.WorktreeMode != runruntime.RunWorktreeModeOff || prepared.ExecutionContext.WorktreeRootPath != runtimeCWD {
 		t.Fatalf("execution context = %+v", prepared.ExecutionContext)
 	}
 }

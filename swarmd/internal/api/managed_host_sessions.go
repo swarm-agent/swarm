@@ -1026,6 +1026,9 @@ func (s *Server) managedHostRunRequestWithRealizedRuntimeCWD(sessionID string, r
 		CWD:           runtimeCWD,
 		WorktreeMode:  runruntime.RunWorktreeModeOff,
 	}
+	if session.WorktreeEnabled {
+		ctx.WorktreeRootPath = runtimeCWD
+	}
 	if request.ExecutionContext != nil {
 		requested := *request.ExecutionContext
 		if workspacePath := strings.TrimSpace(requested.WorkspacePath); workspacePath != "" && workspacePath != runtimeCWD {

@@ -614,9 +614,15 @@ func syncRoutedSessionRouteWithRealizedSession(route pebblestore.SessionRouteRec
 	if !session.WorktreeEnabled {
 		return route, false
 	}
+	// Worktree-enabled child sessions execute from the realized session workspace.
+	// Hosted metadata can still carry the pre-worktree runtime workspace until the
+	// child has persisted post-create metadata, so never let stale metadata pull a
+	// routed worktree route back to the base workspace.
 	realizedPath := strings.TrimSpace(session.WorkspacePath)
-	if descriptor, ok := sessionruntime.HostedSessionFromMetadata(session.Metadata); ok {
-		realizedPath = firstNonEmpty(strings.TrimSpace(descriptor.RuntimeWorkspacePath), realizedPath)
+	if realizedPath == "" {
+		if descriptor, ok := sessionruntime.HostedSessionFromMetadata(session.Metadata); ok {
+			realizedPath = strings.TrimSpace(descriptor.RuntimeWorkspacePath)
+		}
 	}
 	if realizedPath == "" || realizedPath == strings.TrimSpace(route.RuntimeWorkspacePath) {
 		return route, false
@@ -1236,6 +1242,17 @@ func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest,
 		session, event, err = sessionruntime.AttachCreatedWorktreeBranch(s.sessions, s.worktrees, session)
 		if err != nil {
 			return pebblestore.SessionSnapshot{}, nil, "", "", err
+		}
+		if session.WorktreeEnabled {
+			if descriptor, hosted := sessionruntime.HostedSessionFromMetadata(session.Metadata); hosted && strings.TrimSpace(session.WorkspacePath) != "" {
+				descriptor.RuntimeWorkspacePath = strings.TrimSpace(session.WorkspacePath)
+				updatedMetadata := descriptor.WithMetadata(session.Metadata)
+				updated, _, updateErr := s.sessions.UpdateMetadata(session.ID, updatedMetadata)
+				if updateErr != nil {
+					return pebblestore.SessionSnapshot{}, nil, "", "", updateErr
+				}
+				session = updated
+			}
 		}
 	}
 	return session, event, warning, modeWarning, nil

@@ -3516,6 +3516,17 @@ func (s *Server) localCanonicalSessionForRoutedFetch(sessionID string) (pebblest
 	if !sessionHasCanonicalFlowMirrorMetadata(session.Metadata) && !sessionHasControllerOwnedRoutedMirrorMetadata(session.Metadata) {
 		return pebblestore.SessionSnapshot{}, false, nil
 	}
+	if route, ok, routeErr := s.sessionRoutes.Get(sessionID); routeErr != nil {
+		return pebblestore.SessionSnapshot{}, false, routeErr
+	} else if ok {
+		if runtimeWorkspacePath := strings.TrimSpace(route.RuntimeWorkspacePath); runtimeWorkspacePath != "" {
+			descriptor, hosted := sessionruntime.HostedSessionFromMetadata(session.Metadata)
+			if hosted && strings.TrimSpace(descriptor.RuntimeWorkspacePath) != runtimeWorkspacePath {
+				descriptor.RuntimeWorkspacePath = runtimeWorkspacePath
+				session.Metadata = descriptor.WithMetadata(session.Metadata)
+			}
+		}
+	}
 	return session, true, nil
 }
 

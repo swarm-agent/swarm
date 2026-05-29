@@ -175,6 +175,73 @@ func TestMirroredRoutedSessionUsesLocalRuntimeWorkspaceWhenLocalSwarmIsUnknown(t
 	}
 }
 
+func TestSyncHostedMirrorOpenStateKeepsControllerRuntimePathFromChildMetadata(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "hosted-session-mirror-sync-runtime.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	eventLog, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+
+	svc := NewService(pebblestore.NewSessionStore(store), eventLog)
+	svc.SetLocalSwarmIDResolver(func() string { return "controller-swarm" })
+	controllerDescriptor := HostedSessionDescriptor{
+		HostSwarmID:          "host-swarm",
+		HostWorkspacePath:    "/home/installer/swarm-go",
+		RuntimeWorkspacePath: "/workspaces/swarm-go",
+		ChildSwarmID:         "managed-container-swarm",
+	}
+	if _, err := svc.StoreMirroredSession(controllerDescriptor.apply(pebblestore.SessionSnapshot{
+		ID:            "session-managed-container-worktree",
+		WorkspacePath: "/workspaces/swarm-go",
+		WorkspaceName: "swarm-go",
+		Title:         "Managed container worktree",
+		Mode:          ModeAuto,
+		UpdatedAt:     time.Now().UnixMilli(),
+		CreatedAt:     time.Now().UnixMilli(),
+	})); err != nil {
+		t.Fatalf("store initial mirror: %v", err)
+	}
+
+	childDescriptor := HostedSessionDescriptor{
+		HostSwarmID:          "host-swarm",
+		HostWorkspacePath:    "/home/installer/swarm-go",
+		RuntimeWorkspacePath: "/workspaces/swarm-go/.swarm/worktrees/session-managed-container-worktree",
+		ChildSwarmID:         "managed-container-swarm",
+	}
+	updated, err := svc.SyncHostedMirrorOpenState("session-managed-container-worktree", childDescriptor.apply(pebblestore.SessionSnapshot{
+		ID:               "session-managed-container-worktree",
+		WorkspacePath:    "/home/installer/swarm-go",
+		WorkspaceName:    "swarm-go",
+		Title:            "Managed container worktree",
+		Mode:             ModeAuto,
+		WorktreeEnabled:  true,
+		WorktreeRootPath: "/workspaces/swarm-go",
+		WorktreeBranch:   "agent/session-managed-container-worktree",
+		UpdatedAt:        time.Now().UnixMilli(),
+		CreatedAt:        time.Now().UnixMilli(),
+	}))
+	if err != nil {
+		t.Fatalf("sync open state: %v", err)
+	}
+	if updated.WorkspacePath != "/workspaces/swarm-go" {
+		t.Fatalf("updated workspace path = %q, want controller runtime workspace", updated.WorkspacePath)
+	}
+	descriptor, hosted := HostedSessionFromMetadata(updated.Metadata)
+	if !hosted {
+		t.Fatal("updated session lost hosted metadata")
+	}
+	if descriptor.RuntimeWorkspacePath != "/workspaces/swarm-go/.swarm/worktrees/session-managed-container-worktree" {
+		t.Fatalf("runtime metadata path = %q, want child metadata runtime worktree", descriptor.RuntimeWorkspacePath)
+	}
+}
+
 func TestExistingControllerMirroredRoutedSessionStaysInHostWorkspaceWithoutLocalSwarmID(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "controller-mirrored-routed-session.pebble"))
 	if err != nil {
