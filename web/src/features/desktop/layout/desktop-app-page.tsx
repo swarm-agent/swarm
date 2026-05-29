@@ -967,6 +967,7 @@ function sidebarSummaryLabel(session: DesktopSessionRecord): string {
     || normalized === 'starting...'
     || normalized === 'starting…'
     || normalized.startsWith('tool.')
+    || normalized.startsWith('tool:')
     || normalized.startsWith('turn.')
     || normalized.startsWith('run.')
     || normalized.startsWith('session.')

@@ -2084,7 +2084,7 @@ function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope): Parti
       }
       resetRetainedLiveToolState(session.live)
       session.live.toolOutput = ''
-      session.live.summary = session.live.toolName ? `Tool: ${session.live.toolName}` : 'Tool started'
+      session.live.summary = session.live.toolName?.trim() || 'Tool started'
       break
     case 'run.tool.delta':
       session.live.toolName = typeof payloadRecord.tool_name === 'string' ? payloadRecord.tool_name : session.live.toolName
