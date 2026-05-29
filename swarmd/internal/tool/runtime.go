@@ -854,7 +854,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "manage-agent",
-			Description: "Inspect and manage saved agents and custom tools; call with {\"action\":\"inspect\"} first for usage details, including available tool bundles/presets and concrete tool grants; create/update should choose the least-privilege preset first and only add explicit per-tool overrides from the advertised inventory when necessary; mutating actions return approval-ready before/after previews unless confirm=true",
+			Description: "Inspect and manage saved agents and custom tools; call with {\"action\":\"inspect\"} first for usage details, including agent mode guidance, available tool bundles/presets, and concrete tool grants; if the user has not specified which agent type/mode to create, clarify before creating; create/update should choose the least-privilege preset first and only add explicit per-tool overrides from the advertised inventory when necessary; mutating actions return approval-ready before/after previews unless confirm=true",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -874,7 +874,7 @@ func (r *Runtime) Definitions() []Definition {
 									"tool_name":              map[string]any{"type": "string"},
 									"kind":                   map[string]any{"type": "string", "description": "fixed_bash"},
 									"command":                map[string]any{"type": "string"},
-									"mode":                   map[string]any{"type": "string", "description": "primary|subagent"},
+									"mode":                   map[string]any{"type": "string", "description": "primary|subagent|background. Clarify if unspecified: primary is user-selectable in Desktop/TUI; subagent is usable by primary agents for delegation and also user-selectable in Desktop/TUI; background is for Flows and does not appear in the Desktop/TUI selector."},
 									"description":            map[string]any{"type": "string"},
 									"provider":               map[string]any{"type": "string"},
 									"model":                  map[string]any{"type": "string"},
@@ -6063,6 +6063,10 @@ func manageSkillInspect(scope WorkspaceScope) (string, error) {
 	return string(encoded), nil
 }
 
+func manageAgentInstructionsText() string {
+	return "Use manage-agent to inspect and manage saved agents, custom tools, and subagent transcripts. Call inspect/list first, then get before mutating an agent profile. If the user asks to create an agent but does not specify the agent type/mode, clarify before creating. Agent modes: primary agents are user-selectable in Desktop/TUI; subagent agents are usable by primary agents for task delegation and are also user-selectable in Desktop/TUI; background agents are for Flows and do not appear in the Desktop/TUI selector. Use action=transcript/session_transcript with session_id from a task report_ref to read a child subagent transcript when inline task output was truncated or omitted. Inspect output includes tool_inventory.tools and tool_inventory.presets; each preset lists the concrete tools it grants. For create/update, prefer object-form `content`, choose the smallest preset/bundle that fits the requested job, and avoid overscoping. Use explicit `tool_contract.tools.{tool}.enabled` overrides only when the user request needs narrower or slightly broader access than a preset; override names must come from tool_inventory.tools[].contract_name/name. Do not enable bash unless it is limited by explicit bash_prefixes. Do not use inherit_policy for model-created profiles. Custom tool actions use `content={name,kind,description?,command}` and assignment actions use top-level `agent` plus `tool_name`. Mutating actions return approval-ready previews unless confirm=true."
+}
+
 func (r *Runtime) manageAgentInspect(scope WorkspaceScope) (string, error) {
 	if r == nil || r.agents == nil {
 		return "", errors.New("manage-agent service is not configured")
@@ -6091,11 +6095,11 @@ func (r *Runtime) manageAgentInspect(scope WorkspaceScope) (string, error) {
 		"active_subagent":   cloneStringMap(state.ActiveSubagent),
 		"version":           state.Version,
 		"supported_actions": []string{"inspect", "list", "get", "transcript", "session_transcript", "create", "update", "delete", "activate_primary", "set_active_subagent", "remove_active_subagent", "create_custom_tool", "update_custom_tool", "delete_custom_tool", "assign_custom_tool", "unassign_custom_tool"},
-		"instructions":      "Use manage-agent to inspect and manage saved agents, custom tools, and subagent transcripts. Call inspect/list first, then get before mutating an agent profile. Use action=transcript/session_transcript with session_id from a task report_ref to read a child subagent transcript when inline task output was truncated or omitted. Inspect output includes tool_inventory.tools and tool_inventory.presets; each preset lists the concrete tools it grants. For create/update, prefer object-form `content`, choose the smallest preset/bundle that fits the requested job, and avoid overscoping. Use explicit `tool_contract.tools.{tool}.enabled` overrides only when the user request needs narrower or slightly broader access than a preset; override names must come from tool_inventory.tools[].contract_name/name. Do not enable bash unless it is limited by explicit bash_prefixes. Do not use inherit_policy for model-created profiles. Custom tool actions use `content={name,kind,description?,command}` and assignment actions use top-level `agent` plus `tool_name`. Mutating actions return approval-ready previews unless confirm=true.",
+		"instructions":      manageAgentInstructionsText(),
 		"examples": []map[string]any{
 			{"action": "inspect"},
 			{"action": "get", "agent": strings.TrimSpace(state.ActivePrimary)},
-			{"action": "create", "agent": "review-bot", "content": map[string]any{"name": "review-bot", "mode": "subagent", "description": "Code review specialist.", "prompt": "Review diffs and call out concrete risks.", "execution_setting": "read", "tool_contract": map[string]any{"preset": "read_only", "tools": map[string]any{"bash": map[string]any{"enabled": false}}}}},
+			{"action": "create", "agent": "review-bot", "content": map[string]any{"name": "review-bot", "mode": "subagent", "description": "Code review specialist usable by primary agents for delegation.", "prompt": "Review diffs and call out concrete risks.", "execution_setting": "read", "tool_contract": map[string]any{"preset": "read_only", "tools": map[string]any{"bash": map[string]any{"enabled": false}}}}},
 			{"action": "create_custom_tool", "content": map[string]any{"name": "show_go_version", "kind": "fixed_bash", "description": "Show the installed Go version.", "command": "go version"}},
 			{"action": "assign_custom_tool", "agent": strings.TrimSpace(state.ActivePrimary), "tool_name": "show_go_version"},
 		},
@@ -7042,10 +7046,10 @@ func validateManageAgentMode(mode string, _ bool) error {
 	if mode == "" {
 		return nil
 	}
-	if mode == agentruntime.ModePrimary || mode == agentruntime.ModeSubagent {
+	if mode == agentruntime.ModePrimary || mode == agentruntime.ModeSubagent || mode == agentruntime.ModeBackground {
 		return nil
 	}
-	return fmt.Errorf("manage-agent unsupported mode %q; use primary or subagent", mode)
+	return fmt.Errorf("manage-agent unsupported mode %q; use primary, subagent, or background", mode)
 }
 
 func validateManageAgentExecutionSetting(setting string) error {

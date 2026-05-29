@@ -12,6 +12,150 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func TestManageAgentCreateAcceptsBackgroundMode(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := pebblestore.Open(filepath.Join(workspace, "state.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("open event log: %v", err)
+	}
+	agents := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
+	rt := NewRuntime(2)
+	rt.SetManageAgentService(agents)
+
+	results := rt.ExecuteBatch(context.Background(), workspace, []Call{{
+		CallID: "manage-agent-create-background",
+		Name:   "manage-agent",
+		Arguments: mustManageAgentArgsJSON(t, map[string]any{"action": "create", "confirm": true, "agent": "flow-worker", "content": map[string]any{
+			"name":              "flow-worker",
+			"mode":              "background",
+			"prompt":            "Run scheduled flow work.",
+			"execution_setting": "read",
+			"tool_contract":     map[string]any{"preset": "read_only"},
+		}}),
+	}})
+	if len(results) != 1 {
+		t.Fatalf("expected one result, got %d", len(results))
+	}
+	if errText := strings.TrimSpace(results[0].Error); errText != "" {
+		t.Fatalf("unexpected manage-agent error: %s", errText)
+	}
+	decoded := decodeManageAgentResultJSON(t, results[0].Output)
+	agent, ok := decoded["agent"].(map[string]any)
+	if !ok {
+		t.Fatalf("agent payload is %T", decoded["agent"])
+	}
+	if got := agent["mode"]; got != "background" {
+		t.Fatalf("agent.mode = %v, want background", got)
+	}
+	profile, ok, err := agents.GetProfile("flow-worker")
+	if err != nil {
+		t.Fatalf("get profile: %v", err)
+	}
+	if !ok {
+		t.Fatal("flow-worker profile missing")
+	}
+	if profile.Mode != agentruntime.ModeBackground {
+		t.Fatalf("persisted mode = %q, want background", profile.Mode)
+	}
+}
+
+func TestManageAgentUpdateAcceptsBackgroundMode(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := pebblestore.Open(filepath.Join(workspace, "state.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("open event log: %v", err)
+	}
+	agents := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
+	if _, _, _, err := agents.Upsert(agentruntime.UpsertInput{
+		Name:             "convertible",
+		Mode:             agentruntime.ModeSubagent,
+		Prompt:           "I can change modes.",
+		ExecutionSetting: pebblestore.AgentExecutionSettingRead,
+		ToolContract:     &pebblestore.AgentToolContract{Preset: "read_only"},
+	}); err != nil {
+		t.Fatalf("seed profile: %v", err)
+	}
+	rt := NewRuntime(2)
+	rt.SetManageAgentService(agents)
+
+	results := rt.ExecuteBatch(context.Background(), workspace, []Call{{
+		CallID: "manage-agent-update-background",
+		Name:   "manage-agent",
+		Arguments: mustManageAgentArgsJSON(t, map[string]any{"action": "update", "confirm": true, "agent": "convertible", "content": map[string]any{
+			"mode": "background",
+		}}),
+	}})
+	if len(results) != 1 {
+		t.Fatalf("expected one result, got %d", len(results))
+	}
+	if errText := strings.TrimSpace(results[0].Error); errText != "" {
+		t.Fatalf("unexpected manage-agent error: %s", errText)
+	}
+	decoded := decodeManageAgentResultJSON(t, results[0].Output)
+	agent, ok := decoded["agent"].(map[string]any)
+	if !ok {
+		t.Fatalf("agent payload is %T", decoded["agent"])
+	}
+	if got := agent["mode"]; got != "background" {
+		t.Fatalf("agent.mode = %v, want background", got)
+	}
+}
+
+func TestManageAgentInspectExplainsAgentModeRelationship(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := pebblestore.Open(filepath.Join(workspace, "state.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("open event log: %v", err)
+	}
+	agents := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
+	rt := NewRuntime(2)
+	rt.SetManageAgentService(agents)
+
+	results := rt.ExecuteBatch(context.Background(), workspace, []Call{{
+		CallID:    "manage-agent-inspect-modes",
+		Name:      "manage-agent",
+		Arguments: mustManageAgentArgsJSON(t, map[string]any{"action": "inspect"}),
+	}})
+	if len(results) != 1 {
+		t.Fatalf("expected one result, got %d", len(results))
+	}
+	if errText := strings.TrimSpace(results[0].Error); errText != "" {
+		t.Fatalf("unexpected manage-agent error: %s", errText)
+	}
+	decoded := decodeManageAgentResultJSON(t, results[0].Output)
+	instructions := asString(decoded["instructions"])
+	for _, want := range []string{
+		"does not specify the agent type/mode, clarify before creating",
+		"primary agents are user-selectable in Desktop/TUI",
+		"subagent agents are usable by primary agents for task delegation",
+		"also user-selectable in Desktop/TUI",
+		"background agents are for Flows",
+		"do not appear in the Desktop/TUI selector",
+	} {
+		if !strings.Contains(instructions, want) {
+			t.Fatalf("instructions missing %q\n%s", want, instructions)
+		}
+	}
+}
+
 func TestManageAgentCreatePublishesAgentEvent(t *testing.T) {
 	workspace := t.TempDir()
 	store, err := pebblestore.Open(filepath.Join(workspace, "state.pebble"))
