@@ -208,7 +208,7 @@ export function syntaxSpans(text: string, language?: string, shell?: boolean, pl
   if (plain || text.length > MAX_HIGHLIGHT_CHARS) return [{ text, role: "plain" }];
   const lang = normalizeLanguage(language);
   if (shell || lang === "bash" || lang === "shell") return highlightShell(text);
-  if (!lang) return highlightCode(text, "");
+  if (!lang) return [{ text, role: "plain" }];
   return highlightCode(text, lang);
 }
 

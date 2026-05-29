@@ -140,7 +140,7 @@ function PreviewLinesView({
       {commandText ? (
         <div className="mb-1.5 min-w-0 rounded-md bg-[var(--app-surface)] px-2 py-1 text-[11px] leading-5 text-[var(--app-text)]">
           <span className="mr-1 select-none text-[var(--app-accent)]">$</span>
-          <ToolSyntaxLine text={commandText} shell className="whitespace-pre-wrap break-words font-mono [overflow-wrap:anywhere]" />
+          <ToolSyntaxLine text={commandText} language="bash" className="whitespace-pre-wrap break-words font-mono [overflow-wrap:anywhere]" />
         </div>
       ) : null}
       {display.map((line, i) => (
@@ -756,7 +756,7 @@ export function ToolMessageView({
     : todoCounts || toolSummaryRemainder(toolMessage.summary || toolMessage.tool || "tool", label);
   const accentWash = toolAccentWash(toolTheme.color, 14);
   const previewLanguage = inferToolSyntaxLanguage(toolMessage.target || pathFromToolSummary(toolMessage.summary));
-  const shellPreview = toolMessage.tool.trim().toLowerCase() === "bash";
+  const shellPreview = false;
   const plainPreview = shouldRenderPreviewAsPlain(toolMessage.tool);
 
   return (
