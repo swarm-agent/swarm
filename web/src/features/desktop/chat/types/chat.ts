@@ -42,6 +42,7 @@ export interface TaskToolRow {
   currentToolStartedAtMs: number;
   elapsedMs: number;
   currentToolMs: number;
+  terminal: boolean;
 }
 
 export interface SearchToolLineMatch {

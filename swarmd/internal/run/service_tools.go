@@ -122,12 +122,15 @@ func taskStreamStatusForPhase(phase string) string {
 
 const taskStreamPreviewMaxChars = 1600
 
-func taskLaunchProgressDurations(launch taskLaunchOutcome) (elapsedMS, currentToolMS int64) {
-	elapsedMS = launch.ElapsedMS
+func taskLaunchProgressDurations(launch taskLaunchOutcome, terminal bool) (elapsedMS, currentToolMS int64) {
+	if !terminal {
+		return 0, 0
+	}
+	elapsedMS = maxInt64(0, launch.ElapsedMS)
+	currentToolMS = maxInt64(0, launch.CurrentToolMS)
 	if elapsedMS <= 0 && launch.LaunchStartedAtMS > 0 {
 		elapsedMS = maxInt64(0, time.Now().UnixMilli()-launch.LaunchStartedAtMS)
 	}
-	currentToolMS = launch.CurrentToolMS
 	if currentToolMS <= 0 && launch.CurrentToolStarted > 0 && strings.TrimSpace(launch.CurrentTool) != "" {
 		currentToolMS = maxInt64(0, time.Now().UnixMilli()-launch.CurrentToolStarted)
 	}
@@ -200,8 +203,9 @@ func buildTaskStreamPayload(parentSessionID, action, description string, launchC
 	if launchCount <= 0 {
 		launchCount = 1
 	}
-	elapsedMS, currentToolMS := taskLaunchProgressDurations(launch)
 	status := taskStreamStatusForPhase(phase)
+	terminal := status == "ok" || status == "error"
+	elapsedMS, currentToolMS := taskLaunchProgressDurations(launch, terminal)
 	previewKind, previewText := publicTaskPreview(launch.CurrentPreviewKind, launch.CurrentPreviewText)
 	reasoningSummary := strings.TrimSpace(launch.ReasoningSummary)
 	return map[string]any{
@@ -1964,14 +1968,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 		launchRows := make([]map[string]any, 0, len(launches))
 		for _, launch := range launches {
-			elapsedMS := launch.ElapsedMS
-			if elapsedMS <= 0 && launch.LaunchStartedAtMS > 0 {
-				elapsedMS = maxInt64(0, time.Now().UnixMilli()-launch.LaunchStartedAtMS)
-			}
-			currentToolMS := launch.CurrentToolMS
-			if currentToolMS <= 0 && launch.CurrentToolStarted > 0 && strings.TrimSpace(launch.CurrentTool) != "" {
-				currentToolMS = maxInt64(0, time.Now().UnixMilli()-launch.CurrentToolStarted)
-			}
+			elapsedMS, currentToolMS := taskLaunchProgressDurations(launch, strings.EqualFold(strings.TrimSpace(status), "ok") || strings.EqualFold(strings.TrimSpace(status), "error"))
 			launchRow := map[string]any{
 				"launch_index":         launch.LaunchIndex,
 				"requested_subagent":   strings.TrimSpace(launch.RequestedSubagent),
@@ -2062,9 +2059,6 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			eventType := strings.ToLower(strings.TrimSpace(event.Type))
 			switch eventType {
 			case StreamEventStepStarted:
-				if outcome.ElapsedMS <= 0 && outcome.LaunchStartedAtMS > 0 {
-					outcome.ElapsedMS = maxInt64(0, time.Now().UnixMilli()-outcome.LaunchStartedAtMS)
-				}
 				emitTaskDelta("running", "", outcome)
 			case StreamEventToolStarted:
 				nowMS := time.Now().UnixMilli()
@@ -2081,7 +2075,6 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				if outcome.LaunchStartedAtMS <= 0 {
 					outcome.LaunchStartedAtMS = nowMS
 				}
-				outcome.ElapsedMS = maxInt64(0, nowMS-outcome.LaunchStartedAtMS)
 				emitTaskDelta("tool.started", fmt.Sprintf("launch %d running %s", outcome.LaunchIndex, outcome.CurrentTool), outcome)
 			case StreamEventToolDelta:
 				outcome.CurrentPreviewKind = "tool"

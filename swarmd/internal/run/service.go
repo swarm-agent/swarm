@@ -535,9 +535,6 @@ func (s *Service) runTargetedSubagent(ctx context.Context, parentSession pebbles
 		switch strings.TrimSpace(event.Type) {
 		case StreamEventStepStarted:
 			taskStep = maxInt(taskStep, maxInt(1, event.Step))
-			if outcome.ElapsedMS <= 0 && outcome.LaunchStartedAtMS > 0 {
-				outcome.ElapsedMS = maxInt64(0, time.Now().UnixMilli()-outcome.LaunchStartedAtMS)
-			}
 			emitTaskStreamDelta(parentSession.ID, emit, taskStep, taskToolName, taskCallID, taskAction, description, 1, outcome, "running", "")
 		case StreamEventToolStarted:
 			nowMS := time.Now().UnixMilli()
@@ -553,7 +550,6 @@ func (s *Service) runTargetedSubagent(ctx context.Context, parentSession pebbles
 			if outcome.LaunchStartedAtMS <= 0 {
 				outcome.LaunchStartedAtMS = nowMS
 			}
-			outcome.ElapsedMS = maxInt64(0, nowMS-outcome.LaunchStartedAtMS)
 			emitTaskStreamDelta(
 				parentSession.ID,
 				emit,

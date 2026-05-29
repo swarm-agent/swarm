@@ -3051,7 +3051,7 @@ export function DesktopChatPanel({
                   style={{ transform: `translateY(${virtualItem.start}px)` }}
                 >
                   <article className="w-full min-w-0">
-                    <ChatMarkdown content="" toolMessage={item.toolMessage} nowMs={timerNow} />
+                    <ChatMarkdown content="" toolMessage={item.toolMessage} />
                   </article>
                 </div>
               )
@@ -3097,7 +3097,7 @@ export function DesktopChatPanel({
                   data-global-seq={message.globalSeq}
                 >
                   <article className="min-w-0 max-w-[80%] rounded-2xl bg-[var(--app-primary)] px-4 py-3 text-[var(--app-primary-text)] shadow-sm">
-                    <ChatMarkdown content={message.content} toolMessage={message.toolMessage ?? null} className="!text-current" nowMs={timerNow} />
+                    <ChatMarkdown content={message.content} toolMessage={message.toolMessage ?? null} className="!text-current" />
                   </article>
                 </div>
               )
@@ -3122,7 +3122,7 @@ export function DesktopChatPanel({
                     <div className="mb-1 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
                       {reasoningLabel}
                     </div>
-                    {reasoningBody ? <ChatMarkdown content={reasoningBody} toolMessage={message.toolMessage ?? null} nowMs={timerNow} /> : null}
+                    {reasoningBody ? <ChatMarkdown content={reasoningBody} toolMessage={message.toolMessage ?? null} /> : null}
                   </article>
                 </div>
               )
@@ -3146,7 +3146,7 @@ export function DesktopChatPanel({
                       {messageRoleLabel(message.role, resolveMessageAssistantLabel(message, currentSessionAgent))}
                     </div>
                   ) : null}
-                  <ChatMarkdown content={message.content} toolMessage={message.toolMessage ?? null} nowMs={timerNow} />
+                  <ChatMarkdown content={message.content} toolMessage={message.toolMessage ?? null} />
                 </article>
               </div>
             )

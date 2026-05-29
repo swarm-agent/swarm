@@ -594,6 +594,59 @@ function testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads(): voi
   assert(finalMessage?.taskRows[1]?.childSessionId === 'child-2', 'expected second child session id to persist')
 }
 
+function testRunningTaskRowDoesNotUseStreamDurationAsDisplayTime(): void {
+  const message = buildStructuredToolMessage({
+    tool: 'task',
+    callId: 'call_task_running_timer_contract',
+    outputText: JSON.stringify({
+      tool: 'task',
+      path_id: 'tool.task.stream.v1',
+      status: 'running',
+      launches: [{
+        launch_index: 1,
+        child_session_id: 'child-1',
+        subagent: 'explorer',
+        status: 'running',
+        current_tool: 'search',
+        launch_started_at_ms: 123000,
+        current_tool_ms: 5000,
+        elapsed_ms: 9000,
+      }],
+    }),
+  })
+
+  assert(Boolean(message), 'expected running task message')
+  const row = message!.taskRows[0]
+  assert(row?.terminal === false, 'running task row should not be terminal')
+  assert(row?.time === '', `running task row should not format stream duration as display time, got ${row?.time}`)
+  assert(row?.launchStartedAtMs === 123000, `expected launch start timestamp, got ${row?.launchStartedAtMs}`)
+  assert(row?.elapsedMs === 9000, `expected raw elapsed ms to be retained, got ${row?.elapsedMs}`)
+}
+
+function testTerminalTaskRowUsesFinalElapsedAsDisplayTime(): void {
+  const message = buildStructuredToolMessage({
+    tool: 'task',
+    callId: 'call_task_terminal_timer_contract',
+    outputText: JSON.stringify({
+      tool: 'task',
+      path_id: 'tool.task.v1',
+      status: 'ok',
+      launches: [{
+        launch_index: 1,
+        child_session_id: 'child-1',
+        subagent: 'explorer',
+        status: 'ok',
+        elapsed_ms: 3400,
+      }],
+    }),
+  })
+
+  assert(Boolean(message), 'expected terminal task message')
+  const row = message!.taskRows[0]
+  assert(row?.terminal === true, 'terminal task row should be terminal')
+  assert(row?.time === '3.4s', `terminal task row should format final elapsed time, got ${row?.time}`)
+}
+
 function testPlanManageShowsPlanLabelAndAction(): void {
   const message = buildStructuredToolMessage({
     tool: "plan_manage",
@@ -634,6 +687,8 @@ function main(): void {
   testBashToolMessageShowsCommandAsMetadata();
   testSearchToolPreservesContentMatchText();
   testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads();
+  testRunningTaskRowDoesNotUseStreamDurationAsDisplayTime();
+  testTerminalTaskRowUsesFinalElapsedAsDisplayTime();
   testPlanManageShowsPlanLabelAndAction();
   console.log("tool-message tests passed");
 }

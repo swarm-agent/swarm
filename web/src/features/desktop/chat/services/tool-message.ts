@@ -740,6 +740,8 @@ function buildTaskToolRow(
 ): StructuredToolMessage["taskRows"][number] | null {
   if (!payload) return null;
   const status = jsonStr(payload, "status") || "pending";
+  const normalizedStatus = status.trim().toLowerCase();
+  const terminal = ["done", "ok", "success", "completed", "complete", "error", "failed"].includes(normalizedStatus);
   const launchIndex = Math.max(0, jsonNum(payload, "launch_index") || fallbackLaunchIndex);
   const childSessionId = firstNonEmpty(
     jsonStr(payload, "session_id"),
@@ -763,7 +765,7 @@ function buildTaskToolRow(
   }
   const currentToolMs = jsonNum(payload, "current_tool_ms");
   const elapsedMs = jsonNum(payload, "elapsed_ms");
-  const time = formatDurationCompact(currentToolMs || elapsedMs);
+  const time = terminal ? formatDurationCompact(elapsedMs || currentToolMs) : "";
   const previewText = taskPreviewText(payload);
   const normalized = normalizeTaskToolDisplay(tool, rawPreviewKind, previewText);
   const launchStartedAtMs = jsonNum(payload, "launch_started_at_ms");
@@ -784,6 +786,7 @@ function buildTaskToolRow(
     currentToolStartedAtMs,
     elapsedMs,
     currentToolMs,
+    terminal,
   };
 }
 

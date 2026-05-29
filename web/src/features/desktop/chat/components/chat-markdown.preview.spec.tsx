@@ -10,7 +10,7 @@ function assert(condition: boolean, message: string): void {
 }
 
 function renderToolMarkup(toolMessage: NonNullable<ReturnType<typeof buildStructuredToolMessage>>): string {
-  return renderToStaticMarkup(<ToolMessageView toolMessage={toolMessage} nowMs={0} />);
+  return renderToStaticMarkup(<ToolMessageView toolMessage={toolMessage} />);
 }
 
 function testDeniedExitPlanPermissionUsesFlatPreview(): void {
@@ -95,6 +95,64 @@ function testTaskSwarmUsesCompactPreview(): void {
   assert(!markup.includes(`task ${longAssignment}`), "swarm mode should suppress long task header summary");
 }
 
+function testTaskRunningTimerUsesStartTimestamp(): void {
+  const startedAt = Date.now() - 2400;
+  const message = buildStructuredToolMessage({
+    tool: "task",
+    callId: "call_task_running_timer",
+    outputText: JSON.stringify({
+      tool: "task",
+      description: "Map backend timer behavior",
+      launch_count: 1,
+      status: "running",
+      launches: [{
+        launch_index: 1,
+        status: "running",
+        resolved_agent_name: "explorer",
+        assignment_label: "Backend timer mapper",
+        current_tool: "search",
+        launch_started_at_ms: startedAt,
+        current_tool_ms: 999999,
+        elapsed_ms: 999999,
+      }],
+    }),
+    state: "running",
+  });
+
+  assert(Boolean(message), "expected running task message");
+  assert(message!.taskRows[0]?.terminal === false, "running row must not be terminal");
+  assert(message!.taskRows[0]?.time === "", `running row should not use backend duration text: ${message!.taskRows[0]?.time}`);
+  const markup = renderToolMarkup(message!);
+  assert(markup.includes("RUN"), "expected running status");
+  assert(markup.includes("search"), "expected current tool");
+  assert(!markup.includes("999.999") && !markup.includes("1000.0s"), "running timer must ignore stream-coupled duration fields");
+}
+
+function testTaskTerminalTimerUsesFinalElapsed(): void {
+  const message = buildStructuredToolMessage({
+    tool: "task",
+    callId: "call_task_terminal_timer",
+    outputText: JSON.stringify({
+      tool: "task",
+      description: "Map backend timer behavior",
+      launch_count: 1,
+      status: "ok",
+      launches: [{
+        launch_index: 1,
+        status: "ok",
+        resolved_agent_name: "explorer",
+        assignment_label: "Backend timer mapper",
+        elapsed_ms: 3400,
+      }],
+    }),
+  });
+
+  assert(Boolean(message), "expected terminal task message");
+  assert(message!.taskRows[0]?.terminal === true, "ok row must be terminal");
+  const markup = renderToolMarkup(message!);
+  assert(markup.includes("3.4s"), "expected final elapsed duration");
+}
+
 function testTaskHeaderDoesNotShiftBetweenLaunchAssignments(): void {
   const description = "Map backend and UI task stream behavior";
   const firstMessage = buildStructuredToolMessage({
@@ -153,6 +211,8 @@ function main(): void {
   testDeniedExitPlanPermissionUsesFlatPreview();
   testPlanManageUsesFlatPreview();
   testTaskSwarmUsesCompactPreview();
+  testTaskRunningTimerUsesStartTimestamp();
+  testTaskTerminalTimerUsesFinalElapsed();
   testTaskHeaderDoesNotShiftBetweenLaunchAssignments();
   console.log("chat-markdown preview tests passed");
 }

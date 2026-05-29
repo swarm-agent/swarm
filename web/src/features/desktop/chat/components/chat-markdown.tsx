@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { ArrowRight, CheckCircle2, XCircle, LoaderCircle } from "lucide-react";
 import { cn } from "../../../../lib/cn";
 import { MarkdownRenderer } from "../markdown/render";
@@ -15,7 +15,6 @@ interface ChatMarkdownProps {
   content: string;
   className?: string;
   toolMessage?: StructuredToolMessage | null;
-  nowMs?: number;
 }
 
 function resolveToolState(toolMessage: StructuredToolMessage): ToolState {
@@ -260,18 +259,39 @@ function taskStatusBadgeClass(kind: ReturnType<typeof taskStatusKind>): string {
   }
 }
 
-function liveTaskElapsedLabel(row: TaskToolRow, nowMs: number): string {
-  const status = row.status.trim().toLowerCase();
-  const running = status === 'running' || status === 'active' || status === 'in_progress';
-  if (!running) {
-    return row.time || '-';
+function taskElapsedMs(row: TaskToolRow, nowMs: number): number {
+  if (row.terminal) {
+    return Math.max(0, row.elapsedMs || row.currentToolMs);
   }
-  const startedAt = row.currentToolStartedAtMs || row.launchStartedAtMs;
+  const startedAt = row.launchStartedAtMs || row.currentToolStartedAtMs;
   if (startedAt > 0 && nowMs > startedAt) {
-    return formatDuration(Math.max(0, nowMs - startedAt));
+    return Math.max(0, nowMs - startedAt);
   }
-  const fallbackMs = row.currentToolMs || row.elapsedMs;
-  return fallbackMs > 0 ? formatDuration(fallbackMs) : row.time || '-';
+  return 0;
+}
+
+function taskElapsedLabel(row: TaskToolRow, nowMs: number): string {
+  const elapsedMs = taskElapsedMs(row, nowMs);
+  if (elapsedMs > 0) {
+    return formatDuration(elapsedMs);
+  }
+  return row.terminal ? row.time || '-' : '0ms';
+}
+
+function TaskElapsedTime({ row }: { row: TaskToolRow }) {
+  const [timerNow, setTimerNow] = useState(() => Date.now());
+  const running = taskStatusKind(row) === "running" && !row.terminal;
+
+  useEffect(() => {
+    if (!running || row.launchStartedAtMs <= 0) {
+      return;
+    }
+    setTimerNow(Date.now());
+    const intervalID = window.setInterval(() => setTimerNow(Date.now()), 100);
+    return () => window.clearInterval(intervalID);
+  }, [running, row.launchStartedAtMs]);
+
+  return <>{taskElapsedLabel(row, running ? timerNow : 0)}</>;
 }
 
 function taskPreviewLabel(row: TaskToolRow): string {
@@ -283,12 +303,10 @@ function taskPreviewLabel(row: TaskToolRow): string {
 function TaskAgentListRow({
   row,
   index,
-  nowMs,
   dense,
 }: {
   row: TaskToolRow;
   index: number;
-  nowMs: number;
   dense: boolean;
 }) {
   const kind = taskStatusKind(row);
@@ -296,7 +314,6 @@ function TaskAgentListRow({
   const primaryLabel = row.assignmentLabel || row.agent || 'subagent';
   const agentLabel = row.agent && row.assignmentLabel ? `@${row.agent}` : row.agent;
   const secondaryLabel = [agentLabel, row.modelLabel].filter(Boolean).join(' · ');
-  const elapsedLabel = liveTaskElapsedLabel(row, nowMs);
   const toolLabel = row.tool && row.tool !== '-' ? row.tool : taskStatusText(kind);
   const previewText = row.previewText.trim();
   const rowNumber = row.launchIndex || index + 1;
@@ -330,8 +347,8 @@ function TaskAgentListRow({
         <div className="col-start-2 col-span-2 row-start-2 min-w-0 truncate font-mono text-[11px] text-[var(--app-text-muted)] sm:col-start-4 sm:col-span-1 sm:row-start-1" title={toolLabel}>
           {toolLabel}
         </div>
-        <div className={cn("col-start-3 row-start-1 text-right font-mono text-[11px] tabular-nums sm:col-start-5", taskStatusTextClass(kind))}>
-          {elapsedLabel}
+        <div className={cn("col-start-3 row-start-1 min-w-[4.75rem] text-right font-mono text-[11px] tabular-nums sm:col-start-5", taskStatusTextClass(kind))}>
+          <TaskElapsedTime row={row} />
         </div>
       </div>
       {previewText && !dense ? (
@@ -400,11 +417,9 @@ function TaskRowsHeader({
 function TaskSwarmCompactRow({
   row,
   index,
-  nowMs,
 }: {
   row: TaskToolRow;
   index: number;
-  nowMs: number;
 }) {
   const kind = taskStatusKind(row);
   const statusLabel = taskStatusLabel(row);
@@ -412,7 +427,6 @@ function TaskSwarmCompactRow({
   const agent = truncateMiddle(row.agent || 'subagent', TASK_SWARM_AGENT_MAX);
   const agentLabel = agent.startsWith('@') ? agent : `@${agent}`;
   const toolLabel = truncateMiddle(row.tool && row.tool !== '-' ? row.tool : taskStatusText(kind), TASK_SWARM_TOOL_MAX);
-  const elapsedLabel = liveTaskElapsedLabel(row, nowMs);
   const title = row.assignmentLabel && row.assignmentLabel !== row.agent
     ? truncateMiddle(row.assignmentLabel, TASK_SWARM_TITLE_MAX)
     : '';
@@ -436,8 +450,8 @@ function TaskSwarmCompactRow({
         <span className="min-w-0 truncate font-mono text-[10px] text-[var(--app-text-muted)]">
           {toolLabel}
         </span>
-        <span className={cn("ml-auto shrink-0 font-mono text-[10px] tabular-nums", taskStatusTextClass(kind))}>
-          {elapsedLabel}
+        <span className={cn("ml-auto min-w-[4.25rem] shrink-0 text-right font-mono text-[10px] tabular-nums", taskStatusTextClass(kind))}>
+          <TaskElapsedTime row={row} />
         </span>
       </div>
       {title ? (
@@ -449,7 +463,7 @@ function TaskSwarmCompactRow({
   );
 }
 
-function TaskSwarmRowsView({ rows, nowMs }: { rows: TaskToolRow[]; nowMs: number }) {
+function TaskSwarmRowsView({ rows }: { rows: TaskToolRow[] }) {
   const counts = taskRowsCounts(rows);
   return (
     <div className="mt-2 min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-sm">
@@ -460,7 +474,6 @@ function TaskSwarmRowsView({ rows, nowMs }: { rows: TaskToolRow[]; nowMs: number
             key={row.childSessionId.trim() || `launch-index:${row.launchIndex || index + 1}`}
             row={row}
             index={index}
-            nowMs={nowMs}
           />
         ))}
       </div>
@@ -468,11 +481,11 @@ function TaskSwarmRowsView({ rows, nowMs }: { rows: TaskToolRow[]; nowMs: number
   );
 }
 
-function TaskRowsView({ rows, nowMs }: { rows: TaskToolRow[]; nowMs: number }) {
+function TaskRowsView({ rows }: { rows: TaskToolRow[] }) {
   if (rows.length === 0) return null;
 
   if (rows.length > TASK_SWARM_THRESHOLD) {
-    return <TaskSwarmRowsView rows={rows} nowMs={nowMs} />;
+    return <TaskSwarmRowsView rows={rows} />;
   }
 
   const counts = taskRowsCounts(rows);
@@ -494,7 +507,6 @@ function TaskRowsView({ rows, nowMs }: { rows: TaskToolRow[]; nowMs: number }) {
             key={row.childSessionId.trim() || `launch-index:${row.launchIndex || index + 1}`}
             row={row}
             index={index}
-            nowMs={nowMs}
             dense={dense}
           />
         ))}
@@ -733,11 +745,9 @@ function SearchToolView({
 export function ToolMessageView({
   toolMessage,
   isGroupItem,
-  nowMs = 0,
 }: {
   toolMessage: StructuredToolMessage;
   isGroupItem?: boolean;
-  nowMs?: number;
 }) {
   const toolTheme = getToolTheme(toolMessage.tool);
   const ToolIcon = toolTheme.icon;
@@ -803,7 +813,7 @@ export function ToolMessageView({
         {!toolMessage.editDiff &&
         toolMessage.tool === "task" &&
         toolMessage.taskRows.length > 0 ? (
-          <TaskRowsView rows={toolMessage.taskRows} nowMs={nowMs} />
+          <TaskRowsView rows={toolMessage.taskRows} />
         ) : null}
         {!toolMessage.editDiff &&
         toolMessage.tool === "search" &&
@@ -870,7 +880,6 @@ export function ToolGroupView({
             key={msg.callId || i}
             toolMessage={msg}
             isGroupItem={true}
-            nowMs={0}
           />
         ))}
         {messages.length > 3 ? (
@@ -892,10 +901,9 @@ function ChatMarkdownInner({
   content,
   className,
   toolMessage,
-  nowMs = 0,
 }: ChatMarkdownProps) {
   if (toolMessage) {
-    return <ToolMessageView toolMessage={toolMessage} nowMs={nowMs} />;
+    return <ToolMessageView toolMessage={toolMessage} />;
   }
 
   return (
