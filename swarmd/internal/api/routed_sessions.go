@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm/packages/swarmd/internal/flowdiaglog"
 	"swarm/packages/swarmd/internal/identity"
 	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
@@ -271,24 +272,24 @@ func (s *Server) proxyRoutedSessionRequest(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadGateway, err)
 		return true
 	}
-	routeSource := "stored"
 	if !ok {
-		routeSource = "request"
-		target, err = s.currentRemoteSwarmTargetForRequest(r)
-		if err != nil {
-			writeError(w, http.StatusBadGateway, err)
+		requiresRoute, routeErr := s.sessionRequiresCanonicalStoredRoute(sessionID)
+		if routeErr != nil {
+			writeError(w, http.StatusBadGateway, routeErr)
 			return true
 		}
-		if target == nil {
-			return false
+		if requiresRoute {
+			writeError(w, http.StatusBadGateway, errors.New("routed session is missing canonical stored route"))
+			return true
 		}
+		return false
 	}
-	log.Printf("proxy routed session request session_id=%q method=%s path=%q source=%s swarm_id=%q backend_url=%q", strings.TrimSpace(sessionID), r.Method, r.URL.Path, routeSource, strings.TrimSpace(target.SwarmID), strings.TrimSpace(target.BackendURL))
+	log.Printf("proxy routed session request session_id=%q method=%s path=%q source=stored swarm_id=%q backend_url=%q", strings.TrimSpace(sessionID), r.Method, r.URL.Path, strings.TrimSpace(target.SwarmID), strings.TrimSpace(target.BackendURL))
 	flowRouteDiagLog("routed_session_proxy",
 		"session_id", sessionID,
 		"method", r.Method,
 		"path", r.URL.Path,
-		"source", routeSource,
+		"source", "stored",
 		"target_swarm_id", target.SwarmID,
 		"target_backend_url_present", strings.TrimSpace(target.BackendURL) != "",
 	)
@@ -296,6 +297,28 @@ func (s *Server) proxyRoutedSessionRequest(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadGateway, err)
 	}
 	return true
+}
+
+func (s *Server) sessionRequiresCanonicalStoredRoute(sessionID string) (bool, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return false, nil
+	}
+	if s != nil && s.sessionRoutes != nil {
+		if _, ok, err := s.sessionRoutes.Get(sessionID); err != nil {
+			return false, err
+		} else if ok {
+			return true, nil
+		}
+	}
+	if s == nil || s.sessions == nil {
+		return false, nil
+	}
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil || !ok {
+		return false, err
+	}
+	return sessionHasControllerOwnedRoutedMirrorMetadata(session.Metadata), nil
 }
 
 func (s *Server) postPeerJSONToSwarmTarget(ctx context.Context, target swarmTarget, path string, payload any, out any) error {
@@ -379,6 +402,10 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("session service not configured"))
 		return
 	}
+	if s.sessionRoutes == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("session route store not configured"))
+		return
+	}
 	var req peerSessionOpenRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -389,29 +416,49 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("session id is required"))
 		return
 	}
-	if strings.TrimSpace(req.Hosted.HostSwarmID) == "" {
+	hostedHostSwarmID := strings.TrimSpace(req.Hosted.HostSwarmID)
+	if hostedHostSwarmID == "" {
 		writeError(w, http.StatusBadRequest, errors.New("hosted host swarm id is required"))
 		return
 	}
 	childReq := req.Request
-	childWorkspacePath := firstNonEmpty(
-		strings.TrimSpace(childReq.RuntimeWorkspacePath),
-		strings.TrimSpace(childReq.WorkspacePath),
-		strings.TrimSpace(req.Hosted.RuntimeWorkspacePath),
-	)
-	if childWorkspacePath == "" {
-		writeError(w, http.StatusBadRequest, errors.New("runtime workspace path is required"))
+	childReq.WorkspacePath = strings.TrimSpace(childReq.WorkspacePath)
+	childReq.HostWorkspacePath = strings.TrimSpace(childReq.HostWorkspacePath)
+	childReq.RuntimeWorkspacePath = strings.TrimSpace(childReq.RuntimeWorkspacePath)
+	if childReq.WorkspacePath == "" {
+		writeError(w, http.StatusBadRequest, errors.New("workspace_path is required"))
 		return
 	}
-	childReq.WorkspacePath = childWorkspacePath
-	childReq.HostWorkspacePath = childWorkspacePath
-	childReq.RuntimeWorkspacePath = childWorkspacePath
+	if childReq.HostWorkspacePath == "" {
+		writeError(w, http.StatusBadRequest, errors.New("host_workspace_path is required"))
+		return
+	}
+	if childReq.RuntimeWorkspacePath == "" {
+		writeError(w, http.StatusBadRequest, errors.New("runtime_workspace_path is required"))
+		return
+	}
 	if strings.TrimSpace(childReq.WorkspaceName) == "" {
-		childReq.WorkspaceName = filepath.Base(childWorkspacePath)
+		childReq.WorkspaceName = filepath.Base(childReq.WorkspacePath)
+	}
+	worktreeMode, allowWorktree, err := terminalPeerSessionOpenWorktreeMode(childReq)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	routeRecord, err := s.normalizedTerminalPeerSessionOpenRoute(r, req, hostedHostSwarmID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
 	}
 	principal, principalOK := PrincipalFromRequest(r)
 	if !principalOK || !principal.Valid() {
-		principal, principalOK = s.verifiedPeerSessionOpenPrincipalClaim(r, req)
+		principal, principalOK = s.verifiedPeerSessionOpenPrincipalClaim(r, peerSessionOpenRequest{
+			SessionID: req.SessionID,
+			Request:   childReq,
+			Hosted:    req.Hosted,
+			Route:     routeRecord,
+			Principal: req.Principal,
+		})
 		if principalOK && principal.Valid() {
 			ctx := context.WithValue(r.Context(), productPrincipalRequestContextKey, principal)
 			ctx = identity.ContextWithPrincipal(ctx, principal)
@@ -425,10 +472,6 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 	principal.Type = identity.PrincipalTypeUser
 	principal.UserID = strings.TrimSpace(principal.UserID)
 	principal.AccountScopeID = strings.TrimSpace(principal.AccountScopeID)
-	// req.Principal is retained only as a forwarded claim for old callers.
-	// Account authority on this peer boundary comes from persisted account-owned
-	// session/topology state; a mismatched claim is rejected even when a request
-	// principal was already established by the peer middleware.
 	if req.Principal.Valid() {
 		claim := req.Principal
 		claim.UserID = strings.TrimSpace(claim.UserID)
@@ -438,99 +481,53 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if routeUserID := strings.TrimSpace(req.Route.UserID); routeUserID != "" && routeUserID != principal.UserID {
+	if routeRecord.UserID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("route user id is required"))
+		return
+	}
+	if routeRecord.UserID != principal.UserID {
 		writeError(w, http.StatusBadRequest, errors.New("route user id does not match principal"))
 		return
 	}
-	if routeAccountScopeID := strings.TrimSpace(req.Route.AccountScopeID); routeAccountScopeID != "" && routeAccountScopeID != principal.AccountScopeID {
+	if routeRecord.AccountScopeID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("route account scope id is required"))
+		return
+	}
+	if routeRecord.AccountScopeID != principal.AccountScopeID {
 		writeError(w, http.StatusBadRequest, errors.New("route account scope id does not match principal"))
 		return
 	}
-	forwardToRoutedChild := s.shouldForwardPeerSessionOpenToRoutedChild(req.Route)
-	allowWorktree := peerSessionOpenAllowsWorktree(childReq.WorktreeMode) && !forwardToRoutedChild
+	if err := s.validateTerminalPeerSessionOpenPairing(r, routeRecord, principal); err != nil {
+		writeError(w, http.StatusUnauthorized, err)
+		return
+	}
 	session, _, warning, modeWarning, err := s.createSessionFromRequestWithSessionID(childReq, req.Hosted.WithMetadata(nil), allowWorktree, req.SessionID, principal, true)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if strings.TrimSpace(req.Route.SessionID) != "" {
-		routeRecord := req.Route
-		if routeSessionID := strings.TrimSpace(routeRecord.SessionID); routeSessionID != req.SessionID {
-			writeError(w, http.StatusBadRequest, errors.New("route session id does not match request session id"))
-			return
+	if err := validateTerminalPeerSessionOpenRealizedSession(session, worktreeMode); err != nil {
+		if cleanupErr := s.sessions.DeleteSession(session.ID); cleanupErr != nil {
+			log.Printf("peer terminal session create rollback failed session_id=%q err=%v", session.ID, cleanupErr)
 		}
-		routeRecord.UserID = principal.UserID
-		routeRecord.AccountScopeID = principal.AccountScopeID
-		if strings.TrimSpace(routeRecord.HostSwarmID) == "" {
-			routeRecord.HostSwarmID = strings.TrimSpace(req.Hosted.HostSwarmID)
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	routeRecord.CreatedAt = session.CreatedAt
+	routeRecord.UpdatedAt = session.UpdatedAt
+	if _, err := s.sessionRoutes.Put(routeRecord); err != nil {
+		if cleanupErr := s.sessions.DeleteSession(session.ID); cleanupErr != nil {
+			log.Printf("peer session route rollback failed session_id=%q err=%v", session.ID, cleanupErr)
 		}
-		if strings.TrimSpace(routeRecord.HostWorkspacePath) == "" {
-			routeRecord.HostWorkspacePath = strings.TrimSpace(req.Hosted.HostWorkspacePath)
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := s.upsertTopologySessionRoute(routeRecord); err != nil {
+		if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
+			log.Printf("peer session route rollback failed session_id=%q err=%v", session.ID, cleanupErr)
 		}
-		if strings.TrimSpace(routeRecord.RuntimeWorkspacePath) == "" {
-			routeRecord.RuntimeWorkspacePath = strings.TrimSpace(req.Hosted.RuntimeWorkspacePath)
-		}
-		if routeRecord.CreatedAt == 0 {
-			routeRecord.CreatedAt = session.CreatedAt
-		}
-		if routeRecord.UpdatedAt == 0 {
-			routeRecord.UpdatedAt = session.UpdatedAt
-		}
-		if s.sessionRoutes == nil {
-			if cleanupErr := s.sessions.DeleteSession(session.ID); cleanupErr != nil {
-				log.Printf("peer session route rollback failed session_id=%q err=%v", session.ID, cleanupErr)
-			}
-			writeError(w, http.StatusInternalServerError, errors.New("session route store not configured"))
-			return
-		}
-		if _, err := s.sessionRoutes.Put(routeRecord); err != nil {
-			if cleanupErr := s.sessions.DeleteSession(session.ID); cleanupErr != nil {
-				log.Printf("peer session route rollback failed session_id=%q err=%v", session.ID, cleanupErr)
-			}
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
-		if err := s.upsertTopologySessionRoute(routeRecord); err != nil {
-			if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
-				log.Printf("peer session route rollback failed session_id=%q err=%v", session.ID, cleanupErr)
-			}
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
-		if forwardToRoutedChild {
-			childSession, err := s.forwardPeerSessionOpenToRoutedChild(r.Context(), req, routeRecord)
-			if err != nil {
-				if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
-					log.Printf("peer session child forward rollback failed session_id=%q err=%v", session.ID, cleanupErr)
-				}
-				writeError(w, http.StatusBadGateway, err)
-				return
-			}
-			if syncedRoute, changed := syncRoutedSessionRouteWithRealizedSession(routeRecord, childSession); changed {
-				routeRecord = syncedRoute
-				if _, err := s.sessionRoutes.Put(routeRecord); err != nil {
-					if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
-						log.Printf("peer session route sync rollback failed session_id=%q err=%v", session.ID, cleanupErr)
-					}
-					writeError(w, http.StatusInternalServerError, err)
-					return
-				}
-				if err := s.upsertTopologySessionRoute(routeRecord); err != nil {
-					if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
-						log.Printf("peer session topology route sync rollback failed session_id=%q err=%v", session.ID, cleanupErr)
-					}
-					writeError(w, http.StatusInternalServerError, err)
-					return
-				}
-			}
-			if childSession.ID != "" {
-				if syncedSession, syncErr := s.sessions.SyncHostedMirrorOpenState(session.ID, childSession); syncErr != nil {
-					log.Printf("peer session child open state sync failed session_id=%q err=%v", session.ID, syncErr)
-				} else {
-					session = syncedSession
-				}
-			}
-		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":      true,
@@ -539,100 +536,180 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) shouldForwardPeerSessionOpenToRoutedChild(route pebblestore.SessionRouteRecord) bool {
-	if s == nil {
-		return false
+func terminalPeerSessionOpenWorktreeMode(req sessionCreateRequest) (string, bool, error) {
+	rawMode := strings.TrimSpace(req.WorktreeMode)
+	mode := runruntime.NormalizeRunWorktreeMode(rawMode)
+	if rawMode == "" || mode == runruntime.RunWorktreeModeInherit {
+		return "", false, errors.New("worktree_mode must be explicitly set to on or off")
 	}
-	childSwarmID := strings.TrimSpace(route.ChildSwarmID)
-	childBackendURL := strings.TrimSpace(route.ChildBackendURL)
-	if childSwarmID == "" || childBackendURL == "" {
-		return false
+	if mode == "" {
+		return "", false, errors.New("unsupported worktree_mode " + strconv.Quote(rawMode))
 	}
-	hostSwarmID := strings.TrimSpace(route.HostSwarmID)
-	if hostSwarmID != "" && !s.isLocalSwarmID(hostSwarmID) {
-		log.Printf("routed child session open not forwarded by non-owner host session_id=%q child_swarm_id=%q owner_host_swarm_id=%q", strings.TrimSpace(route.SessionID), childSwarmID, hostSwarmID)
-		return false
+	switch mode {
+	case runruntime.RunWorktreeModeOn:
+		return mode, true, nil
+	case runruntime.RunWorktreeModeOff:
+		if req.WorktreeUseCurrentBranch != nil || strings.TrimSpace(req.WorktreeBaseBranch) != "" || strings.TrimSpace(req.WorktreeBranchName) != "" {
+			return "", false, errors.New("worktree fields are not allowed when worktree_mode is off")
+		}
+		return mode, false, nil
+	default:
+		return "", false, errors.New("unsupported worktree_mode " + strconv.Quote(rawMode))
 	}
-	return !s.isLocalSwarmID(childSwarmID)
 }
 
-func (s *Server) forwardPeerSessionOpenToRoutedChild(ctx context.Context, req peerSessionOpenRequest, route pebblestore.SessionRouteRecord) (pebblestore.SessionSnapshot, error) {
-	if s == nil {
-		return pebblestore.SessionSnapshot{}, errors.New("server is not configured")
-	}
+func (s *Server) normalizedTerminalPeerSessionOpenRoute(r *http.Request, req peerSessionOpenRequest, hostedHostSwarmID string) (pebblestore.SessionRouteRecord, error) {
+	route := req.Route
 	route.SessionID = strings.TrimSpace(route.SessionID)
+	route.UserID = strings.TrimSpace(route.UserID)
+	route.AccountScopeID = strings.TrimSpace(route.AccountScopeID)
 	route.ChildSwarmID = strings.TrimSpace(route.ChildSwarmID)
 	route.ChildBackendURL = strings.TrimSpace(route.ChildBackendURL)
 	route.HostSwarmID = strings.TrimSpace(route.HostSwarmID)
+	route.HostContainerID = strings.TrimSpace(route.HostContainerID)
 	route.HostWorkspacePath = strings.TrimSpace(route.HostWorkspacePath)
 	route.RuntimeWorkspacePath = strings.TrimSpace(route.RuntimeWorkspacePath)
-	if route.SessionID == "" || route.ChildSwarmID == "" || route.ChildBackendURL == "" {
-		return pebblestore.SessionSnapshot{}, errors.New("routed child session open requires session id, child swarm id, and child backend url")
+	route.WorkspaceBindingID = strings.TrimSpace(route.WorkspaceBindingID)
+	if route.SessionID == "" {
+		return route, errors.New("route session id is required")
 	}
-	forwardReq := req
-	forwardReq.SessionID = route.SessionID
-	forwardReq.Route = route
-	forwardReq.Hosted.ChildSwarmID = route.ChildSwarmID
-	if route.HostSwarmID != "" {
-		forwardReq.Hosted.HostSwarmID = route.HostSwarmID
+	if route.SessionID != strings.TrimSpace(req.SessionID) {
+		return route, errors.New("route session id does not match request session id")
 	}
-	if route.HostWorkspacePath != "" {
-		forwardReq.Hosted.HostWorkspacePath = route.HostWorkspacePath
+	if route.HostSwarmID == "" {
+		route.HostSwarmID = hostedHostSwarmID
+	} else if !strings.EqualFold(route.HostSwarmID, hostedHostSwarmID) {
+		return route, errors.New("route host swarm id does not match hosted host swarm id")
 	}
-	if route.RuntimeWorkspacePath != "" {
-		forwardReq.Hosted.RuntimeWorkspacePath = route.RuntimeWorkspacePath
-		forwardReq.Request.WorkspacePath = route.RuntimeWorkspacePath
-		forwardReq.Request.HostWorkspacePath = route.RuntimeWorkspacePath
-		forwardReq.Request.RuntimeWorkspacePath = route.RuntimeWorkspacePath
+	if route.HostSwarmID == "" {
+		return route, errors.New("route host swarm id is required")
 	}
-	childTarget := swarmTarget{
-		SwarmID:      route.ChildSwarmID,
-		Name:         route.ChildSwarmID,
-		Role:         "child",
-		Relationship: "child",
-		Kind:         "container",
-		HostSwarmID:  route.HostSwarmID,
-		Online:       true,
-		Selectable:   true,
-		BackendURL:   route.ChildBackendURL,
+	peerSwarmID, peerOK := authorizedPeerSwarmID(r)
+	if !peerOK || strings.TrimSpace(peerSwarmID) == "" {
+		return route, errors.New("authenticated peer swarm id is required")
 	}
-	flowRouteDiagLog("peer_session_open_forward_child", "session_id", route.SessionID, "child_swarm_id", route.ChildSwarmID, "child_backend_url", route.ChildBackendURL, "host_swarm_id", route.HostSwarmID, "runtime_workspace_path", route.RuntimeWorkspacePath)
-	var childResp struct {
-		OK      bool                        `json:"ok"`
-		Session pebblestore.SessionSnapshot `json:"session"`
-		Warning string                      `json:"warning,omitempty"`
+	if !strings.EqualFold(strings.TrimSpace(peerSwarmID), route.HostSwarmID) {
+		return route, errors.New("authenticated peer swarm id does not match route host swarm id")
 	}
-	if err := s.postPeerJSONToSwarmTarget(ctx, childTarget, "/v1/swarm/peer/sessions/open", forwardReq, &childResp); err != nil {
-		flowRouteDiagLog("peer_session_open_forward_child_failed", "session_id", route.SessionID, "child_swarm_id", route.ChildSwarmID, "child_backend_url", route.ChildBackendURL, "error", err)
-		return pebblestore.SessionSnapshot{}, err
+	hostedChildSwarmID := strings.TrimSpace(req.Hosted.ChildSwarmID)
+	if hostedChildSwarmID == "" {
+		return route, errors.New("hosted child swarm id is required")
 	}
-	flowRouteDiagLog("peer_session_open_forward_child_success", "session_id", route.SessionID, "child_swarm_id", route.ChildSwarmID, "child_session_id", childResp.Session.ID, "warning", childResp.Warning)
-	return childResp.Session, nil
+	if route.ChildSwarmID == "" {
+		return route, errors.New("route child swarm id is required")
+	}
+	if !strings.EqualFold(route.ChildSwarmID, hostedChildSwarmID) {
+		return route, errors.New("route child swarm id does not match hosted child swarm id")
+	}
+	localSwarmID := strings.TrimSpace(s.terminalPeerSessionOpenLocalSwarmID())
+	if localSwarmID == "" {
+		return route, errors.New("local swarm id is required")
+	}
+	if !strings.EqualFold(route.ChildSwarmID, localSwarmID) {
+		return route, errors.New("route child swarm id does not match local swarm id")
+	}
+	if route.ChildBackendURL == "" {
+		return route, errors.New("route child backend url is required")
+	}
+	if route.HostWorkspacePath == "" {
+		return route, errors.New("route host workspace path is required")
+	}
+	if route.RuntimeWorkspacePath == "" {
+		return route, errors.New("route runtime workspace path is required")
+	}
+	return route, nil
 }
 
-func syncRoutedSessionRouteWithRealizedSession(route pebblestore.SessionRouteRecord, session pebblestore.SessionSnapshot) (pebblestore.SessionRouteRecord, bool) {
-	if !session.WorktreeEnabled {
-		return route, false
+func (s *Server) terminalPeerSessionOpenLocalSwarmID() string {
+	if s == nil {
+		return ""
 	}
-	// Worktree-enabled child sessions execute from the realized session workspace.
-	// Hosted metadata can still carry the pre-worktree runtime workspace until the
-	// child has persisted post-create metadata, so never let stale metadata pull a
-	// routed worktree route back to the base workspace.
+	if localSwarmID := strings.TrimSpace(s.localSwarmIDFromState()); localSwarmID != "" {
+		return localSwarmID
+	}
+	if s.swarmStore == nil {
+		return ""
+	}
+	localNode, ok, err := s.swarmStore.GetLocalNode()
+	if err != nil || !ok {
+		return ""
+	}
+	return strings.TrimSpace(localNode.SwarmID)
+}
+
+func (s *Server) validateTerminalPeerSessionOpenPairing(r *http.Request, route pebblestore.SessionRouteRecord, principal identity.Principal) error {
+	if s == nil || s.swarmStore == nil {
+		return errors.New("local peer pairing is required")
+	}
+	peerSwarmID, peerOK := authorizedPeerSwarmID(r)
+	if !peerOK || strings.TrimSpace(peerSwarmID) == "" {
+		return errors.New("authenticated peer swarm id is required")
+	}
+	pairing, ok, err := s.swarmStore.GetLocalPairing()
+	if err != nil {
+		return err
+	}
+	if !ok || !strings.EqualFold(strings.TrimSpace(pairing.PairingState), startupconfig.PairingStatePaired) {
+		return errors.New("paired parent is required")
+	}
+	if !strings.EqualFold(strings.TrimSpace(pairing.ParentSwarmID), strings.TrimSpace(peerSwarmID)) {
+		return errors.New("authenticated peer swarm id does not match paired parent swarm id")
+	}
+	if strings.TrimSpace(pairing.UserID) != principal.UserID || strings.TrimSpace(pairing.AccountScopeID) != principal.AccountScopeID {
+		return identity.ErrPrincipalRequired
+	}
+	if !strings.EqualFold(strings.TrimSpace(route.HostSwarmID), strings.TrimSpace(peerSwarmID)) {
+		return errors.New("authenticated peer swarm id does not match route host swarm id")
+	}
+	return nil
+}
+
+func validateTerminalPeerSessionOpenRealizedSession(session pebblestore.SessionSnapshot, worktreeMode string) error {
+	switch worktreeMode {
+	case runruntime.RunWorktreeModeOn:
+		if !session.WorktreeEnabled || strings.TrimSpace(session.WorktreeRootPath) == "" || strings.TrimSpace(session.WorktreeBranch) == "" || strings.TrimSpace(session.WorkspacePath) == "" {
+			return errors.New("worktree_mode on did not create canonical worktree session state")
+		}
+	case runruntime.RunWorktreeModeOff:
+		if session.WorktreeEnabled || strings.TrimSpace(session.WorktreeRootPath) != "" || strings.TrimSpace(session.WorktreeBranch) != "" {
+			return errors.New("worktree_mode off returned worktree session state")
+		}
+	default:
+		return errors.New("unsupported worktree_mode " + strconv.Quote(strings.TrimSpace(worktreeMode)))
+	}
+	return nil
+}
+
+func syncRoutedSessionRouteWithRealizedSession(route pebblestore.SessionRouteRecord, session pebblestore.SessionSnapshot, requireWorktree bool) (pebblestore.SessionRouteRecord, bool, error) {
+	if !session.WorktreeEnabled {
+		if strings.TrimSpace(session.WorktreeRootPath) != "" || strings.TrimSpace(session.WorktreeBranch) != "" {
+			return route, false, errors.New("regular session returned partial worktree state")
+		}
+		if requireWorktree {
+			return route, false, errors.New("worktree_mode on returned a regular session")
+		}
+		return route, false, nil
+	}
 	realizedPath := strings.TrimSpace(session.WorkspacePath)
 	if realizedPath == "" {
-		if descriptor, ok := sessionruntime.HostedSessionFromMetadata(session.Metadata); ok {
-			realizedPath = strings.TrimSpace(descriptor.RuntimeWorkspacePath)
-		}
+		return route, false, errors.New("worktree session is missing realized workspace path")
 	}
-	if realizedPath == "" || realizedPath == strings.TrimSpace(route.RuntimeWorkspacePath) {
-		return route, false
+	if strings.TrimSpace(session.WorktreeRootPath) == "" || strings.TrimSpace(session.WorktreeBranch) == "" {
+		return route, false, errors.New("worktree session is missing canonical worktree state")
 	}
-	route.RuntimeWorkspacePath = realizedPath
+	changed := false
+	if realizedPath != strings.TrimSpace(route.RuntimeWorkspacePath) {
+		route.RuntimeWorkspacePath = realizedPath
+		changed = true
+	}
+	if !changed {
+		return route, false, nil
+	}
 	now := time.Now().UnixMilli()
 	if now > route.UpdatedAt {
 		route.UpdatedAt = now
 	}
-	return route, true
+	return route, true, nil
 }
 
 func (s *Server) verifiedPeerSessionOpenPrincipalClaim(r *http.Request, req peerSessionOpenRequest) (identity.Principal, bool) {
@@ -1045,40 +1122,6 @@ func (s *Server) decodeSessionCreateRequest(r *http.Request) (sessionCreateReque
 	return req, principal, principalOK, nil
 }
 
-func (s *Server) resolveRemoteRuntimeWorkspacePath(ctx context.Context, target swarmTarget, hostWorkspacePath, workspaceName string) string {
-	if s == nil || s.remoteDeploys == nil {
-		return ""
-	}
-	hostWorkspacePath = strings.TrimSpace(hostWorkspacePath)
-	workspaceName = strings.TrimSpace(workspaceName)
-	items, err := s.remoteDeploys.ListCached(ctx)
-	if err != nil {
-		return ""
-	}
-	for _, item := range items {
-		if !matchesRemoteDeployTarget(item, target) {
-			continue
-		}
-		for _, payload := range item.Preflight.Payloads {
-			targetPath := strings.TrimSpace(payload.TargetPath)
-			if targetPath == "" {
-				continue
-			}
-			if hostWorkspacePath != "" {
-				if strings.EqualFold(strings.TrimSpace(payload.WorkspacePath), hostWorkspacePath) ||
-					strings.EqualFold(strings.TrimSpace(payload.SourcePath), hostWorkspacePath) ||
-					strings.EqualFold(strings.TrimSpace(payload.GitRoot), hostWorkspacePath) {
-					return targetPath
-				}
-			}
-			if workspaceName != "" && strings.EqualFold(strings.TrimSpace(payload.WorkspaceName), workspaceName) {
-				return targetPath
-			}
-		}
-	}
-	return ""
-}
-
 func (s *Server) resolveRemoteHostBackendURL(ctx context.Context, target swarmTarget) string {
 	if s == nil || s.remoteDeploys == nil {
 		return ""
@@ -1101,9 +1144,55 @@ func (s *Server) resolveRemoteHostBackendURL(ctx context.Context, target swarmTa
 	return ""
 }
 
-func peerSessionOpenAllowsWorktree(rawMode string) bool {
-	mode := runruntime.NormalizeRunWorktreeMode(rawMode)
-	return mode == runruntime.RunWorktreeModeOn || mode == runruntime.RunWorktreeModeInherit
+func (s *Server) resolveAccountRoutedSessionWorkspaceBinding(principal identity.Principal, req sessionCreateRequest, target swarmTarget) (pebblestore.TopologyWorkspaceBindingRecord, bool, error) {
+	if s == nil || s.topology == nil || !principal.Valid() {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, false, nil
+	}
+	hostWorkspacePath := strings.TrimSpace(req.HostWorkspacePath)
+	if hostWorkspacePath == "" {
+		hostWorkspacePath = strings.TrimSpace(req.WorkspacePath)
+	}
+	if hostWorkspacePath == "" || strings.TrimSpace(target.SwarmID) == "" {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, false, nil
+	}
+	bindings, err := s.topology.ListWorkspaceBindingsForAccount(principal.AccountScopeID, 100000)
+	if err != nil {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, false, err
+	}
+	var matched pebblestore.TopologyWorkspaceBindingRecord
+	for _, binding := range bindings {
+		if !strings.EqualFold(strings.TrimSpace(binding.DestinationRuntimeSwarmID), strings.TrimSpace(target.SwarmID)) {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(binding.SourceWorkspacePath), hostWorkspacePath) {
+			continue
+		}
+		destinationPath := strings.TrimSpace(binding.DestinationWorkspacePath)
+		if destinationPath == "" {
+			return pebblestore.TopologyWorkspaceBindingRecord{}, false, errors.New("routed session workspace binding is missing destination workspace path")
+		}
+		if requested := strings.TrimSpace(req.RuntimeWorkspacePath); requested != "" && !strings.EqualFold(requested, hostWorkspacePath) && !strings.EqualFold(requested, strings.TrimSpace(req.WorkspacePath)) && !strings.EqualFold(requested, destinationPath) {
+			return pebblestore.TopologyWorkspaceBindingRecord{}, false, errors.New("routed session runtime_workspace_path does not match account workspace binding")
+		}
+		if strings.TrimSpace(matched.BindingID) != "" && !strings.EqualFold(strings.TrimSpace(matched.BindingID), strings.TrimSpace(binding.BindingID)) {
+			return pebblestore.TopologyWorkspaceBindingRecord{}, false, errors.New("multiple routed session workspace bindings match target and source workspace")
+		}
+		matched = binding
+	}
+	if strings.TrimSpace(matched.BindingID) == "" {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, false, nil
+	}
+	return matched, true, nil
+}
+
+func routedSessionRuntimePathRequiresBinding(req sessionCreateRequest) bool {
+	requested := strings.TrimSpace(req.RuntimeWorkspacePath)
+	if requested == "" {
+		return false
+	}
+	hostWorkspacePath := strings.TrimSpace(req.HostWorkspacePath)
+	workspacePath := strings.TrimSpace(req.WorkspacePath)
+	return !strings.EqualFold(requested, hostWorkspacePath) && !strings.EqualFold(requested, workspacePath)
 }
 
 func matchesRemoteDeployTarget(item remotedeploy.Session, target swarmTarget) bool {
@@ -1120,29 +1209,6 @@ func (s *Server) createSessionFromRequest(req sessionCreateRequest, principal id
 	return s.createSessionFromRequestWithSessionID(req, overrideMetadata, allowWorktree, "", principal, principalOK)
 }
 
-func (s *Server) applyRoutedSessionWorktreeIntent(principal identity.Principal, principalOK bool, req sessionCreateRequest) sessionCreateRequest {
-	if strings.TrimSpace(req.WorktreeMode) != "" {
-		return req
-	}
-	if !principalOK || !principal.Valid() || s == nil || s.worktrees == nil {
-		return req
-	}
-	workspacePath := firstNonEmpty(strings.TrimSpace(req.HostWorkspacePath), strings.TrimSpace(req.WorkspacePath), strings.TrimSpace(req.RuntimeWorkspacePath))
-	if workspacePath == "" {
-		return req
-	}
-	config, err := s.worktrees.GetConfigForPrincipal(principal, workspacePath)
-	if err != nil || !config.Enabled {
-		return req
-	}
-	useCurrentBranch := config.UseCurrentBranch
-	req.WorktreeMode = runruntime.RunWorktreeModeOn
-	req.WorktreeUseCurrentBranch = &useCurrentBranch
-	req.WorktreeBaseBranch = strings.TrimSpace(config.BaseBranch)
-	req.WorktreeBranchName = strings.TrimSpace(config.BranchName)
-	return req
-}
-
 func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest, overrideMetadata map[string]any, allowWorktree bool, sessionIDOverride string, principalAndOK ...any) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, string, string, error) {
 	principal := identity.Principal{}
 	principalOK := false
@@ -1156,8 +1222,8 @@ func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest,
 	}
 	createMetadata := mergeSessionCreateMetadata(req.Metadata, overrideMetadata)
 	workspacePath := strings.TrimSpace(req.HostWorkspacePath)
-	if _, hosted := sessionruntime.HostedSessionFromMetadata(createMetadata); hosted && !allowWorktree {
-		workspacePath = firstNonEmpty(strings.TrimSpace(req.RuntimeWorkspacePath), workspacePath)
+	if _, hosted := sessionruntime.HostedSessionFromMetadata(createMetadata); hosted && !allowWorktree && strings.TrimSpace(req.WorkspacePath) != "" {
+		workspacePath = strings.TrimSpace(req.WorkspacePath)
 	}
 	createOptions := sessionruntime.CreateSessionOptions{
 		Title:         req.Title,
@@ -1226,6 +1292,9 @@ func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest,
 		if worktreeErr != nil {
 			return pebblestore.SessionSnapshot{}, nil, "", "", worktreeErr
 		}
+		if runruntime.NormalizeRunWorktreeMode(requestedWorktreeMode) == runruntime.RunWorktreeModeOn && createOptions.Worktree == nil {
+			return pebblestore.SessionSnapshot{}, nil, "", "", errors.New("worktree_mode on did not allocate a worktree")
+		}
 		warning = nextWarning
 		if descriptor, hosted := sessionruntime.HostedSessionFromMetadata(createOptions.Metadata); hosted && strings.TrimSpace(createOptions.WorkspacePath) != "" {
 			if createOptions.Worktree != nil || strings.TrimSpace(descriptor.RuntimeWorkspacePath) == "" {
@@ -1242,6 +1311,11 @@ func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest,
 		session, event, err = sessionruntime.AttachCreatedWorktreeBranch(s.sessions, s.worktrees, session)
 		if err != nil {
 			return pebblestore.SessionSnapshot{}, nil, "", "", err
+		}
+		if runruntime.NormalizeRunWorktreeMode(requestedWorktreeMode) == runruntime.RunWorktreeModeOn {
+			if !session.WorktreeEnabled || strings.TrimSpace(session.WorktreeRootPath) == "" || strings.TrimSpace(session.WorktreeBranch) == "" {
+				return pebblestore.SessionSnapshot{}, nil, "", "", errors.New("worktree_mode on did not create canonical worktree session state")
+			}
 		}
 		if session.WorktreeEnabled {
 			if descriptor, hosted := sessionruntime.HostedSessionFromMetadata(session.Metadata); hosted && strings.TrimSpace(session.WorkspacePath) != "" {
@@ -1321,11 +1395,7 @@ func (s *Server) allocateSessionCreateDetachedWorkspace(createOptions *sessionru
 	}
 	allocation, allocErr := allocate()
 	if allocErr != nil {
-		warning := worktreeruntime.DetachedWorkspaceFallbackWarning(allocErr)
-		if warning == "" {
-			return "", allocErr
-		}
-		return warning, nil
+		return "", allocErr
 	}
 	createOptions.WorkspacePath = allocation.WorkspacePath
 	createOptions.Worktree = &sessionruntime.CreateSessionWorktree{

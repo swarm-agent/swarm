@@ -289,31 +289,20 @@ func (s *Service) SyncHostedMirrorOpenState(sessionID string, source pebblestore
 	}
 	next.WorktreeEnabled = source.WorktreeEnabled
 	if next.WorktreeEnabled {
+		if strings.TrimSpace(source.WorktreeRootPath) == "" || strings.TrimSpace(source.WorktreeBranch) == "" || strings.TrimSpace(source.WorkspacePath) == "" {
+			return pebblestore.SessionSnapshot{}, errors.New("worktree session is missing canonical worktree state")
+		}
 		next.WorktreeRootPath = strings.TrimSpace(source.WorktreeRootPath)
 		next.WorktreeBaseBranch = strings.TrimSpace(source.WorktreeBaseBranch)
 		next.WorktreeBranch = strings.TrimSpace(source.WorktreeBranch)
+		if descriptor, hosted := HostedSessionFromMetadata(next.Metadata); hosted {
+			descriptor.RuntimeWorkspacePath = strings.TrimSpace(source.WorkspacePath)
+			next.Metadata = descriptor.WithMetadata(next.Metadata)
+		}
 	} else {
 		next.WorktreeRootPath = ""
 		next.WorktreeBaseBranch = ""
 		next.WorktreeBranch = ""
-	}
-	if descriptor, hosted := HostedSessionFromMetadata(next.Metadata); hosted {
-		runtimeWorkspacePath := ""
-		if source.WorktreeEnabled {
-			runtimeWorkspacePath = strings.TrimSpace(source.WorkspacePath)
-		}
-		if runtimeWorkspacePath == "" {
-			if sourceDescriptor, ok := HostedSessionFromMetadata(source.Metadata); ok {
-				runtimeWorkspacePath = strings.TrimSpace(sourceDescriptor.RuntimeWorkspacePath)
-			}
-		}
-		if runtimeWorkspacePath == "" {
-			runtimeWorkspacePath = strings.TrimSpace(source.WorkspacePath)
-		}
-		if runtimeWorkspacePath != "" {
-			descriptor.RuntimeWorkspacePath = runtimeWorkspacePath
-			next.Metadata = descriptor.WithMetadata(next.Metadata)
-		}
 	}
 	updatedAt := time.Now().UnixMilli()
 	if source.UpdatedAt > updatedAt {

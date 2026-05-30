@@ -286,7 +286,10 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 		markSwarmTargetSeen(seenTargets, deployment)
 	}
 	for _, deployment := range remoteDeployments {
-		if !swarmTargetInCurrentGroup(currentGroupSwarmIDs, deployment.SwarmID) {
+		if selectedID == "" && !swarmTargetInCurrentGroup(currentGroupSwarmIDs, deployment.SwarmID) {
+			continue
+		}
+		if selectedID != "" && !strings.EqualFold(strings.TrimSpace(selectedID), strings.TrimSpace(deployment.SwarmID)) && !swarmTargetInCurrentGroup(currentGroupSwarmIDs, deployment.SwarmID) {
 			continue
 		}
 		if swarmTargetSeen(seenTargets, deployment) {
@@ -529,20 +532,36 @@ func (s *Server) listRemoteDeployTargetsForAccount(r *http.Request, accountScope
 	if accountScopeID == "" {
 		return nil, identity.ErrPrincipalRequired
 	}
-	if s == nil || s.topology == nil {
-		return nil, nil
-	}
-	runtimes, err := s.topology.ListRuntimesForAccount(accountScopeID, 100000)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]swarmTarget, 0, len(runtimes))
-	for _, runtime := range runtimes {
-		target, ok := mapTopologyRuntimeTarget(runtime)
-		if !ok || !strings.EqualFold(strings.TrimSpace(target.Kind), "remote") {
-			continue
+	out := make([]swarmTarget, 0, 16)
+	if s != nil && s.topology != nil {
+		runtimes, err := s.topology.ListRuntimesForAccount(accountScopeID, 100000)
+		if err != nil {
+			return nil, err
 		}
-		out = append(out, target)
+		for _, runtime := range runtimes {
+			target, ok := mapTopologyRuntimeTarget(runtime)
+			if !ok || !strings.EqualFold(strings.TrimSpace(target.Kind), "remote") {
+				continue
+			}
+			out = append(out, target)
+		}
+	}
+	if s != nil && s.remoteDeploys != nil {
+		ctx := context.Background()
+		if r != nil {
+			ctx = r.Context()
+		}
+		items, err := s.remoteDeploys.ListCached(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range items {
+			target, ok := mapRemoteDeployTarget(item)
+			if !ok {
+				continue
+			}
+			out = append(out, target)
+		}
 	}
 	return out, nil
 }
@@ -899,6 +918,9 @@ func mapRemoteDeployTarget(item remotedeploy.Session) (swarmTarget, bool) {
 	}
 	status := strings.TrimSpace(item.Status)
 	backendURL := firstNonEmpty(strings.TrimSpace(item.RemoteEndpoint), strings.TrimSpace(item.RemoteTailnetURL))
+	if backendURL == "" {
+		backendURL = strings.TrimSpace(item.HostAPIBaseURL)
+	}
 	online := strings.EqualFold(status, "attached") && backendURL != ""
 	name := firstNonEmpty(strings.TrimSpace(item.Name), swarmID)
 	return swarmTarget{
