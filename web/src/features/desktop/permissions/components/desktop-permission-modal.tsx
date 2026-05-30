@@ -955,6 +955,7 @@ function PlanUpdateReview({
   checkpoint: boolean
 }) {
   const [selectedView, setSelectedView] = useState<PlanUpdateReviewView>('updated')
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
   const hasOverview =
     updateSummary.trim() !== '' || updateScope.trim() !== '' || updateKind.trim() !== '' || checkpoint
   const viewOptions: Array<{ id: PlanUpdateReviewView; label: string }> = [
@@ -962,6 +963,27 @@ function PlanUpdateReview({
     { id: 'previous', label: 'Previous plan' },
     { id: 'diff', label: 'Diff' },
   ]
+  const copyText = selectedView === 'previous'
+    ? priorPlan
+    : selectedView === 'diff'
+      ? diffLines.join('\n')
+      : plan
+
+  useEffect(() => {
+    setCopyState('idle')
+  }, [selectedView, copyText])
+
+  const handleCopy = async () => {
+    try {
+      if (!copyText.trim() || typeof navigator === 'undefined' || !navigator.clipboard?.writeText) {
+        throw new Error('Clipboard unavailable')
+      }
+      await navigator.clipboard.writeText(copyText)
+      setCopyState('copied')
+    } catch {
+      setCopyState('error')
+    }
+  }
 
   return (
     <div className="flex min-h-0 flex-col gap-4">
@@ -989,22 +1011,34 @@ function PlanUpdateReview({
             </div>
           </div>
         ) : null}
-        <div className={cn('flex flex-wrap gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-1', hasOverview && 'mt-3')}>
-          {viewOptions.map((option) => (
-            <button
-              key={option.id}
-              type="button"
-              className={cn(
-                'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
-                selectedView === option.id
-                  ? 'bg-[var(--app-bg)] text-[var(--app-text)] shadow-sm'
-                  : 'text-[var(--app-text-muted)] hover:bg-[var(--app-bg-alt)] hover:text-[var(--app-text)]',
-              )}
-              onClick={() => setSelectedView(option.id)}
-            >
-              {option.label}
-            </button>
-          ))}
+        <div className={cn('flex flex-wrap items-center justify-between gap-2', hasOverview && 'mt-3')}>
+          <div className="flex flex-wrap gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-1">
+            {viewOptions.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                className={cn(
+                  'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                  selectedView === option.id
+                    ? 'bg-[var(--app-bg)] text-[var(--app-text)] shadow-sm'
+                    : 'text-[var(--app-text-muted)] hover:bg-[var(--app-bg-alt)] hover:text-[var(--app-text)]',
+                )}
+                onClick={() => setSelectedView(option.id)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <Button type="button" variant="outline" size="sm" className="min-h-8 px-2.5" onClick={() => void handleCopy()}>
+            {copyState === 'copied' ? (
+              <Check className="size-4" />
+            ) : copyState === 'error' ? (
+              <AlertCircle className="size-4" />
+            ) : (
+              <Copy className="size-4" />
+            )}
+            {copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy'}
+          </Button>
         </div>
       </section>
       {selectedView === 'previous' ? (
