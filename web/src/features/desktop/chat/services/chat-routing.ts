@@ -12,15 +12,29 @@ export interface DesktopChatRoute {
   hostWorkspacePath: string
   hostWorkspaceName: string
   runtimeWorkspacePath: string
+  workspaceBindingId?: string
+  workspaceName?: string
+  targetSwarmName?: string
 }
 
-export function desktopChatRouteID(swarmId: string | null | undefined, runtimeWorkspacePath: string): string {
-  const normalizedRuntimeWorkspacePath = runtimeWorkspacePath.trim()
-  const normalizedSwarmId = swarmId?.trim() ?? ''
+function normalizedRoutePart(value: string | null | undefined): string {
+  return value?.trim() ?? ''
+}
+
+export function desktopChatRouteID(swarmId: string | null | undefined, workspaceName: string | null | undefined, workspaceBindingId?: string): string {
+  const normalizedBindingId = normalizedRoutePart(workspaceBindingId)
+  const normalizedWorkspaceName = normalizedRoutePart(workspaceName)
+  const normalizedSwarmId = normalizedRoutePart(swarmId)
   if (!normalizedSwarmId) {
     return 'host'
   }
-  return `swarm:${normalizedSwarmId}:${normalizedRuntimeWorkspacePath}`
+  if (normalizedBindingId) {
+    return `swarm:${normalizedSwarmId}:binding:${normalizedBindingId}`
+  }
+  if (normalizedWorkspaceName) {
+    return `swarm:${normalizedSwarmId}:workspace:${normalizedWorkspaceName}`
+  }
+  return ''
 }
 
 export function buildHostDesktopChatRoute(hostSwarmName: string, workspacePath: string, workspaceName: string): DesktopChatRoute {
@@ -36,6 +50,9 @@ export function buildHostDesktopChatRoute(hostSwarmName: string, workspacePath: 
     hostWorkspacePath: normalizedWorkspacePath,
     hostWorkspaceName: workspaceName.trim(),
     runtimeWorkspacePath: normalizedWorkspacePath,
+    workspaceBindingId: '',
+    workspaceName: workspaceName.trim(),
+    targetSwarmName: hostSwarmName.trim() || 'host',
   }
 }
 
@@ -47,12 +64,14 @@ export function buildDesktopChatRouteOptions(input: {
 }): DesktopChatRoute[] {
   const hostRoute = buildHostDesktopChatRoute(input.hostSwarmName, input.workspacePath, input.workspaceName)
   const options: DesktopChatRoute[] = [hostRoute]
-  const seen = new Set<string>([desktopChatRouteID(hostRoute.swarmId, hostRoute.runtimeWorkspacePath)])
+  const seen = new Set<string>([hostRoute.id])
   for (const topologyRoute of input.topologyRoutes) {
     const swarmId = topologyRoute.runtimeSwarmId.trim()
     const runtimeWorkspacePath = topologyRoute.runtimeWorkspacePath.trim()
-    const id = topologyRoute.routeId.trim() || desktopChatRouteID(swarmId, runtimeWorkspacePath)
-    if (!swarmId || !runtimeWorkspacePath || !id) {
+    const workspaceBindingId = topologyRoute.workspaceBindingId.trim()
+    const workspaceName = topologyRoute.hostWorkspaceName.trim() || input.workspaceName.trim()
+    const id = desktopChatRouteID(swarmId, workspaceName, workspaceBindingId)
+    if (!swarmId || !id) {
       continue
     }
     if (seen.has(id)) {
@@ -77,6 +96,9 @@ export function buildDesktopChatRouteOptions(input: {
       hostWorkspacePath: topologyRoute.hostWorkspacePath.trim() || hostRoute.hostWorkspacePath,
       hostWorkspaceName: topologyRoute.hostWorkspaceName.trim() || hostRoute.hostWorkspaceName,
       runtimeWorkspacePath,
+      workspaceBindingId,
+      workspaceName,
+      targetSwarmName: label,
     })
   }
   return options
@@ -89,9 +111,20 @@ export function desktopChatRoutesEqual(left: DesktopChatRoute | null | undefined
   if (!left || !right) {
     return false
   }
-  return left.swarmId === right.swarmId
-    && left.hostWorkspacePath === right.hostWorkspacePath
-    && left.runtimeWorkspacePath === right.runtimeWorkspacePath
+  const leftSwarmId = normalizedRoutePart(left.swarmId)
+  const rightSwarmId = normalizedRoutePart(right.swarmId)
+  if (leftSwarmId !== rightSwarmId) {
+    return false
+  }
+  if (!leftSwarmId) {
+    return true
+  }
+  const leftBindingId = normalizedRoutePart(left.workspaceBindingId)
+  const rightBindingId = normalizedRoutePart(right.workspaceBindingId)
+  if (leftBindingId || rightBindingId) {
+    return leftBindingId !== '' && leftBindingId === rightBindingId
+  }
+  return normalizedRoutePart(left.workspaceName || left.hostWorkspaceName) === normalizedRoutePart(right.workspaceName || right.hostWorkspaceName)
 }
 
 export function resolveDesktopChatRouteById(
@@ -118,10 +151,15 @@ export function desktopChatRouteFromSessionMetadata(session: DesktopSessionRecor
   const metadata = session?.metadata
   const metadataSwarmId = sessionMetadataString(metadata, 'swarm_routed_child_swarm_id')
   const runtimeWorkspacePath = session?.runtimeWorkspacePath?.trim() || sessionMetadataString(metadata, 'swarm_routed_runtime_workspace_path')
-  if (!metadataSwarmId || !runtimeWorkspacePath) {
+  const workspaceBindingId = sessionMetadataString(metadata, 'swarm_routed_workspace_binding_id') || sessionMetadataString(metadata, 'swarm_managed_host_workspace_binding_id') || sessionMetadataString(metadata, 'route_workspace_binding_id')
+  const workspaceName = sessionMetadataString(metadata, 'swarm_routed_workspace_name') || sessionMetadataString(metadata, 'swarm_route_workspace_name') || session?.workspaceName?.trim() || ''
+  if (!metadataSwarmId || (!workspaceBindingId && !workspaceName)) {
     return null
   }
-  const id = sessionMetadataString(metadata, 'swarm_route_id') || desktopChatRouteID(metadataSwarmId, runtimeWorkspacePath)
+  const id = desktopChatRouteID(metadataSwarmId, workspaceName, workspaceBindingId)
+  if (!id) {
+    return null
+  }
   return {
     id,
     label: sessionMetadataString(metadata, 'swarm_route_label') || metadataSwarmId,
@@ -131,8 +169,11 @@ export function desktopChatRouteFromSessionMetadata(session: DesktopSessionRecor
     hostSwarmId: sessionMetadataString(metadata, 'swarm_routed_host_swarm_id'),
     hostSwarmName: sessionMetadataString(metadata, 'swarm_routed_host_swarm_name'),
     hostWorkspacePath: sessionMetadataString(metadata, 'swarm_routed_host_workspace_path') || session?.workspacePath?.trim() || '',
-    hostWorkspaceName: session?.workspaceName?.trim() || '',
+    hostWorkspaceName: workspaceName,
     runtimeWorkspacePath,
+    workspaceBindingId,
+    workspaceName,
+    targetSwarmName: sessionMetadataString(metadata, 'swarm_route_label') || metadataSwarmId,
   }
 }
 

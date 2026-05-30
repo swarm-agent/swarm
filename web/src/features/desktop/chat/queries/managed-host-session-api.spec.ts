@@ -14,6 +14,7 @@ const managedHostRoute: DesktopChatRoute = {
   hostWorkspacePath: '/workspaces/host-swarm',
   hostWorkspaceName: 'host swarm',
   runtimeWorkspacePath: '/managed/workspace',
+  workspaceBindingId: 'binding-managed',
 }
 
 async function withFetchStub(
@@ -64,12 +65,12 @@ async function withFetchStub(
   }
 }
 
-test('managed host chat create with worktree on uses source workspace and managed-host endpoints', async () => {
+test('managed host chat create with worktree on uses binding identity and managed-host endpoints', async () => {
   const { createSession, sendSessionMessage, startSessionRun, stopSessionRun } = await import('./chat-queries')
 
   await withFetchStub(async (calls) => {
     await createSession({
-      workspacePath: managedHostRoute.runtimeWorkspacePath,
+      workspacePath: '/frontend/device/path/workspace',
       workspaceName: 'workspace',
       mode: 'auto',
       agentName: 'swarm',
@@ -91,9 +92,11 @@ test('managed host chat create with worktree on uses source workspace and manage
 
     const openBody = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>
     assert.equal(openBody.target_swarm_id, 'managed-swarm')
-    assert.equal(openBody.workspace_path, '/workspaces/host-swarm')
-    assert.equal(openBody.host_workspace_path, '/workspaces/host-swarm')
-    assert.equal(openBody.runtime_workspace_path, '/managed/workspace')
+    assert.equal(openBody.workspace_name, 'workspace')
+    assert.equal(openBody.workspace_binding_id, 'binding-managed')
+    assert.equal(Object.hasOwn(openBody, 'workspace_path'), false)
+    assert.equal(Object.hasOwn(openBody, 'host_workspace_path'), false)
+    assert.equal(Object.hasOwn(openBody, 'runtime_workspace_path'), false)
     assert.equal(openBody.worktree_mode, 'on')
 
     const messageBody = JSON.parse(String(calls[1]?.init?.body ?? '{}')) as Record<string, unknown>

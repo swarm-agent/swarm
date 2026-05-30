@@ -5,7 +5,7 @@ import { applyDesktopChatRouteToSession, buildDesktopChatRouteOptions, desktopCh
 import type { DesktopSessionRecord } from '../../types/realtime'
 
 const remoteRoute: DesktopChatRoute = {
-  id: 'swarm:child-swarm:/workspaces/swarm',
+  id: 'swarm:child-swarm:binding:binding-remote',
   label: 'child swarm',
   swarmId: 'child-swarm',
   targetKind: 'remote',
@@ -15,10 +15,11 @@ const remoteRoute: DesktopChatRoute = {
   hostWorkspacePath: '/workspaces/host-swarm',
   hostWorkspaceName: 'host swarm',
   runtimeWorkspacePath: '/workspaces/swarm',
+  workspaceBindingId: 'binding-remote',
 }
 
 const managedHostRoute: DesktopChatRoute = {
-  id: 'swarm:managed-swarm:/managed/workspace',
+  id: 'swarm:managed-swarm:binding:binding-managed',
   label: 'managed host',
   swarmId: 'managed-swarm',
   targetKind: 'host',
@@ -28,6 +29,7 @@ const managedHostRoute: DesktopChatRoute = {
   hostWorkspacePath: '/workspaces/host-swarm',
   hostWorkspaceName: 'host swarm',
   runtimeWorkspacePath: '/managed/workspace',
+  workspaceBindingId: 'binding-managed',
 }
 
 function sessionRecord(overrides: Partial<DesktopSessionRecord> = {}): DesktopSessionRecord {
@@ -95,6 +97,7 @@ test('routed session metadata reconstructs route label from server metadata, not
     runtimeWorkspacePath: '/workspaces/swarm',
     metadata: {
       swarm_route_id: remoteRoute.id,
+      swarm_routed_workspace_binding_id: 'binding-remote',
       swarm_route_label: 'Remote Swarm',
       swarm_route_target_kind: 'remote',
       swarm_routed_child_swarm_id: 'child-swarm',
@@ -122,6 +125,7 @@ test('routed session route resolution falls back to server metadata when route o
     hostWorkspacePath: '/workspaces/host-swarm',
     hostWorkspaceName: 'host swarm',
     runtimeWorkspacePath: '/workspaces/host-swarm',
+    workspaceBindingId: '',
   }
   const route = resolveDesktopChatRouteFromSession(sessionRecord({
     workspacePath: '/workspaces/host-swarm',
@@ -129,6 +133,7 @@ test('routed session route resolution falls back to server metadata when route o
     runtimeWorkspacePath: '/workspaces/swarm',
     metadata: {
       swarm_route_id: remoteRoute.id,
+      swarm_routed_workspace_binding_id: 'binding-remote',
       swarm_route_label: 'Remote Swarm',
       swarm_routed_child_swarm_id: 'child-swarm',
       swarm_routed_host_workspace_path: '/workspaces/host-swarm',
@@ -145,6 +150,7 @@ test('routed session route resolution prefers current route option label when av
   const route = resolveDesktopChatRouteFromSession(sessionRecord({
     metadata: {
       swarm_route_id: remoteRoute.id,
+      swarm_routed_workspace_binding_id: 'binding-remote',
       swarm_route_label: 'Stale Remote Swarm',
       swarm_routed_child_swarm_id: 'child-swarm',
       swarm_routed_runtime_workspace_path: '/workspaces/swarm',
@@ -161,6 +167,7 @@ test('managed host session metadata reconstructs selected managed host route', (
     runtimeWorkspacePath: '/managed/workspace',
     metadata: {
       swarm_route_id: managedHostRoute.id,
+      swarm_managed_host_workspace_binding_id: 'binding-managed',
       swarm_route_label: 'Managed Host',
       swarm_route_target_kind: 'host',
       swarm_route_target_relationship: 'managed',
@@ -199,6 +206,7 @@ test('workspace defaults resolve by server-backed route id', () => {
     hostWorkspacePath: '/workspaces/host-swarm',
     hostWorkspaceName: 'host swarm',
     runtimeWorkspacePath: '/workspaces/host-swarm',
+    workspaceBindingId: '',
   }
 
   assert.equal(resolveDesktopChatRouteById([hostRoute, remoteRoute], remoteRoute.id, hostRoute), remoteRoute)
@@ -263,6 +271,34 @@ function topologyRoute(overrides: Partial<WorkspaceOverviewTopologyRoute> = {}):
   }
 }
 
+
+test('route identity uses workspace binding id rather than runtime path', () => {
+  const routeA = topologyRoute({
+    routeId: 'legacy:path:/runtime/a',
+    workspaceBindingId: 'binding-stable',
+    runtimeWorkspacePath: '/runtime/a',
+  })
+  const routeB = topologyRoute({
+    routeId: 'legacy:path:/runtime/b',
+    workspaceBindingId: 'binding-stable',
+    runtimeWorkspacePath: '/runtime/b',
+  })
+
+  assert.equal(desktopChatRouteID('child-swarm', 'Host Workspace', 'binding-stable'), 'swarm:child-swarm:binding:binding-stable')
+  assert.equal(desktopChatRouteID('child-swarm', 'Host Workspace', 'binding-stable'), desktopChatRouteID('child-swarm', 'Other Host Workspace', 'binding-stable'))
+
+  const routes = buildDesktopChatRouteOptions({
+    hostSwarmName: 'Host Swarm',
+    workspacePath: '/host/workspace',
+    workspaceName: 'Host Workspace',
+    topologyRoutes: [routeA, routeB],
+  })
+
+  assert.equal(routes.length, 2)
+  assert.equal(routes[1]?.id, 'swarm:child-swarm:binding:binding-stable')
+  assert.equal(routes[1]?.workspaceBindingId, 'binding-stable')
+})
+
 test('buildDesktopChatRouteOptions derives routes from topology route data', () => {
   const routes = buildDesktopChatRouteOptions({
     hostSwarmName: 'Host Swarm',
@@ -283,9 +319,12 @@ test('buildDesktopChatRouteOptions derives routes from topology route data', () 
     hostWorkspacePath: '/host/workspace',
     hostWorkspaceName: 'Host Workspace',
     runtimeWorkspacePath: '/host/workspace',
+    workspaceBindingId: '',
+    workspaceName: 'Host Workspace',
+    targetSwarmName: 'Host Swarm',
   })
   assert.deepEqual(routes[1], {
-    id: 'swarm:child-swarm:/runtime/workspace',
+    id: 'swarm:child-swarm:binding:binding-1',
     label: 'Child Swarm',
     swarmId: 'child-swarm',
     targetKind: 'remote',
@@ -295,6 +334,9 @@ test('buildDesktopChatRouteOptions derives routes from topology route data', () 
     hostWorkspacePath: '/host/workspace',
     hostWorkspaceName: 'Host Workspace',
     runtimeWorkspacePath: '/runtime/workspace',
+    workspaceBindingId: 'binding-1',
+    workspaceName: 'Host Workspace',
+    targetSwarmName: 'Child Swarm',
   })
 })
 
@@ -306,7 +348,7 @@ test('buildDesktopChatRouteOptions does not require replication links or swarm t
     topologyRoutes: [topologyRoute({ routeId: '' })],
   })
 
-  assert.equal(routes[1]?.id, desktopChatRouteID('child-swarm', '/runtime/workspace'))
+  assert.equal(routes[1]?.id, desktopChatRouteID('child-swarm', 'Host Workspace', 'binding-1'))
   assert.equal(routes[1]?.label, 'Child Swarm')
 })
 
@@ -330,7 +372,7 @@ test('buildDesktopChatRouteOptions labels mirrored child routes with their runti
   assert.equal(routes[1]?.targetKind, 'mirrored')
 })
 
-test('buildDesktopChatRouteOptions deduplicates topology routes by route id', () => {
+test('buildDesktopChatRouteOptions treats different workspace bindings as different routes', () => {
   const routes = buildDesktopChatRouteOptions({
     hostSwarmName: 'Host Swarm',
     workspacePath: '/host/workspace',
@@ -338,7 +380,9 @@ test('buildDesktopChatRouteOptions deduplicates topology routes by route id', ()
     topologyRoutes: [topologyRoute(), topologyRoute({ workspaceBindingId: 'binding-duplicate' })],
   })
 
-  assert.equal(routes.length, 2)
+  assert.equal(routes.length, 3)
+  assert.equal(routes[1]?.id, 'swarm:child-swarm:binding:binding-1')
+  assert.equal(routes[2]?.id, 'swarm:child-swarm:binding:binding-duplicate')
 })
 
 test('groupDesktopChatRoutes keeps managed host outside Primary and first in its managed section', async () => {
@@ -355,9 +399,10 @@ test('groupDesktopChatRoutes keeps managed host outside Primary and first in its
       hostWorkspacePath: '/srv/swarm/swarm-go',
       hostWorkspaceName: 'swarm-go',
       runtimeWorkspacePath: '/srv/swarm/swarm-go',
+      workspaceBindingId: '',
     },
     {
-      id: 'swarm:localtest:/workspaces/swarm-go',
+      id: 'swarm:localtest-swarm:binding:binding-localtest',
       label: 'localtest',
       swarmId: 'localtest-swarm',
       targetKind: 'local',
@@ -367,9 +412,10 @@ test('groupDesktopChatRoutes keeps managed host outside Primary and first in its
       hostWorkspacePath: '/srv/swarm/swarm-go',
       hostWorkspaceName: 'swarm-go',
       runtimeWorkspacePath: '/workspaces/swarm-go',
+      workspaceBindingId: 'binding-localtest',
     },
     {
-      id: 'swarm:heytest:/workspaces/swarm-go',
+      id: 'swarm:child-swarm:binding:binding-heytest',
       label: 'heytest',
       swarmId: 'child-swarm',
       targetKind: 'mirrored',
@@ -379,9 +425,10 @@ test('groupDesktopChatRoutes keeps managed host outside Primary and first in its
       hostWorkspacePath: '/srv/swarm/swarm-go',
       hostWorkspaceName: 'swarm-go',
       runtimeWorkspacePath: '/workspaces/swarm-go',
+      workspaceBindingId: 'binding-heytest',
     },
     {
-      id: 'swarm:managed:/srv/swarm/swarm-go',
+      id: 'swarm:managed-swarm:binding:binding-managed-host',
       label: 'swarm-bomb-2',
       swarmId: 'managed-swarm',
       targetKind: 'host',
@@ -391,6 +438,7 @@ test('groupDesktopChatRoutes keeps managed host outside Primary and first in its
       hostWorkspacePath: '/srv/swarm/swarm-go',
       hostWorkspaceName: 'swarm-go',
       runtimeWorkspacePath: '/srv/swarm/swarm-go',
+      workspaceBindingId: 'binding-managed-host',
     },
   ]
 

@@ -2331,7 +2331,7 @@ export function DesktopChatPanel({
             preference: activePreferenceRecord.preference,
           })
           : await createSession({
-            workspacePath: activeChatRoute.runtimeWorkspacePath,
+            workspacePath,
             workspaceName,
             mode: effectiveSessionMode,
             agentName: resolvedLockedAgentName || currentSessionAgent,
@@ -2524,7 +2524,7 @@ export function DesktopChatPanel({
       if (commitModal.mode === 'agent') {
         const createdSession = await createSession({
           title: childCommitSessionTitle(session, instructions),
-          workspacePath: activeChatRoute.runtimeWorkspacePath,
+          workspacePath,
           workspaceName,
           mode: 'auto',
           agentName: selectedPrimaryAgent,

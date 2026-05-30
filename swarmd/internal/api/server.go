@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -625,14 +624,26 @@ func hostedSessionHostBackendURL(cfg startupconfig.FileConfig) string {
 }
 
 type primaryRoutedSessionOpenContract struct {
-	PrimaryRequest     sessionCreateRequest
-	ChildRequest       sessionCreateRequest
-	RouteMetadata      map[string]any
-	Descriptor         sessionruntime.HostedSessionDescriptor
-	Route              pebblestore.SessionRouteRecord
-	ProxyTarget        swarmTarget
-	RequireWorktree    bool
-	WorkspaceBindingID string
+	PrimaryRequest  sessionCreateRequest
+	ChildRequest    sessionCreateRequest
+	RouteMetadata   map[string]any
+	Descriptor      sessionruntime.HostedSessionDescriptor
+	Route           pebblestore.SessionRouteRecord
+	ProxyTarget     swarmTarget
+	RequireWorktree bool
+	WorkspaceRoute  targetWorkspaceRoute
+}
+
+func routedSessionRequiresWorkspaceBinding(target swarmTarget) bool {
+	if strings.TrimSpace(target.HostSwarmID) != "" {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(target.Kind)) {
+	case "local", "local-container", "mirrored":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) remoteDeploySessionRuntimeWorkspacePath(req sessionCreateRequest, target swarmTarget) (string, bool, error) {
@@ -702,21 +713,37 @@ func (s *Server) buildPrimaryRoutedSessionOpenContract(principal identity.Princi
 	primaryReq.WorkspacePath = strings.TrimSpace(primaryReq.WorkspacePath)
 	primaryReq.HostWorkspacePath = strings.TrimSpace(primaryReq.HostWorkspacePath)
 	primaryReq.RuntimeWorkspacePath = strings.TrimSpace(primaryReq.RuntimeWorkspacePath)
-	if primaryReq.HostWorkspacePath == "" {
-		primaryReq.HostWorkspacePath = primaryReq.WorkspacePath
+	primaryReq.WorkspaceBindingID = strings.TrimSpace(primaryReq.WorkspaceBindingID)
+	primaryReq.WorkspaceName = strings.TrimSpace(primaryReq.WorkspaceName)
+	bindingRequired := routedSessionRequiresWorkspaceBinding(target)
+	if bindingRequired && (primaryReq.WorkspacePath != "" || primaryReq.HostWorkspacePath != "" || primaryReq.RuntimeWorkspacePath != "") {
+		return contract, errors.New("routed session workspace paths must be resolved from workspace binding")
 	}
-	if primaryReq.WorkspacePath == "" {
-		primaryReq.WorkspacePath = primaryReq.HostWorkspacePath
-	}
-	if primaryReq.HostWorkspacePath == "" {
-		return contract, errors.New("host_workspace_path is required for routed session creation")
-	}
-	if strings.TrimSpace(primaryReq.WorkspaceName) == "" {
-		primaryReq.WorkspaceName = filepath.Base(primaryReq.HostWorkspacePath)
+	if err := validateRoutedSessionCreateMetadata(primaryReq.Metadata); err != nil {
+		return contract, err
 	}
 	binding, bindingOK, bindingErr := s.resolveAccountRoutedSessionWorkspaceBinding(principal, primaryReq, target)
 	if bindingErr != nil {
 		return contract, bindingErr
+	}
+	if bindingOK {
+		resolvedRoute, err := newTargetWorkspaceRoute(principal.AccountScopeID, target, binding)
+		if err != nil {
+			return contract, err
+		}
+		matchedRoute := false
+		for _, route := range target.WorkspaceRoutes {
+			if strings.EqualFold(route.WorkspaceBindingID, resolvedRoute.WorkspaceBindingID) {
+				matchedRoute = true
+				break
+			}
+		}
+		if len(target.WorkspaceRoutes) > 0 && !matchedRoute {
+			return contract, errors.New("routed session workspace binding is not advertised by target route identity")
+		}
+	}
+	if bindingRequired && !bindingOK {
+		return contract, errors.New("routed session workspace binding is required")
 	}
 
 	worktreeMode, requireWorktree, err := terminalPeerSessionOpenWorktreeMode(primaryReq)
@@ -731,43 +758,37 @@ func (s *Server) buildPrimaryRoutedSessionOpenContract(principal identity.Princi
 	} else {
 		primaryReq.WorktreeMode = worktreeMode
 	}
+	workspaceRoute := targetWorkspaceRoute{}
 	workspaceBindingID := ""
-	childRuntimePath := strings.TrimSpace(primaryReq.RuntimeWorkspacePath)
-	if remotePath, ok, err := s.remoteDeploySessionRuntimeWorkspacePath(primaryReq, target); err != nil {
-		return contract, err
-	} else if ok {
-		childRuntimePath = remotePath
-	}
+	childRuntimePath := ""
+	routeHostSwarmID := ""
 	if bindingOK {
-		workspaceBindingID = strings.TrimSpace(binding.BindingID)
-		if got := strings.TrimSpace(binding.DestinationRuntimeSwarmID); got == "" {
-			return contract, errors.New("routed session workspace binding is missing destination runtime swarm id")
-		} else if !strings.EqualFold(got, childSwarmID) {
-			return contract, errors.New("routed session workspace binding destination runtime does not match child swarm id")
+		workspaceRoute, err = newTargetWorkspaceRoute(principal.AccountScopeID, target, binding)
+		if err != nil {
+			return contract, err
 		}
-		childRuntimePath = strings.TrimSpace(binding.DestinationWorkspacePath)
-		if childRuntimePath == "" {
-			return contract, errors.New("routed session workspace binding is missing destination workspace path")
+		workspaceBindingID = workspaceRoute.WorkspaceBindingID
+		childRuntimePath = workspaceRoute.RuntimeWorkspacePath
+		routeHostSwarmID = workspaceRoute.HostSwarmID
+		primaryReq.WorkspaceBindingID = workspaceRoute.WorkspaceBindingID
+		primaryReq.WorkspaceName = workspaceRoute.WorkspaceName
+		primaryReq.WorkspacePath = workspaceRoute.HostWorkspacePath
+		primaryReq.HostWorkspacePath = workspaceRoute.HostWorkspacePath
+		primaryReq.RuntimeWorkspacePath = workspaceRoute.RuntimeWorkspacePath
+	} else if !bindingRequired {
+		childRuntimePath = firstNonEmpty(strings.TrimSpace(primaryReq.RuntimeWorkspacePath), strings.TrimSpace(primaryReq.WorkspacePath))
+		if remotePath, ok, err := s.remoteDeploySessionRuntimeWorkspacePath(primaryReq, target); err != nil {
+			return contract, err
+		} else if ok {
+			childRuntimePath = remotePath
 		}
-	} else if routedSessionRuntimePathRequiresBinding(primaryReq) && !strings.EqualFold(strings.TrimSpace(target.Kind), "remote") {
-		return contract, errors.New("routed session workspace binding is required for runtime workspace path")
+		routeHostSwarmID = strings.TrimSpace(target.HostSwarmID)
+		if routeHostSwarmID == "" {
+			routeHostSwarmID = hostSwarmID
+		}
 	}
 	if childRuntimePath == "" {
 		return contract, errors.New("runtime_workspace_path is required for routed session creation")
-	}
-
-	routeHostSwarmID := strings.TrimSpace(target.HostSwarmID)
-	if bindingOK {
-		bindingHostSwarmID := strings.TrimSpace(binding.DestinationHostSwarmID)
-		if routeHostSwarmID != "" && bindingHostSwarmID != "" && !strings.EqualFold(routeHostSwarmID, bindingHostSwarmID) {
-			return contract, errors.New("routed session target host swarm id does not match workspace binding host swarm id")
-		}
-		if routeHostSwarmID == "" {
-			routeHostSwarmID = bindingHostSwarmID
-		}
-	}
-	if routeHostSwarmID == "" {
-		return contract, errors.New("routed session host swarm id is required")
 	}
 	if routeHostSwarmID == "" {
 		return contract, errors.New("routed session host swarm id is required")
@@ -777,22 +798,34 @@ func (s *Server) buildPrimaryRoutedSessionOpenContract(principal identity.Princi
 	childReq.WorkspacePath = childRuntimePath
 	childReq.HostWorkspacePath = childRuntimePath
 	childReq.RuntimeWorkspacePath = childRuntimePath
+	if bindingOK {
+		childReq.WorkspaceName = workspaceRoute.WorkspaceName
+	}
 	if strings.TrimSpace(childReq.WorkspaceName) == "" {
-		childReq.WorkspaceName = filepath.Base(childRuntimePath)
+		return contract, errors.New("workspace_name is required for routed session creation")
 	}
 
 	proxyTarget := target
 
+	routeID := "swarm:" + childSwarmID + ":" + childRuntimePath
+	if workspaceBindingID != "" {
+		routeID = workspaceRoute.routeID()
+	}
+	routeHostWorkspacePath := primaryReq.HostWorkspacePath
+	if bindingOK {
+		routeHostWorkspacePath = workspaceRoute.HostWorkspacePath
+	}
 	routeMetadata := map[string]any{
-		"swarm_route_id":                                         "swarm:" + childSwarmID + ":" + childRuntimePath,
+		"swarm_route_id":                                         routeID,
 		"swarm_route_label":                                      firstNonEmpty(strings.TrimSpace(target.Name), childSwarmID),
 		"swarm_route_target_kind":                                strings.TrimSpace(target.Kind),
 		"owner_transport":                                        "routed_session_peer",
 		sessionruntime.HostedSessionMetadataHostSwarmID:          routeHostSwarmID,
 		sessionruntime.HostedSessionMetadataHostBackendURL:       hostBackendURL,
 		sessionruntime.HostedSessionMetadataChildSwarmID:         childSwarmID,
-		sessionruntime.HostedSessionMetadataHostWorkspacePath:    primaryReq.HostWorkspacePath,
+		sessionruntime.HostedSessionMetadataHostWorkspacePath:    routeHostWorkspacePath,
 		sessionruntime.HostedSessionMetadataRuntimeWorkspacePath: childRuntimePath,
+		"swarm_routed_workspace_binding_id":                      workspaceBindingID,
 	}
 
 	contract = primaryRoutedSessionOpenContract{
@@ -802,7 +835,7 @@ func (s *Server) buildPrimaryRoutedSessionOpenContract(principal identity.Princi
 		Descriptor: sessionruntime.HostedSessionDescriptor{
 			HostSwarmID:          routeHostSwarmID,
 			HostBackendURL:       hostBackendURL,
-			HostWorkspacePath:    primaryReq.HostWorkspacePath,
+			HostWorkspacePath:    routeHostWorkspacePath,
 			RuntimeWorkspacePath: childRuntimePath,
 			ChildSwarmID:         childSwarmID,
 			OwnerTransport:       "routed_session_peer",
@@ -814,13 +847,13 @@ func (s *Server) buildPrimaryRoutedSessionOpenContract(principal identity.Princi
 			ChildSwarmID:         childSwarmID,
 			ChildBackendURL:      routeBackendURL,
 			HostSwarmID:          routeHostSwarmID,
-			HostWorkspacePath:    primaryReq.HostWorkspacePath,
+			HostWorkspacePath:    routeHostWorkspacePath,
 			RuntimeWorkspacePath: childRuntimePath,
 			WorkspaceBindingID:   workspaceBindingID,
 		},
-		ProxyTarget:        proxyTarget,
-		RequireWorktree:    requireWorktree,
-		WorkspaceBindingID: workspaceBindingID,
+		ProxyTarget:     proxyTarget,
+		RequireWorktree: requireWorktree,
+		WorkspaceRoute:  workspaceRoute,
 	}
 	return contract, nil
 }

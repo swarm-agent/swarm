@@ -28,6 +28,7 @@ type sessionCreateRequest struct {
 	WorkspacePath            string         `json:"workspace_path"`
 	HostWorkspacePath        string         `json:"host_workspace_path"`
 	RuntimeWorkspacePath     string         `json:"runtime_workspace_path"`
+	WorkspaceBindingID       string         `json:"workspace_binding_id,omitempty"`
 	WorkspaceName            string         `json:"workspace_name"`
 	Mode                     string         `json:"mode"`
 	AgentName                string         `json:"agent_name"`
@@ -67,23 +68,16 @@ func (s *Server) routedSessionTarget(principal identity.Principal, sessionID str
 	if !ok {
 		return nil, false, nil
 	}
-	retired, err := s.retireStaleRoutedTopologySessionTarget(record)
-	if err != nil {
-		return nil, false, err
-	}
-	if retired {
-		return nil, false, nil
-	}
 	runtimeSwarmID := strings.TrimSpace(record.RuntimeSwarmID)
 	if runtimeSwarmID == "" || strings.TrimSpace(record.BackendURL) == "" {
 		return nil, false, errors.New("routed session is missing canonical topology route details")
 	}
-	if s.isLocalSwarmID(runtimeSwarmID) {
-		return nil, false, nil
-	}
 	runtimeRecord, _, err := s.topology.GetRuntimeForAccount(principal.AccountScopeID, runtimeSwarmID)
 	if err != nil {
 		return nil, false, err
+	}
+	if s.isLocalSwarmID(runtimeSwarmID) && strings.TrimSpace(runtimeRecord.OwnerHostSwarmID) == "" {
+		return nil, false, nil
 	}
 	hostSwarmID := strings.TrimSpace(record.HostSwarmID)
 	if hostSwarmID == "" {
@@ -183,37 +177,6 @@ func (s *Server) retireStaleRoutedSessionTarget(record pebblestore.SessionRouteR
 	return true, nil
 }
 
-func (s *Server) retireStaleRoutedTopologySessionTarget(record pebblestore.TopologySessionRouteRecord) (bool, error) {
-	if s == nil || s.topology == nil {
-		return false, nil
-	}
-	replacementChildSwarmID, err := s.replacementChildSwarmIDForRoutedSession(pebblestore.SessionRouteRecord{
-		SessionID:            record.SessionID,
-		ChildSwarmID:         record.RuntimeSwarmID,
-		ChildBackendURL:      record.BackendURL,
-		HostWorkspacePath:    record.HostWorkspacePath,
-		RuntimeWorkspacePath: record.RuntimeWorkspacePath,
-		CreatedAt:            record.CreatedAt,
-		UpdatedAt:            record.UpdatedAt,
-	})
-	if err != nil {
-		return false, err
-	}
-	if replacementChildSwarmID == "" {
-		return false, nil
-	}
-	if err := s.deleteTopologySessionRoute(record.SessionID); err != nil {
-		return false, err
-	}
-	if s.sessionRoutes != nil {
-		if err := s.sessionRoutes.Delete(record.SessionID); err != nil {
-			return false, err
-		}
-	}
-	log.Printf("retired stale routed session session_id=%q old_child_swarm_id=%q replacement_child_swarm_id=%q child_backend_url=%q", strings.TrimSpace(record.SessionID), strings.TrimSpace(record.RuntimeSwarmID), replacementChildSwarmID, normalizeRoutedSessionBackendURL(record.BackendURL))
-	return true, nil
-}
-
 func (s *Server) retireStaleSessionRoutesForChild(childSwarmID, childBackendURL string) error {
 	if s == nil || s.sessionRoutes == nil {
 		return nil
@@ -233,7 +196,13 @@ func (s *Server) retireStaleSessionRoutesForChild(childSwarmID, childBackendURL 
 		if strings.TrimSpace(record.SessionID) == "" || recordChildSwarmID == "" || recordBackendURL == "" {
 			continue
 		}
-		if recordBackendURL != childBackendURL || strings.EqualFold(recordChildSwarmID, childSwarmID) {
+		if recordBackendURL != childBackendURL {
+			continue
+		}
+		if strings.EqualFold(recordChildSwarmID, childSwarmID) {
+			continue
+		}
+		if strings.TrimSpace(record.WorkspaceBindingID) != "" {
 			continue
 		}
 		if err := s.sessionRoutes.Delete(record.SessionID); err != nil {
@@ -407,31 +376,17 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("hosted host swarm id is required"))
 		return
 	}
-	childReq := req.Request
-	childReq.WorkspacePath = strings.TrimSpace(childReq.WorkspacePath)
-	childReq.HostWorkspacePath = strings.TrimSpace(childReq.HostWorkspacePath)
-	childReq.RuntimeWorkspacePath = strings.TrimSpace(childReq.RuntimeWorkspacePath)
-	if childReq.WorkspacePath == "" {
-		writeError(w, http.StatusBadRequest, errors.New("workspace_path is required"))
-		return
-	}
-	if childReq.HostWorkspacePath == "" {
-		writeError(w, http.StatusBadRequest, errors.New("host_workspace_path is required"))
-		return
-	}
-	if childReq.RuntimeWorkspacePath == "" {
-		writeError(w, http.StatusBadRequest, errors.New("runtime_workspace_path is required"))
-		return
-	}
-	if strings.TrimSpace(childReq.WorkspaceName) == "" {
-		childReq.WorkspaceName = filepath.Base(childReq.WorkspacePath)
-	}
-	worktreeMode, allowWorktree, err := terminalPeerSessionOpenWorktreeMode(childReq)
+	routeRecord, err := s.normalizedTerminalPeerSessionOpenRoute(r, req, hostedHostSwarmID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	routeRecord, err := s.normalizedTerminalPeerSessionOpenRoute(r, req, hostedHostSwarmID)
+	childReq, err := normalizedTerminalPeerSessionOpenRequest(req.Request, routeRecord, req.Hosted)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	worktreeMode, allowWorktree, err := terminalPeerSessionOpenWorktreeMode(childReq)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -522,6 +477,45 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func normalizedTerminalPeerSessionOpenRequest(req sessionCreateRequest, route pebblestore.SessionRouteRecord, hosted sessionruntime.HostedSessionDescriptor) (sessionCreateRequest, error) {
+	req.WorkspacePath = strings.TrimSpace(req.WorkspacePath)
+	req.HostWorkspacePath = strings.TrimSpace(req.HostWorkspacePath)
+	req.RuntimeWorkspacePath = strings.TrimSpace(req.RuntimeWorkspacePath)
+	req.WorkspaceBindingID = strings.TrimSpace(req.WorkspaceBindingID)
+	req.WorkspaceName = strings.TrimSpace(req.WorkspaceName)
+	runtimeWorkspacePath := strings.TrimSpace(route.RuntimeWorkspacePath)
+	if runtimeWorkspacePath == "" {
+		return req, errors.New("route runtime workspace path is required")
+	}
+	if req.WorkspacePath != "" && !strings.EqualFold(req.WorkspacePath, runtimeWorkspacePath) {
+		return req, errors.New("request workspace path does not match route runtime workspace path")
+	}
+	if req.HostWorkspacePath != "" && !strings.EqualFold(req.HostWorkspacePath, runtimeWorkspacePath) {
+		return req, errors.New("request host workspace path does not match route runtime workspace path")
+	}
+	if req.RuntimeWorkspacePath != "" && !strings.EqualFold(req.RuntimeWorkspacePath, runtimeWorkspacePath) {
+		return req, errors.New("request runtime workspace path does not match route runtime workspace path")
+	}
+	if hostedRuntimePath := strings.TrimSpace(hosted.RuntimeWorkspacePath); hostedRuntimePath != "" && !strings.EqualFold(hostedRuntimePath, runtimeWorkspacePath) {
+		return req, errors.New("hosted runtime workspace path does not match route runtime workspace path")
+	}
+	workspaceBindingID := strings.TrimSpace(route.WorkspaceBindingID)
+	if workspaceBindingID == "" {
+		return req, errors.New("route workspace binding id is required")
+	}
+	if req.WorkspaceBindingID != "" && !strings.EqualFold(req.WorkspaceBindingID, workspaceBindingID) {
+		return req, errors.New("request workspace binding id does not match route workspace binding id")
+	}
+	if req.WorkspaceName == "" {
+		return req, errors.New("workspace_name is required")
+	}
+	req.WorkspaceBindingID = workspaceBindingID
+	req.WorkspacePath = runtimeWorkspacePath
+	req.HostWorkspacePath = runtimeWorkspacePath
+	req.RuntimeWorkspacePath = runtimeWorkspacePath
+	return req, nil
+}
+
 func terminalPeerSessionOpenWorktreeMode(req sessionCreateRequest) (string, bool, error) {
 	rawMode := strings.TrimSpace(req.WorktreeMode)
 	mode := runruntime.NormalizeRunWorktreeMode(rawMode)
@@ -597,8 +591,8 @@ func (s *Server) normalizedTerminalPeerSessionOpenRoute(r *http.Request, req pee
 	if route.ChildBackendURL == "" {
 		return route, errors.New("route child backend url is required")
 	}
-	if route.HostWorkspacePath == "" {
-		return route, errors.New("route host workspace path is required")
+	if route.WorkspaceBindingID == "" {
+		return route, errors.New("route workspace binding id is required")
 	}
 	if route.RuntimeWorkspacePath == "" {
 		return route, errors.New("route runtime workspace path is required")
@@ -1150,34 +1144,12 @@ func (s *Server) decodeSessionCreateRequest(r *http.Request) (sessionCreateReque
 	if err := decodeJSON(r, &req); err != nil {
 		return sessionCreateRequest{}, identity.Principal{}, false, err
 	}
+	req.WorkspacePath = strings.TrimSpace(req.WorkspacePath)
+	req.HostWorkspacePath = strings.TrimSpace(req.HostWorkspacePath)
+	req.RuntimeWorkspacePath = strings.TrimSpace(req.RuntimeWorkspacePath)
+	req.WorkspaceBindingID = strings.TrimSpace(req.WorkspaceBindingID)
+	req.WorkspaceName = strings.TrimSpace(req.WorkspaceName)
 	principal, principalOK := PrincipalFromRequest(r)
-	if strings.TrimSpace(req.HostWorkspacePath) == "" {
-		req.HostWorkspacePath = strings.TrimSpace(req.WorkspacePath)
-	}
-	if strings.TrimSpace(req.RuntimeWorkspacePath) == "" {
-		req.RuntimeWorkspacePath = firstNonEmpty(strings.TrimSpace(req.WorkspacePath), strings.TrimSpace(req.HostWorkspacePath))
-	}
-	if strings.TrimSpace(req.HostWorkspacePath) == "" {
-		if !principalOK {
-			return sessionCreateRequest{}, identity.Principal{}, false, identity.ErrPrincipalRequired
-		}
-		current, ok, err := s.workspace.CurrentBindingForPrincipal(principal)
-		if err != nil {
-			return sessionCreateRequest{}, identity.Principal{}, false, err
-		}
-		if ok {
-			req.HostWorkspacePath = current.ResolvedPath
-			if strings.TrimSpace(req.WorkspaceName) == "" {
-				req.WorkspaceName = current.WorkspaceName
-			}
-		}
-	}
-	if strings.TrimSpace(req.RuntimeWorkspacePath) == "" {
-		req.RuntimeWorkspacePath = strings.TrimSpace(req.HostWorkspacePath)
-	}
-	if strings.TrimSpace(req.WorkspaceName) == "" && strings.TrimSpace(req.HostWorkspacePath) != "" {
-		req.WorkspaceName = filepath.Base(strings.TrimSpace(req.HostWorkspacePath))
-	}
 	return req, principal, principalOK, nil
 }
 
@@ -1204,14 +1176,28 @@ func (s *Server) resolveRemoteHostBackendURL(ctx context.Context, target swarmTa
 }
 
 func (s *Server) resolveAccountRoutedSessionWorkspaceBinding(principal identity.Principal, req sessionCreateRequest, target swarmTarget) (pebblestore.TopologyWorkspaceBindingRecord, bool, error) {
-	if s == nil || s.topology == nil || !principal.Valid() {
+	if s == nil || s.topology == nil || !principal.Valid() || strings.TrimSpace(target.SwarmID) == "" {
 		return pebblestore.TopologyWorkspaceBindingRecord{}, false, nil
 	}
-	hostWorkspacePath := strings.TrimSpace(req.HostWorkspacePath)
-	if hostWorkspacePath == "" {
-		hostWorkspacePath = strings.TrimSpace(req.WorkspacePath)
+	requestedBindingID := strings.TrimSpace(req.WorkspaceBindingID)
+	if requestedBindingID != "" {
+		binding, ok, err := s.topology.GetWorkspaceBindingForAccount(principal.AccountScopeID, requestedBindingID)
+		if err != nil {
+			return pebblestore.TopologyWorkspaceBindingRecord{}, false, err
+		}
+		if !ok {
+			return pebblestore.TopologyWorkspaceBindingRecord{}, false, fmt.Errorf("routed session workspace binding %q was not found", requestedBindingID)
+		}
+		if !strings.EqualFold(strings.TrimSpace(binding.DestinationRuntimeSwarmID), strings.TrimSpace(target.SwarmID)) {
+			return pebblestore.TopologyWorkspaceBindingRecord{}, false, errors.New("routed session workspace binding does not match child swarm id")
+		}
+		if strings.TrimSpace(binding.DestinationWorkspacePath) == "" {
+			return pebblestore.TopologyWorkspaceBindingRecord{}, false, errors.New("routed session workspace binding is missing destination workspace path")
+		}
+		return binding, true, nil
 	}
-	if hostWorkspacePath == "" || strings.TrimSpace(target.SwarmID) == "" {
+	workspaceName := strings.TrimSpace(req.WorkspaceName)
+	if workspaceName == "" {
 		return pebblestore.TopologyWorkspaceBindingRecord{}, false, nil
 	}
 	bindings, err := s.topology.ListWorkspaceBindingsForAccount(principal.AccountScopeID, 100000)
@@ -1223,18 +1209,14 @@ func (s *Server) resolveAccountRoutedSessionWorkspaceBinding(principal identity.
 		if !strings.EqualFold(strings.TrimSpace(binding.DestinationRuntimeSwarmID), strings.TrimSpace(target.SwarmID)) {
 			continue
 		}
-		if !strings.EqualFold(strings.TrimSpace(binding.SourceWorkspacePath), hostWorkspacePath) {
+		if !strings.EqualFold(strings.TrimSpace(binding.SourceWorkspaceName), workspaceName) {
 			continue
 		}
-		destinationPath := strings.TrimSpace(binding.DestinationWorkspacePath)
-		if destinationPath == "" {
+		if strings.TrimSpace(binding.DestinationWorkspacePath) == "" {
 			return pebblestore.TopologyWorkspaceBindingRecord{}, false, errors.New("routed session workspace binding is missing destination workspace path")
 		}
-		if requested := strings.TrimSpace(req.RuntimeWorkspacePath); requested != "" && !strings.EqualFold(requested, hostWorkspacePath) && !strings.EqualFold(requested, strings.TrimSpace(req.WorkspacePath)) && !strings.EqualFold(requested, destinationPath) {
-			return pebblestore.TopologyWorkspaceBindingRecord{}, false, errors.New("routed session runtime_workspace_path does not match account workspace binding")
-		}
 		if strings.TrimSpace(matched.BindingID) != "" && !strings.EqualFold(strings.TrimSpace(matched.BindingID), strings.TrimSpace(binding.BindingID)) {
-			return pebblestore.TopologyWorkspaceBindingRecord{}, false, errors.New("multiple routed session workspace bindings match target and source workspace")
+			return pebblestore.TopologyWorkspaceBindingRecord{}, false, errors.New("multiple routed session workspace bindings match target and workspace name")
 		}
 		matched = binding
 	}
@@ -1244,14 +1226,23 @@ func (s *Server) resolveAccountRoutedSessionWorkspaceBinding(principal identity.
 	return matched, true, nil
 }
 
-func routedSessionRuntimePathRequiresBinding(req sessionCreateRequest) bool {
-	requested := strings.TrimSpace(req.RuntimeWorkspacePath)
-	if requested == "" {
-		return false
+func validateRoutedSessionCreateMetadata(metadata map[string]any) error {
+	if len(metadata) == 0 {
+		return nil
 	}
-	hostWorkspacePath := strings.TrimSpace(req.HostWorkspacePath)
-	workspacePath := strings.TrimSpace(req.WorkspacePath)
-	return !strings.EqualFold(requested, hostWorkspacePath) && !strings.EqualFold(requested, workspacePath)
+	for _, key := range []string{
+		sessionruntime.HostedSessionMetadataHostWorkspacePath,
+		sessionruntime.HostedSessionMetadataRuntimeWorkspacePath,
+		"swarm_routed_host_workspace_path",
+		"swarm_routed_runtime_workspace_path",
+		"swarm_route_id",
+		"swarm_routed_workspace_binding_id",
+	} {
+		if _, ok := metadata[key]; ok {
+			return fmt.Errorf("routed session create metadata must not include route authority key %q", key)
+		}
+	}
+	return nil
 }
 
 func matchesRemoteDeployTarget(item remotedeploy.Session, target swarmTarget) bool {

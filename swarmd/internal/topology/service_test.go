@@ -55,7 +55,7 @@ func TestRebuildIgnoresLegacyWorkspaceReplicationLinks(t *testing.T) {
 	}
 }
 
-func TestSessionRouteEnrichmentFallsBackToRuntimeOwner(t *testing.T) {
+func TestSessionRouteEnrichmentUsesExplicitWorkspaceBindingID(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "topology-session-route-owner.pebble"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -94,6 +94,7 @@ func TestSessionRouteEnrichmentFallsBackToRuntimeOwner(t *testing.T) {
 		ChildBackendURL:      "http://127.0.0.1:3900",
 		HostWorkspacePath:    "/src",
 		RuntimeWorkspacePath: "/workspaces/src",
+		WorkspaceBindingID:   "binding:replica:deployment-1",
 	}); err != nil {
 		t.Fatalf("put session route: %v", err)
 	}
@@ -114,6 +115,51 @@ func TestSessionRouteEnrichmentFallsBackToRuntimeOwner(t *testing.T) {
 	}
 	if route.WorkspaceBindingID != "binding:replica:deployment-1" {
 		t.Fatalf("workspace binding id = %q, want %q", route.WorkspaceBindingID, "binding:replica:deployment-1")
+	}
+}
+
+func TestSessionRouteEnrichmentDoesNotInferWorkspaceBindingIDFromPaths(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "topology-session-route-no-path-infer.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	topologyStore := pebblestore.NewTopologyStore(store)
+	sessionRouteStore := pebblestore.NewSessionRouteStore(store)
+
+	if _, err := topologyStore.PutWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
+		BindingID:                 "binding:replica:path-match",
+		SourceWorkspacePath:       "/src",
+		DestinationRuntimeSwarmID: "child-swarm",
+		DestinationWorkspacePath:  "/workspaces/src",
+		DestinationHostSwarmID:    "host-swarm-from-binding",
+	}); err != nil {
+		t.Fatalf("put workspace binding: %v", err)
+	}
+	if _, err := sessionRouteStore.Put(pebblestore.SessionRouteRecord{
+		SessionID:            "session-legacy-path-only",
+		ChildSwarmID:         "child-swarm",
+		ChildBackendURL:      "http://127.0.0.1:3900",
+		HostWorkspacePath:    "/src",
+		RuntimeWorkspacePath: "/workspaces/src",
+	}); err != nil {
+		t.Fatalf("put session route: %v", err)
+	}
+
+	service := NewService(topologyStore, nil, nil, nil, nil, nil, sessionRouteStore, nil)
+	if _, err := service.Rebuild(); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	route, ok, err := topologyStore.GetSessionRoute("session-legacy-path-only")
+	if err != nil || !ok {
+		t.Fatalf("get topology session route ok=%t err=%v", ok, err)
+	}
+	if route.WorkspaceBindingID != "" {
+		t.Fatalf("workspace binding id = %q, want no path-inferred binding", route.WorkspaceBindingID)
+	}
+	if route.HostSwarmID == "host-swarm-from-binding" {
+		t.Fatalf("host swarm id = %q, want no binding-derived enrichment", route.HostSwarmID)
 	}
 }
 

@@ -191,7 +191,7 @@ func (s *Service) UpsertSessionRouteForAccount(accountScopeID string, record peb
 	if err != nil {
 		return pebblestore.TopologySessionRouteRecord{}, err
 	}
-	bindingID := firstNonEmpty(strings.TrimSpace(record.WorkspaceBindingID), matchingWorkspaceBindingID(bindings, record))
+	bindingID := strings.TrimSpace(record.WorkspaceBindingID)
 	route := pebblestore.TopologySessionRouteRecord{
 		SessionID:            strings.TrimSpace(record.SessionID),
 		UserID:               strings.TrimSpace(record.UserID),
@@ -672,7 +672,7 @@ func (s *Service) buildSessionRoutes(bindings []pebblestore.TopologyWorkspaceBin
 	}
 	out := make([]pebblestore.TopologySessionRouteRecord, 0, len(routes))
 	for _, route := range routes {
-		bindingID := firstNonEmpty(strings.TrimSpace(route.WorkspaceBindingID), matchingWorkspaceBindingID(bindings, route))
+		bindingID := strings.TrimSpace(route.WorkspaceBindingID)
 		record := pebblestore.TopologySessionRouteRecord{
 			SessionID:            strings.TrimSpace(route.SessionID),
 			RuntimeSwarmID:       strings.TrimSpace(route.ChildSwarmID),
@@ -689,25 +689,6 @@ func (s *Service) buildSessionRoutes(bindings []pebblestore.TopologyWorkspaceBin
 		out = append(out, record)
 	}
 	return out, nil
-}
-
-func matchingWorkspaceBindingID(bindings []pebblestore.TopologyWorkspaceBindingRecord, route pebblestore.SessionRouteRecord) string {
-	childSwarmID := strings.TrimSpace(route.ChildSwarmID)
-	hostWorkspacePath := strings.TrimSpace(route.HostWorkspacePath)
-	runtimeWorkspacePath := strings.TrimSpace(route.RuntimeWorkspacePath)
-	for _, binding := range bindings {
-		if childSwarmID != "" && !strings.EqualFold(strings.TrimSpace(binding.DestinationRuntimeSwarmID), childSwarmID) {
-			continue
-		}
-		if hostWorkspacePath != "" && !strings.EqualFold(strings.TrimSpace(binding.SourceWorkspacePath), hostWorkspacePath) {
-			continue
-		}
-		if runtimeWorkspacePath != "" && !strings.EqualFold(strings.TrimSpace(binding.DestinationWorkspacePath), runtimeWorkspacePath) {
-			continue
-		}
-		return strings.TrimSpace(binding.BindingID)
-	}
-	return ""
 }
 
 func findWorkspaceBindingByID(bindings []pebblestore.TopologyWorkspaceBindingRecord, bindingID string) pebblestore.TopologyWorkspaceBindingRecord {

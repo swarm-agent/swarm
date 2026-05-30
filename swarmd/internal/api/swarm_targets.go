@@ -38,20 +38,21 @@ type swarmTargetHealthCache struct {
 }
 
 type swarmTarget struct {
-	SwarmID      string `json:"swarm_id"`
-	Name         string `json:"name"`
-	Role         string `json:"role"`
-	Relationship string `json:"relationship"`
-	Kind         string `json:"kind"`
-	DeploymentID string `json:"deployment_id,omitempty"`
-	AttachStatus string `json:"attach_status,omitempty"`
-	HostSwarmID  string `json:"host_swarm_id,omitempty"`
-	Online       bool   `json:"online"`
-	Selectable   bool   `json:"selectable"`
-	Current      bool   `json:"current"`
-	BackendURL   string `json:"backend_url,omitempty"`
-	DesktopURL   string `json:"desktop_url,omitempty"`
-	LastError    string `json:"last_error,omitempty"`
+	SwarmID         string                 `json:"swarm_id"`
+	Name            string                 `json:"name"`
+	Role            string                 `json:"role"`
+	Relationship    string                 `json:"relationship"`
+	Kind            string                 `json:"kind"`
+	DeploymentID    string                 `json:"deployment_id,omitempty"`
+	AttachStatus    string                 `json:"attach_status,omitempty"`
+	HostSwarmID     string                 `json:"host_swarm_id,omitempty"`
+	WorkspaceRoutes []targetWorkspaceRoute `json:"-"`
+	Online          bool                   `json:"online"`
+	Selectable      bool                   `json:"selectable"`
+	Current         bool                   `json:"current"`
+	BackendURL      string                 `json:"backend_url,omitempty"`
+	DesktopURL      string                 `json:"desktop_url,omitempty"`
+	LastError       string                 `json:"last_error,omitempty"`
 }
 
 type swarmTargetsResponse struct {
@@ -176,6 +177,33 @@ func requestedSwarmTargetID(r *http.Request) string {
 		return ""
 	}
 	return strings.TrimSpace(r.URL.Query().Get("swarm_id"))
+}
+
+func (s *Server) attachTargetWorkspaceRoutesForAccount(accountScopeID string, targets []swarmTarget) error {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if s == nil || s.topology == nil || accountScopeID == "" || len(targets) == 0 {
+		return nil
+	}
+	bindings, err := s.topology.ListWorkspaceBindingsForAccount(accountScopeID, 100000)
+	if err != nil {
+		return err
+	}
+	if len(bindings) == 0 {
+		return nil
+	}
+	for i := range targets {
+		for _, binding := range bindings {
+			if !strings.EqualFold(strings.TrimSpace(binding.DestinationRuntimeSwarmID), strings.TrimSpace(targets[i].SwarmID)) {
+				continue
+			}
+			route, err := newTargetWorkspaceRoute(accountScopeID, targets[i], binding)
+			if err != nil {
+				return err
+			}
+			targets[i].WorkspaceRoutes = append(targets[i].WorkspaceRoutes, route)
+		}
+	}
+	return nil
 }
 
 func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool) ([]swarmTarget, *swarmTarget, error) {
@@ -325,6 +353,9 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 	})
 	for i := range targets {
 		targets[i].Current = strings.EqualFold(strings.TrimSpace(targets[i].SwarmID), selectedID)
+	}
+	if err := s.attachTargetWorkspaceRoutesForAccount(principal.AccountScopeID, targets); err != nil {
+		return nil, nil, err
 	}
 	for i := range targets {
 		if targets[i].Current {
