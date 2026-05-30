@@ -686,6 +686,8 @@ type fakeReplicateDeployService struct {
 	lastManagedHostCanonicalIDs   []string
 	lastActionInput               deployruntime.ContainerActionInput
 	lastSettingsInput             deployruntime.ContainerSettingsUpdateInput
+	attachRequestState            deployruntime.ContainerAttachState
+	attachApproveState            deployruntime.ContainerAttachState
 }
 
 func (f *fakeReplicateDeployService) RuntimeStatus(context.Context) (deployruntime.ContainerRuntimeStatus, error) {
@@ -992,7 +994,7 @@ func (f *fakeReplicateDeployService) ChildAttachState(context.Context, deployrun
 }
 
 func (f *fakeReplicateDeployService) AttachRequest(context.Context, deployruntime.ContainerAttachRequestInput) (deployruntime.ContainerAttachState, error) {
-	return deployruntime.ContainerAttachState{}, nil
+	return f.attachRequestState, nil
 }
 
 func (f *fakeReplicateDeployService) AttachStatus(context.Context, deployruntime.ContainerAttachStatusInput) (deployruntime.ContainerAttachState, error) {
@@ -1001,7 +1003,7 @@ func (f *fakeReplicateDeployService) AttachStatus(context.Context, deployruntime
 
 func (f *fakeReplicateDeployService) AttachApprove(_ context.Context, input deployruntime.ContainerAttachApproveInput) (deployruntime.ContainerAttachState, error) {
 	f.lastAttachApproveInput = input
-	return deployruntime.ContainerAttachState{}, nil
+	return f.attachApproveState, nil
 }
 
 func (f *fakeReplicateDeployService) FinalizeAttachFromHost(context.Context, deployruntime.ContainerAttachFinalizeInput) error {

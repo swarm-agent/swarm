@@ -396,9 +396,6 @@ func (s *Server) handleDeployContainerAttachRequest(w http.ResponseWriter, r *ht
 		})
 		return
 	}
-	if cleanupErr := s.retireStaleSessionRoutesForChild(state.ChildSwarmID, state.ChildBackendURL); cleanupErr != nil {
-		log.Printf("deploy attach request stale route cleanup failed deployment_id=%q child_swarm_id=%q err=%v", state.DeploymentID, state.ChildSwarmID, cleanupErr)
-	}
 	log.Printf("deploy attach request accepted deployment_id=%q attach_status=%q child_swarm_id=%q", state.DeploymentID, state.AttachStatus, state.ChildSwarmID)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":      true,
@@ -499,9 +496,6 @@ func (s *Server) handleDeployContainerAttachApprove(w http.ResponseWriter, r *ht
 			"error":   err.Error(),
 		})
 		return
-	}
-	if cleanupErr := s.retireStaleSessionRoutesForChild(state.ChildSwarmID, state.ChildBackendURL); cleanupErr != nil {
-		log.Printf("deploy attach approve stale route cleanup failed deployment_id=%q child_swarm_id=%q err=%v", state.DeploymentID, state.ChildSwarmID, cleanupErr)
 	}
 	log.Printf("deploy attach approve success deployment_id=%q attach_status=%q child_swarm_id=%q", state.DeploymentID, state.AttachStatus, state.ChildSwarmID)
 	writeJSON(w, http.StatusOK, map[string]any{
