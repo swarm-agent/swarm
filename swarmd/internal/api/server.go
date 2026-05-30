@@ -646,41 +646,57 @@ func routedSessionRequiresWorkspaceBinding(target swarmTarget) bool {
 	}
 }
 
-func (s *Server) remoteDeploySessionRuntimeWorkspacePath(req sessionCreateRequest, target swarmTarget) (string, bool, error) {
+type remoteDeploySessionWorkspaceResolution struct {
+	SourceWorkspacePath  string
+	WorkspaceName        string
+	RuntimeWorkspacePath string
+}
+
+func (s *Server) remoteDeploySessionWorkspaceResolution(req sessionCreateRequest, target swarmTarget) (remoteDeploySessionWorkspaceResolution, bool, error) {
 	if s == nil || s.remoteDeploys == nil || !strings.EqualFold(strings.TrimSpace(target.Kind), "remote") {
-		return "", false, nil
+		return remoteDeploySessionWorkspaceResolution{}, false, nil
 	}
 	deploymentID := strings.TrimSpace(target.DeploymentID)
 	if deploymentID == "" {
-		return "", false, nil
+		return remoteDeploySessionWorkspaceResolution{}, false, nil
+	}
+	workspaceName := strings.TrimSpace(req.WorkspaceName)
+	if workspaceName == "" {
+		return remoteDeploySessionWorkspaceResolution{}, false, errors.New("remote routed session workspace_name is required")
 	}
 	items, err := s.remoteDeploys.ListCached(context.Background())
 	if err != nil {
-		return "", false, err
+		return remoteDeploySessionWorkspaceResolution{}, false, err
 	}
-	hostWorkspacePath := strings.TrimSpace(req.HostWorkspacePath)
-	if hostWorkspacePath == "" {
-		hostWorkspacePath = strings.TrimSpace(req.WorkspacePath)
-	}
-	workspaceName := strings.TrimSpace(req.WorkspaceName)
+	var matched remoteDeploySessionWorkspaceResolution
 	for _, item := range items {
 		if !strings.EqualFold(strings.TrimSpace(item.ID), deploymentID) || !strings.EqualFold(strings.TrimSpace(item.ChildSwarmID), strings.TrimSpace(target.SwarmID)) {
 			continue
 		}
 		for _, payload := range item.Preflight.Payloads {
-			if hostWorkspacePath != "" && !strings.EqualFold(strings.TrimSpace(payload.WorkspacePath), hostWorkspacePath) {
+			payloadWorkspaceName := strings.TrimSpace(payload.WorkspaceName)
+			if payloadWorkspaceName == "" || !strings.EqualFold(payloadWorkspaceName, workspaceName) {
 				continue
 			}
-			if workspaceName != "" && strings.TrimSpace(payload.WorkspaceName) != "" && !strings.EqualFold(strings.TrimSpace(payload.WorkspaceName), workspaceName) {
-				continue
+			resolved := remoteDeploySessionWorkspaceResolution{
+				SourceWorkspacePath:  strings.TrimSpace(payload.WorkspacePath),
+				WorkspaceName:        payloadWorkspaceName,
+				RuntimeWorkspacePath: strings.TrimSpace(payload.TargetPath),
 			}
-			if targetPath := strings.TrimSpace(payload.TargetPath); targetPath != "" {
-				return targetPath, true, nil
+			if resolved.RuntimeWorkspacePath == "" {
+				return remoteDeploySessionWorkspaceResolution{}, false, errors.New("remote routed session workspace payload is missing target path")
 			}
+			if matched.RuntimeWorkspacePath != "" && (!strings.EqualFold(matched.RuntimeWorkspacePath, resolved.RuntimeWorkspacePath) || !strings.EqualFold(matched.SourceWorkspacePath, resolved.SourceWorkspacePath)) {
+				return remoteDeploySessionWorkspaceResolution{}, false, errors.New("multiple remote routed session workspace payloads match workspace name")
+			}
+			matched = resolved
 		}
-		return "", false, nil
+		if matched.RuntimeWorkspacePath == "" {
+			return remoteDeploySessionWorkspaceResolution{}, false, fmt.Errorf("remote routed session workspace %q was not found", workspaceName)
+		}
+		return matched, true, nil
 	}
-	return "", false, nil
+	return remoteDeploySessionWorkspaceResolution{}, false, nil
 }
 
 func (s *Server) buildPrimaryRoutedSessionOpenContract(principal identity.Principal, req sessionCreateRequest, target swarmTarget, state swarmruntime.LocalState, hostBackendURL, sessionID string) (primaryRoutedSessionOpenContract, error) {
@@ -776,11 +792,16 @@ func (s *Server) buildPrimaryRoutedSessionOpenContract(principal identity.Princi
 		primaryReq.HostWorkspacePath = workspaceRoute.HostWorkspacePath
 		primaryReq.RuntimeWorkspacePath = workspaceRoute.RuntimeWorkspacePath
 	} else if !bindingRequired {
-		childRuntimePath = firstNonEmpty(strings.TrimSpace(primaryReq.RuntimeWorkspacePath), strings.TrimSpace(primaryReq.WorkspacePath))
-		if remotePath, ok, err := s.remoteDeploySessionRuntimeWorkspacePath(primaryReq, target); err != nil {
+		if remoteWorkspace, ok, err := s.remoteDeploySessionWorkspaceResolution(primaryReq, target); err != nil {
 			return contract, err
 		} else if ok {
-			childRuntimePath = remotePath
+			childRuntimePath = remoteWorkspace.RuntimeWorkspacePath
+			primaryReq.WorkspaceName = remoteWorkspace.WorkspaceName
+			primaryReq.WorkspacePath = remoteWorkspace.SourceWorkspacePath
+			primaryReq.HostWorkspacePath = remoteWorkspace.SourceWorkspacePath
+			primaryReq.RuntimeWorkspacePath = remoteWorkspace.RuntimeWorkspacePath
+		} else {
+			childRuntimePath = firstNonEmpty(strings.TrimSpace(primaryReq.RuntimeWorkspacePath), strings.TrimSpace(primaryReq.WorkspacePath))
 		}
 		routeHostSwarmID = strings.TrimSpace(target.HostSwarmID)
 		if routeHostSwarmID == "" {

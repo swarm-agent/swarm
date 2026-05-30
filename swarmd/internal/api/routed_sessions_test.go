@@ -2040,6 +2040,8 @@ func TestPrimaryRoutedSessionCreateRejectsAmbiguousWorkspaceNameBinding(t *testi
 func TestRemoteDeploySessionCreateUsesRemotePayloadTargetPath(t *testing.T) {
 	server, _, _, routeStore := newRoutedSessionTestServer(t)
 	var openedWorkspacePath atomic.Value
+	var openedRequestWorkspacePath atomic.Value
+	var openedHostWorkspacePath atomic.Value
 	var openedHostBackendURL atomic.Value
 	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/swarm/peer/sessions/open" {
@@ -2051,6 +2053,8 @@ func TestRemoteDeploySessionCreateUsesRemotePayloadTargetPath(t *testing.T) {
 			t.Fatalf("decode child request: %v", err)
 		}
 		openedWorkspacePath.Store(req.Request.RuntimeWorkspacePath)
+		openedRequestWorkspacePath.Store(req.Request.WorkspacePath)
+		openedHostWorkspacePath.Store(req.Request.HostWorkspacePath)
 		hostBackendURL := req.Hosted.HostBackendURL
 		openedHostBackendURL.Store(hostBackendURL)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -2075,7 +2079,7 @@ func TestRemoteDeploySessionCreateUsesRemotePayloadTargetPath(t *testing.T) {
 		}},
 	})
 
-	body := bytes.NewBufferString(`{"title":"remote","mode":"plan","workspace_path":"/src/swarm-go","workspace_name":"swarm-go","preference":{"provider":"fireworks","model":"accounts/fireworks/models/kimi-k2p5","thinking":"high"}}`)
+	body := bytes.NewBufferString(`{"title":"remote","mode":"plan","workspace_path":"/frontend/stale/swarm-go","host_workspace_path":"/frontend/stale-host/swarm-go","runtime_workspace_path":"/frontend/stale-runtime/swarm-go","workspace_name":"swarm-go","preference":{"provider":"fireworks","model":"accounts/fireworks/models/kimi-k2p5","thinking":"high"}}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions?swarm_id=child-swarm", body)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -2086,6 +2090,12 @@ func TestRemoteDeploySessionCreateUsesRemotePayloadTargetPath(t *testing.T) {
 	}
 	if got, _ := openedWorkspacePath.Load().(string); got != "/workspaces/swarm-go" {
 		t.Fatalf("child workspace path = %q, want %q", got, "/workspaces/swarm-go")
+	}
+	if got, _ := openedRequestWorkspacePath.Load().(string); got != "/workspaces/swarm-go" {
+		t.Fatalf("child request workspace path = %q, want resolved runtime path", got)
+	}
+	if got, _ := openedHostWorkspacePath.Load().(string); got != "/workspaces/swarm-go" {
+		t.Fatalf("child host workspace path = %q, want resolved runtime path", got)
 	}
 	if got, _ := openedHostBackendURL.Load().(string); got != "https://remote-host.tailnet.ts.net" {
 		t.Fatalf("child host backend url = %q, want %q", got, "https://remote-host.tailnet.ts.net")
