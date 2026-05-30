@@ -3,11 +3,54 @@ package session
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
+
+func TestHostedSyncClientRequiresDescriptorHostBackendURLForHTTPTransport(t *testing.T) {
+	t.Setenv("SWARM_CHILD_STARTUP_CONFIG", "deploy_container_host_api_base_url = http://127.0.0.1:9999\n")
+	client := NewHostedSyncClient(filepath.Join(t.TempDir(), "swarm-child.conf"), nil)
+
+	_, _, _, err := client.resolveEndpoint(HostedSessionDescriptor{HostSwarmID: "host-swarm"}, hostedSessionPeerAppendMessagePath)
+	if err == nil {
+		t.Fatal("resolve endpoint succeeded without descriptor host backend url")
+	}
+	if !strings.Contains(err.Error(), "host backend url is required") {
+		t.Fatalf("error = %v, want required host backend url", err)
+	}
+}
+
+func TestHostedSyncClientRequiresHostSwarmIDForHTTPTransport(t *testing.T) {
+	t.Setenv("SWARM_CHILD_STARTUP_CONFIG", "")
+	client := NewHostedSyncClient(filepath.Join(t.TempDir(), "swarm-child.conf"), nil)
+
+	_, _, _, err := client.resolveEndpoint(HostedSessionDescriptor{HostBackendURL: "http://127.0.0.1:9999"}, hostedSessionPeerAppendMessagePath)
+	if err == nil {
+		t.Fatal("resolve endpoint succeeded without descriptor host swarm id")
+	}
+	if !strings.Contains(err.Error(), "host swarm id is required") {
+		t.Fatalf("error = %v, want required host swarm id", err)
+	}
+}
+
+func TestHostedSyncClientAllowsExplicitLocalUnixTransportWithoutHostHTTPFields(t *testing.T) {
+	t.Setenv("SWARM_CHILD_STARTUP_CONFIG", "deploy_container_local_transport_socket_path = /tmp/swarm-hosted-sync-test.sock\n")
+	client := NewHostedSyncClient(filepath.Join(t.TempDir(), "swarm-child.conf"), nil)
+
+	endpoint, _, localTransport, err := client.resolveEndpoint(HostedSessionDescriptor{}, hostedSessionPeerAppendMessagePath)
+	if err != nil {
+		t.Fatalf("resolve local endpoint: %v", err)
+	}
+	if !localTransport {
+		t.Fatal("local transport = false, want true")
+	}
+	if endpoint != hostedSessionLocalTransportBaseURL+hostedSessionPeerAppendMessagePath {
+		t.Fatalf("endpoint = %q, want local transport endpoint", endpoint)
+	}
+}
 
 func TestHostedAppendMessageMirrorsCanonicalStateIntoLocalRuntimeCache(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "hosted-session.pebble"))
@@ -119,9 +162,6 @@ func TestManagedHostPeerMetadataDoesNotUseGenericHostedSync(t *testing.T) {
 	metadata := HostedSessionDescriptor{HostSwarmID: "host-swarm", RuntimeWorkspacePath: "/runtime/workspace", ChildSwarmID: "managed-swarm"}.WithMetadata(map[string]any{
 		"owner_transport": "managed_host_peer",
 	})
-	if !hostedSyncOptional(metadata) {
-		t.Fatal("managed-host peer sessions should treat generic hosted sync as optional")
-	}
 	if _, hosted := HostedSessionFromMetadataForLocal(metadata, ""); hosted {
 		t.Fatal("managed-host peer sessions should not use generic hosted sync for local mutations")
 	}

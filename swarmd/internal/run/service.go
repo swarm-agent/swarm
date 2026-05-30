@@ -868,6 +868,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		_, _ = s.permissions.CancelRunPending(permissionSessionID, runID, "run terminated before permission resolution")
 	}()
 
+	var runCancel context.CancelFunc
 	var emitMu sync.Mutex
 	emit = func(event StreamEvent) {
 		if strings.TrimSpace(event.SessionID) == "" {
@@ -876,10 +877,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		if strings.TrimSpace(event.RunID) == "" {
 			event.RunID = runID
 		}
-		if s != nil {
-			s.publishStreamEventEnvelope(event)
-			s.mirrorHostedStreamEvent(event)
-		}
+		publishEvents := []StreamEvent{event}
 		var derivedStatusEvent *StreamEvent
 		var lifecycleEvent *StreamEvent
 		if snapshot, changed, err := s.transitionSessionLifecycleForEvent(event); err == nil && changed {
@@ -889,10 +887,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				RunID:     snapshot.RunID,
 				Lifecycle: &snapshot,
 			}
-			if s != nil {
-				s.publishStreamEventEnvelope(*lifecycleEvent)
-				s.mirrorHostedStreamEvent(*lifecycleEvent)
-			}
+			publishEvents = append(publishEvents, *lifecycleEvent)
 		}
 		if status := sessionStatusForEvent(event); status != "" {
 			statusEvent := StreamEvent{
@@ -904,11 +899,18 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				Error:     event.Error,
 				Agent:     event.Agent,
 			}
-			if s != nil {
-				s.publishStreamEventEnvelope(statusEvent)
-				s.mirrorHostedStreamEvent(statusEvent)
-			}
+			publishEvents = append(publishEvents, statusEvent)
 			derivedStatusEvent = &statusEvent
+		}
+		for _, publishEvent := range publishEvents {
+			if s != nil {
+				s.publishStreamEventEnvelope(publishEvent)
+				if err := s.mirrorHostedStreamEvent(ctx, publishEvent); err != nil {
+					runErr = err
+					runCancel()
+					return
+				}
+			}
 		}
 		if onEvent == nil {
 			return
@@ -923,22 +925,26 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 		emitMu.Unlock()
 	}
+	runCtx, cancelRun := context.WithCancel(ctx)
+	runCancel = cancelRun
+	defer runCancel()
+	ctx = runCtx
+	runnerCtx = runCtx
 	startSnapshot, err := s.beginSessionLifecycle(sessionID, runID, s.effectiveRunOwnerTransport(options, onEvent))
 	if err != nil {
 		return RunResult{}, err
 	}
 	lifecycleClaimed = true
 	emitLifecycleSnapshot(emit, startSnapshot)
-	runCtx, runCancel := context.WithCancel(ctx)
-	defer runCancel()
 	s.attachLifecycleCancel(sessionID, runID, runCancel)
-	ctx = runCtx
-	runnerCtx = runCtx
 	if runningSnapshot, changed, err := s.transitionSessionLifecycle(sessionID, runID, lifecyclePhaseRunning); err == nil && changed {
 		emitLifecycleSnapshot(emit, runningSnapshot)
 	}
 	emit(StreamEvent{Type: StreamEventTurnStarted, Agent: activeAgent})
 	s.emitSessionStatus(emit, sessionID, runID, "running", activeAgent, "", activeAgent)
+	if runErr != nil {
+		return RunResult{}, runErr
+	}
 
 	markToolStart := func(step int, call tool.Call) {
 		if s.permissions == nil {
@@ -968,6 +974,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			return RunResult{}, err
 		}
 		emit(StreamEvent{Type: StreamEventMessageStored, Message: &userMessage})
+		if runErr != nil {
+			return RunResult{}, runErr
+		}
 		if titleEligibilityErr != nil {
 			s.emitSessionTitleWarning(sessionID, "provisional", titleEligibilityErr, emit)
 		}
@@ -1249,6 +1258,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 
 	for step := 1; ; step++ {
 		if err := ctx.Err(); err != nil {
+			if runErr != nil {
+				return RunResult{}, runErr
+			}
 			return RunResult{}, err
 		}
 		emit(StreamEvent{Type: StreamEventStepStarted, Step: step})
@@ -1494,6 +1506,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			}
 		})
 		if stopErr := ctx.Err(); stopErr != nil {
+			if runErr != nil {
+				return RunResult{}, runErr
+			}
 			return RunResult{}, stopErr
 		}
 		if err != nil {
@@ -3786,37 +3801,50 @@ func (s *Service) publishEventEnvelope(event pebblestore.EventEnvelope) {
 	s.eventPublish(event)
 }
 
-func (s *Service) mirrorHostedStreamEvent(event StreamEvent) {
+func (s *Service) mirrorHostedStreamEvent(ctx context.Context, event StreamEvent) error {
 	if s == nil || s.sessions == nil {
-		return
+		return nil
 	}
 	sessionID := strings.TrimSpace(event.SessionID)
 	if sessionID == "" {
-		return
+		return nil
 	}
 	session, ok, err := s.sessions.GetSession(sessionID)
-	if err != nil || !ok {
-		return
+	if err != nil {
+		return fmt.Errorf("load session for hosted stream mirror: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("load session for hosted stream mirror: session %q not found", sessionID)
 	}
 	if event.Message != nil {
-		_, _ = s.sessions.StoreMirroredMessage(session, *event.Message)
+		if _, err := s.sessions.StoreMirroredMessage(session, *event.Message); err != nil {
+			return fmt.Errorf("store hosted stream mirror message: %w", err)
+		}
 	}
 	if event.Type == StreamEventSessionLifecycle && event.Lifecycle != nil {
-		_ = s.sessions.StoreMirroredLifecycle(*event.Lifecycle)
+		if err := s.sessions.StoreMirroredLifecycle(*event.Lifecycle); err != nil {
+			return fmt.Errorf("store hosted stream mirror lifecycle: %w", err)
+		}
 	}
 	descriptor, hosted := s.sessions.HostedDescriptor(session.Metadata)
 	if !hosted {
-		return
+		return nil
 	}
 	eventType := streamEventEnvelopeType(event)
 	if eventType == "" {
-		return
+		return nil
 	}
 	payload := streamEventEnvelopePayload(event)
 	if len(payload) == 0 {
-		return
+		return nil
 	}
-	_, _ = s.sessions.PublishHostedEvent(context.Background(), descriptor, sessionID, eventType, payload, strings.TrimSpace(event.RunID), strings.TrimSpace(event.CallID))
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, err := s.sessions.PublishHostedEvent(ctx, descriptor, sessionID, eventType, payload, strings.TrimSpace(event.RunID), strings.TrimSpace(event.CallID)); err != nil {
+		return fmt.Errorf("publish hosted stream mirror event: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) publishStreamEventEnvelope(event StreamEvent) {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"path/filepath"
@@ -84,44 +85,29 @@ func (s *Server) routedSessionTarget(principal identity.Principal, sessionID str
 	if err != nil {
 		return nil, false, err
 	}
-	var binding pebblestore.TopologyWorkspaceBindingRecord
-	if strings.TrimSpace(record.WorkspaceBindingID) != "" {
-		var err error
-		binding, _, err = s.topology.GetWorkspaceBindingForAccount(principal.AccountScopeID, record.WorkspaceBindingID)
-		if err != nil {
-			return nil, false, err
-		}
+	hostSwarmID := strings.TrimSpace(record.HostSwarmID)
+	if hostSwarmID == "" {
+		return nil, false, errors.New("routed session is missing canonical host swarm id")
 	}
-	hostSwarmID := firstNonEmpty(strings.TrimSpace(record.HostSwarmID), strings.TrimSpace(binding.DestinationHostSwarmID), strings.TrimSpace(runtimeRecord.OwnerHostSwarmID))
 	backendURL := strings.TrimSpace(record.BackendURL)
-	if hostSwarmID != "" && !s.isLocalSwarmID(hostSwarmID) && isLoopbackBackendURL(backendURL) {
-		if ownerRuntime, ok, err := s.topology.GetRuntimeForAccount(principal.AccountScopeID, hostSwarmID); err != nil {
-			return nil, false, err
-		} else if ok {
-			if ownerBackendURL := strings.TrimSpace(ownerRuntime.BackendURL); ownerBackendURL != "" {
-				backendURL = ownerBackendURL
-			}
-		}
-	}
 	flowRouteDiagLog("routed_session_target_lookup",
 		"session_id", record.SessionID,
 		"route_child_swarm_id", record.RuntimeSwarmID,
 		"route_child_backend_url_present", strings.TrimSpace(record.BackendURL) != "",
-		"route_child_backend_url_loopback", isLoopbackBackendURL(record.BackendURL),
 		"route_proxy_backend_url", backendURL,
 		"route_host_swarm_id", hostSwarmID,
-		"route_host_container_id", firstNonEmpty(strings.TrimSpace(record.HostContainerID), strings.TrimSpace(binding.DestinationContainerID), strings.TrimSpace(runtimeRecord.OwnerHostContainerID)),
+		"route_host_container_id", strings.TrimSpace(record.HostContainerID),
 		"route_workspace_binding_id", record.WorkspaceBindingID,
 		"route_host_workspace_path", record.HostWorkspacePath,
-		"route_runtime_workspace_path", firstNonEmpty(strings.TrimSpace(record.RuntimeWorkspacePath), strings.TrimSpace(binding.DestinationWorkspacePath)),
+		"route_runtime_workspace_path", strings.TrimSpace(record.RuntimeWorkspacePath),
 	)
 	target := &swarmTarget{
 		SwarmID:      strings.TrimSpace(record.RuntimeSwarmID),
 		Name:         firstNonEmpty(strings.TrimSpace(runtimeRecord.Name), strings.TrimSpace(record.RuntimeSwarmID)),
 		Role:         firstNonEmpty(strings.TrimSpace(runtimeRecord.Role), "child"),
 		Relationship: firstNonEmpty(strings.TrimSpace(runtimeRecord.Relationship), "child"),
-		Kind:         firstNonEmpty(strings.TrimSpace(binding.LegacyTargetKind), swarmTargetKindForRoutedSession(runtimeRecord)),
-		DeploymentID: strings.TrimPrefix(strings.TrimSpace(binding.BindingID), "binding:replica:"),
+		Kind:         swarmTargetKindForRoutedSession(runtimeRecord),
+		DeploymentID: "",
 		HostSwarmID:  hostSwarmID,
 		Online:       true,
 		Selectable:   true,
@@ -980,16 +966,26 @@ func (s *Server) handlePeerSessionEvent(w http.ResponseWriter, r *http.Request) 
 	if _, _, ok := s.verifySessionOwnershipForRequest(w, r, req.SessionID); !ok {
 		return
 	}
+	if err := s.validateMirroredEventPayloadLifecycle(req.SessionID, req.EventType, req.Payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.validateMirroredEventPayloadMessage(req.SessionID, req.EventType, req.Payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	env, err := s.sessions.StoreMirroredEvent(req.SessionID, req.EventType, req.Payload, req.CausationID, req.CorrelationID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := s.storeMirroredEventPayloadLifecycle(req.SessionID, req.Payload); err != nil {
-		log.Printf("warning: store mirrored event lifecycle failed session_id=%q event_type=%q: %v", strings.TrimSpace(req.SessionID), strings.TrimSpace(req.EventType), err)
+	if err := s.storeMirroredEventPayloadLifecycle(req.SessionID, req.EventType, req.Payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
 	}
-	if err := s.storeMirroredEventPayloadMessage(req.SessionID, req.Payload); err != nil {
-		log.Printf("warning: store mirrored event message failed session_id=%q event_type=%q: %v", strings.TrimSpace(req.SessionID), strings.TrimSpace(req.EventType), err)
+	if err := s.storeMirroredEventPayloadMessage(req.SessionID, req.EventType, req.Payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
 	}
 	if s.hub != nil {
 		s.hub.Publish(env)
@@ -997,61 +993,124 @@ func (s *Server) handlePeerSessionEvent(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "event": env})
 }
 
-func (s *Server) storeMirroredEventPayloadLifecycle(sessionID string, payload map[string]any) error {
-	if s == nil || s.sessions == nil || len(payload) == 0 {
-		return nil
-	}
-	rawLifecycle, ok := payload["lifecycle"]
-	if !ok || rawLifecycle == nil {
-		return nil
-	}
-	encoded, err := json.Marshal(rawLifecycle)
-	if err != nil {
+func (s *Server) validateMirroredEventPayloadLifecycle(sessionID, eventType string, payload map[string]any) error {
+	_, ok, err := s.decodeMirroredEventPayloadLifecycle(sessionID, eventType, payload)
+	if err != nil || !ok {
 		return err
 	}
-	var lifecycle pebblestore.SessionLifecycleSnapshot
-	if err := json.Unmarshal(encoded, &lifecycle); err != nil {
+	return nil
+}
+
+func (s *Server) storeMirroredEventPayloadLifecycle(sessionID, eventType string, payload map[string]any) error {
+	lifecycle, ok, err := s.decodeMirroredEventPayloadLifecycle(sessionID, eventType, payload)
+	if err != nil || !ok {
 		return err
-	}
-	sessionID = strings.TrimSpace(sessionID)
-	if lifecycle.SessionID == "" {
-		lifecycle.SessionID = sessionID
-	}
-	if sessionID == "" || !strings.EqualFold(strings.TrimSpace(lifecycle.SessionID), sessionID) {
-		return nil
 	}
 	return s.sessions.StoreMirroredLifecycle(lifecycle)
 }
 
-func (s *Server) storeMirroredEventPayloadMessage(sessionID string, payload map[string]any) error {
-	if s == nil || s.sessions == nil || len(payload) == 0 {
-		return nil
-	}
-	rawMessage, ok := payload["message"]
-	if !ok || rawMessage == nil {
-		return nil
-	}
-	encoded, err := json.Marshal(rawMessage)
-	if err != nil {
-		return err
-	}
-	var message pebblestore.MessageSnapshot
-	if err := json.Unmarshal(encoded, &message); err != nil {
-		return err
+func (s *Server) decodeMirroredEventPayloadLifecycle(sessionID, eventType string, payload map[string]any) (pebblestore.SessionLifecycleSnapshot, bool, error) {
+	if s == nil || s.sessions == nil {
+		return pebblestore.SessionLifecycleSnapshot{}, false, errors.New("session service not configured")
 	}
 	sessionID = strings.TrimSpace(sessionID)
-	if message.SessionID == "" {
-		message.SessionID = sessionID
+	if sessionID == "" {
+		return pebblestore.SessionLifecycleSnapshot{}, false, errors.New("session id is required")
 	}
-	if sessionID == "" || !strings.EqualFold(strings.TrimSpace(message.SessionID), sessionID) || message.GlobalSeq == 0 {
-		return nil
+	rawLifecycle, ok := payload["lifecycle"]
+	if !ok || rawLifecycle == nil {
+		if mirroredEventRequiresLifecyclePayload(eventType) {
+			return pebblestore.SessionLifecycleSnapshot{}, false, fmt.Errorf("event type %q requires lifecycle payload", strings.TrimSpace(eventType))
+		}
+		return pebblestore.SessionLifecycleSnapshot{}, false, nil
 	}
-	session, ok, err := s.sessions.GetSession(sessionID)
+	encoded, err := json.Marshal(rawLifecycle)
+	if err != nil {
+		return pebblestore.SessionLifecycleSnapshot{}, false, fmt.Errorf("marshal lifecycle payload: %w", err)
+	}
+	var lifecycle pebblestore.SessionLifecycleSnapshot
+	if err := json.Unmarshal(encoded, &lifecycle); err != nil {
+		return pebblestore.SessionLifecycleSnapshot{}, false, fmt.Errorf("decode lifecycle payload: %w", err)
+	}
+	if strings.TrimSpace(lifecycle.SessionID) == "" {
+		return pebblestore.SessionLifecycleSnapshot{}, false, errors.New("lifecycle payload session_id is required")
+	}
+	if !strings.EqualFold(strings.TrimSpace(lifecycle.SessionID), sessionID) {
+		return pebblestore.SessionLifecycleSnapshot{}, false, fmt.Errorf("lifecycle payload session_id %q does not match event session_id %q", strings.TrimSpace(lifecycle.SessionID), sessionID)
+	}
+	return lifecycle, true, nil
+}
+
+func (s *Server) validateMirroredEventPayloadMessage(sessionID, eventType string, payload map[string]any) error {
+	_, _, ok, err := s.decodeMirroredEventPayloadMessage(sessionID, eventType, payload)
+	if err != nil || !ok {
+		return err
+	}
+	return nil
+}
+
+func (s *Server) storeMirroredEventPayloadMessage(sessionID, eventType string, payload map[string]any) error {
+	message, session, ok, err := s.decodeMirroredEventPayloadMessage(sessionID, eventType, payload)
 	if err != nil || !ok {
 		return err
 	}
 	_, err = s.sessions.StoreMirroredMessage(session, message)
 	return err
+}
+
+func (s *Server) decodeMirroredEventPayloadMessage(sessionID, eventType string, payload map[string]any) (pebblestore.MessageSnapshot, pebblestore.SessionSnapshot, bool, error) {
+	if s == nil || s.sessions == nil {
+		return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, false, errors.New("session service not configured")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, false, errors.New("session id is required")
+	}
+	rawMessage, ok := payload["message"]
+	if !ok || rawMessage == nil {
+		if mirroredEventRequiresMessagePayload(eventType) {
+			return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, false, fmt.Errorf("event type %q requires message payload", strings.TrimSpace(eventType))
+		}
+		return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, false, nil
+	}
+	encoded, err := json.Marshal(rawMessage)
+	if err != nil {
+		return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, false, fmt.Errorf("marshal message payload: %w", err)
+	}
+	var message pebblestore.MessageSnapshot
+	if err := json.Unmarshal(encoded, &message); err != nil {
+		return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, false, fmt.Errorf("decode message payload: %w", err)
+	}
+	if strings.TrimSpace(message.SessionID) == "" {
+		return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, false, errors.New("message payload session_id is required")
+	}
+	if !strings.EqualFold(strings.TrimSpace(message.SessionID), sessionID) {
+		return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, false, fmt.Errorf("message payload session_id %q does not match event session_id %q", strings.TrimSpace(message.SessionID), sessionID)
+	}
+	if message.GlobalSeq == 0 {
+		return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, false, errors.New("message payload global_seq is required")
+	}
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, false, err
+	}
+	if !ok {
+		return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, false, fmt.Errorf("session %q not found", sessionID)
+	}
+	return message, session, true, nil
+}
+
+func mirroredEventRequiresLifecyclePayload(eventType string) bool {
+	return strings.TrimSpace(eventType) == "session.lifecycle.updated"
+}
+
+func mirroredEventRequiresMessagePayload(eventType string) bool {
+	switch strings.TrimSpace(eventType) {
+	case "run.message.stored", "run.message.updated":
+		return true
+	default:
+		return false
+	}
 }
 
 func mirroredLifecycleEvent(snapshot pebblestore.SessionLifecycleSnapshot) (*pebblestore.EventEnvelope, error) {

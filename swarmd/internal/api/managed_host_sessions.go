@@ -718,10 +718,10 @@ func (s *Server) mirrorManagedHostRunStreamFrame(sessionID string, payload []byt
 	} else if env.GlobalSeq != 0 && s.hub != nil {
 		s.hub.Publish(env)
 	}
-	if err := s.storeMirroredEventPayloadLifecycle(sessionID, payloadMap); err != nil {
+	if err := s.storeMirroredEventPayloadLifecycle(sessionID, eventType, payloadMap); err != nil {
 		log.Printf("warning: store managed-host run stream lifecycle failed session_id=%q event_type=%q: %v", sessionID, eventType, err)
 	}
-	if err := s.storeMirroredEventPayloadMessage(sessionID, payloadMap); err != nil {
+	if err := s.storeMirroredEventPayloadMessage(sessionID, eventType, payloadMap); err != nil {
 		log.Printf("warning: store managed-host run stream message failed session_id=%q event_type=%q: %v", sessionID, eventType, err)
 	}
 	if err := s.storeMirroredEventPayloadTitle(sessionID, eventType, payloadMap); err != nil {
@@ -1097,10 +1097,10 @@ func (s *Server) handlePeerManagedHostSessionEvent(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := s.storeMirroredEventPayloadLifecycle(req.SessionID, req.Payload); err != nil {
+	if err := s.storeMirroredEventPayloadLifecycle(req.SessionID, req.EventType, req.Payload); err != nil {
 		log.Printf("warning: store managed-host mirrored event lifecycle failed session_id=%q event_type=%q: %v", strings.TrimSpace(req.SessionID), strings.TrimSpace(req.EventType), err)
 	}
-	if err := s.storeMirroredEventPayloadMessage(req.SessionID, req.Payload); err != nil {
+	if err := s.storeMirroredEventPayloadMessage(req.SessionID, req.EventType, req.Payload); err != nil {
 		log.Printf("warning: store managed-host mirrored event message failed session_id=%q event_type=%q: %v", strings.TrimSpace(req.SessionID), strings.TrimSpace(req.EventType), err)
 	}
 	if err := s.storeMirroredEventPayloadTitle(req.SessionID, req.EventType, req.Payload); err != nil {

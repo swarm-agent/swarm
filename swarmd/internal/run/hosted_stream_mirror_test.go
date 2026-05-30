@@ -32,8 +32,12 @@ func TestHostedStreamMirrorStoresMessageAndPublishesEvent(t *testing.T) {
 	}
 
 	message := pebblestore.MessageSnapshot{ID: "msg_00000000000000000005", SessionID: "session-flow", GlobalSeq: 5, Role: "assistant", Content: "live parity", CreatedAt: time.Now().UnixMilli()}
-	svc.mirrorHostedStreamEvent(StreamEvent{Type: StreamEventMessageStored, SessionID: "session-flow", RunID: "run-flow", Message: &message})
-	svc.mirrorHostedStreamEvent(StreamEvent{Type: StreamEventMessageStored, SessionID: "session-flow", RunID: "run-flow", Message: &message})
+	if err := svc.mirrorHostedStreamEvent(context.Background(), StreamEvent{Type: StreamEventMessageStored, SessionID: "session-flow", RunID: "run-flow", Message: &message}); err != nil {
+		t.Fatalf("mirror hosted stream event: %v", err)
+	}
+	if err := svc.mirrorHostedStreamEvent(context.Background(), StreamEvent{Type: StreamEventMessageStored, SessionID: "session-flow", RunID: "run-flow", Message: &message}); err != nil {
+		t.Fatalf("mirror hosted stream event again: %v", err)
+	}
 
 	messages, err := sessions.ListMessages("session-flow", 0, 10)
 	if err != nil {

@@ -180,10 +180,10 @@ func (c *HostedSyncClient) resolveEndpoint(descriptor sessionruntime.HostedSessi
 	}
 	baseURL := strings.TrimSpace(descriptor.HostBackendURL)
 	if baseURL == "" {
-		baseURL = strings.TrimSpace(cfg.DeployContainer.HostAPIBaseURL)
+		return "", nil, false, errors.New("hosted permission host backend url is required for http transport")
 	}
-	if baseURL == "" {
-		return "", nil, false, errors.New("hosted permission host backend url is not configured")
+	if strings.TrimSpace(descriptor.HostSwarmID) == "" {
+		return "", nil, false, errors.New("host swarm id is required for hosted permission http transport")
 	}
 	baseClient := c.httpClient
 	if wait {

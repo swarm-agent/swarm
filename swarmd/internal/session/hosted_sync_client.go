@@ -197,10 +197,10 @@ func (c *HostedSyncClient) resolveEndpoint(descriptor HostedSessionDescriptor, p
 	}
 	baseURL := strings.TrimSpace(descriptor.HostBackendURL)
 	if baseURL == "" {
-		baseURL = strings.TrimSpace(cfg.DeployContainer.HostAPIBaseURL)
+		return "", nil, false, errors.New("hosted session host backend url is required for http transport")
 	}
-	if baseURL == "" {
-		return "", nil, false, errors.New("hosted session host backend url is not configured")
+	if strings.TrimSpace(descriptor.HostSwarmID) == "" {
+		return "", nil, false, errors.New("host swarm id is required for hosted session http transport")
 	}
 	client, err := tailscalehttp.ClientForEndpoint(baseURL, c.httpClient)
 	if err != nil {

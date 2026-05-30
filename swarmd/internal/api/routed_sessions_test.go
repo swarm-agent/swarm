@@ -326,30 +326,9 @@ func createManagedHostContainerRouteSyncFixture(t *testing.T, primary *Server, c
 	}
 }
 
-func TestRoutedSessionTargetRewritesManagedLoopbackBackendToHostBackend(t *testing.T) {
+func TestRoutedSessionTargetUsesStoredBackendURLWithoutLoopbackRewrite(t *testing.T) {
 	server, _, _, _ := newRoutedSessionTestServer(t)
-	managedHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/swarm/peer/sessions/open" {
-			http.NotFound(w, r)
-			return
-		}
-		var req peerSessionOpenRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode child request: %v", err)
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok": true,
-			"session": map[string]any{
-				"id":             req.SessionID,
-				"title":          req.Request.Title,
-				"workspace_path": req.Request.RuntimeWorkspacePath,
-				"workspace_name": req.Request.WorkspaceName,
-				"mode":           req.Request.Mode,
-				"created_at":     1,
-				"updated_at":     2,
-			},
-		})
-	}))
+	managedHost := httptest.NewServer(http.NotFoundHandler())
 	defer managedHost.Close()
 	if _, err := server.swarmMirror.UpsertRemoteResource("managed-swarm", pebblestore.SwarmMirrorEventRecord{
 		Sequence:  1,
@@ -406,36 +385,13 @@ func TestRoutedSessionTargetRewritesManagedLoopbackBackendToHostBackend(t *testi
 	if !ok || target == nil {
 		t.Fatal("routed target not found")
 	}
-	if target.BackendURL != managedHost.URL {
-		t.Fatalf("backend url = %q, want managed host backend", target.BackendURL)
+	if target.BackendURL != "http://127.0.0.1:7782" {
+		t.Fatalf("backend url = %q, want exact stored child backend", target.BackendURL)
 	}
 	if target.HostSwarmID != "managed-swarm" {
 		t.Fatalf("host swarm id = %q, want managed-swarm", target.HostSwarmID)
 	}
 
-	body := bytes.NewBufferString(`{"title":"managed child","mode":"plan","workspace_path":"/host/workspace","host_workspace_path":"/host/workspace","runtime_workspace_path":"/workspaces/swarm-go","workspace_name":"swarm-go","preference":{"provider":"fireworks","model":"accounts/fireworks/models/kimi-k2p6","thinking":"low"}}`)
-	req := httptest.NewRequest(http.MethodPost, "/v1/sessions?swarm_id=child-swarm", body)
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	var payload struct {
-		Session struct {
-			ID string `json:"id"`
-		} `json:"session"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	createdRoute, ok, err := server.topology.GetSessionRouteForAccount(testPrincipal().AccountScopeID, payload.Session.ID)
-	if err != nil || !ok {
-		t.Fatalf("get created topology route ok=%t err=%v", ok, err)
-	}
-	if createdRoute.HostSwarmID != "managed-swarm" {
-		t.Fatalf("created route host swarm id = %q, want managed-swarm", createdRoute.HostSwarmID)
-	}
 }
 
 var errTestRemoteUpdateFailure = errors.New("remote update failed")
@@ -1504,6 +1460,88 @@ func TestPrimaryRoutedSessionCreateRejectsMissingExplicitWorktreeMode(t *testing
 	}
 }
 
+func TestPrimaryRoutedSessionCreateMirrorOpenFailureRollsBackRegularSession(t *testing.T) {
+	server, sessionSvc, _, routeStore := newRoutedSessionTestServer(t)
+	var openedSessionID string
+	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/swarm/peer/sessions/open" {
+			http.NotFound(w, r)
+			return
+		}
+		var opened peerSessionOpenRequest
+		if err := json.NewDecoder(r.Body).Decode(&opened); err != nil {
+			t.Fatalf("decode child open: %v", err)
+		}
+		openedSessionID = opened.SessionID
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true,
+			"session": map[string]any{
+				"id":             opened.SessionID + "-child-mismatch",
+				"title":          opened.Request.Title,
+				"workspace_path": opened.Request.RuntimeWorkspacePath,
+				"workspace_name": opened.Request.WorkspaceName,
+				"mode":           opened.Request.Mode,
+				"created_at":     1,
+				"updated_at":     2,
+			},
+		})
+	}))
+	defer child.Close()
+
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
+		SwarmID:          "container-swarm",
+		UserID:           testPrincipal().UserID,
+		AccountScopeID:   testPrincipal().AccountScopeID,
+		Name:             "container child",
+		Relationship:     swarmruntime.RelationshipChild,
+		Transport:        "remote",
+		BackendURL:       child.URL,
+		Status:           "attached",
+		OwnerHostSwarmID: "host-swarm-id",
+	}); err != nil {
+		t.Fatalf("upsert runtime: %v", err)
+	}
+	if _, err := server.topology.UpsertWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
+		BindingID:                 "binding-primary-sync-failure",
+		UserID:                    testPrincipal().UserID,
+		AccountScopeID:            testPrincipal().AccountScopeID,
+		SourceWorkspacePath:       "/host/swarm-go",
+		SourceWorkspaceName:       "swarm-go",
+		DestinationRuntimeSwarmID: "container-swarm",
+		DestinationHostSwarmID:    "host-swarm-id",
+		DestinationWorkspacePath:  "/workspaces/swarm-go",
+		LegacyTargetKind:          "local-container",
+	}); err != nil {
+		t.Fatalf("upsert binding: %v", err)
+	}
+
+	body := bytes.NewBufferString(`{"title":"sync fail","mode":"auto","workspace_path":"/host/swarm-go","host_workspace_path":"/host/swarm-go","workspace_name":"swarm-go","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions?swarm_id=container-swarm", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadGateway, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "does not match sync source") {
+		t.Fatalf("body = %s, want mirror sync failure", rec.Body.String())
+	}
+	if sessions, err := sessionSvc.ListSessionsForAccount(testPrincipal().AccountScopeID, 10); err != nil || len(sessions) != 0 {
+		t.Fatalf("sessions = %+v err=%v, want no primary residue", sessions, err)
+	}
+	if routes, err := routeStore.List(10); err != nil || len(routes) != 0 {
+		t.Fatalf("routes = %+v err=%v, want no route residue", routes, err)
+	}
+	if strings.TrimSpace(openedSessionID) == "" {
+		t.Fatal("child open was not called")
+	}
+	if topologyRoute, ok, err := server.topology.GetSessionRouteForAccount(testPrincipal().AccountScopeID, openedSessionID); err != nil {
+		t.Fatalf("get topology route: %v", err)
+	} else if ok {
+		t.Fatalf("unexpected topology route residue: %+v", topologyRoute)
+	}
+}
+
 func TestPrimaryRoutedSessionCreateBuildsExplicitBindingContract(t *testing.T) {
 	server, _, _, routeStore := newRoutedSessionTestServer(t)
 	var opened peerSessionOpenRequest
@@ -2090,3 +2128,91 @@ func (f fakeRoutedSwarmService) DetachToStandalone(string) error {
 }
 
 var _ swarmService = fakeRoutedSwarmService{}
+
+func TestPeerSessionEventRejectsRequiredPayloadFailures(t *testing.T) {
+	cases := []struct {
+		name          string
+		body          string
+		wantErrSubstr string
+	}{
+		{
+			name:          "message event missing payload",
+			body:          `{"session_id":"session-strict-event","event_type":"run.message.stored","payload":{"type":"message.stored","session_id":"session-strict-event"}}`,
+			wantErrSubstr: "requires message payload",
+		},
+		{
+			name:          "message event mismatched session",
+			body:          `{"session_id":"session-strict-event","event_type":"run.message.stored","payload":{"type":"message.stored","session_id":"session-strict-event","message":{"id":"msg_00000000000000000008","session_id":"other-session","global_seq":8,"role":"assistant","content":"wrong session","created_at":123}}}`,
+			wantErrSubstr: "does not match event session_id",
+		},
+		{
+			name:          "message event zero global seq",
+			body:          `{"session_id":"session-strict-event","event_type":"run.message.stored","payload":{"type":"message.stored","session_id":"session-strict-event","message":{"id":"msg_00000000000000000009","session_id":"session-strict-event","global_seq":0,"role":"assistant","content":"zero seq","created_at":123}}}`,
+			wantErrSubstr: "global_seq is required",
+		},
+		{
+			name:          "message event missing payload session",
+			body:          `{"session_id":"session-strict-event","event_type":"run.message.stored","payload":{"type":"message.stored","session_id":"session-strict-event","message":{"id":"msg_00000000000000000011","global_seq":11,"role":"assistant","content":"missing session","created_at":123}}}`,
+			wantErrSubstr: "message payload session_id is required",
+		},
+		{
+			name:          "lifecycle event missing payload",
+			body:          `{"session_id":"session-strict-event","event_type":"session.lifecycle.updated","payload":{"type":"session.lifecycle.updated","session_id":"session-strict-event"}}`,
+			wantErrSubstr: "requires lifecycle payload",
+		},
+		{
+			name:          "lifecycle event mismatched session",
+			body:          `{"session_id":"session-strict-event","event_type":"session.lifecycle.updated","payload":{"type":"session.lifecycle.updated","session_id":"session-strict-event","lifecycle":{"session_id":"other-session","run_id":"run-live","active":true,"phase":"running","updated_at":123}}}`,
+			wantErrSubstr: "does not match event session_id",
+		},
+		{
+			name:          "lifecycle event missing payload session",
+			body:          `{"session_id":"session-strict-event","event_type":"session.lifecycle.updated","payload":{"type":"session.lifecycle.updated","session_id":"session-strict-event","lifecycle":{"run_id":"run-live","active":true,"phase":"running","updated_at":123}}}`,
+			wantErrSubstr: "lifecycle payload session_id is required",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server, sessionSvc, _, _ := newRoutedSessionTestServer(t)
+			if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "session-strict-event", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, WorkspacePath: "/host/workspace", WorkspaceName: "workspace", Title: "Strict event", Mode: sessionruntime.ModeAuto, CreatedAt: 1, UpdatedAt: 1}); err != nil {
+				t.Fatalf("store session: %v", err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/v1/swarm/peer/sessions/event", bytes.NewReader([]byte(tc.body)))
+			rec := httptest.NewRecorder()
+			server.handlePeerSessionEvent(rec, requestWithTestPrincipalForAccount(req, testPrincipal().UserID, testPrincipal().AccountScopeID))
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tc.wantErrSubstr) {
+				t.Fatalf("body = %s, want %q", rec.Body.String(), tc.wantErrSubstr)
+			}
+			events, err := server.events.ReadFrom(1, 20)
+			if err != nil {
+				t.Fatalf("read events: %v", err)
+			}
+			for _, event := range events {
+				if event.EntityID == "session-strict-event" && (event.EventType == "run.message.stored" || event.EventType == "session.lifecycle.updated") {
+					t.Fatalf("event was persisted despite payload failure: %+v", event)
+				}
+			}
+		})
+	}
+}
+
+func TestPeerSessionEventRejectsMessagePayloadWhenLocalSessionMissing(t *testing.T) {
+	server, _, _, routeStore := newRoutedSessionTestServer(t)
+	if _, err := routeStore.Put(pebblestore.SessionRouteRecord{SessionID: "session-route-only", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ChildSwarmID: "child-swarm", ChildBackendURL: "http://127.0.0.1:7782", HostSwarmID: "host-swarm-id", HostWorkspacePath: "/host/workspace", RuntimeWorkspacePath: "/runtime/workspace"}); err != nil {
+		t.Fatalf("put route: %v", err)
+	}
+	body := []byte(`{"session_id":"session-route-only","event_type":"run.message.stored","payload":{"type":"message.stored","session_id":"session-route-only","message":{"id":"msg_00000000000000000010","session_id":"session-route-only","global_seq":10,"role":"assistant","content":"no local session","created_at":123}}}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/swarm/peer/sessions/event", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	server.handlePeerSessionEvent(rec, requestWithTestPrincipalForAccount(req, testPrincipal().UserID, testPrincipal().AccountScopeID))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "session-route-only") || !strings.Contains(rec.Body.String(), "not found") {
+		t.Fatalf("body = %s, want missing session error", rec.Body.String())
+	}
+}

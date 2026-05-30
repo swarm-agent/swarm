@@ -3,12 +3,55 @@ package permission
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
+
+func TestHostedPermissionSyncClientRequiresDescriptorHostBackendURLForHTTPTransport(t *testing.T) {
+	t.Setenv("SWARM_CHILD_STARTUP_CONFIG", "deploy_container_host_api_base_url = http://127.0.0.1:9999\n")
+	client := NewHostedSyncClient(filepath.Join(t.TempDir(), "swarm-child.conf"), nil)
+
+	_, _, _, err := client.resolveEndpoint(sessionruntime.HostedSessionDescriptor{HostSwarmID: "host-swarm"}, hostedPermissionPeerCreatePath, false)
+	if err == nil {
+		t.Fatal("resolve endpoint succeeded without descriptor host backend url")
+	}
+	if !strings.Contains(err.Error(), "host backend url is required") {
+		t.Fatalf("error = %v, want required host backend url", err)
+	}
+}
+
+func TestHostedPermissionSyncClientRequiresHostSwarmIDForHTTPTransport(t *testing.T) {
+	t.Setenv("SWARM_CHILD_STARTUP_CONFIG", "")
+	client := NewHostedSyncClient(filepath.Join(t.TempDir(), "swarm-child.conf"), nil)
+
+	_, _, _, err := client.resolveEndpoint(sessionruntime.HostedSessionDescriptor{HostBackendURL: "http://127.0.0.1:9999"}, hostedPermissionPeerCreatePath, false)
+	if err == nil {
+		t.Fatal("resolve endpoint succeeded without descriptor host swarm id")
+	}
+	if !strings.Contains(err.Error(), "host swarm id is required") {
+		t.Fatalf("error = %v, want required host swarm id", err)
+	}
+}
+
+func TestHostedPermissionSyncClientAllowsExplicitLocalUnixTransportWithoutHostHTTPFields(t *testing.T) {
+	t.Setenv("SWARM_CHILD_STARTUP_CONFIG", "deploy_container_local_transport_socket_path = /tmp/swarm-hosted-permission-test.sock\n")
+	client := NewHostedSyncClient(filepath.Join(t.TempDir(), "swarm-child.conf"), nil)
+
+	endpoint, _, localTransport, err := client.resolveEndpoint(sessionruntime.HostedSessionDescriptor{}, hostedPermissionPeerCreatePath, false)
+	if err != nil {
+		t.Fatalf("resolve local endpoint: %v", err)
+	}
+	if !localTransport {
+		t.Fatal("local transport = false, want true")
+	}
+	if endpoint != hostedPermissionLocalTransportBaseURL+hostedPermissionPeerCreatePath {
+		t.Fatalf("endpoint = %q, want local transport endpoint", endpoint)
+	}
+}
 
 func TestHostedPermissionsCreateAndWaitMirrorLocalState(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "hosted-permission-sync.pebble"))

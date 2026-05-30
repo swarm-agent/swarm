@@ -767,10 +767,7 @@ func (s *Server) buildPrimaryRoutedSessionOpenContract(principal identity.Princi
 		}
 	}
 	if routeHostSwarmID == "" {
-		if strings.EqualFold(strings.TrimSpace(target.Kind), "mirrored") {
-			return contract, errors.New("routed session host swarm id is required")
-		}
-		routeHostSwarmID = hostSwarmID
+		return contract, errors.New("routed session host swarm id is required")
 	}
 	if routeHostSwarmID == "" {
 		return contract, errors.New("routed session host swarm id is required")
@@ -785,11 +782,6 @@ func (s *Server) buildPrimaryRoutedSessionOpenContract(principal identity.Princi
 	}
 
 	proxyTarget := target
-	if strings.EqualFold(strings.TrimSpace(target.Kind), "mirrored") {
-		if backendURL := s.ownerHostBackendURLForTarget(target); backendURL != "" {
-			proxyTarget.BackendURL = backendURL
-		}
-	}
 
 	routeMetadata := map[string]any{
 		"swarm_route_id":                                         "swarm:" + childSwarmID + ":" + childRuntimePath,
@@ -2506,14 +2498,10 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			}
 			syncedSession, syncErr := s.sessions.SyncHostedMirrorOpenState(session.ID, childResp.Session)
 			if syncErr != nil {
-				if contract.RequireWorktree {
-					rollbackHostedCreate(syncErr)
-					return
-				}
-				log.Printf("hosted session create mirror sync failed session_id=%q err=%v", session.ID, syncErr)
-			} else {
-				session = syncedSession
+				rollbackHostedCreate(syncErr)
+				return
 			}
+			session = syncedSession
 			if event != nil {
 				s.hub.Publish(*event)
 			}
@@ -2658,11 +2646,12 @@ func (s *Server) rollbackHostedSessionCreate(sessionID string) error {
 		return nil
 	}
 	var failures []string
+	if err := s.deleteTopologySessionRoute(sessionID); err != nil {
+		failures = append(failures, "delete topology session route: "+err.Error())
+	}
 	if s.sessionRoutes != nil {
 		if err := s.sessionRoutes.Delete(sessionID); err != nil {
 			failures = append(failures, "delete session route: "+err.Error())
-		} else if err := s.deleteTopologySessionRoute(sessionID); err != nil {
-			failures = append(failures, "delete topology session route: "+err.Error())
 		}
 	}
 	if s.sessions != nil {
