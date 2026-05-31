@@ -615,13 +615,24 @@ func listRemoteDeployTargetsForAccount(s *Server, r *http.Request, accountScopeI
 }
 
 func (s *Server) applyCachedSwarmTargetHealth(target *swarmTarget) {
-	if s == nil || target == nil || target.Kind == "self" || strings.TrimSpace(target.BackendURL) == "" {
+	if s == nil || target == nil || target.Kind == "self" {
 		return
 	}
-	healthBackendURL := s.proxyBackendURLForTarget(*target)
-	if strings.TrimSpace(healthBackendURL) == "" {
+	authorityHostSwarmID := firstNonEmpty(strings.TrimSpace(target.HostSwarmID), strings.TrimSpace(target.SwarmID))
+	if strings.TrimSpace(target.BackendURL) != "" {
+		conn := authorityConnectionForTarget(*target)
+		s.ensureAuthorityConnectionRegistry().Upsert(conn)
+	}
+	conn, ok := s.ResolveAuthorityConnection("", authorityHostSwarmID)
+	if !ok || conn.endpoint() == "" {
+		target.Online = false
+		target.Selectable = false
+		if strings.TrimSpace(target.AttachStatus) == "" || strings.EqualFold(target.AttachStatus, "attached") {
+			target.AttachStatus = "authority-unreachable"
+		}
 		return
 	}
+	healthBackendURL := conn.endpoint()
 	if !target.Online {
 		s.markSwarmTargetHealth(target, false)
 		return

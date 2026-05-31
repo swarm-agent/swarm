@@ -128,28 +128,6 @@ func (s *Server) routedSessionTarget(principal identity.Principal, sessionID str
 	return target, true, nil
 }
 
-func (s *Server) backendURLForAuthorityHost(accountScopeID, authorityHostSwarmID string) string {
-	authorityHostSwarmID = strings.TrimSpace(authorityHostSwarmID)
-	if s == nil || authorityHostSwarmID == "" {
-		return ""
-	}
-	if s.topology != nil {
-		if runtimeRecord, ok, err := s.topology.GetRuntimeForAccount(accountScopeID, authorityHostSwarmID); err == nil && ok {
-			if backendURL := strings.TrimSpace(runtimeRecord.BackendURL); backendURL != "" {
-				return backendURL
-			}
-		}
-	}
-	if s.swarmNodes != nil {
-		if node, ok, err := s.swarmNodes.Get(authorityHostSwarmID); err == nil && ok {
-			if backendURL := strings.TrimSpace(node.BackendURL); backendURL != "" {
-				return backendURL
-			}
-		}
-	}
-	return ""
-}
-
 func swarmTargetKindForRoutedSession(runtimeRecord pebblestore.TopologyRuntimeRecord) string {
 	if strings.TrimSpace(runtimeRecord.OwnerHostSwarmID) != "" {
 		return "mirrored"
@@ -245,8 +223,17 @@ func (s *Server) postPeerJSONToSwarmTarget(ctx context.Context, target swarmTarg
 		flowdiaglog.Printf("peer_http_post_marshal_failed", "target_swarm_id=%q path=%q err=%q", target.SwarmID, path, err.Error())
 		return err
 	}
-	endpoint := strings.TrimRight(strings.TrimSpace(target.BackendURL), "/") + path
-	flowdiaglog.Printf("peer_http_post_request", "source_swarm_id=%q target_swarm_id=%q path=%q endpoint=%q payload_bytes=%d", strings.TrimSpace(state.Node.SwarmID), target.SwarmID, path, endpoint, len(raw))
+	accountScopeID := ""
+	if principal, ok := identity.PrincipalFromContext(ctx); ok && principal.Valid() {
+		accountScopeID = principal.AccountScopeID
+	}
+	backendURL, err := s.resolveTargetAuthorityBackendURL(accountScopeID, target)
+	if err != nil {
+		flowdiaglog.Printf("peer_http_post_authority_resolve_failed", "target_swarm_id=%q authority_host_swarm_id=%q path=%q err=%q", target.SwarmID, firstNonEmpty(strings.TrimSpace(target.HostSwarmID), strings.TrimSpace(target.SwarmID)), path, err.Error())
+		return err
+	}
+	endpoint := strings.TrimRight(backendURL, "/") + path
+	flowdiaglog.Printf("peer_http_post_request", "source_swarm_id=%q target_swarm_id=%q authority_host_swarm_id=%q path=%q endpoint=%q payload_bytes=%d", strings.TrimSpace(state.Node.SwarmID), target.SwarmID, firstNonEmpty(strings.TrimSpace(target.HostSwarmID), strings.TrimSpace(target.SwarmID)), path, endpoint, len(raw))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
 	if err != nil {
 		flowdiaglog.Printf("peer_http_post_request_build_failed", "target_swarm_id=%q path=%q endpoint=%q err=%q", target.SwarmID, path, endpoint, err.Error())

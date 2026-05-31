@@ -425,7 +425,7 @@ func (s *Server) flowDeliveryTarget(target swarmTarget) swarmTarget {
 		return target
 	}
 	if strings.EqualFold(strings.TrimSpace(target.Kind), "mirrored") || strings.TrimSpace(target.HostSwarmID) != "" {
-		if backendURL := s.proxyBackendURLForTarget(target); strings.TrimSpace(backendURL) != "" {
+		if backendURL, err := s.resolveTargetAuthorityBackendURL("", target); err == nil && strings.TrimSpace(backendURL) != "" {
 			deliveryTarget := target
 			deliveryTarget.BackendURL = strings.TrimSpace(backendURL)
 			deliveryTarget.Online = true

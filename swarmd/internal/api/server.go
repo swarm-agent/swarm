@@ -131,6 +131,7 @@ type Server struct {
 	identitySessions          *identity.SessionService
 	gitRealtime               *gitRealtimeManager
 	swarmTargetHealth         swarmTargetHealthCache
+	authorityConnections      AuthorityConnectionRegistry
 	swarmStore                *pebblestore.SwarmStore
 	swarmMirror               *pebblestore.SwarmMirrorStore
 	mirrorSyncStarted         atomic.Bool
@@ -310,6 +311,7 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 		desktopLocalSessions: newDesktopLocalSessionManager(),
 		remotePairingPending: make(map[string]swarmRemotePairingPendingRequest),
 		gitRealtime:          nil,
+		authorityConnections: newAuthorityConnectionRegistry(),
 		runCtx:               runCtx,
 		runCancel:            runCancel,
 	}

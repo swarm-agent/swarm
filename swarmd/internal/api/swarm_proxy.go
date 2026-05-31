@@ -55,7 +55,15 @@ func (s *Server) proxyRequestToSwarmTarget(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		return err
 	}
-	endpoint, err := cloneURLWithQuery(strings.TrimRight(s.proxyBackendURLForTarget(target), "/")+r.URL.Path, r.URL.Query())
+	accountScopeID := ""
+	if principal, ok := PrincipalFromRequest(r); ok && principal.Valid() {
+		accountScopeID = principal.AccountScopeID
+	}
+	backendURL, err := s.resolveTargetAuthorityBackendURL(accountScopeID, target)
+	if err != nil {
+		return err
+	}
+	endpoint, err := cloneURLWithQuery(strings.TrimRight(backendURL, "/")+r.URL.Path, r.URL.Query())
 	if err != nil {
 		return err
 	}
@@ -102,7 +110,15 @@ func (s *Server) proxyWebsocketToSwarmTarget(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		return err
 	}
-	endpoint, err := cloneURLWithQuery(strings.TrimRight(s.proxyBackendURLForTarget(target), "/")+r.URL.Path, r.URL.Query())
+	accountScopeID := ""
+	if principal, ok := PrincipalFromRequest(r); ok && principal.Valid() {
+		accountScopeID = principal.AccountScopeID
+	}
+	backendURL, err := s.resolveTargetAuthorityBackendURL(accountScopeID, target)
+	if err != nil {
+		return err
+	}
+	endpoint, err := cloneURLWithQuery(strings.TrimRight(backendURL, "/")+r.URL.Path, r.URL.Query())
 	if err != nil {
 		return err
 	}
@@ -293,38 +309,11 @@ func (s *Server) backendURLForSwarmID(swarmID string) string {
 }
 
 func (s *Server) backendURLForSwarmIDForAccount(accountScopeID, swarmID string) string {
-	swarmID = strings.TrimSpace(swarmID)
-	accountScopeID = strings.TrimSpace(accountScopeID)
-	if swarmID == "" || s == nil {
+	conn, ok := s.ResolveAuthorityConnection(accountScopeID, swarmID)
+	if !ok || strings.EqualFold(conn.TransportKind, authorityConnectionTransportLocal) {
 		return ""
 	}
-	if s.swarm != nil {
-		if cfg, err := s.loadStartupConfig(); err == nil {
-			if state, err := s.currentSwarmState(cfg); err == nil {
-				for _, target := range listTrustedPeerTargets(state.TrustedPeers) {
-					if strings.EqualFold(strings.TrimSpace(target.SwarmID), swarmID) && strings.TrimSpace(target.BackendURL) != "" {
-						return strings.TrimSpace(target.BackendURL)
-					}
-				}
-			}
-		}
-	}
-	if s.topology != nil {
-		if accountScopeID != "" {
-			if runtimeRecord, ok, err := s.topology.GetRuntimeForAccount(accountScopeID, swarmID); err == nil && ok {
-				if backendURL := strings.TrimSpace(runtimeRecord.BackendURL); backendURL != "" {
-					return backendURL
-				}
-			}
-			return ""
-		}
-		if runtimeRecord, ok, err := s.topology.GetRuntime(swarmID); err == nil && ok {
-			if backendURL := strings.TrimSpace(runtimeRecord.BackendURL); backendURL != "" {
-				return backendURL
-			}
-		}
-	}
-	return ""
+	return conn.endpoint()
 }
 
 func (s *Server) ownerHostSwarmIDForTarget(target swarmTarget) string {
