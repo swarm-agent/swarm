@@ -29,6 +29,9 @@ type Service struct {
 type Resolution struct {
 	RequestedPath          string `json:"requested_path"`
 	ResolvedPath           string `json:"resolved_path"`
+	WorkspaceID            string `json:"workspace_id,omitempty"`
+	WorkspaceGeneration    int64  `json:"workspace_generation,omitempty"`
+	WorkspaceState         string `json:"workspace_state,omitempty"`
 	WorkspacePath          string `json:"workspace_path"`
 	WorkspaceName          string `json:"workspace_name"`
 	ThemeID                string `json:"theme_id,omitempty"`
@@ -39,23 +42,29 @@ type Resolution struct {
 }
 
 type Entry struct {
-	Path             string                                 `json:"path"`
-	WorkspaceName    string                                 `json:"workspace_name"`
-	ThemeID          string                                 `json:"theme_id,omitempty"`
-	Directories      []string                               `json:"directories"`
-	IsGitRepo        bool                                   `json:"is_git_repo"`
-	ReplicationLinks []pebblestore.WorkspaceReplicationLink `json:"replication_links,omitempty"`
-	SortIndex        int                                    `json:"sort_index"`
-	AddedAt          int64                                  `json:"added_at"`
-	UpdatedAt        int64                                  `json:"updated_at"`
-	LastSelectedAt   int64                                  `json:"last_selected_at"`
-	Active           bool                                   `json:"active"`
-	WorktreeEnabled  bool                                   `json:"worktree_enabled"`
+	Path                string                                 `json:"path"`
+	WorkspaceID         string                                 `json:"workspace_id,omitempty"`
+	WorkspaceGeneration int64                                  `json:"workspace_generation,omitempty"`
+	State               string                                 `json:"state,omitempty"`
+	WorkspaceName       string                                 `json:"workspace_name"`
+	ThemeID             string                                 `json:"theme_id,omitempty"`
+	Directories         []string                               `json:"directories"`
+	IsGitRepo           bool                                   `json:"is_git_repo"`
+	ReplicationLinks    []pebblestore.WorkspaceReplicationLink `json:"replication_links,omitempty"`
+	SortIndex           int                                    `json:"sort_index"`
+	AddedAt             int64                                  `json:"added_at"`
+	UpdatedAt           int64                                  `json:"updated_at"`
+	LastSelectedAt      int64                                  `json:"last_selected_at"`
+	Active              bool                                   `json:"active"`
+	WorktreeEnabled     bool                                   `json:"worktree_enabled"`
 }
 
 type Scope struct {
 	RequestedPath          string   `json:"requested_path"`
 	ResolvedPath           string   `json:"resolved_path"`
+	WorkspaceID            string   `json:"workspace_id,omitempty"`
+	WorkspaceGeneration    int64    `json:"workspace_generation,omitempty"`
+	WorkspaceState         string   `json:"workspace_state,omitempty"`
 	WorkspacePath          string   `json:"workspace_path"`
 	WorkspaceName          string   `json:"workspace_name"`
 	ThemeID                string   `json:"theme_id,omitempty"`
@@ -205,7 +214,7 @@ func (s *Service) SelectForPrincipal(principal identity.Principal, path string) 
 	if _, err := s.store.SetCurrentForAccount(principal.AccountScopeID, principal.UserID, resolved, name); err != nil {
 		return Resolution{}, fmt.Errorf("persist workspace selection: %w", err)
 	}
-	return resolutionForWorkspace(path, resolved, entry.Path, name, normalizeWorkspaceThemeID(entry.ThemeID)), nil
+	return resolutionForEntry(path, resolved, entry, name), nil
 }
 
 func (s *Service) Add(path, name, themeID string, makeCurrent bool) (Resolution, error) {
@@ -246,7 +255,7 @@ func (s *Service) AddForPrincipal(principal identity.Principal, path, name, them
 	if !ok {
 		return Resolution{}, fmt.Errorf("workspace not found after save for path %q", resolved)
 	}
-	return resolutionForWorkspace(path, resolved, entry.Path, name, normalizeWorkspaceThemeID(entry.ThemeID)), nil
+	return resolutionForEntry(path, resolved, entry, name), nil
 }
 
 func (s *Service) AddDirectory(path, directory string) (Resolution, error) {
@@ -277,7 +286,7 @@ func (s *Service) AddDirectoryForPrincipal(principal identity.Principal, path, d
 	if name == "" {
 		name = defaultWorkspaceName(entry.Path)
 	}
-	return resolutionForWorkspace(directory, targetPath, entry.Path, name, normalizeWorkspaceThemeID(entry.ThemeID)), nil
+	return resolutionForEntry(directory, targetPath, entry, name), nil
 }
 
 func (s *Service) RemoveDirectory(path, directory string) (Resolution, error) {
@@ -305,7 +314,7 @@ func (s *Service) RemoveDirectoryForPrincipal(principal identity.Principal, path
 	if name == "" {
 		name = defaultWorkspaceName(entry.Path)
 	}
-	return resolutionForWorkspace(directory, targetPath, entry.Path, name, normalizeWorkspaceThemeID(entry.ThemeID)), nil
+	return resolutionForEntry(directory, targetPath, entry, name), nil
 }
 
 func (s *Service) Rename(path, name string) (Resolution, error) {
@@ -335,7 +344,7 @@ func (s *Service) RenameForPrincipal(principal identity.Principal, path, name st
 	if err != nil {
 		return Resolution{}, fmt.Errorf("rename workspace: %w", err)
 	}
-	return resolutionForWorkspace(path, entry.Path, entry.Path, entry.Name, normalizeWorkspaceThemeID(entry.ThemeID)), nil
+	return resolutionForEntry(path, entry.Path, entry, entry.Name), nil
 }
 
 func (s *Service) SetThemeID(path, themeID string) (Resolution, error) {
@@ -358,7 +367,7 @@ func (s *Service) SetThemeIDForPrincipal(principal identity.Principal, path, the
 	if name == "" {
 		name = defaultWorkspaceName(entry.Path)
 	}
-	resolution := resolutionForWorkspace(path, entry.Path, entry.Path, name, normalizeWorkspaceThemeID(entry.ThemeID))
+	resolution := resolutionForEntry(path, entry.Path, entry, name)
 	if err := s.publishThemeUpdated(resolution); err != nil {
 		return Resolution{}, err
 	}
@@ -409,7 +418,7 @@ func (s *Service) MoveForPrincipal(principal identity.Principal, path string, de
 	if name == "" {
 		name = defaultWorkspaceName(entry.Path)
 	}
-	return resolutionForWorkspace(path, entry.Path, entry.Path, name, normalizeWorkspaceThemeID(entry.ThemeID)), nil
+	return resolutionForEntry(path, entry.Path, entry, name), nil
 }
 
 func (s *Service) Delete(path string) (Resolution, error) {
@@ -440,7 +449,7 @@ func (s *Service) DeleteForPrincipal(principal identity.Principal, path string) 
 	if err := s.store.DeleteForAccount(principal.AccountScopeID, principal.UserID, resolved); err != nil {
 		return Resolution{}, fmt.Errorf("delete workspace: %w", err)
 	}
-	return resolutionForWorkspace(path, resolved, resolved, name, normalizeWorkspaceThemeID(entry.ThemeID)), nil
+	return resolutionForEntry(path, resolved, entry, name), nil
 }
 
 func (s *Service) ListKnown(limit int) ([]Entry, error) {
@@ -452,18 +461,21 @@ func (s *Service) ListKnown(limit int) ([]Entry, error) {
 	for _, entry := range entries {
 		isGitRepo, _ := detectWorkspaceSignals(entry.Path)
 		out = append(out, Entry{
-			Path:             entry.Path,
-			WorkspaceName:    entry.Name,
-			ThemeID:          normalizeWorkspaceThemeID(entry.ThemeID),
-			Directories:      append([]string(nil), entry.Directories...),
-			IsGitRepo:        isGitRepo,
-			ReplicationLinks: append([]pebblestore.WorkspaceReplicationLink(nil), entry.ReplicationLinks...),
-			SortIndex:        entry.SortIndex,
-			AddedAt:          entry.AddedAt,
-			UpdatedAt:        entry.UpdatedAt,
-			LastSelectedAt:   entry.LastSelectedAt,
-			Active:           false,
-			WorktreeEnabled:  false,
+			Path:                entry.Path,
+			WorkspaceID:         entry.WorkspaceID,
+			WorkspaceGeneration: entry.WorkspaceGeneration,
+			State:               entry.State,
+			WorkspaceName:       entry.Name,
+			ThemeID:             normalizeWorkspaceThemeID(entry.ThemeID),
+			Directories:         append([]string(nil), entry.Directories...),
+			IsGitRepo:           isGitRepo,
+			ReplicationLinks:    append([]pebblestore.WorkspaceReplicationLink(nil), entry.ReplicationLinks...),
+			SortIndex:           entry.SortIndex,
+			AddedAt:             entry.AddedAt,
+			UpdatedAt:           entry.UpdatedAt,
+			LastSelectedAt:      entry.LastSelectedAt,
+			Active:              false,
+			WorktreeEnabled:     false,
 		})
 	}
 	return out, nil
@@ -492,18 +504,21 @@ func (s *Service) ListKnownForPrincipal(principal identity.Principal, limit int)
 			active = true
 		}
 		out = append(out, Entry{
-			Path:             entry.Path,
-			WorkspaceName:    entry.Name,
-			ThemeID:          normalizeWorkspaceThemeID(entry.ThemeID),
-			Directories:      append([]string(nil), entry.Directories...),
-			IsGitRepo:        isGitRepo,
-			ReplicationLinks: append([]pebblestore.WorkspaceReplicationLink(nil), entry.ReplicationLinks...),
-			SortIndex:        entry.SortIndex,
-			AddedAt:          entry.AddedAt,
-			UpdatedAt:        entry.UpdatedAt,
-			LastSelectedAt:   entry.LastSelectedAt,
-			Active:           active,
-			WorktreeEnabled:  false,
+			Path:                entry.Path,
+			WorkspaceID:         entry.WorkspaceID,
+			WorkspaceGeneration: entry.WorkspaceGeneration,
+			State:               entry.State,
+			WorkspaceName:       entry.Name,
+			ThemeID:             normalizeWorkspaceThemeID(entry.ThemeID),
+			Directories:         append([]string(nil), entry.Directories...),
+			IsGitRepo:           isGitRepo,
+			ReplicationLinks:    append([]pebblestore.WorkspaceReplicationLink(nil), entry.ReplicationLinks...),
+			SortIndex:           entry.SortIndex,
+			AddedAt:             entry.AddedAt,
+			UpdatedAt:           entry.UpdatedAt,
+			LastSelectedAt:      entry.LastSelectedAt,
+			Active:              active,
+			WorktreeEnabled:     false,
 		})
 	}
 	return out, nil
@@ -532,7 +547,17 @@ func (s *Service) CurrentBindingForPrincipal(principal identity.Principal) (Reso
 	if entryOK {
 		themeID = normalizeWorkspaceThemeID(entry.ThemeID)
 	}
-	return resolutionForWorkspace(binding.Path, binding.Path, binding.Path, binding.Name, themeID), true, nil
+	if entryOK {
+		name := strings.TrimSpace(binding.Name)
+		if name == "" {
+			name = strings.TrimSpace(entry.Name)
+		}
+		if name == "" {
+			name = defaultWorkspaceName(entry.Path)
+		}
+		return resolutionForEntry(binding.Path, binding.Path, entry, name), true, nil
+	}
+	return resolutionForWorkspace(binding.Path, binding.Path, binding.Path, binding.WorkspaceID, binding.WorkspaceGeneration, "", binding.Name, themeID), true, nil
 }
 
 // ScopeForPath is a legacy, principal-less resolver. Do not use it from run,
@@ -575,7 +600,7 @@ func (s *Service) ScopeForPathForPrincipal(principal identity.Principal, path st
 		}
 	}
 	if bestIndex < 0 {
-		return scopeForWorkspace(path, resolved, resolved, defaultWorkspaceName(resolved), "", []string{resolved}, false), nil
+		return scopeForWorkspace(path, resolved, resolved, "", 0, "", defaultWorkspaceName(resolved), "", []string{resolved}, false), nil
 	}
 
 	entry := entries[bestIndex]
@@ -587,7 +612,7 @@ func (s *Service) ScopeForPathForPrincipal(principal identity.Principal, path st
 	if len(directories) == 0 {
 		directories = []string{entry.Path}
 	}
-	return scopeForWorkspace(path, resolved, entry.Path, name, normalizeWorkspaceThemeID(entry.ThemeID), directories, true), nil
+	return scopeForEntry(path, resolved, entry, name, directories, true), nil
 }
 
 // ScopeForWorkspace reads only legacy global workspace entries. Principal-backed
@@ -612,7 +637,7 @@ func (s *Service) ScopeForWorkspace(path string) (Scope, error) {
 	if len(directories) == 0 {
 		directories = []string{entry.Path}
 	}
-	return scopeForWorkspace(path, resolved, entry.Path, name, normalizeWorkspaceThemeID(entry.ThemeID), directories, true), nil
+	return scopeForEntry(path, resolved, entry, name, directories, true), nil
 }
 
 func (s *Service) ScopeForWorkspaceForPrincipal(principal identity.Principal, path string) (Scope, error) {
@@ -638,7 +663,7 @@ func (s *Service) ScopeForWorkspaceForPrincipal(principal identity.Principal, pa
 	if len(directories) == 0 {
 		directories = []string{entry.Path}
 	}
-	return scopeForWorkspace(path, resolved, entry.Path, name, normalizeWorkspaceThemeID(entry.ThemeID), directories, true), nil
+	return scopeForEntry(path, resolved, entry, name, directories, true), nil
 }
 
 func (s *Service) Browse(path string) (BrowseResult, error) {
@@ -889,7 +914,7 @@ func (s *Service) legacyScopeForPath(path string) (Scope, error) {
 		}
 	}
 	if bestIndex < 0 {
-		return scopeForWorkspace(path, resolved, resolved, defaultWorkspaceName(resolved), "", []string{resolved}, false), nil
+		return scopeForWorkspace(path, resolved, resolved, "", 0, "", defaultWorkspaceName(resolved), "", []string{resolved}, false), nil
 	}
 	entry := entries[bestIndex]
 	name := strings.TrimSpace(entry.Name)
@@ -900,7 +925,7 @@ func (s *Service) legacyScopeForPath(path string) (Scope, error) {
 	if len(directories) == 0 {
 		directories = []string{entry.Path}
 	}
-	return scopeForWorkspace(path, resolved, entry.Path, name, normalizeWorkspaceThemeID(entry.ThemeID), directories, true), nil
+	return scopeForEntry(path, resolved, entry, name, directories, true), nil
 }
 
 func (s *Service) ensureRemoteChildWorkspaceEntriesForPrincipal(principal identity.Principal) error {
@@ -1049,6 +1074,9 @@ func resolutionFromScope(requestedPath string, scope Scope) Resolution {
 	return Resolution{
 		RequestedPath:          requestedPath,
 		ResolvedPath:           scope.ResolvedPath,
+		WorkspaceID:            scope.WorkspaceID,
+		WorkspaceGeneration:    scope.WorkspaceGeneration,
+		WorkspaceState:         scope.WorkspaceState,
 		WorkspacePath:          scope.WorkspacePath,
 		WorkspaceName:          scope.WorkspaceName,
 		ThemeID:                scope.ThemeID,
@@ -1059,11 +1087,18 @@ func resolutionFromScope(requestedPath string, scope Scope) Resolution {
 	}
 }
 
-func resolutionForWorkspace(requestedPath, resolvedPath, workspacePath, workspaceName, themeID string) Resolution {
+func resolutionForEntry(requestedPath, resolvedPath string, entry pebblestore.WorkspaceEntry, workspaceName string) Resolution {
+	return resolutionForWorkspace(requestedPath, resolvedPath, entry.Path, entry.WorkspaceID, entry.WorkspaceGeneration, entry.State, workspaceName, normalizeWorkspaceThemeID(entry.ThemeID))
+}
+
+func resolutionForWorkspace(requestedPath, resolvedPath, workspacePath, workspaceID string, workspaceGeneration int64, workspaceState, workspaceName, themeID string) Resolution {
 	managed := managedStorageForWorkspace(workspacePath)
 	return Resolution{
 		RequestedPath:          requestedPath,
 		ResolvedPath:           resolvedPath,
+		WorkspaceID:            workspaceID,
+		WorkspaceGeneration:    workspaceGeneration,
+		WorkspaceState:         workspaceState,
 		WorkspacePath:          workspacePath,
 		WorkspaceName:          workspaceName,
 		ThemeID:                themeID,
@@ -1074,11 +1109,18 @@ func resolutionForWorkspace(requestedPath, resolvedPath, workspacePath, workspac
 	}
 }
 
-func scopeForWorkspace(requestedPath, resolvedPath, workspacePath, workspaceName, themeID string, directories []string, matched bool) Scope {
+func scopeForEntry(requestedPath, resolvedPath string, entry pebblestore.WorkspaceEntry, workspaceName string, directories []string, matched bool) Scope {
+	return scopeForWorkspace(requestedPath, resolvedPath, entry.Path, entry.WorkspaceID, entry.WorkspaceGeneration, entry.State, workspaceName, normalizeWorkspaceThemeID(entry.ThemeID), directories, matched)
+}
+
+func scopeForWorkspace(requestedPath, resolvedPath, workspacePath, workspaceID string, workspaceGeneration int64, workspaceState, workspaceName, themeID string, directories []string, matched bool) Scope {
 	managed := managedStorageForWorkspace(workspacePath)
 	return Scope{
 		RequestedPath:          requestedPath,
 		ResolvedPath:           resolvedPath,
+		WorkspaceID:            workspaceID,
+		WorkspaceGeneration:    workspaceGeneration,
+		WorkspaceState:         workspaceState,
 		WorkspacePath:          workspacePath,
 		WorkspaceName:          workspaceName,
 		ThemeID:                themeID,

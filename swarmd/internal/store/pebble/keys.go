@@ -49,6 +49,7 @@ const (
 	KeyWorkspaceCurrentAccountPrefix            = "workspace/current_by_account/"
 	KeyWorkspaceEntryPrefix                     = "workspace/entry/" // legacy global entry prefix; retained for explicit migration only.
 	KeyWorkspaceEntryAccountPrefix              = "workspace/entry_by_account/"
+	KeyWorkspaceEntryByIDAccountPrefix          = "workspace/entry_by_id_by_account/"
 	KeyWorkspaceTodoItemPrefix                  = "workspace_todo/item/"
 	KeyVideoThreadPrefix                        = "video/thread/"
 	KeyImageThreadPrefix                        = "image/thread/" // legacy global image thread prefix; retained for explicit migration only.
@@ -86,6 +87,7 @@ const (
 	KeySwarmDesktopTargetCurrentAccountPrefix   = "swarm/desktop_target/current_by_account/"
 	KeyTopologyRuntimePrefix                    = "topology/runtime/" // legacy global prefix; retained for explicit migration only.
 	KeyTopologyRuntimeAccountPrefix             = "topology/runtime_by_account/"
+	KeyTopologyRuntimePlacementAccountPrefix    = "topology/runtime_placement_by_account/"
 	KeyTopologyHostContainerPrefix              = "topology/host_container/" // legacy global prefix; retained for explicit migration only.
 	KeyTopologyHostContainerAccountPrefix       = "topology/host_container_by_account/"
 	KeyTopologyAttachmentPrefix                 = "topology/attachment/" // legacy global prefix; retained for explicit migration only.
@@ -365,6 +367,18 @@ func TopologyRuntimePrefixForAccount(accountScopeID string) string {
 	return fmt.Sprintf("%s%s/", KeyTopologyRuntimeAccountPrefix, accountPart)
 }
 
+func KeyTopologyRuntimePlacementForAccount(accountScopeID, runtimeSwarmID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyTopologyRuntimePlacementAccountPrefix, keyPart(accountScopeID), keyPart(runtimeSwarmID))
+}
+
+func TopologyRuntimePlacementPrefixForAccount(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyTopologyRuntimePlacementAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyTopologyRuntimePlacementAccountPrefix, accountPart)
+}
+
 func KeyTopologyHostContainer(hostContainerID string) string {
 	return KeyTopologyHostContainerPrefix + keyPart(hostContainerID)
 }
@@ -475,6 +489,18 @@ func WorkspaceEntryPrefixForAccount(accountScopeID string) string {
 		return KeyWorkspaceEntryAccountPrefix
 	}
 	return fmt.Sprintf("%s%s/", KeyWorkspaceEntryAccountPrefix, accountPart)
+}
+
+func KeyWorkspaceEntryByIDForAccount(accountScopeID, workspaceID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyWorkspaceEntryByIDAccountPrefix, keyPart(accountScopeID), keyPart(workspaceID))
+}
+
+func WorkspaceEntryByIDPrefixForAccount(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyWorkspaceEntryByIDAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyWorkspaceEntryByIDAccountPrefix, accountPart)
 }
 
 func KeyWorkspaceCurrentForAccount(accountScopeID, userID string) string {

@@ -209,6 +209,15 @@ func TestTopologyStoreAccountScopedKeyShape(t *testing.T) {
 	if got, want := TopologyRuntimePrefixForAccount(""), KeyTopologyRuntimeAccountPrefix; got != want {
 		t.Fatalf("empty runtime account prefix = %q, want %q", got, want)
 	}
+	if got, want := KeyTopologyRuntimePlacementForAccount(accountScopeID, " Child-1 "), "topology/runtime_placement_by_account/account%2Fa/child-1"; got != want {
+		t.Fatalf("runtime placement account key = %q, want %q", got, want)
+	}
+	if got, want := TopologyRuntimePlacementPrefixForAccount(accountScopeID), "topology/runtime_placement_by_account/account%2Fa/"; got != want {
+		t.Fatalf("runtime placement account prefix = %q, want %q", got, want)
+	}
+	if got, want := TopologyRuntimePlacementPrefixForAccount(""), KeyTopologyRuntimePlacementAccountPrefix; got != want {
+		t.Fatalf("empty runtime placement account prefix = %q, want %q", got, want)
+	}
 
 	if got, want := KeyTopologyHostContainerForAccount(accountScopeID, " Host:Container "), "topology/host_container_by_account/account%2Fa/host:container"; got != want {
 		t.Fatalf("host container account key = %q, want %q", got, want)

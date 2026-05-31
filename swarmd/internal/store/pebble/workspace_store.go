@@ -1,17 +1,23 @@
 package pebblestore
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type WorkspaceBinding struct {
-	Path       string `json:"path"`
-	Name       string `json:"name"`
-	ResolvedAt int64  `json:"resolved_at"`
+	WorkspaceID         string `json:"workspace_id,omitempty"`
+	WorkspaceGeneration int64  `json:"workspace_generation,omitempty"`
+	Path                string `json:"path"`
+	Name                string `json:"name"`
+	ResolvedAt          int64  `json:"resolved_at"`
 }
 
 type WorkspaceReplicationSync struct {
@@ -34,16 +40,19 @@ type WorkspaceReplicationLink struct {
 }
 
 type WorkspaceEntry struct {
-	AccountScopeID   string                     `json:"account_scope_id,omitempty"`
-	Path             string                     `json:"path"`
-	Name             string                     `json:"name"`
-	ThemeID          string                     `json:"theme_id,omitempty"`
-	Directories      []string                   `json:"directories,omitempty"`
-	ReplicationLinks []WorkspaceReplicationLink `json:"replication_links,omitempty"`
-	SortIndex        int                        `json:"sort_index,omitempty"`
-	AddedAt          int64                      `json:"added_at"`
-	UpdatedAt        int64                      `json:"updated_at"`
-	LastSelectedAt   int64                      `json:"last_selected_at"`
+	AccountScopeID      string                     `json:"account_scope_id,omitempty"`
+	WorkspaceID         string                     `json:"workspace_id"`
+	WorkspaceGeneration int64                      `json:"workspace_generation"`
+	State               string                     `json:"state,omitempty"`
+	Path                string                     `json:"path"`
+	Name                string                     `json:"name"`
+	ThemeID             string                     `json:"theme_id,omitempty"`
+	Directories         []string                   `json:"directories,omitempty"`
+	ReplicationLinks    []WorkspaceReplicationLink `json:"replication_links,omitempty"`
+	SortIndex           int                        `json:"sort_index,omitempty"`
+	AddedAt             int64                      `json:"added_at"`
+	UpdatedAt           int64                      `json:"updated_at"`
+	LastSelectedAt      int64                      `json:"last_selected_at"`
 }
 
 type WorkspaceStore struct {
@@ -63,7 +72,7 @@ func (s *WorkspaceStore) SetCurrentForAccount(accountScopeID, userID, path, name
 	if err != nil {
 		return WorkspaceBinding{}, err
 	}
-	binding := WorkspaceBinding{Path: entry.Path, Name: entry.Name, ResolvedAt: time.Now().UnixMilli()}
+	binding := WorkspaceBinding{WorkspaceID: entry.WorkspaceID, WorkspaceGeneration: entry.WorkspaceGeneration, Path: entry.Path, Name: entry.Name, ResolvedAt: time.Now().UnixMilli()}
 	if err := s.store.PutJSON(KeyWorkspaceCurrentForAccount(accountScopeID, userID), binding); err != nil {
 		return WorkspaceBinding{}, err
 	}
@@ -102,13 +111,10 @@ func (s *WorkspaceStore) RenameForAccount(accountScopeID, userID, path, name str
 		return WorkspaceEntry{}, fmt.Errorf("workspace %q not found", path)
 	}
 	now := time.Now().UnixMilli()
-	entry.AccountScopeID = accountScopeID
+	entry = normalizeWorkspaceEntryForAccount(accountScopeID, entry)
 	entry.Name = name
-	entry.ThemeID = normalizeWorkspaceThemeID(entry.ThemeID)
-	entry.Directories = normalizeWorkspaceDirectories(entry.Path, entry.Directories)
-	entry.ReplicationLinks = normalizeWorkspaceReplicationLinks(entry.ReplicationLinks)
 	entry.UpdatedAt = now
-	if err := s.store.PutJSON(key, entry); err != nil {
+	if err := s.putWorkspaceEntryForAccount(accountScopeID, entry); err != nil {
 		return WorkspaceEntry{}, err
 	}
 	if userID != "" {
@@ -117,6 +123,8 @@ func (s *WorkspaceStore) RenameForAccount(accountScopeID, userID, path, name str
 			return WorkspaceEntry{}, err
 		}
 		if hasCurrent && current.Path == path {
+			current.WorkspaceID = entry.WorkspaceID
+			current.WorkspaceGeneration = entry.WorkspaceGeneration
 			current.Name = name
 			current.ResolvedAt = now
 			if err := s.store.PutJSON(KeyWorkspaceCurrentForAccount(accountScopeID, userID), current); err != nil {
@@ -145,12 +153,10 @@ func (s *WorkspaceStore) SetThemeIDForAccount(accountScopeID, path, themeID stri
 	if !ok {
 		return WorkspaceEntry{}, fmt.Errorf("workspace %q not found", path)
 	}
-	entry.AccountScopeID = accountScopeID
+	entry = normalizeWorkspaceEntryForAccount(accountScopeID, entry)
 	entry.ThemeID = normalizeWorkspaceThemeID(themeID)
-	entry.Directories = normalizeWorkspaceDirectories(entry.Path, entry.Directories)
-	entry.ReplicationLinks = normalizeWorkspaceReplicationLinks(entry.ReplicationLinks)
 	entry.UpdatedAt = time.Now().UnixMilli()
-	if err := s.store.PutJSON(key, entry); err != nil {
+	if err := s.putWorkspaceEntryForAccount(accountScopeID, entry); err != nil {
 		return WorkspaceEntry{}, err
 	}
 	return entry, nil
@@ -166,8 +172,17 @@ func (s *WorkspaceStore) DeleteForAccount(accountScopeID, userID, path string) e
 	if path == "" {
 		return fmt.Errorf("workspace path is required")
 	}
+	entry, ok, err := s.GetForAccount(accountScopeID, path)
+	if err != nil {
+		return err
+	}
 	if err := s.store.Delete(KeyWorkspaceEntryForAccount(accountScopeID, path)); err != nil {
 		return err
+	}
+	if ok && strings.TrimSpace(entry.WorkspaceID) != "" {
+		if err := s.store.Delete(KeyWorkspaceEntryByIDForAccount(accountScopeID, entry.WorkspaceID)); err != nil {
+			return err
+		}
 	}
 	if userID != "" {
 		current, hasCurrent, err := s.GetCurrentForAccount(accountScopeID, userID)
@@ -196,10 +211,7 @@ func (s *WorkspaceStore) GetForAccount(accountScopeID, path string) (WorkspaceEn
 	if !ok {
 		return WorkspaceEntry{}, false, nil
 	}
-	entry.AccountScopeID = accountScopeID
-	entry.ThemeID = normalizeWorkspaceThemeID(entry.ThemeID)
-	entry.Directories = normalizeWorkspaceDirectories(entry.Path, entry.Directories)
-	entry.ReplicationLinks = normalizeWorkspaceReplicationLinks(entry.ReplicationLinks)
+	entry = normalizeWorkspaceEntryForAccount(accountScopeID, entry)
 	return entry, true, nil
 }
 
@@ -273,12 +285,12 @@ func (s *WorkspaceStore) MoveForAccount(accountScopeID, path string, delta int) 
 	}
 	now := time.Now().UnixMilli()
 	for i := range entries {
-		entries[i].AccountScopeID = accountScopeID
+		entries[i] = normalizeWorkspaceEntryForAccount(accountScopeID, entries[i])
 		entries[i].SortIndex = i
 		if entries[i].Path == path {
 			entries[i].UpdatedAt = now
 		}
-		if err := s.store.PutJSON(KeyWorkspaceEntryForAccount(accountScopeID, entries[i].Path), entries[i]); err != nil {
+		if err := s.putWorkspaceEntryForAccount(accountScopeID, entries[i]); err != nil {
 			return WorkspaceEntry{}, err
 		}
 	}
@@ -317,11 +329,11 @@ func (s *WorkspaceStore) AddDirectoryForAccount(accountScopeID, path, directory 
 	if ownerOK && owner.Path != entry.Path {
 		return WorkspaceEntry{}, fmt.Errorf("directory %q already belongs to workspace %q", directory, owner.Path)
 	}
-	entry.AccountScopeID = accountScopeID
+	entry = normalizeWorkspaceEntryForAccount(accountScopeID, entry)
 	entry.Directories = append(entry.Directories, directory)
 	entry.Directories = normalizeWorkspaceDirectories(entry.Path, entry.Directories)
 	entry.UpdatedAt = time.Now().UnixMilli()
-	if err := s.store.PutJSON(KeyWorkspaceEntryForAccount(accountScopeID, entry.Path), entry); err != nil {
+	if err := s.putWorkspaceEntryForAccount(accountScopeID, entry); err != nil {
 		return WorkspaceEntry{}, err
 	}
 	return entry, nil
@@ -362,10 +374,10 @@ func (s *WorkspaceStore) RemoveDirectoryForAccount(accountScopeID, path, directo
 	if !removed {
 		return WorkspaceEntry{}, fmt.Errorf("directory %q is not linked to workspace %q", directory, path)
 	}
-	entry.AccountScopeID = accountScopeID
+	entry = normalizeWorkspaceEntryForAccount(accountScopeID, entry)
 	entry.Directories = normalizeWorkspaceDirectories(entry.Path, updated)
 	entry.UpdatedAt = time.Now().UnixMilli()
-	if err := s.store.PutJSON(KeyWorkspaceEntryForAccount(accountScopeID, entry.Path), entry); err != nil {
+	if err := s.putWorkspaceEntryForAccount(accountScopeID, entry); err != nil {
 		return WorkspaceEntry{}, err
 	}
 	return entry, nil
@@ -438,10 +450,7 @@ func (s *WorkspaceStore) GetLegacy(path string) (WorkspaceEntry, bool, error) {
 	if !ok {
 		return WorkspaceEntry{}, false, nil
 	}
-	entry.AccountScopeID = ""
-	entry.ThemeID = normalizeWorkspaceThemeID(entry.ThemeID)
-	entry.Directories = normalizeWorkspaceDirectories(entry.Path, entry.Directories)
-	entry.ReplicationLinks = normalizeWorkspaceReplicationLinks(entry.ReplicationLinks)
+	entry = normalizeWorkspaceEntryForAccount("", entry)
 	return entry, true, nil
 }
 
@@ -460,10 +469,7 @@ func (s *WorkspaceStore) ListLegacy(limit int) ([]WorkspaceEntry, error) {
 		if strings.TrimSpace(entry.Path) == "" {
 			return nil
 		}
-		entry.AccountScopeID = ""
-		entry.ThemeID = normalizeWorkspaceThemeID(entry.ThemeID)
-		entry.Directories = normalizeWorkspaceDirectories(entry.Path, entry.Directories)
-		entry.ReplicationLinks = normalizeWorkspaceReplicationLinks(entry.ReplicationLinks)
+		entry = normalizeWorkspaceEntryForAccount("", entry)
 		out = append(out, entry)
 		return nil
 	})
@@ -509,10 +515,10 @@ func (s *WorkspaceStore) PurgeAllReplicationLinks() (int, error) {
 				continue
 			}
 			removed += len(entry.ReplicationLinks)
-			entry.AccountScopeID = accountScopeID
+			entry = normalizeWorkspaceEntryForAccount(accountScopeID, entry)
 			entry.ReplicationLinks = nil
 			entry.UpdatedAt = now
-			if err := s.store.PutJSON(KeyWorkspaceEntryForAccount(accountScopeID, entry.Path), entry); err != nil {
+			if err := s.putWorkspaceEntryForAccount(accountScopeID, entry); err != nil {
 				return removed, err
 			}
 		}
@@ -555,10 +561,10 @@ func (s *WorkspaceStore) RemoveReplicationLinksByTargetSwarmIDForAccount(account
 		if len(kept) == len(links) {
 			continue
 		}
-		entry.AccountScopeID = accountScopeID
+		entry = normalizeWorkspaceEntryForAccount(accountScopeID, entry)
 		entry.ReplicationLinks = normalizeWorkspaceReplicationLinks(kept)
 		entry.UpdatedAt = now
-		if err := s.store.PutJSON(KeyWorkspaceEntryForAccount(accountScopeID, entry.Path), entry); err != nil {
+		if err := s.putWorkspaceEntryForAccount(accountScopeID, entry); err != nil {
 			return removed, err
 		}
 	}
@@ -607,18 +613,19 @@ func (s *WorkspaceStore) upsertForAccount(accountScopeID, path, name, themeID st
 	}
 	entry := WorkspaceEntry{AccountScopeID: accountScopeID, Path: path, Name: name, ThemeID: themeID, Directories: []string{path}}
 	if ok {
-		entry.AddedAt = existing.AddedAt
-		if strings.TrimSpace(entry.Name) == "" {
-			entry.Name = existing.Name
+		entry = normalizeWorkspaceEntryForAccount(accountScopeID, existing)
+		entry.Path = path
+		if strings.TrimSpace(name) != "" {
+			entry.Name = name
 		}
-		if !themeProvided {
-			entry.ThemeID = normalizeWorkspaceThemeID(existing.ThemeID)
+		if themeProvided {
+			entry.ThemeID = themeID
 		}
-		entry.Directories = normalizeWorkspaceDirectories(path, existing.Directories)
-		entry.ReplicationLinks = normalizeWorkspaceReplicationLinks(existing.ReplicationLinks)
-		entry.LastSelectedAt = existing.LastSelectedAt
-		entry.SortIndex = existing.SortIndex
+		entry.Directories = normalizeWorkspaceDirectories(path, entry.Directories)
 	} else {
+		entry.WorkspaceID = newWorkspaceID()
+		entry.WorkspaceGeneration = 1
+		entry.State = normalizeWorkspaceState(entry.State)
 		entry.AddedAt = now
 		entry.SortIndex = len(entries)
 	}
@@ -626,10 +633,84 @@ func (s *WorkspaceStore) upsertForAccount(accountScopeID, path, name, themeID st
 		entry.LastSelectedAt = now
 	}
 	entry.UpdatedAt = now
-	if err := s.store.PutJSON(KeyWorkspaceEntryForAccount(accountScopeID, path), entry); err != nil {
+	if err := s.putWorkspaceEntryForAccount(accountScopeID, entry); err != nil {
 		return WorkspaceEntry{}, err
 	}
 	return entry, nil
+}
+
+func (s *WorkspaceStore) UpdatePathForWorkspaceIDForAccount(accountScopeID, workspaceID, newPath string) (WorkspaceEntry, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return WorkspaceEntry{}, fmt.Errorf("account scope is required")
+	}
+	workspaceID = strings.TrimSpace(workspaceID)
+	if workspaceID == "" {
+		return WorkspaceEntry{}, fmt.Errorf("workspace id is required")
+	}
+	newPath = strings.TrimSpace(newPath)
+	if newPath == "" {
+		return WorkspaceEntry{}, fmt.Errorf("workspace path is required")
+	}
+	entry, ok, err := s.GetByWorkspaceIDForAccount(accountScopeID, workspaceID)
+	if err != nil {
+		return WorkspaceEntry{}, err
+	}
+	if !ok {
+		return WorkspaceEntry{}, fmt.Errorf("workspace id %q not found", workspaceID)
+	}
+	if entry.Path == newPath {
+		return entry, nil
+	}
+	existingAtPath, existsAtPath, err := s.GetForAccount(accountScopeID, newPath)
+	if err != nil {
+		return WorkspaceEntry{}, err
+	}
+	if existsAtPath && existingAtPath.WorkspaceID != entry.WorkspaceID {
+		return WorkspaceEntry{}, fmt.Errorf("workspace path %q already belongs to workspace id %q", newPath, existingAtPath.WorkspaceID)
+	}
+	entry.Path = newPath
+	entry.Directories = normalizeWorkspaceDirectories(newPath, entry.Directories)
+	entry.WorkspaceGeneration++
+	entry.UpdatedAt = time.Now().UnixMilli()
+	if err := s.putWorkspaceEntryForAccount(accountScopeID, entry); err != nil {
+		return WorkspaceEntry{}, err
+	}
+	return entry, nil
+}
+
+func (s *WorkspaceStore) GetByWorkspaceIDForAccount(accountScopeID, workspaceID string) (WorkspaceEntry, bool, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return WorkspaceEntry{}, false, fmt.Errorf("account scope is required")
+	}
+	workspaceID = strings.TrimSpace(workspaceID)
+	if workspaceID == "" {
+		return WorkspaceEntry{}, false, fmt.Errorf("workspace id is required")
+	}
+	var entry WorkspaceEntry
+	ok, err := s.store.GetJSON(KeyWorkspaceEntryByIDForAccount(accountScopeID, workspaceID), &entry)
+	if err != nil {
+		return WorkspaceEntry{}, false, err
+	}
+	if !ok {
+		entries, err := s.listAllForAccount(accountScopeID)
+		if err != nil {
+			return WorkspaceEntry{}, false, err
+		}
+		for _, entry := range entries {
+			if entry.WorkspaceID != workspaceID {
+				continue
+			}
+			if err := s.putWorkspaceEntryForAccount(accountScopeID, entry); err != nil {
+				return WorkspaceEntry{}, false, err
+			}
+			return entry, true, nil
+		}
+		return WorkspaceEntry{}, false, nil
+	}
+	entry = normalizeWorkspaceEntryForAccount(accountScopeID, entry)
+	return entry, true, nil
 }
 
 func (s *WorkspaceStore) listAllForAccount(accountScopeID string) ([]WorkspaceEntry, error) {
@@ -646,10 +727,7 @@ func (s *WorkspaceStore) listAllForAccount(accountScopeID string) ([]WorkspaceEn
 		if strings.TrimSpace(entry.Path) == "" {
 			return nil
 		}
-		entry.AccountScopeID = accountScopeID
-		entry.ThemeID = normalizeWorkspaceThemeID(entry.ThemeID)
-		entry.Directories = normalizeWorkspaceDirectories(entry.Path, entry.Directories)
-		entry.ReplicationLinks = normalizeWorkspaceReplicationLinks(entry.ReplicationLinks)
+		entry = normalizeWorkspaceEntryForAccount(accountScopeID, entry)
 		out = append(out, entry)
 		return nil
 	})
@@ -829,6 +907,64 @@ func normalizeWorkspaceReplicationSyncModules(values []string) []string {
 		return nil
 	}
 	return out
+}
+
+func (s *WorkspaceStore) putWorkspaceEntryForAccount(accountScopeID string, entry WorkspaceEntry) error {
+	entry = normalizeWorkspaceEntryForAccount(accountScopeID, entry)
+	if strings.TrimSpace(entry.Path) == "" {
+		return fmt.Errorf("workspace path is required")
+	}
+	if strings.TrimSpace(entry.WorkspaceID) == "" {
+		return fmt.Errorf("workspace id is required")
+	}
+	oldByID := WorkspaceEntry{}
+	if ok, err := s.store.GetJSON(KeyWorkspaceEntryByIDForAccount(accountScopeID, entry.WorkspaceID), &oldByID); err != nil {
+		return err
+	} else if ok && strings.TrimSpace(oldByID.Path) != "" && strings.TrimSpace(oldByID.Path) != entry.Path {
+		if err := s.store.Delete(KeyWorkspaceEntryForAccount(accountScopeID, oldByID.Path)); err != nil {
+			return err
+		}
+	}
+	if err := s.store.PutJSON(KeyWorkspaceEntryForAccount(accountScopeID, entry.Path), entry); err != nil {
+		return err
+	}
+	return s.store.PutJSON(KeyWorkspaceEntryByIDForAccount(accountScopeID, entry.WorkspaceID), entry)
+}
+
+func normalizeWorkspaceEntryForAccount(accountScopeID string, entry WorkspaceEntry) WorkspaceEntry {
+	entry.AccountScopeID = strings.TrimSpace(accountScopeID)
+	entry.Path = strings.TrimSpace(entry.Path)
+	entry.Name = strings.TrimSpace(entry.Name)
+	entry.ThemeID = normalizeWorkspaceThemeID(entry.ThemeID)
+	entry.Directories = normalizeWorkspaceDirectories(entry.Path, entry.Directories)
+	entry.ReplicationLinks = normalizeWorkspaceReplicationLinks(entry.ReplicationLinks)
+	entry.State = normalizeWorkspaceState(entry.State)
+	if entry.WorkspaceGeneration <= 0 {
+		entry.WorkspaceGeneration = 1
+	}
+	if strings.TrimSpace(entry.WorkspaceID) == "" {
+		entry.WorkspaceID = legacyWorkspaceID(accountScopeID, entry.Path)
+	} else {
+		entry.WorkspaceID = strings.TrimSpace(entry.WorkspaceID)
+	}
+	return entry
+}
+
+func normalizeWorkspaceState(state string) string {
+	state = strings.TrimSpace(strings.ToLower(state))
+	if state == "" {
+		return "active"
+	}
+	return state
+}
+
+func newWorkspaceID() string {
+	return "ws_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+}
+
+func legacyWorkspaceID(accountScopeID, path string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(accountScopeID) + "\x00" + strings.TrimSpace(path)))
+	return "ws_legacy_" + hex.EncodeToString(sum[:16])
 }
 
 func findWorkspaceReplicationLinkByID(links []WorkspaceReplicationLink, linkID string) WorkspaceReplicationLink {

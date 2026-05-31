@@ -100,6 +100,54 @@ func (s *Service) ListRuntimesForAccount(accountScopeID string, limit int) ([]pe
 	return s.topologyStore.ListRuntimesForAccount(accountScopeID, limit)
 }
 
+func (s *Service) EnsureLocalSelfPlacementForAccount(accountScopeID string) (pebblestore.TopologyRuntimePlacementRecord, error) {
+	return s.EnsureLocalSelfPlacementForPrincipal(accountScopeID, accountScopeID)
+}
+
+func (s *Service) EnsureLocalSelfPlacementForPrincipal(accountScopeID, userID string) (pebblestore.TopologyRuntimePlacementRecord, error) {
+	if s == nil || s.topologyStore == nil {
+		return pebblestore.TopologyRuntimePlacementRecord{}, fmt.Errorf("topology service is not configured")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return pebblestore.TopologyRuntimePlacementRecord{}, fmt.Errorf("account scope id is required")
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return pebblestore.TopologyRuntimePlacementRecord{}, fmt.Errorf("user id is required")
+	}
+	localSwarmID, localNode, err := s.loadLocalNode()
+	if err != nil {
+		return pebblestore.TopologyRuntimePlacementRecord{}, err
+	}
+	if strings.TrimSpace(localSwarmID) == "" {
+		return pebblestore.TopologyRuntimePlacementRecord{}, fmt.Errorf("local swarm id is required for self placement")
+	}
+	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(s.topologyStore, accountScopeID, pebblestore.TopologyRuntimeRecord{
+		SwarmID:         localSwarmID,
+		UserID:          userID,
+		AccountScopeID:  accountScopeID,
+		Name:            firstNonEmpty(localNode.Name, localSwarmID),
+		Role:            localNode.Role,
+		Relationship:    "self",
+		Status:          "online",
+		ObservedSources: []string{"swarm_local_node"},
+		CreatedAt:       localNode.CreatedAt,
+		UpdatedAt:       localNode.UpdatedAt,
+	}); err != nil {
+		return pebblestore.TopologyRuntimePlacementRecord{}, err
+	}
+	record := pebblestore.TopologyRuntimePlacementRecord{
+		RuntimeSwarmID:       localSwarmID,
+		AccountScopeID:       accountScopeID,
+		AuthorityHostSwarmID: localSwarmID,
+		RuntimeKind:          pebblestore.TopologyRuntimeKindHost,
+		State:                pebblestore.TopologyRuntimePlacementStateActive,
+	}
+	record.PlacementGeneration = 1
+	return s.topologyStore.PutRuntimePlacementForAccount(accountScopeID, record)
+}
+
 func (s *Service) ListHostContainersByHost(hostSwarmID string, limit int) ([]pebblestore.TopologyHostContainerRecord, error) {
 	if s == nil || s.topologyStore == nil {
 		return nil, fmt.Errorf("topology service is not configured")
