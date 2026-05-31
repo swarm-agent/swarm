@@ -1490,7 +1490,7 @@ function FlowDetail({
   busy?: boolean
 }) {
   return (
-    <div data-testid="flows-detail" className="flex min-h-full flex-col gap-8 pb-10 text-[var(--app-text)]">
+    <div data-testid="flows-detail" className="flex min-h-full min-w-0 flex-col gap-6 pb-10 text-[var(--app-text)] sm:gap-8">
       <div className="grid gap-4 border-b border-[var(--app-border)] pb-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
         <div className="min-w-0">
           <button type="button" onClick={onBack} className="mb-4 inline-flex items-center gap-2 text-sm text-[var(--app-text-muted)] hover:text-[var(--app-text)]">
@@ -1502,7 +1502,7 @@ function FlowDetail({
           <h1 className="mt-2 break-words text-2xl font-semibold tracking-tight text-[var(--app-text)]">{flow.name}</h1>
           <p className="mt-2 max-w-3xl break-words text-sm leading-6 text-[var(--app-text-muted)]">{flow.task}</p>
         </div>
-        <div className="grid grid-cols-2 gap-2 md:flex md:shrink-0 md:items-center">
+        <div className="grid min-w-0 grid-cols-2 gap-2 md:flex md:shrink-0 md:items-center">
           <Button data-testid="flows-detail-edit" variant="outline" className="w-full rounded-xl md:w-auto" onClick={() => onEdit(flow)} disabled={busy}>
             Edit
           </Button>
@@ -1905,7 +1905,7 @@ export function FlowsSettingsPage() {
   }
 
   return (
-    <div data-testid="flows-settings-page" className="flex min-h-full min-w-0 flex-col gap-5 pb-10 text-[var(--app-text)]">
+    <div data-testid="flows-settings-page" className="flex min-h-full min-w-0 flex-col gap-4 pb-10 text-[var(--app-text)] sm:gap-5">
       <header className="grid gap-4 border-b border-[var(--app-border)] pb-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
         <div className="min-w-0">
           <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
@@ -1914,7 +1914,7 @@ export function FlowsSettingsPage() {
           <h1 className="mt-2 text-3xl font-semibold tracking-tight text-[var(--app-text)]">Flows</h1>
           <p className="mt-2 max-w-2xl break-words text-sm leading-6 text-[var(--app-text-muted)]">Triage scheduled and background agent jobs from real controller data.</p>
         </div>
-        <div className="grid grid-cols-2 gap-2 md:flex md:items-center md:justify-end">
+        <div className="grid min-w-0 grid-cols-2 gap-2 md:flex md:items-center md:justify-end">
           <Button variant="outline" className="w-full rounded-xl md:w-auto" onClick={handleBackToChat}>
             <ArrowLeft size={15} /> Back
           </Button>
@@ -1936,7 +1936,7 @@ export function FlowsSettingsPage() {
         </div>
       ) : null}
 
-      <section className={cn(surfaceClass, 'grid grid-cols-2 gap-3 px-3 py-3 sm:grid-cols-3 lg:grid-cols-6 lg:px-4')}>
+      <section className={cn(surfaceClass, 'grid min-w-0 grid-cols-1 gap-3 px-3 py-3 min-[380px]:grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 lg:px-4')}>
         {metaHeaderItems.map((item) => {
           const toneClass = item.tone === 'primary' ? 'text-[var(--app-primary)]' : statusTextClasses[item.tone]
           return (

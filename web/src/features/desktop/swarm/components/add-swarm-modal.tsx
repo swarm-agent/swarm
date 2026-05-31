@@ -604,16 +604,17 @@ export function AddSwarmModal({
   if (!open) return null
 
   const panelClassName =
-    'mx-auto mt-[5vh] flex w-[min(840px,calc(100vw-24px))] max-w-[840px] flex-col overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-0 shadow-[var(--shadow-panel)] sm:w-[min(840px,calc(100vw-48px))]'
-  const headerClassName = 'border-b border-[var(--app-border)] px-5 py-4'
+    'mx-auto flex max-h-[calc(100dvh_-_var(--app-safe-area-top)_-_var(--app-safe-area-bottom)_-_12px)] w-[calc(100dvw_-_12px)] max-w-[840px] min-w-0 flex-col overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-0 shadow-[var(--shadow-panel)] sm:max-h-[min(860px,calc(100dvh_-_48px))] sm:w-[min(840px,calc(100vw_-_48px))]'
+  const headerClassName =
+    'shrink-0 border-b border-[var(--app-border)] px-4 py-3 sm:px-5 sm:py-4'
   const bodyClassName =
-    'flex max-h-[min(78vh,820px)] flex-col gap-3 overflow-y-auto px-5 py-4'
+    'flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain px-3 py-3 sm:px-5 sm:py-4'
   const sectionClassName =
-    'grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-none'
+    'grid min-w-0 gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-none'
   const optionClassName = (active: boolean) =>
-    `rounded-lg border px-3 py-2 text-left transition ${active ? 'border-[var(--app-primary)] bg-transparent text-[var(--app-text)]' : 'border-[var(--app-border)] bg-transparent text-[var(--app-text-muted)]'}`
+    `min-w-0 rounded-lg border px-3 py-2 text-left transition ${active ? 'border-[var(--app-primary)] bg-transparent text-[var(--app-text)]' : 'border-[var(--app-border)] bg-transparent text-[var(--app-text-muted)]'}`
   const infoCardClassName =
-    'rounded-lg border border-[var(--app-border)] bg-transparent px-3 py-2 text-left text-[var(--app-text)]'
+    'min-w-0 rounded-lg border border-[var(--app-border)] bg-transparent px-3 py-2 text-left text-[var(--app-text)]'
   const launchPendingReason = (() => {
     if (loading) return 'Loading launch options…'
     if (!swarmName.trim()) return 'Please enter a container name.'
@@ -629,20 +630,20 @@ export function AddSwarmModal({
     `${selectedWorkspaceCountValue} selected workspace${selectedWorkspaceCountValue === 1 ? '' : 's'} will be added to ${launchTargetIsManaged ? launchTargetLabel : 'a local container'} using ${runtimeChoice || 'the selected runtime'} with built-in sync and always-on enabled.`
 
   return (
-    <Dialog>
+    <Dialog className="overflow-hidden p-1.5 pt-[calc(var(--app-safe-area-top)_+_0.375rem)] pb-[calc(var(--app-safe-area-bottom)_+_0.375rem)] sm:p-6">
       <DialogBackdrop onClick={closeModal} />
       <DialogPanel data-testid="add-swarm-modal" className={panelClassName}>
         <div className={headerClassName}>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <h2 className="text-xl font-semibold text-[var(--app-text)]">
+          <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
+              <h2 className="break-words text-lg font-semibold text-[var(--app-text)] sm:text-xl">
                 Add Container
               </h2>
-              <p className="mt-1 text-sm text-[var(--app-text-muted)]">
+              <p className="mt-1 break-words text-sm text-[var(--app-text-muted)]">
                 Launch a container from selected workspaces on this device or a managed host.
               </p>
             </div>
-            <Badge tone={runtimeChoice ? 'live' : 'warning'}>
+            <Badge tone={runtimeChoice ? 'live' : 'warning'} className="self-start sm:shrink-0">
               {runtimeChoice ? `${runtimeChoice} ready` : 'runtime required'}
             </Badge>
           </div>
@@ -658,7 +659,7 @@ export function AddSwarmModal({
           {error ? (
             <Card
               data-testid="add-swarm-error"
-              className="whitespace-pre-wrap border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] p-4 text-sm text-[var(--app-danger)]"
+              className="whitespace-pre-wrap break-words border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] p-4 text-sm text-[var(--app-danger)]"
             >
               {error}
             </Card>
@@ -666,7 +667,7 @@ export function AddSwarmModal({
           {status ? (
             <Card
               data-testid="add-swarm-status"
-              className="border-[var(--app-success-border)] bg-[var(--app-success-bg)] p-4 text-sm text-[var(--app-success)]"
+              className="break-words border-[var(--app-success-border)] bg-[var(--app-success-bg)] p-4 text-sm text-[var(--app-success)]"
             >
               {status}
             </Card>
@@ -674,11 +675,11 @@ export function AddSwarmModal({
 
           <Card className={sectionClassName}>
             <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(220px,320px)] sm:items-center">
-              <div className="grid gap-1">
+              <div className="grid min-w-0 gap-1">
                 <div className="text-sm font-semibold text-[var(--app-text)]">
                   Name this container
                 </div>
-                <div className="text-xs text-[var(--app-text-muted)]">
+                <div className="break-words text-xs text-[var(--app-text-muted)]">
                   Choose the display name used to identify this container after launch.
                 </div>
               </div>
@@ -694,11 +695,11 @@ export function AddSwarmModal({
 
           <Card className={sectionClassName}>
             <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(240px,340px)] sm:items-center">
-              <div className="grid gap-1">
+              <div className="grid min-w-0 gap-1">
                 <div className="text-sm font-semibold text-[var(--app-text)]">
                   Host target
                 </div>
-                <div className="text-xs text-[var(--app-text-muted)]">
+                <div className="break-words text-xs text-[var(--app-text-muted)]">
                   Choose where this container should be created. Managed hosts
                   are listed only when online and selectable.
                 </div>
@@ -719,7 +720,7 @@ export function AddSwarmModal({
                 ))}
               </Select>
             </div>
-            <div className="text-xs text-[var(--app-text-muted)]">
+            <div className="break-words text-xs text-[var(--app-text-muted)]">
               {launchTargetIsManaged
                 ? `This request will stay in local create mode and target managed host ${launchTargetLabel}.`
                 : 'Default: create on this primary host.'}
@@ -731,7 +732,7 @@ export function AddSwarmModal({
               <div className="text-sm font-semibold text-[var(--app-text)]">
                 Container runtime
               </div>
-              <div className="text-xs text-[var(--app-text-muted)]">
+              <div className="break-words text-xs text-[var(--app-text-muted)]">
                 Choose which container runtime should launch the container on the selected host.
               </div>
             </div>
@@ -751,12 +752,12 @@ export function AddSwarmModal({
                     }
                     disabled={submitting || !available}
                   >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
+                    <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
                         <div className="text-sm font-semibold text-[var(--app-text)]">
                           {runtime}
                         </div>
-                        <div className="mt-1 text-xs text-[var(--app-text-muted)]">
+                        <div className="mt-1 break-words text-xs text-[var(--app-text-muted)]">
                           {available
                             ? runtime === runtimeStatus.recommended
                               ? 'Detected and recommended on this device.'
@@ -780,19 +781,19 @@ export function AddSwarmModal({
               })}
             </div>
             {!runtimeChoice && runtimeStatus.warning ? (
-              <div className="rounded-2xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] p-4 text-sm text-[var(--app-warning-text)]">
+              <div className="break-words rounded-2xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] p-4 text-sm text-[var(--app-warning-text)]">
                 {runtimeStatus.warning}
               </div>
             ) : null}
           </Card>
 
           <Card className={sectionClassName}>
-            <div className="flex items-start justify-between gap-3">
-              <div className="grid gap-1">
+            <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
+              <div className="grid min-w-0 gap-1">
                 <div className="text-sm font-semibold text-[var(--app-text)]">
                   Workspaces
                 </div>
-                <div className="text-xs text-[var(--app-text-muted)]">
+                <div className="break-words text-xs text-[var(--app-text-muted)]">
                   Select the workspaces to add.
                 </div>
               </div>
@@ -803,7 +804,7 @@ export function AddSwarmModal({
               </Badge>
             </div>
             {workspaceDrafts.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-[var(--app-border)] bg-transparent px-3 py-4 text-sm text-[var(--app-text-muted)]">
+              <div className="break-words rounded-xl border border-dashed border-[var(--app-border)] bg-transparent px-3 py-4 text-sm text-[var(--app-text-muted)]">
                 No workspaces available yet.
               </div>
             ) : (
@@ -851,7 +852,7 @@ export function AddSwarmModal({
                 })}
               </div>
             )}
-            <div className="rounded-lg border border-[var(--app-border)] bg-transparent p-3">
+            <div className="min-w-0 rounded-lg border border-[var(--app-border)] bg-transparent p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <div className="text-sm font-semibold text-[var(--app-text)]">
@@ -869,18 +870,18 @@ export function AddSwarmModal({
                     <HelpCircle size={14} />
                   </button>
                 </div>
-                <Badge tone={containerPackages.length > 0 ? 'live' : 'neutral'}>
+                <Badge tone={containerPackages.length > 0 ? 'live' : 'neutral'} className="shrink-0">
                   {containerPackages.length} apt packages
                 </Badge>
               </div>
               {packagePlatformInfoOpen ? (
-                <div className="mt-3 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-xs leading-5 text-[var(--app-text-muted)]">
+                <div className="mt-3 break-words rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-xs leading-5 text-[var(--app-text-muted)]">
                   Package platform controls the container OS image and apt
                   packages installed before your selected workspaces are copied
                   in.
                 </div>
               ) : null}
-              <div className="mt-2 text-xs text-[var(--app-text-muted)]">
+              <div className="mt-2 break-words text-xs text-[var(--app-text-muted)]">
                 Base image{' '}
                 <span className="font-medium text-[var(--app-text)]">
                   {containerPackageBaseImage}
@@ -919,12 +920,12 @@ export function AddSwarmModal({
                   </Badge>
                 ))}
                 {containerPackages.length > 18 ? (
-                  <Badge tone="neutral">
+                  <Badge tone="neutral" className="shrink-0">
                     +{containerPackages.length - 18} more
                   </Badge>
                 ) : null}
               </div>
-              <div className="mt-3 flex gap-2">
+              <div className="mt-3 grid gap-2 sm:flex">
                 <Input
                   value={packageInput}
                   onChange={(event) => {
@@ -949,6 +950,7 @@ export function AddSwarmModal({
                   variant="secondary"
                   onClick={() => void addPackage()}
                   disabled={submitting || validatingPackage}
+                  className="w-full sm:w-auto"
                 >
                   {validatingPackage ? (
                     <Loader2 size={14} className="animate-spin" />
@@ -959,7 +961,7 @@ export function AddSwarmModal({
                 </Button>
               </div>
               {packageValidationError || packageSuggestionError ? (
-                <div className="mt-2 text-xs text-[var(--app-danger)]">
+                <div className="mt-2 break-words text-xs text-[var(--app-danger)]">
                   {packageValidationError || packageSuggestionError}
                 </div>
               ) : null}
@@ -967,28 +969,28 @@ export function AddSwarmModal({
           </Card>
 
           <Card className={sectionClassName}>
-            <div className="flex items-start justify-between gap-3">
-              <div className="grid gap-1">
+            <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
+              <div className="grid min-w-0 gap-1">
                 <div className="text-sm font-semibold text-[var(--app-text)]">
                   Ready Check
                 </div>
-                <div className="text-xs text-[var(--app-text-muted)]">
+                <div className="break-words text-xs text-[var(--app-text-muted)]">
                   Containers include always-on restart and Swarm Sync so the main
                   swarm can keep managing them after launch.
                 </div>
               </div>
-              <Badge tone={runtimeChoice ? 'live' : 'warning'}>
+              <Badge tone={runtimeChoice ? 'live' : 'warning'} className="self-start sm:shrink-0">
                 {runtimeChoice ? 'ready' : 'runtime required'}
               </Badge>
             </div>
             <div className="grid gap-2 sm:grid-cols-3">
               <div className={infoCardClassName} data-testid="add-swarm-always-on">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
+                <div className="flex min-w-0 items-start justify-between gap-2">
+                  <div className="min-w-0">
                     <div className="text-sm font-semibold text-[var(--app-text)]">
                       Always On included
                     </div>
-                    <div className="mt-1 text-xs text-[var(--app-text-muted)]">
+                    <div className="mt-1 break-words text-xs text-[var(--app-text-muted)]">
                       Required so the container restarts with its host and stays reachable from the main swarm.
                     </div>
                   </div>
@@ -999,12 +1001,12 @@ export function AddSwarmModal({
                 </div>
               </div>
               <div className={infoCardClassName}>
-                <div className="flex items-start justify-between gap-2">
-                  <div>
+                <div className="flex min-w-0 items-start justify-between gap-2">
+                  <div className="min-w-0">
                     <div className="text-sm font-semibold text-[var(--app-text)]">
                       Swarm Sync included
                     </div>
-                    <div className="mt-1 text-xs text-[var(--app-text-muted)]">
+                    <div className="mt-1 break-words text-xs text-[var(--app-text-muted)]">
                       Required so the main swarm can sync credentials, agents, tools, and workspace management into this container.
                     </div>
                   </div>
@@ -1024,12 +1026,12 @@ export function AddSwarmModal({
                 }
                 disabled={submitting}
               >
-                <div className="flex items-start justify-between gap-2">
-                  <div>
+                <div className="flex min-w-0 items-start justify-between gap-2">
+                  <div className="min-w-0">
                     <div className="text-sm font-semibold text-[var(--app-text)]">
                       Turn permissions off for this container only
                     </div>
-                    <div className="mt-1 text-xs text-[var(--app-text-muted)]">
+                    <div className="mt-1 break-words text-xs text-[var(--app-text-muted)]">
                       {bypassPermissions
                         ? 'Permission policy sync is off for this container. Swarm Sync stays on for everything else.'
                         : 'Permission policy sync is on. Turn this on only if this container should manage its own permissions.'}
@@ -1045,7 +1047,7 @@ export function AddSwarmModal({
               </button>
             </div>
             {hostVaultEnabled ? (
-              <div className="rounded-lg border border-[var(--app-border)] bg-transparent p-3">
+              <div className="min-w-0 rounded-lg border border-[var(--app-border)] bg-transparent p-3">
                 <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">
                   Vault password
                 </label>
@@ -1059,44 +1061,44 @@ export function AddSwarmModal({
                 />
               </div>
             ) : null}
-            <div className="grid gap-2 text-sm text-[var(--app-text-muted)] sm:grid-cols-2">
-              <div>
+            <div className="grid min-w-0 gap-2 break-words text-sm text-[var(--app-text-muted)] sm:grid-cols-2">
+              <div className="min-w-0">
                 <span className="font-medium text-[var(--app-text)]">
                   Target:
                 </span>{' '}
                 {launchTargetIsManaged ? `Managed host — ${launchTargetLabel}` : 'Local container'}
               </div>
-              <div>
+              <div className="min-w-0">
                 <span className="font-medium text-[var(--app-text)]">
                   Manager:
                 </span>{' '}
                 {launchTargetLabel}
               </div>
-              <div>
+              <div className="min-w-0">
                 <span className="font-medium text-[var(--app-text)]">
                   Runtime:
                 </span>{' '}
                 {runtimeChoice || 'Unavailable'}
               </div>
-              <div>
+              <div className="min-w-0">
                 <span className="font-medium text-[var(--app-text)]">
                   Workspaces:
                 </span>{' '}
                 {selectedWorkspaceCountValue}
               </div>
-              <div>
+              <div className="min-w-0">
                 <span className="font-medium text-[var(--app-text)]">
                   Always On:
                 </span>{' '}
                 Enabled
               </div>
-              <div>
+              <div className="min-w-0">
                 <span className="font-medium text-[var(--app-text)]">
                   Swarm Sync:
                 </span>{' '}
                 Enabled
               </div>
-              <div>
+              <div className="min-w-0">
                 <span className="font-medium text-[var(--app-text)]">
                   Permissions:
                 </span>{' '}
@@ -1104,7 +1106,7 @@ export function AddSwarmModal({
                   ? 'Off for this container only'
                   : 'Synced from main swarm'}
               </div>
-              <div>
+              <div className="min-w-0">
                 <span className="font-medium text-[var(--app-text)]">
                   Swarm name:
                 </span>{' '}
@@ -1114,16 +1116,17 @@ export function AddSwarmModal({
           </Card>
         </div>
 
-        <div className="flex flex-col gap-3 border-t border-[var(--app-border)] px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
-          <div className="text-sm text-[var(--app-text-muted)]">
+        <div className="grid shrink-0 gap-3 border-t border-[var(--app-border)] px-3 py-3 pb-[max(0.75rem,var(--app-safe-area-bottom))] sm:flex sm:items-center sm:justify-between sm:px-6 sm:py-5">
+          <div className="min-w-0 break-words text-sm text-[var(--app-text-muted)]">
             {footerStatusText}
           </div>
-          <div className="flex gap-3">
+          <div className="grid gap-2 sm:flex sm:gap-3">
             <Button
               type="button"
               variant="outline"
               onClick={closeModal}
               disabled={submitting}
+              className="w-full sm:w-auto"
             >
               Cancel
             </Button>
@@ -1140,6 +1143,7 @@ export function AddSwarmModal({
                 selectedWorkspaceCountValue === 0 ||
                 (hostVaultEnabled && !syncVaultPassword.trim())
               }
+              className="w-full sm:w-auto"
             >
               {submitting ? (
                 <Loader2 size={14} className="animate-spin" />

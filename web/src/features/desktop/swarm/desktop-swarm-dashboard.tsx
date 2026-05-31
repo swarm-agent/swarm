@@ -26,9 +26,11 @@ import {
   type RemoteSwarmPendingPairing,
 } from './api/remote-pairing'
 import type { DesktopOnboardingStatus, DesktopSwarmGroupMember, DesktopSwarmGroupState, DesktopOnboardingConfig, DesktopOnboardingNetwork, DesktopOnboardingPairing } from './types/dashboard-status'
+import { uiSettingsQueryKey } from '../../queries/query-options'
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
+import { saveLocalContainerUpdateWarningDismissal } from '../settings/swarm/mutations/save-local-container-update-warning-dismissal'
 import { saveSwarmSettings } from '../settings/swarm/mutations/save-swarm-settings'
-import type { UISettingsWire } from '../settings/swarm/types/swarm-settings'
+import { localContainerUpdateWarningDismissed, normalizeSwarmSettings, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import { AddSwarmModal } from './components/add-swarm-modal'
 import { fetchSwarmTargets, type SwarmTarget } from './api/swarm-targets'
 import { deleteSwarmMirrorResources, fetchSwarmMirrorResources, type SwarmMirrorResource, type SwarmMirrorResources, type SwarmMirrorWorkspaceResource } from './api/swarm-mirror'
@@ -1194,7 +1196,7 @@ export function DesktopSwarmDashboard() {
   const [swarmTargets, setSwarmTargets] = useState<SwarmTarget[]>([])
   const [mirrorResources, setMirrorResources] = useState<SwarmMirrorResources>(emptySwarmMirrorResources)
   const [localRuntime, setLocalRuntime] = useState<SwarmLocalRuntimeStatus>({ recommended: '', available: [], installed: [], issues: {}, warning: '' })
-  const [hiddenLocalRuntimeWarning, setHiddenLocalRuntimeWarning] = useState('')
+  const [hidingLocalRuntimeWarning, setHidingLocalRuntimeWarning] = useState(false)
   const [localContainers, setLocalContainers] = useState<SwarmLocalContainer[]>([])
   const [deployments, setDeployments] = useState<DeployContainerDeployment[]>([])
   const [remoteSessions, setRemoteSessions] = useState<RemoteDeploySession[]>([])
@@ -1932,6 +1934,21 @@ export function DesktopSwarmDashboard() {
     }
   }
 
+  const handleHideLocalRuntimeWarning = async () => {
+    setHidingLocalRuntimeWarning(true)
+    setError(null)
+    try {
+      const saved = await saveLocalContainerUpdateWarningDismissal(true)
+      setUISettings(saved)
+      queryClient.setQueryData(uiSettingsQueryKey(), saved)
+      queryClient.setQueryData(['ui-settings', 'swarm'], normalizeSwarmSettings(saved))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save Docker warning preference')
+    } finally {
+      setHidingLocalRuntimeWarning(false)
+    }
+  }
+
   const openAddSwarm = () => {
     setAddSwarmOpen(true)
     setError(null)
@@ -2417,13 +2434,13 @@ export function DesktopSwarmDashboard() {
           </p>
         </div>
         <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
-          <Button type="button" variant="primary" data-testid="swarm-dashboard-add-container" className="col-span-2 w-full sm:col-span-1 sm:w-auto" onClick={() => openAddSwarm()} disabled={addContainerDisabled}>
+          <Button type="button" variant="primary" data-testid="swarm-dashboard-add-container" className="w-full sm:w-auto" onClick={() => openAddSwarm()} disabled={addContainerDisabled}>
             <Plus size={14} />
-            Add Container
+            <span className="truncate">Add Container</span>
           </Button>
           <Button type="button" variant="outline" data-testid="swarm-dashboard-link-swarm" className="w-full sm:w-auto" onClick={() => openLinkSwarm()} disabled={managedHostingControlsDisabled} title={managedHostControlTitle || (localIsChild ? 'This host is already linked to a Manager.' : undefined)}>
             <Link2 size={14} />
-            Link Host
+            <span className="truncate">Link Host</span>
           </Button>
           {visiblePendingPairings.length > 0 || pendingLinkReviewTarget ? (
             <Button type="button" variant="primary" data-testid="swarm-dashboard-link-request" className="w-full sm:w-auto" onClick={() => setLinkRequestOpen(true)}>
@@ -2598,11 +2615,11 @@ export function DesktopSwarmDashboard() {
               </div>
             </div>
 
-            {localRuntime.warning && hiddenLocalRuntimeWarning !== localRuntime.warning ? (
+            {localRuntime.warning && uiSettings && !localContainerUpdateWarningDismissed(uiSettings) ? (
               <div className="mt-3 rounded-xl border border-[var(--app-warning-border)] bg-transparent px-3 py-2 text-sm text-[var(--app-warning-text)]">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div className="flex items-start gap-2"><TriangleAlert size={16} className="mt-0.5 shrink-0" /><div>{localRuntime.warning}</div></div>
-                  <Button type="button" variant="outline" size="sm" className="h-8 text-[11px]" onClick={() => setHiddenLocalRuntimeWarning(localRuntime.warning)}>
+                  <Button type="button" variant="outline" size="sm" className="h-8 text-[11px]" onClick={() => void handleHideLocalRuntimeWarning()} disabled={busy || hidingLocalRuntimeWarning}>
                     Hide
                   </Button>
                 </div>

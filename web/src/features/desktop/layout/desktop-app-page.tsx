@@ -3439,8 +3439,8 @@ export function DesktopAppPage() {
             </Card>
           </div>
         ) : isFlowRoute ? (
-          <div className="min-h-0 flex-1 overflow-y-auto bg-[var(--app-bg)] px-6 py-8">
-            <div className="mx-auto min-h-full w-full max-w-6xl">
+          <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-[var(--app-bg)] px-3 pb-[calc(var(--app-safe-area-bottom)_+_1.25rem)] pt-[calc(var(--app-safe-area-top)_+_1rem)] sm:px-6 sm:py-8">
+            <div className="mx-auto min-h-full w-full max-w-6xl min-w-0">
               <FlowsSettingsPage />
             </div>
           </div>
