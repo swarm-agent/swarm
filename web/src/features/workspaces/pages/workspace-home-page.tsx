@@ -31,6 +31,16 @@ function fallbackWorkspaceNameFromPath(path: string): string {
   return parts[parts.length - 1] || path.trim() || 'workspace'
 }
 
+function normalizeComparePath(path: string): string {
+  const trimmed = path.trim()
+  const withoutTrailing = trimmed.replace(/[\\/]+$/, '')
+  return withoutTrailing || trimmed
+}
+
+function isSamePath(left: string, right: string): boolean {
+  return normalizeComparePath(left) === normalizeComparePath(right)
+}
+
 function formatDiscoveredMeta(entry: { hasSwarm: boolean; hasClaude: boolean; isGitRepo: boolean; lastModified: number }): string {
   const parts: string[] = []
   if (entry.hasSwarm) {
@@ -231,6 +241,7 @@ export function WorkspaceHomePage() {
     removeWorkspaceManagedLink,
     saveWorkspace,
     createFolder,
+    moveWorkspaceToIndex,
     refresh,
     browsePath,
   } = useWorkspaceLauncher()
@@ -244,6 +255,7 @@ export function WorkspaceHomePage() {
   const availableSwarmTargets = swarmTargetsQuery.data?.targets ?? []
   const [modalState, setModalState] = useState<WorkspaceModalState | null>(null)
   const [draftName, setDraftName] = useState('')
+  const [workspaceNameTouched, setWorkspaceNameTouched] = useState(false)
   const [modalError, setModalError] = useState<string | null>(null)
   const [deleteTargetPath, setDeleteTargetPath] = useState<string | null>(null)
   const [workspaceSearch, setWorkspaceSearch] = useState('')
@@ -282,11 +294,11 @@ export function WorkspaceHomePage() {
     if (!modalState) {
       return []
     }
-    const taken = new Set(modalState.sourcePaths.map((value) => value.trim()).filter((value) => value !== ''))
-    taken.add(modalState.workspacePath.trim())
+    const taken = new Set(modalState.sourcePaths.map(normalizeComparePath).filter((value) => value !== ''))
+    taken.add(normalizeComparePath(modalState.workspacePath))
 
     const workspaceCandidates = workspaces
-      .filter((workspace) => workspace.path.trim() !== '' && !taken.has(workspace.path))
+      .filter((workspace) => workspace.path.trim() !== '' && !taken.has(normalizeComparePath(workspace.path)))
       .map((workspace) => ({
         path: workspace.path,
         name: workspace.workspaceName || fallbackWorkspaceNameFromPath(workspace.path),
@@ -294,7 +306,7 @@ export function WorkspaceHomePage() {
       }))
 
     const discoveredCandidates = discovered
-      .filter((entry) => !taken.has(entry.path))
+      .filter((entry) => !taken.has(normalizeComparePath(entry.path)))
       .map((entry) => ({
         path: entry.path,
         name: entry.name,
@@ -329,6 +341,7 @@ export function WorkspaceHomePage() {
       pendingManagedLinks: [],
     })
     setDraftName(initialName)
+    setWorkspaceNameTouched(false)
     setModalError(null)
   }
 
@@ -347,28 +360,61 @@ export function WorkspaceHomePage() {
       pendingManagedLinks: [],
     })
     setDraftName(workspace.workspaceName)
+    setWorkspaceNameTouched(false)
     setModalError(null)
   }
 
   const closeModal = () => {
     setModalState(null)
     setDraftName('')
+    setWorkspaceNameTouched(false)
     setModalError(null)
   }
 
-  const addLinkedDirectory = (path: string) => {
+  const addLinkedDirectories = (paths: string[]) => {
     setModalState((current) => {
       if (!current) {
         return current
       }
-      if (current.sourcePaths.includes(path) || current.workspacePath === path) {
+      const workspaceComparePath = normalizeComparePath(current.workspacePath)
+      const existing = new Set(current.sourcePaths.map(normalizeComparePath))
+      const next = paths.filter((path) => {
+        const comparePath = normalizeComparePath(path)
+        return comparePath !== '' && comparePath !== workspaceComparePath && !existing.has(comparePath)
+      })
+      if (next.length === 0) {
         return current
       }
       return {
         ...current,
-        sourcePaths: [...current.sourcePaths, path],
+        sourcePaths: [...current.sourcePaths, ...next],
       }
     })
+  }
+
+  const addLinkedDirectory = (path: string) => {
+    addLinkedDirectories([path])
+  }
+
+  const pickWorkspaceFolder = (path: string) => {
+    setModalState((current) => {
+      if (!current) {
+        return current
+      }
+      return {
+        ...current,
+        workspacePath: path,
+        sourcePaths: current.sourcePaths.filter((value) => !isSamePath(value, current.workspacePath) && !isSamePath(value, path)),
+      }
+    })
+    if (!workspaceNameTouched) {
+      setDraftName(fallbackWorkspaceNameFromPath(path))
+    }
+  }
+
+  const setDraftNameTouched = (value: string) => {
+    setDraftName(value)
+    setWorkspaceNameTouched(true)
   }
 
   const removeLinkedDirectory = (path: string) => {
@@ -378,7 +424,7 @@ export function WorkspaceHomePage() {
     if (modalState.mode === 'create') {
       setModalState({
         ...modalState,
-        sourcePaths: modalState.sourcePaths.filter((value) => value !== path),
+        sourcePaths: modalState.sourcePaths.filter((value) => !isSamePath(value, path)),
       })
       return
     }
@@ -391,7 +437,7 @@ export function WorkspaceHomePage() {
           }
           return {
             ...current,
-            sourcePaths: current.sourcePaths.filter((value) => value !== path),
+            sourcePaths: current.sourcePaths.filter((value) => !isSamePath(value, path)),
           }
         })
       } catch (err) {
@@ -506,8 +552,17 @@ export function WorkspaceHomePage() {
       return
     }
 
-    const normalizedSources = modalState.sourcePaths.map((value) => value.trim()).filter((value) => value !== '')
-    const linkedDirectories = normalizedSources.filter((value) => value !== workspacePath)
+    const seenLinkedDirectories = new Set<string>()
+    const linkedDirectories = modalState.sourcePaths
+      .map((value) => value.trim())
+      .filter((value) => {
+        const comparePath = normalizeComparePath(value)
+        if (comparePath === '' || comparePath === normalizeComparePath(workspacePath) || seenLinkedDirectories.has(comparePath)) {
+          return false
+        }
+        seenLinkedDirectories.add(comparePath)
+        return true
+      })
 
     try {
       await saveWorkspace({
@@ -738,22 +793,31 @@ export function WorkspaceHomePage() {
         workspacePathEditable={modalState?.workspacePathEditable ?? true}
         name={draftName}
         themeId={modalState?.themeId ?? 'inherit'}
-        linkedDirectories={modalState?.sourcePaths.filter((path) => path !== modalState.workspacePath) ?? []}
+        linkedDirectories={modalState?.sourcePaths.filter((path) => !isSamePath(path, modalState.workspacePath)) ?? []}
         availableDirectories={modalAvailableDirectories}
         pendingManagedLinks={modalState?.pendingManagedLinks ?? []}
         workspaces={workspaces}
         availableSwarmTargets={availableSwarmTargets}
+        browser={browser}
+        browserLoading={browserLoading}
+        browserError={browserError}
         canRemoveLinkedDirectories={Boolean(modalState)}
         error={modalError}
         saving={Boolean(savingPath && modalState?.workspacePath && savingPath === modalState.workspacePath)}
         onWorkspacePathChange={(value) => setModalState((current) => (current ? { ...current, workspacePath: value } : current))}
-        onNameChange={setDraftName}
+        onPickWorkspaceFolder={pickWorkspaceFolder}
+        onNameChange={setDraftNameTouched}
         onThemeIdChange={setThemeId}
+        onBrowsePath={(path) => {
+          void browsePath(path)
+        }}
+        onCreateFolder={createFolder}
         onSelectWorkspace={startEdit}
         onMoveWorkspaceToIndex={(path, index) => {
           void moveWorkspaceToIndex(path, index)
         }}
         onAddLinkedDirectory={addLinkedDirectory}
+        onAddLinkedDirectories={addLinkedDirectories}
         onRemoveLinkedDirectory={removeLinkedDirectory}
         onAddManagedLink={addManagedLink}
         onRemoveManagedLink={removeManagedLink}
