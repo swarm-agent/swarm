@@ -16,7 +16,7 @@ async function withFetchStub(run: (calls: Array<{ input: RequestInfo | URL; init
       })
     }
     if (url === '/v1/swarm/managed-workspaces/inventory?target_swarm_id=managed-swarm&limit=200') {
-      return new Response(JSON.stringify({ ok: true, target: { swarm_id: 'managed-swarm', name: 'swarm-bomb-2', online: true }, managed_home: '/srv/swarm', saved_workspaces: [{ path: '/srv/swarm/swarm-go', workspace_name: 'swarm-go' }] }), {
+      return new Response(JSON.stringify({ ok: true, target: { swarm_id: 'managed-swarm', name: 'SwarmTarget2', online: true }, managed_home: '/srv/swarm', saved_workspaces: [{ path: '/srv/swarm/swarm-go', workspace_name: 'swarm-go' }] }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })

@@ -21,7 +21,7 @@ const MAX_DROPDOWN_WIDTH = 360
 function routeKind(route: DesktopChatRoute): 'managed' | 'remote' | 'local' {
   const targetKind = route.targetKind.trim().toLowerCase()
   const targetRelationship = route.targetRelationship.trim().toLowerCase()
-  if (route.swarmId && (targetRelationship === 'managed' || targetKind === 'host')) {
+  if (route.swarmId && targetRelationship === 'managed') {
     return 'managed'
   }
   return route.swarmId && (targetKind === 'remote' || targetKind === 'mirrored') ? 'remote' : 'local'

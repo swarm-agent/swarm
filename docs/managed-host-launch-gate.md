@@ -7,10 +7,10 @@ Remote SSH/deploy paths are out of scope for product-path evidence. Operator she
 
 Use the host that matches the proof being run. Do not silently substitute hosts; record the host in the evidence directory metadata or run notes.
 
-- `testbench` / `swarm-bomb`: original verification host for migration gates and scripts that explicitly require the SSH testbench host. Use it when a harness says it must run on `swarm-bomb` or when replaying older migration evidence.
-- `testbench2`: newer managed-host/parity VM for Gate B managed-host proof and current no-mode/SwarmMode-removal parity checks, unless a specific migration gate explicitly names `testbench` / `swarm-bomb`.
+- `testbench` / `SwarmTarget1`: original verification host for migration gates and scripts that explicitly require the SSH testbench host. Use it when a harness says it must run on `SwarmTarget1` or when replaying older migration evidence.
+- `testbench2`: newer managed-host/parity VM for Gate B managed-host proof and current no-mode/SwarmMode-removal parity checks, unless a specific migration gate explicitly names `testbench` / `SwarmTarget1`.
 
-For SwarmMode removal proof, run local targeted tests first, then run clean onboarding proof on the clean VM used for that run, and run Gate B managed-host proof on `testbench2` unless the specific harness requires `testbench` / `swarm-bomb`.
+For SwarmMode removal proof, run local targeted tests first, then run clean onboarding proof on the clean VM used for that run, and run Gate B managed-host proof on `testbench2` unless the specific harness requires `testbench` / `SwarmTarget1`.
 
 ```sh
 # Local source gate: functional code/tests/scripts must not depend on SwarmMode.
@@ -39,21 +39,21 @@ cd swarmd && go test ./internal/swarm ./internal/api -run 'EnsureLocalState|Grou
 
 ## Minimal harness
 
-Run the harness on the SSH testbench host, not from the developer workstation. The primary daemon currently binds admin traffic on loopback, so the default primary URL is `http://127.0.0.1:7781` when running on `swarm-bomb`.
+Run the harness on the SSH testbench host, not from the developer workstation. The primary daemon currently binds admin traffic on loopback, so the default primary URL is `http://127.0.0.1:7781` when running on `SwarmTarget1`.
 
 <copy label="ssh launch gate checkpoints 0-1">
-ssh swarm-bomb 'cd ${SWARM_GO_ROOT:-/path/to/swarm-go} && ./tests/swarmd/managed_host_launch_gate_e2e.sh \
+ssh SwarmTarget1 'cd ${SWARM_GO_ROOT:-/path/to/swarm-go} && ./tests/swarmd/managed_host_launch_gate_e2e.sh \
   --scenario 0-1 \
-  --managed-name swarm-bomb-2 \
+  --managed-name SwarmTarget2 \
   --source-workspace-path ${SWARM_GO_ROOT:-/path/to/swarm-go}'
 </copy>
 
 If stale managed-host containers exist and should be removed, cleanup must still go through the primary managed-host API:
 
 <copy label="ssh checkpoint 0 with API cleanup">
-ssh swarm-bomb 'cd ${SWARM_GO_ROOT:-/path/to/swarm-go} && ./tests/swarmd/managed_host_launch_gate_e2e.sh \
+ssh SwarmTarget1 'cd ${SWARM_GO_ROOT:-/path/to/swarm-go} && ./tests/swarmd/managed_host_launch_gate_e2e.sh \
   --scenario 0 \
-  --managed-name swarm-bomb-2 \
+  --managed-name SwarmTarget2 \
   --source-workspace-path ${SWARM_GO_ROOT:-/path/to/swarm-go} \
   --cleanup-existing-managed-containers'
 </copy>
@@ -61,21 +61,21 @@ ssh swarm-bomb 'cd ${SWARM_GO_ROOT:-/path/to/swarm-go} && ./tests/swarmd/managed
 Checkpoint 2 requires a real provider credential already configured on the testbench. It opens a managed-host session through the primary API, sends a deterministic prompt, starts a background run through `/v1/sessions/<id>/run/stream`, then verifies the primary mirror and topology route artifacts.
 
 <copy label="ssh checkpoint 2 managed host ai">
-ssh swarm-bomb 'cd ${SWARM_GO_ROOT:-/path/to/swarm-go} && ./tests/swarmd/managed_host_launch_gate_e2e.sh \
+ssh SwarmTarget1 'cd ${SWARM_GO_ROOT:-/path/to/swarm-go} && ./tests/swarmd/managed_host_launch_gate_e2e.sh \
   --scenario 2 \
-  --managed-name swarm-bomb-2 \
+  --managed-name SwarmTarget2 \
   --source-workspace-path ${SWARM_GO_ROOT:-/path/to/swarm-go} \
   --provider codex \
   --model gpt-5.5 \
   --thinking low'
 </copy>
 
-Checkpoint 4 creates a real child container on `swarm-bomb-2` through the primary API. It fails closed on stale managed containers, records baseline counts, posts only to `/v1/swarm/replicate` with `target_host_swarm_id`, and verifies the returned deployment, topology host container, runtime owner, workspace binding, and managed mirror resources all agree on managed-host identity.
+Checkpoint 4 creates a real child container on `SwarmTarget2` through the primary API. It fails closed on stale managed containers, records baseline counts, posts only to `/v1/swarm/replicate` with `target_host_swarm_id`, and verifies the returned deployment, topology host container, runtime owner, workspace binding, and managed mirror resources all agree on managed-host identity.
 
 <copy label="ssh checkpoint 4 managed container create">
-ssh swarm-bomb 'cd ${SWARM_GO_ROOT:-/path/to/swarm-go} && ./tests/swarmd/managed_host_launch_gate_e2e.sh \
+ssh SwarmTarget1 'cd ${SWARM_GO_ROOT:-/path/to/swarm-go} && ./tests/swarmd/managed_host_launch_gate_e2e.sh \
   --scenario 4 \
-  --managed-name swarm-bomb-2 \
+  --managed-name SwarmTarget2 \
   --source-workspace-path ${SWARM_GO_ROOT:-/path/to/swarm-go} \
   --container-name launch-gate-cp4'
 </copy>
@@ -83,9 +83,9 @@ ssh swarm-bomb 'cd ${SWARM_GO_ROOT:-/path/to/swarm-go} && ./tests/swarmd/managed
 Checkpoint 5 creates a managed-host child, updates deployment settings, stops/starts it through `/v1/deploy/container/action`, deletes it through `/v1/deploy/container/delete`, proves primary topology/deployment cleanup, then recreates a new managed-host child through `/v1/swarm/replicate`.
 
 <copy label="ssh checkpoint 5 managed container crud">
-ssh swarm-bomb 'cd ${SWARM_GO_ROOT:-/path/to/swarm-go} && ./tests/swarmd/managed_host_launch_gate_e2e.sh \
+ssh SwarmTarget1 'cd ${SWARM_GO_ROOT:-/path/to/swarm-go} && ./tests/swarmd/managed_host_launch_gate_e2e.sh \
   --scenario 5 \
-  --managed-name swarm-bomb-2 \
+  --managed-name SwarmTarget2 \
   --source-workspace-path ${SWARM_GO_ROOT:-/path/to/swarm-go} \
   --cp5-container-name launch-gate-cp5 \
   --cp5-recreate-container-name launch-gate-cp5-recreate'
@@ -94,9 +94,9 @@ ssh swarm-bomb 'cd ${SWARM_GO_ROOT:-/path/to/swarm-go} && ./tests/swarmd/managed
 Checkpoint 6 creates a managed-host child container, opens a session through primary `/v1/sessions?swarm_id=<child>`, sends a deterministic prompt through `/v1/sessions/<id>/messages`, starts the run through `/v1/sessions/<id>/run/stream`, verifies the proof token and topology route, then deletes the deployment and proves the route is gone.
 
 <copy label="ssh checkpoint 6 managed container ai">
-ssh swarm-bomb 'cd ${SWARM_GO_ROOT:-/path/to/swarm-go} && ./tests/swarmd/managed_host_launch_gate_e2e.sh \
+ssh SwarmTarget1 'cd ${SWARM_GO_ROOT:-/path/to/swarm-go} && ./tests/swarmd/managed_host_launch_gate_e2e.sh \
   --scenario 6 \
-  --managed-name swarm-bomb-2 \
+  --managed-name SwarmTarget2 \
   --source-workspace-path ${SWARM_GO_ROOT:-/path/to/swarm-go} \
   --provider codex \
   --model gpt-5.5 \

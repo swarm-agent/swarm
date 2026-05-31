@@ -200,8 +200,7 @@ export function isManagedHostDesktopChatRoute(route: DesktopChatRoute | null | u
     return false
   }
   const relationship = route?.targetRelationship?.trim().toLowerCase() ?? ''
-  const kind = route?.targetKind?.trim().toLowerCase() ?? ''
-  return relationship === 'managed' || kind === 'host'
+  return relationship === 'managed'
 }
 
 export function withDesktopChatRoute(path: string, route: DesktopChatRoute | null | undefined): string {

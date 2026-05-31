@@ -68,7 +68,7 @@ func TestAdvanceManagedDevHostStatusMergesPhases(t *testing.T) {
 		t.Fatalf("WriteUpdateJobStatus: %v", err)
 	}
 	profile := Profile{DataDir: dataDir}
-	target := managedDevSwarmTarget{SwarmID: "managed-1", Name: "swarm-bomb-2"}
+	target := managedDevSwarmTarget{SwarmID: "managed-1", Name: "SwarmTarget2"}
 
 	advanceManagedDevHostStatus(profile, target, managedDevPhaseInspect, updateJobStatusCompleted, "selected", "")
 	advanceManagedDevHostStatus(profile, target, managedDevPhaseSync, updateJobStatusRunning, "syncing", "")
@@ -82,7 +82,7 @@ func TestAdvanceManagedDevHostStatusMergesPhases(t *testing.T) {
 		t.Fatalf("hosts = %#v", status.Hosts)
 	}
 	host := status.Hosts[0]
-	if host.HostID != "managed-1" || host.Name != "swarm-bomb-2" || host.CurrentPhase != managedDevPhaseSync || host.Status != updateJobStatusRunning {
+	if host.HostID != "managed-1" || host.Name != "SwarmTarget2" || host.CurrentPhase != managedDevPhaseSync || host.Status != updateJobStatusRunning {
 		t.Fatalf("host = %#v", host)
 	}
 	if len(host.Phases) != 2 || host.Phases[0].Name != managedDevPhaseInspect || host.Phases[1].Name != managedDevPhaseSync || host.Phases[1].Status != updateJobStatusCompleted {
@@ -97,7 +97,7 @@ func TestMarkManagedDevHostPhaseCompletesExistingManagedHosts(t *testing.T) {
 		ID:     "job-1",
 		Kind:   updateKindDev,
 		Status: updateJobStatusRunning,
-		Hosts:  []localupdate.UpdateJobHostStatus{{HostID: "managed-1", Name: "swarm-bomb-2", Role: "managed"}},
+		Hosts:  []localupdate.UpdateJobHostStatus{{HostID: "managed-1", Name: "SwarmTarget2", Role: "managed"}},
 	}); err != nil {
 		t.Fatalf("WriteUpdateJobStatus: %v", err)
 	}

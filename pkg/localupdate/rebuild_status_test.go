@@ -13,7 +13,7 @@ func TestUpdateJobStatusRoundTripsHostPhases(t *testing.T) {
 		Status: " running ",
 		Hosts: []UpdateJobHostStatus{{
 			HostID:       " managed-1 ",
-			Name:         " swarm-bomb-2 ",
+			Name:         " SwarmTarget2 ",
 			Role:         " managed ",
 			CurrentPhase: " sync ",
 			Status:       " running ",
@@ -33,7 +33,7 @@ func TestUpdateJobStatusRoundTripsHostPhases(t *testing.T) {
 	if got.ID != "job-1" || got.Kind != "dev" || got.Status != "running" {
 		t.Fatalf("trimmed status = %#v", got)
 	}
-	if len(got.Hosts) != 1 || got.Hosts[0].HostID != "managed-1" || got.Hosts[0].Name != "swarm-bomb-2" || got.Hosts[0].CurrentPhase != "sync" {
+	if len(got.Hosts) != 1 || got.Hosts[0].HostID != "managed-1" || got.Hosts[0].Name != "SwarmTarget2" || got.Hosts[0].CurrentPhase != "sync" {
 		t.Fatalf("host status = %#v", got.Hosts)
 	}
 	if len(got.Hosts[0].Phases) != 1 || got.Hosts[0].Phases[0].Name != "sync" || got.Hosts[0].Phases[0].Status != "running" {

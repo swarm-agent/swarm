@@ -24,7 +24,7 @@ Options:
   --service-name <name>            systemd service name. Default: swarm.service
   --timeout-seconds <seconds>      Update wait timeout. Default: 1800
   --evidence-dir <path>            Evidence output directory. Default: mktemp under /tmp
-  --allow-local-workstation-run    Allow non swarm-bomb hostname execution.
+  --allow-local-workstation-run    Allow non SwarmTarget1 hostname execution.
   --help                          Show help.
 
 Environment shortcuts:
@@ -48,7 +48,7 @@ require_testbench_execution() {
   local host
   host="$(hostname -s 2>/dev/null || hostname 2>/dev/null || true)"
   case "${host}" in
-    swarm-bomb|swarm-bomb-*) return 0 ;;
+    SwarmTarget1|SwarmTarget1-*) return 0 ;;
   esac
   fail "run this verification on the primary SSH testbench host, or pass --primary-ssh-host for off-host binary evidence"
 }

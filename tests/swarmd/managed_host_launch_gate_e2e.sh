@@ -10,7 +10,7 @@ Usage: ./tests/swarmd/managed_host_launch_gate_e2e.sh [options]
 
 Managed-host-only Launch Gate harness. It drives the primary swarmd API and
 never uses the remote deploy or remote shell product paths. For real testbench
-runs, execute this script on swarm-bomb over SSH (or on swarm-bomb itself); do
+runs, execute this script on SwarmTarget1 over SSH (or on SwarmTarget1 itself); do
 not run it from the developer workstation.
 
 Implemented checkpoints:
@@ -120,9 +120,9 @@ require_testbench_execution() {
   local host
   host="$(hostname -s 2>/dev/null || hostname 2>/dev/null || true)"
   case "${host}" in
-    swarm-bomb|swarm-bomb-*) return 0 ;;
+    SwarmTarget1|SwarmTarget1-*) return 0 ;;
   esac
-  fail "Launch Gate harness must run on the SSH testbench host, not the local workstation. Use: ssh swarm-bomb 'cd ${SWARM_GO_ROOT:-/path/to/swarm-go} && ./tests/swarmd/managed_host_launch_gate_e2e.sh ...'"
+  fail "Launch Gate harness must run on the SSH testbench host, not the local workstation. Use: ssh SwarmTarget1 'cd ${SWARM_GO_ROOT:-/path/to/swarm-go} && ./tests/swarmd/managed_host_launch_gate_e2e.sh ...'"
 }
 
 init_evidence() {

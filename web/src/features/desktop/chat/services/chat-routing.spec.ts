@@ -85,9 +85,18 @@ test('routed session fetch URL includes swarm_id so backend can proxy to child',
   )
 })
 
-test('managed host routes are identified separately from child routes', () => {
+test('managed host routes are identified by managed relationship only', () => {
   assert.equal(isManagedHostDesktopChatRoute(managedHostRoute), true)
   assert.equal(isManagedHostDesktopChatRoute(remoteRoute), false)
+  assert.equal(isManagedHostDesktopChatRoute({
+    ...managedHostRoute,
+    id: 'swarm:self-swarm:binding:binding-self',
+    label: 'primary self',
+    swarmId: 'self-swarm',
+    targetKind: 'host',
+    targetRelationship: 'self',
+    workspaceBindingId: 'binding-self',
+  }), false)
 })
 
 test('routed session metadata reconstructs route label from server metadata, not target metadata', () => {
@@ -371,16 +380,16 @@ test('buildDesktopChatRouteOptions labels mirrored child routes with their runti
     workspaceName: 'Host Workspace',
     topologyRoutes: [topologyRoute({
       runtimeSwarmId: 'container-swarm',
-      runtimeSwarmName: 'swarmbomb2',
+      runtimeSwarmName: 'SwarmTarget2',
       runtimeKind: 'mirrored',
       runtimeRelationship: 'child',
       hostSwarmId: 'managed-host-swarm',
-      hostSwarmName: 'swarm-bomb-2',
+      hostSwarmName: 'SwarmTarget2',
     })],
   })
 
-  assert.equal(routes[1]?.label, 'swarmbomb2')
-  assert.equal(routes[1]?.hostSwarmName, 'swarm-bomb-2')
+  assert.equal(routes[1]?.label, 'SwarmTarget2')
+  assert.equal(routes[1]?.hostSwarmName, 'SwarmTarget2')
   assert.equal(routes[1]?.targetKind, 'mirrored')
 })
 
@@ -397,21 +406,34 @@ test('buildDesktopChatRouteOptions treats different workspace bindings as differ
   assert.equal(routes[2]?.id, 'swarm:child-swarm:binding:binding-duplicate')
 })
 
-test('groupDesktopChatRoutes keeps managed host outside Primary and first in its managed section', async () => {
+test('groupDesktopChatRoutes keeps only managed-relationship host route outside Primary', async () => {
   const { groupDesktopChatRoutes } = await import('../components/route-picker')
   const routes = [
     {
       id: 'host',
-      label: 'swarm-bomb',
+      label: 'SwarmTarget1',
       swarmId: null,
       targetKind: 'host',
       targetRelationship: 'self',
       hostSwarmId: '',
-      hostSwarmName: 'swarm-bomb',
+      hostSwarmName: 'SwarmTarget1',
       hostWorkspacePath: '/srv/swarm/swarm-go',
       hostWorkspaceName: 'swarm-go',
       runtimeWorkspacePath: '/srv/swarm/swarm-go',
       workspaceBindingId: '',
+    },
+    {
+      id: 'swarm:primary-swarm:binding:binding-primary-self',
+      label: 'primary self binding',
+      swarmId: 'primary-swarm',
+      targetKind: 'host',
+      targetRelationship: 'self',
+      hostSwarmId: 'primary-swarm',
+      hostSwarmName: 'SwarmTarget1',
+      hostWorkspacePath: '/srv/swarm/swarm-go',
+      hostWorkspaceName: 'swarm-go',
+      runtimeWorkspacePath: '/srv/swarm/swarm-go',
+      workspaceBindingId: 'binding-primary-self',
     },
     {
       id: 'swarm:localtest-swarm:binding:binding-localtest',
@@ -420,7 +442,7 @@ test('groupDesktopChatRoutes keeps managed host outside Primary and first in its
       targetKind: 'local',
       targetRelationship: 'child',
       hostSwarmId: 'primary-swarm',
-      hostSwarmName: 'swarm-bomb',
+      hostSwarmName: 'SwarmTarget1',
       hostWorkspacePath: '/srv/swarm/swarm-go',
       hostWorkspaceName: 'swarm-go',
       runtimeWorkspacePath: '/workspaces/swarm-go',
@@ -433,7 +455,7 @@ test('groupDesktopChatRoutes keeps managed host outside Primary and first in its
       targetKind: 'mirrored',
       targetRelationship: 'child',
       hostSwarmId: 'managed-swarm',
-      hostSwarmName: 'swarm-bomb-2',
+      hostSwarmName: 'SwarmTarget2',
       hostWorkspacePath: '/srv/swarm/swarm-go',
       hostWorkspaceName: 'swarm-go',
       runtimeWorkspacePath: '/workspaces/swarm-go',
@@ -441,12 +463,12 @@ test('groupDesktopChatRoutes keeps managed host outside Primary and first in its
     },
     {
       id: 'swarm:managed-swarm:binding:binding-managed-host',
-      label: 'swarm-bomb-2',
+      label: 'SwarmTarget2',
       swarmId: 'managed-swarm',
       targetKind: 'host',
       targetRelationship: 'managed',
       hostSwarmId: 'managed-swarm',
-      hostSwarmName: 'swarm-bomb-2',
+      hostSwarmName: 'SwarmTarget2',
       hostWorkspacePath: '/srv/swarm/swarm-go',
       hostWorkspaceName: 'swarm-go',
       runtimeWorkspacePath: '/srv/swarm/swarm-go',
@@ -457,7 +479,7 @@ test('groupDesktopChatRoutes keeps managed host outside Primary and first in its
   const groups = groupDesktopChatRoutes(routes)
 
   assert.deepEqual(groups.map((group) => group.label), ['Primary', 'Managed host'])
-  assert.deepEqual(groups.map((group) => group.routes.map((route) => route.label)), [['swarm-bomb', 'localtest'], ['swarm-bomb-2', 'heytest']])
+  assert.deepEqual(groups.map((group) => group.routes.map((route) => route.label)), [['SwarmTarget1', 'primary self binding', 'localtest'], ['SwarmTarget2', 'heytest']])
 })
 
 

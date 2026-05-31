@@ -25,7 +25,7 @@ async function withFetchStub(
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     calls.push({ input, init })
     const url = String(input)
-    if (url === '/v1/sessions?swarm_id=child-swarm') {
+    if (url === '/v1/sessions?swarm_id=child-swarm' || url === '/v1/sessions?swarm_id=primary-swarm') {
       return new Response(JSON.stringify({
         ok: true,
         session: {
@@ -76,14 +76,18 @@ test('routed session create sends workspace identity and binding without path au
 })
 
 
-test('binding-required route without binding does not fall back to workspace path authority', async () => {
+test('self host route with swarm identity does not use managed-host endpoint or path authority', async () => {
   const { createSession } = await import('./chat-queries')
 
   await withFetchStub(async (calls) => {
     const strictRoute: DesktopChatRoute = {
       ...routedRoute,
-      id: '',
-      workspaceBindingId: '',
+      id: 'swarm:primary-swarm:binding:binding-primary-self',
+      label: 'primary self',
+      swarmId: 'primary-swarm',
+      targetKind: 'host',
+      targetRelationship: 'self',
+      workspaceBindingId: 'binding-primary-self',
       requiresWorkspaceBinding: true,
     }
     await createSession({
@@ -97,7 +101,10 @@ test('binding-required route without binding does not fall back to workspace pat
       worktreeMode: 'off',
     })
 
+    assert.equal(String(calls[0]?.input), '/v1/sessions?swarm_id=primary-swarm')
     const body = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>
+    assert.equal(body.workspace_binding_id, 'binding-primary-self')
+    assert.equal(Object.hasOwn(body, 'target_swarm_id'), false)
     assert.equal(Object.hasOwn(body, 'workspace_path'), false)
     assert.equal(Object.hasOwn(body, 'host_workspace_path'), false)
     assert.equal(Object.hasOwn(body, 'runtime_workspace_path'), false)
