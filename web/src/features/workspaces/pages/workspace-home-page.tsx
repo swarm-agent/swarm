@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { ChevronRight, Folder, FolderOpen, Grid2X2, List, MoreHorizontal, RefreshCw, Search, Settings } from 'lucide-react'
+import { ChevronRight, Eye, EyeOff, Folder, FolderOpen, Grid2X2, List, MoreHorizontal, RefreshCw, Search, Settings } from 'lucide-react'
 import { Card } from '../../../components/ui/card'
 import { Button } from '../../../components/ui/button'
 import { Badge } from '../../../components/ui/badge'
@@ -148,17 +148,27 @@ interface AllWorkspaceRowProps {
   onBrowse: (path: string) => void
   onOpen: (path: string) => void
   onCreate: (entry: WorkspaceDiscoverEntry) => void
+  compact?: boolean
 }
 
-function AllWorkspaceRow({ entry, savedWorkspace, busy, onBrowse, onOpen, onCreate }: AllWorkspaceRowProps) {
-  const metaItems = [entry.hasSwarm ? 'AGENTS.md' : null, entry.hasClaude ? 'CLAUDE.md' : null, entry.isGitRepo ? 'git repo' : null].filter(Boolean)
-  const available = savedWorkspace ? 'Saved' : 'Available'
+function AllWorkspaceRow({ entry, savedWorkspace, busy, onBrowse, onOpen, onCreate, compact = false }: AllWorkspaceRowProps) {
+  const metaItems = compact ? [] : [entry.hasSwarm ? 'AGENTS.md' : null, entry.hasClaude ? 'CLAUDE.md' : null, entry.isGitRepo ? 'git repo' : null].filter(Boolean)
 
   return (
-    <div className="grid min-w-0 grid-cols-[minmax(0,1.1fr)_minmax(0,1.35fr)_auto_auto] items-center gap-3 border-b border-[color-mix(in_oklab,var(--app-border)_48%,transparent)] px-3 py-2.5 text-sm transition-colors last:border-b-0 hover:bg-[color-mix(in_oklab,var(--app-surface-hover)_70%,transparent)] max-md:grid-cols-[minmax(0,1fr)_auto] max-md:items-start">
+    <div
+      className={cn(
+        'grid min-w-0 items-center gap-3 border-b border-[color-mix(in_oklab,var(--app-border)_48%,transparent)] px-3 text-sm transition-colors last:border-b-0 hover:bg-[color-mix(in_oklab,var(--app-surface-hover)_70%,transparent)] max-md:grid-cols-[minmax(0,1fr)_auto] max-md:items-start',
+        compact ? 'grid-cols-[minmax(0,1fr)_5.5rem] py-1.5' : 'grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)_5.5rem] py-2.5',
+      )}
+    >
       <button type="button" className="flex min-w-0 items-center gap-3 text-left" onClick={() => onBrowse(entry.path)}>
-        <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[color-mix(in_oklab,var(--app-surface-elevated)_76%,transparent)] text-[var(--app-text-muted)]">
-          <FolderOpen size={15} />
+        <div
+          className={cn(
+            'flex shrink-0 items-center justify-center rounded-lg bg-[color-mix(in_oklab,var(--app-surface-elevated)_76%,transparent)] text-[var(--app-text-muted)]',
+            compact ? 'size-6' : 'size-8',
+          )}
+        >
+          <FolderOpen size={compact ? 13 : 15} />
         </div>
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
@@ -169,21 +179,21 @@ function AllWorkspaceRow({ entry, savedWorkspace, busy, onBrowse, onOpen, onCrea
               </span>
             ))}
           </div>
-          <div className="mt-0.5 truncate text-xs text-[var(--app-text-subtle)] md:hidden" title={entry.path}>
-            {formatWorkspacePath(entry.path)}
-          </div>
+          {!compact ? (
+            <div className="mt-0.5 truncate text-xs text-[var(--app-text-subtle)] md:hidden" title={entry.path}>
+              {formatWorkspacePath(entry.path)}
+            </div>
+          ) : null}
         </div>
       </button>
-      <button type="button" className="min-w-0 text-left max-md:hidden" onClick={() => onBrowse(entry.path)}>
-        <span className="block truncate text-xs text-[var(--app-text-muted)]" title={entry.path}>
-          {formatWorkspacePath(entry.path)}
-        </span>
-      </button>
-      <div className="flex items-center gap-2 text-xs text-[var(--app-text-muted)] max-md:hidden">
-        <span className={cn('size-1.5 rounded-full', savedWorkspace ? 'bg-[var(--app-success)]' : 'bg-[var(--app-border-accent)]')} />
-        {available}
-      </div>
-      <div className="flex items-center justify-end gap-1">
+      {!compact ? (
+        <button type="button" className="min-w-0 text-left max-md:hidden" onClick={() => onBrowse(entry.path)}>
+          <span className="block truncate text-xs text-[var(--app-text-muted)]" title={entry.path}>
+            {formatWorkspacePath(entry.path)}
+          </span>
+        </button>
+      ) : null}
+      <div className="flex items-center justify-start gap-1">
         <Button
           size="sm"
           variant={savedWorkspace ? 'outline' : 'ghost'}
@@ -237,6 +247,8 @@ export function WorkspaceHomePage() {
   const [modalError, setModalError] = useState<string | null>(null)
   const [deleteTargetPath, setDeleteTargetPath] = useState<string | null>(null)
   const [workspaceSearch, setWorkspaceSearch] = useState('')
+  const [allWorkspacesCompact, setAllWorkspacesCompact] = useState(false)
+  const [allWorkspacesVisible, setAllWorkspacesVisible] = useState(true)
 
   const workspaceSlugByPath = useMemo(() => buildWorkspaceRouteSlugMap(workspaces), [workspaces])
 
@@ -602,56 +614,83 @@ export function WorkspaceHomePage() {
                         <h2 className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">All workspaces</h2>
                         <span className="rounded-full bg-[var(--app-surface-subtle)] px-2 py-0.5 text-[11px] text-[var(--app-text-muted)]">{discovered.length}</span>
                       </div>
-                      <p className="mt-1 text-sm text-[var(--app-text-muted)]">Local folders are secondary: add one here, or browse deeper in Explorer.</p>
+                      <p className="mt-1 text-sm text-[var(--app-text-muted)]">Folders with AGENTS.md or git repos</p>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <div className="flex h-8 min-w-[220px] items-center rounded-lg border border-[color-mix(in_oklab,var(--app-border)_70%,transparent)] bg-transparent px-2.5 text-sm focus-within:border-[var(--app-border-accent)] focus-within:ring-2 focus-within:ring-[var(--app-focus-ring)]">
-                        <Search size={14} className="mr-2 shrink-0 text-[var(--app-text-subtle)]" />
-                        <input
-                          value={workspaceSearch}
-                          onChange={(event) => setWorkspaceSearch(event.target.value)}
-                          placeholder="Search workspaces…"
-                          className="h-full w-full border-0 bg-transparent p-0 text-xs text-[var(--app-text)] outline-none placeholder:text-[var(--app-text-subtle)]"
-                        />
-                      </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {allWorkspacesVisible ? (
+                        <div className="flex h-8 min-w-[220px] items-center rounded-lg border border-[color-mix(in_oklab,var(--app-border)_70%,transparent)] bg-transparent px-2.5 text-sm focus-within:border-[var(--app-border-accent)] focus-within:ring-2 focus-within:ring-[var(--app-focus-ring)]">
+                          <Search size={14} className="mr-2 shrink-0 text-[var(--app-text-subtle)]" />
+                          <input
+                            value={workspaceSearch}
+                            onChange={(event) => setWorkspaceSearch(event.target.value)}
+                            placeholder="Search workspaces…"
+                            className="h-full w-full border-0 bg-transparent p-0 text-xs text-[var(--app-text)] outline-none placeholder:text-[var(--app-text-subtle)]"
+                          />
+                        </div>
+                      ) : null}
                       <div className="flex rounded-lg border border-[color-mix(in_oklab,var(--app-border)_70%,transparent)] bg-[var(--app-surface)] p-0.5 text-[var(--app-text-subtle)]">
-                        <button type="button" className="rounded-md bg-[var(--app-surface-elevated)] p-1.5 text-[var(--app-text)]" aria-label="List view">
+                        <button
+                          type="button"
+                          className={cn('rounded-md p-1.5 transition-colors', !allWorkspacesCompact && 'bg-[var(--app-surface-elevated)] text-[var(--app-text)]')}
+                          aria-label="Detailed folder list"
+                          aria-pressed={!allWorkspacesCompact}
+                          onClick={() => setAllWorkspacesCompact(false)}
+                        >
                           <List size={14} />
                         </button>
-                        <button type="button" className="rounded-md p-1.5 opacity-50" aria-label="Grid view disabled" disabled>
+                        <button
+                          type="button"
+                          className={cn('rounded-md p-1.5 transition-colors', allWorkspacesCompact && 'bg-[var(--app-surface-elevated)] text-[var(--app-text)]')}
+                          aria-label="Compact folder names"
+                          aria-pressed={allWorkspacesCompact}
+                          onClick={() => setAllWorkspacesCompact(true)}
+                        >
                           <Grid2X2 size={14} />
                         </button>
                       </div>
+                      <button
+                        type="button"
+                        className="flex size-8 items-center justify-center rounded-lg border border-[color-mix(in_oklab,var(--app-border)_70%,transparent)] bg-[var(--app-surface)] text-[var(--app-text-subtle)] transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                        aria-label={allWorkspacesVisible ? 'Hide all workspaces' : 'Show all workspaces'}
+                        aria-pressed={!allWorkspacesVisible}
+                        onClick={() => setAllWorkspacesVisible((visible) => !visible)}
+                      >
+                        {allWorkspacesVisible ? <EyeOff size={14} /> : <Eye size={14} />}
+                      </button>
                     </div>
                   </div>
 
-                  {discovered.length === 0 ? (
-                    <WorkspaceStatus kind="empty" title="No candidate folders" message="No repositories found in scanned locations. Use Explorer to browse to a folder." />
-                  ) : (
-                    <div className="overflow-hidden rounded-xl border border-[color-mix(in_oklab,var(--app-border)_58%,transparent)] bg-[color-mix(in_oklab,var(--app-surface)_52%,transparent)]">
-                      <div className="grid grid-cols-[minmax(0,1.1fr)_minmax(0,1.35fr)_auto_auto] gap-3 border-b border-[color-mix(in_oklab,var(--app-border)_56%,transparent)] px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--app-text-subtle)] max-md:hidden">
-                        <span>Name</span>
-                        <span>Location</span>
-                        <span>Status</span>
-                        <span className="text-right">Action</span>
+                  {allWorkspacesVisible ? (
+                    discovered.length === 0 ? (
+                      <WorkspaceStatus kind="empty" title="No candidate folders" message="No repositories found in scanned locations. Use Explorer to browse to a folder." />
+                    ) : (
+                      <div className="overflow-hidden rounded-xl border border-[color-mix(in_oklab,var(--app-border)_58%,transparent)] bg-[color-mix(in_oklab,var(--app-surface)_52%,transparent)]">
+                        {!allWorkspacesCompact ? (
+                          <div className="grid grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)_5.5rem] gap-3 border-b border-[color-mix(in_oklab,var(--app-border)_56%,transparent)] px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--app-text-subtle)] max-md:hidden">
+                            <span>Name</span>
+                            <span>Location</span>
+                            <span>Action</span>
+                          </div>
+                        ) : null}
+                        {discoveredRows.length === 0 ? (
+                          <div className="px-4 py-6 text-sm text-[var(--app-text-muted)]">No folders match your search.</div>
+                        ) : (
+                          discoveredRows.map(({ entry, savedWorkspace }) => (
+                            <AllWorkspaceRow
+                              key={entry.path}
+                              entry={entry}
+                              savedWorkspace={savedWorkspace}
+                              busy={savingPath === entry.path || selectingPath === entry.path}
+                              compact={allWorkspacesCompact}
+                              onBrowse={(path) => void browsePath(path)}
+                              onOpen={handleOpenWorkspace}
+                              onCreate={(row) => openCreateModal(row.path, [row.path], row.name)}
+                            />
+                          ))
+                        )}
                       </div>
-                      {discoveredRows.length === 0 ? (
-                        <div className="px-4 py-6 text-sm text-[var(--app-text-muted)]">No folders match your search.</div>
-                      ) : (
-                        discoveredRows.map(({ entry, savedWorkspace }) => (
-                          <AllWorkspaceRow
-                            key={entry.path}
-                            entry={entry}
-                            savedWorkspace={savedWorkspace}
-                            busy={savingPath === entry.path || selectingPath === entry.path}
-                            onBrowse={(path) => void browsePath(path)}
-                            onOpen={handleOpenWorkspace}
-                            onCreate={(row) => openCreateModal(row.path, [row.path], row.name)}
-                          />
-                        ))
-                      )}
-                    </div>
-                  )}
+                    )
+                  ) : null}
 
                   {temporaryFolderActive ? (
                     <Card className="grid gap-3 px-5 py-5 sm:px-6">

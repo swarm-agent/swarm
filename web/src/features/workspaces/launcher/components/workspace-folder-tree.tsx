@@ -190,29 +190,66 @@ export function WorkspaceFolderTree({
             <div className="-mx-1 mt-1 min-h-0 flex-1 overflow-y-auto py-1">
               {visibleEntries.map((entry) => {
                 const isSaved = savedPaths.has(entry.path)
+                const entryBusy = savingPath === entry.path || selectingPath === entry.path
                 const entryMeta = formatExplorerMeta(entry)
                 const meta = [isSaved ? 'saved' : null, entryMeta || null].filter(Boolean).join(' · ')
                 const selected = createdFolderPath === entry.path
 
                 return (
-                  <button
+                  <div
                     key={entry.path}
-                    type="button"
-                    onClick={() => onBrowsePath(entry.path)}
                     className={cn(
-                      'grid min-h-9 w-full grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 py-1 text-left text-xs transition-colors hover:bg-[var(--app-surface-hover)]',
+                      'group grid min-h-9 w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-md px-1 py-0.5 text-xs transition-colors hover:bg-[var(--app-surface-hover)] focus-within:bg-[var(--app-surface-hover)]',
                       selected && 'bg-[color-mix(in_oklab,var(--app-primary)_10%,transparent)]',
                     )}
                     title={formatWorkspacePath(entry.path)}
                   >
-                    <ChevronRight size={12} className="text-[var(--app-text-subtle)]" />
-                    <Folder size={14} className="text-[var(--app-text-muted)]" />
-                    <span className="min-w-0 truncate">
-                      <span className="truncate font-medium text-[var(--app-text)]">{entry.name}</span>
-                      {meta ? <span className="ml-2 truncate text-[11px] font-normal text-[var(--app-text-subtle)]">{meta}</span> : null}
-                    </span>
-                    {isSaved ? <span className="size-1.5 rounded-full bg-[var(--app-success)]" /> : null}
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => onBrowsePath(entry.path)}
+                      className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2 rounded px-1 py-1 text-left"
+                    >
+                      <Folder size={14} className="shrink-0 text-[var(--app-text-muted)]" />
+                      <span className="min-w-0 truncate">
+                        <span className="truncate font-medium text-[var(--app-text)]">{entry.name}</span>
+                        {meta ? <span className="ml-2 truncate text-[11px] font-normal text-[var(--app-text-subtle)]">{meta}</span> : null}
+                      </span>
+                    </button>
+                    <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                      <button
+                        type="button"
+                        className="flex size-7 items-center justify-center rounded-md text-[var(--app-text-subtle)] transition-colors hover:bg-[var(--app-surface-elevated)] hover:text-[var(--app-text)]"
+                        onClick={() => onBrowsePath(entry.path)}
+                        aria-label={`Open ${entry.name}`}
+                        title="Open folder"
+                      >
+                        <ChevronRight size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        className="flex size-7 items-center justify-center rounded-md text-[var(--app-text-subtle)] transition-colors hover:bg-[var(--app-surface-elevated)] hover:text-[var(--app-text)] disabled:cursor-wait disabled:opacity-50"
+                        disabled={entryBusy}
+                        onClick={() => {
+                          if (isSaved) {
+                            onOpenWorkspace(entry.path)
+                            return
+                          }
+                          onCreateWorkspace({
+                            path: entry.path,
+                            name: entry.name,
+                            isGitRepo: entry.isGitRepo,
+                            hasClaude: entry.hasClaude,
+                            hasSwarm: entry.hasSwarm,
+                            lastModified: 0,
+                          })
+                        }}
+                        aria-label={isSaved ? `Open workspace ${entry.name}` : `Add ${entry.name} as workspace`}
+                        title={isSaved ? 'Open workspace' : 'Add as workspace'}
+                      >
+                        {entryBusy ? <RefreshCw size={13} className="animate-spin" /> : isSaved ? <Folder size={13} /> : <Plus size={14} />}
+                      </button>
+                    </div>
+                  </div>
                 )
               })}
             </div>
