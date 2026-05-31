@@ -636,6 +636,23 @@ type primaryRoutedSessionOpenContract struct {
 	WorkspaceRoute  targetWorkspaceRoute
 }
 
+func routedSessionOpenDispatchTarget(target swarmTarget, authorityHostSwarmID, workspaceBindingID string) swarmTarget {
+	authorityHostSwarmID = strings.TrimSpace(authorityHostSwarmID)
+	if authorityHostSwarmID == "" || strings.TrimSpace(workspaceBindingID) == "" || strings.EqualFold(authorityHostSwarmID, strings.TrimSpace(target.SwarmID)) {
+		return target
+	}
+	return swarmTarget{
+		SwarmID:      authorityHostSwarmID,
+		Name:         authorityHostSwarmID,
+		Role:         "authority",
+		Relationship: "managed",
+		Kind:         "authority",
+		HostSwarmID:  authorityHostSwarmID,
+		Online:       true,
+		Selectable:   true,
+	}
+}
+
 func routedSessionRequiresWorkspaceBinding(target swarmTarget) bool {
 	if strings.TrimSpace(target.HostSwarmID) != "" {
 		return true
@@ -717,10 +734,6 @@ func (s *Server) buildPrimaryRoutedSessionOpenContract(principal identity.Princi
 	childSwarmID := strings.TrimSpace(target.SwarmID)
 	if childSwarmID == "" {
 		return contract, errors.New("routed session child swarm id is required")
-	}
-	routeBackendURL := strings.TrimSpace(target.BackendURL)
-	if routeBackendURL == "" {
-		return contract, errors.New("routed session child backend url is required")
 	}
 	hostBackendURL = strings.TrimSpace(hostBackendURL)
 	if hostBackendURL == "" {
@@ -829,8 +842,6 @@ func (s *Server) buildPrimaryRoutedSessionOpenContract(principal identity.Princi
 		return contract, errors.New("workspace_name is required for routed session creation")
 	}
 
-	proxyTarget := target
-
 	routeID := "swarm:" + childSwarmID + ":" + childRuntimePath
 	if workspaceBindingID != "" {
 		routeID = workspaceRoute.routeID()
@@ -870,12 +881,13 @@ func (s *Server) buildPrimaryRoutedSessionOpenContract(principal identity.Princi
 			AccountScopeID:       strings.TrimSpace(principal.AccountScopeID),
 			ChildSwarmID:         childSwarmID,
 			HostSwarmID:          routeHostSwarmID,
+			HostContainerID:      strings.TrimSpace(binding.DestinationContainerID),
 			RuntimeWorkspacePath: childRuntimePath,
 			WorkspaceBindingID:   workspaceBindingID,
 			PlacementGeneration:  workspaceRoute.PlacementGeneration,
 			BindingGeneration:    workspaceRoute.BindingGeneration,
 		},
-		ProxyTarget:     proxyTarget,
+		ProxyTarget:     routedSessionOpenDispatchTarget(target, routeHostSwarmID, workspaceBindingID),
 		RequireWorktree: requireWorktree,
 		WorkspaceRoute:  workspaceRoute,
 	}

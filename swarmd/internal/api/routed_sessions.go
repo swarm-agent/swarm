@@ -559,8 +559,63 @@ func (s *Server) normalizedTerminalPeerSessionOpenRoute(r *http.Request, req pee
 	if localSwarmID == "" {
 		return route, errors.New("local swarm id is required")
 	}
-	if !strings.EqualFold(route.ChildSwarmID, localSwarmID) {
-		return route, errors.New("route child swarm id does not match local swarm id")
+	if !strings.EqualFold(route.HostSwarmID, localSwarmID) {
+		return route, errors.New("route host swarm id does not match local authority swarm id")
+	}
+	if route.PlacementGeneration <= 0 || route.BindingGeneration <= 0 {
+		return route, errors.New("route placement and binding generations are required")
+	}
+	if s != nil && s.topology != nil {
+		placement, ok, err := s.topology.GetRuntimePlacementForAccount(route.AccountScopeID, route.ChildSwarmID)
+		if err != nil {
+			return route, err
+		}
+		if !ok {
+			return route, errors.New("runtime placement is required")
+		}
+		if strings.TrimSpace(placement.State) != pebblestore.TopologyRuntimePlacementStateActive {
+			return route, errors.New("runtime placement is not active")
+		}
+		if !strings.EqualFold(strings.TrimSpace(placement.AuthorityHostSwarmID), localSwarmID) {
+			return route, errors.New("runtime placement authority does not match local authority swarm id")
+		}
+		if !strings.EqualFold(strings.TrimSpace(route.HostContainerID), strings.TrimSpace(placement.AuthorityContainerID)) {
+			return route, errors.New("runtime placement container id does not match route")
+		}
+		if route.PlacementGeneration != placement.PlacementGeneration {
+			return route, errors.New("runtime placement generation is stale")
+		}
+		binding, ok, err := s.topology.GetWorkspaceBindingForAccount(route.AccountScopeID, route.WorkspaceBindingID)
+		if err != nil {
+			return route, err
+		}
+		if !ok {
+			return route, errors.New("workspace binding is required")
+		}
+		if strings.TrimSpace(binding.State) != "" && !strings.EqualFold(strings.TrimSpace(binding.State), pebblestore.TopologyWorkspaceBindingStateBound) {
+			return route, errors.New("workspace binding is not bound")
+		}
+		if !strings.EqualFold(strings.TrimSpace(binding.DestinationRuntimeSwarmID), strings.TrimSpace(route.ChildSwarmID)) {
+			return route, errors.New("workspace binding runtime does not match route")
+		}
+		if !strings.EqualFold(strings.TrimSpace(binding.DestinationAuthorityHostSwarmID), localSwarmID) {
+			return route, errors.New("workspace binding authority does not match local authority swarm id")
+		}
+		if !strings.EqualFold(strings.TrimSpace(binding.DestinationContainerID), strings.TrimSpace(placement.AuthorityContainerID)) {
+			return route, errors.New("workspace binding container does not match placement")
+		}
+		if binding.PlacementGeneration != route.PlacementGeneration {
+			return route, errors.New("workspace binding placement generation is stale")
+		}
+		if binding.BindingGeneration != route.BindingGeneration {
+			return route, errors.New("workspace binding generation is stale")
+		}
+		if !strings.EqualFold(strings.TrimSpace(binding.AttestedByHostSwarmID), localSwarmID) {
+			return route, errors.New("workspace binding attesting host does not match local authority swarm id")
+		}
+		if strings.TrimSpace(binding.DestinationWorkspacePath) != "" && !strings.EqualFold(strings.TrimSpace(binding.DestinationWorkspacePath), strings.TrimSpace(route.RuntimeWorkspacePath)) {
+			return route, errors.New("workspace binding runtime path does not match route")
+		}
 	}
 	if route.WorkspaceBindingID == "" {
 		return route, errors.New("route workspace binding id is required")

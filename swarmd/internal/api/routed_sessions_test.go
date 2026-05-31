@@ -2412,6 +2412,167 @@ func TestRemoteSessionCreateUsesRegistryMagicDNSBackend(t *testing.T) {
 	}
 }
 
+func TestPrimaryRoutedSessionCreateDispatchesWorkspaceBackedOpenToAuthorityHost(t *testing.T) {
+	server, _, _, routeStore := newRoutedSessionTestServer(t)
+	var opened atomic.Int32
+	var openedPath atomic.Value
+	authority := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/swarm/peer/sessions/open" {
+			http.NotFound(w, r)
+			return
+		}
+		opened.Add(1)
+		var req peerSessionOpenRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode authority open: %v", err)
+		}
+		if req.Route.ChildSwarmID != "managed-container" {
+			t.Fatalf("route child = %q, want managed-container", req.Route.ChildSwarmID)
+		}
+		if req.Route.HostSwarmID != "managed-host" {
+			t.Fatalf("route host = %q, want managed-host", req.Route.HostSwarmID)
+		}
+		if req.Route.HostContainerID != "managed-host:container-1" {
+			t.Fatalf("route container = %q, want managed-host:container-1", req.Route.HostContainerID)
+		}
+		openedPath.Store(req.Request.RuntimeWorkspacePath)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true,
+			"session": map[string]any{
+				"id":             req.SessionID,
+				"title":          req.Request.Title,
+				"workspace_path": req.Request.RuntimeWorkspacePath,
+				"workspace_name": req.Request.WorkspaceName,
+				"mode":           req.Request.Mode,
+				"created_at":     1,
+				"updated_at":     2,
+			},
+		})
+	}))
+	defer authority.Close()
+
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, SwarmID: "managed-host", Name: "managed host", Relationship: "managed", Status: "online"}); err != nil {
+		t.Fatalf("upsert managed host: %v", err)
+	}
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, SwarmID: "managed-container", Name: "managed container", Relationship: "child", OwnerHostSwarmID: "managed-host", OwnerHostContainerID: "managed-host:container-1", Status: "attached"}); err != nil {
+		t.Fatalf("upsert managed container: %v", err)
+	}
+	if err := server.RegisterAuthorityConnection(AuthorityConnection{AccountScopeID: testPrincipal().AccountScopeID, AuthorityHostSwarmID: "managed-host", TransportKind: authorityConnectionTransportHTTP, TransportRef: authority.URL}); err != nil {
+		t.Fatalf("register authority: %v", err)
+	}
+	if _, err := server.topology.UpsertWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
+		BindingID:                       "binding-managed-container",
+		UserID:                          testPrincipal().UserID,
+		AccountScopeID:                  testPrincipal().AccountScopeID,
+		SourceWorkspaceID:               "workspace-managed-container",
+		SourceWorkspaceGeneration:       1,
+		SourceWorkspacePath:             "/source/workspace",
+		SourceWorkspaceName:             "workspace",
+		DestinationRuntimeSwarmID:       "managed-container",
+		DestinationAuthorityHostSwarmID: "managed-host",
+		DestinationHostSwarmID:          "managed-host",
+		DestinationContainerID:          "managed-host:container-1",
+		DestinationRuntimeKind:          pebblestore.TopologyRuntimeKindContainer,
+		DestinationWorkspacePath:        "/runtime/workspace",
+		PlacementGeneration:             1,
+		BindingGeneration:               1,
+		State:                           pebblestore.TopologyWorkspaceBindingStateBound,
+		AttestedByHostSwarmID:           "managed-host",
+	}); err != nil {
+		t.Fatalf("upsert binding: %v", err)
+	}
+
+	body := bytes.NewBufferString(`{"title":"managed","mode":"plan","workspace_name":"workspace","workspace_binding_id":"binding-managed-container","worktree_mode":"off","preference":{"provider":"fireworks","model":"accounts/fireworks/models/kimi-k2p5","thinking":"high"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions?swarm_id=managed-container", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if opened.Load() != 1 {
+		t.Fatalf("authority opens = %d, want 1", opened.Load())
+	}
+	if got, _ := openedPath.Load().(string); got != "/runtime/workspace" {
+		t.Fatalf("runtime path = %q, want binding runtime path", got)
+	}
+	var payload struct {
+		Session struct {
+			ID string `json:"id"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	route, ok, err := routeStore.Get(payload.Session.ID)
+	if err != nil || !ok {
+		t.Fatalf("get route ok=%t err=%v", ok, err)
+	}
+	if route.ChildSwarmID != "managed-container" || route.HostSwarmID != "managed-host" || route.ChildBackendURL != "" || route.HostWorkspacePath != "" {
+		t.Fatalf("unexpected session execution route: %+v", route)
+	}
+}
+
+func TestPeerSessionOpenRejectsStalePlacementGeneration(t *testing.T) {
+	server, sessionSvc, _, routeStore := newRoutedSessionTestServer(t)
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, SwarmID: "managed-swarm", Name: "managed host", Relationship: "managed", Status: "online"}); err != nil {
+		t.Fatalf("upsert managed host: %v", err)
+	}
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, SwarmID: "child-swarm", Name: "managed child", Relationship: "child", OwnerHostSwarmID: "managed-swarm", OwnerHostContainerID: "managed-swarm:container-1", Status: "attached"}); err != nil {
+		t.Fatalf("upsert child: %v", err)
+	}
+	if _, err := server.topology.UpsertWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
+		BindingID:                       "binding-stale-placement",
+		UserID:                          testPrincipal().UserID,
+		AccountScopeID:                  testPrincipal().AccountScopeID,
+		SourceWorkspaceID:               "workspace-stale-placement",
+		SourceWorkspaceGeneration:       1,
+		SourceWorkspacePath:             "/source/workspace",
+		SourceWorkspaceName:             "workspace",
+		DestinationRuntimeSwarmID:       "child-swarm",
+		DestinationAuthorityHostSwarmID: "managed-swarm",
+		DestinationHostSwarmID:          "managed-swarm",
+		DestinationContainerID:          "managed-swarm:container-1",
+		DestinationRuntimeKind:          pebblestore.TopologyRuntimeKindContainer,
+		DestinationWorkspacePath:        "/runtime/workspace",
+		PlacementGeneration:             1,
+		BindingGeneration:               1,
+		State:                           pebblestore.TopologyWorkspaceBindingStateBound,
+		AttestedByHostSwarmID:           "managed-swarm",
+	}); err != nil {
+		t.Fatalf("upsert binding: %v", err)
+	}
+	payload, err := json.Marshal(peerSessionOpenRequest{
+		SessionID: "session-stale-placement",
+		Request: func() sessionCreateRequest {
+			req := sessionCreateRequest{Title: "stale", WorkspacePath: "/runtime/workspace", HostWorkspacePath: "/runtime/workspace", RuntimeWorkspacePath: "/runtime/workspace", WorkspaceBindingID: "binding-stale-placement", WorkspaceName: "workspace", Mode: sessionruntime.ModeAuto, AgentName: "swarm", WorktreeMode: runruntime.RunWorktreeModeOff}
+			req.Preference.Provider = "codex"
+			req.Preference.Model = "gpt-5.4"
+			req.Preference.Thinking = "medium"
+			return req
+		}(),
+		Hosted: sessionruntime.HostedSessionDescriptor{HostSwarmID: "managed-swarm", RuntimeWorkspacePath: "/runtime/workspace", ChildSwarmID: "child-swarm", OwnerTransport: "routed_session_peer"},
+		Route:  pebblestore.SessionRouteRecord{SessionID: "session-stale-placement", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ChildSwarmID: "child-swarm", HostSwarmID: "managed-swarm", HostContainerID: "managed-swarm:container-1", RuntimeWorkspacePath: "/runtime/workspace", WorkspaceBindingID: "binding-stale-placement", PlacementGeneration: 2, BindingGeneration: 1},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/swarm/peer/sessions/open", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: "managed-swarm"}))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if _, ok, err := sessionSvc.GetSession("session-stale-placement"); err != nil || ok {
+		t.Fatalf("get session ok=%t err=%v, want no session", ok, err)
+	}
+	if _, ok, err := routeStore.Get("session-stale-placement"); err != nil || ok {
+		t.Fatalf("get route ok=%t err=%v, want no route", ok, err)
+	}
+}
+
 func TestRemoteDeploySessionStartIsRetired(t *testing.T) {
 	server, _, _, _ := newRoutedSessionTestServer(t)
 	fake := &fakeRemoteDeployService{}

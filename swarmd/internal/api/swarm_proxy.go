@@ -29,8 +29,13 @@ func (s *Server) currentRemoteSwarmTargetForRequest(r *http.Request) (*swarmTarg
 	if currentTarget == nil || strings.EqualFold(strings.TrimSpace(currentTarget.Relationship), "self") {
 		return nil, nil
 	}
-	if strings.TrimSpace(currentTarget.BackendURL) == "" {
-		return nil, errors.New("selected swarm target is missing backend_url")
+	principal, _ := PrincipalFromRequest(r)
+	accountScopeID := ""
+	if principal.Valid() {
+		accountScopeID = principal.AccountScopeID
+	}
+	if _, err := s.resolveTargetAuthorityBackendURL(accountScopeID, *currentTarget); err != nil {
+		return nil, err
 	}
 	return currentTarget, nil
 }
