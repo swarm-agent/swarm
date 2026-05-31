@@ -369,7 +369,7 @@ export function WorkspaceHomePage() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => void navigate({ to: '/settings', search: { tab: 'agents' } })}
+              onClick={() => void navigate({ to: '/settings' })}
               className="rounded-md bg-[var(--app-surface)] shadow-sm"
             >
               <Settings size={14} />

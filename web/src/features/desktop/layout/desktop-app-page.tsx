@@ -3160,13 +3160,12 @@ export function DesktopAppPage() {
                       <Link
                         to="/$workspaceSlug/settings"
                         params={{ workspaceSlug: routeWorkspaceSlug }}
-                        search={{ tab: 'agents' }}
                         className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
                         onClick={() => {
                           setQuickSettingsTab(null)
                           setMobileSidebarOpen(false)
                         }}
-                        aria-label="Open agent settings"
+                        aria-label="Open settings"
                         title="Settings"
                       >
                         <Settings size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
@@ -3175,13 +3174,12 @@ export function DesktopAppPage() {
                     ) : (
                       <Link
                         to="/settings"
-                        search={{ tab: 'agents' }}
                         className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
                         onClick={() => {
                           setQuickSettingsTab(null)
                           setMobileSidebarOpen(false)
                         }}
-                        aria-label="Open agent settings"
+                        aria-label="Open settings"
                         title="Settings"
                       >
                         <Settings size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
