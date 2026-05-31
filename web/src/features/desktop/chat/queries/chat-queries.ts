@@ -1267,6 +1267,8 @@ function sessionRequestBody(input: {
 }): Record<string, unknown> {
   const workspaceBindingId = input.route?.workspaceBindingId?.trim() || ''
   const routeRequiresBinding = Boolean(input.route?.requiresWorkspaceBinding || input.route?.swarmId?.trim())
+  const explicitWorktreeMode = input.worktreeMode?.trim() || ''
+  const worktreeMode = explicitWorktreeMode || (routeRequiresBinding ? 'off' : '')
   const body: Record<string, unknown> = {
     title: input.title ?? "",
     workspace_name: input.route?.workspaceName?.trim() || input.workspaceName,
@@ -1274,7 +1276,7 @@ function sessionRequestBody(input: {
     mode: input.mode,
     agent_name: input.agentName?.trim() ?? "",
     metadata: input.metadata ?? undefined,
-    worktree_mode: input.worktreeMode?.trim() || undefined,
+    worktree_mode: worktreeMode || undefined,
     preference: {
       provider: input.preference.provider,
       model: input.preference.model,

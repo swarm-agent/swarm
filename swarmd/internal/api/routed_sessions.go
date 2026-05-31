@@ -559,13 +559,15 @@ func (s *Server) normalizedTerminalPeerSessionOpenRoute(r *http.Request, req pee
 	if localSwarmID == "" {
 		return route, errors.New("local swarm id is required")
 	}
-	if !strings.EqualFold(route.HostSwarmID, localSwarmID) {
-		return route, errors.New("route host swarm id does not match local authority swarm id")
+	localIsAuthority := strings.EqualFold(route.HostSwarmID, localSwarmID)
+	localIsSelectedRuntime := strings.EqualFold(route.ChildSwarmID, localSwarmID)
+	if !localIsAuthority && !localIsSelectedRuntime {
+		return route, errors.New("route host/child swarm id does not match local session receiver swarm id")
 	}
-	if route.PlacementGeneration <= 0 || route.BindingGeneration <= 0 {
+	if localIsAuthority && (route.PlacementGeneration <= 0 || route.BindingGeneration <= 0) {
 		return route, errors.New("route placement and binding generations are required")
 	}
-	if s != nil && s.topology != nil {
+	if localIsAuthority && s != nil && s.topology != nil {
 		placement, ok, err := s.topology.GetRuntimePlacementForAccount(route.AccountScopeID, route.ChildSwarmID)
 		if err != nil {
 			return route, err

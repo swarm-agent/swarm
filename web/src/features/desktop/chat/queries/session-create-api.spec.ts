@@ -69,9 +69,33 @@ test('routed session create sends workspace identity and binding without path au
     const body = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>
     assert.equal(body.workspace_name, 'swarm-go')
     assert.equal(body.workspace_binding_id, 'binding-primary')
+    assert.equal(body.worktree_mode, 'off')
     assert.equal(Object.hasOwn(body, 'workspace_path'), false)
     assert.equal(Object.hasOwn(body, 'host_workspace_path'), false)
     assert.equal(Object.hasOwn(body, 'runtime_workspace_path'), false)
+  })
+})
+
+
+test('routed session create defaults missing worktree mode to off for strict routed sessions', async () => {
+  const { createSession } = await import('./chat-queries')
+
+  await withFetchStub(async (calls) => {
+    await createSession({
+      title: 'Routed',
+      workspacePath: '/frontend/device/path/swarm-go',
+      workspaceName: 'swarm-go',
+      mode: 'auto',
+      agentName: 'swarm',
+      preference: { provider: 'codex', model: 'gpt-5.4', thinking: 'medium', serviceTier: '', contextMode: '' },
+      route: routedRoute,
+    })
+
+    assert.equal(String(calls[0]?.input), '/v1/sessions?swarm_id=child-swarm')
+    const body = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>
+    assert.equal(body.workspace_binding_id, 'binding-primary')
+    assert.equal(body.worktree_mode, 'off')
+    assert.equal(Object.hasOwn(body, 'workspace_path'), false)
   })
 })
 
@@ -104,6 +128,7 @@ test('self host route with swarm identity does not use managed-host endpoint or 
     assert.equal(String(calls[0]?.input), '/v1/sessions?swarm_id=primary-swarm')
     const body = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>
     assert.equal(body.workspace_binding_id, 'binding-primary-self')
+    assert.equal(body.worktree_mode, 'off')
     assert.equal(Object.hasOwn(body, 'target_swarm_id'), false)
     assert.equal(Object.hasOwn(body, 'workspace_path'), false)
     assert.equal(Object.hasOwn(body, 'host_workspace_path'), false)
