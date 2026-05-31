@@ -2415,12 +2415,18 @@ func (s *Server) handleContextSources(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
+	requestPath := ""
+	if r != nil && r.URL != nil {
+		requestPath = r.URL.Path
+	}
 	if s.sessions == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("session service not configured"))
 		return
 	}
 	principal, principalOK := PrincipalFromRequest(r)
+	flowRouteDiagLog("desktop_sessions_auth", "path", requestPath, "method", r.Method, "principal_ok", principalOK, "principal_valid", principal.Valid(), "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID, "principal_session_id", principal.SessionID)
 	if !principalOK || !principal.Valid() {
+		flowRouteDiagLog("desktop_sessions_reject", "path", requestPath, "method", r.Method, "reason", "principal_required")
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
 		return
 	}
@@ -2461,6 +2467,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			"sessions": responseSessions,
 		})
 	case http.MethodPost:
+		flowRouteDiagLog("desktop_session_create_start", "path", requestPath, "query_swarm_id", requestedSwarmTargetID(r), "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID)
 		req, principal, principalOK, err := s.decodeSessionCreateRequest(r)
 		if err != nil {
 			status := http.StatusBadRequest
@@ -2470,12 +2477,14 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			writeError(w, status, err)
 			return
 		}
+		flowRouteDiagLog("desktop_session_create_request", "workspace_binding_id", req.WorkspaceBindingID, "workspace_name", req.WorkspaceName, "workspace_path_present", strings.TrimSpace(req.WorkspacePath) != "", "host_workspace_path_present", strings.TrimSpace(req.HostWorkspacePath) != "", "runtime_workspace_path_present", strings.TrimSpace(req.RuntimeWorkspacePath) != "", "worktree_mode", req.WorktreeMode, "provider", req.Preference.Provider, "model", req.Preference.Model)
 		remoteTarget, err := s.currentRemoteSwarmTargetForRequest(r)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, err)
 			return
 		}
 		if remoteTarget != nil {
+			flowRouteDiagLog("desktop_session_create_target", "target_swarm_id", remoteTarget.SwarmID, "target_kind", remoteTarget.Kind, "target_relationship", remoteTarget.Relationship, "target_host_swarm_id", remoteTarget.HostSwarmID, "target_backend_url_present", strings.TrimSpace(remoteTarget.BackendURL) != "", "workspace_route_count", len(remoteTarget.WorkspaceRoutes))
 			if s.sessionRoutes == nil {
 				writeError(w, http.StatusInternalServerError, errors.New("session route store not configured"))
 				return
@@ -2496,6 +2505,9 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			}
 			sessionID := sessionruntime.NewSessionID()
 			contract, contractErr := s.buildPrimaryRoutedSessionOpenContract(principal, req, *remoteTarget, state, hostBackendURL, sessionID)
+			if contractErr == nil {
+				flowRouteDiagLog("desktop_session_create_contract", "session_id", sessionID, "target_swarm_id", remoteTarget.SwarmID, "route_host_swarm_id", contract.Route.HostSwarmID, "route_child_swarm_id", contract.Route.ChildSwarmID, "route_workspace_binding_id", contract.Route.WorkspaceBindingID, "route_host_workspace_path", contract.Route.HostWorkspacePath, "route_runtime_workspace_path", contract.Route.RuntimeWorkspacePath, "child_workspace_path", contract.ChildRequest.WorkspacePath, "child_workspace_name", contract.ChildRequest.WorkspaceName)
+			}
 			if contractErr != nil {
 				writeError(w, http.StatusBadRequest, contractErr)
 				return
@@ -2514,12 +2526,20 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			routeRecord := contract.Route
 			routeRecord.CreatedAt = session.CreatedAt
 			routeRecord.UpdatedAt = session.UpdatedAt
+			if _, err := s.sessionRoutes.Put(routeRecord); err != nil {
+				if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
+					log.Printf("hosted session route rollback failed session_id=%q err=%v", session.ID, cleanupErr)
+				}
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
 			childDescriptor := contract.Descriptor
 			var childResp struct {
 				OK      bool                        `json:"ok"`
 				Session pebblestore.SessionSnapshot `json:"session"`
 				Warning string                      `json:"warning,omitempty"`
 			}
+			flowRouteDiagLog("desktop_session_create_peer_open", "session_id", session.ID, "target_swarm_id", contract.ProxyTarget.SwarmID, "target_backend_url_present", strings.TrimSpace(contract.ProxyTarget.BackendURL) != "", "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID)
 			if err := s.postPeerJSONToSwarmTarget(r.Context(), contract.ProxyTarget, "/v1/swarm/peer/sessions/open", peerSessionOpenRequest{
 				SessionID: session.ID,
 				Request:   contract.ChildRequest,
@@ -2530,18 +2550,23 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 				rollbackHostedCreate(hostedSessionOpenError(contract.ProxyTarget, err))
 				return
 			}
+			routeChanged := false
 			if syncedRoute, changed, syncErr := syncRoutedSessionRouteWithRealizedSession(routeRecord, childResp.Session, contract.RequireWorktree); syncErr != nil {
 				rollbackHostedCreate(syncErr)
 				return
 			} else if changed {
 				routeRecord = syncedRoute
+				routeChanged = true
 			}
-			if _, err := s.sessionRoutes.Put(routeRecord); err != nil {
-				if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
-					log.Printf("hosted session route rollback failed session_id=%q err=%v", session.ID, cleanupErr)
+			flowRouteDiagLog("desktop_session_create_peer_open_success", "session_id", session.ID, "child_session_id", childResp.Session.ID, "child_workspace_path", childResp.Session.WorkspacePath, "route_workspace_binding_id", routeRecord.WorkspaceBindingID)
+			if routeChanged {
+				if _, err := s.sessionRoutes.Put(routeRecord); err != nil {
+					if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
+						log.Printf("hosted session route rollback failed session_id=%q err=%v", session.ID, cleanupErr)
+					}
+					writeError(w, http.StatusInternalServerError, err)
+					return
 				}
-				writeError(w, http.StatusInternalServerError, err)
-				return
 			}
 			if err := s.upsertTopologySessionRoute(routeRecord); err != nil {
 				if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {

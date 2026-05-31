@@ -217,10 +217,26 @@ func (s *Server) postPeerJSONToSwarmTarget(ctx context.Context, target swarmTarg
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(peerAuthSwarmIDHeader, strings.TrimSpace(state.Node.SwarmID))
 	req.Header.Set(peerAuthTokenHeader, peerToken)
+	principalUserID := ""
+	principalAccountScopeID := ""
+	principalAttached := false
 	if principal, ok := identity.PrincipalFromContext(ctx); ok && principal.Valid() {
-		req.Header.Set("X-Swarm-Principal-User-ID", strings.TrimSpace(principal.UserID))
-		req.Header.Set("X-Swarm-Principal-Account-Scope-ID", strings.TrimSpace(principal.AccountScopeID))
+		principalUserID = strings.TrimSpace(principal.UserID)
+		principalAccountScopeID = strings.TrimSpace(principal.AccountScopeID)
+		principalAttached = true
+		req.Header.Set("X-Swarm-Principal-User-ID", principalUserID)
+		req.Header.Set("X-Swarm-Principal-Account-Scope-ID", principalAccountScopeID)
 	}
+	flowRouteDiagLog("desktop_routed_peer_open_outbound",
+		"target_swarm_id", target.SwarmID,
+		"path", path,
+		"endpoint", endpoint,
+		"source_swarm_id", strings.TrimSpace(state.Node.SwarmID),
+		"peer_auth_header", strings.TrimSpace(state.Node.SwarmID) != "" && strings.TrimSpace(peerToken) != "",
+		"principal_attached", principalAttached,
+		"principal_user_id", principalUserID,
+		"principal_account_scope_id", principalAccountScopeID,
+	)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Printf("routed peer request failed swarm_id=%q path=%q elapsed_ms=%d err=%v", strings.TrimSpace(target.SwarmID), strings.TrimSpace(path), time.Since(startedAt).Milliseconds(), err)
@@ -229,6 +245,7 @@ func (s *Server) postPeerJSONToSwarmTarget(ctx context.Context, target swarmTarg
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		flowRouteDiagLog("desktop_routed_peer_open_response", "target_swarm_id", target.SwarmID, "path", path, "status", resp.StatusCode, "ok", false)
 		var failure struct {
 			Error string `json:"error"`
 		}
@@ -243,6 +260,7 @@ func (s *Server) postPeerJSONToSwarmTarget(ctx context.Context, target swarmTarg
 		return errors.New(resp.Status)
 	}
 	log.Printf("routed peer request success swarm_id=%q path=%q status=%d elapsed_ms=%d", strings.TrimSpace(target.SwarmID), strings.TrimSpace(path), resp.StatusCode, time.Since(startedAt).Milliseconds())
+	flowRouteDiagLog("desktop_routed_peer_open_response", "target_swarm_id", target.SwarmID, "path", path, "status", resp.StatusCode, "ok", true)
 	flowdiaglog.Printf("peer_http_post_status_success", "target_swarm_id=%q path=%q endpoint=%q status=%d elapsed_ms=%d", strings.TrimSpace(target.SwarmID), strings.TrimSpace(path), endpoint, resp.StatusCode, time.Since(startedAt).Milliseconds())
 	if out == nil {
 		return nil
@@ -273,6 +291,26 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	peerSwarmID, peerAuthorized := authorizedPeerSwarmID(r)
+	requestPrincipal, requestPrincipalOK := PrincipalFromRequest(r)
+	flowRouteDiagLog("desktop_routed_peer_open_received",
+		"path", r.URL.Path,
+		"session_id", req.SessionID,
+		"peer_authorized", peerAuthorized,
+		"peer_swarm_id", peerSwarmID,
+		"request_principal_ok", requestPrincipalOK,
+		"request_principal_valid", requestPrincipal.Valid(),
+		"request_principal_user_id", requestPrincipal.UserID,
+		"request_principal_account_scope_id", requestPrincipal.AccountScopeID,
+		"claim_valid", req.Principal.Valid(),
+		"claim_user_id", req.Principal.UserID,
+		"claim_account_scope_id", req.Principal.AccountScopeID,
+		"route_user_id", req.Route.UserID,
+		"route_account_scope_id", req.Route.AccountScopeID,
+		"route_host_swarm_id", req.Route.HostSwarmID,
+		"route_child_swarm_id", req.Route.ChildSwarmID,
+		"route_workspace_binding_id", req.Route.WorkspaceBindingID,
+	)
 	req.SessionID = strings.TrimSpace(req.SessionID)
 	if req.SessionID == "" {
 		writeError(w, http.StatusBadRequest, errors.New("session id is required"))
@@ -298,7 +336,7 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	principal, principalOK := PrincipalFromRequest(r)
+	principal, principalOK := requestPrincipal, requestPrincipalOK
 	if !principalOK || !principal.Valid() {
 		principal, principalOK = s.verifiedPeerSessionOpenPrincipalClaim(r, peerSessionOpenRequest{
 			SessionID: req.SessionID,
@@ -307,6 +345,7 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 			Route:     routeRecord,
 			Principal: req.Principal,
 		})
+		flowRouteDiagLog("desktop_routed_peer_open_principal_claim_verified", "session_id", req.SessionID, "ok", principalOK, "principal_valid", principal.Valid(), "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID)
 		if principalOK && principal.Valid() {
 			ctx := context.WithValue(r.Context(), productPrincipalRequestContextKey, principal)
 			ctx = identity.ContextWithPrincipal(ctx, principal)
@@ -314,6 +353,7 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !principalOK || !principal.Valid() {
+		flowRouteDiagLog("desktop_routed_peer_open_reject", "session_id", req.SessionID, "reason", "principal_required", "peer_authorized", peerAuthorized, "peer_swarm_id", peerSwarmID, "claim_valid", req.Principal.Valid(), "claim_user_id", req.Principal.UserID, "claim_account_scope_id", req.Principal.AccountScopeID)
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
 		return
 	}
@@ -346,6 +386,7 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.validateTerminalPeerSessionOpenPairing(r, routeRecord, principal); err != nil {
+		flowRouteDiagLog("desktop_routed_peer_open_reject", "session_id", req.SessionID, "reason", "pairing_validation", "error", err, "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID, "peer_swarm_id", peerSwarmID, "route_host_swarm_id", routeRecord.HostSwarmID, "route_child_swarm_id", routeRecord.ChildSwarmID)
 		writeError(w, http.StatusUnauthorized, err)
 		return
 	}
@@ -377,6 +418,7 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	flowRouteDiagLog("desktop_routed_peer_open_success", "session_id", req.SessionID, "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID, "route_workspace_binding_id", routeRecord.WorkspaceBindingID, "workspace_path", session.WorkspacePath)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":      true,
 		"session": session,
@@ -601,7 +643,8 @@ func syncRoutedSessionRouteWithRealizedSession(route pebblestore.SessionRouteRec
 
 func (s *Server) verifiedPeerSessionOpenPrincipalClaim(r *http.Request, req peerSessionOpenRequest) (identity.Principal, bool) {
 	claim := req.Principal
-	if !claim.Valid() || s == nil || s.topology == nil {
+	if !claim.Valid() || s == nil {
+		flowRouteDiagLog("desktop_routed_peer_open_claim_reject", "reason", "invalid_claim_or_server", "session_id", req.SessionID, "claim_valid", claim.Valid(), "server_nil", s == nil)
 		return identity.Principal{}, false
 	}
 	claim.Type = identity.PrincipalTypeUser
@@ -627,12 +670,19 @@ func (s *Server) verifiedPeerSessionOpenPrincipalClaim(r *http.Request, req peer
 	if runtimeSwarmID == "" {
 		return identity.Principal{}, false
 	}
-	if _, ok, err := s.topology.GetRuntimeForAccount(claim.AccountScopeID, runtimeSwarmID); err == nil && ok {
-		return claim, true
+	if s.topology != nil {
+		if _, ok, err := s.topology.GetRuntimeForAccount(claim.AccountScopeID, runtimeSwarmID); err == nil && ok {
+			flowRouteDiagLog("desktop_routed_peer_open_claim_accept", "reason", "topology_runtime", "session_id", sessionID, "runtime_swarm_id", runtimeSwarmID, "claim_user_id", claim.UserID, "claim_account_scope_id", claim.AccountScopeID)
+			return claim, true
+		} else if err != nil {
+			flowRouteDiagLog("desktop_routed_peer_open_claim_topology_error", "session_id", sessionID, "runtime_swarm_id", runtimeSwarmID, "error", err)
+		}
 	}
 	if s.verifiedLocalChildPeerSessionOpenClaim(r, req, claim, runtimeSwarmID) {
+		flowRouteDiagLog("desktop_routed_peer_open_claim_accept", "reason", "local_child_pairing", "session_id", sessionID, "runtime_swarm_id", runtimeSwarmID, "claim_user_id", claim.UserID, "claim_account_scope_id", claim.AccountScopeID)
 		return claim, true
 	}
+	flowRouteDiagLog("desktop_routed_peer_open_claim_reject", "reason", "no_authoritative_state", "session_id", sessionID, "runtime_swarm_id", runtimeSwarmID, "claim_user_id", claim.UserID, "claim_account_scope_id", claim.AccountScopeID, "topology_configured", s.topology != nil, "swarm_store_configured", s.swarmStore != nil)
 	return identity.Principal{}, false
 }
 

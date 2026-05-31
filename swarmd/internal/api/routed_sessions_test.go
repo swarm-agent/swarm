@@ -22,6 +22,7 @@ import (
 	"swarm/packages/swarmd/internal/permission"
 	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
 	runruntime "swarm/packages/swarmd/internal/run"
+	"swarm/packages/swarmd/internal/security"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
@@ -1639,6 +1640,79 @@ func TestPrimaryRoutedSessionCreateRejectsMissingExplicitWorktreeMode(t *testing
 	}
 }
 
+func TestPrimaryRoutedSessionCreatePeerOpenFailureRollsBackEarlyRoute(t *testing.T) {
+	server, sessionSvc, _, routeStore := newRoutedSessionTestServer(t)
+	var openedSessionID string
+	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/swarm/peer/sessions/open" {
+			http.NotFound(w, r)
+			return
+		}
+		var opened peerSessionOpenRequest
+		if err := json.NewDecoder(r.Body).Decode(&opened); err != nil {
+			t.Fatalf("decode child open: %v", err)
+		}
+		openedSessionID = opened.SessionID
+		if route, ok, err := routeStore.Get(opened.SessionID); err != nil || !ok {
+			t.Fatalf("route available during failed child open ok=%t err=%v", ok, err)
+		} else if route.WorkspaceBindingID != "binding-primary-open-failure" || route.ChildSwarmID != "container-swarm" {
+			t.Fatalf("route available during failed child open = %+v", route)
+		}
+		writeError(w, http.StatusBadGateway, errors.New("child open failed"))
+	}))
+	defer child.Close()
+
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
+		SwarmID:          "container-swarm",
+		UserID:           testPrincipal().UserID,
+		AccountScopeID:   testPrincipal().AccountScopeID,
+		Name:             "container child",
+		Relationship:     swarmruntime.RelationshipChild,
+		Transport:        "remote",
+		BackendURL:       child.URL,
+		Status:           "attached",
+		OwnerHostSwarmID: "host-swarm-id",
+	}); err != nil {
+		t.Fatalf("upsert runtime: %v", err)
+	}
+	if _, err := server.topology.UpsertWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
+		BindingID:                 "binding-primary-open-failure",
+		UserID:                    testPrincipal().UserID,
+		AccountScopeID:            testPrincipal().AccountScopeID,
+		SourceWorkspacePath:       "/host/swarm-go",
+		SourceWorkspaceName:       "swarm-go",
+		DestinationRuntimeSwarmID: "container-swarm",
+		DestinationHostSwarmID:    "host-swarm-id",
+		DestinationWorkspacePath:  "/workspaces/swarm-go",
+		LegacyTargetKind:          "local-container",
+	}); err != nil {
+		t.Fatalf("upsert binding: %v", err)
+	}
+
+	body := bytes.NewBufferString(`{"title":"open fail","mode":"auto","workspace_binding_id":"binding-primary-open-failure","workspace_name":"swarm-go","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions?swarm_id=container-swarm", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadGateway, rec.Body.String())
+	}
+	if strings.TrimSpace(openedSessionID) == "" {
+		t.Fatal("child open was not called")
+	}
+	if sessions, err := sessionSvc.ListSessionsForAccount(testPrincipal().AccountScopeID, 10); err != nil || len(sessions) != 0 {
+		t.Fatalf("sessions = %+v err=%v, want no primary residue", sessions, err)
+	}
+	if routes, err := routeStore.List(10); err != nil || len(routes) != 0 {
+		t.Fatalf("routes = %+v err=%v, want no route residue", routes, err)
+	}
+	if _, ok, err := routeStore.Get(openedSessionID); err != nil {
+		t.Fatalf("get rolled back route: %v", err)
+	} else if ok {
+		t.Fatalf("route %q still exists after peer-open failure rollback", openedSessionID)
+	}
+}
+
 func TestPrimaryRoutedSessionCreateMirrorOpenFailureRollsBackRegularSession(t *testing.T) {
 	server, sessionSvc, _, routeStore := newRoutedSessionTestServer(t)
 	var openedSessionID string
@@ -1714,6 +1788,11 @@ func TestPrimaryRoutedSessionCreateMirrorOpenFailureRollsBackRegularSession(t *t
 	if strings.TrimSpace(openedSessionID) == "" {
 		t.Fatal("child open was not called")
 	}
+	if _, ok, err := routeStore.Get(openedSessionID); err != nil {
+		t.Fatalf("get rolled back route: %v", err)
+	} else if ok {
+		t.Fatalf("route %q still exists after peer-open failure rollback", openedSessionID)
+	}
 	if topologyRoute, ok, err := server.topology.GetSessionRouteForAccount(testPrincipal().AccountScopeID, openedSessionID); err != nil {
 		t.Fatalf("get topology route: %v", err)
 	} else if ok {
@@ -1721,9 +1800,93 @@ func TestPrimaryRoutedSessionCreateMirrorOpenFailureRollsBackRegularSession(t *t
 	}
 }
 
+func TestDesktopPrimaryToLocalContainerRoutedSessionE2EUsesPairingIdentity(t *testing.T) {
+	primary, _, _, routeStore := newRoutedSessionTestServer(t)
+	child, childSessionSvc, _, childRouteStore, childSwarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	configureRoutedSessionTestServerAsChild(t, child, childSwarmStore, "container-swarm", "host-swarm-id", testPrincipal().UserID, testPrincipal().AccountScopeID)
+	child.security = security.NewService(nil, nil)
+	child.topology = nil // local containers do not need topology to trust an account-bound paired parent.
+	childHandler := child.Handler()
+	childHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		childHandler.ServeHTTP(w, r)
+	}))
+	defer childHTTP.Close()
+
+	if err := primary.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
+		SwarmID:          "container-swarm",
+		UserID:           testPrincipal().UserID,
+		AccountScopeID:   testPrincipal().AccountScopeID,
+		Name:             "container child",
+		Relationship:     swarmruntime.RelationshipChild,
+		Transport:        "remote",
+		BackendURL:       childHTTP.URL,
+		Status:           "attached",
+		OwnerHostSwarmID: "host-swarm-id",
+	}); err != nil {
+		t.Fatalf("upsert runtime: %v", err)
+	}
+	if _, err := primary.topology.UpsertWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
+		BindingID:                 "binding-desktop-e2e",
+		UserID:                    testPrincipal().UserID,
+		AccountScopeID:            testPrincipal().AccountScopeID,
+		SourceWorkspacePath:       "/host/swarm-go",
+		SourceWorkspaceName:       "swarm-go",
+		DestinationRuntimeSwarmID: "container-swarm",
+		DestinationHostSwarmID:    "host-swarm-id",
+		DestinationWorkspacePath:  "/workspaces/swarm-go",
+		LegacyTargetKind:          "local-container",
+	}); err != nil {
+		t.Fatalf("upsert binding: %v", err)
+	}
+
+	body := bytes.NewBufferString(`{"title":"desktop e2e","mode":"auto","workspace_binding_id":"binding-desktop-e2e","workspace_name":"swarm-go","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"fireworks","model":"accounts/fireworks/models/kimi-k2p5","thinking":"high"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions?swarm_id=container-swarm", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	primary.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("desktop routed session status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var payload struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Session.ID == "" {
+		t.Fatalf("missing session in payload: %s", rec.Body.String())
+	}
+	if payload.Session.UserID != testPrincipal().UserID || payload.Session.AccountScopeID != testPrincipal().AccountScopeID {
+		t.Fatalf("primary session identity = %q/%q", payload.Session.UserID, payload.Session.AccountScopeID)
+	}
+	primaryRoute, ok, err := routeStore.Get(payload.Session.ID)
+	if err != nil || !ok {
+		t.Fatalf("primary route ok=%t err=%v", ok, err)
+	}
+	if primaryRoute.WorkspaceBindingID != "binding-desktop-e2e" || primaryRoute.HostSwarmID != "host-swarm-id" || primaryRoute.ChildSwarmID != "container-swarm" {
+		t.Fatalf("primary route = %+v", primaryRoute)
+	}
+	childSession, ok, err := childSessionSvc.GetSession(payload.Session.ID)
+	if err != nil || !ok {
+		t.Fatalf("child session ok=%t err=%v", ok, err)
+	}
+	if childSession.UserID != testPrincipal().UserID || childSession.AccountScopeID != testPrincipal().AccountScopeID || childSession.WorkspacePath != "/workspaces/swarm-go" {
+		t.Fatalf("child session = %+v", childSession)
+	}
+	childRoute, ok, err := childRouteStore.Get(payload.Session.ID)
+	if err != nil || !ok {
+		t.Fatalf("child route ok=%t err=%v", ok, err)
+	}
+	if childRoute.UserID != testPrincipal().UserID || childRoute.AccountScopeID != testPrincipal().AccountScopeID || childRoute.WorkspaceBindingID != "binding-desktop-e2e" {
+		t.Fatalf("child route = %+v", childRoute)
+	}
+}
+
 func TestPrimaryRoutedSessionCreateBuildsExplicitBindingContract(t *testing.T) {
 	server, _, _, routeStore := newRoutedSessionTestServer(t)
 	var opened peerSessionOpenRequest
+	var metadataCallbackStatus int
 	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/swarm/peer/sessions/open" {
 			http.NotFound(w, r)
@@ -1731,6 +1894,21 @@ func TestPrimaryRoutedSessionCreateBuildsExplicitBindingContract(t *testing.T) {
 		}
 		if err := json.NewDecoder(r.Body).Decode(&opened); err != nil {
 			t.Fatalf("decode child open: %v", err)
+		}
+		route, ok, err := routeStore.Get(opened.SessionID)
+		if err != nil || !ok {
+			t.Fatalf("route available during child open ok=%t err=%v", ok, err)
+		}
+		if route.WorkspaceBindingID != "binding-primary-explicit" || route.ChildSwarmID != "container-swarm" || route.RuntimeWorkspacePath != "/workspaces/swarm-go" {
+			t.Fatalf("route available during child open = %+v", route)
+		}
+		metadataReq := httptest.NewRequest(http.MethodPost, "/v1/swarm/peer/sessions/metadata", bytes.NewReader([]byte(`{"session_id":"`+opened.SessionID+`","metadata":{"background_run":{"active":true}}}`)))
+		metadataReq = metadataReq.WithContext(context.WithValue(metadataReq.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: "container-swarm"}))
+		metadataRec := httptest.NewRecorder()
+		server.handlePeerSessionMetadata(metadataRec, metadataReq)
+		metadataCallbackStatus = metadataRec.Code
+		if metadataRec.Code != http.StatusOK {
+			t.Fatalf("metadata callback during child open status = %d, body=%s", metadataRec.Code, metadataRec.Body.String())
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok": true,
@@ -1781,6 +1959,9 @@ func TestPrimaryRoutedSessionCreateBuildsExplicitBindingContract(t *testing.T) {
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if metadataCallbackStatus != http.StatusOK {
+		t.Fatalf("metadata callback during child open status = %d, want %d", metadataCallbackStatus, http.StatusOK)
 	}
 	if opened.Request.RuntimeWorkspacePath != "/workspaces/swarm-go" || opened.Request.WorkspacePath != "/workspaces/swarm-go" || opened.Request.HostWorkspacePath != "/workspaces/swarm-go" {
 		t.Fatalf("child request paths = workspace %q host %q runtime %q", opened.Request.WorkspacePath, opened.Request.HostWorkspacePath, opened.Request.RuntimeWorkspacePath)
