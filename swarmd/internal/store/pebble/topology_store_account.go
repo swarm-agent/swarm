@@ -535,20 +535,10 @@ func (s *TopologyStore) PutWorkspaceBindingForAccount(accountScopeID string, rec
 		return TopologyWorkspaceBindingRecord{}, err
 	}
 	record = normalizeTopologyWorkspaceBindingRecord(record)
-	if record.BindingID == "" {
-		return TopologyWorkspaceBindingRecord{}, errors.New("topology workspace binding id is required")
-	}
-	if record.SourceWorkspacePath == "" {
-		return TopologyWorkspaceBindingRecord{}, errors.New("topology source workspace path is required")
-	}
 	if record, err = enforceTopologyWorkspaceBindingAccount(accountScopeID, record); err != nil {
 		return TopologyWorkspaceBindingRecord{}, err
 	}
-	record.CreatedAt, record.UpdatedAt = nextTopologyWriteTimestamps(record.CreatedAt)
-	if err := s.store.PutJSON(KeyTopologyWorkspaceBindingForAccount(accountScopeID, record.BindingID), record); err != nil {
-		return TopologyWorkspaceBindingRecord{}, err
-	}
-	return record, nil
+	return s.putStrictWorkspaceBindingForAccount(accountScopeID, record)
 }
 
 func (s *TopologyStore) DeleteWorkspaceBindingForAccount(accountScopeID, bindingID string) error {
@@ -563,7 +553,21 @@ func (s *TopologyStore) DeleteWorkspaceBindingForAccount(accountScopeID, binding
 	if bindingID == "" {
 		return errors.New("topology workspace binding id is required")
 	}
-	return s.store.Delete(KeyTopologyWorkspaceBindingForAccount(accountScopeID, bindingID))
+	record, ok, err := s.GetWorkspaceBindingForAccount(accountScopeID, bindingID)
+	if err != nil {
+		return err
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if err := batch.Delete([]byte(KeyTopologyWorkspaceBindingForAccount(accountScopeID, bindingID)), nil); err != nil {
+		return err
+	}
+	if ok && topologyWorkspaceBindingIsBound(record) {
+		if err := batch.Delete([]byte(topologyWorkspaceBindingActiveIndexKey(accountScopeID, record)), nil); err != nil {
+			return err
+		}
+	}
+	return batch.Commit(pebble.Sync)
 }
 
 func (s *TopologyStore) ListSessionRoutesForAccount(accountScopeID string, limit int) ([]TopologySessionRouteRecord, error) {

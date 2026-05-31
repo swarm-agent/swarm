@@ -152,6 +152,10 @@ func (s *Server) handleManagedHostSessionOpen(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if strings.TrimSpace(req.WorkspacePath) != "" || strings.TrimSpace(req.HostWorkspacePath) != "" || strings.TrimSpace(req.RuntimeWorkspacePath) != "" {
+		writeError(w, http.StatusBadRequest, errors.New("managed-host session workspace paths must be resolved from workspace binding"))
+		return
+	}
 	principal, principalOK := PrincipalFromRequest(r)
 	if !principalOK || !principal.Valid() {
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
@@ -232,9 +236,7 @@ func (s *Server) handleManagedHostSessionOpen(w http.ResponseWriter, r *http.Req
 		UserID:               strings.TrimSpace(principal.UserID),
 		AccountScopeID:       strings.TrimSpace(principal.AccountScopeID),
 		ChildSwarmID:         strings.TrimSpace(realizedRoute.ManagedHostSwarmID),
-		ChildBackendURL:      strings.TrimSpace(realizedRoute.ManagedHostBackendURL),
 		HostSwarmID:          strings.TrimSpace(realizedRoute.ManagedHostSwarmID),
-		HostWorkspacePath:    firstNonEmpty(strings.TrimSpace(realizedRoute.SourceWorkspacePath), strings.TrimSpace(route.SourceWorkspacePath)),
 		RuntimeWorkspacePath: strings.TrimSpace(realizedRoute.RuntimeWorkspacePath),
 		WorkspaceBindingID:   workspaceBindingID,
 		CreatedAt:            mirror.CreatedAt,
@@ -487,9 +489,7 @@ func (s *Server) handlePeerManagedHostSessionOpen(w http.ResponseWriter, r *http
 		UserID:               strings.TrimSpace(principal.UserID),
 		AccountScopeID:       strings.TrimSpace(principal.AccountScopeID),
 		ChildSwarmID:         strings.TrimSpace(realized.Route.ManagedHostSwarmID),
-		ChildBackendURL:      strings.TrimSpace(realized.Route.ManagedHostBackendURL),
 		HostSwarmID:          strings.TrimSpace(realized.Route.ManagedHostSwarmID),
-		HostWorkspacePath:    realized.HostWorkspacePath,
 		RuntimeWorkspacePath: realized.RuntimeCWD,
 		WorkspaceBindingID:   realized.BindingID,
 		CreatedAt:            session.CreatedAt,
@@ -1319,47 +1319,23 @@ func (s *Server) resolveManagedHostSessionWorkspaceBinding(principal identity.Pr
 		return pebblestore.TopologyWorkspaceBindingRecord{}, false, errors.New("managed_host_swarm_id is required")
 	}
 	requestedBindingID := strings.TrimSpace(req.WorkspaceBindingID)
-	if requestedBindingID != "" {
-		binding, ok, err := s.topology.GetWorkspaceBindingForAccount(principal.AccountScopeID, requestedBindingID)
-		if err != nil {
-			return pebblestore.TopologyWorkspaceBindingRecord{}, false, err
-		}
-		if !ok {
-			return pebblestore.TopologyWorkspaceBindingRecord{}, false, fmt.Errorf("managed-host workspace binding %q was not found", requestedBindingID)
-		}
-		if err := validateManagedHostSessionWorkspaceBinding(binding, managedHostSwarmID); err != nil {
-			return pebblestore.TopologyWorkspaceBindingRecord{}, false, err
-		}
-		return binding, true, nil
-	}
-	workspaceName := strings.TrimSpace(req.WorkspaceName)
-	if workspaceName == "" {
+	if requestedBindingID == "" {
 		return pebblestore.TopologyWorkspaceBindingRecord{}, false, nil
 	}
-	bindings, err := s.topology.ListWorkspaceBindingsForAccount(principal.AccountScopeID, 100000)
+	binding, ok, err := s.topology.GetWorkspaceBindingForAccount(principal.AccountScopeID, requestedBindingID)
 	if err != nil {
 		return pebblestore.TopologyWorkspaceBindingRecord{}, false, err
 	}
-	var matched pebblestore.TopologyWorkspaceBindingRecord
-	for _, binding := range bindings {
-		if !strings.EqualFold(strings.TrimSpace(binding.SourceWorkspaceName), workspaceName) {
-			continue
-		}
-		if err := validateManagedHostSessionWorkspaceBinding(binding, managedHostSwarmID); err != nil {
-			if strings.TrimSpace(binding.BindingID) == "" || strings.TrimSpace(binding.DestinationWorkspacePath) == "" {
-				return pebblestore.TopologyWorkspaceBindingRecord{}, false, err
-			}
-			continue
-		}
-		if strings.TrimSpace(matched.BindingID) != "" && !strings.EqualFold(strings.TrimSpace(matched.BindingID), strings.TrimSpace(binding.BindingID)) {
-			return pebblestore.TopologyWorkspaceBindingRecord{}, false, errors.New("multiple managed-host workspace bindings match target and workspace name")
-		}
-		matched = binding
+	if !ok {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, false, fmt.Errorf("managed-host workspace binding %q was not found", requestedBindingID)
 	}
-	if strings.TrimSpace(matched.BindingID) == "" {
-		return pebblestore.TopologyWorkspaceBindingRecord{}, false, nil
+	if err := s.validateAccountSessionWorkspaceBinding(principal, binding, managedHostSwarmID, "managed-host session"); err != nil {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, false, err
 	}
-	return matched, true, nil
+	if err := validateManagedHostSessionWorkspaceBinding(binding, managedHostSwarmID); err != nil {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, false, err
+	}
+	return binding, true, nil
 }
 
 func validateManagedHostSessionWorkspaceBinding(binding pebblestore.TopologyWorkspaceBindingRecord, managedHostSwarmID string) error {
@@ -1561,9 +1537,6 @@ func (s *Server) managedHostTargetForSessionRequest(r *http.Request, sessionID, 
 				ownerSwarmID = routeHostSwarmID
 			} else if ownerSwarmID == "" {
 				ownerSwarmID = routeChildSwarmID
-			}
-			if strings.EqualFold(ownerSwarmID, routeChildSwarmID) || routeHostSwarmID == "" || s.isLocalSwarmID(routeHostSwarmID) {
-				ownerBackendURL = strings.TrimSpace(route.ChildBackendURL)
 			}
 		}
 	}

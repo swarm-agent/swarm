@@ -648,6 +648,10 @@ func (s *IntegrationStore) ListAssignmentsByAgent(agentName string, limit int) (
 }
 
 func (s *IntegrationStore) ListAssignmentsByAgentForAccount(accountScopeID, agentName string, limit int) ([]IntegrationAssignmentRecord, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return s.listAssignmentsByIndex(IntegrationAssignmentByAgentPrefix(agentName), limit, true)
+	}
 	return s.listAssignmentsByIndex(IntegrationAssignmentByAgentPrefixForAccount(accountScopeID, agentName), limit, true)
 }
 
@@ -656,6 +660,10 @@ func (s *IntegrationStore) ListAssignmentsByPack(packID, versionID string, limit
 }
 
 func (s *IntegrationStore) ListAssignmentsByPackForAccount(accountScopeID, packID, versionID string, limit int) ([]IntegrationAssignmentRecord, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return s.listAssignmentsByIndex(IntegrationAssignmentByPackPrefix(packID, versionID), limit, true)
+	}
 	return s.listAssignmentsByIndex(IntegrationAssignmentByPackPrefixForAccount(accountScopeID, packID, versionID), limit, true)
 }
 

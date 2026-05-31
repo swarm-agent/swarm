@@ -17,7 +17,7 @@ func (s *Server) upsertTopologySessionRoute(record pebblestore.SessionRouteRecor
 	if s.sessionRoutes == nil {
 		return nil
 	}
-	if strings.TrimSpace(route.SessionID) == "" || strings.TrimSpace(route.RuntimeSwarmID) == "" || strings.TrimSpace(route.BackendURL) == "" {
+	if strings.TrimSpace(route.SessionID) == "" || strings.TrimSpace(route.RuntimeSwarmID) == "" {
 		return nil
 	}
 	_, err = s.sessionRoutes.Put(pebblestore.SessionRouteRecord{
@@ -25,12 +25,12 @@ func (s *Server) upsertTopologySessionRoute(record pebblestore.SessionRouteRecor
 		UserID:               record.UserID,
 		AccountScopeID:       record.AccountScopeID,
 		ChildSwarmID:         route.RuntimeSwarmID,
-		ChildBackendURL:      route.BackendURL,
 		HostSwarmID:          route.HostSwarmID,
 		HostContainerID:      route.HostContainerID,
-		HostWorkspacePath:    route.HostWorkspacePath,
 		RuntimeWorkspacePath: route.RuntimeWorkspacePath,
 		WorkspaceBindingID:   route.WorkspaceBindingID,
+		PlacementGeneration:  route.PlacementGeneration,
+		BindingGeneration:    route.BindingGeneration,
 		CreatedAt:            route.CreatedAt,
 		UpdatedAt:            route.UpdatedAt,
 	})

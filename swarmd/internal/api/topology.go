@@ -58,19 +58,31 @@ type topologyAttachmentResponse struct {
 }
 
 type topologyWorkspaceBindingResponse struct {
-	BindingID                 string                               `json:"binding_id"`
-	SourceWorkspacePath       string                               `json:"source_workspace_path"`
-	SourceWorkspaceName       string                               `json:"source_workspace_name,omitempty"`
-	DestinationRuntimeSwarmID string                               `json:"destination_runtime_swarm_id,omitempty"`
-	DestinationHostSwarmID    string                               `json:"destination_host_swarm_id,omitempty"`
-	DestinationContainerID    string                               `json:"destination_container_id,omitempty"`
-	DestinationWorkspacePath  string                               `json:"destination_workspace_path,omitempty"`
-	ReplicationMode           string                               `json:"replication_mode,omitempty"`
-	Writable                  bool                                 `json:"writable"`
-	Sync                      pebblestore.WorkspaceReplicationSync `json:"sync,omitempty"`
-	LegacyTargetKind          string                               `json:"legacy_target_kind,omitempty"`
-	CreatedAt                 int64                                `json:"created_at"`
-	UpdatedAt                 int64                                `json:"updated_at"`
+	BindingID                       string                               `json:"binding_id"`
+	WorkspaceBindingID              string                               `json:"workspace_binding_id,omitempty"`
+	SourceWorkspaceID               string                               `json:"source_workspace_id,omitempty"`
+	SourceWorkspaceGeneration       int64                                `json:"source_workspace_generation,omitempty"`
+	SourceWorkspacePath             string                               `json:"source_workspace_path"`
+	SourceWorkspaceName             string                               `json:"source_workspace_name,omitempty"`
+	DestinationRuntimeSwarmID       string                               `json:"destination_runtime_swarm_id,omitempty"`
+	DestinationAuthorityHostSwarmID string                               `json:"destination_authority_host_swarm_id,omitempty"`
+	DestinationRuntimeKind          string                               `json:"destination_runtime_kind,omitempty"`
+	DestinationHostSwarmID          string                               `json:"destination_host_swarm_id,omitempty"`
+	DestinationContainerID          string                               `json:"destination_container_id,omitempty"`
+	DestinationWorkspacePath        string                               `json:"destination_workspace_path,omitempty"`
+	PlacementGeneration             int                                  `json:"placement_generation,omitempty"`
+	BindingGeneration               int                                  `json:"binding_generation,omitempty"`
+	State                           string                               `json:"state,omitempty"`
+	AccessMode                      string                               `json:"access_mode,omitempty"`
+	MaterializationKind             string                               `json:"materialization_kind,omitempty"`
+	AttestedByHostSwarmID           string                               `json:"attested_by_host_swarm_id,omitempty"`
+	AttestedAt                      int64                                `json:"attested_at,omitempty"`
+	ReplicationMode                 string                               `json:"replication_mode,omitempty"`
+	Writable                        bool                                 `json:"writable"`
+	Sync                            pebblestore.WorkspaceReplicationSync `json:"sync,omitempty"`
+	LegacyTargetKind                string                               `json:"legacy_target_kind,omitempty"`
+	CreatedAt                       int64                                `json:"created_at"`
+	UpdatedAt                       int64                                `json:"updated_at"`
 }
 
 type topologySessionRouteResponse struct {
@@ -126,7 +138,9 @@ type topologyRuntimeOwnerResponse struct {
 type topologyWorkspaceBindingsResponse struct {
 	OK                  bool                               `json:"ok"`
 	PathID              string                             `json:"path_id"`
-	SourceWorkspacePath string                             `json:"source_workspace_path"`
+	WorkspaceBindingID  string                             `json:"workspace_binding_id,omitempty"`
+	SourceWorkspaceID   string                             `json:"source_workspace_id,omitempty"`
+	SourceWorkspacePath string                             `json:"source_workspace_path,omitempty"`
 	Bindings            []topologyWorkspaceBindingResponse `json:"bindings,omitempty"`
 }
 
@@ -262,19 +276,49 @@ func (s *Server) handleSwarmTopologyWorkspaceBindings(w http.ResponseWriter, r *
 		writeError(w, http.StatusUnauthorized, err)
 		return
 	}
-	sourceWorkspacePath := strings.TrimSpace(r.URL.Query().Get("source_workspace_path"))
-	if sourceWorkspacePath == "" {
-		writeError(w, http.StatusBadRequest, errors.New("source_workspace_path is required"))
+	query := r.URL.Query()
+	sourceWorkspacePath := strings.TrimSpace(query.Get("source_workspace_path"))
+	sourceWorkspaceID := strings.TrimSpace(query.Get("source_workspace_id"))
+	workspaceBindingID := strings.TrimSpace(query.Get("workspace_binding_id"))
+	if sourceWorkspacePath == "" && sourceWorkspaceID == "" && workspaceBindingID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("source_workspace_path, source_workspace_id, or workspace_binding_id is required"))
 		return
 	}
-	bindings, err := s.topology.ListWorkspaceBindingsBySourcePathForAccount(principal.AccountScopeID, sourceWorkspacePath, 100000)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
+
+	var bindings []pebblestore.TopologyWorkspaceBindingRecord
+	if workspaceBindingID != "" {
+		binding, ok, err := s.topology.GetWorkspaceBindingForAccount(principal.AccountScopeID, workspaceBindingID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if ok && topologyWorkspaceBindingMatchesQuery(binding, sourceWorkspaceID, sourceWorkspacePath) {
+			bindings = append(bindings, binding)
+		}
+	} else if sourceWorkspaceID != "" {
+		records, err := s.topology.ListWorkspaceBindingsForAccount(principal.AccountScopeID, 100000)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		for _, record := range records {
+			if topologyWorkspaceBindingMatchesQuery(record, sourceWorkspaceID, sourceWorkspacePath) {
+				bindings = append(bindings, record)
+			}
+		}
+	} else {
+		var err error
+		bindings, err = s.topology.ListWorkspaceBindingsBySourcePathForAccount(principal.AccountScopeID, sourceWorkspacePath, 100000)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, topologyWorkspaceBindingsResponse{
 		OK:                  true,
 		PathID:              "swarm.topology.workspace_bindings.v1",
+		WorkspaceBindingID:  workspaceBindingID,
+		SourceWorkspaceID:   sourceWorkspaceID,
 		SourceWorkspacePath: sourceWorkspacePath,
 		Bindings:            mapTopologyWorkspaceBindingResponses(bindings),
 	})
@@ -310,6 +354,16 @@ func (s *Server) handleSwarmTopologySessionRoute(w http.ResponseWriter, r *http.
 		response.Route = &routeCopy
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func topologyWorkspaceBindingMatchesQuery(record pebblestore.TopologyWorkspaceBindingRecord, sourceWorkspaceID, sourceWorkspacePath string) bool {
+	if sourceWorkspaceID != "" && strings.TrimSpace(record.SourceWorkspaceID) != sourceWorkspaceID {
+		return false
+	}
+	if sourceWorkspacePath != "" && !strings.EqualFold(strings.TrimSpace(record.SourceWorkspacePath), sourceWorkspacePath) {
+		return false
+	}
+	return true
 }
 
 func mapTopologyRuntimeResponses(records []pebblestore.TopologyRuntimeRecord) []topologyRuntimeResponse {
@@ -399,19 +453,31 @@ func mapTopologyWorkspaceBindingResponses(records []pebblestore.TopologyWorkspac
 
 func mapTopologyWorkspaceBindingResponse(record pebblestore.TopologyWorkspaceBindingRecord) topologyWorkspaceBindingResponse {
 	return topologyWorkspaceBindingResponse{
-		BindingID:                 record.BindingID,
-		SourceWorkspacePath:       record.SourceWorkspacePath,
-		SourceWorkspaceName:       record.SourceWorkspaceName,
-		DestinationRuntimeSwarmID: record.DestinationRuntimeSwarmID,
-		DestinationHostSwarmID:    record.DestinationHostSwarmID,
-		DestinationContainerID:    record.DestinationContainerID,
-		DestinationWorkspacePath:  record.DestinationWorkspacePath,
-		ReplicationMode:           record.ReplicationMode,
-		Writable:                  record.Writable,
-		Sync:                      record.Sync,
-		LegacyTargetKind:          record.LegacyTargetKind,
-		CreatedAt:                 record.CreatedAt,
-		UpdatedAt:                 record.UpdatedAt,
+		BindingID:                       record.BindingID,
+		WorkspaceBindingID:              record.BindingID,
+		SourceWorkspaceID:               record.SourceWorkspaceID,
+		SourceWorkspaceGeneration:       record.SourceWorkspaceGeneration,
+		SourceWorkspacePath:             record.SourceWorkspacePath,
+		SourceWorkspaceName:             record.SourceWorkspaceName,
+		DestinationRuntimeSwarmID:       record.DestinationRuntimeSwarmID,
+		DestinationAuthorityHostSwarmID: record.DestinationAuthorityHostSwarmID,
+		DestinationRuntimeKind:          record.DestinationRuntimeKind,
+		DestinationHostSwarmID:          record.DestinationHostSwarmID,
+		DestinationContainerID:          record.DestinationContainerID,
+		DestinationWorkspacePath:        record.DestinationWorkspacePath,
+		PlacementGeneration:             record.PlacementGeneration,
+		BindingGeneration:               record.BindingGeneration,
+		State:                           record.State,
+		AccessMode:                      record.AccessMode,
+		MaterializationKind:             record.MaterializationKind,
+		AttestedByHostSwarmID:           record.AttestedByHostSwarmID,
+		AttestedAt:                      record.AttestedAt,
+		ReplicationMode:                 record.ReplicationMode,
+		Writable:                        record.Writable,
+		Sync:                            record.Sync,
+		LegacyTargetKind:                record.LegacyTargetKind,
+		CreatedAt:                       record.CreatedAt,
+		UpdatedAt:                       record.UpdatedAt,
 	}
 }
 

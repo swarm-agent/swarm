@@ -1,6 +1,9 @@
 package pebblestore
 
-import "strings"
+import (
+	"errors"
+	"strings"
+)
 
 const (
 	topologyRuntimeSourceLocalNode   = "swarm_local_node"
@@ -148,17 +151,24 @@ func ensureTopologyRuntimePlacementForRuntime(topology *TopologyStore, accountSc
 		return nil
 	}
 
+	authorityHostSwarmID := strings.TrimSpace(runtime.OwnerHostSwarmID)
+	authorityContainerID := strings.TrimSpace(runtime.OwnerHostContainerID)
 	placement := TopologyRuntimePlacementRecord{
 		RuntimeSwarmID:       runtime.SwarmID,
 		AccountScopeID:       accountScopeID,
-		AuthorityHostSwarmID: strings.TrimSpace(runtime.OwnerHostSwarmID),
-		AuthorityContainerID: strings.TrimSpace(runtime.OwnerHostContainerID),
+		AuthorityHostSwarmID: authorityHostSwarmID,
+		AuthorityContainerID: authorityContainerID,
 	}
-	if placement.AuthorityHostSwarmID == "" && placement.AuthorityContainerID == "" {
+	if authorityHostSwarmID == "" && authorityContainerID == "" {
 		placement.RuntimeKind = TopologyRuntimeKindHost
 		placement.AuthorityHostSwarmID = runtime.SwarmID
-	} else {
+	} else if authorityHostSwarmID != "" && authorityContainerID != "" {
 		placement.RuntimeKind = TopologyRuntimeKindContainer
+	} else {
+		if authorityHostSwarmID != "" {
+			return errors.New("topology container runtime placement authority container id is required")
+		}
+		return errors.New("topology container runtime placement authority host swarm id is required")
 	}
 	_, err := topology.PutRuntimePlacementForAccount(accountScopeID, placement)
 	return err

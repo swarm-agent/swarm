@@ -72,6 +72,13 @@ func (s *Service) EnsureSnapshot() (pebblestore.TopologyMigrationStatusRecord, e
 	return s.Rebuild()
 }
 
+func (s *Service) RefreshMigrationStatus() (pebblestore.TopologyMigrationStatusRecord, error) {
+	if s == nil || s.topologyStore == nil {
+		return pebblestore.TopologyMigrationStatusRecord{}, fmt.Errorf("topology service is not configured")
+	}
+	return s.topologyStore.RefreshMigrationStatus()
+}
+
 func (s *Service) Snapshot() (pebblestore.TopologySnapshot, error) {
 	if s == nil || s.topologyStore == nil {
 		return pebblestore.TopologySnapshot{}, fmt.Errorf("topology service is not configured")
@@ -107,6 +114,13 @@ func (s *Service) ListRuntimePlacementsForAccount(accountScopeID string, limit i
 	return s.topologyStore.ListRuntimePlacementsForAccount(accountScopeID, limit)
 }
 
+func (s *Service) GetRuntimePlacementForAccount(accountScopeID, runtimeSwarmID string) (pebblestore.TopologyRuntimePlacementRecord, bool, error) {
+	if s == nil || s.topologyStore == nil {
+		return pebblestore.TopologyRuntimePlacementRecord{}, false, fmt.Errorf("topology service is not configured")
+	}
+	return s.topologyStore.GetRuntimePlacementForAccount(accountScopeID, runtimeSwarmID)
+}
+
 func (s *Service) EnsureLocalSelfPlacementForAccount(accountScopeID string) (pebblestore.TopologyRuntimePlacementRecord, error) {
 	return s.EnsureLocalSelfPlacementForPrincipal(accountScopeID, accountScopeID)
 }
@@ -130,7 +144,7 @@ func (s *Service) EnsureLocalSelfPlacementForPrincipal(accountScopeID, userID st
 	if strings.TrimSpace(localSwarmID) == "" {
 		return pebblestore.TopologyRuntimePlacementRecord{}, fmt.Errorf("local swarm id is required for self placement")
 	}
-	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(s.topologyStore, accountScopeID, pebblestore.TopologyRuntimeRecord{
+	if _, err := s.topologyStore.PutRuntimeForAccount(accountScopeID, pebblestore.TopologyRuntimeRecord{
 		SwarmID:         localSwarmID,
 		UserID:          userID,
 		AccountScopeID:  accountScopeID,
@@ -153,6 +167,85 @@ func (s *Service) EnsureLocalSelfPlacementForPrincipal(accountScopeID, userID st
 	}
 	record.PlacementGeneration = 1
 	return s.topologyStore.PutRuntimePlacementForAccount(accountScopeID, record)
+}
+
+func (s *Service) requireExistingLocalSelfPlacementForAccount(accountScopeID string) (pebblestore.TopologyRuntimePlacementRecord, error) {
+	if s == nil || s.topologyStore == nil {
+		return pebblestore.TopologyRuntimePlacementRecord{}, fmt.Errorf("topology service is not configured")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return pebblestore.TopologyRuntimePlacementRecord{}, fmt.Errorf("account scope id is required")
+	}
+	localSwarmID, _, err := s.loadLocalNode()
+	if err != nil {
+		return pebblestore.TopologyRuntimePlacementRecord{}, err
+	}
+	if strings.TrimSpace(localSwarmID) == "" {
+		return pebblestore.TopologyRuntimePlacementRecord{}, fmt.Errorf("local swarm id is required for self placement")
+	}
+	placement, ok, err := s.topologyStore.GetRuntimePlacementForAccount(accountScopeID, localSwarmID)
+	if err != nil {
+		return pebblestore.TopologyRuntimePlacementRecord{}, err
+	}
+	if !ok {
+		return pebblestore.TopologyRuntimePlacementRecord{}, fmt.Errorf("local self runtime placement is required for workspace binding")
+	}
+	if !strings.EqualFold(placement.RuntimeSwarmID, localSwarmID) || placement.RuntimeKind != pebblestore.TopologyRuntimeKindHost || !strings.EqualFold(placement.AuthorityHostSwarmID, localSwarmID) || placement.AuthorityContainerID != "" || placement.PlacementGeneration <= 0 || placement.State != pebblestore.TopologyRuntimePlacementStateActive {
+		return pebblestore.TopologyRuntimePlacementRecord{}, fmt.Errorf("local self placement is invalid for workspace binding")
+	}
+	return placement, nil
+}
+
+func (s *Service) EnsureLocalWorkspaceSelfBindingForPrincipal(accountScopeID, userID string, workspaceEntry pebblestore.WorkspaceEntry) (pebblestore.TopologyWorkspaceBindingRecord, error) {
+	if s == nil || s.topologyStore == nil {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, fmt.Errorf("topology service is not configured")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, fmt.Errorf("account scope id is required")
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, fmt.Errorf("user id is required")
+	}
+	workspaceEntry = pebblestore.NormalizeWorkspaceEntryForAccount(accountScopeID, workspaceEntry)
+	if strings.TrimSpace(workspaceEntry.WorkspaceID) == "" {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, fmt.Errorf("workspace id is required")
+	}
+	if workspaceEntry.WorkspaceGeneration <= 0 {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, fmt.Errorf("workspace generation is required")
+	}
+	if strings.TrimSpace(workspaceEntry.Path) == "" {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, fmt.Errorf("workspace path is required")
+	}
+	placement, err := s.requireExistingLocalSelfPlacementForAccount(accountScopeID)
+	if err != nil {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, err
+	}
+	binding := pebblestore.TopologyWorkspaceBindingRecord{
+		BindingID:                       pebblestore.DeterministicTopologyWorkspaceSelfBindingID(accountScopeID, workspaceEntry.WorkspaceID, placement.RuntimeSwarmID),
+		UserID:                          userID,
+		AccountScopeID:                  accountScopeID,
+		SourceWorkspaceID:               workspaceEntry.WorkspaceID,
+		SourceWorkspaceGeneration:       workspaceEntry.WorkspaceGeneration,
+		SourceWorkspacePath:             workspaceEntry.Path,
+		SourceWorkspaceName:             workspaceEntry.Name,
+		DestinationRuntimeSwarmID:       placement.RuntimeSwarmID,
+		DestinationAuthorityHostSwarmID: placement.AuthorityHostSwarmID,
+		DestinationRuntimeKind:          placement.RuntimeKind,
+		DestinationHostSwarmID:          placement.AuthorityHostSwarmID,
+		DestinationWorkspacePath:        workspaceEntry.Path,
+		PlacementGeneration:             placement.PlacementGeneration,
+		BindingGeneration:               1,
+		State:                           pebblestore.TopologyWorkspaceBindingStateBound,
+		AccessMode:                      pebblestore.TopologyWorkspaceBindingAccessModeLocal,
+		MaterializationKind:             pebblestore.TopologyWorkspaceBindingMaterializationSource,
+		AttestedByHostSwarmID:           placement.AuthorityHostSwarmID,
+		AttestedAt:                      time.Now().UnixMilli(),
+		Writable:                        true,
+	}
+	return s.topologyStore.EnsureLocalWorkspaceSelfBindingForAccount(accountScopeID, binding)
 }
 
 func (s *Service) ListHostContainersByHost(hostSwarmID string, limit int) ([]pebblestore.TopologyHostContainerRecord, error) {
@@ -255,9 +348,9 @@ func (s *Service) UpsertSessionRouteForAccount(accountScopeID string, record peb
 		HostSwarmID:          strings.TrimSpace(record.HostSwarmID),
 		HostContainerID:      strings.TrimSpace(record.HostContainerID),
 		WorkspaceBindingID:   bindingID,
-		BackendURL:           strings.TrimSpace(record.ChildBackendURL),
-		HostWorkspacePath:    strings.TrimSpace(record.HostWorkspacePath),
 		RuntimeWorkspacePath: strings.TrimSpace(record.RuntimeWorkspacePath),
+		PlacementGeneration:  record.PlacementGeneration,
+		BindingGeneration:    record.BindingGeneration,
 		CreatedAt:            record.CreatedAt,
 		UpdatedAt:            record.UpdatedAt,
 	}
@@ -796,9 +889,9 @@ func (s *Service) buildSessionRoutes(bindings []pebblestore.TopologyWorkspaceBin
 			HostSwarmID:          strings.TrimSpace(route.HostSwarmID),
 			HostContainerID:      strings.TrimSpace(route.HostContainerID),
 			WorkspaceBindingID:   bindingID,
-			BackendURL:           strings.TrimSpace(route.ChildBackendURL),
-			HostWorkspacePath:    strings.TrimSpace(route.HostWorkspacePath),
 			RuntimeWorkspacePath: strings.TrimSpace(route.RuntimeWorkspacePath),
+			PlacementGeneration:  route.PlacementGeneration,
+			BindingGeneration:    route.BindingGeneration,
 			CreatedAt:            route.CreatedAt,
 			UpdatedAt:            route.UpdatedAt,
 		}
@@ -936,6 +1029,12 @@ func enrichTopologySessionRouteFromBinding(route *pebblestore.TopologySessionRou
 	if strings.TrimSpace(route.RuntimeWorkspacePath) == "" && bindingPresent {
 		route.RuntimeWorkspacePath = strings.TrimSpace(binding.DestinationWorkspacePath)
 	}
+	if route.PlacementGeneration <= 0 && bindingPresent {
+		route.PlacementGeneration = binding.PlacementGeneration
+	}
+	if route.BindingGeneration <= 0 && bindingPresent {
+		route.BindingGeneration = binding.BindingGeneration
+	}
 }
 
 func mergeRuntime(dst map[string]pebblestore.TopologyRuntimeRecord, incoming pebblestore.TopologyRuntimeRecord) {
@@ -1041,7 +1140,7 @@ func normalizeRuntime(record pebblestore.TopologyRuntimeRecord) pebblestore.Topo
 	record.Relationship = strings.ToLower(strings.TrimSpace(record.Relationship))
 	record.Status = strings.ToLower(strings.TrimSpace(record.Status))
 	record.Transport = strings.ToLower(strings.TrimSpace(record.Transport))
-	record.BackendURL = strings.TrimSpace(record.BackendURL)
+	record.BackendURL = ""
 	record.DesktopURL = strings.TrimSpace(record.DesktopURL)
 	record.OwnerHostSwarmID = strings.TrimSpace(record.OwnerHostSwarmID)
 	record.OwnerHostContainerID = strings.TrimSpace(record.OwnerHostContainerID)

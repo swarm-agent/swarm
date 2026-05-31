@@ -584,7 +584,11 @@ func listRemoteDeployTargetsForAccount(s *Server, r *http.Request, accountScopeI
 		}
 		for _, runtime := range runtimes {
 			target, ok := mapTopologyRuntimeTargetWithPlacement(runtime, placementByRuntime[strings.TrimSpace(runtime.SwarmID)])
-			if !ok || !strings.EqualFold(strings.TrimSpace(target.Kind), "remote") {
+			if !ok {
+				continue
+			}
+			kind := strings.TrimSpace(target.Kind)
+			if !strings.EqualFold(kind, "remote") && !strings.EqualFold(kind, "mirrored") {
 				continue
 			}
 			out = append(out, target)
@@ -1018,7 +1022,11 @@ func mapTopologyRuntimeTargetWithPlacement(item pebblestore.TopologyRuntimeRecor
 	if kind == "" {
 		switch strings.ToLower(strings.TrimSpace(item.Relationship)) {
 		case swarmruntime.RelationshipChild:
-			kind = "remote"
+			if hostSwarmID != "" {
+				kind = "mirrored"
+			} else {
+				kind = "remote"
+			}
 		case swarmruntime.RelationshipManaged, swarmruntime.RelationshipManager:
 			kind = "host"
 		default:

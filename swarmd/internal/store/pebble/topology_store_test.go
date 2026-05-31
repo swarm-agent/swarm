@@ -76,7 +76,7 @@ func TestTopologyStoreDirectWritersAndSnapshot(t *testing.T) {
 		t.Fatalf("attachment state = %q", attachmentRecord.State)
 	}
 
-	bindingRecord, err := topology.PutWorkspaceBinding(TopologyWorkspaceBindingRecord{
+	if _, err := topology.PutWorkspaceBinding(TopologyWorkspaceBindingRecord{
 		BindingID:                 " /src|child-1|/dst|child ",
 		UserID:                    " user-a ",
 		AccountScopeID:            " account-a ",
@@ -84,13 +84,10 @@ func TestTopologyStoreDirectWritersAndSnapshot(t *testing.T) {
 		DestinationRuntimeSwarmID: runtimeRecord.SwarmID,
 		DestinationWorkspacePath:  " /dst ",
 		ReplicationMode:           " mirror ",
-	})
-	if err != nil {
-		t.Fatalf("put workspace binding: %v", err)
+	}); err == nil {
+		t.Fatal("expected legacy global workspace binding write to be forbidden")
 	}
-	if bindingRecord.BindingID != "/src|child-1|/dst|child" {
-		t.Fatalf("binding id = %q", bindingRecord.BindingID)
-	}
+	bindingRecord := TopologyWorkspaceBindingRecord{BindingID: "legacy-global-write-forbidden"}
 
 	routeRecord, err := topology.PutSessionRoute(TopologySessionRouteRecord{
 		SessionID:          " session-1 ",
@@ -103,15 +100,15 @@ func TestTopologyStoreDirectWritersAndSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("put session route: %v", err)
 	}
-	if routeRecord.BackendURL != "http://child.example:7781/" {
-		t.Fatalf("route backend url = %q", routeRecord.BackendURL)
+	if routeRecord.BackendURL != "" {
+		t.Fatalf("route backend url = %q, want no stored route transport authority", routeRecord.BackendURL)
 	}
 
 	refreshedStatus, ok, err := topology.GetMigrationStatus(DefaultTopologyMigrationStatusID)
 	if err != nil || !ok {
 		t.Fatalf("get refreshed migration status ok=%t err=%v", ok, err)
 	}
-	if refreshedStatus.RuntimeCount != 1 || refreshedStatus.HostContainerCount != 1 || refreshedStatus.AttachmentCount != 1 || refreshedStatus.WorkspaceBindingCount != 1 || refreshedStatus.SessionRouteCount != 1 {
+	if refreshedStatus.RuntimeCount != 1 || refreshedStatus.HostContainerCount != 1 || refreshedStatus.AttachmentCount != 1 || refreshedStatus.WorkspaceBindingCount != 0 || refreshedStatus.SessionRouteCount != 1 {
 		t.Fatalf("unexpected refreshed migration counts after direct writes: %+v", refreshedStatus)
 	}
 
@@ -159,14 +156,13 @@ func TestTopologyStoreDirectWritersAndSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	if len(snapshot.Runtimes) != 1 || len(snapshot.HostContainers) != 1 || len(snapshot.Attachments) != 1 || len(snapshot.WorkspaceBindings) != 1 || len(snapshot.SessionRoutes) != 1 {
+	if len(snapshot.Runtimes) != 1 || len(snapshot.HostContainers) != 1 || len(snapshot.Attachments) != 1 || len(snapshot.WorkspaceBindings) != 0 || len(snapshot.SessionRoutes) != 1 {
 		t.Fatalf("unexpected snapshot counts: %+v", snapshot.MigrationStatus)
 	}
 	if snapshot.MigrationStatus.Version != "checkpoint1-v1" {
 		t.Fatalf("snapshot migration version = %q", snapshot.MigrationStatus.Version)
 	}
 	if snapshot.HostContainers[0].UserID != "user-a" || snapshot.HostContainers[0].AccountScopeID != "account-a" ||
-		snapshot.WorkspaceBindings[0].UserID != "user-a" || snapshot.WorkspaceBindings[0].AccountScopeID != "account-a" ||
 		snapshot.SessionRoutes[0].UserID != "user-a" || snapshot.SessionRoutes[0].AccountScopeID != "account-a" {
 		t.Fatalf("snapshot account ownership missing: %+v", snapshot)
 	}
@@ -339,8 +335,8 @@ func TestTopologyStoreAccountScopedAPIsIsolationNoFallback(t *testing.T) {
 	if _, err := topology.PutAttachment(TopologyAttachmentRecord{AttachmentID: "legacy-host:ctr=>legacy-runtime", UserID: "legacy-user", AccountScopeID: accountA, HostContainerID: "legacy-host:ctr", RuntimeSwarmID: "legacy-runtime"}); err != nil {
 		t.Fatalf("put legacy attachment: %v", err)
 	}
-	if _, err := topology.PutWorkspaceBinding(TopologyWorkspaceBindingRecord{BindingID: "legacy-binding", UserID: "legacy-user", AccountScopeID: accountA, SourceWorkspacePath: "/legacy"}); err != nil {
-		t.Fatalf("put legacy workspace binding: %v", err)
+	if err := store.PutJSON(KeyTopologyWorkspaceBinding("legacy-binding"), TopologyWorkspaceBindingRecord{BindingID: "legacy-binding", UserID: "legacy-user", AccountScopeID: accountA, SourceWorkspacePath: "/legacy"}); err != nil {
+		t.Fatalf("seed legacy workspace binding: %v", err)
 	}
 	if _, err := topology.PutSessionRoute(TopologySessionRouteRecord{SessionID: "legacy-session", UserID: "legacy-user", AccountScopeID: accountA}); err != nil {
 		t.Fatalf("put legacy session route: %v", err)
@@ -364,11 +360,11 @@ func TestTopologyStoreAccountScopedAPIsIsolationNoFallback(t *testing.T) {
 	if _, err := topology.PutAttachmentForAccount(accountB, TopologyAttachmentRecord{AttachmentID: "shared-host:ctr=>shared-runtime", UserID: "user-b", AccountScopeID: accountB, HostContainerID: "shared-host:ctr", RuntimeSwarmID: "shared-runtime"}); err != nil {
 		t.Fatalf("put account B attachment: %v", err)
 	}
-	if _, err := topology.PutWorkspaceBindingForAccount(accountA, TopologyWorkspaceBindingRecord{BindingID: "shared-binding", UserID: "user-a", AccountScopeID: accountA, SourceWorkspacePath: "/workspace"}); err != nil {
-		t.Fatalf("put account A workspace binding: %v", err)
+	if err := store.PutJSON(KeyTopologyWorkspaceBindingForAccount(accountA, "shared-binding"), TopologyWorkspaceBindingRecord{BindingID: "shared-binding", UserID: "user-a", AccountScopeID: accountA, SourceWorkspacePath: "/workspace"}); err != nil {
+		t.Fatalf("seed account A workspace binding: %v", err)
 	}
-	if _, err := topology.PutWorkspaceBindingForAccount(accountB, TopologyWorkspaceBindingRecord{BindingID: "shared-binding", UserID: "user-b", AccountScopeID: accountB, SourceWorkspacePath: "/workspace"}); err != nil {
-		t.Fatalf("put account B workspace binding: %v", err)
+	if err := store.PutJSON(KeyTopologyWorkspaceBindingForAccount(accountB, "shared-binding"), TopologyWorkspaceBindingRecord{BindingID: "shared-binding", UserID: "user-b", AccountScopeID: accountB, SourceWorkspacePath: "/workspace"}); err != nil {
+		t.Fatalf("seed account B workspace binding: %v", err)
 	}
 	if _, err := topology.PutSessionRouteForAccount(accountA, TopologySessionRouteRecord{SessionID: "shared-session", UserID: "user-a", AccountScopeID: accountA, RuntimeSwarmID: "shared-runtime"}); err != nil {
 		t.Fatalf("put account A session route: %v", err)
@@ -385,8 +381,8 @@ func TestTopologyStoreAccountScopedAPIsIsolationNoFallback(t *testing.T) {
 	if _, err := topology.PutAttachmentForAccount(accountA, TopologyAttachmentRecord{AttachmentID: "a-only-host:ctr=>a-only-runtime", UserID: "user-a", AccountScopeID: accountA, HostContainerID: "a-only-host:ctr", RuntimeSwarmID: "a-only-runtime"}); err != nil {
 		t.Fatalf("put account A only attachment: %v", err)
 	}
-	if _, err := topology.PutWorkspaceBindingForAccount(accountA, TopologyWorkspaceBindingRecord{BindingID: "a-only-binding", UserID: "user-a", AccountScopeID: accountA, SourceWorkspacePath: "/a-only"}); err != nil {
-		t.Fatalf("put account A only workspace binding: %v", err)
+	if err := store.PutJSON(KeyTopologyWorkspaceBindingForAccount(accountA, "a-only-binding"), TopologyWorkspaceBindingRecord{BindingID: "a-only-binding", UserID: "user-a", AccountScopeID: accountA, SourceWorkspacePath: "/a-only"}); err != nil {
+		t.Fatalf("seed account A only workspace binding: %v", err)
 	}
 	if _, err := topology.PutSessionRouteForAccount(accountA, TopologySessionRouteRecord{SessionID: "a-only-session", UserID: "user-a", AccountScopeID: accountA, RuntimeSwarmID: "a-only-runtime"}); err != nil {
 		t.Fatalf("put account A only session route: %v", err)

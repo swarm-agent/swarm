@@ -18,6 +18,8 @@ type SessionRouteRecord struct {
 	HostWorkspacePath    string `json:"host_workspace_path,omitempty"`
 	RuntimeWorkspacePath string `json:"runtime_workspace_path,omitempty"`
 	WorkspaceBindingID   string `json:"workspace_binding_id,omitempty"`
+	PlacementGeneration  int    `json:"placement_generation,omitempty"`
+	BindingGeneration    int    `json:"binding_generation,omitempty"`
 	CreatedAt            int64  `json:"created_at"`
 	UpdatedAt            int64  `json:"updated_at"`
 }
@@ -101,11 +103,19 @@ func normalizeSessionRouteRecord(record SessionRouteRecord) SessionRouteRecord {
 	record.UserID = strings.TrimSpace(record.UserID)
 	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
 	record.ChildSwarmID = strings.TrimSpace(record.ChildSwarmID)
-	record.ChildBackendURL = strings.TrimSpace(record.ChildBackendURL)
+	// CP6 SessionExecution records may decode legacy route-authority fields, but
+	// must never persist or expose transport/path authority from them.
+	record.ChildBackendURL = ""
 	record.HostSwarmID = strings.TrimSpace(record.HostSwarmID)
 	record.HostContainerID = strings.TrimSpace(record.HostContainerID)
-	record.HostWorkspacePath = strings.TrimSpace(record.HostWorkspacePath)
+	record.HostWorkspacePath = ""
 	record.RuntimeWorkspacePath = strings.TrimSpace(record.RuntimeWorkspacePath)
 	record.WorkspaceBindingID = strings.TrimSpace(record.WorkspaceBindingID)
+	if record.PlacementGeneration < 0 {
+		record.PlacementGeneration = 0
+	}
+	if record.BindingGeneration < 0 {
+		record.BindingGeneration = 0
+	}
 	return record
 }

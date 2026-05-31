@@ -27,18 +27,19 @@ type Service struct {
 }
 
 type Resolution struct {
-	RequestedPath          string `json:"requested_path"`
-	ResolvedPath           string `json:"resolved_path"`
-	WorkspaceID            string `json:"workspace_id,omitempty"`
-	WorkspaceGeneration    int64  `json:"workspace_generation,omitempty"`
-	WorkspaceState         string `json:"workspace_state,omitempty"`
-	WorkspacePath          string `json:"workspace_path"`
-	WorkspaceName          string `json:"workspace_name"`
-	ThemeID                string `json:"theme_id,omitempty"`
-	ManagedDataPath        string `json:"managed_data_path,omitempty"`
-	ManagedCachePath       string `json:"managed_cache_path,omitempty"`
-	ManagedStatePath       string `json:"managed_state_path,omitempty"`
-	ManagedWorkspaceBucket string `json:"managed_workspace_bucket,omitempty"`
+	RequestedPath           string `json:"requested_path"`
+	ResolvedPath            string `json:"resolved_path"`
+	WorkspaceID             string `json:"workspace_id,omitempty"`
+	LocalWorkspaceBindingID string `json:"local_workspace_binding_id,omitempty"`
+	WorkspaceGeneration     int64  `json:"workspace_generation,omitempty"`
+	WorkspaceState          string `json:"workspace_state,omitempty"`
+	WorkspacePath           string `json:"workspace_path"`
+	WorkspaceName           string `json:"workspace_name"`
+	ThemeID                 string `json:"theme_id,omitempty"`
+	ManagedDataPath         string `json:"managed_data_path,omitempty"`
+	ManagedCachePath        string `json:"managed_cache_path,omitempty"`
+	ManagedStatePath        string `json:"managed_state_path,omitempty"`
+	ManagedWorkspaceBucket  string `json:"managed_workspace_bucket,omitempty"`
 }
 
 type Entry struct {
@@ -118,6 +119,16 @@ func (s *Service) SetStartupConfigForTesting(cfg startupconfig.FileConfig) {
 		return
 	}
 	s.startupConfigForWorkspaces = &cfg
+}
+
+func (s *Service) GetByWorkspaceIDForPrincipal(principal identity.Principal, workspaceID string) (pebblestore.WorkspaceEntry, bool, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return pebblestore.WorkspaceEntry{}, false, err
+	}
+	if s == nil || s.store == nil {
+		return pebblestore.WorkspaceEntry{}, false, fmt.Errorf("workspace service is not configured")
+	}
+	return s.store.GetByWorkspaceIDForAccount(principal.AccountScopeID, workspaceID)
 }
 
 func (s *Service) explicitChildContainerRuntime() bool {
@@ -222,40 +233,101 @@ func (s *Service) Add(path, name, themeID string, makeCurrent bool) (Resolution,
 }
 
 func (s *Service) AddForPrincipal(principal identity.Principal, path, name, themeID string, makeCurrent bool) (Resolution, error) {
+	resolution, _, _, err := s.AddForPrincipalWithEntry(principal, path, name, themeID, makeCurrent)
+	return resolution, err
+}
+
+func (s *Service) AddForPrincipalWithEntry(principal identity.Principal, path, name, themeID string, makeCurrent bool) (Resolution, pebblestore.WorkspaceEntry, bool, error) {
+	return s.addForPrincipalWithEntrySelection(principal, path, name, themeID, makeCurrent)
+}
+
+func (s *Service) AddForPrincipalWithEntryWithoutSelection(principal identity.Principal, path, name, themeID string) (Resolution, pebblestore.WorkspaceEntry, bool, error) {
+	return s.addForPrincipalWithEntrySelection(principal, path, name, themeID, false)
+}
+
+func (s *Service) addForPrincipalWithEntrySelection(principal identity.Principal, path, name, themeID string, selectCurrent bool) (Resolution, pebblestore.WorkspaceEntry, bool, error) {
+	if s == nil || s.store == nil {
+		return Resolution{}, pebblestore.WorkspaceEntry{}, false, fmt.Errorf("workspace service is not configured")
+	}
 	if err := requirePrincipal(principal); err != nil {
-		return Resolution{}, err
+		return Resolution{}, pebblestore.WorkspaceEntry{}, false, err
 	}
 	resolved, err := resolvePath(path)
 	if err != nil {
-		return Resolution{}, err
+		return Resolution{}, pebblestore.WorkspaceEntry{}, false, err
 	}
 	if err := ensureWorkspaceDirectory(resolved); err != nil {
-		return Resolution{}, err
+		return Resolution{}, pebblestore.WorkspaceEntry{}, false, err
 	}
 	name = strings.TrimSpace(name)
 	if name == "" {
 		name = defaultWorkspaceName(resolved)
 	}
-	if makeCurrent {
-		if _, err := s.store.SaveForAccount(principal.AccountScopeID, resolved, name, themeID, true); err != nil {
-			return Resolution{}, fmt.Errorf("persist workspace binding: %w", err)
+	entry, created, err := s.store.SaveForAccountWithResult(principal.AccountScopeID, resolved, name, themeID, selectCurrent)
+	if err != nil {
+		if selectCurrent {
+			return Resolution{}, pebblestore.WorkspaceEntry{}, false, fmt.Errorf("persist workspace binding: %w", err)
 		}
+		return Resolution{}, pebblestore.WorkspaceEntry{}, false, fmt.Errorf("persist workspace entry: %w", err)
+	}
+	if selectCurrent {
 		if _, err := s.store.SetCurrentForAccount(principal.AccountScopeID, principal.UserID, resolved, name); err != nil {
-			return Resolution{}, fmt.Errorf("persist workspace selection: %w", err)
-		}
-	} else {
-		if _, err := s.store.SaveForAccount(principal.AccountScopeID, resolved, name, themeID, false); err != nil {
-			return Resolution{}, fmt.Errorf("persist workspace entry: %w", err)
+			return Resolution{}, pebblestore.WorkspaceEntry{}, created, fmt.Errorf("persist workspace selection: %w", err)
 		}
 	}
 	entry, ok, err := s.store.GetForAccount(principal.AccountScopeID, resolved)
 	if err != nil {
-		return Resolution{}, err
+		return Resolution{}, pebblestore.WorkspaceEntry{}, created, err
 	}
 	if !ok {
-		return Resolution{}, fmt.Errorf("workspace not found after save for path %q", resolved)
+		return Resolution{}, pebblestore.WorkspaceEntry{}, created, fmt.Errorf("workspace not found after save for path %q", resolved)
 	}
-	return resolutionForEntry(path, resolved, entry, name), nil
+	return resolutionForEntry(path, resolved, entry, name), entry, created, nil
+}
+
+func (s *Service) SelectEntryForPrincipal(principal identity.Principal, entry pebblestore.WorkspaceEntry) error {
+	if s == nil || s.store == nil {
+		return fmt.Errorf("workspace service is not configured")
+	}
+	if err := requirePrincipal(principal); err != nil {
+		return err
+	}
+	entry = pebblestore.NormalizeWorkspaceEntryForAccount(principal.AccountScopeID, entry)
+	path := strings.TrimSpace(entry.Path)
+	if path == "" {
+		return fmt.Errorf("workspace path is required")
+	}
+	name := strings.TrimSpace(entry.Name)
+	if name == "" {
+		name = defaultWorkspaceName(path)
+	}
+	if _, err := s.store.SetCurrentForAccount(principal.AccountScopeID, principal.UserID, path, name); err != nil {
+		return fmt.Errorf("persist workspace selection: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) RollbackCreatedWorkspaceForPrincipal(principal identity.Principal, entry pebblestore.WorkspaceEntry) error {
+	if s == nil || s.store == nil {
+		return fmt.Errorf("workspace service is not configured")
+	}
+	if err := requirePrincipal(principal); err != nil {
+		return err
+	}
+	entry = pebblestore.NormalizeWorkspaceEntryForAccount(principal.AccountScopeID, entry)
+	path := strings.TrimSpace(entry.Path)
+	if path == "" {
+		return fmt.Errorf("workspace path is required")
+	}
+	if err := s.store.DeleteForAccount(principal.AccountScopeID, principal.UserID, path); err != nil {
+		return fmt.Errorf("rollback workspace add: %w", err)
+	}
+	if existing, ok, err := s.store.GetForAccount(principal.AccountScopeID, path); err != nil {
+		return fmt.Errorf("verify workspace rollback: %w", err)
+	} else if ok {
+		return fmt.Errorf("verify workspace rollback: workspace %q still exists with id %q", path, existing.WorkspaceID)
+	}
+	return nil
 }
 
 func (s *Service) AddDirectory(path, directory string) (Resolution, error) {

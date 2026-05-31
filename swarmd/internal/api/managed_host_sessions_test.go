@@ -21,6 +21,28 @@ import (
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
+func TestManagedHostSessionOpenRejectsPathFieldsWithBindingID(t *testing.T) {
+	server, _, _, _ := newRoutedSessionTestServer(t)
+	managed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("managed host should not be called when request supplies workspace paths")
+	}))
+	defer managed.Close()
+	seedManagedHostTarget(t, server, managed.URL)
+
+	seedPeerManagedHostWorkspaceBindingWithID(t, server, "binding-managed", "/host/workspace", "/managed/workspace")
+	req := httptest.NewRequest(http.MethodPost, managedHostSessionOpenPath, bytes.NewBufferString(`{"title":"managed","workspace_path":"/frontend/guessed-path","host_workspace_path":"/primary/guessed-host-path","runtime_workspace_path":"/primary/guessed-runtime-path","workspace_name":"workspace","workspace_binding_id":"binding-managed","mode":"auto","agent_name":"swarm","worktree_mode":"on","worktree_use_current_branch":false,"worktree_base_branch":"release/api-request","worktree_branch_name":"agent/api-request","preference":{"provider":"codex","model":"gpt-5.5","thinking":"high"},"target_swarm_id":"managed-swarm"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "managed-host session workspace paths must be resolved from workspace binding") {
+		t.Fatalf("body = %s, want path-authority rejection", rec.Body.String())
+	}
+}
+
 func TestManagedHostSessionOpenForwardsExplicitWorktreeIntentFromAPI(t *testing.T) {
 	server, _, _, _ := newRoutedSessionTestServer(t)
 	server.SetWorktreeService(&fakeWorktreeService{config: worktreeruntime.Config{Enabled: true, UseCurrentBranch: true, BaseBranch: "main", BranchName: "agent/primary-config-must-not-leak"}})
@@ -52,7 +74,7 @@ func TestManagedHostSessionOpenForwardsExplicitWorktreeIntentFromAPI(t *testing.
 	seedManagedHostTarget(t, server, managed.URL)
 
 	seedPeerManagedHostWorkspaceBindingWithID(t, server, "binding-managed", "/host/workspace", "/managed/workspace")
-	req := httptest.NewRequest(http.MethodPost, managedHostSessionOpenPath, bytes.NewBufferString(`{"title":"managed","workspace_path":"/frontend/guessed-path","host_workspace_path":"/primary/guessed-host-path","runtime_workspace_path":"/primary/guessed-runtime-path","workspace_name":"workspace","workspace_binding_id":"binding-managed","mode":"auto","agent_name":"swarm","worktree_mode":"on","worktree_use_current_branch":false,"worktree_base_branch":"release/api-request","worktree_branch_name":"agent/api-request","preference":{"provider":"codex","model":"gpt-5.5","thinking":"high"},"target_swarm_id":"managed-swarm"}`))
+	req := httptest.NewRequest(http.MethodPost, managedHostSessionOpenPath, bytes.NewBufferString(`{"title":"managed","workspace_name":"workspace","workspace_binding_id":"binding-managed","mode":"auto","agent_name":"swarm","worktree_mode":"on","worktree_use_current_branch":false,"worktree_base_branch":"release/api-request","worktree_branch_name":"agent/api-request","preference":{"provider":"codex","model":"gpt-5.5","thinking":"high"},"target_swarm_id":"managed-swarm"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
@@ -121,8 +143,8 @@ func TestManagedHostSessionOpenMirrorsUnderSourceWorkspacePath(t *testing.T) {
 		t.Fatalf("get route: %v", err)
 	} else if !ok {
 		t.Fatalf("route not stored")
-	} else if route.HostWorkspacePath != "/source/workspace" || route.RuntimeWorkspacePath != "/managed/workspace" {
-		t.Fatalf("route host/runtime = %q/%q, want source/managed", route.HostWorkspacePath, route.RuntimeWorkspacePath)
+	} else if route.HostWorkspacePath != "" || route.ChildBackendURL != "" || route.RuntimeWorkspacePath != "/managed/workspace" {
+		t.Fatalf("route execution = %+v, want runtime path without stored backend/host path authority", route)
 	}
 }
 
@@ -426,7 +448,7 @@ func TestManagedHostSessionOpenSendsOnlyLogicalIntentToPeer(t *testing.T) {
 	}
 	server.SetStartupConfigPath(startupPath)
 	seedManagedHostTarget(t, server, managed.URL)
-	req := httptest.NewRequest(http.MethodPost, managedHostSessionOpenPath, bytes.NewBufferString(`{"title":"managed","workspace_path":"/frontend/guessed-path","host_workspace_path":"/frontend/guessed-host-path","runtime_workspace_path":"/frontend/guessed-runtime-path","workspace_name":"workspace","workspace_binding_id":"managed-binding","mode":"auto","agent_name":"swarm","preference":{"provider":"codex","model":"gpt-5.5","thinking":"high"},"target_swarm_id":"managed-swarm"}`))
+	req := httptest.NewRequest(http.MethodPost, managedHostSessionOpenPath, bytes.NewBufferString(`{"title":"managed","workspace_name":"workspace","workspace_binding_id":"managed-binding","mode":"auto","agent_name":"swarm","preference":{"provider":"codex","model":"gpt-5.5","thinking":"high"},"target_swarm_id":"managed-swarm"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
@@ -491,8 +513,8 @@ func TestManagedHostSessionOpenSendsOnlyLogicalIntentToPeer(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("get base session route ok=%t err=%v", ok, err)
 	}
-	if baseRoute.ChildSwarmID != "managed-swarm" || baseRoute.ChildBackendURL != managed.URL || baseRoute.UserID != testPrincipal().UserID || baseRoute.AccountScopeID != testPrincipal().AccountScopeID {
-		t.Fatalf("base session route = %+v", baseRoute)
+	if baseRoute.ChildSwarmID != "managed-swarm" || baseRoute.ChildBackendURL != "" || baseRoute.HostWorkspacePath != "" || baseRoute.UserID != testPrincipal().UserID || baseRoute.AccountScopeID != testPrincipal().AccountScopeID {
+		t.Fatalf("base session execution = %+v", baseRoute)
 	}
 }
 
@@ -754,7 +776,7 @@ func TestPeerManagedHostSessionEventPublishesToPrimaryRunStream(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, peerManagedHostSessionEventPath, bytes.NewBufferString(`{"session_id":"managed-session","event_type":"assistant.delta","payload":{"type":"assistant.delta","session_id":"managed-session","run_id":"managed-run","delta":"hello"},"causation_id":"managed-run"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(peerAuthSwarmIDHeader, "managed-swarm")
-	req.Header.Set(peerAuthTokenHeader, "managed-token")
+	req.Header.Set(peerAuthTokenHeader, "peer-token")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
 
@@ -1014,7 +1036,7 @@ func TestPeerManagedHostSessionEventStoresMirroredPermission(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, peerManagedHostSessionEventPath, bytes.NewBufferString(`{"session_id":"managed-session","event_type":"permission.updated","payload":{"type":"permission.updated","session_id":"managed-session","run_id":"managed-run","permission":{"id":"perm-managed","session_id":"managed-session","run_id":"managed-run","call_id":"call-1","tool_name":"bash","status":"approved","decision":"allow_once","reason":"ok"}}}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(peerAuthSwarmIDHeader, "managed-swarm")
-	req.Header.Set(peerAuthTokenHeader, "managed-token")
+	req.Header.Set(peerAuthTokenHeader, "peer-token")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -1045,7 +1067,7 @@ func TestManagedHostPermissionControlPostResolvesOnPrimary(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, peerManagedHostSessionRunStreamPath, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(peerAuthSwarmIDHeader, "managed-swarm")
-	req.Header.Set(peerAuthTokenHeader, "managed-token")
+	req.Header.Set(peerAuthTokenHeader, "peer-token")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {

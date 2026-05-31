@@ -15,6 +15,10 @@ import (
 const (
 	DefaultTopologyMigrationStatusID = "default"
 	TopologySnapshotVersion          = "checkpoint1-v1"
+
+	TopologyWorkspaceBindingStateBound            = "bound"
+	TopologyWorkspaceBindingAccessModeLocal       = "local"
+	TopologyWorkspaceBindingMaterializationSource = "source"
 )
 
 type TopologyRuntimeRecord struct {
@@ -72,21 +76,32 @@ type TopologyAttachmentRecord struct {
 }
 
 type TopologyWorkspaceBindingRecord struct {
-	BindingID                 string                   `json:"binding_id"`
-	UserID                    string                   `json:"user_id,omitempty"`
-	AccountScopeID            string                   `json:"account_scope_id,omitempty"`
-	SourceWorkspacePath       string                   `json:"source_workspace_path"`
-	SourceWorkspaceName       string                   `json:"source_workspace_name,omitempty"`
-	DestinationRuntimeSwarmID string                   `json:"destination_runtime_swarm_id,omitempty"`
-	DestinationHostSwarmID    string                   `json:"destination_host_swarm_id,omitempty"`
-	DestinationContainerID    string                   `json:"destination_container_id,omitempty"`
-	DestinationWorkspacePath  string                   `json:"destination_workspace_path,omitempty"`
-	ReplicationMode           string                   `json:"replication_mode,omitempty"`
-	Writable                  bool                     `json:"writable"`
-	Sync                      WorkspaceReplicationSync `json:"sync,omitempty"`
-	LegacyTargetKind          string                   `json:"legacy_target_kind,omitempty"`
-	CreatedAt                 int64                    `json:"created_at"`
-	UpdatedAt                 int64                    `json:"updated_at"`
+	BindingID                       string                   `json:"binding_id"`
+	UserID                          string                   `json:"user_id,omitempty"`
+	AccountScopeID                  string                   `json:"account_scope_id,omitempty"`
+	SourceWorkspaceID               string                   `json:"source_workspace_id,omitempty"`
+	SourceWorkspaceGeneration       int64                    `json:"source_workspace_generation,omitempty"`
+	SourceWorkspacePath             string                   `json:"source_workspace_path"`
+	SourceWorkspaceName             string                   `json:"source_workspace_name,omitempty"`
+	DestinationRuntimeSwarmID       string                   `json:"destination_runtime_swarm_id,omitempty"`
+	DestinationAuthorityHostSwarmID string                   `json:"destination_authority_host_swarm_id,omitempty"`
+	DestinationRuntimeKind          string                   `json:"destination_runtime_kind,omitempty"`
+	DestinationHostSwarmID          string                   `json:"destination_host_swarm_id,omitempty"`
+	DestinationContainerID          string                   `json:"destination_container_id,omitempty"`
+	DestinationWorkspacePath        string                   `json:"destination_workspace_path,omitempty"`
+	PlacementGeneration             int                      `json:"placement_generation,omitempty"`
+	BindingGeneration               int                      `json:"binding_generation,omitempty"`
+	State                           string                   `json:"state,omitempty"`
+	AccessMode                      string                   `json:"access_mode,omitempty"`
+	MaterializationKind             string                   `json:"materialization_kind,omitempty"`
+	AttestedByHostSwarmID           string                   `json:"attested_by_host_swarm_id,omitempty"`
+	AttestedAt                      int64                    `json:"attested_at,omitempty"`
+	ReplicationMode                 string                   `json:"replication_mode,omitempty"`
+	Writable                        bool                     `json:"writable"`
+	Sync                            WorkspaceReplicationSync `json:"sync,omitempty"`
+	LegacyTargetKind                string                   `json:"legacy_target_kind,omitempty"`
+	CreatedAt                       int64                    `json:"created_at"`
+	UpdatedAt                       int64                    `json:"updated_at"`
 }
 
 type TopologySessionRouteRecord struct {
@@ -100,6 +115,8 @@ type TopologySessionRouteRecord struct {
 	BackendURL           string `json:"backend_url,omitempty"`
 	HostWorkspacePath    string `json:"host_workspace_path,omitempty"`
 	RuntimeWorkspacePath string `json:"runtime_workspace_path,omitempty"`
+	PlacementGeneration  int    `json:"placement_generation,omitempty"`
+	BindingGeneration    int    `json:"binding_generation,omitempty"`
 	CreatedAt            int64  `json:"created_at"`
 	UpdatedAt            int64  `json:"updated_at"`
 }
@@ -584,25 +601,7 @@ func (s *TopologyStore) PutWorkspaceBinding(record TopologyWorkspaceBindingRecor
 	if s == nil || s.store == nil {
 		return TopologyWorkspaceBindingRecord{}, errors.New("topology store is not configured")
 	}
-	record = normalizeTopologyWorkspaceBindingRecord(record)
-	if record.BindingID == "" {
-		return TopologyWorkspaceBindingRecord{}, errors.New("topology workspace binding id is required")
-	}
-	if record.SourceWorkspacePath == "" {
-		return TopologyWorkspaceBindingRecord{}, errors.New("topology source workspace path is required")
-	}
-	now := time.Now().UnixMilli()
-	if record.CreatedAt <= 0 {
-		record.CreatedAt = now
-	}
-	record.UpdatedAt = now
-	if err := s.store.PutJSON(KeyTopologyWorkspaceBinding(record.BindingID), record); err != nil {
-		return TopologyWorkspaceBindingRecord{}, err
-	}
-	if _, err := s.refreshMigrationStatus(); err != nil {
-		return TopologyWorkspaceBindingRecord{}, err
-	}
-	return record, nil
+	return TopologyWorkspaceBindingRecord{}, errors.New("legacy global topology workspace binding writes are forbidden; use account-scoped strict binding writes")
 }
 
 func (s *TopologyStore) DeleteWorkspaceBinding(bindingID string) error {
@@ -733,7 +732,15 @@ func (s *TopologyStore) refreshMigrationStatus() (TopologyMigrationStatusRecord,
 	if err != nil {
 		return TopologyMigrationStatusRecord{}, err
 	}
+	accountRuntimeCount, err := s.countTopologyJSONRecordsWithPrefix(KeyTopologyRuntimeAccountPrefix)
+	if err != nil {
+		return TopologyMigrationStatusRecord{}, err
+	}
 	hostContainers, err := s.ListHostContainers(100000)
+	if err != nil {
+		return TopologyMigrationStatusRecord{}, err
+	}
+	accountHostContainerCount, err := s.countTopologyJSONRecordsWithPrefix(KeyTopologyHostContainerAccountPrefix)
 	if err != nil {
 		return TopologyMigrationStatusRecord{}, err
 	}
@@ -741,7 +748,15 @@ func (s *TopologyStore) refreshMigrationStatus() (TopologyMigrationStatusRecord,
 	if err != nil {
 		return TopologyMigrationStatusRecord{}, err
 	}
+	accountAttachmentCount, err := s.countTopologyJSONRecordsWithPrefix(KeyTopologyAttachmentAccountPrefix)
+	if err != nil {
+		return TopologyMigrationStatusRecord{}, err
+	}
 	workspaceBindings, err := s.ListWorkspaceBindings(100000)
+	if err != nil {
+		return TopologyMigrationStatusRecord{}, err
+	}
+	accountWorkspaceBindingCount, err := s.countTopologyJSONRecordsWithPrefix(KeyTopologyWorkspaceBindingAccountPrefix)
 	if err != nil {
 		return TopologyMigrationStatusRecord{}, err
 	}
@@ -749,16 +764,43 @@ func (s *TopologyStore) refreshMigrationStatus() (TopologyMigrationStatusRecord,
 	if err != nil {
 		return TopologyMigrationStatusRecord{}, err
 	}
+	accountSessionRouteCount, err := s.countTopologyJSONRecordsWithPrefix(KeyTopologySessionRouteAccountPrefix)
+	if err != nil {
+		return TopologyMigrationStatusRecord{}, err
+	}
 	return s.PutMigrationStatus(TopologyMigrationStatusRecord{
 		ID:                    DefaultTopologyMigrationStatusID,
 		Version:               TopologySnapshotVersion,
 		RebuiltAt:             time.Now().UnixMilli(),
-		RuntimeCount:          len(runtimes),
-		HostContainerCount:    len(hostContainers),
-		AttachmentCount:       len(attachments),
-		WorkspaceBindingCount: len(workspaceBindings),
-		SessionRouteCount:     len(sessionRoutes),
+		RuntimeCount:          len(runtimes) + accountRuntimeCount,
+		HostContainerCount:    len(hostContainers) + accountHostContainerCount,
+		AttachmentCount:       len(attachments) + accountAttachmentCount,
+		WorkspaceBindingCount: len(workspaceBindings) + accountWorkspaceBindingCount,
+		SessionRouteCount:     len(sessionRoutes) + accountSessionRouteCount,
 	})
+}
+
+func (s *TopologyStore) countTopologyJSONRecordsWithPrefix(prefix string) (int, error) {
+	if s == nil || s.store == nil {
+		return 0, errors.New("topology store is not configured")
+	}
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return 0, errors.New("topology record prefix is required")
+	}
+	count := 0
+	err := s.store.IteratePrefix(prefix, 100000, func(key string, value []byte) error {
+		var raw json.RawMessage
+		if err := json.Unmarshal(value, &raw); err != nil {
+			return fmt.Errorf("decode topology record %q: %w", key, err)
+		}
+		count++
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 func (s *TopologyStore) listTopologyRuntimeRecords(limit int) ([]TopologyRuntimeRecord, error) {
@@ -1096,12 +1138,31 @@ func normalizeTopologyWorkspaceBindingRecord(record TopologyWorkspaceBindingReco
 	record.BindingID = normalizeTopologyKeyValue(record.BindingID)
 	record.UserID = strings.TrimSpace(record.UserID)
 	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
+	record.SourceWorkspaceID = normalizeTopologyKeyValue(record.SourceWorkspaceID)
+	if record.SourceWorkspaceGeneration < 0 {
+		record.SourceWorkspaceGeneration = 0
+	}
 	record.SourceWorkspacePath = strings.TrimSpace(record.SourceWorkspacePath)
 	record.SourceWorkspaceName = strings.TrimSpace(record.SourceWorkspaceName)
 	record.DestinationRuntimeSwarmID = strings.TrimSpace(record.DestinationRuntimeSwarmID)
+	record.DestinationAuthorityHostSwarmID = strings.TrimSpace(record.DestinationAuthorityHostSwarmID)
+	record.DestinationRuntimeKind = strings.ToLower(strings.TrimSpace(record.DestinationRuntimeKind))
 	record.DestinationHostSwarmID = strings.TrimSpace(record.DestinationHostSwarmID)
 	record.DestinationContainerID = strings.TrimSpace(record.DestinationContainerID)
 	record.DestinationWorkspacePath = strings.TrimSpace(record.DestinationWorkspacePath)
+	if record.PlacementGeneration < 0 {
+		record.PlacementGeneration = 0
+	}
+	if record.BindingGeneration < 0 {
+		record.BindingGeneration = 0
+	}
+	record.State = strings.ToLower(strings.TrimSpace(record.State))
+	record.AccessMode = strings.ToLower(strings.TrimSpace(record.AccessMode))
+	record.MaterializationKind = strings.ToLower(strings.TrimSpace(record.MaterializationKind))
+	record.AttestedByHostSwarmID = strings.TrimSpace(record.AttestedByHostSwarmID)
+	if record.AttestedAt < 0 {
+		record.AttestedAt = 0
+	}
 	record.ReplicationMode = strings.TrimSpace(record.ReplicationMode)
 	record.Sync = normalizeWorkspaceReplicationSync(record.Sync)
 	record.LegacyTargetKind = strings.TrimSpace(record.LegacyTargetKind)
@@ -1137,9 +1198,17 @@ func normalizeTopologySessionRouteRecord(record TopologySessionRouteRecord) Topo
 	record.HostSwarmID = strings.TrimSpace(record.HostSwarmID)
 	record.HostContainerID = strings.TrimSpace(record.HostContainerID)
 	record.WorkspaceBindingID = strings.TrimSpace(record.WorkspaceBindingID)
-	record.BackendURL = strings.TrimSpace(record.BackendURL)
-	record.HostWorkspacePath = strings.TrimSpace(record.HostWorkspacePath)
+	// CP6 SessionExecution topology records may decode legacy route-authority
+	// fields, but must not persist transport or host-path authority.
+	record.BackendURL = ""
+	record.HostWorkspacePath = ""
 	record.RuntimeWorkspacePath = strings.TrimSpace(record.RuntimeWorkspacePath)
+	if record.PlacementGeneration < 0 {
+		record.PlacementGeneration = 0
+	}
+	if record.BindingGeneration < 0 {
+		record.BindingGeneration = 0
+	}
 	record.CreatedAt, record.UpdatedAt = normalizeTopologyTimestamps(record.CreatedAt, record.UpdatedAt)
 	return record
 }

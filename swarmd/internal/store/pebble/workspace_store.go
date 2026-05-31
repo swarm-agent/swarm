@@ -87,6 +87,10 @@ func (s *WorkspaceStore) SaveForAccount(accountScopeID, path, name, themeID stri
 	return s.upsertForAccount(accountScopeID, path, name, themeID, selected)
 }
 
+func (s *WorkspaceStore) SaveForAccountWithResult(accountScopeID, path, name, themeID string, selected bool) (WorkspaceEntry, bool, error) {
+	return s.upsertForAccountWithResult(accountScopeID, path, name, themeID, selected)
+}
+
 func (s *WorkspaceStore) RenameForAccount(accountScopeID, userID, path, name string) (WorkspaceEntry, error) {
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	userID = strings.TrimSpace(userID)
@@ -586,13 +590,18 @@ func (s *WorkspaceStore) RemoveDirectory(path, directory string) (WorkspaceEntry
 }
 
 func (s *WorkspaceStore) upsertForAccount(accountScopeID, path, name, themeID string, selected bool) (WorkspaceEntry, error) {
+	entry, _, err := s.upsertForAccountWithResult(accountScopeID, path, name, themeID, selected)
+	return entry, err
+}
+
+func (s *WorkspaceStore) upsertForAccountWithResult(accountScopeID, path, name, themeID string, selected bool) (WorkspaceEntry, bool, error) {
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	if accountScopeID == "" {
-		return WorkspaceEntry{}, fmt.Errorf("account scope is required")
+		return WorkspaceEntry{}, false, fmt.Errorf("account scope is required")
 	}
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return WorkspaceEntry{}, fmt.Errorf("workspace path is required")
+		return WorkspaceEntry{}, false, fmt.Errorf("workspace path is required")
 	}
 	name = strings.TrimSpace(name)
 	themeProvided := strings.TrimSpace(themeID) != ""
@@ -600,7 +609,7 @@ func (s *WorkspaceStore) upsertForAccount(accountScopeID, path, name, themeID st
 	now := time.Now().UnixMilli()
 	entries, err := s.listAllForAccount(accountScopeID)
 	if err != nil {
-		return WorkspaceEntry{}, err
+		return WorkspaceEntry{}, false, err
 	}
 	var existing WorkspaceEntry
 	ok := false
@@ -634,9 +643,9 @@ func (s *WorkspaceStore) upsertForAccount(accountScopeID, path, name, themeID st
 	}
 	entry.UpdatedAt = now
 	if err := s.putWorkspaceEntryForAccount(accountScopeID, entry); err != nil {
-		return WorkspaceEntry{}, err
+		return WorkspaceEntry{}, false, err
 	}
-	return entry, nil
+	return entry, !ok, nil
 }
 
 func (s *WorkspaceStore) UpdatePathForWorkspaceIDForAccount(accountScopeID, workspaceID, newPath string) (WorkspaceEntry, error) {
@@ -929,6 +938,10 @@ func (s *WorkspaceStore) putWorkspaceEntryForAccount(accountScopeID string, entr
 		return err
 	}
 	return s.store.PutJSON(KeyWorkspaceEntryByIDForAccount(accountScopeID, entry.WorkspaceID), entry)
+}
+
+func NormalizeWorkspaceEntryForAccount(accountScopeID string, entry WorkspaceEntry) WorkspaceEntry {
+	return normalizeWorkspaceEntryForAccount(accountScopeID, entry)
 }
 
 func normalizeWorkspaceEntryForAccount(accountScopeID string, entry WorkspaceEntry) WorkspaceEntry {

@@ -3,6 +3,9 @@ import type { WorkspaceOverviewTopologyRoute } from './workspace-overview'
 
 export interface WorkspaceEntry {
   path: string
+  workspaceId?: string
+  workspaceGeneration?: number
+  state?: string
   workspaceName: string
   themeId: string
   directories: string[]
@@ -33,6 +36,10 @@ export interface WorkspaceEntry {
 export interface WorkspaceResolution {
   requestedPath: string
   resolvedPath: string
+  workspaceId?: string
+  workspaceGeneration?: number
+  state?: string
+  localWorkspaceBindingId: string
   workspaceName: string
   themeId: string
 }
@@ -81,6 +88,9 @@ export interface WorkspaceBrowseResponse {
 
 export interface WorkspaceEntryWire {
   path: string
+  workspace_id?: string
+  workspace_generation?: number
+  state?: string
   workspace_name: string
   theme_id?: string
   directories: string[]
@@ -109,6 +119,10 @@ export interface WorkspaceEntryWire {
 export interface WorkspaceResolutionWire {
   requested_path: string
   resolved_path: string
+  workspace_id?: string
+  workspace_generation?: number
+  state?: string
+  local_workspace_binding_id?: string
   workspace_name: string
   theme_id?: string
 }
@@ -143,6 +157,9 @@ export interface WorkspaceBrowseResultWire {
 export function mapWorkspaceEntry(entry: WorkspaceEntryWire): WorkspaceEntry {
   return {
     path: entry.path,
+    workspaceId: String(entry.workspace_id ?? '').trim(),
+    workspaceGeneration: typeof entry.workspace_generation === 'number' ? entry.workspace_generation : 0,
+    state: String(entry.state ?? '').trim(),
     workspaceName: entry.workspace_name,
     themeId: entry.theme_id ?? '',
     directories: entry.directories,
@@ -175,6 +192,10 @@ export function mapWorkspaceResolution(entry: WorkspaceResolutionWire): Workspac
   return {
     requestedPath: entry.requested_path,
     resolvedPath: entry.resolved_path,
+    workspaceId: String(entry.workspace_id ?? '').trim(),
+    workspaceGeneration: typeof entry.workspace_generation === 'number' ? entry.workspace_generation : 0,
+    state: String(entry.state ?? '').trim(),
+    localWorkspaceBindingId: entry.local_workspace_binding_id ?? '',
     workspaceName: entry.workspace_name,
     themeId: entry.theme_id ?? '',
   }

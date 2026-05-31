@@ -48,6 +48,22 @@ func TestWorkspaceStoreAccountIsolation(t *testing.T) {
 	}
 }
 
+func TestWorkspaceStoreSaveForAccountWithResultReportsCreation(t *testing.T) {
+	workspaces := newTestWorkspaceStore(t)
+
+	first, created, err := workspaces.SaveForAccountWithResult("account-a", "/tmp/ws-created", "Workspace", "", false)
+	if err != nil || !created {
+		t.Fatalf("first save created=%v err=%v", created, err)
+	}
+	second, created, err := workspaces.SaveForAccountWithResult("account-a", "/tmp/ws-created", "Workspace", "", false)
+	if err != nil || created {
+		t.Fatalf("second save created=%v err=%v", created, err)
+	}
+	if first.WorkspaceID != second.WorkspaceID {
+		t.Fatalf("duplicate save changed workspace id: first=%q second=%q", first.WorkspaceID, second.WorkspaceID)
+	}
+}
+
 func TestWorkspaceStoreStableWorkspaceIDAndGeneration(t *testing.T) {
 	workspaces := newTestWorkspaceStore(t)
 

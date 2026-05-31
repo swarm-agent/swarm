@@ -78,7 +78,10 @@ func TestSessionRouteEnrichmentUsesExplicitWorkspaceBindingID(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("put deployment: %v", err)
 	}
-	if _, err := topologyStore.PutWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
+	if _, err := pebblestore.UpsertTopologyWorkspaceBinding(topologyStore, pebblestore.TopologyWorkspaceBindingRecord{
+		UserID:                    "user-a",
+		AccountScopeID:            "account-a",
+		LegacyTargetKind:          "test-legacy",
 		BindingID:                 "binding:replica:deployment-1",
 		SourceWorkspacePath:       "/src",
 		DestinationRuntimeSwarmID: "child-swarm",
@@ -128,7 +131,10 @@ func TestSessionRouteEnrichmentDoesNotInferWorkspaceBindingIDFromPaths(t *testin
 	topologyStore := pebblestore.NewTopologyStore(store)
 	sessionRouteStore := pebblestore.NewSessionRouteStore(store)
 
-	if _, err := topologyStore.PutWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
+	if _, err := pebblestore.UpsertTopologyWorkspaceBinding(topologyStore, pebblestore.TopologyWorkspaceBindingRecord{
+		UserID:                    "user-a",
+		AccountScopeID:            "account-a",
+		LegacyTargetKind:          "test-legacy",
 		BindingID:                 "binding:replica:path-match",
 		SourceWorkspacePath:       "/src",
 		DestinationRuntimeSwarmID: "child-swarm",
@@ -193,29 +199,47 @@ func TestRebuildPreservesCanonicalWorkspaceBindings(t *testing.T) {
 		t.Fatalf("seed legacy replication link: %v", err)
 	}
 
-	canonicalBinding, err := topologyStore.PutWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
-		BindingID:                 "canonical-binding",
-		SourceWorkspacePath:       "/src",
-		SourceWorkspaceName:       "Source",
-		DestinationRuntimeSwarmID: "canonical-child",
-		DestinationWorkspacePath:  "/canonical-dst",
-		ReplicationMode:           "mirror",
-		Writable:                  true,
+	if _, err := topologyStore.PutRuntimeForAccount("account-a", pebblestore.TopologyRuntimeRecord{SwarmID: "canonical-child", UserID: "user-a", AccountScopeID: "account-a", Name: "canonical child"}); err != nil {
+		t.Fatalf("put canonical runtime: %v", err)
+	}
+	if _, err := topologyStore.PutRuntimePlacementForAccount("account-a", pebblestore.TopologyRuntimePlacementRecord{RuntimeSwarmID: "canonical-child", AccountScopeID: "account-a", AuthorityHostSwarmID: "canonical-child", RuntimeKind: pebblestore.TopologyRuntimeKindHost, PlacementGeneration: 1, State: pebblestore.TopologyRuntimePlacementStateActive}); err != nil {
+		t.Fatalf("put canonical placement: %v", err)
+	}
+	canonicalBinding, err := pebblestore.UpsertTopologyWorkspaceBinding(topologyStore, pebblestore.TopologyWorkspaceBindingRecord{
+		UserID:                          "user-a",
+		AccountScopeID:                  "account-a",
+		LegacyTargetKind:                "test-legacy",
+		BindingID:                       "canonical-binding",
+		SourceWorkspaceID:               legacyEntry.WorkspaceID,
+		SourceWorkspaceGeneration:       legacyEntry.WorkspaceGeneration,
+		SourceWorkspacePath:             "/src",
+		SourceWorkspaceName:             "Source",
+		DestinationRuntimeSwarmID:       "canonical-child",
+		DestinationAuthorityHostSwarmID: "canonical-child",
+		DestinationRuntimeKind:          pebblestore.TopologyRuntimeKindHost,
+		DestinationHostSwarmID:          "canonical-child",
+		DestinationWorkspacePath:        "/canonical-dst",
+		PlacementGeneration:             1,
+		BindingGeneration:               1,
+		State:                           pebblestore.TopologyWorkspaceBindingStateBound,
+		AttestedByHostSwarmID:           "canonical-child",
+		ReplicationMode:                 "mirror",
+		Writable:                        true,
 	})
 	if err != nil {
 		t.Fatalf("put canonical workspace binding: %v", err)
 	}
 
 	service := NewService(topologyStore, nil, nil, nil, nil, nil, nil, workspaceStore)
-	status, err := service.Rebuild()
+	status, err := service.RefreshMigrationStatus()
 	if err != nil {
-		t.Fatalf("rebuild: %v", err)
+		t.Fatalf("refresh migration status: %v", err)
 	}
 	if status.WorkspaceBindingCount != 1 {
 		t.Fatalf("workspace binding count = %d, want 1", status.WorkspaceBindingCount)
 	}
 
-	bindings, err := topologyStore.ListWorkspaceBindings(100000)
+	bindings, err := topologyStore.ListWorkspaceBindingsForAccount("account-a", 100000)
 	if err != nil {
 		t.Fatalf("list topology workspace bindings: %v", err)
 	}

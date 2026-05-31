@@ -293,14 +293,15 @@ func TestFlowAssignmentDeliveryRoutesMirroredChildThroughManagedHostEvenWhenChil
 		token: "peer-token",
 	})
 	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
-		SwarmID:          "managed-child",
-		UserID:           testUserID,
-		AccountScopeID:   testAccountScopeID,
-		Name:             "managed child",
-		Relationship:     "child",
-		BackendURL:       "http://127.0.0.1:7782",
-		Status:           "attached",
-		OwnerHostSwarmID: "managed-swarm-1",
+		SwarmID:              "managed-child",
+		UserID:               testUserID,
+		AccountScopeID:       testAccountScopeID,
+		Name:                 "managed child",
+		Relationship:         "child",
+		BackendURL:           "http://127.0.0.1:7782",
+		Status:               "attached",
+		OwnerHostSwarmID:     "managed-swarm-1",
+		OwnerHostContainerID: "managed-deployment",
 	}); err != nil {
 		t.Fatalf("upsert child runtime: %v", err)
 	}

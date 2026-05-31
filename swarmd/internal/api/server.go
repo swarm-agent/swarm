@@ -732,7 +732,8 @@ func (s *Server) buildPrimaryRoutedSessionOpenContract(principal identity.Princi
 	primaryReq.WorkspaceBindingID = strings.TrimSpace(primaryReq.WorkspaceBindingID)
 	primaryReq.WorkspaceName = strings.TrimSpace(primaryReq.WorkspaceName)
 	bindingRequired := routedSessionRequiresWorkspaceBinding(target)
-	if bindingRequired && (primaryReq.WorkspacePath != "" || primaryReq.HostWorkspacePath != "" || primaryReq.RuntimeWorkspacePath != "") {
+	workspaceBacked := bindingRequired || primaryReq.WorkspaceBindingID != ""
+	if workspaceBacked && (primaryReq.WorkspacePath != "" || primaryReq.HostWorkspacePath != "" || primaryReq.RuntimeWorkspacePath != "") {
 		return contract, errors.New("routed session workspace paths must be resolved from workspace binding")
 	}
 	if err := validateRoutedSessionCreateMetadata(primaryReq.Metadata); err != nil {
@@ -866,11 +867,11 @@ func (s *Server) buildPrimaryRoutedSessionOpenContract(principal identity.Princi
 			UserID:               strings.TrimSpace(principal.UserID),
 			AccountScopeID:       strings.TrimSpace(principal.AccountScopeID),
 			ChildSwarmID:         childSwarmID,
-			ChildBackendURL:      routeBackendURL,
 			HostSwarmID:          routeHostSwarmID,
-			HostWorkspacePath:    routeHostWorkspacePath,
 			RuntimeWorkspacePath: childRuntimePath,
 			WorkspaceBindingID:   workspaceBindingID,
+			PlacementGeneration:  workspaceRoute.PlacementGeneration,
+			BindingGeneration:    workspaceRoute.BindingGeneration,
 		},
 		ProxyTarget:     proxyTarget,
 		RequireWorktree: requireWorktree,
@@ -1939,14 +1940,48 @@ func (s *Server) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
 	if req.MakeCurrent != nil {
 		makeCurrent = *req.MakeCurrent
 	}
-	resolution, err := s.workspace.AddForPrincipal(principal, req.Path, req.Name, req.ThemeID, makeCurrent)
+	if s.workspace == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("workspace service not configured"))
+		return
+	}
+	if s.topology == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("topology service not configured"))
+		return
+	}
+	resolution, entry, created, err := s.workspace.AddForPrincipalWithEntryWithoutSelection(principal, req.Path, req.Name, req.ThemeID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	binding, err := s.topology.EnsureLocalWorkspaceSelfBindingForPrincipal(principal.AccountScopeID, principal.UserID, entry)
+	if err != nil {
+		if created {
+			if rollbackErr := s.workspace.RollbackCreatedWorkspaceForPrincipal(principal, entry); rollbackErr != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Errorf("create workspace self binding: %w; rollback failed: %w", err, rollbackErr))
+				return
+			}
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if makeCurrent {
+		if err := s.workspace.SelectEntryForPrincipal(principal, entry); err != nil {
+			if created {
+				if rollbackErr := s.workspace.RollbackCreatedWorkspaceForPrincipal(principal, entry); rollbackErr != nil {
+					writeError(w, http.StatusInternalServerError, fmt.Errorf("select workspace after self binding: %w; rollback failed: %w", err, rollbackErr))
+					return
+				}
+			}
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+	}
+	resolution.LocalWorkspaceBindingID = binding.BindingID
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":        true,
-		"workspace": resolution,
+		"ok":                         true,
+		"workspace":                  resolution,
+		"workspace_id":               resolution.WorkspaceID,
+		"local_workspace_binding_id": binding.BindingID,
 	})
 }
 

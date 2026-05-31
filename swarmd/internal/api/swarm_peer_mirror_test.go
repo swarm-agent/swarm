@@ -110,13 +110,14 @@ func TestMirroredManagedHostChildTargetIsSelectableViaOwnerHostGroup(t *testing.
 		t.Fatalf("upsert mirrored target: %v", err)
 	}
 	if err := primary.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
-		UserID:           testUserID,
-		AccountScopeID:   testAccountScopeID,
-		SwarmID:          "child-swarm-1",
-		Name:             "managed-child",
-		Relationship:     "child",
-		BackendURL:       "http://127.0.0.1:7782",
-		OwnerHostSwarmID: "managed-swarm-1",
+		UserID:               testUserID,
+		AccountScopeID:       testAccountScopeID,
+		SwarmID:              "child-swarm-1",
+		Name:                 "managed-child",
+		Relationship:         "child",
+		BackendURL:           "http://127.0.0.1:7782",
+		OwnerHostSwarmID:     "managed-swarm-1",
+		OwnerHostContainerID: "managed-swarm-1:container-1",
 	}); err != nil {
 		t.Fatalf("upsert runtime: %v", err)
 	}

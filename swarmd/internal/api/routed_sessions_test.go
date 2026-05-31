@@ -139,7 +139,7 @@ func TestProxyBackendURLUsesChildLoopbackOnOwnerHost(t *testing.T) {
 }
 
 func TestRoutedRunStreamControlProxiesHostedMirrorSession(t *testing.T) {
-	server, sessionSvc, _, routeStore := newRoutedSessionTestServer(t)
+	server, sessionSvc, _, _ := newRoutedSessionTestServer(t)
 	var hits atomic.Int32
 	var requestPath atomic.Value
 	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -156,17 +156,26 @@ func TestRoutedRunStreamControlProxiesHostedMirrorSession(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("update metadata: %v", err)
 	}
-	if _, err := routeStore.Put(pebblestore.SessionRouteRecord{
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
+		SwarmID:        "host-swarm-id",
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: testPrincipal().AccountScopeID,
+		Name:           "host",
+		Relationship:   "self",
+		BackendURL:     child.URL,
+		Status:         "online",
+	}); err != nil {
+		t.Fatalf("upsert authority runtime: %v", err)
+	}
+	if _, err := server.topology.UpsertSessionRoute(pebblestore.SessionRouteRecord{
 		SessionID:            sessionID,
 		UserID:               testPrincipal().UserID,
 		AccountScopeID:       testPrincipal().AccountScopeID,
 		ChildSwarmID:         "child-swarm",
-		ChildBackendURL:      child.URL,
 		HostSwarmID:          "host-swarm-id",
-		HostWorkspacePath:    "/host/workspace",
 		RuntimeWorkspacePath: "/runtime/workspace",
 	}); err != nil {
-		t.Fatalf("put route: %v", err)
+		t.Fatalf("put session execution: %v", err)
 	}
 
 	body := bytes.NewBufferString(`{"type":"run.start","prompt":"hello","background":true}`)
@@ -186,7 +195,7 @@ func TestRoutedRunStreamControlProxiesHostedMirrorSession(t *testing.T) {
 	}
 }
 
-func TestManagedHostContainerWorktreeSessionRejectsLegacyAmbiguousOpenRoute(t *testing.T) {
+func TestManagedHostContainerWorktreeSessionRejectsLegacyPathAuthorityRoute(t *testing.T) {
 	primary, _, _, routeStore := newRoutedSessionTestServer(t)
 	createManagedHostContainerRouteSyncFixture(t, primary, nil, routeStore)
 
@@ -195,15 +204,15 @@ func TestManagedHostContainerWorktreeSessionRejectsLegacyAmbiguousOpenRoute(t *t
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	primary.Handler().ServeHTTP(rec, withTestPrincipal(req))
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("session create status = %d, want %d, body=%s", rec.Code, http.StatusBadGateway, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("session create status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "authenticated peer swarm id is required") {
-		t.Fatalf("body = %s, want explicit terminal authentication failure", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "routed session workspace paths must be resolved from workspace binding") {
+		t.Fatalf("body = %s, want path-authority rejection", rec.Body.String())
 	}
 }
 
-func TestManagedHostContainerWorktreeOffRejectsLegacyAmbiguousOpenRoute(t *testing.T) {
+func TestManagedHostContainerWorktreeOffRejectsLegacyPathAuthorityRoute(t *testing.T) {
 	primary, _, _, routeStore := newRoutedSessionTestServer(t)
 	createManagedHostContainerRouteSyncFixture(t, primary, nil, routeStore)
 	if _, err := primary.swarmDesktopTargetSelection.PutForAccount(testPrincipal().AccountScopeID, testPrincipal().UserID, "managed-container-swarm"); err != nil {
@@ -215,11 +224,11 @@ func TestManagedHostContainerWorktreeOffRejectsLegacyAmbiguousOpenRoute(t *testi
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	primary.Handler().ServeHTTP(rec, withTestPrincipal(req))
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("session create status = %d, want %d, body=%s", rec.Code, http.StatusBadGateway, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("session create status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "authenticated peer swarm id is required") {
-		t.Fatalf("body = %s, want explicit terminal authentication failure", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "routed session workspace paths must be resolved from workspace binding") {
+		t.Fatalf("body = %s, want path-authority rejection", rec.Body.String())
 	}
 }
 
@@ -382,6 +391,9 @@ func TestRoutedSessionTargetDoesNotRetireRoutesOnLookupWhenReplacementChildExist
 	}); err != nil {
 		t.Fatalf("upsert runtime: %v", err)
 	}
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, SwarmID: "managed-swarm", Name: "managed host", Relationship: "managed", BackendURL: "http://127.0.0.1:7782", Status: "online"}); err != nil {
+		t.Fatalf("upsert authority runtime: %v", err)
+	}
 	if _, err := server.topology.UpsertSessionRoute(pebblestore.SessionRouteRecord{
 		SessionID:            sessionID,
 		UserID:               testPrincipal().UserID,
@@ -418,7 +430,7 @@ func TestRoutedSessionTargetDoesNotRetireRoutesOnLookupWhenReplacementChildExist
 	}
 }
 
-func TestRoutedSessionTargetUsesStoredBackendURLWithoutLoopbackRewrite(t *testing.T) {
+func TestRoutedSessionTargetUsesAuthorityHostTransportWithoutStoredBackendURL(t *testing.T) {
 	server, _, _, _ := newRoutedSessionTestServer(t)
 	managedHost := httptest.NewServer(http.NotFoundHandler())
 	defer managedHost.Close()
@@ -477,8 +489,8 @@ func TestRoutedSessionTargetUsesStoredBackendURLWithoutLoopbackRewrite(t *testin
 	if !ok || target == nil {
 		t.Fatal("routed target not found")
 	}
-	if target.BackendURL != "http://127.0.0.1:7782" {
-		t.Fatalf("backend url = %q, want exact stored child backend", target.BackendURL)
+	if target.BackendURL != managedHost.URL {
+		t.Fatalf("backend url = %q, want live authority host backend %q", target.BackendURL, managedHost.URL)
 	}
 	if target.HostSwarmID != "managed-swarm" {
 		t.Fatalf("host swarm id = %q, want managed-swarm", target.HostSwarmID)
@@ -1067,9 +1079,12 @@ func TestRoutedSessionGetUsesStoredRouteWithoutSwarmID(t *testing.T) {
 	}))
 	defer child.Close()
 
-	sessionID := "session-routed"
+	sessionID := seedRoutedSession(t, server.sessions)
 	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{SwarmID: "child-swarm", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, Name: "child", Relationship: "child", BackendURL: child.URL}); err != nil {
 		t.Fatalf("upsert runtime: %v", err)
+	}
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{SwarmID: "host-swarm-id", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, Name: "host", Relationship: "self", BackendURL: child.URL, Status: "online"}); err != nil {
+		t.Fatalf("upsert authority runtime: %v", err)
 	}
 	if _, err := routeStore.Put(pebblestore.SessionRouteRecord{
 		SessionID:            sessionID,
@@ -1206,16 +1221,20 @@ func TestRoutedSessionTargetKeepsLocalContainerRuntimeEvenWhenHostIsSelf(t *test
 		t.Fatalf("put route: %v", err)
 	}
 	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
-		UserID:           testPrincipal().UserID,
-		AccountScopeID:   testPrincipal().AccountScopeID,
-		SwarmID:          "child-swarm",
-		Name:             "local container child",
-		Relationship:     "child",
-		BackendURL:       "http://127.0.0.1:7782",
-		Status:           "attached",
-		OwnerHostSwarmID: "host-swarm-id",
+		UserID:               testPrincipal().UserID,
+		AccountScopeID:       testPrincipal().AccountScopeID,
+		SwarmID:              "child-swarm",
+		Name:                 "local container child",
+		Relationship:         "child",
+		BackendURL:           "http://127.0.0.1:7782",
+		Status:               "attached",
+		OwnerHostSwarmID:     "host-swarm-id",
+		OwnerHostContainerID: "host-container-1",
 	}); err != nil {
 		t.Fatalf("upsert runtime: %v", err)
+	}
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, SwarmID: "host-swarm-id", Name: "host", Relationship: "self", BackendURL: "http://127.0.0.1:7782", Status: "online"}); err != nil {
+		t.Fatalf("upsert authority runtime: %v", err)
 	}
 	if _, err := server.topology.UpsertSessionRoute(pebblestore.SessionRouteRecord{
 		SessionID:            sessionID,
@@ -1262,16 +1281,20 @@ func TestRoutedSessionTargetKeepsLocalChildLoopbackBackendWhenOwnerHostIsSelf(t 
 		t.Fatalf("put route: %v", err)
 	}
 	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
-		UserID:           testPrincipal().UserID,
-		AccountScopeID:   testPrincipal().AccountScopeID,
-		SwarmID:          "child-swarm",
-		Name:             "child",
-		Relationship:     "child",
-		BackendURL:       "http://127.0.0.1:7782",
-		Status:           "attached",
-		OwnerHostSwarmID: "host-swarm-id",
+		UserID:               testPrincipal().UserID,
+		AccountScopeID:       testPrincipal().AccountScopeID,
+		SwarmID:              "child-swarm",
+		Name:                 "child",
+		Relationship:         "child",
+		BackendURL:           "http://127.0.0.1:7782",
+		Status:               "attached",
+		OwnerHostSwarmID:     "host-swarm-id",
+		OwnerHostContainerID: "host-container-1",
 	}); err != nil {
 		t.Fatalf("upsert runtime: %v", err)
+	}
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, SwarmID: "host-swarm-id", Name: "host", Relationship: "self", BackendURL: "http://127.0.0.1:7782", Status: "online"}); err != nil {
+		t.Fatalf("upsert authority runtime: %v", err)
 	}
 	if _, err := server.topology.UpsertSessionRoute(pebblestore.SessionRouteRecord{
 		SessionID:            sessionID,
@@ -1316,16 +1339,20 @@ func TestRoutedSessionTargetUsesOwnerHostPeerAuth(t *testing.T) {
 		t.Fatalf("put route: %v", err)
 	}
 	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
-		UserID:           testPrincipal().UserID,
-		AccountScopeID:   testPrincipal().AccountScopeID,
-		SwarmID:          "child-swarm",
-		Name:             "child",
-		Relationship:     "child",
-		BackendURL:       "http://127.0.0.1:7782",
-		Status:           "attached",
-		OwnerHostSwarmID: "managed-swarm",
+		UserID:               testPrincipal().UserID,
+		AccountScopeID:       testPrincipal().AccountScopeID,
+		SwarmID:              "child-swarm",
+		Name:                 "child",
+		Relationship:         "child",
+		BackendURL:           "http://127.0.0.1:7782",
+		Status:               "attached",
+		OwnerHostSwarmID:     "managed-swarm",
+		OwnerHostContainerID: "managed-swarm:container-1",
 	}); err != nil {
 		t.Fatalf("upsert runtime: %v", err)
+	}
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, SwarmID: "managed-swarm", Name: "managed host", Relationship: "managed", BackendURL: "http://127.0.0.1:7782", Status: "online"}); err != nil {
+		t.Fatalf("upsert authority runtime: %v", err)
 	}
 	if _, err := server.topology.UpsertSessionRoute(pebblestore.SessionRouteRecord{
 		SessionID:            sessionID,
@@ -1358,7 +1385,7 @@ func TestRoutedSessionTargetUsesOwnerHostPeerAuth(t *testing.T) {
 }
 
 func TestRoutedRunStreamControlUsesStoredRouteWithoutSwarmID(t *testing.T) {
-	server, _, _, routeStore := newRoutedSessionTestServer(t)
+	server, _, _, _ := newRoutedSessionTestServer(t)
 	var hits atomic.Int32
 	var requestPath atomic.Value
 	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1368,18 +1395,27 @@ func TestRoutedRunStreamControlUsesStoredRouteWithoutSwarmID(t *testing.T) {
 	}))
 	defer child.Close()
 
-	sessionID := "session-routed"
-	if _, err := routeStore.Put(pebblestore.SessionRouteRecord{
+	sessionID := seedRoutedSession(t, server.sessions)
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
+		SwarmID:        "host-swarm-id",
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: testPrincipal().AccountScopeID,
+		Name:           "host",
+		Relationship:   "self",
+		BackendURL:     child.URL,
+		Status:         "online",
+	}); err != nil {
+		t.Fatalf("upsert authority runtime: %v", err)
+	}
+	if _, err := server.topology.UpsertSessionRoute(pebblestore.SessionRouteRecord{
 		SessionID:            sessionID,
 		UserID:               testPrincipal().UserID,
 		AccountScopeID:       testPrincipal().AccountScopeID,
 		ChildSwarmID:         "child-swarm",
-		ChildBackendURL:      child.URL,
 		HostSwarmID:          "host-swarm-id",
-		HostWorkspacePath:    "/host/workspace",
 		RuntimeWorkspacePath: "/runtime/workspace",
 	}); err != nil {
-		t.Fatalf("put route: %v", err)
+		t.Fatalf("put session execution: %v", err)
 	}
 
 	body := bytes.NewBufferString(`{"type":"run.start","prompt":"hello","background":true}`)
@@ -1598,15 +1634,16 @@ func TestPrimaryRoutedSessionCreateRejectsMissingExplicitWorktreeMode(t *testing
 	defer child.Close()
 
 	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
-		SwarmID:          "container-swarm",
-		UserID:           testPrincipal().UserID,
-		AccountScopeID:   testPrincipal().AccountScopeID,
-		Name:             "container child",
-		Relationship:     swarmruntime.RelationshipChild,
-		Transport:        "remote",
-		BackendURL:       child.URL,
-		Status:           "attached",
-		OwnerHostSwarmID: "host-swarm-id",
+		SwarmID:              "container-swarm",
+		UserID:               testPrincipal().UserID,
+		AccountScopeID:       testPrincipal().AccountScopeID,
+		Name:                 "container child",
+		Relationship:         swarmruntime.RelationshipChild,
+		Transport:            "remote",
+		BackendURL:           child.URL,
+		Status:               "attached",
+		OwnerHostSwarmID:     "host-swarm-id",
+		OwnerHostContainerID: "host-container-1",
 	}); err != nil {
 		t.Fatalf("upsert runtime: %v", err)
 	}
@@ -1663,15 +1700,16 @@ func TestPrimaryRoutedSessionCreatePeerOpenFailureRollsBackEarlyRoute(t *testing
 	defer child.Close()
 
 	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
-		SwarmID:          "container-swarm",
-		UserID:           testPrincipal().UserID,
-		AccountScopeID:   testPrincipal().AccountScopeID,
-		Name:             "container child",
-		Relationship:     swarmruntime.RelationshipChild,
-		Transport:        "remote",
-		BackendURL:       child.URL,
-		Status:           "attached",
-		OwnerHostSwarmID: "host-swarm-id",
+		SwarmID:              "container-swarm",
+		UserID:               testPrincipal().UserID,
+		AccountScopeID:       testPrincipal().AccountScopeID,
+		Name:                 "container child",
+		Relationship:         swarmruntime.RelationshipChild,
+		Transport:            "remote",
+		BackendURL:           child.URL,
+		Status:               "attached",
+		OwnerHostSwarmID:     "host-swarm-id",
+		OwnerHostContainerID: "host-container-1",
 	}); err != nil {
 		t.Fatalf("upsert runtime: %v", err)
 	}
@@ -1742,15 +1780,16 @@ func TestPrimaryRoutedSessionCreateMirrorOpenFailureRollsBackRegularSession(t *t
 	defer child.Close()
 
 	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
-		SwarmID:          "container-swarm",
-		UserID:           testPrincipal().UserID,
-		AccountScopeID:   testPrincipal().AccountScopeID,
-		Name:             "container child",
-		Relationship:     swarmruntime.RelationshipChild,
-		Transport:        "remote",
-		BackendURL:       child.URL,
-		Status:           "attached",
-		OwnerHostSwarmID: "host-swarm-id",
+		SwarmID:              "container-swarm",
+		UserID:               testPrincipal().UserID,
+		AccountScopeID:       testPrincipal().AccountScopeID,
+		Name:                 "container child",
+		Relationship:         swarmruntime.RelationshipChild,
+		Transport:            "remote",
+		BackendURL:           child.URL,
+		Status:               "attached",
+		OwnerHostSwarmID:     "host-swarm-id",
+		OwnerHostContainerID: "host-container-1",
 	}); err != nil {
 		t.Fatalf("upsert runtime: %v", err)
 	}
@@ -1813,15 +1852,16 @@ func TestDesktopPrimaryToLocalContainerRoutedSessionE2EUsesPairingIdentity(t *te
 	defer childHTTP.Close()
 
 	if err := primary.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
-		SwarmID:          "container-swarm",
-		UserID:           testPrincipal().UserID,
-		AccountScopeID:   testPrincipal().AccountScopeID,
-		Name:             "container child",
-		Relationship:     swarmruntime.RelationshipChild,
-		Transport:        "remote",
-		BackendURL:       childHTTP.URL,
-		Status:           "attached",
-		OwnerHostSwarmID: "host-swarm-id",
+		SwarmID:              "container-swarm",
+		UserID:               testPrincipal().UserID,
+		AccountScopeID:       testPrincipal().AccountScopeID,
+		Name:                 "container child",
+		Relationship:         swarmruntime.RelationshipChild,
+		Transport:            "remote",
+		BackendURL:           childHTTP.URL,
+		Status:               "attached",
+		OwnerHostSwarmID:     "host-swarm-id",
+		OwnerHostContainerID: "host-container-1",
 	}); err != nil {
 		t.Fatalf("upsert runtime: %v", err)
 	}
@@ -1926,15 +1966,16 @@ func TestPrimaryRoutedSessionCreateBuildsExplicitBindingContract(t *testing.T) {
 	defer child.Close()
 
 	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
-		SwarmID:          "container-swarm",
-		UserID:           testPrincipal().UserID,
-		AccountScopeID:   testPrincipal().AccountScopeID,
-		Name:             "container child",
-		Relationship:     swarmruntime.RelationshipChild,
-		Transport:        "remote",
-		BackendURL:       child.URL,
-		Status:           "attached",
-		OwnerHostSwarmID: "host-swarm-id",
+		SwarmID:              "container-swarm",
+		UserID:               testPrincipal().UserID,
+		AccountScopeID:       testPrincipal().AccountScopeID,
+		Name:                 "container child",
+		Relationship:         swarmruntime.RelationshipChild,
+		Transport:            "remote",
+		BackendURL:           child.URL,
+		Status:               "attached",
+		OwnerHostSwarmID:     "host-swarm-id",
+		OwnerHostContainerID: "host-container-1",
 	}); err != nil {
 		t.Fatalf("upsert runtime: %v", err)
 	}
@@ -1969,7 +2010,7 @@ func TestPrimaryRoutedSessionCreateBuildsExplicitBindingContract(t *testing.T) {
 	if opened.Hosted.HostSwarmID != "host-swarm-id" || opened.Route.HostSwarmID != "host-swarm-id" || opened.Route.ChildSwarmID != "container-swarm" {
 		t.Fatalf("open contract hosted=%+v route=%+v", opened.Hosted, opened.Route)
 	}
-	if opened.Route.RuntimeWorkspacePath != "/workspaces/swarm-go" || opened.Route.HostWorkspacePath != "/host/swarm-go" || opened.Route.WorkspaceBindingID != "binding-primary-explicit" {
+	if opened.Route.RuntimeWorkspacePath != "/workspaces/swarm-go" || opened.Route.HostWorkspacePath != "" || opened.Route.ChildBackendURL != "" || opened.Route.WorkspaceBindingID != "binding-primary-explicit" {
 		t.Fatalf("route contract = %+v", opened.Route)
 	}
 
@@ -2014,15 +2055,16 @@ func TestPrimaryRoutedSessionCreateRejectsPathAuthorityForBindingRoute(t *testin
 	}))
 	defer child.Close()
 	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
-		SwarmID:          "container-swarm",
-		UserID:           testPrincipal().UserID,
-		AccountScopeID:   testPrincipal().AccountScopeID,
-		Name:             "container child",
-		Relationship:     swarmruntime.RelationshipChild,
-		Transport:        "remote",
-		BackendURL:       child.URL,
-		Status:           "attached",
-		OwnerHostSwarmID: "host-swarm-id",
+		SwarmID:              "container-swarm",
+		UserID:               testPrincipal().UserID,
+		AccountScopeID:       testPrincipal().AccountScopeID,
+		Name:                 "container child",
+		Relationship:         swarmruntime.RelationshipChild,
+		Transport:            "remote",
+		BackendURL:           child.URL,
+		Status:               "attached",
+		OwnerHostSwarmID:     "host-swarm-id",
+		OwnerHostContainerID: "host-container-1",
 	}); err != nil {
 		t.Fatalf("upsert runtime: %v", err)
 	}
@@ -2053,7 +2095,7 @@ func TestPrimaryRoutedSessionCreateRejectsPathAuthorityForBindingRoute(t *testin
 	}
 }
 
-func TestPrimaryRoutedSessionCreateResolvesBindingByWorkspaceNameWhenPathsDiffer(t *testing.T) {
+func TestPrimaryRoutedSessionCreateRejectsWorkspaceNameOnlyWhenBindingExists(t *testing.T) {
 	server, _, _, routeStore := newRoutedSessionTestServer(t)
 	var opened peerSessionOpenRequest
 	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2081,28 +2123,32 @@ func TestPrimaryRoutedSessionCreateResolvesBindingByWorkspaceNameWhenPathsDiffer
 	defer child.Close()
 
 	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
-		SwarmID:          "container-swarm",
-		UserID:           testPrincipal().UserID,
-		AccountScopeID:   testPrincipal().AccountScopeID,
-		Name:             "container child",
-		Relationship:     swarmruntime.RelationshipChild,
-		Transport:        "remote",
-		BackendURL:       child.URL,
-		Status:           "attached",
-		OwnerHostSwarmID: "host-swarm-id",
+		SwarmID:              "container-swarm",
+		UserID:               testPrincipal().UserID,
+		AccountScopeID:       testPrincipal().AccountScopeID,
+		Name:                 "container child",
+		Relationship:         swarmruntime.RelationshipChild,
+		Transport:            "remote",
+		BackendURL:           child.URL,
+		Status:               "attached",
+		OwnerHostSwarmID:     "host-swarm-id",
+		OwnerHostContainerID: "host-container-1",
 	}); err != nil {
 		t.Fatalf("upsert runtime: %v", err)
 	}
 	if _, err := server.topology.UpsertWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
-		BindingID:                 "binding-name-match",
-		UserID:                    testPrincipal().UserID,
-		AccountScopeID:            testPrincipal().AccountScopeID,
-		SourceWorkspacePath:       "/real/host/path/swarm-go",
-		SourceWorkspaceName:       "swarm-go",
-		DestinationRuntimeSwarmID: "container-swarm",
-		DestinationHostSwarmID:    "host-swarm-id",
-		DestinationWorkspacePath:  "/real/container/path/swarm-go",
-		LegacyTargetKind:          "local-container",
+		BindingID:                       "binding-name-match",
+		UserID:                          testPrincipal().UserID,
+		AccountScopeID:                  testPrincipal().AccountScopeID,
+		SourceWorkspacePath:             "/real/host/path/swarm-go",
+		SourceWorkspaceName:             "swarm-go",
+		DestinationRuntimeSwarmID:       "container-swarm",
+		DestinationAuthorityHostSwarmID: "host-swarm-id",
+		DestinationHostSwarmID:          "host-swarm-id",
+		DestinationContainerID:          "host-container-1",
+		DestinationWorkspacePath:        "/real/container/path/swarm-go",
+		PlacementGeneration:             1,
+		LegacyTargetKind:                "local-container",
 	}); err != nil {
 		t.Fatalf("upsert binding: %v", err)
 	}
@@ -2112,33 +2158,23 @@ func TestPrimaryRoutedSessionCreateResolvesBindingByWorkspaceNameWhenPathsDiffer
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-	if opened.Request.WorkspacePath != "/real/container/path/swarm-go" || opened.Request.RuntimeWorkspacePath != "/real/container/path/swarm-go" {
-		t.Fatalf("opened child paths = workspace %q runtime %q", opened.Request.WorkspacePath, opened.Request.RuntimeWorkspacePath)
+	if !strings.Contains(rec.Body.String(), "routed session workspace binding is required") {
+		t.Fatalf("body = %s, want required binding error", rec.Body.String())
 	}
-	if opened.Route.WorkspaceBindingID != "binding-name-match" || opened.Route.HostWorkspacePath != "/real/host/path/swarm-go" || opened.Route.RuntimeWorkspacePath != "/real/container/path/swarm-go" {
-		t.Fatalf("opened route = %+v", opened.Route)
+	if strings.TrimSpace(opened.SessionID) != "" {
+		t.Fatalf("child open should not be called without binding id: %+v", opened)
 	}
-	if opened.Request.Metadata != nil {
-		t.Fatalf("child request metadata = %+v, want route authority kept out of frontend/child request metadata", opened.Request.Metadata)
-	}
-
-	var payload struct {
-		Session struct {
-			ID string `json:"id"`
-		} `json:"session"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	route, ok, err := routeStore.Get(payload.Session.ID)
-	if err != nil || !ok {
-		t.Fatalf("route ok=%t err=%v", ok, err)
-	}
-	if route.WorkspaceBindingID != "binding-name-match" || route.RuntimeWorkspacePath != "/real/container/path/swarm-go" {
-		t.Fatalf("stored route = %+v", route)
+	if routeStore != nil {
+		routes, err := routeStore.List(100)
+		if err != nil {
+			t.Fatalf("list routes: %v", err)
+		}
+		if len(routes) != 0 {
+			t.Fatalf("routes = %+v, want none", routes)
+		}
 	}
 }
 
@@ -2149,15 +2185,16 @@ func TestPrimaryRoutedSessionCreateRequiresBindingIdentityForLocalContainerWhenW
 	}))
 	defer child.Close()
 	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
-		SwarmID:          "container-swarm",
-		UserID:           testPrincipal().UserID,
-		AccountScopeID:   testPrincipal().AccountScopeID,
-		Name:             "container child",
-		Relationship:     swarmruntime.RelationshipChild,
-		Transport:        "remote",
-		BackendURL:       child.URL,
-		Status:           "attached",
-		OwnerHostSwarmID: "host-swarm-id",
+		SwarmID:              "container-swarm",
+		UserID:               testPrincipal().UserID,
+		AccountScopeID:       testPrincipal().AccountScopeID,
+		Name:                 "container child",
+		Relationship:         swarmruntime.RelationshipChild,
+		Transport:            "remote",
+		BackendURL:           child.URL,
+		Status:               "attached",
+		OwnerHostSwarmID:     "host-swarm-id",
+		OwnerHostContainerID: "host-container-1",
 	}); err != nil {
 		t.Fatalf("upsert runtime: %v", err)
 	}
@@ -2175,37 +2212,23 @@ func TestPrimaryRoutedSessionCreateRequiresBindingIdentityForLocalContainerWhenW
 	}
 }
 
-func TestPrimaryRoutedSessionCreateRejectsAmbiguousWorkspaceNameBinding(t *testing.T) {
+func TestPrimaryRoutedSessionCreateRejectsWorkspaceNameOnlyWithoutAmbiguityLookup(t *testing.T) {
 	server, _, _, _ := newRoutedSessionTestServer(t)
 	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
-		SwarmID:          "container-swarm",
-		UserID:           testPrincipal().UserID,
-		AccountScopeID:   testPrincipal().AccountScopeID,
-		Name:             "container child",
-		Relationship:     swarmruntime.RelationshipChild,
-		Transport:        "remote",
-		BackendURL:       "https://child.example.test",
-		Status:           "attached",
-		OwnerHostSwarmID: "host-swarm-id",
+		SwarmID:              "container-swarm",
+		UserID:               testPrincipal().UserID,
+		AccountScopeID:       testPrincipal().AccountScopeID,
+		Name:                 "container child",
+		Relationship:         swarmruntime.RelationshipChild,
+		Transport:            "remote",
+		BackendURL:           "https://child.example.test",
+		Status:               "attached",
+		OwnerHostSwarmID:     "host-swarm-id",
+		OwnerHostContainerID: "host-container-1",
 	}); err != nil {
 		t.Fatalf("upsert runtime: %v", err)
 	}
-	for _, binding := range []pebblestore.TopologyWorkspaceBindingRecord{
-		{BindingID: "binding-one", SourceWorkspacePath: "/host/one/swarm-go", DestinationWorkspacePath: "/runtime/one/swarm-go"},
-		{BindingID: "binding-two", SourceWorkspacePath: "/host/two/swarm-go", DestinationWorkspacePath: "/runtime/two/swarm-go"},
-	} {
-		binding.UserID = testPrincipal().UserID
-		binding.AccountScopeID = testPrincipal().AccountScopeID
-		binding.SourceWorkspaceName = "swarm-go"
-		binding.DestinationRuntimeSwarmID = "container-swarm"
-		binding.DestinationHostSwarmID = "host-swarm-id"
-		binding.LegacyTargetKind = "local-container"
-		if _, err := server.topology.UpsertWorkspaceBinding(binding); err != nil {
-			t.Fatalf("upsert binding %q: %v", binding.BindingID, err)
-		}
-	}
-
-	body := bytes.NewBufferString(`{"title":"ambiguous","mode":"auto","workspace_name":"swarm-go","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`)
+	body := bytes.NewBufferString(`{"title":"name-only","mode":"auto","workspace_name":"swarm-go","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions?swarm_id=container-swarm", body)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -2213,8 +2236,8 @@ func TestPrimaryRoutedSessionCreateRejectsAmbiguousWorkspaceNameBinding(t *testi
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "multiple routed session workspace bindings match target and workspace name") {
-		t.Fatalf("body = %s, want ambiguity error", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "routed session workspace binding is required") {
+		t.Fatalf("body = %s, want required binding error", rec.Body.String())
 	}
 }
 
@@ -2384,8 +2407,8 @@ func TestRemoteSessionCreateUsesRegistryMagicDNSBackend(t *testing.T) {
 	if !ok {
 		t.Fatalf("route missing for session %q", payload.Session.ID)
 	}
-	if route.ChildSwarmID != "registry-child" || route.ChildBackendURL != child.URL {
-		t.Fatalf("route child = %q/%q, want registry-child/%q", route.ChildSwarmID, route.ChildBackendURL, child.URL)
+	if route.ChildSwarmID != "registry-child" || route.ChildBackendURL != "" || route.HostWorkspacePath != "" {
+		t.Fatalf("route execution = %+v, want registry-child with no stored backend/host path authority", route)
 	}
 }
 
