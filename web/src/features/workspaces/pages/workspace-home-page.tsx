@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { ChevronRight, Eye, EyeOff, Folder, FolderOpen, Grid2X2, List, MoreHorizontal, RefreshCw, Search, Settings } from 'lucide-react'
+import { ArrowUp, Check, ChevronRight, Eye, EyeOff, Folder, FolderPlus, Grid2X2, Home, List, MoreHorizontal, Plus, RefreshCw, Search, Settings, X } from 'lucide-react'
 import { Card } from '../../../components/ui/card'
 import { Button } from '../../../components/ui/button'
 import { Badge } from '../../../components/ui/badge'
@@ -12,7 +12,7 @@ import { WorkspaceEditorModal, type WorkspaceEditorAvailableDirectory, type Work
 import { fetchSwarmTargets } from '../../desktop/swarm/api/swarm-targets'
 import { buildWorkspaceRouteSlugMap, workspaceRouteSlugBase } from '../launcher/services/workspace-route'
 import { formatWorkspaceDirectories, formatWorkspacePath } from '../launcher/services/workspace-format'
-import type { WorkspaceDiscoverEntry, WorkspaceEntry } from '../launcher/types/workspace'
+import type { WorkspaceBrowseResult, WorkspaceDiscoverEntry, WorkspaceEntry } from '../launcher/types/workspace'
 import { useWorkspaceLauncher } from '../launcher/state/use-workspace-launcher'
 import { cn } from '../../../lib/cn'
 
@@ -39,6 +39,42 @@ function normalizeComparePath(path: string): string {
 
 function isSamePath(left: string, right: string): boolean {
   return normalizeComparePath(left) === normalizeComparePath(right)
+}
+
+function isPathInside(childPath: string, parentPath: string): boolean {
+  const child = normalizeComparePath(childPath)
+  const parent = normalizeComparePath(parentPath)
+  if (!child || !parent || child === parent) {
+    return false
+  }
+  return child.startsWith(`${parent}/`) || child.startsWith(`${parent}\\`)
+}
+
+type ExplorerDrawerMode = 'browse' | 'workspace-folder' | 'linked-folders' | null
+
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() => (typeof window === 'undefined' ? false : window.matchMedia(query).matches))
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined
+    }
+    const mediaQuery = window.matchMedia(query)
+    const updateMatches = () => setMatches(mediaQuery.matches)
+    updateMatches()
+    mediaQuery.addEventListener('change', updateMatches)
+    return () => mediaQuery.removeEventListener('change', updateMatches)
+  }, [query])
+
+  return matches
+}
+
+function formatBrowseMeta(entry: Pick<WorkspaceBrowseResult['entries'][number], 'hasSwarm' | 'hasClaude' | 'isGitRepo'>): string {
+  const parts: string[] = []
+  if (entry.hasSwarm) parts.push('AGENTS.md')
+  if (entry.hasClaude) parts.push('CLAUDE.md')
+  if (entry.isGitRepo) parts.push('git repo')
+  return parts.join(' · ')
 }
 
 function formatDiscoveredMeta(entry: { hasSwarm: boolean; hasClaude: boolean; isGitRepo: boolean; lastModified: number }): string {
@@ -163,11 +199,12 @@ interface AllWorkspaceRowProps {
 
 function AllWorkspaceRow({ entry, savedWorkspace, busy, onBrowse, onOpen, onCreate, compact = false }: AllWorkspaceRowProps) {
   const metaItems = compact ? [] : [entry.hasSwarm ? 'AGENTS.md' : null, entry.hasClaude ? 'CLAUDE.md' : null, entry.isGitRepo ? 'git repo' : null].filter(Boolean)
+  const mobileMeta = [entry.hasSwarm ? 'AGENTS.md' : null, entry.hasClaude ? 'CLAUDE.md' : null, entry.isGitRepo ? 'git repo' : null].filter(Boolean).join(' · ')
 
   return (
     <div
       className={cn(
-        'grid min-w-0 items-center gap-3 border-b border-[color-mix(in_oklab,var(--app-border)_48%,transparent)] px-3 text-sm transition-colors last:border-b-0 hover:bg-[color-mix(in_oklab,var(--app-surface-hover)_70%,transparent)] max-md:grid-cols-[minmax(0,1fr)_auto] max-md:items-start',
+        'grid min-w-0 items-center gap-3 border-b border-[color-mix(in_oklab,var(--app-border)_48%,transparent)] px-3 text-sm transition-colors last:border-b-0 hover:bg-[color-mix(in_oklab,var(--app-surface-hover)_70%,transparent)] max-md:min-h-14 max-md:grid-cols-[minmax(0,1fr)_auto] max-md:px-2.5 max-md:py-2',
         compact ? 'grid-cols-[minmax(0,1fr)_5.5rem] py-1.5' : 'grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)_5.5rem] py-2.5',
       )}
     >
@@ -175,10 +212,10 @@ function AllWorkspaceRow({ entry, savedWorkspace, busy, onBrowse, onOpen, onCrea
         <div
           className={cn(
             'flex shrink-0 items-center justify-center rounded-lg bg-[color-mix(in_oklab,var(--app-surface-elevated)_76%,transparent)] text-[var(--app-text-muted)]',
-            compact ? 'size-6' : 'size-8',
+            compact ? 'size-6 max-md:size-8' : 'size-8',
           )}
         >
-          <FolderOpen size={compact ? 13 : 15} />
+          <Folder size={compact ? 13 : 15} />
         </div>
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
@@ -189,11 +226,12 @@ function AllWorkspaceRow({ entry, savedWorkspace, busy, onBrowse, onOpen, onCrea
               </span>
             ))}
           </div>
-          {!compact ? (
-            <div className="mt-0.5 truncate text-xs text-[var(--app-text-subtle)] md:hidden" title={entry.path}>
-              {formatWorkspacePath(entry.path)}
-            </div>
-          ) : null}
+          <div className="mt-0.5 hidden truncate text-[11px] text-[var(--app-text-subtle)] max-md:block">
+            {mobileMeta || 'folder'}
+          </div>
+          <div className="mt-0.5 truncate text-xs text-[var(--app-text-subtle)] max-md:text-[11px]" title={entry.path}>
+            {formatWorkspacePath(entry.path)}
+          </div>
         </div>
       </button>
       {!compact ? (
@@ -209,13 +247,276 @@ function AllWorkspaceRow({ entry, savedWorkspace, busy, onBrowse, onOpen, onCrea
           variant={savedWorkspace ? 'outline' : 'ghost'}
           disabled={busy}
           onClick={() => (savedWorkspace ? onOpen(savedWorkspace.path) : onCreate(entry))}
-          className="h-7 rounded-md px-2.5 text-xs"
+          className="h-7 rounded-md px-2.5 text-xs max-md:h-8 max-md:min-w-12"
         >
           {busy ? 'Working…' : savedWorkspace ? 'Open' : 'Add'}
         </Button>
-        <ChevronRight size={15} className="text-[var(--app-text-subtle)]" />
+        <ChevronRight size={15} className="text-[var(--app-text-subtle)] max-md:hidden" />
       </div>
     </div>
+  )
+}
+
+interface MobileExplorerDrawerProps {
+  open: boolean
+  mode: ExplorerDrawerMode
+  browser: WorkspaceBrowseResult | null
+  browserLoading: boolean
+  browserError: string | null
+  workspaces: WorkspaceEntry[]
+  workspacePath: string
+  linkedDirectories: string[]
+  selectingPath: string | null
+  savingPath: string | null
+  onClose: () => void
+  onBrowsePath: (path: string) => void
+  onOpenWorkspace: (path: string) => void
+  onCreateWorkspace: (entry: WorkspaceDiscoverEntry) => void
+  onUseFolderTemporarily: (path: string) => void
+  onPickWorkspaceFolder: (path: string) => void
+  onAddLinkedDirectories: (paths: string[]) => void
+  onCreateFolder: (parentPath: string, name: string) => Promise<string>
+}
+
+function MobileExplorerDrawer({
+  open,
+  mode,
+  browser,
+  browserLoading,
+  browserError,
+  workspaces,
+  workspacePath,
+  linkedDirectories,
+  selectingPath,
+  savingPath,
+  onClose,
+  onBrowsePath,
+  onOpenWorkspace,
+  onCreateWorkspace,
+  onUseFolderTemporarily,
+  onPickWorkspaceFolder,
+  onAddLinkedDirectories,
+  onCreateFolder,
+}: MobileExplorerDrawerProps) {
+  const [search, setSearch] = useState('')
+  const [selectedLinkedFolders, setSelectedLinkedFolders] = useState<Set<string>>(() => new Set())
+  const [fullHeight, setFullHeight] = useState(false)
+  const [createdFolderName, setCreatedFolderName] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!open) {
+      setSearch('')
+      setSelectedLinkedFolders(new Set())
+      setFullHeight(false)
+    }
+  }, [open])
+
+  const currentPath = browser?.resolvedPath ?? ''
+  const currentPathLabel = currentPath ? formatWorkspacePath(currentPath) : '—'
+  const savedPaths = useMemo(() => new Set(workspaces.map((workspace) => normalizeComparePath(workspace.path))), [workspaces])
+  const linkedPathSet = useMemo(() => new Set(linkedDirectories.map(normalizeComparePath)), [linkedDirectories])
+  const searchValue = search.trim().toLowerCase()
+  const visibleEntries = useMemo(() => {
+    const entries = browser?.entries ?? []
+    if (!searchValue) return entries
+    return entries.filter((entry) => entry.name.toLowerCase().includes(searchValue) || entry.path.toLowerCase().includes(searchValue))
+  }, [browser?.entries, searchValue])
+  const selectedAddableFolders = useMemo(() => Array.from(selectedLinkedFolders).filter((path) => {
+    const normalized = normalizeComparePath(path)
+    return normalized !== '' && !isSamePath(path, workspacePath) && !linkedPathSet.has(normalized)
+  }), [linkedPathSet, selectedLinkedFolders, workspacePath])
+
+  if (!open || !mode) {
+    return null
+  }
+
+  const title = mode === 'linked-folders' ? 'Select linked folders' : mode === 'workspace-folder' ? 'Choose workspace folder' : 'Explorer'
+  const description = mode === 'linked-folders'
+    ? 'Select folders agents may access from this workspace.'
+    : mode === 'workspace-folder'
+      ? 'Choose the main folder for this workspace.'
+      : 'Navigate folders and add any folder as a workspace.'
+  const currentSaved = currentPath ? savedPaths.has(normalizeComparePath(currentPath)) : false
+  const currentBusy = Boolean(currentPath && (savingPath === currentPath || selectingPath === currentPath))
+
+  const createFolder = async () => {
+    if (!currentPath) return
+    const name = window.prompt(`Name the new folder in ${currentPath}`)?.trim() ?? ''
+    if (!name) return
+    const createdPath = await onCreateFolder(currentPath, name)
+    if (createdPath) {
+      setCreatedFolderName(name)
+      window.setTimeout(() => setCreatedFolderName((value) => (value === name ? null : value)), 3500)
+    }
+  }
+
+  const addCurrentFolder = () => {
+    if (!currentPath) return
+    onCreateWorkspace({
+      path: currentPath,
+      name: fallbackWorkspaceNameFromPath(currentPath),
+      isGitRepo: false,
+      hasClaude: false,
+      hasSwarm: false,
+      lastModified: 0,
+    })
+    onClose()
+  }
+
+  const toggleLinkedFolder = (path: string) => {
+    setSelectedLinkedFolders((current) => {
+      const next = new Set(current)
+      const existing = Array.from(next).find((value) => isSamePath(value, path))
+      if (existing) {
+        next.delete(existing)
+      } else {
+        next.add(path)
+      }
+      return next
+    })
+  }
+
+  const confirmLinkedFolders = () => {
+    if (selectedAddableFolders.length === 0) return
+    onAddLinkedDirectories(selectedAddableFolders)
+    onClose()
+  }
+
+  return (
+    <div className="fixed inset-0 z-[80] lg:hidden" role="dialog" aria-modal="true" aria-label={title}>
+      <div className="absolute inset-0 bg-black/55 backdrop-blur-[1px]" onClick={onClose} />
+      <div
+        className={cn(
+          'absolute inset-x-0 bottom-0 flex flex-col overflow-hidden rounded-t-3xl border border-[color-mix(in_oklab,var(--app-border)_70%,transparent)] bg-[color-mix(in_oklab,var(--app-surface)_96%,var(--app-bg))] shadow-[0_-24px_60px_rgba(0,0,0,0.45)] transition-[height] duration-200',
+          fullHeight ? 'h-[calc(100dvh-10px)]' : 'h-[78dvh]',
+        )}
+      >
+        <button type="button" className="mx-auto mt-2 h-6 w-24 touch-none" aria-label="Expand Explorer drawer" onClick={() => setFullHeight((value) => !value)}>
+          <span className="mx-auto mt-2 block h-1.5 w-12 rounded-full bg-[color-mix(in_oklab,var(--app-text-muted)_48%,transparent)]" />
+        </button>
+        <div className="flex items-start justify-between gap-3 px-4 pb-3 pt-1">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h2 className="text-base font-semibold text-[var(--app-text)]">{title}</h2>
+              {mode === 'linked-folders' ? <span className="text-xs text-[var(--app-text-muted)]">{selectedAddableFolders.length} selected</span> : null}
+            </div>
+            <p className="mt-0.5 text-xs leading-5 text-[var(--app-text-muted)]">{description}</p>
+          </div>
+          <button type="button" className="flex size-9 shrink-0 items-center justify-center rounded-full text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]" onClick={onClose} aria-label="Close Explorer">
+            <X size={17} />
+          </button>
+        </div>
+
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-4">
+          <div className="overflow-hidden rounded-xl border border-[color-mix(in_oklab,var(--app-border)_44%,transparent)] bg-[color-mix(in_oklab,var(--app-bg)_34%,transparent)]">
+            <div className="flex h-10 items-center gap-1 px-3">
+              <div className="min-w-0 flex-1 truncate font-mono text-xs text-[var(--app-text)]" title={currentPath || undefined}>
+                {currentPathLabel}
+              </div>
+              <ExplorerDrawerIconButton label="Home" disabled={!browser?.homePath} onClick={() => onBrowsePath(browser?.homePath ?? '')}><Home size={14} /></ExplorerDrawerIconButton>
+              <ExplorerDrawerIconButton label="Up" disabled={!browser?.parentPath} onClick={() => browser?.parentPath && onBrowsePath(browser.parentPath)}><ArrowUp size={14} /></ExplorerDrawerIconButton>
+              <ExplorerDrawerIconButton label="Refresh" disabled={browserLoading || !currentPath} onClick={() => onBrowsePath(currentPath)}><RefreshCw size={14} className={cn(browserLoading && 'animate-spin')} /></ExplorerDrawerIconButton>
+            </div>
+            <label className="flex h-10 items-center border-t border-[color-mix(in_oklab,var(--app-border)_30%,transparent)] px-3 text-xs focus-within:bg-[var(--app-surface-subtle)]">
+              <Search size={14} className="mr-2 shrink-0 text-[var(--app-text-subtle)]" />
+              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search folders…" className="h-full w-full border-0 bg-transparent p-0 text-sm text-[var(--app-text)] outline-none placeholder:text-[var(--app-text-subtle)]" />
+            </label>
+          </div>
+
+          {createdFolderName ? <div className="px-1 text-xs text-[var(--app-text-muted)]">Created “{createdFolderName}”</div> : null}
+          {browserError ? <div className="rounded-lg border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-xs text-[var(--app-danger)]">{browserError}</div> : null}
+          {browserLoading && !browser ? <div className="px-1 text-sm text-[var(--app-text-muted)]">Loading folders…</div> : null}
+
+          <div className="flex min-h-0 flex-1 flex-col border-t border-[color-mix(in_oklab,var(--app-border)_34%,transparent)] pt-2">
+            <button type="button" className="flex min-h-11 w-full items-center gap-2 rounded-lg px-2 text-left text-sm text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:opacity-50" disabled={browserLoading || !currentPath} onClick={() => void createFolder()}>
+              <FolderPlus size={16} />
+              <span>New folder</span>
+            </button>
+            <div className="mt-2 flex items-center justify-between px-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">
+              <span>Folders</span>
+              <span>{visibleEntries.length}</span>
+            </div>
+            {visibleEntries.length === 0 ? <div className="px-1 py-5 text-sm text-[var(--app-text-muted)]">{searchValue ? 'No matching folders.' : 'No folders found here.'}</div> : null}
+            <div className="-mx-1 mt-1 min-h-0 flex-1 overflow-y-auto pb-2">
+              {visibleEntries.map((entry) => {
+                const meta = formatBrowseMeta(entry)
+                const checked = Array.from(selectedLinkedFolders).some((path) => isSamePath(path, entry.path))
+                const alreadyLinked = linkedPathSet.has(normalizeComparePath(entry.path))
+                const isMainFolder = isSamePath(entry.path, workspacePath)
+                const nestedInMain = isPathInside(entry.path, workspacePath)
+                const disabledSelection = mode === 'linked-folders' && (alreadyLinked || isMainFolder || nestedInMain)
+                const isSaved = savedPaths.has(normalizeComparePath(entry.path))
+                const entryBusy = savingPath === entry.path || selectingPath === entry.path
+
+                return (
+                  <div key={entry.path} className={cn('grid min-h-12 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-lg px-1 text-sm hover:bg-[var(--app-surface-hover)]', checked && 'bg-[color-mix(in_oklab,var(--app-primary)_10%,transparent)]', disabledSelection && 'opacity-55')} title={formatWorkspacePath(entry.path)}>
+                    <button type="button" className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-3 rounded-md px-1 py-2 text-left" disabled={disabledSelection} onClick={() => (mode === 'linked-folders' ? toggleLinkedFolder(entry.path) : onBrowsePath(entry.path))}>
+                      {mode === 'linked-folders' ? (
+                        <span className={cn('flex size-5 shrink-0 items-center justify-center rounded border', checked ? 'border-[var(--app-border-accent)] bg-[var(--app-primary)] text-[var(--app-bg)]' : 'border-[var(--app-border)] text-transparent')}><Check size={13} /></span>
+                      ) : (
+                        <Folder size={16} className="shrink-0 text-[var(--app-text-muted)]" />
+                      )}
+                      <span className="min-w-0">
+                        <span className="block truncate font-medium text-[var(--app-text)]">{entry.name}</span>
+                        <span className="block truncate text-xs text-[var(--app-text-subtle)]">{[meta || null, alreadyLinked ? 'linked' : null, isMainFolder ? 'main folder' : null, nestedInMain ? 'inside main folder' : null].filter(Boolean).join(' · ')}</span>
+                      </span>
+                    </button>
+                    {mode === 'browse' && !isSaved ? (
+                      <button
+                        type="button"
+                        className="flex size-9 items-center justify-center rounded-md text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-elevated)] hover:text-[var(--app-text)]"
+                        onClick={() => {
+                          onCreateWorkspace({ path: entry.path, name: entry.name, isGitRepo: entry.isGitRepo, hasClaude: entry.hasClaude, hasSwarm: entry.hasSwarm, lastModified: 0 })
+                          onClose()
+                        }}
+                        aria-label={`Add ${entry.name} as workspace`}
+                      >
+                        <Plus size={16} />
+                      </button>
+                    ) : (
+                      <button type="button" className="flex size-9 items-center justify-center rounded-md text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-elevated)] hover:text-[var(--app-text)]" onClick={() => onBrowsePath(entry.path)} aria-label={`Open ${entry.name}`}>
+                        {entryBusy ? <RefreshCw size={15} className="animate-spin" /> : <ChevronRight size={16} />}
+                      </button>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+
+        <div className="shrink-0 border-t border-[color-mix(in_oklab,var(--app-border)_48%,transparent)] bg-[color-mix(in_oklab,var(--app-surface)_92%,var(--app-bg))] px-4 pb-[calc(env(safe-area-inset-bottom)+14px)] pt-3">
+          {mode === 'linked-folders' ? (
+            <div className="grid grid-cols-[1fr_1.4fr] gap-3">
+              <Button type="button" onClick={onClose}>Cancel</Button>
+              <Button type="button" disabled={selectedAddableFolders.length === 0} onClick={confirmLinkedFolders}>Add {selectedAddableFolders.length} folder{selectedAddableFolders.length === 1 ? '' : 's'}</Button>
+            </div>
+          ) : mode === 'workspace-folder' ? (
+            <div className="grid gap-2">
+              <div className="truncate text-[11px] text-[var(--app-text-subtle)]" title={currentPath || undefined}>Current: {currentPathLabel}</div>
+              <Button type="button" disabled={!currentPath || browserLoading} onClick={() => { onPickWorkspaceFolder(currentPath); onClose() }}>Use this folder</Button>
+            </div>
+          ) : (
+            <div className="grid gap-2">
+              <div className="truncate text-[11px] text-[var(--app-text-subtle)]" title={currentPath || undefined}>Current: {currentPathLabel}</div>
+              <Button type="button" className="w-full" disabled={!currentPath || currentBusy} onClick={() => (currentSaved ? onOpenWorkspace(currentPath) : addCurrentFolder())}>
+                {currentBusy ? <RefreshCw size={14} className="animate-spin" /> : currentSaved ? <Folder size={15} /> : <Plus size={15} />}
+                {currentBusy ? 'Working…' : currentSaved ? 'Open workspace' : 'Add current folder as workspace'}
+              </Button>
+              <button type="button" className="h-8 rounded-md text-xs text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:opacity-50" disabled={!currentPath || selectingPath === currentPath} onClick={() => onUseFolderTemporarily(currentPath)}>Use current folder as temp</button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ExplorerDrawerIconButton({ label, disabled, onClick, children }: { label: string; disabled?: boolean; onClick: () => void; children: ReactNode }) {
+  return (
+    <button type="button" aria-label={label} title={label} disabled={disabled} onClick={onClick} className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-40">
+      {children}
+    </button>
   )
 }
 
@@ -261,6 +562,8 @@ export function WorkspaceHomePage() {
   const [workspaceSearch, setWorkspaceSearch] = useState('')
   const [allWorkspacesCompact, setAllWorkspacesCompact] = useState(false)
   const [allWorkspacesVisible, setAllWorkspacesVisible] = useState(true)
+  const [explorerDrawerMode, setExplorerDrawerMode] = useState<ExplorerDrawerMode>(null)
+  const isDesktopExplorer = useMediaQuery('(min-width: 1024px)')
 
   const workspaceSlugByPath = useMemo(() => buildWorkspaceRouteSlugMap(workspaces), [workspaces])
 
@@ -498,6 +801,18 @@ export function WorkspaceHomePage() {
     })()
   }
 
+  const openMobileExplorer = (mode: Exclude<ExplorerDrawerMode, null>) => {
+    setExplorerDrawerMode(mode)
+    const startPath = mode === 'browse' ? (browser?.resolvedPath || browser?.homePath || '') : (modalState?.workspacePath || browser?.resolvedPath || browser?.homePath || '')
+    if (startPath) {
+      void browsePath(startPath)
+    }
+  }
+
+  const closeMobileExplorer = () => {
+    setExplorerDrawerMode(null)
+  }
+
   const handleOpenWorkspace = (path: string) => {
     void (async () => {
       const resolution = await openWorkspace(path)
@@ -511,6 +826,7 @@ export function WorkspaceHomePage() {
   }
 
   const handleUseFolderTemporarily = (path: string) => {
+    closeMobileExplorer()
     void (async () => {
       const resolution = await useFolderTemporarily(path)
       const workspaceSlug = workspaceRouteSlugBase({
@@ -590,26 +906,29 @@ export function WorkspaceHomePage() {
   return (
     <>
       <main className="flex h-full min-h-0 w-full overflow-hidden bg-[linear-gradient(180deg,var(--app-bg),color-mix(in_oklab,var(--app-bg)_76%,var(--app-surface-subtle)))]">
-        <section className="min-h-0 min-w-0 flex-[1_1_68%] overflow-y-auto overscroll-contain px-4 py-6 [-webkit-overflow-scrolling:touch] sm:px-6 lg:px-8">
-          <div className="flex min-h-full flex-col gap-8">
-            <div className="flex flex-col gap-4 bg-transparent px-0 py-2 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h1 className="text-2xl font-semibold tracking-tight text-[var(--app-text)]">Workspaces</h1>
-                <p className="mt-1 text-sm text-[var(--app-text-muted)]">Select a project to begin working</p>
+        <section className="min-h-0 min-w-0 flex-[1_1_68%] overflow-y-auto overscroll-contain px-4 py-5 pb-28 [-webkit-overflow-scrolling:touch] sm:px-6 lg:px-8 lg:pb-6">
+          <div className="flex min-h-full flex-col gap-7 lg:gap-8">
+            <div className="flex items-start justify-between gap-3 bg-transparent px-0 py-1 sm:items-center">
+              <div className="flex min-w-0 items-start gap-3">
+                <div className="min-w-0">
+                  <h1 className="text-xl font-semibold tracking-tight text-[var(--app-text)] sm:text-2xl">Workspaces</h1>
+                  <p className="mt-1 text-sm text-[var(--app-text-muted)]">Select a project to begin working</p>
+                </div>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex shrink-0 items-center gap-2 sm:gap-3">
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={() => void navigate({ to: '/settings' })}
-                  className="rounded-md bg-[var(--app-surface)] shadow-sm"
+                  className="size-9 rounded-md bg-[var(--app-surface)] p-0 shadow-sm sm:w-auto sm:px-3"
+                  aria-label="Settings"
                 >
                   <Settings size={14} />
-                  Settings
+                  <span className="hidden sm:inline">Settings</span>
                 </Button>
-                <Button variant="outline" size="sm" onClick={() => void refresh()} disabled={refreshing} className="rounded-md bg-[var(--app-surface)] shadow-sm">
+                <Button variant="outline" size="sm" onClick={() => void refresh()} disabled={refreshing} className="size-9 rounded-md bg-[var(--app-surface)] p-0 shadow-sm sm:w-auto sm:px-3" aria-label="Refresh workspaces">
                   <RefreshCw size={14} className={refreshing ? 'animate-spin' : undefined} />
-                  Refresh
+                  <span className="hidden sm:inline">Refresh</span>
                 </Button>
               </div>
             </div>
@@ -637,11 +956,11 @@ export function WorkspaceHomePage() {
               <div className="flex flex-col gap-9">
                 <section className="flex flex-col gap-4">
                   <div className="flex items-end justify-between gap-3">
-                    <div>
+                    <div className="flex items-center gap-2">
                       <h2 className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Pinned workspaces</h2>
-                      <p className="mt-1 text-sm text-[var(--app-text-muted)]">Open a saved workspace or manage its local links.</p>
+                      <span className="text-xs text-[var(--app-text-subtle)]">{workspaces.length}</span>
                     </div>
-                    <span className="text-xs text-[var(--app-text-subtle)]">{workspaces.length}</span>
+                    <p className="hidden text-sm text-[var(--app-text-muted)] sm:block">Open a saved workspace or manage its local links.</p>
                   </div>
                   {workspaces.length === 0 ? (
                     <WorkspaceStatus kind="empty" title="No saved workspaces" message="Browse a folder in Explorer and add it as your first workspace." />
@@ -669,11 +988,11 @@ export function WorkspaceHomePage() {
                         <h2 className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">All workspaces</h2>
                         <span className="rounded-full bg-[var(--app-surface-subtle)] px-2 py-0.5 text-[11px] text-[var(--app-text-muted)]">{discovered.length}</span>
                       </div>
-                      <p className="mt-1 text-sm text-[var(--app-text-muted)]">Folders with AGENTS.md or git repos</p>
+                      <p className="mt-1 hidden text-sm text-[var(--app-text-muted)] sm:block">Folders with AGENTS.md or git repos</p>
                     </div>
-                    <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2 max-sm:w-full">
                       {allWorkspacesVisible ? (
-                        <div className="flex h-8 min-w-[220px] items-center rounded-lg border border-[color-mix(in_oklab,var(--app-border)_70%,transparent)] bg-transparent px-2.5 text-sm focus-within:border-[var(--app-border-accent)] focus-within:ring-2 focus-within:ring-[var(--app-focus-ring)]">
+                        <div className="flex h-8 min-w-[220px] items-center rounded-lg border border-[color-mix(in_oklab,var(--app-border)_70%,transparent)] bg-transparent px-2.5 text-sm focus-within:border-[var(--app-border-accent)] focus-within:ring-2 focus-within:ring-[var(--app-focus-ring)] max-sm:min-w-0 max-sm:flex-1">
                           <Search size={14} className="mr-2 shrink-0 text-[var(--app-text-subtle)]" />
                           <input
                             value={workspaceSearch}
@@ -767,24 +1086,38 @@ export function WorkspaceHomePage() {
           </div>
         </section>
 
-        <aside className="min-h-0 w-[34%] min-w-[340px] max-w-[430px] shrink-0 border-l border-[color-mix(in_oklab,var(--app-border)_64%,transparent)] bg-[color-mix(in_oklab,var(--app-surface)_52%,transparent)]">
-          <WorkspaceFolderTree
-            browser={browser}
-            browserLoading={browserLoading}
-            browserError={browserError}
-            workspaces={workspaces}
-            selectingPath={selectingPath}
-            savingPath={savingPath}
-            onBrowsePath={(path) => {
-              void browsePath(path)
-            }}
-            onOpenWorkspace={handleOpenWorkspace}
-            onUseFolderTemporarily={handleUseFolderTemporarily}
-            onCreateWorkspace={(entry) => openCreateModal(entry.path, [entry.path], entry.name)}
-            onCreateFolder={createFolder}
-          />
-        </aside>
+        {isDesktopExplorer ? (
+          <aside className="min-h-0 w-[34%] min-w-[340px] max-w-[430px] shrink-0 border-l border-[color-mix(in_oklab,var(--app-border)_64%,transparent)] bg-[color-mix(in_oklab,var(--app-surface)_52%,transparent)]">
+            <WorkspaceFolderTree
+              browser={browser}
+              browserLoading={browserLoading}
+              browserError={browserError}
+              workspaces={workspaces}
+              selectingPath={selectingPath}
+              savingPath={savingPath}
+              onBrowsePath={(path) => {
+                void browsePath(path)
+              }}
+              onOpenWorkspace={handleOpenWorkspace}
+              onUseFolderTemporarily={handleUseFolderTemporarily}
+              onCreateWorkspace={(entry) => openCreateModal(entry.path, [entry.path], entry.name)}
+              onCreateFolder={createFolder}
+            />
+          </aside>
+        ) : null}
       </main>
+
+      {!isDesktopExplorer ? (
+        <div className="fixed inset-x-0 bottom-0 z-40 px-4 pb-[calc(env(safe-area-inset-bottom)+12px)] pt-3 lg:hidden pointer-events-none">
+          <button
+            type="button"
+            className="pointer-events-auto flex min-h-12 w-full items-center justify-center rounded-2xl border border-[color-mix(in_oklab,var(--app-border-accent)_58%,transparent)] bg-[color-mix(in_oklab,var(--app-primary)_88%,#6d5dfc)] px-4 text-sm font-semibold text-white shadow-[0_14px_36px_rgba(0,0,0,0.38)]"
+            onClick={() => openMobileExplorer('browse')}
+          >
+            <span className="flex items-center gap-2"><Plus size={17} /> Add from Explorer</span>
+          </button>
+        </div>
+      ) : null}
 
       <WorkspaceEditorModal
         open={Boolean(modalState?.open)}
@@ -811,6 +1144,8 @@ export function WorkspaceHomePage() {
         onBrowsePath={(path) => {
           void browsePath(path)
         }}
+        useExternalMobileFolderPicker={!isDesktopExplorer}
+        onRequestMobileFolderPicker={(mode) => openMobileExplorer(mode)}
         onCreateFolder={createFolder}
         onSelectWorkspace={startEdit}
         onMoveWorkspaceToIndex={(path, index) => {
@@ -826,6 +1161,27 @@ export function WorkspaceHomePage() {
         onSubmit={() => {
           void submitModal()
         }}
+      />
+
+      <MobileExplorerDrawer
+        open={Boolean(explorerDrawerMode)}
+        mode={explorerDrawerMode}
+        browser={browser}
+        browserLoading={browserLoading}
+        browserError={browserError}
+        workspaces={workspaces}
+        workspacePath={modalState?.workspacePath ?? ''}
+        linkedDirectories={modalState?.sourcePaths.filter((path) => !isSamePath(path, modalState.workspacePath)) ?? []}
+        selectingPath={selectingPath}
+        savingPath={savingPath}
+        onClose={closeMobileExplorer}
+        onBrowsePath={(path) => void browsePath(path)}
+        onOpenWorkspace={handleOpenWorkspace}
+        onCreateWorkspace={(entry) => openCreateModal(entry.path, [entry.path], entry.name)}
+        onUseFolderTemporarily={handleUseFolderTemporarily}
+        onPickWorkspaceFolder={pickWorkspaceFolder}
+        onAddLinkedDirectories={addLinkedDirectories}
+        onCreateFolder={createFolder}
       />
 
       <Dialog className={deleteTargetWorkspace ? undefined : 'hidden'} aria-hidden={!deleteTargetWorkspace}>

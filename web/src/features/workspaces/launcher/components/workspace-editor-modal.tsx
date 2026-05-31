@@ -53,6 +53,8 @@ interface WorkspaceEditorModalProps {
   onNameChange: (value: string) => void
   onThemeIdChange: (value: string) => void
   onBrowsePath?: (path: string) => void
+  useExternalMobileFolderPicker?: boolean
+  onRequestMobileFolderPicker?: (mode: Exclude<FolderPickerMode, null>) => void
   onCreateFolder?: (parentPath: string, name: string) => Promise<string>
   onSelectWorkspace?: (path: string) => void
   onMoveWorkspaceToIndex?: (path: string, index: number) => void
@@ -148,6 +150,8 @@ export function WorkspaceEditorModal({
   onNameChange,
   onThemeIdChange,
   onBrowsePath,
+  useExternalMobileFolderPicker = false,
+  onRequestMobileFolderPicker,
   onCreateFolder,
   onSelectWorkspace,
   onMoveWorkspaceToIndex,
@@ -242,6 +246,10 @@ export function WorkspaceEditorModal({
   }
 
   const openFolderPicker = (nextMode: Exclude<FolderPickerMode, null>) => {
+    if (useExternalMobileFolderPicker && onRequestMobileFolderPicker) {
+      onRequestMobileFolderPicker(nextMode)
+      return
+    }
     setFolderPickerMode(nextMode)
     setFolderPickerSearch('')
     if (nextMode === 'linked-folders') {
@@ -477,7 +485,7 @@ export function WorkspaceEditorModal({
   return (
     <div className="fixed inset-0 z-[70] grid place-items-center p-3 sm:p-6" role="dialog" aria-modal="true" aria-label={mode === 'create' ? 'Create workspace' : 'Edit workspace'}>
       <div className="absolute inset-0 bg-[var(--app-backdrop)]" onClick={onClose} />
-      <Card className={cn('relative z-10 flex max-h-[min(920px,calc(100vh-24px))] w-full flex-col overflow-hidden border-[var(--app-border)] shadow-[var(--shadow-panel)]', folderPickerMode ? 'max-w-6xl' : 'max-w-3xl')}>
+      <Card className={cn('relative z-10 flex max-h-[min(920px,calc(100vh-24px))] w-full flex-col overflow-hidden border-[var(--app-border)] shadow-[var(--shadow-panel)] max-sm:h-[calc(100dvh-16px)] max-sm:max-h-[calc(100dvh-16px)] max-sm:rounded-3xl', folderPickerMode ? 'max-w-6xl' : 'max-w-3xl')}>
         <div className="flex items-start justify-between gap-4 border-b border-[var(--app-border)] px-5 py-4 sm:px-6">
           <div className="grid gap-1">
             <h2 className="text-xl font-semibold tracking-tight text-[var(--app-text)]">{mode === 'create' ? 'Create workspace' : 'Edit workspace'}</h2>
