@@ -51,15 +51,21 @@ func TestSwarmReplicateLeavesRuntimeEmptyWhenCallerOmitsIt(t *testing.T) {
 	}
 }
 
-func TestSwarmReplicateLocalContainerDoesNotRequireCurrentGroup(t *testing.T) {
+func TestSwarmReplicateLocalContainerFailsClosedWhenDeploySkipsPlacement(t *testing.T) {
 	handler, fakeDeploy, workspacePath := newReplicateTestHandler(t)
+	fakeDeploy.onCreate = nil
 	setReplicateFakeSwarmState(handler, swarmruntime.LocalState{
-		Node: swarmruntime.LocalNodeState{SwarmID: "host-swarm-id", Name: "host-swarm", Role: "master"},
+		Node:           swarmruntime.LocalNodeState{SwarmID: "host-swarm-id", Name: "host-swarm", Role: "master"},
+		CurrentGroupID: "group-1",
+		Groups: []swarmruntime.GroupState{{
+			Group:   swarmruntime.Group{ID: "group-1", Name: "Primary Group", NetworkName: "group-net", HostSwarmID: "host-swarm-id"},
+			Members: []swarmruntime.GroupMember{{GroupID: "group-1", SwarmID: "host-swarm-id", Name: "host-swarm", SwarmRole: "master", MembershipRole: swarmruntime.GroupMembershipRoleHost}},
+		}},
 	})
 
 	recorder := postReplicateRequest(t, handler, map[string]any{
 		"mode":       "local",
-		"swarm_name": "replica-no-group",
+		"swarm_name": "replica-no-placement",
 		"runtime":    "podman",
 		"sync": map[string]any{
 			"enabled": true,
@@ -72,21 +78,17 @@ func TestSwarmReplicateLocalContainerDoesNotRequireCurrentGroup(t *testing.T) {
 		}},
 	})
 
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d, body=%s", recorder.Code, http.StatusInternalServerError, recorder.Body.String())
 	}
-	if fakeDeploy.lastCreateInput.Name != "replica-no-group" {
-		t.Fatalf("create name = %q, want replica-no-group", fakeDeploy.lastCreateInput.Name)
+	if !strings.Contains(recorder.Body.String(), "runtime placement is not active") {
+		t.Fatalf("body = %s, want runtime placement failure", recorder.Body.String())
 	}
-	if fakeDeploy.lastCreateInput.GroupID != "" || fakeDeploy.lastCreateInput.GroupName != "" || fakeDeploy.lastCreateInput.GroupNetworkName != "" {
-		t.Fatalf("create group fields = id %q name %q network %q, want empty", fakeDeploy.lastCreateInput.GroupID, fakeDeploy.lastCreateInput.GroupName, fakeDeploy.lastCreateInput.GroupNetworkName)
+	if fakeDeploy.lastCreateInput.Name != "replica-no-placement" {
+		t.Fatalf("create name = %q, want replica-no-placement", fakeDeploy.lastCreateInput.Name)
 	}
-	var response swarmReplicateResponse
-	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if response.Swarm.GroupID != "" {
-		t.Fatalf("response group id = %q, want empty", response.Swarm.GroupID)
+	if fakeDeploy.lastCreateInput.GroupID != "group-1" || fakeDeploy.lastCreateInput.GroupName != "Primary Group" || fakeDeploy.lastCreateInput.GroupNetworkName != "group-net" {
+		t.Fatalf("create group fields = id %q name %q network %q", fakeDeploy.lastCreateInput.GroupID, fakeDeploy.lastCreateInput.GroupName, fakeDeploy.lastCreateInput.GroupNetworkName)
 	}
 }
 
@@ -583,7 +585,8 @@ func newReplicateTestHandler(t *testing.T) (*Server, *fakeReplicateDeployService
 	}
 
 	server := NewServer(nil, nil, nil, nil, nil, workspaceSvc, nil, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
-	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, nil, nil))
+	topologyStore := pebblestore.NewTopologyStore(store)
+	server.SetTopologyService(topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil, nil))
 	server.SetSwarmStore(pebblestore.NewSwarmStore(store))
 
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
@@ -614,12 +617,20 @@ func newReplicateTestHandler(t *testing.T) (*Server, *fakeReplicateDeployService
 					NetworkName: "group-net",
 					HostSwarmID: "host-swarm-id",
 				},
+				Members: []swarmruntime.GroupMember{{GroupID: "group-1", SwarmID: "host-swarm-id", Name: "host-swarm", SwarmRole: "master", MembershipRole: swarmruntime.GroupMembershipRoleHost}},
 			}},
 		},
 	})
 
 	fakeDeploy := &fakeReplicateDeployService{}
 	server.SetDeployContainerService(fakeDeploy)
+	fakeDeploy.onCreate = func(input deployruntime.ContainerCreateInput) {
+		if strings.TrimSpace(input.GroupID) == "" {
+			return
+		}
+		hostContainerID := pebblestore.CanonicalTopologyHostContainerID("host-swarm-id", "deployment-1")
+		_, _ = topologyStore.PutRuntimePlacementForAccount(testPrincipal().AccountScopeID, pebblestore.TopologyRuntimePlacementRecord{RuntimeSwarmID: "child-swarm-1", AccountScopeID: testPrincipal().AccountScopeID, AuthorityHostSwarmID: "host-swarm-id", AuthorityContainerID: hostContainerID, RuntimeKind: pebblestore.TopologyRuntimeKindContainer, PlacementGeneration: 1, State: pebblestore.TopologyRuntimePlacementStateActive})
+	}
 
 	return server, fakeDeploy, workspacePath
 }
@@ -676,6 +687,7 @@ func swarmStateWithManagedPeer(backendURL, token string) swarmruntime.LocalState
 }
 
 type fakeReplicateDeployService struct {
+	onCreate                      func(deployruntime.ContainerCreateInput)
 	lastCreateInput               deployruntime.ContainerCreateInput
 	lastAttachApproveInput        deployruntime.ContainerAttachApproveInput
 	lastSyncCredentialBundleInput deployruntime.ContainerSyncCredentialRequestInput
@@ -711,6 +723,9 @@ func (f *fakeReplicateDeployService) List(context.Context) ([]deployruntime.Cont
 
 func (f *fakeReplicateDeployService) Create(_ context.Context, input deployruntime.ContainerCreateInput) (deployruntime.ContainerDeployment, error) {
 	f.lastCreateInput = input
+	if f.onCreate != nil {
+		f.onCreate(input)
+	}
 	return deployruntime.ContainerDeployment{
 		ID:                "deployment-1",
 		Name:              input.Name,
@@ -883,6 +898,12 @@ func TestManagedHostTopologyWritesAreAccountOwned(t *testing.T) {
 	}
 	if len(bindings) != 1 || bindings[0].UserID != testPrincipal().UserID || bindings[0].AccountScopeID != testPrincipal().AccountScopeID {
 		t.Fatalf("account workspace bindings = %#v", bindings)
+	}
+	if strings.TrimSpace(bindings[0].SourceWorkspaceID) == "" || bindings[0].SourceWorkspaceGeneration <= 0 {
+		t.Fatalf("workspace binding source identity incomplete: %#v", bindings[0])
+	}
+	if strings.TrimSpace(bindings[0].DestinationAuthorityHostSwarmID) != "managed-swarm-1" || bindings[0].DestinationRuntimeKind != pebblestore.TopologyRuntimeKindContainer || bindings[0].PlacementGeneration <= 0 {
+		t.Fatalf("workspace binding placement identity incomplete: %#v", bindings[0])
 	}
 }
 

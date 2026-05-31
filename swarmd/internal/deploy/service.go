@@ -2429,6 +2429,20 @@ func (s *Service) finalizeApprovedAttach(record *pebblestore.DeployContainerReco
 	groupID := strings.TrimSpace(record.GroupID)
 	groupName := strings.TrimSpace(record.GroupName)
 	groupNetworkName := strings.TrimSpace(record.GroupNetworkName)
+	if groupID == "" {
+		group, err := s.swarms.UpsertGroup(swarmruntime.UpsertGroupInput{
+			Name:        firstNonEmpty(groupName, strings.TrimSpace(hostState.Node.Name), strings.TrimSpace(startupCfg.SwarmName), "Swarm Group"),
+			NetworkName: groupNetworkName,
+			HostSwarmID: strings.TrimSpace(hostState.Node.SwarmID),
+			SetCurrent:  true,
+		})
+		if err != nil {
+			return err
+		}
+		groupID = strings.TrimSpace(group.ID)
+		groupName = firstNonEmpty(strings.TrimSpace(group.Name), groupID)
+		groupNetworkName = firstNonEmpty(strings.TrimSpace(group.NetworkName), swarmruntime.SuggestedGroupNetworkName(groupName, groupID))
+	}
 	if groupID != "" {
 		group, ok, err := s.swarmStore.GetGroup(groupID)
 		if err != nil {
@@ -5509,7 +5523,22 @@ func containsTrimmedString(values []string, target string) bool {
 func (s *Service) resolveTargetGroupForCreate(hostState swarmruntime.LocalState, input ContainerCreateInput) (pebblestore.SwarmGroupRecord, error) {
 	groupID := strings.TrimSpace(input.GroupID)
 	if groupID == "" {
-		return pebblestore.SwarmGroupRecord{}, nil
+		groupID = strings.TrimSpace(hostState.CurrentGroupID)
+	}
+	if groupID == "" && strings.TrimSpace(hostState.Node.SwarmID) != "" {
+		group, err := s.swarms.UpsertGroup(swarmruntime.UpsertGroupInput{
+			Name:        firstNonEmpty(strings.TrimSpace(input.GroupName), strings.TrimSpace(hostState.Node.Name), "Swarm Group"),
+			NetworkName: strings.TrimSpace(input.GroupNetworkName),
+			HostSwarmID: strings.TrimSpace(hostState.Node.SwarmID),
+			SetCurrent:  true,
+		})
+		if err != nil {
+			return pebblestore.SwarmGroupRecord{}, err
+		}
+		return pebblestore.SwarmGroupRecord{ID: group.ID, Name: group.Name, NetworkName: group.NetworkName, HostSwarmID: group.HostSwarmID, CreatedAt: group.CreatedAt, UpdatedAt: group.UpdatedAt}, nil
+	}
+	if groupID == "" {
+		return pebblestore.SwarmGroupRecord{}, fmt.Errorf("current swarm group is required for container creation")
 	}
 	if err := requireHostedGroupForLocalSwarm(hostState, groupID); err != nil {
 		return pebblestore.SwarmGroupRecord{}, err

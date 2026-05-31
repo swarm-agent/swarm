@@ -99,6 +99,43 @@ func TestMirrorDeploymentSyncsCanonicalHostContainerAndAttachment(t *testing.T) 
 	if placement.RuntimeKind != pebblestore.TopologyRuntimeKindContainer || placement.AuthorityHostSwarmID != "managed-swarm" || placement.AuthorityContainerID != hostContainerID {
 		t.Fatalf("unexpected runtime placement: %+v", placement)
 	}
+
+	deployment, err = deploySvc.MirrorDeployment(context.Background(), ContainerDeployment{
+		ID:                 "deploy-1",
+		UserID:             "user-1",
+		AccountScopeID:     "account-1",
+		Name:               "managed child",
+		Kind:               "container",
+		Status:             "running",
+		Runtime:            "docker",
+		ContainerName:      "managed-child",
+		ContainerID:        "ctr-123",
+		HostSwarmID:        "managed-swarm",
+		HostDisplayName:    "Managed Host",
+		HostBackendURL:     "http://managed.example:7781",
+		HostAPIBaseURL:     "http://managed.example:7781",
+		AttachStatus:       "attached",
+		ChildSwarmID:       "child-swarm-1",
+		ChildDisplayName:   "Child One",
+		ChildBackendURL:    "http://child.example:7781",
+		WorkspaceBootstrap: []ContainerWorkspaceBootstrap{{SourceWorkspacePath: "/workspace", SourceWorkspaceName: "workspace", TargetWorkspacePath: "/workspaces/workspace", Writable: true}},
+	})
+	if err != nil {
+		t.Fatalf("mirror deployment with workspace binding: %v", err)
+	}
+	bindings, err := topologyStore.ListWorkspaceBindingsForAccount("account-1", 10)
+	if err != nil {
+		t.Fatalf("list workspace bindings: %v", err)
+	}
+	if len(bindings) != 1 {
+		t.Fatalf("workspace binding count = %d, want 1: %#v", len(bindings), bindings)
+	}
+	if bindings[0].SourceWorkspaceID == "" || bindings[0].SourceWorkspaceGeneration <= 0 {
+		t.Fatalf("workspace binding source identity incomplete: %#v", bindings[0])
+	}
+	if bindings[0].DestinationAuthorityHostSwarmID != "managed-swarm" || bindings[0].DestinationRuntimeKind != pebblestore.TopologyRuntimeKindContainer || bindings[0].PlacementGeneration <= 0 {
+		t.Fatalf("workspace binding placement identity incomplete: %#v", bindings[0])
+	}
 }
 
 func TestLocalContainerDeleteUsesCanonicalAttachmentsForCleanup(t *testing.T) {

@@ -128,6 +128,7 @@ func (s *Service) syncCanonicalWorkspaceBindings(record pebblestore.DeployContai
 		if strings.TrimSpace(item.SourceWorkspacePath) == "" {
 			continue
 		}
+		sourceWorkspaceID := deploymentWorkspaceBindingWorkspaceID(accountScopeID, strings.TrimSpace(item.SourceWorkspacePath))
 		placement, ok, err := s.topology.GetRuntimePlacementForAccount(accountScopeID, childSwarmID)
 		if err != nil {
 			return err
@@ -139,6 +140,8 @@ func (s *Service) syncCanonicalWorkspaceBindings(record pebblestore.DeployContai
 			BindingID:                       pebblestore.CanonicalTopologyWorkspaceBindingID(record.ID, strings.TrimSpace(item.SourceWorkspacePath)),
 			UserID:                          userID,
 			AccountScopeID:                  accountScopeID,
+			SourceWorkspaceID:               sourceWorkspaceID,
+			SourceWorkspaceGeneration:       1,
 			SourceWorkspacePath:             strings.TrimSpace(item.SourceWorkspacePath),
 			SourceWorkspaceName:             strings.TrimSpace(item.SourceWorkspaceName),
 			DestinationRuntimeSwarmID:       childSwarmID,

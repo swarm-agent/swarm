@@ -97,10 +97,12 @@ type swarmReplicateWorkspaceResponse struct {
 }
 
 type replicateWorkspaceCatalogEntry struct {
-	Name        string
-	ThemeID     string
-	Directories []string
-	Active      bool
+	WorkspaceID         string
+	WorkspaceGeneration int64
+	Name                string
+	ThemeID             string
+	Directories         []string
+	Active              bool
 }
 
 type replicationTargetAssignment struct {
@@ -325,39 +327,56 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 		Workspaces: make([]swarmReplicateWorkspaceResponse, 0, len(normalizedWorkspaces)),
 	}
 	for _, normalized := range normalizedWorkspaces {
-		linkTargetKind := targetMode
 		linkTargetSwarmID := childSwarmID
 		if !targetHostIsLocal && targetHost != nil {
-			linkTargetKind = "host"
 			linkTargetSwarmID = strings.TrimSpace(targetHost.SwarmID)
 		}
 		bindingTargetSwarmID := linkTargetSwarmID
-		bindingHostSwarmID := ""
-		bindingContainerID := ""
 		if targetHostIsLocal {
 			bindingTargetSwarmID = childSwarmID
 		} else if targetHost != nil {
 			bindingTargetSwarmID = childSwarmID
-			bindingHostSwarmID = strings.TrimSpace(targetHost.SwarmID)
-			bindingContainerID = strings.TrimSpace(deployment.HostContainerID)
+		}
+		catalogEntry := workspaceCatalog[normalized.SourceWorkspacePath]
+		if strings.TrimSpace(catalogEntry.WorkspaceID) == "" || catalogEntry.WorkspaceGeneration <= 0 {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("workspace %q is missing stable workspace identity", normalized.SourceWorkspacePath))
+			return
+		}
+		placement, ok, err := s.topology.GetRuntimePlacementForAccount(principal.AccountScopeID, bindingTargetSwarmID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if !ok || strings.TrimSpace(placement.AuthorityHostSwarmID) == "" || placement.PlacementGeneration <= 0 || strings.TrimSpace(placement.State) != pebblestore.TopologyRuntimePlacementStateActive {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("replicated container runtime placement is not active for %s", bindingTargetSwarmID))
+			return
 		}
 		binding := pebblestore.TopologyWorkspaceBindingRecord{
-			BindingID:                 pebblestore.CanonicalTopologyWorkspaceBindingID(strings.TrimSpace(deployment.ID), normalized.SourceWorkspacePath),
-			SourceWorkspacePath:       normalized.SourceWorkspacePath,
-			SourceWorkspaceName:       workspaceCatalog[normalized.SourceWorkspacePath].Name,
-			DestinationRuntimeSwarmID: bindingTargetSwarmID,
-			DestinationHostSwarmID:    bindingHostSwarmID,
-			DestinationContainerID:    bindingContainerID,
-			DestinationWorkspacePath:  childWorkspacePaths[normalized.SourceWorkspacePath],
-			ReplicationMode:           normalized.ReplicationMode,
-			Writable:                  normalized.Writable,
+			BindingID:                       pebblestore.CanonicalTopologyWorkspaceBindingID(strings.TrimSpace(deployment.ID), normalized.SourceWorkspacePath),
+			SourceWorkspaceID:               catalogEntry.WorkspaceID,
+			SourceWorkspaceGeneration:       catalogEntry.WorkspaceGeneration,
+			SourceWorkspacePath:             normalized.SourceWorkspacePath,
+			SourceWorkspaceName:             catalogEntry.Name,
+			DestinationRuntimeSwarmID:       bindingTargetSwarmID,
+			DestinationAuthorityHostSwarmID: placement.AuthorityHostSwarmID,
+			DestinationHostSwarmID:          placement.AuthorityHostSwarmID,
+			DestinationContainerID:          placement.AuthorityContainerID,
+			DestinationRuntimeKind:          placement.RuntimeKind,
+			DestinationWorkspacePath:        childWorkspacePaths[normalized.SourceWorkspacePath],
+			PlacementGeneration:             placement.PlacementGeneration,
+			BindingGeneration:               1,
+			State:                           pebblestore.TopologyWorkspaceBindingStateBound,
+			AccessMode:                      pebblestore.TopologyWorkspaceBindingAccessModeReadWrite,
+			MaterializationKind:             pebblestore.TopologyWorkspaceBindingMaterializationSource,
+			AttestedByHostSwarmID:           placement.AuthorityHostSwarmID,
+			ReplicationMode:                 normalized.ReplicationMode,
+			Writable:                        normalized.Writable,
 			Sync: pebblestore.WorkspaceReplicationSync{
 				Enabled: syncConfig.Enabled,
 				Mode:    syncConfig.Mode,
 				Modules: append([]string(nil), syncConfig.Modules...),
 			},
-			LegacyTargetKind: linkTargetKind,
-			CreatedAt:        time.Now().UnixMilli(),
+			CreatedAt: time.Now().UnixMilli(),
 		}
 		binding.UpdatedAt = binding.CreatedAt
 		binding.UserID = strings.TrimSpace(principal.UserID)
@@ -486,6 +505,10 @@ func (s *Server) replicateToRemoteSwarm(r *http.Request, workspaces []workspace.
 	if err != nil {
 		return swarmReplicateResponse{}, http.StatusInternalServerError, err
 	}
+	principal, principalOK := PrincipalFromRequest(r)
+	if !principalOK || !principal.Valid() {
+		return swarmReplicateResponse{}, http.StatusUnauthorized, identity.ErrPrincipalRequired
+	}
 	localSwarmID := strings.TrimSpace(state.Node.SwarmID)
 	if localSwarmID == "" {
 		return swarmReplicateResponse{}, http.StatusInternalServerError, errors.New("local swarm id is not configured")
@@ -520,8 +543,15 @@ func (s *Server) replicateToRemoteSwarm(r *http.Request, workspaces []workspace.
 				return swarmReplicateResponse{}, http.StatusBadGateway, err
 			}
 		}
+		if strings.TrimSpace(workspaceCatalog.WorkspaceID) == "" || workspaceCatalog.WorkspaceGeneration <= 0 {
+			return swarmReplicateResponse{}, http.StatusInternalServerError, fmt.Errorf("workspace %q is missing stable workspace identity", normalized.SourceWorkspacePath)
+		}
 		binding, err := s.topology.UpsertWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
 			BindingID:                 pebblestore.CanonicalTopologyWorkspaceBindingID(strings.TrimSpace(target.SwarmID), normalized.SourceWorkspacePath),
+			AccountScopeID:            principal.AccountScopeID,
+			UserID:                    principal.UserID,
+			SourceWorkspaceID:         workspaceCatalog.WorkspaceID,
+			SourceWorkspaceGeneration: workspaceCatalog.WorkspaceGeneration,
 			SourceWorkspacePath:       normalized.SourceWorkspacePath,
 			SourceWorkspaceName:       firstNonEmpty(strings.TrimSpace(workspaceCatalog.Name), defaultReplicatedWorkspaceName(normalized.SourceWorkspacePath)),
 			DestinationRuntimeSwarmID: strings.TrimSpace(target.SwarmID),
@@ -820,19 +850,21 @@ func (s *Server) replicateWorkspaceCatalogForPrincipal(principal identity.Princi
 				directories = append(directories, trimmed)
 			}
 		}
+		if strings.TrimSpace(entry.WorkspaceID) == "" || entry.WorkspaceGeneration <= 0 {
+			return nil, fmt.Errorf("workspace %q is missing stable workspace identity", path)
+		}
 		out[path] = replicateWorkspaceCatalogEntry{
-			Name:        name,
-			ThemeID:     strings.TrimSpace(entry.ThemeID),
-			Directories: directories,
-			Active:      entry.Active,
+			WorkspaceID:         strings.TrimSpace(entry.WorkspaceID),
+			WorkspaceGeneration: entry.WorkspaceGeneration,
+			Name:                name,
+			ThemeID:             strings.TrimSpace(entry.ThemeID),
+			Directories:         directories,
+			Active:              entry.Active,
 		}
 	}
 	for _, item := range workspaces {
 		if _, ok := out[item.SourceWorkspacePath]; !ok {
-			out[item.SourceWorkspacePath] = replicateWorkspaceCatalogEntry{
-				Name:        defaultReplicatedWorkspaceName(item.SourceWorkspacePath),
-				Directories: []string{item.SourceWorkspacePath},
-			}
+			return nil, fmt.Errorf("workspace %q must be added before replication", item.SourceWorkspacePath)
 		}
 	}
 	return out, nil
