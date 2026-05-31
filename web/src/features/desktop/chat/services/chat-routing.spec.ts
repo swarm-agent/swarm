@@ -251,7 +251,7 @@ function topologyRoute(overrides: Partial<WorkspaceOverviewTopologyRoute> = {}):
     runtimeSwarmName: 'Child Swarm',
     runtimeKind: 'remote',
     runtimeRelationship: 'child',
-    runtimeBackendUrl: 'https://child.example.test',
+    authorityHostSwarmId: 'host-swarm',
     hostSwarmId: 'host-swarm',
     hostSwarmName: 'Host Swarm',
     hostWorkspacePath: '/host/workspace',
@@ -458,4 +458,21 @@ test('groupDesktopChatRoutes keeps managed host outside Primary and first in its
 
   assert.deepEqual(groups.map((group) => group.label), ['Primary', 'Managed host'])
   assert.deepEqual(groups.map((group) => group.routes.map((route) => route.label)), [['swarm-bomb', 'localtest'], ['swarm-bomb-2', 'heytest']])
+})
+
+
+test('buildDesktopChatRouteOptions includes local self binding for host route when provided', () => {
+  const routes = buildDesktopChatRouteOptions({
+    hostSwarmName: 'Host Swarm',
+    workspacePath: '/host/workspace',
+    workspaceName: 'Host Workspace',
+    topologyRoutes: [],
+    localWorkspaceBindingId: 'binding-local-self',
+    hostSwarmId: 'host-swarm',
+  })
+
+  assert.equal(routes[0]?.id, 'swarm:host-swarm:binding:binding-local-self')
+  assert.equal(routes[0]?.swarmId, 'host-swarm')
+  assert.equal(routes[0]?.workspaceBindingId, 'binding-local-self')
+  assert.equal(routes[0]?.requiresWorkspaceBinding, true)
 })

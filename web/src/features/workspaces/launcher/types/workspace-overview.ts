@@ -102,7 +102,7 @@ export interface WorkspaceOverviewTopologyRouteWire {
   runtime_swarm_name?: string
   runtime_kind?: string
   runtime_relationship?: string
-  runtime_backend_url?: string
+  authority_host_swarm_id?: string
   host_swarm_id?: string
   host_swarm_name?: string
   host_workspace_path?: string
@@ -151,7 +151,7 @@ export interface WorkspaceOverviewTopologyRoute {
   runtimeSwarmName: string
   runtimeKind: string
   runtimeRelationship: string
-  runtimeBackendUrl: string
+  authorityHostSwarmId: string
   hostSwarmId: string
   hostSwarmName: string
   hostWorkspacePath: string
@@ -240,8 +240,8 @@ function mapOverviewTopologyRoute(route: WorkspaceOverviewTopologyRouteWire): Wo
     runtimeSwarmName: String(route.runtime_swarm_name ?? '').trim(),
     runtimeKind: String(route.runtime_kind ?? '').trim(),
     runtimeRelationship: String(route.runtime_relationship ?? '').trim(),
-    runtimeBackendUrl: String(route.runtime_backend_url ?? '').trim(),
-    hostSwarmId: String(route.host_swarm_id ?? '').trim(),
+    authorityHostSwarmId: String(route.authority_host_swarm_id ?? route.host_swarm_id ?? '').trim(),
+    hostSwarmId: String(route.host_swarm_id ?? route.authority_host_swarm_id ?? '').trim(),
     hostSwarmName: String(route.host_swarm_name ?? '').trim(),
     hostWorkspacePath: String(route.host_workspace_path ?? '').trim(),
     hostWorkspaceName: String(route.host_workspace_name ?? '').trim(),
@@ -409,7 +409,7 @@ function mapOverviewWorkspace(workspace: WorkspaceOverviewWorkspaceWire, preferR
       : [],
     todoSummary: mapWorkspaceTodoSummary(workspace.todo_summary),
     topologyRoutes: Array.isArray(workspace.topology_routes)
-      ? workspace.topology_routes.map(mapOverviewTopologyRoute).filter((route) => route.routeId && route.runtimeSwarmId && route.runtimeWorkspacePath)
+      ? workspace.topology_routes.map(mapOverviewTopologyRoute).filter((route) => route.routeId && route.workspaceBindingId && route.runtimeSwarmId && route.runtimeWorkspacePath)
       : [],
   }
 }

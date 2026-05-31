@@ -1345,6 +1345,19 @@ func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest,
 	}
 	createMetadata := mergeSessionCreateMetadata(req.Metadata, overrideMetadata)
 	workspacePath := strings.TrimSpace(req.HostWorkspacePath)
+	if workspacePath == "" && strings.TrimSpace(req.WorkspaceBindingID) != "" && principalOK && principal.Valid() && s != nil && s.topology != nil {
+		binding, ok, err := s.topology.GetWorkspaceBindingForAccount(principal.AccountScopeID, req.WorkspaceBindingID)
+		if err != nil {
+			return pebblestore.SessionSnapshot{}, nil, "", "", err
+		}
+		if !ok {
+			return pebblestore.SessionSnapshot{}, nil, "", "", fmt.Errorf("session workspace binding %q was not found", strings.TrimSpace(req.WorkspaceBindingID))
+		}
+		workspacePath = strings.TrimSpace(binding.DestinationWorkspacePath)
+		if strings.TrimSpace(req.WorkspaceName) == "" {
+			req.WorkspaceName = firstNonEmpty(strings.TrimSpace(binding.SourceWorkspaceName), baseNameForPath(workspacePath))
+		}
+	}
 	if descriptor, hosted := sessionruntime.HostedSessionFromMetadata(createMetadata); hosted {
 		if runtimeWorkspacePath := strings.TrimSpace(descriptor.RuntimeWorkspacePath); runtimeWorkspacePath != "" {
 			workspacePath = runtimeWorkspacePath

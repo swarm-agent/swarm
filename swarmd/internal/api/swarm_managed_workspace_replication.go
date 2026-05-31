@@ -1520,18 +1520,64 @@ func (s *Server) upsertManagedWorkspaceBindingForPrincipal(principal identity.Pr
 		return pebblestore.TopologyWorkspaceBindingRecord{}, identity.ErrPrincipalRequired
 	}
 	targetSwarmID := strings.TrimSpace(target.SwarmID)
+	if targetSwarmID == "" {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, errors.New("managed workspace target swarm id is required")
+	}
 	sourceWorkspacePath = strings.TrimSpace(sourceWorkspacePath)
+	workspaceName := firstNonEmpty(strings.TrimSpace(sourceWorkspaceName), defaultReplicatedWorkspaceName(sourceWorkspacePath))
+	workspaceID := ""
+	workspaceGeneration := int64(1)
+	if s.workspace != nil {
+		_, entry, _, err := s.workspace.AddForPrincipalWithEntryWithoutSelection(principal, sourceWorkspacePath, workspaceName, "")
+		if err != nil {
+			return pebblestore.TopologyWorkspaceBindingRecord{}, err
+		}
+		workspaceID = strings.TrimSpace(entry.WorkspaceID)
+		workspaceGeneration = int64(entry.WorkspaceGeneration)
+		workspaceName = firstNonEmpty(strings.TrimSpace(entry.Name), workspaceName)
+	}
+	if workspaceID == "" {
+		workspaceID = managedWorkspaceBindingWorkspaceID(strings.TrimSpace(principal.AccountScopeID), sourceWorkspacePath)
+	}
+	placement, ok, err := s.topology.GetRuntimePlacementForAccount(strings.TrimSpace(principal.AccountScopeID), targetSwarmID)
+	if err != nil {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, err
+	}
+	if !ok {
+		if placement, err = s.topology.EnsureLocalSelfPlacementForPrincipal(strings.TrimSpace(principal.AccountScopeID), strings.TrimSpace(principal.UserID)); err != nil {
+			return pebblestore.TopologyWorkspaceBindingRecord{}, err
+		}
+		if !strings.EqualFold(placement.RuntimeSwarmID, targetSwarmID) {
+			return pebblestore.TopologyWorkspaceBindingRecord{}, errors.New("managed workspace target placement is required")
+		}
+	}
 	return s.topology.UpsertWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
-		BindingID:                 pebblestore.CanonicalTopologyWorkspaceBindingID(targetSwarmID, sourceWorkspacePath),
-		UserID:                    strings.TrimSpace(principal.UserID),
-		AccountScopeID:            strings.TrimSpace(principal.AccountScopeID),
-		SourceWorkspacePath:       sourceWorkspacePath,
-		SourceWorkspaceName:       firstNonEmpty(strings.TrimSpace(sourceWorkspaceName), defaultReplicatedWorkspaceName(sourceWorkspacePath)),
-		DestinationRuntimeSwarmID: targetSwarmID,
-		DestinationHostSwarmID:    targetSwarmID,
-		DestinationWorkspacePath:  strings.TrimSpace(destinationPath),
-		ReplicationMode:           workspace.ReplicationModeBundle,
-		Writable:                  true,
-		LegacyTargetKind:          managedWorkspaceTargetKind,
+		BindingID:                       pebblestore.CanonicalTopologyWorkspaceBindingID(targetSwarmID, sourceWorkspacePath),
+		UserID:                          strings.TrimSpace(principal.UserID),
+		AccountScopeID:                  strings.TrimSpace(principal.AccountScopeID),
+		SourceWorkspaceID:               workspaceID,
+		SourceWorkspaceGeneration:       workspaceGeneration,
+		SourceWorkspacePath:             sourceWorkspacePath,
+		SourceWorkspaceName:             workspaceName,
+		DestinationRuntimeSwarmID:       targetSwarmID,
+		DestinationAuthorityHostSwarmID: placement.AuthorityHostSwarmID,
+		DestinationHostSwarmID:          placement.AuthorityHostSwarmID,
+		DestinationContainerID:          placement.AuthorityContainerID,
+		DestinationRuntimeKind:          placement.RuntimeKind,
+		DestinationWorkspacePath:        strings.TrimSpace(destinationPath),
+		PlacementGeneration:             placement.PlacementGeneration,
+		BindingGeneration:               1,
+		State:                           pebblestore.TopologyWorkspaceBindingStateBound,
+		AccessMode:                      pebblestore.TopologyWorkspaceBindingAccessModeReadWrite,
+		MaterializationKind:             pebblestore.TopologyWorkspaceBindingMaterializationSource,
+		AttestedByHostSwarmID:           placement.AuthorityHostSwarmID,
+		ReplicationMode:                 workspace.ReplicationModeBundle,
+		Writable:                        true,
+		LegacyTargetKind:                managedWorkspaceTargetKind,
 	})
+}
+
+func managedWorkspaceBindingWorkspaceID(accountScopeID, sourceWorkspacePath string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(accountScopeID) + "\x00" + strings.TrimSpace(sourceWorkspacePath)))
+	return "workspace_" + hex.EncodeToString(sum[:16])
 }

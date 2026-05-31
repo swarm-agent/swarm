@@ -74,3 +74,32 @@ test('routed session create sends workspace identity and binding without path au
     assert.equal(Object.hasOwn(body, 'runtime_workspace_path'), false)
   })
 })
+
+
+test('binding-required route without binding does not fall back to workspace path authority', async () => {
+  const { createSession } = await import('./chat-queries')
+
+  await withFetchStub(async (calls) => {
+    const strictRoute: DesktopChatRoute = {
+      ...routedRoute,
+      id: '',
+      workspaceBindingId: '',
+      requiresWorkspaceBinding: true,
+    }
+    await createSession({
+      title: 'Routed',
+      workspacePath: '/frontend/device/path/swarm-go',
+      workspaceName: 'swarm-go',
+      mode: 'auto',
+      agentName: 'swarm',
+      preference: { provider: 'codex', model: 'gpt-5.4', thinking: 'medium', serviceTier: '', contextMode: '' },
+      route: strictRoute,
+      worktreeMode: 'off',
+    })
+
+    const body = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>
+    assert.equal(Object.hasOwn(body, 'workspace_path'), false)
+    assert.equal(Object.hasOwn(body, 'host_workspace_path'), false)
+    assert.equal(Object.hasOwn(body, 'runtime_workspace_path'), false)
+  })
+})

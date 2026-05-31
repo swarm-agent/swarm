@@ -148,7 +148,7 @@ function topologyRouteArraysEqual(left: WorkspaceOverviewTopologyRoute[], right:
       || leftRoute.runtimeSwarmName !== rightRoute.runtimeSwarmName
       || leftRoute.runtimeKind !== rightRoute.runtimeKind
       || leftRoute.runtimeRelationship !== rightRoute.runtimeRelationship
-      || leftRoute.runtimeBackendUrl !== rightRoute.runtimeBackendUrl
+      || leftRoute.authorityHostSwarmId !== rightRoute.authorityHostSwarmId
       || leftRoute.hostSwarmId !== rightRoute.hostSwarmId
       || leftRoute.hostWorkspacePath !== rightRoute.hostWorkspacePath
       || leftRoute.hostWorkspaceName !== rightRoute.hostWorkspaceName
@@ -457,6 +457,7 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
         requestedPath: trimmedPath,
         resolvedPath: browserResult.resolvedPath,
         workspaceName: browserResult.resolvedPath.split(/[\\/]/).filter(Boolean).pop() || browserResult.resolvedPath,
+        localWorkspaceBindingId: '',
         themeId: '',
       }
       applyCurrentResolution(resolution)

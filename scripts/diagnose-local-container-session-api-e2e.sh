@@ -244,13 +244,12 @@ capture_backend_logs after_replicate
 
 session_body="$(jq -nc \
   --arg title "Local container Sessions API Fireworks E2E" \
-  --arg workspace_path "${WORKSPACE_PATH}" \
   --arg workspace_name "$(basename "${WORKSPACE_PATH}")" \
   --arg workspace_binding_id "${WORKSPACE_BINDING_ID}" \
   --arg provider "${PROVIDER}" \
   --arg model "${MODEL}" \
   --arg thinking "${THINKING}" \
-  '{title:$title,workspace_path:$workspace_path,workspace_name:$workspace_name,workspace_binding_id:$workspace_binding_id,mode:"auto",agent_name:"swarm",worktree_mode:"off",preference:{provider:$provider,model:$model,thinking:$thinking},metadata:{local_container_session_api_e2e:true}}')"
+  '{title:$title,workspace_name:$workspace_name,workspace_binding_id:$workspace_binding_id,mode:"auto",agent_name:"swarm",worktree_mode:"off",preference:{provider:$provider,model:$model,thinking:$thinking},metadata:{local_container_session_api_e2e:true}}')"
 printf '%s\n' "${session_body}" >"${ARTIFACT_DIR}/session_create_request.json"
 log "opening routed session through primary /v1/sessions?swarm_id=${CHILD_SWARM_ID}"
 api_json POST "/v1/sessions?swarm_id=$(urlencode "${CHILD_SWARM_ID}")" "${session_body}" "${ARTIFACT_DIR}/session_create_response.json" 120

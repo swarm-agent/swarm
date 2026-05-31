@@ -332,6 +332,8 @@ interface DesktopChatPanelProps {
   workspaceName: string
   workspaceWorktreeEnabled: boolean
   workspaceTopologyRoutes: WorkspaceOverviewTopologyRoute[]
+  localWorkspaceBindingId?: string
+  hostSwarmId?: string | null
   session: DesktopSessionRecord | null
   sessionCreateOverride?: (input: {
     title?: string
@@ -956,6 +958,8 @@ export function DesktopChatPanel({
   workspaceName,
   workspaceWorktreeEnabled,
   workspaceTopologyRoutes,
+  localWorkspaceBindingId,
+  hostSwarmId,
   session,
   onSessionCreated,
   onOpenSettingsTab,
@@ -1040,7 +1044,9 @@ export function DesktopChatPanel({
     workspacePath,
     workspaceName,
     topologyRoutes: workspaceTopologyRoutes,
-  }), [hostSwarmName, workspacePath, workspaceName, workspaceTopologyRoutes])
+    localWorkspaceBindingId,
+    hostSwarmId,
+  }), [hostSwarmName, hostSwarmId, localWorkspaceBindingId, workspacePath, workspaceName, workspaceTopologyRoutes])
   const defaultChatRoute = routeOptions[0]!
   const [selectedRouteId, setSelectedRouteId] = useState(() => defaultChatRoute?.id ?? 'host')
   const [draftRouteOverrideId, setDraftRouteOverrideId] = useState<string | null>(null)

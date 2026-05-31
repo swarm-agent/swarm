@@ -8,6 +8,7 @@ test('formToCreateInput maps manual and scheduled flows without auto-run intent'
   const target: FlowSwarmTarget = { swarm_id: 'local-swarm', kind: 'self', name: 'Local', online: true, selectable: true, current: true }
   const workspace: FlowWorkspaceEntry = {
     path: '/tmp/workspace',
+    localWorkspaceBindingId: '',
     workspaceName: 'workspace',
     themeId: '',
     directories: [],
@@ -172,6 +173,7 @@ test('formToCreateInput stores only selected real agent identifiers from every g
   const target: FlowSwarmTarget = { swarm_id: 'local-swarm', kind: 'self', name: 'Local', online: true, selectable: true, current: true }
   const workspace: FlowWorkspaceEntry = {
     path: '/tmp/workspace',
+    localWorkspaceBindingId: '',
     workspaceName: 'workspace',
     themeId: '',
     directories: [],

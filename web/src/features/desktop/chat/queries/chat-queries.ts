@@ -1266,6 +1266,7 @@ function sessionRequestBody(input: {
   worktreeMode?: string;
 }): Record<string, unknown> {
   const workspaceBindingId = input.route?.workspaceBindingId?.trim() || ''
+  const routeRequiresBinding = Boolean(input.route?.requiresWorkspaceBinding || input.route?.swarmId?.trim())
   const body: Record<string, unknown> = {
     title: input.title ?? "",
     workspace_name: input.route?.workspaceName?.trim() || input.workspaceName,
@@ -1282,7 +1283,7 @@ function sessionRequestBody(input: {
       context_mode: input.preference.contextMode,
     },
   }
-  if (!workspaceBindingId) {
+  if (!workspaceBindingId && !routeRequiresBinding) {
     body.workspace_path = input.workspacePath
   }
   return body

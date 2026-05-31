@@ -138,23 +138,48 @@ func TestLocalContainerDeleteUsesCanonicalAttachmentsForCleanup(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("put topology host container: %v", err)
 	}
-	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, "account-1", pebblestore.TopologyRuntimeRecord{SwarmID: "child-swarm", UserID: "user-1", AccountScopeID: "account-1", Name: "Child", Relationship: "child", ObservedSources: []string{pebblestore.TopologyRuntimeSourceDeployContainer}}); err != nil {
+	if _, err := topologyStore.PutRuntimePlacementForAccount("account-1", pebblestore.TopologyRuntimePlacementRecord{RuntimeSwarmID: "host-swarm", AccountScopeID: "account-1", AuthorityHostSwarmID: "host-swarm", RuntimeKind: pebblestore.TopologyRuntimeKindHost, PlacementGeneration: 1, State: pebblestore.TopologyRuntimePlacementStateActive}); err != nil {
+		t.Fatalf("put host placement: %v", err)
+	}
+	if _, err := topologyStore.PutRuntimePlacementForAccount("account-1", pebblestore.TopologyRuntimePlacementRecord{RuntimeSwarmID: "child-swarm", AccountScopeID: "account-1", AuthorityHostSwarmID: "host-swarm", AuthorityContainerID: pebblestore.CanonicalTopologyHostContainerID("host-swarm", "ctr-1"), RuntimeKind: pebblestore.TopologyRuntimeKindContainer, PlacementGeneration: 1, State: pebblestore.TopologyRuntimePlacementStateActive}); err != nil {
+		t.Fatalf("put child placement: %v", err)
+	}
+	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, "account-1", pebblestore.TopologyRuntimeRecord{SwarmID: "child-swarm", UserID: "user-1", AccountScopeID: "account-1", Name: "Child", Relationship: "child", OwnerHostSwarmID: "host-swarm", OwnerHostContainerID: pebblestore.CanonicalTopologyHostContainerID("host-swarm", "ctr-1"), ObservedSources: []string{pebblestore.TopologyRuntimeSourceDeployContainer}}); err != nil {
 		t.Fatalf("put topology runtime: %v", err)
 	}
 	attachmentID := pebblestore.CanonicalTopologyAttachmentID(pebblestore.CanonicalTopologyHostContainerID("host-swarm", "ctr-1"), "child-swarm")
 	if _, err := topologyStore.PutAttachmentForAccount("account-1", pebblestore.TopologyAttachmentRecord{AttachmentID: attachmentID, UserID: "user-1", AccountScopeID: "account-1", HostContainerID: pebblestore.CanonicalTopologyHostContainerID("host-swarm", "ctr-1"), RuntimeSwarmID: "child-swarm", DeploymentID: "deploy-1", State: "attached"}); err != nil {
 		t.Fatalf("put topology attachment: %v", err)
 	}
+	placement, ok, err := topologyStore.GetRuntimePlacementForAccount("account-1", "child-swarm")
+	if err != nil || !ok {
+		t.Fatalf("get child placement before binding ok=%t err=%v placement=%+v", ok, err, placement)
+	}
+	if placement.RuntimeKind != pebblestore.TopologyRuntimeKindContainer {
+		t.Fatalf("child placement before binding = %+v", placement)
+	}
 	if _, err := topologyStore.PutWorkspaceBindingForAccount("account-1", pebblestore.TopologyWorkspaceBindingRecord{
-		BindingID:                 "binding:replica:pc-child:/workspace",
-		UserID:                    "user-1",
-		AccountScopeID:            "account-1",
-		SourceWorkspacePath:       "/workspace",
-		SourceWorkspaceName:       "workspace",
-		DestinationRuntimeSwarmID: "child-swarm",
-		DestinationWorkspacePath:  "/workspaces/workspace",
-		ReplicationMode:           "bundle",
-		Writable:                  true,
+		BindingID:                       "binding:replica:pc-child:/workspace",
+		UserID:                          "user-1",
+		AccountScopeID:                  "account-1",
+		SourceWorkspaceID:               "workspace-id-1",
+		SourceWorkspaceGeneration:       1,
+		SourceWorkspacePath:             "/workspace",
+		SourceWorkspaceName:             "workspace",
+		DestinationRuntimeSwarmID:       "child-swarm",
+		DestinationAuthorityHostSwarmID: "host-swarm",
+		DestinationHostSwarmID:          "host-swarm",
+		DestinationContainerID:          pebblestore.CanonicalTopologyHostContainerID("host-swarm", "ctr-1"),
+		DestinationRuntimeKind:          pebblestore.TopologyRuntimeKindContainer,
+		DestinationWorkspacePath:        "/workspaces/workspace",
+		PlacementGeneration:             1,
+		BindingGeneration:               1,
+		State:                           pebblestore.TopologyWorkspaceBindingStateBound,
+		AccessMode:                      pebblestore.TopologyWorkspaceBindingAccessModeReadWrite,
+		MaterializationKind:             pebblestore.TopologyWorkspaceBindingMaterializationSource,
+		AttestedByHostSwarmID:           "host-swarm",
+		ReplicationMode:                 "bundle",
+		Writable:                        true,
 	}); err != nil {
 		t.Fatalf("put topology workspace binding: %v", err)
 	}

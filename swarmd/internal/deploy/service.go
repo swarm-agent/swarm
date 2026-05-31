@@ -2137,6 +2137,8 @@ func (s *Service) FinalizeAttachFromHost(ctx context.Context, input ContainerAtt
 	return s.finalizeChildAttach(ctx, cfg, state, ContainerAttachState{
 		DeploymentID:     strings.TrimSpace(input.DeploymentID),
 		AttachStatus:     "attached",
+		ChildSwarmID:     strings.TrimSpace(state.Node.SwarmID),
+		ChildDisplayName: strings.TrimSpace(state.Node.Name),
 		HostSwarmID:      strings.TrimSpace(input.HostSwarmID),
 		HostDisplayName:  strings.TrimSpace(input.HostDisplayName),
 		HostPublicKey:    strings.TrimSpace(input.HostPublicKey),
@@ -3537,6 +3539,9 @@ func (s *Service) finalizeChildAttach(ctx context.Context, cfg startupconfig.Fil
 		}
 	}
 	if principal.Valid() {
+		if err := s.ensureChildSelfPlacementForBootstrap(accountScopeID, userID, state); err != nil {
+			return err
+		}
 		if cfg.DeployContainer.HostDriven {
 			if len(finalizeInput.WorkspaceBootstrap) > 0 {
 				if err := s.applyBootstrapWorkspaces(principal, cfg, status, pairing, finalizeInput.WorkspaceBootstrap); err != nil {
@@ -4547,7 +4552,6 @@ func (s *Service) applyBootstrapWorkspaces(principal identity.Principal, cfg sta
 		return err
 	}
 	currentAssigned := hasCurrent && strings.TrimSpace(current.WorkspacePath) != ""
-	hostSwarmID := firstNonEmpty(status.HostSwarmID, strings.TrimSpace(cfg.ParentSwarmID))
 	for _, item := range items {
 		workspacePath := strings.TrimSpace(item.TargetWorkspacePath)
 		if workspacePath == "" {
@@ -4582,19 +4586,45 @@ func (s *Service) applyBootstrapWorkspaces(principal identity.Principal, cfg sta
 			entry.Directories = append(entry.Directories, targetPath)
 		}
 		if s.topology != nil {
-			_, err := pebblestore.UpsertTopologyWorkspaceBindingForAccount(s.topology, principal.AccountScopeID, pebblestore.TopologyWorkspaceBindingRecord{
-				BindingID:                 pebblestore.CanonicalTopologyWorkspaceBindingID(deploymentID, strings.TrimSpace(item.SourceWorkspacePath)),
-				UserID:                    strings.TrimSpace(principal.UserID),
-				AccountScopeID:            strings.TrimSpace(principal.AccountScopeID),
-				SourceWorkspacePath:       strings.TrimSpace(item.SourceWorkspacePath),
-				SourceWorkspaceName:       strings.TrimSpace(item.SourceWorkspaceName),
-				DestinationRuntimeSwarmID: strings.TrimSpace(status.ChildSwarmID),
-				DestinationHostSwarmID:    hostSwarmID,
-				DestinationWorkspacePath:  workspacePath,
-				ReplicationMode:           strings.TrimSpace(item.ReplicationMode),
-				Writable:                  item.Writable,
-				Sync:                      item.Sync,
-				LegacyTargetKind:          "local",
+			workspaceID := strings.TrimSpace(entry.WorkspaceID)
+			workspaceGeneration := int64(entry.WorkspaceGeneration)
+			if workspaceID == "" {
+				workspaceID = deploymentWorkspaceBindingWorkspaceID(strings.TrimSpace(principal.AccountScopeID), strings.TrimSpace(item.SourceWorkspacePath))
+			}
+			if workspaceGeneration <= 0 {
+				workspaceGeneration = 1
+			}
+			placement, ok, err := s.topology.GetRuntimePlacementForAccount(strings.TrimSpace(principal.AccountScopeID), strings.TrimSpace(status.ChildSwarmID))
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return fmt.Errorf("deploy bootstrap workspace binding requires runtime placement for %s", strings.TrimSpace(status.ChildSwarmID))
+			}
+			_, err = pebblestore.UpsertTopologyWorkspaceBindingForAccount(s.topology, principal.AccountScopeID, pebblestore.TopologyWorkspaceBindingRecord{
+				BindingID:                       pebblestore.CanonicalTopologyWorkspaceBindingID(deploymentID, strings.TrimSpace(item.SourceWorkspacePath)),
+				UserID:                          strings.TrimSpace(principal.UserID),
+				AccountScopeID:                  strings.TrimSpace(principal.AccountScopeID),
+				SourceWorkspaceID:               workspaceID,
+				SourceWorkspaceGeneration:       workspaceGeneration,
+				SourceWorkspacePath:             strings.TrimSpace(item.SourceWorkspacePath),
+				SourceWorkspaceName:             strings.TrimSpace(item.SourceWorkspaceName),
+				DestinationRuntimeSwarmID:       strings.TrimSpace(status.ChildSwarmID),
+				DestinationAuthorityHostSwarmID: placement.AuthorityHostSwarmID,
+				DestinationHostSwarmID:          placement.AuthorityHostSwarmID,
+				DestinationContainerID:          placement.AuthorityContainerID,
+				DestinationRuntimeKind:          placement.RuntimeKind,
+				DestinationWorkspacePath:        workspacePath,
+				PlacementGeneration:             placement.PlacementGeneration,
+				BindingGeneration:               1,
+				State:                           pebblestore.TopologyWorkspaceBindingStateBound,
+				AccessMode:                      pebblestore.TopologyWorkspaceBindingAccessModeReadWrite,
+				MaterializationKind:             pebblestore.TopologyWorkspaceBindingMaterializationSource,
+				AttestedByHostSwarmID:           placement.AuthorityHostSwarmID,
+				ReplicationMode:                 strings.TrimSpace(item.ReplicationMode),
+				Writable:                        item.Writable,
+				Sync:                            item.Sync,
+				LegacyTargetKind:                "local",
 			})
 			if err != nil {
 				return err

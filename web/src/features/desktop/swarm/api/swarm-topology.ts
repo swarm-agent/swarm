@@ -52,6 +52,7 @@ export interface SwarmTopologyWorkspaceBindingRecord {
   source_workspace_path: string
   source_workspace_name?: string
   destination_runtime_swarm_id?: string
+  destination_authority_host_swarm_id?: string
   destination_host_swarm_id?: string
   destination_container_id?: string
   destination_workspace_path?: string

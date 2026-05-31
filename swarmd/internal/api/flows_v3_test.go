@@ -50,16 +50,14 @@ func TestFlowsV3CreateListGetUpdateRunNowDeleteHistoryAndStatus(t *testing.T) {
 		t.Fatalf("seed remote swarm node: %v", err)
 	}
 	workspace := t.TempDir()
-	seedFlowTopologyWorkspaceBinding(t, server, workspace, filepath.Base(workspace), "pc-child-remote", "remote", "child-remote", "/workspaces/remote")
+	bindingID := seedFlowTopologyWorkspaceBinding(t, server, workspace, filepath.Base(workspace), "pc-child-remote", "remote", "child-remote", "/workspaces/remote")
 	req := flowV3UpsertRequest{
-		FlowID:  "flow-v3-remote",
-		Name:    "Remote V3 flow",
-		Enabled: boolPtr(true),
-		Target:  flow.TargetSelection{SwarmID: "child-remote", Kind: "remote", DeploymentID: "pc-child-remote", Name: "pc child"},
-		Agent:   flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
-		Workspace: flow.WorkspaceContext{
-			WorkspacePath: workspace,
-		},
+		FlowID:        "flow-v3-remote",
+		Name:          "Remote V3 flow",
+		Enabled:       boolPtr(true),
+		Target:        flow.TargetSelection{SwarmID: "child-remote", Kind: "remote", DeploymentID: "pc-child-remote", Name: "pc child"},
+		Agent:         flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
+		Workspace:     flow.WorkspaceContext{WorkspaceBindingID: bindingID},
 		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceOnDemand},
 		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
 		Intent:        flow.PromptIntent{Prompt: "Refresh memory remotely."},
@@ -122,13 +120,11 @@ func TestFlowsV3CreateListGetUpdateRunNowDeleteHistoryAndStatus(t *testing.T) {
 		t.Fatalf("get payload = %+v", getPayload)
 	}
 	updateReq := flowV3UpsertRequest{
-		Name:    "Remote V3 flow updated",
-		Enabled: boolPtr(false),
-		Target:  flow.TargetSelection{SwarmID: "child-remote", Kind: "remote", DeploymentID: "pc-child-remote", Name: "pc child"},
-		Agent:   flow.AgentSelection{ProfileName: "swarm", ProfileMode: "primary"},
-		Workspace: flow.WorkspaceContext{
-			WorkspacePath: filepath.Join(workspace, "updated"),
-		},
+		Name:          "Remote V3 flow updated",
+		Enabled:       boolPtr(false),
+		Target:        flow.TargetSelection{SwarmID: "child-remote", Kind: "remote", DeploymentID: "pc-child-remote", Name: "pc child"},
+		Agent:         flow.AgentSelection{ProfileName: "swarm", ProfileMode: "primary"},
+		Workspace:     flow.WorkspaceContext{WorkspaceBindingID: bindingID},
 		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceOnDemand},
 		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
 		Intent:        flow.PromptIntent{Prompt: "Use swarm primary."},
@@ -287,16 +283,14 @@ func TestFlowsV3LocalContainerCRUDSyncsAcrossHTTPBoundary(t *testing.T) {
 		Selectable:   true,
 		BackendURL:   child.URL,
 	}}})
-	seedFlowTopologyWorkspaceBinding(t, server, workspace, filepath.Base(workspace), "pc-child-local", "local", "child-local", "/workspaces/local")
+	bindingID := seedFlowTopologyWorkspaceBinding(t, server, workspace, filepath.Base(workspace), "pc-child-local", "local", "child-local", "/workspaces/local")
 	req := flowV3UpsertRequest{
-		FlowID:  "flow-v3-local-crud",
-		Name:    "Local V3 flow",
-		Enabled: boolPtr(true),
-		Target:  flow.TargetSelection{SwarmID: "child-local", Kind: "local", DeploymentID: "pc-child-local", Name: "local child"},
-		Agent:   flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
-		Workspace: flow.WorkspaceContext{
-			WorkspacePath: workspace,
-		},
+		FlowID:        "flow-v3-local-crud",
+		Name:          "Local V3 flow",
+		Enabled:       boolPtr(true),
+		Target:        flow.TargetSelection{SwarmID: "child-local", Kind: "local", DeploymentID: "pc-child-local", Name: "local child"},
+		Agent:         flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
+		Workspace:     flow.WorkspaceContext{WorkspaceBindingID: bindingID},
 		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceOnDemand},
 		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
 		Intent:        flow.PromptIntent{Prompt: "Sync to local container."},
@@ -310,7 +304,7 @@ func TestFlowsV3LocalContainerCRUDSyncsAcrossHTTPBoundary(t *testing.T) {
 	}
 	updateReq := req
 	updateReq.Name = "Local V3 flow updated"
-	updateReq.Workspace.WorkspacePath = filepath.Join(workspace, "updated")
+	updateReq.Workspace.WorkspaceBindingID = bindingID
 	updateRec := httptest.NewRecorder()
 	updateHTTP := httptest.NewRequest(http.MethodPut, "/v3/flows/flow-v3-local-crud", jsonReader(t, updateReq))
 	updateHTTP.Header.Set("Content-Type", "application/json")
@@ -377,16 +371,14 @@ func TestFlowsV3CreateAllowsLocalContainerTargetWithLocalOwnerHost(t *testing.T)
 		Selectable:   true,
 		BackendURL:   child.URL,
 	}}})
-	seedFlowTopologyWorkspaceBinding(t, server, workspace, filepath.Base(workspace), "pc-local-container", "local", "local-container-swarm", "/workspaces/local-container")
+	bindingID := seedFlowTopologyWorkspaceBinding(t, server, workspace, filepath.Base(workspace), "pc-local-container", "local", "local-container-swarm", "/workspaces/local-container")
 	req := flowV3UpsertRequest{
-		FlowID:  "flow-v3-local-container-owner-host",
-		Name:    "Local container owner-host flow",
-		Enabled: boolPtr(true),
-		Target:  flow.TargetSelection{SwarmID: "local-container-swarm", Kind: "local", DeploymentID: "pc-local-container", Name: "local container"},
-		Agent:   flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
-		Workspace: flow.WorkspaceContext{
-			WorkspacePath: workspace,
-		},
+		FlowID:        "flow-v3-local-container-owner-host",
+		Name:          "Local container owner-host flow",
+		Enabled:       boolPtr(true),
+		Target:        flow.TargetSelection{SwarmID: "local-container-swarm", Kind: "local", DeploymentID: "pc-local-container", Name: "local container"},
+		Agent:         flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
+		Workspace:     flow.WorkspaceContext{WorkspaceBindingID: bindingID},
 		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceOnDemand},
 		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
 		Intent:        flow.PromptIntent{Prompt: "Create on a local container target."},
@@ -486,16 +478,14 @@ func TestFlowsV3CreateDoesNotAutoRunOnDemandFlow(t *testing.T) {
 	runner := &fakeFlowRunService{}
 	server.runner = runner
 	workspace := t.TempDir()
+	bindingID := seedFlowTopologyWorkspaceBinding(t, server, workspace, filepath.Base(workspace), "self-one-shot", "self", "host-swarm-id", workspace)
 	req := flowV3UpsertRequest{
-		FlowID:  "flow-v3-one-shot",
-		Name:    "One-shot V3 flow",
-		Enabled: boolPtr(true),
-		Target:  flow.TargetSelection{Kind: "self"},
-		Agent:   flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
-		Workspace: flow.WorkspaceContext{
-			WorkspacePath: workspace,
-			CWD:           workspace,
-		},
+		FlowID:        "flow-v3-one-shot",
+		Name:          "One-shot V3 flow",
+		Enabled:       boolPtr(true),
+		Target:        flow.TargetSelection{Kind: "self"},
+		Agent:         flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
+		Workspace:     flow.WorkspaceContext{WorkspaceBindingID: bindingID, CWD: workspace},
 		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceOnDemand},
 		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
 		Intent:        flow.PromptIntent{Prompt: "Run once immediately.", Mode: "one_shot_background"},
@@ -535,15 +525,15 @@ func TestFlowsV3CreateDoesNotAutoRunOnDemandFlow(t *testing.T) {
 func TestFlowsV3CreateSchedulesMultipleTimesAndPreservesTimezone(t *testing.T) {
 	server, flows := newFlowPeerTestServer(t)
 	ensureFlowTestAgent(t, server)
+	workspace := t.TempDir()
+	bindingID := seedFlowTopologyWorkspaceBinding(t, server, workspace, filepath.Base(workspace), "self-multi-time", "self", "host-swarm-id", workspace)
 	req := flowV3UpsertRequest{
-		FlowID:  "flow-v3-multi-time",
-		Name:    "Multi-time flow",
-		Enabled: boolPtr(true),
-		Target:  flow.TargetSelection{Kind: "self"},
-		Agent:   flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
-		Workspace: flow.WorkspaceContext{
-			WorkspacePath: t.TempDir(),
-		},
+		FlowID:        "flow-v3-multi-time",
+		Name:          "Multi-time flow",
+		Enabled:       boolPtr(true),
+		Target:        flow.TargetSelection{Kind: "self"},
+		Agent:         flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
+		Workspace:     flow.WorkspaceContext{WorkspaceBindingID: bindingID},
 		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceDaily, Times: []string{"17:00", "09:00"}, Timezone: "America/New_York"},
 		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
 		Intent:        flow.PromptIntent{Prompt: "Run twice daily."},
@@ -586,15 +576,14 @@ func TestFlowsV3CreateAcceptsModalWeeklyMultiDayAndRawCron(t *testing.T) {
 	server, flows := newFlowPeerTestServer(t)
 	ensureFlowTestAgent(t, server)
 	workspace := t.TempDir()
+	bindingID := seedFlowTopologyWorkspaceBinding(t, server, workspace, filepath.Base(workspace), "self-weekly", "self", "host-swarm-id", workspace)
 	weeklyReq := flowV3UpsertRequest{
-		FlowID:  "flow-v3-weekly-multi-day",
-		Name:    "Weekly multi-day flow",
-		Enabled: boolPtr(true),
-		Target:  flow.TargetSelection{Kind: "self"},
-		Agent:   flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
-		Workspace: flow.WorkspaceContext{
-			WorkspacePath: workspace,
-		},
+		FlowID:        "flow-v3-weekly-multi-day",
+		Name:          "Weekly multi-day flow",
+		Enabled:       boolPtr(true),
+		Target:        flow.TargetSelection{Kind: "self"},
+		Agent:         flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
+		Workspace:     flow.WorkspaceContext{WorkspaceBindingID: bindingID},
 		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceWeekly, Time: "09:00", Times: []string{"09:00"}, Weekday: "Mon,Wed,Fri", Timezone: "UTC"},
 		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
 		Intent:        flow.PromptIntent{Prompt: "Run weekly."},
@@ -647,16 +636,14 @@ func TestFlowsV3CreatePersistsPendingSyncWhenTargetIsUnavailable(t *testing.T) {
 		LastError:    "child is stopped",
 	}}})
 	workspace := t.TempDir()
-	seedFlowTopologyWorkspaceBinding(t, server, workspace, filepath.Base(workspace), "pc-offline", "local", "child-offline", "/workspaces/offline")
+	bindingID := seedFlowTopologyWorkspaceBinding(t, server, workspace, filepath.Base(workspace), "pc-offline", "local", "child-offline", "/workspaces/offline")
 	req := flowV3UpsertRequest{
-		FlowID:  "flow-v3-pending-sync",
-		Name:    "Pending sync flow",
-		Enabled: boolPtr(true),
-		Target:  flow.TargetSelection{SwarmID: "child-offline", Kind: "local", DeploymentID: "pc-offline", Name: "offline child"},
-		Agent:   flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
-		Workspace: flow.WorkspaceContext{
-			WorkspacePath: workspace,
-		},
+		FlowID:        "flow-v3-pending-sync",
+		Name:          "Pending sync flow",
+		Enabled:       boolPtr(true),
+		Target:        flow.TargetSelection{SwarmID: "child-offline", Kind: "local", DeploymentID: "pc-offline", Name: "offline child"},
+		Agent:         flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
+		Workspace:     flow.WorkspaceContext{WorkspaceBindingID: bindingID},
 		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceOnDemand},
 		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
 		Intent:        flow.PromptIntent{Prompt: "Wait until child returns."},
@@ -806,7 +793,7 @@ func boolPtr(value bool) *bool {
 	return &value
 }
 
-func TestFlowsV3CreateResolvesWorkspaceBindingByName(t *testing.T) {
+func TestFlowsV3CreateUsesExplicitWorkspaceBinding(t *testing.T) {
 	server, flows := newFlowPeerTestServer(t)
 	ensureFlowTestAgent(t, server)
 	server.SetDeployContainerService(&fakeFlowDeployService{targets: []swarmTarget{{
@@ -818,7 +805,7 @@ func TestFlowsV3CreateResolvesWorkspaceBindingByName(t *testing.T) {
 		Online:       true,
 		Selectable:   true,
 	}}})
-	seedFlowTopologyWorkspaceBinding(t, server, "/workspace-fixtures/installer/workspaces/swarm-go-6", "swarm-go", "managed-deployment", "local", "managed-swarm", "/workspaces/swarm-go")
+	bindingID := seedFlowTopologyWorkspaceBinding(t, server, "/workspace-fixtures/installer/workspaces/swarm-go-6", "swarm-go", "managed-deployment", "local", "managed-swarm", "/workspaces/swarm-go")
 	req := flowV3UpsertRequest{
 		FlowID:  "flow-v3-binding-name",
 		Name:    "Binding name flow",
@@ -826,13 +813,12 @@ func TestFlowsV3CreateResolvesWorkspaceBindingByName(t *testing.T) {
 		Target:  flow.TargetSelection{SwarmID: "managed-swarm", Kind: "local", DeploymentID: "managed-deployment", Name: "managed"},
 		Agent:   flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
 		Workspace: flow.WorkspaceContext{
-			WorkspacePath:     "/workspace-fixtures/installer/swarm-go",
-			WorkspaceName:     "swarm-go",
-			HostWorkspacePath: "/workspace-fixtures/installer/swarm-go",
+			WorkspaceBindingID: bindingID,
+			WorkspaceName:      "swarm-go",
 		},
 		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceOnDemand},
 		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
-		Intent:        flow.PromptIntent{Prompt: "Resolve by workspace name."},
+		Intent:        flow.PromptIntent{Prompt: "Use explicit workspace binding."},
 	}
 	rec := httptest.NewRecorder()
 	reqHTTP := httptest.NewRequest(http.MethodPost, "/v3/flows", jsonReader(t, req))
@@ -846,7 +832,7 @@ func TestFlowsV3CreateResolvesWorkspaceBindingByName(t *testing.T) {
 		t.Fatalf("get definition ok=%v err=%v", ok, err)
 	}
 	workspace := definition.Assignment.Workspace
-	if workspace.WorkspaceBindingID == "" || workspace.HostWorkspacePath != "/workspace-fixtures/installer/workspaces/swarm-go-6" || workspace.RuntimeWorkspacePath != "/workspaces/swarm-go" {
+	if workspace.WorkspaceBindingID == "" || workspace.HostWorkspacePath != "" || workspace.RuntimeWorkspacePath != "" || workspace.WorkspacePath != "" {
 		t.Fatalf("stored workspace = %+v", workspace)
 	}
 	outbox, err := flows.ListOutboxCommandsForAccount(testAccountScopeID, "flow-v3-binding-name", "", 10)
@@ -858,7 +844,7 @@ func TestFlowsV3CreateResolvesWorkspaceBindingByName(t *testing.T) {
 	}
 }
 
-func TestFlowsV3CreateRejectsAmbiguousWorkspaceNameBinding(t *testing.T) {
+func TestFlowsV3CreateRejectsMissingWorkspaceBinding(t *testing.T) {
 	server, _ := newFlowPeerTestServer(t)
 	ensureFlowTestAgent(t, server)
 	server.SetDeployContainerService(&fakeFlowDeployService{targets: []swarmTarget{{
@@ -893,7 +879,7 @@ func TestFlowsV3CreateRejectsAmbiguousWorkspaceNameBinding(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("create status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "matches multiple topology bindings") {
+	if !strings.Contains(rec.Body.String(), "workspace_binding_id is required") {
 		t.Fatalf("body = %s", rec.Body.String())
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 )
@@ -305,6 +306,9 @@ func (s *Server) refreshLocalMirrorProjections(ctx context.Context) error {
 	}
 	if s.workspace != nil {
 		entries, err := s.workspace.ListKnown(100000)
+		if len(entries) == 0 && localSwarmID != "" {
+			entries, err = s.workspace.ListKnownForPrincipal(identity.Principal{Type: identity.PrincipalTypeUser, UserID: localSwarmID, AccountScopeID: localSwarmID}, 100000)
+		}
 		if err != nil {
 			return err
 		}

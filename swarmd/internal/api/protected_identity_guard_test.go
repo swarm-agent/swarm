@@ -19,6 +19,7 @@ import (
 	"swarm/packages/swarmd/internal/security"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
+	topologyruntime "swarm/packages/swarmd/internal/topology"
 	"swarm/packages/swarmd/internal/uisettings"
 	"swarm/packages/swarmd/internal/workspace"
 )
@@ -192,7 +193,8 @@ func newProtectedIdentityGuardTestServer(t *testing.T, bootstrap bool) (*Server,
 	}
 	authSvc := auth.NewService(pebblestore.NewAuthStore(store), eventLog)
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), eventLog)
-	workspaceSvc := workspace.NewService(pebblestore.NewWorkspaceStore(store))
+	workspaceStore := pebblestore.NewWorkspaceStore(store)
+	workspaceSvc := workspace.NewService(workspaceStore)
 	securitySvc := security.NewService(pebblestore.NewClientAuthStore(store), eventLog)
 	if _, err := securitySvc.EnsureAttachAuth(); err != nil {
 		t.Fatalf("ensure attach auth: %v", err)
@@ -210,6 +212,11 @@ func newProtectedIdentityGuardTestServer(t *testing.T, bootstrap bool) (*Server,
 	server.SetIdentityService(identitySvc)
 	server.SetIdentitySessionService(identity.NewSessionService(identityStore, pebblestore.NewIdentitySessionStore(store)))
 	server.SetUISettingsService(uisettings.NewService(pebblestore.NewUISettingsStore(store)))
+	swarmStore := pebblestore.NewSwarmStore(store)
+	if _, err := swarmStore.PutLocalNode(pebblestore.SwarmLocalNodeRecord{SwarmID: "guard-device-swarm", Name: "Guard Device", Role: "master"}); err != nil {
+		t.Fatalf("put local swarm node: %v", err)
+	}
+	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), swarmStore, nil, nil, nil, nil, nil, workspaceStore))
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
 	cfg := startupconfig.Default(startupPath)
 	cfg.SwarmName = "Guard Device"

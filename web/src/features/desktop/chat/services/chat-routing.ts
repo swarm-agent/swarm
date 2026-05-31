@@ -15,15 +15,15 @@ export interface DesktopChatRoute {
   workspaceBindingId?: string
   workspaceName?: string
   targetSwarmName?: string
+  requiresWorkspaceBinding?: boolean
 }
 
 function normalizedRoutePart(value: string | null | undefined): string {
   return value?.trim() ?? ''
 }
 
-export function desktopChatRouteID(swarmId: string | null | undefined, workspaceName: string | null | undefined, workspaceBindingId?: string): string {
+export function desktopChatRouteID(swarmId: string | null | undefined, _workspaceName: string | null | undefined, workspaceBindingId?: string): string {
   const normalizedBindingId = normalizedRoutePart(workspaceBindingId)
-  const normalizedWorkspaceName = normalizedRoutePart(workspaceName)
   const normalizedSwarmId = normalizedRoutePart(swarmId)
   if (!normalizedSwarmId) {
     return 'host'
@@ -34,22 +34,30 @@ export function desktopChatRouteID(swarmId: string | null | undefined, workspace
   return ''
 }
 
-export function buildHostDesktopChatRoute(hostSwarmName: string, workspacePath: string, workspaceName: string): DesktopChatRoute {
+export function buildHostDesktopChatRoute(hostSwarmName: string, workspacePath: string, workspaceName: string, workspaceBindingId = '', swarmId: string | null = null): DesktopChatRoute {
   const normalizedWorkspacePath = workspacePath.trim()
+  const normalizedBindingId = workspaceBindingId.trim()
+  const normalizedSwarmId = swarmId?.trim() || null
+  const routeId = normalizedSwarmId
+    ? desktopChatRouteID(normalizedSwarmId, workspaceName, normalizedBindingId)
+    : normalizedBindingId
+      ? `host:binding:${normalizedBindingId}`
+      : 'host'
   return {
-    id: 'host',
+    id: routeId || 'host',
     label: hostSwarmName.trim() || 'host',
-    swarmId: null,
+    swarmId: normalizedSwarmId,
     targetKind: 'host',
     targetRelationship: 'self',
-    hostSwarmId: '',
+    hostSwarmId: normalizedSwarmId ?? '',
     hostSwarmName: hostSwarmName.trim() || 'host',
     hostWorkspacePath: normalizedWorkspacePath,
     hostWorkspaceName: workspaceName.trim(),
     runtimeWorkspacePath: normalizedWorkspacePath,
-    workspaceBindingId: '',
+    workspaceBindingId: normalizedBindingId,
     workspaceName: workspaceName.trim(),
     targetSwarmName: hostSwarmName.trim() || 'host',
+    ...(normalizedBindingId ? { requiresWorkspaceBinding: true } : {}),
   }
 }
 
@@ -58,8 +66,10 @@ export function buildDesktopChatRouteOptions(input: {
   workspacePath: string
   workspaceName: string
   topologyRoutes: WorkspaceOverviewTopologyRoute[]
+  localWorkspaceBindingId?: string
+  hostSwarmId?: string | null
 }): DesktopChatRoute[] {
-  const hostRoute = buildHostDesktopChatRoute(input.hostSwarmName, input.workspacePath, input.workspaceName)
+  const hostRoute = buildHostDesktopChatRoute(input.hostSwarmName, input.workspacePath, input.workspaceName, input.localWorkspaceBindingId, input.hostSwarmId)
   const options: DesktopChatRoute[] = [hostRoute]
   const seen = new Set<string>([hostRoute.id])
   for (const topologyRoute of input.topologyRoutes) {

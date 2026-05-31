@@ -48,7 +48,7 @@ type workspaceOverviewTopologyRoute struct {
 	RuntimeSwarmName     string                               `json:"runtime_swarm_name,omitempty"`
 	RuntimeKind          string                               `json:"runtime_kind,omitempty"`
 	RuntimeRelationship  string                               `json:"runtime_relationship,omitempty"`
-	RuntimeBackendURL    string                               `json:"runtime_backend_url,omitempty"`
+	AuthorityHostSwarmID string                               `json:"authority_host_swarm_id,omitempty"`
 	HostSwarmID          string                               `json:"host_swarm_id,omitempty"`
 	HostSwarmName        string                               `json:"host_swarm_name,omitempty"`
 	HostWorkspacePath    string                               `json:"host_workspace_path"`
@@ -179,11 +179,9 @@ func (s *Server) handleWorkspaceOverview(w http.ResponseWriter, r *http.Request)
 	}
 
 	workspacePaths := make([]string, 0, len(workspaces))
-	workspaceNamesByPath := make(map[string]string, len(workspaces))
 	for _, entry := range workspaces {
 		workspacePath := strings.TrimSpace(entry.Path)
 		workspacePaths = append(workspacePaths, workspacePath)
-		workspaceNamesByPath[workspacePath] = strings.TrimSpace(entry.WorkspaceName)
 	}
 	todoSummaries := make(map[string]pebblestore.WorkspaceTodoSummary, len(workspacePaths))
 	if s.todos != nil && len(workspacePaths) > 0 {
@@ -205,15 +203,17 @@ func (s *Server) handleWorkspaceOverview(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	topologyRoutesByWorkspace, err := s.workspaceOverviewTopologyRoutesByWorkspace(principal, swarmTargets, workspaceNamesByPath)
+	topologyRoutesByWorkspace, err := s.workspaceOverviewTopologyRoutesByWorkspace(principal, swarmTargets, workspaces)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 
+	localBindingByWorkspaceID := localWorkspaceBindingIDsByWorkspaceID(workspaces, topologyRoutesByWorkspace)
 	responseWorkspaces := make([]workspaceOverviewWorkspace, 0, len(workspaces))
 	for _, entry := range workspaces {
 		workspacePath := strings.TrimSpace(entry.Path)
+		entry.LocalWorkspaceBindingID = strings.TrimSpace(localBindingByWorkspaceID[strings.TrimSpace(entry.WorkspaceID)])
 		responseWorkspaces = append(responseWorkspaces, workspaceOverviewWorkspace{
 			Entry:                   entry,
 			Sessions:                sessionsByWorkspace[workspacePath],
@@ -405,7 +405,7 @@ func (s *Server) workspaceOverviewSessionsByWorkspace(groups []pebblestore.Works
 	return result, nil
 }
 
-func (s *Server) workspaceOverviewTopologyRoutesByWorkspace(principal identity.Principal, swarmTargets []swarmTarget, localWorkspaceNamesByPath map[string]string) (map[string][]workspaceOverviewTopologyRoute, error) {
+func (s *Server) workspaceOverviewTopologyRoutesByWorkspace(principal identity.Principal, swarmTargets []swarmTarget, workspaces []workspace.Entry) (map[string][]workspaceOverviewTopologyRoute, error) {
 	out := make(map[string][]workspaceOverviewTopologyRoute)
 	if s == nil || s.topology == nil {
 		return out, nil
@@ -420,6 +420,17 @@ func (s *Server) workspaceOverviewTopologyRoutesByWorkspace(principal identity.P
 	bindings, err := s.topology.ListWorkspaceBindingsForAccount(accountScopeID, 100000)
 	if err != nil {
 		return nil, err
+	}
+	workspacePathByID := make(map[string]string, len(workspaces))
+	workspaceNameByID := make(map[string]string, len(workspaces))
+	for _, entry := range workspaces {
+		workspaceID := strings.TrimSpace(entry.WorkspaceID)
+		workspacePath := strings.TrimSpace(entry.Path)
+		if workspaceID == "" || workspacePath == "" {
+			continue
+		}
+		workspacePathByID[workspaceID] = workspacePath
+		workspaceNameByID[workspaceID] = strings.TrimSpace(entry.WorkspaceName)
 	}
 	runtimeTargets := make(map[string]swarmTarget, len(swarmTargets))
 	for _, target := range swarmTargets {
@@ -437,13 +448,17 @@ func (s *Server) workspaceOverviewTopologyRoutesByWorkspace(principal identity.P
 	} else {
 		return nil, err
 	}
-	workspaceNameRouteCounts := workspaceOverviewWorkspaceNameRouteCounts(bindings)
 	seenByWorkspace := make(map[string]map[string]struct{})
 	for _, binding := range bindings {
-		workspacePath := strings.TrimSpace(binding.SourceWorkspacePath)
+		workspaceBindingID := strings.TrimSpace(binding.BindingID)
+		workspaceID := strings.TrimSpace(binding.SourceWorkspaceID)
+		workspacePath := workspacePathByID[workspaceID]
 		runtimeSwarmID := strings.TrimSpace(binding.DestinationRuntimeSwarmID)
 		runtimeWorkspacePath := strings.TrimSpace(binding.DestinationWorkspacePath)
-		if workspacePath == "" || runtimeSwarmID == "" || runtimeWorkspacePath == "" {
+		if workspaceBindingID == "" || workspaceID == "" || workspacePath == "" || runtimeSwarmID == "" || runtimeWorkspacePath == "" {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(binding.State), pebblestore.TopologyWorkspaceBindingStateBound) {
 			continue
 		}
 		runtimeRecord := topologyRuntimes[strings.ToLower(runtimeSwarmID)]
@@ -456,15 +471,9 @@ func (s *Server) workspaceOverviewTopologyRoutesByWorkspace(principal identity.P
 				continue
 			}
 		}
-		workspaceRoute, ok := s.workspaceOverviewTopologyRouteForBinding(binding, runtimeTarget, runtimeRecord, runtimeTargets, workspacePath, workspacePath, strings.TrimSpace(binding.SourceWorkspaceName), workspaceOverviewWorkspaceNameRouteUnambiguous(workspaceNameRouteCounts, binding))
+		workspaceRoute, ok := s.workspaceOverviewTopologyRouteForBinding(binding, runtimeTarget, runtimeRecord, runtimeTargets, workspacePath, workspacePath, workspaceNameByID[workspaceID])
 		if ok {
 			appendWorkspaceOverviewTopologyRoute(out, seenByWorkspace, workspacePath, workspaceRoute)
-		}
-		for _, managedWorkspacePath := range workspaceOverviewManagedHostWorkspacePaths(binding, runtimeTarget, runtimeRecord, localWorkspaceNamesByPath) {
-			managedRoute, ok := s.workspaceOverviewTopologyRouteForBinding(binding, runtimeTarget, runtimeRecord, runtimeTargets, managedWorkspacePath, managedWorkspacePath, localWorkspaceNamesByPath[managedWorkspacePath], workspaceOverviewWorkspaceNameRouteUnambiguous(workspaceNameRouteCounts, binding))
-			if ok {
-				appendWorkspaceOverviewTopologyRoute(out, seenByWorkspace, managedWorkspacePath, managedRoute)
-			}
 		}
 	}
 	for workspacePath := range out {
@@ -480,33 +489,34 @@ func (s *Server) workspaceOverviewTopologyRoutesByWorkspace(principal identity.P
 	return out, nil
 }
 
-func (s *Server) workspaceOverviewTopologyRouteForBinding(binding pebblestore.TopologyWorkspaceBindingRecord, runtimeTarget swarmTarget, runtimeRecord pebblestore.TopologyRuntimeRecord, runtimeTargets map[string]swarmTarget, workspacePath, hostWorkspacePath, hostWorkspaceName string, workspaceNameRouteUnambiguous bool) (workspaceOverviewTopologyRoute, bool) {
+func (s *Server) workspaceOverviewTopologyRouteForBinding(binding pebblestore.TopologyWorkspaceBindingRecord, runtimeTarget swarmTarget, runtimeRecord pebblestore.TopologyRuntimeRecord, runtimeTargets map[string]swarmTarget, workspacePath, hostWorkspacePath, hostWorkspaceName string) (workspaceOverviewTopologyRoute, bool) {
 	runtimeSwarmID := strings.TrimSpace(binding.DestinationRuntimeSwarmID)
 	runtimeWorkspacePath := strings.TrimSpace(binding.DestinationWorkspacePath)
-	routeID := workspaceOverviewTopologyRouteID(runtimeSwarmID, strings.TrimSpace(binding.BindingID), strings.TrimSpace(binding.SourceWorkspaceName), workspaceNameRouteUnambiguous)
+	workspaceBindingID := strings.TrimSpace(binding.BindingID)
+	routeID := workspaceOverviewTopologyRouteID(runtimeSwarmID, workspaceBindingID)
 	if routeID == "" || strings.TrimSpace(workspacePath) == "" {
 		return workspaceOverviewTopologyRoute{}, false
 	}
-	hostSwarmID := firstNonEmpty(strings.TrimSpace(binding.DestinationHostSwarmID), strings.TrimSpace(runtimeRecord.OwnerHostSwarmID), strings.TrimSpace(runtimeTarget.HostSwarmID))
+	authorityHostSwarmID := firstNonEmpty(strings.TrimSpace(binding.DestinationAuthorityHostSwarmID), strings.TrimSpace(binding.DestinationHostSwarmID), strings.TrimSpace(runtimeRecord.OwnerHostSwarmID), strings.TrimSpace(runtimeTarget.HostSwarmID))
 	hostSwarmName := ""
-	if hostSwarmID != "" {
-		if hostTarget, ok := runtimeTargets[strings.ToLower(hostSwarmID)]; ok {
-			hostSwarmName = firstNonEmpty(strings.TrimSpace(hostTarget.Name), hostSwarmID)
+	if authorityHostSwarmID != "" {
+		if hostTarget, ok := runtimeTargets[strings.ToLower(authorityHostSwarmID)]; ok {
+			hostSwarmName = firstNonEmpty(strings.TrimSpace(hostTarget.Name), authorityHostSwarmID)
 		}
 		if hostSwarmName == "" {
-			hostSwarmName = hostSwarmID
+			hostSwarmName = authorityHostSwarmID
 		}
 	}
 	return workspaceOverviewTopologyRoute{
 		RouteID:              routeID,
 		RouteSource:          workspaceOverviewTopologyRouteSource,
-		WorkspaceBindingID:   strings.TrimSpace(binding.BindingID),
+		WorkspaceBindingID:   workspaceBindingID,
 		RuntimeSwarmID:       runtimeSwarmID,
 		RuntimeSwarmName:     firstNonEmpty(strings.TrimSpace(runtimeTarget.Name), runtimeSwarmID),
-		RuntimeKind:          firstNonEmpty(strings.TrimSpace(runtimeTarget.Kind), strings.TrimSpace(binding.LegacyTargetKind)),
+		RuntimeKind:          firstNonEmpty(strings.TrimSpace(binding.DestinationRuntimeKind), strings.TrimSpace(runtimeTarget.Kind)),
 		RuntimeRelationship:  strings.TrimSpace(runtimeTarget.Relationship),
-		RuntimeBackendURL:    strings.TrimSpace(runtimeTarget.BackendURL),
-		HostSwarmID:          hostSwarmID,
+		AuthorityHostSwarmID: authorityHostSwarmID,
+		HostSwarmID:          authorityHostSwarmID,
 		HostSwarmName:        hostSwarmName,
 		HostWorkspacePath:    strings.TrimSpace(hostWorkspacePath),
 		HostWorkspaceName:    strings.TrimSpace(hostWorkspaceName),
@@ -518,6 +528,31 @@ func (s *Server) workspaceOverviewTopologyRouteForBinding(binding pebblestore.To
 		CreatedAt:            binding.CreatedAt,
 		UpdatedAt:            binding.UpdatedAt,
 	}, true
+}
+
+func localWorkspaceBindingIDsByWorkspaceID(workspaces []workspace.Entry, routesByWorkspace map[string][]workspaceOverviewTopologyRoute) map[string]string {
+	out := make(map[string]string)
+	workspaceIDByPath := make(map[string]string, len(workspaces))
+	for _, entry := range workspaces {
+		workspacePath := strings.TrimSpace(entry.Path)
+		workspaceID := strings.TrimSpace(entry.WorkspaceID)
+		if workspacePath != "" && workspaceID != "" {
+			workspaceIDByPath[workspacePath] = workspaceID
+		}
+	}
+	for workspacePath, routes := range routesByWorkspace {
+		workspaceID := workspaceIDByPath[strings.TrimSpace(workspacePath)]
+		if workspaceID == "" {
+			continue
+		}
+		for _, route := range routes {
+			if strings.EqualFold(strings.TrimSpace(route.RuntimeSwarmID), strings.TrimSpace(route.AuthorityHostSwarmID)) && strings.TrimSpace(route.ContainerID) == "" {
+				out[workspaceID] = strings.TrimSpace(route.WorkspaceBindingID)
+				break
+			}
+		}
+	}
+	return out
 }
 
 func appendWorkspaceOverviewTopologyRoute(out map[string][]workspaceOverviewTopologyRoute, seenByWorkspace map[string]map[string]struct{}, workspacePath string, route workspaceOverviewTopologyRoute) {
@@ -535,50 +570,6 @@ func appendWorkspaceOverviewTopologyRoute(out map[string][]workspaceOverviewTopo
 	out[workspacePath] = append(out[workspacePath], route)
 }
 
-func workspaceOverviewManagedHostWorkspacePaths(binding pebblestore.TopologyWorkspaceBindingRecord, runtimeTarget swarmTarget, runtimeRecord pebblestore.TopologyRuntimeRecord, localWorkspaceNamesByPath map[string]string) []string {
-	hostSwarmID := firstNonEmpty(strings.TrimSpace(binding.DestinationHostSwarmID), strings.TrimSpace(runtimeRecord.OwnerHostSwarmID), strings.TrimSpace(runtimeTarget.HostSwarmID))
-	if hostSwarmID == "" || strings.EqualFold(strings.TrimSpace(binding.SourceWorkspacePath), strings.TrimSpace(binding.DestinationWorkspacePath)) {
-		return nil
-	}
-	relationship := strings.ToLower(strings.TrimSpace(runtimeTarget.Relationship))
-	kind := strings.ToLower(strings.TrimSpace(runtimeTarget.Kind))
-	if relationship != "child" && kind != "mirrored" && kind != "local" {
-		return nil
-	}
-	if len(localWorkspaceNamesByPath) == 0 {
-		return nil
-	}
-	runtimeBase := strings.ToLower(strings.TrimSpace(baseNameForPath(binding.DestinationWorkspacePath)))
-	sourceBase := strings.ToLower(strings.TrimSpace(baseNameForPath(binding.SourceWorkspacePath)))
-	if runtimeBase == "" {
-		return nil
-	}
-	paths := make([]string, 0, 1)
-	for workspacePath, workspaceName := range localWorkspaceNamesByPath {
-		workspaceBase := strings.ToLower(strings.TrimSpace(baseNameForPath(workspacePath)))
-		workspaceLabel := strings.ToLower(strings.TrimSpace(workspaceName))
-		if workspaceBase == runtimeBase || workspaceLabel == runtimeBase {
-			if sourceBase == "" || workspaceBase != sourceBase || !strings.EqualFold(strings.TrimSpace(workspacePath), strings.TrimSpace(binding.SourceWorkspacePath)) {
-				paths = append(paths, workspacePath)
-			}
-		}
-	}
-	sort.Strings(paths)
-	return paths
-}
-
-func baseNameForPath(path string) string {
-	path = strings.TrimRight(strings.TrimSpace(path), "/")
-	if path == "" {
-		return ""
-	}
-	idx := strings.LastIndex(path, "/")
-	if idx >= 0 {
-		return path[idx+1:]
-	}
-	return path
-}
-
 func (s *Server) topologyRouteOwnerHostSelectable(runtimeTarget swarmTarget, runtimeRecord pebblestore.TopologyRuntimeRecord, runtimeTargets map[string]swarmTarget) bool {
 	hostSwarmID := firstNonEmpty(strings.TrimSpace(runtimeTarget.HostSwarmID), strings.TrimSpace(runtimeRecord.OwnerHostSwarmID))
 	if hostSwarmID == "" || s.isLocalSwarmID(hostSwarmID) || !isLoopbackBackendURL(runtimeTarget.BackendURL) {
@@ -588,45 +579,13 @@ func (s *Server) topologyRouteOwnerHostSelectable(runtimeTarget swarmTarget, run
 	return ok && hostTarget.Online && hostTarget.Selectable && strings.TrimSpace(hostTarget.BackendURL) != ""
 }
 
-func workspaceOverviewWorkspaceNameRouteCounts(bindings []pebblestore.TopologyWorkspaceBindingRecord) map[string]map[string]int {
-	counts := make(map[string]map[string]int)
-	for _, binding := range bindings {
-		runtimeSwarmID := strings.ToLower(strings.TrimSpace(binding.DestinationRuntimeSwarmID))
-		workspaceName := strings.ToLower(strings.TrimSpace(binding.SourceWorkspaceName))
-		if runtimeSwarmID == "" || workspaceName == "" {
-			continue
-		}
-		if counts[runtimeSwarmID] == nil {
-			counts[runtimeSwarmID] = make(map[string]int)
-		}
-		counts[runtimeSwarmID][workspaceName]++
-	}
-	return counts
-}
-
-func workspaceOverviewWorkspaceNameRouteUnambiguous(counts map[string]map[string]int, binding pebblestore.TopologyWorkspaceBindingRecord) bool {
-	runtimeSwarmID := strings.ToLower(strings.TrimSpace(binding.DestinationRuntimeSwarmID))
-	workspaceName := strings.ToLower(strings.TrimSpace(binding.SourceWorkspaceName))
-	if runtimeSwarmID == "" || workspaceName == "" {
-		return false
-	}
-	return counts[runtimeSwarmID][workspaceName] == 1
-}
-
-func workspaceOverviewTopologyRouteID(runtimeSwarmID, workspaceBindingID, workspaceName string, workspaceNameRouteUnambiguous bool) string {
+func workspaceOverviewTopologyRouteID(runtimeSwarmID, workspaceBindingID string) string {
 	runtimeSwarmID = strings.TrimSpace(runtimeSwarmID)
 	workspaceBindingID = strings.TrimSpace(workspaceBindingID)
-	workspaceName = strings.TrimSpace(workspaceName)
-	if runtimeSwarmID == "" {
+	if runtimeSwarmID == "" || workspaceBindingID == "" {
 		return ""
 	}
-	if workspaceBindingID != "" {
-		return "swarm:" + runtimeSwarmID + ":binding:" + workspaceBindingID
-	}
-	if workspaceNameRouteUnambiguous && workspaceName != "" {
-		return "swarm:" + runtimeSwarmID + ":workspace:" + workspaceName
-	}
-	return ""
+	return "swarm:" + runtimeSwarmID + ":binding:" + workspaceBindingID
 }
 
 func workspaceOverviewSessionStatus(lifecycle *pebblestore.SessionLifecycleSnapshot) string {

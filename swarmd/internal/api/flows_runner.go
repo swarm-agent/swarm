@@ -198,29 +198,30 @@ func (s *Server) runAcceptedFlow(ctx context.Context, accepted flow.AcceptedAssi
 		"metadata_source", flowRouteDiagMetadataValue(metadata, "source"),
 		"metadata_owner_transport", flowRouteDiagMetadataValue(metadata, "owner_transport"),
 	)
-	runtimeWorkspacePath := firstNonEmpty(strings.TrimSpace(assignment.Workspace.RuntimeWorkspacePath), strings.TrimSpace(assignment.Workspace.WorkspacePath))
-	hostWorkspacePath := firstNonEmpty(strings.TrimSpace(assignment.Workspace.HostWorkspacePath), strings.TrimSpace(assignment.Workspace.WorkspacePath))
+	workspaceBindingID := strings.TrimSpace(assignment.Workspace.WorkspaceBindingID)
+	if workspaceBindingID == "" && strings.TrimSpace(assignment.Workspace.WorkspacePath) == "" && strings.TrimSpace(assignment.Workspace.RuntimeWorkspacePath) == "" {
+		return flow.RunStart{}, errors.New("flow workspace_binding_id is required")
+	}
+	runtimeWorkspacePath, workspaceName, err := s.flowWorkspaceMaterializationForRun(principal.AccountScopeID, assignment.Workspace, assignment.Target)
+	if err != nil {
+		return flow.RunStart{}, err
+	}
 	sessionReq := sessionCreateRequest{
-		Title:                flowRunSessionTitle(assignment),
-		WorkspacePath:        runtimeWorkspacePath,
-		HostWorkspacePath:    hostWorkspacePath,
-		RuntimeWorkspacePath: runtimeWorkspacePath,
-		WorkspaceName:        filepath.Base(runtimeWorkspacePath),
-		Mode:                 sessionruntime.ModeAuto,
-		AgentName:            resolvedAgent.RuntimeTargetName,
-		WorktreeMode:         strings.TrimSpace(assignment.Workspace.WorktreeMode),
-		Metadata:             metadata,
+		Title:              flowRunSessionTitle(assignment),
+		WorkspaceBindingID: workspaceBindingID,
+		WorkspaceName:      workspaceName,
+		Mode:               sessionruntime.ModeAuto,
+		AgentName:          resolvedAgent.RuntimeTargetName,
+		WorktreeMode:       strings.TrimSpace(assignment.Workspace.WorktreeMode),
+		Metadata:           metadata,
 	}
 	sessionReq.Preference.Provider = pref.Provider
 	sessionReq.Preference.Model = pref.Model
 	sessionReq.Preference.Thinking = pref.Thinking
 	sessionReq.Preference.ServiceTier = pref.ServiceTier
 	sessionReq.Preference.ContextMode = pref.ContextMode
-	if sessionReq.WorkspaceName == "." || sessionReq.WorkspaceName == string(filepath.Separator) {
-		sessionReq.WorkspaceName = "workspace"
-	}
-	if strings.TrimSpace(sessionReq.WorkspacePath) == "" {
-		return flow.RunStart{}, errors.New("flow workspace_path is required")
+	if strings.TrimSpace(runtimeWorkspacePath) == "" {
+		return flow.RunStart{}, errors.New("flow workspace binding destination workspace path is required")
 	}
 	if strings.TrimSpace(sessionReq.WorkspaceName) == "" || sessionReq.WorkspaceName == "." || sessionReq.WorkspaceName == string(filepath.Separator) {
 		sessionReq.WorkspaceName = "workspace"
@@ -557,13 +558,61 @@ func (s *Server) flowHostedSessionDescriptor(assignment flow.Assignment) (sessio
 		return sessionruntime.HostedSessionDescriptor{}, false
 	}
 	hostBackendURL := firstNonEmpty(strings.TrimSpace(cfg.DeployContainer.HostAPIBaseURL), strings.TrimSpace(cfg.RemoteDeploy.HostAPIBaseURL))
+	runtimeWorkspacePath, _, err := s.flowWorkspaceMaterializationForRun("", assignment.Workspace, assignment.Target)
+	if err != nil {
+		return sessionruntime.HostedSessionDescriptor{}, false
+	}
 	return sessionruntime.HostedSessionDescriptor{
 		HostSwarmID:          controllerSwarmID,
 		HostBackendURL:       hostBackendURL,
-		HostWorkspacePath:    firstNonEmpty(strings.TrimSpace(assignment.Workspace.HostWorkspacePath), strings.TrimSpace(assignment.Workspace.WorkspacePath)),
-		RuntimeWorkspacePath: firstNonEmpty(strings.TrimSpace(assignment.Workspace.RuntimeWorkspacePath), strings.TrimSpace(assignment.Workspace.WorkspacePath)),
+		RuntimeWorkspacePath: runtimeWorkspacePath,
 		ChildSwarmID:         localSwarmID,
 	}, true
+}
+
+func (s *Server) flowWorkspaceMaterializationForRun(accountScopeID string, workspace flow.WorkspaceContext, target flow.TargetSelection) (string, string, error) {
+	workspace = normalizeManagementWorkspace(workspace)
+	workspaceName := strings.TrimSpace(workspace.WorkspaceName)
+	bindingID := strings.TrimSpace(workspace.WorkspaceBindingID)
+	if bindingID == "" {
+		runtimeWorkspacePath := firstNonEmpty(strings.TrimSpace(workspace.RuntimeWorkspacePath), strings.TrimSpace(workspace.WorkspacePath))
+		if runtimeWorkspacePath == "" {
+			return "", "", errors.New("flow workspace_binding_id is required")
+		}
+		return runtimeWorkspacePath, firstNonEmpty(workspaceName, baseNameForPath(runtimeWorkspacePath)), nil
+	}
+	if s != nil && s.topology != nil && strings.TrimSpace(accountScopeID) != "" {
+		binding, ok, err := s.topology.GetWorkspaceBindingForAccount(accountScopeID, bindingID)
+		if err != nil {
+			return "", "", err
+		}
+		if !ok {
+			return "", "", fmt.Errorf("flow workspace binding %q was not found", bindingID)
+		}
+		targetSwarmID := strings.TrimSpace(target.SwarmID)
+		deploymentID := strings.TrimSpace(target.DeploymentID)
+		if targetSwarmID != "" && !flowWorkspaceBindingMatchesTarget(binding, targetSwarmID, deploymentID) {
+			return "", "", fmt.Errorf("flow workspace binding %q does not match target %q", binding.BindingID, flowV3TargetSelectionLabel(target))
+		}
+		if strings.TrimSpace(binding.State) != "" && !strings.EqualFold(strings.TrimSpace(binding.State), pebblestore.TopologyWorkspaceBindingStateBound) {
+			return "", "", errors.New("flow workspace binding is not bound")
+		}
+		runtimeWorkspacePath := strings.TrimSpace(binding.DestinationWorkspacePath)
+		if runtimeWorkspacePath == "" {
+			return "", "", fmt.Errorf("flow workspace binding %q is missing destination workspace path", bindingID)
+		}
+		workspaceName = firstNonEmpty(workspaceName, strings.TrimSpace(binding.SourceWorkspaceName), baseNameForPath(runtimeWorkspacePath))
+		return runtimeWorkspacePath, workspaceName, nil
+	}
+	runtimeWorkspacePath := strings.TrimSpace(workspace.RuntimeWorkspacePath)
+	if runtimeWorkspacePath == "" {
+		runtimeWorkspacePath = strings.TrimSpace(workspace.WorkspacePath)
+	}
+	if runtimeWorkspacePath == "" {
+		return "", "", errors.New("flow workspace binding destination workspace path is required")
+	}
+	workspaceName = firstNonEmpty(workspaceName, baseNameForPath(runtimeWorkspacePath))
+	return runtimeWorkspacePath, workspaceName, nil
 }
 
 func flowRunPrompt(intent flow.PromptIntent) string {

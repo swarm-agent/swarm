@@ -58,6 +58,9 @@ func (s *Service) syncCanonicalDeploymentState(record pebblestore.DeployContaine
 	if childSwarmID == "" {
 		return nil
 	}
+	if hostSwarmID == "" {
+		return fmt.Errorf("deploy topology sync requires host swarm id for child placement")
+	}
 	if _, err := s.topology.PutRuntimePlacementForAccount(accountScopeID, pebblestore.TopologyRuntimePlacementRecord{
 		RuntimeSwarmID:       childSwarmID,
 		AccountScopeID:       accountScopeID,
@@ -125,21 +128,37 @@ func (s *Service) syncCanonicalWorkspaceBindings(record pebblestore.DeployContai
 		if strings.TrimSpace(item.SourceWorkspacePath) == "" {
 			continue
 		}
+		placement, ok, err := s.topology.GetRuntimePlacementForAccount(accountScopeID, childSwarmID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("deploy topology workspace sync requires runtime placement for %s", childSwarmID)
+		}
 		if _, err := pebblestore.UpsertTopologyWorkspaceBindingForAccount(s.topology, accountScopeID, pebblestore.TopologyWorkspaceBindingRecord{
-			BindingID:                 pebblestore.CanonicalTopologyWorkspaceBindingID(record.ID, strings.TrimSpace(item.SourceWorkspacePath)),
-			UserID:                    userID,
-			AccountScopeID:            accountScopeID,
-			SourceWorkspacePath:       strings.TrimSpace(item.SourceWorkspacePath),
-			SourceWorkspaceName:       strings.TrimSpace(item.SourceWorkspaceName),
-			DestinationRuntimeSwarmID: childSwarmID,
-			DestinationHostSwarmID:    strings.TrimSpace(record.HostSwarmID),
-			DestinationWorkspacePath:  strings.TrimSpace(item.TargetWorkspacePath),
-			ReplicationMode:           strings.TrimSpace(item.ReplicationMode),
-			Writable:                  item.Writable,
-			Sync:                      item.Sync,
-			LegacyTargetKind:          "local",
-			CreatedAt:                 record.CreatedAt,
-			UpdatedAt:                 record.UpdatedAt,
+			BindingID:                       pebblestore.CanonicalTopologyWorkspaceBindingID(record.ID, strings.TrimSpace(item.SourceWorkspacePath)),
+			UserID:                          userID,
+			AccountScopeID:                  accountScopeID,
+			SourceWorkspacePath:             strings.TrimSpace(item.SourceWorkspacePath),
+			SourceWorkspaceName:             strings.TrimSpace(item.SourceWorkspaceName),
+			DestinationRuntimeSwarmID:       childSwarmID,
+			DestinationAuthorityHostSwarmID: placement.AuthorityHostSwarmID,
+			DestinationHostSwarmID:          placement.AuthorityHostSwarmID,
+			DestinationContainerID:          placement.AuthorityContainerID,
+			DestinationRuntimeKind:          placement.RuntimeKind,
+			DestinationWorkspacePath:        strings.TrimSpace(item.TargetWorkspacePath),
+			PlacementGeneration:             placement.PlacementGeneration,
+			BindingGeneration:               1,
+			State:                           pebblestore.TopologyWorkspaceBindingStateBound,
+			AccessMode:                      pebblestore.TopologyWorkspaceBindingAccessModeReadWrite,
+			MaterializationKind:             pebblestore.TopologyWorkspaceBindingMaterializationSource,
+			AttestedByHostSwarmID:           placement.AuthorityHostSwarmID,
+			ReplicationMode:                 strings.TrimSpace(item.ReplicationMode),
+			Writable:                        item.Writable,
+			Sync:                            item.Sync,
+			LegacyTargetKind:                "local",
+			CreatedAt:                       record.CreatedAt,
+			UpdatedAt:                       record.UpdatedAt,
 		}); err != nil {
 			return err
 		}

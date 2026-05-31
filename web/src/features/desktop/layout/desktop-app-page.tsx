@@ -343,6 +343,7 @@ function gitSummaryTooltip(status: GitSnapshot | null | undefined): string {
 function buildTemporaryWorkspaceEntry(path: string, workspaceName: string): WorkspaceEntry {
   return {
     path,
+    localWorkspaceBindingId: '',
     workspaceName,
     themeId: '',
     directories: [path],
@@ -3458,6 +3459,8 @@ export function DesktopAppPage() {
             workspaceName={chatWorkspaceName}
             workspaceWorktreeEnabled={selectedWorkspace?.worktreeEnabled ?? false}
             workspaceTopologyRoutes={selectedWorkspace?.topologyRoutes ?? []}
+            localWorkspaceBindingId={selectedWorkspace?.localWorkspaceBindingId}
+            hostSwarmId={currentSwarmTarget?.swarm_id ?? null}
             session={selectedSession}
             onSessionCreated={handleSessionCreated}
             onOpenSettingsTab={handleOpenSettingsTab}

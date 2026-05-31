@@ -572,6 +572,7 @@ func newFlowPeerTestServer(t *testing.T) (*Server, *pebblestore.FlowStore) {
 	server.SetSwarmMirrorStore(pebblestore.NewSwarmMirrorStore(store))
 	server.SetSwarmNodeStore(pebblestore.NewSwarmNodeStore(store))
 	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, server.swarmNodes, nil, nil, nil, nil, pebblestore.NewWorkspaceStore(store)))
+	seedFlowDefaultSelfWorkspaceBinding(t, server)
 	flows := pebblestore.NewFlowStore(store)
 	server.SetFlowStore(flows)
 	server.SetSessionRouteStore(pebblestore.NewSessionRouteStore(store))

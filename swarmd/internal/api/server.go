@@ -638,19 +638,19 @@ type primaryRoutedSessionOpenContract struct {
 
 func routedSessionOpenDispatchTarget(target swarmTarget, authorityHostSwarmID, workspaceBindingID string) swarmTarget {
 	authorityHostSwarmID = strings.TrimSpace(authorityHostSwarmID)
-	if authorityHostSwarmID == "" || strings.TrimSpace(workspaceBindingID) == "" || strings.EqualFold(authorityHostSwarmID, strings.TrimSpace(target.SwarmID)) {
+	if authorityHostSwarmID == "" || strings.TrimSpace(workspaceBindingID) == "" || strings.EqualFold(authorityHostSwarmID, strings.TrimSpace(target.SwarmID)) || strings.EqualFold(authorityHostSwarmID, strings.TrimSpace(target.HostSwarmID)) {
 		return target
 	}
-	return swarmTarget{
-		SwarmID:      authorityHostSwarmID,
-		Name:         authorityHostSwarmID,
-		Role:         "authority",
-		Relationship: "managed",
-		Kind:         "authority",
-		HostSwarmID:  authorityHostSwarmID,
-		Online:       true,
-		Selectable:   true,
-	}
+	authority := target
+	authority.SwarmID = authorityHostSwarmID
+	authority.Name = authorityHostSwarmID
+	authority.Role = "authority"
+	authority.Relationship = "managed"
+	authority.Kind = "authority"
+	authority.HostSwarmID = authorityHostSwarmID
+	authority.Online = true
+	authority.Selectable = true
+	return authority
 }
 
 func routedSessionRequiresWorkspaceBinding(target swarmTarget) bool {
@@ -1960,6 +1960,10 @@ func (s *Server) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.topology == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("topology service not configured"))
+		return
+	}
+	if _, err := s.topology.EnsureLocalSelfPlacementForPrincipal(principal.AccountScopeID, principal.UserID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	resolution, entry, created, err := s.workspace.AddForPrincipalWithEntryWithoutSelection(principal, req.Path, req.Name, req.ThemeID)

@@ -457,6 +457,8 @@ export function IntegrationsPage() {
                   workspaceName={selectedSession?.workspaceName || INTEGRATION_BUILDER_WORKSPACE_NAME}
                   workspaceWorktreeEnabled={false}
                   workspaceTopologyRoutes={[]}
+                  localWorkspaceBindingId=""
+                  hostSwarmId={null}
                   session={selectedSession}
                   sessionCreateOverride={handleCreateChildSession}
                   onSessionCreated={(session) => {

@@ -742,24 +742,15 @@ func (s *Server) flowV3AssignmentFromRequest(r *http.Request, req flowV3UpsertRe
 	if !flowV3HasWorkspaceInput(workspace) && base != nil {
 		workspace = normalizeManagementWorkspace(base.Workspace)
 	}
-	if workspace.WorkspacePath == "" || workspace.WorkspacePath == "." {
-		if s.workspace != nil {
-			if current, currentOK, err := s.workspace.CurrentBindingForPrincipal(principal); err != nil {
-				return flow.Assignment{}, err
-			} else if currentOK && strings.TrimSpace(current.ResolvedPath) != "" {
-				workspace.WorkspacePath = strings.TrimSpace(current.ResolvedPath)
-				if workspace.WorkspaceName == "" {
-					workspace.WorkspaceName = strings.TrimSpace(current.WorkspaceName)
-				}
-			}
-		}
-		if workspace.WorkspacePath == "" {
-			return flow.Assignment{}, errors.New("workspace_path is required")
-		}
+	if workspace.WorkspaceBindingID == "" {
+		return flow.Assignment{}, errors.New("workspace_binding_id is required")
 	}
 	if workspace.WorkspaceName == "" {
 		workspace.WorkspaceName = baseNameForPath(workspace.WorkspacePath)
 	}
+	workspace.WorkspacePath = ""
+	workspace.HostWorkspacePath = ""
+	workspace.RuntimeWorkspacePath = ""
 	if flowV3HasTargetSelection(target) && !isSelfFlowTarget(swarmTarget{}, flow.ResolvedTarget{Kind: target.Kind}) {
 		targetDetail, err := s.requireFlowV3TargetDetail(r, target)
 		if err != nil {
@@ -820,78 +811,43 @@ func (s *Server) resolveFlowV3WorkspaceBindingForTarget(accountScopeID string, w
 	if accountScopeID == "" {
 		return flow.WorkspaceContext{}, errors.New("flow workspace binding resolution requires account scope")
 	}
-	if isSelfFlowTarget(target, resolved) {
-		return workspace, nil
+	if strings.TrimSpace(workspace.WorkspaceBindingID) == "" {
+		return flow.WorkspaceContext{}, errors.New("workspace_binding_id is required")
 	}
 	targetSwarmID := firstNonEmpty(strings.TrimSpace(resolved.SwarmID), strings.TrimSpace(target.SwarmID))
 	deploymentID := firstNonEmpty(strings.TrimSpace(resolved.DeploymentID), strings.TrimSpace(target.DeploymentID))
-	var binding pebblestore.TopologyWorkspaceBindingRecord
-	if workspace.WorkspaceBindingID != "" {
-		found, ok, err := s.topology.GetWorkspaceBindingForAccount(accountScopeID, workspace.WorkspaceBindingID)
-		if err != nil {
-			return flow.WorkspaceContext{}, err
-		}
-		if !ok {
-			return flow.WorkspaceContext{}, fmt.Errorf("flow workspace binding %q was not found", workspace.WorkspaceBindingID)
-		}
-		if !flowWorkspaceBindingMatchesTarget(found, targetSwarmID, deploymentID) {
-			return flow.WorkspaceContext{}, fmt.Errorf("flow workspace binding %q does not match target %q", found.BindingID, flowV3TargetSelectionLabel(resolved.Selection))
-		}
-		binding = found
-	} else {
-		bindings, err := s.topology.ListWorkspaceBindingsForAccount(accountScopeID, 100000)
-		if err != nil {
-			return flow.WorkspaceContext{}, err
-		}
-		matches := make([]pebblestore.TopologyWorkspaceBindingRecord, 0, 2)
-		workspaceName := strings.ToLower(strings.TrimSpace(workspace.WorkspaceName))
-		workspaceBase := strings.ToLower(strings.TrimSpace(baseNameForPath(workspace.WorkspacePath)))
-		for _, candidate := range bindings {
-			if !flowWorkspaceBindingMatchesTarget(candidate, targetSwarmID, deploymentID) {
-				continue
-			}
-			candidateName := strings.ToLower(strings.TrimSpace(candidate.SourceWorkspaceName))
-			candidateBase := strings.ToLower(strings.TrimSpace(baseNameForPath(candidate.SourceWorkspacePath)))
-			if (workspaceName != "" && (workspaceName == candidateName || workspaceName == candidateBase)) || (workspaceBase != "" && workspaceBase == candidateBase) {
-				matches = append(matches, candidate)
-			}
-		}
-		if len(matches) == 0 {
-			for _, candidate := range bindings {
-				if !flowWorkspaceBindingMatchesTarget(candidate, targetSwarmID, deploymentID) {
-					continue
-				}
-				source := strings.TrimSpace(candidate.SourceWorkspacePath)
-				if source != "" && flowPathWithinRoot(source, workspace.WorkspacePath) {
-					matches = append(matches, candidate)
-				}
-			}
-		}
-		if len(matches) == 0 {
-			return flow.WorkspaceContext{}, fmt.Errorf("flow workspace %q has no topology binding for target %q", firstNonEmpty(workspace.WorkspaceName, workspace.WorkspacePath), flowV3TargetSelectionLabel(resolved.Selection))
-		}
-		if len(matches) > 1 {
-			return flow.WorkspaceContext{}, fmt.Errorf("flow workspace %q matches multiple topology bindings for target %q; specify workspace_binding_id", firstNonEmpty(workspace.WorkspaceName, workspace.WorkspacePath), flowV3TargetSelectionLabel(resolved.Selection))
-		}
-		binding = matches[0]
+	binding, ok, err := s.topology.GetWorkspaceBindingForAccount(accountScopeID, workspace.WorkspaceBindingID)
+	if err != nil {
+		return flow.WorkspaceContext{}, err
 	}
-	if strings.TrimSpace(binding.BindingID) == "" || strings.TrimSpace(binding.SourceWorkspacePath) == "" || strings.TrimSpace(binding.DestinationWorkspacePath) == "" {
+	if !ok {
+		return flow.WorkspaceContext{}, fmt.Errorf("flow workspace binding %q was not found", workspace.WorkspaceBindingID)
+	}
+	if !flowWorkspaceBindingMatchesTarget(binding, targetSwarmID, deploymentID) {
+		return flow.WorkspaceContext{}, fmt.Errorf("flow workspace binding %q does not match target %q", binding.BindingID, flowV3TargetSelectionLabel(resolved.Selection))
+	}
+	if strings.TrimSpace(binding.AccountScopeID) != "" && !strings.EqualFold(strings.TrimSpace(binding.AccountScopeID), accountScopeID) {
+		return flow.WorkspaceContext{}, errors.New("flow workspace binding account scope does not match principal")
+	}
+	if !strings.EqualFold(strings.TrimSpace(binding.DestinationRuntimeSwarmID), targetSwarmID) {
+		return flow.WorkspaceContext{}, errors.New("flow workspace binding does not match selected runtime swarm id")
+	}
+	if strings.TrimSpace(binding.State) != "" && !strings.EqualFold(strings.TrimSpace(binding.State), pebblestore.TopologyWorkspaceBindingStateBound) {
+		return flow.WorkspaceContext{}, errors.New("flow workspace binding is not bound")
+	}
+	if strings.TrimSpace(binding.AttestedByHostSwarmID) != "" && !strings.EqualFold(strings.TrimSpace(binding.AttestedByHostSwarmID), strings.TrimSpace(binding.DestinationAuthorityHostSwarmID)) {
+		return flow.WorkspaceContext{}, errors.New("flow workspace binding attesting host does not match authority host")
+	}
+	if strings.TrimSpace(binding.BindingID) == "" || strings.TrimSpace(binding.DestinationWorkspacePath) == "" {
 		return flow.WorkspaceContext{}, fmt.Errorf("flow workspace binding %q is incomplete", binding.BindingID)
 	}
-	sourcePath := strings.TrimSpace(binding.SourceWorkspacePath)
-	destinationPath := strings.TrimSpace(binding.DestinationWorkspacePath)
-	originalPath := firstNonEmpty(workspace.HostWorkspacePath, workspace.WorkspacePath, sourcePath)
 	workspace.WorkspaceBindingID = strings.TrimSpace(binding.BindingID)
-	workspace.WorkspaceName = firstNonEmpty(strings.TrimSpace(workspace.WorkspaceName), strings.TrimSpace(binding.SourceWorkspaceName), baseNameForPath(sourcePath))
-	workspace.HostWorkspacePath = sourcePath
-	workspace.RuntimeWorkspacePath = translateFlowSubpath(sourcePath, destinationPath, sourcePath)
-	workspace.WorkspacePath = sourcePath
-	if workspace.CWD != "" {
-		workspace.CWD = translateFlowSubpath(originalPath, workspace.RuntimeWorkspacePath, workspace.CWD)
-	}
+	workspace.WorkspaceName = firstNonEmpty(strings.TrimSpace(workspace.WorkspaceName), strings.TrimSpace(binding.SourceWorkspaceName), baseNameForPath(binding.DestinationWorkspacePath))
+	workspace.WorkspacePath = ""
+	workspace.HostWorkspacePath = ""
+	workspace.RuntimeWorkspacePath = ""
 	return workspace, nil
 }
-
 func (s *Server) flowV3TargetDetail(r *http.Request, selection flow.TargetSelection) (*swarmTarget, error) {
 	selection = normalizeFlowTargetSelection(selection)
 	if !flowV3HasTargetSelection(selection) {

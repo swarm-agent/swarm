@@ -180,7 +180,11 @@ func (s *Server) DeliverPendingFlowAssignmentCommands(ctx context.Context, limit
 
 func (s *Server) enqueueFlowAssignmentCommandForTarget(command flow.AssignmentCommand, target swarmTarget, resolved flow.ResolvedTarget) (pebblestore.FlowOutboxCommandRecord, error) {
 	command = normalizeAPIFlowAssignmentCommand(command)
-	command.Assignment.Workspace = s.flowWorkspaceForTargetForAccount(command.AccountScopeID, command.Assignment.Workspace, target, resolved)
+	var workspaceErr error
+	command.Assignment.Workspace, workspaceErr = s.flowWorkspaceForTargetForAccount(command.AccountScopeID, command.Assignment.Workspace, target, resolved)
+	if workspaceErr != nil {
+		return pebblestore.FlowOutboxCommandRecord{}, workspaceErr
+	}
 	if err := command.ValidateIdempotencyKey(); err != nil {
 		return pebblestore.FlowOutboxCommandRecord{}, err
 	}
@@ -368,7 +372,12 @@ func (s *Server) proxyPeerFlowApplyToLocalChild(w http.ResponseWriter, r *http.R
 		return false
 	}
 	proxied := command
-	proxied.Assignment.Workspace = s.flowWorkspaceForTargetForAccount(proxied.AccountScopeID, proxied.Assignment.Workspace, target, resolvedFlowTarget(proxied.Assignment.Target, target))
+	var workspaceErr error
+	proxied.Assignment.Workspace, workspaceErr = s.flowWorkspaceForTargetForAccount(proxied.AccountScopeID, proxied.Assignment.Workspace, target, resolvedFlowTarget(proxied.Assignment.Target, target))
+	if workspaceErr != nil {
+		writeError(w, http.StatusBadRequest, workspaceErr)
+		return true
+	}
 	flowRouteDiagLog("peer_apply_proxy_to_local_child",
 		"peer_header_swarm_id", peerSwarmID,
 		"flow_id", command.FlowID,
@@ -668,48 +677,53 @@ func normalizeFlowTargetSelection(selection flow.TargetSelection) flow.TargetSel
 }
 
 func (s *Server) flowWorkspaceForTarget(workspace flow.WorkspaceContext, target swarmTarget, resolved flow.ResolvedTarget) flow.WorkspaceContext {
-	return s.flowWorkspaceForTargetForAccount("", workspace, target, resolved)
+	resolvedWorkspace, err := s.flowWorkspaceForTargetForAccount("", workspace, target, resolved)
+	if err != nil {
+		return normalizeManagementWorkspace(workspace)
+	}
+	return resolvedWorkspace
 }
 
-func (s *Server) flowWorkspaceForTargetForAccount(accountScopeID string, workspace flow.WorkspaceContext, target swarmTarget, resolved flow.ResolvedTarget) flow.WorkspaceContext {
+func (s *Server) flowWorkspaceForTargetForAccount(accountScopeID string, workspace flow.WorkspaceContext, target swarmTarget, resolved flow.ResolvedTarget) (flow.WorkspaceContext, error) {
 	workspace = normalizeManagementWorkspace(workspace)
-	hostWorkspacePath := firstNonEmpty(workspace.HostWorkspacePath, workspace.WorkspacePath)
-	runtimeWorkspacePath := firstNonEmpty(workspace.RuntimeWorkspacePath, workspace.WorkspacePath)
-	if workspace.HostWorkspacePath == "" {
-		workspace.HostWorkspacePath = hostWorkspacePath
+	if isSelfFlowTarget(target, resolved) {
+		return workspace, nil
 	}
-	if workspace.RuntimeWorkspacePath == "" {
-		workspace.RuntimeWorkspacePath = runtimeWorkspacePath
-	}
-	if workspace.WorkspacePath == "" || isSelfFlowTarget(target, resolved) {
-		return workspace
-	}
-	if strings.TrimSpace(workspace.WorkspaceBindingID) != "" && s != nil && s.topology != nil && strings.TrimSpace(accountScopeID) != "" {
-		binding, ok, err := s.topology.GetWorkspaceBindingForAccount(accountScopeID, workspace.WorkspaceBindingID)
-		if err == nil && ok {
-			source := strings.TrimSpace(binding.SourceWorkspacePath)
-			targetPath := strings.TrimSpace(binding.DestinationWorkspacePath)
-			if source != "" && targetPath != "" && flowWorkspaceBindingMatchesTarget(binding, firstNonEmpty(strings.TrimSpace(resolved.SwarmID), strings.TrimSpace(target.SwarmID)), firstNonEmpty(strings.TrimSpace(resolved.DeploymentID), strings.TrimSpace(target.DeploymentID))) {
-				workspace.CWD = translateFlowSubpath(source, targetPath, workspace.CWD)
-				workspace.WorkspacePath = targetPath
-				workspace.RuntimeWorkspacePath = targetPath
-				workspace.HostWorkspacePath = source
-				workspace.WorkspaceName = firstNonEmpty(workspace.WorkspaceName, strings.TrimSpace(binding.SourceWorkspaceName), baseNameForPath(source))
-				return workspace
-			}
+	bindingID := strings.TrimSpace(workspace.WorkspaceBindingID)
+	if bindingID == "" {
+		if strings.TrimSpace(workspace.WorkspacePath) != "" || strings.TrimSpace(workspace.RuntimeWorkspacePath) != "" {
+			return workspace, nil
 		}
+		return flow.WorkspaceContext{}, errors.New("workspace_binding_id is required")
 	}
-	translated := s.resolveReplicatedFlowWorkspacePathForAccount(accountScopeID, hostWorkspacePath, target, resolved)
-	if translated == "" || translated == workspace.WorkspacePath {
-		if translated != "" {
-			workspace.RuntimeWorkspacePath = translated
+	if s == nil || s.topology == nil || strings.TrimSpace(accountScopeID) == "" {
+		return flow.WorkspaceContext{}, errors.New("flow workspace binding resolution requires topology store and account scope")
+	}
+	binding, ok, err := s.topology.GetWorkspaceBindingForAccount(accountScopeID, bindingID)
+	if err != nil {
+		return flow.WorkspaceContext{}, err
+	}
+	if !ok {
+		return flow.WorkspaceContext{}, fmt.Errorf("flow workspace binding %q was not found", bindingID)
+	}
+	targetSwarmID := firstNonEmpty(strings.TrimSpace(resolved.SwarmID), strings.TrimSpace(target.SwarmID))
+	deploymentID := firstNonEmpty(strings.TrimSpace(resolved.DeploymentID), strings.TrimSpace(target.DeploymentID))
+	if !flowWorkspaceBindingMatchesTarget(binding, targetSwarmID, deploymentID) {
+		if strings.TrimSpace(workspace.WorkspacePath) != "" || strings.TrimSpace(workspace.RuntimeWorkspacePath) != "" {
+			return workspace, nil
 		}
-		return workspace
+		return flow.WorkspaceContext{}, fmt.Errorf("flow workspace binding %q does not match target %q", binding.BindingID, flowV3TargetSelectionLabel(resolved.Selection))
 	}
-	workspace.CWD = translateFlowSubpath(hostWorkspacePath, translated, workspace.CWD)
-	workspace.WorkspacePath = translated
-	workspace.RuntimeWorkspacePath = translated
-	return workspace
+	targetPath := strings.TrimSpace(binding.DestinationWorkspacePath)
+	if targetPath == "" {
+		return flow.WorkspaceContext{}, fmt.Errorf("flow workspace binding %q is missing destination workspace path", bindingID)
+	}
+	workspace.WorkspaceBindingID = strings.TrimSpace(binding.BindingID)
+	workspace.WorkspaceName = firstNonEmpty(workspace.WorkspaceName, strings.TrimSpace(binding.SourceWorkspaceName), baseNameForPath(targetPath))
+	workspace.WorkspacePath = targetPath
+	workspace.RuntimeWorkspacePath = targetPath
+	workspace.HostWorkspacePath = ""
+	return workspace, nil
 }
 
 func (s *Server) resolveReplicatedFlowWorkspacePath(hostWorkspacePath string, target swarmTarget, resolved flow.ResolvedTarget) string {

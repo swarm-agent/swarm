@@ -48,7 +48,7 @@ function responseForTarget(kind: string, relationship: string): WorkspaceOvervie
         runtime_swarm_name: 'Child Swarm',
         runtime_kind: 'remote',
         runtime_relationship: 'child',
-        runtime_backend_url: 'https://child.example.test',
+        authority_host_swarm_id: 'host-swarm',
         host_swarm_id: 'host-swarm',
         host_workspace_path: '/workspaces/host-swarm',
         host_workspace_name: 'host-swarm',
@@ -77,6 +77,8 @@ test('remote child workspace overview groups routed sessions under runtime works
   assert.equal(overview.workspaces[0]?.sessions[0]?.runtimeWorkspacePath, '/workspaces/swarm')
   assert.equal(overview.workspaces[0]?.topologyRoutes[0]?.routeSource, 'topology/workspace_binding')
   assert.equal(overview.workspaces[0]?.topologyRoutes[0]?.runtimeSwarmId, 'child-swarm')
+  assert.equal(overview.workspaces[0]?.topologyRoutes[0]?.workspaceBindingId, 'binding-1')
+  assert.equal(overview.workspaces[0]?.topologyRoutes[0]?.authorityHostSwarmId, 'host-swarm')
   assert.deepEqual(overview.workspaces[0]?.topologyRoutes[0]?.sync.modules, ['sessions'])
 })
 

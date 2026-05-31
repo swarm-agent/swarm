@@ -22,7 +22,7 @@ function route(overrides: Partial<WorkspaceOverviewTopologyRoute> = {}): Workspa
     runtimeSwarmName: 'Target Name',
     runtimeKind: 'host',
     runtimeRelationship: 'managed',
-    runtimeBackendUrl: 'http://target.example',
+    authorityHostSwarmId: 'host-swarm',
     hostSwarmId: 'host-swarm',
     hostWorkspacePath: '/source',
     hostWorkspaceName: 'Source',

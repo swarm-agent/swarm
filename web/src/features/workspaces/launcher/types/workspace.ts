@@ -6,6 +6,7 @@ export interface WorkspaceEntry {
   workspaceId?: string
   workspaceGeneration?: number
   state?: string
+  localWorkspaceBindingId: string
   workspaceName: string
   themeId: string
   directories: string[]
@@ -91,6 +92,7 @@ export interface WorkspaceEntryWire {
   workspace_id?: string
   workspace_generation?: number
   state?: string
+  local_workspace_binding_id?: string
   workspace_name: string
   theme_id?: string
   directories: string[]
@@ -160,6 +162,7 @@ export function mapWorkspaceEntry(entry: WorkspaceEntryWire): WorkspaceEntry {
     workspaceId: String(entry.workspace_id ?? '').trim(),
     workspaceGeneration: typeof entry.workspace_generation === 'number' ? entry.workspace_generation : 0,
     state: String(entry.state ?? '').trim(),
+    localWorkspaceBindingId: String(entry.local_workspace_binding_id ?? '').trim(),
     workspaceName: entry.workspace_name,
     themeId: entry.theme_id ?? '',
     directories: entry.directories,
