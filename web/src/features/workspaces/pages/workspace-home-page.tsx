@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { ArrowUp, Check, ChevronRight, Eye, EyeOff, Folder, FolderPlus, Grid2X2, Home, List, MoreHorizontal, Plus, RefreshCw, Search, Settings, X } from 'lucide-react'
+import { ArrowUp, Check, ChevronRight, Eye, EyeOff, FileText, Folder, FolderPlus, GitBranch, Grid2X2, Home, List, MoreHorizontal, Plus, RefreshCw, Search, Settings, X } from 'lucide-react'
 import { Card } from '../../../components/ui/card'
 import { Button } from '../../../components/ui/button'
 import { Badge } from '../../../components/ui/badge'
@@ -105,6 +105,39 @@ function workspaceLocation(workspace: WorkspaceEntry): string {
   return formatWorkspaceDirectories(workspace.directories)[0] ?? formatWorkspacePath(workspace.path)
 }
 
+function WorkspaceSignalIcons({ hasSwarm, isGitRepo, compact = false }: { hasSwarm: boolean; isGitRepo: boolean; compact?: boolean }) {
+  return (
+    <div className={cn('flex items-center gap-1.5', compact ? 'justify-start' : 'justify-center')}>
+      <span
+        className={cn(
+          'flex shrink-0 items-center justify-center rounded-md border transition-colors',
+          compact ? 'size-6' : 'size-7',
+          hasSwarm
+            ? 'border-[color-mix(in_oklab,var(--app-border-accent)_58%,var(--app-border))] bg-[color-mix(in_oklab,var(--app-primary)_12%,transparent)] text-[var(--app-text)]'
+            : 'border-[color-mix(in_oklab,var(--app-border)_48%,transparent)] bg-transparent text-[var(--app-text-muted)] opacity-35',
+        )}
+        title={hasSwarm ? 'AGENTS.md present' : 'No AGENTS.md detected'}
+        aria-label={hasSwarm ? 'AGENTS.md present' : 'No AGENTS.md detected'}
+      >
+        <FileText size={compact ? 12 : 14} strokeWidth={1.8} />
+      </span>
+      <span
+        className={cn(
+          'flex shrink-0 items-center justify-center rounded-md border transition-colors',
+          compact ? 'size-6' : 'size-7',
+          isGitRepo
+            ? 'border-[color-mix(in_oklab,var(--app-success)_45%,var(--app-border))] bg-[color-mix(in_oklab,var(--app-success)_10%,transparent)] text-[var(--app-success)]'
+            : 'border-[color-mix(in_oklab,var(--app-border)_48%,transparent)] bg-transparent text-[var(--app-text-muted)] opacity-35',
+        )}
+        title={isGitRepo ? 'Git repository' : 'No git repository detected'}
+        aria-label={isGitRepo ? 'Git repository' : 'No git repository detected'}
+      >
+        <GitBranch size={compact ? 12 : 14} strokeWidth={1.8} />
+      </span>
+    </div>
+  )
+}
+
 function WorkspaceGlyph({ active = false }: { active?: boolean }) {
   return (
     <div
@@ -198,14 +231,12 @@ interface AllWorkspaceRowProps {
 }
 
 function AllWorkspaceRow({ entry, savedWorkspace, busy, onBrowse, onOpen, onCreate, compact = false }: AllWorkspaceRowProps) {
-  const metaItems = compact ? [] : [entry.hasSwarm ? 'AGENTS.md' : null, entry.hasClaude ? 'CLAUDE.md' : null, entry.isGitRepo ? 'git repo' : null].filter(Boolean)
-  const mobileMeta = [entry.hasSwarm ? 'AGENTS.md' : null, entry.hasClaude ? 'CLAUDE.md' : null, entry.isGitRepo ? 'git repo' : null].filter(Boolean).join(' · ')
-
   return (
     <div
       className={cn(
-        'grid min-w-0 items-center gap-3 border-b border-[color-mix(in_oklab,var(--app-border)_48%,transparent)] px-3 text-sm transition-colors last:border-b-0 hover:bg-[color-mix(in_oklab,var(--app-surface-hover)_70%,transparent)] max-md:min-h-14 max-md:grid-cols-[minmax(0,1fr)_auto] max-md:px-2.5 max-md:py-2',
-        compact ? 'grid-cols-[minmax(0,1fr)_5.5rem] py-1.5' : 'grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)_5.5rem] py-2.5',
+        'grid min-w-0 items-center gap-3 rounded-lg border border-[color-mix(in_oklab,var(--app-border)_48%,transparent)] bg-[color-mix(in_oklab,var(--app-surface)_52%,transparent)] px-3 text-sm transition-colors hover:bg-[color-mix(in_oklab,var(--app-surface-hover)_70%,transparent)] max-md:min-h-14 max-md:grid-cols-[minmax(0,1fr)_auto] max-md:px-2.5 max-md:py-2',
+        compact ? 'grid-cols-[minmax(0,1fr)_4.25rem_5.5rem] py-1.5' : 'grid-cols-[minmax(0,1fr)_4.25rem_5.5rem] py-2.5',
+        compact && 'max-md:grid-cols-[minmax(0,1fr)_auto]',
       )}
     >
       <button type="button" className="flex min-w-0 items-center gap-3 text-left" onClick={() => onBrowse(entry.path)}>
@@ -220,27 +251,20 @@ function AllWorkspaceRow({ entry, savedWorkspace, busy, onBrowse, onOpen, onCrea
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
             <span className="truncate font-medium text-[var(--app-text)]">{savedWorkspace?.workspaceName || entry.name}</span>
-            {metaItems.map((item) => (
-              <span key={item} className="rounded bg-[var(--app-surface-subtle)] px-1.5 py-0.5 text-[10px] text-[var(--app-text-subtle)] max-lg:hidden">
-                {item}
-              </span>
-            ))}
           </div>
-          <div className="mt-0.5 hidden truncate text-[11px] text-[var(--app-text-subtle)] max-md:block">
-            {mobileMeta || 'folder'}
+          <div className="mt-1 hidden max-md:block">
+            <WorkspaceSignalIcons hasSwarm={entry.hasSwarm} isGitRepo={entry.isGitRepo} compact />
           </div>
-          <div className="mt-0.5 truncate text-xs text-[var(--app-text-subtle)] max-md:text-[11px]" title={entry.path}>
-            {formatWorkspacePath(entry.path)}
-          </div>
+          {!compact ? (
+            <div className="mt-0.5 truncate text-xs text-[var(--app-text-subtle)] max-md:text-[11px]" title={entry.path}>
+              {formatWorkspacePath(entry.path)}
+            </div>
+          ) : null}
         </div>
       </button>
-      {!compact ? (
-        <button type="button" className="min-w-0 text-left max-md:hidden" onClick={() => onBrowse(entry.path)}>
-          <span className="block truncate text-xs text-[var(--app-text-muted)]" title={entry.path}>
-            {formatWorkspacePath(entry.path)}
-          </span>
-        </button>
-      ) : null}
+      <div className="max-md:hidden">
+        <WorkspaceSignalIcons hasSwarm={entry.hasSwarm} isGitRepo={entry.isGitRepo} compact={compact} />
+      </div>
       <div className="flex items-center justify-start gap-1">
         <Button
           size="sm"
@@ -1038,16 +1062,9 @@ export function WorkspaceHomePage() {
                     discovered.length === 0 ? (
                       <WorkspaceStatus kind="empty" title="No candidate folders" message="No repositories found in scanned locations. Use Explorer to browse to a folder." />
                     ) : (
-                      <div className="overflow-hidden rounded-xl border border-[color-mix(in_oklab,var(--app-border)_58%,transparent)] bg-[color-mix(in_oklab,var(--app-surface)_52%,transparent)]">
-                        {!allWorkspacesCompact ? (
-                          <div className="grid grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)_5.5rem] gap-3 border-b border-[color-mix(in_oklab,var(--app-border)_56%,transparent)] px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--app-text-subtle)] max-md:hidden">
-                            <span>Name</span>
-                            <span>Location</span>
-                            <span>Action</span>
-                          </div>
-                        ) : null}
+                      <div className="grid gap-2 md:grid-cols-2">
                         {discoveredRows.length === 0 ? (
-                          <div className="px-4 py-6 text-sm text-[var(--app-text-muted)]">No folders match your search.</div>
+                          <div className="rounded-xl border border-[color-mix(in_oklab,var(--app-border)_58%,transparent)] px-4 py-6 text-sm text-[var(--app-text-muted)] md:col-span-2">No folders match your search.</div>
                         ) : (
                           discoveredRows.map(({ entry, savedWorkspace }) => (
                             <AllWorkspaceRow
