@@ -54,6 +54,7 @@ const (
 	PathContainerManagedAgentsApply        = "deploy.container.managed.agents.apply.v1"
 	PathContainerManagedModelDefaultsApply = "deploy.container.managed.model_defaults.apply.v1"
 	PathContainerManagedPermissionsApply   = "deploy.container.managed.permissions.apply.v1"
+	PathContainerPairingAccountBind        = "deploy.container.pairing.account_bind.v1"
 	PathContainerSettings                  = "deploy.container.settings.v1"
 	PathContainerWorkspaceBootstrap        = "deploy.container.workspace-bootstrap.v1"
 
@@ -251,6 +252,14 @@ type ContainerSyncCredentialBundle struct {
 	Exported       int    `json:"exported"`
 	ExportedAt     int64  `json:"exported_at,omitempty"`
 	SnapshotHash   string `json:"snapshot_hash,omitempty"`
+}
+
+type ContainerPairingAccountBindInput struct {
+	DeploymentID   string `json:"deployment_id"`
+	HostSwarmID    string `json:"host_swarm_id"`
+	ChildSwarmID   string `json:"child_swarm_id"`
+	UserID         string `json:"user_id"`
+	AccountScopeID string `json:"account_scope_id"`
 }
 
 type ContainerSyncAgentBundle struct {
@@ -1229,6 +1238,9 @@ func (s *Service) AttachApprove(ctx context.Context, input ContainerAttachApprov
 	if strings.TrimSpace(record.ChildSwarmID) == "" {
 		return ContainerAttachState{}, fmt.Errorf("child attach request has not been received")
 	}
+	if _, _, err := requireDeployRecordAccountIdentity(&record); err != nil {
+		return ContainerAttachState{}, err
+	}
 	if record.AttachStatus == "attached" {
 		return mapAttachState(record), nil
 	}
@@ -1330,18 +1342,22 @@ func (s *Service) SyncCredentialBundle(ctx context.Context, input ContainerSyncC
 	if strings.TrimSpace(record.SyncBundlePassword) == "" {
 		return ContainerSyncCredentialBundle{}, fmt.Errorf("sync bundle password is not configured")
 	}
+	userID, accountScopeID, err := requireDeployRecordAccountIdentity(&record)
+	if err != nil {
+		return ContainerSyncCredentialBundle{}, err
+	}
 	if known := strings.TrimSpace(input.KnownSnapshotHash); known != "" && strings.EqualFold(known, strings.TrimSpace(record.SyncCredentialSnapshotHash)) {
 		return ContainerSyncCredentialBundle{
 			OwnerSwarmID:   record.SyncOwnerSwarmID,
-			UserID:         strings.TrimSpace(record.UserID),
-			AccountScopeID: strings.TrimSpace(record.AccountScopeID),
+			UserID:         userID,
+			AccountScopeID: accountScopeID,
 			BundlePassword: record.SyncBundlePassword,
 			Exported:       record.SyncBundleExportCount,
 			ExportedAt:     record.SyncBundleExportedAt,
 			SnapshotHash:   strings.TrimSpace(record.SyncCredentialSnapshotHash),
 		}, nil
 	}
-	payload, exported, err := s.auth.ExportCredentialsForAccount(record.AccountScopeID, record.SyncBundlePassword, strings.TrimSpace(input.VaultPassword))
+	payload, exported, err := s.auth.ExportCredentialsForAccount(accountScopeID, record.SyncBundlePassword, strings.TrimSpace(input.VaultPassword))
 	if err != nil {
 		return ContainerSyncCredentialBundle{}, err
 	}
@@ -1357,8 +1373,8 @@ func (s *Service) SyncCredentialBundle(ctx context.Context, input ContainerSyncC
 	}
 	return ContainerSyncCredentialBundle{
 		OwnerSwarmID:   record.SyncOwnerSwarmID,
-		UserID:         strings.TrimSpace(record.UserID),
-		AccountScopeID: strings.TrimSpace(record.AccountScopeID),
+		UserID:         userID,
+		AccountScopeID: accountScopeID,
 		BundlePassword: record.SyncBundlePassword,
 		Bundle:         payload,
 		Exported:       exported,
@@ -1403,7 +1419,11 @@ func (s *Service) SyncAgentBundle(ctx context.Context, input ContainerSyncCreden
 	if !syncProfiles && !syncCustomTools {
 		return ContainerSyncAgentBundle{}, fmt.Errorf("agent sync modules are not enabled for this deployment")
 	}
-	return s.exportManagedAgentBundleForAccount(record.AccountScopeID, record.SyncModules)
+	_, accountScopeID, err := requireDeployRecordAccountIdentity(&record)
+	if err != nil {
+		return ContainerSyncAgentBundle{}, err
+	}
+	return s.exportManagedAgentBundleForAccount(accountScopeID, record.SyncModules)
 }
 
 func (s *Service) SyncSkillBundle(ctx context.Context, input ContainerSyncCredentialRequestInput) (ContainerSyncSkillBundle, error) {
@@ -1471,7 +1491,11 @@ func (s *Service) SyncModelDefaultsBundle(ctx context.Context, input ContainerSy
 	if !workspaceruntime.ReplicationSyncModuleEnabled(record.SyncModules, workspaceruntime.ReplicationSyncModuleModelDefaults) {
 		return ContainerSyncModelDefaultsBundle{}, fmt.Errorf("model default sync module is not enabled for this deployment")
 	}
-	return s.exportManagedModelDefaultsBundleForAccount(record.AccountScopeID, record.SyncModules)
+	_, accountScopeID, err := requireDeployRecordAccountIdentity(&record)
+	if err != nil {
+		return ContainerSyncModelDefaultsBundle{}, err
+	}
+	return s.exportManagedModelDefaultsBundleForAccount(accountScopeID, record.SyncModules)
 }
 
 func (s *Service) SyncManagedHostModelDefaultsBundle(ctx context.Context, input ContainerSyncCredentialRequestInput) (ContainerSyncModelDefaultsBundle, error) {
@@ -1511,6 +1535,10 @@ func (s *Service) SyncPermissionBundle(ctx context.Context, input ContainerSyncC
 	if !record.SyncEnabled {
 		return ContainerSyncPermissionBundle{}, fmt.Errorf("swarm sync is not enabled for this deployment")
 	}
+	_, accountScopeID, err := requireDeployRecordAccountIdentity(&record)
+	if err != nil {
+		return ContainerSyncPermissionBundle{}, err
+	}
 	if record.BypassPermissions {
 		return ContainerSyncPermissionBundle{State: permission.ManagedPolicyState{
 			Policy:            permission.DefaultPolicy(),
@@ -1518,7 +1546,7 @@ func (s *Service) SyncPermissionBundle(ctx context.Context, input ContainerSyncC
 			ExportedAt:        time.Now().UnixMilli(),
 		}}, nil
 	}
-	state, err := s.permission.ExportPolicyStateForAccount(record.AccountScopeID)
+	state, err := s.permission.ExportPolicyStateForAccount(accountScopeID)
 	if err != nil {
 		return ContainerSyncPermissionBundle{}, err
 	}
@@ -1886,11 +1914,10 @@ func (s *Service) materializeManagedPairingIdentity(pairing pebblestore.SwarmLoc
 	if accountScopeID == "" {
 		return fmt.Errorf("managed pairing account scope id is required")
 	}
-	if s == nil || s.identity == nil {
-		return fmt.Errorf("identity service is not configured")
-	}
-	if _, err := s.identity.EnsureLinkedIdentity(identity.EnsureLinkedIdentityInput{UserID: userID, AccountScopeID: accountScopeID, DisplayName: userID}); err != nil {
-		return fmt.Errorf("materialize managed pairing identity: %w", err)
+	if s != nil && s.identity != nil {
+		if _, err := s.identity.EnsureLinkedIdentity(identity.EnsureLinkedIdentityInput{UserID: userID, AccountScopeID: accountScopeID, DisplayName: userID}); err != nil {
+			return fmt.Errorf("materialize managed pairing identity: %w", err)
+		}
 	}
 	if s.agents != nil {
 		if err := s.agents.EnsureDefaultsForAccount(accountScopeID); err != nil {
@@ -1903,6 +1930,47 @@ func (s *Service) materializeManagedPairingIdentity(pairing pebblestore.SwarmLoc
 		}
 	}
 	return nil
+}
+
+func (s *Service) validateManagedPairingIdentity(pairing pebblestore.SwarmLocalPairingRecord) error {
+	if _, _, err := requirePairingIdentity(pairing.UserID, pairing.AccountScopeID); err != nil {
+		return err
+	}
+	if s != nil && s.identity != nil {
+		return s.materializeManagedPairingIdentity(pairing)
+	}
+	return nil
+}
+
+func requireDeployRecordAccountIdentity(record *pebblestore.DeployContainerRecord) (string, string, error) {
+	if record == nil {
+		return "", "", fmt.Errorf("deploy container record is required")
+	}
+	userID := strings.TrimSpace(record.UserID)
+	accountScopeID := strings.TrimSpace(record.AccountScopeID)
+	switch {
+	case userID == "" && accountScopeID == "":
+		return "", "", fmt.Errorf("deploy container record user id and account scope id are required")
+	case userID == "":
+		return "", "", fmt.Errorf("deploy container record user id is required")
+	case accountScopeID == "":
+		return "", "", fmt.Errorf("deploy container record account scope id is required")
+	}
+	return userID, accountScopeID, nil
+}
+
+func requirePairingIdentity(userID, accountScopeID string) (string, string, error) {
+	userID = strings.TrimSpace(userID)
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	switch {
+	case userID == "" && accountScopeID == "":
+		return "", "", fmt.Errorf("local pairing user id and account scope id are required")
+	case userID == "":
+		return "", "", fmt.Errorf("local pairing user id is required")
+	case accountScopeID == "":
+		return "", "", fmt.Errorf("local pairing account scope id is required")
+	}
+	return userID, accountScopeID, nil
 }
 
 func bindManagedPairingIdentity(pairing pebblestore.SwarmLocalPairingRecord, userID, accountScopeID string) (pebblestore.SwarmLocalPairingRecord, error) {
@@ -2349,6 +2417,9 @@ func (s *Service) finalizeApprovedAttach(record *pebblestore.DeployContainerReco
 	if strings.TrimSpace(record.ChildPublicKey) == "" || strings.TrimSpace(record.ChildFingerprint) == "" {
 		return fmt.Errorf("child identity proof is required for approval")
 	}
+	if _, _, err := requireDeployRecordAccountIdentity(record); err != nil {
+		return err
+	}
 	startupCfg, hostState, err := s.resolveBootstrapContext()
 	if err != nil {
 		return err
@@ -2440,6 +2511,10 @@ func (s *Service) finalizeApprovedAttach(record *pebblestore.DeployContainerReco
 	record.GroupName = groupName
 	record.GroupNetworkName = groupNetworkName
 	if record.SyncEnabled {
+		_, accountScopeID, err := requireDeployRecordAccountIdentity(record)
+		if err != nil {
+			return err
+		}
 		record.SyncMode = firstNonEmpty(record.SyncMode, workspaceruntime.ReplicationSyncModeManaged)
 		record.SyncModules = workspaceruntime.NormalizeReplicationSyncModules(record.SyncModules)
 		if len(record.SyncModules) == 0 {
@@ -2470,7 +2545,7 @@ func (s *Service) finalizeApprovedAttach(record *pebblestore.DeployContainerReco
 			if s.auth == nil {
 				return fmt.Errorf("auth service is not configured")
 			}
-			_, exported, err := s.auth.ExportCredentialsForAccount(record.AccountScopeID, record.SyncBundlePassword, strings.TrimSpace(syncVaultPassword))
+			_, exported, err := s.auth.ExportCredentialsForAccount(accountScopeID, record.SyncBundlePassword, strings.TrimSpace(syncVaultPassword))
 			if err != nil {
 				return err
 			}
@@ -3276,24 +3351,36 @@ func (s *Service) finalizeChildAttach(ctx context.Context, cfg startupconfig.Fil
 	if !ok {
 		pairing = pebblestore.SwarmLocalPairingRecord{}
 	}
+	principalUserID := ""
+	principalAccountScopeID := ""
+	if principal, ok := identity.PrincipalFromContext(ctx); ok {
+		principalUserID = strings.TrimSpace(principal.UserID)
+		principalAccountScopeID = strings.TrimSpace(principal.AccountScopeID)
+	}
+	userID, accountScopeID, err := requirePairingIdentity(
+		firstNonEmpty(strings.TrimSpace(finalizeInput.UserID), strings.TrimSpace(status.UserID), principalUserID),
+		firstNonEmpty(strings.TrimSpace(finalizeInput.AccountScopeID), strings.TrimSpace(status.AccountScopeID), principalAccountScopeID),
+	)
+	if err != nil {
+		return err
+	}
 	pairing.PairingState = startupconfig.PairingStatePaired
 	pairing.ParentSwarmID = firstNonEmpty(status.HostSwarmID, strings.TrimSpace(cfg.ParentSwarmID))
-	pairing.UserID = firstNonEmpty(strings.TrimSpace(finalizeInput.UserID), strings.TrimSpace(status.UserID))
-	pairing.AccountScopeID = firstNonEmpty(strings.TrimSpace(finalizeInput.AccountScopeID), strings.TrimSpace(status.AccountScopeID))
+	pairing.UserID = userID
+	pairing.AccountScopeID = accountScopeID
 	pairing.LastDecision = "approved"
 	pairing.LastDecisionReason = ""
 	pairing.LastUpdatedByRole = "child"
-	if s.agents != nil && strings.TrimSpace(pairing.AccountScopeID) != "" {
-		if err := s.agents.EnsureDefaultsForAccount(pairing.AccountScopeID); err != nil {
-			return err
-		}
-	}
-	if _, err := s.swarmStore.PutLocalPairing(pairing); err != nil {
-		return err
-	}
 	hostSwarmID := firstNonEmpty(status.HostSwarmID, strings.TrimSpace(cfg.ParentSwarmID))
 	if hostSwarmID == "" {
 		return fmt.Errorf("approved attach is missing host swarm id")
+	}
+	pairing.ParentSwarmID = hostSwarmID
+	if err := s.validateManagedPairingIdentity(pairing); err != nil {
+		return err
+	}
+	if _, err := s.swarmStore.PutLocalPairing(pairing); err != nil {
+		return err
 	}
 	existingPeer, peerExists, err := s.swarmStore.GetTrustedPeer(hostSwarmID)
 	if err != nil {
@@ -3532,7 +3619,9 @@ func (s *Service) fetchSyncSkillBundle(ctx context.Context, cfg startupconfig.Fi
 		return ContainerSyncSkillBundle{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	s.addPeerAuthHeaders(req, firstNonEmpty(strings.TrimSpace(status.HostSwarmID), strings.TrimSpace(cfg.ParentSwarmID)))
+	if err := s.addPeerAuthHeaders(req, firstNonEmpty(strings.TrimSpace(status.HostSwarmID), strings.TrimSpace(cfg.ParentSwarmID))); err != nil {
+		return ContainerSyncSkillBundle{}, err
+	}
 	client, err := s.bootstrapHTTPClientForEndpoint(socketPath, endpoint)
 	if err != nil {
 		return ContainerSyncSkillBundle{}, err
@@ -3575,7 +3664,9 @@ func (s *Service) fetchSyncModelDefaultsBundle(ctx context.Context, cfg startupc
 		return ContainerSyncModelDefaultsBundle{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	s.addPeerAuthHeaders(req, firstNonEmpty(strings.TrimSpace(status.HostSwarmID), strings.TrimSpace(cfg.ParentSwarmID)))
+	if err := s.addPeerAuthHeaders(req, firstNonEmpty(strings.TrimSpace(status.HostSwarmID), strings.TrimSpace(cfg.ParentSwarmID))); err != nil {
+		return ContainerSyncModelDefaultsBundle{}, err
+	}
 	client, err := s.bootstrapHTTPClientForEndpoint(socketPath, endpoint)
 	if err != nil {
 		return ContainerSyncModelDefaultsBundle{}, err
@@ -3617,7 +3708,9 @@ func (s *Service) fetchSyncPermissionBundle(ctx context.Context, cfg startupconf
 		return ContainerSyncPermissionBundle{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	s.addPeerAuthHeaders(req, firstNonEmpty(strings.TrimSpace(status.HostSwarmID), strings.TrimSpace(cfg.ParentSwarmID)))
+	if err := s.addPeerAuthHeaders(req, firstNonEmpty(strings.TrimSpace(status.HostSwarmID), strings.TrimSpace(cfg.ParentSwarmID))); err != nil {
+		return ContainerSyncPermissionBundle{}, err
+	}
 	client, err := s.bootstrapHTTPClientForEndpoint(socketPath, endpoint)
 	if err != nil {
 		return ContainerSyncPermissionBundle{}, err
@@ -3666,7 +3759,9 @@ func (s *Service) fetchSyncAgentBundle(ctx context.Context, cfg startupconfig.Fi
 		return ContainerSyncAgentBundle{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	s.addPeerAuthHeaders(req, firstNonEmpty(strings.TrimSpace(status.HostSwarmID), strings.TrimSpace(cfg.ParentSwarmID)))
+	if err := s.addPeerAuthHeaders(req, firstNonEmpty(strings.TrimSpace(status.HostSwarmID), strings.TrimSpace(cfg.ParentSwarmID))); err != nil {
+		return ContainerSyncAgentBundle{}, err
+	}
 	client, err := s.bootstrapHTTPClientForEndpoint(socketPath, endpoint)
 	if err != nil {
 		return ContainerSyncAgentBundle{}, err
@@ -3747,6 +3842,67 @@ func (s *Service) ApplyManagedAgentBundle(ctx context.Context, bundle ContainerS
 		modules = workspaceruntime.DefaultReplicationSyncModules()
 	}
 	return s.applyManagedAgentBundle(bundle, modules)
+}
+
+func (s *Service) BindLocalPairingAccount(ctx context.Context, input ContainerPairingAccountBindInput) error {
+	_ = ctx
+	if s == nil || s.swarmStore == nil {
+		return fmt.Errorf("deploy container service is not configured")
+	}
+	userID, accountScopeID, err := requirePairingIdentity(input.UserID, input.AccountScopeID)
+	if err != nil {
+		return err
+	}
+	hostSwarmID := strings.TrimSpace(input.HostSwarmID)
+	if hostSwarmID == "" {
+		return fmt.Errorf("host swarm id is required")
+	}
+	childSwarmID := strings.TrimSpace(input.ChildSwarmID)
+	if childSwarmID == "" {
+		return fmt.Errorf("child swarm id is required")
+	}
+	localNode, ok, err := s.swarmStore.GetLocalNode()
+	if err != nil {
+		return err
+	}
+	if !ok || strings.TrimSpace(localNode.SwarmID) == "" {
+		return fmt.Errorf("local swarm id is required")
+	}
+	if !strings.EqualFold(strings.TrimSpace(localNode.SwarmID), childSwarmID) {
+		return fmt.Errorf("child swarm id does not match local swarm")
+	}
+	pairing, ok, err := s.swarmStore.GetLocalPairing()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		pairing = pebblestore.SwarmLocalPairingRecord{}
+	}
+	state := strings.TrimSpace(pairing.PairingState)
+	existingParent := strings.TrimSpace(pairing.ParentSwarmID)
+	if state != "" && !strings.EqualFold(state, startupconfig.PairingStateUnpaired) && !strings.EqualFold(state, startupconfig.PairingStatePaired) {
+		return fmt.Errorf("local pairing state %q cannot be account-bound", state)
+	}
+	if strings.EqualFold(state, startupconfig.PairingStatePaired) && existingParent == "" {
+		return fmt.Errorf("paired local pairing parent swarm id is required")
+	}
+	if existingParent != "" && !strings.EqualFold(existingParent, hostSwarmID) {
+		return fmt.Errorf("local pairing parent swarm id does not match host swarm id")
+	}
+	updated, err := bindManagedPairingIdentity(pairing, userID, accountScopeID)
+	if err != nil {
+		return err
+	}
+	updated.PairingState = startupconfig.PairingStatePaired
+	updated.ParentSwarmID = hostSwarmID
+	updated.LastDecision = "approved"
+	updated.LastDecisionReason = ""
+	updated.LastUpdatedByRole = "child"
+	if err := s.validateManagedPairingIdentity(updated); err != nil {
+		return err
+	}
+	_, err = s.swarmStore.PutLocalPairing(updated)
+	return err
 }
 
 func (s *Service) ApplyManagedCredentialBundle(ctx context.Context, bundle ContainerSyncCredentialBundle) error {
@@ -4567,7 +4723,9 @@ func (s *Service) fetchManagedHostSyncJSON(ctx context.Context, endpoint, manage
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	s.addPeerAuthHeaders(req, managerSwarmID)
+	if err := s.addPeerAuthHeaders(req, managerSwarmID); err != nil {
+		return err
+	}
 	client, err := s.bootstrapHTTPClientForEndpoint("", endpoint)
 	if err != nil {
 		return err
@@ -4626,7 +4784,9 @@ func (s *Service) fetchSyncCredentialBundle(ctx context.Context, cfg startupconf
 		return ContainerSyncCredentialBundle{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	s.addPeerAuthHeaders(req, firstNonEmpty(strings.TrimSpace(status.HostSwarmID), strings.TrimSpace(cfg.ParentSwarmID)))
+	if err := s.addPeerAuthHeaders(req, firstNonEmpty(strings.TrimSpace(status.HostSwarmID), strings.TrimSpace(cfg.ParentSwarmID))); err != nil {
+		return ContainerSyncCredentialBundle{}, err
+	}
 	client, err := s.bootstrapHTTPClientForEndpoint(socketPath, endpoint)
 	if err != nil {
 		return ContainerSyncCredentialBundle{}, err
@@ -4684,7 +4844,9 @@ func (s *Service) fetchRemoteDeploySyncCredentialBundle(ctx context.Context, cfg
 		return ContainerSyncCredentialBundle{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	s.addPeerAuthHeaders(req, ownerSwarmID)
+	if err := s.addPeerAuthHeaders(req, ownerSwarmID); err != nil {
+		return ContainerSyncCredentialBundle{}, err
+	}
 	client, err := s.bootstrapHTTPClientForEndpoint("", endpoint)
 	if err != nil {
 		return ContainerSyncCredentialBundle{}, err
@@ -4849,9 +5011,26 @@ func (s *Service) pushManagedSyncToChild(ctx context.Context, record *pebblestor
 	if childURL == "" || strings.TrimSpace(record.ChildSwarmID) == "" {
 		return nil
 	}
+	userID, accountScopeID, err := requireDeployRecordAccountIdentity(record)
+	if err != nil {
+		return err
+	}
+	hostSwarmID := firstNonEmpty(strings.TrimSpace(record.HostSwarmID), strings.TrimSpace(record.SyncOwnerSwarmID))
+	if hostSwarmID == "" {
+		return fmt.Errorf("host swarm id is required for account-bound local pairing")
+	}
 	client := s.client
 	if client == nil {
 		client = newBootstrapClient()
+	}
+	if err := s.postChildJSON(ctx, client, *record, childURL+"/v1/deploy/container/pairing/account-bind", ContainerPairingAccountBindInput{
+		DeploymentID:   strings.TrimSpace(record.ID),
+		HostSwarmID:    hostSwarmID,
+		ChildSwarmID:   strings.TrimSpace(record.ChildSwarmID),
+		UserID:         userID,
+		AccountScopeID: accountScopeID,
+	}, nil); err != nil {
+		return err
 	}
 	if workspaceruntime.ReplicationSyncModuleEnabled(record.SyncModules, workspaceruntime.ReplicationSyncModuleCredentials) {
 		if s.auth == nil {
@@ -4867,7 +5046,7 @@ func (s *Service) pushManagedSyncToChild(ctx context.Context, record *pebblestor
 			}
 			record.SyncBundlePassword = bundlePassword
 		}
-		payload, exported, err := s.auth.ExportCredentialsForAccount(record.AccountScopeID, record.SyncBundlePassword, "")
+		payload, exported, err := s.auth.ExportCredentialsForAccount(accountScopeID, record.SyncBundlePassword, "")
 		if err != nil {
 			return err
 		}
@@ -4880,6 +5059,8 @@ func (s *Service) pushManagedSyncToChild(ctx context.Context, record *pebblestor
 		record.SyncCredentialSnapshotHash = strings.TrimSpace(metadata.SnapshotHash)
 		bundle := ContainerSyncCredentialBundle{
 			OwnerSwarmID:   strings.TrimSpace(record.SyncOwnerSwarmID),
+			UserID:         userID,
+			AccountScopeID: accountScopeID,
 			BundlePassword: strings.TrimSpace(record.SyncBundlePassword),
 			Bundle:         payload,
 			Exported:       exported,
@@ -4891,7 +5072,7 @@ func (s *Service) pushManagedSyncToChild(ctx context.Context, record *pebblestor
 		}
 	}
 	if workspaceruntime.ReplicationSyncModuleEnabled(record.SyncModules, workspaceruntime.ReplicationSyncModuleAgents) || workspaceruntime.ReplicationSyncModuleEnabled(record.SyncModules, workspaceruntime.ReplicationSyncModuleCustomTools) {
-		bundle, err := s.exportManagedAgentBundleForAccount(record.AccountScopeID, record.SyncModules)
+		bundle, err := s.exportManagedAgentBundleForAccount(accountScopeID, record.SyncModules)
 		if err != nil {
 			return err
 		}
@@ -4900,7 +5081,7 @@ func (s *Service) pushManagedSyncToChild(ctx context.Context, record *pebblestor
 		}
 	}
 	if s.model != nil && workspaceruntime.ReplicationSyncModuleEnabled(record.SyncModules, workspaceruntime.ReplicationSyncModuleModelDefaults) {
-		bundle, err := s.exportManagedModelDefaultsBundleForAccount(record.AccountScopeID, record.SyncModules)
+		bundle, err := s.exportManagedModelDefaultsBundleForAccount(accountScopeID, record.SyncModules)
 		if err != nil {
 			return err
 		}
@@ -4916,7 +5097,7 @@ func (s *Service) pushManagedSyncToChild(ctx context.Context, record *pebblestor
 		if s.permission == nil {
 			return fmt.Errorf("permission service is not configured")
 		}
-		state, err := s.permission.ExportPolicyState()
+		state, err := s.permission.ExportPolicyStateForAccount(accountScopeID)
 		if err != nil {
 			return err
 		}
@@ -4957,7 +5138,9 @@ func (s *Service) postPeerJSON(ctx context.Context, client *http.Client, peerSwa
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	s.addPeerAuthHeaders(req, strings.TrimSpace(peerSwarmID))
+	if err := s.addPeerAuthHeaders(req, strings.TrimSpace(peerSwarmID)); err != nil {
+		return err
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -4991,28 +5174,39 @@ func (s *Service) postPeerJSON(ctx context.Context, client *http.Client, peerSwa
 	return nil
 }
 
-func (s *Service) addPeerAuthHeaders(req *http.Request, peerSwarmID string) {
-	if s == nil || s.swarmStore == nil || req == nil {
-		return
+func (s *Service) addPeerAuthHeaders(req *http.Request, peerSwarmID string) error {
+	if req == nil {
+		return fmt.Errorf("peer auth request is required")
+	}
+	if s == nil || s.swarmStore == nil {
+		return fmt.Errorf("peer auth swarm store is not configured")
 	}
 	peerSwarmID = strings.TrimSpace(peerSwarmID)
 	if peerSwarmID == "" {
-		return
+		return fmt.Errorf("peer auth peer swarm id is required")
 	}
 	node, ok, err := s.swarmStore.GetLocalNode()
-	if err != nil || !ok || strings.TrimSpace(node.SwarmID) == "" {
-		return
+	if err != nil {
+		return fmt.Errorf("peer auth local node lookup failed: %w", err)
+	}
+	localSwarmID := strings.TrimSpace(node.SwarmID)
+	if !ok || localSwarmID == "" {
+		return fmt.Errorf("peer auth local swarm id is not configured")
 	}
 	peer, ok, err := s.swarmStore.GetTrustedPeer(peerSwarmID)
-	if err != nil || !ok {
-		return
+	if err != nil {
+		return fmt.Errorf("peer auth trusted peer lookup failed for %q: %w", peerSwarmID, err)
+	}
+	if !ok {
+		return fmt.Errorf("peer auth trusted peer %q is not configured", peerSwarmID)
 	}
 	peerToken := strings.TrimSpace(peer.OutgoingPeerAuthToken)
 	if peerToken == "" {
-		return
+		return fmt.Errorf("peer auth outgoing token for %q is not configured", peerSwarmID)
 	}
-	req.Header.Set(peerAuthSwarmIDHeader, strings.TrimSpace(node.SwarmID))
+	req.Header.Set(peerAuthSwarmIDHeader, localSwarmID)
 	req.Header.Set(peerAuthTokenHeader, peerToken)
+	return nil
 }
 
 func (s *Service) managedLocalChildVaultKey(deploymentID string) (string, bool, error) {
@@ -5147,7 +5341,9 @@ func (s *Service) fetchChildVaultStatus(ctx context.Context, record pebblestore.
 	if err != nil {
 		return auth.VaultStatus{}, err
 	}
-	s.addPeerAuthHeaders(req, record.ChildSwarmID)
+	if err := s.addPeerAuthHeaders(req, record.ChildSwarmID); err != nil {
+		return auth.VaultStatus{}, err
+	}
 	resp, err := s.bootstrapHTTPClient("").Do(req)
 	if err != nil {
 		return auth.VaultStatus{}, err
@@ -5174,7 +5370,9 @@ func (s *Service) unlockChildVault(ctx context.Context, record pebblestore.Deplo
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	s.addPeerAuthHeaders(req, record.ChildSwarmID)
+	if err := s.addPeerAuthHeaders(req, record.ChildSwarmID); err != nil {
+		return err
+	}
 	resp, err := s.bootstrapHTTPClient("").Do(req)
 	if err != nil {
 		return err

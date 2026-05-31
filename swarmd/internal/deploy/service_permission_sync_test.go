@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
@@ -40,10 +41,21 @@ func newPermissionSyncTestService(t *testing.T) (*Service, *pebblestore.DeployCo
 func TestUpdateSettingsPushesHostBypassToManagedChild(t *testing.T) {
 	deploySvc, deploymentStore, permSvc := newPermissionSyncTestService(t)
 	permSvc.SetBypassPermissions(true)
+	if _, err := deploySvc.swarmStore.PutTrustedPeer(pebblestore.SwarmTrustedPeerRecord{SwarmID: "child-swarm", Name: "Child", Relationship: swarmruntime.RelationshipChild, OutgoingPeerAuthToken: "host-to-child-token"}); err != nil {
+		t.Fatalf("put trusted peer: %v", err)
+	}
 
 	managedApplyCount := 0
 	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get(peerAuthSwarmIDHeader); got != "host-swarm" {
+			t.Fatalf("peer auth swarm id = %q, want host-swarm", got)
+		}
+		if got := r.Header.Get(peerAuthTokenHeader); got != "host-to-child-token" {
+			t.Fatalf("peer auth token = %q, want host-to-child-token", got)
+		}
 		switch r.URL.Path {
+		case "/v1/deploy/container/pairing/account-bind":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "path_id": PathContainerPairingAccountBind})
 		case "/v1/permissions/managed/apply":
 			managedApplyCount++
 			var state permission.ManagedPolicyState
@@ -72,6 +84,8 @@ func TestUpdateSettingsPushesHostBypassToManagedChild(t *testing.T) {
 		HostBackendURL:    child.URL,
 		ChildBackendURL:   child.URL,
 		ChildSwarmID:      "child-swarm",
+		UserID:            testPrincipal().UserID,
+		AccountScopeID:    testPrincipal().AccountScopeID,
 		BypassPermissions: false,
 	}); err != nil {
 		t.Fatalf("put deployment: %v", err)
@@ -86,9 +100,65 @@ func TestUpdateSettingsPushesHostBypassToManagedChild(t *testing.T) {
 	}
 }
 
+func TestPushManagedSyncToLocalChildrenFailsBeforeHTTPWhenPeerAuthMissing(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	deploymentStore := pebblestore.NewDeployContainerStore(store)
+	swarmStore := pebblestore.NewSwarmStore(store)
+	if _, err := swarmStore.PutLocalNode(pebblestore.SwarmLocalNodeRecord{SwarmID: "host-swarm", Name: "Host", Role: "master"}); err != nil {
+		t.Fatalf("put local node: %v", err)
+	}
+	deploySvc := NewService(deploymentStore, nil, nil, swarmStore, nil, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"), permission.NewService(pebblestore.NewPermissionStore(store), nil, nil))
+
+	childHit := false
+	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		childHit = true
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	}))
+	t.Cleanup(child.Close)
+
+	if _, err := deploymentStore.Put(pebblestore.DeployContainerRecord{
+		ID:               "managed-child",
+		Kind:             "container",
+		Name:             "Managed Child",
+		Status:           "running",
+		AttachStatus:     "attached",
+		SyncEnabled:      true,
+		SyncModules:      []string{workspaceruntime.ReplicationSyncModulePermissions},
+		SyncOwnerSwarmID: "host-swarm",
+		ChildBackendURL:  child.URL,
+		ChildSwarmID:     "child-swarm",
+		UserID:           testPrincipal().UserID,
+		AccountScopeID:   testPrincipal().AccountScopeID,
+	}); err != nil {
+		t.Fatalf("put deployment: %v", err)
+	}
+
+	err = deploySvc.PushManagedSyncToLocalChildren(testPrincipalContext(), "test")
+	if err == nil {
+		t.Fatalf("PushManagedSyncToLocalChildren() succeeded without peer auth")
+	}
+	if !strings.Contains(err.Error(), "peer auth trusted peer") {
+		t.Fatalf("PushManagedSyncToLocalChildren() error = %v", err)
+	}
+	if childHit {
+		t.Fatalf("child server was hit despite missing peer auth")
+	}
+}
+
 func TestSyncPermissionBundleMirrorsHostBypassForManagedChild(t *testing.T) {
 	deploySvc, deploymentStore, permSvc := newPermissionSyncTestService(t)
 	permSvc.SetBypassPermissions(true)
+
+	childHit := false
+	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		childHit = true
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	}))
+	t.Cleanup(child.Close)
 
 	if _, err := deploymentStore.Put(pebblestore.DeployContainerRecord{
 		ID:                "managed-child",
@@ -96,6 +166,12 @@ func TestSyncPermissionBundleMirrorsHostBypassForManagedChild(t *testing.T) {
 		Name:              "Managed Child",
 		BootstrapSecret:   "secret",
 		SyncEnabled:       true,
+		SyncModules:       []string{workspaceruntime.ReplicationSyncModulePermissions},
+		SyncOwnerSwarmID:  "host-swarm",
+		ChildBackendURL:   child.URL,
+		ChildSwarmID:      "child-swarm",
+		UserID:            testPrincipal().UserID,
+		AccountScopeID:    testPrincipal().AccountScopeID,
 		BypassPermissions: false,
 	}); err != nil {
 		t.Fatalf("put deployment: %v", err)
@@ -107,6 +183,9 @@ func TestSyncPermissionBundleMirrorsHostBypassForManagedChild(t *testing.T) {
 	}
 	if !bundle.State.BypassPermissions {
 		t.Fatalf("bundle bypass = false, want true")
+	}
+	if childHit {
+		t.Fatalf("SyncPermissionBundle should export locally and must not push to child")
 	}
 }
 
@@ -135,12 +214,23 @@ func TestPushManagedSyncToLocalChildrenPushesAgentsAndCredentials(t *testing.T) 
 		t.Fatalf("upsert credential: %v", err)
 	}
 	permSvc := permission.NewService(pebblestore.NewPermissionStore(store), nil, nil)
+	if _, err := swarmStore.PutTrustedPeer(pebblestore.SwarmTrustedPeerRecord{SwarmID: "child-swarm", Name: "Child", Relationship: swarmruntime.RelationshipChild, OutgoingPeerAuthToken: "host-to-child-token"}); err != nil {
+		t.Fatalf("put trusted peer: %v", err)
+	}
 	deploySvc := NewService(deploymentStore, nil, nil, swarmStore, authSvc, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), nil, permSvc)
 
 	agentApplyCount := 0
 	credentialApplyCount := 0
 	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get(peerAuthSwarmIDHeader); got != "host-swarm" {
+			t.Fatalf("peer auth swarm id = %q, want host-swarm", got)
+		}
+		if got := r.Header.Get(peerAuthTokenHeader); got != "host-to-child-token" {
+			t.Fatalf("peer auth token = %q, want host-to-child-token", got)
+		}
 		switch r.URL.Path {
+		case "/v1/deploy/container/pairing/account-bind":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "path_id": PathContainerPairingAccountBind})
 		case "/v1/deploy/container/managed/agents/apply":
 			agentApplyCount++
 			var bundle ContainerSyncAgentBundle
@@ -163,6 +253,9 @@ func TestPushManagedSyncToLocalChildrenPushesAgentsAndCredentials(t *testing.T) 
 			if bundle.OwnerSwarmID != "host-swarm" || bundle.BundlePassword == "" || len(bundle.Bundle) == 0 || bundle.SnapshotHash == "" {
 				t.Fatalf("credential bundle incomplete: %#v", bundle)
 			}
+			if bundle.UserID != testPrincipal().UserID || bundle.AccountScopeID != testPrincipal().AccountScopeID {
+				t.Fatalf("credential bundle identity = %q/%q", bundle.UserID, bundle.AccountScopeID)
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "path_id": PathContainerManagedCredentialsApply})
 		case "/v1/permissions/managed/apply":
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
@@ -183,8 +276,8 @@ func TestPushManagedSyncToLocalChildrenPushesAgentsAndCredentials(t *testing.T) 
 		SyncOwnerSwarmID: "host-swarm",
 		ChildBackendURL:  child.URL,
 		ChildSwarmID:     "child-swarm",
-		UserID:           "user-1",
-		AccountScopeID:   "account-1",
+		UserID:           testPrincipal().UserID,
+		AccountScopeID:   testPrincipal().AccountScopeID,
 	}); err != nil {
 		t.Fatalf("put deployment: %v", err)
 	}
@@ -732,6 +825,12 @@ func TestDeployContainerRuntimeSyncAppliesAgentsAndModelDefaultsToPairedAccount(
 		t.Fatalf("new event log: %v", err)
 	}
 	swarmStore := pebblestore.NewSwarmStore(store)
+	if _, err := swarmStore.PutLocalNode(pebblestore.SwarmLocalNodeRecord{SwarmID: "child-swarm", Name: "Child", Role: "child"}); err != nil {
+		t.Fatalf("put local node: %v", err)
+	}
+	if _, err := swarmStore.PutTrustedPeer(pebblestore.SwarmTrustedPeerRecord{SwarmID: "host-swarm", Name: "Host", Relationship: swarmruntime.RelationshipParent, OutgoingPeerAuthToken: "child-to-host-token"}); err != nil {
+		t.Fatalf("put trusted peer: %v", err)
+	}
 	pairing := pebblestore.SwarmLocalPairingRecord{
 		PairingState:   startupconfig.PairingStatePaired,
 		ParentSwarmID:  "host-swarm",

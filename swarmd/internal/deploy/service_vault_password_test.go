@@ -130,6 +130,12 @@ func TestApplyManagedModelDefaultsBundlePersistsCompletePreference(t *testing.T)
 func TestFinalizeChildAttachAppliesModelDefaultsDuringInitialLocalAttach(t *testing.T) {
 	svc, store := newModelDefaultsSyncTestService(t)
 	modelStore := pebblestore.NewModelStore(store)
+	if _, err := svc.swarmStore.PutLocalNode(pebblestore.SwarmLocalNodeRecord{SwarmID: "child-swarm", Name: "Child", Role: "child"}); err != nil {
+		t.Fatalf("put local node: %v", err)
+	}
+	if _, err := svc.swarmStore.PutTrustedPeer(pebblestore.SwarmTrustedPeerRecord{SwarmID: "host-swarm", Name: "Host", Relationship: swarmruntime.RelationshipParent, OutgoingPeerAuthToken: "child-to-host-token"}); err != nil {
+		t.Fatalf("put trusted peer: %v", err)
+	}
 
 	var sawSyncModelDefaults bool
 	host := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -173,11 +179,11 @@ func TestFinalizeChildAttachAppliesModelDefaultsDuringInitialLocalAttach(t *test
 	if !sawSyncModelDefaults {
 		t.Fatalf("finalizeChildAttach() did not request model defaults during initial attach")
 	}
-	pref, ok, err := modelStore.GetGlobalPreference()
+	pref, ok, err := modelStore.GetPreferenceForAccount(principal.AccountScopeID)
 	if err != nil {
-		t.Fatalf("GetGlobalPreference() error = %v", err)
+		t.Fatalf("GetPreferenceForAccount() error = %v", err)
 	}
-	if !ok || pref.Provider != "codex" || pref.Model != "gpt-5-codex" || pref.Thinking != "high" {
+	if !ok || pref.Provider != "codex" || pref.Model != "gpt-5-codex" || pref.Thinking != "high" || pref.AccountScopeID != principal.AccountScopeID {
 		t.Fatalf("preference after finalize = %+v ok=%v", pref, ok)
 	}
 }

@@ -1010,6 +1010,10 @@ func (f *fakeReplicateDeployService) FinalizeAttachFromHost(context.Context, dep
 	return nil
 }
 
+func (f *fakeReplicateDeployService) BindLocalPairingAccount(context.Context, deployruntime.ContainerPairingAccountBindInput) error {
+	return nil
+}
+
 func (f *fakeReplicateDeployService) SyncCredentialBundle(_ context.Context, input deployruntime.ContainerSyncCredentialRequestInput) (deployruntime.ContainerSyncCredentialBundle, error) {
 	f.lastSyncCredentialBundleInput = input
 	return deployruntime.ContainerSyncCredentialBundle{}, nil

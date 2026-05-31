@@ -117,6 +117,7 @@ func (s *Server) registerDeployRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/deploy/container/attach/request", s.handleDeployContainerAttachRequest)
 	mux.HandleFunc("/v1/deploy/container/attach/approve", s.handleDeployContainerAttachApprove)
 	mux.HandleFunc("/v1/deploy/container/attach/finalize", s.handleDeployContainerAttachFinalize)
+	mux.HandleFunc("/v1/deploy/container/pairing/account-bind", s.handleDeployContainerPairingAccountBind)
 	mux.HandleFunc("/v1/deploy/container/sync/credentials", s.handleDeployContainerSyncCredentials)
 	mux.HandleFunc("/v1/deploy/container/sync/agents", s.handleDeployContainerSyncAgents)
 	mux.HandleFunc("/v1/deploy/container/sync/skills", s.handleDeployContainerSyncSkills)
