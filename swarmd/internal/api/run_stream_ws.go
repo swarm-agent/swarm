@@ -636,6 +636,10 @@ func (s *Server) handleRunStreamWebsocket(w http.ResponseWriter, r *http.Request
 
 	switch inbound.Type {
 	case "run.start", "start":
+		if err := s.enforceSessionBindingWriteAccess(principal, sessionID, "run start"); err != nil {
+			s.sendRunStreamControl(conn, runStreamControlMessage{Type: "error", OK: false, SessionID: sessionID, Error: err.Error()})
+			return
+		}
 		s.handleRunStreamStart(conn, sessionID, inbound, principal)
 		return
 	case "run.resume", "resume":
@@ -836,6 +840,10 @@ func (s *Server) handleRunStreamControl(w http.ResponseWriter, r *http.Request, 
 	}
 	switch inbound.Type {
 	case "run.start", "start":
+		if err := s.enforceSessionBindingWriteAccess(principal, sessionID, "run start"); err != nil {
+			writeError(w, http.StatusForbidden, err)
+			return
+		}
 		state, err := s.runStreams.newRun(sessionID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)

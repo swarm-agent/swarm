@@ -2899,7 +2899,8 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, errors.New("session id is required"))
 			return
 		}
-		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
+		principal, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID)
+		if !ok {
 			return
 		}
 		if r.Method == http.MethodPost && s.isManagedHostMirroredSession(sessionID) {
@@ -2940,6 +2941,10 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 				"messages":   messages,
 			})
 		case http.MethodPost:
+			if err := s.enforceSessionBindingWriteAccess(principal, sessionID, "append message"); err != nil {
+				writeError(w, http.StatusForbidden, err)
+				return
+			}
 			var req struct {
 				Role    string `json:"role"`
 				Content string `json:"content"`
@@ -3674,6 +3679,10 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		var req runruntime.RunRequest
 		if err := decodeJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := s.enforceSessionBindingWriteAccess(principal, sessionID, "run start"); err != nil {
+			writeError(w, http.StatusForbidden, err)
 			return
 		}
 		integrationCtx, err := s.applyIntegrationBuilderRunContext(principal, sessionID, &sessionRunRequestAdapter{

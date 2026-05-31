@@ -105,11 +105,11 @@ func (s *TopologyStore) EnsureLocalWorkspaceSelfBindingForAccount(accountScopeID
 	if record.State != TopologyWorkspaceBindingStateBound {
 		return TopologyWorkspaceBindingRecord{}, errors.New("topology local self workspace binding state must be bound")
 	}
-	if record.AccessMode == "" {
-		record.AccessMode = TopologyWorkspaceBindingAccessModeLocal
+	if record.AccessMode == "" || record.AccessMode == TopologyWorkspaceBindingAccessModeLocal {
+		record.AccessMode = TopologyWorkspaceBindingAccessModeReadWrite
 	}
-	if record.AccessMode != TopologyWorkspaceBindingAccessModeLocal {
-		return TopologyWorkspaceBindingRecord{}, errors.New("topology local self workspace binding access mode must be local")
+	if record.AccessMode != TopologyWorkspaceBindingAccessModeReadWrite {
+		return TopologyWorkspaceBindingRecord{}, errors.New("topology local self workspace binding access mode must be read_write")
 	}
 	if record.MaterializationKind == "" {
 		record.MaterializationKind = TopologyWorkspaceBindingMaterializationSource
@@ -170,6 +170,14 @@ func (s *TopologyStore) activeWorkspaceBindingsForWorkspaceAndRuntime(accountSco
 	return out, nil
 }
 
+func normalizeLocalSelfWorkspaceBindingAccessMode(accessMode string) string {
+	accessMode = strings.ToLower(strings.TrimSpace(accessMode))
+	if accessMode == "" || accessMode == TopologyWorkspaceBindingAccessModeLocal {
+		return TopologyWorkspaceBindingAccessModeReadWrite
+	}
+	return accessMode
+}
+
 func validateExistingLocalWorkspaceSelfBinding(existing, desired TopologyWorkspaceBindingRecord) error {
 	existing = normalizeTopologyWorkspaceBindingRecord(existing)
 	desired = normalizeTopologyWorkspaceBindingRecord(desired)
@@ -209,7 +217,7 @@ func validateExistingLocalWorkspaceSelfBinding(existing, desired TopologyWorkspa
 	if existing.State != desired.State {
 		return fmt.Errorf("workspace binding %q state mismatch", existing.BindingID)
 	}
-	if existing.AccessMode != desired.AccessMode {
+	if normalizeLocalSelfWorkspaceBindingAccessMode(existing.AccessMode) != normalizeLocalSelfWorkspaceBindingAccessMode(desired.AccessMode) {
 		return fmt.Errorf("workspace binding %q access mode mismatch", existing.BindingID)
 	}
 	if existing.MaterializationKind != desired.MaterializationKind {

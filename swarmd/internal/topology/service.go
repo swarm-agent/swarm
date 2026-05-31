@@ -239,7 +239,7 @@ func (s *Service) EnsureLocalWorkspaceSelfBindingForPrincipal(accountScopeID, us
 		PlacementGeneration:             placement.PlacementGeneration,
 		BindingGeneration:               1,
 		State:                           pebblestore.TopologyWorkspaceBindingStateBound,
-		AccessMode:                      pebblestore.TopologyWorkspaceBindingAccessModeLocal,
+		AccessMode:                      pebblestore.TopologyWorkspaceBindingAccessModeReadWrite,
 		MaterializationKind:             pebblestore.TopologyWorkspaceBindingMaterializationSource,
 		AttestedByHostSwarmID:           placement.AuthorityHostSwarmID,
 		AttestedAt:                      time.Now().UnixMilli(),

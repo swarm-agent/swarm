@@ -18,6 +18,8 @@ const (
 
 	TopologyWorkspaceBindingStateBound            = "bound"
 	TopologyWorkspaceBindingAccessModeLocal       = "local"
+	TopologyWorkspaceBindingAccessModeReadOnly    = "read_only"
+	TopologyWorkspaceBindingAccessModeReadWrite   = "read_write"
 	TopologyWorkspaceBindingMaterializationSource = "source"
 )
 

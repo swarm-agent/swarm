@@ -35,7 +35,7 @@ func normalizeStrictTopologyWorkspaceBindingDefaults(record TopologyWorkspaceBin
 	}
 	if record.State == TopologyWorkspaceBindingStateBound {
 		if record.AccessMode == "" {
-			record.AccessMode = TopologyWorkspaceBindingAccessModeLocal
+			record.AccessMode = TopologyWorkspaceBindingAccessModeReadWrite
 		}
 		if record.MaterializationKind == "" {
 			record.MaterializationKind = TopologyWorkspaceBindingMaterializationSource
@@ -45,6 +45,15 @@ func normalizeStrictTopologyWorkspaceBindingDefaults(record TopologyWorkspaceBin
 		}
 	}
 	return record
+}
+
+func topologyWorkspaceBindingValidAccessMode(accessMode string) bool {
+	switch strings.ToLower(strings.TrimSpace(accessMode)) {
+	case TopologyWorkspaceBindingAccessModeReadOnly, TopologyWorkspaceBindingAccessModeReadWrite:
+		return true
+	default:
+		return false
+	}
 }
 
 func validateStrictTopologyWorkspaceBinding(record TopologyWorkspaceBindingRecord) error {
@@ -85,7 +94,10 @@ func validateStrictTopologyWorkspaceBinding(record TopologyWorkspaceBindingRecor
 	}
 	if record.State == TopologyWorkspaceBindingStateBound {
 		if record.AccessMode == "" {
-			record.AccessMode = TopologyWorkspaceBindingAccessModeLocal
+			record.AccessMode = TopologyWorkspaceBindingAccessModeReadWrite
+		}
+		if !topologyWorkspaceBindingValidAccessMode(record.AccessMode) {
+			return errors.New("topology workspace binding access mode must be read_only or read_write")
 		}
 		if record.MaterializationKind == "" {
 			record.MaterializationKind = TopologyWorkspaceBindingMaterializationSource

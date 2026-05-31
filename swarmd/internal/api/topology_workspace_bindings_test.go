@@ -46,7 +46,7 @@ func TestSwarmTopologyWorkspaceBindingsSupportsIdentityQueries(t *testing.T) {
 		PlacementGeneration:             1,
 		BindingGeneration:               1,
 		State:                           "bound",
-		AccessMode:                      "local",
+		AccessMode:                      pebblestore.TopologyWorkspaceBindingAccessModeReadWrite,
 		MaterializationKind:             "source",
 		AttestedByHostSwarmID:           "runtime-self",
 		Writable:                        true,
@@ -79,7 +79,7 @@ func TestSwarmTopologyWorkspaceBindingsSupportsIdentityQueries(t *testing.T) {
 			`"placement_generation":1`,
 			`"binding_generation":1`,
 			`"state":"bound"`,
-			`"access_mode":"local"`,
+			`"access_mode":"read_write"`,
 			`"materialization_kind":"source"`,
 		} {
 			if !strings.Contains(body, want) {

@@ -81,6 +81,12 @@ func (s *Server) handleManagedHostWorkspaceGitCommit(w http.ResponseWriter, r *h
 }
 
 func (s *Server) writeGitCommitResponse(w http.ResponseWriter, r *http.Request, req workspaceGitCommitRequest, principal identity.Principal) {
+	if sessionID := strings.TrimSpace(r.URL.Query().Get("session_id")); sessionID != "" {
+		if err := s.enforceSessionBindingWriteAccess(principal, sessionID, "git commit"); err != nil {
+			writeError(w, http.StatusForbidden, err)
+			return
+		}
+	}
 	workspacePath, err := s.resolveGitCommitWorkspacePath(req, principal)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)

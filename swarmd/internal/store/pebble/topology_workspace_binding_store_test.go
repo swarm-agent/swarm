@@ -39,7 +39,7 @@ func testLocalSelfWorkspaceBinding(accountScopeID, userID, workspaceID, workspac
 		DestinationRuntimeKind:          TopologyRuntimeKindHost,
 		DestinationHostSwarmID:          runtimeSwarmID,
 		DestinationWorkspacePath:        workspacePath,
-		AccessMode:                      TopologyWorkspaceBindingAccessModeLocal,
+		AccessMode:                      TopologyWorkspaceBindingAccessModeReadWrite,
 		MaterializationKind:             TopologyWorkspaceBindingMaterializationSource,
 		PlacementGeneration:             generation,
 		BindingGeneration:               1,
@@ -152,7 +152,7 @@ func TestEnsureLocalWorkspaceSelfBindingForAccountRejectsAccessMaterializationAt
 		wantError string
 	}{
 		{name: "state", mutate: func(r *TopologyWorkspaceBindingRecord) { r.State = "inactive" }, wantError: "state must be bound"},
-		{name: "access", mutate: func(r *TopologyWorkspaceBindingRecord) { r.AccessMode = "remote" }, wantError: "access mode must be local"},
+		{name: "access", mutate: func(r *TopologyWorkspaceBindingRecord) { r.AccessMode = TopologyWorkspaceBindingAccessModeReadOnly }, wantError: "access mode must be read_write"},
 		{name: "materialization", mutate: func(r *TopologyWorkspaceBindingRecord) { r.MaterializationKind = "copy" }, wantError: "materialization kind must be source"},
 		{name: "attestation", mutate: func(r *TopologyWorkspaceBindingRecord) { r.AttestedByHostSwarmID = "other-swarm" }, wantError: "attesting host must equal destination runtime swarm id"},
 	}

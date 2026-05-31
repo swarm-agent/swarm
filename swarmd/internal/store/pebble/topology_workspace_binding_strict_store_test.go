@@ -39,6 +39,18 @@ func TestPutWorkspaceBindingForAccountValidatesPlacementAndIndexesActiveBinding(
 	}
 }
 
+func TestPutWorkspaceBindingForAccountValidatesAccessMode(t *testing.T) {
+	topology := newTestTopologyWorkspaceBindingStore(t)
+	putTestLocalSelfPlacement(t, topology, "account-a", "user-a", "local-swarm", 1)
+	binding := testLocalSelfWorkspaceBinding("account-a", "user-a", "ws-a", "/workspace-a", "local-swarm", 1)
+	binding.BindingID = "binding-invalid-access"
+	binding.AccessMode = "local"
+	_, err := topology.PutWorkspaceBindingForAccount("account-a", binding)
+	if err == nil || !strings.Contains(err.Error(), "access mode must be read_only or read_write") {
+		t.Fatalf("expected access mode validation, got %v", err)
+	}
+}
+
 func TestPutWorkspaceBindingForAccountRejectsPlacementMismatch(t *testing.T) {
 	topology := newTestTopologyWorkspaceBindingStore(t)
 	putTestLocalSelfPlacement(t, topology, "account-a", "user-a", "local-swarm", 1)
