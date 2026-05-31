@@ -89,6 +89,16 @@ func UpsertTopologyRuntimeRecord(topology *TopologyStore, incoming TopologyRunti
 		}
 		incoming = mergeTopologyRuntimeRecord(existing, incoming)
 	}
+	if strings.TrimSpace(incoming.AccountScopeID) != "" {
+		if _, err := enforceTopologyRuntimeAccount(incoming.AccountScopeID, incoming); err != nil {
+			return err
+		}
+		if err := ensureTopologyRuntimePlacementForRuntime(topology, incoming.AccountScopeID, incoming); err != nil {
+			return err
+		}
+		_, err = topology.PutRuntimeForAccount(incoming.AccountScopeID, incoming)
+		return err
+	}
 	_, err = topology.PutRuntime(incoming)
 	return err
 }
@@ -115,7 +125,42 @@ func UpsertTopologyRuntimeRecordForAccount(topology *TopologyStore, accountScope
 		}
 		incoming = mergeTopologyRuntimeRecord(existing, incoming)
 	}
+	if _, err := enforceTopologyRuntimeAccount(accountScopeID, incoming); err != nil {
+		return err
+	}
+	if err := ensureTopologyRuntimePlacementForRuntime(topology, accountScopeID, incoming); err != nil {
+		return err
+	}
 	_, err = topology.PutRuntimeForAccount(accountScopeID, incoming)
+	return err
+}
+
+func ensureTopologyRuntimePlacementForRuntime(topology *TopologyStore, accountScopeID string, runtime TopologyRuntimeRecord) error {
+	if topology == nil {
+		return nil
+	}
+	runtime = normalizeTopologyRuntimeRecord(runtime)
+	if runtime.SwarmID == "" {
+		return nil
+	}
+	accountScopeID = strings.TrimSpace(firstNonEmpty(accountScopeID, runtime.AccountScopeID))
+	if accountScopeID == "" {
+		return nil
+	}
+
+	placement := TopologyRuntimePlacementRecord{
+		RuntimeSwarmID:       runtime.SwarmID,
+		AccountScopeID:       accountScopeID,
+		AuthorityHostSwarmID: strings.TrimSpace(runtime.OwnerHostSwarmID),
+		AuthorityContainerID: strings.TrimSpace(runtime.OwnerHostContainerID),
+	}
+	if placement.AuthorityHostSwarmID == "" && placement.AuthorityContainerID == "" {
+		placement.RuntimeKind = TopologyRuntimeKindHost
+		placement.AuthorityHostSwarmID = runtime.SwarmID
+	} else {
+		placement.RuntimeKind = TopologyRuntimeKindContainer
+	}
+	_, err := topology.PutRuntimePlacementForAccount(accountScopeID, placement)
 	return err
 }
 

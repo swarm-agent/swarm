@@ -48,10 +48,11 @@ func TestMirrorDeploymentSyncsCanonicalHostContainerAndAttachment(t *testing.T) 
 	}
 
 	hostContainerID, err := deploySvc.canonicalHostContainerIDForDeployment(pebblestore.DeployContainerRecord{
-		ID:            deployment.ID,
-		ContainerID:   deployment.ContainerID,
-		ContainerName: deployment.ContainerName,
-		HostSwarmID:   deployment.HostSwarmID,
+		ID:              deployment.ID,
+		ContainerID:     deployment.ContainerID,
+		ContainerName:   deployment.ContainerName,
+		HostSwarmID:     deployment.HostSwarmID,
+		HostContainerID: deployment.HostContainerID,
 	})
 	if err != nil {
 		t.Fatalf("canonical host container id: %v", err)
@@ -90,6 +91,13 @@ func TestMirrorDeploymentSyncsCanonicalHostContainerAndAttachment(t *testing.T) 
 	}
 	if runtimeRecord.OwnerHostContainerID != hostContainerID {
 		t.Fatalf("runtime owner host container id = %q", runtimeRecord.OwnerHostContainerID)
+	}
+	placement, ok, err := topologyStore.GetRuntimePlacementForAccount("account-1", "child-swarm-1")
+	if err != nil || !ok {
+		t.Fatalf("get runtime placement ok=%t err=%v", ok, err)
+	}
+	if placement.RuntimeKind != pebblestore.TopologyRuntimeKindContainer || placement.AuthorityHostSwarmID != "managed-swarm" || placement.AuthorityContainerID != hostContainerID {
+		t.Fatalf("unexpected runtime placement: %+v", placement)
 	}
 }
 

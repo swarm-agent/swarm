@@ -31,8 +31,10 @@ func TestCleanupRemoteChildStateUsesCanonicalAttachmentIDs(t *testing.T) {
 		HostSwarmID: "host-swarm",
 	}
 	hostContainerID := pebblestore.CanonicalTopologyHostContainerID("host-swarm", remoteContainerNameForSession(record.ID))
-	if err := pebblestore.UpsertTopologyHostContainer(topologyStore, pebblestore.TopologyHostContainerRecord{
+	if err := pebblestore.UpsertTopologyHostContainerForAccount(topologyStore, "host-swarm", pebblestore.TopologyHostContainerRecord{
 		HostContainerID:     hostContainerID,
+		UserID:              "host-swarm",
+		AccountScopeID:      "host-swarm",
 		HostSwarmID:         "host-swarm",
 		RuntimeContainerRef: remoteContainerNameForSession(record.ID),
 		Name:                "remote child",
@@ -42,17 +44,23 @@ func TestCleanupRemoteChildStateUsesCanonicalAttachmentIDs(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("put host container: %v", err)
 	}
-	if err := pebblestore.UpsertTopologyRuntimeRecord(topologyStore, pebblestore.TopologyRuntimeRecord{
-		SwarmID:         "child-swarm",
-		Name:            "Child",
-		Relationship:    "child",
-		ObservedSources: []string{pebblestore.TopologyRuntimeSourceRemoteDeploySession},
+	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, "host-swarm", pebblestore.TopologyRuntimeRecord{
+		SwarmID:              "child-swarm",
+		UserID:               "host-swarm",
+		AccountScopeID:       "host-swarm",
+		Name:                 "Child",
+		Relationship:         "child",
+		OwnerHostSwarmID:     "host-swarm",
+		OwnerHostContainerID: hostContainerID,
+		ObservedSources:      []string{pebblestore.TopologyRuntimeSourceRemoteDeploySession},
 	}); err != nil {
 		t.Fatalf("put runtime: %v", err)
 	}
 	attachmentID := pebblestore.CanonicalTopologyAttachmentID(hostContainerID, "child-swarm")
-	if err := pebblestore.UpsertTopologyAttachment(topologyStore, pebblestore.TopologyAttachmentRecord{
+	if err := pebblestore.UpsertTopologyAttachmentForAccount(topologyStore, "host-swarm", pebblestore.TopologyAttachmentRecord{
 		AttachmentID:          attachmentID,
+		UserID:                "host-swarm",
+		AccountScopeID:        "host-swarm",
 		HostContainerID:       hostContainerID,
 		RuntimeSwarmID:        "child-swarm",
 		RemoteDeploySessionID: record.ID,
@@ -66,13 +74,13 @@ func TestCleanupRemoteChildStateUsesCanonicalAttachmentIDs(t *testing.T) {
 	if err := svc.cleanupRemoteChildState(record, item); err != nil {
 		t.Fatalf("cleanup remote child state: %v", err)
 	}
-	if _, ok, err := topologyStore.GetAttachment(attachmentID); err != nil || ok {
+	if _, ok, err := topologyStore.GetAttachmentForAccount("host-swarm", attachmentID); err != nil || ok {
 		t.Fatalf("attachment remaining ok=%t err=%v", ok, err)
 	}
-	if _, ok, err := topologyStore.GetHostContainer(hostContainerID); err != nil || ok {
+	if _, ok, err := topologyStore.GetHostContainerForAccount("host-swarm", hostContainerID); err != nil || ok {
 		t.Fatalf("host container remaining ok=%t err=%v", ok, err)
 	}
-	if _, ok, err := topologyStore.GetRuntime("child-swarm"); err != nil || ok {
+	if _, ok, err := topologyStore.GetRuntimeForAccount("host-swarm", "child-swarm"); err != nil || ok {
 		t.Fatalf("runtime remaining ok=%t err=%v", ok, err)
 	}
 	if _, ok, err := swarmStore.GetTrustedPeer("child-swarm"); err != nil || ok {

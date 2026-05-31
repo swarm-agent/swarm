@@ -28,7 +28,7 @@ func (s *Service) syncCanonicalDeploymentState(record pebblestore.DeployContaine
 		}
 	}
 	runtimeContainerRef := firstNonEmpty(strings.TrimSpace(record.ContainerID), strings.TrimSpace(record.ContainerName), strings.TrimSpace(record.ID))
-	hostContainerID := pebblestore.CanonicalTopologyHostContainerID(hostSwarmID, runtimeContainerRef)
+	hostContainerID := firstNonEmpty(strings.TrimSpace(record.HostContainerID), pebblestore.CanonicalTopologyHostContainerID(hostSwarmID, runtimeContainerRef))
 	if hostContainerID == "" {
 		return nil
 	}
@@ -57,6 +57,17 @@ func (s *Service) syncCanonicalDeploymentState(record pebblestore.DeployContaine
 	childSwarmID := strings.TrimSpace(record.ChildSwarmID)
 	if childSwarmID == "" {
 		return nil
+	}
+	if _, err := s.topology.PutRuntimePlacementForAccount(accountScopeID, pebblestore.TopologyRuntimePlacementRecord{
+		RuntimeSwarmID:       childSwarmID,
+		AccountScopeID:       accountScopeID,
+		AuthorityHostSwarmID: hostSwarmID,
+		AuthorityContainerID: hostContainerID,
+		RuntimeKind:          pebblestore.TopologyRuntimeKindContainer,
+		CreatedAt:            record.CreatedAt,
+		UpdatedAt:            record.UpdatedAt,
+	}); err != nil {
+		return err
 	}
 	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(s.topology, accountScopeID, pebblestore.TopologyRuntimeRecord{
 		SwarmID:              childSwarmID,
@@ -157,6 +168,9 @@ func (s *Service) deleteCanonicalDeploymentState(record pebblestore.DeployContai
 		}
 		for _, attachmentRecord := range attachmentRecords {
 			if strings.TrimSpace(attachmentRecord.DeploymentID) == strings.TrimSpace(record.ID) {
+				if err := s.topology.DeleteRuntimePlacementForAccount(accountScopeID, attachmentRecord.RuntimeSwarmID); err != nil {
+					return err
+				}
 				if err := s.topology.DeleteAttachmentForAccount(accountScopeID, attachmentRecord.AttachmentID); err != nil {
 					return err
 				}
@@ -301,6 +315,9 @@ func (s *Service) childAttachmentRecordsForDeployment(record pebblestore.DeployC
 
 func (s *Service) canonicalHostContainerIDForDeployment(record pebblestore.DeployContainerRecord) (string, error) {
 	hostSwarmID := firstNonEmpty(strings.TrimSpace(record.HostSwarmID), strings.TrimSpace(record.SyncOwnerSwarmID))
+	if hostContainerID := strings.TrimSpace(record.HostContainerID); hostContainerID != "" {
+		return hostContainerID, nil
+	}
 	runtimeContainerRef := firstNonEmpty(strings.TrimSpace(record.ContainerID), strings.TrimSpace(record.ContainerName), strings.TrimSpace(record.ID))
 	if canonicalID := pebblestore.CanonicalTopologyHostContainerID(hostSwarmID, runtimeContainerRef); canonicalID != "" {
 		return canonicalID, nil

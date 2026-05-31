@@ -87,6 +87,7 @@ const (
 	KeySwarmDesktopTargetCurrentAccountPrefix   = "swarm/desktop_target/current_by_account/"
 	KeyTopologyRuntimePrefix                    = "topology/runtime/" // legacy global prefix; retained for explicit migration only.
 	KeyTopologyRuntimeAccountPrefix             = "topology/runtime_by_account/"
+	KeyTopologyRuntimePlacementPrefix           = "topology/runtime_placement/" // legacy global prefix; retained for explicit migration only.
 	KeyTopologyRuntimePlacementAccountPrefix    = "topology/runtime_placement_by_account/"
 	KeyTopologyHostContainerPrefix              = "topology/host_container/" // legacy global prefix; retained for explicit migration only.
 	KeyTopologyHostContainerAccountPrefix       = "topology/host_container_by_account/"
@@ -365,6 +366,14 @@ func TopologyRuntimePrefixForAccount(accountScopeID string) string {
 		return KeyTopologyRuntimeAccountPrefix
 	}
 	return fmt.Sprintf("%s%s/", KeyTopologyRuntimeAccountPrefix, accountPart)
+}
+
+func KeyTopologyRuntimePlacement(runtimeSwarmID string) string {
+	return KeyTopologyRuntimePlacementPrefix + keyPart(runtimeSwarmID)
+}
+
+func TopologyRuntimePlacementPrefix() string {
+	return KeyTopologyRuntimePlacementPrefix
 }
 
 func KeyTopologyRuntimePlacementForAccount(accountScopeID, runtimeSwarmID string) string {

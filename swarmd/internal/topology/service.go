@@ -100,6 +100,13 @@ func (s *Service) ListRuntimesForAccount(accountScopeID string, limit int) ([]pe
 	return s.topologyStore.ListRuntimesForAccount(accountScopeID, limit)
 }
 
+func (s *Service) ListRuntimePlacementsForAccount(accountScopeID string, limit int) ([]pebblestore.TopologyRuntimePlacementRecord, error) {
+	if s == nil || s.topologyStore == nil {
+		return nil, fmt.Errorf("topology service is not configured")
+	}
+	return s.topologyStore.ListRuntimePlacementsForAccount(accountScopeID, limit)
+}
+
 func (s *Service) EnsureLocalSelfPlacementForAccount(accountScopeID string) (pebblestore.TopologyRuntimePlacementRecord, error) {
 	return s.EnsureLocalSelfPlacementForPrincipal(accountScopeID, accountScopeID)
 }
@@ -448,6 +455,7 @@ func (s *Service) buildSnapshot() (pebblestore.TopologySnapshot, error) {
 	}
 
 	runtimeMap := map[string]pebblestore.TopologyRuntimeRecord{}
+	runtimePlacementMap := map[string]pebblestore.TopologyRuntimePlacementRecord{}
 	hostContainerMap := map[string]pebblestore.TopologyHostContainerRecord{}
 	attachmentMap := map[string]pebblestore.TopologyAttachmentRecord{}
 
@@ -461,6 +469,13 @@ func (s *Service) buildSnapshot() (pebblestore.TopologySnapshot, error) {
 			ObservedSources: []string{"swarm_local_node"},
 			CreatedAt:       now,
 			UpdatedAt:       now,
+		})
+		mergeRuntimePlacement(runtimePlacementMap, pebblestore.TopologyRuntimePlacementRecord{
+			RuntimeSwarmID:       localNode.SwarmID,
+			AuthorityHostSwarmID: localNode.SwarmID,
+			RuntimeKind:          pebblestore.TopologyRuntimeKindHost,
+			CreatedAt:            now,
+			UpdatedAt:            now,
 		})
 	}
 
@@ -544,7 +559,7 @@ func (s *Service) buildSnapshot() (pebblestore.TopologySnapshot, error) {
 		for _, deployment := range deployments {
 			hostSwarmID := firstNonEmpty(strings.TrimSpace(deployment.HostSwarmID), localSwarmID, "local")
 			runtimeContainerRef := firstNonEmpty(strings.TrimSpace(deployment.ContainerID), strings.TrimSpace(deployment.ContainerName), strings.TrimSpace(deployment.ID))
-			hostContainerID := canonicalHostContainerID(hostSwarmID, runtimeContainerRef)
+			hostContainerID := firstNonEmpty(strings.TrimSpace(deployment.HostContainerID), canonicalHostContainerID(hostSwarmID, runtimeContainerRef))
 			mergeHostContainer(hostContainerMap, pebblestore.TopologyHostContainerRecord{
 				HostContainerID:     hostContainerID,
 				HostSwarmID:         hostSwarmID,
@@ -563,6 +578,14 @@ func (s *Service) buildSnapshot() (pebblestore.TopologySnapshot, error) {
 				UpdatedAt:           deployment.UpdatedAt,
 			})
 			if strings.TrimSpace(deployment.ChildSwarmID) != "" {
+				mergeRuntimePlacement(runtimePlacementMap, pebblestore.TopologyRuntimePlacementRecord{
+					RuntimeSwarmID:       deployment.ChildSwarmID,
+					AuthorityHostSwarmID: hostSwarmID,
+					AuthorityContainerID: hostContainerID,
+					RuntimeKind:          pebblestore.TopologyRuntimeKindContainer,
+					CreatedAt:            deployment.CreatedAt,
+					UpdatedAt:            deployment.UpdatedAt,
+				})
 				mergeRuntime(runtimeMap, pebblestore.TopologyRuntimeRecord{
 					SwarmID:              deployment.ChildSwarmID,
 					Name:                 firstNonEmpty(deployment.ChildDisplayName, deployment.Name, deployment.ChildSwarmID),
@@ -598,18 +621,46 @@ func (s *Service) buildSnapshot() (pebblestore.TopologySnapshot, error) {
 		}
 		for _, session := range sessions {
 			if strings.TrimSpace(session.ChildSwarmID) != "" {
+				hostSwarmID := firstNonEmpty(strings.TrimSpace(session.HostSwarmID), strings.TrimSpace(session.MasterSwarmID))
+				runtimeContainerRef := remoteContainerNameForSession(session.ID)
+				hostContainerID := canonicalHostContainerID(hostSwarmID, runtimeContainerRef)
+				if hostContainerID != "" {
+					mergeHostContainer(hostContainerMap, pebblestore.TopologyHostContainerRecord{
+						HostContainerID:     hostContainerID,
+						HostSwarmID:         hostSwarmID,
+						RuntimeContainerRef: runtimeContainerRef,
+						Name:                firstNonEmpty(session.ChildName, session.Name, session.ID),
+						ContainerName:       runtimeContainerRef,
+						Runtime:             session.RemoteRuntime,
+						Status:              session.Status,
+						HostAPIBaseURL:      remoteSessionEndpoint(session),
+						ObservedSources:     []string{"remote_deploy_session"},
+						CreatedAt:           session.CreatedAt,
+						UpdatedAt:           session.UpdatedAt,
+					})
+					mergeRuntimePlacement(runtimePlacementMap, pebblestore.TopologyRuntimePlacementRecord{
+						RuntimeSwarmID:       session.ChildSwarmID,
+						AuthorityHostSwarmID: hostSwarmID,
+						AuthorityContainerID: hostContainerID,
+						RuntimeKind:          pebblestore.TopologyRuntimeKindContainer,
+						CreatedAt:            session.CreatedAt,
+						UpdatedAt:            session.UpdatedAt,
+					})
+				}
 				mergeRuntime(runtimeMap, pebblestore.TopologyRuntimeRecord{
-					SwarmID:         session.ChildSwarmID,
-					Name:            firstNonEmpty(session.ChildName, session.Name, session.ChildSwarmID),
-					Role:            "child",
-					Relationship:    "child",
-					BackendURL:      session.RemoteEndpoint,
-					DesktopURL:      session.HostDesktopURL,
-					Status:          session.Status,
-					Transport:       session.TransportMode,
-					ObservedSources: []string{"remote_deploy_session"},
-					CreatedAt:       session.CreatedAt,
-					UpdatedAt:       session.UpdatedAt,
+					SwarmID:              session.ChildSwarmID,
+					Name:                 firstNonEmpty(session.ChildName, session.Name, session.ChildSwarmID),
+					Role:                 "child",
+					Relationship:         "child",
+					BackendURL:           session.RemoteEndpoint,
+					DesktopURL:           session.HostDesktopURL,
+					Status:               session.Status,
+					Transport:            session.TransportMode,
+					OwnerHostSwarmID:     hostSwarmID,
+					OwnerHostContainerID: hostContainerID,
+					ObservedSources:      []string{"remote_deploy_session"},
+					CreatedAt:            session.CreatedAt,
+					UpdatedAt:            session.UpdatedAt,
 				})
 			}
 		}
@@ -624,13 +675,30 @@ func (s *Service) buildSnapshot() (pebblestore.TopologySnapshot, error) {
 		return pebblestore.TopologySnapshot{}, err
 	}
 
+	for _, runtime := range runtimeMap {
+		if _, ok := runtimePlacementMap[runtime.SwarmID]; ok {
+			continue
+		}
+		if strings.TrimSpace(runtime.OwnerHostSwarmID) != "" && strings.TrimSpace(runtime.OwnerHostContainerID) != "" {
+			mergeRuntimePlacement(runtimePlacementMap, pebblestore.TopologyRuntimePlacementRecord{
+				RuntimeSwarmID:       runtime.SwarmID,
+				AuthorityHostSwarmID: runtime.OwnerHostSwarmID,
+				AuthorityContainerID: runtime.OwnerHostContainerID,
+				RuntimeKind:          pebblestore.TopologyRuntimeKindContainer,
+				CreatedAt:            runtime.CreatedAt,
+				UpdatedAt:            runtime.UpdatedAt,
+			})
+		}
+	}
 	runtimes := runtimeMapValues(runtimeMap)
 	for i := range runtimes {
 		runtimes[i].GroupIDs = normalizeGroupIDs(groupIDsBySwarm[runtimes[i].SwarmID])
 	}
+	runtimePlacements := runtimePlacementMapValues(runtimePlacementMap)
 	hostContainers := hostContainerMapValues(hostContainerMap)
 	attachments := attachmentMapValues(attachmentMap)
 	sortTopologyRuntimes(runtimes)
+	sortTopologyRuntimePlacements(runtimePlacements)
 	sortTopologyHostContainers(hostContainers)
 	sortTopologyAttachments(attachments)
 	sortTopologyWorkspaceBindings(workspaceBindings)
@@ -648,6 +716,7 @@ func (s *Service) buildSnapshot() (pebblestore.TopologySnapshot, error) {
 	}
 	return pebblestore.TopologySnapshot{
 		Runtimes:          runtimes,
+		RuntimePlacements: runtimePlacements,
 		HostContainers:    hostContainers,
 		Attachments:       attachments,
 		WorkspaceBindings: workspaceBindings,
@@ -895,6 +964,26 @@ func mergeRuntime(dst map[string]pebblestore.TopologyRuntimeRecord, incoming peb
 	dst[incoming.SwarmID] = existing
 }
 
+func mergeRuntimePlacement(dst map[string]pebblestore.TopologyRuntimePlacementRecord, incoming pebblestore.TopologyRuntimePlacementRecord) {
+	incoming = normalizeRuntimePlacement(incoming)
+	if incoming.RuntimeSwarmID == "" {
+		return
+	}
+	existing, ok := dst[incoming.RuntimeSwarmID]
+	if !ok {
+		dst[incoming.RuntimeSwarmID] = incoming
+		return
+	}
+	existing.AuthorityHostSwarmID = firstNonEmpty(existing.AuthorityHostSwarmID, incoming.AuthorityHostSwarmID)
+	existing.AuthorityContainerID = firstNonEmpty(existing.AuthorityContainerID, incoming.AuthorityContainerID)
+	existing.RuntimeKind = firstNonEmpty(existing.RuntimeKind, incoming.RuntimeKind)
+	existing.State = firstNonEmpty(existing.State, incoming.State)
+	existing.PlacementGeneration = maxInt(existing.PlacementGeneration, incoming.PlacementGeneration)
+	existing.CreatedAt = minPositive(existing.CreatedAt, incoming.CreatedAt)
+	existing.UpdatedAt = maxInt64(existing.UpdatedAt, incoming.UpdatedAt)
+	dst[incoming.RuntimeSwarmID] = existing
+}
+
 func mergeHostContainer(dst map[string]pebblestore.TopologyHostContainerRecord, incoming pebblestore.TopologyHostContainerRecord) {
 	incoming = normalizeHostContainer(incoming)
 	if incoming.HostContainerID == "" {
@@ -962,6 +1051,27 @@ func normalizeRuntime(record pebblestore.TopologyRuntimeRecord) pebblestore.Topo
 	}
 	if record.UpdatedAt <= 0 {
 		record.UpdatedAt = record.CreatedAt
+	}
+	return record
+}
+
+func normalizeRuntimePlacement(record pebblestore.TopologyRuntimePlacementRecord) pebblestore.TopologyRuntimePlacementRecord {
+	record.RuntimeSwarmID = strings.TrimSpace(record.RuntimeSwarmID)
+	record.AuthorityHostSwarmID = strings.TrimSpace(record.AuthorityHostSwarmID)
+	record.AuthorityContainerID = strings.TrimSpace(record.AuthorityContainerID)
+	record.RuntimeKind = strings.ToLower(strings.TrimSpace(record.RuntimeKind))
+	record.State = strings.ToLower(strings.TrimSpace(record.State))
+	if record.State == "" {
+		record.State = pebblestore.TopologyRuntimePlacementStateActive
+	}
+	if record.PlacementGeneration <= 0 {
+		record.PlacementGeneration = 1
+	}
+	if record.CreatedAt < 0 {
+		record.CreatedAt = 0
+	}
+	if record.UpdatedAt < 0 {
+		record.UpdatedAt = 0
 	}
 	return record
 }
@@ -1103,6 +1213,25 @@ func normalizeNodeRelationship(role string) string {
 	}
 }
 
+func remoteContainerNameForSession(sessionID string) string {
+	slug := strings.ToLower(strings.TrimSpace(sessionID))
+	slug = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			return r
+		}
+		return '-'
+	}, slug)
+	slug = strings.Trim(slug, "-")
+	if slug == "" {
+		return "swarm-remote"
+	}
+	return "swarm-remote-" + slug
+}
+
+func remoteSessionEndpoint(session pebblestore.RemoteDeploySessionRecord) string {
+	return firstNonEmpty(session.RemoteEndpoint, session.RemoteTailnetURL, session.HostAPIBaseURL)
+}
+
 func canonicalHostContainerID(hostSwarmID, runtimeContainerRef string) string {
 	hostSwarmID = strings.TrimSpace(hostSwarmID)
 	runtimeContainerRef = strings.TrimSpace(runtimeContainerRef)
@@ -1135,6 +1264,15 @@ func sortTopologyRuntimes(records []pebblestore.TopologyRuntimeRecord) {
 	sort.Slice(records, func(i, j int) bool {
 		if records[i].UpdatedAt == records[j].UpdatedAt {
 			return strings.ToLower(records[i].SwarmID) < strings.ToLower(records[j].SwarmID)
+		}
+		return records[i].UpdatedAt > records[j].UpdatedAt
+	})
+}
+
+func sortTopologyRuntimePlacements(records []pebblestore.TopologyRuntimePlacementRecord) {
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].UpdatedAt == records[j].UpdatedAt {
+			return strings.ToLower(records[i].RuntimeSwarmID) < strings.ToLower(records[j].RuntimeSwarmID)
 		}
 		return records[i].UpdatedAt > records[j].UpdatedAt
 	})
@@ -1178,6 +1316,14 @@ func sortTopologySessionRoutes(records []pebblestore.TopologySessionRouteRecord)
 
 func runtimeMapValues(input map[string]pebblestore.TopologyRuntimeRecord) []pebblestore.TopologyRuntimeRecord {
 	out := make([]pebblestore.TopologyRuntimeRecord, 0, len(input))
+	for _, value := range input {
+		out = append(out, value)
+	}
+	return out
+}
+
+func runtimePlacementMapValues(input map[string]pebblestore.TopologyRuntimePlacementRecord) []pebblestore.TopologyRuntimePlacementRecord {
+	out := make([]pebblestore.TopologyRuntimePlacementRecord, 0, len(input))
 	for _, value := range input {
 		out = append(out, value)
 	}

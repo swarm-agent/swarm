@@ -80,6 +80,12 @@ func (s *TopologyStore) getRuntimePlacementForAccountRaw(accountScopeID, runtime
 	if record.PlacementID == "" {
 		record.PlacementID = legacyTopologyRuntimePlacementID(record.AccountScopeID, record.RuntimeSwarmID)
 	}
+	if record.PlacementGeneration <= 0 {
+		record.PlacementGeneration = 1
+	}
+	if strings.TrimSpace(record.State) == "" {
+		record.State = TopologyRuntimePlacementStateActive
+	}
 	return record, true, nil
 }
 
@@ -145,6 +151,9 @@ func (s *TopologyStore) PutRuntimePlacementForAccount(accountScopeID string, rec
 	if err := validateTopologyRuntimePlacement(record); err != nil {
 		return TopologyRuntimePlacementRecord{}, err
 	}
+	if err := s.validateRuntimePlacementAuthorityForAccount(accountScopeID, record); err != nil {
+		return TopologyRuntimePlacementRecord{}, err
+	}
 	record.CreatedAt, record.UpdatedAt = nextTopologyWriteTimestamps(record.CreatedAt)
 	if err := s.store.PutJSON(KeyTopologyRuntimePlacementForAccount(accountScopeID, record.RuntimeSwarmID), record); err != nil {
 		return TopologyRuntimePlacementRecord{}, err
@@ -190,6 +199,26 @@ func (s *TopologyStore) listTopologyRuntimePlacementRecordsForAccount(accountSco
 	return out, nil
 }
 
+func normalizeTopologyRuntimePlacementRecords(records []TopologyRuntimePlacementRecord) []TopologyRuntimePlacementRecord {
+	if len(records) == 0 {
+		return nil
+	}
+	out := make([]TopologyRuntimePlacementRecord, 0, len(records))
+	seen := make(map[string]struct{}, len(records))
+	for _, raw := range records {
+		record := normalizeTopologyRuntimePlacementRecord(raw)
+		if record.RuntimeSwarmID == "" {
+			continue
+		}
+		if _, ok := seen[record.RuntimeSwarmID]; ok {
+			continue
+		}
+		seen[record.RuntimeSwarmID] = struct{}{}
+		out = append(out, record)
+	}
+	return out
+}
+
 func normalizeTopologyRuntimePlacementRecord(record TopologyRuntimePlacementRecord) TopologyRuntimePlacementRecord {
 	record.PlacementID = normalizeTopologyKeyValue(record.PlacementID)
 	record.RuntimeSwarmID = normalizeTopologyKeyValue(record.RuntimeSwarmID)
@@ -223,6 +252,36 @@ func enforceTopologyRuntimePlacementAccount(accountScopeID string, record Topolo
 	return record, nil
 }
 
+func (s *TopologyStore) validateRuntimePlacementAuthorityForAccount(accountScopeID string, record TopologyRuntimePlacementRecord) error {
+	if strings.ToLower(strings.TrimSpace(record.RuntimeKind)) != TopologyRuntimeKindContainer {
+		return nil
+	}
+	authorityHostSwarmID := strings.TrimSpace(record.AuthorityHostSwarmID)
+	if authorityHostSwarmID == "" {
+		return nil
+	}
+	authority, ok, err := s.getRuntimePlacementForAccountRaw(accountScopeID, authorityHostSwarmID)
+	if err != nil || !ok {
+		return err
+	}
+	if err := validateTopologyRuntimePlacement(authority); err != nil {
+		return err
+	}
+	if strings.ToLower(strings.TrimSpace(authority.RuntimeKind)) == TopologyRuntimeKindContainer {
+		return errors.New("topology container runtime placement authority host swarm id must reference a host runtime")
+	}
+	if strings.TrimSpace(record.AuthorityContainerID) != "" {
+		hostContainer, ok, err := s.GetHostContainerForAccount(accountScopeID, record.AuthorityContainerID)
+		if err != nil {
+			return err
+		}
+		if ok && strings.TrimSpace(hostContainer.HostSwarmID) != "" && !strings.EqualFold(strings.TrimSpace(hostContainer.HostSwarmID), authorityHostSwarmID) {
+			return errors.New("topology container runtime placement authority container id must belong to authority host swarm id")
+		}
+	}
+	return nil
+}
+
 func validateTopologyRuntimePlacement(record TopologyRuntimePlacementRecord) error {
 	if strings.TrimSpace(record.PlacementID) == "" {
 		return errors.New("topology runtime placement id is required")
@@ -254,6 +313,9 @@ func validateTopologyRuntimePlacement(record TopologyRuntimePlacementRecord) err
 		}
 		if strings.TrimSpace(record.AuthorityContainerID) == "" {
 			return errors.New("topology container runtime placement authority container id is required")
+		}
+		if strings.TrimSpace(record.AuthorityHostSwarmID) == strings.TrimSpace(record.RuntimeSwarmID) {
+			return errors.New("topology container runtime placement authority host swarm id must not equal runtime swarm id")
 		}
 	default:
 		return errors.New("topology runtime placement runtime kind must be host or container")

@@ -18,6 +18,7 @@ import (
 	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
+	topologyruntime "swarm/packages/swarmd/internal/topology"
 )
 
 const (
@@ -559,18 +560,30 @@ func listTrustedPeerTargets(peers []swarmruntime.TrustedPeer) []swarmTarget {
 }
 
 func (s *Server) listRemoteDeployTargetsForAccount(r *http.Request, accountScopeID string) ([]swarmTarget, error) {
+	return listRemoteDeployTargetsForAccount(s, r, accountScopeID)
+}
+
+func listRemoteDeployTargetsForAccount(s *Server, r *http.Request, accountScopeID string) ([]swarmTarget, error) {
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	if accountScopeID == "" {
 		return nil, identity.ErrPrincipalRequired
 	}
 	out := make([]swarmTarget, 0, 16)
-	if s != nil && s.topology != nil {
-		runtimes, err := s.topology.ListRuntimesForAccount(accountScopeID, 100000)
+	if topologySvc := topologyServiceFromServer(s); topologySvc != nil {
+		runtimes, err := topologySvc.ListRuntimesForAccount(accountScopeID, 100000)
 		if err != nil {
 			return nil, err
 		}
+		placementByRuntime := map[string]pebblestore.TopologyRuntimePlacementRecord{}
+		placements, err := topologySvc.ListRuntimePlacementsForAccount(accountScopeID, 100000)
+		if err != nil {
+			return nil, err
+		}
+		for _, placement := range placements {
+			placementByRuntime[strings.TrimSpace(placement.RuntimeSwarmID)] = placement
+		}
 		for _, runtime := range runtimes {
-			target, ok := mapTopologyRuntimeTarget(runtime)
+			target, ok := mapTopologyRuntimeTargetWithPlacement(runtime, placementByRuntime[strings.TrimSpace(runtime.SwarmID)])
 			if !ok || !strings.EqualFold(strings.TrimSpace(target.Kind), "remote") {
 				continue
 			}
@@ -970,14 +983,36 @@ func mapRemoteDeployTarget(item remotedeploy.Session) (swarmTarget, bool) {
 	}, true
 }
 
+type topologyRuntimeLister interface {
+	ListRuntimesForAccount(accountScopeID string, limit int) ([]pebblestore.TopologyRuntimeRecord, error)
+	ListRuntimePlacementsForAccount(accountScopeID string, limit int) ([]pebblestore.TopologyRuntimePlacementRecord, error)
+}
+
+func topologyServiceFromServer(s *Server) topologyRuntimeLister {
+	if s == nil || s.topology == nil {
+		return nil
+	}
+	return s.topology
+}
+
+func listRemoteDeployTargetsForTopology(r *http.Request, accountScopeID string, topologyStore *pebblestore.TopologyStore) ([]swarmTarget, error) {
+	return listRemoteDeployTargetsForAccount(&Server{topology: topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil, nil)}, r, accountScopeID)
+}
+
 func mapTopologyRuntimeTarget(item pebblestore.TopologyRuntimeRecord) (swarmTarget, bool) {
+	return mapTopologyRuntimeTargetWithPlacement(item, pebblestore.TopologyRuntimePlacementRecord{})
+}
+
+func mapTopologyRuntimeTargetWithPlacement(item pebblestore.TopologyRuntimeRecord, placement pebblestore.TopologyRuntimePlacementRecord) (swarmTarget, bool) {
 	swarmID := strings.TrimSpace(item.SwarmID)
 	backendURL := strings.TrimSpace(item.BackendURL)
-	if swarmID == "" || backendURL == "" {
+	if swarmID == "" {
 		return swarmTarget{}, false
 	}
 	status := strings.TrimSpace(item.Status)
 	online := status == "" || swarmNodeStatusOnline(status)
+	hostSwarmID := firstNonEmpty(strings.TrimSpace(placement.AuthorityHostSwarmID), strings.TrimSpace(item.OwnerHostSwarmID))
+	hostContainerID := firstNonEmpty(strings.TrimSpace(placement.AuthorityContainerID), strings.TrimSpace(item.OwnerHostContainerID))
 	role := firstNonEmpty(strings.TrimSpace(item.Role), strings.TrimSpace(item.Relationship), "child")
 	kind := strings.TrimSpace(item.Transport)
 	if kind == "" {
@@ -996,9 +1031,9 @@ func mapTopologyRuntimeTarget(item pebblestore.TopologyRuntimeRecord) (swarmTarg
 		Role:         role,
 		Relationship: strings.TrimSpace(item.Relationship),
 		Kind:         kind,
-		DeploymentID: strings.TrimSpace(item.OwnerHostContainerID),
+		DeploymentID: hostContainerID,
 		AttachStatus: firstNonEmpty(status, "attached"),
-		HostSwarmID:  strings.TrimSpace(item.OwnerHostSwarmID),
+		HostSwarmID:  hostSwarmID,
 		Online:       online,
 		Selectable:   online,
 		BackendURL:   backendURL,

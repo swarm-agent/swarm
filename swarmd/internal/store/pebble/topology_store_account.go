@@ -23,6 +23,10 @@ func (s *TopologyStore) SnapshotForAccount(accountScopeID string) (TopologySnaps
 	if err != nil {
 		return TopologySnapshot{}, err
 	}
+	runtimePlacements, err := s.ListRuntimePlacementsForAccount(accountScopeID, 100000)
+	if err != nil {
+		return TopologySnapshot{}, err
+	}
 	hostContainers, err := s.ListHostContainersForAccount(accountScopeID, 100000)
 	if err != nil {
 		return TopologySnapshot{}, err
@@ -41,6 +45,7 @@ func (s *TopologyStore) SnapshotForAccount(accountScopeID string) (TopologySnaps
 	}
 	return TopologySnapshot{
 		Runtimes:          runtimes,
+		RuntimePlacements: runtimePlacements,
 		HostContainers:    hostContainers,
 		Attachments:       attachments,
 		WorkspaceBindings: workspaceBindings,
@@ -70,12 +75,24 @@ func (s *TopologyStore) ReplaceSnapshotForAccount(accountScopeID string, snapsho
 		return err
 	}
 	snapshot.Runtimes = normalizeTopologyRuntimeRecords(snapshot.Runtimes)
+	snapshot.RuntimePlacements = normalizeTopologyRuntimePlacementRecords(snapshot.RuntimePlacements)
 	snapshot.HostContainers = normalizeTopologyHostContainerRecords(snapshot.HostContainers)
 	snapshot.Attachments = normalizeTopologyAttachmentRecords(snapshot.Attachments)
 	snapshot.WorkspaceBindings = normalizeTopologyWorkspaceBindingRecords(snapshot.WorkspaceBindings)
 	snapshot.SessionRoutes = normalizeTopologySessionRouteRecords(snapshot.SessionRoutes)
 	for i := range snapshot.Runtimes {
 		if snapshot.Runtimes[i], err = enforceTopologyRuntimeAccount(accountScopeID, snapshot.Runtimes[i]); err != nil {
+			return err
+		}
+	}
+	for i := range snapshot.RuntimePlacements {
+		if snapshot.RuntimePlacements[i], err = enforceTopologyRuntimePlacementAccount(accountScopeID, snapshot.RuntimePlacements[i]); err != nil {
+			return err
+		}
+		if snapshot.RuntimePlacements[i].PlacementID == "" {
+			snapshot.RuntimePlacements[i].PlacementID = legacyTopologyRuntimePlacementID(snapshot.RuntimePlacements[i].AccountScopeID, snapshot.RuntimePlacements[i].RuntimeSwarmID)
+		}
+		if err := validateTopologyRuntimePlacement(snapshot.RuntimePlacements[i]); err != nil {
 			return err
 		}
 	}
@@ -103,6 +120,7 @@ func (s *TopologyStore) ReplaceSnapshotForAccount(accountScopeID string, snapsho
 	defer batch.Close()
 	for _, prefix := range []string{
 		TopologyRuntimePrefixForAccount(accountScopeID),
+		TopologyRuntimePlacementPrefixForAccount(accountScopeID),
 		TopologyHostContainerPrefixForAccount(accountScopeID),
 		TopologyAttachmentPrefixForAccount(accountScopeID),
 		TopologyWorkspaceBindingPrefixForAccount(accountScopeID),
@@ -115,6 +133,11 @@ func (s *TopologyStore) ReplaceSnapshotForAccount(accountScopeID string, snapsho
 	for _, record := range snapshot.Runtimes {
 		if err := setTopologyBatchJSON(batch, KeyTopologyRuntimeForAccount(accountScopeID, record.SwarmID), record); err != nil {
 			return fmt.Errorf("marshal topology runtime %q: %w", record.SwarmID, err)
+		}
+	}
+	for _, record := range snapshot.RuntimePlacements {
+		if err := setTopologyBatchJSON(batch, KeyTopologyRuntimePlacementForAccount(accountScopeID, record.RuntimeSwarmID), record); err != nil {
+			return fmt.Errorf("marshal topology runtime placement %q: %w", record.RuntimeSwarmID, err)
 		}
 	}
 	for _, record := range snapshot.HostContainers {
@@ -213,7 +236,10 @@ func (s *TopologyStore) DeleteRuntimeForAccount(accountScopeID, swarmID string) 
 	if swarmID == "" {
 		return errors.New("topology runtime swarm id is required")
 	}
-	return s.store.Delete(KeyTopologyRuntimeForAccount(accountScopeID, swarmID))
+	if err := s.store.Delete(KeyTopologyRuntimeForAccount(accountScopeID, swarmID)); err != nil {
+		return err
+	}
+	return s.DeleteRuntimePlacementForAccount(accountScopeID, swarmID)
 }
 
 func (s *TopologyStore) ListHostContainersForAccount(accountScopeID string, limit int) ([]TopologyHostContainerRecord, error) {

@@ -117,6 +117,7 @@ type TopologyMigrationStatusRecord struct {
 
 type TopologySnapshot struct {
 	Runtimes          []TopologyRuntimeRecord          `json:"runtimes,omitempty"`
+	RuntimePlacements []TopologyRuntimePlacementRecord `json:"runtime_placements,omitempty"`
 	HostContainers    []TopologyHostContainerRecord    `json:"host_containers,omitempty"`
 	Attachments       []TopologyAttachmentRecord       `json:"attachments,omitempty"`
 	WorkspaceBindings []TopologyWorkspaceBindingRecord `json:"workspace_bindings,omitempty"`
@@ -140,6 +141,7 @@ func (s *TopologyStore) ReplaceSnapshot(snapshot TopologySnapshot) error {
 		return errors.New("topology store is not configured")
 	}
 	snapshot.Runtimes = normalizeTopologyRuntimeRecords(snapshot.Runtimes)
+	snapshot.RuntimePlacements = normalizeTopologyRuntimePlacementRecords(snapshot.RuntimePlacements)
 	snapshot.HostContainers = normalizeTopologyHostContainerRecords(snapshot.HostContainers)
 	snapshot.Attachments = normalizeTopologyAttachmentRecords(snapshot.Attachments)
 	snapshot.WorkspaceBindings = normalizeTopologyWorkspaceBindingRecords(snapshot.WorkspaceBindings)
@@ -149,6 +151,7 @@ func (s *TopologyStore) ReplaceSnapshot(snapshot TopologySnapshot) error {
 	defer batch.Close()
 	for _, prefix := range []string{
 		TopologyRuntimePrefix(),
+		TopologyRuntimePlacementPrefix(),
 		TopologyHostContainerPrefix(),
 		TopologyAttachmentPrefix(),
 		TopologyWorkspaceBindingPrefix(),
@@ -165,6 +168,15 @@ func (s *TopologyStore) ReplaceSnapshot(snapshot TopologySnapshot) error {
 			return fmt.Errorf("marshal topology runtime %q: %w", record.SwarmID, err)
 		}
 		if err := batch.Set([]byte(KeyTopologyRuntime(record.SwarmID)), payload, nil); err != nil {
+			return err
+		}
+	}
+	for _, record := range snapshot.RuntimePlacements {
+		payload, err := json.Marshal(record)
+		if err != nil {
+			return fmt.Errorf("marshal topology runtime placement %q: %w", record.RuntimeSwarmID, err)
+		}
+		if err := batch.Set([]byte(KeyTopologyRuntimePlacement(record.RuntimeSwarmID)), payload, nil); err != nil {
 			return err
 		}
 	}
@@ -222,6 +234,10 @@ func (s *TopologyStore) Snapshot() (TopologySnapshot, error) {
 	if err != nil {
 		return TopologySnapshot{}, err
 	}
+	runtimePlacements, err := s.listTopologyRuntimePlacementRecords(100000)
+	if err != nil {
+		return TopologySnapshot{}, err
+	}
 	hostContainers, err := s.ListHostContainers(100000)
 	if err != nil {
 		return TopologySnapshot{}, err
@@ -244,6 +260,7 @@ func (s *TopologyStore) Snapshot() (TopologySnapshot, error) {
 	}
 	return TopologySnapshot{
 		Runtimes:          runtimes,
+		RuntimePlacements: runtimePlacements,
 		HostContainers:    hostContainers,
 		Attachments:       attachments,
 		WorkspaceBindings: workspaceBindings,
@@ -309,6 +326,9 @@ func (s *TopologyStore) DeleteRuntime(swarmID string) error {
 		return errors.New("topology runtime swarm id is required")
 	}
 	if err := s.store.Delete(KeyTopologyRuntime(swarmID)); err != nil {
+		return err
+	}
+	if err := s.DeleteRuntimePlacement(swarmID); err != nil {
 		return err
 	}
 	_, err := s.refreshMigrationStatus()
