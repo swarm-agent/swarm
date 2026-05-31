@@ -531,12 +531,15 @@ type WorkspaceReplicationLink struct {
 }
 
 type WorkspaceResolution struct {
-	RequestedPath    string                     `json:"requested_path"`
-	ResolvedPath     string                     `json:"resolved_path"`
-	WorkspacePath    string                     `json:"workspace_path"`
-	WorkspaceName    string                     `json:"workspace_name"`
-	ThemeID          string                     `json:"theme_id,omitempty"`
-	ReplicationLinks []WorkspaceReplicationLink `json:"replication_links,omitempty"`
+	RequestedPath       string                     `json:"requested_path"`
+	ResolvedPath        string                     `json:"resolved_path"`
+	WorkspaceID         string                     `json:"workspace_id,omitempty"`
+	WorkspaceGeneration int64                      `json:"workspace_generation,omitempty"`
+	WorkspaceState      string                     `json:"workspace_state,omitempty"`
+	WorkspacePath       string                     `json:"workspace_path"`
+	WorkspaceName       string                     `json:"workspace_name"`
+	ThemeID             string                     `json:"theme_id,omitempty"`
+	ReplicationLinks    []WorkspaceReplicationLink `json:"replication_links,omitempty"`
 }
 
 type WorkspaceTopologyRoute struct {
@@ -561,17 +564,20 @@ type WorkspaceTopologyRoute struct {
 }
 
 type WorkspaceEntry struct {
-	Path             string                     `json:"path"`
-	WorkspaceName    string                     `json:"workspace_name"`
-	ThemeID          string                     `json:"theme_id,omitempty"`
-	Directories      []string                   `json:"directories"`
-	ReplicationLinks []WorkspaceReplicationLink `json:"replication_links,omitempty"`
-	IsGitRepo        bool                       `json:"is_git_repo"`
-	SortIndex        int                        `json:"sort_index"`
-	AddedAt          int64                      `json:"added_at"`
-	UpdatedAt        int64                      `json:"updated_at"`
-	LastSelectedAt   int64                      `json:"last_selected_at"`
-	Active           bool                       `json:"active"`
+	Path                string                     `json:"path"`
+	WorkspaceID         string                     `json:"workspace_id,omitempty"`
+	WorkspaceGeneration int64                      `json:"workspace_generation,omitempty"`
+	State               string                     `json:"state,omitempty"`
+	WorkspaceName       string                     `json:"workspace_name"`
+	ThemeID             string                     `json:"theme_id,omitempty"`
+	Directories         []string                   `json:"directories"`
+	ReplicationLinks    []WorkspaceReplicationLink `json:"replication_links,omitempty"`
+	IsGitRepo           bool                       `json:"is_git_repo"`
+	SortIndex           int                        `json:"sort_index"`
+	AddedAt             int64                      `json:"added_at"`
+	UpdatedAt           int64                      `json:"updated_at"`
+	LastSelectedAt      int64                      `json:"last_selected_at"`
+	Active              bool                       `json:"active"`
 }
 
 type WorkspaceOverviewWorkspace struct {
