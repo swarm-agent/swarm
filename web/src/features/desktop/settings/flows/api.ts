@@ -277,6 +277,7 @@ function workspaceEntryFromBinding(binding: SwarmTopologyWorkspaceBindingRecord)
   const workspaceName = binding.source_workspace_name?.trim() || sourcePath.replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean).pop() || sourcePath
   return {
     path: sourcePath,
+    localWorkspaceBindingId: bindingID,
     workspaceName,
     themeId: '',
     directories: [],

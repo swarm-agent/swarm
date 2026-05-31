@@ -536,6 +536,7 @@ function flowWorkspaceFromContent(content: Record<string, unknown>): FlowWorkspa
   const path = stringFromRecord(workspace, 'workspace_path') || stringFromRecord(workspace, 'host_workspace_path') || stringFromRecord(workspace, 'cwd') || ''
   return {
     path,
+    localWorkspaceBindingId: '',
     workspaceName: path.split('/').filter(Boolean).pop() || path || 'workspace',
     themeId: '',
     directories: [],
