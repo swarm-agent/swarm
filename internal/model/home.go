@@ -124,6 +124,7 @@ type ChatRoute struct {
 	ID                   string
 	Label                string
 	SwarmID              string
+	WorkspaceBindingID   string
 	HostWorkspacePath    string
 	RuntimeWorkspacePath string
 }

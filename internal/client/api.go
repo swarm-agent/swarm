@@ -645,6 +645,7 @@ type SessionCreateOptions struct {
 	HostWorkspacePath    string
 	RuntimeWorkspacePath string
 	WorkspaceName        string
+	WorkspaceBindingID   string
 	Mode                 string
 	AgentName            string
 	SwarmID              string
@@ -2591,16 +2592,15 @@ func (c *API) CreateSession(ctx context.Context, title, workspacePath, workspace
 }
 
 func (c *API) CreateSessionWithOptions(ctx context.Context, options SessionCreateOptions) (SessionSummary, error) {
+	workspaceBindingID := strings.TrimSpace(options.WorkspaceBindingID)
 	req := map[string]any{
-		"title":                  strings.TrimSpace(options.Title),
-		"workspace_path":         strings.TrimSpace(options.WorkspacePath),
-		"host_workspace_path":    strings.TrimSpace(options.HostWorkspacePath),
-		"runtime_workspace_path": strings.TrimSpace(options.RuntimeWorkspacePath),
-		"workspace_name":         strings.TrimSpace(options.WorkspaceName),
-		"mode":                   strings.TrimSpace(options.Mode),
-		"agent_name":             strings.TrimSpace(options.AgentName),
-		"metadata":               options.Metadata,
-		"worktree_mode":          strings.TrimSpace(options.WorktreeMode),
+		"title":                strings.TrimSpace(options.Title),
+		"workspace_name":       strings.TrimSpace(options.WorkspaceName),
+		"workspace_binding_id": workspaceBindingID,
+		"mode":                 strings.TrimSpace(options.Mode),
+		"agent_name":           strings.TrimSpace(options.AgentName),
+		"metadata":             options.Metadata,
+		"worktree_mode":        strings.TrimSpace(options.WorktreeMode),
 		"preference": map[string]string{
 			"provider":     strings.TrimSpace(options.Preference.Provider),
 			"model":        strings.TrimSpace(options.Preference.Model),
@@ -2608,6 +2608,15 @@ func (c *API) CreateSessionWithOptions(ctx context.Context, options SessionCreat
 			"service_tier": strings.TrimSpace(options.Preference.ServiceTier),
 			"context_mode": strings.TrimSpace(options.Preference.ContextMode),
 		},
+	}
+	if workspaceBindingID == "" {
+		req["workspace_path"] = strings.TrimSpace(options.WorkspacePath)
+		if hostPath := strings.TrimSpace(options.HostWorkspacePath); hostPath != "" {
+			req["host_workspace_path"] = hostPath
+		}
+		if runtimePath := strings.TrimSpace(options.RuntimeWorkspacePath); runtimePath != "" {
+			req["runtime_workspace_path"] = runtimePath
+		}
 	}
 	var resp struct {
 		OK      bool           `json:"ok"`

@@ -244,7 +244,7 @@ import type { WorkspaceOverviewTopologyRoute } from '../../../workspaces/launche
 
 function topologyRoute(overrides: Partial<WorkspaceOverviewTopologyRoute> = {}): WorkspaceOverviewTopologyRoute {
   return {
-    routeId: 'swarm:child-swarm:/runtime/workspace',
+    routeId: 'swarm:child-swarm:binding:binding-1',
     routeSource: 'topology/workspace_binding',
     workspaceBindingId: 'binding-1',
     runtimeSwarmId: 'child-swarm',
@@ -350,6 +350,18 @@ test('buildDesktopChatRouteOptions does not require replication links or swarm t
 
   assert.equal(routes[1]?.id, desktopChatRouteID('child-swarm', 'Host Workspace', 'binding-1'))
   assert.equal(routes[1]?.label, 'Child Swarm')
+})
+
+test('buildDesktopChatRouteOptions skips workspace-backed routes without binding id', () => {
+  const routes = buildDesktopChatRouteOptions({
+    hostSwarmName: 'Host Swarm',
+    workspacePath: '/host/workspace',
+    workspaceName: 'Host Workspace',
+    topologyRoutes: [topologyRoute({ routeId: 'swarm:child-swarm:workspace:Host Workspace', workspaceBindingId: '' })],
+  })
+
+  assert.equal(routes.length, 1)
+  assert.equal(routes[0]?.id, 'host')
 })
 
 test('buildDesktopChatRouteOptions labels mirrored child routes with their runtime name and keeps host name separately', () => {

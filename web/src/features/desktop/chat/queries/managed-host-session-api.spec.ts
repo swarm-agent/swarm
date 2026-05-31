@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import type { DesktopChatRoute } from '../services/chat-routing'
 
 const managedHostRoute: DesktopChatRoute = {
-  id: 'swarm:managed-swarm:/managed/workspace',
+  id: 'swarm:managed-swarm:binding:binding-managed',
   label: 'managed host',
   swarmId: 'managed-swarm',
   targetKind: 'host',

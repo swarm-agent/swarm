@@ -31,9 +31,6 @@ export function desktopChatRouteID(swarmId: string | null | undefined, workspace
   if (normalizedBindingId) {
     return `swarm:${normalizedSwarmId}:binding:${normalizedBindingId}`
   }
-  if (normalizedWorkspaceName) {
-    return `swarm:${normalizedSwarmId}:workspace:${normalizedWorkspaceName}`
-  }
   return ''
 }
 
@@ -70,8 +67,11 @@ export function buildDesktopChatRouteOptions(input: {
     const runtimeWorkspacePath = topologyRoute.runtimeWorkspacePath.trim()
     const workspaceBindingId = topologyRoute.workspaceBindingId.trim()
     const workspaceName = topologyRoute.hostWorkspaceName.trim() || input.workspaceName.trim()
+    if (!swarmId || !workspaceBindingId) {
+      continue
+    }
     const id = desktopChatRouteID(swarmId, workspaceName, workspaceBindingId)
-    if (!swarmId || !id) {
+    if (!id) {
       continue
     }
     if (seen.has(id)) {
@@ -121,10 +121,7 @@ export function desktopChatRoutesEqual(left: DesktopChatRoute | null | undefined
   }
   const leftBindingId = normalizedRoutePart(left.workspaceBindingId)
   const rightBindingId = normalizedRoutePart(right.workspaceBindingId)
-  if (leftBindingId || rightBindingId) {
-    return leftBindingId !== '' && leftBindingId === rightBindingId
-  }
-  return normalizedRoutePart(left.workspaceName || left.hostWorkspaceName) === normalizedRoutePart(right.workspaceName || right.hostWorkspaceName)
+  return leftBindingId !== '' && leftBindingId === rightBindingId
 }
 
 export function resolveDesktopChatRouteById(
@@ -153,7 +150,7 @@ export function desktopChatRouteFromSessionMetadata(session: DesktopSessionRecor
   const runtimeWorkspacePath = session?.runtimeWorkspacePath?.trim() || sessionMetadataString(metadata, 'swarm_routed_runtime_workspace_path')
   const workspaceBindingId = sessionMetadataString(metadata, 'swarm_routed_workspace_binding_id') || sessionMetadataString(metadata, 'swarm_managed_host_workspace_binding_id') || sessionMetadataString(metadata, 'route_workspace_binding_id')
   const workspaceName = sessionMetadataString(metadata, 'swarm_routed_workspace_name') || sessionMetadataString(metadata, 'swarm_route_workspace_name') || session?.workspaceName?.trim() || ''
-  if (!metadataSwarmId || (!workspaceBindingId && !workspaceName)) {
+  if (!metadataSwarmId || !workspaceBindingId) {
     return null
   }
   const id = desktopChatRouteID(metadataSwarmId, workspaceName, workspaceBindingId)

@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestCreateSessionWithOptionsIncludesSwarmIDQuery(t *testing.T) {
+func TestCreateSessionWithOptionsIncludesSwarmIDQueryAndBindingWithoutPathAuthority(t *testing.T) {
 	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
 	t.Setenv("DATA_DIR", "")
 
@@ -45,6 +45,7 @@ func TestCreateSessionWithOptionsIncludesSwarmIDQuery(t *testing.T) {
 		HostWorkspacePath:    "/host/workspace",
 		RuntimeWorkspacePath: "/workspaces/swarm-go",
 		WorkspaceName:        "Workspace",
+		WorkspaceBindingID:   "binding-child",
 		Mode:                 "auto",
 		SwarmID:              "child-swarm",
 		Preference: ModelPreference{
@@ -62,10 +63,16 @@ func TestCreateSessionWithOptionsIncludesSwarmIDQuery(t *testing.T) {
 	if gotSwarmID != "child-swarm" {
 		t.Fatalf("swarm_id query = %q, want child-swarm", gotSwarmID)
 	}
-	if got, _ := body["host_workspace_path"].(string); got != "/host/workspace" {
-		t.Fatalf("host_workspace_path = %q, want /host/workspace", got)
+	if got, _ := body["workspace_binding_id"].(string); got != "binding-child" {
+		t.Fatalf("workspace_binding_id = %q, want binding-child", got)
 	}
-	if got, _ := body["runtime_workspace_path"].(string); got != "/workspaces/swarm-go" {
-		t.Fatalf("runtime_workspace_path = %q, want /workspaces/swarm-go", got)
+	if _, ok := body["workspace_path"]; ok {
+		t.Fatalf("workspace_path present in workspace-backed request: %#v", body["workspace_path"])
+	}
+	if _, ok := body["host_workspace_path"]; ok {
+		t.Fatalf("host_workspace_path present in workspace-backed request: %#v", body["host_workspace_path"])
+	}
+	if _, ok := body["runtime_workspace_path"]; ok {
+		t.Fatalf("runtime_workspace_path present in workspace-backed request: %#v", body["runtime_workspace_path"])
 	}
 }

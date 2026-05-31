@@ -2730,11 +2730,13 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 		HostWorkspacePath:    route.HostWorkspacePath,
 		RuntimeWorkspacePath: route.RuntimeWorkspacePath,
 		WorkspaceName:        workspaceName,
+		WorkspaceBindingID:   route.WorkspaceBindingID,
 		SwarmID:              route.SwarmID,
 		Preference:           preference,
 		Metadata: map[string]any{
 			"swarm_route_id":                      route.ID,
 			"swarm_routed_child_swarm_id":         route.SwarmID,
+			"swarm_routed_workspace_binding_id":   route.WorkspaceBindingID,
 			"swarm_routed_host_workspace_path":    route.HostWorkspacePath,
 			"swarm_routed_runtime_workspace_path": route.RuntimeWorkspacePath,
 		},
@@ -3798,6 +3800,7 @@ func (a *App) createBackgroundCommitSession(ctx context.Context, parentSessionID
 		WorkspaceName:        workspaceName,
 		Mode:                 "auto",
 		AgentName:            emptyFallback(strings.TrimSpace(a.homeModel.ActiveAgent), "swarm"),
+		WorkspaceBindingID:   firstNonEmpty(consumeStringMetadata(metadata, "swarm_routed_workspace_binding_id"), consumeStringMetadata(metadata, "swarm_managed_host_workspace_binding_id"), consumeStringMetadata(metadata, "route_workspace_binding_id")),
 		SwarmID:              consumeStringMetadata(metadata, "swarm_routed_child_swarm_id"),
 		Metadata:             metadata,
 		Preference:           parentSummary.Preference,
@@ -7641,12 +7644,13 @@ func buildChatRoutesForWorkspaces(workspaces []model.Workspace, workspacePath st
 	seen := map[string]struct{}{"host": {}}
 	for _, route := range active.TopologyRoutes {
 		swarmID := strings.TrimSpace(route.RuntimeSwarmID)
+		bindingID := strings.TrimSpace(route.WorkspaceBindingID)
 		runtimePath := strings.TrimSpace(route.RuntimeWorkspacePath)
 		routeID := strings.TrimSpace(route.RouteID)
-		if routeID == "" {
-			routeID = "swarm:" + swarmID + ":" + runtimePath
+		if routeID == "" && bindingID != "" {
+			routeID = "swarm:" + swarmID + ":binding:" + bindingID
 		}
-		if swarmID == "" || runtimePath == "" || routeID == "" {
+		if swarmID == "" || bindingID == "" || routeID == "" {
 			continue
 		}
 		if _, exists := seen[routeID]; exists {
@@ -7665,6 +7669,7 @@ func buildChatRoutesForWorkspaces(workspaces []model.Workspace, workspacePath st
 			ID:                   routeID,
 			Label:                label,
 			SwarmID:              swarmID,
+			WorkspaceBindingID:   strings.TrimSpace(route.WorkspaceBindingID),
 			HostWorkspacePath:    hostWorkspacePath,
 			RuntimeWorkspacePath: runtimePath,
 		})
@@ -7795,13 +7800,17 @@ func (a *App) sessionRouteFromMetadata(workspacePath string, metadata map[string
 
 	hostWorkspacePath := consumeStringMetadata(metadata, "swarm_routed_host_workspace_path")
 	runtimeWorkspacePath := consumeStringMetadata(metadata, "swarm_routed_runtime_workspace_path")
+	workspaceBindingID := firstNonEmpty(consumeStringMetadata(metadata, "swarm_routed_workspace_binding_id"), consumeStringMetadata(metadata, "swarm_managed_host_workspace_binding_id"), consumeStringMetadata(metadata, "route_workspace_binding_id"))
 	childSwarmID := consumeStringMetadata(metadata, "swarm_routed_child_swarm_id")
 	routes := buildChatRoutesForWorkspaces(a.homeModel.Workspaces, firstNonEmpty(hostWorkspacePath, workspacePath))
 	for _, route := range routes {
 		if routeID != "" && strings.TrimSpace(route.ID) == routeID {
 			return route, true
 		}
-		if childSwarmID != "" && strings.TrimSpace(route.SwarmID) == childSwarmID {
+		if workspaceBindingID != "" && strings.TrimSpace(route.WorkspaceBindingID) == workspaceBindingID {
+			return route, true
+		}
+		if workspaceBindingID == "" && childSwarmID != "" && strings.TrimSpace(route.SwarmID) == childSwarmID {
 			if runtimeWorkspacePath == "" || pathsEqual(route.RuntimeWorkspacePath, runtimeWorkspacePath) {
 				return route, true
 			}

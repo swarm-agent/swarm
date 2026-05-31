@@ -1265,11 +1265,11 @@ function sessionRequestBody(input: {
   route?: DesktopChatRoute | null;
   worktreeMode?: string;
 }): Record<string, unknown> {
-  return {
+  const workspaceBindingId = input.route?.workspaceBindingId?.trim() || ''
+  const body: Record<string, unknown> = {
     title: input.title ?? "",
-    workspace_path: input.route ? undefined : input.workspacePath,
     workspace_name: input.route?.workspaceName?.trim() || input.workspaceName,
-    workspace_binding_id: input.route?.workspaceBindingId?.trim() || undefined,
+    workspace_binding_id: workspaceBindingId || undefined,
     mode: input.mode,
     agent_name: input.agentName?.trim() ?? "",
     metadata: input.metadata ?? undefined,
@@ -1282,6 +1282,10 @@ function sessionRequestBody(input: {
       context_mode: input.preference.contextMode,
     },
   }
+  if (!workspaceBindingId) {
+    body.workspace_path = input.workspacePath
+  }
+  return body
 }
 
 export async function createSession(input: {

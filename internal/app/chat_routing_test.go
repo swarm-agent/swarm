@@ -9,7 +9,7 @@ import (
 )
 
 const testWorkspacePath = "/host/workspace"
-const testRemoteRouteID = "swarm:child-swarm:/workspaces/swarm-go"
+const testRemoteRouteID = "swarm:child-swarm:binding:binding-1"
 
 func testRoutingWorkspaces() []model.Workspace {
 	return []model.Workspace{{
@@ -57,6 +57,9 @@ func TestBuildChatRoutesForWorkspacesKeepsTargetSwarmID(t *testing.T) {
 	}
 	if remote.RuntimeWorkspacePath != "/workspaces/swarm-go" {
 		t.Fatalf("remote RuntimeWorkspacePath = %q, want /workspaces/swarm-go", remote.RuntimeWorkspacePath)
+	}
+	if remote.WorkspaceBindingID != "binding-1" {
+		t.Fatalf("remote WorkspaceBindingID = %q, want binding-1", remote.WorkspaceBindingID)
 	}
 }
 
