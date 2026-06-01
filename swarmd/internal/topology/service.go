@@ -297,6 +297,13 @@ func (s *Service) FindHostContainer(hostSwarmID string, refs ...string) (pebbles
 	return pebblestore.FindTopologyHostContainerByRefs(s.topologyStore, hostSwarmID, refs...)
 }
 
+func (s *Service) PutRuntimeForAccount(accountScopeID string, record pebblestore.TopologyRuntimeRecord) (pebblestore.TopologyRuntimeRecord, error) {
+	if s == nil || s.topologyStore == nil {
+		return pebblestore.TopologyRuntimeRecord{}, fmt.Errorf("topology service is not configured")
+	}
+	return s.topologyStore.PutRuntimeForAccount(accountScopeID, record)
+}
+
 func (s *Service) UpsertRuntime(record pebblestore.TopologyRuntimeRecord) error {
 	if s == nil || s.topologyStore == nil {
 		return fmt.Errorf("topology service is not configured")

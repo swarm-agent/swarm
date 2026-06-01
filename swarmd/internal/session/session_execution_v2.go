@@ -231,6 +231,10 @@ func normalizeSessionExecutionV2(execution SessionExecution) SessionExecution {
 	return execution
 }
 
+func ValidateSessionExecutionV2(execution SessionExecution) error {
+	return validateSessionExecutionV2(execution)
+}
+
 func validateSessionExecutionV2(execution SessionExecution) error {
 	if execution.ExecutionClass != SessionExecutionClassPrimary && execution.ExecutionClass != SessionExecutionClassLocalContainer {
 		return fmt.Errorf("unsupported sessions v2 execution class %q", execution.ExecutionClass)
@@ -279,6 +283,10 @@ func validateCreateFromExecutionV2Metadata(metadata map[string]any) error {
 		}
 	}
 	return nil
+}
+
+func RuntimeSessionV2Metadata(base map[string]any, execution SessionExecution) map[string]any {
+	return sessionExecutionV2Metadata(base, execution)
 }
 
 func sessionExecutionV2Metadata(base map[string]any, execution SessionExecution) map[string]any {

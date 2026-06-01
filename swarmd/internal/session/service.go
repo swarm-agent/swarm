@@ -903,6 +903,10 @@ func normalizeStoredSessionPreference(pref pebblestore.ModelPreference) pebblest
 	return pref
 }
 
+func NormalizeSessionPreferenceValue(pref pebblestore.ModelPreference) (pebblestore.ModelPreference, error) {
+	return normalizeSessionPreferenceValue(pref)
+}
+
 func normalizeSessionPreferenceValue(pref pebblestore.ModelPreference) (pebblestore.ModelPreference, error) {
 	pref = normalizeStoredSessionPreference(pref)
 	if pref.Provider == "" && pref.Model == "" {
