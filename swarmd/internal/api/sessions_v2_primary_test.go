@@ -248,6 +248,36 @@ func TestSessionsV2LocalContainerCreatesSessionFromBindingAuthority(t *testing.T
 	}
 }
 
+func TestSessionsV2PrimaryCreateEndpointIsNotRejectedAsReservedLifecycleID(t *testing.T) {
+	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV2PrimaryAuthority(t, server, swarmStore, "host-swarm-id", "binding-primary-v2", "/host/swarm-go")
+
+	rec := postSessionsV2Primary(t, server, `{"swarm_id":"host-swarm-id","workspace_binding_id":"binding-primary-v2","title":"primary v2","mode":"auto","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "session_v2_bad_request") || strings.Contains(rec.Body.String(), "invalid sessions v2 lifecycle path") {
+		t.Fatalf("primary create was rejected as lifecycle path: %s", rec.Body.String())
+	}
+}
+
+func TestSessionsV2LocalContainerCreateEndpointIsNotRejectedAsReservedLifecycleID(t *testing.T) {
+	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV2LocalContainerAuthority(t, server, swarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+
+	req := httptest.NewRequest(http.MethodPost, "/v2/sessions/local-containers", bytes.NewBufferString(`{"swarm_id":"container-swarm","workspace_binding_id":"binding-container-v2","title":"container v2","mode":"auto","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "session_v2_bad_request") || strings.Contains(rec.Body.String(), "invalid sessions v2 lifecycle path") {
+		t.Fatalf("local-container create was rejected as lifecycle path: %s", rec.Body.String())
+	}
+}
+
 func TestSessionsV2LocalContainerRejectsHostPlacement(t *testing.T) {
 	server, _, _, routeStore, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
 	seedSessionsV2PrimaryAuthority(t, server, swarmStore, "host-swarm-id", "binding-primary-v2", "/host/swarm-go")

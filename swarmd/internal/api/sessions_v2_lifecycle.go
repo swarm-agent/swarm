@@ -137,13 +137,22 @@ func parsePrimarySessionV2LifecyclePath(path string) (string, string, bool) {
 		}
 	}
 	sessionID := strings.TrimSpace(parts[0])
-	if sessionID == "" {
+	if sessionID == "" || isReservedPrimarySessionV2LifecycleID(sessionID) {
 		return "", "", false
 	}
 	if len(parts) == 1 {
 		return sessionID, "", true
 	}
 	return sessionID, strings.Join(parts[1:], "/"), true
+}
+
+func isReservedPrimarySessionV2LifecycleID(sessionID string) bool {
+	switch strings.TrimSpace(sessionID) {
+	case "primary", "local-containers", "local_container":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) requirePrimarySessionV2Authority(r *http.Request, sessionID string, requireWrite bool) (primarySessionV2Authority, error) {

@@ -65,6 +65,25 @@ func TestSessionsV2LifecycleGetAndAppendUseExecutionAuthority(t *testing.T) {
 	}
 }
 
+func TestSessionsV2LifecycleRejectsReservedEndpointIDs(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+
+	for _, reservedID := range []string{"primary", "local-containers", "local_container"} {
+		t.Run(reservedID, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/v2/sessions/"+reservedID+"/messages", nil)
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "session_v2_bad_request") || !strings.Contains(rec.Body.String(), "invalid sessions v2 lifecycle path") {
+				t.Fatalf("body = %s, want bad request invalid path", rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestSessionsV2LifecycleRejectsMissingExecution(t *testing.T) {
 	server, sessionSvc := newSessionAccessModeTestServer(t, pebblestore.TopologyWorkspaceBindingAccessModeReadWrite)
 	pref := pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "medium"}
