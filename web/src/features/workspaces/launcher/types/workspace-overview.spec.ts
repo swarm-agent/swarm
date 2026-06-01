@@ -89,3 +89,19 @@ test('self workspace overview keeps routed mirror sessions under host workspace 
   assert.equal(overview.workspaces[0]?.sessions[0]?.workspacePath, '/workspaces/host-swarm')
   assert.equal(overview.workspaces[0]?.sessions[0]?.runtimeWorkspacePath, '/workspaces/swarm')
 })
+
+
+test('workspace overview keeps topology routes by binding identity without requiring runtime path', () => {
+  const response = responseForTarget('remote', 'child')
+  const route = response.workspaces?.[0]?.topology_routes?.[0]
+  if (route) {
+    route.runtime_workspace_path = ''
+  }
+
+  const overview = mapWorkspaceOverviewResponse(response)
+
+  assert.equal(overview.workspaces[0]?.topologyRoutes.length, 1)
+  assert.equal(overview.workspaces[0]?.topologyRoutes[0]?.runtimeSwarmId, 'child-swarm')
+  assert.equal(overview.workspaces[0]?.topologyRoutes[0]?.workspaceBindingId, 'binding-1')
+  assert.equal(overview.workspaces[0]?.topologyRoutes[0]?.runtimeWorkspacePath, '')
+})

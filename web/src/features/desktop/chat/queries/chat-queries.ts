@@ -25,9 +25,9 @@ import type {
 import {
   applyDesktopChatRouteToSession,
   desktopChatRouteFromSessionMetadata,
+  getDesktopSessionCreateV2Target,
   isManagedHostDesktopChatRoute,
   type DesktopChatRoute,
-  withDesktopChatRoute,
 } from "../services/chat-routing";
 import {
   canonicalSessionWorkspaceName,
@@ -1254,41 +1254,116 @@ export async function activatePrimaryAgent(name: string): Promise<void> {
   });
 }
 
-function sessionRequestBody(input: {
+const SESSION_CREATE_V2_FORBIDDEN_METADATA_KEYS = new Set([
+  'workspace_name',
+  'workspace_path',
+  'host_workspace_path',
+  'runtime_workspace_path',
+  'backend_url',
+  'child_backend_url',
+  'target_backend_url',
+  'target_swarm_id',
+  'next_hop_swarm_id',
+  'next_hop_backend_url',
+  'local_workspace_binding_id',
+  'owner_transport',
+])
+
+const SESSION_CREATE_V2_FORBIDDEN_METADATA_PREFIXES = [
+  'swarm_route_',
+  'swarm_routed_',
+  'swarm_managed_',
+  'swarm_v2_',
+  'hosted_session',
+  'managed_host',
+]
+
+const SESSION_CREATE_V2_FORBIDDEN_METADATA_PARTS = [
+  'workspace_name',
+  'workspace_path',
+  'path',
+  'backend_url',
+  'swarm_id',
+  'route',
+  'routing',
+  'backend',
+  'target',
+]
+
+function isForbiddenSessionCreateV2MetadataKey(key: string): boolean {
+  const normalized = key.trim().toLowerCase()
+  if (!normalized) {
+    return true
+  }
+  if (SESSION_CREATE_V2_FORBIDDEN_METADATA_KEYS.has(normalized)) {
+    return true
+  }
+  if (SESSION_CREATE_V2_FORBIDDEN_METADATA_PREFIXES.some((prefix) => normalized.startsWith(prefix))) {
+    return true
+  }
+  return SESSION_CREATE_V2_FORBIDDEN_METADATA_PARTS.some((part) => normalized.includes(part))
+}
+
+export function sanitizeSessionCreateV2Metadata(metadata: Record<string, unknown> | null | undefined): Record<string, unknown> | undefined {
+  if (!metadata || typeof metadata !== 'object') {
+    return undefined
+  }
+  const sanitized: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(metadata)) {
+    if (isForbiddenSessionCreateV2MetadataKey(key)) {
+      continue
+    }
+    sanitized[key] = value
+  }
+  return Object.keys(sanitized).length > 0 ? sanitized : undefined
+}
+
+function optionalString(value: string | null | undefined): string | undefined {
+  const normalized = value?.trim() ?? ''
+  return normalized ? normalized : undefined
+}
+
+function stripUndefinedFields<T extends Record<string, unknown>>(value: T): T {
+  for (const key of Object.keys(value)) {
+    if (value[key] === undefined) {
+      delete value[key]
+    }
+  }
+  return value
+}
+
+function sessionCreateV2RequestBody(input: {
+  target: { swarmId: string; workspaceBindingId: string };
   title?: string;
-  workspacePath: string;
-  workspaceName: string;
   mode: string;
   agentName?: string;
   metadata?: Record<string, unknown>;
   preference: ResolvedSessionPreference["preference"];
-  route?: DesktopChatRoute | null;
   worktreeMode?: string;
+  worktreeUseCurrentBranch?: boolean;
+  worktreeBaseBranch?: string;
+  worktreeBranchName?: string;
 }): Record<string, unknown> {
-  const workspaceBindingId = input.route?.workspaceBindingId?.trim() || ''
-  const routeRequiresBinding = Boolean(input.route?.requiresWorkspaceBinding || input.route?.swarmId?.trim())
-  const explicitWorktreeMode = input.worktreeMode?.trim() || ''
-  const worktreeMode = explicitWorktreeMode || (routeRequiresBinding ? 'off' : '')
-  const body: Record<string, unknown> = {
+  const preference = stripUndefinedFields({
+    provider: optionalString(input.preference.provider),
+    model: optionalString(input.preference.model),
+    thinking: optionalString(input.preference.thinking),
+    service_tier: optionalString(input.preference.serviceTier),
+    context_mode: optionalString(input.preference.contextMode),
+  })
+  return stripUndefinedFields({
+    swarm_id: input.target.swarmId,
+    workspace_binding_id: input.target.workspaceBindingId,
     title: input.title ?? "",
-    workspace_name: input.route?.workspaceName?.trim() || input.workspaceName,
-    workspace_binding_id: workspaceBindingId || undefined,
     mode: input.mode,
     agent_name: input.agentName?.trim() ?? "",
-    metadata: input.metadata ?? undefined,
-    worktree_mode: worktreeMode || undefined,
-    preference: {
-      provider: input.preference.provider,
-      model: input.preference.model,
-      thinking: input.preference.thinking,
-      service_tier: input.preference.serviceTier,
-      context_mode: input.preference.contextMode,
-    },
-  }
-  if (!workspaceBindingId && !routeRequiresBinding) {
-    body.workspace_path = input.workspacePath
-  }
-  return body
+    worktree_mode: optionalString(input.worktreeMode),
+    worktree_use_current_branch: input.worktreeUseCurrentBranch,
+    worktree_base_branch: optionalString(input.worktreeBaseBranch),
+    worktree_branch_name: optionalString(input.worktreeBranchName),
+    preference: Object.keys(preference).length > 0 ? preference : undefined,
+    metadata: sanitizeSessionCreateV2Metadata(input.metadata),
+  })
 }
 
 export async function createSession(input: {
@@ -1301,16 +1376,28 @@ export async function createSession(input: {
   preference: ResolvedSessionPreference["preference"];
   route?: DesktopChatRoute | null;
   worktreeMode?: string;
+  worktreeUseCurrentBranch?: boolean;
+  worktreeBaseBranch?: string;
+  worktreeBranchName?: string;
 }): Promise<DesktopSessionRecord> {
-  const body = sessionRequestBody(input)
-  const endpoint = isManagedHostDesktopChatRoute(input.route)
-    ? "/v1/swarm/managed-hosts/sessions/open"
-    : withDesktopChatRoute("/v1/sessions", input.route)
-  if (isManagedHostDesktopChatRoute(input.route)) {
-    body.target_swarm_id = input.route?.swarmId?.trim() ?? ""
+  const target = getDesktopSessionCreateV2Target(input.route)
+  if (target.endpoint === null) {
+    throw new Error(target.unsupportedReason)
   }
-  const response = await requestJson<{ session?: SessionWire }>(
-    endpoint,
+  const body = sessionCreateV2RequestBody({
+    target,
+    title: input.title,
+    mode: input.mode,
+    agentName: input.agentName,
+    metadata: input.metadata,
+    preference: input.preference,
+    worktreeMode: input.worktreeMode,
+    worktreeUseCurrentBranch: input.worktreeUseCurrentBranch,
+    worktreeBaseBranch: input.worktreeBaseBranch,
+    worktreeBranchName: input.worktreeBranchName,
+  })
+  const response = await requestJson<{ session?: SessionWire; session_execution?: Record<string, unknown> }>(
+    target.endpoint,
     {
       method: "POST",
       headers: {

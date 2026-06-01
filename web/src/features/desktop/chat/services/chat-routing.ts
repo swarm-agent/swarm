@@ -203,6 +203,48 @@ export function isManagedHostDesktopChatRoute(route: DesktopChatRoute | null | u
   return relationship === 'managed'
 }
 
+export type DesktopSessionCreateV2Target =
+  | { endpoint: '/v2/sessions/primary'; swarmId: string; workspaceBindingId: string }
+  | { endpoint: '/v2/sessions/local-containers'; swarmId: string; workspaceBindingId: string }
+  | { endpoint: null; unsupportedReason: string }
+
+function normalizedRouteLabel(value: string | null | undefined): string {
+  return value?.trim().toLowerCase() ?? ''
+}
+
+function isLocalContainerDesktopRouteKind(value: string | null | undefined): boolean {
+  const normalized = normalizedRouteLabel(value)
+  return normalized === 'container'
+    || normalized === 'local-container'
+    || normalized === 'local_container'
+    || normalized === 'mirrored_child'
+    || normalized === 'child'
+}
+
+export function getDesktopSessionCreateV2Target(route: DesktopChatRoute | null | undefined): DesktopSessionCreateV2Target {
+  const swarmId = route?.swarmId?.trim() ?? ''
+  const workspaceBindingId = route?.workspaceBindingId?.trim() ?? ''
+  const relationship = normalizedRouteLabel(route?.targetRelationship)
+  const targetKind = normalizedRouteLabel(route?.targetKind)
+
+  if (relationship === 'managed') {
+    return { endpoint: null, unsupportedReason: 'Managed-host v2 session create is not implemented yet.' }
+  }
+  if (!swarmId) {
+    return { endpoint: null, unsupportedReason: 'Sessions API v2 create requires a selected swarm_id.' }
+  }
+  if (!workspaceBindingId) {
+    return { endpoint: null, unsupportedReason: 'Sessions API v2 create requires workspace_binding_id.' }
+  }
+  if (relationship === 'self' && targetKind === 'host') {
+    return { endpoint: '/v2/sessions/primary', swarmId, workspaceBindingId }
+  }
+  if (relationship === 'child' && isLocalContainerDesktopRouteKind(targetKind)) {
+    return { endpoint: '/v2/sessions/local-containers', swarmId, workspaceBindingId }
+  }
+  return { endpoint: null, unsupportedReason: `Sessions API v2 create does not support route target ${relationship || 'unknown'}/${targetKind || 'unknown'}.` }
+}
+
 export function withDesktopChatRoute(path: string, route: DesktopChatRoute | null | undefined): string {
   const normalizedPath = path.trim()
   if (!normalizedPath) {

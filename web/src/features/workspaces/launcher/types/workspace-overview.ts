@@ -409,7 +409,7 @@ function mapOverviewWorkspace(workspace: WorkspaceOverviewWorkspaceWire, preferR
       : [],
     todoSummary: mapWorkspaceTodoSummary(workspace.todo_summary),
     topologyRoutes: Array.isArray(workspace.topology_routes)
-      ? workspace.topology_routes.map(mapOverviewTopologyRoute).filter((route) => route.routeId && route.workspaceBindingId && route.runtimeSwarmId && route.runtimeWorkspacePath)
+      ? workspace.topology_routes.map(mapOverviewTopologyRoute).filter((route) => route.routeId && route.workspaceBindingId && route.runtimeSwarmId)
       : [],
   }
 }

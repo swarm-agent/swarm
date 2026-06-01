@@ -24,38 +24,7 @@ async function withFetchStub(
   const originalFetch = globalThis.fetch
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     calls.push({ input, init })
-    const url = String(input)
-    if (url === '/v1/swarm/managed-hosts/sessions/open') {
-      return new Response(JSON.stringify({
-        ok: true,
-        session: {
-          id: 'managed-session',
-          title: 'Managed',
-          workspace_path: '/managed/workspace',
-          workspace_name: 'workspace',
-          mode: 'auto',
-          metadata: { swarm_managed_host_session: true, swarm_managed_host_swarm_id: 'managed-swarm' },
-          created_at: 1,
-          updated_at: 1,
-        },
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    }
-    if (url === '/v1/swarm/managed-hosts/sessions/run') {
-      return new Response(JSON.stringify({ ok: true, session_id: 'managed-session', run_id: 'run-managed', status: 'accepted' }), {
-        status: 202,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    }
-    if (url === '/v1/swarm/managed-hosts/sessions/message') {
-      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    }
-    if (url === '/v1/swarm/managed-hosts/sessions/stop') {
-      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    }
-    if (url.startsWith('/v1/sessions')) {
-      throw new Error(`unexpected container/local session API: ${url}`)
-    }
-    throw new Error(`unexpected fetch: ${url}`)
+    throw new Error(`unexpected fetch: ${String(input)}`)
   }) as typeof fetch
 
   try {
@@ -65,46 +34,48 @@ async function withFetchStub(
   }
 }
 
-test('managed host chat create with worktree on uses binding identity and managed-host endpoints', async () => {
-  const { createSession, sendSessionMessage, startSessionRun, stopSessionRun } = await import('./chat-queries')
+test('managed desktop create is disabled until managed Sessions API v2 exists', async () => {
+  const { createSession } = await import('./chat-queries')
 
   await withFetchStub(async (calls) => {
-    await createSession({
-      workspacePath: '/frontend/device/path/workspace',
-      workspaceName: 'workspace',
-      mode: 'auto',
-      agentName: 'swarm',
-      preference: { provider: 'codex', model: 'gpt-5.4', thinking: 'medium', serviceTier: '', contextMode: '' },
-      route: managedHostRoute,
-      worktreeMode: 'on',
-    })
-    await sendSessionMessage('managed-session', 'user', 'hello managed', managedHostRoute)
-    await startSessionRun({ sessionId: 'managed-session', route: managedHostRoute, prompt: 'hello managed', agentName: 'swarm' })
-    await stopSessionRun('managed-session', 'run-managed', managedHostRoute)
+    await assert.rejects(
+      createSession({
+        workspacePath: '/frontend/device/path/workspace',
+        workspaceName: 'workspace',
+        mode: 'auto',
+        agentName: 'swarm',
+        preference: { provider: 'codex', model: 'gpt-5.4', thinking: 'medium', serviceTier: '', contextMode: '' },
+        route: managedHostRoute,
+        worktreeMode: 'on',
+      }),
+      /Managed-host v2 session create is not implemented yet\./,
+    )
 
-    const urls = calls.map((entry) => String(entry.input))
-    assert.deepEqual(urls, [
-      '/v1/swarm/managed-hosts/sessions/open',
-      '/v1/swarm/managed-hosts/sessions/message',
-      '/v1/swarm/managed-hosts/sessions/run',
-      '/v1/swarm/managed-hosts/sessions/stop',
-    ])
+    assert.equal(calls.length, 0)
+    assert.equal(calls.some((entry) => String(entry.input) === '/v1/swarm/managed-hosts/sessions/open'), false)
+    assert.equal(calls.some((entry) => String(entry.input).startsWith('/v1/sessions')), false)
+  })
+})
 
-    const openBody = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>
-    assert.equal(openBody.target_swarm_id, 'managed-swarm')
-    assert.equal(openBody.workspace_name, 'workspace')
-    assert.equal(openBody.workspace_binding_id, 'binding-managed')
-    assert.equal(Object.hasOwn(openBody, 'workspace_path'), false)
-    assert.equal(Object.hasOwn(openBody, 'host_workspace_path'), false)
-    assert.equal(Object.hasOwn(openBody, 'runtime_workspace_path'), false)
-    assert.equal(openBody.worktree_mode, 'on')
+test('managed desktop create does not send target_swarm_id or legacy managed-host open body', async () => {
+  const { createSession } = await import('./chat-queries')
 
-    const messageBody = JSON.parse(String(calls[1]?.init?.body ?? '{}')) as Record<string, unknown>
-    assert.equal(messageBody.target_swarm_id, 'managed-swarm')
-    assert.equal(messageBody.session_id, 'managed-session')
+  await withFetchStub(async (calls) => {
+    await assert.rejects(
+      createSession({
+        workspacePath: '/frontend/device/path/workspace',
+        workspaceName: 'workspace',
+        mode: 'auto',
+        agentName: 'swarm',
+        preference: { provider: 'codex', model: 'gpt-5.4', thinking: 'medium', serviceTier: '', contextMode: '' },
+        route: managedHostRoute,
+        worktreeMode: 'on',
+      }),
+      /Managed-host v2 session create is not implemented yet\./,
+    )
 
-    const runBody = JSON.parse(String(calls[2]?.init?.body ?? '{}')) as Record<string, unknown>
-    assert.equal(runBody.target_swarm_id, 'managed-swarm')
-    assert.equal(runBody.session_id, 'managed-session')
+    const bodies = calls.map((entry) => String(entry.init?.body ?? ''))
+    assert.equal(bodies.some((body) => body.includes('target_swarm_id')), false)
+    assert.equal(bodies.some((body) => body.includes('managed-swarm')), false)
   })
 })
