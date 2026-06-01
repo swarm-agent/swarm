@@ -144,7 +144,7 @@ func (s *Server) requirePrimarySessionV2Authority(r *http.Request, sessionID str
 	if strings.TrimSpace(execution.RuntimeKind) != pebblestore.TopologyRuntimeKindHost || strings.TrimSpace(execution.AuthorityContainerID) != "" {
 		return primarySessionV2Authority{}, sessionV2InvalidClass("sessions v2 primary execution must target host runtime authority")
 	}
-	if execution.PlacementGeneration <= 0 || execution.BindingGeneration <= 0 || strings.TrimSpace(execution.WorkspaceBindingID) == "" {
+	if strings.TrimSpace(execution.WorkspaceBindingID) == "" || strings.TrimSpace(execution.SourceWorkspaceID) == "" || execution.SourceWorkspaceGeneration <= 0 || strings.TrimSpace(execution.SourceWorkspacePath) == "" || strings.TrimSpace(execution.RuntimeWorkspacePath) == "" || execution.PlacementGeneration <= 0 || execution.BindingGeneration <= 0 {
 		return primarySessionV2Authority{}, sessionV2StaleAuthority("sessions v2 execution authority identity is incomplete")
 	}
 
@@ -174,6 +174,9 @@ func (s *Server) requirePrimarySessionV2Authority(r *http.Request, sessionID str
 	}
 	if !bindingOK {
 		return primarySessionV2Authority{}, sessionV2AuthorityNotFound("sessions v2 workspace binding %q was not found", execution.WorkspaceBindingID)
+	}
+	if strings.TrimSpace(binding.BindingID) == "" || strings.TrimSpace(binding.SourceWorkspaceID) == "" || binding.SourceWorkspaceGeneration <= 0 || strings.TrimSpace(binding.SourceWorkspacePath) == "" || strings.TrimSpace(binding.DestinationWorkspacePath) == "" || binding.PlacementGeneration <= 0 || binding.BindingGeneration <= 0 {
+		return primarySessionV2Authority{}, sessionV2StaleAuthority("sessions v2 workspace binding authority identity is incomplete")
 	}
 	if strings.TrimSpace(binding.State) != pebblestore.TopologyWorkspaceBindingStateBound {
 		return primarySessionV2Authority{}, sessionV2StaleAuthority("sessions v2 workspace binding is not bound")

@@ -93,6 +93,13 @@ func (s *Service) SnapshotForAccount(accountScopeID string) (pebblestore.Topolog
 	return s.topologyStore.SnapshotForAccount(accountScopeID)
 }
 
+func (s *Service) ReplaceSnapshotForAccount(accountScopeID string, snapshot pebblestore.TopologySnapshot) error {
+	if s == nil || s.topologyStore == nil {
+		return fmt.Errorf("topology service is not configured")
+	}
+	return s.topologyStore.ReplaceSnapshotForAccount(accountScopeID, snapshot)
+}
+
 func (s *Service) ListRuntimes(limit int) ([]pebblestore.TopologyRuntimeRecord, error) {
 	if s == nil || s.topologyStore == nil {
 		return nil, fmt.Errorf("topology service is not configured")
