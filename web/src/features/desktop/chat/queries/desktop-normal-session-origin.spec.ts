@@ -12,13 +12,13 @@ async function withFetchStub(
     if (url === '/v1/auth/attach/token') {
       throw new Error('unexpected legacy attach-token bootstrap')
     }
-    if (url.startsWith('/v1/sessions/') && url.endsWith('/run/stream')) {
+    if (url.startsWith('/v2/sessions/') && url.endsWith('/run/stream')) {
       return new Response(JSON.stringify({ ok: true, run_id: 'run-1', status: 'accepted' }), {
         status: 202,
         headers: { 'Content-Type': 'application/json' },
       })
     }
-    if (url.startsWith('/v1/sessions/') && url.endsWith('/mode')) {
+    if (url.startsWith('/v2/sessions/') && url.endsWith('/mode')) {
       const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
       const mode = String(body.mode ?? '').trim()
       if (mode !== 'plan' && mode !== 'auto') {
@@ -53,7 +53,7 @@ test('normal desktop session start does not send background-targeted metadata', 
       background: false,
     })
 
-    const runCall = calls.find((entry) => String(entry.input).includes('/v1/sessions/session-normal/run/stream'))
+    const runCall = calls.find((entry) => String(entry.input).includes('/v2/sessions/session-normal/run/stream'))
     assert.ok(runCall, 'expected run start request')
     const body = JSON.parse(String(runCall?.init?.body ?? '{}')) as Record<string, unknown>
     assert.equal(body.background, false)
@@ -76,7 +76,7 @@ test('commit session start targets memory as the commit-capable subagent', async
       targetName: 'memory',
     })
 
-    const runCall = calls.find((entry) => String(entry.input).includes('/v1/sessions/session-commit/run/stream'))
+    const runCall = calls.find((entry) => String(entry.input).includes('/v2/sessions/session-commit/run/stream'))
     assert.ok(runCall, 'expected commit run start request')
     const body = JSON.parse(String(runCall?.init?.body ?? '{}')) as Record<string, unknown>
     assert.equal(body.background, true)
@@ -98,7 +98,7 @@ test('subagent-targeted desktop session start sends targeted lineage metadata', 
       targetName: 'explorer',
     })
 
-    const runCall = calls.find((entry) => String(entry.input).includes('/v1/sessions/session-subagent/run/stream'))
+    const runCall = calls.find((entry) => String(entry.input).includes('/v2/sessions/session-subagent/run/stream'))
     assert.ok(runCall, 'expected subagent run start request')
     const body = JSON.parse(String(runCall?.init?.body ?? '{}')) as Record<string, unknown>
     assert.equal(body.background, false)
@@ -116,7 +116,7 @@ test('session mode update only sends runtime plan or auto modes', async () => {
     const resolved = await updateSessionMode('session-memory', 'auto')
 
     assert.equal(resolved, 'auto')
-    const modeCall = calls.find((entry) => String(entry.input).includes('/v1/sessions/session-memory/mode'))
+    const modeCall = calls.find((entry) => String(entry.input).includes('/v2/sessions/session-memory/mode'))
     assert.ok(modeCall, 'expected session mode request')
     const body = JSON.parse(String(modeCall?.init?.body ?? '{}')) as Record<string, unknown>
     assert.equal(body.mode, 'auto')
@@ -134,7 +134,7 @@ test('direct non-primary desktop session run can select memory as the agent', as
       background: false,
     })
 
-    const runCall = calls.find((entry) => String(entry.input).includes('/v1/sessions/session-memory/run/stream'))
+    const runCall = calls.find((entry) => String(entry.input).includes('/v2/sessions/session-memory/run/stream'))
     assert.ok(runCall, 'expected memory run start request')
     const body = JSON.parse(String(runCall?.init?.body ?? '{}')) as Record<string, unknown>
     assert.equal(body.background, false)

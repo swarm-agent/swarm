@@ -9,7 +9,7 @@ async function withFetchStub(
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     calls.push({ input, init })
     const url = String(input)
-    if (url === '/v1/sessions/session-test/permissions?status=pending&limit=200') {
+    if (url === '/v2/sessions/session-test/permissions?status=pending&limit=200') {
       return new Response(JSON.stringify({
         ok: true,
         session_id: 'session-test',
@@ -39,7 +39,7 @@ test('fetchSessionPendingPermissions requests the pending-only permission API', 
     const permissions = await fetchSessionPendingPermissions('session-test')
 
     assert.deepEqual(calls.map((entry) => String(entry.input)), [
-      '/v1/sessions/session-test/permissions?status=pending&limit=200',
+      '/v2/sessions/session-test/permissions?status=pending&limit=200',
     ])
     assert.equal(permissions.length, 1)
     assert.equal(permissions[0]?.id, 'perm-pending')

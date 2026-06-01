@@ -637,7 +637,7 @@ export async function fetchSession(
   }
 
   const response = await requestJson<{ session?: SessionWire }>(
-    `/v1/sessions/${encodeURIComponent(normalizedSessionId)}`,
+    `/v2/sessions/${encodeURIComponent(normalizedSessionId)}`,
   );
   const mappedSession = mapSession(response.session ?? {});
   const mapped = applyDesktopChatRouteToSession(
@@ -715,7 +715,7 @@ export async function fetchSessionMessages(
     search.set("after_seq", String(afterSeq));
   }
   const response = await requestJson<MessagesResponseWire>(
-    `/v1/sessions/${encodeURIComponent(sessionId)}/messages?${search.toString()}`,
+    `/v2/sessions/${encodeURIComponent(sessionId)}/messages?${search.toString()}`,
     { signal },
   );
   return Array.isArray(response.messages)
@@ -742,7 +742,7 @@ export async function fetchSessionPreference(
   signal?: AbortSignal,
 ): Promise<ResolvedSessionPreference> {
   const response = await requestJson<SessionPreferenceWire>(
-    `/v1/sessions/${encodeURIComponent(sessionId)}/preference`,
+    `/v2/sessions/${encodeURIComponent(sessionId)}/preference`,
     { signal },
   );
   return {
@@ -771,7 +771,7 @@ export async function updateSessionMode(
   mode: string,
 ): Promise<string> {
   const response = await requestJson<{ mode?: string }>(
-    `/v1/sessions/${encodeURIComponent(sessionId)}/mode`,
+    `/v2/sessions/${encodeURIComponent(sessionId)}/mode`,
     {
       method: "POST",
       headers: {
@@ -789,7 +789,7 @@ export async function updateSessionMetadata(
   route?: DesktopChatRoute | null,
 ): Promise<DesktopSessionRecord> {
   const response = await requestJson<{ session?: SessionWire }>(
-    `/v1/sessions/${encodeURIComponent(sessionId)}/metadata`,
+    `/v2/sessions/${encodeURIComponent(sessionId)}/metadata`,
     {
       method: "POST",
       headers: {
@@ -812,7 +812,7 @@ export async function updateSessionPreference(
   input: Partial<ResolvedSessionPreference["preference"]>,
 ): Promise<ResolvedSessionPreference> {
   const response = await requestJson<SessionPreferenceWire>(
-    `/v1/sessions/${encodeURIComponent(sessionId)}/preference`,
+    `/v2/sessions/${encodeURIComponent(sessionId)}/preference`,
     {
       method: "POST",
       headers: {
@@ -1420,7 +1420,7 @@ export async function sendSessionMessage(
   route?: DesktopChatRoute | null,
 ) {
   const managedHost = isManagedHostDesktopChatRoute(route)
-  return requestJson(managedHost ? "/v1/swarm/managed-hosts/sessions/message" : `/v1/sessions/${encodeURIComponent(sessionId)}/messages`, {
+  return requestJson(managedHost ? "/v1/swarm/managed-hosts/sessions/message" : `/v2/sessions/${encodeURIComponent(sessionId)}/messages`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -1483,7 +1483,7 @@ export async function startSessionRun(
 
   const managedHost = isManagedHostDesktopChatRoute(options.route);
   return requestJson<DesktopRunAccepted>(
-    managedHost ? "/v1/swarm/managed-hosts/sessions/run" : `/v1/sessions/${encodeURIComponent(sessionId)}/run/stream`,
+    managedHost ? "/v1/swarm/managed-hosts/sessions/run" : `/v2/sessions/${encodeURIComponent(sessionId)}/run/stream`,
     {
       method: "POST",
       headers: {
@@ -1511,7 +1511,7 @@ export async function openRunStream(sessionId: string): Promise<WebSocket> {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   await ensureDesktopSession(true);
   const url = new URL(
-    `/v1/sessions/${encodeURIComponent(sessionId)}/run/stream`,
+    `/v2/sessions/${encodeURIComponent(sessionId)}/run/stream`,
     `${protocol}//${window.location.host}`,
   );
   return new WebSocket(url);
@@ -1524,7 +1524,7 @@ export async function stopSessionRun(
 ): Promise<void> {
   const managedHost = isManagedHostDesktopChatRoute(route);
   const response = await apiFetch(
-    managedHost ? "/v1/swarm/managed-hosts/sessions/stop" : `/v1/sessions/${encodeURIComponent(sessionId)}/run/stream`,
+    managedHost ? "/v1/swarm/managed-hosts/sessions/stop" : `/v2/sessions/${encodeURIComponent(sessionId)}/run/stream`,
     {
       method: "POST",
       headers: {
@@ -1553,7 +1553,7 @@ export async function resolveSessionPermission(
   approvedArguments?: Record<string, unknown>,
 ): Promise<DesktopPermissionRecord> {
   const response = await requestJson<ResolvePermissionResponseWire>(
-    `/v1/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(permissionId)}/resolve`,
+    `/v2/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(permissionId)}/resolve`,
     {
       method: "POST",
       headers: {
@@ -1574,7 +1574,7 @@ export async function fetchSessionUsageSummary(
   signal?: AbortSignal,
 ): Promise<DesktopSessionUsageRecord | null> {
   const response = await requestJson<SessionUsageResponseWire>(
-    `/v1/sessions/${encodeURIComponent(sessionId)}/usage`,
+    `/v2/sessions/${encodeURIComponent(sessionId)}/usage`,
     { signal },
   );
   return mapSessionUsageSummary(response.usage_summary);
@@ -1585,7 +1585,7 @@ export async function fetchActiveSessionPlan(
   signal?: AbortSignal,
 ): Promise<{ hasActive: boolean; plan: DesktopSessionPlanRecord }> {
   const response = await requestJson<ActiveSessionPlanResponseWire>(
-    `/v1/sessions/${encodeURIComponent(sessionId)}/plans/active`,
+    `/v2/sessions/${encodeURIComponent(sessionId)}/plans/active`,
     { signal },
   );
   return {
@@ -1605,7 +1605,7 @@ export async function saveSessionPlan(
   },
 ): Promise<DesktopSessionPlanRecord> {
   const response = await requestJson<SaveSessionPlanResponseWire>(
-    `/v1/sessions/${encodeURIComponent(sessionId)}/plans`,
+    `/v2/sessions/${encodeURIComponent(sessionId)}/plans`,
     {
       method: "POST",
       headers: {
@@ -1630,7 +1630,7 @@ export async function fetchSessionPlanHistory(
   signal?: AbortSignal,
 ): Promise<DesktopSessionPlanRevisionRecord[]> {
   const response = await requestJson<SessionPlanHistoryResponseWire>(
-    `/v1/sessions/${encodeURIComponent(sessionId)}/plans/${encodeURIComponent(planId)}/history?limit=100`,
+    `/v2/sessions/${encodeURIComponent(sessionId)}/plans/${encodeURIComponent(planId)}/history?limit=100`,
     { signal },
   );
   return Array.isArray(response.revisions)
@@ -1643,7 +1643,7 @@ export async function fetchSessionPendingPermissions(
   signal?: AbortSignal,
 ): Promise<DesktopPermissionRecord[]> {
   const response = await requestJson<PendingPermissionsResponseWire>(
-    `/v1/sessions/${encodeURIComponent(sessionId)}/permissions?status=pending&limit=200`,
+    `/v2/sessions/${encodeURIComponent(sessionId)}/permissions?status=pending&limit=200`,
     { signal },
   );
   return Array.isArray(response.permissions)

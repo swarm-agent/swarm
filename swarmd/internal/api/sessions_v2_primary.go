@@ -155,7 +155,7 @@ func decodeSessionsV2CreateRequestStrict(r *http.Request) (sessionruntime.Sessio
 	if req.WorkspaceBindingID == "" {
 		return sessionruntime.SessionsV2CreateRequest{}, sessionV2BadRequest("sessions v2 workspace_binding_id is required")
 	}
-	if err := validateSessionsV2CreateMetadata(req.Metadata); err != nil {
+	if err := validateSessionsV2Metadata(req.Metadata); err != nil {
 		return sessionruntime.SessionsV2CreateRequest{}, err
 	}
 	return req, nil
@@ -344,10 +344,27 @@ func sessionsV2ExecutionFromBinding(class string, placement pebblestore.Topology
 	}
 }
 
-func validateSessionsV2CreateMetadata(metadata map[string]any) error {
-	for key := range metadata {
-		if sessionV2KeyLooksLikeAuthority(key) || strings.HasPrefix(strings.ToLower(strings.TrimSpace(key)), "swarm_v2_") || strings.TrimSpace(key) == "local_workspace_binding_id" {
-			return sessionV2BadRequest("sessions v2 metadata must not include routing authority key %q", key)
+func validateSessionsV2Metadata(metadata map[string]any) error {
+	return validateSessionsV2MetadataValue(metadata)
+}
+
+func validateSessionsV2MetadataValue(value any) error {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			normalizedKey := strings.ToLower(strings.TrimSpace(key))
+			if sessionV2KeyLooksLikeAuthority(key) || strings.HasPrefix(normalizedKey, "swarm_v2_") || normalizedKey == "local_workspace_binding_id" {
+				return sessionV2BadRequest("sessions v2 metadata must not include routing authority key %q", key)
+			}
+			if err := validateSessionsV2MetadataValue(child); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if err := validateSessionsV2MetadataValue(child); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
