@@ -143,6 +143,32 @@ interface SessionPreferenceWire {
   max_output_tokens?: number;
 }
 
+interface SessionMetadataWire {
+  metadata?: Record<string, unknown>;
+}
+
+interface SessionCodexConfigWire {
+  session_id?: string;
+  provider?: string;
+  model?: string;
+  thinking?: string;
+  service_tier?: string;
+  context_mode?: string;
+  effective_context_window?: number;
+  updated_at?: number;
+}
+
+export interface DesktopSessionCodexConfig {
+  sessionId: string;
+  provider: string;
+  model: string;
+  thinking: string;
+  serviceTier: string;
+  contextMode: string;
+  effectiveContextWindow: number;
+  updatedAt: number;
+}
+
 interface DraftModelWire {
   preference?: {
     provider?: string;
@@ -199,8 +225,17 @@ interface SaveSessionPlanResponseWire {
   plan?: SessionPlanWire | null;
 }
 
+interface SessionPlansResponseWire {
+  active_plan_id?: string;
+  plans?: SessionPlanWire[] | null;
+}
+
 interface SessionPlanHistoryResponseWire {
   revisions?: SessionPlanWire[] | null;
+}
+
+interface ResolveAllPermissionsResponseWire {
+  resolved?: ResolvePermissionResponseWire["permission"][];
 }
 
 type ProviderDefaultsPreviewWire = {
@@ -425,6 +460,24 @@ function mapSessionUsageSummary(
     totalTokens,
     remainingTokens,
     updatedAt,
+  };
+}
+
+function mapSessionCodexConfig(
+  config: SessionCodexConfigWire | null | undefined,
+): DesktopSessionCodexConfig {
+  return {
+    sessionId: String(config?.session_id ?? "").trim(),
+    provider: String(config?.provider ?? "").trim(),
+    model: String(config?.model ?? "").trim(),
+    thinking: String(config?.thinking ?? "").trim(),
+    serviceTier: String(config?.service_tier ?? "").trim(),
+    contextMode: String(config?.context_mode ?? "").trim(),
+    effectiveContextWindow:
+      typeof config?.effective_context_window === "number"
+        ? config.effective_context_window
+        : 0,
+    updatedAt: typeof config?.updated_at === "number" ? config.updated_at : 0,
   };
 }
 
@@ -766,6 +819,17 @@ export async function fetchSessionPreference(
   };
 }
 
+export async function fetchSessionMode(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const response = await requestJson<{ mode?: string }>(
+    `/v2/sessions/${encodeURIComponent(sessionId)}/mode`,
+    { signal },
+  );
+  return String(response.mode ?? "").trim() || "auto";
+}
+
 export async function updateSessionMode(
   sessionId: string,
   mode: string,
@@ -781,6 +845,19 @@ export async function updateSessionMode(
     },
   );
   return String(response.mode ?? "").trim() || "auto";
+}
+
+export async function fetchSessionMetadata(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<Record<string, unknown>> {
+  const response = await requestJson<SessionMetadataWire>(
+    `/v2/sessions/${encodeURIComponent(sessionId)}/metadata`,
+    { signal },
+  );
+  return response.metadata && typeof response.metadata === "object"
+    ? response.metadata
+    : {};
 }
 
 export async function updateSessionMetadata(
@@ -805,6 +882,37 @@ export async function updateSessionMetadata(
     mappedSession,
     route ?? routeFromSessionMetadata(mappedSession),
   );
+}
+
+export async function fetchSessionCodexConfig(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<DesktopSessionCodexConfig> {
+  const response = await requestJson<SessionCodexConfigWire>(
+    `/v2/sessions/${encodeURIComponent(sessionId)}/codex`,
+    { signal },
+  );
+  return mapSessionCodexConfig(response);
+}
+
+export async function updateSessionCodexConfig(
+  sessionId: string,
+  input: { serviceTier?: string; contextMode?: string },
+): Promise<DesktopSessionCodexConfig> {
+  const response = await requestJson<SessionCodexConfigWire>(
+    `/v2/sessions/${encodeURIComponent(sessionId)}/codex`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        service_tier: input.serviceTier,
+        context_mode: input.contextMode,
+      }),
+    },
+  );
+  return mapSessionCodexConfig(response);
 }
 
 export async function updateSessionPreference(
@@ -1420,20 +1528,28 @@ export async function sendSessionMessage(
   route?: DesktopChatRoute | null,
 ) {
   const managedHost = isManagedHostDesktopChatRoute(route)
-  return requestJson(managedHost ? "/v1/swarm/managed-hosts/sessions/message" : `/v2/sessions/${encodeURIComponent(sessionId)}/messages`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
+  return requestJson(
+    managedHost
+      ? "/v1/swarm/managed-hosts/sessions/message"
+      : `/v2/sessions/${encodeURIComponent(sessionId)}/messages`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(
+        managedHost
+          ? { target_swarm_id: route?.swarmId?.trim() ?? "", session_id: sessionId, role, content }
+          : { role, content },
+      ),
     },
-    body: JSON.stringify(managedHost
-      ? { target_swarm_id: route?.swarmId?.trim() ?? "", session_id: sessionId, role, content }
-      : { role, content }),
-  });
+  );
 }
 
 export interface DesktopBackgroundRunStartOptions {
   sessionId: string;
   route?: DesktopChatRoute | null;
+  stream?: boolean;
   prompt: string;
   agentName?: string;
   instructions?: string;
@@ -1482,27 +1598,38 @@ export async function startSessionRun(
   }
 
   const managedHost = isManagedHostDesktopChatRoute(options.route);
+  const primaryEndpoint = options.stream === false ? "run" : "run/stream";
+  const effectiveAgentName = managedHost
+    ? (options.agentName?.trim() ?? "")
+    : (options.targetName?.trim() || options.agentName?.trim() || "");
+  const nativePrimaryBody = {
+    type: "run.start",
+    prompt,
+    agent_name: effectiveAgentName,
+    instructions: options.instructions?.trim() ?? "",
+    compact: Boolean(options.compact),
+    background: Boolean(options.background),
+  };
+  const managedHostBody = {
+    ...nativePrimaryBody,
+    agent_name: options.agentName?.trim() ?? "",
+    target_swarm_id: options.route?.swarmId?.trim() ?? "",
+    session_id: sessionId,
+    target_kind: options.targetKind?.trim() ?? "",
+    target_name: options.targetName?.trim() ?? "",
+    tool_scope: options.toolScope,
+    execution_context: options.executionContext,
+  };
   return requestJson<DesktopRunAccepted>(
-    managedHost ? "/v1/swarm/managed-hosts/sessions/run" : `/v2/sessions/${encodeURIComponent(sessionId)}/run/stream`,
+    managedHost
+      ? "/v1/swarm/managed-hosts/sessions/run"
+      : `/v2/sessions/${encodeURIComponent(sessionId)}/${primaryEndpoint}`,
     {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        type: "run.start",
-        target_swarm_id: managedHost ? options.route?.swarmId?.trim() ?? "" : undefined,
-        session_id: managedHost ? sessionId : undefined,
-        prompt,
-        agent_name: options.agentName?.trim() ?? "",
-        instructions: options.instructions?.trim() ?? "",
-        compact: Boolean(options.compact),
-        background: Boolean(options.background),
-        target_kind: options.targetKind?.trim() ?? "",
-        target_name: options.targetName?.trim() ?? "",
-        tool_scope: options.toolScope,
-        execution_context: options.executionContext,
-      }),
+      body: JSON.stringify(managedHost ? managedHostBody : nativePrimaryBody),
     },
   );
 }
@@ -1524,15 +1651,19 @@ export async function stopSessionRun(
 ): Promise<void> {
   const managedHost = isManagedHostDesktopChatRoute(route);
   const response = await apiFetch(
-    managedHost ? "/v1/swarm/managed-hosts/sessions/stop" : `/v2/sessions/${encodeURIComponent(sessionId)}/run/stream`,
+    managedHost
+      ? "/v1/swarm/managed-hosts/sessions/stop"
+      : `/v2/sessions/${encodeURIComponent(sessionId)}/run/stream`,
     {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(managedHost
-        ? { type: "run.stop", target_swarm_id: route?.swarmId?.trim() ?? "", session_id: sessionId, run_id: runId }
-        : { type: "run.stop", run_id: runId }),
+      body: JSON.stringify(
+        managedHost
+          ? { type: "run.stop", target_swarm_id: route?.swarmId?.trim() ?? "", session_id: sessionId, run_id: runId }
+          : { type: "run.stop", run_id: runId },
+      ),
     },
   );
   if (!response.ok) {
@@ -1594,6 +1725,51 @@ export async function fetchActiveSessionPlan(
   };
 }
 
+export async function activateSessionPlan(
+  sessionId: string,
+  planId: string,
+): Promise<DesktopSessionPlanRecord> {
+  const response = await requestJson<ActiveSessionPlanResponseWire>(
+    `/v2/sessions/${encodeURIComponent(sessionId)}/plans/active`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ plan_id: planId.trim() }),
+    },
+  );
+  return mapSessionPlan(response.active_plan);
+}
+
+export async function fetchSessionPlans(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<{ activePlanId: string; plans: DesktopSessionPlanRecord[] }> {
+  const response = await requestJson<SessionPlansResponseWire>(
+    `/v2/sessions/${encodeURIComponent(sessionId)}/plans?limit=100`,
+    { signal },
+  );
+  return {
+    activePlanId: String(response.active_plan_id ?? "").trim(),
+    plans: Array.isArray(response.plans)
+      ? response.plans.map((plan) => mapSessionPlan(plan))
+      : [],
+  };
+}
+
+export async function fetchSessionPlan(
+  sessionId: string,
+  planId: string,
+  signal?: AbortSignal,
+): Promise<DesktopSessionPlanRecord> {
+  const response = await requestJson<SaveSessionPlanResponseWire>(
+    `/v2/sessions/${encodeURIComponent(sessionId)}/plans/${encodeURIComponent(planId)}`,
+    { signal },
+  );
+  return mapSessionPlan(response.plan);
+}
+
 export async function saveSessionPlan(
   sessionId: string,
   input: {
@@ -1635,6 +1811,36 @@ export async function fetchSessionPlanHistory(
   );
   return Array.isArray(response.revisions)
     ? response.revisions.map((revision, index) => mapSessionPlanRevision(revision, index))
+    : [];
+}
+
+export async function resolveAllSessionPermissions(
+  sessionId: string,
+  action:
+    | "approve"
+    | "deny"
+    | "approve_always"
+    | "always_allow"
+    | "always_deny",
+  reason: string,
+  limit?: number,
+): Promise<DesktopPermissionRecord[]> {
+  const response = await requestJson<ResolveAllPermissionsResponseWire>(
+    `/v2/sessions/${encodeURIComponent(sessionId)}/permissions/resolve_all`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        action,
+        reason,
+        limit,
+      }),
+    },
+  );
+  return Array.isArray(response.resolved)
+    ? response.resolved.map((permission) => mapResolvedPermission(permission))
     : [];
 }
 

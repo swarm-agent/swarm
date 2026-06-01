@@ -19,23 +19,29 @@ import (
 )
 
 func TestSessionsV2LifecycleDoesNotReferenceLegacyHandlers(t *testing.T) {
-	body, err := os.ReadFile("sessions_v2_lifecycle.go")
-	if err != nil {
-		t.Fatalf("read lifecycle file: %v", err)
-	}
-	for _, forbidden := range []string{
-		"handleSessionByID",
-		"handleSessions(",
-		"createSessionFromRequest",
-		"proxyRoutedSessionRequest",
-		"localCanonicalSessionForRoutedFetch",
-		"handleManagedHostSession",
-		"sessionWorkspaceBindingForAccess",
-		"enforceSessionBindingWriteAccess",
+	for _, path := range []string{
+		"sessions_v2_lifecycle.go",
+		"sessions_v2_primary.go",
+		"server_routes.go",
+		"run_stream_ws.go",
 	} {
-		if strings.Contains(string(body), forbidden) {
-			t.Fatalf("sessions_v2_lifecycle.go contains forbidden legacy/routed symbol %q", forbidden)
-		}
+		t.Run(path, func(t *testing.T) {
+			body, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read %s: %v", path, err)
+			}
+			for _, forbidden := range []string{
+				"createSessionFromRequest",
+				"sessionCreateRequest",
+				"proxyRoutedSessionRequest",
+				"localCanonicalSessionForRoutedFetch",
+				"sessionWorkspaceBindingForAccess",
+			} {
+				if strings.Contains(string(body), forbidden) {
+					t.Fatalf("%s contains forbidden legacy/routed symbol %q", path, forbidden)
+				}
+			}
+		})
 	}
 }
 
@@ -62,6 +68,107 @@ func TestSessionsV2LifecycleGetAndAppendUseExecutionAuthority(t *testing.T) {
 	}
 	if !strings.Contains(postRec.Body.String(), `"message"`) || !strings.Contains(postRec.Body.String(), "hello v2") {
 		t.Fatalf("append body = %s", postRec.Body.String())
+	}
+}
+
+func TestSessionsV2LifecyclePrimarySurfaceSchemasAndMethods(t *testing.T) {
+	server, _, permissionSvc, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	server.runner = &primaryV2RunRequestRecordingRunner{emitLifecycle: true}
+	sessionID := createPrimarySessionV2ForLifecycleTest(t, server, swarmStore, "binding-primary-v2", pebblestore.TopologyWorkspaceBindingAccessModeReadWrite, true)
+
+	pending, err := permissionSvc.CreatePending(permission.CreateInput{SessionID: sessionID, RunID: "run-surface", CallID: "call-surface", ToolName: "bash", ToolArguments: "{}", Requirement: "approval", Mode: sessionruntime.ModeAuto})
+	if err != nil {
+		t.Fatalf("create pending permission: %v", err)
+	}
+
+	type lifecycleSurfaceCase struct {
+		name       string
+		method     string
+		path       string
+		body       string
+		wantStatus int
+		wantKeys   []string
+	}
+	cases := []lifecycleSurfaceCase{
+		{name: "get session", method: http.MethodGet, path: "/v2/sessions/" + sessionID, wantStatus: http.StatusOK, wantKeys: []string{"ok", "session"}},
+		{name: "get messages", method: http.MethodGet, path: "/v2/sessions/" + sessionID + "/messages", wantStatus: http.StatusOK, wantKeys: []string{"ok", "session_id", "messages"}},
+		{name: "post messages", method: http.MethodPost, path: "/v2/sessions/" + sessionID + "/messages", body: `{"role":"user","content":"surface"}`, wantStatus: http.StatusOK, wantKeys: []string{"ok", "message", "session"}},
+		{name: "get metadata", method: http.MethodGet, path: "/v2/sessions/" + sessionID + "/metadata", wantStatus: http.StatusOK, wantKeys: []string{"ok", "session_id", "metadata", "updated_at"}},
+		{name: "post metadata", method: http.MethodPost, path: "/v2/sessions/" + sessionID + "/metadata", body: `{"metadata":{"ticket":"surface"}}`, wantStatus: http.StatusOK, wantKeys: []string{"ok", "session"}},
+		{name: "get mode", method: http.MethodGet, path: "/v2/sessions/" + sessionID + "/mode", wantStatus: http.StatusOK, wantKeys: []string{"ok", "session_id", "mode"}},
+		{name: "post mode", method: http.MethodPost, path: "/v2/sessions/" + sessionID + "/mode", body: `{"mode":"auto"}`, wantStatus: http.StatusOK, wantKeys: []string{"ok", "session_id", "mode", "updated_at", "warning"}},
+		{name: "get preference", method: http.MethodGet, path: "/v2/sessions/" + sessionID + "/preference", wantStatus: http.StatusOK, wantKeys: []string{"preference", "context_window", "max_output_tokens"}},
+		{name: "post preference", method: http.MethodPost, path: "/v2/sessions/" + sessionID + "/preference", body: `{"provider":"codex","model":"gpt-5.4","thinking":"medium","service_tier":"fast"}`, wantStatus: http.StatusOK, wantKeys: []string{"preference", "context_window", "max_output_tokens"}},
+		{name: "get codex", method: http.MethodGet, path: "/v2/sessions/" + sessionID + "/codex", wantStatus: http.StatusOK, wantKeys: []string{"ok", "session_id", "provider", "model", "thinking", "service_tier", "context_mode", "effective_context_window", "updated_at"}},
+		{name: "post codex", method: http.MethodPost, path: "/v2/sessions/" + sessionID + "/codex", body: `{"service_tier":"flex","context_mode":"1m"}`, wantStatus: http.StatusOK, wantKeys: []string{"ok", "session_id", "provider", "model", "thinking", "service_tier", "context_mode", "effective_context_window", "updated_at"}},
+		{name: "get active plan empty", method: http.MethodGet, path: "/v2/sessions/" + sessionID + "/plans/active", wantStatus: http.StatusOK, wantKeys: []string{"ok", "session_id", "has_active", "active_plan"}},
+		{name: "post plans", method: http.MethodPost, path: "/v2/sessions/" + sessionID + "/plans", body: `{"id":"plan-surface","title":"Plan","plan":"# Plan\n1. Test","status":"draft","approval_state":"pending","activate":true}`, wantStatus: http.StatusOK, wantKeys: []string{"ok", "session_id", "plan"}},
+		{name: "get plans", method: http.MethodGet, path: "/v2/sessions/" + sessionID + "/plans", wantStatus: http.StatusOK, wantKeys: []string{"ok", "session_id", "active_plan_id", "count", "plans"}},
+		{name: "get active plan", method: http.MethodGet, path: "/v2/sessions/" + sessionID + "/plans/active", wantStatus: http.StatusOK, wantKeys: []string{"ok", "session_id", "has_active", "active_plan"}},
+		{name: "post active plan", method: http.MethodPost, path: "/v2/sessions/" + sessionID + "/plans/active", body: `{"plan_id":"plan-surface"}`, wantStatus: http.StatusOK, wantKeys: []string{"ok", "session_id", "active_plan"}},
+		{name: "get plan by id", method: http.MethodGet, path: "/v2/sessions/" + sessionID + "/plans/plan-surface", wantStatus: http.StatusOK, wantKeys: []string{"ok", "session_id", "plan"}},
+		{name: "get plan history", method: http.MethodGet, path: "/v2/sessions/" + sessionID + "/plans/plan-surface/history", wantStatus: http.StatusOK, wantKeys: []string{"ok", "session_id", "plan_id", "count", "revisions"}},
+		{name: "get permissions", method: http.MethodGet, path: "/v2/sessions/" + sessionID + "/permissions?status=pending", wantStatus: http.StatusOK, wantKeys: []string{"ok", "session_id", "count", "permissions"}},
+		{name: "resolve permission", method: http.MethodPost, path: "/v2/sessions/" + sessionID + "/permissions/" + pending.ID + "/resolve", body: `{"action":"deny_once","reason":"surface"}`, wantStatus: http.StatusOK, wantKeys: []string{"ok", "session_id", "permission", "saved_rule"}},
+		{name: "resolve all permissions", method: http.MethodPost, path: "/v2/sessions/" + sessionID + "/permissions/resolve_all", body: `{"action":"deny_once","reason":"surface","limit":10}`, wantStatus: http.StatusOK, wantKeys: []string{"ok", "session_id", "count", "resolved"}},
+		{name: "post run", method: http.MethodPost, path: "/v2/sessions/" + sessionID + "/run", body: `{"prompt":"surface","agent_name":"swarm"}`, wantStatus: http.StatusOK, wantKeys: []string{"ok", "result"}},
+		{name: "get usage", method: http.MethodGet, path: "/v2/sessions/" + sessionID + "/usage", wantStatus: http.StatusOK, wantKeys: []string{"ok", "session_id", "has_usage_summary", "usage_summary", "turn_usage_records"}},
+		{name: "post run stream start", method: http.MethodPost, path: "/v2/sessions/" + sessionID + "/run/stream", body: `{"type":"run.start","prompt":"surface","agent_name":"swarm"}`, wantStatus: http.StatusAccepted, wantKeys: []string{"ok", "session_id", "run_id", "status"}},
+		{name: "post run stream resume missing run id", method: http.MethodPost, path: "/v2/sessions/" + sessionID + "/run/stream", body: `{"type":"run.resume"}`, wantStatus: http.StatusBadRequest, wantKeys: []string{"error"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, bytes.NewBufferString(tc.body))
+			if tc.body != "" {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d, body=%s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("decode response: %v body=%s", err, rec.Body.String())
+			}
+			for _, key := range tc.wantKeys {
+				if _, ok := payload[key]; !ok {
+					t.Fatalf("response missing key %q: %s", key, rec.Body.String())
+				}
+			}
+		})
+	}
+
+	methodCases := []lifecycleSurfaceCase{
+		{name: "post session get rejects", method: http.MethodPost, path: "/v2/sessions/" + sessionID, body: `{}`, wantStatus: http.StatusMethodNotAllowed},
+		{name: "put messages rejects", method: http.MethodPut, path: "/v2/sessions/" + sessionID + "/messages", body: `{}`, wantStatus: http.StatusMethodNotAllowed},
+		{name: "delete metadata rejects", method: http.MethodDelete, path: "/v2/sessions/" + sessionID + "/metadata", wantStatus: http.StatusMethodNotAllowed},
+		{name: "put mode rejects", method: http.MethodPut, path: "/v2/sessions/" + sessionID + "/mode", body: `{}`, wantStatus: http.StatusMethodNotAllowed},
+		{name: "put preference rejects", method: http.MethodPut, path: "/v2/sessions/" + sessionID + "/preference", body: `{}`, wantStatus: http.StatusMethodNotAllowed},
+		{name: "delete codex rejects", method: http.MethodDelete, path: "/v2/sessions/" + sessionID + "/codex", wantStatus: http.StatusMethodNotAllowed},
+		{name: "put active plan rejects", method: http.MethodPut, path: "/v2/sessions/" + sessionID + "/plans/active", body: `{}`, wantStatus: http.StatusMethodNotAllowed},
+		{name: "delete plans rejects", method: http.MethodDelete, path: "/v2/sessions/" + sessionID + "/plans", wantStatus: http.StatusMethodNotAllowed},
+		{name: "post plan by id rejects", method: http.MethodPost, path: "/v2/sessions/" + sessionID + "/plans/plan-surface", body: `{}`, wantStatus: http.StatusMethodNotAllowed},
+		{name: "post plan history rejects", method: http.MethodPost, path: "/v2/sessions/" + sessionID + "/plans/plan-surface/history", body: `{}`, wantStatus: http.StatusMethodNotAllowed},
+		{name: "post permissions rejects", method: http.MethodPost, path: "/v2/sessions/" + sessionID + "/permissions", body: `{}`, wantStatus: http.StatusMethodNotAllowed},
+		{name: "get permission resolve rejects", method: http.MethodGet, path: "/v2/sessions/" + sessionID + "/permissions/" + pending.ID + "/resolve", wantStatus: http.StatusMethodNotAllowed},
+		{name: "get resolve all rejects", method: http.MethodGet, path: "/v2/sessions/" + sessionID + "/permissions/resolve_all", wantStatus: http.StatusMethodNotAllowed},
+		{name: "post usage rejects", method: http.MethodPost, path: "/v2/sessions/" + sessionID + "/usage", body: `{}`, wantStatus: http.StatusMethodNotAllowed},
+		{name: "get run rejects", method: http.MethodGet, path: "/v2/sessions/" + sessionID + "/run", wantStatus: http.StatusMethodNotAllowed},
+	}
+	for _, tc := range methodCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, bytes.NewBufferString(tc.body))
+			if tc.body != "" {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d, body=%s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+		})
 	}
 }
 

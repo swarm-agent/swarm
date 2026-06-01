@@ -998,6 +998,25 @@ func (s *Server) handlePrimarySessionV2RunStreamControl(w http.ResponseWriter, r
 	inbound.Type = strings.ToLower(strings.TrimSpace(inbound.Type))
 	inbound.RunID = strings.TrimSpace(inbound.RunID)
 	switch inbound.Type {
+	case "run.resume", "resume":
+		// Resume is read-only observation: the outer /run/stream entrypoint
+		// already validated read authority. The control POST confirms the
+		// existing run belongs to this session without mutating execution state.
+		if inbound.RunID == "" {
+			writeError(w, http.StatusBadRequest, errors.New("run_id is required for resume"))
+			return
+		}
+		state, sub, _, err := s.runStreams.subscribe(inbound.RunID, inbound.LastSeq)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		defer s.runStreams.unsubscribe(inbound.RunID, sub.id)
+		if state.sessionID != sessionID {
+			writeError(w, http.StatusBadRequest, errors.New("run/session mismatch"))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "run_id": inbound.RunID, "last_seq": inbound.LastSeq, "status": "resume_available"})
 	case "run.start", "start":
 		if _, err := s.requirePrimarySessionV2Authority(r, sessionID, true); err != nil {
 			writeSessionsV2Error(w, err)

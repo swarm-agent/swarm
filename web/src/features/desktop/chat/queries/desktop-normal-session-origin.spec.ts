@@ -57,14 +57,18 @@ test('normal desktop session start does not send background-targeted metadata', 
     assert.ok(runCall, 'expected run start request')
     const body = JSON.parse(String(runCall?.init?.body ?? '{}')) as Record<string, unknown>
     assert.equal(body.background, false)
-    assert.equal(body.target_kind, '')
-    assert.equal(body.target_name, '')
+    assert.equal(Object.hasOwn(body, 'target_kind'), false)
+    assert.equal(Object.hasOwn(body, 'target_name'), false)
+    assert.equal(Object.hasOwn(body, 'target_swarm_id'), false)
+    assert.equal(Object.hasOwn(body, 'session_id'), false)
+    assert.equal(Object.hasOwn(body, 'tool_scope'), false)
+    assert.equal(Object.hasOwn(body, 'execution_context'), false)
     assert.equal(new Headers(runCall?.init?.headers).get('X-Swarm-Token'), null)
     assert.equal(runCall?.init?.credentials, 'same-origin')
   })
 })
 
-test('commit session start targets memory as the commit-capable subagent', async () => {
+test('primary commit session start uses native v2 authority without request-time routing overrides', async () => {
   const { startSessionRun } = await import('./chat-queries')
 
   await withFetchStub(async (calls) => {
@@ -74,18 +78,20 @@ test('commit session start targets memory as the commit-capable subagent', async
       background: true,
       targetKind: 'background',
       targetName: 'memory',
+      executionContext: { workspace_path: '/must/not/be/sent' },
     })
 
     const runCall = calls.find((entry) => String(entry.input).includes('/v2/sessions/session-commit/run/stream'))
     assert.ok(runCall, 'expected commit run start request')
     const body = JSON.parse(String(runCall?.init?.body ?? '{}')) as Record<string, unknown>
     assert.equal(body.background, true)
-    assert.equal(body.target_kind, 'background')
-    assert.equal(body.target_name, 'memory')
+    assert.equal(Object.hasOwn(body, 'target_kind'), false)
+    assert.equal(Object.hasOwn(body, 'target_name'), false)
+    assert.equal(Object.hasOwn(body, 'execution_context'), false)
   })
 })
 
-test('subagent-targeted desktop session start sends targeted lineage metadata', async () => {
+test('subagent-targeted primary desktop session start uses native v2 authority', async () => {
   const { startSessionRun } = await import('./chat-queries')
 
   await withFetchStub(async (calls) => {
@@ -103,9 +109,9 @@ test('subagent-targeted desktop session start sends targeted lineage metadata', 
     const body = JSON.parse(String(runCall?.init?.body ?? '{}')) as Record<string, unknown>
     assert.equal(body.background, false)
     assert.equal(body.prompt, 'investigate desktop mentions')
-    assert.equal(body.agent_name, 'swarm')
-    assert.equal(body.target_kind, 'subagent')
-    assert.equal(body.target_name, 'explorer')
+    assert.equal(body.agent_name, 'explorer')
+    assert.equal(Object.hasOwn(body, 'target_kind'), false)
+    assert.equal(Object.hasOwn(body, 'target_name'), false)
   })
 })
 
@@ -123,7 +129,7 @@ test('session mode update only sends runtime plan or auto modes', async () => {
   })
 })
 
-test('direct non-primary desktop session run can select memory as the agent', async () => {
+test('direct primary desktop session run can select memory as the agent without routing overrides', async () => {
   const { startSessionRun } = await import('./chat-queries')
 
   await withFetchStub(async (calls) => {
@@ -139,7 +145,7 @@ test('direct non-primary desktop session run can select memory as the agent', as
     const body = JSON.parse(String(runCall?.init?.body ?? '{}')) as Record<string, unknown>
     assert.equal(body.background, false)
     assert.equal(body.agent_name, 'memory')
-    assert.equal(body.target_kind, '')
-    assert.equal(body.target_name, '')
+    assert.equal(Object.hasOwn(body, 'target_kind'), false)
+    assert.equal(Object.hasOwn(body, 'target_name'), false)
   })
 })
