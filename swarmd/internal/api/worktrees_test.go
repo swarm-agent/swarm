@@ -18,14 +18,21 @@ import (
 )
 
 type fakeWorktreeService struct {
-	config       worktreeruntime.Config
-	allocation   worktreeruntime.Allocation
-	managed      []worktreeruntime.ManagedWorktree
-	prune        worktreeruntime.PruneResult
-	attachBranch *string
+	config          worktreeruntime.Config
+	allocation      worktreeruntime.Allocation
+	managed         []worktreeruntime.ManagedWorktree
+	prune           worktreeruntime.PruneResult
+	attachBranch    *string
+	allocationErr   error
+	configReadCount int
+	lastWorkspace   string
+	lastNameSeed    string
+	lastBaseBranch  string
+	lastBranchName  string
 }
 
 func (f *fakeWorktreeService) GetConfig(workspacePath string) (worktreeruntime.Config, error) {
+	f.configReadCount++
 	cfg := f.config
 	cfg.WorkspacePath = workspacePath
 	return cfg, nil
@@ -45,18 +52,23 @@ func (f *fakeWorktreeService) SetConfigForPrincipal(principal identity.Principal
 }
 
 func (f *fakeWorktreeService) AllocateDetachedWorkspace(workspacePath, nameSeed string) (worktreeruntime.Allocation, error) {
-	allocation := f.allocation
-	if strings.TrimSpace(allocation.WorkspacePath) == "" {
-		allocation.WorkspacePath = workspacePath
+	f.lastWorkspace = workspacePath
+	f.lastNameSeed = nameSeed
+	if f.allocationErr != nil {
+		return worktreeruntime.Allocation{}, f.allocationErr
 	}
+	allocation := f.allocation
 	if strings.TrimSpace(allocation.RepoRoot) == "" {
 		allocation.RepoRoot = workspacePath
 	}
+	if strings.TrimSpace(allocation.WorkspaceID) == "" {
+		allocation.WorkspaceID = worktreeruntime.WorkspaceIdentityForSession(nameSeed)
+	}
+	if strings.TrimSpace(allocation.WorkspacePath) == "" {
+		allocation.WorkspacePath = strings.TrimRight(allocation.RepoRoot, "/") + "/.swarm/worktrees/" + allocation.WorkspaceID
+	}
 	if strings.TrimSpace(allocation.BaseBranch) == "" {
 		allocation.BaseBranch = "main"
-	}
-	if strings.TrimSpace(allocation.WorkspaceID) == "" {
-		allocation.WorkspaceID = "ws_test"
 	}
 	return allocation, nil
 }
@@ -66,6 +78,8 @@ func (f *fakeWorktreeService) AllocateDetachedWorkspaceForPrincipal(principal id
 }
 
 func (f *fakeWorktreeService) AllocateDetachedWorkspaceRequested(workspacePath, nameSeed, baseBranch, branchName string) (worktreeruntime.Allocation, error) {
+	f.lastBaseBranch = strings.TrimSpace(baseBranch)
+	f.lastBranchName = strings.TrimSpace(branchName)
 	allocation, err := f.AllocateDetachedWorkspace(workspacePath, nameSeed)
 	if err != nil {
 		return worktreeruntime.Allocation{}, err

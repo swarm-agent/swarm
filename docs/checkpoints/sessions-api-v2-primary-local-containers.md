@@ -1,402 +1,638 @@
-# Sessions API v2: primary-first contract and local-container extension
+# Sessions API v2: full native rewrite for primary -> local-container
 
-Status: design draft for the primary + local-container implementation slice.
+Status: rewrite source of truth.
 
-This document defines the first v2 session-open contract. The primary endpoint is the base shape every other v2 session-open API follows. The local-container endpoint adds one explicit execution class without reintroducing legacy routed-session ambiguity.
+This document supersedes the earlier primary-only framing. The next implementation phase is a full native v2 rewrite for primary and local-container session create + lifecycle + dispatch + mirroring. The local-container path must not wrap, proxy, or infer authority through legacy v1 session routes.
 
-## Goal
+## What changed
 
-Make session creation explicit, classed, and fail-closed:
+We are no longer treating local-container as a later add-on after a primary-only lifecycle slice.
 
-1. The client chooses a runtime target before opening a session.
-2. The client calls the endpoint for that target class.
-3. The backend proves the selected runtime from persisted topology placement and workspace binding records.
-4. The backend builds one `SessionExecution` identity from those authoritative records.
-5. Execution uses that identity; responses and mirrors are projections, not new routing truth.
+We now need one coherent Sessions API v2 model that:
 
-There is no generic session-open router in v2. The endpoint path is part of the contract.
+1. creates primary and local-container sessions natively,
+2. serves the full lifecycle natively,
+3. dispatches primary -> local-container deterministically from frozen execution + live placement + live workspace binding,
+4. uses native mirroring APIs instead of legacy peer session wrappers,
+5. preserves clear traceability after the fact.
 
-## Endpoint families
+## Non-negotiable rules
 
-Implemented in this slice:
+### Native v2 only
 
-| Execution class | Endpoint | Meaning |
-| --- | --- | --- |
-| Primary host runtime | `POST /v2/sessions/primary` | Execute directly on the primary host runtime. |
-| Local container runtime | `POST /v2/sessions/local-containers` | Execute inside a local container whose authority host is the primary. |
+- No wrapping through `/v1/sessions`.
+- No wrapping through `handleSessions`, `handleSessionByID`, or `createSessionFromRequest`.
+- No wrapping through `proxyRoutedSessionRequest`.
+- No authority from `SessionRouteRecord`, topology session routes, backend URLs, child URLs, next-hop fields, or durable route state.
+- No authority from workspace name, workspace path, runtime path, container-local path, or client-supplied routing hints.
+- No authority from mirrored session snapshots.
 
-Planned later, not implemented in this slice:
+### Authority sources
 
-| Execution class | Future endpoint | Meaning |
-| --- | --- | --- |
-| Managed host primary runtime | `POST /v2/sessions/managed-primary` | Dispatch to a managed host authority and execute on that host runtime. |
-| Managed host local container runtime | `POST /v2/sessions/managed-local-containers` | Dispatch to a managed host authority, then execute in one of its local containers. |
+The only authority for native v2 session lifecycle is:
 
-The local-container endpoint belongs under Sessions, not under container lifecycle APIs. Container lifecycle remains owned by local-container/deploy APIs; session open remains owned by Sessions API v2.
+1. frozen `SessionExecutionV2Record`,
+2. live `TopologyRuntimePlacementRecord`,
+3. live `TopologyWorkspaceBindingRecord`.
 
-## Route registration shape
+### Strict class enforcement
 
-The runtime routes should be registered beside the legacy session endpoints while staying separate from them:
+Every native v2 mutating path must validate one of:
 
-```go
-mux.HandleFunc("/v2/sessions/primary", s.handleSessionsV2Primary)
-mux.HandleFunc("/v2/sessions/local-containers", s.handleSessionsV2LocalContainers)
-```
+- `SessionExecutionClassPrimary`
+- `SessionExecutionClassLocalContainer`
 
-The handlers must not fall through to `handleSessions`, `handleSessionByID`, managed-host session handlers, or generic routed proxy logic.
+There is no generic fallback class and no legacy routed exception.
 
-## Request contract
+### Workspace binding rule
 
-Both implemented endpoints use the same request body. The endpoint class says what kind of runtime is allowed; the body identifies which selected runtime and workspace binding are being opened.
+- TUI CWD primary sessions are the only allowed no-binding exception.
+- That exception is only for terminal/TUI primary host sessions.
+- Web and desktop must always provide `workspace_binding_id`.
+- Local-container sessions must always provide `workspace_binding_id`.
 
-```json
-{
-  "swarm_id": "selected-runtime-swarm-id",
-  "workspace_binding_id": "workspace-binding-id",
-  "title": "optional display title",
-  "mode": "plan|auto",
-  "agent_name": "optional agent profile name",
-  "worktree_mode": "off|on|inherit",
-  "worktree_use_current_branch": true,
-  "worktree_base_branch": "optional-base-branch",
-  "worktree_branch_name": "optional-requested-branch",
-  "preference": {
-    "provider": "optional-provider",
-    "model": "optional-model",
-    "thinking": "optional-thinking",
-    "service_tier": "optional-service-tier",
-    "context_mode": "optional-context-mode"
-  },
-  "metadata": {}
-}
-```
+## Current code inventory
 
-Required for workspace-backed creates:
+### Native v2 create routes that exist today
+
+Registered in `swarmd/internal/api/server_routes.go`:
+
+- `POST /v2/sessions/primary` -> `handleSessionsV2Primary`
+- `POST /v2/sessions/local-containers` -> `handleSessionsV2LocalContainers`
+- `/v2/sessions/{id}...` -> `handlePrimarySessionV2ByID`
+
+### What `sessions_v2_primary.go` does today
+
+`swarmd/internal/api/sessions_v2_primary.go` currently provides:
+
+- strict request decoding via `decodeSessionsV2CreateRequestStrict`
+- allowed create fields:
+  - `swarm_id`
+  - `workspace_binding_id`
+  - `workspace_path` only for TUI CWD primary create
+  - title/mode/agent/worktree/preference/metadata
+- authority-looking metadata rejection via `validateSessionsV2Metadata`
+- create-time runtime resolution via:
+  - `GetRuntimeForAccount`
+  - `GetRuntimePlacementForAccount`
+  - `GetWorkspaceBindingForAccount`
+- create-time placement validation via:
+  - `validatePrimarySessionV2Placement`
+  - `validateLocalContainerSessionV2Placement`
+- create-time binding validation via:
+  - `validatePrimarySessionV2Binding`
+  - `validateLocalContainerSessionV2Binding`
+  - `validateCommonSessionV2Binding`
+- frozen execution construction via `sessionsV2ExecutionFromBinding`
+- create persistence via `sessions.CreateFromExecutionV2(...)`
+
+### What native v2 create validates for local-container today
+
+The local-container create path already enforces several correct invariants:
+
+- selected runtime placement must exist and be active
+- placement runtime kind must be `container`
+- placement authority host swarm id must equal the local primary swarm id
+- placement authority container id must be non-empty
+- workspace binding must exist in the principal account
+- binding must be bound
+- binding must be writable/read_write
+- binding destination runtime swarm id must equal selected container swarm id
+- binding destination authority host swarm id must equal local primary swarm id
+- binding destination runtime kind must be `container`
+- binding destination container id must equal placement authority container id
+- binding placement/binding generations must match
+- binding attesting host must match placement authority host
+
+### What native v2 lifecycle does today
+
+`swarmd/internal/api/sessions_v2_lifecycle.go` currently exposes a primary-only lifecycle under `/v2/sessions/{id}`:
+
+- `GET /v2/sessions/{id}`
+- `GET/POST /v2/sessions/{id}/messages`
+- `GET/POST /v2/sessions/{id}/metadata`
+- `GET/POST /v2/sessions/{id}/mode`
+- `GET/POST /v2/sessions/{id}/preference`
+- `GET/POST /v2/sessions/{id}/codex`
+- `GET/POST /v2/sessions/{id}/plans/active`
+- `GET/POST /v2/sessions/{id}/plans`
+- `GET /v2/sessions/{id}/plans/{plan_id}`
+- `GET /v2/sessions/{id}/plans/{plan_id}/history`
+- `GET /v2/sessions/{id}/permissions`
+- `POST /v2/sessions/{id}/permissions/{permission_id}/resolve`
+- `POST /v2/sessions/{id}/permissions/resolve_all`
+- `GET /v2/sessions/{id}/usage`
+- `POST /v2/sessions/{id}/run`
+- `GET/POST /v2/sessions/{id}/run/stream`
+
+### What native v2 lifecycle checks today
+
+`requirePrimarySessionV2Authority(...)` currently:
+
+- loads `SessionExecutionV2Record` from Pebble
+- requires principal/account-scope match
+- requires execution class == `primary`
+- requires local node identity
+- requires execution runtime swarm id and authority host swarm id == local primary swarm id
+- requires host runtime kind and empty authority container id
+- re-loads runtime placement
+- requires active host self-placement
+- requires placement generation == execution placement generation
+- re-loads workspace binding when binding exists
+- requires bound binding in same account
+- requires binding destination == local primary self-authority
+- requires binding destination runtime kind == `host`
+- requires binding attesting host match
+- requires binding generations and source identity match frozen execution
+- requires read_write/writable for mutating calls
+- allows the TUI CWD primary exception when execution carries no binding and has the expected synthetic TUI markers
+
+### The hard current blocker
+
+Native lifecycle is still primary-only.
+
+`requirePrimarySessionV2Authority(...)` rejects any execution class other than `primary`.
+
+That means:
+
+- local-container create exists,
+- local-container `SessionExecutionV2Record` can be persisted,
+- but local-container sessions cannot use native `/v2/sessions/{id}` lifecycle.
+
+That is the central mismatch we now need to remove.
+
+## What the current wrong path does today
+
+The current local-container/routed path still depends on legacy routed-session machinery.
+
+### Legacy create/open flow
+
+The current routed/local-container create path uses the old host/peer route stack:
+
+1. Primary-side create code builds a hosted/routed contract.
+2. Primary writes or prepares a canonical parent session.
+3. Primary writes a `SessionRouteRecord` via `sessionRoutes.Put(...)`.
+4. Primary writes a topology session route via `upsertTopologySessionRoute(...)`.
+5. Primary sends `POST /v1/swarm/peer/sessions/open` via `postPeerJSONToSwarmTarget(...)`.
+6. Child/peer receives that in `handlePeerSessionOpen(...)`.
+7. Child normalizes request/route/path fields via:
+   - `normalizedTerminalPeerSessionOpenRoute(...)`
+   - `normalizedTerminalPeerSessionOpenRequest(...)`
+8. Child creates a local session via `createSessionFromRequestWithSessionID(...)`.
+9. Primary calls `SyncHostedMirrorOpenState(...)` to sync canonical mirror state from the child response.
+
+### Legacy lifecycle flow
+
+Later lifecycle requests still rely on routed proxy behavior:
+
+- primary call sites in `server.go` check `proxyRoutedSessionRequest(...)`
+- that resolves target using `routedSessionTarget(...)`
+- target resolution reads stored route state via `GetSessionRouteForAccount(...)`
+- target transport is resolved from authority host/backend URL state
+- request is proxied to child/peer handlers
+
+### Legacy peer session APIs still in play
+
+Registered peer session APIs:
+
+- `POST /v1/swarm/peer/sessions/open`
+- `POST /v1/swarm/peer/sessions/append_message`
+- `POST /v1/swarm/peer/sessions/mode`
+- `POST /v1/swarm/peer/sessions/title`
+- `POST /v1/swarm/peer/sessions/metadata`
+- `POST /v1/swarm/peer/sessions/lifecycle`
+- `POST /v1/swarm/peer/sessions/event`
+
+### What those peer handlers do today
+
+`swarmd/internal/api/routed_sessions.go` currently lets the child/peer path own or mirror session behavior by:
+
+- mutating messages through `handlePeerSessionAppendMessage`
+- mutating mode through `handlePeerSessionMode`
+- mutating title through `handlePeerSessionTitle`
+- mutating metadata through `handlePeerSessionMetadata`
+- ingesting mirrored lifecycle through `handlePeerSessionLifecycle` -> `StoreMirroredLifecycle(...)`
+- ingesting mirrored events through `handlePeerSessionEvent` -> `StoreMirroredEvent(...)`
+- decoding embedded lifecycle/message payloads out of mirrored event payloads and storing them locally
+
+## Why the current path is wrong for the new contract
+
+### Wrong authority source
+
+The routed path still depends on:
+
+- `SessionRouteRecord`
+- topology session routes
+- proxy target resolution
+- authority transport lookup from route state
+
+That is forbidden for native v2 authority.
+
+### Wrong ownership split
+
+The old path lets the peer session APIs behave like the canonical lifecycle surface.
+
+For native v2, the canonical session lifecycle must stay on `/v2/sessions/{id}` under one authority model. Internal runtime communication is allowed, but it must not masquerade as the public session API.
+
+### Wrong path semantics
+
+The old path still normalizes or compares:
+
+- request workspace path
+- host workspace path
+- runtime workspace path
+- workspace name
+
+Those are not allowed as routing authority in the new design.
+
+### Wrong traceability
+
+The old path spreads one logical session operation across:
+
+- public create handler
+- route stores
+- topology session route writes
+- peer open HTTP
+- child-side session create
+- mirror synchronization
+- later proxy interception
+- peer lifecycle/event ingestion
+
+That is exactly the traceability failure we are trying to remove.
+
+## New setup: how authority must work after the rewrite
+
+### Trusted user-facing create inputs
+
+The only trusted user-facing routing inputs for workspace-backed v2 create are:
 
 - `swarm_id`
 - `workspace_binding_id`
 
-Allowed non-routing options:
+Everything else is non-authoritative session configuration.
 
-- `title`
-- `mode`
-- `agent_name`
-- worktree intent fields
-- model/provider preference fields
-- validated metadata
+### What `swarm_target` means now
 
-Forbidden request fields for workspace-backed v2 session create:
+`swarm_target` is a UI selection/projection, not authority.
 
-- `workspace_path`
-- `host_workspace_path`
-- `runtime_workspace_path`
-- `workspace_name` as binding lookup authority
-- `target_swarm_id` as an alternate to `swarm_id`
-- `backend_url`
-- `child_backend_url`
-- `target_backend_url`
-- `next_hop_swarm_id`
-- `next_hop_backend_url`
-- any durable route/backend URL field
+It may help the client choose:
 
-If a forbidden field is present, the request fails before any session record or route record is written.
+- endpoint family (`/primary` vs `/local-containers`)
+- selected `swarm_id`
+- selected `workspace_binding_id`
 
-## Authoritative records
+But after that, the backend must ignore `swarm_target` display metadata as authority.
 
-V2 routing authority comes only from these persisted records:
+No trust in:
 
-| Authority | Fields used |
-| --- | --- |
-| Local node identity | primary/local host `swarm_id` |
-| `TopologyRuntimePlacementRecord` | `RuntimeSwarmID`, `AuthorityHostSwarmID`, `AuthorityContainerID`, `RuntimeKind`, `PlacementGeneration`, `State` |
-| `TopologyWorkspaceBindingRecord` | `BindingID`, `SourceWorkspaceID`, `SourceWorkspaceGeneration`, `SourceWorkspacePath`, `SourceWorkspaceName`, `DestinationRuntimeSwarmID`, `DestinationAuthorityHostSwarmID`, `DestinationRuntimeKind`, `DestinationContainerID`, `DestinationWorkspacePath`, `PlacementGeneration`, `BindingGeneration`, `State`, `AccessMode`, `AttestedByHostSwarmID` |
+- target name
+- target kind
+- target workspace path
+- target display name
+- deployment id
+- backend URL
+- next hop
 
-Not routing authority:
+### Trusted backend resolution chain
 
-- desktop selected-target setting
-- workspace name
-- client workspace paths
-- startup/config backend URL
-- durable runtime/backend URL fields
-- local container names or operational records without matching topology placement
-- child/container `SessionSnapshot.WorkspacePath`
+For native v2, the backend decision chain must be:
 
-## Primary endpoint: `POST /v2/sessions/primary`
+1. client selects a swarm target in UI,
+2. client sends only `swarm_id` + `workspace_binding_id`,
+3. backend loads runtime placement for `swarm_id`,
+4. backend loads workspace binding for `workspace_binding_id`,
+5. backend validates that binding destination matches placement,
+6. backend freezes `SessionExecutionV2Record`,
+7. later lifecycle loads frozen execution by session id,
+8. backend re-loads live placement and live binding,
+9. backend rejects stale/mismatched generation or destination,
+10. backend derives authority host/runtime/container from execution + placement + binding,
+11. backend dispatches natively.
 
-### Validation
+There is no route lookup step in the middle.
 
-The primary endpoint accepts only the primary host runtime.
+## Post-replication resolution: swarm target + binding -> exact dispatch
 
-Required proof:
+This is the hard part and it must be explicit.
 
-1. Authenticated principal is present.
-2. `swarm_id` is non-empty.
-3. `workspace_binding_id` is non-empty for workspace-backed create.
-4. Local node identity exists.
-5. `swarm_id` equals the primary/local node swarm id.
-6. Runtime placement exists for `swarm_id`.
-7. Placement is active.
-8. Placement is self-placement:
-   - `RuntimeSwarmID == swarm_id`
-   - `AuthorityHostSwarmID == swarm_id`
-   - `RuntimeKind == "host"`
-   - `AuthorityContainerID == ""`
-9. Workspace binding exists for `workspace_binding_id` in the principal account.
-10. Binding matches selected runtime and placement:
-    - `DestinationRuntimeSwarmID == swarm_id`
-    - `DestinationAuthorityHostSwarmID == swarm_id`
-    - `DestinationRuntimeKind == "host"`
-    - `DestinationContainerID == ""`
-    - `PlacementGeneration == placement.PlacementGeneration`
-    - `State == "bound"`
-11. Access mode permits the requested session operations.
+### What replication must produce
 
-### Execution construction
+After replication to a local container, the system must already have:
 
-After validation, the handler builds a `SessionExecution` directly from placement + binding:
+1. a runtime placement record for the target runtime swarm id,
+2. a workspace binding record whose destination points at that target runtime,
+3. matching placement and binding generations,
+4. a destination authority host swarm id,
+5. a destination runtime kind,
+6. a destination container id for container targets,
+7. a destination workspace path inside the runtime,
+8. a source workspace identity for the primary-side canonical workspace.
 
-```json
-{
-  "execution_class": "primary",
-  "runtime_swarm_id": "selected-runtime-swarm-id",
-  "runtime_kind": "host",
-  "authority_host_swarm_id": "selected-runtime-swarm-id",
-  "authority_container_id": "",
-  "workspace_binding_id": "workspace-binding-id",
-  "source_workspace_id": "binding-source-workspace-id",
-  "source_workspace_generation": 1,
-  "source_workspace_name": "binding-source-display-name",
-  "source_workspace_path": "binding-source-path",
-  "runtime_workspace_path": "binding-destination-path",
-  "placement_generation": 1,
-  "binding_generation": 1
+### How create resolves after replication
+
+When primary receives:
+
+- `swarm_id = selected target runtime`
+- `workspace_binding_id = selected replicated workspace binding`
+
+it must prove all of the following:
+
+1. placement exists for `swarm_id`
+2. binding exists for `workspace_binding_id`
+3. binding destination runtime swarm id == `swarm_id`
+4. binding destination authority host swarm id == placement authority host swarm id
+5. binding destination runtime kind == placement runtime kind
+6. for local-container, binding destination container id == placement authority container id
+7. binding destination workspace path is non-empty
+8. binding source workspace identity is complete
+9. binding and placement generations match
+10. binding is bound and account-scoped to the principal
+
+Only then can the backend freeze the execution.
+
+### How later lifecycle auto-resolves where to send the request
+
+Later user lifecycle requests should carry only `session_id`.
+
+The backend must then:
+
+1. load `SessionExecutionV2Record`
+2. read `ExecutionClass`
+3. re-load live placement and live binding
+4. derive:
+   - runtime swarm id
+   - authority host swarm id
+   - runtime kind
+   - authority container id
+   - runtime workspace path
+5. choose native dispatch from those values
+
+That means the backend "automatically understands where to send this" from the frozen execution plus live placement/binding, not from a route store and not from the client repeating target hints.
+
+## Required public v2 API surface
+
+### Create
+
+- `POST /v2/sessions/primary`
+- `POST /v2/sessions/local-containers`
+
+### Canonical lifecycle
+
+These must be native for both primary and local-container sessions under one authority validator:
+
+- `GET /v2/sessions/{id}`
+- `GET/POST /v2/sessions/{id}/messages`
+- `GET/POST /v2/sessions/{id}/metadata`
+- `GET/POST /v2/sessions/{id}/mode`
+- `GET/POST /v2/sessions/{id}/preference`
+- `GET/POST /v2/sessions/{id}/codex`
+- `GET/POST /v2/sessions/{id}/plans/active`
+- `GET/POST /v2/sessions/{id}/plans`
+- `GET /v2/sessions/{id}/plans/{plan_id}`
+- `GET /v2/sessions/{id}/plans/{plan_id}/history`
+- `GET /v2/sessions/{id}/permissions`
+- `POST /v2/sessions/{id}/permissions/{permission_id}/resolve`
+- `POST /v2/sessions/{id}/permissions/resolve_all`
+- `GET /v2/sessions/{id}/usage`
+- `POST /v2/sessions/{id}/run`
+- `GET/POST /v2/sessions/{id}/run/stream`
+
+## Required internal runtime API surface
+
+We also need a native internal runtime API to replace the old peer session APIs.
+
+### Required replacements
+
+Old APIs to replace:
+
+- `/v1/swarm/peer/sessions/open`
+- `/v1/swarm/peer/sessions/append_message`
+- `/v1/swarm/peer/sessions/mode`
+- `/v1/swarm/peer/sessions/title`
+- `/v1/swarm/peer/sessions/metadata`
+- `/v1/swarm/peer/sessions/lifecycle`
+- `/v1/swarm/peer/sessions/event`
+
+### Recommended native replacements
+
+#### Internal runtime open/sync
+
+- `POST /v2/internal/runtime-sessions/open`
+  - authority host -> runtime
+  - creates or attaches runtime-local execution context for a frozen `SessionExecutionV2Record`
+- `POST /v2/internal/runtime-sessions/{id}/sync/state`
+  - authority host -> runtime
+  - pushes canonical mode/preference/metadata/codex/session-state needed by the runtime
+
+#### Internal runtime execution
+
+- `POST /v2/internal/runtime-sessions/{id}/run`
+- `GET/POST /v2/internal/runtime-sessions/{id}/run/stream`
+
+These are not public lifecycle APIs. They are runtime-dispatch APIs used after canonical v2 authority succeeds.
+
+#### Internal mirroring
+
+Replace split `lifecycle` + `event` peer ingestion with one typed mirror surface:
+
+- `POST /v2/internal/runtime-sessions/{id}/mirror/batch`
+
+Recommended payload types inside the batch:
+
+- `session.snapshot`
+- `session.lifecycle`
+- `run.event`
+- `message.stored`
+- `usage.delta`
+
+Rules:
+
+- mirror payloads are typed
+- every payload must name `session_id`
+- every payload must match the frozen execution class and runtime identity
+- lifecycle/message payloads must be validated before persistence
+- mirror ingestion must fail closed on mismatched session id, runtime identity, or malformed payloads
+
+## Mirroring model for primary -> local-container
+
+### Canonical owner
+
+For primary -> local-container v2, the canonical session remains owned by the authority host side of the session, not by the legacy peer session path.
+
+### What mirror data is allowed to update
+
+Allowed mirrored facts:
+
+- runtime-generated events
+- runtime lifecycle changes
+- runtime-emitted stored messages
+- usage deltas
+- runtime-open status
+
+### What mirror data must not overwrite authority
+
+Mirrors must never redefine:
+
+- source workspace identity
+- workspace binding id
+- execution class
+- authority host swarm id
+- destination container id
+- canonical authority path
+
+### Path rule
+
+Container-local runtime paths are execution facts only.
+
+They must not replace primary/source workspace identity.
+
+That means:
+
+- child `SessionSnapshot.WorkspacePath` is not authority
+- child worktree root path is not source workspace identity
+- `/workspaces/...` inside the container is not the canonical workspace source path
+
+## Required authority helper: `requireSessionV2Authority`
+
+The current primary-only helper must become a polymorphic helper.
+
+Recommended shape:
+
+```go
+type sessionV2Authority struct {
+    Principal identity.Principal
+    Execution pebblestore.SessionExecutionV2Record
+    Placement pebblestore.TopologyRuntimePlacementRecord
+    Binding   pebblestore.TopologyWorkspaceBindingRecord
 }
 ```
 
-For primary self-bindings, source and runtime paths may be the same. That equality is a validated property of the binding, not a client assumption.
+### Required behavior
 
-### Response
+For every request:
 
-The response returns the created session and the frozen execution identity used to create it:
+1. load principal
+2. load execution by session id
+3. ensure execution account scope matches principal
+4. switch on execution class
+5. re-load live placement using `execution.RuntimeSwarmID`
+6. if binding exists, re-load live binding using `execution.WorkspaceBindingID`
+7. validate class-specific invariants
+8. validate generation invariants
+9. validate access-mode invariants
+10. return a typed authority object
 
-```json
-{
-  "ok": true,
-  "session": {},
-  "session_execution": {
-    "execution_class": "primary",
-    "runtime_swarm_id": "selected-runtime-swarm-id",
-    "runtime_kind": "host",
-    "authority_host_swarm_id": "selected-runtime-swarm-id",
-    "workspace_binding_id": "workspace-binding-id",
-    "placement_generation": 1,
-    "binding_generation": 1
-  }
-}
-```
+### Primary class invariants
 
-The response may include display paths derived from the binding, but those paths are not accepted back as routing authority in later requests.
+- execution class == `primary`
+- runtime kind == `host`
+- authority host swarm id == local primary swarm id
+- authority container id empty
+- placement is active host self-placement
+- binding destination is host self-authority
 
-## Local-container endpoint: `POST /v2/sessions/local-containers`
+### Local-container class invariants
 
-The local-container endpoint uses the same request and response shape as primary, but the endpoint class changes validation and execution.
+- execution class == `local_container`
+- runtime kind == `container`
+- authority host swarm id == local primary swarm id for this phase
+- authority container id non-empty
+- placement is active container placement
+- binding destination runtime kind == `container`
+- binding destination runtime swarm id == execution runtime swarm id
+- binding destination authority host swarm id == execution authority host swarm id
+- binding destination container id == execution authority container id
 
-### Validation
+## Dispatch model after authority
 
-Required proof:
+### Public lifecycle stays canonical
 
-1. Authenticated principal is present.
-2. `swarm_id` is the selected container runtime swarm id.
-3. `workspace_binding_id` is present.
-4. Local node identity exists and is the primary authority host.
-5. Runtime placement exists for `swarm_id`.
-6. Placement is active.
-7. Placement is a local container controlled by primary:
-   - `RuntimeSwarmID == swarm_id`
-   - `RuntimeKind == "container"`
-   - `AuthorityHostSwarmID == primarySwarmID`
-   - `AuthorityContainerID != ""`
-8. Workspace binding exists and matches placement:
-   - `DestinationRuntimeSwarmID == swarm_id`
-   - `DestinationAuthorityHostSwarmID == primarySwarmID`
-   - `DestinationRuntimeKind == "container"`
-   - `DestinationContainerID == placement.AuthorityContainerID`
-   - `DestinationWorkspacePath != ""`
-   - `PlacementGeneration == placement.PlacementGeneration`
-   - `State == "bound"`
-   - `AttestedByHostSwarmID == primarySwarmID`
-9. Access mode permits the requested session operations.
+Public `/v2/sessions/{id}` handlers should always:
 
-### Execution construction
+1. validate authority natively,
+2. mutate/read canonical state natively,
+3. dispatch to runtime only when runtime execution is required.
 
-The local-container handler builds the same `SessionExecution` shape with a different execution class:
+### Primary dispatch
 
-```json
-{
-  "execution_class": "local_container",
-  "runtime_swarm_id": "container-runtime-swarm-id",
-  "runtime_kind": "container",
-  "authority_host_swarm_id": "primary-host-swarm-id",
-  "authority_container_id": "primary-owned-container-id",
-  "workspace_binding_id": "workspace-binding-id",
-  "source_workspace_id": "binding-source-workspace-id",
-  "source_workspace_generation": 1,
-  "source_workspace_name": "binding-source-display-name",
-  "source_workspace_path": "primary/source/display/path/from-binding",
-  "runtime_workspace_path": "container/runtime/path/from-binding",
-  "placement_generation": 1,
-  "binding_generation": 1
-}
-```
+For `primary` execution:
 
-The runtime path used for execution is `binding.DestinationWorkspacePath`. The primary mirror/source identity is `binding.SourceWorkspaceID` plus `binding.SourceWorkspaceGeneration` and binding source display fields.
+- use local host runtime services directly.
 
-### Mirror rule
+### Local-container dispatch
 
-For local-container sessions, child/container session snapshots are runtime diagnostics only.
+For `local_container` execution in this phase:
 
-Primary-side mirror/session state must not adopt:
+- authority host is the local primary,
+- runtime target is a local container,
+- dispatch must be derived from execution + placement + binding,
+- dispatch must not go through legacy peer session wrappers.
 
-- child `SessionSnapshot.WorkspacePath`
-- child worktree root paths as source workspace paths
-- container-local `/workspaces/...` paths as primary workspace identity
+This may use an internal runtime transport, but it must be the v2 internal runtime API, not the old routed-session public surface.
 
-Primary-side mirror identity comes from the frozen `SessionExecution` and workspace binding. Runtime-local paths remain runtime execution facts.
+## Things the next implementation must delete or stop using
 
-## Path terminology
+Do not call these from the new public v2 path:
 
-V2 uses distinct names for distinct facts:
+- `handleSessions`
+- `handleSessionByID`
+- `createSessionFromRequest`
+- `createSessionFromRequestWithSessionID`
+- `proxyRoutedSessionRequest`
+- `routedSessionTarget`
+- `routedSessionTargetOrFailClosed`
+- `handlePeerSessionOpen`
+- `handlePeerSessionAppendMessage`
+- `handlePeerSessionMode`
+- `handlePeerSessionTitle`
+- `handlePeerSessionMetadata`
+- `handlePeerSessionLifecycle`
+- `handlePeerSessionEvent`
+- `SessionRouteRecord` authority
+- topology session route authority
 
-| Field | Meaning | Owner | Accepted from client? |
-| --- | --- | --- | --- |
-| `source_workspace_id` | Stable primary workspace identity. | Workspace catalog / binding | No |
-| `source_workspace_generation` | Source workspace version/generation. | Workspace catalog / binding | No |
-| `source_workspace_path` | Primary/source display path from binding. | Binding | No |
-| `destination_workspace_path` / `runtime_workspace_path` | Path visible to the selected runtime. | Binding attested by authority host | No |
-| `runtime_cwd` | Exact cwd used for execution after worktree realization. | Session execution/worktree realization | No |
-| `SessionSnapshot.WorkspacePath` | Session display/projection field. | Session service projection | No |
+## Explicit next-agent brief
 
-This eliminates path ambiguity:
+The next implementation agent should assume the following setup:
 
-- Primary host sessions derive both source and runtime paths from a self-binding.
-- Local-container sessions derive primary/source identity from binding source fields and runtime execution path from binding destination fields.
-- A container-local path can never overwrite primary/source path identity.
-- A client cannot select a workspace by path or name.
+1. We are doing a full native v2 rewrite for primary and local-container session APIs.
+2. The current local-container path is wrong because it still depends on legacy routed peer session APIs and route stores.
+3. `swarm_target` is only a UI selection/projection; it is not authority.
+4. The trusted user-facing routing inputs are only `swarm_id` and `workspace_binding_id`.
+5. The trusted lifecycle authority chain is only frozen execution + live placement + live binding.
+6. All lifecycle APIs previously used through v1 wrappers must be redone natively under `/v2/sessions/{id}`.
+7. Internal runtime communication and mirroring APIs must also be redone natively; do not reuse `/v1/swarm/peer/sessions/*`.
+8. Post-replication dispatch must deterministically derive authority host/runtime/container from binding + placement, not from route records or backend URLs.
+9. Mirroring must be typed, explicit, and fail closed.
+10. The result must leave a clear audit trail: create request -> frozen execution -> live placement/binding recheck -> runtime dispatch -> mirror ingestion.
 
-## Settings isolation
+## Relevant filepaths
 
-Session API v2 does not use settings as placement authority.
+- `swarmd/internal/api/server_routes.go`
+- `swarmd/internal/api/sessions_v2_primary.go`
+- `swarmd/internal/api/sessions_v2_lifecycle.go`
+- `swarmd/internal/api/routed_sessions.go`
+- `swarmd/internal/api/server.go`
+- `swarmd/internal/api/target_workspace_route.go`
+- `swarmd/internal/api/swarm_targets.go`
+- `swarmd/internal/api/swarm_replicate.go`
+- `swarmd/internal/api/swarm_replicate_container.go`
+- `swarmd/internal/api/flows_mirror.go`
+- `swarmd/internal/api/flows_runner.go`
+- `swarmd/internal/session/session_execution_v2.go`
+- `swarmd/internal/session/service.go`
+- `swarmd/internal/store/pebble/topology_runtime_placement_store.go`
+- `swarmd/internal/store/pebble/topology_workspace_binding_store.go`
+- `web/src/features/desktop/chat/services/chat-routing.ts`
 
-Specifically, v2 session create must not route from:
+## Bottom line
 
-- desktop selected target setting
-- workspace overview current route setting
-- local container profile settings
-- deploy/container settings
-- startup-config backend URLs
-- remembered child backend URLs
-- model/provider settings
-- workspace name defaults
+The rewrite target is not "make the current local-container route work."
 
-Settings may only affect non-routing behavior after placement is proven:
+The rewrite target is:
 
-- model/provider preference chooses execution model, not runtime target
-- worktree options choose worktree realization, not workspace binding
-- metadata can annotate the session after validation, not alter routing
-- UI selected target decides which endpoint the client calls, but the backend still validates `swarm_id` + placement + binding and fails on mismatch
-
-This means changing settings cannot silently send a session to another runtime or reinterpret workspace paths.
-
-## Fail-closed behavior
-
-V2 handlers fail before writing session state when:
-
-- principal is missing or invalid
-- endpoint class and placement kind disagree
-- selected `swarm_id` is missing or unknown
-- workspace binding is missing
-- binding does not match selected runtime
-- binding placement generation is stale
-- placement is missing, stale, inactive, or malformed
-- authority host is not the expected host for the endpoint
-- authority connection is unavailable for future remote endpoints
-- forbidden routing/path/backend fields are present
-- access mode disallows the requested operation
-
-Suggested error classes:
-
-| Condition | Status | Code |
-| --- | --- | --- |
-| Missing principal | `401` | `principal_required` |
-| Malformed request / forbidden field | `400` | `session_v2_bad_request` |
-| Wrong endpoint class | `400` | `session_v2_invalid_execution_class` |
-| Missing placement or binding | `404` | `session_v2_authority_not_found` |
-| Stale placement or binding mismatch | `409` | `session_v2_stale_authority` |
-| Access mode denial | `403` | `session_v2_access_denied` |
-| Future remote authority unavailable | `503` | `session_v2_authority_unavailable` |
-
-## Client routing rule
-
-The frontend/router uses selected target metadata only to choose the endpoint:
-
-| Selected target | Client endpoint |
-| --- | --- |
-| primary host runtime | `/v2/sessions/primary` |
-| local container runtime whose authority host is primary | `/v2/sessions/local-containers` |
-| managed host primary runtime | not implemented in this slice |
-| managed-host-owned local container runtime | not implemented in this slice |
-
-The client sends only:
-
-- selected runtime `swarm_id`
-- selected route/workspace `workspace_binding_id`
-- non-routing session options
-
-The client never sends workspace path fields, backend URL fields, next-hop fields, or workspace-name lookup hints for workspace-backed v2 creates.
-
-## Internal organization
-
-Shared helpers should implement the common contract once:
-
-1. Decode v2 request.
-2. Reject forbidden fields.
-3. Normalize `swarm_id` and `workspace_binding_id`.
-4. Load principal-local node identity.
-5. Load runtime placement.
-6. Load workspace binding.
-7. Validate binding against placement and endpoint class.
-8. Build frozen `SessionExecution`.
-
-Endpoint-specific handlers should only add class-specific checks and execution dispatch:
-
-| Handler | Extra checks | Execution path |
-| --- | --- | --- |
-| `handleSessionsV2Primary` | host self-placement | direct primary/local session creation |
-| `handleSessionsV2LocalContainers` | container placement with primary authority host | primary-as-authority local container session open |
-
-Future managed endpoints reuse the same request and `SessionExecution` shape, adding only remote authority resolution through live `AuthorityConnection`.
-
-## What this removes
-
-This API shape removes the legacy ambiguity that caused routing and mirror mismatches:
-
-- no recursive next-hop routing
-- no generic `/v1/sessions?swarm_id=...` inference for v2 workspace-backed creates
-- no path-based workspace binding lookup
-- no workspace-name binding fallback
-- no durable backend URL as routing authority
-- no child snapshot path overwriting primary mirror identity
-- no managed-host handler participation in primary/local-container v2 opens
-- no hidden dependency on global desktop target selection
-
-The result is one clear decision chain:
-
-```text
-selected runtime
-  -> endpoint class
-  -> RuntimePlacement
-  -> authority host proof
-  -> WorkspaceBinding
-  -> SessionExecution
-  -> execution
-```
+- public v2 create + lifecycle are native,
+- internal runtime open/run/mirror APIs are native,
+- routing authority comes only from execution + placement + binding,
+- post-replication resolution is deterministic from swarm target selection -> `swarm_id` + `workspace_binding_id` -> frozen execution -> live placement/binding -> dispatch,
+- and no v1 wrapper or route-store authority remains in the path.

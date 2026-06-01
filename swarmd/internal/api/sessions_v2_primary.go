@@ -12,6 +12,7 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
 const (
@@ -95,6 +96,13 @@ func (s *Server) handleSessionsV2Create(w http.ResponseWriter, r *http.Request, 
 		writeSessionsV2Error(w, err)
 		return
 	}
+	if shouldRealizeSessionsV2Worktree(req) {
+		execution, err = s.realizeSessionsV2PrimaryWorktree(principal, req, execution)
+		if err != nil {
+			writeSessionsV2Error(w, err)
+			return
+		}
+	}
 	session, persistedExecution, event, warning, modeWarning, err := s.sessions.CreateFromExecutionV2(r.Context(), sessionruntime.SessionsV2CreateCommand{Principal: principal, Request: req, Execution: execution})
 	if err != nil {
 		writeSessionsV2Error(w, err)
@@ -159,10 +167,76 @@ func decodeSessionsV2CreateRequestStrict(r *http.Request) (sessionruntime.Sessio
 	if req.WorkspaceBindingID == "" && req.WorkspacePath == "" {
 		return sessionruntime.SessionsV2CreateRequest{}, sessionV2BadRequest("sessions v2 workspace_binding_id is required")
 	}
+	if err := validateSessionsV2WorktreeRequest(req); err != nil {
+		return sessionruntime.SessionsV2CreateRequest{}, err
+	}
 	if err := validateSessionsV2Metadata(req.Metadata); err != nil {
 		return sessionruntime.SessionsV2CreateRequest{}, err
 	}
 	return req, nil
+}
+
+func validateSessionsV2WorktreeRequest(req sessionruntime.SessionsV2CreateRequest) error {
+	mode := strings.ToLower(strings.TrimSpace(req.WorktreeMode))
+	switch mode {
+	case "", "off":
+		if strings.TrimSpace(req.WorktreeBaseBranch) != "" || strings.TrimSpace(req.WorktreeBranchName) != "" {
+			return sessionV2BadRequest("worktree fields are only allowed when worktree_mode is on")
+		}
+		return nil
+	case "on":
+		if req.WorktreeUseCurrentBranch != nil {
+			useCurrentBranch := *req.WorktreeUseCurrentBranch
+			if useCurrentBranch && strings.TrimSpace(req.WorktreeBaseBranch) != "" {
+				return sessionV2BadRequest("worktree_use_current_branch cannot be true when worktree_base_branch is set")
+			}
+			if !useCurrentBranch && strings.TrimSpace(req.WorktreeBaseBranch) == "" {
+				return sessionV2BadRequest("worktree_base_branch is required when worktree_use_current_branch is false")
+			}
+		}
+		return nil
+	default:
+		return sessionV2BadRequest("unsupported worktree_mode %q", strings.TrimSpace(req.WorktreeMode))
+	}
+}
+
+func shouldRealizeSessionsV2Worktree(req sessionruntime.SessionsV2CreateRequest) bool {
+	return strings.EqualFold(strings.TrimSpace(req.WorktreeMode), "on")
+}
+
+func (s *Server) realizeSessionsV2PrimaryWorktree(principal identity.Principal, req sessionruntime.SessionsV2CreateRequest, execution sessionruntime.SessionExecution) (sessionruntime.SessionExecution, error) {
+	execution = sessionruntime.NormalizeSessionExecutionV2ForCreate(execution)
+	if execution.ExecutionClass != sessionruntime.SessionExecutionClassPrimary {
+		return sessionruntime.SessionExecution{}, sessionV2BadRequest("worktree_mode on is only supported for primary sessions v2")
+	}
+	if execution.WorkspaceBindingID == "" {
+		return sessionruntime.SessionExecution{}, sessionV2BadRequest("worktree_mode on requires workspace_binding_id")
+	}
+	if s.worktrees == nil {
+		return sessionruntime.SessionExecution{}, sessionV2BadRequest("worktree_mode on requires worktree service")
+	}
+	sessionID := strings.TrimSpace(execution.SessionID)
+	if sessionID == "" {
+		sessionID = sessionruntime.NewSessionID()
+		execution.SessionID = sessionID
+	}
+	allocation, err := s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(principal, execution.SourceWorkspacePath, sessionID, req.WorktreeBaseBranch, req.WorktreeBranchName)
+	if err != nil {
+		return sessionruntime.SessionExecution{}, sessionV2BadRequest("realize primary sessions v2 worktree: %v", err)
+	}
+	if strings.TrimSpace(allocation.WorkspacePath) == "" || strings.TrimSpace(allocation.BaseBranch) == "" || strings.TrimSpace(allocation.BranchName) == "" {
+		return sessionruntime.SessionExecution{}, sessionV2BadRequest("worktree_mode on did not allocate complete worktree facts")
+	}
+	if workspaceID := strings.TrimSpace(allocation.WorkspaceID); workspaceID != worktreeruntime.WorkspaceIdentityForSession(sessionID) {
+		return sessionruntime.SessionExecution{}, sessionV2BadRequest("worktree_mode on allocation workspace identity mismatch")
+	}
+	execution.SessionID = sessionID
+	execution.RuntimeWorkspacePath = strings.TrimSpace(allocation.WorkspacePath)
+	execution.WorktreeEnabled = true
+	execution.WorktreeRootPath = strings.TrimSpace(allocation.WorkspacePath)
+	execution.WorktreeBaseBranch = strings.TrimSpace(allocation.BaseBranch)
+	execution.WorktreeBranch = strings.TrimSpace(allocation.BranchName)
+	return execution, nil
 }
 
 func (s *Server) buildSessionsV2Execution(r *http.Request, principal identity.Principal, req sessionruntime.SessionsV2CreateRequest, endpointClass string) (sessionruntime.SessionExecution, error) {
@@ -194,6 +268,9 @@ func (s *Server) buildSessionsV2Execution(r *http.Request, principal identity.Pr
 	if req.WorkspaceBindingID == "" {
 		if endpointClass != sessionsV2EndpointPrimary {
 			return sessionruntime.SessionExecution{}, sessionV2BadRequest("sessions v2 workspace_binding_id is required")
+		}
+		if shouldRealizeSessionsV2Worktree(req) {
+			return sessionruntime.SessionExecution{}, sessionV2BadRequest("worktree_mode on requires workspace_binding_id")
 		}
 		return s.buildSessionsV2PrimaryTUICWDExecution(r, req, primarySwarmID, placement)
 	}

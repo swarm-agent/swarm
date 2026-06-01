@@ -36,6 +36,8 @@ func TestSessionsV2LifecycleDoesNotReferenceLegacyHandlers(t *testing.T) {
 				"proxyRoutedSessionRequest",
 				"localCanonicalSessionForRoutedFetch",
 				"sessionWorkspaceBindingForAccess",
+				"SessionRouteRecord",
+				"swarm_target",
 			} {
 				if strings.Contains(string(body), forbidden) {
 					t.Fatalf("%s contains forbidden legacy/routed symbol %q", path, forbidden)
@@ -273,24 +275,6 @@ func TestSessionsV2LifecycleRejectsIncompleteMatchingExecutionAndBindingAuthorit
 			},
 		},
 		{
-			name: "source workspace path empty",
-			mutateExec: func(execution *pebblestore.SessionExecutionV2Record) {
-				execution.SourceWorkspacePath = ""
-			},
-			mutateBinding: func(binding *pebblestore.TopologyWorkspaceBindingRecord) {
-				binding.SourceWorkspacePath = ""
-			},
-		},
-		{
-			name: "runtime workspace path empty",
-			mutateExec: func(execution *pebblestore.SessionExecutionV2Record) {
-				execution.RuntimeWorkspacePath = ""
-			},
-			mutateBinding: func(binding *pebblestore.TopologyWorkspaceBindingRecord) {
-				binding.DestinationWorkspacePath = ""
-			},
-		},
-		{
 			name: "source workspace generation zero",
 			mutateExec: func(execution *pebblestore.SessionExecutionV2Record) {
 				execution.SourceWorkspaceGeneration = 0
@@ -348,10 +332,63 @@ func TestSessionsV2LifecycleRejectsIncompleteMatchingExecutionAndBindingAuthorit
 			if rec.Code != http.StatusConflict {
 				t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusConflict, rec.Body.String())
 			}
-			if !strings.Contains(rec.Body.String(), "authority identity is incomplete") {
-				t.Fatalf("body = %s, want incomplete authority rejection", rec.Body.String())
+			if !strings.Contains(rec.Body.String(), "authority identity is incomplete") && !strings.Contains(rec.Body.String(), "source identity mismatch") {
+				t.Fatalf("body = %s, want incomplete authority/source identity rejection", rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestSessionsV2LifecycleDoesNotUseWorkspacePathsOrNamesAsAuthority(t *testing.T) {
+	server, sessionSvc, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	sessionID := createPrimarySessionV2ForLifecycleTest(t, server, swarmStore, "binding-primary-v2", pebblestore.TopologyWorkspaceBindingAccessModeReadWrite, true)
+
+	execution, ok, err := sessionSvc.Store().GetSessionExecutionV2(sessionID)
+	if err != nil || !ok {
+		t.Fatalf("get execution ok=%t err=%v", ok, err)
+	}
+	execution.SourceWorkspaceName = "renamed-workspace"
+	execution.SourceWorkspacePath = "renamed-source"
+	execution.RuntimeWorkspacePath = "renamed-runtime"
+	session, ok, err := sessionSvc.GetSession(sessionID)
+	if err != nil || !ok {
+		t.Fatalf("get session ok=%t err=%v", ok, err)
+	}
+	if err := sessionSvc.Store().CreateSessionWithExecutionV2(session, execution); err != nil {
+		t.Fatalf("update execution path/name fields: %v", err)
+	}
+
+	binding, ok, err := server.topology.GetWorkspaceBindingForAccount(testPrincipal().AccountScopeID, "binding-primary-v2")
+	if err != nil || !ok {
+		t.Fatalf("get binding ok=%t err=%v", ok, err)
+	}
+	binding.SourceWorkspaceName = "renamed-workspace"
+	binding.SourceWorkspacePath = "other-source"
+	binding.DestinationWorkspacePath = "other-runtime"
+	snapshot, err := server.topology.SnapshotForAccount(testPrincipal().AccountScopeID)
+	if err != nil {
+		t.Fatalf("snapshot topology: %v", err)
+	}
+	replaced := false
+	for i := range snapshot.WorkspaceBindings {
+		if snapshot.WorkspaceBindings[i].BindingID == binding.BindingID {
+			snapshot.WorkspaceBindings[i] = binding
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		t.Fatalf("workspace binding %q missing from snapshot", binding.BindingID)
+	}
+	if err := server.topology.ReplaceSnapshotForAccount(testPrincipal().AccountScopeID, snapshot); err != nil {
+		t.Fatalf("update binding path/name fields: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/sessions/"+sessionID+"/messages", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 }
 

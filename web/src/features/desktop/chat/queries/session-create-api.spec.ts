@@ -151,6 +151,7 @@ test('local-container child route creates via Sessions API v2 local-containers e
     assert.equal(body.swarm_id, 'child-swarm')
     assert.equal(body.workspace_binding_id, 'binding-child')
     assert.equal(body.worktree_mode, 'off')
+    assert.equal(Object.hasOwn(body, 'worktree_use_current_branch'), false)
     assertNoForbiddenCreateBodyFields(String(calls[0]?.input), body)
   })
 })
@@ -197,6 +198,10 @@ test('route path and workspace-name fields are not sent in v2 create body', asyn
 
     const body = requestBody(calls[0])
     assertNoForbiddenCreateBodyFields(String(calls[0]?.input), body)
+    assert.equal(body.worktree_mode, 'off')
+    assert.equal(Object.hasOwn(body, 'worktree_use_current_branch'), false)
+    assert.equal(Object.hasOwn(body, 'worktree_base_branch'), false)
+    assert.equal(Object.hasOwn(body, 'worktree_branch_name'), false)
     assert.equal(JSON.stringify(body).includes('must-not-be-sent'), false)
     assert.equal(JSON.stringify(body).includes('/must/not/be/sent'), false)
   })

@@ -19,11 +19,23 @@ import (
 
 const sessionsV2LifecyclePrefix = "/v2/sessions/"
 
-type primarySessionV2Authority struct {
+type sessionV2Authority struct {
 	Principal identity.Principal
 	Execution pebblestore.SessionExecutionV2Record
 	Placement pebblestore.TopologyRuntimePlacementRecord
-	Binding   pebblestore.TopologyWorkspaceBindingRecord
+	Binding   *pebblestore.TopologyWorkspaceBindingRecord
+	Mutating  bool
+}
+
+func validatePrimarySessionV2DispatchAuthority(authority sessionV2Authority) error {
+	switch strings.TrimSpace(authority.Execution.ExecutionClass) {
+	case sessionruntime.SessionExecutionClassPrimary:
+		return nil
+	case sessionruntime.SessionExecutionClassLocalContainer:
+		return sessionV2InvalidClass("sessions v2 local-container lifecycle dispatch is not implemented")
+	default:
+		return sessionV2InvalidClass("sessions v2 execution class %q is not supported", authority.Execution.ExecutionClass)
+	}
 }
 
 func validatePrimarySessionV2RunRequest(req runruntime.RunRequest) error {
@@ -155,131 +167,212 @@ func isReservedPrimarySessionV2LifecycleID(sessionID string) bool {
 	}
 }
 
-func (s *Server) requirePrimarySessionV2Authority(r *http.Request, sessionID string, requireWrite bool) (primarySessionV2Authority, error) {
+func (s *Server) requirePrimarySessionV2DispatchAuthority(r *http.Request, sessionID string, mutating bool) (sessionV2Authority, error) {
+	authority, err := s.requireSessionV2Authority(r, sessionID, mutating)
+	if err != nil {
+		return sessionV2Authority{}, err
+	}
+	if err := validatePrimarySessionV2DispatchAuthority(authority); err != nil {
+		return sessionV2Authority{}, err
+	}
+	return authority, nil
+}
+
+func (s *Server) requireSessionV2Authority(r *http.Request, sessionID string, mutating bool) (sessionV2Authority, error) {
 	if s == nil || s.sessions == nil || s.sessions.Store() == nil || s.topology == nil {
-		return primarySessionV2Authority{}, errors.New("sessions v2 service is not configured")
+		return sessionV2Authority{}, errors.New("sessions v2 service is not configured")
 	}
 	principal, ok := PrincipalFromRequest(r)
 	if !ok || !principal.Valid() {
-		return primarySessionV2Authority{}, identity.ErrPrincipalRequired
+		return sessionV2Authority{}, identity.ErrPrincipalRequired
 	}
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
-		return primarySessionV2Authority{}, sessionV2BadRequest("session id is required")
+		return sessionV2Authority{}, sessionV2BadRequest("session id is required")
 	}
 
 	execution, executionOK, err := s.sessions.Store().GetSessionExecutionV2(sessionID)
 	if err != nil {
-		return primarySessionV2Authority{}, err
+		return sessionV2Authority{}, err
 	}
 	if !executionOK {
-		return primarySessionV2Authority{}, sessionV2AuthorityNotFound("sessions v2 execution for %q was not found", sessionID)
+		return sessionV2Authority{}, sessionV2AuthorityNotFound("sessions v2 execution for %q was not found", sessionID)
 	}
 	if strings.TrimSpace(execution.SessionID) != sessionID {
-		return primarySessionV2Authority{}, sessionV2StaleAuthority("sessions v2 execution session id mismatch")
+		return sessionV2Authority{}, sessionV2StaleAuthority("sessions v2 execution session id mismatch")
 	}
 	if strings.TrimSpace(execution.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
-		return primarySessionV2Authority{}, sessionV2AccessDenied("sessions v2 execution account scope does not match principal")
+		return sessionV2Authority{}, sessionV2AccessDenied("sessions v2 execution account scope does not match principal")
 	}
-	if strings.TrimSpace(execution.ExecutionClass) != sessionruntime.SessionExecutionClassPrimary {
-		return primarySessionV2Authority{}, sessionV2InvalidClass("sessions v2 lifecycle only supports primary execution")
-	}
-
-	localNode, localOK, err := s.swarmLocalNode()
-	if err != nil {
-		return primarySessionV2Authority{}, err
-	}
-	localSwarmID := strings.TrimSpace(localNode.SwarmID)
-	if !localOK || localSwarmID == "" {
-		return primarySessionV2Authority{}, sessionV2AuthorityNotFound("sessions v2 primary local node identity is required")
-	}
-	if strings.TrimSpace(execution.RuntimeSwarmID) != localSwarmID || strings.TrimSpace(execution.AuthorityHostSwarmID) != localSwarmID {
-		return primarySessionV2Authority{}, sessionV2StaleAuthority("sessions v2 execution is not owned by this primary runtime")
-	}
-	if strings.TrimSpace(execution.RuntimeKind) != pebblestore.TopologyRuntimeKindHost || strings.TrimSpace(execution.AuthorityContainerID) != "" {
-		return primarySessionV2Authority{}, sessionV2InvalidClass("sessions v2 primary execution must target host runtime authority")
-	}
-	if strings.TrimSpace(execution.WorkspaceBindingID) == "" {
-		if !isPrimarySessionV2TUICWDExecution(execution) {
-			return primarySessionV2Authority{}, sessionV2StaleAuthority("sessions v2 execution authority identity is incomplete")
-		}
-	} else if strings.TrimSpace(execution.SourceWorkspaceID) == "" || execution.SourceWorkspaceGeneration <= 0 || strings.TrimSpace(execution.SourceWorkspacePath) == "" || strings.TrimSpace(execution.RuntimeWorkspacePath) == "" || execution.PlacementGeneration <= 0 || execution.BindingGeneration <= 0 {
-		return primarySessionV2Authority{}, sessionV2StaleAuthority("sessions v2 execution authority identity is incomplete")
+	if strings.TrimSpace(execution.UserID) != "" && strings.TrimSpace(execution.UserID) != strings.TrimSpace(principal.UserID) {
+		return sessionV2Authority{}, sessionV2AccessDenied("sessions v2 execution user does not match principal")
 	}
 
 	placement, placementOK, err := s.topology.GetRuntimePlacementForAccount(principal.AccountScopeID, execution.RuntimeSwarmID)
 	if err != nil {
-		return primarySessionV2Authority{}, err
+		return sessionV2Authority{}, err
 	}
 	if !placementOK {
-		return primarySessionV2Authority{}, sessionV2AuthorityNotFound("sessions v2 runtime placement for %q was not found", execution.RuntimeSwarmID)
+		return sessionV2Authority{}, sessionV2AuthorityNotFound("sessions v2 runtime placement for %q was not found", execution.RuntimeSwarmID)
 	}
-	if strings.TrimSpace(placement.RuntimeSwarmID) != localSwarmID || strings.TrimSpace(placement.AuthorityHostSwarmID) != localSwarmID {
-		return primarySessionV2Authority{}, sessionV2StaleAuthority("sessions v2 primary placement is not local self-authority")
+	if strings.TrimSpace(placement.RuntimeSwarmID) != strings.TrimSpace(execution.RuntimeSwarmID) {
+		return sessionV2Authority{}, sessionV2StaleAuthority("sessions v2 runtime placement id mismatch")
+	}
+	if strings.TrimSpace(placement.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		return sessionV2Authority{}, sessionV2AccessDenied("sessions v2 runtime placement account scope does not match principal")
 	}
 	if strings.TrimSpace(placement.State) != pebblestore.TopologyRuntimePlacementStateActive {
-		return primarySessionV2Authority{}, sessionV2StaleAuthority("sessions v2 primary placement is not active")
-	}
-	if strings.TrimSpace(placement.RuntimeKind) != pebblestore.TopologyRuntimeKindHost || strings.TrimSpace(placement.AuthorityContainerID) != "" {
-		return primarySessionV2Authority{}, sessionV2InvalidClass("sessions v2 primary placement must be host self-placement")
+		return sessionV2Authority{}, sessionV2StaleAuthority("sessions v2 runtime placement is not active")
 	}
 	if placement.PlacementGeneration != execution.PlacementGeneration {
-		return primarySessionV2Authority{}, sessionV2StaleAuthority("sessions v2 primary placement generation mismatch")
+		return sessionV2Authority{}, sessionV2StaleAuthority("sessions v2 runtime placement generation mismatch")
+	}
+	authority := sessionV2Authority{Principal: principal, Execution: execution, Placement: placement, Mutating: mutating}
+	switch strings.TrimSpace(execution.ExecutionClass) {
+	case sessionruntime.SessionExecutionClassPrimary:
+		return s.validatePrimarySessionV2Authority(authority)
+	case sessionruntime.SessionExecutionClassLocalContainer:
+		return s.validateLocalContainerSessionV2Authority(authority)
+	default:
+		return sessionV2Authority{}, sessionV2InvalidClass("sessions v2 execution class %q is not supported", execution.ExecutionClass)
+	}
+}
+
+func (s *Server) validatePrimarySessionV2Authority(authority sessionV2Authority) (sessionV2Authority, error) {
+	execution := authority.Execution
+	placement := authority.Placement
+
+	localNode, localOK, err := s.swarmLocalNode()
+	if err != nil {
+		return sessionV2Authority{}, err
+	}
+	localSwarmID := strings.TrimSpace(localNode.SwarmID)
+	if !localOK || localSwarmID == "" {
+		return sessionV2Authority{}, sessionV2AuthorityNotFound("sessions v2 primary local node identity is required")
+	}
+	if strings.TrimSpace(execution.RuntimeSwarmID) != localSwarmID || strings.TrimSpace(execution.AuthorityHostSwarmID) != localSwarmID {
+		return sessionV2Authority{}, sessionV2StaleAuthority("sessions v2 execution is not owned by this primary runtime")
+	}
+	if strings.TrimSpace(execution.RuntimeKind) != pebblestore.TopologyRuntimeKindHost || strings.TrimSpace(execution.AuthorityContainerID) != "" {
+		return sessionV2Authority{}, sessionV2InvalidClass("sessions v2 primary execution must target host runtime authority")
+	}
+	if strings.TrimSpace(placement.RuntimeKind) != strings.TrimSpace(execution.RuntimeKind) || strings.TrimSpace(placement.AuthorityHostSwarmID) != strings.TrimSpace(execution.AuthorityHostSwarmID) || strings.TrimSpace(placement.AuthorityContainerID) != strings.TrimSpace(execution.AuthorityContainerID) {
+		return sessionV2Authority{}, sessionV2StaleAuthority("sessions v2 runtime placement authority mismatch")
+	}
+	if strings.TrimSpace(placement.RuntimeSwarmID) != localSwarmID || strings.TrimSpace(placement.AuthorityHostSwarmID) != localSwarmID {
+		return sessionV2Authority{}, sessionV2StaleAuthority("sessions v2 primary placement is not local self-authority")
+	}
+	if strings.TrimSpace(placement.RuntimeKind) != pebblestore.TopologyRuntimeKindHost || strings.TrimSpace(placement.AuthorityContainerID) != "" {
+		return sessionV2Authority{}, sessionV2InvalidClass("sessions v2 primary placement must be host self-placement")
 	}
 	if strings.TrimSpace(execution.WorkspaceBindingID) == "" {
 		if err := validatePrimarySessionV2TUICWDExecution(execution); err != nil {
-			return primarySessionV2Authority{}, err
+			return sessionV2Authority{}, err
 		}
-		return primarySessionV2Authority{Principal: principal, Execution: execution, Placement: placement}, nil
+		return authority, nil
+	}
+	if strings.TrimSpace(execution.SourceWorkspaceID) == "" || execution.SourceWorkspaceGeneration <= 0 || execution.PlacementGeneration <= 0 || execution.BindingGeneration <= 0 {
+		return sessionV2Authority{}, sessionV2StaleAuthority("sessions v2 execution authority identity is incomplete")
 	}
 
-	binding, bindingOK, err := s.topology.GetWorkspaceBindingForAccount(principal.AccountScopeID, execution.WorkspaceBindingID)
+	binding, err := s.requireSessionV2WorkspaceBinding(authority)
 	if err != nil {
-		return primarySessionV2Authority{}, err
-	}
-	if !bindingOK {
-		return primarySessionV2Authority{}, sessionV2AuthorityNotFound("sessions v2 workspace binding %q was not found", execution.WorkspaceBindingID)
-	}
-	if strings.TrimSpace(binding.BindingID) == "" || strings.TrimSpace(binding.SourceWorkspaceID) == "" || binding.SourceWorkspaceGeneration <= 0 || strings.TrimSpace(binding.SourceWorkspacePath) == "" || strings.TrimSpace(binding.DestinationWorkspacePath) == "" || binding.PlacementGeneration <= 0 || binding.BindingGeneration <= 0 {
-		return primarySessionV2Authority{}, sessionV2StaleAuthority("sessions v2 workspace binding authority identity is incomplete")
-	}
-	if strings.TrimSpace(binding.State) != pebblestore.TopologyWorkspaceBindingStateBound {
-		return primarySessionV2Authority{}, sessionV2StaleAuthority("sessions v2 workspace binding is not bound")
-	}
-	if strings.TrimSpace(binding.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
-		return primarySessionV2Authority{}, sessionV2AccessDenied("sessions v2 workspace binding account scope does not match principal")
-	}
-	if strings.TrimSpace(binding.BindingID) != strings.TrimSpace(execution.WorkspaceBindingID) {
-		return primarySessionV2Authority{}, sessionV2StaleAuthority("sessions v2 workspace binding id mismatch")
+		return sessionV2Authority{}, err
 	}
 	if strings.TrimSpace(binding.DestinationRuntimeSwarmID) != localSwarmID || strings.TrimSpace(binding.DestinationAuthorityHostSwarmID) != localSwarmID {
-		return primarySessionV2Authority{}, sessionV2StaleAuthority("sessions v2 workspace binding destination is not local primary self-authority")
+		return sessionV2Authority{}, sessionV2StaleAuthority("sessions v2 workspace binding destination is not local primary self-authority")
 	}
 	if strings.TrimSpace(binding.DestinationRuntimeKind) != pebblestore.TopologyRuntimeKindHost || strings.TrimSpace(binding.DestinationContainerID) != "" {
-		return primarySessionV2Authority{}, sessionV2InvalidClass("sessions v2 workspace binding destination must be host runtime")
+		return sessionV2Authority{}, sessionV2InvalidClass("sessions v2 workspace binding destination must be host runtime")
 	}
-	if strings.TrimSpace(binding.AttestedByHostSwarmID) != strings.TrimSpace(placement.AuthorityHostSwarmID) {
-		return primarySessionV2Authority{}, sessionV2StaleAuthority("sessions v2 workspace binding attesting host does not match authority host")
+	authority.Binding = &binding
+	return authority, nil
+}
+
+func (s *Server) validateLocalContainerSessionV2Authority(authority sessionV2Authority) (sessionV2Authority, error) {
+	execution := authority.Execution
+	placement := authority.Placement
+
+	localNode, localOK, err := s.swarmLocalNode()
+	if err != nil {
+		return sessionV2Authority{}, err
 	}
-	if binding.PlacementGeneration != execution.PlacementGeneration || binding.BindingGeneration != execution.BindingGeneration {
-		return primarySessionV2Authority{}, sessionV2StaleAuthority("sessions v2 workspace binding generation mismatch")
+	localSwarmID := strings.TrimSpace(localNode.SwarmID)
+	if !localOK || localSwarmID == "" {
+		return sessionV2Authority{}, sessionV2AuthorityNotFound("sessions v2 primary local node identity is required")
 	}
-	if strings.TrimSpace(binding.SourceWorkspaceID) != strings.TrimSpace(execution.SourceWorkspaceID) || binding.SourceWorkspaceGeneration != execution.SourceWorkspaceGeneration || strings.TrimSpace(binding.SourceWorkspacePath) != strings.TrimSpace(execution.SourceWorkspacePath) || strings.TrimSpace(binding.SourceWorkspaceName) != strings.TrimSpace(execution.SourceWorkspaceName) {
-		return primarySessionV2Authority{}, sessionV2StaleAuthority("sessions v2 workspace binding source identity mismatch")
+	if strings.TrimSpace(execution.AuthorityHostSwarmID) != localSwarmID {
+		return sessionV2Authority{}, sessionV2StaleAuthority("sessions v2 local-container execution is not owned by this primary runtime")
 	}
-	if strings.TrimSpace(binding.DestinationWorkspacePath) != strings.TrimSpace(execution.RuntimeWorkspacePath) {
-		return primarySessionV2Authority{}, sessionV2StaleAuthority("sessions v2 workspace binding destination workspace path mismatch")
+	if strings.TrimSpace(execution.RuntimeKind) != pebblestore.TopologyRuntimeKindContainer || strings.TrimSpace(execution.AuthorityContainerID) == "" {
+		return sessionV2Authority{}, sessionV2InvalidClass("sessions v2 local-container execution must target container runtime authority")
 	}
-	accessMode := strings.TrimSpace(binding.AccessMode)
-	if requireWrite {
-		if accessMode != pebblestore.TopologyWorkspaceBindingAccessModeReadWrite || !binding.Writable {
-			return primarySessionV2Authority{}, sessionV2AccessDenied("sessions v2 workspace binding is read-only")
-		}
-	} else if accessMode != pebblestore.TopologyWorkspaceBindingAccessModeReadWrite && accessMode != pebblestore.TopologyWorkspaceBindingAccessModeReadOnly {
-		return primarySessionV2Authority{}, sessionV2StaleAuthority("sessions v2 workspace binding access mode is invalid")
+	if strings.TrimSpace(placement.RuntimeKind) != strings.TrimSpace(execution.RuntimeKind) || strings.TrimSpace(placement.AuthorityHostSwarmID) != strings.TrimSpace(execution.AuthorityHostSwarmID) || strings.TrimSpace(placement.AuthorityContainerID) != strings.TrimSpace(execution.AuthorityContainerID) {
+		return sessionV2Authority{}, sessionV2StaleAuthority("sessions v2 runtime placement authority mismatch")
+	}
+	if strings.TrimSpace(placement.RuntimeKind) != pebblestore.TopologyRuntimeKindContainer || strings.TrimSpace(placement.AuthorityHostSwarmID) != localSwarmID || strings.TrimSpace(placement.AuthorityContainerID) == "" {
+		return sessionV2Authority{}, sessionV2InvalidClass("sessions v2 local-container placement must be container authority owned by this primary runtime")
+	}
+	if strings.TrimSpace(execution.WorkspaceBindingID) == "" || strings.TrimSpace(execution.SourceWorkspaceID) == "" || execution.SourceWorkspaceGeneration <= 0 || execution.PlacementGeneration <= 0 || execution.BindingGeneration <= 0 {
+		return sessionV2Authority{}, sessionV2StaleAuthority("sessions v2 execution authority identity is incomplete")
 	}
 
-	return primarySessionV2Authority{Principal: principal, Execution: execution, Placement: placement, Binding: binding}, nil
+	binding, err := s.requireSessionV2WorkspaceBinding(authority)
+	if err != nil {
+		return sessionV2Authority{}, err
+	}
+	if strings.TrimSpace(binding.DestinationRuntimeSwarmID) != strings.TrimSpace(execution.RuntimeSwarmID) || strings.TrimSpace(binding.DestinationAuthorityHostSwarmID) != localSwarmID {
+		return sessionV2Authority{}, sessionV2StaleAuthority("sessions v2 local-container workspace binding destination mismatch")
+	}
+	if strings.TrimSpace(binding.DestinationRuntimeKind) != pebblestore.TopologyRuntimeKindContainer || strings.TrimSpace(binding.DestinationContainerID) != strings.TrimSpace(execution.AuthorityContainerID) {
+		return sessionV2Authority{}, sessionV2InvalidClass("sessions v2 local-container workspace binding destination must match container authority")
+	}
+	if strings.TrimSpace(binding.DestinationWorkspacePath) == "" || strings.TrimSpace(execution.RuntimeWorkspacePath) == "" {
+		return sessionV2Authority{}, sessionV2StaleAuthority("sessions v2 local-container runtime workspace identity is incomplete")
+	}
+	authority.Binding = &binding
+	return authority, nil
+}
+
+func (s *Server) requireSessionV2WorkspaceBinding(authority sessionV2Authority) (pebblestore.TopologyWorkspaceBindingRecord, error) {
+	execution := authority.Execution
+	binding, bindingOK, err := s.topology.GetWorkspaceBindingForAccount(authority.Principal.AccountScopeID, execution.WorkspaceBindingID)
+	if err != nil {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, err
+	}
+	if !bindingOK {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, sessionV2AuthorityNotFound("sessions v2 workspace binding %q was not found", execution.WorkspaceBindingID)
+	}
+	if strings.TrimSpace(binding.BindingID) == "" || strings.TrimSpace(binding.SourceWorkspaceID) == "" || binding.SourceWorkspaceGeneration <= 0 || binding.PlacementGeneration <= 0 || binding.BindingGeneration <= 0 {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, sessionV2StaleAuthority("sessions v2 workspace binding authority identity is incomplete")
+	}
+	if strings.TrimSpace(binding.State) != pebblestore.TopologyWorkspaceBindingStateBound {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, sessionV2StaleAuthority("sessions v2 workspace binding is not bound")
+	}
+	if strings.TrimSpace(binding.AccountScopeID) != strings.TrimSpace(authority.Principal.AccountScopeID) {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, sessionV2AccessDenied("sessions v2 workspace binding account scope does not match principal")
+	}
+	if strings.TrimSpace(binding.BindingID) != strings.TrimSpace(execution.WorkspaceBindingID) {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, sessionV2StaleAuthority("sessions v2 workspace binding id mismatch")
+	}
+	if strings.TrimSpace(binding.AttestedByHostSwarmID) != strings.TrimSpace(authority.Placement.AuthorityHostSwarmID) {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, sessionV2StaleAuthority("sessions v2 workspace binding attesting host does not match authority host")
+	}
+	if binding.PlacementGeneration != execution.PlacementGeneration || binding.BindingGeneration != execution.BindingGeneration {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, sessionV2StaleAuthority("sessions v2 workspace binding generation mismatch")
+	}
+	if strings.TrimSpace(binding.SourceWorkspaceID) != strings.TrimSpace(execution.SourceWorkspaceID) || binding.SourceWorkspaceGeneration != execution.SourceWorkspaceGeneration {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, sessionV2StaleAuthority("sessions v2 workspace binding source identity mismatch")
+	}
+	accessMode := strings.TrimSpace(binding.AccessMode)
+	if authority.Mutating {
+		if accessMode != pebblestore.TopologyWorkspaceBindingAccessModeReadWrite || !binding.Writable {
+			return pebblestore.TopologyWorkspaceBindingRecord{}, sessionV2AccessDenied("sessions v2 workspace binding is read-only")
+		}
+	} else if accessMode != pebblestore.TopologyWorkspaceBindingAccessModeReadWrite && accessMode != pebblestore.TopologyWorkspaceBindingAccessModeReadOnly {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, sessionV2StaleAuthority("sessions v2 workspace binding access mode is invalid")
+	}
+	return binding, nil
 }
 
 func isPrimarySessionV2TUICWDExecution(execution pebblestore.SessionExecutionV2Record) bool {
@@ -306,7 +399,7 @@ func (s *Server) handlePrimarySessionV2Get(w http.ResponseWriter, r *http.Reques
 		methodNotAllowed(w)
 		return
 	}
-	if _, err := s.requirePrimarySessionV2Authority(r, sessionID, false); err != nil {
+	if _, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, false); err != nil {
 		writeSessionsV2Error(w, err)
 		return
 	}
@@ -328,7 +421,7 @@ func (s *Server) handlePrimarySessionV2Messages(w http.ResponseWriter, r *http.R
 		methodNotAllowed(w)
 		return
 	}
-	if _, err := s.requirePrimarySessionV2Authority(r, sessionID, requireWrite); err != nil {
+	if _, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, requireWrite); err != nil {
 		writeSessionsV2Error(w, err)
 		return
 	}
@@ -406,7 +499,7 @@ func (s *Server) handlePrimarySessionV2Metadata(w http.ResponseWriter, r *http.R
 		methodNotAllowed(w)
 		return
 	}
-	if _, err := s.requirePrimarySessionV2Authority(r, sessionID, requireWrite); err != nil {
+	if _, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, requireWrite); err != nil {
 		writeSessionsV2Error(w, err)
 		return
 	}
@@ -451,7 +544,7 @@ func (s *Server) handlePrimarySessionV2Mode(w http.ResponseWriter, r *http.Reque
 		methodNotAllowed(w)
 		return
 	}
-	authority, err := s.requirePrimarySessionV2Authority(r, sessionID, requireWrite)
+	authority, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, requireWrite)
 	if err != nil {
 		writeSessionsV2Error(w, err)
 		return
@@ -511,7 +604,7 @@ func (s *Server) handlePrimarySessionV2Preference(w http.ResponseWriter, r *http
 		methodNotAllowed(w)
 		return
 	}
-	if _, err := s.requirePrimarySessionV2Authority(r, sessionID, requireWrite); err != nil {
+	if _, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, requireWrite); err != nil {
 		writeSessionsV2Error(w, err)
 		return
 	}
@@ -562,7 +655,7 @@ func (s *Server) handlePrimarySessionV2Codex(w http.ResponseWriter, r *http.Requ
 		methodNotAllowed(w)
 		return
 	}
-	if _, err := s.requirePrimarySessionV2Authority(r, sessionID, requireWrite); err != nil {
+	if _, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, requireWrite); err != nil {
 		writeSessionsV2Error(w, err)
 		return
 	}
@@ -600,7 +693,7 @@ func (s *Server) handlePrimarySessionV2ActivePlan(w http.ResponseWriter, r *http
 		methodNotAllowed(w)
 		return
 	}
-	if _, err := s.requirePrimarySessionV2Authority(r, sessionID, requireWrite); err != nil {
+	if _, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, requireWrite); err != nil {
 		writeSessionsV2Error(w, err)
 		return
 	}
@@ -645,7 +738,7 @@ func (s *Server) handlePrimarySessionV2PlanByID(w http.ResponseWriter, r *http.R
 		methodNotAllowed(w)
 		return
 	}
-	if _, err := s.requirePrimarySessionV2Authority(r, sessionID, false); err != nil {
+	if _, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, false); err != nil {
 		writeSessionsV2Error(w, err)
 		return
 	}
@@ -690,7 +783,7 @@ func (s *Server) handlePrimarySessionV2Plans(w http.ResponseWriter, r *http.Requ
 		methodNotAllowed(w)
 		return
 	}
-	if _, err := s.requirePrimarySessionV2Authority(r, sessionID, requireWrite); err != nil {
+	if _, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, requireWrite); err != nil {
 		writeSessionsV2Error(w, err)
 		return
 	}
@@ -757,7 +850,7 @@ func (s *Server) handlePrimarySessionV2Permissions(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusInternalServerError, errors.New("permission service is not configured"))
 		return
 	}
-	if _, err := s.requirePrimarySessionV2Authority(r, sessionID, false); err != nil {
+	if _, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, false); err != nil {
 		writeSessionsV2Error(w, err)
 		return
 	}
@@ -797,7 +890,7 @@ func (s *Server) handlePrimarySessionV2PermissionResolve(w http.ResponseWriter, 
 		writeError(w, http.StatusBadRequest, errors.New("permission id is required"))
 		return
 	}
-	if _, err := s.requirePrimarySessionV2Authority(r, sessionID, true); err != nil {
+	if _, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, true); err != nil {
 		writeSessionsV2Error(w, err)
 		return
 	}
@@ -827,7 +920,7 @@ func (s *Server) handlePrimarySessionV2PermissionResolveAll(w http.ResponseWrite
 		writeError(w, http.StatusInternalServerError, errors.New("permission service is not configured"))
 		return
 	}
-	if _, err := s.requirePrimarySessionV2Authority(r, sessionID, true); err != nil {
+	if _, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, true); err != nil {
 		writeSessionsV2Error(w, err)
 		return
 	}
@@ -853,7 +946,7 @@ func (s *Server) handlePrimarySessionV2Usage(w http.ResponseWriter, r *http.Requ
 		methodNotAllowed(w)
 		return
 	}
-	if _, err := s.requirePrimarySessionV2Authority(r, sessionID, false); err != nil {
+	if _, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, false); err != nil {
 		writeSessionsV2Error(w, err)
 		return
 	}
@@ -883,7 +976,7 @@ func (s *Server) handlePrimarySessionV2Run(w http.ResponseWriter, r *http.Reques
 		methodNotAllowed(w)
 		return
 	}
-	authority, err := s.requirePrimarySessionV2Authority(r, sessionID, true)
+	authority, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, true)
 	if err != nil {
 		writeSessionsV2Error(w, err)
 		return
@@ -931,7 +1024,7 @@ func (s *Server) handlePrimarySessionV2Run(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Server) handlePrimarySessionV2RunStream(w http.ResponseWriter, r *http.Request, sessionID string) {
-	authority, err := s.requirePrimarySessionV2Authority(r, sessionID, false)
+	authority, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, false)
 	if err != nil {
 		writeSessionsV2Error(w, err)
 		return
@@ -983,7 +1076,7 @@ func (s *Server) handlePrimarySessionV2RunStreamWebsocket(w http.ResponseWriter,
 	}
 	switch inbound.Type {
 	case "run.start", "start":
-		if _, err := s.requirePrimarySessionV2Authority(r, sessionID, true); err != nil {
+		if _, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, true); err != nil {
 			s.sendRunStreamControl(conn, runStreamControlMessage{Type: "error", OK: false, SessionID: sessionID, Error: err.Error()})
 			return
 		}
@@ -999,7 +1092,7 @@ func (s *Server) handlePrimarySessionV2RunStreamWebsocket(w http.ResponseWriter,
 		// subscribes/replays frames for an existing run after a session match.
 		s.handleRunStreamResume(conn, sessionID, inbound)
 	case "run.stop", "stop":
-		if _, err := s.requirePrimarySessionV2Authority(r, sessionID, true); err != nil {
+		if _, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, true); err != nil {
 			s.sendRunStreamControl(conn, runStreamControlMessage{Type: "error", OK: false, SessionID: sessionID, Error: err.Error()})
 			return
 		}
@@ -1047,7 +1140,7 @@ func (s *Server) handlePrimarySessionV2RunStreamControl(w http.ResponseWriter, r
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "run_id": inbound.RunID, "last_seq": inbound.LastSeq, "status": "resume_available"})
 	case "run.start", "start":
-		if _, err := s.requirePrimarySessionV2Authority(r, sessionID, true); err != nil {
+		if _, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, true); err != nil {
 			writeSessionsV2Error(w, err)
 			return
 		}
@@ -1076,7 +1169,7 @@ func (s *Server) handlePrimarySessionV2RunStreamControl(w http.ResponseWriter, r
 		}
 		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "session_id": sessionID, "run_id": state.runID, "status": "accepted", "background": inbound.RunRequest.Background, "target_kind": strings.TrimSpace(inbound.RunRequest.TargetKind), "target_name": strings.TrimSpace(inbound.RunRequest.TargetName), "owner_transport": "background_api"})
 	case "run.stop", "stop":
-		if _, err := s.requirePrimarySessionV2Authority(r, sessionID, true); err != nil {
+		if _, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, true); err != nil {
 			writeSessionsV2Error(w, err)
 			return
 		}

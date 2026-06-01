@@ -66,6 +66,10 @@ type SessionExecutionV2Record struct {
 	SourceWorkspaceName       string `json:"source_workspace_name,omitempty"`
 	SourceWorkspacePath       string `json:"source_workspace_path"`
 	RuntimeWorkspacePath      string `json:"runtime_workspace_path"`
+	WorktreeEnabled           bool   `json:"worktree_enabled,omitempty"`
+	WorktreeRootPath          string `json:"worktree_root_path,omitempty"`
+	WorktreeBaseBranch        string `json:"worktree_base_branch,omitempty"`
+	WorktreeBranch            string `json:"worktree_branch,omitempty"`
 	PlacementGeneration       int    `json:"placement_generation"`
 	BindingGeneration         int    `json:"binding_generation"`
 	CreatedAt                 int64  `json:"created_at"`
@@ -1087,6 +1091,23 @@ func normalizeSessionOwnership(session SessionSnapshot) SessionSnapshot {
 	session.ID = strings.TrimSpace(session.ID)
 	session.UserID = strings.TrimSpace(session.UserID)
 	session.AccountScopeID = strings.TrimSpace(session.AccountScopeID)
+	session.WorkspacePath = strings.TrimSpace(session.WorkspacePath)
+	session.WorkspaceName = strings.TrimSpace(session.WorkspaceName)
+	session.WorktreeRootPath = strings.TrimSpace(session.WorktreeRootPath)
+	session.WorktreeBaseBranch = strings.TrimSpace(session.WorktreeBaseBranch)
+	session.WorktreeBranch = strings.TrimSpace(session.WorktreeBranch)
+	if session.WorktreeEnabled {
+		if session.WorktreeRootPath == "" || session.WorktreeBranch == "" {
+			session.WorktreeEnabled = false
+			session.WorktreeRootPath = ""
+			session.WorktreeBaseBranch = ""
+			session.WorktreeBranch = ""
+		}
+	} else {
+		session.WorktreeRootPath = ""
+		session.WorktreeBaseBranch = ""
+		session.WorktreeBranch = ""
+	}
 	return session
 }
 

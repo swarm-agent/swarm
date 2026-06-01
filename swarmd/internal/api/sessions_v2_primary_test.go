@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
 func TestSessionsV2HandlersDoNotWrapLegacySessionCreate(t *testing.T) {
@@ -20,7 +22,7 @@ func TestSessionsV2HandlersDoNotWrapLegacySessionCreate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
 		}
-		for _, forbidden := range []string{"createSessionFromRequest", "handleSessions(", "handleSessionByID", "sessionCreateRequest"} {
+		for _, forbidden := range []string{"createSessionFromRequest", "handleSessions(", "handleSessionByID", "sessionCreateRequest", "proxyRoutedSessionRequest"} {
 			if strings.Contains(string(body), forbidden) {
 				t.Fatalf("%s contains forbidden legacy wrapper symbol %q", path, forbidden)
 			}
@@ -30,6 +32,7 @@ func TestSessionsV2HandlersDoNotWrapLegacySessionCreate(t *testing.T) {
 
 func TestSessionsV2PrimaryCreatesLocalSessionFromBindingAuthority(t *testing.T) {
 	server, sessionSvc, _, routeStore, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	server.SetWorktreeService(&fakeWorktreeService{config: worktreeruntime.Config{Enabled: true, BaseBranch: "must-not-read", BranchName: "ignored/config"}})
 	seedSessionsV2PrimaryAuthority(t, server, swarmStore, "host-swarm-id", "binding-primary-v2", "/host/swarm-go")
 
 	req := httptest.NewRequest(http.MethodPost, "/v2/sessions/primary", bytes.NewBufferString(`{"swarm_id":"host-swarm-id","workspace_binding_id":"binding-primary-v2","title":"primary v2","mode":"auto","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"},"metadata":{"purpose":"test"}}`))
@@ -82,6 +85,149 @@ func TestSessionsV2PrimaryCreatesLocalSessionFromBindingAuthority(t *testing.T) 
 	} else if ok {
 		t.Fatalf("unexpected topology route for primary v2 session")
 	}
+	if fake, ok := server.worktrees.(*fakeWorktreeService); ok && fake.configReadCount != 0 {
+		t.Fatalf("worktree_mode off read global/workspace config %d times", fake.configReadCount)
+	}
+}
+
+func TestSessionsV2PrimaryWorktreeOnRealizesPerRequestWorktree(t *testing.T) {
+	server, sessionSvc, _, routeStore, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV2PrimaryAuthority(t, server, swarmStore, "host-swarm-id", "binding-primary-v2", "/host/swarm-go")
+	fake := &fakeWorktreeService{
+		config: worktreeruntime.Config{Enabled: false, BaseBranch: "ignored-config", BranchName: "ignored/config"},
+		allocation: worktreeruntime.Allocation{
+			RepoRoot:    "/host/swarm-go",
+			BaseBranch:  "dev",
+			BranchName:  "agent/session-primary-v2",
+			WorkspaceID: "",
+		},
+	}
+	server.SetWorktreeService(fake)
+
+	rec := postSessionsV2Primary(t, server, `{"swarm_id":"host-swarm-id","workspace_binding_id":"binding-primary-v2","title":"primary v2 wt","mode":"auto","agent_name":"swarm","worktree_mode":"on","worktree_use_current_branch":false,"worktree_base_branch":"dev","worktree_branch_name":"agent/session-primary-v2","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		OK               bool                            `json:"ok"`
+		Session          pebblestore.SessionSnapshot     `json:"session"`
+		SessionExecution sessionruntime.SessionExecution `json:"session_execution"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !payload.OK || strings.TrimSpace(payload.Session.ID) == "" {
+		t.Fatalf("payload = %+v", payload)
+	}
+	if fake.configReadCount != 0 {
+		t.Fatalf("primary v2 worktree create read global/workspace config %d times", fake.configReadCount)
+	}
+	if fake.lastWorkspace != "/host/swarm-go" || fake.lastNameSeed != payload.Session.ID || fake.lastBaseBranch != "dev" || fake.lastBranchName != "agent/session-primary-v2" {
+		t.Fatalf("allocation request workspace=%q seed=%q base=%q branch=%q session=%q", fake.lastWorkspace, fake.lastNameSeed, fake.lastBaseBranch, fake.lastBranchName, payload.Session.ID)
+	}
+	if !strings.HasSuffix(payload.Session.WorkspacePath, worktreeruntime.WorkspaceIdentityForSession(payload.Session.ID)) {
+		t.Fatalf("worktree path %q does not use session workspace identity %q", payload.Session.WorkspacePath, worktreeruntime.WorkspaceIdentityForSession(payload.Session.ID))
+	}
+	if !strings.HasPrefix(payload.Session.WorkspacePath, "/host/swarm-go/.swarm/worktrees/") || !payload.Session.WorktreeEnabled || payload.Session.WorktreeRootPath != payload.Session.WorkspacePath || payload.Session.WorktreeBaseBranch != "dev" || payload.Session.WorktreeBranch != "agent/session-primary-v2" {
+		t.Fatalf("session worktree facts = %+v", payload.Session)
+	}
+	if payload.SessionExecution.SessionID != payload.Session.ID || payload.SessionExecution.SourceWorkspacePath != "/host/swarm-go" || payload.SessionExecution.RuntimeWorkspacePath != payload.Session.WorkspacePath || !payload.SessionExecution.WorktreeEnabled || payload.SessionExecution.WorktreeRootPath != payload.Session.WorkspacePath || payload.SessionExecution.WorktreeBaseBranch != "dev" || payload.SessionExecution.WorktreeBranch != "agent/session-primary-v2" {
+		t.Fatalf("execution worktree facts = %+v session=%+v", payload.SessionExecution, payload.Session)
+	}
+	if payload.Session.Metadata["workspace_id"] != worktreeruntime.WorkspaceIdentityForSession(payload.Session.ID) || payload.Session.Metadata["swarm_v2_runtime_workspace_path"] != payload.Session.WorkspacePath || payload.Session.Metadata["swarm_v2_source_workspace_path"] != "/host/swarm-go" || payload.Session.Metadata["swarm_v2_worktree_enabled"] != true || payload.Session.Metadata["swarm_v2_worktree_root_path"] != payload.Session.WorkspacePath || payload.Session.Metadata["swarm_v2_worktree_base_branch"] != "dev" || payload.Session.Metadata["swarm_v2_worktree_branch"] != "agent/session-primary-v2" {
+		t.Fatalf("metadata worktree projection = %+v", payload.Session.Metadata)
+	}
+	storedExecution, ok, err := sessionSvc.Store().GetSessionExecutionV2(payload.Session.ID)
+	if err != nil || !ok {
+		t.Fatalf("stored execution ok=%t err=%v", ok, err)
+	}
+	if storedExecution.RuntimeWorkspacePath != payload.Session.WorkspacePath || storedExecution.SourceWorkspacePath != "/host/swarm-go" || !storedExecution.WorktreeEnabled || storedExecution.WorktreeRootPath != payload.Session.WorkspacePath || storedExecution.WorktreeBaseBranch != "dev" || storedExecution.WorktreeBranch != "agent/session-primary-v2" {
+		t.Fatalf("stored execution = %+v", storedExecution)
+	}
+	if routes, err := routeStore.List(10); err != nil || len(routes) != 0 {
+		t.Fatalf("routes = %+v err=%v, want no legacy route for primary v2 worktree", routes, err)
+	}
+}
+
+func TestSessionsV2PrimaryWorktreeOnRequiresWorktreeService(t *testing.T) {
+	server, _, _, routeStore, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV2PrimaryAuthority(t, server, swarmStore, "host-swarm-id", "binding-primary-v2", "/host/swarm-go")
+
+	rec := postSessionsV2Primary(t, server, `{"swarm_id":"host-swarm-id","workspace_binding_id":"binding-primary-v2","title":"primary v2 wt","mode":"auto","agent_name":"swarm","worktree_mode":"on","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "requires worktree service") {
+		t.Fatalf("body = %s, want missing worktree service rejection", rec.Body.String())
+	}
+	assertNoPrimaryCreateResidue(t, server, routeStore)
+}
+
+func TestSessionsV2PrimaryWorktreeOnRejectsAllocationFailure(t *testing.T) {
+	server, _, _, routeStore, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV2PrimaryAuthority(t, server, swarmStore, "host-swarm-id", "binding-primary-v2", "/host/swarm-go")
+	server.SetWorktreeService(&fakeWorktreeService{allocationErr: errors.New("boom")})
+
+	rec := postSessionsV2Primary(t, server, `{"swarm_id":"host-swarm-id","workspace_binding_id":"binding-primary-v2","title":"primary v2 wt","mode":"auto","agent_name":"swarm","worktree_mode":"on","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "realize primary sessions v2 worktree") {
+		t.Fatalf("body = %s, want allocation failure", rec.Body.String())
+	}
+	assertNoPrimaryCreateResidue(t, server, routeStore)
+}
+
+func TestSessionsV2PrimaryRejectsUnsupportedWorktreeMode(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{name: "inherit", body: `{"swarm_id":"host-swarm-id","workspace_binding_id":"binding-primary-v2","title":"primary v2 wt","mode":"auto","agent_name":"swarm","worktree_mode":"inherit","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server, _, _, routeStore, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+			seedSessionsV2PrimaryAuthority(t, server, swarmStore, "host-swarm-id", "binding-primary-v2", "/host/swarm-go")
+
+			rec := postSessionsV2Primary(t, server, tc.body)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "unsupported worktree_mode") {
+				t.Fatalf("body = %s, want unsupported mode rejection", rec.Body.String())
+			}
+			assertNoPrimaryCreateResidue(t, server, routeStore)
+		})
+	}
+}
+
+func TestSessionsV2PrimaryRejectsExplicitBaseBranchWithoutExplicitBranchMode(t *testing.T) {
+	server, _, _, routeStore, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV2PrimaryAuthority(t, server, swarmStore, "host-swarm-id", "binding-primary-v2", "/host/swarm-go")
+
+	rec := postSessionsV2Primary(t, server, `{"swarm_id":"host-swarm-id","workspace_binding_id":"binding-primary-v2","title":"primary v2 wt","mode":"auto","agent_name":"swarm","worktree_mode":"on","worktree_use_current_branch":false,"preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "worktree_base_branch is required") {
+		t.Fatalf("body = %s, want base branch required rejection", rec.Body.String())
+	}
+	assertNoPrimaryCreateResidue(t, server, routeStore)
+}
+
+func TestSessionsV2PrimaryRejectsWorktreeFieldsWhenOff(t *testing.T) {
+	server, _, _, routeStore, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV2PrimaryAuthority(t, server, swarmStore, "host-swarm-id", "binding-primary-v2", "/host/swarm-go")
+
+	rec := postSessionsV2Primary(t, server, `{"swarm_id":"host-swarm-id","workspace_binding_id":"binding-primary-v2","title":"primary v2 wt","mode":"auto","agent_name":"swarm","worktree_base_branch":"dev","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "worktree fields are only allowed") && !strings.Contains(rec.Body.String(), "unsupported worktree_mode") {
+		t.Fatalf("body = %s, want worktree field rejection", rec.Body.String())
+	}
+	assertNoPrimaryCreateResidue(t, server, routeStore)
 }
 
 func TestSessionsV2PrimaryRejectsLocalContainerRuntime(t *testing.T) {

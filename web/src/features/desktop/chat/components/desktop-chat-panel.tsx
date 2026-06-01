@@ -2343,7 +2343,8 @@ export function DesktopChatPanel({
             agentName: resolvedLockedAgentName || currentSessionAgent,
             preference: activePreferenceRecord.preference,
             route: activeChatRoute,
-            worktreeMode: activeChatRoute.swarmId && workspaceWorktreeEnabled ? 'on' : undefined,
+            worktreeMode: activeChatRoute.swarmId && workspaceWorktreeEnabled ? 'on' : 'off',
+            worktreeUseCurrentBranch: activeChatRoute.swarmId && workspaceWorktreeEnabled ? true : undefined,
           })
         upsertSession(targetSession)
         queryClient.setQueryData(sessionPreferenceQueryKey(targetSession.id), {

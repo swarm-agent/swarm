@@ -36,6 +36,10 @@ type SessionExecution struct {
 	SourceWorkspaceName       string `json:"source_workspace_name,omitempty"`
 	SourceWorkspacePath       string `json:"source_workspace_path"`
 	RuntimeWorkspacePath      string `json:"runtime_workspace_path"`
+	WorktreeEnabled           bool   `json:"worktree_enabled,omitempty"`
+	WorktreeRootPath          string `json:"worktree_root_path,omitempty"`
+	WorktreeBaseBranch        string `json:"worktree_base_branch,omitempty"`
+	WorktreeBranch            string `json:"worktree_branch,omitempty"`
 	PlacementGeneration       int    `json:"placement_generation"`
 	BindingGeneration         int    `json:"binding_generation"`
 	CreatedAt                 int64  `json:"created_at,omitempty"`
@@ -83,6 +87,13 @@ func (s *Service) CreateFromExecutionV2(ctx context.Context, cmd SessionsV2Creat
 	if execution.WorkspaceBindingID == "" && strings.TrimSpace(cmd.Request.WorkspacePath) != execution.RuntimeWorkspacePath {
 		return pebblestore.SessionSnapshot{}, SessionExecution{}, nil, "", "", errors.New("sessions v2 request workspace_path does not match tui cwd execution")
 	}
+	requestedWorktree := strings.EqualFold(strings.TrimSpace(cmd.Request.WorktreeMode), "on")
+	if requestedWorktree != execution.WorktreeEnabled {
+		return pebblestore.SessionSnapshot{}, SessionExecution{}, nil, "", "", errors.New("sessions v2 request worktree_mode does not match execution")
+	}
+	if !requestedWorktree && strings.TrimSpace(cmd.Request.WorktreeMode) != "" && !strings.EqualFold(strings.TrimSpace(cmd.Request.WorktreeMode), "off") {
+		return pebblestore.SessionSnapshot{}, SessionExecution{}, nil, "", "", fmt.Errorf("unsupported sessions v2 worktree_mode %q", strings.TrimSpace(cmd.Request.WorktreeMode))
+	}
 	if err := validateCreateFromExecutionV2Metadata(cmd.Request.Metadata); err != nil {
 		return pebblestore.SessionSnapshot{}, SessionExecution{}, nil, "", "", err
 	}
@@ -103,7 +114,10 @@ func (s *Service) CreateFromExecutionV2(ctx context.Context, cmd SessionsV2Creat
 		agentName = "swarm"
 	}
 
-	sessionID := NewSessionID()
+	sessionID := strings.TrimSpace(execution.SessionID)
+	if sessionID == "" {
+		sessionID = NewSessionID()
+	}
 	now := time.Now().UnixMilli()
 	execution.SessionID = sessionID
 	execution.CreatedAt = now
@@ -129,17 +143,21 @@ func (s *Service) CreateFromExecutionV2(ctx context.Context, cmd SessionsV2Creat
 	}
 
 	session := pebblestore.SessionSnapshot{
-		ID:             sessionID,
-		UserID:         strings.TrimSpace(cmd.Principal.UserID),
-		AccountScopeID: strings.TrimSpace(cmd.Principal.AccountScopeID),
-		WorkspacePath:  workspacePath,
-		WorkspaceName:  workspaceName,
-		Title:          title,
-		Mode:           mode,
-		Preference:     preference,
-		Metadata:       metadata,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		ID:                 sessionID,
+		UserID:             strings.TrimSpace(cmd.Principal.UserID),
+		AccountScopeID:     strings.TrimSpace(cmd.Principal.AccountScopeID),
+		WorkspacePath:      workspacePath,
+		WorkspaceName:      workspaceName,
+		Title:              title,
+		Mode:               mode,
+		Preference:         preference,
+		WorktreeEnabled:    execution.WorktreeEnabled,
+		WorktreeRootPath:   execution.WorktreeRootPath,
+		WorktreeBaseBranch: execution.WorktreeBaseBranch,
+		WorktreeBranch:     execution.WorktreeBranch,
+		Metadata:           metadata,
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
 	if err := s.store.CreateSessionWithExecutionV2(session, sessionExecutionV2RecordFromExecution(cmd.Principal, execution)); err != nil {
 		return pebblestore.SessionSnapshot{}, SessionExecution{}, nil, "", "", fmt.Errorf("persist session execution v2: %w", err)
@@ -175,11 +193,19 @@ func sessionExecutionV2RecordFromExecution(principal identity.Principal, executi
 		SourceWorkspaceName:       execution.SourceWorkspaceName,
 		SourceWorkspacePath:       execution.SourceWorkspacePath,
 		RuntimeWorkspacePath:      execution.RuntimeWorkspacePath,
+		WorktreeEnabled:           execution.WorktreeEnabled,
+		WorktreeRootPath:          execution.WorktreeRootPath,
+		WorktreeBaseBranch:        execution.WorktreeBaseBranch,
+		WorktreeBranch:            execution.WorktreeBranch,
 		PlacementGeneration:       execution.PlacementGeneration,
 		BindingGeneration:         execution.BindingGeneration,
 		CreatedAt:                 execution.CreatedAt,
 		UpdatedAt:                 execution.UpdatedAt,
 	}
+}
+
+func NormalizeSessionExecutionV2ForCreate(execution SessionExecution) SessionExecution {
+	return normalizeSessionExecutionV2(execution)
 }
 
 func normalizeSessionExecutionV2(execution SessionExecution) SessionExecution {
@@ -194,6 +220,14 @@ func normalizeSessionExecutionV2(execution SessionExecution) SessionExecution {
 	execution.SourceWorkspaceName = strings.TrimSpace(execution.SourceWorkspaceName)
 	execution.SourceWorkspacePath = strings.TrimSpace(execution.SourceWorkspacePath)
 	execution.RuntimeWorkspacePath = strings.TrimSpace(execution.RuntimeWorkspacePath)
+	execution.WorktreeRootPath = strings.TrimSpace(execution.WorktreeRootPath)
+	execution.WorktreeBaseBranch = strings.TrimSpace(execution.WorktreeBaseBranch)
+	execution.WorktreeBranch = strings.TrimSpace(execution.WorktreeBranch)
+	if !execution.WorktreeEnabled {
+		execution.WorktreeRootPath = ""
+		execution.WorktreeBaseBranch = ""
+		execution.WorktreeBranch = ""
+	}
 	return execution
 }
 
@@ -219,6 +253,16 @@ func validateSessionExecutionV2(execution SessionExecution) error {
 	if execution.SourceWorkspaceGeneration <= 0 || execution.PlacementGeneration <= 0 || execution.BindingGeneration <= 0 {
 		return errors.New("sessions v2 execution generations are required")
 	}
+	if execution.WorktreeEnabled {
+		if execution.SessionID == "" {
+			return errors.New("sessions v2 worktree execution session identity is required")
+		}
+		if execution.WorktreeRootPath == "" || execution.WorktreeBranch == "" || execution.RuntimeWorkspacePath != execution.WorktreeRootPath {
+			return errors.New("sessions v2 worktree execution facts are required")
+		}
+	} else if execution.WorktreeRootPath != "" || execution.WorktreeBaseBranch != "" || execution.WorktreeBranch != "" {
+		return errors.New("sessions v2 worktree facts require worktree execution")
+	}
 	return nil
 }
 
@@ -238,7 +282,7 @@ func validateCreateFromExecutionV2Metadata(metadata map[string]any) error {
 }
 
 func sessionExecutionV2Metadata(base map[string]any, execution SessionExecution) map[string]any {
-	metadata := make(map[string]any, len(base)+18)
+	metadata := make(map[string]any, len(base)+24)
 	for key, value := range base {
 		metadata[key] = value
 	}
@@ -251,6 +295,12 @@ func sessionExecutionV2Metadata(base map[string]any, execution SessionExecution)
 	metadata["swarm_v2_source_workspace_id"] = execution.SourceWorkspaceID
 	metadata["swarm_v2_source_workspace_generation"] = fmt.Sprintf("%d", execution.SourceWorkspaceGeneration)
 	metadata["swarm_v2_source_workspace_name"] = execution.SourceWorkspaceName
+	metadata["swarm_v2_source_workspace_path"] = execution.SourceWorkspacePath
+	metadata["swarm_v2_runtime_workspace_path"] = execution.RuntimeWorkspacePath
+	metadata["swarm_v2_worktree_enabled"] = execution.WorktreeEnabled
+	metadata["swarm_v2_worktree_root_path"] = execution.WorktreeRootPath
+	metadata["swarm_v2_worktree_base_branch"] = execution.WorktreeBaseBranch
+	metadata["swarm_v2_worktree_branch"] = execution.WorktreeBranch
 	metadata["swarm_v2_placement_generation"] = execution.PlacementGeneration
 	metadata["swarm_v2_binding_generation"] = execution.BindingGeneration
 	metadata["local_workspace_binding_id"] = execution.WorkspaceBindingID

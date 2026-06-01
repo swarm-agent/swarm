@@ -1452,6 +1452,7 @@ function sessionCreateV2RequestBody(input: {
   worktreeBaseBranch?: string;
   worktreeBranchName?: string;
 }): Record<string, unknown> {
+  const worktreeMode = optionalString(input.worktreeMode) ?? "off"
   const preference = stripUndefinedFields({
     provider: optionalString(input.preference.provider),
     model: optionalString(input.preference.model),
@@ -1465,10 +1466,10 @@ function sessionCreateV2RequestBody(input: {
     title: input.title ?? "",
     mode: input.mode,
     agent_name: input.agentName?.trim() ?? "",
-    worktree_mode: optionalString(input.worktreeMode),
-    worktree_use_current_branch: input.worktreeUseCurrentBranch,
-    worktree_base_branch: optionalString(input.worktreeBaseBranch),
-    worktree_branch_name: optionalString(input.worktreeBranchName),
+    worktree_mode: worktreeMode,
+    worktree_use_current_branch: worktreeMode === "on" ? input.worktreeUseCurrentBranch : undefined,
+    worktree_base_branch: worktreeMode === "on" ? optionalString(input.worktreeBaseBranch) : undefined,
+    worktree_branch_name: worktreeMode === "on" ? optionalString(input.worktreeBranchName) : undefined,
     preference: Object.keys(preference).length > 0 ? preference : undefined,
     metadata: sanitizeSessionCreateV2Metadata(input.metadata),
   })
