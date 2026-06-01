@@ -417,10 +417,12 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 	}
 	session, _, warning, modeWarning, err := s.createSessionFromRequestWithSessionID(childReq, req.Hosted.WithMetadata(nil), allowWorktree, req.SessionID, principal, true)
 	if err != nil {
+		flowRouteDiagLog("desktop_routed_peer_open_create_error", "session_id", req.SessionID, "worktree_mode", worktreeMode, "workspace_binding_id", childReq.WorkspaceBindingID, "request_workspace_path", childReq.WorkspacePath, "hosted_runtime_workspace_path", req.Hosted.RuntimeWorkspacePath, "error", err)
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	if err := validateTerminalPeerSessionOpenRealizedSession(session, worktreeMode); err != nil {
+		flowRouteDiagLog("desktop_routed_peer_open_realized_session_error", "session_id", req.SessionID, "worktree_mode", worktreeMode, "workspace_binding_id", childReq.WorkspaceBindingID, "session_workspace_path", session.WorkspacePath, "session_worktree_enabled", session.WorktreeEnabled, "session_worktree_root_path", session.WorktreeRootPath, "session_worktree_branch", session.WorktreeBranch, "error", err)
 		if cleanupErr := s.sessions.DeleteSession(session.ID); cleanupErr != nil {
 			log.Printf("peer terminal session create rollback failed session_id=%q err=%v", session.ID, cleanupErr)
 		}
@@ -1430,12 +1432,17 @@ func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest,
 	}, createMetadata)
 	warning := ""
 	if allowWorktree {
+		s.logSessionCreateWorktreeDiag("before_apply", sessionID, requestedWorktreeMode, createOptions, pebblestore.SessionSnapshot{}, nil)
 		nextWarning, worktreeErr := s.applySessionCreateWorktree(&createOptions, sessionID, requestedWorktreeMode, requestedWorktreeUseCurrentBranch, requestedWorktreeBaseBranch, requestedWorktreeBranchName, principal, principalOK)
 		if worktreeErr != nil {
+			s.logSessionCreateWorktreeDiag("apply_error", sessionID, requestedWorktreeMode, createOptions, pebblestore.SessionSnapshot{}, worktreeErr)
 			return pebblestore.SessionSnapshot{}, nil, "", "", worktreeErr
 		}
+		s.logSessionCreateWorktreeDiag("after_apply", sessionID, requestedWorktreeMode, createOptions, pebblestore.SessionSnapshot{}, nil)
 		if runruntime.NormalizeRunWorktreeMode(requestedWorktreeMode) == runruntime.RunWorktreeModeOn && createOptions.Worktree == nil {
-			return pebblestore.SessionSnapshot{}, nil, "", "", errors.New("worktree_mode on did not allocate a worktree")
+			err := fmt.Errorf("worktree_mode on did not allocate a worktree: session_id=%q create_workspace_path=%q worktree_service_configured=%t", sessionID, strings.TrimSpace(createOptions.WorkspacePath), s != nil && s.worktrees != nil)
+			s.logSessionCreateWorktreeDiag("allocation_missing", sessionID, requestedWorktreeMode, createOptions, pebblestore.SessionSnapshot{}, err)
+			return pebblestore.SessionSnapshot{}, nil, "", "", err
 		}
 		warning = nextWarning
 		if descriptor, hosted := sessionruntime.HostedSessionFromMetadata(createOptions.Metadata); hosted && strings.TrimSpace(createOptions.WorkspacePath) != "" {
@@ -1445,18 +1452,28 @@ func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest,
 			createOptions.Metadata = descriptor.WithMetadata(createOptions.Metadata)
 		}
 	}
+	s.logSessionCreateWorktreeDiag("before_create", sessionID, requestedWorktreeMode, createOptions, pebblestore.SessionSnapshot{}, nil)
 	session, event, err := s.sessions.CreateSessionWithOptions(createOptions)
 	if err != nil {
+		s.logSessionCreateWorktreeDiag("create_error", sessionID, requestedWorktreeMode, createOptions, session, err)
 		return pebblestore.SessionSnapshot{}, nil, "", "", err
 	}
+	s.logSessionCreateWorktreeDiag("after_create", sessionID, requestedWorktreeMode, createOptions, session, nil)
 	if allowWorktree && s.worktrees != nil {
 		session, event, err = sessionruntime.AttachCreatedWorktreeBranch(s.sessions, s.worktrees, session)
 		if err != nil {
+			s.logSessionCreateWorktreeDiag("attach_error", sessionID, requestedWorktreeMode, createOptions, session, err)
 			return pebblestore.SessionSnapshot{}, nil, "", "", err
 		}
+		s.logSessionCreateWorktreeDiag("after_attach", sessionID, requestedWorktreeMode, createOptions, session, nil)
 		if runruntime.NormalizeRunWorktreeMode(requestedWorktreeMode) == runruntime.RunWorktreeModeOn {
-			if !session.WorktreeEnabled || strings.TrimSpace(session.WorktreeRootPath) == "" || strings.TrimSpace(session.WorktreeBranch) == "" {
-				return pebblestore.SessionSnapshot{}, nil, "", "", errors.New("worktree_mode on did not create canonical worktree session state")
+			if missing := missingCanonicalWorktreeSessionFields(session); len(missing) > 0 {
+				err := canonicalWorktreeSessionStateError(session, missing, createOptions)
+				s.logSessionCreateWorktreeDiag("canonical_state_missing", sessionID, requestedWorktreeMode, createOptions, session, err)
+				if cleanupErr := s.sessions.DeleteSession(session.ID); cleanupErr != nil {
+					log.Printf("worktree session create rollback failed session_id=%q err=%v", session.ID, cleanupErr)
+				}
+				return pebblestore.SessionSnapshot{}, nil, "", "", err
 			}
 		}
 		if session.WorktreeEnabled {
@@ -1539,6 +1556,7 @@ func (s *Server) allocateSessionCreateDetachedWorkspace(createOptions *sessionru
 	if allocErr != nil {
 		return "", allocErr
 	}
+	flowRouteDiagLog("session_create_worktree_allocation", "session_id", sessionID, "input_workspace_path", createOptions.WorkspacePath, "allocation_workspace_path", allocation.WorkspacePath, "allocation_repo_root", allocation.RepoRoot, "allocation_base_branch", allocation.BaseBranch, "allocation_branch_name", allocation.BranchName, "allocation_workspace_id", allocation.WorkspaceID)
 	createOptions.WorkspacePath = allocation.WorkspacePath
 	createOptions.Worktree = &sessionruntime.CreateSessionWorktree{
 		RootPath:    allocation.RepoRoot,
@@ -1547,4 +1565,72 @@ func (s *Server) allocateSessionCreateDetachedWorkspace(createOptions *sessionru
 		WorkspaceID: allocation.WorkspaceID,
 	}
 	return "", nil
+}
+
+func (s *Server) logSessionCreateWorktreeDiag(stage, sessionID, requestedWorktreeMode string, createOptions sessionruntime.CreateSessionOptions, session pebblestore.SessionSnapshot, err error) {
+	if runruntime.NormalizeRunWorktreeMode(requestedWorktreeMode) != runruntime.RunWorktreeModeOn {
+		return
+	}
+	worktreeRoot, worktreeBase, worktreeBranch, worktreeWorkspaceID := "", "", "", ""
+	if createOptions.Worktree != nil {
+		worktreeRoot = createOptions.Worktree.RootPath
+		worktreeBase = createOptions.Worktree.BaseBranch
+		worktreeBranch = createOptions.Worktree.BranchName
+		worktreeWorkspaceID = createOptions.Worktree.WorkspaceID
+	}
+	descriptorRuntimePath := ""
+	descriptorHostPath := ""
+	if descriptor, hosted := sessionruntime.HostedSessionFromMetadata(createOptions.Metadata); hosted {
+		descriptorRuntimePath = descriptor.RuntimeWorkspacePath
+		descriptorHostPath = descriptor.HostWorkspacePath
+	}
+	fields := []any{
+		"session_id", sessionID,
+		"create_workspace_path", createOptions.WorkspacePath,
+		"create_workspace_name", createOptions.WorkspaceName,
+		"create_worktree_present", createOptions.Worktree != nil,
+		"create_worktree_root_path", worktreeRoot,
+		"create_worktree_base_branch", worktreeBase,
+		"create_worktree_branch", worktreeBranch,
+		"create_worktree_workspace_id", worktreeWorkspaceID,
+		"metadata_hosted_runtime_workspace_path", descriptorRuntimePath,
+		"metadata_hosted_host_workspace_path", descriptorHostPath,
+		"session_id_returned", session.ID,
+		"session_workspace_path", session.WorkspacePath,
+		"session_worktree_enabled", session.WorktreeEnabled,
+		"session_worktree_root_path", session.WorktreeRootPath,
+		"session_worktree_base_branch", session.WorktreeBaseBranch,
+		"session_worktree_branch", session.WorktreeBranch,
+	}
+	if err != nil {
+		fields = append(fields, "error", err.Error())
+	}
+	flowRouteDiagLog("session_create_worktree_"+strings.TrimSpace(stage), fields...)
+}
+
+func missingCanonicalWorktreeSessionFields(session pebblestore.SessionSnapshot) []string {
+	missing := make([]string, 0, 4)
+	if !session.WorktreeEnabled {
+		missing = append(missing, "worktree_enabled")
+	}
+	if strings.TrimSpace(session.WorktreeRootPath) == "" {
+		missing = append(missing, "worktree_root_path")
+	}
+	if strings.TrimSpace(session.WorktreeBranch) == "" {
+		missing = append(missing, "worktree_branch")
+	}
+	if strings.TrimSpace(session.WorkspacePath) == "" {
+		missing = append(missing, "workspace_path")
+	}
+	return missing
+}
+
+func canonicalWorktreeSessionStateError(session pebblestore.SessionSnapshot, missing []string, createOptions sessionruntime.CreateSessionOptions) error {
+	worktreePresent := createOptions.Worktree != nil
+	createRoot, createBranch := "", ""
+	if createOptions.Worktree != nil {
+		createRoot = strings.TrimSpace(createOptions.Worktree.RootPath)
+		createBranch = strings.TrimSpace(createOptions.Worktree.BranchName)
+	}
+	return fmt.Errorf("worktree_mode on did not create canonical worktree session state: missing=%s session_id=%q session_workspace_path=%q session_worktree_enabled=%t session_worktree_root_path=%q session_worktree_branch=%q create_workspace_path=%q create_worktree_present=%t create_worktree_root_path=%q create_worktree_branch=%q", strings.Join(missing, ","), session.ID, strings.TrimSpace(session.WorkspacePath), session.WorktreeEnabled, strings.TrimSpace(session.WorktreeRootPath), strings.TrimSpace(session.WorktreeBranch), strings.TrimSpace(createOptions.WorkspacePath), worktreePresent, createRoot, createBranch)
 }

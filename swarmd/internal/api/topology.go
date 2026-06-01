@@ -94,6 +94,8 @@ type topologySessionRouteResponse struct {
 	BackendURL           string `json:"backend_url,omitempty"`
 	HostWorkspacePath    string `json:"host_workspace_path,omitempty"`
 	RuntimeWorkspacePath string `json:"runtime_workspace_path,omitempty"`
+	PlacementGeneration  int    `json:"placement_generation,omitempty"`
+	BindingGeneration    int    `json:"binding_generation,omitempty"`
 	CreatedAt            int64  `json:"created_at"`
 	UpdatedAt            int64  `json:"updated_at"`
 }
@@ -499,6 +501,8 @@ func mapTopologySessionRouteResponse(record pebblestore.TopologySessionRouteReco
 		BackendURL:           record.BackendURL,
 		HostWorkspacePath:    record.HostWorkspacePath,
 		RuntimeWorkspacePath: record.RuntimeWorkspacePath,
+		PlacementGeneration:  record.PlacementGeneration,
+		BindingGeneration:    record.BindingGeneration,
 		CreatedAt:            record.CreatedAt,
 		UpdatedAt:            record.UpdatedAt,
 	}

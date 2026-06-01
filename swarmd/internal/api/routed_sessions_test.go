@@ -718,6 +718,64 @@ func TestPeerSessionOpenAllowsRequestedWorktreeForPairedLocalChild(t *testing.T)
 	}
 }
 
+func TestPeerSessionOpenDiagnosesMissingCanonicalWorktreeField(t *testing.T) {
+	server, sessionSvc, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	configureRoutedSessionTestServerAsChild(t, server, swarmStore, "child-swarm", "host-swarm-id", testPrincipal().UserID, testPrincipal().AccountScopeID)
+	attachBranch := ""
+	server.SetWorktreeService(&fakeWorktreeService{
+		config:       worktreeruntime.Config{Enabled: true, UseCurrentBranch: true},
+		attachBranch: &attachBranch,
+		allocation: worktreeruntime.Allocation{
+			WorkspacePath: "/var/cache/swarmd/workspaces/swarm-go-test/worktrees/ws_missing_branch",
+			RepoRoot:      "/var/cache/swarmd/workspaces/swarm-go-test",
+			BaseBranch:    "main",
+			BranchName:    "",
+			WorkspaceID:   "ws_missing_branch",
+		},
+	})
+
+	payload, err := json.Marshal(peerSessionOpenRequest{
+		SessionID: "session-missing-worktree-branch",
+		Request: func() sessionCreateRequest {
+			req := sessionCreateRequest{Title: "paired child missing worktree branch", WorkspacePath: "/workspaces/swarm-go", HostWorkspacePath: "/workspaces/swarm-go", RuntimeWorkspacePath: "/workspaces/swarm-go", WorkspaceBindingID: "binding-missing-worktree-branch", WorkspaceName: "swarm-go", Mode: sessionruntime.ModeAuto, WorktreeMode: "on"}
+			req.Preference.Provider = "codex"
+			req.Preference.Model = "gpt-5.4"
+			req.Preference.Thinking = "medium"
+			return req
+		}(),
+		Hosted:    sessionruntime.HostedSessionDescriptor{HostSwarmID: "host-swarm-id", HostWorkspacePath: "/host/swarm-go", RuntimeWorkspacePath: "/workspaces/swarm-go", ChildSwarmID: "child-swarm", OwnerTransport: "routed_session_peer"},
+		Route:     pebblestore.SessionRouteRecord{SessionID: "session-missing-worktree-branch", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ChildSwarmID: "child-swarm", HostSwarmID: "host-swarm-id", RuntimeWorkspacePath: "/workspaces/swarm-go", WorkspaceBindingID: "binding-missing-worktree-branch"},
+		Principal: testPrincipal(),
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/swarm/peer/sessions/open", bytes.NewReader(payload))
+	req = req.WithContext(context.WithValue(req.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: "host-swarm-id"}))
+	rec := httptest.NewRecorder()
+	server.handlePeerSessionOpen(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"worktree_mode on did not create canonical worktree session state",
+		"missing=worktree_branch",
+		`session_id=\"session-missing-worktree-branch\"`,
+		`session_workspace_path=\"/var/cache/swarmd/workspaces/swarm-go-test/worktrees/ws_missing_branch\"`,
+		"session_worktree_enabled=true",
+		`create_workspace_path=\"/var/cache/swarmd/workspaces/swarm-go-test/worktrees/ws_missing_branch\"`,
+		"create_worktree_present=true",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body missing %q:\n%s", want, body)
+		}
+	}
+	if _, ok, err := sessionSvc.GetSession("session-missing-worktree-branch"); err != nil || ok {
+		t.Fatalf("get session ok=%t err=%v, want no persisted session after failed open", ok, err)
+	}
+}
+
 func TestPeerSessionOpenRejectsInheritedWorktreeForPairedLocalChild(t *testing.T) {
 	server, sessionSvc, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
 	configureRoutedSessionTestServerAsChild(t, server, swarmStore, "child-swarm", "host-swarm-id", testPrincipal().UserID, testPrincipal().AccountScopeID)

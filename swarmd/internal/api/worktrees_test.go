@@ -18,10 +18,11 @@ import (
 )
 
 type fakeWorktreeService struct {
-	config     worktreeruntime.Config
-	allocation worktreeruntime.Allocation
-	managed    []worktreeruntime.ManagedWorktree
-	prune      worktreeruntime.PruneResult
+	config       worktreeruntime.Config
+	allocation   worktreeruntime.Allocation
+	managed      []worktreeruntime.ManagedWorktree
+	prune        worktreeruntime.PruneResult
+	attachBranch *string
 }
 
 func (f *fakeWorktreeService) GetConfig(workspacePath string) (worktreeruntime.Config, error) {
@@ -83,6 +84,9 @@ func (f *fakeWorktreeService) AllocateDetachedWorkspaceRequestedForPrincipal(pri
 }
 
 func (f *fakeWorktreeService) AttachBranch(workspacePath, sessionID, title string) (string, error) {
+	if f.attachBranch != nil {
+		return *f.attachBranch, nil
+	}
 	return "agent/test", nil
 }
 
