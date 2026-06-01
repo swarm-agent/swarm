@@ -60,7 +60,10 @@ func (s *Server) openRuntimeSessionV2(r *http.Request, req sessionruntime.Runtim
 		return sessionruntime.RuntimeSessionOpenResponse{}, err
 	}
 	if strings.TrimSpace(req.Config.WorktreeMode) != "" && !strings.EqualFold(strings.TrimSpace(req.Config.WorktreeMode), "off") {
-		return sessionruntime.RuntimeSessionOpenResponse{}, sessionV2BadRequest("runtime session open does not install worktrees in checkpoint 8")
+		return sessionruntime.RuntimeSessionOpenResponse{}, sessionV2BadRequest("runtime session open does not install worktrees before the dedicated worktree checkpoint")
+	}
+	if req.Config.WorktreeUseCurrentBranch != nil {
+		return sessionruntime.RuntimeSessionOpenResponse{}, sessionV2BadRequest("runtime session open does not install worktrees before the dedicated worktree checkpoint")
 	}
 	sessionID := strings.TrimSpace(req.SessionID)
 	session, exists, err := s.sessions.GetSession(sessionID)

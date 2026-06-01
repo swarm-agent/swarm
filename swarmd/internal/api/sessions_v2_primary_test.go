@@ -2,17 +2,22 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"swarm-refactor/swarmtui/pkg/startupconfig"
+	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	swarmruntime "swarm/packages/swarmd/internal/swarm"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
@@ -356,42 +361,154 @@ func TestSessionsV2PrimaryRejectsWorkspaceNameOnlyBindingLookup(t *testing.T) {
 	assertNoPrimaryCreateResidue(t, server, routeStore)
 }
 
-func TestSessionsV2LocalContainerCreatesSessionFromBindingAuthority(t *testing.T) {
-	server, sessionSvc, _, routeStore, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
-	seedSessionsV2LocalContainerAuthority(t, server, swarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+func TestSessionsV2LocalContainerCreatesViaNativeRuntimeOpen(t *testing.T) {
+	hostServer, hostSessionSvc, _, routeStore, hostSwarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	runtimeServer, runtimeSessionSvc, _, _, runtimeSwarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV2LocalContainerAuthority(t, hostServer, hostSwarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	seedRuntimeSessionsV2OpenContainerAuthority(t, runtimeServer, runtimeSwarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	setTestServerLocalSwarmID(t, runtimeServer, "container-swarm")
+	seedRuntimeSessionsV2Pairing(t, runtimeSwarmStore, "host-swarm-id")
+
+	var openCalls atomic.Int32
+	runtimeHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != runtimeSessionsV2OpenPath {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get(peerAuthSwarmIDHeader) != "host-swarm-id" || r.Header.Get(peerAuthTokenHeader) != "peer-token" {
+			t.Fatalf("runtime open peer auth headers = %q/%q", r.Header.Get(peerAuthSwarmIDHeader), r.Header.Get(peerAuthTokenHeader))
+		}
+		if r.Header.Get("X-Swarm-Principal-User-ID") != "" || r.Header.Get("X-Swarm-Principal-Account-Scope-ID") != "" {
+			t.Fatalf("runtime open forwarded principal headers")
+		}
+		openCalls.Add(1)
+		r = r.WithContext(context.WithValue(r.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: "host-swarm-id"}))
+		if principal, ok := runtimeServer.trustedPairingPrincipalForPeerRequest(r); ok {
+			r = withSessionsV2TestPrincipal(r, principal)
+		}
+		runtimeServer.Handler().ServeHTTP(w, r)
+	}))
+	defer runtimeHTTP.Close()
+	if err := hostServer.RegisterAuthorityConnection(AuthorityConnection{AuthorityHostSwarmID: "container-swarm", AccountScopeID: testPrincipal().AccountScopeID, TransportKind: authorityConnectionTransportHTTP, TransportRef: runtimeHTTP.URL, Health: AuthorityConnectionHealthOnline}); err != nil {
+		t.Fatalf("register runtime authority connection: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/v2/sessions/local-containers", bytes.NewBufferString(`{"swarm_id":"container-swarm","workspace_binding_id":"binding-container-v2","title":"container v2","mode":"auto","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"},"metadata":{"purpose":"test"}}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	hostServer.Handler().ServeHTTP(rec, withTestPrincipal(req))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
+	if openCalls.Load() != 1 {
+		t.Fatalf("runtime open calls = %d, want 1", openCalls.Load())
+	}
 	var payload struct {
-		OK               bool                            `json:"ok"`
-		Session          pebblestore.SessionSnapshot     `json:"session"`
-		SessionExecution sessionruntime.SessionExecution `json:"session_execution"`
+		OK                  bool                                      `json:"ok"`
+		Session             pebblestore.SessionSnapshot               `json:"session"`
+		SessionExecution    sessionruntime.SessionExecution           `json:"session_execution"`
+		RuntimeOpenResponse sessionruntime.RuntimeSessionOpenResponse `json:"runtime_open_response"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
+	if !payload.OK || strings.TrimSpace(payload.Session.ID) == "" {
+		t.Fatalf("payload = %+v", payload)
+	}
 	if payload.Session.WorkspacePath != "/workspaces/swarm-go" || payload.Session.WorkspaceName != "swarm-go" {
 		t.Fatalf("session workspace = path %q name %q", payload.Session.WorkspacePath, payload.Session.WorkspaceName)
 	}
-	if payload.SessionExecution.ExecutionClass != sessionruntime.SessionExecutionClassLocalContainer || payload.SessionExecution.RuntimeSwarmID != "container-swarm" || payload.SessionExecution.AuthorityHostSwarmID != "host-swarm-id" || payload.SessionExecution.AuthorityContainerID != "host-container-1" || payload.SessionExecution.SourceWorkspacePath != "/host/swarm-go" || payload.SessionExecution.RuntimeWorkspacePath != "/workspaces/swarm-go" {
-		t.Fatalf("session execution = %+v", payload.SessionExecution)
+	if payload.Session.UserID != testPrincipal().UserID || payload.Session.AccountScopeID != testPrincipal().AccountScopeID {
+		t.Fatalf("primary session principal = %q/%q", payload.Session.UserID, payload.Session.AccountScopeID)
 	}
-	storedExecution, ok, err := sessionSvc.Store().GetSessionExecutionV2(payload.Session.ID)
+	if payload.Session.Metadata["purpose"] != "test" || payload.Session.Metadata["swarm_v2_execution_class"] != sessionruntime.SessionExecutionClassLocalContainer || payload.Session.Metadata["local_workspace_binding_id"] != "binding-container-v2" {
+		t.Fatalf("primary session metadata = %+v", payload.Session.Metadata)
+	}
+	if payload.SessionExecution.SessionID != payload.Session.ID || payload.SessionExecution.ExecutionClass != sessionruntime.SessionExecutionClassLocalContainer || payload.SessionExecution.RuntimeSwarmID != "container-swarm" || payload.SessionExecution.AuthorityHostSwarmID != "host-swarm-id" || payload.SessionExecution.AuthorityContainerID != "host-container-1" || payload.SessionExecution.SourceWorkspacePath != "/host/swarm-go" || payload.SessionExecution.RuntimeWorkspacePath != "/workspaces/swarm-go" {
+		t.Fatalf("session execution = %+v session=%+v", payload.SessionExecution, payload.Session)
+	}
+	if !payload.RuntimeOpenResponse.OK || payload.RuntimeOpenResponse.SessionID != payload.Session.ID || payload.RuntimeOpenResponse.Status != "opened" {
+		t.Fatalf("runtime open response = %+v", payload.RuntimeOpenResponse)
+	}
+	storedExecution, ok, err := hostSessionSvc.Store().GetSessionExecutionV2(payload.Session.ID)
 	if err != nil || !ok {
-		t.Fatalf("stored execution ok=%t err=%v", ok, err)
+		t.Fatalf("host stored execution ok=%t err=%v", ok, err)
 	}
-	if storedExecution.SourceWorkspacePath != "/host/swarm-go" || storedExecution.RuntimeWorkspacePath != "/workspaces/swarm-go" {
-		t.Fatalf("stored execution = %+v", storedExecution)
+	if storedExecution.SourceWorkspacePath != "/host/swarm-go" || storedExecution.RuntimeWorkspacePath != "/workspaces/swarm-go" || storedExecution.RuntimeSwarmID != "container-swarm" {
+		t.Fatalf("host stored execution = %+v", storedExecution)
+	}
+	runtimeSnapshot, ok, err := runtimeSessionSvc.GetSession(payload.Session.ID)
+	if err != nil || !ok {
+		t.Fatalf("runtime session ok=%t err=%v", ok, err)
+	}
+	if runtimeSnapshot.UserID != testPrincipal().UserID || runtimeSnapshot.AccountScopeID != testPrincipal().AccountScopeID {
+		t.Fatalf("runtime session principal = %q/%q", runtimeSnapshot.UserID, runtimeSnapshot.AccountScopeID)
 	}
 	if routes, err := routeStore.List(10); err != nil || len(routes) != 0 {
 		t.Fatalf("routes = %+v err=%v, want no legacy route for local-container v2", routes, err)
 	}
+}
+
+func TestSessionsV2LocalContainerNativeRuntimeOpenFailureFailsCreate(t *testing.T) {
+	hostServer, hostSessionSvc, _, routeStore, hostSwarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV2LocalContainerAuthority(t, hostServer, hostSwarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	failureRuntime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != runtimeSessionsV2OpenPath {
+			t.Fatalf("unexpected runtime path %s", r.URL.Path)
+		}
+		if r.Header.Get(peerAuthSwarmIDHeader) != "host-swarm-id" || r.Header.Get(peerAuthTokenHeader) != "peer-token" {
+			t.Fatalf("runtime open failure peer auth headers = %q/%q", r.Header.Get(peerAuthSwarmIDHeader), r.Header.Get(peerAuthTokenHeader))
+		}
+		if r.Header.Get("X-Swarm-Principal-User-ID") != "" || r.Header.Get("X-Swarm-Principal-Account-Scope-ID") != "" {
+			t.Fatalf("runtime open failure path forwarded principal headers")
+		}
+		writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": "boom"})
+	}))
+	defer failureRuntime.Close()
+	if err := hostServer.RegisterAuthorityConnection(AuthorityConnection{AuthorityHostSwarmID: "container-swarm", AccountScopeID: testPrincipal().AccountScopeID, TransportKind: authorityConnectionTransportHTTP, TransportRef: failureRuntime.URL, Health: AuthorityConnectionHealthOnline}); err != nil {
+		t.Fatalf("register runtime authority connection: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v2/sessions/local-containers", bytes.NewBufferString(`{"swarm_id":"container-swarm","workspace_binding_id":"binding-container-v2","title":"container v2","mode":"auto","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	hostServer.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+	if sessions, err := hostSessionSvc.ListSessionsForAccount(testPrincipal().AccountScopeID, 10); err != nil || len(sessions) != 0 {
+		t.Fatalf("sessions = %+v err=%v, want no primary sessions after runtime open failure", sessions, err)
+	}
+	assertNoPrimaryCreateResidue(t, hostServer, routeStore)
+}
+
+func TestSessionsV2LocalContainerRejectsWorktreeUntilDedicatedCheckpoint(t *testing.T) {
+	server, _, _, routeStore, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV2LocalContainerAuthority(t, server, swarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+
+	req := httptest.NewRequest(http.MethodPost, "/v2/sessions/local-containers", bytes.NewBufferString(`{"swarm_id":"container-swarm","workspace_binding_id":"binding-container-v2","title":"container v2","mode":"auto","agent_name":"swarm","worktree_mode":"on","worktree_use_current_branch":false,"worktree_base_branch":"dev","worktree_branch_name":"agent/session-v2","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "worktree settings are not supported") {
+		t.Fatalf("body = %s, want worktree checkpoint rejection", rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/v2/sessions/local-containers", bytes.NewBufferString(`{"swarm_id":"container-swarm","workspace_binding_id":"binding-container-v2","title":"container v2","mode":"auto","agent_name":"swarm","worktree_mode":"off","worktree_use_current_branch":true,"preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("use-current status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "worktree settings are not supported") {
+		t.Fatalf("body = %s, want explicit worktree setting rejection", rec.Body.String())
+	}
+	assertNoPrimaryCreateResidue(t, server, routeStore)
 }
 
 func TestSessionsV2PrimaryCreateEndpointIsNotRejectedAsReservedLifecycleID(t *testing.T) {
@@ -408,13 +525,28 @@ func TestSessionsV2PrimaryCreateEndpointIsNotRejectedAsReservedLifecycleID(t *te
 }
 
 func TestSessionsV2LocalContainerCreateEndpointIsNotRejectedAsReservedLifecycleID(t *testing.T) {
-	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
-	seedSessionsV2LocalContainerAuthority(t, server, swarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	hostServer, _, _, _, hostSwarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	runtimeServer, _, _, _, runtimeSwarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV2LocalContainerAuthority(t, hostServer, hostSwarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	seedRuntimeSessionsV2OpenContainerAuthority(t, runtimeServer, runtimeSwarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	setTestServerLocalSwarmID(t, runtimeServer, "container-swarm")
+	seedRuntimeSessionsV2Pairing(t, runtimeSwarmStore, "host-swarm-id")
+	runtimeHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(context.WithValue(r.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: "host-swarm-id"}))
+		if principal, ok := runtimeServer.trustedPairingPrincipalForPeerRequest(r); ok {
+			r = withSessionsV2TestPrincipal(r, principal)
+		}
+		runtimeServer.Handler().ServeHTTP(w, r)
+	}))
+	defer runtimeHTTP.Close()
+	if err := hostServer.RegisterAuthorityConnection(AuthorityConnection{AuthorityHostSwarmID: "container-swarm", AccountScopeID: testPrincipal().AccountScopeID, TransportKind: authorityConnectionTransportHTTP, TransportRef: runtimeHTTP.URL, Health: AuthorityConnectionHealthOnline}); err != nil {
+		t.Fatalf("register runtime authority connection: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/v2/sessions/local-containers", bytes.NewBufferString(`{"swarm_id":"container-swarm","workspace_binding_id":"binding-container-v2","title":"container v2","mode":"auto","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	hostServer.Handler().ServeHTTP(rec, withTestPrincipal(req))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
@@ -501,6 +633,31 @@ func seedSessionsV2PrimaryAuthorityWithBindingGeneration(t *testing.T, server *S
 }
 
 var _ = sessionruntime.ModeAuto
+
+func setTestServerLocalSwarmID(t *testing.T, server *Server, swarmID string) {
+	t.Helper()
+	if server == nil {
+		t.Fatal("server is required")
+	}
+	server.SetSwarmService(fakeRoutedSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: swarmID, Name: "test-swarm", Role: "child"}}, token: "peer-token"})
+}
+
+func withSessionsV2TestPrincipal(req *http.Request, principal identity.Principal) *http.Request {
+	ctx := req.Context()
+	ctx = identity.ContextWithPrincipal(ctx, principal)
+	ctx = context.WithValue(ctx, productPrincipalRequestContextKey, principal)
+	return req.WithContext(ctx)
+}
+
+func seedRuntimeSessionsV2Pairing(t *testing.T, swarmStore *pebblestore.SwarmStore, parentSwarmID string) {
+	t.Helper()
+	if swarmStore == nil {
+		t.Fatal("swarm store is required")
+	}
+	if _, err := swarmStore.PutLocalPairing(pebblestore.SwarmLocalPairingRecord{ParentSwarmID: parentSwarmID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, PairingState: startupconfig.PairingStatePaired}); err != nil {
+		t.Fatalf("put runtime pairing: %v", err)
+	}
+}
 
 func seedSessionsV2LocalContainerAuthority(t *testing.T, server *Server, swarmStore *pebblestore.SwarmStore, primarySwarmID, containerSwarmID, authorityContainerID, bindingID, sourceWorkspacePath, runtimeWorkspacePath string) {
 	t.Helper()

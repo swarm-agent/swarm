@@ -177,6 +177,10 @@ func (s *Service) CreateFromExecutionV2(ctx context.Context, cmd SessionsV2Creat
 	return session, execution, env, "", modeWarning, nil
 }
 
+func SessionExecutionV2RecordFromExecution(principal identity.Principal, execution SessionExecution) pebblestore.SessionExecutionV2Record {
+	return sessionExecutionV2RecordFromExecution(principal, execution)
+}
+
 func sessionExecutionV2RecordFromExecution(principal identity.Principal, execution SessionExecution) pebblestore.SessionExecutionV2Record {
 	return pebblestore.SessionExecutionV2Record{
 		SessionID:                 execution.SessionID,

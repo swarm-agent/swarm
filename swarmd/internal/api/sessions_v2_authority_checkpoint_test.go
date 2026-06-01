@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 func TestSessionsV2LifecycleLocalContainerAuthorityValidatedThenDispatchFailsClosed(t *testing.T) {
 	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
 	seedSessionsV2LocalContainerAuthority(t, server, swarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	registerSessionsV2TestRuntimeOpen(t, server, swarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
 
 	req := httptest.NewRequest(http.MethodPost, "/v2/sessions/local-containers", bytes.NewBufferString(`{"swarm_id":"container-swarm","workspace_binding_id":"binding-container-v2","title":"container v2","mode":"auto","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -48,6 +50,7 @@ func TestSessionsV2LifecycleLocalContainerAuthorityValidatedThenDispatchFailsClo
 func TestSessionsV2LifecycleLocalContainerMutatingReadOnlyBindingFailsBeforeDispatch(t *testing.T) {
 	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
 	seedSessionsV2LocalContainerAuthority(t, server, swarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	registerSessionsV2TestRuntimeOpen(t, server, swarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
 
 	req := httptest.NewRequest(http.MethodPost, "/v2/sessions/local-containers", bytes.NewBufferString(`{"swarm_id":"container-swarm","workspace_binding_id":"binding-container-v2","title":"container v2","mode":"auto","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -183,5 +186,24 @@ func TestSessionsV2AuthorityRejectsStaleRuntimePlacementGeneration(t *testing.T)
 	}
 	if !strings.Contains(rec.Body.String(), "runtime placement generation mismatch") {
 		t.Fatalf("body = %s, want runtime placement generation mismatch", rec.Body.String())
+	}
+}
+
+func registerSessionsV2TestRuntimeOpen(t *testing.T, hostServer *Server, hostSwarmStore *pebblestore.SwarmStore, primarySwarmID, containerSwarmID, authorityContainerID, bindingID, sourceWorkspacePath, runtimeWorkspacePath string) {
+	t.Helper()
+	runtimeServer, _, _, _, runtimeSwarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	seedRuntimeSessionsV2OpenContainerAuthority(t, runtimeServer, runtimeSwarmStore, primarySwarmID, containerSwarmID, authorityContainerID, bindingID, sourceWorkspacePath, runtimeWorkspacePath)
+	setTestServerLocalSwarmID(t, runtimeServer, containerSwarmID)
+	seedRuntimeSessionsV2Pairing(t, runtimeSwarmStore, primarySwarmID)
+	runtimeHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(context.WithValue(r.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: primarySwarmID}))
+		if principal, ok := runtimeServer.trustedPairingPrincipalForPeerRequest(r); ok {
+			r = withSessionsV2TestPrincipal(r, principal)
+		}
+		runtimeServer.Handler().ServeHTTP(w, r)
+	}))
+	t.Cleanup(runtimeHTTP.Close)
+	if err := hostServer.RegisterAuthorityConnection(AuthorityConnection{AuthorityHostSwarmID: containerSwarmID, AccountScopeID: testPrincipal().AccountScopeID, TransportKind: authorityConnectionTransportHTTP, TransportRef: runtimeHTTP.URL, Health: AuthorityConnectionHealthOnline}); err != nil {
+		t.Fatalf("register runtime authority connection: %v", err)
 	}
 }
