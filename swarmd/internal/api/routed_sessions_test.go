@@ -669,6 +669,24 @@ func TestPeerSessionOpenAcceptsPairedChildPrincipalClaimWithoutLocalTopologyRunt
 func TestPeerSessionOpenAllowsRequestedWorktreeForPairedLocalChild(t *testing.T) {
 	server, sessionSvc, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
 	configureRoutedSessionTestServerAsChild(t, server, swarmStore, "child-swarm", "host-swarm-id", testPrincipal().UserID, testPrincipal().AccountScopeID)
+	sessionSvc.SetLocalSwarmIDResolver(func() string { return "child-swarm" })
+	hostedSync := &recordingHostedSessionSync{session: pebblestore.SessionSnapshot{
+		ID:            "session-paired-worktree",
+		WorkspacePath: "/workspaces/swarm-go",
+		WorkspaceName: "swarm-go",
+		Title:         "mirrored parent response without child-local worktree fields",
+		Mode:          sessionruntime.ModeAuto,
+		Metadata: sessionruntime.HostedSessionDescriptor{
+			HostSwarmID:          "host-swarm-id",
+			HostWorkspacePath:    "/host/swarm-go",
+			RuntimeWorkspacePath: "/workspaces/swarm-go",
+			ChildSwarmID:         "child-swarm",
+			OwnerTransport:       "routed_session_peer",
+		}.WithMetadata(nil),
+		CreatedAt: 1,
+		UpdatedAt: 2,
+	}}
+	sessionSvc.SetHostedSync(hostedSync)
 	server.SetWorktreeService(&fakeWorktreeService{
 		config: worktreeruntime.Config{Enabled: true, UseCurrentBranch: true},
 		allocation: worktreeruntime.Allocation{
@@ -678,6 +696,7 @@ func TestPeerSessionOpenAllowsRequestedWorktreeForPairedLocalChild(t *testing.T)
 			BranchName:    "agent/session-paired-worktree",
 			WorkspaceID:   "ws_peer_open",
 		},
+		attachBranch: testStringPtr("agent/session-paired-worktree"),
 	})
 
 	payload, err := json.Marshal(peerSessionOpenRequest{
@@ -693,6 +712,7 @@ func TestPeerSessionOpenAllowsRequestedWorktreeForPairedLocalChild(t *testing.T)
 		Route:     pebblestore.SessionRouteRecord{SessionID: "session-paired-worktree", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ChildSwarmID: "child-swarm", ChildBackendURL: "http://127.0.0.1:7782", HostSwarmID: "host-swarm-id", HostWorkspacePath: "/host/swarm-go", RuntimeWorkspacePath: "/workspaces/swarm-go", WorkspaceBindingID: "binding-paired-worktree"},
 		Principal: testPrincipal(),
 	})
+	var _ sessionruntime.HostedSessionSync = hostedSync
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
@@ -702,6 +722,9 @@ func TestPeerSessionOpenAllowsRequestedWorktreeForPairedLocalChild(t *testing.T)
 	server.handlePeerSessionOpen(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if hostedSync.updateMetadataCalls != 0 {
+		t.Fatalf("hosted metadata sync calls = %d, want 0 for local-only worktree metadata update", hostedSync.updateMetadataCalls)
 	}
 	session, ok, err := sessionSvc.GetSession("session-paired-worktree")
 	if err != nil || !ok {
@@ -715,6 +738,16 @@ func TestPeerSessionOpenAllowsRequestedWorktreeForPairedLocalChild(t *testing.T)
 	}
 	if session.WorktreeRootPath != "/var/cache/swarmd/workspaces/swarm-go-test" || session.WorktreeBranch != "agent/session-paired-worktree" {
 		t.Fatalf("worktree fields = root %q branch %q", session.WorktreeRootPath, session.WorktreeBranch)
+	}
+	if strings.TrimSpace(session.WorktreeRootPath) == "" || strings.TrimSpace(session.WorktreeBranch) == "" {
+		t.Fatalf("worktree root/branch must be non-empty: root=%q branch=%q", session.WorktreeRootPath, session.WorktreeBranch)
+	}
+	descriptor, hosted := sessionruntime.HostedSessionFromMetadata(session.Metadata)
+	if !hosted {
+		t.Fatalf("hosted metadata missing after local-only update: %+v", session.Metadata)
+	}
+	if descriptor.RuntimeWorkspacePath != session.WorkspacePath {
+		t.Fatalf("runtime workspace metadata = %q, want preserved worktree workspace %q", descriptor.RuntimeWorkspacePath, session.WorkspacePath)
 	}
 }
 
@@ -2821,6 +2854,40 @@ func seedRoutedSession(t *testing.T, sessionSvc *sessionruntime.Service) string 
 type fakeRoutedSwarmService struct {
 	state swarmruntime.LocalState
 	token string
+}
+
+func testStringPtr(value string) *string {
+	return &value
+}
+
+type recordingHostedSessionSync struct {
+	updateMetadataCalls int
+	session             pebblestore.SessionSnapshot
+}
+
+func (f *recordingHostedSessionSync) AppendMessage(context.Context, sessionruntime.HostedSessionDescriptor, string, string, string, map[string]any) (pebblestore.MessageSnapshot, pebblestore.SessionSnapshot, error) {
+	return pebblestore.MessageSnapshot{}, f.session, nil
+}
+
+func (f *recordingHostedSessionSync) SetMode(context.Context, sessionruntime.HostedSessionDescriptor, string, string) (pebblestore.SessionSnapshot, error) {
+	return f.session, nil
+}
+
+func (f *recordingHostedSessionSync) SetTitle(context.Context, sessionruntime.HostedSessionDescriptor, string, string) (pebblestore.SessionSnapshot, error) {
+	return f.session, nil
+}
+
+func (f *recordingHostedSessionSync) UpdateMetadata(context.Context, sessionruntime.HostedSessionDescriptor, string, map[string]any) (pebblestore.SessionSnapshot, error) {
+	f.updateMetadataCalls++
+	return f.session, nil
+}
+
+func (f *recordingHostedSessionSync) UpsertLifecycle(context.Context, sessionruntime.HostedSessionDescriptor, pebblestore.SessionLifecycleSnapshot) error {
+	return nil
+}
+
+func (f *recordingHostedSessionSync) PublishEvent(context.Context, sessionruntime.HostedSessionDescriptor, string, string, map[string]any, string, string) (pebblestore.EventEnvelope, error) {
+	return pebblestore.EventEnvelope{}, nil
 }
 
 type fakeRemoteDeployService struct {

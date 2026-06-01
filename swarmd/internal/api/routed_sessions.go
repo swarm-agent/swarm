@@ -1480,11 +1480,23 @@ func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest,
 			if descriptor, hosted := sessionruntime.HostedSessionFromMetadata(session.Metadata); hosted && strings.TrimSpace(session.WorkspacePath) != "" {
 				descriptor.RuntimeWorkspacePath = strings.TrimSpace(session.WorkspacePath)
 				updatedMetadata := descriptor.WithMetadata(session.Metadata)
-				updated, _, updateErr := s.sessions.UpdateMetadata(session.ID, updatedMetadata)
+				s.logSessionCreateWorktreeDiag("metadata_local_only_update_before", sessionID, requestedWorktreeMode, createOptions, session, nil)
+				flowRouteDiagLog("session_create_worktree_metadata_local_only_update_path",
+					"session_id", session.ID,
+					"metadata_update_method", "UpdateDerivedMetadata",
+					"hosted_sync_skipped", true,
+					"session_worktree_enabled", session.WorktreeEnabled,
+					"session_worktree_root_path", session.WorktreeRootPath,
+					"session_worktree_branch", session.WorktreeBranch,
+					"metadata_runtime_workspace_path", descriptor.RuntimeWorkspacePath,
+				)
+				updated, _, updateErr := s.sessions.UpdateDerivedMetadata(session.ID, updatedMetadata)
 				if updateErr != nil {
+					s.logSessionCreateWorktreeDiag("metadata_local_only_update_error", sessionID, requestedWorktreeMode, createOptions, session, updateErr)
 					return pebblestore.SessionSnapshot{}, nil, "", "", updateErr
 				}
 				session = updated
+				s.logSessionCreateWorktreeDiag("metadata_local_only_update_after", sessionID, requestedWorktreeMode, createOptions, session, nil)
 			}
 		}
 	}

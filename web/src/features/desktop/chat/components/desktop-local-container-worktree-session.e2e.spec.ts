@@ -250,11 +250,15 @@ fi
 }
 
 function assertDiagnosticLogStages(logText: string): void {
-  const hasSessionWorktree = /session_create_worktree_(allocation|before_apply|after_apply|before_create|after_create|after_attach|canonical_state_missing)/.test(logText)
+  const hasSessionWorktree = /session_create_worktree_(allocation|before_apply|after_apply|before_create|after_create|after_attach|metadata_local_only_update_before|metadata_local_only_update_after|canonical_state_missing)/.test(logText)
+  const hasLocalOnlyMetadataUpdate = /session_create_worktree_metadata_local_only_update_path/.test(logText)
+  const hasLocalOnlyMetadataFields = /metadata_update_method="UpdateDerivedMetadata"/.test(logText) && /hosted_sync_skipped="true"/.test(logText) && /session_worktree_enabled="true"/.test(logText) && /session_worktree_root_path="[^"]+"/.test(logText) && /session_worktree_branch="[^"]+"/.test(logText)
   const hasPeerOpen = /desktop_routed_peer_open_(received|create_error|realized_session_error|success)/.test(logText)
   const hasGitWorktreeAdd = /worktree_git_worktree_add_(start|success|error)/.test(logText)
   const missing = [
     hasSessionWorktree ? '' : 'session_create_worktree_*',
+    hasLocalOnlyMetadataUpdate ? '' : 'session_create_worktree_metadata_local_only_update_path',
+    hasLocalOnlyMetadataFields ? '' : 'local-only metadata update fields',
     hasPeerOpen ? '' : 'desktop_routed_peer_open_*',
     hasGitWorktreeAdd ? '' : 'worktree_git_worktree_add_*',
   ].filter(Boolean)
@@ -430,7 +434,7 @@ test('local-container routed session open creates canonical worktree state using
       worktreeRootPath: opened.session.worktree_root_path ?? '',
       worktreeBranch: opened.session.worktree_branch ?? '',
       requestContract: 'POST /v1/sessions?swarm_id=<local-container> with workspace_binding_id and no workspace_path/host_workspace_path/runtime_workspace_path',
-      diagnosticLogStagesAsserted: ['session_create_worktree_*', 'desktop_routed_peer_open_*', 'worktree_git_worktree_add_*'],
+      diagnosticLogStagesAsserted: ['session_create_worktree_*', 'session_create_worktree_metadata_local_only_update_path', 'desktop_routed_peer_open_*', 'worktree_git_worktree_add_*'],
       expectedFailureSignal: SESSION_CANONICAL_STATE_FAILURE,
       evidence: [
         'replicate_request.json',
