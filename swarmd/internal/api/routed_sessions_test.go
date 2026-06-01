@@ -1086,6 +1086,65 @@ func TestRoutedSessionMessagesReloadFromHostWithoutProxy(t *testing.T) {
 	}
 }
 
+func TestRoutedRunStreamControlMissingStoredRouteFailsClosed(t *testing.T) {
+	server, sessionSvc, _, _ := newRoutedSessionTestServer(t)
+	var hits atomic.Int32
+	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	}))
+	defer child.Close()
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
+		SwarmID:        "selected-child",
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: testPrincipal().AccountScopeID,
+		Name:           "selected child",
+		Relationship:   "child",
+		BackendURL:     child.URL,
+		Status:         "attached",
+	}); err != nil {
+		t.Fatalf("upsert selected runtime: %v", err)
+	}
+	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{
+		ID:             "session-run-missing-route",
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: testPrincipal().AccountScopeID,
+		WorkspacePath:  "/host/workspace",
+		WorkspaceName:  "workspace",
+		Title:          "Routed run without route",
+		Mode:           sessionruntime.ModeAuto,
+		Metadata: map[string]any{
+			"owner_transport": "routed_session_peer",
+			sessionruntime.HostedSessionMetadataHostWorkspacePath:    "/host/workspace",
+			sessionruntime.HostedSessionMetadataRuntimeWorkspacePath: "/runtime/workspace",
+			sessionruntime.HostedSessionMetadataChildSwarmID:         "missing-child",
+			"swarm_routed_workspace_binding_id":                    "binding-missing-route",
+		},
+		CreatedAt: 1,
+		UpdatedAt: 1,
+	}); err != nil {
+		t.Fatalf("store mirrored session: %v", err)
+	}
+	if _, err := server.swarmDesktopTargetSelection.PutForAccount(testPrincipal().AccountScopeID, testPrincipal().UserID, "selected-child"); err != nil {
+		t.Fatalf("select target: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/session-run-missing-route/run/stream?swarm_id=selected-child", bytes.NewBufferString(`{"type":"run.start","prompt":"hello","background":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadGateway, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "routed session is missing canonical stored route") {
+		t.Fatalf("body = %s, want missing canonical route error", rec.Body.String())
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("selected target hits = %d, want 0", hits.Load())
+	}
+}
+
 func TestRoutedSessionProxyMissingStoredRouteDoesNotUseRequestTarget(t *testing.T) {
 	server, sessionSvc, _, _ := newRoutedSessionTestServer(t)
 	var hits atomic.Int32
@@ -1718,53 +1777,68 @@ func TestRoutedSessionPreferenceReadFromHostWithoutProxy(t *testing.T) {
 }
 
 func TestPrimaryRoutedSessionCreateRejectsMissingExplicitWorktreeMode(t *testing.T) {
-	server, _, _, routeStore := newRoutedSessionTestServer(t)
-	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatalf("child open should not be called for invalid primary contract")
-	}))
-	defer child.Close()
+	cases := []struct {
+		name             string
+		worktreeModeJSON string
+	}{
+		{name: "missing", worktreeModeJSON: ""},
+		{name: "empty", worktreeModeJSON: `,"worktree_mode":""`},
+		{name: "invalid", worktreeModeJSON: `,"worktree_mode":"legacy-default"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server, _, _, routeStore := newRoutedSessionTestServer(t)
+			var childOpenCalled atomic.Bool
+			child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				childOpenCalled.Store(true)
+				t.Fatalf("child open should not be called for invalid primary contract")
+			}))
+			defer child.Close()
 
-	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
-		SwarmID:              "container-swarm",
-		UserID:               testPrincipal().UserID,
-		AccountScopeID:       testPrincipal().AccountScopeID,
-		Name:                 "container child",
-		Relationship:         swarmruntime.RelationshipChild,
-		Transport:            "remote",
-		BackendURL:           child.URL,
-		Status:               "attached",
-		OwnerHostSwarmID:     "host-swarm-id",
-		OwnerHostContainerID: "host-container-1",
-	}); err != nil {
-		t.Fatalf("upsert runtime: %v", err)
-	}
-	if _, err := server.topology.UpsertWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
-		BindingID:                 "binding-primary-missing-worktree",
-		UserID:                    testPrincipal().UserID,
-		AccountScopeID:            testPrincipal().AccountScopeID,
-		SourceWorkspacePath:       "/host/swarm-go",
-		SourceWorkspaceName:       "swarm-go",
-		DestinationRuntimeSwarmID: "container-swarm",
-		DestinationHostSwarmID:    "host-swarm-id",
-		DestinationWorkspacePath:  "/workspaces/swarm-go",
-		LegacyTargetKind:          "local-container",
-	}); err != nil {
-		t.Fatalf("upsert binding: %v", err)
-	}
+			if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
+				SwarmID:              "container-swarm",
+				UserID:               testPrincipal().UserID,
+				AccountScopeID:       testPrincipal().AccountScopeID,
+				Name:                 "container child",
+				Relationship:         swarmruntime.RelationshipChild,
+				Transport:            "remote",
+				BackendURL:           child.URL,
+				Status:               "attached",
+				OwnerHostSwarmID:     "host-swarm-id",
+				OwnerHostContainerID: "host-container-1",
+			}); err != nil {
+				t.Fatalf("upsert runtime: %v", err)
+			}
+			if _, err := server.topology.UpsertWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
+				BindingID:                 "binding-primary-missing-worktree",
+				UserID:                    testPrincipal().UserID,
+				AccountScopeID:            testPrincipal().AccountScopeID,
+				SourceWorkspacePath:       "/host/swarm-go",
+				SourceWorkspaceName:       "swarm-go",
+				DestinationRuntimeSwarmID: "container-swarm",
+				DestinationHostSwarmID:    "host-swarm-id",
+				DestinationWorkspacePath:  "/workspaces/swarm-go",
+				LegacyTargetKind:          "local-container",
+			}); err != nil {
+				t.Fatalf("upsert binding: %v", err)
+			}
 
-	body := bytes.NewBufferString(`{"title":"missing worktree","mode":"auto","workspace_binding_id":"binding-primary-missing-worktree","workspace_name":"swarm-go","agent_name":"swarm","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`)
-	req := httptest.NewRequest(http.MethodPost, "/v1/sessions?swarm_id=container-swarm", body)
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "worktree_mode must be explicitly set to on or off") {
-		t.Fatalf("body = %s, want explicit worktree mode error", rec.Body.String())
-	}
-	if routes, err := routeStore.List(10); err != nil || len(routes) != 0 {
-		t.Fatalf("routes = %+v err=%v, want no route", routes, err)
+			body := bytes.NewBufferString(`{"title":"missing worktree","mode":"auto","workspace_binding_id":"binding-primary-missing-worktree","workspace_name":"swarm-go","agent_name":"swarm"` + tc.worktreeModeJSON + `,"preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`)
+			req := httptest.NewRequest(http.MethodPost, "/v1/sessions?swarm_id=container-swarm", body)
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "worktree_mode must be explicitly set to on or off") {
+				t.Fatalf("body = %s, want explicit worktree mode error", rec.Body.String())
+			}
+			if childOpenCalled.Load() {
+				t.Fatal("child open was called for invalid primary contract")
+			}
+			assertNoPrimaryCreateResidue(t, server, routeStore)
+		})
 	}
 }
 
@@ -2140,49 +2214,80 @@ func TestPrimaryRoutedSessionCreateBuildsExplicitBindingContract(t *testing.T) {
 }
 
 func TestPrimaryRoutedSessionCreateRejectsPathAuthorityForBindingRoute(t *testing.T) {
-	server, _, _, _ := newRoutedSessionTestServer(t)
-	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatalf("child open should not be called when frontend sends route path authority")
-	}))
-	defer child.Close()
-	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
-		SwarmID:              "container-swarm",
-		UserID:               testPrincipal().UserID,
-		AccountScopeID:       testPrincipal().AccountScopeID,
-		Name:                 "container child",
-		Relationship:         swarmruntime.RelationshipChild,
-		Transport:            "remote",
-		BackendURL:           child.URL,
-		Status:               "attached",
-		OwnerHostSwarmID:     "host-swarm-id",
-		OwnerHostContainerID: "host-container-1",
-	}); err != nil {
-		t.Fatalf("upsert runtime: %v", err)
+	cases := []struct {
+		name      string
+		fieldJSON string
+	}{
+		{name: "workspace path", fieldJSON: `"workspace_path":"/frontend/stale/swarm-go"`},
+		{name: "host workspace path", fieldJSON: `"host_workspace_path":"/frontend/stale-host/swarm-go"`},
+		{name: "runtime workspace path", fieldJSON: `"runtime_workspace_path":"/frontend/stale-runtime/swarm-go"`},
 	}
-	if _, err := server.topology.UpsertWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
-		BindingID:                 "binding-path-rejected",
-		UserID:                    testPrincipal().UserID,
-		AccountScopeID:            testPrincipal().AccountScopeID,
-		SourceWorkspacePath:       "/host/swarm-go",
-		SourceWorkspaceName:       "swarm-go",
-		DestinationRuntimeSwarmID: "container-swarm",
-		DestinationHostSwarmID:    "host-swarm-id",
-		DestinationWorkspacePath:  "/workspaces/swarm-go",
-		LegacyTargetKind:          "local-container",
-	}); err != nil {
-		t.Fatalf("upsert binding: %v", err)
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server, _, _, routeStore := newRoutedSessionTestServer(t)
+			var childOpenCalled atomic.Bool
+			child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				childOpenCalled.Store(true)
+				t.Fatalf("child open should not be called when frontend sends route path authority")
+			}))
+			defer child.Close()
+			if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
+				SwarmID:              "container-swarm",
+				UserID:               testPrincipal().UserID,
+				AccountScopeID:       testPrincipal().AccountScopeID,
+				Name:                 "container child",
+				Relationship:         swarmruntime.RelationshipChild,
+				Transport:            "remote",
+				BackendURL:           child.URL,
+				Status:               "attached",
+				OwnerHostSwarmID:     "host-swarm-id",
+				OwnerHostContainerID: "host-container-1",
+			}); err != nil {
+				t.Fatalf("upsert runtime: %v", err)
+			}
+			if _, err := server.topology.UpsertWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
+				BindingID:                 "binding-path-rejected",
+				UserID:                    testPrincipal().UserID,
+				AccountScopeID:            testPrincipal().AccountScopeID,
+				SourceWorkspacePath:       "/host/swarm-go",
+				SourceWorkspaceName:       "swarm-go",
+				DestinationRuntimeSwarmID: "container-swarm",
+				DestinationHostSwarmID:    "host-swarm-id",
+				DestinationWorkspacePath:  "/workspaces/swarm-go",
+				LegacyTargetKind:          "local-container",
+			}); err != nil {
+				t.Fatalf("upsert binding: %v", err)
+			}
 
-	body := bytes.NewBufferString(`{"title":"path authority","mode":"auto","workspace_path":"/frontend/stale/swarm-go","workspace_binding_id":"binding-path-rejected","workspace_name":"swarm-go","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`)
-	req := httptest.NewRequest(http.MethodPost, "/v1/sessions?swarm_id=container-swarm", body)
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			body := bytes.NewBufferString(`{"title":"path authority","mode":"auto",` + tc.fieldJSON + `,"workspace_binding_id":"binding-path-rejected","workspace_name":"swarm-go","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`)
+			req := httptest.NewRequest(http.MethodPost, "/v1/sessions?swarm_id=container-swarm", body)
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "routed session workspace paths must be resolved from workspace binding") {
+				t.Fatalf("body = %s, want path authority rejection", rec.Body.String())
+			}
+			if childOpenCalled.Load() {
+				t.Fatal("child open was called when frontend sent route path authority")
+			}
+			assertNoPrimaryCreateResidue(t, server, routeStore)
+		})
 	}
-	if !strings.Contains(rec.Body.String(), "routed session workspace paths must be resolved from workspace binding") {
-		t.Fatalf("body = %s, want path authority rejection", rec.Body.String())
+}
+
+func assertNoPrimaryCreateResidue(t *testing.T, _ *Server, routeStore *pebblestore.SessionRouteStore) {
+	t.Helper()
+	if routeStore != nil {
+		routes, err := routeStore.List(10)
+		if err != nil {
+			t.Fatalf("list routes: %v", err)
+		}
+		if len(routes) != 0 {
+			t.Fatalf("routes = %+v, want no route", routes)
+		}
 	}
 }
 

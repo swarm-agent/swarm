@@ -566,20 +566,13 @@ func (s *runStreamState) removeSubscriberLocked(subscriberID string) {
 }
 
 func (s *Server) handleRunStreamWebsocket(w http.ResponseWriter, r *http.Request, sessionID string, principal identity.Principal) {
-	remoteTarget, ok, err := s.routedSessionTarget(principal, sessionID)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
-		return
-	}
-	if !ok {
-		remoteTarget, err = s.currentRemoteSwarmTargetForRequest(r)
-		if err != nil {
-			writeError(w, http.StatusBadGateway, err)
-			return
-		}
-	}
 	if s.isManagedHostMirroredSession(sessionID) {
 		s.handleManagedHostSessionRunStreamWebsocket(w, r, sessionID)
+		return
+	}
+	remoteTarget, _, err := s.routedSessionTargetOrFailClosed(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
 		return
 	}
 	if remoteTarget != nil {
@@ -800,20 +793,13 @@ func (s *Server) handleRunStreamStop(conn *transportws.Conn, sessionID string, i
 }
 
 func (s *Server) handleRunStreamControl(w http.ResponseWriter, r *http.Request, sessionID string, principal identity.Principal) {
-	remoteTarget, ok, err := s.routedSessionTarget(principal, sessionID)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
-		return
-	}
-	if !ok {
-		remoteTarget, err = s.currentRemoteSwarmTargetForRequest(r)
-		if err != nil {
-			writeError(w, http.StatusBadGateway, err)
-			return
-		}
-	}
 	if s.isManagedHostMirroredSession(sessionID) {
 		s.handleManagedHostSessionRunStreamControl(w, r, sessionID)
+		return
+	}
+	remoteTarget, _, err := s.routedSessionTargetOrFailClosed(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
 		return
 	}
 	if remoteTarget != nil {

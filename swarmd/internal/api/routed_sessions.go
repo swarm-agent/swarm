@@ -102,7 +102,7 @@ func (s *Server) routedSessionTarget(principal identity.Principal, sessionID str
 	}
 	flowRouteDiagLog("routed_session_target_lookup",
 		"session_id", record.SessionID,
-		"route_child_swarm_id", record.RuntimeSwarmID,
+		"route_child_swarm_id", runtimeSwarmID,
 		"route_child_backend_url_present", false,
 		"route_proxy_backend_url", backendURL,
 		"route_host_swarm_id", hostSwarmID,
@@ -112,8 +112,8 @@ func (s *Server) routedSessionTarget(principal identity.Principal, sessionID str
 		"route_runtime_workspace_path", strings.TrimSpace(record.RuntimeWorkspacePath),
 	)
 	target := &swarmTarget{
-		SwarmID:      strings.TrimSpace(record.RuntimeSwarmID),
-		Name:         firstNonEmpty(strings.TrimSpace(runtimeRecord.Name), strings.TrimSpace(record.RuntimeSwarmID)),
+		SwarmID:      runtimeSwarmID,
+		Name:         firstNonEmpty(strings.TrimSpace(runtimeRecord.Name), runtimeSwarmID),
 		Role:         firstNonEmpty(strings.TrimSpace(runtimeRecord.Role), "child"),
 		Relationship: firstNonEmpty(strings.TrimSpace(runtimeRecord.Relationship), "child"),
 		Kind:         swarmTargetKindForRoutedSession(runtimeRecord),
@@ -139,27 +139,35 @@ func normalizeRoutedSessionBackendURL(raw string) string {
 	return strings.TrimRight(strings.TrimSpace(raw), "/")
 }
 
+var errRoutedSessionMissingCanonicalStoredRoute = errors.New("routed session is missing canonical stored route")
+
+func (s *Server) routedSessionTargetOrFailClosed(principal identity.Principal, sessionID string) (*swarmTarget, bool, error) {
+	target, ok, err := s.routedSessionTarget(principal, sessionID)
+	if err != nil || ok {
+		return target, ok, err
+	}
+	requiresRoute, routeErr := s.sessionRequiresCanonicalStoredRoute(sessionID)
+	if routeErr != nil {
+		return nil, false, routeErr
+	}
+	if requiresRoute {
+		return nil, false, errRoutedSessionMissingCanonicalStoredRoute
+	}
+	return nil, false, nil
+}
+
 func (s *Server) proxyRoutedSessionRequest(w http.ResponseWriter, r *http.Request, sessionID string) bool {
 	principal, principalOK := PrincipalFromRequest(r)
 	if !principalOK || !principal.Valid() {
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
 		return true
 	}
-	target, ok, err := s.routedSessionTarget(principal, sessionID)
+	target, ok, err := s.routedSessionTargetOrFailClosed(principal, sessionID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return true
 	}
 	if !ok {
-		requiresRoute, routeErr := s.sessionRequiresCanonicalStoredRoute(sessionID)
-		if routeErr != nil {
-			writeError(w, http.StatusBadGateway, routeErr)
-			return true
-		}
-		if requiresRoute {
-			writeError(w, http.StatusBadGateway, errors.New("routed session is missing canonical stored route"))
-			return true
-		}
 		return false
 	}
 	log.Printf("proxy routed session request session_id=%q method=%s path=%q source=stored swarm_id=%q backend_url=%q", strings.TrimSpace(sessionID), r.Method, r.URL.Path, strings.TrimSpace(target.SwarmID), strings.TrimSpace(target.BackendURL))
@@ -196,7 +204,7 @@ func (s *Server) sessionRequiresCanonicalStoredRoute(sessionID string) (bool, er
 	if err != nil || !ok {
 		return false, err
 	}
-	return sessionHasControllerOwnedRoutedMirrorMetadata(session.Metadata), nil
+	return sessionHasControllerOwnedRoutedMirrorMetadata(session.Metadata) || sessionHasRoutedWorkspaceBindingMetadata(session.Metadata), nil
 }
 
 func (s *Server) postPeerJSONToSwarmTarget(ctx context.Context, target swarmTarget, path string, payload any, out any) error {

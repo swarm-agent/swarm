@@ -23,23 +23,18 @@ type targetWorkspaceRoute struct {
 
 func newTargetWorkspaceRoute(accountScopeID string, target swarmTarget, binding pebblestore.TopologyWorkspaceBindingRecord) (targetWorkspaceRoute, error) {
 	targetHostSwarmID := strings.TrimSpace(target.HostSwarmID)
-	bindingHostSwarmID := firstNonEmpty(strings.TrimSpace(binding.DestinationAuthorityHostSwarmID), strings.TrimSpace(binding.DestinationHostSwarmID))
-	if strings.TrimSpace(binding.DestinationAuthorityHostSwarmID) == "" && targetHostSwarmID != "" && strings.TrimSpace(binding.DestinationHostSwarmID) != "" {
-		// Legacy bindings had only destination_host_swarm_id, and many fixtures used
-		// that field as source-host path metadata. Strict bindings carry
-		// destination_authority_host_swarm_id; for legacy-only records, keep target
-		// authority identity authoritative instead of treating stale host path data as
-		// placement authority.
-		bindingHostSwarmID = targetHostSwarmID
+	bindingHostSwarmID := strings.TrimSpace(binding.DestinationAuthorityHostSwarmID)
+	if bindingHostSwarmID == "" {
+		return targetWorkspaceRoute{}, errors.New("target workspace route binding authority host swarm id is required")
 	}
-	if targetHostSwarmID != "" && bindingHostSwarmID != "" && !strings.EqualFold(targetHostSwarmID, bindingHostSwarmID) {
+	if targetHostSwarmID != "" && !strings.EqualFold(targetHostSwarmID, bindingHostSwarmID) {
 		return targetWorkspaceRoute{}, errors.New("target workspace route authority host swarm id does not match binding authority host swarm id")
 	}
 	route := targetWorkspaceRoute{
 		AccountScopeID:      strings.TrimSpace(accountScopeID),
 		TargetSwarmID:       strings.TrimSpace(target.SwarmID),
 		RuntimeSwarmID:      strings.TrimSpace(binding.DestinationRuntimeSwarmID),
-		HostSwarmID:         firstNonEmpty(bindingHostSwarmID, targetHostSwarmID, strings.TrimSpace(binding.DestinationRuntimeSwarmID)),
+		HostSwarmID:         bindingHostSwarmID,
 		WorkspaceBindingID:  strings.TrimSpace(binding.BindingID),
 		WorkspaceName:       strings.TrimSpace(binding.SourceWorkspaceName),
 		PlacementGeneration: binding.PlacementGeneration,
