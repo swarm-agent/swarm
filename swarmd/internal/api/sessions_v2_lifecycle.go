@@ -965,6 +965,9 @@ func (s *Server) handlePrimarySessionV2RunStreamWebsocket(w http.ResponseWriter,
 		inbound.RunRequest = inbound.RunRequest.Normalized()
 		s.handleRunStreamStart(conn, sessionID, inbound, principal)
 	case "run.resume", "resume":
+		// Resume is read-only observation: the outer /run/stream entrypoint
+		// already validated read authority, and handleRunStreamResume only
+		// subscribes/replays frames for an existing run after a session match.
 		s.handleRunStreamResume(conn, sessionID, inbound)
 	case "run.stop", "stop":
 		if _, err := s.requirePrimarySessionV2Authority(r, sessionID, true); err != nil {
