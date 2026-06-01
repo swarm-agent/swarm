@@ -19,6 +19,9 @@ const CLEANUP = process.env.SWARM_LOCAL_CONTAINER_WORKTREE_CLEANUP === '1'
 const REUSE_CHILD_SWARM_ID = process.env.SWARM_LOCAL_CONTAINER_CHILD_SWARM_ID || process.env.SWARM_E2E_MANAGED_CHILD_SWARM_ID || ''
 const REUSE_WORKSPACE_BINDING_ID = process.env.SWARM_LOCAL_CONTAINER_WORKSPACE_BINDING_ID || process.env.SWARM_E2E_WORKSPACE_BINDING_ID || ''
 const REUSE_RUNTIME_WORKSPACE_PATH = process.env.SWARM_LOCAL_CONTAINER_RUNTIME_WORKSPACE_PATH || process.env.SWARM_E2E_MANAGED_CHILD_RUNTIME_WORKSPACE || ''
+const PROVIDER = process.env.SWARM_PROVIDER || 'codex'
+const MODEL = process.env.SWARM_MODEL || 'gpt-5.5'
+const THINKING = process.env.SWARM_THINKING || 'low'
 
 const SESSION_CANONICAL_STATE_FAILURE = 'worktree_mode on did not create canonical worktree session state'
 const FORBIDDEN_SESSION_CREATE_PATH_FIELDS = ['workspace_path', 'host_workspace_path', 'runtime_workspace_path'] as const
@@ -334,6 +337,7 @@ async function openWorktreeSession(target: ContainerTarget, sourceWorkspacePath:
     worktree_use_current_branch: false,
     worktree_base_branch: baseBranch,
     worktree_branch_name: BRANCH_NAME,
+    preference: { provider: PROVIDER, model: MODEL, thinking: THINKING },
     metadata: { desktop_local_container_worktree_session_e2e: true },
   }
   assertStableSessionCreateContract(sessionCreateRequest)
