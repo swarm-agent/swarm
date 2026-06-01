@@ -102,6 +102,30 @@ func TestSessionsV2LifecycleRejectsStalePlacementGeneration(t *testing.T) {
 	}
 }
 
+func TestSessionsV2LifecycleRejectsBindingAttestationMismatch(t *testing.T) {
+	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	sessionID := createPrimarySessionV2ForLifecycleTest(t, server, swarmStore, "binding-primary-v2", pebblestore.TopologyWorkspaceBindingAccessModeReadWrite, true)
+	binding, ok, err := server.topology.GetWorkspaceBindingForAccount(testPrincipal().AccountScopeID, "binding-primary-v2")
+	if err != nil || !ok {
+		t.Fatalf("get binding ok=%t err=%v", ok, err)
+	}
+	binding.AttestedByHostSwarmID = "other-host-swarm-id"
+	binding.LegacyTargetKind = "attestation-mismatch-v2-test"
+	if _, err := server.topology.UpsertWorkspaceBinding(binding); err != nil {
+		t.Fatalf("update binding attestation: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/sessions/"+sessionID+"/messages", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "attesting host does not match authority host") {
+		t.Fatalf("body = %s, want attestation mismatch", rec.Body.String())
+	}
+}
+
 func TestSessionsV2LifecycleMetadataUpdateRejectsAuthorityKeys(t *testing.T) {
 	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
 	sessionID := createPrimarySessionV2ForLifecycleTest(t, server, swarmStore, "binding-primary-v2", pebblestore.TopologyWorkspaceBindingAccessModeReadWrite, true)

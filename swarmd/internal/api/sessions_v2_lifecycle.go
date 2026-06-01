@@ -190,6 +190,9 @@ func (s *Server) requirePrimarySessionV2Authority(r *http.Request, sessionID str
 	if strings.TrimSpace(binding.DestinationRuntimeKind) != pebblestore.TopologyRuntimeKindHost || strings.TrimSpace(binding.DestinationContainerID) != "" {
 		return primarySessionV2Authority{}, sessionV2InvalidClass("sessions v2 workspace binding destination must be host runtime")
 	}
+	if strings.TrimSpace(binding.AttestedByHostSwarmID) != strings.TrimSpace(placement.AuthorityHostSwarmID) {
+		return primarySessionV2Authority{}, sessionV2StaleAuthority("sessions v2 workspace binding attesting host does not match authority host")
+	}
 	if binding.PlacementGeneration != execution.PlacementGeneration || binding.BindingGeneration != execution.BindingGeneration {
 		return primarySessionV2Authority{}, sessionV2StaleAuthority("sessions v2 workspace binding generation mismatch")
 	}
