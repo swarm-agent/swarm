@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestCreateSessionWithOptionsIncludesSwarmIDQueryAndBindingWithoutPathAuthority(t *testing.T) {
+func TestCreateSessionWithOptionsOmitsAuthorityFieldsWhenBindingIsPresent(t *testing.T) {
 	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
 	t.Setenv("DATA_DIR", "")
 
@@ -66,13 +66,9 @@ func TestCreateSessionWithOptionsIncludesSwarmIDQueryAndBindingWithoutPathAuthor
 	if got, _ := body["workspace_binding_id"].(string); got != "binding-child" {
 		t.Fatalf("workspace_binding_id = %q, want binding-child", got)
 	}
-	if _, ok := body["workspace_path"]; ok {
-		t.Fatalf("workspace_path present in workspace-backed request: %#v", body["workspace_path"])
-	}
-	if _, ok := body["host_workspace_path"]; ok {
-		t.Fatalf("host_workspace_path present in workspace-backed request: %#v", body["host_workspace_path"])
-	}
-	if _, ok := body["runtime_workspace_path"]; ok {
-		t.Fatalf("runtime_workspace_path present in workspace-backed request: %#v", body["runtime_workspace_path"])
+	for _, key := range []string{"workspace_name", "workspace_path", "host_workspace_path", "runtime_workspace_path"} {
+		if _, ok := body[key]; ok {
+			t.Fatalf("%s present in workspace-bound create request: %#v", key, body[key])
+		}
 	}
 }

@@ -119,10 +119,15 @@ func (a *App) swarmStatusLines() []string {
 	lines := []string{
 		"swarm name: " + a.currentSwarmName(),
 		"swarm role: " + a.currentSwarmRole(),
+	}
+	if target := a.homeModel.CurrentSwarmTarget; target != nil && strings.TrimSpace(target.SwarmID) != "" {
+		lines = append(lines, "current target swarm_id: "+strings.TrimSpace(target.SwarmID))
+	}
+	lines = append(lines,
 		fmt.Sprintf("pending swarm notifications: %d", a.swarmNotificationCount),
 		"usage: /swarm [status|pending|approve <id>|reject <id>|set <name>|role <master|child>|<name>]",
 		"master role note: future controller for child swarms; pairing and sync come later.",
-	}
+	)
 	if strings.TrimSpace(a.settingsLabel) != "" {
 		lines = append(lines, "settings: "+a.settingsLabel)
 	}
@@ -145,8 +150,11 @@ func (a *App) showSwarmSelectorOverlay(status string) {
 	lines := []string{
 		"current: " + a.selectedChatRouteLabelForWorkspace(workspacePath),
 		"default: " + chatRouteLabelForID(routes, emptyFallback(strings.TrimSpace(a.config.Chat.DefaultWorkspaceRoutes[workspacePath]), "host")),
-		"selectors:",
 	}
+	if target := a.homeModel.CurrentSwarmTarget; target != nil && strings.TrimSpace(target.SwarmID) != "" {
+		lines = append(lines, "current target swarm_id: "+strings.TrimSpace(target.SwarmID))
+	}
+	lines = append(lines, "selectors:")
 	for _, route := range routes {
 		marker := "  "
 		if strings.TrimSpace(route.ID) == selected {

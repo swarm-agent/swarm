@@ -50,14 +50,17 @@ type WorkspaceTopologyRoute struct {
 }
 
 type Workspace struct {
-	Name             string
-	Path             string
-	Directories      []string
-	ReplicationLinks []WorkspaceReplicationLink
-	TopologyRoutes   []WorkspaceTopologyRoute
-	ThemeID          string
-	Icon             string
-	Active           bool
+	Name                    string
+	Path                    string
+	WorkspaceID             string
+	WorkspaceGeneration     int64
+	LocalWorkspaceBindingID string
+	Directories             []string
+	ReplicationLinks        []WorkspaceReplicationLink
+	TopologyRoutes          []WorkspaceTopologyRoute
+	ThemeID                 string
+	Icon                    string
+	Active                  bool
 }
 
 type DirectoryItem struct {
@@ -129,6 +132,23 @@ type ChatRoute struct {
 	RuntimeWorkspacePath string
 }
 
+type SwarmTarget struct {
+	SwarmID      string
+	Name         string
+	Role         string
+	Relationship string
+	Kind         string
+	DeploymentID string
+	AttachStatus string
+	HostSwarmID  string
+	Online       bool
+	Selectable   bool
+	Current      bool
+	BackendURL   string
+	DesktopURL   string
+	LastError    string
+}
+
 type HomeModel struct {
 	Title                       string
 	Version                     string
@@ -155,6 +175,7 @@ type HomeModel struct {
 	RuleCount                   int
 	SkillCount                  int
 	WorktreesEnabled            bool
+	CurrentSwarmTarget          *SwarmTarget
 	ChatRoutes                  []ChatRoute
 	SelectedChatRouteID         string
 	Workspaces                  []Workspace
@@ -209,6 +230,7 @@ func MockHome() HomeModel {
 		ActiveAgentRuntimeKnown:     true,
 		Subagents:                   []string{"clone", "explorer", "memory"},
 		ContextWindow:               200000,
+		CurrentSwarmTarget:          &SwarmTarget{SwarmID: "mock-swarm", Name: "Mock Swarm", Role: "master", Relationship: "self", Kind: "local", Online: true, Selectable: true, Current: true},
 		Workspaces: []Workspace{
 			{Name: "swarm", Path: displayPath(swarmPath), Icon: "*", Active: true},
 			{Name: "swarm-box", Path: displayPath(boxPath), Icon: "+", Active: false},

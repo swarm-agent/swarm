@@ -563,13 +563,31 @@ type WorkspaceTopologyRoute struct {
 	UpdatedAt            int64                    `json:"updated_at"`
 }
 
+type WorkspaceOverviewSwarmTarget struct {
+	SwarmID      string `json:"swarm_id"`
+	Name         string `json:"name"`
+	Role         string `json:"role"`
+	Relationship string `json:"relationship"`
+	Kind         string `json:"kind"`
+	DeploymentID string `json:"deployment_id,omitempty"`
+	AttachStatus string `json:"attach_status,omitempty"`
+	HostSwarmID  string `json:"host_swarm_id,omitempty"`
+	Online       bool   `json:"online"`
+	Selectable   bool   `json:"selectable"`
+	Current      bool   `json:"current"`
+	BackendURL   string `json:"backend_url,omitempty"`
+	DesktopURL   string `json:"desktop_url,omitempty"`
+	LastError    string `json:"last_error,omitempty"`
+}
+
 type WorkspaceEntry struct {
-	Path                string                     `json:"path"`
-	WorkspaceID         string                     `json:"workspace_id,omitempty"`
-	WorkspaceGeneration int64                      `json:"workspace_generation,omitempty"`
-	State               string                     `json:"state,omitempty"`
-	WorkspaceName       string                     `json:"workspace_name"`
-	ThemeID             string                     `json:"theme_id,omitempty"`
+	Path                    string                     `json:"path"`
+	WorkspaceID             string                     `json:"workspace_id,omitempty"`
+	WorkspaceGeneration     int64                      `json:"workspace_generation,omitempty"`
+	State                   string                     `json:"state,omitempty"`
+	LocalWorkspaceBindingID string                     `json:"local_workspace_binding_id,omitempty"`
+	WorkspaceName           string                     `json:"workspace_name"`
+	ThemeID                 string                     `json:"theme_id,omitempty"`
 	Directories         []string                   `json:"directories"`
 	ReplicationLinks    []WorkspaceReplicationLink `json:"replication_links,omitempty"`
 	IsGitRepo           bool                       `json:"is_git_repo"`
@@ -587,15 +605,16 @@ type WorkspaceOverviewWorkspace struct {
 }
 
 type WorkspaceOverviewResponse struct {
-	OK               bool                         `json:"ok"`
-	CurrentWorkspace *WorkspaceResolution         `json:"current_workspace,omitempty"`
-	Workspaces       []WorkspaceOverviewWorkspace `json:"workspaces"`
-	Directories      []WorkspaceDiscoverEntry     `json:"directories"`
-	Cursor           int                          `json:"cursor,omitempty"`
-	Limit            int                          `json:"limit,omitempty"`
-	NextCursor       int                          `json:"next_cursor,omitempty"`
-	HasMore          bool                         `json:"has_more,omitempty"`
-	TotalWorkspaces  int                          `json:"total_workspaces,omitempty"`
+	OK               bool                          `json:"ok"`
+	CurrentWorkspace *WorkspaceResolution          `json:"current_workspace,omitempty"`
+	Workspaces       []WorkspaceOverviewWorkspace  `json:"workspaces"`
+	Directories      []WorkspaceDiscoverEntry      `json:"directories"`
+	Cursor           int                           `json:"cursor,omitempty"`
+	Limit            int                           `json:"limit,omitempty"`
+	NextCursor       int                           `json:"next_cursor,omitempty"`
+	HasMore          bool                          `json:"has_more,omitempty"`
+	TotalWorkspaces  int                           `json:"total_workspaces,omitempty"`
+	SwarmTarget      *WorkspaceOverviewSwarmTarget `json:"swarm_target,omitempty"`
 }
 
 type RuleSource struct {
@@ -2595,7 +2614,6 @@ func (c *API) CreateSessionWithOptions(ctx context.Context, options SessionCreat
 	workspaceBindingID := strings.TrimSpace(options.WorkspaceBindingID)
 	req := map[string]any{
 		"title":                strings.TrimSpace(options.Title),
-		"workspace_name":       strings.TrimSpace(options.WorkspaceName),
 		"workspace_binding_id": workspaceBindingID,
 		"mode":                 strings.TrimSpace(options.Mode),
 		"agent_name":           strings.TrimSpace(options.AgentName),
@@ -2611,6 +2629,7 @@ func (c *API) CreateSessionWithOptions(ctx context.Context, options SessionCreat
 	}
 	if workspaceBindingID == "" {
 		req["workspace_path"] = strings.TrimSpace(options.WorkspacePath)
+		req["workspace_name"] = strings.TrimSpace(options.WorkspaceName)
 		if hostPath := strings.TrimSpace(options.HostWorkspacePath); hostPath != "" {
 			req["host_workspace_path"] = hostPath
 		}

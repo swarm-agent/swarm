@@ -2704,8 +2704,19 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 		return errors.New("workspace path is required")
 	}
 
-	workspaceName := a.contextDisplayNameForPath(workspacePath, strings.TrimSpace(a.home.ActiveWorkspaceName()))
+	activeWorkspaceName := ""
+	if a.home != nil {
+		activeWorkspaceName = strings.TrimSpace(a.home.ActiveWorkspaceName())
+	}
+	workspaceName := a.contextDisplayNameForPath(workspacePath, activeWorkspaceName)
 	route := a.selectedChatRouteForWorkspace(workspacePath)
+	if strings.TrimSpace(route.WorkspaceBindingID) == "" {
+		route.WorkspaceBindingID = a.localWorkspaceBindingIDForPath(workspacePath)
+	}
+	if strings.TrimSpace(route.WorkspaceBindingID) == "" {
+		return errors.New("workspace binding id is required")
+	}
+	createSwarmID := createSessionSwarmIDForRoute(route, a.homeModel.CurrentSwarmTarget)
 
 	title := strings.TrimSpace(titleSeed)
 	if title == "" {
@@ -2731,15 +2742,9 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 		RuntimeWorkspacePath: route.RuntimeWorkspacePath,
 		WorkspaceName:        workspaceName,
 		WorkspaceBindingID:   route.WorkspaceBindingID,
-		SwarmID:              route.SwarmID,
+		SwarmID:              createSwarmID,
 		Preference:           preference,
-		Metadata: map[string]any{
-			"swarm_route_id":                      route.ID,
-			"swarm_routed_child_swarm_id":         route.SwarmID,
-			"swarm_routed_workspace_binding_id":   route.WorkspaceBindingID,
-			"swarm_routed_host_workspace_path":    route.HostWorkspacePath,
-			"swarm_routed_runtime_workspace_path": route.RuntimeWorkspacePath,
-		},
+		Metadata:             nil,
 	})
 	if err != nil {
 		return err
@@ -7189,6 +7194,7 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 	activeIsWorkspace := false
 	activeIsWorkspaceRoot := false
 	if overviewErr == nil {
+		next.CurrentSwarmTarget = modelSwarmTargetFromClient(overview.SwarmTarget)
 		selectedWorkspacePath := ""
 		if overview.CurrentWorkspace != nil {
 			selectedWorkspacePath = normalizePath(strings.TrimSpace(overview.CurrentWorkspace.WorkspacePath))
@@ -7214,13 +7220,16 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 				directories = []string{entryPath}
 			}
 			next.Workspaces = append(next.Workspaces, model.Workspace{
-				Name:             name,
-				Path:             entryPath,
-				Directories:      directories,
-				ReplicationLinks: modelReplicationLinksFromClient(entry.ReplicationLinks),
-				TopologyRoutes:   modelTopologyRoutesFromClient(entry.TopologyRoutes),
-				ThemeID:          strings.TrimSpace(entry.ThemeID),
-				Icon:             workspaceIcon(i),
+				Name:                    name,
+				Path:                    entryPath,
+				WorkspaceID:             strings.TrimSpace(entry.WorkspaceID),
+				WorkspaceGeneration:     entry.WorkspaceGeneration,
+				LocalWorkspaceBindingID: strings.TrimSpace(entry.LocalWorkspaceBindingID),
+				Directories:             directories,
+				ReplicationLinks:        modelReplicationLinksFromClient(entry.ReplicationLinks),
+				TopologyRoutes:          modelTopologyRoutesFromClient(entry.TopologyRoutes),
+				ThemeID:                 strings.TrimSpace(entry.ThemeID),
+				Icon:                    workspaceIcon(i),
 			})
 			next.Directories = append(next.Directories, model.DirectoryItem{
 				Name:         name,
@@ -7776,6 +7785,22 @@ func (a *App) selectedChatRouteLabelForWorkspace(workspacePath string) string {
 	return emptyFallback(strings.TrimSpace(route.Label), "host")
 }
 
+func (a *App) localWorkspaceBindingIDForPath(workspacePath string) string {
+	if a == nil {
+		return ""
+	}
+	workspacePath = normalizePath(strings.TrimSpace(workspacePath))
+	if workspacePath == "" {
+		return ""
+	}
+	for _, workspace := range a.homeModel.Workspaces {
+		if pathsEqual(workspace.Path, workspacePath) {
+			return strings.TrimSpace(workspace.LocalWorkspaceBindingID)
+		}
+	}
+	return ""
+}
+
 func (a *App) sessionRouteLabelForWorkspace(workspacePath string, metadata map[string]any) string {
 	if route, ok := a.sessionRouteFromMetadata(workspacePath, metadata); ok {
 		return emptyFallback(strings.TrimSpace(route.Label), "host")
@@ -7834,6 +7859,31 @@ func routeIDSwarmLabel(routeID string) string {
 		return strings.TrimSpace(parts[1])
 	}
 	return strings.TrimSpace(routeID)
+}
+
+func modelSwarmTargetFromClient(target *client.WorkspaceOverviewSwarmTarget) *model.SwarmTarget {
+	if target == nil {
+		return nil
+	}
+	if strings.TrimSpace(target.SwarmID) == "" {
+		return nil
+	}
+	return &model.SwarmTarget{
+		SwarmID:      strings.TrimSpace(target.SwarmID),
+		Name:         strings.TrimSpace(target.Name),
+		Role:         strings.TrimSpace(target.Role),
+		Relationship: strings.TrimSpace(target.Relationship),
+		Kind:         strings.TrimSpace(target.Kind),
+		DeploymentID: strings.TrimSpace(target.DeploymentID),
+		AttachStatus: strings.TrimSpace(target.AttachStatus),
+		HostSwarmID:  strings.TrimSpace(target.HostSwarmID),
+		Online:       target.Online,
+		Selectable:   target.Selectable,
+		Current:      target.Current,
+		BackendURL:   strings.TrimSpace(target.BackendURL),
+		DesktopURL:   strings.TrimSpace(target.DesktopURL),
+		LastError:    strings.TrimSpace(target.LastError),
+	}
 }
 
 func modelTopologyRoutesFromClient(routes []client.WorkspaceTopologyRoute) []model.WorkspaceTopologyRoute {

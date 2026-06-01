@@ -48,9 +48,19 @@ func TestBuildChatRoutesForWorkspacesKeepsTargetSwarmID(t *testing.T) {
 	if len(routes) != 2 {
 		t.Fatalf("route count = %d, want 2", len(routes))
 	}
+	host := routes[0]
+	if host.ID != "host" {
+		t.Fatalf("host route ID = %q, want host", host.ID)
+	}
+	if host.SwarmID != "" {
+		t.Fatalf("host route SwarmID = %q, want empty; host target lives in workspace overview swarm_target", host.SwarmID)
+	}
 	remote := routes[1]
 	if remote.SwarmID != "child-swarm" {
 		t.Fatalf("remote SwarmID = %q, want child-swarm", remote.SwarmID)
+	}
+	if remote.SwarmID == remote.WorkspaceBindingID {
+		t.Fatalf("remote SwarmID must come from runtime swarm id, not workspace binding id")
 	}
 	if remote.HostWorkspacePath != testWorkspacePath {
 		t.Fatalf("remote HostWorkspacePath = %q, want %s", remote.HostWorkspacePath, testWorkspacePath)
@@ -60,6 +70,41 @@ func TestBuildChatRoutesForWorkspacesKeepsTargetSwarmID(t *testing.T) {
 	}
 	if remote.WorkspaceBindingID != "binding-1" {
 		t.Fatalf("remote WorkspaceBindingID = %q, want binding-1", remote.WorkspaceBindingID)
+	}
+}
+
+func TestModelSwarmTargetFromClientPropagatesWorkspaceOverviewTarget(t *testing.T) {
+	target := modelSwarmTargetFromClient(&client.WorkspaceOverviewSwarmTarget{
+		SwarmID:      " target-swarm ",
+		Name:         " Target Swarm ",
+		Role:         " master ",
+		Relationship: " self ",
+		Kind:         " local ",
+		DeploymentID: " deploy-1 ",
+		AttachStatus: " attached ",
+		HostSwarmID:  " host-swarm ",
+		Online:       true,
+		Selectable:   true,
+		Current:      true,
+		BackendURL:   " http://127.0.0.1:7781 ",
+		DesktopURL:   " http://127.0.0.1:7780 ",
+		LastError:    " previous error ",
+	})
+
+	if target == nil {
+		t.Fatalf("target is nil")
+	}
+	if target.SwarmID != "target-swarm" {
+		t.Fatalf("SwarmID = %q, want target-swarm", target.SwarmID)
+	}
+	if target.HostSwarmID != "host-swarm" {
+		t.Fatalf("HostSwarmID = %q, want host-swarm", target.HostSwarmID)
+	}
+	if target.BackendURL != "http://127.0.0.1:7781" {
+		t.Fatalf("BackendURL = %q, want trimmed backend URL", target.BackendURL)
+	}
+	if !target.Online || !target.Selectable || !target.Current {
+		t.Fatalf("target booleans not propagated: %+v", target)
 	}
 }
 
