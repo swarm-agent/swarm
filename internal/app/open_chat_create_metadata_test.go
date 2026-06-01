@@ -28,6 +28,20 @@ func TestOpenChatSessionCreatePayloadUsesHostRouteAuthority(t *testing.T) {
 	assertCreateMetadataStrictV2Safe(t, got.metadata)
 }
 
+func TestOpenChatSessionCreatePayloadUsesTUICWDPrimaryExceptionOnlyForHostRoute(t *testing.T) {
+	got := captureOpenChatSessionCreateRequest(t, model.ChatRoute{ID: "host"}, "host-swarm", "", testWorkspacePath, "plan")
+
+	if got.bodyString("swarm_id") != "host-swarm" {
+		t.Fatalf("swarm_id = %q, want host-swarm", got.bodyString("swarm_id"))
+	}
+	if _, ok := got.body["workspace_binding_id"]; ok {
+		t.Fatalf("workspace_binding_id present in TUI cwd create: %#v", got.body["workspace_binding_id"])
+	}
+	if got.bodyString("workspace_path") != testWorkspacePath {
+		t.Fatalf("workspace_path = %q, want %q", got.bodyString("workspace_path"), testWorkspacePath)
+	}
+}
+
 func TestOpenChatSessionCreatePayloadUsesSelectedRouteAuthority(t *testing.T) {
 	route := model.ChatRoute{
 		ID:                   testRemoteRouteID,
@@ -117,6 +131,16 @@ func captureOpenChatSessionCreateRequest(t *testing.T, route model.ChatRoute, ho
 			})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions/session-1/mode":
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "mode": captured.bodyString("mode")})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/providers":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "providers": []any{}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/models/favorites":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "favorites": []any{}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/model/catalog":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "models": []any{}})
+		case r.Method == http.MethodGet && (r.URL.Path == "/v1/sessions/session-1/messages" || r.URL.Path == "/v2/sessions/session-1/messages"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "session_id": "session-1", "messages": []any{}})
+		case r.Method == http.MethodGet && (r.URL.Path == "/v1/sessions/session-1/usage" || r.URL.Path == "/v2/sessions/session-1/usage"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "session_id": "session-1", "has_usage_summary": false, "turn_usage_records": []any{}})
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
@@ -176,7 +200,7 @@ func topologyRoutesForTestChatRoute(route model.ChatRoute) []model.WorkspaceTopo
 func assertV2PrimaryCreatePayload(t *testing.T, body map[string]any, bindingID, mode string) {
 	t.Helper()
 	allowed := map[string]struct{}{
-		"swarm_id": {}, "workspace_binding_id": {}, "title": {}, "mode": {}, "agent_name": {},
+		"swarm_id": {}, "workspace_binding_id": {}, "workspace_path": {}, "title": {}, "mode": {}, "agent_name": {},
 		"metadata": {}, "worktree_mode": {}, "preference": {},
 	}
 	for key := range body {

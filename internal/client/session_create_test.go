@@ -22,6 +22,9 @@ func TestCreateSessionWithOptionsPostsStrictV2PrimaryPayload(t *testing.T) {
 		if r.Header.Get("X-Swarm-Token") == "" {
 			t.Fatalf("missing X-Swarm-Token on v2 create request")
 		}
+		if r.Header.Get("X-Swarm-Client") != "swarmtui" {
+			t.Fatalf("X-Swarm-Client = %q, want swarmtui", r.Header.Get("X-Swarm-Client"))
+		}
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
@@ -95,5 +98,47 @@ func TestCreateSessionWithOptionsPostsStrictV2PrimaryPayload(t *testing.T) {
 		if _, ok := body[key]; ok {
 			t.Fatalf("%s present in workspace-bound create request: %#v", key, body[key])
 		}
+	}
+}
+
+func TestCreateSessionWithOptionsPostsTUICWDPrimaryPayloadWithoutBinding(t *testing.T) {
+	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
+	t.Setenv("DATA_DIR", "")
+
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Swarm-Client") != "swarmtui" {
+			t.Fatalf("X-Swarm-Client = %q, want swarmtui", r.Header.Get("X-Swarm-Client"))
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":      true,
+			"session": map[string]any{"id": "session-1", "workspace_path": "/cwd", "workspace_name": "cwd", "title": "New Session", "mode": "plan"},
+		})
+	}))
+	defer server.Close()
+
+	api := New(server.URL)
+	api.SetToken("test-token")
+	if _, err := api.CreateSessionWithOptions(context.Background(), SessionCreateOptions{
+		Title:         "New Session",
+		WorkspacePath: "/cwd",
+		SwarmID:       "host-swarm",
+		TUIPrimaryCWD: true,
+		Preference: ModelPreference{
+			Provider: "anthropic",
+			Model:    "claude",
+			Thinking: "auto",
+		},
+	}); err != nil {
+		t.Fatalf("CreateSessionWithOptions() error = %v", err)
+	}
+	if _, ok := body["workspace_binding_id"]; ok {
+		t.Fatalf("workspace_binding_id present in TUI cwd create: %#v", body["workspace_binding_id"])
+	}
+	if got, _ := body["workspace_path"].(string); got != "/cwd" {
+		t.Fatalf("workspace_path = %q, want /cwd", got)
 	}
 }

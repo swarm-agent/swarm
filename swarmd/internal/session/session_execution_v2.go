@@ -17,6 +17,10 @@ import (
 const (
 	SessionExecutionClassPrimary        = "primary"
 	SessionExecutionClassLocalContainer = "local_container"
+
+	SessionExecutionTUICWDSourceIDPrefix    = "tui-cwd:"
+	SessionExecutionTUICWDSourceGeneration  = int64(1)
+	SessionExecutionTUICWDBindingGeneration = int(1)
 )
 
 type SessionExecution struct {
@@ -41,6 +45,7 @@ type SessionExecution struct {
 type SessionsV2CreateRequest struct {
 	SwarmID                  string                      `json:"swarm_id"`
 	WorkspaceBindingID       string                      `json:"workspace_binding_id"`
+	WorkspacePath            string                      `json:"workspace_path,omitempty"`
 	Title                    string                      `json:"title,omitempty"`
 	Mode                     string                      `json:"mode,omitempty"`
 	AgentName                string                      `json:"agent_name,omitempty"`
@@ -74,6 +79,9 @@ func (s *Service) CreateFromExecutionV2(ctx context.Context, cmd SessionsV2Creat
 	}
 	if strings.TrimSpace(cmd.Request.WorkspaceBindingID) != execution.WorkspaceBindingID {
 		return pebblestore.SessionSnapshot{}, SessionExecution{}, nil, "", "", errors.New("sessions v2 request workspace_binding_id does not match execution binding")
+	}
+	if execution.WorkspaceBindingID == "" && strings.TrimSpace(cmd.Request.WorkspacePath) != execution.RuntimeWorkspacePath {
+		return pebblestore.SessionSnapshot{}, SessionExecution{}, nil, "", "", errors.New("sessions v2 request workspace_path does not match tui cwd execution")
 	}
 	if err := validateCreateFromExecutionV2Metadata(cmd.Request.Metadata); err != nil {
 		return pebblestore.SessionSnapshot{}, SessionExecution{}, nil, "", "", err
@@ -196,6 +204,15 @@ func validateSessionExecutionV2(execution SessionExecution) error {
 	if execution.RuntimeSwarmID == "" || execution.RuntimeKind == "" || execution.AuthorityHostSwarmID == "" {
 		return errors.New("sessions v2 execution runtime and authority identity are required")
 	}
+	if isPrimaryTUICWDSessionExecution(execution) {
+		if execution.SourceWorkspacePath == "" || execution.RuntimeWorkspacePath == "" || execution.SourceWorkspacePath != execution.RuntimeWorkspacePath {
+			return errors.New("sessions v2 tui cwd execution workspace identity is required")
+		}
+		if execution.SourceWorkspaceGeneration != SessionExecutionTUICWDSourceGeneration || execution.PlacementGeneration <= 0 || execution.BindingGeneration != SessionExecutionTUICWDBindingGeneration {
+			return errors.New("sessions v2 tui cwd execution generations are required")
+		}
+		return nil
+	}
 	if execution.WorkspaceBindingID == "" || execution.SourceWorkspaceID == "" || execution.SourceWorkspacePath == "" || execution.RuntimeWorkspacePath == "" {
 		return errors.New("sessions v2 execution workspace identity is required")
 	}
@@ -203,6 +220,12 @@ func validateSessionExecutionV2(execution SessionExecution) error {
 		return errors.New("sessions v2 execution generations are required")
 	}
 	return nil
+}
+
+func isPrimaryTUICWDSessionExecution(execution SessionExecution) bool {
+	return execution.ExecutionClass == SessionExecutionClassPrimary &&
+		execution.WorkspaceBindingID == "" &&
+		strings.HasPrefix(execution.SourceWorkspaceID, SessionExecutionTUICWDSourceIDPrefix)
 }
 
 func validateCreateFromExecutionV2Metadata(metadata map[string]any) error {

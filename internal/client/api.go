@@ -684,6 +684,7 @@ type SessionCreateOptions struct {
 	RuntimeWorkspacePath     string
 	WorkspaceName            string
 	WorkspaceBindingID       string
+	TUIPrimaryCWD            bool
 	Mode                     string
 	AgentName                string
 	SwarmID                  string
@@ -2646,13 +2647,12 @@ func (c *API) CreateSessionWithOptions(ctx context.Context, options SessionCreat
 		worktreeMode = "off"
 	}
 	req := map[string]any{
-		"swarm_id":             strings.TrimSpace(options.SwarmID),
-		"workspace_binding_id": strings.TrimSpace(options.WorkspaceBindingID),
-		"title":                strings.TrimSpace(options.Title),
-		"mode":                 mode,
-		"agent_name":           agentName,
-		"metadata":             metadata,
-		"worktree_mode":        worktreeMode,
+		"swarm_id":      strings.TrimSpace(options.SwarmID),
+		"title":         strings.TrimSpace(options.Title),
+		"mode":          mode,
+		"agent_name":    agentName,
+		"metadata":      metadata,
+		"worktree_mode": worktreeMode,
 		"preference": map[string]string{
 			"provider":     strings.TrimSpace(options.Preference.Provider),
 			"model":        strings.TrimSpace(options.Preference.Model),
@@ -2660,6 +2660,11 @@ func (c *API) CreateSessionWithOptions(ctx context.Context, options SessionCreat
 			"service_tier": strings.TrimSpace(options.Preference.ServiceTier),
 			"context_mode": strings.TrimSpace(options.Preference.ContextMode),
 		},
+	}
+	if bindingID := strings.TrimSpace(options.WorkspaceBindingID); bindingID != "" {
+		req["workspace_binding_id"] = bindingID
+	} else if options.TUIPrimaryCWD {
+		req["workspace_path"] = strings.TrimSpace(options.WorkspacePath)
 	}
 	if options.WorktreeUseCurrentBranch != nil {
 		req["worktree_use_current_branch"] = *options.WorktreeUseCurrentBranch
@@ -3413,6 +3418,9 @@ func (c *API) request(ctx context.Context, method, path string, payload any, att
 		if token != "" {
 			req.Header.Set("X-Swarm-Token", token)
 		}
+	}
+	if method == http.MethodPost && path == "/v2/sessions/primary" {
+		req.Header.Set("X-Swarm-Client", "swarmtui")
 	}
 
 	resp, err := httpClient.Do(req)

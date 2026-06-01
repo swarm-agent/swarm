@@ -90,7 +90,7 @@ func (s *Server) handleSessionsV2Create(w http.ResponseWriter, r *http.Request, 
 		writeSessionsV2Error(w, err)
 		return
 	}
-	execution, err := s.buildSessionsV2Execution(principal, req, endpointClass)
+	execution, err := s.buildSessionsV2Execution(r, principal, req, endpointClass)
 	if err != nil {
 		writeSessionsV2Error(w, err)
 		return
@@ -126,7 +126,7 @@ func decodeSessionsV2CreateRequestStrict(r *http.Request) (sessionruntime.Sessio
 		return sessionruntime.SessionsV2CreateRequest{}, sessionV2BadRequest("request body must contain one JSON object")
 	}
 	allowed := map[string]struct{}{
-		"swarm_id": {}, "workspace_binding_id": {}, "title": {}, "mode": {}, "agent_name": {},
+		"swarm_id": {}, "workspace_binding_id": {}, "workspace_path": {}, "title": {}, "mode": {}, "agent_name": {},
 		"worktree_mode": {}, "worktree_use_current_branch": {}, "worktree_base_branch": {}, "worktree_branch_name": {},
 		"preference": {}, "metadata": {},
 	}
@@ -143,6 +143,7 @@ func decodeSessionsV2CreateRequestStrict(r *http.Request) (sessionruntime.Sessio
 	}
 	req.SwarmID = strings.TrimSpace(req.SwarmID)
 	req.WorkspaceBindingID = strings.TrimSpace(req.WorkspaceBindingID)
+	req.WorkspacePath = strings.TrimSpace(req.WorkspacePath)
 	req.Title = strings.TrimSpace(req.Title)
 	req.Mode = strings.TrimSpace(req.Mode)
 	req.AgentName = strings.TrimSpace(req.AgentName)
@@ -152,7 +153,10 @@ func decodeSessionsV2CreateRequestStrict(r *http.Request) (sessionruntime.Sessio
 	if req.SwarmID == "" {
 		return sessionruntime.SessionsV2CreateRequest{}, sessionV2BadRequest("sessions v2 swarm_id is required")
 	}
-	if req.WorkspaceBindingID == "" {
+	if req.WorkspaceBindingID != "" && req.WorkspacePath != "" {
+		return sessionruntime.SessionsV2CreateRequest{}, sessionV2BadRequest("sessions v2 create must not include unknown or routing authority field %q", "workspace_path")
+	}
+	if req.WorkspaceBindingID == "" && req.WorkspacePath == "" {
 		return sessionruntime.SessionsV2CreateRequest{}, sessionV2BadRequest("sessions v2 workspace_binding_id is required")
 	}
 	if err := validateSessionsV2Metadata(req.Metadata); err != nil {
@@ -161,7 +165,7 @@ func decodeSessionsV2CreateRequestStrict(r *http.Request) (sessionruntime.Sessio
 	return req, nil
 }
 
-func (s *Server) buildSessionsV2Execution(principal identity.Principal, req sessionruntime.SessionsV2CreateRequest, endpointClass string) (sessionruntime.SessionExecution, error) {
+func (s *Server) buildSessionsV2Execution(r *http.Request, principal identity.Principal, req sessionruntime.SessionsV2CreateRequest, endpointClass string) (sessionruntime.SessionExecution, error) {
 	localNode, localOK, err := s.swarmLocalNode()
 	if err != nil {
 		return sessionruntime.SessionExecution{}, err
@@ -186,6 +190,15 @@ func (s *Server) buildSessionsV2Execution(principal identity.Principal, req sess
 	}
 	if !placementOK {
 		return sessionruntime.SessionExecution{}, sessionV2AuthorityNotFound("sessions v2 runtime placement for %q was not found", req.SwarmID)
+	}
+	if req.WorkspaceBindingID == "" {
+		if endpointClass != sessionsV2EndpointPrimary {
+			return sessionruntime.SessionExecution{}, sessionV2BadRequest("sessions v2 workspace_binding_id is required")
+		}
+		return s.buildSessionsV2PrimaryTUICWDExecution(r, req, primarySwarmID, placement)
+	}
+	if req.WorkspacePath != "" {
+		return sessionruntime.SessionExecution{}, sessionV2BadRequest("sessions v2 workspace_path is only allowed for TUI primary cwd create without workspace_binding_id")
 	}
 	binding, bindingOK, err := s.topology.GetWorkspaceBindingForAccount(principal.AccountScopeID, req.WorkspaceBindingID)
 	if err != nil {
@@ -220,6 +233,45 @@ func (s *Server) buildSessionsV2Execution(principal identity.Principal, req sess
 	default:
 		return sessionruntime.SessionExecution{}, sessionV2InvalidClass("unsupported sessions v2 endpoint class %q", endpointClass)
 	}
+}
+
+func (s *Server) buildSessionsV2PrimaryTUICWDExecution(r *http.Request, req sessionruntime.SessionsV2CreateRequest, primarySwarmID string, placement pebblestore.TopologyRuntimePlacementRecord) (sessionruntime.SessionExecution, error) {
+	if req.SwarmID != primarySwarmID {
+		return sessionruntime.SessionExecution{}, sessionV2InvalidClass("primary sessions v2 swarm_id %q is not the primary runtime", req.SwarmID)
+	}
+	if err := validatePrimarySessionV2Placement(req.SwarmID, placement); err != nil {
+		return sessionruntime.SessionExecution{}, err
+	}
+	if !isSessionsV2TUIClientRequest(r) {
+		return sessionruntime.SessionExecution{}, sessionV2BadRequest("sessions v2 workspace_binding_id is required")
+	}
+	workspacePath := strings.TrimSpace(req.WorkspacePath)
+	if workspacePath == "" {
+		return sessionruntime.SessionExecution{}, sessionV2BadRequest("sessions v2 workspace_binding_id is required")
+	}
+	workspaceName := baseNameForPath(workspacePath)
+	return sessionruntime.SessionExecution{
+		ExecutionClass:            sessionruntime.SessionExecutionClassPrimary,
+		RuntimeSwarmID:            strings.TrimSpace(placement.RuntimeSwarmID),
+		RuntimeKind:               strings.TrimSpace(placement.RuntimeKind),
+		AuthorityHostSwarmID:      strings.TrimSpace(placement.AuthorityHostSwarmID),
+		AuthorityContainerID:      strings.TrimSpace(placement.AuthorityContainerID),
+		WorkspaceBindingID:        "",
+		SourceWorkspaceID:         sessionruntime.SessionExecutionTUICWDSourceIDPrefix + workspacePath,
+		SourceWorkspaceGeneration: sessionruntime.SessionExecutionTUICWDSourceGeneration,
+		SourceWorkspaceName:       workspaceName,
+		SourceWorkspacePath:       workspacePath,
+		RuntimeWorkspacePath:      workspacePath,
+		PlacementGeneration:       placement.PlacementGeneration,
+		BindingGeneration:         sessionruntime.SessionExecutionTUICWDBindingGeneration,
+	}, nil
+}
+
+func isSessionsV2TUIClientRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Swarm-Client")), "swarmtui")
 }
 
 func validatePrimarySessionV2Placement(swarmID string, placement pebblestore.TopologyRuntimePlacementRecord) error {

@@ -2705,7 +2705,8 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 	if strings.TrimSpace(route.WorkspaceBindingID) == "" {
 		route.WorkspaceBindingID = a.localWorkspaceBindingIDForPath(workspacePath)
 	}
-	if strings.TrimSpace(route.WorkspaceBindingID) == "" {
+	allowTUICWDPrimary := strings.TrimSpace(route.WorkspaceBindingID) == "" && strings.TrimSpace(route.ID) == "host"
+	if strings.TrimSpace(route.WorkspaceBindingID) == "" && !allowTUICWDPrimary {
 		return errors.New("workspace binding id is required")
 	}
 	createSwarmID := createSessionSwarmIDForRoute(route, a.homeModel.CurrentSwarmTarget)
@@ -2737,8 +2738,10 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 	}
 	session, err := a.api.CreateSessionWithOptions(ctx, client.SessionCreateOptions{
 		Title:              title,
+		WorkspacePath:      workspacePath,
 		WorkspaceName:      workspaceName,
 		WorkspaceBindingID: route.WorkspaceBindingID,
+		TUIPrimaryCWD:      allowTUICWDPrimary,
 		SwarmID:            createSwarmID,
 		Mode:               createMode,
 		AgentName:          emptyFallback(strings.TrimSpace(a.homeModel.ActiveAgent), "swarm"),

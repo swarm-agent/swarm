@@ -199,7 +199,11 @@ func (s *Server) requirePrimarySessionV2Authority(r *http.Request, sessionID str
 	if strings.TrimSpace(execution.RuntimeKind) != pebblestore.TopologyRuntimeKindHost || strings.TrimSpace(execution.AuthorityContainerID) != "" {
 		return primarySessionV2Authority{}, sessionV2InvalidClass("sessions v2 primary execution must target host runtime authority")
 	}
-	if strings.TrimSpace(execution.WorkspaceBindingID) == "" || strings.TrimSpace(execution.SourceWorkspaceID) == "" || execution.SourceWorkspaceGeneration <= 0 || strings.TrimSpace(execution.SourceWorkspacePath) == "" || strings.TrimSpace(execution.RuntimeWorkspacePath) == "" || execution.PlacementGeneration <= 0 || execution.BindingGeneration <= 0 {
+	if strings.TrimSpace(execution.WorkspaceBindingID) == "" {
+		if !isPrimarySessionV2TUICWDExecution(execution) {
+			return primarySessionV2Authority{}, sessionV2StaleAuthority("sessions v2 execution authority identity is incomplete")
+		}
+	} else if strings.TrimSpace(execution.SourceWorkspaceID) == "" || execution.SourceWorkspaceGeneration <= 0 || strings.TrimSpace(execution.SourceWorkspacePath) == "" || strings.TrimSpace(execution.RuntimeWorkspacePath) == "" || execution.PlacementGeneration <= 0 || execution.BindingGeneration <= 0 {
 		return primarySessionV2Authority{}, sessionV2StaleAuthority("sessions v2 execution authority identity is incomplete")
 	}
 
@@ -221,6 +225,12 @@ func (s *Server) requirePrimarySessionV2Authority(r *http.Request, sessionID str
 	}
 	if placement.PlacementGeneration != execution.PlacementGeneration {
 		return primarySessionV2Authority{}, sessionV2StaleAuthority("sessions v2 primary placement generation mismatch")
+	}
+	if strings.TrimSpace(execution.WorkspaceBindingID) == "" {
+		if err := validatePrimarySessionV2TUICWDExecution(execution); err != nil {
+			return primarySessionV2Authority{}, err
+		}
+		return primarySessionV2Authority{Principal: principal, Execution: execution, Placement: placement}, nil
 	}
 
 	binding, bindingOK, err := s.topology.GetWorkspaceBindingForAccount(principal.AccountScopeID, execution.WorkspaceBindingID)
@@ -270,6 +280,25 @@ func (s *Server) requirePrimarySessionV2Authority(r *http.Request, sessionID str
 	}
 
 	return primarySessionV2Authority{Principal: principal, Execution: execution, Placement: placement, Binding: binding}, nil
+}
+
+func isPrimarySessionV2TUICWDExecution(execution pebblestore.SessionExecutionV2Record) bool {
+	return strings.TrimSpace(execution.ExecutionClass) == sessionruntime.SessionExecutionClassPrimary &&
+		strings.TrimSpace(execution.WorkspaceBindingID) == "" &&
+		strings.HasPrefix(strings.TrimSpace(execution.SourceWorkspaceID), sessionruntime.SessionExecutionTUICWDSourceIDPrefix)
+}
+
+func validatePrimarySessionV2TUICWDExecution(execution pebblestore.SessionExecutionV2Record) error {
+	if !isPrimarySessionV2TUICWDExecution(execution) {
+		return sessionV2StaleAuthority("sessions v2 execution authority identity is incomplete")
+	}
+	if strings.TrimSpace(execution.SourceWorkspacePath) == "" || strings.TrimSpace(execution.RuntimeWorkspacePath) == "" || strings.TrimSpace(execution.SourceWorkspacePath) != strings.TrimSpace(execution.RuntimeWorkspacePath) {
+		return sessionV2StaleAuthority("sessions v2 tui cwd execution workspace identity is incomplete")
+	}
+	if execution.SourceWorkspaceGeneration != sessionruntime.SessionExecutionTUICWDSourceGeneration || execution.BindingGeneration != sessionruntime.SessionExecutionTUICWDBindingGeneration {
+		return sessionV2StaleAuthority("sessions v2 tui cwd execution generation mismatch")
+	}
+	return nil
 }
 
 func (s *Server) handlePrimarySessionV2Get(w http.ResponseWriter, r *http.Request, sessionID string) {
