@@ -2,15 +2,20 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
+	"swarm/packages/swarmd/internal/permission"
+	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 )
 
 func TestSessionsV2LifecycleDoesNotReferenceLegacyHandlers(t *testing.T) {
@@ -271,6 +276,133 @@ func TestSessionsV2LifecycleMetadataUpdateAcceptsSafeMetadata(t *testing.T) {
 	}
 }
 
+func TestSessionsV2LifecycleRunRejectsRequestTimeAuthorityOverrides(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "target_kind", body: `{"prompt":"hello","target_kind":"subagent"}`, want: "target_kind"},
+		{name: "target_name", body: `{"prompt":"hello","target_name":"memory"}`, want: "target_name"},
+		{name: "execution_context_workspace_path", body: `{"prompt":"hello","execution_context":{"workspace_path":"override-workspace"}}`, want: "execution_context.workspace_path"},
+		{name: "execution_context_cwd", body: `{"prompt":"hello","execution_context":{"cwd":"override-cwd"}}`, want: "execution_context.cwd"},
+		{name: "execution_context_worktree_root_path", body: `{"prompt":"hello","execution_context":{"worktree_root_path":"override-worktree"}}`, want: "execution_context.worktree_root_path"},
+		{name: "execution_context_worktree_mode", body: `{"prompt":"hello","execution_context":{"worktree_mode":"off"}}`, want: "execution_context.worktree_mode"},
+		{name: "execution_context_worktree_branch", body: `{"prompt":"hello","execution_context":{"worktree_branch":"feature"}}`, want: "execution_context.worktree_branch"},
+		{name: "execution_context_worktree_base_branch", body: `{"prompt":"hello","execution_context":{"worktree_base_branch":"main"}}`, want: "execution_context.worktree_base_branch"},
+		{name: "tool_scope", body: `{"prompt":"hello","tool_scope":{}}`, want: "tool_scope"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+			server.runner = &primaryV2RunRequestRecordingRunner{}
+			sessionID := createPrimarySessionV2ForLifecycleTest(t, server, swarmStore, "binding-primary-v2", pebblestore.TopologyWorkspaceBindingAccessModeReadWrite, true)
+
+			req := httptest.NewRequest(http.MethodPost, "/v2/sessions/"+sessionID+"/run", bytes.NewBufferString(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("run status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "session_v2_bad_request") || !strings.Contains(rec.Body.String(), tc.want) {
+				t.Fatalf("body = %s, want bad request mentioning %s", rec.Body.String(), tc.want)
+			}
+		})
+	}
+}
+
+func TestSessionsV2LifecycleRunStreamControlRejectsRequestTimeAuthorityOverrides(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "target_kind", body: `{"type":"run.start","prompt":"hello","target_kind":"subagent"}`, want: "target_kind"},
+		{name: "target_name", body: `{"type":"run.start","prompt":"hello","target_name":"memory"}`, want: "target_name"},
+		{name: "execution_context_workspace_path", body: `{"type":"run.start","prompt":"hello","execution_context":{"workspace_path":"override-workspace"}}`, want: "execution_context.workspace_path"},
+		{name: "execution_context_cwd", body: `{"type":"run.start","prompt":"hello","execution_context":{"cwd":"override-cwd"}}`, want: "execution_context.cwd"},
+		{name: "execution_context_worktree_root_path", body: `{"type":"run.start","prompt":"hello","execution_context":{"worktree_root_path":"override-worktree"}}`, want: "execution_context.worktree_root_path"},
+		{name: "execution_context_worktree_mode", body: `{"type":"run.start","prompt":"hello","execution_context":{"worktree_mode":"off"}}`, want: "execution_context.worktree_mode"},
+		{name: "execution_context_worktree_branch", body: `{"type":"run.start","prompt":"hello","execution_context":{"worktree_branch":"feature"}}`, want: "execution_context.worktree_branch"},
+		{name: "execution_context_worktree_base_branch", body: `{"type":"run.start","prompt":"hello","execution_context":{"worktree_base_branch":"main"}}`, want: "execution_context.worktree_base_branch"},
+		{name: "tool_scope", body: `{"type":"run.start","prompt":"hello","tool_scope":{}}`, want: "tool_scope"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+			server.runner = &primaryV2RunRequestRecordingRunner{}
+			sessionID := createPrimarySessionV2ForLifecycleTest(t, server, swarmStore, "binding-primary-v2", pebblestore.TopologyWorkspaceBindingAccessModeReadWrite, true)
+
+			req := httptest.NewRequest(http.MethodPost, "/v2/sessions/"+sessionID+"/run/stream", bytes.NewBufferString(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("run stream status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "session_v2_bad_request") || !strings.Contains(rec.Body.String(), tc.want) {
+				t.Fatalf("body = %s, want bad request mentioning %s", rec.Body.String(), tc.want)
+			}
+		})
+	}
+}
+
+func TestSessionsV2LifecycleRunAllowsSafeInstructionsAndBackgroundOwnership(t *testing.T) {
+	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &primaryV2RunRequestRecordingRunner{}
+	server.runner = runner
+	sessionID := createPrimarySessionV2ForLifecycleTest(t, server, swarmStore, "binding-primary-v2", pebblestore.TopologyWorkspaceBindingAccessModeReadWrite, true)
+
+	req := httptest.NewRequest(http.MethodPost, "/v2/sessions/"+sessionID+"/run", bytes.NewBufferString(`{"prompt":"hello","instructions":"safe user instructions","agent_name":"swarm","background":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("run status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	calls, recordedSessionID, recordedRequest, _ := runner.snapshot()
+	if calls != 1 || recordedSessionID != sessionID {
+		t.Fatalf("runner calls=%d session_id=%q, want one call for %q", calls, recordedSessionID, sessionID)
+	}
+	if recordedRequest.Prompt != "hello" || recordedRequest.Instructions != "safe user instructions" || !recordedRequest.Background {
+		t.Fatalf("runner request = %+v", recordedRequest)
+	}
+	if recordedRequest.TargetKind != "" || recordedRequest.TargetName != "" || recordedRequest.ExecutionContext != nil || recordedRequest.ToolScope != nil {
+		t.Fatalf("runner request carried authority override: %+v", recordedRequest)
+	}
+}
+
+func TestSessionsV2LifecycleRunStreamControlAllowsSafeBackgroundOwnership(t *testing.T) {
+	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &primaryV2RunRequestRecordingRunner{emitLifecycle: true}
+	server.runner = runner
+	sessionID := createPrimarySessionV2ForLifecycleTest(t, server, swarmStore, "binding-primary-v2", pebblestore.TopologyWorkspaceBindingAccessModeReadWrite, true)
+
+	req := httptest.NewRequest(http.MethodPost, "/v2/sessions/"+sessionID+"/run/stream", bytes.NewBufferString(`{"type":"run.start","prompt":"hello","instructions":"safe user instructions","background":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("run stream status = %d, want %d, body=%s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+	calls, recordedSessionID, recordedRequest, recordedMeta := runner.snapshot()
+	if calls != 1 || recordedSessionID != sessionID {
+		t.Fatalf("runner calls=%d session_id=%q, want one call for %q", calls, recordedSessionID, sessionID)
+	}
+	if recordedRequest.Prompt != "hello" || recordedRequest.Instructions != "safe user instructions" || !recordedRequest.Background {
+		t.Fatalf("runner request = %+v", recordedRequest)
+	}
+	if recordedRequest.TargetKind != "" || recordedRequest.TargetName != "" || recordedRequest.ExecutionContext != nil || recordedRequest.ToolScope != nil {
+		t.Fatalf("runner request carried authority override: %+v", recordedRequest)
+	}
+	if recordedMeta.OwnerTransport != "background_api" {
+		t.Fatalf("owner transport = %q, want background_api", recordedMeta.OwnerTransport)
+	}
+}
+
 func TestSessionsV2LifecycleReadOnlyBindingAllowsReadBlocksMutation(t *testing.T) {
 	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
 	sessionID := createPrimarySessionV2ForLifecycleTest(t, server, swarmStore, "binding-readonly-v2", pebblestore.TopologyWorkspaceBindingAccessModeReadOnly, false)
@@ -292,6 +424,76 @@ func TestSessionsV2LifecycleReadOnlyBindingAllowsReadBlocksMutation(t *testing.T
 	if !strings.Contains(postRec.Body.String(), "read-only") {
 		t.Fatalf("body = %s, want read-only rejection", postRec.Body.String())
 	}
+}
+
+type primaryV2RunRequestRecordingRunner struct {
+	mu            sync.Mutex
+	calls         int
+	sessionID     string
+	request       runruntime.RunRequest
+	meta          runruntime.RunStartMeta
+	emitLifecycle bool
+}
+
+func (r *primaryV2RunRequestRecordingRunner) RunTurn(_ context.Context, sessionID string, request runruntime.RunRequest, meta runruntime.RunStartMeta) (runruntime.RunResult, error) {
+	r.mu.Lock()
+	r.calls++
+	r.sessionID = sessionID
+	r.request = request
+	r.meta = meta
+	r.mu.Unlock()
+	return runruntime.RunResult{SessionID: sessionID, Background: request.Background, TargetKind: request.TargetKind, TargetName: request.TargetName}, nil
+}
+
+func (r *primaryV2RunRequestRecordingRunner) RunTurnStreaming(_ context.Context, sessionID string, request runruntime.RunRequest, meta runruntime.RunStartMeta, onEvent runruntime.StreamHandler) (runruntime.RunResult, error) {
+	r.mu.Lock()
+	r.calls++
+	r.sessionID = sessionID
+	r.request = request
+	r.meta = meta
+	emitLifecycle := r.emitLifecycle
+	r.mu.Unlock()
+	if emitLifecycle && onEvent != nil {
+		onEvent(runruntime.StreamEvent{Type: runruntime.StreamEventSessionLifecycle, SessionID: sessionID, RunID: meta.RunID, Lifecycle: &pebblestore.SessionLifecycleSnapshot{SessionID: sessionID, RunID: meta.RunID, Active: true, OwnerTransport: meta.OwnerTransport}})
+	}
+	return runruntime.RunResult{SessionID: sessionID, Background: request.Background, TargetKind: request.TargetKind, TargetName: request.TargetName}, nil
+}
+
+func (r *primaryV2RunRequestRecordingRunner) snapshot() (int, string, runruntime.RunRequest, runruntime.RunStartMeta) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	request := r.request
+	if request.ToolScope != nil {
+		scope := *request.ToolScope
+		request.ToolScope = &scope
+	}
+	if request.ExecutionContext != nil {
+		ctx := *request.ExecutionContext
+		request.ExecutionContext = &ctx
+	}
+	return r.calls, r.sessionID, request, r.meta
+}
+
+func (r *primaryV2RunRequestRecordingRunner) StopSessionRun(sessionID, runID, reason string) error {
+	return nil
+}
+
+func (r *primaryV2RunRequestRecordingRunner) ExecuteToolForSessionScope(context.Context, string, tool.Call) (string, error) {
+	return "{}", nil
+}
+
+func (r *primaryV2RunRequestRecordingRunner) ListAgentToolDefinitions() []tool.Definition { return nil }
+
+func (r *primaryV2RunRequestRecordingRunner) ListAgentToolDefinitionsForAccount(string) []tool.Definition {
+	return nil
+}
+
+func (r *primaryV2RunRequestRecordingRunner) ResolveAgentToolContract(pebblestore.AgentProfile) (runruntime.ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
+	return runruntime.ResolvedAgentToolContract{}, nil, nil, nil
+}
+
+func (r *primaryV2RunRequestRecordingRunner) ResolveAgentToolContractForAccount(string, pebblestore.AgentProfile) (runruntime.ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
+	return runruntime.ResolvedAgentToolContract{}, nil, nil, nil
 }
 
 func createPrimarySessionV2ForLifecycleTest(t *testing.T, server *Server, swarmStore *pebblestore.SwarmStore, bindingID, accessMode string, writable bool) string {

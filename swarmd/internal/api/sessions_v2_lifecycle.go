@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +24,51 @@ type primarySessionV2Authority struct {
 	Execution pebblestore.SessionExecutionV2Record
 	Placement pebblestore.TopologyRuntimePlacementRecord
 	Binding   pebblestore.TopologyWorkspaceBindingRecord
+}
+
+func validatePrimarySessionV2RunRequest(req runruntime.RunRequest) error {
+	if req.ToolScope != nil {
+		return sessionV2BadRequest("primary sessions v2 run request cannot override tool_scope")
+	}
+	normalized := req.Normalized()
+	if strings.TrimSpace(normalized.TargetKind) != "" {
+		return sessionV2BadRequest("primary sessions v2 run request cannot override target_kind")
+	}
+	if strings.TrimSpace(normalized.TargetName) != "" {
+		return sessionV2BadRequest("primary sessions v2 run request cannot override target_name")
+	}
+	if normalized.ExecutionContext != nil {
+		ctx := *normalized.ExecutionContext
+		switch {
+		case strings.TrimSpace(ctx.WorkspacePath) != "":
+			return sessionV2BadRequest("primary sessions v2 run request cannot override execution_context.workspace_path")
+		case strings.TrimSpace(ctx.CWD) != "":
+			return sessionV2BadRequest("primary sessions v2 run request cannot override execution_context.cwd")
+		case strings.TrimSpace(ctx.WorktreeMode) != "":
+			return sessionV2BadRequest("primary sessions v2 run request cannot override execution_context.worktree_mode")
+		case strings.TrimSpace(ctx.WorktreeRootPath) != "":
+			return sessionV2BadRequest("primary sessions v2 run request cannot override execution_context.worktree_root_path")
+		case strings.TrimSpace(ctx.WorktreeBranch) != "":
+			return sessionV2BadRequest("primary sessions v2 run request cannot override execution_context.worktree_branch")
+		case strings.TrimSpace(ctx.WorktreeBaseBranch) != "":
+			return sessionV2BadRequest("primary sessions v2 run request cannot override execution_context.worktree_base_branch")
+		}
+	}
+	// background only changes the response/stream owner transport for the
+	// already-authorized primary v2 run. Runtime and workspace remain fixed by
+	// the frozen SessionExecutionV2 authority validated before execution.
+	return nil
+}
+
+func decodePrimarySessionV2RunStreamInbound(raw []byte) (runStreamInboundMessage, error) {
+	var inbound runStreamInboundMessage
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	if err := decodeJSONObject(decoder, &inbound); err != nil {
+		return runStreamInboundMessage{}, fmt.Errorf("decode run stream payload: %w", err)
+	}
+	inbound.Type = strings.ToLower(strings.TrimSpace(inbound.Type))
+	inbound.RunID = strings.TrimSpace(inbound.RunID)
+	return inbound, nil
 }
 
 func (s *Server) handlePrimarySessionV2ByID(w http.ResponseWriter, r *http.Request) {
@@ -817,6 +863,11 @@ func (s *Server) handlePrimarySessionV2Run(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if err := validatePrimarySessionV2RunRequest(req); err != nil {
+		writeSessionsV2Error(w, err)
+		return
+	}
+	req = req.Normalized()
 	integrationCtx, err := s.applyIntegrationBuilderRunContext(authority.Principal, sessionID, &sessionRunRequestAdapter{agentName: func() string { return req.AgentName }, setAgentName: func(value string) { req.AgentName = value }, instructions: func() string { return req.Instructions }, setInstructions: func(value string) { req.Instructions = value }})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -886,7 +937,7 @@ func (s *Server) handlePrimarySessionV2RunStreamWebsocket(w http.ResponseWriter,
 		log.Printf("sessions v2 run stream websocket initial read failed session_id=%s remote_addr=%s err=%v", sessionID, strings.TrimSpace(r.RemoteAddr), err)
 		return
 	}
-	inbound, err := decodeRunStreamInbound(raw)
+	inbound, err := decodePrimarySessionV2RunStreamInbound(raw)
 	if err != nil {
 		log.Printf("sessions v2 run stream websocket decode failed session_id=%s remote_addr=%s err=%v", sessionID, strings.TrimSpace(r.RemoteAddr), err)
 		s.sendRunStreamControl(conn, runStreamControlMessage{Type: "error", OK: false, SessionID: sessionID, Error: err.Error()})
@@ -898,6 +949,11 @@ func (s *Server) handlePrimarySessionV2RunStreamWebsocket(w http.ResponseWriter,
 			s.sendRunStreamControl(conn, runStreamControlMessage{Type: "error", OK: false, SessionID: sessionID, Error: err.Error()})
 			return
 		}
+		if err := validatePrimarySessionV2RunRequest(inbound.RunRequest); err != nil {
+			s.sendRunStreamControl(conn, runStreamControlMessage{Type: "error", OK: false, SessionID: sessionID, Error: err.Error()})
+			return
+		}
+		inbound.RunRequest = inbound.RunRequest.Normalized()
 		s.handleRunStreamStart(conn, sessionID, inbound, principal)
 	case "run.resume", "resume":
 		s.handleRunStreamResume(conn, sessionID, inbound)
@@ -928,7 +984,6 @@ func (s *Server) handlePrimarySessionV2RunStreamControl(w http.ResponseWriter, r
 		return
 	}
 	inbound.Type = strings.ToLower(strings.TrimSpace(inbound.Type))
-	inbound.RunRequest = inbound.RunRequest.Normalized()
 	inbound.RunID = strings.TrimSpace(inbound.RunID)
 	switch inbound.Type {
 	case "run.start", "start":
@@ -936,9 +991,18 @@ func (s *Server) handlePrimarySessionV2RunStreamControl(w http.ResponseWriter, r
 			writeSessionsV2Error(w, err)
 			return
 		}
+		if err := validatePrimarySessionV2RunRequest(inbound.RunRequest); err != nil {
+			writeSessionsV2Error(w, err)
+			return
+		}
+		inbound.RunRequest = inbound.RunRequest.Normalized()
 		state, err := s.runStreams.newRun(sessionID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if state == nil {
+			writeError(w, http.StatusInternalServerError, errors.New("unable to allocate run stream"))
 			return
 		}
 		started := s.startRunStreamExecution(state.runID, sessionID, inbound, principal)
