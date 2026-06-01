@@ -29,7 +29,13 @@ func TestOpenChatSessionCreatePayloadUsesHostRouteAuthority(t *testing.T) {
 }
 
 func TestOpenChatSessionCreatePayloadUsesTUICWDPrimaryExceptionOnlyForHostRoute(t *testing.T) {
-	got := captureOpenChatSessionCreateRequest(t, model.ChatRoute{ID: "host"}, "host-swarm", "", testWorkspacePath, "plan")
+	got := captureOpenChatSessionCreateRequestWithWorktreeSettings(t, model.ChatRoute{ID: "host"}, "host-swarm", "", testWorkspacePath, "plan", client.WorktreeSettings{
+		WorkspacePath:    testWorkspacePath,
+		Enabled:          true,
+		UseCurrentBranch: false,
+		BaseBranch:       "main",
+		BranchName:       "feature/<id>",
+	})
 
 	if got.bodyString("swarm_id") != "host-swarm" {
 		t.Fatalf("swarm_id = %q, want host-swarm", got.bodyString("swarm_id"))
@@ -39,6 +45,45 @@ func TestOpenChatSessionCreatePayloadUsesTUICWDPrimaryExceptionOnlyForHostRoute(
 	}
 	if got.bodyString("workspace_path") != testWorkspacePath {
 		t.Fatalf("workspace_path = %q, want %q", got.bodyString("workspace_path"), testWorkspacePath)
+	}
+	if got.bodyString("worktree_mode") != "off" {
+		t.Fatalf("worktree_mode = %q, want off", got.bodyString("worktree_mode"))
+	}
+	for _, key := range []string{"worktree_use_current_branch", "worktree_base_branch", "worktree_branch_name"} {
+		if _, ok := got.body[key]; ok {
+			t.Fatalf("%s present in TUI cwd create: %#v", key, got.body[key])
+		}
+	}
+}
+
+func TestOpenChatSessionCreatePayloadUsesWorktreeSettingsForBoundHostRoute(t *testing.T) {
+	got := captureOpenChatSessionCreateRequestWithWorktreeSettings(t, model.ChatRoute{ID: "host"}, "host-swarm", "local-binding", testWorkspacePath, "plan", client.WorktreeSettings{
+		WorkspacePath:    testWorkspacePath,
+		Enabled:          true,
+		UseCurrentBranch: false,
+		BaseBranch:       "main",
+		BranchName:       "feature/<id>",
+	})
+
+	if got.bodyString("workspace_binding_id") != "local-binding" {
+		t.Fatalf("workspace_binding_id = %q, want local-binding", got.bodyString("workspace_binding_id"))
+	}
+	if got.bodyString("worktree_mode") != "on" {
+		t.Fatalf("worktree_mode = %q, want on", got.bodyString("worktree_mode"))
+	}
+	if gotUseCurrent, ok := got.body["worktree_use_current_branch"].(bool); !ok || gotUseCurrent {
+		t.Fatalf("worktree_use_current_branch = %#v, want false", got.body["worktree_use_current_branch"])
+	}
+	if got.bodyString("worktree_base_branch") != "main" {
+		t.Fatalf("worktree_base_branch = %q, want main", got.bodyString("worktree_base_branch"))
+	}
+	if got.bodyString("worktree_branch_name") != "feature" {
+		t.Fatalf("worktree_branch_name = %q, want feature", got.bodyString("worktree_branch_name"))
+	}
+	for _, key := range []string{"workspace_name", "workspace_path", "host_workspace_path", "runtime_workspace_path", "target_swarm_id", "routing_hint"} {
+		if _, ok := got.body[key]; ok {
+			t.Fatalf("create payload contains strict-v2-invalid authority field %q in %#v", key, got.body)
+		}
 	}
 }
 
@@ -78,6 +123,11 @@ func (r capturedCreateRequest) bodyString(key string) string {
 }
 
 func captureOpenChatSessionCreateRequest(t *testing.T, route model.ChatRoute, hostSwarmID, localBindingID, workspacePath, sessionMode string) capturedCreateRequest {
+	t.Helper()
+	return captureOpenChatSessionCreateRequestWithWorktreeSettings(t, route, hostSwarmID, localBindingID, workspacePath, sessionMode, client.WorktreeSettings{WorkspacePath: workspacePath})
+}
+
+func captureOpenChatSessionCreateRequestWithWorktreeSettings(t *testing.T, route model.ChatRoute, hostSwarmID, localBindingID, workspacePath, sessionMode string, worktreeSettings client.WorktreeSettings) capturedCreateRequest {
 	t.Helper()
 	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
 	t.Setenv("DATA_DIR", "")
@@ -121,6 +171,15 @@ func captureOpenChatSessionCreateRequest(t *testing.T, route model.ChatRoute, ho
 					"workspace_binding_id":    captured.bodyString("workspace_binding_id"),
 				},
 			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/worktrees":
+			if got := r.URL.Query().Get("workspace_path"); got != workspacePath {
+				t.Fatalf("worktrees workspace_path = %q, want %q", got, workspacePath)
+			}
+			settings := worktreeSettings
+			if strings.TrimSpace(settings.WorkspacePath) == "" {
+				settings.WorkspacePath = workspacePath
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "worktrees": settings})
 		case r.Method == http.MethodGet && r.URL.Path == "/v2/sessions/session-1/preference":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"preference": map[string]any{
@@ -201,7 +260,7 @@ func assertV2PrimaryCreatePayload(t *testing.T, body map[string]any, bindingID, 
 	t.Helper()
 	allowed := map[string]struct{}{
 		"swarm_id": {}, "workspace_binding_id": {}, "workspace_path": {}, "title": {}, "mode": {}, "agent_name": {},
-		"metadata": {}, "worktree_mode": {}, "preference": {},
+		"metadata": {}, "worktree_mode": {}, "worktree_use_current_branch": {}, "worktree_base_branch": {}, "worktree_branch_name": {}, "preference": {},
 	}
 	for key := range body {
 		if _, ok := allowed[key]; !ok {

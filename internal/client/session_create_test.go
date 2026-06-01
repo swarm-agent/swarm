@@ -51,16 +51,21 @@ func TestCreateSessionWithOptionsPostsStrictV2PrimaryPayload(t *testing.T) {
 	}))
 	defer server.Close()
 
+	useCurrentBranch := false
 	api := New(server.URL)
 	api.SetToken("test-token")
 	session, err := api.CreateSessionWithOptions(context.Background(), SessionCreateOptions{
-		Title:                "New Session",
-		WorkspacePath:        "/host/workspace",
-		HostWorkspacePath:    "/host/workspace",
-		RuntimeWorkspacePath: "/workspaces/swarm-go",
-		WorkspaceName:        "Workspace",
-		WorkspaceBindingID:   "binding-child",
-		SwarmID:              "child-swarm",
+		Title:                    "New Session",
+		WorkspacePath:            "/host/workspace",
+		HostWorkspacePath:        "/host/workspace",
+		RuntimeWorkspacePath:     "/workspaces/swarm-go",
+		WorkspaceName:            "Workspace",
+		WorkspaceBindingID:       "binding-child",
+		SwarmID:                  "child-swarm",
+		WorktreeMode:             "off",
+		WorktreeUseCurrentBranch: &useCurrentBranch,
+		WorktreeBaseBranch:       "main",
+		WorktreeBranchName:       "agent",
 		Preference: ModelPreference{
 			Provider: "anthropic",
 			Model:    "claude",
@@ -90,6 +95,11 @@ func TestCreateSessionWithOptionsPostsStrictV2PrimaryPayload(t *testing.T) {
 	}
 	if got, _ := body["worktree_mode"].(string); got != "off" {
 		t.Fatalf("worktree_mode = %q, want off", got)
+	}
+	for _, key := range []string{"worktree_use_current_branch", "worktree_base_branch", "worktree_branch_name"} {
+		if _, ok := body[key]; ok {
+			t.Fatalf("%s present while worktree_mode is off: %#v", key, body[key])
+		}
 	}
 	if metadata, ok := body["metadata"].(map[string]any); !ok || len(metadata) != 0 {
 		t.Fatalf("metadata = %#v, want empty object", body["metadata"])
@@ -140,5 +150,66 @@ func TestCreateSessionWithOptionsPostsTUICWDPrimaryPayloadWithoutBinding(t *test
 	}
 	if got, _ := body["workspace_path"].(string); got != "/cwd" {
 		t.Fatalf("workspace_path = %q, want /cwd", got)
+	}
+	if got, _ := body["worktree_mode"].(string); got != "off" {
+		t.Fatalf("worktree_mode = %q, want off", got)
+	}
+	for _, key := range []string{"worktree_use_current_branch", "worktree_base_branch", "worktree_branch_name"} {
+		if _, ok := body[key]; ok {
+			t.Fatalf("%s present in TUI cwd create: %#v", key, body[key])
+		}
+	}
+}
+
+func TestCreateSessionWithOptionsPostsWorktreeOnPayloadFields(t *testing.T) {
+	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
+	t.Setenv("DATA_DIR", "")
+
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Swarm-Client") != "swarmtui" {
+			t.Fatalf("X-Swarm-Client = %q, want swarmtui", r.Header.Get("X-Swarm-Client"))
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":      true,
+			"session": map[string]any{"id": "session-1", "workspace_path": "/host/workspace", "workspace_name": "Workspace", "title": "New Session", "mode": "plan"},
+		})
+	}))
+	defer server.Close()
+
+	useCurrentBranch := false
+	api := New(server.URL)
+	api.SetToken("test-token")
+	if _, err := api.CreateSessionWithOptions(context.Background(), SessionCreateOptions{
+		Title:                    "New Session",
+		WorkspacePath:            "/host/workspace",
+		WorkspaceBindingID:       "binding-host",
+		SwarmID:                  "host-swarm",
+		WorktreeMode:             "on",
+		WorktreeUseCurrentBranch: &useCurrentBranch,
+		WorktreeBaseBranch:       "main",
+		WorktreeBranchName:       "agent",
+		Preference: ModelPreference{
+			Provider: "anthropic",
+			Model:    "claude",
+			Thinking: "auto",
+		},
+	}); err != nil {
+		t.Fatalf("CreateSessionWithOptions() error = %v", err)
+	}
+	if got, _ := body["worktree_mode"].(string); got != "on" {
+		t.Fatalf("worktree_mode = %q, want on", got)
+	}
+	if got, ok := body["worktree_use_current_branch"].(bool); !ok || got {
+		t.Fatalf("worktree_use_current_branch = %#v, want false", body["worktree_use_current_branch"])
+	}
+	if got, _ := body["worktree_base_branch"].(string); got != "main" {
+		t.Fatalf("worktree_base_branch = %q, want main", got)
+	}
+	if got, _ := body["worktree_branch_name"].(string); got != "agent" {
+		t.Fatalf("worktree_branch_name = %q, want agent", got)
 	}
 }

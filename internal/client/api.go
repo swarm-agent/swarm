@@ -2653,8 +2653,8 @@ func (c *API) CreateSessionWithOptions(ctx context.Context, options SessionCreat
 	if agentName == "" {
 		agentName = "swarm"
 	}
-	worktreeMode := strings.TrimSpace(options.WorktreeMode)
-	if worktreeMode == "" || strings.EqualFold(worktreeMode, "inherit") {
+	worktreeMode := strings.ToLower(strings.TrimSpace(options.WorktreeMode))
+	if worktreeMode == "" || worktreeMode == "inherit" {
 		worktreeMode = "off"
 	}
 	req := map[string]any{
@@ -2677,14 +2677,16 @@ func (c *API) CreateSessionWithOptions(ctx context.Context, options SessionCreat
 	} else if options.TUIPrimaryCWD {
 		req["workspace_path"] = strings.TrimSpace(options.WorkspacePath)
 	}
-	if options.WorktreeUseCurrentBranch != nil {
-		req["worktree_use_current_branch"] = *options.WorktreeUseCurrentBranch
-	}
-	if baseBranch := strings.TrimSpace(options.WorktreeBaseBranch); baseBranch != "" {
-		req["worktree_base_branch"] = baseBranch
-	}
-	if branchName := strings.TrimSpace(options.WorktreeBranchName); branchName != "" {
-		req["worktree_branch_name"] = branchName
+	if worktreeMode == "on" {
+		if options.WorktreeUseCurrentBranch != nil {
+			req["worktree_use_current_branch"] = *options.WorktreeUseCurrentBranch
+		}
+		if baseBranch := strings.TrimSpace(options.WorktreeBaseBranch); baseBranch != "" {
+			req["worktree_base_branch"] = baseBranch
+		}
+		if branchName := strings.TrimSpace(options.WorktreeBranchName); branchName != "" {
+			req["worktree_branch_name"] = branchName
+		}
 	}
 	var resp struct {
 		OK               bool               `json:"ok"`

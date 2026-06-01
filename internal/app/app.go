@@ -2736,18 +2736,42 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 	if createMode != "auto" {
 		createMode = "plan"
 	}
+
+	worktreeMode := "off"
+	var worktreeUseCurrentBranch *bool
+	worktreeBaseBranch := ""
+	worktreeBranchName := ""
+	if strings.TrimSpace(route.WorkspaceBindingID) != "" {
+		settings, err := a.api.GetWorktreeSettings(ctx, workspacePath)
+		if err != nil {
+			return fmt.Errorf("get worktree settings: %w", err)
+		}
+		if settings.Enabled {
+			worktreeMode = "on"
+			useCurrentBranch := settings.UseCurrentBranch
+			worktreeUseCurrentBranch = &useCurrentBranch
+			if !useCurrentBranch {
+				worktreeBaseBranch = strings.TrimSpace(settings.BaseBranch)
+			}
+			worktreeBranchName = normalizeWorktreeBranchPrefix(settings.BranchName)
+		}
+	}
+
 	session, err := a.api.CreateSessionWithOptions(ctx, client.SessionCreateOptions{
-		Title:              title,
-		WorkspacePath:      workspacePath,
-		WorkspaceName:      workspaceName,
-		WorkspaceBindingID: route.WorkspaceBindingID,
-		TUIPrimaryCWD:      allowTUICWDPrimary,
-		SwarmID:            createSwarmID,
-		Mode:               createMode,
-		AgentName:          emptyFallback(strings.TrimSpace(a.homeModel.ActiveAgent), "swarm"),
-		Preference:         preference,
-		Metadata:           nil,
-		WorktreeMode:       "off",
+		Title:                    title,
+		WorkspacePath:            workspacePath,
+		WorkspaceName:            workspaceName,
+		WorkspaceBindingID:       route.WorkspaceBindingID,
+		TUIPrimaryCWD:            allowTUICWDPrimary,
+		SwarmID:                  createSwarmID,
+		Mode:                     createMode,
+		AgentName:                emptyFallback(strings.TrimSpace(a.homeModel.ActiveAgent), "swarm"),
+		Preference:               preference,
+		Metadata:                 nil,
+		WorktreeMode:             worktreeMode,
+		WorktreeUseCurrentBranch: worktreeUseCurrentBranch,
+		WorktreeBaseBranch:       worktreeBaseBranch,
+		WorktreeBranchName:       worktreeBranchName,
 	})
 	if err != nil {
 		return err
