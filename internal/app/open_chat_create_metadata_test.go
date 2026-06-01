@@ -121,7 +121,7 @@ func captureOpenChatSessionCreateRequest(t *testing.T, route model.ChatRoute, ho
 					"workspace_binding_id":    captured.bodyString("workspace_binding_id"),
 				},
 			})
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions/session-1/preference":
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/sessions/session-1/preference":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"preference": map[string]any{
 					"provider": "anthropic",
@@ -129,7 +129,7 @@ func captureOpenChatSessionCreateRequest(t *testing.T, route model.ChatRoute, ho
 					"thinking": "auto",
 				},
 			})
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions/session-1/mode":
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/sessions/session-1/mode":
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "mode": captured.bodyString("mode")})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/providers":
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "providers": []any{}})

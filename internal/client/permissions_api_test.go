@@ -43,8 +43,8 @@ func TestListPendingPermissionsRequestsPendingStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListPendingPermissions() error = %v", err)
 	}
-	if gotPath != "/v1/sessions/session-test/permissions" {
-		t.Fatalf("request path = %q, want /v1/sessions/session-test/permissions", gotPath)
+	if gotPath != "/v2/sessions/session-test/permissions" {
+		t.Fatalf("request path = %q, want /v2/sessions/session-test/permissions", gotPath)
 	}
 	if gotQuery != "status=pending&limit=200" {
 		t.Fatalf("request query = %q, want status=pending&limit=200", gotQuery)

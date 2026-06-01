@@ -1236,7 +1236,7 @@ func New(baseURL string) *API {
 	return &API{
 		baseURL: baseURL,
 		// Do not set a global client timeout here. Long-running requests such as
-		// /v1/sessions/{id}/run must be controlled by per-request context deadlines.
+		// /v2/sessions/{id}/run must be controlled by per-request context deadlines.
 		http: &http.Client{},
 	}
 }
@@ -2613,8 +2613,19 @@ func (c *API) listSessionsForPath(ctx context.Context, limit int, cwd string, ex
 	return resp.Sessions, nil
 }
 
+func sessionV2LifecyclePath(sessionID, suffix string) string {
+	path := "/v2/sessions/" + url.PathEscape(strings.TrimSpace(sessionID))
+	if suffix = strings.TrimSpace(suffix); suffix != "" {
+		if !strings.HasPrefix(suffix, "/") {
+			suffix = "/" + suffix
+		}
+		path += suffix
+	}
+	return path
+}
+
 func (c *API) GetSession(ctx context.Context, sessionID string) (SessionSummary, error) {
-	path := "/v1/sessions/" + url.PathEscape(sessionID)
+	path := sessionV2LifecyclePath(sessionID, "")
 	var resp struct {
 		OK      bool           `json:"ok"`
 		Session SessionSummary `json:"session"`
@@ -2705,7 +2716,7 @@ func (c *API) ListSessionMessages(ctx context.Context, sessionID string, afterSe
 		query.Set("after_seq", strconv.FormatUint(afterSeq, 10))
 	}
 	query.Set("limit", strconv.Itoa(limit))
-	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/messages?" + query.Encode()
+	path := sessionV2LifecyclePath(sessionID, "messages") + "?" + query.Encode()
 
 	var resp struct {
 		OK        bool             `json:"ok"`
@@ -2726,7 +2737,7 @@ func (c *API) GetSessionUsage(ctx context.Context, sessionID string, limit int) 
 	if limit <= 0 {
 		limit = 50
 	}
-	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/usage?limit=" + strconv.Itoa(limit)
+	path := sessionV2LifecyclePath(sessionID, "usage") + "?limit=" + strconv.Itoa(limit)
 	var resp struct {
 		OK              bool                `json:"ok"`
 		SessionID       string              `json:"session_id"`
@@ -2745,7 +2756,7 @@ func (c *API) GetSessionMode(ctx context.Context, sessionID string) (string, err
 	if sessionID == "" {
 		return "", errors.New("session id is required")
 	}
-	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/mode"
+	path := sessionV2LifecyclePath(sessionID, "mode")
 	var resp struct {
 		OK        bool   `json:"ok"`
 		SessionID string `json:"session_id"`
@@ -2765,7 +2776,7 @@ func (c *API) SetSessionMode(ctx context.Context, sessionID, mode string) (strin
 	req := map[string]string{
 		"mode": strings.TrimSpace(mode),
 	}
-	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/mode"
+	path := sessionV2LifecyclePath(sessionID, "mode")
 	var resp struct {
 		OK        bool   `json:"ok"`
 		SessionID string `json:"session_id"`
@@ -2778,7 +2789,7 @@ func (c *API) SetSessionMode(ctx context.Context, sessionID, mode string) (strin
 }
 
 func (c *API) UpdateSessionMetadata(ctx context.Context, sessionID string, metadata map[string]any) (SessionSummary, error) {
-	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/metadata"
+	path := sessionV2LifecyclePath(sessionID, "metadata")
 	payload := map[string]any{
 		"metadata": metadata,
 	}
@@ -2797,7 +2808,7 @@ func (c *API) GetSessionCodexConfig(ctx context.Context, sessionID string) (Sess
 	if sessionID == "" {
 		return SessionCodexConfig{}, errors.New("session id is required")
 	}
-	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/codex"
+	path := sessionV2LifecyclePath(sessionID, "codex")
 	var resp struct {
 		OK                     bool   `json:"ok"`
 		SessionID              string `json:"session_id"`
@@ -2825,7 +2836,7 @@ func (c *API) UpdateSessionCodexConfig(ctx context.Context, sessionID string, re
 	if sessionID == "" {
 		return SessionCodexConfig{}, errors.New("session id is required")
 	}
-	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/codex"
+	path := sessionV2LifecyclePath(sessionID, "codex")
 	var resp struct {
 		OK                     bool   `json:"ok"`
 		SessionID              string `json:"session_id"`
@@ -2853,7 +2864,7 @@ func (c *API) GetSessionPreference(ctx context.Context, sessionID string) (Model
 	if sessionID == "" {
 		return ModelResolved{}, errors.New("session id is required")
 	}
-	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/preference"
+	path := sessionV2LifecyclePath(sessionID, "preference")
 	var resolved ModelResolved
 	if err := c.getJSON(ctx, path, &resolved, true); err != nil {
 		return ModelResolved{}, err
@@ -2866,7 +2877,7 @@ func (c *API) SetSessionPreference(ctx context.Context, sessionID string, req ma
 	if sessionID == "" {
 		return ModelResolved{}, errors.New("session id is required")
 	}
-	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/preference"
+	path := sessionV2LifecyclePath(sessionID, "preference")
 	var resolved ModelResolved
 	if err := c.postJSON(ctx, path, req, &resolved, true); err != nil {
 		return ModelResolved{}, err
@@ -2882,7 +2893,7 @@ func (c *API) ListSessionPlans(ctx context.Context, sessionID string, limit int)
 	if limit <= 0 {
 		limit = 100
 	}
-	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/plans?limit=" + strconv.Itoa(limit)
+	path := sessionV2LifecyclePath(sessionID, "plans") + "?limit=" + strconv.Itoa(limit)
 	var resp struct {
 		OK           bool          `json:"ok"`
 		SessionID    string        `json:"session_id"`
@@ -2905,7 +2916,7 @@ func (c *API) GetSessionPlan(ctx context.Context, sessionID, planID string) (Ses
 	if planID == "" {
 		return SessionPlan{}, errors.New("plan id is required")
 	}
-	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/plans/" + url.PathEscape(planID)
+	path := sessionV2LifecyclePath(sessionID, "plans/"+url.PathEscape(planID))
 	var resp struct {
 		OK        bool        `json:"ok"`
 		SessionID string      `json:"session_id"`
@@ -2922,7 +2933,7 @@ func (c *API) GetActiveSessionPlan(ctx context.Context, sessionID string) (Sessi
 	if sessionID == "" {
 		return SessionPlan{}, false, errors.New("session id is required")
 	}
-	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/plans/active"
+	path := sessionV2LifecyclePath(sessionID, "plans/active")
 	var resp struct {
 		OK         bool        `json:"ok"`
 		SessionID  string      `json:"session_id"`
@@ -2940,7 +2951,7 @@ func (c *API) SaveSessionPlan(ctx context.Context, sessionID string, req Session
 	if sessionID == "" {
 		return SessionPlan{}, errors.New("session id is required")
 	}
-	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/plans"
+	path := sessionV2LifecyclePath(sessionID, "plans")
 	var resp struct {
 		OK        bool        `json:"ok"`
 		SessionID string      `json:"session_id"`
@@ -2961,7 +2972,7 @@ func (c *API) SetActiveSessionPlan(ctx context.Context, sessionID, planID string
 	if planID == "" {
 		return SessionPlan{}, errors.New("plan id is required")
 	}
-	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/plans/active"
+	path := sessionV2LifecyclePath(sessionID, "plans/active")
 	req := map[string]string{"plan_id": planID}
 	var resp struct {
 		OK         bool        `json:"ok"`
@@ -2982,7 +2993,7 @@ func (c *API) ListPendingPermissions(ctx context.Context, sessionID string, limi
 	if limit <= 0 {
 		limit = 200
 	}
-	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/permissions?status=pending&limit=" + strconv.Itoa(limit)
+	path := sessionV2LifecyclePath(sessionID, "permissions") + "?status=pending&limit=" + strconv.Itoa(limit)
 	var resp struct {
 		OK          bool               `json:"ok"`
 		SessionID   string             `json:"session_id"`
@@ -3003,7 +3014,7 @@ func (c *API) ListPermissions(ctx context.Context, sessionID string, limit int) 
 	if limit <= 0 {
 		limit = 200
 	}
-	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/permissions?limit=" + strconv.Itoa(limit)
+	path := sessionV2LifecyclePath(sessionID, "permissions") + "?limit=" + strconv.Itoa(limit)
 	var resp struct {
 		OK          bool               `json:"ok"`
 		SessionID   string             `json:"session_id"`
@@ -3036,7 +3047,7 @@ func (c *API) ResolvePermissionWithArguments(ctx context.Context, sessionID, per
 	if approvedArguments = strings.TrimSpace(approvedArguments); approvedArguments != "" {
 		req["approved_arguments"] = json.RawMessage(approvedArguments)
 	}
-	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/permissions/" + url.PathEscape(permissionID) + "/resolve"
+	path := sessionV2LifecyclePath(sessionID, "permissions/"+url.PathEscape(permissionID)+"/resolve")
 	var resp struct {
 		OK         bool             `json:"ok"`
 		SessionID  string           `json:"session_id"`
@@ -3062,7 +3073,7 @@ func (c *API) ResolveAllPermissions(ctx context.Context, sessionID, action, reas
 		"reason": strings.TrimSpace(reason),
 		"limit":  1000,
 	}
-	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/permissions/resolve_all"
+	path := sessionV2LifecyclePath(sessionID, "permissions/resolve_all")
 	var resp struct {
 		OK        bool               `json:"ok"`
 		SessionID string             `json:"session_id"`
@@ -3075,7 +3086,7 @@ func (c *API) ResolveAllPermissions(ctx context.Context, sessionID, action, reas
 	return resp.Resolved, nil
 }
 
-func runSessionRequest(prompt, agentName, instructions string, options RunSessionOptions) map[string]any {
+func runSessionV2Request(prompt, agentName, instructions string, options RunSessionOptions) map[string]any {
 	req := map[string]any{
 		"prompt":       strings.TrimSpace(prompt),
 		"agent_name":   strings.TrimSpace(agentName),
@@ -3084,18 +3095,6 @@ func runSessionRequest(prompt, agentName, instructions string, options RunSessio
 	}
 	if options.Background {
 		req["background"] = true
-	}
-	if value := strings.TrimSpace(options.TargetKind); value != "" {
-		req["target_kind"] = value
-	}
-	if value := strings.TrimSpace(options.TargetName); value != "" {
-		req["target_name"] = value
-	}
-	if options.ToolScope != nil {
-		req["tool_scope"] = options.ToolScope
-	}
-	if options.ExecutionContext != nil {
-		req["execution_context"] = options.ExecutionContext
 	}
 	return req
 }
@@ -3114,8 +3113,8 @@ func (c *API) RunSessionWithOptions(ctx context.Context, sessionID, prompt, agen
 		return SessionRunResult{}, errors.New("prompt is required")
 	}
 
-	req := runSessionRequest(prompt, agentName, instructions, options)
-	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/run"
+	req := runSessionV2Request(prompt, agentName, instructions, options)
+	path := sessionV2LifecyclePath(sessionID, "run")
 	var resp struct {
 		OK     bool             `json:"ok"`
 		Result SessionRunResult `json:"result"`
@@ -3139,7 +3138,7 @@ func (c *API) StopSessionRun(ctx context.Context, sessionID, runID string) error
 	if runID == "" {
 		return errors.New("run id is required")
 	}
-	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/run/stream"
+	path := sessionV2LifecyclePath(sessionID, "run/stream")
 	return c.postJSON(ctx, path, map[string]any{
 		"type":   "run.stop",
 		"run_id": runID,
@@ -3163,7 +3162,7 @@ func (c *API) RunSessionStreamWithOptions(ctx context.Context, sessionID, prompt
 		defer cancel()
 	}
 
-	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/run/stream"
+	path := sessionV2LifecyclePath(sessionID, "run/stream")
 	connect := func() (*wsClientConn, error) {
 		baseURL, _, socketPath := c.requestTarget()
 		return dialDaemonWS(ctx, baseURL, c.Token(), socketPath, path, "")
@@ -3175,7 +3174,7 @@ func (c *API) RunSessionStreamWithOptions(ctx context.Context, sessionID, prompt
 	}
 	defer conn.Close()
 
-	startPayload := runSessionRequest(prompt, agentName, instructions, options)
+	startPayload := runSessionV2Request(prompt, agentName, instructions, options)
 	startPayload["type"] = "run.start"
 
 	startMsg, err := json.Marshal(startPayload)
@@ -3291,10 +3290,10 @@ func (c *API) StartBackgroundSessionRun(ctx context.Context, sessionID, prompt, 
 	}
 	options.Background = true
 
-	req := runSessionRequest(prompt, agentName, instructions, options)
+	req := runSessionV2Request(prompt, agentName, instructions, options)
 	req["type"] = "run.start"
 
-	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/run/stream"
+	path := sessionV2LifecyclePath(sessionID, "run/stream")
 	var resp BackgroundRunAccepted
 	if err := c.postJSON(ctx, path, req, &resp, true); err != nil {
 		return BackgroundRunAccepted{}, err
@@ -3329,7 +3328,7 @@ func (c *API) persistRunStreamClientError(sessionID, stage string, runErr error)
 		"role":    "system",
 		"content": content,
 	}
-	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/messages"
+	path := sessionV2LifecyclePath(sessionID, "messages")
 	ctx, cancel := context.WithTimeout(context.Background(), streamErrorLogTimeout)
 	defer cancel()
 

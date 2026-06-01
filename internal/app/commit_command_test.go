@@ -30,7 +30,7 @@ func TestStartBackgroundCommitRunTargetsMemoryAgent(t *testing.T) {
 
 	var body map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/sessions/child-1/run/stream" {
+		if r.URL.Path != "/v2/sessions/child-1/run/stream" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -53,10 +53,10 @@ func TestStartBackgroundCommitRunTargetsMemoryAgent(t *testing.T) {
 	if _, err := a.startBackgroundCommitRun(context.Background(), model.SessionSummary{ID: "child-1"}, ""); err != nil {
 		t.Fatalf("startBackgroundCommitRun() error = %v", err)
 	}
-	if got, _ := body["target_kind"].(string); got != "background" {
-		t.Fatalf("target_kind = %q, want background", got)
+	if _, ok := body["target_kind"]; ok {
+		t.Fatalf("target_kind present in primary v2 background run payload: %#v", body["target_kind"])
 	}
-	if got, _ := body["target_name"].(string); got != "memory" {
-		t.Fatalf("target_name = %q, want memory", got)
+	if _, ok := body["target_name"]; ok {
+		t.Fatalf("target_name present in primary v2 background run payload: %#v", body["target_name"])
 	}
 }
