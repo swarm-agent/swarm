@@ -69,6 +69,13 @@ func NewService(store *pebblestore.SessionStore, events *pebblestore.EventLog) *
 	return &Service{store: store, events: events}
 }
 
+func (s *Service) Store() *pebblestore.SessionStore {
+	if s == nil {
+		return nil
+	}
+	return s.store
+}
+
 func (s *Service) SetHostedSync(sync HostedSessionSync) {
 	if s == nil {
 		return

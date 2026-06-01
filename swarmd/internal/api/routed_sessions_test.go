@@ -1118,7 +1118,7 @@ func TestRoutedRunStreamControlMissingStoredRouteFailsClosed(t *testing.T) {
 			sessionruntime.HostedSessionMetadataHostWorkspacePath:    "/host/workspace",
 			sessionruntime.HostedSessionMetadataRuntimeWorkspacePath: "/runtime/workspace",
 			sessionruntime.HostedSessionMetadataChildSwarmID:         "missing-child",
-			"swarm_routed_workspace_binding_id":                    "binding-missing-route",
+			"swarm_routed_workspace_binding_id":                      "binding-missing-route",
 		},
 		CreatedAt: 1,
 		UpdatedAt: 1,
@@ -2899,9 +2899,10 @@ func newRoutedSessionTestServerWithSwarmStore(t *testing.T) (*Server, *sessionru
 	}
 	routeStore := pebblestore.NewSessionRouteStore(store)
 	nodeStore := pebblestore.NewSwarmNodeStore(store)
-	swarmStore := pebblestore.NewSwarmStore(store)
+	topologyStore := pebblestore.NewTopologyStore(store)
+	swarmStore := pebblestore.NewSwarmStore(store, topologyStore)
 	server := NewServer(nil, agentSvc, modelSvc, nil, sessionSvc, nil, nil, nil, nil, permissionSvc, nil, eventLog, stream.NewHub(eventLog))
-	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, routeStore, pebblestore.NewWorkspaceStore(store)))
+	server.SetTopologyService(topologyruntime.NewService(topologyStore, swarmStore, nil, nil, nil, nil, routeStore, pebblestore.NewWorkspaceStore(store)))
 	server.SetSessionRouteStore(routeStore)
 	server.SetSwarmNodeStore(nodeStore)
 	server.SetSwarmStore(swarmStore)

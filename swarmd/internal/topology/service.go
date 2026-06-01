@@ -121,6 +121,13 @@ func (s *Service) GetRuntimePlacementForAccount(accountScopeID, runtimeSwarmID s
 	return s.topologyStore.GetRuntimePlacementForAccount(accountScopeID, runtimeSwarmID)
 }
 
+func (s *Service) PutRuntimePlacementForAccount(accountScopeID string, record pebblestore.TopologyRuntimePlacementRecord) (pebblestore.TopologyRuntimePlacementRecord, error) {
+	if s == nil || s.topologyStore == nil {
+		return pebblestore.TopologyRuntimePlacementRecord{}, fmt.Errorf("topology service is not configured")
+	}
+	return s.topologyStore.PutRuntimePlacementForAccount(accountScopeID, record)
+}
+
 func (s *Service) EnsureLocalSelfPlacementForAccount(accountScopeID string) (pebblestore.TopologyRuntimePlacementRecord, error) {
 	return s.EnsureLocalSelfPlacementForPrincipal(accountScopeID, accountScopeID)
 }

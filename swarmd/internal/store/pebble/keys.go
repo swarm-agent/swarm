@@ -321,6 +321,14 @@ func KeySessionByAccount(accountScopeID, sessionID string) string {
 	return fmt.Sprintf("session_by_account/%s/%s", keyPart(accountScopeID), keyPart(sessionID))
 }
 
+func KeySessionExecutionV2(sessionID string) string {
+	return fmt.Sprintf("session_execution_v2/%s", keyPart(sessionID))
+}
+
+func KeySessionExecutionV2ByAccount(accountScopeID, sessionID string) string {
+	return fmt.Sprintf("session_execution_v2_by_account/%s/%s", keyPart(accountScopeID), keyPart(sessionID))
+}
+
 func SessionByAccountPrefix(accountScopeID string) string {
 	part := keyPart(accountScopeID)
 	if part == "" {
