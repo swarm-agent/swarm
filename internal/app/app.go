@@ -2625,14 +2625,6 @@ func (a *App) handleCommitCommand(args []string) {
 		"background":  true,
 		"target_kind": launchRecord.TargetKind,
 		"target_name": launchRecord.TargetName,
-		"execution_context": map[string]any{
-			"workspace_path":       launchRecord.WorkspacePath,
-			"cwd":                  launchRecord.CWD,
-			"worktree_mode":        launchRecord.WorktreeMode,
-			"worktree_root_path":   launchRecord.WorktreeRootPath,
-			"worktree_branch":      launchRecord.WorktreeBranch,
-			"worktree_base_branch": launchRecord.WorktreeBaseBranch,
-		},
 	})
 	a.setBackgroundSessionSummary(launchRecord)
 	a.upsertHomeSessionSummary(childSummary)
@@ -2735,33 +2727,29 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 	if strings.TrimSpace(preference.Provider) == "" || strings.TrimSpace(preference.Model) == "" || strings.TrimSpace(preference.Thinking) == "" {
 		return errors.New("new sessions require an explicit draft model selection")
 	}
+	createMode := "auto"
+	if a.home != nil {
+		createMode = a.home.SessionMode()
+	}
+	createMode = normalizeAppSessionMode(createMode)
+	if createMode != "auto" {
+		createMode = "plan"
+	}
 	session, err := a.api.CreateSessionWithOptions(ctx, client.SessionCreateOptions{
-		Title:                title,
-		WorkspacePath:        workspacePath,
-		HostWorkspacePath:    route.HostWorkspacePath,
-		RuntimeWorkspacePath: route.RuntimeWorkspacePath,
-		WorkspaceName:        workspaceName,
-		WorkspaceBindingID:   route.WorkspaceBindingID,
-		SwarmID:              createSwarmID,
-		Preference:           preference,
-		Metadata:             nil,
+		Title:              title,
+		WorkspaceName:      workspaceName,
+		WorkspaceBindingID: route.WorkspaceBindingID,
+		SwarmID:            createSwarmID,
+		Mode:               createMode,
+		AgentName:          emptyFallback(strings.TrimSpace(a.homeModel.ActiveAgent), "swarm"),
+		Preference:         preference,
+		Metadata:           nil,
+		WorktreeMode:       "off",
 	})
 	if err != nil {
 		return err
 	}
 	warning := strings.TrimSpace(session.Warning)
-	selectedMode := "auto"
-	if a.home != nil {
-		selectedMode = a.home.SessionMode()
-	}
-	selectedMode = strings.TrimSpace(selectedMode)
-	if selectedMode != "" && !strings.EqualFold(strings.TrimSpace(session.Mode), selectedMode) {
-		mode, modeErr := a.api.SetSessionMode(ctx, strings.TrimSpace(session.ID), selectedMode)
-		if modeErr != nil {
-			return fmt.Errorf("set session mode %q failed: %w", selectedMode, modeErr)
-		}
-		session.Mode = mode
-	}
 	created := model.SessionSummary{
 		ID:                 strings.TrimSpace(session.ID),
 		WorkspacePath:      strings.TrimSpace(session.WorkspacePath),
@@ -2769,6 +2757,7 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 		Title:              strings.TrimSpace(session.Title),
 		Mode:               strings.TrimSpace(session.Mode),
 		Metadata:           cloneMetadataMap(session.Metadata),
+		SessionExecution:   cloneSessionExecutionV2(session.SessionExecution),
 		Preference:         session.Preference,
 		WorktreeEnabled:    session.WorktreeEnabled,
 		WorktreeRootPath:   strings.TrimSpace(session.WorktreeRootPath),
@@ -2851,6 +2840,7 @@ func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt str
 		Metadata:               cloneMetadataMap(summary.Metadata),
 		PendingPermissionCount: summary.PendingPermissionCount,
 		Lifecycle:              cloneClientSessionLifecycle(summary.Lifecycle),
+		SessionExecution:       cloneSessionExecutionV2(summary.SessionExecution),
 		Preference: client.ModelPreference{
 			Provider:    strings.TrimSpace(modelProvider),
 			Model:       strings.TrimSpace(modelName),
@@ -3607,54 +3597,16 @@ func (a *App) commitRunInstructions(userInstructions string) string {
 	return strings.Join(instructions, "\n")
 }
 
-func (a *App) commitLineageMetadata(parentSessionID string, parentSummary model.SessionSummary, instructions string, execCtx *client.RunExecutionContext) map[string]any {
+func (a *App) commitLineageMetadata(parentSessionID string, parentSummary model.SessionSummary, instructions string) map[string]any {
 	metadata := map[string]any{
-		"parent_session_id":          strings.TrimSpace(parentSessionID),
-		"parent_title":               strings.TrimSpace(parentSummary.Title),
-		"commit_instructions":        strings.TrimSpace(instructions),
-		"lineage_kind":               "background_agent",
-		"lineage_label":              commitBackgroundLineageTag,
-		"launch_source":              "commit",
-		"requested_background_agent": commitBackgroundAgentName,
-		"background_agent":           commitBackgroundAgentName,
-	}
-	if execCtx != nil {
-		metadata["execution_context"] = map[string]any{
-			"workspace_path":       strings.TrimSpace(execCtx.WorkspacePath),
-			"cwd":                  strings.TrimSpace(execCtx.CWD),
-			"worktree_mode":        strings.TrimSpace(execCtx.WorktreeMode),
-			"worktree_root_path":   strings.TrimSpace(execCtx.WorktreeRootPath),
-			"worktree_branch":      strings.TrimSpace(execCtx.WorktreeBranch),
-			"worktree_base_branch": strings.TrimSpace(execCtx.WorktreeBaseBranch),
-		}
+		"parent_session_id":   strings.TrimSpace(parentSessionID),
+		"parent_title":        strings.TrimSpace(parentSummary.Title),
+		"commit_instructions": strings.TrimSpace(instructions),
+		"lineage_kind":        "background_agent",
+		"lineage_label":       commitBackgroundLineageTag,
+		"launch_source":       "commit",
 	}
 	return metadata
-}
-
-func (a *App) commitSessionWorkspacePaths(parentSummary model.SessionSummary, execCtx *client.RunExecutionContext) (workspacePath, hostWorkspacePath, runtimeWorkspacePath string) {
-	workspacePath = strings.TrimSpace(parentSummary.WorkspacePath)
-	if execCtx != nil {
-		runtimeWorkspacePath = strings.TrimSpace(execCtx.WorkspacePath)
-		if runtimeWorkspacePath == "" {
-			runtimeWorkspacePath = strings.TrimSpace(execCtx.CWD)
-		}
-	}
-	if metadata := parentSummary.Metadata; len(metadata) > 0 {
-		hostWorkspacePath = consumeStringMetadata(metadata, "swarm_routed_host_workspace_path")
-		if runtimeWorkspacePath == "" {
-			runtimeWorkspacePath = consumeStringMetadata(metadata, "swarm_routed_runtime_workspace_path")
-		}
-	}
-	if hostWorkspacePath == "" {
-		hostWorkspacePath = workspacePath
-	}
-	if runtimeWorkspacePath == "" {
-		runtimeWorkspacePath = workspacePath
-	}
-	if workspacePath == "" {
-		workspacePath = firstNonEmpty(hostWorkspacePath, runtimeWorkspacePath)
-	}
-	return workspacePath, hostWorkspacePath, runtimeWorkspacePath
 }
 
 func firstNonEmpty(values ...string) string {
@@ -3749,67 +3701,35 @@ func (a *App) commitExecutionContext(summary model.SessionSummary) *client.RunEx
 	return ctx
 }
 
-func (a *App) commitChildSessionBaseMetadata(parentMetadata map[string]any) map[string]any {
-	base := cloneMetadataMap(parentMetadata)
-	if len(base) == 0 {
-		return nil
-	}
-	keys := []string{
-		"swarm_session_hosted",
-		"swarm_routed_host_swarm_id",
-		"swarm_routed_host_backend_url",
-		"swarm_routed_host_workspace_path",
-		"swarm_routed_runtime_workspace_path",
-		"swarm_routed_child_swarm_id",
-	}
-	filtered := make(map[string]any, len(keys))
-	for _, key := range keys {
-		if value, ok := base[key]; ok {
-			filtered[key] = value
-		}
-	}
-	if len(filtered) == 0 {
-		return nil
-	}
-	return filtered
-}
-
 func (a *App) createBackgroundCommitSession(ctx context.Context, parentSessionID string, parentSummary model.SessionSummary, instructions string) (model.SessionSummary, error) {
 	execCtx := a.commitExecutionContext(parentSummary)
-	workspacePath, hostWorkspacePath, runtimeWorkspacePath := a.commitSessionWorkspacePaths(parentSummary, execCtx)
-	if workspacePath == "" {
-		workspacePath = strings.TrimSpace(a.activeContextPath())
-	}
-	if workspacePath == "" {
-		workspacePath = strings.TrimSpace(a.startupCWD)
-	}
-	if workspacePath == "" {
-		return model.SessionSummary{}, errors.New("workspace path is required")
-	}
-	if hostWorkspacePath == "" {
-		hostWorkspacePath = workspacePath
-	}
-	if runtimeWorkspacePath == "" {
-		runtimeWorkspacePath = firstNonEmpty(strings.TrimSpace(execCtx.WorkspacePath), strings.TrimSpace(execCtx.CWD), workspacePath)
-	}
 	workspaceName := strings.TrimSpace(parentSummary.WorkspaceName)
 	if workspaceName == "" {
-		workspaceName = directoryNameForPath(hostWorkspacePath)
+		workspaceName = directoryNameForPath(parentSummary.WorkspacePath)
 	}
-	metadata := mergeMetadataMaps(a.commitChildSessionBaseMetadata(parentSummary.Metadata), a.commitLineageMetadata(parentSessionID, parentSummary, instructions, execCtx))
+	metadata := a.commitLineageMetadata(parentSessionID, parentSummary, instructions)
+	workspaceBindingID := firstNonEmpty(sessionExecutionWorkspaceBindingID(parentSummary), consumeStringMetadata(parentSummary.Metadata, "local_workspace_binding_id"))
+	swarmID := sessionExecutionRuntimeSwarmID(parentSummary)
+	if workspaceBindingID == "" {
+		return model.SessionSummary{}, errors.New("workspace binding id is required")
+	}
+	if swarmID == "" {
+		return model.SessionSummary{}, errors.New("swarm id is required")
+	}
+	worktreeMode := strings.TrimSpace(execCtx.WorktreeMode)
+	if strings.EqualFold(worktreeMode, "inherit") {
+		worktreeMode = "off"
+	}
 	child, err := a.api.CreateSessionWithOptions(ctx, client.SessionCreateOptions{
-		Title:                a.commitSessionTitle(parentSummary.Title, instructions),
-		WorkspacePath:        workspacePath,
-		HostWorkspacePath:    hostWorkspacePath,
-		RuntimeWorkspacePath: runtimeWorkspacePath,
-		WorkspaceName:        workspaceName,
-		Mode:                 "auto",
-		AgentName:            emptyFallback(strings.TrimSpace(a.homeModel.ActiveAgent), "swarm"),
-		WorkspaceBindingID:   firstNonEmpty(consumeStringMetadata(metadata, "swarm_routed_workspace_binding_id"), consumeStringMetadata(metadata, "swarm_managed_host_workspace_binding_id"), consumeStringMetadata(metadata, "route_workspace_binding_id")),
-		SwarmID:              consumeStringMetadata(metadata, "swarm_routed_child_swarm_id"),
-		Metadata:             metadata,
-		Preference:           parentSummary.Preference,
-		WorktreeMode:         strings.TrimSpace(execCtx.WorktreeMode),
+		Title:              a.commitSessionTitle(parentSummary.Title, instructions),
+		WorkspaceName:      workspaceName,
+		Mode:               "auto",
+		AgentName:          emptyFallback(strings.TrimSpace(a.homeModel.ActiveAgent), "swarm"),
+		WorkspaceBindingID: workspaceBindingID,
+		SwarmID:            swarmID,
+		Metadata:           metadata,
+		Preference:         parentSummary.Preference,
+		WorktreeMode:       worktreeMode,
 	})
 	if err != nil {
 		return model.SessionSummary{}, err
@@ -3823,6 +3743,7 @@ func (a *App) createBackgroundCommitSession(ctx context.Context, parentSessionID
 		Title:                  strings.TrimSpace(child.Title),
 		Mode:                   strings.TrimSpace(child.Mode),
 		Metadata:               metadata,
+		SessionExecution:       cloneSessionExecutionV2(child.SessionExecution),
 		Preference:             child.Preference,
 		WorktreeEnabled:        child.WorktreeEnabled,
 		WorktreeRootPath:       strings.TrimSpace(child.WorktreeRootPath),
@@ -3984,6 +3905,28 @@ func cloneClientSessionLifecycle(lifecycle *client.SessionLifecycleSnapshot) *cl
 	return &copy
 }
 
+func cloneSessionExecutionV2(execution *client.SessionExecutionV2) *client.SessionExecutionV2 {
+	if execution == nil {
+		return nil
+	}
+	copy := *execution
+	return &copy
+}
+
+func sessionExecutionRuntimeSwarmID(summary model.SessionSummary) string {
+	if summary.SessionExecution == nil {
+		return ""
+	}
+	return strings.TrimSpace(summary.SessionExecution.RuntimeSwarmID)
+}
+
+func sessionExecutionWorkspaceBindingID(summary model.SessionSummary) string {
+	if summary.SessionExecution == nil {
+		return ""
+	}
+	return strings.TrimSpace(summary.SessionExecution.WorkspaceBindingID)
+}
+
 func mergeClientModelPreference(current, incoming client.ModelPreference) client.ModelPreference {
 	merged := current
 	merged.Provider = strings.TrimSpace(incoming.Provider)
@@ -4032,6 +3975,9 @@ func mergeHomeSessionSummary(current, incoming model.SessionSummary) model.Sessi
 	if incoming.Lifecycle != nil {
 		merged.Lifecycle = cloneClientSessionLifecycle(incoming.Lifecycle)
 	}
+	if incoming.SessionExecution != nil {
+		merged.SessionExecution = cloneSessionExecutionV2(incoming.SessionExecution)
+	}
 	return merged
 }
 
@@ -4049,6 +3995,7 @@ func modelSessionSummaryFromClient(record client.SessionSummary) model.SessionSu
 		Metadata:               cloneMetadataMap(record.Metadata),
 		PendingPermissionCount: record.PendingPermissionCount,
 		Lifecycle:              cloneClientSessionLifecycle(record.Lifecycle),
+		SessionExecution:       cloneSessionExecutionV2(record.SessionExecution),
 		Preference:             mergeClientModelPreference(client.ModelPreference{}, record.Preference),
 		WorktreeEnabled:        record.WorktreeEnabled,
 		WorktreeRootPath:       strings.TrimSpace(record.WorktreeRootPath),

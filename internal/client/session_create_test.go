@@ -8,16 +8,20 @@ import (
 	"testing"
 )
 
-func TestCreateSessionWithOptionsOmitsAuthorityFieldsWhenBindingIsPresent(t *testing.T) {
+func TestCreateSessionWithOptionsPostsStrictV2PrimaryPayload(t *testing.T) {
 	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
 	t.Setenv("DATA_DIR", "")
 
 	var gotPath string
-	var gotSwarmID string
 	var body map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		gotSwarmID = r.URL.Query().Get("swarm_id")
+		if r.URL.RawQuery != "" {
+			t.Fatalf("unexpected query on create request: %q", r.URL.RawQuery)
+		}
+		if r.Header.Get("X-Swarm-Token") == "" {
+			t.Fatalf("missing X-Swarm-Token on v2 create request")
+		}
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
@@ -34,19 +38,25 @@ func TestCreateSessionWithOptionsOmitsAuthorityFieldsWhenBindingIsPresent(t *tes
 				"title":          "New Session",
 				"mode":           "auto",
 			},
+			"session_execution": map[string]any{
+				"session_id":           "session-1",
+				"execution_class":      "primary",
+				"runtime_swarm_id":     "child-swarm",
+				"workspace_binding_id": "binding-child",
+			},
 		})
 	}))
 	defer server.Close()
 
 	api := New(server.URL)
-	_, err := api.CreateSessionWithOptions(context.Background(), SessionCreateOptions{
+	api.SetToken("test-token")
+	session, err := api.CreateSessionWithOptions(context.Background(), SessionCreateOptions{
 		Title:                "New Session",
 		WorkspacePath:        "/host/workspace",
 		HostWorkspacePath:    "/host/workspace",
 		RuntimeWorkspacePath: "/workspaces/swarm-go",
 		WorkspaceName:        "Workspace",
 		WorkspaceBindingID:   "binding-child",
-		Mode:                 "auto",
 		SwarmID:              "child-swarm",
 		Preference: ModelPreference{
 			Provider: "anthropic",
@@ -57,16 +67,31 @@ func TestCreateSessionWithOptionsOmitsAuthorityFieldsWhenBindingIsPresent(t *tes
 	if err != nil {
 		t.Fatalf("CreateSessionWithOptions() error = %v", err)
 	}
-	if gotPath != "/v1/sessions" {
-		t.Fatalf("request path = %q, want /v1/sessions", gotPath)
+	if gotPath != "/v2/sessions/primary" {
+		t.Fatalf("request path = %q, want /v2/sessions/primary", gotPath)
 	}
-	if gotSwarmID != "child-swarm" {
-		t.Fatalf("swarm_id query = %q, want child-swarm", gotSwarmID)
+	if got, _ := body["swarm_id"].(string); got != "child-swarm" {
+		t.Fatalf("swarm_id = %q, want child-swarm", got)
 	}
 	if got, _ := body["workspace_binding_id"].(string); got != "binding-child" {
 		t.Fatalf("workspace_binding_id = %q, want binding-child", got)
 	}
-	for _, key := range []string{"workspace_name", "workspace_path", "host_workspace_path", "runtime_workspace_path"} {
+	if session.SessionExecution == nil || session.SessionExecution.RuntimeSwarmID != "child-swarm" || session.SessionExecution.WorkspaceBindingID != "binding-child" {
+		t.Fatalf("session execution = %#v, want child-swarm/binding-child", session.SessionExecution)
+	}
+	if got, _ := body["mode"].(string); got != "plan" {
+		t.Fatalf("mode = %q, want plan", got)
+	}
+	if got, _ := body["agent_name"].(string); got != "swarm" {
+		t.Fatalf("agent_name = %q, want swarm", got)
+	}
+	if got, _ := body["worktree_mode"].(string); got != "off" {
+		t.Fatalf("worktree_mode = %q, want off", got)
+	}
+	if metadata, ok := body["metadata"].(map[string]any); !ok || len(metadata) != 0 {
+		t.Fatalf("metadata = %#v, want empty object", body["metadata"])
+	}
+	for _, key := range []string{"workspace_name", "workspace_path", "host_workspace_path", "runtime_workspace_path", "target_swarm_id", "routing_hint"} {
 		if _, ok := body[key]; ok {
 			t.Fatalf("%s present in workspace-bound create request: %#v", key, body[key])
 		}

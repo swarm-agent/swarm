@@ -7,22 +7,20 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/model"
 )
 
-func TestCommitLineageMetadataTargetsMemoryAgent(t *testing.T) {
+func TestCommitLineageMetadataIsV2Safe(t *testing.T) {
 	a := &App{}
-	metadata := a.commitLineageMetadata("parent-1", model.SessionSummary{}, "", nil)
+	metadata := a.commitLineageMetadata("parent-1", model.SessionSummary{}, "")
 
 	if got, _ := metadata["lineage_label"].(string); got != "@memory" {
 		t.Fatalf("lineage_label = %q, want @memory", got)
 	}
-	if got, _ := metadata["requested_background_agent"].(string); got != "memory" {
-		t.Fatalf("requested_background_agent = %q, want memory", got)
-	}
-	if got, _ := metadata["background_agent"].(string); got != "memory" {
-		t.Fatalf("background_agent = %q, want memory", got)
+	for _, key := range []string{"requested_background_agent", "background_agent", "execution_context"} {
+		if _, ok := metadata[key]; ok {
+			t.Fatalf("%s present in v2 create metadata: %#v", key, metadata)
+		}
 	}
 }
 
@@ -51,7 +49,7 @@ func TestStartBackgroundCommitRunTargetsMemoryAgent(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a := &App{api: client.New(server.URL)}
+	a := &App{api: testAPIWithToken(server.URL)}
 	if _, err := a.startBackgroundCommitRun(context.Background(), model.SessionSummary{ID: "child-1"}, ""); err != nil {
 		t.Fatalf("startBackgroundCommitRun() error = %v", err)
 	}

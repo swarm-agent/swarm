@@ -588,14 +588,14 @@ type WorkspaceEntry struct {
 	LocalWorkspaceBindingID string                     `json:"local_workspace_binding_id,omitempty"`
 	WorkspaceName           string                     `json:"workspace_name"`
 	ThemeID                 string                     `json:"theme_id,omitempty"`
-	Directories         []string                   `json:"directories"`
-	ReplicationLinks    []WorkspaceReplicationLink `json:"replication_links,omitempty"`
-	IsGitRepo           bool                       `json:"is_git_repo"`
-	SortIndex           int                        `json:"sort_index"`
-	AddedAt             int64                      `json:"added_at"`
-	UpdatedAt           int64                      `json:"updated_at"`
-	LastSelectedAt      int64                      `json:"last_selected_at"`
-	Active              bool                       `json:"active"`
+	Directories             []string                   `json:"directories"`
+	ReplicationLinks        []WorkspaceReplicationLink `json:"replication_links,omitempty"`
+	IsGitRepo               bool                       `json:"is_git_repo"`
+	SortIndex               int                        `json:"sort_index"`
+	AddedAt                 int64                      `json:"added_at"`
+	UpdatedAt               int64                      `json:"updated_at"`
+	LastSelectedAt          int64                      `json:"last_selected_at"`
+	Active                  bool                       `json:"active"`
 }
 
 type WorkspaceOverviewWorkspace struct {
@@ -658,19 +658,41 @@ type SessionLifecycleSnapshot struct {
 	OwnerTransport string `json:"owner_transport,omitempty"`
 }
 
+type SessionExecutionV2 struct {
+	SessionID                 string `json:"session_id,omitempty"`
+	ExecutionClass            string `json:"execution_class"`
+	RuntimeSwarmID            string `json:"runtime_swarm_id"`
+	RuntimeKind               string `json:"runtime_kind"`
+	AuthorityHostSwarmID      string `json:"authority_host_swarm_id"`
+	AuthorityContainerID      string `json:"authority_container_id,omitempty"`
+	WorkspaceBindingID        string `json:"workspace_binding_id"`
+	SourceWorkspaceID         string `json:"source_workspace_id"`
+	SourceWorkspaceGeneration int64  `json:"source_workspace_generation"`
+	SourceWorkspaceName       string `json:"source_workspace_name,omitempty"`
+	SourceWorkspacePath       string `json:"source_workspace_path"`
+	RuntimeWorkspacePath      string `json:"runtime_workspace_path"`
+	PlacementGeneration       int    `json:"placement_generation"`
+	BindingGeneration         int    `json:"binding_generation"`
+	CreatedAt                 int64  `json:"created_at,omitempty"`
+	UpdatedAt                 int64  `json:"updated_at,omitempty"`
+}
+
 type SessionCreateOptions struct {
-	Title                string
-	WorkspacePath        string
-	HostWorkspacePath    string
-	RuntimeWorkspacePath string
-	WorkspaceName        string
-	WorkspaceBindingID   string
-	Mode                 string
-	AgentName            string
-	SwarmID              string
-	Metadata             map[string]any
-	Preference           ModelPreference
-	WorktreeMode         string
+	Title                    string
+	WorkspacePath            string
+	HostWorkspacePath        string
+	RuntimeWorkspacePath     string
+	WorkspaceName            string
+	WorkspaceBindingID       string
+	Mode                     string
+	AgentName                string
+	SwarmID                  string
+	Metadata                 map[string]any
+	Preference               ModelPreference
+	WorktreeMode             string
+	WorktreeUseCurrentBranch *bool
+	WorktreeBaseBranch       string
+	WorktreeBranchName       string
 }
 
 type SessionSummary struct {
@@ -704,6 +726,7 @@ type SessionSummary struct {
 	LastMessageAt          int64                     `json:"last_message_at"`
 	PendingPermissionCount int                       `json:"pending_permission_count"`
 	Lifecycle              *SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
+	SessionExecution       *SessionExecutionV2       `json:"session_execution,omitempty"`
 }
 
 type SessionPlan struct {
@@ -2602,23 +2625,34 @@ func (c *API) GetSession(ctx context.Context, sessionID string) (SessionSummary,
 }
 
 func (c *API) CreateSession(ctx context.Context, title, workspacePath, workspaceName string, preference ModelPreference) (SessionSummary, error) {
-	return c.CreateSessionWithOptions(ctx, SessionCreateOptions{
-		Title:         title,
-		WorkspacePath: workspacePath,
-		WorkspaceName: workspaceName,
-		Preference:    preference,
-	})
+	return SessionSummary{}, errors.New("create session requires sessions v2 swarm_id and workspace_binding_id")
 }
 
 func (c *API) CreateSessionWithOptions(ctx context.Context, options SessionCreateOptions) (SessionSummary, error) {
-	workspaceBindingID := strings.TrimSpace(options.WorkspaceBindingID)
+	metadata := options.Metadata
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	mode := strings.ToLower(strings.TrimSpace(options.Mode))
+	if mode != "auto" {
+		mode = "plan"
+	}
+	agentName := strings.TrimSpace(options.AgentName)
+	if agentName == "" {
+		agentName = "swarm"
+	}
+	worktreeMode := strings.TrimSpace(options.WorktreeMode)
+	if worktreeMode == "" || strings.EqualFold(worktreeMode, "inherit") {
+		worktreeMode = "off"
+	}
 	req := map[string]any{
+		"swarm_id":             strings.TrimSpace(options.SwarmID),
+		"workspace_binding_id": strings.TrimSpace(options.WorkspaceBindingID),
 		"title":                strings.TrimSpace(options.Title),
-		"workspace_binding_id": workspaceBindingID,
-		"mode":                 strings.TrimSpace(options.Mode),
-		"agent_name":           strings.TrimSpace(options.AgentName),
-		"metadata":             options.Metadata,
-		"worktree_mode":        strings.TrimSpace(options.WorktreeMode),
+		"mode":                 mode,
+		"agent_name":           agentName,
+		"metadata":             metadata,
+		"worktree_mode":        worktreeMode,
 		"preference": map[string]string{
 			"provider":     strings.TrimSpace(options.Preference.Provider),
 			"model":        strings.TrimSpace(options.Preference.Model),
@@ -2627,31 +2661,28 @@ func (c *API) CreateSessionWithOptions(ctx context.Context, options SessionCreat
 			"context_mode": strings.TrimSpace(options.Preference.ContextMode),
 		},
 	}
-	if workspaceBindingID == "" {
-		req["workspace_path"] = strings.TrimSpace(options.WorkspacePath)
-		req["workspace_name"] = strings.TrimSpace(options.WorkspaceName)
-		if hostPath := strings.TrimSpace(options.HostWorkspacePath); hostPath != "" {
-			req["host_workspace_path"] = hostPath
-		}
-		if runtimePath := strings.TrimSpace(options.RuntimeWorkspacePath); runtimePath != "" {
-			req["runtime_workspace_path"] = runtimePath
-		}
+	if options.WorktreeUseCurrentBranch != nil {
+		req["worktree_use_current_branch"] = *options.WorktreeUseCurrentBranch
+	}
+	if baseBranch := strings.TrimSpace(options.WorktreeBaseBranch); baseBranch != "" {
+		req["worktree_base_branch"] = baseBranch
+	}
+	if branchName := strings.TrimSpace(options.WorktreeBranchName); branchName != "" {
+		req["worktree_branch_name"] = branchName
 	}
 	var resp struct {
-		OK      bool           `json:"ok"`
-		Session SessionSummary `json:"session"`
-		Warning string         `json:"warning,omitempty"`
+		OK               bool               `json:"ok"`
+		Session          SessionSummary     `json:"session"`
+		SessionExecution SessionExecutionV2 `json:"session_execution"`
+		Warning          string             `json:"warning,omitempty"`
 	}
-	path := "/v1/sessions"
-	if swarmID := strings.TrimSpace(options.SwarmID); swarmID != "" {
-		query := url.Values{}
-		query.Set("swarm_id", swarmID)
-		path += "?" + query.Encode()
-	}
-	if err := c.postJSON(ctx, path, req, &resp, true); err != nil {
+	if err := c.postJSON(ctx, "/v2/sessions/primary", req, &resp, true); err != nil {
 		return SessionSummary{}, err
 	}
 	resp.Session.Warning = strings.TrimSpace(resp.Warning)
+	if strings.TrimSpace(resp.SessionExecution.RuntimeSwarmID) != "" || strings.TrimSpace(resp.SessionExecution.WorkspaceBindingID) != "" {
+		resp.Session.SessionExecution = &resp.SessionExecution
+	}
 	return resp.Session, nil
 }
 

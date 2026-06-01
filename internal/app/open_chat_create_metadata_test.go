@@ -12,20 +12,23 @@ import (
 	"swarm-refactor/swarmtui/internal/ui"
 )
 
-func TestOpenChatSessionCreateMetadataIsStrictV2SafeForHostRoute(t *testing.T) {
-	got := captureOpenChatSessionCreateRequest(t, model.ChatRoute{ID: "host"}, "host-swarm", "local-binding", testWorkspacePath)
+func TestOpenChatSessionCreatePayloadUsesHostRouteAuthority(t *testing.T) {
+	got := captureOpenChatSessionCreateRequest(t, model.ChatRoute{ID: "host"}, "host-swarm", "local-binding", testWorkspacePath, "plan")
 
-	if got.swarmID != "host-swarm" {
-		t.Fatalf("swarm_id query = %q, want host-swarm", got.swarmID)
+	if got.bodyString("swarm_id") != "host-swarm" {
+		t.Fatalf("swarm_id = %q, want host-swarm", got.bodyString("swarm_id"))
 	}
 	if got.bodyString("workspace_binding_id") != "local-binding" {
 		t.Fatalf("workspace_binding_id = %q, want local-binding", got.bodyString("workspace_binding_id"))
 	}
-	assertV2PrimaryCreatePayload(t, got.body, "local-binding")
+	if got.sessionExecution == nil || got.sessionExecution.RuntimeSwarmID != "host-swarm" || got.sessionExecution.WorkspaceBindingID != "local-binding" {
+		t.Fatalf("session execution = %#v, want host-swarm/local-binding", got.sessionExecution)
+	}
+	assertV2PrimaryCreatePayload(t, got.body, "local-binding", "plan")
 	assertCreateMetadataStrictV2Safe(t, got.metadata)
 }
 
-func TestOpenChatSessionCreateMetadataIsStrictV2SafeForRemoteRoute(t *testing.T) {
+func TestOpenChatSessionCreatePayloadUsesSelectedRouteAuthority(t *testing.T) {
 	route := model.ChatRoute{
 		ID:                   testRemoteRouteID,
 		Label:                "Child Desk",
@@ -34,22 +37,25 @@ func TestOpenChatSessionCreateMetadataIsStrictV2SafeForRemoteRoute(t *testing.T)
 		HostWorkspacePath:    testWorkspacePath,
 		RuntimeWorkspacePath: "/workspaces/swarm-go",
 	}
-	got := captureOpenChatSessionCreateRequest(t, route, "host-swarm", "local-binding", testWorkspacePath)
+	got := captureOpenChatSessionCreateRequest(t, route, "host-swarm", "local-binding", testWorkspacePath, "auto")
 
-	if got.swarmID != "child-swarm" {
-		t.Fatalf("swarm_id query = %q, want child-swarm", got.swarmID)
+	if got.bodyString("swarm_id") != "child-swarm" {
+		t.Fatalf("swarm_id = %q, want child-swarm", got.bodyString("swarm_id"))
 	}
 	if got.bodyString("workspace_binding_id") != "binding-1" {
 		t.Fatalf("workspace_binding_id = %q, want binding-1", got.bodyString("workspace_binding_id"))
 	}
-	assertV2PrimaryCreatePayload(t, got.body, "binding-1")
+	if got.sessionExecution == nil || got.sessionExecution.RuntimeSwarmID != "child-swarm" || got.sessionExecution.WorkspaceBindingID != "binding-1" {
+		t.Fatalf("session execution = %#v, want child-swarm/binding-1", got.sessionExecution)
+	}
+	assertV2PrimaryCreatePayload(t, got.body, "binding-1", "auto")
 	assertCreateMetadataStrictV2Safe(t, got.metadata)
 }
 
 type capturedCreateRequest struct {
-	swarmID  string
-	body     map[string]any
-	metadata map[string]any
+	body             map[string]any
+	metadata         map[string]any
+	sessionExecution *client.SessionExecutionV2
 }
 
 func (r capturedCreateRequest) bodyString(key string) string {
@@ -57,7 +63,7 @@ func (r capturedCreateRequest) bodyString(key string) string {
 	return value
 }
 
-func captureOpenChatSessionCreateRequest(t *testing.T, route model.ChatRoute, hostSwarmID, localBindingID, workspacePath string) capturedCreateRequest {
+func captureOpenChatSessionCreateRequest(t *testing.T, route model.ChatRoute, hostSwarmID, localBindingID, workspacePath, sessionMode string) capturedCreateRequest {
 	t.Helper()
 	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
 	t.Setenv("DATA_DIR", "")
@@ -65,8 +71,13 @@ func captureOpenChatSessionCreateRequest(t *testing.T, route model.ChatRoute, ho
 	captured := capturedCreateRequest{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/sessions":
-			captured.swarmID = r.URL.Query().Get("swarm_id")
+		case r.Method == http.MethodPost && r.URL.Path == "/v2/sessions/primary":
+			if r.URL.RawQuery != "" {
+				t.Fatalf("unexpected query on create request: %q", r.URL.RawQuery)
+			}
+			if r.Header.Get("X-Swarm-Token") == "" {
+				t.Fatalf("missing X-Swarm-Token on v2 create request")
+			}
 			if err := json.NewDecoder(r.Body).Decode(&captured.body); err != nil {
 				t.Fatalf("decode request: %v", err)
 			}
@@ -87,6 +98,14 @@ func captureOpenChatSessionCreateRequest(t *testing.T, route model.ChatRoute, ho
 					"mode":           mode,
 					"metadata":       captured.metadata,
 				},
+				"session_execution": map[string]any{
+					"session_id":              "session-1",
+					"execution_class":         "primary",
+					"runtime_swarm_id":        captured.bodyString("swarm_id"),
+					"runtime_kind":            "host",
+					"authority_host_swarm_id": captured.bodyString("swarm_id"),
+					"workspace_binding_id":    captured.bodyString("workspace_binding_id"),
+				},
 			})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions/session-1/preference":
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -97,7 +116,7 @@ func captureOpenChatSessionCreateRequest(t *testing.T, route model.ChatRoute, ho
 				},
 			})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions/session-1/mode":
-			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "mode": "plan"})
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "mode": captured.bodyString("mode")})
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
@@ -116,18 +135,26 @@ func captureOpenChatSessionCreateRequest(t *testing.T, route model.ChatRoute, ho
 			TopologyRoutes:          topologyRoutesForTestChatRoute(route),
 		}},
 	}
+	homePage := ui.NewHomePage(homeModel)
+	homePage.SetSessionMode(sessionMode)
 	app := &App{
-		api:                 client.New(server.URL),
+		api:                 testAPIWithToken(server.URL),
 		startupCWD:          workspacePath,
 		workspacePath:       workspacePath,
 		selectedChatRouteID: route.ID,
-		home:                ui.NewHomePage(homeModel),
+		home:                homePage,
 		homeModel:           homeModel,
 		streamEvents:        make(chan client.StreamEventEnvelope, 1),
 	}
 
 	if err := app.openChatSession("New Session", ""); err != nil {
 		t.Fatalf("openChatSession() error = %v", err)
+	}
+	for _, summary := range app.homeModel.RecentSessions {
+		if strings.TrimSpace(summary.ID) == "session-1" {
+			captured.sessionExecution = summary.SessionExecution
+			break
+		}
 	}
 	return captured
 }
@@ -146,10 +173,10 @@ func topologyRoutesForTestChatRoute(route model.ChatRoute) []model.WorkspaceTopo
 	}}
 }
 
-func assertV2PrimaryCreatePayload(t *testing.T, body map[string]any, bindingID string) {
+func assertV2PrimaryCreatePayload(t *testing.T, body map[string]any, bindingID, mode string) {
 	t.Helper()
 	allowed := map[string]struct{}{
-		"title": {}, "workspace_binding_id": {}, "mode": {}, "agent_name": {},
+		"swarm_id": {}, "workspace_binding_id": {}, "title": {}, "mode": {}, "agent_name": {},
 		"metadata": {}, "worktree_mode": {}, "preference": {},
 	}
 	for key := range body {
@@ -157,7 +184,19 @@ func assertV2PrimaryCreatePayload(t *testing.T, body map[string]any, bindingID s
 			t.Fatalf("create payload contains field outside strict v2 primary schema %q in %#v", key, body)
 		}
 	}
-	for _, key := range []string{"workspace_name", "workspace_path", "host_workspace_path", "runtime_workspace_path"} {
+	if got := bodyString(body, "swarm_id"); got == "" {
+		t.Fatalf("swarm_id missing in strict v2 create payload: %#v", body)
+	}
+	if got := bodyString(body, "mode"); got != mode {
+		t.Fatalf("mode = %q, want %q", got, mode)
+	}
+	if got := bodyString(body, "agent_name"); got == "" {
+		t.Fatalf("agent_name missing in strict v2 create payload: %#v", body)
+	}
+	if got := bodyString(body, "worktree_mode"); got != "off" {
+		t.Fatalf("worktree_mode = %q, want off", got)
+	}
+	for _, key := range []string{"workspace_name", "workspace_path", "host_workspace_path", "runtime_workspace_path", "target_swarm_id", "routing_hint"} {
 		if _, ok := body[key]; ok {
 			t.Fatalf("create payload contains strict-v2-invalid authority field %q in %#v", key, body)
 		}

@@ -73,7 +73,7 @@ func TestConfirmLocalContainerUpdateSkipsWhenNoLocalContainersAffected(t *testin
 	defer server.Close()
 
 	a := newUpdateCommandTestApp()
-	a.api = client.New(server.URL)
+	a.api = testAPIWithToken(server.URL)
 
 	if ok := a.confirmLocalContainerUpdate(false, "v1.2.3"); !ok {
 		t.Fatalf("confirmLocalContainerUpdate() = false, want true")
@@ -112,7 +112,7 @@ func TestConfirmLocalContainerUpdateRequiresConfirmWhenAffected(t *testing.T) {
 	defer server.Close()
 
 	a := newUpdateCommandTestApp()
-	a.api = client.New(server.URL)
+	a.api = testAPIWithToken(server.URL)
 
 	if ok := a.confirmLocalContainerUpdate(true, "v1.2.3"); ok {
 		t.Fatalf("confirmLocalContainerUpdate() = true, want false")
@@ -177,7 +177,7 @@ func TestConfirmPendingLocalContainerUpdateCanCancelConfirmOrDismiss(t *testing.
 	defer server.Close()
 
 	a = newUpdateCommandTestApp()
-	a.api = client.New(server.URL)
+	a.api = testAPIWithToken(server.URL)
 	a.pendingLocalContainerUpdate = &localContainerUpdateConfirmation{DevMode: true}
 	a.handleUpdateCommand([]string{"dismiss"})
 	if !a.config.Updates.LocalContainerWarningDismissed || !saved.Updates.LocalContainerWarningDismissed {
@@ -214,7 +214,7 @@ func TestClientLocalContainerPlanPostRebuildQuery(t *testing.T) {
 	}))
 	defer server.Close()
 
-	api := client.New(server.URL)
+	api := testAPIWithToken(server.URL)
 	devMode := true
 	if _, err := api.GetLocalContainerUpdatePlanWithPostRebuild(context.Background(), &devMode, "v1.2.3", true); err != nil {
 		t.Fatalf("GetLocalContainerUpdatePlanWithPostRebuild() error = %v", err)

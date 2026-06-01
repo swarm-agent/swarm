@@ -43,7 +43,7 @@ func TestSaveThinkingTagsSettingPreservesUnrelatedUISettings(t *testing.T) {
 
 	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
 	t.Setenv("DATA_DIR", "")
-	api := client.New(server.URL)
+	api := testAPIWithToken(server.URL)
 	if err := saveThinkingTagsSetting(api, false); err != nil {
 		t.Fatalf("saveThinkingTagsSetting: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestSaveSwarmNameSettingPreservesThinkingTags(t *testing.T) {
 
 	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
 	t.Setenv("DATA_DIR", "")
-	api := client.New(server.URL)
+	api := testAPIWithToken(server.URL)
 	if err := saveSwarmNameSetting(api, "Desk"); err != nil {
 		t.Fatalf("saveSwarmNameSetting: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestUpdateUISettingsReturnsGetFailure(t *testing.T) {
 
 	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
 	t.Setenv("DATA_DIR", "")
-	api := client.New(server.URL)
+	api := testAPIWithToken(server.URL)
 	err := updateUISettings(api, func(settings *client.UISettings) {
 		settings.Chat.ThinkingTags = false
 	})
@@ -179,7 +179,7 @@ func TestUpdateUISettingsMutateNilIsAllowed(t *testing.T) {
 
 	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
 	t.Setenv("DATA_DIR", "")
-	api := client.New(server.URL)
+	api := testAPIWithToken(server.URL)
 	if err := updateUISettings(api, nil); err != nil {
 		t.Fatalf("updateUISettings nil mutate: %v", err)
 	}
