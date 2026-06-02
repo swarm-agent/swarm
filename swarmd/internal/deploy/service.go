@@ -209,6 +209,8 @@ type ContainerAttachFinalizeInput struct {
 	UserID                   string                        `json:"user_id,omitempty"`
 	AccountScopeID           string                        `json:"account_scope_id,omitempty"`
 	HostSwarmID              string                        `json:"host_swarm_id"`
+	HostContainerID          string                        `json:"host_container_id,omitempty"`
+	ChildSwarmID             string                        `json:"child_swarm_id,omitempty"`
 	HostDisplayName          string                        `json:"host_display_name"`
 	HostPublicKey            string                        `json:"host_public_key"`
 	HostFingerprint          string                        `json:"host_fingerprint"`
@@ -322,6 +324,7 @@ type ContainerAttachState struct {
 	ChildDesktopURL          string `json:"child_desktop_url,omitempty"`
 	ChildFingerprint         string `json:"child_fingerprint,omitempty"`
 	HostSwarmID              string `json:"host_swarm_id,omitempty"`
+	HostContainerID          string `json:"host_container_id,omitempty"`
 	HostDisplayName          string `json:"host_display_name,omitempty"`
 	HostPublicKey            string `json:"host_public_key,omitempty"`
 	HostFingerprint          string `json:"host_fingerprint,omitempty"`
@@ -1251,6 +1254,14 @@ func (s *Service) AttachApprove(ctx context.Context, input ContainerAttachApprov
 		return ContainerAttachState{}, fmt.Errorf("bootstrap secret mismatch")
 	}
 	record.HostSwarmID = strings.TrimSpace(input.HostSwarmID)
+	if strings.TrimSpace(record.HostSwarmID) == "" {
+		return ContainerAttachState{}, fmt.Errorf("approved attach is missing host swarm id")
+	}
+	runtimeContainerRef := firstNonEmpty(strings.TrimSpace(record.ContainerID), strings.TrimSpace(record.ContainerName), strings.TrimSpace(record.ID))
+	record.HostContainerID = firstNonEmpty(strings.TrimSpace(record.HostContainerID), pebblestore.CanonicalTopologyHostContainerID(record.HostSwarmID, runtimeContainerRef))
+	if strings.TrimSpace(record.HostContainerID) == "" {
+		return ContainerAttachState{}, fmt.Errorf("approved attach is missing host container id")
+	}
 	record.HostDisplayName = strings.TrimSpace(input.HostDisplayName)
 	record.HostPublicKey = strings.TrimSpace(input.HostPublicKey)
 	record.HostFingerprint = strings.TrimSpace(input.HostFingerprint)
@@ -2140,6 +2151,7 @@ func (s *Service) FinalizeAttachFromHost(ctx context.Context, input ContainerAtt
 		ChildSwarmID:     strings.TrimSpace(state.Node.SwarmID),
 		ChildDisplayName: strings.TrimSpace(state.Node.Name),
 		HostSwarmID:      strings.TrimSpace(input.HostSwarmID),
+		HostContainerID:  strings.TrimSpace(input.HostContainerID),
 		HostDisplayName:  strings.TrimSpace(input.HostDisplayName),
 		HostPublicKey:    strings.TrimSpace(input.HostPublicKey),
 		HostFingerprint:  strings.TrimSpace(input.HostFingerprint),
@@ -2782,6 +2794,7 @@ func mapAttachState(record pebblestore.DeployContainerRecord) ContainerAttachSta
 		ChildDesktopURL:        record.ChildDesktopURL,
 		ChildFingerprint:       record.ChildFingerprint,
 		HostSwarmID:            record.HostSwarmID,
+		HostContainerID:        record.HostContainerID,
 		HostDisplayName:        record.HostDisplayName,
 		HostPublicKey:          record.HostPublicKey,
 		HostFingerprint:        record.HostFingerprint,
@@ -2987,12 +3000,14 @@ func (s *Service) completeHostDrivenLocalAttach(ctx context.Context, startupCfg 
 		return pebblestore.DeployContainerRecord{}, loadErr
 	}
 	finalizeInput := ContainerAttachFinalizeInput{
-		DeploymentID:      record.ID,
-		BootstrapSecret:   record.BootstrapSecret,
-		UserID:            currentRecord.UserID,
-		AccountScopeID:    currentRecord.AccountScopeID,
-		HostSwarmID:       attachState.HostSwarmID,
-		HostDisplayName:   attachState.HostDisplayName,
+		DeploymentID:     record.ID,
+		BootstrapSecret:  record.BootstrapSecret,
+		UserID:           currentRecord.UserID,
+		AccountScopeID:   currentRecord.AccountScopeID,
+		HostSwarmID:      attachState.HostSwarmID,
+		HostContainerID:  firstNonEmpty(strings.TrimSpace(attachState.HostContainerID), strings.TrimSpace(currentRecord.HostContainerID)),
+		ChildSwarmID:     firstNonEmpty(strings.TrimSpace(attachState.ChildSwarmID), strings.TrimSpace(childState.Node.SwarmID), strings.TrimSpace(currentRecord.ChildSwarmID)),
+		HostDisplayName:  attachState.HostDisplayName,
 		HostPublicKey:     attachState.HostPublicKey,
 		HostFingerprint:   attachState.HostFingerprint,
 		HostBackendURL:    attachState.HostBackendURL,
@@ -3552,10 +3567,16 @@ func (s *Service) finalizeChildAttach(ctx context.Context, cfg startupconfig.Fil
 			}
 		}
 	}
-	if principal.Valid() {
+	if cfg.DeployContainer.HostDriven {
+		if err := s.ensureChildContainerPlacementForBootstrap(accountScopeID, userID, state, status, finalizeInput); err != nil {
+			return err
+		}
+	} else if principal.Valid() {
 		if err := s.ensureChildSelfPlacementForBootstrap(accountScopeID, userID, state); err != nil {
 			return err
 		}
+	}
+	if principal.Valid() {
 		if cfg.DeployContainer.HostDriven {
 			if len(finalizeInput.WorkspaceBootstrap) > 0 {
 				if err := s.applyBootstrapWorkspaces(principal, cfg, status, pairing, finalizeInput.WorkspaceBootstrap); err != nil {

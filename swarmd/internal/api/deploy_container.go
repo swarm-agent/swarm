@@ -520,6 +520,8 @@ func (s *Server) handleDeployContainerAttachFinalize(w http.ResponseWriter, r *h
 		UserID                   string                                      `json:"user_id,omitempty"`
 		AccountScopeID           string                                      `json:"account_scope_id,omitempty"`
 		HostSwarmID              string                                      `json:"host_swarm_id"`
+		HostContainerID          string                                      `json:"host_container_id,omitempty"`
+		ChildSwarmID             string                                      `json:"child_swarm_id,omitempty"`
 		HostDisplayName          string                                      `json:"host_display_name"`
 		HostPublicKey            string                                      `json:"host_public_key"`
 		HostFingerprint          string                                      `json:"host_fingerprint"`
@@ -550,6 +552,8 @@ func (s *Server) handleDeployContainerAttachFinalize(w http.ResponseWriter, r *h
 		UserID:                   req.UserID,
 		AccountScopeID:           req.AccountScopeID,
 		HostSwarmID:              req.HostSwarmID,
+		HostContainerID:          req.HostContainerID,
+		ChildSwarmID:             req.ChildSwarmID,
 		HostDisplayName:          req.HostDisplayName,
 		HostPublicKey:            req.HostPublicKey,
 		HostFingerprint:          req.HostFingerprint,
