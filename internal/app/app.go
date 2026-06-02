@@ -4020,7 +4020,6 @@ func mergeHomeSessionSummary(current, incoming model.SessionSummary) model.Sessi
 	if incoming.SessionExecution != nil {
 		merged.SessionExecution = cloneSessionExecutionV2(incoming.SessionExecution)
 	}
-	merged.WorkspacePath = sessionSummaryWorkspacePath(merged)
 	return merged
 }
 
@@ -4029,7 +4028,7 @@ func modelSessionSummaryFromClient(record client.SessionSummary) model.SessionSu
 	if title == "" {
 		title = strings.TrimSpace(record.ID)
 	}
-	summary := model.SessionSummary{
+	return model.SessionSummary{
 		ID:                     strings.TrimSpace(record.ID),
 		WorkspacePath:          strings.TrimSpace(record.WorkspacePath),
 		WorkspaceName:          strings.TrimSpace(record.WorkspaceName),
@@ -4046,22 +4045,6 @@ func modelSessionSummaryFromClient(record client.SessionSummary) model.SessionSu
 		WorktreeBranch:         strings.TrimSpace(record.WorktreeBranch),
 		UpdatedAgo:             formatAgo(record.UpdatedAt),
 	}
-	summary.WorkspacePath = sessionSummaryWorkspacePath(summary)
-	return summary
-}
-
-func sessionSummaryWorkspacePath(summary model.SessionSummary) string {
-	path := strings.TrimSpace(summary.WorkspacePath)
-	execution := summary.SessionExecution
-	if execution == nil {
-		return path
-	}
-	if strings.EqualFold(strings.TrimSpace(execution.ExecutionClass), "local_container") || strings.EqualFold(strings.TrimSpace(execution.RuntimeKind), "container") {
-		if sourcePath := strings.TrimSpace(execution.SourceWorkspacePath); sourcePath != "" {
-			return sourcePath
-		}
-	}
-	return path
 }
 
 func chatSessionTabsWithExtras(summaries []model.SessionSummary, extras []client.SessionSummary) []ui.ChatSessionTab {
@@ -4100,7 +4083,6 @@ func filterSessionSummariesForExactPath(summaries []model.SessionSummary, path s
 	}
 	filtered := make([]model.SessionSummary, 0, len(summaries))
 	for _, summary := range summaries {
-		summary.WorkspacePath = sessionSummaryWorkspacePath(summary)
 		if !pathsEqual(summary.WorkspacePath, normalizedPath) {
 			continue
 		}
