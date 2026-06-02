@@ -6,6 +6,7 @@ import { queryClient } from '../../../app/query-client'
 import {
   canonicalSessionWorkspaceName,
   canonicalSessionWorkspacePath,
+  sessionWorkspaceFactsFromMetadata,
 } from '../services/session-workspace'
 import {
   syncWorkspaceOverviewSession,
@@ -49,7 +50,7 @@ import { appendLiveAssistantSegment } from './live-assistant-segments'
 import { clearNotifications as clearDurableNotifications, fetchNotifications, fetchNotificationSummary, updateNotification } from '../notifications/api'
 import type { DurableNotificationRecord, NotificationSummaryRecord } from '../notifications/types'
 
-interface EventEnvelope<T = Record<string, unknown>> {
+export interface EventEnvelope<T = Record<string, unknown>> {
   global_seq?: number
   stream?: string
   event_type?: string
@@ -1134,7 +1135,8 @@ function patchOverviewSessionStatus(session: DesktopSessionRecord): DesktopSessi
 }
 
 function deferDesktopCacheMutation(label: string, mutate: () => void): void {
-  window.setTimeout(() => {
+  const setTimeoutFn = typeof window !== 'undefined' ? window.setTimeout.bind(window) : setTimeout
+  setTimeoutFn(() => {
     try {
       mutate()
     } catch (error) {
@@ -1594,7 +1596,7 @@ function applyRunStreamResumeFailure(state: DesktopStoreState, sessionId: string
   return { sessions }
 }
 
-function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope): Partial<DesktopStoreState> {
+export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope): Partial<DesktopStoreState> {
   const eventType = typeof envelope.event_type === 'string' ? envelope.event_type : ''
   const ts = typeof envelope.ts_unix_ms === 'number' ? envelope.ts_unix_ms : Date.now()
   const payload = envelope.payload && typeof envelope.payload === 'object' ? envelope.payload : {}
@@ -1809,12 +1811,7 @@ function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope): Parti
       const metadataRecord = payloadRecord.metadata && typeof payloadRecord.metadata === 'object'
         ? payloadRecord.metadata as Record<string, unknown>
         : null
-      const hostedHostWorkspacePath = typeof metadataRecord?.swarm_routed_host_workspace_path === 'string'
-        ? metadataRecord.swarm_routed_host_workspace_path.trim()
-        : ''
-      const hostedRuntimeWorkspacePath = typeof metadataRecord?.swarm_routed_runtime_workspace_path === 'string'
-        ? metadataRecord.swarm_routed_runtime_workspace_path.trim()
-        : ''
+      const workspaceFacts = sessionWorkspaceFactsFromMetadata(metadataRecord)
       session.title = typeof payloadRecord.title === 'string' ? payloadRecord.title : session.title
       session.metadata = metadataRecord ?? session.metadata
       const rawWorkspacePath = typeof payloadRecord.workspace_path === 'string'
@@ -1822,24 +1819,24 @@ function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope): Parti
         : session.workspacePath
       const worktreeRootPath = typeof payloadRecord.worktree_root_path === 'string'
         ? payloadRecord.worktree_root_path.trim()
-        : session.worktreeRootPath
+        : workspaceFacts.worktreeRootPath || session.worktreeRootPath
       const worktreeEnabled = typeof payloadRecord.worktree_enabled === 'boolean'
         ? payloadRecord.worktree_enabled
-        : session.worktreeEnabled
+        : workspaceFacts.worktreeEnabled ?? session.worktreeEnabled
       const nextWorkspacePath = canonicalSessionWorkspacePath({
         workspacePath: rawWorkspacePath,
-        hostedHostWorkspacePath,
-        hostedRuntimeWorkspacePath,
+        sourceWorkspacePath: workspaceFacts.sourceWorkspacePath,
+        runtimeWorkspacePath: workspaceFacts.runtimeWorkspacePath,
         worktreeEnabled,
         worktreeRootPath,
       })
-      session.workspacePath = session.workspacePath || nextWorkspacePath
-      const nextRuntimeWorkspacePath = hostedRuntimeWorkspacePath || (
+      session.workspacePath = nextWorkspacePath || session.workspacePath
+      const nextRuntimeWorkspacePath = workspaceFacts.runtimeWorkspacePath || (
         typeof payloadRecord.workspace_path === 'string'
           ? payloadRecord.workspace_path.trim()
           : session.runtimeWorkspacePath || session.workspacePath
       )
-      session.runtimeWorkspacePath = session.runtimeWorkspacePath || nextRuntimeWorkspacePath
+      session.runtimeWorkspacePath = nextRuntimeWorkspacePath || session.runtimeWorkspacePath
       session.worktreeEnabled = worktreeEnabled
       session.worktreeRootPath = worktreeRootPath
       session.worktreeBaseBranch = typeof payloadRecord.worktree_base_branch === 'string'

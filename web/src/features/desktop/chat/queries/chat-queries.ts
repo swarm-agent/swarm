@@ -32,6 +32,7 @@ import {
 import {
   canonicalSessionWorkspaceName,
   canonicalSessionWorkspacePath,
+  sessionWorkspaceFactsFromMetadata,
 } from "../../services/session-workspace";
 import {
   modelAllowedByProviderPreset,
@@ -573,20 +574,13 @@ function mapSession(session: SessionWire): DesktopSessionRecord {
       ? (session.metadata as Record<string, unknown>)
       : undefined;
   const workspacePath = String(session.workspace_path ?? "").trim();
-  const hostedHostWorkspacePath =
-    typeof metadata?.swarm_routed_host_workspace_path === "string"
-      ? metadata.swarm_routed_host_workspace_path.trim()
-      : "";
-  const hostedRuntimeWorkspacePath =
-    typeof metadata?.swarm_routed_runtime_workspace_path === "string"
-      ? metadata.swarm_routed_runtime_workspace_path.trim()
-      : "";
-  const worktreeEnabled = Boolean(session.worktree_enabled);
-  const worktreeRootPath = String(session.worktree_root_path ?? "").trim();
+  const workspaceFacts = sessionWorkspaceFactsFromMetadata(metadata);
+  const worktreeEnabled = workspaceFacts.worktreeEnabled ?? Boolean(session.worktree_enabled);
+  const worktreeRootPath = String(session.worktree_root_path ?? workspaceFacts.worktreeRootPath).trim();
   const canonicalWorkspacePath = canonicalSessionWorkspacePath({
     workspacePath,
-    hostedHostWorkspacePath,
-    hostedRuntimeWorkspacePath,
+    sourceWorkspacePath: workspaceFacts.sourceWorkspacePath,
+    runtimeWorkspacePath: workspaceFacts.runtimeWorkspacePath,
     worktreeEnabled,
     worktreeRootPath,
   });
@@ -606,7 +600,7 @@ function mapSession(session: SessionWire): DesktopSessionRecord {
     updatedAt: typeof session.updated_at === "number" ? session.updated_at : 0,
     createdAt: typeof session.created_at === "number" ? session.created_at : 0,
     permissionsHydrated: true,
-    runtimeWorkspacePath: hostedRuntimeWorkspacePath || workspacePath,
+    runtimeWorkspacePath: workspaceFacts.runtimeWorkspacePath || workspacePath,
     worktreeEnabled,
     worktreeRootPath,
     worktreeBaseBranch: String(session.worktree_base_branch ?? "").trim(),
