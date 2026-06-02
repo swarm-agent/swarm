@@ -25,7 +25,6 @@ func TestRuntimeSessionsV2RoutesRegisteredFailClosed(t *testing.T) {
 		{name: "open", method: http.MethodPost, path: "/v2/internal/runtime-sessions/open"},
 		{name: "sync state", method: http.MethodPost, path: "/v2/internal/runtime-sessions/session-123/sync/state"},
 		{name: "run", method: http.MethodPost, path: "/v2/internal/runtime-sessions/session-123/run"},
-		{name: "stop", method: http.MethodPost, path: "/v2/internal/runtime-sessions/session-123/stop"},
 		{name: "stream get", method: http.MethodGet, path: "/v2/internal/runtime-sessions/session-123/run/stream"},
 		{name: "stream post", method: http.MethodPost, path: "/v2/internal/runtime-sessions/session-123/run/stream"},
 		{name: "mirror batch", method: http.MethodPost, path: "/v2/internal/runtime-sessions/session-123/mirror/batch"},
@@ -39,7 +38,7 @@ func TestRuntimeSessionsV2RoutesRegisteredFailClosed(t *testing.T) {
 			switch tt.path {
 			case runtimeSessionsV2OpenPath:
 				want = http.StatusBadRequest
-			case "/v2/internal/runtime-sessions/session-123/run", "/v2/internal/runtime-sessions/session-123/stop", "/v2/internal/runtime-sessions/session-123/run/stream", "/v2/internal/runtime-sessions/session-123/mirror/batch":
+			case "/v2/internal/runtime-sessions/session-123/run", "/v2/internal/runtime-sessions/session-123/run/stream", "/v2/internal/runtime-sessions/session-123/mirror/batch":
 				want = http.StatusForbidden
 			}
 			if rec.Code != want {
@@ -66,7 +65,6 @@ func TestRuntimeSessionsV2RoutesRejectUnknownPathAndMethod(t *testing.T) {
 		{name: "missing id", method: http.MethodPost, path: "/v2/internal/runtime-sessions/%20/run", want: http.StatusBadRequest},
 		{name: "trailing slash not canonicalized", method: http.MethodPost, path: "/v2/internal/runtime-sessions/session-123/run/", want: http.StatusNotFound},
 		{name: "session get wrong method", method: http.MethodPost, path: "/v2/internal/runtime-sessions/session-123", want: http.StatusMethodNotAllowed},
-		{name: "stop wrong method", method: http.MethodGet, path: "/v2/internal/runtime-sessions/session-123/stop", want: http.StatusMethodNotAllowed},
 		{name: "wrong method", method: http.MethodGet, path: "/v2/internal/runtime-sessions/open", want: http.StatusMethodNotAllowed},
 	}
 	for _, tt := range tests {
@@ -98,55 +96,6 @@ func TestRuntimeSessionsV2HandlersDoNotCallLegacyRoutedHandlers(t *testing.T) {
 		if strings.Contains(string(body), forbidden) {
 			t.Fatalf("runtime_sessions_v2.go contains forbidden legacy symbol %q", forbidden)
 		}
-	}
-}
-
-func TestRuntimeSessionsV2StopRequiresRuntimeAuthorityAndCallsRunner(t *testing.T) {
-	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
-	runner := &primaryV2RunRequestRecordingRunner{}
-	server.runner = runner
-	seedRuntimeSessionsV2OpenContainerAuthority(t, server, swarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
-	reqBody := runtimeSessionsV2OpenTestRequest(t, server, "session-runtime-stop", "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
-	rec := postRuntimeSessionsV2Open(t, server, reqBody)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("open status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-
-	payload, err := json.Marshal(sessionruntime.RuntimeSessionStopRequest{RunID: "run-runtime-stop", Reason: "runtime requested"})
-	if err != nil {
-		t.Fatalf("marshal stop request: %v", err)
-	}
-	req := httptest.NewRequest(http.MethodPost, runtimeSessionsV2Prefix+"session-runtime-stop/stop", bytes.NewReader(payload))
-	req.Header.Set("Content-Type", "application/json")
-	req = req.WithContext(context.WithValue(req.Context(), localTransportAuthEnabledKey, true))
-	req = req.WithContext(context.WithValue(req.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: "container-swarm"}))
-	req.Header.Set(peerAuthSwarmIDHeader, "container-swarm")
-	if principal, ok := server.trustedRuntimeSessionV2PrincipalForPeerRequest(req, "session-runtime-stop"); ok {
-		req = withSessionsV2TestPrincipal(req, principal)
-	}
-	stopRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(stopRec, req)
-	if stopRec.Code != http.StatusOK {
-		t.Fatalf("stop status = %d, want %d, body=%s", stopRec.Code, http.StatusOK, stopRec.Body.String())
-	}
-	var stopPayload sessionruntime.RuntimeSessionStopResponse
-	if err := json.Unmarshal(stopRec.Body.Bytes(), &stopPayload); err != nil {
-		t.Fatalf("decode stop response: %v", err)
-	}
-	if !stopPayload.OK || stopPayload.SessionID != "session-runtime-stop" || stopPayload.RunID != "run-runtime-stop" || stopPayload.Status != "stop_requested" {
-		t.Fatalf("unexpected stop response: %+v", stopPayload)
-	}
-	calls, sessionID, runID, reason := runner.stopSnapshot()
-	if calls != 1 || sessionID != "session-runtime-stop" || runID != "run-runtime-stop" || reason != "runtime requested" {
-		t.Fatalf("stop call = %d/%q/%q/%q", calls, sessionID, runID, reason)
-	}
-
-	untrustedReq := httptest.NewRequest(http.MethodPost, runtimeSessionsV2Prefix+"session-runtime-stop/stop", bytes.NewReader(payload))
-	untrustedReq.Header.Set("Content-Type", "application/json")
-	untrustedRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(untrustedRec, untrustedReq)
-	if untrustedRec.Code != http.StatusForbidden {
-		t.Fatalf("untrusted status = %d, want %d, body=%s", untrustedRec.Code, http.StatusForbidden, untrustedRec.Body.String())
 	}
 }
 

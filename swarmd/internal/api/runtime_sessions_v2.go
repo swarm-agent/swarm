@@ -645,21 +645,6 @@ func (s *Server) handleRuntimeSessionsV2ByID(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		s.handleNativeSessionV2Run(w, r, sessionID, principal)
-	case "stop":
-		if r.Method != http.MethodPost {
-			methodNotAllowed(w)
-			return
-		}
-		principal, err := s.requireRuntimeSessionV2Principal(r, sessionID)
-		if err != nil {
-			writeSessionsV2Error(w, err)
-			return
-		}
-		if err := s.requireRuntimeSessionV2MutationAuthority(principal, sessionID); err != nil {
-			writeSessionsV2Error(w, err)
-			return
-		}
-		s.handleNativeSessionV2Stop(w, r, sessionID)
 	case "run/stream":
 		if r.Method != http.MethodGet && r.Method != http.MethodPost {
 			methodNotAllowed(w)

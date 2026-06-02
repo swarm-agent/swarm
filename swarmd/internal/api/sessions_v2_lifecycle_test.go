@@ -115,7 +115,6 @@ func TestSessionsV2LifecyclePrimarySurfaceSchemasAndMethods(t *testing.T) {
 		{name: "resolve permission", method: http.MethodPost, path: "/v2/sessions/" + sessionID + "/permissions/" + pending.ID + "/resolve", body: `{"action":"deny_once","reason":"surface"}`, wantStatus: http.StatusOK, wantKeys: []string{"ok", "session_id", "permission", "saved_rule"}},
 		{name: "resolve all permissions", method: http.MethodPost, path: "/v2/sessions/" + sessionID + "/permissions/resolve_all", body: `{"action":"deny_once","reason":"surface","limit":10}`, wantStatus: http.StatusOK, wantKeys: []string{"ok", "session_id", "count", "resolved"}},
 		{name: "post run", method: http.MethodPost, path: "/v2/sessions/" + sessionID + "/run", body: `{"prompt":"surface","agent_name":"swarm"}`, wantStatus: http.StatusOK, wantKeys: []string{"ok", "result"}},
-		{name: "post stop", method: http.MethodPost, path: "/v2/sessions/" + sessionID + "/stop", body: `{"run_id":"run-surface","reason":"surface stop"}`, wantStatus: http.StatusOK, wantKeys: []string{"ok", "session_id", "run_id", "status"}},
 		{name: "get usage", method: http.MethodGet, path: "/v2/sessions/" + sessionID + "/usage", wantStatus: http.StatusOK, wantKeys: []string{"ok", "session_id", "has_usage_summary", "usage_summary", "turn_usage_records"}},
 		{name: "post run stream start", method: http.MethodPost, path: "/v2/sessions/" + sessionID + "/run/stream", body: `{"type":"run.start","prompt":"surface","agent_name":"swarm"}`, wantStatus: http.StatusAccepted, wantKeys: []string{"ok", "session_id", "run_id", "status"}},
 		{name: "post run stream resume missing run id", method: http.MethodPost, path: "/v2/sessions/" + sessionID + "/run/stream", body: `{"type":"run.resume"}`, wantStatus: http.StatusBadRequest, wantKeys: []string{"error"}},
@@ -160,7 +159,6 @@ func TestSessionsV2LifecyclePrimarySurfaceSchemasAndMethods(t *testing.T) {
 		{name: "get resolve all rejects", method: http.MethodGet, path: "/v2/sessions/" + sessionID + "/permissions/resolve_all", wantStatus: http.StatusMethodNotAllowed},
 		{name: "post usage rejects", method: http.MethodPost, path: "/v2/sessions/" + sessionID + "/usage", body: `{}`, wantStatus: http.StatusMethodNotAllowed},
 		{name: "get run rejects", method: http.MethodGet, path: "/v2/sessions/" + sessionID + "/run", wantStatus: http.StatusMethodNotAllowed},
-		{name: "get stop rejects", method: http.MethodGet, path: "/v2/sessions/" + sessionID + "/stop", wantStatus: http.StatusMethodNotAllowed},
 	}
 	for _, tc := range methodCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -540,33 +538,6 @@ func TestSessionsV2LifecycleRunAllowsSafeInstructionsAndBackgroundOwnership(t *t
 	}
 }
 
-func TestSessionsV2PrimaryStopCallsRunner(t *testing.T) {
-	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
-	runner := &primaryV2RunRequestRecordingRunner{}
-	server.runner = runner
-	sessionID := createPrimarySessionV2ForLifecycleTest(t, server, swarmStore, "binding-primary-v2", pebblestore.TopologyWorkspaceBindingAccessModeReadWrite, true)
-
-	req := httptest.NewRequest(http.MethodPost, "/v2/sessions/"+sessionID+"/stop", bytes.NewBufferString(`{"run_id":"run-stop-primary","reason":"custom stop"}`))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("stop status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	var payload sessionruntime.RuntimeSessionStopResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode stop response: %v", err)
-	}
-	if !payload.OK || payload.SessionID != sessionID || payload.RunID != "run-stop-primary" || payload.Status != "stop_requested" {
-		t.Fatalf("unexpected stop response: %+v", payload)
-	}
-	calls, recordedSessionID, recordedRunID, recordedReason := runner.stopSnapshot()
-	if calls != 1 || recordedSessionID != sessionID || recordedRunID != "run-stop-primary" || recordedReason != "custom stop" {
-		t.Fatalf("stop call = %d/%q/%q/%q", calls, recordedSessionID, recordedRunID, recordedReason)
-	}
-}
-
 func TestSessionsV2LifecycleRunStreamControlAllowsSafeBackgroundOwnership(t *testing.T) {
 	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
 	runner := &primaryV2RunRequestRecordingRunner{emitLifecycle: true}
@@ -620,7 +591,7 @@ func TestSessionsV2LifecycleReadOnlyBindingAllowsReadBlocksMutation(t *testing.T
 }
 
 func TestSessionsV2LifecycleLocalContainerDispatchesNativeRuntime(t *testing.T) {
-	hostServer, hostSessionSvc, _, routeStore, hostSwarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	hostServer, _, _, routeStore, hostSwarmStore := newRoutedSessionTestServerWithSwarmStore(t)
 	runtimeServer, runtimeSessionSvc, _, _, runtimeSwarmStore := newRoutedSessionTestServerWithSwarmStore(t)
 	runner := &primaryV2RunRequestRecordingRunner{emitLifecycle: true}
 	runtimeServer.runner = runner
@@ -732,28 +703,6 @@ func TestSessionsV2LifecycleLocalContainerDispatchesNativeRuntime(t *testing.T) 
 		t.Fatalf("owner transport = %q, want background_api", recordedMeta.OwnerTransport)
 	}
 
-	if err := runtimeSessionSvc.UpsertLifecycle(pebblestore.SessionLifecycleSnapshot{SessionID: sessionID, RunID: "run-stop-runtime", Active: false, Phase: "cancelled", StopReason: "container stop"}); err != nil {
-		t.Fatalf("seed runtime stop lifecycle: %v", err)
-	}
-	stopReq := httptest.NewRequest(http.MethodPost, "/v2/sessions/"+sessionID+"/stop", bytes.NewBufferString(`{"run_id":"run-stop-runtime","reason":"container stop"}`))
-	stopReq.Header.Set("Content-Type", "application/json")
-	stopRec := httptest.NewRecorder()
-	hostServer.Handler().ServeHTTP(stopRec, withTestPrincipal(stopReq))
-	if stopRec.Code != http.StatusOK {
-		t.Fatalf("stop status = %d, want %d, body=%s", stopRec.Code, http.StatusOK, stopRec.Body.String())
-	}
-	stopCalls, stopSessionID, stopRunID, stopReason := runner.stopSnapshot()
-	if stopCalls != 1 || stopSessionID != sessionID || stopRunID != "run-stop-runtime" || stopReason != "container stop" {
-		t.Fatalf("stop call = %d/%q/%q/%q", stopCalls, stopSessionID, stopRunID, stopReason)
-	}
-	mirroredLifecycle, ok, err := hostSessionSvc.GetLifecycle(sessionID)
-	if err != nil || !ok {
-		t.Fatalf("host mirrored lifecycle ok=%v err=%v", ok, err)
-	}
-	if mirroredLifecycle.RunID != "run-stop-runtime" || mirroredLifecycle.Phase != "cancelled" || mirroredLifecycle.StopReason != "container stop" {
-		t.Fatalf("host mirrored lifecycle = %+v", mirroredLifecycle)
-	}
-
 	overrideReq := httptest.NewRequest(http.MethodPost, "/v2/sessions/"+sessionID+"/run", bytes.NewBufferString(`{"prompt":"blocked","target_kind":"subagent"}`))
 	overrideReq.Header.Set("Content-Type", "application/json")
 	overrideRec := httptest.NewRecorder()
@@ -772,11 +721,10 @@ func TestSessionsV2LifecycleLocalContainerDispatchesNativeRuntime(t *testing.T) 
 	wantPost := http.MethodPost + " " + runtimeSessionsV2Prefix + sessionID + "/messages"
 	wantRun := http.MethodPost + " " + runtimeSessionsV2Prefix + sessionID + "/run"
 	wantStream := http.MethodPost + " " + runtimeSessionsV2Prefix + sessionID + "/run/stream"
-	wantStop := http.MethodPost + " " + runtimeSessionsV2Prefix + sessionID + "/stop"
 	lifecyclePathsMu.Lock()
 	paths := strings.Join(lifecyclePaths, "\n")
 	lifecyclePathsMu.Unlock()
-	for _, wantPath := range []string{wantGet, wantPost, wantRun, wantStream, wantStop} {
+	for _, wantPath := range []string{wantGet, wantPost, wantRun, wantStream} {
 		if !strings.Contains(paths, wantPath) {
 			t.Fatalf("runtime lifecycle paths = %q, missing %q", paths, wantPath)
 		}
@@ -788,8 +736,8 @@ func TestSessionsV2LifecycleLocalContainerDispatchesNativeRuntime(t *testing.T) 
 	if len(messages) != 1 || messages[0].Content != "via runtime" {
 		t.Fatalf("runtime messages = %+v, want posted message", messages)
 	}
-	if runtimeCalls.Load() < 7 {
-		t.Fatalf("runtime calls = %d, want open plus lifecycle/run/stop calls", runtimeCalls.Load())
+	if runtimeCalls.Load() < 6 {
+		t.Fatalf("runtime calls = %d, want open plus lifecycle/run calls", runtimeCalls.Load())
 	}
 }
 
@@ -852,13 +800,9 @@ func TestSessionsV2LifecycleLocalContainerFailsClosedWithoutRuntimeAuthorityConn
 type primaryV2RunRequestRecordingRunner struct {
 	mu            sync.Mutex
 	calls         int
-	stopCalls     int
 	sessionID     string
 	request       runruntime.RunRequest
 	meta          runruntime.RunStartMeta
-	stopSessionID string
-	stopRunID     string
-	stopReason    string
 	emitLifecycle bool
 }
 
@@ -902,19 +846,7 @@ func (r *primaryV2RunRequestRecordingRunner) snapshot() (int, string, runruntime
 }
 
 func (r *primaryV2RunRequestRecordingRunner) StopSessionRun(sessionID, runID, reason string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.stopCalls++
-	r.stopSessionID = sessionID
-	r.stopRunID = runID
-	r.stopReason = reason
 	return nil
-}
-
-func (r *primaryV2RunRequestRecordingRunner) stopSnapshot() (int, string, string, string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.stopCalls, r.stopSessionID, r.stopRunID, r.stopReason
 }
 
 func (r *primaryV2RunRequestRecordingRunner) ExecuteToolForSessionScope(context.Context, string, tool.Call) (string, error) {

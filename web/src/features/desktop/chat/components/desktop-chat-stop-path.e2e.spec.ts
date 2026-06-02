@@ -176,8 +176,7 @@ async function installStopPathInstrumentation(page: Page): Promise<void> {
       let type = '';
       try { type = body ? String(JSON.parse(body).type || '') : ''; } catch {}
       const isRunStreamPost = method === 'POST' && String(url).includes('/run/stream');
-      const isStopPost = method === 'POST' && String(url).includes('/stop');
-      const label = isStopPost ? 'client.stopSessionRun.request' : isRunStreamPost && type === 'run.start' ? 'client.startSessionRun.request' : '';
+      const label = isRunStreamPost && type === 'run.stop' ? 'client.stopSessionRun.request' : isRunStreamPost && type === 'run.start' ? 'client.startSessionRun.request' : '';
       if (label) mark(label + '.start');
       try {
         const response = await nativeFetch(input, init);

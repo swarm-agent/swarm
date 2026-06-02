@@ -1648,7 +1648,7 @@ export async function stopSessionRun(
   const response = await apiFetch(
     managedHost
       ? "/v1/swarm/managed-hosts/sessions/stop"
-      : `/v2/sessions/${encodeURIComponent(sessionId)}/stop`,
+      : `/v2/sessions/${encodeURIComponent(sessionId)}/run/stream`,
     {
       method: "POST",
       headers: {
@@ -1657,7 +1657,7 @@ export async function stopSessionRun(
       body: JSON.stringify(
         managedHost
           ? { type: "run.stop", target_swarm_id: route?.swarmId?.trim() ?? "", session_id: sessionId, run_id: runId }
-          : { run_id: runId, reason: "run stopped by user" },
+          : { type: "run.stop", run_id: runId },
       ),
     },
   );
