@@ -933,13 +933,15 @@ func buildReplicationPlan(workspaces []workspace.NormalizedReplicationWorkspace,
 			anyCurrent = true
 		}
 		bootstraps = append(bootstraps, deployruntime.ContainerWorkspaceBootstrap{
-			SourceWorkspacePath: item.SourceWorkspacePath,
-			SourceWorkspaceName: name,
-			TargetWorkspacePath: targetPath,
-			ThemeID:             catalog.ThemeID,
-			Directories:         directories,
-			ReplicationMode:     item.ReplicationMode,
-			Writable:            item.Writable,
+			SourceWorkspaceID:         catalog.WorkspaceID,
+			SourceWorkspaceGeneration: catalog.WorkspaceGeneration,
+			SourceWorkspacePath:       item.SourceWorkspacePath,
+			SourceWorkspaceName:       name,
+			TargetWorkspacePath:       targetPath,
+			ThemeID:                   catalog.ThemeID,
+			Directories:               directories,
+			ReplicationMode:           item.ReplicationMode,
+			Writable:                  item.Writable,
 			Sync: pebblestore.WorkspaceReplicationSync{
 				Enabled: syncConfig.Enabled,
 				Mode:    syncConfig.Mode,

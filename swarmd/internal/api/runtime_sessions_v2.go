@@ -47,7 +47,7 @@ func (s *Server) openRuntimeSessionV2(r *http.Request, req sessionruntime.Runtim
 	if !ok || !principal.Valid() {
 		return sessionruntime.RuntimeSessionOpenResponse{}, identity.ErrPrincipalRequired
 	}
-	if err := s.validateRuntimeSessionV2OpenAuthority(principal, req); err != nil {
+	if err := s.validateRuntimeSessionV2OpenAuthority(r, principal, req); err != nil {
 		return sessionruntime.RuntimeSessionOpenResponse{}, err
 	}
 
@@ -162,7 +162,7 @@ func (s *Server) openRuntimeSessionV2(r *http.Request, req sessionruntime.Runtim
 	}, nil
 }
 
-func (s *Server) validateRuntimeSessionV2OpenAuthority(principal identity.Principal, req sessionruntime.RuntimeSessionOpenRequest) error {
+func (s *Server) validateRuntimeSessionV2OpenAuthority(r *http.Request, principal identity.Principal, req sessionruntime.RuntimeSessionOpenRequest) error {
 	requestSessionID := strings.TrimSpace(req.SessionID)
 	if requestSessionID == "" {
 		return sessionV2BadRequest("runtime session id is required")
@@ -271,6 +271,10 @@ func (s *Server) validateRuntimeSessionV2OpenAuthority(principal identity.Princi
 		return sessionV2StaleAuthority("runtime session placement generation mismatch")
 	}
 
+	if err := s.syncRuntimeSessionV2BindingAuthoritySnapshot(r, principal, req, placement); err != nil {
+		return err
+	}
+
 	binding, bindingOK, err := s.topology.GetWorkspaceBindingForAccount(principal.AccountScopeID, execution.WorkspaceBindingID)
 	if err != nil {
 		return err
@@ -279,6 +283,71 @@ func (s *Server) validateRuntimeSessionV2OpenAuthority(principal identity.Princi
 		return sessionV2AuthorityNotFound("runtime session workspace binding %q was not found", execution.WorkspaceBindingID)
 	}
 	return runtimeSessionsV2ValidateBindingAuthority(req, placement, binding)
+}
+
+func (s *Server) syncRuntimeSessionV2BindingAuthoritySnapshot(r *http.Request, principal identity.Principal, req sessionruntime.RuntimeSessionOpenRequest, placement pebblestore.TopologyRuntimePlacementRecord) error {
+	snapshot := req.BindingAuthoritySnapshot
+	if snapshot == nil {
+		return nil
+	}
+	if s == nil || s.topology == nil {
+		return errors.New("runtime sessions v2 topology service is not configured")
+	}
+	sourceSwarmID := strings.TrimSpace(r.Header.Get(peerAuthSwarmIDHeader))
+	execution := req.SessionExecution
+	record := *snapshot
+	if strings.TrimSpace(record.BindingID) == "" || strings.TrimSpace(record.BindingID) != strings.TrimSpace(execution.WorkspaceBindingID) {
+		return sessionV2StaleAuthority("runtime session binding authority snapshot id mismatch")
+	}
+	if strings.TrimSpace(record.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		return sessionV2AccessDenied("runtime session binding authority snapshot account scope mismatch")
+	}
+	if strings.TrimSpace(record.UserID) != "" && strings.TrimSpace(record.UserID) != strings.TrimSpace(principal.UserID) {
+		return sessionV2AccessDenied("runtime session binding authority snapshot user mismatch")
+	}
+	if sourceSwarmID == "" || strings.TrimSpace(record.DestinationAuthorityHostSwarmID) != sourceSwarmID || strings.TrimSpace(execution.AuthorityHostSwarmID) != sourceSwarmID {
+		return sessionV2AccessDenied("runtime session binding authority snapshot must come from authority host")
+	}
+	if strings.TrimSpace(record.DestinationRuntimeSwarmID) != strings.TrimSpace(placement.RuntimeSwarmID) || strings.TrimSpace(record.DestinationRuntimeSwarmID) != strings.TrimSpace(execution.RuntimeSwarmID) {
+		return sessionV2StaleAuthority("runtime session binding authority snapshot destination runtime mismatch")
+	}
+	if strings.TrimSpace(record.DestinationRuntimeKind) != pebblestore.TopologyRuntimeKindContainer || strings.TrimSpace(record.DestinationRuntimeKind) != strings.TrimSpace(placement.RuntimeKind) {
+		return sessionV2StaleAuthority("runtime session binding authority snapshot destination kind mismatch")
+	}
+	if strings.TrimSpace(record.DestinationContainerID) != strings.TrimSpace(placement.AuthorityContainerID) || strings.TrimSpace(record.DestinationContainerID) != strings.TrimSpace(execution.AuthorityContainerID) {
+		return sessionV2StaleAuthority("runtime session binding authority snapshot destination container mismatch")
+	}
+	if strings.TrimSpace(record.DestinationWorkspacePath) == "" || strings.TrimSpace(record.DestinationWorkspacePath) != strings.TrimSpace(execution.RuntimeWorkspacePath) {
+		return sessionV2StaleAuthority("runtime session binding authority snapshot destination path mismatch")
+	}
+	if record.PlacementGeneration != placement.PlacementGeneration || record.PlacementGeneration != execution.PlacementGeneration {
+		return sessionV2StaleAuthority("runtime session binding authority snapshot placement generation mismatch")
+	}
+	if record.BindingGeneration != execution.BindingGeneration {
+		return sessionV2StaleAuthority("runtime session binding authority snapshot binding generation mismatch")
+	}
+	if strings.TrimSpace(record.SourceWorkspaceID) == "" || strings.TrimSpace(record.SourceWorkspaceID) != strings.TrimSpace(execution.SourceWorkspaceID) {
+		return sessionV2StaleAuthority("runtime session binding authority snapshot source workspace id mismatch")
+	}
+	if record.SourceWorkspaceGeneration != execution.SourceWorkspaceGeneration {
+		return sessionV2StaleAuthority("runtime session binding authority snapshot source workspace generation mismatch")
+	}
+	if strings.TrimSpace(record.SourceWorkspacePath) == "" || strings.TrimSpace(record.SourceWorkspacePath) != strings.TrimSpace(execution.SourceWorkspacePath) {
+		return sessionV2StaleAuthority("runtime session binding authority snapshot source workspace path mismatch")
+	}
+	if strings.TrimSpace(record.State) != pebblestore.TopologyWorkspaceBindingStateBound {
+		return sessionV2StaleAuthority("runtime session binding authority snapshot is not bound")
+	}
+	if strings.TrimSpace(record.AttestedByHostSwarmID) != sourceSwarmID {
+		return sessionV2StaleAuthority("runtime session binding authority snapshot attesting host mismatch")
+	}
+	if strings.TrimSpace(record.AccessMode) != pebblestore.TopologyWorkspaceBindingAccessModeReadWrite || !record.Writable {
+		return sessionV2AccessDenied("runtime session binding authority snapshot must be read_write and writable")
+	}
+	if _, err := s.topology.UpsertWorkspaceBinding(record); err != nil {
+		return err
+	}
+	return nil
 }
 
 func runtimeSessionsV2ValidateBindingAuthority(req sessionruntime.RuntimeSessionOpenRequest, placement pebblestore.TopologyRuntimePlacementRecord, binding pebblestore.TopologyWorkspaceBindingRecord) error {

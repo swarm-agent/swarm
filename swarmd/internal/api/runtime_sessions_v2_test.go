@@ -131,6 +131,64 @@ func TestRuntimeSessionsV2OpenCreatesContainerLocalSession(t *testing.T) {
 	}
 }
 
+func TestRuntimeSessionsV2OpenRepairsBindingFromAuthoritySnapshot(t *testing.T) {
+	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	seedRuntimeSessionsV2OpenContainerAuthority(t, server, swarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	stale, ok, err := server.topology.GetWorkspaceBindingForAccount(testPrincipal().AccountScopeID, "binding-container-v2")
+	if err != nil || !ok {
+		t.Fatalf("get seeded binding ok=%t err=%v", ok, err)
+	}
+	snapshot := stale
+	snapshot.SourceWorkspaceID = "workspace-primary-v2"
+	snapshot.SourceWorkspaceGeneration = 9
+	stale.SourceWorkspaceID = "workspace-container-local"
+	stale.SourceWorkspaceGeneration = 1
+	if _, err := server.topology.UpsertWorkspaceBinding(stale); err != nil {
+		t.Fatalf("write stale binding: %v", err)
+	}
+	reqBody := runtimeSessionsV2OpenTestRequest("session-runtime-repair", "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	reqBody.SessionExecution.SourceWorkspaceID = snapshot.SourceWorkspaceID
+	reqBody.SessionExecution.SourceWorkspaceGeneration = snapshot.SourceWorkspaceGeneration
+	reqBody.Authority.SourceWorkspaceID = snapshot.SourceWorkspaceID
+	reqBody.Authority.SourceWorkspaceGeneration = snapshot.SourceWorkspaceGeneration
+	reqBody.SourceWorkspace.WorkspaceID = snapshot.SourceWorkspaceID
+	reqBody.SourceWorkspace.WorkspaceGeneration = snapshot.SourceWorkspaceGeneration
+	reqBody.DestinationRuntimeWorkspace.WorkspaceID = snapshot.SourceWorkspaceID
+	reqBody.DestinationRuntimeWorkspace.WorkspaceGeneration = snapshot.SourceWorkspaceGeneration
+	reqBody.BindingAuthoritySnapshot = &snapshot
+
+	rec := postRuntimeSessionsV2Open(t, server, reqBody)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	repaired, ok, err := server.topology.GetWorkspaceBindingForAccount(testPrincipal().AccountScopeID, "binding-container-v2")
+	if err != nil || !ok {
+		t.Fatalf("get repaired binding ok=%t err=%v", ok, err)
+	}
+	if repaired.SourceWorkspaceID != snapshot.SourceWorkspaceID || repaired.SourceWorkspaceGeneration != snapshot.SourceWorkspaceGeneration {
+		t.Fatalf("binding source identity = %q/%d", repaired.SourceWorkspaceID, repaired.SourceWorkspaceGeneration)
+	}
+}
+
+func TestRuntimeSessionsV2OpenRejectsBindingAuthoritySnapshotForWrongContainer(t *testing.T) {
+	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	seedRuntimeSessionsV2OpenContainerAuthority(t, server, swarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	reqBody := runtimeSessionsV2OpenTestRequest("session-runtime-repair-wrong-container", "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	binding, ok, err := server.topology.GetWorkspaceBindingForAccount(testPrincipal().AccountScopeID, "binding-container-v2")
+	if err != nil || !ok {
+		t.Fatalf("get binding ok=%t err=%v", ok, err)
+	}
+	binding.DestinationContainerID = "other-container"
+	reqBody.BindingAuthoritySnapshot = &binding
+	rec := postRuntimeSessionsV2Open(t, server, reqBody)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "destination container mismatch") {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+}
+
 func TestRuntimeSessionsV2OpenAttachesExistingContainerLocalSession(t *testing.T) {
 	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
 	seedRuntimeSessionsV2OpenContainerAuthority(t, server, swarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
@@ -220,6 +278,7 @@ func postRuntimeSessionsV2Open(t *testing.T, server *Server, body sessionruntime
 	}
 	req := httptest.NewRequest(http.MethodPost, runtimeSessionsV2OpenPath, bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(peerAuthSwarmIDHeader, body.SessionExecution.AuthorityHostSwarmID)
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 	return rec

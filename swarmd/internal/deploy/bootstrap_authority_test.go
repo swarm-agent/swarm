@@ -55,17 +55,19 @@ func TestFinalizeChildAttachSeedsExplicitContainerAuthority(t *testing.T) {
 		GroupNetworkName: "group-net",
 	}
 	err = deploySvc.finalizeChildAttach(ctx, cfg, state, status, ContainerAttachFinalizeInput{
-		DeploymentID:     "deployment-1",
-		UserID:           principal.UserID,
-		AccountScopeID:   principal.AccountScopeID,
-		HostSwarmID:      "host-swarm",
-		HostContainerID:  "host-swarm:container-1",
-		ChildSwarmID:     "child-swarm",
+		DeploymentID:    "deployment-1",
+		UserID:          principal.UserID,
+		AccountScopeID:  principal.AccountScopeID,
+		HostSwarmID:     "host-swarm",
+		HostContainerID: "host-swarm:container-1",
+		ChildSwarmID:    "child-swarm",
 		WorkspaceBootstrap: []ContainerWorkspaceBootstrap{{
-			SourceWorkspacePath: "/source/repo",
-			SourceWorkspaceName: "repo",
-			TargetWorkspacePath: runtimeWorkspacePath,
-			Writable:            true,
+			SourceWorkspaceID:         "ws_primary_repo",
+			SourceWorkspaceGeneration: 7,
+			SourceWorkspacePath:       "/source/repo",
+			SourceWorkspaceName:       "repo",
+			TargetWorkspacePath:       runtimeWorkspacePath,
+			Writable:                  true,
 		}},
 	})
 	if err != nil {
@@ -102,6 +104,9 @@ func TestFinalizeChildAttachSeedsExplicitContainerAuthority(t *testing.T) {
 		t.Fatalf("binding count = %d, want 1: %#v", len(bindings), bindings)
 	}
 	binding := bindings[0]
+	if binding.SourceWorkspaceID != "ws_primary_repo" || binding.SourceWorkspaceGeneration != 7 {
+		t.Fatalf("binding source identity = %q/%d", binding.SourceWorkspaceID, binding.SourceWorkspaceGeneration)
+	}
 	if binding.SourceWorkspacePath != "/source/repo" || binding.DestinationWorkspacePath != runtimeWorkspacePath {
 		t.Fatalf("binding paths = %q/%q", binding.SourceWorkspacePath, binding.DestinationWorkspacePath)
 	}
@@ -126,6 +131,45 @@ func TestFinalizeChildAttachSeedsExplicitContainerAuthority(t *testing.T) {
 	}
 	if runtimeRecord.OwnerHostSwarmID == "" || runtimeRecord.OwnerHostContainerID == "" {
 		t.Fatalf("runtime owner identity incomplete after reseed: %#v", runtimeRecord)
+	}
+}
+
+func TestFinalizeChildAttachMissingSourceWorkspaceAuthorityFailsClosed(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	topologyStore := pebblestore.NewTopologyStore(store)
+	swarmStore := pebblestore.NewSwarmStore(store, topologyStore)
+	workspaceSvc := workspaceruntime.NewService(pebblestore.NewWorkspaceStore(store))
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, nil, nil, workspaceSvc, filepath.Join(t.TempDir(), "swarm.conf"), topologyStore)
+	principal := testPrincipal()
+	runtimeWorkspacePath := filepath.Join(t.TempDir(), "runtime-workspace")
+	if err := os.MkdirAll(runtimeWorkspacePath, 0o755); err != nil {
+		t.Fatalf("create runtime workspace: %v", err)
+	}
+
+	err = deploySvc.finalizeChildAttach(identity.ContextWithPrincipal(context.Background(), principal), startupconfig.FileConfig{BypassPermissions: true, DeployContainer: startupconfig.DeployContainerBootstrap{Enabled: true, HostDriven: true, DeploymentID: "deployment-1"}}, swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "child-swarm", Name: "Child"}}, ContainerAttachState{DeploymentID: "deployment-1", AttachStatus: "attached", ChildSwarmID: "child-swarm", HostSwarmID: "host-swarm", HostContainerID: "host-swarm:container-1"}, ContainerAttachFinalizeInput{
+		DeploymentID:    "deployment-1",
+		UserID:          principal.UserID,
+		AccountScopeID:  principal.AccountScopeID,
+		HostSwarmID:     "host-swarm",
+		HostContainerID: "host-swarm:container-1",
+		ChildSwarmID:    "child-swarm",
+		WorkspaceBootstrap: []ContainerWorkspaceBootstrap{{
+			SourceWorkspacePath: "/source/repo",
+			SourceWorkspaceName: "repo",
+			TargetWorkspacePath: runtimeWorkspacePath,
+			Writable:            true,
+		}},
+	})
+	if err == nil {
+		t.Fatal("finalizeChildAttach() succeeded without source workspace authority")
+	}
+	if !strings.Contains(err.Error(), "source workspace id") {
+		t.Fatalf("finalizeChildAttach() error = %v", err)
 	}
 }
 

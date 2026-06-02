@@ -193,6 +193,10 @@ func (s *TopologyStore) putStrictWorkspaceBindingForAccount(accountScopeID strin
 	if err := validateStrictTopologyWorkspaceBinding(record); err != nil {
 		return TopologyWorkspaceBindingRecord{}, err
 	}
+	existing, existingOK, err := s.GetWorkspaceBindingForAccount(accountScopeID, record.BindingID)
+	if err != nil {
+		return TopologyWorkspaceBindingRecord{}, err
+	}
 	if err := s.validateWorkspaceBindingPlacementForAccount(accountScopeID, record); err != nil {
 		if strings.TrimSpace(record.LegacyTargetKind) != "" {
 			if errors.Is(err, errTopologyWorkspaceBindingPlacementMissing) || strings.Contains(err.Error(), "runtime kind does not match placement") || strings.Contains(err.Error(), "authority host does not match placement") || strings.Contains(err.Error(), "destination container does not match placement") || strings.Contains(err.Error(), "placement generation does not match placement") {
@@ -216,6 +220,11 @@ func (s *TopologyStore) putStrictWorkspaceBindingForAccount(accountScopeID strin
 	defer batch.Close()
 	if err := setTopologyBatchJSON(batch, KeyTopologyWorkspaceBindingForAccount(accountScopeID, record.BindingID), record); err != nil {
 		return TopologyWorkspaceBindingRecord{}, err
+	}
+	if existingOK && topologyWorkspaceBindingIsBound(existing) && topologyWorkspaceBindingActiveIndexKey(accountScopeID, existing) != topologyWorkspaceBindingActiveIndexKey(accountScopeID, record) {
+		if err := batch.Delete([]byte(topologyWorkspaceBindingActiveIndexKey(accountScopeID, existing)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+			return TopologyWorkspaceBindingRecord{}, err
+		}
 	}
 	if topologyWorkspaceBindingIsBound(record) {
 		if err := setTopologyBatchJSON(batch, topologyWorkspaceBindingActiveIndexKey(accountScopeID, record), record.BindingID); err != nil {

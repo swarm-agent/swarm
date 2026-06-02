@@ -871,7 +871,7 @@ func TestManagedHostTopologyWritesAreAccountOwned(t *testing.T) {
 		ChildBackendURL:    "http://child.example:7781",
 		ChildDesktopURL:    "https://child.example",
 		AttachStatus:       "attached",
-		WorkspaceBootstrap: []deployruntime.ContainerWorkspaceBootstrap{{SourceWorkspacePath: "/host/work", SourceWorkspaceName: "work", TargetWorkspacePath: "/managed/work", Writable: true}},
+		WorkspaceBootstrap: []deployruntime.ContainerWorkspaceBootstrap{{SourceWorkspaceID: "ws_primary_work", SourceWorkspaceGeneration: 4, SourceWorkspacePath: "/host/work", SourceWorkspaceName: "work", TargetWorkspacePath: "/managed/work", Writable: true}},
 	}, swarmTarget{SwarmID: "managed-swarm-1", Name: "Managed Host", BackendURL: "http://managed.example:7781", DesktopURL: "https://managed.example"}, deployContainerCreatePayload{DeploymentID: "deployment-1", Name: "managed-child"})
 	if err != nil {
 		t.Fatalf("mirror managed host deployment: %v", err)
@@ -899,8 +899,8 @@ func TestManagedHostTopologyWritesAreAccountOwned(t *testing.T) {
 	if len(bindings) != 1 || bindings[0].UserID != testPrincipal().UserID || bindings[0].AccountScopeID != testPrincipal().AccountScopeID {
 		t.Fatalf("account workspace bindings = %#v", bindings)
 	}
-	if strings.TrimSpace(bindings[0].SourceWorkspaceID) == "" || bindings[0].SourceWorkspaceGeneration <= 0 {
-		t.Fatalf("workspace binding source identity incomplete: %#v", bindings[0])
+	if strings.TrimSpace(bindings[0].SourceWorkspaceID) != "ws_primary_work" || bindings[0].SourceWorkspaceGeneration != 4 {
+		t.Fatalf("workspace binding source identity = %q/%d", bindings[0].SourceWorkspaceID, bindings[0].SourceWorkspaceGeneration)
 	}
 	if strings.TrimSpace(bindings[0].DestinationAuthorityHostSwarmID) != "managed-swarm-1" || bindings[0].DestinationRuntimeKind != pebblestore.TopologyRuntimeKindContainer || bindings[0].PlacementGeneration <= 0 {
 		t.Fatalf("workspace binding placement identity incomplete: %#v", bindings[0])

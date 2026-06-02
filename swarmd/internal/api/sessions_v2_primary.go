@@ -154,6 +154,14 @@ func (s *Server) createSessionsV2LocalContainer(r *http.Request, principal ident
 	}
 	frozenExecution := sessionruntime.SessionExecutionV2RecordFromExecution(principal, execution)
 	openReq := runtimeSessionOpenRequestFromFrozenExecution(frozenExecution, req)
+	bindingSnapshot, bindingOK, err := s.topology.GetWorkspaceBindingForAccount(principal.AccountScopeID, frozenExecution.WorkspaceBindingID)
+	if err != nil {
+		return nil, err
+	}
+	if !bindingOK {
+		return nil, sessionV2AuthorityNotFound("local-container sessions v2 workspace binding %q was not found", frozenExecution.WorkspaceBindingID)
+	}
+	openReq.BindingAuthoritySnapshot = &bindingSnapshot
 	openResp, err := s.dispatchRuntimeSessionV2Open(r, principal, execution, openReq)
 	if err != nil {
 		return nil, err

@@ -69,13 +69,14 @@ type RuntimeSessionWorktreeFacts struct {
 }
 
 type RuntimeSessionOpenRequest struct {
-	SessionID                   string                               `json:"session_id"`
-	Authority                   RuntimeSessionAuthority              `json:"authority"`
-	SessionExecution            pebblestore.SessionExecutionV2Record `json:"session_execution"`
-	SourceWorkspace             RuntimeSessionWorkspaceFacts         `json:"source_workspace"`
-	DestinationRuntimeWorkspace RuntimeSessionWorkspaceFacts         `json:"destination_runtime_workspace"`
-	Config                      RuntimeSessionConfig                 `json:"config"`
-	Worktree                    RuntimeSessionWorktreeFacts          `json:"worktree,omitempty"`
+	SessionID                   string                                      `json:"session_id"`
+	Authority                   RuntimeSessionAuthority                     `json:"authority"`
+	SessionExecution            pebblestore.SessionExecutionV2Record        `json:"session_execution"`
+	BindingAuthoritySnapshot    *pebblestore.TopologyWorkspaceBindingRecord `json:"binding_authority_snapshot,omitempty"`
+	SourceWorkspace             RuntimeSessionWorkspaceFacts                `json:"source_workspace"`
+	DestinationRuntimeWorkspace RuntimeSessionWorkspaceFacts                `json:"destination_runtime_workspace"`
+	Config                      RuntimeSessionConfig                        `json:"config"`
+	Worktree                    RuntimeSessionWorktreeFacts                 `json:"worktree,omitempty"`
 }
 
 type RuntimeSessionOpenResponse struct {

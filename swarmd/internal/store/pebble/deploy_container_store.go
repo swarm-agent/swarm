@@ -90,15 +90,17 @@ type DeployContainerWorkspaceBootstrapDirectory struct {
 }
 
 type DeployContainerWorkspaceBootstrap struct {
-	SourceWorkspacePath string                                       `json:"source_workspace_path"`
-	SourceWorkspaceName string                                       `json:"source_workspace_name"`
-	TargetWorkspacePath string                                       `json:"target_workspace_path"`
-	ThemeID             string                                       `json:"theme_id,omitempty"`
-	Directories         []DeployContainerWorkspaceBootstrapDirectory `json:"directories,omitempty"`
-	ReplicationMode     string                                       `json:"replication_mode,omitempty"`
-	Writable            bool                                         `json:"writable"`
-	Sync                WorkspaceReplicationSync                     `json:"sync,omitempty"`
-	MakeCurrent         bool                                         `json:"make_current,omitempty"`
+	SourceWorkspaceID         string                                       `json:"source_workspace_id,omitempty"`
+	SourceWorkspaceGeneration int64                                        `json:"source_workspace_generation,omitempty"`
+	SourceWorkspacePath       string                                       `json:"source_workspace_path"`
+	SourceWorkspaceName       string                                       `json:"source_workspace_name"`
+	TargetWorkspacePath       string                                       `json:"target_workspace_path"`
+	ThemeID                   string                                       `json:"theme_id,omitempty"`
+	Directories               []DeployContainerWorkspaceBootstrapDirectory `json:"directories,omitempty"`
+	ReplicationMode           string                                       `json:"replication_mode,omitempty"`
+	Writable                  bool                                         `json:"writable"`
+	Sync                      WorkspaceReplicationSync                     `json:"sync,omitempty"`
+	MakeCurrent               bool                                         `json:"make_current,omitempty"`
 }
 
 type DeployContainerStore struct {
@@ -463,6 +465,7 @@ func normalizeDeployContainerWorkspaceBootstrapList(items []DeployContainerWorks
 }
 
 func normalizeDeployContainerWorkspaceBootstrap(item DeployContainerWorkspaceBootstrap) DeployContainerWorkspaceBootstrap {
+	item.SourceWorkspaceID = strings.TrimSpace(item.SourceWorkspaceID)
 	item.SourceWorkspacePath = strings.TrimSpace(item.SourceWorkspacePath)
 	item.SourceWorkspaceName = strings.TrimSpace(item.SourceWorkspaceName)
 	item.TargetWorkspacePath = strings.TrimSpace(item.TargetWorkspacePath)

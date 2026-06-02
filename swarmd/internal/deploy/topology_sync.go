@@ -128,7 +128,14 @@ func (s *Service) syncCanonicalWorkspaceBindings(record pebblestore.DeployContai
 		if strings.TrimSpace(item.SourceWorkspacePath) == "" {
 			continue
 		}
-		sourceWorkspaceID := deploymentWorkspaceBindingWorkspaceID(accountScopeID, strings.TrimSpace(item.SourceWorkspacePath))
+		sourceWorkspaceID := strings.TrimSpace(item.SourceWorkspaceID)
+		if sourceWorkspaceID == "" {
+			return fmt.Errorf("deploy topology workspace sync for %q is missing source workspace id", strings.TrimSpace(item.SourceWorkspacePath))
+		}
+		sourceWorkspaceGeneration := item.SourceWorkspaceGeneration
+		if sourceWorkspaceGeneration <= 0 {
+			return fmt.Errorf("deploy topology workspace sync for %q is missing source workspace generation", strings.TrimSpace(item.SourceWorkspacePath))
+		}
 		placement, ok, err := s.topology.GetRuntimePlacementForAccount(accountScopeID, childSwarmID)
 		if err != nil {
 			return err
@@ -141,7 +148,7 @@ func (s *Service) syncCanonicalWorkspaceBindings(record pebblestore.DeployContai
 			UserID:                          userID,
 			AccountScopeID:                  accountScopeID,
 			SourceWorkspaceID:               sourceWorkspaceID,
-			SourceWorkspaceGeneration:       1,
+			SourceWorkspaceGeneration:       sourceWorkspaceGeneration,
 			SourceWorkspacePath:             strings.TrimSpace(item.SourceWorkspacePath),
 			SourceWorkspaceName:             strings.TrimSpace(item.SourceWorkspaceName),
 			DestinationRuntimeSwarmID:       childSwarmID,

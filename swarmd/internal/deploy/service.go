@@ -3000,14 +3000,14 @@ func (s *Service) completeHostDrivenLocalAttach(ctx context.Context, startupCfg 
 		return pebblestore.DeployContainerRecord{}, loadErr
 	}
 	finalizeInput := ContainerAttachFinalizeInput{
-		DeploymentID:     record.ID,
-		BootstrapSecret:  record.BootstrapSecret,
-		UserID:           currentRecord.UserID,
-		AccountScopeID:   currentRecord.AccountScopeID,
-		HostSwarmID:      attachState.HostSwarmID,
-		HostContainerID:  firstNonEmpty(strings.TrimSpace(attachState.HostContainerID), strings.TrimSpace(currentRecord.HostContainerID)),
-		ChildSwarmID:     firstNonEmpty(strings.TrimSpace(attachState.ChildSwarmID), strings.TrimSpace(childState.Node.SwarmID), strings.TrimSpace(currentRecord.ChildSwarmID)),
-		HostDisplayName:  attachState.HostDisplayName,
+		DeploymentID:      record.ID,
+		BootstrapSecret:   record.BootstrapSecret,
+		UserID:            currentRecord.UserID,
+		AccountScopeID:    currentRecord.AccountScopeID,
+		HostSwarmID:       attachState.HostSwarmID,
+		HostContainerID:   firstNonEmpty(strings.TrimSpace(attachState.HostContainerID), strings.TrimSpace(currentRecord.HostContainerID)),
+		ChildSwarmID:      firstNonEmpty(strings.TrimSpace(attachState.ChildSwarmID), strings.TrimSpace(childState.Node.SwarmID), strings.TrimSpace(currentRecord.ChildSwarmID)),
+		HostDisplayName:   attachState.HostDisplayName,
 		HostPublicKey:     attachState.HostPublicKey,
 		HostFingerprint:   attachState.HostFingerprint,
 		HostBackendURL:    attachState.HostBackendURL,
@@ -4621,13 +4621,13 @@ func (s *Service) applyBootstrapWorkspaces(principal identity.Principal, cfg sta
 			entry.Directories = append(entry.Directories, targetPath)
 		}
 		if s.topology != nil {
-			workspaceID := strings.TrimSpace(entry.WorkspaceID)
-			workspaceGeneration := int64(entry.WorkspaceGeneration)
-			if workspaceID == "" {
-				workspaceID = deploymentWorkspaceBindingWorkspaceID(strings.TrimSpace(principal.AccountScopeID), strings.TrimSpace(item.SourceWorkspacePath))
+			sourceWorkspaceID := strings.TrimSpace(item.SourceWorkspaceID)
+			sourceWorkspaceGeneration := item.SourceWorkspaceGeneration
+			if sourceWorkspaceID == "" {
+				return fmt.Errorf("deploy bootstrap workspace binding for %q is missing source workspace id", strings.TrimSpace(item.SourceWorkspacePath))
 			}
-			if workspaceGeneration <= 0 {
-				workspaceGeneration = 1
+			if sourceWorkspaceGeneration <= 0 {
+				return fmt.Errorf("deploy bootstrap workspace binding for %q is missing source workspace generation", strings.TrimSpace(item.SourceWorkspacePath))
 			}
 			placement, ok, err := s.topology.GetRuntimePlacementForAccount(strings.TrimSpace(principal.AccountScopeID), strings.TrimSpace(status.ChildSwarmID))
 			if err != nil {
@@ -4640,8 +4640,8 @@ func (s *Service) applyBootstrapWorkspaces(principal identity.Principal, cfg sta
 				BindingID:                       pebblestore.CanonicalTopologyWorkspaceBindingID(deploymentID, strings.TrimSpace(item.SourceWorkspacePath)),
 				UserID:                          strings.TrimSpace(principal.UserID),
 				AccountScopeID:                  strings.TrimSpace(principal.AccountScopeID),
-				SourceWorkspaceID:               workspaceID,
-				SourceWorkspaceGeneration:       workspaceGeneration,
+				SourceWorkspaceID:               sourceWorkspaceID,
+				SourceWorkspaceGeneration:       sourceWorkspaceGeneration,
 				SourceWorkspacePath:             strings.TrimSpace(item.SourceWorkspacePath),
 				SourceWorkspaceName:             strings.TrimSpace(item.SourceWorkspaceName),
 				DestinationRuntimeSwarmID:       strings.TrimSpace(status.ChildSwarmID),
@@ -4656,6 +4656,7 @@ func (s *Service) applyBootstrapWorkspaces(principal identity.Principal, cfg sta
 				AccessMode:                      pebblestore.TopologyWorkspaceBindingAccessModeReadWrite,
 				MaterializationKind:             pebblestore.TopologyWorkspaceBindingMaterializationSource,
 				AttestedByHostSwarmID:           placement.AuthorityHostSwarmID,
+				AttestedAt:                      time.Now().UnixMilli(),
 				ReplicationMode:                 strings.TrimSpace(item.ReplicationMode),
 				Writable:                        item.Writable,
 				Sync:                            item.Sync,

@@ -118,7 +118,7 @@ func TestMirrorDeploymentSyncsCanonicalHostContainerAndAttachment(t *testing.T) 
 		ChildSwarmID:       "child-swarm-1",
 		ChildDisplayName:   "Child One",
 		ChildBackendURL:    "http://child.example:7781",
-		WorkspaceBootstrap: []ContainerWorkspaceBootstrap{{SourceWorkspacePath: "/workspace", SourceWorkspaceName: "workspace", TargetWorkspacePath: "/workspaces/workspace", Writable: true}},
+		WorkspaceBootstrap: []ContainerWorkspaceBootstrap{{SourceWorkspaceID: "ws_primary_workspace", SourceWorkspaceGeneration: 3, SourceWorkspacePath: "/workspace", SourceWorkspaceName: "workspace", TargetWorkspacePath: "/workspaces/workspace", Writable: true}},
 	})
 	if err != nil {
 		t.Fatalf("mirror deployment with workspace binding: %v", err)
@@ -130,8 +130,8 @@ func TestMirrorDeploymentSyncsCanonicalHostContainerAndAttachment(t *testing.T) 
 	if len(bindings) != 1 {
 		t.Fatalf("workspace binding count = %d, want 1: %#v", len(bindings), bindings)
 	}
-	if bindings[0].SourceWorkspaceID == "" || bindings[0].SourceWorkspaceGeneration <= 0 {
-		t.Fatalf("workspace binding source identity incomplete: %#v", bindings[0])
+	if bindings[0].SourceWorkspaceID != "ws_primary_workspace" || bindings[0].SourceWorkspaceGeneration != 3 {
+		t.Fatalf("workspace binding source identity = %q/%d", bindings[0].SourceWorkspaceID, bindings[0].SourceWorkspaceGeneration)
 	}
 	if bindings[0].DestinationAuthorityHostSwarmID != "managed-swarm" || bindings[0].DestinationRuntimeKind != pebblestore.TopologyRuntimeKindContainer || bindings[0].PlacementGeneration <= 0 {
 		t.Fatalf("workspace binding placement identity incomplete: %#v", bindings[0])
