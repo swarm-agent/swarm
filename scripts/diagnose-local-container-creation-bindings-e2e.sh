@@ -415,7 +415,7 @@ jq -n \
   --arg child_swarm_id "${CHILD_SWARM_ID}" \
   --arg runtime_workspace_path "${RUNTIME_WORKSPACE_PATH}" \
   '
-  def assert($cond; $msg): if $cond then empty else error($msg) end;
+  def assert($cond; $msg): if $cond then . else error($msg) end;
   def nonempty($v): (($v // "") | length) > 0;
   ($primary[0]) as $p |
   ($container[0]) as $c |
