@@ -2713,19 +2713,13 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	if allowTUICWDPrimary {
+	if allowTUICWDPrimary && strings.TrimSpace(createSwarmID) == "" {
 		state, err := a.api.GetSwarmState(ctx)
 		if err != nil {
-			if strings.TrimSpace(createSwarmID) == "" {
-				return fmt.Errorf("resolve primary swarm for TUI cwd session: %w", err)
-			}
-		} else {
-			a.applyPrimarySwarmStateForDisplay(state)
-			if strings.TrimSpace(createSwarmID) == "" {
-				createSwarmID = strings.TrimSpace(state.Node.SwarmID)
-			}
+			return fmt.Errorf("resolve primary swarm for TUI cwd session: %w", err)
 		}
-		if strings.TrimSpace(createSwarmID) == "" {
+		createSwarmID = strings.TrimSpace(state.Node.SwarmID)
+		if createSwarmID == "" {
 			return errors.New("primary swarm id is required for TUI cwd session")
 		}
 	}
@@ -2828,40 +2822,6 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 		a.showToast(ui.ToastWarning, warning)
 	}
 	return nil
-}
-
-func (a *App) applyPrimarySwarmStateForDisplay(state client.SwarmLocalState) {
-	if a == nil {
-		return
-	}
-	swarmID := strings.TrimSpace(state.Node.SwarmID)
-	if swarmID == "" {
-		return
-	}
-	name := firstNonEmpty(strings.TrimSpace(state.Node.Name), a.currentSwarmName())
-	target := a.homeModel.CurrentSwarmTarget
-	if target == nil || !sameSwarmID(target.SwarmID, swarmID) {
-		target = &model.SwarmTarget{}
-	}
-	target.SwarmID = swarmID
-	target.Name = name
-	target.Role = strings.TrimSpace(state.Node.Role)
-	target.Relationship = "self"
-	target.Kind = "self"
-	target.Online = true
-	target.Selectable = true
-	target.Current = true
-	a.homeModel.CurrentSwarmTarget = target
-	if name == "" {
-		return
-	}
-	a.config.Swarm.Name = name
-	if a.home != nil {
-		a.home.SetSwarmName(name)
-	}
-	if a.chat != nil {
-		a.chat.SetSwarmName(name)
-	}
 }
 
 func (a *App) openExistingSession(summary model.SessionSummary) error {

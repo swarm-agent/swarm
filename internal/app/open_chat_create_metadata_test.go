@@ -70,12 +70,6 @@ func TestOpenChatSessionCreatePayloadFallsBackToPrimarySwarmStateForTUICWDWhenRo
 	if got.bodyString("workspace_path") != testWorkspacePath {
 		t.Fatalf("workspace_path = %q, want %q", got.bodyString("workspace_path"), testWorkspacePath)
 	}
-	if got.currentTarget == nil || got.currentTarget.Name != "Fallback Primary" || got.currentTarget.Relationship != "self" || got.currentTarget.Kind != "self" {
-		t.Fatalf("current target = %+v, want named primary self target", got.currentTarget)
-	}
-	if got.chatSwarmName != "Fallback Primary" {
-		t.Fatalf("chat swarm name = %q, want Fallback Primary", got.chatSwarmName)
-	}
 }
 
 func TestOpenChatSessionCreatePayloadUsesWorktreeSettingsForBoundHostRoute(t *testing.T) {
@@ -137,8 +131,6 @@ type capturedCreateRequest struct {
 	body             map[string]any
 	metadata         map[string]any
 	sessionExecution *client.SessionExecutionV2
-	currentTarget    *model.SwarmTarget
-	chatSwarmName    string
 }
 
 func (r capturedCreateRequest) bodyString(key string) string {
@@ -163,7 +155,7 @@ func captureOpenChatSessionCreateRequestWithWorktreeSettings(t *testing.T, route
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"ok": true,
 				"state": map[string]any{
-					"node":          map[string]any{"swarm_id": "fallback-primary-swarm", "name": "Fallback Primary", "role": "master"},
+					"node":          map[string]any{"swarm_id": "fallback-primary-swarm", "name": "Primary", "role": "master"},
 					"pairing":       map[string]any{},
 					"trusted_peers": []any{},
 				},
@@ -272,8 +264,6 @@ func captureOpenChatSessionCreateRequestWithWorktreeSettings(t *testing.T, route
 			break
 		}
 	}
-	captured.currentTarget = app.homeModel.CurrentSwarmTarget
-	captured.chatSwarmName = app.config.Swarm.Name
 	return captured
 }
 
