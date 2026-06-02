@@ -344,6 +344,13 @@ func (s *Service) UpsertWorkspaceBinding(record pebblestore.TopologyWorkspaceBin
 	return pebblestore.UpsertTopologyWorkspaceBinding(s.topologyStore, record)
 }
 
+func (s *Service) PutWorkspaceBindingForAccount(accountScopeID string, record pebblestore.TopologyWorkspaceBindingRecord) (pebblestore.TopologyWorkspaceBindingRecord, error) {
+	if s == nil || s.topologyStore == nil {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, fmt.Errorf("topology service is not configured")
+	}
+	return s.topologyStore.PutWorkspaceBindingForAccount(accountScopeID, record)
+}
+
 func (s *Service) UpsertSessionRoute(record pebblestore.SessionRouteRecord) (pebblestore.TopologySessionRouteRecord, error) {
 	return s.UpsertSessionRouteForAccount(strings.TrimSpace(record.AccountScopeID), record)
 }

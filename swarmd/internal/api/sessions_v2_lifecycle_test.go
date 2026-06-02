@@ -745,7 +745,7 @@ func TestSessionsV2LifecycleLocalContainerFailsClosedWithoutRuntimeAuthorityConn
 	hostServer, sessionSvc, _, routeStore, hostSwarmStore := newRoutedSessionTestServerWithSwarmStore(t)
 	seedSessionsV2LocalContainerAuthority(t, hostServer, hostSwarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
 	sessionID := "session-local-container-lifecycle-fail-closed"
-	openReq := runtimeSessionsV2OpenTestRequest(sessionID, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	openReq := runtimeSessionsV2OpenTestRequest(t, hostServer, sessionID, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
 	execution := openReq.SessionExecution
 	snapshot := pebblestore.SessionSnapshot{
 		ID:             sessionID,
