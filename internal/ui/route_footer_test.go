@@ -35,6 +35,28 @@ func TestHomeFooterUsesActiveRouteAsSwarmLabel(t *testing.T) {
 	}
 }
 
+func TestHomeFooterUsesPrimarySelfHostRouteLabel(t *testing.T) {
+	page := NewHomePage(model.HomeModel{
+		ServerMode:          "local",
+		SelectedChatRouteID: "swarm:primary:binding:primary-binding",
+		CurrentSwarmTarget:  &model.SwarmTarget{SwarmID: "primary", Name: "Primary Desk", Relationship: "self", Kind: "host"},
+		ChatRoutes: []model.ChatRoute{
+			{ID: "host", Label: "host", TargetKind: "host", TargetRelationship: "self"},
+			{ID: "swarm:primary:binding:primary-binding", Label: "Local", SwarmID: "primary", WorkspaceBindingID: "primary-binding", TargetKind: "host", TargetRelationship: "self"},
+			{ID: "swarm:container:binding:container-binding", Label: "Local", SwarmID: "container", WorkspaceBindingID: "container-binding", TargetKind: "container", TargetRelationship: "child"},
+		},
+	})
+	page.SetSwarmName("Fallback Local")
+
+	tokens := page.homeFooterTokens()
+	if len(tokens) == 0 {
+		t.Fatal("homeFooterTokens() returned no tokens")
+	}
+	if tokens[0].Text != "Primary Desk" {
+		t.Fatalf("home primary footer token = %q, want primary self host route label", tokens[0].Text)
+	}
+}
+
 func TestHomeFooterUsesLocalSwarmNameForHostRoute(t *testing.T) {
 	page := NewHomePage(model.HomeModel{
 		ServerMode:          "local",

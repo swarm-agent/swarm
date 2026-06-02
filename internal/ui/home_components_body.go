@@ -470,13 +470,24 @@ func selectedHomeRouteLabel(m model.HomeModel) string {
 	selected := strings.TrimSpace(m.SelectedChatRouteID)
 	for _, route := range m.ChatRoutes {
 		if strings.TrimSpace(route.ID) == selected {
-			return strings.TrimSpace(route.Label)
+			return displayHomeChatRouteLabel(m, route)
 		}
 	}
 	if len(m.ChatRoutes) > 0 {
-		return strings.TrimSpace(m.ChatRoutes[0].Label)
+		return displayHomeChatRouteLabel(m, m.ChatRoutes[0])
 	}
 	return "host"
+}
+
+func displayHomeChatRouteLabel(m model.HomeModel, route model.ChatRoute) string {
+	if strings.EqualFold(strings.TrimSpace(route.TargetRelationship), "self") && strings.EqualFold(strings.TrimSpace(route.TargetKind), "host") {
+		if target := m.CurrentSwarmTarget; target != nil && strings.TrimSpace(route.SwarmID) != "" && strings.TrimSpace(route.SwarmID) == strings.TrimSpace(target.SwarmID) {
+			if targetName := strings.TrimSpace(target.Name); targetName != "" {
+				return targetName
+			}
+		}
+	}
+	return strings.TrimSpace(route.Label)
 }
 
 func (p *HomePage) homeFooterRightLine(maxWidth int) string {

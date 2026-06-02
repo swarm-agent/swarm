@@ -131,6 +131,8 @@ type ChatRoute struct {
 	WorkspaceBindingID   string
 	HostWorkspacePath    string
 	RuntimeWorkspacePath string
+	TargetKind           string
+	TargetRelationship   string
 }
 
 type SwarmTarget struct {

@@ -61,12 +61,13 @@ func (a *App) cycleChatRoute() {
 		go a.persistDefaultWorkspaceRoute(workspacePath, a.selectedChatRouteID)
 	}
 	a.home.SetModel(a.homeModel)
+	nextLabel := a.displayChatRouteLabel(next)
 	if a.chat != nil {
 		meta := a.chat.Meta()
-		meta.Route = emptyFallback(strings.TrimSpace(next.Label), "host")
+		meta.Route = nextLabel
 		a.chat.SetMeta(meta)
 	}
-	a.setRouteStatus(fmt.Sprintf("route: %s", emptyFallback(strings.TrimSpace(next.Label), "host")))
+	a.setRouteStatus(fmt.Sprintf("route: %s", nextLabel))
 }
 
 func (a *App) persistDefaultWorkspaceRoute(workspacePath, routeID string) {

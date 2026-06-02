@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { applyDesktopChatRouteToSession, buildDesktopChatRouteOptions, desktopChatRouteFromSessionMetadata, desktopChatRouteID, getDesktopSessionCreateV2Target, isManagedHostDesktopChatRoute, resolveDesktopChatRouteById, resolveDesktopChatRouteFromSession, withDesktopChatRoute, type DesktopChatRoute } from './chat-routing'
+import { applyDesktopChatRouteToSession, buildDesktopChatRouteOptions, desktopChatRouteFromSessionMetadata, desktopChatRouteID, getDesktopSessionCreateV2Target, isManagedHostDesktopChatRoute, isPrimaryDesktopChatRoute, resolveDesktopChatRouteById, resolveDesktopChatRouteFromSession, withDesktopChatRoute, type DesktopChatRoute } from './chat-routing'
 import type { DesktopSessionRecord } from '../../types/realtime'
 
 const remoteRoute: DesktopChatRoute = {
@@ -83,6 +83,21 @@ test('routed session fetch URL includes swarm_id so backend can proxy to child',
     withDesktopChatRoute('/v1/sessions/session-1', remoteRoute),
     '/v1/sessions/session-1?swarm_id=child-swarm',
   )
+})
+
+test('primary host routes are identified by self host relationship even with v2 identifiers', () => {
+  const primaryRoute = {
+    ...managedHostRoute,
+    id: 'swarm:self-swarm:binding:binding-self',
+    label: 'primary self',
+    swarmId: 'self-swarm',
+    targetKind: 'host',
+    targetRelationship: 'self',
+    workspaceBindingId: 'binding-self',
+  }
+
+  assert.equal(isPrimaryDesktopChatRoute(primaryRoute), true)
+  assert.equal(isManagedHostDesktopChatRoute(primaryRoute), false)
 })
 
 test('managed host routes are identified by managed relationship only', () => {
@@ -431,6 +446,25 @@ test('buildDesktopChatRouteOptions treats different workspace bindings as differ
   assert.equal(routes.length, 3)
   assert.equal(routes[1]?.id, 'swarm:child-swarm:binding:binding-1')
   assert.equal(routes[2]?.id, 'swarm:child-swarm:binding:binding-duplicate')
+})
+
+test('routeCaption labels v2 primary self host as primary host', async () => {
+  const { routeCaption } = await import('../components/route-picker')
+
+  assert.equal(routeCaption({
+    ...remoteRoute,
+    id: 'swarm:primary-swarm:binding:binding-primary-self',
+    label: 'primary self binding',
+    swarmId: 'primary-swarm',
+    targetKind: 'host',
+    targetRelationship: 'self',
+    workspaceBindingId: 'binding-primary-self',
+  }), 'Primary host')
+  assert.equal(routeCaption({
+    ...remoteRoute,
+    targetKind: 'container',
+    targetRelationship: 'child',
+  }), 'Primary container')
 })
 
 test('groupDesktopChatRoutes keeps only managed-relationship host route outside Primary', async () => {

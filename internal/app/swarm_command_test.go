@@ -35,7 +35,7 @@ func TestSwarmSelectorOverlayContentIsMinimal(t *testing.T) {
 	selected := normalizeSelectedRouteID(app.selectedChatRouteID, routes)
 	lines := []string{
 		"current: " + app.selectedChatRouteLabelForWorkspace(app.workspacePath),
-		"default: " + chatRouteLabelForID(routes, app.config.Chat.DefaultWorkspaceRoutes[app.workspacePath]),
+		"default: " + app.chatRouteLabelForID(routes, app.config.Chat.DefaultWorkspaceRoutes[app.workspacePath]),
 	}
 	if target := app.homeModel.CurrentSwarmTarget; target != nil && strings.TrimSpace(target.SwarmID) != "" {
 		lines = append(lines, "current target swarm_id: "+strings.TrimSpace(target.SwarmID))
@@ -46,7 +46,7 @@ func TestSwarmSelectorOverlayContentIsMinimal(t *testing.T) {
 		if strings.TrimSpace(route.ID) == selected {
 			marker = "* "
 		}
-		lines = append(lines, marker+route.Label)
+		lines = append(lines, marker+app.displayChatRouteLabel(route))
 	}
 	lines = append(lines,
 		"commands:",

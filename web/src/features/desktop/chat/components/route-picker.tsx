@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, ChevronDown, Container, Monitor, Server, Star } from 'lucide-react'
+import { isPrimaryDesktopChatRoute } from '../services/chat-routing'
 import type { DesktopChatRoute } from '../services/chat-routing'
 
 interface RoutePickerProps {
@@ -18,26 +19,29 @@ const VIEWPORT_GUTTER = 8
 const MIN_DROPDOWN_WIDTH = 260
 const MAX_DROPDOWN_WIDTH = 360
 
-function routeKind(route: DesktopChatRoute): 'managed' | 'remote' | 'local' {
+function routeKind(route: DesktopChatRoute): 'primary' | 'managed' | 'remote' | 'local' {
   const targetKind = route.targetKind.trim().toLowerCase()
   const targetRelationship = route.targetRelationship.trim().toLowerCase()
-  if (route.swarmId && targetRelationship === 'managed') {
+  if (!route.swarmId || isPrimaryDesktopChatRoute(route)) {
+    return 'primary'
+  }
+  if (targetRelationship === 'managed') {
     return 'managed'
   }
-  return route.swarmId && (targetKind === 'remote' || targetKind === 'mirrored') ? 'remote' : 'local'
+  return targetKind === 'remote' || targetKind === 'mirrored' ? 'remote' : 'local'
 }
 
 function RouteIcon({ route, className }: { route: DesktopChatRoute; className?: string }) {
   const kind = routeKind(route)
-  const Icon = !route.swarmId || kind === 'managed' ? Monitor : kind === 'remote' ? Server : Container
+  const Icon = kind === 'primary' || kind === 'managed' ? Monitor : kind === 'remote' ? Server : Container
   return <Icon size={14} className={className} />
 }
 
-function routeCaption(route: DesktopChatRoute): string {
-  if (!route.swarmId) {
+export function routeCaption(route: DesktopChatRoute): string {
+  const kind = routeKind(route)
+  if (kind === 'primary') {
     return 'Primary host'
   }
-  const kind = routeKind(route)
   if (kind === 'managed') {
     return 'Managed host'
   }
@@ -80,7 +84,7 @@ export function groupDesktopChatRoutes(routes: DesktopChatRoute[]): RouteGroup[]
 
   for (const route of routes) {
     const kind = routeKind(route)
-    if (!route.swarmId || kind === 'local') {
+    if (kind === 'primary' || kind === 'local') {
       primary.push(route)
       continue
     }

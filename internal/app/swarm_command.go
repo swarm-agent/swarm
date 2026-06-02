@@ -149,7 +149,7 @@ func (a *App) showSwarmSelectorOverlay(status string) {
 	selected := normalizeSelectedRouteID(a.selectedChatRouteID, routes)
 	lines := []string{
 		"current: " + a.selectedChatRouteLabelForWorkspace(workspacePath),
-		"default: " + chatRouteLabelForID(routes, emptyFallback(strings.TrimSpace(a.config.Chat.DefaultWorkspaceRoutes[workspacePath]), "host")),
+		"default: " + a.chatRouteLabelForID(routes, emptyFallback(strings.TrimSpace(a.config.Chat.DefaultWorkspaceRoutes[workspacePath]), "host")),
 	}
 	if target := a.homeModel.CurrentSwarmTarget; target != nil && strings.TrimSpace(target.SwarmID) != "" {
 		lines = append(lines, "current target swarm_id: "+strings.TrimSpace(target.SwarmID))
@@ -160,7 +160,7 @@ func (a *App) showSwarmSelectorOverlay(status string) {
 		if strings.TrimSpace(route.ID) == selected {
 			marker = "* "
 		}
-		lines = append(lines, marker+emptyFallback(strings.TrimSpace(route.Label), "host"))
+		lines = append(lines, marker+a.displayChatRouteLabel(route))
 	}
 	lines = append(lines,
 		"commands:",
@@ -172,11 +172,11 @@ func (a *App) showSwarmSelectorOverlay(status string) {
 	a.home.SetStatus(status)
 }
 
-func chatRouteLabelForID(routes []model.ChatRoute, routeID string) string {
+func (a *App) chatRouteLabelForID(routes []model.ChatRoute, routeID string) string {
 	routeID = strings.TrimSpace(routeID)
 	for _, route := range routes {
 		if strings.TrimSpace(route.ID) == routeID {
-			return emptyFallback(strings.TrimSpace(route.Label), "host")
+			return a.displayChatRouteLabel(route)
 		}
 	}
 	return "host"

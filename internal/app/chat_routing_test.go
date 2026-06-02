@@ -71,6 +71,39 @@ func TestBuildChatRoutesForWorkspacesKeepsTargetSwarmID(t *testing.T) {
 	if remote.WorkspaceBindingID != "binding-1" {
 		t.Fatalf("remote WorkspaceBindingID = %q, want binding-1", remote.WorkspaceBindingID)
 	}
+	if remote.TargetRelationship != "child" || remote.TargetKind != "remote" {
+		t.Fatalf("remote target = %q/%q, want child/remote", remote.TargetRelationship, remote.TargetKind)
+	}
+}
+
+func TestBuildChatRoutesForWorkspacesKeepsPrimarySelfHostTarget(t *testing.T) {
+	workspaces := []model.Workspace{{
+		Name: "Host Repo",
+		Path: testWorkspacePath,
+		TopologyRoutes: []model.WorkspaceTopologyRoute{{
+			RouteID:              "swarm:primary-swarm:binding:binding-primary",
+			WorkspaceBindingID:   "binding-primary",
+			RuntimeSwarmID:       "primary-swarm",
+			RuntimeSwarmName:     "Primary Swarm",
+			RuntimeKind:          "host",
+			RuntimeRelationship:  "self",
+			HostWorkspacePath:    testWorkspacePath,
+			HostWorkspaceName:    "Host Repo",
+			RuntimeWorkspacePath: testWorkspacePath,
+		}},
+	}}
+
+	routes := buildChatRoutesForWorkspaces(workspaces, testWorkspacePath)
+	if len(routes) != 2 {
+		t.Fatalf("route count = %d, want 2", len(routes))
+	}
+	primary := routes[1]
+	if !isPrimaryHostChatRoute(primary) {
+		t.Fatalf("primary target = %q/%q, want self/host", primary.TargetRelationship, primary.TargetKind)
+	}
+	if primary.SwarmID != "primary-swarm" || primary.WorkspaceBindingID != "binding-primary" {
+		t.Fatalf("primary identifiers not preserved: %+v", primary)
+	}
 }
 
 func TestModelSwarmTargetFromClientPropagatesWorkspaceOverviewTarget(t *testing.T) {
@@ -206,6 +239,67 @@ func TestRemoteUISettingsUpdateKeepsExplicitSelection(t *testing.T) {
 	}
 	if app.selectedChatRouteID != testRemoteRouteID {
 		t.Fatalf("selected route ID = %q, want explicit %q", app.selectedChatRouteID, testRemoteRouteID)
+	}
+}
+
+func TestSelectedChatRouteLabelUsesPrimaryTargetName(t *testing.T) {
+	app := &App{
+		homeModel: model.HomeModel{
+			CurrentSwarmTarget: &model.SwarmTarget{SwarmID: "primary-swarm", Name: "Primary Swarm", Relationship: "self", Kind: "host"},
+			Workspaces: []model.Workspace{{
+				Name: "Host Repo",
+				Path: testWorkspacePath,
+				TopologyRoutes: []model.WorkspaceTopologyRoute{{
+					RouteID:              "swarm:primary-swarm:binding:binding-primary",
+					WorkspaceBindingID:   "binding-primary",
+					RuntimeSwarmID:       "primary-swarm",
+					RuntimeSwarmName:     "Local",
+					RuntimeKind:          "host",
+					RuntimeRelationship:  "self",
+					HostWorkspacePath:    testWorkspacePath,
+					RuntimeWorkspacePath: testWorkspacePath,
+				}},
+			}},
+		},
+		selectedChatRouteID: "swarm:primary-swarm:binding:binding-primary",
+	}
+
+	label := app.selectedChatRouteLabelForWorkspace(testWorkspacePath)
+	if label != "Primary Swarm" {
+		t.Fatalf("selected route label = %q, want primary target name", label)
+	}
+}
+
+func TestSessionRouteLabelUsesV2PrimaryTargetName(t *testing.T) {
+	app := &App{homeModel: model.HomeModel{
+		CurrentSwarmTarget: &model.SwarmTarget{SwarmID: "primary-swarm", Name: "Primary Swarm", Relationship: "self", Kind: "host"},
+		Workspaces: []model.Workspace{{
+			Name: "Host Repo",
+			Path: testWorkspacePath,
+			TopologyRoutes: []model.WorkspaceTopologyRoute{{
+				RouteID:              "swarm:primary-swarm:binding:binding-primary",
+				WorkspaceBindingID:   "binding-primary",
+				RuntimeSwarmID:       "primary-swarm",
+				RuntimeSwarmName:     "Local",
+				RuntimeKind:          "host",
+				RuntimeRelationship:  "self",
+				HostWorkspacePath:    testWorkspacePath,
+				RuntimeWorkspacePath: testWorkspacePath,
+			}},
+		}},
+	}}
+	metadata := map[string]any{
+		"swarm_v2_execution_class":        "primary",
+		"swarm_v2_runtime_swarm_id":       "primary-swarm",
+		"swarm_v2_runtime_kind":           "host",
+		"swarm_v2_workspace_binding_id":   "binding-primary",
+		"swarm_v2_source_workspace_path":  testWorkspacePath,
+		"swarm_v2_runtime_workspace_path": testWorkspacePath,
+	}
+
+	label := app.sessionRouteLabelForWorkspace(testWorkspacePath, metadata)
+	if label != "Primary Swarm" {
+		t.Fatalf("session route label = %q, want primary target name", label)
 	}
 }
 
