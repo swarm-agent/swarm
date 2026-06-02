@@ -29,3 +29,10 @@ func TestCreateSessionSwarmIDForRouteDoesNotUseWorkspaceID(t *testing.T) {
 		t.Fatalf("swarm id used workspace id")
 	}
 }
+
+func TestCreateSessionSwarmIDForRouteUsesOverviewTargetForRouterBackedPrimaryHost(t *testing.T) {
+	got := createSessionSwarmIDForRoute(model.ChatRoute{ID: "swarm:host-swarm:binding:binding-primary", TargetKind: "host", TargetRelationship: "self"}, &model.SwarmTarget{SwarmID: "host-swarm"})
+	if got != "host-swarm" {
+		t.Fatalf("swarm id = %q, want host-swarm", got)
+	}
+}

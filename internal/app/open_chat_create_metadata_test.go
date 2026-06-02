@@ -56,6 +56,22 @@ func TestOpenChatSessionCreatePayloadUsesTUICWDPrimaryExceptionOnlyForHostRoute(
 	}
 }
 
+func TestOpenChatSessionCreatePayloadFallsBackToPrimarySwarmStateForTUICWDWhenRouterLosesSwarmTarget(t *testing.T) {
+	got := captureOpenChatSessionCreateRequestWithWorktreeSettings(t, model.ChatRoute{ID: "host"}, "", "", testWorkspacePath, "plan", client.WorktreeSettings{
+		WorkspacePath: testWorkspacePath,
+	})
+
+	if got.bodyString("swarm_id") != "fallback-primary-swarm" {
+		t.Fatalf("swarm_id = %q, want fallback-primary-swarm", got.bodyString("swarm_id"))
+	}
+	if _, ok := got.body["workspace_binding_id"]; ok {
+		t.Fatalf("workspace_binding_id present in TUI cwd create: %#v", got.body["workspace_binding_id"])
+	}
+	if got.bodyString("workspace_path") != testWorkspacePath {
+		t.Fatalf("workspace_path = %q, want %q", got.bodyString("workspace_path"), testWorkspacePath)
+	}
+}
+
 func TestOpenChatSessionCreatePayloadUsesWorktreeSettingsForBoundHostRoute(t *testing.T) {
 	got := captureOpenChatSessionCreateRequestWithWorktreeSettings(t, model.ChatRoute{ID: "host"}, "host-swarm", "local-binding", testWorkspacePath, "plan", client.WorktreeSettings{
 		WorkspacePath:    testWorkspacePath,
@@ -135,6 +151,15 @@ func captureOpenChatSessionCreateRequestWithWorktreeSettings(t *testing.T, route
 	captured := capturedCreateRequest{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/swarm/state":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"state": map[string]any{
+					"node":          map[string]any{"swarm_id": "fallback-primary-swarm", "name": "Primary", "role": "master"},
+					"pairing":       map[string]any{},
+					"trusted_peers": []any{},
+				},
+			})
 		case r.Method == http.MethodPost && r.URL.Path == "/v2/sessions/primary":
 			if r.URL.RawQuery != "" {
 				t.Fatalf("unexpected query on create request: %q", r.URL.RawQuery)

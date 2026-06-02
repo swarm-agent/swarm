@@ -2711,13 +2711,24 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 	}
 	createSwarmID := createSessionSwarmIDForRoute(route, a.homeModel.CurrentSwarmTarget)
 
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	if allowTUICWDPrimary && strings.TrimSpace(createSwarmID) == "" {
+		state, err := a.api.GetSwarmState(ctx)
+		if err != nil {
+			return fmt.Errorf("resolve primary swarm for TUI cwd session: %w", err)
+		}
+		createSwarmID = strings.TrimSpace(state.Node.SwarmID)
+		if createSwarmID == "" {
+			return errors.New("primary swarm id is required for TUI cwd session")
+		}
+	}
+
 	title := strings.TrimSpace(titleSeed)
 	if title == "" {
 		title = "New Session"
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
 	preference := client.ModelPreference{
 		Provider:    strings.TrimSpace(a.homeModel.ModelProvider),
 		Model:       strings.TrimSpace(a.homeModel.ModelName),

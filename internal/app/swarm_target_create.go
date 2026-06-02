@@ -10,7 +10,10 @@ func createSessionSwarmIDForRoute(route model.ChatRoute, target *model.SwarmTarg
 	if swarmID := strings.TrimSpace(route.SwarmID); swarmID != "" {
 		return swarmID
 	}
-	if strings.TrimSpace(route.ID) != "host" || target == nil {
+	if target == nil {
+		return ""
+	}
+	if strings.TrimSpace(route.ID) != "host" && !isPrimaryHostChatRoute(route) {
 		return ""
 	}
 	return strings.TrimSpace(target.SwarmID)
