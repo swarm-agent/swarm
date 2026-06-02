@@ -62,6 +62,8 @@ func TestCreateSessionWithOptionsPostsStrictV2PrimaryPayload(t *testing.T) {
 		WorkspaceName:            "Workspace",
 		WorkspaceBindingID:       "binding-child",
 		SwarmID:                  "child-swarm",
+		TargetKind:               "host",
+		TargetRelationship:       "self",
 		WorktreeMode:             "off",
 		WorktreeUseCurrentBranch: &useCurrentBranch,
 		WorktreeBaseBranch:       "main",
@@ -108,6 +110,77 @@ func TestCreateSessionWithOptionsPostsStrictV2PrimaryPayload(t *testing.T) {
 		if _, ok := body[key]; ok {
 			t.Fatalf("%s present in workspace-bound create request: %#v", key, body[key])
 		}
+	}
+}
+
+func TestCreateSessionWithOptionsPostsLocalContainerEndpoint(t *testing.T) {
+	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
+	t.Setenv("DATA_DIR", "")
+
+	var gotPath string
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": true,
+			"session": map[string]any{
+				"id":             "session-container",
+				"workspace_path": "/workspaces/swarm-go",
+				"workspace_name": "Workspace",
+				"title":          "Container Session",
+				"mode":           "auto",
+			},
+			"session_execution": map[string]any{
+				"session_id":           "session-container",
+				"execution_class":      "local_container",
+				"runtime_kind":         "container",
+				"runtime_swarm_id":     "container-swarm",
+				"workspace_binding_id": "binding-container",
+			},
+		})
+	}))
+	defer server.Close()
+
+	api := New(server.URL)
+	api.SetToken("test-token")
+	session, err := api.CreateSessionWithOptions(context.Background(), SessionCreateOptions{
+		Title:              "Container Session",
+		WorkspacePath:      "/host/workspace",
+		WorkspaceBindingID: "binding-container",
+		SwarmID:            "container-swarm",
+		TargetKind:         "container",
+		TargetRelationship: "child",
+		WorktreeMode:       "off",
+		Preference: ModelPreference{
+			Provider: "anthropic",
+			Model:    "claude",
+			Thinking: "auto",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSessionWithOptions() error = %v", err)
+	}
+	if gotPath != "/v2/sessions/local-containers" {
+		t.Fatalf("request path = %q, want /v2/sessions/local-containers", gotPath)
+	}
+	if got, _ := body["swarm_id"].(string); got != "container-swarm" {
+		t.Fatalf("swarm_id = %q, want container-swarm", got)
+	}
+	if got, _ := body["workspace_binding_id"].(string); got != "binding-container" {
+		t.Fatalf("workspace_binding_id = %q, want binding-container", got)
+	}
+	if _, ok := body["workspace_path"]; ok {
+		t.Fatalf("workspace_path present in local-container create: %#v", body["workspace_path"])
+	}
+	if session.SessionExecution == nil || session.SessionExecution.ExecutionClass != "local_container" || session.SessionExecution.RuntimeKind != "container" {
+		t.Fatalf("session execution = %#v, want local_container/container", session.SessionExecution)
 	}
 }
 

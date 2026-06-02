@@ -4,9 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gdamore/tcell/v2"
-
-	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/ui"
 )
 
@@ -71,13 +68,6 @@ func (a *App) cycleChatRoute() {
 	}
 	a.homeModel.ChatRoutes = routes
 	a.homeModel.SelectedChatRouteID = a.selectedChatRouteID
-	if a.config.Chat.DefaultWorkspaceRoutes == nil {
-		a.config.Chat.DefaultWorkspaceRoutes = make(map[string]string)
-	}
-	if workspacePath != "" {
-		a.config.Chat.DefaultWorkspaceRoutes[workspacePath] = a.selectedChatRouteID
-		go a.persistDefaultWorkspaceRoute(workspacePath, a.selectedChatRouteID)
-	}
 	a.home.SetModel(a.homeModel)
 	nextLabel := a.displayChatRouteLabel(next)
 	if a.chat != nil {
@@ -86,24 +76,6 @@ func (a *App) cycleChatRoute() {
 		a.chat.SetMeta(meta)
 	}
 	a.setRouteStatus(fmt.Sprintf("route: %s", nextLabel))
-}
-
-func (a *App) persistDefaultWorkspaceRoute(workspacePath, routeID string) {
-	workspacePath = strings.TrimSpace(workspacePath)
-	routeID = strings.TrimSpace(routeID)
-	if workspacePath == "" || routeID == "" || a == nil || a.api == nil {
-		return
-	}
-	if err := updateUISettings(a.api, func(settings *client.UISettings) {
-		if settings.Chat.DefaultWorkspaceRoutes == nil {
-			settings.Chat.DefaultWorkspaceRoutes = make(map[string]string)
-		}
-		settings.Chat.DefaultWorkspaceRoutes[workspacePath] = routeID
-	}); err != nil {
-		if a.screen != nil {
-			a.screen.PostEventWait(tcell.NewEventInterrupt(interruptReloadReady))
-		}
-	}
 }
 
 func (a *App) setRouteStatus(status string) {

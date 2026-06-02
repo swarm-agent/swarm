@@ -37,7 +37,7 @@ func TestSwarmSelectorOverlayContentIsMinimal(t *testing.T) {
 	}
 	lines = append(lines,
 		"commands:",
-		"  Alt+R: change default route",
+		"  Alt+R: switch route for this TUI",
 		"  /swarm status: pairing status",
 		"  /swarm pending: pending enrollments",
 	)

@@ -2761,6 +2761,8 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 		WorkspaceBindingID:       route.WorkspaceBindingID,
 		TUIPrimaryCWD:            allowTUICWDPrimary,
 		SwarmID:                  createSwarmID,
+		TargetKind:               route.TargetKind,
+		TargetRelationship:       route.TargetRelationship,
 		Mode:                     createMode,
 		AgentName:                emptyFallback(strings.TrimSpace(a.homeModel.ActiveAgent), "swarm"),
 		Preference:               preference,
@@ -3751,6 +3753,8 @@ func (a *App) createBackgroundCommitSession(ctx context.Context, parentSessionID
 		AgentName:          emptyFallback(strings.TrimSpace(a.homeModel.ActiveAgent), "swarm"),
 		WorkspaceBindingID: workspaceBindingID,
 		SwarmID:            swarmID,
+		ExecutionClass:     sessionExecutionClass(parentSummary),
+		TargetKind:         sessionExecutionRuntimeKind(parentSummary),
 		Metadata:           metadata,
 		Preference:         parentSummary.Preference,
 		WorktreeMode:       worktreeMode,
@@ -3942,6 +3946,20 @@ func sessionExecutionRuntimeSwarmID(summary model.SessionSummary) string {
 		return ""
 	}
 	return strings.TrimSpace(summary.SessionExecution.RuntimeSwarmID)
+}
+
+func sessionExecutionRuntimeKind(summary model.SessionSummary) string {
+	if summary.SessionExecution == nil {
+		return ""
+	}
+	return strings.TrimSpace(summary.SessionExecution.RuntimeKind)
+}
+
+func sessionExecutionClass(summary model.SessionSummary) string {
+	if summary.SessionExecution == nil {
+		return ""
+	}
+	return strings.TrimSpace(summary.SessionExecution.ExecutionClass)
 }
 
 func sessionExecutionWorkspaceBindingID(summary model.SessionSummary) string {

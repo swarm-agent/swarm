@@ -95,6 +95,8 @@ func TestOpenChatSessionCreatePayloadUsesSelectedRouteAuthority(t *testing.T) {
 		WorkspaceBindingID:   "binding-1",
 		HostWorkspacePath:    testWorkspacePath,
 		RuntimeWorkspacePath: "/workspaces/swarm-go",
+		TargetKind:           "container",
+		TargetRelationship:   "child",
 	}
 	got := captureOpenChatSessionCreateRequest(t, route, "host-swarm", "local-binding", testWorkspacePath, "auto")
 
@@ -104,14 +106,18 @@ func TestOpenChatSessionCreatePayloadUsesSelectedRouteAuthority(t *testing.T) {
 	if got.bodyString("workspace_binding_id") != "binding-1" {
 		t.Fatalf("workspace_binding_id = %q, want binding-1", got.bodyString("workspace_binding_id"))
 	}
-	if got.sessionExecution == nil || got.sessionExecution.RuntimeSwarmID != "child-swarm" || got.sessionExecution.WorkspaceBindingID != "binding-1" {
-		t.Fatalf("session execution = %#v, want child-swarm/binding-1", got.sessionExecution)
+	if got.path != "/v2/sessions/local-containers" {
+		t.Fatalf("create path = %q, want /v2/sessions/local-containers", got.path)
+	}
+	if got.sessionExecution == nil || got.sessionExecution.RuntimeSwarmID != "child-swarm" || got.sessionExecution.WorkspaceBindingID != "binding-1" || got.sessionExecution.ExecutionClass != "local_container" || got.sessionExecution.RuntimeKind != "container" {
+		t.Fatalf("session execution = %#v, want local_container child-swarm/binding-1", got.sessionExecution)
 	}
 	assertV2PrimaryCreatePayload(t, got.body, "binding-1", "auto")
 	assertCreateMetadataStrictV2Safe(t, got.metadata)
 }
 
 type capturedCreateRequest struct {
+	path             string
 	body             map[string]any
 	metadata         map[string]any
 	sessionExecution *client.SessionExecutionV2
@@ -135,7 +141,8 @@ func captureOpenChatSessionCreateRequestWithWorktreeSettings(t *testing.T, route
 	captured := capturedCreateRequest{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/v2/sessions/primary":
+		case r.Method == http.MethodPost && (r.URL.Path == "/v2/sessions/primary" || r.URL.Path == "/v2/sessions/local-containers"):
+			captured.path = r.URL.Path
 			if r.URL.RawQuery != "" {
 				t.Fatalf("unexpected query on create request: %q", r.URL.RawQuery)
 			}
@@ -152,6 +159,12 @@ func captureOpenChatSessionCreateRequestWithWorktreeSettings(t *testing.T, route
 			if value, _ := captured.body["mode"].(string); strings.TrimSpace(value) != "" {
 				mode = value
 			}
+			executionClass := "primary"
+			runtimeKind := "host"
+			if r.URL.Path == "/v2/sessions/local-containers" {
+				executionClass = "local_container"
+				runtimeKind = "container"
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"ok": true,
 				"session": map[string]any{
@@ -164,9 +177,9 @@ func captureOpenChatSessionCreateRequestWithWorktreeSettings(t *testing.T, route
 				},
 				"session_execution": map[string]any{
 					"session_id":              "session-1",
-					"execution_class":         "primary",
+					"execution_class":         executionClass,
 					"runtime_swarm_id":        captured.bodyString("swarm_id"),
-					"runtime_kind":            "host",
+					"runtime_kind":            runtimeKind,
 					"authority_host_swarm_id": captured.bodyString("swarm_id"),
 					"workspace_binding_id":    captured.bodyString("workspace_binding_id"),
 				},

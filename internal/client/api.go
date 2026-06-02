@@ -701,6 +701,9 @@ type SessionCreateOptions struct {
 	Mode                     string
 	AgentName                string
 	SwarmID                  string
+	ExecutionClass           string
+	TargetKind               string
+	TargetRelationship       string
 	Metadata                 map[string]any
 	Preference               ModelPreference
 	WorktreeMode             string
@@ -2666,6 +2669,26 @@ func (c *API) CreateSession(ctx context.Context, title, workspacePath, workspace
 	return SessionSummary{}, errors.New("create session requires sessions v2 swarm_id and workspace_binding_id")
 }
 
+func sessionCreateEndpoint(options SessionCreateOptions) (string, error) {
+	executionClass := strings.ToLower(strings.TrimSpace(options.ExecutionClass))
+	targetKind := strings.ToLower(strings.TrimSpace(options.TargetKind))
+	targetRelationship := strings.ToLower(strings.TrimSpace(options.TargetRelationship))
+
+	if executionClass == "local_container" || executionClass == "local-container" {
+		return "/v2/sessions/local-containers", nil
+	}
+	if executionClass == "primary" {
+		return "/v2/sessions/primary", nil
+	}
+	if targetKind == "container" || targetKind == "local_container" || targetKind == "local-container" {
+		return "/v2/sessions/local-containers", nil
+	}
+	if targetRelationship == "child" && targetKind != "" && targetKind != "remote" && targetKind != "managed_host" {
+		return "", fmt.Errorf("unsupported sessions v2 create target kind %q for child route", strings.TrimSpace(options.TargetKind))
+	}
+	return "/v2/sessions/primary", nil
+}
+
 func (c *API) CreateSessionWithOptions(ctx context.Context, options SessionCreateOptions) (SessionSummary, error) {
 	metadata := options.Metadata
 	if metadata == nil {
@@ -2714,13 +2737,17 @@ func (c *API) CreateSessionWithOptions(ctx context.Context, options SessionCreat
 			req["worktree_branch_name"] = branchName
 		}
 	}
+	endpoint, err := sessionCreateEndpoint(options)
+	if err != nil {
+		return SessionSummary{}, err
+	}
 	var resp struct {
 		OK               bool               `json:"ok"`
 		Session          SessionSummary     `json:"session"`
 		SessionExecution SessionExecutionV2 `json:"session_execution"`
 		Warning          string             `json:"warning,omitempty"`
 	}
-	if err := c.postJSON(ctx, "/v2/sessions/primary", req, &resp, true); err != nil {
+	if err := c.postJSON(ctx, endpoint, req, &resp, true); err != nil {
 		return SessionSummary{}, err
 	}
 	resp.Session.Warning = strings.TrimSpace(resp.Warning)

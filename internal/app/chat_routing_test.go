@@ -268,6 +268,29 @@ func TestRemoteUISettingsUpdateKeepsExplicitSelection(t *testing.T) {
 	}
 }
 
+func TestCycleChatRouteDoesNotPersistGlobalDefault(t *testing.T) {
+	app := &App{
+		route:               "home",
+		workspacePath:       testWorkspacePath,
+		selectedChatRouteID: "host",
+		config:              AppConfig{Chat: ChatConfig{DefaultWorkspaceRoutes: map[string]string{testWorkspacePath: "host"}}},
+		home:                ui.NewHomePage(model.EmptyHome()),
+		homeModel: model.HomeModel{ChatRoutes: []model.ChatRoute{
+			{ID: "host", Label: "host", TargetKind: "host", TargetRelationship: "self"},
+			{ID: testRemoteRouteID, Label: "Child", SwarmID: "child-swarm", WorkspaceBindingID: "binding-child", TargetKind: "container", TargetRelationship: "child"},
+		}},
+	}
+
+	app.cycleChatRoute()
+
+	if app.selectedChatRouteID != testRemoteRouteID {
+		t.Fatalf("selected route ID = %q, want %q", app.selectedChatRouteID, testRemoteRouteID)
+	}
+	if got := app.config.Chat.DefaultWorkspaceRoutes[testWorkspacePath]; got != "host" {
+		t.Fatalf("persisted default route = %q, want unchanged host", got)
+	}
+}
+
 func TestCycleChatRouteSinglePrimaryHostUsesResolverBackedLabel(t *testing.T) {
 	app := &App{
 		route:               "home",
