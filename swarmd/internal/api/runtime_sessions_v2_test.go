@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -37,7 +38,7 @@ func TestRuntimeSessionsV2RoutesRegisteredFailClosed(t *testing.T) {
 			switch tt.path {
 			case runtimeSessionsV2OpenPath:
 				want = http.StatusBadRequest
-			case "/v2/internal/runtime-sessions/session-123/run", "/v2/internal/runtime-sessions/session-123/run/stream":
+			case "/v2/internal/runtime-sessions/session-123/run", "/v2/internal/runtime-sessions/session-123/run/stream", "/v2/internal/runtime-sessions/session-123/mirror/batch":
 				want = http.StatusForbidden
 			}
 			if rec.Code != want {
@@ -311,5 +312,225 @@ func seedRuntimeSessionsV2OpenContainerAuthority(t *testing.T, server *Server, s
 	runtimeRecord.OwnerHostContainerID = authorityContainerID
 	if _, err := server.topology.PutRuntimeForAccount(testPrincipal().AccountScopeID, runtimeRecord); err != nil {
 		t.Fatalf("put runtime owner identity: %v", err)
+	}
+}
+
+func TestRuntimeSessionsV2MirrorBatchRejectsAuthorityMismatches(t *testing.T) {
+	tests := []struct {
+		name       string
+		mutate     func(*sessionruntime.RuntimeSessionMirrorBatchRequest)
+		wantStatus int
+		wantBody   string
+	}{
+		{name: "wrong session id", mutate: func(batch *sessionruntime.RuntimeSessionMirrorBatchRequest) {
+			batch.SessionID = "other-session"
+		}, wantStatus: http.StatusConflict, wantBody: "batch session id mismatch"},
+		{name: "wrong runtime swarm id", mutate: func(batch *sessionruntime.RuntimeSessionMirrorBatchRequest) {
+			batch.Authority.RuntimeSwarmID = "other-runtime"
+			batch.Authority.DestinationRuntimeSwarmID = "other-runtime"
+		}, wantStatus: http.StatusConflict, wantBody: "runtime swarm id mismatch"},
+		{name: "wrong authority container id", mutate: func(batch *sessionruntime.RuntimeSessionMirrorBatchRequest) {
+			batch.Authority.AuthorityContainerID = "other-container"
+		}, wantStatus: http.StatusConflict, wantBody: "authority container id mismatch"},
+		{name: "source workspace overwrite", mutate: func(batch *sessionruntime.RuntimeSessionMirrorBatchRequest) {
+			var payload sessionruntime.RuntimeSessionSnapshotMirrorItem
+			mustDecodeMirrorPayloadForTest(t, batch.Items[0].Payload, &payload)
+			payload.Session.Metadata["swarm_v2_source_workspace_id"] = "other-workspace"
+			batch.Items[0].Payload = mirrorPayloadForTest(t, payload)
+		}, wantStatus: http.StatusConflict, wantBody: "swarm_v2_source_workspace_id"},
+		{name: "workspace binding overwrite", mutate: func(batch *sessionruntime.RuntimeSessionMirrorBatchRequest) {
+			var payload sessionruntime.RuntimeSessionSnapshotMirrorItem
+			mustDecodeMirrorPayloadForTest(t, batch.Items[0].Payload, &payload)
+			payload.Session.Metadata["local_workspace_binding_id"] = "other-binding"
+			batch.Items[0].Payload = mirrorPayloadForTest(t, payload)
+		}, wantStatus: http.StatusConflict, wantBody: "local_workspace_binding_id"},
+		{name: "runtime path as source path", mutate: func(batch *sessionruntime.RuntimeSessionMirrorBatchRequest) {
+			var payload sessionruntime.RuntimeSessionSnapshotMirrorItem
+			mustDecodeMirrorPayloadForTest(t, batch.Items[0].Payload, &payload)
+			payload.Session.WorkspacePath = "/host/swarm-go"
+			batch.Items[0].Payload = mirrorPayloadForTest(t, payload)
+		}, wantStatus: http.StatusConflict, wantBody: "snapshot runtime workspace path mismatch"},
+		{name: "malformed payload", mutate: func(batch *sessionruntime.RuntimeSessionMirrorBatchRequest) {
+			batch.Items[0].Payload = json.RawMessage(`[]`)
+		}, wantStatus: http.StatusBadRequest, wantBody: "invalid runtime session snapshot mirror item"},
+		{name: "unknown type", mutate: func(batch *sessionruntime.RuntimeSessionMirrorBatchRequest) {
+			batch.Items[0].Type = "authority.overwrite"
+		}, wantStatus: http.StatusBadRequest, wantBody: "unknown runtime session mirror item type"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+			sessionID := createRuntimeSessionsV2MirrorBatchTarget(t, server, swarmStore)
+			execution, ok, err := server.sessions.Store().GetSessionExecutionV2(sessionID)
+			if err != nil || !ok {
+				t.Fatalf("get execution ok=%t err=%v", ok, err)
+			}
+			batch := runtimeSessionsV2MirrorBatchForTest(t, execution, true, false, false)
+			tt.mutate(&batch)
+			rec := postRuntimeSessionsV2MirrorBatch(t, server, sessionID, batch)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d, body=%s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tt.wantBody) {
+				t.Fatalf("body = %s, want %q", rec.Body.String(), tt.wantBody)
+			}
+		})
+	}
+}
+
+func TestRuntimeSessionsV2MirrorBatchStoresValidLifecycleMessageAndSnapshot(t *testing.T) {
+	server, sessionSvc, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	sessionID := createRuntimeSessionsV2MirrorBatchTarget(t, server, swarmStore)
+	execution, ok, err := sessionSvc.Store().GetSessionExecutionV2(sessionID)
+	if err != nil || !ok {
+		t.Fatalf("get execution ok=%t err=%v", ok, err)
+	}
+	batch := runtimeSessionsV2MirrorBatchForTest(t, execution, true, true, true)
+	rec := postRuntimeSessionsV2MirrorBatch(t, server, sessionID, batch)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var response sessionruntime.RuntimeSessionMirrorBatchResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode mirror response: %v", err)
+	}
+	if !response.OK || response.SessionID != sessionID || response.Accepted != 3 {
+		t.Fatalf("unexpected mirror response: %+v", response)
+	}
+	lifecycle, ok, err := sessionSvc.GetLifecycle(sessionID)
+	if err != nil || !ok {
+		t.Fatalf("get lifecycle ok=%t err=%v", ok, err)
+	}
+	if lifecycle.Phase != "active" || !lifecycle.Active {
+		t.Fatalf("unexpected lifecycle: %+v", lifecycle)
+	}
+	messages, err := sessionSvc.ListMessages(sessionID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	found := false
+	for _, message := range messages {
+		if message.GlobalSeq == 7 && message.Content == "mirrored message" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("mirrored message not found: %+v", messages)
+	}
+	snapshot, ok, err := sessionSvc.GetSession(sessionID)
+	if err != nil || !ok {
+		t.Fatalf("get session ok=%t err=%v", ok, err)
+	}
+	if snapshot.WorkspacePath != execution.RuntimeWorkspacePath || snapshot.Metadata["swarm_v2_runtime_workspace_path"] != execution.RuntimeWorkspacePath {
+		t.Fatalf("unexpected mirrored snapshot: %+v", snapshot)
+	}
+}
+
+func createRuntimeSessionsV2MirrorBatchTarget(t *testing.T, server *Server, swarmStore *pebblestore.SwarmStore) string {
+	t.Helper()
+	seedRuntimeSessionsV2OpenContainerAuthority(t, server, swarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	reqBody := runtimeSessionsV2OpenTestRequest("session-runtime-mirror", "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	rec := postRuntimeSessionsV2Open(t, server, reqBody)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("open status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	return reqBody.SessionID
+}
+
+func runtimeSessionsV2MirrorBatchForTest(t *testing.T, execution pebblestore.SessionExecutionV2Record, includeSnapshot, includeLifecycle, includeMessage bool) sessionruntime.RuntimeSessionMirrorBatchRequest {
+	t.Helper()
+	exec := runtimeSessionsV2ExecutionFromRecord(execution)
+	batch := sessionruntime.RuntimeSessionMirrorBatchRequest{
+		SessionID:        execution.SessionID,
+		Authority:        runtimeSessionOpenRequestFromFrozenExecution(execution, sessionruntime.SessionsV2CreateRequest{}).Authority,
+		SessionExecution: execution,
+	}
+	if includeSnapshot {
+		snapshot := pebblestore.SessionSnapshot{
+			ID:             execution.SessionID,
+			UserID:         execution.UserID,
+			AccountScopeID: execution.AccountScopeID,
+			WorkspacePath:  execution.RuntimeWorkspacePath,
+			WorkspaceName:  execution.SourceWorkspaceName,
+			Title:          "mirrored snapshot",
+			Mode:           sessionruntime.ModeAuto,
+			Metadata:       sessionruntime.RuntimeSessionV2Metadata(map[string]any{"mirror_safe": "ok"}, exec),
+			CreatedAt:      100,
+			UpdatedAt:      200,
+		}
+		batch.Items = append(batch.Items, sessionruntime.RuntimeSessionMirrorItem{Type: sessionruntime.RuntimeSessionMirrorTypeSessionSnapshot, SessionID: execution.SessionID, Payload: mirrorPayloadForTest(t, sessionruntime.RuntimeSessionSnapshotMirrorItem{Session: snapshot})})
+	}
+	if includeLifecycle {
+		lifecycle := pebblestore.SessionLifecycleSnapshot{SessionID: execution.SessionID, UserID: execution.UserID, AccountScopeID: execution.AccountScopeID, RunID: "run-mirror", Active: true, Phase: "active", Generation: 1}
+		batch.Items = append(batch.Items, sessionruntime.RuntimeSessionMirrorItem{Type: sessionruntime.RuntimeSessionMirrorTypeSessionLifecycle, SessionID: execution.SessionID, Payload: mirrorPayloadForTest(t, sessionruntime.RuntimeSessionLifecycleMirrorItem{Lifecycle: lifecycle})})
+	}
+	if includeMessage {
+		message := pebblestore.MessageSnapshot{SessionID: execution.SessionID, UserID: execution.UserID, AccountScopeID: execution.AccountScopeID, GlobalSeq: 7, Role: "assistant", Content: "mirrored message", CreatedAt: 300}
+		batch.Items = append(batch.Items, sessionruntime.RuntimeSessionMirrorItem{Type: sessionruntime.RuntimeSessionMirrorTypeMessageStored, SessionID: execution.SessionID, Payload: mirrorPayloadForTest(t, sessionruntime.RuntimeSessionMessageStoredMirrorItem{Message: message})})
+	}
+	return batch
+}
+
+func postRuntimeSessionsV2MirrorBatch(t *testing.T, server *Server, sessionID string, batch sessionruntime.RuntimeSessionMirrorBatchRequest) *httptest.ResponseRecorder {
+	t.Helper()
+	payload, err := json.Marshal(batch)
+	if err != nil {
+		t.Fatalf("marshal mirror batch: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, runtimeSessionsV2Prefix+sessionID+"/mirror/batch", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), localTransportAuthEnabledKey, true))
+	req = req.WithContext(context.WithValue(req.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: batch.SessionExecution.RuntimeSwarmID}))
+	req.Header.Set(peerAuthSwarmIDHeader, batch.SessionExecution.RuntimeSwarmID)
+	if principal, ok := server.trustedRuntimeSessionV2PrincipalForPeerRequest(req, sessionID); ok {
+		req = withSessionsV2TestPrincipal(req, principal)
+	}
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+func mirrorPayloadForTest(t *testing.T, payload any) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal mirror payload: %v", err)
+	}
+	return raw
+}
+
+func mustDecodeMirrorPayloadForTest(t *testing.T, raw json.RawMessage, out any) {
+	t.Helper()
+	if err := json.Unmarshal(raw, out); err != nil {
+		t.Fatalf("decode mirror payload: %v", err)
+	}
+}
+
+func TestRuntimeSessionsV2MirrorBatchRequiresRuntimePeerTransport(t *testing.T) {
+	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	sessionID := createRuntimeSessionsV2MirrorBatchTarget(t, server, swarmStore)
+	execution, ok, err := server.sessions.Store().GetSessionExecutionV2(sessionID)
+	if err != nil || !ok {
+		t.Fatalf("get execution ok=%t err=%v", ok, err)
+	}
+	batch := runtimeSessionsV2MirrorBatchForTest(t, execution, true, false, false)
+	payload, err := json.Marshal(batch)
+	if err != nil {
+		t.Fatalf("marshal mirror batch: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, runtimeSessionsV2Prefix+sessionID+"/mirror/batch", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: execution.AuthorityHostSwarmID}))
+	req.Header.Set(peerAuthSwarmIDHeader, execution.AuthorityHostSwarmID)
+	if principal, ok := server.trustedRuntimeSessionV2PrincipalForPeerRequest(req, sessionID); ok {
+		req = withSessionsV2TestPrincipal(req, principal)
+	}
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "trusted runtime peer transport") {
+		t.Fatalf("body = %s, want runtime peer transport rejection", rec.Body.String())
 	}
 }

@@ -552,7 +552,7 @@ func (s *Server) handleRuntimeSessionsV2ByID(w http.ResponseWriter, r *http.Requ
 			methodNotAllowed(w)
 			return
 		}
-		writeRuntimeSessionsV2NotImplemented(w, "runtime session mirror batch is not implemented")
+		s.handleRuntimeSessionV2MirrorBatch(w, r, sessionID)
 	default:
 		if strings.HasPrefix(action, "plans/") {
 			if r.Method != http.MethodGet {
@@ -611,6 +611,47 @@ func (s *Server) requireRuntimeSessionV2Principal(r *http.Request, sessionID str
 	ctx := identity.ContextWithPrincipal(r.Context(), principal)
 	*r = *r.WithContext(ctx)
 	return principal, nil
+}
+
+func (s *Server) handleRuntimeSessionV2MirrorBatch(w http.ResponseWriter, r *http.Request, sessionID string) {
+	principal, err := s.requireRuntimeSessionV2Principal(r, sessionID)
+	if err != nil {
+		writeSessionsV2Error(w, err)
+		return
+	}
+	if s == nil || s.sessions == nil || s.sessions.Store() == nil {
+		writeSessionsV2Error(w, errors.New("runtime sessions v2 service is not configured"))
+		return
+	}
+	execution, ok, err := s.sessions.Store().GetSessionExecutionV2(sessionID)
+	if err != nil {
+		writeSessionsV2Error(w, err)
+		return
+	}
+	if !ok {
+		writeSessionsV2Error(w, sessionV2AuthorityNotFound("runtime session execution for %q was not found", sessionID))
+		return
+	}
+	if strings.TrimSpace(execution.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		writeSessionsV2Error(w, sessionV2AccessDenied("runtime session execution account scope does not match principal"))
+		return
+	}
+	peerSwarmID, authorizedPeer := authorizedPeerSwarmID(r)
+	if !authorizedPeer || !strings.EqualFold(strings.TrimSpace(peerSwarmID), strings.TrimSpace(execution.RuntimeSwarmID)) {
+		writeSessionsV2Error(w, sessionV2AccessDenied("runtime session mirror batch requires trusted runtime peer transport"))
+		return
+	}
+	var batch sessionruntime.RuntimeSessionMirrorBatchRequest
+	if err := decodeJSON(r, &batch); err != nil {
+		writeSessionsV2Error(w, sessionV2BadRequest("invalid runtime session mirror batch request: %v", err))
+		return
+	}
+	accepted, err := s.ingestRuntimeSessionV2MirrorBatch(execution, batch, runtimeSessionV2MirrorIngestionOptions{})
+	if err != nil {
+		writeSessionsV2Error(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sessionruntime.RuntimeSessionMirrorBatchResponse{OK: true, SessionID: sessionID, Accepted: accepted, Status: "accepted"})
 }
 
 func (s *Server) requireRuntimeSessionV2MutationAuthority(principal identity.Principal, sessionID string) error {

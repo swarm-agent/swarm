@@ -271,93 +271,471 @@ func (s *Server) dispatchRuntimeSessionV2Open(r *http.Request, principal identit
 	return resp, nil
 }
 
+type runtimeSessionV2MirrorIngestionOptions struct {
+	RejectSessionSnapshot bool
+}
+
+type runtimeSessionV2MirrorAction struct {
+	session   *pebblestore.SessionSnapshot
+	lifecycle *pebblestore.SessionLifecycleSnapshot
+	message   *pebblestore.MessageSnapshot
+}
+
 func (s *Server) ingestRuntimeSessionV2InitialMirror(req sessionruntime.RuntimeSessionOpenRequest, resp sessionruntime.RuntimeSessionOpenResponse) error {
-	if s == nil || s.sessions == nil {
-		return errors.New("sessions v2 service is not configured")
+	if resp.MirrorBatch == nil {
+		return nil
 	}
-	if resp.MirrorBatch != nil {
-		if strings.TrimSpace(resp.MirrorBatch.SessionID) != strings.TrimSpace(req.SessionID) {
-			return sessionV2StaleAuthority("runtime session mirror batch session id mismatch")
+	_, err := s.ingestRuntimeSessionV2MirrorBatch(req.SessionExecution, *resp.MirrorBatch, runtimeSessionV2MirrorIngestionOptions{RejectSessionSnapshot: len(resp.InitialMessages) > 0})
+	return err
+}
+
+func (s *Server) ingestRuntimeSessionV2MirrorBatch(frozen pebblestore.SessionExecutionV2Record, batch sessionruntime.RuntimeSessionMirrorBatchRequest, opts runtimeSessionV2MirrorIngestionOptions) (int, error) {
+	if s == nil || s.sessions == nil || s.sessions.Store() == nil {
+		return 0, errors.New("sessions v2 service is not configured")
+	}
+	if err := validateRuntimeSessionV2MirrorBatchAuthority(frozen, batch); err != nil {
+		return 0, err
+	}
+	actions, err := validateRuntimeSessionV2MirrorItems(frozen, batch.Items, opts)
+	if err != nil {
+		return 0, err
+	}
+	if err := s.applyRuntimeSessionV2MirrorActions(strings.TrimSpace(frozen.SessionID), actions); err != nil {
+		return 0, err
+	}
+	return len(batch.Items), nil
+}
+
+func validateRuntimeSessionV2MirrorBatchAuthority(frozen pebblestore.SessionExecutionV2Record, batch sessionruntime.RuntimeSessionMirrorBatchRequest) error {
+	if strings.TrimSpace(frozen.SessionID) == "" {
+		return sessionV2BadRequest("runtime session mirror frozen execution session id is required")
+	}
+	if strings.TrimSpace(batch.SessionID) == "" {
+		return sessionV2BadRequest("runtime session mirror batch session id is required")
+	}
+	if strings.TrimSpace(batch.SessionID) != strings.TrimSpace(frozen.SessionID) {
+		return sessionV2StaleAuthority("runtime session mirror batch session id mismatch")
+	}
+	if err := runtimeSessionV2MirrorAuthorityMatchesFrozen(batch.Authority, frozen); err != nil {
+		return err
+	}
+	return runtimeSessionV2MirrorExecutionMatchesFrozen(batch.SessionExecution, frozen)
+}
+
+func runtimeSessionV2MirrorAuthorityMatchesFrozen(authority sessionruntime.RuntimeSessionAuthority, frozen pebblestore.SessionExecutionV2Record) error {
+	checks := []struct{ field, got, want string }{
+		{"authority session id", authority.SessionID, frozen.SessionID},
+		{"authority user id", authority.UserID, frozen.UserID},
+		{"authority account scope id", authority.AccountScopeID, frozen.AccountScopeID},
+		{"authority execution class", authority.ExecutionClass, frozen.ExecutionClass},
+		{"authority runtime swarm id", authority.RuntimeSwarmID, frozen.RuntimeSwarmID},
+		{"authority runtime kind", authority.RuntimeKind, frozen.RuntimeKind},
+		{"authority host swarm id", authority.AuthorityHostSwarmID, frozen.AuthorityHostSwarmID},
+		{"authority container id", authority.AuthorityContainerID, frozen.AuthorityContainerID},
+		{"authority workspace binding id", authority.WorkspaceBindingID, frozen.WorkspaceBindingID},
+		{"authority source workspace id", authority.SourceWorkspaceID, frozen.SourceWorkspaceID},
+		{"authority source workspace path", authority.SourceWorkspacePath, frozen.SourceWorkspacePath},
+		{"authority destination runtime swarm id", authority.DestinationRuntimeSwarmID, frozen.RuntimeSwarmID},
+		{"authority destination runtime kind", authority.DestinationRuntimeKind, frozen.RuntimeKind},
+		{"authority destination host swarm id", authority.DestinationAuthorityHost, frozen.AuthorityHostSwarmID},
+		{"authority destination container id", authority.DestinationContainerID, frozen.AuthorityContainerID},
+		{"authority runtime workspace path", authority.RuntimeWorkspacePath, frozen.RuntimeWorkspacePath},
+	}
+	for _, check := range checks {
+		if err := runtimeSessionV2MirrorRequireEqual(check.field, check.got, check.want); err != nil {
+			return err
 		}
-		for _, item := range resp.MirrorBatch.Items {
-			if strings.TrimSpace(item.SessionID) != "" && strings.TrimSpace(item.SessionID) != strings.TrimSpace(req.SessionID) {
-				return sessionV2StaleAuthority("runtime session mirror item session id mismatch")
+	}
+	if authority.PlacementGeneration <= 0 {
+		return sessionV2BadRequest("runtime session mirror authority placement generation is required")
+	}
+	if authority.PlacementGeneration != frozen.PlacementGeneration {
+		return sessionV2StaleAuthority("runtime session mirror authority placement generation mismatch")
+	}
+	if authority.BindingGeneration <= 0 {
+		return sessionV2BadRequest("runtime session mirror authority binding generation is required")
+	}
+	if authority.BindingGeneration != frozen.BindingGeneration {
+		return sessionV2StaleAuthority("runtime session mirror authority binding generation mismatch")
+	}
+	if authority.SourceWorkspaceGeneration <= 0 {
+		return sessionV2BadRequest("runtime session mirror authority source workspace generation is required")
+	}
+	if authority.SourceWorkspaceGeneration != frozen.SourceWorkspaceGeneration {
+		return sessionV2StaleAuthority("runtime session mirror authority source workspace generation mismatch")
+	}
+	if strings.TrimSpace(authority.SourceWorkspaceName) != "" && strings.TrimSpace(frozen.SourceWorkspaceName) != "" && strings.TrimSpace(authority.SourceWorkspaceName) != strings.TrimSpace(frozen.SourceWorkspaceName) {
+		return sessionV2StaleAuthority("runtime session mirror authority source workspace name mismatch")
+	}
+	return nil
+}
+
+func runtimeSessionV2MirrorExecutionMatchesFrozen(requested, frozen pebblestore.SessionExecutionV2Record) error {
+	checks := []struct{ field, got, want string }{
+		{"execution session id", requested.SessionID, frozen.SessionID},
+		{"execution user id", requested.UserID, frozen.UserID},
+		{"execution account scope id", requested.AccountScopeID, frozen.AccountScopeID},
+		{"execution class", requested.ExecutionClass, frozen.ExecutionClass},
+		{"execution runtime swarm id", requested.RuntimeSwarmID, frozen.RuntimeSwarmID},
+		{"execution runtime kind", requested.RuntimeKind, frozen.RuntimeKind},
+		{"execution authority host swarm id", requested.AuthorityHostSwarmID, frozen.AuthorityHostSwarmID},
+		{"execution authority container id", requested.AuthorityContainerID, frozen.AuthorityContainerID},
+		{"execution workspace binding id", requested.WorkspaceBindingID, frozen.WorkspaceBindingID},
+		{"execution source workspace id", requested.SourceWorkspaceID, frozen.SourceWorkspaceID},
+		{"execution source workspace path", requested.SourceWorkspacePath, frozen.SourceWorkspacePath},
+		{"execution runtime workspace path", requested.RuntimeWorkspacePath, frozen.RuntimeWorkspacePath},
+	}
+	for _, check := range checks {
+		if err := runtimeSessionV2MirrorRequireEqual(check.field, check.got, check.want); err != nil {
+			return err
+		}
+	}
+	if requested.SourceWorkspaceGeneration <= 0 {
+		return sessionV2BadRequest("runtime session mirror execution source workspace generation is required")
+	}
+	if requested.SourceWorkspaceGeneration != frozen.SourceWorkspaceGeneration {
+		return sessionV2StaleAuthority("runtime session mirror execution source workspace generation mismatch")
+	}
+	if requested.PlacementGeneration <= 0 {
+		return sessionV2BadRequest("runtime session mirror execution placement generation is required")
+	}
+	if requested.PlacementGeneration != frozen.PlacementGeneration {
+		return sessionV2StaleAuthority("runtime session mirror execution placement generation mismatch")
+	}
+	if requested.BindingGeneration <= 0 {
+		return sessionV2BadRequest("runtime session mirror execution binding generation is required")
+	}
+	if requested.BindingGeneration != frozen.BindingGeneration {
+		return sessionV2StaleAuthority("runtime session mirror execution binding generation mismatch")
+	}
+	if strings.TrimSpace(requested.SourceWorkspaceName) != "" && strings.TrimSpace(frozen.SourceWorkspaceName) != "" && strings.TrimSpace(requested.SourceWorkspaceName) != strings.TrimSpace(frozen.SourceWorkspaceName) {
+		return sessionV2StaleAuthority("runtime session mirror execution source workspace name mismatch")
+	}
+	if requested.WorktreeEnabled != frozen.WorktreeEnabled || strings.TrimSpace(requested.WorktreeRootPath) != strings.TrimSpace(frozen.WorktreeRootPath) || strings.TrimSpace(requested.WorktreeBaseBranch) != strings.TrimSpace(frozen.WorktreeBaseBranch) || strings.TrimSpace(requested.WorktreeBranch) != strings.TrimSpace(frozen.WorktreeBranch) {
+		return sessionV2StaleAuthority("runtime session mirror execution worktree facts mismatch")
+	}
+	return nil
+}
+
+func runtimeSessionV2MirrorRequireEqual(field, got, want string) error {
+	if strings.TrimSpace(got) == "" || strings.TrimSpace(want) == "" {
+		return sessionV2BadRequest("runtime session mirror %s is required", field)
+	}
+	if strings.TrimSpace(got) != strings.TrimSpace(want) {
+		return sessionV2StaleAuthority("runtime session mirror %s mismatch", field)
+	}
+	return nil
+}
+
+func validateRuntimeSessionV2MirrorItems(frozen pebblestore.SessionExecutionV2Record, items []sessionruntime.RuntimeSessionMirrorItem, opts runtimeSessionV2MirrorIngestionOptions) ([]runtimeSessionV2MirrorAction, error) {
+	actions := make([]runtimeSessionV2MirrorAction, 0, len(items))
+	sessionID := strings.TrimSpace(frozen.SessionID)
+	for _, item := range items {
+		itemType := strings.TrimSpace(item.Type)
+		if itemType == "" {
+			return nil, sessionV2BadRequest("runtime session mirror item type is required")
+		}
+		if err := runtimeSessionV2MirrorRequireEqual("item session id", item.SessionID, sessionID); err != nil {
+			return nil, err
+		}
+		if len(item.Payload) == 0 {
+			return nil, sessionV2BadRequest("runtime session mirror item payload is required")
+		}
+		switch itemType {
+		case sessionruntime.RuntimeSessionMirrorTypeSessionSnapshot:
+			if opts.RejectSessionSnapshot {
+				return nil, sessionV2StaleAuthority("runtime session open response must not include both initial messages and mirror session snapshot")
 			}
-			switch strings.TrimSpace(item.Type) {
-			case sessionruntime.RuntimeSessionMirrorTypeSessionSnapshot:
-				var payload sessionruntime.RuntimeSessionSnapshotMirrorItem
-				if err := json.Unmarshal(item.Payload, &payload); err != nil {
-					return sessionV2BadRequest("invalid runtime session snapshot mirror item: %v", err)
-				}
-				if strings.TrimSpace(payload.Session.ID) != strings.TrimSpace(req.SessionID) {
-					return sessionV2StaleAuthority("runtime session snapshot mirror item session id mismatch")
-				}
-				if len(resp.InitialMessages) > 0 {
-					return sessionV2StaleAuthority("runtime session open response must not include both initial messages and mirror session snapshot")
-				}
-				if !runtimeSessionV2MirroredSnapshotMatchesAuthority(req, payload.Session) {
-					return sessionV2StaleAuthority("runtime session snapshot mirror item authority mismatch")
-				}
-				if _, err := s.sessions.StoreMirroredSession(payload.Session); err != nil {
-					return err
-				}
-			case sessionruntime.RuntimeSessionMirrorTypeSessionLifecycle:
-				var payload sessionruntime.RuntimeSessionLifecycleMirrorItem
-				if err := json.Unmarshal(item.Payload, &payload); err != nil {
-					return sessionV2BadRequest("invalid runtime session lifecycle mirror item: %v", err)
-				}
-				if strings.TrimSpace(payload.Lifecycle.SessionID) != strings.TrimSpace(req.SessionID) {
-					return sessionV2StaleAuthority("runtime session lifecycle mirror item session id mismatch")
-				}
-				if err := s.sessions.StoreMirroredLifecycle(payload.Lifecycle); err != nil {
-					return err
-				}
-			case sessionruntime.RuntimeSessionMirrorTypeMessageStored:
-				var payload sessionruntime.RuntimeSessionMessageStoredMirrorItem
-				if err := json.Unmarshal(item.Payload, &payload); err != nil {
-					return sessionV2BadRequest("invalid runtime session message mirror item: %v", err)
-				}
-				if strings.TrimSpace(payload.Message.SessionID) != strings.TrimSpace(req.SessionID) {
-					return sessionV2StaleAuthority("runtime session message mirror item session id mismatch")
-				}
-				if payload.Message.GlobalSeq == 0 {
-					return sessionV2BadRequest("runtime session message mirror item global seq is required")
-				}
-				if snapshot, ok, err := s.sessions.GetSession(req.SessionID); err != nil {
-					return err
-				} else if ok {
-					if _, err := s.sessions.StoreMirroredMessage(snapshot, payload.Message); err != nil {
-						return err
-					}
-				}
+			var payload sessionruntime.RuntimeSessionSnapshotMirrorItem
+			if err := decodeRuntimeSessionV2MirrorPayload(item.Payload, &payload); err != nil {
+				return nil, sessionV2BadRequest("invalid runtime session snapshot mirror item: %v", err)
+			}
+			if err := validateRuntimeSessionV2MirroredSnapshot(frozen, payload.Session); err != nil {
+				return nil, err
+			}
+			snapshot := payload.Session
+			actions = append(actions, runtimeSessionV2MirrorAction{session: &snapshot})
+		case sessionruntime.RuntimeSessionMirrorTypeSessionLifecycle:
+			var payload sessionruntime.RuntimeSessionLifecycleMirrorItem
+			if err := decodeRuntimeSessionV2MirrorPayload(item.Payload, &payload); err != nil {
+				return nil, sessionV2BadRequest("invalid runtime session lifecycle mirror item: %v", err)
+			}
+			if err := validateRuntimeSessionV2MirroredLifecycle(frozen, payload.Lifecycle); err != nil {
+				return nil, err
+			}
+			lifecycle := payload.Lifecycle
+			actions = append(actions, runtimeSessionV2MirrorAction{lifecycle: &lifecycle})
+		case sessionruntime.RuntimeSessionMirrorTypeMessageStored:
+			var payload sessionruntime.RuntimeSessionMessageStoredMirrorItem
+			if err := decodeRuntimeSessionV2MirrorPayload(item.Payload, &payload); err != nil {
+				return nil, sessionV2BadRequest("invalid runtime session message mirror item: %v", err)
+			}
+			if err := validateRuntimeSessionV2MirroredMessage(frozen, payload.Message); err != nil {
+				return nil, err
+			}
+			message := payload.Message
+			actions = append(actions, runtimeSessionV2MirrorAction{message: &message})
+		case sessionruntime.RuntimeSessionMirrorTypeRuntimeOpened:
+			var payload sessionruntime.RuntimeSessionOpenedMirrorItem
+			if err := decodeRuntimeSessionV2MirrorPayload(item.Payload, &payload); err != nil {
+				return nil, sessionV2BadRequest("invalid runtime opened mirror item: %v", err)
+			}
+			if err := runtimeSessionV2MirrorRequireEqual("runtime opened session id", payload.SessionID, sessionID); err != nil {
+				return nil, err
+			}
+			if err := runtimeSessionV2MirrorExecutionMatchesFrozen(payload.SessionExecution, frozen); err != nil {
+				return nil, err
+			}
+			actions = append(actions, runtimeSessionV2MirrorAction{})
+		case sessionruntime.RuntimeSessionMirrorTypeRuntimeClosed:
+			var payload sessionruntime.RuntimeSessionClosedMirrorItem
+			if err := decodeRuntimeSessionV2MirrorPayload(item.Payload, &payload); err != nil {
+				return nil, sessionV2BadRequest("invalid runtime closed mirror item: %v", err)
+			}
+			if err := runtimeSessionV2MirrorRequireEqual("runtime closed session id", payload.SessionID, sessionID); err != nil {
+				return nil, err
+			}
+			actions = append(actions, runtimeSessionV2MirrorAction{})
+		case sessionruntime.RuntimeSessionMirrorTypeRuntimeError:
+			var payload sessionruntime.RuntimeSessionErrorMirrorItem
+			if err := decodeRuntimeSessionV2MirrorPayload(item.Payload, &payload); err != nil {
+				return nil, sessionV2BadRequest("invalid runtime error mirror item: %v", err)
+			}
+			if err := runtimeSessionV2MirrorRequireEqual("runtime error session id", payload.SessionID, sessionID); err != nil {
+				return nil, err
+			}
+			if strings.TrimSpace(payload.Error) == "" {
+				return nil, sessionV2BadRequest("runtime session mirror runtime error text is required")
+			}
+			if err := validateRuntimeSessionV2MirroredMetadataAuthority(payload.Metadata, frozen); err != nil {
+				return nil, err
+			}
+			actions = append(actions, runtimeSessionV2MirrorAction{})
+		case sessionruntime.RuntimeSessionMirrorTypeUsageDelta:
+			var payload sessionruntime.RuntimeSessionUsageDeltaMirrorItem
+			if err := decodeRuntimeSessionV2MirrorPayload(item.Payload, &payload); err != nil {
+				return nil, sessionV2BadRequest("invalid runtime usage delta mirror item: %v", err)
+			}
+			if err := validateRuntimeSessionV2MirroredUsage(frozen, payload.UsageDelta); err != nil {
+				return nil, err
+			}
+			actions = append(actions, runtimeSessionV2MirrorAction{})
+		case sessionruntime.RuntimeSessionMirrorTypeRunEvent:
+			var payload sessionruntime.RuntimeSessionRunEventMirrorItem
+			if err := decodeRuntimeSessionV2MirrorPayload(item.Payload, &payload); err != nil {
+				return nil, sessionV2BadRequest("invalid runtime run event mirror item: %v", err)
+			}
+			if strings.TrimSpace(payload.Event.EventType) == "" {
+				return nil, sessionV2BadRequest("runtime session mirror run event type is required")
+			}
+			if strings.TrimSpace(payload.Event.Stream) != "" && strings.TrimSpace(payload.Event.Stream) != "session:"+sessionID {
+				return nil, sessionV2StaleAuthority("runtime session mirror run event stream mismatch")
+			}
+			if strings.TrimSpace(payload.Event.EntityID) != "" && strings.TrimSpace(payload.Event.EntityID) != sessionID {
+				return nil, sessionV2StaleAuthority("runtime session mirror run event entity mismatch")
+			}
+			if err := validateRuntimeSessionV2MirrorRawJSONAuthority(payload.Event.Payload, frozen); err != nil {
+				return nil, err
+			}
+			actions = append(actions, runtimeSessionV2MirrorAction{})
+		default:
+			return nil, sessionV2BadRequest("unknown runtime session mirror item type %q", itemType)
+		}
+	}
+	return actions, nil
+}
+
+func decodeRuntimeSessionV2MirrorPayload(raw json.RawMessage, out any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(out); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return errors.New("payload must contain one JSON object")
+	}
+	return nil
+}
+
+func validateRuntimeSessionV2MirroredSnapshot(frozen pebblestore.SessionExecutionV2Record, snapshot pebblestore.SessionSnapshot) error {
+	if err := runtimeSessionV2MirrorRequireEqual("snapshot session id", snapshot.ID, frozen.SessionID); err != nil {
+		return err
+	}
+	if err := runtimeSessionV2MirrorRequireEqual("snapshot user id", snapshot.UserID, frozen.UserID); err != nil {
+		return err
+	}
+	if err := runtimeSessionV2MirrorRequireEqual("snapshot account scope id", snapshot.AccountScopeID, frozen.AccountScopeID); err != nil {
+		return err
+	}
+	if err := runtimeSessionV2MirrorRequireEqual("snapshot runtime workspace path", snapshot.WorkspacePath, frozen.RuntimeWorkspacePath); err != nil {
+		return err
+	}
+	if strings.TrimSpace(frozen.SourceWorkspacePath) != "" && strings.TrimSpace(frozen.SourceWorkspacePath) == strings.TrimSpace(snapshot.WorkspacePath) && strings.TrimSpace(frozen.SourceWorkspacePath) != strings.TrimSpace(frozen.RuntimeWorkspacePath) {
+		return sessionV2StaleAuthority("runtime session mirror snapshot attempted to use source workspace path as runtime workspace path")
+	}
+	if snapshot.WorktreeEnabled || strings.TrimSpace(snapshot.WorktreeRootPath) != "" || strings.TrimSpace(snapshot.WorktreeBaseBranch) != "" || strings.TrimSpace(snapshot.WorktreeBranch) != "" {
+		return sessionV2StaleAuthority("runtime session mirror snapshot included unsupported worktree facts")
+	}
+	return validateRuntimeSessionV2MirroredMetadataAuthority(snapshot.Metadata, frozen)
+}
+
+func validateRuntimeSessionV2MirroredLifecycle(frozen pebblestore.SessionExecutionV2Record, lifecycle pebblestore.SessionLifecycleSnapshot) error {
+	if err := runtimeSessionV2MirrorRequireEqual("lifecycle session id", lifecycle.SessionID, frozen.SessionID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(lifecycle.UserID) != "" && strings.TrimSpace(lifecycle.UserID) != strings.TrimSpace(frozen.UserID) {
+		return sessionV2StaleAuthority("runtime session mirror lifecycle user id mismatch")
+	}
+	if strings.TrimSpace(lifecycle.AccountScopeID) != "" && strings.TrimSpace(lifecycle.AccountScopeID) != strings.TrimSpace(frozen.AccountScopeID) {
+		return sessionV2StaleAuthority("runtime session mirror lifecycle account scope id mismatch")
+	}
+	return nil
+}
+
+func validateRuntimeSessionV2MirroredMessage(frozen pebblestore.SessionExecutionV2Record, message pebblestore.MessageSnapshot) error {
+	if err := runtimeSessionV2MirrorRequireEqual("message session id", message.SessionID, frozen.SessionID); err != nil {
+		return err
+	}
+	if message.GlobalSeq == 0 {
+		return sessionV2BadRequest("runtime session message mirror item global seq is required")
+	}
+	if strings.TrimSpace(message.UserID) != "" && strings.TrimSpace(message.UserID) != strings.TrimSpace(frozen.UserID) {
+		return sessionV2StaleAuthority("runtime session mirror message user id mismatch")
+	}
+	if strings.TrimSpace(message.AccountScopeID) != "" && strings.TrimSpace(message.AccountScopeID) != strings.TrimSpace(frozen.AccountScopeID) {
+		return sessionV2StaleAuthority("runtime session mirror message account scope id mismatch")
+	}
+	return validateRuntimeSessionV2MirroredMetadataAuthority(message.Metadata, frozen)
+}
+
+func validateRuntimeSessionV2MirroredUsage(frozen pebblestore.SessionExecutionV2Record, usage pebblestore.SessionTurnUsageSnapshot) error {
+	if err := runtimeSessionV2MirrorRequireEqual("usage session id", usage.SessionID, frozen.SessionID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(usage.UserID) != "" && strings.TrimSpace(usage.UserID) != strings.TrimSpace(frozen.UserID) {
+		return sessionV2StaleAuthority("runtime session mirror usage user id mismatch")
+	}
+	if strings.TrimSpace(usage.AccountScopeID) != "" && strings.TrimSpace(usage.AccountScopeID) != strings.TrimSpace(frozen.AccountScopeID) {
+		return sessionV2StaleAuthority("runtime session mirror usage account scope id mismatch")
+	}
+	return nil
+}
+
+func validateRuntimeSessionV2MirroredMetadataAuthority(metadata map[string]any, frozen pebblestore.SessionExecutionV2Record) error {
+	return validateRuntimeSessionV2MirroredMetadataValue(metadata, frozen)
+}
+
+func validateRuntimeSessionV2MirrorRawJSONAuthority(raw json.RawMessage, frozen pebblestore.SessionExecutionV2Record) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	var payload any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return sessionV2BadRequest("invalid runtime session mirror event payload: %v", err)
+	}
+	return validateRuntimeSessionV2MirroredMetadataValue(payload, frozen)
+}
+
+func validateRuntimeSessionV2MirroredMetadataValue(value any, frozen pebblestore.SessionExecutionV2Record) error {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			normalizedKey := strings.ToLower(strings.TrimSpace(key))
+			if err := validateRuntimeSessionV2MirroredMetadataKey(normalizedKey, key, child, frozen); err != nil {
+				return err
+			}
+			if expectedRuntimeSessionV2MirroredMetadataKey(normalizedKey) {
+				continue
+			}
+			if err := validateRuntimeSessionV2MirroredMetadataValue(child, frozen); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if err := validateRuntimeSessionV2MirroredMetadataValue(child, frozen); err != nil {
+				return err
 			}
 		}
 	}
 	return nil
 }
 
-func runtimeSessionV2MirroredSnapshotMatchesAuthority(req sessionruntime.RuntimeSessionOpenRequest, snapshot pebblestore.SessionSnapshot) bool {
-	if strings.TrimSpace(snapshot.ID) != strings.TrimSpace(req.SessionID) {
-		return false
+func expectedRuntimeSessionV2MirroredMetadataKey(normalizedKey string) bool {
+	_, ok := runtimeSessionV2MirroredMetadataExpectedValues(pebblestore.SessionExecutionV2Record{})[normalizedKey]
+	return ok
+}
+
+func runtimeSessionV2MirroredMetadataExpectedValues(frozen pebblestore.SessionExecutionV2Record) map[string]string {
+	return map[string]string{
+		"swarm_v2_execution_class":             frozen.ExecutionClass,
+		"swarm_v2_runtime_swarm_id":            frozen.RuntimeSwarmID,
+		"swarm_v2_runtime_kind":                frozen.RuntimeKind,
+		"swarm_v2_authority_host_swarm_id":     frozen.AuthorityHostSwarmID,
+		"swarm_v2_authority_container_id":      frozen.AuthorityContainerID,
+		"swarm_v2_workspace_binding_id":        frozen.WorkspaceBindingID,
+		"local_workspace_binding_id":           frozen.WorkspaceBindingID,
+		"swarm_v2_source_workspace_id":         frozen.SourceWorkspaceID,
+		"swarm_v2_source_workspace_generation": fmt.Sprint(frozen.SourceWorkspaceGeneration),
+		"swarm_v2_source_workspace_name":       frozen.SourceWorkspaceName,
+		"swarm_v2_source_workspace_path":       frozen.SourceWorkspacePath,
+		"swarm_v2_runtime_workspace_path":      frozen.RuntimeWorkspacePath,
+		"swarm_v2_worktree_enabled":            fmt.Sprint(frozen.WorktreeEnabled),
+		"swarm_v2_worktree_root_path":          frozen.WorktreeRootPath,
+		"swarm_v2_worktree_base_branch":        frozen.WorktreeBaseBranch,
+		"swarm_v2_worktree_branch":             frozen.WorktreeBranch,
+		"swarm_v2_placement_generation":        fmt.Sprint(frozen.PlacementGeneration),
+		"swarm_v2_binding_generation":          fmt.Sprint(frozen.BindingGeneration),
 	}
-	if strings.TrimSpace(snapshot.UserID) != "" && strings.TrimSpace(snapshot.UserID) != strings.TrimSpace(req.SessionExecution.UserID) {
-		return false
-	}
-	if strings.TrimSpace(snapshot.AccountScopeID) != "" && strings.TrimSpace(snapshot.AccountScopeID) != strings.TrimSpace(req.SessionExecution.AccountScopeID) {
-		return false
-	}
-	if strings.TrimSpace(snapshot.WorkspacePath) != strings.TrimSpace(req.SessionExecution.RuntimeWorkspacePath) {
-		return false
-	}
-	if snapshot.Metadata != nil {
-		if value, _ := snapshot.Metadata["swarm_v2_runtime_swarm_id"].(string); strings.TrimSpace(value) != "" && strings.TrimSpace(value) != strings.TrimSpace(req.SessionExecution.RuntimeSwarmID) {
-			return false
+}
+
+func validateRuntimeSessionV2MirroredMetadataKey(normalizedKey, originalKey string, value any, frozen pebblestore.SessionExecutionV2Record) error {
+	expected := runtimeSessionV2MirroredMetadataExpectedValues(frozen)
+	if want, ok := expected[normalizedKey]; ok {
+		if strings.TrimSpace(fmt.Sprint(value)) != strings.TrimSpace(want) {
+			return sessionV2StaleAuthority("runtime session mirror metadata authority key %q mismatch", originalKey)
 		}
-		if value, _ := snapshot.Metadata["local_workspace_binding_id"].(string); strings.TrimSpace(value) != "" && strings.TrimSpace(value) != strings.TrimSpace(req.SessionExecution.WorkspaceBindingID) {
-			return false
+		return nil
+	}
+	if normalizedKey == "workspace_id" || strings.HasPrefix(normalizedKey, "swarm_v2_") || sessionV2KeyLooksLikeAuthority(originalKey) {
+		return sessionV2BadRequest("runtime session mirror metadata must not include authority key %q", originalKey)
+	}
+	if strings.Contains(normalizedKey, "workspace_binding_id") || strings.Contains(normalizedKey, "runtime_swarm_id") || strings.Contains(normalizedKey, "authority_host_swarm_id") || strings.Contains(normalizedKey, "authority_container_id") || strings.Contains(normalizedKey, "source_workspace_id") || strings.Contains(normalizedKey, "source_workspace_path") || strings.Contains(normalizedKey, "runtime_workspace_path") {
+		return sessionV2BadRequest("runtime session mirror metadata must not include authority key %q", originalKey)
+	}
+	return nil
+}
+
+func (s *Server) applyRuntimeSessionV2MirrorActions(sessionID string, actions []runtimeSessionV2MirrorAction) error {
+	current, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		return err
+	}
+	for _, action := range actions {
+		if action.session != nil {
+			stored, err := s.sessions.StoreMirroredSession(*action.session)
+			if err != nil {
+				return err
+			}
+			current = stored
+			ok = true
+		}
+		if action.lifecycle != nil {
+			if err := s.sessions.StoreMirroredLifecycle(*action.lifecycle); err != nil {
+				return err
+			}
+		}
+		if action.message != nil {
+			if !ok {
+				return sessionV2AuthorityNotFound("runtime session mirror target session %q was not found", sessionID)
+			}
+			if _, err := s.sessions.StoreMirroredMessage(current, *action.message); err != nil {
+				return err
+			}
 		}
 	}
-	return true
+	return nil
 }
 
 func validateRuntimeSessionV2OpenResponse(req sessionruntime.RuntimeSessionOpenRequest, resp sessionruntime.RuntimeSessionOpenResponse) error {
