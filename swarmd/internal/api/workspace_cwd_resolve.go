@@ -192,10 +192,8 @@ func (s *Server) workspaceCWDRoutesForScope(principal identity.Principal, swarmT
 		primarySwarmID = strings.TrimSpace(primaryTarget.SwarmID)
 	}
 	for _, binding := range bindings {
-		if !strings.EqualFold(strings.TrimSpace(binding.SourceWorkspaceID), workspaceID) {
-			continue
-		}
-		if binding.SourceWorkspaceGeneration > 0 && scope.WorkspaceGeneration > 0 && binding.SourceWorkspaceGeneration != scope.WorkspaceGeneration {
+		bindingWorkspaceID := strings.TrimSpace(binding.SourceWorkspaceID)
+		if bindingWorkspaceID == "" || !strings.EqualFold(bindingWorkspaceID, workspaceID) {
 			continue
 		}
 		workspaceBindingID := strings.TrimSpace(binding.BindingID)
@@ -274,10 +272,8 @@ func (s *Server) workspaceCWDPrimaryBindingRoute(primaryTarget *swarmTarget, sco
 	}
 	primarySwarmID := strings.TrimSpace(primaryTarget.SwarmID)
 	for _, binding := range bindings {
-		if !strings.EqualFold(strings.TrimSpace(binding.SourceWorkspaceID), workspaceID) {
-			continue
-		}
-		if binding.SourceWorkspaceGeneration > 0 && scope.WorkspaceGeneration > 0 && binding.SourceWorkspaceGeneration != scope.WorkspaceGeneration {
+		bindingWorkspaceID := strings.TrimSpace(binding.SourceWorkspaceID)
+		if bindingWorkspaceID == "" || !strings.EqualFold(bindingWorkspaceID, workspaceID) {
 			continue
 		}
 		if strings.EqualFold(strings.TrimSpace(binding.DestinationRuntimeSwarmID), primarySwarmID) && strings.TrimSpace(binding.DestinationContainerID) == "" && strings.EqualFold(strings.TrimSpace(binding.State), pebblestore.TopologyWorkspaceBindingStateBound) {

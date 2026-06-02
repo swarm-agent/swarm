@@ -155,6 +155,97 @@ func TestWorkspaceCWDResolveKnownWorkspaceUsesTopologyBindingsIgnoringSelectedTa
 	}
 }
 
+func TestWorkspaceCWDResolveIncludesLocalContainerBindingWhenSourceGenerationIsStale(t *testing.T) {
+	server, workspacePath, store := newWorkspaceOverviewTopologyTestServer(t)
+	setReplicateFakeSwarmState(server, swarmruntime.LocalState{
+		Node:           swarmruntime.LocalNodeState{SwarmID: "host-swarm-id", Name: "host-swarm", Role: "master"},
+		CurrentGroupID: "group-1",
+		Groups: []swarmruntime.GroupState{{
+			Group: swarmruntime.Group{ID: "group-1", Name: "Primary Group", HostSwarmID: "host-swarm-id"},
+			Members: []swarmruntime.GroupMember{
+				{GroupID: "group-1", SwarmID: "host-swarm-id", Name: "host-swarm", SwarmRole: "master", MembershipRole: swarmruntime.GroupMembershipRoleHost},
+				{GroupID: "group-1", SwarmID: "container-swarm", Name: "check2", SwarmRole: swarmruntime.RelationshipChild, MembershipRole: swarmruntime.GroupMembershipRoleMember},
+			},
+		}},
+	})
+	topologyStore := pebblestore.NewTopologyStore(store)
+	workspaceEntry, ok, err := pebblestore.NewWorkspaceStore(store).GetForAccount(testPrincipal().AccountScopeID, workspacePath)
+	if err != nil || !ok {
+		t.Fatalf("get workspace entry ok=%t err=%v", ok, err)
+	}
+	workspaceStore := pebblestore.NewWorkspaceStore(store)
+	if _, err := workspaceStore.UpdatePathForWorkspaceIDForAccount(testPrincipal().AccountScopeID, workspaceEntry.WorkspaceID, filepath.Join(t.TempDir(), "workspace-one-renamed")); err != nil {
+		t.Fatalf("bump workspace generation: %v", err)
+	}
+	if _, err := workspaceStore.UpdatePathForWorkspaceIDForAccount(testPrincipal().AccountScopeID, workspaceEntry.WorkspaceID, workspacePath); err != nil {
+		t.Fatalf("restore workspace path: %v", err)
+	}
+	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyRuntimeRecord{
+		UserID:               testPrincipal().UserID,
+		AccountScopeID:       testPrincipal().AccountScopeID,
+		SwarmID:              "container-swarm",
+		Name:                 "check2",
+		Relationship:         swarmruntime.RelationshipChild,
+		BackendURL:           "https://container.example.test",
+		Status:               "online",
+		OwnerHostSwarmID:     "host-swarm-id",
+		OwnerHostContainerID: "host-container-1",
+	}); err != nil {
+		t.Fatalf("upsert topology runtime: %v", err)
+	}
+	if _, err := topologyStore.PutRuntimePlacementForAccount(testPrincipal().AccountScopeID, pebblestore.TopologyRuntimePlacementRecord{RuntimeSwarmID: "container-swarm", AccountScopeID: testPrincipal().AccountScopeID, AuthorityHostSwarmID: "host-swarm-id", AuthorityContainerID: "host-container-1", RuntimeKind: pebblestore.TopologyRuntimeKindContainer, PlacementGeneration: 1, State: pebblestore.TopologyRuntimePlacementStateActive}); err != nil {
+		t.Fatalf("put runtime placement: %v", err)
+	}
+	if _, err := topologyStore.PutWorkspaceBindingForAccount(testPrincipal().AccountScopeID, pebblestore.TopologyWorkspaceBindingRecord{
+		BindingID:                       "binding-container-stale-source-generation",
+		UserID:                          testPrincipal().UserID,
+		AccountScopeID:                  testPrincipal().AccountScopeID,
+		SourceWorkspaceID:               workspaceEntry.WorkspaceID,
+		SourceWorkspaceGeneration:       workspaceEntry.WorkspaceGeneration,
+		SourceWorkspacePath:             workspacePath,
+		SourceWorkspaceName:             "workspace-one",
+		DestinationRuntimeSwarmID:       "container-swarm",
+		DestinationAuthorityHostSwarmID: "host-swarm-id",
+		DestinationRuntimeKind:          pebblestore.TopologyRuntimeKindContainer,
+		DestinationHostSwarmID:          "host-swarm-id",
+		DestinationContainerID:          "host-container-1",
+		DestinationWorkspacePath:        "/workspaces/workspace-one",
+		PlacementGeneration:             1,
+		BindingGeneration:               1,
+		State:                           pebblestore.TopologyWorkspaceBindingStateBound,
+		AttestedByHostSwarmID:           "host-swarm-id",
+		AccessMode:                      pebblestore.TopologyWorkspaceBindingAccessModeReadWrite,
+		MaterializationKind:             pebblestore.TopologyWorkspaceBindingMaterializationSource,
+		Writable:                        true,
+	}); err != nil {
+		t.Fatalf("put workspace binding: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := withTestPrincipal(httptest.NewRequest(http.MethodGet, "/v1/workspace/cwd/resolve?cwd="+url.QueryEscape(workspacePath), nil))
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response workspaceCWDResolveResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode cwd resolve: %v", err)
+	}
+	if response.Workspace == nil || response.Workspace.WorkspaceGeneration != workspaceEntry.WorkspaceGeneration+2 {
+		t.Fatalf("workspace generation = %+v, want %d", response.Workspace, workspaceEntry.WorkspaceGeneration+2)
+	}
+	if len(response.Routes) != 1 {
+		t.Fatalf("route count=%d routes=%+v", len(response.Routes), response.Routes)
+	}
+	route := response.Routes[0]
+	if route.WorkspaceBindingID != "binding-container-stale-source-generation" || route.RuntimeSwarmID != "container-swarm" || route.RuntimeSwarmName != "check2" {
+		t.Fatalf("container route = %+v", route)
+	}
+	if route.RuntimeKind != pebblestore.TopologyRuntimeKindContainer || route.ContainerID != "host-container-1" || route.RuntimeWorkspacePath != "/workspaces/workspace-one" {
+		t.Fatalf("container route authority fields = %+v", route)
+	}
+}
+
 func TestWorkspaceCWDResolveKnownWorkspaceIncludesPrimarySelfBindingRoute(t *testing.T) {
 	server, workspacePath, store := newWorkspaceOverviewTopologyTestServer(t)
 	setReplicateFakeSwarmState(server, swarmruntime.LocalState{
