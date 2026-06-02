@@ -14,6 +14,7 @@ import (
 	"time"
 
 	deployruntime "swarm/packages/swarmd/internal/deploy"
+	"swarm/packages/swarmd/internal/identity"
 )
 
 const (
@@ -119,12 +120,17 @@ func (s *Server) handleDeployContainerPackageSuggest(w http.ResponseWriter, r *h
 		writeError(w, http.StatusBadRequest, errors.New("workspace_paths must include at least one workspace"))
 		return
 	}
+	principal, principalOK := PrincipalFromRequest(r)
+	if !principalOK {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 
 	scanRoots := make([]string, 0, len(workspacePaths))
 	seenWorkspaces := make(map[string]struct{}, len(workspacePaths))
 	seenRoots := make(map[string]struct{}, len(workspacePaths)*2)
 	for _, workspacePath := range workspacePaths {
-		scope, err := s.workspace.ScopeForWorkspace(workspacePath)
+		scope, err := s.workspace.ScopeForWorkspaceForPrincipal(principal, workspacePath)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("resolve workspace %q: %w", workspacePath, err))
 			return
