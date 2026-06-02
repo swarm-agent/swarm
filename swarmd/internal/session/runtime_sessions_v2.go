@@ -136,6 +136,19 @@ type RuntimeSessionRunResponse struct {
 	Status    string `json:"status,omitempty"`
 }
 
+type RuntimeSessionStopRequest struct {
+	RunID  string `json:"run_id"`
+	Reason string `json:"reason,omitempty"`
+}
+
+type RuntimeSessionStopResponse struct {
+	OK          bool                              `json:"ok"`
+	SessionID   string                            `json:"session_id"`
+	RunID       string                            `json:"run_id"`
+	Status      string                            `json:"status"`
+	MirrorBatch *RuntimeSessionMirrorBatchRequest `json:"mirror_batch,omitempty"`
+}
+
 type RuntimeSessionStreamRequest struct {
 	SessionID        string                               `json:"session_id"`
 	Authority        RuntimeSessionAuthority              `json:"authority,omitempty"`

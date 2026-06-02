@@ -40,6 +40,9 @@ async function withFetchStub(
     if (url === '/v2/sessions/session-primary/run/stream') {
       return jsonResponse({ ok: true, session_id: 'session-primary', run_id: 'run-stream-1', status: 'accepted' }, 202)
     }
+    if (url === '/v2/sessions/session-primary/stop') {
+      return jsonResponse({ ok: true, session_id: 'session-primary', run_id: body.run_id, status: 'stop_requested' })
+    }
 
     throw new Error(`unexpected fetch: ${url}`)
   }) as typeof fetch
@@ -105,6 +108,21 @@ test('primary desktop plan and permission helpers use native v2 lifecycle endpoi
     assert.equal(callFor(calls, '/v2/sessions/session-primary/plans?limit=100').init?.method, undefined)
     assert.equal(callFor(calls, '/v2/sessions/session-primary/plans/plan-1').init?.method, undefined)
     assert.equal(callFor(calls, '/v2/sessions/session-primary/permissions/resolve_all').init?.method, 'POST')
+  })
+})
+
+test('primary desktop stop helper uses native v2 stop endpoint', async () => {
+  const { stopSessionRun } = await import('./chat-queries')
+
+  await withFetchStub(async (calls) => {
+    await stopSessionRun('session-primary', 'run-stop-1')
+
+    const stopCall = callFor(calls, '/v2/sessions/session-primary/stop')
+    const stopBody = JSON.parse(String(stopCall.init?.body ?? '{}')) as Record<string, unknown>
+    assert.equal(stopCall.init?.method, 'POST')
+    assert.deepEqual(stopBody, { run_id: 'run-stop-1', reason: 'run stopped by user' })
+    assert.equal(calls.some((entry) => String(entry.input) === '/v2/sessions/session-primary/run/stream'), false)
+    assert.equal(calls.some((entry) => String(entry.input).startsWith('/v1/swarm/managed-hosts/sessions/stop')), false)
   })
 })
 

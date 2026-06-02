@@ -24,7 +24,11 @@ async function withFetchStub(
   const originalFetch = globalThis.fetch
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     calls.push({ input, init })
-    throw new Error(`unexpected fetch: ${String(input)}`)
+    const url = String(input)
+    if (url === '/v1/swarm/managed-hosts/sessions/stop') {
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    throw new Error(`unexpected fetch: ${url}`)
   }) as typeof fetch
 
   try {
@@ -54,6 +58,20 @@ test('managed desktop create is disabled until managed Sessions API v2 exists', 
     assert.equal(calls.length, 0)
     assert.equal(calls.some((entry) => String(entry.input) === '/v1/swarm/managed-hosts/sessions/open'), false)
     assert.equal(calls.some((entry) => String(entry.input).startsWith('/v1/sessions')), false)
+  })
+})
+
+test('managed desktop stop helper keeps managed-host stop path separate', async () => {
+  const { stopSessionRun } = await import('./chat-queries')
+
+  await withFetchStub(async (calls) => {
+    await stopSessionRun('session-managed', 'run-managed', managedHostRoute)
+
+    assert.equal(calls.length, 1)
+    assert.equal(String(calls[0]?.input), '/v1/swarm/managed-hosts/sessions/stop')
+    const body = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>
+    assert.equal(calls[0]?.init?.method, 'POST')
+    assert.deepEqual(body, { type: 'run.stop', target_swarm_id: 'managed-swarm', session_id: 'session-managed', run_id: 'run-managed' })
   })
 })
 

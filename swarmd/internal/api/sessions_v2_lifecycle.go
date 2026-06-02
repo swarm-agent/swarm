@@ -47,7 +47,7 @@ func isMutatingSessionsV2LifecycleRequest(method, subpath string) bool {
 		return false
 	case "messages", "metadata", "mode", "preference", "codex", "plans/active", "plans":
 		return method == http.MethodPost
-	case "permissions/resolve_all", "run":
+	case "permissions/resolve_all", "run", "stop":
 		return method == http.MethodPost
 	case "run/stream":
 		return false
@@ -92,7 +92,7 @@ func localContainerRuntimeLifecycleAction(subpath string) (string, bool) {
 	switch subpath {
 	case "":
 		return "", true
-	case "messages", "metadata", "mode", "preference", "codex", "plans/active", "plans", "permissions", "permissions/resolve_all", "usage", "run", "run/stream":
+	case "messages", "metadata", "mode", "preference", "codex", "plans/active", "plans", "permissions", "permissions/resolve_all", "usage", "run", "run/stream", "stop":
 		return subpath, true
 	default:
 		if strings.HasPrefix(subpath, "plans/") || strings.HasPrefix(subpath, "permissions/") && strings.HasSuffix(subpath, "/resolve") {
@@ -186,6 +186,8 @@ func (s *Server) handlePrimarySessionV2ByID(w http.ResponseWriter, r *http.Reque
 		s.handlePrimarySessionV2Usage(w, r, sessionID)
 	case "run":
 		s.handlePrimarySessionV2Run(w, r, sessionID)
+	case "stop":
+		s.handlePrimarySessionV2Stop(w, r, sessionID)
 	case "run/stream":
 		s.handlePrimarySessionV2RunStream(w, r, sessionID)
 	default:
@@ -276,7 +278,7 @@ func methodAllowedForSessionsV2LifecycleSubpath(method, subpath string) bool {
 		return method == http.MethodGet || method == http.MethodPost
 	case "permissions", "usage":
 		return method == http.MethodGet
-	case "permissions/resolve_all", "run":
+	case "permissions/resolve_all", "run", "stop":
 		return method == http.MethodPost
 	case "run/stream":
 		return method == http.MethodGet || method == http.MethodPost
@@ -377,6 +379,9 @@ func (s *Server) dispatchRemoteRuntimeSessionV2Lifecycle(w http.ResponseWriter, 
 		return sessionV2StaleAuthority("runtime session lifecycle dispatch failed: %v", err)
 	}
 	defer resp.Body.Close()
+	if strings.Trim(strings.TrimSpace(action), "/") == "stop" {
+		return s.handleRemoteRuntimeSessionV2StopResponse(w, resp, authority)
+	}
 	for key, values := range resp.Header {
 		if strings.EqualFold(key, "Content-Length") {
 			continue
@@ -387,6 +392,41 @@ func (s *Server) dispatchRemoteRuntimeSessionV2Lifecycle(w http.ResponseWriter, 
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
+	return nil
+}
+
+func (s *Server) handleRemoteRuntimeSessionV2StopResponse(w http.ResponseWriter, resp *http.Response, authority sessionV2Authority) error {
+	if resp == nil || resp.Body == nil {
+		return sessionV2StaleAuthority("runtime session stop response was empty")
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return sessionV2StaleAuthority("runtime session stop response read failed: %v", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		for key, values := range resp.Header {
+			if strings.EqualFold(key, "Content-Length") {
+				continue
+			}
+			for _, value := range values {
+				w.Header().Add(key, value)
+			}
+		}
+		w.WriteHeader(resp.StatusCode)
+		_, _ = w.Write(raw)
+		return nil
+	}
+	var stopResp sessionruntime.RuntimeSessionStopResponse
+	if err := json.Unmarshal(raw, &stopResp); err != nil {
+		return sessionV2StaleAuthority("runtime session stop response decode failed: %v", err)
+	}
+	if stopResp.MirrorBatch != nil {
+		if _, err := s.ingestRuntimeSessionV2MirrorBatch(authority.Execution, *stopResp.MirrorBatch, runtimeSessionV2MirrorIngestionOptions{}); err != nil {
+			return err
+		}
+		stopResp.MirrorBatch = nil
+	}
+	writeJSON(w, resp.StatusCode, stopResp)
 	return nil
 }
 
@@ -1247,6 +1287,115 @@ func (s *Server) handlePrimarySessionV2Run(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.handleNativeSessionV2Run(w, r, sessionID, authority.Principal)
+}
+
+func (s *Server) handlePrimarySessionV2Stop(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if _, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, true); err != nil {
+		writeSessionsV2Error(w, err)
+		return
+	}
+	s.handleNativeSessionV2Stop(w, r, sessionID)
+}
+
+func (s *Server) handleNativeSessionV2Stop(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if s.runner == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("run service not configured"))
+		return
+	}
+	var req sessionruntime.RuntimeSessionStopRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	req.RunID = strings.TrimSpace(req.RunID)
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		reason = "run stopped by user"
+	}
+	if req.RunID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("run_id is required for stop"))
+		return
+	}
+	if s.runStreams != nil {
+		s.runStreams.setStopReason(req.RunID, reason)
+	}
+	if err := s.runner.StopSessionRun(sessionID, req.RunID, reason); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	resp := sessionruntime.RuntimeSessionStopResponse{OK: true, SessionID: sessionID, RunID: req.RunID, Status: "stop_requested"}
+	if batch, err := s.runtimeSessionV2StopMirrorBatch(sessionID, req.RunID); err != nil {
+		writeSessionsV2Error(w, err)
+		return
+	} else if batch != nil {
+		resp.MirrorBatch = batch
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) runtimeSessionV2StopMirrorBatch(sessionID, runID string) (*sessionruntime.RuntimeSessionMirrorBatchRequest, error) {
+	if s == nil || s.sessions == nil || s.sessions.Store() == nil {
+		return nil, nil
+	}
+	execution, ok, err := s.sessions.Store().GetSessionExecutionV2(sessionID)
+	if err != nil || !ok {
+		return nil, err
+	}
+	if strings.TrimSpace(execution.ExecutionClass) != sessionruntime.SessionExecutionClassLocalContainer {
+		return nil, nil
+	}
+	lifecycle, ok, err := s.sessions.GetLifecycle(sessionID)
+	if err != nil || !ok {
+		return nil, err
+	}
+	if strings.TrimSpace(lifecycle.RunID) == "" || strings.TrimSpace(lifecycle.RunID) != strings.TrimSpace(runID) {
+		return nil, nil
+	}
+	payload, err := json.Marshal(sessionruntime.RuntimeSessionLifecycleMirrorItem{Lifecycle: lifecycle})
+	if err != nil {
+		return nil, err
+	}
+	batch := sessionruntime.RuntimeSessionMirrorBatchRequest{
+		SessionID:        sessionID,
+		Authority:        runtimeSessionAuthorityFromExecutionV2(execution),
+		SessionExecution: execution,
+		Items: []sessionruntime.RuntimeSessionMirrorItem{{
+			Type:      sessionruntime.RuntimeSessionMirrorTypeSessionLifecycle,
+			SessionID: sessionID,
+			RunID:     strings.TrimSpace(lifecycle.RunID),
+			Payload:   payload,
+		}},
+	}
+	return &batch, nil
+}
+
+func runtimeSessionAuthorityFromExecutionV2(execution pebblestore.SessionExecutionV2Record) sessionruntime.RuntimeSessionAuthority {
+	return sessionruntime.RuntimeSessionAuthority{
+		SessionID:                 strings.TrimSpace(execution.SessionID),
+		UserID:                    strings.TrimSpace(execution.UserID),
+		AccountScopeID:            strings.TrimSpace(execution.AccountScopeID),
+		ExecutionClass:            strings.TrimSpace(execution.ExecutionClass),
+		RuntimeSwarmID:            strings.TrimSpace(execution.RuntimeSwarmID),
+		RuntimeKind:               strings.TrimSpace(execution.RuntimeKind),
+		AuthorityHostSwarmID:      strings.TrimSpace(execution.AuthorityHostSwarmID),
+		AuthorityContainerID:      strings.TrimSpace(execution.AuthorityContainerID),
+		WorkspaceBindingID:        strings.TrimSpace(execution.WorkspaceBindingID),
+		PlacementGeneration:       execution.PlacementGeneration,
+		BindingGeneration:         execution.BindingGeneration,
+		SourceWorkspaceID:         strings.TrimSpace(execution.SourceWorkspaceID),
+		SourceWorkspaceGeneration: execution.SourceWorkspaceGeneration,
+		SourceWorkspaceName:       strings.TrimSpace(execution.SourceWorkspaceName),
+		SourceWorkspacePath:       strings.TrimSpace(execution.SourceWorkspacePath),
+		DestinationRuntimeSwarmID: strings.TrimSpace(execution.RuntimeSwarmID),
+		DestinationRuntimeKind:    strings.TrimSpace(execution.RuntimeKind),
+		DestinationAuthorityHost:  strings.TrimSpace(execution.AuthorityHostSwarmID),
+		DestinationContainerID:    strings.TrimSpace(execution.AuthorityContainerID),
+		RuntimeWorkspacePath:      strings.TrimSpace(execution.RuntimeWorkspacePath),
+	}
 }
 
 func requireSessionV2Mutation(requireMutation func() error) error {
