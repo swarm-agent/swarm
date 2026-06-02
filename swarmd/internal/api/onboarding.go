@@ -17,6 +17,7 @@ import (
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/identity"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 )
 
@@ -532,8 +533,11 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 		changed = true
 	}
 	if req.Child != nil {
-		updated.Child = *req.Child
-		turnedOffChildMode = cfg.Child && !updated.Child
+		if *req.Child {
+			return onboardingResponse{}, nil, errors.New("primary onboarding cannot enable child mode; use Link Swarm pairing to make this swarm managed")
+		}
+		updated.Child = false
+		turnedOffChildMode = cfg.Child
 		if turnedOffChildMode {
 			updated = startupconfig.ScrubManagedLinkState(updated)
 			updated.PairingState = startupconfig.PairingStateUnpaired
@@ -644,6 +648,9 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 		issued = &createdSession
 		identityPayload = actorOnboardingIdentityPayload(createdSession.Actor)
 	}
+	if err := s.ensureOnboardingPrimaryTopology(identityPayload); err != nil {
+		return onboardingResponse{}, nil, err
+	}
 	response, err := s.onboardingResponseWithServeDetectionAndLocalLinkState(includeSensitive, true, responseLocalLinkState)
 	if err != nil {
 		return onboardingResponse{}, nil, err
@@ -719,6 +726,80 @@ func (s *Server) readSavedWorkspaceCount(accountScopeID, userID string) (int, er
 		return 0, err
 	}
 	return len(entries), nil
+}
+
+func (s *Server) ensureOnboardingPrimaryTopology(identityPayload onboardingIdentityPayload) error {
+	if s == nil || s.topology == nil || s.workspace == nil {
+		return nil
+	}
+	principal := identity.Principal{
+		Type:               identity.PrincipalTypeUser,
+		UserID:             strings.TrimSpace(identityPayload.UserID),
+		AccountScopeID:     strings.TrimSpace(identityPayload.AccountScopeID),
+		AccountScopeSource: identity.AccountScopeSourceServerState,
+	}
+	if !principal.Valid() {
+		return nil
+	}
+	placement, err := s.topology.EnsureLocalSelfPlacementForPrincipal(principal.AccountScopeID, principal.UserID)
+	if err != nil {
+		return err
+	}
+	if !isPrimarySelfPlacement(placement) {
+		return fmt.Errorf("onboarding primary placement is invalid for local swarm %q", strings.TrimSpace(placement.RuntimeSwarmID))
+	}
+	entries, err := s.workspace.ListKnownForPrincipal(principal, 100000)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		workspaceEntry := pebblestore.WorkspaceEntry{
+			AccountScopeID:      principal.AccountScopeID,
+			WorkspaceID:         strings.TrimSpace(entry.WorkspaceID),
+			WorkspaceGeneration: entry.WorkspaceGeneration,
+			State:               strings.TrimSpace(entry.State),
+			Path:                strings.TrimSpace(entry.Path),
+			Name:                strings.TrimSpace(entry.WorkspaceName),
+		}
+		if strings.TrimSpace(workspaceEntry.WorkspaceID) == "" || workspaceEntry.WorkspaceGeneration <= 0 || strings.TrimSpace(workspaceEntry.Path) == "" {
+			continue
+		}
+		binding, err := s.topology.EnsureLocalWorkspaceSelfBindingForPrincipal(principal.AccountScopeID, principal.UserID, workspaceEntry)
+		if err != nil {
+			return err
+		}
+		if !isPrimarySelfWorkspaceBinding(placement, binding) {
+			return fmt.Errorf("onboarding primary workspace binding %q is invalid for local swarm %q", strings.TrimSpace(binding.BindingID), strings.TrimSpace(placement.RuntimeSwarmID))
+		}
+	}
+	return nil
+}
+
+func isPrimarySelfPlacement(placement pebblestore.TopologyRuntimePlacementRecord) bool {
+	runtimeSwarmID := strings.TrimSpace(placement.RuntimeSwarmID)
+	return runtimeSwarmID != "" &&
+		strings.TrimSpace(placement.AuthorityHostSwarmID) == runtimeSwarmID &&
+		strings.TrimSpace(placement.RuntimeKind) == pebblestore.TopologyRuntimeKindHost &&
+		strings.TrimSpace(placement.AuthorityContainerID) == "" &&
+		strings.TrimSpace(placement.State) == pebblestore.TopologyRuntimePlacementStateActive &&
+		placement.PlacementGeneration > 0
+}
+
+func isPrimarySelfWorkspaceBinding(placement pebblestore.TopologyRuntimePlacementRecord, binding pebblestore.TopologyWorkspaceBindingRecord) bool {
+	runtimeSwarmID := strings.TrimSpace(placement.RuntimeSwarmID)
+	return runtimeSwarmID != "" &&
+		strings.TrimSpace(binding.DestinationRuntimeSwarmID) == runtimeSwarmID &&
+		strings.TrimSpace(binding.DestinationAuthorityHostSwarmID) == runtimeSwarmID &&
+		strings.TrimSpace(binding.DestinationHostSwarmID) == runtimeSwarmID &&
+		strings.TrimSpace(binding.DestinationRuntimeKind) == pebblestore.TopologyRuntimeKindHost &&
+		strings.TrimSpace(binding.DestinationContainerID) == "" &&
+		strings.TrimSpace(binding.State) == pebblestore.TopologyWorkspaceBindingStateBound &&
+		binding.PlacementGeneration == placement.PlacementGeneration &&
+		binding.BindingGeneration > 0 &&
+		strings.TrimSpace(binding.SourceWorkspaceID) != "" &&
+		binding.SourceWorkspaceGeneration > 0 &&
+		strings.TrimSpace(binding.SourceWorkspacePath) != "" &&
+		strings.TrimSpace(binding.DestinationWorkspacePath) == strings.TrimSpace(binding.SourceWorkspacePath)
 }
 
 func shouldShowOnboarding(cfg startupconfig.FileConfig, identityBootstrapped bool) bool {

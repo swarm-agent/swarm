@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -20,6 +21,7 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
+	topologyruntime "swarm/packages/swarmd/internal/topology"
 	"swarm/packages/swarmd/internal/uisettings"
 	"swarm/packages/swarmd/internal/workspace"
 )
@@ -127,6 +129,69 @@ func TestOnboardingPostBootstrapsIdentityAndIssuesSession(t *testing.T) {
 	}
 }
 
+func TestOnboardingPostBootstrapsPrimarySelfPlacement(t *testing.T) {
+	server, _, topologyStore, _ := newOnboardingPrimaryTopologyTestServer(t)
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, newJSONSameOriginDesktopRequest(t, map[string]any{"username": "Alice", "swarm_name": "Primary Laptop"}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bootstrap status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	placement, ok, err := topologyStore.GetRuntimePlacementForAccount("acct_onboarding_test", "onboarding-primary-test")
+	if err != nil || !ok {
+		t.Fatalf("primary placement ok=%v err=%v", ok, err)
+	}
+	if placement.RuntimeSwarmID != "onboarding-primary-test" || placement.AuthorityHostSwarmID != "onboarding-primary-test" || placement.RuntimeKind != pebblestore.TopologyRuntimeKindHost || placement.AuthorityContainerID != "" || placement.State != pebblestore.TopologyRuntimePlacementStateActive {
+		t.Fatalf("primary placement = %+v", placement)
+	}
+}
+
+func TestOnboardingRepairsPrimaryWorkspaceSelfBinding(t *testing.T) {
+	server, identityStore, topologyStore, workspaceSvc := newOnboardingPrimaryTopologyTestServer(t)
+	if _, err := identityStore.BootstrapFirstIdentity("alice"); err != nil {
+		t.Fatalf("bootstrap identity: %v", err)
+	}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user_onboarding_test", AccountScopeID: "acct_onboarding_test", AccountScopeSource: identity.AccountScopeSourceServerState}
+	workspacePath := filepath.Join(t.TempDir(), "primary")
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	_, entry, _, err := workspaceSvc.AddForPrincipalWithEntryWithoutSelection(principal, workspacePath, "primary", "")
+	if err != nil {
+		t.Fatalf("add workspace: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, newJSONSameOriginDesktopRequest(t, map[string]any{"swarm_name": "Primary Laptop"}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("onboarding update status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	bindings, err := topologyStore.ListWorkspaceBindingsForAccount(principal.AccountScopeID, 100)
+	if err != nil {
+		t.Fatalf("list workspace bindings: %v", err)
+	}
+	if len(bindings) != 1 {
+		t.Fatalf("workspace bindings = %d: %+v", len(bindings), bindings)
+	}
+	binding := bindings[0]
+	if binding.SourceWorkspaceID != entry.WorkspaceID || binding.SourceWorkspaceGeneration != entry.WorkspaceGeneration || binding.SourceWorkspacePath != entry.Path {
+		t.Fatalf("binding source = %+v entry=%+v", binding, entry)
+	}
+	if binding.DestinationRuntimeSwarmID != "onboarding-primary-test" || binding.DestinationAuthorityHostSwarmID != "onboarding-primary-test" || binding.DestinationRuntimeKind != pebblestore.TopologyRuntimeKindHost || binding.DestinationContainerID != "" || binding.DestinationWorkspacePath != entry.Path {
+		t.Fatalf("binding destination = %+v", binding)
+	}
+}
+
+func TestOnboardingRejectsPrimaryChildModeToggle(t *testing.T) {
+	server, _, _, _ := newOnboardingPrimaryTopologyTestServer(t)
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, newJSONSameOriginDesktopRequest(t, map[string]any{"username": "Alice", "swarm_name": "Primary Laptop", "child": true}))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "cannot enable child mode") {
+		t.Fatalf("child mode status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestOnboardingIdentitySaveDoesNotRequireLANAdvertiseHost(t *testing.T) {
 	server, _, _ := newOnboardingIdentityTestServerWithCalls(t, false)
 
@@ -198,6 +263,51 @@ func newOnboardingIdentityTestServer(t *testing.T, bootstrap bool) (*Server, *pe
 	t.Helper()
 	server, identityStore, _ := newOnboardingIdentityTestServerWithCalls(t, bootstrap)
 	return server, identityStore
+}
+
+func newOnboardingPrimaryTopologyTestServer(t *testing.T) (*Server, *identity.Service, *pebblestore.TopologyStore, *workspace.Service) {
+	t.Helper()
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "onboarding-primary-topology.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	eventLog, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("event log: %v", err)
+	}
+	authSvc := auth.NewService(pebblestore.NewAuthStore(store), eventLog)
+	securitySvc := security.NewService(pebblestore.NewClientAuthStore(store), eventLog)
+	if _, err := securitySvc.EnsureAttachAuth(); err != nil {
+		t.Fatalf("ensure attach auth: %v", err)
+	}
+	workspaceSvc := workspace.NewService(pebblestore.NewWorkspaceStore(store))
+	hub := stream.NewHub(eventLog)
+	notificationSvc := notification.NewService(pebblestore.NewNotificationStore(store), eventLog, hub.Publish)
+	identityStore := pebblestore.NewIdentityStore(store)
+	identitySvc := identity.NewService(identityStore, identity.WithIDGenerator(onboardingIdentityTestIDGenerator))
+	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), eventLog)
+	swarmStore := pebblestore.NewSwarmStore(store, nil)
+	if _, err := swarmStore.PutLocalNode(pebblestore.SwarmLocalNodeRecord{SwarmID: "onboarding-primary-test", Name: "Primary", Role: bootstrapRoleMaster}); err != nil {
+		t.Fatalf("put local node: %v", err)
+	}
+	topologyStore := pebblestore.NewTopologyStore(store)
+	topologySvc := topologyruntime.NewService(topologyStore, swarmStore, nil, nil, nil, nil, nil, pebblestore.NewWorkspaceStore(store))
+	swarmSvc := swarmruntime.NewService(swarmStore, eventLog, nil)
+	server := NewServer(authSvc, agentSvc, nil, nil, nil, workspaceSvc, nil, securitySvc, nil, nil, notificationSvc, eventLog, hub)
+	server.SetIdentityService(identitySvc)
+	server.SetIdentitySessionService(identity.NewSessionService(identityStore, pebblestore.NewIdentitySessionStore(store)))
+	server.SetUISettingsService(uisettings.NewService(pebblestore.NewUISettingsStore(store)))
+	server.SetSwarmService(swarmSvc)
+	server.SetTopologyService(topologySvc)
+	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
+	cfg := startupconfig.Default(startupPath)
+	cfg.SwarmName = ""
+	if err := startupconfig.Write(cfg); err != nil {
+		t.Fatalf("write startup config: %v", err)
+	}
+	server.SetStartupConfigPath(startupPath)
+	return server, identitySvc, topologyStore, workspaceSvc
 }
 
 func newOnboardingIdentityTestServerWithCalls(t *testing.T, bootstrap bool) (*Server, *pebblestore.IdentityStore, *fakeLocalAuthSwarmCalls) {
