@@ -80,7 +80,7 @@ func TestPrimaryLifecycleMethodsUseV2SessionPaths(t *testing.T) {
 			_, err := api.RunSessionWithOptions(ctx, sessionID, "prompt", "swarm", "", RunSessionOptions{})
 			return err
 		}},
-		{"stop run", http.MethodPost, "/v2/sessions/session-1/run/stream", func(api *API) error { return api.StopSessionRun(ctx, sessionID, "run-1") }},
+		{"stop primary run", http.MethodPost, "/v2/sessions/session-1/run/stop/primary", func(api *API) error { return api.StopPrimarySessionRun(ctx, sessionID, "run-1", "primary-swarm") }},
 		{"background run", http.MethodPost, "/v2/sessions/session-1/run/stream", func(api *API) error {
 			_, err := api.StartBackgroundSessionRun(ctx, sessionID, "prompt", "swarm", "", RunSessionOptions{})
 			return err
@@ -95,6 +95,15 @@ func TestPrimaryLifecycleMethodsUseV2SessionPaths(t *testing.T) {
 				gotPath = r.URL.Path
 				if strings.HasPrefix(gotPath, "/v1/") {
 					t.Fatalf("unexpected v1 path: %s", gotPath)
+				}
+				if r.URL.Path == "/v2/sessions/session-1/run/stop/primary" {
+					var body map[string]any
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Fatalf("decode stop body: %v", err)
+					}
+					if body["target_swarm_id"] != "primary-swarm" || body["run_id"] != "run-1" {
+						t.Fatalf("stop body = %+v", body)
+					}
 				}
 				writeLifecycleTestResponse(t, w, r, sessionID, planID, permissionID)
 			}))
@@ -300,6 +309,11 @@ func writeLifecycleTestResponse(t *testing.T, w http.ResponseWriter, r *http.Req
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "session_id": sessionID, "count": 0, "resolved": []any{}})
 	case "/v2/sessions/" + sessionID + "/run":
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": map[string]any{"session_id": sessionID}})
+	case "/v2/sessions/" + sessionID + "/run/stop/primary":
+		if r.Method != http.MethodPost {
+			t.Fatalf("primary stop method = %s, want POST", r.Method)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "session_id": sessionID, "run_id": "run-1", "status": "stop_requested"})
 	case "/v2/sessions/" + sessionID + "/run/stream":
 		if r.Method != http.MethodPost {
 			t.Fatalf("run stream method = %s, want POST", r.Method)

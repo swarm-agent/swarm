@@ -216,6 +216,16 @@ export function isManagedHostDesktopChatRoute(route: DesktopChatRoute | null | u
   return relationship === 'managed'
 }
 
+export function isPrimaryDesktopChatRoute(route: DesktopChatRoute | null | undefined): boolean {
+  const swarmId = route?.swarmId?.trim() ?? ''
+  if (!swarmId) {
+    return false
+  }
+  const relationship = route?.targetRelationship?.trim().toLowerCase() ?? ''
+  const targetKind = route?.targetKind?.trim().toLowerCase() ?? ''
+  return relationship === 'self' && targetKind === 'host'
+}
+
 export type DesktopSessionCreateV2Target =
   | { endpoint: '/v2/sessions/primary'; swarmId: string; workspaceBindingId: string }
   | { endpoint: '/v2/sessions/local-containers'; swarmId: string; workspaceBindingId: string }

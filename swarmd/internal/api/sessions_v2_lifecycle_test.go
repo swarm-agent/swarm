@@ -117,6 +117,7 @@ func TestSessionsV2LifecyclePrimarySurfaceSchemasAndMethods(t *testing.T) {
 		{name: "post run", method: http.MethodPost, path: "/v2/sessions/" + sessionID + "/run", body: `{"prompt":"surface","agent_name":"swarm"}`, wantStatus: http.StatusOK, wantKeys: []string{"ok", "result"}},
 		{name: "get usage", method: http.MethodGet, path: "/v2/sessions/" + sessionID + "/usage", wantStatus: http.StatusOK, wantKeys: []string{"ok", "session_id", "has_usage_summary", "usage_summary", "turn_usage_records"}},
 		{name: "post run stream start", method: http.MethodPost, path: "/v2/sessions/" + sessionID + "/run/stream", body: `{"type":"run.start","prompt":"surface","agent_name":"swarm"}`, wantStatus: http.StatusAccepted, wantKeys: []string{"ok", "session_id", "run_id", "status"}},
+		{name: "post primary stop", method: http.MethodPost, path: "/v2/sessions/" + sessionID + "/run/stop/primary", body: `{"type":"run.stop","target_swarm_id":"host-swarm-id","run_id":"run-surface"}`, wantStatus: http.StatusOK, wantKeys: []string{"ok", "session_id", "run_id", "status", "target_swarm_id"}},
 		{name: "post run stream resume missing run id", method: http.MethodPost, path: "/v2/sessions/" + sessionID + "/run/stream", body: `{"type":"run.resume"}`, wantStatus: http.StatusBadRequest, wantKeys: []string{"error"}},
 	}
 
@@ -535,6 +536,87 @@ func TestSessionsV2LifecycleRunAllowsSafeInstructionsAndBackgroundOwnership(t *t
 	}
 	if recordedRequest.TargetKind != "" || recordedRequest.TargetName != "" || recordedRequest.ExecutionContext != nil || recordedRequest.ToolScope != nil {
 		t.Fatalf("runner request carried authority override: %+v", recordedRequest)
+	}
+}
+
+func TestSessionsV2LifecyclePrimaryStopRequiresPrimarySwarmTarget(t *testing.T) {
+	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	server.runner = &primaryV2RunRequestRecordingRunner{}
+	sessionID := createPrimarySessionV2ForLifecycleTest(t, server, swarmStore, "binding-primary-v2", pebblestore.TopologyWorkspaceBindingAccessModeReadWrite, true)
+
+	for _, tc := range []struct {
+		name       string
+		body       string
+		wantStatus int
+		want       string
+	}{
+		{name: "missing target", body: `{"type":"run.stop","run_id":"run-1"}`, wantStatus: http.StatusBadRequest, want: "target_swarm_id is required"},
+		{name: "wrong target", body: `{"type":"run.stop","target_swarm_id":"container-swarm","run_id":"run-1"}`, wantStatus: http.StatusBadRequest, want: "does not match primary execution runtime"},
+		{name: "primary target", body: `{"type":"run.stop","target_swarm_id":"host-swarm-id","run_id":"run-1"}`, wantStatus: http.StatusOK, want: "stop_requested"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/v2/sessions/"+sessionID+"/run/stop/primary", bytes.NewBufferString(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d, body=%s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tc.want) {
+				t.Fatalf("body = %s, want %q", rec.Body.String(), tc.want)
+			}
+		})
+	}
+}
+
+func TestSessionsV2LifecycleLocalContainerDoesNotUsePrimaryStopPath(t *testing.T) {
+	hostServer, _, _, _, hostSwarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	runtimeServer, _, _, _, runtimeSwarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	runtimeServer.runner = &primaryV2RunRequestRecordingRunner{}
+	seedSessionsV2LocalContainerAuthority(t, hostServer, hostSwarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	seedRuntimeSessionsV2OpenContainerAuthority(t, runtimeServer, runtimeSwarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	setTestServerLocalSwarmID(t, runtimeServer, "container-swarm")
+	seedRuntimeSessionsV2Pairing(t, runtimeSwarmStore, "host-swarm-id")
+
+	runtimeHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(context.WithValue(r.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: "host-swarm-id"}))
+		if principal, ok := runtimeServer.trustedPairingPrincipalForPeerRequest(r); ok {
+			r = withSessionsV2TestPrincipal(r, principal)
+		}
+		runtimeServer.Handler().ServeHTTP(w, r)
+	}))
+	defer runtimeHTTP.Close()
+	if err := hostServer.RegisterAuthorityConnection(AuthorityConnection{AuthorityHostSwarmID: "container-swarm", AccountScopeID: testPrincipal().AccountScopeID, TransportKind: authorityConnectionTransportHTTP, TransportRef: runtimeHTTP.URL, Health: AuthorityConnectionHealthOnline}); err != nil {
+		t.Fatalf("register runtime authority connection: %v", err)
+	}
+
+	createReq := httptest.NewRequest(http.MethodPost, "/v2/sessions/local-containers", bytes.NewBufferString(`{"swarm_id":"container-swarm","workspace_binding_id":"binding-container-v2","title":"container v2 lifecycle","mode":"auto","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	hostServer.Handler().ServeHTTP(createRec, withTestPrincipal(createReq))
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, want %d, body=%s", createRec.Code, http.StatusOK, createRec.Body.String())
+	}
+	var createPayload struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createPayload); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	sessionID := strings.TrimSpace(createPayload.Session.ID)
+	if sessionID == "" {
+		t.Fatalf("created local-container session missing id: %s", createRec.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v2/sessions/"+sessionID+"/run/stop/primary", bytes.NewBufferString(`{"type":"run.stop","target_swarm_id":"container-swarm","run_id":"run-1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	hostServer.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "local-container lifecycle dispatch") {
+		t.Fatalf("body = %s, want local-container primary-stop rejection", rec.Body.String())
 	}
 }
 

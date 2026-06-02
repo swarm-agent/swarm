@@ -3140,10 +3140,35 @@ func (c *API) StopSessionRun(ctx context.Context, sessionID, runID string) error
 	if runID == "" {
 		return errors.New("run id is required")
 	}
-	path := sessionV2LifecyclePath(sessionID, "run/stream")
+	state, err := c.GetSwarmState(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve primary stop swarm target: %w", err)
+	}
+	targetSwarmID := strings.TrimSpace(state.Node.SwarmID)
+	if targetSwarmID == "" {
+		return errors.New("primary stop swarm target is not configured")
+	}
+	return c.StopPrimarySessionRun(ctx, sessionID, runID, targetSwarmID)
+}
+
+func (c *API) StopPrimarySessionRun(ctx context.Context, sessionID, runID, targetSwarmID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	runID = strings.TrimSpace(runID)
+	targetSwarmID = strings.TrimSpace(targetSwarmID)
+	if sessionID == "" {
+		return errors.New("session id is required")
+	}
+	if runID == "" {
+		return errors.New("run id is required")
+	}
+	if targetSwarmID == "" {
+		return errors.New("target swarm id is required")
+	}
+	path := sessionV2LifecyclePath(sessionID, "run/stop/primary")
 	return c.postJSON(ctx, path, map[string]any{
-		"type":   "run.stop",
-		"run_id": runID,
+		"type":            "run.stop",
+		"target_swarm_id": targetSwarmID,
+		"run_id":          runID,
 	}, nil, true)
 }
 

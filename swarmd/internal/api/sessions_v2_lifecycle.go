@@ -47,7 +47,7 @@ func isMutatingSessionsV2LifecycleRequest(method, subpath string) bool {
 		return false
 	case "messages", "metadata", "mode", "preference", "codex", "plans/active", "plans":
 		return method == http.MethodPost
-	case "permissions/resolve_all", "run":
+	case "permissions/resolve_all", "run", "run/stop/primary":
 		return method == http.MethodPost
 	case "run/stream":
 		return false
@@ -186,6 +186,8 @@ func (s *Server) handlePrimarySessionV2ByID(w http.ResponseWriter, r *http.Reque
 		s.handlePrimarySessionV2Usage(w, r, sessionID)
 	case "run":
 		s.handlePrimarySessionV2Run(w, r, sessionID)
+	case "run/stop/primary":
+		s.handlePrimarySessionV2RunStopPrimary(w, r, sessionID)
 	case "run/stream":
 		s.handlePrimarySessionV2RunStream(w, r, sessionID)
 	default:
@@ -276,7 +278,7 @@ func methodAllowedForSessionsV2LifecycleSubpath(method, subpath string) bool {
 		return method == http.MethodGet || method == http.MethodPost
 	case "permissions", "usage":
 		return method == http.MethodGet
-	case "permissions/resolve_all", "run":
+	case "permissions/resolve_all", "run", "run/stop/primary":
 		return method == http.MethodPost
 	case "run/stream":
 		return method == http.MethodGet || method == http.MethodPost
@@ -1247,6 +1249,53 @@ func (s *Server) handlePrimarySessionV2Run(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.handleNativeSessionV2Run(w, r, sessionID, authority.Principal)
+}
+
+func (s *Server) handlePrimarySessionV2RunStopPrimary(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	authority, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, true)
+	if err != nil {
+		writeSessionsV2Error(w, err)
+		return
+	}
+	if s.runner == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("run service not configured"))
+		return
+	}
+	if s.runStreams == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("run stream manager not configured"))
+		return
+	}
+	var req struct {
+		Type          string `json:"type,omitempty"`
+		TargetSwarmID string `json:"target_swarm_id"`
+		RunID         string `json:"run_id"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	runID := strings.TrimSpace(req.RunID)
+	if runID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("run_id is required for stop"))
+		return
+	}
+	if targetSwarmID := strings.TrimSpace(req.TargetSwarmID); targetSwarmID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("target_swarm_id is required for primary stop"))
+		return
+	} else if !strings.EqualFold(targetSwarmID, strings.TrimSpace(authority.Execution.RuntimeSwarmID)) {
+		writeSessionsV2Error(w, sessionV2InvalidClass("primary stop target swarm %q does not match primary execution runtime %q", targetSwarmID, authority.Execution.RuntimeSwarmID))
+		return
+	}
+	s.runStreams.setStopReason(runID, "run stopped by user")
+	if err := s.runner.StopSessionRun(sessionID, runID, "run stopped by user"); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "run_id": runID, "status": "stop_requested", "target_swarm_id": strings.TrimSpace(authority.Execution.RuntimeSwarmID)})
 }
 
 func requireSessionV2Mutation(requireMutation func() error) error {

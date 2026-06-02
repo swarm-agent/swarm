@@ -40,6 +40,9 @@ async function withFetchStub(
     if (url === '/v2/sessions/session-primary/run/stream') {
       return jsonResponse({ ok: true, session_id: 'session-primary', run_id: 'run-stream-1', status: 'accepted' }, 202)
     }
+    if (url === '/v2/sessions/session-primary/run/stop/primary') {
+      return jsonResponse({ ok: true, session_id: 'session-primary', run_id: body.run_id, status: 'stop_requested', target_swarm_id: body.target_swarm_id })
+    }
 
     throw new Error(`unexpected fetch: ${url}`)
   }) as typeof fetch
@@ -105,6 +108,34 @@ test('primary desktop plan and permission helpers use native v2 lifecycle endpoi
     assert.equal(callFor(calls, '/v2/sessions/session-primary/plans?limit=100').init?.method, undefined)
     assert.equal(callFor(calls, '/v2/sessions/session-primary/plans/plan-1').init?.method, undefined)
     assert.equal(callFor(calls, '/v2/sessions/session-primary/permissions/resolve_all').init?.method, 'POST')
+  })
+})
+
+test('primary desktop stop helper uses primary-only stop path with swarm target', async () => {
+  const { stopSessionRun } = await import('./chat-queries')
+
+  await withFetchStub(async (calls) => {
+    await stopSessionRun('session-primary', 'run-1', {
+      id: 'host:binding:local-binding',
+      label: 'primary',
+      swarmId: 'primary-swarm',
+      targetKind: 'host',
+      targetRelationship: 'self',
+      hostSwarmId: 'primary-swarm',
+      hostSwarmName: 'primary',
+      hostWorkspacePath: '/repo',
+      hostWorkspaceName: 'swarm-go',
+      runtimeWorkspacePath: '/repo',
+      workspaceBindingId: 'local-binding',
+    })
+
+    const stopCall = callFor(calls, '/v2/sessions/session-primary/run/stop/primary')
+    const stopBody = JSON.parse(String(stopCall.init?.body ?? '{}')) as Record<string, unknown>
+    assert.equal(stopCall.init?.method, 'POST')
+    assert.equal(stopBody.type, 'run.stop')
+    assert.equal(stopBody.target_swarm_id, 'primary-swarm')
+    assert.equal(stopBody.run_id, 'run-1')
+    assert.equal(Object.hasOwn(stopBody, 'session_id'), false)
   })
 })
 
