@@ -290,9 +290,10 @@ type runtimeSessionV2MirrorIngestionOptions struct {
 }
 
 type runtimeSessionV2MirrorAction struct {
-	session   *pebblestore.SessionSnapshot
-	lifecycle *pebblestore.SessionLifecycleSnapshot
-	message   *pebblestore.MessageSnapshot
+	session        *pebblestore.SessionSnapshot
+	lifecycle      *pebblestore.SessionLifecycleSnapshot
+	lifecycleEvent *pebblestore.EventEnvelope
+	message        *pebblestore.MessageSnapshot
 }
 
 func (s *Server) ingestRuntimeSessionV2InitialMirror(req sessionruntime.RuntimeSessionOpenRequest, resp sessionruntime.RuntimeSessionOpenResponse) error {
@@ -478,7 +479,11 @@ func validateRuntimeSessionV2MirrorItems(frozen pebblestore.SessionExecutionV2Re
 				return nil, err
 			}
 			lifecycle := payload.Lifecycle
-			actions = append(actions, runtimeSessionV2MirrorAction{lifecycle: &lifecycle})
+			lifecycleEvent, err := mirroredLifecycleEvent(lifecycle)
+			if err != nil {
+				return nil, err
+			}
+			actions = append(actions, runtimeSessionV2MirrorAction{lifecycle: &lifecycle, lifecycleEvent: lifecycleEvent})
 		case sessionruntime.RuntimeSessionMirrorTypeMessageStored:
 			var payload sessionruntime.RuntimeSessionMessageStoredMirrorItem
 			if err := decodeRuntimeSessionV2MirrorPayload(item.Payload, &payload); err != nil {
@@ -738,6 +743,19 @@ func (s *Server) applyRuntimeSessionV2MirrorActions(sessionID string, actions []
 		if action.lifecycle != nil {
 			if err := s.sessions.StoreMirroredLifecycle(*action.lifecycle); err != nil {
 				return err
+			}
+			if action.lifecycleEvent != nil {
+				event := *action.lifecycleEvent
+				if s.events != nil {
+					appended, err := s.events.Append(event.Stream, event.EventType, event.EntityID, event.Payload, event.CausationID, event.CorrelationID)
+					if err != nil {
+						return err
+					}
+					event = appended
+				}
+				if s.hub != nil {
+					s.hub.Publish(event)
+				}
 			}
 		}
 		if action.message != nil {

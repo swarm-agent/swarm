@@ -620,6 +620,181 @@ func TestSessionsV2LifecycleLocalContainerDoesNotUsePrimaryStopPath(t *testing.T
 	}
 }
 
+func TestSessionsV2LifecyclePrimaryStopRejectsPrimarySessionOnLocalContainerPath(t *testing.T) {
+	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	sessionID := createPrimarySessionV2ForLifecycleTest(t, server, swarmStore, "binding-primary-v2", pebblestore.TopologyWorkspaceBindingAccessModeReadWrite, true)
+
+	req := httptest.NewRequest(http.MethodPost, "/v2/sessions/"+sessionID+"/run/stop/local-container", bytes.NewBufferString(`{"type":"run.stop","run_id":"run-1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "local-container stop requires local_container execution class") {
+		t.Fatalf("body = %s, want local-container class rejection", rec.Body.String())
+	}
+}
+
+func TestSessionsV2LifecycleSurfaceAllowsLocalContainerStop(t *testing.T) {
+	hostServer, _, _, _, hostSwarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	runtimeServer, _, _, _, runtimeSwarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	runtimeServer.runner = &primaryV2RunRequestRecordingRunner{}
+	seedSessionsV2LocalContainerAuthority(t, hostServer, hostSwarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	seedRuntimeSessionsV2OpenContainerAuthority(t, runtimeServer, runtimeSwarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	setTestServerLocalSwarmID(t, runtimeServer, "container-swarm")
+	seedRuntimeSessionsV2Pairing(t, runtimeSwarmStore, "host-swarm-id")
+
+	runtimeHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(context.WithValue(r.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: "host-swarm-id"}))
+		if principal, ok := runtimeServer.trustedPairingPrincipalForPeerRequest(r); ok {
+			r = withSessionsV2TestPrincipal(r, principal)
+		}
+		runtimeServer.Handler().ServeHTTP(w, r)
+	}))
+	defer runtimeHTTP.Close()
+	if err := hostServer.RegisterAuthorityConnection(AuthorityConnection{AuthorityHostSwarmID: "container-swarm", AccountScopeID: testPrincipal().AccountScopeID, TransportKind: authorityConnectionTransportHTTP, TransportRef: runtimeHTTP.URL, Health: AuthorityConnectionHealthOnline}); err != nil {
+		t.Fatalf("register runtime authority connection: %v", err)
+	}
+
+	createReq := httptest.NewRequest(http.MethodPost, "/v2/sessions/local-containers", bytes.NewBufferString(`{"swarm_id":"container-swarm","workspace_binding_id":"binding-container-v2","title":"container v2 lifecycle","mode":"auto","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	hostServer.Handler().ServeHTTP(createRec, withTestPrincipal(createReq))
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, want %d, body=%s", createRec.Code, http.StatusOK, createRec.Body.String())
+	}
+	var createPayload struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createPayload); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	sessionID := strings.TrimSpace(createPayload.Session.ID)
+	req := httptest.NewRequest(http.MethodPost, "/v2/sessions/"+sessionID+"/run/stop/local-container", bytes.NewBufferString(`{"type":"run.stop","run_id":"missing-run"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	hostServer.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "runtime session stop failed") {
+		t.Fatalf("body = %s, want runtime stop dispatch failure", rec.Body.String())
+	}
+}
+
+func TestSessionsV2LifecycleLocalContainerStopDispatchesInternalStopAndMirrorsLifecycle(t *testing.T) {
+	hostServer, sessionSvc, _, _, hostSwarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	runtimeServer, _, _, _, runtimeSwarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	runtimeServer.runner = &primaryV2RunRequestRecordingRunner{}
+	seedSessionsV2LocalContainerAuthority(t, hostServer, hostSwarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	seedRuntimeSessionsV2OpenContainerAuthority(t, runtimeServer, runtimeSwarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	setTestServerLocalSwarmID(t, runtimeServer, "container-swarm")
+	seedRuntimeSessionsV2Pairing(t, runtimeSwarmStore, "host-swarm-id")
+
+	var runtimeStopCalls int32
+	runtimeHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(context.WithValue(r.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: "host-swarm-id"}))
+		if strings.Contains(r.URL.Path, "/run/stream") {
+			t.Fatalf("local-container stop used run/stream: %s", r.URL.Path)
+		}
+		if strings.HasSuffix(r.URL.Path, "/run/stop") {
+			atomic.AddInt32(&runtimeStopCalls, 1)
+		}
+		if principal, ok := runtimeServer.trustedPairingPrincipalForPeerRequest(r); ok {
+			r = withSessionsV2TestPrincipal(r, principal)
+		}
+		runtimeServer.Handler().ServeHTTP(w, r)
+	}))
+	defer runtimeHTTP.Close()
+	if err := hostServer.RegisterAuthorityConnection(AuthorityConnection{AuthorityHostSwarmID: "container-swarm", AccountScopeID: testPrincipal().AccountScopeID, TransportKind: authorityConnectionTransportHTTP, TransportRef: runtimeHTTP.URL, Health: AuthorityConnectionHealthOnline}); err != nil {
+		t.Fatalf("register runtime authority connection: %v", err)
+	}
+
+	createReq := httptest.NewRequest(http.MethodPost, "/v2/sessions/local-containers", bytes.NewBufferString(`{"swarm_id":"container-swarm","workspace_binding_id":"binding-container-v2","title":"container v2 lifecycle","mode":"auto","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	hostServer.Handler().ServeHTTP(createRec, withTestPrincipal(createReq))
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, want %d, body=%s", createRec.Code, http.StatusOK, createRec.Body.String())
+	}
+	var createPayload struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createPayload); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	sessionID := strings.TrimSpace(createPayload.Session.ID)
+	if sessionID == "" {
+		t.Fatalf("created local-container session missing id: %s", createRec.Body.String())
+	}
+	execution, ok, err := sessionSvc.Store().GetSessionExecutionV2(sessionID)
+	if err != nil || !ok {
+		t.Fatalf("get host execution ok=%t err=%v", ok, err)
+	}
+	runtimeSession, ok, err := runtimeServer.sessions.GetSession(sessionID)
+	if err != nil || !ok {
+		t.Fatalf("get runtime session ok=%t err=%v", ok, err)
+	}
+	if err := runtimeServer.sessions.Store().CreateSessionWithExecutionV2(runtimeSession, execution); err != nil {
+		t.Fatalf("seed runtime execution: %v", err)
+	}
+	active := pebblestore.SessionLifecycleSnapshot{SessionID: sessionID, UserID: execution.UserID, AccountScopeID: execution.AccountScopeID, RunID: "run-1", Active: true, Phase: "running", StartedAt: 1, UpdatedAt: 2, Generation: 1}
+	if err := runtimeServer.sessions.UpsertLifecycle(active); err != nil {
+		t.Fatalf("seed runtime lifecycle: %v", err)
+	}
+	if err := hostServer.sessions.UpsertLifecycle(active); err != nil {
+		t.Fatalf("seed host lifecycle: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v2/sessions/"+sessionID+"/run/stop/local-container", bytes.NewBufferString(`{"type":"run.stop","run_id":"run-1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	hostServer.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if runtimeStopCalls != 1 {
+		t.Fatalf("runtime stop calls = %d, want 1", runtimeStopCalls)
+	}
+	runtimeRunner, ok := runtimeServer.runner.(*primaryV2RunRequestRecordingRunner)
+	if ok {
+		runtimeRunner.mu.Lock()
+		stopSessionID, stopRunID, stopReason := runtimeRunner.stopSessionID, runtimeRunner.stopRunID, runtimeRunner.stopReason
+		runtimeRunner.mu.Unlock()
+		if stopSessionID != sessionID || stopRunID != "run-1" || stopReason != "run stopped by user" {
+			ok = false
+		}
+	}
+	if !ok {
+		t.Fatalf("runtime stop runner = %+v", runtimeServer.runner)
+	}
+	if strings.Contains(rec.Body.String(), "mirror_batch") || !strings.Contains(rec.Body.String(), "accepted") {
+		t.Fatalf("response = %s, want accepted mirror without raw batch", rec.Body.String())
+	}
+	lifecycle, ok, err := sessionSvc.GetLifecycle(sessionID)
+	if err != nil || !ok {
+		t.Fatalf("get host lifecycle ok=%t err=%v", ok, err)
+	}
+	if lifecycle.Active || lifecycle.Phase != "cancelled" || lifecycle.RunID != "run-1" || lifecycle.StopReason != "run stopped by user" {
+		t.Fatalf("unexpected mirrored lifecycle: %+v", lifecycle)
+	}
+	events, err := hostServer.events.ReadFrom(0, 20)
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	foundLifecycleEvent := false
+	for _, event := range events {
+		if event.EntityID == sessionID && event.EventType == "session.lifecycle.updated" {
+			foundLifecycleEvent = true
+			break
+		}
+	}
+	if !foundLifecycleEvent {
+		t.Fatalf("missing mirrored lifecycle realtime event in %+v", events)
+	}
+}
+
 func TestSessionsV2LifecycleRunStreamControlAllowsSafeBackgroundOwnership(t *testing.T) {
 	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
 	runner := &primaryV2RunRequestRecordingRunner{emitLifecycle: true}
@@ -886,6 +1061,9 @@ type primaryV2RunRequestRecordingRunner struct {
 	request       runruntime.RunRequest
 	meta          runruntime.RunStartMeta
 	emitLifecycle bool
+	stopSessionID string
+	stopRunID     string
+	stopReason    string
 }
 
 func (r *primaryV2RunRequestRecordingRunner) RunTurn(_ context.Context, sessionID string, request runruntime.RunRequest, meta runruntime.RunStartMeta) (runruntime.RunResult, error) {
@@ -928,6 +1106,11 @@ func (r *primaryV2RunRequestRecordingRunner) snapshot() (int, string, runruntime
 }
 
 func (r *primaryV2RunRequestRecordingRunner) StopSessionRun(sessionID, runID, reason string) error {
+	r.mu.Lock()
+	r.stopSessionID = sessionID
+	r.stopRunID = runID
+	r.stopReason = reason
+	r.mu.Unlock()
 	return nil
 }
 

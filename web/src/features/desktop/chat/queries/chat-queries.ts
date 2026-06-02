@@ -26,6 +26,7 @@ import {
   applyDesktopChatRouteToSession,
   desktopChatRouteFromSessionMetadata,
   getDesktopSessionCreateV2Target,
+  isLocalContainerDesktopChatRoute,
   isManagedHostDesktopChatRoute,
   isPrimaryDesktopChatRoute,
   type DesktopChatRoute,
@@ -1647,25 +1648,29 @@ export async function stopSessionRun(
 ): Promise<void> {
   const managedHost = isManagedHostDesktopChatRoute(route);
   const primaryTarget = isPrimaryDesktopChatRoute(route);
+  const localContainerTarget = isLocalContainerDesktopChatRoute(route);
+  if (!managedHost && !primaryTarget && !localContainerTarget) {
+    throw new Error("Unsupported desktop chat stop route.");
+  }
   const targetSwarmId = route?.swarmId?.trim() ?? "";
+  const endpoint = managedHost
+    ? "/v1/swarm/managed-hosts/sessions/stop"
+    : primaryTarget
+      ? `/v2/sessions/${encodeURIComponent(sessionId)}/run/stop/primary`
+      : `/v2/sessions/${encodeURIComponent(sessionId)}/run/stop/local-container`;
+  const body = managedHost
+    ? { type: "run.stop", target_swarm_id: targetSwarmId, session_id: sessionId, run_id: runId }
+    : primaryTarget
+      ? { type: "run.stop", target_swarm_id: targetSwarmId, run_id: runId }
+      : { type: "run.stop", run_id: runId };
   const response = await apiFetch(
-    managedHost
-      ? "/v1/swarm/managed-hosts/sessions/stop"
-      : primaryTarget
-        ? `/v2/sessions/${encodeURIComponent(sessionId)}/run/stop/primary`
-        : `/v2/sessions/${encodeURIComponent(sessionId)}/run/stream`,
+    endpoint,
     {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(
-        managedHost
-          ? { type: "run.stop", target_swarm_id: targetSwarmId, session_id: sessionId, run_id: runId }
-          : primaryTarget
-            ? { type: "run.stop", target_swarm_id: targetSwarmId, run_id: runId }
-            : { type: "run.stop", run_id: runId },
-      ),
+      body: JSON.stringify(body),
     },
   );
   if (!response.ok) {

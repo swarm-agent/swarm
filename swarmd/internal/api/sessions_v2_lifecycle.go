@@ -47,7 +47,7 @@ func isMutatingSessionsV2LifecycleRequest(method, subpath string) bool {
 		return false
 	case "messages", "metadata", "mode", "preference", "codex", "plans/active", "plans":
 		return method == http.MethodPost
-	case "permissions/resolve_all", "run", "run/stop/primary":
+	case "permissions/resolve_all", "run", "run/stop/primary", "run/stop/local-container":
 		return method == http.MethodPost
 	case "run/stream":
 		return false
@@ -94,6 +94,8 @@ func localContainerRuntimeLifecycleAction(subpath string) (string, bool) {
 		return "", true
 	case "messages", "metadata", "mode", "preference", "codex", "plans/active", "plans", "permissions", "permissions/resolve_all", "usage", "run", "run/stream":
 		return subpath, true
+	case "run/stop/local-container":
+		return "run/stop", true
 	default:
 		if strings.HasPrefix(subpath, "plans/") || strings.HasPrefix(subpath, "permissions/") && strings.HasSuffix(subpath, "/resolve") {
 			return subpath, true
@@ -187,7 +189,12 @@ func (s *Server) handlePrimarySessionV2ByID(w http.ResponseWriter, r *http.Reque
 	case "run":
 		s.handlePrimarySessionV2Run(w, r, sessionID)
 	case "run/stop/primary":
+		if s.handleLocalContainerSessionV2LifecycleIfNeeded(w, r, sessionID, subpath) {
+			return
+		}
 		s.handlePrimarySessionV2RunStopPrimary(w, r, sessionID)
+	case "run/stop/local-container":
+		s.handlePrimarySessionV2RunStopLocalContainer(w, r, sessionID)
 	case "run/stream":
 		s.handlePrimarySessionV2RunStream(w, r, sessionID)
 	default:
@@ -248,6 +255,25 @@ func (s *Server) requirePrimarySessionV2DispatchAuthority(r *http.Request, sessi
 }
 
 func (s *Server) handleLocalContainerSessionV2LifecycleIfNeeded(w http.ResponseWriter, r *http.Request, sessionID, subpath string) bool {
+	if strings.TrimSpace(subpath) == "run/stop/local-container" {
+		return false
+	}
+	if strings.TrimSpace(subpath) == "run/stop/primary" {
+		authority, err := s.requireSessionV2Authority(r, sessionID, isMutatingSessionsV2LifecycleHTTPRequest(r, subpath))
+		if err != nil {
+			writeSessionsV2Error(w, err)
+			return true
+		}
+		if strings.TrimSpace(authority.Execution.ExecutionClass) == sessionruntime.SessionExecutionClassLocalContainer {
+			if !methodAllowedForSessionsV2LifecycleSubpath(r.Method, subpath) {
+				methodNotAllowed(w)
+				return true
+			}
+			writeSessionsV2Error(w, sessionV2InvalidClass("sessions v2 local-container lifecycle dispatch must use native runtime dispatch"))
+			return true
+		}
+		return false
+	}
 	action, supported := localContainerRuntimeLifecycleAction(subpath)
 	if !supported {
 		return false
@@ -278,7 +304,7 @@ func methodAllowedForSessionsV2LifecycleSubpath(method, subpath string) bool {
 		return method == http.MethodGet || method == http.MethodPost
 	case "permissions", "usage":
 		return method == http.MethodGet
-	case "permissions/resolve_all", "run", "run/stop/primary":
+	case "permissions/resolve_all", "run", "run/stop/primary", "run/stop/local-container":
 		return method == http.MethodPost
 	case "run/stream":
 		return method == http.MethodGet || method == http.MethodPost
@@ -325,6 +351,75 @@ func (s *Server) dispatchLocalRuntimeSessionV2Lifecycle(w http.ResponseWriter, r
 	cloned.URL.RawQuery = r.URL.RawQuery
 	cloned.RequestURI = ""
 	s.handleRuntimeSessionsV2ByID(w, cloned)
+}
+
+func (s *Server) dispatchLocalContainerSessionV2RunStop(r *http.Request, authority sessionV2Authority, req sessionruntime.RuntimeSessionStopRequest) (sessionruntime.RuntimeSessionStopResponse, error) {
+	if s == nil {
+		return sessionruntime.RuntimeSessionStopResponse{}, errors.New("sessions v2 service is not configured")
+	}
+	localNode, localOK, err := s.swarmLocalNode()
+	if err != nil {
+		return sessionruntime.RuntimeSessionStopResponse{}, err
+	}
+	localSwarmID := strings.TrimSpace(localNode.SwarmID)
+	var resp sessionruntime.RuntimeSessionStopResponse
+	if localOK && strings.EqualFold(localSwarmID, strings.TrimSpace(authority.Execution.RuntimeSwarmID)) {
+		principal := authority.Principal
+		principal.SessionID = strings.TrimSpace(authority.Execution.SessionID)
+		resp, err = s.stopRuntimeSessionV2Run(authority.Execution.SessionID, principal, req)
+	} else {
+		resp, err = s.dispatchRemoteRuntimeSessionV2RunStop(r, authority, req)
+	}
+	if err != nil {
+		return sessionruntime.RuntimeSessionStopResponse{}, err
+	}
+	if resp.MirrorBatch == nil {
+		return resp, nil
+	}
+	accepted, err := s.ingestRuntimeSessionV2MirrorBatch(authority.Execution, *resp.MirrorBatch, runtimeSessionV2MirrorIngestionOptions{})
+	if err != nil {
+		return sessionruntime.RuntimeSessionStopResponse{}, err
+	}
+	resp.MirrorAccepted = accepted
+	resp.MirrorStatus = "accepted"
+	resp.MirrorBatch = nil
+	return resp, nil
+}
+
+func (s *Server) dispatchRemoteRuntimeSessionV2RunStop(r *http.Request, authority sessionV2Authority, req sessionruntime.RuntimeSessionStopRequest) (sessionruntime.RuntimeSessionStopResponse, error) {
+	if s.swarm == nil {
+		return sessionruntime.RuntimeSessionStopResponse{}, sessionV2AuthorityNotFound("runtime session peer authority for %q is not configured", authority.Execution.RuntimeSwarmID)
+	}
+	localNode, localOK, err := s.swarmLocalNode()
+	if err != nil {
+		return sessionruntime.RuntimeSessionStopResponse{}, err
+	}
+	localSwarmID := strings.TrimSpace(localNode.SwarmID)
+	if !localOK || localSwarmID == "" {
+		return sessionruntime.RuntimeSessionStopResponse{}, sessionV2AuthorityNotFound("runtime session peer authority for %q is not configured", authority.Execution.RuntimeSwarmID)
+	}
+	conn, ok := s.ResolveAuthorityConnection(authority.Principal.AccountScopeID, authority.Execution.RuntimeSwarmID)
+	if !ok || strings.TrimSpace(conn.endpoint()) == "" {
+		return sessionruntime.RuntimeSessionStopResponse{}, sessionV2AuthorityNotFound("runtime session authority connection for %q was not found", authority.Execution.RuntimeSwarmID)
+	}
+	if strings.EqualFold(conn.TransportKind, authorityConnectionTransportLocal) {
+		return sessionruntime.RuntimeSessionStopResponse{}, sessionV2StaleAuthority("runtime session authority connection for %q resolved local transport for non-local runtime", authority.Execution.RuntimeSwarmID)
+	}
+	peerToken, ok, err := s.swarm.OutgoingPeerAuthToken(strings.TrimSpace(authority.Execution.RuntimeSwarmID))
+	if err != nil {
+		return sessionruntime.RuntimeSessionStopResponse{}, err
+	}
+	if !ok || strings.TrimSpace(peerToken) == "" {
+		return sessionruntime.RuntimeSessionStopResponse{}, sessionV2AuthorityNotFound("runtime session peer authority for %q is not configured", authority.Execution.RuntimeSwarmID)
+	}
+	endpoint := strings.TrimRight(conn.endpoint(), "/") + runtimeSessionsV2Prefix + strings.TrimSpace(authority.Execution.SessionID) + "/run/stop"
+	client := &http.Client{Timeout: runtimeSessionOpenHTTPTimeout}
+	var resp sessionruntime.RuntimeSessionStopResponse
+	headers := map[string]string{peerAuthSwarmIDHeader: localSwarmID, peerAuthTokenHeader: peerToken}
+	if err := remoteSwarmJSONRequestWithClientAndHeaders(http.MethodPost, endpoint, req, &resp, client, headers); err != nil {
+		return sessionruntime.RuntimeSessionStopResponse{}, sessionV2StaleAuthority("runtime session stop failed: %v", err)
+	}
+	return resp, nil
 }
 
 func (s *Server) dispatchRemoteRuntimeSessionV2Lifecycle(w http.ResponseWriter, r *http.Request, authority sessionV2Authority, action string) error {
@@ -666,7 +761,8 @@ func (s *Server) handlePrimarySessionV2Get(w http.ResponseWriter, r *http.Reques
 		methodNotAllowed(w)
 		return
 	}
-	if _, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, false); err != nil {
+	authority, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, false)
+	if err != nil {
 		writeSessionsV2Error(w, err)
 		return
 	}
@@ -679,7 +775,23 @@ func (s *Server) handlePrimarySessionV2Get(w http.ResponseWriter, r *http.Reques
 		writeSessionNotFound(w)
 		return
 	}
-	s.writeSessionSnapshot(w, session)
+	fields := gitStatusResponseForSession(session)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true,
+		"session": struct {
+			pebblestore.SessionSnapshot
+			gitStatusResponseFields
+			GitCommitDetected bool                            `json:"git_commit_detected,omitempty"`
+			GitCommitCount    int                             `json:"git_commit_count,omitempty"`
+			SessionExecution  sessionruntime.SessionExecution `json:"session_execution,omitempty"`
+		}{
+			SessionSnapshot:         session,
+			gitStatusResponseFields: fields,
+			GitCommitDetected:       gitCommitDetectedForSession(session, fields),
+			GitCommitCount:          gitCommitCountForSession(session, fields),
+			SessionExecution:        runtimeSessionsV2ExecutionFromRecord(authority.Execution),
+		},
+	})
 }
 
 func (s *Server) handlePrimarySessionV2Messages(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -1249,6 +1361,33 @@ func (s *Server) handlePrimarySessionV2Run(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.handleNativeSessionV2Run(w, r, sessionID, authority.Principal)
+}
+
+func (s *Server) handlePrimarySessionV2RunStopLocalContainer(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	authority, err := s.requireSessionV2Authority(r, sessionID, true)
+	if err != nil {
+		writeSessionsV2Error(w, err)
+		return
+	}
+	if strings.TrimSpace(authority.Execution.ExecutionClass) != sessionruntime.SessionExecutionClassLocalContainer {
+		writeSessionsV2Error(w, sessionV2InvalidClass("local-container stop requires local_container execution class"))
+		return
+	}
+	var req sessionruntime.RuntimeSessionStopRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeSessionsV2Error(w, sessionV2BadRequest("invalid local-container stop request: %v", err))
+		return
+	}
+	resp, err := s.dispatchLocalContainerSessionV2RunStop(r, authority, req)
+	if err != nil {
+		writeSessionsV2Error(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handlePrimarySessionV2RunStopPrimary(w http.ResponseWriter, r *http.Request, sessionID string) {

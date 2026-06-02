@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -645,6 +646,21 @@ func (s *Server) handleRuntimeSessionsV2ByID(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		s.handleNativeSessionV2Run(w, r, sessionID, principal)
+	case "run/stop":
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		principal, err := s.requireRuntimeSessionV2Principal(r, sessionID)
+		if err != nil {
+			writeSessionsV2Error(w, err)
+			return
+		}
+		if err := s.requireRuntimeSessionV2MutationAuthority(principal, sessionID); err != nil {
+			writeSessionsV2Error(w, err)
+			return
+		}
+		s.handleRuntimeSessionV2RunStop(w, r, sessionID, principal)
 	case "run/stream":
 		if r.Method != http.MethodGet && r.Method != http.MethodPost {
 			methodNotAllowed(w)
@@ -722,6 +738,103 @@ func (s *Server) requireRuntimeSessionV2Principal(r *http.Request, sessionID str
 	ctx := identity.ContextWithPrincipal(r.Context(), principal)
 	*r = *r.WithContext(ctx)
 	return principal, nil
+}
+
+func (s *Server) handleRuntimeSessionV2RunStop(w http.ResponseWriter, r *http.Request, sessionID string, principal identity.Principal) {
+	var req sessionruntime.RuntimeSessionStopRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeSessionsV2Error(w, sessionV2BadRequest("invalid runtime session stop request: %v", err))
+		return
+	}
+	resp, err := s.stopRuntimeSessionV2Run(sessionID, principal, req)
+	if err != nil {
+		writeSessionsV2Error(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) stopRuntimeSessionV2Run(sessionID string, principal identity.Principal, req sessionruntime.RuntimeSessionStopRequest) (sessionruntime.RuntimeSessionStopResponse, error) {
+	if s == nil || s.runner == nil || s.runStreams == nil || s.sessions == nil || s.sessions.Store() == nil {
+		return sessionruntime.RuntimeSessionStopResponse{}, errors.New("runtime sessions v2 run stop service is not configured")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	runID := strings.TrimSpace(req.RunID)
+	if runID == "" {
+		return sessionruntime.RuntimeSessionStopResponse{}, sessionV2BadRequest("run_id is required for stop")
+	}
+	execution, ok, err := s.sessions.Store().GetSessionExecutionV2(sessionID)
+	if err != nil {
+		return sessionruntime.RuntimeSessionStopResponse{}, err
+	}
+	if !ok {
+		return sessionruntime.RuntimeSessionStopResponse{}, sessionV2AuthorityNotFound("runtime session execution for %q was not found", sessionID)
+	}
+	if strings.TrimSpace(execution.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		return sessionruntime.RuntimeSessionStopResponse{}, sessionV2AccessDenied("runtime session execution account scope does not match principal")
+	}
+
+	const stopReason = "run stopped by user"
+	lifecycle, lifecycleOK, err := s.sessions.GetLifecycle(sessionID)
+	if err != nil {
+		return sessionruntime.RuntimeSessionStopResponse{}, err
+	}
+	if !lifecycleOK || !lifecycle.Active || !strings.EqualFold(strings.TrimSpace(lifecycle.RunID), runID) {
+		return sessionruntime.RuntimeSessionStopResponse{}, sessionV2StaleAuthority("runtime session stop failed: session has no active run")
+	}
+	s.runStreams.setStopReason(runID, stopReason)
+	if err := s.runner.StopSessionRun(sessionID, runID, stopReason); err != nil {
+		return sessionruntime.RuntimeSessionStopResponse{}, sessionV2StaleAuthority("runtime session stop failed: %v", err)
+	}
+	if refreshed, ok, err := s.sessions.GetLifecycle(sessionID); err != nil {
+		return sessionruntime.RuntimeSessionStopResponse{}, err
+	} else if ok && strings.EqualFold(strings.TrimSpace(refreshed.RunID), runID) {
+		lifecycle = refreshed
+	}
+	{
+		lifecycle.SessionID = sessionID
+		if strings.TrimSpace(lifecycle.UserID) == "" {
+			lifecycle.UserID = execution.UserID
+		}
+		if strings.TrimSpace(lifecycle.AccountScopeID) == "" {
+			lifecycle.AccountScopeID = execution.AccountScopeID
+		}
+		lifecycle.Active = false
+		lifecycle.Phase = "cancelled"
+		if strings.TrimSpace(lifecycle.StopReason) == "" {
+			lifecycle.StopReason = stopReason
+		}
+		if lifecycle.UpdatedAt == 0 {
+			lifecycle.UpdatedAt = time.Now().UnixMilli()
+		}
+		if lifecycle.EndedAt == 0 {
+			lifecycle.EndedAt = lifecycle.UpdatedAt
+		}
+	}
+	mirrorBatch, err := runtimeSessionV2StopMirrorBatch(execution, lifecycle)
+	if err != nil {
+		return sessionruntime.RuntimeSessionStopResponse{}, err
+	}
+	return sessionruntime.RuntimeSessionStopResponse{OK: true, SessionID: sessionID, RunID: runID, Status: "stop_requested", TargetSwarmID: strings.TrimSpace(execution.RuntimeSwarmID), MirrorStatus: "ready", MirrorAccepted: len(mirrorBatch.Items), Lifecycle: &lifecycle, MirrorBatch: &mirrorBatch}, nil
+}
+
+func runtimeSessionV2StopMirrorBatch(execution pebblestore.SessionExecutionV2Record, lifecycle pebblestore.SessionLifecycleSnapshot) (sessionruntime.RuntimeSessionMirrorBatchRequest, error) {
+	payload, err := json.Marshal(sessionruntime.RuntimeSessionLifecycleMirrorItem{Lifecycle: lifecycle})
+	if err != nil {
+		return sessionruntime.RuntimeSessionMirrorBatchRequest{}, err
+	}
+	return sessionruntime.RuntimeSessionMirrorBatchRequest{
+		SessionID:        strings.TrimSpace(execution.SessionID),
+		Authority:        runtimeSessionOpenRequestFromFrozenExecution(execution, sessionruntime.SessionsV2CreateRequest{}).Authority,
+		SessionExecution: execution,
+		Items: []sessionruntime.RuntimeSessionMirrorItem{{
+			Type:      sessionruntime.RuntimeSessionMirrorTypeSessionLifecycle,
+			SessionID: strings.TrimSpace(execution.SessionID),
+			RunID:     strings.TrimSpace(lifecycle.RunID),
+			CreatedAt: lifecycle.UpdatedAt,
+			Payload:   payload,
+		}},
+	}, nil
 }
 
 func (s *Server) handleRuntimeSessionV2MirrorBatch(w http.ResponseWriter, r *http.Request, sessionID string) {

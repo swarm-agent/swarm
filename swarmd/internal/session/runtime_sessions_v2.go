@@ -136,6 +136,23 @@ type RuntimeSessionRunResponse struct {
 	Status    string `json:"status,omitempty"`
 }
 
+type RuntimeSessionStopRequest struct {
+	Type  string `json:"type,omitempty"`
+	RunID string `json:"run_id"`
+}
+
+type RuntimeSessionStopResponse struct {
+	OK             bool                                  `json:"ok"`
+	SessionID      string                                `json:"session_id"`
+	RunID          string                                `json:"run_id"`
+	Status         string                                `json:"status"`
+	TargetSwarmID  string                                `json:"target_swarm_id"`
+	MirrorStatus   string                                `json:"mirror_status,omitempty"`
+	MirrorAccepted int                                   `json:"mirror_accepted,omitempty"`
+	Lifecycle      *pebblestore.SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
+	MirrorBatch    *RuntimeSessionMirrorBatchRequest     `json:"mirror_batch,omitempty"`
+}
+
 type RuntimeSessionStreamRequest struct {
 	SessionID        string                               `json:"session_id"`
 	Authority        RuntimeSessionAuthority              `json:"authority,omitempty"`
