@@ -14,6 +14,24 @@ func TestOpenChatSessionHostRouteUsesOverviewSwarmTarget(t *testing.T) {
 	}
 }
 
+func TestBuildChatRoutesForHomeModelTreatsSelfKindAsPrimaryHostTarget(t *testing.T) {
+	routes := buildChatRoutesForHomeModel(model.HomeModel{
+		CurrentSwarmTarget: &model.SwarmTarget{SwarmID: "host-swarm", Name: "Host Swarm", Relationship: "self", Kind: "self", Current: true},
+		Workspaces: []model.Workspace{{
+			Path:                    testWorkspacePath,
+			LocalWorkspaceBindingID: "local-binding",
+		}},
+	}, testWorkspacePath)
+
+	if len(routes) != 1 {
+		t.Fatalf("route count = %d, want 1", len(routes))
+	}
+	route := routes[0]
+	if route.ID != "swarm:host-swarm:binding:local-binding" || route.SwarmID != "host-swarm" || route.WorkspaceBindingID != "local-binding" {
+		t.Fatalf("primary self route did not preserve v2 shape: %+v", route)
+	}
+}
+
 func TestOpenChatSessionRemoteRouteKeepsTopologyRouteSwarmID(t *testing.T) {
 	routes := buildChatRoutesForWorkspaces(testRoutingWorkspaces(), testWorkspacePath)
 	selected := ""

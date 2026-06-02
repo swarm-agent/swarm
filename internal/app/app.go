@@ -7826,7 +7826,7 @@ func isPrimaryHostSwarmTarget(target *model.SwarmTarget) bool {
 	}
 	relationship := strings.ToLower(strings.TrimSpace(target.Relationship))
 	kind := strings.ToLower(strings.TrimSpace(target.Kind))
-	return relationship == "self" && (kind == "" || kind == "host" || kind == "local")
+	return relationship == "self" && (kind == "" || kind == "host" || kind == "local" || kind == "self")
 }
 
 func primaryHostRouteTargetName(route model.ChatRoute, target *model.SwarmTarget) string {
