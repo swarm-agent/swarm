@@ -60,6 +60,8 @@ type workspaceOverviewTopologyRoute struct {
 	Sync                 pebblestore.WorkspaceReplicationSync `json:"sync,omitempty"`
 	CreatedAt            int64                                `json:"created_at"`
 	UpdatedAt            int64                                `json:"updated_at"`
+	TUIPrimaryCWD        bool                                 `json:"tui_primary_cwd,omitempty"`
+	UnavailableReason    string                               `json:"unavailable_reason,omitempty"`
 }
 
 func (s *Server) applyWorkspaceWorktreeStatus(principal identity.Principal, entries []workspace.Entry) ([]workspace.Entry, error) {

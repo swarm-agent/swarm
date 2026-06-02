@@ -133,6 +133,8 @@ type ChatRoute struct {
 	RuntimeWorkspacePath string
 	TargetKind           string
 	TargetRelationship   string
+	TUIPrimaryCWD        bool
+	UnavailableReason    string
 }
 
 type SwarmTarget struct {

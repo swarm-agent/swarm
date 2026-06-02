@@ -561,6 +561,8 @@ type WorkspaceTopologyRoute struct {
 	Sync                 WorkspaceReplicationSync `json:"sync,omitempty"`
 	CreatedAt            int64                    `json:"created_at"`
 	UpdatedAt            int64                    `json:"updated_at"`
+	TUIPrimaryCWD        bool                     `json:"tui_primary_cwd,omitempty"`
+	UnavailableReason    string                   `json:"unavailable_reason,omitempty"`
 }
 
 type WorkspaceOverviewSwarmTarget struct {
@@ -615,6 +617,17 @@ type WorkspaceOverviewResponse struct {
 	HasMore          bool                          `json:"has_more,omitempty"`
 	TotalWorkspaces  int                           `json:"total_workspaces,omitempty"`
 	SwarmTarget      *WorkspaceOverviewSwarmTarget `json:"swarm_target,omitempty"`
+}
+
+type WorkspaceCWDResolveResponse struct {
+	OK                 bool                          `json:"ok"`
+	CWD                string                        `json:"cwd"`
+	ResolvedPath       string                        `json:"resolved_path"`
+	ResolutionKind     string                        `json:"resolution_kind"`
+	Workspace          *WorkspaceResolution          `json:"workspace,omitempty"`
+	PrimarySwarmTarget *WorkspaceOverviewSwarmTarget `json:"primary_swarm_target,omitempty"`
+	Routes             []WorkspaceTopologyRoute      `json:"routes"`
+	UnavailableReason  string                        `json:"unavailable_reason,omitempty"`
 }
 
 type RuleSource struct {
@@ -2413,6 +2426,19 @@ func (c *API) WorkspaceOverview(ctx context.Context, cwd string, roots []string,
 	var resp WorkspaceOverviewResponse
 	if err := c.getJSON(ctx, path, &resp, true); err != nil {
 		return WorkspaceOverviewResponse{}, err
+	}
+	return resp, nil
+}
+
+func (c *API) WorkspaceCWDResolve(ctx context.Context, cwd string) (WorkspaceCWDResolveResponse, error) {
+	query := url.Values{}
+	if strings.TrimSpace(cwd) != "" {
+		query.Set("cwd", strings.TrimSpace(cwd))
+	}
+	path := "/v1/workspace/cwd/resolve?" + query.Encode()
+	var resp WorkspaceCWDResolveResponse
+	if err := c.getJSON(ctx, path, &resp, true); err != nil {
+		return WorkspaceCWDResolveResponse{}, err
 	}
 	return resp, nil
 }

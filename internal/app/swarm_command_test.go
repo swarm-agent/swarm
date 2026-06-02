@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/model"
 )
 
@@ -12,26 +13,12 @@ func TestSwarmSelectorOverlayContentIsMinimal(t *testing.T) {
 	app := &App{
 		workspacePath:       workspacePath,
 		selectedChatRouteID: "swarm:child:" + workspacePath,
-		homeModel: model.HomeModel{Workspaces: []model.Workspace{{
-			Name: "repo",
-			Path: workspacePath,
-			TopologyRoutes: []model.WorkspaceTopologyRoute{{
-				RouteID:              "swarm:child:" + workspacePath,
-				RouteSource:          "topology/workspace_binding",
-				WorkspaceBindingID:   "binding-1",
-				RuntimeSwarmID:       "child",
-				RuntimeSwarmName:     "Child",
-				RuntimeKind:          "remote",
-				RuntimeRelationship:  "child",
-				HostWorkspacePath:    workspacePath,
-				HostWorkspaceName:    "repo",
-				RuntimeWorkspacePath: workspacePath,
-			}},
-		}}},
+		homeModel:           model.HomeModel{},
 	}
+	app.homeModel.ChatRoutes = modelChatRoutesFromCWDResolve(client.WorkspaceCWDResolveResponse{Routes: []client.WorkspaceTopologyRoute{{RouteID: "swarm:child:" + workspacePath, WorkspaceBindingID: "binding-1", RuntimeSwarmID: "child", RuntimeSwarmName: "Child", RuntimeKind: "remote", RuntimeRelationship: "child", HostWorkspacePath: workspacePath, RuntimeWorkspacePath: workspacePath}}})
 	app.config.Chat.DefaultWorkspaceRoutes = map[string]string{app.workspacePath: "swarm:child:" + app.workspacePath}
 
-	routes := buildChatRoutesForHomeModel(app.homeModel, app.workspacePath)
+	routes := app.homeModel.ChatRoutes
 	selected := normalizeSelectedRouteID(app.selectedChatRouteID, routes)
 	lines := []string{
 		"current: " + app.selectedChatRouteLabelForWorkspace(app.workspacePath),

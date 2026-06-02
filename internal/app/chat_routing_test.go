@@ -268,7 +268,7 @@ func TestRemoteUISettingsUpdateKeepsExplicitSelection(t *testing.T) {
 	}
 }
 
-func TestCycleChatRouteSinglePrimaryHostUsesRouterBackedLabel(t *testing.T) {
+func TestCycleChatRouteSinglePrimaryHostUsesResolverBackedLabel(t *testing.T) {
 	app := &App{
 		route:               "home",
 		workspacePath:       testWorkspacePath,
@@ -276,9 +276,15 @@ func TestCycleChatRouteSinglePrimaryHostUsesRouterBackedLabel(t *testing.T) {
 		home:                ui.NewHomePage(model.EmptyHome()),
 		homeModel: model.HomeModel{
 			CurrentSwarmTarget: &model.SwarmTarget{SwarmID: "primary-swarm", Name: "Primary Swarm", Relationship: "self", Kind: "host"},
-			Workspaces: []model.Workspace{{
-				Path:                    testWorkspacePath,
-				LocalWorkspaceBindingID: "binding-primary",
+			ChatRoutes: []model.ChatRoute{{
+				ID:                   "swarm:primary-swarm:binding:binding-primary",
+				Label:                "Primary Swarm",
+				SwarmID:              "primary-swarm",
+				WorkspaceBindingID:   "binding-primary",
+				HostWorkspacePath:    testWorkspacePath,
+				RuntimeWorkspacePath: testWorkspacePath,
+				TargetKind:           "host",
+				TargetRelationship:   "self",
 			}},
 		},
 	}
@@ -289,7 +295,7 @@ func TestCycleChatRouteSinglePrimaryHostUsesRouterBackedLabel(t *testing.T) {
 		t.Fatalf("route status = %q, want route: Primary Swarm", app.home.Status())
 	}
 	if app.selectedChatRouteID != "swarm:primary-swarm:binding:binding-primary" {
-		t.Fatalf("selected route ID = %q, want router-backed primary route", app.selectedChatRouteID)
+		t.Fatalf("selected route ID = %q, want resolver-backed primary route", app.selectedChatRouteID)
 	}
 }
 

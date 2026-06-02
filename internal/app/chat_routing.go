@@ -33,7 +33,7 @@ func (a *App) cycleChatRoute() {
 	if workspacePath == "" {
 		workspacePath = strings.TrimSpace(a.startupCWD)
 	}
-	routes := buildChatRoutesForHomeModel(a.homeModel, workspacePath)
+	routes := a.homeModel.ChatRoutes
 	if len(routes) <= 1 {
 		label := "host"
 		if len(routes) == 1 {
@@ -44,6 +44,9 @@ func (a *App) cycleChatRoute() {
 				a.home.SetModel(a.homeModel)
 			}
 			label = a.displayChatRouteLabel(routes[0])
+		}
+		if len(routes) == 0 {
+			label = "unavailable"
 		}
 		if a.chat != nil {
 			meta := a.chat.Meta()

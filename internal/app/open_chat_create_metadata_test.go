@@ -13,7 +13,7 @@ import (
 )
 
 func TestOpenChatSessionCreatePayloadUsesHostRouteAuthority(t *testing.T) {
-	got := captureOpenChatSessionCreateRequest(t, model.ChatRoute{ID: "host"}, "host-swarm", "local-binding", testWorkspacePath, "plan")
+	got := captureOpenChatSessionCreateRequest(t, model.ChatRoute{ID: "host", SwarmID: "host-swarm", WorkspaceBindingID: "local-binding", TargetKind: "host", TargetRelationship: "self"}, "host-swarm", "local-binding", testWorkspacePath, "plan")
 
 	if got.bodyString("swarm_id") != "host-swarm" {
 		t.Fatalf("swarm_id = %q, want host-swarm", got.bodyString("swarm_id"))
@@ -29,7 +29,7 @@ func TestOpenChatSessionCreatePayloadUsesHostRouteAuthority(t *testing.T) {
 }
 
 func TestOpenChatSessionCreatePayloadUsesTUICWDPrimaryExceptionOnlyForHostRoute(t *testing.T) {
-	got := captureOpenChatSessionCreateRequestWithWorktreeSettings(t, model.ChatRoute{ID: "host"}, "host-swarm", "", testWorkspacePath, "plan", client.WorktreeSettings{
+	got := captureOpenChatSessionCreateRequestWithWorktreeSettings(t, model.ChatRoute{ID: "host", TUIPrimaryCWD: true}, "host-swarm", "", testWorkspacePath, "plan", client.WorktreeSettings{
 		WorkspacePath:    testWorkspacePath,
 		Enabled:          true,
 		UseCurrentBranch: false,
@@ -57,7 +57,7 @@ func TestOpenChatSessionCreatePayloadUsesTUICWDPrimaryExceptionOnlyForHostRoute(
 }
 
 func TestOpenChatSessionCreatePayloadUsesWorktreeSettingsForBoundHostRoute(t *testing.T) {
-	got := captureOpenChatSessionCreateRequestWithWorktreeSettings(t, model.ChatRoute{ID: "host"}, "host-swarm", "local-binding", testWorkspacePath, "plan", client.WorktreeSettings{
+	got := captureOpenChatSessionCreateRequestWithWorktreeSettings(t, model.ChatRoute{ID: "host", SwarmID: "host-swarm", WorkspaceBindingID: "local-binding", TargetKind: "host", TargetRelationship: "self"}, "host-swarm", "local-binding", testWorkspacePath, "plan", client.WorktreeSettings{
 		WorkspacePath:    testWorkspacePath,
 		Enabled:          true,
 		UseCurrentBranch: false,
@@ -218,6 +218,9 @@ func captureOpenChatSessionCreateRequestWithWorktreeSettings(t *testing.T, route
 			TopologyRoutes:          topologyRoutesForTestChatRoute(route),
 		}},
 	}
+	if strings.TrimSpace(route.ID) != "" {
+		homeModel.ChatRoutes = []model.ChatRoute{route}
+	}
 	homePage := ui.NewHomePage(homeModel)
 	homePage.SetSessionMode(sessionMode)
 	app := &App{
@@ -304,5 +307,45 @@ func assertCreateMetadataStrictV2Safe(t *testing.T, metadata map[string]any) {
 		if strings.Contains(normalized, "swarm") || strings.Contains(normalized, "target") || strings.Contains(normalized, "routing") || strings.Contains(normalized, "route") || strings.Contains(normalized, "path") || strings.Contains(normalized, "workspace_name") || strings.Contains(normalized, "managed_host") {
 			t.Fatalf("create metadata contains v2 authority-looking key %q in %#v", key, metadata)
 		}
+	}
+}
+
+func TestOpenChatSessionCreateRequiresResolverBindingForKnownWorkspaceHostRoute(t *testing.T) {
+	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
+	t.Setenv("DATA_DIR", "")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/worktrees":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "worktrees": client.WorktreeSettings{WorkspacePath: testWorkspacePath}})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	homeModel := model.HomeModel{
+		ModelProvider:      "anthropic",
+		ModelName:          "claude",
+		ThinkingLevel:      "auto",
+		CurrentSwarmTarget: &model.SwarmTarget{SwarmID: "host-swarm"},
+		ChatRoutes:         []model.ChatRoute{{ID: "host", Label: "host", SwarmID: "host-swarm", TargetKind: "host", TargetRelationship: "self"}},
+		Workspaces: []model.Workspace{{
+			Name:                    "Host Repo",
+			Path:                    testWorkspacePath,
+			LocalWorkspaceBindingID: "local-binding",
+		}},
+	}
+	homePage := ui.NewHomePage(homeModel)
+	app := &App{
+		api:                 testAPIWithToken(server.URL),
+		startupCWD:          testWorkspacePath,
+		workspacePath:       testWorkspacePath,
+		selectedChatRouteID: "host",
+		home:                homePage,
+		homeModel:           homeModel,
+		streamEvents:        make(chan client.StreamEventEnvelope, 1),
+	}
+
+	if err := app.openChatSession("New Session", ""); err == nil || !strings.Contains(err.Error(), "workspace binding id is required") {
+		t.Fatalf("openChatSession() error = %v, want workspace binding required", err)
 	}
 }

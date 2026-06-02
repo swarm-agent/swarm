@@ -174,6 +174,7 @@ func (s *Server) registerWorkspaceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/workspace/current", s.handleWorkspaceCurrent)
 	mux.HandleFunc("/v1/workspace/list", s.handleWorkspaceList)
 	mux.HandleFunc("/v1/workspace/overview", s.handleWorkspaceOverview)
+	mux.HandleFunc("/v1/workspace/cwd/resolve", s.handleWorkspaceCWDResolve)
 	mux.HandleFunc("/v1/workspace/discover", s.handleWorkspaceDiscover)
 	mux.HandleFunc("/v1/workspace/browse", s.handleWorkspaceBrowse)
 	mux.HandleFunc("/v1/workspace/video/scan", s.handleWorkspaceVideoScan)

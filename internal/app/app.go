@@ -2702,10 +2702,7 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 	}
 	workspaceName := a.contextDisplayNameForPath(workspacePath, activeWorkspaceName)
 	route := a.selectedChatRouteForWorkspace(workspacePath)
-	if strings.TrimSpace(route.WorkspaceBindingID) == "" {
-		route.WorkspaceBindingID = a.localWorkspaceBindingIDForPath(workspacePath)
-	}
-	allowTUICWDPrimary := strings.TrimSpace(route.WorkspaceBindingID) == "" && strings.TrimSpace(route.ID) == "host"
+	allowTUICWDPrimary := strings.TrimSpace(route.WorkspaceBindingID) == "" && strings.TrimSpace(route.ID) == "host" && route.TUIPrimaryCWD
 	if strings.TrimSpace(route.WorkspaceBindingID) == "" && !allowTUICWDPrimary {
 		return errors.New("workspace binding id is required")
 	}
@@ -6964,9 +6961,7 @@ func (a *App) applyLoadedAppConfig(cfg AppConfig) {
 	if a == nil {
 		return
 	}
-	previousConfig := a.config
 	a.config = cfg
-	a.syncSelectedChatRouteAfterSettingsUpdate(previousConfig)
 	if a.keybinds == nil {
 		a.keybinds = ui.NewDefaultKeyBindings()
 	} else {
@@ -7096,6 +7091,8 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		worktreeErr      error
 		overview         client.WorkspaceOverviewResponse
 		overviewErr      error
+		cwdResolve       client.WorkspaceCWDResolveResponse
+		cwdResolveErr    error
 		providerStatuses []client.ProviderStatus
 		providersErr     error
 		modelResolved    client.ModelResolved
@@ -7110,7 +7107,7 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		sessionsErr      error
 	)
 	var refreshWG sync.WaitGroup
-	refreshWG.Add(9)
+	refreshWG.Add(10)
 	go func() {
 		defer refreshWG.Done()
 		health, healthErr = a.api.GetHealth(ctx)
@@ -7122,6 +7119,10 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 	go func() {
 		defer refreshWG.Done()
 		overview, overviewErr = a.api.WorkspaceOverview(ctx, next.CWD, nil, homeWorkspaceOverviewSessionLimit)
+	}()
+	go func() {
+		defer refreshWG.Done()
+		cwdResolve, cwdResolveErr = a.api.WorkspaceCWDResolve(ctx, next.CWD)
 	}()
 	go func() {
 		defer refreshWG.Done()
@@ -7220,10 +7221,7 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		if preferredWorkspacePath == "" {
 			preferredWorkspacePath = normalizePath(strings.TrimSpace(a.workspacePath))
 		}
-		next.ChatRoutes = buildChatRoutesForHomeModel(next, preferredWorkspacePath)
-		selectedRouteID := a.resolveSelectedChatRouteIDForWorkspace(preferredWorkspacePath, next.ChatRoutes)
-		a.selectedChatRouteID = selectedRouteID
-		next.SelectedChatRouteID = selectedRouteID
+		// ChatRoutes are authoritative only after /v1/workspace/cwd/resolve below.
 		activeWorkspacePath := resolveWorkspaceSelectionPath(activePath, next.Workspaces, preferredWorkspacePath)
 		activeIsWorkspace = activeWorkspacePath != ""
 		activeIsWorkspaceRoot = activeWorkspacePath != "" && pathsEqual(activePath, activeWorkspacePath)
@@ -7255,6 +7253,23 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		}
 	} else {
 		errorsSeen = append(errorsSeen, "workspace overview unavailable")
+	}
+	if cwdResolveErr == nil {
+		next = applyCWDResolverToHomeModel(next, cwdResolve)
+		preferredWorkspacePath := activePath
+		if cwdResolve.Workspace != nil && strings.TrimSpace(cwdResolve.Workspace.WorkspacePath) != "" {
+			preferredWorkspacePath = normalizePath(strings.TrimSpace(cwdResolve.Workspace.WorkspacePath))
+		}
+		if len(next.ChatRoutes) > 0 {
+			selectedRouteID := a.resolveSelectedChatRouteIDForWorkspace(preferredWorkspacePath, next.ChatRoutes)
+			a.selectedChatRouteID = selectedRouteID
+			next.SelectedChatRouteID = selectedRouteID
+		} else {
+			a.selectedChatRouteID = ""
+			next.SelectedChatRouteID = ""
+		}
+	} else {
+		errorsSeen = append(errorsSeen, "cwd route resolver unavailable")
 	}
 
 	gitStatus, _ := gitStatusForPath(activePath)
@@ -7599,6 +7614,9 @@ func (a *App) syncKnownWorkspaceSelectionForPath(path string) {
 		a.homeModel.Directories[i].IsWorkspace = isWorkspaceRoot
 	}
 	a.workspacePath = resolvedSelection
+	selectedRouteID := a.resolveSelectedChatRouteIDForWorkspace(target, a.homeModel.ChatRoutes)
+	a.selectedChatRouteID = selectedRouteID
+	a.homeModel.SelectedChatRouteID = selectedRouteID
 	if a.home != nil {
 		a.home.SetModel(a.homeModel)
 	}
@@ -7635,6 +7653,17 @@ func buildChatRoutesForWorkspacesWithHostTarget(workspaces []model.Workspace, wo
 		}
 	}
 	hostBindingID := strings.TrimSpace(active.LocalWorkspaceBindingID)
+	if hostBindingID == "" {
+		for _, route := range active.TopologyRoutes {
+			if strings.TrimSpace(route.WorkspaceBindingID) == "" || strings.TrimSpace(route.ContainerID) != "" {
+				continue
+			}
+			if hostSwarmID != "" && strings.EqualFold(strings.TrimSpace(route.RuntimeSwarmID), hostSwarmID) {
+				hostBindingID = strings.TrimSpace(route.WorkspaceBindingID)
+				break
+			}
+		}
+	}
 	hostRouteID := primaryHostRouteID(hostSwarmID, hostBindingID)
 	routes := []model.ChatRoute{{
 		ID:                   hostRouteID,
@@ -7752,40 +7781,16 @@ func (a *App) resolveSelectedChatRouteIDForWorkspace(workspacePath string, route
 	return normalizeSelectedRouteID(selected, routes)
 }
 
-func (a *App) syncSelectedChatRouteAfterSettingsUpdate(previousConfig AppConfig) {
-	if a == nil || len(a.homeModel.ChatRoutes) == 0 {
-		return
-	}
-	workspacePath := strings.TrimSpace(a.activeWorkspacePath())
-	if workspacePath == "" {
-		workspacePath = strings.TrimSpace(a.workspacePath)
-	}
-	if workspacePath == "" {
-		workspacePath = strings.TrimSpace(a.startupCWD)
-	}
-	workspacePath = normalizePath(workspacePath)
-	if workspacePath == "" {
-		return
-	}
-	routes := buildChatRoutesForHomeModel(a.homeModel, workspacePath)
-	previousDefault := normalizeSelectedRouteID(defaultChatRouteIDFromConfig(previousConfig, workspacePath), routes)
-	currentSelected := normalizeSelectedRouteID(a.selectedChatRouteID, routes)
-	if strings.TrimSpace(a.selectedChatRouteID) != "" && currentSelected != previousDefault {
-		return
-	}
-	nextSelected := normalizeSelectedRouteID(a.defaultChatRouteIDForWorkspace(workspacePath), routes)
-	a.selectedChatRouteID = nextSelected
-	a.homeModel.ChatRoutes = routes
-	a.homeModel.SelectedChatRouteID = nextSelected
-}
-
 func (a *App) selectedChatRouteForWorkspace(workspacePath string) model.ChatRoute {
-	routes := buildChatRoutesForHomeModel(a.homeModel, workspacePath)
+	routes := a.homeModel.ChatRoutes
 	selected := a.resolveSelectedChatRouteIDForWorkspace(workspacePath, routes)
 	for _, route := range routes {
 		if strings.TrimSpace(route.ID) == selected {
 			return route
 		}
+	}
+	if len(routes) == 0 {
+		return model.ChatRoute{}
 	}
 	return routes[0]
 }
@@ -7845,22 +7850,6 @@ func sameSwarmID(left, right string) bool {
 	return strings.TrimSpace(left) != "" && strings.TrimSpace(left) == strings.TrimSpace(right)
 }
 
-func (a *App) localWorkspaceBindingIDForPath(workspacePath string) string {
-	if a == nil {
-		return ""
-	}
-	workspacePath = normalizePath(strings.TrimSpace(workspacePath))
-	if workspacePath == "" {
-		return ""
-	}
-	for _, workspace := range a.homeModel.Workspaces {
-		if pathsEqual(workspace.Path, workspacePath) {
-			return strings.TrimSpace(workspace.LocalWorkspaceBindingID)
-		}
-	}
-	return ""
-}
-
 func (a *App) sessionRouteLabelForWorkspace(workspacePath string, metadata map[string]any) string {
 	if route, ok := a.sessionRouteFromMetadata(workspacePath, metadata); ok {
 		return a.displayChatRouteLabel(route)
@@ -7900,7 +7889,7 @@ func (a *App) sessionRouteFromMetadata(workspacePath string, metadata map[string
 		}
 		return model.ChatRoute{}, false
 	}
-	routes := buildChatRoutesForHomeModel(a.homeModel, firstNonEmpty(hostWorkspacePath, workspacePath))
+	routes := a.homeModel.ChatRoutes
 	for _, route := range routes {
 		if routeID != "" && strings.TrimSpace(route.ID) == routeID {
 			return route, true
@@ -7964,7 +7953,7 @@ func (a *App) v2SessionRouteFromMetadata(workspacePath string, metadata map[stri
 	if a == nil {
 		return route, true
 	}
-	for _, candidate := range buildChatRoutesForHomeModel(a.homeModel, hostWorkspacePath) {
+	for _, candidate := range a.homeModel.ChatRoutes {
 		if strings.TrimSpace(candidate.WorkspaceBindingID) == workspaceBindingID && strings.TrimSpace(candidate.SwarmID) == runtimeSwarmID {
 			return candidate, true
 		}
