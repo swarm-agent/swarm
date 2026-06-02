@@ -378,6 +378,77 @@ func (s *SessionStore) ListSessionsForAccountScope(accountScopeID, scopePath str
 	})
 }
 
+func (s *SessionStore) ListSessionsForAccountWorkspaceBindings(accountScopeID, sourceWorkspaceID string, workspaceBindingIDs []string, fallbackScopePath string, limit int) ([]SessionSnapshot, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, errors.New("account scope id is required")
+	}
+	sourceWorkspaceID = strings.TrimSpace(sourceWorkspaceID)
+	bindingSet := make(map[string]struct{}, len(workspaceBindingIDs))
+	for _, bindingID := range workspaceBindingIDs {
+		if bindingID = strings.TrimSpace(bindingID); bindingID != "" {
+			bindingSet[bindingID] = struct{}{}
+		}
+	}
+	if sourceWorkspaceID == "" && len(bindingSet) == 0 {
+		return s.ListSessionsForAccountScope(accountScopeID, fallbackScopePath, limit)
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	fallbackScopePath = strings.TrimSpace(fallbackScopePath)
+	normalizedFallbackScope := ""
+	if fallbackScopePath != "" {
+		normalized, err := normalizeSessionPath(fallbackScopePath)
+		if err != nil {
+			return nil, err
+		}
+		normalizedFallbackScope = normalized
+	}
+	out := make([]SessionSnapshot, 0, limit)
+	const iterateAll = int(^uint(0) >> 1)
+	err := s.store.IteratePrefix(SessionByAccountPrefix(accountScopeID), iterateAll, func(_ string, value []byte) error {
+		sessionID := strings.TrimSpace(string(value))
+		if sessionID == "" {
+			return nil
+		}
+		session, ok, err := s.GetSession(sessionID)
+		if err != nil {
+			return err
+		}
+		if !ok || strings.TrimSpace(session.AccountScopeID) != accountScopeID {
+			return nil
+		}
+		include := false
+		if execution, executionOK, err := s.GetSessionExecutionV2(sessionID); err != nil {
+			return err
+		} else if executionOK && strings.TrimSpace(execution.AccountScopeID) == accountScopeID {
+			if sourceWorkspaceID != "" && strings.TrimSpace(execution.SourceWorkspaceID) == sourceWorkspaceID {
+				include = true
+			}
+			if !include && len(bindingSet) > 0 {
+				if _, ok := bindingSet[strings.TrimSpace(execution.WorkspaceBindingID)]; ok {
+					include = true
+				}
+			}
+		}
+		if !include && normalizedFallbackScope != "" {
+			include = pathInScope(session.WorkspacePath, normalizedFallbackScope)
+		}
+		if !include {
+			return nil
+		}
+		if err := s.appendSessionListItem(&out, session); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return finalizeSessionList(out, limit), nil
+}
+
 type WorkspaceSessionList struct {
 	WorkspacePath string            `json:"workspace_path"`
 	Sessions      []SessionSnapshot `json:"sessions"`

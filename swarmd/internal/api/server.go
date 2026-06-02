@@ -2429,7 +2429,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		if cwd == "" {
 			sessions, listErr = s.sessions.ListSessionsForAccount(principal.AccountScopeID, limit)
 		} else {
-			sessions, listErr = listSessionsForCWD(s.sessions, s.workspace, principal, cwd, limit, exactPath)
+			sessions, listErr = listSessionsForCWDWithTopology(s.sessions, s.workspace, s.topology, principal, cwd, limit, exactPath)
 		}
 		if listErr != nil {
 			writeError(w, http.StatusInternalServerError, listErr)

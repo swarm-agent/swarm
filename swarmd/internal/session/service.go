@@ -778,6 +778,15 @@ func (s *Service) ListSessionsForAccountScope(accountScopeID, scopePath string, 
 	return sessions, nil
 }
 
+func (s *Service) ListSessionsForAccountWorkspaceBindings(accountScopeID, sourceWorkspaceID string, workspaceBindingIDs []string, fallbackScopePath string, limit int) ([]pebblestore.SessionSnapshot, error) {
+	sessions, err := s.store.ListSessionsForAccountWorkspaceBindings(accountScopeID, sourceWorkspaceID, workspaceBindingIDs, fallbackScopePath, limit)
+	if err != nil {
+		return nil, err
+	}
+	normalizeSessionListModes(sessions)
+	return sessions, nil
+}
+
 func normalizeSessionListModes(sessions []pebblestore.SessionSnapshot) {
 	for i := range sessions {
 		sessions[i].Mode = NormalizeMode(sessions[i].Mode)
