@@ -463,7 +463,7 @@ func (p *HomePage) activeSwarmFooterLabel() string {
 	if strings.EqualFold(strings.TrimSpace(label), "host") {
 		label = strings.TrimSpace(p.swarmName)
 	}
-	return strings.TrimSpace(label)
+	return emptyValue(strings.TrimSpace(label), displayRuntimeMode(p.model.ServerMode))
 }
 
 func selectedHomeRouteLabel(m model.HomeModel) string {
@@ -476,7 +476,7 @@ func selectedHomeRouteLabel(m model.HomeModel) string {
 	if len(m.ChatRoutes) > 0 {
 		return displayHomeChatRouteLabel(m, m.ChatRoutes[0])
 	}
-	return ""
+	return "host"
 }
 
 func displayHomeChatRouteLabel(m model.HomeModel, route model.ChatRoute) string {

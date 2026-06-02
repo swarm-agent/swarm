@@ -28,8 +28,8 @@ func TestOpenChatSessionCreatePayloadUsesHostRouteAuthority(t *testing.T) {
 	assertCreateMetadataStrictV2Safe(t, got.metadata)
 }
 
-func TestOpenChatSessionCreatePayloadUsesTUICWDPrimaryExceptionOnlyForSyntheticRoute(t *testing.T) {
-	got := captureOpenChatSessionCreateRequestWithWorktreeSettings(t, model.ChatRoute{ID: "tui-cwd-primary:host-swarm", SwarmID: "host-swarm", SyntheticTUIPrimaryCWD: true}, "host-swarm", "", testWorkspacePath, "plan", client.WorktreeSettings{
+func TestOpenChatSessionCreatePayloadUsesTUICWDPrimaryExceptionOnlyForHostRoute(t *testing.T) {
+	got := captureOpenChatSessionCreateRequestWithWorktreeSettings(t, model.ChatRoute{ID: "host"}, "host-swarm", "", testWorkspacePath, "plan", client.WorktreeSettings{
 		WorkspacePath:    testWorkspacePath,
 		Enabled:          true,
 		UseCurrentBranch: false,
@@ -56,17 +56,25 @@ func TestOpenChatSessionCreatePayloadUsesTUICWDPrimaryExceptionOnlyForSyntheticR
 	}
 }
 
-func TestOpenChatSessionCreatePayloadDoesNotLateRepairMissingSyntheticTarget(t *testing.T) {
-	err := captureOpenChatSessionError(t, model.ChatRoute{ID: "tui-cwd-primary:missing", SyntheticTUIPrimaryCWD: true}, "", "", testWorkspacePath, "plan")
-	if err == nil || !strings.Contains(err.Error(), "workspace binding id is required") {
-		t.Fatalf("openChatSession error = %v, want fail-closed missing hydrated route", err)
-	}
-}
+func TestOpenChatSessionCreatePayloadFallsBackToPrimarySwarmStateForTUICWDWhenRouterLosesSwarmTarget(t *testing.T) {
+	got := captureOpenChatSessionCreateRequestWithWorktreeSettings(t, model.ChatRoute{ID: "host"}, "", "", testWorkspacePath, "plan", client.WorktreeSettings{
+		WorkspacePath: testWorkspacePath,
+	})
 
-func TestOpenChatSessionCreatePayloadRejectsUnboundNonSyntheticWorkspaceRoute(t *testing.T) {
-	err := captureOpenChatSessionError(t, model.ChatRoute{ID: "swarm:host-swarm", SwarmID: "host-swarm"}, "host-swarm", "", testWorkspacePath, "plan")
-	if err == nil || !strings.Contains(err.Error(), "workspace binding id is required") {
-		t.Fatalf("openChatSession error = %v, want workspace binding id required", err)
+	if got.bodyString("swarm_id") != "fallback-primary-swarm" {
+		t.Fatalf("swarm_id = %q, want fallback-primary-swarm", got.bodyString("swarm_id"))
+	}
+	if _, ok := got.body["workspace_binding_id"]; ok {
+		t.Fatalf("workspace_binding_id present in TUI cwd create: %#v", got.body["workspace_binding_id"])
+	}
+	if got.bodyString("workspace_path") != testWorkspacePath {
+		t.Fatalf("workspace_path = %q, want %q", got.bodyString("workspace_path"), testWorkspacePath)
+	}
+	if got.currentTarget == nil || got.currentTarget.Name != "Fallback Primary" || got.currentTarget.Relationship != "self" || got.currentTarget.Kind != "self" {
+		t.Fatalf("current target = %+v, want named primary self target", got.currentTarget)
+	}
+	if got.chatSwarmName != "Fallback Primary" {
+		t.Fatalf("chat swarm name = %q, want Fallback Primary", got.chatSwarmName)
 	}
 }
 
@@ -129,6 +137,8 @@ type capturedCreateRequest struct {
 	body             map[string]any
 	metadata         map[string]any
 	sessionExecution *client.SessionExecutionV2
+	currentTarget    *model.SwarmTarget
+	chatSwarmName    string
 }
 
 func (r capturedCreateRequest) bodyString(key string) string {
@@ -141,22 +151,7 @@ func captureOpenChatSessionCreateRequest(t *testing.T, route model.ChatRoute, ho
 	return captureOpenChatSessionCreateRequestWithWorktreeSettings(t, route, hostSwarmID, localBindingID, workspacePath, sessionMode, client.WorktreeSettings{WorkspacePath: workspacePath})
 }
 
-func captureOpenChatSessionError(t *testing.T, route model.ChatRoute, hostSwarmID, localBindingID, workspacePath, sessionMode string) error {
-	t.Helper()
-	_, err := runOpenChatSessionCapture(t, route, hostSwarmID, localBindingID, workspacePath, sessionMode, client.WorktreeSettings{WorkspacePath: workspacePath})
-	return err
-}
-
 func captureOpenChatSessionCreateRequestWithWorktreeSettings(t *testing.T, route model.ChatRoute, hostSwarmID, localBindingID, workspacePath, sessionMode string, worktreeSettings client.WorktreeSettings) capturedCreateRequest {
-	t.Helper()
-	captured, err := runOpenChatSessionCapture(t, route, hostSwarmID, localBindingID, workspacePath, sessionMode, worktreeSettings)
-	if err != nil {
-		t.Fatalf("openChatSession() error = %v", err)
-	}
-	return captured
-}
-
-func runOpenChatSessionCapture(t *testing.T, route model.ChatRoute, hostSwarmID, localBindingID, workspacePath, sessionMode string, worktreeSettings client.WorktreeSettings) (capturedCreateRequest, error) {
 	t.Helper()
 	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
 	t.Setenv("DATA_DIR", "")
@@ -164,6 +159,15 @@ func runOpenChatSessionCapture(t *testing.T, route model.ChatRoute, hostSwarmID,
 	captured := capturedCreateRequest{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/swarm/state":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"state": map[string]any{
+					"node":          map[string]any{"swarm_id": "fallback-primary-swarm", "name": "Fallback Primary", "role": "master"},
+					"pairing":       map[string]any{},
+					"trusted_peers": []any{},
+				},
+			})
 		case r.Method == http.MethodPost && r.URL.Path == "/v2/sessions/primary":
 			if r.URL.RawQuery != "" {
 				t.Fatalf("unexpected query on create request: %q", r.URL.RawQuery)
@@ -235,21 +239,17 @@ func runOpenChatSessionCapture(t *testing.T, route model.ChatRoute, hostSwarmID,
 	}))
 	defer server.Close()
 
-	workspaces := []model.Workspace{{
-		Name:                    "Host Repo",
-		Path:                    workspacePath,
-		LocalWorkspaceBindingID: localBindingID,
-		TopologyRoutes:          topologyRoutesForTestChatRoute(route),
-	}}
-	if route.SyntheticTUIPrimaryCWD {
-		workspaces = nil
-	}
 	homeModel := model.HomeModel{
 		ModelProvider:      "anthropic",
 		ModelName:          "claude",
 		ThinkingLevel:      "auto",
-		CurrentSwarmTarget: &model.SwarmTarget{SwarmID: hostSwarmID, Relationship: "self", Kind: "host"},
-		Workspaces:         workspaces,
+		CurrentSwarmTarget: &model.SwarmTarget{SwarmID: hostSwarmID},
+		Workspaces: []model.Workspace{{
+			Name:                    "Host Repo",
+			Path:                    workspacePath,
+			LocalWorkspaceBindingID: localBindingID,
+			TopologyRoutes:          topologyRoutesForTestChatRoute(route),
+		}},
 	}
 	homePage := ui.NewHomePage(homeModel)
 	homePage.SetSessionMode(sessionMode)
@@ -264,7 +264,7 @@ func runOpenChatSessionCapture(t *testing.T, route model.ChatRoute, hostSwarmID,
 	}
 
 	if err := app.openChatSession("New Session", ""); err != nil {
-		return captured, err
+		t.Fatalf("openChatSession() error = %v", err)
 	}
 	for _, summary := range app.homeModel.RecentSessions {
 		if strings.TrimSpace(summary.ID) == "session-1" {
@@ -272,11 +272,13 @@ func runOpenChatSessionCapture(t *testing.T, route model.ChatRoute, hostSwarmID,
 			break
 		}
 	}
-	return captured, nil
+	captured.currentTarget = app.homeModel.CurrentSwarmTarget
+	captured.chatSwarmName = app.config.Swarm.Name
+	return captured
 }
 
 func topologyRoutesForTestChatRoute(route model.ChatRoute) []model.WorkspaceTopologyRoute {
-	if strings.TrimSpace(route.ID) == "host" || route.SyntheticTUIPrimaryCWD {
+	if strings.TrimSpace(route.ID) == "host" {
 		return nil
 	}
 	return []model.WorkspaceTopologyRoute{{

@@ -45,10 +45,17 @@ func testLegacyReplicationLinkWorkspaces() []model.Workspace {
 func TestBuildChatRoutesForWorkspacesKeepsTargetSwarmID(t *testing.T) {
 	routes := buildChatRoutesForWorkspaces(testRoutingWorkspaces(), testWorkspacePath)
 
-	if len(routes) != 1 {
-		t.Fatalf("route count = %d, want 1", len(routes))
+	if len(routes) != 2 {
+		t.Fatalf("route count = %d, want 2", len(routes))
 	}
-	remote := routes[0]
+	host := routes[0]
+	if host.ID != "host" {
+		t.Fatalf("host route ID = %q, want host", host.ID)
+	}
+	if host.SwarmID != "" {
+		t.Fatalf("legacy host route SwarmID = %q, want empty without workspace overview swarm_target", host.SwarmID)
+	}
+	remote := routes[1]
 	if remote.SwarmID != "child-swarm" {
 		t.Fatalf("remote SwarmID = %q, want child-swarm", remote.SwarmID)
 	}
@@ -113,10 +120,10 @@ func TestBuildChatRoutesForWorkspacesKeepsPrimarySelfHostTarget(t *testing.T) {
 	}}
 
 	routes := buildChatRoutesForWorkspaces(workspaces, testWorkspacePath)
-	if len(routes) != 1 {
-		t.Fatalf("route count = %d, want 1", len(routes))
+	if len(routes) != 2 {
+		t.Fatalf("route count = %d, want 2", len(routes))
 	}
-	primary := routes[0]
+	primary := routes[1]
 	if !isPrimaryHostChatRoute(primary) {
 		t.Fatalf("primary target = %q/%q, want self/host", primary.TargetRelationship, primary.TargetKind)
 	}
@@ -163,8 +170,11 @@ func TestModelSwarmTargetFromClientPropagatesWorkspaceOverviewTarget(t *testing.
 func TestBuildChatRoutesForWorkspacesIgnoresLegacyReplicationLinks(t *testing.T) {
 	routes := buildChatRoutesForWorkspaces(testLegacyReplicationLinkWorkspaces(), testWorkspacePath)
 
-	if len(routes) != 0 {
-		t.Fatalf("route count = %d, want no hydrated routes without topology/binding authority", len(routes))
+	if len(routes) != 1 {
+		t.Fatalf("route count = %d, want host-only from topology routes", len(routes))
+	}
+	if routes[0].ID != "host" {
+		t.Fatalf("route ID = %q, want host", routes[0].ID)
 	}
 }
 
@@ -214,28 +224,17 @@ func TestRefreshHomeModelSelectsServerBackedWorkspaceDefault(t *testing.T) {
 func TestRemoteUISettingsUpdateMovesSelectionWhenTrackingDefault(t *testing.T) {
 	app := &App{
 		workspacePath:       testWorkspacePath,
-		selectedChatRouteID: "swarm:primary-swarm:binding:binding-primary",
-		config:              AppConfig{Chat: ChatConfig{DefaultWorkspaceRoutes: map[string]string{testWorkspacePath: "swarm:primary-swarm:binding:binding-primary"}}},
+		selectedChatRouteID: "host",
+		config:              AppConfig{Chat: ChatConfig{DefaultWorkspaceRoutes: map[string]string{testWorkspacePath: "host"}}},
 		home:                ui.NewHomePage(model.EmptyHome()),
-		homeModel: model.HomeModel{
-			CurrentSwarmTarget: &model.SwarmTarget{SwarmID: "primary-swarm", Name: "Primary Swarm", Relationship: "self", Kind: "host"},
-			Workspaces: []model.Workspace{{
-				Name:                    "Host Repo",
-				Path:                    testWorkspacePath,
-				LocalWorkspaceBindingID: "binding-primary",
-				TopologyRoutes:          testRoutingWorkspaces()[0].TopologyRoutes,
-			}},
-		},
+		homeModel:           model.HomeModel{Workspaces: testRoutingWorkspaces()},
 	}
 	app.homeModel.ChatRoutes = buildChatRoutesForWorkspaces(app.homeModel.Workspaces, testWorkspacePath)
-	app.homeModel.SelectedChatRouteID = "swarm:primary-swarm:binding:binding-primary"
+	app.homeModel.SelectedChatRouteID = "host"
 
-	changed := app.applyRemoteUISettings(client.UISettings{
-		Chat: client.UIChatSettings{DefaultWorkspaceRoutes: map[string]string{
-			testWorkspacePath: testRemoteRouteID,
-		}},
-		Swarm: client.UISwarmSettings{Name: "Local"},
-	})
+	changed := app.applyRemoteUISettings(client.UISettings{Chat: client.UIChatSettings{DefaultWorkspaceRoutes: map[string]string{
+		testWorkspacePath: testRemoteRouteID,
+	}}})
 	if !changed {
 		t.Fatalf("applyRemoteUISettings returned false")
 	}
@@ -245,32 +244,21 @@ func TestRemoteUISettingsUpdateMovesSelectionWhenTrackingDefault(t *testing.T) {
 	if app.homeModel.SelectedChatRouteID != testRemoteRouteID {
 		t.Fatalf("home model selected route ID = %q, want %q", app.homeModel.SelectedChatRouteID, testRemoteRouteID)
 	}
-	if got := app.currentSwarmName(); got != "Primary Swarm" {
-		t.Fatalf("current swarm name = %q, want Primary Swarm", got)
-	}
 }
 
 func TestRemoteUISettingsUpdateKeepsExplicitSelection(t *testing.T) {
 	app := &App{
 		workspacePath:       testWorkspacePath,
 		selectedChatRouteID: testRemoteRouteID,
-		config:              AppConfig{Chat: ChatConfig{DefaultWorkspaceRoutes: map[string]string{testWorkspacePath: "swarm:primary-swarm:binding:binding-primary"}}},
+		config:              AppConfig{Chat: ChatConfig{DefaultWorkspaceRoutes: map[string]string{testWorkspacePath: "host"}}},
 		home:                ui.NewHomePage(model.EmptyHome()),
-		homeModel: model.HomeModel{
-			CurrentSwarmTarget: &model.SwarmTarget{SwarmID: "primary-swarm", Name: "Primary Swarm", Relationship: "self", Kind: "host"},
-			Workspaces: []model.Workspace{{
-				Name:                    "Host Repo",
-				Path:                    testWorkspacePath,
-				LocalWorkspaceBindingID: "binding-primary",
-				TopologyRoutes:          testRoutingWorkspaces()[0].TopologyRoutes,
-			}},
-		},
+		homeModel:           model.HomeModel{Workspaces: testRoutingWorkspaces()},
 	}
 	app.homeModel.ChatRoutes = buildChatRoutesForWorkspaces(app.homeModel.Workspaces, testWorkspacePath)
 	app.homeModel.SelectedChatRouteID = testRemoteRouteID
 
 	changed := app.applyRemoteUISettings(client.UISettings{Chat: client.UIChatSettings{DefaultWorkspaceRoutes: map[string]string{
-		testWorkspacePath: "swarm:primary-swarm:binding:binding-primary",
+		testWorkspacePath: "host",
 	}}})
 	if !changed {
 		t.Fatalf("applyRemoteUISettings returned false")
@@ -280,57 +268,11 @@ func TestRemoteUISettingsUpdateKeepsExplicitSelection(t *testing.T) {
 	}
 }
 
-func TestBuildChatRoutesForHomeModelNonWorkspaceCreatesExplicitSyntheticTuiCWDPrimary(t *testing.T) {
-	routes := buildChatRoutesForHomeModel(model.HomeModel{
-		CurrentSwarmTarget: &model.SwarmTarget{SwarmID: "primary-swarm", Name: "Primary Swarm", Relationship: "self", Kind: "host"},
-	}, "/directory/not-workspace")
-
-	if len(routes) != 1 {
-		t.Fatalf("route count = %d, want 1 synthetic primary", len(routes))
-	}
-	route := routes[0]
-	if !route.SyntheticTUIPrimaryCWD || route.WorkspaceBindingID != "" || route.SwarmID != "primary-swarm" {
-		t.Fatalf("synthetic route = %+v, want primary swarm with no binding", route)
-	}
-	if route.ID != "tui-cwd-primary:primary-swarm" || route.Label != "Primary Swarm" {
-		t.Fatalf("synthetic route identity/label = %+v", route)
-	}
-}
-
-func TestBuildChatRoutesForHomeModelWorkspaceMissingBindingFailsClosed(t *testing.T) {
-	routes := buildChatRoutesForHomeModel(model.HomeModel{
-		CurrentSwarmTarget: &model.SwarmTarget{SwarmID: "primary-swarm", Name: "Primary Swarm", Relationship: "self", Kind: "host"},
-		Workspaces: []model.Workspace{{
-			Name: "Host Repo",
-			Path: testWorkspacePath,
-		}},
-	}, testWorkspacePath)
-
-	if len(routes) != 0 {
-		t.Fatalf("route count = %d, want fail-closed no routes without workspace binding", len(routes))
-	}
-}
-
-func TestBuildChatRoutesForHomeModelWorkspaceSubdirectoryRequiresBinding(t *testing.T) {
-	routes := buildChatRoutesForHomeModel(model.HomeModel{
-		CurrentSwarmTarget: &model.SwarmTarget{SwarmID: "primary-swarm", Name: "Primary Swarm", Relationship: "self", Kind: "host"},
-		Workspaces: []model.Workspace{{
-			Name:        "Host Repo",
-			Path:        testWorkspacePath,
-			Directories: []string{testWorkspacePath + "/pkg"},
-		}},
-	}, testWorkspacePath+"/pkg")
-
-	if len(routes) != 0 {
-		t.Fatalf("route count = %d, want fail-closed no synthetic route for workspace subdirectory without binding", len(routes))
-	}
-}
-
 func TestCycleChatRouteSinglePrimaryHostUsesRouterBackedLabel(t *testing.T) {
 	app := &App{
 		route:               "home",
 		workspacePath:       testWorkspacePath,
-		selectedChatRouteID: "swarm:primary-swarm:binding:binding-primary",
+		selectedChatRouteID: "host",
 		home:                ui.NewHomePage(model.EmptyHome()),
 		homeModel: model.HomeModel{
 			CurrentSwarmTarget: &model.SwarmTarget{SwarmID: "primary-swarm", Name: "Primary Swarm", Relationship: "self", Kind: "host"},

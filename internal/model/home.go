@@ -125,15 +125,14 @@ type BackgroundSessionSummary struct {
 }
 
 type ChatRoute struct {
-	ID                     string
-	Label                  string
-	SwarmID                string
-	WorkspaceBindingID     string
-	HostWorkspacePath      string
-	RuntimeWorkspacePath   string
-	TargetKind             string
-	TargetRelationship     string
-	SyntheticTUIPrimaryCWD bool
+	ID                   string
+	Label                string
+	SwarmID              string
+	WorkspaceBindingID   string
+	HostWorkspacePath    string
+	RuntimeWorkspacePath string
+	TargetKind           string
+	TargetRelationship   string
 }
 
 type SwarmTarget struct {

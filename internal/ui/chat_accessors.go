@@ -328,5 +328,9 @@ func (p *ChatPage) SetSwarmName(name string) {
 	if p == nil {
 		return
 	}
-	p.swarmName = strings.TrimSpace(name)
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "Local"
+	}
+	p.swarmName = name
 }

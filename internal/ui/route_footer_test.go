@@ -12,11 +12,11 @@ func TestHomeFooterUsesActiveRouteAsSwarmLabel(t *testing.T) {
 		ServerMode:          "local",
 		SelectedChatRouteID: "swarm:remote:/repo",
 		ChatRoutes: []model.ChatRoute{
-			{ID: "swarm:primary:binding:primary-binding", Label: "Primary Desk", SwarmID: "primary", WorkspaceBindingID: "primary-binding", TargetKind: "host", TargetRelationship: "self"},
-			{ID: "swarm:remote:/repo", Label: "Remote Desk", SwarmID: "remote", WorkspaceBindingID: "remote-binding"},
+			{ID: "host", Label: "host"},
+			{ID: "swarm:remote:/repo", Label: "Remote Desk"},
 		},
 	})
-	page.SetSwarmName("Ignored Desk")
+	page.SetSwarmName("Local Desk")
 
 	tokens := page.homeFooterTokens()
 	if len(tokens) == 0 {
@@ -41,11 +41,12 @@ func TestHomeFooterUsesPrimarySelfHostRouteLabel(t *testing.T) {
 		SelectedChatRouteID: "swarm:primary:binding:primary-binding",
 		CurrentSwarmTarget:  &model.SwarmTarget{SwarmID: "primary", Name: "Primary Desk", Relationship: "self", Kind: "host"},
 		ChatRoutes: []model.ChatRoute{
-			{ID: "swarm:primary:binding:primary-binding", Label: "Stored Stale", SwarmID: "primary", WorkspaceBindingID: "primary-binding", TargetKind: "host", TargetRelationship: "self"},
-			{ID: "swarm:container:binding:container-binding", Label: "Container Desk", SwarmID: "container", WorkspaceBindingID: "container-binding", TargetKind: "container", TargetRelationship: "child"},
+			{ID: "host", Label: "host", TargetKind: "host", TargetRelationship: "self"},
+			{ID: "swarm:primary:binding:primary-binding", Label: "Local", SwarmID: "primary", WorkspaceBindingID: "primary-binding", TargetKind: "host", TargetRelationship: "self"},
+			{ID: "swarm:container:binding:container-binding", Label: "Local", SwarmID: "container", WorkspaceBindingID: "container-binding", TargetKind: "container", TargetRelationship: "child"},
 		},
 	})
-	page.SetSwarmName("Ignored Desk")
+	page.SetSwarmName("Fallback Local")
 
 	tokens := page.homeFooterTokens()
 	if len(tokens) == 0 {
@@ -56,20 +57,38 @@ func TestHomeFooterUsesPrimarySelfHostRouteLabel(t *testing.T) {
 	}
 }
 
-func TestHomeFooterDoesNotFallbackToSwarmNameForMissingRouteLabel(t *testing.T) {
+func TestHomeFooterUsesCurrentPrimaryTargetForLegacyHostRoute(t *testing.T) {
 	page := NewHomePage(model.HomeModel{
 		ServerMode:          "local",
-		SelectedChatRouteID: "swarm:primary:binding:primary-binding",
-		ChatRoutes:          []model.ChatRoute{{ID: "swarm:primary:binding:primary-binding", SwarmID: "primary", WorkspaceBindingID: "primary-binding"}},
+		SelectedChatRouteID: "host",
+		CurrentSwarmTarget:  &model.SwarmTarget{SwarmID: "primary", Name: "Primary Desk", Relationship: "self", Kind: "host"},
+		ChatRoutes:          []model.ChatRoute{{ID: "host", Label: "host", TargetKind: "host", TargetRelationship: "self"}},
 	})
-	page.SetSwarmName("Ignored Desk")
+	page.SetSwarmName("Fallback Local")
 
 	tokens := page.homeFooterTokens()
 	if len(tokens) == 0 {
 		t.Fatal("homeFooterTokens() returned no tokens")
 	}
-	if tokens[0].Text != "" {
-		t.Fatalf("home primary footer token = %q, want empty hydrated label", tokens[0].Text)
+	if tokens[0].Text != "Primary Desk" {
+		t.Fatalf("home primary footer token = %q, want current primary target name", tokens[0].Text)
+	}
+}
+
+func TestHomeFooterUsesLocalSwarmNameForHostRoute(t *testing.T) {
+	page := NewHomePage(model.HomeModel{
+		ServerMode:          "local",
+		SelectedChatRouteID: "host",
+		ChatRoutes:          []model.ChatRoute{{ID: "host", Label: "host"}},
+	})
+	page.SetSwarmName("Local Desk")
+
+	tokens := page.homeFooterTokens()
+	if len(tokens) == 0 {
+		t.Fatal("homeFooterTokens() returned no tokens")
+	}
+	if tokens[0].Text != "Local Desk" {
+		t.Fatalf("home primary footer token = %q, want local swarm name", tokens[0].Text)
 	}
 }
 
@@ -79,7 +98,7 @@ func TestChatFooterUsesActiveRouteAsSwarmLabel(t *testing.T) {
 		ShowHeader:     true,
 		SessionMode:    "auto",
 		AuthConfigured: true,
-		SwarmName:      "Ignored Desk",
+		SwarmName:      "Local Desk",
 		Meta:           ChatSessionMeta{Route: "Remote Desk"},
 	})
 
@@ -100,13 +119,13 @@ func TestChatFooterUsesActiveRouteAsSwarmLabel(t *testing.T) {
 	}
 }
 
-func TestChatFooterDoesNotFallbackToSwarmNameForHostRoute(t *testing.T) {
+func TestChatFooterUsesLocalSwarmNameForHostRoute(t *testing.T) {
 	page := NewChatPage(ChatPageOptions{
 		SessionID:      "session-test",
 		ShowHeader:     true,
 		SessionMode:    "auto",
 		AuthConfigured: true,
-		SwarmName:      "Ignored Desk",
+		SwarmName:      "Local Desk",
 		Meta:           ChatSessionMeta{Route: "host"},
 	})
 
@@ -114,12 +133,7 @@ func TestChatFooterDoesNotFallbackToSwarmNameForHostRoute(t *testing.T) {
 	if len(tokens) == 0 {
 		t.Fatal("footerSettingsTokens() returned no tokens")
 	}
-	if tokens[0].Text != "Ignored Desk" {
-		t.Fatalf("chat primary footer token = %q, want app-provided swarm name for legacy host route", tokens[0].Text)
-	}
-	page.SetSwarmName("")
-	tokens = page.footerSettingsTokens()
-	if tokens[0].Text != "" {
-		t.Fatalf("chat primary footer token after clearing swarm name = %q, want empty", tokens[0].Text)
+	if tokens[0].Text != "Local Desk" {
+		t.Fatalf("chat primary footer token = %q, want local swarm name", tokens[0].Text)
 	}
 }

@@ -143,6 +143,7 @@ func NewHomePage(m model.HomeModel) *HomePage {
 		recentPageSize: recentVisibleRows,
 		statusLine:     "",
 		sessionMode:    "auto",
+		swarmName:      "Local",
 		promptCursor:   0,
 	}
 }

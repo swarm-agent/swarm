@@ -6,14 +6,14 @@ import (
 	"swarm-refactor/swarmtui/internal/model"
 )
 
-func TestCreateSessionSwarmIDForRouteDoesNotFallbackToOverviewTarget(t *testing.T) {
+func TestCreateSessionSwarmIDForRouteUsesOverviewTargetForHost(t *testing.T) {
 	got := createSessionSwarmIDForRoute(model.ChatRoute{ID: "host"}, &model.SwarmTarget{SwarmID: " host-swarm "})
-	if got != "" {
-		t.Fatalf("swarm id = %q, want no late target fallback", got)
+	if got != "host-swarm" {
+		t.Fatalf("swarm id = %q, want host-swarm", got)
 	}
 }
 
-func TestCreateSessionSwarmIDForRouteKeepsHydratedRouteSwarmID(t *testing.T) {
+func TestCreateSessionSwarmIDForRouteKeepsTopologyRouteSwarmID(t *testing.T) {
 	got := createSessionSwarmIDForRoute(model.ChatRoute{ID: "swarm:child", SwarmID: " child-swarm "}, &model.SwarmTarget{SwarmID: "host-swarm"})
 	if got != "child-swarm" {
 		t.Fatalf("swarm id = %q, want child-swarm", got)
@@ -22,7 +22,17 @@ func TestCreateSessionSwarmIDForRouteKeepsHydratedRouteSwarmID(t *testing.T) {
 
 func TestCreateSessionSwarmIDForRouteDoesNotUseWorkspaceID(t *testing.T) {
 	got := createSessionSwarmIDForRoute(model.ChatRoute{ID: "host", WorkspaceBindingID: "workspace-id"}, &model.SwarmTarget{SwarmID: "host-swarm"})
-	if got != "" {
-		t.Fatalf("swarm id = %q, want no target/workspace fallback", got)
+	if got != "host-swarm" {
+		t.Fatalf("swarm id = %q, want host-swarm", got)
+	}
+	if got == "workspace-id" {
+		t.Fatalf("swarm id used workspace id")
+	}
+}
+
+func TestCreateSessionSwarmIDForRouteUsesOverviewTargetForRouterBackedPrimaryHost(t *testing.T) {
+	got := createSessionSwarmIDForRoute(model.ChatRoute{ID: "swarm:host-swarm:binding:binding-primary", TargetKind: "host", TargetRelationship: "self"}, &model.SwarmTarget{SwarmID: "host-swarm"})
+	if got != "host-swarm" {
+		t.Fatalf("swarm id = %q, want host-swarm", got)
 	}
 }

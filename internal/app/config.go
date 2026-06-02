@@ -15,6 +15,7 @@ const (
 	defaultThemeID         = "castor"
 	defaultSwarmingTitle   = "Swarming"
 	defaultSwarmingStatus  = "swarming"
+	defaultSwarmName       = "Local"
 	bootstrapRoleMaster    = "master"
 	bootstrapRoleChild     = "child"
 	settingsBackendLabel   = "daemon"
@@ -118,6 +119,7 @@ func defaultAppConfig() AppConfig {
 			Status: defaultSwarmingStatus,
 		},
 		Swarm: SwarmConfig{
+			Name: defaultSwarmName,
 			Role: bootstrapRoleMaster,
 		},
 	}
@@ -251,7 +253,7 @@ func saveDefaultNewSessionModeSetting(api *client.API, mode string) error {
 
 func saveSwarmNameSetting(api *client.API, name string) error {
 	return updateUISettings(api, func(settings *client.UISettings) {
-		settings.Swarm.Name = strings.TrimSpace(name)
+		settings.Swarm.Name = emptyFallback(strings.TrimSpace(name), defaultSwarmName)
 	})
 }
 
@@ -300,7 +302,7 @@ func appConfigFromUISettings(settings client.UISettings) AppConfig {
 
 	cfg.Swarming.Title = emptyFallback(strings.TrimSpace(settings.Swarming.Title), defaultSwarmingTitle)
 	cfg.Swarming.Status = emptyFallback(strings.TrimSpace(settings.Swarming.Status), defaultSwarmingStatus)
-	cfg.Swarm.Name = strings.TrimSpace(settings.Swarm.Name)
+	cfg.Swarm.Name = emptyFallback(strings.TrimSpace(settings.Swarm.Name), defaultSwarmName)
 	cfg.Swarm.RemoteSSHTargets = append([]string(nil), settings.Swarm.RemoteSSHTargets...)
 	cfg.Swarm.Role = bootstrapRoleMaster
 	cfg.Updates.LocalContainerWarningDismissed = settings.Updates.LocalContainerWarningDismissed
@@ -339,7 +341,7 @@ func uiSettingsFromAppConfig(cfg AppConfig) client.UISettings {
 			Status: emptyFallback(strings.TrimSpace(cfg.Swarming.Status), defaultSwarmingStatus),
 		},
 		Swarm: client.UISwarmSettings{
-			Name:             strings.TrimSpace(cfg.Swarm.Name),
+			Name:             emptyFallback(strings.TrimSpace(cfg.Swarm.Name), defaultSwarmName),
 			RemoteSSHTargets: append([]string(nil), cfg.Swarm.RemoteSSHTargets...),
 		},
 		Updates: client.UIUpdateSettings{
