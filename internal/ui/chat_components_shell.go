@@ -270,7 +270,7 @@ func (p *ChatPage) activeSwarmFooterLabel() string {
 	if label == "" || strings.EqualFold(label, "host") {
 		label = strings.TrimSpace(p.swarmName)
 	}
-	return emptyValue(label, "Local")
+	return strings.TrimSpace(label)
 }
 
 func drawFooterTokenRow(s tcell.Screen, x, y, maxWidth int, tokens []footerToken) {

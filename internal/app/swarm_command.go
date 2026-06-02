@@ -104,7 +104,15 @@ func (a *App) applySwarmRoleSetting(role string) {
 }
 
 func (a *App) currentSwarmName() string {
-	return emptyFallback(strings.TrimSpace(a.config.Swarm.Name), defaultSwarmName)
+	if a != nil {
+		if target := a.homeModel.CurrentSwarmTarget; target != nil {
+			if name := strings.TrimSpace(target.Name); name != "" {
+				return name
+			}
+		}
+		return strings.TrimSpace(a.config.Swarm.Name)
+	}
+	return ""
 }
 
 func (a *App) currentSwarmRole() string {
@@ -149,7 +157,7 @@ func (a *App) showSwarmSelectorOverlay(status string) {
 	selected := normalizeSelectedRouteID(a.selectedChatRouteID, routes)
 	lines := []string{
 		"current: " + a.selectedChatRouteLabelForWorkspace(workspacePath),
-		"default: " + a.chatRouteLabelForID(routes, emptyFallback(strings.TrimSpace(a.config.Chat.DefaultWorkspaceRoutes[workspacePath]), "host")),
+		"default: " + a.chatRouteLabelForID(routes, strings.TrimSpace(a.config.Chat.DefaultWorkspaceRoutes[workspacePath])),
 	}
 	if target := a.homeModel.CurrentSwarmTarget; target != nil && strings.TrimSpace(target.SwarmID) != "" {
 		lines = append(lines, "current target swarm_id: "+strings.TrimSpace(target.SwarmID))
@@ -179,7 +187,7 @@ func (a *App) chatRouteLabelForID(routes []model.ChatRoute, routeID string) stri
 			return a.displayChatRouteLabel(route)
 		}
 	}
-	return "host"
+	return ""
 }
 
 func (a *App) showSwarmStatusOverlay(status string) {

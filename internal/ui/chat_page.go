@@ -611,9 +611,6 @@ func NewChatPage(opts ChatPageOptions) *ChatPage {
 	if p.swarmingStatus == "" {
 		p.swarmingStatus = "swarming"
 	}
-	if p.swarmName == "" {
-		p.swarmName = "Local"
-	}
 	if p.keybinds == nil {
 		p.keybinds = NewDefaultKeyBindings()
 	}

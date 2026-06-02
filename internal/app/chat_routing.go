@@ -26,25 +26,24 @@ func (a *App) cycleChatRoute() {
 			return
 		}
 	}
-	workspacePath := strings.TrimSpace(a.activeWorkspacePath())
-	if workspacePath == "" {
-		workspacePath = strings.TrimSpace(a.workspacePath)
-	}
-	if workspacePath == "" {
-		workspacePath = strings.TrimSpace(a.startupCWD)
+	workspacePath := normalizePath(strings.TrimSpace(a.activeContextPath()))
+	selectionPath := workspacePath
+	if activeWorkspace, ok := activeWorkspaceForRoute(a.homeModel.Workspaces, workspacePath); ok {
+		selectionPath = normalizePath(strings.TrimSpace(activeWorkspace.Path))
 	}
 	routes := buildChatRoutesForHomeModel(a.homeModel, workspacePath)
+	if len(routes) == 0 {
+		a.setRouteStatus("route unavailable: swarm target not hydrated")
+		return
+	}
 	if len(routes) <= 1 {
-		label := "host"
-		if len(routes) == 1 {
-			a.selectedChatRouteID = normalizeSelectedRouteID(a.selectedChatRouteID, routes)
-			a.homeModel.ChatRoutes = routes
-			a.homeModel.SelectedChatRouteID = a.selectedChatRouteID
-			if a.home != nil {
-				a.home.SetModel(a.homeModel)
-			}
-			label = a.displayChatRouteLabel(routes[0])
+		a.selectedChatRouteID = normalizeSelectedRouteID(a.selectedChatRouteID, routes)
+		a.homeModel.ChatRoutes = routes
+		a.homeModel.SelectedChatRouteID = a.selectedChatRouteID
+		if a.home != nil {
+			a.home.SetModel(a.homeModel)
 		}
+		label := a.displayChatRouteLabel(routes[0])
 		if a.chat != nil {
 			meta := a.chat.Meta()
 			meta.Route = label
@@ -71,9 +70,9 @@ func (a *App) cycleChatRoute() {
 	if a.config.Chat.DefaultWorkspaceRoutes == nil {
 		a.config.Chat.DefaultWorkspaceRoutes = make(map[string]string)
 	}
-	if workspacePath != "" {
-		a.config.Chat.DefaultWorkspaceRoutes[workspacePath] = a.selectedChatRouteID
-		go a.persistDefaultWorkspaceRoute(workspacePath, a.selectedChatRouteID)
+	if selectionPath != "" {
+		a.config.Chat.DefaultWorkspaceRoutes[selectionPath] = a.selectedChatRouteID
+		go a.persistDefaultWorkspaceRoute(selectionPath, a.selectedChatRouteID)
 	}
 	a.home.SetModel(a.homeModel)
 	nextLabel := a.displayChatRouteLabel(next)

@@ -215,11 +215,7 @@ func (p *HomePage) SetSwarmName(name string) {
 	if p == nil {
 		return
 	}
-	name = strings.TrimSpace(name)
-	if name == "" {
-		name = "Local"
-	}
-	p.swarmName = name
+	p.swarmName = strings.TrimSpace(name)
 }
 
 func (p *HomePage) SetSwarmNotificationCount(count int) {
