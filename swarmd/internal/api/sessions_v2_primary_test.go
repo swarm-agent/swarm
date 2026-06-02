@@ -27,7 +27,7 @@ func TestSessionsV2HandlersDoNotWrapLegacySessionCreate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
 		}
-		for _, forbidden := range []string{"createSessionFromRequest", "handleSessions(", "handleSessionByID", "sessionCreateRequest", "proxyRoutedSessionRequest"} {
+		for _, forbidden := range []string{"createSessionFromRequest", "handleSessions(", "handleSessionByID", "sessionCreateRequest", "proxyRoutedSessionRequest", "/v1/swarm/peer/sessions/open"} {
 			if strings.Contains(string(body), forbidden) {
 				t.Fatalf("%s contains forbidden legacy wrapper symbol %q", path, forbidden)
 			}
@@ -425,7 +425,7 @@ func TestSessionsV2LocalContainerCreatesViaNativeRuntimeOpen(t *testing.T) {
 	if payload.Session.Metadata["purpose"] != "test" || payload.Session.Metadata["swarm_v2_execution_class"] != sessionruntime.SessionExecutionClassLocalContainer || payload.Session.Metadata["local_workspace_binding_id"] != "binding-container-v2" {
 		t.Fatalf("primary session metadata = %+v", payload.Session.Metadata)
 	}
-	if payload.SessionExecution.SessionID != payload.Session.ID || payload.SessionExecution.ExecutionClass != sessionruntime.SessionExecutionClassLocalContainer || payload.SessionExecution.RuntimeSwarmID != "container-swarm" || payload.SessionExecution.AuthorityHostSwarmID != "host-swarm-id" || payload.SessionExecution.AuthorityContainerID != "host-container-1" || payload.SessionExecution.SourceWorkspacePath != "/host/swarm-go" || payload.SessionExecution.RuntimeWorkspacePath != "/workspaces/swarm-go" {
+	if payload.SessionExecution.SessionID != payload.Session.ID || payload.SessionExecution.ExecutionClass != sessionruntime.SessionExecutionClassLocalContainer || payload.SessionExecution.RuntimeSwarmID != "container-swarm" || payload.SessionExecution.AuthorityHostSwarmID != "host-swarm-id" || payload.SessionExecution.AuthorityContainerID != "host-container-1" || payload.SessionExecution.SourceWorkspaceID != "workspace-container-v2" || payload.SessionExecution.SourceWorkspaceGeneration != 1 || payload.SessionExecution.SourceWorkspacePath != "/host/swarm-go" || payload.SessionExecution.RuntimeWorkspacePath != "/workspaces/swarm-go" || payload.SessionExecution.PlacementGeneration != 1 || payload.SessionExecution.BindingGeneration != 1 {
 		t.Fatalf("session execution = %+v session=%+v", payload.SessionExecution, payload.Session)
 	}
 	if !payload.RuntimeOpenResponse.OK || payload.RuntimeOpenResponse.SessionID != payload.Session.ID || payload.RuntimeOpenResponse.Status != "opened" {
@@ -511,6 +511,133 @@ func TestSessionsV2LocalContainerRejectsWorktreeUntilDedicatedCheckpoint(t *test
 	assertNoPrimaryCreateResidue(t, server, routeStore)
 }
 
+func TestSessionsV2LocalContainerRequiresBindingID(t *testing.T) {
+	server, _, _, routeStore, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV2LocalContainerAuthority(t, server, swarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+
+	rec := postSessionsV2LocalContainer(t, server, `{"swarm_id":"container-swarm","title":"missing binding","mode":"auto","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "workspace_binding_id is required") {
+		t.Fatalf("body = %s, want binding required error", rec.Body.String())
+	}
+	assertNoPrimaryCreateResidue(t, server, routeStore)
+}
+
+func TestSessionsV2LocalContainerRejectsWorkspacePath(t *testing.T) {
+	server, _, _, routeStore, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV2LocalContainerAuthority(t, server, swarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+
+	rec := postSessionsV2LocalContainer(t, server, `{"swarm_id":"container-swarm","workspace_binding_id":"binding-container-v2","workspace_path":"/frontend/guessed","title":"bad path","mode":"auto","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "workspace_path") {
+		t.Fatalf("body = %s, want workspace_path rejection", rec.Body.String())
+	}
+	assertNoPrimaryCreateResidue(t, server, routeStore)
+}
+
+func TestSessionsV2LocalContainerValidatesRuntimePrincipalScope(t *testing.T) {
+	server, _, _, routeStore, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV2LocalContainerAuthority(t, server, swarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	mutateSessionsV2Runtime(t, server, "container-swarm", func(runtime *pebblestore.TopologyRuntimeRecord) {
+		runtime.UserID = "other-user"
+	})
+
+	rec := postSessionsV2LocalContainer(t, server, `{"swarm_id":"container-swarm","workspace_binding_id":"binding-container-v2","title":"bad runtime scope","mode":"auto","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "runtime user does not match principal") {
+		t.Fatalf("body = %s, want runtime principal scope rejection", rec.Body.String())
+	}
+	assertNoPrimaryCreateResidue(t, server, routeStore)
+}
+
+func TestSessionsV2LocalContainerPlacementRequiresAuthorityContainerID(t *testing.T) {
+	err := validateLocalContainerSessionV2Placement("container-swarm", "host-swarm-id", pebblestore.TopologyRuntimePlacementRecord{
+		RuntimeSwarmID:       "container-swarm",
+		AccountScopeID:       testPrincipal().AccountScopeID,
+		AuthorityHostSwarmID: "host-swarm-id",
+		RuntimeKind:          pebblestore.TopologyRuntimeKindContainer,
+		PlacementGeneration:  1,
+		State:                pebblestore.TopologyRuntimePlacementStateActive,
+	})
+	if err == nil || !strings.Contains(err.Error(), "authority container id is required") {
+		t.Fatalf("err = %v, want authority container id rejection", err)
+	}
+}
+
+func TestSessionsV2LocalContainerValidatesLivePlacement(t *testing.T) {
+	cases := []struct {
+		name       string
+		mutate     func(*pebblestore.TopologyRuntimePlacementRecord)
+		wantStatus int
+		wantBody   string
+	}{
+		{name: "inactive placement", mutate: func(p *pebblestore.TopologyRuntimePlacementRecord) { p.State = "inactive" }, wantStatus: http.StatusConflict, wantBody: "runtime placement is not active"},
+		{name: "authority host not primary", mutate: func(p *pebblestore.TopologyRuntimePlacementRecord) { p.AuthorityHostSwarmID = "other-host" }, wantStatus: http.StatusBadRequest, wantBody: "authority host must be the primary runtime"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server, _, _, routeStore, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+			seedSessionsV2LocalContainerAuthority(t, server, swarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+			mutateSessionsV2RuntimePlacement(t, server, "container-swarm", tc.mutate)
+
+			rec := postSessionsV2LocalContainer(t, server, `{"swarm_id":"container-swarm","workspace_binding_id":"binding-container-v2","title":"bad placement","mode":"auto","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d, body=%s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tc.wantBody) {
+				t.Fatalf("body = %s, want %q", rec.Body.String(), tc.wantBody)
+			}
+			assertNoPrimaryCreateResidue(t, server, routeStore)
+		})
+	}
+}
+
+func TestSessionsV2LocalContainerValidatesBindingContract(t *testing.T) {
+	cases := []struct {
+		name       string
+		mutate     func(*pebblestore.TopologyWorkspaceBindingRecord)
+		wantStatus int
+		wantBody   string
+	}{
+		{name: "destination swarm mismatch", mutate: func(b *pebblestore.TopologyWorkspaceBindingRecord) { b.DestinationRuntimeSwarmID = "other-container" }, wantStatus: http.StatusConflict, wantBody: "does not match selected primary authority"},
+		{name: "destination kind not container", mutate: func(b *pebblestore.TopologyWorkspaceBindingRecord) {
+			b.DestinationRuntimeKind = pebblestore.TopologyRuntimeKindHost
+		}, wantStatus: http.StatusBadRequest, wantBody: "destination runtime kind must be container"},
+		{name: "destination container mismatch", mutate: func(b *pebblestore.TopologyWorkspaceBindingRecord) { b.DestinationContainerID = "other-container-id" }, wantStatus: http.StatusConflict, wantBody: "destination container id does not match placement"},
+		{name: "destination path missing", mutate: func(b *pebblestore.TopologyWorkspaceBindingRecord) { b.DestinationWorkspacePath = "" }, wantStatus: http.StatusConflict, wantBody: "destination workspace path is required"},
+		{name: "placement generation mismatch", mutate: func(b *pebblestore.TopologyWorkspaceBindingRecord) { b.PlacementGeneration = 2 }, wantStatus: http.StatusConflict, wantBody: "generation does not match placement"},
+		{name: "attesting host mismatch", mutate: func(b *pebblestore.TopologyWorkspaceBindingRecord) { b.AttestedByHostSwarmID = "other-host" }, wantStatus: http.StatusConflict, wantBody: "attesting host does not match authority host"},
+		{name: "read only", mutate: func(b *pebblestore.TopologyWorkspaceBindingRecord) {
+			b.AccessMode = pebblestore.TopologyWorkspaceBindingAccessModeReadOnly
+			b.Writable = false
+		}, wantStatus: http.StatusForbidden, wantBody: "read_write and writable"},
+		{name: "not bound", mutate: func(b *pebblestore.TopologyWorkspaceBindingRecord) { b.State = "pending" }, wantStatus: http.StatusConflict, wantBody: "workspace binding is not bound"},
+		{name: "user mismatch", mutate: func(b *pebblestore.TopologyWorkspaceBindingRecord) { b.UserID = "other-user" }, wantStatus: http.StatusForbidden, wantBody: "workspace binding user does not match principal"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server, _, _, routeStore, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+			seedSessionsV2LocalContainerAuthority(t, server, swarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+			mutateSessionsV2WorkspaceBinding(t, server, "binding-container-v2", tc.mutate)
+
+			rec := postSessionsV2LocalContainer(t, server, `{"swarm_id":"container-swarm","workspace_binding_id":"binding-container-v2","title":"bad binding","mode":"auto","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d, body=%s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tc.wantBody) {
+				t.Fatalf("body = %s, want %q", rec.Body.String(), tc.wantBody)
+			}
+			assertNoPrimaryCreateResidue(t, server, routeStore)
+		})
+	}
+}
+
 func TestSessionsV2PrimaryCreateEndpointIsNotRejectedAsReservedLifecycleID(t *testing.T) {
 	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
 	seedSessionsV2PrimaryAuthority(t, server, swarmStore, "host-swarm-id", "binding-primary-v2", "/host/swarm-go")
@@ -577,6 +704,84 @@ func postSessionsV2Primary(t *testing.T, server *Server, body string) *httptest.
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 	return rec
+}
+
+func postSessionsV2LocalContainer(t *testing.T, server *Server, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v2/sessions/local-containers", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	return rec
+}
+
+func mutateSessionsV2Runtime(t *testing.T, server *Server, swarmID string, mutate func(*pebblestore.TopologyRuntimeRecord)) {
+	t.Helper()
+	runtimeRecord, ok, err := server.topology.GetRuntimeForAccount(testPrincipal().AccountScopeID, swarmID)
+	if err != nil || !ok {
+		t.Fatalf("get runtime ok=%t err=%v", ok, err)
+	}
+	mutate(&runtimeRecord)
+	snapshot, err := server.topology.SnapshotForAccount(testPrincipal().AccountScopeID)
+	if err != nil {
+		t.Fatalf("snapshot topology: %v", err)
+	}
+	for i := range snapshot.Runtimes {
+		if snapshot.Runtimes[i].SwarmID == swarmID {
+			snapshot.Runtimes[i] = runtimeRecord
+			if err := server.topology.ReplaceSnapshotForAccount(testPrincipal().AccountScopeID, snapshot); err != nil {
+				t.Fatalf("replace runtime: %v", err)
+			}
+			return
+		}
+	}
+	t.Fatalf("runtime %q missing from snapshot", swarmID)
+}
+
+func mutateSessionsV2RuntimePlacement(t *testing.T, server *Server, swarmID string, mutate func(*pebblestore.TopologyRuntimePlacementRecord)) {
+	t.Helper()
+	placement, ok, err := server.topology.GetRuntimePlacementForAccount(testPrincipal().AccountScopeID, swarmID)
+	if err != nil || !ok {
+		t.Fatalf("get runtime placement ok=%t err=%v", ok, err)
+	}
+	mutate(&placement)
+	snapshot, err := server.topology.SnapshotForAccount(testPrincipal().AccountScopeID)
+	if err != nil {
+		t.Fatalf("snapshot topology: %v", err)
+	}
+	for i := range snapshot.RuntimePlacements {
+		if snapshot.RuntimePlacements[i].RuntimeSwarmID == swarmID {
+			snapshot.RuntimePlacements[i] = placement
+			if err := server.topology.ReplaceSnapshotForAccount(testPrincipal().AccountScopeID, snapshot); err != nil {
+				t.Fatalf("replace runtime placement: %v", err)
+			}
+			return
+		}
+	}
+	t.Fatalf("runtime placement %q missing from snapshot", swarmID)
+}
+
+func mutateSessionsV2WorkspaceBinding(t *testing.T, server *Server, bindingID string, mutate func(*pebblestore.TopologyWorkspaceBindingRecord)) {
+	t.Helper()
+	binding, ok, err := server.topology.GetWorkspaceBindingForAccount(testPrincipal().AccountScopeID, bindingID)
+	if err != nil || !ok {
+		t.Fatalf("get workspace binding ok=%t err=%v", ok, err)
+	}
+	mutate(&binding)
+	snapshot, err := server.topology.SnapshotForAccount(testPrincipal().AccountScopeID)
+	if err != nil {
+		t.Fatalf("snapshot topology: %v", err)
+	}
+	for i := range snapshot.WorkspaceBindings {
+		if snapshot.WorkspaceBindings[i].BindingID == bindingID {
+			snapshot.WorkspaceBindings[i] = binding
+			if err := server.topology.ReplaceSnapshotForAccount(testPrincipal().AccountScopeID, snapshot); err != nil {
+				t.Fatalf("replace workspace binding: %v", err)
+			}
+			return
+		}
+	}
+	t.Fatalf("workspace binding %q missing from snapshot", bindingID)
 }
 
 func seedSessionsV2PrimaryAuthority(t *testing.T, server *Server, swarmStore *pebblestore.SwarmStore, swarmID, bindingID, workspacePath string) {

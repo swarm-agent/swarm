@@ -132,6 +132,12 @@ func (s *Server) handleSessionsV2Create(w http.ResponseWriter, r *http.Request, 
 }
 
 func (s *Server) createSessionsV2LocalContainer(r *http.Request, principal identity.Principal, req sessionruntime.SessionsV2CreateRequest) (map[string]any, error) {
+	if strings.TrimSpace(req.WorkspacePath) != "" {
+		return nil, sessionV2BadRequest("local-container sessions v2 must not include workspace_path")
+	}
+	if strings.TrimSpace(req.WorkspaceBindingID) == "" {
+		return nil, sessionV2BadRequest("local-container sessions v2 workspace_binding_id is required")
+	}
 	if strings.TrimSpace(req.WorktreeMode) != "" && !strings.EqualFold(strings.TrimSpace(req.WorktreeMode), "off") {
 		return nil, sessionV2BadRequest("local-container sessions v2 worktree settings are not supported before the dedicated worktree checkpoint")
 	}
@@ -1056,12 +1062,21 @@ func (s *Server) buildSessionsV2Execution(r *http.Request, principal identity.Pr
 	if strings.TrimSpace(runtimeRecord.SwarmID) != req.SwarmID {
 		return sessionruntime.SessionExecution{}, sessionV2StaleAuthority("sessions v2 runtime identity mismatch")
 	}
+	if strings.TrimSpace(runtimeRecord.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		return sessionruntime.SessionExecution{}, sessionV2AccessDenied("sessions v2 runtime account scope does not match principal")
+	}
+	if strings.TrimSpace(runtimeRecord.UserID) != "" && strings.TrimSpace(runtimeRecord.UserID) != strings.TrimSpace(principal.UserID) {
+		return sessionruntime.SessionExecution{}, sessionV2AccessDenied("sessions v2 runtime user does not match principal")
+	}
 	placement, placementOK, err := s.topology.GetRuntimePlacementForAccount(principal.AccountScopeID, req.SwarmID)
 	if err != nil {
 		return sessionruntime.SessionExecution{}, err
 	}
 	if !placementOK {
 		return sessionruntime.SessionExecution{}, sessionV2AuthorityNotFound("sessions v2 runtime placement for %q was not found", req.SwarmID)
+	}
+	if strings.TrimSpace(placement.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		return sessionruntime.SessionExecution{}, sessionV2AccessDenied("sessions v2 runtime placement account scope does not match principal")
 	}
 	if req.WorkspaceBindingID == "" {
 		if endpointClass != sessionsV2EndpointPrimary {
@@ -1231,6 +1246,9 @@ func validateCommonSessionV2Binding(principal identity.Principal, bindingID stri
 	}
 	if strings.TrimSpace(binding.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
 		return sessionV2AccessDenied("sessions v2 workspace binding account scope does not match principal")
+	}
+	if strings.TrimSpace(binding.UserID) != "" && strings.TrimSpace(binding.UserID) != strings.TrimSpace(principal.UserID) {
+		return sessionV2AccessDenied("sessions v2 workspace binding user does not match principal")
 	}
 	if strings.TrimSpace(binding.State) != pebblestore.TopologyWorkspaceBindingStateBound {
 		return sessionV2StaleAuthority("sessions v2 workspace binding is not bound")
