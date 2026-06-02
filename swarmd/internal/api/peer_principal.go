@@ -76,6 +76,11 @@ func (s *Server) trustedSessionPrincipalForRequest(r *http.Request, sessionID st
 		flowRouteDiagLog("trusted_session_principal_pairing", "path", path, "ok", ok, "principal_valid", principal.Valid(), "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID, "peer_swarm_id", peerSwarmID)
 		return principal, ok
 	}
+	if strings.HasPrefix(path, runtimeSessionsV2Prefix) {
+		principal, ok := s.trustedRuntimeSessionV2PrincipalForPeerRequest(r, sessionID)
+		flowRouteDiagLog("trusted_session_principal_runtime_v2", "path", path, "session_id", sessionID, "ok", ok, "principal_valid", principal.Valid(), "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID, "peer_swarm_id", peerSwarmID)
+		return principal, ok
+	}
 	// Host/container peer auth and the local transport prove transport identity
 	// only. Forwarded X-Swarm-Principal-* headers are claims, not authority;
 	// the receiving runtime may mint request principal context only from
@@ -302,9 +307,15 @@ func (s *Server) peerSessionTransportMatchesPairedParentForRoute(r *http.Request
 
 func peerSessionIDFromRequestPath(path string) string {
 	path = strings.TrimSpace(path)
-	const prefix = "/v1/sessions/"
-	if !strings.HasPrefix(path, prefix) {
+	if path == runtimeSessionsV2OpenPath {
 		return ""
+	}
+	prefix := "/v1/sessions/"
+	if !strings.HasPrefix(path, prefix) {
+		prefix = runtimeSessionsV2Prefix
+		if !strings.HasPrefix(path, prefix) {
+			return ""
+		}
 	}
 	rest := strings.Trim(strings.TrimPrefix(path, prefix), "/")
 	if rest == "" {

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	gorillaws "github.com/gorilla/websocket"
 	"swarm/packages/swarmd/internal/identity"
 	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -48,9 +50,41 @@ func isMutatingSessionsV2LifecycleRequest(method, subpath string) bool {
 	case "permissions/resolve_all", "run":
 		return method == http.MethodPost
 	case "run/stream":
-		return method == http.MethodPost
+		return false
 	default:
 		return strings.HasPrefix(subpath, "permissions/") && strings.HasSuffix(subpath, "/resolve") && method == http.MethodPost
+	}
+}
+
+func isMutatingSessionsV2LifecycleHTTPRequest(r *http.Request, subpath string) bool {
+	if r == nil {
+		return false
+	}
+	if subpath != "run/stream" || r.Method != http.MethodPost {
+		return isMutatingSessionsV2LifecycleRequest(r.Method, subpath)
+	}
+	if r.Body == nil {
+		return false
+	}
+	raw, err := io.ReadAll(r.Body)
+	if r.Body != nil {
+		_ = r.Body.Close()
+	}
+	r.Body = io.NopCloser(bytes.NewReader(raw))
+	if err != nil {
+		return false
+	}
+	var inbound struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &inbound); err != nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(inbound.Type)) {
+	case "run.start", "start", "run.stop", "stop":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -216,7 +250,7 @@ func (s *Server) handleLocalContainerSessionV2LifecycleIfNeeded(w http.ResponseW
 	if !supported {
 		return false
 	}
-	authority, err := s.requireSessionV2Authority(r, sessionID, isMutatingSessionsV2LifecycleRequest(r.Method, subpath))
+	authority, err := s.requireSessionV2Authority(r, sessionID, isMutatingSessionsV2LifecycleHTTPRequest(r, subpath))
 	if err != nil {
 		writeSessionsV2Error(w, err)
 		return true
@@ -267,15 +301,20 @@ func (s *Server) dispatchLocalContainerSessionV2Lifecycle(w http.ResponseWriter,
 	}
 	localSwarmID := strings.TrimSpace(localNode.SwarmID)
 	if localOK && strings.EqualFold(localSwarmID, strings.TrimSpace(authority.Execution.RuntimeSwarmID)) {
-		s.dispatchLocalRuntimeSessionV2Lifecycle(w, r, authority.Execution.SessionID, action)
+		s.dispatchLocalRuntimeSessionV2Lifecycle(w, r, authority, action)
 		return nil
 	}
 	return s.dispatchRemoteRuntimeSessionV2Lifecycle(w, r, authority, action)
 }
 
-func (s *Server) dispatchLocalRuntimeSessionV2Lifecycle(w http.ResponseWriter, r *http.Request, sessionID, action string) {
-	cloned := r.Clone(r.Context())
-	path := runtimeSessionsV2Prefix + strings.TrimSpace(sessionID)
+func (s *Server) dispatchLocalRuntimeSessionV2Lifecycle(w http.ResponseWriter, r *http.Request, authority sessionV2Authority, action string) {
+	sessionID := strings.TrimSpace(authority.Execution.SessionID)
+	principal := authority.Principal
+	principal.SessionID = sessionID
+	ctx := context.WithValue(r.Context(), productPrincipalRequestContextKey, principal)
+	ctx = identity.ContextWithPrincipal(ctx, principal)
+	cloned := r.Clone(ctx)
+	path := runtimeSessionsV2Prefix + sessionID
 	if strings.TrimSpace(action) != "" {
 		path += "/" + strings.Trim(strings.TrimSpace(action), "/")
 	}
@@ -320,6 +359,9 @@ func (s *Server) dispatchRemoteRuntimeSessionV2Lifecycle(w http.ResponseWriter, 
 	if r.URL != nil && r.URL.RawQuery != "" {
 		endpoint += "?" + r.URL.RawQuery
 	}
+	if strings.Trim(strings.TrimSpace(action), "/") == "run/stream" && r.Method == http.MethodGet && isWebsocketUpgradeRequest(r) {
+		return s.dispatchRemoteRuntimeSessionV2RunStreamWebsocket(w, r, authority, endpoint, localSwarmID, peerToken)
+	}
 	forwardReq, err := http.NewRequestWithContext(r.Context(), r.Method, endpoint, r.Body)
 	if err != nil {
 		return err
@@ -345,6 +387,59 @@ func (s *Server) dispatchRemoteRuntimeSessionV2Lifecycle(w http.ResponseWriter, 
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
+	return nil
+}
+
+func (s *Server) dispatchRemoteRuntimeSessionV2RunStreamWebsocket(w http.ResponseWriter, r *http.Request, authority sessionV2Authority, endpoint, localSwarmID, peerToken string) error {
+	wsEndpoint, err := websocketEndpointForBackend(endpoint)
+	if err != nil {
+		return err
+	}
+	downstream, err := transportws.Accept(w, r)
+	if err != nil {
+		return err
+	}
+	defer downstream.Close()
+	raw, err := downstream.ReadText()
+	if err != nil {
+		log.Printf("sessions v2 local-container run stream initial read failed session_id=%s remote_addr=%s err=%v", authority.Execution.SessionID, strings.TrimSpace(r.RemoteAddr), err)
+		return nil
+	}
+	inbound, err := decodePrimarySessionV2RunStreamInbound(raw)
+	if err != nil {
+		s.sendRunStreamControl(downstream, runStreamControlMessage{Type: "error", OK: false, SessionID: authority.Execution.SessionID, Error: err.Error()})
+		return nil
+	}
+	switch inbound.Type {
+	case "run.start", "start":
+		if _, err := s.requireSessionV2Authority(r, authority.Execution.SessionID, true); err != nil {
+			s.sendRunStreamControl(downstream, runStreamControlMessage{Type: "error", OK: false, SessionID: authority.Execution.SessionID, Error: err.Error()})
+			return nil
+		}
+		if err := validatePrimarySessionV2RunRequest(inbound.RunRequest); err != nil {
+			s.sendRunStreamControl(downstream, runStreamControlMessage{Type: "error", OK: false, SessionID: authority.Execution.SessionID, Error: err.Error()})
+			return nil
+		}
+	case "run.stop", "stop":
+		if _, err := s.requireSessionV2Authority(r, authority.Execution.SessionID, true); err != nil {
+			s.sendRunStreamControl(downstream, runStreamControlMessage{Type: "error", OK: false, SessionID: authority.Execution.SessionID, Error: err.Error()})
+			return nil
+		}
+	}
+	headers := cloneHeaderForUpstreamWebsocket(r.Header)
+	headers.Set(peerAuthSwarmIDHeader, strings.TrimSpace(localSwarmID))
+	headers.Set(peerAuthTokenHeader, strings.TrimSpace(peerToken))
+	upstream, resp, err := gorillaws.DefaultDialer.DialContext(r.Context(), wsEndpoint, headers)
+	if err != nil {
+		s.sendRunStreamControl(downstream, runStreamControlMessage{Type: "error", OK: false, SessionID: authority.Execution.SessionID, Error: summarizeWebsocketDialError(err, resp).Error()})
+		return nil
+	}
+	defer upstream.Close()
+	if err := upstream.WriteMessage(gorillaws.TextMessage, raw); err != nil {
+		s.sendRunStreamControl(downstream, runStreamControlMessage{Type: "error", OK: false, SessionID: authority.Execution.SessionID, Error: err.Error()})
+		return nil
+	}
+	bridgeWebsocketText(downstream, upstream)
 	return nil
 }
 
@@ -1151,6 +1246,17 @@ func (s *Server) handlePrimarySessionV2Run(w http.ResponseWriter, r *http.Reques
 		writeSessionsV2Error(w, err)
 		return
 	}
+	s.handleNativeSessionV2Run(w, r, sessionID, authority.Principal)
+}
+
+func requireSessionV2Mutation(requireMutation func() error) error {
+	if requireMutation == nil {
+		return nil
+	}
+	return requireMutation()
+}
+
+func (s *Server) handleNativeSessionV2Run(w http.ResponseWriter, r *http.Request, sessionID string, principal identity.Principal) {
 	if s.runner == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("run service not configured"))
 		return
@@ -1169,14 +1275,14 @@ func (s *Server) handlePrimarySessionV2Run(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	req = req.Normalized()
-	integrationCtx, err := s.applyIntegrationBuilderRunContext(authority.Principal, sessionID, &sessionRunRequestAdapter{agentName: func() string { return req.AgentName }, setAgentName: func(value string) { req.AgentName = value }, instructions: func() string { return req.Instructions }, setInstructions: func(value string) { req.Instructions = value }})
+	integrationCtx, err := s.applyIntegrationBuilderRunContext(principal, sessionID, &sessionRunRequestAdapter{agentName: func() string { return req.AgentName }, setAgentName: func(value string) { req.AgentName = value }, instructions: func() string { return req.Instructions }, setInstructions: func(value string) { req.Instructions = value }})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	s.beginActiveRun()
 	defer s.endActiveRun()
-	result, err := s.runner.RunTurn(identity.ContextWithPrincipal(r.Context(), authority.Principal), sessionID, req, runruntime.RunStartMeta{IntegrationFlow: integrationCtx.IntegrationFlow, Principal: authority.Principal})
+	result, err := s.runner.RunTurn(identity.ContextWithPrincipal(r.Context(), principal), sessionID, req, runruntime.RunStartMeta{IntegrationFlow: integrationCtx.IntegrationFlow, Principal: principal})
 	if err != nil {
 		status := http.StatusBadRequest
 		if errors.Is(err, runruntime.ErrSessionAlreadyActive) {
@@ -1199,17 +1305,24 @@ func (s *Server) handlePrimarySessionV2RunStream(w http.ResponseWriter, r *http.
 		writeSessionsV2Error(w, err)
 		return
 	}
+	s.handleAuthorizedSessionV2RunStream(w, r, sessionID, authority.Principal, func() error {
+		_, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, true)
+		return err
+	})
+}
+
+func (s *Server) handleAuthorizedSessionV2RunStream(w http.ResponseWriter, r *http.Request, sessionID string, principal identity.Principal, requireMutation func() error) {
 	switch r.Method {
 	case http.MethodGet:
-		s.handlePrimarySessionV2RunStreamWebsocket(w, r, sessionID, authority.Principal)
+		s.handleAuthorizedSessionV2RunStreamWebsocket(w, r, sessionID, principal, requireMutation)
 	case http.MethodPost:
-		s.handlePrimarySessionV2RunStreamControl(w, r, sessionID, authority.Principal)
+		s.handleAuthorizedSessionV2RunStreamControl(w, r, sessionID, principal, requireMutation)
 	default:
 		writeError(w, http.StatusUpgradeRequired, errors.New("run stream requires websocket upgrade (GET) or control POST"))
 	}
 }
 
-func (s *Server) handlePrimarySessionV2RunStreamWebsocket(w http.ResponseWriter, r *http.Request, sessionID string, principal identity.Principal) {
+func (s *Server) handleAuthorizedSessionV2RunStreamWebsocket(w http.ResponseWriter, r *http.Request, sessionID string, principal identity.Principal, requireMutation func() error) {
 	if s.runner == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("run service not configured"))
 		return
@@ -1246,7 +1359,7 @@ func (s *Server) handlePrimarySessionV2RunStreamWebsocket(w http.ResponseWriter,
 	}
 	switch inbound.Type {
 	case "run.start", "start":
-		if _, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, true); err != nil {
+		if err := requireSessionV2Mutation(requireMutation); err != nil {
 			s.sendRunStreamControl(conn, runStreamControlMessage{Type: "error", OK: false, SessionID: sessionID, Error: err.Error()})
 			return
 		}
@@ -1262,7 +1375,7 @@ func (s *Server) handlePrimarySessionV2RunStreamWebsocket(w http.ResponseWriter,
 		// subscribes/replays frames for an existing run after a session match.
 		s.handleRunStreamResume(conn, sessionID, inbound)
 	case "run.stop", "stop":
-		if _, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, true); err != nil {
+		if err := requireSessionV2Mutation(requireMutation); err != nil {
 			s.sendRunStreamControl(conn, runStreamControlMessage{Type: "error", OK: false, SessionID: sessionID, Error: err.Error()})
 			return
 		}
@@ -1273,7 +1386,7 @@ func (s *Server) handlePrimarySessionV2RunStreamWebsocket(w http.ResponseWriter,
 	}
 }
 
-func (s *Server) handlePrimarySessionV2RunStreamControl(w http.ResponseWriter, r *http.Request, sessionID string, principal identity.Principal) {
+func (s *Server) handleAuthorizedSessionV2RunStreamControl(w http.ResponseWriter, r *http.Request, sessionID string, principal identity.Principal, requireMutation func() error) {
 	if s.runner == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("run service not configured"))
 		return
@@ -1310,7 +1423,7 @@ func (s *Server) handlePrimarySessionV2RunStreamControl(w http.ResponseWriter, r
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "run_id": inbound.RunID, "last_seq": inbound.LastSeq, "status": "resume_available"})
 	case "run.start", "start":
-		if _, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, true); err != nil {
+		if err := requireSessionV2Mutation(requireMutation); err != nil {
 			writeSessionsV2Error(w, err)
 			return
 		}
@@ -1339,7 +1452,7 @@ func (s *Server) handlePrimarySessionV2RunStreamControl(w http.ResponseWriter, r
 		}
 		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "session_id": sessionID, "run_id": state.runID, "status": "accepted", "background": inbound.RunRequest.Background, "target_kind": strings.TrimSpace(inbound.RunRequest.TargetKind), "target_name": strings.TrimSpace(inbound.RunRequest.TargetName), "owner_transport": "background_api"})
 	case "run.stop", "stop":
-		if _, err := s.requirePrimarySessionV2DispatchAuthority(r, sessionID, true); err != nil {
+		if err := requireSessionV2Mutation(requireMutation); err != nil {
 			writeSessionsV2Error(w, err)
 			return
 		}

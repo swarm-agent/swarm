@@ -524,13 +524,29 @@ func (s *Server) handleRuntimeSessionsV2ByID(w http.ResponseWriter, r *http.Requ
 			methodNotAllowed(w)
 			return
 		}
-		writeRuntimeSessionsV2NotImplemented(w, "runtime session run is not implemented")
+		principal, err := s.requireRuntimeSessionV2Principal(r, sessionID)
+		if err != nil {
+			writeSessionsV2Error(w, err)
+			return
+		}
+		if err := s.requireRuntimeSessionV2MutationAuthority(principal, sessionID); err != nil {
+			writeSessionsV2Error(w, err)
+			return
+		}
+		s.handleNativeSessionV2Run(w, r, sessionID, principal)
 	case "run/stream":
 		if r.Method != http.MethodGet && r.Method != http.MethodPost {
 			methodNotAllowed(w)
 			return
 		}
-		writeRuntimeSessionsV2NotImplemented(w, "runtime session run stream is not implemented")
+		principal, err := s.requireRuntimeSessionV2Principal(r, sessionID)
+		if err != nil {
+			writeSessionsV2Error(w, err)
+			return
+		}
+		s.handleAuthorizedSessionV2RunStream(w, r, sessionID, principal, func() error {
+			return s.requireRuntimeSessionV2MutationAuthority(principal, sessionID)
+		})
 	case "mirror/batch":
 		if r.Method != http.MethodPost {
 			methodNotAllowed(w)
@@ -556,6 +572,88 @@ func (s *Server) handleRuntimeSessionsV2ByID(w http.ResponseWriter, r *http.Requ
 		}
 		writeError(w, http.StatusNotFound, errors.New("runtime sessions v2 route not found"))
 	}
+}
+
+func (s *Server) requireRuntimeSessionV2Principal(r *http.Request, sessionID string) (identity.Principal, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return identity.Principal{}, sessionV2BadRequest("runtime session id is required")
+	}
+	if !isTrustedPeerOrLocalTransport(r) {
+		return identity.Principal{}, sessionV2AccessDenied("runtime session internal access requires trusted runtime transport")
+	}
+	principal, ok := s.trustedRuntimeSessionV2PrincipalForPeerRequest(r, sessionID)
+	if !ok || !principal.Valid() {
+		return identity.Principal{}, identity.ErrPrincipalRequired
+	}
+	if strings.TrimSpace(principal.SessionID) != sessionID {
+		return identity.Principal{}, sessionV2AccessDenied("runtime session principal session id does not match request")
+	}
+	if s == nil || s.sessions == nil || s.sessions.Store() == nil {
+		return identity.Principal{}, errors.New("runtime sessions v2 service is not configured")
+	}
+	execution, ok, err := s.sessions.Store().GetSessionExecutionV2(sessionID)
+	if err != nil {
+		return identity.Principal{}, err
+	}
+	if !ok {
+		return identity.Principal{}, sessionV2AuthorityNotFound("runtime session execution for %q was not found", sessionID)
+	}
+	if strings.TrimSpace(execution.SessionID) != sessionID {
+		return identity.Principal{}, sessionV2StaleAuthority("runtime session execution session id mismatch")
+	}
+	if strings.TrimSpace(execution.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		return identity.Principal{}, sessionV2AccessDenied("runtime session execution account scope does not match principal")
+	}
+	if strings.TrimSpace(execution.UserID) != "" && strings.TrimSpace(execution.UserID) != strings.TrimSpace(principal.UserID) {
+		return identity.Principal{}, sessionV2AccessDenied("runtime session execution user does not match principal")
+	}
+	ctx := identity.ContextWithPrincipal(r.Context(), principal)
+	*r = *r.WithContext(ctx)
+	return principal, nil
+}
+
+func (s *Server) requireRuntimeSessionV2MutationAuthority(principal identity.Principal, sessionID string) error {
+	if !principal.Valid() {
+		return identity.ErrPrincipalRequired
+	}
+	if s == nil || s.sessions == nil || s.sessions.Store() == nil || s.topology == nil {
+		return errors.New("runtime sessions v2 service is not configured")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	execution, ok, err := s.sessions.Store().GetSessionExecutionV2(sessionID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return sessionV2AuthorityNotFound("runtime session execution for %q was not found", sessionID)
+	}
+	if strings.TrimSpace(execution.SessionID) != sessionID {
+		return sessionV2StaleAuthority("runtime session execution session id mismatch")
+	}
+	if strings.TrimSpace(execution.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		return sessionV2AccessDenied("runtime session execution account scope does not match principal")
+	}
+	binding, ok, err := s.topology.GetWorkspaceBindingForAccount(principal.AccountScopeID, execution.WorkspaceBindingID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return sessionV2AuthorityNotFound("runtime session workspace binding %q was not found", execution.WorkspaceBindingID)
+	}
+	if strings.TrimSpace(binding.BindingID) != strings.TrimSpace(execution.WorkspaceBindingID) || binding.BindingGeneration != execution.BindingGeneration || binding.PlacementGeneration != execution.PlacementGeneration {
+		return sessionV2StaleAuthority("runtime session workspace binding generation mismatch")
+	}
+	if strings.TrimSpace(binding.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		return sessionV2AccessDenied("runtime session workspace binding account scope does not match principal")
+	}
+	if strings.TrimSpace(binding.State) != pebblestore.TopologyWorkspaceBindingStateBound {
+		return sessionV2StaleAuthority("runtime session workspace binding is not bound")
+	}
+	if strings.TrimSpace(binding.AccessMode) != pebblestore.TopologyWorkspaceBindingAccessModeReadWrite || !binding.Writable {
+		return sessionV2AccessDenied("runtime session workspace binding is read-only")
+	}
+	return nil
 }
 
 func (s *Server) handleRuntimeSessionV2Get(w http.ResponseWriter, r *http.Request, sessionID string) {

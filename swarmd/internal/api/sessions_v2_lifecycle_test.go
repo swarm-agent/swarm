@@ -593,6 +593,8 @@ func TestSessionsV2LifecycleReadOnlyBindingAllowsReadBlocksMutation(t *testing.T
 func TestSessionsV2LifecycleLocalContainerDispatchesNativeRuntime(t *testing.T) {
 	hostServer, _, _, routeStore, hostSwarmStore := newRoutedSessionTestServerWithSwarmStore(t)
 	runtimeServer, runtimeSessionSvc, _, _, runtimeSwarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &primaryV2RunRequestRecordingRunner{emitLifecycle: true}
+	runtimeServer.runner = runner
 	seedSessionsV2LocalContainerAuthority(t, hostServer, hostSwarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
 	seedRuntimeSessionsV2OpenContainerAuthority(t, runtimeServer, runtimeSwarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
 	setTestServerLocalSwarmID(t, runtimeServer, "container-swarm")
@@ -667,16 +669,65 @@ func TestSessionsV2LifecycleLocalContainerDispatchesNativeRuntime(t *testing.T) 
 	if postRec.Code != http.StatusOK {
 		t.Fatalf("messages post status = %d, want %d, body=%s", postRec.Code, http.StatusOK, postRec.Body.String())
 	}
+
+	runReq := httptest.NewRequest(http.MethodPost, "/v2/sessions/"+sessionID+"/run", bytes.NewBufferString(`{"prompt":"run via runtime","instructions":"safe user instructions","background":true}`))
+	runReq.Header.Set("Content-Type", "application/json")
+	runRec := httptest.NewRecorder()
+	hostServer.Handler().ServeHTTP(runRec, withTestPrincipal(runReq))
+	if runRec.Code != http.StatusOK {
+		t.Fatalf("run status = %d, want %d, body=%s", runRec.Code, http.StatusOK, runRec.Body.String())
+	}
+	calls, recordedSessionID, recordedRequest, _ := runner.snapshot()
+	if calls != 1 || recordedSessionID != sessionID {
+		t.Fatalf("runner calls=%d session_id=%q, want run call for %q", calls, recordedSessionID, sessionID)
+	}
+	if recordedRequest.Prompt != "run via runtime" || !recordedRequest.Background || recordedRequest.TargetKind != "" || recordedRequest.TargetName != "" || recordedRequest.ExecutionContext != nil || recordedRequest.ToolScope != nil {
+		t.Fatalf("runtime run request = %+v", recordedRequest)
+	}
+
+	streamReq := httptest.NewRequest(http.MethodPost, "/v2/sessions/"+sessionID+"/run/stream", bytes.NewBufferString(`{"type":"run.start","prompt":"stream via runtime","background":true}`))
+	streamReq.Header.Set("Content-Type", "application/json")
+	streamRec := httptest.NewRecorder()
+	hostServer.Handler().ServeHTTP(streamRec, withTestPrincipal(streamReq))
+	if streamRec.Code != http.StatusAccepted {
+		t.Fatalf("run stream status = %d, want %d, body=%s", streamRec.Code, http.StatusAccepted, streamRec.Body.String())
+	}
+	calls, recordedSessionID, recordedRequest, recordedMeta := runner.snapshot()
+	if calls != 2 || recordedSessionID != sessionID {
+		t.Fatalf("runner calls=%d session_id=%q, want second stream call for %q", calls, recordedSessionID, sessionID)
+	}
+	if recordedRequest.Prompt != "stream via runtime" || !recordedRequest.Background || recordedRequest.TargetKind != "" || recordedRequest.TargetName != "" || recordedRequest.ExecutionContext != nil || recordedRequest.ToolScope != nil {
+		t.Fatalf("runtime stream request = %+v", recordedRequest)
+	}
+	if recordedMeta.OwnerTransport != "background_api" {
+		t.Fatalf("owner transport = %q, want background_api", recordedMeta.OwnerTransport)
+	}
+
+	overrideReq := httptest.NewRequest(http.MethodPost, "/v2/sessions/"+sessionID+"/run", bytes.NewBufferString(`{"prompt":"blocked","target_kind":"subagent"}`))
+	overrideReq.Header.Set("Content-Type", "application/json")
+	overrideRec := httptest.NewRecorder()
+	hostServer.Handler().ServeHTTP(overrideRec, withTestPrincipal(overrideReq))
+	if overrideRec.Code != http.StatusBadRequest {
+		t.Fatalf("override status = %d, want %d, body=%s", overrideRec.Code, http.StatusBadRequest, overrideRec.Body.String())
+	}
+	if !strings.Contains(overrideRec.Body.String(), "target_kind") {
+		t.Fatalf("override body = %s, want target_kind rejection", overrideRec.Body.String())
+	}
+
 	if legacyCalls.Load() != 0 {
 		t.Fatalf("legacy route calls = %d, want 0", legacyCalls.Load())
 	}
 	wantGet := http.MethodGet + " " + runtimeSessionsV2Prefix + sessionID + "/messages"
 	wantPost := http.MethodPost + " " + runtimeSessionsV2Prefix + sessionID + "/messages"
+	wantRun := http.MethodPost + " " + runtimeSessionsV2Prefix + sessionID + "/run"
+	wantStream := http.MethodPost + " " + runtimeSessionsV2Prefix + sessionID + "/run/stream"
 	lifecyclePathsMu.Lock()
 	paths := strings.Join(lifecyclePaths, "\n")
 	lifecyclePathsMu.Unlock()
-	if !strings.Contains(paths, wantGet) || !strings.Contains(paths, wantPost) {
-		t.Fatalf("runtime lifecycle paths = %q, want %q and %q", paths, wantGet, wantPost)
+	for _, wantPath := range []string{wantGet, wantPost, wantRun, wantStream} {
+		if !strings.Contains(paths, wantPath) {
+			t.Fatalf("runtime lifecycle paths = %q, missing %q", paths, wantPath)
+		}
 	}
 	messages, err := runtimeSessionSvc.ListMessages(sessionID, 0, 10)
 	if err != nil {
@@ -685,8 +736,8 @@ func TestSessionsV2LifecycleLocalContainerDispatchesNativeRuntime(t *testing.T) 
 	if len(messages) != 1 || messages[0].Content != "via runtime" {
 		t.Fatalf("runtime messages = %+v, want posted message", messages)
 	}
-	if runtimeCalls.Load() < 3 {
-		t.Fatalf("runtime calls = %d, want open plus lifecycle calls", runtimeCalls.Load())
+	if runtimeCalls.Load() < 6 {
+		t.Fatalf("runtime calls = %d, want open plus lifecycle/run calls", runtimeCalls.Load())
 	}
 }
 
@@ -729,6 +780,17 @@ func TestSessionsV2LifecycleLocalContainerFailsClosedWithoutRuntimeAuthorityConn
 	}
 	if !strings.Contains(rec.Body.String(), "runtime session authority connection") {
 		t.Fatalf("body = %s, want missing runtime authority connection", rec.Body.String())
+	}
+
+	runReq := httptest.NewRequest(http.MethodPost, "/v2/sessions/"+sessionID+"/run", bytes.NewBufferString(`{"prompt":"blocked"}`))
+	runReq.Header.Set("Content-Type", "application/json")
+	runRec := httptest.NewRecorder()
+	hostServer.Handler().ServeHTTP(runRec, withTestPrincipal(runReq))
+	if runRec.Code != http.StatusNotFound {
+		t.Fatalf("run status = %d, want %d, body=%s", runRec.Code, http.StatusNotFound, runRec.Body.String())
+	}
+	if !strings.Contains(runRec.Body.String(), "runtime session authority connection") {
+		t.Fatalf("run body = %s, want missing runtime authority connection", runRec.Body.String())
 	}
 	if legacyCalls.Load() != 0 {
 		t.Fatalf("legacy route calls = %d, want 0", legacyCalls.Load())

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -209,11 +210,17 @@ func registerSessionsV2TestRuntimeOpen(t *testing.T, hostServer *Server, hostSwa
 	return runtimeServer
 }
 
-func TestSessionsV2LifecycleLocalContainerRunFailsClosedWithoutLegacyProxy(t *testing.T) {
-	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+func TestSessionsV2LifecycleLocalContainerRunDispatchesNativeRuntime(t *testing.T) {
+	server, _, _, routeStore, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
 	seedSessionsV2LocalContainerAuthority(t, server, swarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
 	runtimeServer := registerSessionsV2TestRuntimeOpen(t, server, swarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
 	runtimeServer.runner = &primaryV2RunRequestRecordingRunner{}
+	var legacyCalls atomic.Int32
+	legacyHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		legacyCalls.Add(1)
+		writeJSON(w, http.StatusTeapot, map[string]any{"ok": false, "error": "legacy route should not be used"})
+	}))
+	defer legacyHTTP.Close()
 
 	req := httptest.NewRequest(http.MethodPost, "/v2/sessions/local-containers", bytes.NewBufferString(`{"swarm_id":"container-swarm","workspace_binding_id":"binding-container-v2","title":"container v2","mode":"auto","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -228,20 +235,29 @@ func TestSessionsV2LifecycleLocalContainerRunFailsClosedWithoutLegacyProxy(t *te
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode create response: %v", err)
 	}
+	if _, err := routeStore.Put(pebblestore.SessionRouteRecord{SessionID: payload.Session.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ChildSwarmID: "legacy-child", ChildBackendURL: legacyHTTP.URL, HostSwarmID: "host-swarm-id", HostContainerID: "legacy-container", HostWorkspacePath: "/host/swarm-go", RuntimeWorkspacePath: "/legacy/workspace", WorkspaceBindingID: "legacy-binding"}); err != nil {
+		t.Fatalf("put legacy route trap: %v", err)
+	}
 
 	lifecycleReq := httptest.NewRequest(http.MethodPost, "/v2/sessions/"+payload.Session.ID+"/run", bytes.NewBufferString(`{"prompt":"blocked"}`))
 	lifecycleReq.Header.Set("Content-Type", "application/json")
 	lifecycleRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(lifecycleRec, withTestPrincipal(lifecycleReq))
-	if lifecycleRec.Code != http.StatusNotImplemented {
-		t.Fatalf("run status = %d, want %d, body=%s", lifecycleRec.Code, http.StatusNotImplemented, lifecycleRec.Body.String())
+	if lifecycleRec.Code != http.StatusOK {
+		t.Fatalf("run status = %d, want %d, body=%s", lifecycleRec.Code, http.StatusOK, lifecycleRec.Body.String())
 	}
-	if !strings.Contains(lifecycleRec.Body.String(), "runtime_session_not_implemented") || strings.Contains(lifecycleRec.Body.String(), "legacy") {
-		t.Fatalf("body = %s, want native runtime fail-closed response", lifecycleRec.Body.String())
+	if strings.Contains(lifecycleRec.Body.String(), "legacy") || strings.Contains(lifecycleRec.Body.String(), "runtime_session_not_implemented") {
+		t.Fatalf("body = %s, want native runtime run response", lifecycleRec.Body.String())
 	}
-	calls, _, _, _ := runtimeServer.runner.(*primaryV2RunRequestRecordingRunner).snapshot()
-	if calls != 0 {
-		t.Fatalf("runtime runner calls = %d, want fail-closed stub before run execution", calls)
+	calls, recordedSessionID, recordedRequest, _ := runtimeServer.runner.(*primaryV2RunRequestRecordingRunner).snapshot()
+	if calls != 1 || recordedSessionID != payload.Session.ID {
+		t.Fatalf("runtime runner calls=%d session_id=%q, want native run for %q", calls, recordedSessionID, payload.Session.ID)
+	}
+	if recordedRequest.Prompt != "blocked" || recordedRequest.TargetKind != "" || recordedRequest.TargetName != "" || recordedRequest.ExecutionContext != nil || recordedRequest.ToolScope != nil {
+		t.Fatalf("runtime run request = %+v", recordedRequest)
+	}
+	if legacyCalls.Load() != 0 {
+		t.Fatalf("legacy route calls = %d, want 0", legacyCalls.Load())
 	}
 }
 

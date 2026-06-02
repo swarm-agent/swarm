@@ -34,13 +34,16 @@ func TestRuntimeSessionsV2RoutesRegisteredFailClosed(t *testing.T) {
 			rec := httptest.NewRecorder()
 			mux.ServeHTTP(rec, req)
 			want := http.StatusNotImplemented
-			if tt.path == runtimeSessionsV2OpenPath {
+			switch tt.path {
+			case runtimeSessionsV2OpenPath:
 				want = http.StatusBadRequest
+			case "/v2/internal/runtime-sessions/session-123/run", "/v2/internal/runtime-sessions/session-123/run/stream":
+				want = http.StatusForbidden
 			}
 			if rec.Code != want {
 				t.Fatalf("status = %d, want %d, body=%s", rec.Code, want, rec.Body.String())
 			}
-			if tt.path != runtimeSessionsV2OpenPath && !strings.Contains(rec.Body.String(), "runtime_session_not_implemented") {
+			if tt.path != runtimeSessionsV2OpenPath && want == http.StatusNotImplemented && !strings.Contains(rec.Body.String(), "runtime_session_not_implemented") {
 				t.Fatalf("body = %s, want not implemented code", rec.Body.String())
 			}
 		})
