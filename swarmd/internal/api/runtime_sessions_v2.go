@@ -447,6 +447,72 @@ func (s *Server) handleRuntimeSessionsV2ByID(w http.ResponseWriter, r *http.Requ
 	}
 
 	switch action {
+	case "":
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w)
+			return
+		}
+		s.handleRuntimeSessionV2Get(w, r, sessionID)
+	case "messages":
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		s.handleRuntimeSessionV2Messages(w, r, sessionID)
+	case "metadata":
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		s.handleRuntimeSessionV2Metadata(w, r, sessionID)
+	case "mode":
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		s.handleRuntimeSessionV2Mode(w, r, sessionID)
+	case "preference":
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		s.handleRuntimeSessionV2Preference(w, r, sessionID)
+	case "codex":
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		s.handleRuntimeSessionV2Codex(w, r, sessionID)
+	case "plans/active":
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		s.handleRuntimeSessionV2ActivePlan(w, r, sessionID)
+	case "plans":
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		s.handleRuntimeSessionV2Plans(w, r, sessionID)
+	case "permissions":
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w)
+			return
+		}
+		s.handleRuntimeSessionV2Permissions(w, r, sessionID)
+	case "permissions/resolve_all":
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		s.handleRuntimeSessionV2PermissionResolveAll(w, r, sessionID)
+	case "usage":
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w)
+			return
+		}
+		s.handleRuntimeSessionV2Usage(w, r, sessionID)
 	case "sync/state":
 		if r.Method != http.MethodPost {
 			methodNotAllowed(w)
@@ -472,8 +538,432 @@ func (s *Server) handleRuntimeSessionsV2ByID(w http.ResponseWriter, r *http.Requ
 		}
 		writeRuntimeSessionsV2NotImplemented(w, "runtime session mirror batch is not implemented")
 	default:
+		if strings.HasPrefix(action, "plans/") {
+			if r.Method != http.MethodGet {
+				methodNotAllowed(w)
+				return
+			}
+			s.handleRuntimeSessionV2PlanByID(w, r, sessionID, strings.TrimPrefix(action, "plans/"))
+			return
+		}
+		if strings.HasPrefix(action, "permissions/") && strings.HasSuffix(action, "/resolve") {
+			if r.Method != http.MethodPost {
+				methodNotAllowed(w)
+				return
+			}
+			s.handleRuntimeSessionV2PermissionResolve(w, r, sessionID, strings.TrimSuffix(strings.TrimPrefix(action, "permissions/"), "/resolve"))
+			return
+		}
 		writeError(w, http.StatusNotFound, errors.New("runtime sessions v2 route not found"))
 	}
+}
+
+func (s *Server) handleRuntimeSessionV2Get(w http.ResponseWriter, r *http.Request, sessionID string) {
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !ok {
+		writeSessionNotFound(w)
+		return
+	}
+	s.writeSessionSnapshot(w, session)
+}
+
+func (s *Server) handleRuntimeSessionV2Messages(w http.ResponseWriter, r *http.Request, sessionID string) {
+	switch r.Method {
+	case http.MethodGet:
+		afterSeq, limit, ok := parseAfterSeqAndLimit(w, r, 500)
+		if !ok {
+			return
+		}
+		messages, err := s.sessions.ListMessages(sessionID, afterSeq, limit)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "messages": messages})
+	case http.MethodPost:
+		var req struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		}
+		if err := decodeJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		message, updatedSession, event, err := s.sessions.AppendMessage(sessionID, req.Role, req.Content, nil)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if event != nil && s.hub != nil {
+			s.hub.Publish(*event)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": message, "session": updatedSession})
+	}
+}
+
+func (s *Server) handleRuntimeSessionV2Metadata(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method == http.MethodGet {
+		session, ok, err := s.sessions.GetSession(sessionID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if !ok {
+			writeSessionNotFound(w)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "metadata": session.Metadata, "updated_at": session.UpdatedAt})
+		return
+	}
+	var req struct {
+		Metadata map[string]any `json:"metadata"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := validateSessionsV2Metadata(req.Metadata); err != nil {
+		writeSessionsV2Error(w, err)
+		return
+	}
+	session, event, err := s.sessions.UpdateMetadata(sessionID, req.Metadata)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if event != nil && s.hub != nil {
+		s.hub.Publish(*event)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session": session})
+}
+
+func (s *Server) handleRuntimeSessionV2Mode(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method == http.MethodGet {
+		mode, err := s.sessions.GetMode(sessionID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "mode": mode})
+		return
+	}
+	var req struct {
+		Mode string `json:"mode"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	session, event, err := s.sessions.SetMode(sessionID, req.Mode)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if event != nil && s.hub != nil {
+		s.hub.Publish(*event)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "mode": session.Mode, "updated_at": session.UpdatedAt, "warning": ""})
+}
+
+func (s *Server) handleRuntimeSessionV2Preference(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method == http.MethodGet {
+		pref, err := s.sessions.GetSessionPreference(sessionID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		resolved, err := s.model.ResolvePreference(pref)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, resolved)
+		return
+	}
+	var req struct {
+		Provider    *string `json:"provider,omitempty"`
+		Model       *string `json:"model,omitempty"`
+		Thinking    *string `json:"thinking,omitempty"`
+		ServiceTier *string `json:"service_tier,omitempty"`
+		ContextMode *string `json:"context_mode,omitempty"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	pref, event, err := s.sessions.SetSessionPreference(sessionID, sessionruntime.SessionPreferenceUpdate{Provider: req.Provider, Model: req.Model, Thinking: req.Thinking, ServiceTier: req.ServiceTier, ContextMode: req.ContextMode})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if event != nil && s.hub != nil {
+		s.hub.Publish(*event)
+	}
+	resolved, err := s.model.ResolvePreference(pref)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resolved)
+}
+
+func (s *Server) handleRuntimeSessionV2Codex(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method == http.MethodGet {
+		config, err := s.sessions.GetCodexConfig(sessionID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, s.codexSessionConfigResponse(sessionID, config))
+		return
+	}
+	var req struct {
+		ServiceTier *string `json:"service_tier,omitempty"`
+		ContextMode *string `json:"context_mode,omitempty"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	config, event, err := s.sessions.SetCodexConfig(sessionID, sessionruntime.SessionCodexConfigUpdate{ServiceTier: req.ServiceTier, ContextMode: req.ContextMode})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if event != nil && s.hub != nil {
+		s.hub.Publish(*event)
+	}
+	writeJSON(w, http.StatusOK, s.codexSessionConfigResponse(sessionID, config))
+}
+
+func (s *Server) handleRuntimeSessionV2ActivePlan(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method == http.MethodGet {
+		plan, ok, err := s.sessions.GetActivePlan(sessionID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if !ok {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "has_active": false, "active_plan": nil})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "has_active": true, "active_plan": plan})
+		return
+	}
+	var req struct {
+		PlanID string `json:"plan_id"`
+		ID     string `json:"id"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	planID := strings.TrimSpace(req.PlanID)
+	if planID == "" {
+		planID = strings.TrimSpace(req.ID)
+	}
+	plan, event, err := s.sessions.SetActivePlan(sessionID, planID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if event != nil && s.hub != nil {
+		s.hub.Publish(*event)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "active_plan": plan})
+}
+
+func (s *Server) handleRuntimeSessionV2Plans(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method == http.MethodGet {
+		limit, ok := parseSessionsV2PositiveLimit(w, r, 100)
+		if !ok {
+			return
+		}
+		plans, activeID, err := s.sessions.ListPlans(sessionID, limit)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "active_plan_id": activeID, "count": len(plans), "plans": plans})
+		return
+	}
+	var req struct {
+		ID            string `json:"id"`
+		PlanID        string `json:"plan_id"`
+		Title         string `json:"title"`
+		Plan          string `json:"plan"`
+		Status        string `json:"status"`
+		ApprovalState string `json:"approval_state"`
+		UpdateSummary string `json:"update_summary"`
+		UpdateScope   string `json:"update_scope"`
+		Scope         string `json:"scope"`
+		UpdateKind    string `json:"update_kind"`
+		Checkpoint    bool   `json:"checkpoint"`
+		Activate      *bool  `json:"activate"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	planID := strings.TrimSpace(req.PlanID)
+	if planID == "" {
+		planID = strings.TrimSpace(req.ID)
+	}
+	activate := true
+	if req.Activate != nil {
+		activate = *req.Activate
+	}
+	updateScope := strings.TrimSpace(req.UpdateScope)
+	if updateScope == "" {
+		updateScope = strings.TrimSpace(req.Scope)
+	}
+	plan, event, err := s.sessions.SavePlanWithMetadata(sessionID, planID, req.Title, req.Plan, req.Status, req.ApprovalState, activate, sessionruntime.PlanSaveMetadata{UpdateSummary: req.UpdateSummary, UpdateScope: updateScope, UpdateKind: req.UpdateKind, Checkpoint: req.Checkpoint})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if event != nil && s.hub != nil {
+		s.hub.Publish(*event)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "plan": plan})
+}
+
+func (s *Server) handleRuntimeSessionV2PlanByID(w http.ResponseWriter, r *http.Request, sessionID, tail string) {
+	if strings.HasSuffix(tail, "/history") {
+		planID := strings.TrimSpace(strings.TrimSuffix(tail, "/history"))
+		if planID == "" || strings.Contains(planID, "/") {
+			writeError(w, http.StatusBadRequest, errors.New("plan id is required"))
+			return
+		}
+		limit, ok := parseSessionsV2PositiveLimit(w, r, 100)
+		if !ok {
+			return
+		}
+		revisions, err := s.sessions.ListPlanRevisions(sessionID, planID, limit)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "plan_id": planID, "count": len(revisions), "revisions": revisions})
+		return
+	}
+	planID := strings.TrimSpace(tail)
+	if planID == "" || strings.Contains(planID, "/") {
+		writeError(w, http.StatusBadRequest, errors.New("plan id is required"))
+		return
+	}
+	plan, ok, err := s.sessions.GetPlan(sessionID, planID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "plan not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "plan": plan})
+}
+
+func (s *Server) handleRuntimeSessionV2Permissions(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if s.perm == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("permission service is not configured"))
+		return
+	}
+	limit, ok := parseSessionsV2PositiveLimit(w, r, 200)
+	if !ok {
+		return
+	}
+	var permissions []pebblestore.PermissionRecord
+	var err error
+	switch status := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("status"))); status {
+	case "", "all":
+		permissions, err = s.perm.ListPermissions(sessionID, limit)
+	case pebblestore.PermissionStatusPending:
+		permissions, err = s.perm.ListPending(sessionID, limit)
+	default:
+		writeError(w, http.StatusBadRequest, errors.New("unsupported permission status"))
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "count": len(permissions), "permissions": permissions})
+}
+
+func (s *Server) handleRuntimeSessionV2PermissionResolve(w http.ResponseWriter, r *http.Request, sessionID, permissionID string) {
+	if s.perm == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("permission service is not configured"))
+		return
+	}
+	permissionID = strings.Trim(permissionID, "/")
+	if permissionID == "" || strings.Contains(permissionID, "/") {
+		writeError(w, http.StatusBadRequest, errors.New("permission id is required"))
+		return
+	}
+	var req struct {
+		Action            string          `json:"action"`
+		Reason            string          `json:"reason"`
+		ApprovedArguments json.RawMessage `json:"approved_arguments,omitempty"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	record, savedRule, err := s.perm.ResolveWithPolicyAndArguments(sessionID, permissionID, req.Action, req.Reason, string(req.ApprovedArguments))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "permission": record, "saved_rule": savedRule})
+}
+
+func (s *Server) handleRuntimeSessionV2PermissionResolveAll(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if s.perm == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("permission service is not configured"))
+		return
+	}
+	var req struct {
+		Action string `json:"action"`
+		Reason string `json:"reason"`
+		Limit  int    `json:"limit"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	resolved, err := s.perm.ResolveAll(sessionID, req.Action, req.Reason, req.Limit)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "count": len(resolved), "resolved": resolved})
+}
+
+func (s *Server) handleRuntimeSessionV2Usage(w http.ResponseWriter, r *http.Request, sessionID string) {
+	limit, ok := parseSessionsV2PositiveLimit(w, r, 50)
+	if !ok {
+		return
+	}
+	summary, hasSummary, err := s.sessions.GetUsageSummary(sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	turns, err := s.sessions.ListTurnUsage(sessionID, limit)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	var summaryPayload any
+	if hasSummary {
+		summaryPayload = summary
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "has_usage_summary": hasSummary, "usage_summary": summaryPayload, "turn_usage_records": turns})
 }
 
 func parseRuntimeSessionsV2ByIDPath(rawPath string) (string, string, bool) {
@@ -493,7 +983,7 @@ func parseRuntimeSessionsV2ByIDPath(rawPath string) (string, string, bool) {
 		return "", "", false
 	}
 	if len(parts) != 2 {
-		return sessionID, "", false
+		return sessionID, "", true
 	}
 	action := parts[1]
 	if action == "" || action != strings.TrimSpace(action) || strings.HasPrefix(action, "/") || strings.HasSuffix(action, "/") {

@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"swarm/packages/swarmd/internal/permission"
@@ -586,6 +587,151 @@ func TestSessionsV2LifecycleReadOnlyBindingAllowsReadBlocksMutation(t *testing.T
 	}
 	if !strings.Contains(postRec.Body.String(), "read-only") {
 		t.Fatalf("body = %s, want read-only rejection", postRec.Body.String())
+	}
+}
+
+func TestSessionsV2LifecycleLocalContainerDispatchesNativeRuntime(t *testing.T) {
+	hostServer, _, _, routeStore, hostSwarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	runtimeServer, runtimeSessionSvc, _, _, runtimeSwarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV2LocalContainerAuthority(t, hostServer, hostSwarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	seedRuntimeSessionsV2OpenContainerAuthority(t, runtimeServer, runtimeSwarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	setTestServerLocalSwarmID(t, runtimeServer, "container-swarm")
+	seedRuntimeSessionsV2Pairing(t, runtimeSwarmStore, "host-swarm-id")
+
+	var runtimeCalls atomic.Int32
+	var lifecyclePathsMu sync.Mutex
+	lifecyclePaths := make([]string, 0, 4)
+	runtimeHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(peerAuthSwarmIDHeader) != "host-swarm-id" || r.Header.Get(peerAuthTokenHeader) != "peer-token" {
+			t.Fatalf("runtime lifecycle peer auth headers = %q/%q", r.Header.Get(peerAuthSwarmIDHeader), r.Header.Get(peerAuthTokenHeader))
+		}
+		if r.Header.Get("X-Swarm-Principal-User-ID") != "" || r.Header.Get("X-Swarm-Principal-Account-Scope-ID") != "" {
+			t.Fatalf("runtime lifecycle forwarded principal headers")
+		}
+		runtimeCalls.Add(1)
+		if r.URL.Path != runtimeSessionsV2OpenPath {
+			lifecyclePathsMu.Lock()
+			lifecyclePaths = append(lifecyclePaths, r.Method+" "+r.URL.Path)
+			lifecyclePathsMu.Unlock()
+		}
+		r = r.WithContext(context.WithValue(r.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: "host-swarm-id"}))
+		if principal, ok := runtimeServer.trustedPairingPrincipalForPeerRequest(r); ok {
+			r = withSessionsV2TestPrincipal(r, principal)
+		}
+		runtimeServer.Handler().ServeHTTP(w, r)
+	}))
+	defer runtimeHTTP.Close()
+	if err := hostServer.RegisterAuthorityConnection(AuthorityConnection{AuthorityHostSwarmID: "container-swarm", AccountScopeID: testPrincipal().AccountScopeID, TransportKind: authorityConnectionTransportHTTP, TransportRef: runtimeHTTP.URL, Health: AuthorityConnectionHealthOnline}); err != nil {
+		t.Fatalf("register runtime authority connection: %v", err)
+	}
+
+	createReq := httptest.NewRequest(http.MethodPost, "/v2/sessions/local-containers", bytes.NewBufferString(`{"swarm_id":"container-swarm","workspace_binding_id":"binding-container-v2","title":"container v2 lifecycle","mode":"auto","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	hostServer.Handler().ServeHTTP(createRec, withTestPrincipal(createReq))
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, want %d, body=%s", createRec.Code, http.StatusOK, createRec.Body.String())
+	}
+	var createPayload struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createPayload); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	sessionID := strings.TrimSpace(createPayload.Session.ID)
+	if sessionID == "" {
+		t.Fatalf("created local-container session missing id: %s", createRec.Body.String())
+	}
+
+	var legacyCalls atomic.Int32
+	legacyHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		legacyCalls.Add(1)
+		writeJSON(w, http.StatusTeapot, map[string]any{"ok": false, "error": "legacy route should not be used"})
+	}))
+	defer legacyHTTP.Close()
+	if _, err := routeStore.Put(pebblestore.SessionRouteRecord{SessionID: sessionID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ChildSwarmID: "legacy-child", ChildBackendURL: legacyHTTP.URL, HostSwarmID: "host-swarm-id", HostContainerID: "legacy-container", HostWorkspacePath: "/host/swarm-go", RuntimeWorkspacePath: "/legacy/workspace", WorkspaceBindingID: "legacy-binding"}); err != nil {
+		t.Fatalf("put legacy route trap: %v", err)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/v2/sessions/"+sessionID+"/messages", nil)
+	getRec := httptest.NewRecorder()
+	hostServer.Handler().ServeHTTP(getRec, withTestPrincipal(getReq))
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("messages get status = %d, want %d, body=%s", getRec.Code, http.StatusOK, getRec.Body.String())
+	}
+
+	postReq := httptest.NewRequest(http.MethodPost, "/v2/sessions/"+sessionID+"/messages", bytes.NewBufferString(`{"role":"user","content":"via runtime"}`))
+	postReq.Header.Set("Content-Type", "application/json")
+	postRec := httptest.NewRecorder()
+	hostServer.Handler().ServeHTTP(postRec, withTestPrincipal(postReq))
+	if postRec.Code != http.StatusOK {
+		t.Fatalf("messages post status = %d, want %d, body=%s", postRec.Code, http.StatusOK, postRec.Body.String())
+	}
+	if legacyCalls.Load() != 0 {
+		t.Fatalf("legacy route calls = %d, want 0", legacyCalls.Load())
+	}
+	wantGet := http.MethodGet + " " + runtimeSessionsV2Prefix + sessionID + "/messages"
+	wantPost := http.MethodPost + " " + runtimeSessionsV2Prefix + sessionID + "/messages"
+	lifecyclePathsMu.Lock()
+	paths := strings.Join(lifecyclePaths, "\n")
+	lifecyclePathsMu.Unlock()
+	if !strings.Contains(paths, wantGet) || !strings.Contains(paths, wantPost) {
+		t.Fatalf("runtime lifecycle paths = %q, want %q and %q", paths, wantGet, wantPost)
+	}
+	messages, err := runtimeSessionSvc.ListMessages(sessionID, 0, 10)
+	if err != nil {
+		t.Fatalf("list runtime messages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Content != "via runtime" {
+		t.Fatalf("runtime messages = %+v, want posted message", messages)
+	}
+	if runtimeCalls.Load() < 3 {
+		t.Fatalf("runtime calls = %d, want open plus lifecycle calls", runtimeCalls.Load())
+	}
+}
+
+func TestSessionsV2LifecycleLocalContainerFailsClosedWithoutRuntimeAuthorityConnection(t *testing.T) {
+	hostServer, sessionSvc, _, routeStore, hostSwarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV2LocalContainerAuthority(t, hostServer, hostSwarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	sessionID := "session-local-container-lifecycle-fail-closed"
+	openReq := runtimeSessionsV2OpenTestRequest(sessionID, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	execution := openReq.SessionExecution
+	snapshot := pebblestore.SessionSnapshot{
+		ID:             sessionID,
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: testPrincipal().AccountScopeID,
+		WorkspacePath:  "/workspaces/swarm-go",
+		WorkspaceName:  "swarm-go",
+		Title:          "local-container lifecycle fail closed",
+		Mode:           sessionruntime.ModeAuto,
+		Preference:     openReq.Config.Preference,
+		Metadata:       sessionruntime.RuntimeSessionV2Metadata(nil, runtimeSessionsV2ExecutionFromRecord(execution)),
+	}
+	if err := sessionSvc.Store().CreateSessionWithExecutionV2(snapshot, execution); err != nil {
+		t.Fatalf("seed local-container session execution: %v", err)
+	}
+
+	var legacyCalls atomic.Int32
+	legacyHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		legacyCalls.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "legacy": true})
+	}))
+	defer legacyHTTP.Close()
+	if _, err := routeStore.Put(pebblestore.SessionRouteRecord{SessionID: sessionID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ChildSwarmID: "legacy-child", ChildBackendURL: legacyHTTP.URL, HostSwarmID: "host-swarm-id", HostContainerID: "legacy-container", HostWorkspacePath: "/host/swarm-go", RuntimeWorkspacePath: "/legacy/workspace", WorkspaceBindingID: "legacy-binding"}); err != nil {
+		t.Fatalf("put legacy route trap: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/sessions/"+sessionID+"/messages", nil)
+	rec := httptest.NewRecorder()
+	hostServer.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "runtime session authority connection") {
+		t.Fatalf("body = %s, want missing runtime authority connection", rec.Body.String())
+	}
+	if legacyCalls.Load() != 0 {
+		t.Fatalf("legacy route calls = %d, want 0", legacyCalls.Load())
 	}
 }
 

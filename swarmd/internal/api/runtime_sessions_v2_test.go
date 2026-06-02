@@ -60,6 +60,7 @@ func TestRuntimeSessionsV2RoutesRejectUnknownPathAndMethod(t *testing.T) {
 		{name: "unknown action", method: http.MethodPost, path: "/v2/internal/runtime-sessions/session-123/unknown", want: http.StatusNotFound},
 		{name: "missing id", method: http.MethodPost, path: "/v2/internal/runtime-sessions/%20/run", want: http.StatusBadRequest},
 		{name: "trailing slash not canonicalized", method: http.MethodPost, path: "/v2/internal/runtime-sessions/session-123/run/", want: http.StatusNotFound},
+		{name: "session get wrong method", method: http.MethodPost, path: "/v2/internal/runtime-sessions/session-123", want: http.StatusMethodNotAllowed},
 		{name: "wrong method", method: http.MethodGet, path: "/v2/internal/runtime-sessions/open", want: http.StatusMethodNotAllowed},
 	}
 	for _, tt := range tests {

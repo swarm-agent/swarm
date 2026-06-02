@@ -39,11 +39,11 @@ func TestSessionsV2LifecycleLocalContainerAuthorityValidatedThenDispatchFailsClo
 	lifecycleReq := httptest.NewRequest(http.MethodGet, "/v2/sessions/"+payload.Session.ID+"/messages", nil)
 	lifecycleRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(lifecycleRec, withTestPrincipal(lifecycleReq))
-	if lifecycleRec.Code != http.StatusBadRequest {
-		t.Fatalf("lifecycle status = %d, want %d, body=%s", lifecycleRec.Code, http.StatusBadRequest, lifecycleRec.Body.String())
+	if lifecycleRec.Code != http.StatusOK {
+		t.Fatalf("lifecycle status = %d, want %d, body=%s", lifecycleRec.Code, http.StatusOK, lifecycleRec.Body.String())
 	}
-	if !strings.Contains(lifecycleRec.Body.String(), "local-container lifecycle dispatch is not implemented") {
-		t.Fatalf("body = %s, want local-container dispatch placeholder", lifecycleRec.Body.String())
+	if !strings.Contains(lifecycleRec.Body.String(), `"messages"`) || strings.Contains(lifecycleRec.Body.String(), "dispatch is not implemented") {
+		t.Fatalf("body = %s, want native runtime messages response", lifecycleRec.Body.String())
 	}
 }
 
@@ -189,7 +189,7 @@ func TestSessionsV2AuthorityRejectsStaleRuntimePlacementGeneration(t *testing.T)
 	}
 }
 
-func registerSessionsV2TestRuntimeOpen(t *testing.T, hostServer *Server, hostSwarmStore *pebblestore.SwarmStore, primarySwarmID, containerSwarmID, authorityContainerID, bindingID, sourceWorkspacePath, runtimeWorkspacePath string) {
+func registerSessionsV2TestRuntimeOpen(t *testing.T, hostServer *Server, hostSwarmStore *pebblestore.SwarmStore, primarySwarmID, containerSwarmID, authorityContainerID, bindingID, sourceWorkspacePath, runtimeWorkspacePath string) *Server {
 	t.Helper()
 	runtimeServer, _, _, _, runtimeSwarmStore := newRoutedSessionTestServerWithSwarmStore(t)
 	seedRuntimeSessionsV2OpenContainerAuthority(t, runtimeServer, runtimeSwarmStore, primarySwarmID, containerSwarmID, authorityContainerID, bindingID, sourceWorkspacePath, runtimeWorkspacePath)
@@ -205,5 +205,76 @@ func registerSessionsV2TestRuntimeOpen(t *testing.T, hostServer *Server, hostSwa
 	t.Cleanup(runtimeHTTP.Close)
 	if err := hostServer.RegisterAuthorityConnection(AuthorityConnection{AuthorityHostSwarmID: containerSwarmID, AccountScopeID: testPrincipal().AccountScopeID, TransportKind: authorityConnectionTransportHTTP, TransportRef: runtimeHTTP.URL, Health: AuthorityConnectionHealthOnline}); err != nil {
 		t.Fatalf("register runtime authority connection: %v", err)
+	}
+	return runtimeServer
+}
+
+func TestSessionsV2LifecycleLocalContainerRunFailsClosedWithoutLegacyProxy(t *testing.T) {
+	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV2LocalContainerAuthority(t, server, swarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	runtimeServer := registerSessionsV2TestRuntimeOpen(t, server, swarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	runtimeServer.runner = &primaryV2RunRequestRecordingRunner{}
+
+	req := httptest.NewRequest(http.MethodPost, "/v2/sessions/local-containers", bytes.NewBufferString(`{"swarm_id":"container-swarm","workspace_binding_id":"binding-container-v2","title":"container v2","mode":"auto","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+
+	lifecycleReq := httptest.NewRequest(http.MethodPost, "/v2/sessions/"+payload.Session.ID+"/run", bytes.NewBufferString(`{"prompt":"blocked"}`))
+	lifecycleReq.Header.Set("Content-Type", "application/json")
+	lifecycleRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(lifecycleRec, withTestPrincipal(lifecycleReq))
+	if lifecycleRec.Code != http.StatusNotImplemented {
+		t.Fatalf("run status = %d, want %d, body=%s", lifecycleRec.Code, http.StatusNotImplemented, lifecycleRec.Body.String())
+	}
+	if !strings.Contains(lifecycleRec.Body.String(), "runtime_session_not_implemented") || strings.Contains(lifecycleRec.Body.String(), "legacy") {
+		t.Fatalf("body = %s, want native runtime fail-closed response", lifecycleRec.Body.String())
+	}
+	calls, _, _, _ := runtimeServer.runner.(*primaryV2RunRequestRecordingRunner).snapshot()
+	if calls != 0 {
+		t.Fatalf("runtime runner calls = %d, want fail-closed stub before run execution", calls)
+	}
+}
+
+func TestSessionsV2LifecycleLocalContainerDispatchUsesRuntimeSessionState(t *testing.T) {
+	hostServer, _, _, _, hostSwarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV2LocalContainerAuthority(t, hostServer, hostSwarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+	runtimeServer := registerSessionsV2TestRuntimeOpen(t, hostServer, hostSwarmStore, "host-swarm-id", "container-swarm", "host-container-1", "binding-container-v2", "/host/swarm-go", "/workspaces/swarm-go")
+
+	req := httptest.NewRequest(http.MethodPost, "/v2/sessions/local-containers", bytes.NewBufferString(`{"swarm_id":"container-swarm","workspace_binding_id":"binding-container-v2","title":"container v2","mode":"auto","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	hostServer.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	message := pebblestore.MessageSnapshot{SessionID: payload.Session.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, GlobalSeq: 1, Role: "assistant", Content: "runtime-only"}
+	if _, err := runtimeServer.sessions.StoreMirroredMessage(payload.Session, message); err != nil {
+		t.Fatalf("append runtime message: %v", err)
+	}
+
+	lifecycleReq := httptest.NewRequest(http.MethodGet, "/v2/sessions/"+payload.Session.ID+"/messages", nil)
+	lifecycleRec := httptest.NewRecorder()
+	hostServer.Handler().ServeHTTP(lifecycleRec, withTestPrincipal(lifecycleReq))
+	if lifecycleRec.Code != http.StatusOK {
+		t.Fatalf("messages status = %d, want %d, body=%s", lifecycleRec.Code, http.StatusOK, lifecycleRec.Body.String())
+	}
+	if !strings.Contains(lifecycleRec.Body.String(), "runtime-only") {
+		t.Fatalf("body = %s, want runtime-owned message", lifecycleRec.Body.String())
 	}
 }

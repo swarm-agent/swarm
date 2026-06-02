@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -32,9 +33,38 @@ func validatePrimarySessionV2DispatchAuthority(authority sessionV2Authority) err
 	case sessionruntime.SessionExecutionClassPrimary:
 		return nil
 	case sessionruntime.SessionExecutionClassLocalContainer:
-		return sessionV2InvalidClass("sessions v2 local-container lifecycle dispatch is not implemented")
+		return sessionV2InvalidClass("sessions v2 local-container lifecycle dispatch must use native runtime dispatch")
 	default:
 		return sessionV2InvalidClass("sessions v2 execution class %q is not supported", authority.Execution.ExecutionClass)
+	}
+}
+
+func isMutatingSessionsV2LifecycleRequest(method, subpath string) bool {
+	switch subpath {
+	case "":
+		return false
+	case "messages", "metadata", "mode", "preference", "codex", "plans/active", "plans":
+		return method == http.MethodPost
+	case "permissions/resolve_all", "run":
+		return method == http.MethodPost
+	case "run/stream":
+		return method == http.MethodPost
+	default:
+		return strings.HasPrefix(subpath, "permissions/") && strings.HasSuffix(subpath, "/resolve") && method == http.MethodPost
+	}
+}
+
+func localContainerRuntimeLifecycleAction(subpath string) (string, bool) {
+	switch subpath {
+	case "":
+		return "", true
+	case "messages", "metadata", "mode", "preference", "codex", "plans/active", "plans", "permissions", "permissions/resolve_all", "usage", "run", "run/stream":
+		return subpath, true
+	default:
+		if strings.HasPrefix(subpath, "plans/") || strings.HasPrefix(subpath, "permissions/") && strings.HasSuffix(subpath, "/resolve") {
+			return subpath, true
+		}
+		return "", false
 	}
 }
 
@@ -91,6 +121,9 @@ func (s *Server) handlePrimarySessionV2ByID(w http.ResponseWriter, r *http.Reque
 	sessionID, subpath, ok := parsePrimarySessionV2LifecyclePath(r.URL.Path)
 	if !ok {
 		writeSessionsV2Error(w, sessionV2BadRequest("invalid sessions v2 lifecycle path"))
+		return
+	}
+	if s.handleLocalContainerSessionV2LifecycleIfNeeded(w, r, sessionID, subpath) {
 		return
 	}
 
@@ -176,6 +209,143 @@ func (s *Server) requirePrimarySessionV2DispatchAuthority(r *http.Request, sessi
 		return sessionV2Authority{}, err
 	}
 	return authority, nil
+}
+
+func (s *Server) handleLocalContainerSessionV2LifecycleIfNeeded(w http.ResponseWriter, r *http.Request, sessionID, subpath string) bool {
+	action, supported := localContainerRuntimeLifecycleAction(subpath)
+	if !supported {
+		return false
+	}
+	authority, err := s.requireSessionV2Authority(r, sessionID, isMutatingSessionsV2LifecycleRequest(r.Method, subpath))
+	if err != nil {
+		writeSessionsV2Error(w, err)
+		return true
+	}
+	if strings.TrimSpace(authority.Execution.ExecutionClass) != sessionruntime.SessionExecutionClassLocalContainer {
+		return false
+	}
+	if !methodAllowedForSessionsV2LifecycleSubpath(r.Method, subpath) {
+		methodNotAllowed(w)
+		return true
+	}
+	if err := s.dispatchLocalContainerSessionV2Lifecycle(w, r, authority, action); err != nil {
+		writeSessionsV2Error(w, err)
+	}
+	return true
+}
+
+func methodAllowedForSessionsV2LifecycleSubpath(method, subpath string) bool {
+	switch subpath {
+	case "":
+		return method == http.MethodGet
+	case "messages", "metadata", "mode", "preference", "codex", "plans/active", "plans":
+		return method == http.MethodGet || method == http.MethodPost
+	case "permissions", "usage":
+		return method == http.MethodGet
+	case "permissions/resolve_all", "run":
+		return method == http.MethodPost
+	case "run/stream":
+		return method == http.MethodGet || method == http.MethodPost
+	default:
+		if strings.HasPrefix(subpath, "plans/") {
+			return method == http.MethodGet
+		}
+		if strings.HasPrefix(subpath, "permissions/") && strings.HasSuffix(subpath, "/resolve") {
+			return method == http.MethodPost
+		}
+		return false
+	}
+}
+
+func (s *Server) dispatchLocalContainerSessionV2Lifecycle(w http.ResponseWriter, r *http.Request, authority sessionV2Authority, action string) error {
+	if s == nil {
+		return errors.New("sessions v2 service is not configured")
+	}
+	localNode, localOK, err := s.swarmLocalNode()
+	if err != nil {
+		return err
+	}
+	localSwarmID := strings.TrimSpace(localNode.SwarmID)
+	if localOK && strings.EqualFold(localSwarmID, strings.TrimSpace(authority.Execution.RuntimeSwarmID)) {
+		s.dispatchLocalRuntimeSessionV2Lifecycle(w, r, authority.Execution.SessionID, action)
+		return nil
+	}
+	return s.dispatchRemoteRuntimeSessionV2Lifecycle(w, r, authority, action)
+}
+
+func (s *Server) dispatchLocalRuntimeSessionV2Lifecycle(w http.ResponseWriter, r *http.Request, sessionID, action string) {
+	cloned := r.Clone(r.Context())
+	path := runtimeSessionsV2Prefix + strings.TrimSpace(sessionID)
+	if strings.TrimSpace(action) != "" {
+		path += "/" + strings.Trim(strings.TrimSpace(action), "/")
+	}
+	cloned.URL.Path = path
+	cloned.URL.RawPath = ""
+	cloned.URL.RawQuery = r.URL.RawQuery
+	cloned.RequestURI = ""
+	s.handleRuntimeSessionsV2ByID(w, cloned)
+}
+
+func (s *Server) dispatchRemoteRuntimeSessionV2Lifecycle(w http.ResponseWriter, r *http.Request, authority sessionV2Authority, action string) error {
+	if s.swarm == nil {
+		return sessionV2AuthorityNotFound("runtime session peer authority for %q is not configured", authority.Execution.RuntimeSwarmID)
+	}
+	localNode, localOK, err := s.swarmLocalNode()
+	if err != nil {
+		return err
+	}
+	localSwarmID := strings.TrimSpace(localNode.SwarmID)
+	if !localOK || localSwarmID == "" {
+		return sessionV2AuthorityNotFound("runtime session peer authority for %q is not configured", authority.Execution.RuntimeSwarmID)
+	}
+	conn, ok := s.ResolveAuthorityConnection(authority.Principal.AccountScopeID, authority.Execution.RuntimeSwarmID)
+	if !ok || strings.TrimSpace(conn.endpoint()) == "" {
+		return sessionV2AuthorityNotFound("runtime session authority connection for %q was not found", authority.Execution.RuntimeSwarmID)
+	}
+	if strings.EqualFold(conn.TransportKind, authorityConnectionTransportLocal) {
+		return sessionV2StaleAuthority("runtime session authority connection for %q resolved local transport for non-local runtime", authority.Execution.RuntimeSwarmID)
+	}
+	peerToken, ok, err := s.swarm.OutgoingPeerAuthToken(strings.TrimSpace(authority.Execution.RuntimeSwarmID))
+	if err != nil {
+		return err
+	}
+	if !ok || strings.TrimSpace(peerToken) == "" {
+		return sessionV2AuthorityNotFound("runtime session peer authority for %q is not configured", authority.Execution.RuntimeSwarmID)
+	}
+
+	endpoint := strings.TrimRight(conn.endpoint(), "/") + runtimeSessionsV2Prefix + strings.TrimSpace(authority.Execution.SessionID)
+	if strings.TrimSpace(action) != "" {
+		endpoint += "/" + strings.Trim(strings.TrimSpace(action), "/")
+	}
+	if r.URL != nil && r.URL.RawQuery != "" {
+		endpoint += "?" + r.URL.RawQuery
+	}
+	forwardReq, err := http.NewRequestWithContext(r.Context(), r.Method, endpoint, r.Body)
+	if err != nil {
+		return err
+	}
+	forwardReq.Header.Set("Accept", "application/json")
+	if contentType := strings.TrimSpace(r.Header.Get("Content-Type")); contentType != "" {
+		forwardReq.Header.Set("Content-Type", contentType)
+	}
+	forwardReq.Header.Set(peerAuthSwarmIDHeader, localSwarmID)
+	forwardReq.Header.Set(peerAuthTokenHeader, peerToken)
+	resp, err := (&http.Client{Timeout: runtimeSessionOpenHTTPTimeout}).Do(forwardReq)
+	if err != nil {
+		return sessionV2StaleAuthority("runtime session lifecycle dispatch failed: %v", err)
+	}
+	defer resp.Body.Close()
+	for key, values := range resp.Header {
+		if strings.EqualFold(key, "Content-Length") {
+			continue
+		}
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+	return nil
 }
 
 func (s *Server) requireSessionV2Authority(r *http.Request, sessionID string, mutating bool) (sessionV2Authority, error) {
