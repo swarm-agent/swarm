@@ -186,7 +186,7 @@ else
   printf 'container not found for podman/docker: %s\n' "${container}" >&2
   exit 22
 fi
-"${runtime}" exec "${container}" sh -s -- "${api_url}" "${method}" "${path}" "${max_time}" "${body_b64}" <<'IN_CONTAINER_API'
+"${runtime}" exec -i "${container}" sh -s -- "${api_url}" "${method}" "${path}" "${max_time}" "${body_b64}" <<'IN_CONTAINER_API'
 set -euo pipefail
 api_url="${1%/}"
 method="$2"
