@@ -145,7 +145,7 @@ func (a *App) showSwarmSelectorOverlay(status string) {
 	if workspacePath == "" {
 		workspacePath = strings.TrimSpace(a.startupCWD)
 	}
-	routes := buildChatRoutesForWorkspaces(a.homeModel.Workspaces, workspacePath)
+	routes := buildChatRoutesForHomeModel(a.homeModel, workspacePath)
 	selected := normalizeSelectedRouteID(a.selectedChatRouteID, routes)
 	lines := []string{
 		"current: " + a.selectedChatRouteLabelForWorkspace(workspacePath),

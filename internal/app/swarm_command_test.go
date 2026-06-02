@@ -31,7 +31,7 @@ func TestSwarmSelectorOverlayContentIsMinimal(t *testing.T) {
 	}
 	app.config.Chat.DefaultWorkspaceRoutes = map[string]string{app.workspacePath: "swarm:child:" + app.workspacePath}
 
-	routes := buildChatRoutesForWorkspaces(app.homeModel.Workspaces, app.workspacePath)
+	routes := buildChatRoutesForHomeModel(app.homeModel, app.workspacePath)
 	selected := normalizeSelectedRouteID(app.selectedChatRouteID, routes)
 	lines := []string{
 		"current: " + app.selectedChatRouteLabelForWorkspace(app.workspacePath),

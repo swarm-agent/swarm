@@ -33,9 +33,24 @@ func (a *App) cycleChatRoute() {
 	if workspacePath == "" {
 		workspacePath = strings.TrimSpace(a.startupCWD)
 	}
-	routes := buildChatRoutesForWorkspaces(a.homeModel.Workspaces, workspacePath)
+	routes := buildChatRoutesForHomeModel(a.homeModel, workspacePath)
 	if len(routes) <= 1 {
-		a.setRouteStatus("route: host")
+		label := "host"
+		if len(routes) == 1 {
+			a.selectedChatRouteID = normalizeSelectedRouteID(a.selectedChatRouteID, routes)
+			a.homeModel.ChatRoutes = routes
+			a.homeModel.SelectedChatRouteID = a.selectedChatRouteID
+			if a.home != nil {
+				a.home.SetModel(a.homeModel)
+			}
+			label = a.displayChatRouteLabel(routes[0])
+		}
+		if a.chat != nil {
+			meta := a.chat.Meta()
+			meta.Route = label
+			a.chat.SetMeta(meta)
+		}
+		a.setRouteStatus(fmt.Sprintf("route: %s", label))
 		return
 	}
 	current := normalizeSelectedRouteID(a.selectedChatRouteID, routes)

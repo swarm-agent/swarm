@@ -57,6 +57,24 @@ func TestHomeFooterUsesPrimarySelfHostRouteLabel(t *testing.T) {
 	}
 }
 
+func TestHomeFooterUsesCurrentPrimaryTargetForLegacyHostRoute(t *testing.T) {
+	page := NewHomePage(model.HomeModel{
+		ServerMode:          "local",
+		SelectedChatRouteID: "host",
+		CurrentSwarmTarget:  &model.SwarmTarget{SwarmID: "primary", Name: "Primary Desk", Relationship: "self", Kind: "host"},
+		ChatRoutes:          []model.ChatRoute{{ID: "host", Label: "host", TargetKind: "host", TargetRelationship: "self"}},
+	})
+	page.SetSwarmName("Fallback Local")
+
+	tokens := page.homeFooterTokens()
+	if len(tokens) == 0 {
+		t.Fatal("homeFooterTokens() returned no tokens")
+	}
+	if tokens[0].Text != "Primary Desk" {
+		t.Fatalf("home primary footer token = %q, want current primary target name", tokens[0].Text)
+	}
+}
+
 func TestHomeFooterUsesLocalSwarmNameForHostRoute(t *testing.T) {
 	page := NewHomePage(model.HomeModel{
 		ServerMode:          "local",

@@ -481,9 +481,13 @@ func selectedHomeRouteLabel(m model.HomeModel) string {
 
 func displayHomeChatRouteLabel(m model.HomeModel, route model.ChatRoute) string {
 	if strings.EqualFold(strings.TrimSpace(route.TargetRelationship), "self") && strings.EqualFold(strings.TrimSpace(route.TargetKind), "host") {
-		if target := m.CurrentSwarmTarget; target != nil && strings.TrimSpace(route.SwarmID) != "" && strings.TrimSpace(route.SwarmID) == strings.TrimSpace(target.SwarmID) {
-			if targetName := strings.TrimSpace(target.Name); targetName != "" {
-				return targetName
+		if target := m.CurrentSwarmTarget; target != nil {
+			routeSwarmID := strings.TrimSpace(route.SwarmID)
+			targetSwarmID := strings.TrimSpace(target.SwarmID)
+			if (routeSwarmID == "" || routeSwarmID == targetSwarmID) && strings.EqualFold(strings.TrimSpace(target.Relationship), "self") {
+				if targetName := strings.TrimSpace(target.Name); targetName != "" {
+					return targetName
+				}
 			}
 		}
 	}

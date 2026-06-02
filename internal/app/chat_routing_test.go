@@ -53,7 +53,7 @@ func TestBuildChatRoutesForWorkspacesKeepsTargetSwarmID(t *testing.T) {
 		t.Fatalf("host route ID = %q, want host", host.ID)
 	}
 	if host.SwarmID != "" {
-		t.Fatalf("host route SwarmID = %q, want empty; host target lives in workspace overview swarm_target", host.SwarmID)
+		t.Fatalf("legacy host route SwarmID = %q, want empty without workspace overview swarm_target", host.SwarmID)
 	}
 	remote := routes[1]
 	if remote.SwarmID != "child-swarm" {
@@ -73,6 +73,32 @@ func TestBuildChatRoutesForWorkspacesKeepsTargetSwarmID(t *testing.T) {
 	}
 	if remote.TargetRelationship != "child" || remote.TargetKind != "remote" {
 		t.Fatalf("remote target = %q/%q, want child/remote", remote.TargetRelationship, remote.TargetKind)
+	}
+}
+
+func TestBuildChatRoutesForHomeModelUsesWorkspaceOverviewPrimaryHostTarget(t *testing.T) {
+	model := model.HomeModel{
+		CurrentSwarmTarget: &model.SwarmTarget{SwarmID: "primary-swarm", Name: "Primary Swarm", Relationship: "self", Kind: "host"},
+		Workspaces: []model.Workspace{{
+			Name:                    "Host Repo",
+			Path:                    testWorkspacePath,
+			LocalWorkspaceBindingID: "binding-primary",
+		}},
+	}
+
+	routes := buildChatRoutesForHomeModel(model, testWorkspacePath)
+	if len(routes) != 1 {
+		t.Fatalf("route count = %d, want 1", len(routes))
+	}
+	host := routes[0]
+	if host.ID != "swarm:primary-swarm:binding:binding-primary" {
+		t.Fatalf("host route ID = %q, want router-backed primary binding route", host.ID)
+	}
+	if host.Label != "Primary Swarm" || host.SwarmID != "primary-swarm" || host.WorkspaceBindingID != "binding-primary" {
+		t.Fatalf("host route did not preserve overview target/binding: %+v", host)
+	}
+	if !isPrimaryHostChatRoute(host) {
+		t.Fatalf("host target = %q/%q, want self/host", host.TargetRelationship, host.TargetKind)
 	}
 }
 
@@ -239,6 +265,46 @@ func TestRemoteUISettingsUpdateKeepsExplicitSelection(t *testing.T) {
 	}
 	if app.selectedChatRouteID != testRemoteRouteID {
 		t.Fatalf("selected route ID = %q, want explicit %q", app.selectedChatRouteID, testRemoteRouteID)
+	}
+}
+
+func TestCycleChatRouteSinglePrimaryHostUsesRouterBackedLabel(t *testing.T) {
+	app := &App{
+		route:               "home",
+		workspacePath:       testWorkspacePath,
+		selectedChatRouteID: "host",
+		home:                ui.NewHomePage(model.EmptyHome()),
+		homeModel: model.HomeModel{
+			CurrentSwarmTarget: &model.SwarmTarget{SwarmID: "primary-swarm", Name: "Primary Swarm", Relationship: "self", Kind: "host"},
+			Workspaces: []model.Workspace{{
+				Path:                    testWorkspacePath,
+				LocalWorkspaceBindingID: "binding-primary",
+			}},
+		},
+	}
+
+	app.cycleChatRoute()
+
+	if app.home.Status() != "route: Primary Swarm" {
+		t.Fatalf("route status = %q, want route: Primary Swarm", app.home.Status())
+	}
+	if app.selectedChatRouteID != "swarm:primary-swarm:binding:binding-primary" {
+		t.Fatalf("selected route ID = %q, want router-backed primary route", app.selectedChatRouteID)
+	}
+}
+
+func TestNormalizeSelectedRouteIDMapsLegacyHostToRouterBackedPrimaryHost(t *testing.T) {
+	routes := buildChatRoutesForHomeModel(model.HomeModel{
+		CurrentSwarmTarget: &model.SwarmTarget{SwarmID: "primary-swarm", Name: "Primary Swarm", Relationship: "self", Kind: "host"},
+		Workspaces: []model.Workspace{{
+			Path:                    testWorkspacePath,
+			LocalWorkspaceBindingID: "binding-primary",
+		}},
+	}, testWorkspacePath)
+
+	got := normalizeSelectedRouteID("host", routes)
+	if got != "swarm:primary-swarm:binding:binding-primary" {
+		t.Fatalf("normalized host route ID = %q, want router-backed primary host route", got)
 	}
 }
 
