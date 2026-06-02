@@ -154,12 +154,24 @@ function sessionMetadataString(metadata: Record<string, unknown> | null | undefi
   return typeof value === 'string' ? value.trim() : ''
 }
 
+function inferV2TargetRelationship(metadata: Record<string, unknown> | null | undefined): string {
+  const executionClass = sessionMetadataString(metadata, 'swarm_v2_execution_class').toLowerCase()
+  if (executionClass === 'local_container') {
+    return 'child'
+  }
+  if (executionClass === 'primary') {
+    return 'self'
+  }
+  return ''
+}
+
 export function desktopChatRouteFromSessionMetadata(session: DesktopSessionRecord | null | undefined): DesktopChatRoute | null {
   const metadata = session?.metadata
-  const metadataSwarmId = sessionMetadataString(metadata, 'swarm_routed_child_swarm_id')
-  const runtimeWorkspacePath = session?.runtimeWorkspacePath?.trim() || sessionMetadataString(metadata, 'swarm_routed_runtime_workspace_path')
-  const workspaceBindingId = sessionMetadataString(metadata, 'swarm_routed_workspace_binding_id') || sessionMetadataString(metadata, 'swarm_managed_host_workspace_binding_id') || sessionMetadataString(metadata, 'route_workspace_binding_id')
-  const workspaceName = sessionMetadataString(metadata, 'swarm_routed_workspace_name') || sessionMetadataString(metadata, 'swarm_route_workspace_name') || session?.workspaceName?.trim() || ''
+  const metadataSwarmId = sessionMetadataString(metadata, 'swarm_v2_runtime_swarm_id')
+  const runtimeWorkspacePath = session?.runtimeWorkspacePath?.trim()
+    || sessionMetadataString(metadata, 'swarm_v2_runtime_workspace_path')
+  const workspaceBindingId = sessionMetadataString(metadata, 'swarm_v2_workspace_binding_id') || sessionMetadataString(metadata, 'local_workspace_binding_id')
+  const workspaceName = sessionMetadataString(metadata, 'swarm_v2_source_workspace_name') || session?.workspaceName?.trim() || ''
   if (!metadataSwarmId || !workspaceBindingId) {
     return null
   }
@@ -167,20 +179,21 @@ export function desktopChatRouteFromSessionMetadata(session: DesktopSessionRecor
   if (!id) {
     return null
   }
+  const label = metadataSwarmId
   return {
     id,
-    label: sessionMetadataString(metadata, 'swarm_route_label') || metadataSwarmId,
+    label,
     swarmId: metadataSwarmId,
-    targetKind: sessionMetadataString(metadata, 'swarm_route_target_kind') || sessionMetadataString(metadata, 'swarm_target_kind'),
-    targetRelationship: sessionMetadataString(metadata, 'swarm_route_target_relationship') || sessionMetadataString(metadata, 'swarm_target_relationship'),
-    hostSwarmId: sessionMetadataString(metadata, 'swarm_routed_host_swarm_id'),
-    hostSwarmName: sessionMetadataString(metadata, 'swarm_routed_host_swarm_name'),
-    hostWorkspacePath: sessionMetadataString(metadata, 'swarm_routed_host_workspace_path') || session?.workspacePath?.trim() || '',
+    targetKind: sessionMetadataString(metadata, 'swarm_v2_runtime_kind'),
+    targetRelationship: inferV2TargetRelationship(metadata),
+    hostSwarmId: sessionMetadataString(metadata, 'swarm_v2_authority_host_swarm_id'),
+    hostSwarmName: '',
+    hostWorkspacePath: sessionMetadataString(metadata, 'swarm_v2_source_workspace_path') || session?.workspacePath?.trim() || '',
     hostWorkspaceName: workspaceName,
     runtimeWorkspacePath,
     workspaceBindingId,
     workspaceName,
-    targetSwarmName: sessionMetadataString(metadata, 'swarm_route_label') || metadataSwarmId,
+    targetSwarmName: label,
   }
 }
 

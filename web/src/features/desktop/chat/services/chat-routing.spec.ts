@@ -99,7 +99,7 @@ test('managed host routes are identified by managed relationship only', () => {
   }), false)
 })
 
-test('routed session metadata reconstructs route label from server metadata, not target metadata', () => {
+test('legacy routed session metadata is not accepted for native v2 route reconstruction', () => {
   const route = desktopChatRouteFromSessionMetadata(sessionRecord({
     workspacePath: '/workspaces/host-swarm',
     workspaceName: 'host swarm',
@@ -117,56 +117,83 @@ test('routed session metadata reconstructs route label from server metadata, not
     },
   }))
 
-  assert.equal(route?.id, remoteRoute.id)
-  assert.equal(route?.label, 'Remote Swarm')
-  assert.equal(route?.targetKind, 'remote')
+  assert.equal(route, null)
 })
 
-test('routed session route resolution falls back to server metadata when route option is unavailable', () => {
+test('v2 local-container mirrored session resolves to matching container route instead of primary', () => {
   const hostRoute: DesktopChatRoute = {
-    id: 'host',
-    label: 'Local Swarm',
-    swarmId: null,
+    id: 'swarm:primary-swarm:binding:binding-primary',
+    label: 'primary',
+    swarmId: 'primary-swarm',
     targetKind: 'host',
     targetRelationship: 'self',
-    hostSwarmId: '',
-    hostSwarmName: 'Local Swarm',
-    hostWorkspacePath: '/workspaces/host-swarm',
-    hostWorkspaceName: 'host swarm',
-    runtimeWorkspacePath: '/workspaces/host-swarm',
-    workspaceBindingId: '',
+    hostSwarmId: 'primary-swarm',
+    hostSwarmName: 'primary',
+    hostWorkspacePath: '/host/workspace',
+    hostWorkspaceName: 'swarm-go',
+    runtimeWorkspacePath: '/host/workspace',
+    workspaceBindingId: 'binding-primary',
   }
-  const route = resolveDesktopChatRouteFromSession(sessionRecord({
-    workspacePath: '/workspaces/host-swarm',
-    workspaceName: 'host swarm',
-    runtimeWorkspacePath: '/workspaces/swarm',
-    metadata: {
-      swarm_route_id: remoteRoute.id,
-      swarm_routed_workspace_binding_id: 'binding-remote',
-      swarm_route_label: 'Remote Swarm',
-      swarm_routed_child_swarm_id: 'child-swarm',
-      swarm_routed_host_workspace_path: '/workspaces/host-swarm',
-      swarm_routed_runtime_workspace_path: '/workspaces/swarm',
-      swarm_target_name: 'memory',
-    },
-  }), [hostRoute], hostRoute)
+  const containerRoute: DesktopChatRoute = {
+    id: 'swarm:container-2-swarm:binding:binding-container-2',
+    label: 'container 2',
+    swarmId: 'container-2-swarm',
+    targetKind: 'container',
+    targetRelationship: 'child',
+    hostSwarmId: 'primary-swarm',
+    hostSwarmName: 'primary',
+    hostWorkspacePath: '/host/workspace',
+    hostWorkspaceName: 'swarm-go',
+    runtimeWorkspacePath: '/container/workspace',
+    workspaceBindingId: 'binding-container-2',
+    workspaceName: 'swarm-go',
+  }
 
-  assert.equal(route?.id, remoteRoute.id)
-  assert.equal(route?.label, 'Remote Swarm')
+  const route = resolveDesktopChatRouteFromSession(sessionRecord({
+    workspacePath: '/host/workspace',
+    workspaceName: 'swarm-go',
+    runtimeWorkspacePath: '/container/workspace',
+    metadata: {
+      swarm_v2_execution_class: 'local_container',
+      swarm_v2_runtime_swarm_id: 'container-2-swarm',
+      swarm_v2_runtime_kind: 'container',
+      swarm_v2_authority_host_swarm_id: 'primary-swarm',
+      swarm_v2_workspace_binding_id: 'binding-container-2',
+      local_workspace_binding_id: 'binding-container-2',
+      swarm_v2_source_workspace_name: 'swarm-go',
+      swarm_v2_source_workspace_path: '/host/workspace',
+      swarm_v2_runtime_workspace_path: '/container/workspace',
+    },
+  }), [hostRoute, containerRoute], hostRoute)
+
+  assert.equal(route?.id, containerRoute.id)
+  assert.equal(route?.label, 'container 2')
+  assert.equal(route?.swarmId, 'container-2-swarm')
 })
 
-test('routed session route resolution prefers current route option label when available', () => {
-  const route = resolveDesktopChatRouteFromSession(sessionRecord({
+test('v2 local-container mirrored session metadata provides fallback route before topology loads', () => {
+  const route = desktopChatRouteFromSessionMetadata(sessionRecord({
+    workspacePath: '/host/workspace',
+    workspaceName: 'primary workspace',
+    runtimeWorkspacePath: '',
     metadata: {
-      swarm_route_id: remoteRoute.id,
-      swarm_routed_workspace_binding_id: 'binding-remote',
-      swarm_route_label: 'Stale Remote Swarm',
-      swarm_routed_child_swarm_id: 'child-swarm',
-      swarm_routed_runtime_workspace_path: '/workspaces/swarm',
+      swarm_v2_execution_class: 'local_container',
+      swarm_v2_runtime_swarm_id: 'container-2-swarm',
+      swarm_v2_runtime_kind: 'container',
+      swarm_v2_authority_host_swarm_id: 'primary-swarm',
+      local_workspace_binding_id: 'binding-container-2',
+      swarm_v2_source_workspace_name: 'swarm-go',
+      swarm_v2_source_workspace_path: '/host/workspace',
+      swarm_v2_runtime_workspace_path: '/container/workspace',
     },
-  }), [remoteRoute], null)
+  }))
 
-  assert.equal(route?.label, 'child swarm')
+  assert.equal(route?.id, 'swarm:container-2-swarm:binding:binding-container-2')
+  assert.equal(route?.label, 'container-2-swarm')
+  assert.equal(route?.targetKind, 'container')
+  assert.equal(route?.targetRelationship, 'child')
+  assert.equal(route?.runtimeWorkspacePath, '/container/workspace')
+  assert.equal(route?.workspaceName, 'swarm-go')
 })
 
 test('managed host session metadata reconstructs selected managed host route', () => {
