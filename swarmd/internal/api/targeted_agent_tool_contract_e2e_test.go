@@ -77,7 +77,13 @@ func TestTargetedScopedSubagentToolContractAPIEndToEnd(t *testing.T) {
 	upsertScopedAgentV2(t, handler, "scopedsub-e2e", "subagent", allowedCommand)
 	upsertScopedAgentV2(t, handler, "scopedbg-e2e", "background", allowedCommand)
 
+	agentState := getAgentStateV2(t, handler)
+	assertToolInventoryContains(t, agentState.ToolInventory, "read", "search", "list", "bash", "exit_plan_mode")
+	assertPresetInventoryContains(t, agentState.ToolInventory, "read_only", "read", "search", "list")
+
 	resolved := getResolvedToolContractV2(t, handler, "scopedsub-e2e")
+	assertToolInventoryContains(t, resolved.ToolInventory, "read", "search", "list", "bash", "exit_plan_mode")
+	assertPresetInventoryContains(t, resolved.ToolInventory, "read_only", "read", "search", "list")
 	bashState, ok := resolved.Resolved.Tools["bash"]
 	if !ok {
 		t.Fatalf("resolved tool contract missing bash entry: %+v", resolved.Resolved.Tools)
@@ -133,6 +139,45 @@ func TestTargetedScopedSubagentToolContractAPIEndToEnd(t *testing.T) {
 			subagentResult.Result.ToolCallCount,
 			subagentResult.Result.AssistantMessage.Content,
 		)
+	}
+}
+
+func TestAgentV2ToolInventoryAndDefaultResolvedTools(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "agent-v2-tool-inventory.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	eventLog, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	modelSvc := model.NewService(pebblestore.NewModelStore(store), eventLog, nil)
+	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
+	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), eventLog)
+	if err := agentSvc.EnsureDefaultsForAccount("acct_targeted_agent_test"); err != nil {
+		t.Fatalf("ensure default agents: %v", err)
+	}
+	runSvc := runruntime.NewService(sessionSvc, modelSvc, registry.New(), tool.NewRuntime(2), nil, agentSvc, nil, eventLog)
+	server := NewServer(nil, agentSvc, modelSvc, runSvc, sessionSvc, nil, nil, nil, registry.New(), nil, nil, eventLog, stream.NewHub(nil))
+	handler := testProductActorHandler(server.Handler())
+
+	agentState := getAgentStateV2(t, handler)
+	assertToolInventoryContains(t, agentState.ToolInventory, "read", "search", "list", "bash", "exit_plan_mode")
+	assertPresetInventoryContains(t, agentState.ToolInventory, "read_only", "read", "search", "list")
+
+	resolved := getResolvedToolContractV2(t, handler, "explorer")
+	assertToolInventoryContains(t, resolved.ToolInventory, "read", "search", "list", "bash", "exit_plan_mode")
+	assertPresetInventoryContains(t, resolved.ToolInventory, "read_only", "read", "search", "list")
+	for _, name := range []string{"read", "search", "list", "websearch", "webfetch"} {
+		state, ok := resolved.Resolved.Tools[name]
+		if !ok || !state.Enabled {
+			t.Fatalf("explorer resolved tool %s = %+v, ok=%t", name, state, ok)
+		}
+	}
+	if len(resolved.Resolved.AvailableTools) == 0 {
+		t.Fatalf("explorer resolved available_tools is empty: %+v", resolved.Resolved)
 	}
 }
 
@@ -534,6 +579,13 @@ type resolvedToolContractResponse struct {
 	Agent           string                               `json:"agent"`
 	RawToolContract *pebblestore.AgentToolContract       `json:"raw_tool_contract"`
 	Resolved        runruntime.ResolvedAgentToolContract `json:"resolved"`
+	ToolInventory   map[string]any                       `json:"tool_inventory"`
+}
+
+type agentStateResponse struct {
+	OK            bool           `json:"ok"`
+	State         map[string]any `json:"state"`
+	ToolInventory map[string]any `json:"tool_inventory"`
 }
 
 func getResolvedToolContractV2(t *testing.T, handler http.Handler, name string) resolvedToolContractResponse {
@@ -544,6 +596,67 @@ func getResolvedToolContractV2(t *testing.T, handler http.Handler, name string) 
 		t.Fatalf("GET /v2/agents/%s/tool-contract status=%d", name, status)
 	}
 	return resp
+}
+
+func getAgentStateV2(t *testing.T, handler http.Handler) agentStateResponse {
+	t.Helper()
+	resp := agentStateResponse{}
+	status := doJSONRequestLocal(t, handler, http.MethodGet, "/v2/agents?limit=200", nil, &resp)
+	if status != http.StatusOK {
+		t.Fatalf("GET /v2/agents status=%d", status)
+	}
+	return resp
+}
+
+func assertToolInventoryContains(t *testing.T, inventory map[string]any, names ...string) {
+	t.Helper()
+	tools, ok := inventory["tools"].([]any)
+	if !ok {
+		t.Fatalf("tool_inventory.tools = %T %v", inventory["tools"], inventory["tools"])
+	}
+	found := map[string]bool{}
+	for _, rawTool := range tools {
+		toolMap, ok := rawTool.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := toolMap["contract_name"].(string)
+		found[strings.TrimSpace(name)] = true
+	}
+	for _, name := range names {
+		if !found[name] {
+			t.Fatalf("tool_inventory missing %q; found=%v", name, found)
+		}
+	}
+}
+
+func assertPresetInventoryContains(t *testing.T, inventory map[string]any, id string, names ...string) {
+	t.Helper()
+	presets, ok := inventory["presets"].([]any)
+	if !ok {
+		t.Fatalf("tool_inventory.presets = %T %v", inventory["presets"], inventory["presets"])
+	}
+	for _, rawPreset := range presets {
+		preset, ok := rawPreset.(map[string]any)
+		if !ok || preset["id"] != id {
+			continue
+		}
+		enabled, ok := preset["enabled_tools"].([]any)
+		if !ok {
+			t.Fatalf("preset %s enabled_tools = %T %v", id, preset["enabled_tools"], preset["enabled_tools"])
+		}
+		found := map[string]bool{}
+		for _, rawName := range enabled {
+			found[strings.TrimSpace(rawName.(string))] = true
+		}
+		for _, name := range names {
+			if !found[name] {
+				t.Fatalf("preset %s missing enabled tool %q; found=%v", id, name, found)
+			}
+		}
+		return
+	}
+	t.Fatalf("preset %s not found in %v", id, presets)
 }
 
 func upsertScopedAgentV2(t *testing.T, handler http.Handler, name, mode, allowedCommand string) {

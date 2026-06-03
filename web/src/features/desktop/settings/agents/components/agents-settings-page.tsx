@@ -213,6 +213,71 @@ function customToolsFromAccess(access: ToolAccessList): AgentFormState["toolCont
   return tools;
 }
 
+function resolvedToolAccess(
+  runtime: AgentToolContractRuntimeRecord | undefined,
+): ToolAccessList | null {
+  if (!runtime?.resolved) {
+    return null;
+  }
+  return {
+    allowed: sortedUnique(runtime.resolved.availableTools),
+    blocked: sortedUnique(runtime.resolved.unavailableTools),
+  };
+}
+
+function sameToolConfig(
+  left: AgentToolContractToolRecord | undefined,
+  right: AgentToolContractToolRecord | undefined,
+): boolean {
+  if (!left && !right) return true;
+  if (!left || !right) return false;
+  return left.enabled === right.enabled && sameStringSet(left.bashPrefixes, right.bashPrefixes);
+}
+
+function sameToolContractTools(
+  left: AgentFormState["toolContractTools"],
+  right: AgentFormState["toolContractTools"],
+): boolean {
+  const names = new Set([...Object.keys(left), ...Object.keys(right)]);
+  for (const name of names) {
+    if (!sameToolConfig(left[name], right[name])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function formMatchesSavedToolContract(
+  form: AgentFormState,
+  profile: AgentProfileRecord | null,
+): boolean {
+  if (!profile) {
+    return false;
+  }
+  const saved = profileToForm(profile);
+  return (
+    form.toolContractPreset.trim() === saved.toolContractPreset.trim() &&
+    form.toolContractInheritPolicy === saved.toolContractInheritPolicy &&
+    sameToolContractTools(form.toolContractTools, saved.toolContractTools)
+  );
+}
+
+function inferExecutionSettingFromAccess(
+  form: AgentFormState,
+  access: ToolAccessList,
+): "read" | "readwrite" | "" {
+  if (form.exitPlanModeEnabled) {
+    return "";
+  }
+  const hasExplicitContract =
+    form.toolContractPreset.trim() !== "" || Object.keys(form.toolContractTools).length > 0;
+  if (!hasExplicitContract) {
+    return form.executionSetting || "readwrite";
+  }
+  const mutatingTools = new Set(["write", "edit", "bash", "task", "git_add", "git_commit"]);
+  return access.allowed.some((tool) => mutatingTools.has(tool)) ? "readwrite" : "read";
+}
+
 function ToolAccessRow({
   label,
   count,
@@ -997,6 +1062,20 @@ export function AgentsSettingsPage() {
     () => effectiveToolAccess(activeToolPreset, form.toolContractTools, runtimeToolNames),
     [activeToolPreset, form.toolContractTools, runtimeToolNames],
   );
+  const runtimeToolAccess = useMemo(
+    () => resolvedToolAccess(toolContractRuntime),
+    [toolContractRuntime],
+  );
+  const showRuntimeToolAccess =
+    Boolean(runtimeToolAccess) && formMatchesSavedToolContract(form, selectedProfile);
+  const displayedToolContractAccess =
+    showRuntimeToolAccess && runtimeToolAccess
+      ? runtimeToolAccess
+      : effectiveToolContractAccess;
+  const displayedExecutionSetting = inferExecutionSettingFromAccess(
+    form,
+    displayedToolContractAccess,
+  );
 
   useEffect(() => {
     if (selectedKey === NEW_AGENT_KEY) {
@@ -1171,6 +1250,7 @@ export function AgentsSettingsPage() {
         provider: form.provider.trim(),
         model: form.provider.trim() ? form.model.trim() : "",
         thinking: form.thinking.trim(),
+        executionSetting: displayedExecutionSetting,
         prompt: newPrompt,
       });
       await refreshAgents();
@@ -1207,6 +1287,7 @@ export function AgentsSettingsPage() {
         provider: form.provider.trim(),
         model: form.provider.trim() ? form.model.trim() : "",
         thinking: form.thinking.trim(),
+        executionSetting: displayedExecutionSetting,
       });
       await refreshAgents();
       setSelectedKey(savedName || trimmedName);
@@ -1902,46 +1983,27 @@ export function AgentsSettingsPage() {
                 </div>
               </div>
 
-              <div className="flex items-center border-t border-[var(--app-border)] px-4 py-3">
-                <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
-                  Execution
+              <div className="flex items-start border-t border-[var(--app-border)] px-4 py-3">
+                <label className="w-1/4 shrink-0 pt-1 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
+                  Runtime
                 </label>
-                <div className="w-full">
-                  <div className="relative">
-                    <select
-                      value={form.executionSetting}
-                      onChange={(event: ChangeEvent<HTMLSelectElement>) =>
-                        setForm((current) => ({
-                          ...current,
-                          executionSetting: event.target.value as
-                            | "read"
-                            | "readwrite"
-                            | "",
-                        }))
-                      }
-                      disabled={busy || form.exitPlanModeEnabled}
-                      className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
-                    >
-                      <option value="">unset</option>
-                      <option value="read">read</option>
-                      <option value="readwrite">readwrite</option>
-                    </select>
-                    <ChevronDown
-                      size={14}
-                      className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]"
-                    />
-                  </div>
-                  <p className="mt-2 text-xs text-[var(--app-text-muted)]">
+                <div className="min-w-0 flex-1 text-sm text-[var(--app-text)]">
+                  <div className="font-medium">
                     {form.exitPlanModeEnabled
-                      ? "Plan-mode agents use the plan -> auto contract; execution_setting is ignored and cleared."
-                      : "Required when plan mode is off. Tool scope can only narrow this baseline."}
+                      ? "Plan approval before execution"
+                      : `Direct execution (${displayedExecutionSetting || "unset"})`}
+                  </div>
+                  <p className="mt-1 text-xs text-[var(--app-text-muted)]">
+                    {form.exitPlanModeEnabled
+                      ? "The agent starts in plan mode, then exit_plan_mode requests approval before switching to auto execution."
+                      : "Execution is inferred from the selected tool contract and saved as the required baseline when plan mode is off."}
                   </p>
                 </div>
               </div>
 
               <div className="flex items-center border-t border-[var(--app-border)] px-4 py-3">
                 <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
-                  Plan mode
+                  Plan approval
                 </label>
                 <label className="inline-flex items-center gap-2 text-sm text-[var(--app-text)]">
                   <input
@@ -1958,7 +2020,7 @@ export function AgentsSettingsPage() {
                     }
                     disabled={busy}
                   />
-                  Enable plan → approval → execute flow
+                  Require plan approval before execution
                 </label>
               </div>
 
@@ -2036,8 +2098,8 @@ export function AgentsSettingsPage() {
                     <div className="min-w-0 flex-1 space-y-2">
                       <ToolAccessRow
                         label="Allowed"
-                        count={effectiveToolContractAccess.allowed.length}
-                        items={effectiveToolContractAccess.allowed}
+                        count={displayedToolContractAccess.allowed.length}
+                        items={displayedToolContractAccess.allowed}
                         emptyText="No tools are allowed"
                         tone="allow"
                         onItemClick={(item) => setToolAccess(item, false)}
@@ -2046,8 +2108,8 @@ export function AgentsSettingsPage() {
                       />
                       <ToolAccessRow
                         label="Blocked"
-                        count={effectiveToolContractAccess.blocked.length}
-                        items={effectiveToolContractAccess.blocked}
+                        count={displayedToolContractAccess.blocked.length}
+                        items={displayedToolContractAccess.blocked}
                         emptyText="No tools are blocked"
                         tone="block"
                         onItemClick={(item) => setToolAccess(item, true)}
@@ -2055,7 +2117,9 @@ export function AgentsSettingsPage() {
                         itemTitle="Click to allow this tool"
                       />
                       <div className="text-xs text-[var(--app-text-muted)]">
-                        Click a tool chip to move it between allowed and blocked. Any combination that does not match a preset is saved as Custom.
+                        {showRuntimeToolAccess
+                          ? "Showing the resolved runtime tool set for this saved agent. Click a chip to customize and save as Custom."
+                          : "Click a tool chip to move it between allowed and blocked. Any combination that does not match a preset is saved as Custom."}
                       </div>
                     </div>
                   </div>

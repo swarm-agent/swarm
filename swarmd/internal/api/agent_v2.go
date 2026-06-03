@@ -145,10 +145,16 @@ func (s *Server) handleAgentsV2(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	toolInventory, err := s.agentToolInventoryForAccount(principal.AccountScopeID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":                        true,
 		"state":                     state,
 		"provider_defaults_preview": s.providerDefaultsPreviewForState(state),
+		"tool_inventory":            toolInventory,
 	})
 }
 
@@ -344,12 +350,18 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		toolInventory, err := s.agentToolInventoryForAccount(principal.AccountScopeID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":                true,
 			"agent":             strings.TrimSpace(profile.Name),
 			"raw_tool_contract": profile.ToolContract,
 			"resolved":          resolved,
 			"compiled_policy":   compiledPolicy,
+			"tool_inventory":    toolInventory,
 		})
 		return
 	}

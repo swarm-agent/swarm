@@ -869,7 +869,7 @@ export async function updateSessionMetadata(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        metadata,
+        metadata: sanitizeSessionCreateV2Metadata(metadata) ?? {},
       }),
     },
   );
@@ -1408,17 +1408,28 @@ function isForbiddenSessionCreateV2MetadataKey(key: string): boolean {
   return SESSION_CREATE_V2_FORBIDDEN_METADATA_PARTS.some((part) => normalized.includes(part))
 }
 
+function sanitizeSessionCreateV2MetadataValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((child) => sanitizeSessionCreateV2MetadataValue(child))
+  }
+  if (!value || typeof value !== 'object') {
+    return value
+  }
+  const sanitized: Record<string, unknown> = {}
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (isForbiddenSessionCreateV2MetadataKey(key)) {
+      continue
+    }
+    sanitized[key] = sanitizeSessionCreateV2MetadataValue(child)
+  }
+  return sanitized
+}
+
 export function sanitizeSessionCreateV2Metadata(metadata: Record<string, unknown> | null | undefined): Record<string, unknown> | undefined {
   if (!metadata || typeof metadata !== 'object') {
     return undefined
   }
-  const sanitized: Record<string, unknown> = {}
-  for (const [key, value] of Object.entries(metadata)) {
-    if (isForbiddenSessionCreateV2MetadataKey(key)) {
-      continue
-    }
-    sanitized[key] = value
-  }
+  const sanitized = sanitizeSessionCreateV2MetadataValue(metadata) as Record<string, unknown>
   return Object.keys(sanitized).length > 0 ? sanitized : undefined
 }
 

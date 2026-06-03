@@ -14,6 +14,9 @@ async function withFetchStub(
       : {}
 
     if (url === '/v2/sessions/session-primary/metadata') {
+      if (init?.method === 'POST') {
+        return jsonResponse({ ok: true, session: { id: 'session-primary', title: 'Primary', workspace_path: '/repo', workspace_name: 'repo', mode: 'auto', metadata: body.metadata } })
+      }
       return jsonResponse({ ok: true, session_id: 'session-primary', metadata: { ticket: 'T-1' } })
     }
     if (url === '/v2/sessions/session-primary/mode') {
@@ -90,6 +93,45 @@ test('primary desktop lifecycle helpers use native v2 metadata, mode, and codex 
     assert.equal(callFor(calls, '/v2/sessions/session-primary/mode').init?.method, undefined)
     assert.equal(callFor(calls, '/v2/sessions/session-primary/codex').init?.method, undefined)
     assert.equal(calls.filter((entry) => String(entry.input) === '/v2/sessions/session-primary/codex' && entry.init?.method === 'POST').length, 1)
+  })
+})
+
+test('primary desktop session metadata updates strip v2 authority keys recursively', async () => {
+  const { updateSessionMetadata } = await import('./chat-queries')
+
+  await withFetchStub(async (calls) => {
+    await updateSessionMetadata('session-primary', {
+      ticket: 'T-2',
+      swarm_v2_authority_container_id: 'forbidden-root',
+      execution_context: {
+        workspace_path: '/forbidden',
+        cwd: '/also-forbidden',
+        safe_note: 'kept',
+      },
+      children: [
+        {
+          target_swarm_id: 'forbidden-child',
+          safe_child: 'kept-child',
+        },
+      ],
+    })
+
+    const call = callFor(calls, '/v2/sessions/session-primary/metadata')
+    const body = JSON.parse(String(call.init?.body ?? '{}')) as Record<string, unknown>
+    const metadata = body.metadata as Record<string, unknown>
+    assert.equal(call.init?.method, 'POST')
+    assert.deepEqual(metadata, {
+      ticket: 'T-2',
+      execution_context: {
+        cwd: '/also-forbidden',
+        safe_note: 'kept',
+      },
+      children: [
+        {
+          safe_child: 'kept-child',
+        },
+      ],
+    })
   })
 })
 
