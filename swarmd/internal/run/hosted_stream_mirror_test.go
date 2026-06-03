@@ -10,6 +10,53 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func TestHostedStreamMirrorStoresTitleWithoutClientStream(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "hosted-stream-mirror-title.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	eventLog, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
+	sync := &streamMirrorHostedSync{sessions: sessions}
+	sessions.SetHostedSync(sync)
+	svc := &Service{sessions: sessions, events: eventLog}
+
+	descriptor := sessionruntime.HostedSessionDescriptor{HostSwarmID: "controller-swarm", HostBackendURL: "http://127.0.0.1:1", HostWorkspacePath: "/host/workspace", RuntimeWorkspacePath: "/runtime/workspace", ChildSwarmID: "target-swarm"}
+	metadata := descriptor.WithMetadata(map[string]any{"source": "clientless-title-test"})
+	if _, err := sessions.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "session-title-no-client", WorkspacePath: "/runtime/workspace", WorkspaceName: "workspace", Title: "Old title", Mode: sessionruntime.ModeAuto, Metadata: metadata, CreatedAt: time.Now().UnixMilli(), UpdatedAt: time.Now().UnixMilli()}); err != nil {
+		t.Fatalf("store session: %v", err)
+	}
+
+	if err := svc.mirrorHostedStreamEvent(context.Background(), StreamEvent{Type: StreamEventSessionTitle, SessionID: "session-title-no-client", RunID: "run-title", Title: "Server persisted title", TitleStage: "final"}); err != nil {
+		t.Fatalf("mirror title event: %v", err)
+	}
+
+	mirrored, ok, err := sessions.GetSession("session-title-no-client")
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if !ok || mirrored.Title != "Server persisted title" {
+		t.Fatalf("mirrored session ok=%v title=%q", ok, mirrored.Title)
+	}
+	events, err := eventLog.ReadFrom(1, 20)
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	var sawHostedTitle bool
+	for _, event := range events {
+		if event.EventType == "run.session.title.updated" && event.EntityID == "session-title-no-client" {
+			sawHostedTitle = true
+		}
+	}
+	if !sawHostedTitle {
+		t.Fatalf("missing hosted run.session.title.updated event in %+v", events)
+	}
+}
+
 func TestHostedStreamMirrorStoresMessageAndPublishesEvent(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "hosted-stream-mirror.pebble"))
 	if err != nil {

@@ -37,6 +37,7 @@ interface AgentFormState {
   model: string;
   thinking: string;
   prompt: string;
+  runtimeMode: "plan_auto" | "read" | "readwrite" | "";
   executionSetting: "read" | "readwrite" | "";
   exitPlanModeEnabled: boolean;
   toolContractPreset: string;
@@ -262,20 +263,116 @@ function formMatchesSavedToolContract(
   );
 }
 
-function inferExecutionSettingFromAccess(
-  form: AgentFormState,
+const READ_ONLY_TOOL_NAMES = new Set([
+  "ask_user",
+  "exit_plan_mode",
+  "agentic_search",
+  "list",
+  "manage_agent",
+  "manage_flow",
+  "manage_image",
+  "manage_integrations",
+  "manage_skill",
+  "manage_theme",
+  "manage_todos",
+  "manage_worktree",
+  "plan_manage",
+  "read",
+  "search",
+  "skill_use",
+  "webfetch",
+  "websearch",
+]);
+
+const MUTATING_TOOL_NAMES = new Set(["write", "edit", "bash", "task", "git_add", "git_commit"]);
+
+const DIRECT_READ_BASELINE: ToolAccessList = {
+  allowed: sortedUnique(Array.from(READ_ONLY_TOOL_NAMES).filter((name) => name !== "exit_plan_mode")),
+  blocked: sortedUnique(["write", "edit", "bash", "task", "exit_plan_mode"]),
+};
+
+const DIRECT_READWRITE_BASELINE: ToolAccessList = {
+  allowed: sortedUnique([
+    "ask_user",
+    "edit",
+    "list",
+    "plan_manage",
+    "read",
+    "search",
+    "skill_use",
+    "webfetch",
+    "websearch",
+    "write",
+  ]),
+  blocked: sortedUnique(["bash", "task", "exit_plan_mode"]),
+};
+
+function runtimeModeForToolAccess(access: ToolAccessList): "read" | "readwrite" {
+  for (const tool of access.allowed) {
+    if (MUTATING_TOOL_NAMES.has(tool) || !READ_ONLY_TOOL_NAMES.has(tool)) {
+      return "readwrite";
+    }
+  }
+  return "read";
+}
+
+function toolAccessForExecutionModeChange(
+  currentAccess: ToolAccessList,
+  mode: AgentFormState["runtimeMode"],
+  runtimeToolNames: string[],
+): ToolAccessList {
+  if (mode === "plan_auto") {
+    return {
+      allowed: sortedUnique([...currentAccess.allowed, "exit_plan_mode"]),
+      blocked: sortedUnique(currentAccess.blocked.filter((name) => name !== "exit_plan_mode")),
+    };
+  }
+
+  const baseline = mode === "read" ? DIRECT_READ_BASELINE : DIRECT_READWRITE_BASELINE;
+  const allowed = new Set(baseline.allowed);
+  const blocked = new Set(baseline.blocked);
+  for (const name of runtimeToolNames) {
+    if (!allowed.has(name)) {
+      blocked.add(name);
+    }
+  }
+  return {
+    allowed: sortedUnique(Array.from(allowed)),
+    blocked: sortedUnique(Array.from(blocked).filter((name) => !allowed.has(name))),
+  };
+}
+
+function runtimeModeLabel(mode: AgentFormState["runtimeMode"]): string {
+  switch (mode) {
+    case "plan_auto":
+      return "Plan approval";
+    case "read":
+      return "Direct read-only";
+    case "readwrite":
+      return "Direct read/write";
+    default:
+      return "Unset";
+  }
+}
+
+function normalizeExecutionMode(form: AgentFormState): AgentFormState["runtimeMode"] {
+  if (form.exitPlanModeEnabled || form.runtimeMode === "plan_auto") {
+    return "plan_auto";
+  }
+  return form.runtimeMode || form.executionSetting || "readwrite";
+}
+
+function toolAccessForExecutionMode(
   access: ToolAccessList,
-): "read" | "readwrite" | "" {
-  if (form.exitPlanModeEnabled) {
-    return "";
+  mode: AgentFormState["runtimeMode"],
+): ToolAccessList {
+  if (mode === "plan_auto") {
+    return access;
   }
-  const hasExplicitContract =
-    form.toolContractPreset.trim() !== "" || Object.keys(form.toolContractTools).length > 0;
-  if (!hasExplicitContract) {
-    return form.executionSetting || "readwrite";
-  }
-  const mutatingTools = new Set(["write", "edit", "bash", "task", "git_add", "git_commit"]);
-  return access.allowed.some((tool) => mutatingTools.has(tool)) ? "readwrite" : "read";
+  return {
+    allowed: sortedUnique(access.allowed.filter((name) => name !== "exit_plan_mode")),
+    blocked: sortedUnique([...access.blocked, "exit_plan_mode"]),
+  };
 }
 
 function ToolAccessRow({
@@ -353,6 +450,7 @@ function emptyAgentForm(): AgentFormState {
     model: "",
     thinking: "",
     prompt: "",
+    runtimeMode: "readwrite",
     executionSetting: "readwrite",
     exitPlanModeEnabled: false,
     toolContractPreset: "",
@@ -363,10 +461,8 @@ function emptyAgentForm(): AgentFormState {
 }
 
 function agentRuntimeSummary(profile: AgentProfileRecord): string {
-  if (profile.exitPlanModeEnabled) {
-    return "plan -> auto";
-  }
-  return profile.executionSetting || "unset";
+  const mode = profile.runtimeMode || (profile.exitPlanModeEnabled ? "plan_auto" : profile.executionSetting || "");
+  return runtimeModeLabel(mode);
 }
 
 function agentProviderModelSummary(
@@ -458,8 +554,9 @@ function profileToForm(
     model: profile.model,
     thinking: profile.thinking,
     prompt: profile.prompt,
-    executionSetting: profile.executionSetting,
-    exitPlanModeEnabled: profile.exitPlanModeEnabled,
+    runtimeMode: profile.exitPlanModeEnabled ? "plan_auto" : profile.runtimeMode,
+    executionSetting: profile.exitPlanModeEnabled ? "" : profile.executionSetting,
+    exitPlanModeEnabled: profile.exitPlanModeEnabled || profile.runtimeMode === "plan_auto",
     toolContractPreset:
       profile.toolContract?.preset ?? profile.toolScope?.preset ?? "",
     toolContractInheritPolicy: Boolean(
@@ -498,6 +595,8 @@ async function upsertAgent(input: AgentFormState): Promise<string> {
     }
   }
 
+  const resolvedExecutionMode = normalizeExecutionMode(input) || "readwrite";
+
   const response = await requestJson<{ profile?: { name?: string } }>(
     `/v2/agents/${encodeURIComponent(input.name.trim())}`,
     {
@@ -512,12 +611,16 @@ async function upsertAgent(input: AgentFormState): Promise<string> {
         model: input.model,
         thinking: input.thinking,
         prompt: input.prompt,
-        execution_setting: input.exitPlanModeEnabled
-          ? ""
-          : input.executionSetting,
-        exit_plan_mode_enabled: input.exitPlanModeEnabled,
+        runtime_mode: resolvedExecutionMode,
+        execution_setting:
+          resolvedExecutionMode === "plan_auto" ? "" : resolvedExecutionMode,
+        exit_plan_mode_enabled: resolvedExecutionMode === "plan_auto",
         tool_contract: {
-          preset: input.toolContractPreset.trim() || undefined,
+          preset:
+            input.toolContractPreset.trim() &&
+            input.toolContractPreset.trim() !== CUSTOM_AGENT_TOOL_PRESET_ID
+              ? input.toolContractPreset.trim()
+              : undefined,
           tools:
             Object.keys(toolContractTools).length > 0
               ? toolContractTools
@@ -1068,14 +1171,42 @@ export function AgentsSettingsPage() {
   );
   const showRuntimeToolAccess =
     Boolean(runtimeToolAccess) && formMatchesSavedToolContract(form, selectedProfile);
-  const displayedToolContractAccess =
+  const displayedRuntimeMode = normalizeExecutionMode(form);
+  const rawDisplayedToolContractAccess =
     showRuntimeToolAccess && runtimeToolAccess
       ? runtimeToolAccess
       : effectiveToolContractAccess;
-  const displayedExecutionSetting = inferExecutionSettingFromAccess(
-    form,
-    displayedToolContractAccess,
+  const displayedToolContractAccess = toolAccessForExecutionMode(
+    rawDisplayedToolContractAccess,
+    displayedRuntimeMode,
   );
+
+  const setExecutionMode = (nextMode: AgentFormState["runtimeMode"]) => {
+    setForm((current) => {
+      const currentPreset =
+        toolPresetOptions.find((option) => option.id === current.toolContractPreset) ??
+        agentToolPresetByID(current.toolContractPreset) ??
+        CUSTOM_AGENT_TOOL_PRESET;
+      const currentAccess = effectiveToolAccess(
+        currentPreset,
+        current.toolContractTools,
+        runtimeToolNames,
+      );
+      const nextAccess = toolAccessForExecutionModeChange(
+        currentAccess,
+        nextMode,
+        runtimeToolNames,
+      );
+      return {
+        ...current,
+        runtimeMode: nextMode,
+        executionSetting: nextMode === "plan_auto" ? "" : nextMode,
+        exitPlanModeEnabled: nextMode === "plan_auto",
+        toolContractPreset: CUSTOM_AGENT_TOOL_PRESET_ID,
+        toolContractTools: customToolsFromAccess(nextAccess),
+      };
+    });
+  };
 
   useEffect(() => {
     if (selectedKey === NEW_AGENT_KEY) {
@@ -1183,14 +1314,23 @@ export function AgentsSettingsPage() {
           current.toolContractTools,
           runtimeToolNames,
         );
+        const nextRuntimeMode = normalizeExecutionMode(current);
         return {
           ...current,
+          runtimeMode: nextRuntimeMode,
+          executionSetting: nextRuntimeMode === "plan_auto" ? "" : nextRuntimeMode,
+          exitPlanModeEnabled: nextRuntimeMode === "plan_auto",
           toolContractPreset: CUSTOM_AGENT_TOOL_PRESET_ID,
           toolContractTools: customToolsFromAccess(currentAccess),
         };
       }
+      const presetAccess = toolAccessForPreset(preset);
+      const nextRuntimeMode = runtimeModeForToolAccess(presetAccess);
       return {
         ...current,
+        runtimeMode: nextRuntimeMode,
+        executionSetting: nextRuntimeMode,
+        exitPlanModeEnabled: false,
         toolContractPreset: preset.id,
         toolContractTools: {},
       };
@@ -1221,8 +1361,12 @@ export function AgentsSettingsPage() {
       }
       nextAccess.allowed = sortedUnique(nextAccess.allowed);
       nextAccess.blocked = sortedUnique(nextAccess.blocked);
+      const nextRuntimeMode = normalizeExecutionMode(current);
       return {
         ...current,
+        runtimeMode: nextRuntimeMode,
+        executionSetting: nextRuntimeMode === "plan_auto" ? "" : nextRuntimeMode,
+        exitPlanModeEnabled: nextRuntimeMode === "plan_auto",
         toolContractPreset: matchedToolPresetID(nextAccess, toolPresetOptions),
         toolContractTools: customToolsFromAccess(nextAccess),
       };
@@ -1250,7 +1394,8 @@ export function AgentsSettingsPage() {
         provider: form.provider.trim(),
         model: form.provider.trim() ? form.model.trim() : "",
         thinking: form.thinking.trim(),
-        executionSetting: displayedExecutionSetting,
+        runtimeMode: displayedRuntimeMode,
+        executionSetting: displayedRuntimeMode === "plan_auto" ? "" : displayedRuntimeMode,
         prompt: newPrompt,
       });
       await refreshAgents();
@@ -1287,7 +1432,8 @@ export function AgentsSettingsPage() {
         provider: form.provider.trim(),
         model: form.provider.trim() ? form.model.trim() : "",
         thinking: form.thinking.trim(),
-        executionSetting: displayedExecutionSetting,
+        runtimeMode: displayedRuntimeMode,
+        executionSetting: displayedRuntimeMode === "plan_auto" ? "" : displayedRuntimeMode,
       });
       await refreshAgents();
       setSelectedKey(savedName || trimmedName);
@@ -1984,44 +2130,46 @@ export function AgentsSettingsPage() {
               </div>
 
               <div className="flex items-start border-t border-[var(--app-border)] px-4 py-3">
-                <label className="w-1/4 shrink-0 pt-1 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
-                  Runtime
+                <label className="w-1/4 shrink-0 pt-2 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
+                  Execution mode
                 </label>
-                <div className="min-w-0 flex-1 text-sm text-[var(--app-text)]">
-                  <div className="font-medium">
-                    {form.exitPlanModeEnabled
-                      ? "Plan approval before execution"
-                      : `Direct execution (${displayedExecutionSetting || "unset"})`}
+                <div className="min-w-0 flex-1 space-y-2 text-sm text-[var(--app-text)]">
+                  <div className="relative">
+                    <select
+                      value={displayedRuntimeMode || "readwrite"}
+                      onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+                        const nextMode = event.target.value as AgentFormState["runtimeMode"];
+                        setExecutionMode(nextMode);
+                      }}
+                      disabled={busy}
+                      className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+                    >
+                      <option value="plan_auto">Plan approval</option>
+                      <option value="read">Direct read-only</option>
+                      <option value="readwrite">Direct read/write</option>
+                    </select>
+                    <ChevronDown
+                      size={14}
+                      className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]"
+                    />
                   </div>
-                  <p className="mt-1 text-xs text-[var(--app-text-muted)]">
-                    {form.exitPlanModeEnabled
-                      ? "The agent starts in plan mode, then exit_plan_mode requests approval before switching to auto execution."
-                      : "Execution is inferred from the selected tool contract and saved as the required baseline when plan mode is off."}
+                  <div className="font-medium">
+                    Saving as {runtimeModeLabel(displayedRuntimeMode)} with a Custom tool contract
+                  </div>
+                  <p className="text-xs leading-5 text-[var(--app-text-muted)]">
+                    Plan approval saves <code>runtime_mode=plan_auto</code> and enables
+                    <code> exit_plan_mode</code>, so the agent starts in plan mode and
+                    asks before switching to auto execution. Direct modes save
+                    <code> runtime_mode=read</code> or <code>runtime_mode=readwrite</code>;
+                    <code> plan_manage</code> can still be used, but
+                    <code> exit_plan_mode</code> is disabled.
+                  </p>
+                  <p className="text-xs leading-5 text-[var(--app-text-muted)]">
+                    Changing the tool preset chooses that preset’s suggested Direct
+                    mode. Changing Execution mode converts the tool contract to Custom
+                    so the selected runtime flags are saved exactly.
                   </p>
                 </div>
-              </div>
-
-              <div className="flex items-center border-t border-[var(--app-border)] px-4 py-3">
-                <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
-                  Plan approval
-                </label>
-                <label className="inline-flex items-center gap-2 text-sm text-[var(--app-text)]">
-                  <input
-                    type="checkbox"
-                    checked={form.exitPlanModeEnabled}
-                    onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                      setForm((current) => ({
-                        ...current,
-                        exitPlanModeEnabled: event.target.checked,
-                        executionSetting: event.target.checked
-                          ? ""
-                          : current.executionSetting,
-                      }))
-                    }
-                    disabled={busy}
-                  />
-                  Require plan approval before execution
-                </label>
               </div>
 
               <div className="border-t border-[var(--app-border)] px-4 py-4">
@@ -2029,9 +2177,9 @@ export function AgentsSettingsPage() {
                   <Settings2 size={14} /> Tool contract
                 </div>
                 <p className="mb-4 text-xs text-[var(--app-text-muted)]">
-                  Canonical runtime contract for this agent. Runtime data is loaded
-                  from /v2/agents/{selectedToolContractName || form.name || "{name}"}
-                  /tool-contract.
+                  Tool presets are suggestions for allowed tools. Switching Execution
+                  mode saves a Custom tool contract so runtime_mode and
+                  exit_plan_mode_enabled stay authoritative.
                 </p>
                 <div className="space-y-3">
                   <div className="flex items-start gap-3">

@@ -194,6 +194,7 @@ export interface AgentProfileRecord {
   model: string;
   thinking: string;
   prompt: string;
+  runtimeMode: "plan_auto" | "read" | "readwrite" | "";
   executionSetting: "read" | "readwrite" | "";
   exitPlanModeEnabled: boolean;
   toolScope: AgentToolScopeRecord | null;

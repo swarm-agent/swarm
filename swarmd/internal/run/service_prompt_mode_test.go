@@ -20,10 +20,10 @@ func TestModeCapabilityInstructionsUseExecutionModeWhenPlanModeDisabled(t *testi
 
 	for _, want := range []string{
 		"Current execution mode: read.",
-		"Execution mode is controlled by the saved agent execution_setting because plan mode is disabled for this agent.",
+		"Execution mode is controlled by the saved agent runtime_mode because plan mode is disabled for this agent.",
 		"Current agent runtime contract: read.",
 		"Current agent exit-plan-mode enabled: false.",
-		"With plan mode disabled, the backend uses the execution setting as the effective runtime mode.",
+		"With plan mode disabled, the backend uses runtime_mode as the effective runtime contract.",
 	} {
 		if !strings.Contains(instructions, want) {
 			t.Fatalf("instructions missing %q\n--- instructions ---\n%s", want, instructions)
@@ -51,7 +51,7 @@ func TestModeCapabilityInstructionsUseSessionModeWhenPlanModeEnabled(t *testing.
 
 	for _, want := range []string{
 		"Current session mode: plan.",
-		"Current agent runtime contract: plan -> auto",
+		"Current agent runtime contract: plan_auto",
 		"Current agent exit-plan-mode enabled: true.",
 		"Plan-mode expectation:",
 		"Because the current session mode is plan",

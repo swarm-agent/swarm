@@ -323,6 +323,7 @@ type AgentStateWire = {
       model?: string;
       thinking?: string;
       prompt?: string;
+      runtime_mode?: string;
       execution_setting?: string;
       exit_plan_mode_enabled?: boolean;
       tool_scope?: {
@@ -356,6 +357,7 @@ type RestoreAgentDefaultsWire = {
     model?: string;
     thinking?: string;
     prompt?: string;
+    runtime_mode?: string;
     execution_setting?: string;
     exit_plan_mode_enabled?: boolean;
     enabled?: boolean;
@@ -1139,6 +1141,14 @@ export async function fetchAgentState(
           model: String(profile.model ?? "").trim(),
           thinking: String(profile.thinking ?? "").trim(),
           prompt: String(profile.prompt ?? ""),
+          runtimeMode: (() => {
+            const raw = String(profile.runtime_mode ?? "")
+              .trim()
+              .toLowerCase();
+            return raw === "plan_auto" || raw === "read" || raw === "readwrite"
+              ? raw
+              : "";
+          })() as "plan_auto" | "read" | "readwrite" | "",
           executionSetting: (() => {
             const raw = String(profile.execution_setting ?? "")
               .trim()
@@ -1277,6 +1287,14 @@ function mapAgentDefaultsState(
           model: String(profile.model ?? "").trim(),
           thinking: String(profile.thinking ?? "").trim(),
           prompt: String(profile.prompt ?? ""),
+          runtimeMode: (() => {
+            const raw = String(profile.runtime_mode ?? "")
+              .trim()
+              .toLowerCase();
+            return raw === "plan_auto" || raw === "read" || raw === "readwrite"
+              ? raw
+              : "";
+          })() as "plan_auto" | "read" | "readwrite" | "",
           executionSetting: (() => {
             const raw = String(profile.execution_setting ?? "")
               .trim()

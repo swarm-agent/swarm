@@ -200,6 +200,150 @@ func TestManageAgentCreatePublishesAgentEvent(t *testing.T) {
 	}
 }
 
+func TestManageAgentCreateExplicitRuntimeModeOverridesPresetSuggestion(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := pebblestore.Open(filepath.Join(workspace, "state.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("open event log: %v", err)
+	}
+	agents := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
+	rt := NewRuntime(2)
+	rt.SetManageAgentService(agents)
+	results := rt.ExecuteBatch(context.Background(), workspace, []Call{{
+		CallID: "manage-agent-read-with-readwrite-preset",
+		Name:   "manage-agent",
+		Arguments: mustManageAgentArgsJSON(t, map[string]any{
+			"action":  "create",
+			"confirm": true,
+			"agent":   "read-with-readwrite-preset",
+			"content": map[string]any{
+				"name":         "read-with-readwrite-preset",
+				"mode":         "subagent",
+				"prompt":       "Runtime wins.",
+				"runtime_mode": "read",
+				"tool_contract": map[string]any{
+					"preset": "read_write",
+				},
+			},
+		}),
+	}})
+	if len(results) != 1 {
+		t.Fatalf("expected one result, got %d", len(results))
+	}
+	if errText := strings.TrimSpace(results[0].Error); errText != "" {
+		t.Fatalf("unexpected manage-agent error: %s", errText)
+	}
+	decoded := decodeManageAgentResultJSON(t, results[0].Output)
+	agent, ok := decoded["agent"].(map[string]any)
+	if !ok {
+		t.Fatalf("agent payload is %T", decoded["agent"])
+	}
+	if got := agent["runtime_mode"]; got != "read" {
+		t.Fatalf("runtime_mode = %v, want read", got)
+	}
+}
+
+func TestManageAgentCreatePlanAutoAllowsPresetSuggestions(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := pebblestore.Open(filepath.Join(workspace, "state.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("open event log: %v", err)
+	}
+	agents := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
+	rt := NewRuntime(2)
+	rt.SetManageAgentService(agents)
+	results := rt.ExecuteBatch(context.Background(), workspace, []Call{{
+		CallID: "manage-agent-plan-with-readwrite-preset",
+		Name:   "manage-agent",
+		Arguments: mustManageAgentArgsJSON(t, map[string]any{
+			"action":  "create",
+			"confirm": true,
+			"agent":   "plan-with-readwrite-preset",
+			"content": map[string]any{
+				"name":         "plan-with-readwrite-preset",
+				"mode":         "subagent",
+				"prompt":       "Runtime wins.",
+				"runtime_mode": "plan_auto",
+				"tool_contract": map[string]any{
+					"preset": "read_write",
+				},
+			},
+		}),
+	}})
+	if len(results) != 1 {
+		t.Fatalf("expected one result, got %d", len(results))
+	}
+	if errText := strings.TrimSpace(results[0].Error); errText != "" {
+		t.Fatalf("unexpected manage-agent error: %s", errText)
+	}
+	decoded := decodeManageAgentResultJSON(t, results[0].Output)
+	agent, ok := decoded["agent"].(map[string]any)
+	if !ok {
+		t.Fatalf("agent payload is %T", decoded["agent"])
+	}
+	if got := agent["runtime_mode"]; got != "plan_auto" {
+		t.Fatalf("runtime_mode = %v, want plan_auto", got)
+	}
+}
+
+func TestManageAgentCreateDerivesReadRuntimeFromReadOnlyContract(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := pebblestore.Open(filepath.Join(workspace, "state.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("open event log: %v", err)
+	}
+	agents := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
+	rt := NewRuntime(2)
+	rt.SetManageAgentService(agents)
+	results := rt.ExecuteBatch(context.Background(), workspace, []Call{{
+		CallID: "manage-agent-derive-read-runtime",
+		Name:   "manage-agent",
+		Arguments: mustManageAgentArgsJSON(t, map[string]any{
+			"action":  "create",
+			"confirm": true,
+			"agent":   "derived-read",
+			"content": map[string]any{
+				"name":          "derived-read",
+				"mode":          "subagent",
+				"prompt":        "Read.",
+				"tool_contract": map[string]any{"preset": "read_only"},
+			},
+		}),
+	}})
+	if len(results) != 1 {
+		t.Fatalf("expected one result, got %d", len(results))
+	}
+	if errText := strings.TrimSpace(results[0].Error); errText != "" {
+		t.Fatalf("unexpected manage-agent error: %s", errText)
+	}
+	decoded := decodeManageAgentResultJSON(t, results[0].Output)
+	agent, ok := decoded["agent"].(map[string]any)
+	if !ok {
+		t.Fatalf("agent payload is %T", decoded["agent"])
+	}
+	if got := agent["runtime_mode"]; got != "read" {
+		t.Fatalf("runtime_mode = %v, want read", got)
+	}
+}
+
 func TestManageAgentCreateAcceptsBoundedToolContractOverrideWhenServiceConfigured(t *testing.T) {
 	workspace := t.TempDir()
 	store, err := pebblestore.Open(filepath.Join(workspace, "state.pebble"))
@@ -223,11 +367,11 @@ func TestManageAgentCreateAcceptsBoundedToolContractOverrideWhenServiceConfigure
 			"confirm": true,
 			"agent":   "scoped-reviewer",
 			"content": map[string]any{
-				"name":              "scoped-reviewer",
-				"mode":              "subagent",
-				"description":       "Scoped reviewer",
-				"prompt":            "Review safely.",
-				"execution_setting": "read",
+				"name":         "scoped-reviewer",
+				"mode":         "subagent",
+				"description":  "Scoped reviewer",
+				"prompt":       "Review safely.",
+				"runtime_mode": "readwrite",
 				"tool_contract": map[string]any{
 					"preset": "read_only",
 					"tools": map[string]any{

@@ -240,6 +240,7 @@ func (s *Service) resolveAgentForAccount(accountScopeID, name string) (pebblesto
 		Mode:                agentruntime.ModePrimary,
 		Provider:            "",
 		Prompt:              "You are Swarm, the primary orchestration agent. Execute user tasks with concise, concrete outcomes. Match execution depth to request scope and avoid unnecessary delegation for narrow asks.",
+		RuntimeMode:         pebblestore.AgentRuntimeModePlanAuto,
 		ExitPlanModeEnabled: pebblestore.BoolPtr(true),
 		Enabled:             true,
 		UpdatedAt:           0,
@@ -299,13 +300,11 @@ func (s *Service) composeInstructionsForScopeWithDiscoveryRoots(scope tool.Works
 	}
 	executionSetting := pebblestore.NormalizeAgentExecutionSetting(agentProfile.ExecutionSetting)
 	exitPlanModeEnabled := pebblestore.AgentExitPlanModeEnabled(agentProfile)
-	runtimeContract := "unset"
-	if exitPlanModeEnabled {
-		runtimeContract = "plan -> auto"
-	} else if executionSetting != "" {
-		runtimeContract = executionSetting
+	runtimeContract := pebblestore.AgentProfileRuntimeMode(agentProfile)
+	if runtimeContract == "" {
+		runtimeContract = "unset"
 	}
-	toolScopeBase := "base execution setting"
+	toolScopeBase := "base runtime mode"
 	if exitPlanModeEnabled {
 		toolScopeBase = "plan/auto runtime contract"
 	}
@@ -324,6 +323,9 @@ func (s *Service) composeInstructionsForScopeWithDiscoveryRoots(scope tool.Works
 		}
 		if !exitPlanModeEnabled {
 			settingLabel := executionSetting
+			if settingLabel == "" {
+				settingLabel = runtimeContract
+			}
 			if settingLabel == "" {
 				settingLabel = "unset"
 			}
@@ -451,6 +453,11 @@ func modeCapabilityInstructions(mode string, bypassPermissions bool, agentProfil
 	setting, hasExecutionSetting := pebblestore.AgentExecutionSetting(agentProfile)
 	executionSetting := setting
 	exitPlanModeEnabled := pebblestore.AgentExitPlanModeEnabled(agentProfile)
+	runtimeMode := pebblestore.AgentProfileRuntimeMode(agentProfile)
+	if !exitPlanModeEnabled && runtimeMode != "" && runtimeMode != pebblestore.AgentRuntimeModePlanAuto {
+		executionSetting = runtimeMode
+		hasExecutionSetting = true
+	}
 	if executionSetting == "" {
 		executionSetting = "unset"
 	}
@@ -459,7 +466,7 @@ func modeCapabilityInstructions(mode string, bypassPermissions bool, agentProfil
 	if exitPlanModeEnabled {
 		currentMode = sessionruntime.NormalizeMode(currentMode)
 	} else if hasExecutionSetting {
-		currentMode = setting
+		currentMode = executionSetting
 	} else if currentMode == "" {
 		currentMode = "unset"
 	}
@@ -470,13 +477,13 @@ func modeCapabilityInstructions(mode string, bypassPermissions bool, agentProfil
 			"Current session mode: "+currentMode+".",
 			"The current session mode above is authoritative for this turn and supersedes any earlier transcript text, tool output, or UI guidance that described a different mode.",
 			"Session mode can be changed between turns; do not treat an earlier auto/plan state as permanent.",
-			"Current agent runtime contract: plan -> auto (exit_plan_mode transitions an approved plan turn to auto; it does not make auto mode irreversible).",
+			"Current agent runtime contract: plan_auto (exit_plan_mode transitions an approved plan turn to auto; it does not make auto mode irreversible).",
 		)
 	} else {
 		lines = append(lines,
 			"Current execution mode: "+currentMode+".",
 			"The current execution mode above is authoritative for this turn and supersedes any earlier transcript text, tool output, or UI guidance that described a different mode.",
-			"Execution mode is controlled by the saved agent execution_setting because plan mode is disabled for this agent.",
+			"Execution mode is controlled by the saved agent runtime_mode because plan mode is disabled for this agent.",
 			"Current agent runtime contract: "+executionSetting+".",
 		)
 	}
@@ -487,30 +494,30 @@ func modeCapabilityInstructions(mode string, bypassPermissions bool, agentProfil
 		"Tool capability policy (enforced by backend):",
 	)
 	switch executionSetting {
+	case "unset":
+		if exitPlanModeEnabled {
+			lines = append(lines,
+				"- tool availability is determined by plan mode until exit_plan_mode switches the session to auto.",
+				"- read/readwrite runtime capability requests are overridden while plan mode is enabled.",
+			)
+		} else {
+			lines = append(lines,
+				"- no static runtime mode is configured for this agent.",
+				"- with plan mode disabled, runs will fail until runtime_mode is set to read or readwrite.",
+			)
+		}
 	case pebblestore.AgentExecutionSettingRead:
 		lines = append(lines,
-			"- read execution setting provides the baseline non-mutating contract when plan mode is disabled.",
+			"- read runtime mode provides the baseline non-mutating contract when plan mode is disabled.",
 			"- the saved agent profile may still explicitly enable or disable tools beyond that baseline.",
 			"- do not assume bash, write, or edit access unless those tools are present in the resolved tool list.",
 		)
 	case pebblestore.AgentExecutionSettingReadWrite:
 		lines = append(lines,
-			"- readwrite execution setting provides the baseline mutable contract when plan mode is disabled.",
+			"- readwrite runtime mode provides the baseline mutable contract when plan mode is disabled.",
 			"- the saved agent profile may still explicitly disable tools or add scoped tools beyond that baseline.",
 			"- do not assume bash access unless bash is present in the resolved tool list.",
 		)
-	default:
-		if exitPlanModeEnabled {
-			lines = append(lines,
-				"- tool availability is determined by plan mode until exit_plan_mode switches the session to auto.",
-				"- read/readwrite execution capability requests are overridden while plan mode is enabled.",
-			)
-		} else {
-			lines = append(lines,
-				"- no static execution setting is configured for this agent.",
-				"- with plan mode disabled, runs will fail until execution_setting is set to read or readwrite.",
-			)
-		}
 	}
 	if exitPlanModeEnabled {
 		lines = append(lines,
@@ -546,7 +553,7 @@ func modeCapabilityInstructions(mode string, bypassPermissions bool, agentProfil
 		}
 		if !exitPlanModeEnabled && hasExecutionSetting {
 			lines = append(lines,
-				"With plan mode disabled, the backend uses the execution setting as the effective runtime mode.",
+				"With plan mode disabled, the backend uses runtime_mode as the effective runtime contract.",
 			)
 		}
 	}

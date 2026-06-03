@@ -423,6 +423,7 @@ type AgentProfile struct {
 	Model               string             `json:"model"`
 	Thinking            string             `json:"thinking"`
 	Prompt              string             `json:"prompt"`
+	RuntimeMode         string             `json:"runtime_mode,omitempty"`
 	ExecutionSetting    string             `json:"execution_setting,omitempty"`
 	ExitPlanModeEnabled *bool              `json:"exit_plan_mode_enabled,omitempty"`
 	ToolScope           *AgentToolScope    `json:"tool_scope,omitempty"`
@@ -502,6 +503,7 @@ type AgentUpsertRequest struct {
 	Model               *string                     `json:"model,omitempty"`
 	Thinking            *string                     `json:"thinking,omitempty"`
 	Prompt              string                      `json:"prompt,omitempty"`
+	RuntimeMode         string                      `json:"runtime_mode,omitempty"`
 	ExecutionSetting    string                      `json:"execution_setting,omitempty"`
 	ExitPlanModeEnabled *bool                       `json:"exit_plan_mode_enabled,omitempty"`
 	ToolScope           *AgentToolScope             `json:"tool_scope,omitempty"`
@@ -2035,6 +2037,7 @@ func (c *API) UpsertAgent(ctx context.Context, req AgentUpsertRequest) (AgentPro
 		"mode":                   strings.TrimSpace(req.Mode),
 		"description":            strings.TrimSpace(req.Description),
 		"prompt":                 req.Prompt,
+		"runtime_mode":           strings.TrimSpace(req.RuntimeMode),
 		"execution_setting":      strings.TrimSpace(req.ExecutionSetting),
 		"exit_plan_mode_enabled": req.ExitPlanModeEnabled,
 		"tool_contract":          toolContract,

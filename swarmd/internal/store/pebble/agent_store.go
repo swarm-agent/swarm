@@ -9,8 +9,12 @@ import (
 )
 
 const (
-	AgentExecutionSettingRead      = "read"
-	AgentExecutionSettingReadWrite = "readwrite"
+	AgentRuntimeModePlanAuto  = "plan_auto"
+	AgentRuntimeModeRead      = "read"
+	AgentRuntimeModeReadWrite = "readwrite"
+
+	AgentExecutionSettingRead      = AgentRuntimeModeRead
+	AgentExecutionSettingReadWrite = AgentRuntimeModeReadWrite
 
 	AgentCustomToolKindFixedBash = "fixed_bash"
 )
@@ -42,6 +46,7 @@ type AgentProfile struct {
 	Model               string             `json:"model"`
 	Thinking            string             `json:"thinking"`
 	Prompt              string             `json:"prompt"`
+	RuntimeMode         string             `json:"runtime_mode,omitempty"`
 	ExecutionSetting    string             `json:"execution_setting,omitempty"`
 	ExitPlanModeEnabled *bool              `json:"exit_plan_mode_enabled,omitempty"`
 	ToolScope           *AgentToolScope    `json:"tool_scope,omitempty"`
@@ -71,11 +76,24 @@ func CloneBoolPtr(value *bool) *bool {
 	return BoolPtr(*value)
 }
 
-func NormalizeAgentExecutionSetting(value string) string {
+func NormalizeAgentRuntimeMode(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case AgentExecutionSettingRead:
+	case AgentRuntimeModePlanAuto, "plan-auto", "plan -> auto", "plan - auto", "plan -auto", "planauto", "auto":
+		return AgentRuntimeModePlanAuto
+	case AgentRuntimeModeRead:
+		return AgentRuntimeModeRead
+	case AgentRuntimeModeReadWrite, "read_write", "read-write":
+		return AgentRuntimeModeReadWrite
+	default:
+		return ""
+	}
+}
+
+func NormalizeAgentExecutionSetting(value string) string {
+	switch NormalizeAgentRuntimeMode(value) {
+	case AgentRuntimeModeRead:
 		return AgentExecutionSettingRead
-	case AgentExecutionSettingReadWrite, "read_write", "read-write":
+	case AgentRuntimeModeReadWrite:
 		return AgentExecutionSettingReadWrite
 	default:
 		return ""
@@ -210,6 +228,93 @@ func AgentExecutionSetting(profile AgentProfile) (string, bool) {
 	return setting, setting != ""
 }
 
+func AgentProfileRuntimeMode(profile AgentProfile) string {
+	if mode := NormalizeAgentRuntimeMode(profile.RuntimeMode); mode != "" {
+		return mode
+	}
+	if AgentExitPlanModeEnabled(profile) {
+		return AgentRuntimeModePlanAuto
+	}
+	if setting, ok := AgentExecutionSetting(profile); ok {
+		return setting
+	}
+	return AgentRuntimeModeForToolContract(profile.ToolContract)
+}
+
+func AgentRuntimeModeForToolContract(contract *AgentToolContract) string {
+	return AgentRuntimeModeForToolContractWithDefault(contract, true)
+}
+
+func AgentRuntimeModeForToolContractWithDefault(contract *AgentToolContract, defaultRead bool) string {
+	contract = NormalizeAgentToolContract(contract)
+	if contract == nil {
+		return ""
+	}
+	if agentToolContractEnablesMutatingTools(contract) {
+		return AgentRuntimeModeReadWrite
+	}
+	if defaultRead {
+		return AgentRuntimeModeRead
+	}
+	return ""
+}
+
+func agentToolContractEnablesMutatingTools(contract *AgentToolContract) bool {
+	if contract == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(contract.Preset)) {
+	case "read_write", "bash_git_only", "background_commit":
+		return true
+	}
+	readOnlyTools := map[string]struct{}{
+		"ask_user":            {},
+		"exit_plan_mode":      {},
+		"list":                {},
+		"manage_agent":        {},
+		"manage_flow":         {},
+		"manage_integrations": {},
+		"manage_skill":        {},
+		"manage_theme":        {},
+		"manage_todos":        {},
+		"manage_worktree":     {},
+		"plan_manage":         {},
+		"read":                {},
+		"search":              {},
+		"skill_use":           {},
+		"webfetch":            {},
+		"websearch":           {},
+	}
+	mutatingTools := map[string]struct{}{
+		"bash":       {},
+		"edit":       {},
+		"git_add":    {},
+		"git_commit": {},
+		"task":       {},
+		"write":      {},
+	}
+	for rawName, cfg := range contract.Tools {
+		name := normalizeAgentToolScopeKey(rawName)
+		if name == "" {
+			continue
+		}
+		enabled := cfg.Enabled != nil && *cfg.Enabled
+		if len(cfg.BashPrefixes) > 0 {
+			enabled = true
+		}
+		if !enabled {
+			continue
+		}
+		if _, ok := mutatingTools[name]; ok {
+			return true
+		}
+		if _, ok := readOnlyTools[name]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
 func NormalizeAgentProfile(profile AgentProfile) AgentProfile {
 	profile.Name = strings.TrimSpace(profile.Name)
 	profile.Mode = strings.ToLower(strings.TrimSpace(profile.Mode))
@@ -218,6 +323,7 @@ func NormalizeAgentProfile(profile AgentProfile) AgentProfile {
 	profile.Model = strings.TrimSpace(profile.Model)
 	profile.Thinking = strings.ToLower(strings.TrimSpace(profile.Thinking))
 	profile.Prompt = strings.TrimSpace(profile.Prompt)
+	profile.RuntimeMode = NormalizeAgentRuntimeMode(profile.RuntimeMode)
 	profile.ExecutionSetting = NormalizeAgentExecutionSetting(profile.ExecutionSetting)
 	profile.ToolScope = NormalizeAgentToolScope(profile.ToolScope)
 	profile.ToolContract = NormalizeAgentToolContract(profile.ToolContract)
@@ -227,8 +333,28 @@ func NormalizeAgentProfile(profile AgentProfile) AgentProfile {
 	} else {
 		profile.ExitPlanModeEnabled = CloneBoolPtr(profile.ExitPlanModeEnabled)
 	}
-	if AgentExitPlanModeEnabled(profile) {
+	runtimeMode := AgentProfileRuntimeMode(profile)
+	if toolRuntimeMode := AgentRuntimeModeForToolContract(profile.ToolContract); toolRuntimeMode != "" && runtimeMode == "" {
+		runtimeMode = toolRuntimeMode
+	}
+	switch runtimeMode {
+	case AgentRuntimeModePlanAuto:
+		profile.RuntimeMode = AgentRuntimeModePlanAuto
+		profile.ExitPlanModeEnabled = BoolPtr(true)
 		profile.ExecutionSetting = ""
+	case AgentRuntimeModeRead, AgentRuntimeModeReadWrite:
+		profile.RuntimeMode = runtimeMode
+		profile.ExitPlanModeEnabled = BoolPtr(false)
+		profile.ExecutionSetting = runtimeMode
+	default:
+		if profile.ExitPlanModeEnabled != nil && !AgentExitPlanModeEnabled(profile) {
+			profile.RuntimeMode = ""
+			profile.ExecutionSetting = ""
+		} else {
+			profile.RuntimeMode = AgentRuntimeModePlanAuto
+			profile.ExitPlanModeEnabled = BoolPtr(true)
+			profile.ExecutionSetting = ""
+		}
 	}
 	profile.Protected = strings.EqualFold(profile.Name, "memory")
 	return profile

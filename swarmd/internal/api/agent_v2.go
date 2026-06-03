@@ -437,6 +437,7 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			Model               *string                                 `json:"model"`
 			Thinking            *string                                 `json:"thinking"`
 			Prompt              string                                  `json:"prompt"`
+			RuntimeMode         string                                  `json:"runtime_mode"`
 			ExecutionSetting    string                                  `json:"execution_setting"`
 			ExitPlanModeEnabled *bool                                   `json:"exit_plan_mode_enabled"`
 			ToolContract        *pebblestore.AgentToolContract          `json:"tool_contract"`
@@ -480,6 +481,7 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			ModelSet:            req.Model != nil,
 			ThinkingSet:         req.Thinking != nil,
 			Prompt:              req.Prompt,
+			RuntimeMode:         req.RuntimeMode,
 			ExecutionSetting:    req.ExecutionSetting,
 			ExitPlanModeEnabled: req.ExitPlanModeEnabled,
 			ToolContract:        req.ToolContract,

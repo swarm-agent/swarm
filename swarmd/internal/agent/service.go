@@ -94,6 +94,7 @@ type UpsertInput struct {
 	ModelSet            bool                           `json:"-"`
 	ThinkingSet         bool                           `json:"-"`
 	Prompt              string                         `json:"prompt"`
+	RuntimeMode         string                         `json:"runtime_mode"`
 	ExecutionSetting    string                         `json:"execution_setting"`
 	ExitPlanModeEnabled *bool                          `json:"exit_plan_mode_enabled"`
 	ToolScope           *pebblestore.AgentToolScope    `json:"tool_scope"`
@@ -271,7 +272,7 @@ func shouldReconcileBuiltInMemory(profile pebblestore.AgentProfile) bool {
 	if profile.Mode != ModeSubagent || !profile.Enabled {
 		return true
 	}
-	if pebblestore.NormalizeAgentExecutionSetting(profile.ExecutionSetting) != pebblestore.AgentExecutionSettingRead {
+	if pebblestore.AgentProfileRuntimeMode(profile) != pebblestore.AgentRuntimeModeReadWrite {
 		return true
 	}
 	if profile.ToolContract == nil || strings.TrimSpace(profile.ToolContract.Preset) != "background_commit" {
@@ -296,7 +297,8 @@ func reconcileBuiltInMemory(profile pebblestore.AgentProfile, now int64) pebbles
 	profile.Name = "memory"
 	profile.Mode = ModeSubagent
 	profile.Description = "Durable artifacts and commits"
-	profile.ExecutionSetting = pebblestore.AgentExecutionSettingRead
+	profile.RuntimeMode = pebblestore.AgentRuntimeModeReadWrite
+	profile.ExecutionSetting = pebblestore.AgentExecutionSettingReadWrite
 	profile.ExitPlanModeEnabled = pebblestore.BoolPtr(false)
 	profile.ToolContract = defaultMemoryToolContract()
 	profile.Enabled = true
@@ -807,6 +809,9 @@ func (s *Service) assignCustomToolForAccount(accountScopeID, agentName, toolName
 	}
 	contract.Tools[toolName] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(true)}
 	profile.ToolContract = pebblestore.NormalizeAgentToolContract(contract)
+	if runtimeMode := pebblestore.AgentRuntimeModeForToolContract(profile.ToolContract); runtimeMode == pebblestore.AgentRuntimeModeReadWrite && runtimeMode != pebblestore.AgentProfileRuntimeMode(profile) {
+		return pebblestore.AgentProfile{}, 0, nil, fmt.Errorf("custom tool %q requires runtime_mode=%s", toolName, runtimeMode)
+	}
 	profile.UpdatedAt = time.Now().UnixMilli()
 	if err := s.putProfileForAccountLocked(accountScopeID, profile); err != nil {
 		return pebblestore.AgentProfile{}, 0, nil, err
@@ -968,6 +973,9 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 		if strings.TrimSpace(profile.Prompt) == "" {
 			profile.Prompt = existing.Prompt
 		}
+		if strings.TrimSpace(profile.RuntimeMode) == "" {
+			profile.RuntimeMode = existing.RuntimeMode
+		}
 		if strings.TrimSpace(profile.ExecutionSetting) == "" {
 			profile.ExecutionSetting = existing.ExecutionSetting
 		}
@@ -992,6 +1000,10 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 			profile.Model = ""
 			profile.Thinking = ""
 		}
+	}
+	profile, err = finalizeRuntimeProfile(profile, input, ok)
+	if err != nil {
+		return pebblestore.AgentProfile{}, 0, nil, err
 	}
 	profile = pebblestore.NormalizeAgentProfile(profile)
 	profile.UpdatedAt = time.Now().UnixMilli()
@@ -1421,6 +1433,9 @@ func (s *Service) previewUpsertForAccount(accountScopeID string, input UpsertInp
 		if strings.TrimSpace(profile.Prompt) == "" {
 			profile.Prompt = before.Prompt
 		}
+		if strings.TrimSpace(profile.RuntimeMode) == "" {
+			profile.RuntimeMode = before.RuntimeMode
+		}
 		if strings.TrimSpace(profile.ExecutionSetting) == "" {
 			profile.ExecutionSetting = before.ExecutionSetting
 		}
@@ -1446,6 +1461,10 @@ func (s *Service) previewUpsertForAccount(accountScopeID string, input UpsertInp
 		profile.Provider = ""
 		profile.Model = ""
 		profile.Thinking = ""
+	}
+	profile, err = finalizeRuntimeProfile(profile, input, ok)
+	if err != nil {
+		return PreviewUpsertResult{}, err
 	}
 	profile = pebblestore.NormalizeAgentProfile(profile)
 	result := PreviewUpsertResult{After: profile, Exists: ok}
@@ -1742,6 +1761,7 @@ func defaultProfiles(now int64) []pebblestore.AgentProfile {
 		{
 			Name:                "swarm",
 			Mode:                ModePrimary,
+			RuntimeMode:         pebblestore.AgentRuntimeModePlanAuto,
 			Description:         "Primary orchestrator",
 			Provider:            "",
 			Model:               "",
@@ -1762,6 +1782,7 @@ func defaultProfiles(now int64) []pebblestore.AgentProfile {
 			Mode:             ModeSubagent,
 			Description:      "Repository explorer",
 			Provider:         "",
+			RuntimeMode:      pebblestore.AgentRuntimeModeRead,
 			ExecutionSetting: pebblestore.AgentExecutionSettingRead,
 			Prompt: strings.TrimSpace("" +
 				"You are Explorer, a subagent focused on repository inspection and evidence collection.\n" +
@@ -1775,7 +1796,8 @@ func defaultProfiles(now int64) []pebblestore.AgentProfile {
 			Mode:                ModeSubagent,
 			Description:         "Durable artifacts and commits",
 			Provider:            "",
-			ExecutionSetting:    pebblestore.AgentExecutionSettingRead,
+			RuntimeMode:         pebblestore.AgentRuntimeModeReadWrite,
+			ExecutionSetting:    pebblestore.AgentExecutionSettingReadWrite,
 			ExitPlanModeEnabled: pebblestore.BoolPtr(false),
 			Prompt:              defaultMemoryPrompt(),
 			ToolContract:        defaultMemoryToolContract(),
@@ -1787,6 +1809,7 @@ func defaultProfiles(now int64) []pebblestore.AgentProfile {
 			Mode:             ModeSubagent,
 			Description:      "Creative worker",
 			Provider:         "",
+			RuntimeMode:      pebblestore.AgentRuntimeModeReadWrite,
 			ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite,
 			Prompt: strings.TrimSpace("" +
 				"You are Parallel, a creative execution subagent.\n" +
@@ -1799,6 +1822,7 @@ func defaultProfiles(now int64) []pebblestore.AgentProfile {
 			Mode:             ModeSubagent,
 			Description:      "Swarm clone",
 			Provider:         "",
+			RuntimeMode:      pebblestore.AgentRuntimeModeReadWrite,
 			ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite,
 			Prompt: strings.TrimSpace("" +
 				"You are Clone, a fast implementation subagent mirroring Swarm behavior.\n" +
@@ -1832,6 +1856,55 @@ func defaultProfileByName(name string, now int64) (pebblestore.AgentProfile, boo
 	return pebblestore.AgentProfile{}, false
 }
 
+func finalizeRuntimeProfile(profile pebblestore.AgentProfile, input UpsertInput, existing bool) (pebblestore.AgentProfile, error) {
+	requestedRuntimeMode := pebblestore.NormalizeAgentRuntimeMode(input.RuntimeMode)
+	runtimeMode := pebblestore.NormalizeAgentRuntimeMode(profile.RuntimeMode)
+	executionSetting := pebblestore.NormalizeAgentExecutionSetting(profile.ExecutionSetting)
+	if requestedExecutionSetting := pebblestore.NormalizeAgentExecutionSetting(input.ExecutionSetting); requestedExecutionSetting != "" {
+		executionSetting = requestedExecutionSetting
+	}
+	exitPlanModeEnabled := pebblestore.AgentExitPlanModeEnabled(profile)
+	toolRuntimeMode := pebblestore.AgentRuntimeModeForToolContractWithDefault(profile.ToolContract, !existing)
+
+	if requestedRuntimeMode != "" {
+		runtimeMode = requestedRuntimeMode
+	}
+	if runtimeMode == "" && !existing {
+		runtimeMode = pebblestore.AgentRuntimeModeForToolContractWithDefault(profile.ToolContract, true)
+	}
+	if runtimeMode == "" && !existing {
+		runtimeMode = pebblestore.AgentRuntimeModeRead
+	}
+	if runtimeMode == "" {
+		return profile, errors.New("agent runtime_mode is required")
+	}
+	if runtimeMode == pebblestore.AgentRuntimeModePlanAuto {
+		if input.ExitPlanModeEnabled != nil && !*input.ExitPlanModeEnabled {
+			return profile, errors.New("agent runtime_mode=plan_auto contradicts exit_plan_mode_enabled=false")
+		}
+		if strings.TrimSpace(input.ExecutionSetting) != "" {
+			return profile, errors.New("agent runtime_mode=plan_auto cannot include execution_setting")
+		}
+		profile.RuntimeMode = pebblestore.AgentRuntimeModePlanAuto
+		profile.ExitPlanModeEnabled = pebblestore.BoolPtr(true)
+		profile.ExecutionSetting = ""
+		return profile, nil
+	}
+	if exitPlanModeEnabled {
+		return profile, errors.New("agent direct runtime cannot have exit_plan_mode_enabled=true; use runtime_mode=plan_auto")
+	}
+	if executionSetting != "" && executionSetting != runtimeMode {
+		return profile, fmt.Errorf("agent runtime_mode=%s contradicts execution_setting=%s", runtimeMode, executionSetting)
+	}
+	if toolRuntimeMode != "" && toolRuntimeMode != runtimeMode && requestedRuntimeMode == "" && strings.TrimSpace(input.ExecutionSetting) == "" && !existing {
+		runtimeMode = toolRuntimeMode
+	}
+	profile.RuntimeMode = runtimeMode
+	profile.ExitPlanModeEnabled = pebblestore.BoolPtr(false)
+	profile.ExecutionSetting = runtimeMode
+	return profile, nil
+}
+
 func normalizeUpsertInput(input UpsertInput) (pebblestore.AgentProfile, error) {
 	name := normalizeName(input.Name)
 	if name == "" {
@@ -1843,6 +1916,10 @@ func normalizeUpsertInput(input UpsertInput) (pebblestore.AgentProfile, error) {
 	}
 	if mode != ModePrimary && mode != ModeSubagent && mode != ModeBackground {
 		return pebblestore.AgentProfile{}, fmt.Errorf("invalid mode %q", input.Mode)
+	}
+	runtimeMode := pebblestore.NormalizeAgentRuntimeMode(input.RuntimeMode)
+	if strings.TrimSpace(input.RuntimeMode) != "" && runtimeMode == "" {
+		return pebblestore.AgentProfile{}, fmt.Errorf("invalid runtime_mode %q", input.RuntimeMode)
 	}
 	executionSetting := pebblestore.NormalizeAgentExecutionSetting(input.ExecutionSetting)
 	if strings.TrimSpace(input.ExecutionSetting) != "" && executionSetting == "" {
@@ -1862,6 +1939,7 @@ func normalizeUpsertInput(input UpsertInput) (pebblestore.AgentProfile, error) {
 		Model:               strings.TrimSpace(input.Model),
 		Thinking:            strings.ToLower(strings.TrimSpace(input.Thinking)),
 		Prompt:              strings.TrimSpace(input.Prompt),
+		RuntimeMode:         runtimeMode,
 		ExecutionSetting:    executionSetting,
 		ExitPlanModeEnabled: pebblestore.CloneBoolPtr(input.ExitPlanModeEnabled),
 		ToolScope:           toolScope,

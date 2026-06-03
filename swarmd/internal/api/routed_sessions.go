@@ -1417,12 +1417,12 @@ func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest,
 		agentName = "swarm"
 	}
 	if !pebblestore.AgentExitPlanModeEnabled(profile) {
-		setting, ok := pebblestore.AgentExecutionSetting(profile)
-		if !ok {
-			return pebblestore.SessionSnapshot{}, nil, "", "", errors.New(agentName + " has plan mode disabled but no execution_setting is configured")
+		setting := pebblestore.AgentProfileRuntimeMode(profile)
+		if setting == "" || setting == pebblestore.AgentRuntimeModePlanAuto {
+			return pebblestore.SessionSnapshot{}, nil, "", "", errors.New(agentName + " has plan mode disabled but no runtime_mode is configured")
 		}
 		if sessionruntime.NormalizeMode(req.Mode) != setting {
-			modeWarning = "agent " + strconv.Quote(agentName) + " has plan mode disabled; ignoring requested session mode " + strconv.Quote(sessionruntime.NormalizeMode(req.Mode)) + " and using execution setting " + strconv.Quote(setting)
+			modeWarning = "agent " + strconv.Quote(agentName) + " has plan mode disabled; ignoring requested session mode " + strconv.Quote(sessionruntime.NormalizeMode(req.Mode)) + " and using runtime mode " + strconv.Quote(setting)
 		}
 		createOptions.Mode = setting
 	}

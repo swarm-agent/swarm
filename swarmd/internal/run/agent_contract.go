@@ -166,7 +166,7 @@ func (s *Service) resolveAgentToolContractForAccount(accountScopeID string, prof
 	}
 
 	resolved := ResolvedAgentToolContract{
-		RuntimeMode: contractRuntimeMode(profile),
+		RuntimeMode: pebblestore.AgentProfileRuntimeMode(profile),
 		Tools:       make(map[string]ResolvedAgentTool, len(knownTools)),
 	}
 	for name := range knownTools {
@@ -283,16 +283,6 @@ func (s *Service) resolveAgentToolContractForAccount(accountScopeID string, prof
 		disabled = nil
 	}
 	return resolved, &compiled, disabled, nil
-}
-
-func contractRuntimeMode(profile pebblestore.AgentProfile) string {
-	if pebblestore.AgentExitPlanModeEnabled(profile) {
-		return "plan_auto"
-	}
-	if setting, ok := pebblestore.AgentExecutionSetting(profile); ok {
-		return setting
-	}
-	return "unset"
 }
 
 func applyExecutionSettingBaseline(target map[string]ResolvedAgentTool, setting string) {

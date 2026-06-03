@@ -561,6 +561,7 @@ function flowAgentFromContent(content: Record<string, unknown>): FlowAgentProfil
     model: '',
     thinking: '',
     prompt: '',
+    runtimeMode: '',
     executionSetting: '',
     exitPlanModeEnabled: false,
     toolScope: null,

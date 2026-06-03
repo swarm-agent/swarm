@@ -2994,17 +2994,17 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			requestedMode := sessionruntime.NormalizeMode(req.Mode)
 			modeWarning := ""
 			if !pebblestore.AgentExitPlanModeEnabled(profile) {
-				setting, ok := pebblestore.AgentExecutionSetting(profile)
-				if !ok {
+				setting := pebblestore.AgentProfileRuntimeMode(profile)
+				if setting == "" || setting == pebblestore.AgentRuntimeModePlanAuto {
 					agentName := strings.TrimSpace(profile.Name)
 					if agentName == "" {
 						agentName = "active primary agent"
 					}
-					writeError(w, http.StatusBadRequest, fmt.Errorf("%s has plan mode disabled but no execution_setting is configured", agentName))
+					writeError(w, http.StatusBadRequest, fmt.Errorf("%s has plan mode disabled but no runtime_mode is configured", agentName))
 					return
 				}
 				if requestedMode != setting {
-					modeWarning = fmt.Sprintf("active primary agent %q has plan mode disabled; ignoring requested session mode %q and using execution setting %q", strings.TrimSpace(profile.Name), requestedMode, setting)
+					modeWarning = fmt.Sprintf("active primary agent %q has plan mode disabled; ignoring requested session mode %q and using runtime mode %q", strings.TrimSpace(profile.Name), requestedMode, setting)
 				}
 				req.Mode = setting
 			}

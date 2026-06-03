@@ -880,7 +880,8 @@ func (r *Runtime) Definitions() []Definition {
 									"model":                  map[string]any{"type": "string"},
 									"thinking":               map[string]any{"type": "string"},
 									"prompt":                 map[string]any{"type": "string"},
-									"execution_setting":      map[string]any{"type": "string", "description": "read|readwrite"},
+									"runtime_mode":           map[string]any{"type": "string", "description": "plan_auto|read|readwrite"},
+									"execution_setting":      map[string]any{"type": "string", "description": "legacy alias for read|readwrite direct runtime"},
 									"exit_plan_mode_enabled": map[string]any{"type": "boolean"},
 									"enabled":                map[string]any{"type": "boolean"},
 									"tool_scope":             manageAgentToolScopeSchema(),
@@ -6222,13 +6223,6 @@ func (r *Runtime) manageAgentUpsert(scope WorkspaceScope, args map[string]any, m
 	if err != nil {
 		return "", err
 	}
-	if aligned := manageAgentEffectiveExecutionSetting(preview.After); aligned != "" && !strings.EqualFold(strings.TrimSpace(aligned), strings.TrimSpace(preview.After.ExecutionSetting)) {
-		input.ExecutionSetting = aligned
-		preview, err = r.previewUpsertAgentForScope(scope, input)
-		if err != nil {
-			return "", err
-		}
-	}
 	if mustExist && !preview.Exists {
 		return "", fmt.Errorf("agent %q does not exist", preview.After.Name)
 	}
@@ -6884,6 +6878,7 @@ func manageAgentUpsertInputFromArgs(args map[string]any) (agentruntime.UpsertInp
 		Mode:             strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "mode"), manageAgentStringArg(content, "mode"))),
 		Description:      strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "description"), manageAgentStringArg(content, "description"))),
 		Prompt:           strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "prompt"), manageAgentStringArg(content, "prompt"))),
+		RuntimeMode:      strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "runtime_mode"), manageAgentStringArg(content, "runtime_mode"))),
 		ExecutionSetting: strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "execution_setting"), manageAgentStringArg(content, "execution_setting"))),
 	}
 	if value, ok := manageAgentValue(args, content, "provider"); ok {
@@ -7004,6 +6999,9 @@ func validateManageAgentMutationInput(input agentruntime.UpsertInput, mustExist 
 	if err := validateManageAgentMode(input.Mode, mustExist); err != nil {
 		return err
 	}
+	if err := validateManageAgentRuntimeMode(input.RuntimeMode); err != nil {
+		return err
+	}
 	if err := validateManageAgentExecutionSetting(input.ExecutionSetting); err != nil {
 		return err
 	}
@@ -7016,6 +7014,7 @@ func validateManageAgentMutationInput(input agentruntime.UpsertInput, mustExist 
 	hasMutation := strings.TrimSpace(input.Mode) != "" ||
 		strings.TrimSpace(input.Description) != "" ||
 		strings.TrimSpace(input.Prompt) != "" ||
+		strings.TrimSpace(input.RuntimeMode) != "" ||
 		strings.TrimSpace(input.ExecutionSetting) != "" ||
 		input.ProviderSet || input.ModelSet || input.ThinkingSet ||
 		input.ExitPlanModeEnabled != nil || input.ToolContract != nil || input.Enabled != nil
@@ -7023,7 +7022,7 @@ func validateManageAgentMutationInput(input agentruntime.UpsertInput, mustExist 
 		if !hasMutation {
 			return errors.New("manage-agent update requires at least one field to change")
 		}
-		return nil
+		return validateManageAgentRuntimeAliases(input)
 	}
 	if strings.TrimSpace(input.Mode) == "" {
 		return errors.New("manage-agent create requires content.mode")
@@ -7031,12 +7030,54 @@ func validateManageAgentMutationInput(input agentruntime.UpsertInput, mustExist 
 	if strings.TrimSpace(input.Prompt) == "" {
 		return errors.New("manage-agent create requires content.prompt")
 	}
-	exitPlanEnabled := input.ExitPlanModeEnabled != nil && *input.ExitPlanModeEnabled
-	if !exitPlanEnabled && strings.TrimSpace(input.ExecutionSetting) == "" {
-		return errors.New("manage-agent create requires content.execution_setting or content.exit_plan_mode_enabled=true")
+	runtimeMode := pebblestore.NormalizeAgentRuntimeMode(input.RuntimeMode)
+	if runtimeMode == "" && input.ExitPlanModeEnabled != nil && *input.ExitPlanModeEnabled {
+		runtimeMode = pebblestore.AgentRuntimeModePlanAuto
 	}
-	if !exitPlanEnabled && input.ToolContract == nil {
+	if runtimeMode == "" {
+		runtimeMode = pebblestore.NormalizeAgentExecutionSetting(input.ExecutionSetting)
+	}
+	if runtimeMode == "" {
+		runtimeMode = pebblestore.AgentRuntimeModeForToolContractWithDefault(input.ToolContract, true)
+	}
+	if runtimeMode == "" {
+		return errors.New("manage-agent create requires content.runtime_mode (plan_auto, read, or readwrite)")
+	}
+	if err := validateManageAgentRuntimeAliases(input); err != nil {
+		return err
+	}
+	if runtimeMode != pebblestore.AgentRuntimeModePlanAuto && input.ToolContract == nil {
 		return errors.New("manage-agent create requires content.tool_contract.preset; inspect tool_inventory.presets and choose the least-privilege bundle")
+	}
+	return nil
+}
+
+func validateManageAgentRuntimeAliases(input agentruntime.UpsertInput) error {
+	runtimeMode := pebblestore.NormalizeAgentRuntimeMode(input.RuntimeMode)
+	executionSetting := pebblestore.NormalizeAgentExecutionSetting(input.ExecutionSetting)
+	if runtimeMode == pebblestore.AgentRuntimeModePlanAuto && strings.TrimSpace(input.ExecutionSetting) != "" {
+		return errors.New("manage-agent runtime_mode=plan_auto cannot include execution_setting")
+	}
+	if runtimeMode != "" && runtimeMode != pebblestore.AgentRuntimeModePlanAuto && executionSetting != "" && executionSetting != runtimeMode {
+		return fmt.Errorf("manage-agent runtime_mode=%s contradicts execution_setting=%s", runtimeMode, executionSetting)
+	}
+	if input.ExitPlanModeEnabled != nil {
+		if *input.ExitPlanModeEnabled && runtimeMode != "" && runtimeMode != pebblestore.AgentRuntimeModePlanAuto {
+			return errors.New("manage-agent direct runtime cannot have exit_plan_mode_enabled=true; use runtime_mode=plan_auto")
+		}
+		if !*input.ExitPlanModeEnabled && runtimeMode == pebblestore.AgentRuntimeModePlanAuto {
+			return errors.New("manage-agent runtime_mode=plan_auto contradicts exit_plan_mode_enabled=false")
+		}
+	}
+	return nil
+}
+
+func validateManageAgentRuntimeMode(mode string) error {
+	if strings.TrimSpace(mode) == "" {
+		return nil
+	}
+	if pebblestore.NormalizeAgentRuntimeMode(mode) == "" {
+		return fmt.Errorf("manage-agent unsupported runtime_mode %q; use plan_auto, read, or readwrite", strings.TrimSpace(mode))
 	}
 	return nil
 }
@@ -7288,8 +7329,8 @@ func manageAgentToolContractFromValue(value any) (*pebblestore.AgentToolContract
 }
 
 func manageAgentEffectiveExecutionSetting(profile pebblestore.AgentProfile) string {
-	if pebblestore.AgentExitPlanModeEnabled(profile) {
-		return ""
+	if runtimeMode := pebblestore.AgentProfileRuntimeMode(profile); runtimeMode != "" {
+		return runtimeMode
 	}
 	baseline := pebblestore.NormalizeAgentExecutionSetting(profile.ExecutionSetting)
 	if profile.ToolContract == nil && profile.ToolScope == nil {
@@ -7367,6 +7408,7 @@ func manageAgentProfileMap(profile pebblestore.AgentProfile, activePrimary bool,
 		"model":                       strings.TrimSpace(profile.Model),
 		"thinking":                    strings.TrimSpace(profile.Thinking),
 		"prompt":                      strings.TrimSpace(profile.Prompt),
+		"runtime_mode":                pebblestore.AgentProfileRuntimeMode(profile),
 		"execution_setting":           strings.TrimSpace(profile.ExecutionSetting),
 		"effective_execution_setting": manageAgentEffectiveExecutionSetting(profile),
 		"exit_plan_mode_enabled":      pebblestore.AgentExitPlanModeEnabled(profile),

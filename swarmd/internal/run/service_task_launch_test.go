@@ -390,11 +390,11 @@ func TestBuildTaskLaunchPermissionPayloadIncludesResolvedToolSummary(t *testing.
 	if tools.Preset != "bash_git_only" {
 		t.Fatalf("preset = %q, want bash_git_only", tools.Preset)
 	}
-	if tools.RuntimeMode != pebblestore.AgentExecutionSettingRead {
-		t.Fatalf("runtime mode = %q, want read", tools.RuntimeMode)
+	if tools.RuntimeMode != pebblestore.AgentExecutionSettingReadWrite {
+		t.Fatalf("runtime mode = %q, want readwrite", tools.RuntimeMode)
 	}
-	if tools.EffectiveExecutionMode != pebblestore.AgentExecutionSettingRead {
-		t.Fatalf("effective execution mode = %q, want read", tools.EffectiveExecutionMode)
+	if tools.EffectiveExecutionMode != pebblestore.AgentExecutionSettingReadWrite {
+		t.Fatalf("effective execution mode = %q, want readwrite", tools.EffectiveExecutionMode)
 	}
 	for _, want := range []string{"read", "search", "list", "skill_use"} {
 		if !stringSliceContains(tools.AllowedTools, want) {
@@ -450,7 +450,8 @@ func newTaskLaunchPermissionTestService(t *testing.T) (*Service, string, func())
 		Provider:            "static",
 		Model:               "review-model",
 		Prompt:              "Review carefully.",
-		ExecutionSetting:    pebblestore.AgentExecutionSettingRead,
+		RuntimeMode:         pebblestore.AgentRuntimeModeReadWrite,
+		ExecutionSetting:    pebblestore.AgentExecutionSettingReadWrite,
 		ExitPlanModeEnabled: pebblestore.BoolPtr(false),
 		ToolContract: &pebblestore.AgentToolContract{
 			Preset: "bash_git_only",
@@ -467,6 +468,7 @@ func newTaskLaunchPermissionTestService(t *testing.T) (*Service, string, func())
 		Name:             "disabled-subagent",
 		Mode:             agentruntime.ModeSubagent,
 		Prompt:           "Disabled.",
+		RuntimeMode:      pebblestore.AgentRuntimeModeRead,
 		ExecutionSetting: pebblestore.AgentExecutionSettingRead,
 		Enabled:          pebblestore.BoolPtr(false),
 	}); err != nil {
@@ -550,6 +552,7 @@ func newTaskLaunchPermissionServiceWithPermissions(t *testing.T) (*Service, stri
 		Name:             "reviewer",
 		Mode:             agentruntime.ModeSubagent,
 		Prompt:           "Review carefully.",
+		RuntimeMode:      pebblestore.AgentRuntimeModeRead,
 		ExecutionSetting: pebblestore.AgentExecutionSettingRead,
 		Enabled:          pebblestore.BoolPtr(true),
 	}); err != nil {

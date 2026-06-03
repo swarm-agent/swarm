@@ -157,13 +157,16 @@ func (s *Service) resolveExecutionMode(requestMode string, agentProfile pebblest
 	if pebblestore.AgentExitPlanModeEnabled(agentProfile) {
 		return requestMode, "", nil
 	}
-	setting, ok := pebblestore.AgentExecutionSetting(agentProfile)
-	if !ok {
+	setting := pebblestore.AgentProfileRuntimeMode(agentProfile)
+	if setting == pebblestore.AgentRuntimeModePlanAuto {
+		return requestMode, "", nil
+	}
+	if setting == "" {
 		agentName := strings.TrimSpace(agentProfile.Name)
 		if agentName == "" {
 			agentName = "agent"
 		}
-		return "", "", fmt.Errorf("agent %q has plan mode disabled but no execution_setting is configured", agentName)
+		return "", "", fmt.Errorf("agent %q has plan mode disabled but no runtime_mode is configured", agentName)
 	}
 	warning := ""
 	if requestMode != setting {
@@ -171,7 +174,7 @@ func (s *Service) resolveExecutionMode(requestMode string, agentProfile pebblest
 		if agentName == "" {
 			agentName = "agent"
 		}
-		warning = fmt.Sprintf("agent %q has plan mode disabled; ignoring session mode %q and using execution setting %q", agentName, requestMode, setting)
+		warning = fmt.Sprintf("agent %q has plan mode disabled; ignoring session mode %q and using runtime mode %q", agentName, requestMode, setting)
 	}
 	return setting, warning, nil
 }
@@ -3824,6 +3827,13 @@ func (s *Service) mirrorHostedStreamEvent(ctx context.Context, event StreamEvent
 	if event.Type == StreamEventSessionLifecycle && event.Lifecycle != nil {
 		if err := s.sessions.StoreMirroredLifecycle(*event.Lifecycle); err != nil {
 			return fmt.Errorf("store hosted stream mirror lifecycle: %w", err)
+		}
+	}
+	if event.Type == StreamEventSessionTitle {
+		if title := strings.TrimSpace(event.Title); title != "" {
+			if _, err := s.sessions.StoreMirroredTitle(sessionID, title, time.Now().UnixMilli()); err != nil {
+				return fmt.Errorf("store hosted stream mirror title: %w", err)
+			}
 		}
 	}
 	descriptor, hosted := s.sessions.HostedDescriptor(session.Metadata)
