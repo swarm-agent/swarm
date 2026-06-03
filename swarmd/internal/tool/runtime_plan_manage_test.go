@@ -6,19 +6,7 @@ import (
 )
 
 func TestPlanManageDefinitionIncludesExplicitNewOverride(t *testing.T) {
-	rt := NewRuntime(1)
-	var definition Definition
-	found := false
-	for _, candidate := range rt.Definitions() {
-		if candidate.Name == "plan_manage" {
-			definition = candidate
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatal("plan_manage definition not found")
-	}
+	definition := mustFindDefinition(t, "plan_manage")
 	if definition.Description == "" {
 		t.Fatal("plan_manage description is empty")
 	}
@@ -44,11 +32,42 @@ func TestPlanManageDefinitionIncludesExplicitNewOverride(t *testing.T) {
 	if !containsAll(description, "action=new", "active plan", "replacement") {
 		t.Fatalf("override description %q does not explain intentional replacement", description)
 	}
-	for _, name := range []string{"patch", "operation", "section", "old_text", "new_text", "text", "checklist_item", "checked", "replace_all"} {
+	for _, name := range []string{"patch", "operation", "section", "old_text", "new_text", "text", "checklist_item", "checked", "replace_all", "document", "document_patch", "info", "checkpoint_order", "active_checkpoint_id"} {
 		if _, ok := params[name].(map[string]any); !ok {
 			t.Fatalf("%s property missing or wrong type: %T", name, params[name])
 		}
 	}
+}
+
+func TestExitPlanModeDefinitionAcceptsStructuredDocument(t *testing.T) {
+	definition := mustFindDefinition(t, "exit_plan_mode")
+	if !containsAll(definition.Description, "structured", "SessionPlanDocument", "document") {
+		t.Fatalf("exit_plan_mode description %q does not advertise structured document", definition.Description)
+	}
+	params, ok := definition.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties type = %T", definition.Parameters["properties"])
+	}
+	for _, name := range []string{"title", "plan", "document", "plan_id", "id"} {
+		if _, ok := params[name].(map[string]any); !ok {
+			t.Fatalf("%s property missing or wrong type: %T", name, params[name])
+		}
+	}
+	if required, ok := definition.Parameters["required"]; ok {
+		t.Fatalf("exit_plan_mode should not require markdown-only title/plan fields, got required=%#v", required)
+	}
+}
+
+func mustFindDefinition(t *testing.T, name string) Definition {
+	t.Helper()
+	rt := NewRuntime(1)
+	for _, candidate := range rt.Definitions() {
+		if candidate.Name == name {
+			return candidate
+		}
+	}
+	t.Fatalf("%s definition not found", name)
+	return Definition{}
 }
 
 func containsAll(value string, needles ...string) bool {

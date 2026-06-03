@@ -209,6 +209,7 @@ interface SessionPlanInfoWire {
   assumptions?: string[];
   open_questions?: string[];
   relevant_files?: string[];
+  success_criteria?: string[];
   validation_strategy?: string;
 }
 
@@ -527,10 +528,6 @@ function mapSessionCodexConfig(
   };
 }
 
-function mapStringArray(value: string[] | undefined): string[] {
-  return Array.isArray(value) ? value.map((item) => String(item).trim()).filter(Boolean) : [];
-}
-
 function mapSessionPlanDocument(
   document: SessionPlanDocumentWire | null | undefined,
 ): DesktopSessionPlanDocument | null {
@@ -552,6 +549,7 @@ function mapSessionPlanDocument(
       assumptions: mapStringArray(info.assumptions),
       openQuestions: mapStringArray(info.open_questions),
       relevantFiles: mapStringArray(info.relevant_files),
+      successCriteria: mapStringArray(info.success_criteria),
       validationStrategy: String(info.validation_strategy ?? "").trim(),
     },
     checkpoints: Array.isArray(document.checkpoints)
@@ -1902,8 +1900,9 @@ export async function saveSessionPlan(
   input: {
     id?: string;
     title?: string;
-    plan: string;
+    plan?: string;
     document?: unknown;
+    documentPatch?: unknown;
     status?: string;
     approvalState?: string;
   },
@@ -1921,6 +1920,7 @@ export async function saveSessionPlan(
         title: input.title?.trim() || undefined,
         plan: input.plan,
         document: input.document ?? undefined,
+        document_patch: input.documentPatch ?? undefined,
         status: input.status?.trim() || undefined,
         approval_state: input.approvalState?.trim() || undefined,
       }),

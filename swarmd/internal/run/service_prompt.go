@@ -15,7 +15,7 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 )
 
-const autoModePlanManageSaveSnippet = `{"action":"save","plan":"# Plan\n1. ...","update_summary":"what changed","update_scope":"phase or section"}`
+const autoModePlanManageSaveSnippet = `{"action":"save","document":{"info":{"goal":"..."},"checkpoints":[{"id":"cp-1","title":"...","status":"pending"}]},"update_summary":"what changed","update_scope":"phase or section"}`
 
 func masterHarnessPrompt(workspacePath string) string {
 	return masterHarnessPromptWithScope(tool.WorkspaceScope{
@@ -99,7 +99,7 @@ func masterHarnessPromptWithScope(scope tool.WorkspaceScope) string {
 		"- If the user is only making a suggestion or preference statement rather than an explicit change request, do not silently mutate settings; either note the suggestion as follow-up guidance or redirect them to the relevant settings surface.",
 		"- When you provide long commands, config snippets, file contents, or any text the user is likely to copy, wrap that exact payload in <copy>...</copy> tags. Use an optional label attribute like <copy label=\"restart command\">...</copy> when it helps the UI preview.",
 		"- Keep copy-tag payloads exact and free of explanatory prose; put context before or after the tagged block. Multiple <copy> blocks are allowed in one response.",
-		"- In plan mode, once the plan is actionable, submit it with exit_plan_mode for approval so the session can leave plan mode and continue execution; include any final plan updates directly in that exit_plan_mode call instead of doing a separate last-minute plan_manage save first.",
+		"- In plan mode, once the plan is actionable, submit it with exit_plan_mode for approval so the session can leave plan mode and continue execution; include the final structured document (info and checkpoints) directly in that exit_plan_mode call instead of doing a separate last-minute plan_manage save first.",
 		fmt.Sprintf("- In auto mode, never call exit_plan_mode. To update the active plan instead, use plan_manage with exactly: %s", autoModePlanManageSaveSnippet),
 		"Harness tool usage examples:",
 		"- search (single scope): {\"query\":\"modeCapabilityInstructions\",\"path\":\"swarmd/internal/run\",\"include\":\"*.go\"}",
@@ -117,7 +117,7 @@ func masterHarnessPromptWithScope(scope tool.WorkspaceScope) string {
 		"- manage_todos supports an atomic `batch` action with an `operations` payload for true bulk changes.",
 		"- manage_todos also supports `delete_done` for removing completed tasks in one call.",
 		fmt.Sprintf("- plan_manage (update active plan without switching modes): %s", autoModePlanManageSaveSnippet),
-		"- exit_plan_mode (submit final updated plan for approval and exit plan mode; include plan_id when reusing an active plan): {\"title\":\"Plan: tighten harness prompt\",\"plan_id\":\"plan_123\",\"plan\":\"# Plan\\n1. Update master prompt\\n2. Add harness examples\\n3. Clarify plan mode state transition\\n\\n## Relevant filepaths\\n- swarmd/internal/run/service.go\\n\\n## Open questions\\n- none\"}",
+		"- exit_plan_mode (submit final structured plan document for approval and exit plan mode; include plan_id when reusing an active plan): {\"title\":\"Plan: tighten harness prompt\",\"plan_id\":\"plan_123\",\"document\":{\"info\":{\"goal\":\"Tighten harness prompt\",\"relevant_files\":[\"swarmd/internal/run/service.go\"]},\"checkpoints\":[{\"id\":\"cp-1\",\"title\":\"Update prompt\",\"status\":\"pending\",\"tasks\":[\"Update master prompt\"]}]}}",
 		strings.Join(workspaceScopeLines, "\n"),
 		"Tool constraints:",
 		rootConstraint,
@@ -537,7 +537,7 @@ func modeCapabilityInstructions(mode string, bypassPermissions bool, agentProfil
 		)
 		if exitPlanModeEnabled {
 			lines = append(lines,
-				"Keep refining the plan with plan_manage as needed while staying in plan mode. For the final step, call exit_plan_mode once with the final updated title/body (and active plan_id when available); do not do a redundant plan_manage save immediately before exit_plan_mode just to submit the same plan. After approval, execution continues in auto on the same active plan/checklist, and plan_manage can still update it.",
+				"Keep refining the plan with plan_manage as needed while staying in plan mode. For the final step, call exit_plan_mode once with the final structured document (info/checkpoints) and active plan_id when available; do not do a redundant plan_manage save immediately before exit_plan_mode just to submit the same plan. After approval, execution continues in auto on the same active plan/checklist, and plan_manage can still update it.",
 				"Because the current session mode is plan, you may call exit_plan_mode when the plan is actionable even if earlier transcript text says the session already exited plan mode or that exit_plan_mode cannot be called from auto.",
 			)
 		}

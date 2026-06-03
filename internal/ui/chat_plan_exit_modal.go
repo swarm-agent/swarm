@@ -30,6 +30,8 @@ func (p *ChatPage) OpenExitPlanModeModal(title, body string) bool {
 	p.planExitBody = body
 	p.planExitPermission = ""
 	p.planExitPlanID = ""
+	p.planExitDocument = ""
+	p.planExitApprovedArgs = ""
 	p.planExitScroll = 0
 	p.planExitSelection = chatPlanExitSelectConfirm
 	p.planExitInput = ""
@@ -38,7 +40,7 @@ func (p *ChatPage) OpenExitPlanModeModal(title, body string) bool {
 	return true
 }
 
-func (p *ChatPage) OpenExitPlanModePermissionModal(permissionID, planID, title, body string) bool {
+func (p *ChatPage) OpenExitPlanModePermissionModal(permissionID, planID, title, body, documentText, approvedArguments string) bool {
 	title = strings.TrimSpace(title)
 	if title == "" {
 		title = "Exit Plan Mode"
@@ -52,6 +54,8 @@ func (p *ChatPage) OpenExitPlanModePermissionModal(permissionID, planID, title, 
 	p.planExitBody = body
 	p.planExitPermission = strings.TrimSpace(permissionID)
 	p.planExitPlanID = strings.TrimSpace(planID)
+	p.planExitDocument = strings.TrimSpace(documentText)
+	p.planExitApprovedArgs = strings.TrimSpace(approvedArguments)
 	p.planExitScroll = 0
 	p.planExitSelection = chatPlanExitSelectConfirm
 	p.planExitInput = ""
@@ -68,6 +72,8 @@ func (p *ChatPage) closePlanExitModal() {
 	p.planExitVisible = false
 	p.planExitPermission = ""
 	p.planExitPlanID = ""
+	p.planExitDocument = ""
+	p.planExitApprovedArgs = ""
 	p.planExitInput = ""
 	p.planExitScroll = 0
 	p.planExitSelection = chatPlanExitSelectConfirm
@@ -424,7 +430,15 @@ func (p *ChatPage) planExitModalLines(width int) []chatRenderLine {
 	lines = appendPlain(lines, "Approving this request switches the session from plan mode to auto mode.", p.theme.TextMuted)
 	lines = appendPlain(lines, "Execution can then proceed with normal tool permissions for auto mode.", p.theme.TextMuted)
 	lines = append(lines, chatRenderLine{Text: "", Style: styleForCurrentCellBackground(p.theme.Text)})
-	lines = appendPlain(lines, "Plan details:", p.theme.Secondary.Bold(true))
+	if document := strings.TrimSpace(p.planExitDocument); document != "" {
+		lines = appendPlain(lines, "Structured plan document:", p.theme.Secondary.Bold(true))
+		for _, row := range p.assistantMarkdownRows(document, p.theme.Text) {
+			lines = appendWrapped(lines, row)
+		}
+		lines = append(lines, chatRenderLine{Text: "", Style: styleForCurrentCellBackground(p.theme.Text)})
+	} else {
+		lines = appendPlain(lines, "Plan details:", p.theme.Secondary.Bold(true))
+	}
 
 	body := strings.TrimSpace(p.planExitBody)
 	if body == "" {
@@ -503,7 +517,7 @@ func (p *ChatPage) resolvePlanExitModal(approve bool) {
 	p.closePlanExitModal()
 	if permissionID != "" {
 		if approve {
-			p.queueResolvePermissionByID(permissionID, "approve", note)
+			p.queueResolvePermissionByID(permissionID, "approve", note, strings.TrimSpace(p.planExitApprovedArgs))
 			p.statusLine = "exit plan mode approved"
 		} else {
 			p.queueResolvePermissionByID(permissionID, "deny", note)
@@ -523,18 +537,20 @@ func isExitPlanPermission(record ChatPermissionRecord) bool {
 	return name == "exit_plan_mode"
 }
 
-func exitPlanPermissionPayload(record ChatPermissionRecord) (string, string, string) {
+func exitPlanPermissionPayload(record ChatPermissionRecord) (string, string, string, string, string) {
 	title := "Exit Plan Mode"
 	body := "Review and approve this plan to switch the session from plan mode to auto mode. Once approved, execution continues on the same active plan/checklist, and plan_manage can still update it later."
 	planID := ""
+	documentText := ""
+	approvedArguments := ""
 
 	raw := strings.TrimSpace(record.ToolArguments)
 	if raw == "" {
-		return title, body, planID
+		return title, body, planID, documentText, approvedArguments
 	}
 	var args map[string]any
 	if err := json.Unmarshal([]byte(raw), &args); err != nil {
-		return title, body, planID
+		return title, body, planID, documentText, approvedArguments
 	}
 	if value := mapStringArg(args, "title"); value != "" {
 		title = value
@@ -546,5 +562,13 @@ func exitPlanPermissionPayload(record ChatPermissionRecord) (string, string, str
 	if planID == "" {
 		planID = mapStringArg(args, "planID")
 	}
-	return title, body, planID
+	if document, ok := args["document"]; ok {
+		documentText = StructuredPlanDocumentTextFromValue(document)
+	}
+	if approved, ok := args["approved_arguments"]; ok {
+		if rawApproved, err := json.Marshal(approved); err == nil {
+			approvedArguments = string(rawApproved)
+		}
+	}
+	return title, body, planID, documentText, approvedArguments
 }

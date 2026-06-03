@@ -782,6 +782,7 @@ type SessionPlanInfo struct {
 	Assumptions        []string `json:"assumptions,omitempty"`
 	OpenQuestions      []string `json:"open_questions,omitempty"`
 	RelevantFiles      []string `json:"relevant_files,omitempty"`
+	SuccessCriteria    []string `json:"success_criteria,omitempty"`
 	ValidationStrategy string   `json:"validation_strategy,omitempty"`
 }
 
@@ -800,15 +801,32 @@ type SessionPlanCheckpoint struct {
 	Order              int      `json:"order,omitempty"`
 }
 
+type SessionPlanDocumentPatch struct {
+	Operation          string                     `json:"operation,omitempty"`
+	Info               *SessionPlanInfo           `json:"info,omitempty"`
+	Checkpoint         *SessionPlanCheckpoint     `json:"checkpoint,omitempty"`
+	CheckpointID       string                     `json:"checkpoint_id,omitempty"`
+	CheckpointOrder    []string                   `json:"checkpoint_order,omitempty"`
+	ActiveCheckpointID string                     `json:"active_checkpoint_id,omitempty"`
+	Status             string                     `json:"status,omitempty"`
+	Notes              string                     `json:"notes,omitempty"`
+	Report             string                     `json:"report,omitempty"`
+	Result             string                     `json:"result,omitempty"`
+	ChangedFiles       []string                   `json:"changed_files,omitempty"`
+	Validation         []string                   `json:"validation,omitempty"`
+	Operations         []SessionPlanDocumentPatch `json:"operations,omitempty"`
+}
+
 type SessionPlanUpsertRequest struct {
-	ID            string               `json:"id,omitempty"`
-	PlanID        string               `json:"plan_id,omitempty"`
-	Title         string               `json:"title,omitempty"`
-	Plan          string               `json:"plan,omitempty"`
-	Document      *SessionPlanDocument `json:"document,omitempty"`
-	Status        string               `json:"status,omitempty"`
-	ApprovalState string               `json:"approval_state,omitempty"`
-	Activate      *bool                `json:"activate,omitempty"`
+	ID            string                    `json:"id,omitempty"`
+	PlanID        string                    `json:"plan_id,omitempty"`
+	Title         string                    `json:"title,omitempty"`
+	Plan          string                    `json:"plan,omitempty"`
+	Document      *SessionPlanDocument      `json:"document,omitempty"`
+	DocumentPatch *SessionPlanDocumentPatch `json:"document_patch,omitempty"`
+	Status        string                    `json:"status,omitempty"`
+	ApprovalState string                    `json:"approval_state,omitempty"`
+	Activate      *bool                     `json:"activate,omitempty"`
 }
 
 type PermissionRecord struct {

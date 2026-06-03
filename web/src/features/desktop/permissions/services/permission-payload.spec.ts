@@ -3,6 +3,7 @@ import {
   parseAgentChangePermission,
   parseManageTodosPermission,
   parseManageFlowPermission,
+  parseExitPlanPermission,
   parsePlanUpdatePermission,
   buildPlanUpdateDiffPreview,
   parseTaskLaunchPermission,
@@ -327,6 +328,59 @@ function testPlanUpdateKindAndPayloadParsing(): void {
   assert(Object.keys(payload.approvedArguments).length === 0, 'expected no approved arguments by default')
 }
 
+function testPlanUpdateParsesStructuredDocument(): void {
+  const document = {
+    id: 'plan_123',
+    title: 'Structured Plan',
+    info: { goal: 'Ship structured UI' },
+    checkpoints: [
+      { id: 'cp-1', title: 'Model', status: 'done', order: 1 },
+      { id: 'cp-2', title: 'UI', status: 'pending', order: 2 },
+    ],
+    active_checkpoint_id: 'cp-2',
+  }
+  const permission = makePermission({
+    toolName: 'plan_manage',
+    requirement: 'plan_update',
+    toolArguments: JSON.stringify({
+      title: 'Structured Plan',
+      plan_id: 'plan_123',
+      document,
+      prior_document: { ...document, active_checkpoint_id: 'cp-1' },
+      approved_arguments: { action: 'save', plan_id: 'plan_123', document },
+    }),
+  })
+  const payload = parsePlanUpdatePermission(permission)
+  assert(Boolean(payload.document), 'expected structured document passthrough')
+  assert((payload.document as { id?: string }).id === 'plan_123', 'expected structured document id')
+  assert(Boolean(payload.priorDocument), 'expected prior structured document')
+  assert(((payload.approvedArguments.document as { id?: string })?.id ?? '') === 'plan_123', 'expected approved arguments to preserve document')
+}
+
+function testExitPlanParsesStructuredDocument(): void {
+  const document = {
+    id: 'plan_exit',
+    title: 'Exit Structured Plan',
+    info: { goal: 'Approve structured exit' },
+    checkpoints: [{ id: 'cp-1', title: 'Exit', status: 'pending', order: 1 }],
+  }
+  const permission = makePermission({
+    toolName: 'exit_plan_mode',
+    requirement: 'permission',
+    toolArguments: JSON.stringify({
+      title: 'Exit Structured Plan',
+      plan_id: 'plan_exit',
+      plan: '# fallback',
+      document,
+    }),
+  })
+  const payload = parseExitPlanPermission(permission)
+  assert(payload.planId === 'plan_exit', 'expected exit plan id')
+  assert(payload.body === '# fallback', 'expected fallback body')
+  assert(Boolean(payload.document), 'expected exit document passthrough')
+  assert((payload.document as { id?: string }).id === 'plan_exit', 'expected exit document id')
+}
+
 function testPlanUpdateDiffPreviewPreservesAllDiffRows(): void {
   const diffRows = [
     '  # Plan',
@@ -428,6 +482,8 @@ function main(): void {
   testManageTodosKindAndPayloadParsing()
   testManageFlowKindAndPayloadParsing()
   testPlanUpdateKindAndPayloadParsing()
+  testPlanUpdateParsesStructuredDocument()
+  testExitPlanParsesStructuredDocument()
   testPlanUpdateDiffPreviewPreservesAllDiffRows()
   testPlanUpdateDiffPreviewFallsBackToCompleteBeforeAfterRows()
   testGenericBashPermissionFormatsCommandAsCodeBlock()

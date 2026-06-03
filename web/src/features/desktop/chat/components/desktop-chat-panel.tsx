@@ -2127,6 +2127,7 @@ export function DesktopChatPanel({
             id: '',
             title: 'Current Plan',
             plan: '',
+            document: null,
             status: 'draft',
             approvalState: '',
             updatedAt: 0,
@@ -2432,7 +2433,7 @@ export function DesktopChatPanel({
     }
   }, [])
 
-  const handlePlanSave = useCallback(async (planText: string) => {
+  const handlePlanSave = useCallback(async (planText: string, document?: Record<string, unknown>) => {
     if (!sessionId) {
       setPlanModal((current) => ({ ...current, error: 'Session id is unavailable.' }))
       return
@@ -2445,6 +2446,7 @@ export function DesktopChatPanel({
         id: currentPlan?.id,
         title: (currentPlan?.title?.trim() || 'Current Plan'),
         plan: planText,
+        document,
         status: (currentPlan?.status?.trim() || 'draft'),
         approvalState: currentPlan?.approvalState,
       })

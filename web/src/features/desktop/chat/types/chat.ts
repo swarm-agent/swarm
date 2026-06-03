@@ -272,6 +272,7 @@ export interface DesktopSessionPlanInfo {
   assumptions: string[];
   openQuestions: string[];
   relevantFiles: string[];
+  successCriteria: string[];
   validationStrategy: string;
 }
 

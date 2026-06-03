@@ -7,6 +7,7 @@ import { Textarea } from '../../../../components/ui/textarea'
 import { cn } from '../../../../lib/cn'
 import { requestJson } from '../../../../app/api'
 import { ChatMarkdown } from '../../chat/components/chat-markdown'
+import { StructuredPlanDocumentView, normalizeStructuredPlanDocument } from '../../chat/components/structured-plan-document'
 import { getToolTheme } from '../../chat/services/tool-theme'
 import { AGENT_TOOL_PRESET_OPTIONS, CUSTOM_AGENT_TOOL_PRESET_ID } from '../../chat/services/agent-tool-presets'
 import type { ModelOptionRecord } from '../../chat/types/chat'
@@ -768,13 +769,14 @@ function ExitPlanModal({
   }
 
   const payload = parseExitPlanPermission(permission)
+  const structuredDocument = normalizeStructuredPlanDocument(payload.document)
 
   const handleCopy = async () => {
     try {
       if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) {
         throw new Error('Clipboard unavailable')
       }
-      await navigator.clipboard.writeText(payload.body)
+      await navigator.clipboard.writeText(structuredDocument ? JSON.stringify(payload.document, null, 2) : payload.body)
       setCopyState('copied')
     } catch {
       setCopyState('error')
@@ -784,7 +786,10 @@ function ExitPlanModal({
   const resolve = async (action: 'approve' | 'deny') => {
     setLoading(true)
     try {
-      await onResolve(action, note.trim())
+      const approvedArguments = action === 'approve' && structuredDocument
+        ? { plan_id: payload.planId || structuredDocument.id, title: payload.title || structuredDocument.title, plan: payload.body, document: payload.document }
+        : undefined
+      await onResolve(action, note.trim(), approvedArguments)
     } finally {
       setLoading(false)
     }
@@ -816,7 +821,7 @@ function ExitPlanModal({
       <div className="flex h-full min-h-0 flex-col gap-3 sm:gap-4">
         <section className="flex min-h-0 flex-1 flex-col gap-3">
           <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3">
-            <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Plan</span>
+            <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{structuredDocument ? 'Structured plan document' : 'Plan'}</span>
             <Button type="button" variant="outline" size="sm" className="min-h-8 px-2.5" onClick={() => void handleCopy()}>
               {copyState === 'copied' ? (
                 <Check className="size-4" />
@@ -829,7 +834,11 @@ function ExitPlanModal({
             </Button>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-            <ChatMarkdown content={payload.body} className="text-base leading-7" />
+            {structuredDocument ? (
+              <StructuredPlanDocumentView document={structuredDocument} compact />
+            ) : (
+              <ChatMarkdown content={payload.body} className="text-base leading-7" />
+            )}
           </div>
         </section>
       </div>
@@ -946,6 +955,8 @@ function PlanUpdateReview({
   updateScope,
   updateKind,
   checkpoint,
+  document,
+  priorDocument,
 }: {
   diffLines: string[]
   priorPlan: string
@@ -955,21 +966,25 @@ function PlanUpdateReview({
   updateScope: string
   updateKind: string
   checkpoint: boolean
+  document: unknown
+  priorDocument: unknown
 }) {
   const [selectedView, setSelectedView] = useState<PlanUpdateReviewView>('updated')
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
   const hasOverview =
     updateSummary.trim() !== '' || updateScope.trim() !== '' || updateKind.trim() !== '' || checkpoint
+  const structuredDocument = normalizeStructuredPlanDocument(document)
+  const structuredPriorDocument = normalizeStructuredPlanDocument(priorDocument)
   const viewOptions: Array<{ id: PlanUpdateReviewView; label: string }> = [
-    { id: 'updated', label: 'Updated plan' },
-    { id: 'previous', label: 'Previous plan' },
+    { id: 'updated', label: structuredDocument ? 'Updated document' : 'Updated plan' },
+    { id: 'previous', label: structuredPriorDocument ? 'Previous document' : 'Previous plan' },
     { id: 'diff', label: 'Diff' },
   ]
   const copyText = selectedView === 'previous'
-    ? priorPlan
+    ? (structuredPriorDocument ? JSON.stringify(priorDocument, null, 2) : priorPlan)
     : selectedView === 'diff'
       ? diffLines.join('\n')
-      : plan
+      : (structuredDocument ? JSON.stringify(document, null, 2) : plan)
 
   useEffect(() => {
     setCopyState('idle')
@@ -1044,14 +1059,20 @@ function PlanUpdateReview({
         </div>
       </section>
       {selectedView === 'previous' ? (
-        <PlanTextPanel
-          title={priorTitle ? `Previous plan: ${priorTitle}` : 'Previous plan'}
-          text={priorPlan}
-          emptyText="No previous plan text was provided."
-          tone="previous"
-        />
+        structuredPriorDocument ? (
+          <StructuredPlanDocumentView document={structuredPriorDocument} emptyText="No previous structured plan document was provided." compact />
+        ) : (
+          <PlanTextPanel
+            title={priorTitle ? `Previous plan: ${priorTitle}` : 'Previous plan'}
+            text={priorPlan}
+            emptyText="No previous plan text was provided."
+            tone="previous"
+          />
+        )
       ) : selectedView === 'diff' ? (
         <PlanUpdateFullDiff diffLines={diffLines} priorPlan={priorPlan} plan={plan} />
+      ) : structuredDocument ? (
+        <StructuredPlanDocumentView document={structuredDocument} emptyText="No updated structured plan document was provided." compact />
       ) : (
         <PlanTextPanel title="Updated plan" text={plan} emptyText="No updated plan text was provided." tone="updated" />
       )}
@@ -1142,6 +1163,8 @@ function PlanUpdateModal({
         updateScope={payload.updateScope}
         updateKind={payload.updateKind}
         checkpoint={payload.checkpoint}
+        document={payload.document}
+        priorDocument={payload.priorDocument}
       />
     </ModalShell>
   )

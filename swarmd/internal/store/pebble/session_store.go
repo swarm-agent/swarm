@@ -142,6 +142,7 @@ type SessionPlanInfo struct {
 	Assumptions        []string `json:"assumptions,omitempty"`
 	OpenQuestions      []string `json:"open_questions,omitempty"`
 	RelevantFiles      []string `json:"relevant_files,omitempty"`
+	SuccessCriteria    []string `json:"success_criteria,omitempty"`
 	ValidationStrategy string   `json:"validation_strategy,omitempty"`
 }
 

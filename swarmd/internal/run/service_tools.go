@@ -1195,9 +1195,41 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 	if arguments == "" {
 		arguments = "{}"
 	}
+	userMessage := ""
+	if approved := strings.TrimSpace(feedback); approved != "" {
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(approved), &payload); err != nil {
+			userMessage = normalizePermissionFeedback(approved)
+		} else {
+			if reason := normalizePermissionFeedback(mapString(payload, "reason")); reason != "" {
+				userMessage = reason
+			}
+			if rawApprovedArgs, ok := payload["approved_arguments"]; ok {
+				raw, err := json.Marshal(rawApprovedArgs)
+				if err != nil {
+					return "", err
+				}
+				var approvedArgs map[string]any
+				if err := json.Unmarshal(raw, &approvedArgs); err != nil {
+					return "", fmt.Errorf("approved exit_plan_mode arguments invalid: %w", err)
+				}
+				payload = approvedArgs
+			}
+			raw, err := json.Marshal(payload)
+			if err != nil {
+				return "", err
+			}
+			arguments = string(raw)
+		}
+	}
+
 	var args map[string]any
 	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
 		return "", fmt.Errorf("exit_plan_mode arguments invalid: %w", err)
+	}
+	document, err := planDocumentFromArgsForTool(args, "exit_plan_mode")
+	if err != nil {
+		return "", err
 	}
 	title := strings.TrimSpace(mapString(args, "title"))
 	plan := strings.TrimSpace(mapString(args, "plan"))
@@ -1208,10 +1240,18 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 	if planID == "" {
 		planID = strings.TrimSpace(mapString(args, "id"))
 	}
-
-	if title == "" || plan == "" {
-		return "", errors.New("exit_plan_mode requires title and plan")
+	if document != nil {
+		if planID == "" {
+			planID = strings.TrimSpace(document.ID)
+		}
+		if title == "" {
+			title = strings.TrimSpace(document.Title)
+		}
+		if plan == "" {
+			plan = strings.TrimSpace(firstNonEmptyString(document.DisplayText, document.RenderedText))
+		}
 	}
+
 	if s.sessions == nil {
 		return "", errors.New("session service is not configured")
 	}
@@ -1222,19 +1262,53 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 		}
 		if ok {
 			planID = strings.TrimSpace(active.ID)
+			if title == "" {
+				title = strings.TrimSpace(active.Title)
+			}
+			if plan == "" {
+				plan = strings.TrimSpace(active.Plan)
+			}
+			if document == nil {
+				document = active.Document
+			}
+		}
+	} else if existing, ok, err := s.sessions.GetPlan(sessionID, planID); err != nil {
+		return "", fmt.Errorf("exit_plan_mode failed to inspect plan: %w", err)
+	} else if ok {
+		if title == "" {
+			title = strings.TrimSpace(existing.Title)
+		}
+		if plan == "" {
+			plan = strings.TrimSpace(existing.Plan)
+		}
+		if document == nil {
+			document = existing.Document
 		}
 	}
 	if planID == "" {
 		planID = fmt.Sprintf("plan_%d", time.Now().UnixMilli())
 	}
+	if title == "" {
+		return "", errors.New("exit_plan_mode requires title or document.title")
+	}
+	if plan == "" && document == nil {
+		return "", errors.New("exit_plan_mode requires plan or document")
+	}
+	if plan == "" && document != nil {
+		plan = strings.TrimSpace(firstNonEmptyString(document.DisplayText, document.RenderedText))
+	}
+	if plan == "" {
+		plan = "# " + title
+	}
 
-	userMessage := normalizePermissionFeedback(feedback)
 	if !pebblestore.AgentExitPlanModeEnabled(agentProfile) {
 		payload := map[string]any{
 			"tool":              "exit_plan_mode",
 			"status":            "rejected",
 			"title":             title,
 			"plan_id":           planID,
+			"plan":              plan,
+			"document":          document,
 			"approval_state":    "disabled_for_agent",
 			"path_id":           "tool.exit-plan-mode.v3",
 			"summary":           "exit_plan_mode rejected: disabled for agent",
@@ -1247,31 +1321,18 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 		}
 		return string(raw), nil
 	}
-	status := "submitted"
-	approvalState := "pending_review"
-	if sessionruntime.NormalizeMode(sessionMode) != sessionruntime.ModePlan {
-		status = "rejected"
-		approvalState = "not_in_plan_mode"
-	} else {
-		status = "approved"
-		approvalState = "approved"
-	}
-	savedPlan, _, saveErr := s.sessions.SavePlan(sessionID, planID, title, plan, status, approvalState, true)
-	if saveErr != nil {
-		return "", fmt.Errorf("exit_plan_mode failed to save plan: %w", saveErr)
-	}
-	planID = strings.TrimSpace(savedPlan.ID)
-
 	if sessionruntime.NormalizeMode(sessionMode) != sessionruntime.ModePlan {
 		payload := map[string]any{
 			"tool":                    "exit_plan_mode",
 			"status":                  "rejected",
 			"plan_id":                 planID,
 			"title":                   title,
+			"plan":                    plan,
+			"document":                document,
 			"approval_state":          "not_in_plan_mode",
-			"requested_modifications": []string{"Do not call exit_plan_mode from auto. To update the active plan instead, use plan_manage with exactly: {\"action\":\"save\",\"plan\":\"# Plan\\n1. ...\"}. Only call exit_plan_mode when leaving plan mode."},
+			"requested_modifications": []string{"Do not call exit_plan_mode from auto. To update the active plan instead, use plan_manage save."},
 			"path_id":                 "tool.exit-plan-mode.v3",
-			"summary":                 "plan saved but exit_plan_mode rejected: session not in plan mode; use plan_manage save to update the active plan instead",
+			"summary":                 "exit_plan_mode rejected: session not in plan mode; use plan_manage save to update the active plan instead",
 			"user_message":            userMessage,
 			"details_truncated":       false,
 		}
@@ -1281,6 +1342,21 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 		}
 		return string(raw), nil
 	}
+	status := "approved"
+	approvalState := "approved"
+	var documentForSave *pebblestore.SessionPlanDocument
+	if document != nil {
+		documentClone := *document
+		documentClone.ID = strings.TrimSpace(firstNonEmptyString(planID, documentClone.ID))
+		documentClone.Title = strings.TrimSpace(firstNonEmptyString(title, documentClone.Title))
+		documentClone.Status = status
+		documentForSave = &documentClone
+	}
+	savedPlan, _, saveErr := s.sessions.SavePlanWithMetadata(sessionID, planID, title, plan, status, approvalState, true, sessionruntime.PlanSaveMetadata{UpdateSummary: "exit plan mode submission", UpdateScope: "plan", UpdateKind: "exit_plan_mode", Document: documentForSave})
+	if saveErr != nil {
+		return "", fmt.Errorf("exit_plan_mode failed to save plan: %w", saveErr)
+	}
+	planID = strings.TrimSpace(savedPlan.ID)
 
 	if _, setModeEnv, err := s.sessions.SetMode(sessionID, sessionruntime.ModeAuto); err != nil {
 		return "", fmt.Errorf("exit_plan_mode failed to set mode: %w", err)
@@ -1291,16 +1367,20 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 	payload := map[string]any{
 		"tool":                    "exit_plan_mode",
 		"status":                  "approved",
-		"title":                   title,
+		"title":                   savedPlan.Title,
 		"plan_id":                 planID,
+		"plan":                    savedPlan.Plan,
+		"document":                savedPlan.Document,
 		"approval_state":          "approved",
 		"requested_modifications": []string{},
 		"mode_changed":            true,
 		"target_mode":             sessionruntime.ModeAuto,
 		"user_message":            userMessage,
 		"path_id":                 "tool.exit-plan-mode.v3",
-		"summary":                 "plan saved, approved; mode switched to auto",
+		"summary":                 "structured plan saved, approved; mode switched to auto",
 		"details_truncated":       false,
+		"version":                 savedPlan.Version,
+		"parent_revision":         savedPlan.ParentRevision,
 	}
 	encoded, marshalErr := json.Marshal(payload)
 	if marshalErr != nil {
@@ -1355,11 +1435,25 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 	case "upsert", "set", "write-active", "write_active":
 		action = "save"
 	case "update", "edit":
-		if strings.TrimSpace(mapString(args, "plan")) == "" {
+		if strings.TrimSpace(mapString(args, "plan")) == "" && args["document"] == nil {
 			action = "patch"
 		} else {
 			action = "save"
 		}
+	case "update-info", "update_info":
+		action = "update_info"
+	case "upsert-checkpoint", "upsert_checkpoint", "replace-checkpoint", "replace_checkpoint":
+		action = "upsert_checkpoint"
+	case "update-checkpoint", "update_checkpoint", "patch-checkpoint", "patch_checkpoint":
+		action = "update_checkpoint"
+	case "complete-checkpoint", "complete_checkpoint", "finish-checkpoint", "finish_checkpoint":
+		action = "complete_checkpoint"
+	case "remove-checkpoint", "remove_checkpoint", "delete-checkpoint", "delete_checkpoint":
+		action = "remove_checkpoint"
+	case "reorder-checkpoints", "reorder_checkpoints":
+		action = "reorder_checkpoints"
+	case "set-active-checkpoint", "set_active_checkpoint", "activate-checkpoint", "activate_checkpoint":
+		action = "set_active_checkpoint"
 	case "update-section", "update_section":
 		action = "update_section"
 	}
@@ -1594,7 +1688,7 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 			"details_truncated": false,
 		}
 		return marshalPlanManagePayload(payload)
-	case "patch", "update_section":
+	case "patch", "update_section", "update_info", "upsert_checkpoint", "update_checkpoint", "complete_checkpoint", "remove_checkpoint", "reorder_checkpoints", "set_active_checkpoint":
 		planID := strings.TrimSpace(mapString(args, "plan_id"))
 		if planID == "" {
 			planID = strings.TrimSpace(mapString(args, "id"))
@@ -1618,12 +1712,19 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 		if err != nil {
 			return "", err
 		}
+		documentPatch, err := planDocumentPatchFromArgs(args)
+		if err != nil {
+			return "", err
+		}
+		if documentPatch != nil && documentPatch.Operation == "" {
+			documentPatch.Operation = action
+		}
 		var activate *bool
 		if _, hasActivate := args["activate"]; hasActivate {
 			value := mapBool(args, "activate")
 			activate = &value
 		}
-		plan, _, err := s.sessions.PatchPlan(sessionID, sessionruntime.PlanPatchOptions{PlanID: planID, Title: title, Status: status, ApprovalState: approvalState, Activate: activate, Patch: patch, Document: document, Metadata: sessionruntime.PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: updateScope, UpdateKind: updateKind, Checkpoint: checkpoint}})
+		plan, _, err := s.sessions.PatchPlan(sessionID, sessionruntime.PlanPatchOptions{PlanID: planID, Title: title, Status: status, ApprovalState: approvalState, Activate: activate, Patch: patch, Document: document, DocumentPatch: documentPatch, Metadata: sessionruntime.PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: updateScope, UpdateKind: updateKind, Checkpoint: checkpoint}})
 		if err != nil {
 			return "", err
 		}

@@ -70,6 +70,7 @@ type planManagePermissionPayload struct {
 	PriorPlan         string         `json:"prior_plan,omitempty"`
 	Plan              string         `json:"plan,omitempty"`
 	DiffLines         []string       `json:"diff_lines,omitempty"`
+	Document          any            `json:"document,omitempty"`
 	Status            string         `json:"status,omitempty"`
 	ApprovalState     string         `json:"approval_state,omitempty"`
 	Activate          bool           `json:"activate,omitempty"`
@@ -78,6 +79,7 @@ type planManagePermissionPayload struct {
 	UpdateSummary     string         `json:"update_summary,omitempty"`
 	UpdateScope       string         `json:"update_scope,omitempty"`
 	UpdateKind        string         `json:"update_kind,omitempty"`
+	DocumentOperation string         `json:"document_operation,omitempty"`
 	Checkpoint        bool           `json:"checkpoint,omitempty"`
 	ApprovedArguments map[string]any `json:"approved_arguments,omitempty"`
 }
@@ -550,6 +552,12 @@ func (s *Service) permissionArgumentsForCall(sessionID, sessionMode string, call
 			return "", err
 		}
 		return marshalPayload(payload)
+	case "exit_plan_mode":
+		payload, err := s.buildExitPlanModePermissionPayload(sessionID, call)
+		if err != nil {
+			return "", err
+		}
+		return marshalPayload(payload)
 	case "plan_manage":
 		payload, ok, err := s.buildPlanManagePermissionPayload(sessionID, call)
 		if err != nil {
@@ -576,6 +584,108 @@ func (s *Service) permissionArgumentsForCall(sessionID, sessionMode string, call
 	default:
 		return arguments, nil
 	}
+}
+
+func (s *Service) buildExitPlanModePermissionPayload(sessionID string, call tool.Call) (map[string]any, error) {
+	arguments := strings.TrimSpace(call.Arguments)
+	if arguments == "" {
+		arguments = "{}"
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+		return nil, fmt.Errorf("exit_plan_mode arguments invalid: %w", err)
+	}
+	document, err := planDocumentFromArgsForTool(args, "exit_plan_mode")
+	if err != nil {
+		return nil, err
+	}
+	planID := strings.TrimSpace(firstNonEmptyString(mapString(args, "plan_id"), mapString(args, "planID"), mapString(args, "id")))
+	title := strings.TrimSpace(mapString(args, "title"))
+	planBody := strings.TrimSpace(mapString(args, "plan"))
+	if document != nil {
+		if planID == "" {
+			planID = strings.TrimSpace(document.ID)
+		}
+		if title == "" {
+			title = strings.TrimSpace(document.Title)
+		}
+		if planBody == "" {
+			planBody = strings.TrimSpace(firstNonEmptyString(document.DisplayText, document.RenderedText))
+		}
+	}
+
+	var existing *pebblestore.SessionPlanSnapshot
+	if s.sessions != nil {
+		if planID == "" {
+			active, ok, err := s.sessions.GetActivePlan(sessionID)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				planID = strings.TrimSpace(active.ID)
+				existing = &active
+			}
+		} else if current, ok, err := s.sessions.GetPlan(sessionID, planID); err != nil {
+			return nil, err
+		} else if ok {
+			existing = &current
+		}
+	}
+	if existing != nil {
+		if title == "" {
+			title = strings.TrimSpace(existing.Title)
+		}
+		if planBody == "" {
+			planBody = strings.TrimSpace(existing.Plan)
+		}
+		if document == nil {
+			document = existing.Document
+		}
+	}
+	if document != nil {
+		documentClone := *document
+		documentClone.ID = strings.TrimSpace(firstNonEmptyString(planID, documentClone.ID))
+		documentClone.Title = strings.TrimSpace(firstNonEmptyString(title, documentClone.Title))
+		document = &documentClone
+	}
+
+	approved := cloneGenericMap(args)
+	if approved == nil {
+		approved = map[string]any{}
+	}
+	if title != "" {
+		approved["title"] = title
+	}
+	if strings.TrimSpace(mapString(approved, "title")) == "" {
+		delete(approved, "title")
+	}
+	if planID != "" {
+		approved["plan_id"] = planID
+	}
+	if planBody != "" {
+		approved["plan"] = planBody
+	}
+	if document != nil {
+		approved["document"] = document
+	}
+	delete(approved, "approved_arguments")
+
+	payload := map[string]any{
+		"path_id":            "permission.exit-plan-mode.v1",
+		"tool":               "exit_plan_mode",
+		"title":              title,
+		"plan_id":            planID,
+		"plan":               planBody,
+		"document":           document,
+		"approved_arguments": approved,
+	}
+	if existing != nil {
+		payload["prior_title"] = strings.TrimSpace(existing.Title)
+		payload["prior_plan"] = strings.TrimSpace(existing.Plan)
+		payload["prior_document"] = existing.Document
+		payload["version"] = existing.Version
+	}
+	return payload, nil
 }
 
 func (s *Service) buildManageFlowPermissionPayload(sessionID string, call tool.Call) (manageFlowPermissionPayload, error) {
@@ -725,19 +835,33 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 	case "upsert", "set", "write-active", "write_active":
 		action = "save"
 	case "update", "edit":
-		if strings.TrimSpace(mapString(args, "plan")) == "" {
+		if strings.TrimSpace(mapString(args, "plan")) == "" && args["document"] == nil {
 			action = "patch"
 		} else {
 			action = "save"
 		}
+	case "update-info", "update_info":
+		action = "update_info"
+	case "upsert-checkpoint", "upsert_checkpoint", "replace-checkpoint", "replace_checkpoint", "set-checkpoint", "set_checkpoint":
+		action = "upsert_checkpoint"
+	case "update-checkpoint", "update_checkpoint", "patch-checkpoint", "patch_checkpoint":
+		action = "update_checkpoint"
+	case "complete-checkpoint", "complete_checkpoint", "finish-checkpoint", "finish_checkpoint":
+		action = "complete_checkpoint"
+	case "remove-checkpoint", "remove_checkpoint", "delete-checkpoint", "delete_checkpoint":
+		action = "remove_checkpoint"
+	case "reorder-checkpoints", "reorder_checkpoints":
+		action = "reorder_checkpoints"
+	case "set-active-checkpoint", "set_active_checkpoint", "activate-checkpoint", "activate_checkpoint":
+		action = "set_active_checkpoint"
 	case "update-section", "update_section":
 		action = "update_section"
 	}
-	if action != "save" && action != "patch" && action != "update_section" {
+	if action != "save" && action != "patch" && action != "update_section" && action != "update_info" && action != "upsert_checkpoint" && action != "update_checkpoint" && action != "complete_checkpoint" && action != "remove_checkpoint" && action != "reorder_checkpoints" && action != "set_active_checkpoint" {
 		return planManagePermissionPayload{}, false, nil
 	}
 	planBody := strings.TrimSpace(mapString(args, "plan"))
-	if action == "save" && planBody == "" {
+	if action == "save" && planBody == "" && args["document"] == nil {
 		return planManagePermissionPayload{}, false, nil
 	}
 	if s.sessions == nil {
@@ -787,7 +911,23 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 	updateScope := strings.TrimSpace(firstNonEmptyString(mapString(args, "update_scope"), mapString(args, "scope")))
 	updateKind := strings.TrimSpace(firstNonEmptyString(mapString(args, "update_kind"), mapString(args, "kind")))
 	checkpoint := mapBool(args, "checkpoint")
+	document, err := planDocumentFromArgs(args)
+	if err != nil {
+		return planManagePermissionPayload{}, false, err
+	}
+	documentPatch, err := planDocumentPatchFromArgs(args)
+	if err != nil {
+		return planManagePermissionPayload{}, false, err
+	}
+	if documentPatch != nil && strings.Contains(action, "checkpoint") {
+		checkpoint = true
+	} else if documentPatch == nil && (action == "update_info" || action == "upsert_checkpoint" || action == "update_checkpoint" || action == "complete_checkpoint" || action == "remove_checkpoint" || action == "reorder_checkpoints" || action == "set_active_checkpoint") {
+		return planManagePermissionPayload{}, false, nil
+	}
 	previewPlan := planBody
+	if previewPlan == "" && document != nil {
+		previewPlan = strings.TrimSpace(existing.Plan)
+	}
 	if action == "patch" || action == "update_section" {
 		patch, err := planPatchFromManageArgs(args, action)
 		if err != nil {
@@ -798,23 +938,37 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 			return planManagePermissionPayload{}, false, err
 		}
 	}
+	if documentPatch != nil && documentPatch.Operation == "" {
+		documentPatch.Operation = action
+	}
+	previewDocument := document
+	if documentPatch != nil {
+		previewDocument, err = sessionruntime.ApplyPlanDocumentPatch(planID, title, existing.Document, *documentPatch)
+		if err != nil {
+			return planManagePermissionPayload{}, false, err
+		}
+	} else if previewDocument == nil {
+		previewDocument = existing.Document
+	}
 	payload := planManagePermissionPayload{
-		PathID:        "tool.plan-manage-update.v1",
-		Title:         title,
-		PlanID:        planID,
-		PriorTitle:    strings.TrimSpace(existing.Title),
-		PriorPlan:     strings.TrimSpace(existing.Plan),
-		Plan:          previewPlan,
-		DiffLines:     sessionruntime.BuildPlanDiffLines(existing.Plan, previewPlan),
-		Status:        status,
-		ApprovalState: approvalState,
-		Activate:      activate,
-		Action:        action,
-		UpdateType:    "existing_plan",
-		UpdateSummary: updateSummary,
-		UpdateScope:   updateScope,
-		UpdateKind:    updateKind,
-		Checkpoint:    checkpoint,
+		PathID:            "tool.plan-manage-update.v1",
+		Title:             title,
+		PlanID:            planID,
+		PriorTitle:        strings.TrimSpace(existing.Title),
+		PriorPlan:         strings.TrimSpace(existing.Plan),
+		Plan:              previewPlan,
+		Document:          previewDocument,
+		DiffLines:         sessionruntime.BuildPlanDiffLines(existing.Plan, previewPlan),
+		Status:            status,
+		ApprovalState:     approvalState,
+		Activate:          activate,
+		Action:            action,
+		UpdateType:        "existing_plan",
+		UpdateSummary:     updateSummary,
+		UpdateScope:       updateScope,
+		UpdateKind:        updateKind,
+		DocumentOperation: action,
+		Checkpoint:        checkpoint,
 		ApprovedArguments: map[string]any{
 			"action":         action,
 			"plan_id":        planID,
@@ -829,12 +983,21 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 		},
 	}
 	if action == "save" {
-		payload.ApprovedArguments["plan"] = planBody
+		if planBody != "" {
+			payload.ApprovedArguments["plan"] = planBody
+		}
+		if document != nil {
+			payload.ApprovedArguments["document"] = document
+		}
 	} else {
 		for key, value := range args {
 			switch key {
-			case "patch", "operation", "patch_operation", "patch_action", "section", "old_text", "new_text", "text", "checklist_item", "item", "checked", "replace_all":
+			case "document", "document_patch", "document_operation", "operations", "info", "checkpoint_id", "checkpoint_order", "active_checkpoint_id", "active_checkpoint", "notes", "report", "result", "changed_files", "validation", "patch", "operation", "patch_operation", "patch_action", "section", "old_text", "new_text", "text", "checklist_item", "item", "checked", "replace_all":
 				payload.ApprovedArguments[key] = value
+			case "checkpoint":
+				if _, isBool := value.(bool); !isBool {
+					payload.ApprovedArguments[key] = value
+				}
 			}
 		}
 	}
@@ -1292,42 +1455,31 @@ func planManageApprovalArguments(payload map[string]any) map[string]any {
 		if action != "" {
 			args["action"] = action
 		}
-		if len(args) == 0 {
-			return nil
-		}
 		if strings.TrimSpace(mapString(args, "action")) == "" {
 			args["action"] = "save"
 		}
 		return args
 	}
-
-	action := strings.ToLower(strings.TrimSpace(mapString(payload, "action")))
-	if action == "" {
-		action = "save"
+	args := cloneGenericMap(payload)
+	if args == nil {
+		args = map[string]any{}
 	}
-	args := map[string]any{"action": action}
-	if planID := strings.TrimSpace(firstNonEmptyString(mapString(payload, "plan_id"), mapString(payload, "id"))); planID != "" {
-		args["plan_id"] = planID
+	delete(args, "tool")
+	delete(args, "path_id")
+	delete(args, "approval_summary")
+	delete(args, "user_message")
+	delete(args, "requested_modifications")
+	delete(args, "details_truncated")
+	delete(args, "prior_title")
+	delete(args, "prior_plan")
+	delete(args, "prior_document")
+	delete(args, "diff_lines")
+	delete(args, "version")
+	if strings.TrimSpace(mapString(args, "action")) == "" {
+		args["action"] = "save"
 	}
-	if title := strings.TrimSpace(mapString(payload, "title")); title != "" {
-		args["title"] = title
-	}
-	if planBody := strings.TrimSpace(mapString(payload, "plan")); planBody != "" {
-		args["plan"] = planBody
-	}
-	if status := strings.TrimSpace(mapString(payload, "status")); status != "" {
-		args["status"] = status
-	}
-	if approvalState := strings.TrimSpace(mapString(payload, "approval_state")); approvalState != "" {
-		args["approval_state"] = approvalState
-	}
-	if activate, ok := payload["activate"].(bool); ok {
-		args["activate"] = activate
-	}
-	if action == "save" {
-		if _, ok := args["plan"]; !ok {
-			return nil
-		}
+	if len(args) == 1 {
+		return nil
 	}
 	return args
 }

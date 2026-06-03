@@ -7,6 +7,7 @@ import { Textarea } from '../../../../components/ui/textarea'
 import { cn } from '../../../../lib/cn'
 import { ChatMarkdown } from './chat-markdown'
 import type { DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
+import { StructuredPlanDocumentView, structuredPlanDocumentToWire } from './structured-plan-document'
 
 interface DesktopPlanModalProps {
   open: boolean
@@ -17,7 +18,7 @@ interface DesktopPlanModalProps {
   error: string | null
   onOpenChange: (open: boolean) => void
   onCopy: (text: string) => Promise<boolean>
-  onSave: (planText: string) => Promise<void>
+  onSave: (planText: string, document?: Record<string, unknown>) => Promise<void>
 }
 
 function useEscapeToClose(open: boolean, onClose: () => void) {
@@ -79,6 +80,8 @@ export function DesktopPlanModal({
   onSave,
 }: DesktopPlanModalProps) {
   const [draft, setDraft] = useState('')
+  const [documentDraft, setDocumentDraft] = useState('')
+  const [documentDraftError, setDocumentDraftError] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
   const [selectedRevisionKey, setSelectedRevisionKey] = useState('current')
@@ -88,10 +91,12 @@ export function DesktopPlanModal({
       return
     }
     setDraft(plan?.plan ?? '')
+    setDocumentDraft(plan?.document ? JSON.stringify(structuredPlanDocumentToWire(plan.document), null, 2) : '')
+    setDocumentDraftError(null)
     setEditing(false)
     setCopyState('idle')
     setSelectedRevisionKey('current')
-  }, [open, plan?.id, plan?.updatedAt, plan?.plan])
+  }, [open, plan?.id, plan?.updatedAt, plan?.plan, plan?.document])
 
   useEscapeToClose(open, () => onOpenChange(false))
 
@@ -131,8 +136,10 @@ export function DesktopPlanModal({
   }
 
   const viewingRevision = selectedRevision !== null
+  const selectedDocument = viewingRevision ? selectedRevision.document : (plan?.document ?? null)
   const preview = viewingRevision ? selectedRevision.plan : (draft.trim() !== '' ? draft : (plan?.plan ?? ''))
-  const dirty = draft !== (plan?.plan ?? '')
+  const currentDocumentWire = plan?.document ? JSON.stringify(structuredPlanDocumentToWire(plan.document), null, 2) : ''
+  const dirty = draft !== (plan?.plan ?? '') || documentDraft !== currentDocumentWire
 
   const handleCopy = async () => {
     const ok = await onCopy(preview)
@@ -140,7 +147,21 @@ export function DesktopPlanModal({
   }
 
   const handleSave = async () => {
-    await onSave(draft)
+    setDocumentDraftError(null)
+    let parsedDocument: Record<string, unknown> | undefined
+    if (documentDraft.trim()) {
+      try {
+        const parsed = JSON.parse(documentDraft) as unknown
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new Error('Structured document must be a JSON object.')
+        }
+        parsedDocument = parsed as Record<string, unknown>
+      } catch (error) {
+        setDocumentDraftError(error instanceof Error ? error.message : 'Structured document JSON is invalid.')
+        return
+      }
+    }
+    await onSave(draft, parsedDocument)
     setEditing(false)
     setSelectedRevisionKey('current')
   }
@@ -150,13 +171,16 @@ export function DesktopPlanModal({
       return
     }
     setDraft(selectedRevision.plan)
-    await onSave(selectedRevision.plan)
+    const revisionDocument = selectedRevision.document ? structuredPlanDocumentToWire(selectedRevision.document) : undefined
+    await onSave(selectedRevision.plan, revisionDocument)
     setEditing(false)
     setSelectedRevisionKey('current')
   }
 
   const handleCancelEdit = () => {
     setDraft(plan?.plan ?? '')
+    setDocumentDraft(currentDocumentWire)
+    setDocumentDraftError(null)
     setEditing(false)
   }
 
@@ -266,27 +290,56 @@ export function DesktopPlanModal({
             <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
               {editing ? (
                 <section className="grid gap-3">
-                  <Textarea
-                    value={draft}
-                    onChange={(event) => setDraft(event.target.value)}
-                    placeholder="Write or paste the current session plan…"
-                    className="min-h-[420px] w-full resize-y bg-[var(--app-bg-alt)] font-mono text-sm leading-6"
-                  />
-                  <p className="text-xs text-[var(--app-text-muted)]">
-                    Saving updates the canonical plan and records a new revision.
-                  </p>
+                  {plan?.document ? (
+                    <>
+                      <label className="grid gap-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Structured plan document</span>
+                        <Textarea
+                          value={documentDraft}
+                          onChange={(event) => {
+                            setDocumentDraft(event.target.value)
+                            setDocumentDraftError(null)
+                          }}
+                          placeholder="Edit structured plan info and checkpoints as JSON…"
+                          className="min-h-[420px] w-full resize-y bg-[var(--app-bg-alt)] font-mono text-sm leading-6"
+                        />
+                      </label>
+                      {documentDraftError ? (
+                        <p className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-xs text-[var(--app-danger)]">{documentDraftError}</p>
+                      ) : null}
+                      <p className="text-xs text-[var(--app-text-muted)]">
+                        This edits the canonical structured plan document: base info plus checkpoint objects. Saving records one revision.
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <Textarea
+                        value={draft}
+                        onChange={(event) => setDraft(event.target.value)}
+                        placeholder="Write or paste the current session plan…"
+                        className="min-h-[420px] w-full resize-y bg-[var(--app-bg-alt)] font-mono text-sm leading-6"
+                      />
+                      <p className="text-xs text-[var(--app-text-muted)]">
+                        No structured document exists yet; saving this display text records a new revision.
+                      </p>
+                    </>
+                  )}
                 </section>
               ) : (
                 <div className="grid gap-4">
-                  <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-5">
-                    {preview.trim() ? (
-                      <ChatMarkdown content={preview} className="text-base leading-7" />
-                    ) : (
-                      <p className="text-sm text-[var(--app-text-muted)]">
-                        No active plan yet. Use Edit plan to create one for this session.
-                      </p>
-                    )}
-                  </section>
+                  {selectedDocument ? (
+                    <StructuredPlanDocumentView document={selectedDocument} emptyText="No structured plan data is available for this plan." />
+                  ) : (
+                    <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-5">
+                      {preview.trim() ? (
+                        <ChatMarkdown content={preview} className="text-base leading-7" />
+                      ) : (
+                        <p className="text-sm text-[var(--app-text-muted)]">
+                          No active plan yet. Use Edit plan to create one for this session.
+                        </p>
+                      )}
+                    </section>
+                  )}
 
                   {viewingRevision ? (
                     <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">

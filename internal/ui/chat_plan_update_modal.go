@@ -44,6 +44,17 @@ func (p *ChatPage) OpenPlanUpdatePermissionModal(record ChatPermissionRecord) bo
 	p.planUpdateScope = strings.TrimSpace(firstNonEmptyToolValue(mapStringArg(payload, "update_scope"), mapStringArg(payload, "scope")))
 	p.planUpdateKind = strings.TrimSpace(firstNonEmptyToolValue(mapStringArg(payload, "update_kind"), mapStringArg(payload, "kind")))
 	p.planUpdateCheckpoint = mapBoolArg(payload, "checkpoint")
+	if document, ok := payload["document"]; ok {
+		p.planUpdateDocumentText = StructuredPlanDocumentTextFromValue(document)
+	}
+	if priorDocument, ok := payload["prior_document"]; ok {
+		p.planUpdatePriorDocText = StructuredPlanDocumentTextFromValue(priorDocument)
+	}
+	if approved, ok := payload["approved_arguments"]; ok {
+		if rawApproved, err := json.Marshal(approved); err == nil {
+			p.planUpdateApprovedArgs = string(rawApproved)
+		}
+	}
 	p.planUpdateScroll = 0
 	p.planUpdateSelection = chatPlanUpdateSelectConfirm
 	p.planUpdateInput = ""
@@ -65,6 +76,9 @@ func (p *ChatPage) closePlanUpdateModal() {
 	p.planUpdateScope = ""
 	p.planUpdateKind = ""
 	p.planUpdateCheckpoint = false
+	p.planUpdateDocumentText = ""
+	p.planUpdatePriorDocText = ""
+	p.planUpdateApprovedArgs = ""
 	p.planUpdateScroll = 0
 	p.planUpdateSelection = chatPlanUpdateSelectConfirm
 	p.planUpdateInput = ""
@@ -395,7 +409,11 @@ func (p *ChatPage) planUpdateModalLines(width int) []chatRenderLine {
 			lines = appendPlain(lines, "Checkpoint: yes", p.theme.TextMuted)
 		}
 	}
-	lines = appendPlain(lines, "Review the targeted summary first, then inspect the diff and resulting plan before accepting.", p.theme.TextMuted)
+	if strings.TrimSpace(p.planUpdateDocumentText) != "" || strings.TrimSpace(p.planUpdatePriorDocText) != "" {
+		lines = appendPlain(lines, "Review the structured document objects before accepting.", p.theme.TextMuted)
+	} else {
+		lines = appendPlain(lines, "Review the targeted summary first, then inspect the diff and resulting plan before accepting.", p.theme.TextMuted)
+	}
 	lines = append(lines, chatRenderLine{Text: "", Style: styleForCurrentCellBackground(p.theme.Text)})
 
 	lines = appendPlain(lines, "Diff preview:", p.theme.Secondary.Bold(true))
@@ -407,16 +425,35 @@ func (p *ChatPage) planUpdateModalLines(width int) []chatRenderLine {
 		priorTitle = title
 	}
 	lines = appendPlain(lines, fmt.Sprintf("Previous plan: %s", priorTitle), p.theme.Warning.Bold(true))
-	priorPlan := strings.TrimSpace(p.planUpdatePriorPlan)
-	if priorPlan == "" {
-		priorPlan = "No prior plan text was provided."
+	if priorDocument := strings.TrimSpace(p.planUpdatePriorDocText); priorDocument != "" {
+		for _, row := range p.assistantMarkdownRows(priorDocument, p.theme.TextMuted) {
+			lines = appendWrapped(lines, row)
+		}
+		lines = append(lines, chatRenderLine{Text: "", Style: styleForCurrentCellBackground(p.theme.Text)})
+	} else {
+		priorPlan := strings.TrimSpace(p.planUpdatePriorPlan)
+		if priorPlan == "" {
+			priorPlan = "No prior plan text was provided."
+		}
+		for _, row := range p.assistantMarkdownRows(priorPlan, p.theme.TextMuted) {
+			lines = appendWrapped(lines, row)
+		}
+		lines = append(lines, chatRenderLine{Text: "", Style: styleForCurrentCellBackground(p.theme.Text)})
 	}
-	for _, row := range p.assistantMarkdownRows(priorPlan, p.theme.TextMuted) {
-		lines = appendWrapped(lines, row)
-	}
-	lines = append(lines, chatRenderLine{Text: "", Style: styleForCurrentCellBackground(p.theme.Text)})
 
 	lines = appendPlain(lines, "Updated plan:", p.theme.Success.Bold(true))
+	if document := strings.TrimSpace(p.planUpdateDocumentText); document != "" {
+		for _, row := range p.assistantMarkdownRows(document, p.theme.Text) {
+			lines = appendWrapped(lines, row)
+		}
+		if len(lines) == 0 {
+			return []chatRenderLine{{Text: "", Style: styleForCurrentCellBackground(p.theme.Text)}}
+		}
+		for i := range lines {
+			lines[i] = renderLineForCurrentCellBackground(lines[i])
+		}
+		return lines
+	}
 	updatedPlan := strings.TrimSpace(p.planUpdatePlan)
 	if updatedPlan == "" {
 		updatedPlan = "No updated plan text was provided."

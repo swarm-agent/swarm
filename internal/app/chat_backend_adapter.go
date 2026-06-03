@@ -115,6 +115,7 @@ func (b *apiChatBackend) SaveSessionPlan(ctx context.Context, sessionID string, 
 		PlanID:        strings.TrimSpace(plan.ID),
 		Title:         strings.TrimSpace(plan.Title),
 		Plan:          plan.Plan,
+		Document:      clientSessionPlanDocumentFromAny(plan.Document),
 		Status:        strings.TrimSpace(plan.Status),
 		ApprovalState: strings.TrimSpace(plan.ApprovalState),
 	})
@@ -355,6 +356,7 @@ func convertClientSessionPlan(plan client.SessionPlan) ui.ChatSessionPlan {
 		ID:            strings.TrimSpace(plan.ID),
 		Title:         strings.TrimSpace(plan.Title),
 		Plan:          plan.Plan,
+		Document:      plan.Document,
 		Status:        strings.TrimSpace(plan.Status),
 		ApprovalState: strings.TrimSpace(plan.ApprovalState),
 	}

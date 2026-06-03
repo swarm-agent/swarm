@@ -20,6 +20,7 @@ type ChatSessionPlan struct {
 	ID            string
 	Title         string
 	Plan          string
+	Document      any
 	Status        string
 	ApprovalState string
 	Active        bool

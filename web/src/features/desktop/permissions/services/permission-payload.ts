@@ -25,6 +25,7 @@ export interface ExitPlanPayload {
   title: string
   body: string
   planId: string
+  document: unknown
 }
 
 export interface PlanUpdatePayload {
@@ -38,6 +39,8 @@ export interface PlanUpdatePayload {
   updateScope: string
   updateKind: string
   checkpoint: boolean
+  document: unknown
+  priorDocument: unknown
   approvedArguments: Record<string, unknown>
 }
 
@@ -576,6 +579,7 @@ export function parseExitPlanPermission(permission: DesktopPermissionRecord): Ex
         ? payload.plan.trim()
         : 'Review and approve this plan to switch the session from plan mode to auto mode. Once approved, execution continues; this is not a handoff to another agent.',
     planId: payload ? mapStringArg(payload, 'plan_id') || mapStringArg(payload, 'planID') : '',
+    document: payload?.document ?? null,
   }
 }
 
@@ -593,6 +597,8 @@ export function parsePlanUpdatePermission(permission: DesktopPermissionRecord): 
     updateScope: mapStringArg(payload, 'update_scope') || mapStringArg(payload, 'scope'),
     updateKind: mapStringArg(payload, 'update_kind') || mapStringArg(payload, 'kind'),
     checkpoint: mapBoolArg(payload, 'checkpoint'),
+    document: payload.document ?? null,
+    priorDocument: payload.prior_document ?? null,
     approvedArguments: mapObjectArg(payload, 'approved_arguments'),
   }
 }

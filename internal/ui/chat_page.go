@@ -418,33 +418,38 @@ type ChatPage struct {
 	skillChangeApproveRect Rect
 	skillChangeDenyRect    Rect
 
-	planUpdatePermission  string
-	planUpdateTitle       string
-	planUpdatePlanID      string
-	planUpdatePriorTitle  string
-	planUpdatePriorPlan   string
-	planUpdatePlan        string
-	planUpdateDiffLines   []string
-	planUpdateSummary     string
-	planUpdateScope       string
-	planUpdateKind        string
-	planUpdateCheckpoint  bool
-	planUpdateScroll      int
-	planUpdateSelection   int
-	planUpdateInput       string
-	planUpdateCancelRect  Rect
-	planUpdateConfirmRect Rect
+	planUpdatePermission   string
+	planUpdateTitle        string
+	planUpdatePlanID       string
+	planUpdatePriorTitle   string
+	planUpdatePriorPlan    string
+	planUpdatePlan         string
+	planUpdateDiffLines    []string
+	planUpdateSummary      string
+	planUpdateScope        string
+	planUpdateKind         string
+	planUpdateCheckpoint   bool
+	planUpdateDocumentText string
+	planUpdatePriorDocText string
+	planUpdateApprovedArgs string
+	planUpdateScroll       int
+	planUpdateSelection    int
+	planUpdateInput        string
+	planUpdateCancelRect   Rect
+	planUpdateConfirmRect  Rect
 
-	planExitVisible     bool
-	planExitTitle       string
-	planExitBody        string
-	planExitPermission  string
-	planExitPlanID      string
-	planExitScroll      int
-	planExitSelection   int
-	planExitInput       string
-	planExitCancelRect  Rect
-	planExitConfirmRect Rect
+	planExitVisible      bool
+	planExitTitle        string
+	planExitBody         string
+	planExitPermission   string
+	planExitPlanID       string
+	planExitDocument     string
+	planExitApprovedArgs string
+	planExitScroll       int
+	planExitSelection    int
+	planExitInput        string
+	planExitCancelRect   Rect
+	planExitConfirmRect  Rect
 
 	manageFlowPermission  string
 	manageFlowTitle       string
@@ -5414,8 +5419,8 @@ func (p *ChatPage) syncSpecialPermissionModals() {
 		}
 		return
 	}
-	title, body, planID := exitPlanPermissionPayload(selected)
-	p.OpenExitPlanModePermissionModal(selected.ID, planID, title, body)
+	title, body, planID, documentText, approvedArguments := exitPlanPermissionPayload(selected)
+	p.OpenExitPlanModePermissionModal(selected.ID, planID, title, body, documentText, approvedArguments)
 }
 
 func (p *ChatPage) pendingPermissionByID(permissionID string) (ChatPermissionRecord, bool) {

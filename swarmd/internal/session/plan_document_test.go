@@ -203,3 +203,83 @@ func TestSetActivePlanDoesNotCreateRevisionOrMutateDocument(t *testing.T) {
 		t.Fatalf("revision count after activation = %d, want 1", len(revisions))
 	}
 }
+
+func TestApplyPlanDocumentPatchBatchCreatesOneRevision(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	first, _, err := svc.SavePlanWithMetadata(sessionID, "plan-one", "One Plan", "# Plan", "draft", "draft", true, PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		Info: pebblestore.SessionPlanInfo{Goal: "initial goal"},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "Model", Status: "active"},
+			{ID: "cp-2", Title: "API", Status: "pending"},
+		},
+		ActiveCheckpointID: "cp-1",
+	}})
+	if err != nil {
+		t.Fatalf("save structured plan: %v", err)
+	}
+
+	updated, _, err := svc.PatchPlan(sessionID, PlanPatchOptions{
+		PlanID: first.ID,
+		DocumentPatch: &PlanDocumentPatch{Operations: []PlanDocumentPatchOperation{
+			{Operation: "update_info", Info: &pebblestore.SessionPlanInfo{Goal: "modular one-plan system", Decisions: []string{"structured document is canonical"}}},
+			{Operation: "complete_checkpoint", CheckpointID: "cp-1", Report: "model complete", ChangedFiles: []string{"swarmd/internal/session/plan_document.go"}, Validation: []string{"go test ./internal/session"}},
+			{Operation: "set_active_checkpoint", ActiveCheckpointID: "cp-2"},
+			{Operation: "reorder_checkpoints", CheckpointOrder: []string{"cp-2", "cp-1"}},
+		}},
+		Metadata: PlanSaveMetadata{UpdateSummary: "batch modular plan update", UpdateScope: "document+checkpoints", UpdateKind: "document_patch"},
+	})
+	if err != nil {
+		t.Fatalf("patch document batch: %v", err)
+	}
+	if updated.Version != first.Version+1 || updated.ParentRevision != first.Version {
+		t.Fatalf("revision linkage = version %d parent %d", updated.Version, updated.ParentRevision)
+	}
+	if updated.Document == nil || updated.Document.Info.Goal != "modular one-plan system" || updated.Document.ActiveCheckpointID != "cp-2" {
+		t.Fatalf("updated document = %#v", updated.Document)
+	}
+	if updated.Document.Checkpoints[0].ID != "cp-2" || updated.Document.Checkpoints[0].Order != 1 || updated.Document.Checkpoints[1].Status != "done" || updated.Document.Checkpoints[1].Report != "model complete" {
+		t.Fatalf("checkpoint patch/order failed: %#v", updated.Document.Checkpoints)
+	}
+	revisions, err := svc.ListPlanRevisions(sessionID, first.ID, 10)
+	if err != nil {
+		t.Fatalf("list revisions: %v", err)
+	}
+	if len(revisions) != 2 {
+		t.Fatalf("revision count = %d, want one archived revision plus current", len(revisions))
+	}
+}
+
+func TestApplyPlanDocumentPatchIsAtomicOnInvalidBatch(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	first, _, err := svc.SavePlanWithMetadata(sessionID, "plan-one", "One Plan", "# Plan", "draft", "draft", true, PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		Info:        pebblestore.SessionPlanInfo{Goal: "initial goal"},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Model"}},
+	}})
+	if err != nil {
+		t.Fatalf("save structured plan: %v", err)
+	}
+
+	_, _, err = svc.PatchPlan(sessionID, PlanPatchOptions{
+		PlanID: first.ID,
+		DocumentPatch: &PlanDocumentPatch{Operations: []PlanDocumentPatchOperation{
+			{Operation: "update_info", Info: &pebblestore.SessionPlanInfo{Goal: "should not persist"}},
+			{Operation: "complete_checkpoint", CheckpointID: "missing"},
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("invalid batch error = %v, want missing checkpoint", err)
+	}
+	current, ok, err := svc.GetPlan(sessionID, first.ID)
+	if err != nil || !ok {
+		t.Fatalf("get current plan: ok=%v err=%v", ok, err)
+	}
+	if current.Version != first.Version || current.Document.Info.Goal != "initial goal" {
+		t.Fatalf("invalid batch mutated current plan: %#v", current)
+	}
+}

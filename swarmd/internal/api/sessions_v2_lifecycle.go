@@ -1180,19 +1180,20 @@ func (s *Server) handlePrimarySessionV2Plans(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	var req struct {
-		ID            string                           `json:"id"`
-		PlanID        string                           `json:"plan_id"`
-		Title         string                           `json:"title"`
-		Plan          string                           `json:"plan"`
-		Document      *pebblestore.SessionPlanDocument `json:"document"`
-		Status        string                           `json:"status"`
-		ApprovalState string                           `json:"approval_state"`
-		UpdateSummary string                           `json:"update_summary"`
-		UpdateScope   string                           `json:"update_scope"`
-		Scope         string                           `json:"scope"`
-		UpdateKind    string                           `json:"update_kind"`
-		Checkpoint    bool                             `json:"checkpoint"`
-		Activate      *bool                            `json:"activate"`
+		ID            string                            `json:"id"`
+		PlanID        string                            `json:"plan_id"`
+		Title         string                            `json:"title"`
+		Plan          string                            `json:"plan"`
+		Document      *pebblestore.SessionPlanDocument  `json:"document"`
+		DocumentPatch *sessionruntime.PlanDocumentPatch `json:"document_patch"`
+		Status        string                            `json:"status"`
+		ApprovalState string                            `json:"approval_state"`
+		UpdateSummary string                            `json:"update_summary"`
+		UpdateScope   string                            `json:"update_scope"`
+		Scope         string                            `json:"scope"`
+		UpdateKind    string                            `json:"update_kind"`
+		Checkpoint    bool                              `json:"checkpoint"`
+		Activate      *bool                             `json:"activate"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -1210,7 +1211,16 @@ func (s *Server) handlePrimarySessionV2Plans(w http.ResponseWriter, r *http.Requ
 	if updateScope == "" {
 		updateScope = strings.TrimSpace(req.Scope)
 	}
-	plan, event, err := s.sessions.SavePlanWithMetadata(sessionID, planID, req.Title, req.Plan, req.Status, req.ApprovalState, activate, sessionruntime.PlanSaveMetadata{UpdateSummary: req.UpdateSummary, UpdateScope: updateScope, UpdateKind: req.UpdateKind, Checkpoint: req.Checkpoint, Document: req.Document})
+	metadata := sessionruntime.PlanSaveMetadata{UpdateSummary: req.UpdateSummary, UpdateScope: updateScope, UpdateKind: req.UpdateKind, Checkpoint: req.Checkpoint, Document: req.Document}
+	var plan pebblestore.SessionPlanSnapshot
+	var event *pebblestore.EventEnvelope
+	var err error
+	if req.DocumentPatch != nil {
+		activatePtr := &activate
+		plan, event, err = s.sessions.PatchPlan(sessionID, sessionruntime.PlanPatchOptions{PlanID: planID, Title: req.Title, Status: req.Status, ApprovalState: req.ApprovalState, Activate: activatePtr, Document: req.Document, DocumentPatch: req.DocumentPatch, Metadata: metadata})
+	} else {
+		plan, event, err = s.sessions.SavePlanWithMetadata(sessionID, planID, req.Title, req.Plan, req.Status, req.ApprovalState, activate, metadata)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return

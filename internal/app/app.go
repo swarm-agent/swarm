@@ -2389,9 +2389,9 @@ func (a *App) handlePlanCommand(args []string) {
 		}
 		uiPlans := make([]ui.ChatSessionPlan, 0, len(plans))
 		for _, candidate := range plans {
-			uiPlans = append(uiPlans, ui.ChatSessionPlan{ID: strings.TrimSpace(candidate.ID), Title: strings.TrimSpace(candidate.Title), Plan: candidate.Plan, Status: strings.TrimSpace(candidate.Status), ApprovalState: strings.TrimSpace(candidate.ApprovalState), Active: candidate.Active})
+			uiPlans = append(uiPlans, ui.ChatSessionPlan{ID: strings.TrimSpace(candidate.ID), Title: strings.TrimSpace(candidate.Title), Plan: candidate.Plan, Document: candidate.Document, Status: strings.TrimSpace(candidate.Status), ApprovalState: strings.TrimSpace(candidate.ApprovalState), Active: candidate.Active})
 		}
-		if !a.chat.OpenCurrentPlanModalWithPlans(ui.ChatSessionPlan{ID: strings.TrimSpace(plan.ID), Title: strings.TrimSpace(plan.Title), Plan: plan.Plan, Status: strings.TrimSpace(plan.Status), ApprovalState: strings.TrimSpace(plan.ApprovalState), Active: ok}, uiPlans, activeID) {
+		if !a.chat.OpenCurrentPlanModalWithPlans(ui.ChatSessionPlan{ID: strings.TrimSpace(plan.ID), Title: strings.TrimSpace(plan.Title), Plan: plan.Plan, Document: plan.Document, Status: strings.TrimSpace(plan.Status), ApprovalState: strings.TrimSpace(plan.ApprovalState), Active: ok}, uiPlans, activeID) {
 			a.home.SetStatus("current plan modal is unavailable while another modal is open")
 			return
 		}
@@ -2425,6 +2425,13 @@ func (a *App) handlePlanCommand(args []string) {
 			title = strings.TrimSpace(strings.Join(args[1:], " "))
 		}
 		body := a.buildPlanExitModalBody(title)
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		if plan, ok, err := a.api.GetActiveSessionPlan(ctx, sessionID); err == nil && ok {
+			if documentText := ui.StructuredPlanDocumentTextFromValue(plan.Document); strings.TrimSpace(documentText) != "" {
+				body = strings.TrimSpace(body) + "\n\nStructured plan document:\n" + documentText
+			}
+		}
+		cancel()
 		if !a.chat.OpenExitPlanModeModal(title, body) {
 			a.home.SetStatus("exit plan modal is unavailable while pending permissions are open")
 			return
@@ -4331,6 +4338,7 @@ func (a *App) handleChatAction(action ui.ChatAction) {
 			PlanID:        strings.TrimSpace(action.Plan.ID),
 			Title:         strings.TrimSpace(action.Plan.Title),
 			Plan:          action.Plan.Plan,
+			Document:      clientSessionPlanDocumentFromAny(action.Plan.Document),
 			Status:        strings.TrimSpace(action.Plan.Status),
 			ApprovalState: strings.TrimSpace(action.Plan.ApprovalState),
 		})

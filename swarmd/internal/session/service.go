@@ -1721,6 +1721,7 @@ type PlanPatchOptions struct {
 	Activate      *bool
 	Patch         PlanPatch
 	Document      *pebblestore.SessionPlanDocument
+	DocumentPatch *PlanDocumentPatch
 	Metadata      PlanSaveMetadata
 }
 
@@ -1885,8 +1886,8 @@ func (s *Service) PatchPlan(sessionID string, options PlanPatchOptions) (pebbles
 	if sessionID == "" {
 		return pebblestore.SessionPlanSnapshot{}, nil, errors.New("session id is required")
 	}
-	if options.Patch.IsZero() && options.Document == nil {
-		return pebblestore.SessionPlanSnapshot{}, nil, errors.New("plan patch requires at least one edit field or document")
+	if options.Patch.IsZero() && options.Document == nil && options.DocumentPatch == nil {
+		return pebblestore.SessionPlanSnapshot{}, nil, errors.New("plan patch requires at least one edit field or document/document_patch")
 	}
 	var existing pebblestore.SessionPlanSnapshot
 	var ok bool
@@ -1916,7 +1917,7 @@ func (s *Service) PatchPlan(sessionID string, options PlanPatchOptions) (pebbles
 			return pebblestore.SessionPlanSnapshot{}, nil, err
 		}
 	}
-	if patchedPlan == existing.Plan && options.Document == nil {
+	if patchedPlan == existing.Plan && options.Document == nil && options.DocumentPatch == nil {
 		return pebblestore.SessionPlanSnapshot{}, nil, errors.New("plan patch produced no changes")
 	}
 	title := strings.TrimSpace(options.Title)
@@ -1936,7 +1937,13 @@ func (s *Service) PatchPlan(sessionID string, options PlanPatchOptions) (pebbles
 		activate = *options.Activate
 	}
 	metadata := options.Metadata
-	if options.Document != nil {
+	if options.DocumentPatch != nil {
+		document, err := ApplyPlanDocumentPatch(planID, title, existing.Document, *options.DocumentPatch)
+		if err != nil {
+			return pebblestore.SessionPlanSnapshot{}, nil, err
+		}
+		metadata.Document = document
+	} else if options.Document != nil {
 		metadata.Document = options.Document
 	}
 	return s.SavePlanWithMetadata(sessionID, planID, title, patchedPlan, status, approvalState, activate, metadata)

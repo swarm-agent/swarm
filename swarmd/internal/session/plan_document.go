@@ -80,6 +80,247 @@ func ValidatePlanDocument(doc *pebblestore.SessionPlanDocument) error {
 	return nil
 }
 
+// PlanDocumentPatch is the structured, modular edit format for one-plan
+// documents. The service applies the whole patch atomically and stores exactly
+// one normal plan revision for the accepted update.
+type PlanDocumentPatch struct {
+	Operation          string                             `json:"operation,omitempty"`
+	Info               *pebblestore.SessionPlanInfo       `json:"info,omitempty"`
+	Checkpoint         *pebblestore.SessionPlanCheckpoint `json:"checkpoint,omitempty"`
+	CheckpointID       string                             `json:"checkpoint_id,omitempty"`
+	CheckpointOrder    []string                           `json:"checkpoint_order,omitempty"`
+	ActiveCheckpointID string                             `json:"active_checkpoint_id,omitempty"`
+	Status             string                             `json:"status,omitempty"`
+	Notes              string                             `json:"notes,omitempty"`
+	Report             string                             `json:"report,omitempty"`
+	Result             string                             `json:"result,omitempty"`
+	ChangedFiles       []string                           `json:"changed_files,omitempty"`
+	Validation         []string                           `json:"validation,omitempty"`
+	Operations         []PlanDocumentPatchOperation       `json:"operations,omitempty"`
+}
+
+type PlanDocumentPatchOperation = PlanDocumentPatch
+
+func (p PlanDocumentPatch) IsZero() bool {
+	return strings.TrimSpace(p.Operation) == "" && p.Info == nil && p.Checkpoint == nil && strings.TrimSpace(p.CheckpointID) == "" && len(p.CheckpointOrder) == 0 && strings.TrimSpace(p.ActiveCheckpointID) == "" && strings.TrimSpace(p.Status) == "" && strings.TrimSpace(p.Notes) == "" && strings.TrimSpace(p.Report) == "" && strings.TrimSpace(p.Result) == "" && len(p.ChangedFiles) == 0 && len(p.Validation) == 0 && len(p.Operations) == 0
+}
+
+func ApplyPlanDocumentPatch(planID, title string, existing *pebblestore.SessionPlanDocument, patch PlanDocumentPatch) (*pebblestore.SessionPlanDocument, error) {
+	if patch.IsZero() {
+		return nil, errors.New("plan document patch requires at least one structured operation")
+	}
+	doc := clonePlanDocument(existing)
+	if doc == nil {
+		doc = &pebblestore.SessionPlanDocument{ID: strings.TrimSpace(planID), Title: strings.TrimSpace(title)}
+	}
+	ops := patch.Operations
+	if len(ops) == 0 {
+		ops = []PlanDocumentPatchOperation{patch}
+	}
+	for _, op := range ops {
+		if err := applyPlanDocumentPatchOperation(doc, op); err != nil {
+			return nil, err
+		}
+	}
+	return NormalizePlanDocumentForSave(planID, title, doc, nil)
+}
+
+func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op PlanDocumentPatchOperation) error {
+	operation := strings.ToLower(strings.TrimSpace(op.Operation))
+	operation = strings.ReplaceAll(operation, "-", "_")
+	if operation == "" {
+		switch {
+		case op.Info != nil:
+			operation = "update_info"
+		case op.Checkpoint != nil:
+			operation = "upsert_checkpoint"
+		case len(op.CheckpointOrder) > 0:
+			operation = "reorder_checkpoints"
+		case strings.TrimSpace(op.ActiveCheckpointID) != "":
+			operation = "set_active_checkpoint"
+		default:
+			return errors.New("plan document patch operation is required")
+		}
+	}
+	switch operation {
+	case "update_info", "replace_info", "set_info":
+		if op.Info == nil {
+			return errors.New("update_info plan document patch requires info")
+		}
+		doc.Info = *op.Info
+		trimPlanInfo(&doc.Info)
+		return nil
+	case "upsert_checkpoint", "replace_checkpoint", "set_checkpoint":
+		if op.Checkpoint == nil {
+			return errors.New("upsert_checkpoint plan document patch requires checkpoint")
+		}
+		checkpoint := *op.Checkpoint
+		trimPlanCheckpoint(&checkpoint)
+		if checkpoint.ID == "" {
+			return errors.New("upsert_checkpoint plan document patch requires checkpoint.id")
+		}
+		idx := findPlanCheckpointIndex(doc.Checkpoints, checkpoint.ID)
+		if idx >= 0 {
+			if checkpoint.Order == 0 {
+				checkpoint.Order = doc.Checkpoints[idx].Order
+			}
+			doc.Checkpoints[idx] = checkpoint
+		} else {
+			if checkpoint.Order == 0 {
+				checkpoint.Order = len(doc.Checkpoints) + 1
+			}
+			doc.Checkpoints = append(doc.Checkpoints, checkpoint)
+		}
+		normalizeCheckpointOrder(doc)
+		return nil
+	case "update_checkpoint", "patch_checkpoint":
+		id := strings.TrimSpace(firstNonBlank(op.CheckpointID, checkpointIDFromPatch(op.Checkpoint)))
+		if id == "" {
+			return errors.New("update_checkpoint plan document patch requires checkpoint_id")
+		}
+		idx := findPlanCheckpointIndex(doc.Checkpoints, id)
+		if idx < 0 {
+			return fmt.Errorf("plan document checkpoint %q was not found", id)
+		}
+		if op.Checkpoint != nil {
+			checkpoint := *op.Checkpoint
+			trimPlanCheckpoint(&checkpoint)
+			if checkpoint.ID == "" {
+				checkpoint.ID = id
+			}
+			if checkpoint.ID != id {
+				return fmt.Errorf("update_checkpoint checkpoint id %q does not match target %q", checkpoint.ID, id)
+			}
+			if checkpoint.Order == 0 {
+				checkpoint.Order = doc.Checkpoints[idx].Order
+			}
+			doc.Checkpoints[idx] = checkpoint
+		}
+		applyCheckpointCompletionFields(&doc.Checkpoints[idx], op, false)
+		return nil
+	case "complete_checkpoint", "finish_checkpoint":
+		id := strings.TrimSpace(firstNonBlank(op.CheckpointID, checkpointIDFromPatch(op.Checkpoint)))
+		if id == "" {
+			return errors.New("complete_checkpoint plan document patch requires checkpoint_id")
+		}
+		idx := findPlanCheckpointIndex(doc.Checkpoints, id)
+		if idx < 0 {
+			return fmt.Errorf("plan document checkpoint %q was not found", id)
+		}
+		applyCheckpointCompletionFields(&doc.Checkpoints[idx], op, true)
+		return nil
+	case "remove_checkpoint", "delete_checkpoint":
+		id := strings.TrimSpace(firstNonBlank(op.CheckpointID, checkpointIDFromPatch(op.Checkpoint)))
+		if id == "" {
+			return errors.New("remove_checkpoint plan document patch requires checkpoint_id")
+		}
+		idx := findPlanCheckpointIndex(doc.Checkpoints, id)
+		if idx < 0 {
+			return fmt.Errorf("plan document checkpoint %q was not found", id)
+		}
+		if strings.TrimSpace(doc.ActiveCheckpointID) == id {
+			return fmt.Errorf("cannot remove active checkpoint %q", id)
+		}
+		doc.Checkpoints = append(doc.Checkpoints[:idx], doc.Checkpoints[idx+1:]...)
+		normalizeCheckpointOrder(doc)
+		return nil
+	case "reorder_checkpoints", "reorder_checkpoint":
+		return reorderPlanDocumentCheckpoints(doc, op.CheckpointOrder)
+	case "set_active_checkpoint", "activate_checkpoint":
+		id := strings.TrimSpace(firstNonBlank(op.ActiveCheckpointID, op.CheckpointID, checkpointIDFromPatch(op.Checkpoint)))
+		if id == "" {
+			return errors.New("set_active_checkpoint plan document patch requires active_checkpoint_id or checkpoint_id")
+		}
+		if findPlanCheckpointIndex(doc.Checkpoints, id) < 0 {
+			return fmt.Errorf("plan document checkpoint %q was not found", id)
+		}
+		doc.ActiveCheckpointID = id
+		return nil
+	default:
+		return fmt.Errorf("unsupported plan document patch operation %q", op.Operation)
+	}
+}
+
+func checkpointIDFromPatch(checkpoint *pebblestore.SessionPlanCheckpoint) string {
+	if checkpoint == nil {
+		return ""
+	}
+	return checkpoint.ID
+}
+
+func applyCheckpointCompletionFields(checkpoint *pebblestore.SessionPlanCheckpoint, op PlanDocumentPatchOperation, complete bool) {
+	if complete {
+		checkpoint.Status = "done"
+	}
+	if status := strings.TrimSpace(op.Status); status != "" {
+		checkpoint.Status = status
+	}
+	if notes := strings.TrimSpace(op.Notes); notes != "" {
+		checkpoint.Notes = notes
+	}
+	if report := strings.TrimSpace(op.Report); report != "" {
+		checkpoint.Report = report
+	}
+	if result := strings.TrimSpace(op.Result); result != "" {
+		checkpoint.Result = result
+	}
+	if len(op.ChangedFiles) > 0 {
+		checkpoint.ChangedFiles = trimStringSlice(op.ChangedFiles)
+	}
+	if len(op.Validation) > 0 {
+		checkpoint.Validation = trimStringSlice(op.Validation)
+	}
+}
+
+func findPlanCheckpointIndex(checkpoints []pebblestore.SessionPlanCheckpoint, id string) int {
+	id = strings.TrimSpace(id)
+	for i := range checkpoints {
+		if strings.TrimSpace(checkpoints[i].ID) == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func normalizeCheckpointOrder(doc *pebblestore.SessionPlanDocument) {
+	for i := range doc.Checkpoints {
+		doc.Checkpoints[i].Order = i + 1
+	}
+}
+
+func reorderPlanDocumentCheckpoints(doc *pebblestore.SessionPlanDocument, order []string) error {
+	if len(order) == 0 {
+		return errors.New("reorder_checkpoints plan document patch requires checkpoint_order")
+	}
+	if len(order) != len(doc.Checkpoints) {
+		return fmt.Errorf("reorder_checkpoints checkpoint_order length %d does not match checkpoint count %d", len(order), len(doc.Checkpoints))
+	}
+	byID := make(map[string]pebblestore.SessionPlanCheckpoint, len(doc.Checkpoints))
+	for _, checkpoint := range doc.Checkpoints {
+		byID[strings.TrimSpace(checkpoint.ID)] = checkpoint
+	}
+	reordered := make([]pebblestore.SessionPlanCheckpoint, 0, len(order))
+	seen := make(map[string]struct{}, len(order))
+	for _, rawID := range order {
+		id := strings.TrimSpace(rawID)
+		if id == "" {
+			return errors.New("reorder_checkpoints checkpoint_order cannot contain empty ids")
+		}
+		if _, ok := seen[id]; ok {
+			return fmt.Errorf("reorder_checkpoints checkpoint id %q is duplicated", id)
+		}
+		checkpoint, ok := byID[id]
+		if !ok {
+			return fmt.Errorf("reorder_checkpoints checkpoint id %q was not found", id)
+		}
+		seen[id] = struct{}{}
+		reordered = append(reordered, checkpoint)
+	}
+	doc.Checkpoints = reordered
+	normalizeCheckpointOrder(doc)
+	return nil
+}
+
 func clonePlanDocument(doc *pebblestore.SessionPlanDocument) *pebblestore.SessionPlanDocument {
 	if doc == nil {
 		return nil
@@ -90,6 +331,7 @@ func clonePlanDocument(doc *pebblestore.SessionPlanDocument) *pebblestore.Sessio
 	clone.Info.Assumptions = cloneStringSlice(doc.Info.Assumptions)
 	clone.Info.OpenQuestions = cloneStringSlice(doc.Info.OpenQuestions)
 	clone.Info.RelevantFiles = cloneStringSlice(doc.Info.RelevantFiles)
+	clone.Info.SuccessCriteria = cloneStringSlice(doc.Info.SuccessCriteria)
 	clone.Checkpoints = make([]pebblestore.SessionPlanCheckpoint, len(doc.Checkpoints))
 	for i := range doc.Checkpoints {
 		clone.Checkpoints[i] = doc.Checkpoints[i]
@@ -122,6 +364,7 @@ func trimPlanInfo(info *pebblestore.SessionPlanInfo) {
 	info.Assumptions = trimStringSlice(info.Assumptions)
 	info.OpenQuestions = trimStringSlice(info.OpenQuestions)
 	info.RelevantFiles = trimStringSlice(info.RelevantFiles)
+	info.SuccessCriteria = trimStringSlice(info.SuccessCriteria)
 }
 
 func trimPlanCheckpoint(checkpoint *pebblestore.SessionPlanCheckpoint) {

@@ -40,11 +40,15 @@ func (p *ChatPage) openPlanEditorModalWithPlans(plan ChatSessionPlan, plans []Ch
 	}
 	body := strings.ReplaceAll(plan.Plan, "\r\n", "\n")
 	body = strings.ReplaceAll(body, "\r", "\n")
+	if documentText := StructuredPlanDocumentTextFromValue(plan.Document); strings.TrimSpace(documentText) != "" {
+		body = documentText
+	}
 	p.planEditorVisible = true
 	p.planEditorPlan = ChatSessionPlan{
 		ID:            planID,
 		Title:         title,
 		Plan:          body,
+		Document:      plan.Document,
 		Status:        strings.TrimSpace(plan.Status),
 		ApprovalState: strings.TrimSpace(plan.ApprovalState),
 		Active:        plan.Active,
@@ -166,6 +170,9 @@ func (p *ChatPage) loadSelectedPlanEditorPlan() {
 	plan := normalizePlanEditorPlan(p.selectedPlanEditorPlan(), p.planEditorActivePlanID)
 	p.planEditorPlan = plan
 	p.planEditorInput = plan.Plan
+	if documentText := StructuredPlanDocumentTextFromValue(plan.Document); strings.TrimSpace(documentText) != "" {
+		p.planEditorInput = documentText
+	}
 	p.planEditorInputScroll = 0
 	p.planEditorScroll = 0
 	p.planEditorSelection = chatPlanEditorSelectSave
@@ -629,6 +636,7 @@ func (p *ChatPage) resolvePlanEditorModal(action chatPlanEditorAction) {
 			ID:            strings.TrimSpace(plan.ID),
 			Title:         planEditorFallback(strings.TrimSpace(plan.Title), "Plan"),
 			Plan:          text,
+			Document:      plan.Document,
 			Status:        planEditorFallback(strings.TrimSpace(plan.Status), "draft"),
 			ApprovalState: strings.TrimSpace(plan.ApprovalState),
 		}
