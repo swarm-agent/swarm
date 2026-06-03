@@ -448,7 +448,6 @@ func composeModeAwareInstructions(baseInstructions, mode string, bypassPermissio
 }
 
 func modeCapabilityInstructions(mode string, bypassPermissions bool, agentProfile pebblestore.AgentProfile) string {
-	mode = sessionruntime.NormalizeMode(mode)
 	setting, hasExecutionSetting := pebblestore.AgentExecutionSetting(agentProfile)
 	executionSetting := setting
 	exitPlanModeEnabled := pebblestore.AgentExitPlanModeEnabled(agentProfile)
@@ -456,15 +455,30 @@ func modeCapabilityInstructions(mode string, bypassPermissions bool, agentProfil
 		executionSetting = "unset"
 	}
 
-	lines := []string{
-		"Current session mode: " + mode + ".",
-		"The current session mode above is authoritative for this turn and supersedes any earlier transcript text, tool output, or UI guidance that described a different mode.",
-		"Session mode can be changed between turns; do not treat an earlier auto/plan state as permanent.",
-	}
+	currentMode := strings.ToLower(strings.TrimSpace(mode))
 	if exitPlanModeEnabled {
-		lines = append(lines, "Current agent runtime contract: plan -> auto (exit_plan_mode transitions an approved plan turn to auto; it does not make auto mode irreversible).")
+		currentMode = sessionruntime.NormalizeMode(currentMode)
+	} else if hasExecutionSetting {
+		currentMode = setting
+	} else if currentMode == "" {
+		currentMode = "unset"
+	}
+
+	lines := make([]string, 0, 24)
+	if exitPlanModeEnabled {
+		lines = append(lines,
+			"Current session mode: "+currentMode+".",
+			"The current session mode above is authoritative for this turn and supersedes any earlier transcript text, tool output, or UI guidance that described a different mode.",
+			"Session mode can be changed between turns; do not treat an earlier auto/plan state as permanent.",
+			"Current agent runtime contract: plan -> auto (exit_plan_mode transitions an approved plan turn to auto; it does not make auto mode irreversible).",
+		)
 	} else {
-		lines = append(lines, "Current agent runtime contract: "+executionSetting+".")
+		lines = append(lines,
+			"Current execution mode: "+currentMode+".",
+			"The current execution mode above is authoritative for this turn and supersedes any earlier transcript text, tool output, or UI guidance that described a different mode.",
+			"Execution mode is controlled by the saved agent execution_setting because plan mode is disabled for this agent.",
+			"Current agent runtime contract: "+executionSetting+".",
+		)
 	}
 	lines = append(lines,
 		fmt.Sprintf("Current agent exit-plan-mode enabled: %t.", exitPlanModeEnabled),
@@ -508,7 +522,7 @@ func modeCapabilityInstructions(mode string, bypassPermissions bool, agentProfil
 			"- exit_plan_mode is unavailable for this agent and will be rejected by backend policy.",
 		)
 	}
-	if mode == sessionruntime.ModePlan {
+	if currentMode == sessionruntime.ModePlan {
 		lines = append(lines,
 			"Plan-mode expectation: run targeted discovery, then draft/refine a concrete execution plan quickly.",
 			"Do not keep scanning for unrelated edge cases once the plan is actionable.",
@@ -525,7 +539,7 @@ func modeCapabilityInstructions(mode string, bypassPermissions bool, agentProfil
 			"Execution expectation: continue implementation; ask-user only for true product/decision forks.",
 			"When an active plan exists and the work is multi-step, keep the execution checklist in `manage_todos owner_kind=agent` aligned with actual implementation progress.",
 		)
-		if mode == sessionruntime.ModeAuto && exitPlanModeEnabled {
+		if currentMode == sessionruntime.ModeAuto && exitPlanModeEnabled {
 			lines = append(lines,
 				fmt.Sprintf("If an active plan exists, use plan_manage get-active/save to inspect or revise it without switching modes. Do not call exit_plan_mode from auto; it only applies when leaving plan mode. To update the active plan instead, use plan_manage with exactly: %s", autoModePlanManageSaveSnippet),
 			)
