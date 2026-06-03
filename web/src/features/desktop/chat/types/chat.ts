@@ -264,10 +264,50 @@ export interface ModelOptionRecord {
   contextWindow: number;
 }
 
+export interface DesktopSessionPlanInfo {
+  goal: string;
+  context: string;
+  decisions: string[];
+  constraints: string[];
+  assumptions: string[];
+  openQuestions: string[];
+  relevantFiles: string[];
+  validationStrategy: string;
+}
+
+export interface DesktopSessionPlanCheckpoint {
+  id: string;
+  title: string;
+  status: string;
+  objective: string;
+  tasks: string[];
+  acceptanceCriteria: string[];
+  notes: string;
+  report: string;
+  result: string;
+  changedFiles: string[];
+  validation: string[];
+  order: number;
+}
+
+export interface DesktopSessionPlanDocument {
+  id: string;
+  title: string;
+  status: string;
+  schemaVersion: string;
+  revisionId: string;
+  info: DesktopSessionPlanInfo;
+  checkpoints: DesktopSessionPlanCheckpoint[];
+  activeCheckpointId: string;
+  renderedText: string;
+  displayText: string;
+}
+
 export interface DesktopSessionPlanRecord {
   id: string;
   title: string;
   plan: string;
+  document: DesktopSessionPlanDocument | null;
   status: string;
   approvalState: string;
   updatedAt: number;

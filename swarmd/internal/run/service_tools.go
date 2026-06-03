@@ -1540,8 +1540,8 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 				planID = strings.TrimSpace(active.ID)
 			}
 		}
-		if planBody == "" {
-			return "", errors.New("plan_manage save requires plan")
+		if planBody == "" && args["document"] == nil {
+			return "", errors.New("plan_manage save requires plan or document")
 		}
 		status := strings.TrimSpace(mapString(args, "status"))
 		approvalState := strings.TrimSpace(mapString(args, "approval_state"))
@@ -1549,12 +1549,19 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 		updateScope := strings.TrimSpace(firstNonEmptyString(mapString(args, "update_scope"), mapString(args, "scope")))
 		updateKind := strings.TrimSpace(firstNonEmptyString(mapString(args, "update_kind"), mapString(args, "kind")))
 		checkpoint := mapBool(args, "checkpoint")
+		document, err := planDocumentFromArgs(args)
+		if err != nil {
+			return "", err
+		}
 		if planID != "" {
 			existing, ok, err := s.sessions.GetPlan(sessionID, planID)
 			if err != nil {
 				return "", err
 			}
 			if ok {
+				if planBody == "" && document != nil {
+					planBody = existing.Plan
+				}
 				if title == "" {
 					title = strings.TrimSpace(existing.Title)
 				}
@@ -1573,7 +1580,7 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 		if _, hasActivate := args["activate"]; hasActivate {
 			activate = mapBool(args, "activate")
 		}
-		plan, _, err := s.sessions.SavePlanWithMetadata(sessionID, planID, title, planBody, status, approvalState, activate, sessionruntime.PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: updateScope, UpdateKind: updateKind, Checkpoint: checkpoint})
+		plan, _, err := s.sessions.SavePlanWithMetadata(sessionID, planID, title, planBody, status, approvalState, activate, sessionruntime.PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: updateScope, UpdateKind: updateKind, Checkpoint: checkpoint, Document: document})
 		if err != nil {
 			return "", err
 		}
@@ -1592,9 +1599,13 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 		if planID == "" {
 			planID = strings.TrimSpace(mapString(args, "id"))
 		}
-		patch, err := planPatchFromManageArgs(args, action)
-		if err != nil {
-			return "", err
+		var patch sessionruntime.PlanPatch
+		if planPatchArgsPresent(args, action) {
+			var err error
+			patch, err = planPatchFromManageArgs(args, action)
+			if err != nil {
+				return "", err
+			}
 		}
 		title := strings.TrimSpace(mapString(args, "title"))
 		status := strings.TrimSpace(mapString(args, "status"))
@@ -1603,12 +1614,16 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 		updateScope := strings.TrimSpace(firstNonEmptyString(mapString(args, "update_scope"), mapString(args, "scope")))
 		updateKind := strings.TrimSpace(firstNonEmptyString(mapString(args, "update_kind"), mapString(args, "kind")))
 		checkpoint := mapBool(args, "checkpoint")
+		document, err := planDocumentFromArgs(args)
+		if err != nil {
+			return "", err
+		}
 		var activate *bool
 		if _, hasActivate := args["activate"]; hasActivate {
 			value := mapBool(args, "activate")
 			activate = &value
 		}
-		plan, _, err := s.sessions.PatchPlan(sessionID, sessionruntime.PlanPatchOptions{PlanID: planID, Title: title, Status: status, ApprovalState: approvalState, Activate: activate, Patch: patch, Metadata: sessionruntime.PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: updateScope, UpdateKind: updateKind, Checkpoint: checkpoint}})
+		plan, _, err := s.sessions.PatchPlan(sessionID, sessionruntime.PlanPatchOptions{PlanID: planID, Title: title, Status: status, ApprovalState: approvalState, Activate: activate, Patch: patch, Document: document, Metadata: sessionruntime.PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: updateScope, UpdateKind: updateKind, Checkpoint: checkpoint}})
 		if err != nil {
 			return "", err
 		}
@@ -1628,7 +1643,11 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 			title = "New Plan"
 		}
 		override := mapBool(args, "override")
-		plan, _, err := s.sessions.StartNewPlan(sessionID, title, sessionruntime.StartNewPlanOptions{Override: override})
+		document, err := planDocumentFromArgs(args)
+		if err != nil {
+			return "", err
+		}
+		plan, _, err := s.sessions.StartNewPlan(sessionID, title, sessionruntime.StartNewPlanOptions{Override: override, Document: document})
 		if err != nil {
 			return "", err
 		}

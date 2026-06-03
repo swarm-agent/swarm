@@ -103,7 +103,7 @@ func TestPatchPlanRejectsMetadataOnlyAndAmbiguousReplace(t *testing.T) {
 	}
 
 	_, _, err = svc.PatchPlan(sessionID, PlanPatchOptions{Metadata: PlanSaveMetadata{UpdateSummary: "metadata only"}})
-	if err == nil || !strings.Contains(err.Error(), "requires at least one edit field") {
+	if err == nil || !strings.Contains(err.Error(), "requires at least one edit field or document") {
 		t.Fatalf("metadata-only patch error = %v, want clear edit-field error", err)
 	}
 

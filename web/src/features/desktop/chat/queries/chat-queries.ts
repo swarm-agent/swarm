@@ -19,6 +19,7 @@ import type {
   ModelOptionRecord,
   ProviderDefaultsPreviewRecord,
   ResolvedSessionPreference,
+  DesktopSessionPlanDocument,
   DesktopSessionPlanRecord,
   DesktopSessionPlanRevisionRecord,
 } from "../types/chat";
@@ -200,10 +201,50 @@ interface SessionUsageResponseWire {
   usage_summary?: SessionUsageSummaryWire | null;
 }
 
+interface SessionPlanInfoWire {
+  goal?: string;
+  context?: string;
+  decisions?: string[];
+  constraints?: string[];
+  assumptions?: string[];
+  open_questions?: string[];
+  relevant_files?: string[];
+  validation_strategy?: string;
+}
+
+interface SessionPlanCheckpointWire {
+  id?: string;
+  title?: string;
+  status?: string;
+  objective?: string;
+  tasks?: string[];
+  acceptance_criteria?: string[];
+  notes?: string;
+  report?: string;
+  result?: string;
+  changed_files?: string[];
+  validation?: string[];
+  order?: number;
+}
+
+interface SessionPlanDocumentWire {
+  id?: string;
+  title?: string;
+  status?: string;
+  schema_version?: string;
+  revision_id?: string;
+  info?: SessionPlanInfoWire | null;
+  checkpoints?: SessionPlanCheckpointWire[] | null;
+  active_checkpoint_id?: string;
+  rendered_text?: string;
+  display_text?: string;
+}
+
 interface SessionPlanWire {
   id?: string;
   title?: string;
   plan?: string;
+  document?: SessionPlanDocumentWire | null;
   status?: string;
   approval_state?: string;
   created_at?: number;
@@ -486,6 +527,55 @@ function mapSessionCodexConfig(
   };
 }
 
+function mapStringArray(value: string[] | undefined): string[] {
+  return Array.isArray(value) ? value.map((item) => String(item).trim()).filter(Boolean) : [];
+}
+
+function mapSessionPlanDocument(
+  document: SessionPlanDocumentWire | null | undefined,
+): DesktopSessionPlanDocument | null {
+  if (!document) {
+    return null;
+  }
+  const info = document.info ?? {};
+  return {
+    id: String(document.id ?? "").trim(),
+    title: String(document.title ?? "").trim(),
+    status: String(document.status ?? "").trim(),
+    schemaVersion: String(document.schema_version ?? "").trim(),
+    revisionId: String(document.revision_id ?? "").trim(),
+    info: {
+      goal: String(info.goal ?? "").trim(),
+      context: String(info.context ?? "").trim(),
+      decisions: mapStringArray(info.decisions),
+      constraints: mapStringArray(info.constraints),
+      assumptions: mapStringArray(info.assumptions),
+      openQuestions: mapStringArray(info.open_questions),
+      relevantFiles: mapStringArray(info.relevant_files),
+      validationStrategy: String(info.validation_strategy ?? "").trim(),
+    },
+    checkpoints: Array.isArray(document.checkpoints)
+      ? document.checkpoints.map((checkpoint, index) => ({
+          id: String(checkpoint?.id ?? "").trim(),
+          title: String(checkpoint?.title ?? "").trim(),
+          status: String(checkpoint?.status ?? "").trim(),
+          objective: String(checkpoint?.objective ?? "").trim(),
+          tasks: mapStringArray(checkpoint?.tasks),
+          acceptanceCriteria: mapStringArray(checkpoint?.acceptance_criteria),
+          notes: String(checkpoint?.notes ?? "").trim(),
+          report: String(checkpoint?.report ?? "").trim(),
+          result: String(checkpoint?.result ?? "").trim(),
+          changedFiles: mapStringArray(checkpoint?.changed_files),
+          validation: mapStringArray(checkpoint?.validation),
+          order: typeof checkpoint?.order === "number" ? checkpoint.order : index + 1,
+        }))
+      : [],
+    activeCheckpointId: String(document.active_checkpoint_id ?? "").trim(),
+    renderedText: String(document.rendered_text ?? ""),
+    displayText: String(document.display_text ?? ""),
+  };
+}
+
 function mapSessionPlan(
   plan: SessionPlanWire | null | undefined,
 ): DesktopSessionPlanRecord {
@@ -493,6 +583,7 @@ function mapSessionPlan(
     id: String(plan?.id ?? "").trim(),
     title: String(plan?.title ?? "").trim(),
     plan: String(plan?.plan ?? ""),
+    document: mapSessionPlanDocument(plan?.document),
     status: String(plan?.status ?? "").trim(),
     approvalState: String(plan?.approval_state ?? "").trim(),
     updatedAt: typeof plan?.updated_at === "number" ? plan.updated_at : 0,
@@ -1812,6 +1903,7 @@ export async function saveSessionPlan(
     id?: string;
     title?: string;
     plan: string;
+    document?: unknown;
     status?: string;
     approvalState?: string;
   },
@@ -1828,6 +1920,7 @@ export async function saveSessionPlan(
         plan_id: input.id?.trim() || undefined,
         title: input.title?.trim() || undefined,
         plan: input.plan,
+        document: input.document ?? undefined,
         status: input.status?.trim() || undefined,
         approval_state: input.approvalState?.trim() || undefined,
       }),

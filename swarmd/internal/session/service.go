@@ -1710,6 +1710,7 @@ type PlanSaveMetadata struct {
 	UpdateScope   string
 	UpdateKind    string
 	Checkpoint    bool
+	Document      *pebblestore.SessionPlanDocument
 }
 
 type PlanPatchOptions struct {
@@ -1719,6 +1720,7 @@ type PlanPatchOptions struct {
 	ApprovalState string
 	Activate      *bool
 	Patch         PlanPatch
+	Document      *pebblestore.SessionPlanDocument
 	Metadata      PlanSaveMetadata
 }
 
@@ -1741,7 +1743,11 @@ func (s *Service) SavePlanWithMetadata(sessionID, planID, title, plan, status, a
 		return pebblestore.SessionPlanSnapshot{}, nil, errors.New("session id is required")
 	}
 	if title == "" {
-		title = "Plan"
+		if metadata.Document != nil && strings.TrimSpace(metadata.Document.Title) != "" {
+			title = strings.TrimSpace(metadata.Document.Title)
+		} else {
+			title = "Plan"
+		}
 	}
 	if status == "" {
 		status = "draft"
@@ -1760,7 +1766,11 @@ func (s *Service) SavePlanWithMetadata(sessionID, planID, title, plan, status, a
 
 	now := time.Now().UnixMilli()
 	if planID == "" {
-		planID = s.newPlanID(now)
+		if metadata.Document != nil && strings.TrimSpace(metadata.Document.ID) != "" {
+			planID = strings.TrimSpace(metadata.Document.ID)
+		} else {
+			planID = s.newPlanID(now)
+		}
 	}
 
 	existing, found, err := s.store.GetPlan(sessionID, planID)
@@ -1786,7 +1796,15 @@ func (s *Service) SavePlanWithMetadata(sessionID, planID, title, plan, status, a
 		Version:        1,
 	}
 	if found {
+		if plan == "" && metadata.Document != nil {
+			plan = existing.Plan
+			record.Plan = existing.Plan
+		}
 		record.CreatedAt = existing.CreatedAt
+		record.Document, err = NormalizePlanDocumentForSave(planID, title, metadata.Document, existing.Document)
+		if err != nil {
+			return pebblestore.SessionPlanSnapshot{}, nil, err
+		}
 		if record.UserID == "" {
 			record.UserID = existing.UserID
 		}
@@ -1801,6 +1819,15 @@ func (s *Service) SavePlanWithMetadata(sessionID, planID, title, plan, status, a
 		}
 		record.Version = existing.Version + 1
 		record.ParentRevision = existing.Version
+	}
+	if !found {
+		record.Document, err = NormalizePlanDocumentForSave(planID, title, metadata.Document, nil)
+		if err != nil {
+			return pebblestore.SessionPlanSnapshot{}, nil, err
+		}
+	}
+	if record.Document != nil {
+		record.Document.RevisionID = fmt.Sprintf("%s:v%d", planID, record.Version)
 	}
 	if record.CreatedAt <= 0 {
 		record.CreatedAt = now
@@ -1858,8 +1885,8 @@ func (s *Service) PatchPlan(sessionID string, options PlanPatchOptions) (pebbles
 	if sessionID == "" {
 		return pebblestore.SessionPlanSnapshot{}, nil, errors.New("session id is required")
 	}
-	if options.Patch.IsZero() {
-		return pebblestore.SessionPlanSnapshot{}, nil, errors.New("plan patch requires at least one edit field")
+	if options.Patch.IsZero() && options.Document == nil {
+		return pebblestore.SessionPlanSnapshot{}, nil, errors.New("plan patch requires at least one edit field or document")
 	}
 	var existing pebblestore.SessionPlanSnapshot
 	var ok bool
@@ -1882,11 +1909,14 @@ func (s *Service) PatchPlan(sessionID string, options PlanPatchOptions) (pebbles
 			return pebblestore.SessionPlanSnapshot{}, nil, fmt.Errorf("plan %q not found", planID)
 		}
 	}
-	patchedPlan, err := ApplyPlanPatch(existing.Plan, options.Patch)
-	if err != nil {
-		return pebblestore.SessionPlanSnapshot{}, nil, err
+	patchedPlan := existing.Plan
+	if !options.Patch.IsZero() {
+		patchedPlan, err = ApplyPlanPatch(existing.Plan, options.Patch)
+		if err != nil {
+			return pebblestore.SessionPlanSnapshot{}, nil, err
+		}
 	}
-	if patchedPlan == existing.Plan {
+	if patchedPlan == existing.Plan && options.Document == nil {
 		return pebblestore.SessionPlanSnapshot{}, nil, errors.New("plan patch produced no changes")
 	}
 	title := strings.TrimSpace(options.Title)
@@ -1905,7 +1935,11 @@ func (s *Service) PatchPlan(sessionID string, options PlanPatchOptions) (pebbles
 	if options.Activate != nil {
 		activate = *options.Activate
 	}
-	return s.SavePlanWithMetadata(sessionID, planID, title, patchedPlan, status, approvalState, activate, options.Metadata)
+	metadata := options.Metadata
+	if options.Document != nil {
+		metadata.Document = options.Document
+	}
+	return s.SavePlanWithMetadata(sessionID, planID, title, patchedPlan, status, approvalState, activate, metadata)
 }
 
 func (s *Service) ListPlans(sessionID string, limit int) ([]pebblestore.SessionPlanSnapshot, string, error) {
@@ -2033,10 +2067,6 @@ func (s *Service) SetActivePlan(sessionID, planID string) (pebblestore.SessionPl
 		return pebblestore.SessionPlanSnapshot{}, nil, err
 	}
 	record.Active = true
-	record.UpdatedAt = now
-	if err := s.store.PutPlan(record); err != nil {
-		return pebblestore.SessionPlanSnapshot{}, nil, err
-	}
 
 	payload, err := json.Marshal(map[string]any{
 		"session_id": sessionID,
@@ -2056,6 +2086,7 @@ func (s *Service) SetActivePlan(sessionID, planID string) (pebblestore.SessionPl
 
 type StartNewPlanOptions struct {
 	Override bool
+	Document *pebblestore.SessionPlanDocument
 }
 
 func (s *Service) StartNewPlan(sessionID, title string, options ...StartNewPlanOptions) (pebblestore.SessionPlanSnapshot, *pebblestore.EventEnvelope, error) {
@@ -2063,10 +2094,11 @@ func (s *Service) StartNewPlan(sessionID, title string, options ...StartNewPlanO
 	if sessionID == "" {
 		return pebblestore.SessionPlanSnapshot{}, nil, errors.New("session id is required")
 	}
-	allowOverride := false
+	var opts StartNewPlanOptions
 	if len(options) > 0 {
-		allowOverride = options[0].Override
+		opts = options[0]
 	}
+	allowOverride := opts.Override
 	if !allowOverride {
 		active, ok, err := s.GetActivePlan(sessionID)
 		if err != nil {
@@ -2081,7 +2113,7 @@ func (s *Service) StartNewPlan(sessionID, title string, options ...StartNewPlanO
 		title = "New Plan"
 	}
 	plan := "# " + title + "\n\n- [ ] next step\n"
-	return s.SavePlan(sessionID, "", title, plan, "draft", "draft", true)
+	return s.SavePlanWithMetadata(sessionID, "", title, plan, "draft", "draft", true, PlanSaveMetadata{Document: opts.Document})
 }
 
 func NewSessionID() string {

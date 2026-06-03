@@ -98,26 +98,66 @@ type SessionCodexConfig struct {
 }
 
 type SessionPlanSnapshot struct {
-	ID             string   `json:"id"`
-	SessionID      string   `json:"session_id"`
-	UserID         string   `json:"user_id,omitempty"`
-	AccountScopeID string   `json:"account_scope_id,omitempty"`
-	Title          string   `json:"title"`
-	Plan           string   `json:"plan"`
-	Status         string   `json:"status"`
-	ApprovalState  string   `json:"approval_state"`
-	Active         bool     `json:"active"`
-	CreatedAt      int64    `json:"created_at"`
-	UpdatedAt      int64    `json:"updated_at"`
-	PriorTitle     string   `json:"prior_title,omitempty"`
-	PriorPlan      string   `json:"prior_plan,omitempty"`
-	DiffLines      []string `json:"diff_lines,omitempty"`
-	UpdateSummary  string   `json:"update_summary,omitempty"`
-	UpdateScope    string   `json:"update_scope,omitempty"`
-	UpdateKind     string   `json:"update_kind,omitempty"`
-	Version        int      `json:"version,omitempty"`
-	ParentRevision int      `json:"parent_revision,omitempty"`
-	Checkpoint     bool     `json:"checkpoint,omitempty"`
+	ID             string               `json:"id"`
+	SessionID      string               `json:"session_id"`
+	UserID         string               `json:"user_id,omitempty"`
+	AccountScopeID string               `json:"account_scope_id,omitempty"`
+	Title          string               `json:"title"`
+	Plan           string               `json:"plan"`
+	Document       *SessionPlanDocument `json:"document,omitempty"`
+	Status         string               `json:"status"`
+	ApprovalState  string               `json:"approval_state"`
+	Active         bool                 `json:"active"`
+	CreatedAt      int64                `json:"created_at"`
+	UpdatedAt      int64                `json:"updated_at"`
+	PriorTitle     string               `json:"prior_title,omitempty"`
+	PriorPlan      string               `json:"prior_plan,omitempty"`
+	DiffLines      []string             `json:"diff_lines,omitempty"`
+	UpdateSummary  string               `json:"update_summary,omitempty"`
+	UpdateScope    string               `json:"update_scope,omitempty"`
+	UpdateKind     string               `json:"update_kind,omitempty"`
+	Version        int                  `json:"version,omitempty"`
+	ParentRevision int                  `json:"parent_revision,omitempty"`
+	Checkpoint     bool                 `json:"checkpoint,omitempty"`
+}
+
+type SessionPlanDocument struct {
+	ID                 string                  `json:"id"`
+	Title              string                  `json:"title"`
+	Status             string                  `json:"status,omitempty"`
+	SchemaVersion      string                  `json:"schema_version,omitempty"`
+	RevisionID         string                  `json:"revision_id,omitempty"`
+	Info               SessionPlanInfo         `json:"info,omitempty"`
+	Checkpoints        []SessionPlanCheckpoint `json:"checkpoints,omitempty"`
+	ActiveCheckpointID string                  `json:"active_checkpoint_id,omitempty"`
+	RenderedText       string                  `json:"rendered_text,omitempty"`
+	DisplayText        string                  `json:"display_text,omitempty"`
+}
+
+type SessionPlanInfo struct {
+	Goal               string   `json:"goal,omitempty"`
+	Context            string   `json:"context,omitempty"`
+	Decisions          []string `json:"decisions,omitempty"`
+	Constraints        []string `json:"constraints,omitempty"`
+	Assumptions        []string `json:"assumptions,omitempty"`
+	OpenQuestions      []string `json:"open_questions,omitempty"`
+	RelevantFiles      []string `json:"relevant_files,omitempty"`
+	ValidationStrategy string   `json:"validation_strategy,omitempty"`
+}
+
+type SessionPlanCheckpoint struct {
+	ID                 string   `json:"id"`
+	Title              string   `json:"title,omitempty"`
+	Status             string   `json:"status,omitempty"`
+	Objective          string   `json:"objective,omitempty"`
+	Tasks              []string `json:"tasks,omitempty"`
+	AcceptanceCriteria []string `json:"acceptance_criteria,omitempty"`
+	Notes              string   `json:"notes,omitempty"`
+	Report             string   `json:"report,omitempty"`
+	Result             string   `json:"result,omitempty"`
+	ChangedFiles       []string `json:"changed_files,omitempty"`
+	Validation         []string `json:"validation,omitempty"`
+	Order              int      `json:"order,omitempty"`
 }
 
 type SessionPlanActive struct {

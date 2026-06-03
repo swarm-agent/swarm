@@ -3328,18 +3328,19 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			})
 		case http.MethodPost:
 			var req struct {
-				ID            string `json:"id"`
-				PlanID        string `json:"plan_id"`
-				Title         string `json:"title"`
-				Plan          string `json:"plan"`
-				Status        string `json:"status"`
-				ApprovalState string `json:"approval_state"`
-				UpdateSummary string `json:"update_summary"`
-				UpdateScope   string `json:"update_scope"`
-				Scope         string `json:"scope"`
-				UpdateKind    string `json:"update_kind"`
-				Checkpoint    bool   `json:"checkpoint"`
-				Activate      *bool  `json:"activate"`
+				ID            string                           `json:"id"`
+				PlanID        string                           `json:"plan_id"`
+				Title         string                           `json:"title"`
+				Plan          string                           `json:"plan"`
+				Document      *pebblestore.SessionPlanDocument `json:"document"`
+				Status        string                           `json:"status"`
+				ApprovalState string                           `json:"approval_state"`
+				UpdateSummary string                           `json:"update_summary"`
+				UpdateScope   string                           `json:"update_scope"`
+				Scope         string                           `json:"scope"`
+				UpdateKind    string                           `json:"update_kind"`
+				Checkpoint    bool                             `json:"checkpoint"`
+				Activate      *bool                            `json:"activate"`
 			}
 			if err := decodeJSON(r, &req); err != nil {
 				writeError(w, http.StatusBadRequest, err)
@@ -3357,7 +3358,7 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			if updateScope == "" {
 				updateScope = strings.TrimSpace(req.Scope)
 			}
-			plan, event, err := s.sessions.SavePlanWithMetadata(sessionID, planID, req.Title, req.Plan, req.Status, req.ApprovalState, activate, sessionruntime.PlanSaveMetadata{UpdateSummary: req.UpdateSummary, UpdateScope: updateScope, UpdateKind: req.UpdateKind, Checkpoint: req.Checkpoint})
+			plan, event, err := s.sessions.SavePlanWithMetadata(sessionID, planID, req.Title, req.Plan, req.Status, req.ApprovalState, activate, sessionruntime.PlanSaveMetadata{UpdateSummary: req.UpdateSummary, UpdateScope: updateScope, UpdateKind: req.UpdateKind, Checkpoint: req.Checkpoint, Document: req.Document})
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return

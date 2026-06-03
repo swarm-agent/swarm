@@ -18,7 +18,7 @@ type PlanPatch struct {
 }
 
 func (p PlanPatch) IsZero() bool {
-	return strings.TrimSpace(p.OldText) == "" && strings.TrimSpace(p.NewText) == "" && strings.TrimSpace(p.Text) == "" && strings.TrimSpace(p.ChecklistItem) == "" && p.Checked == nil
+	return strings.TrimSpace(p.OldText) == "" && strings.TrimSpace(p.NewText) == "" && strings.TrimSpace(p.Text) == "" && strings.TrimSpace(p.ChecklistItem) == "" && strings.TrimSpace(p.Section) == "" && p.Checked == nil
 }
 
 func ApplyPlanPatch(plan string, patch PlanPatch) (string, error) {
