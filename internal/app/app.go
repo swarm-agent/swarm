@@ -4095,6 +4095,41 @@ func scopedSessionTabsForPath(path string, summaries []model.SessionSummary, ext
 	return chatSessionTabsWithExtras(filterSessionSummariesForExactPath(summaries, path), extras)
 }
 
+func localWorkspaceBindingIDForActiveWorkspace(home model.HomeModel, activeWorkspacePath string) string {
+	for _, ws := range home.Workspaces {
+		if ws.Active {
+			return strings.TrimSpace(ws.LocalWorkspaceBindingID)
+		}
+	}
+	activeWorkspacePath = normalizePath(activeWorkspacePath)
+	if activeWorkspacePath == "" {
+		return ""
+	}
+	for _, ws := range home.Workspaces {
+		if pathsEqual(ws.Path, activeWorkspacePath) {
+			return strings.TrimSpace(ws.LocalWorkspaceBindingID)
+		}
+	}
+	return ""
+}
+
+func (a *App) activeLocalWorkspaceBindingID() string {
+	if a == nil {
+		return ""
+	}
+	return localWorkspaceBindingIDForActiveWorkspace(a.homeModel, a.activeWorkspacePath())
+}
+
+func (a *App) listSessionsForActiveContext(ctx context.Context, limit int, workspacePath string) ([]client.SessionSummary, error) {
+	if a == nil || a.api == nil {
+		return nil, errors.New("api is unavailable")
+	}
+	if bindingID := a.activeLocalWorkspaceBindingID(); bindingID != "" {
+		return a.api.ListSessionsForWorkspaceBinding(ctx, limit, bindingID)
+	}
+	return a.api.ListSessionsForExactCWD(ctx, limit, workspacePath)
+}
+
 const (
 	workspaceOverviewDesktopSessionLimit = 200
 	homeRecentSessionLimit               = 50
@@ -4163,7 +4198,7 @@ func (a *App) openHomeSessionsModal(query string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
-	sessions, err := a.api.ListSessionsForCWD(ctx, workspaceOverviewDesktopSessionLimit, workspacePath)
+	sessions, err := a.listSessionsForActiveContext(ctx, workspaceOverviewDesktopSessionLimit, workspacePath)
 	if err != nil {
 		a.home.SetStatus(fmt.Sprintf("sessions modal failed: %v", err))
 		return
@@ -4192,7 +4227,7 @@ func (a *App) openChatSessionsPalette(query string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
-	sessions, err := a.api.ListSessionsForCWD(ctx, workspaceOverviewDesktopSessionLimit, workspacePath)
+	sessions, err := a.listSessionsForActiveContext(ctx, workspaceOverviewDesktopSessionLimit, workspacePath)
 	if err != nil {
 		return err
 	}
@@ -7125,7 +7160,7 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		sessionsErr      error
 	)
 	var refreshWG sync.WaitGroup
-	refreshWG.Add(10)
+	refreshWG.Add(9)
 	go func() {
 		defer refreshWG.Done()
 		health, healthErr = a.api.GetHealth(ctx)
@@ -7161,10 +7196,6 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 	go func() {
 		defer refreshWG.Done()
 		contextReport, contextErr = a.api.ContextSources(ctx, contextPath)
-	}()
-	go func() {
-		defer refreshWG.Done()
-		sessions, sessionsErr = a.api.ListSessionsForExactCWD(ctx, homeRecentSessionLimit, contextPath)
 	}()
 	refreshWG.Wait()
 
@@ -7288,6 +7319,12 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		}
 	} else {
 		errorsSeen = append(errorsSeen, "cwd route resolver unavailable")
+	}
+
+	if bindingID := localWorkspaceBindingIDForActiveWorkspace(next, activePath); bindingID != "" {
+		sessions, sessionsErr = a.api.ListSessionsForWorkspaceBinding(ctx, homeRecentSessionLimit, bindingID)
+	} else {
+		sessions, sessionsErr = a.api.ListSessionsForExactCWD(ctx, homeRecentSessionLimit, contextPath)
 	}
 
 	gitStatus, _ := gitStatusForPath(activePath)

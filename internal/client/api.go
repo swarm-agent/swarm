@@ -2610,18 +2610,22 @@ func (c *API) SetMCPServerEnabled(ctx context.Context, id string, enabled bool) 
 }
 
 func (c *API) ListSessions(ctx context.Context, limit int) ([]SessionSummary, error) {
-	return c.ListSessionsForCWD(ctx, limit, "")
+	return c.listSessionsV1ForPath(ctx, limit, "", false)
 }
 
 func (c *API) ListSessionsForCWD(ctx context.Context, limit int, cwd string) ([]SessionSummary, error) {
-	return c.listSessionsForPath(ctx, limit, cwd, false)
+	return c.listSessionsV1ForPath(ctx, limit, cwd, false)
 }
 
 func (c *API) ListSessionsForExactCWD(ctx context.Context, limit int, cwd string) ([]SessionSummary, error) {
-	return c.listSessionsForPath(ctx, limit, cwd, true)
+	return c.listSessionsV2(ctx, limit, "cwd", cwd)
 }
 
-func (c *API) listSessionsForPath(ctx context.Context, limit int, cwd string, exact bool) ([]SessionSummary, error) {
+func (c *API) ListSessionsForWorkspaceBinding(ctx context.Context, limit int, workspaceBindingID string) ([]SessionSummary, error) {
+	return c.listSessionsV2(ctx, limit, "workspace_binding_id", workspaceBindingID)
+}
+
+func (c *API) listSessionsV1ForPath(ctx context.Context, limit int, cwd string, exact bool) ([]SessionSummary, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -2632,6 +2636,32 @@ func (c *API) listSessionsForPath(ctx context.Context, limit int, cwd string, ex
 	if exact {
 		path += "&exact_path=true"
 	}
+	var resp struct {
+		OK       bool             `json:"ok"`
+		Sessions []SessionSummary `json:"sessions"`
+	}
+	if err := c.getJSON(ctx, path, &resp, true); err != nil {
+		return nil, err
+	}
+	return resp.Sessions, nil
+}
+
+func (c *API) listSessionsV2(ctx context.Context, limit int, mode, value string) ([]SessionSummary, error) {
+	mode = strings.TrimSpace(mode)
+	value = strings.TrimSpace(value)
+	if mode != "cwd" && mode != "workspace_binding_id" {
+		return nil, fmt.Errorf("unsupported sessions v2 list mode %q", mode)
+	}
+	if value == "" {
+		return nil, fmt.Errorf("sessions v2 list %s is required", mode)
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	query := url.Values{}
+	query.Set("limit", strconv.Itoa(limit))
+	query.Set(mode, value)
+	path := "/v2/sessions?" + query.Encode()
 	var resp struct {
 		OK       bool             `json:"ok"`
 		Sessions []SessionSummary `json:"sessions"`
