@@ -113,7 +113,7 @@ func TestManageAgentUpdateAcceptsBackgroundMode(t *testing.T) {
 	}
 }
 
-func TestManageAgentInspectExplainsAgentModeRelationship(t *testing.T) {
+func TestManageAgentInspectExplainsAgentModeAndExecutionModeRelationship(t *testing.T) {
 	workspace := t.TempDir()
 	store, err := pebblestore.Open(filepath.Join(workspace, "state.pebble"))
 	if err != nil {
@@ -143,16 +143,49 @@ func TestManageAgentInspectExplainsAgentModeRelationship(t *testing.T) {
 	decoded := decodeManageAgentResultJSON(t, results[0].Output)
 	instructions := asString(decoded["instructions"])
 	for _, want := range []string{
-		"does not specify the agent type/mode, clarify before creating",
+		"does not specify the agent type/mode or execution mode, clarify before creating",
 		"primary agents are user-selectable in Desktop/TUI",
 		"subagent agents are usable by primary agents for task delegation",
 		"also user-selectable in Desktop/TUI",
 		"background agents are for Flows",
 		"do not appear in the Desktop/TUI selector",
+		"Execution modes are explicit",
+		"runtime_mode=plan_auto means plan approval mode and forces exit_plan_mode_enabled=true",
+		"runtime_mode=read means direct read-only mode and forces exit_plan_mode_enabled=false",
+		"runtime_mode=readwrite means direct read/write mode and forces exit_plan_mode_enabled=false",
+		"Treat runtime_mode as authoritative for create/update",
+		"execution_setting is a legacy alias for direct read/readwrite only",
+		"Tool presets are least-privilege grant suggestions",
+		"must not override an explicit user-requested runtime_mode",
+		"set explicit `runtime_mode`",
 	} {
 		if !strings.Contains(instructions, want) {
 			t.Fatalf("instructions missing %q\n%s", want, instructions)
 		}
+	}
+	examples, ok := decoded["examples"].([]any)
+	if !ok || len(examples) == 0 {
+		t.Fatalf("examples = %T %v, want non-empty", decoded["examples"], decoded["examples"])
+	}
+	foundRuntimeModeExample := false
+	for _, rawExample := range examples {
+		example, ok := rawExample.(map[string]any)
+		if !ok || example["action"] != "create" {
+			continue
+		}
+		content, ok := example["content"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if got := content["runtime_mode"]; got == "read" {
+			foundRuntimeModeExample = true
+		}
+		if _, legacy := content["execution_setting"]; legacy {
+			t.Fatalf("create example still uses legacy execution_setting: %v", content)
+		}
+	}
+	if !foundRuntimeModeExample {
+		t.Fatalf("create examples did not include runtime_mode=read: %v", examples)
 	}
 }
 

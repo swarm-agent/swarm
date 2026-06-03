@@ -854,7 +854,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "manage-agent",
-			Description: "Inspect and manage saved agents and custom tools; call with {\"action\":\"inspect\"} first for usage details, including agent mode guidance, available tool bundles/presets, and concrete tool grants; if the user has not specified which agent type/mode to create, clarify before creating; create/update should choose the least-privilege preset first and only add explicit per-tool overrides from the advertised inventory when necessary; mutating actions return approval-ready before/after previews unless confirm=true",
+			Description: "Inspect and manage saved agents and custom tools; call with {\"action\":\"inspect\"} first for usage details, including agent mode guidance, execution modes, available tool bundles/presets, and concrete tool grants; if the user has not specified which agent type/mode or execution mode to create, clarify before creating; create/update should set explicit runtime_mode (plan_auto, read, or readwrite), choose the least-privilege preset first, and only add explicit per-tool overrides from the advertised inventory when necessary; mutating actions return approval-ready before/after previews unless confirm=true",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -880,9 +880,9 @@ func (r *Runtime) Definitions() []Definition {
 									"model":                  map[string]any{"type": "string"},
 									"thinking":               map[string]any{"type": "string"},
 									"prompt":                 map[string]any{"type": "string"},
-									"runtime_mode":           map[string]any{"type": "string", "description": "plan_auto|read|readwrite"},
-									"execution_setting":      map[string]any{"type": "string", "description": "legacy alias for read|readwrite direct runtime"},
-									"exit_plan_mode_enabled": map[string]any{"type": "boolean"},
+									"runtime_mode":           map[string]any{"type": "string", "description": "Authoritative execution mode: plan_auto|read|readwrite"},
+									"execution_setting":      map[string]any{"type": "string", "description": "legacy alias for read|readwrite direct runtime only; prefer runtime_mode"},
+									"exit_plan_mode_enabled": map[string]any{"type": "boolean", "description": "Derived from runtime_mode: true for plan_auto, false for read/readwrite"},
 									"enabled":                map[string]any{"type": "boolean"},
 									"tool_scope":             manageAgentToolScopeSchema(),
 									"tool_contract":          manageAgentToolContractSchema(),
@@ -6065,7 +6065,7 @@ func manageSkillInspect(scope WorkspaceScope) (string, error) {
 }
 
 func manageAgentInstructionsText() string {
-	return "Use manage-agent to inspect and manage saved agents, custom tools, and subagent transcripts. Call inspect/list first, then get before mutating an agent profile. If the user asks to create an agent but does not specify the agent type/mode, clarify before creating. Agent modes: primary agents are user-selectable in Desktop/TUI; subagent agents are usable by primary agents for task delegation and are also user-selectable in Desktop/TUI; background agents are for Flows and do not appear in the Desktop/TUI selector. Use action=transcript/session_transcript with session_id from a task report_ref to read a child subagent transcript when inline task output was truncated or omitted. Inspect output includes tool_inventory.tools and tool_inventory.presets; each preset lists the concrete tools it grants. For create/update, prefer object-form `content`, choose the smallest preset/bundle that fits the requested job, and avoid overscoping. Use explicit `tool_contract.tools.{tool}.enabled` overrides only when the user request needs narrower or slightly broader access than a preset; override names must come from tool_inventory.tools[].contract_name/name. Do not enable bash unless it is limited by explicit bash_prefixes. Do not use inherit_policy for model-created profiles. Custom tool actions use `content={name,kind,description?,command}` and assignment actions use top-level `agent` plus `tool_name`. Mutating actions return approval-ready previews unless confirm=true."
+	return "Use manage-agent to inspect and manage saved agents, custom tools, and subagent transcripts. Call inspect/list first, then get before mutating an agent profile. If the user asks to create an agent but does not specify the agent type/mode or execution mode, clarify before creating. Agent modes: primary agents are user-selectable in Desktop/TUI; subagent agents are usable by primary agents for task delegation and are also user-selectable in Desktop/TUI; background agents are for Flows and do not appear in the Desktop/TUI selector. Execution modes are explicit: runtime_mode=plan_auto means plan approval mode and forces exit_plan_mode_enabled=true; runtime_mode=read means direct read-only mode and forces exit_plan_mode_enabled=false; runtime_mode=readwrite means direct read/write mode and forces exit_plan_mode_enabled=false. Treat runtime_mode as authoritative for create/update. execution_setting is a legacy alias for direct read/readwrite only; do not use it with plan_auto and prefer runtime_mode for new changes. Tool presets are least-privilege grant suggestions and may imply a default direct mode, but they must not override an explicit user-requested runtime_mode. Use action=transcript/session_transcript with session_id from a task report_ref to read a child subagent transcript when inline task output was truncated or omitted. Inspect output includes tool_inventory.tools and tool_inventory.presets; each preset lists the concrete tools it grants. For create/update, prefer object-form `content`, set explicit `runtime_mode`, choose the smallest preset/bundle that fits the requested job, and avoid overscoping. Use explicit `tool_contract.tools.{tool}.enabled` overrides only when the user request needs narrower or slightly broader access than a preset; override names must come from tool_inventory.tools[].contract_name/name. Do not enable bash unless it is limited by explicit bash_prefixes. Do not use inherit_policy for model-created profiles. Custom tool actions use `content={name,kind,description?,command}` and assignment actions use top-level `agent` plus `tool_name`. Mutating actions return approval-ready previews unless confirm=true."
 }
 
 func (r *Runtime) manageAgentInspect(scope WorkspaceScope) (string, error) {
@@ -6100,7 +6100,7 @@ func (r *Runtime) manageAgentInspect(scope WorkspaceScope) (string, error) {
 		"examples": []map[string]any{
 			{"action": "inspect"},
 			{"action": "get", "agent": strings.TrimSpace(state.ActivePrimary)},
-			{"action": "create", "agent": "review-bot", "content": map[string]any{"name": "review-bot", "mode": "subagent", "description": "Code review specialist usable by primary agents for delegation.", "prompt": "Review diffs and call out concrete risks.", "execution_setting": "read", "tool_contract": map[string]any{"preset": "read_only", "tools": map[string]any{"bash": map[string]any{"enabled": false}}}}},
+			{"action": "create", "agent": "review-bot", "content": map[string]any{"name": "review-bot", "mode": "subagent", "description": "Code review specialist usable by primary agents for delegation.", "prompt": "Review diffs and call out concrete risks.", "runtime_mode": "read", "tool_contract": map[string]any{"preset": "read_only", "tools": map[string]any{"bash": map[string]any{"enabled": false}}}}},
 			{"action": "create_custom_tool", "content": map[string]any{"name": "show_go_version", "kind": "fixed_bash", "description": "Show the installed Go version.", "command": "go version"}},
 			{"action": "assign_custom_tool", "agent": strings.TrimSpace(state.ActivePrimary), "tool_name": "show_go_version"},
 		},
