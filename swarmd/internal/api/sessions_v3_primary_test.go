@@ -1368,7 +1368,15 @@ func TestSessionsV3ExecutorRecordsFailurePayload(t *testing.T) {
 
 func TestSessionsV3ExecutorUsesProviderFromCommittedHistory(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	runner := &sessionsV3RecordingProviderRunner{text: "provider answer"}
+	runner := &sessionsV3RecordingProviderRunner{
+		text: "provider answer",
+		response: provideriface.Response{
+			ID:         "provider-response-1",
+			Model:      "provider-model-resolved",
+			StopReason: "stop",
+			Usage:      provideriface.TokenUsage{InputTokens: 3, OutputTokens: 4, TotalTokens: 7},
+		},
+	}
 	providers := registry.New()
 	providers.RegisterRunner(runner)
 	server.providers = providers
@@ -1386,6 +1394,9 @@ func TestSessionsV3ExecutorUsesProviderFromCommittedHistory(t *testing.T) {
 	}
 	if len(messages) != 2 || messages[0].Role != "user" || messages[1].Role != "assistant" || messages[1].Content != "provider answer" {
 		t.Fatalf("messages = %+v", messages)
+	}
+	if messages[1].Metadata["executor_kind"] != "v3_provider" || messages[1].Metadata["provider"] != "test-provider" || messages[1].Metadata["model"] != "provider-model-resolved" || messages[1].Metadata["provider_response_id"] != "provider-response-1" {
+		t.Fatalf("assistant metadata = %+v", messages[1].Metadata)
 	}
 	if runner.callCount != 1 {
 		t.Fatalf("provider call count = %d, want 1", runner.callCount)
@@ -1406,8 +1417,36 @@ func TestSessionsV3ExecutorUsesProviderFromCommittedHistory(t *testing.T) {
 	if len(runner.lastRequest.Input) != 1 {
 		t.Fatalf("provider input = %+v, want committed user message only", runner.lastRequest.Input)
 	}
-	if runner.lastRequest.Model != "test-model" || runner.lastRequest.Thinking != "medium" || runner.lastRequest.SessionID != created.ID {
+	if runner.lastRequest.Model != "test-model" || runner.lastRequest.Thinking != "medium" || runner.lastRequest.SessionID != created.ID || runner.lastRequest.ToolChoice != "none" {
 		t.Fatalf("provider request = %+v", runner.lastRequest)
+	}
+}
+
+func TestSessionsV3ExecutorFailsClosedWhenProviderReturnsToolCalls(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{
+		text:          "needs a tool",
+		functionCalls: []provideriface.FunctionCall{{CallID: "call-1", Name: "bash", Arguments: "{}"}},
+	}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "provider-tool-call-create", "provider tool call", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-tool-call-message", "do something with a tool")
+	intent := waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentFailed)
+	if !strings.Contains(intent.BlockedReason, "tool-loop execution is not supported") {
+		t.Fatalf("run intent = %+v", intent)
+	}
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Role != "user" {
+		t.Fatalf("messages after unsupported tool call = %+v, want only committed user message", messages)
 	}
 }
 
@@ -1440,11 +1479,13 @@ func createSessionsV3PrimaryTestSessionWithPreference(t *testing.T, server *Serv
 }
 
 type sessionsV3RecordingProviderRunner struct {
-	text        string
-	deltas      []string
-	err         error
-	callCount   int
-	lastRequest provideriface.Request
+	text          string
+	deltas        []string
+	err           error
+	response      provideriface.Response
+	functionCalls []provideriface.FunctionCall
+	callCount     int
+	lastRequest   provideriface.Request
 }
 
 func (r *sessionsV3RecordingProviderRunner) ID() string { return "test-provider" }
@@ -1466,5 +1507,12 @@ func (r *sessionsV3RecordingProviderRunner) CreateResponseStreaming(_ context.Co
 			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: delta})
 		}
 	}
-	return provideriface.Response{Text: r.text}, nil
+	response := r.response
+	if response.Text == "" {
+		response.Text = r.text
+	}
+	if len(r.functionCalls) > 0 {
+		response.FunctionCalls = append([]provideriface.FunctionCall(nil), r.functionCalls...)
+	}
+	return response, nil
 }

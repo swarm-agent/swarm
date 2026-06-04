@@ -246,12 +246,12 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 		case <-time.After(e.modelDelay):
 		}
 	}
-	content, err := e.assistantResponse(ctx, job)
+	response, err := e.assistantResponse(ctx, job)
 	if err != nil {
 		_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, err.Error(), "session.run.failed")
 		return
 	}
-	if _, err := e.completeRun(job, content); err != nil {
+	if _, err := e.completeRun(job, response); err != nil {
 		_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, err.Error(), "session.run.failed")
 	}
 }
@@ -405,17 +405,51 @@ func (c *sessionV3AssistantDeltaCoalescer) shouldFlush(delta string) bool {
 	return false
 }
 
-func (e *sessionV3Executor) completeRun(job sessionV3ExecutorJob, content string) (sessionruntime.SessionMutationResult, error) {
+type sessionV3AssistantResponse struct {
+	Content            string
+	ExecutorKind       string
+	ProviderID         string
+	Model              string
+	ProviderResponseID string
+	StopReason         string
+	Usage              provideriface.TokenUsage
+}
+
+func (r sessionV3AssistantResponse) metadata(runID string) map[string]any {
+	metadata := map[string]any{
+		"run_id":        strings.TrimSpace(runID),
+		"executor_kind": strings.TrimSpace(r.ExecutorKind),
+	}
+	if metadata["executor_kind"] == "" {
+		metadata["executor_kind"] = "v3_provider"
+	}
+	if providerID := strings.TrimSpace(r.ProviderID); providerID != "" {
+		metadata["provider"] = providerID
+	}
+	if model := strings.TrimSpace(r.Model); model != "" {
+		metadata["model"] = model
+	}
+	if responseID := strings.TrimSpace(r.ProviderResponseID); responseID != "" {
+		metadata["provider_response_id"] = responseID
+	}
+	if stopReason := strings.TrimSpace(r.StopReason); stopReason != "" {
+		metadata["stop_reason"] = stopReason
+	}
+	if r.Usage.InputTokens != 0 || r.Usage.OutputTokens != 0 || r.Usage.ThinkingTokens != 0 || r.Usage.TotalTokens != 0 || r.Usage.CacheReadTokens != 0 || r.Usage.CacheWriteTokens != 0 || r.Usage.Source != "" || r.Usage.Transport != "" {
+		metadata["usage"] = r.Usage
+	}
+	return metadata
+}
+
+func (e *sessionV3Executor) completeRun(job sessionV3ExecutorJob, response sessionV3AssistantResponse) (sessionruntime.SessionMutationResult, error) {
+	content := response.Content
 	now := time.Now().UnixMilli()
 	message := pebblestore.MessageSnapshot{
 		ID:        sessionV3AssistantMessageID(job.SessionID, job.RunID),
 		Role:      "assistant",
 		Content:   content,
 		CreatedAt: now,
-		Metadata: map[string]any{
-			"run_id":        job.RunID,
-			"executor_kind": "v3_fake_model",
-		},
+		Metadata:  response.metadata(job.RunID),
 	}
 	intent := pebblestore.V3SessionRunIntent{
 		RunID:     job.RunID,
@@ -443,72 +477,72 @@ func (e *sessionV3Executor) completeRun(job sessionV3ExecutorJob, content string
 	})
 }
 
-func (e *sessionV3Executor) assistantResponse(ctx context.Context, job sessionV3ExecutorJob) (string, error) {
+func (e *sessionV3Executor) assistantResponse(ctx context.Context, job sessionV3ExecutorJob) (sessionV3AssistantResponse, error) {
 	if e != nil && e.server != nil && e.server.providers != nil {
-		content, usedProvider, err := e.providerAssistantResponse(ctx, job)
+		response, usedProvider, err := e.providerAssistantResponse(ctx, job)
 		if usedProvider || err != nil {
-			return content, err
+			return response, err
 		}
 	}
 	content, err := e.fakeAssistantResponse(job.SessionID)
 	if err != nil {
-		return "", err
+		return sessionV3AssistantResponse{}, err
 	}
 	coalescer := newSessionV3AssistantDeltaCoalescer(e, job)
 	if err := coalescer.Add(content); err != nil {
-		return "", err
+		return sessionV3AssistantResponse{}, err
 	}
 	if err := coalescer.Flush(); err != nil {
-		return "", err
+		return sessionV3AssistantResponse{}, err
 	}
-	return content, nil
+	return sessionV3AssistantResponse{Content: content, ExecutorKind: "v3_fake_model"}, nil
 }
 
-func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job sessionV3ExecutorJob) (string, bool, error) {
+func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job sessionV3ExecutorJob) (sessionV3AssistantResponse, bool, error) {
 	session, ok, err := e.server.sessions.GetSession(job.SessionID)
 	if err != nil {
-		return "", true, err
+		return sessionV3AssistantResponse{}, true, err
 	}
 	if !ok {
-		return "", true, fmt.Errorf("session %q not found", job.SessionID)
+		return sessionV3AssistantResponse{}, true, fmt.Errorf("session %q not found", job.SessionID)
 	}
-	pref := normalizeSessionsV3ModelPreference(session.Preference)
+	pref, contextWindow, err := e.resolveSessionV3ProviderPreference(session.Preference)
+	if err != nil {
+		return sessionV3AssistantResponse{}, true, err
+	}
 	providerID := strings.ToLower(strings.TrimSpace(pref.Provider))
 	modelName := strings.TrimSpace(pref.Model)
 	if providerID == "" || modelName == "" {
-		return "", false, nil
+		return sessionV3AssistantResponse{}, false, nil
 	}
 	runner, ok := e.server.providers.GetRunner(providerID)
 	if !ok {
-		return "", true, fmt.Errorf("provider %q is configured but not runnable yet", providerID)
+		return sessionV3AssistantResponse{}, true, fmt.Errorf("provider %q is configured but not runnable yet", providerID)
 	}
 	messages, err := e.server.sessions.ListSessionMessages(job.SessionID, 0, 500)
 	if err != nil {
-		return "", true, err
+		return sessionV3AssistantResponse{}, true, err
 	}
 	input := sessionsV3ProviderInput(messages)
 	if len(input) == 0 {
-		return "", true, errors.New("v3 provider input is empty")
-	}
-	thinking := strings.TrimSpace(pref.Thinking)
-	if thinking == "" {
-		thinking = "medium"
-	}
-	serviceTier := ""
-	if providerID == "codex" {
-		serviceTier = codexruntime.NormalizeServiceTier(pref.ServiceTier)
+		return sessionV3AssistantResponse{}, true, errors.New("v3 provider input is empty")
 	}
 	req := provideriface.Request{
 		SessionID:     job.SessionID,
 		Model:         modelName,
-		Thinking:      thinking,
+		Thinking:      strings.TrimSpace(pref.Thinking),
 		Instructions:  "You are Swarm, a concise coding assistant. Answer the user's latest message using the committed V3 session history.",
 		Input:         input,
 		ToolChoice:    "none",
-		ServiceTier:   serviceTier,
+		ServiceTier:   strings.TrimSpace(pref.ServiceTier),
 		ContextMode:   strings.TrimSpace(pref.ContextMode),
+		ContextWindow: contextWindow,
 		WorkspacePath: strings.TrimSpace(session.WorkspacePath),
 	}
+	if req.Thinking == "" {
+		req.Thinking = "medium"
+	}
+	ctx = identity.ContextWithPrincipal(ctx, job.Principal)
 	var streamed strings.Builder
 	coalescer := newSessionV3AssistantDeltaCoalescer(e, job)
 	var progressErr error
@@ -525,10 +559,13 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		progressErr = flushErr
 	}
 	if err != nil {
-		return "", true, err
+		return sessionV3AssistantResponse{}, true, err
 	}
 	if progressErr != nil {
-		return "", true, progressErr
+		return sessionV3AssistantResponse{}, true, progressErr
+	}
+	if len(response.FunctionCalls) > 0 || response.RestartTurn {
+		return sessionV3AssistantResponse{}, true, errors.New("v3 provider returned tool calls; tool-loop execution is not supported by the primary-owned V3 executor yet")
 	}
 	content := strings.TrimSpace(response.Text)
 	if content == "" {
@@ -548,17 +585,59 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		}
 	}
 	if content == "" {
-		return "", true, errors.New("provider returned empty assistant response")
+		return sessionV3AssistantResponse{}, true, errors.New("provider returned empty assistant response")
 	}
 	if coalescer.FlushCount() == 0 {
 		if err := coalescer.Add(content); err != nil {
-			return "", true, err
+			return sessionV3AssistantResponse{}, true, err
 		}
 		if err := coalescer.Flush(); err != nil {
-			return "", true, err
+			return sessionV3AssistantResponse{}, true, err
 		}
 	}
-	return content, true, nil
+	model := strings.TrimSpace(response.Model)
+	if model == "" {
+		model = modelName
+	}
+	providerRunnerID := strings.TrimSpace(runner.ID())
+	if providerRunnerID == "" {
+		providerRunnerID = providerID
+	}
+	return sessionV3AssistantResponse{
+		Content:            content,
+		ExecutorKind:       "v3_provider",
+		ProviderID:         providerRunnerID,
+		Model:              model,
+		ProviderResponseID: strings.TrimSpace(response.ID),
+		StopReason:         strings.TrimSpace(response.StopReason),
+		Usage:              response.Usage,
+	}, true, nil
+}
+
+func (e *sessionV3Executor) resolveSessionV3ProviderPreference(pref pebblestore.ModelPreference) (pebblestore.ModelPreference, int, error) {
+	pref = normalizeSessionsV3ModelPreference(pref)
+	if e == nil || e.server == nil || e.server.model == nil {
+		if pref.Provider == "codex" {
+			pref.ServiceTier = codexruntime.NormalizeServiceTier(pref.ServiceTier)
+			pref.ContextMode = codexruntime.NormalizeContextMode(pref.ContextMode)
+		} else {
+			pref.ServiceTier = ""
+			pref.ContextMode = ""
+		}
+		return pref, 0, nil
+	}
+	resolved, err := e.server.model.ResolvePreference(pref)
+	if err != nil {
+		return pebblestore.ModelPreference{}, 0, fmt.Errorf("resolve v3 provider preference: %w", err)
+	}
+	resolvedPref := normalizeSessionsV3ModelPreference(resolved.Preference)
+	if resolvedPref.Provider == "" && pref.Provider != "" {
+		resolvedPref.Provider = pref.Provider
+	}
+	if resolvedPref.Model == "" && pref.Model != "" {
+		resolvedPref.Model = pref.Model
+	}
+	return resolvedPref, resolved.ContextWindow, nil
 }
 
 func sessionsV3ProviderInput(messages []pebblestore.MessageSnapshot) []map[string]any {
