@@ -33,6 +33,7 @@ const (
 	sessionV3ProviderToolLoopMaxSteps         = 8
 	sessionV3AssistantDeltaFlushMaxBytes      = 512
 	sessionV3AssistantDeltaFlushMaxDelay      = 100 * time.Millisecond
+	sessionV3RunStopDefaultReason             = "run stopped by user"
 	sessionV3TitleDefault                     = "New Session"
 	sessionV3TitleConversationLimit           = 24
 	sessionV3TitlePromptPreviewRunes          = 2000
@@ -49,6 +50,12 @@ type sessionV3ExecutorJob struct {
 	RunID     string
 }
 
+type sessionV3ExecutorRunState struct {
+	cancel   context.CancelFunc
+	canceled bool
+	reason   string
+}
+
 type sessionV3Executor struct {
 	server *Server
 	queue  chan sessionV3ExecutorJob
@@ -62,6 +69,7 @@ type sessionV3Executor struct {
 	mu              sync.Mutex
 	inFlightRuns    map[string]bool
 	activeBySession map[string]string
+	runStates       map[string]*sessionV3ExecutorRunState
 }
 
 func newSessionV3Executor(server *Server) *sessionV3Executor {
@@ -74,6 +82,7 @@ func newSessionV3Executor(server *Server) *sessionV3Executor {
 		deltaFlushMaxDelay: sessionV3AssistantDeltaFlushMaxDelay,
 		inFlightRuns:       make(map[string]bool),
 		activeBySession:    make(map[string]string),
+		runStates:          make(map[string]*sessionV3ExecutorRunState),
 	}
 	ctx := context.Background()
 	if server != nil && server.runCtx != nil {
@@ -105,6 +114,12 @@ func (e *sessionV3Executor) EnqueueRun(job sessionV3ExecutorJob) bool {
 	}
 	e.inFlightRuns[runKey] = true
 	e.activeBySession[job.SessionID] = job.RunID
+	if e.runStates == nil {
+		e.runStates = make(map[string]*sessionV3ExecutorRunState)
+	}
+	if e.runStates[runKey] == nil {
+		e.runStates[runKey] = &sessionV3ExecutorRunState{}
+	}
 	e.mu.Unlock()
 
 	select {
@@ -135,10 +150,113 @@ func (e *sessionV3Executor) finish(job sessionV3ExecutorJob) {
 	runKey := sessionV3ExecutorRunKey(job.SessionID, job.RunID)
 	e.mu.Lock()
 	delete(e.inFlightRuns, runKey)
+	delete(e.runStates, runKey)
 	if e.activeBySession[job.SessionID] == job.RunID {
 		delete(e.activeBySession, job.SessionID)
 	}
 	e.mu.Unlock()
+}
+
+func (e *sessionV3Executor) attachCancel(job sessionV3ExecutorJob, cancel context.CancelFunc) {
+	if e == nil || cancel == nil {
+		return
+	}
+	runKey := sessionV3ExecutorRunKey(job.SessionID, job.RunID)
+	shouldCancel := false
+	e.mu.Lock()
+	if e.runStates == nil {
+		e.runStates = make(map[string]*sessionV3ExecutorRunState)
+	}
+	state := e.runStates[runKey]
+	if state == nil {
+		state = &sessionV3ExecutorRunState{}
+		e.runStates[runKey] = state
+	}
+	state.cancel = cancel
+	shouldCancel = state.canceled
+	e.mu.Unlock()
+	if shouldCancel {
+		cancel()
+	}
+}
+
+func (e *sessionV3Executor) isRunCanceled(job sessionV3ExecutorJob) bool {
+	if e == nil {
+		return false
+	}
+	runKey := sessionV3ExecutorRunKey(job.SessionID, job.RunID)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	state := e.runStates[runKey]
+	return state != nil && state.canceled
+}
+
+func (e *sessionV3Executor) cancellationReason(job sessionV3ExecutorJob) string {
+	if e == nil {
+		return sessionV3RunStopDefaultReason
+	}
+	runKey := sessionV3ExecutorRunKey(job.SessionID, job.RunID)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if state := e.runStates[runKey]; state != nil {
+		if reason := strings.TrimSpace(state.reason); reason != "" {
+			return reason
+		}
+	}
+	return sessionV3RunStopDefaultReason
+}
+
+func (e *sessionV3Executor) CancelRun(job sessionV3ExecutorJob, reason string) (sessionruntime.SessionMutationResult, bool, error) {
+	if e == nil || e.server == nil || e.server.sessions == nil {
+		return sessionruntime.SessionMutationResult{}, false, errors.New("v3 executor is not configured")
+	}
+	job.SessionID = strings.TrimSpace(job.SessionID)
+	job.RunID = strings.TrimSpace(job.RunID)
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = sessionV3RunStopDefaultReason
+	}
+	if job.SessionID == "" || job.RunID == "" {
+		return sessionruntime.SessionMutationResult{}, false, errors.New("session id and run id are required")
+	}
+	runKey := sessionV3ExecutorRunKey(job.SessionID, job.RunID)
+	var cancel context.CancelFunc
+	tracked := false
+	e.mu.Lock()
+	if e.runStates == nil {
+		e.runStates = make(map[string]*sessionV3ExecutorRunState)
+	}
+	state := e.runStates[runKey]
+	if state != nil {
+		tracked = true
+		state.canceled = true
+		state.reason = reason
+		cancel = state.cancel
+	}
+	e.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	intent, ok, err := e.server.sessions.GetSessionRunIntent(job.SessionID, job.RunID)
+	if err != nil {
+		return sessionruntime.SessionMutationResult{}, tracked, err
+	}
+	if ok {
+		switch intent.Status {
+		case sessionruntime.RunIntentPendingExecutor, sessionruntime.RunIntentRunning:
+			result, err := e.recordRunStatus(job, sessionruntime.RunIntentFailed, reason, "session.run.failed")
+			return result, true, err
+		case sessionruntime.RunIntentFailed:
+			if strings.TrimSpace(intent.BlockedReason) == reason {
+				return sessionruntime.SessionMutationResult{SessionID: job.SessionID, RunIntent: &intent}, true, nil
+			}
+		}
+	}
+	if tracked {
+		result, err := e.recordRunStatus(job, sessionruntime.RunIntentFailed, reason, "session.run.failed")
+		return result, true, err
+	}
+	return sessionruntime.SessionMutationResult{}, false, fmt.Errorf("v3 run %q is not active", job.RunID)
 }
 
 func (e *sessionV3Executor) recoverDurableRuns(ctx context.Context) {
@@ -212,14 +330,20 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 	if e.server == nil || e.server.sessions == nil {
 		return
 	}
+	runCtx, runCancel := context.WithCancel(ctx)
+	defer runCancel()
+	e.attachCancel(job, runCancel)
 	e.server.beginActiveRun()
 	defer e.server.endActiveRun()
 	if e.startDelay > 0 {
 		select {
-		case <-ctx.Done():
+		case <-runCtx.Done():
 			return
 		case <-time.After(e.startDelay):
 		}
+	}
+	if e.isRunCanceled(job) || runCtx.Err() != nil {
+		return
 	}
 	intent, ok, err := e.server.sessions.GetSessionRunIntent(job.SessionID, job.RunID)
 	if err != nil || !ok || intent.Status != sessionruntime.RunIntentPendingExecutor {
@@ -229,33 +353,47 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 		return
 	}
 	select {
-	case <-ctx.Done():
-		_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, "executor stopped", "session.run.failed")
+	case <-runCtx.Done():
+		if !e.isRunCanceled(job) {
+			_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, "executor stopped", "session.run.failed")
+		}
 		return
 	default:
 	}
 	if e.modelDelay > 0 {
 		select {
-		case <-ctx.Done():
-			_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, "executor stopped", "session.run.failed")
+		case <-runCtx.Done():
+			if !e.isRunCanceled(job) {
+				_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, "executor stopped", "session.run.failed")
+			}
 			return
 		case <-time.After(e.modelDelay):
 		}
 	}
-	response, err := e.assistantResponse(ctx, job)
+	response, err := e.assistantResponse(runCtx, job)
 	if err != nil {
-		_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, err.Error(), "session.run.failed")
+		if !e.isRunCanceled(job) {
+			_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, err.Error(), "session.run.failed")
+		}
+		return
+	}
+	if e.isRunCanceled(job) || runCtx.Err() != nil {
 		return
 	}
 	result, err := e.completeRun(job, response)
 	if err != nil {
-		_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, err.Error(), "session.run.failed")
+		if !e.isRunCanceled(job) {
+			_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, err.Error(), "session.run.failed")
+		}
 		return
 	}
 	e.maybeStartSessionV3TitleFlow(job, result)
 }
 
 func (e *sessionV3Executor) recordRunStatus(job sessionV3ExecutorJob, status, reason, eventType string) (sessionruntime.SessionMutationResult, error) {
+	if e == nil || e.server == nil {
+		return sessionruntime.SessionMutationResult{}, errors.New("v3 executor is not configured")
+	}
 	now := time.Now().UnixMilli()
 	intent := pebblestore.V3SessionRunIntent{
 		RunID:         job.RunID,
@@ -296,6 +434,9 @@ func (e *sessionV3Executor) recordRunStatus(job sessionV3ExecutorJob, status, re
 }
 
 func (e *sessionV3Executor) recordRunProgress(job sessionV3ExecutorJob, deltaIndex int, delta string) (sessionruntime.SessionMutationResult, error) {
+	if e.isRunCanceled(job) {
+		return sessionruntime.SessionMutationResult{}, context.Canceled
+	}
 	now := time.Now().UnixMilli()
 	metadata := map[string]any{
 		"run_id":      job.RunID,
@@ -452,6 +593,9 @@ func (r sessionV3AssistantResponse) metadata(runID string) map[string]any {
 }
 
 func (e *sessionV3Executor) completeRun(job sessionV3ExecutorJob, response sessionV3AssistantResponse) (sessionruntime.SessionMutationResult, error) {
+	if e.isRunCanceled(job) {
+		return sessionruntime.SessionMutationResult{}, context.Canceled
+	}
 	content := response.Content
 	now := time.Now().UnixMilli()
 	message := pebblestore.MessageSnapshot{
@@ -904,6 +1048,9 @@ func (e *sessionV3Executor) emitSessionV3ProviderToolEvent(job sessionV3Executor
 }
 
 func (e *sessionV3Executor) recordProviderToolEvent(job sessionV3ExecutorJob, event runruntime.StreamEvent, eventType string, deltaIndex int) error {
+	if e.isRunCanceled(job) {
+		return context.Canceled
+	}
 	if e == nil || e.server == nil {
 		return errors.New("v3 executor is not configured")
 	}

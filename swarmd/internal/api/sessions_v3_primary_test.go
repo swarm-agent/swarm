@@ -651,6 +651,106 @@ func TestSessionsV3ExecutorFailsStaleRunningRunAfterRestartWithoutResume(t *test
 	}
 }
 
+func TestSessionsV3PrimaryRunStopCancelsActiveExecutorAndSuppressesLateOutput(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	entered := make(chan struct{})
+	releaseLate := make(chan struct{})
+	runner := &sessionsV3RecordingProviderRunner{
+		handler: func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+			close(entered)
+			<-ctx.Done()
+			<-releaseLate
+			if onEvent != nil {
+				onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: "late output"})
+			}
+			return provideriface.Response{Text: "late assistant"}, nil
+		},
+	}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "active-cancel-create", "active cancel", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "active-cancel-message", "cancel active run")
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("provider was not entered")
+	}
+	intent := waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentRunning)
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/run/stop", bytes.NewBufferString(fmt.Sprintf(`{"type":"run.stop","run_id":%q,"reason":"stop from test"}`, intent.RunID)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stop status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	failed := waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentFailed)
+	if failed.RunID != intent.RunID || failed.BlockedReason != "stop from test" {
+		t.Fatalf("failed intent = %+v", failed)
+	}
+	close(releaseLate)
+	if !server.WaitForInFlightRuns(2 * time.Second) {
+		t.Fatalf("executor did not drain after active cancel")
+	}
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Role != "user" {
+		t.Fatalf("messages after cancel = %+v", messages)
+	}
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	for _, event := range events {
+		if event.EventType == "session.assistant.delta" || event.EventType == "session.assistant.completed" {
+			t.Fatalf("late assistant event persisted after cancel: %+v", event)
+		}
+	}
+}
+
+func TestSessionsV3PrimaryRunStopCancelsBeforeExecutorStart(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{text: "should not run"}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 500 * time.Millisecond
+	server.v3SessionExecutor = exec
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "queued-cancel-create", "queued cancel", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "queued-cancel-message", "cancel before start")
+	intent := waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentPendingExecutor)
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/run/stop", bytes.NewBufferString(fmt.Sprintf(`{"type":"run.stop","run_id":%q}`, intent.RunID)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("queued stop status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	failed := waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentFailed)
+	if failed.RunID != intent.RunID || failed.BlockedReason != sessionV3RunStopDefaultReason {
+		t.Fatalf("failed intent = %+v", failed)
+	}
+	if !server.WaitForInFlightRuns(2 * time.Second) {
+		t.Fatalf("executor did not drain after queued cancel")
+	}
+	if runner.callCount != 0 {
+		t.Fatalf("provider call count = %d, want 0 for queued cancel", runner.callCount)
+	}
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Role != "user" {
+		t.Fatalf("messages after queued cancel = %+v", messages)
+	}
+}
+
 func TestSessionsV3PrimaryPostReturnsBeforeModelCompletion(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	installSessionsV3TestProvider(server, "nonblocking provider answer")

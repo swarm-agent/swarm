@@ -45,6 +45,12 @@ type sessionsV3MessageRequest struct {
 	Authority         map[string]any `json:"authority,omitempty"`
 }
 
+type sessionsV3StopRequest struct {
+	Type   string `json:"type,omitempty"`
+	RunID  string `json:"run_id"`
+	Reason string `json:"reason,omitempty"`
+}
+
 type sessionsV3HydratedSession struct {
 	Session    pebblestore.SessionSnapshot      `json:"session"`
 	Projection sessionruntime.SessionProjection `json:"projection"`
@@ -116,6 +122,8 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		s.handleSessionV3PrimaryEvents(w, r, principal, sessionID)
 	case "stream":
 		s.handleSessionV3PrimaryStream(w, r, principal, sessionID)
+	case "run/stop":
+		s.handleSessionV3PrimaryRunStop(w, r, principal, sessionID)
 	default:
 		writeError(w, http.StatusBadRequest, errors.New("unknown sessions v3 path"))
 	}
@@ -406,6 +414,58 @@ func (s *Server) handleSessionV3PrimaryEvents(w http.ResponseWriter, r *http.Req
 		"run_intents":        replay.RunIntents,
 		"high_watermark_seq": replay.HighWatermarkSeq,
 		"next_seq":           replay.NextSeq,
+	})
+}
+
+func (s *Server) handleSessionV3PrimaryRunStop(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if s.v3SessionExecutor == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("sessions v3 executor is not configured"))
+		return
+	}
+	var req sessionsV3StopRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	runID := strings.TrimSpace(req.RunID)
+	if runID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("run_id is required"))
+		return
+	}
+	if _, found, err := s.hydrateSessionsV3Primary(principal, sessionID); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	} else if !found {
+		writeSessionNotFound(w)
+		return
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		reason = sessionV3RunStopDefaultReason
+	}
+	result, cancelled, err := s.v3SessionExecutor.CancelRun(sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: runID}, reason)
+	if err != nil {
+		status := http.StatusBadRequest
+		if !cancelled {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err)
+		return
+	}
+	if s.perm != nil {
+		_, _ = s.perm.CancelRunPending(sessionID, runID, reason)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":         true,
+		"session_id": sessionID,
+		"run_id":     runID,
+		"status":     sessionruntime.RunIntentFailed,
+		"reason":     reason,
+		"mutation":   result,
 	})
 }
 

@@ -195,7 +195,8 @@ interface SessionDataRequestOptions {
 const V3_SESSION_ID_PREFIX = "v3session_";
 
 export function isV3SessionId(sessionId: string | null | undefined): boolean {
-  return (sessionId ?? "").trim().startsWith(V3_SESSION_ID_PREFIX);
+  const normalized = (sessionId ?? "").trim();
+  return normalized.startsWith(V3_SESSION_ID_PREFIX) || normalized.startsWith("session-v3");
 }
 
 function resolveSessionApiForSession(
@@ -2029,7 +2030,22 @@ export async function stopSessionRun(
   runId: string,
   route?: DesktopChatRoute | null,
 ): Promise<void> {
-  rejectV3SessionV2Subresource(sessionId, "session run stop");
+  if (isV3SessionId(sessionId)) {
+    const response = await apiFetch(
+      `/v3/sessions/${encodeURIComponent(sessionId)}/run/stop`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ type: "run.stop", run_id: runId }),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(await readErrorMessage(response));
+    }
+    return;
+  }
   const managedHost = isManagedHostDesktopChatRoute(route);
   const primaryTarget = isPrimaryDesktopChatRoute(route);
   const localContainerTarget = isLocalContainerDesktopChatRoute(route);

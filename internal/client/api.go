@@ -3592,9 +3592,15 @@ func (c *API) StopSessionRun(ctx context.Context, sessionID, runID string) error
 	if runID == "" {
 		return errors.New("run id is required")
 	}
+	if isSessionV3ID(sessionID) {
+		return c.StopSessionV3Run(ctx, sessionID, runID, "")
+	}
 	session, err := c.GetSession(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("resolve session execution for stop: %w", err)
+	}
+	if strings.EqualFold(strings.TrimSpace(session.SessionAPI), "v3") {
+		return c.StopSessionV3Run(ctx, sessionID, runID, "")
 	}
 	if session.SessionExecution != nil {
 		switch strings.TrimSpace(session.SessionExecution.ExecutionClass) {
@@ -3609,6 +3615,27 @@ func (c *API) StopSessionRun(ctx context.Context, sessionID, runID string) error
 		}
 	}
 	return errors.New("session execution class is not available for stop")
+}
+
+func isSessionV3ID(sessionID string) bool {
+	sessionID = strings.TrimSpace(sessionID)
+	return strings.HasPrefix(sessionID, "v3session_") || strings.HasPrefix(sessionID, "session-v3")
+}
+
+func (c *API) StopSessionV3Run(ctx context.Context, sessionID, runID, reason string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	runID = strings.TrimSpace(runID)
+	if sessionID == "" {
+		return errors.New("session id is required")
+	}
+	if runID == "" {
+		return errors.New("run id is required")
+	}
+	body := map[string]any{"type": "run.stop", "run_id": runID}
+	if reason = strings.TrimSpace(reason); reason != "" {
+		body["reason"] = reason
+	}
+	return c.postJSON(ctx, sessionV3PrimaryPath(sessionID, "run/stop"), body, nil, true)
 }
 
 func (c *API) StopLocalContainerSessionRun(ctx context.Context, sessionID, runID string) error {
