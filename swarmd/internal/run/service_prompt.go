@@ -261,6 +261,12 @@ func (s *Service) composeInstructions(workspacePath string, agentProfile pebbles
 	return s.composeInstructionsForScope(scope, agentProfile, userInstructions)
 }
 
+func (s *Service) ComposeRuntimeInstructions(scope tool.WorkspaceScope, mode string, bypassPermissions bool, agentProfile pebblestore.AgentProfile, userInstructions string) string {
+	base := s.composeInstructionsForScope(scope, agentProfile, userInstructions)
+	base = appendHostRuntimeContext(base, scope.PrimaryPath, scope.Roots)
+	return composeModeAwareInstructions(base, mode, bypassPermissions, agentProfile)
+}
+
 func (s *Service) composeInstructionsForScope(scope tool.WorkspaceScope, agentProfile pebblestore.AgentProfile, userInstructions string) string {
 	return s.composeInstructionsForScopeWithDiscoveryRoots(scope, scope.Roots, agentProfile, userInstructions)
 }

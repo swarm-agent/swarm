@@ -28,6 +28,7 @@ type sessionsV3CreateRequest struct {
 	WorkspacePath   string                      `json:"workspace_path"`
 	WorkspaceName   string                      `json:"workspace_name,omitempty"`
 	Mode            string                      `json:"mode,omitempty"`
+	AgentName       string                      `json:"agent_name,omitempty"`
 	Preference      pebblestore.ModelPreference `json:"preference,omitempty"`
 	Metadata        map[string]any              `json:"metadata,omitempty"`
 }
@@ -144,6 +145,11 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	resolvedAgent, err := s.resolveSessionsV3PrimaryCreateAgent(principal, req.AgentName)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	workspaceName := strings.TrimSpace(req.WorkspaceName)
 	if workspaceName == "" {
 		workspaceName = filepath.Base(workspacePath)
@@ -165,11 +171,11 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 		Title:          title,
 		Mode:           sessionruntime.NormalizeMode(req.Mode),
 		Preference:     normalizeSessionsV3ModelPreference(req.Preference),
-		Metadata:       cloneSessionsV3Metadata(req.Metadata),
+		Metadata:       sessionsV3CreateServerMetadata(req.Metadata, resolvedAgent),
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
-	payloadHash, err := sessionsV3CreatePayloadHash(sessionID, req, workspaceName, title)
+	payloadHash, err := sessionsV3CreatePayloadHash(sessionID, req, workspaceName, title, session.Metadata)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -450,7 +456,7 @@ func parseSessionsV3PrimaryPath(path string) (string, string, bool) {
 	return sessionID, strings.Join(parts[1:], "/"), true
 }
 
-func sessionsV3CreatePayloadHash(sessionID string, req sessionsV3CreateRequest, workspaceName, title string) (string, error) {
+func sessionsV3CreatePayloadHash(sessionID string, req sessionsV3CreateRequest, workspaceName, title string, metadata map[string]any) (string, error) {
 	canonical := struct {
 		Operation     string                      `json:"operation"`
 		SessionID     string                      `json:"session_id"`
@@ -458,6 +464,7 @@ func sessionsV3CreatePayloadHash(sessionID string, req sessionsV3CreateRequest, 
 		WorkspacePath string                      `json:"workspace_path"`
 		WorkspaceName string                      `json:"workspace_name"`
 		Mode          string                      `json:"mode"`
+		AgentName     string                      `json:"agent_name,omitempty"`
 		Preference    pebblestore.ModelPreference `json:"preference"`
 		Metadata      map[string]any              `json:"metadata,omitempty"`
 	}{
@@ -467,8 +474,9 @@ func sessionsV3CreatePayloadHash(sessionID string, req sessionsV3CreateRequest, 
 		WorkspacePath: strings.TrimSpace(req.WorkspacePath),
 		WorkspaceName: workspaceName,
 		Mode:          sessionruntime.NormalizeMode(req.Mode),
+		AgentName:     strings.TrimSpace(req.AgentName),
 		Preference:    normalizeSessionsV3ModelPreference(req.Preference),
-		Metadata:      cloneSessionsV3Metadata(req.Metadata),
+		Metadata:      cloneSessionsV3Metadata(metadata),
 	}
 	raw, err := json.Marshal(canonical)
 	if err != nil {
@@ -547,6 +555,80 @@ func validateSessionsV3CreateMetadata(metadata map[string]any) error {
 		}
 	}
 	return nil
+}
+
+type sessionsV3ResolvedAgentIdentity struct {
+	Name                string
+	ResolvedName        string
+	Mode                string
+	RuntimeMode         string
+	ExitPlanModeEnabled bool
+	ToolContractPreset  string
+}
+
+func (s *Server) resolveSessionsV3PrimaryCreateAgent(principal identity.Principal, requestedName string) (sessionsV3ResolvedAgentIdentity, error) {
+	requestedName = strings.TrimSpace(requestedName)
+	if s == nil || s.agents == nil {
+		if requestedName != "" && !strings.EqualFold(requestedName, "swarm") {
+			return sessionsV3ResolvedAgentIdentity{}, fmt.Errorf("agent %q cannot resolve without agent service", requestedName)
+		}
+		return sessionsV3ResolvedAgentIdentity{Name: "swarm", ResolvedName: "swarm", Mode: "primary", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: true}, nil
+	}
+	profile, err := s.agents.ResolvePrimaryForAccount(principal.AccountScopeID, requestedName)
+	if err != nil {
+		return sessionsV3ResolvedAgentIdentity{}, err
+	}
+	name := strings.TrimSpace(profile.Name)
+	if name == "" {
+		name = requestedName
+	}
+	if name == "" {
+		name = "swarm"
+	}
+	mode := strings.TrimSpace(profile.Mode)
+	if mode == "" {
+		mode = "primary"
+	}
+	if mode != "primary" {
+		return sessionsV3ResolvedAgentIdentity{}, fmt.Errorf("agent %q is not primary", name)
+	}
+	if !profile.Enabled {
+		return sessionsV3ResolvedAgentIdentity{}, fmt.Errorf("agent %q is disabled", name)
+	}
+	return sessionsV3ResolvedAgentIdentity{
+		Name:                name,
+		ResolvedName:        name,
+		Mode:                mode,
+		RuntimeMode:         pebblestore.AgentProfileRuntimeMode(profile),
+		ExitPlanModeEnabled: pebblestore.AgentExitPlanModeEnabled(profile),
+		ToolContractPreset:  sessionsV3AgentToolContractPreset(profile),
+	}, nil
+}
+
+func sessionsV3AgentToolContractPreset(profile pebblestore.AgentProfile) string {
+	if profile.ToolContract != nil {
+		return strings.TrimSpace(profile.ToolContract.Preset)
+	}
+	if profile.ToolScope != nil {
+		return strings.TrimSpace(profile.ToolScope.Preset)
+	}
+	return ""
+}
+
+func sessionsV3CreateServerMetadata(clientMetadata map[string]any, agent sessionsV3ResolvedAgentIdentity) map[string]any {
+	metadata := cloneSessionsV3Metadata(clientMetadata)
+	if metadata == nil {
+		metadata = make(map[string]any, 8)
+	}
+	metadata["agent_name"] = agent.Name
+	metadata["resolved_agent_name"] = agent.ResolvedName
+	metadata["agent_mode"] = agent.Mode
+	metadata["runtime_mode"] = agent.RuntimeMode
+	metadata["exit_plan_mode_enabled"] = agent.ExitPlanModeEnabled
+	if agent.ToolContractPreset != "" {
+		metadata["tool_contract_preset"] = agent.ToolContractPreset
+	}
+	return metadata
 }
 
 func sessionsV3PrimaryAuthorityStatus(req sessionsV3MessageRequest) string {
@@ -702,7 +784,13 @@ func sessionsV3AuthorityInt(authority map[string]any, keys ...string) int {
 
 func isProtectedSessionsV3MetadataKey(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
-	case "workspace_binding_id",
+	case "agent_name",
+		"resolved_agent_name",
+		"agent_mode",
+		"runtime_mode",
+		"exit_plan_mode_enabled",
+		"tool_contract_preset",
+		"workspace_binding_id",
 		"local_workspace_binding_id",
 		"source_workspace_id",
 		"source_workspace_path",

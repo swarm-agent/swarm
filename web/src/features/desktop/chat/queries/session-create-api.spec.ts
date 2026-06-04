@@ -132,7 +132,7 @@ test('primary/self host route creates via Sessions API v3 primary endpoint', asy
     assert.equal(body.workspace_name, 'swarm-go')
     assert.equal(body.title, 'Primary')
     assert.equal(body.mode, 'auto')
-    assert.equal(Object.hasOwn(body, 'agent_name'), false)
+    assert.equal(body.agent_name, 'swarm')
     assert.equal(Object.hasOwn(body, 'worktree_mode'), false)
     assert.equal(Object.hasOwn(body, 'worktree_use_current_branch'), false)
     assert.equal(Object.hasOwn(body, 'worktree_base_branch'), false)

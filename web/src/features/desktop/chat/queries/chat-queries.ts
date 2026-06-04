@@ -1792,6 +1792,7 @@ function sessionCreateV3RequestBody(input: {
   workspacePath: string;
   workspaceName: string;
   mode: string;
+  agentName?: string;
   metadata?: Record<string, unknown>;
   preference: ResolvedSessionPreference["preference"];
 }): Record<string, unknown> {
@@ -1803,6 +1804,7 @@ function sessionCreateV3RequestBody(input: {
     workspace_path: input.workspacePath,
     workspace_name: input.workspaceName,
     mode: input.mode,
+    agent_name: input.agentName?.trim() || undefined,
     preference: Object.keys(preference).length > 0 ? preference : undefined,
     metadata: sanitizeSessionCreateV2Metadata(input.metadata),
   })
@@ -1832,6 +1834,7 @@ export async function createSession(input: {
       workspacePath: input.workspacePath,
       workspaceName: input.workspaceName,
       mode: input.mode,
+      agentName: input.agentName,
       metadata: input.metadata,
       preference: input.preference,
     })

@@ -23,6 +23,10 @@ func resolveRunWorkspaceContext(execCtx resolvedRunExecutionContext) runWorkspac
 	}
 }
 
+func (s *Service) ResolveRuntimeWorkspaceScope(session pebblestore.SessionSnapshot, principal identity.Principal) (tool.WorkspaceScope, error) {
+	return s.resolveRunWorkspaceScope(session, principal)
+}
+
 func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, principal identity.Principal) (tool.WorkspaceScope, error) {
 	workspacePath := strings.TrimSpace(session.WorkspacePath)
 	principal, err := principalForRunWorkspaceScope(session, principal)

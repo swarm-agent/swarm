@@ -13,6 +13,7 @@ import (
 
 	codexruntime "swarm/packages/swarmd/internal/provider/codex"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
+	runruntime "swarm/packages/swarmd/internal/run"
 
 	"sync"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 )
 
 const (
@@ -400,6 +402,17 @@ func (c *sessionV3AssistantDeltaCoalescer) shouldFlush(delta string) bool {
 	return false
 }
 
+type sessionV3ResolvedRuntime struct {
+	Session       pebblestore.SessionSnapshot
+	AgentProfile  pebblestore.AgentProfile
+	Preference    pebblestore.ModelPreference
+	ContextWindow int
+	Scope         tool.WorkspaceScope
+	Instructions  string
+	Tools         []provideriface.ToolDefinition
+	ToolChoice    string
+}
+
 type sessionV3AssistantResponse struct {
 	Content            string
 	ExecutorKind       string
@@ -625,69 +638,56 @@ func (e *sessionV3Executor) generateSessionV3MemoryTitle(session pebblestore.Ses
 }
 
 func (e *sessionV3Executor) assistantResponse(ctx context.Context, job sessionV3ExecutorJob) (sessionV3AssistantResponse, error) {
-	if e != nil && e.server != nil && e.server.providers != nil {
-		response, usedProvider, err := e.providerAssistantResponse(ctx, job)
-		if usedProvider || err != nil {
-			return response, err
-		}
-	}
-	content, err := e.fakeAssistantResponse(job.SessionID)
+	resolved, err := e.resolveSessionV3Runtime(job)
 	if err != nil {
 		return sessionV3AssistantResponse{}, err
 	}
-	coalescer := newSessionV3AssistantDeltaCoalescer(e, job)
-	if err := coalescer.Add(content); err != nil {
-		return sessionV3AssistantResponse{}, err
-	}
-	if err := coalescer.Flush(); err != nil {
-		return sessionV3AssistantResponse{}, err
-	}
-	return sessionV3AssistantResponse{Content: content, ExecutorKind: "v3_fake_model"}, nil
+	return e.providerAssistantResponse(ctx, job, resolved)
 }
 
-func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job sessionV3ExecutorJob) (sessionV3AssistantResponse, bool, error) {
-	session, ok, err := e.server.sessions.GetSession(job.SessionID)
-	if err != nil {
-		return sessionV3AssistantResponse{}, true, err
+func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime) (sessionV3AssistantResponse, error) {
+	if e == nil || e.server == nil || e.server.providers == nil {
+		return sessionV3AssistantResponse{}, errors.New("provider registry is not configured")
 	}
-	if !ok {
-		return sessionV3AssistantResponse{}, true, fmt.Errorf("session %q not found", job.SessionID)
-	}
-	pref, contextWindow, err := e.resolveSessionV3ProviderPreference(session.Preference)
-	if err != nil {
-		return sessionV3AssistantResponse{}, true, err
-	}
+	pref := resolved.Preference
 	providerID := strings.ToLower(strings.TrimSpace(pref.Provider))
 	modelName := strings.TrimSpace(pref.Model)
 	if providerID == "" || modelName == "" {
-		return sessionV3AssistantResponse{}, false, nil
+		return sessionV3AssistantResponse{}, errors.New("resolved v3 provider/model is empty")
 	}
 	runner, ok := e.server.providers.GetRunner(providerID)
 	if !ok {
-		return sessionV3AssistantResponse{}, true, fmt.Errorf("provider %q is configured but not runnable yet", providerID)
+		return sessionV3AssistantResponse{}, fmt.Errorf("provider %q is configured but not runnable yet", providerID)
 	}
 	messages, err := e.server.sessions.ListSessionMessages(job.SessionID, 0, 500)
 	if err != nil {
-		return sessionV3AssistantResponse{}, true, err
+		return sessionV3AssistantResponse{}, err
 	}
 	input := sessionsV3ProviderInput(messages)
 	if len(input) == 0 {
-		return sessionV3AssistantResponse{}, true, errors.New("v3 provider input is empty")
+		return sessionV3AssistantResponse{}, errors.New("v3 provider input is empty")
 	}
 	req := provideriface.Request{
 		SessionID:     job.SessionID,
 		Model:         modelName,
 		Thinking:      strings.TrimSpace(pref.Thinking),
-		Instructions:  "You are Swarm, a concise coding assistant. Answer the user's latest message using the committed V3 session history.",
+		Instructions:  resolved.Instructions,
 		Input:         input,
-		ToolChoice:    "none",
+		Tools:         resolved.Tools,
+		ToolChoice:    resolved.ToolChoice,
 		ServiceTier:   strings.TrimSpace(pref.ServiceTier),
 		ContextMode:   strings.TrimSpace(pref.ContextMode),
-		ContextWindow: contextWindow,
-		WorkspacePath: strings.TrimSpace(session.WorkspacePath),
+		ContextWindow: resolved.ContextWindow,
+		WorkspacePath: strings.TrimSpace(resolved.Scope.PrimaryPath),
 	}
 	if req.Thinking == "" {
 		req.Thinking = "medium"
+	}
+	if req.Instructions == "" {
+		return sessionV3AssistantResponse{}, errors.New("resolved v3 instructions are empty")
+	}
+	if req.ToolChoice == "" {
+		req.ToolChoice = "none"
 	}
 	ctx = identity.ContextWithPrincipal(ctx, job.Principal)
 	var streamed strings.Builder
@@ -706,13 +706,13 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		progressErr = flushErr
 	}
 	if err != nil {
-		return sessionV3AssistantResponse{}, true, err
+		return sessionV3AssistantResponse{}, err
 	}
 	if progressErr != nil {
-		return sessionV3AssistantResponse{}, true, progressErr
+		return sessionV3AssistantResponse{}, progressErr
 	}
 	if len(response.FunctionCalls) > 0 || response.RestartTurn {
-		return sessionV3AssistantResponse{}, true, errors.New("v3 provider returned tool calls; tool-loop execution is not supported by the primary-owned V3 executor yet")
+		return sessionV3AssistantResponse{}, errors.New("v3 provider returned tool calls; tool-loop execution is not supported by the primary-owned V3 executor yet")
 	}
 	content := strings.TrimSpace(response.Text)
 	if content == "" {
@@ -732,14 +732,14 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		}
 	}
 	if content == "" {
-		return sessionV3AssistantResponse{}, true, errors.New("provider returned empty assistant response")
+		return sessionV3AssistantResponse{}, errors.New("provider returned empty assistant response")
 	}
 	if coalescer.FlushCount() == 0 {
 		if err := coalescer.Add(content); err != nil {
-			return sessionV3AssistantResponse{}, true, err
+			return sessionV3AssistantResponse{}, err
 		}
 		if err := coalescer.Flush(); err != nil {
-			return sessionV3AssistantResponse{}, true, err
+			return sessionV3AssistantResponse{}, err
 		}
 	}
 	model := strings.TrimSpace(response.Model)
@@ -758,7 +758,187 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		ProviderResponseID: strings.TrimSpace(response.ID),
 		StopReason:         strings.TrimSpace(response.StopReason),
 		Usage:              response.Usage,
-	}, true, nil
+	}, nil
+}
+
+func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (sessionV3ResolvedRuntime, error) {
+	if e == nil || e.server == nil || e.server.sessions == nil {
+		return sessionV3ResolvedRuntime{}, errors.New("v3 executor is not configured")
+	}
+	session, ok, err := e.server.sessions.GetSession(job.SessionID)
+	if err != nil {
+		return sessionV3ResolvedRuntime{}, err
+	}
+	if !ok {
+		return sessionV3ResolvedRuntime{}, fmt.Errorf("session %q not found", job.SessionID)
+	}
+	if strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(job.Principal.AccountScopeID) {
+		return sessionV3ResolvedRuntime{}, errors.New("session principal account mismatch")
+	}
+	agentName := strings.TrimSpace(firstNonEmpty(sessionV3MetadataString(session.Metadata, "resolved_agent_name"), sessionV3MetadataString(session.Metadata, "agent_name")))
+	if agentName == "" {
+		return sessionV3ResolvedRuntime{}, errors.New("v3 session is missing durable agent identity")
+	}
+	if e.server.agents == nil {
+		return sessionV3ResolvedRuntime{}, errors.New("agent service is not configured")
+	}
+	agentProfile, err := e.server.agents.ResolvePrimaryForAccount(session.AccountScopeID, agentName)
+	if err != nil {
+		return sessionV3ResolvedRuntime{}, err
+	}
+	if !agentProfile.Enabled {
+		return sessionV3ResolvedRuntime{}, fmt.Errorf("agent %q is disabled", strings.TrimSpace(agentProfile.Name))
+	}
+	if strings.TrimSpace(agentProfile.Mode) != "primary" {
+		return sessionV3ResolvedRuntime{}, fmt.Errorf("agent %q is not primary", strings.TrimSpace(agentProfile.Name))
+	}
+	pref, contextWindow, err := e.resolveSessionV3ProviderPreference(applySessionV3AgentPreferenceOverrides(session.Preference, agentProfile))
+	if err != nil {
+		return sessionV3ResolvedRuntime{}, err
+	}
+	if strings.TrimSpace(pref.Provider) == "" || strings.TrimSpace(pref.Model) == "" {
+		return sessionV3ResolvedRuntime{}, errors.New("resolved v3 provider/model is empty")
+	}
+	scope, err := e.resolveSessionV3WorkspaceScope(session, job.Principal)
+	if err != nil {
+		return sessionV3ResolvedRuntime{}, err
+	}
+	if strings.TrimSpace(scope.PrimaryPath) == "" {
+		return sessionV3ResolvedRuntime{}, errors.New("session workspace path is empty")
+	}
+	instructions := strings.TrimSpace(e.composeSessionV3Instructions(scope, session.Mode, agentProfile))
+	if instructions == "" {
+		return sessionV3ResolvedRuntime{}, errors.New("resolved v3 instructions are empty")
+	}
+	tools, err := e.resolveSessionV3ProviderTools(session.AccountScopeID, agentProfile)
+	if err != nil {
+		return sessionV3ResolvedRuntime{}, err
+	}
+	toolChoice := "none"
+	if len(tools) > 0 {
+		toolChoice = "auto"
+	}
+	return sessionV3ResolvedRuntime{Session: session, AgentProfile: agentProfile, Preference: pref, ContextWindow: contextWindow, Scope: scope, Instructions: instructions, Tools: tools, ToolChoice: toolChoice}, nil
+}
+
+func (e *sessionV3Executor) resolveSessionV3WorkspaceScope(session pebblestore.SessionSnapshot, principal identity.Principal) (tool.WorkspaceScope, error) {
+	if hydrator, ok := e.server.runner.(interface {
+		ResolveRuntimeWorkspaceScope(pebblestore.SessionSnapshot, identity.Principal) (tool.WorkspaceScope, error)
+	}); ok && hydrator != nil {
+		return hydrator.ResolveRuntimeWorkspaceScope(session, principal)
+	}
+	hydrator := runruntime.NewService(e.server.sessions, e.server.model, e.server.providers, nil, nil, e.server.agents, e.server.discovery, e.server.events)
+	if e.server.workspace != nil {
+		hydrator.SetWorkspaceService(e.server.workspace)
+	}
+	return hydrator.ResolveRuntimeWorkspaceScope(session, principal)
+}
+
+func (e *sessionV3Executor) composeSessionV3Instructions(scope tool.WorkspaceScope, mode string, agentProfile pebblestore.AgentProfile) string {
+	if hydrator, ok := e.server.runner.(interface {
+		ComposeRuntimeInstructions(tool.WorkspaceScope, string, bool, pebblestore.AgentProfile, string) string
+	}); ok && hydrator != nil {
+		return hydrator.ComposeRuntimeInstructions(scope, mode, e.server.BypassPermissions(), agentProfile, "")
+	}
+	hydrator := runruntime.NewService(e.server.sessions, e.server.model, e.server.providers, nil, nil, e.server.agents, e.server.discovery, e.server.events)
+	return hydrator.ComposeRuntimeInstructions(scope, mode, e.server.BypassPermissions(), agentProfile, "")
+}
+
+func (e *sessionV3Executor) composeSessionV3InstructionsLegacy(scope tool.WorkspaceScope, mode string, agentProfile pebblestore.AgentProfile) string {
+	agentName := strings.TrimSpace(agentProfile.Name)
+	if agentName == "" {
+		agentName = "swarm"
+	}
+	agentMode := strings.TrimSpace(agentProfile.Mode)
+	if agentMode == "" {
+		agentMode = "primary"
+	}
+	runtimeMode := pebblestore.AgentProfileRuntimeMode(agentProfile)
+	if runtimeMode == "" {
+		runtimeMode = "unset"
+	}
+	prompt := strings.TrimSpace(agentProfile.Prompt)
+	if prompt == "" {
+		return ""
+	}
+	lines := []string{
+		"Active agent profile:",
+		"- name: " + agentName,
+		"- mode: " + agentMode,
+		"- runtime_contract: " + runtimeMode,
+		fmt.Sprintf("- exit_plan_mode_enabled: %t", pebblestore.AgentExitPlanModeEnabled(agentProfile)),
+		"",
+		prompt,
+		"",
+		"Current session mode: " + sessionruntime.NormalizeMode(mode) + ".",
+		"Use the committed V3 session history and workspace scope to answer the user's latest message.",
+		"Workspace scope primary path: " + strings.TrimSpace(scope.PrimaryPath),
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func (e *sessionV3Executor) resolveSessionV3ProviderTools(accountScopeID string, agentProfile pebblestore.AgentProfile) ([]provideriface.ToolDefinition, error) {
+	if e == nil || e.server == nil || e.server.runner == nil {
+		return nil, nil
+	}
+	contract, _, disabled, err := e.server.runner.ResolveAgentToolContractForAccount(accountScopeID, agentProfile)
+	if err != nil {
+		return nil, err
+	}
+	definitions := sessionsV3ProviderToolDefinitions(e.server.runner.ListAgentToolDefinitionsForAccount(accountScopeID))
+	if len(definitions) == 0 {
+		return nil, nil
+	}
+	allowed := make(map[string]bool, len(contract.Tools))
+	for name, state := range contract.Tools {
+		name = strings.TrimSpace(name)
+		if name != "" && state.Enabled {
+			allowed[name] = true
+		}
+	}
+	filtered := make([]provideriface.ToolDefinition, 0, len(definitions))
+	for _, definition := range definitions {
+		name := strings.TrimSpace(definition.Name)
+		if name == "" || disabled[name] || !allowed[name] {
+			continue
+		}
+		filtered = append(filtered, definition)
+	}
+	return filtered, nil
+}
+
+func sessionsV3ProviderToolDefinitions(definitions []tool.Definition) []provideriface.ToolDefinition {
+	out := make([]provideriface.ToolDefinition, 0, len(definitions))
+	for _, definition := range definitions {
+		out = append(out, provideriface.ToolDefinition{
+			Type:        definition.Type,
+			Name:        definition.Name,
+			Description: definition.Description,
+			Parameters:  sessionsV3ProviderToolParameters(definition.Parameters),
+		})
+	}
+	return out
+}
+
+func sessionsV3ProviderToolParameters(parameters map[string]any) map[string]any {
+	if len(parameters) == 0 {
+		return map[string]any{"type": "object", "properties": map[string]any{}}
+	}
+	out := make(map[string]any, len(parameters))
+	for key, value := range parameters {
+		if value != nil {
+			out[key] = value
+		}
+	}
+	if strings.TrimSpace(fmt.Sprint(out["type"])) == "" {
+		out["type"] = "object"
+	}
+	if strings.EqualFold(strings.TrimSpace(fmt.Sprint(out["type"])), "object") {
+		if _, ok := out["properties"].(map[string]any); !ok {
+			out["properties"] = map[string]any{}
+		}
+	}
+	return out
 }
 
 func (e *sessionV3Executor) resolveSessionV3ProviderPreference(pref pebblestore.ModelPreference) (pebblestore.ModelPreference, int, error) {
@@ -806,24 +986,6 @@ func sessionsV3ProviderInput(messages []pebblestore.MessageSnapshot) []map[strin
 		}
 	}
 	return input
-}
-
-func (e *sessionV3Executor) fakeAssistantResponse(sessionID string) (string, error) {
-	messages, err := e.server.sessions.ListSessionMessages(sessionID, 0, 500)
-	if err != nil {
-		return "", err
-	}
-	lastUser := ""
-	for i := len(messages) - 1; i >= 0; i-- {
-		if strings.TrimSpace(messages[i].Role) == "user" {
-			lastUser = messages[i].Content
-			break
-		}
-	}
-	if strings.TrimSpace(lastUser) == "" {
-		return "V3 fake assistant response.", nil
-	}
-	return "V3 fake assistant response: " + lastUser, nil
 }
 
 func shouldGenerateSessionV3Title(session pebblestore.SessionSnapshot) bool {
