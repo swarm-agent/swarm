@@ -838,6 +838,89 @@ func TestSessionsV3PrimaryStreamTransitionsFromReplayToLiveEvents(t *testing.T) 
 	}
 }
 
+func TestSessionsV3PrimaryStreamPublishesExecutorCommittedEventsAndReplaysThem(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+	created := createSessionsV3PrimaryTestSession(t, server, "cp4-outbox-create", "CP4 outbox")
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, withTestPrincipal(r))
+	}))
+	defer httpServer.Close()
+
+	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	defer conn.Close()
+	started := readSessionsV3PrimaryStreamFrame(t, conn)
+	complete := readSessionsV3PrimaryStreamFrame(t, conn)
+	if started.Type != "replay.started" || complete.Type != "replay.complete" || complete.LastSeq != 1 {
+		t.Fatalf("initial frames started=%+v complete=%+v", started, complete)
+	}
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "cp4-outbox-message", "stream committed assistant")
+	wantLive := []string{"session.message.appended", "session.assistant.started", "session.assistant.completed"}
+	for i, wantType := range wantLive {
+		frame := readSessionsV3PrimaryStreamFrame(t, conn)
+		wantSeq := uint64(i + 2)
+		if frame.Type != "event" || frame.Event == nil || frame.Event.Seq != wantSeq || frame.Event.EventType != wantType {
+			t.Fatalf("live frame %d = %+v, want seq=%d type=%s", i, frame, wantSeq, wantType)
+		}
+		if _, ok, err := sessionSvc.Store().GetV3SessionEvent(created.ID, frame.Event.Seq); err != nil || !ok {
+			t.Fatalf("live event seq %d was not durable before publish: ok=%t err=%v", frame.Event.Seq, ok, err)
+		}
+	}
+
+	messages := getSessionsV3PrimaryTestMessages(t, server, created.ID, 0, 10)
+	if len(messages) != 2 || messages[1].Role != "assistant" || !strings.Contains(messages[1].Content, "stream committed assistant") {
+		t.Fatalf("messages after executor completion = %+v", messages)
+	}
+
+	replay := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=2")
+	defer replay.Close()
+	replayStarted := readSessionsV3PrimaryStreamFrame(t, replay)
+	if replayStarted.Type != "replay.started" || replayStarted.HighWatermarkSeq != 4 {
+		t.Fatalf("replay started = %+v", replayStarted)
+	}
+	for i, wantType := range []string{"session.assistant.started", "session.assistant.completed"} {
+		frame := readSessionsV3PrimaryStreamFrame(t, replay)
+		wantSeq := uint64(i + 3)
+		if frame.Type != "event" || frame.Event == nil || frame.Event.Seq != wantSeq || frame.Event.EventType != wantType {
+			t.Fatalf("replay frame %d = %+v, want seq=%d type=%s", i, frame, wantSeq, wantType)
+		}
+	}
+	replayComplete := readSessionsV3PrimaryStreamFrame(t, replay)
+	if replayComplete.Type != "replay.complete" || replayComplete.LastSeq != 4 {
+		t.Fatalf("replay complete = %+v", replayComplete)
+	}
+}
+
+func TestSessionsV3PrimaryStreamDoesNotRepublishReplayedMutations(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "cp4-no-republish-create", "CP4 no republish")
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, withTestPrincipal(r))
+	}))
+	defer httpServer.Close()
+
+	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	defer conn.Close()
+	started := readSessionsV3PrimaryStreamFrame(t, conn)
+	complete := readSessionsV3PrimaryStreamFrame(t, conn)
+	if started.Type != "replay.started" || complete.Type != "replay.complete" || complete.LastSeq != 1 {
+		t.Fatalf("initial frames started=%+v complete=%+v", started, complete)
+	}
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "cp4-no-republish-message", "publish once")
+	live := readSessionsV3PrimaryStreamFrame(t, conn)
+	if live.Type != "event" || live.Event == nil || live.Event.Seq != 2 || live.Event.EventType != "session.message.appended" {
+		t.Fatalf("live event = %+v", live)
+	}
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "cp4-no-republish-message", "publish once")
+	if frame, ok := readOptionalSessionsV3PrimaryStreamFrame(t, conn, 150*time.Millisecond); ok {
+		t.Fatalf("duplicate idempotency replay unexpectedly republished frame: %+v", frame)
+	}
+}
+
 func TestSessionsV3PrimaryStreamCursorErrors(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSession(t, server, "cp6-cursor-create", "CP6 cursor")
@@ -1004,6 +1087,22 @@ func readSessionsV3PrimaryStreamFrame(t *testing.T, conn *gorillaws.Conn) sessio
 		t.Fatalf("decode v3 stream frame %s: %v", string(raw), err)
 	}
 	return frame
+}
+
+func readOptionalSessionsV3PrimaryStreamFrame(t *testing.T, conn *gorillaws.Conn, timeout time.Duration) (sessionV3StreamFrame, bool) {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	_, raw, err := conn.ReadMessage()
+	if err != nil {
+		return sessionV3StreamFrame{}, false
+	}
+	var frame sessionV3StreamFrame
+	if err := json.Unmarshal(raw, &frame); err != nil {
+		t.Fatalf("decode v3 stream frame %s: %v", string(raw), err)
+	}
+	return frame, true
 }
 
 func newSessionsV3PrimaryAPITestServer(t *testing.T, storePath string) (*Server, *sessionruntime.Service, func() error) {

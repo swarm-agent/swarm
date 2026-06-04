@@ -282,14 +282,3 @@ func (s *Server) sendSessionV3StreamFrame(conn *transportws.Conn, frame sessionV
 	}
 	return conn.WriteText(raw)
 }
-
-func (s *Server) applySessionV3PrimaryMutation(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
-	if s == nil || s.sessions == nil {
-		return sessionruntime.SessionMutationResult{}, errors.New("sessions v3 service is not configured")
-	}
-	result, err := s.sessions.ApplySessionMutation(input)
-	if err == nil && result.Event.Seq != 0 && s.v3SessionStreams != nil && !result.Replayed {
-		s.v3SessionStreams.publish(result.Event)
-	}
-	return result, err
-}
