@@ -387,36 +387,11 @@ func (p *ChatPage) drawPlanEditorDocument(s tcell.Screen, rect Rect, onPanel fun
 		return 0
 	}
 	doc := structuredPlanDocumentMap(p.planEditorPlan.Document)
-	wide := rect.W >= 86 && len(doc) > 0
-	if wide {
-		leftW := rect.W / 3
-		if leftW < 28 {
-			leftW = 28
-		}
-		if leftW > 44 {
-			leftW = 44
-		}
-		rightW := rect.W - leftW - 3
-		if rightW < 36 {
-			wide = false
-		} else {
-			leftRect := Rect{X: rect.X, Y: rect.Y, W: leftW, H: rect.H}
-			rightRect := Rect{X: rect.X + leftW + 3, Y: rect.Y, W: rightW, H: rect.H}
-			for y := rect.Y; y < rect.Y+rect.H; y++ {
-				s.SetContent(rect.X+leftW+1, y, '│', nil, onPanel(p.theme.Border))
-			}
-			leftLines := p.planEditorDetailLines(doc, maxInt(1, leftRect.W))
-			rightLines := p.planEditorCheckpointLines(doc, maxInt(1, rightRect.W))
-			maxScroll := maxInt(maxInt(0, len(leftLines)-leftRect.H), maxInt(0, len(rightLines)-rightRect.H))
-			p.clampPlanEditorScroll(maxScroll)
-			p.drawPlanEditorLines(s, leftRect, leftLines, p.planEditorInputScroll, onPanel)
-			p.drawPlanEditorLines(s, rightRect, rightLines, p.planEditorInputScroll, onPanel)
-			return maxScroll
-		}
-	}
-
 	lines := p.planEditorFallbackLines(rect.W)
 	if len(doc) > 0 {
+		// TUI plan documents are intentionally rendered as one vertical stack.
+		// Two-column layouts are hard to scan in terminals and make wrapping brittle;
+		// keep information at the top and checkpoints below it at every width.
 		lines = append(p.planEditorDetailLines(doc, rect.W), planEditorRenderLine{Text: "", Style: p.theme.Text})
 		lines = append(lines, p.planEditorCheckpointLines(doc, rect.W)...)
 	}
