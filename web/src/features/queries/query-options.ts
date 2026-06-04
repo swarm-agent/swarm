@@ -38,10 +38,10 @@ export function sessionMessagesQueryKey(sessionId: string) {
   return ['session-messages', sessionId] as const
 }
 
-export function sessionMessagesQueryOptions(sessionId: string) {
+export function sessionMessagesQueryOptions(sessionId: string, sessionApi?: string | null) {
   return {
     queryKey: sessionMessagesQueryKey(sessionId),
-    queryFn: () => fetchSessionMessages(sessionId),
+    queryFn: ({ signal }: { signal?: AbortSignal }) => fetchSessionMessages(sessionId, signal, 0, { sessionApi }),
     staleTime: 60_000,
     enabled: sessionId.trim() !== '',
   }
@@ -98,7 +98,7 @@ export function modelOptionsQueryOptions() {
   }
 }
 
-export function ensureSessionRuntimeData(queryClient: QueryClient, sessionId: string) {
+export function ensureSessionRuntimeData(queryClient: QueryClient, sessionId: string, sessionApi?: string | null) {
   const normalizedSessionId = sessionId.trim()
   if (!normalizedSessionId) {
     return Promise.resolve()
@@ -108,16 +108,16 @@ export function ensureSessionRuntimeData(queryClient: QueryClient, sessionId: st
   const preferenceKey = sessionPreferenceQueryKey(normalizedSessionId)
 
   return Promise.all([
-    queryClient.getQueryData(messagesKey) ? Promise.resolve() : queryClient.prefetchQuery(sessionMessagesQueryOptions(normalizedSessionId)),
+    queryClient.getQueryData(messagesKey) ? Promise.resolve() : queryClient.prefetchQuery(sessionMessagesQueryOptions(normalizedSessionId, sessionApi)),
     queryClient.getQueryData(preferenceKey) ? Promise.resolve() : queryClient.prefetchQuery(sessionPreferenceQueryOptions(normalizedSessionId)),
   ])
 }
 
-export async function prefetchSessionRuntimeData(queryClient: QueryClient, sessionId: string) {
+export async function prefetchSessionRuntimeData(queryClient: QueryClient, sessionId: string, sessionApi?: string | null) {
   const normalizedSessionId = sessionId.trim()
   if (!normalizedSessionId) {
     return
   }
 
-  await ensureSessionRuntimeData(queryClient, normalizedSessionId)
+  await ensureSessionRuntimeData(queryClient, normalizedSessionId, sessionApi)
 }

@@ -151,6 +151,10 @@ interface V3HydratedSessionResponseWire {
   events?: unknown[];
 }
 
+interface SessionDataRequestOptions {
+  sessionApi?: string | null;
+}
+
 interface SessionPreferenceWire {
   preference?: {
     provider?: string;
@@ -834,10 +838,25 @@ function mapSession(session: SessionWire): DesktopSessionRecord {
 
 export async function fetchSession(
   sessionId: string,
+  options: SessionDataRequestOptions = {},
 ): Promise<DesktopSessionRecord | null> {
   const normalizedSessionId = sessionId.trim();
   if (!normalizedSessionId) {
     return null;
+  }
+
+  const sessionApi = options.sessionApi?.trim().toLowerCase() ?? "";
+  if (sessionApi === "v3") {
+    const response = await requestJson<V3HydratedSessionResponseWire>(
+      `/v3/sessions/${encodeURIComponent(normalizedSessionId)}`,
+    );
+    const mappedSession = mapSession(mapSessionProjectionToSession(response.session ?? {}, response.projection));
+    const mapped = applyDesktopChatRouteToSession(
+      mappedSession,
+      routeFromSessionMetadata(mappedSession),
+    );
+    mapped.permissionsHydrated = false;
+    return mapped.id ? applySessionProjectionCursor(mapped, response.projection) : null;
   }
 
   const response = await requestJson<{ session?: SessionWire }>(
@@ -913,13 +932,18 @@ export async function fetchSessionMessages(
   sessionId: string,
   signal?: AbortSignal,
   afterSeq = 0,
+  options: SessionDataRequestOptions = {},
 ): Promise<ChatMessageRecord[]> {
   const search = new URLSearchParams({ limit: "100" });
   if (afterSeq > 0) {
     search.set("after_seq", String(afterSeq));
   }
+  const sessionApi = options.sessionApi?.trim().toLowerCase() ?? "";
+  const endpoint = sessionApi === "v3"
+    ? `/v3/sessions/${encodeURIComponent(sessionId)}/messages?${search.toString()}`
+    : `/v2/sessions/${encodeURIComponent(sessionId)}/messages?${search.toString()}`;
   const response = await requestJson<MessagesResponseWire>(
-    `/v2/sessions/${encodeURIComponent(sessionId)}/messages?${search.toString()}`,
+    endpoint,
     { signal },
   );
   return Array.isArray(response.messages)

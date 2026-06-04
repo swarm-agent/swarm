@@ -1152,17 +1152,18 @@ function syncBlockedSessionToWorkspaceOverview(queryClient: QueryClient, session
   })
 }
 
-function requestAuthoritativeSessionSnapshot(sessionId: string): void {
+function requestAuthoritativeSessionSnapshot(sessionId: string, sessionApi?: string | null): void {
   const normalizedSessionId = sessionId.trim()
   if (!normalizedSessionId || pendingSessionSnapshotHydrations.has(normalizedSessionId)) {
     return
   }
 
+  const normalizedSessionApi = sessionApi?.trim().toLowerCase() ?? ''
   pendingSessionSnapshotHydrations.add(normalizedSessionId)
   window.setTimeout(() => {
     void (async () => {
       try {
-        const fetchedSession = await fetchSession(normalizedSessionId)
+        const fetchedSession = await fetchSession(normalizedSessionId, { sessionApi: normalizedSessionApi })
         if (!fetchedSession) {
           return
         }
@@ -2169,7 +2170,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
   sessions[sessionId] = merged
   syncBlockedSessionToWorkspaceOverview(queryClient, merged)
   if (sessionRequiresSnapshotHydration(merged, eventType)) {
-    requestAuthoritativeSessionSnapshot(sessionId)
+    requestAuthoritativeSessionSnapshot(sessionId, merged.sessionApi)
   }
 
   const nextActiveWorkspacePath = state.activeSessionId === merged.id

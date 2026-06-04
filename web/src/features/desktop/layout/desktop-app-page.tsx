@@ -1306,7 +1306,7 @@ interface SessionRowProps {
   agentSummary: SessionAgentSummary
   agentsExpanded: boolean
   onSelect: (sessionId: string) => void
-  onPrefetch: (sessionId: string) => void
+  onPrefetch: (sessionId: string, sessionApi?: string | null) => void
   onToggleAgents: (sessionId: string) => void
 }
 
@@ -1352,8 +1352,8 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
           onSelect(session.id)
         }
       }}
-      onMouseEnter={() => onPrefetch(session.id)}
-      onFocus={() => onPrefetch(session.id)}
+      onMouseEnter={() => onPrefetch(session.id, session.sessionApi)}
+      onFocus={() => onPrefetch(session.id, session.sessionApi)}
       className={cn(
         'grid w-full min-w-0 gap-1 rounded-lg text-left transition-colors outline-none',
         isNestedSession ? 'px-2.5 py-1.5' : 'px-3 py-2',
@@ -2654,8 +2654,8 @@ export function DesktopAppPage() {
     mobileSidebarSwipeRef.current = null
   }, [])
 
-  const handlePrefetchSession = useCallback((sessionId: string) => {
-    void prefetchSessionRuntimeData(queryClient, sessionId)
+  const handlePrefetchSession = useCallback((sessionId: string, sessionApi?: string | null) => {
+    void prefetchSessionRuntimeData(queryClient, sessionId, sessionApi)
   }, [queryClient])
 
   const handleToggleAgentSessions = useCallback((sessionId: string) => {

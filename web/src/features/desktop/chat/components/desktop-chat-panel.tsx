@@ -1055,7 +1055,7 @@ export function DesktopChatPanel({
   const cachedPreference = sessionId ? queryClient.getQueryData<ResolvedSessionPreference>(sessionPreferenceQueryOptions(sessionId).queryKey) : undefined
 
   const messagesQuery = useQuery({
-    ...sessionMessagesQueryOptions(sessionId ?? ''),
+    ...sessionMessagesQueryOptions(sessionId ?? '', liveSession?.sessionApi),
     initialData: cachedMessages,
   })
 
@@ -1838,10 +1838,10 @@ export function DesktopChatPanel({
   useEffect(() => {
     setPanelError(null)
     if (sessionId) {
-      void ensureSessionRuntimeData(queryClient, sessionId)
+      void ensureSessionRuntimeData(queryClient, sessionId, liveSession?.sessionApi)
       void refreshSessionPermissions(sessionId)
     }
-  }, [queryClient, refreshSessionPermissions, sessionId])
+  }, [liveSession?.sessionApi, queryClient, refreshSessionPermissions, sessionId])
 
   useEffect(() => {
     if (!sessionId || !resumableRunId) {
