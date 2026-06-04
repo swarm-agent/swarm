@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
+
 	gorillaws "github.com/gorilla/websocket"
 
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -716,6 +718,23 @@ func waitForSessionsV3RunIntentStatus(t *testing.T, sessionSvc *sessionruntime.S
 	intents, _ := sessionSvc.Store().ListV3SessionRunIntents(sessionID, 0, 10)
 	t.Fatalf("run intent status %q not found: %+v", want, intents)
 	return sessionruntime.SessionRunIntent{}
+}
+
+func waitForSessionsV3Title(t *testing.T, sessionSvc *sessionruntime.Service, sessionID, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		session, ok, err := sessionSvc.GetSession(sessionID)
+		if err != nil {
+			t.Fatalf("get session: %v", err)
+		}
+		if ok && session.Title == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	session, _, _ := sessionSvc.GetSession(sessionID)
+	t.Fatalf("session title = %q, want %q", session.Title, want)
 }
 
 func TestSessionsV3PrimaryMessageIsIdempotent(t *testing.T) {
@@ -1606,6 +1625,106 @@ func TestSessionsV3ExecutorFailsClosedWhenProviderReturnsToolCalls(t *testing.T)
 	}
 }
 
+func TestSessionsV3ExecutorUpdatesDefaultTitleWithMemoryAgentAfterFirstRun(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{responses: []provideriface.Response{{Text: "assistant answer"}, {Text: "Memory Agent Session Title Flow"}}}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "title-model", Thinking: "low", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory title prompt"}); err != nil {
+		t.Fatalf("upsert memory agent: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "title-update-create", "New Session", pebblestore.ModelPreference{Provider: "test-provider", Model: "chat-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "title-update-message", "please title this first turn")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+	waitForSessionsV3Title(t, sessionSvc, created.ID, "Memory Agent Session Title Flow")
+	if !server.WaitForInFlightRuns(2 * time.Second) {
+		t.Fatalf("server did not drain v3 title generation")
+	}
+
+	stored, ok, err := sessionSvc.GetSession(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("load titled session ok=%v err=%v", ok, err)
+	}
+	if stored.Title != "Memory Agent Session Title Flow" {
+		t.Fatalf("session title = %q", stored.Title)
+	}
+	if runner.callCount != 2 {
+		t.Fatalf("provider call count = %d, want assistant + memory title", runner.callCount)
+	}
+	if !strings.Contains(runner.requests[1].Instructions, "Memory title prompt") || !strings.Contains(runner.requests[1].Instructions, "You generate deterministic session titles") {
+		t.Fatalf("memory title instructions = %q", runner.requests[1].Instructions)
+	}
+	if runner.requests[1].Model != "title-model" || runner.requests[1].Thinking != "low" || runner.requests[1].ToolChoice != "none" {
+		t.Fatalf("memory title request = %+v", runner.requests[1])
+	}
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	var titleEvent *sessionruntime.SessionEvent
+	for _, event := range events {
+		if event.EventType == "session.title.updated" {
+			copy := event
+			titleEvent = &copy
+		}
+	}
+	if titleEvent == nil {
+		t.Fatalf("missing session.title.updated event: %+v", events)
+	}
+	var payload struct {
+		SessionID string                      `json:"session_id"`
+		Title     string                      `json:"title"`
+		Stage     string                      `json:"stage"`
+		Session   pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(titleEvent.Payload, &payload); err != nil {
+		t.Fatalf("decode title event payload: %v", err)
+	}
+	if payload.SessionID != created.ID || payload.Title != "Memory Agent Session Title Flow" || payload.Stage != "final" || payload.Session.Title != "Memory Agent Session Title Flow" {
+		t.Fatalf("title event payload = %+v", payload)
+	}
+	replay, err := sessionSvc.ReplaySessionEvents(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("replay events: %v", err)
+	}
+	if replay.Session == nil || replay.Session.Title != "Memory Agent Session Title Flow" {
+		t.Fatalf("replayed session = %+v", replay.Session)
+	}
+}
+
+func TestSessionsV3ExecutorDoesNotRetitleExplicitTitle(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{responses: []provideriface.Response{{Text: "assistant answer"}, {Text: "Should Not Apply"}}}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "explicit-title-create", "Explicit Title", pebblestore.ModelPreference{Provider: "test-provider", Model: "chat-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "explicit-title-message", "keep explicit title")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+	if !server.WaitForInFlightRuns(2 * time.Second) {
+		t.Fatalf("server did not drain")
+	}
+	stored, ok, err := sessionSvc.GetSession(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("load session ok=%v err=%v", ok, err)
+	}
+	if stored.Title != "Explicit Title" {
+		t.Fatalf("session title = %q", stored.Title)
+	}
+	if runner.callCount != 1 {
+		t.Fatalf("provider call count = %d, want only assistant", runner.callCount)
+	}
+}
+
 func createSessionsV3PrimaryTestSessionWithPreference(t *testing.T, server *Server, clientRequestID, title string, pref pebblestore.ModelPreference) pebblestore.SessionSnapshot {
 	t.Helper()
 	payload := map[string]any{
@@ -1639,9 +1758,11 @@ type sessionsV3RecordingProviderRunner struct {
 	deltas        []string
 	err           error
 	response      provideriface.Response
+	responses     []provideriface.Response
 	functionCalls []provideriface.FunctionCall
 	callCount     int
 	lastRequest   provideriface.Request
+	requests      []provideriface.Request
 }
 
 func (r *sessionsV3RecordingProviderRunner) ID() string { return "test-provider" }
@@ -1651,21 +1772,25 @@ func (r *sessionsV3RecordingProviderRunner) CreateResponse(ctx context.Context, 
 func (r *sessionsV3RecordingProviderRunner) CreateResponseStreaming(_ context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
 	r.callCount++
 	r.lastRequest = req
+	r.requests = append(r.requests, req)
 	if r.err != nil {
 		return provideriface.Response{}, r.err
+	}
+	response := r.response
+	if len(r.responses) >= r.callCount {
+		response = r.responses[r.callCount-1]
+	}
+	if response.Text == "" {
+		response.Text = r.text
 	}
 	if onEvent != nil {
 		deltas := r.deltas
 		if len(deltas) == 0 {
-			deltas = []string{r.text}
+			deltas = []string{response.Text}
 		}
 		for _, delta := range deltas {
 			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: delta})
 		}
-	}
-	response := r.response
-	if response.Text == "" {
-		response.Text = r.text
 	}
 	if len(r.functionCalls) > 0 {
 		response.FunctionCalls = append([]provideriface.FunctionCall(nil), r.functionCalls...)

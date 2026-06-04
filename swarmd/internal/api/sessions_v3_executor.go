@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 
 	codexruntime "swarm/packages/swarmd/internal/provider/codex"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
+
 	"sync"
 	"time"
 
@@ -27,7 +29,15 @@ const (
 	sessionV3ExecutorDefaultRunningStaleAfter = 5 * time.Minute
 	sessionV3AssistantDeltaFlushMaxBytes      = 512
 	sessionV3AssistantDeltaFlushMaxDelay      = 100 * time.Millisecond
+	sessionV3TitleDefault                     = "New Session"
+	sessionV3TitleConversationLimit           = 24
+	sessionV3TitlePromptPreviewRunes          = 2000
+	sessionV3TitleGenerationTimeout           = 20 * time.Second
+	sessionV3TitleFinalWordsMin               = 5
+	sessionV3TitleFinalWordsMax               = 6
 )
+
+var sessionV3TitleWordPattern = regexp.MustCompile(`\b[\p{L}\p{N}][\p{L}\p{N}'-]*\b`)
 
 type sessionV3ExecutorJob struct {
 	Principal identity.Principal
@@ -233,9 +243,12 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 		_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, err.Error(), "session.run.failed")
 		return
 	}
-	if _, err := e.completeRun(job, response); err != nil {
+	result, err := e.completeRun(job, response)
+	if err != nil {
 		_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, err.Error(), "session.run.failed")
+		return
 	}
+	e.maybeStartSessionV3TitleFlow(job, result)
 }
 
 func (e *sessionV3Executor) recordRunStatus(job sessionV3ExecutorJob, status, reason, eventType string) (sessionruntime.SessionMutationResult, error) {
@@ -459,6 +472,158 @@ func (e *sessionV3Executor) completeRun(job sessionV3ExecutorJob, response sessi
 	})
 }
 
+func (e *sessionV3Executor) maybeStartSessionV3TitleFlow(job sessionV3ExecutorJob, result sessionruntime.SessionMutationResult) {
+	if e == nil || e.server == nil || e.server.sessions == nil || result.Replayed || result.Message == nil {
+		return
+	}
+	session, ok, err := e.server.sessions.GetSession(job.SessionID)
+	if err != nil || !ok || !shouldGenerateSessionV3Title(session) {
+		return
+	}
+	messages, err := e.server.sessions.ListSessionMessages(job.SessionID, 0, sessionV3TitleConversationLimit)
+	if err != nil || !shouldGenerateSessionV3TitleWithMessages(session, messages) {
+		return
+	}
+	go e.generateAndApplySessionV3Title(job)
+}
+
+func (e *sessionV3Executor) generateAndApplySessionV3Title(job sessionV3ExecutorJob) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("warning: v3 session title background panic for session %q: %v", job.SessionID, recovered)
+		}
+	}()
+	if e == nil || e.server == nil || e.server.sessions == nil {
+		return
+	}
+	e.server.beginActiveRun()
+	defer e.server.endActiveRun()
+	session, ok, err := e.server.sessions.GetSession(job.SessionID)
+	if err != nil || !ok || !shouldGenerateSessionV3Title(session) {
+		return
+	}
+	messages, err := e.server.sessions.ListSessionMessages(job.SessionID, 0, sessionV3TitleConversationLimit)
+	if err != nil || !shouldGenerateSessionV3TitleWithMessages(session, messages) {
+		return
+	}
+	conversation := buildSessionV3TitleConversation(messages)
+	if conversation == "" {
+		return
+	}
+	title, err := e.generateSessionV3MemoryTitle(session, conversation, job.Principal)
+	if err != nil {
+		log.Printf("warning: v3 session title generation failed for session %q: %v", job.SessionID, err)
+		return
+	}
+	if title == "" {
+		return
+	}
+	current, ok, err := e.server.sessions.GetSession(job.SessionID)
+	if err != nil || !ok || !shouldGenerateSessionV3Title(current) {
+		return
+	}
+	now := time.Now().UnixMilli()
+	current.Title = title
+	current.UpdatedAt = now
+	current.Metadata = cloneSessionsV3Metadata(current.Metadata)
+	payload, err := json.Marshal(map[string]any{
+		"session_id": job.SessionID,
+		"title":      title,
+		"stage":      "final",
+		"updated_at": now,
+		"session":    current,
+	})
+	if err != nil {
+		log.Printf("warning: marshal v3 session title payload for session %q: %v", job.SessionID, err)
+		return
+	}
+	payloadHash, err := sessionV3TitlePayloadHash(job.SessionID, job.RunID, title)
+	if err != nil {
+		log.Printf("warning: hash v3 session title payload for session %q: %v", job.SessionID, err)
+		return
+	}
+	clientRequestID := sessionV3ExecutorClientRequestID("session.title.updated", job.RunID)
+	if _, err := e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       job.SessionID,
+		UserID:          job.Principal.UserID,
+		AccountScopeID:  job.Principal.AccountScopeID,
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationUpdateTitle,
+		EventType:       "session.title.updated",
+		EventPayload:    payload,
+		Session:         &current,
+		NowUnixMs:       now,
+	}); err != nil {
+		log.Printf("warning: apply v3 session title update for session %q: %v", job.SessionID, err)
+	}
+}
+
+func (e *sessionV3Executor) generateSessionV3MemoryTitle(session pebblestore.SessionSnapshot, promptContext string, principal identity.Principal) (string, error) {
+	if e == nil || e.server == nil || e.server.providers == nil {
+		return "", errors.New("provider registry is not configured")
+	}
+	memoryProfile := pebblestore.AgentProfile{Name: "memory", Prompt: "You are Memory, the durable artifacts agent.", Enabled: true}
+	if e.server.agents != nil {
+		resolved, err := e.server.agents.ResolveSubagentForAccount(session.AccountScopeID, "memory")
+		if err != nil {
+			return "", err
+		}
+		memoryProfile = resolved
+	}
+	preference, _, err := e.resolveSessionV3ProviderPreference(applySessionV3AgentPreferenceOverrides(session.Preference, memoryProfile))
+	if err != nil {
+		return "", err
+	}
+	providerID := strings.ToLower(strings.TrimSpace(preference.Provider))
+	if providerID == "" {
+		return "", errors.New("resolved memory title provider is empty")
+	}
+	runner, ok := e.server.providers.GetRunner(providerID)
+	if !ok {
+		return "", fmt.Errorf("memory title provider %q is not runnable", providerID)
+	}
+	modelName := strings.TrimSpace(preference.Model)
+	if modelName == "" {
+		return "", errors.New("resolved memory title model is empty")
+	}
+	instructions := strings.TrimSpace(strings.Join([]string{
+		strings.TrimSpace(memoryProfile.Prompt),
+		"You generate deterministic session titles.",
+		fmt.Sprintf("Return only the title text with %d to %d words.", sessionV3TitleFinalWordsMin, sessionV3TitleFinalWordsMax),
+		"No markdown, no quotes, no explanations, no trailing punctuation.",
+		"Stage: final.",
+	}, "\n"))
+	req := provideriface.Request{
+		SessionID:     session.ID,
+		Model:         modelName,
+		Thinking:      normalizeSessionV3ThinkingWithProvider(providerID, preference.Thinking),
+		Instructions:  instructions,
+		Input:         []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": "Conversation summary:\n" + truncateSessionV3TitleRunes(promptContext, sessionV3TitlePromptPreviewRunes)}}}},
+		ToolChoice:    "none",
+		ServiceTier:   strings.TrimSpace(preference.ServiceTier),
+		ContextMode:   strings.TrimSpace(preference.ContextMode),
+		WorkspacePath: strings.TrimSpace(session.WorkspacePath),
+	}
+	bgCtx := context.Background()
+	if principal.Valid() {
+		bgCtx = identity.ContextWithPrincipal(bgCtx, principal)
+	}
+	ctx, cancel := context.WithTimeout(bgCtx, sessionV3TitleGenerationTimeout)
+	defer cancel()
+	response, err := runner.CreateResponse(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	title := sanitizeSessionV3GeneratedTitle(firstNonEmpty(strings.TrimSpace(response.Text), strings.TrimSpace(response.ReasoningSummary)), sessionV3TitleFinalWordsMin, sessionV3TitleFinalWordsMax)
+	if title == "" {
+		return "", errors.New("memory agent returned an empty/invalid title")
+	}
+	return title, nil
+}
+
 func (e *sessionV3Executor) assistantResponse(ctx context.Context, job sessionV3ExecutorJob) (sessionV3AssistantResponse, error) {
 	if e != nil && e.server != nil && e.server.providers != nil {
 		response, usedProvider, err := e.providerAssistantResponse(ctx, job)
@@ -659,6 +824,187 @@ func (e *sessionV3Executor) fakeAssistantResponse(sessionID string) (string, err
 		return "V3 fake assistant response.", nil
 	}
 	return "V3 fake assistant response: " + lastUser, nil
+}
+
+func shouldGenerateSessionV3Title(session pebblestore.SessionSnapshot) bool {
+	if session.MessageCount > 2 {
+		return false
+	}
+	if sessionV3TitleGenerationLocked(session.Metadata) {
+		return false
+	}
+	title := strings.TrimSpace(session.Title)
+	return title == "" || strings.EqualFold(title, sessionV3TitleDefault)
+}
+
+func shouldGenerateSessionV3TitleWithMessages(session pebblestore.SessionSnapshot, messages []pebblestore.MessageSnapshot) bool {
+	if !shouldGenerateSessionV3Title(session) {
+		return false
+	}
+	var userCount, assistantCount int
+	for _, message := range messages {
+		switch strings.ToLower(strings.TrimSpace(message.Role)) {
+		case "system":
+			continue
+		case "user":
+			userCount++
+		case "assistant":
+			assistantCount++
+		default:
+			return false
+		}
+	}
+	return userCount == 1 && assistantCount >= 1
+}
+
+func sessionV3TitleGenerationLocked(metadata map[string]any) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	if sessionV3MetadataBool(metadata, "title_locked") || sessionV3MetadataBool(metadata, "background") {
+		return true
+	}
+	for _, pair := range []struct{ key, value string }{
+		{"title_source", "flow_task"},
+		{"lineage_kind", "delegated_subagent"},
+		{"lineage_kind", "flow"},
+		{"launch_source", "task"},
+		{"launch_source", "targeted_subagent"},
+		{"launch_mode", "background"},
+		{"source", "flow"},
+		{"owner_transport", "flow_scheduler"},
+		{"subagent", "commit"},
+		{"requested_subagent", "commit"},
+	} {
+		if strings.EqualFold(sessionV3MetadataString(metadata, pair.key), pair.value) {
+			return true
+		}
+	}
+	return sessionV3MetadataString(metadata, "flow_id") != ""
+}
+
+func sessionV3MetadataBool(metadata map[string]any, key string) bool {
+	switch typed := metadata[key].(type) {
+	case bool:
+		return typed
+	case string:
+		return strings.EqualFold(strings.TrimSpace(typed), "true")
+	default:
+		return false
+	}
+}
+
+func sessionV3MetadataString(metadata map[string]any, key string) string {
+	value, ok := metadata[key]
+	if !ok || value == nil {
+		return ""
+	}
+	if typed, ok := value.(string); ok {
+		return strings.TrimSpace(typed)
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
+}
+
+func buildSessionV3TitleConversation(messages []pebblestore.MessageSnapshot) string {
+	lines := make([]string, 0, len(messages))
+	for _, message := range messages {
+		role := strings.ToLower(strings.TrimSpace(message.Role))
+		if role != "user" && role != "assistant" {
+			continue
+		}
+		content := strings.TrimSpace(message.Content)
+		if content == "" {
+			continue
+		}
+		lines = append(lines, role+": "+truncateSessionV3TitleRunes(content, 240))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func applySessionV3AgentPreferenceOverrides(base pebblestore.ModelPreference, agentProfile pebblestore.AgentProfile) pebblestore.ModelPreference {
+	providerOverride := strings.ToLower(strings.TrimSpace(agentProfile.Provider))
+	modelOverride := strings.TrimSpace(agentProfile.Model)
+	thinkingOverride := strings.TrimSpace(agentProfile.Thinking)
+	if providerOverride != "" && modelOverride != "" {
+		base.Provider = providerOverride
+		base.Model = modelOverride
+	} else if providerOverride == "" && modelOverride != "" {
+		base.Model = modelOverride
+	}
+	if thinkingOverride != "" {
+		base.Thinking = thinkingOverride
+	}
+	base.Thinking = normalizeSessionV3ThinkingWithProvider(base.Provider, base.Thinking)
+	if !strings.EqualFold(strings.TrimSpace(base.Provider), "codex") || !strings.EqualFold(strings.TrimSpace(base.Model), "gpt-5.4") {
+		base.ServiceTier = ""
+		base.ContextMode = ""
+	}
+	return base
+}
+
+func normalizeSessionV3ThinkingWithProvider(providerID, thinking string) string {
+	normalized := strings.ToLower(strings.TrimSpace(thinking))
+	switch normalized {
+	case "off", "low", "medium", "high", "xhigh":
+		if (strings.EqualFold(providerID, "copilot") || strings.EqualFold(providerID, "fireworks") || strings.EqualFold(providerID, "openrouter")) && normalized == "xhigh" {
+			return "high"
+		}
+		return normalized
+	}
+	switch strings.ToLower(strings.TrimSpace(providerID)) {
+	case "google":
+		return "xhigh"
+	case "copilot", "fireworks", "openrouter":
+		return "high"
+	default:
+		return pebblestore.DefaultThinkingLevel
+	}
+}
+
+func sanitizeSessionV3GeneratedTitle(raw string, minWords, maxWords int) string {
+	words := sessionV3TitleWordPattern.FindAllString(strings.TrimSpace(raw), -1)
+	if len(words) == 0 {
+		return ""
+	}
+	if maxWords > 0 && len(words) > maxWords {
+		words = words[:maxWords]
+	}
+	if len(words) < minWords {
+		return ""
+	}
+	return strings.Join(words, " ")
+}
+
+func truncateSessionV3TitleRunes(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit <= 0 {
+		return value
+	}
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit])
+}
+
+func sessionV3TitlePayloadHash(sessionID, runID, title string) (string, error) {
+	canonical := struct {
+		Operation string `json:"operation"`
+		SessionID string `json:"session_id"`
+		RunID     string `json:"run_id"`
+		Title     string `json:"title"`
+	}{
+		Operation: sessionruntime.SessionMutationUpdateTitle,
+		SessionID: strings.TrimSpace(sessionID),
+		RunID:     strings.TrimSpace(runID),
+		Title:     strings.TrimSpace(title),
+	}
+	raw, err := json.Marshal(canonical)
+	if err != nil {
+		return "", fmt.Errorf("marshal v3 title payload hash: %w", err)
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func sessionV3ExecutorRunKey(sessionID, runID string) string {
