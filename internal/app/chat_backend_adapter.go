@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 
 	"swarm-refactor/swarmtui/internal/client"
@@ -291,12 +292,23 @@ func (b *apiChatBackend) RunTurnStream(ctx context.Context, sessionID string, re
 			onEvent(ui.ChatRunStreamEvent{Type: "message.stored", SessionID: sessionID, RunID: result.RunIntent.RunID, Message: ptrChatMessageRecord(convertClientMessage(result.Message))})
 			onEvent(ui.ChatRunStreamEvent{Type: "session.lifecycle.updated", SessionID: sessionID, RunID: result.RunIntent.RunID, Lifecycle: primaryRunIntentLifecycle(sessionID, result.RunIntent)})
 		}
-		return ui.ChatRunResponse{
-			UserMessage:          convertClientMessage(result.Message),
-			NoAssistant:          true,
-			PrimaryRunStatus:     strings.TrimSpace(result.RunIntent.Status),
-			PrimaryBlockedReason: strings.TrimSpace(result.RunIntent.BlockedReason),
-		}, nil
+		if !strings.EqualFold(strings.TrimSpace(result.RunIntent.Status), "pending_executor") {
+			return ui.ChatRunResponse{
+				UserMessage:          convertClientMessage(result.Message),
+				NoAssistant:          true,
+				PrimaryRunStatus:     strings.TrimSpace(result.RunIntent.Status),
+				PrimaryBlockedReason: strings.TrimSpace(result.RunIntent.BlockedReason),
+			}, nil
+		}
+		streamResp, streamErr := b.consumeSessionV3Run(ctx, sessionID, result.RunIntent, onEvent)
+		if streamErr != nil {
+			return ui.ChatRunResponse{}, streamErr
+		}
+		streamResp.UserMessage = convertClientMessage(result.Message)
+		if strings.TrimSpace(streamResp.PrimaryRunStatus) == "" {
+			streamResp.PrimaryRunStatus = strings.TrimSpace(result.RunIntent.Status)
+		}
+		return streamResp, nil
 	}
 
 	result, err := b.api.RunSessionStreamWithOptions(ctx, sessionID, req.Prompt, req.AgentName, req.Instructions, client.RunSessionOptions{
@@ -339,6 +351,155 @@ func (b *apiChatBackend) RunTurnStream(ctx context.Context, sessionID string, re
 	}, nil
 }
 
+func (b *apiChatBackend) consumeSessionV3Run(ctx context.Context, sessionID string, intent client.SessionV3RunIntent, onEvent func(ui.ChatRunStreamEvent)) (ui.ChatRunResponse, error) {
+	var response ui.ChatRunResponse
+	runID := strings.TrimSpace(intent.RunID)
+	response.PrimaryRunStatus = strings.TrimSpace(intent.Status)
+	response.PrimaryBlockedReason = strings.TrimSpace(intent.BlockedReason)
+	afterSeq := intent.EventSeq
+	streamCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	err := b.api.StreamSessionV3Replay(streamCtx, sessionID, afterSeq, func(frame client.SessionV3StreamFrame) {
+		if frame.Event == nil || strings.ToLower(strings.TrimSpace(frame.Type)) != "event" {
+			return
+		}
+		event := v3StreamEventToChatEvent(*frame.Event)
+		if strings.TrimSpace(event.SessionID) == "" {
+			event.SessionID = strings.TrimSpace(sessionID)
+		}
+		if strings.TrimSpace(event.RunID) == "" {
+			event.RunID = runID
+		}
+		if onEvent != nil {
+			onEvent(event)
+		}
+		switch strings.ToLower(strings.TrimSpace(event.Type)) {
+		case "message.stored":
+			if event.Message != nil && strings.EqualFold(strings.TrimSpace(event.Message.Role), "assistant") {
+				response.AssistantMessage = *event.Message
+				response.PrimaryRunStatus = "completed"
+				cancel()
+			}
+		case "turn.completed":
+			response.PrimaryRunStatus = "completed"
+			cancel()
+		case "turn.error":
+			response.PrimaryRunStatus = "failed"
+			response.PrimaryBlockedReason = strings.TrimSpace(event.Error)
+			cancel()
+		}
+	})
+	if err != nil {
+		if response.AssistantMessage.Content != "" || strings.EqualFold(response.PrimaryRunStatus, "completed") {
+			return response, nil
+		}
+		return ui.ChatRunResponse{}, err
+	}
+	if strings.TrimSpace(response.AssistantMessage.Content) == "" && strings.EqualFold(response.PrimaryRunStatus, "completed") {
+		response.NoAssistant = true
+	}
+	return response, nil
+}
+
+func v3StreamEventToChatEvent(event client.SessionV3Event) ui.ChatRunStreamEvent {
+	var payload map[string]any
+	if len(event.Payload) > 0 {
+		_ = json.Unmarshal(event.Payload, &payload)
+	}
+	out := ui.ChatRunStreamEvent{Type: strings.TrimSpace(event.EventType), SessionID: strings.TrimSpace(event.SessionID)}
+	if out.SessionID == "" {
+		out.SessionID = stringValue(payload, "session_id")
+	}
+	out.RunID = stringValue(payload, "run_id")
+	out.Status = stringValue(payload, "status")
+	out.Error = stringValue(payload, "error")
+	switch strings.TrimSpace(event.EventType) {
+	case "session.message.appended":
+		out.Type = "message.stored"
+		out.Message = messageFromV3Payload(payload, out.SessionID)
+	case "session.assistant.started":
+		out.Type = "session.lifecycle.updated"
+		out.Lifecycle = &ui.ChatSessionLifecycle{SessionID: out.SessionID, RunID: out.RunID, Active: true, Phase: "running", StartedAt: event.TsUnixMS, UpdatedAt: event.TsUnixMS}
+	case "session.assistant.delta":
+		out.Type = "assistant.delta"
+		out.Delta = stringValue(payload, "delta")
+	case "session.assistant.completed":
+		out.Type = "message.stored"
+		out.Message = messageFromV3Payload(payload, out.SessionID)
+	case "session.run.failed", "session.assistant.failed":
+		out.Type = "turn.error"
+		if out.Error == "" {
+			out.Error = "Run failed"
+		}
+	}
+	if out.RunID == "" && out.Message != nil {
+		out.RunID = stringValue(out.Message.Metadata, "run_id")
+	}
+	return out
+}
+
+func messageFromV3Payload(payload map[string]any, fallbackSessionID string) *ui.ChatMessageRecord {
+	messagePayload, _ := payload["message"].(map[string]any)
+	if len(messagePayload) == 0 {
+		return nil
+	}
+	metadata, _ := messagePayload["metadata"].(map[string]any)
+	message := ui.ChatMessageRecord{
+		ID:        stringValue(messagePayload, "id"),
+		SessionID: firstNonEmptyV3String(stringValue(messagePayload, "session_id"), fallbackSessionID),
+		Role:      stringValue(messagePayload, "role"),
+		Content:   stringValue(messagePayload, "content"),
+		GlobalSeq: uint64Number(messagePayload, "global_seq"),
+		CreatedAt: int64Number(messagePayload, "created_at"),
+		Metadata:  metadata,
+	}
+	return &message
+}
+
+func stringValue(payload map[string]any, key string) string {
+	if value, ok := payload[key].(string); ok {
+		return strings.TrimSpace(value)
+	}
+	return ""
+}
+
+func firstNonEmptyV3String(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func uint64Number(payload map[string]any, key string) uint64 {
+	switch value := payload[key].(type) {
+	case float64:
+		if value > 0 {
+			return uint64(value)
+		}
+	case int:
+		if value > 0 {
+			return uint64(value)
+		}
+	case uint64:
+		return value
+	}
+	return 0
+}
+
+func int64Number(payload map[string]any, key string) int64 {
+	switch value := payload[key].(type) {
+	case float64:
+		return int64(value)
+	case int64:
+		return value
+	case int:
+		return int64(value)
+	}
+	return 0
+}
+
 func ptrChatMessageRecord(record ui.ChatMessageRecord) *ui.ChatMessageRecord {
 	return &record
 }
@@ -346,13 +507,23 @@ func ptrChatMessageRecord(record ui.ChatMessageRecord) *ui.ChatMessageRecord {
 func primaryRunIntentLifecycle(sessionID string, intent client.SessionV3RunIntent) *ui.ChatSessionLifecycle {
 	status := strings.ToLower(strings.TrimSpace(intent.Status))
 	phase := status
+	active := false
 	if phase == "" {
 		phase = "pending_executor"
+	}
+	switch phase {
+	case "pending_executor":
+		phase = "starting"
+		active = true
+	case "running":
+		active = true
+	case "completed", "failed", "dispatch_blocked":
+		active = false
 	}
 	return &ui.ChatSessionLifecycle{
 		SessionID:  strings.TrimSpace(sessionID),
 		RunID:      strings.TrimSpace(intent.RunID),
-		Active:     false,
+		Active:     active,
 		Phase:      phase,
 		StartedAt:  intent.CreatedAt,
 		EndedAt:    intent.UpdatedAt,

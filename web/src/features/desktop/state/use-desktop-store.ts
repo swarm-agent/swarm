@@ -920,7 +920,9 @@ function summarizePermission(permission: { reason: string; toolName: string; sta
 function cancelDraftFlush(sessionId: string) {
   const timer = draftFlushTimers.get(sessionId)
   if (timer !== undefined) {
-    window.cancelAnimationFrame(timer)
+    if (typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
+      window.cancelAnimationFrame(timer)
+    }
     draftFlushTimers.delete(sessionId)
   }
   pendingDraftFlush.delete(sessionId)
@@ -971,8 +973,13 @@ function scheduleDraftFlush(sessionId: string, draft: DraftFlushState) {
   if (draftFlushTimers.has(sessionId)) {
     return
   }
-  const raf = window.requestAnimationFrame(() => flushDraftState(sessionId))
+  const raf = typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function'
+    ? window.requestAnimationFrame(() => flushDraftState(sessionId))
+    : 0
   draftFlushTimers.set(sessionId, raf)
+  if (raf === 0) {
+    flushDraftState(sessionId)
+  }
 }
 
 function normalizePermission(input: Record<string, unknown>): DesktopSessionRecord['pendingPermissions'][number] | null {
@@ -1508,6 +1515,7 @@ function applyV3SessionStreamFrame(state: DesktopStoreState, sessionId: string, 
   const patch = applyEnvelope(state, envelope)
   const eventSeq = typeof payload.event?.seq === 'number' ? Math.max(0, payload.event.seq) : 0
   const highWatermark = typeof payload.high_watermark_seq === 'number' ? Math.max(0, payload.high_watermark_seq) : eventSeq
+  const v3EventType = String(payload.event?.event_type ?? type).trim()
   const patchedSessions = patch.sessions ?? state.sessions
   const existing = patchedSessions[sessionId]
   if (!existing) {
@@ -1524,10 +1532,10 @@ function applyV3SessionStreamFrame(state: DesktopStoreState, sessionId: string, 
         projectionHighWatermarkSeq: Math.max(existing.projectionHighWatermarkSeq ?? 0, highWatermark),
         live: {
           ...existing.live,
-          lastEventType: String(payload.event?.event_type ?? type).trim() || type,
+          lastEventType: v3EventType || type,
           lastEventAt: ts,
           awaitingAck: false,
-          error: null,
+          error: v3EventType === 'session.run.failed' ? existing.live.error : null,
         },
       }),
     },
@@ -2199,6 +2207,111 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
         updateMessagesCache(normalized.sessionId, normalized)
       }
       session.messageCount += 1
+      break
+    }
+    case 'session.assistant.started': {
+      const runIntent = payloadRecord.run_intent && typeof payloadRecord.run_intent === 'object'
+        ? payloadRecord.run_intent as Record<string, unknown>
+        : null
+      const runId = typeof payloadRecord.run_id === 'string'
+        ? payloadRecord.run_id.trim()
+        : typeof runIntent?.run_id === 'string'
+          ? runIntent.run_id.trim()
+          : ''
+      if (runId) {
+        session.live.runId = runId
+      }
+      session.live.status = 'running'
+      session.live.awaitingAck = false
+      session.live.startedAt = session.live.startedAt ?? ts
+      session.live.summary = 'Assistant responding…'
+      session.live.error = null
+      session.live.lastEventType = eventType
+      session.live.lastEventAt = ts
+      resetLiveToolState(session.live)
+      resetLiveReasoningState(session.live)
+      break
+    }
+    case 'session.assistant.delta': {
+      const runId = typeof payloadRecord.run_id === 'string' ? payloadRecord.run_id.trim() : ''
+      if (runId) {
+        session.live.runId = runId
+      }
+      const delta = typeof payloadRecord.delta === 'string' ? payloadRecord.delta : ''
+      if (delta) {
+        const nextDraft = session.live.assistantDraft + delta
+        session.live.assistantDraft = nextDraft
+        scheduleDraftFlush(sessionId, {
+          assistantDraft: nextDraft,
+          reasoningSummary: session.live.reasoningSummary,
+          reasoningText: session.live.reasoningText,
+          reasoningState: session.live.reasoningState,
+          reasoningSegment: session.live.reasoningSegment,
+          toolOutput: session.live.toolOutput,
+        })
+      }
+      session.live.status = 'running'
+      session.live.awaitingAck = false
+      session.live.summary = 'Streaming response…'
+      session.live.error = null
+      session.live.lastEventType = eventType
+      session.live.lastEventAt = ts
+      break
+    }
+    case 'session.assistant.completed': {
+      const runIntent = payloadRecord.run_intent && typeof payloadRecord.run_intent === 'object'
+        ? payloadRecord.run_intent as Record<string, unknown>
+        : null
+      const normalized = normalizeMessage(payloadRecord.message as RunStreamEventMessage['message'], sessionId)
+      if (normalized) {
+        const finalizedAssistantDraft = session.live.assistantDraft
+        deferAssistantFinalization(sessionId, normalized, finalizedAssistantDraft)
+        cancelDraftFlush(sessionId)
+        resetLiveAssistantState(session.live)
+        session.messageCount += 1
+      }
+      session.live.status = 'idle'
+      session.live.runId = null
+      session.live.startedAt = null
+      session.live.awaitingAck = false
+      session.live.summary = null
+      session.live.error = null
+      session.live.lastEventType = eventType
+      session.live.lastEventAt = ts
+      if (typeof runIntent?.status === 'string' && runIntent.status.trim().toLowerCase() === 'completed') {
+        resetLiveToolState(session.live)
+        resetLiveReasoningState(session.live)
+      }
+      break
+    }
+    case 'session.run.failed':
+    case 'session.assistant.failed': {
+      const runIntent = payloadRecord.run_intent && typeof payloadRecord.run_intent === 'object'
+        ? payloadRecord.run_intent as Record<string, unknown>
+        : null
+      const runId = typeof payloadRecord.run_id === 'string'
+        ? payloadRecord.run_id.trim()
+        : typeof runIntent?.run_id === 'string'
+          ? runIntent.run_id.trim()
+          : ''
+      const error = typeof payloadRecord.error === 'string' && payloadRecord.error.trim() !== ''
+        ? payloadRecord.error.trim()
+        : typeof runIntent?.blocked_reason === 'string' && runIntent.blocked_reason.trim() !== ''
+          ? runIntent.blocked_reason.trim()
+          : 'Run failed'
+      cancelDraftFlush(sessionId)
+      session.live.status = 'error'
+      session.live.runId = null
+      session.live.startedAt = null
+      session.live.awaitingAck = false
+      session.live.summary = error
+      session.live.error = error
+      session.live.lastEventType = eventType
+      session.live.lastEventAt = ts
+      retainLiveToolState(session.live, 'error')
+      resetLiveToolState(session.live)
+      resetLiveReasoningState(session.live)
+      notifications.unshift(makeNotification(sessionId, runId || session.live.runId, eventType, 'Run failed', error, 'error', ts))
       break
     }
     case 'permission.requested':

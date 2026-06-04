@@ -105,6 +105,144 @@ test('V3 stream frame application commits ordered durable message events and cur
   assert.equal(updated.live.lastEventAt, 11)
 })
 
+test('V3 stream maps committed assistant lifecycle events into live draft and final message state', () => {
+  const originalWindow = globalThis.window
+  const testWindow = originalWindow ?? {} as typeof window
+  testWindow.setTimeout = ((callback: TimerHandler) => {
+    if (typeof callback === 'function') callback()
+    return 0
+  }) as typeof window.setTimeout
+  globalThis.window = testWindow
+  const session = makeSession({ id: 'session-v3', sessionApi: 'v3', lastEventSeq: 1, projectionHighWatermarkSeq: 1 })
+  useDesktopStore.setState(makeState(session), true)
+
+  try {
+
+    useDesktopStore.getState().__testApplyRunStreamFrame?.('session-v3', {
+      type: 'event',
+      ok: true,
+      session_id: 'session-v3',
+      last_seq: 2,
+      event: {
+        id: 'v3evt_session-v3_00000000000000000002',
+        session_id: 'session-v3',
+        seq: 2,
+        event_type: 'session.assistant.started',
+        ts_unix_ms: 20,
+        payload: { session_id: 'session-v3', run_id: 'run-v3', status: 'running' },
+      },
+    }, 20)
+
+    let updated = useDesktopStore.getState().sessions['session-v3']
+    assert.equal(updated.live.runId, 'run-v3')
+    assert.equal(updated.live.status, 'running')
+    assert.equal(updated.live.summary, 'Assistant responding…')
+
+    useDesktopStore.getState().__testApplyRunStreamFrame?.('session-v3', {
+      type: 'event',
+      ok: true,
+      session_id: 'session-v3',
+      last_seq: 3,
+      event: {
+        id: 'v3evt_session-v3_00000000000000000003',
+        session_id: 'session-v3',
+        seq: 3,
+        event_type: 'session.assistant.delta',
+        ts_unix_ms: 21,
+        payload: { session_id: 'session-v3', run_id: 'run-v3', delta: 'hel' },
+      },
+    }, 21)
+    useDesktopStore.getState().__testApplyRunStreamFrame?.('session-v3', {
+      type: 'event',
+      ok: true,
+      session_id: 'session-v3',
+      last_seq: 4,
+      event: {
+        id: 'v3evt_session-v3_00000000000000000004',
+        session_id: 'session-v3',
+        seq: 4,
+        event_type: 'session.assistant.delta',
+        ts_unix_ms: 22,
+        payload: { session_id: 'session-v3', run_id: 'run-v3', delta: 'lo' },
+      },
+    }, 22)
+
+    updated = useDesktopStore.getState().sessions['session-v3']
+    assert.equal(updated.live.assistantDraft, 'hello')
+    assert.equal(updated.live.lastEventType, 'session.assistant.delta')
+
+    useDesktopStore.getState().__testApplyRunStreamFrame?.('session-v3', {
+      type: 'event',
+      ok: true,
+      session_id: 'session-v3',
+      last_seq: 5,
+      event: {
+        id: 'v3evt_session-v3_00000000000000000005',
+        session_id: 'session-v3',
+        seq: 5,
+        event_type: 'session.assistant.completed',
+        ts_unix_ms: 23,
+        payload: {
+          session_id: 'session-v3',
+          run_id: 'run-v3',
+          status: 'completed',
+          message: {
+            id: 'msg-assistant-v3',
+            session_id: 'session-v3',
+            global_seq: 5,
+            role: 'assistant',
+            content: 'hello',
+            created_at: 23,
+          },
+          run_intent: { run_id: 'run-v3', status: 'completed' },
+        },
+      },
+    }, 23)
+
+    updated = useDesktopStore.getState().sessions['session-v3']
+    assert.equal(updated.lastEventSeq, 5)
+    assert.equal(updated.projectionHighWatermarkSeq, 5)
+    assert.equal(updated.live.status, 'idle')
+    assert.equal(updated.live.runId, null)
+    assert.equal(updated.live.assistantDraft, '')
+    assert.equal(updated.live.lastEventType, 'session.assistant.completed')
+    assert.equal(updated.messageCount, 1)
+  } finally {
+    if (originalWindow) {
+      globalThis.window = originalWindow
+    } else {
+      Reflect.deleteProperty(globalThis, 'window')
+    }
+  }
+})
+
+test('V3 stream maps committed run failures into replayable error state', () => {
+  const session = makeSession({ id: 'session-v3', sessionApi: 'v3', live: { ...emptyLiveState(), status: 'running', runId: 'run-v3', assistantDraft: 'partial' } })
+  useDesktopStore.setState(makeState(session), true)
+
+  useDesktopStore.getState().__testApplyRunStreamFrame?.('session-v3', {
+    type: 'event',
+    ok: true,
+    session_id: 'session-v3',
+    last_seq: 2,
+    event: {
+      id: 'v3evt_session-v3_00000000000000000002',
+      session_id: 'session-v3',
+      seq: 2,
+      event_type: 'session.run.failed',
+      ts_unix_ms: 30,
+      payload: { session_id: 'session-v3', run_id: 'run-v3', status: 'failed', error: 'provider unavailable' },
+    },
+  }, 30)
+
+  const updated = useDesktopStore.getState().sessions['session-v3']
+  assert.equal(updated.live.status, 'error')
+  assert.equal(updated.live.runId, null)
+  assert.equal(updated.live.error, 'provider unavailable')
+  assert.equal(updated.live.summary, 'provider unavailable')
+  assert.equal(updated.live.lastEventType, 'session.run.failed')
+})
+
 test('V3 replay control frames update cursor state without V2 resume semantics', () => {
   const session = makeSession({ id: 'session-v3', lastEventSeq: 2, projectionHighWatermarkSeq: 2 })
   useDesktopStore.setState(makeState(session), true)

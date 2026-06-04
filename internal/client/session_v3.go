@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 type SessionV3StreamFrame struct {
@@ -33,6 +34,69 @@ func (f SessionV3StreamFrame) Err() error {
 }
 
 func (c *API) StreamSessionV3(ctx context.Context, sessionID string, afterSeq uint64, onFrame func(SessionV3StreamFrame)) error {
+	return c.streamSessionV3WebSocket(ctx, sessionID, afterSeq, onFrame)
+}
+
+func (c *API) StreamSessionV3Replay(ctx context.Context, sessionID string, afterSeq uint64, onFrame func(SessionV3StreamFrame)) error {
+	return c.streamSessionV3Replay(ctx, sessionID, afterSeq, onFrame)
+}
+
+func (c *API) streamSessionV3Replay(ctx context.Context, sessionID string, afterSeq uint64, onFrame func(SessionV3StreamFrame)) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return errors.New("session id is required")
+	}
+	if ctx == nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(context.Background())
+		defer cancel()
+	}
+	lastSeq := afterSeq
+	for {
+		replay, err := c.ReplaySessionV3Events(ctx, sessionID, lastSeq, 500)
+		if err != nil {
+			return err
+		}
+		if onFrame != nil {
+			onFrame(SessionV3StreamFrame{Type: "replay.started", OK: true, SessionID: sessionID, LastSeq: lastSeq, HighWatermarkSeq: replay.HighWatermarkSeq, NextSeq: replay.NextSeq, Projection: replay.Projection})
+		}
+		for _, event := range replay.Events {
+			if event.Seq <= lastSeq {
+				continue
+			}
+			if event.Seq != lastSeq+1 {
+				return fmt.Errorf("sessions v3 replay gap at %d, want %d; refetch required", event.Seq, lastSeq+1)
+			}
+			lastSeq = event.Seq
+			frame := SessionV3StreamFrame{Type: "event", OK: true, SessionID: sessionID, LastSeq: lastSeq, HighWatermarkSeq: replay.HighWatermarkSeq, Event: &event, Projection: replay.Projection}
+			if onFrame != nil {
+				onFrame(frame)
+			}
+			if isTerminalSessionV3Event(event.EventType) {
+				return nil
+			}
+		}
+		if onFrame != nil {
+			onFrame(SessionV3StreamFrame{Type: "replay.complete", OK: true, SessionID: sessionID, LastSeq: lastSeq, HighWatermarkSeq: replay.HighWatermarkSeq, NextSeq: replay.NextSeq, Projection: replay.Projection})
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+func isTerminalSessionV3Event(eventType string) bool {
+	switch strings.TrimSpace(eventType) {
+	case "session.assistant.completed", "session.run.failed", "session.assistant.failed":
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *API) streamSessionV3WebSocket(ctx context.Context, sessionID string, afterSeq uint64, onFrame func(SessionV3StreamFrame)) error {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return errors.New("session id is required")
