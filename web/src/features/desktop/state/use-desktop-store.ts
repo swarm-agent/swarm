@@ -2258,6 +2258,94 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
       session.live.lastEventAt = ts
       break
     }
+    case 'session.tool.started':
+    case 'session.tool.delta':
+    case 'session.tool.completed': {
+      const runId = typeof payloadRecord.run_id === 'string' ? payloadRecord.run_id.trim() : ''
+      const toolName = typeof payloadRecord.tool_name === 'string' ? payloadRecord.tool_name.trim() : ''
+      const callId = typeof payloadRecord.call_id === 'string' ? payloadRecord.call_id.trim() : ''
+      const isToolStarted = eventType === 'session.tool.started'
+      const isToolDelta = eventType === 'session.tool.delta'
+      const isToolCompleted = eventType === 'session.tool.completed'
+      if (runId) {
+        session.live.runId = runId
+      }
+      session.live.status = 'running'
+      session.live.awaitingAck = false
+      session.live.error = null
+      session.live.lastEventType = eventType
+      session.live.lastEventAt = ts
+      if (typeof payloadRecord.step === 'number') {
+        session.live.step = payloadRecord.step
+      }
+      if (isToolStarted) {
+        flushLiveAssistantDraftToSegment(session.live, ts)
+        resetRetainedLiveToolState(session.live)
+        session.live.toolOutput = ''
+      }
+      session.live.toolName = toolName || session.live.toolName
+      session.live.toolCallId = callId || session.live.toolCallId
+      if (typeof payloadRecord.arguments === 'string') {
+        session.live.toolArguments = payloadRecord.arguments.trim() || null
+      }
+      if (typeof payloadRecord.summary === 'string' && payloadRecord.summary.trim() !== '') {
+        session.live.summary = payloadRecord.summary.trim()
+      } else if (session.live.toolName?.trim()) {
+        session.live.summary = session.live.toolName.trim()
+      }
+      if (isToolDelta && typeof payloadRecord.output === 'string') {
+        session.live.toolOutput = session.live.toolName === 'task'
+          ? mergedTaskToolDelta(session.live.toolOutput, payloadRecord.output)
+          : appendLiveToolOutput(session.live.toolOutput, payloadRecord.output)
+        scheduleDraftFlush(sessionId, {
+          assistantDraft: session.live.assistantDraft,
+          reasoningSummary: session.live.reasoningSummary,
+          reasoningText: session.live.reasoningText,
+          reasoningState: session.live.reasoningState,
+          reasoningSegment: session.live.reasoningSegment,
+          toolOutput: session.live.toolOutput,
+        })
+      } else if (isToolCompleted) {
+        session.live.toolOutput = typeof payloadRecord.raw_output === 'string'
+          ? replaceLiveToolOutput(payloadRecord.raw_output)
+          : typeof payloadRecord.output === 'string'
+            ? replaceLiveToolOutput(payloadRecord.output)
+            : session.live.toolOutput
+        retainLiveToolState(session.live, 'done')
+        resetLiveToolState(session.live)
+      }
+      break
+    }
+    case 'session.run.started':
+    case 'session.run.running': {
+      const runId = typeof payloadRecord.run_id === 'string' ? payloadRecord.run_id.trim() : ''
+      if (runId) {
+        session.live.runId = runId
+      }
+      session.live.status = 'running'
+      session.live.awaitingAck = false
+      session.live.startedAt = session.live.startedAt ?? ts
+      session.live.summary = 'Assistant responding…'
+      session.live.error = null
+      session.live.lastEventType = eventType
+      session.live.lastEventAt = ts
+      break
+    }
+    case 'session.run.completed': {
+      cancelDraftFlush(sessionId)
+      session.live.status = 'idle'
+      session.live.runId = null
+      session.live.startedAt = null
+      session.live.awaitingAck = false
+      session.live.summary = null
+      session.live.error = null
+      session.live.lastEventType = eventType
+      session.live.lastEventAt = ts
+      retainLiveToolState(session.live, 'done')
+      resetLiveToolState(session.live)
+      resetLiveReasoningState(session.live)
+      break
+    }
     case 'session.assistant.completed': {
       const runIntent = payloadRecord.run_intent && typeof payloadRecord.run_intent === 'object'
         ? payloadRecord.run_intent as Record<string, unknown>

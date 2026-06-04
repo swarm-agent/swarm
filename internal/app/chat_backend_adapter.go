@@ -359,7 +359,7 @@ func (b *apiChatBackend) consumeSessionV3Run(ctx context.Context, sessionID stri
 	afterSeq := intent.EventSeq
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	err := b.api.StreamSessionV3Replay(streamCtx, sessionID, afterSeq, func(frame client.SessionV3StreamFrame) {
+	err := b.api.StreamSessionV3(streamCtx, sessionID, afterSeq, func(frame client.SessionV3StreamFrame) {
 		if frame.Event == nil || strings.ToLower(strings.TrimSpace(frame.Type)) != "event" {
 			return
 		}
@@ -426,6 +426,35 @@ func v3StreamEventToChatEvent(event client.SessionV3Event) ui.ChatRunStreamEvent
 	case "session.assistant.completed":
 		out.Type = "message.stored"
 		out.Message = messageFromV3Payload(payload, out.SessionID)
+	case "session.tool.started":
+		out.Type = "tool.started"
+		out.ToolName = firstNonEmptyV3String(stringValue(payload, "tool_name"), "tool")
+		out.CallID = stringValue(payload, "call_id")
+		out.Arguments = stringValue(payload, "arguments")
+		out.Output = stringValue(payload, "output")
+		out.RawOutput = stringValue(payload, "raw_output")
+		out.Step = int(int64Number(payload, "step"))
+		out.DurationMS = int64Number(payload, "duration_ms")
+		if out.Summary == "" {
+			out.Summary = out.ToolName
+		}
+	case "session.tool.delta":
+		out.Type = "tool.delta"
+		out.ToolName = firstNonEmptyV3String(stringValue(payload, "tool_name"), "tool")
+		out.CallID = stringValue(payload, "call_id")
+		out.Output = stringValue(payload, "output")
+		out.RawOutput = stringValue(payload, "raw_output")
+		out.Step = int(int64Number(payload, "step"))
+		out.DurationMS = int64Number(payload, "duration_ms")
+	case "session.tool.completed":
+		out.Type = "tool.completed"
+		out.ToolName = firstNonEmptyV3String(stringValue(payload, "tool_name"), "tool")
+		out.CallID = stringValue(payload, "call_id")
+		out.Arguments = stringValue(payload, "arguments")
+		out.Output = stringValue(payload, "output")
+		out.RawOutput = stringValue(payload, "raw_output")
+		out.Step = int(int64Number(payload, "step"))
+		out.DurationMS = int64Number(payload, "duration_ms")
 	case "session.run.failed", "session.assistant.failed":
 		out.Type = "turn.error"
 		if out.Error == "" {

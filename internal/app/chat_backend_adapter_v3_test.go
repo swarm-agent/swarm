@@ -1,7 +1,11 @@
 package app
 
 import (
+	"bufio"
 	"context"
+	"crypto/sha1"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -28,18 +32,13 @@ func TestAPIChatBackendV3RunTurnConsumesCommittedAssistantStream(t *testing.T) {
 				"messages":   []any{},
 				"events":     []any{},
 			})
-		case r.Method == http.MethodGet && r.URL.Path == "/v3/sessions/session-v3/events":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"ok":                 true,
-				"projection":         map[string]any{"session_id": "session-v3", "last_event_seq": 5, "projection_high_watermark_seq": 5},
-				"high_watermark_seq": 5,
-				"next_seq":           5,
-				"events": []any{
-					map[string]any{"id": "evt-3", "session_id": "session-v3", "seq": 3, "event_type": "session.assistant.started", "ts_unix_ms": 30, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "running"}},
-					map[string]any{"id": "evt-4", "session_id": "session-v3", "seq": 4, "event_type": "session.assistant.delta", "ts_unix_ms": 31, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "delta": "hel"}},
-					map[string]any{"id": "evt-5", "session_id": "session-v3", "seq": 5, "event_type": "session.assistant.completed", "ts_unix_ms": 32, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "completed", "message": map[string]any{"id": "msg-assistant", "session_id": "session-v3", "global_seq": 5, "role": "assistant", "content": "hello", "created_at": 32, "metadata": map[string]any{"run_id": "run-1"}}, "run_intent": map[string]any{"run_id": "run-1", "status": "completed"}}},
-				},
-			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/sessions/session-v3/stream":
+			writeTestV3StreamFrames(t, w, r,
+				map[string]any{"type": "replay.started", "ok": true, "session_id": "session-v3", "after_seq": 2, "high_watermark_seq": 5},
+				map[string]any{"type": "event", "ok": true, "session_id": "session-v3", "last_seq": 3, "event": map[string]any{"id": "evt-3", "session_id": "session-v3", "seq": 3, "event_type": "session.assistant.started", "ts_unix_ms": 30, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "running"}}},
+				map[string]any{"type": "event", "ok": true, "session_id": "session-v3", "last_seq": 4, "event": map[string]any{"id": "evt-4", "session_id": "session-v3", "seq": 4, "event_type": "session.assistant.delta", "ts_unix_ms": 31, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "delta": "hel"}}},
+				map[string]any{"type": "event", "ok": true, "session_id": "session-v3", "last_seq": 5, "event": map[string]any{"id": "evt-5", "session_id": "session-v3", "seq": 5, "event_type": "session.assistant.completed", "ts_unix_ms": 32, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "completed", "message": map[string]any{"id": "msg-assistant", "session_id": "session-v3", "global_seq": 5, "role": "assistant", "content": "hello", "created_at": 32, "metadata": map[string]any{"run_id": "run-1"}}, "run_intent": map[string]any{"run_id": "run-1", "status": "completed"}}}},
+			)
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
@@ -57,7 +56,7 @@ func TestAPIChatBackendV3RunTurnConsumesCommittedAssistantStream(t *testing.T) {
 	if resp.AssistantMessage.ID != "msg-assistant" || resp.AssistantMessage.Content != "hello" || resp.NoAssistant {
 		t.Fatalf("response = %#v", resp)
 	}
-	if len(gotPaths) != 2 || gotPaths[0] != "POST /v3/sessions/session-v3/messages" || gotPaths[1] != "GET /v3/sessions/session-v3/events" {
+	if len(gotPaths) != 2 || gotPaths[0] != "POST /v3/sessions/session-v3/messages" || gotPaths[1] != "GET /v3/sessions/session-v3/stream" {
 		t.Fatalf("paths = %#v", gotPaths)
 	}
 	if len(events) < 5 {
@@ -166,4 +165,61 @@ func TestAPIChatBackendV3MapsSessionToolEventsToLiveToolStream(t *testing.T) {
 	if completed.Type != "tool.completed" || completed.Output != "done" || completed.RawOutput != "raw done" || completed.DurationMS != 7 {
 		t.Fatalf("mapped completed event = %#v", completed)
 	}
+}
+
+func writeTestV3StreamFrames(t *testing.T, w http.ResponseWriter, r *http.Request, frames ...map[string]any) {
+	t.Helper()
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		t.Fatalf("response writer does not support hijacking")
+	}
+	conn, rw, err := hijacker.Hijack()
+	if err != nil {
+		t.Fatalf("hijack websocket: %v", err)
+	}
+	defer conn.Close()
+	key := strings.TrimSpace(r.Header.Get("Sec-WebSocket-Key"))
+	if key == "" {
+		t.Fatalf("missing websocket key")
+	}
+	acceptHash := sha1.Sum([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+	accept := base64.StdEncoding.EncodeToString(acceptHash[:])
+	if _, err := rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + "\r\n\r\n"); err != nil {
+		t.Fatalf("write websocket handshake: %v", err)
+	}
+	if err := rw.Flush(); err != nil {
+		t.Fatalf("flush websocket handshake: %v", err)
+	}
+	for _, frame := range frames {
+		raw, err := json.Marshal(frame)
+		if err != nil {
+			t.Fatalf("marshal websocket frame: %v", err)
+		}
+		if err := writeTestWebSocketText(rw.Writer, raw); err != nil {
+			t.Fatalf("write websocket frame: %v", err)
+		}
+		if err := rw.Flush(); err != nil {
+			t.Fatalf("flush websocket frame: %v", err)
+		}
+	}
+}
+
+func writeTestWebSocketText(w *bufio.Writer, payload []byte) error {
+	header := []byte{0x81}
+	switch length := len(payload); {
+	case length <= 125:
+		header = append(header, byte(length))
+	case length <= 65535:
+		header = append(header, 126, byte(length>>8), byte(length))
+	default:
+		header = append(header, 127)
+		ext := make([]byte, 8)
+		binary.BigEndian.PutUint64(ext, uint64(length))
+		header = append(header, ext...)
+	}
+	if _, err := w.Write(header); err != nil {
+		return err
+	}
+	_, err := w.Write(payload)
+	return err
 }

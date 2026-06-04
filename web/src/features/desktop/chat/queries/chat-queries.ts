@@ -2019,8 +2019,11 @@ export async function openRunStream(
       : `/v2/sessions/${encodeURIComponent(normalizedSessionId)}/run/stream`,
     `${protocol}//${window.location.host}`,
   );
-  if (sessionApi === "v3" && typeof options.afterSeq === "number" && Number.isFinite(options.afterSeq) && options.afterSeq > 0) {
-    url.searchParams.set("after_seq", String(Math.floor(options.afterSeq)));
+  if (sessionApi === "v3") {
+    const afterSeq = typeof options.afterSeq === "number" && Number.isFinite(options.afterSeq)
+      ? Math.max(0, Math.floor(options.afterSeq))
+      : 0;
+    url.searchParams.set("after_seq", String(afterSeq));
   }
   return new WebSocket(url);
 }

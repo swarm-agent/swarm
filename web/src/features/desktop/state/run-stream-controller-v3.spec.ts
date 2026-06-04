@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import { afterEach, test } from 'node:test'
 
+import { queryClient } from '../../../app/query-client'
 import type { DesktopSessionRecord, DesktopStoreState } from '../types/realtime'
 import { applyEnvelope, useDesktopStore } from './use-desktop-store'
 
@@ -66,6 +67,23 @@ function makeState(session: DesktopSessionRecord): DesktopStoreState {
     lastGlobalSeq: 0,
   }
 }
+
+afterEach(async () => {
+  useDesktopStore.getState().disconnect()
+  useDesktopStore.setState({
+    sessions: {},
+    notifications: [],
+    lastGlobalSeq: 0,
+    reconnectTimer: null,
+    heartbeatTimer: null,
+    livenessTimer: null,
+    reconnectAttempt: 0,
+    realtimeDesired: false,
+    connectionState: 'idle',
+  })
+  queryClient.clear()
+  await new Promise((resolve) => setImmediate(resolve))
+})
 
 test('V3 stream frame application commits ordered durable message events and cursor state', () => {
   const session = makeSession({ id: 'session-v3', lastEventSeq: 1, projectionHighWatermarkSeq: 1 })

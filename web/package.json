@@ -7,7 +7,7 @@
     "dev": "node ./scripts/use-local-node.mjs ./scripts/vite-launcher.mjs",
     "build": "node ./scripts/use-local-node.mjs ./node_modules/typescript/bin/tsc -b && node ./scripts/use-local-node.mjs ./scripts/vite-launcher.mjs build",
     "preview": "node ./scripts/use-local-node.mjs ./scripts/vite-launcher.mjs preview",
-    "test": "node --import tsx --test ./src/**/*.spec.ts"
+    "test": "node --import tsx --test --test-timeout=30000 --test-force-exit ./src/**/*.spec.ts"
   },
   "dependencies": {
     "@tailwindcss/oxide-linux-x64-gnu": "4.2.2",
