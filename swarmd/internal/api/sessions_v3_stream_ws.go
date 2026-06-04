@@ -39,10 +39,16 @@ type sessionV3StreamFrame struct {
 	Projection       sessionruntime.SessionProjection `json:"projection,omitempty"`
 }
 
+type sessionV3StreamSlowConsumer struct {
+	NextSeq uint64
+	Reason  string
+}
+
 type sessionV3StreamSubscriber struct {
 	id        string
 	sessionID string
 	send      chan sessionruntime.SessionEvent
+	slow      chan sessionV3StreamSlowConsumer
 }
 
 type sessionV3StreamHub struct {
@@ -70,6 +76,7 @@ func (h *sessionV3StreamHub) subscribe(sessionID string) *sessionV3StreamSubscri
 		id:        fmt.Sprintf("v3sub_%d", h.nextSub),
 		sessionID: sessionID,
 		send:      make(chan sessionruntime.SessionEvent, sessionV3StreamSubscriberBufSize),
+		slow:      make(chan sessionV3StreamSlowConsumer, 1),
 	}
 	if h.subs[sessionID] == nil {
 		h.subs[sessionID] = make(map[string]*sessionV3StreamSubscriber)
@@ -88,9 +95,8 @@ func (h *sessionV3StreamHub) unsubscribe(sub *sessionV3StreamSubscriber) {
 	if subs == nil {
 		return
 	}
-	if existing, ok := subs[sub.id]; ok {
+	if _, ok := subs[sub.id]; ok {
 		delete(subs, sub.id)
-		close(existing.send)
 	}
 	if len(subs) == 0 {
 		delete(h.subs, sub.sessionID)
@@ -113,7 +119,34 @@ func (h *sessionV3StreamHub) publish(event sessionruntime.SessionEvent) {
 		select {
 		case sub.send <- event:
 		default:
+			h.markSlowConsumer(sub, event.Seq)
 		}
+	}
+}
+
+func (h *sessionV3StreamHub) markSlowConsumer(sub *sessionV3StreamSubscriber, nextSeq uint64) {
+	if h == nil || sub == nil {
+		return
+	}
+	h.mu.Lock()
+	subs := h.subs[sub.sessionID]
+	if subs == nil || subs[sub.id] == nil {
+		h.mu.Unlock()
+		return
+	}
+	delete(subs, sub.id)
+	if len(subs) == 0 {
+		delete(h.subs, sub.sessionID)
+	}
+	h.mu.Unlock()
+
+	notice := sessionV3StreamSlowConsumer{
+		NextSeq: nextSeq,
+		Reason:  fmt.Sprintf("slow_consumer: subscriber queue full before event seq %d; reconnect required", nextSeq),
+	}
+	select {
+	case sub.slow <- notice:
+	default:
 	}
 }
 
@@ -244,21 +277,21 @@ func (s *Server) streamSessionV3PrimaryEvents(conn *transportws.Conn, sessionID 
 	defer ticker.Stop()
 	for {
 		select {
-		case event, ok := <-sub.send:
-			if !ok {
-				return
-			}
+		case event := <-sub.send:
 			if event.Seq <= lastSent {
 				continue
 			}
 			if event.Seq != lastSent+1 {
-				s.sendSessionV3StreamFrame(conn, sessionV3StreamFrame{Type: "cursor.error", OK: false, SessionID: sessionID, AfterSeq: lastSent, Error: fmt.Sprintf("live event sequence gap at %d, want %d; refetch required", event.Seq, lastSent+1)})
+				s.sendSessionV3StreamFrame(conn, sessionV3StreamFrame{Type: "cursor.error", OK: false, SessionID: sessionID, AfterSeq: lastSent, HighWatermarkSeq: event.Seq, NextSeq: event.Seq, Error: fmt.Sprintf("live event sequence gap at %d, want %d; refetch required", event.Seq, lastSent+1)})
 				return
 			}
 			if !s.sendSessionV3StreamEvent(conn, sessionID, event) {
 				return
 			}
 			lastSent = event.Seq
+		case slow := <-sub.slow:
+			s.sendSessionV3StreamFrame(conn, sessionV3StreamFrame{Type: "cursor.error", OK: false, SessionID: sessionID, AfterSeq: lastSent, NextSeq: slow.NextSeq, Error: slow.Reason})
+			return
 		case <-ticker.C:
 			if err := s.sendSessionV3StreamFrame(conn, sessionV3StreamFrame{Type: "keepalive", OK: true, SessionID: sessionID, LastSeq: lastSent}); err != nil {
 				return

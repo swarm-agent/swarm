@@ -964,6 +964,72 @@ func TestSessionsV3PrimaryStreamCursorErrors(t *testing.T) {
 	}
 }
 
+func TestSessionsV3PrimaryStreamHubMarksSlowConsumerAndOtherSubscribersContinue(t *testing.T) {
+	hub := newSessionV3StreamHub()
+	const sessionID = "v3_test_slow_consumer"
+	slow := hub.subscribe(sessionID)
+	fast := hub.subscribe(sessionID)
+	if slow == nil || fast == nil {
+		t.Fatalf("subscribers were not created")
+	}
+	defer hub.unsubscribe(slow)
+	defer hub.unsubscribe(fast)
+
+	const eventCount = sessionV3StreamSubscriberBufSize + 2
+	fastEvents := make(chan sessionruntime.SessionEvent, eventCount)
+	fastDone := make(chan struct{})
+	go func() {
+		defer close(fastDone)
+		for i := 0; i < eventCount; i++ {
+			fastEvents <- <-fast.send
+		}
+	}()
+
+	for i := 0; i < eventCount; i++ {
+		hub.publish(sessionruntime.SessionEvent{SessionID: sessionID, Seq: uint64(i + 1), EventType: "session.message.appended"})
+	}
+
+	select {
+	case notice := <-slow.slow:
+		if notice.NextSeq == 0 || !strings.Contains(notice.Reason, "slow_consumer") {
+			t.Fatalf("slow consumer notice = %+v", notice)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("slow consumer was not marked when subscriber queue filled")
+	}
+	select {
+	case <-fastDone:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("fast subscriber did not receive all events after slow subscriber was removed")
+	}
+	for i := 0; i < eventCount; i++ {
+		event := <-fastEvents
+		if event.Seq != uint64(i+1) {
+			t.Fatalf("fast event %d seq = %d", i, event.Seq)
+		}
+	}
+
+	drainedSlow := 0
+	for {
+		select {
+		case <-slow.send:
+			drainedSlow++
+		default:
+			goto drained
+		}
+	}
+drained:
+	if drainedSlow != sessionV3StreamSubscriberBufSize {
+		t.Fatalf("slow subscriber buffered events = %d, want %d", drainedSlow, sessionV3StreamSubscriberBufSize)
+	}
+	hub.publish(sessionruntime.SessionEvent{SessionID: sessionID, Seq: eventCount + 1, EventType: "session.message.appended"})
+	select {
+	case event := <-slow.send:
+		t.Fatalf("slow subscriber received event after slow-consumer removal: %+v", event)
+	default:
+	}
+}
+
 func TestSessionsV3PrimaryStandalonePathsWorkWithDispatchServicesDisabled(t *testing.T) {
 	t.Setenv("SWARM_API_NO_AUTH", "1")
 	storePath := filepath.Join(t.TempDir(), "sessions-v3-standalone.pebble")
