@@ -11,11 +11,11 @@ async function withFetchStub(
     calls.push({ input, init })
     const url = String(input)
 
-    if (url === '/v3/sessions/session-v3') {
+    if (url === '/v3/sessions/session-v3' || url === '/v3/sessions/v3session_auto') {
       return jsonResponse({
         ok: true,
         session: {
-          id: 'session-v3',
+          id: url.endsWith('/v3session_auto') ? 'v3session_auto' : 'session-v3',
           title: 'V3 session',
           workspace_path: '/repo',
           workspace_name: 'repo',
@@ -25,13 +25,13 @@ async function withFetchStub(
           updated_at: 5,
         },
         projection: {
-          session_id: 'session-v3',
+          session_id: url.endsWith('/v3session_auto') ? 'v3session_auto' : 'session-v3',
           last_event_seq: 7,
           projection_high_watermark_seq: 6,
           updated_at: 5,
         },
         messages: [
-          { id: 'msg-1', session_id: 'session-v3', global_seq: 2, role: 'user', content: 'hello', created_at: 2 },
+          { id: 'msg-1', session_id: url.endsWith('/v3session_auto') ? 'v3session_auto' : 'session-v3', global_seq: 2, role: 'user', content: 'hello', created_at: 2 },
         ],
         events: [],
       })
@@ -52,13 +52,13 @@ async function withFetchStub(
       })
     }
 
-    if (url === '/v3/sessions/session-v3/messages?limit=100&after_seq=2') {
+    if (url === '/v3/sessions/session-v3/messages?limit=100&after_seq=2' || url === '/v3/sessions/v3session_auto/messages?limit=100') {
       return jsonResponse({
         ok: true,
-        session_id: 'session-v3',
+        session_id: url.includes('/v3session_auto/') ? 'v3session_auto' : 'session-v3',
         messages: [
-          { id: 'msg-2', session_id: 'session-v3', global_seq: 3, role: 'user', content: 'second', created_at: 3 },
-          { id: 'msg-3', session_id: 'session-v3', global_seq: 4, role: 'assistant', content: 'third', created_at: 4 },
+          { id: 'msg-2', session_id: url.includes('/v3session_auto/') ? 'v3session_auto' : 'session-v3', global_seq: 3, role: 'user', content: 'second', created_at: 3 },
+          { id: 'msg-3', session_id: url.includes('/v3session_auto/') ? 'v3session_auto' : 'session-v3', global_seq: 4, role: 'assistant', content: 'third', created_at: 4 },
         ],
       })
     }
@@ -120,6 +120,24 @@ test('fetchSessionMessages loads V3 message history from Sessions API v3 only an
     assert.deepEqual(messages.map((message) => message.globalSeq), [3, 4])
     assert.deepEqual(messages.map((message) => message.id), ['msg-2', 'msg-3'])
     assert.deepEqual(calls.map((entry) => String(entry.input)), ['/v3/sessions/session-v3/messages?limit=100&after_seq=2'])
+    assertNoV1OrV2SessionDataCalls(calls)
+  })
+})
+
+test('v3session-prefixed hydrate and messages auto-select Sessions API v3 without explicit options', async () => {
+  const { fetchSession, fetchSessionMessages } = await import('./chat-queries')
+
+  await withFetchStub(async (calls) => {
+    const session = await fetchSession('v3session_auto')
+    const messages = await fetchSessionMessages('v3session_auto')
+
+    assert.equal(session?.id, 'v3session_auto')
+    assert.equal(session?.sessionApi, 'v3')
+    assert.deepEqual(messages.map((message) => message.sessionId), ['v3session_auto', 'v3session_auto'])
+    assert.deepEqual(calls.map((entry) => String(entry.input)), [
+      '/v3/sessions/v3session_auto',
+      '/v3/sessions/v3session_auto/messages?limit=100',
+    ])
     assertNoV1OrV2SessionDataCalls(calls)
   })
 })

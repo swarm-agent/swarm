@@ -192,6 +192,33 @@ interface SessionDataRequestOptions {
   sessionApi?: string | null;
 }
 
+const V3_SESSION_ID_PREFIX = "v3session_";
+
+export function isV3SessionId(sessionId: string | null | undefined): boolean {
+  return (sessionId ?? "").trim().startsWith(V3_SESSION_ID_PREFIX);
+}
+
+function resolveSessionApiForSession(
+  sessionId: string,
+  options: SessionDataRequestOptions = {},
+): string {
+  const sessionApi = options.sessionApi?.trim().toLowerCase() ?? "";
+  if (sessionApi === "v3" || isV3SessionId(sessionId)) {
+    return "v3";
+  }
+  return sessionApi;
+}
+
+function rejectV3SessionV2Subresource(sessionId: string, subresource: string): void {
+  const normalizedSessionId = sessionId.trim();
+  if (!isV3SessionId(normalizedSessionId)) {
+    return;
+  }
+  throw new Error(
+    `Sessions API v3 does not support ${subresource}; refusing to call legacy Sessions API v2 for ${normalizedSessionId}.`,
+  );
+}
+
 interface SendSessionMessageOptions extends SessionDataRequestOptions {
   clientRequestId?: string | null;
 }
@@ -928,7 +955,7 @@ export async function fetchSession(
     return null;
   }
 
-  const sessionApi = options.sessionApi?.trim().toLowerCase() ?? "";
+  const sessionApi = resolveSessionApiForSession(normalizedSessionId, options);
   if (sessionApi === "v3") {
     const response = await requestJson<V3HydratedSessionResponseWire>(
       `/v3/sessions/${encodeURIComponent(normalizedSessionId)}`,
@@ -1017,14 +1044,15 @@ export async function fetchSessionMessages(
   afterSeq = 0,
   options: SessionDataRequestOptions = {},
 ): Promise<ChatMessageRecord[]> {
+  const normalizedSessionId = sessionId.trim();
   const search = new URLSearchParams({ limit: "100" });
   if (afterSeq > 0) {
     search.set("after_seq", String(afterSeq));
   }
-  const sessionApi = options.sessionApi?.trim().toLowerCase() ?? "";
+  const sessionApi = resolveSessionApiForSession(normalizedSessionId, options);
   const endpoint = sessionApi === "v3"
-    ? `/v3/sessions/${encodeURIComponent(sessionId)}/messages?${search.toString()}`
-    : `/v2/sessions/${encodeURIComponent(sessionId)}/messages?${search.toString()}`;
+    ? `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/messages?${search.toString()}`
+    : `/v2/sessions/${encodeURIComponent(normalizedSessionId)}/messages?${search.toString()}`;
   const response = await requestJson<MessagesResponseWire>(
     endpoint,
     { signal },
@@ -1038,6 +1066,7 @@ export async function fetchSessionPreference(
   sessionId: string,
   signal?: AbortSignal,
 ): Promise<ResolvedSessionPreference> {
+  rejectV3SessionV2Subresource(sessionId, "session preference");
   const response = await requestJson<SessionPreferenceWire>(
     `/v2/sessions/${encodeURIComponent(sessionId)}/preference`,
     { signal },
@@ -1067,6 +1096,7 @@ export async function fetchSessionMode(
   sessionId: string,
   signal?: AbortSignal,
 ): Promise<string> {
+  rejectV3SessionV2Subresource(sessionId, "session mode");
   const response = await requestJson<{ mode?: string }>(
     `/v2/sessions/${encodeURIComponent(sessionId)}/mode`,
     { signal },
@@ -1078,6 +1108,7 @@ export async function updateSessionMode(
   sessionId: string,
   mode: string,
 ): Promise<string> {
+  rejectV3SessionV2Subresource(sessionId, "session mode");
   const response = await requestJson<{ mode?: string }>(
     `/v2/sessions/${encodeURIComponent(sessionId)}/mode`,
     {
@@ -1095,6 +1126,7 @@ export async function fetchSessionMetadata(
   sessionId: string,
   signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
+  rejectV3SessionV2Subresource(sessionId, "session metadata");
   const response = await requestJson<SessionMetadataWire>(
     `/v2/sessions/${encodeURIComponent(sessionId)}/metadata`,
     { signal },
@@ -1109,6 +1141,7 @@ export async function updateSessionMetadata(
   metadata: Record<string, unknown>,
   route?: DesktopChatRoute | null,
 ): Promise<DesktopSessionRecord> {
+  rejectV3SessionV2Subresource(sessionId, "session metadata");
   const response = await requestJson<{ session?: SessionWire }>(
     `/v2/sessions/${encodeURIComponent(sessionId)}/metadata`,
     {
@@ -1132,6 +1165,7 @@ export async function fetchSessionCodexConfig(
   sessionId: string,
   signal?: AbortSignal,
 ): Promise<DesktopSessionCodexConfig> {
+  rejectV3SessionV2Subresource(sessionId, "session Codex config");
   const response = await requestJson<SessionCodexConfigWire>(
     `/v2/sessions/${encodeURIComponent(sessionId)}/codex`,
     { signal },
@@ -1143,6 +1177,7 @@ export async function updateSessionCodexConfig(
   sessionId: string,
   input: { serviceTier?: string; contextMode?: string },
 ): Promise<DesktopSessionCodexConfig> {
+  rejectV3SessionV2Subresource(sessionId, "session Codex config");
   const response = await requestJson<SessionCodexConfigWire>(
     `/v2/sessions/${encodeURIComponent(sessionId)}/codex`,
     {
@@ -1163,6 +1198,7 @@ export async function updateSessionPreference(
   sessionId: string,
   input: Partial<ResolvedSessionPreference["preference"]>,
 ): Promise<ResolvedSessionPreference> {
+  rejectV3SessionV2Subresource(sessionId, "session preference");
   const response = await requestJson<SessionPreferenceWire>(
     `/v2/sessions/${encodeURIComponent(sessionId)}/preference`,
     {
@@ -1835,12 +1871,13 @@ export async function sendSessionMessage(
   route?: DesktopChatRoute | null,
   options: SendSessionMessageOptions = {},
 ): Promise<SendSessionMessageResult | unknown> {
-  const sessionApi = options.sessionApi?.trim().toLowerCase() ?? "";
+  const normalizedSessionId = sessionId.trim();
+  const sessionApi = resolveSessionApiForSession(normalizedSessionId, options);
   if (sessionApi === "v3") {
     const clientRequestId = options.clientRequestId?.trim()
-      || `desktop-v3-message:${sessionId}:${crypto.randomUUID()}`;
+      || `desktop-v3-message:${normalizedSessionId}:${crypto.randomUUID()}`;
     const response = await requestJson<V3MessageCommitResponseWire>(
-      `/v3/sessions/${encodeURIComponent(sessionId)}/messages`,
+      `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/messages`,
       {
         method: "POST",
         headers: {
@@ -1860,7 +1897,7 @@ export async function sendSessionMessage(
   return requestJson(
     managedHost
       ? "/v1/swarm/managed-hosts/sessions/message"
-      : `/v2/sessions/${encodeURIComponent(sessionId)}/messages`,
+      : `/v2/sessions/${encodeURIComponent(normalizedSessionId)}/messages`,
     {
       method: "POST",
       headers: {
@@ -1868,7 +1905,7 @@ export async function sendSessionMessage(
       },
       body: JSON.stringify(
         managedHost
-          ? { target_swarm_id: route?.swarmId?.trim() ?? "", session_id: sessionId, role, content }
+          ? { target_swarm_id: route?.swarmId?.trim() ?? "", session_id: normalizedSessionId, role, content }
           : { role, content },
       ),
     },
@@ -1918,6 +1955,7 @@ export async function startSessionRun(
   options: DesktopBackgroundRunStartOptions,
 ): Promise<DesktopRunAccepted> {
   const sessionId = options.sessionId.trim();
+  rejectV3SessionV2Subresource(sessionId, "session run dispatch");
   if (!sessionId) {
     throw new Error("session id is required");
   }
@@ -1967,13 +2005,14 @@ export async function openRunStream(
   sessionId: string,
   options: { sessionApi?: string | null; afterSeq?: number } = {},
 ): Promise<WebSocket> {
+  const normalizedSessionId = sessionId.trim();
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   await ensureDesktopSession(true);
-  const sessionApi = options.sessionApi?.trim().toLowerCase() ?? "";
+  const sessionApi = resolveSessionApiForSession(normalizedSessionId, options);
   const url = new URL(
     sessionApi === "v3"
-      ? `/v3/sessions/${encodeURIComponent(sessionId)}/stream`
-      : `/v2/sessions/${encodeURIComponent(sessionId)}/run/stream`,
+      ? `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/stream`
+      : `/v2/sessions/${encodeURIComponent(normalizedSessionId)}/run/stream`,
     `${protocol}//${window.location.host}`,
   );
   if (sessionApi === "v3" && typeof options.afterSeq === "number" && Number.isFinite(options.afterSeq) && options.afterSeq > 0) {
@@ -1987,6 +2026,7 @@ export async function stopSessionRun(
   runId: string,
   route?: DesktopChatRoute | null,
 ): Promise<void> {
+  rejectV3SessionV2Subresource(sessionId, "session run stop");
   const managedHost = isManagedHostDesktopChatRoute(route);
   const primaryTarget = isPrimaryDesktopChatRoute(route);
   const localContainerTarget = isLocalContainerDesktopChatRoute(route);
@@ -2031,6 +2071,7 @@ export async function resolveSessionPermission(
   reason: string,
   approvedArguments?: Record<string, unknown>,
 ): Promise<DesktopPermissionRecord> {
+  rejectV3SessionV2Subresource(sessionId, "session permissions");
   const response = await requestJson<ResolvePermissionResponseWire>(
     `/v2/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(permissionId)}/resolve`,
     {
@@ -2052,6 +2093,7 @@ export async function fetchSessionUsageSummary(
   sessionId: string,
   signal?: AbortSignal,
 ): Promise<DesktopSessionUsageRecord | null> {
+  rejectV3SessionV2Subresource(sessionId, "session usage summary");
   const response = await requestJson<SessionUsageResponseWire>(
     `/v2/sessions/${encodeURIComponent(sessionId)}/usage`,
     { signal },
@@ -2063,6 +2105,7 @@ export async function fetchActiveSessionPlan(
   sessionId: string,
   signal?: AbortSignal,
 ): Promise<{ hasActive: boolean; plan: DesktopSessionPlanRecord }> {
+  rejectV3SessionV2Subresource(sessionId, "session plans");
   const response = await requestJson<ActiveSessionPlanResponseWire>(
     `/v2/sessions/${encodeURIComponent(sessionId)}/plans/active`,
     { signal },
@@ -2077,6 +2120,7 @@ export async function activateSessionPlan(
   sessionId: string,
   planId: string,
 ): Promise<DesktopSessionPlanRecord> {
+  rejectV3SessionV2Subresource(sessionId, "session plans");
   const response = await requestJson<ActiveSessionPlanResponseWire>(
     `/v2/sessions/${encodeURIComponent(sessionId)}/plans/active`,
     {
@@ -2094,6 +2138,7 @@ export async function fetchSessionPlans(
   sessionId: string,
   signal?: AbortSignal,
 ): Promise<{ activePlanId: string; plans: DesktopSessionPlanRecord[] }> {
+  rejectV3SessionV2Subresource(sessionId, "session plans");
   const response = await requestJson<SessionPlansResponseWire>(
     `/v2/sessions/${encodeURIComponent(sessionId)}/plans?limit=100`,
     { signal },
@@ -2111,6 +2156,7 @@ export async function fetchSessionPlan(
   planId: string,
   signal?: AbortSignal,
 ): Promise<DesktopSessionPlanRecord> {
+  rejectV3SessionV2Subresource(sessionId, "session plans");
   const response = await requestJson<SaveSessionPlanResponseWire>(
     `/v2/sessions/${encodeURIComponent(sessionId)}/plans/${encodeURIComponent(planId)}`,
     { signal },
@@ -2130,6 +2176,7 @@ export async function saveSessionPlan(
     approvalState?: string;
   },
 ): Promise<DesktopSessionPlanRecord> {
+  rejectV3SessionV2Subresource(sessionId, "session plans");
   const response = await requestJson<SaveSessionPlanResponseWire>(
     `/v2/sessions/${encodeURIComponent(sessionId)}/plans`,
     {
@@ -2157,6 +2204,7 @@ export async function fetchSessionPlanHistory(
   planId: string,
   signal?: AbortSignal,
 ): Promise<DesktopSessionPlanRevisionRecord[]> {
+  rejectV3SessionV2Subresource(sessionId, "session plans");
   const response = await requestJson<SessionPlanHistoryResponseWire>(
     `/v2/sessions/${encodeURIComponent(sessionId)}/plans/${encodeURIComponent(planId)}/history?limit=100`,
     { signal },
@@ -2177,6 +2225,7 @@ export async function resolveAllSessionPermissions(
   reason: string,
   limit?: number,
 ): Promise<DesktopPermissionRecord[]> {
+  rejectV3SessionV2Subresource(sessionId, "session permissions");
   const response = await requestJson<ResolveAllPermissionsResponseWire>(
     `/v2/sessions/${encodeURIComponent(sessionId)}/permissions/resolve_all`,
     {
@@ -2200,6 +2249,7 @@ export async function fetchSessionPendingPermissions(
   sessionId: string,
   signal?: AbortSignal,
 ): Promise<DesktopPermissionRecord[]> {
+  rejectV3SessionV2Subresource(sessionId, "session permissions");
   const response = await requestJson<PendingPermissionsResponseWire>(
     `/v2/sessions/${encodeURIComponent(sessionId)}/permissions?status=pending&limit=200`,
     { signal },

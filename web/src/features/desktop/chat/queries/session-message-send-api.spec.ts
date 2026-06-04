@@ -11,12 +11,12 @@ async function withFetchStub(
     calls.push({ input, init })
     const url = String(input)
 
-    if (url === '/v3/sessions/session-v3/messages') {
+    if (url === '/v3/sessions/session-v3/messages' || url === '/v3/sessions/v3session_auto/messages') {
       const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
       return jsonResponse({
         ok: true,
         session: {
-          id: 'session-v3',
+          id: url.includes('/v3session_auto/') ? 'v3session_auto' : 'session-v3',
           title: 'V3 session',
           workspace_path: '/repo',
           workspace_name: 'repo',
@@ -27,21 +27,21 @@ async function withFetchStub(
           created_at: 1,
         },
         projection: {
-          session_id: 'session-v3',
+          session_id: url.includes('/v3session_auto/') ? 'v3session_auto' : 'session-v3',
           last_event_seq: 3,
           projection_high_watermark_seq: 3,
           updated_at: 7,
         },
         message: {
           id: 'msg-v3-1',
-          session_id: 'session-v3',
+          session_id: url.includes('/v3session_auto/') ? 'v3session_auto' : 'session-v3',
           global_seq: 2,
           role: body.role,
           content: body.content,
           created_at: 6,
         },
         run_intent: {
-          session_id: 'session-v3',
+          session_id: url.includes('/v3session_auto/') ? 'v3session_auto' : 'session-v3',
           run_id: 'v3run-session-v3-2',
           status: 'pending_executor',
           event_seq: 3,
@@ -49,7 +49,7 @@ async function withFetchStub(
           updated_at: 7,
         },
         messages: [
-          { id: 'msg-v3-1', session_id: 'session-v3', global_seq: 2, role: body.role, content: body.content, created_at: 6 },
+          { id: 'msg-v3-1', session_id: url.includes('/v3session_auto/') ? 'v3session_auto' : 'session-v3', global_seq: 2, role: body.role, content: body.content, created_at: 6 },
         ],
         events: [],
       })
@@ -115,6 +115,29 @@ test('sendSessionMessage commits V3 desktop messages through Sessions API v3 onl
     assert.equal(result.runIntent?.status, 'pending_executor')
     assert.equal(result.session?.sessionApi, 'v3')
     assert.equal(result.session?.projectionHighWatermarkSeq, 3)
+  })
+})
+
+test('v3session-prefixed send auto-selects Sessions API v3 without explicit options', async () => {
+  const { sendSessionMessage } = await import('./chat-queries')
+
+  await withFetchStub(async (calls) => {
+    const response = await sendSessionMessage('v3session_auto', 'user', 'hello v3 auto')
+
+    assert.deepEqual(calls.map((entry) => String(entry.input)), ['/v3/sessions/v3session_auto/messages'])
+    assertNoV1OrV2SessionCalls(calls)
+    const body = requestBody(calls[0])
+    assert.equal(body.role, 'user')
+    assert.equal(body.content, 'hello v3 auto')
+    assert.equal(typeof body.client_request_id, 'string')
+    assert.match(String(body.client_request_id), /^desktop-v3-message:v3session_auto:/)
+
+    assert.ok(response && typeof response === 'object' && 'session' in response)
+    const result = response as Awaited<ReturnType<typeof sendSessionMessage>> & {
+      session?: { id?: string; sessionApi?: string }
+    }
+    assert.equal(result.session?.id, 'v3session_auto')
+    assert.equal(result.session?.sessionApi, 'v3')
   })
 })
 
