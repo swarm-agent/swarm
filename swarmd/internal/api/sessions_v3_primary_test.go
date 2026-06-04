@@ -554,6 +554,26 @@ func waitForSessionsV3MessageCount(t *testing.T, sessionSvc *sessionruntime.Serv
 	t.Fatalf("message count = %d, want %d: %+v", len(messages), want, messages)
 }
 
+func waitForSessionsV3RunIntentStatus(t *testing.T, sessionSvc *sessionruntime.Service, sessionID, want string) sessionruntime.SessionRunIntent {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		intents, err := sessionSvc.Store().ListV3SessionRunIntents(sessionID, 0, 10)
+		if err != nil {
+			t.Fatalf("list run intents: %v", err)
+		}
+		for _, intent := range intents {
+			if intent.Status == want {
+				return intent
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	intents, _ := sessionSvc.Store().ListV3SessionRunIntents(sessionID, 0, 10)
+	t.Fatalf("run intent status %q not found: %+v", want, intents)
+	return sessionruntime.SessionRunIntent{}
+}
+
 func TestSessionsV3PrimaryMessageIsIdempotent(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-idempotent-create","workspace_path":"/workspace/cp4","title":"CP4"}`))
@@ -858,7 +878,7 @@ func TestSessionsV3PrimaryStreamPublishesExecutorCommittedEventsAndReplaysThem(t
 	}
 
 	postSessionsV3PrimaryTestMessage(t, server, created.ID, "cp4-outbox-message", "stream committed assistant")
-	wantLive := []string{"session.message.appended", "session.assistant.started", "session.assistant.completed"}
+	wantLive := []string{"session.message.appended", "session.assistant.started", "session.assistant.delta", "session.assistant.completed"}
 	for i, wantType := range wantLive {
 		frame := readSessionsV3PrimaryStreamFrame(t, conn)
 		wantSeq := uint64(i + 2)
@@ -878,10 +898,10 @@ func TestSessionsV3PrimaryStreamPublishesExecutorCommittedEventsAndReplaysThem(t
 	replay := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=2")
 	defer replay.Close()
 	replayStarted := readSessionsV3PrimaryStreamFrame(t, replay)
-	if replayStarted.Type != "replay.started" || replayStarted.HighWatermarkSeq != 4 {
+	if replayStarted.Type != "replay.started" || replayStarted.HighWatermarkSeq != 5 {
 		t.Fatalf("replay started = %+v", replayStarted)
 	}
-	for i, wantType := range []string{"session.assistant.started", "session.assistant.completed"} {
+	for i, wantType := range []string{"session.assistant.started", "session.assistant.delta", "session.assistant.completed"} {
 		frame := readSessionsV3PrimaryStreamFrame(t, replay)
 		wantSeq := uint64(i + 3)
 		if frame.Type != "event" || frame.Event == nil || frame.Event.Seq != wantSeq || frame.Event.EventType != wantType {
@@ -889,7 +909,7 @@ func TestSessionsV3PrimaryStreamPublishesExecutorCommittedEventsAndReplaysThem(t
 		}
 	}
 	replayComplete := readSessionsV3PrimaryStreamFrame(t, replay)
-	if replayComplete.Type != "replay.complete" || replayComplete.LastSeq != 4 {
+	if replayComplete.Type != "replay.complete" || replayComplete.LastSeq != 5 {
 		t.Fatalf("replay complete = %+v", replayComplete)
 	}
 }
@@ -1152,6 +1172,134 @@ func TestSessionsV3ExecutorRecoversPendingRunAfterRestart(t *testing.T) {
 	}
 }
 
+func TestSessionsV3ExecutorCoalescesProviderDeltas(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{deltas: []string{"hel", "lo", " ", "world"}, text: "hello world"}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	exec.deltaFlushMaxBytes = 64
+	exec.deltaFlushMaxDelay = time.Hour
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "coalesced-provider-create", "coalesced provider", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "coalesced-provider-message", "coalesce provider deltas")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	var deltas []sessionruntime.SessionEvent
+	for _, event := range events {
+		if event.EventType == "session.assistant.delta" {
+			deltas = append(deltas, event)
+		}
+	}
+	if len(deltas) != 1 {
+		t.Fatalf("assistant delta events = %d, want one coalesced event events=%+v", len(deltas), events)
+	}
+	var payload struct {
+		RunID      string `json:"run_id"`
+		DeltaIndex int    `json:"delta_index"`
+		Delta      string `json:"delta"`
+	}
+	if err := json.Unmarshal(deltas[0].Payload, &payload); err != nil {
+		t.Fatalf("decode delta payload: %v", err)
+	}
+	if payload.DeltaIndex != 1 || payload.Delta != "hello world" {
+		t.Fatalf("delta payload = %+v", payload)
+	}
+}
+
+func TestSessionsV3ExecutorFlushesProviderDeltaAtSizeBoundary(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{deltas: []string{"ab", "cd", "ef"}, text: "abcdef"}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	exec.deltaFlushMaxBytes = 4
+	exec.deltaFlushMaxDelay = time.Hour
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "boundary-provider-create", "boundary provider", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "boundary-provider-message", "flush at size boundary")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	var got []string
+	for _, event := range events {
+		if event.EventType != "session.assistant.delta" {
+			continue
+		}
+		var payload struct {
+			Delta string `json:"delta"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("decode delta payload: %v", err)
+		}
+		got = append(got, payload.Delta)
+	}
+	if strings.Join(got, "|") != "abcd|ef" {
+		t.Fatalf("coalesced deltas = %#v, want [abcd ef]", got)
+	}
+}
+
+func TestSessionsV3ExecutorRecordsFailurePayload(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{err: fmt.Errorf("provider exploded")}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "failure-provider-create", "failure provider", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "failure-provider-message", "fail provider")
+	waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentFailed)
+
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	var failure *sessionruntime.SessionEvent
+	for _, event := range events {
+		if event.EventType == "session.run.failed" {
+			copy := event
+			failure = &copy
+		}
+	}
+	if failure == nil {
+		t.Fatalf("missing run failure event: %+v", events)
+	}
+	var payload struct {
+		RunID  string `json:"run_id"`
+		Status string `json:"status"`
+		Error  string `json:"error"`
+	}
+	if err := json.Unmarshal(failure.Payload, &payload); err != nil {
+		t.Fatalf("decode failure payload: %v", err)
+	}
+	if payload.Status != sessionruntime.RunIntentFailed || !strings.Contains(payload.Error, "provider exploded") {
+		t.Fatalf("failure payload = %+v", payload)
+	}
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Role != "user" {
+		t.Fatalf("messages after failure = %+v, want only committed user message", messages)
+	}
+}
+
 func TestSessionsV3ExecutorUsesProviderFromCommittedHistory(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	runner := &sessionsV3RecordingProviderRunner{text: "provider answer"}
@@ -1227,6 +1375,8 @@ func createSessionsV3PrimaryTestSessionWithPreference(t *testing.T, server *Serv
 
 type sessionsV3RecordingProviderRunner struct {
 	text        string
+	deltas      []string
+	err         error
 	callCount   int
 	lastRequest provideriface.Request
 }
@@ -1238,8 +1388,17 @@ func (r *sessionsV3RecordingProviderRunner) CreateResponse(ctx context.Context, 
 func (r *sessionsV3RecordingProviderRunner) CreateResponseStreaming(_ context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
 	r.callCount++
 	r.lastRequest = req
+	if r.err != nil {
+		return provideriface.Response{}, r.err
+	}
 	if onEvent != nil {
-		onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: r.text})
+		deltas := r.deltas
+		if len(deltas) == 0 {
+			deltas = []string{r.text}
+		}
+		for _, delta := range deltas {
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: delta})
+		}
 	}
 	return provideriface.Response{Text: r.text}, nil
 }

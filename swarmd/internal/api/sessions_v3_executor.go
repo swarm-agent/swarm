@@ -25,6 +25,8 @@ const (
 	sessionV3ExecutorDefaultStartDelay        = 10 * time.Millisecond
 	sessionV3ExecutorRecoveryLimit            = 500
 	sessionV3ExecutorDefaultRunningStaleAfter = 5 * time.Minute
+	sessionV3AssistantDeltaFlushMaxBytes      = 512
+	sessionV3AssistantDeltaFlushMaxDelay      = 100 * time.Millisecond
 )
 
 type sessionV3ExecutorJob struct {
@@ -37,9 +39,11 @@ type sessionV3Executor struct {
 	server *Server
 	queue  chan sessionV3ExecutorJob
 
-	startDelay        time.Duration
-	modelDelay        time.Duration
-	runningStaleAfter time.Duration
+	startDelay         time.Duration
+	modelDelay         time.Duration
+	runningStaleAfter  time.Duration
+	deltaFlushMaxBytes int
+	deltaFlushMaxDelay time.Duration
 
 	mu              sync.Mutex
 	inFlightRuns    map[string]bool
@@ -48,12 +52,14 @@ type sessionV3Executor struct {
 
 func newSessionV3Executor(server *Server) *sessionV3Executor {
 	exec := &sessionV3Executor{
-		server:            server,
-		queue:             make(chan sessionV3ExecutorJob, sessionV3ExecutorQueueSize),
-		startDelay:        sessionV3ExecutorDefaultStartDelay,
-		runningStaleAfter: sessionV3ExecutorDefaultRunningStaleAfter,
-		inFlightRuns:      make(map[string]bool),
-		activeBySession:   make(map[string]string),
+		server:             server,
+		queue:              make(chan sessionV3ExecutorJob, sessionV3ExecutorQueueSize),
+		startDelay:         sessionV3ExecutorDefaultStartDelay,
+		runningStaleAfter:  sessionV3ExecutorDefaultRunningStaleAfter,
+		deltaFlushMaxBytes: sessionV3AssistantDeltaFlushMaxBytes,
+		deltaFlushMaxDelay: sessionV3AssistantDeltaFlushMaxDelay,
+		inFlightRuns:       make(map[string]bool),
+		activeBySession:    make(map[string]string),
 	}
 	ctx := context.Background()
 	if server != nil && server.runCtx != nil {
@@ -258,6 +264,18 @@ func (e *sessionV3Executor) recordRunStatus(job sessionV3ExecutorJob, status, re
 		BlockedReason: strings.TrimSpace(reason),
 		UpdatedAt:     now,
 	}
+	var eventPayload json.RawMessage
+	if eventType == "session.run.failed" {
+		raw, err := json.Marshal(map[string]any{
+			"run_id": job.RunID,
+			"status": status,
+			"error":  strings.TrimSpace(reason),
+		})
+		if err != nil {
+			return sessionruntime.SessionMutationResult{}, err
+		}
+		eventPayload = raw
+	}
 	payloadHash, err := sessionV3ExecutorPayloadHash(job.SessionID, job.RunID, status, reason, eventType, "")
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, err
@@ -272,6 +290,7 @@ func (e *sessionV3Executor) recordRunStatus(job sessionV3ExecutorJob, status, re
 		RequestHash:     payloadHash,
 		Kind:            sessionruntime.SessionMutationRecordRunIntent,
 		EventType:       eventType,
+		EventPayload:    eventPayload,
 		RunIntent:       &intent,
 		NowUnixMs:       now,
 	})
@@ -308,6 +327,82 @@ func (e *sessionV3Executor) recordRunProgress(job sessionV3ExecutorJob, deltaInd
 		RunIntent:       &intent,
 		NowUnixMs:       now,
 	})
+}
+
+type sessionV3AssistantDeltaCoalescer struct {
+	exec            *sessionV3Executor
+	job             sessionV3ExecutorJob
+	buf             strings.Builder
+	bufferStartedAt time.Time
+	nextDeltaIndex  int
+	flushCount      int
+}
+
+func newSessionV3AssistantDeltaCoalescer(exec *sessionV3Executor, job sessionV3ExecutorJob) *sessionV3AssistantDeltaCoalescer {
+	return &sessionV3AssistantDeltaCoalescer{exec: exec, job: job}
+}
+
+func (c *sessionV3AssistantDeltaCoalescer) Add(delta string) error {
+	if c == nil || delta == "" {
+		return nil
+	}
+	if c.bufferStartedAt.IsZero() {
+		c.bufferStartedAt = time.Now()
+	}
+	c.buf.WriteString(delta)
+	if c.shouldFlush(delta) {
+		return c.Flush()
+	}
+	return nil
+}
+
+func (c *sessionV3AssistantDeltaCoalescer) Flush() error {
+	if c == nil || c.buf.Len() == 0 {
+		return nil
+	}
+	if c.exec == nil {
+		return errors.New("v3 assistant delta coalescer missing executor")
+	}
+	delta := c.buf.String()
+	c.buf.Reset()
+	c.bufferStartedAt = time.Time{}
+	c.nextDeltaIndex++
+	if _, err := c.exec.recordRunProgress(c.job, c.nextDeltaIndex, delta); err != nil {
+		return err
+	}
+	c.flushCount++
+	return nil
+}
+
+func (c *sessionV3AssistantDeltaCoalescer) FlushCount() int {
+	if c == nil {
+		return 0
+	}
+	return c.flushCount
+}
+
+func (c *sessionV3AssistantDeltaCoalescer) shouldFlush(delta string) bool {
+	if c == nil {
+		return false
+	}
+	if c.exec == nil {
+		return true
+	}
+	maxBytes := c.exec.deltaFlushMaxBytes
+	if maxBytes <= 0 {
+		maxBytes = sessionV3AssistantDeltaFlushMaxBytes
+	}
+	if c.buf.Len() >= maxBytes {
+		return true
+	}
+	if strings.Contains(delta, "\n") {
+		return true
+	}
+	maxDelay := c.exec.deltaFlushMaxDelay
+	if maxDelay > 0 && !c.bufferStartedAt.IsZero() && time.Since(c.bufferStartedAt) >= maxDelay {
+		return true
+	}
+	return false
 }
 
 func (e *sessionV3Executor) completeRun(job sessionV3ExecutorJob, content string) (sessionruntime.SessionMutationResult, error) {
@@ -355,7 +450,18 @@ func (e *sessionV3Executor) assistantResponse(ctx context.Context, job sessionV3
 			return content, err
 		}
 	}
-	return e.fakeAssistantResponse(job.SessionID)
+	content, err := e.fakeAssistantResponse(job.SessionID)
+	if err != nil {
+		return "", err
+	}
+	coalescer := newSessionV3AssistantDeltaCoalescer(e, job)
+	if err := coalescer.Add(content); err != nil {
+		return "", err
+	}
+	if err := coalescer.Flush(); err != nil {
+		return "", err
+	}
+	return content, nil
 }
 
 func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job sessionV3ExecutorJob) (string, bool, error) {
@@ -404,19 +510,25 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		WorkspacePath: strings.TrimSpace(session.WorkspacePath),
 	}
 	var streamed strings.Builder
-	deltaIndex := 0
+	coalescer := newSessionV3AssistantDeltaCoalescer(e, job)
+	var progressErr error
 	response, err := runner.CreateResponseStreaming(ctx, req, func(event provideriface.StreamEvent) {
 		if event.Type != provideriface.StreamEventOutputTextDelta {
 			return
 		}
 		streamed.WriteString(event.Delta)
-		deltaIndex++
-		if strings.TrimSpace(event.Delta) != "" {
-			_, _ = e.recordRunProgress(job, deltaIndex, event.Delta)
+		if progressErr == nil {
+			progressErr = coalescer.Add(event.Delta)
 		}
 	})
+	if flushErr := coalescer.Flush(); flushErr != nil && progressErr == nil {
+		progressErr = flushErr
+	}
 	if err != nil {
 		return "", true, err
+	}
+	if progressErr != nil {
+		return "", true, progressErr
 	}
 	content := strings.TrimSpace(response.Text)
 	if content == "" {
@@ -437,6 +549,14 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	}
 	if content == "" {
 		return "", true, errors.New("provider returned empty assistant response")
+	}
+	if coalescer.FlushCount() == 0 {
+		if err := coalescer.Add(content); err != nil {
+			return "", true, err
+		}
+		if err := coalescer.Flush(); err != nil {
+			return "", true, err
+		}
 	}
 	return content, true, nil
 }
