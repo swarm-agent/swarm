@@ -2,12 +2,18 @@ package run
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
+	"time"
 
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
@@ -272,41 +278,132 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 }
 
 func (s *Service) storeProviderManagedToolResult(config providerToolInvokerConfig, call tool.Call, metadata map[string]any, result tool.Result) error {
+	if isProviderManagedV3SessionID(config.sessionID) {
+		return s.storeProviderManagedToolResultV3(config, call, metadata, result)
+	}
+	return s.storeProviderManagedToolResultLegacy(config, newToolCallSnapshot(call), metadata, newToolResultSnapshot(result))
+}
+
+func (s *Service) storeProviderManagedToolResultV3(config providerToolInvokerConfig, call tool.Call, metadata map[string]any, result tool.Result) error {
 	if s == nil || s.sessions == nil {
 		return errors.New("session store is not configured")
 	}
-
-	toolHistoryText := formatToolHistoryWithMetadata(call, metadata, result)
-	storedToolMessage, _, event, err := s.sessions.AppendMessage(config.sessionID, "tool", toolHistoryText, nil)
+	session, ok, err := s.sessions.GetSession(config.sessionID)
 	if err != nil {
 		return err
 	}
-
-	if config.emit != nil {
-		config.emit(StreamEvent{Type: StreamEventMessageStored, Step: config.step, Message: &storedToolMessage})
+	if !ok {
+		return fmt.Errorf("session %q not found", config.sessionID)
 	}
-	if sessionSnapshot, ok, sessionErr := s.sessions.GetSession(config.sessionID); sessionErr == nil && ok {
-		if commitMeta, detected := detectGitCommit(call, result); detected {
-			updatedMetadata := sessionGitMetadata(sessionSnapshot.Metadata)
-			gitMeta, _ := updatedMetadata["git"].(map[string]any)
-			if gitMeta != nil {
-				gitMeta["commit_detected"] = true
-				gitMeta["commit_count"] = sessionGitCommitCount(updatedMetadata) + 1
-				gitMeta["last_commit"] = commitMeta
-				gitMeta["last_commit_at"] = storedToolMessage.CreatedAt
-				if updatedSession, env, updateErr := s.sessions.UpdateMetadata(config.sessionID, updatedMetadata); updateErr == nil {
-					sessionSnapshot = updatedSession
-					if env != nil {
-						s.publishEventEnvelope(*env)
-					}
-				}
-			}
-		}
-		s.maybeRefreshSessionGitState(config.sessionID, sessionSnapshot)
+	principal := config.principal
+	if !principal.Valid() {
+		principal = identity.Principal{Type: identity.PrincipalTypeUser, UserID: session.UserID, AccountScopeID: session.AccountScopeID}
 	}
-	if event != nil {
-		s.publishEventEnvelope(*event)
+	content := formatToolHistoryWithMetadata(call, metadata, result)
+	if strings.TrimSpace(content) == "" {
+		content = firstNonEmptyString(strings.TrimSpace(result.Output), strings.TrimSpace(result.Error), "tool completed")
 	}
-
+	now := time.Now().UnixMilli()
+	message := pebblestore.MessageSnapshot{
+		ID:        providerManagedV3ToolMessageID(config.sessionID, config.runID, config.step, call.CallID),
+		Role:      "tool",
+		Content:   content,
+		CreatedAt: now,
+		Metadata:  providerManagedV3ToolMessageMetadata(config, call, metadata, result),
+	}
+	payloadHash, err := providerManagedV3ToolPayloadHash(config.sessionID, config.runID, config.step, call, metadata, result, content)
+	if err != nil {
+		return err
+	}
+	clientRequestID := providerManagedV3ToolClientRequestID(config.runID, config.step, call.CallID)
+	mutation, err := s.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{
+		SessionID:       config.sessionID,
+		UserID:          principal.UserID,
+		AccountScopeID:  principal.AccountScopeID,
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationAppendMessage,
+		EventType:       "session.tool.completed",
+		Message:         &message,
+		NowUnixMs:       now,
+	})
+	if err != nil {
+		return err
+	}
+	if config.emit != nil && mutation.Message != nil {
+		config.emit(StreamEvent{Type: StreamEventMessageStored, Step: config.step, Message: mutation.Message})
+	}
 	return nil
+}
+
+func providerManagedV3ToolMessageMetadata(config providerToolInvokerConfig, call tool.Call, metadata map[string]any, result tool.Result) map[string]any {
+	out := cloneGenericMap(metadata)
+	if out == nil {
+		out = map[string]any{}
+	}
+	out["run_id"] = strings.TrimSpace(config.runID)
+	out["step"] = config.step
+	out["tool_call_id"] = strings.TrimSpace(call.CallID)
+	out["tool_name"] = strings.TrimSpace(call.Name)
+	out["executor_kind"] = "v3_provider_tool"
+	if errText := strings.TrimSpace(result.Error); errText != "" {
+		out["error"] = errText
+	}
+	if result.DurationMS != 0 {
+		out["duration_ms"] = result.DurationMS
+	}
+	return out
+}
+
+func providerManagedV3ToolClientRequestID(runID string, step int, callID string) string {
+	callID = strings.NewReplacer(".", "_", "/", "_", " ", "_").Replace(strings.TrimSpace(callID))
+	if callID == "" {
+		callID = "tool_call"
+	}
+	return fmt.Sprintf("v3-tool-%s-%04d-%s", strings.TrimSpace(runID), step, callID)
+}
+
+func providerManagedV3ToolMessageID(sessionID, runID string, step int, callID string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(runID) + "\x00" + fmt.Sprint(step) + "\x00" + strings.TrimSpace(callID) + "\x00tool"))
+	return "v3msg_tool_" + hex.EncodeToString(sum[:16])
+}
+
+func providerManagedV3ToolPayloadHash(sessionID, runID string, step int, call tool.Call, metadata map[string]any, result tool.Result, content string) (string, error) {
+	canonical := struct {
+		Operation string         `json:"operation"`
+		SessionID string         `json:"session_id"`
+		RunID     string         `json:"run_id"`
+		Step      int            `json:"step"`
+		CallID    string         `json:"call_id"`
+		Name      string         `json:"name"`
+		Arguments string         `json:"arguments"`
+		Metadata  map[string]any `json:"metadata,omitempty"`
+		Output    string         `json:"output,omitempty"`
+		Error     string         `json:"error,omitempty"`
+		Content   string         `json:"content"`
+	}{
+		Operation: "v3.provider.tool.completed",
+		SessionID: strings.TrimSpace(sessionID),
+		RunID:     strings.TrimSpace(runID),
+		Step:      step,
+		CallID:    strings.TrimSpace(call.CallID),
+		Name:      strings.TrimSpace(call.Name),
+		Arguments: strings.TrimSpace(call.Arguments),
+		Metadata:  cloneGenericMap(metadata),
+		Output:    strings.TrimSpace(result.Output),
+		Error:     strings.TrimSpace(result.Error),
+		Content:   content,
+	}
+	raw, err := json.Marshal(canonical)
+	if err != nil {
+		return "", fmt.Errorf("marshal v3 tool payload hash: %w", err)
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func isProviderManagedV3SessionID(sessionID string) bool {
+	return strings.HasPrefix(strings.TrimSpace(sessionID), "v3session_")
 }
