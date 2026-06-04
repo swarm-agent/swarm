@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -91,6 +92,31 @@ func TestApplyV3SessionMutationAtomicCreateAndReplayIdempotency(t *testing.T) {
 	}
 	if len(events) != 1 {
 		t.Fatalf("duplicate idempotent create appended events: %+v", events)
+	}
+
+	_, err = sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:      "session-1",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		IdempotencyKey: "create-2",
+		RequestHash:    "hash-create-2",
+		Kind:           V3SessionMutationCreateSession,
+		Session: &SessionSnapshot{
+			ID:            "session-1",
+			WorkspacePath: "/workspace",
+			WorkspaceName: "workspace",
+			Title:         "Duplicate Create",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("duplicate create err = %v, want already exists", err)
+	}
+	events, err = sessions.ListV3SessionEvents("session-1", 0, 10)
+	if err != nil {
+		t.Fatalf("list events after duplicate create: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("duplicate create appended events: %+v", events)
 	}
 
 	conflict, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{

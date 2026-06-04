@@ -222,6 +222,8 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/integrations/workspaces", s.handleIntegrationWorkspaces)
 	mux.HandleFunc("/v1/integrations/workspaces/", s.handleIntegrationWorkspaceByID)
 	mux.HandleFunc("/v1/integrations/builder/sessions", s.handleIntegrationBuilderSessions)
+	mux.HandleFunc("/v3/sessions", s.handleSessionsV3Primary)
+	mux.HandleFunc("/v3/sessions/", s.handleSessionV3PrimaryByID)
 	mux.HandleFunc("/v2/sessions", s.handleSessionsV2List)
 	mux.HandleFunc("/v2/sessions/primary", s.handleSessionsV2Primary)
 	mux.HandleFunc("/v2/sessions/local-containers", s.handleSessionsV2LocalContainers)

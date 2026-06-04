@@ -40,6 +40,13 @@ func (s *Service) ListSessionEvents(sessionID string, afterSeq uint64, limit int
 	return s.store.ListV3SessionEvents(sessionID, afterSeq, limit)
 }
 
+func (s *Service) ListSessionMessages(sessionID string, afterSeq uint64, limit int) ([]pebblestore.MessageSnapshot, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ListV3SessionMessages(sessionID, afterSeq, limit)
+}
+
 func (s *Service) GetSessionProjection(sessionID string) (SessionProjection, bool, error) {
 	if s == nil || s.store == nil {
 		return SessionProjection{}, false, errors.New("session store is not configured")

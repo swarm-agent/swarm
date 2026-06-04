@@ -581,6 +581,9 @@ func (s *SessionStore) resultFromV3IdempotencyRecord(record V3SessionIdempotency
 
 func (s *SessionStore) prepareV3SessionForMutation(input V3SessionMutationInput, seq uint64, now int64) (SessionSnapshot, bool, error) {
 	if input.Session != nil {
+		if input.Kind == V3SessionMutationCreateSession && seq > 1 {
+			return SessionSnapshot{}, false, fmt.Errorf("session %q already exists", input.SessionID)
+		}
 		session := normalizeSessionOwnership(*input.Session)
 		session.ID = input.SessionID
 		if session.UserID == "" {
