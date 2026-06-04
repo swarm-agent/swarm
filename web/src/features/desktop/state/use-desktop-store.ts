@@ -735,7 +735,7 @@ function resolveRunStreamId(session: DesktopSessionRecord | undefined, runId?: s
   return ''
 }
 
-function resolveRunStreamResumeRequest(sessionId: string, fallbackRunId?: string | null): { sessionId: string; runId: string; lastSeq: number } | null {
+function resolveRunStreamResumeRequest(sessionId: string, fallbackRunId?: string | null): { sessionId: string; runId: string; lastSeq: number; sessionApi?: string | null; afterSeq?: number } | null {
   const normalizedSessionId = sessionId.trim()
   if (!normalizedSessionId) {
     return null
@@ -745,10 +745,13 @@ function resolveRunStreamResumeRequest(sessionId: string, fallbackRunId?: string
   if (!session) {
     return null
   }
-  if (session.live.status === 'idle' || session.live.status === 'error') {
+  const sessionApi = session.sessionApi?.trim().toLowerCase() ?? ''
+  if (sessionApi !== 'v3' && (session.live.status === 'idle' || session.live.status === 'error')) {
     return null
   }
-  const runId = resolveRunStreamId(session, fallbackRunId)
+  const runId = sessionApi === 'v3'
+    ? (resolveRunStreamId(session, fallbackRunId) || 'v3-primary-session-events')
+    : resolveRunStreamId(session, fallbackRunId)
   if (!runId) {
     return null
   }
@@ -769,6 +772,10 @@ function resolveRunStreamResumeRequest(sessionId: string, fallbackRunId?: string
     sessionId: normalizedSessionId,
     runId,
     lastSeq: session.live.seq ?? 0,
+    sessionApi: session.sessionApi,
+    afterSeq: sessionApi === 'v3'
+      ? Math.max(0, session.lastEventSeq ?? session.projectionHighWatermarkSeq ?? 0)
+      : undefined,
   }
 }
 
@@ -1380,10 +1387,160 @@ function deferAssistantFinalization(sessionId: string, message: ChatMessageRecor
   })
 }
 
+function v3SessionStreamEventEnvelope(payload: RunStreamEventMessage): EventEnvelope | null {
+  if (String(payload.type ?? '').trim() !== 'event' || !payload.event || typeof payload.event !== 'object') {
+    return null
+  }
+  const event = payload.event
+  const eventType = String(event.event_type ?? '').trim()
+  const sessionId = String(event.session_id ?? payload.session_id ?? '').trim()
+  const rawPayload = event.payload && typeof event.payload === 'object'
+    ? { ...event.payload }
+    : {}
+  const nestedSession = rawPayload.session && typeof rawPayload.session === 'object'
+    ? rawPayload.session as Record<string, unknown>
+    : null
+  const eventPayload = (eventType === 'session.created' || eventType === 'session.updated') && nestedSession
+    ? { ...nestedSession }
+    : rawPayload
+  if (sessionId && typeof eventPayload.session_id !== 'string') {
+    eventPayload.session_id = sessionId
+  }
+  return {
+    stream: sessionId ? `v3/session:${sessionId}` : undefined,
+    event_type: eventType,
+    entity_id: sessionId,
+    ts_unix_ms: typeof event.ts_unix_ms === 'number' ? event.ts_unix_ms : undefined,
+    payload: eventPayload,
+  }
+}
+
+function applyV3SessionStreamFrame(state: DesktopStoreState, sessionId: string, payload: RunStreamEventMessage, ts: number): Partial<DesktopStoreState> | null {
+  const type = String(payload.type ?? '').trim()
+  if (type === 'keepalive') {
+    const existing = state.sessions[sessionId]
+    if (!existing) {
+      return {}
+    }
+    const lastSeq = typeof payload.last_seq === 'number' ? Math.max(0, payload.last_seq) : existing.lastEventSeq ?? 0
+    return {
+      sessions: {
+        ...state.sessions,
+        [sessionId]: mergeSessionRecords(existing, {
+          ...existing,
+          sessionApi: existing.sessionApi || 'v3',
+          lastEventSeq: Math.max(existing.lastEventSeq ?? 0, lastSeq),
+          projectionHighWatermarkSeq: Math.max(existing.projectionHighWatermarkSeq ?? 0, lastSeq),
+          live: {
+            ...existing.live,
+            lastEventType: 'keepalive',
+            lastEventAt: ts,
+            awaitingAck: false,
+            error: null,
+          },
+        }),
+      },
+    }
+  }
+  if (type === 'replay.started' || type === 'replay.complete') {
+    const existing = state.sessions[sessionId]
+    if (!existing) {
+      return {}
+    }
+    const lastSeq = typeof payload.last_seq === 'number' ? Math.max(0, payload.last_seq) : existing.lastEventSeq ?? 0
+    const highWatermark = typeof payload.high_watermark_seq === 'number'
+      ? Math.max(0, payload.high_watermark_seq)
+      : existing.projectionHighWatermarkSeq ?? lastSeq
+    return {
+      sessions: {
+        ...state.sessions,
+        [sessionId]: mergeSessionRecords(existing, {
+          ...existing,
+          sessionApi: existing.sessionApi || 'v3',
+          lastEventSeq: Math.max(existing.lastEventSeq ?? 0, lastSeq),
+          projectionHighWatermarkSeq: Math.max(existing.projectionHighWatermarkSeq ?? 0, highWatermark),
+          live: {
+            ...existing.live,
+            lastEventType: type,
+            lastEventAt: ts,
+            awaitingAck: false,
+            error: null,
+          },
+        }),
+      },
+    }
+  }
+  if (type === 'cursor.error') {
+    const existing = state.sessions[sessionId]
+    if (existing) {
+      requestAuthoritativeSessionSnapshot(sessionId, existing.sessionApi || 'v3')
+    }
+    return {}
+  }
+  if (type === 'error') {
+    const existing = state.sessions[sessionId]
+    if (!existing) {
+      return {}
+    }
+    return {
+      sessions: {
+        ...state.sessions,
+        [sessionId]: mergeSessionRecords(existing, {
+          ...existing,
+          sessionApi: existing.sessionApi || 'v3',
+          live: {
+            ...existing.live,
+            status: existing.lifecycle?.active ? existing.live.status : 'error',
+            lastEventType: 'error',
+            lastEventAt: ts,
+            awaitingAck: false,
+            error: String(payload.error ?? 'V3 session stream failed'),
+            summary: existing.lifecycle?.active ? 'Stream error' : null,
+          },
+        }),
+      },
+    }
+  }
+  const envelope = v3SessionStreamEventEnvelope(payload)
+  if (!envelope) {
+    return null
+  }
+  const patch = applyEnvelope(state, envelope)
+  const eventSeq = typeof payload.event?.seq === 'number' ? Math.max(0, payload.event.seq) : 0
+  const highWatermark = typeof payload.high_watermark_seq === 'number' ? Math.max(0, payload.high_watermark_seq) : eventSeq
+  const patchedSessions = patch.sessions ?? state.sessions
+  const existing = patchedSessions[sessionId]
+  if (!existing) {
+    return patch
+  }
+  return {
+    ...patch,
+    sessions: {
+      ...patchedSessions,
+      [sessionId]: mergeSessionRecords(existing, {
+        ...existing,
+        sessionApi: existing.sessionApi || 'v3',
+        lastEventSeq: Math.max(existing.lastEventSeq ?? 0, eventSeq),
+        projectionHighWatermarkSeq: Math.max(existing.projectionHighWatermarkSeq ?? 0, highWatermark),
+        live: {
+          ...existing.live,
+          lastEventType: String(payload.event?.event_type ?? type).trim() || type,
+          lastEventAt: ts,
+          awaitingAck: false,
+          error: null,
+        },
+      }),
+    },
+  }
+}
+
 function applyRunStreamFrame(state: DesktopStoreState, sessionId: string, payload: RunStreamEventMessage, ts: number): Partial<DesktopStoreState> {
+  const type = String(payload.type ?? '').trim()
+  if (state.sessions[sessionId]?.sessionApi?.trim().toLowerCase() === 'v3') {
+    return applyV3SessionStreamFrame(state, sessionId, payload, ts) ?? {}
+  }
   const sessions = { ...state.sessions }
   const session = { ...ensureSession(state, sessionId), live: { ...ensureSession(state, sessionId).live }, pendingPermissions: [...ensureSession(state, sessionId).pendingPermissions] }
-  const type = String(payload.type ?? '').trim()
   const runID = String(payload.run_id ?? '').trim()
   const messageSessionID = String(payload.session_id ?? '').trim()
 
@@ -1948,6 +2105,9 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
       const requestedWorkspaceName = typeof payloadRecord.workspace_name === 'string' ? payloadRecord.workspace_name.trim() : session.workspaceName
       session.workspaceName = canonicalSessionWorkspaceName(requestedWorkspaceName, rawWorkspacePath, nextWorkspacePath) || session.workspaceName
       session.mode = typeof payloadRecord.mode === 'string' ? payloadRecord.mode : session.mode
+      session.sessionApi = typeof payloadRecord.session_api === 'string' && payloadRecord.session_api.trim() !== ''
+        ? payloadRecord.session_api.trim()
+        : session.sessionApi
       session.createdAt = typeof payloadRecord.created_at === 'number' ? payloadRecord.created_at : session.createdAt || ts
       break
     }
@@ -2033,9 +2193,14 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
     case 'session.title.updated':
       session.title = typeof payloadRecord.title === 'string' ? payloadRecord.title : session.title
       break
-    case 'session.message.appended':
+    case 'session.message.appended': {
+      const normalized = normalizeMessage(payloadRecord.message as RunStreamEventMessage['message'], sessionId)
+      if (normalized) {
+        updateMessagesCache(normalized.sessionId, normalized)
+      }
       session.messageCount += 1
       break
+    }
     case 'permission.requested':
     case 'permission.updated': {
       const permissionSource = (payloadRecord.permission && typeof payloadRecord.permission === 'object' ? payloadRecord.permission : payloadRecord) as Record<string, unknown>

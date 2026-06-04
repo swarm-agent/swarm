@@ -19,6 +19,10 @@ export type RunStreamEventMessage = {
   run_id?: string
   seq?: number
   error?: string
+  after_seq?: number
+  last_seq?: number
+  high_watermark_seq?: number
+  next_seq?: number
   status?: string
   summary?: string
   delta?: string
@@ -64,12 +68,30 @@ export type RunStreamEventMessage = {
     created_at?: number
     metadata?: Record<string, unknown>
   }
+  event?: {
+    id?: string
+    session_id?: string
+    seq?: number
+    event_type?: string
+    payload?: Record<string, unknown>
+    ts_unix_ms?: number
+    causation_id?: string
+    correlation_id?: string
+  }
+  projection?: {
+    session_id?: string
+    last_event_seq?: number
+    projection_high_watermark_seq?: number
+    updated_at?: number
+  }
 }
 
 type ResumeRequest = {
   sessionId: string
   runId: string
   lastSeq: number
+  sessionApi?: string | null
+  afterSeq?: number
 }
 
 type SessionControllerEntry = {
@@ -114,6 +136,10 @@ function isTerminalSessionStatus(payload: RunStreamEventMessage): boolean {
 
 function isSessionAlreadyActiveRunError(message: string): boolean {
   return message.trim().toLowerCase() === 'session already has an active run'
+}
+
+function isV3ResumeRequest(request: ResumeRequest | null): boolean {
+  return request?.sessionApi?.trim().toLowerCase() === 'v3'
 }
 
 export class DesktopRunStreamController {
@@ -234,7 +260,10 @@ export class DesktopRunStreamController {
     const generation = entry.generation
 
     try {
-      const socket = await openRunStream(resumeRequest.sessionId)
+      const socket = await openRunStream(resumeRequest.sessionId, {
+        sessionApi: resumeRequest.sessionApi,
+        afterSeq: resumeRequest.afterSeq,
+      })
       if (entry.generation !== generation || entry.desiredRunId !== resumeRequest.runId) {
         socket.close()
         return
@@ -279,9 +308,18 @@ export class DesktopRunStreamController {
         const ts = Date.now()
         this.options.onFrame(entry.sessionId, payload, ts)
 
-        if (type === 'resume.accepted') {
+        if (type === 'resume.accepted' || type === 'replay.started' || type === 'replay.complete') {
           entry.reconnectAttempt = 0
           this.cancelReconnect(entry)
+          return
+        }
+
+        if (type === 'cursor.error') {
+          const message = String(payload.error ?? 'V3 session stream cursor failed')
+          this.options.onReconnectPending(entry.sessionId, message, ts)
+          this.cancelReconnect(entry)
+          this.closeSocket(entry, false)
+          this.scheduleReconnect(entry, message)
           return
         }
 
@@ -359,8 +397,14 @@ export class DesktopRunStreamController {
 
   private sendResume(entry: SessionControllerEntry, socket: WebSocket): void {
     const request = this.options.getResumeRequest(entry.sessionId, entry.desiredRunId)
+    if (isV3ResumeRequest(request) && entry.desiredRunId === 'v3-primary-session-events') {
+      return
+    }
     if (!request || request.runId !== entry.desiredRunId) {
       this.close(entry.sessionId)
+      return
+    }
+    if (isV3ResumeRequest(request)) {
       return
     }
     try {

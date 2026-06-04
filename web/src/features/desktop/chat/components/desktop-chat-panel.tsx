@@ -1844,14 +1844,21 @@ export function DesktopChatPanel({
   }, [liveSession?.sessionApi, queryClient, refreshSessionPermissions, sessionId])
 
   useEffect(() => {
-    if (!sessionId || !resumableRunId) {
+    if (!sessionId) {
+      return
+    }
+    if (liveSession?.sessionApi?.trim().toLowerCase() === 'v3') {
+      void ensureRunStream(sessionId, resumableRunId || null)
+      return
+    }
+    if (!resumableRunId) {
       return
     }
     if (!lifecycleActive && !reconnectingRun && !awaitingLifecycleStart) {
       return
     }
     void ensureRunStream(sessionId, resumableRunId)
-  }, [awaitingLifecycleStart, ensureRunStream, lifecycleActive, reconnectingRun, resumableRunId, sessionId])
+  }, [awaitingLifecycleStart, ensureRunStream, lifecycleActive, liveSession?.sessionApi, reconnectingRun, resumableRunId, sessionId])
 
   useEffect(() => {
     if (!session || storedSession) {

@@ -1963,13 +1963,22 @@ export async function startSessionRun(
   );
 }
 
-export async function openRunStream(sessionId: string): Promise<WebSocket> {
+export async function openRunStream(
+  sessionId: string,
+  options: { sessionApi?: string | null; afterSeq?: number } = {},
+): Promise<WebSocket> {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   await ensureDesktopSession(true);
+  const sessionApi = options.sessionApi?.trim().toLowerCase() ?? "";
   const url = new URL(
-    `/v2/sessions/${encodeURIComponent(sessionId)}/run/stream`,
+    sessionApi === "v3"
+      ? `/v3/sessions/${encodeURIComponent(sessionId)}/stream`
+      : `/v2/sessions/${encodeURIComponent(sessionId)}/run/stream`,
     `${protocol}//${window.location.host}`,
   );
+  if (sessionApi === "v3" && typeof options.afterSeq === "number" && Number.isFinite(options.afterSeq) && options.afterSeq > 0) {
+    url.searchParams.set("after_seq", String(Math.floor(options.afterSeq)));
+  }
   return new WebSocket(url);
 }
 

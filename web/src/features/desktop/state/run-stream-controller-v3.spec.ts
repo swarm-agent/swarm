@@ -1,0 +1,162 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+
+import type { DesktopSessionRecord, DesktopStoreState } from '../types/realtime'
+import { applyEnvelope, useDesktopStore } from './use-desktop-store'
+
+function emptyLiveState(): DesktopSessionRecord['live'] {
+  return {
+    runId: null,
+    agentName: null,
+    startedAt: null,
+    status: 'idle',
+    step: 0,
+    toolName: null,
+    toolCallId: null,
+    toolArguments: null,
+    toolOutput: '',
+    retainedToolName: null,
+    retainedToolCallId: null,
+    retainedToolArguments: null,
+    retainedToolOutput: '',
+    retainedToolState: null,
+    summary: null,
+    lastEventType: null,
+    lastEventAt: null,
+    error: null,
+    seq: 0,
+    assistantDraft: '',
+    retainedAssistantSegments: [],
+    reasoningSummary: '',
+    reasoningText: '',
+    reasoningState: 'idle',
+    reasoningSegment: 0,
+    reasoningStartedAt: null,
+    awaitingAck: false,
+  }
+}
+
+function makeSession(input: Partial<DesktopSessionRecord> & Pick<DesktopSessionRecord, 'id'>): DesktopSessionRecord {
+  return {
+    id: input.id,
+    title: input.title ?? 'V3 session',
+    workspacePath: input.workspacePath ?? '/repo',
+    workspaceName: input.workspaceName ?? 'repo',
+    mode: input.mode ?? 'auto',
+    metadata: input.metadata,
+    sessionApi: input.sessionApi ?? 'v3',
+    lastEventSeq: input.lastEventSeq ?? 0,
+    projectionHighWatermarkSeq: input.projectionHighWatermarkSeq ?? 0,
+    messageCount: input.messageCount ?? 0,
+    updatedAt: input.updatedAt ?? 1,
+    createdAt: input.createdAt ?? 1,
+    permissionsHydrated: input.permissionsHydrated ?? false,
+    lifecycle: input.lifecycle ?? null,
+    live: input.live ?? emptyLiveState(),
+    pendingPermissions: input.pendingPermissions ?? [],
+    pendingPermissionCount: input.pendingPermissionCount ?? 0,
+    usage: input.usage ?? null,
+  }
+}
+
+function makeState(session: DesktopSessionRecord): DesktopStoreState {
+  return {
+    ...useDesktopStore.getState(),
+    sessions: { [session.id]: session },
+    lastGlobalSeq: 0,
+  }
+}
+
+test('V3 stream frame application commits ordered durable message events and cursor state', () => {
+  const session = makeSession({ id: 'session-v3', lastEventSeq: 1, projectionHighWatermarkSeq: 1 })
+  useDesktopStore.setState(makeState(session), true)
+
+  useDesktopStore.getState().__testApplyRunStreamFrame?.('session-v3', {
+    type: 'event',
+    ok: true,
+    session_id: 'session-v3',
+    last_seq: 2,
+    event: {
+      id: 'v3evt_session-v3_00000000000000000002',
+      session_id: 'session-v3',
+      seq: 2,
+      event_type: 'session.message.appended',
+      ts_unix_ms: 10,
+      payload: {
+        session_id: 'session-v3',
+        message: {
+          id: 'msg-v3-2',
+          session_id: 'session-v3',
+          global_seq: 2,
+          role: 'user',
+          content: 'hello from v3 stream',
+          created_at: 10,
+        },
+      },
+    },
+  }, 11)
+
+  const updated = useDesktopStore.getState().sessions['session-v3']
+  assert.equal(updated.sessionApi, 'v3')
+  assert.equal(updated.lastEventSeq, 2)
+  assert.equal(updated.projectionHighWatermarkSeq, 2)
+  assert.equal(updated.messageCount, 1)
+  assert.equal(updated.live.lastEventType, 'session.message.appended')
+  assert.equal(updated.live.lastEventAt, 11)
+})
+
+test('V3 replay control frames update cursor state without V2 resume semantics', () => {
+  const session = makeSession({ id: 'session-v3', lastEventSeq: 2, projectionHighWatermarkSeq: 2 })
+  useDesktopStore.setState(makeState(session), true)
+
+  useDesktopStore.getState().__testApplyRunStreamFrame?.('session-v3', {
+    type: 'replay.complete',
+    ok: true,
+    session_id: 'session-v3',
+    last_seq: 4,
+    high_watermark_seq: 4,
+    next_seq: 4,
+  }, 22)
+
+  const updated = useDesktopStore.getState().sessions['session-v3']
+  assert.equal(updated.lastEventSeq, 4)
+  assert.equal(updated.projectionHighWatermarkSeq, 4)
+  assert.equal(updated.live.lastEventType, 'replay.complete')
+  assert.equal(updated.live.awaitingAck, false)
+})
+
+test('desktop panel and controller route V3 streams to Sessions API v3 only', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const controllerSource = await readFile(new URL('./run-stream-controller.ts', import.meta.url), 'utf8')
+  const querySource = await readFile(new URL('../chat/queries/chat-queries.ts', import.meta.url), 'utf8')
+  const panelSource = await readFile(new URL('../chat/components/desktop-chat-panel.tsx', import.meta.url), 'utf8')
+
+  assert.match(querySource, /`\/v3\/sessions\/\$\{encodeURIComponent\(sessionId\)\}\/stream`/)
+  assert.match(querySource, /url\.searchParams\.set\("after_seq"/)
+  assert.match(controllerSource, /sessionApi: resumeRequest\.sessionApi/)
+  assert.match(controllerSource, /type === 'cursor\.error'/)
+  assert.match(controllerSource, /if \(isV3ResumeRequest\(request\)\) \{\n\s+return\n\s+\}/)
+  assert.match(panelSource, /liveSession\?\.sessionApi\?\.trim\(\)\.toLowerCase\(\) === 'v3'/)
+  assert.doesNotMatch(querySource, /\/v3\/sessions\/[^`]+\/run\/stream/)
+})
+
+// Keep the V3 stream path compatible with existing session envelope handling.
+test('V3 session.created payload nesting maps through applyEnvelope', () => {
+  const patch = applyEnvelope({ ...useDesktopStore.getState(), sessions: {}, lastGlobalSeq: 0 }, {
+    event_type: 'session.created',
+    entity_id: 'session-created',
+    ts_unix_ms: 1,
+    payload: {
+      id: 'session-created',
+      session_id: 'session-created',
+      title: 'created',
+      workspace_path: '/repo',
+      workspace_name: 'repo',
+      mode: 'auto',
+      session_api: 'v3',
+      created_at: 1,
+      updated_at: 1,
+    },
+  })
+  assert.equal(patch.sessions?.['session-created']?.workspacePath, '/repo')
+})
