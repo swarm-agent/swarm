@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	api "swarm/packages/swarmd/internal/api"
+	"swarm/packages/swarmd/internal/identity"
 	providerdefaults "swarm/packages/swarmd/internal/provider/defaults"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -62,6 +63,7 @@ func BenchmarkListSessionsEndpointFromCopiedDB(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				recorder := httptest.NewRecorder()
 				request := httptest.NewRequest(http.MethodGet, requestPath, nil)
+				request = request.WithContext(identity.ContextWithPrincipal(request.Context(), copiedSessionTestPrincipal()))
 				handler.ServeHTTP(recorder, request)
 				if recorder.Code != http.StatusOK {
 					b.Fatalf("list sessions status = %d, want %d", recorder.Code, http.StatusOK)
@@ -84,11 +86,16 @@ type listSessionsResponse struct {
 	Sessions []pebblestore.SessionSnapshot `json:"sessions"`
 }
 
+func copiedSessionTestPrincipal() identity.Principal {
+	return identity.Principal{Type: identity.PrincipalTypeUser, UserID: "copied-session-user", AccountScopeID: "copied-session-account", AccountScopeSource: identity.AccountScopeSourceServerState}
+}
+
 func listSessionsViaHandler(t *testing.T, handler http.Handler, limit int) listSessionsResponse {
 	t.Helper()
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/v1/sessions?limit=%d", limit), nil)
+	request = request.WithContext(identity.ContextWithPrincipal(request.Context(), copiedSessionTestPrincipal()))
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("list sessions status = %d, want %d", recorder.Code, http.StatusOK)
@@ -160,9 +167,11 @@ func seedSessionsDB(tb testing.TB, dbPath string, sessionCount int) {
 
 		defaults := providerdefaults.MustLookup("codex")
 		session, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
-			Title:         fmt.Sprintf("Session %03d", i),
-			WorkspacePath: workspacePath,
-			WorkspaceName: fmt.Sprintf("Workspace %02d", workspaceIndex),
+			UserID:         copiedSessionTestPrincipal().UserID,
+			AccountScopeID: copiedSessionTestPrincipal().AccountScopeID,
+			Title:          fmt.Sprintf("Session %03d", i),
+			WorkspacePath:  workspacePath,
+			WorkspaceName:  fmt.Sprintf("Workspace %02d", workspaceIndex),
 			Preference: &pebblestore.ModelPreference{
 				Provider: defaults.ProviderID,
 				Model:    defaults.PrimaryModel,

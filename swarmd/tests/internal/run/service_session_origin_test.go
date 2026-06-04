@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/model"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"swarm/packages/swarmd/internal/provider/registry"
@@ -52,6 +53,8 @@ func TestRunTurnStreamingSessionMetadataDistinguishesForegroundAndBackgroundRuns
 		t.Fatalf("new event log: %v", err)
 	}
 
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "session-origin-user", AccountScopeID: "session-origin-account", AccountScopeSource: identity.AccountScopeSourceServerState}
+
 	modelSvc := model.NewService(pebblestore.NewModelStore(store), events, nil)
 	if _, _, err := modelSvc.SetGlobalPreference("codex", "gpt-5.4", "high"); err != nil {
 		t.Fatalf("set global preference: %v", err)
@@ -64,19 +67,23 @@ func TestRunTurnStreamingSessionMetadataDistinguishesForegroundAndBackgroundRuns
 		Thinking: "high",
 	}
 	foregroundSession, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
-		Title:         "foreground",
-		WorkspacePath: t.TempDir(),
-		WorkspaceName: "workspace",
-		Preference:    preference,
+		UserID:         principal.UserID,
+		AccountScopeID: principal.AccountScopeID,
+		Title:          "foreground",
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "workspace",
+		Preference:     preference,
 	})
 	if err != nil {
 		t.Fatalf("create foreground session: %v", err)
 	}
 	backgroundSession, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
-		Title:         "background",
-		WorkspacePath: t.TempDir(),
-		WorkspaceName: "workspace",
-		Preference:    preference,
+		UserID:         principal.UserID,
+		AccountScopeID: principal.AccountScopeID,
+		Title:          "background",
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "workspace",
+		Preference:     preference,
 	})
 	if err != nil {
 		t.Fatalf("create background session: %v", err)
@@ -93,7 +100,7 @@ func TestRunTurnStreamingSessionMetadataDistinguishesForegroundAndBackgroundRuns
 	providers.RegisterRunner(runner)
 
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
-	if err := agentSvc.EnsureDefaults(); err != nil {
+	if err := agentSvc.EnsureDefaultsForAccount(principal.AccountScopeID); err != nil {
 		t.Fatalf("ensure default agents: %v", err)
 	}
 
@@ -103,7 +110,8 @@ func TestRunTurnStreamingSessionMetadataDistinguishesForegroundAndBackgroundRuns
 		Prompt:     "hello",
 		Background: false,
 	}, runpkg.RunStartMeta{
-		RunID: "run-foreground",
+		RunID:     "run-foreground",
+		Principal: principal,
 	}, nil); err != nil {
 		t.Fatalf("run foreground turn: %v", err)
 	}
@@ -114,7 +122,8 @@ func TestRunTurnStreamingSessionMetadataDistinguishesForegroundAndBackgroundRuns
 		TargetKind: runpkg.RunTargetKindBackground,
 		TargetName: "memory",
 	}, runpkg.RunStartMeta{
-		RunID: "run-background",
+		RunID:     "run-background",
+		Principal: principal,
 	}, nil); err != nil {
 		t.Fatalf("run background turn: %v", err)
 	}

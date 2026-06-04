@@ -7907,7 +7907,13 @@ func (a *App) resolveSelectedChatRouteIDForWorkspace(workspacePath string, route
 }
 
 func (a *App) selectedChatRouteForWorkspace(workspacePath string) model.ChatRoute {
+	if a == nil {
+		return model.ChatRoute{}
+	}
 	routes := a.homeModel.ChatRoutes
+	if len(routes) == 0 {
+		routes = buildChatRoutesForHomeModel(a.homeModel, workspacePath)
+	}
 	selected := a.resolveSelectedChatRouteIDForWorkspace(workspacePath, routes)
 	for _, route := range routes {
 		if strings.TrimSpace(route.ID) == selected {
@@ -8015,6 +8021,9 @@ func (a *App) sessionRouteFromMetadata(workspacePath string, metadata map[string
 		return model.ChatRoute{}, false
 	}
 	routes := a.homeModel.ChatRoutes
+	if len(routes) == 0 {
+		routes = buildChatRoutesForHomeModel(a.homeModel, firstNonEmpty(hostWorkspacePath, workspacePath))
+	}
 	for _, route := range routes {
 		if routeID != "" && strings.TrimSpace(route.ID) == routeID {
 			return route, true

@@ -28,10 +28,12 @@ func TestRunTurnStoresAssistantTextBeforeToolAsSeparateTimelineMessage(t *testin
 	}
 	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
 	session, _, err := sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
-		Title:         "Assistant timeline",
-		WorkspacePath: t.TempDir(),
-		WorkspaceName: "workspace",
-		Mode:          sessionruntime.ModeAuto,
+		UserID:         "user-test",
+		AccountScopeID: "account-test",
+		Title:          "Assistant timeline",
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "workspace",
+		Mode:           sessionruntime.ModeAuto,
 		Preference: &pebblestore.ModelPreference{
 			Provider: "fake",
 			Model:    "fake-model",
@@ -218,10 +220,12 @@ func TestRunTurnStoresRepeatedAssistantToolSegmentsInTimelineOrder(t *testing.T)
 	}
 	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
 	session, _, err := sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
-		Title:         "Assistant multistep timeline",
-		WorkspacePath: t.TempDir(),
-		WorkspaceName: "workspace",
-		Mode:          sessionruntime.ModeAuto,
+		UserID:         "user-test",
+		AccountScopeID: "account-test",
+		Title:          "Assistant multistep timeline",
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "workspace",
+		Mode:           sessionruntime.ModeAuto,
 		Preference: &pebblestore.ModelPreference{
 			Provider: "fake-multistep",
 			Model:    "fake-model",
