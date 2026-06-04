@@ -18,6 +18,8 @@ import (
 
 const sessionsV3PrimaryPrefix = "/v3/sessions/"
 
+// V3 primary write handlers delegate through the ApplySessionMutation boundary.
+
 type sessionsV3CreateRequest struct {
 	SessionID       string                      `json:"session_id,omitempty"`
 	ClientRequestID string                      `json:"client_request_id,omitempty"`
@@ -111,6 +113,8 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		s.handleSessionV3PrimaryMessages(w, r, principal, sessionID)
 	case "events":
 		s.handleSessionV3PrimaryEvents(w, r, principal, sessionID)
+	case "stream":
+		s.handleSessionV3PrimaryStream(w, r, principal, sessionID)
 	default:
 		writeError(w, http.StatusBadRequest, errors.New("unknown sessions v3 path"))
 	}
@@ -170,7 +174,7 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	result, err := s.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{
+	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       sessionID,
 		UserID:          principal.UserID,
 		AccountScopeID:  principal.AccountScopeID,
@@ -312,7 +316,7 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	result, err := s.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{
+	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       sessionID,
 		UserID:          principal.UserID,
 		AccountScopeID:  principal.AccountScopeID,

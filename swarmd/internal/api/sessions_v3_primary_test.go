@@ -11,6 +11,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	gorillaws "github.com/gorilla/websocket"
 
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -534,6 +537,170 @@ func TestSessionsV3PrimaryCreateIsIdempotent(t *testing.T) {
 	if len(events) != 1 || len(second.Events) != 1 {
 		t.Fatalf("events persisted=%+v second=%+v", events, second.Events)
 	}
+}
+
+func TestSessionsV3PrimaryStreamReplaysDurableEventsAfterRestart(t *testing.T) {
+	t.Setenv("SWARM_API_NO_AUTH", "1")
+	storePath := filepath.Join(t.TempDir(), "sessions-v3-stream.pebble")
+	server, _, closeStore := newSessionsV3PrimaryAPITestServer(t, storePath)
+	created := createSessionsV3PrimaryTestSession(t, server, "cp6-create", "CP6")
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "cp6-message-0", "cp6 message 0")
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "cp6-message-1", "cp6 message 1")
+	if err := closeStore(); err != nil {
+		t.Fatalf("close first store: %v", err)
+	}
+
+	restarted, _, closeRestarted := newSessionsV3PrimaryAPITestServer(t, storePath)
+	defer func() { _ = closeRestarted() }()
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		restarted.Handler().ServeHTTP(w, withTestPrincipal(r))
+	}))
+	defer httpServer.Close()
+
+	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	defer conn.Close()
+	started := readSessionsV3PrimaryStreamFrame(t, conn)
+	if started.Type != "replay.started" || !started.OK || started.HighWatermarkSeq != 3 {
+		t.Fatalf("replay started = %+v", started)
+	}
+	first := readSessionsV3PrimaryStreamFrame(t, conn)
+	second := readSessionsV3PrimaryStreamFrame(t, conn)
+	if first.Type != "event" || first.Event == nil || first.Event.Seq != 2 || second.Event == nil || second.Event.Seq != 3 {
+		t.Fatalf("stream replay events first=%+v second=%+v", first, second)
+	}
+	complete := readSessionsV3PrimaryStreamFrame(t, conn)
+	if complete.Type != "replay.complete" || complete.LastSeq != 3 || complete.NextSeq != 3 {
+		t.Fatalf("replay complete = %+v", complete)
+	}
+}
+
+func TestSessionsV3PrimaryStreamTransitionsFromReplayToLiveEvents(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "cp6-live-create", "CP6 live")
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, withTestPrincipal(r))
+	}))
+	defer httpServer.Close()
+
+	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	defer conn.Close()
+	started := readSessionsV3PrimaryStreamFrame(t, conn)
+	complete := readSessionsV3PrimaryStreamFrame(t, conn)
+	if started.Type != "replay.started" || complete.Type != "replay.complete" || complete.LastSeq != 1 {
+		t.Fatalf("initial frames started=%+v complete=%+v", started, complete)
+	}
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "cp6-live-message", "cp6 live message")
+	live := readSessionsV3PrimaryStreamFrame(t, conn)
+	if live.Type != "event" || live.Event == nil || live.Event.Seq != 2 || live.Event.EventType != "session.message.appended" {
+		t.Fatalf("live event = %+v", live)
+	}
+}
+
+func TestSessionsV3PrimaryStreamCursorErrors(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "cp6-cursor-create", "CP6 cursor")
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, withTestPrincipal(r))
+	}))
+	defer httpServer.Close()
+
+	ahead := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=2")
+	aheadFrame := readSessionsV3PrimaryStreamFrame(t, ahead)
+	_ = ahead.Close()
+	if aheadFrame.Type != "cursor.error" || aheadFrame.OK || !strings.Contains(aheadFrame.Error, "refetch required") {
+		t.Fatalf("ahead cursor frame = %+v", aheadFrame)
+	}
+
+	malformed := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=not-a-number")
+	malformedFrame := readSessionsV3PrimaryStreamFrame(t, malformed)
+	_ = malformed.Close()
+	if malformedFrame.Type != "error" || !strings.Contains(malformedFrame.Error, "after_seq") {
+		t.Fatalf("malformed cursor frame = %+v", malformedFrame)
+	}
+}
+
+func TestSessionsV3PrimaryStreamHandlerDoesNotUseV2RunStreamOrRuntime(t *testing.T) {
+	body, err := os.ReadFile("sessions_v3_stream_ws.go")
+	if err != nil {
+		t.Fatalf("read sessions_v3_stream_ws.go: %v", err)
+	}
+	for _, required := range []string{"ReplaySessionEvents", "GetSessionProjection", "handleSessionV3PrimaryStream", "sessionV3StreamHub"} {
+		if !strings.Contains(string(body), required) {
+			t.Fatalf("sessions_v3_stream_ws.go missing required V3 stream symbol %q", required)
+		}
+	}
+	for _, forbidden := range []string{"runStreamManager", "handleRunStream", "proxyManagedHostRunStream", "dispatchRemoteRuntime", "routedSessionTarget", "gorillaws"} {
+		if strings.Contains(string(body), forbidden) {
+			t.Fatalf("sessions_v3_stream_ws.go contains forbidden runtime/v2 stream symbol %q", forbidden)
+		}
+	}
+}
+
+func createSessionsV3PrimaryTestSession(t *testing.T, server *Server, clientRequestID, title string) pebblestore.SessionSnapshot {
+	t.Helper()
+	body := fmt.Sprintf(`{"client_request_id":%q,"workspace_path":"/workspace/cp6","title":%q}`, clientRequestID, title)
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var created struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if strings.TrimSpace(created.Session.ID) == "" {
+		t.Fatalf("created session missing id: %+v", created.Session)
+	}
+	return created.Session
+}
+
+func postSessionsV3PrimaryTestMessage(t *testing.T, server *Server, sessionID, clientRequestID, content string) {
+	t.Helper()
+	body := fmt.Sprintf(`{"client_request_id":%q,"role":"user","content":%q}`, clientRequestID, content)
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+sessionID+"/messages", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("message status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+func dialSessionsV3PrimaryStream(t *testing.T, baseURL, sessionID, rawQuery string) *gorillaws.Conn {
+	t.Helper()
+	wsURL := "ws" + strings.TrimPrefix(baseURL, "http") + "/v3/sessions/" + sessionID + "/stream"
+	if rawQuery != "" {
+		wsURL += "?" + rawQuery
+	}
+	conn, resp, err := gorillaws.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		if resp != nil {
+			t.Fatalf("dial v3 stream: %v status=%d", err, resp.StatusCode)
+		}
+		t.Fatalf("dial v3 stream: %v", err)
+	}
+	return conn
+}
+
+func readSessionsV3PrimaryStreamFrame(t *testing.T, conn *gorillaws.Conn) sessionV3StreamFrame {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	_, raw, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read v3 stream frame: %v", err)
+	}
+	var frame sessionV3StreamFrame
+	if err := json.Unmarshal(raw, &frame); err != nil {
+		t.Fatalf("decode v3 stream frame %s: %v", string(raw), err)
+	}
+	return frame
 }
 
 func newSessionsV3PrimaryAPITestServer(t *testing.T, storePath string) (*Server, *sessionruntime.Service, func() error) {
