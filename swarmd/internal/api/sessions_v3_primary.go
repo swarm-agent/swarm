@@ -305,7 +305,7 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 		return
 	}
 	now := time.Now().UnixMilli()
-	runStatus, blockedReason := sessionsV3PrimaryRunIntentStatus(req)
+	runStatus, blockedReason := s.sessionsV3PrimaryRunIntentStatus(principal, hydrated.Session, req)
 	runIntent := &pebblestore.V3SessionRunIntent{
 		RunID:         strings.TrimSpace(req.RunID),
 		Status:        runStatus,
@@ -537,11 +537,148 @@ func sessionsV3PrimaryAuthorityStatus(req sessionsV3MessageRequest) string {
 	return "absent"
 }
 
-func sessionsV3PrimaryRunIntentStatus(req sessionsV3MessageRequest) (string, string) {
-	if sessionsV3PrimaryAuthorityStatus(req) == "invalid" {
-		return sessionruntime.RunIntentDispatchBlocked, "invalid dispatch authority for primary-owned v3 stage 1"
+func (s *Server) sessionsV3PrimaryRunIntentStatus(principal identity.Principal, session pebblestore.SessionSnapshot, req sessionsV3MessageRequest) (string, string) {
+	if reason := s.sessionsV3PrimaryDispatchBlockedReason(principal, session, req); reason != "" {
+		return sessionruntime.RunIntentDispatchBlocked, reason
 	}
 	return sessionruntime.RunIntentPendingExecutor, ""
+}
+
+func (s *Server) sessionsV3PrimaryDispatchBlockedReason(principal identity.Principal, session pebblestore.SessionSnapshot, req sessionsV3MessageRequest) string {
+	authority := firstNonEmptyMap(req.DispatchAuthority, req.Authority)
+	if len(authority) == 0 {
+		return ""
+	}
+	if strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		return "dispatch authority account mismatch"
+	}
+	accountScopeID := sessionsV3AuthorityString(authority, "account_scope_id")
+	if accountScopeID != "" && accountScopeID != strings.TrimSpace(principal.AccountScopeID) {
+		return "dispatch authority account mismatch"
+	}
+	runtimeSwarmID := sessionsV3AuthorityString(authority, "runtime_swarm_id", "swarm_id", "target_swarm_id")
+	if runtimeSwarmID == "" {
+		return "dispatch authority missing executor runtime"
+	}
+	runtimeKind := sessionsV3AuthorityString(authority, "runtime_kind", "target_kind")
+	workspaceBindingID := sessionsV3AuthorityString(authority, "workspace_binding_id", "local_workspace_binding_id")
+	placementGeneration := sessionsV3AuthorityInt(authority, "placement_generation")
+	bindingGeneration := sessionsV3AuthorityInt(authority, "binding_generation")
+	authorityHostSwarmID := sessionsV3AuthorityString(authority, "authority_host_swarm_id", "host_swarm_id")
+	authorityContainerID := sessionsV3AuthorityString(authority, "authority_container_id", "host_container_id", "container_id")
+	sourceWorkspacePath := sessionsV3AuthorityString(authority, "source_workspace_path", "workspace_path", "host_workspace_path")
+	runtimeWorkspacePath := sessionsV3AuthorityString(authority, "runtime_workspace_path", "destination_workspace_path")
+
+	if s == nil || s.topology == nil {
+		return "dispatch authority unavailable: topology is not configured"
+	}
+	placement, placementOK, err := s.topology.GetRuntimePlacementForAccount(principal.AccountScopeID, runtimeSwarmID)
+	if err != nil {
+		return "dispatch authority unavailable: " + err.Error()
+	}
+	if !placementOK {
+		return "dispatch authority unavailable: runtime placement not found"
+	}
+	if strings.TrimSpace(placement.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		return "dispatch authority account mismatch"
+	}
+	if strings.TrimSpace(placement.State) != pebblestore.TopologyRuntimePlacementStateActive {
+		return "dispatch authority stale: runtime placement is not active"
+	}
+	if placementGeneration > 0 && placement.PlacementGeneration != placementGeneration {
+		return "dispatch authority stale: runtime placement generation mismatch"
+	}
+	if runtimeKind != "" && strings.TrimSpace(placement.RuntimeKind) != runtimeKind {
+		return "dispatch authority runtime kind mismatch"
+	}
+	if authorityHostSwarmID != "" && strings.TrimSpace(placement.AuthorityHostSwarmID) != authorityHostSwarmID {
+		return "dispatch authority placement authority host mismatch"
+	}
+	if authorityContainerID != "" && strings.TrimSpace(placement.AuthorityContainerID) != authorityContainerID {
+		return "dispatch authority placement container mismatch"
+	}
+	if workspaceBindingID == "" {
+		return "dispatch authority missing workspace binding"
+	}
+	binding, bindingOK, err := s.topology.GetWorkspaceBindingForAccount(principal.AccountScopeID, workspaceBindingID)
+	if err != nil {
+		return "dispatch authority unavailable: " + err.Error()
+	}
+	if !bindingOK {
+		return "dispatch authority unavailable: workspace binding not found"
+	}
+	if strings.TrimSpace(binding.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		return "dispatch authority account mismatch"
+	}
+	if strings.TrimSpace(binding.State) != pebblestore.TopologyWorkspaceBindingStateBound {
+		return "dispatch authority stale: workspace binding is not bound"
+	}
+	if placementGeneration > 0 && binding.PlacementGeneration != placementGeneration {
+		return "dispatch authority stale: workspace binding placement generation mismatch"
+	}
+	if bindingGeneration > 0 && binding.BindingGeneration != bindingGeneration {
+		return "dispatch authority stale: workspace binding generation mismatch"
+	}
+	if strings.TrimSpace(binding.DestinationRuntimeSwarmID) != runtimeSwarmID {
+		return "dispatch authority workspace binding runtime mismatch"
+	}
+	if authorityHostSwarmID != "" && strings.TrimSpace(binding.DestinationAuthorityHostSwarmID) != authorityHostSwarmID {
+		return "dispatch authority workspace binding authority host mismatch"
+	}
+	if runtimeKind != "" && strings.TrimSpace(binding.DestinationRuntimeKind) != runtimeKind {
+		return "dispatch authority workspace binding runtime kind mismatch"
+	}
+	if authorityContainerID != "" && strings.TrimSpace(binding.DestinationContainerID) != authorityContainerID {
+		return "dispatch authority workspace binding container mismatch"
+	}
+	if sourceWorkspacePath != "" && filepath.Clean(strings.TrimSpace(binding.SourceWorkspacePath)) != filepath.Clean(sourceWorkspacePath) {
+		return "dispatch authority source workspace path mismatch"
+	}
+	if strings.TrimSpace(session.WorkspacePath) != "" && strings.TrimSpace(binding.SourceWorkspacePath) != "" && filepath.Clean(strings.TrimSpace(session.WorkspacePath)) != filepath.Clean(strings.TrimSpace(binding.SourceWorkspacePath)) {
+		return "dispatch authority session workspace path mismatch"
+	}
+	if runtimeWorkspacePath != "" && filepath.Clean(strings.TrimSpace(binding.DestinationWorkspacePath)) != filepath.Clean(runtimeWorkspacePath) {
+		return "dispatch authority runtime workspace path mismatch"
+	}
+	return "dispatch authority accepted but no executor is attached in v3 stage 1"
+}
+
+func firstNonEmptyMap(maps ...map[string]any) map[string]any {
+	for _, item := range maps {
+		if len(item) > 0 {
+			return item
+		}
+	}
+	return nil
+}
+
+func sessionsV3AuthorityString(authority map[string]any, keys ...string) string {
+	for _, key := range keys {
+		value, ok := authority[key]
+		if !ok {
+			value, ok = authority[strings.ToLower(key)]
+		}
+		if !ok {
+			continue
+		}
+		s := strings.TrimSpace(fmt.Sprint(value))
+		if s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func sessionsV3AuthorityInt(authority map[string]any, keys ...string) int {
+	raw := sessionsV3AuthorityString(authority, keys...)
+	if raw == "" {
+		return 0
+	}
+	var parsed int
+	if _, err := fmt.Sscanf(raw, "%d", &parsed); err != nil || parsed < 0 {
+		return 0
+	}
+	return parsed
 }
 
 func isProtectedSessionsV3MetadataKey(key string) bool {

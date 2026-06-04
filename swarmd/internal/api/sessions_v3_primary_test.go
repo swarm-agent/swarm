@@ -298,7 +298,7 @@ func TestSessionsV3PrimaryMessageWithInvalidDispatchAuthorityStillCommitsAndBloc
 	if payload.Message == nil || payload.Message.Content != "durable despite invalid authority" {
 		t.Fatalf("message payload = %+v", payload.Message)
 	}
-	if payload.RunIntent == nil || payload.RunIntent.Status != sessionruntime.RunIntentDispatchBlocked || !strings.Contains(payload.RunIntent.BlockedReason, "invalid dispatch authority") {
+	if payload.RunIntent == nil || payload.RunIntent.Status != sessionruntime.RunIntentDispatchBlocked || !strings.Contains(payload.RunIntent.BlockedReason, "runtime placement not found") {
 		t.Fatalf("run intent = %+v", payload.RunIntent)
 	}
 	messages, err := sessionSvc.ListSessionMessages(created.Session.ID, 0, 10)
@@ -310,6 +310,99 @@ func TestSessionsV3PrimaryMessageWithInvalidDispatchAuthorityStillCommitsAndBloc
 	}
 	if routes, err := routeStore.List(10); err != nil || len(routes) != 0 {
 		t.Fatalf("routes = %+v err=%v, want none", routes, err)
+	}
+}
+
+func TestSessionsV3PrimaryDispatchAuthorityRecordsSpecificBlockedReasonsWithoutBlockingMessage(t *testing.T) {
+	baseAuthority := `"runtime_swarm_id":"host-swarm-id","runtime_kind":"host","workspace_binding_id":"binding-primary-v2","authority_host_swarm_id":"host-swarm-id","placement_generation":1,"binding_generation":1,"source_workspace_path":"/workspace/cp8","runtime_workspace_path":"/workspace/cp8"`
+	tests := []struct {
+		name      string
+		authority string
+		mutate    func(t *testing.T, server *Server)
+		want      string
+	}{
+		{
+			name:      "accepted authority still blocked because stage 1 has no executor",
+			authority: baseAuthority,
+			want:      "no executor is attached",
+		},
+		{
+			name:      "stale binding generation",
+			authority: baseAuthority,
+			mutate: func(t *testing.T, server *Server) {
+				mutateSessionsV2WorkspaceBinding(t, server, "binding-primary-v2", func(binding *pebblestore.TopologyWorkspaceBindingRecord) {
+					binding.BindingGeneration = 2
+				})
+			},
+			want: "workspace binding generation mismatch",
+		},
+		{
+			name:      "unavailable target",
+			authority: strings.ReplaceAll(baseAuthority, `"runtime_swarm_id":"host-swarm-id"`, `"runtime_swarm_id":"missing-swarm"`),
+			want:      "runtime placement not found",
+		},
+		{
+			name:      "placement authority mismatch",
+			authority: strings.ReplaceAll(baseAuthority, `"authority_host_swarm_id":"host-swarm-id"`, `"authority_host_swarm_id":"other-host"`),
+			want:      "placement authority host mismatch",
+		},
+		{
+			name:      "account mismatch",
+			authority: baseAuthority + `,"account_scope_id":"other-account"`,
+			want:      "account mismatch",
+		},
+		{
+			name:      "runtime kind mismatch",
+			authority: strings.ReplaceAll(baseAuthority, `"runtime_kind":"host"`, `"runtime_kind":"container"`),
+			want:      "runtime kind mismatch",
+		},
+		{
+			name:      "missing executor runtime",
+			authority: `"workspace_binding_id":"binding-primary-v2"`,
+			want:      "missing executor runtime",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, sessionSvc, _, routeStore, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+			seedSessionsV2PrimaryAuthority(t, server, swarmStore, "host-swarm-id", "binding-primary-v2", "/workspace/cp8")
+			if tt.mutate != nil {
+				tt.mutate(t, server)
+			}
+			created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "cp8-create-"+strings.NewReplacer(" ", "-", "/", "-", "_", "-").Replace(tt.name), "CP8", "/workspace/cp8")
+			body := fmt.Sprintf(`{"client_request_id":%q,"role":"user","content":"cp8 durable","dispatch_authority":{%s}}`, "cp8-message-"+strings.NewReplacer(" ", "-", "/", "-", "_", "-").Replace(tt.name), tt.authority)
+			req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/messages", bytes.NewBufferString(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("message status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			var payload struct {
+				RunIntent *sessionruntime.SessionRunIntent `json:"run_intent"`
+				Message   *pebblestore.MessageSnapshot     `json:"message"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("decode message response: %v", err)
+			}
+			if payload.Message == nil || payload.Message.Content != "cp8 durable" {
+				t.Fatalf("message payload = %+v", payload.Message)
+			}
+			if payload.RunIntent == nil || payload.RunIntent.Status != sessionruntime.RunIntentDispatchBlocked || !strings.Contains(payload.RunIntent.BlockedReason, tt.want) {
+				t.Fatalf("run intent = %+v, want blocked reason containing %q", payload.RunIntent, tt.want)
+			}
+			messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+			if err != nil {
+				t.Fatalf("list messages: %v", err)
+			}
+			if len(messages) != 1 || messages[0].Content != "cp8 durable" {
+				t.Fatalf("messages = %+v", messages)
+			}
+			if routes, err := routeStore.List(10); err != nil || len(routes) != 0 {
+				t.Fatalf("routes = %+v err=%v, want none", routes, err)
+			}
+		})
 	}
 }
 
@@ -620,6 +713,42 @@ func TestSessionsV3PrimaryStreamCursorErrors(t *testing.T) {
 	}
 }
 
+func TestSessionsV3PrimaryStandalonePathsWorkWithDispatchServicesDisabled(t *testing.T) {
+	t.Setenv("SWARM_API_NO_AUTH", "1")
+	storePath := filepath.Join(t.TempDir(), "sessions-v3-standalone.pebble")
+	server, _, closeStore := newSessionsV3PrimaryAPITestServer(t, storePath)
+	defer func() { _ = closeStore() }()
+
+	created := createSessionsV3PrimaryTestSession(t, server, "cp8-standalone-create", "CP8 standalone")
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "cp8-standalone-message", "standalone message")
+	for _, path := range []string{
+		"/v3/sessions?limit=10",
+		"/v3/sessions/" + created.ID,
+		"/v3/sessions/" + created.ID + "/messages?after_seq=0&limit=10",
+		"/v3/sessions/" + created.ID + "/events?after_seq=0&limit=10",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d, want %d, body=%s", path, rec.Code, http.StatusOK, rec.Body.String())
+		}
+	}
+
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, withTestPrincipal(r))
+	}))
+	defer httpServer.Close()
+	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	defer conn.Close()
+	started := readSessionsV3PrimaryStreamFrame(t, conn)
+	event := readSessionsV3PrimaryStreamFrame(t, conn)
+	complete := readSessionsV3PrimaryStreamFrame(t, conn)
+	if started.Type != "replay.started" || event.Type != "event" || event.Event == nil || event.Event.Seq != 2 || complete.Type != "replay.complete" {
+		t.Fatalf("stream frames started=%+v event=%+v complete=%+v", started, event, complete)
+	}
+}
+
 func TestSessionsV3PrimaryStreamHandlerDoesNotUseV2RunStreamOrRuntime(t *testing.T) {
 	body, err := os.ReadFile("sessions_v3_stream_ws.go")
 	if err != nil {
@@ -639,7 +768,12 @@ func TestSessionsV3PrimaryStreamHandlerDoesNotUseV2RunStreamOrRuntime(t *testing
 
 func createSessionsV3PrimaryTestSession(t *testing.T, server *Server, clientRequestID, title string) pebblestore.SessionSnapshot {
 	t.Helper()
-	body := fmt.Sprintf(`{"client_request_id":%q,"workspace_path":"/workspace/cp6","title":%q}`, clientRequestID, title)
+	return createSessionsV3PrimaryTestSessionWithWorkspace(t, server, clientRequestID, title, "/workspace/cp6")
+}
+
+func createSessionsV3PrimaryTestSessionWithWorkspace(t *testing.T, server *Server, clientRequestID, title, workspacePath string) pebblestore.SessionSnapshot {
+	t.Helper()
+	body := fmt.Sprintf(`{"client_request_id":%q,"workspace_path":%q,"title":%q}`, clientRequestID, workspacePath, title)
 	req := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
