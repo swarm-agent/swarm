@@ -30,6 +30,18 @@ type sessionsV3CreateRequest struct {
 	Metadata        map[string]any              `json:"metadata,omitempty"`
 }
 
+type sessionsV3MessageRequest struct {
+	ClientRequestID   string         `json:"client_request_id,omitempty"`
+	IdempotencyKey    string         `json:"idempotency_key,omitempty"`
+	MessageID         string         `json:"message_id,omitempty"`
+	RunID             string         `json:"run_id,omitempty"`
+	Role              string         `json:"role"`
+	Content           string         `json:"content"`
+	Metadata          map[string]any `json:"metadata,omitempty"`
+	DispatchAuthority map[string]any `json:"dispatch_authority,omitempty"`
+	Authority         map[string]any `json:"authority,omitempty"`
+}
+
 type sessionsV3HydratedSession struct {
 	Session    pebblestore.SessionSnapshot      `json:"session"`
 	Projection sessionruntime.SessionProjection `json:"projection"`
@@ -63,36 +75,43 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, errors.New("sessions v3 service is not configured"))
 		return
 	}
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w)
-		return
-	}
 	principal, principalOK := PrincipalFromRequest(r)
 	if !principalOK || !principal.Valid() {
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
 		return
 	}
-	sessionID, ok := parseSessionsV3PrimarySessionID(r.URL.Path)
+	sessionID, subpath, ok := parseSessionsV3PrimaryPath(r.URL.Path)
 	if !ok {
 		writeError(w, http.StatusBadRequest, errors.New("invalid sessions v3 path"))
 		return
 	}
-	hydrated, found, err := s.hydrateSessionsV3Primary(principal, sessionID)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
+	switch subpath {
+	case "":
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w)
+			return
+		}
+		hydrated, found, err := s.hydrateSessionsV3Primary(principal, sessionID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if !found {
+			writeSessionNotFound(w)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":         true,
+			"session":    hydrated.Session,
+			"projection": hydrated.Projection,
+			"messages":   hydrated.Messages,
+			"events":     hydrated.Events,
+		})
+	case "messages":
+		s.handleSessionV3PrimaryMessages(w, r, principal, sessionID)
+	default:
+		writeError(w, http.StatusBadRequest, errors.New("unknown sessions v3 path"))
 	}
-	if !found {
-		writeSessionNotFound(w)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":         true,
-		"session":    hydrated.Session,
-		"projection": hydrated.Projection,
-		"messages":   hydrated.Messages,
-		"events":     hydrated.Events,
-	})
 }
 
 func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Request, principal identity.Principal) {
@@ -216,6 +235,124 @@ func (s *Server) handleSessionsV3PrimaryList(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "sessions": items})
 }
 
+func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if r.Method == http.MethodGet {
+		afterSeq, limit, ok := parseAfterSeqAndLimit(w, r, 500)
+		if !ok {
+			return
+		}
+		if _, found, err := s.hydrateSessionsV3Primary(principal, sessionID); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		} else if !found {
+			writeSessionNotFound(w)
+			return
+		}
+		messages, err := s.sessions.ListSessionMessages(sessionID, afterSeq, limit)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "messages": messages})
+		return
+	}
+
+	var req sessionsV3MessageRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	clientRequestID := strings.TrimSpace(firstNonEmpty(req.ClientRequestID, req.IdempotencyKey, r.Header.Get("Idempotency-Key")))
+	if clientRequestID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("client_request_id is required"))
+		return
+	}
+	hydrated, found, err := s.hydrateSessionsV3Primary(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !found {
+		writeSessionNotFound(w)
+		return
+	}
+	if err := validateSessionsV3CreateMetadata(req.Metadata); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	message := pebblestore.MessageSnapshot{
+		ID:       strings.TrimSpace(req.MessageID),
+		Role:     strings.TrimSpace(req.Role),
+		Content:  req.Content,
+		Metadata: cloneSessionsV3Metadata(req.Metadata),
+	}
+	if message.Role == "" {
+		writeError(w, http.StatusBadRequest, errors.New("message role is required"))
+		return
+	}
+	if message.Content == "" {
+		writeError(w, http.StatusBadRequest, errors.New("message content is required"))
+		return
+	}
+	now := time.Now().UnixMilli()
+	runStatus, blockedReason := sessionsV3PrimaryRunIntentStatus(req)
+	runIntent := &pebblestore.V3SessionRunIntent{
+		RunID:         strings.TrimSpace(req.RunID),
+		Status:        runStatus,
+		BlockedReason: blockedReason,
+	}
+	payloadHash, err := sessionsV3MessagePayloadHash(sessionID, req, message, runIntent.Status, runIntent.BlockedReason)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	result, err := s.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{
+		SessionID:       sessionID,
+		UserID:          principal.UserID,
+		AccountScopeID:  principal.AccountScopeID,
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationAppendMessage,
+		Message:         &message,
+		RunIntent:       runIntent,
+		NowUnixMs:       now,
+	})
+	if err != nil {
+		if errors.Is(err, sessionruntime.ErrSessionIdempotencyConflict) {
+			writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": err.Error(), "conflict": result.Conflict, "result": result})
+			return
+		}
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	updated, found, err := s.hydrateSessionsV3Primary(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !found {
+		writeError(w, http.StatusInternalServerError, errors.New("updated sessions v3 projection was not found"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":         true,
+		"session":    updated.Session,
+		"projection": updated.Projection,
+		"message":    result.Message,
+		"run_intent": result.RunIntent,
+		"messages":   updated.Messages,
+		"events":     updated.Events,
+		"mutation":   result,
+		"previous":   hydrated.Projection,
+	})
+}
+
 func (s *Server) hydrateSessionsV3Primary(principal identity.Principal, sessionID string) (sessionsV3HydratedSession, bool, error) {
 	session, ok, err := s.sessions.GetSession(sessionID)
 	if err != nil || !ok {
@@ -239,15 +376,28 @@ func (s *Server) hydrateSessionsV3Primary(principal identity.Principal, sessionI
 	return sessionsV3HydratedSession{Session: session, Projection: projection, Messages: messages, Events: events}, true, nil
 }
 
-func parseSessionsV3PrimarySessionID(path string) (string, bool) {
+func parseSessionsV3PrimaryPath(path string) (string, string, bool) {
 	if !strings.HasPrefix(path, sessionsV3PrimaryPrefix) {
-		return "", false
+		return "", "", false
 	}
 	rest := strings.TrimPrefix(path, sessionsV3PrimaryPrefix)
-	if rest == "" || strings.HasPrefix(rest, "/") || strings.HasSuffix(rest, "/") || strings.Contains(rest, "/") {
-		return "", false
+	if rest == "" || strings.HasPrefix(rest, "/") || strings.HasSuffix(rest, "/") || strings.Contains(rest, "//") {
+		return "", "", false
 	}
-	return strings.TrimSpace(rest), strings.TrimSpace(rest) != ""
+	parts := strings.Split(rest, "/")
+	for _, part := range parts {
+		if strings.TrimSpace(part) == "" {
+			return "", "", false
+		}
+	}
+	sessionID := strings.TrimSpace(parts[0])
+	if sessionID == "" {
+		return "", "", false
+	}
+	if len(parts) == 1 {
+		return sessionID, "", true
+	}
+	return sessionID, strings.Join(parts[1:], "/"), true
 }
 
 func sessionsV3CreatePayloadHash(sessionID string, req sessionsV3CreateRequest, workspaceName, title string) (string, error) {
@@ -278,6 +428,42 @@ func sessionsV3CreatePayloadHash(sessionID string, req sessionsV3CreateRequest, 
 	return hex.EncodeToString(sum[:]), nil
 }
 
+func sessionsV3MessagePayloadHash(sessionID string, req sessionsV3MessageRequest, message pebblestore.MessageSnapshot, runStatus, blockedReason string) (string, error) {
+	canonical := struct {
+		Operation         string         `json:"operation"`
+		SessionID         string         `json:"session_id"`
+		MessageID         string         `json:"message_id,omitempty"`
+		RunID             string         `json:"run_id,omitempty"`
+		Role              string         `json:"role"`
+		Content           string         `json:"content"`
+		Metadata          map[string]any `json:"metadata,omitempty"`
+		RunStatus         string         `json:"run_status"`
+		BlockedReason     string         `json:"blocked_reason"`
+		AuthorityStatus   string         `json:"authority_status"`
+		Authority         map[string]any `json:"authority,omitempty"`
+		DispatchAuthority map[string]any `json:"dispatch_authority,omitempty"`
+	}{
+		Operation:         sessionruntime.SessionMutationAppendMessage,
+		SessionID:         strings.TrimSpace(sessionID),
+		MessageID:         strings.TrimSpace(message.ID),
+		RunID:             strings.TrimSpace(req.RunID),
+		Role:              strings.TrimSpace(message.Role),
+		Content:           message.Content,
+		Metadata:          cloneSessionsV3Metadata(message.Metadata),
+		RunStatus:         runStatus,
+		BlockedReason:     blockedReason,
+		AuthorityStatus:   sessionsV3PrimaryAuthorityStatus(req),
+		Authority:         cloneSessionsV3Metadata(req.Authority),
+		DispatchAuthority: cloneSessionsV3Metadata(req.DispatchAuthority),
+	}
+	raw, err := json.Marshal(canonical)
+	if err != nil {
+		return "", fmt.Errorf("marshal sessions v3 message payload hash: %w", err)
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
 func stableSessionsV3PrimarySessionID(principal identity.Principal, clientRequestID string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(principal.AccountScopeID) + "\x00" + strings.TrimSpace(clientRequestID)))
 	return "v3session_" + hex.EncodeToString(sum[:16])
@@ -302,6 +488,20 @@ func validateSessionsV3CreateMetadata(metadata map[string]any) error {
 		}
 	}
 	return nil
+}
+
+func sessionsV3PrimaryAuthorityStatus(req sessionsV3MessageRequest) string {
+	if len(req.DispatchAuthority) > 0 || len(req.Authority) > 0 {
+		return "invalid"
+	}
+	return "absent"
+}
+
+func sessionsV3PrimaryRunIntentStatus(req sessionsV3MessageRequest) (string, string) {
+	if sessionsV3PrimaryAuthorityStatus(req) == "invalid" {
+		return sessionruntime.RunIntentDispatchBlocked, "invalid dispatch authority for primary-owned v3 stage 1"
+	}
+	return sessionruntime.RunIntentPendingExecutor, ""
 }
 
 func isProtectedSessionsV3MetadataKey(key string) bool {

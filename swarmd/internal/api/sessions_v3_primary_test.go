@@ -3,11 +3,13 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -20,7 +22,7 @@ func TestSessionsV3PrimaryHandlersDoNotUseRuntimeDispatchOrRoutes(t *testing.T) 
 	if err != nil {
 		t.Fatalf("read sessions_v3_primary.go: %v", err)
 	}
-	for _, required := range []string{"ApplySessionMutation", "SessionMutationCreateSession", "ListSessionEvents", "ListSessionMessages"} {
+	for _, required := range []string{"ApplySessionMutation", "SessionMutationCreateSession", "SessionMutationAppendMessage", "RunIntentDispatchBlocked", "ListSessionEvents", "ListSessionMessages"} {
 		if !strings.Contains(string(body), required) {
 			t.Fatalf("sessions_v3_primary.go missing required V3 primary storage symbol %q", required)
 		}
@@ -181,6 +183,247 @@ func TestSessionsV3PrimaryCreateRejectsProtectedAuthorityMetadata(t *testing.T) 
 	}
 	if routes, err := routeStore.List(10); err != nil || len(routes) != 0 {
 		t.Fatalf("routes = %+v err=%v, want none", routes, err)
+	}
+}
+
+func TestSessionsV3PrimaryMessagesCommitUserMessageAndPendingExecutorIntent(t *testing.T) {
+	server, sessionSvc, _, routeStore, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-create","workspace_path":"/workspace/cp4","title":"CP4"}`))
+	create.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(createRec, withTestPrincipal(create))
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, want %d, body=%s", createRec.Code, http.StatusOK, createRec.Body.String())
+	}
+	var created struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+
+	messageReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.Session.ID+"/messages", bytes.NewBufferString(`{"client_request_id":"cp4-message","role":"user","content":"hello cp4","metadata":{"purpose":"cp4"}}`))
+	messageReq.Header.Set("Content-Type", "application/json")
+	messageRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(messageRec, withTestPrincipal(messageReq))
+	if messageRec.Code != http.StatusOK {
+		t.Fatalf("message status = %d, want %d, body=%s", messageRec.Code, http.StatusOK, messageRec.Body.String())
+	}
+	var payload struct {
+		OK         bool                                 `json:"ok"`
+		Session    pebblestore.SessionSnapshot          `json:"session"`
+		Projection sessionruntime.SessionProjection     `json:"projection"`
+		Message    *pebblestore.MessageSnapshot         `json:"message"`
+		RunIntent  *sessionruntime.SessionRunIntent     `json:"run_intent"`
+		Messages   []pebblestore.MessageSnapshot        `json:"messages"`
+		Events     []sessionruntime.SessionEvent        `json:"events"`
+		Mutation   sessionruntime.SessionMutationResult `json:"mutation"`
+	}
+	if err := json.Unmarshal(messageRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode message response: %v", err)
+	}
+	if !payload.OK || payload.Message == nil || payload.Message.Content != "hello cp4" || payload.Message.Role != "user" {
+		t.Fatalf("message payload = %+v", payload)
+	}
+	if payload.Session.MessageCount != 1 || payload.Projection.LastEventSeq != 2 || len(payload.Events) != 2 || len(payload.Messages) != 1 {
+		t.Fatalf("session/projection/events/messages = %+v %+v %+v %+v", payload.Session, payload.Projection, payload.Events, payload.Messages)
+	}
+	if payload.RunIntent == nil || payload.RunIntent.Status != sessionruntime.RunIntentPendingExecutor || payload.RunIntent.BlockedReason != "" || payload.RunIntent.EventSeq != 2 {
+		t.Fatalf("run intent = %+v", payload.RunIntent)
+	}
+	if payload.Mutation.FirstSeq != 2 || payload.Mutation.Message == nil || payload.Mutation.RunIntent == nil {
+		t.Fatalf("mutation = %+v", payload.Mutation)
+	}
+	if routes, err := routeStore.List(10); err != nil || len(routes) != 0 {
+		t.Fatalf("routes = %+v err=%v, want none", routes, err)
+	}
+	messages, err := sessionSvc.ListSessionMessages(created.Session.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Content != "hello cp4" || messages[0].Metadata["purpose"] != "cp4" {
+		t.Fatalf("stored messages = %+v", messages)
+	}
+	getReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+created.Session.ID+"/messages?after_seq=0&limit=10", nil)
+	getRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(getRec, withTestPrincipal(getReq))
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get messages status = %d, want %d, body=%s", getRec.Code, http.StatusOK, getRec.Body.String())
+	}
+	var listed struct {
+		OK       bool                          `json:"ok"`
+		Messages []pebblestore.MessageSnapshot `json:"messages"`
+	}
+	if err := json.Unmarshal(getRec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode get messages response: %v", err)
+	}
+	if !listed.OK || len(listed.Messages) != 1 || listed.Messages[0].ID != messages[0].ID {
+		t.Fatalf("listed messages = %+v", listed)
+	}
+}
+
+func TestSessionsV3PrimaryMessageWithInvalidDispatchAuthorityStillCommitsAndBlocks(t *testing.T) {
+	server, sessionSvc, _, routeStore, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-invalid-authority-create","workspace_path":"/workspace/cp4","title":"CP4"}`))
+	create.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(createRec, withTestPrincipal(create))
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, want %d, body=%s", createRec.Code, http.StatusOK, createRec.Body.String())
+	}
+	var created struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+
+	messageReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.Session.ID+"/messages", bytes.NewBufferString(`{"client_request_id":"cp4-invalid-authority-message","role":"user","content":"durable despite invalid authority","dispatch_authority":{"runtime_swarm_id":"container-swarm","authority_container_id":"container-1"}}`))
+	messageReq.Header.Set("Content-Type", "application/json")
+	messageRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(messageRec, withTestPrincipal(messageReq))
+	if messageRec.Code != http.StatusOK {
+		t.Fatalf("message status = %d, want %d, body=%s", messageRec.Code, http.StatusOK, messageRec.Body.String())
+	}
+	var payload struct {
+		RunIntent *sessionruntime.SessionRunIntent `json:"run_intent"`
+		Message   *pebblestore.MessageSnapshot     `json:"message"`
+	}
+	if err := json.Unmarshal(messageRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode message response: %v", err)
+	}
+	if payload.Message == nil || payload.Message.Content != "durable despite invalid authority" {
+		t.Fatalf("message payload = %+v", payload.Message)
+	}
+	if payload.RunIntent == nil || payload.RunIntent.Status != sessionruntime.RunIntentDispatchBlocked || !strings.Contains(payload.RunIntent.BlockedReason, "invalid dispatch authority") {
+		t.Fatalf("run intent = %+v", payload.RunIntent)
+	}
+	messages, err := sessionSvc.ListSessionMessages(created.Session.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Content != "durable despite invalid authority" {
+		t.Fatalf("messages = %+v", messages)
+	}
+	if routes, err := routeStore.List(10); err != nil || len(routes) != 0 {
+		t.Fatalf("routes = %+v err=%v, want none", routes, err)
+	}
+}
+
+func TestSessionsV3PrimaryMessageIsIdempotent(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-idempotent-create","workspace_path":"/workspace/cp4","title":"CP4"}`))
+	create.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(createRec, withTestPrincipal(create))
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, want %d, body=%s", createRec.Code, http.StatusOK, createRec.Body.String())
+	}
+	var created struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	body := `{"client_request_id":"cp4-same-message","role":"user","content":"idempotent cp4"}`
+	post := func() (int, string) {
+		req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.Session.ID+"/messages", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+		return rec.Code, rec.Body.String()
+	}
+	status, firstBody := post()
+	if status != http.StatusOK {
+		t.Fatalf("first status = %d body=%s", status, firstBody)
+	}
+	status, secondBody := post()
+	if status != http.StatusOK {
+		t.Fatalf("second status = %d body=%s", status, secondBody)
+	}
+	var second struct {
+		Mutation sessionruntime.SessionMutationResult `json:"mutation"`
+		Events   []sessionruntime.SessionEvent        `json:"events"`
+	}
+	if err := json.Unmarshal([]byte(secondBody), &second); err != nil {
+		t.Fatalf("decode second response: %v", err)
+	}
+	if !second.Mutation.Replayed || second.Mutation.PrimarySeq != 2 {
+		t.Fatalf("second mutation = %+v", second.Mutation)
+	}
+	events, err := sessionSvc.ListSessionEvents(created.Session.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 2 || len(second.Events) != 2 {
+		t.Fatalf("events persisted=%+v second=%+v", events, second.Events)
+	}
+}
+
+func TestSessionsV3PrimaryConcurrentDistinctMessagesAllocateContiguousSeq(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-concurrent-create","workspace_path":"/workspace/cp4","title":"CP4"}`))
+	create.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(createRec, withTestPrincipal(create))
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, want %d, body=%s", createRec.Code, http.StatusOK, createRec.Body.String())
+	}
+	var created struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+
+	const workers = 12
+	var wg sync.WaitGroup
+	errs := make(chan string, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			body := fmt.Sprintf(`{"client_request_id":"cp4-concurrent-%02d","role":"user","content":"message %02d"}`, i, i)
+			req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.Session.ID+"/messages", bytes.NewBufferString(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+			if rec.Code != http.StatusOK {
+				errs <- fmt.Sprintf("message %d status = %d body=%s", i, rec.Code, rec.Body.String())
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+
+	events, err := sessionSvc.ListSessionEvents(created.Session.ID, 0, workers+2)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != workers+1 {
+		t.Fatalf("events = %d, want %d: %+v", len(events), workers+1, events)
+	}
+	for i, event := range events {
+		wantSeq := uint64(i + 1)
+		if event.Seq != wantSeq {
+			t.Fatalf("event[%d].seq=%d want %d events=%+v", i, event.Seq, wantSeq, events)
+		}
+	}
+	messages, err := sessionSvc.ListSessionMessages(created.Session.ID, 0, workers+1)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != workers {
+		t.Fatalf("messages = %d, want %d: %+v", len(messages), workers, messages)
+	}
+	for i, message := range messages {
+		wantSeq := uint64(i + 2)
+		if message.GlobalSeq != wantSeq {
+			t.Fatalf("message[%d].global_seq=%d want %d messages=%+v", i, message.GlobalSeq, wantSeq, messages)
+		}
 	}
 }
 
