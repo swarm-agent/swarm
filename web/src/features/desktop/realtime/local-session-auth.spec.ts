@@ -54,7 +54,7 @@ test('desktop websocket clients bootstrap the local session cookie and do not se
     assert.deepEqual(fetchCalls, ['/v1/auth/desktop/session', '/v1/auth/desktop/session'])
     assert.deepEqual(websocketURLs, [
       'ws://127.0.0.1:5555/ws',
-      'ws://127.0.0.1:5555/v1/sessions/session-local-auth/run/stream',
+      'ws://127.0.0.1:5555/v2/sessions/session-local-auth/run/stream',
     ])
     for (const url of websocketURLs) {
       assert.equal(new URL(url).searchParams.get('token'), null)

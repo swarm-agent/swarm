@@ -140,6 +140,95 @@ test('desktop panel and controller route V3 streams to Sessions API v3 only', as
   assert.doesNotMatch(querySource, /\/v3\/sessions\/[^`]+\/run\/stream/)
 })
 
+test('desktop store submitPrompt for V3 primary sessions commits through Sessions API v3 without V2 run dispatch', async () => {
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ input, init })
+    const url = String(input)
+    if (url !== '/v3/sessions/session-v3/messages') {
+      throw new Error(`unexpected fetch: ${url}`)
+    }
+    return new Response(JSON.stringify({
+      ok: true,
+      session: {
+        id: 'session-v3',
+        title: 'V3 session',
+        workspace_path: '/repo',
+        workspace_name: 'repo',
+        mode: 'auto',
+        session_api: 'v3',
+        message_count: 1,
+        updated_at: 20,
+        created_at: 1,
+      },
+      projection: {
+        session_id: 'session-v3',
+        last_event_seq: 3,
+        projection_high_watermark_seq: 3,
+        updated_at: 20,
+      },
+      message: {
+        id: 'msg-v3-submit',
+        session_id: 'session-v3',
+        global_seq: 2,
+        role: 'user',
+        content: 'hello primary',
+        created_at: 19,
+      },
+      run_intent: {
+        session_id: 'session-v3',
+        run_id: 'v3run-session-v3-2',
+        status: 'pending_executor',
+        event_seq: 3,
+        created_at: 20,
+        updated_at: 20,
+      },
+      messages: [],
+      events: [],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  try {
+    const session = makeSession({ id: 'session-v3', sessionApi: 'v3' })
+    useDesktopStore.setState(makeState(session), true)
+
+    await useDesktopStore.getState().submitPrompt({
+      sessionId: 'session-v3',
+      sessionApi: 'v3',
+      clientRequestId: 'desktop-v3-message:test-submit',
+      workspacePath: '/repo',
+      workspaceName: 'repo',
+      prompt: 'hello primary',
+      agentName: 'swarm',
+    })
+
+    const urls = calls.map((entry) => String(entry.input))
+    assert.deepEqual(urls, ['/v3/sessions/session-v3/messages'])
+    assert.equal(urls.some((url) => url.startsWith('/v1/swarm/managed-hosts/sessions')), false)
+    assert.equal(urls.some((url) => url.startsWith('/v2/sessions')), false)
+    const body = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>
+    assert.deepEqual(body, {
+      client_request_id: 'desktop-v3-message:test-submit',
+      role: 'user',
+      content: 'hello primary',
+    })
+
+    const updated = useDesktopStore.getState().sessions['session-v3']
+    assert.equal(updated.sessionApi, 'v3')
+    assert.equal(updated.lastEventSeq, 3)
+    assert.equal(updated.projectionHighWatermarkSeq, 3)
+    assert.equal(updated.live.runId, 'v3run-session-v3-2')
+    assert.equal(updated.live.status, 'starting')
+    assert.equal(updated.live.lastEventType, 'run.pending_executor')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 // Keep the V3 stream path compatible with existing session envelope handling.
 test('V3 session.created payload nesting maps through applyEnvelope', () => {
   const patch = applyEnvelope({ ...useDesktopStore.getState(), sessions: {}, lastGlobalSeq: 0 }, {
