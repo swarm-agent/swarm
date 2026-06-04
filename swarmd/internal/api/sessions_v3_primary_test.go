@@ -1722,6 +1722,168 @@ func TestSessionsV3ExecutorExecutesProviderToolCallsAndContinuesToFinalAnswer(t 
 	}
 }
 
+func TestSessionsV3ExecutorCarriesFullContinuationHistoryAcrossMultipleToolSteps(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "one.txt"), []byte("first durable tool result"), 0o644); err != nil {
+		t.Fatalf("write first file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "two.txt"), []byte("second durable tool result"), 0o644); err != nil {
+		t.Fatalf("write second file: %v", err)
+	}
+	runner := &sessionsV3RecordingProviderRunner{responses: []provideriface.Response{
+		{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-reused", Name: "read", Arguments: `{"path":"one.txt"}`}}},
+		{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-reused", Name: "read", Arguments: `{"path":"two.txt"}`}}},
+		{Text: "final answer with both tool results"},
+	}}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	runSvc := runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, nil, nil)
+	server.runner = runSvc
+	server.SetBypassPermissions(true)
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"read": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
+		t.Fatalf("upsert tool-enabled swarm agent: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-multi-tool-create", "provider multi tool", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-multi-tool-message", "read both files before answering")
+	waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 4 || messages[0].Role != "user" || messages[1].Role != "tool" || messages[2].Role != "tool" || messages[3].Role != "assistant" {
+		t.Fatalf("messages after multi-step tool loop = %+v, want user/tool/tool/assistant", messages)
+	}
+	if !strings.Contains(messages[1].Content, "first durable tool result") || !strings.Contains(messages[2].Content, "second durable tool result") {
+		t.Fatalf("tool messages did not persist distinct step results: %+v", messages)
+	}
+	if messages[1].ID == messages[2].ID {
+		t.Fatalf("tool messages reused id across steps: %+v", messages)
+	}
+	if runner.callCount != 3 {
+		t.Fatalf("provider call count = %d, want two tool steps plus final", runner.callCount)
+	}
+	if len(runner.requests) != 3 || len(runner.requests[2].Input) != 3 {
+		t.Fatalf("final continuation input = %+v, want full user/tool/tool history", runner.requests)
+	}
+}
+
+func TestSessionsV3ExecutorPersistsFailureWhenToolLoopExceedsBound(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "loop.txt"), []byte("loop tool result"), 0o644); err != nil {
+		t.Fatalf("write loop file: %v", err)
+	}
+	responses := make([]provideriface.Response, 0, sessionV3ProviderToolLoopMaxSteps)
+	for i := 0; i < sessionV3ProviderToolLoopMaxSteps; i++ {
+		responses = append(responses, provideriface.Response{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-reused", Name: "read", Arguments: `{"path":"loop.txt"}`}}})
+	}
+	runner := &sessionsV3RecordingProviderRunner{responses: responses}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	runSvc := runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, nil, nil)
+	server.runner = runSvc
+	server.SetBypassPermissions(true)
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"read": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
+		t.Fatalf("upsert tool-enabled swarm agent: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-tool-bound-create", "provider tool bound", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-tool-bound-message", "keep reading forever")
+	intent := waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentFailed)
+	if !strings.Contains(intent.BlockedReason, fmt.Sprintf("tool loop exceeded %d steps", sessionV3ProviderToolLoopMaxSteps)) {
+		t.Fatalf("failed intent = %+v", intent)
+	}
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != sessionV3ProviderToolLoopMaxSteps+1 {
+		t.Fatalf("messages after bounded failure = %d %+v, want user plus one tool per step", len(messages), messages)
+	}
+	for i, message := range messages[1:] {
+		if message.Role != "tool" || !strings.Contains(message.Content, "loop tool result") {
+			t.Fatalf("tool message %d = %+v", i, message)
+		}
+	}
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 40)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	var failure *sessionruntime.SessionEvent
+	for _, event := range events {
+		if event.EventType == "session.run.failed" {
+			copy := event
+			failure = &copy
+		}
+	}
+	if failure == nil {
+		t.Fatalf("missing durable run failure event after bounded loop: %+v", events)
+	}
+}
+
+func TestSessionsV3ExecutorContinuesAfterProviderManagedRestartTurn(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "restart.txt"), []byte("restart-turn tool result"), 0o644); err != nil {
+		t.Fatalf("write restart file: %v", err)
+	}
+	runner := &sessionsV3RecordingProviderRunner{}
+	runner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if runner.callCount == 1 {
+			if req.ToolInvoker == nil {
+				return provideriface.Response{}, fmt.Errorf("missing provider-managed tool invoker")
+			}
+			if _, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "provider-managed-read", Name: "read", Arguments: `{"path":"restart.txt"}`}); err != nil {
+				return provideriface.Response{}, err
+			}
+			return provideriface.Response{RestartTurn: true}, nil
+		}
+		if len(req.Input) != 2 {
+			return provideriface.Response{}, fmt.Errorf("restart continuation input length = %d, want user plus tool", len(req.Input))
+		}
+		return provideriface.Response{Text: "final answer after restart turn"}, nil
+	}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	runSvc := runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, nil, nil)
+	server.runner = runSvc
+	server.SetBypassPermissions(true)
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"read": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
+		t.Fatalf("upsert tool-enabled swarm agent: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-restart-turn-create", "provider restart turn", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-restart-turn-message", "read then restart")
+	waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 3 || messages[0].Role != "user" || messages[1].Role != "tool" || messages[2].Role != "assistant" {
+		t.Fatalf("messages after restart turn = %+v, want user/tool/assistant", messages)
+	}
+	if !strings.Contains(messages[1].Content, "restart-turn tool result") || messages[2].Content != "final answer after restart turn" {
+		t.Fatalf("messages after restart turn = %+v", messages)
+	}
+	if runner.callCount != 2 {
+		t.Fatalf("provider call count = %d, want restart plus continuation", runner.callCount)
+	}
+}
+
 func TestSessionsV3RuntimeInstructionsUseLegacyWorkspaceAndRuleContext(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	primary := t.TempDir()
@@ -1989,6 +2151,7 @@ type sessionsV3RecordingProviderRunner struct {
 	response      provideriface.Response
 	responses     []provideriface.Response
 	functionCalls []provideriface.FunctionCall
+	handler       func(context.Context, provideriface.Request, func(provideriface.StreamEvent)) (provideriface.Response, error)
 	callCount     int
 	lastRequest   provideriface.Request
 	requests      []provideriface.Request
@@ -1998,10 +2161,13 @@ func (r *sessionsV3RecordingProviderRunner) ID() string { return "test-provider"
 func (r *sessionsV3RecordingProviderRunner) CreateResponse(ctx context.Context, req provideriface.Request) (provideriface.Response, error) {
 	return r.CreateResponseStreaming(ctx, req, nil)
 }
-func (r *sessionsV3RecordingProviderRunner) CreateResponseStreaming(_ context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+func (r *sessionsV3RecordingProviderRunner) CreateResponseStreaming(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
 	r.callCount++
 	r.lastRequest = req
 	r.requests = append(r.requests, req)
+	if r.handler != nil {
+		return r.handler(ctx, req, onEvent)
+	}
 	if r.err != nil {
 		return provideriface.Response{}, r.err
 	}

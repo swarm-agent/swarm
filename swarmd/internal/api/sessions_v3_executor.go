@@ -745,19 +745,20 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 	if runner == nil {
 		return provideriface.Response{}, "", 0, errors.New("provider runner is not configured")
 	}
-	var toolInvoker provideriface.ToolInvoker
-	if len(baseReq.Tools) > 0 && !strings.EqualFold(strings.TrimSpace(baseReq.ToolChoice), "none") {
-		var invokerErr error
-		toolInvoker, invokerErr = e.newSessionV3ProviderToolInvoker(resolved, job)
-		if invokerErr != nil {
-			return provideriface.Response{}, "", 0, invokerErr
-		}
-	}
+	toolsEnabled := len(baseReq.Tools) > 0 && !strings.EqualFold(strings.TrimSpace(baseReq.ToolChoice), "none")
 	input := append([]map[string]any(nil), baseReq.Input...)
 	var lastResponse provideriface.Response
 	var finalStreamed strings.Builder
 	var totalFlushCount int
 	for step := 1; step <= sessionV3ProviderToolLoopMaxSteps; step++ {
+		var toolInvoker provideriface.ToolInvoker
+		if toolsEnabled {
+			var invokerErr error
+			toolInvoker, invokerErr = e.newSessionV3ProviderToolInvoker(resolved, job, step)
+			if invokerErr != nil {
+				return provideriface.Response{}, "", totalFlushCount, invokerErr
+			}
+		}
 		req := baseReq
 		req.Input = append([]map[string]any(nil), input...)
 		req.ToolInvoker = toolInvoker
@@ -798,15 +799,11 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			}
 			return provideriface.Response{}, "", totalFlushCount, errors.New("v3 provider requested a tool-loop restart without tool calls")
 		}
-		if len(baseReq.Tools) == 0 || strings.EqualFold(strings.TrimSpace(baseReq.ToolChoice), "none") {
+		if !toolsEnabled {
 			return provideriface.Response{}, "", totalFlushCount, errors.New("v3 provider returned tool calls; tool-loop execution is not supported without resolved tools")
 		}
 		if toolInvoker == nil {
-			var invokerErr error
-			toolInvoker, invokerErr = e.newSessionV3ProviderToolInvoker(resolved, job)
-			if invokerErr != nil {
-				return provideriface.Response{}, "", totalFlushCount, invokerErr
-			}
+			return provideriface.Response{}, "", totalFlushCount, errors.New("v3 provider tool invoker is not configured")
 		}
 		toolResults := make([]provideriface.ToolExecutionResult, 0, len(response.FunctionCalls))
 		for _, call := range response.FunctionCalls {
@@ -833,7 +830,7 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 	return lastResponse, finalStreamed.String(), totalFlushCount, nil
 }
 
-func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3ResolvedRuntime, job sessionV3ExecutorJob) (provideriface.ToolInvoker, error) {
+func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3ResolvedRuntime, job sessionV3ExecutorJob, step int) (provideriface.ToolInvoker, error) {
 	if e == nil || e.server == nil || e.server.sessions == nil {
 		return nil, errors.New("v3 executor is not configured")
 	}
@@ -855,11 +852,14 @@ func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3Re
 	if len(roots) == 0 && workspacePath != "" {
 		roots = []string{workspacePath}
 	}
+	if step <= 0 {
+		step = 1
+	}
 	invoker := builder.NewProviderManagedToolInvoker(runruntime.ProviderManagedToolInvokerConfig{
 		SessionID:            job.SessionID,
 		PermissionSessionID:  job.SessionID,
 		RunID:                job.RunID,
-		Step:                 1,
+		Step:                 step,
 		SessionMode:          resolved.Session.Mode,
 		WorkspacePath:        workspacePath,
 		WorkspaceRoots:       roots,
