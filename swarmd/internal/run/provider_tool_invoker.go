@@ -34,6 +34,7 @@ type ProviderManagedToolInvokerConfig struct {
 	WorkspaceName        string
 	Principal            identity.Principal
 	Emit                 StreamHandler
+	ApplySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
 	Policy               *permission.Policy
 	AgentProfile         pebblestore.AgentProfile
 }
@@ -51,6 +52,7 @@ type providerToolInvokerConfig struct {
 	workspaceName        string
 	principal            identity.Principal
 	emit                 StreamHandler
+	applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
 	policy               *permission.Policy
 	agentProfile         pebblestore.AgentProfile
 }
@@ -69,6 +71,7 @@ func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerCon
 		workspaceName:        strings.TrimSpace(config.WorkspaceName),
 		principal:            config.Principal,
 		emit:                 config.Emit,
+		applySessionMutation: config.ApplySessionMutation,
 		policy:               config.Policy,
 		agentProfile:         config.AgentProfile,
 	}
@@ -359,7 +362,15 @@ func (s *Service) storeProviderManagedToolResultV3(config providerToolInvokerCon
 		return err
 	}
 	clientRequestID := providerManagedV3ToolClientRequestID(config.runID, config.step, call.CallID)
-	mutation, err := s.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{
+	eventPayload, err := providerManagedV3ToolEventPayload("session.tool.completed", config, call, metadata, result)
+	if err != nil {
+		return err
+	}
+	applyMutation := config.applySessionMutation
+	if applyMutation == nil {
+		return errors.New("v3 provider tool persistence requires applySessionV3PrimaryMutation")
+	}
+	mutation, err := applyMutation(sessionruntime.SessionMutationInput{
 		SessionID:       config.sessionID,
 		UserID:          principal.UserID,
 		AccountScopeID:  principal.AccountScopeID,
@@ -369,6 +380,7 @@ func (s *Service) storeProviderManagedToolResultV3(config providerToolInvokerCon
 		RequestHash:     payloadHash,
 		Kind:            sessionruntime.SessionMutationAppendMessage,
 		EventType:       "session.tool.completed",
+		EventPayload:    eventPayload,
 		Message:         &message,
 		NowUnixMs:       now,
 	})
@@ -379,6 +391,37 @@ func (s *Service) storeProviderManagedToolResultV3(config providerToolInvokerCon
 		config.emit(StreamEvent{Type: StreamEventMessageStored, Step: config.step, Message: mutation.Message})
 	}
 	return nil
+}
+
+func providerManagedV3ToolEventPayload(eventType string, config providerToolInvokerConfig, call tool.Call, metadata map[string]any, result tool.Result) (json.RawMessage, error) {
+	payload := map[string]any{
+		"run_id":    strings.TrimSpace(config.runID),
+		"step":      config.step,
+		"tool_name": strings.TrimSpace(firstNonEmptyString(result.Name, call.Name, "tool")),
+		"call_id":   strings.TrimSpace(firstNonEmptyString(result.CallID, call.CallID, "tool_call")),
+	}
+	if eventType = strings.TrimSpace(eventType); eventType != "" {
+		payload["type"] = eventType
+	}
+	if args := strings.TrimSpace(call.Arguments); args != "" {
+		payload["arguments"] = args
+	}
+	if output := formatToolCompletedOutput(call, result); output != "" {
+		payload["output"] = output
+	}
+	if rawOutput := liveStreamRawOutput(call, result); rawOutput != "" {
+		payload["raw_output"] = rawOutput
+	}
+	if errText := strings.TrimSpace(result.Error); errText != "" {
+		payload["error"] = errText
+	}
+	if result.DurationMS != 0 {
+		payload["duration_ms"] = result.DurationMS
+	}
+	if len(metadata) > 0 {
+		payload["metadata"] = cloneGenericMap(metadata)
+	}
+	return json.Marshal(payload)
 }
 
 func providerManagedV3ToolMessageMetadata(config providerToolInvokerConfig, call tool.Call, metadata map[string]any, result tool.Result) map[string]any {

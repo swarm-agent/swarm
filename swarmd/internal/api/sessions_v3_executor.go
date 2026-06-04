@@ -868,12 +868,115 @@ func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3Re
 		WorkspaceName:        resolved.Session.WorkspaceName,
 		Principal:            job.Principal,
 		Policy:               policy,
+		Emit:                 e.emitSessionV3ProviderToolEvent(job),
+		ApplySessionMutation: e.server.applySessionV3PrimaryMutation,
 		AgentProfile:         resolved.AgentProfile,
 	})
 	if invoker == nil {
 		return nil, errors.New("provider-managed tool invoker is not configured")
 	}
 	return invoker, nil
+}
+
+func (e *sessionV3Executor) emitSessionV3ProviderToolEvent(job sessionV3ExecutorJob) runruntime.StreamHandler {
+	var mu sync.Mutex
+	deltaIndex := 0
+	return func(event runruntime.StreamEvent) {
+		eventType := ""
+		eventDeltaIndex := 0
+		switch strings.TrimSpace(event.Type) {
+		case runruntime.StreamEventToolStarted:
+			eventType = "session.tool.started"
+		case runruntime.StreamEventToolDelta:
+			eventType = "session.tool.delta"
+			mu.Lock()
+			deltaIndex++
+			eventDeltaIndex = deltaIndex
+			mu.Unlock()
+		default:
+			return
+		}
+		if err := e.recordProviderToolEvent(job, event, eventType, eventDeltaIndex); err != nil {
+			log.Printf("warning: failed to record v3 provider tool event session=%q run=%q type=%q call=%q: %v", job.SessionID, job.RunID, eventType, event.CallID, err)
+			return
+		}
+	}
+}
+
+func (e *sessionV3Executor) recordProviderToolEvent(job sessionV3ExecutorJob, event runruntime.StreamEvent, eventType string, deltaIndex int) error {
+	if e == nil || e.server == nil {
+		return errors.New("v3 executor is not configured")
+	}
+	eventType = strings.TrimSpace(eventType)
+	if eventType == "" {
+		return errors.New("v3 provider tool event type is required")
+	}
+	step := event.Step
+	if step <= 0 {
+		step = 1
+	}
+	toolName := strings.TrimSpace(event.ToolName)
+	if toolName == "" {
+		toolName = "tool"
+	}
+	callID := strings.TrimSpace(event.CallID)
+	if callID == "" {
+		callID = "tool_call"
+	}
+	payload := map[string]any{
+		"run_id":    strings.TrimSpace(job.RunID),
+		"step":      step,
+		"tool_name": toolName,
+		"call_id":   callID,
+	}
+	if args := strings.TrimSpace(event.Arguments); args != "" {
+		payload["arguments"] = args
+	}
+	if output := event.Output; output != "" {
+		payload["output"] = output
+	}
+	if rawOutput := event.RawOutput; rawOutput != "" {
+		payload["raw_output"] = rawOutput
+	}
+	if errText := strings.TrimSpace(event.Error); errText != "" {
+		payload["error"] = errText
+	}
+	if event.DurationMS != 0 {
+		payload["duration_ms"] = event.DurationMS
+	}
+	if deltaIndex > 0 {
+		payload["delta_index"] = deltaIndex
+	}
+	if len(event.Metadata) > 0 {
+		payload["metadata"] = cloneSessionsV3Metadata(event.Metadata)
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	contentForHash := string(raw)
+	payloadHash, err := sessionV3ExecutorPayloadHash(job.SessionID, job.RunID, sessionruntime.RunIntentRunning, "", eventType, contentForHash)
+	if err != nil {
+		return err
+	}
+	clientRequestID := sessionV3ProviderToolEventClientRequestID(eventType, job.RunID, step, callID, deltaIndex)
+	now := time.Now().UnixMilli()
+	intent := pebblestore.V3SessionRunIntent{RunID: job.RunID, Status: sessionruntime.RunIntentRunning, UpdatedAt: now}
+	_, err = e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       job.SessionID,
+		UserID:          job.Principal.UserID,
+		AccountScopeID:  job.Principal.AccountScopeID,
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationRecordRunIntent,
+		EventType:       eventType,
+		EventPayload:    raw,
+		RunIntent:       &intent,
+		NowUnixMs:       now,
+	})
+	return err
 }
 
 func (e *sessionV3Executor) sessionV3CompiledToolPolicy(resolved sessionV3ResolvedRuntime) (*permission.Policy, error) {
@@ -1315,6 +1418,18 @@ func sessionV3ExecutorRunKey(sessionID, runID string) string {
 func sessionV3ExecutorClientRequestID(eventType, runID string) string {
 	label := strings.NewReplacer(".", "_", "/", "_", " ", "_").Replace(strings.TrimSpace(eventType))
 	return "v3-executor-" + label + "-" + strings.TrimSpace(runID)
+}
+
+func sessionV3ProviderToolEventClientRequestID(eventType, runID string, step int, callID string, deltaIndex int) string {
+	label := strings.NewReplacer(".", "_", "/", "_", " ", "_").Replace(strings.TrimSpace(eventType))
+	callID = strings.NewReplacer(".", "_", "/", "_", " ", "_").Replace(strings.TrimSpace(callID))
+	if callID == "" {
+		callID = "tool_call"
+	}
+	if deltaIndex > 0 {
+		return fmt.Sprintf("v3-executor-%s-%s-%04d-%s-%04d", label, strings.TrimSpace(runID), step, callID, deltaIndex)
+	}
+	return fmt.Sprintf("v3-executor-%s-%s-%04d-%s", label, strings.TrimSpace(runID), step, callID)
 }
 
 func sessionV3AssistantMessageID(sessionID, runID string) string {
