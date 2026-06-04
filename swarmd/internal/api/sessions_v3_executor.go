@@ -179,35 +179,17 @@ func (e *sessionV3Executor) recoverDurableRuns(ctx context.Context) {
 			continue
 		}
 		if intent.Status == sessionruntime.RunIntentRunning {
-			if err := e.resetRunningRunForRecovery(job); err != nil {
-				log.Printf("warning: v3 session executor recovery could not reset run %q for session %q: %v", job.RunID, job.SessionID, err)
-				continue
+			if err := e.failStaleRunningRunForRecovery(job); err != nil {
+				log.Printf("warning: v3 session executor recovery could not fail interrupted run %q for session %q: %v", job.RunID, job.SessionID, err)
 			}
+			continue
 		}
 		e.EnqueueRun(job)
 	}
 }
 
-func (e *sessionV3Executor) resetRunningRunForRecovery(job sessionV3ExecutorJob) error {
-	now := time.Now().UnixMilli()
-	payloadHash, err := sessionV3ExecutorPayloadHash(job.SessionID, job.RunID, sessionruntime.RunIntentPendingExecutor, "startup recovery", "session.run.recovered", "")
-	if err != nil {
-		return err
-	}
-	intent := pebblestore.V3SessionRunIntent{RunID: job.RunID, Status: sessionruntime.RunIntentPendingExecutor, BlockedReason: "startup recovery", UpdatedAt: now}
-	_, err = e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
-		SessionID:       job.SessionID,
-		UserID:          job.Principal.UserID,
-		AccountScopeID:  job.Principal.AccountScopeID,
-		ClientRequestID: sessionV3ExecutorClientRequestID("session.run.recovered", job.RunID),
-		IdempotencyKey:  sessionV3ExecutorClientRequestID("session.run.recovered", job.RunID),
-		PayloadHash:     payloadHash,
-		RequestHash:     payloadHash,
-		Kind:            sessionruntime.SessionMutationRecordRunIntent,
-		EventType:       "session.run.recovered",
-		RunIntent:       &intent,
-		NowUnixMs:       now,
-	})
+func (e *sessionV3Executor) failStaleRunningRunForRecovery(job sessionV3ExecutorJob) error {
+	_, err := e.recordRunStatus(job, sessionruntime.RunIntentFailed, "executor interrupted during daemon restart", "session.run.failed")
 	return err
 }
 

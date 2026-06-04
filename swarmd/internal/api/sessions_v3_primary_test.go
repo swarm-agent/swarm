@@ -482,6 +482,150 @@ func TestSessionsV3ExecutorRejectsDuplicateEnqueueRun(t *testing.T) {
 	}
 }
 
+func TestSessionsV3PrimaryDuplicatePostReplayDoesNotDuplicateAssistantOutput(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 150 * time.Millisecond
+	server.v3SessionExecutor = exec
+	created := createSessionsV3PrimaryTestSession(t, server, "duplicate-post-create", "duplicate post")
+	body := `{"client_request_id":"duplicate-post-message","role":"user","content":"dedupe this turn"}`
+	post := func() {
+		req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/messages", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("post status = %d body=%s", rec.Code, rec.Body.String())
+		}
+	}
+	post()
+	post()
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 2 || messages[0].Role != "user" || messages[1].Role != "assistant" {
+		t.Fatalf("messages after duplicate POST replay = %+v", messages)
+	}
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	var started, completed int
+	for _, event := range events {
+		switch event.EventType {
+		case "session.assistant.started":
+			started++
+		case "session.assistant.completed":
+			completed++
+		}
+	}
+	if started != 1 || completed != 1 {
+		t.Fatalf("assistant events started=%d completed=%d events=%+v", started, completed, events)
+	}
+}
+
+func TestSessionsV3PrimaryDispatchBlockedNeverInvokesExecutorModel(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{text: "should not run"}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "dispatch-blocked-no-model-create", "blocked no model", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model"})
+	body := `{"client_request_id":"dispatch-blocked-no-model-message","role":"user","content":"do not execute","dispatch_authority":{"runtime_swarm_id":"missing-swarm","authority_container_id":"container-1"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/messages", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("post status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	intent := waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentDispatchBlocked)
+	if !strings.Contains(intent.BlockedReason, "runtime placement not found") {
+		t.Fatalf("run intent = %+v", intent)
+	}
+	if !server.WaitForInFlightRuns(2 * time.Second) {
+		t.Fatalf("executor did not drain")
+	}
+	if runner.callCount != 0 {
+		t.Fatalf("provider call count = %d, want 0 for dispatch_blocked", runner.callCount)
+	}
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Role != "user" || messages[0].Content != "do not execute" {
+		t.Fatalf("messages after dispatch_blocked = %+v", messages)
+	}
+}
+
+func TestSessionsV3ExecutorFailsStaleRunningRunAfterRestartWithoutResume(t *testing.T) {
+	t.Setenv("SWARM_API_NO_AUTH", "1")
+	storePath := filepath.Join(t.TempDir(), "sessions-v3-stale-running.pebble")
+	server, sessionSvc, closeStore := newSessionsV3PrimaryAPITestServer(t, storePath)
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "stale-running-create", "stale running", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "stale-running-message", "interrupted turn")
+	intents, err := sessionSvc.Store().ListV3SessionRunIntents(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list run intents: %v", err)
+	}
+	if len(intents) != 1 || intents[0].Status != sessionruntime.RunIntentPendingExecutor {
+		t.Fatalf("run intents before stale mark = %+v", intents)
+	}
+	runID := intents[0].RunID
+	staleAt := time.Now().Add(-10 * time.Minute).UnixMilli()
+	payloadHash, err := sessionV3ExecutorPayloadHash(created.ID, runID, sessionruntime.RunIntentRunning, "", "session.assistant.started", "")
+	if err != nil {
+		t.Fatalf("payload hash: %v", err)
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       created.ID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: sessionV3ExecutorClientRequestID("session.assistant.started", runID),
+		IdempotencyKey:  sessionV3ExecutorClientRequestID("session.assistant.started", runID),
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationRecordRunIntent,
+		EventType:       "session.assistant.started",
+		RunIntent:       &pebblestore.V3SessionRunIntent{RunID: runID, Status: sessionruntime.RunIntentRunning, UpdatedAt: staleAt},
+		NowUnixMs:       staleAt,
+	}); err != nil {
+		t.Fatalf("mark run running: %v", err)
+	}
+	if err := closeStore(); err != nil {
+		t.Fatalf("close first store: %v", err)
+	}
+
+	restarted, restartedSessions, closeRestarted := newSessionsV3PrimaryAPITestServer(t, storePath)
+	defer func() { _ = closeRestarted() }()
+	runner := &sessionsV3RecordingProviderRunner{text: "should not resume"}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	restarted.providers = providers
+	exec := newSessionV3Executor(restarted)
+	exec.startDelay = 0
+	restarted.v3SessionExecutor = exec
+	intent := waitForSessionsV3RunIntentStatus(t, restartedSessions, created.ID, sessionruntime.RunIntentFailed)
+	if !strings.Contains(intent.BlockedReason, "executor interrupted during daemon restart") {
+		t.Fatalf("failed intent = %+v", intent)
+	}
+	if runner.callCount != 0 {
+		t.Fatalf("provider call count = %d, want 0 for stale interrupted run", runner.callCount)
+	}
+	messages, err := restartedSessions.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages after restart: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Role != "user" || messages[0].Content != "interrupted turn" {
+		t.Fatalf("messages after stale running recovery = %+v", messages)
+	}
+}
+
 func TestSessionsV3PrimaryPostReturnsBeforeModelCompletion(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	exec := newSessionV3Executor(server)
@@ -976,17 +1120,16 @@ func TestSessionsV3PrimaryStreamHubMarksSlowConsumerAndOtherSubscribersContinue(
 	defer hub.unsubscribe(fast)
 
 	const eventCount = sessionV3StreamSubscriberBufSize + 2
-	fastEvents := make(chan sessionruntime.SessionEvent, eventCount)
-	fastDone := make(chan struct{})
-	go func() {
-		defer close(fastDone)
-		for i := 0; i < eventCount; i++ {
-			fastEvents <- <-fast.send
-		}
-	}()
-
 	for i := 0; i < eventCount; i++ {
 		hub.publish(sessionruntime.SessionEvent{SessionID: sessionID, Seq: uint64(i + 1), EventType: "session.message.appended"})
+		select {
+		case event := <-fast.send:
+			if event.Seq != uint64(i+1) {
+				t.Fatalf("fast event %d seq = %d", i, event.Seq)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("fast subscriber did not receive event %d after slow subscriber was removed", i+1)
+		}
 	}
 
 	select {
@@ -996,17 +1139,6 @@ func TestSessionsV3PrimaryStreamHubMarksSlowConsumerAndOtherSubscribersContinue(
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatalf("slow consumer was not marked when subscriber queue filled")
-	}
-	select {
-	case <-fastDone:
-	case <-time.After(2 * time.Second):
-		t.Fatalf("fast subscriber did not receive all events after slow subscriber was removed")
-	}
-	for i := 0; i < eventCount; i++ {
-		event := <-fastEvents
-		if event.Seq != uint64(i+1) {
-			t.Fatalf("fast event %d seq = %d", i, event.Seq)
-		}
 	}
 
 	drainedSlow := 0
@@ -1235,6 +1367,30 @@ func TestSessionsV3ExecutorRecoversPendingRunAfterRestart(t *testing.T) {
 	}
 	if len(messages) != 2 || messages[1].Role != "assistant" || !strings.Contains(messages[1].Content, "recover me") {
 		t.Fatalf("messages after recovery = %+v", messages)
+	}
+	exec.recoverDurableRuns(restarted.runCtx)
+	if !restarted.WaitForInFlightRuns(2 * time.Second) {
+		t.Fatalf("executor did not drain after repeated recovery scan")
+	}
+	messages, err = sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages after repeated recovery: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("messages after repeated recovery = %+v, want no duplicate assistant", messages)
+	}
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list events after repeated recovery: %v", err)
+	}
+	var completed int
+	for _, event := range events {
+		if event.EventType == "session.assistant.completed" {
+			completed++
+		}
+	}
+	if completed != 1 {
+		t.Fatalf("assistant completed events after repeated recovery = %d events=%+v", completed, events)
 	}
 }
 
