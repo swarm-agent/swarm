@@ -244,6 +244,50 @@ The following are explicitly out of scope for Stage 1 implementation:
 - Existing V2 authority concepts may be reused only to compute future `dispatch_blocked` reasons.
 - Panic/fake runtime dispatchers should prove V3 create/list/hydrate/message/stream do not call containers.
 
+## CP9+ factual checkpoint audit: V3 primary executor
+
+Status: factual audit complete; implementation still open.
+
+This section supersedes the earlier Stage 1 assumption that `pending_executor` could remain only a durable marker. The durable V3 session/event substrate is still the source of truth, but a complete conversation now requires an in-process primary executor that consumes committed V3 run intents and writes assistant output back through the same V3 mutation boundary.
+
+### Proven facts from the current code
+
+- No `pending_executor` consumer exists. Search hits for `pending_executor` / `RunIntentPendingExecutor` are limited to constants, the message handler, and tests; there is no `EnqueueRun`, `RecoverPendingRuns`, V3 executor service, or startup recovery hook.
+- `POST /v3/sessions/{id}/messages` creates a `V3SessionRunIntent` at `swarmd/internal/api/sessions_v3_primary.go` lines 307-313 and commits it with `ApplySessionMutation` at lines 319-331. After commit it hydrates and returns at lines 340-359; it does not enqueue execution.
+- `applySessionV3PrimaryMutation` publishes only the committed V3 event to the in-memory V3 stream hub (`swarmd/internal/api/sessions_v3_stream_ws.go` lines 286-294). It is not a scheduler signal today.
+- The durable run-intent status vocabulary currently has only `pending_executor` and `dispatch_blocked` (`swarmd/internal/store/pebble/session_event_store.go` lines 25-26). There is no durable `running`, `completed`, `failed`, `cancelled`, or `interrupted` state yet.
+- `V3SessionMutationRecordRunIntent` and `session.run_intent.recorded` exist, so run lifecycle transitions can be represented through the mutation boundary, but there is no atomic claim/precondition helper for `pending_executor -> running`.
+- `KeyV3SessionRunIntentActive` is written when a run intent is recorded, but there is no read/list API for active run intent recovery and no account/global pending-run scan.
+- V3 WebSocket replay/live delivery is correctly based on committed V3 session events. This is the right stream surface for assistant events, but only user/session/run-intent events are currently produced.
+- Existing `run.Service.RunTurnStreaming` can invoke the model/runtime, but it currently appends its own user message and assistant message through the legacy session append path (`swarmd/internal/run/service.go` lines 974-979 and 1176-1189). A V3 executor must not call that path as-is unless it is refactored/adapted to avoid duplicating the already-committed user message and to write assistant output through `ApplySessionMutation`.
+- Server startup (`swarmd/internal/api/server.go` lines 293-326) initializes the V3 stream hub but no V3 executor and no recovery scan.
+- Current V3 tests prove create/list/hydrate/message/idempotency/replay/stream durability, but there are no V3 tests that assert model invocation, assistant message persistence, assistant stream events, duplicate enqueue safety, or restart recovery of pending runs.
+
+### Updated checkpoint statuses and target points
+
+| Checkpoint | Current status | Fact-based target points |
+| --- | --- | --- |
+| 1 — V3 durable session substrate | Complete / mostly complete | Keep the current `POST /v3/sessions`, list, hydrate, event projection, Pebble durability, idempotency, and ordered primary sequence behavior. Do not rewrite unless a targeted test disproves it. |
+| 2 — V3 message append + run intent creation | Complete but not sufficient | Keep `POST /v3/sessions/{id}/messages` as a fast durable commit through `ApplySessionMutation`; it already records `pending_executor` or `dispatch_blocked` and publishes committed user events. Add executor signaling only after a successful commit. |
+| 3 — V3 executor consumption of pending runs | Missing | Add a primary-owned in-process executor/scheduler with idempotent `EnqueueRun(ctx, accountID, sessionID, runIntentID)` and `RecoverPendingRuns(ctx)` responsibilities. Hook it from the post-commit message path for `pending_executor`; never enqueue `dispatch_blocked`. |
+| 4 — Model/runtime invocation | Missing / adapter required | Build model input from hydrated V3 primary messages. Do not call Desktop dispatch, container dispatch, or V2 stream truth. Do not use `RunTurnStreaming` as-is if it would append a duplicate user message or write assistant output outside V3. Either factor a lower-level model turn runner or add a V3-safe runner adapter with V3 write callbacks. |
+| 5 — Assistant message persistence | Missing | Persist final assistant output as a V3 `MessageSnapshot` with role `assistant` through `ApplySessionMutation`. Add replayable assistant lifecycle/output event types or explicit `EventType` payloads for start/delta/complete/failure as needed. |
+| 6 — V3 WebSocket assistant streaming | Substrate complete; assistant streaming missing | Keep `/v3/sessions/{id}/stream` based on committed V3 events. Publish assistant events only after they are durably committed. Coalesce small deltas before Pebble writes while preserving low latency to the first assistant event. |
+| 7 — Restart recovery | Missing | Add startup recovery that scans durable unfinished V3 run intents. Re-enqueue `pending_executor`. For stale `running`, choose and document a deterministic initial policy, preferably mark failed/interrupted unless a proven idempotent resume path exists. |
+| 8 — Idempotency and concurrency | Partially complete | Existing mutation/idempotency/concurrent seq tests cover user writes. Add executor-level idempotency: duplicate message retry and duplicate enqueue must not double-generate; one active generation per session; deterministic executor idempotency keys tied to run intent ID. |
+| 9 — Performance | Needs validation | `POST /messages` must return after durable commit/enqueue without waiting for model completion. Use bounded workers/queues, per-session locking or claim CAS, no hot polling, no unbounded goroutines, and coalesced delta commits. |
+
+### Executor implementation attack points
+
+1. **Store/service run lifecycle gaps**: add durable run statuses (`running`, `completed`, `failed`, and optionally `cancelled`/`interrupted`), a safe claim path for `pending_executor -> running`, and a pending/active run-intent scan API. Keep all writes behind `ApplySessionMutation` or a clearly equivalent V3 mutation method.
+2. **Post-commit signal bus**: after `ApplySessionMutation` succeeds in the message handler, signal the executor for `pending_executor` results. The HTTP handler must not wait for completion and must not treat enqueue failure as message durability failure; enqueue/recovery must be idempotent.
+3. **Executor worker model**: run bounded background workers, one active executor per session, and deterministic run-intent idempotency keys. Duplicate enqueue should exit after observing already-running/completed/failed state.
+4. **V3-safe model invocation**: hydrate V3 messages and session/model preference from primary storage. Use or refactor the existing model runtime so it can generate assistant output without appending another user message and without writing assistant output to legacy/V2 truth.
+5. **Assistant event persistence**: commit assistant start/delta/complete/failure events and final assistant message snapshots through V3 mutation calls. Use chunk coalescing by size/time to avoid one Pebble write per tiny token.
+6. **Stream integration**: rely on `applySessionV3PrimaryMutation` publishing committed V3 events to the existing V3 stream hub. Do not wrap V2 `runStreamManager` or container streams.
+7. **Recovery and stale runs**: initialize executor/recovery from server startup when sessions are configured. Recovery must make orphaned `pending_executor` records live again after daemon restart.
+8. **Targeted validation only**: add focused tests for message-post enqueue, assistant persistence, assistant stream events, duplicate request/enqueue safety, restart recovery, dispatch-blocked no-execute, and async/performance sanity. Do not run broad repository-wide Go tests.
+
 ## Relevant filepaths
 
 - `docs/checkpoints/sessions-api-v2-primary-local-containers.md`

@@ -23,6 +23,9 @@ const (
 	V3SessionMutationStatusConflict  = "idempotency_conflict"
 
 	V3RunIntentPendingExecutor = "pending_executor"
+	V3RunIntentRunning         = "running"
+	V3RunIntentCompleted       = "completed"
+	V3RunIntentFailed          = "failed"
 	V3RunIntentDispatchBlocked = "dispatch_blocked"
 )
 
@@ -275,16 +278,23 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		now = time.Now().UnixMilli()
 	}
 
+	lifecycle, lifecycleProvided := prepareV3LifecycleForMutation(input, seq, now)
+	runIntent, runIntentProvided := prepareV3RunIntentForMutation(input, seq, now)
+	if runIntentProvided {
+		prepared, err := s.validateV3RunIntentTransition(input.SessionID, runIntent)
+		if err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		runIntent = prepared
+	}
 	session, sessionProvided, err := s.prepareV3SessionForMutation(input, seq, now)
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
-	message, messageProvided, err := prepareV3MessageForMutation(input, session, seq, now)
+	message, messageProvided, err := s.prepareV3MessageForMutation(input, session, seq, now)
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
-	lifecycle, lifecycleProvided := prepareV3LifecycleForMutation(input, seq, now)
-	runIntent, runIntentProvided := prepareV3RunIntentForMutation(input, seq, now)
 	payload, err := input.v3EventPayload(seq, session, message, lifecycle, runIntent)
 	if err != nil {
 		return V3SessionMutationResult{}, err
@@ -404,8 +414,15 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		if err := batch.Set([]byte(KeyV3SessionRunIntent(runIntent.SessionID, runIntent.RunID)), runPayload, nil); err != nil {
 			return V3SessionMutationResult{}, err
 		}
-		if err := batch.Set([]byte(KeyV3SessionRunIntentActive(runIntent.SessionID)), []byte(runIntent.RunID), nil); err != nil {
-			return V3SessionMutationResult{}, err
+		activeKey := KeyV3SessionRunIntentActive(runIntent.SessionID)
+		if isV3RunIntentTerminal(runIntent.Status) {
+			if err := batch.Delete([]byte(activeKey), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+				return V3SessionMutationResult{}, err
+			}
+		} else if runIntent.Status == V3RunIntentRunning {
+			if err := batch.Set([]byte(activeKey), []byte(runIntent.RunID), nil); err != nil {
+				return V3SessionMutationResult{}, err
+			}
 		}
 	}
 	if err := batch.Set([]byte(idempotencyStoreKey), idempotencyPayload, nil); err != nil {
@@ -666,6 +683,22 @@ func (s *SessionStore) GetV3SessionRunIntent(sessionID, runID string) (V3Session
 	return intent, true, nil
 }
 
+func (s *SessionStore) GetV3SessionActiveRunIntent(sessionID string) (V3SessionRunIntent, bool, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return V3SessionRunIntent{}, false, errors.New("session id is required")
+	}
+	raw, ok, err := s.store.GetBytes(KeyV3SessionRunIntentActive(sessionID))
+	if err != nil || !ok {
+		return V3SessionRunIntent{}, ok, err
+	}
+	runID := strings.TrimSpace(string(raw))
+	if runID == "" {
+		return V3SessionRunIntent{}, false, nil
+	}
+	return s.GetV3SessionRunIntent(sessionID, runID)
+}
+
 func (s *SessionStore) ListV3SessionRunIntents(sessionID string, afterSeq uint64, limit int) ([]V3SessionRunIntent, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
@@ -768,6 +801,49 @@ func (s *SessionStore) resultFromV3IdempotencyRecord(record V3SessionIdempotency
 	return result, nil
 }
 
+func (s *SessionStore) validateV3RunIntentTransition(sessionID string, incoming V3SessionRunIntent) (V3SessionRunIntent, error) {
+	status := strings.TrimSpace(incoming.Status)
+	if status == "" {
+		status = V3RunIntentPendingExecutor
+	}
+	existing, ok, err := s.GetV3SessionRunIntent(sessionID, incoming.RunID)
+	if err != nil {
+		return V3SessionRunIntent{}, err
+	}
+	if ok {
+		if incoming.CreatedAt == 0 {
+			incoming.CreatedAt = existing.CreatedAt
+		}
+		switch status {
+		case V3RunIntentRunning:
+			if existing.Status != V3RunIntentPendingExecutor {
+				return V3SessionRunIntent{}, fmt.Errorf("v3 run %q is %s, cannot claim", incoming.RunID, existing.Status)
+			}
+		case V3RunIntentCompleted, V3RunIntentFailed:
+			if existing.Status != V3RunIntentRunning && existing.Status != V3RunIntentPendingExecutor {
+				return V3SessionRunIntent{}, fmt.Errorf("v3 run %q is %s, cannot complete", incoming.RunID, existing.Status)
+			}
+		}
+	} else if status != V3RunIntentPendingExecutor && status != V3RunIntentDispatchBlocked {
+		return V3SessionRunIntent{}, fmt.Errorf("v3 run %q is missing pending intent", incoming.RunID)
+	}
+	if active, activeOK, err := s.GetV3SessionActiveRunIntent(sessionID); err != nil {
+		return V3SessionRunIntent{}, err
+	} else if activeOK && active.RunID != incoming.RunID && status == V3RunIntentRunning {
+		return V3SessionRunIntent{}, fmt.Errorf("session %q already has active v3 run %q", sessionID, active.RunID)
+	}
+	return incoming, nil
+}
+
+func isV3RunIntentTerminal(status string) bool {
+	switch strings.TrimSpace(status) {
+	case V3RunIntentCompleted, V3RunIntentFailed, V3RunIntentDispatchBlocked:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *SessionStore) prepareV3SessionForMutation(input V3SessionMutationInput, seq uint64, now int64) (SessionSnapshot, bool, error) {
 	if input.Session != nil {
 		if input.Kind == V3SessionMutationCreateSession && seq > 1 {
@@ -830,7 +906,7 @@ func (s *SessionStore) setSessionInBatch(batch *pebble.Batch, session SessionSna
 	return nil
 }
 
-func prepareV3MessageForMutation(input V3SessionMutationInput, session SessionSnapshot, seq uint64, now int64) (MessageSnapshot, bool, error) {
+func (s *SessionStore) prepareV3MessageForMutation(input V3SessionMutationInput, session SessionSnapshot, seq uint64, now int64) (MessageSnapshot, bool, error) {
 	if input.Message == nil {
 		return MessageSnapshot{}, false, nil
 	}

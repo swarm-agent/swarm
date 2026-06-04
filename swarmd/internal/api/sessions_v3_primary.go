@@ -311,6 +311,9 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 		Status:        runStatus,
 		BlockedReason: blockedReason,
 	}
+	if runIntent.RunID == "" {
+		runIntent.RunID = stableSessionsV3PrimaryRunID(sessionID, clientRequestID)
+	}
 	payloadHash, err := sessionsV3MessagePayloadHash(sessionID, req, message, runIntent.Status, runIntent.BlockedReason)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -337,6 +340,10 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	var enqueueJob *sessionV3ExecutorJob
+	if !result.Replayed && result.RunIntent != nil && result.RunIntent.Status == sessionruntime.RunIntentPendingExecutor && s.v3SessionExecutor != nil {
+		enqueueJob = &sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: result.RunIntent.RunID}
+	}
 	updated, found, err := s.hydrateSessionsV3Primary(principal, sessionID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -357,6 +364,9 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 		"mutation":   result,
 		"previous":   hydrated.Projection,
 	})
+	if enqueueJob != nil {
+		s.v3SessionExecutor.EnqueueRun(*enqueueJob)
+	}
 }
 
 func (s *Server) handleSessionV3PrimaryEvents(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
@@ -509,6 +519,11 @@ func stableSessionsV3PrimarySessionID(principal identity.Principal, clientReques
 	return "v3session_" + hex.EncodeToString(sum[:16])
 }
 
+func stableSessionsV3PrimaryRunID(sessionID, clientRequestID string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(clientRequestID)))
+	return "v3run_" + hex.EncodeToString(sum[:16])
+}
+
 func isSessionsV3PrimarySessionID(sessionID string) bool {
 	return strings.HasPrefix(strings.TrimSpace(sessionID), "v3session_")
 }
@@ -644,7 +659,7 @@ func (s *Server) sessionsV3PrimaryDispatchBlockedReason(principal identity.Princ
 	if runtimeWorkspacePath != "" && filepath.Clean(strings.TrimSpace(binding.DestinationWorkspacePath)) != filepath.Clean(runtimeWorkspacePath) {
 		return "dispatch authority runtime workspace path mismatch"
 	}
-	return "dispatch authority accepted but no executor is attached in v3 stage 1"
+	return ""
 }
 
 func firstNonEmptyMap(maps ...map[string]any) map[string]any {

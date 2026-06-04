@@ -316,15 +316,16 @@ func TestSessionsV3PrimaryMessageWithInvalidDispatchAuthorityStillCommitsAndBloc
 func TestSessionsV3PrimaryDispatchAuthorityRecordsSpecificBlockedReasonsWithoutBlockingMessage(t *testing.T) {
 	baseAuthority := `"runtime_swarm_id":"host-swarm-id","runtime_kind":"host","workspace_binding_id":"binding-primary-v2","authority_host_swarm_id":"host-swarm-id","placement_generation":1,"binding_generation":1,"source_workspace_path":"/workspace/cp8","runtime_workspace_path":"/workspace/cp8"`
 	tests := []struct {
-		name      string
-		authority string
-		mutate    func(t *testing.T, server *Server)
-		want      string
+		name       string
+		authority  string
+		mutate     func(t *testing.T, server *Server)
+		wantStatus string
+		want       string
 	}{
 		{
-			name:      "accepted authority still blocked because stage 1 has no executor",
-			authority: baseAuthority,
-			want:      "no executor is attached",
+			name:       "accepted authority records pending executor intent",
+			authority:  baseAuthority,
+			wantStatus: sessionruntime.RunIntentPendingExecutor,
 		},
 		{
 			name:      "stale binding generation",
@@ -365,6 +366,10 @@ func TestSessionsV3PrimaryDispatchAuthorityRecordsSpecificBlockedReasonsWithoutB
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			wantStatus := tt.wantStatus
+			if wantStatus == "" {
+				wantStatus = sessionruntime.RunIntentDispatchBlocked
+			}
 			server, sessionSvc, _, routeStore, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
 			seedSessionsV2PrimaryAuthority(t, server, swarmStore, "host-swarm-id", "binding-primary-v2", "/workspace/cp8")
 			if tt.mutate != nil {
@@ -389,8 +394,8 @@ func TestSessionsV3PrimaryDispatchAuthorityRecordsSpecificBlockedReasonsWithoutB
 			if payload.Message == nil || payload.Message.Content != "cp8 durable" {
 				t.Fatalf("message payload = %+v", payload.Message)
 			}
-			if payload.RunIntent == nil || payload.RunIntent.Status != sessionruntime.RunIntentDispatchBlocked || !strings.Contains(payload.RunIntent.BlockedReason, tt.want) {
-				t.Fatalf("run intent = %+v, want blocked reason containing %q", payload.RunIntent, tt.want)
+			if payload.RunIntent == nil || payload.RunIntent.Status != wantStatus || (tt.want != "" && !strings.Contains(payload.RunIntent.BlockedReason, tt.want)) {
+				t.Fatalf("run intent = %+v, want status %q blocked reason containing %q", payload.RunIntent, wantStatus, tt.want)
 			}
 			messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
 			if err != nil {
@@ -404,6 +409,145 @@ func TestSessionsV3PrimaryDispatchAuthorityRecordsSpecificBlockedReasonsWithoutB
 			}
 		})
 	}
+}
+
+func TestSessionsV3PrimaryFakeModelVerticalSlicePersistsAssistantOnce(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	server.v3SessionExecutor = newSessionV3Executor(server)
+	created := createSessionsV3PrimaryTestSession(t, server, "fake-model-create", "fake model")
+	body := `{"client_request_id":"fake-model-message","role":"user","content":"hello fake model"}`
+	post := func() {
+		req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/messages", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("post message status = %d body=%s", rec.Code, rec.Body.String())
+		}
+	}
+	post()
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+	post()
+	if !server.WaitForInFlightRuns(2 * time.Second) {
+		t.Fatalf("executor did not drain")
+	}
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 2 || messages[0].Role != "user" || messages[1].Role != "assistant" || !strings.Contains(messages[1].Content, "hello fake model") {
+		t.Fatalf("messages = %+v", messages)
+	}
+	listed := getSessionsV3PrimaryTestMessages(t, server, created.ID, 0, 10)
+	if len(listed) != 2 || listed[0].Role != "user" || listed[0].Content != "hello fake model" || listed[1].Role != "assistant" || !strings.Contains(listed[1].Content, "hello fake model") {
+		t.Fatalf("GET /v3/sessions/{id}/messages listed = %+v", listed)
+	}
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	var assistantStarted, assistantCompleted int
+	for _, event := range events {
+		switch event.EventType {
+		case "session.assistant.started":
+			assistantStarted++
+		case "session.assistant.completed":
+			assistantCompleted++
+		}
+	}
+	if assistantStarted != 1 || assistantCompleted != 1 {
+		t.Fatalf("assistant events started=%d completed=%d events=%+v", assistantStarted, assistantCompleted, events)
+	}
+}
+
+func TestSessionsV3ExecutorRejectsDuplicateEnqueueRun(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 250 * time.Millisecond
+	server.v3SessionExecutor = exec
+	job := sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: "v3session_duplicate_enqueue", RunID: "run-duplicate"}
+	if !exec.EnqueueRun(job) {
+		t.Fatalf("first enqueue returned false")
+	}
+	if exec.EnqueueRun(job) {
+		t.Fatalf("duplicate enqueue returned true while original run was still queued/in-flight")
+	}
+	server.CancelInFlightRuns()
+	if !server.WaitForInFlightRuns(2 * time.Second) {
+		t.Fatalf("executor did not drain after cancellation")
+	}
+}
+
+func TestSessionsV3PrimaryPostReturnsBeforeModelCompletion(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	exec.modelDelay = 500 * time.Millisecond
+	server.v3SessionExecutor = exec
+	created := createSessionsV3PrimaryTestSession(t, server, "nonblocking-create", "nonblocking")
+	body := `{"client_request_id":"nonblocking-message","role":"user","content":"do not block on model"}`
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/messages", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	started := time.Now()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	elapsed := time.Since(started)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("post message status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if elapsed >= 250*time.Millisecond {
+		t.Fatalf("POST blocked for %s; want return before fake model delay", elapsed)
+	}
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages after POST: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Role != "user" || messages[0].Content != "do not block on model" {
+		t.Fatalf("messages immediately after POST = %+v, want committed user only", messages)
+	}
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+	listed := getSessionsV3PrimaryTestMessages(t, server, created.ID, 0, 10)
+	if len(listed) != 2 || listed[0].Role != "user" || listed[1].Role != "assistant" {
+		t.Fatalf("GET /messages after completion = %+v", listed)
+	}
+}
+
+func TestSessionsV3ExecutorEnabledByNormalServerStartup(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "normal-startup.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+	eventLog, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
+	server := NewServer(nil, nil, nil, nil, sessionSvc, nil, nil, nil, nil, nil, nil, eventLog, stream.NewHub(eventLog))
+	defer func() {
+		server.CancelInFlightRuns()
+		server.WaitForInFlightRuns(2 * time.Second)
+	}()
+	if server.v3SessionExecutor == nil {
+		t.Fatalf("normal NewServer startup with session service did not enable V3 session executor")
+	}
+}
+
+func waitForSessionsV3MessageCount(t *testing.T, sessionSvc *sessionruntime.Service, sessionID string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		messages, err := sessionSvc.ListSessionMessages(sessionID, 0, 10)
+		if err != nil {
+			t.Fatalf("list messages: %v", err)
+		}
+		if len(messages) >= want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	messages, _ := sessionSvc.ListSessionMessages(sessionID, 0, 10)
+	t.Fatalf("message count = %d, want %d: %+v", len(messages), want, messages)
 }
 
 func TestSessionsV3PrimaryMessageIsIdempotent(t *testing.T) {
@@ -451,7 +595,7 @@ func TestSessionsV3PrimaryMessageIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list events: %v", err)
 	}
-	if len(events) != 2 || len(second.Events) != 2 {
+	if len(events) < 2 || len(second.Events) < 2 || events[1].EventType != "session.message.appended" {
 		t.Fatalf("events persisted=%+v second=%+v", events, second.Events)
 	}
 }
@@ -805,6 +949,27 @@ func postSessionsV3PrimaryTestMessage(t *testing.T, server *Server, sessionID, c
 	}
 }
 
+func getSessionsV3PrimaryTestMessages(t *testing.T, server *Server, sessionID string, afterSeq uint64, limit int) []pebblestore.MessageSnapshot {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/v3/sessions/%s/messages?after_seq=%d&limit=%d", sessionID, afterSeq, limit), nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET messages status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		OK       bool                          `json:"ok"`
+		Messages []pebblestore.MessageSnapshot `json:"messages"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode GET messages response: %v", err)
+	}
+	if !payload.OK {
+		t.Fatalf("GET messages payload not ok: %+v", payload)
+	}
+	return payload.Messages
+}
+
 func dialSessionsV3PrimaryStream(t *testing.T, baseURL, sessionID, rawQuery string) *gorillaws.Conn {
 	t.Helper()
 	wsURL := "ws" + strings.TrimPrefix(baseURL, "http") + "/v3/sessions/" + sessionID + "/stream"
@@ -850,5 +1015,11 @@ func newSessionsV3PrimaryAPITestServer(t *testing.T, storePath string) (*Server,
 	}
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
 	server := NewServer(nil, nil, nil, nil, sessionSvc, nil, nil, nil, nil, nil, nil, eventLog, stream.NewHub(eventLog))
-	return server, sessionSvc, store.Close
+	server.v3SessionExecutor = nil
+	closeStore := func() error {
+		server.CancelInFlightRuns()
+		server.WaitForInFlightRuns(2 * time.Second)
+		return store.Close()
+	}
+	return server, sessionSvc, closeStore
 }

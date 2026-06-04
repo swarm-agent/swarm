@@ -2873,11 +2873,16 @@ func newRoutedSessionTestServerWithSwarmStore(t *testing.T) (*Server, *sessionru
 	t.Helper()
 	t.Setenv("SWARM_API_NO_AUTH", "1")
 
+	var server *Server
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "routed-session-api.pebble"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() {
+		if server != nil {
+			server.CancelInFlightRuns()
+			server.WaitForInFlightRuns(2 * time.Second)
+		}
 		_ = store.Close()
 	})
 
@@ -2901,7 +2906,8 @@ func newRoutedSessionTestServerWithSwarmStore(t *testing.T) (*Server, *sessionru
 	nodeStore := pebblestore.NewSwarmNodeStore(store)
 	topologyStore := pebblestore.NewTopologyStore(store)
 	swarmStore := pebblestore.NewSwarmStore(store, topologyStore)
-	server := NewServer(nil, agentSvc, modelSvc, nil, sessionSvc, nil, nil, nil, nil, permissionSvc, nil, eventLog, stream.NewHub(eventLog))
+	server = NewServer(nil, agentSvc, modelSvc, nil, sessionSvc, nil, nil, nil, nil, permissionSvc, nil, eventLog, stream.NewHub(eventLog))
+	server.v3SessionExecutor = nil
 	server.SetTopologyService(topologyruntime.NewService(topologyStore, swarmStore, nil, nil, nil, nil, routeStore, pebblestore.NewWorkspaceStore(store)))
 	server.SetSessionRouteStore(routeStore)
 	server.SetSwarmNodeStore(nodeStore)

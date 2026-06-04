@@ -83,6 +83,7 @@ type Server struct {
 	runner                      runService
 	runStreams                  *runStreamManager
 	v3SessionStreams            *sessionV3StreamHub
+	v3SessionExecutor           *sessionV3Executor
 	sessions                    *sessionruntime.Service
 	workspace                   *workspace.Service
 	discovery                   *discovery.Service
@@ -322,6 +323,9 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 	}
 	if permissionSvc, ok := permSvc.(*permission.Service); ok {
 		permissionSvc.SetHostedSync(NewManagedHostPermissionControlClient(server))
+	}
+	if sessionSvc != nil {
+		server.v3SessionExecutor = newSessionV3Executor(server)
 	}
 	return server
 }

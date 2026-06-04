@@ -22,6 +22,9 @@ const (
 	SessionMutationRecordRunIntent = pebblestore.V3SessionMutationRecordRunIntent
 
 	RunIntentPendingExecutor = pebblestore.V3RunIntentPendingExecutor
+	RunIntentRunning         = pebblestore.V3RunIntentRunning
+	RunIntentCompleted       = pebblestore.V3RunIntentCompleted
+	RunIntentFailed          = pebblestore.V3RunIntentFailed
 	RunIntentDispatchBlocked = pebblestore.V3RunIntentDispatchBlocked
 )
 
@@ -60,4 +63,18 @@ func (s *Service) ReplaySessionEvents(sessionID string, afterSeq uint64, limit i
 		return SessionReplay{}, errors.New("session store is not configured")
 	}
 	return s.store.ReplayV3SessionEvents(sessionID, afterSeq, limit)
+}
+
+func (s *Service) GetSessionRunIntent(sessionID, runID string) (SessionRunIntent, bool, error) {
+	if s == nil || s.store == nil {
+		return SessionRunIntent{}, false, errors.New("session store is not configured")
+	}
+	return s.store.GetV3SessionRunIntent(sessionID, runID)
+}
+
+func (s *Service) GetSessionActiveRunIntent(sessionID string) (SessionRunIntent, bool, error) {
+	if s == nil || s.store == nil {
+		return SessionRunIntent{}, false, errors.New("session store is not configured")
+	}
+	return s.store.GetV3SessionActiveRunIntent(sessionID)
 }
