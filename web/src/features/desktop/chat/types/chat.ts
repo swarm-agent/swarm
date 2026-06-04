@@ -266,6 +266,7 @@ export interface ModelOptionRecord {
 
 export interface DesktopSessionPlanInfo {
   goal: string;
+  scope: string;
   context: string;
   decisions: string[];
   constraints: string[];

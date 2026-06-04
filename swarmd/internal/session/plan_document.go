@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -86,6 +87,7 @@ func ValidatePlanDocument(doc *pebblestore.SessionPlanDocument) error {
 type PlanDocumentPatch struct {
 	Operation          string                             `json:"operation,omitempty"`
 	Info               *pebblestore.SessionPlanInfo       `json:"info,omitempty"`
+	InfoFields         map[string]json.RawMessage         `json:"-"`
 	Checkpoint         *pebblestore.SessionPlanCheckpoint `json:"checkpoint,omitempty"`
 	CheckpointID       string                             `json:"checkpoint_id,omitempty"`
 	CheckpointOrder    []string                           `json:"checkpoint_order,omitempty"`
@@ -101,8 +103,42 @@ type PlanDocumentPatch struct {
 
 type PlanDocumentPatchOperation = PlanDocumentPatch
 
+func (p *PlanDocumentPatch) UnmarshalJSON(raw []byte) error {
+	type alias PlanDocumentPatch
+	var base alias
+	if err := json.Unmarshal(raw, &base); err != nil {
+		return err
+	}
+	*p = PlanDocumentPatch(base)
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return err
+	}
+	infoRaw, ok := payload["info"]
+	if !ok || len(infoRaw) == 0 || string(infoRaw) == "null" {
+		return nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(infoRaw, &fields); err != nil {
+		return err
+	}
+	var info pebblestore.SessionPlanInfo
+	if err := json.Unmarshal(infoRaw, &info); err != nil {
+		return err
+	}
+	if rawScope, ok := fields["scope"]; ok && len(rawScope) > 0 {
+		var scope string
+		if json.Unmarshal(rawScope, &scope) == nil {
+			info.Scope = scope
+		}
+	}
+	p.Info = &info
+	p.InfoFields = fields
+	return nil
+}
+
 func (p PlanDocumentPatch) IsZero() bool {
-	return strings.TrimSpace(p.Operation) == "" && p.Info == nil && p.Checkpoint == nil && strings.TrimSpace(p.CheckpointID) == "" && len(p.CheckpointOrder) == 0 && strings.TrimSpace(p.ActiveCheckpointID) == "" && strings.TrimSpace(p.Status) == "" && strings.TrimSpace(p.Notes) == "" && strings.TrimSpace(p.Report) == "" && strings.TrimSpace(p.Result) == "" && len(p.ChangedFiles) == 0 && len(p.Validation) == 0 && len(p.Operations) == 0
+	return strings.TrimSpace(p.Operation) == "" && p.Info == nil && len(p.InfoFields) == 0 && p.Checkpoint == nil && strings.TrimSpace(p.CheckpointID) == "" && len(p.CheckpointOrder) == 0 && strings.TrimSpace(p.ActiveCheckpointID) == "" && strings.TrimSpace(p.Status) == "" && strings.TrimSpace(p.Notes) == "" && strings.TrimSpace(p.Report) == "" && strings.TrimSpace(p.Result) == "" && len(p.ChangedFiles) == 0 && len(p.Validation) == 0 && len(p.Operations) == 0
 }
 
 func ApplyPlanDocumentPatch(planID, title string, existing *pebblestore.SessionPlanDocument, patch PlanDocumentPatch) (*pebblestore.SessionPlanDocument, error) {
@@ -130,7 +166,7 @@ func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op Pl
 	operation = strings.ReplaceAll(operation, "-", "_")
 	if operation == "" {
 		switch {
-		case op.Info != nil:
+		case op.Info != nil || len(op.InfoFields) > 0:
 			operation = "update_info"
 		case op.Checkpoint != nil:
 			operation = "upsert_checkpoint"
@@ -143,9 +179,18 @@ func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op Pl
 		}
 	}
 	switch operation {
-	case "update_info", "replace_info", "set_info":
-		if op.Info == nil {
+	case "update_info", "patch_info":
+		if op.Info == nil && len(op.InfoFields) == 0 {
 			return errors.New("update_info plan document patch requires info")
+		}
+		if err := mergePlanInfoPatch(&doc.Info, op.Info, op.InfoFields); err != nil {
+			return err
+		}
+		trimPlanInfo(&doc.Info)
+		return nil
+	case "replace_info", "set_info":
+		if op.Info == nil {
+			return errors.New("replace_info plan document patch requires info")
 		}
 		doc.Info = *op.Info
 		trimPlanInfo(&doc.Info)
@@ -241,6 +286,116 @@ func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op Pl
 	}
 }
 
+func mergePlanInfoPatch(target *pebblestore.SessionPlanInfo, info *pebblestore.SessionPlanInfo, fields map[string]json.RawMessage) error {
+	if target == nil {
+		return errors.New("plan document info target is required")
+	}
+	if len(fields) == 0 {
+		if info == nil {
+			return nil
+		}
+		fields = infoFieldPresence(info)
+	}
+	if info == nil {
+		info = &pebblestore.SessionPlanInfo{}
+		if len(fields) > 0 {
+			raw, err := json.Marshal(fields)
+			if err != nil {
+				return fmt.Errorf("update_info plan document patch info invalid: %w", err)
+			}
+			if err := json.Unmarshal(raw, info); err != nil {
+				return fmt.Errorf("update_info plan document patch info invalid: %w", err)
+			}
+		}
+	}
+	for field, raw := range fields {
+		switch normalizePlanInfoFieldName(field) {
+		case "goal":
+			target.Goal = stringFromPlanInfoRaw(raw, info.Goal)
+		case "scope":
+			target.Scope = stringFromPlanInfoRaw(raw, info.Scope)
+		case "context":
+			target.Context = stringFromPlanInfoRaw(raw, info.Context)
+			if target.Scope == "" {
+				target.Scope = target.Context
+			}
+		case "decisions":
+			target.Decisions = stringSliceFromPlanInfoRaw(raw, info.Decisions)
+		case "constraints":
+			target.Constraints = stringSliceFromPlanInfoRaw(raw, info.Constraints)
+		case "assumptions":
+			target.Assumptions = stringSliceFromPlanInfoRaw(raw, info.Assumptions)
+		case "open_questions":
+			target.OpenQuestions = stringSliceFromPlanInfoRaw(raw, info.OpenQuestions)
+		case "relevant_files":
+			target.RelevantFiles = stringSliceFromPlanInfoRaw(raw, info.RelevantFiles)
+		case "files":
+			if values := stringSliceFromPlanInfoRaw(raw, nil); len(values) > 0 || strings.TrimSpace(string(raw)) == "[]" {
+				target.RelevantFiles = values
+			} else if value := stringFromPlanInfoRaw(raw, ""); value != "" {
+				target.RelevantFiles = []string{value}
+			}
+		case "success_criteria":
+			target.SuccessCriteria = stringSliceFromPlanInfoRaw(raw, info.SuccessCriteria)
+		case "validation_strategy":
+			target.ValidationStrategy = stringFromPlanInfoRaw(raw, info.ValidationStrategy)
+		case "validation":
+			if value := stringFromPlanInfoRaw(raw, ""); value != "" || strings.TrimSpace(string(raw)) == `""` {
+				target.ValidationStrategy = value
+			} else if values := stringSliceFromPlanInfoRaw(raw, nil); len(values) > 0 {
+				target.ValidationStrategy = strings.Join(values, "; ")
+			}
+		}
+	}
+	return nil
+}
+
+func stringFromPlanInfoRaw(raw json.RawMessage, fallback string) string {
+	var value string
+	if len(raw) > 0 && json.Unmarshal(raw, &value) == nil {
+		return value
+	}
+	return fallback
+}
+
+func stringSliceFromPlanInfoRaw(raw json.RawMessage, fallback []string) []string {
+	if len(raw) > 0 {
+		var values []string
+		if json.Unmarshal(raw, &values) == nil {
+			return values
+		}
+	}
+	return cloneStringSlice(fallback)
+}
+
+func infoFieldPresence(info *pebblestore.SessionPlanInfo) map[string]json.RawMessage {
+	if info == nil {
+		return nil
+	}
+	raw, err := json.Marshal(info)
+	if err != nil {
+		return nil
+	}
+	fields := map[string]json.RawMessage{}
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil
+	}
+	return fields
+}
+
+func normalizePlanInfoFieldName(field string) string {
+	field = strings.TrimSpace(field)
+	field = strings.ReplaceAll(field, "-", "_")
+	var out strings.Builder
+	for i, r := range field {
+		if i > 0 && r >= 'A' && r <= 'Z' {
+			out.WriteByte('_')
+		}
+		out.WriteRune(r)
+	}
+	return strings.ToLower(out.String())
+}
+
 func checkpointIDFromPatch(checkpoint *pebblestore.SessionPlanCheckpoint) string {
 	if checkpoint == nil {
 		return ""
@@ -326,6 +481,9 @@ func clonePlanDocument(doc *pebblestore.SessionPlanDocument) *pebblestore.Sessio
 		return nil
 	}
 	clone := *doc
+	if clone.Info.Scope == "" {
+		clone.Info.Scope = clone.Info.Context
+	}
 	clone.Info.Decisions = cloneStringSlice(doc.Info.Decisions)
 	clone.Info.Constraints = cloneStringSlice(doc.Info.Constraints)
 	clone.Info.Assumptions = cloneStringSlice(doc.Info.Assumptions)
@@ -357,7 +515,11 @@ func trimPlanInfo(info *pebblestore.SessionPlanInfo) {
 		return
 	}
 	info.Goal = strings.TrimSpace(info.Goal)
+	info.Scope = strings.TrimSpace(info.Scope)
 	info.Context = strings.TrimSpace(info.Context)
+	if info.Scope == "" {
+		info.Scope = info.Context
+	}
 	info.ValidationStrategy = strings.TrimSpace(info.ValidationStrategy)
 	info.Decisions = trimStringSlice(info.Decisions)
 	info.Constraints = trimStringSlice(info.Constraints)

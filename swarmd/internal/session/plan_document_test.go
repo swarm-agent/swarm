@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -210,7 +211,7 @@ func TestApplyPlanDocumentPatchBatchCreatesOneRevision(t *testing.T) {
 
 	sessionID := createPlanTestSession(t, svc)
 	first, _, err := svc.SavePlanWithMetadata(sessionID, "plan-one", "One Plan", "# Plan", "draft", "draft", true, PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
-		Info: pebblestore.SessionPlanInfo{Goal: "initial goal"},
+		Info: pebblestore.SessionPlanInfo{Goal: "initial goal", Scope: "initial scope"},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{
 			{ID: "cp-1", Title: "Model", Status: "active"},
 			{ID: "cp-2", Title: "API", Status: "pending"},
@@ -237,7 +238,7 @@ func TestApplyPlanDocumentPatchBatchCreatesOneRevision(t *testing.T) {
 	if updated.Version != first.Version+1 || updated.ParentRevision != first.Version {
 		t.Fatalf("revision linkage = version %d parent %d", updated.Version, updated.ParentRevision)
 	}
-	if updated.Document == nil || updated.Document.Info.Goal != "modular one-plan system" || updated.Document.ActiveCheckpointID != "cp-2" {
+	if updated.Document == nil || updated.Document.Info.Goal != "modular one-plan system" || updated.Document.Info.Scope != "initial scope" || updated.Document.ActiveCheckpointID != "cp-2" {
 		t.Fatalf("updated document = %#v", updated.Document)
 	}
 	if updated.Document.Checkpoints[0].ID != "cp-2" || updated.Document.Checkpoints[0].Order != 1 || updated.Document.Checkpoints[1].Status != "done" || updated.Document.Checkpoints[1].Report != "model complete" {
@@ -249,6 +250,69 @@ func TestApplyPlanDocumentPatchBatchCreatesOneRevision(t *testing.T) {
 	}
 	if len(revisions) != 2 {
 		t.Fatalf("revision count = %d, want one archived revision plus current", len(revisions))
+	}
+}
+
+func TestApplyPlanDocumentPatchUpdateInfoPreservesUntouchedSections(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	first, _, err := svc.SavePlanWithMetadata(sessionID, "plan-one", "One Plan", "# Plan", "draft", "draft", true, PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		Info: pebblestore.SessionPlanInfo{
+			Goal:               "initial goal",
+			Scope:              "initial scope",
+			Decisions:          []string{"existing decision"},
+			RelevantFiles:      []string{"old.go"},
+			ValidationStrategy: "go test ./old",
+		},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Model"}},
+	}})
+	if err != nil {
+		t.Fatalf("save structured plan: %v", err)
+	}
+
+	updated, _, err := svc.PatchPlan(sessionID, PlanPatchOptions{
+		PlanID: first.ID,
+		DocumentPatch: &PlanDocumentPatch{Operation: "update_info", Info: &pebblestore.SessionPlanInfo{
+			Scope:         "narrower implementation scope",
+			RelevantFiles: []string{"swarmd/internal/session/plan_document.go"},
+		}, InfoFields: infoFieldPresence(&pebblestore.SessionPlanInfo{
+			Scope:         "narrower implementation scope",
+			RelevantFiles: []string{"swarmd/internal/session/plan_document.go"},
+		})},
+		Metadata: PlanSaveMetadata{UpdateSummary: "update scope/files", UpdateScope: "plan info", UpdateKind: "document_patch"},
+	})
+	if err != nil {
+		t.Fatalf("patch info: %v", err)
+	}
+	if updated.Version != first.Version+1 || updated.ParentRevision != first.Version {
+		t.Fatalf("revision linkage = version %d parent %d", updated.Version, updated.ParentRevision)
+	}
+	info := updated.Document.Info
+	if info.Goal != "initial goal" || info.Scope != "narrower implementation scope" || info.Decisions[0] != "existing decision" || info.RelevantFiles[0] != "swarmd/internal/session/plan_document.go" || info.ValidationStrategy != "go test ./old" {
+		t.Fatalf("partial info patch did not preserve/update expected fields: %#v", info)
+	}
+	if len(updated.Document.Checkpoints) != 1 || updated.Document.Checkpoints[0].ID != "cp-1" {
+		t.Fatalf("info patch mutated checkpoints: %#v", updated.Document.Checkpoints)
+	}
+}
+
+func TestApplyPlanDocumentPatchInfoJSONPresenceAllowsClearingList(t *testing.T) {
+	var patch PlanDocumentPatch
+	if err := json.Unmarshal([]byte(`{"operation":"update_info","info":{"decisions":[]}}`), &patch); err != nil {
+		t.Fatalf("unmarshal patch: %v", err)
+	}
+	doc, err := ApplyPlanDocumentPatch("plan-one", "One Plan", &pebblestore.SessionPlanDocument{
+		ID:    "plan-one",
+		Title: "One Plan",
+		Info:  pebblestore.SessionPlanInfo{Goal: "initial", Decisions: []string{"clear me"}, RelevantFiles: []string{"keep.go"}},
+	}, patch)
+	if err != nil {
+		t.Fatalf("apply patch: %v", err)
+	}
+	if doc.Info.Goal != "initial" || len(doc.Info.Decisions) != 0 || doc.Info.RelevantFiles[0] != "keep.go" {
+		t.Fatalf("json presence patch result = %#v", doc.Info)
 	}
 }
 

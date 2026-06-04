@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ChangeEvent } from 'react'
-import { Copy, Check, AlertCircle, ChevronDown, Rocket, LockKeyhole, Server, type LucideIcon } from 'lucide-react'
+import { Copy, Check, AlertCircle, ChevronDown, ChevronRight, Circle, Compass, Brain, CheckCircle2, FileText, ListTodo, PlayCircle, Rocket, LockKeyhole, Server, ShieldCheck, Target, type LucideIcon } from 'lucide-react'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { Button } from '../../../../components/ui/button'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -7,7 +7,7 @@ import { Textarea } from '../../../../components/ui/textarea'
 import { cn } from '../../../../lib/cn'
 import { requestJson } from '../../../../app/api'
 import { ChatMarkdown } from '../../chat/components/chat-markdown'
-import { StructuredPlanDocumentView, normalizeStructuredPlanDocument } from '../../chat/components/structured-plan-document'
+import { StructuredPlanDocumentView, normalizeStructuredPlanDocument, type StructuredPlanCheckpoint, type StructuredPlanDocument } from '../../chat/components/structured-plan-document'
 import { getToolTheme } from '../../chat/services/tool-theme'
 import { AGENT_TOOL_PRESET_OPTIONS, CUSTOM_AGENT_TOOL_PRESET_ID } from '../../chat/services/agent-tool-presets'
 import type { ModelOptionRecord } from '../../chat/types/chat'
@@ -140,7 +140,9 @@ function ModalShell({
   widthClassName,
   bodyClassName,
   headerExtra,
+  headerActions,
   footer,
+  planStyle = false,
   children,
   onOpenChange,
   onRequestClose,
@@ -157,7 +159,9 @@ function ModalShell({
   widthClassName: string
   bodyClassName?: string
   headerExtra?: React.ReactNode
+  headerActions?: React.ReactNode
   footer?: React.ReactNode
+  planStyle?: boolean
   children: React.ReactNode
   onOpenChange: (open: boolean) => void
   onRequestClose?: () => void
@@ -193,19 +197,21 @@ function ModalShell({
       role="dialog"
       aria-modal="true"
       aria-label={title}
-      className="z-[80] overflow-hidden p-1.5 pt-[calc(var(--app-safe-area-top)_+_0.375rem)] pb-[calc(var(--app-safe-area-bottom)_+_0.375rem)] sm:p-4"
+      className={planStyle ? 'z-[80] p-3 sm:p-6' : 'z-[80] overflow-hidden p-1.5 pt-[calc(var(--app-safe-area-top)_+_0.375rem)] pb-[calc(var(--app-safe-area-bottom)_+_0.375rem)] sm:p-4'}
     >
       <DialogBackdrop onClick={handleRequestClose} />
       <DialogPanel
         className={cn(
-          'flex min-h-0 max-h-[calc(100dvh_-_var(--app-safe-area-top)_-_var(--app-safe-area-bottom)_-_12px)] flex-col overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-0 shadow-[var(--shadow-panel)] sm:max-h-[calc(100dvh-32px)]',
+          planStyle
+            ? 'flex min-h-0 max-h-[min(900px,calc(100vh-48px))] flex-col overflow-hidden rounded-3xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] p-0 shadow-[var(--shadow-panel)]'
+            : 'flex min-h-0 max-h-[calc(100dvh_-_var(--app-safe-area-top)_-_var(--app-safe-area-bottom)_-_12px)] flex-col overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-0 shadow-[var(--shadow-panel)] sm:max-h-[calc(100dvh-32px)]',
           widthClassName,
         )}
       >
-        <div className="shrink-0 flex items-start justify-between gap-3 border-b border-[var(--app-border)] px-3 py-4 sm:px-5 sm:py-5">
+        <div className={planStyle ? 'grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-4 border-b border-[var(--app-border)] px-6 py-4' : 'shrink-0 flex items-start justify-between gap-3 border-b border-[var(--app-border)] px-3 py-4 sm:px-5 sm:py-5'}>
           <div className="min-w-0 flex flex-col gap-1.5">
-            <h2 className="text-sm font-semibold tracking-tight text-[var(--app-text)] sm:text-base">{title}</h2>
-            {subtitle?.trim() ? <span className="text-xs leading-5 text-[var(--app-text-muted)] sm:text-sm">{subtitle}</span> : null}
+            <h2 className={planStyle ? 'truncate text-xl font-semibold tracking-tight text-[var(--app-text)]' : 'text-sm font-semibold tracking-tight text-[var(--app-text)] sm:text-base'}>{title}</h2>
+            {subtitle?.trim() ? <span className={planStyle ? 'truncate text-sm leading-5 text-[var(--app-text-muted)]' : 'text-xs leading-5 text-[var(--app-text-muted)] sm:text-sm'}>{subtitle}</span> : null}
             {showSessionMeta ? (
               <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--app-text-subtle)]">
                 <span>mode {sessionMode.trim() || 'plan'}</span>
@@ -216,9 +222,16 @@ function ModalShell({
             ) : null}
             {headerExtra ? <div className="mt-2">{headerExtra}</div> : null}
           </div>
-          <ModalCloseButton onClick={handleRequestClose} aria-label="Close permission modal" />
+          {headerActions ? (
+            <div className="flex min-w-0 shrink-0 flex-nowrap items-center justify-end gap-2 overflow-x-auto whitespace-nowrap">
+              {headerActions}
+              <ModalCloseButton onClick={handleRequestClose} aria-label="Close permission modal" />
+            </div>
+          ) : (
+            <ModalCloseButton onClick={handleRequestClose} aria-label="Close permission modal" />
+          )}
         </div>
-        <div className={cn('min-h-0 flex-auto overflow-y-auto overflow-x-hidden overscroll-contain px-3 py-3 sm:px-5 sm:py-4', bodyClassName)}>{children}</div>
+        <div className={cn(planStyle ? 'min-h-0 flex-auto overflow-y-auto overflow-x-hidden overscroll-contain px-6 py-5' : 'min-h-0 flex-auto overflow-y-auto overflow-x-hidden overscroll-contain px-3 py-3 sm:px-5 sm:py-4', bodyClassName)}>{children}</div>
         {footer}
       </DialogPanel>
     </Dialog>
@@ -744,6 +757,299 @@ function ManageFlowModal({
     />
   )
 }
+function ExitPlanSectionEyebrow({ children, className }: { children: string; className?: string }) {
+  return <div className={cn('text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]', className)}>{children}</div>
+}
+
+function ExitPlanTextBlock({ value }: { value: string }) {
+  if (!value.trim()) {
+    return null
+  }
+  return <p className="whitespace-pre-wrap break-words text-sm leading-6 text-[var(--app-text)]">{value}</p>
+}
+
+function ExitPlanBulletList({ values, mono = false }: { values: string[]; mono?: boolean }) {
+  if (values.length === 0) {
+    return null
+  }
+  return (
+    <ul className="grid gap-1.5">
+      {values.map((value, index) => (
+        <li key={`${index}:${value}`} className={cn('flex min-w-0 gap-2 text-sm leading-6 text-[var(--app-text)]', mono ? 'font-mono text-xs' : '')}>
+          <span className="mt-2.5 size-1.5 shrink-0 rounded-full bg-[var(--app-primary)]" />
+          <span className="min-w-0 whitespace-pre-wrap break-words">{value}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function ExitPlanInfoSection({ title, icon: Icon, children }: { title: string; icon: LucideIcon; children: React.ReactNode }) {
+  return (
+    <section className="grid gap-2 py-4 last:pb-0">
+      <div className="flex items-center gap-2">
+        <Icon className="size-4 shrink-0 text-[var(--app-primary)]" />
+        <h4 className="text-sm font-semibold text-[var(--app-text)]">{title}</h4>
+      </div>
+      <div className="min-w-0 pl-6">{children}</div>
+    </section>
+  )
+}
+
+function ExitPlanDetails({ document }: { document: StructuredPlanDocument }) {
+  const validationFiles = document.info.validationStrategy.trim() !== '' || document.info.relevantFiles.length > 0
+  const hasDetails = Boolean(
+    document.info.goal
+      || document.info.scope
+      || document.info.decisions.length
+      || validationFiles
+      || document.info.successCriteria.length
+      || document.info.constraints.length
+      || document.info.assumptions.length
+      || document.info.openQuestions.length,
+  )
+
+  return (
+    <section className="min-w-0 content-start">
+      <ExitPlanSectionEyebrow>Plan details</ExitPlanSectionEyebrow>
+      {hasDetails ? (
+        <div className="mt-2 grid">
+          {document.info.goal ? (
+            <ExitPlanInfoSection title="Goal" icon={Target}>
+              <ExitPlanTextBlock value={document.info.goal} />
+            </ExitPlanInfoSection>
+          ) : null}
+          {document.info.scope ? (
+            <ExitPlanInfoSection title="Scope" icon={Compass}>
+              <ExitPlanTextBlock value={document.info.scope} />
+            </ExitPlanInfoSection>
+          ) : null}
+          {document.info.decisions.length > 0 ? (
+            <ExitPlanInfoSection title="Decisions" icon={Brain}>
+              <ExitPlanBulletList values={document.info.decisions} />
+            </ExitPlanInfoSection>
+          ) : null}
+          {validationFiles ? (
+            <ExitPlanInfoSection title="Validation & files" icon={ShieldCheck}>
+              <div className="grid gap-3">
+                <ExitPlanTextBlock value={document.info.validationStrategy} />
+                {document.info.relevantFiles.length > 0 ? (
+                  <div className="grid gap-2">
+                    <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
+                      <FileText className="size-3.5 shrink-0 text-[var(--app-primary)]" />
+                      Relevant files
+                    </div>
+                    <ExitPlanBulletList values={document.info.relevantFiles} mono />
+                  </div>
+                ) : null}
+              </div>
+            </ExitPlanInfoSection>
+          ) : null}
+          {document.info.successCriteria.length > 0 ? (
+            <ExitPlanInfoSection title="Success criteria" icon={CheckCircle2}>
+              <ExitPlanBulletList values={document.info.successCriteria} />
+            </ExitPlanInfoSection>
+          ) : null}
+          {document.info.constraints.length > 0 ? (
+            <ExitPlanInfoSection title="Constraints" icon={ShieldCheck}>
+              <ExitPlanBulletList values={document.info.constraints} />
+            </ExitPlanInfoSection>
+          ) : null}
+          {document.info.assumptions.length > 0 ? (
+            <ExitPlanInfoSection title="Assumptions" icon={Compass}>
+              <ExitPlanBulletList values={document.info.assumptions} />
+            </ExitPlanInfoSection>
+          ) : null}
+          {document.info.openQuestions.length > 0 ? (
+            <ExitPlanInfoSection title="Open questions" icon={ListTodo}>
+              <ExitPlanBulletList values={document.info.openQuestions} />
+            </ExitPlanInfoSection>
+          ) : null}
+        </div>
+      ) : (
+        <p className="mt-3 rounded-xl border border-dashed border-[var(--app-border)] px-3 py-3 text-sm text-[var(--app-text-muted)]">No plan details are defined.</p>
+      )}
+    </section>
+  )
+}
+
+function ExitPlanCheckpointStatusIcon({ status, active }: { status: string; active: boolean }) {
+  const normStatus = status.toLowerCase()
+  if (normStatus === 'completed' || normStatus === 'done' || normStatus === 'success') {
+    return <CheckCircle2 className="size-4 text-[var(--app-success)]" />
+  }
+  if (active || normStatus === 'in_progress' || normStatus === 'in-progress' || normStatus === 'active') {
+    return <PlayCircle className="size-4 text-[var(--app-primary)]" />
+  }
+  return <Circle className="size-4 text-[var(--app-text-muted)]" />
+}
+
+function exitPlanFormatStatusLabel(status: string, active: boolean): string {
+  if (active) {
+    return 'Active'
+  }
+  const trimmed = status.trim()
+  if (!trimmed) {
+    return ''
+  }
+  return trimmed
+    .replace(/[-_]+/g, ' ')
+    .replace(/\w\S*/g, (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+}
+
+function ExitPlanCheckpointStatusText({ status, active }: { status: string; active: boolean }) {
+  const label = exitPlanFormatStatusLabel(status, active)
+  if (!label) {
+    return null
+  }
+  const normStatus = status.toLowerCase()
+  const done = normStatus === 'done' || normStatus === 'completed' || normStatus === 'success'
+  return (
+    <span className={cn('shrink-0 text-xs font-medium', done ? 'text-[var(--app-success)]' : active ? 'text-[var(--app-primary)]' : 'text-[var(--app-text-muted)]')}>
+      {label}
+    </span>
+  )
+}
+
+function ExitPlanCheckpointSection({ title, values, mono = false }: { title: string; values: string[]; mono?: boolean }) {
+  if (values.length === 0) {
+    return null
+  }
+  return (
+    <div className="grid min-w-0 gap-1.5">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{title}</div>
+      <ExitPlanBulletList values={values} mono={mono} />
+    </div>
+  )
+}
+
+function ExitPlanCheckpointTextSection({ title, value }: { title: string; value: string }) {
+  if (!value.trim()) {
+    return null
+  }
+  return (
+    <div className="grid min-w-0 gap-1.5">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{title}</div>
+      <p className="whitespace-pre-wrap break-words text-sm leading-6 text-[var(--app-text-muted)]">{value}</p>
+    </div>
+  )
+}
+
+function ExitPlanCheckpointRow({
+  checkpoint,
+  index,
+  active,
+  expanded,
+  onToggle,
+}: {
+  checkpoint: StructuredPlanCheckpoint
+  index: number
+  active: boolean
+  expanded: boolean
+  onToggle: () => void
+}) {
+  const title = checkpoint.title || checkpoint.id || 'Untitled checkpoint'
+  return (
+    <div className={cn('border-b border-[var(--app-border)] last:border-b-0', active ? 'bg-[var(--app-primary-soft)]/35' : '')}>
+      <button
+        type="button"
+        onClick={onToggle}
+        className={cn(
+          'grid w-full grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 px-1 py-3 text-left transition hover:bg-[var(--app-surface-subtle)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] sm:px-2',
+          active ? 'border-l-2 border-[var(--app-primary)] pl-2 sm:pl-3' : 'border-l-2 border-transparent pl-2 sm:pl-3',
+        )}
+        aria-expanded={expanded}
+      >
+        <ExitPlanCheckpointStatusIcon status={checkpoint.status} active={active} />
+        <span className={cn('min-w-0 truncate text-sm font-medium', active ? 'text-[var(--app-primary)]' : 'text-[var(--app-text)]')}>
+          <span className="mr-1.5 font-semibold text-[var(--app-text-muted)]">{index + 1}.</span>
+          {title}
+        </span>
+        <ExitPlanCheckpointStatusText status={checkpoint.status} active={active} />
+        {expanded ? <ChevronDown className="size-4 text-[var(--app-text-muted)]" /> : <ChevronRight className="size-4 text-[var(--app-text-muted)]" />}
+      </button>
+      {expanded ? (
+        <div className={cn('grid gap-3 pb-4 pl-12 pr-3 pt-1', active ? 'border-l-2 border-[var(--app-primary)]' : 'border-l-2 border-transparent')}>
+          <ExitPlanCheckpointTextSection title="Objective" value={checkpoint.objective} />
+          <ExitPlanCheckpointSection title="Tasks" values={checkpoint.tasks} />
+          <ExitPlanCheckpointSection title="Acceptance" values={checkpoint.acceptanceCriteria} />
+          <ExitPlanCheckpointTextSection title="Notes" value={checkpoint.notes} />
+          <ExitPlanCheckpointTextSection title="Report" value={checkpoint.report} />
+          <ExitPlanCheckpointTextSection title="Result" value={checkpoint.result} />
+          <ExitPlanCheckpointSection title="Changed files" values={checkpoint.changedFiles} mono />
+          <ExitPlanCheckpointSection title="Validation" values={checkpoint.validation} />
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function ExitPlanCheckpointList({ document }: { document: StructuredPlanDocument }) {
+  const activeID = document.activeCheckpointId.trim()
+  const activeLabel = activeID || 'none'
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => new Set())
+
+  useEffect(() => {
+    setCollapsedIds(new Set())
+  }, [document.id, document.revisionId])
+
+  return (
+    <section className="min-w-0 content-start">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <ExitPlanSectionEyebrow>Checkpoints</ExitPlanSectionEyebrow>
+          <div className="mt-1 text-sm text-[var(--app-text-muted)]">
+            {document.checkpoints.length} step{document.checkpoints.length === 1 ? '' : 's'} · {activeLabel} active
+          </div>
+        </div>
+      </div>
+      {document.checkpoints.length > 0 ? (
+        <div className="mt-4">
+          {document.checkpoints.map((checkpoint, index) => {
+            const active = activeID !== '' && checkpoint.id === activeID
+            const rowId = checkpoint.id || `${checkpoint.order}:${checkpoint.title}`
+            return (
+              <ExitPlanCheckpointRow
+                key={rowId}
+                checkpoint={checkpoint}
+                index={index}
+                active={active}
+                expanded={!collapsedIds.has(rowId)}
+                onToggle={() => {
+                  setCollapsedIds((current) => {
+                    const next = new Set(current)
+                    if (next.has(rowId)) {
+                      next.delete(rowId)
+                    } else {
+                      next.add(rowId)
+                    }
+                    return next
+                  })
+                }}
+              />
+            )
+          })}
+        </div>
+      ) : (
+        <p className="mt-3 rounded-xl border border-dashed border-[var(--app-border)] px-3 py-3 text-sm text-[var(--app-text-muted)]">No checkpoints are defined.</p>
+      )}
+    </section>
+  )
+}
+
+function ExitPlanDocumentView({ document }: { document: StructuredPlanDocument }) {
+  return (
+    <div className="grid min-h-0 grid-cols-1 gap-6 min-[901px]:grid-cols-[minmax(380px,0.85fr)_minmax(520px,1.15fr)] min-[901px]:gap-0">
+      <div className="min-w-0 min-[901px]:pr-6">
+        <ExitPlanDetails document={document} />
+      </div>
+      <div className="min-w-0 border-t border-[var(--app-border)] pt-6 min-[901px]:border-l min-[901px]:border-t-0 min-[901px]:pl-6 min-[901px]:pt-0">
+        <ExitPlanCheckpointList document={document} />
+      </div>
+    </div>
+  )
+}
+
 function ExitPlanModal({
   permission,
   open,
@@ -799,11 +1105,25 @@ function ExitPlanModal({
     <ModalShell
       open={open}
       title={payload.title || 'Exit Plan Mode'}
-      subtitle={payload.planId ? `Plan ${payload.planId}` : 'Approve this request to leave plan mode and continue execution'}
+      subtitle={structuredDocument ? undefined : 'Approve this request to leave plan mode and continue execution'}
       pendingCount={pendingCount}
       sessionMode={sessionMode}
-      widthClassName="w-full sm:w-[min(1120px,calc(100vw-48px))]"
+      widthClassName="w-[min(1180px,calc(100vw-24px))] sm:w-[min(1280px,calc(100vw-48px))]"
       bodyClassName="overflow-y-auto"
+      showSessionMeta={false}
+      planStyle
+      headerActions={
+        <Button type="button" variant="outline" size="sm" onClick={() => void handleCopy()}>
+          {copyState === 'copied' ? (
+            <Check className="size-4" />
+          ) : copyState === 'error' ? (
+            <AlertCircle className="size-4" />
+          ) : (
+            <Copy className="size-4" />
+          )}
+          {copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy'}
+        </Button>
+      }
       footer={
         <PermissionActionBar
           loading={loading}
@@ -818,30 +1138,13 @@ function ExitPlanModal({
       onDenyShortcut={() => void resolve('deny')}
       shortcutsDisabled={loading}
     >
-      <div className="flex h-full min-h-0 flex-col gap-3 sm:gap-4">
-        <section className="flex min-h-0 flex-1 flex-col gap-3">
-          <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3">
-            <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{structuredDocument ? 'Structured plan document' : 'Plan'}</span>
-            <Button type="button" variant="outline" size="sm" className="min-h-8 px-2.5" onClick={() => void handleCopy()}>
-              {copyState === 'copied' ? (
-                <Check className="size-4" />
-              ) : copyState === 'error' ? (
-                <AlertCircle className="size-4" />
-              ) : (
-                <Copy className="size-4" />
-              )}
-              {copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy'}
-            </Button>
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-            {structuredDocument ? (
-              <StructuredPlanDocumentView document={structuredDocument} compact />
-            ) : (
-              <ChatMarkdown content={payload.body} className="text-base leading-7" />
-            )}
-          </div>
+      {structuredDocument ? (
+        <ExitPlanDocumentView document={structuredDocument} />
+      ) : (
+        <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-5">
+          <ChatMarkdown content={payload.body} className="text-base leading-7" />
         </section>
-      </div>
+      )}
     </ModalShell>
   )
 }
@@ -1060,7 +1363,7 @@ function PlanUpdateReview({
       </section>
       {selectedView === 'previous' ? (
         structuredPriorDocument ? (
-          <StructuredPlanDocumentView document={structuredPriorDocument} emptyText="No previous structured plan document was provided." compact />
+          <StructuredPlanDocumentView document={structuredPriorDocument} emptyText="No previous structured plan document was provided." />
         ) : (
           <PlanTextPanel
             title={priorTitle ? `Previous plan: ${priorTitle}` : 'Previous plan'}
@@ -1072,7 +1375,7 @@ function PlanUpdateReview({
       ) : selectedView === 'diff' ? (
         <PlanUpdateFullDiff diffLines={diffLines} priorPlan={priorPlan} plan={plan} />
       ) : structuredDocument ? (
-        <StructuredPlanDocumentView document={structuredDocument} emptyText="No updated structured plan document was provided." compact />
+        <StructuredPlanDocumentView document={structuredDocument} emptyText="No updated structured plan document was provided." />
       ) : (
         <PlanTextPanel title="Updated plan" text={plan} emptyText="No updated plan text was provided." tone="updated" />
       )}
@@ -1136,7 +1439,7 @@ function PlanUpdateModal({
       subtitle={payload.planId ? `Plan ${payload.planId}` : 'Approve this request to revise an existing plan'}
       pendingCount={pendingCount}
       sessionMode={sessionMode}
-      widthClassName="w-full sm:w-[min(1120px,calc(100vw-48px))]"
+      widthClassName="w-full sm:w-[min(1400px,calc(100vw-48px))] xl:w-[min(1550px,calc(100vw-64px))]"
       bodyClassName="overflow-y-auto"
       footer={
         <PermissionActionBar

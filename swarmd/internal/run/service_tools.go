@@ -1440,7 +1440,7 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 		} else {
 			action = "save"
 		}
-	case "update-info", "update_info":
+	case "update-info", "update_info", "patch-info", "patch_info":
 		action = "update_info"
 	case "upsert-checkpoint", "upsert_checkpoint", "replace-checkpoint", "replace_checkpoint":
 		action = "upsert_checkpoint"

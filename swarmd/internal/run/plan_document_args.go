@@ -95,10 +95,25 @@ func planDocumentPatchFromArgs(args map[string]any) (*sessionruntime.PlanDocumen
 	}
 	if value, ok := args["info"]; ok && value != nil {
 		var info pebblestore.SessionPlanInfo
-		if err := unmarshalPlanToolArg(value, &info, "plan_manage document info"); err != nil {
-			return nil, err
+		raw, err := planToolArgJSON(value)
+		if err != nil {
+			return nil, fmt.Errorf("plan_manage document info invalid: %w", err)
+		}
+		if err := json.Unmarshal(raw, &info); err != nil {
+			return nil, fmt.Errorf("plan_manage document info invalid: %w", err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			return nil, fmt.Errorf("plan_manage document info invalid: %w", err)
+		}
+		if rawScope, ok := fields["scope"]; ok && len(rawScope) > 0 {
+			var scope string
+			if json.Unmarshal(rawScope, &scope) == nil {
+				info.Scope = scope
+			}
 		}
 		patch.Info = &info
+		patch.InfoFields = fields
 	}
 	if value, ok := args["checkpoint"]; ok && value != nil {
 		if _, isBool := value.(bool); isBool {
@@ -135,7 +150,7 @@ func planDocumentPatchArgsPresent(args map[string]any) bool {
 	}
 	operation := strings.ToLower(strings.TrimSpace(firstNonEmptyString(mapString(args, "operation"), mapString(args, "op"))))
 	switch strings.ReplaceAll(operation, "-", "_") {
-	case "update_info", "replace_info", "set_info", "upsert_checkpoint", "replace_checkpoint", "set_checkpoint", "update_checkpoint", "patch_checkpoint", "complete_checkpoint", "finish_checkpoint", "remove_checkpoint", "delete_checkpoint", "reorder_checkpoints", "reorder_checkpoint", "set_active_checkpoint", "activate_checkpoint":
+	case "update_info", "patch_info", "replace_info", "set_info", "upsert_checkpoint", "replace_checkpoint", "set_checkpoint", "update_checkpoint", "patch_checkpoint", "complete_checkpoint", "finish_checkpoint", "remove_checkpoint", "delete_checkpoint", "reorder_checkpoints", "reorder_checkpoint", "set_active_checkpoint", "activate_checkpoint":
 		return true
 	default:
 		return false

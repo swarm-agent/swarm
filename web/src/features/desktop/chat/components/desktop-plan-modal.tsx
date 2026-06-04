@@ -1,13 +1,33 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Copy, Check, AlertCircle, Save, Pencil, RotateCcw } from 'lucide-react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  AlertCircle,
+  Brain,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Circle,
+  Compass,
+  Copy,
+  FileText,
+  ListTodo,
+  Pencil,
+  PlayCircle,
+  RotateCcw,
+  Save,
+  ShieldCheck,
+  Target,
+  type LucideIcon,
+} from 'lucide-react'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { Button } from '../../../../components/ui/button'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
+import { Select } from '../../../../components/ui/select'
 import { Textarea } from '../../../../components/ui/textarea'
 import { cn } from '../../../../lib/cn'
 import { ChatMarkdown } from './chat-markdown'
-import type { DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
-import { StructuredPlanDocumentView, structuredPlanDocumentToWire } from './structured-plan-document'
+import type { DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
+import { structuredPlanDocumentToWire } from './structured-plan-document'
 
 interface DesktopPlanModalProps {
   open: boolean
@@ -37,17 +57,6 @@ function useEscapeToClose(open: boolean, onClose: () => void) {
   }, [open, onClose])
 }
 
-function formatRevisionTimestamp(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) {
-    return 'unknown time'
-  }
-  try {
-    return new Date(value).toLocaleString()
-  } catch {
-    return String(value)
-  }
-}
-
 function revisionLabel(revision: DesktopSessionPlanRevisionRecord): string {
   if (revision.version > 0) {
     return `Revision ${revision.version}`
@@ -55,24 +64,312 @@ function revisionLabel(revision: DesktopSessionPlanRevisionRecord): string {
   return 'Revision'
 }
 
-function diffLineClassName(line: string): string {
-  if (line.startsWith('+')) {
-    return 'bg-[var(--app-success-bg)] text-[var(--app-success)]'
+function revisionOptionLabel(revision: DesktopSessionPlanRevisionRecord): string {
+  const summary = revision.updateSummary || revision.updateKind || revision.updateScope || 'Plan snapshot'
+  return `${revisionLabel(revision)} — ${summary}`
+}
+
+function SectionEyebrow({ children, className }: { children: string; className?: string }) {
+  return <div className={cn('text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]', className)}>{children}</div>
+}
+
+function TextBlock({ value }: { value: string }) {
+  if (!value.trim()) {
+    return null
   }
-  if (line.startsWith('-')) {
-    return 'bg-[var(--app-danger-bg)] text-[var(--app-danger)]'
+  return <p className="whitespace-pre-wrap break-words text-sm leading-6 text-[var(--app-text)]">{value}</p>
+}
+
+function BulletList({ values, mono = false }: { values: string[]; mono?: boolean }) {
+  if (values.length === 0) {
+    return null
   }
-  if (line.startsWith('@@')) {
-    return 'bg-[var(--app-primary-soft)] text-[var(--app-primary)]'
+  return (
+    <ul className="grid gap-1.5">
+      {values.map((value, index) => (
+        <li key={`${index}:${value}`} className={cn('flex min-w-0 gap-2 text-sm leading-6 text-[var(--app-text)]', mono ? 'font-mono text-xs' : '')}>
+          <span className="mt-2.5 size-1.5 shrink-0 rounded-full bg-[var(--app-primary)]" />
+          <span className="min-w-0 whitespace-pre-wrap break-words">{value}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function PlanInfoSection({ title, icon: Icon, children }: { title: string; icon: LucideIcon; children: React.ReactNode }) {
+  return (
+    <section className="grid gap-2 py-4 last:pb-0">
+      <div className="flex items-center gap-2">
+        <Icon className="size-4 shrink-0 text-[var(--app-primary)]" />
+        <h4 className="text-sm font-semibold text-[var(--app-text)]">{title}</h4>
+      </div>
+      <div className="min-w-0 pl-6">{children}</div>
+    </section>
+  )
+}
+
+function PlanDetails({ document }: { document: DesktopSessionPlanDocument }) {
+  const validationFiles = document.info.validationStrategy.trim() !== '' || document.info.relevantFiles.length > 0
+  const hasDetails = Boolean(
+    document.info.goal
+      || document.info.scope
+      || document.info.decisions.length
+      || validationFiles
+      || document.info.successCriteria.length
+      || document.info.constraints.length
+      || document.info.assumptions.length
+      || document.info.openQuestions.length,
+  )
+
+  return (
+    <section className="min-w-0 content-start">
+      <SectionEyebrow>Plan details</SectionEyebrow>
+      {hasDetails ? (
+        <div className="mt-2 grid">
+          {document.info.goal ? (
+            <PlanInfoSection title="Goal" icon={Target}>
+              <TextBlock value={document.info.goal} />
+            </PlanInfoSection>
+          ) : null}
+          {document.info.scope ? (
+            <PlanInfoSection title="Scope" icon={Compass}>
+              <TextBlock value={document.info.scope} />
+            </PlanInfoSection>
+          ) : null}
+          {document.info.decisions.length > 0 ? (
+            <PlanInfoSection title="Decisions" icon={Brain}>
+              <BulletList values={document.info.decisions} />
+            </PlanInfoSection>
+          ) : null}
+          {validationFiles ? (
+            <PlanInfoSection title="Validation & files" icon={ShieldCheck}>
+              <div className="grid gap-3">
+                <TextBlock value={document.info.validationStrategy} />
+                {document.info.relevantFiles.length > 0 ? (
+                  <div className="grid gap-2">
+                    <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
+                      <FileText className="size-3.5 shrink-0 text-[var(--app-primary)]" />
+                      Relevant files
+                    </div>
+                    <BulletList values={document.info.relevantFiles} mono />
+                  </div>
+                ) : null}
+              </div>
+            </PlanInfoSection>
+          ) : null}
+          {document.info.successCriteria.length > 0 ? (
+            <PlanInfoSection title="Success criteria" icon={CheckCircle2}>
+              <BulletList values={document.info.successCriteria} />
+            </PlanInfoSection>
+          ) : null}
+          {document.info.constraints.length > 0 ? (
+            <PlanInfoSection title="Constraints" icon={ShieldCheck}>
+              <BulletList values={document.info.constraints} />
+            </PlanInfoSection>
+          ) : null}
+          {document.info.assumptions.length > 0 ? (
+            <PlanInfoSection title="Assumptions" icon={Compass}>
+              <BulletList values={document.info.assumptions} />
+            </PlanInfoSection>
+          ) : null}
+          {document.info.openQuestions.length > 0 ? (
+            <PlanInfoSection title="Open questions" icon={ListTodo}>
+              <BulletList values={document.info.openQuestions} />
+            </PlanInfoSection>
+          ) : null}
+        </div>
+      ) : (
+        <p className="mt-3 rounded-xl border border-dashed border-[var(--app-border)] px-3 py-3 text-sm text-[var(--app-text-muted)]">No plan details are defined.</p>
+      )}
+    </section>
+  )
+}
+
+function CheckpointStatusIcon({ status, active }: { status: string; active: boolean }) {
+  const normStatus = status.toLowerCase()
+  if (normStatus === 'completed' || normStatus === 'done' || normStatus === 'success') {
+    return <CheckCircle2 className="size-4 text-[var(--app-success)]" />
   }
-  return 'text-[var(--app-text-muted)]'
+  if (active || normStatus === 'in_progress' || normStatus === 'in-progress' || normStatus === 'active') {
+    return <PlayCircle className="size-4 text-[var(--app-primary)]" />
+  }
+  return <Circle className="size-4 text-[var(--app-text-muted)]" />
+}
+
+function formatStatusLabel(status: string, active: boolean): string {
+  if (active) {
+    return 'Active'
+  }
+  const trimmed = status.trim()
+  if (!trimmed) {
+    return ''
+  }
+  return trimmed
+    .replace(/[-_]+/g, ' ')
+    .replace(/\w\S*/g, (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+}
+
+function CheckpointStatusText({ status, active }: { status: string; active: boolean }) {
+  const label = formatStatusLabel(status, active)
+  if (!label) {
+    return null
+  }
+  const normStatus = status.toLowerCase()
+  const done = normStatus === 'done' || normStatus === 'completed' || normStatus === 'success'
+  return (
+    <span className={cn('shrink-0 text-xs font-medium', done ? 'text-[var(--app-success)]' : active ? 'text-[var(--app-primary)]' : 'text-[var(--app-text-muted)]')}>
+      {label}
+    </span>
+  )
+}
+
+function CheckpointSection({ title, values, mono = false }: { title: string; values: string[]; mono?: boolean }) {
+  if (values.length === 0) {
+    return null
+  }
+  return (
+    <div className="grid min-w-0 gap-1.5">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{title}</div>
+      <BulletList values={values} mono={mono} />
+    </div>
+  )
+}
+
+function CheckpointTextSection({ title, value }: { title: string; value: string }) {
+  if (!value.trim()) {
+    return null
+  }
+  return (
+    <div className="grid min-w-0 gap-1.5">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{title}</div>
+      <p className="whitespace-pre-wrap break-words text-sm leading-6 text-[var(--app-text-muted)]">{value}</p>
+    </div>
+  )
+}
+
+function CheckpointRow({
+  checkpoint,
+  index,
+  active,
+  expanded,
+  onToggle,
+}: {
+  checkpoint: DesktopSessionPlanCheckpoint
+  index: number
+  active: boolean
+  expanded: boolean
+  onToggle: () => void
+}) {
+  const title = checkpoint.title || checkpoint.id || 'Untitled checkpoint'
+  return (
+    <div className={cn('border-b border-[var(--app-border)] last:border-b-0', active ? 'bg-[var(--app-primary-soft)]/35' : '')}>
+      <button
+        type="button"
+        onClick={onToggle}
+        className={cn(
+          'grid w-full grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 px-1 py-3 text-left transition hover:bg-[var(--app-surface-subtle)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] sm:px-2',
+          active ? 'border-l-2 border-[var(--app-primary)] pl-2 sm:pl-3' : 'border-l-2 border-transparent pl-2 sm:pl-3',
+        )}
+        aria-expanded={expanded}
+      >
+        <CheckpointStatusIcon status={checkpoint.status} active={active} />
+        <span className={cn('min-w-0 truncate text-sm font-medium', active ? 'text-[var(--app-primary)]' : 'text-[var(--app-text)]')}>
+          <span className="mr-1.5 font-semibold text-[var(--app-text-muted)]">{index + 1}.</span>
+          {title}
+        </span>
+        <CheckpointStatusText status={checkpoint.status} active={active} />
+        {expanded ? <ChevronDown className="size-4 text-[var(--app-text-muted)]" /> : <ChevronRight className="size-4 text-[var(--app-text-muted)]" />}
+      </button>
+      {expanded ? (
+        <div className={cn('grid gap-3 pb-4 pl-12 pr-3 pt-1', active ? 'border-l-2 border-[var(--app-primary)]' : 'border-l-2 border-transparent')}>
+          <CheckpointTextSection title="Objective" value={checkpoint.objective} />
+          <CheckpointSection title="Tasks" values={checkpoint.tasks} />
+          <CheckpointSection title="Acceptance" values={checkpoint.acceptanceCriteria} />
+          <CheckpointTextSection title="Notes" value={checkpoint.notes} />
+          <CheckpointTextSection title="Report" value={checkpoint.report} />
+          <CheckpointTextSection title="Result" value={checkpoint.result} />
+          <CheckpointSection title="Changed files" values={checkpoint.changedFiles} mono />
+          <CheckpointSection title="Validation" values={checkpoint.validation} />
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function CheckpointList({ document }: { document: DesktopSessionPlanDocument }) {
+  const activeID = document.activeCheckpointId.trim()
+  const activeLabel = activeID || 'none'
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => new Set())
+
+  useEffect(() => {
+    setCollapsedIds(new Set())
+  }, [document.id, document.revisionId])
+
+  return (
+    <section className="min-w-0 content-start">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <SectionEyebrow>Checkpoints</SectionEyebrow>
+          <div className="mt-1 text-sm text-[var(--app-text-muted)]">
+            {document.checkpoints.length} step{document.checkpoints.length === 1 ? '' : 's'} · {activeLabel} active
+          </div>
+        </div>
+      </div>
+      {document.checkpoints.length > 0 ? (
+        <div className="mt-4">
+          {document.checkpoints.map((checkpoint, index) => {
+            const active = activeID !== '' && checkpoint.id === activeID
+            const rowId = checkpoint.id || `${checkpoint.order}:${checkpoint.title}`
+            return (
+              <CheckpointRow
+                key={rowId}
+                checkpoint={checkpoint}
+                index={index}
+                active={active}
+                expanded={!collapsedIds.has(rowId)}
+                onToggle={() => {
+                  setCollapsedIds((current) => {
+                    const next = new Set(current)
+                    if (next.has(rowId)) {
+                      next.delete(rowId)
+                    } else {
+                      next.add(rowId)
+                    }
+                    return next
+                  })
+                }}
+              />
+            )
+          })}
+        </div>
+      ) : (
+        <p className="mt-3 rounded-xl border border-dashed border-[var(--app-border)] px-3 py-3 text-sm text-[var(--app-text-muted)]">No checkpoints are defined.</p>
+      )}
+    </section>
+  )
+}
+
+function PlanModalDocumentView({ document, emptyText }: { document: DesktopSessionPlanDocument | null; emptyText: string }) {
+  if (!document) {
+    return <section className="rounded-2xl border border-dashed border-[var(--app-border)] bg-[var(--app-bg-alt)] px-4 py-5 text-sm text-[var(--app-text-muted)]">{emptyText}</section>
+  }
+  return (
+    <div className="grid min-h-0 grid-cols-1 gap-6 min-[901px]:grid-cols-[minmax(380px,0.85fr)_minmax(520px,1.15fr)] min-[901px]:gap-0">
+      <div className="min-w-0 min-[901px]:pr-6">
+        <PlanDetails document={document} />
+      </div>
+      <div className="min-w-0 border-t border-[var(--app-border)] pt-6 min-[901px]:border-l min-[901px]:border-t-0 min-[901px]:pl-6 min-[901px]:pt-0">
+        <CheckpointList document={document} />
+      </div>
+    </div>
+  )
 }
 
 export function DesktopPlanModal({
   open,
   plan,
   revisions,
-  historyLoading,
+  historyLoading: _historyLoading,
   saving,
   error,
   onOpenChange,
@@ -85,6 +382,8 @@ export function DesktopPlanModal({
   const [editing, setEditing] = useState(false)
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
   const [selectedRevisionKey, setSelectedRevisionKey] = useState('current')
+  const [revisionSelectWidth, setRevisionSelectWidth] = useState<number | undefined>(undefined)
+  const revisionSelectSizerRef = useRef<HTMLSpanElement | null>(null)
 
   useEffect(() => {
     if (!open) {
@@ -105,31 +404,28 @@ export function DesktopPlanModal({
     return value || 'Current Plan'
   }, [plan?.title])
 
-  const subtitle = useMemo(() => {
-    const parts: string[] = []
-    const planId = plan?.id?.trim() ?? ''
-    const status = plan?.status?.trim() ?? ''
-    const approvalState = plan?.approvalState?.trim() ?? ''
-    if (planId) {
-      parts.push(`Canonical plan ${planId}`)
-    } else {
-      parts.push('No active plan yet')
-    }
-    if (status) {
-      parts.push(`status ${status}`)
-    }
-    if (approvalState) {
-      parts.push(`approval ${approvalState}`)
-    }
-    return parts.join(' • ')
-  }, [plan?.approvalState, plan?.id, plan?.status])
-
   const selectedRevision = useMemo(() => {
     if (selectedRevisionKey === 'current') {
       return null
     }
     return revisions.find((revision) => revision.key === selectedRevisionKey) ?? null
   }, [revisions, selectedRevisionKey])
+
+  const selectedRevisionLabel = selectedRevision ? revisionOptionLabel(selectedRevision) : 'Current revision'
+
+  useLayoutEffect(() => {
+    if (!open) {
+      return
+    }
+    const sizer = revisionSelectSizerRef.current
+    if (!sizer) {
+      return
+    }
+    const textWidth = Math.ceil(sizer.getBoundingClientRect().width)
+    const selectChromeWidth = 54
+    const maxWidth = 360
+    setRevisionSelectWidth(Math.min(textWidth + selectChromeWidth, maxWidth))
+  }, [open, selectedRevisionLabel])
 
   if (!open) {
     return null
@@ -185,211 +481,146 @@ export function DesktopPlanModal({
   }
 
   return (
-    <Dialog role="dialog" aria-modal="true" aria-label={title} className="z-[80] p-4 sm:p-6">
+    <Dialog role="dialog" aria-modal="true" aria-label={title} className="z-[80] p-3 sm:p-6">
       <DialogBackdrop onClick={() => onOpenChange(false)} />
-      <DialogPanel className="w-[min(1180px,calc(100vw-24px))] overflow-hidden rounded-3xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] p-0 shadow-[var(--shadow-panel)] sm:w-[min(1280px,calc(100vw-48px))]">
-        <div className="flex items-start justify-between gap-4 border-b border-[var(--app-border)] px-6 py-5">
-          <div className="min-w-0 flex-1">
-            <h2 className="text-xl font-semibold tracking-tight text-[var(--app-text)]">{title}</h2>
-            <p className="mt-1 text-sm text-[var(--app-text-muted)]">{subtitle}</p>
+      <DialogPanel className="grid max-h-[min(900px,calc(100vh-48px))] w-[min(1180px,calc(100vw-24px))] grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-3xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] p-0 shadow-[var(--shadow-panel)] sm:w-[min(1280px,calc(100vw-48px))]">
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4 border-b border-[var(--app-border)] px-6 py-4">
+          <div className="min-w-0">
+            <h2 className="truncate text-xl font-semibold tracking-tight text-[var(--app-text)]">{title}</h2>
           </div>
-          <ModalCloseButton onClick={() => onOpenChange(false)} aria-label="Close current plan dialog" />
+          <div className="flex min-w-0 shrink-0 flex-nowrap items-center justify-end gap-2 overflow-x-auto whitespace-nowrap">
+            <span
+              ref={revisionSelectSizerRef}
+              aria-hidden="true"
+              className="pointer-events-none absolute -z-10 whitespace-pre text-sm opacity-0"
+            >
+              {selectedRevisionLabel}
+            </span>
+            <Select
+              value={selectedRevisionKey}
+              onChange={(event) => {
+                setEditing(false)
+                setSelectedRevisionKey(event.target.value)
+              }}
+              className="h-9 min-h-9 max-w-[360px] shrink-0 rounded-lg bg-[var(--app-surface)] py-1.5 pl-3 pr-10 text-sm"
+              style={revisionSelectWidth ? { width: `${revisionSelectWidth}px` } : undefined}
+              aria-label="Select plan revision"
+              disabled={editing}
+            >
+              <option value="current">Current revision</option>
+              {revisions.map((revision) => (
+                <option key={revision.key} value={revision.key}>
+                  {revisionOptionLabel(revision)}
+                </option>
+              ))}
+            </Select>
+            {viewingRevision ? (
+              <Button type="button" variant="primary" size="sm" onClick={() => void handleRestoreRevision()} disabled={saving || editing}>
+                <RotateCcw className={cn('size-4', saving ? 'animate-pulse' : '')} />
+                {saving ? 'Activating…' : 'Activate revision'}
+              </Button>
+            ) : null}
+            <Button type="button" variant="outline" size="sm" onClick={() => void handleCopy()}>
+              {copyState === 'copied' ? (
+                <Check className="size-4" />
+              ) : copyState === 'error' ? (
+                <AlertCircle className="size-4" />
+              ) : (
+                <Copy className="size-4" />
+              )}
+              {copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy'}
+            </Button>
+            {editing ? (
+              <>
+                <Button type="button" variant="secondary" size="sm" onClick={handleCancelEdit} disabled={saving}>
+                  Cancel
+                </Button>
+                <Button type="button" variant="primary" size="sm" onClick={() => void handleSave()} disabled={saving || !dirty}>
+                  <Save className={cn('size-4', saving ? 'animate-pulse' : '')} />
+                  {saving ? 'Saving…' : 'Save plan'}
+                </Button>
+              </>
+            ) : (
+              <Button
+                type="button"
+                variant="primary"
+                size="sm"
+                onClick={() => {
+                  setSelectedRevisionKey('current')
+                  setEditing(true)
+                }}
+              >
+                <Pencil className="size-4" />
+                Edit plan
+              </Button>
+            )}
+            <ModalCloseButton onClick={() => onOpenChange(false)} aria-label="Close current plan dialog" />
+          </div>
         </div>
 
-        <div className="grid max-h-[min(74vh,900px)] min-h-[520px] grid-cols-1 overflow-hidden lg:grid-cols-[300px_minmax(0,1fr)]">
-          <aside className="min-h-0 overflow-y-auto border-b border-[var(--app-border)] bg-[var(--app-bg-alt)] px-4 py-4 lg:border-b-0 lg:border-r">
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Plan revisions</span>
-              {historyLoading ? <span className="text-xs text-[var(--app-text-muted)]">Loading…</span> : null}
-            </div>
-            <div className="grid gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setEditing(false)
-                  setSelectedRevisionKey('current')
-                }}
-                className={cn(
-                  'rounded-2xl border px-3 py-3 text-left transition',
-                  !viewingRevision
-                    ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-text)]'
-                    : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] hover:border-[var(--app-border-strong)] hover:text-[var(--app-text)]',
-                )}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-semibold text-[var(--app-text)]">Current active plan</span>
-                  <span className="rounded-full border border-[var(--app-border)] px-2 py-0.5 text-[10px] uppercase tracking-[0.08em] text-[var(--app-text-muted)]">active</span>
-                </div>
-                <div className="mt-1 text-xs text-[var(--app-text-muted)]">{formatRevisionTimestamp(plan?.updatedAt ?? 0)}</div>
-              </button>
-
-              {revisions.length > 0 ? revisions.map((revision) => (
-                <button
-                  key={revision.key}
-                  type="button"
-                  onClick={() => {
-                    setEditing(false)
-                    setSelectedRevisionKey(revision.key)
-                  }}
-                  className={cn(
-                    'rounded-2xl border px-3 py-3 text-left transition',
-                    selectedRevisionKey === revision.key
-                      ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-text)]'
-                      : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] hover:border-[var(--app-border-strong)] hover:text-[var(--app-text)]',
-                  )}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm font-semibold text-[var(--app-text)]">{revisionLabel(revision)}</span>
-                    {revision.parentRevision > 0 ? <span className="text-[10px] text-[var(--app-text-muted)]">from {revision.parentRevision}</span> : null}
-                  </div>
-                  <div className="mt-1 text-xs text-[var(--app-text-muted)]">{revision.updateSummary || revision.updateKind || 'Plan snapshot'}</div>
-                  <div className="mt-1 text-[11px] text-[var(--app-text-subtle)]">{formatRevisionTimestamp(revision.updatedAt)}</div>
-                </button>
-              )) : (
-                <div className="rounded-2xl border border-dashed border-[var(--app-border)] px-3 py-4 text-sm text-[var(--app-text-muted)]">
-                  {plan?.id ? 'No stored revisions yet.' : 'Create a plan to start revision history.'}
-                </div>
+        <div className="min-h-0 overflow-y-auto px-6 py-5">
+          {editing ? (
+            <section className="grid gap-3">
+              {plan?.document ? (
+                <>
+                  <label className="grid gap-2">
+                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Structured plan document</span>
+                    <Textarea
+                      value={documentDraft}
+                      onChange={(event) => {
+                        setDocumentDraft(event.target.value)
+                        setDocumentDraftError(null)
+                      }}
+                      placeholder="Edit structured plan info and checkpoints as JSON…"
+                      className="min-h-[420px] w-full resize-y bg-[var(--app-bg-alt)] font-mono text-sm leading-6"
+                    />
+                  </label>
+                  {documentDraftError ? (
+                    <p className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-xs text-[var(--app-danger)]">{documentDraftError}</p>
+                  ) : null}
+                  <p className="text-xs text-[var(--app-text-muted)]">
+                    This edits the canonical structured plan document: base info plus checkpoint objects. Saving records one revision.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <Textarea
+                    value={draft}
+                    onChange={(event) => setDraft(event.target.value)}
+                    placeholder="Write or paste the current session plan…"
+                    className="min-h-[420px] w-full resize-y bg-[var(--app-bg-alt)] font-mono text-sm leading-6"
+                  />
+                  <p className="text-xs text-[var(--app-text-muted)]">
+                    No structured document exists yet; saving this display text records a new revision.
+                  </p>
+                </>
               )}
-            </div>
-          </aside>
-
-          <div className="flex min-h-0 flex-col overflow-hidden">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--app-border)] px-6 py-4">
-              <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
-                {editing ? 'Editing plan' : viewingRevision ? revisionLabel(selectedRevision) : 'Current plan'}
-              </span>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button type="button" variant="outline" size="sm" onClick={() => void handleCopy()}>
-                  {copyState === 'copied' ? (
-                    <Check className="size-4" />
-                  ) : copyState === 'error' ? (
-                    <AlertCircle className="size-4" />
+            </section>
+          ) : (
+            <div className="grid gap-4">
+              {selectedDocument ? (
+                <PlanModalDocumentView document={selectedDocument} emptyText="No structured plan data is available for this plan." />
+              ) : (
+                <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-5">
+                  {preview.trim() ? (
+                    <ChatMarkdown content={preview} className="text-base leading-7" />
                   ) : (
-                    <Copy className="size-4" />
-                  )}
-                  {copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy'}
-                </Button>
-                {viewingRevision ? (
-                  <Button type="button" variant="primary" size="sm" onClick={() => void handleRestoreRevision()} disabled={saving}>
-                    <RotateCcw className={cn('size-4', saving ? 'animate-pulse' : '')} />
-                    {saving ? 'Restoring…' : 'Restore as latest'}
-                  </Button>
-                ) : editing ? (
-                  <Button type="button" variant="secondary" size="sm" onClick={handleCancelEdit} disabled={saving}>
-                    Cancel edit
-                  </Button>
-                ) : (
-                  <Button type="button" variant="primary" size="sm" onClick={() => setEditing(true)}>
-                    <Pencil className="size-4" />
-                    Edit plan
-                  </Button>
-                )}
-              </div>
-            </div>
-
-            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
-              {editing ? (
-                <section className="grid gap-3">
-                  {plan?.document ? (
-                    <>
-                      <label className="grid gap-2">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Structured plan document</span>
-                        <Textarea
-                          value={documentDraft}
-                          onChange={(event) => {
-                            setDocumentDraft(event.target.value)
-                            setDocumentDraftError(null)
-                          }}
-                          placeholder="Edit structured plan info and checkpoints as JSON…"
-                          className="min-h-[420px] w-full resize-y bg-[var(--app-bg-alt)] font-mono text-sm leading-6"
-                        />
-                      </label>
-                      {documentDraftError ? (
-                        <p className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-xs text-[var(--app-danger)]">{documentDraftError}</p>
-                      ) : null}
-                      <p className="text-xs text-[var(--app-text-muted)]">
-                        This edits the canonical structured plan document: base info plus checkpoint objects. Saving records one revision.
-                      </p>
-                    </>
-                  ) : (
-                    <>
-                      <Textarea
-                        value={draft}
-                        onChange={(event) => setDraft(event.target.value)}
-                        placeholder="Write or paste the current session plan…"
-                        className="min-h-[420px] w-full resize-y bg-[var(--app-bg-alt)] font-mono text-sm leading-6"
-                      />
-                      <p className="text-xs text-[var(--app-text-muted)]">
-                        No structured document exists yet; saving this display text records a new revision.
-                      </p>
-                    </>
+                    <p className="text-sm text-[var(--app-text-muted)]">
+                      No active plan yet. Use Edit plan to create one for this session.
+                    </p>
                   )}
                 </section>
-              ) : (
-                <div className="grid gap-4">
-                  {selectedDocument ? (
-                    <StructuredPlanDocumentView document={selectedDocument} emptyText="No structured plan data is available for this plan." />
-                  ) : (
-                    <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-5">
-                      {preview.trim() ? (
-                        <ChatMarkdown content={preview} className="text-base leading-7" />
-                      ) : (
-                        <p className="text-sm text-[var(--app-text-muted)]">
-                          No active plan yet. Use Edit plan to create one for this session.
-                        </p>
-                      )}
-                    </section>
-                  )}
-
-                  {viewingRevision ? (
-                    <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
-                      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                        <div>
-                          <h3 className="text-sm font-semibold text-[var(--app-text)]">Stored diff</h3>
-                          <p className="text-xs text-[var(--app-text-muted)]">
-                            {selectedRevision.updateScope || selectedRevision.updateSummary || 'Changes from the parent revision'}
-                          </p>
-                        </div>
-                        <span className="text-xs text-[var(--app-text-muted)]">
-                          {selectedRevision.diffLines.length} lines
-                        </span>
-                      </div>
-                      {selectedRevision.diffLines.length > 0 ? (
-                        <pre className="max-h-[320px] overflow-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] py-2 font-mono text-[12px] leading-5">
-                          {selectedRevision.diffLines.map((line, index) => (
-                            <div key={`${index}:${line}`} className={cn('whitespace-pre-wrap break-words px-3', diffLineClassName(line))}>{line || ' '}</div>
-                          ))}
-                        </pre>
-                      ) : (
-                        <p className="rounded-xl border border-dashed border-[var(--app-border)] px-3 py-3 text-sm text-[var(--app-text-muted)]">
-                          This base revision has no parent diff.
-                        </p>
-                      )}
-                    </section>
-                  ) : null}
-                </div>
               )}
-
-              {error ? (
-                <div className="mt-4 rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-4 py-3 text-sm text-[var(--app-danger)]">
-                  {error}
-                </div>
-              ) : null}
             </div>
-          </div>
-        </div>
+          )}
 
-        <div className="flex flex-wrap justify-end gap-2 border-t border-[var(--app-border)] px-6 py-4">
-          <Button type="button" variant="ghost" onClick={() => onOpenChange(false)} disabled={saving}>
-            Close
-          </Button>
-          {editing ? (
-            <Button type="button" variant="primary" onClick={() => void handleSave()} disabled={saving || !dirty}>
-              <Save className={cn('size-4', saving ? 'animate-pulse' : '')} />
-              {saving ? 'Saving…' : 'Save plan'}
-            </Button>
+          {error ? (
+            <div className="mt-4 rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-4 py-3 text-sm text-[var(--app-danger)]">
+              {error}
+            </div>
           ) : null}
         </div>
+
       </DialogPanel>
     </Dialog>
   )

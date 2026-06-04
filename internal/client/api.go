@@ -776,6 +776,7 @@ type SessionPlanDocument struct {
 
 type SessionPlanInfo struct {
 	Goal               string   `json:"goal,omitempty"`
+	Scope              string   `json:"scope,omitempty"`
 	Context            string   `json:"context,omitempty"`
 	Decisions          []string `json:"decisions,omitempty"`
 	Constraints        []string `json:"constraints,omitempty"`

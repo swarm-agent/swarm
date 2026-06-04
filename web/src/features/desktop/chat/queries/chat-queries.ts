@@ -203,14 +203,17 @@ interface SessionUsageResponseWire {
 
 interface SessionPlanInfoWire {
   goal?: string;
+  scope?: string;
   context?: string;
   decisions?: string[];
   constraints?: string[];
   assumptions?: string[];
   open_questions?: string[];
   relevant_files?: string[];
+  files?: string[];
   success_criteria?: string[];
   validation_strategy?: string;
+  validation?: string | string[];
 }
 
 interface SessionPlanCheckpointWire {
@@ -543,14 +546,17 @@ function mapSessionPlanDocument(
     revisionId: String(document.revision_id ?? "").trim(),
     info: {
       goal: String(info.goal ?? "").trim(),
+      scope: String(info.scope ?? info.context ?? "").trim(),
       context: String(info.context ?? "").trim(),
       decisions: mapStringArray(info.decisions),
       constraints: mapStringArray(info.constraints),
       assumptions: mapStringArray(info.assumptions),
       openQuestions: mapStringArray(info.open_questions),
-      relevantFiles: mapStringArray(info.relevant_files),
+      relevantFiles: mapStringArray(info.relevant_files ?? info.files),
       successCriteria: mapStringArray(info.success_criteria),
-      validationStrategy: String(info.validation_strategy ?? "").trim(),
+      validationStrategy: Array.isArray(info.validation)
+        ? mapStringArray(info.validation).join("; ")
+        : String(info.validation_strategy ?? info.validation ?? "").trim(),
     },
     checkpoints: Array.isArray(document.checkpoints)
       ? document.checkpoints.map((checkpoint, index) => ({

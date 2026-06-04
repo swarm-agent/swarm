@@ -36,6 +36,23 @@ func TestPlanDocumentFromArgsAcceptsObjectAndJSONString(t *testing.T) {
 	}
 }
 
+func TestPlanDocumentPatchFromArgsPreservesPartialInfoFieldPresence(t *testing.T) {
+	patch, err := planDocumentPatchFromArgs(map[string]any{
+		"action":             "update_info",
+		"document_operation": "update_info",
+		"info": map[string]any{
+			"scope":          "only this scope",
+			"relevant_files": []any{"swarmd/internal/session/plan_document.go"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("parse document patch: %v", err)
+	}
+	if patch == nil || patch.Info == nil || patch.Info.Scope != "only this scope" || len(patch.InfoFields) != 2 {
+		t.Fatalf("patch info presence = %#v fields=%#v", patch, patch.InfoFields)
+	}
+}
+
 func TestPlanDocumentFromArgsRejectsInvalidJSONString(t *testing.T) {
 	_, err := planDocumentFromArgsForTool(map[string]any{"document": "not json"}, "exit_plan_mode")
 	if err == nil || !strings.Contains(err.Error(), "exit_plan_mode document invalid") {
