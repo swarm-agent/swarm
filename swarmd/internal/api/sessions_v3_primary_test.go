@@ -22,7 +22,7 @@ func TestSessionsV3PrimaryHandlersDoNotUseRuntimeDispatchOrRoutes(t *testing.T) 
 	if err != nil {
 		t.Fatalf("read sessions_v3_primary.go: %v", err)
 	}
-	for _, required := range []string{"ApplySessionMutation", "SessionMutationCreateSession", "SessionMutationAppendMessage", "RunIntentDispatchBlocked", "ListSessionEvents", "ListSessionMessages"} {
+	for _, required := range []string{"ApplySessionMutation", "SessionMutationCreateSession", "SessionMutationAppendMessage", "RunIntentDispatchBlocked", "ReplaySessionEvents", "ListSessionEvents", "ListSessionMessages"} {
 		if !strings.Contains(string(body), required) {
 			t.Fatalf("sessions_v3_primary.go missing required V3 primary storage symbol %q", required)
 		}
@@ -424,6 +424,72 @@ func TestSessionsV3PrimaryConcurrentDistinctMessagesAllocateContiguousSeq(t *tes
 		if message.GlobalSeq != wantSeq {
 			t.Fatalf("message[%d].global_seq=%d want %d messages=%+v", i, message.GlobalSeq, wantSeq, messages)
 		}
+	}
+}
+
+func TestSessionsV3PrimaryEventsReplayCursorAndRestart(t *testing.T) {
+	t.Setenv("SWARM_API_NO_AUTH", "1")
+	storePath := filepath.Join(t.TempDir(), "sessions-v3-events.pebble")
+	server, _, closeStore := newSessionsV3PrimaryAPITestServer(t, storePath)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp5-create","workspace_path":"/workspace/cp5","title":"CP5"}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(createRec, withTestPrincipal(createReq))
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, want %d, body=%s", createRec.Code, http.StatusOK, createRec.Body.String())
+	}
+	var created struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		body := fmt.Sprintf(`{"client_request_id":"cp5-message-%d","role":"user","content":"cp5 message %d"}`, i, i)
+		messageReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.Session.ID+"/messages", bytes.NewBufferString(body))
+		messageReq.Header.Set("Content-Type", "application/json")
+		messageRec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(messageRec, withTestPrincipal(messageReq))
+		if messageRec.Code != http.StatusOK {
+			t.Fatalf("message %d status = %d, want %d, body=%s", i, messageRec.Code, http.StatusOK, messageRec.Body.String())
+		}
+	}
+	if err := closeStore(); err != nil {
+		t.Fatalf("close first store: %v", err)
+	}
+
+	restarted, _, closeRestarted := newSessionsV3PrimaryAPITestServer(t, storePath)
+	defer func() { _ = closeRestarted() }()
+	replayReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+created.Session.ID+"/events?after_seq=1&limit=1", nil)
+	replayRec := httptest.NewRecorder()
+	restarted.Handler().ServeHTTP(replayRec, withTestPrincipal(replayReq))
+	if replayRec.Code != http.StatusOK {
+		t.Fatalf("events status = %d, want %d, body=%s", replayRec.Code, http.StatusOK, replayRec.Body.String())
+	}
+	var replay struct {
+		OK               bool                              `json:"ok"`
+		Events           []sessionruntime.SessionEvent     `json:"events"`
+		Projection       sessionruntime.SessionProjection  `json:"projection"`
+		Messages         []pebblestore.MessageSnapshot     `json:"messages"`
+		RunIntents       []sessionruntime.SessionRunIntent `json:"run_intents"`
+		HighWatermarkSeq uint64                            `json:"high_watermark_seq"`
+		NextSeq          uint64                            `json:"next_seq"`
+	}
+	if err := json.Unmarshal(replayRec.Body.Bytes(), &replay); err != nil {
+		t.Fatalf("decode replay response: %v", err)
+	}
+	if !replay.OK || len(replay.Events) != 1 || replay.Events[0].Seq != 2 || replay.HighWatermarkSeq != 2 || replay.NextSeq != 2 {
+		t.Fatalf("replay page = %+v", replay)
+	}
+	if replay.Projection.LastEventSeq != 3 || replay.Projection.ProjectionHighWatermarkSeq != 3 {
+		t.Fatalf("projection = %+v", replay.Projection)
+	}
+	if len(replay.Messages) != 1 || replay.Messages[0].Content != "cp5 message 0" {
+		t.Fatalf("messages = %+v", replay.Messages)
+	}
+	if len(replay.RunIntents) != 1 || replay.RunIntents[0].EventSeq != 2 {
+		t.Fatalf("run intents = %+v", replay.RunIntents)
 	}
 }
 

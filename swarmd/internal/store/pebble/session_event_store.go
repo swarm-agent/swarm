@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -150,6 +151,31 @@ type V3SessionRunIntent struct {
 	EventSeq       uint64 `json:"event_seq"`
 }
 
+type V3SessionReplay struct {
+	Session          *SessionSnapshot          `json:"session,omitempty"`
+	Projection       V3SessionProjection       `json:"projection"`
+	Lifecycle        *SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
+	Messages         []MessageSnapshot         `json:"messages"`
+	RunIntents       []V3SessionRunIntent      `json:"run_intents,omitempty"`
+	Events           []V3SessionEvent          `json:"events"`
+	HighWatermarkSeq uint64                    `json:"high_watermark_seq"`
+	NextSeq          uint64                    `json:"next_seq"`
+}
+
+type v3SessionEventReplayPayload struct {
+	SessionID string                    `json:"session_id,omitempty"`
+	Seq       uint64                    `json:"seq,omitempty"`
+	Kind      string                    `json:"kind,omitempty"`
+	Session   *SessionSnapshot          `json:"session,omitempty"`
+	Message   *MessageSnapshot          `json:"message,omitempty"`
+	Lifecycle *SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
+	RunIntent *V3SessionRunIntent       `json:"run_intent,omitempty"`
+	MessageID string                    `json:"message_id,omitempty"`
+	Role      string                    `json:"role,omitempty"`
+	RunID     string                    `json:"run_id,omitempty"`
+	Status    string                    `json:"status,omitempty"`
+}
+
 func KeyV3SessionSequence(sessionID string) string {
 	return fmt.Sprintf("v3/session_seq/%s", keyPart(sessionID))
 }
@@ -188,6 +214,10 @@ func V3SessionMessagePrefix(sessionID string) string {
 
 func KeyV3SessionRunIntent(sessionID, runID string) string {
 	return fmt.Sprintf("v3/session_run_intent/%s/%s", keyPart(sessionID), keyPart(runID))
+}
+
+func V3SessionRunIntentPrefix(sessionID string) string {
+	return fmt.Sprintf("v3/session_run_intent/%s/", keyPart(sessionID))
 }
 
 func KeyV3SessionRunIntentActive(sessionID string) string {
@@ -255,7 +285,7 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	}
 	lifecycle, lifecycleProvided := prepareV3LifecycleForMutation(input, seq, now)
 	runIntent, runIntentProvided := prepareV3RunIntentForMutation(input, seq, now)
-	payload, err := input.v3EventPayload(seq, message, runIntent)
+	payload, err := input.v3EventPayload(seq, session, message, lifecycle, runIntent)
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
@@ -436,6 +466,9 @@ func (s *SessionStore) ListV3SessionEvents(sessionID string, afterSeq uint64, li
 	}
 	out := make([]V3SessionEvent, 0, limit)
 	err := s.store.IteratePrefix(V3SessionEventPrefix(sessionID), 100000, func(_ string, value []byte) error {
+		if len(out) >= limit {
+			return nil
+		}
 		var event V3SessionEvent
 		if err := json.Unmarshal(value, &event); err != nil {
 			return err
@@ -443,12 +476,142 @@ func (s *SessionStore) ListV3SessionEvents(sessionID string, afterSeq uint64, li
 		if event.Seq <= afterSeq {
 			return nil
 		}
-		if len(out) < limit {
-			out = append(out, event)
-		}
+		out = append(out, event)
 		return nil
 	})
 	return out, err
+}
+
+func (s *SessionStore) ReplayV3SessionEvents(sessionID string, afterSeq uint64, limit int) (V3SessionReplay, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return V3SessionReplay{}, errors.New("session id is required")
+	}
+	events, err := s.ListV3SessionEvents(sessionID, afterSeq, limit)
+	if err != nil {
+		return V3SessionReplay{}, err
+	}
+	replay := V3SessionReplay{
+		Events:   append([]V3SessionEvent(nil), events...),
+		Messages: []MessageSnapshot{},
+		NextSeq:  afterSeq,
+	}
+	seenMessages := map[string]bool{}
+	seenRunIntents := map[string]bool{}
+	expectedSeq := afterSeq + 1
+	for _, event := range events {
+		if event.SessionID != sessionID {
+			return V3SessionReplay{}, fmt.Errorf("v3 session event %q belongs to session %q, want %q", event.ID, event.SessionID, sessionID)
+		}
+		if event.Seq == 0 {
+			return V3SessionReplay{}, fmt.Errorf("v3 session event %q has zero sequence", event.ID)
+		}
+		if event.Seq != expectedSeq {
+			return V3SessionReplay{}, fmt.Errorf("v3 session event sequence gap at %d, want %d", event.Seq, expectedSeq)
+		}
+		expectedSeq++
+		var payload v3SessionEventReplayPayload
+		if len(event.Payload) > 0 {
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				return V3SessionReplay{}, fmt.Errorf("decode v3 session event %d payload: %w", event.Seq, err)
+			}
+		}
+		if payload.Session != nil {
+			session := normalizeSessionOwnership(*payload.Session)
+			session.ID = sessionID
+			session.Metadata = cloneSessionMetadataMap(session.Metadata)
+			replay.Session = &session
+		}
+		if payload.Lifecycle != nil {
+			lifecycle := *payload.Lifecycle
+			lifecycle.SessionID = sessionID
+			replay.Lifecycle = &lifecycle
+			if replay.Session != nil {
+				replay.Session.Lifecycle = &lifecycle
+			}
+		}
+		if payload.Message != nil && payload.Message.ID != "" && !seenMessages[payload.Message.ID] {
+			message := sanitizeMessageSnapshot(*payload.Message)
+			message.SessionID = sessionID
+			if message.GlobalSeq == 0 {
+				message.GlobalSeq = event.Seq
+			}
+			replay.Messages = append(replay.Messages, message)
+			seenMessages[message.ID] = true
+		}
+		if payload.RunIntent != nil && payload.RunIntent.RunID != "" && !seenRunIntents[payload.RunIntent.RunID] {
+			intent := *payload.RunIntent
+			intent.SessionID = sessionID
+			if intent.EventSeq == 0 {
+				intent.EventSeq = event.Seq
+			}
+			replay.RunIntents = append(replay.RunIntents, intent)
+			seenRunIntents[intent.RunID] = true
+		}
+		replay.HighWatermarkSeq = event.Seq
+	}
+	if stored, ok, err := s.GetSession(sessionID); err != nil {
+		return V3SessionReplay{}, err
+	} else if ok && replay.Session == nil {
+		stored.Metadata = cloneSessionMetadataMap(stored.Metadata)
+		replay.Session = &stored
+	}
+	if replay.Lifecycle == nil {
+		if lifecycle, ok, err := s.GetSessionLifecycle(sessionID); err != nil {
+			return V3SessionReplay{}, err
+		} else if ok {
+			replay.Lifecycle = &lifecycle
+			if replay.Session != nil {
+				replay.Session.Lifecycle = &lifecycle
+			}
+		}
+	}
+	if replay.HighWatermarkSeq > afterSeq {
+		messages, err := s.ListV3SessionMessages(sessionID, afterSeq, limit)
+		if err != nil {
+			return V3SessionReplay{}, err
+		}
+		for _, message := range messages {
+			if message.GlobalSeq > replay.HighWatermarkSeq {
+				continue
+			}
+			if message.ID != "" && !seenMessages[message.ID] {
+				replay.Messages = append(replay.Messages, message)
+				seenMessages[message.ID] = true
+			}
+		}
+		intents, err := s.ListV3SessionRunIntents(sessionID, afterSeq, limit)
+		if err != nil {
+			return V3SessionReplay{}, err
+		}
+		for _, intent := range intents {
+			if intent.EventSeq > replay.HighWatermarkSeq {
+				continue
+			}
+			if intent.RunID != "" && !seenRunIntents[intent.RunID] {
+				replay.RunIntents = append(replay.RunIntents, intent)
+				seenRunIntents[intent.RunID] = true
+			}
+		}
+	}
+	sort.SliceStable(replay.Messages, func(i, j int) bool { return replay.Messages[i].GlobalSeq < replay.Messages[j].GlobalSeq })
+	sort.SliceStable(replay.RunIntents, func(i, j int) bool { return replay.RunIntents[i].EventSeq < replay.RunIntents[j].EventSeq })
+	if projection, ok, err := s.GetV3SessionProjection(sessionID); err != nil {
+		return V3SessionReplay{}, err
+	} else if ok {
+		replay.Projection = projection
+	} else if replay.HighWatermarkSeq > 0 {
+		replay.Projection = V3SessionProjection{SessionID: sessionID, LastEventSeq: replay.HighWatermarkSeq, ProjectionHighWatermarkSeq: replay.HighWatermarkSeq}
+	}
+	if replay.NextSeq == 0 && replay.HighWatermarkSeq == 0 {
+		replay.NextSeq = afterSeq
+	} else if replay.HighWatermarkSeq > 0 {
+		replay.NextSeq = replay.HighWatermarkSeq
+	}
+	if replay.Projection.ProjectionHighWatermarkSeq < replay.HighWatermarkSeq {
+		return V3SessionReplay{}, fmt.Errorf("v3 session projection high watermark %d is behind replay high watermark %d", replay.Projection.ProjectionHighWatermarkSeq, replay.HighWatermarkSeq)
+	}
+	return replay, nil
 }
 
 func (s *SessionStore) GetV3SessionProjection(sessionID string) (V3SessionProjection, bool, error) {
@@ -501,6 +664,32 @@ func (s *SessionStore) GetV3SessionRunIntent(sessionID, runID string) (V3Session
 		return V3SessionRunIntent{}, ok, err
 	}
 	return intent, true, nil
+}
+
+func (s *SessionStore) ListV3SessionRunIntents(sessionID string, afterSeq uint64, limit int) ([]V3SessionRunIntent, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, errors.New("session id is required")
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	out := make([]V3SessionRunIntent, 0, limit)
+	err := s.store.IteratePrefix(V3SessionRunIntentPrefix(sessionID), 100000, func(_ string, value []byte) error {
+		if len(out) >= limit {
+			return nil
+		}
+		var intent V3SessionRunIntent
+		if err := json.Unmarshal(value, &intent); err != nil {
+			return err
+		}
+		if intent.EventSeq <= afterSeq {
+			return nil
+		}
+		out = append(out, intent)
+		return nil
+	})
+	return out, err
 }
 
 func (s *SessionStore) readV3SessionSequence(sessionID string) (uint64, error) {
@@ -850,22 +1039,35 @@ func normalizeV3SessionEventType(input V3SessionMutationInput) string {
 	}
 }
 
-func (input V3SessionMutationInput) v3EventPayload(seq uint64, message MessageSnapshot, runIntent V3SessionRunIntent) (json.RawMessage, error) {
+func (input V3SessionMutationInput) v3EventPayload(seq uint64, session SessionSnapshot, message MessageSnapshot, lifecycle SessionLifecycleSnapshot, runIntent V3SessionRunIntent) (json.RawMessage, error) {
 	if len(input.EventPayload) > 0 {
 		return append(json.RawMessage(nil), input.EventPayload...), nil
 	}
-	payload := map[string]any{
-		"session_id": input.SessionID,
-		"seq":        seq,
-		"kind":       input.Kind,
+	payload := v3SessionEventReplayPayload{
+		SessionID: input.SessionID,
+		Seq:       seq,
+		Kind:      input.Kind,
+	}
+	if session.ID != "" {
+		snapshot := session
+		snapshot.Metadata = cloneSessionMetadataMap(snapshot.Metadata)
+		payload.Session = &snapshot
 	}
 	if message.ID != "" {
-		payload["message_id"] = message.ID
-		payload["role"] = message.Role
+		msg := sanitizeMessageSnapshot(message)
+		payload.Message = &msg
+		payload.MessageID = msg.ID
+		payload.Role = msg.Role
+	}
+	if lifecycle.SessionID != "" {
+		copy := lifecycle
+		payload.Lifecycle = &copy
 	}
 	if runIntent.RunID != "" {
-		payload["run_id"] = runIntent.RunID
-		payload["status"] = runIntent.Status
+		intent := runIntent
+		payload.RunIntent = &intent
+		payload.RunID = intent.RunID
+		payload.Status = intent.Status
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

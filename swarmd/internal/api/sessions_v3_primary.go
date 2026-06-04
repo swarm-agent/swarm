@@ -109,6 +109,8 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		})
 	case "messages":
 		s.handleSessionV3PrimaryMessages(w, r, principal, sessionID)
+	case "events":
+		s.handleSessionV3PrimaryEvents(w, r, principal, sessionID)
 	default:
 		writeError(w, http.StatusBadRequest, errors.New("unknown sessions v3 path"))
 	}
@@ -350,6 +352,40 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 		"events":     updated.Events,
 		"mutation":   result,
 		"previous":   hydrated.Projection,
+	})
+}
+
+func (s *Server) handleSessionV3PrimaryEvents(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	afterSeq, limit, ok := parseAfterSeqAndLimit(w, r, 500)
+	if !ok {
+		return
+	}
+	if _, found, err := s.hydrateSessionsV3Primary(principal, sessionID); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	} else if !found {
+		writeSessionNotFound(w)
+		return
+	}
+	replay, err := s.sessions.ReplaySessionEvents(sessionID, afterSeq, limit)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":                 true,
+		"session_id":         sessionID,
+		"events":             replay.Events,
+		"projection":         replay.Projection,
+		"lifecycle":          replay.Lifecycle,
+		"messages":           replay.Messages,
+		"run_intents":        replay.RunIntents,
+		"high_watermark_seq": replay.HighWatermarkSeq,
+		"next_seq":           replay.NextSeq,
 	})
 }
 

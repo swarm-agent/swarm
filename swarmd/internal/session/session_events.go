@@ -11,6 +11,7 @@ type SessionMutationResult = pebblestore.V3SessionMutationResult
 type SessionEvent = pebblestore.V3SessionEvent
 type SessionProjection = pebblestore.V3SessionProjection
 type SessionRunIntent = pebblestore.V3SessionRunIntent
+type SessionReplay = pebblestore.V3SessionReplay
 
 type SessionIdempotencyRecord = pebblestore.V3SessionIdempotencyRecord
 
@@ -52,4 +53,11 @@ func (s *Service) GetSessionProjection(sessionID string) (SessionProjection, boo
 		return SessionProjection{}, false, errors.New("session store is not configured")
 	}
 	return s.store.GetV3SessionProjection(sessionID)
+}
+
+func (s *Service) ReplaySessionEvents(sessionID string, afterSeq uint64, limit int) (SessionReplay, error) {
+	if s == nil || s.store == nil {
+		return SessionReplay{}, errors.New("session store is not configured")
+	}
+	return s.store.ReplayV3SessionEvents(sessionID, afterSeq, limit)
 }
