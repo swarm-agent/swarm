@@ -2053,6 +2053,7 @@ export function DesktopChatPanel({
       }
       await submitPrompt({
         sessionId,
+        sessionApi: liveSession?.sessionApi,
         workspacePath,
         workspaceName,
         prompt: parsed.note,
@@ -2369,6 +2370,8 @@ export function DesktopChatPanel({
       await submitPrompt({
         sessionId: targetSession.id,
         route: activeChatRoute,
+        sessionApi: targetSession.sessionApi,
+        clientRequestId: pendingMessageId ? `desktop-v3-message:${pendingMessageId}` : undefined,
         workspacePath,
         workspaceName,
         prompt: runPrompt,

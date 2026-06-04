@@ -246,6 +246,8 @@ export interface DesktopStoreState {
   submitPrompt: (input: {
     sessionId: string | null
     route?: DesktopChatRoute | null
+    sessionApi?: string | null
+    clientRequestId?: string | null
     workspacePath: string
     workspaceName: string
     prompt: string

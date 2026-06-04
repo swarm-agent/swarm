@@ -20,10 +20,12 @@ import {
   fetchSession,
   fetchSessionPendingPermissions,
   fetchSessionUsageSummary,
+  sendSessionMessage,
+  type SendSessionMessageResult,
 } from '../chat/queries/chat-queries'
 import type { DesktopChatRoute } from '../chat/services/chat-routing'
 import { gitStatusQueryKey } from '../git/api'
-import { agentStateQueryOptions, sessionMessagesQueryOptions, sessionPreferenceQueryKey, uiSettingsQueryKey } from '../../queries/query-options'
+import { agentStateQueryOptions, sessionMessagesQueryKey, sessionMessagesQueryOptions, sessionPreferenceQueryKey, uiSettingsQueryKey } from '../../queries/query-options'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { mergeMessageIntoCache } from '../chat/services/message-cache'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
@@ -1305,6 +1307,58 @@ function updateMessagesCache(sessionId: string, message: ChatMessageRecord, afte
     queryClient.setQueryData(sessionMessagesQueryOptions(sessionId).queryKey, (current: ChatMessageRecord[] | undefined) => mergeMessageIntoCache(current, message))
     afterSync?.()
   })
+}
+
+function mergeMessagesCache(sessionId: string, messages: ChatMessageRecord[]): void {
+  if (messages.length === 0) {
+    return
+  }
+  queryClient.setQueryData(sessionMessagesQueryKey(sessionId), (current: ChatMessageRecord[] | undefined) => (
+    messages.reduce<ChatMessageRecord[]>((merged, message) => mergeMessageIntoCache(merged, message), current ?? [])
+  ))
+}
+
+function isSendSessionMessageResult(value: unknown): value is SendSessionMessageResult {
+  return Boolean(value && typeof value === 'object' && ('message' in value || 'runIntent' in value || 'session' in value))
+}
+
+function applyV3MessageCommitResult(state: DesktopStoreState, sessionId: string, result: SendSessionMessageResult, ts: number): Partial<DesktopStoreState> {
+  const existing = state.sessions[sessionId]
+  if (!existing) {
+    return {}
+  }
+  const runIntent = result.runIntent
+  const runStatus = runIntent?.status.trim().toLowerCase() ?? ''
+  const sessions = { ...state.sessions }
+  const baseSession = result.session
+    ? mergeSessionRecords(existing, result.session)
+    : existing
+  const session = { ...baseSession, live: { ...baseSession.live } }
+  session.sessionApi = session.sessionApi || 'v3'
+  session.live.runId = runIntent?.runId || session.live.runId
+  session.live.awaitingAck = false
+  session.live.status = runStatus === 'dispatch_blocked'
+    ? 'blocked'
+    : runStatus === 'pending_executor'
+      ? 'starting'
+      : session.live.status
+  session.live.summary = runStatus === 'dispatch_blocked'
+    ? (runIntent?.blockedReason || 'Dispatch blocked')
+    : runStatus === 'pending_executor'
+      ? 'Pending executor…'
+      : session.live.summary
+  session.live.error = runStatus === 'dispatch_blocked'
+    ? (runIntent?.blockedReason || null)
+    : null
+  session.live.lastEventType = runStatus === 'dispatch_blocked'
+    ? 'run.dispatch_blocked'
+    : runStatus === 'pending_executor'
+      ? 'run.pending_executor'
+      : 'message.committed'
+  session.live.lastEventAt = ts
+  sessions[sessionId] = mergeSessionRecords(existing, session)
+  syncBlockedSessionToWorkspaceOverview(queryClient, sessions[sessionId])
+  return { sessions }
 }
 
 function deferAssistantFinalization(sessionId: string, message: ChatMessageRecord, assistantDraft: string): void {
@@ -2899,9 +2953,11 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
     set((state) => applyRunStreamFrame(state, normalizedSessionId, { type: 'run.stop.accepted', run_id: runId }, Date.now()))
     await requireRunStreamController().stop({ sessionId: normalizedSessionId, runId, route })
   },
-  submitPrompt: async ({ sessionId, route = null, workspacePath, prompt, agentName, compact = false, targetKind = '', targetName = '' }: {
+  submitPrompt: async ({ sessionId, route = null, sessionApi = null, clientRequestId: providedClientRequestId = null, workspacePath, prompt, agentName, compact = false, targetKind = '', targetName = '' }: {
     sessionId: string | null
     route?: DesktopChatRoute | null
+    sessionApi?: string | null
+    clientRequestId?: string | null
     workspacePath: string
     prompt: string
     agentName: string
@@ -2953,6 +3009,20 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
     })
 
     try {
+      const effectiveSessionApi = sessionApi?.trim().toLowerCase() || get().sessions[targetSessionId]?.sessionApi?.trim().toLowerCase() || ''
+      if (effectiveSessionApi === 'v3' && !compact) {
+        const clientRequestId = providedClientRequestId?.trim() || `desktop-v3-message:${targetSessionId}:${Date.now()}`
+        const result = await sendSessionMessage(targetSessionId, 'user', trimmedPrompt, route, { sessionApi: 'v3', clientRequestId })
+        if (isSendSessionMessageResult(result)) {
+          const committedMessages = result.message
+            ? [result.message]
+            : result.messages ?? []
+          mergeMessagesCache(targetSessionId, committedMessages)
+          set((state) => applyV3MessageCommitResult(state, targetSessionId, result, Date.now()))
+        }
+        return
+      }
+
       const accepted = await requireRunStreamController().start({
         sessionId: targetSessionId,
         route,

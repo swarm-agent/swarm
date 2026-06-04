@@ -125,16 +125,18 @@ interface PendingPermissionsResponseWire {
   permissions?: ResolvePermissionResponseWire["permission"][];
 }
 
+interface MessageWire {
+  id?: string;
+  session_id?: string;
+  global_seq?: number;
+  role?: string;
+  content?: string;
+  created_at?: number;
+  metadata?: Record<string, unknown>;
+}
+
 interface MessagesResponseWire {
-  messages?: Array<{
-    id?: string;
-    session_id?: string;
-    global_seq?: number;
-    role?: string;
-    content?: string;
-    created_at?: number;
-    metadata?: Record<string, unknown>;
-  }>;
+  messages?: MessageWire[];
 }
 
 interface SessionProjectionWire {
@@ -151,8 +153,47 @@ interface V3HydratedSessionResponseWire {
   events?: unknown[];
 }
 
+interface V3RunIntentWire {
+  session_id?: string;
+  run_id?: string;
+  status?: string;
+  blocked_reason?: string;
+  created_at?: number;
+  updated_at?: number;
+  event_seq?: number;
+}
+
+interface V3MessageCommitResponseWire extends V3HydratedSessionResponseWire {
+  ok?: boolean;
+  message?: MessageWire;
+  run_intent?: V3RunIntentWire | null;
+}
+
+export interface V3RunIntentRecord {
+  sessionId: string;
+  runId: string;
+  status: string;
+  blockedReason: string;
+  createdAt: number;
+  updatedAt: number;
+  eventSeq: number;
+}
+
+export interface SendSessionMessageResult {
+  ok?: boolean;
+  session?: DesktopSessionRecord;
+  message?: ChatMessageRecord | null;
+  messages?: ChatMessageRecord[];
+  runIntent?: V3RunIntentRecord | null;
+  events?: unknown[];
+}
+
 interface SessionDataRequestOptions {
   sessionApi?: string | null;
+}
+
+interface SendSessionMessageOptions extends SessionDataRequestOptions {
+  clientRequestId?: string | null;
 }
 
 interface SessionPreferenceWire {
@@ -684,6 +725,48 @@ function applySessionProjectionCursor(session: DesktopSessionRecord, projection:
   };
 }
 
+function mapChatMessage(message: MessageWire): ChatMessageRecord {
+  const content = String(message.content ?? "");
+  return {
+    id: String(message.id ?? "").trim(),
+    sessionId: String(message.session_id ?? "").trim(),
+    globalSeq: typeof message.global_seq === "number" ? message.global_seq : 0,
+    role: String(message.role ?? "").trim(),
+    content,
+    createdAt: typeof message.created_at === "number" ? message.created_at : 0,
+    metadata: message.metadata,
+    toolMessage: parseStructuredToolMessage(content),
+  };
+}
+
+function mapV3RunIntent(intent: V3RunIntentWire | null | undefined): V3RunIntentRecord | null {
+  if (!intent || typeof intent !== "object") {
+    return null;
+  }
+  return {
+    sessionId: String(intent.session_id ?? "").trim(),
+    runId: String(intent.run_id ?? "").trim(),
+    status: String(intent.status ?? "").trim(),
+    blockedReason: String(intent.blocked_reason ?? "").trim(),
+    createdAt: typeof intent.created_at === "number" ? intent.created_at : 0,
+    updatedAt: typeof intent.updated_at === "number" ? intent.updated_at : 0,
+    eventSeq: typeof intent.event_seq === "number" ? intent.event_seq : 0,
+  };
+}
+
+function mapV3MessageCommitResponse(response: V3MessageCommitResponseWire): SendSessionMessageResult {
+  const mappedSession = mapSession(mapSessionProjectionToSession(response.session ?? {}, response.projection));
+  const session = mappedSession.id ? applySessionProjectionCursor(mappedSession, response.projection) : undefined;
+  return {
+    ok: response.ok,
+    session,
+    message: response.message ? mapChatMessage(response.message) : null,
+    messages: Array.isArray(response.messages) ? response.messages.map(mapChatMessage) : [],
+    runIntent: mapV3RunIntent(response.run_intent),
+    events: Array.isArray(response.events) ? response.events : [],
+  };
+}
+
 function mapSession(session: SessionWire): DesktopSessionRecord {
   const lifecycle =
     session.lifecycle && typeof session.lifecycle === "object"
@@ -947,21 +1030,7 @@ export async function fetchSessionMessages(
     { signal },
   );
   return Array.isArray(response.messages)
-    ? response.messages.map((message) => {
-        const content = String(message.content ?? "");
-        return {
-          id: String(message.id ?? "").trim(),
-          sessionId: String(message.session_id ?? "").trim(),
-          globalSeq:
-            typeof message.global_seq === "number" ? message.global_seq : 0,
-          role: String(message.role ?? "").trim(),
-          content,
-          createdAt:
-            typeof message.created_at === "number" ? message.created_at : 0,
-          metadata: message.metadata,
-          toolMessage: parseStructuredToolMessage(content),
-        };
-      })
+    ? response.messages.map(mapChatMessage)
     : [];
 }
 
@@ -1764,7 +1833,29 @@ export async function sendSessionMessage(
   role: "user" | "assistant" | "system" | "tool" | "reasoning",
   content: string,
   route?: DesktopChatRoute | null,
-) {
+  options: SendSessionMessageOptions = {},
+): Promise<SendSessionMessageResult | unknown> {
+  const sessionApi = options.sessionApi?.trim().toLowerCase() ?? "";
+  if (sessionApi === "v3") {
+    const clientRequestId = options.clientRequestId?.trim()
+      || `desktop-v3-message:${sessionId}:${crypto.randomUUID()}`;
+    const response = await requestJson<V3MessageCommitResponseWire>(
+      `/v3/sessions/${encodeURIComponent(sessionId)}/messages`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          client_request_id: clientRequestId,
+          role,
+          content,
+        }),
+      },
+    );
+    return mapV3MessageCommitResponse(response);
+  }
+
   const managedHost = isManagedHostDesktopChatRoute(route)
   return requestJson(
     managedHost
