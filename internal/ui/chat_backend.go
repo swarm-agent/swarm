@@ -128,17 +128,20 @@ type ChatUsageSummary struct {
 }
 
 type ChatRunResponse struct {
-	Model            string
-	Thinking         string
-	ReasoningSummary string
-	TurnUsage        *ChatTurnUsage
-	UsageSummary     *ChatUsageSummary
-	UserMessage      ChatMessageRecord
-	ToolMessages     []ChatMessageRecord
-	AssistantMessage ChatMessageRecord
-	Commentary       []ChatMessageRecord
-	TargetKind       string
-	TargetName       string
+	Model                string
+	Thinking             string
+	ReasoningSummary     string
+	TurnUsage            *ChatTurnUsage
+	UsageSummary         *ChatUsageSummary
+	UserMessage          ChatMessageRecord
+	ToolMessages         []ChatMessageRecord
+	AssistantMessage     ChatMessageRecord
+	Commentary           []ChatMessageRecord
+	TargetKind           string
+	TargetName           string
+	NoAssistant          bool
+	PrimaryRunStatus     string
+	PrimaryBlockedReason string
 }
 
 type ChatRunStreamEvent struct {

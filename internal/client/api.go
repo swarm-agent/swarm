@@ -715,37 +715,105 @@ type SessionCreateOptions struct {
 }
 
 type SessionSummary struct {
-	ID                     string                    `json:"id"`
-	WorkspacePath          string                    `json:"workspace_path"`
-	WorkspaceName          string                    `json:"workspace_name"`
-	Title                  string                    `json:"title"`
-	Mode                   string                    `json:"mode"`
-	Warning                string                    `json:"warning,omitempty"`
-	Preference             ModelPreference           `json:"preference,omitempty"`
-	WorktreeEnabled        bool                      `json:"worktree_enabled,omitempty"`
-	WorktreeRootPath       string                    `json:"worktree_root_path,omitempty"`
-	WorktreeBaseBranch     string                    `json:"worktree_base_branch,omitempty"`
-	WorktreeBranch         string                    `json:"worktree_branch,omitempty"`
-	GitBranch              string                    `json:"git_branch,omitempty"`
-	GitHasGit              bool                      `json:"git_has_git,omitempty"`
-	GitClean               bool                      `json:"git_clean,omitempty"`
-	GitDirtyCount          int                       `json:"git_dirty_count,omitempty"`
-	GitStagedCount         int                       `json:"git_staged_count,omitempty"`
-	GitModifiedCount       int                       `json:"git_modified_count,omitempty"`
-	GitUntrackedCount      int                       `json:"git_untracked_count,omitempty"`
-	GitConflictCount       int                       `json:"git_conflict_count,omitempty"`
-	GitAheadCount          int                       `json:"git_ahead_count,omitempty"`
-	GitBehindCount         int                       `json:"git_behind_count,omitempty"`
-	GitCommitDetected      bool                      `json:"git_commit_detected,omitempty"`
-	GitCommitCount         int                       `json:"git_commit_count,omitempty"`
-	Metadata               map[string]any            `json:"metadata,omitempty"`
-	CreatedAt              int64                     `json:"created_at"`
-	UpdatedAt              int64                     `json:"updated_at"`
-	MessageCount           int                       `json:"message_count"`
-	LastMessageAt          int64                     `json:"last_message_at"`
-	PendingPermissionCount int                       `json:"pending_permission_count"`
-	Lifecycle              *SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
-	SessionExecution       *SessionExecutionV2       `json:"session_execution,omitempty"`
+	ID                         string                    `json:"id"`
+	WorkspacePath              string                    `json:"workspace_path"`
+	WorkspaceName              string                    `json:"workspace_name"`
+	Title                      string                    `json:"title"`
+	Mode                       string                    `json:"mode"`
+	Warning                    string                    `json:"warning,omitempty"`
+	Preference                 ModelPreference           `json:"preference,omitempty"`
+	WorktreeEnabled            bool                      `json:"worktree_enabled,omitempty"`
+	WorktreeRootPath           string                    `json:"worktree_root_path,omitempty"`
+	WorktreeBaseBranch         string                    `json:"worktree_base_branch,omitempty"`
+	WorktreeBranch             string                    `json:"worktree_branch,omitempty"`
+	GitBranch                  string                    `json:"git_branch,omitempty"`
+	GitHasGit                  bool                      `json:"git_has_git,omitempty"`
+	GitClean                   bool                      `json:"git_clean,omitempty"`
+	GitDirtyCount              int                       `json:"git_dirty_count,omitempty"`
+	GitStagedCount             int                       `json:"git_staged_count,omitempty"`
+	GitModifiedCount           int                       `json:"git_modified_count,omitempty"`
+	GitUntrackedCount          int                       `json:"git_untracked_count,omitempty"`
+	GitConflictCount           int                       `json:"git_conflict_count,omitempty"`
+	GitAheadCount              int                       `json:"git_ahead_count,omitempty"`
+	GitBehindCount             int                       `json:"git_behind_count,omitempty"`
+	GitCommitDetected          bool                      `json:"git_commit_detected,omitempty"`
+	GitCommitCount             int                       `json:"git_commit_count,omitempty"`
+	Metadata                   map[string]any            `json:"metadata,omitempty"`
+	CreatedAt                  int64                     `json:"created_at"`
+	UpdatedAt                  int64                     `json:"updated_at"`
+	MessageCount               int                       `json:"message_count"`
+	LastMessageAt              int64                     `json:"last_message_at"`
+	PendingPermissionCount     int                       `json:"pending_permission_count"`
+	Lifecycle                  *SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
+	SessionExecution           *SessionExecutionV2       `json:"session_execution,omitempty"`
+	SessionAPI                 string                    `json:"session_api,omitempty"`
+	LastEventSeq               uint64                    `json:"last_event_seq,omitempty"`
+	ProjectionHighWatermarkSeq uint64                    `json:"projection_high_watermark_seq,omitempty"`
+}
+
+type SessionV3Projection struct {
+	SessionID                  string `json:"session_id"`
+	LastEventSeq               uint64 `json:"last_event_seq"`
+	ProjectionHighWatermarkSeq uint64 `json:"projection_high_watermark_seq"`
+	UpdatedAt                  int64  `json:"updated_at"`
+}
+
+type SessionV3RunIntent struct {
+	SessionID     string `json:"session_id"`
+	RunID         string `json:"run_id"`
+	Status        string `json:"status"`
+	BlockedReason string `json:"blocked_reason,omitempty"`
+	CreatedAt     int64  `json:"created_at"`
+	UpdatedAt     int64  `json:"updated_at"`
+	EventSeq      uint64 `json:"event_seq"`
+}
+
+type SessionV3Event struct {
+	ID            string          `json:"id"`
+	SessionID     string          `json:"session_id"`
+	Seq           uint64          `json:"seq"`
+	EventType     string          `json:"event_type"`
+	Payload       json.RawMessage `json:"payload"`
+	TsUnixMS      int64           `json:"ts_unix_ms"`
+	CausationID   string          `json:"causation_id,omitempty"`
+	CorrelationID string          `json:"correlation_id,omitempty"`
+}
+
+type SessionV3Hydrated struct {
+	Session    SessionSummary      `json:"session"`
+	Projection SessionV3Projection `json:"projection"`
+	Messages   []SessionMessage    `json:"messages"`
+	Events     []SessionV3Event    `json:"events"`
+}
+
+type SessionV3MessageOptions struct {
+	ClientRequestID   string
+	MessageID         string
+	RunID             string
+	Role              string
+	Content           string
+	Metadata          map[string]any
+	DispatchAuthority map[string]any
+}
+
+type SessionV3MessageResult struct {
+	Session    SessionSummary      `json:"session"`
+	Projection SessionV3Projection `json:"projection"`
+	Message    SessionMessage      `json:"message"`
+	RunIntent  SessionV3RunIntent  `json:"run_intent"`
+	Messages   []SessionMessage    `json:"messages"`
+	Events     []SessionV3Event    `json:"events"`
+}
+
+type SessionV3Replay struct {
+	Session          *SessionSummary           `json:"session,omitempty"`
+	Projection       SessionV3Projection       `json:"projection"`
+	Lifecycle        *SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
+	Messages         []SessionMessage          `json:"messages"`
+	RunIntents       []SessionV3RunIntent      `json:"run_intents,omitempty"`
+	Events           []SessionV3Event          `json:"events"`
+	HighWatermarkSeq uint64                    `json:"high_watermark_seq"`
+	NextSeq          uint64                    `json:"next_seq"`
 }
 
 type SessionPlan struct {
@@ -2753,6 +2821,209 @@ func sessionV2LifecyclePath(sessionID, suffix string) string {
 		path += suffix
 	}
 	return path
+}
+
+func sessionV3PrimaryPath(sessionID, suffix string) string {
+	path := "/v3/sessions"
+	if id := strings.TrimSpace(sessionID); id != "" {
+		path += "/" + url.PathEscape(id)
+	}
+	if suffix = strings.TrimSpace(suffix); suffix != "" {
+		if !strings.HasPrefix(suffix, "/") {
+			suffix = "/" + suffix
+		}
+		path += suffix
+	}
+	return path
+}
+
+func newSessionV3ClientRequestID(prefix string) string {
+	prefix = strings.Trim(strings.TrimSpace(prefix), "-")
+	if prefix == "" {
+		prefix = "session-v3"
+	}
+	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+}
+
+func markSessionV3(summary SessionSummary, projection SessionV3Projection) SessionSummary {
+	summary.SessionAPI = "v3"
+	summary.LastEventSeq = projection.LastEventSeq
+	summary.ProjectionHighWatermarkSeq = projection.ProjectionHighWatermarkSeq
+	return summary
+}
+
+func (c *API) ListSessionsV3(ctx context.Context, limit int) ([]SessionSummary, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	path := sessionV3PrimaryPath("", "") + "?limit=" + strconv.Itoa(limit)
+	var resp struct {
+		OK       bool `json:"ok"`
+		Sessions []struct {
+			Session    SessionSummary      `json:"session"`
+			Projection SessionV3Projection `json:"projection"`
+		} `json:"sessions"`
+	}
+	if err := c.getJSON(ctx, path, &resp, true); err != nil {
+		return nil, err
+	}
+	out := make([]SessionSummary, 0, len(resp.Sessions))
+	for _, item := range resp.Sessions {
+		out = append(out, markSessionV3(item.Session, item.Projection))
+	}
+	return out, nil
+}
+
+func (c *API) CreateSessionV3WithOptions(ctx context.Context, options SessionCreateOptions) (SessionV3Hydrated, error) {
+	workspacePath := strings.TrimSpace(options.WorkspacePath)
+	if workspacePath == "" {
+		return SessionV3Hydrated{}, errors.New("workspace path is required")
+	}
+	mode := strings.ToLower(strings.TrimSpace(options.Mode))
+	if mode != "auto" {
+		mode = "plan"
+	}
+	req := map[string]any{
+		"client_request_id": newSessionV3ClientRequestID("create"),
+		"title":             strings.TrimSpace(options.Title),
+		"workspace_path":    workspacePath,
+		"workspace_name":    strings.TrimSpace(options.WorkspaceName),
+		"mode":              mode,
+		"preference": map[string]string{
+			"provider":     strings.TrimSpace(options.Preference.Provider),
+			"model":        strings.TrimSpace(options.Preference.Model),
+			"thinking":     strings.TrimSpace(options.Preference.Thinking),
+			"service_tier": strings.TrimSpace(options.Preference.ServiceTier),
+			"context_mode": strings.TrimSpace(options.Preference.ContextMode),
+		},
+	}
+	if len(options.Metadata) > 0 {
+		req["metadata"] = options.Metadata
+	}
+	var resp struct {
+		OK         bool                `json:"ok"`
+		Session    SessionSummary      `json:"session"`
+		Projection SessionV3Projection `json:"projection"`
+		Messages   []SessionMessage    `json:"messages"`
+		Events     []SessionV3Event    `json:"events"`
+	}
+	if err := c.postJSON(ctx, sessionV3PrimaryPath("", ""), req, &resp, true); err != nil {
+		return SessionV3Hydrated{}, err
+	}
+	resp.Session = markSessionV3(resp.Session, resp.Projection)
+	return SessionV3Hydrated{Session: resp.Session, Projection: resp.Projection, Messages: resp.Messages, Events: resp.Events}, nil
+}
+
+func (c *API) GetSessionV3(ctx context.Context, sessionID string) (SessionV3Hydrated, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return SessionV3Hydrated{}, errors.New("session id is required")
+	}
+	var resp struct {
+		OK         bool                `json:"ok"`
+		Session    SessionSummary      `json:"session"`
+		Projection SessionV3Projection `json:"projection"`
+		Messages   []SessionMessage    `json:"messages"`
+		Events     []SessionV3Event    `json:"events"`
+	}
+	if err := c.getJSON(ctx, sessionV3PrimaryPath(sessionID, ""), &resp, true); err != nil {
+		return SessionV3Hydrated{}, err
+	}
+	resp.Session = markSessionV3(resp.Session, resp.Projection)
+	return SessionV3Hydrated{Session: resp.Session, Projection: resp.Projection, Messages: resp.Messages, Events: resp.Events}, nil
+}
+
+func (c *API) ListSessionV3Messages(ctx context.Context, sessionID string, afterSeq uint64, limit int) ([]SessionMessage, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, errors.New("session id is required")
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	query := url.Values{}
+	if afterSeq > 0 {
+		query.Set("after_seq", strconv.FormatUint(afterSeq, 10))
+	}
+	query.Set("limit", strconv.Itoa(limit))
+	var resp struct {
+		OK        bool             `json:"ok"`
+		SessionID string           `json:"session_id"`
+		Messages  []SessionMessage `json:"messages"`
+	}
+	if err := c.getJSON(ctx, sessionV3PrimaryPath(sessionID, "messages")+"?"+query.Encode(), &resp, true); err != nil {
+		return nil, err
+	}
+	return resp.Messages, nil
+}
+
+func (c *API) ReplaySessionV3Events(ctx context.Context, sessionID string, afterSeq uint64, limit int) (SessionV3Replay, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return SessionV3Replay{}, errors.New("session id is required")
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	query := url.Values{}
+	if afterSeq > 0 {
+		query.Set("after_seq", strconv.FormatUint(afterSeq, 10))
+	}
+	query.Set("limit", strconv.Itoa(limit))
+	var replay SessionV3Replay
+	if err := c.getJSON(ctx, sessionV3PrimaryPath(sessionID, "events")+"?"+query.Encode(), &replay, true); err != nil {
+		return SessionV3Replay{}, err
+	}
+	if replay.Session != nil {
+		marked := markSessionV3(*replay.Session, replay.Projection)
+		replay.Session = &marked
+	}
+	return replay, nil
+}
+
+func (c *API) SendSessionV3Message(ctx context.Context, sessionID string, options SessionV3MessageOptions) (SessionV3MessageResult, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return SessionV3MessageResult{}, errors.New("session id is required")
+	}
+	role := strings.TrimSpace(options.Role)
+	if role == "" {
+		role = "user"
+	}
+	req := map[string]any{
+		"client_request_id": strings.TrimSpace(options.ClientRequestID),
+		"role":              role,
+		"content":           options.Content,
+	}
+	if req["client_request_id"] == "" {
+		req["client_request_id"] = newSessionV3ClientRequestID("message")
+	}
+	if value := strings.TrimSpace(options.MessageID); value != "" {
+		req["message_id"] = value
+	}
+	if value := strings.TrimSpace(options.RunID); value != "" {
+		req["run_id"] = value
+	}
+	if len(options.Metadata) > 0 {
+		req["metadata"] = options.Metadata
+	}
+	if len(options.DispatchAuthority) > 0 {
+		req["dispatch_authority"] = options.DispatchAuthority
+	}
+	var resp struct {
+		OK         bool                `json:"ok"`
+		Session    SessionSummary      `json:"session"`
+		Projection SessionV3Projection `json:"projection"`
+		Message    SessionMessage      `json:"message"`
+		RunIntent  SessionV3RunIntent  `json:"run_intent"`
+		Messages   []SessionMessage    `json:"messages"`
+		Events     []SessionV3Event    `json:"events"`
+	}
+	if err := c.postJSON(ctx, sessionV3PrimaryPath(sessionID, "messages"), req, &resp, true); err != nil {
+		return SessionV3MessageResult{}, err
+	}
+	resp.Session = markSessionV3(resp.Session, resp.Projection)
+	return SessionV3MessageResult{Session: resp.Session, Projection: resp.Projection, Message: resp.Message, RunIntent: resp.RunIntent, Messages: resp.Messages, Events: resp.Events}, nil
 }
 
 func (c *API) GetSession(ctx context.Context, sessionID string) (SessionSummary, error) {

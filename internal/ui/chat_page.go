@@ -2904,6 +2904,25 @@ func (p *ChatPage) applyRunSuccess(resp ChatRunResponse) {
 	if assistantText == "" {
 		assistantText = strings.TrimSpace(p.liveAssistant)
 	}
+	if assistantText == "" && resp.NoAssistant {
+		status := strings.TrimSpace(resp.PrimaryRunStatus)
+		if status == "" {
+			status = "pending_executor"
+		}
+		if reason := strings.TrimSpace(resp.PrimaryBlockedReason); reason != "" {
+			p.statusLine = status + ": " + reason
+		} else {
+			p.statusLine = status + " - no executor attached"
+		}
+		p.errorLine = ""
+		p.liveAssistant = ""
+		p.liveThinking = ""
+		p.thinkingCompletedAt = time.Time{}
+		p.reasoningActive = false
+		p.reasoningStartedAt = time.Time{}
+		p.streamingRun = false
+		return
+	}
 	if assistantText == "" {
 		assistantText = "No assistant response text was returned."
 	}

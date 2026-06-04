@@ -2774,7 +2774,7 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 		}
 	}
 
-	session, err := a.api.CreateSessionWithOptions(ctx, client.SessionCreateOptions{
+	createOptions := client.SessionCreateOptions{
 		Title:                    title,
 		WorkspacePath:            workspacePath,
 		WorkspaceName:            workspaceName,
@@ -2791,24 +2791,38 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 		WorktreeUseCurrentBranch: worktreeUseCurrentBranch,
 		WorktreeBaseBranch:       worktreeBaseBranch,
 		WorktreeBranchName:       worktreeBranchName,
-	})
-	if err != nil {
-		return err
+	}
+	session := client.SessionSummary{}
+	if allowTUICWDPrimary {
+		createdV3, err := a.api.CreateSessionV3WithOptions(ctx, createOptions)
+		if err != nil {
+			return err
+		}
+		session = createdV3.Session
+	} else {
+		createdV2, err := a.api.CreateSessionWithOptions(ctx, createOptions)
+		if err != nil {
+			return err
+		}
+		session = createdV2
 	}
 	warning := strings.TrimSpace(session.Warning)
 	created := model.SessionSummary{
-		ID:                 strings.TrimSpace(session.ID),
-		WorkspacePath:      strings.TrimSpace(session.WorkspacePath),
-		WorkspaceName:      strings.TrimSpace(session.WorkspaceName),
-		Title:              strings.TrimSpace(session.Title),
-		Mode:               strings.TrimSpace(session.Mode),
-		Metadata:           cloneMetadataMap(session.Metadata),
-		SessionExecution:   cloneSessionExecutionV2(session.SessionExecution),
-		Preference:         session.Preference,
-		WorktreeEnabled:    session.WorktreeEnabled,
-		WorktreeRootPath:   strings.TrimSpace(session.WorktreeRootPath),
-		WorktreeBaseBranch: strings.TrimSpace(session.WorktreeBaseBranch),
-		WorktreeBranch:     strings.TrimSpace(session.WorktreeBranch),
+		ID:                         strings.TrimSpace(session.ID),
+		WorkspacePath:              strings.TrimSpace(session.WorkspacePath),
+		WorkspaceName:              strings.TrimSpace(session.WorkspaceName),
+		Title:                      strings.TrimSpace(session.Title),
+		Mode:                       strings.TrimSpace(session.Mode),
+		Metadata:                   cloneMetadataMap(session.Metadata),
+		SessionExecution:           cloneSessionExecutionV2(session.SessionExecution),
+		Preference:                 session.Preference,
+		WorktreeEnabled:            session.WorktreeEnabled,
+		WorktreeRootPath:           strings.TrimSpace(session.WorktreeRootPath),
+		WorktreeBaseBranch:         strings.TrimSpace(session.WorktreeBaseBranch),
+		WorktreeBranch:             strings.TrimSpace(session.WorktreeBranch),
+		SessionAPI:                 strings.TrimSpace(session.SessionAPI),
+		LastEventSeq:               session.LastEventSeq,
+		ProjectionHighWatermarkSeq: session.ProjectionHighWatermarkSeq,
 	}
 	if created.WorkspacePath == "" {
 		created.WorkspacePath = workspacePath
@@ -2878,15 +2892,18 @@ func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt str
 		contextMode = strings.TrimSpace(summary.Preference.ContextMode)
 	}
 	openedSummary := model.SessionSummary{
-		ID:                     sessionID,
-		WorkspacePath:          strings.TrimSpace(summary.WorkspacePath),
-		WorkspaceName:          strings.TrimSpace(summary.WorkspaceName),
-		Title:                  title,
-		Mode:                   strings.TrimSpace(summary.Mode),
-		Metadata:               cloneMetadataMap(summary.Metadata),
-		PendingPermissionCount: summary.PendingPermissionCount,
-		Lifecycle:              cloneClientSessionLifecycle(summary.Lifecycle),
-		SessionExecution:       cloneSessionExecutionV2(summary.SessionExecution),
+		ID:                         sessionID,
+		WorkspacePath:              strings.TrimSpace(summary.WorkspacePath),
+		WorkspaceName:              strings.TrimSpace(summary.WorkspaceName),
+		Title:                      title,
+		Mode:                       strings.TrimSpace(summary.Mode),
+		Metadata:                   cloneMetadataMap(summary.Metadata),
+		PendingPermissionCount:     summary.PendingPermissionCount,
+		Lifecycle:                  cloneClientSessionLifecycle(summary.Lifecycle),
+		SessionExecution:           cloneSessionExecutionV2(summary.SessionExecution),
+		SessionAPI:                 strings.TrimSpace(summary.SessionAPI),
+		LastEventSeq:               summary.LastEventSeq,
+		ProjectionHighWatermarkSeq: summary.ProjectionHighWatermarkSeq,
 		Preference: client.ModelPreference{
 			Provider:    strings.TrimSpace(modelProvider),
 			Model:       strings.TrimSpace(modelName),
@@ -2922,6 +2939,7 @@ func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt str
 		serviceTier,
 		contextMode,
 		contextWindow,
+		summary.SessionAPI,
 		summary.Metadata,
 	)
 }
@@ -3009,7 +3027,7 @@ func normalizeAppSessionMode(mode string) string {
 	}
 }
 
-func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName, sessionMode, worktreeBranch string, worktreeEnabled bool, worktreeRootPath, initialPrompt, modelProvider, modelName, thinkingLevel, serviceTier, contextMode string, contextWindow int, sessionMetadata map[string]any) error {
+func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName, sessionMode, worktreeBranch string, worktreeEnabled bool, worktreeRootPath, initialPrompt, modelProvider, modelName, thinkingLevel, serviceTier, contextMode string, contextWindow int, sessionAPI string, sessionMetadata map[string]any) error {
 	dir := a.home.ActiveDirectory()
 	chatWorkspace := strings.TrimSpace(workspaceName)
 	chatPath := strings.TrimSpace(workspacePath)
@@ -3045,7 +3063,7 @@ func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName
 	}
 
 	a.chat = ui.NewChatPage(ui.ChatPageOptions{
-		Backend:            newAPIChatBackend(a.api),
+		Backend:            newAPIChatBackend(a.api, sessionAPI),
 		SessionID:          strings.TrimSpace(sessionID),
 		SessionTitle:       strings.TrimSpace(sessionTitle),
 		InitialPrompt:      strings.TrimSpace(initialPrompt),
@@ -4040,6 +4058,15 @@ func mergeHomeSessionSummary(current, incoming model.SessionSummary) model.Sessi
 	if incoming.SessionExecution != nil {
 		merged.SessionExecution = cloneSessionExecutionV2(incoming.SessionExecution)
 	}
+	if value := strings.TrimSpace(incoming.SessionAPI); value != "" {
+		merged.SessionAPI = value
+	}
+	if incoming.LastEventSeq != 0 {
+		merged.LastEventSeq = incoming.LastEventSeq
+	}
+	if incoming.ProjectionHighWatermarkSeq != 0 {
+		merged.ProjectionHighWatermarkSeq = incoming.ProjectionHighWatermarkSeq
+	}
 	return merged
 }
 
@@ -4049,21 +4076,24 @@ func modelSessionSummaryFromClient(record client.SessionSummary) model.SessionSu
 		title = strings.TrimSpace(record.ID)
 	}
 	return model.SessionSummary{
-		ID:                     strings.TrimSpace(record.ID),
-		WorkspacePath:          strings.TrimSpace(record.WorkspacePath),
-		WorkspaceName:          strings.TrimSpace(record.WorkspaceName),
-		Title:                  title,
-		Mode:                   strings.TrimSpace(record.Mode),
-		Metadata:               cloneMetadataMap(record.Metadata),
-		PendingPermissionCount: record.PendingPermissionCount,
-		Lifecycle:              cloneClientSessionLifecycle(record.Lifecycle),
-		SessionExecution:       cloneSessionExecutionV2(record.SessionExecution),
-		Preference:             mergeClientModelPreference(client.ModelPreference{}, record.Preference),
-		WorktreeEnabled:        record.WorktreeEnabled,
-		WorktreeRootPath:       strings.TrimSpace(record.WorktreeRootPath),
-		WorktreeBaseBranch:     strings.TrimSpace(record.WorktreeBaseBranch),
-		WorktreeBranch:         strings.TrimSpace(record.WorktreeBranch),
-		UpdatedAgo:             formatAgo(record.UpdatedAt),
+		ID:                         strings.TrimSpace(record.ID),
+		WorkspacePath:              strings.TrimSpace(record.WorkspacePath),
+		WorkspaceName:              strings.TrimSpace(record.WorkspaceName),
+		Title:                      title,
+		Mode:                       strings.TrimSpace(record.Mode),
+		Metadata:                   cloneMetadataMap(record.Metadata),
+		PendingPermissionCount:     record.PendingPermissionCount,
+		Lifecycle:                  cloneClientSessionLifecycle(record.Lifecycle),
+		SessionExecution:           cloneSessionExecutionV2(record.SessionExecution),
+		Preference:                 mergeClientModelPreference(client.ModelPreference{}, record.Preference),
+		WorktreeEnabled:            record.WorktreeEnabled,
+		WorktreeRootPath:           strings.TrimSpace(record.WorktreeRootPath),
+		WorktreeBaseBranch:         strings.TrimSpace(record.WorktreeBaseBranch),
+		WorktreeBranch:             strings.TrimSpace(record.WorktreeBranch),
+		UpdatedAgo:                 formatAgo(record.UpdatedAt),
+		SessionAPI:                 strings.TrimSpace(record.SessionAPI),
+		LastEventSeq:               record.LastEventSeq,
+		ProjectionHighWatermarkSeq: record.ProjectionHighWatermarkSeq,
 	}
 }
 

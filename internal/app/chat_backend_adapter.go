@@ -36,17 +36,28 @@ func convertChatRunExecutionContext(ctx *ui.ChatRunExecutionContext) *client.Run
 }
 
 type apiChatBackend struct {
-	api *client.API
+	api        *client.API
+	sessionAPI string
 }
 
-func newAPIChatBackend(api *client.API) *apiChatBackend {
-	return &apiChatBackend{
-		api: api,
+func newAPIChatBackend(api *client.API, sessionAPI ...string) *apiChatBackend {
+	backend := &apiChatBackend{api: api}
+	if len(sessionAPI) > 0 {
+		backend.sessionAPI = strings.ToLower(strings.TrimSpace(sessionAPI[0]))
 	}
+	return backend
 }
 
 func (b *apiChatBackend) LoadMessages(ctx context.Context, sessionID string, afterSeq uint64, limit int) ([]ui.ChatMessageRecord, error) {
-	messages, err := b.api.ListSessionMessages(ctx, sessionID, afterSeq, limit)
+	var (
+		messages []client.SessionMessage
+		err      error
+	)
+	if strings.EqualFold(strings.TrimSpace(b.sessionAPI), "v3") {
+		messages, err = b.api.ListSessionV3Messages(ctx, sessionID, afterSeq, limit)
+	} else {
+		messages, err = b.api.ListSessionMessages(ctx, sessionID, afterSeq, limit)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -271,6 +282,23 @@ func (b *apiChatBackend) RunTurn(ctx context.Context, sessionID string, req ui.C
 }
 
 func (b *apiChatBackend) RunTurnStream(ctx context.Context, sessionID string, req ui.ChatRunRequest, onEvent func(ui.ChatRunStreamEvent)) (ui.ChatRunResponse, error) {
+	if strings.EqualFold(strings.TrimSpace(b.sessionAPI), "v3") {
+		result, err := b.api.SendSessionV3Message(ctx, sessionID, client.SessionV3MessageOptions{Role: "user", Content: req.Prompt})
+		if err != nil {
+			return ui.ChatRunResponse{}, err
+		}
+		if onEvent != nil {
+			onEvent(ui.ChatRunStreamEvent{Type: "message.stored", SessionID: sessionID, RunID: result.RunIntent.RunID, Message: ptrChatMessageRecord(convertClientMessage(result.Message))})
+			onEvent(ui.ChatRunStreamEvent{Type: "session.lifecycle.updated", SessionID: sessionID, RunID: result.RunIntent.RunID, Lifecycle: primaryRunIntentLifecycle(sessionID, result.RunIntent)})
+		}
+		return ui.ChatRunResponse{
+			UserMessage:          convertClientMessage(result.Message),
+			NoAssistant:          true,
+			PrimaryRunStatus:     strings.TrimSpace(result.RunIntent.Status),
+			PrimaryBlockedReason: strings.TrimSpace(result.RunIntent.BlockedReason),
+		}, nil
+	}
+
 	result, err := b.api.RunSessionStreamWithOptions(ctx, sessionID, req.Prompt, req.AgentName, req.Instructions, client.RunSessionOptions{
 		Compact:          req.Compact,
 		Background:       req.Background,
@@ -309,6 +337,28 @@ func (b *apiChatBackend) RunTurnStream(ctx context.Context, sessionID string, re
 		TargetKind:       result.TargetKind,
 		TargetName:       result.TargetName,
 	}, nil
+}
+
+func ptrChatMessageRecord(record ui.ChatMessageRecord) *ui.ChatMessageRecord {
+	return &record
+}
+
+func primaryRunIntentLifecycle(sessionID string, intent client.SessionV3RunIntent) *ui.ChatSessionLifecycle {
+	status := strings.ToLower(strings.TrimSpace(intent.Status))
+	phase := status
+	if phase == "" {
+		phase = "pending_executor"
+	}
+	return &ui.ChatSessionLifecycle{
+		SessionID:  strings.TrimSpace(sessionID),
+		RunID:      strings.TrimSpace(intent.RunID),
+		Active:     false,
+		Phase:      phase,
+		StartedAt:  intent.CreatedAt,
+		EndedAt:    intent.UpdatedAt,
+		UpdatedAt:  intent.UpdatedAt,
+		StopReason: strings.TrimSpace(intent.BlockedReason),
+	}
 }
 
 func convertClientMessage(message client.SessionMessage) ui.ChatMessageRecord {

@@ -28,7 +28,7 @@ func TestOpenChatSessionCreatePayloadUsesHostRouteAuthority(t *testing.T) {
 	assertCreateMetadataStrictV2Safe(t, got.metadata)
 }
 
-func TestOpenChatSessionCreatePayloadUsesTUICWDPrimaryExceptionOnlyForHostRoute(t *testing.T) {
+func TestOpenChatSessionCreatePayloadUsesV3PrimaryForTUICWDHostRoute(t *testing.T) {
 	got := captureOpenChatSessionCreateRequestWithWorktreeSettings(t, model.ChatRoute{ID: "host", TUIPrimaryCWD: true}, "host-swarm", "", testWorkspacePath, "plan", client.WorktreeSettings{
 		WorkspacePath:    testWorkspacePath,
 		Enabled:          true,
@@ -37,21 +37,24 @@ func TestOpenChatSessionCreatePayloadUsesTUICWDPrimaryExceptionOnlyForHostRoute(
 		BranchName:       "feature/<id>",
 	})
 
-	if got.bodyString("swarm_id") != "host-swarm" {
-		t.Fatalf("swarm_id = %q, want host-swarm", got.bodyString("swarm_id"))
+	if got.path != "/v3/sessions" {
+		t.Fatalf("create path = %q, want /v3/sessions", got.path)
+	}
+	if _, ok := got.body["swarm_id"]; ok {
+		t.Fatalf("swarm_id present in v3 primary create: %#v", got.body["swarm_id"])
 	}
 	if _, ok := got.body["workspace_binding_id"]; ok {
-		t.Fatalf("workspace_binding_id present in TUI cwd create: %#v", got.body["workspace_binding_id"])
+		t.Fatalf("workspace_binding_id present in v3 primary create: %#v", got.body["workspace_binding_id"])
 	}
 	if got.bodyString("workspace_path") != testWorkspacePath {
 		t.Fatalf("workspace_path = %q, want %q", got.bodyString("workspace_path"), testWorkspacePath)
 	}
-	if got.bodyString("worktree_mode") != "off" {
-		t.Fatalf("worktree_mode = %q, want off", got.bodyString("worktree_mode"))
+	if got.bodyString("workspace_name") == "" {
+		t.Fatalf("workspace_name missing in v3 primary create: %#v", got.body)
 	}
-	for _, key := range []string{"worktree_use_current_branch", "worktree_base_branch", "worktree_branch_name"} {
+	for _, key := range []string{"worktree_mode", "worktree_use_current_branch", "worktree_base_branch", "worktree_branch_name"} {
 		if _, ok := got.body[key]; ok {
-			t.Fatalf("%s present in TUI cwd create: %#v", key, got.body[key])
+			t.Fatalf("%s present in v3 primary create: %#v", key, got.body[key])
 		}
 	}
 }
@@ -141,6 +144,38 @@ func captureOpenChatSessionCreateRequestWithWorktreeSettings(t *testing.T, route
 	captured := capturedCreateRequest{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v3/sessions":
+			captured.path = r.URL.Path
+			if r.URL.RawQuery != "" {
+				t.Fatalf("unexpected query on v3 create request: %q", r.URL.RawQuery)
+			}
+			if r.Header.Get("X-Swarm-Token") == "" {
+				t.Fatalf("missing X-Swarm-Token on v3 create request")
+			}
+			if err := json.NewDecoder(r.Body).Decode(&captured.body); err != nil {
+				t.Fatalf("decode v3 request: %v", err)
+			}
+			if metadata, ok := captured.body["metadata"].(map[string]any); ok {
+				captured.metadata = metadata
+			}
+			mode := "plan"
+			if value, _ := captured.body["mode"].(string); strings.TrimSpace(value) != "" {
+				mode = value
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"session": map[string]any{
+					"id":             "session-1",
+					"workspace_path": captured.bodyString("workspace_path"),
+					"workspace_name": captured.bodyString("workspace_name"),
+					"title":          "New Session",
+					"mode":           mode,
+					"metadata":       captured.metadata,
+				},
+				"projection": map[string]any{"session_id": "session-1", "last_event_seq": 1, "projection_high_watermark_seq": 1},
+				"messages":   []any{},
+				"events":     []any{},
+			})
 		case r.Method == http.MethodPost && (r.URL.Path == "/v2/sessions/primary" || r.URL.Path == "/v2/sessions/local-containers"):
 			captured.path = r.URL.Path
 			if r.URL.RawQuery != "" {
@@ -193,7 +228,7 @@ func captureOpenChatSessionCreateRequestWithWorktreeSettings(t *testing.T, route
 				settings.WorkspacePath = workspacePath
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "worktrees": settings})
-		case r.Method == http.MethodGet && r.URL.Path == "/v2/sessions/session-1/preference":
+		case r.Method == http.MethodGet && (r.URL.Path == "/v2/sessions/session-1/preference" || r.URL.Path == "/v3/sessions/session-1/preference"):
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"preference": map[string]any{
 					"provider": "anthropic",
@@ -201,7 +236,7 @@ func captureOpenChatSessionCreateRequestWithWorktreeSettings(t *testing.T, route
 					"thinking": "auto",
 				},
 			})
-		case r.Method == http.MethodGet && r.URL.Path == "/v2/sessions/session-1/mode":
+		case r.Method == http.MethodGet && (r.URL.Path == "/v2/sessions/session-1/mode" || r.URL.Path == "/v3/sessions/session-1/mode"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "mode": captured.bodyString("mode")})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/providers":
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "providers": []any{}})
@@ -209,7 +244,7 @@ func captureOpenChatSessionCreateRequestWithWorktreeSettings(t *testing.T, route
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "favorites": []any{}})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/model/catalog":
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "models": []any{}})
-		case r.Method == http.MethodGet && (r.URL.Path == "/v1/sessions/session-1/messages" || r.URL.Path == "/v2/sessions/session-1/messages"):
+		case r.Method == http.MethodGet && (r.URL.Path == "/v1/sessions/session-1/messages" || r.URL.Path == "/v2/sessions/session-1/messages" || r.URL.Path == "/v3/sessions/session-1/messages"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "session_id": "session-1", "messages": []any{}})
 		case r.Method == http.MethodGet && (r.URL.Path == "/v1/sessions/session-1/usage" || r.URL.Path == "/v2/sessions/session-1/usage"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "session_id": "session-1", "has_usage_summary": false, "turn_usage_records": []any{}})

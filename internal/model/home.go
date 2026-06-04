@@ -82,22 +82,25 @@ type DirectoryItem struct {
 }
 
 type SessionSummary struct {
-	ID                     string
-	WorkspacePath          string
-	WorkspaceName          string
-	Title                  string
-	Mode                   string
-	Metadata               map[string]any
-	PendingPermissionCount int
-	Lifecycle              *client.SessionLifecycleSnapshot
-	SessionExecution       *client.SessionExecutionV2
-	Preference             client.ModelPreference
-	WorktreeEnabled        bool
-	WorktreeRootPath       string
-	WorktreeBaseBranch     string
-	WorktreeBranch         string
-	UpdatedAgo             string
-	Depth                  int
+	ID                         string
+	WorkspacePath              string
+	WorkspaceName              string
+	Title                      string
+	Mode                       string
+	Metadata                   map[string]any
+	PendingPermissionCount     int
+	Lifecycle                  *client.SessionLifecycleSnapshot
+	SessionExecution           *client.SessionExecutionV2
+	Preference                 client.ModelPreference
+	WorktreeEnabled            bool
+	WorktreeRootPath           string
+	WorktreeBaseBranch         string
+	WorktreeBranch             string
+	UpdatedAgo                 string
+	Depth                      int
+	SessionAPI                 string
+	LastEventSeq               uint64
+	ProjectionHighWatermarkSeq uint64
 }
 
 type BackgroundSessionSummary struct {
