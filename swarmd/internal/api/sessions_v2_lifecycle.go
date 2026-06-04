@@ -150,13 +150,17 @@ func decodePrimarySessionV2RunStreamInbound(raw []byte) (runStreamInboundMessage
 }
 
 func (s *Server) handlePrimarySessionV2ByID(w http.ResponseWriter, r *http.Request) {
-	if s.sessions == nil || s.topology == nil {
-		writeSessionsV2Error(w, errors.New("sessions v2 service is not configured"))
-		return
-	}
 	sessionID, subpath, ok := parsePrimarySessionV2LifecyclePath(r.URL.Path)
 	if !ok {
 		writeSessionsV2Error(w, sessionV2BadRequest("invalid sessions v2 lifecycle path"))
+		return
+	}
+	if isSessionsV3PrimarySessionID(sessionID) {
+		writeSessionsV2Error(w, sessionV2BadRequest("v3 primary session %q must use /v3/sessions endpoints", sessionID))
+		return
+	}
+	if s.sessions == nil || s.topology == nil {
+		writeSessionsV2Error(w, errors.New("sessions v2 service is not configured"))
 		return
 	}
 	if s.handleLocalContainerSessionV2LifecycleIfNeeded(w, r, sessionID, subpath) {

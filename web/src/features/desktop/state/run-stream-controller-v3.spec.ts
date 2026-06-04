@@ -131,7 +131,7 @@ test('desktop panel and controller route V3 streams to Sessions API v3 only', as
   const querySource = await readFile(new URL('../chat/queries/chat-queries.ts', import.meta.url), 'utf8')
   const panelSource = await readFile(new URL('../chat/components/desktop-chat-panel.tsx', import.meta.url), 'utf8')
 
-  assert.match(querySource, /`\/v3\/sessions\/\$\{encodeURIComponent\(sessionId\)\}\/stream`/)
+  assert.match(querySource, /`\/v3\/sessions\/\$\{encodeURIComponent\(normalizedSessionId\)\}\/stream`/)
   assert.match(querySource, /url\.searchParams\.set\("after_seq"/)
   assert.match(controllerSource, /sessionApi: resumeRequest\.sessionApi/)
   assert.match(controllerSource, /type === 'cursor\.error'/)

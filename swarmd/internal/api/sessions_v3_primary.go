@@ -509,6 +509,10 @@ func stableSessionsV3PrimarySessionID(principal identity.Principal, clientReques
 	return "v3session_" + hex.EncodeToString(sum[:16])
 }
 
+func isSessionsV3PrimarySessionID(sessionID string) bool {
+	return strings.HasPrefix(strings.TrimSpace(sessionID), "v3session_")
+}
+
 func normalizeSessionsV3ModelPreference(pref pebblestore.ModelPreference) pebblestore.ModelPreference {
 	pref.Provider = strings.TrimSpace(pref.Provider)
 	pref.Model = strings.TrimSpace(pref.Model)
