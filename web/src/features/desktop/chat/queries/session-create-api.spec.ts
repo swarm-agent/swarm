@@ -31,8 +31,6 @@ const primaryRoute: DesktopChatRoute = {
 }
 
 const forbiddenCreateBodyKeys = [
-  'workspace_name',
-  'workspace_path',
   'host_workspace_path',
   'runtime_workspace_path',
   'target_swarm_id',
@@ -49,22 +47,32 @@ async function withFetchStub(
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     calls.push({ input, init })
     const url = String(input)
-    if (url === '/v2/sessions/primary' || url === '/v2/sessions/local-containers') {
+    if (url === '/v3/sessions' || url === '/v2/sessions/local-containers') {
       const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+      const primary = url === '/v3/sessions'
       return new Response(JSON.stringify({
         ok: true,
         session: {
-          id: `${url.endsWith('/primary') ? 'primary' : 'local'}-session`,
+          id: primary ? 'primary-session' : 'local-session',
           title: String(body.title ?? ''),
-          workspace_path: url.endsWith('/primary') ? '/host/device/path/swarm-go' : '/container/device/path/swarm-go',
-          workspace_name: 'swarm-go',
+          workspace_path: primary ? String(body.workspace_path ?? '') : '/container/device/path/swarm-go',
+          workspace_name: primary ? String(body.workspace_name ?? '') : 'swarm-go',
           mode: String(body.mode ?? 'auto'),
           metadata: { server_metadata: true },
+          session_api: primary ? 'v3' : undefined,
+          last_event_seq: primary ? 1 : undefined,
+          projection_high_watermark_seq: primary ? 1 : undefined,
           created_at: 1,
           updated_at: 1,
         },
-        session_execution: {
-          session_id: `${url.endsWith('/primary') ? 'primary' : 'local'}-session`,
+        projection: primary ? {
+          session_id: 'primary-session',
+          last_event_seq: 1,
+          projection_high_watermark_seq: 1,
+          updated_at: 1,
+        } : undefined,
+        session_execution: primary ? undefined : {
+          session_id: 'local-session',
           swarm_id: body.swarm_id,
           workspace_binding_id: body.workspace_binding_id,
         },
@@ -91,7 +99,13 @@ function assertNoForbiddenCreateBodyFields(url: string, body: Record<string, unk
   }
 }
 
-test('primary/self host route creates via Sessions API v2 primary endpoint', async () => {
+function assertNoV2CreateAuthorityFields(url: string, body: Record<string, unknown>) {
+  assertNoForbiddenCreateBodyFields(url, body)
+  assert.equal(Object.hasOwn(body, 'workspace_name'), false)
+  assert.equal(Object.hasOwn(body, 'workspace_path'), false)
+}
+
+test('primary/self host route creates via Sessions API v3 primary endpoint', async () => {
   const { createSession } = await import('./chat-queries')
 
   await withFetchStub(async (calls) => {
@@ -109,17 +123,20 @@ test('primary/self host route creates via Sessions API v2 primary endpoint', asy
       worktreeBranchName: 'agent/session-v2',
     })
 
-    assert.equal(String(calls[0]?.input), '/v2/sessions/primary')
+    assert.equal(String(calls[0]?.input), '/v3/sessions')
     const body = requestBody(calls[0])
-    assert.equal(body.swarm_id, 'primary-swarm')
-    assert.equal(body.workspace_binding_id, 'binding-primary')
+    assert.equal(Object.hasOwn(body, 'client_request_id'), true)
+    assert.equal(Object.hasOwn(body, 'swarm_id'), false)
+    assert.equal(Object.hasOwn(body, 'workspace_binding_id'), false)
+    assert.equal(body.workspace_path, '/frontend/device/path/swarm-go')
+    assert.equal(body.workspace_name, 'swarm-go')
     assert.equal(body.title, 'Primary')
     assert.equal(body.mode, 'auto')
-    assert.equal(body.agent_name, 'swarm')
-    assert.equal(body.worktree_mode, 'on')
-    assert.equal(body.worktree_use_current_branch, false)
-    assert.equal(body.worktree_base_branch, 'dev')
-    assert.equal(body.worktree_branch_name, 'agent/session-v2')
+    assert.equal(Object.hasOwn(body, 'agent_name'), false)
+    assert.equal(Object.hasOwn(body, 'worktree_mode'), false)
+    assert.equal(Object.hasOwn(body, 'worktree_use_current_branch'), false)
+    assert.equal(Object.hasOwn(body, 'worktree_base_branch'), false)
+    assert.equal(Object.hasOwn(body, 'worktree_branch_name'), false)
     assert.deepEqual(body.preference, {
       provider: 'codex',
       model: 'gpt-5.4',
@@ -128,6 +145,17 @@ test('primary/self host route creates via Sessions API v2 primary endpoint', asy
       context_mode: 'large',
     })
     assertNoForbiddenCreateBodyFields(String(calls[0]?.input), body)
+    const session = await createSession({
+      title: 'Primary cursor',
+      workspacePath: '/frontend/device/path/swarm-go',
+      workspaceName: 'swarm-go',
+      mode: 'auto',
+      preference: { provider: '', model: '', thinking: '', serviceTier: '', contextMode: '' },
+      route: primaryRoute,
+    })
+    assert.equal(session.sessionApi, 'v3')
+    assert.equal(session.lastEventSeq, 1)
+    assert.equal(session.projectionHighWatermarkSeq, 1)
   })
 })
 
@@ -152,7 +180,7 @@ test('local-container child route creates via Sessions API v2 local-containers e
     assert.equal(body.workspace_binding_id, 'binding-child')
     assert.equal(body.worktree_mode, 'off')
     assert.equal(Object.hasOwn(body, 'worktree_use_current_branch'), false)
-    assertNoForbiddenCreateBodyFields(String(calls[0]?.input), body)
+    assertNoV2CreateAuthorityFields(String(calls[0]?.input), body)
   })
 })
 
@@ -197,7 +225,7 @@ test('route path and workspace-name fields are not sent in v2 create body', asyn
     })
 
     const body = requestBody(calls[0])
-    assertNoForbiddenCreateBodyFields(String(calls[0]?.input), body)
+    assertNoV2CreateAuthorityFields(String(calls[0]?.input), body)
     assert.equal(body.worktree_mode, 'off')
     assert.equal(Object.hasOwn(body, 'worktree_use_current_branch'), false)
     assert.equal(Object.hasOwn(body, 'worktree_base_branch'), false)

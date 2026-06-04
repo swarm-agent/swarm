@@ -26,6 +26,9 @@ export interface DesktopSessionRecord {
   workspaceName: string
   mode: string
   metadata?: Record<string, unknown>
+  sessionApi?: string
+  lastEventSeq?: number
+  projectionHighWatermarkSeq?: number
   messageCount: number
   updatedAt: number
   createdAt: number

@@ -51,6 +51,9 @@ interface SessionWire {
   workspace_name?: string;
   mode?: string;
   metadata?: Record<string, unknown>;
+  session_api?: string;
+  last_event_seq?: number;
+  projection_high_watermark_seq?: number;
   message_count?: number;
   updated_at?: number;
   created_at?: number;
@@ -132,6 +135,20 @@ interface MessagesResponseWire {
     created_at?: number;
     metadata?: Record<string, unknown>;
   }>;
+}
+
+interface SessionProjectionWire {
+  session_id?: string;
+  last_event_seq?: number;
+  projection_high_watermark_seq?: number;
+  updated_at?: number;
+}
+
+interface V3HydratedSessionResponseWire {
+  session?: SessionWire;
+  projection?: SessionProjectionWire;
+  messages?: MessagesResponseWire["messages"];
+  events?: unknown[];
 }
 
 interface SessionPreferenceWire {
@@ -627,6 +644,42 @@ export function mapDesktopSession(session: unknown): DesktopSessionRecord {
   return mapSession(session as SessionWire);
 }
 
+function mapSessionProjectionToSession(session: SessionWire, projection: SessionProjectionWire | null | undefined): SessionWire {
+  if (!projection || typeof projection !== "object") {
+    return session;
+  }
+  return {
+    ...session,
+    session_api: String(session.session_api ?? "").trim() || "v3",
+    last_event_seq:
+      typeof projection.last_event_seq === "number"
+        ? projection.last_event_seq
+        : session.last_event_seq,
+    projection_high_watermark_seq:
+      typeof projection.projection_high_watermark_seq === "number"
+        ? projection.projection_high_watermark_seq
+        : session.projection_high_watermark_seq,
+  };
+}
+
+function applySessionProjectionCursor(session: DesktopSessionRecord, projection: SessionProjectionWire | null | undefined): DesktopSessionRecord {
+  if (!projection || typeof projection !== "object") {
+    return session;
+  }
+  return {
+    ...session,
+    sessionApi: session.sessionApi || "v3",
+    lastEventSeq:
+      typeof projection.last_event_seq === "number"
+        ? projection.last_event_seq
+        : (session.lastEventSeq ?? 0),
+    projectionHighWatermarkSeq:
+      typeof projection.projection_high_watermark_seq === "number"
+        ? projection.projection_high_watermark_seq
+        : (session.projectionHighWatermarkSeq ?? 0),
+  };
+}
+
 function mapSession(session: SessionWire): DesktopSessionRecord {
   const lifecycle =
     session.lifecycle && typeof session.lifecycle === "object"
@@ -694,6 +747,11 @@ function mapSession(session: SessionWire): DesktopSessionRecord {
     ),
     mode: String(session.mode ?? "auto").trim() || "auto",
     metadata,
+    sessionApi: String(session.session_api ?? "").trim(),
+    lastEventSeq:
+      typeof session.last_event_seq === "number" ? session.last_event_seq : 0,
+    projectionHighWatermarkSeq:
+      typeof session.projection_high_watermark_seq === "number" ? session.projection_high_watermark_seq : 0,
     messageCount:
       typeof session.message_count === "number" ? session.message_count : 0,
     updatedAt: typeof session.updated_at === "number" ? session.updated_at : 0,
@@ -1560,6 +1618,17 @@ function stripUndefinedFields<T extends Record<string, unknown>>(value: T): T {
   return value
 }
 
+function sessionCreatePreferenceBody(preferenceInput: ResolvedSessionPreference["preference"]): Record<string, unknown> {
+  const preference = stripUndefinedFields({
+    provider: optionalString(preferenceInput.provider),
+    model: optionalString(preferenceInput.model),
+    thinking: optionalString(preferenceInput.thinking),
+    service_tier: optionalString(preferenceInput.serviceTier),
+    context_mode: optionalString(preferenceInput.contextMode),
+  })
+  return preference
+}
+
 function sessionCreateV2RequestBody(input: {
   target: { swarmId: string; workspaceBindingId: string };
   title?: string;
@@ -1573,13 +1642,7 @@ function sessionCreateV2RequestBody(input: {
   worktreeBranchName?: string;
 }): Record<string, unknown> {
   const worktreeMode = optionalString(input.worktreeMode) ?? "off"
-  const preference = stripUndefinedFields({
-    provider: optionalString(input.preference.provider),
-    model: optionalString(input.preference.model),
-    thinking: optionalString(input.preference.thinking),
-    service_tier: optionalString(input.preference.serviceTier),
-    context_mode: optionalString(input.preference.contextMode),
-  })
+  const preference = sessionCreatePreferenceBody(input.preference)
   return stripUndefinedFields({
     swarm_id: input.target.swarmId,
     workspace_binding_id: input.target.workspaceBindingId,
@@ -1590,6 +1653,27 @@ function sessionCreateV2RequestBody(input: {
     worktree_use_current_branch: worktreeMode === "on" ? input.worktreeUseCurrentBranch : undefined,
     worktree_base_branch: worktreeMode === "on" ? optionalString(input.worktreeBaseBranch) : undefined,
     worktree_branch_name: worktreeMode === "on" ? optionalString(input.worktreeBranchName) : undefined,
+    preference: Object.keys(preference).length > 0 ? preference : undefined,
+    metadata: sanitizeSessionCreateV2Metadata(input.metadata),
+  })
+}
+
+function sessionCreateV3RequestBody(input: {
+  title?: string;
+  workspacePath: string;
+  workspaceName: string;
+  mode: string;
+  metadata?: Record<string, unknown>;
+  preference: ResolvedSessionPreference["preference"];
+}): Record<string, unknown> {
+  const preference = sessionCreatePreferenceBody(input.preference)
+  const title = optionalString(input.title)
+  return stripUndefinedFields({
+    client_request_id: `desktop-v3-create:${crypto.randomUUID()}`,
+    title: title || undefined,
+    workspace_path: input.workspacePath,
+    workspace_name: input.workspaceName,
+    mode: input.mode,
     preference: Object.keys(preference).length > 0 ? preference : undefined,
     metadata: sanitizeSessionCreateV2Metadata(input.metadata),
   })
@@ -1613,19 +1697,28 @@ export async function createSession(input: {
   if (target.endpoint === null) {
     throw new Error(target.unsupportedReason)
   }
-  const body = sessionCreateV2RequestBody({
-    target,
-    title: input.title,
-    mode: input.mode,
-    agentName: input.agentName,
-    metadata: input.metadata,
-    preference: input.preference,
-    worktreeMode: input.worktreeMode,
-    worktreeUseCurrentBranch: input.worktreeUseCurrentBranch,
-    worktreeBaseBranch: input.worktreeBaseBranch,
-    worktreeBranchName: input.worktreeBranchName,
-  })
-  const response = await requestJson<{ session?: SessionWire; session_execution?: Record<string, unknown> }>(
+  const body = target.sessionApi === "v3"
+    ? sessionCreateV3RequestBody({
+      title: input.title,
+      workspacePath: input.workspacePath,
+      workspaceName: input.workspaceName,
+      mode: input.mode,
+      metadata: input.metadata,
+      preference: input.preference,
+    })
+    : sessionCreateV2RequestBody({
+      target: { swarmId: target.swarmId, workspaceBindingId: target.workspaceBindingId },
+      title: input.title,
+      mode: input.mode,
+      agentName: input.agentName,
+      metadata: input.metadata,
+      preference: input.preference,
+      worktreeMode: input.worktreeMode,
+      worktreeUseCurrentBranch: input.worktreeUseCurrentBranch,
+      worktreeBaseBranch: input.worktreeBaseBranch,
+      worktreeBranchName: input.worktreeBranchName,
+    })
+  const response = await requestJson<V3HydratedSessionResponseWire & { session_execution?: Record<string, unknown> }>(
     target.endpoint,
     {
       method: "POST",
@@ -1636,10 +1729,10 @@ export async function createSession(input: {
     },
   );
   const mapped = applyDesktopChatRouteToSession(
-    mapSession(response.session ?? {}),
+    mapSession(mapSessionProjectionToSession(response.session ?? {}, response.projection)),
     input.route,
   );
-  return mapped;
+  return applySessionProjectionCursor(mapped, response.projection);
 }
 
 export async function sendSessionMessage(

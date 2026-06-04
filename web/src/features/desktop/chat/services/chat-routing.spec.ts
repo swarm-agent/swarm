@@ -561,7 +561,7 @@ test('buildDesktopChatRouteOptions includes local self binding for host route wh
 })
 
 
-test('getDesktopSessionCreateV2Target maps primary and local-container routes without path inference', () => {
+test('getDesktopSessionCreateV2Target maps primary to V3 and local-container to V2 without path inference', () => {
   assert.deepEqual(getDesktopSessionCreateV2Target({
     ...remoteRoute,
     swarmId: 'primary-swarm',
@@ -572,7 +572,8 @@ test('getDesktopSessionCreateV2Target maps primary and local-container routes wi
     runtimeWorkspacePath: '/must/not/matter-runtime',
     workspaceName: 'must-not-matter',
   }), {
-    endpoint: '/v2/sessions/primary',
+    sessionApi: 'v3',
+    endpoint: '/v3/sessions',
     swarmId: 'primary-swarm',
     workspaceBindingId: 'binding-primary',
   })
@@ -588,6 +589,7 @@ test('getDesktopSessionCreateV2Target maps primary and local-container routes wi
       runtimeWorkspacePath: '',
       workspaceName: '',
     }), {
+      sessionApi: 'v2',
       endpoint: '/v2/sessions/local-containers',
       swarmId: 'child-swarm',
       workspaceBindingId: 'binding-child',
@@ -597,6 +599,7 @@ test('getDesktopSessionCreateV2Target maps primary and local-container routes wi
 
 test('getDesktopSessionCreateV2Target blocks managed and missing-binding routes', () => {
   assert.deepEqual(getDesktopSessionCreateV2Target(managedHostRoute), {
+    sessionApi: null,
     endpoint: null,
     unsupportedReason: 'Managed-host v2 session create is not implemented yet.',
   })
