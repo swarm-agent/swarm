@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -14,6 +15,9 @@ import (
 	"time"
 
 	gorillaws "github.com/gorilla/websocket"
+
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
+	"swarm/packages/swarmd/internal/provider/registry"
 
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -1022,4 +1026,121 @@ func newSessionsV3PrimaryAPITestServer(t *testing.T, storePath string) (*Server,
 		return store.Close()
 	}
 	return server, sessionSvc, closeStore
+}
+
+func TestSessionsV3ExecutorRecoversPendingRunAfterRestart(t *testing.T) {
+	t.Setenv("SWARM_API_NO_AUTH", "1")
+	storePath := filepath.Join(t.TempDir(), "sessions-v3-executor-recovery.pebble")
+	server, _, closeStore := newSessionsV3PrimaryAPITestServer(t, storePath)
+	created := createSessionsV3PrimaryTestSession(t, server, "recover-create", "recover pending")
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "recover-message", "recover me")
+	if err := closeStore(); err != nil {
+		t.Fatalf("close first store: %v", err)
+	}
+
+	restarted, sessionSvc, closeRestarted := newSessionsV3PrimaryAPITestServer(t, storePath)
+	defer func() { _ = closeRestarted() }()
+	exec := newSessionV3Executor(restarted)
+	exec.startDelay = 0
+	restarted.v3SessionExecutor = exec
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages after recovery: %v", err)
+	}
+	if len(messages) != 2 || messages[1].Role != "assistant" || !strings.Contains(messages[1].Content, "recover me") {
+		t.Fatalf("messages after recovery = %+v", messages)
+	}
+}
+
+func TestSessionsV3ExecutorUsesProviderFromCommittedHistory(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{text: "provider answer"}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "provider-create", "provider", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-message", "use real provider")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 2 || messages[0].Role != "user" || messages[1].Role != "assistant" || messages[1].Content != "provider answer" {
+		t.Fatalf("messages = %+v", messages)
+	}
+	if runner.callCount != 1 {
+		t.Fatalf("provider call count = %d, want 1", runner.callCount)
+	}
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	var deltas int
+	for _, event := range events {
+		if event.EventType == "session.assistant.delta" {
+			deltas++
+		}
+	}
+	if deltas != 1 {
+		t.Fatalf("assistant delta events = %d, want 1 events=%+v", deltas, events)
+	}
+	if len(runner.lastRequest.Input) != 1 {
+		t.Fatalf("provider input = %+v, want committed user message only", runner.lastRequest.Input)
+	}
+	if runner.lastRequest.Model != "test-model" || runner.lastRequest.Thinking != "medium" || runner.lastRequest.SessionID != created.ID {
+		t.Fatalf("provider request = %+v", runner.lastRequest)
+	}
+}
+
+func createSessionsV3PrimaryTestSessionWithPreference(t *testing.T, server *Server, clientRequestID, title string, pref pebblestore.ModelPreference) pebblestore.SessionSnapshot {
+	t.Helper()
+	payload := map[string]any{
+		"client_request_id": clientRequestID,
+		"workspace_path":    "/workspace/provider",
+		"title":             title,
+		"preference":        pref,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal create payload: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var created struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	return created.Session
+}
+
+type sessionsV3RecordingProviderRunner struct {
+	text        string
+	callCount   int
+	lastRequest provideriface.Request
+}
+
+func (r *sessionsV3RecordingProviderRunner) ID() string { return "test-provider" }
+func (r *sessionsV3RecordingProviderRunner) CreateResponse(ctx context.Context, req provideriface.Request) (provideriface.Response, error) {
+	return r.CreateResponseStreaming(ctx, req, nil)
+}
+func (r *sessionsV3RecordingProviderRunner) CreateResponseStreaming(_ context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+	r.callCount++
+	r.lastRequest = req
+	if onEvent != nil {
+		onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: r.text})
+	}
+	return provideriface.Response{Text: r.text}, nil
 }

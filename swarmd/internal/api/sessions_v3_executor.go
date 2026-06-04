@@ -5,8 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"strings"
+
+	codexruntime "swarm/packages/swarmd/internal/provider/codex"
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"sync"
 	"time"
 
@@ -16,8 +21,10 @@ import (
 )
 
 const (
-	sessionV3ExecutorQueueSize         = 128
-	sessionV3ExecutorDefaultStartDelay = 10 * time.Millisecond
+	sessionV3ExecutorQueueSize                = 128
+	sessionV3ExecutorDefaultStartDelay        = 10 * time.Millisecond
+	sessionV3ExecutorRecoveryLimit            = 500
+	sessionV3ExecutorDefaultRunningStaleAfter = 5 * time.Minute
 )
 
 type sessionV3ExecutorJob struct {
@@ -30,8 +37,9 @@ type sessionV3Executor struct {
 	server *Server
 	queue  chan sessionV3ExecutorJob
 
-	startDelay time.Duration
-	modelDelay time.Duration
+	startDelay        time.Duration
+	modelDelay        time.Duration
+	runningStaleAfter time.Duration
 
 	mu              sync.Mutex
 	inFlightRuns    map[string]bool
@@ -40,17 +48,19 @@ type sessionV3Executor struct {
 
 func newSessionV3Executor(server *Server) *sessionV3Executor {
 	exec := &sessionV3Executor{
-		server:          server,
-		queue:           make(chan sessionV3ExecutorJob, sessionV3ExecutorQueueSize),
-		startDelay:      sessionV3ExecutorDefaultStartDelay,
-		inFlightRuns:    make(map[string]bool),
-		activeBySession: make(map[string]string),
+		server:            server,
+		queue:             make(chan sessionV3ExecutorJob, sessionV3ExecutorQueueSize),
+		startDelay:        sessionV3ExecutorDefaultStartDelay,
+		runningStaleAfter: sessionV3ExecutorDefaultRunningStaleAfter,
+		inFlightRuns:      make(map[string]bool),
+		activeBySession:   make(map[string]string),
 	}
 	ctx := context.Background()
 	if server != nil && server.runCtx != nil {
 		ctx = server.runCtx
 	}
 	go exec.loop(ctx)
+	exec.recoverDurableRuns(ctx)
 	return exec
 }
 
@@ -111,6 +121,90 @@ func (e *sessionV3Executor) finish(job sessionV3ExecutorJob) {
 	e.mu.Unlock()
 }
 
+func (e *sessionV3Executor) recoverDurableRuns(ctx context.Context) {
+	if e == nil || e.server == nil || e.server.sessions == nil {
+		return
+	}
+	select {
+	case <-ctx.Done():
+		return
+	default:
+	}
+	staleBefore := int64(0)
+	if e.runningStaleAfter > 0 {
+		staleBefore = time.Now().Add(-e.runningStaleAfter).UnixMilli()
+	}
+	intents, err := e.server.sessions.ListRecoverableSessionRunIntents(staleBefore, sessionV3ExecutorRecoveryLimit)
+	if err != nil {
+		log.Printf("warning: v3 session executor recovery scan failed: %v", err)
+		return
+	}
+	for _, intent := range intents {
+		if ctx.Err() != nil {
+			return
+		}
+		if strings.TrimSpace(intent.RunID) == "" || strings.TrimSpace(intent.SessionID) == "" {
+			continue
+		}
+		job := sessionV3ExecutorJob{
+			Principal: identity.Principal{
+				Type:           identity.PrincipalTypeUser,
+				UserID:         intent.UserID,
+				AccountScopeID: intent.AccountScopeID,
+			},
+			SessionID: intent.SessionID,
+			RunID:     intent.RunID,
+		}
+		if strings.TrimSpace(job.Principal.UserID) == "" || strings.TrimSpace(job.Principal.AccountScopeID) == "" {
+			if session, ok, err := e.server.sessions.GetSession(intent.SessionID); err != nil {
+				log.Printf("warning: v3 session executor recovery could not hydrate session %q for run %q: %v", intent.SessionID, intent.RunID, err)
+				continue
+			} else if ok {
+				if job.Principal.UserID == "" {
+					job.Principal.UserID = session.UserID
+				}
+				if job.Principal.AccountScopeID == "" {
+					job.Principal.AccountScopeID = session.AccountScopeID
+				}
+			}
+		}
+		if !job.Principal.Valid() {
+			log.Printf("warning: v3 session executor recovery skipped run %q for session %q: missing principal", intent.RunID, intent.SessionID)
+			continue
+		}
+		if intent.Status == sessionruntime.RunIntentRunning {
+			if err := e.resetRunningRunForRecovery(job); err != nil {
+				log.Printf("warning: v3 session executor recovery could not reset run %q for session %q: %v", job.RunID, job.SessionID, err)
+				continue
+			}
+		}
+		e.EnqueueRun(job)
+	}
+}
+
+func (e *sessionV3Executor) resetRunningRunForRecovery(job sessionV3ExecutorJob) error {
+	now := time.Now().UnixMilli()
+	payloadHash, err := sessionV3ExecutorPayloadHash(job.SessionID, job.RunID, sessionruntime.RunIntentPendingExecutor, "startup recovery", "session.run.recovered", "")
+	if err != nil {
+		return err
+	}
+	intent := pebblestore.V3SessionRunIntent{RunID: job.RunID, Status: sessionruntime.RunIntentPendingExecutor, BlockedReason: "startup recovery", UpdatedAt: now}
+	_, err = e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       job.SessionID,
+		UserID:          job.Principal.UserID,
+		AccountScopeID:  job.Principal.AccountScopeID,
+		ClientRequestID: sessionV3ExecutorClientRequestID("session.run.recovered", job.RunID),
+		IdempotencyKey:  sessionV3ExecutorClientRequestID("session.run.recovered", job.RunID),
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationRecordRunIntent,
+		EventType:       "session.run.recovered",
+		RunIntent:       &intent,
+		NowUnixMs:       now,
+	})
+	return err
+}
+
 func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 	defer e.finish(job)
 	if e.server == nil || e.server.sessions == nil {
@@ -146,7 +240,7 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 		case <-time.After(e.modelDelay):
 		}
 	}
-	content, err := e.fakeAssistantResponse(job.SessionID)
+	content, err := e.assistantResponse(ctx, job)
 	if err != nil {
 		_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, err.Error(), "session.run.failed")
 		return
@@ -178,6 +272,39 @@ func (e *sessionV3Executor) recordRunStatus(job sessionV3ExecutorJob, status, re
 		RequestHash:     payloadHash,
 		Kind:            sessionruntime.SessionMutationRecordRunIntent,
 		EventType:       eventType,
+		RunIntent:       &intent,
+		NowUnixMs:       now,
+	})
+}
+
+func (e *sessionV3Executor) recordRunProgress(job sessionV3ExecutorJob, deltaIndex int, delta string) (sessionruntime.SessionMutationResult, error) {
+	now := time.Now().UnixMilli()
+	metadata := map[string]any{
+		"run_id":      job.RunID,
+		"delta_index": deltaIndex,
+		"delta":       delta,
+	}
+	raw, err := json.Marshal(metadata)
+	if err != nil {
+		return sessionruntime.SessionMutationResult{}, err
+	}
+	intent := pebblestore.V3SessionRunIntent{RunID: job.RunID, Status: sessionruntime.RunIntentRunning, UpdatedAt: now}
+	payloadHash, err := sessionV3ExecutorPayloadHash(job.SessionID, job.RunID, sessionruntime.RunIntentRunning, "", "session.assistant.delta", fmt.Sprintf("%d:%s", deltaIndex, delta))
+	if err != nil {
+		return sessionruntime.SessionMutationResult{}, err
+	}
+	clientRequestID := fmt.Sprintf("%s-%04d", sessionV3ExecutorClientRequestID("session.assistant.delta", job.RunID), deltaIndex)
+	return e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       job.SessionID,
+		UserID:          job.Principal.UserID,
+		AccountScopeID:  job.Principal.AccountScopeID,
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationRecordRunIntent,
+		EventType:       "session.assistant.delta",
+		EventPayload:    raw,
 		RunIntent:       &intent,
 		NowUnixMs:       now,
 	})
@@ -219,6 +346,120 @@ func (e *sessionV3Executor) completeRun(job sessionV3ExecutorJob, content string
 		RunIntent:       &intent,
 		NowUnixMs:       now,
 	})
+}
+
+func (e *sessionV3Executor) assistantResponse(ctx context.Context, job sessionV3ExecutorJob) (string, error) {
+	if e != nil && e.server != nil && e.server.providers != nil {
+		content, usedProvider, err := e.providerAssistantResponse(ctx, job)
+		if usedProvider || err != nil {
+			return content, err
+		}
+	}
+	return e.fakeAssistantResponse(job.SessionID)
+}
+
+func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job sessionV3ExecutorJob) (string, bool, error) {
+	session, ok, err := e.server.sessions.GetSession(job.SessionID)
+	if err != nil {
+		return "", true, err
+	}
+	if !ok {
+		return "", true, fmt.Errorf("session %q not found", job.SessionID)
+	}
+	pref := normalizeSessionsV3ModelPreference(session.Preference)
+	providerID := strings.ToLower(strings.TrimSpace(pref.Provider))
+	modelName := strings.TrimSpace(pref.Model)
+	if providerID == "" || modelName == "" {
+		return "", false, nil
+	}
+	runner, ok := e.server.providers.GetRunner(providerID)
+	if !ok {
+		return "", true, fmt.Errorf("provider %q is configured but not runnable yet", providerID)
+	}
+	messages, err := e.server.sessions.ListSessionMessages(job.SessionID, 0, 500)
+	if err != nil {
+		return "", true, err
+	}
+	input := sessionsV3ProviderInput(messages)
+	if len(input) == 0 {
+		return "", true, errors.New("v3 provider input is empty")
+	}
+	thinking := strings.TrimSpace(pref.Thinking)
+	if thinking == "" {
+		thinking = "medium"
+	}
+	serviceTier := ""
+	if providerID == "codex" {
+		serviceTier = codexruntime.NormalizeServiceTier(pref.ServiceTier)
+	}
+	req := provideriface.Request{
+		SessionID:     job.SessionID,
+		Model:         modelName,
+		Thinking:      thinking,
+		Instructions:  "You are Swarm, a concise coding assistant. Answer the user's latest message using the committed V3 session history.",
+		Input:         input,
+		ToolChoice:    "none",
+		ServiceTier:   serviceTier,
+		ContextMode:   strings.TrimSpace(pref.ContextMode),
+		WorkspacePath: strings.TrimSpace(session.WorkspacePath),
+	}
+	var streamed strings.Builder
+	deltaIndex := 0
+	response, err := runner.CreateResponseStreaming(ctx, req, func(event provideriface.StreamEvent) {
+		if event.Type != provideriface.StreamEventOutputTextDelta {
+			return
+		}
+		streamed.WriteString(event.Delta)
+		deltaIndex++
+		if strings.TrimSpace(event.Delta) != "" {
+			_, _ = e.recordRunProgress(job, deltaIndex, event.Delta)
+		}
+	})
+	if err != nil {
+		return "", true, err
+	}
+	content := strings.TrimSpace(response.Text)
+	if content == "" {
+		content = strings.TrimSpace(streamed.String())
+	}
+	if content == "" {
+		for _, message := range response.AssistantMessages {
+			if message.Phase != "" && message.Phase != provideriface.AssistantPhaseFinalAnswer {
+				continue
+			}
+			if text := strings.TrimSpace(message.Text); text != "" {
+				if content != "" {
+					content += "\n\n"
+				}
+				content += text
+			}
+		}
+	}
+	if content == "" {
+		return "", true, errors.New("provider returned empty assistant response")
+	}
+	return content, true, nil
+}
+
+func sessionsV3ProviderInput(messages []pebblestore.MessageSnapshot) []map[string]any {
+	input := make([]map[string]any, 0, len(messages))
+	for _, message := range messages {
+		content := strings.TrimSpace(message.Content)
+		if content == "" {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(message.Role)) {
+		case "assistant":
+			input = append(input, map[string]any{"role": "assistant", "content": []map[string]any{{"type": "output_text", "text": content}}})
+		case "system":
+			input = append(input, map[string]any{"role": "user", "content": []map[string]any{{"type": "input_text", "text": "[system] " + content}}})
+		case "reasoning", "tool":
+			continue
+		default:
+			input = append(input, map[string]any{"role": "user", "content": []map[string]any{{"type": "input_text", "text": content}}})
+		}
+	}
+	return input
 }
 
 func (e *sessionV3Executor) fakeAssistantResponse(sessionID string) (string, error) {

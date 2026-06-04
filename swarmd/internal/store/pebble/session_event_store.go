@@ -227,6 +227,18 @@ func KeyV3SessionRunIntentActive(sessionID string) string {
 	return fmt.Sprintf("v3/session_run_intent_active/%s", keyPart(sessionID))
 }
 
+func KeyV3SessionRunIntentStatus(status string, updatedAt int64, accountScopeID, sessionID, runID string) string {
+	return fmt.Sprintf("v3/session_run_intent_status/%s/%020d/%s/%s/%s", keyPart(status), updatedAt, keyPart(accountScopeID), keyPart(sessionID), keyPart(runID))
+}
+
+func V3SessionRunIntentStatusPrefix(status string) string {
+	part := keyPart(status)
+	if part == "" {
+		return "v3/session_run_intent_status/"
+	}
+	return fmt.Sprintf("v3/session_run_intent_status/%s/", part)
+}
+
 func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3SessionMutationResult, error) {
 	if s == nil || s.store == nil {
 		return V3SessionMutationResult{}, errors.New("session store is not configured")
@@ -407,11 +419,25 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		}
 	}
 	if runIntentProvided {
+		previousRunIntent, previousRunIntentOK, err := s.GetV3SessionRunIntent(runIntent.SessionID, runIntent.RunID)
+		if err != nil {
+			return V3SessionMutationResult{}, err
+		}
 		runPayload, err := json.Marshal(runIntent)
 		if err != nil {
 			return V3SessionMutationResult{}, fmt.Errorf("marshal v3 run intent %q: %w", runIntent.RunID, err)
 		}
 		if err := batch.Set([]byte(KeyV3SessionRunIntent(runIntent.SessionID, runIntent.RunID)), runPayload, nil); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		if previousRunIntentOK {
+			previousStatusKey := KeyV3SessionRunIntentStatus(previousRunIntent.Status, previousRunIntent.UpdatedAt, previousRunIntent.AccountScopeID, previousRunIntent.SessionID, previousRunIntent.RunID)
+			if err := batch.Delete([]byte(previousStatusKey), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+				return V3SessionMutationResult{}, err
+			}
+		}
+		statusKey := KeyV3SessionRunIntentStatus(runIntent.Status, runIntent.UpdatedAt, runIntent.AccountScopeID, runIntent.SessionID, runIntent.RunID)
+		if err := batch.Set([]byte(statusKey), runPayload, nil); err != nil {
 			return V3SessionMutationResult{}, err
 		}
 		activeKey := KeyV3SessionRunIntentActive(runIntent.SessionID)
@@ -725,6 +751,68 @@ func (s *SessionStore) ListV3SessionRunIntents(sessionID string, afterSeq uint64
 	return out, err
 }
 
+func (s *SessionStore) ListV3SessionRunIntentsByStatus(status string, limit int) ([]V3SessionRunIntent, error) {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		return nil, errors.New("run intent status is required")
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	out := make([]V3SessionRunIntent, 0, limit)
+	err := s.store.IteratePrefix(V3SessionRunIntentStatusPrefix(status), 100000, func(_ string, value []byte) error {
+		if len(out) >= limit {
+			return nil
+		}
+		var intent V3SessionRunIntent
+		if err := json.Unmarshal(value, &intent); err != nil {
+			return err
+		}
+		if strings.TrimSpace(intent.Status) != status {
+			return nil
+		}
+		out = append(out, intent)
+		return nil
+	})
+	return out, err
+}
+
+func (s *SessionStore) ListV3SessionRecoverableRunIntents(staleRunningBeforeUnixMs int64, limit int) ([]V3SessionRunIntent, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	out := make([]V3SessionRunIntent, 0, limit)
+	appendStatus := func(status string, include func(V3SessionRunIntent) bool) error {
+		if len(out) >= limit {
+			return nil
+		}
+		intents, err := s.ListV3SessionRunIntentsByStatus(status, limit-len(out))
+		if err != nil {
+			return err
+		}
+		for _, intent := range intents {
+			if len(out) >= limit {
+				break
+			}
+			if include == nil || include(intent) {
+				out = append(out, intent)
+			}
+		}
+		return nil
+	}
+	if err := appendStatus(V3RunIntentPendingExecutor, nil); err != nil {
+		return nil, err
+	}
+	if staleRunningBeforeUnixMs > 0 {
+		if err := appendStatus(V3RunIntentRunning, func(intent V3SessionRunIntent) bool {
+			return intent.UpdatedAt > 0 && intent.UpdatedAt < staleRunningBeforeUnixMs
+		}); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
 func (s *SessionStore) readV3SessionSequence(sessionID string) (uint64, error) {
 	raw, ok, err := s.store.GetBytes(KeyV3SessionSequence(sessionID))
 	if err != nil || !ok {
@@ -815,9 +903,13 @@ func (s *SessionStore) validateV3RunIntentTransition(sessionID string, incoming 
 			incoming.CreatedAt = existing.CreatedAt
 		}
 		switch status {
+		case V3RunIntentPendingExecutor:
+			if existing.Status != V3RunIntentRunning {
+				return V3SessionRunIntent{}, fmt.Errorf("v3 run %q is %s, cannot reset pending", incoming.RunID, existing.Status)
+			}
 		case V3RunIntentRunning:
-			if existing.Status != V3RunIntentPendingExecutor {
-				return V3SessionRunIntent{}, fmt.Errorf("v3 run %q is %s, cannot claim", incoming.RunID, existing.Status)
+			if existing.Status != V3RunIntentPendingExecutor && existing.Status != V3RunIntentRunning {
+				return V3SessionRunIntent{}, fmt.Errorf("v3 run %q is %s, cannot claim or update", incoming.RunID, existing.Status)
 			}
 		case V3RunIntentCompleted, V3RunIntentFailed:
 			if existing.Status != V3RunIntentRunning && existing.Status != V3RunIntentPendingExecutor {

@@ -476,3 +476,73 @@ func TestApplyV3SessionMutationConcurrentDistinctAppendsAllocateContiguousSeq(t 
 		t.Fatalf("message count = %d, want %d", updated.MessageCount, workers)
 	}
 }
+
+func TestV3SessionRunIntentStatusIndexesSupportRecoveryDiscovery(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "session-recovery-index")
+
+	_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:      "session-recovery-index",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		IdempotencyKey: "pending-run-1",
+		RequestHash:    "hash-pending-run-1",
+		Kind:           V3SessionMutationAppendMessage,
+		Message:        &MessageSnapshot{Role: "user", Content: "pending please"},
+		RunIntent:      &V3SessionRunIntent{RunID: "run-pending", Status: V3RunIntentPendingExecutor},
+		NowUnixMs:      2000,
+	})
+	if err != nil {
+		t.Fatalf("record pending run: %v", err)
+	}
+	_, err = sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:      "session-recovery-index",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		IdempotencyKey: "claim-run-1",
+		RequestHash:    "hash-claim-run-1",
+		Kind:           V3SessionMutationRecordRunIntent,
+		RunIntent:      &V3SessionRunIntent{RunID: "run-pending", Status: V3RunIntentRunning},
+		NowUnixMs:      3000,
+	})
+	if err != nil {
+		t.Fatalf("claim run: %v", err)
+	}
+	_, err = sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:      "session-recovery-index",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		IdempotencyKey: "pending-run-2",
+		RequestHash:    "hash-pending-run-2",
+		Kind:           V3SessionMutationAppendMessage,
+		Message:        &MessageSnapshot{Role: "user", Content: "still pending"},
+		RunIntent:      &V3SessionRunIntent{RunID: "run-still-pending", Status: V3RunIntentPendingExecutor},
+		NowUnixMs:      4000,
+	})
+	if err != nil {
+		t.Fatalf("record second pending run: %v", err)
+	}
+
+	pending, err := sessions.ListV3SessionRunIntentsByStatus(V3RunIntentPendingExecutor, 10)
+	if err != nil {
+		t.Fatalf("list pending: %v", err)
+	}
+	if len(pending) != 1 || pending[0].RunID != "run-still-pending" {
+		t.Fatalf("pending intents = %+v", pending)
+	}
+	running, err := sessions.ListV3SessionRunIntentsByStatus(V3RunIntentRunning, 10)
+	if err != nil {
+		t.Fatalf("list running: %v", err)
+	}
+	if len(running) != 1 || running[0].RunID != "run-pending" {
+		t.Fatalf("running intents = %+v", running)
+	}
+	recoverable, err := sessions.ListV3SessionRecoverableRunIntents(3500, 10)
+	if err != nil {
+		t.Fatalf("list recoverable: %v", err)
+	}
+	if len(recoverable) != 2 || recoverable[0].RunID != "run-still-pending" || recoverable[1].RunID != "run-pending" {
+		t.Fatalf("recoverable intents = %+v", recoverable)
+	}
+}
