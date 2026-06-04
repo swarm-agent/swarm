@@ -1950,7 +1950,7 @@ func TestSessionsV3ExecutorDoesNotRetitleExplicitTitle(t *testing.T) {
 
 func createSessionsV3PrimaryTestSessionWithPreference(t *testing.T, server *Server, clientRequestID, title string, pref pebblestore.ModelPreference) pebblestore.SessionSnapshot {
 	t.Helper()
-	return createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, clientRequestID, title, "/workspace/provider", pref)
+	return createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, clientRequestID, title, t.TempDir(), pref)
 }
 
 func createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t *testing.T, server *Server, clientRequestID, title, workspacePath string, pref pebblestore.ModelPreference) pebblestore.SessionSnapshot {

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -29,6 +30,7 @@ const (
 	sessionV3ExecutorDefaultStartDelay        = 10 * time.Millisecond
 	sessionV3ExecutorRecoveryLimit            = 500
 	sessionV3ExecutorDefaultRunningStaleAfter = 5 * time.Minute
+	sessionV3ProviderToolLoopMaxSteps         = 8
 	sessionV3AssistantDeltaFlushMaxBytes      = 512
 	sessionV3AssistantDeltaFlushMaxDelay      = 100 * time.Millisecond
 	sessionV3TitleDefault                     = "New Session"
@@ -667,56 +669,37 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	if len(input) == 0 {
 		return sessionV3AssistantResponse{}, errors.New("v3 provider input is empty")
 	}
-	req := provideriface.Request{
-		SessionID:     job.SessionID,
-		Model:         modelName,
-		Thinking:      strings.TrimSpace(pref.Thinking),
-		Instructions:  resolved.Instructions,
-		Input:         input,
-		Tools:         resolved.Tools,
-		ToolChoice:    resolved.ToolChoice,
-		ServiceTier:   strings.TrimSpace(pref.ServiceTier),
-		ContextMode:   strings.TrimSpace(pref.ContextMode),
-		ContextWindow: resolved.ContextWindow,
-		WorkspacePath: strings.TrimSpace(resolved.Scope.PrimaryPath),
+	baseReq := provideriface.Request{
+		SessionID:         job.SessionID,
+		Model:             modelName,
+		Thinking:          strings.TrimSpace(pref.Thinking),
+		Instructions:      resolved.Instructions,
+		Input:             input,
+		Tools:             resolved.Tools,
+		ToolChoice:        resolved.ToolChoice,
+		ServiceTier:       strings.TrimSpace(pref.ServiceTier),
+		ContextMode:       strings.TrimSpace(pref.ContextMode),
+		ContextWindow:     resolved.ContextWindow,
+		ParallelToolCalls: true,
+		WorkspacePath:     strings.TrimSpace(resolved.Scope.PrimaryPath),
 	}
-	if req.Thinking == "" {
-		req.Thinking = "medium"
+	if baseReq.Thinking == "" {
+		baseReq.Thinking = "medium"
 	}
-	if req.Instructions == "" {
+	if baseReq.Instructions == "" {
 		return sessionV3AssistantResponse{}, errors.New("resolved v3 instructions are empty")
 	}
-	if req.ToolChoice == "" {
-		req.ToolChoice = "none"
+	if baseReq.ToolChoice == "" {
+		baseReq.ToolChoice = "none"
 	}
 	ctx = identity.ContextWithPrincipal(ctx, job.Principal)
-	var streamed strings.Builder
-	coalescer := newSessionV3AssistantDeltaCoalescer(e, job)
-	var progressErr error
-	response, err := runner.CreateResponseStreaming(ctx, req, func(event provideriface.StreamEvent) {
-		if event.Type != provideriface.StreamEventOutputTextDelta {
-			return
-		}
-		streamed.WriteString(event.Delta)
-		if progressErr == nil {
-			progressErr = coalescer.Add(event.Delta)
-		}
-	})
-	if flushErr := coalescer.Flush(); flushErr != nil && progressErr == nil {
-		progressErr = flushErr
-	}
+	response, streamed, flushCount, err := e.runProviderToolLoop(ctx, job, resolved, runner, baseReq)
 	if err != nil {
 		return sessionV3AssistantResponse{}, err
 	}
-	if progressErr != nil {
-		return sessionV3AssistantResponse{}, progressErr
-	}
-	if len(response.FunctionCalls) > 0 || response.RestartTurn {
-		return sessionV3AssistantResponse{}, errors.New("v3 provider returned tool calls; tool-loop execution is not supported by the primary-owned V3 executor yet")
-	}
 	content := strings.TrimSpace(response.Text)
 	if content == "" {
-		content = strings.TrimSpace(streamed.String())
+		content = strings.TrimSpace(streamed)
 	}
 	if content == "" {
 		for _, message := range response.AssistantMessages {
@@ -734,11 +717,8 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	if content == "" {
 		return sessionV3AssistantResponse{}, errors.New("provider returned empty assistant response")
 	}
-	if coalescer.FlushCount() == 0 {
-		if err := coalescer.Add(content); err != nil {
-			return sessionV3AssistantResponse{}, err
-		}
-		if err := coalescer.Flush(); err != nil {
+	if flushCount == 0 {
+		if _, err := e.recordRunProgress(job, 1, content); err != nil {
 			return sessionV3AssistantResponse{}, err
 		}
 	}
@@ -759,6 +739,163 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		StopReason:         strings.TrimSpace(response.StopReason),
 		Usage:              response.Usage,
 	}, nil
+}
+
+func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, runner provideriface.Runner, baseReq provideriface.Request) (provideriface.Response, string, int, error) {
+	if runner == nil {
+		return provideriface.Response{}, "", 0, errors.New("provider runner is not configured")
+	}
+	var toolInvoker provideriface.ToolInvoker
+	if len(baseReq.Tools) > 0 && !strings.EqualFold(strings.TrimSpace(baseReq.ToolChoice), "none") {
+		var invokerErr error
+		toolInvoker, invokerErr = e.newSessionV3ProviderToolInvoker(resolved, job)
+		if invokerErr != nil {
+			return provideriface.Response{}, "", 0, invokerErr
+		}
+	}
+	input := append([]map[string]any(nil), baseReq.Input...)
+	var lastResponse provideriface.Response
+	var finalStreamed strings.Builder
+	var totalFlushCount int
+	for step := 1; step <= sessionV3ProviderToolLoopMaxSteps; step++ {
+		req := baseReq
+		req.Input = append([]map[string]any(nil), input...)
+		req.ToolInvoker = toolInvoker
+		var streamed strings.Builder
+		coalescer := newSessionV3AssistantDeltaCoalescer(e, job)
+		var progressErr error
+		response, err := runner.CreateResponseStreaming(ctx, req, func(event provideriface.StreamEvent) {
+			if event.Type != provideriface.StreamEventOutputTextDelta {
+				return
+			}
+			streamed.WriteString(event.Delta)
+			if progressErr == nil {
+				progressErr = coalescer.Add(event.Delta)
+			}
+		})
+		if flushErr := coalescer.Flush(); flushErr != nil && progressErr == nil {
+			progressErr = flushErr
+		}
+		if err != nil {
+			return provideriface.Response{}, "", totalFlushCount, err
+		}
+		if progressErr != nil {
+			return provideriface.Response{}, "", totalFlushCount, progressErr
+		}
+		lastResponse = response
+		totalFlushCount += coalescer.FlushCount()
+		if len(response.FunctionCalls) == 0 && !response.RestartTurn {
+			finalStreamed.WriteString(streamed.String())
+			return response, finalStreamed.String(), totalFlushCount, nil
+		}
+		if len(response.FunctionCalls) == 0 {
+			if response.RestartTurn {
+				input = e.sessionV3ProviderContinuationInput(job)
+				if len(input) == 0 {
+					return provideriface.Response{}, "", totalFlushCount, errors.New("v3 provider restart requested but continuation input is empty")
+				}
+				continue
+			}
+			return provideriface.Response{}, "", totalFlushCount, errors.New("v3 provider requested a tool-loop restart without tool calls")
+		}
+		if len(baseReq.Tools) == 0 || strings.EqualFold(strings.TrimSpace(baseReq.ToolChoice), "none") {
+			return provideriface.Response{}, "", totalFlushCount, errors.New("v3 provider returned tool calls; tool-loop execution is not supported without resolved tools")
+		}
+		if toolInvoker == nil {
+			var invokerErr error
+			toolInvoker, invokerErr = e.newSessionV3ProviderToolInvoker(resolved, job)
+			if invokerErr != nil {
+				return provideriface.Response{}, "", totalFlushCount, invokerErr
+			}
+		}
+		toolResults := make([]provideriface.ToolExecutionResult, 0, len(response.FunctionCalls))
+		for _, call := range response.FunctionCalls {
+			result, err := toolInvoker.ExecuteTool(ctx, provideriface.ToolInvocation{
+				CallID:    strings.TrimSpace(call.CallID),
+				Name:      strings.TrimSpace(call.Name),
+				Arguments: strings.TrimSpace(call.Arguments),
+				Metadata:  cloneSessionsV3Metadata(call.Metadata),
+			})
+			if err != nil {
+				return provideriface.Response{}, "", totalFlushCount, err
+			}
+			toolResults = append(toolResults, result)
+		}
+		input = e.sessionV3ProviderContinuationInput(job)
+		if len(input) == 0 {
+			return provideriface.Response{}, "", totalFlushCount, errors.New("v3 provider continuation input is empty after tool execution")
+		}
+		_ = toolResults
+	}
+	if len(lastResponse.FunctionCalls) > 0 || lastResponse.RestartTurn {
+		return provideriface.Response{}, "", totalFlushCount, fmt.Errorf("v3 provider tool loop exceeded %d steps", sessionV3ProviderToolLoopMaxSteps)
+	}
+	return lastResponse, finalStreamed.String(), totalFlushCount, nil
+}
+
+func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3ResolvedRuntime, job sessionV3ExecutorJob) (provideriface.ToolInvoker, error) {
+	if e == nil || e.server == nil || e.server.sessions == nil {
+		return nil, errors.New("v3 executor is not configured")
+	}
+	if e.server.runner == nil {
+		return nil, errors.New("run service is not configured")
+	}
+	builder, ok := e.server.runner.(interface {
+		NewProviderManagedToolInvoker(runruntime.ProviderManagedToolInvokerConfig) provideriface.ToolInvoker
+	})
+	if !ok || builder == nil {
+		return nil, errors.New("run service does not support provider-managed tool execution")
+	}
+	policy, err := e.sessionV3CompiledToolPolicy(resolved)
+	if err != nil {
+		return nil, err
+	}
+	workspacePath := strings.TrimSpace(resolved.Scope.PrimaryPath)
+	roots := append([]string(nil), resolved.Scope.Roots...)
+	if len(roots) == 0 && workspacePath != "" {
+		roots = []string{workspacePath}
+	}
+	invoker := builder.NewProviderManagedToolInvoker(runruntime.ProviderManagedToolInvokerConfig{
+		SessionID:            job.SessionID,
+		PermissionSessionID:  job.SessionID,
+		RunID:                job.RunID,
+		Step:                 1,
+		SessionMode:          resolved.Session.Mode,
+		WorkspacePath:        workspacePath,
+		WorkspaceRoots:       roots,
+		WorkspaceOriginPath:  workspacePath,
+		WorkspaceOriginRoots: roots,
+		WorkspaceName:        resolved.Session.WorkspaceName,
+		Principal:            job.Principal,
+		Policy:               policy,
+		AgentProfile:         resolved.AgentProfile,
+	})
+	if invoker == nil {
+		return nil, errors.New("provider-managed tool invoker is not configured")
+	}
+	return invoker, nil
+}
+
+func (e *sessionV3Executor) sessionV3CompiledToolPolicy(resolved sessionV3ResolvedRuntime) (*permission.Policy, error) {
+	if e == nil || e.server == nil || e.server.runner == nil {
+		return nil, nil
+	}
+	_, policy, _, err := e.server.runner.ResolveAgentToolContractForAccount(resolved.Session.AccountScopeID, resolved.AgentProfile)
+	if err != nil {
+		return nil, err
+	}
+	return policy, nil
+}
+
+func (e *sessionV3Executor) sessionV3ProviderContinuationInput(job sessionV3ExecutorJob) []map[string]any {
+	if e == nil || e.server == nil || e.server.sessions == nil {
+		return nil
+	}
+	messages, err := e.server.sessions.ListSessionMessages(job.SessionID, 0, 500)
+	if err != nil || len(messages) == 0 {
+		return nil
+	}
+	return sessionsV3ProviderInput(messages)
 }
 
 func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (sessionV3ResolvedRuntime, error) {
@@ -979,8 +1116,10 @@ func sessionsV3ProviderInput(messages []pebblestore.MessageSnapshot) []map[strin
 			input = append(input, map[string]any{"role": "assistant", "content": []map[string]any{{"type": "output_text", "text": content}}})
 		case "system":
 			input = append(input, map[string]any{"role": "user", "content": []map[string]any{{"type": "input_text", "text": "[system] " + content}}})
-		case "reasoning", "tool":
+		case "reasoning":
 			continue
+		case "tool":
+			input = append(input, map[string]any{"role": "user", "content": []map[string]any{{"type": "input_text", "text": "[tool result] " + content}}})
 		default:
 			input = append(input, map[string]any{"role": "user", "content": []map[string]any{{"type": "input_text", "text": content}}})
 		}

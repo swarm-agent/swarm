@@ -18,6 +18,26 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 )
 
+// ProviderManagedToolInvokerConfig configures provider-managed tool execution for
+// callers that own the provider loop but need the canonical run.Service tool
+// executor and persistence path.
+type ProviderManagedToolInvokerConfig struct {
+	SessionID            string
+	PermissionSessionID  string
+	RunID                string
+	Step                 int
+	SessionMode          string
+	WorkspacePath        string
+	WorkspaceRoots       []string
+	WorkspaceOriginPath  string
+	WorkspaceOriginRoots []string
+	WorkspaceName        string
+	Principal            identity.Principal
+	Emit                 StreamHandler
+	Policy               *permission.Policy
+	AgentProfile         pebblestore.AgentProfile
+}
+
 type providerToolInvokerConfig struct {
 	sessionID            string
 	permissionSessionID  string
@@ -35,6 +55,25 @@ type providerToolInvokerConfig struct {
 	agentProfile         pebblestore.AgentProfile
 }
 
+func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerConfig {
+	return providerToolInvokerConfig{
+		sessionID:            strings.TrimSpace(config.SessionID),
+		permissionSessionID:  strings.TrimSpace(config.PermissionSessionID),
+		runID:                strings.TrimSpace(config.RunID),
+		step:                 config.Step,
+		sessionMode:          strings.TrimSpace(config.SessionMode),
+		workspacePath:        strings.TrimSpace(config.WorkspacePath),
+		workspaceRoots:       append([]string(nil), config.WorkspaceRoots...),
+		workspaceOriginPath:  strings.TrimSpace(config.WorkspaceOriginPath),
+		workspaceOriginRoots: append([]string(nil), config.WorkspaceOriginRoots...),
+		workspaceName:        strings.TrimSpace(config.WorkspaceName),
+		principal:            config.Principal,
+		emit:                 config.Emit,
+		policy:               config.Policy,
+		agentProfile:         config.AgentProfile,
+	}
+}
+
 type providerToolInvoker struct {
 	service *Service
 	config  providerToolInvokerConfig
@@ -48,6 +87,10 @@ func (s *Service) newProviderToolInvoker(config providerToolInvokerConfig) provi
 		service: s,
 		config:  config,
 	}
+}
+
+func (s *Service) NewProviderManagedToolInvoker(config ProviderManagedToolInvokerConfig) provideriface.ToolInvoker {
+	return s.newProviderToolInvoker(config.internal())
 }
 
 func (i *providerToolInvoker) ExecuteTool(ctx context.Context, invocation provideriface.ToolInvocation) (provideriface.ToolExecutionResult, error) {
