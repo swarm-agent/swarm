@@ -119,11 +119,20 @@ func planDocumentPatchFromArgs(args map[string]any) (*sessionruntime.PlanDocumen
 		if _, isBool := value.(bool); isBool {
 			// checkpoint=true is revision metadata, not a structured checkpoint object.
 		} else {
+			raw, err := planToolArgJSON(value)
+			if err != nil {
+				return nil, fmt.Errorf("plan_manage checkpoint invalid: %w", err)
+			}
 			var checkpoint pebblestore.SessionPlanCheckpoint
-			if err := unmarshalPlanToolArg(value, &checkpoint, "plan_manage checkpoint"); err != nil {
-				return nil, err
+			if err := json.Unmarshal(raw, &checkpoint); err != nil {
+				return nil, fmt.Errorf("plan_manage checkpoint invalid: %w", err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &fields); err != nil {
+				return nil, fmt.Errorf("plan_manage checkpoint invalid: %w", err)
 			}
 			patch.Checkpoint = &checkpoint
+			patch.CheckpointFields = fields
 		}
 	}
 	if value, ok := args["operations"]; ok && value != nil {

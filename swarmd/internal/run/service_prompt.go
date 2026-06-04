@@ -117,6 +117,8 @@ func masterHarnessPromptWithScope(scope tool.WorkspaceScope) string {
 		"- manage_todos supports an atomic `batch` action with an `operations` payload for true bulk changes.",
 		"- manage_todos also supports `delete_done` for removing completed tasks in one call.",
 		fmt.Sprintf("- plan_manage (update active plan without switching modes): %s", autoModePlanManageSaveSnippet),
+		"- plan_manage modular document patches: update_info and update_checkpoint merge only provided fields and preserve omitted fields; use replace_info/set_info or replace_checkpoint/set_checkpoint only when intentionally replacing a whole object.",
+		"- plan_manage update_checkpoint example: {\"action\":\"update_checkpoint\",\"checkpoint_id\":\"cp-1\",\"checkpoint\":{\"status\":\"in_progress\"},\"notes\":\"Started implementation\"}",
 		"- exit_plan_mode (submit final structured plan document for approval and exit plan mode; include plan_id when reusing an active plan): {\"title\":\"Plan: tighten harness prompt\",\"plan_id\":\"plan_123\",\"document\":{\"info\":{\"goal\":\"Tighten harness prompt\",\"relevant_files\":[\"swarmd/internal/run/service.go\"]},\"checkpoints\":[{\"id\":\"cp-1\",\"title\":\"Update prompt\",\"status\":\"pending\",\"tasks\":[\"Update master prompt\"]}]}}",
 		strings.Join(workspaceScopeLines, "\n"),
 		"Tool constraints:",

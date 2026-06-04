@@ -89,6 +89,7 @@ type PlanDocumentPatch struct {
 	Info               *pebblestore.SessionPlanInfo       `json:"info,omitempty"`
 	InfoFields         map[string]json.RawMessage         `json:"-"`
 	Checkpoint         *pebblestore.SessionPlanCheckpoint `json:"checkpoint,omitempty"`
+	CheckpointFields   map[string]json.RawMessage         `json:"-"`
 	CheckpointID       string                             `json:"checkpoint_id,omitempty"`
 	CheckpointOrder    []string                           `json:"checkpoint_order,omitempty"`
 	ActiveCheckpointID string                             `json:"active_checkpoint_id,omitempty"`
@@ -114,31 +115,41 @@ func (p *PlanDocumentPatch) UnmarshalJSON(raw []byte) error {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return err
 	}
-	infoRaw, ok := payload["info"]
-	if !ok || len(infoRaw) == 0 || string(infoRaw) == "null" {
-		return nil
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(infoRaw, &fields); err != nil {
-		return err
-	}
-	var info pebblestore.SessionPlanInfo
-	if err := json.Unmarshal(infoRaw, &info); err != nil {
-		return err
-	}
-	if rawScope, ok := fields["scope"]; ok && len(rawScope) > 0 {
-		var scope string
-		if json.Unmarshal(rawScope, &scope) == nil {
-			info.Scope = scope
+	if infoRaw, ok := payload["info"]; ok && len(infoRaw) > 0 && string(infoRaw) != "null" {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(infoRaw, &fields); err != nil {
+			return err
 		}
+		var info pebblestore.SessionPlanInfo
+		if err := json.Unmarshal(infoRaw, &info); err != nil {
+			return err
+		}
+		if rawScope, ok := fields["scope"]; ok && len(rawScope) > 0 {
+			var scope string
+			if json.Unmarshal(rawScope, &scope) == nil {
+				info.Scope = scope
+			}
+		}
+		p.Info = &info
+		p.InfoFields = fields
 	}
-	p.Info = &info
-	p.InfoFields = fields
+	if checkpointRaw, ok := payload["checkpoint"]; ok && len(checkpointRaw) > 0 && string(checkpointRaw) != "null" {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(checkpointRaw, &fields); err != nil {
+			return err
+		}
+		var checkpoint pebblestore.SessionPlanCheckpoint
+		if err := json.Unmarshal(checkpointRaw, &checkpoint); err != nil {
+			return err
+		}
+		p.Checkpoint = &checkpoint
+		p.CheckpointFields = fields
+	}
 	return nil
 }
 
 func (p PlanDocumentPatch) IsZero() bool {
-	return strings.TrimSpace(p.Operation) == "" && p.Info == nil && len(p.InfoFields) == 0 && p.Checkpoint == nil && strings.TrimSpace(p.CheckpointID) == "" && len(p.CheckpointOrder) == 0 && strings.TrimSpace(p.ActiveCheckpointID) == "" && strings.TrimSpace(p.Status) == "" && strings.TrimSpace(p.Notes) == "" && strings.TrimSpace(p.Report) == "" && strings.TrimSpace(p.Result) == "" && len(p.ChangedFiles) == 0 && len(p.Validation) == 0 && len(p.Operations) == 0
+	return strings.TrimSpace(p.Operation) == "" && p.Info == nil && len(p.InfoFields) == 0 && p.Checkpoint == nil && len(p.CheckpointFields) == 0 && strings.TrimSpace(p.CheckpointID) == "" && len(p.CheckpointOrder) == 0 && strings.TrimSpace(p.ActiveCheckpointID) == "" && strings.TrimSpace(p.Status) == "" && strings.TrimSpace(p.Notes) == "" && strings.TrimSpace(p.Report) == "" && strings.TrimSpace(p.Result) == "" && len(p.ChangedFiles) == 0 && len(p.Validation) == 0 && len(p.Operations) == 0
 }
 
 func ApplyPlanDocumentPatch(planID, title string, existing *pebblestore.SessionPlanDocument, patch PlanDocumentPatch) (*pebblestore.SessionPlanDocument, error) {
@@ -228,18 +239,9 @@ func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op Pl
 			return fmt.Errorf("plan document checkpoint %q was not found", id)
 		}
 		if op.Checkpoint != nil {
-			checkpoint := *op.Checkpoint
-			trimPlanCheckpoint(&checkpoint)
-			if checkpoint.ID == "" {
-				checkpoint.ID = id
+			if err := mergePlanCheckpointPatch(&doc.Checkpoints[idx], op.Checkpoint, op.CheckpointFields, id); err != nil {
+				return err
 			}
-			if checkpoint.ID != id {
-				return fmt.Errorf("update_checkpoint checkpoint id %q does not match target %q", checkpoint.ID, id)
-			}
-			if checkpoint.Order == 0 {
-				checkpoint.Order = doc.Checkpoints[idx].Order
-			}
-			doc.Checkpoints[idx] = checkpoint
 		}
 		applyCheckpointCompletionFields(&doc.Checkpoints[idx], op, false)
 		return nil
@@ -366,6 +368,86 @@ func stringSliceFromPlanInfoRaw(raw json.RawMessage, fallback []string) []string
 		}
 	}
 	return cloneStringSlice(fallback)
+}
+
+func mergePlanCheckpointPatch(target *pebblestore.SessionPlanCheckpoint, checkpoint *pebblestore.SessionPlanCheckpoint, fields map[string]json.RawMessage, targetID string) error {
+	if target == nil {
+		return errors.New("plan document checkpoint target is required")
+	}
+	if checkpoint == nil {
+		return nil
+	}
+	if len(fields) == 0 {
+		fields = checkpointFieldPresence(checkpoint)
+	}
+	trimmed := *checkpoint
+	trimPlanCheckpoint(&trimmed)
+	if trimmed.ID == "" {
+		trimmed.ID = strings.TrimSpace(targetID)
+	}
+	if trimmed.ID != strings.TrimSpace(targetID) {
+		return fmt.Errorf("update_checkpoint checkpoint id %q does not match target %q", trimmed.ID, strings.TrimSpace(targetID))
+	}
+	for field, raw := range fields {
+		switch normalizePlanInfoFieldName(field) {
+		case "id":
+			id := stringFromPlanInfoRaw(raw, trimmed.ID)
+			id = strings.TrimSpace(id)
+			if id == "" {
+				id = strings.TrimSpace(targetID)
+			}
+			if id != strings.TrimSpace(targetID) {
+				return fmt.Errorf("update_checkpoint checkpoint id %q does not match target %q", id, strings.TrimSpace(targetID))
+			}
+			target.ID = id
+		case "title":
+			target.Title = strings.TrimSpace(stringFromPlanInfoRaw(raw, trimmed.Title))
+		case "status":
+			target.Status = strings.TrimSpace(stringFromPlanInfoRaw(raw, trimmed.Status))
+		case "objective":
+			target.Objective = strings.TrimSpace(stringFromPlanInfoRaw(raw, trimmed.Objective))
+		case "tasks":
+			target.Tasks = trimStringSlice(stringSliceFromPlanInfoRaw(raw, trimmed.Tasks))
+		case "acceptance_criteria":
+			target.AcceptanceCriteria = trimStringSlice(stringSliceFromPlanInfoRaw(raw, trimmed.AcceptanceCriteria))
+		case "notes":
+			target.Notes = strings.TrimSpace(stringFromPlanInfoRaw(raw, trimmed.Notes))
+		case "report":
+			target.Report = strings.TrimSpace(stringFromPlanInfoRaw(raw, trimmed.Report))
+		case "result":
+			target.Result = strings.TrimSpace(stringFromPlanInfoRaw(raw, trimmed.Result))
+		case "changed_files":
+			target.ChangedFiles = trimStringSlice(stringSliceFromPlanInfoRaw(raw, trimmed.ChangedFiles))
+		case "validation":
+			target.Validation = trimStringSlice(stringSliceFromPlanInfoRaw(raw, trimmed.Validation))
+		case "order":
+			var order int
+			if len(raw) > 0 && json.Unmarshal(raw, &order) == nil {
+				target.Order = order
+			} else if trimmed.Order != 0 {
+				target.Order = trimmed.Order
+			}
+		}
+	}
+	if target.ID == "" {
+		target.ID = strings.TrimSpace(targetID)
+	}
+	return nil
+}
+
+func checkpointFieldPresence(checkpoint *pebblestore.SessionPlanCheckpoint) map[string]json.RawMessage {
+	if checkpoint == nil {
+		return nil
+	}
+	raw, err := json.Marshal(checkpoint)
+	if err != nil {
+		return nil
+	}
+	fields := map[string]json.RawMessage{}
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil
+	}
+	return fields
 }
 
 func infoFieldPresence(info *pebblestore.SessionPlanInfo) map[string]json.RawMessage {
