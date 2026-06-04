@@ -749,16 +749,25 @@ type SessionSummary struct {
 }
 
 type SessionPlan struct {
-	ID            string               `json:"id"`
-	SessionID     string               `json:"session_id"`
-	Title         string               `json:"title"`
-	Plan          string               `json:"plan"`
-	Document      *SessionPlanDocument `json:"document,omitempty"`
-	Status        string               `json:"status"`
-	ApprovalState string               `json:"approval_state"`
-	Active        bool                 `json:"active"`
-	CreatedAt     int64                `json:"created_at"`
-	UpdatedAt     int64                `json:"updated_at"`
+	ID             string               `json:"id"`
+	SessionID      string               `json:"session_id"`
+	Title          string               `json:"title"`
+	Plan           string               `json:"plan"`
+	Document       *SessionPlanDocument `json:"document,omitempty"`
+	Status         string               `json:"status"`
+	ApprovalState  string               `json:"approval_state"`
+	Active         bool                 `json:"active"`
+	CreatedAt      int64                `json:"created_at"`
+	UpdatedAt      int64                `json:"updated_at"`
+	PriorTitle     string               `json:"prior_title,omitempty"`
+	PriorPlan      string               `json:"prior_plan,omitempty"`
+	DiffLines      []string             `json:"diff_lines,omitempty"`
+	UpdateSummary  string               `json:"update_summary,omitempty"`
+	UpdateScope    string               `json:"update_scope,omitempty"`
+	UpdateKind     string               `json:"update_kind,omitempty"`
+	Version        int                  `json:"version,omitempty"`
+	ParentRevision int                  `json:"parent_revision,omitempty"`
+	Checkpoint     bool                 `json:"checkpoint,omitempty"`
 }
 
 type SessionPlanDocument struct {
@@ -3053,6 +3062,32 @@ func (c *API) ListSessionPlans(ctx context.Context, sessionID string, limit int)
 		return nil, "", err
 	}
 	return resp.Plans, strings.TrimSpace(resp.ActivePlanID), nil
+}
+
+func (c *API) ListSessionPlanHistory(ctx context.Context, sessionID, planID string, limit int) ([]SessionPlan, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	planID = strings.TrimSpace(planID)
+	if sessionID == "" {
+		return nil, errors.New("session id is required")
+	}
+	if planID == "" {
+		return nil, errors.New("plan id is required")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	path := sessionV2LifecyclePath(sessionID, "plans/"+url.PathEscape(planID)+"/history") + "?limit=" + strconv.Itoa(limit)
+	var resp struct {
+		OK        bool          `json:"ok"`
+		SessionID string        `json:"session_id"`
+		PlanID    string        `json:"plan_id"`
+		Count     int           `json:"count"`
+		Revisions []SessionPlan `json:"revisions"`
+	}
+	if err := c.getJSON(ctx, path, &resp, true); err != nil {
+		return nil, err
+	}
+	return resp.Revisions, nil
 }
 
 func (c *API) GetSessionPlan(ctx context.Context, sessionID, planID string) (SessionPlan, error) {

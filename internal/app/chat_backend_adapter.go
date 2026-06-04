@@ -353,12 +353,24 @@ func convertClientPermission(record client.PermissionRecord) ui.ChatPermissionRe
 
 func convertClientSessionPlan(plan client.SessionPlan) ui.ChatSessionPlan {
 	return ui.ChatSessionPlan{
-		ID:            strings.TrimSpace(plan.ID),
-		Title:         strings.TrimSpace(plan.Title),
-		Plan:          plan.Plan,
-		Document:      plan.Document,
-		Status:        strings.TrimSpace(plan.Status),
-		ApprovalState: strings.TrimSpace(plan.ApprovalState),
+		ID:             strings.TrimSpace(plan.ID),
+		Title:          strings.TrimSpace(plan.Title),
+		Plan:           plan.Plan,
+		Document:       plan.Document,
+		Status:         strings.TrimSpace(plan.Status),
+		ApprovalState:  strings.TrimSpace(plan.ApprovalState),
+		Active:         plan.Active,
+		CreatedAt:      plan.CreatedAt,
+		UpdatedAt:      plan.UpdatedAt,
+		PriorTitle:     strings.TrimSpace(plan.PriorTitle),
+		PriorPlan:      plan.PriorPlan,
+		DiffLines:      append([]string(nil), plan.DiffLines...),
+		UpdateSummary:  strings.TrimSpace(plan.UpdateSummary),
+		UpdateScope:    strings.TrimSpace(plan.UpdateScope),
+		UpdateKind:     strings.TrimSpace(plan.UpdateKind),
+		Version:        plan.Version,
+		ParentRevision: plan.ParentRevision,
+		Checkpoint:     plan.Checkpoint,
 	}
 }
 

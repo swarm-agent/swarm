@@ -17,13 +17,25 @@ const (
 )
 
 type ChatSessionPlan struct {
-	ID            string
-	Title         string
-	Plan          string
-	Document      any
-	Status        string
-	ApprovalState string
-	Active        bool
+	ID              string
+	Title           string
+	Plan            string
+	Document        any
+	Status          string
+	ApprovalState   string
+	Active          bool
+	CreatedAt       int64
+	UpdatedAt       int64
+	PriorTitle      string
+	PriorPlan       string
+	DiffLines       []string
+	UpdateSummary   string
+	UpdateScope     string
+	UpdateKind      string
+	Version         int
+	ParentRevision  int
+	Checkpoint      bool
+	RestoreRevision bool
 }
 
 type ChatAction struct {

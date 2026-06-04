@@ -2387,11 +2387,24 @@ func (a *App) handlePlanCommand(args []string) {
 		if !ok {
 			plan = client.SessionPlan{Title: "Current Plan", Status: "draft"}
 		}
-		uiPlans := make([]ui.ChatSessionPlan, 0, len(plans))
-		for _, candidate := range plans {
-			uiPlans = append(uiPlans, ui.ChatSessionPlan{ID: strings.TrimSpace(candidate.ID), Title: strings.TrimSpace(candidate.Title), Plan: candidate.Plan, Document: candidate.Document, Status: strings.TrimSpace(candidate.Status), ApprovalState: strings.TrimSpace(candidate.ApprovalState), Active: candidate.Active})
+		uiRevisions := make([]ui.ChatSessionPlan, 0)
+		if strings.TrimSpace(plan.ID) != "" {
+			revisions, historyErr := a.api.ListSessionPlanHistory(ctx, sessionID, plan.ID, 100)
+			if historyErr != nil {
+				a.home.SetStatus(fmt.Sprintf("/plan history failed: %v", historyErr))
+			} else {
+				uiRevisions = make([]ui.ChatSessionPlan, 0, len(revisions))
+				for _, revision := range revisions {
+					uiRevisions = append(uiRevisions, ui.ChatSessionPlan{ID: strings.TrimSpace(revision.ID), Title: strings.TrimSpace(revision.Title), Plan: revision.Plan, Document: revision.Document, Status: strings.TrimSpace(revision.Status), ApprovalState: strings.TrimSpace(revision.ApprovalState), Active: revision.Active, CreatedAt: revision.CreatedAt, UpdatedAt: revision.UpdatedAt, PriorTitle: strings.TrimSpace(revision.PriorTitle), PriorPlan: revision.PriorPlan, DiffLines: append([]string(nil), revision.DiffLines...), UpdateSummary: strings.TrimSpace(revision.UpdateSummary), UpdateScope: strings.TrimSpace(revision.UpdateScope), UpdateKind: strings.TrimSpace(revision.UpdateKind), Version: revision.Version, ParentRevision: revision.ParentRevision, Checkpoint: revision.Checkpoint})
+				}
+			}
 		}
-		if !a.chat.OpenCurrentPlanModalWithPlans(ui.ChatSessionPlan{ID: strings.TrimSpace(plan.ID), Title: strings.TrimSpace(plan.Title), Plan: plan.Plan, Document: plan.Document, Status: strings.TrimSpace(plan.Status), ApprovalState: strings.TrimSpace(plan.ApprovalState), Active: ok}, uiPlans, activeID) {
+		if len(uiRevisions) == 0 && len(plans) > 0 {
+			for _, candidate := range plans {
+				uiRevisions = append(uiRevisions, ui.ChatSessionPlan{ID: strings.TrimSpace(candidate.ID), Title: strings.TrimSpace(candidate.Title), Plan: candidate.Plan, Document: candidate.Document, Status: strings.TrimSpace(candidate.Status), ApprovalState: strings.TrimSpace(candidate.ApprovalState), Active: candidate.Active, CreatedAt: candidate.CreatedAt, UpdatedAt: candidate.UpdatedAt})
+			}
+		}
+		if !a.chat.OpenCurrentPlanModalWithPlans(ui.ChatSessionPlan{ID: strings.TrimSpace(plan.ID), Title: strings.TrimSpace(plan.Title), Plan: plan.Plan, Document: plan.Document, Status: strings.TrimSpace(plan.Status), ApprovalState: strings.TrimSpace(plan.ApprovalState), Active: ok, CreatedAt: plan.CreatedAt, UpdatedAt: plan.UpdatedAt, Version: plan.Version}, uiRevisions, activeID) {
 			a.home.SetStatus("current plan modal is unavailable while another modal is open")
 			return
 		}
@@ -4309,14 +4322,33 @@ func (a *App) handleChatAction(action ui.ChatAction) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
-		plan, err := a.api.SetActiveSessionPlan(ctx, sessionID, planID)
+		var plan client.SessionPlan
+		var err error
+		if action.Plan.RestoreRevision {
+			restored, saveErr := a.api.SaveSessionPlan(ctx, sessionID, client.SessionPlanUpsertRequest{
+				ID:            planID,
+				PlanID:        planID,
+				Title:         strings.TrimSpace(action.Plan.Title),
+				Plan:          action.Plan.Plan,
+				Document:      clientSessionPlanDocumentFromAny(action.Plan.Document),
+				Status:        strings.TrimSpace(action.Plan.Status),
+				ApprovalState: strings.TrimSpace(action.Plan.ApprovalState),
+			})
+			plan, err = restored, saveErr
+		} else {
+			plan, err = a.api.SetActiveSessionPlan(ctx, sessionID, planID)
+		}
 		if err != nil {
 			a.home.SetStatus(fmt.Sprintf("activate plan failed: %v", err))
 			return
 		}
 		a.chat.SetActivePlan(chatPlanLabel(plan))
 		a.home.SetStatus(fmt.Sprintf("active plan: %s", plan.ID))
-		a.chat.AppendSystemMessage(fmt.Sprintf("Active plan set to %s (%s).", plan.ID, emptyFallback(plan.Title, "untitled")))
+		if action.Plan.RestoreRevision {
+			a.chat.AppendSystemMessage(fmt.Sprintf("Restored revision as active plan %s (%s).", plan.ID, emptyFallback(plan.Title, "untitled")))
+		} else {
+			a.chat.AppendSystemMessage(fmt.Sprintf("Active plan set to %s (%s).", plan.ID, emptyFallback(plan.Title, "untitled")))
+		}
 	case ui.ChatActionSavePlan:
 		if a.api == nil {
 			a.home.SetStatus("save plan failed: api client is not configured")

@@ -466,6 +466,7 @@ type ChatPage struct {
 	planEditorActivePlanID  string
 	planEditorPlanSelection int
 	planEditorPlanScroll    int
+	planEditorRevisionFocus bool
 	planEditorInput         string
 	planEditorEditing       bool
 	planEditorConfirmSave   bool

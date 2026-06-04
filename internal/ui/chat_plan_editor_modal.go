@@ -1,9 +1,10 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
@@ -13,97 +14,68 @@ func (p *ChatPage) openPlanEditorModal(plan ChatSessionPlan) {
 	p.openPlanEditorModalWithPlans(plan, nil, strings.TrimSpace(plan.ID))
 }
 
-func (p *ChatPage) openPlanEditorModalWithPlans(plan ChatSessionPlan, plans []ChatSessionPlan, activePlanID string) {
-	planID := strings.TrimSpace(plan.ID)
+func (p *ChatPage) openPlanEditorModalWithPlans(plan ChatSessionPlan, revisions []ChatSessionPlan, activePlanID string) {
 	activePlanID = strings.TrimSpace(activePlanID)
 	if activePlanID == "" {
-		activePlanID = planID
-	}
-	normalizedPlans := normalizePlanEditorPlans(plans, plan, activePlanID)
-	selected := 0
-	if planID != "" {
-		for i, candidate := range normalizedPlans {
-			if strings.TrimSpace(candidate.ID) == planID {
-				selected = i
-				break
-			}
-		}
-	}
-	if len(normalizedPlans) > 0 {
-		plan = normalizedPlans[selected]
+		activePlanID = strings.TrimSpace(plan.ID)
 	}
 	plan = normalizePlanEditorPlan(plan, activePlanID)
-	planID = strings.TrimSpace(plan.ID)
-	title := strings.TrimSpace(plan.Title)
-	if title == "" {
-		title = "Plan"
+	items := normalizePlanEditorRevisions(plan, revisions, activePlanID)
+	if len(items) == 0 {
+		items = []ChatSessionPlan{plan}
 	}
-	body := strings.ReplaceAll(plan.Plan, "\r\n", "\n")
-	body = strings.ReplaceAll(body, "\r", "\n")
-	if documentText := StructuredPlanDocumentTextFromValue(plan.Document); strings.TrimSpace(documentText) != "" {
-		body = documentText
-	}
+
 	p.planEditorVisible = true
-	p.planEditorPlan = ChatSessionPlan{
-		ID:            planID,
-		Title:         title,
-		Plan:          body,
-		Document:      plan.Document,
-		Status:        strings.TrimSpace(plan.Status),
-		ApprovalState: strings.TrimSpace(plan.ApprovalState),
-		Active:        plan.Active,
-	}
-	p.planEditorPlans = normalizedPlans
+	p.planEditorPlan = items[0]
+	p.planEditorPlans = items
 	p.planEditorActivePlanID = activePlanID
-	p.planEditorPlanSelection = selected
+	p.planEditorPlanSelection = 0
 	p.planEditorPlanScroll = 0
-	p.planEditorInput = body
+	p.planEditorRevisionFocus = false
+	p.planEditorInput = planEditorDisplayText(items[0])
 	p.planEditorEditing = false
 	p.planEditorConfirmSave = false
-	p.planEditorSelection = chatPlanEditorSelectSave
+	p.planEditorSelection = chatPlanEditorSelectCopy
 	p.planEditorScroll = 0
 	p.planEditorInputScroll = 0
 	p.planEditorCancelRect = Rect{}
 	p.planEditorCopyRect = Rect{}
 	p.planEditorSaveRect = Rect{}
-	if planID != "" {
+	if title := strings.TrimSpace(items[0].Title); title != "" {
 		p.statusLine = fmt.Sprintf("current plan: %s", title)
 	} else {
 		p.statusLine = "current plan: no active plan"
 	}
 }
 
-func normalizePlanEditorPlans(plans []ChatSessionPlan, current ChatSessionPlan, activePlanID string) []ChatSessionPlan {
-	activePlanID = strings.TrimSpace(activePlanID)
-	out := make([]ChatSessionPlan, 0, len(plans)+1)
-	seen := make(map[string]bool, len(plans)+1)
-	for _, plan := range plans {
-		normalized := normalizePlanEditorPlan(plan, activePlanID)
-		id := strings.TrimSpace(normalized.ID)
-		if id == "" && strings.TrimSpace(normalized.Title) == "" && strings.TrimSpace(normalized.Plan) == "" {
+func normalizePlanEditorRevisions(current ChatSessionPlan, revisions []ChatSessionPlan, activePlanID string) []ChatSessionPlan {
+	current = normalizePlanEditorPlan(current, activePlanID)
+	activeKey := planEditorRevisionKey(current, 0)
+	if strings.TrimSpace(current.ID) == strings.TrimSpace(activePlanID) && activeKey != "" {
+		current.Active = true
+	}
+	out := []ChatSessionPlan{current}
+	seen := map[string]bool{activeKey: true}
+	for _, revision := range revisions {
+		normalized := normalizePlanEditorPlan(revision, activePlanID)
+		if strings.TrimSpace(normalized.ID) == "" && strings.TrimSpace(normalized.Title) == "" && strings.TrimSpace(normalized.Plan) == "" && normalized.Document == nil {
 			continue
 		}
-		key := id
-		if key == "" {
-			key = strings.TrimSpace(normalized.Title)
-		}
-		if key != "" && seen[key] {
+		key := planEditorRevisionKey(normalized, len(out))
+		if seen[key] {
 			continue
 		}
-		if key != "" {
-			seen[key] = true
+		if strings.TrimSpace(normalized.ID) == strings.TrimSpace(activePlanID) {
+			normalized.Active = key == activeKey
 		}
+		seen[key] = true
 		out = append(out, normalized)
 	}
-	current = normalizePlanEditorPlan(current, activePlanID)
-	currentID := strings.TrimSpace(current.ID)
-	if currentID != "" && !seen[currentID] {
-		out = append([]ChatSessionPlan{current}, out...)
-	}
-	if len(out) == 0 {
-		out = append(out, current)
-	}
 	return out
+}
+
+func normalizePlanEditorPlans(plans []ChatSessionPlan, current ChatSessionPlan, activePlanID string) []ChatSessionPlan {
+	return normalizePlanEditorRevisions(current, plans, activePlanID)
 }
 
 func normalizePlanEditorPlan(plan ChatSessionPlan, activePlanID string) ChatSessionPlan {
@@ -116,9 +88,9 @@ func normalizePlanEditorPlan(plan ChatSessionPlan, activePlanID string) ChatSess
 	plan.Plan = strings.ReplaceAll(plan.Plan, "\r", "\n")
 	plan.Status = strings.TrimSpace(plan.Status)
 	plan.ApprovalState = strings.TrimSpace(plan.ApprovalState)
-	if plan.ID != "" && strings.TrimSpace(activePlanID) == plan.ID {
-		plan.Active = true
-	}
+	plan.UpdateSummary = strings.TrimSpace(plan.UpdateSummary)
+	plan.UpdateScope = strings.TrimSpace(plan.UpdateScope)
+	plan.UpdateKind = strings.TrimSpace(plan.UpdateKind)
 	return plan
 }
 
@@ -138,12 +110,11 @@ func (p *ChatPage) selectedPlanEditorPlan() ChatSessionPlan {
 
 func (p *ChatPage) planEditorSelectedPlanActive() bool {
 	plan := p.selectedPlanEditorPlan()
-	id := strings.TrimSpace(plan.ID)
-	return plan.Active || (id != "" && id == strings.TrimSpace(p.planEditorActivePlanID))
+	return plan.Active
 }
 
 func (p *ChatPage) selectPlanEditorPlan(delta int) bool {
-	if p == nil || len(p.planEditorPlans) == 0 || p.planEditorEditing || p.planEditorConfirmSave {
+	if p == nil || len(p.planEditorPlans) == 0 {
 		return false
 	}
 	next := p.planEditorPlanSelection + delta
@@ -158,24 +129,34 @@ func (p *ChatPage) selectPlanEditorPlan(delta int) bool {
 	}
 	p.planEditorPlanSelection = next
 	p.loadSelectedPlanEditorPlan()
-	if p.planEditorSelectedPlanActive() {
-		p.statusLine = fmt.Sprintf("current plan: %s", planEditorFallback(strings.TrimSpace(p.planEditorPlan.Title), strings.TrimSpace(p.planEditorPlan.ID)))
-	} else {
-		p.statusLine = "Press a to activate as current plan"
-	}
+	p.statusLine = fmt.Sprintf("previewing %s (Enter to activate)", planEditorRevisionLabel(p.planEditorPlan, next))
 	return true
 }
 
 func (p *ChatPage) loadSelectedPlanEditorPlan() {
 	plan := normalizePlanEditorPlan(p.selectedPlanEditorPlan(), p.planEditorActivePlanID)
 	p.planEditorPlan = plan
-	p.planEditorInput = plan.Plan
-	if documentText := StructuredPlanDocumentTextFromValue(plan.Document); strings.TrimSpace(documentText) != "" {
-		p.planEditorInput = documentText
-	}
+	p.planEditorInput = planEditorDisplayText(plan)
 	p.planEditorInputScroll = 0
 	p.planEditorScroll = 0
-	p.planEditorSelection = chatPlanEditorSelectSave
+	p.planEditorSelection = chatPlanEditorSelectCopy
+	p.statusLine = fmt.Sprintf("viewing %s", planEditorRevisionLabel(plan, p.planEditorPlanSelection))
+}
+
+func (p *ChatPage) activateSelectedPlanEditorPlan() {
+	if p == nil || len(p.planEditorPlans) == 0 {
+		return
+	}
+	p.loadSelectedPlanEditorPlan()
+	plan := p.planEditorPlan
+	if strings.TrimSpace(plan.ID) == "" {
+		p.statusLine = "selected revision has no plan id"
+		return
+	}
+	plan.RestoreRevision = p.planEditorPlanSelection > 0
+	p.pendingChatAction = &ChatAction{Kind: ChatActionActivatePlan, Plan: plan}
+	p.closePlanEditorModal()
+	p.statusLine = fmt.Sprintf("activating %s...", planEditorRevisionLabel(plan, p.planEditorPlanSelection))
 }
 
 func (p *ChatPage) planEditorModalActive() bool {
@@ -189,10 +170,11 @@ func (p *ChatPage) closePlanEditorModal() {
 	p.planEditorActivePlanID = ""
 	p.planEditorPlanSelection = 0
 	p.planEditorPlanScroll = 0
+	p.planEditorRevisionFocus = false
 	p.planEditorInput = ""
 	p.planEditorEditing = false
 	p.planEditorConfirmSave = false
-	p.planEditorSelection = chatPlanEditorSelectSave
+	p.planEditorSelection = chatPlanEditorSelectCopy
 	p.planEditorScroll = 0
 	p.planEditorInputScroll = 0
 	p.planEditorCancelRect = Rect{}
@@ -213,9 +195,6 @@ func (p *ChatPage) handlePlanEditorModalMouse(ev *tcell.EventMouse) bool {
 			return true
 		case p.planEditorCopyRect.Contains(x, y):
 			p.resolvePlanEditorModal(chatPlanEditorActionCopy)
-			return true
-		case p.planEditorSaveRect.Contains(x, y):
-			p.resolvePlanEditorModal(chatPlanEditorActionSave)
 			return true
 		}
 	}
@@ -238,112 +217,30 @@ func (p *ChatPage) handlePlanEditorModalKey(ev *tcell.EventKey) bool {
 	if p.keybinds == nil {
 		p.keybinds = NewDefaultKeyBindings()
 	}
-	if p.planEditorConfirmSave {
-		switch {
-		case p.keybinds.Match(ev, KeybindPlanExitCancel):
-			p.planEditorConfirmSave = false
-			p.statusLine = "save canceled"
-			return true
-		case p.keybinds.Match(ev, KeybindPlanExitConfirm):
-			p.planEditorEditing = false
-			p.planEditorConfirmSave = false
-			p.planEditorSelection = chatPlanEditorSelectSave
-			p.resolvePlanEditorModal(chatPlanEditorActionSave)
-			return true
-		case ev.Key() == tcell.KeyRune:
-			switch unicode.ToLower(ev.Rune()) {
-			case 'y':
-				p.planEditorEditing = false
-				p.planEditorConfirmSave = false
-				p.planEditorSelection = chatPlanEditorSelectSave
-				p.resolvePlanEditorModal(chatPlanEditorActionSave)
-				return true
-			case 'n':
-				p.planEditorConfirmSave = false
-				p.statusLine = "save canceled"
-				return true
-			}
-		}
-		return true
-	}
-	if p.planEditorEditing {
-		switch {
-		case p.keybinds.Match(ev, KeybindPlanExitCancel):
-			p.resolvePlanEditorModal(chatPlanEditorActionCancel)
-			return true
-		case p.keybinds.Match(ev, KeybindPlanExitToggle), p.keybinds.Match(ev, KeybindPlanExitToggleRight), p.keybinds.Match(ev, KeybindPlanExitToggleLeft):
-			if p.planEditorSelection == chatPlanEditorSelectCancel {
-				p.planEditorSelection = chatPlanEditorSelectSave
-			} else {
-				p.planEditorSelection = chatPlanEditorSelectCancel
-			}
-			return true
-		case ev.Key() == tcell.KeyBackspace || ev.Key() == tcell.KeyBackspace2:
-			if len(p.planEditorInput) > 0 {
-				_, sz := utf8.DecodeLastRuneInString(p.planEditorInput)
-				if sz > 0 {
-					p.planEditorInput = p.planEditorInput[:len(p.planEditorInput)-sz]
-				}
-			}
-			p.planEditorSelection = chatPlanEditorSelectSave
-			return true
-		case ev.Key() == tcell.KeyCtrlU:
-			p.planEditorInput = ""
-			p.planEditorInputScroll = 0
-			p.planEditorSelection = chatPlanEditorSelectSave
-			return true
-		case ev.Key() == tcell.KeyCtrlJ:
-			p.planEditorInput += "\n"
-			p.planEditorSelection = chatPlanEditorSelectSave
-			return true
-		case ev.Key() == tcell.KeyEnter:
-			if p.planEditorSelection == chatPlanEditorSelectCancel {
-				p.resolvePlanEditorModal(chatPlanEditorActionCancel)
-				return true
-			}
-			p.planEditorEditing = false
-			p.planEditorConfirmSave = false
-			p.planEditorSelection = chatPlanEditorSelectSave
-			p.resolvePlanEditorModal(chatPlanEditorActionSave)
-			return true
-		case ev.Key() == tcell.KeyRune:
-			r := ev.Rune()
-			if unicode.IsPrint(r) && utf8.RuneCountInString(p.planEditorInput) < chatMaxInputRunes {
-				p.planEditorInput += string(r)
-				p.planEditorSelection = chatPlanEditorSelectSave
-			}
-			return true
-		}
-		return true
-	}
 
 	switch {
 	case p.keybinds.Match(ev, KeybindPlanExitCancel):
 		p.resolvePlanEditorModal(chatPlanEditorActionCancel)
 		return true
-	case p.keybinds.Match(ev, KeybindPlanExitToggle), p.keybinds.Match(ev, KeybindPlanExitToggleRight):
-		p.planEditorSelection = (p.planEditorSelection + 1) % 3
+	case p.keybinds.Match(ev, KeybindPlanExitToggle), p.keybinds.Match(ev, KeybindPlanExitToggleRight), p.keybinds.Match(ev, KeybindPlanExitToggleLeft):
+		p.planEditorRevisionFocus = false
+		if p.planEditorSelection == chatPlanEditorSelectCancel {
+			p.planEditorSelection = chatPlanEditorSelectCopy
+		} else {
+			p.planEditorSelection = chatPlanEditorSelectCancel
+		}
 		return true
-	case p.keybinds.Match(ev, KeybindPlanExitToggleLeft):
-		p.planEditorSelection = (p.planEditorSelection + 2) % 3
-		return true
-	case p.keybinds.Match(ev, KeybindPlanExitMoveUp):
-		if !p.selectPlanEditorPlan(-1) {
+	case p.keybinds.Match(ev, KeybindPlanExitMoveUp), p.keybinds.Match(ev, KeybindPlanExitMoveUpAlt):
+		if p.planEditorRevisionFocus {
+			p.selectPlanEditorPlan(-1)
+		} else {
 			p.shiftPlanEditorScroll(-1)
 		}
 		return true
-	case p.keybinds.Match(ev, KeybindPlanExitMoveDown):
-		if !p.selectPlanEditorPlan(1) {
-			p.shiftPlanEditorScroll(1)
-		}
-		return true
-	case p.keybinds.Match(ev, KeybindPlanExitMoveUpAlt):
-		if !p.selectPlanEditorPlan(-1) {
-			p.shiftPlanEditorScroll(-1)
-		}
-		return true
-	case p.keybinds.Match(ev, KeybindPlanExitMoveDownAlt):
-		if !p.selectPlanEditorPlan(1) {
+	case p.keybinds.Match(ev, KeybindPlanExitMoveDown), p.keybinds.Match(ev, KeybindPlanExitMoveDownAlt):
+		if p.planEditorRevisionFocus {
+			p.selectPlanEditorPlan(1)
+		} else {
 			p.shiftPlanEditorScroll(1)
 		}
 		return true
@@ -362,35 +259,24 @@ func (p *ChatPage) handlePlanEditorModalKey(ev *tcell.EventKey) bool {
 		p.planEditorInputScroll = 1 << 30
 		return true
 	case p.keybinds.Match(ev, KeybindPlanExitConfirm):
-		switch p.planEditorSelection {
-		case chatPlanEditorSelectCancel:
+		if p.planEditorRevisionFocus {
+			p.activateSelectedPlanEditorPlan()
+			return true
+		}
+		if p.planEditorSelection == chatPlanEditorSelectCancel {
 			p.resolvePlanEditorModal(chatPlanEditorActionCancel)
-		case chatPlanEditorSelectCopy:
+		} else {
 			p.resolvePlanEditorModal(chatPlanEditorActionCopy)
-		default:
-			p.resolvePlanEditorModal(chatPlanEditorActionSave)
 		}
 		return true
 	case ev.Key() == tcell.KeyRune:
-		r := unicode.ToLower(ev.Rune())
-		switch r {
-		case 'c':
+		switch strings.ToLower(string(ev.Rune())) {
+		case "c":
 			p.resolvePlanEditorModal(chatPlanEditorActionCopy)
 			return true
-		case 'a':
-			if !p.planEditorSelectedPlanActive() {
-				plan := p.selectedPlanEditorPlan()
-				if strings.TrimSpace(plan.ID) != "" {
-					p.pendingChatAction = &ChatAction{Kind: ChatActionActivatePlan, Plan: plan}
-					p.statusLine = "activating current plan..."
-				}
-			}
-			return true
-		case 'e':
-			p.planEditorEditing = true
-			p.planEditorConfirmSave = false
-			p.planEditorSelection = chatPlanEditorSelectSave
-			p.statusLine = "editing plan (Enter saves, Ctrl+J newline, Esc cancels)"
+		case "r":
+			p.planEditorRevisionFocus = true
+			p.statusLine = "revision selector focused (↑/↓ preview, Enter activate)"
 			return true
 		}
 	}
@@ -401,14 +287,14 @@ func (p *ChatPage) drawPlanEditorModal(s tcell.Screen, screen Rect) {
 	if !p.planEditorModalActive() || screen.W < 40 || screen.H < 12 {
 		return
 	}
-	modalW := minInt(120, screen.W-6)
+	modalW := minInt(132, screen.W-4)
 	if modalW < 56 {
 		modalW = screen.W - 2
 	}
 	if modalW < 40 {
 		return
 	}
-	modalH := minInt(38, screen.H-4)
+	modalH := minInt(40, screen.H-4)
 	if modalH < 16 {
 		modalH = screen.H - 2
 	}
@@ -419,165 +305,70 @@ func (p *ChatPage) drawPlanEditorModal(s tcell.Screen, screen Rect) {
 	onPanel := func(style tcell.Style) tcell.Style { return styleWithBackgroundFrom(style, p.theme.Panel) }
 	FillRect(s, modal, p.theme.Panel)
 	DrawBox(s, modal, onPanel(p.theme.BorderActive))
+
+	revisionLabel := planEditorRevisionLabel(p.planEditorPlan, p.planEditorPlanSelection)
+	if len(p.planEditorPlans) == 0 {
+		revisionLabel = "Current revision"
+	}
+	revisionText := "R " + revisionLabel
+	revisionStyle := onPanel(p.theme.TextMuted)
+	if p.planEditorRevisionFocus {
+		revisionStyle = onPanel(p.theme.Warning.Bold(true))
+		revisionText = "› " + revisionText
+	}
+	if p.planEditorSelectedPlanActive() {
+		revisionText += " (active)"
+	}
+	revisionW := minInt(maxInt(18, utf8.RuneCountInString(revisionText)+2), modal.W/2)
+	DrawTextRight(s, modal.X+modal.W-2, modal.Y+1, revisionW, revisionStyle, clampEllipsis(revisionText, revisionW))
+
 	header := "Current Plan"
 	if title := strings.TrimSpace(p.planEditorPlan.Title); title != "" {
-		header = "Current Plan: " + title
+		header = title
 	}
-	DrawText(s, modal.X+2, modal.Y+1, modal.W-4, onPanel(p.theme.Warning.Bold(true)), clampEllipsis(header, modal.W-4))
-	subtitle := "Review, copy, edit, and save the active plan for this session."
-	if planID := strings.TrimSpace(p.planEditorPlan.ID); planID != "" {
-		subtitle = fmt.Sprintf("Plan %s • copy/paste friendly editor", clampEllipsis(planID, 24))
+	titleW := modal.W - 5 - revisionW
+	if titleW < 12 {
+		titleW = modal.W - 4
+	}
+	DrawText(s, modal.X+2, modal.Y+1, titleW, onPanel(p.theme.Warning.Bold(true)), clampEllipsis(header, titleW))
+	subtitle := "Ask the AI to update plans; TUI direct editing is disabled for now."
+	if len(p.planEditorPlans) > 1 {
+		subtitle = "Press r for revisions, ↑/↓ preview, Enter activate. Ask the AI to update plans."
 	}
 	DrawText(s, modal.X+2, modal.Y+2, modal.W-4, onPanel(p.theme.TextMuted), clampEllipsis(subtitle, modal.W-4))
 
-	bodyRect := Rect{X: modal.X + 2, Y: modal.Y + 4, W: modal.W - 4, H: modal.H - 8}
-	compact := bodyRect.W < 52
-	if compact {
-		DrawText(s, bodyRect.X, bodyRect.Y, bodyRect.W, onPanel(p.theme.Secondary.Bold(true)), "Plan")
-		editorRect := Rect{X: bodyRect.X, Y: bodyRect.Y + 1, W: bodyRect.W, H: maxInt(3, bodyRect.H-3)}
-		DrawBox(s, editorRect, onPanel(p.theme.Border))
-		textRect := Rect{X: editorRect.X + 1, Y: editorRect.Y + 1, W: maxInt(1, editorRect.W-2), H: maxInt(1, editorRect.H-2)}
-		visibleLines, maxScroll := p.planEditorVisibleLines(textRect.W, textRect.H)
-		if maxScroll < 0 {
-			maxScroll = 0
-		}
-		if p.planEditorInputScroll > maxScroll {
-			p.planEditorInputScroll = maxScroll
-		}
-		for i := 0; i < len(visibleLines) && i < textRect.H; i++ {
-			DrawText(s, textRect.X, textRect.Y+i, textRect.W, onPanel(p.theme.Text), visibleLines[i])
-		}
-		if len(visibleLines) == 0 {
-			DrawText(s, textRect.X, textRect.Y, textRect.W, onPanel(p.theme.TextMuted), "No active plan yet.")
-		}
-		if maxScroll > 0 {
-			scrollLabel := fmt.Sprintf("scroll %d/%d", p.planEditorInputScroll+1, maxScroll+1)
-			DrawTextRight(s, editorRect.X+editorRect.W-1, editorRect.Y, editorRect.W/2, onPanel(p.theme.TextMuted), clampEllipsis(scrollLabel, editorRect.W/2))
-		}
-	} else {
-		bodyRect := Rect{X: modal.X + 2, Y: modal.Y + 4, W: modal.W - 4, H: modal.H - 8}
-		leftW := maxInt(24, bodyRect.W/3)
-		if leftW > 34 {
-			leftW = 34
-		}
-		rightW := bodyRect.W - leftW - 2
-		if rightW < 20 {
-			rightW = 20
-			leftW = bodyRect.W - rightW - 2
-		}
-		leftRect := Rect{X: bodyRect.X, Y: bodyRect.Y, W: leftW, H: bodyRect.H}
-		rightRect := Rect{X: leftRect.X + leftRect.W + 2, Y: bodyRect.Y, W: rightW, H: bodyRect.H}
-
-		DrawText(s, leftRect.X, leftRect.Y, leftRect.W, onPanel(p.theme.Secondary.Bold(true)), "Plans")
-		listY := leftRect.Y + 2
-		listH := maxInt(1, leftRect.H-5)
-		plans := p.planEditorPlans
-		if len(plans) == 0 {
-			plans = []ChatSessionPlan{p.planEditorPlan}
-		}
-		if p.planEditorPlanSelection < 0 {
-			p.planEditorPlanSelection = 0
-		}
-		if p.planEditorPlanSelection >= len(plans) {
-			p.planEditorPlanSelection = len(plans) - 1
-		}
-		if p.planEditorPlanSelection < p.planEditorPlanScroll {
-			p.planEditorPlanScroll = p.planEditorPlanSelection
-		}
-		if p.planEditorPlanSelection >= p.planEditorPlanScroll+listH {
-			p.planEditorPlanScroll = p.planEditorPlanSelection - listH + 1
-		}
-		if p.planEditorPlanScroll < 0 {
-			p.planEditorPlanScroll = 0
-		}
-		for row := 0; row < listH && p.planEditorPlanScroll+row < len(plans); row++ {
-			idx := p.planEditorPlanScroll + row
-			plan := plans[idx]
-			prefix := "  "
-			style := onPanel(p.theme.Text)
-			if idx == p.planEditorPlanSelection {
-				prefix = "› "
-				style = onPanel(p.theme.Warning.Bold(true))
-			} else if plan.Active || strings.TrimSpace(plan.ID) == strings.TrimSpace(p.planEditorActivePlanID) {
-				prefix = "* "
-				style = onPanel(p.theme.Success)
-			}
-			title := planEditorFallback(strings.TrimSpace(plan.Title), strings.TrimSpace(plan.ID))
-			DrawText(s, leftRect.X, listY+row, leftRect.W, style, clampEllipsis(prefix+title, leftRect.W))
-		}
-		if len(plans) == 0 {
-			DrawText(s, leftRect.X, listY, leftRect.W, onPanel(p.theme.TextMuted), "No saved plans")
-		}
-		hintY := leftRect.Y + leftRect.H - 2
-		if !p.planEditorSelectedPlanActive() {
-			DrawText(s, leftRect.X, hintY, leftRect.W, onPanel(p.theme.Warning), clampEllipsis("Press a to activate as current plan", leftRect.W))
-		} else {
-			DrawText(s, leftRect.X, hintY, leftRect.W, onPanel(p.theme.TextMuted), clampEllipsis("↑/↓ choose plan", leftRect.W))
-		}
-
-		DrawText(s, rightRect.X, rightRect.Y, rightRect.W, onPanel(p.theme.Secondary.Bold(true)), "Plan editor")
-		editorRect := Rect{X: rightRect.X, Y: rightRect.Y + 1, W: rightRect.W, H: rightRect.H - 2}
-		DrawBox(s, editorRect, onPanel(p.theme.Border))
-		textRect := Rect{X: editorRect.X + 1, Y: editorRect.Y + 1, W: editorRect.W - 2, H: editorRect.H - 2}
-		visibleLines, maxScroll := p.planEditorVisibleLines(maxInt(1, textRect.W), maxInt(1, textRect.H))
-		if maxScroll < 0 {
-			maxScroll = 0
-		}
-		if p.planEditorInputScroll > maxScroll {
-			p.planEditorInputScroll = maxScroll
-		}
-		for i := 0; i < len(visibleLines) && i < textRect.H; i++ {
-			DrawText(s, textRect.X, textRect.Y+i, textRect.W, onPanel(p.theme.Text), visibleLines[i])
-		}
-		if p.planEditorEditing {
-			DrawTextRight(s, textRect.X+textRect.W-1, textRect.Y, textRect.W, onPanel(p.theme.Warning), clampEllipsis("EDITING", textRect.W))
-		}
-		if len(visibleLines) == 0 {
-			DrawText(s, textRect.X, textRect.Y, textRect.W, onPanel(p.theme.TextMuted), "No active plan yet. Save to create one.")
-		}
-		if (p.frameTick/chatCursorBlinkOn)%2 == 0 {
-			cursorLine, cursorCol := p.planEditorCursor(maxInt(1, textRect.W), maxInt(1, textRect.H))
-			cursorX := minInt(textRect.X+cursorCol, textRect.X+textRect.W-1)
-			cursorY := minInt(textRect.Y+cursorLine, textRect.Y+textRect.H-1)
-			s.SetContent(cursorX, cursorY, chatCursorRune, nil, onPanel(p.theme.Primary))
-		}
-		if maxScroll > 0 {
-			scrollLabel := fmt.Sprintf("scroll %d/%d", p.planEditorInputScroll+1, maxScroll+1)
-			DrawTextRight(s, editorRect.X+editorRect.W-1, editorRect.Y, editorRect.W/2, onPanel(p.theme.TextMuted), clampEllipsis(scrollLabel, editorRect.W/2))
-		}
-	}
+	bodyRect := Rect{X: modal.X + 2, Y: modal.Y + 4, W: modal.W - 4, H: modal.H - 7}
+	maxScroll := p.drawPlanEditorDocument(s, bodyRect, onPanel)
 
 	helpY := modal.Y + modal.H - 3
-	helpText := "↑/↓ plans • Tab/←/→ buttons • C copy • E edit"
-	if !p.planEditorSelectedPlanActive() {
-		helpText = "Press a to activate as current plan"
+	helpText := "↑/↓ scroll • R revisions • Tab buttons • C copy • Esc close"
+	if p.planEditorRevisionFocus {
+		helpText = "Revisions focused • ↑/↓ preview • Enter activate • Tab buttons • Esc close"
 	}
-	if p.planEditorEditing {
-		helpText = "Editing plan • Enter saves • Ctrl+J newline • Esc cancels"
+	helpWidth := modal.W - 4
+	if maxScroll > 0 {
+		scrollLabel := fmt.Sprintf("scroll %d/%d", p.planEditorInputScroll+1, maxScroll+1)
+		scrollWidth := utf8.RuneCountInString(scrollLabel)
+		DrawTextRight(s, modal.X+modal.W-2, helpY, maxInt(scrollWidth, modal.W/2), onPanel(p.theme.TextMuted), clampEllipsis(scrollLabel, modal.W/2))
+		remaining := modal.W - 4 - scrollWidth - 2
+		if remaining > 12 {
+			helpWidth = remaining
+		}
 	}
-	if p.planEditorConfirmSave {
-		helpText = "Confirm save • Enter saves • Esc or N cancels"
-	}
-	DrawText(s, modal.X+2, helpY, modal.W-4, onPanel(p.theme.TextMuted), clampEllipsis(helpText, modal.W-4))
+	DrawText(s, modal.X+2, helpY, helpWidth, onPanel(p.theme.TextMuted), clampEllipsis(helpText, helpWidth))
+
 	buttonY := modal.Y + modal.H - 2
-	labels := []string{"Esc Cancel", "C Copy", "Enter Save"}
-	styles := []tcell.Style{p.theme.TextMuted, p.theme.Accent, p.theme.Success}
-	rects := []*Rect{&p.planEditorCancelRect, &p.planEditorCopyRect, &p.planEditorSaveRect}
+	labels := []string{"Esc Close", "C Copy"}
+	styles := []tcell.Style{p.theme.TextMuted, p.theme.Accent}
+	rects := []*Rect{&p.planEditorCancelRect, &p.planEditorCopyRect}
+	p.planEditorSaveRect = Rect{}
 	selection := p.planEditorSelection
-	if p.planEditorEditing {
-		labels = []string{"Esc Cancel", "Enter Save"}
-		styles = []tcell.Style{p.theme.TextMuted, p.theme.Success}
-		rects = []*Rect{&p.planEditorCancelRect, &p.planEditorSaveRect}
-		p.planEditorCopyRect = Rect{}
-		selection = chatPlanEditorSelectSave
-	} else if p.planEditorConfirmSave {
-		selection = chatPlanEditorSelectSave
+	if selection < 0 || selection >= len(styles) || p.planEditorRevisionFocus {
+		selection = -1
 	}
-	if selection >= 0 && selection < len(styles) {
-		for i := range styles {
-			if i == selection {
-				styles[i] = p.theme.Warning
-			}
+	for i := range styles {
+		if i == selection {
+			styles[i] = p.theme.Warning
 		}
 	}
 	x := modal.X + 2
@@ -586,9 +377,281 @@ func (p *ChatPage) drawPlanEditorModal(s tcell.Screen, screen Rect) {
 		*rects[i], nextX = drawPermissionActionButton(s, x, buttonY, modal.X+modal.W-2, label, styles[i])
 		x = nextX
 	}
-	if p.planEditorCancelRect.W == 0 && p.planEditorCopyRect.W == 0 && p.planEditorSaveRect.W == 0 {
-		DrawText(s, modal.X+2, buttonY, modal.W-4, onPanel(p.theme.TextMuted), clampEllipsis("Esc cancel • Enter save", modal.W-4))
+	if p.planEditorCancelRect.W == 0 && p.planEditorCopyRect.W == 0 {
+		DrawText(s, modal.X+2, buttonY, modal.W-4, onPanel(p.theme.TextMuted), clampEllipsis("Esc close • C copy", modal.W-4))
 	}
+}
+
+func (p *ChatPage) drawPlanEditorDocument(s tcell.Screen, rect Rect, onPanel func(tcell.Style) tcell.Style) int {
+	if rect.W <= 0 || rect.H <= 0 {
+		return 0
+	}
+	doc := structuredPlanDocumentMap(p.planEditorPlan.Document)
+	wide := rect.W >= 86 && len(doc) > 0
+	if wide {
+		leftW := rect.W / 3
+		if leftW < 28 {
+			leftW = 28
+		}
+		if leftW > 44 {
+			leftW = 44
+		}
+		rightW := rect.W - leftW - 3
+		if rightW < 36 {
+			wide = false
+		} else {
+			leftRect := Rect{X: rect.X, Y: rect.Y, W: leftW, H: rect.H}
+			rightRect := Rect{X: rect.X + leftW + 3, Y: rect.Y, W: rightW, H: rect.H}
+			for y := rect.Y; y < rect.Y+rect.H; y++ {
+				s.SetContent(rect.X+leftW+1, y, '│', nil, onPanel(p.theme.Border))
+			}
+			leftLines := p.planEditorDetailLines(doc, maxInt(1, leftRect.W))
+			rightLines := p.planEditorCheckpointLines(doc, maxInt(1, rightRect.W))
+			maxScroll := maxInt(maxInt(0, len(leftLines)-leftRect.H), maxInt(0, len(rightLines)-rightRect.H))
+			p.clampPlanEditorScroll(maxScroll)
+			p.drawPlanEditorLines(s, leftRect, leftLines, p.planEditorInputScroll, onPanel)
+			p.drawPlanEditorLines(s, rightRect, rightLines, p.planEditorInputScroll, onPanel)
+			return maxScroll
+		}
+	}
+
+	lines := p.planEditorFallbackLines(rect.W)
+	if len(doc) > 0 {
+		lines = append(p.planEditorDetailLines(doc, rect.W), planEditorRenderLine{Text: "", Style: p.theme.Text})
+		lines = append(lines, p.planEditorCheckpointLines(doc, rect.W)...)
+	}
+	maxScroll := maxInt(0, len(lines)-rect.H)
+	p.clampPlanEditorScroll(maxScroll)
+	p.drawPlanEditorLines(s, rect, lines, p.planEditorInputScroll, onPanel)
+	return maxScroll
+}
+
+type planEditorRenderLine struct {
+	Text  string
+	Style tcell.Style
+}
+
+func (p *ChatPage) drawPlanEditorLines(s tcell.Screen, rect Rect, lines []planEditorRenderLine, scroll int, onPanel func(tcell.Style) tcell.Style) {
+	if scroll < 0 {
+		scroll = 0
+	}
+	for row := 0; row < rect.H; row++ {
+		idx := scroll + row
+		if idx >= len(lines) {
+			break
+		}
+		line := lines[idx]
+		DrawText(s, rect.X, rect.Y+row, rect.W, onPanel(line.Style), clampEllipsis(line.Text, rect.W))
+	}
+	if len(lines) == 0 {
+		DrawText(s, rect.X, rect.Y, rect.W, onPanel(p.theme.TextMuted), "No active plan yet.")
+	}
+}
+
+func (p *ChatPage) planEditorDetailLines(doc map[string]any, width int) []planEditorRenderLine {
+	lines := []planEditorRenderLine{{Text: "Plan Details", Style: p.theme.Secondary.Bold(true)}}
+	add := func(text string, style tcell.Style) {
+		lines = appendWrappedPlanEditorLine(lines, text, width, style)
+	}
+	if title := firstNonEmptyToolValue(mapStringArg(doc, "title"), mapStringArg(doc, "id")); title != "" {
+		add(title, p.theme.Text.Bold(true))
+	}
+	if status := mapStringArg(doc, "status"); status != "" {
+		add("Status: "+quietPlanStatus(status), p.theme.TextMuted)
+	}
+	info, _ := doc["info"].(map[string]any)
+	appendPlanEditorField(&lines, width, "Goal", mapStringArg(info, "goal"), p.theme.Text)
+	appendPlanEditorField(&lines, width, "Scope", firstNonEmptyToolValue(mapStringArg(info, "scope"), mapStringArg(info, "context")), p.theme.Text)
+	appendPlanEditorList(&lines, width, "Decisions", mapAnyStringSlice(info, "decisions"), p.theme.Text)
+	appendPlanEditorList(&lines, width, "Files", firstNonEmptyStringSlice(mapAnyStringSlice(info, "relevant_files"), mapAnyStringSlice(info, "relevantFiles"), mapAnyStringSlice(info, "files")), p.theme.Text)
+	appendPlanEditorField(&lines, width, "Validation", firstNonEmptyToolValue(mapStringArg(info, "validation_strategy"), mapStringArg(info, "validationStrategy"), mapStringArg(info, "validation"), strings.Join(mapAnyStringSlice(info, "validation"), "; ")), p.theme.Text)
+	if len(lines) == 1 {
+		lines = appendWrappedPlanEditorLine(lines, strings.TrimSpace(p.planEditorPlan.Plan), width, p.theme.Text)
+	}
+	return lines
+}
+
+func (p *ChatPage) planEditorCheckpointLines(doc map[string]any, width int) []planEditorRenderLine {
+	checkpoints := mapAnyObjectSlice(doc, "checkpoints")
+	sort.SliceStable(checkpoints, func(i, j int) bool { return mapAnyInt(checkpoints[i], "order") < mapAnyInt(checkpoints[j], "order") })
+	lines := []planEditorRenderLine{{Text: fmt.Sprintf("Checkpoints (%d)", len(checkpoints)), Style: p.theme.Secondary.Bold(true)}}
+	if len(checkpoints) == 0 {
+		return append(lines, planEditorRenderLine{Text: "No checkpoints yet.", Style: p.theme.TextMuted})
+	}
+	activeID := firstNonEmptyToolValue(mapStringArg(doc, "active_checkpoint_id"), mapStringArg(doc, "activeCheckpointId"))
+	for idx, checkpoint := range checkpoints {
+		order := mapAnyInt(checkpoint, "order")
+		if order <= 0 {
+			order = idx + 1
+		}
+		title := firstNonEmptyToolValue(mapStringArg(checkpoint, "title"), mapStringArg(checkpoint, "id"), "Untitled checkpoint")
+		status := quietPlanStatus(mapStringArg(checkpoint, "status"))
+		heading := fmt.Sprintf("%d. %s", order, title)
+		if status != "" {
+			heading += " · " + status
+		}
+		style := p.theme.Text.Bold(true)
+		if activeID != "" && activeID == mapStringArg(checkpoint, "id") {
+			heading = "› " + heading
+			style = p.theme.Warning.Bold(true)
+		}
+		if idx > 0 {
+			lines = append(lines, planEditorRenderLine{Text: "", Style: p.theme.Text})
+		}
+		lines = appendWrappedPlanEditorLine(lines, heading, width, style)
+		appendPlanEditorField(&lines, width, "Objective", mapStringArg(checkpoint, "objective"), p.theme.Text)
+		appendPlanEditorList(&lines, width, "Tasks", mapAnyStringSlice(checkpoint, "tasks"), p.theme.Text)
+		appendPlanEditorList(&lines, width, "Acceptance", firstNonEmptyStringSlice(mapAnyStringSlice(checkpoint, "acceptance_criteria"), mapAnyStringSlice(checkpoint, "acceptanceCriteria")), p.theme.Text)
+		appendPlanEditorField(&lines, width, "Notes", mapStringArg(checkpoint, "notes"), p.theme.Text)
+		appendPlanEditorField(&lines, width, "Report", mapStringArg(checkpoint, "report"), p.theme.Text)
+		appendPlanEditorField(&lines, width, "Result", mapStringArg(checkpoint, "result"), p.theme.Text)
+		appendPlanEditorList(&lines, width, "Changed files", firstNonEmptyStringSlice(mapAnyStringSlice(checkpoint, "changed_files"), mapAnyStringSlice(checkpoint, "changedFiles")), p.theme.Text)
+		appendPlanEditorList(&lines, width, "Validation", mapAnyStringSlice(checkpoint, "validation"), p.theme.Text)
+	}
+	return lines
+}
+
+func (p *ChatPage) planEditorFallbackLines(width int) []planEditorRenderLine {
+	lines := []planEditorRenderLine{{Text: "Plan", Style: p.theme.Secondary.Bold(true)}}
+	text := strings.TrimSpace(p.planEditorInput)
+	if text == "" {
+		return append(lines, planEditorRenderLine{Text: "No active plan yet.", Style: p.theme.TextMuted})
+	}
+	return appendWrappedPlanEditorLine(lines, text, width, p.theme.Text)
+}
+
+func appendPlanEditorField(lines *[]planEditorRenderLine, width int, label, value string, style tcell.Style) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	*lines = appendWrappedPlanEditorLine(*lines, label+": "+value, width, style)
+}
+
+func appendPlanEditorList(lines *[]planEditorRenderLine, width int, label string, values []string, style tcell.Style) {
+	if len(values) == 0 {
+		return
+	}
+	*lines = appendWrappedPlanEditorLine(*lines, label+":", width, style.Bold(true))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			*lines = appendWrappedPlanEditorLine(*lines, "- "+value, width, style)
+		}
+	}
+}
+
+func appendWrappedPlanEditorLine(lines []planEditorRenderLine, text string, width int, style tcell.Style) []planEditorRenderLine {
+	if width <= 0 {
+		width = 1
+	}
+	if strings.TrimSpace(text) == "" {
+		return append(lines, planEditorRenderLine{Text: "", Style: style})
+	}
+	wrapped := wrapWithCustomPrefixes("", "  ", text, width)
+	if len(wrapped) == 0 {
+		return append(lines, planEditorRenderLine{Text: "", Style: style})
+	}
+	for _, line := range wrapped {
+		lines = append(lines, planEditorRenderLine{Text: line, Style: style})
+	}
+	return lines
+}
+
+func structuredPlanDocumentMap(value any) map[string]any {
+	if value == nil {
+		return nil
+	}
+	if mapped, ok := value.(map[string]any); ok {
+		return mapped
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil || len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func quietPlanStatus(status string) string {
+	status = strings.TrimSpace(strings.ReplaceAll(status, "_", " "))
+	if status == "" {
+		return ""
+	}
+	parts := strings.Fields(strings.ToLower(status))
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(part[:1]) + part[1:]
+	}
+	return strings.Join(parts, " ")
+}
+
+func planEditorDisplayText(plan ChatSessionPlan) string {
+	if documentText := StructuredPlanDocumentTextFromValue(plan.Document); strings.TrimSpace(documentText) != "" {
+		return documentText
+	}
+	return strings.TrimSpace(plan.Plan)
+}
+
+func planEditorRevisionKey(plan ChatSessionPlan, idx int) string {
+	if doc := structuredPlanDocumentMap(plan.Document); len(doc) > 0 {
+		if revision := firstNonEmptyToolValue(mapStringArg(doc, "revision_id"), mapStringArg(doc, "revisionId")); revision != "" {
+			return revision
+		}
+	}
+	if plan.Version > 0 {
+		return fmt.Sprintf("%s:v%d", strings.TrimSpace(plan.ID), plan.Version)
+	}
+	if id := strings.TrimSpace(plan.ID); id != "" {
+		return fmt.Sprintf("%s:%d", id, idx)
+	}
+	return fmt.Sprintf("revision:%d", idx)
+}
+
+func planEditorRevisionLabel(plan ChatSessionPlan, idx int) string {
+	label := "Current revision"
+	if idx > 0 {
+		if plan.Version > 0 {
+			label = fmt.Sprintf("Revision %d", plan.Version)
+		} else {
+			label = fmt.Sprintf("Revision %d", idx)
+		}
+	}
+	summary := firstNonEmptyToolValue(plan.UpdateSummary, plan.UpdateKind, plan.UpdateScope)
+	if summary != "" {
+		label += " — " + summary
+	}
+	return label
+}
+
+func (p *ChatPage) planEditorDirty() bool { return false }
+
+func (p *ChatPage) shiftPlanEditorScroll(delta int) {
+	p.planEditorScroll += delta
+	if p.planEditorScroll < 0 {
+		p.planEditorScroll = 0
+	}
+	p.planEditorInputScroll += delta
+	if p.planEditorInputScroll < 0 {
+		p.planEditorInputScroll = 0
+	}
+}
+
+func (p *ChatPage) clampPlanEditorScroll(maxScroll int) {
+	if p.planEditorInputScroll < 0 {
+		p.planEditorInputScroll = 0
+		p.planEditorScroll = 0
+		return
+	}
+	if p.planEditorInputScroll > maxScroll {
+		p.planEditorInputScroll = maxScroll
+	}
+	p.planEditorScroll = p.planEditorInputScroll
 }
 
 type chatPlanEditorAction string
@@ -607,8 +670,7 @@ const (
 
 func (p *ChatPage) resolvePlanEditorModal(action chatPlanEditorAction) {
 	plan := p.planEditorPlan
-	text := strings.ReplaceAll(p.planEditorInput, "\r\n", "\n")
-	text = strings.ReplaceAll(text, "\r", "\n")
+	text := planEditorDisplayText(plan)
 	p.closePlanEditorModal()
 	switch action {
 	case chatPlanEditorActionCopy:
@@ -631,106 +693,7 @@ func (p *ChatPage) resolvePlanEditorModal(action chatPlanEditorAction) {
 		}
 		p.statusLine = "copied current plan to clipboard"
 		p.ShowToast(ToastSuccess, "copied current plan to clipboard")
-	case chatPlanEditorActionSave:
-		updated := ChatSessionPlan{
-			ID:            strings.TrimSpace(plan.ID),
-			Title:         planEditorFallback(strings.TrimSpace(plan.Title), "Plan"),
-			Plan:          text,
-			Document:      plan.Document,
-			Status:        planEditorFallback(strings.TrimSpace(plan.Status), "draft"),
-			ApprovalState: strings.TrimSpace(plan.ApprovalState),
-		}
-		p.pendingChatAction = &ChatAction{Kind: ChatActionSavePlan, Plan: updated}
-		p.statusLine = "saving current plan..."
 	default:
 		p.statusLine = "current plan closed"
 	}
-}
-
-func planEditorFallback(value, fallback string) string {
-	if strings.TrimSpace(value) == "" {
-		return fallback
-	}
-	return value
-}
-
-func (p *ChatPage) planEditorDirty() bool {
-	if p == nil {
-		return false
-	}
-	current := strings.ReplaceAll(p.planEditorInput, "\r\n", "\n")
-	current = strings.ReplaceAll(current, "\r", "\n")
-	original := strings.ReplaceAll(p.planEditorPlan.Plan, "\r\n", "\n")
-	original = strings.ReplaceAll(original, "\r", "\n")
-	return current != original
-}
-
-func (p *ChatPage) shiftPlanEditorScroll(delta int) {
-	p.planEditorScroll += delta
-	if p.planEditorScroll < 0 {
-		p.planEditorScroll = 0
-	}
-	p.planEditorInputScroll += delta
-	if p.planEditorInputScroll < 0 {
-		p.planEditorInputScroll = 0
-	}
-}
-
-func (p *ChatPage) planEditorVisibleLines(width, height int) ([]string, int) {
-	if width <= 0 {
-		width = 1
-	}
-	if height <= 0 {
-		height = 1
-	}
-	text := strings.ReplaceAll(p.planEditorInput, "\r\n", "\n")
-	text = strings.ReplaceAll(text, "\r", "\n")
-	lines := wrapWithCustomPrefixes("", "", text, width)
-	if len(lines) == 0 {
-		lines = []string{""}
-	}
-	maxScroll := len(lines) - height
-	if maxScroll < 0 {
-		maxScroll = 0
-	}
-	if p.planEditorInputScroll > maxScroll {
-		p.planEditorInputScroll = maxScroll
-	}
-	start := p.planEditorInputScroll
-	end := minInt(len(lines), start+height)
-	if start < 0 {
-		start = 0
-	}
-	if start >= len(lines) {
-		start = maxInt(0, len(lines)-height)
-		end = len(lines)
-	}
-	return lines[start:end], maxScroll
-}
-
-func (p *ChatPage) planEditorCursor(width, height int) (int, int) {
-	if width <= 0 {
-		width = 1
-	}
-	if height <= 0 {
-		height = 1
-	}
-	text := strings.ReplaceAll(p.planEditorInput, "\r\n", "\n")
-	text = strings.ReplaceAll(text, "\r", "\n")
-	wrapped := wrapWithCustomPrefixes("", "", text, width)
-	if len(wrapped) == 0 {
-		return 0, 0
-	}
-	cursorIndex := len(wrapped) - 1 - p.planEditorInputScroll
-	if cursorIndex < 0 {
-		cursorIndex = 0
-	}
-	if cursorIndex >= height {
-		cursorIndex = height - 1
-	}
-	cursorText := wrapped[len(wrapped)-1]
-	if p.planEditorInputScroll > 0 {
-		cursorText = wrapped[minInt(len(wrapped)-1, p.planEditorInputScroll+cursorIndex)]
-	}
-	return cursorIndex, utf8.RuneCountInString(cursorText)
 }

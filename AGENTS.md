@@ -55,6 +55,10 @@ If a rule below conflicts with convenience, the rule wins.
 - Do not run `go test` or other test suites unless the user explicitly asks for tests.
 - Never run the full test suite or broad package/repository-wide test commands unless the user explicitly requests that exact broad validation.
   - Forbidden by default examples: `go test ./...`, `go test ./internal/...`, package-wide commands such as `go test ./internal/run`, npm full-suite commands, and any equivalent broad validation.
+  - Multi-package test commands are broad validation and are forbidden by default, even when each individual package seems related. Do not run commands like `go test ./internal/app ./internal/ui ./internal/client` unless the user explicitly named that exact command or explicitly requested those exact package tests.
+  - Chaining broad or multi-package tests with lightweight checks is still banned. The exact pattern `go test ./internal/app ./internal/ui ./internal/client && git diff --check && git status --short` is forbidden unless the user explicitly requests that exact validation command.
+  - If you did not create or identify specific narrow tests to run, do not run an entire package suite as a substitute. Stop and report that validation was not run, or ask which exact tests the user wants.
+  - Prefer named, targeted tests only, for example `go test ./internal/ui -run TestSpecificCase`, when the user has asked for validation and the test directly covers the changed code.
   - In this repository, agents are specifically forbidden from running expensive backend package suites such as `cd swarmd && go test ./internal/run`, `cd swarmd && go test ./internal/api`, `cd swarmd && go test ./internal/...`, or equivalent `/api` or `/internal/run` tests unless the user names that exact command or explicitly asks for those exact package tests.
   - A user asking whether something is "ready to test" is not permission to run broad Go tests. Answer with the safest next test options or ask which exact validation to run.
   - If validation is needed, ask first or use the narrowest compile-only/check command that does not execute a test suite.
