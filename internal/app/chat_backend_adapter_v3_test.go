@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 
+	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/ui"
 )
 
@@ -119,5 +122,48 @@ func TestAPIChatBackendV3RunTurnCommitsPrimaryMessageOnly(t *testing.T) {
 	}
 	if events[1].Type != "session.lifecycle.updated" || events[1].Lifecycle == nil || events[1].Lifecycle.Phase != "dispatch_blocked" {
 		t.Fatalf("lifecycle event = %#v", events[1])
+	}
+}
+
+func TestAPIChatBackendV3ActiveTurnUsesLiveWebSocketStream(t *testing.T) {
+	body, err := os.ReadFile("chat_backend_adapter.go")
+	if err != nil {
+		t.Fatalf("read chat_backend_adapter.go: %v", err)
+	}
+	source := string(body)
+	if !strings.Contains(source, "StreamSessionV3(") {
+		t.Fatalf("V3 active turn consumption must use live StreamSessionV3 websocket")
+	}
+	if strings.Contains(source, "StreamSessionV3Replay(streamCtx") {
+		t.Fatalf("V3 active turn consumption must not use replay polling in place of the live websocket")
+	}
+}
+
+func TestAPIChatBackendV3MapsSessionToolEventsToLiveToolStream(t *testing.T) {
+	started := v3StreamEventToChatEvent(client.SessionV3Event{
+		SessionID: "session-v3",
+		EventType: "session.tool.started",
+		Payload:   json.RawMessage(`{"session_id":"session-v3","run_id":"run-v3","tool_name":"bash","call_id":"call-1","arguments":"{\"command\":\"echo hi\"}","step":2}`),
+	})
+	if started.Type != "tool.started" || started.ToolName != "bash" || started.CallID != "call-1" || started.Arguments == "" || started.Step != 2 {
+		t.Fatalf("mapped started event = %#v", started)
+	}
+
+	delta := v3StreamEventToChatEvent(client.SessionV3Event{
+		SessionID: "session-v3",
+		EventType: "session.tool.delta",
+		Payload:   json.RawMessage(`{"session_id":"session-v3","run_id":"run-v3","tool_name":"bash","call_id":"call-1","output":"chunk"}`),
+	})
+	if delta.Type != "tool.delta" || delta.Output != "chunk" || delta.ToolName != "bash" || delta.CallID != "call-1" {
+		t.Fatalf("mapped delta event = %#v", delta)
+	}
+
+	completed := v3StreamEventToChatEvent(client.SessionV3Event{
+		SessionID: "session-v3",
+		EventType: "session.tool.completed",
+		Payload:   json.RawMessage(`{"session_id":"session-v3","run_id":"run-v3","tool_name":"bash","call_id":"call-1","output":"done","raw_output":"raw done","duration_ms":7}`),
+	})
+	if completed.Type != "tool.completed" || completed.Output != "done" || completed.RawOutput != "raw done" || completed.DurationMS != 7 {
+		t.Fatalf("mapped completed event = %#v", completed)
 	}
 }

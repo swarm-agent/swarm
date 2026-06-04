@@ -81,7 +81,6 @@ test('v3session-prefixed run, plan, permission, and usage helpers fail closed be
   } = await import('./chat-queries')
 
   await assertRejectsWithoutFetch(() => startSessionRun({ sessionId: 'v3session_guard', prompt: 'run', route: primaryRoute }), 'session run dispatch')
-  await assertRejectsWithoutFetch(() => stopSessionRun('v3session_guard', 'run-1', primaryRoute), 'session run stop')
   await assertRejectsWithoutFetch(() => resolveSessionPermission('v3session_guard', 'perm-1', 'approve', 'ok'), 'session permissions')
   await assertRejectsWithoutFetch(() => fetchSessionUsageSummary('v3session_guard'), 'session usage summary')
   await assertRejectsWithoutFetch(() => fetchActiveSessionPlan('v3session_guard'), 'session plans')
@@ -92,4 +91,29 @@ test('v3session-prefixed run, plan, permission, and usage helpers fail closed be
   await assertRejectsWithoutFetch(() => fetchSessionPlanHistory('v3session_guard', 'plan-1'), 'session plans')
   await assertRejectsWithoutFetch(() => resolveAllSessionPermissions('v3session_guard', 'approve', 'ok'), 'session permissions')
   await assertRejectsWithoutFetch(() => fetchSessionPendingPermissions('v3session_guard'), 'session permissions')
+})
+
+
+test('v3session-prefixed stop helper calls Sessions API v3 cancel endpoint, not V2 stop', async () => {
+  const originalFetch = globalThis.fetch
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = []
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ input, init })
+    return new Response(JSON.stringify({ ok: true, session_id: 'v3session_guard', run_id: 'run-1', status: 'cancel_requested' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  try {
+    const { stopSessionRun } = await import('./chat-queries')
+    await stopSessionRun('v3session_guard', 'run-1', primaryRoute)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  assert.equal(calls.length, 1)
+  assert.equal(String(calls[0].input), '/v3/sessions/v3session_guard/run/stop')
+  assert.equal(calls[0].init?.method, 'POST')
+  assert.deepEqual(JSON.parse(String(calls[0].init?.body ?? '{}')), { type: 'run.stop', run_id: 'run-1' })
 })

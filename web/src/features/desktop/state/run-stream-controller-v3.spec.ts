@@ -243,6 +243,75 @@ test('V3 stream maps committed run failures into replayable error state', () => 
   assert.equal(updated.live.lastEventType, 'session.run.failed')
 })
 
+
+test('V3 stream maps session.tool events into live tool state', () => {
+  const session = makeSession({ id: 'session-v3', sessionApi: 'v3', lastEventSeq: 1, projectionHighWatermarkSeq: 1 })
+  useDesktopStore.setState(makeState(session), true)
+
+  useDesktopStore.getState().__testApplyRunStreamFrame?.('session-v3', {
+    type: 'event',
+    ok: true,
+    session_id: 'session-v3',
+    last_seq: 2,
+    event: {
+      id: 'v3evt_session-v3_00000000000000000002',
+      session_id: 'session-v3',
+      seq: 2,
+      event_type: 'session.tool.started',
+      ts_unix_ms: 20,
+      payload: { session_id: 'session-v3', run_id: 'run-v3', tool_name: 'bash', call_id: 'call-1', arguments: '{"command":"echo hi"}', step: 1 },
+    },
+  }, 20)
+
+  let updated = useDesktopStore.getState().sessions['session-v3']
+  assert.equal(updated.live.toolName, 'bash')
+  assert.equal(updated.live.toolCallId, 'call-1')
+  assert.equal(updated.live.toolArguments, '{"command":"echo hi"}')
+  assert.equal(updated.live.summary, 'bash')
+  assert.equal(updated.live.lastEventType, 'session.tool.started')
+
+  useDesktopStore.getState().__testApplyRunStreamFrame?.('session-v3', {
+    type: 'event',
+    ok: true,
+    session_id: 'session-v3',
+    last_seq: 3,
+    event: {
+      id: 'v3evt_session-v3_00000000000000000003',
+      session_id: 'session-v3',
+      seq: 3,
+      event_type: 'session.tool.delta',
+      ts_unix_ms: 21,
+      payload: { session_id: 'session-v3', run_id: 'run-v3', tool_name: 'bash', call_id: 'call-1', output: 'chunk' },
+    },
+  }, 21)
+
+  updated = useDesktopStore.getState().sessions['session-v3']
+  assert.equal(updated.live.toolOutput, 'chunk')
+  assert.equal(updated.live.lastEventType, 'session.tool.delta')
+
+  useDesktopStore.getState().__testApplyRunStreamFrame?.('session-v3', {
+    type: 'event',
+    ok: true,
+    session_id: 'session-v3',
+    last_seq: 4,
+    event: {
+      id: 'v3evt_session-v3_00000000000000000004',
+      session_id: 'session-v3',
+      seq: 4,
+      event_type: 'session.tool.completed',
+      ts_unix_ms: 22,
+      payload: { session_id: 'session-v3', run_id: 'run-v3', tool_name: 'bash', call_id: 'call-1', output: 'done', raw_output: 'raw done' },
+    },
+  }, 22)
+
+  updated = useDesktopStore.getState().sessions['session-v3']
+  assert.equal(updated.live.toolName, null)
+  assert.equal(updated.live.retainedToolName, 'bash')
+  assert.equal(updated.live.retainedToolOutput, 'raw done')
+  assert.equal(updated.live.retainedToolState, 'done')
+  assert.equal(updated.live.lastEventType, 'session.tool.completed')
+})
+
 test('V3 replay control frames update cursor state without V2 resume semantics', () => {
   const session = makeSession({ id: 'session-v3', lastEventSeq: 2, projectionHighWatermarkSeq: 2 })
   useDesktopStore.setState(makeState(session), true)

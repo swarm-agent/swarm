@@ -1102,6 +1102,69 @@ func TestSessionsV3PrimaryStreamPublishesExecutorCommittedEventsAndReplaysThem(t
 	}
 }
 
+func TestSessionsV3PrimaryLiveStreamPublishesProviderToolProgressAndCommittedCompletion(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := t.TempDir()
+	runner := &sessionsV3RecordingProviderRunner{responses: []provideriface.Response{
+		{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-live-bash", Name: "bash", Arguments: `{"command":"printf 'live-tool-progress\n'","timeout_ms":1000}`}}},
+		{Text: "final answer after live tool progress"},
+	}}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	runSvc := runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, nil, nil)
+	server.runner = runSvc
+	server.SetBypassPermissions(true)
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"bash": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
+		t.Fatalf("upsert bash-enabled swarm agent: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "live-tool-stream-create", "live tool stream", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, withTestPrincipal(r))
+	}))
+	defer httpServer.Close()
+
+	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	defer conn.Close()
+	started := readSessionsV3PrimaryStreamFrame(t, conn)
+	complete := readSessionsV3PrimaryStreamFrame(t, conn)
+	if started.Type != "replay.started" || complete.Type != "replay.complete" || complete.LastSeq != 1 {
+		t.Fatalf("initial stream frames started=%+v complete=%+v", started, complete)
+	}
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "live-tool-stream-message", "run a live bash tool")
+	want := []string{"session.tool.started", "session.tool.delta", "session.tool.completed", "session.assistant.completed"}
+	seen := make([]string, 0, len(want))
+	for len(seen) < len(want) {
+		frame := readSessionsV3PrimaryStreamFrame(t, conn)
+		if frame.Type != "event" || frame.Event == nil {
+			t.Fatalf("live stream frame = %+v, want event", frame)
+		}
+		eventType := strings.TrimSpace(frame.Event.EventType)
+		if eventType == "session.message.appended" || eventType == "session.assistant.started" || eventType == "session.assistant.delta" {
+			continue
+		}
+		seen = append(seen, eventType)
+		if eventType == "session.tool.started" || eventType == "session.tool.delta" || eventType == "session.tool.completed" {
+			var payload map[string]any
+			if err := json.Unmarshal(frame.Event.Payload, &payload); err != nil {
+				t.Fatalf("decode tool event payload: %v", err)
+			}
+			if payload["run_id"] == "" || payload["tool_name"] != "bash" || payload["call_id"] != "call-live-bash" {
+				t.Fatalf("tool event payload for %s = %+v", eventType, payload)
+			}
+		}
+	}
+	for i, wantType := range want {
+		if seen[i] != wantType {
+			t.Fatalf("live tool event order = %+v, want %+v", seen, want)
+		}
+	}
+}
+
 func TestSessionsV3PrimaryStreamDoesNotRepublishReplayedMutations(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSession(t, server, "cp4-no-republish-create", "CP4 no republish")
