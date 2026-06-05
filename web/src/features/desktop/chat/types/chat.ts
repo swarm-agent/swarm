@@ -92,6 +92,7 @@ export interface StructuredToolMessage {
   pathId: "run.tool-history.v2";
   tool: string;
   callId: string;
+  toolInstanceId?: string;
   target: string | null;
   commandText: string;
   argumentsText: string;

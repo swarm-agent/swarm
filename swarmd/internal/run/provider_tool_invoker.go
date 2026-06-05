@@ -345,7 +345,8 @@ func (s *Service) storeProviderManagedToolResultV3(config providerToolInvokerCon
 	if !principal.Valid() {
 		principal = identity.Principal{Type: identity.PrincipalTypeUser, UserID: session.UserID, AccountScopeID: session.AccountScopeID}
 	}
-	content := formatToolHistoryWithMetadata(call, metadata, result)
+	messageMetadata := providerManagedV3ToolMessageMetadata(config, call, metadata, result)
+	content := formatToolHistoryWithMetadata(call, messageMetadata, result)
 	if strings.TrimSpace(content) == "" {
 		content = firstNonEmptyString(strings.TrimSpace(result.Output), strings.TrimSpace(result.Error), "tool completed")
 	}
@@ -355,9 +356,9 @@ func (s *Service) storeProviderManagedToolResultV3(config providerToolInvokerCon
 		Role:      "tool",
 		Content:   content,
 		CreatedAt: now,
-		Metadata:  providerManagedV3ToolMessageMetadata(config, call, metadata, result),
+		Metadata:  messageMetadata,
 	}
-	payloadHash, err := providerManagedV3ToolPayloadHash(config.sessionID, config.runID, config.step, call, metadata, result, content)
+	payloadHash, err := providerManagedV3ToolPayloadHash(config.sessionID, config.runID, config.step, call, messageMetadata, result, content)
 	if err != nil {
 		return err
 	}
@@ -399,13 +400,15 @@ func providerManagedV3ToolEventPayload(eventType string, config providerToolInvo
 		step = 1
 	}
 	callID := strings.TrimSpace(firstNonEmptyString(result.CallID, call.CallID, "tool_call"))
+	stepID := providerManagedV3ToolStepID(step)
+	toolInstanceID := providerManagedV3ToolInstanceID(step, callID)
 	payload := map[string]any{
 		"run_id":           strings.TrimSpace(config.runID),
 		"step":             step,
-		"step_id":          fmt.Sprintf("step-%d", step),
+		"step_id":          stepID,
 		"tool_name":        strings.TrimSpace(firstNonEmptyString(result.Name, call.Name, "tool")),
 		"call_id":          callID,
-		"tool_instance_id": callID,
+		"tool_instance_id": toolInstanceID,
 	}
 	if eventType = strings.TrimSpace(eventType); eventType != "" {
 		payload["type"] = eventType
@@ -436,9 +439,17 @@ func providerManagedV3ToolMessageMetadata(config providerToolInvokerConfig, call
 	if out == nil {
 		out = map[string]any{}
 	}
+	step := config.step
+	if step <= 0 {
+		step = 1
+	}
+	callID := strings.TrimSpace(firstNonEmptyString(result.CallID, call.CallID, "tool_call"))
 	out["run_id"] = strings.TrimSpace(config.runID)
-	out["step"] = config.step
+	out["step"] = step
+	out["step_id"] = providerManagedV3ToolStepID(step)
 	out["tool_call_id"] = strings.TrimSpace(call.CallID)
+	out["call_id"] = callID
+	out["tool_instance_id"] = providerManagedV3ToolInstanceID(step, callID)
 	out["tool_name"] = strings.TrimSpace(call.Name)
 	out["executor_kind"] = "v3_provider_tool"
 	if errText := strings.TrimSpace(result.Error); errText != "" {
@@ -450,11 +461,23 @@ func providerManagedV3ToolMessageMetadata(config providerToolInvokerConfig, call
 	return out
 }
 
-func providerManagedV3ToolClientRequestID(runID string, step int, callID string) string {
-	callID = strings.NewReplacer(".", "_", "/", "_", " ", "_").Replace(strings.TrimSpace(callID))
+func providerManagedV3ToolStepID(step int) string {
+	if step <= 0 {
+		step = 1
+	}
+	return fmt.Sprintf("step-%d", step)
+}
+
+func providerManagedV3ToolInstanceID(step int, callID string) string {
+	callID = strings.TrimSpace(callID)
 	if callID == "" {
 		callID = "tool_call"
 	}
+	return providerManagedV3ToolStepID(step) + ":" + callID
+}
+
+func providerManagedV3ToolClientRequestID(runID string, step int, callID string) string {
+	callID = strings.NewReplacer(".", "_", "/", "_", " ", "_", ":", "_").Replace(providerManagedV3ToolInstanceID(step, callID))
 	return fmt.Sprintf("v3-tool-%s-%04d-%s", strings.TrimSpace(runID), step, callID)
 }
 

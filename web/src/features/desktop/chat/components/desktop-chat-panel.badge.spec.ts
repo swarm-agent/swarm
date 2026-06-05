@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import type { DesktopLiveAssistantSegment, DesktopSessionRecord } from '../../types/realtime'
 import type { ChatMessageRecord } from '../types/chat'
-import { desktopChatVirtualItemKey, formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, isSilentSpeechRecognitionError, metadataTodoSummary, resolveMessageAssistantLabel, resolveSessionEffectiveAgentName, retainedAssistantSegmentsWithoutCanonicalReplay, savedRuleCountdownSeconds, sessionUsesReadOnlyFlowIdentity, shouldShowScrollLockReturnButton, visibleDesktopChatMessages } from './desktop-chat-panel'
+import { buildLiveToolMessages, desktopChatVirtualItemKey, formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, isSilentSpeechRecognitionError, metadataTodoSummary, resolveMessageAssistantLabel, resolveSessionEffectiveAgentName, retainedAssistantSegmentsWithoutCanonicalReplay, savedRuleCountdownSeconds, sessionUsesReadOnlyFlowIdentity, shouldShowScrollLockReturnButton, visibleDesktopChatMessages } from './desktop-chat-panel'
 
 test('formatAgentTodoBadge shows progress-first badge with active count', () => {
   assert.equal(formatAgentTodoBadge({ taskCount: 6, openCount: 2, inProgressCount: 1, activeText: '' }), '4/6 complete • 1 active')
@@ -116,6 +116,51 @@ function makeSession(overrides: Partial<DesktopSessionRecord> = {}): DesktopSess
     ...overrides,
   }
 }
+
+test('buildLiveToolMessages renders every live tool history entry with stable instance identity', () => {
+  const session = makeSession()
+  session.live.toolHistory = [
+    {
+      key: 'session-1\u001frun-1\u001fstep-2\u001fcall-reused\u001fstep-2:call-reused',
+      sessionId: 'session-1',
+      runId: 'run-1',
+      stepId: 'step-2',
+      callId: 'call-reused',
+      toolInstanceId: 'step-2:call-reused',
+      toolName: 'read',
+      toolArguments: '{"path":"two.txt"}',
+      toolOutput: 'second output',
+      state: 'done',
+      step: 2,
+      startedAt: 20,
+      updatedAt: 22,
+      completedAt: 22,
+    },
+    {
+      key: 'session-1\u001frun-1\u001fstep-1\u001fcall-reused\u001fstep-1:call-reused',
+      sessionId: 'session-1',
+      runId: 'run-1',
+      stepId: 'step-1',
+      callId: 'call-reused',
+      toolInstanceId: 'step-1:call-reused',
+      toolName: 'read',
+      toolArguments: '{"path":"one.txt"}',
+      toolOutput: 'first output',
+      state: 'done',
+      step: 1,
+      startedAt: 10,
+      updatedAt: 12,
+      completedAt: 12,
+    },
+  ]
+
+  const messages = buildLiveToolMessages(session)
+
+  assert.equal(messages.length, 2)
+  assert.deepEqual(messages.map((message) => message.callId), ['call-reused', 'call-reused'])
+  assert.deepEqual(messages.map((message) => message.toolInstanceId), ['step-1:call-reused', 'step-2:call-reused'])
+  assert.deepEqual(messages.map((message) => message.output), ['first output', 'second output'])
+})
 
 test('flow sessions are treated as read-only flow identity and resolve their real flow agent name', () => {
   const session = makeSession({

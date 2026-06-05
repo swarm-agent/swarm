@@ -12,6 +12,7 @@ interface ToolHistoryPayload {
   path_id?: string;
   tool?: string;
   call_id?: string;
+  tool_instance_id?: string;
   arguments?: string;
   output?: string;
   completed_output?: string;
@@ -22,6 +23,7 @@ interface ToolHistoryPayload {
 interface StructuredToolMessageInput {
   tool: string;
   callId?: string;
+  toolInstanceId?: string;
   argumentsText?: string;
   outputText?: string;
   completedOutputText?: string;
@@ -1667,6 +1669,7 @@ export function buildStructuredToolMessage(
     pathId: "run.tool-history.v2",
     tool: toolName,
     callId: String(input.callId ?? "").trim(),
+    toolInstanceId: String(input.toolInstanceId ?? "").trim(),
     target: resolveToolTarget(argumentsJson) ?? resolveToolTarget(outputJson),
     commandText:
       toolName.toLowerCase() === "bash"
@@ -1702,6 +1705,7 @@ export function parseStructuredToolMessage(
   return buildStructuredToolMessage({
     tool: String(payload.tool ?? "").trim(),
     callId: String(payload.call_id ?? "").trim(),
+    toolInstanceId: String(payload.tool_instance_id ?? "").trim(),
     argumentsText: String(payload.arguments ?? "").trim(),
     outputText: String(payload.output ?? "").trim(),
     completedOutputText: String(payload.completed_output ?? "").trim(),

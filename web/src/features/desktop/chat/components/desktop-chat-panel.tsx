@@ -30,7 +30,7 @@ import {
   updateSessionPreference,
 } from '../queries/chat-queries'
 import type { AgentStateRecord, ChatMessageRecord, ResolvedSessionPreference, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
-import type { DesktopLiveAssistantSegment, DesktopSessionRecord } from '../../types/realtime'
+import type { DesktopLiveAssistantSegment, DesktopLiveToolRecord, DesktopSessionRecord } from '../../types/realtime'
 import { Card } from '../../../../components/ui/card'
 import { ChatMarkdown } from './chat-markdown'
 import { buildStructuredToolMessage } from '../services/tool-message'
@@ -531,7 +531,7 @@ function renderItemKey(item: RenderItem | undefined, index: number): string {
     case 'message':
       return item.virtualKey ?? item.message.id
     case 'live-tool':
-      return `live-tool:${item.toolMessage.callId || item.toolMessage.tool || 'active'}`
+      return `live-tool:${item.toolMessage.toolInstanceId || item.toolMessage.callId || item.toolMessage.tool || 'active'}`
     case 'live-assistant':
       return item.id
     default:
@@ -616,6 +616,7 @@ function isLiveToolEventType(eventType: string): boolean {
 function hasRenderableToolSnapshot(snapshot: {
   toolName: string | null
   toolCallId: string | null
+  toolInstanceId?: string | null
   toolArguments: string | null
   toolOutput: string
 } | null | undefined): boolean {
@@ -630,43 +631,41 @@ function hasRenderableToolSnapshot(snapshot: {
   )
 }
 
-function buildLiveToolMessage(session: DesktopSessionRecord | null | undefined): NonNullable<ChatMessageRecord['toolMessage']> | null {
-  const live = session?.live
-  const lastEventType = live?.lastEventType?.trim() ?? ''
-  const liveStatus = live?.status ?? 'idle'
-  const activeSnapshot = live
-    ? {
-        toolName: live.toolName,
-        toolCallId: live.toolCallId,
-        toolArguments: live.toolArguments,
-        toolOutput: live.toolOutput,
-      }
-    : null
-  const retainedSnapshot = live
-    ? {
-        toolName: live.retainedToolName,
-        toolCallId: live.retainedToolCallId,
-        toolArguments: live.retainedToolArguments,
-        toolOutput: live.retainedToolOutput,
-      }
-    : null
+type LiveToolSnapshot = {
+  toolName: string | null
+  toolCallId: string | null
+  toolInstanceId?: string | null
+  toolArguments: string | null
+  toolOutput: string
+  state: NonNullable<ChatMessageRecord['toolMessage']>['state']
+}
 
-  const useActiveSnapshot = hasRenderableToolSnapshot(activeSnapshot)
-    && (isLiveToolEventType(lastEventType) || ['starting', 'running', 'blocked'].includes(liveStatus))
-  const snapshot = useActiveSnapshot ? activeSnapshot : hasRenderableToolSnapshot(retainedSnapshot) ? retainedSnapshot : null
-  if (!snapshot) {
+function liveToolRecordSnapshot(record: DesktopLiveToolRecord): LiveToolSnapshot | null {
+  const toolName = record.toolName?.trim() ?? ''
+  if (!toolName) {
     return null
   }
+  return {
+    toolName,
+    toolCallId: record.callId,
+    toolInstanceId: record.toolInstanceId,
+    toolArguments: record.toolArguments,
+    toolOutput: record.toolOutput,
+    state: record.state,
+  }
+}
 
+function buildLiveToolMessageFromSnapshot(snapshot: LiveToolSnapshot): NonNullable<ChatMessageRecord['toolMessage']> | null {
   const toolName = snapshot.toolName?.trim() ?? ''
   if (!toolName) {
     return null
   }
 
-  const state = useActiveSnapshot ? 'running' : (live?.retainedToolState ?? 'done')
+  const state = snapshot.state
   const toolMessage = buildStructuredToolMessage({
     tool: toolName,
     callId: snapshot.toolCallId ?? '',
+    toolInstanceId: snapshot.toolInstanceId ?? '',
     argumentsText: snapshot.toolArguments ?? '',
     outputText: snapshot.toolOutput ?? '',
     state,
@@ -682,6 +681,51 @@ function buildLiveToolMessage(session: DesktopSessionRecord | null | undefined):
   }
 }
 
+export function buildLiveToolMessages(session: DesktopSessionRecord | null | undefined): NonNullable<ChatMessageRecord['toolMessage']>[] {
+  const live = session?.live
+  if (!live) {
+    return []
+  }
+
+  const historyMessages = (live.toolHistory ?? [])
+    .slice()
+    .reverse()
+    .map(liveToolRecordSnapshot)
+    .filter((snapshot): snapshot is LiveToolSnapshot => hasRenderableToolSnapshot(snapshot))
+    .map(buildLiveToolMessageFromSnapshot)
+    .filter((message): message is NonNullable<ChatMessageRecord['toolMessage']> => message !== null)
+  if (historyMessages.length > 0) {
+    return historyMessages
+  }
+
+  const lastEventType = live.lastEventType?.trim() ?? ''
+  const liveStatus = live.status ?? 'idle'
+  const activeSnapshot = {
+    toolName: live.toolName,
+    toolCallId: live.toolCallId,
+    toolArguments: live.toolArguments,
+    toolOutput: live.toolOutput,
+    state: 'running' as const,
+  }
+  const retainedSnapshot = {
+    toolName: live.retainedToolName,
+    toolCallId: live.retainedToolCallId,
+    toolArguments: live.retainedToolArguments,
+    toolOutput: live.retainedToolOutput,
+    state: live.retainedToolState ?? 'done' as const,
+  }
+
+  const useActiveSnapshot = hasRenderableToolSnapshot(activeSnapshot)
+    && (isLiveToolEventType(lastEventType) || ['starting', 'running', 'blocked'].includes(liveStatus))
+  const snapshot = useActiveSnapshot ? activeSnapshot : hasRenderableToolSnapshot(retainedSnapshot) ? retainedSnapshot : null
+  const message = snapshot ? buildLiveToolMessageFromSnapshot(snapshot) : null
+  return message ? [message] : []
+}
+
+function toolMessageIdentity(toolMessage: NonNullable<ChatMessageRecord['toolMessage']>): string {
+  return (toolMessage.toolInstanceId?.trim() || toolMessage.callId.trim())
+}
+
 function hasCanonicalLiveToolReplacement(
   messages: ChatMessageRecord[],
   liveToolMessage: NonNullable<ChatMessageRecord['toolMessage']> | null,
@@ -689,8 +733,8 @@ function hasCanonicalLiveToolReplacement(
   if (!liveToolMessage) {
     return false
   }
-  const liveCallID = liveToolMessage.callId.trim()
-  if (!liveCallID) {
+  const liveIdentity = toolMessageIdentity(liveToolMessage)
+  if (!liveIdentity) {
     return false
   }
   return messages.some((message) => {
@@ -698,7 +742,7 @@ function hasCanonicalLiveToolReplacement(
     if (!toolMessage) {
       return false
     }
-    return toolMessage.callId.trim() === liveCallID
+    return toolMessageIdentity(toolMessage) === liveIdentity
   })
 }
 
@@ -1376,13 +1420,14 @@ export function DesktopChatPanel({
     () => retainedAssistantSegmentsWithoutCanonicalReplay(retainedAssistantSegments, displayedMessages),
     [displayedMessages, retainedAssistantSegments],
   )
-  const liveToolMessage = useMemo(() => buildLiveToolMessage(liveSession), [liveSession])
-  const shouldRenderLiveToolMessage = useMemo(
-    () => liveToolMessage !== null && !hasCanonicalLiveToolReplacement(displayedMessages, liveToolMessage),
-    [displayedMessages, liveToolMessage],
+  const liveToolMessages = useMemo(() => buildLiveToolMessages(liveSession), [liveSession])
+  const renderableLiveToolMessages = useMemo(
+    () => liveToolMessages.filter((message) => !hasCanonicalLiveToolReplacement(displayedMessages, message)),
+    [displayedMessages, liveToolMessages],
   )
+  const shouldRenderLiveToolMessage = renderableLiveToolMessages.length > 0
   const shouldRenderLiveAssistantDraft =
-    liveAssistantDraft !== '' && !(shouldRenderLiveToolMessage && liveToolMessage?.tool.trim().toLowerCase() === 'task')
+    liveAssistantDraft !== '' && !renderableLiveToolMessages.some((message) => message.tool.trim().toLowerCase() === 'task')
   const loadingMessages = sessionId !== null && messagesQuery.isLoading && messages.length === 0
   const lifecycle = liveSession?.lifecycle ?? null
   const lifecyclePhase = lifecycle?.phase.trim().toLowerCase() ?? ''
@@ -1432,18 +1477,18 @@ export function DesktopChatPanel({
   }, [composerDisabled, showDictationButton, stopDictation])
 
   useEffect(() => {
-    if (!liveToolMessage) {
-      return
+    for (let index = renderableLiveToolMessages.length - 1; index >= 0; index -= 1) {
+      const sidebarState = imageSidebarStateFromToolMessage(renderableLiveToolMessages[index])
+      if (sidebarState) {
+        setImageSidebar((current) => ({
+          ...sidebarState,
+          workspacePath: current?.threadId === sidebarState.threadId ? current.workspacePath : workspacePath,
+          workspaceName: current?.threadId === sidebarState.threadId ? current.workspaceName : workspaceName,
+        }))
+        return
+      }
     }
-    const sidebarState = imageSidebarStateFromToolMessage(liveToolMessage)
-    if (sidebarState) {
-      setImageSidebar((current) => ({
-        ...sidebarState,
-        workspacePath: current?.threadId === sidebarState.threadId ? current.workspacePath : workspacePath,
-        workspaceName: current?.threadId === sidebarState.threadId ? current.workspaceName : workspaceName,
-      }))
-    }
-  }, [liveToolMessage, workspaceName, workspacePath])
+  }, [renderableLiveToolMessages, workspaceName, workspacePath])
 
   useEffect(() => {
     for (let index = displayedMessages.length - 1; index >= 0; index -= 1) {
@@ -1480,14 +1525,16 @@ export function DesktopChatPanel({
     for (const segment of renderableRetainedAssistantSegments) {
       items.push({ type: 'live-assistant', id: segment.id, content: segment.content })
     }
-    if (shouldRenderLiveToolMessage && liveToolMessage) {
-      items.push({ type: 'live-tool', toolMessage: liveToolMessage })
+    if (shouldRenderLiveToolMessage) {
+      for (const liveToolMessage of renderableLiveToolMessages) {
+        items.push({ type: 'live-tool', toolMessage: liveToolMessage })
+      }
     }
     if (shouldRenderLiveAssistantDraft) {
       items.push({ type: 'live-assistant', id: liveAssistantDraftKey, content: liveAssistantDraft })
     }
     return items
-  }, [displayedMessages, liveAssistantDraft, liveAssistantDraftKey, liveToolMessage, renderableRetainedAssistantSegments, sessionId, shouldRenderLiveAssistantDraft, shouldRenderLiveToolMessage])
+  }, [displayedMessages, liveAssistantDraft, liveAssistantDraftKey, renderableLiveToolMessages, renderableRetainedAssistantSegments, sessionId, shouldRenderLiveAssistantDraft, shouldRenderLiveToolMessage])
   const thinkingTagsMeasurementKey = desktopChatThinkingTagsMeasurementKey(thinkingTagsEnabled)
   const renderMeasurementKey = useMemo(
     () => [thinkingTagsMeasurementKey, ...renderItems.map((item) => {
@@ -1497,7 +1544,7 @@ export function DesktopChatPanel({
             ? `la:${item.message.content.length}`
             : `m:${item.message.id}:${item.message.content.length}`
         case 'live-tool':
-          return `lt:${item.toolMessage.callId || item.toolMessage.tool}:${item.toolMessage.output.length}:${item.toolMessage.completedOutput.length}:${item.toolMessage.taskRows.length}`
+          return `lt:${item.toolMessage.toolInstanceId || item.toolMessage.callId || item.toolMessage.tool}:${item.toolMessage.output.length}:${item.toolMessage.completedOutput.length}:${item.toolMessage.taskRows.length}`
         case 'live-assistant':
           return `la:${item.content.length}`
         default:

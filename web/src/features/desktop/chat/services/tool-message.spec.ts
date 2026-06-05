@@ -1,4 +1,4 @@
-import { buildStructuredToolMessage } from "./tool-message";
+import { buildStructuredToolMessage, parseStructuredToolMessage } from "./tool-message";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {
@@ -670,6 +670,29 @@ function testPlanManageShowsPlanLabelAndAction(): void {
   assert(message?.previewLines.includes("update: polish tool stream") === true, `missing plan update: ${message?.previewLines.join(" | ")}`);
 }
 
+function testToolMessagePreservesToolInstanceID(): void {
+  const built = buildStructuredToolMessage({
+    tool: "read",
+    callId: "call-reused",
+    toolInstanceId: "step-1:call-reused",
+    argumentsText: JSON.stringify({ path: "one.txt" }),
+    outputText: "first output",
+  });
+  assert(Boolean(built), "expected structured tool message");
+  assert(built?.toolInstanceId === "step-1:call-reused", `unexpected built tool instance id: ${built?.toolInstanceId}`);
+
+  const parsed = parseStructuredToolMessage(JSON.stringify({
+    path_id: "run.tool-history.v2",
+    tool: "read",
+    call_id: "call-reused",
+    tool_instance_id: "step-2:call-reused",
+    arguments: JSON.stringify({ path: "two.txt" }),
+    output: "second output",
+  }));
+  assert(Boolean(parsed), "expected parsed structured tool message");
+  assert(parsed?.toolInstanceId === "step-2:call-reused", `unexpected parsed tool instance id: ${parsed?.toolInstanceId}`);
+}
+
 function main(): void {
   testExitPlanApprovedShowsMetadata();
   testExitPlanDeniedPermissionShowsFeedbackAndPlan();
@@ -690,6 +713,7 @@ function main(): void {
   testRunningTaskRowDoesNotUseStreamDurationAsDisplayTime();
   testTerminalTaskRowUsesFinalElapsedAsDisplayTime();
   testPlanManageShowsPlanLabelAndAction();
+  testToolMessagePreservesToolInstanceID();
   console.log("tool-message tests passed");
 }
 

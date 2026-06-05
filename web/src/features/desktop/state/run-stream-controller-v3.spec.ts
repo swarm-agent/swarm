@@ -337,6 +337,49 @@ test('V3 stream maps session.tool events into live tool state', () => {
   assert.equal(updated.live.lastEventType, 'session.tool.completed')
 })
 
+test('V3 stream keeps reused provider call IDs as separate live tool history records', () => {
+  const session = makeSession({ id: 'session-v3', sessionApi: 'v3', lastEventSeq: 1, projectionHighWatermarkSeq: 1 })
+  useDesktopStore.setState(makeState(session), true)
+
+  const emitToolEvent = (seq: number, eventType: 'session.tool.started' | 'session.tool.completed', step: number, rawOutput: string) => {
+    useDesktopStore.getState().__testApplyRunStreamFrame?.('session-v3', {
+      type: 'event',
+      ok: true,
+      session_id: 'session-v3',
+      last_seq: seq,
+      event: {
+        id: `v3evt_session-v3_${String(seq).padStart(20, '0')}`,
+        session_id: 'session-v3',
+        seq,
+        event_type: eventType,
+        ts_unix_ms: 20 + seq,
+        payload: {
+          session_id: 'session-v3',
+          run_id: 'run-v3',
+          step_id: `step-${step}`,
+          tool_instance_id: `step-${step}:call-reused`,
+          tool_name: 'read',
+          call_id: 'call-reused',
+          arguments: JSON.stringify({ path: `${step}.txt` }),
+          raw_output: rawOutput,
+          step,
+        },
+      },
+    }, 20 + seq)
+  }
+
+  emitToolEvent(2, 'session.tool.started', 1, '')
+  emitToolEvent(3, 'session.tool.completed', 1, 'first')
+  emitToolEvent(4, 'session.tool.started', 2, '')
+  emitToolEvent(5, 'session.tool.completed', 2, 'second')
+
+  const updated = useDesktopStore.getState().sessions['session-v3']
+  assert.equal(updated.live.toolHistory?.length, 2)
+  assert.deepEqual(updated.live.toolHistory?.map((item) => item.callId), ['call-reused', 'call-reused'])
+  assert.deepEqual(updated.live.toolHistory?.map((item) => item.toolInstanceId), ['step-2:call-reused', 'step-1:call-reused'])
+  assert.deepEqual(updated.live.toolHistory?.map((item) => item.toolOutput), ['second', 'first'])
+})
+
 test('V3 replay control frames update cursor state without V2 resume semantics', () => {
   const session = makeSession({ id: 'session-v3', lastEventSeq: 2, projectionHighWatermarkSeq: 2 })
   useDesktopStore.setState(makeState(session), true)

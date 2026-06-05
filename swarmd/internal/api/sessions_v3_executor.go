@@ -1070,13 +1070,15 @@ func (e *sessionV3Executor) recordProviderToolEvent(job sessionV3ExecutorJob, ev
 	if callID == "" {
 		callID = "tool_call"
 	}
+	stepID := sessionV3ProviderToolStepID(step)
+	toolInstanceID := sessionV3ProviderToolInstanceID(step, callID)
 	payload := map[string]any{
 		"run_id":           strings.TrimSpace(job.RunID),
 		"step":             step,
-		"step_id":          sessionV3ProviderToolStepID(step),
+		"step_id":          stepID,
 		"tool_name":        toolName,
 		"call_id":          callID,
-		"tool_instance_id": sessionV3ProviderToolInstanceID(callID),
+		"tool_instance_id": toolInstanceID,
 	}
 	if args := strings.TrimSpace(event.Arguments); args != "" {
 		payload["arguments"] = args
@@ -1576,17 +1578,17 @@ func sessionV3ProviderToolStepID(step int) string {
 	return fmt.Sprintf("step-%d", step)
 }
 
-func sessionV3ProviderToolInstanceID(callID string) string {
+func sessionV3ProviderToolInstanceID(step int, callID string) string {
 	callID = strings.TrimSpace(callID)
 	if callID == "" {
-		return "tool_call"
+		callID = "tool_call"
 	}
-	return callID
+	return sessionV3ProviderToolStepID(step) + ":" + callID
 }
 
 func sessionV3ProviderToolEventClientRequestID(eventType, runID string, step int, callID string, deltaIndex int) string {
 	label := strings.NewReplacer(".", "_", "/", "_", " ", "_").Replace(strings.TrimSpace(eventType))
-	callID = strings.NewReplacer(".", "_", "/", "_", " ", "_").Replace(sessionV3ProviderToolInstanceID(callID))
+	callID = strings.NewReplacer(".", "_", "/", "_", " ", "_", ":", "_").Replace(sessionV3ProviderToolInstanceID(step, callID))
 	if deltaIndex > 0 {
 		return fmt.Sprintf("v3-executor-%s-%s-%04d-%s-%04d", label, strings.TrimSpace(runID), step, callID, deltaIndex)
 	}

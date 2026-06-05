@@ -877,7 +877,7 @@ export function ToolGroupView({
       <div className="grid gap-0">
         {displayedMessages.map((msg, i) => (
           <ToolMessageView
-            key={msg.callId || i}
+            key={msg.toolInstanceId || msg.callId || i}
             toolMessage={msg}
             isGroupItem={true}
           />

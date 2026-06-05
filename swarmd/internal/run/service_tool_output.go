@@ -19,6 +19,7 @@ type toolHistoryRecord struct {
 	PathID          string         `json:"path_id"`
 	Tool            string         `json:"tool"`
 	CallID          string         `json:"call_id"`
+	ToolInstanceID  string         `json:"tool_instance_id,omitempty"`
 	Arguments       string         `json:"arguments,omitempty"`
 	Metadata        map[string]any `json:"metadata,omitempty"`
 	Output          string         `json:"output,omitempty"`
@@ -58,6 +59,20 @@ func formatToolHistoryWithMetadata(call tool.Call, metadata map[string]any, resu
 	return fmt.Sprintf("tool=%s call_id=%s output=%s", record.Tool, record.CallID, summary)
 }
 
+func toolHistoryMetadataString(metadata map[string]any, key string) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	value, ok := metadata[key]
+	if !ok || value == nil {
+		return ""
+	}
+	if typed, ok := value.(string); ok {
+		return strings.TrimSpace(typed)
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
+}
+
 func buildToolHistoryRecord(call tool.Call, metadata map[string]any, result tool.Result) toolHistoryRecord {
 	name := strings.TrimSpace(call.Name)
 	if name == "" {
@@ -78,6 +93,7 @@ func buildToolHistoryRecord(call tool.Call, metadata map[string]any, result tool
 		PathID:          toolHistoryPathID,
 		Tool:            name,
 		CallID:          callID,
+		ToolInstanceID:  toolHistoryMetadataString(metadata, "tool_instance_id"),
 		Arguments:       arguments,
 		Metadata:        cloneGenericMap(metadata),
 		Output:          strings.TrimSpace(result.Output),
@@ -102,6 +118,7 @@ func decodeToolHistoryRecord(raw string) (toolHistoryRecord, bool) {
 		record.PathID = strings.TrimSpace(record.PathID)
 		record.Tool = strings.TrimSpace(record.Tool)
 		record.CallID = strings.TrimSpace(record.CallID)
+		record.ToolInstanceID = strings.TrimSpace(record.ToolInstanceID)
 		record.Arguments = strings.TrimSpace(record.Arguments)
 		record.Output = strings.TrimSpace(record.Output)
 		record.CompletedOutput = strings.TrimSpace(record.CompletedOutput)

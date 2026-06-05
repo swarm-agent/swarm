@@ -1255,7 +1255,7 @@ func TestSessionsV3PrimaryLiveStreamPublishesProviderToolProgressAndCommittedCom
 			if err := json.Unmarshal(frame.Event.Payload, &payload); err != nil {
 				t.Fatalf("decode tool event payload: %v", err)
 			}
-			if payload["run_id"] == "" || payload["tool_name"] != "bash" || payload["call_id"] != "call-live-bash" || payload["step_id"] != "step-1" || payload["tool_instance_id"] != "call-live-bash" {
+			if payload["run_id"] == "" || payload["tool_name"] != "bash" || payload["call_id"] != "call-live-bash" || payload["step_id"] != "step-1" || payload["tool_instance_id"] != "step-1:call-live-bash" {
 				t.Fatalf("tool event payload for %s = %+v", eventType, payload)
 			}
 		}
@@ -1556,6 +1556,135 @@ func TestSessionsV3PrimaryStreamCapturesRealProviderMultiToolLoopContinuity(t *t
 	sessionsV3AssertStreamStillOpenAfterCompletion(t, conn)
 }
 
+func TestSessionsV3PrimaryStreamDisambiguatesReusedProviderToolCallIDs(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "one.txt"), []byte("first reused-call stream result"), 0o644); err != nil {
+		t.Fatalf("write first file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "two.txt"), []byte("second reused-call stream result"), 0o644); err != nil {
+		t.Fatalf("write second file: %v", err)
+	}
+	runner := &sessionsV3RecordingProviderRunner{responses: []provideriface.Response{
+		{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-reused", Name: "read", Arguments: `{"path":"one.txt"}`}}},
+		{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-reused", Name: "read", Arguments: `{"path":"two.txt"}`}}},
+		{Text: "final answer after reused call IDs"},
+	}}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	runSvc := runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, nil, nil)
+	server.runner = runSvc
+	server.SetBypassPermissions(true)
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"read": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
+		t.Fatalf("upsert read-enabled swarm agent: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, withTestPrincipal(r))
+	}))
+	defer httpServer.Close()
+
+	created := createSessionsV3PrimaryHTTPTestSession(t, httpServer.URL, "stream-reused-call-create", "stream reused call IDs", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	defer conn.Close()
+	startedReplay := readSessionsV3PrimaryStreamFrame(t, conn)
+	completedReplay := readSessionsV3PrimaryStreamFrame(t, conn)
+	if startedReplay.Type != "replay.started" || completedReplay.Type != "replay.complete" || completedReplay.LastSeq != 1 {
+		t.Fatalf("initial stream replay frames = %+v %+v", startedReplay, completedReplay)
+	}
+
+	postSessionsV3PrimaryHTTPTestMessage(t, httpServer.URL, created.ID, "stream-reused-call-message", "read both files before answering")
+
+	type toolIdentity struct {
+		Seq            uint64
+		EventType      string
+		Step           int    `json:"step"`
+		StepID         string `json:"step_id"`
+		CallID         string `json:"call_id"`
+		ToolInstanceID string `json:"tool_instance_id"`
+		ToolName       string `json:"tool_name"`
+	}
+	var startedTools []toolIdentity
+	var completedTools []toolIdentity
+	for {
+		frame := readSessionsV3PrimaryStreamFrame(t, conn)
+		if frame.Type != "event" || frame.Event == nil {
+			continue
+		}
+		eventType := strings.TrimSpace(frame.Event.EventType)
+		if eventType == "session.tool.started" || eventType == "session.tool.completed" {
+			var identity toolIdentity
+			if err := json.Unmarshal(frame.Event.Payload, &identity); err != nil {
+				t.Fatalf("decode %s payload seq=%d: %v", eventType, frame.Event.Seq, err)
+			}
+			identity.Seq = frame.Event.Seq
+			identity.EventType = eventType
+			if identity.CallID != "call-reused" || identity.ToolName != "read" || identity.StepID == "" || identity.ToolInstanceID == "" {
+				t.Fatalf("unexpected reused-call tool identity for %s seq=%d: %+v", eventType, frame.Event.Seq, identity)
+			}
+			if eventType == "session.tool.started" {
+				startedTools = append(startedTools, identity)
+			} else {
+				completedTools = append(completedTools, identity)
+			}
+		}
+		if eventType == "session.assistant.completed" {
+			break
+		}
+	}
+	if runner.callCount != 3 {
+		t.Fatalf("provider call count = %d, want two tool steps plus final", runner.callCount)
+	}
+	if len(startedTools) != 2 || len(completedTools) != 2 {
+		t.Fatalf("tool event identities started=%+v completed=%+v, want two of each", startedTools, completedTools)
+	}
+	if fmt.Sprint([]string{startedTools[0].StepID, startedTools[1].StepID}) != "[step-1 step-2]" || fmt.Sprint([]string{completedTools[0].StepID, completedTools[1].StepID}) != "[step-1 step-2]" {
+		t.Fatalf("tool step IDs started=%+v completed=%+v, want step-1 then step-2", startedTools, completedTools)
+	}
+	wantToolInstanceIDs := []string{"step-1:call-reused", "step-2:call-reused"}
+	for i := range startedTools {
+		if startedTools[i].ToolInstanceID != completedTools[i].ToolInstanceID {
+			t.Fatalf("tool instance changed between started/completed for step %d: started=%+v completed=%+v", i+1, startedTools[i], completedTools[i])
+		}
+		if startedTools[i].ToolInstanceID != wantToolInstanceIDs[i] {
+			t.Fatalf("tool instance for step %d = %q, want %q; started=%+v completed=%+v", i+1, startedTools[i].ToolInstanceID, wantToolInstanceIDs[i], startedTools, completedTools)
+		}
+	}
+	if startedTools[0].ToolInstanceID == startedTools[1].ToolInstanceID || completedTools[0].ToolInstanceID == completedTools[1].ToolInstanceID {
+		t.Fatalf("backend reused tool_instance_id when provider reused call_id; started=%+v completed=%+v", startedTools, completedTools)
+	}
+
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list messages after reused call ID run: %v", err)
+	}
+	var persistedToolInstanceIDs []string
+	for _, message := range messages {
+		if strings.TrimSpace(message.Role) != "tool" {
+			continue
+		}
+		var content struct {
+			CallID         string `json:"call_id"`
+			ToolInstanceID string `json:"tool_instance_id"`
+		}
+		if err := json.Unmarshal([]byte(message.Content), &content); err != nil {
+			t.Fatalf("decode persisted tool message content: %v content=%q", err, message.Content)
+		}
+		metadataToolInstanceID := strings.TrimSpace(fmt.Sprint(message.Metadata["tool_instance_id"]))
+		if content.CallID != "call-reused" || content.ToolInstanceID == "" || metadataToolInstanceID != content.ToolInstanceID {
+			t.Fatalf("persisted tool message missing stable instance ID content=%+v metadata=%+v", content, message.Metadata)
+		}
+		persistedToolInstanceIDs = append(persistedToolInstanceIDs, content.ToolInstanceID)
+	}
+	if fmt.Sprint(persistedToolInstanceIDs) != "[step-1:call-reused step-2:call-reused]" {
+		t.Fatalf("persisted tool instance IDs = %v, want per-step IDs", persistedToolInstanceIDs)
+	}
+}
+
 func TestSessionsV3PrimaryStreamHandlerDoesNotUseV2RunStreamOrRuntime(t *testing.T) {
 	body, err := os.ReadFile("sessions_v3_stream_ws.go")
 	if err != nil {
@@ -1852,8 +1981,11 @@ func sessionsV3AssertToolIdentity(t *testing.T, events []sessionruntime.SessionE
 		}
 		step, _ := payload["step"].(float64)
 		wantStepID := fmt.Sprintf("step-%d", int(step))
-		if step <= 0 || payload["step_id"] != wantStepID || strings.TrimSpace(fmt.Sprint(payload["tool_instance_id"])) == "" || strings.TrimSpace(fmt.Sprint(payload["call_id"])) == "" {
-			t.Fatalf("%s payload missing stable tool identity seq=%d payload=%+v", eventType, event.Seq, payload)
+		callID := strings.TrimSpace(fmt.Sprint(payload["call_id"]))
+		toolInstanceID := strings.TrimSpace(fmt.Sprint(payload["tool_instance_id"]))
+		wantToolInstanceID := wantStepID + ":" + callID
+		if step <= 0 || payload["step_id"] != wantStepID || callID == "" || toolInstanceID != wantToolInstanceID {
+			t.Fatalf("%s payload missing stable tool identity seq=%d want_instance_id=%q payload=%+v", eventType, event.Seq, wantToolInstanceID, payload)
 		}
 	}
 	if count == 0 {
