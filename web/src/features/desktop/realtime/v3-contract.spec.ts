@@ -39,6 +39,26 @@ test('V3 realtime contract freezes the native route and protocol envelope', () =
   assert.equal(decoded.protocol_version, 1)
 })
 
+test('V3 realtime TS contract accepts session.tool events with stable tool identity', () => {
+  const message = {
+    ...validEventMessage(),
+    event_type: 'session.tool.started',
+    event: {
+      ...validEventMessage().event,
+      event_type: 'session.tool.started',
+      payload: {
+        run_id: 'run-1',
+        step_id: 'step-1',
+        call_id: 'call-1',
+        tool_instance_id: 'call-1',
+        tool_name: 'bash',
+        step: 1,
+      },
+    },
+  }
+  validateV3RealtimeMessage(message)
+})
+
 test('V3 realtime TS contract accepts interleaved sessions by session_id and event.seq', () => {
   const frames = [
     validEventMessage(),

@@ -1255,7 +1255,7 @@ func TestSessionsV3PrimaryLiveStreamPublishesProviderToolProgressAndCommittedCom
 			if err := json.Unmarshal(frame.Event.Payload, &payload); err != nil {
 				t.Fatalf("decode tool event payload: %v", err)
 			}
-			if payload["run_id"] == "" || payload["tool_name"] != "bash" || payload["call_id"] != "call-live-bash" {
+			if payload["run_id"] == "" || payload["tool_name"] != "bash" || payload["call_id"] != "call-live-bash" || payload["step_id"] != "step-1" || payload["tool_instance_id"] != "call-live-bash" {
 				t.Fatalf("tool event payload for %s = %+v", eventType, payload)
 			}
 		}
@@ -1542,6 +1542,8 @@ func TestSessionsV3PrimaryStreamCapturesRealProviderMultiToolLoopContinuity(t *t
 	if fmt.Sprint(toolStartedSteps) != "[1 2]" || fmt.Sprint(toolCompletedSteps) != "[1 2]" {
 		t.Fatalf("tool event steps started=%v completed=%v, want [1 2] for both", toolStartedSteps, toolCompletedSteps)
 	}
+	sessionsV3AssertToolIdentity(t, events, "session.tool.started")
+	sessionsV3AssertToolIdentity(t, events, "session.tool.completed")
 	completedIndex := sessionsV3TraceIndex(dbLiveTypes, "session.assistant.completed")
 	if completedIndex < 0 {
 		t.Fatalf("missing assistant completion in live DB event order: %v", dbLiveTypes)
@@ -1834,6 +1836,29 @@ func sessionsV3TraceEventSteps(events []sessionruntime.SessionEvent, eventType s
 		}
 	}
 	return steps
+}
+
+func sessionsV3AssertToolIdentity(t *testing.T, events []sessionruntime.SessionEvent, eventType string) {
+	t.Helper()
+	count := 0
+	for _, event := range events {
+		if event.EventType != eventType {
+			continue
+		}
+		count++
+		var payload map[string]any
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("decode %s payload seq=%d: %v", eventType, event.Seq, err)
+		}
+		step, _ := payload["step"].(float64)
+		wantStepID := fmt.Sprintf("step-%d", int(step))
+		if step <= 0 || payload["step_id"] != wantStepID || strings.TrimSpace(fmt.Sprint(payload["tool_instance_id"])) == "" || strings.TrimSpace(fmt.Sprint(payload["call_id"])) == "" {
+			t.Fatalf("%s payload missing stable tool identity seq=%d payload=%+v", eventType, event.Seq, payload)
+		}
+	}
+	if count == 0 {
+		t.Fatalf("missing %s events", eventType)
+	}
 }
 
 func newSessionsV3PrimaryAPITestServer(t *testing.T, storePath string) (*Server, *sessionruntime.Service, func() error) {

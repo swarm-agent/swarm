@@ -394,11 +394,18 @@ func (s *Service) storeProviderManagedToolResultV3(config providerToolInvokerCon
 }
 
 func providerManagedV3ToolEventPayload(eventType string, config providerToolInvokerConfig, call tool.Call, metadata map[string]any, result tool.Result) (json.RawMessage, error) {
+	step := config.step
+	if step <= 0 {
+		step = 1
+	}
+	callID := strings.TrimSpace(firstNonEmptyString(result.CallID, call.CallID, "tool_call"))
 	payload := map[string]any{
-		"run_id":    strings.TrimSpace(config.runID),
-		"step":      config.step,
-		"tool_name": strings.TrimSpace(firstNonEmptyString(result.Name, call.Name, "tool")),
-		"call_id":   strings.TrimSpace(firstNonEmptyString(result.CallID, call.CallID, "tool_call")),
+		"run_id":           strings.TrimSpace(config.runID),
+		"step":             step,
+		"step_id":          fmt.Sprintf("step-%d", step),
+		"tool_name":        strings.TrimSpace(firstNonEmptyString(result.Name, call.Name, "tool")),
+		"call_id":          callID,
+		"tool_instance_id": callID,
 	}
 	if eventType = strings.TrimSpace(eventType); eventType != "" {
 		payload["type"] = eventType

@@ -600,7 +600,17 @@ function estimateRenderItemSize(item: RenderItem | undefined, thinkingTagsEnable
 }
 
 function isLiveToolEventType(eventType: string): boolean {
-  return ['tool.started', 'tool.delta', 'tool.completed', 'run.tool.started', 'run.tool.delta', 'run.tool.completed'].includes(eventType)
+  return [
+    'tool.started',
+    'tool.delta',
+    'tool.completed',
+    'run.tool.started',
+    'run.tool.delta',
+    'run.tool.completed',
+    'session.tool.started',
+    'session.tool.delta',
+    'session.tool.completed',
+  ].includes(eventType)
 }
 
 function hasRenderableToolSnapshot(snapshot: {
