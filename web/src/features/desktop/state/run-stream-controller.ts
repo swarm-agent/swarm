@@ -138,10 +138,6 @@ function isSessionAlreadyActiveRunError(message: string): boolean {
   return message.trim().toLowerCase() === 'session already has an active run'
 }
 
-function isV3ResumeRequest(request: ResumeRequest | null): boolean {
-  return request?.sessionApi?.trim().toLowerCase() === 'v3'
-}
-
 export class DesktopRunStreamController {
   private readonly entries = new Map<string, SessionControllerEntry>()
 
@@ -397,14 +393,8 @@ export class DesktopRunStreamController {
 
   private sendResume(entry: SessionControllerEntry, socket: WebSocket): void {
     const request = this.options.getResumeRequest(entry.sessionId, entry.desiredRunId)
-    if (isV3ResumeRequest(request) && entry.desiredRunId === 'v3-primary-session-events') {
-      return
-    }
     if (!request || request.runId !== entry.desiredRunId) {
       this.close(entry.sessionId)
-      return
-    }
-    if (isV3ResumeRequest(request)) {
       return
     }
     try {

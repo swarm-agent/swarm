@@ -4,6 +4,7 @@ import {
   readErrorMessage,
   ensureDesktopSession,
 } from "../../../../app/api";
+import { V3_REALTIME_STREAM_PATH } from "../../realtime/v3-contract";
 import type {
   DesktopPermissionRecord,
   DesktopSessionRecord,
@@ -551,6 +552,7 @@ function emptyLiveState(): DesktopSessionRecord["live"] {
     retainedToolArguments: null,
     retainedToolOutput: "",
     retainedToolState: null,
+    toolHistory: [],
     summary: null,
     lastEventType: null,
     lastEventAt: null,
@@ -2010,20 +2012,28 @@ export async function openRunStream(
   options: { sessionApi?: string | null; afterSeq?: number } = {},
 ): Promise<WebSocket> {
   const normalizedSessionId = sessionId.trim();
+  const sessionApi = resolveSessionApiForSession(normalizedSessionId, options);
+  if (sessionApi === "v3") {
+    throw new Error("V3 sessions use the shared /v3/realtime/stream connection");
+  }
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   await ensureDesktopSession(true);
-  const sessionApi = resolveSessionApiForSession(normalizedSessionId, options);
   const url = new URL(
-    sessionApi === "v3"
-      ? `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/stream`
-      : `/v2/sessions/${encodeURIComponent(normalizedSessionId)}/run/stream`,
+    `/v2/sessions/${encodeURIComponent(normalizedSessionId)}/run/stream`,
     `${protocol}//${window.location.host}`,
   );
-  if (sessionApi === "v3") {
-    const afterSeq = typeof options.afterSeq === "number" && Number.isFinite(options.afterSeq)
-      ? Math.max(0, Math.floor(options.afterSeq))
-      : 0;
-    url.searchParams.set("after_seq", String(afterSeq));
+  return new WebSocket(url);
+}
+
+export async function openV3RealtimeStream(
+  options: { endpointCursor?: string | null } = {},
+): Promise<WebSocket> {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  await ensureDesktopSession(true);
+  const url = new URL(V3_REALTIME_STREAM_PATH, `${protocol}//${window.location.host}`);
+  const endpointCursor = options.endpointCursor?.trim() ?? "";
+  if (endpointCursor) {
+    url.searchParams.set("endpoint_cursor", endpointCursor);
   }
   return new WebSocket(url);
 }

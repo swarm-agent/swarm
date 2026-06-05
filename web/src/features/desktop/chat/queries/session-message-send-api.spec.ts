@@ -161,5 +161,6 @@ test('desktop store V3 submit path uses message commit helper instead of V2 run 
   assert.match(panelSource, /clientRequestId: pendingMessageId \? `desktop-v3-message:\$\{pendingMessageId\}` : undefined/)
   assert.match(source, /effectiveSessionApi === 'v3' && !compact/)
   assert.match(source, /applyV3MessageCommitResult/)
-  assert.match(source, /requireRunStreamController\(\)\.ensure\(targetSessionId, committedRunId\)/)
+  assert.match(source, /requireV3RealtimeController\(\)\.ensure\(\)/)
+  assert.doesNotMatch(source, /requireRunStreamController\(\)\.ensure\(targetSessionId, committedRunId\)/)
 })

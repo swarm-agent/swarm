@@ -19,6 +19,23 @@ export interface DesktopLiveAssistantSegment {
   seq: number
 }
 
+export interface DesktopLiveToolRecord {
+  key: string
+  sessionId: string
+  runId: string
+  stepId: string
+  callId: string
+  toolInstanceId: string
+  toolName: string | null
+  toolArguments: string | null
+  toolOutput: string
+  state: 'running' | 'done' | 'error'
+  step: number | null
+  startedAt: number
+  updatedAt: number
+  completedAt: number | null
+}
+
 export interface DesktopSessionRecord {
   id: string
   title: string
@@ -81,6 +98,7 @@ export interface DesktopSessionRecord {
     retainedToolArguments: string | null
     retainedToolOutput: string
     retainedToolState: 'running' | 'done' | 'error' | null
+    toolHistory?: DesktopLiveToolRecord[]
     summary: string | null
     lastEventType: string | null
     lastEventAt: number | null

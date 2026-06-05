@@ -29,6 +29,13 @@ export type V3RealtimeEvent = {
   correlation_id?: string
 }
 
+export type V3RealtimeProjection = {
+  session_id?: string
+  last_event_seq?: number
+  projection_high_watermark_seq?: number
+  updated_at?: number
+}
+
 export type V3RealtimeMessage = {
   protocol: typeof V3_REALTIME_PROTOCOL
   protocol_version: typeof V3_REALTIME_PROTOCOL_VERSION
@@ -42,6 +49,7 @@ export type V3RealtimeMessage = {
   endpoint_cursor?: string
   event_type?: string
   event?: V3RealtimeEvent
+  projection?: V3RealtimeProjection
   error_code?: string
   error?: string
   reason?: string

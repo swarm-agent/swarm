@@ -40,12 +40,15 @@ import type {
   DesktopNotificationCenterRecord,
   DesktopNotificationRecord,
   DesktopNotificationSummary,
+  DesktopLiveToolRecord,
   DesktopSessionRecord,
   DesktopStoreState,
 } from '../types/realtime'
 import type { ChatMessageRecord } from '../chat/types/chat'
 import type { VaultStatus } from '../vault/types'
 import { DesktopRunStreamController, type RunStreamEventMessage } from './run-stream-controller'
+import { DesktopV3RealtimeController, type V3RealtimeControllerSubscription } from './v3-realtime-controller'
+import type { V3RealtimeMessage } from '../realtime/v3-contract'
 import { sessionRequiresSnapshotHydration } from './session-snapshot-hydration'
 import { mergeSessionRecords } from './session-records'
 import { appendLiveAssistantSegment } from './live-assistant-segments'
@@ -91,6 +94,7 @@ const LIVENESS_TIMEOUT_MS = 45_000
 const RESUME_STALE_GRACE_MS = 5_000
 const NEW_SESSION_DRAFT_KEY_PREFIX = '__workspace__:'
 const MAX_LIVE_TOOL_OUTPUT_CHARS = 4000
+const MAX_LIVE_TOOL_HISTORY = 20
 
 function isTaskToolPayload(record: Record<string, unknown> | null): boolean {
   if (!record) {
@@ -107,12 +111,20 @@ let desktopRealtimeSocket: WebSocket | null = null
 let desktopRealtimeLastActivityAt = 0
 let desktopRealtimeConnectingStartedAt = 0
 let runStreamController: DesktopRunStreamController | null = null
+let v3RealtimeController: DesktopV3RealtimeController | null = null
 
 function requireRunStreamController(): DesktopRunStreamController {
   if (!runStreamController) {
     throw new Error('run stream controller is not initialized')
   }
   return runStreamController
+}
+
+function requireV3RealtimeController(): DesktopV3RealtimeController {
+  if (!v3RealtimeController) {
+    throw new Error('v3 realtime controller is not initialized')
+  }
+  return v3RealtimeController
 }
 
 function mapDurableNotification(record: DurableNotificationRecord): DesktopNotificationCenterRecord {
@@ -553,6 +565,7 @@ function emptyLiveState(): DesktopSessionRecord['live'] {
     retainedToolArguments: null,
     retainedToolOutput: '',
     retainedToolState: null,
+    toolHistory: [],
     summary: null,
     lastEventType: null,
     lastEventAt: null,
@@ -603,6 +616,58 @@ function retainLiveToolState(
   live.retainedToolArguments = toolArguments || live.retainedToolArguments
   live.retainedToolOutput = toolOutput || live.retainedToolOutput
   live.retainedToolState = state
+}
+
+function liveToolKey(input: { sessionId: string; runId: string; stepId: string; callId: string; toolInstanceId: string }): string {
+  return [input.sessionId, input.runId, input.stepId, input.callId, input.toolInstanceId].join('\u001f')
+}
+
+function upsertLiveToolHistory(
+  live: DesktopSessionRecord['live'],
+  input: {
+    sessionId: string
+    runId: string
+    stepId: string
+    callId: string
+    toolInstanceId: string
+    toolName: string
+    toolArguments?: string | null
+    output?: string | null
+    rawOutput?: string | null
+    state: DesktopLiveToolRecord['state']
+    step?: number | null
+    ts: number
+  },
+): void {
+  if (!input.runId || !input.stepId || !input.callId || !input.toolInstanceId) {
+    return
+  }
+  const key = liveToolKey(input)
+  const existing = (live.toolHistory ?? []).find((item) => item.key === key)
+  const outputDelta = input.rawOutput ?? input.output ?? ''
+  const nextOutput = input.rawOutput !== undefined && input.rawOutput !== null
+    ? replaceLiveToolOutput(input.rawOutput)
+    : input.output
+      ? appendLiveToolOutput(existing?.toolOutput ?? '', input.output)
+      : existing?.toolOutput ?? ''
+  const next: DesktopLiveToolRecord = {
+    key,
+    sessionId: input.sessionId,
+    runId: input.runId,
+    stepId: input.stepId,
+    callId: input.callId,
+    toolInstanceId: input.toolInstanceId,
+    toolName: input.toolName || existing?.toolName || null,
+    toolArguments: input.toolArguments ?? existing?.toolArguments ?? null,
+    toolOutput: outputDelta ? nextOutput : existing?.toolOutput ?? '',
+    state: input.state,
+    step: input.step ?? existing?.step ?? null,
+    startedAt: existing?.startedAt ?? input.ts,
+    updatedAt: input.ts,
+    completedAt: input.state === 'done' || input.state === 'error' ? input.ts : existing?.completedAt ?? null,
+  }
+  const rest = (live.toolHistory ?? []).filter((item) => item.key !== key)
+  live.toolHistory = [next, ...rest].slice(0, MAX_LIVE_TOOL_HISTORY)
 }
 
 function resetRetainedLiveToolState(live: DesktopSessionRecord['live']): void {
@@ -746,12 +811,13 @@ function resolveRunStreamResumeRequest(sessionId: string, fallbackRunId?: string
     return null
   }
   const sessionApi = session.sessionApi?.trim().toLowerCase() ?? ''
-  if (sessionApi !== 'v3' && (session.live.status === 'idle' || session.live.status === 'error')) {
+  if (sessionApi === 'v3') {
     return null
   }
-  const runId = sessionApi === 'v3'
-    ? (resolveRunStreamId(session, fallbackRunId) || 'v3-primary-session-events')
-    : resolveRunStreamId(session, fallbackRunId)
+  if (session.live.status === 'idle' || session.live.status === 'error') {
+    return null
+  }
+  const runId = resolveRunStreamId(session, fallbackRunId)
   if (!runId) {
     return null
   }
@@ -773,10 +839,18 @@ function resolveRunStreamResumeRequest(sessionId: string, fallbackRunId?: string
     runId,
     lastSeq: session.live.seq ?? 0,
     sessionApi: session.sessionApi,
-    afterSeq: sessionApi === 'v3'
-      ? Math.max(0, session.lastEventSeq ?? session.projectionHighWatermarkSeq ?? 0)
-      : undefined,
   }
+}
+
+function resolveV3RealtimeSubscriptions(): V3RealtimeControllerSubscription[] {
+  const state = useDesktopStore.getState()
+  return Object.values(state.sessions)
+    .filter((session) => session.sessionApi?.trim().toLowerCase() === 'v3')
+    .filter((session) => session.live.status !== 'idle' || Boolean(session.lifecycle?.active) || session.live.awaitingAck)
+    .map((session) => ({
+      sessionId: session.id,
+      afterSeq: Math.max(0, session.lastEventSeq ?? session.projectionHighWatermarkSeq ?? 0),
+    }))
 }
 
 function normalizeLifecycle(
@@ -1546,6 +1620,136 @@ function applyV3SessionStreamFrame(state: DesktopStoreState, sessionId: string, 
   }
 }
 
+function v3RealtimeEventEnvelope(message: V3RealtimeMessage): EventEnvelope | null {
+  if (message.kind !== 'event' || !message.event || typeof message.event !== 'object') {
+    return null
+  }
+  const event = message.event
+  const eventType = String(event.event_type ?? '').trim()
+  const sessionId = String(event.session_id ?? message.session_id ?? '').trim()
+  const rawPayload = event.payload && typeof event.payload === 'object'
+    ? { ...event.payload as Record<string, unknown> }
+    : {}
+  const nestedSession = rawPayload.session && typeof rawPayload.session === 'object'
+    ? rawPayload.session as Record<string, unknown>
+    : null
+  const eventPayload = (eventType === 'session.created' || eventType === 'session.updated') && nestedSession
+    ? { ...nestedSession }
+    : rawPayload
+  if (sessionId && typeof eventPayload.session_id !== 'string') {
+    eventPayload.session_id = sessionId
+  }
+  return {
+    stream: sessionId ? `v3/session:${sessionId}` : undefined,
+    event_type: eventType,
+    entity_id: sessionId,
+    ts_unix_ms: typeof event.ts_unix_ms === 'number' ? event.ts_unix_ms : undefined,
+    payload: eventPayload,
+  }
+}
+
+function applyV3RealtimeFrame(state: DesktopStoreState, payload: V3RealtimeMessage, ts: number): Partial<DesktopStoreState> {
+  const sessionId = payload.session_id?.trim() ?? payload.event?.session_id?.trim() ?? ''
+  const type = payload.kind
+  if (!sessionId && type !== 'keepalive') {
+    return {}
+  }
+  if (type === 'keepalive') {
+    return {}
+  }
+  if (type === 'replay.started' || type === 'replay.complete') {
+    const existing = state.sessions[sessionId]
+    if (!existing) {
+      return {}
+    }
+    const lastSeq = typeof payload.last_seq === 'number' ? Math.max(0, payload.last_seq) : existing.lastEventSeq ?? 0
+    const highWatermark = typeof payload.high_watermark_seq === 'number'
+      ? Math.max(0, payload.high_watermark_seq)
+      : existing.projectionHighWatermarkSeq ?? lastSeq
+    return {
+      sessions: {
+        ...state.sessions,
+        [sessionId]: mergeSessionRecords(existing, {
+          ...existing,
+          sessionApi: existing.sessionApi || 'v3',
+          lastEventSeq: Math.max(existing.lastEventSeq ?? 0, lastSeq),
+          projectionHighWatermarkSeq: Math.max(existing.projectionHighWatermarkSeq ?? 0, highWatermark),
+          live: {
+            ...existing.live,
+            lastEventType: type,
+            lastEventAt: ts,
+            awaitingAck: false,
+            error: null,
+          },
+        }),
+      },
+    }
+  }
+  if (type === 'cursor.error') {
+    const existing = state.sessions[sessionId]
+    if (existing) {
+      requestAuthoritativeSessionSnapshot(sessionId, existing.sessionApi || 'v3')
+    }
+    return {}
+  }
+  if (type === 'auth.denied' || type === 'slow_consumer.reconnect_required') {
+    const existing = state.sessions[sessionId]
+    if (!existing) {
+      return {}
+    }
+    return {
+      sessions: {
+        ...state.sessions,
+        [sessionId]: mergeSessionRecords(existing, {
+          ...existing,
+          sessionApi: existing.sessionApi || 'v3',
+          live: {
+            ...existing.live,
+            status: existing.lifecycle?.active ? existing.live.status : 'error',
+            lastEventType: type,
+            lastEventAt: ts,
+            awaitingAck: false,
+            error: String(payload.error ?? payload.reason ?? 'V3 realtime failed'),
+            summary: existing.lifecycle?.active ? 'Realtime recovery required' : null,
+          },
+        }),
+      },
+    }
+  }
+  const envelope = v3RealtimeEventEnvelope(payload)
+  if (!envelope) {
+    return {}
+  }
+  const patch = applyEnvelope(state, envelope)
+  const eventSeq = typeof payload.event?.seq === 'number' ? Math.max(0, payload.event.seq) : 0
+  const highWatermark = typeof payload.high_watermark_seq === 'number' ? Math.max(0, payload.high_watermark_seq) : eventSeq
+  const v3EventType = String(payload.event?.event_type ?? type).trim()
+  const patchedSessions = patch.sessions ?? state.sessions
+  const existing = patchedSessions[sessionId]
+  if (!existing) {
+    return patch
+  }
+  return {
+    ...patch,
+    sessions: {
+      ...patchedSessions,
+      [sessionId]: mergeSessionRecords(existing, {
+        ...existing,
+        sessionApi: existing.sessionApi || 'v3',
+        lastEventSeq: Math.max(existing.lastEventSeq ?? 0, eventSeq),
+        projectionHighWatermarkSeq: Math.max(existing.projectionHighWatermarkSeq ?? 0, highWatermark),
+        live: {
+          ...existing.live,
+          lastEventType: v3EventType || type,
+          lastEventAt: ts,
+          awaitingAck: false,
+          error: v3EventType === 'session.run.failed' ? existing.live.error : null,
+        },
+      }),
+    },
+  }
+}
+
 function applyRunStreamFrame(state: DesktopStoreState, sessionId: string, payload: RunStreamEventMessage, ts: number): Partial<DesktopStoreState> {
   const type = String(payload.type ?? '').trim()
   if (state.sessions[sessionId]?.sessionApi?.trim().toLowerCase() === 'v3') {
@@ -2269,6 +2473,8 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
       const runId = typeof payloadRecord.run_id === 'string' ? payloadRecord.run_id.trim() : ''
       const toolName = typeof payloadRecord.tool_name === 'string' ? payloadRecord.tool_name.trim() : ''
       const callId = typeof payloadRecord.call_id === 'string' ? payloadRecord.call_id.trim() : ''
+      const stepId = typeof payloadRecord.step_id === 'string' ? payloadRecord.step_id.trim() : ''
+      const toolInstanceId = typeof payloadRecord.tool_instance_id === 'string' ? payloadRecord.tool_instance_id.trim() : ''
       const isToolStarted = eventType === 'session.tool.started'
       const isToolDelta = eventType === 'session.tool.delta'
       const isToolCompleted = eventType === 'session.tool.completed'
@@ -2299,6 +2505,20 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
       } else if (session.live.toolName?.trim()) {
         session.live.summary = session.live.toolName.trim()
       }
+      upsertLiveToolHistory(session.live, {
+        sessionId,
+        runId,
+        stepId,
+        callId,
+        toolInstanceId,
+        toolName,
+        toolArguments: typeof payloadRecord.arguments === 'string' ? payloadRecord.arguments.trim() || null : null,
+        output: typeof payloadRecord.output === 'string' ? payloadRecord.output : null,
+        rawOutput: typeof payloadRecord.raw_output === 'string' ? payloadRecord.raw_output : null,
+        state: isToolCompleted ? 'done' : 'running',
+        step: typeof payloadRecord.step === 'number' ? payloadRecord.step : null,
+        ts,
+      })
       if (isToolDelta && typeof payloadRecord.output === 'string') {
         session.live.toolOutput = session.live.toolName === 'task'
           ? mergedTaskToolDelta(session.live.toolOutput, payloadRecord.output)
@@ -2622,6 +2842,19 @@ runStreamController = new DesktopRunStreamController({
   getResumeRequest: (sessionId, fallbackRunId) => resolveRunStreamResumeRequest(sessionId, fallbackRunId),
   onFrame: (sessionId, payload, ts) => {
     useDesktopStore.setState((state) => applyRunStreamFrame(state, sessionId, payload, ts))
+  },
+  onReconnectPending: (sessionId, reason, ts) => {
+    useDesktopStore.setState((state) => applyRunStreamSocketFailure(state, sessionId, reason, ts))
+  },
+  onResumeFailure: (sessionId, message, ts) => {
+    useDesktopStore.setState((state) => applyRunStreamResumeFailure(state, sessionId, message, ts))
+  },
+})
+
+v3RealtimeController = new DesktopV3RealtimeController({
+  getSubscriptions: () => resolveV3RealtimeSubscriptions(),
+  onFrame: (payload, ts) => {
+    useDesktopStore.setState((state) => applyV3RealtimeFrame(state, payload, ts))
   },
   onReconnectPending: (sessionId, reason, ts) => {
     useDesktopStore.setState((state) => applyRunStreamSocketFailure(state, sessionId, reason, ts))
@@ -3278,6 +3511,7 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
       hasSocket: Boolean(desktopRealtimeSocket),
       realtimeDesired: current.realtimeDesired,
       runStreamCount: requireRunStreamController().activeSessionCount(),
+      v3RealtimeCount: requireV3RealtimeController().activeConnectionCount(),
     })
     clearReconnectTimer(current)
     clearHeartbeatTimer(current)
@@ -3298,10 +3532,15 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
     })
     socket?.close()
     requireRunStreamController().closeAll()
+    requireV3RealtimeController().close()
   },
   closeRunStream: (sessionId) => {
     const normalizedSessionId = sessionId.trim()
     if (!normalizedSessionId) {
+      return
+    }
+    const sessionApi = get().sessions[normalizedSessionId]?.sessionApi?.trim().toLowerCase() ?? ''
+    if (sessionApi === 'v3') {
       return
     }
     requireRunStreamController().close(normalizedSessionId)
@@ -3309,6 +3548,11 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
   ensureRunStream: async (sessionId: string, runId?: string | null) => {
     const normalizedSessionId = sessionId.trim()
     if (!normalizedSessionId) {
+      return
+    }
+    const sessionApi = get().sessions[normalizedSessionId]?.sessionApi?.trim().toLowerCase() ?? ''
+    if (sessionApi === 'v3') {
+      await requireV3RealtimeController().ensure()
       return
     }
     await requireRunStreamController().ensure(normalizedSessionId, runId)
@@ -3386,16 +3630,14 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
       if (effectiveSessionApi === 'v3' && !compact) {
         const clientRequestId = providedClientRequestId?.trim() || `desktop-v3-message:${targetSessionId}:${submitStartedAt}`
         const result = await sendSessionMessage(targetSessionId, 'user', trimmedPrompt, route, { sessionApi: 'v3', clientRequestId })
-        let committedRunId: string | null = null
         if (isSendSessionMessageResult(result)) {
-          committedRunId = result.runIntent?.runId?.trim() || null
           const committedMessages = result.message
             ? [result.message]
             : result.messages ?? []
           mergeMessagesCache(targetSessionId, committedMessages)
           set((state) => applyV3MessageCommitResult(state, targetSessionId, result, Date.now()))
         }
-        await requireRunStreamController().ensure(targetSessionId, committedRunId)
+        await requireV3RealtimeController().ensure()
         return
       }
 

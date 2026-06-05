@@ -46,19 +46,21 @@ test('desktop websocket clients bootstrap the local session cookie and do not se
 
   try {
     const { openDesktopWebSocket } = await import('./client')
-    const { openRunStream } = await import('../chat/queries/chat-queries')
+    const { openRunStream, openV3RealtimeStream } = await import('../chat/queries/chat-queries')
 
     await openDesktopWebSocket()
     await openRunStream('session-local-auth')
-    await openRunStream('v3session_auto', { afterSeq: 4 })
-    await openRunStream('v3session_zero', { sessionApi: 'v3', afterSeq: 0 })
+    await openV3RealtimeStream({ endpointCursor: 'cursor-4' })
+    await assert.rejects(
+      () => openRunStream('v3session_zero', { sessionApi: 'v3', afterSeq: 0 }),
+      /shared \/v3\/realtime\/stream connection/,
+    )
 
-    assert.deepEqual(fetchCalls, ['/v1/auth/desktop/session', '/v1/auth/desktop/session', '/v1/auth/desktop/session', '/v1/auth/desktop/session'])
+    assert.deepEqual(fetchCalls, ['/v1/auth/desktop/session', '/v1/auth/desktop/session', '/v1/auth/desktop/session'])
     assert.deepEqual(websocketURLs, [
       'ws://127.0.0.1:5555/ws',
       'ws://127.0.0.1:5555/v2/sessions/session-local-auth/run/stream',
-      'ws://127.0.0.1:5555/v3/sessions/v3session_auto/stream?after_seq=4',
-      'ws://127.0.0.1:5555/v3/sessions/v3session_zero/stream?after_seq=0',
+      'ws://127.0.0.1:5555/v3/realtime/stream?endpoint_cursor=cursor-4',
     ])
     for (const url of websocketURLs) {
       assert.equal(new URL(url).searchParams.get('token'), null)
