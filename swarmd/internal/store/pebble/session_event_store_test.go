@@ -35,6 +35,16 @@ func TestApplyV3SessionMutationAtomicCreateAndReplayIdempotency(t *testing.T) {
 	if result.PrimarySeq != 1 || result.Event.Seq != 1 {
 		t.Fatalf("create seq result = %+v event=%+v", result, result.Event)
 	}
+	if result.RealtimeOutbox == nil || result.RealtimeOutbox.EndpointSeq != 1 || result.RealtimeOutbox.Event.Seq != result.Event.Seq || result.RealtimeOutbox.SessionID != result.SessionID {
+		t.Fatalf("create realtime outbox = %+v result=%+v", result.RealtimeOutbox, result)
+	}
+	outbox, ok, err := sessions.GetV3RealtimeOutbox(result.RealtimeOutbox.EndpointSeq)
+	if err != nil || !ok {
+		t.Fatalf("get realtime outbox ok=%v err=%v", ok, err)
+	}
+	if outbox.Event.ID != result.Event.ID || outbox.EndpointCursor != "cursor-1" || outbox.Projection.ProjectionHighWatermarkSeq != 1 {
+		t.Fatalf("persisted realtime outbox = %+v result event=%+v", outbox, result.Event)
+	}
 	if result.Projection.LastEventSeq != 1 || result.Projection.ProjectionHighWatermarkSeq != 1 {
 		t.Fatalf("projection = %+v", result.Projection)
 	}
@@ -85,6 +95,9 @@ func TestApplyV3SessionMutationAtomicCreateAndReplayIdempotency(t *testing.T) {
 	}
 	if !replayed.Replayed || replayed.PrimarySeq != result.PrimarySeq || replayed.Event.ID != result.Event.ID {
 		t.Fatalf("replayed = %+v original=%+v", replayed, result)
+	}
+	if replayed.RealtimeOutbox != nil {
+		t.Fatalf("replayed idempotent mutation must not mint or publish a new realtime outbox row: %+v", replayed.RealtimeOutbox)
 	}
 	events, err = sessions.ListV3SessionEvents("session-1", 0, 10)
 	if err != nil {
@@ -385,6 +398,58 @@ func openV3SessionEventTestStore(t *testing.T) *Store {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	return store
+}
+
+func TestApplyV3SessionMutationRealtimeOutboxIsAtomicAndOrdered(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "session-outbox-a")
+	createV3SessionForTest(t, sessions, "session-outbox-b")
+
+	appendResult, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:      "session-outbox-a",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		IdempotencyKey: "message-outbox-a",
+		PayloadHash:    "hash-message-outbox-a",
+		Kind:           V3SessionMutationAppendMessage,
+		Message:        &MessageSnapshot{Role: "user", Content: "outbox message"},
+		NowUnixMs:      2000,
+	})
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+	if appendResult.RealtimeOutbox == nil {
+		t.Fatalf("append mutation missing realtime outbox row: %+v", appendResult)
+	}
+
+	records, err := sessions.ListV3RealtimeOutboxAfter(0, 10)
+	if err != nil {
+		t.Fatalf("list realtime outbox: %v", err)
+	}
+	if len(records) != 3 {
+		t.Fatalf("realtime outbox rows = %d %+v, want create/create/append", len(records), records)
+	}
+	for i, record := range records {
+		wantEndpointSeq := uint64(i + 1)
+		if record.EndpointSeq != wantEndpointSeq || record.EndpointCursor != V3RealtimeOutboxCursor(wantEndpointSeq) {
+			t.Fatalf("outbox[%d] endpoint = %d/%q, want %d/%q", i, record.EndpointSeq, record.EndpointCursor, wantEndpointSeq, V3RealtimeOutboxCursor(wantEndpointSeq))
+		}
+		storedEvent, ok, err := sessions.GetV3SessionEvent(record.SessionID, record.Event.Seq)
+		if err != nil || !ok {
+			t.Fatalf("outbox[%d] event lookup ok=%v err=%v", i, ok, err)
+		}
+		if storedEvent.ID != record.Event.ID || storedEvent.EventType != record.Event.EventType {
+			t.Fatalf("outbox[%d] event = %+v stored=%+v", i, record.Event, storedEvent)
+		}
+	}
+	sessionRecords, err := sessions.ListV3RealtimeOutboxForSessionAfterSeq("session-outbox-a", 1, 10)
+	if err != nil {
+		t.Fatalf("list session realtime outbox: %v", err)
+	}
+	if len(sessionRecords) != 1 || sessionRecords[0].Event.ID != appendResult.Event.ID {
+		t.Fatalf("session outbox after seq 1 = %+v, want append event %q", sessionRecords, appendResult.Event.ID)
+	}
 }
 
 func TestApplyV3SessionMutationConcurrentDistinctAppendsAllocateContiguousSeq(t *testing.T) {

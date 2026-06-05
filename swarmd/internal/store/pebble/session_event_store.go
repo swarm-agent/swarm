@@ -75,6 +75,7 @@ type V3SessionMutationResult struct {
 	RunIntent       *V3SessionRunIntent        `json:"run_intent,omitempty"`
 	Projection      V3SessionProjection        `json:"projection"`
 	Idempotency     V3SessionIdempotencyRecord `json:"idempotency"`
+	RealtimeOutbox  *V3RealtimeOutboxRecord    `json:"realtime_outbox,omitempty"`
 	Replayed        bool                       `json:"replayed,omitempty"`
 }
 
@@ -141,6 +142,17 @@ type V3SessionProjection struct {
 	LastEventSeq               uint64 `json:"last_event_seq"`
 	ProjectionHighWatermarkSeq uint64 `json:"projection_high_watermark_seq"`
 	UpdatedAt                  int64  `json:"updated_at"`
+}
+
+type V3RealtimeOutboxRecord struct {
+	EndpointSeq    uint64              `json:"endpoint_seq"`
+	EndpointCursor string              `json:"endpoint_cursor"`
+	SessionID      string              `json:"session_id"`
+	UserID         string              `json:"user_id,omitempty"`
+	AccountScopeID string              `json:"account_scope_id,omitempty"`
+	Event          V3SessionEvent      `json:"event"`
+	Projection     V3SessionProjection `json:"projection"`
+	CreatedAt      int64               `json:"created_at"`
 }
 
 type V3SessionRunIntent struct {
@@ -240,6 +252,22 @@ func V3SessionRunIntentStatusPrefix(status string) string {
 	return fmt.Sprintf("v3/session_run_intent_status/%s/", part)
 }
 
+func KeyV3RealtimeOutboxSequence() string {
+	return "v3/realtime_outbox_seq"
+}
+
+func KeyV3RealtimeOutbox(endpointSeq uint64) string {
+	return fmt.Sprintf("v3/realtime_outbox/%020d", endpointSeq)
+}
+
+func V3RealtimeOutboxPrefix() string {
+	return "v3/realtime_outbox/"
+}
+
+func V3RealtimeOutboxCursor(endpointSeq uint64) string {
+	return fmt.Sprintf("cursor-%d", endpointSeq)
+}
+
 func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3SessionMutationResult, error) {
 	if s == nil || s.store == nil {
 		return V3SessionMutationResult{}, errors.New("session store is not configured")
@@ -285,7 +313,12 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
+	currentOutboxSeq, err := s.readV3RealtimeOutboxSequence()
+	if err != nil {
+		return V3SessionMutationResult{}, err
+	}
 	seq := currentSeq + 1
+	endpointSeq := currentOutboxSeq + 1
 	now := input.NowUnixMs
 	if now == 0 {
 		now = time.Now().UnixMilli()
@@ -365,6 +398,20 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if err != nil {
 		return V3SessionMutationResult{}, fmt.Errorf("marshal v3 session event: %w", err)
 	}
+	realtimeOutbox := V3RealtimeOutboxRecord{
+		EndpointSeq:    endpointSeq,
+		EndpointCursor: V3RealtimeOutboxCursor(endpointSeq),
+		SessionID:      input.SessionID,
+		UserID:         input.UserID,
+		AccountScopeID: input.AccountScopeID,
+		Event:          event,
+		Projection:     projection,
+		CreatedAt:      now,
+	}
+	realtimeOutboxPayload, err := json.Marshal(realtimeOutbox)
+	if err != nil {
+		return V3SessionMutationResult{}, fmt.Errorf("marshal v3 realtime outbox event: %w", err)
+	}
 	projectionPayload, err := json.Marshal(projection)
 	if err != nil {
 		return V3SessionMutationResult{}, fmt.Errorf("marshal v3 session projection: %w", err)
@@ -386,6 +433,12 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		return V3SessionMutationResult{}, err
 	}
 	if err := batch.Set([]byte(KeyV3SessionEvent(input.SessionID, seq)), eventPayload, nil); err != nil {
+		return V3SessionMutationResult{}, err
+	}
+	if err := batch.Set([]byte(KeyV3RealtimeOutboxSequence()), uint64ToBytes(endpointSeq), nil); err != nil {
+		return V3SessionMutationResult{}, err
+	}
+	if err := batch.Set([]byte(KeyV3RealtimeOutbox(endpointSeq)), realtimeOutboxPayload, nil); err != nil {
 		return V3SessionMutationResult{}, err
 	}
 	if err := batch.Set([]byte(KeyV3SessionProjection(input.SessionID)), projectionPayload, nil); err != nil {
@@ -472,6 +525,7 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		Event:           event,
 		Projection:      projection,
 		Idempotency:     idempotency,
+		RealtimeOutbox:  &realtimeOutbox,
 	}
 	if sessionProvided || messageProvided {
 		result.Session = &session
@@ -812,6 +866,77 @@ func (s *SessionStore) ListV3SessionRecoverableRunIntents(staleRunningBeforeUnix
 		}
 	}
 	return out, nil
+}
+
+func (s *SessionStore) GetV3RealtimeOutbox(endpointSeq uint64) (V3RealtimeOutboxRecord, bool, error) {
+	var record V3RealtimeOutboxRecord
+	if endpointSeq == 0 {
+		return V3RealtimeOutboxRecord{}, false, errors.New("v3 realtime endpoint seq is required")
+	}
+	ok, err := s.store.GetJSON(KeyV3RealtimeOutbox(endpointSeq), &record)
+	if err != nil || !ok {
+		return V3RealtimeOutboxRecord{}, ok, err
+	}
+	return record, true, nil
+}
+
+func (s *SessionStore) ListV3RealtimeOutboxAfter(afterEndpointSeq uint64, limit int) ([]V3RealtimeOutboxRecord, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	out := make([]V3RealtimeOutboxRecord, 0, limit)
+	err := s.store.IteratePrefix(V3RealtimeOutboxPrefix(), 100000, func(_ string, value []byte) error {
+		if len(out) >= limit {
+			return nil
+		}
+		var record V3RealtimeOutboxRecord
+		if err := json.Unmarshal(value, &record); err != nil {
+			return err
+		}
+		if record.EndpointSeq <= afterEndpointSeq {
+			return nil
+		}
+		out = append(out, record)
+		return nil
+	})
+	return out, err
+}
+
+func (s *SessionStore) ListV3RealtimeOutboxForSessionAfterSeq(sessionID string, afterSeq uint64, limit int) ([]V3RealtimeOutboxRecord, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, errors.New("session id is required")
+	}
+	records, err := s.ListV3RealtimeOutboxAfter(0, 100000)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	out := make([]V3RealtimeOutboxRecord, 0, limit)
+	for _, record := range records {
+		if len(out) >= limit {
+			break
+		}
+		if record.SessionID != sessionID || record.Event.Seq <= afterSeq {
+			continue
+		}
+		out = append(out, record)
+	}
+	return out, nil
+}
+
+func (s *SessionStore) readV3RealtimeOutboxSequence() (uint64, error) {
+	raw, ok, err := s.store.GetBytes(KeyV3RealtimeOutboxSequence())
+	if err != nil || !ok {
+		return 0, err
+	}
+	seq, err := bytesToUint64(raw)
+	if err != nil {
+		return 0, fmt.Errorf("decode v3 realtime outbox sequence: %w", err)
+	}
+	return seq, nil
 }
 
 func (s *SessionStore) readV3SessionSequence(sessionID string) (uint64, error) {

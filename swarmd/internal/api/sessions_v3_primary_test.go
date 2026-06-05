@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1405,6 +1407,153 @@ func TestSessionsV3PrimaryStandalonePathsWorkWithDispatchServicesDisabled(t *tes
 	}
 }
 
+func TestSessionsV3PrimaryStreamCapturesRealProviderMultiToolLoopContinuity(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "one.txt"), []byte("first durable stream result"), 0o644); err != nil {
+		t.Fatalf("write first tool file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "two.txt"), []byte("second durable stream result"), 0o644); err != nil {
+		t.Fatalf("write second tool file: %v", err)
+	}
+
+	runner := &sessionsV3RecordingProviderRunner{}
+	runner.handler = func(_ context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		switch runner.callCount {
+		case 1:
+			if req.ToolInvoker == nil || req.ToolChoice != "auto" {
+				return provideriface.Response{}, fmt.Errorf("initial provider request tool invoker=%v tool_choice=%q, want real tool loop", req.ToolInvoker != nil, req.ToolChoice)
+			}
+			if len(req.Input) != 1 || !sessionsV3TraceInputContains(req.Input, "read both files before answering") {
+				return provideriface.Response{}, fmt.Errorf("initial provider input = %+v, want committed user prompt only", req.Input)
+			}
+			return provideriface.Response{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-read-one", Name: "read", Arguments: `{"path":"one.txt"}`}}}, nil
+		case 2:
+			if !sessionsV3TraceInputContains(req.Input, "first durable stream result") || sessionsV3TraceInputContains(req.Input, "second durable stream result") {
+				return provideriface.Response{}, fmt.Errorf("first continuation input = %+v, want first tool result only", req.Input)
+			}
+			return provideriface.Response{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-read-two", Name: "read", Arguments: `{"path":"two.txt"}`}}}, nil
+		case 3:
+			if !sessionsV3TraceInputContains(req.Input, "first durable stream result") || !sessionsV3TraceInputContains(req.Input, "second durable stream result") {
+				return provideriface.Response{}, fmt.Errorf("final continuation input = %+v, want both durable tool results", req.Input)
+			}
+			if onEvent != nil {
+				onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: "final stream trace answer"})
+			}
+			return provideriface.Response{Text: "final stream trace answer", StopReason: "stop"}, nil
+		default:
+			return provideriface.Response{}, fmt.Errorf("unexpected provider call count %d", runner.callCount)
+		}
+	}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	runSvc := runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, nil, nil)
+	server.runner = runSvc
+	server.SetBypassPermissions(true)
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"read": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
+		t.Fatalf("upsert tool-enabled swarm agent: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	exec.deltaFlushMaxDelay = time.Hour
+	server.v3SessionExecutor = exec
+
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, withTestPrincipal(r))
+	}))
+	defer httpServer.Close()
+
+	created := createSessionsV3PrimaryHTTPTestSession(t, httpServer.URL, "stream-trace-create", "stream trace", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	defer conn.Close()
+	replayStarted := readSessionsV3PrimaryStreamFrame(t, conn)
+	replayComplete := readSessionsV3PrimaryStreamFrame(t, conn)
+	if replayStarted.Type != "replay.started" || replayComplete.Type != "replay.complete" {
+		t.Fatalf("initial stream replay frames = %+v %+v", replayStarted, replayComplete)
+	}
+
+	postSessionsV3PrimaryHTTPTestMessage(t, httpServer.URL, created.ID, "stream-trace-message", "read both files before answering")
+
+	var captured []sessionsV3RawStreamFrame
+	for {
+		capture := readSessionsV3PrimaryStreamRawFrame(t, conn, 3*time.Second)
+		captured = append(captured, capture)
+		if capture.Frame.Type == "event" && capture.Frame.Event != nil && capture.Frame.Event.EventType == "session.assistant.completed" {
+			break
+		}
+	}
+
+	intent := waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list messages after stream trace: %v", err)
+	}
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 80)
+	if err != nil {
+		t.Fatalf("list events after stream trace: %v", err)
+	}
+	intents, err := sessionSvc.Store().ListV3SessionRunIntents(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list run intents after stream trace: %v", err)
+	}
+
+	for i, capture := range captured {
+		t.Logf("ws_frame[%02d]=%s", i, capture.Raw)
+	}
+	for i, event := range events {
+		t.Logf("db_event[%02d]=seq=%d type=%s payload=%s", i, event.Seq, event.EventType, string(event.Payload))
+	}
+	for i, message := range messages {
+		t.Logf("db_message[%02d]=seq=%d role=%s id=%s content=%q metadata=%+v", i, message.GlobalSeq, message.Role, message.ID, message.Content, message.Metadata)
+	}
+	for i, runIntent := range intents {
+		t.Logf("db_run_intent[%02d]=run_id=%s status=%s blocked_reason=%q updated_at=%d", i, runIntent.RunID, runIntent.Status, runIntent.BlockedReason, runIntent.UpdatedAt)
+	}
+
+	if intent.BlockedReason != "" {
+		t.Fatalf("completed run has blocked reason: %+v", intent)
+	}
+	if runner.callCount != 3 {
+		t.Fatalf("provider call count = %d, want assistant tool1 -> continuation tool2 -> final", runner.callCount)
+	}
+	if len(messages) != 4 || messages[0].Role != "user" || messages[1].Role != "tool" || messages[2].Role != "tool" || messages[3].Role != "assistant" {
+		t.Fatalf("messages after stream trace = %+v, want user/tool/tool/assistant", messages)
+	}
+	if !strings.Contains(messages[1].Content, "first durable stream result") || !strings.Contains(messages[2].Content, "second durable stream result") || messages[3].Content != "final stream trace answer" {
+		t.Fatalf("message contents after stream trace = %+v", messages)
+	}
+
+	dbLiveTypes, dbLiveSeqs := sessionsV3TraceEventTypesAfterSeq(events, 1)
+	wsTypes, wsSeqs := sessionsV3TraceStreamEventTypes(captured)
+	if strings.Join(wsTypes, "|") != strings.Join(dbLiveTypes, "|") {
+		t.Fatalf("websocket event order = %v, DB live event order = %v", wsTypes, dbLiveTypes)
+	}
+	if fmt.Sprint(wsSeqs) != fmt.Sprint(dbLiveSeqs) {
+		t.Fatalf("websocket seqs = %v, DB live seqs = %v", wsSeqs, dbLiveSeqs)
+	}
+	for _, want := range []string{"session.message.appended", "session.assistant.started", "session.tool.started", "session.tool.completed", "session.assistant.delta", "session.assistant.completed"} {
+		if sessionsV3TraceIndex(dbLiveTypes, want) < 0 {
+			t.Fatalf("DB live event order missing %q: %v", want, dbLiveTypes)
+		}
+	}
+	toolStartedSteps := sessionsV3TraceEventSteps(events, "session.tool.started")
+	toolCompletedSteps := sessionsV3TraceEventSteps(events, "session.tool.completed")
+	if fmt.Sprint(toolStartedSteps) != "[1 2]" || fmt.Sprint(toolCompletedSteps) != "[1 2]" {
+		t.Fatalf("tool event steps started=%v completed=%v, want [1 2] for both", toolStartedSteps, toolCompletedSteps)
+	}
+	completedIndex := sessionsV3TraceIndex(dbLiveTypes, "session.assistant.completed")
+	if completedIndex < 0 {
+		t.Fatalf("missing assistant completion in live DB event order: %v", dbLiveTypes)
+	}
+	for i, eventType := range dbLiveTypes[:completedIndex] {
+		if eventType == "session.assistant.completed" || eventType == "session.run.failed" {
+			t.Fatalf("terminal event %q emitted before final assistant completion at live index %d: %v", eventType, i, dbLiveTypes)
+		}
+	}
+	sessionsV3AssertStreamStillOpenAfterCompletion(t, conn)
+}
+
 func TestSessionsV3PrimaryStreamHandlerDoesNotUseV2RunStreamOrRuntime(t *testing.T) {
 	body, err := os.ReadFile("sessions_v3_stream_ws.go")
 	if err != nil {
@@ -1536,6 +1685,155 @@ func readOptionalSessionsV3PrimaryStreamFrame(t *testing.T, conn *gorillaws.Conn
 		t.Fatalf("decode v3 stream frame %s: %v", string(raw), err)
 	}
 	return frame, true
+}
+
+type sessionsV3RawStreamFrame struct {
+	Raw   string
+	Frame sessionV3StreamFrame
+}
+
+func readSessionsV3PrimaryStreamRawFrame(t *testing.T, conn *gorillaws.Conn, timeout time.Duration) sessionsV3RawStreamFrame {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	_, raw, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read v3 stream raw frame: %v", err)
+	}
+	var frame sessionV3StreamFrame
+	if err := json.Unmarshal(raw, &frame); err != nil {
+		t.Fatalf("decode v3 stream raw frame %s: %v", string(raw), err)
+	}
+	return sessionsV3RawStreamFrame{Raw: string(raw), Frame: frame}
+}
+
+func sessionsV3AssertStreamStillOpenAfterCompletion(t *testing.T, conn *gorillaws.Conn) {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(150 * time.Millisecond)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	_, raw, err := conn.ReadMessage()
+	if err == nil {
+		t.Fatalf("stream produced unexpected immediate frame after completion instead of staying idle/open: %s", string(raw))
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return
+	}
+	t.Fatalf("stream closed or errored immediately after assistant completion: %v", err)
+}
+
+func createSessionsV3PrimaryHTTPTestSession(t *testing.T, baseURL, clientRequestID, title, workspacePath string, pref pebblestore.ModelPreference) pebblestore.SessionSnapshot {
+	t.Helper()
+	payload := map[string]any{
+		"client_request_id": clientRequestID,
+		"workspace_path":    workspacePath,
+		"title":             title,
+		"agent_name":        "swarm",
+		"preference":        pref,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal HTTP create payload: %v", err)
+	}
+	resp, err := http.Post(baseURL+"/v3/sessions", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("HTTP create v3 session: %v", err)
+	}
+	defer resp.Body.Close()
+	var created struct {
+		OK      bool                          `json:"ok"`
+		Session pebblestore.SessionSnapshot   `json:"session"`
+		Events  []sessionruntime.SessionEvent `json:"events"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode HTTP create response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK || !created.OK || strings.TrimSpace(created.Session.ID) == "" || len(created.Events) != 1 || created.Events[0].EventType != "session.created" {
+		t.Fatalf("HTTP create response status=%d payload=%+v", resp.StatusCode, created)
+	}
+	return created.Session
+}
+
+func postSessionsV3PrimaryHTTPTestMessage(t *testing.T, baseURL, sessionID, clientRequestID, content string) {
+	t.Helper()
+	payload := map[string]any{"client_request_id": clientRequestID, "role": "user", "content": content}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal HTTP message payload: %v", err)
+	}
+	resp, err := http.Post(baseURL+"/v3/sessions/"+sessionID+"/messages", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("HTTP post v3 message: %v", err)
+	}
+	defer resp.Body.Close()
+	var posted struct {
+		OK        bool                            `json:"ok"`
+		RunIntent *pebblestore.V3SessionRunIntent `json:"run_intent"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&posted); err != nil {
+		t.Fatalf("decode HTTP message response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK || !posted.OK || posted.RunIntent == nil || posted.RunIntent.Status != sessionruntime.RunIntentPendingExecutor {
+		t.Fatalf("HTTP message response status=%d payload=%+v", resp.StatusCode, posted)
+	}
+}
+
+func sessionsV3TraceInputContains(input []map[string]any, needle string) bool {
+	raw, err := json.Marshal(input)
+	return err == nil && strings.Contains(string(raw), needle)
+}
+
+func sessionsV3TraceEventTypesAfterSeq(events []sessionruntime.SessionEvent, afterSeq uint64) ([]string, []uint64) {
+	types := make([]string, 0, len(events))
+	seqs := make([]uint64, 0, len(events))
+	for _, event := range events {
+		if event.Seq <= afterSeq {
+			continue
+		}
+		types = append(types, event.EventType)
+		seqs = append(seqs, event.Seq)
+	}
+	return types, seqs
+}
+
+func sessionsV3TraceStreamEventTypes(captures []sessionsV3RawStreamFrame) ([]string, []uint64) {
+	types := make([]string, 0, len(captures))
+	seqs := make([]uint64, 0, len(captures))
+	for _, capture := range captures {
+		if capture.Frame.Type != "event" || capture.Frame.Event == nil {
+			continue
+		}
+		types = append(types, capture.Frame.Event.EventType)
+		seqs = append(seqs, capture.Frame.Event.Seq)
+	}
+	return types, seqs
+}
+
+func sessionsV3TraceIndex(items []string, want string) int {
+	for i, item := range items {
+		if item == want {
+			return i
+		}
+	}
+	return -1
+}
+
+func sessionsV3TraceEventSteps(events []sessionruntime.SessionEvent, eventType string) []int {
+	var steps []int
+	for _, event := range events {
+		if event.EventType != eventType {
+			continue
+		}
+		var payload struct {
+			Step int `json:"step"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err == nil {
+			steps = append(steps, payload.Step)
+		}
+	}
+	return steps
 }
 
 func newSessionsV3PrimaryAPITestServer(t *testing.T, storePath string) (*Server, *sessionruntime.Service, func() error) {

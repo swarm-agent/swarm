@@ -26,6 +26,9 @@ func (s *Server) publishCommittedSessionV3MutationResult(result sessionruntime.S
 		return
 	}
 	s.publishCommittedSessionV3Event(result.Event)
+	if result.RealtimeOutbox != nil {
+		s.publishCommittedV3RealtimeOutbox(*result.RealtimeOutbox)
+	}
 }
 
 func (s *Server) publishCommittedSessionV3Event(event sessionruntime.SessionEvent) {
@@ -33,4 +36,14 @@ func (s *Server) publishCommittedSessionV3Event(event sessionruntime.SessionEven
 		return
 	}
 	s.v3SessionStreams.publish(event)
+}
+
+func (s *Server) publishCommittedV3RealtimeOutbox(record sessionruntime.RealtimeOutboxRecord) {
+	if s == nil || record.EndpointSeq == 0 {
+		return
+	}
+	if s.v3RealtimeOutbox == nil {
+		s.v3RealtimeOutbox = newV3RealtimeOutboxHub()
+	}
+	s.v3RealtimeOutbox.publish(record)
 }

@@ -12,6 +12,7 @@ type SessionEvent = pebblestore.V3SessionEvent
 type SessionProjection = pebblestore.V3SessionProjection
 type SessionRunIntent = pebblestore.V3SessionRunIntent
 type SessionReplay = pebblestore.V3SessionReplay
+type RealtimeOutboxRecord = pebblestore.V3RealtimeOutboxRecord
 
 type SessionIdempotencyRecord = pebblestore.V3SessionIdempotencyRecord
 
@@ -64,6 +65,19 @@ func (s *Service) ReplaySessionEvents(sessionID string, afterSeq uint64, limit i
 		return SessionReplay{}, errors.New("session store is not configured")
 	}
 	return s.store.ReplayV3SessionEvents(sessionID, afterSeq, limit)
+}
+func (s *Service) ListRealtimeOutboxAfter(afterEndpointSeq uint64, limit int) ([]RealtimeOutboxRecord, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ListV3RealtimeOutboxAfter(afterEndpointSeq, limit)
+}
+
+func (s *Service) ListRealtimeOutboxForSessionAfterSeq(sessionID string, afterSeq uint64, limit int) ([]RealtimeOutboxRecord, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ListV3RealtimeOutboxForSessionAfterSeq(sessionID, afterSeq, limit)
 }
 
 func (s *Service) GetSessionRunIntent(sessionID, runID string) (SessionRunIntent, bool, error) {
