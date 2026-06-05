@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import type { DesktopLiveAssistantSegment, DesktopSessionRecord } from '../../types/realtime'
 import type { ChatMessageRecord } from '../types/chat'
-import { buildLiveToolMessages, desktopChatVirtualItemKey, formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, isSilentSpeechRecognitionError, metadataTodoSummary, orderDesktopLiveTimelineItems, resolveMessageAssistantLabel, resolveSessionEffectiveAgentName, retainedAssistantSegmentsWithoutCanonicalReplay, savedRuleCountdownSeconds, sessionUsesReadOnlyFlowIdentity, shouldShowScrollLockReturnButton, visibleDesktopChatMessages } from './desktop-chat-panel'
+import { buildLiveToolMessages, desktopChatVirtualItemKey, formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, isSilentSpeechRecognitionError, metadataTodoSummary, orderDesktopTimelineItems, resolveMessageAssistantLabel, resolveSessionEffectiveAgentName, retainedAssistantSegmentsWithoutCanonicalReplay, savedRuleCountdownSeconds, sessionUsesReadOnlyFlowIdentity, shouldShowScrollLockReturnButton, visibleDesktopChatMessages } from './desktop-chat-panel'
 
 test('formatAgentTodoBadge shows progress-first badge with active count', () => {
   assert.equal(formatAgentTodoBadge({ taskCount: 6, openCount: 2, inProgressCount: 1, activeText: '' }), '4/6 complete • 1 active')
@@ -163,7 +163,7 @@ test('buildLiveToolMessages renders every live tool history entry with stable in
 })
 
 test('desktop live timeline orders assistant segments and tool calls by V3 event sequence', () => {
-  const ordered = orderDesktopLiveTimelineItems([
+  const ordered = orderDesktopTimelineItems([
     {
       type: 'live-tool',
       toolMessage: {
@@ -217,6 +217,45 @@ test('desktop live timeline orders assistant segments and tool calls by V3 event
     'call-1',
     'SEGMENT B',
     'call-2',
+  ])
+})
+
+test('desktop timeline orders canonical messages and retained live items by one backend sequence', () => {
+  const ordered = orderDesktopTimelineItems([
+    {
+      type: 'message',
+      message: makeMessage({
+        id: 'canonical-tool',
+        globalSeq: 5,
+        role: 'tool',
+        content: 'tool result',
+        toolMessage: {
+          pathId: 'run.v3.provider-tool-result.v1',
+          tool: 'read',
+          callId: 'call-5',
+          toolInstanceId: 'step-5:call-5',
+          target: null,
+          commandText: '',
+          argumentsText: '{}',
+          output: 'tool result',
+          completedOutput: 'tool result',
+          error: '',
+          durationMs: 0,
+          summary: 'read',
+          state: 'done',
+          timelineSeq: 5,
+          editDiff: null,
+          previewLines: [],
+          taskRows: [],
+        },
+      }),
+    },
+    { type: 'live-assistant', id: 'segment-4', content: 'assistant before tool', timelineSeq: 4 },
+  ])
+
+  assert.deepEqual(ordered.map((item) => item.type === 'message' ? item.message.id : item.id), [
+    'segment-4',
+    'canonical-tool',
   ])
 })
 

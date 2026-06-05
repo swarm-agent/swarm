@@ -31,6 +31,27 @@ function mergeSessionTitle(existing: DesktopSessionRecord, incoming: DesktopSess
   return incoming.title
 }
 
+function mergeSessionLiveState(
+  existing: DesktopSessionRecord['live'],
+  incoming: DesktopSessionRecord['live'],
+): DesktopSessionRecord['live'] {
+  const incomingRetainedAssistantSegments = incoming.retainedAssistantSegments ?? []
+  const existingRetainedAssistantSegments = existing.retainedAssistantSegments ?? []
+  const incomingToolHistory = incoming.toolHistory ?? []
+  const existingToolHistory = existing.toolHistory ?? []
+
+  return {
+    ...incoming,
+    seq: Math.max(existing.seq ?? 0, incoming.seq ?? 0),
+    retainedAssistantSegments: incomingRetainedAssistantSegments.length > 0
+      ? incomingRetainedAssistantSegments
+      : existingRetainedAssistantSegments,
+    toolHistory: incomingToolHistory.length > 0
+      ? incomingToolHistory
+      : existingToolHistory,
+  }
+}
+
 export function mergeSessionRecords(existing: DesktopSessionRecord | null, incoming: DesktopSessionRecord): DesktopSessionRecord {
   if (!existing) {
     return incoming
@@ -74,7 +95,7 @@ export function mergeSessionRecords(existing: DesktopSessionRecord | null, incom
     gitCommittedAdditions: incoming.gitCommittedAdditions ?? existing.gitCommittedAdditions ?? 0,
     gitCommittedDeletions: incoming.gitCommittedDeletions ?? existing.gitCommittedDeletions ?? 0,
     lifecycle: incoming.lifecycle ?? existing.lifecycle,
-    live: incoming.live,
+    live: mergeSessionLiveState(existing.live, incoming.live),
     pendingPermissions: incoming.pendingPermissions,
     pendingPermissionCount: incoming.pendingPermissionCount,
     usage: incoming.usage ?? existing.usage,

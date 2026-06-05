@@ -106,3 +106,55 @@ test('flow merge still accepts non-placeholder incoming titles', () => {
   const merged = mergeSessionRecords(existing, incoming)
   assert.equal(merged.title, 'Renamed flow title')
 })
+
+test('merge preserves client-only live history when incoming hydration has empty live arrays', () => {
+  const existing = makeSession({
+    live: {
+      ...makeSession().live,
+      seq: 8,
+      assistantDraft: 'streaming text',
+      retainedAssistantSegments: [
+        { id: 'live-assistant:1:4:0', content: 'assistant before tool', createdAt: 1, seq: 4 },
+      ],
+      toolHistory: [
+        {
+          key: 'session-1\u001frun-1\u001fstep-1\u001fcall-1\u001fstep-1:call-1',
+          sessionId: 'session-1',
+          runId: 'run-1',
+          stepId: 'step-1',
+          callId: 'call-1',
+          toolInstanceId: 'step-1:call-1',
+          toolName: 'read',
+          toolArguments: '{"path":"file.txt"}',
+          toolOutput: 'done',
+          state: 'done',
+          step: 1,
+          seq: 5,
+          startedAt: 2,
+          updatedAt: 3,
+          completedAt: 3,
+        },
+      ],
+    },
+  })
+  const incoming = makeSession({
+    updatedAt: 10,
+    live: {
+      ...makeSession().live,
+      seq: 3,
+      retainedAssistantSegments: [],
+      toolHistory: [],
+      status: 'idle',
+    },
+  })
+
+  const merged = mergeSessionRecords(existing, incoming)
+
+  assert.equal(merged.live.seq, 8)
+  assert.deepEqual(merged.live.retainedAssistantSegments.map((segment) => [segment.content, segment.seq]), [
+    ['assistant before tool', 4],
+  ])
+  assert.deepEqual(merged.live.toolHistory?.map((item) => [item.callId, item.seq]), [
+    ['call-1', 5],
+  ])
+})
