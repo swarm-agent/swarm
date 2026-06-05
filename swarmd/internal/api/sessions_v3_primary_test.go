@@ -1916,6 +1916,31 @@ func sessionsV3TraceInputContains(input []map[string]any, needle string) bool {
 	return err == nil && strings.Contains(string(raw), needle)
 }
 
+func sessionsV3ProviderInputHasTopLevelType(input []map[string]any, itemType string) bool {
+	itemType = strings.TrimSpace(itemType)
+	for _, item := range input {
+		if strings.EqualFold(strings.TrimSpace(fmt.Sprint(item["type"])), itemType) {
+			return true
+		}
+	}
+	return false
+}
+
+func sessionsV3ProviderInputContainsContentText(input []map[string]any, needle string) bool {
+	for _, item := range input {
+		content, ok := item["content"].([]map[string]any)
+		if !ok {
+			continue
+		}
+		for _, part := range content {
+			if strings.Contains(fmt.Sprint(part["text"]), needle) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func sessionsV3TraceEventTypesAfterSeq(events []sessionruntime.SessionEvent, afterSeq uint64) ([]string, []uint64) {
 	types := make([]string, 0, len(events))
 	seqs := make([]uint64, 0, len(events))
@@ -2290,6 +2315,45 @@ func TestSessionsV3ExecutorUsesAutoToolChoiceWhenToolsResolved(t *testing.T) {
 	}
 }
 
+func TestSessionsV3ProviderInputRequiresStructuredToolTranscriptItems(t *testing.T) {
+	toolContent, err := json.Marshal(map[string]any{
+		"path_id":          "run.tool-history.v2",
+		"tool":             "read",
+		"call_id":          "call-read-facts",
+		"tool_instance_id": "step-1:call-read-facts",
+		"arguments":        `{"path":"facts.txt"}`,
+		"output":           "tool-loop-file-content",
+		"completed_output": "tool-loop-file-content",
+		"metadata": map[string]any{
+			"executor_kind":    "v3_provider_tool",
+			"run_id":           "run-structured-tool-history",
+			"step":             1,
+			"step_id":          "step-1",
+			"tool_instance_id": "step-1:call-read-facts",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal tool history fixture: %v", err)
+	}
+	input := sessionsV3ProviderInput([]pebblestore.MessageSnapshot{
+		{Role: "user", Content: "read facts.txt before answering"},
+		{Role: "tool", Content: string(toolContent), Metadata: map[string]any{
+			"executor_kind":    "v3_provider_tool",
+			"run_id":           "run-structured-tool-history",
+			"step":             1,
+			"step_id":          "step-1",
+			"tool_instance_id": "step-1:call-read-facts",
+		}},
+	})
+
+	hasCall := sessionsV3ProviderInputHasTopLevelType(input, "function_call")
+	hasOutput := sessionsV3ProviderInputHasTopLevelType(input, "function_call_output")
+	hasStringifiedToolResult := sessionsV3ProviderInputContainsContentText(input, "[tool result]")
+	if !hasCall || !hasOutput || hasStringifiedToolResult {
+		t.Fatalf("provider input = %+v, want structured function_call/function_call_output items and no stringified [tool result] user text (hasCall=%t hasOutput=%t hasStringifiedToolResult=%t)", input, hasCall, hasOutput, hasStringifiedToolResult)
+	}
+}
+
 func TestSessionsV3ExecutorExecutesProviderToolCallsAndContinuesToFinalAnswer(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	workspace := t.TempDir()
@@ -2337,6 +2401,10 @@ func TestSessionsV3ExecutorExecutesProviderToolCallsAndContinuesToFinalAnswer(t 
 	}
 	if len(runner.requests) != 2 || len(runner.requests[1].Input) < 2 {
 		t.Fatalf("continuation request input = %+v", runner.requests)
+	}
+	continuationInput := runner.requests[1].Input
+	if !sessionsV3ProviderInputHasTopLevelType(continuationInput, "function_call") || !sessionsV3ProviderInputHasTopLevelType(continuationInput, "function_call_output") || sessionsV3ProviderInputContainsContentText(continuationInput, "[tool result]") {
+		t.Fatalf("continuation provider input = %+v, want direct structured function_call/function_call_output reinjection instead of DB-reparsed user text", continuationInput)
 	}
 }
 
