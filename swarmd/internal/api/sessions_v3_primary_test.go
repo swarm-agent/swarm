@@ -2469,6 +2469,96 @@ func TestSessionsV3ExecutorCarriesFullContinuationHistoryAcrossMultipleToolSteps
 	}
 }
 
+func TestSessionsV3ExecutorCompletesAfterPreToolDeltaAndThreeToolCalls(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := t.TempDir()
+	for name, content := range map[string]string{
+		"one.txt":   "first tool result",
+		"two.txt":   "second tool result",
+		"three.txt": "third tool result",
+	} {
+		if err := os.WriteFile(filepath.Join(workspace, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	runner := &sessionsV3RecordingProviderRunner{}
+	runner.handler = func(_ context.Context, _ provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		switch runner.callCount {
+		case 1:
+			if onEvent != nil {
+				onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: "First message"})
+			}
+			return provideriface.Response{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-read-one", Name: "read", Arguments: `{"path":"one.txt"}`}}}, nil
+		case 2:
+			return provideriface.Response{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-read-two", Name: "read", Arguments: `{"path":"two.txt"}`}}}, nil
+		case 3:
+			return provideriface.Response{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-read-three", Name: "read", Arguments: `{"path":"three.txt"}`}}}, nil
+		case 4:
+			if onEvent != nil {
+				onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: "I've finished testing"})
+			}
+			return provideriface.Response{Text: "I've finished testing"}, nil
+		default:
+			return provideriface.Response{}, fmt.Errorf("unexpected provider call %d", runner.callCount)
+		}
+	}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	runSvc := runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, nil, nil)
+	server.runner = runSvc
+	server.SetBypassPermissions(true)
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"read": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
+		t.Fatalf("upsert tool-enabled swarm agent: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-pretool-delta-create", "provider pretool delta", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-pretool-delta-message", `test. start off first message, "First message" do 3 tool calls in a row, then state "I've finished testing"`)
+	intent := waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
+	if intent.BlockedReason != "" {
+		t.Fatalf("completed run has blocked reason: %+v", intent)
+	}
+
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 5 || messages[0].Role != "user" || messages[1].Role != "tool" || messages[2].Role != "tool" || messages[3].Role != "tool" || messages[4].Role != "assistant" {
+		t.Fatalf("messages after pre-tool delta and three tools = %+v, want user/tool/tool/tool/assistant", messages)
+	}
+	if messages[4].Content != "I've finished testing" {
+		t.Fatalf("final assistant content = %q", messages[4].Content)
+	}
+
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 40)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	var deltas []int
+	for _, event := range events {
+		if event.EventType == "session.run.failed" {
+			t.Fatalf("unexpected run failure event after final assistant text: %+v", event)
+		}
+		if event.EventType != "session.assistant.delta" {
+			continue
+		}
+		var payload struct {
+			DeltaIndex int    `json:"delta_index"`
+			Delta      string `json:"delta"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("decode delta payload: %v", err)
+		}
+		deltas = append(deltas, payload.DeltaIndex)
+	}
+	if len(deltas) != 2 || deltas[0] == deltas[1] {
+		t.Fatalf("assistant delta indexes = %+v, want two unique run-scoped indexes", deltas)
+	}
+}
+
 func TestSessionsV3ExecutorPersistsFailureWhenToolLoopExceedsBound(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	workspace := t.TempDir()

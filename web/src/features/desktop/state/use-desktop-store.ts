@@ -1835,6 +1835,7 @@ function applyRunStreamFrame(state: DesktopStoreState, sessionId: string, payloa
       const isToolCompleted = type === 'tool.completed' || type === 'run.tool.completed'
       if (isToolStarted) {
         flushLiveAssistantDraftToSegment(session.live, ts)
+        cancelDraftFlush(sessionId)
       }
       session.live.toolName = String(payload.tool_name ?? '').trim() || session.live.toolName
       if (typeof payload.summary === 'string' && payload.summary.trim() !== '') {
@@ -2492,6 +2493,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
       }
       if (isToolStarted) {
         flushLiveAssistantDraftToSegment(session.live, ts)
+        cancelDraftFlush(sessionId)
         resetRetainedLiveToolState(session.live)
         session.live.toolOutput = ''
       }
@@ -2715,6 +2717,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
       break
     case 'run.tool.started':
       flushLiveAssistantDraftToSegment(session.live, ts)
+      cancelDraftFlush(sessionId)
       session.live.runId = typeof payloadRecord.run_id === 'string' ? payloadRecord.run_id : session.live.runId
       session.live.toolName = typeof payloadRecord.tool_name === 'string' ? payloadRecord.tool_name : session.live.toolName
       session.live.step = typeof payloadRecord.step === 'number' ? payloadRecord.step : session.live.step

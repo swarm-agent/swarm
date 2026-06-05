@@ -380,6 +380,76 @@ test('V3 stream keeps reused provider call IDs as separate live tool history rec
   assert.deepEqual(updated.live.toolHistory?.map((item) => item.toolOutput), ['second', 'first'])
 })
 
+test('V3 assistant draft promotion ignores stale scheduled flushes after tool start', () => {
+  const originalWindow = globalThis.window
+  const scheduled: Array<() => void> = []
+  const canceled = new Set<number>()
+  const testWindow = (originalWindow ?? {}) as typeof window
+  testWindow.requestAnimationFrame = ((callback: FrameRequestCallback) => {
+    const id = scheduled.length + 1
+    scheduled.push(() => {
+      if (!canceled.has(id)) callback(0)
+    })
+    return id
+  }) as typeof window.requestAnimationFrame
+  testWindow.cancelAnimationFrame = ((id: number) => {
+    canceled.add(id)
+  }) as typeof window.cancelAnimationFrame
+  testWindow.setTimeout = ((callback: TimerHandler) => {
+    if (typeof callback === 'function') callback()
+    return 0
+  }) as typeof window.setTimeout
+  globalThis.window = testWindow
+
+  try {
+    const session = makeSession({ id: 'session-v3', sessionApi: 'v3', lastEventSeq: 1, projectionHighWatermarkSeq: 1 })
+    useDesktopStore.setState(makeState(session), true)
+
+    useDesktopStore.getState().__testApplyRunStreamFrame?.('session-v3', {
+      type: 'event',
+      ok: true,
+      session_id: 'session-v3',
+      last_seq: 2,
+      event: {
+        id: 'v3evt_session-v3_00000000000000000002',
+        session_id: 'session-v3',
+        seq: 2,
+        event_type: 'session.assistant.delta',
+        ts_unix_ms: 20,
+        payload: { session_id: 'session-v3', run_id: 'run-v3', delta: 'First message' },
+      },
+    }, 20)
+
+    useDesktopStore.getState().__testApplyRunStreamFrame?.('session-v3', {
+      type: 'event',
+      ok: true,
+      session_id: 'session-v3',
+      last_seq: 3,
+      event: {
+        id: 'v3evt_session-v3_00000000000000000003',
+        session_id: 'session-v3',
+        seq: 3,
+        event_type: 'session.tool.started',
+        ts_unix_ms: 21,
+        payload: { session_id: 'session-v3', run_id: 'run-v3', step_id: 'step-1', tool_instance_id: 'step-1:call-1', tool_name: 'list', call_id: 'call-1', arguments: '{}', step: 1 },
+      },
+    }, 21)
+
+    scheduled.forEach((callback) => callback())
+
+    const updated = useDesktopStore.getState().sessions['session-v3']
+    assert.equal(updated.live.assistantDraft, '')
+    assert.equal(updated.live.retainedAssistantSegments.length, 1)
+    assert.equal(updated.live.retainedAssistantSegments[0]?.content, 'First message')
+  } finally {
+    if (originalWindow) {
+      globalThis.window = originalWindow
+    } else {
+      Reflect.deleteProperty(globalThis, 'window')
+    }
+  }
+})
+
 test('V3 replay control frames update cursor state without V2 resume semantics', () => {
   const session = makeSession({ id: 'session-v3', lastEventSeq: 2, projectionHighWatermarkSeq: 2 })
   useDesktopStore.setState(makeState(session), true)

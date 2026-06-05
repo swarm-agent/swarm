@@ -908,6 +908,7 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		req.ToolInvoker = toolInvoker
 		var streamed strings.Builder
 		coalescer := newSessionV3AssistantDeltaCoalescer(e, job)
+		coalescer.nextDeltaIndex = totalFlushCount
 		var progressErr error
 		response, err := runner.CreateResponseStreaming(ctx, req, func(event provideriface.StreamEvent) {
 			if event.Type != provideriface.StreamEventOutputTextDelta {
