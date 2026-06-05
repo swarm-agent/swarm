@@ -378,6 +378,39 @@ test('V3 stream keeps reused provider call IDs as separate live tool history rec
   assert.deepEqual(updated.live.toolHistory?.map((item) => item.callId), ['call-reused', 'call-reused'])
   assert.deepEqual(updated.live.toolHistory?.map((item) => item.toolInstanceId), ['step-2:call-reused', 'step-1:call-reused'])
   assert.deepEqual(updated.live.toolHistory?.map((item) => item.toolOutput), ['second', 'first'])
+  assert.deepEqual(updated.live.toolHistory?.map((item) => item.seq), [4, 2])
+})
+
+test('V3 stream retains sequence on interleaved assistant segments and live tools', () => {
+  const session = makeSession({ id: 'session-v3', sessionApi: 'v3', lastEventSeq: 1, projectionHighWatermarkSeq: 1 })
+  useDesktopStore.setState(makeState(session), true)
+
+  const emit = (seq: number, eventType: string, payload: Record<string, unknown>) => {
+    useDesktopStore.getState().__testApplyRunStreamFrame?.('session-v3', {
+      type: 'event',
+      ok: true,
+      session_id: 'session-v3',
+      last_seq: seq,
+      event: {
+        id: `v3evt_session-v3_${String(seq).padStart(20, '0')}`,
+        session_id: 'session-v3',
+        seq,
+        event_type: eventType,
+        ts_unix_ms: 20 + seq,
+        payload: { session_id: 'session-v3', run_id: 'run-v3', ...payload },
+      },
+    }, 20 + seq)
+  }
+
+  emit(2, 'session.assistant.delta', { delta: 'SEGMENT A' })
+  emit(3, 'session.tool.started', { step_id: 'step-1', tool_instance_id: 'step-1:call-1', tool_name: 'list', call_id: 'call-1', arguments: '{}', step: 1 })
+  emit(4, 'session.tool.completed', { step_id: 'step-1', tool_instance_id: 'step-1:call-1', tool_name: 'list', call_id: 'call-1', raw_output: 'first', step: 1 })
+  emit(5, 'session.assistant.delta', { delta: 'SEGMENT B' })
+  emit(6, 'session.tool.started', { step_id: 'step-2', tool_instance_id: 'step-2:call-2', tool_name: 'list', call_id: 'call-2', arguments: '{}', step: 2 })
+
+  const updated = useDesktopStore.getState().sessions['session-v3']
+  assert.deepEqual(updated.live.retainedAssistantSegments.map((segment) => [segment.content, segment.seq]), [['SEGMENT A', 2], ['SEGMENT B', 5]])
+  assert.deepEqual(updated.live.toolHistory?.map((item) => [item.callId, item.seq]), [['call-2', 6], ['call-1', 3]])
 })
 
 test('V3 assistant draft promotion ignores stale scheduled flushes after tool start', () => {

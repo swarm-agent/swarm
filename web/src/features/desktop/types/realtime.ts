@@ -31,6 +31,7 @@ export interface DesktopLiveToolRecord {
   toolOutput: string
   state: 'running' | 'done' | 'error'
   step: number | null
+  seq?: number
   startedAt: number
   updatedAt: number
   completedAt: number | null

@@ -636,6 +636,7 @@ function upsertLiveToolHistory(
     rawOutput?: string | null
     state: DesktopLiveToolRecord['state']
     step?: number | null
+    seq?: number | null
     ts: number
   },
 ): void {
@@ -662,6 +663,7 @@ function upsertLiveToolHistory(
     toolOutput: outputDelta ? nextOutput : existing?.toolOutput ?? '',
     state: input.state,
     step: input.step ?? existing?.step ?? null,
+    seq: existing?.seq ?? input.seq ?? undefined,
     startedAt: existing?.startedAt ?? input.ts,
     updatedAt: input.ts,
     completedAt: input.state === 'done' || input.state === 'error' ? input.ts : existing?.completedAt ?? null,
@@ -1492,6 +1494,7 @@ function v3SessionStreamEventEnvelope(payload: RunStreamEventMessage): EventEnve
     eventPayload.session_id = sessionId
   }
   return {
+    global_seq: typeof event.seq === 'number' ? event.seq : undefined,
     stream: sessionId ? `v3/session:${sessionId}` : undefined,
     event_type: eventType,
     entity_id: sessionId,
@@ -1640,6 +1643,7 @@ function v3RealtimeEventEnvelope(message: V3RealtimeMessage): EventEnvelope | nu
     eventPayload.session_id = sessionId
   }
   return {
+    global_seq: typeof event.seq === 'number' ? event.seq : undefined,
     stream: sessionId ? `v3/session:${sessionId}` : undefined,
     event_type: eventType,
     entity_id: sessionId,
@@ -2028,6 +2032,7 @@ function applyRunStreamResumeFailure(state: DesktopStoreState, sessionId: string
 export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope): Partial<DesktopStoreState> {
   const eventType = typeof envelope.event_type === 'string' ? envelope.event_type : ''
   const ts = typeof envelope.ts_unix_ms === 'number' ? envelope.ts_unix_ms : Date.now()
+  const envelopeSeq = typeof envelope.global_seq === 'number' ? Math.max(0, envelope.global_seq) : 0
   const payload = envelope.payload && typeof envelope.payload === 'object' ? envelope.payload : {}
   const payloadRecord = payload as Record<string, unknown>
   if (eventType.startsWith('workspace.todo.')) {
@@ -2519,6 +2524,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
         rawOutput: typeof payloadRecord.raw_output === 'string' ? payloadRecord.raw_output : null,
         state: isToolCompleted ? 'done' : 'running',
         step: typeof payloadRecord.step === 'number' ? payloadRecord.step : null,
+        seq: envelopeSeq,
         ts,
       })
       if (isToolDelta && typeof payloadRecord.output === 'string') {
@@ -2815,6 +2821,9 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
       break
   }
 
+  if (envelopeSeq > 0) {
+    session.live.seq = Math.max(session.live.seq, envelopeSeq)
+  }
   const merged = mergeSessionRecords(state.sessions[sessionId] ?? null, session)
   sessions[sessionId] = merged
   syncBlockedSessionToWorkspaceOverview(queryClient, merged)

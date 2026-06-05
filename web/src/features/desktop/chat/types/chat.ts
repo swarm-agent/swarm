@@ -103,6 +103,7 @@ export interface StructuredToolMessage {
   durationMs: number;
   summary: string;
   state: ToolMessageState;
+  timelineSeq?: number;
   editDiff: EditDiffPreview | null;
   searchData?: SearchToolData | null;
   todoData?: TodoToolData | null;

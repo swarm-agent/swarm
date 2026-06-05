@@ -467,10 +467,10 @@ export function shouldShowScrollLockReturnButton(element: ScrollMetrics): boolea
   return scrollBottomGap(element) >= Math.max(RETURN_TO_SCROLL_LOCK_MIN_DISTANCE_PX, element.clientHeight / 2)
 }
 
-type RenderItem =
+export type RenderItem =
   | { type: 'message'; message: ChatMessageRecord; virtualKey?: string }
   | { type: 'live-tool'; toolMessage: NonNullable<ChatMessageRecord['toolMessage']> }
-  | { type: 'live-assistant'; id: string; content: string }
+  | { type: 'live-assistant'; id: string; content: string; timelineSeq?: number }
 
 function jsonStringValue(record: Record<string, unknown> | null | undefined, key: string): string {
   const value = record?.[key]
@@ -537,6 +537,17 @@ function renderItemKey(item: RenderItem | undefined, index: number): string {
     default:
       return `render-item:${index}`
   }
+}
+
+export function orderDesktopLiveTimelineItems(items: RenderItem[]): RenderItem[] {
+  return [...items].sort((left, right) => {
+    const leftSeq = left.type === 'live-assistant' ? left.timelineSeq ?? 0 : left.type === 'live-tool' ? left.toolMessage.timelineSeq ?? 0 : 0
+    const rightSeq = right.type === 'live-assistant' ? right.timelineSeq ?? 0 : right.type === 'live-tool' ? right.toolMessage.timelineSeq ?? 0 : 0
+    if (leftSeq > 0 && rightSeq > 0 && leftSeq !== rightSeq) {
+      return leftSeq - rightSeq
+    }
+    return 0
+  })
 }
 
 export function desktopChatThinkingTagsMeasurementKey(thinkingTagsEnabled: boolean): string {
@@ -638,6 +649,7 @@ type LiveToolSnapshot = {
   toolArguments: string | null
   toolOutput: string
   state: NonNullable<ChatMessageRecord['toolMessage']>['state']
+  seq?: number | null
 }
 
 function liveToolRecordSnapshot(record: DesktopLiveToolRecord): LiveToolSnapshot | null {
@@ -652,6 +664,7 @@ function liveToolRecordSnapshot(record: DesktopLiveToolRecord): LiveToolSnapshot
     toolArguments: record.toolArguments,
     toolOutput: record.toolOutput,
     state: record.state,
+    seq: record.seq ?? null,
   }
 }
 
@@ -678,6 +691,7 @@ function buildLiveToolMessageFromSnapshot(snapshot: LiveToolSnapshot): NonNullab
   return {
     ...toolMessage,
     state,
+    timelineSeq: snapshot.seq ?? undefined,
   }
 }
 
@@ -1522,17 +1536,19 @@ export function DesktopChatPanel({
       message,
       virtualKey: message.id === handoffMessageId ? handoff?.key : undefined,
     }))
+    const liveTimelineItems: RenderItem[] = []
     for (const segment of renderableRetainedAssistantSegments) {
-      items.push({ type: 'live-assistant', id: segment.id, content: segment.content })
+      liveTimelineItems.push({ type: 'live-assistant', id: segment.id, content: segment.content, timelineSeq: segment.seq })
     }
     if (shouldRenderLiveToolMessage) {
       for (const liveToolMessage of renderableLiveToolMessages) {
-        items.push({ type: 'live-tool', toolMessage: liveToolMessage })
+        liveTimelineItems.push({ type: 'live-tool', toolMessage: liveToolMessage })
       }
     }
     if (shouldRenderLiveAssistantDraft) {
-      items.push({ type: 'live-assistant', id: liveAssistantDraftKey, content: liveAssistantDraft })
+      liveTimelineItems.push({ type: 'live-assistant', id: liveAssistantDraftKey, content: liveAssistantDraft })
     }
+    items.push(...orderDesktopLiveTimelineItems(liveTimelineItems))
     return items
   }, [displayedMessages, liveAssistantDraft, liveAssistantDraftKey, renderableLiveToolMessages, renderableRetainedAssistantSegments, sessionId, shouldRenderLiveAssistantDraft, shouldRenderLiveToolMessage])
   const thinkingTagsMeasurementKey = desktopChatThinkingTagsMeasurementKey(thinkingTagsEnabled)

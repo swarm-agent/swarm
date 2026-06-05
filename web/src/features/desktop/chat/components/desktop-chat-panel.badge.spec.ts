@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import type { DesktopLiveAssistantSegment, DesktopSessionRecord } from '../../types/realtime'
 import type { ChatMessageRecord } from '../types/chat'
-import { buildLiveToolMessages, desktopChatVirtualItemKey, formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, isSilentSpeechRecognitionError, metadataTodoSummary, resolveMessageAssistantLabel, resolveSessionEffectiveAgentName, retainedAssistantSegmentsWithoutCanonicalReplay, savedRuleCountdownSeconds, sessionUsesReadOnlyFlowIdentity, shouldShowScrollLockReturnButton, visibleDesktopChatMessages } from './desktop-chat-panel'
+import { buildLiveToolMessages, desktopChatVirtualItemKey, formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, isSilentSpeechRecognitionError, metadataTodoSummary, orderDesktopLiveTimelineItems, resolveMessageAssistantLabel, resolveSessionEffectiveAgentName, retainedAssistantSegmentsWithoutCanonicalReplay, savedRuleCountdownSeconds, sessionUsesReadOnlyFlowIdentity, shouldShowScrollLockReturnButton, visibleDesktopChatMessages } from './desktop-chat-panel'
 
 test('formatAgentTodoBadge shows progress-first badge with active count', () => {
   assert.equal(formatAgentTodoBadge({ taskCount: 6, openCount: 2, inProgressCount: 1, activeText: '' }), '4/6 complete • 1 active')
@@ -160,6 +160,64 @@ test('buildLiveToolMessages renders every live tool history entry with stable in
   assert.deepEqual(messages.map((message) => message.callId), ['call-reused', 'call-reused'])
   assert.deepEqual(messages.map((message) => message.toolInstanceId), ['step-1:call-reused', 'step-2:call-reused'])
   assert.deepEqual(messages.map((message) => message.output), ['first output', 'second output'])
+})
+
+test('desktop live timeline orders assistant segments and tool calls by V3 event sequence', () => {
+  const ordered = orderDesktopLiveTimelineItems([
+    {
+      type: 'live-tool',
+      toolMessage: {
+        pathId: 'run.v3.provider-tool-result.v1',
+        tool: 'list',
+        callId: 'call-1',
+        toolInstanceId: 'step-1:call-1',
+        target: null,
+        commandText: '',
+        argumentsText: '{}',
+        output: 'listed',
+        completedOutput: 'listed',
+        error: '',
+        durationMs: 0,
+        summary: 'list',
+        state: 'done',
+        timelineSeq: 3,
+        editDiff: null,
+        previewLines: [],
+        taskRows: [],
+      },
+    },
+    { type: 'live-assistant', id: 'segment-a', content: 'SEGMENT A', timelineSeq: 2 },
+    {
+      type: 'live-tool',
+      toolMessage: {
+        pathId: 'run.v3.provider-tool-result.v1',
+        tool: 'list',
+        callId: 'call-2',
+        toolInstanceId: 'step-2:call-2',
+        target: null,
+        commandText: '',
+        argumentsText: '{}',
+        output: 'listed again',
+        completedOutput: 'listed again',
+        error: '',
+        durationMs: 0,
+        summary: 'list',
+        state: 'done',
+        timelineSeq: 5,
+        editDiff: null,
+        previewLines: [],
+        taskRows: [],
+      },
+    },
+    { type: 'live-assistant', id: 'segment-b', content: 'SEGMENT B', timelineSeq: 4 },
+  ])
+
+  assert.deepEqual(ordered.map((item) => item.type === 'live-assistant' ? item.content : item.toolMessage.callId), [
+    'SEGMENT A',
+    'call-1',
+    'SEGMENT B',
+    'call-2',
+  ])
 })
 
 test('flow sessions are treated as read-only flow identity and resolve their real flow agent name', () => {
