@@ -155,10 +155,11 @@ test('legacy non-V3 send keeps existing v2 message endpoint', async () => {
 test('desktop store V3 submit path uses message commit helper instead of V2 run dispatch', async () => {
   const source = await readFile(new URL('../../state/use-desktop-store.ts', import.meta.url), 'utf8')
 
-  assert.match(source, /clientRequestId = providedClientRequestId\?\.trim\(\) \|\| `desktop-v3-message:\$\{targetSessionId\}:\$\{Date\.now\(\)\}`/)
+  assert.match(source, /clientRequestId = providedClientRequestId\?\.trim\(\) \|\| `desktop-v3-message:\$\{targetSessionId\}:\$\{submitStartedAt\}`/)
   assert.match(source, /sendSessionMessage\(targetSessionId, 'user', trimmedPrompt, route, \{ sessionApi: 'v3', clientRequestId \}\)/)
   const panelSource = await readFile(new URL('../components/desktop-chat-panel.tsx', import.meta.url), 'utf8')
   assert.match(panelSource, /clientRequestId: pendingMessageId \? `desktop-v3-message:\$\{pendingMessageId\}` : undefined/)
   assert.match(source, /effectiveSessionApi === 'v3' && !compact/)
   assert.match(source, /applyV3MessageCommitResult/)
+  assert.match(source, /requireRunStreamController\(\)\.ensure\(targetSessionId, committedRunId\)/)
 })

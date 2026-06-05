@@ -365,12 +365,48 @@ test('desktop panel and controller route V3 streams to Sessions API v3 only', as
   assert.doesNotMatch(querySource, /\/v3\/sessions\/[^`]+\/run\/stream/)
 })
 
-test('desktop store submitPrompt for V3 primary sessions commits through Sessions API v3 without V2 run dispatch', async () => {
+test('desktop store submitPrompt for V3 primary sessions commits through Sessions API v3 and starts the V3 stream', async () => {
   const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = []
+  const websocketURLs: string[] = []
   const originalFetch = globalThis.fetch
+  const originalWindow = globalThis.window
+  const originalWebSocket = globalThis.WebSocket
+
+  class FakeWebSocket {
+    static CONNECTING = 0
+    static OPEN = 1
+    static CLOSING = 2
+    static CLOSED = 3
+    readyState = FakeWebSocket.OPEN
+    url: string
+
+    constructor(input: string | URL) {
+      this.url = String(input)
+      websocketURLs.push(this.url)
+    }
+
+    addEventListener() {}
+    close() {
+      this.readyState = FakeWebSocket.CLOSED
+    }
+    send() {}
+  }
+
+  globalThis.window = {
+    location: { protocol: 'http:', host: '127.0.0.1:7777' },
+    setTimeout: ((callback: TimerHandler, timeout?: number) => setTimeout(callback, timeout)) as typeof window.setTimeout,
+    clearTimeout: ((timer?: number) => clearTimeout(timer)) as typeof window.clearTimeout,
+  } as unknown as Window & typeof globalThis
+  globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     calls.push({ input, init })
     const url = String(input)
+    if (url === '/v1/auth/desktop/session') {
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
     if (url !== '/v3/sessions/session-v3/messages') {
       throw new Error(`unexpected fetch: ${url}`)
     }
@@ -432,9 +468,10 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
     })
 
     const urls = calls.map((entry) => String(entry.input))
-    assert.deepEqual(urls, ['/v3/sessions/session-v3/messages'])
+    assert.deepEqual(urls, ['/v3/sessions/session-v3/messages', '/v1/auth/desktop/session'])
     assert.equal(urls.some((url) => url.startsWith('/v1/swarm/managed-hosts/sessions')), false)
     assert.equal(urls.some((url) => url.startsWith('/v2/sessions')), false)
+    assert.deepEqual(websocketURLs, ['ws://127.0.0.1:7777/v3/sessions/session-v3/stream?after_seq=3'])
     const body = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>
     assert.deepEqual(body, {
       client_request_id: 'desktop-v3-message:test-submit',
@@ -448,9 +485,13 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
     assert.equal(updated.projectionHighWatermarkSeq, 3)
     assert.equal(updated.live.runId, 'v3run-session-v3-2')
     assert.equal(updated.live.status, 'starting')
+    assert.equal(updated.live.startedAt, 20)
     assert.equal(updated.live.lastEventType, 'run.pending_executor')
   } finally {
+    useDesktopStore.getState().disconnect()
     globalThis.fetch = originalFetch
+    globalThis.window = originalWindow
+    globalThis.WebSocket = originalWebSocket
   }
 })
 

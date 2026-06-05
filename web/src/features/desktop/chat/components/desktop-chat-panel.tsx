@@ -1386,12 +1386,14 @@ export function DesktopChatPanel({
     && liveRunId !== ''
     && liveSession?.live.summary === 'Reconnecting…'
   const lifecycleStartedAt = lifecycleActive && typeof lifecycle?.startedAt === 'number' && lifecycle.startedAt > 0 ? lifecycle.startedAt : 0
+  const liveStartedAt = typeof liveSession?.live.startedAt === 'number' && liveSession.live.startedAt > 0 ? liveSession.live.startedAt : 0
+  const activeRunStartedAt = lifecycleStartedAt || liveStartedAt
   const awaitingLifecycleStart = !lifecycleActive && (Boolean(liveSession?.live.awaitingAck) || liveSession?.live.status === 'starting')
   const resumableRunId = lifecycleRunId || liveRunId
   const submitting = awaitingLifecycleStart || reconnectingRun || (lifecycleActive && lifecyclePhase === 'starting')
   const canStop = (lifecycleActive && lifecycleRunId !== '') || reconnectingRun || (awaitingLifecycleStart && liveRunId !== '')
-  const showRunTimer = lifecycleActive && lifecycleStartedAt > 0
-  const runTimerLabel = showRunTimer ? formatDurationCompact(timerNow - lifecycleStartedAt) : reconnectingRun ? 'Reconnecting…' : ''
+  const showRunTimer = activeRunStartedAt > 0 && (lifecycleActive || awaitingLifecycleStart || liveSession?.live.status === 'running' || liveSession?.live.status === 'blocked')
+  const runTimerLabel = showRunTimer ? formatDurationCompact(timerNow - activeRunStartedAt) : reconnectingRun ? 'Reconnecting…' : ''
   const savedRuleCountdown = savedRuleCountdownSeconds(lastSavedRuleExpiresAt, savedRuleCountdownNow)
   const composerDisabled = awaitingLifecycleStart || reconnectingRun || (lifecycleActive && lifecyclePhase === 'starting')
   const runActive = canStop || submitting || lifecycleActive

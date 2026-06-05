@@ -1343,6 +1343,7 @@ function applyV3MessageCommitResult(state: DesktopStoreState, sessionId: string,
   }
   const runIntent = result.runIntent
   const runStatus = runIntent?.status.trim().toLowerCase() ?? ''
+  const runStartedAt = runIntent?.createdAt && runIntent.createdAt > 0 ? runIntent.createdAt : ts
   const sessions = { ...state.sessions }
   const baseSession = result.session
     ? mergeSessionRecords(existing, result.session)
@@ -1356,6 +1357,9 @@ function applyV3MessageCommitResult(state: DesktopStoreState, sessionId: string,
     : runStatus === 'pending_executor'
       ? 'starting'
       : session.live.status
+  if ((runStatus === 'pending_executor' || runStatus === 'dispatch_blocked') && session.live.startedAt === null) {
+    session.live.startedAt = runStartedAt
+  }
   session.live.summary = runStatus === 'dispatch_blocked'
     ? (runIntent?.blockedReason || 'Dispatch blocked')
     : runStatus === 'pending_executor'
@@ -2252,6 +2256,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
       }
       session.live.status = 'running'
       session.live.awaitingAck = false
+      session.live.startedAt = session.live.startedAt ?? ts
       session.live.summary = 'Streaming response…'
       session.live.error = null
       session.live.lastEventType = eventType
@@ -2272,6 +2277,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
       }
       session.live.status = 'running'
       session.live.awaitingAck = false
+      session.live.startedAt = session.live.startedAt ?? ts
       session.live.error = null
       session.live.lastEventType = eventType
       session.live.lastEventAt = ts
@@ -3337,6 +3343,7 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
     }
 
     const targetSessionId = sessionId?.trim() ?? ''
+    const submitStartedAt = Date.now()
     const sourceDraftKey = draftKeyForSession(targetSessionId || null, workspacePath)
 
     if (!targetSessionId) {
@@ -3350,7 +3357,7 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
       const sessions = { ...state.sessions }
       const session = { ...ensureSession(state, targetSessionId), live: { ...ensureSession(state, targetSessionId).live } }
       session.live.status = session.lifecycle?.active ? session.live.status : 'starting'
-      session.live.startedAt = session.lifecycle?.active ? session.live.startedAt : null
+      session.live.startedAt = session.lifecycle?.active ? session.live.startedAt : submitStartedAt
       session.live.agentName = targetName.trim() || agentName.trim() || session.live.agentName
       session.live.runId = null
       session.live.seq = 0
@@ -3377,15 +3384,18 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
     try {
       const effectiveSessionApi = sessionApi?.trim().toLowerCase() || get().sessions[targetSessionId]?.sessionApi?.trim().toLowerCase() || ''
       if (effectiveSessionApi === 'v3' && !compact) {
-        const clientRequestId = providedClientRequestId?.trim() || `desktop-v3-message:${targetSessionId}:${Date.now()}`
+        const clientRequestId = providedClientRequestId?.trim() || `desktop-v3-message:${targetSessionId}:${submitStartedAt}`
         const result = await sendSessionMessage(targetSessionId, 'user', trimmedPrompt, route, { sessionApi: 'v3', clientRequestId })
+        let committedRunId: string | null = null
         if (isSendSessionMessageResult(result)) {
+          committedRunId = result.runIntent?.runId?.trim() || null
           const committedMessages = result.message
             ? [result.message]
             : result.messages ?? []
           mergeMessagesCache(targetSessionId, committedMessages)
           set((state) => applyV3MessageCommitResult(state, targetSessionId, result, Date.now()))
         }
+        await requireRunStreamController().ensure(targetSessionId, committedRunId)
         return
       }
 
