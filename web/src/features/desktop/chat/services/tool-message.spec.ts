@@ -693,6 +693,28 @@ function testToolMessagePreservesToolInstanceID(): void {
   assert(parsed?.toolInstanceId === "step-2:call-reused", `unexpected parsed tool instance id: ${parsed?.toolInstanceId}`);
 }
 
+function testParsesV3ProviderToolResultEnvelope(): void {
+  const parsed = parseStructuredToolMessage(JSON.stringify({
+    path_id: "run.v3.provider-tool-result.v1",
+    type: "v3_provider_tool_result",
+    run_id: "v3run_123",
+    step: 3,
+    step_id: "step-3",
+    tool_name: "read",
+    call_id: "call-read-go-mod",
+    tool_instance_id: "step-3:call-read-go-mod",
+    arguments: JSON.stringify({ path: "go.mod", line_start: 1, max_lines: 20 }),
+    output: JSON.stringify({ path: "/workspace/go.mod", line_start: 1, count: 20, truncated: true }),
+    completed_output: "read /workspace/go.mod (lines 1-20, partial)",
+  }));
+  assert(Boolean(parsed), "expected parsed V3 provider tool result");
+  assert(parsed?.pathId === "run.v3.provider-tool-result.v1", `unexpected path id: ${parsed?.pathId}`);
+  assert(parsed?.tool === "read", `unexpected tool: ${parsed?.tool}`);
+  assert(parsed?.toolInstanceId === "step-3:call-read-go-mod", `unexpected tool instance id: ${parsed?.toolInstanceId}`);
+  assert(parsed?.summary.includes("go.mod"), `expected summarized read output, got: ${parsed?.summary}`);
+  assert(!parsed?.previewLines.some((line) => line.includes("run.v3.provider-tool-result.v1")), "should not leak raw V3 envelope path_id into preview");
+}
+
 function main(): void {
   testExitPlanApprovedShowsMetadata();
   testExitPlanDeniedPermissionShowsFeedbackAndPlan();
@@ -714,6 +736,7 @@ function main(): void {
   testTerminalTaskRowUsesFinalElapsedAsDisplayTime();
   testPlanManageShowsPlanLabelAndAction();
   testToolMessagePreservesToolInstanceID();
+  testParsesV3ProviderToolResultEnvelope();
   console.log("tool-message tests passed");
 }
 

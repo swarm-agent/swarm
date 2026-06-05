@@ -11,6 +11,7 @@ import type {
 interface ToolHistoryPayload {
   path_id?: string;
   tool?: string;
+  tool_name?: string;
   call_id?: string;
   tool_instance_id?: string;
   arguments?: string;
@@ -21,6 +22,7 @@ interface ToolHistoryPayload {
 }
 
 interface StructuredToolMessageInput {
+  pathId?: StructuredToolMessage["pathId"];
   tool: string;
   callId?: string;
   toolInstanceId?: string;
@@ -1666,7 +1668,7 @@ export function buildStructuredToolMessage(
   const error = String(input.error ?? "").trim();
 
   return {
-    pathId: "run.tool-history.v2",
+    pathId: input.pathId ?? "run.tool-history.v2",
     tool: toolName,
     callId: String(input.callId ?? "").trim(),
     toolInstanceId: String(input.toolInstanceId ?? "").trim(),
@@ -1695,15 +1697,20 @@ export function parseStructuredToolMessage(
   content: string,
 ): StructuredToolMessage | null {
   const payload = parseJsonRecord(content) as ToolHistoryPayload | null;
+  if (!payload) {
+    return null;
+  }
+  const pathId = String(payload.path_id ?? "").trim();
   if (
-    !payload ||
-    String(payload.path_id ?? "").trim() !== "run.tool-history.v2"
+    pathId !== "run.tool-history.v2" &&
+    pathId !== "run.v3.provider-tool-result.v1"
   ) {
     return null;
   }
 
   return buildStructuredToolMessage({
-    tool: String(payload.tool ?? "").trim(),
+    pathId,
+    tool: String(payload.tool ?? payload.tool_name ?? "").trim(),
     callId: String(payload.call_id ?? "").trim(),
     toolInstanceId: String(payload.tool_instance_id ?? "").trim(),
     argumentsText: String(payload.arguments ?? "").trim(),

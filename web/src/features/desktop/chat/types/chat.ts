@@ -89,7 +89,7 @@ export interface TodoToolData {
 }
 
 export interface StructuredToolMessage {
-  pathId: "run.tool-history.v2";
+  pathId: "run.tool-history.v2" | "run.v3.provider-tool-result.v1";
   tool: string;
   callId: string;
   toolInstanceId?: string;
