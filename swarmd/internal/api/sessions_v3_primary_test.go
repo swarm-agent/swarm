@@ -2317,10 +2317,12 @@ func TestSessionsV3ExecutorUsesAutoToolChoiceWhenToolsResolved(t *testing.T) {
 
 func TestSessionsV3ProviderInputRequiresStructuredToolTranscriptItems(t *testing.T) {
 	toolContent, err := json.Marshal(map[string]any{
-		"path_id":          "run.tool-history.v2",
-		"tool":             "read",
+		"path_id":          "run.v3.provider-tool-result.v1",
+		"type":             "v3_provider_tool_result",
+		"tool_name":        "read",
 		"call_id":          "call-read-facts",
 		"tool_instance_id": "step-1:call-read-facts",
+		"tool":             "read",
 		"arguments":        `{"path":"facts.txt"}`,
 		"output":           "tool-loop-file-content",
 		"completed_output": "tool-loop-file-content",
@@ -2393,6 +2395,10 @@ func TestSessionsV3ExecutorExecutesProviderToolCallsAndContinuesToFinalAnswer(t 
 	if !strings.Contains(messages[1].Content, "tool-loop-file-content") {
 		t.Fatalf("tool message content = %q, want durable tool output", messages[1].Content)
 	}
+	toolRecord, ok := sessionsV3DecodeProviderToolResultRecord(messages[1].Content)
+	if !ok || toolRecord.PathID != "run.v3.provider-tool-result.v1" || toolRecord.ToolName != "read" || toolRecord.CallID != "call-read-facts" || toolRecord.ToolInstanceID != "step-1:call-read-facts" {
+		t.Fatalf("tool message content did not persist V3-native provider tool result record: ok=%t record=%+v content=%q", ok, toolRecord, messages[1].Content)
+	}
 	if messages[2].Content != "final answer after durable tool result" {
 		t.Fatalf("assistant final content = %q", messages[2].Content)
 	}
@@ -2454,8 +2460,12 @@ func TestSessionsV3ExecutorCarriesFullContinuationHistoryAcrossMultipleToolSteps
 	if runner.callCount != 3 {
 		t.Fatalf("provider call count = %d, want two tool steps plus final", runner.callCount)
 	}
-	if len(runner.requests) != 3 || len(runner.requests[2].Input) != 3 {
-		t.Fatalf("final continuation input = %+v, want full user/tool/tool history", runner.requests)
+	if len(runner.requests) != 3 || len(runner.requests[2].Input) != 5 {
+		t.Fatalf("final continuation input = %+v, want full user plus two structured function_call/function_call_output pairs", runner.requests)
+	}
+	finalInput := runner.requests[2].Input
+	if !sessionsV3ProviderInputHasTopLevelType(finalInput, "function_call") || !sessionsV3ProviderInputHasTopLevelType(finalInput, "function_call_output") || sessionsV3ProviderInputContainsContentText(finalInput, "[tool result]") {
+		t.Fatalf("final continuation input = %+v, want structured tool reinjection without stringified tool result text", finalInput)
 	}
 }
 
@@ -2534,8 +2544,8 @@ func TestSessionsV3ExecutorContinuesAfterProviderManagedRestartTurn(t *testing.T
 			}
 			return provideriface.Response{RestartTurn: true}, nil
 		}
-		if len(req.Input) != 2 {
-			return provideriface.Response{}, fmt.Errorf("restart continuation input length = %d, want user plus tool", len(req.Input))
+		if len(req.Input) != 3 || !sessionsV3ProviderInputHasTopLevelType(req.Input, "function_call") || !sessionsV3ProviderInputHasTopLevelType(req.Input, "function_call_output") || sessionsV3ProviderInputContainsContentText(req.Input, "[tool result]") {
+			return provideriface.Response{}, fmt.Errorf("restart continuation input = %+v, want user plus structured tool call/output", req.Input)
 		}
 		return provideriface.Response{Text: "final answer after restart turn"}, nil
 	}

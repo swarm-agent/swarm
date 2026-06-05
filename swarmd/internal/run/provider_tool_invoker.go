@@ -346,9 +346,9 @@ func (s *Service) storeProviderManagedToolResultV3(config providerToolInvokerCon
 		principal = identity.Principal{Type: identity.PrincipalTypeUser, UserID: session.UserID, AccountScopeID: session.AccountScopeID}
 	}
 	messageMetadata := providerManagedV3ToolMessageMetadata(config, call, metadata, result)
-	content := formatToolHistoryWithMetadata(call, messageMetadata, result)
-	if strings.TrimSpace(content) == "" {
-		content = firstNonEmptyString(strings.TrimSpace(result.Output), strings.TrimSpace(result.Error), "tool completed")
+	content, err := formatV3ProviderManagedToolResultRecord(call, messageMetadata, result)
+	if err != nil {
+		return fmt.Errorf("marshal v3 provider tool result record: %w", err)
 	}
 	now := time.Now().UnixMilli()
 	message := pebblestore.MessageSnapshot{

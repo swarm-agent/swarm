@@ -962,11 +962,10 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			}
 			toolResults = append(toolResults, result)
 		}
-		input = e.sessionV3ProviderContinuationInput(job)
+		input = append(input, sessionsV3ProviderToolResultInputItems(response.FunctionCalls, toolResults)...)
 		if len(input) == 0 {
 			return provideriface.Response{}, "", totalFlushCount, errors.New("v3 provider continuation input is empty after tool execution")
 		}
-		_ = toolResults
 	}
 	if len(lastResponse.FunctionCalls) > 0 || lastResponse.RestartTurn {
 		return provideriface.Response{}, "", totalFlushCount, fmt.Errorf("v3 provider tool loop exceeded %d steps", sessionV3ProviderToolLoopMaxSteps)
@@ -1373,12 +1372,139 @@ func sessionsV3ProviderInput(messages []pebblestore.MessageSnapshot) []map[strin
 		case "reasoning":
 			continue
 		case "tool":
-			input = append(input, map[string]any{"role": "user", "content": []map[string]any{{"type": "input_text", "text": "[tool result] " + content}}})
+			if toolItems, ok := sessionsV3ProviderToolMessageInput(content, message.Metadata); ok {
+				input = append(input, toolItems...)
+			}
 		default:
 			input = append(input, map[string]any{"role": "user", "content": []map[string]any{{"type": "input_text", "text": content}}})
 		}
 	}
 	return input
+}
+
+func sessionsV3ProviderToolMessageInput(content string, metadata map[string]any) ([]map[string]any, bool) {
+	record, ok := sessionsV3DecodeProviderToolResultRecord(content)
+	if !ok {
+		return nil, false
+	}
+	if len(record.Metadata) == 0 {
+		record.Metadata = cloneSessionsV3Metadata(metadata)
+	}
+	return sessionsV3ProviderToolRecordInputItems(record), true
+}
+
+func sessionsV3ProviderToolRecordInputItems(record sessionV3ProviderToolResultRecord) []map[string]any {
+	callID := strings.TrimSpace(record.CallID)
+	if callID == "" {
+		return nil
+	}
+	name := strings.TrimSpace(record.ToolName)
+	if name == "" {
+		name = "tool"
+	}
+	arguments := strings.TrimSpace(record.Arguments)
+	if arguments == "" {
+		arguments = "{}"
+	}
+	callInput := map[string]any{
+		"type":      "function_call",
+		"call_id":   callID,
+		"name":      name,
+		"arguments": arguments,
+	}
+	if metadata := cloneSessionsV3Metadata(record.Metadata); len(metadata) > 0 {
+		callInput["metadata"] = metadata
+	}
+	output := strings.TrimSpace(firstNonEmpty(record.Output, record.CompletedOutput, record.Error))
+	return []map[string]any{
+		callInput,
+		{"type": "function_call_output", "call_id": callID, "output": output},
+	}
+}
+
+func sessionsV3ProviderToolResultInputItems(calls []provideriface.FunctionCall, results []provideriface.ToolExecutionResult) []map[string]any {
+	count := len(calls)
+	if len(results) < count {
+		count = len(results)
+	}
+	out := make([]map[string]any, 0, count*2)
+	for i := 0; i < count; i++ {
+		call := calls[i]
+		result := results[i]
+		callID := strings.TrimSpace(firstNonEmpty(result.CallID, call.CallID))
+		if callID == "" {
+			continue
+		}
+		name := strings.TrimSpace(firstNonEmpty(call.Name, result.Name))
+		if name == "" {
+			name = "tool"
+		}
+		arguments := strings.TrimSpace(call.Arguments)
+		if arguments == "" {
+			arguments = "{}"
+		}
+		metadata := cloneSessionsV3Metadata(call.Metadata)
+		callInput := map[string]any{"type": "function_call", "call_id": callID, "name": name, "arguments": arguments}
+		if len(metadata) > 0 {
+			callInput["metadata"] = metadata
+		}
+		output := strings.TrimSpace(result.TextForModel)
+		if output == "" {
+			output = strings.TrimSpace(firstNonEmpty(result.Output, result.Error))
+		}
+		out = append(out, callInput, map[string]any{"type": "function_call_output", "call_id": callID, "output": output})
+	}
+	return out
+}
+
+type sessionV3ProviderToolResultRecord struct {
+	PathID          string         `json:"path_id"`
+	Type            string         `json:"type"`
+	RunID           string         `json:"run_id,omitempty"`
+	Step            int            `json:"step,omitempty"`
+	StepID          string         `json:"step_id,omitempty"`
+	ToolName        string         `json:"tool_name"`
+	CallID          string         `json:"call_id"`
+	ToolInstanceID  string         `json:"tool_instance_id,omitempty"`
+	Arguments       string         `json:"arguments,omitempty"`
+	Metadata        map[string]any `json:"metadata,omitempty"`
+	Output          string         `json:"output,omitempty"`
+	CompletedOutput string         `json:"completed_output,omitempty"`
+	Error           string         `json:"error,omitempty"`
+	DurationMS      int64          `json:"duration_ms,omitempty"`
+}
+
+func sessionsV3DecodeProviderToolResultRecord(raw string) (sessionV3ProviderToolResultRecord, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return sessionV3ProviderToolResultRecord{}, false
+	}
+	var record sessionV3ProviderToolResultRecord
+	if err := json.Unmarshal([]byte(raw), &record); err != nil {
+		return sessionV3ProviderToolResultRecord{}, false
+	}
+	record.PathID = strings.TrimSpace(record.PathID)
+	record.Type = strings.TrimSpace(record.Type)
+	record.RunID = strings.TrimSpace(record.RunID)
+	record.StepID = strings.TrimSpace(record.StepID)
+	record.ToolName = strings.TrimSpace(record.ToolName)
+	record.CallID = strings.TrimSpace(record.CallID)
+	record.ToolInstanceID = strings.TrimSpace(record.ToolInstanceID)
+	record.Arguments = strings.TrimSpace(record.Arguments)
+	record.Output = strings.TrimSpace(record.Output)
+	record.CompletedOutput = strings.TrimSpace(record.CompletedOutput)
+	record.Error = strings.TrimSpace(record.Error)
+	record.Metadata = cloneSessionsV3Metadata(record.Metadata)
+	if !strings.EqualFold(record.PathID, "run.v3.provider-tool-result.v1") || record.ToolName == "" || record.CallID == "" {
+		return sessionV3ProviderToolResultRecord{}, false
+	}
+	if record.Arguments == "" {
+		record.Arguments = "{}"
+	}
+	if record.CompletedOutput == "" {
+		record.CompletedOutput = record.Output
+	}
+	return record, true
 }
 
 func shouldGenerateSessionV3Title(session pebblestore.SessionSnapshot) bool {

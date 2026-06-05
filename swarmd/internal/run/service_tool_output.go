@@ -10,7 +10,8 @@ import (
 )
 
 const (
-	toolHistoryPathID = "run.tool-history.v2"
+	toolHistoryPathID                 = "run.tool-history.v2"
+	v3ProviderManagedToolResultPathID = "run.v3.provider-tool-result.v1"
 )
 
 type gitStatusResponseFields = gitstatus.ResponseFields
@@ -18,6 +19,23 @@ type gitStatusResponseFields = gitstatus.ResponseFields
 type toolHistoryRecord struct {
 	PathID          string         `json:"path_id"`
 	Tool            string         `json:"tool"`
+	CallID          string         `json:"call_id"`
+	ToolInstanceID  string         `json:"tool_instance_id,omitempty"`
+	Arguments       string         `json:"arguments,omitempty"`
+	Metadata        map[string]any `json:"metadata,omitempty"`
+	Output          string         `json:"output,omitempty"`
+	CompletedOutput string         `json:"completed_output,omitempty"`
+	Error           string         `json:"error,omitempty"`
+	DurationMS      int64          `json:"duration_ms,omitempty"`
+}
+
+type v3ProviderManagedToolResultRecord struct {
+	PathID          string         `json:"path_id"`
+	Type            string         `json:"type"`
+	RunID           string         `json:"run_id,omitempty"`
+	Step            int            `json:"step,omitempty"`
+	StepID          string         `json:"step_id,omitempty"`
+	ToolName        string         `json:"tool_name"`
 	CallID          string         `json:"call_id"`
 	ToolInstanceID  string         `json:"tool_instance_id,omitempty"`
 	Arguments       string         `json:"arguments,omitempty"`
@@ -134,7 +152,124 @@ func decodeToolHistoryRecord(raw string) (toolHistoryRecord, bool) {
 			return record, true
 		}
 	}
+	if record, ok := decodeV3ProviderManagedToolResultRecord(raw); ok {
+		return toolHistoryRecord{
+			PathID:          toolHistoryPathID,
+			Tool:            record.ToolName,
+			CallID:          record.CallID,
+			ToolInstanceID:  record.ToolInstanceID,
+			Arguments:       record.Arguments,
+			Metadata:        record.Metadata,
+			Output:          record.Output,
+			CompletedOutput: record.CompletedOutput,
+			Error:           record.Error,
+			DurationMS:      record.DurationMS,
+		}, true
+	}
 	return toolHistoryRecord{}, false
+}
+
+func buildV3ProviderManagedToolResultRecord(call tool.Call, metadata map[string]any, result tool.Result) v3ProviderManagedToolResultRecord {
+	name := strings.TrimSpace(call.Name)
+	if name == "" {
+		name = strings.TrimSpace(result.Name)
+	}
+	if name == "" {
+		name = "tool"
+	}
+	callID := strings.TrimSpace(result.CallID)
+	if callID == "" {
+		callID = strings.TrimSpace(call.CallID)
+	}
+	arguments := strings.TrimSpace(call.Arguments)
+	if arguments == "" {
+		arguments = "{}"
+	}
+	record := v3ProviderManagedToolResultRecord{
+		PathID:          v3ProviderManagedToolResultPathID,
+		Type:            "v3_provider_tool_result",
+		RunID:           toolHistoryMetadataString(metadata, "run_id"),
+		Step:            toolHistoryMetadataInt(metadata, "step"),
+		StepID:          toolHistoryMetadataString(metadata, "step_id"),
+		ToolName:        name,
+		CallID:          callID,
+		ToolInstanceID:  toolHistoryMetadataString(metadata, "tool_instance_id"),
+		Arguments:       arguments,
+		Metadata:        cloneGenericMap(metadata),
+		Output:          strings.TrimSpace(result.Output),
+		CompletedOutput: formatToolCompletedOutput(call, result),
+		Error:           strings.TrimSpace(result.Error),
+		DurationMS:      result.DurationMS,
+	}
+	if record.CompletedOutput == "" {
+		record.CompletedOutput = record.Output
+	}
+	return record
+}
+
+func formatV3ProviderManagedToolResultRecord(call tool.Call, metadata map[string]any, result tool.Result) (string, error) {
+	record := buildV3ProviderManagedToolResultRecord(call, metadata, result)
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
+func decodeV3ProviderManagedToolResultRecord(raw string) (v3ProviderManagedToolResultRecord, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return v3ProviderManagedToolResultRecord{}, false
+	}
+	var record v3ProviderManagedToolResultRecord
+	if err := json.Unmarshal([]byte(raw), &record); err != nil {
+		return v3ProviderManagedToolResultRecord{}, false
+	}
+	record.PathID = strings.TrimSpace(record.PathID)
+	record.Type = strings.TrimSpace(record.Type)
+	record.RunID = strings.TrimSpace(record.RunID)
+	record.StepID = strings.TrimSpace(record.StepID)
+	record.ToolName = strings.TrimSpace(record.ToolName)
+	record.CallID = strings.TrimSpace(record.CallID)
+	record.ToolInstanceID = strings.TrimSpace(record.ToolInstanceID)
+	record.Arguments = strings.TrimSpace(record.Arguments)
+	record.Output = strings.TrimSpace(record.Output)
+	record.CompletedOutput = strings.TrimSpace(record.CompletedOutput)
+	record.Error = strings.TrimSpace(record.Error)
+	record.Metadata = cloneGenericMap(record.Metadata)
+	if !strings.EqualFold(record.PathID, v3ProviderManagedToolResultPathID) || record.ToolName == "" || record.CallID == "" {
+		return v3ProviderManagedToolResultRecord{}, false
+	}
+	if record.Arguments == "" {
+		record.Arguments = "{}"
+	}
+	if record.CompletedOutput == "" {
+		record.CompletedOutput = record.Output
+	}
+	return record, true
+}
+
+func toolHistoryMetadataInt(metadata map[string]any, key string) int {
+	if len(metadata) == 0 {
+		return 0
+	}
+	switch value := metadata[key].(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	case json.Number:
+		parsed, _ := value.Int64()
+		return int(parsed)
+	case string:
+		var parsed int
+		_, _ = fmt.Sscanf(strings.TrimSpace(value), "%d", &parsed)
+		return parsed
+	default:
+		return 0
+	}
 }
 
 func buildToolHistoryInput(content string) ([]map[string]any, bool) {
