@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"strconv"
 	"strings"
 
 	codexruntime "swarm/packages/swarmd/internal/provider/codex"
@@ -632,6 +633,50 @@ func (e *sessionV3Executor) completeRun(job sessionV3ExecutorJob, response sessi
 	})
 }
 
+func (e *sessionV3Executor) recordPreToolAssistantSegment(job sessionV3ExecutorJob, response sessionV3AssistantResponse, step int) (sessionruntime.SessionMutationResult, error) {
+	if e.isRunCanceled(job) {
+		return sessionruntime.SessionMutationResult{}, context.Canceled
+	}
+	content := strings.TrimSpace(response.Content)
+	if content == "" {
+		return sessionruntime.SessionMutationResult{}, nil
+	}
+	now := time.Now().UnixMilli()
+	metadata := response.metadata(job.RunID)
+	metadata["segment_kind"] = "pre_tool"
+	metadata["step"] = step
+	metadata["step_id"] = sessionV3ProviderToolStepID(step)
+	message := pebblestore.MessageSnapshot{
+		ID:        sessionV3AssistantSegmentMessageID(job.SessionID, job.RunID, step),
+		Role:      "assistant",
+		Content:   content,
+		CreatedAt: now,
+		Metadata:  metadata,
+	}
+	e.recordSessionV3Diagnostic(job, "session.diagnostic.backend.message", "backend.executor", fmt.Sprintf("assistant-pre-tool-message-step-%d-before-store", step), sessionV3MessageDiagnostic(message, response))
+	intent := pebblestore.V3SessionRunIntent{RunID: job.RunID, Status: sessionruntime.RunIntentRunning, UpdatedAt: now}
+	eventType := "session.message.appended"
+	payloadHash, err := sessionV3ExecutorPayloadHash(job.SessionID, job.RunID, sessionruntime.RunIntentRunning, "", eventType, fmt.Sprintf("%d:%s", step, content))
+	if err != nil {
+		return sessionruntime.SessionMutationResult{}, err
+	}
+	clientRequestID := sessionV3ExecutorStepClientRequestID("session.assistant.pre_tool", job.RunID, step)
+	return e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       job.SessionID,
+		UserID:          job.Principal.UserID,
+		AccountScopeID:  job.Principal.AccountScopeID,
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationAppendMessage,
+		EventType:       eventType,
+		Message:         &message,
+		RunIntent:       &intent,
+		NowUnixMs:       now,
+	})
+}
+
 func (e *sessionV3Executor) maybeStartSessionV3TitleFlow(job sessionV3ExecutorJob, result sessionruntime.SessionMutationResult) {
 	if e == nil || e.server == nil || e.server.sessions == nil || result.Replayed || result.Message == nil {
 		return
@@ -981,6 +1026,25 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		}
 		if toolInvoker == nil {
 			return provideriface.Response{}, "", totalFlushCount, errors.New("v3 provider tool invoker is not configured")
+		}
+		preToolContent := strings.TrimSpace(streamed.String())
+		if preToolContent != "" {
+			segment := sessionV3AssistantResponse{
+				Content:            preToolContent,
+				ExecutorKind:       "v3_provider",
+				ProviderID:         strings.TrimSpace(runner.ID()),
+				Model:              strings.TrimSpace(firstNonEmpty(response.Model, baseReq.Model)),
+				ProviderResponseID: strings.TrimSpace(response.ID),
+				StopReason:         strings.TrimSpace(response.StopReason),
+				Usage:              response.Usage,
+			}
+			if segment.ProviderID == "" {
+				segment.ProviderID = strings.TrimSpace(resolved.Preference.Provider)
+			}
+			if _, err := e.recordPreToolAssistantSegment(job, segment, step); err != nil {
+				return provideriface.Response{}, "", totalFlushCount, err
+			}
+			input = append(input, sessionsV3ProviderAssistantInputItem(preToolContent))
 		}
 		toolResults := make([]provideriface.ToolExecutionResult, 0, len(response.FunctionCalls))
 		for _, call := range response.FunctionCalls {
@@ -1399,7 +1463,7 @@ func sessionsV3ProviderInput(messages []pebblestore.MessageSnapshot) []map[strin
 		}
 		switch strings.ToLower(strings.TrimSpace(message.Role)) {
 		case "assistant":
-			input = append(input, map[string]any{"role": "assistant", "content": []map[string]any{{"type": "output_text", "text": content}}})
+			input = append(input, sessionsV3ProviderAssistantInputItem(content))
 		case "system":
 			input = append(input, map[string]any{"role": "user", "content": []map[string]any{{"type": "input_text", "text": "[system] " + content}}})
 		case "reasoning":
@@ -1413,6 +1477,10 @@ func sessionsV3ProviderInput(messages []pebblestore.MessageSnapshot) []map[strin
 		}
 	}
 	return input
+}
+
+func sessionsV3ProviderAssistantInputItem(content string) map[string]any {
+	return map[string]any{"role": "assistant", "content": []map[string]any{{"type": "output_text", "text": content}}}
 }
 
 func sessionsV3ProviderToolMessageInput(content string, metadata map[string]any) ([]map[string]any, bool) {
@@ -1737,6 +1805,14 @@ func sessionV3ProviderToolStepID(step int) string {
 	return fmt.Sprintf("step-%d", step)
 }
 
+func sessionV3ExecutorStepClientRequestID(eventType, runID string, step int) string {
+	label := strings.NewReplacer(".", "_", "/", "_", " ", "_").Replace(strings.TrimSpace(eventType))
+	if step <= 0 {
+		step = 1
+	}
+	return fmt.Sprintf("v3-executor-%s-%s-%04d", label, strings.TrimSpace(runID), step)
+}
+
 func sessionV3ProviderToolInstanceID(step int, callID string) string {
 	callID = strings.TrimSpace(callID)
 	if callID == "" {
@@ -1756,6 +1832,14 @@ func sessionV3ProviderToolEventClientRequestID(eventType, runID string, step int
 
 func sessionV3AssistantMessageID(sessionID, runID string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(runID) + "\x00assistant"))
+	return "v3msg_assistant_" + hex.EncodeToString(sum[:16])
+}
+
+func sessionV3AssistantSegmentMessageID(sessionID, runID string, step int) string {
+	if step <= 0 {
+		step = 1
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(runID) + "\x00assistant\x00pre_tool\x00" + strconv.Itoa(step)))
 	return "v3msg_assistant_" + hex.EncodeToString(sum[:16])
 }
 
