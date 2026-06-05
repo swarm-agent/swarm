@@ -32,12 +32,12 @@ func TestAPIChatBackendV3RunTurnConsumesCommittedAssistantStream(t *testing.T) {
 				"messages":   []any{},
 				"events":     []any{},
 			})
-		case r.Method == http.MethodGet && r.URL.Path == "/v3/sessions/session-v3/stream":
-			writeTestV3StreamFrames(t, w, r,
-				map[string]any{"type": "replay.started", "ok": true, "session_id": "session-v3", "after_seq": 2, "high_watermark_seq": 5},
-				map[string]any{"type": "event", "ok": true, "session_id": "session-v3", "last_seq": 3, "event": map[string]any{"id": "evt-3", "session_id": "session-v3", "seq": 3, "event_type": "session.assistant.started", "ts_unix_ms": 30, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "running"}}},
-				map[string]any{"type": "event", "ok": true, "session_id": "session-v3", "last_seq": 4, "event": map[string]any{"id": "evt-4", "session_id": "session-v3", "seq": 4, "event_type": "session.assistant.delta", "ts_unix_ms": 31, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "delta": "hel"}}},
-				map[string]any{"type": "event", "ok": true, "session_id": "session-v3", "last_seq": 5, "event": map[string]any{"id": "evt-5", "session_id": "session-v3", "seq": 5, "event_type": "session.assistant.completed", "ts_unix_ms": 32, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "completed", "message": map[string]any{"id": "msg-assistant", "session_id": "session-v3", "global_seq": 5, "role": "assistant", "content": "hello", "created_at": 32, "metadata": map[string]any{"run_id": "run-1"}}, "run_intent": map[string]any{"run_id": "run-1", "status": "completed"}}}},
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/realtime/stream":
+			writeTestV3RealtimeFrames(t, w, r,
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.started", "session_id": "session-v3", "subscription_id": "active-turn", "after_seq": 2, "high_watermark_seq": 5},
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "event_type": "session.assistant.started", "last_seq": 3, "event": map[string]any{"id": "evt-3", "session_id": "session-v3", "seq": 3, "event_type": "session.assistant.started", "ts_unix_ms": 30, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "running"}}},
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "event_type": "session.assistant.delta", "last_seq": 4, "event": map[string]any{"id": "evt-4", "session_id": "session-v3", "seq": 4, "event_type": "session.assistant.delta", "ts_unix_ms": 31, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "delta": "hel"}}},
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "event_type": "session.assistant.completed", "last_seq": 5, "event": map[string]any{"id": "evt-5", "session_id": "session-v3", "seq": 5, "event_type": "session.assistant.completed", "ts_unix_ms": 32, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "completed", "message": map[string]any{"id": "msg-assistant", "session_id": "session-v3", "global_seq": 5, "role": "assistant", "content": "hello", "created_at": 32, "metadata": map[string]any{"run_id": "run-1"}}, "run_intent": map[string]any{"run_id": "run-1", "status": "completed"}}}},
 			)
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
@@ -56,7 +56,7 @@ func TestAPIChatBackendV3RunTurnConsumesCommittedAssistantStream(t *testing.T) {
 	if resp.AssistantMessage.ID != "msg-assistant" || resp.AssistantMessage.Content != "hello" || resp.NoAssistant {
 		t.Fatalf("response = %#v", resp)
 	}
-	if len(gotPaths) != 2 || gotPaths[0] != "POST /v3/sessions/session-v3/messages" || gotPaths[1] != "GET /v3/sessions/session-v3/stream" {
+	if len(gotPaths) != 2 || gotPaths[0] != "POST /v3/sessions/session-v3/messages" || gotPaths[1] != "GET /v3/realtime/stream" {
 		t.Fatalf("paths = %#v", gotPaths)
 	}
 	if len(events) < 5 {
@@ -130,11 +130,13 @@ func TestAPIChatBackendV3ActiveTurnUsesLiveWebSocketStream(t *testing.T) {
 		t.Fatalf("read chat_backend_adapter.go: %v", err)
 	}
 	source := string(body)
-	if !strings.Contains(source, "StreamSessionV3(") {
-		t.Fatalf("V3 active turn consumption must use live StreamSessionV3 websocket")
+	if !strings.Contains(source, "StreamSessionsV3Realtime(") {
+		t.Fatalf("V3 active turn consumption must use the native multiplexed V3 realtime websocket")
 	}
-	if strings.Contains(source, "StreamSessionV3Replay(streamCtx") {
-		t.Fatalf("V3 active turn consumption must not use replay polling in place of the live websocket")
+	for _, forbidden := range []string{"StreamSessionV3(streamCtx", "StreamSessionV3Replay(streamCtx", "ReplaySessionV3Events(streamCtx"} {
+		if strings.Contains(source, forbidden) {
+			t.Fatalf("V3 active turn consumption must not use %s in place of the native realtime websocket", forbidden)
+		}
 	}
 }
 
@@ -167,7 +169,7 @@ func TestAPIChatBackendV3MapsSessionToolEventsToLiveToolStream(t *testing.T) {
 	}
 }
 
-func writeTestV3StreamFrames(t *testing.T, w http.ResponseWriter, r *http.Request, frames ...map[string]any) {
+func writeTestV3RealtimeFrames(t *testing.T, w http.ResponseWriter, r *http.Request, frames ...map[string]any) {
 	t.Helper()
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
@@ -190,6 +192,17 @@ func writeTestV3StreamFrames(t *testing.T, w http.ResponseWriter, r *http.Reques
 	if err := rw.Flush(); err != nil {
 		t.Fatalf("flush websocket handshake: %v", err)
 	}
+	_, subscribePayload, err := readTestWebSocketText(rw.Reader)
+	if err != nil {
+		t.Fatalf("read realtime subscribe: %v", err)
+	}
+	var subscribe map[string]any
+	if err := json.Unmarshal(subscribePayload, &subscribe); err != nil {
+		t.Fatalf("decode realtime subscribe: %v", err)
+	}
+	if subscribe["protocol"] != "v3.realtime" || subscribe["kind"] != "subscribe.session" || subscribe["session_id"] != "session-v3" {
+		t.Fatalf("subscribe frame = %#v", subscribe)
+	}
 	for _, frame := range frames {
 		raw, err := json.Marshal(frame)
 		if err != nil {
@@ -202,6 +215,45 @@ func writeTestV3StreamFrames(t *testing.T, w http.ResponseWriter, r *http.Reques
 			t.Fatalf("flush websocket frame: %v", err)
 		}
 	}
+}
+
+func readTestWebSocketText(r *bufio.Reader) (byte, []byte, error) {
+	head := make([]byte, 2)
+	if _, err := r.Read(head); err != nil {
+		return 0, nil, err
+	}
+	opcode := head[0] & 0x0F
+	masked := head[1]&0x80 != 0
+	payloadLength := int(head[1] & 0x7F)
+	if payloadLength == 126 {
+		ext := make([]byte, 2)
+		if _, err := r.Read(ext); err != nil {
+			return 0, nil, err
+		}
+		payloadLength = int(ext[0])<<8 | int(ext[1])
+	} else if payloadLength == 127 {
+		ext := make([]byte, 8)
+		if _, err := r.Read(ext); err != nil {
+			return 0, nil, err
+		}
+		payloadLength = int(binary.BigEndian.Uint64(ext))
+	}
+	var mask [4]byte
+	if masked {
+		if _, err := r.Read(mask[:]); err != nil {
+			return 0, nil, err
+		}
+	}
+	payload := make([]byte, payloadLength)
+	if _, err := r.Read(payload); err != nil {
+		return 0, nil, err
+	}
+	if masked {
+		for i := range payload {
+			payload[i] ^= mask[i%4]
+		}
+	}
+	return opcode, payload, nil
 }
 
 func writeTestWebSocketText(w *bufio.Writer, payload []byte) error {

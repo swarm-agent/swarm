@@ -103,3 +103,73 @@ func TestSessionV3ClientUsesPrimaryRoutes(t *testing.T) {
 		}
 	}
 }
+
+func TestStreamSessionsV3RealtimeMultiplexesSubscriptionsAndIsolatesGaps(t *testing.T) {
+	var gotPath string
+	var subscribes []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if r.Method != http.MethodGet || r.URL.Path != "/v3/realtime/stream" {
+			t.Fatalf("websocket path = %s %s, want GET /v3/realtime/stream", r.Method, r.URL.Path)
+		}
+		conn, rw, err := hijackLifecycleTestWebsocket(w, r)
+		if err != nil {
+			t.Fatalf("hijack websocket: %v", err)
+		}
+		defer conn.Close()
+		for i := 0; i < 2; i++ {
+			_, payload, err := readClientLifecycleTestFrame(rw)
+			if err != nil {
+				t.Fatalf("read subscribe %d: %v", i, err)
+			}
+			var msg map[string]any
+			if err := json.Unmarshal(payload, &msg); err != nil {
+				t.Fatalf("decode subscribe %d: %v", i, err)
+			}
+			subscribes = append(subscribes, msg)
+		}
+		writeServerLifecycleTestFrame(t, conn, map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.started", "session_id": "session-a", "after_seq": 1})
+		writeServerLifecycleTestFrame(t, conn, map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.complete", "session_id": "session-a", "last_seq": 1})
+		writeServerLifecycleTestFrame(t, conn, map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.started", "session_id": "session-b", "after_seq": 1})
+		writeServerLifecycleTestFrame(t, conn, map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.complete", "session_id": "session-b", "last_seq": 1})
+		writeServerLifecycleTestFrame(t, conn, map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-a", "event_type": "session.assistant.delta", "last_seq": 3, "high_watermark_seq": 3, "event": map[string]any{"id": "evt-a-3", "session_id": "session-a", "seq": 3, "event_type": "session.assistant.delta", "payload": map[string]any{"session_id": "session-a", "delta": "gap"}}})
+		writeServerLifecycleTestFrame(t, conn, map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-b", "event_type": "session.assistant.delta", "last_seq": 2, "event": map[string]any{"id": "evt-b-2", "session_id": "session-b", "seq": 2, "event_type": "session.assistant.delta", "payload": map[string]any{"session_id": "session-b", "delta": "ok"}}})
+	}))
+	defer server.Close()
+
+	api := New(server.URL)
+	api.SetToken("test-token")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var frames []V3RealtimeFrame
+	err := api.StreamSessionsV3Realtime(ctx, []V3RealtimeSubscription{{SessionID: "session-a", AfterSeq: 1, SubscriptionID: "sub-a"}, {SessionID: "session-b", AfterSeq: 1, SubscriptionID: "sub-b"}}, func(frame V3RealtimeFrame) {
+		frames = append(frames, frame)
+		if frame.Kind == "event" && frame.SessionID == "session-b" && frame.Event != nil && frame.Event.Seq == 2 {
+			cancel()
+		}
+	})
+	if err != nil {
+		t.Fatalf("StreamSessionsV3Realtime() error = %v", err)
+	}
+	if gotPath != "/v3/realtime/stream" {
+		t.Fatalf("got path = %q", gotPath)
+	}
+	if len(subscribes) != 2 || subscribes[0]["kind"] != "subscribe.session" || subscribes[0]["session_id"] != "session-a" || subscribes[0]["after_seq"] != float64(1) || subscribes[1]["session_id"] != "session-b" {
+		t.Fatalf("subscribes = %#v", subscribes)
+	}
+	var sawGap, sawB bool
+	for _, frame := range frames {
+		if frame.Kind == "cursor.error" && frame.SessionID == "session-a" && frame.ErrorCode == "session_cursor_gap" {
+			sawGap = true
+		}
+		if frame.Kind == "event" && frame.SessionID == "session-b" && frame.Event != nil && frame.Event.Seq == 2 {
+			sawB = true
+		}
+		if frame.Kind == "event" && frame.SessionID == "session-a" {
+			t.Fatalf("gap event for session-a was delivered: %#v", frame)
+		}
+	}
+	if !sawGap || !sawB {
+		t.Fatalf("frames did not prove gap isolation; sawGap=%v sawB=%v frames=%#v", sawGap, sawB, frames)
+	}
+}

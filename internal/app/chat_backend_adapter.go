@@ -359,13 +359,13 @@ func (b *apiChatBackend) consumeSessionV3Run(ctx context.Context, sessionID stri
 	afterSeq := intent.EventSeq
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	err := b.api.StreamSessionV3(streamCtx, sessionID, afterSeq, func(frame client.SessionV3StreamFrame) {
-		if frame.Event == nil || strings.ToLower(strings.TrimSpace(frame.Type)) != "event" {
+	err := b.api.StreamSessionsV3Realtime(streamCtx, []client.V3RealtimeSubscription{{SessionID: sessionID, AfterSeq: afterSeq, SubscriptionID: "active-turn"}}, func(frame client.V3RealtimeFrame) {
+		if frame.Event == nil || strings.ToLower(strings.TrimSpace(frame.Kind)) != "event" {
 			return
 		}
 		event := v3StreamEventToChatEvent(*frame.Event)
-		if strings.TrimSpace(event.SessionID) == "" {
-			event.SessionID = strings.TrimSpace(sessionID)
+		if strings.TrimSpace(event.SessionID) != strings.TrimSpace(sessionID) {
+			return
 		}
 		if strings.TrimSpace(event.RunID) == "" {
 			event.RunID = runID

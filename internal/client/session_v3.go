@@ -9,6 +9,233 @@ import (
 	"time"
 )
 
+const (
+	v3RealtimeStreamPath       = "/v3/realtime/stream"
+	v3RealtimeProtocol         = "v3.realtime"
+	v3RealtimeProtocolVersion  = 1
+	v3RealtimeKindEvent        = "event"
+	v3RealtimeKindReplayStart  = "replay.started"
+	v3RealtimeKindReplayDone   = "replay.complete"
+	v3RealtimeKindCursorError  = "cursor.error"
+	v3RealtimeKindKeepalive    = "keepalive"
+	v3RealtimeKindHighWater    = "projection.high_watermark"
+	v3RealtimeKindSubscribe    = "subscribe.session"
+	v3RealtimeKindUnsubscribe  = "unsubscribe.session"
+	v3RealtimeKindResume       = "resume"
+	v3RealtimeKindAuthDenied   = "auth.denied"
+	v3RealtimeKindSlowConsumer = "slow_consumer.reconnect_required"
+)
+
+type V3RealtimeSubscription struct {
+	SessionID      string
+	AfterSeq       uint64
+	SubscriptionID string
+}
+
+type V3RealtimeFrame struct {
+	Protocol         string               `json:"protocol"`
+	ProtocolVersion  int                  `json:"protocol_version"`
+	Kind             string               `json:"kind"`
+	SessionID        string               `json:"session_id,omitempty"`
+	SubscriptionID   string               `json:"subscription_id,omitempty"`
+	AfterSeq         uint64               `json:"after_seq,omitempty"`
+	LastSeq          uint64               `json:"last_seq,omitempty"`
+	NextSeq          uint64               `json:"next_seq,omitempty"`
+	HighWatermarkSeq uint64               `json:"high_watermark_seq,omitempty"`
+	EndpointCursor   string               `json:"endpoint_cursor,omitempty"`
+	EventType        string               `json:"event_type,omitempty"`
+	Event            *SessionV3Event      `json:"event,omitempty"`
+	Projection       *SessionV3Projection `json:"projection,omitempty"`
+	ErrorCode        string               `json:"error_code,omitempty"`
+	Error            string               `json:"error,omitempty"`
+	Reason           string               `json:"reason,omitempty"`
+}
+
+func (f V3RealtimeFrame) Err() error {
+	msg := strings.TrimSpace(f.Error)
+	if msg == "" {
+		msg = strings.TrimSpace(f.Reason)
+	}
+	if msg == "" {
+		msg = strings.TrimSpace(f.ErrorCode)
+	}
+	if msg == "" {
+		msg = strings.TrimSpace(f.Kind)
+	}
+	if msg == "" {
+		msg = "v3 realtime stream failed"
+	}
+	return errors.New(msg)
+}
+
+func (c *API) StreamSessionsV3Realtime(ctx context.Context, subscriptions []V3RealtimeSubscription, onFrame func(V3RealtimeFrame)) error {
+	if c == nil {
+		return errors.New("api client is not configured")
+	}
+	if ctx == nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(context.Background())
+		defer cancel()
+	}
+	normalized := make([]V3RealtimeSubscription, 0, len(subscriptions))
+	seen := make(map[string]struct{}, len(subscriptions))
+	for _, sub := range subscriptions {
+		sessionID := strings.TrimSpace(sub.SessionID)
+		if sessionID == "" {
+			return errors.New("session id is required")
+		}
+		if _, ok := seen[sessionID]; ok {
+			return fmt.Errorf("duplicate v3 realtime session subscription %q", sessionID)
+		}
+		seen[sessionID] = struct{}{}
+		sub.SessionID = sessionID
+		if strings.TrimSpace(sub.SubscriptionID) == "" {
+			sub.SubscriptionID = fmt.Sprintf("tui-%s-%d", sessionID, time.Now().UnixNano())
+		}
+		normalized = append(normalized, sub)
+	}
+	if len(normalized) == 0 {
+		return errors.New("at least one v3 realtime session subscription is required")
+	}
+
+	baseURL, _, socketPath := c.requestTarget()
+	conn, err := dialDaemonWS(ctx, baseURL, c.Token(), socketPath, v3RealtimeStreamPath, "")
+	if err != nil {
+		return fmt.Errorf("connect v3 realtime stream: %w", err)
+	}
+	defer conn.Close()
+
+	lastSeqBySession := make(map[string]uint64, len(normalized))
+	for _, sub := range normalized {
+		lastSeqBySession[sub.SessionID] = sub.AfterSeq
+		msg := V3RealtimeFrame{
+			Protocol:        v3RealtimeProtocol,
+			ProtocolVersion: v3RealtimeProtocolVersion,
+			Kind:            v3RealtimeKindSubscribe,
+			SessionID:       sub.SessionID,
+			SubscriptionID:  strings.TrimSpace(sub.SubscriptionID),
+			AfterSeq:        sub.AfterSeq,
+		}
+		raw, err := json.Marshal(msg)
+		if err != nil {
+			return err
+		}
+		if err := conn.WriteText(raw); err != nil {
+			return fmt.Errorf("send v3 realtime subscribe: %w", err)
+		}
+	}
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil
+		}
+		raw, readErr := conn.ReadText(ctx)
+		if readErr != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("read v3 realtime stream: %w", readErr)
+		}
+		var frame V3RealtimeFrame
+		if err := json.Unmarshal(raw, &frame); err != nil {
+			return fmt.Errorf("decode v3 realtime frame: %w", err)
+		}
+		if err := validateV3RealtimeFrameProtocol(frame); err != nil {
+			return err
+		}
+		kind := strings.ToLower(strings.TrimSpace(frame.Kind))
+		deliver := true
+		switch kind {
+		case v3RealtimeKindEvent:
+			if err := applyV3RealtimeSessionOrder(lastSeqBySession, &frame, onFrame); err != nil {
+				return err
+			}
+			if frame.Event == nil || frame.Event.Seq != frame.LastSeq {
+				deliver = false
+			}
+		case v3RealtimeKindCursorError, v3RealtimeKindAuthDenied:
+			// Per-session recovery state belongs to the named session; keep the shared
+			// connection alive so other sessions can continue to receive events.
+		case v3RealtimeKindSlowConsumer:
+			if onFrame != nil {
+				onFrame(frame)
+			}
+			return frame.Err()
+		case v3RealtimeKindReplayStart, v3RealtimeKindReplayDone, v3RealtimeKindKeepalive, v3RealtimeKindHighWater:
+			// Control frames are delivered to the caller, but they do not advance
+			// application order. Only event.seq advances session state.
+		default:
+			return fmt.Errorf("unsupported v3 realtime kind %q", frame.Kind)
+		}
+		if deliver && onFrame != nil {
+			onFrame(frame)
+		}
+	}
+}
+
+func validateV3RealtimeFrameProtocol(frame V3RealtimeFrame) error {
+	if frame.Protocol != v3RealtimeProtocol {
+		return fmt.Errorf("v3 realtime protocol must be %q", v3RealtimeProtocol)
+	}
+	if frame.ProtocolVersion != v3RealtimeProtocolVersion {
+		return fmt.Errorf("v3 realtime protocol_version must be %d", v3RealtimeProtocolVersion)
+	}
+	if strings.TrimSpace(frame.Kind) == "" {
+		return errors.New("v3 realtime kind is required")
+	}
+	return nil
+}
+
+func applyV3RealtimeSessionOrder(lastSeqBySession map[string]uint64, frame *V3RealtimeFrame, onFrame func(V3RealtimeFrame)) error {
+	if frame == nil || frame.Event == nil {
+		return errors.New("v3 realtime event frame missing event")
+	}
+	sessionID := strings.TrimSpace(frame.SessionID)
+	if sessionID == "" {
+		return errors.New("v3 realtime event missing session_id")
+	}
+	if strings.TrimSpace(frame.Event.SessionID) == "" {
+		return errors.New("v3 realtime event payload missing session_id")
+	}
+	if frame.Event.SessionID != sessionID {
+		return errors.New("v3 realtime event session_id conflicts with payload session_id")
+	}
+	if frame.Event.Seq == 0 {
+		return errors.New("v3 realtime event missing event.seq")
+	}
+	lastSeq, ok := lastSeqBySession[sessionID]
+	if !ok {
+		return fmt.Errorf("v3 realtime event for unsubscribed session %q", sessionID)
+	}
+	if frame.Event.Seq <= lastSeq {
+		frame.Event = nil
+		return nil
+	}
+	if frame.Event.Seq != lastSeq+1 {
+		if onFrame != nil {
+			onFrame(V3RealtimeFrame{
+				Protocol:         v3RealtimeProtocol,
+				ProtocolVersion:  v3RealtimeProtocolVersion,
+				Kind:             v3RealtimeKindCursorError,
+				SessionID:        sessionID,
+				LastSeq:          lastSeq,
+				NextSeq:          frame.Event.Seq,
+				HighWatermarkSeq: frame.HighWatermarkSeq,
+				ErrorCode:        "session_cursor_gap",
+				Error:            fmt.Sprintf("session event sequence gap at %d, want %d; refetch required", frame.Event.Seq, lastSeq+1),
+			})
+		}
+		frame.Event = nil
+		return nil
+	}
+	lastSeqBySession[sessionID] = frame.Event.Seq
+	frame.LastSeq = frame.Event.Seq
+	if strings.TrimSpace(frame.EventType) == "" {
+		frame.EventType = frame.Event.EventType
+	}
+	return nil
+}
+
 type SessionV3StreamFrame struct {
 	Type             string              `json:"type"`
 	OK               bool                `json:"ok,omitempty"`
