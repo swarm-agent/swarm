@@ -87,6 +87,7 @@ type Response struct {
 	FunctionCalls     []FunctionCall     `json:"function_calls,omitempty"`
 	Usage             TokenUsage         `json:"usage,omitempty"`
 	RestartTurn       bool               `json:"restart_turn,omitempty"`
+	Raw               map[string]any     `json:"raw,omitempty"`
 }
 
 type AssistantMessage struct {

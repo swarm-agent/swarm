@@ -437,6 +437,7 @@ func fromCodexResponse(resp Response) provideriface.Response {
 		StopReason:       resp.StopReason,
 		Text:             resp.Text,
 		ReasoningSummary: resp.ReasoningSummary,
+		Raw:              resp.Raw,
 		Usage: provideriface.TokenUsage{
 			InputTokens:      resp.Usage.InputTokens,
 			OutputTokens:     resp.Usage.OutputTokens,

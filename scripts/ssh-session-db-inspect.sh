@@ -352,12 +352,13 @@ type selectionReport struct {
 }
 
 type sessionDump struct {
-	Session       pebblestore.SessionSnapshot      `json:"session"`
-	LegacyMessages []pebblestore.MessageSnapshot   `json:"legacy_messages,omitempty"`
-	V3Messages     []pebblestore.MessageSnapshot   `json:"v3_messages,omitempty"`
+	Session       pebblestore.SessionSnapshot       `json:"session"`
+	LegacyMessages []pebblestore.MessageSnapshot    `json:"legacy_messages,omitempty"`
+	V3Messages     []pebblestore.MessageSnapshot    `json:"v3_messages,omitempty"`
 	V3Projection   *pebblestore.V3SessionProjection `json:"v3_projection,omitempty"`
 	V3RunIntents   []pebblestore.V3SessionRunIntent `json:"v3_run_intents,omitempty"`
 	V3Events       []pebblestore.V3SessionEvent     `json:"v3_events,omitempty"`
+	V3Outbox       []pebblestore.V3RealtimeOutboxRecord `json:"v3_outbox,omitempty"`
 	MatchedReason  string                           `json:"matched_reason,omitempty"`
 }
 
@@ -405,6 +406,7 @@ func main() {
 		v3Messages, _ := sessions.ListV3SessionMessages(session.ID, 0, 100000)
 		v3Events, _ := sessions.ListV3SessionEvents(session.ID, 0, 100000)
 		v3Intents, _ := sessions.ListV3SessionRunIntents(session.ID, 0, 1000)
+		v3Outbox, _ := sessions.ListV3RealtimeOutboxForSessionAfterSeq(session.ID, 0, 100000)
 		projection, hasProjection, _ := sessions.GetV3SessionProjection(session.ID)
 
 		candidate := sessionDump{
@@ -413,6 +415,7 @@ func main() {
 			V3Messages:     trimMessages(v3Messages, *messageLimit, *dump),
 			V3RunIntents:   v3Intents,
 			V3Events:       trimEvents(v3Events, *eventLimit, *dump),
+			V3Outbox:       trimOutbox(v3Outbox, *eventLimit, *dump),
 		}
 		if hasProjection {
 			p := projection
@@ -526,7 +529,19 @@ func printText(r report) {
 			for _, event := range item.V3Events {
 				payload := map[string]any{}
 				_ = json.Unmarshal(event.Payload, &payload)
-				fmt.Printf("- event seq=%d type=%s run_id=%s delta=%q message=%s\n", event.Seq, event.EventType, stringField(payload, "run_id"), oneLine(stringField(payload, "delta"), 100), messagePayloadSummary(payload))
+				if isDiagnosticPayload(payload) {
+					fmt.Printf("- DIAG seq=%d type=%s run_id=%s stage=%s source=%s sequence=%s payload=%s\n", event.Seq, event.EventType, stringField(payload, "run_id"), stringField(payload, "stage"), stringField(payload, "source"), stringField(payload, "sequence_label"), jsonOneLine(payload["payload"], 20000))
+					continue
+				}
+				fmt.Printf("- event seq=%d type=%s run_id=%s delta=%q message=%s payload=%s\n", event.Seq, event.EventType, stringField(payload, "run_id"), oneLine(stringField(payload, "delta"), 100), messagePayloadSummary(payload), jsonOneLine(payload, 3000))
+			}
+		}
+		if len(item.V3Outbox) > 0 {
+			fmt.Printf("v3_outbox=%d\n", len(item.V3Outbox))
+			for _, record := range item.V3Outbox {
+				payload := map[string]any{}
+				_ = json.Unmarshal(record.Event.Payload, &payload)
+				fmt.Printf("- outbox endpoint_seq=%d cursor=%s event_seq=%d type=%s diagnostic=%t payload=%s\n", record.EndpointSeq, record.EndpointCursor, record.Event.Seq, record.Event.EventType, isDiagnosticPayload(payload), jsonOneLine(payload, 3000))
 			}
 		}
 	}
@@ -564,6 +579,17 @@ func trimEvents(events []pebblestore.V3SessionEvent, limit int, dump bool) []peb
 	return events[len(events)-limit:]
 }
 
+func trimOutbox(records []pebblestore.V3RealtimeOutboxRecord, limit int, dump bool) []pebblestore.V3RealtimeOutboxRecord {
+	if dump {
+		return records
+	}
+	limit = positive(limit, 24)
+	if len(records) <= limit {
+		return records
+	}
+	return records[len(records)-limit:]
+}
+
 func bounded[T any](items []T, limit int) []T {
 	limit = positive(limit, 1000)
 	if len(items) <= limit {
@@ -596,6 +622,19 @@ func messagePayloadSummary(payload map[string]any) string {
 		return ""
 	}
 	return oneLine(string(encoded), 220)
+}
+
+func isDiagnosticPayload(payload map[string]any) bool {
+	value, ok := payload["diagnostic"].(bool)
+	return ok && value
+}
+
+func jsonOneLine(value any, limit int) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	return oneLine(string(encoded), limit)
 }
 
 func unixMilli(ms int64) string {

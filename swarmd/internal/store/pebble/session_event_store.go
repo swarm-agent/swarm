@@ -13,11 +13,12 @@ import (
 )
 
 const (
-	V3SessionMutationCreateSession   = "session.create"
-	V3SessionMutationAppendMessage   = "message.append"
-	V3SessionMutationUpsertLifecycle = "lifecycle.upsert"
-	V3SessionMutationRecordRunIntent = "run_intent.record"
-	V3SessionMutationUpdateTitle     = "session.title.update"
+	V3SessionMutationCreateSession    = "session.create"
+	V3SessionMutationAppendMessage    = "message.append"
+	V3SessionMutationUpsertLifecycle  = "lifecycle.upsert"
+	V3SessionMutationRecordRunIntent  = "run_intent.record"
+	V3SessionMutationRecordDiagnostic = "diagnostic.record"
+	V3SessionMutationUpdateTitle      = "session.title.update"
 
 	V3SessionMutationResponseVersion = "v3.session_mutation.result.v1"
 	V3SessionMutationStatusCompleted = "completed"
@@ -1328,6 +1329,8 @@ func normalizeV3SessionEventType(input V3SessionMutationInput) string {
 		return "session.lifecycle.updated"
 	case V3SessionMutationRecordRunIntent:
 		return "session.run_intent.recorded"
+	case V3SessionMutationRecordDiagnostic:
+		return "session.diagnostic"
 	case V3SessionMutationUpdateTitle:
 		return "session.title.updated"
 	default:

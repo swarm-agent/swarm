@@ -605,6 +605,7 @@ func (e *sessionV3Executor) completeRun(job sessionV3ExecutorJob, response sessi
 		CreatedAt: now,
 		Metadata:  response.metadata(job.RunID),
 	}
+	e.recordSessionV3Diagnostic(job, "session.diagnostic.backend.message", "backend.executor", "assistant-message-before-store", sessionV3MessageDiagnostic(message, response))
 	intent := pebblestore.V3SessionRunIntent{
 		RunID:     job.RunID,
 		Status:    sessionruntime.RunIntentCompleted,
@@ -836,11 +837,26 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	if baseReq.ToolChoice == "" {
 		baseReq.ToolChoice = "none"
 	}
+	e.recordSessionV3Diagnostic(job, "session.diagnostic.provider.request", "backend.provider", "request", map[string]any{
+		"provider": providerID,
+		"model":    modelName,
+		"request":  sessionV3ProviderRequestDiagnostic(baseReq),
+	})
 	ctx = identity.ContextWithPrincipal(ctx, job.Principal)
 	response, streamed, flushCount, err := e.runProviderToolLoop(ctx, job, resolved, runner, baseReq)
 	if err != nil {
+		e.recordSessionV3Diagnostic(job, "session.diagnostic.provider.error", "backend.provider", "provider-error", map[string]any{
+			"provider": providerID,
+			"model":    modelName,
+			"error":    err.Error(),
+		})
 		return sessionV3AssistantResponse{}, err
 	}
+	e.recordSessionV3Diagnostic(job, "session.diagnostic.provider.response", "backend.provider", "provider-response", map[string]any{
+		"provider": providerID,
+		"model":    modelName,
+		"result":   sessionV3ProviderResponseDiagnostic(response, streamed, flushCount),
+	})
 	content := strings.TrimSpace(response.Text)
 	if content == "" {
 		content = strings.TrimSpace(streamed)
@@ -874,7 +890,7 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	if providerRunnerID == "" {
 		providerRunnerID = providerID
 	}
-	return sessionV3AssistantResponse{
+	assistant := sessionV3AssistantResponse{
 		Content:            content,
 		ExecutorKind:       "v3_provider",
 		ProviderID:         providerRunnerID,
@@ -882,7 +898,13 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		ProviderResponseID: strings.TrimSpace(response.ID),
 		StopReason:         strings.TrimSpace(response.StopReason),
 		Usage:              response.Usage,
-	}, nil
+	}
+	e.recordSessionV3Diagnostic(job, "session.diagnostic.backend.final", "backend.executor", "assistant-final", map[string]any{
+		"content":            content,
+		"provider_response":  response,
+		"assistant_response": assistant,
+	})
+	return assistant, nil
 }
 
 func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, runner provideriface.Runner, baseReq provideriface.Request) (provideriface.Response, string, int, error) {
@@ -910,7 +932,10 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		coalescer := newSessionV3AssistantDeltaCoalescer(e, job)
 		coalescer.nextDeltaIndex = totalFlushCount
 		var progressErr error
+		streamIndex := 0
 		response, err := runner.CreateResponseStreaming(ctx, req, func(event provideriface.StreamEvent) {
+			streamIndex++
+			e.recordSessionV3Diagnostic(job, "session.diagnostic.provider.stream", "backend.provider", fmt.Sprintf("step-%d-stream-%06d", step, streamIndex), sessionV3ProviderStreamEventDiagnostic(event, step, streamIndex))
 			if event.Type != provideriface.StreamEventOutputTextDelta {
 				return
 			}
@@ -922,6 +947,13 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		if flushErr := coalescer.Flush(); flushErr != nil && progressErr == nil {
 			progressErr = flushErr
 		}
+		e.recordSessionV3Diagnostic(job, "session.diagnostic.backend.flush", "backend.coalescer", fmt.Sprintf("step-%d-flush-summary", step), map[string]any{
+			"step":               step,
+			"streamed":           streamed.String(),
+			"step_flush_count":   coalescer.FlushCount(),
+			"total_flush_before": totalFlushCount,
+			"progress_error":     sessionV3DiagnosticErrorString(progressErr),
+		})
 		if err != nil {
 			return provideriface.Response{}, "", totalFlushCount, err
 		}

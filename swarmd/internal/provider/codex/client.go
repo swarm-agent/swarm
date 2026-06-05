@@ -205,6 +205,7 @@ type Response struct {
 	Messages         []AssistantMessage `json:"messages,omitempty"`
 	FunctionCalls    []FunctionCall     `json:"function_calls,omitempty"`
 	Usage            TokenUsage         `json:"usage,omitempty"`
+	Raw              map[string]any     `json:"raw,omitempty"`
 }
 
 type AssistantMessage struct {
@@ -2526,6 +2527,7 @@ func parseResponse(decoded map[string]any) Response {
 		ID:         asString(responseObj["id"]),
 		Model:      asString(responseObj["model"]),
 		StopReason: extractStopReason(responseObj, decoded),
+		Raw:        cloneMapAny(decoded),
 	}
 	if out.ID == "" {
 		out.ID = asString(decoded["id"])
