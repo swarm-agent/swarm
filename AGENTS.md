@@ -217,13 +217,24 @@ Flow target/path rules:
 
 ## SSH Alias Fast Testing
 
-When a user asks to test through an SSH alias, use the reusable fast-test script instead of hand-writing one-off copy/rebuild commands:
+When a user asks to test through an SSH alias, use the reusable fast-test script instead of hand-writing one-off copy/rebuild commands. The exact script is `scripts/ssh-fast-test.sh`:
 
 ```bash
 ./scripts/ssh-fast-test.sh <ssh-alias>
 ```
 
-The script must remain generic and host-agnostic. It discovers the remote `swarm-go` checkout, rsyncs the current working tree there while excluding local artifacts, runs the checked-in remote rebuild path (`./rebuild s`), then restarts the user systemd service with `systemctl --user restart`. If discovery cannot find the checkout, pass `--remote-dir <path>` rather than hardcoding a host path in docs or code. If a host uses a non-default unit, pass `--service <unit>`.
+What `scripts/ssh-fast-test.sh` does:
+- Auto-discovers the remote `swarm-go` checkout unless `--remote-dir <path>` is provided.
+- Rsyncs the current working tree to that checkout while excluding local artifacts, build outputs, `.git`, caches, and node/tool directories.
+- Runs the checked-in remote rebuild path: `./rebuild s`.
+- Restarts the configured Swarm service unless `--no-restart` is used. It prefers a user systemd unit when present (`systemctl --user restart <unit>`), otherwise it uses the system unit via `sudo -n systemctl restart <unit>`.
+- Defaults to service unit `swarm.service`; pass `--service <unit>` only when the target uses a different unit.
+
+If discovery cannot find the checkout, pass `--remote-dir <path>` rather than hardcoding a host path in docs or code. Use the script's built-in help for current flags:
+
+```bash
+./scripts/ssh-fast-test.sh <ssh-alias> --help
+```
 
 For a clean database validation when the user says "Rebuild from 0", first commit intended source changes, then use:
 
@@ -231,9 +242,42 @@ For a clean database validation when the user says "Rebuild from 0", first commi
 ./scripts/ssh-fast-test.sh <ssh-alias> --from-zero
 ```
 
-`--from-zero` refuses a dirty or untracked local worktree, stops the remote Swarm service before rsync, deletes the remote Pebble DB path, runs `./rebuild s`, and restarts the user systemd service. Use `--db-path <path>` only when the target explicitly uses a different canonical DB path.
+`--from-zero` refuses a dirty or untracked local worktree, stops the remote Swarm service before rsync, deletes the remote Pebble DB path, runs `./rebuild s`, and restarts the service. Use `--db-path <path>` only when the target explicitly uses a different canonical DB path.
 
 Do not replace this flow with ad-hoc `scp`/`rsync` plus manual rebuild steps unless the script itself is broken and you are fixing it. This is the canonical fast manual testing path for "ssh alias" requests.
+
+## SSH Alias Session DB Inspection
+
+When a user asks to inspect, search, or dump remote Swarm sessions from an SSH alias, use `scripts/ssh-session-db-inspect.sh` instead of writing throwaway Pebble inspection snippets. It is intentionally general, not V3-only:
+
+```bash
+./scripts/ssh-session-db-inspect.sh <ssh-alias> --latest 5
+```
+
+What `scripts/ssh-session-db-inspect.sh` does:
+- Auto-discovers the remote `swarm-go` checkout unless `--remote-dir <path>` is provided.
+- Opens the configured Pebble database, defaulting to `/var/lib/swarmd/swarmd.pebble`.
+- Stops an active Swarm service before DB inspection and restores it afterward. It handles user or system `swarm.service`; use `--no-stop` only when read-only live inspection is explicitly acceptable.
+- Searches by latest sessions, exact `--session <id>`, or `--query <text>` across session fields, legacy messages, V3 messages, and V3 events.
+- Dumps both legacy session messages and V3-native projection/messages/run intents/events when present.
+- Supports human-readable output, `--json`, and `--out <remote-path>` for large dumps that should be written to a remote file instead of flooding chat.
+
+Common commands:
+
+```bash
+./scripts/ssh-session-db-inspect.sh <ssh-alias> --latest 5
+./scripts/ssh-session-db-inspect.sh <ssh-alias> --session <session-id> --dump
+./scripts/ssh-session-db-inspect.sh <ssh-alias> --query "assistant.completed" --events 40
+./scripts/ssh-session-db-inspect.sh <ssh-alias> --query "search text" --json --out /tmp/session-dump.json
+```
+
+Use the script's built-in help for current flags:
+
+```bash
+./scripts/ssh-session-db-inspect.sh <ssh-alias> --help
+```
+
+Do not hardcode host-specific DB paths or checkout locations in this file or in scripts. Prefer `--db-path <path>`, `--remote-dir <path>`, and `--service <unit>` when the target host differs from defaults.
 
 ## Current Active Testing Focus
 
