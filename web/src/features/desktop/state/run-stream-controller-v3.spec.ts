@@ -6,7 +6,6 @@ import { sessionMessagesQueryKey } from '../../queries/query-options'
 import type { DesktopSessionRecord, DesktopStoreState } from '../types/realtime'
 import { applyEnvelope, useDesktopStore } from './use-desktop-store'
 import type { RunStreamEventMessage } from './run-stream-controller'
-import { DesktopV3RealtimeController } from './v3-realtime-controller'
 
 function emptyLiveState(): DesktopSessionRecord['live'] {
   return {
@@ -504,30 +503,30 @@ test('V3 replay control frames update cursor state without V2 resume semantics',
   assert.equal(updated.live.awaitingAck, false)
 })
 
-test('desktop panel and controller route V3 streams to native realtime only', async () => {
+test('desktop V3 canonical session updates do not depend on V3-only realtime sockets', async () => {
   const { readFile } = await import('node:fs/promises')
   const controllerSource = await readFile(new URL('./run-stream-controller.ts', import.meta.url), 'utf8')
-  const v3RealtimeControllerSource = await readFile(new URL('./v3-realtime-controller.ts', import.meta.url), 'utf8')
   const querySource = await readFile(new URL('../chat/queries/chat-queries.ts', import.meta.url), 'utf8')
   const panelSource = await readFile(new URL('../chat/components/desktop-chat-panel.tsx', import.meta.url), 'utf8')
-
-  assert.match(querySource, /V3_REALTIME_STREAM_PATH/)
-  assert.match(querySource, /V3 sessions use the shared \/v3\/realtime\/stream connection/)
-  assert.match(v3RealtimeControllerSource, /kind: 'subscribe\.session'/)
-  assert.match(v3RealtimeControllerSource, /kind: 'unsubscribe\.session'/)
-  assert.match(v3RealtimeControllerSource, /validateV3RealtimeMessage/)
   const storeSource = await readFile(new URL('./use-desktop-store.ts', import.meta.url), 'utf8')
-  assert.match(storeSource, /if \(sessionApi === 'v3'\) \{\n\s+await requireV3RealtimeController\(\)\.ensure\(\)\n\s+return\n\s+\}/)
-  assert.match(storeSource, /resolveV3RealtimeSubscriptions/)
+
+  assert.match(querySource, /V3 sessions use the global \/ws session:\* connection/)
+  assert.doesNotMatch(storeSource, /DesktopV3RealtimeController/)
+  assert.doesNotMatch(storeSource, /requireV3RealtimeController/)
+  assert.doesNotMatch(storeSource, /resolveV3RealtimeSubscriptions/)
+  assert.doesNotMatch(storeSource, /applyV3RealtimeFrame/)
+  assert.doesNotMatch(storeSource, /subscribe\.session/)
+  assert.match(storeSource, /if \(sessionApi === 'v3'\) \{\n\s+set\(\{ realtimeDesired: true \}\)\n\s+await get\(\)\.connect\(\)\n\s+return\n\s+\}/)
   assert.match(panelSource, /liveSession\?\.sessionApi\?\.trim\(\)\.toLowerCase\(\) === 'v3'/)
   assert.match(panelSource, /session\.tool\.started/)
   assert.match(panelSource, /session\.tool\.delta/)
   assert.match(panelSource, /session\.tool\.completed/)
+  assert.doesNotMatch(controllerSource, /\/v3\/sessions\/[^`]+\/stream/)
   assert.doesNotMatch(querySource, /\/v3\/sessions\/[^`]+\/stream/)
   assert.doesNotMatch(querySource, /\/v3\/sessions\/[^`]+\/run\/stream/)
 })
 
-test('desktop store submitPrompt for V3 primary sessions commits through Sessions API v3 and starts the V3 stream', async () => {
+test('desktop store submitPrompt for V3 primary sessions commits through Sessions API v3 and uses global websocket only', async () => {
   const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = []
   const websocketURLs: string[] = []
   let websocketCloseCount = 0
@@ -570,6 +569,8 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
     location: { protocol: 'http:', host: '127.0.0.1:7777' },
     setTimeout: ((callback: TimerHandler, timeout?: number) => setTimeout(callback, timeout)) as typeof window.setTimeout,
     clearTimeout: ((timer?: number) => clearTimeout(timer)) as typeof window.clearTimeout,
+    setInterval: ((callback: TimerHandler, timeout?: number) => setInterval(callback, timeout)) as typeof window.setInterval,
+    clearInterval: ((timer?: number) => clearInterval(timer)) as typeof window.clearInterval,
   } as unknown as Window & typeof globalThis
   globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -651,7 +652,7 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
     assert.deepEqual(urls, ['/v3/sessions/session-v3/messages', '/v1/auth/desktop/session'].sort())
     assert.equal(urls.some((url) => url.startsWith('/v1/swarm/managed-hosts/sessions')), false)
     assert.equal(urls.some((url) => url.startsWith('/v2/sessions')), false)
-    assert.deepEqual(websocketURLs, ['ws://127.0.0.1:7777/v3/realtime/stream'])
+    assert.deepEqual(websocketURLs, ['ws://127.0.0.1:7777/ws'])
     const body = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>
     assert.deepEqual(body, {
       client_request_id: 'desktop-v3-message:test-submit',
@@ -849,14 +850,12 @@ test('V3 session.created payload nesting maps through applyEnvelope', () => {
   assert.equal(patch.sessions?.['session-created']?.workspacePath, '/repo')
 })
 
-test('V3 realtime controller multiplexes multiple sessions over one native socket and isolates cursor errors', async () => {
+test('V3 ensureRunStream uses only the global /ws socket and subscribes session wildcard', async () => {
   const websocketURLs: string[] = []
   const sent: Array<Record<string, unknown>> = []
-  const fetchCalls: string[] = []
   const originalFetch = globalThis.fetch
   const originalWindow = globalThis.window
   const originalWebSocket = globalThis.WebSocket
-  const listeners = new Map<string, Array<(event: Event | MessageEvent) => void>>()
 
   class FakeWebSocket {
     static CONNECTING = 0
@@ -872,16 +871,14 @@ test('V3 realtime controller multiplexes multiple sessions over one native socke
     }
 
     addEventListener(type: string, callback: EventListenerOrEventListenerObject) {
-      const wrapped = (event: Event | MessageEvent) => {
-        if (typeof callback === 'function') {
-          callback(event)
-        } else {
-          callback.handleEvent(event)
-        }
-      }
-      listeners.set(type, [...(listeners.get(type) ?? []), wrapped])
       if (type === 'open') {
-        queueMicrotask(() => wrapped(new Event('open')))
+        queueMicrotask(() => {
+          if (typeof callback === 'function') {
+            callback(new Event('open'))
+          } else {
+            callback.handleEvent(new Event('open'))
+          }
+        })
       }
     }
 
@@ -899,38 +896,14 @@ test('V3 realtime controller multiplexes multiple sessions over one native socke
     addEventListener() {},
     setTimeout: ((callback: TimerHandler, timeout?: number) => setTimeout(callback, timeout)) as typeof window.setTimeout,
     clearTimeout: ((timer?: number) => clearTimeout(timer)) as typeof window.clearTimeout,
+    setInterval: ((callback: TimerHandler, timeout?: number) => setInterval(callback, timeout)) as typeof window.setInterval,
+    clearInterval: ((timer?: number) => clearInterval(timer)) as typeof window.clearInterval,
   } as unknown as Window & typeof globalThis
   globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input)
-    fetchCalls.push(url)
     if (url === '/v1/auth/desktop/session') {
       return new Response(JSON.stringify({ ok: true }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    }
-    if (url === '/v3/sessions/session-v3-b') {
-      return new Response(JSON.stringify({
-        ok: true,
-        session: {
-          id: 'session-v3-b',
-          title: 'B',
-          workspace_path: '/repo',
-          workspace_name: 'repo',
-          mode: 'auto',
-          session_api: 'v3',
-          message_count: 0,
-          updated_at: 5,
-          created_at: 1,
-        },
-        projection: {
-          session_id: 'session-v3-b',
-          last_event_seq: 5,
-          projection_high_watermark_seq: 5,
-          updated_at: 5,
-        },
-      }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })
@@ -938,106 +911,19 @@ test('V3 realtime controller multiplexes multiple sessions over one native socke
     throw new Error(`unexpected fetch: ${url}`)
   }) as typeof fetch
 
-  const originalSetTimeout = globalThis.window.setTimeout
-  globalThis.window.setTimeout = ((callback: TimerHandler, timeout?: number) => {
-    if (timeout === 0 && typeof callback === 'function') {
-      queueMicrotask(() => callback())
-    }
-    return 0
-  }) as typeof window.setTimeout
-
-  useDesktopStore.setState({
-    ...makeState(makeSession({ id: 'session-v3-a', sessionApi: 'v3', lastEventSeq: 2, projectionHighWatermarkSeq: 2 })),
-    sessions: {
-      'session-v3-a': makeSession({ id: 'session-v3-a', sessionApi: 'v3', lastEventSeq: 2, projectionHighWatermarkSeq: 2 }),
-      'session-v3-b': makeSession({ id: 'session-v3-b', sessionApi: 'v3', lastEventSeq: 4, projectionHighWatermarkSeq: 4 }),
-    },
-  }, true)
-
-  const reconnects: Array<{ sessionId: string; reason: string }> = []
-  const frames: Array<{ sessionId: string; seq: number }> = []
-  const controller = new DesktopV3RealtimeController({
-    getSubscriptions: () => [
-      { sessionId: 'session-v3-a', afterSeq: 2 },
-      { sessionId: 'session-v3-b', afterSeq: 4 },
-    ],
-    onFrame: (payload) => {
-      if (payload.session_id) {
-        useDesktopStore.getState().__testApplyRunStreamFrame?.(payload.session_id, {
-          type: payload.kind,
-          ok: true,
-          session_id: payload.session_id,
-          last_seq: payload.last_seq,
-          high_watermark_seq: payload.high_watermark_seq,
-          next_seq: payload.next_seq,
-          error: payload.error,
-          event: payload.event as RunStreamEventMessage['event'],
-        }, Date.now())
-      }
-      if (payload.kind === 'event' && payload.session_id && payload.event?.seq) {
-        frames.push({ sessionId: payload.session_id, seq: payload.event.seq })
-      }
-    },
-    onReconnectPending: (sessionId, reason) => {
-      reconnects.push({ sessionId, reason })
-    },
-    onResumeFailure: () => undefined,
-  })
-
   try {
-    await controller.ensure()
+    useDesktopStore.setState(makeState(makeSession({ id: 'session-v3-a', sessionApi: 'v3' })), true)
+
+    await useDesktopStore.getState().ensureRunStream('session-v3-a')
     await new Promise((resolve) => setImmediate(resolve))
 
-    assert.deepEqual(websocketURLs, ['ws://127.0.0.1:7777/v3/realtime/stream'])
-    assert.deepEqual(sent.map((message) => ({ kind: message.kind, session_id: message.session_id, after_seq: message.after_seq })), [
-      { kind: 'subscribe.session', session_id: 'session-v3-a', after_seq: 2 },
-      { kind: 'subscribe.session', session_id: 'session-v3-b', after_seq: 4 },
-    ])
-
-    for (const callback of listeners.get('message') ?? []) {
-      callback(new MessageEvent('message', {
-        data: JSON.stringify({
-          protocol: 'v3.realtime',
-          protocol_version: 1,
-          kind: 'event',
-          session_id: 'session-v3-b',
-          last_seq: 5,
-          high_watermark_seq: 5,
-          endpoint_cursor: 'cursor-9',
-          event_type: 'session.assistant.delta',
-          event: {
-            session_id: 'session-v3-b',
-            seq: 5,
-            event_type: 'session.assistant.delta',
-            payload: { session_id: 'session-v3-b', delta: 'b' },
-          },
-        }),
-      }))
-      callback(new MessageEvent('message', {
-        data: JSON.stringify({
-          protocol: 'v3.realtime',
-          protocol_version: 1,
-          kind: 'cursor.error',
-          session_id: 'session-v3-b',
-          error_code: 'session_cursor_gap',
-          error: 'refetch only b',
-          last_seq: 4,
-          next_seq: 6,
-        }),
-      }))
-    }
-
-    await new Promise((resolve) => setImmediate(resolve))
-    await new Promise((resolve) => setImmediate(resolve))
-
-    assert.deepEqual(frames, [{ sessionId: 'session-v3-b', seq: 5 }])
-    assert.deepEqual(reconnects, [{ sessionId: 'session-v3-b', reason: 'refetch only b' }])
-    assert.equal(websocketURLs.length, 1)
-    assert.deepEqual(fetchCalls, ['/v1/auth/desktop/session', '/v3/sessions/session-v3-b'])
+    assert.deepEqual(websocketURLs, ['ws://127.0.0.1:7777/ws'])
+    assert.equal(sent.some((message) => message.type === 'subscribe' && message.channel === 'session:*'), true)
+    assert.equal(sent.some((message) => message.kind === 'subscribe.session'), false)
+    assert.equal(websocketURLs.some((url) => url.includes('/v3/realtime/stream')), false)
   } finally {
-    controller.close()
+    useDesktopStore.getState().disconnect()
     globalThis.fetch = originalFetch
-    globalThis.window.setTimeout = originalSetTimeout
     globalThis.window = originalWindow
     globalThis.WebSocket = originalWebSocket
   }

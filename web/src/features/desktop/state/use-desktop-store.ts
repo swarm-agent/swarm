@@ -47,8 +47,6 @@ import type {
 import type { ChatMessageRecord } from '../chat/types/chat'
 import type { VaultStatus } from '../vault/types'
 import { DesktopRunStreamController, type RunStreamEventMessage } from './run-stream-controller'
-import { DesktopV3RealtimeController, type V3RealtimeControllerSubscription } from './v3-realtime-controller'
-import type { V3RealtimeMessage } from '../realtime/v3-contract'
 import { sessionRequiresSnapshotHydration } from './session-snapshot-hydration'
 import { mergeSessionRecords } from './session-records'
 import { appendLiveAssistantSegment } from './live-assistant-segments'
@@ -111,20 +109,12 @@ let desktopRealtimeSocket: WebSocket | null = null
 let desktopRealtimeLastActivityAt = 0
 let desktopRealtimeConnectingStartedAt = 0
 let runStreamController: DesktopRunStreamController | null = null
-let v3RealtimeController: DesktopV3RealtimeController | null = null
 
 function requireRunStreamController(): DesktopRunStreamController {
   if (!runStreamController) {
     throw new Error('run stream controller is not initialized')
   }
   return runStreamController
-}
-
-function requireV3RealtimeController(): DesktopV3RealtimeController {
-  if (!v3RealtimeController) {
-    throw new Error('v3 realtime controller is not initialized')
-  }
-  return v3RealtimeController
 }
 
 function mapDurableNotification(record: DurableNotificationRecord): DesktopNotificationCenterRecord {
@@ -842,17 +832,6 @@ function resolveRunStreamResumeRequest(sessionId: string, fallbackRunId?: string
     lastSeq: session.live.seq ?? 0,
     sessionApi: session.sessionApi,
   }
-}
-
-function resolveV3RealtimeSubscriptions(): V3RealtimeControllerSubscription[] {
-  const state = useDesktopStore.getState()
-  return Object.values(state.sessions)
-    .filter((session) => session.sessionApi?.trim().toLowerCase() === 'v3')
-    .filter((session) => session.live.status !== 'idle' || Boolean(session.lifecycle?.active) || session.live.awaitingAck)
-    .map((session) => ({
-      sessionId: session.id,
-      afterSeq: Math.max(0, session.lastEventSeq ?? session.projectionHighWatermarkSeq ?? 0),
-    }))
 }
 
 function normalizeLifecycle(
@@ -1669,137 +1648,6 @@ function applyV3SessionStreamFrame(state: DesktopStoreState, sessionId: string, 
   const envelope = v3SessionStreamEventEnvelope(payload)
   if (!envelope) {
     return null
-  }
-  const patch = applyEnvelope(state, envelope)
-  const eventSeq = typeof payload.event?.seq === 'number' ? Math.max(0, payload.event.seq) : 0
-  const highWatermark = typeof payload.high_watermark_seq === 'number' ? Math.max(0, payload.high_watermark_seq) : eventSeq
-  const v3EventType = String(payload.event?.event_type ?? type).trim()
-  const patchedSessions = patch.sessions ?? state.sessions
-  const existing = patchedSessions[sessionId]
-  if (!existing) {
-    return patch
-  }
-  return {
-    ...patch,
-    sessions: {
-      ...patchedSessions,
-      [sessionId]: mergeSessionRecords(existing, {
-        ...existing,
-        sessionApi: existing.sessionApi || 'v3',
-        lastEventSeq: Math.max(existing.lastEventSeq ?? 0, eventSeq),
-        projectionHighWatermarkSeq: Math.max(existing.projectionHighWatermarkSeq ?? 0, highWatermark),
-        live: {
-          ...existing.live,
-          lastEventType: v3EventType || type,
-          lastEventAt: ts,
-          awaitingAck: false,
-          error: v3EventType === 'session.run.failed' ? existing.live.error : null,
-        },
-      }),
-    },
-  }
-}
-
-function v3RealtimeEventEnvelope(message: V3RealtimeMessage): EventEnvelope | null {
-  if (message.kind !== 'event' || !message.event || typeof message.event !== 'object') {
-    return null
-  }
-  const event = message.event
-  const eventType = String(event.event_type ?? '').trim()
-  const sessionId = String(event.session_id ?? message.session_id ?? '').trim()
-  const rawPayload = event.payload && typeof event.payload === 'object'
-    ? { ...event.payload as Record<string, unknown> }
-    : {}
-  const nestedSession = rawPayload.session && typeof rawPayload.session === 'object'
-    ? rawPayload.session as Record<string, unknown>
-    : null
-  const eventPayload = (eventType === 'session.created' || eventType === 'session.updated') && nestedSession
-    ? { ...nestedSession }
-    : rawPayload
-  if (sessionId && typeof eventPayload.session_id !== 'string') {
-    eventPayload.session_id = sessionId
-  }
-  return {
-    global_seq: typeof event.seq === 'number' ? event.seq : undefined,
-    stream: sessionId ? `v3/session:${sessionId}` : undefined,
-    event_type: eventType,
-    entity_id: sessionId,
-    ts_unix_ms: typeof event.ts_unix_ms === 'number' ? event.ts_unix_ms : undefined,
-    payload: eventPayload,
-  }
-}
-
-function applyV3RealtimeFrame(state: DesktopStoreState, payload: V3RealtimeMessage, ts: number): Partial<DesktopStoreState> {
-  const sessionId = payload.session_id?.trim() ?? payload.event?.session_id?.trim() ?? ''
-  const type = payload.kind
-  if (!sessionId && type !== 'keepalive') {
-    return {}
-  }
-  if (type === 'keepalive') {
-    return {}
-  }
-  if (type === 'replay.started' || type === 'replay.complete') {
-    const existing = state.sessions[sessionId]
-    if (!existing) {
-      return {}
-    }
-    const lastSeq = typeof payload.last_seq === 'number' ? Math.max(0, payload.last_seq) : existing.lastEventSeq ?? 0
-    const highWatermark = typeof payload.high_watermark_seq === 'number'
-      ? Math.max(0, payload.high_watermark_seq)
-      : existing.projectionHighWatermarkSeq ?? lastSeq
-    return {
-      sessions: {
-        ...state.sessions,
-        [sessionId]: mergeSessionRecords(existing, {
-          ...existing,
-          sessionApi: existing.sessionApi || 'v3',
-          lastEventSeq: Math.max(existing.lastEventSeq ?? 0, lastSeq),
-          projectionHighWatermarkSeq: Math.max(existing.projectionHighWatermarkSeq ?? 0, highWatermark),
-          live: {
-            ...existing.live,
-            lastEventType: type,
-            lastEventAt: ts,
-            awaitingAck: false,
-            error: null,
-          },
-        }),
-      },
-    }
-  }
-  if (type === 'cursor.error') {
-    const existing = state.sessions[sessionId]
-    if (existing) {
-      requestAuthoritativeSessionSnapshot(sessionId, existing.sessionApi || 'v3')
-    }
-    return {}
-  }
-  if (type === 'auth.denied' || type === 'slow_consumer.reconnect_required') {
-    const existing = state.sessions[sessionId]
-    if (!existing) {
-      return {}
-    }
-    return {
-      sessions: {
-        ...state.sessions,
-        [sessionId]: mergeSessionRecords(existing, {
-          ...existing,
-          sessionApi: existing.sessionApi || 'v3',
-          live: {
-            ...existing.live,
-            status: existing.lifecycle?.active ? existing.live.status : 'error',
-            lastEventType: type,
-            lastEventAt: ts,
-            awaitingAck: false,
-            error: String(payload.error ?? payload.reason ?? 'V3 realtime failed'),
-            summary: existing.lifecycle?.active ? 'Realtime recovery required' : null,
-          },
-        }),
-      },
-    }
-  }
-  const envelope = v3RealtimeEventEnvelope(payload)
-  if (!envelope) {
-    return {}
   }
   const patch = applyEnvelope(state, envelope)
   const eventSeq = typeof payload.event?.seq === 'number' ? Math.max(0, payload.event.seq) : 0
@@ -2948,19 +2796,6 @@ runStreamController = new DesktopRunStreamController({
   },
 })
 
-v3RealtimeController = new DesktopV3RealtimeController({
-  getSubscriptions: () => resolveV3RealtimeSubscriptions(),
-  onFrame: (payload, ts) => {
-    useDesktopStore.setState((state) => applyV3RealtimeFrame(state, payload, ts))
-  },
-  onReconnectPending: (sessionId, reason, ts) => {
-    useDesktopStore.setState((state) => applyRunStreamSocketFailure(state, sessionId, reason, ts))
-  },
-  onResumeFailure: (sessionId, message, ts) => {
-    useDesktopStore.setState((state) => applyRunStreamResumeFailure(state, sessionId, message, ts))
-  },
-})
-
 export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
   hydrated: false,
   hydrating: false,
@@ -3608,7 +3443,6 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
       hasSocket: Boolean(desktopRealtimeSocket),
       realtimeDesired: current.realtimeDesired,
       runStreamCount: requireRunStreamController().activeSessionCount(),
-      v3RealtimeCount: requireV3RealtimeController().activeConnectionCount(),
     })
     clearReconnectTimer(current)
     clearHeartbeatTimer(current)
@@ -3629,7 +3463,6 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
     })
     socket?.close()
     requireRunStreamController().closeAll()
-    requireV3RealtimeController().close()
   },
   closeRunStream: (sessionId) => {
     const normalizedSessionId = sessionId.trim()
@@ -3649,7 +3482,8 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
     }
     const sessionApi = get().sessions[normalizedSessionId]?.sessionApi?.trim().toLowerCase() ?? ''
     if (sessionApi === 'v3') {
-      await requireV3RealtimeController().ensure()
+      set({ realtimeDesired: true })
+      await get().connect()
       return
     }
     await requireRunStreamController().ensure(normalizedSessionId, runId)
@@ -3734,7 +3568,8 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
           mergeMessagesCache(targetSessionId, committedMessages)
           set((state) => applyV3MessageCommitResult(state, targetSessionId, result, Date.now()))
         }
-        await requireV3RealtimeController().ensure()
+        set({ realtimeDesired: true })
+        await get().connect()
         return
       }
 

@@ -4,7 +4,6 @@ import {
   readErrorMessage,
   ensureDesktopSession,
 } from "../../../../app/api";
-import { V3_REALTIME_STREAM_PATH } from "../../realtime/v3-contract";
 import type {
   DesktopPermissionRecord,
   DesktopSessionRecord,
@@ -2014,7 +2013,7 @@ export async function openRunStream(
   const normalizedSessionId = sessionId.trim();
   const sessionApi = resolveSessionApiForSession(normalizedSessionId, options);
   if (sessionApi === "v3") {
-    throw new Error("V3 sessions use the shared /v3/realtime/stream connection");
+    throw new Error("V3 sessions use the global /ws session:* connection");
   }
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   await ensureDesktopSession(true);
@@ -2025,18 +2024,6 @@ export async function openRunStream(
   return new WebSocket(url);
 }
 
-export async function openV3RealtimeStream(
-  options: { endpointCursor?: string | null } = {},
-): Promise<WebSocket> {
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  await ensureDesktopSession(true);
-  const url = new URL(V3_REALTIME_STREAM_PATH, `${protocol}//${window.location.host}`);
-  const endpointCursor = options.endpointCursor?.trim() ?? "";
-  if (endpointCursor) {
-    url.searchParams.set("endpoint_cursor", endpointCursor);
-  }
-  return new WebSocket(url);
-}
 
 export async function stopSessionRun(
   sessionId: string,
