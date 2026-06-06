@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -28,6 +29,9 @@ type sessionV3DiagnosticInput struct {
 }
 
 func (s *Server) appendSessionV3Diagnostic(input sessionV3DiagnosticInput) (sessionruntime.SessionMutationResult, error) {
+	if !sessionV3DiagnosticsEnabled() {
+		return sessionruntime.SessionMutationResult{}, nil
+	}
 	if s == nil || s.sessions == nil {
 		return sessionruntime.SessionMutationResult{}, errors.New("sessions v3 service is not configured")
 	}
@@ -111,7 +115,14 @@ func sessionV3DiagnosticClientRequestID(stage, runID, sequenceLabel, payloadHash
 	return strings.Join(parts, "-")
 }
 
+func sessionV3DiagnosticsEnabled() bool {
+	return os.Getenv("SWARM_V3_DIAGNOSTICS") == "1"
+}
+
 func shouldRecordV3StoreDiagnostic(input sessionruntime.SessionMutationInput) bool {
+	if !sessionV3DiagnosticsEnabled() {
+		return false
+	}
 	if strings.TrimSpace(input.Kind) == "" || strings.TrimSpace(input.Kind) == sessionruntime.SessionMutationRecordDiagnostic {
 		return false
 	}
