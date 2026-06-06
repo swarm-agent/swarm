@@ -46,6 +46,8 @@ interface UpsertWorkspaceManagedLinkInput {
 
 interface UseWorkspaceLauncherOptions {
   applyDocumentTheme?: boolean
+  autoRefresh?: boolean
+  browseDuringRefresh?: boolean
 }
 
 interface UseWorkspaceLauncherState {
@@ -246,11 +248,13 @@ function isDefaultWorkspaceOverviewKey(queryKey: readonly unknown[]): boolean {
 export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}): UseWorkspaceLauncherState {
   const queryClient = useQueryClient()
   const applyDocumentTheme = options.applyDocumentTheme ?? true
+  const autoRefresh = options.autoRefresh ?? true
+  const browseDuringRefresh = options.browseDuringRefresh ?? true
   const refreshVaultStatus = useDesktopStore((state) => state.refreshVaultStatus)
   const [workspaces, setWorkspaces] = useState<WorkspaceEntry[]>([])
   const [discovered, setDiscovered] = useState<WorkspaceDiscoverEntry[]>([])
   const [currentWorkspacePath, setCurrentWorkspacePath] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(autoRefresh)
   const [refreshing, setRefreshing] = useState(false)
   const [selectingPath, setSelectingPath] = useState<string | null>(null)
   const [savingPath, setSavingPath] = useState<string | null>(null)
@@ -338,12 +342,14 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
       if (applyDocumentTheme) {
         applyWorkspaceTheme(resolveEffectiveThemeId(nextCurrentWorkspacePath, sorted, globalThemeId))
       }
-      if (roots.length > 0) {
-        debugLog('workspace-launcher', 'refresh:browse-root', { root: roots[0] })
-        await browsePath(roots[0])
-      } else if (!browser) {
-        debugLog('workspace-launcher', 'refresh:browse-empty-root')
-        await browsePath('')
+      if (browseDuringRefresh) {
+        if (roots.length > 0) {
+          debugLog('workspace-launcher', 'refresh:browse-root', { root: roots[0] })
+          await browsePath(roots[0])
+        } else if (!browser) {
+          debugLog('workspace-launcher', 'refresh:browse-empty-root')
+          await browsePath('')
+        }
       }
       finish({ ok: true, workspaceCount: sorted.length })
     } catch (err) {
@@ -368,12 +374,16 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
       setLoading(false)
       setRefreshing(false)
     }
-  }, [applyDocumentTheme, browser, browsePath, globalThemeId, queryClient, refreshVaultStatus])
+  }, [applyDocumentTheme, browser, browseDuringRefresh, browsePath, globalThemeId, queryClient, refreshVaultStatus])
 
   useEffect(() => {
+    if (!autoRefresh) {
+      setLoading(false)
+      return
+    }
     debugLog('workspace-launcher', 'effect:initial-refresh')
     void refresh()
-  }, [refresh])
+  }, [autoRefresh, refresh])
 
   useEffect(() => {
     if (loading) {

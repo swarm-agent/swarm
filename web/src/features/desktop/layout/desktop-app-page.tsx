@@ -1453,7 +1453,7 @@ export function DesktopAppPage() {
   const routeWorkspaceSlug = (workspaceFlowDetailMatch ? workspaceFlowDetailMatch.workspaceSlug : workspaceFlowMatch ? workspaceFlowMatch.workspaceSlug : workspaceSessionMatch ? workspaceSessionMatch.workspaceSlug : workspaceMatch ? workspaceMatch.workspaceSlug : '').trim()
   const routeSessionId = (!isFlowRoute && workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
   const pwaDebugEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has(PWA_DEBUG_QUERY_PARAM)
-  const { workspaces, selectingPath, savingPath, saveWorkspace, setWorktreeEnabled, loading: workspacesLoading } = useWorkspaceLauncher({ applyDocumentTheme: false })
+  const { workspaces, selectingPath, savingPath, saveWorkspace, setWorktreeEnabled, loading: launcherWorkspacesLoading } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
   const connectionState = useDesktopStore((state) => state.connectionState)
   const liveSessions = useDesktopStore((state) => state.sessions)
   const activeSessionId = useDesktopStore((state) => state.activeSessionId)
@@ -1607,6 +1607,7 @@ export function DesktopAppPage() {
     ...workspaceOverviewQueryOptions([], 25),
     placeholderData: (previousData) => previousData,
   })
+  const workspacesLoading = launcherWorkspacesLoading || overviewQuery.isPending
   const uiSettingsQuery = useQuery({
     queryKey: uiSettingsQueryKey(),
     queryFn: () => getUISettings(),
