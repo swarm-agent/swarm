@@ -13,7 +13,8 @@ import { useDesktopStore } from '../state/use-desktop-store'
 import { useWorkspaceLauncher } from '../../workspaces/launcher/state/use-workspace-launcher'
 import { applyDesktopRouteTheme } from './desktop-theme-controller'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
-import { prefetchSessionRuntimeData, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
+import { agentStateQueryOptions, prefetchSessionRuntimeData, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
+import { getCachedDesktopV3SessionSnapshot, hydrateDesktopV3SessionSnapshot } from '../state/desktop-v3-cache'
 import type { DesktopSessionRecord } from '../types/realtime'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
 import { DesktopQuickSettingsModal, type QuickSettingsTabID } from '../settings/components/desktop-quick-settings-modal'
@@ -44,7 +45,6 @@ import { fetchSwarmTargets, selectSwarmTarget, type SwarmTarget } from '../swarm
 import { fetchRemoteDeploySessions, type RemoteDeploySession } from '../swarm/api/deploy-container'
 import { approveRemoteSwarmPairing, fetchPendingRemoteSwarmPairings, type RemoteSwarmPendingPairing } from '../onboarding/api'
 import { ManagedHostLinkRequestModal, activePendingPairings, managedHostTargetFromPairingResult } from '../swarm/components/managed-host-link-request-modal'
-import { fetchSession } from '../chat/queries/chat-queries'
 import { buildDesktopChatRouteOptions, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../chat/services/chat-routing'
 import { fetchGitStatus, gitStatusQueryKey, startGitRealtime } from '../git/api'
 import type { GitFileStatus, GitSnapshot } from '../git/types'
@@ -66,6 +66,7 @@ const MOBILE_SIDEBAR_SWIPE_EDGE_PX = 28
 const MOBILE_SIDEBAR_SWIPE_MIN_X_PX = 72
 const MOBILE_SIDEBAR_SWIPE_MAX_Y_PX = 48
 type MobileSidebarSwipeState = { startX: number; startY: number; tracking: boolean; completed: boolean; mode: 'open' | 'close' }
+type DesktopV3BootstrapState = { status: 'idle' | 'running' | 'ready' | 'error'; epoch: number; error: string | null }
 const UPDATE_STATUS_REFETCH_INTERVAL_MS = 5 * 60_000
 const SWARM_TARGET_REFETCH_INTERVAL_MS = 10_000
 const SIDEBAR_ACTION_RAIL_WIDTH_CLASS = 'w-[52px]'
@@ -1116,29 +1117,6 @@ function sessionActivityLabel(session: DesktopSessionRecord): string {
   }
 }
 
-function sessionNeedsRefresh(session: DesktopSessionRecord | null): boolean {
-  if (!session) {
-    return true
-  }
-
-  if (session.lifecycle && !session.lifecycle.active) {
-    return false
-  }
-
-  if (session.live.summary === 'Reconnecting…') {
-    return true
-  }
-
-  if (session.lifecycle?.active) {
-    return false
-  }
-
-  return (session.live.status !== 'idle' && session.live.status !== 'error')
-    || session.live.awaitingAck
-    || session.live.runId !== null
-    || session.live.startedAt !== null
-}
-
 interface SidebarSessionNode {
   session: DesktopSessionRecord
   children: SidebarSessionNode[]
@@ -1520,10 +1498,12 @@ export function DesktopAppPage() {
   const [todoSavingWorkspacePath, setTodoSavingWorkspacePath] = useState<string | null>(null)
   const [workspaceLayout, setWorkspaceLayout] = useState<Record<string, SidebarWorkspaceLayout>>(() => loadSidebarWorkspaceLayout())
   const [routeSessionPending, setRouteSessionPending] = useState(false)
+  const [desktopV3Bootstrap, setDesktopV3Bootstrap] = useState<DesktopV3BootstrapState>({ status: 'idle', epoch: 0, error: null })
   const [sidebarNow, setSidebarNow] = useState(() => Date.now())
   const sidebarBodyRef = useRef<HTMLDivElement | null>(null)
   const mobileSidebarSwipeRef = useRef<MobileSidebarSwipeState | null>(null)
   const resizeStateRef = useRef<SidebarResizeState | null>(null)
+  const desktopV3BootstrapEpochRef = useRef(0)
   const workspaceByPath = useMemo<Map<string, WorkspaceEntry>>(
     () => new Map(workspaces.map((workspace) => [workspace.path, workspace] as const)),
     [workspaces],
@@ -2070,64 +2050,114 @@ export function DesktopAppPage() {
 
   const workspaceSlugByPath = useMemo(() => buildWorkspaceRouteSlugMap(mergedSidebarWorkspaceEntries), [mergedSidebarWorkspaceEntries])
 
+  const bootstrapSessionIds = useMemo<string[]>(() => {
+    const sessionIds = new Set<string>()
+    const addSessionId = (sessionId: string | null | undefined) => {
+      const normalizedSessionId = sessionId?.trim() ?? ''
+      if (normalizedSessionId) {
+        sessionIds.add(normalizedSessionId)
+      }
+    }
+
+    addSessionId(routeSessionId)
+    addSessionId(activeSessionId)
+    for (const workspace of visibleSidebarWorkspaceEntries) {
+      for (const session of sessionsByWorkspace.get(workspace.path) ?? []) {
+        addSessionId(session.id)
+      }
+    }
+
+    return Array.from(sessionIds)
+  }, [activeSessionId, routeSessionId, sessionsByWorkspace, visibleSidebarWorkspaceEntries])
+  const bootstrapSessionIdsKey = bootstrapSessionIds.join('\u0000')
+
   useEffect(() => {
     const normalizedRouteSessionId = routeSessionId?.trim() ?? ''
-    debugLog('desktop-app-page', 'effect:route-session-hydration-check', {
-      normalizedRouteSessionId,
-      sessionCached: Boolean(normalizedRouteSessionId && sessionById.get(normalizedRouteSessionId)),
-    })
-    if (!normalizedRouteSessionId) {
-      setRouteSessionPending(false)
-      return
-    }
-
-    const cachedSession = sessionById.get(normalizedRouteSessionId) ?? null
-    if (cachedSession && !sessionNeedsRefresh(cachedSession)) {
-      debugLog('desktop-app-page', 'effect:route-session-hydration-skip-cache-hit', {
-        normalizedRouteSessionId,
-      })
-      setRouteSessionPending(false)
-      return
-    }
-
+    const epoch = desktopV3BootstrapEpochRef.current + 1
+    desktopV3BootstrapEpochRef.current = epoch
     let cancelled = false
-    setRouteSessionPending(true)
+    const isCurrentEpoch = () => !cancelled && desktopV3BootstrapEpochRef.current === epoch
+    if (bootstrapSessionIds.length === 0) {
+      if (!normalizedRouteSessionId) {
+        setRouteSessionPending(false)
+      }
+      setDesktopV3Bootstrap({ status: 'idle', epoch, error: null })
+      return
+    }
 
-    void (async () => {
-      try {
-        debugLog('desktop-app-page', 'effect:route-session-fetch-start', {
-          normalizedRouteSessionId,
-        })
-        const fetchedSession = await fetchSession(normalizedRouteSessionId)
-        if (cancelled || !fetchedSession) {
-          debugLog('desktop-app-page', 'effect:route-session-fetch-abort', {
-            cancelled,
-            hasSession: Boolean(fetchedSession),
-          })
+    const abortController = new AbortController()
+    setDesktopV3Bootstrap({ status: 'running', epoch, error: null })
+    const applySnapshotSession = (session: DesktopSessionRecord) => {
+      if (!isCurrentEpoch()) {
+        return
+      }
+      upsertSession(session)
+      syncWorkspaceOverviewSession(queryClient, session)
+      if (session.id === normalizedRouteSessionId) {
+        void useDesktopStore.getState().refreshSessionPermissions(normalizedRouteSessionId)
+      }
+    }
+
+    const idsToHydrate: string[] = []
+    for (const sessionId of bootstrapSessionIds) {
+      const cachedSnapshot = getCachedDesktopV3SessionSnapshot(queryClient, sessionId)
+      if (cachedSnapshot) {
+        applySnapshotSession(cachedSnapshot.session)
+        continue
+      }
+      idsToHydrate.push(sessionId)
+    }
+
+    const routeSessionCached = Boolean(
+      normalizedRouteSessionId && (
+        getCachedDesktopV3SessionSnapshot(queryClient, normalizedRouteSessionId)
+          || useDesktopStore.getState().sessions[normalizedRouteSessionId]
+      ),
+    )
+    debugLog('desktop-app-page', 'effect:v3-bootstrap-hydration-check', {
+      routeSessionId: normalizedRouteSessionId,
+      sessionCount: bootstrapSessionIds.length,
+      hydrateCount: idsToHydrate.length,
+      routeSessionCached,
+    })
+
+    if (normalizedRouteSessionId && !routeSessionCached) {
+      setRouteSessionPending(true)
+    } else if (!normalizedRouteSessionId) {
+      setRouteSessionPending(false)
+    }
+
+    const bootstrapTasks: Promise<void>[] = [
+      queryClient.ensureQueryData(agentStateQueryOptions()).then(() => undefined),
+      ...idsToHydrate.map(async (sessionId) => {
+        const snapshot = await hydrateDesktopV3SessionSnapshot(queryClient, sessionId, { signal: abortController.signal })
+        if (!snapshot || cancelled) {
           return
         }
-        debugLog('desktop-app-page', 'effect:route-session-fetch-success', {
-          normalizedRouteSessionId,
-          workspacePath: fetchedSession.workspacePath,
-        })
-        upsertSession(fetchedSession)
-        void useDesktopStore.getState().refreshSessionPermissions(normalizedRouteSessionId)
-        syncWorkspaceOverviewSession(queryClient, fetchedSession)
-      } catch (error) {
-        if (!cancelled) {
-          console.error('[desktop-app] failed to hydrate route session', error)
-        }
-      } finally {
-        if (!cancelled) {
-          setRouteSessionPending(false)
-        }
+        applySnapshotSession(snapshot.session)
+      }),
+    ]
+
+    void Promise.allSettled(bootstrapTasks).then((results) => {
+      if (!isCurrentEpoch()) {
+        return
       }
-    })()
+      const rejected = results.filter((result) => result.status === 'rejected')
+      if (rejected.length > 0) {
+        const error = rejected.map((result) => result.reason).join('\n')
+        console.error('[desktop-app] failed to hydrate desktop v3 bootstrap data', rejected.map((result) => result.reason))
+        setDesktopV3Bootstrap({ status: 'error', epoch, error })
+      } else {
+        setDesktopV3Bootstrap({ status: 'ready', epoch, error: null })
+      }
+      setRouteSessionPending(false)
+    })
 
     return () => {
       cancelled = true
+      abortController.abort()
     }
-  }, [queryClient, routeSessionId, sessionById, upsertSession])
+  }, [bootstrapSessionIdsKey, queryClient, routeSessionId, upsertSession])
 
   const routeSession = routeSessionId ? sessionById.get(routeSessionId) ?? null : null
 
@@ -3382,6 +3412,9 @@ export function DesktopAppPage() {
   return (
     <div
       className="absolute inset-0 flex h-full min-h-0 w-full overflow-hidden bg-[var(--app-surface)] p-0 text-[var(--app-text)]"
+      data-v3-bootstrap-status={desktopV3Bootstrap.status}
+      data-v3-bootstrap-epoch={desktopV3Bootstrap.epoch}
+      data-v3-bootstrap-error={desktopV3Bootstrap.error ?? undefined}
       onTouchStart={handleMobileSidebarTouchStart}
       onTouchMove={handleMobileSidebarTouchMove}
       onTouchEnd={handleMobileSidebarTouchEnd}
