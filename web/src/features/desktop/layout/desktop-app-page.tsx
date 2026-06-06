@@ -69,6 +69,7 @@ type MobileSidebarSwipeState = { startX: number; startY: number; tracking: boole
 type DesktopV3BootstrapState = { status: 'idle' | 'running' | 'ready' | 'error'; epoch: number; error: string | null }
 const UPDATE_STATUS_REFETCH_INTERVAL_MS = 5 * 60_000
 const SWARM_TARGET_REFETCH_INTERVAL_MS = 10_000
+const PAIRING_REQUEST_INITIAL_REFRESH_DELAY_MS = 1_250
 const SIDEBAR_ACTION_RAIL_WIDTH_CLASS = 'w-[52px]'
 const SIDEBAR_ACTION_ROW_CLASS = `grid min-w-0 grid-cols-[minmax(0,1fr)_52px] items-center gap-2.5`
 const SIDEBAR_ACTION_RAIL_CLASS = `grid ${SIDEBAR_ACTION_RAIL_WIDTH_CLASS} shrink-0 grid-cols-[24px_24px] justify-end gap-1`
@@ -1790,9 +1791,14 @@ export function DesktopAppPage() {
   }, [])
 
   useEffect(() => {
-    refreshPairingRequests()
-    const timer = window.setInterval(refreshPairingRequests, 5_000)
-    return () => window.clearInterval(timer)
+    // Link-request badges are sidebar/background affordances, not chat-render inputs.
+    // Keep them out of the first-second Desktop bootstrap request set.
+    const initialTimer = window.setTimeout(refreshPairingRequests, PAIRING_REQUEST_INITIAL_REFRESH_DELAY_MS)
+    const pollTimer = window.setInterval(refreshPairingRequests, 5_000)
+    return () => {
+      window.clearTimeout(initialTimer)
+      window.clearInterval(pollTimer)
+    }
   }, [refreshPairingRequests])
 
   const handleOpenPairingRequests = useCallback(() => {

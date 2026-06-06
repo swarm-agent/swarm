@@ -403,7 +403,9 @@ test('DesktopAppPage must use cache-first V3-only route and hover switching', as
 
   assert.match(source, /readDesktopV3CachedSession\(queryClient, routeSessionId\)/)
   assert.match(source, /readDesktopV3CachedSession\(queryClient, sessionId\)/)
-  assert.match(source, /hydrateDesktopV3SessionSnapshot\(queryClient, sessionId\)/)
+  assert.match(source, /hydrateDesktopV3SessionSnapshot\(queryClient, sessionId/)
+  assert.match(source, /PAIRING_REQUEST_INITIAL_REFRESH_DELAY_MS = 1_250/)
+  assert.match(source, /window\.setTimeout\(refreshPairingRequests, PAIRING_REQUEST_INITIAL_REFRESH_DELAY_MS\)/)
   assert.doesNotMatch(source, /refreshSessionPermissions\(normalizedRouteSessionId\)/)
   assert.doesNotMatch(source, /fetchSession\(/)
   assert.doesNotMatch(source, /prefetchSessionRuntimeData/)
