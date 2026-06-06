@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
+import { QueryClient } from '@tanstack/react-query'
 
 async function withFetchStub(
   run: (calls: Array<{ input: RequestInfo | URL; init?: RequestInit }>) => Promise<void>,
@@ -11,38 +12,54 @@ async function withFetchStub(
     calls.push({ input, init })
     const url = String(input)
 
-    if (url === '/v3/sessions/session-v3' || url === '/v3/sessions/v3session_auto') {
+    const v3SessionMatch = /^\/v3\/sessions\/([^/?]+)$/.exec(url)
+    if (v3SessionMatch) {
+      return jsonResponse(v3HydratedSessionPayload(decodeURIComponent(v3SessionMatch[1])))
+    }
+
+    const v3MessagesMatch = /^\/v3\/sessions\/([^/?]+)\/messages\?/.exec(url)
+    if (v3MessagesMatch) {
+      const sessionId = decodeURIComponent(v3MessagesMatch[1])
       return jsonResponse({
         ok: true,
-        session: {
-          id: url.endsWith('/v3session_auto') ? 'v3session_auto' : 'session-v3',
-          title: 'V3 session',
-          workspace_path: '/repo',
-          workspace_name: 'repo',
-          mode: 'auto',
-          metadata: { route: 'primary' },
-          created_at: 1,
-          updated_at: 5,
-        },
-        projection: {
-          session_id: url.endsWith('/v3session_auto') ? 'v3session_auto' : 'session-v3',
-          last_event_seq: 7,
-          projection_high_watermark_seq: 6,
-          updated_at: 5,
-        },
+        session_id: sessionId,
         messages: [
-          { id: 'msg-1', session_id: url.endsWith('/v3session_auto') ? 'v3session_auto' : 'session-v3', global_seq: 2, role: 'user', content: 'hello', created_at: 2 },
+          { id: `${sessionId}-msg-2`, session_id: sessionId, global_seq: 3, role: 'user', content: 'second', created_at: 3 },
+          { id: `${sessionId}-msg-3`, session_id: sessionId, global_seq: 4, role: 'assistant', content: 'third', created_at: 4 },
         ],
-        events: [],
       })
     }
 
-    if (url === '/v2/sessions/session-v2') {
+    const v2MessagesMatch = /^\/v2\/sessions\/([^/?]+)\/messages\?/.exec(url)
+    if (v2MessagesMatch) {
+      const sessionId = decodeURIComponent(v2MessagesMatch[1])
+      return jsonResponse({
+        ok: true,
+        session_id: sessionId,
+        messages: [
+          { id: `${sessionId}-legacy-msg`, session_id: sessionId, global_seq: 1, role: 'user', content: 'legacy', created_at: 1 },
+        ],
+      })
+    }
+
+    const v2PreferenceMatch = /^\/v2\/sessions\/([^/?]+)\/preference$/.exec(url)
+    if (v2PreferenceMatch) {
+      return jsonResponse({
+        ok: true,
+        preference: { provider: 'codex', model: 'gpt-5.4', thinking: 'medium', service_tier: 'flex', context_mode: 'large', updated_at: 2 },
+        context_window: 1000000,
+        max_output_tokens: 8192,
+      })
+    }
+
+    const v2SessionMatch = /^\/v2\/sessions\/([^/?]+)$/.exec(url)
+    if (v2SessionMatch) {
+      const sessionId = decodeURIComponent(v2SessionMatch[1])
       return jsonResponse({
         ok: true,
         session: {
-          id: 'session-v2',
-          title: 'V2 session',
+          id: sessionId,
+          title: 'Legacy session',
           workspace_path: '/repo',
           workspace_name: 'repo',
           mode: 'auto',
@@ -52,25 +69,10 @@ async function withFetchStub(
       })
     }
 
-    if (url === '/v3/sessions/session-v3/messages?limit=100&after_seq=2' || url === '/v3/sessions/v3session_auto/messages?limit=100') {
-      return jsonResponse({
-        ok: true,
-        session_id: url.includes('/v3session_auto/') ? 'v3session_auto' : 'session-v3',
-        messages: [
-          { id: 'msg-2', session_id: url.includes('/v3session_auto/') ? 'v3session_auto' : 'session-v3', global_seq: 3, role: 'user', content: 'second', created_at: 3 },
-          { id: 'msg-3', session_id: url.includes('/v3session_auto/') ? 'v3session_auto' : 'session-v3', global_seq: 4, role: 'assistant', content: 'third', created_at: 4 },
-        ],
-      })
-    }
-
-    if (url === '/v2/sessions/session-v2/messages?limit=100') {
-      return jsonResponse({
-        ok: true,
-        session_id: 'session-v2',
-        messages: [
-          { id: 'msg-v2', session_id: 'session-v2', global_seq: 1, role: 'user', content: 'legacy', created_at: 1 },
-        ],
-      })
+    const v1SessionMatch = /^\/v1\/sessions\/([^/?]+)/.exec(url)
+    if (v1SessionMatch) {
+      const sessionId = decodeURIComponent(v1SessionMatch[1])
+      return jsonResponse({ ok: true, session: { id: sessionId } })
     }
 
     throw new Error(`unexpected fetch: ${url}`)
@@ -83,6 +85,32 @@ async function withFetchStub(
   }
 }
 
+function v3HydratedSessionPayload(sessionId: string) {
+  return {
+    ok: true,
+    session: {
+      id: sessionId,
+      title: 'V3 session',
+      workspace_path: '/repo',
+      workspace_name: 'repo',
+      mode: 'auto',
+      metadata: { route: 'primary' },
+      created_at: 1,
+      updated_at: 5,
+    },
+    projection: {
+      session_id: sessionId,
+      last_event_seq: 7,
+      projection_high_watermark_seq: 6,
+      updated_at: 5,
+    },
+    messages: [
+      { id: `${sessionId}-msg-1`, session_id: sessionId, global_seq: 2, role: 'user', content: 'hello', created_at: 2 },
+    ],
+    events: [],
+  }
+}
+
 function jsonResponse(payload: unknown): Response {
   return new Response(JSON.stringify(payload), {
     status: 200,
@@ -90,13 +118,22 @@ function jsonResponse(payload: unknown): Response {
   })
 }
 
+function requestUrls(calls: Array<{ input: RequestInfo | URL; init?: RequestInit }>) {
+  return calls.map((entry) => String(entry.input))
+}
+
 function assertNoV1OrV2SessionDataCalls(calls: Array<{ input: RequestInfo | URL; init?: RequestInit }>) {
-  const urls = calls.map((entry) => String(entry.input))
+  const urls = requestUrls(calls)
   assert.equal(urls.some((url) => url.startsWith('/v1/sessions')), false, `unexpected v1 session call: ${urls.join(', ')}`)
   assert.equal(urls.some((url) => url.startsWith('/v2/sessions')), false, `unexpected v2 session call: ${urls.join(', ')}`)
 }
 
-test('fetchSession hydrates V3 sessions from Sessions API v3 only', async () => {
+function assertNoPrefixedSessionIds(calls: Array<{ input: RequestInfo | URL; init?: RequestInit }>) {
+  const urls = requestUrls(calls)
+  assert.equal(urls.some((url) => url.includes('v3session_')), false, `unexpected prefixed session id call: ${urls.join(', ')}`)
+}
+
+test('fetchSession uses raw canonical IDs with explicit Sessions API v3', async () => {
   const { fetchSession } = await import('./chat-queries')
 
   await withFetchStub(async (calls) => {
@@ -106,8 +143,35 @@ test('fetchSession hydrates V3 sessions from Sessions API v3 only', async () => 
     assert.equal(session?.sessionApi, 'v3')
     assert.equal(session?.lastEventSeq, 7)
     assert.equal(session?.projectionHighWatermarkSeq, 6)
-    assert.deepEqual(calls.map((entry) => String(entry.input)), ['/v3/sessions/session-v3'])
+    assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-v3'])
     assertNoV1OrV2SessionDataCalls(calls)
+    assertNoPrefixedSessionIds(calls)
+  })
+})
+
+test('Desktop V3 bootstrap fetches raw route session IDs from /v3/sessions only', async () => {
+  const { fetchSession } = await import('./chat-queries')
+
+  await withFetchStub(async (calls) => {
+    const session = await fetchSession('session-raw')
+
+    assert.equal(session?.id, 'session-raw')
+    assert.equal(session?.sessionApi, 'v3')
+    assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-raw'])
+    assertNoV1OrV2SessionDataCalls(calls)
+    assertNoPrefixedSessionIds(calls)
+  })
+})
+
+test('Desktop V3 route bootstrap rejects v3session-prefixed IDs before network', async () => {
+  const { fetchSession } = await import('./chat-queries')
+
+  await withFetchStub(async (calls) => {
+    await assert.rejects(
+      () => fetchSession('v3session_route-param'),
+      /raw canonical session id/i,
+    )
+    assert.deepEqual(requestUrls(calls), [])
   })
 })
 
@@ -118,49 +182,34 @@ test('fetchSessionMessages loads V3 message history from Sessions API v3 only an
     const messages = await fetchSessionMessages('session-v3', undefined, 2, { sessionApi: 'v3' })
 
     assert.deepEqual(messages.map((message) => message.globalSeq), [3, 4])
-    assert.deepEqual(messages.map((message) => message.id), ['msg-2', 'msg-3'])
-    assert.deepEqual(calls.map((entry) => String(entry.input)), ['/v3/sessions/session-v3/messages?limit=100&after_seq=2'])
+    assert.deepEqual(messages.map((message) => message.id), ['session-v3-msg-2', 'session-v3-msg-3'])
+    assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-v3/messages?limit=100&after_seq=2'])
     assertNoV1OrV2SessionDataCalls(calls)
+    assertNoPrefixedSessionIds(calls)
   })
 })
 
-test('v3session-prefixed hydrate and messages auto-select Sessions API v3 without explicit options', async () => {
-  const { fetchSession, fetchSessionMessages } = await import('./chat-queries')
+test('Desktop V3 session switching prewarm uses the full-session source only', async () => {
+  const { ensureSessionRuntimeData } = await import('../../../queries/query-options')
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
 
   await withFetchStub(async (calls) => {
-    const session = await fetchSession('v3session_auto')
-    const messages = await fetchSessionMessages('v3session_auto')
+    await ensureSessionRuntimeData(queryClient, 'session-switch')
 
-    assert.equal(session?.id, 'v3session_auto')
-    assert.equal(session?.sessionApi, 'v3')
-    assert.deepEqual(messages.map((message) => message.sessionId), ['v3session_auto', 'v3session_auto'])
-    assert.deepEqual(calls.map((entry) => String(entry.input)), [
-      '/v3/sessions/v3session_auto',
-      '/v3/sessions/v3session_auto/messages?limit=100',
-    ])
+    assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-switch'])
     assertNoV1OrV2SessionDataCalls(calls)
+    assertNoPrefixedSessionIds(calls)
   })
+
+  queryClient.clear()
 })
 
-test('legacy non-V3 hydrate and messages keep existing Sessions API v2 endpoints', async () => {
-  const { fetchSession, fetchSessionMessages } = await import('./chat-queries')
+test('DesktopAppPage must not use legacy fetchSession as the route cache contract', async () => {
+  const source = await readFile(new URL('../../layout/desktop-app-page.tsx', import.meta.url), 'utf8')
 
-  await withFetchStub(async (calls) => {
-    const session = await fetchSession('session-v2')
-    const messages = await fetchSessionMessages('session-v2')
-
-    assert.equal(session?.id, 'session-v2')
-    assert.equal(messages[0]?.id, 'msg-v2')
-    assert.deepEqual(calls.map((entry) => String(entry.input)), [
-      '/v2/sessions/session-v2',
-      '/v2/sessions/session-v2/messages?limit=100',
-    ])
-  })
-})
-
-test('authoritative snapshot hydration preserves V3 API identity when refetching', async () => {
-  const source = await readFile(new URL('../../state/use-desktop-store.ts', import.meta.url), 'utf8')
-
-  assert.match(source, /fetchSession\(normalizedSessionId, \{ sessionApi: normalizedSessionApi \}\)/)
-  assert.match(source, /requestAuthoritativeSessionSnapshot\(sessionId, merged\.sessionApi\)/)
+  assert.doesNotMatch(source, /fetchSession\(/)
+  assert.doesNotMatch(source, /\/v1\/sessions|\/v2\/sessions/)
+  assert.doesNotMatch(source, /v3session_/)
 })
