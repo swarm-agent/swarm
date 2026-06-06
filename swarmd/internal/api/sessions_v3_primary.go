@@ -470,26 +470,14 @@ func (s *Server) handleSessionV3PrimaryRunStop(w http.ResponseWriter, r *http.Re
 }
 
 func (s *Server) hydrateSessionsV3Primary(principal identity.Principal, sessionID string) (sessionsV3HydratedSession, bool, error) {
-	session, ok, err := s.sessions.GetSession(sessionID)
+	hydrated, ok, err := s.sessions.HydrateSessionSnapshot(sessionID, 500, 500)
 	if err != nil || !ok {
 		return sessionsV3HydratedSession{}, ok, err
 	}
-	if strings.TrimSpace(session.AccountScopeID) == "" || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+	if strings.TrimSpace(hydrated.Session.AccountScopeID) == "" || strings.TrimSpace(hydrated.Session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
 		return sessionsV3HydratedSession{}, false, nil
 	}
-	projection, projectionOK, err := s.sessions.GetSessionProjection(sessionID)
-	if err != nil || !projectionOK {
-		return sessionsV3HydratedSession{}, projectionOK, err
-	}
-	messages, err := s.sessions.ListSessionMessages(sessionID, 0, 500)
-	if err != nil {
-		return sessionsV3HydratedSession{}, false, err
-	}
-	events, err := s.sessions.ListSessionEvents(sessionID, 0, 500)
-	if err != nil {
-		return sessionsV3HydratedSession{}, false, err
-	}
-	return sessionsV3HydratedSession{Session: session, Projection: projection, Messages: messages, Events: events}, true, nil
+	return sessionsV3HydratedSession{Session: hydrated.Session, Projection: hydrated.Projection, Messages: hydrated.Messages, Events: hydrated.Events}, true, nil
 }
 
 func parseSessionsV3PrimaryPath(path string) (string, string, bool) {

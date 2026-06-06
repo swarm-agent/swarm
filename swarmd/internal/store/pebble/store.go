@@ -101,6 +101,38 @@ func (s *Store) NewBatch() *pebble.Batch {
 }
 
 func (s *Store) IteratePrefix(prefix string, limit int, visit func(key string, value []byte) error) error {
+	return iteratePrefixFromReader(s.db, prefix, limit, visit)
+}
+
+func getBytesFromReader(reader pebble.Reader, key string) ([]byte, bool, error) {
+	value, closer, err := reader.Get([]byte(key))
+	if errors.Is(err, pebble.ErrNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	defer closer.Close()
+
+	copyValue := append([]byte(nil), value...)
+	return copyValue, true, nil
+}
+
+func getJSONFromReader(reader pebble.Reader, key string, out any) (bool, error) {
+	payload, ok, err := getBytesFromReader(reader, key)
+	if err != nil {
+		return false, fmt.Errorf("get json key %q: %w", key, err)
+	}
+	if !ok {
+		return false, nil
+	}
+	if err := json.Unmarshal(payload, out); err != nil {
+		return false, fmt.Errorf("unmarshal json key %q: %w", key, err)
+	}
+	return true, nil
+}
+
+func iteratePrefixFromReader(reader pebble.Reader, prefix string, limit int, visit func(key string, value []byte) error) error {
 	if strings.TrimSpace(prefix) == "" {
 		return errors.New("iterate prefix must not be empty")
 	}
@@ -108,7 +140,7 @@ func (s *Store) IteratePrefix(prefix string, limit int, visit func(key string, v
 		limit = 1000
 	}
 
-	iter, err := s.db.NewIter(&pebble.IterOptions{
+	iter, err := reader.NewIter(&pebble.IterOptions{
 		LowerBound: []byte(prefix),
 		UpperBound: []byte(prefix + "\xff"),
 	})

@@ -334,8 +334,12 @@ func (s *SessionStore) DeleteSession(sessionID string) error {
 }
 
 func (s *SessionStore) GetSession(sessionID string) (SessionSnapshot, bool, error) {
+	return s.getSessionFromReader(s.store.db, sessionID)
+}
+
+func (s *SessionStore) getSessionFromReader(reader pebble.Reader, sessionID string) (SessionSnapshot, bool, error) {
 	var session SessionSnapshot
-	ok, err := s.store.GetJSON(KeySession(sessionID), &session)
+	ok, err := getJSONFromReader(reader, KeySession(sessionID), &session)
 	if err != nil {
 		return SessionSnapshot{}, false, err
 	}
@@ -345,9 +349,10 @@ func (s *SessionStore) GetSession(sessionID string) (SessionSnapshot, bool, erro
 	session = normalizeSessionOwnership(session)
 	session.TemporaryWorkspaceRoots = NormalizeSessionTemporaryWorkspaceRoots(session.WorkspacePath, session.TemporaryWorkspaceRoots)
 	session.Metadata = cloneSessionMetadataMap(session.Metadata)
-	session.Lifecycle, err = s.loadSessionLifecycle(session.ID)
-	if err != nil {
+	if lifecycle, lifecycleOK, err := getSessionLifecycleFromReader(reader, session.ID); err != nil {
 		return SessionSnapshot{}, false, err
+	} else if lifecycleOK {
+		session.Lifecycle = &lifecycle
 	}
 	return session, true, nil
 }
@@ -762,12 +767,16 @@ func (s *SessionStore) UpsertSessionLifecycle(snapshot SessionLifecycleSnapshot)
 }
 
 func (s *SessionStore) GetSessionLifecycle(sessionID string) (SessionLifecycleSnapshot, bool, error) {
+	return getSessionLifecycleFromReader(s.store.db, sessionID)
+}
+
+func getSessionLifecycleFromReader(reader pebble.Reader, sessionID string) (SessionLifecycleSnapshot, bool, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return SessionLifecycleSnapshot{}, false, errors.New("session lifecycle session id is required")
 	}
 	var snapshot SessionLifecycleSnapshot
-	ok, err := s.store.GetJSON(KeySessionLifecycle(sessionID), &snapshot)
+	ok, err := getJSONFromReader(reader, KeySessionLifecycle(sessionID), &snapshot)
 	if err != nil {
 		return SessionLifecycleSnapshot{}, false, err
 	}

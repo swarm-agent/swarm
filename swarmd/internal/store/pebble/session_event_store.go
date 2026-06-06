@@ -179,6 +179,13 @@ type V3SessionReplay struct {
 	NextSeq          uint64                    `json:"next_seq"`
 }
 
+type V3SessionHydration struct {
+	Session    SessionSnapshot     `json:"session"`
+	Projection V3SessionProjection `json:"projection"`
+	Messages   []MessageSnapshot   `json:"messages"`
+	Events     []V3SessionEvent    `json:"events"`
+}
+
 type v3SessionEventReplayPayload struct {
 	SessionID string                    `json:"session_id,omitempty"`
 	Seq       uint64                    `json:"seq,omitempty"`
@@ -556,6 +563,10 @@ func (s *SessionStore) GetV3SessionEvent(sessionID string, seq uint64) (V3Sessio
 }
 
 func (s *SessionStore) ListV3SessionEvents(sessionID string, afterSeq uint64, limit int) ([]V3SessionEvent, error) {
+	return listV3SessionEventsFromReader(s.store.db, sessionID, afterSeq, limit)
+}
+
+func listV3SessionEventsFromReader(reader pebble.Reader, sessionID string, afterSeq uint64, limit int) ([]V3SessionEvent, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return nil, errors.New("session id is required")
@@ -564,7 +575,7 @@ func (s *SessionStore) ListV3SessionEvents(sessionID string, afterSeq uint64, li
 		limit = 500
 	}
 	out := make([]V3SessionEvent, 0, limit)
-	err := s.store.IteratePrefix(V3SessionEventPrefix(sessionID), 100000, func(_ string, value []byte) error {
+	err := iteratePrefixFromReader(reader, V3SessionEventPrefix(sessionID), 100000, func(_ string, value []byte) error {
 		if len(out) >= limit {
 			return nil
 		}
@@ -586,7 +597,7 @@ func (s *SessionStore) ReplayV3SessionEvents(sessionID string, afterSeq uint64, 
 	if sessionID == "" {
 		return V3SessionReplay{}, errors.New("session id is required")
 	}
-	events, err := s.ListV3SessionEvents(sessionID, afterSeq, limit)
+	events, err := listV3SessionEventsFromReader(s.store.db, sessionID, afterSeq, limit)
 	if err != nil {
 		return V3SessionReplay{}, err
 	}
@@ -649,14 +660,14 @@ func (s *SessionStore) ReplayV3SessionEvents(sessionID string, afterSeq uint64, 
 		}
 		replay.HighWatermarkSeq = event.Seq
 	}
-	if stored, ok, err := s.GetSession(sessionID); err != nil {
+	if stored, ok, err := s.getSessionFromReader(s.store.db, sessionID); err != nil {
 		return V3SessionReplay{}, err
 	} else if ok && replay.Session == nil {
 		stored.Metadata = cloneSessionMetadataMap(stored.Metadata)
 		replay.Session = &stored
 	}
 	if replay.Lifecycle == nil {
-		if lifecycle, ok, err := s.GetSessionLifecycle(sessionID); err != nil {
+		if lifecycle, ok, err := getSessionLifecycleFromReader(s.store.db, sessionID); err != nil {
 			return V3SessionReplay{}, err
 		} else if ok {
 			replay.Lifecycle = &lifecycle
@@ -666,7 +677,7 @@ func (s *SessionStore) ReplayV3SessionEvents(sessionID string, afterSeq uint64, 
 		}
 	}
 	if replay.HighWatermarkSeq > afterSeq {
-		messages, err := s.ListV3SessionMessages(sessionID, afterSeq, limit)
+		messages, err := listV3SessionMessagesFromReader(s.store.db, sessionID, afterSeq, limit)
 		if err != nil {
 			return V3SessionReplay{}, err
 		}
@@ -695,7 +706,7 @@ func (s *SessionStore) ReplayV3SessionEvents(sessionID string, afterSeq uint64, 
 	}
 	sort.SliceStable(replay.Messages, func(i, j int) bool { return replay.Messages[i].GlobalSeq < replay.Messages[j].GlobalSeq })
 	sort.SliceStable(replay.RunIntents, func(i, j int) bool { return replay.RunIntents[i].EventSeq < replay.RunIntents[j].EventSeq })
-	if projection, ok, err := s.GetV3SessionProjection(sessionID); err != nil {
+	if projection, ok, err := getV3SessionProjectionFromReader(s.store.db, sessionID); err != nil {
 		return V3SessionReplay{}, err
 	} else if ok {
 		replay.Projection = projection
@@ -714,12 +725,50 @@ func (s *SessionStore) ReplayV3SessionEvents(sessionID string, afterSeq uint64, 
 }
 
 func (s *SessionStore) GetV3SessionProjection(sessionID string) (V3SessionProjection, bool, error) {
+	return getV3SessionProjectionFromReader(s.store.db, sessionID)
+}
+
+func getV3SessionProjectionFromReader(reader pebble.Reader, sessionID string) (V3SessionProjection, bool, error) {
 	var projection V3SessionProjection
-	ok, err := s.store.GetJSON(KeyV3SessionProjection(strings.TrimSpace(sessionID)), &projection)
+	ok, err := getJSONFromReader(reader, KeyV3SessionProjection(strings.TrimSpace(sessionID)), &projection)
 	if err != nil || !ok {
 		return V3SessionProjection{}, ok, err
 	}
 	return projection, true, nil
+}
+
+func (s *SessionStore) HydrateV3SessionSnapshot(sessionID string, messageLimit, eventLimit int) (hydration V3SessionHydration, found bool, err error) {
+	snapshot := s.store.db.NewSnapshot()
+	defer func() {
+		if closeErr := snapshot.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
+	return s.hydrateV3SessionSnapshotFromReader(snapshot, sessionID, messageLimit, eventLimit)
+}
+
+func (s *SessionStore) hydrateV3SessionSnapshotFromReader(reader pebble.Reader, sessionID string, messageLimit, eventLimit int) (V3SessionHydration, bool, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return V3SessionHydration{}, false, errors.New("session id is required")
+	}
+	session, ok, err := s.getSessionFromReader(reader, sessionID)
+	if err != nil || !ok {
+		return V3SessionHydration{}, ok, err
+	}
+	projection, projectionOK, err := getV3SessionProjectionFromReader(reader, sessionID)
+	if err != nil || !projectionOK {
+		return V3SessionHydration{}, projectionOK, err
+	}
+	messages, err := listV3SessionMessagesFromReader(reader, sessionID, 0, messageLimit)
+	if err != nil {
+		return V3SessionHydration{}, false, err
+	}
+	events, err := listV3SessionEventsFromReader(reader, sessionID, 0, eventLimit)
+	if err != nil {
+		return V3SessionHydration{}, false, err
+	}
+	return V3SessionHydration{Session: session, Projection: projection, Messages: messages, Events: events}, true, nil
 }
 
 func (s *SessionStore) GetV3SessionIdempotencyRecord(accountScopeID, sessionID, idempotencyKey string) (V3SessionIdempotencyRecord, bool, error) {
@@ -731,6 +780,10 @@ func (s *SessionStore) GetV3SessionOperationIdempotencyRecord(accountScopeID, se
 }
 
 func (s *SessionStore) ListV3SessionMessages(sessionID string, afterSeq uint64, limit int) ([]MessageSnapshot, error) {
+	return listV3SessionMessagesFromReader(s.store.db, sessionID, afterSeq, limit)
+}
+
+func listV3SessionMessagesFromReader(reader pebble.Reader, sessionID string, afterSeq uint64, limit int) ([]MessageSnapshot, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return nil, errors.New("session id is required")
@@ -739,7 +792,7 @@ func (s *SessionStore) ListV3SessionMessages(sessionID string, afterSeq uint64, 
 		limit = 500
 	}
 	out := make([]MessageSnapshot, 0, limit)
-	err := s.store.IteratePrefix(V3SessionMessagePrefix(sessionID), 100000, func(_ string, value []byte) error {
+	err := iteratePrefixFromReader(reader, V3SessionMessagePrefix(sessionID), 100000, func(_ string, value []byte) error {
 		var message MessageSnapshot
 		if err := json.Unmarshal(value, &message); err != nil {
 			return err

@@ -38,7 +38,7 @@ func TestSessionsV3PrimaryHandlersDoNotUseRuntimeDispatchOrRoutes(t *testing.T) 
 	if err != nil {
 		t.Fatalf("read sessions_v3_primary.go: %v", err)
 	}
-	for _, required := range []string{"ApplySessionMutation", "SessionMutationCreateSession", "SessionMutationAppendMessage", "RunIntentDispatchBlocked", "ReplaySessionEvents", "ListSessionEvents", "ListSessionMessages"} {
+	for _, required := range []string{"ApplySessionMutation", "SessionMutationCreateSession", "SessionMutationAppendMessage", "RunIntentDispatchBlocked", "ReplaySessionEvents", "HydrateSessionSnapshot"} {
 		if !strings.Contains(string(body), required) {
 			t.Fatalf("sessions_v3_primary.go missing required V3 primary storage symbol %q", required)
 		}

@@ -61,6 +61,13 @@ func (s *Service) GetSessionProjection(sessionID string) (SessionProjection, boo
 	return s.store.GetV3SessionProjection(sessionID)
 }
 
+func (s *Service) HydrateSessionSnapshot(sessionID string, messageLimit, eventLimit int) (pebblestore.V3SessionHydration, bool, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.V3SessionHydration{}, false, errors.New("session store is not configured")
+	}
+	return s.store.HydrateV3SessionSnapshot(sessionID, messageLimit, eventLimit)
+}
+
 func (s *Service) ReplaySessionEvents(sessionID string, afterSeq uint64, limit int) (SessionReplay, error) {
 	if s == nil || s.store == nil {
 		return SessionReplay{}, errors.New("session store is not configured")
