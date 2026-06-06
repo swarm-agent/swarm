@@ -261,3 +261,15 @@ test('DesktopAppPage must use cache-first V3-only route and hover switching', as
   assert.doesNotMatch(source, /\/v1\/sessions|\/v2\/sessions/)
   assert.doesNotMatch(source, /v3session_/)
 })
+
+test('Desktop realtime reconciles through canonical V3 snapshots only', async () => {
+  const source = await readFile(new URL('../../state/use-desktop-store.ts', import.meta.url), 'utf8')
+
+  assert.match(source, /hydrateDesktopV3SessionSnapshot\(queryClient, normalizedSessionId\)/)
+  assert.match(source, /getCachedDesktopV3SessionSnapshot\(queryClient, sessionId\)/)
+  assert.match(source, /if \(eventType\.startsWith\('session\.'\) && hasCanonicalV3Snapshot\)/)
+  assert.match(source, /invalidateQueries\(\{ queryKey: desktopV3SessionSnapshotQueryKey\(normalizedSessionId\) \}\)/)
+  assert.doesNotMatch(source, /fetchSession\(/)
+  assert.doesNotMatch(source, /\/v1\/sessions|\/v2\/sessions/)
+  assert.doesNotMatch(source, /v3session_/)
+})

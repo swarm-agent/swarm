@@ -17,7 +17,6 @@ import { setWorkspaceThemeCustomOptions } from '../../workspaces/launcher/servic
 import { openDesktopWebSocket } from '../realtime/client'
 import { disableVault, enableVault, exportVaultBundle, fetchVaultStatus, importVaultBundle, lockVault, unlockVault } from '../vault/api'
 import {
-  fetchSession,
   fetchSessionPendingPermissions,
   fetchSessionUsageSummary,
   sendSessionMessage,
@@ -48,6 +47,7 @@ import type { ChatMessageRecord } from '../chat/types/chat'
 import type { VaultStatus } from '../vault/types'
 import { DesktopRunStreamController, type RunStreamEventMessage } from './run-stream-controller'
 import { sessionRequiresSnapshotHydration } from './session-snapshot-hydration'
+import { desktopV3SessionSnapshotQueryKey, getCachedDesktopV3SessionSnapshot, hydrateDesktopV3SessionSnapshot } from './desktop-v3-cache'
 import { mergeSessionRecords } from './session-records'
 import { appendLiveAssistantSegment } from './live-assistant-segments'
 import { clearNotifications as clearDurableNotifications, fetchNotifications, fetchNotificationSummary, updateNotification } from '../notifications/api'
@@ -1223,24 +1223,34 @@ function syncBlockedSessionToWorkspaceOverview(queryClient: QueryClient, session
   })
 }
 
-function requestAuthoritativeSessionSnapshot(sessionId: string, sessionApi?: string | null): void {
+function invalidateAuthoritativeSessionSnapshot(sessionId: string): void {
+  const normalizedSessionId = sessionId.trim()
+  if (!normalizedSessionId) {
+    return
+  }
+  deferDesktopCacheMutation('desktop v3 session snapshot invalidate', () => {
+    void queryClient.invalidateQueries({ queryKey: desktopV3SessionSnapshotQueryKey(normalizedSessionId) })
+  })
+}
+
+function requestAuthoritativeSessionSnapshot(sessionId: string): void {
   const normalizedSessionId = sessionId.trim()
   if (!normalizedSessionId || pendingSessionSnapshotHydrations.has(normalizedSessionId)) {
     return
   }
 
-  const normalizedSessionApi = sessionApi?.trim().toLowerCase() ?? ''
   pendingSessionSnapshotHydrations.add(normalizedSessionId)
-  window.setTimeout(() => {
+  const setTimeoutFn = typeof window !== 'undefined' ? window.setTimeout.bind(window) : setTimeout
+  setTimeoutFn(() => {
     void (async () => {
       try {
-        const fetchedSession = await fetchSession(normalizedSessionId, { sessionApi: normalizedSessionApi })
-        if (!fetchedSession) {
+        const snapshot = await hydrateDesktopV3SessionSnapshot(queryClient, normalizedSessionId)
+        if (!snapshot) {
           return
         }
-        useDesktopStore.getState().upsertSession(fetchedSession)
+        useDesktopStore.getState().upsertSession(snapshot.session)
       } catch (error) {
-        console.error('[desktop-store] authoritative session hydration failed', error)
+        console.error('[desktop-store] authoritative desktop v3 session hydration failed', error)
       } finally {
         pendingSessionSnapshotHydrations.delete(normalizedSessionId)
       }
@@ -1617,7 +1627,7 @@ function applyV3SessionStreamFrame(state: DesktopStoreState, sessionId: string, 
   if (type === 'cursor.error') {
     const existing = state.sessions[sessionId]
     if (existing) {
-      requestAuthoritativeSessionSnapshot(sessionId, existing.sessionApi || 'v3')
+      requestAuthoritativeSessionSnapshot(sessionId)
     }
     return {}
   }
@@ -2156,6 +2166,11 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
   }
   if (!sessionId) {
     return { lastGlobalSeq: Math.max(state.lastGlobalSeq, envelope.global_seq ?? 0) }
+  }
+
+  const hasCanonicalV3Snapshot = Boolean(getCachedDesktopV3SessionSnapshot(queryClient, sessionId))
+  if (eventType.startsWith('session.') && hasCanonicalV3Snapshot) {
+    invalidateAuthoritativeSessionSnapshot(sessionId)
   }
 
   const sessions = { ...state.sessions }
@@ -2761,7 +2776,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
   sessions[sessionId] = merged
   syncBlockedSessionToWorkspaceOverview(queryClient, merged)
   if (sessionRequiresSnapshotHydration(merged, eventType)) {
-    requestAuthoritativeSessionSnapshot(sessionId, merged.sessionApi)
+    requestAuthoritativeSessionSnapshot(sessionId)
   }
 
   const nextActiveWorkspacePath = state.activeSessionId === merged.id
