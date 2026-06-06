@@ -594,6 +594,89 @@ function testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads(): voi
   assert(finalMessage?.taskRows[1]?.childSessionId === 'child-2', 'expected second child session id to persist')
 }
 
+function testTaskRowsParseCanonicalStreamContractFields(): void {
+  const message = buildStructuredToolMessage({
+    tool: 'task',
+    callId: 'call_task_contract_fields',
+    outputText: JSON.stringify({
+      tool: 'task',
+      path_id: 'tool.task.stream.v1',
+      action: 'spawn',
+      status: 'running',
+      phase: 'tool.delta',
+      launch_count: 3,
+      description: 'map repo',
+      goal: 'map repo',
+      parent_session_id: 'parent-session',
+      launches: [{
+        launch_index: 2,
+        child_session_id: 'child-session-2',
+        child_mode: 'auto',
+        requested_subagent: 'explorer',
+        subagent: 'explorer-v2',
+        agent_type: 'explorer-v2',
+        meta_prompt: 'map backend files',
+        assignment_label: 'Backend map',
+        subagent_provider: 'test-provider',
+        subagent_model: 'test-model',
+        status: 'running',
+        phase: 'tool.delta',
+        current_tool: 'search',
+        current_preview_kind: 'tool',
+        current_preview_text: 'matched service_tools.go',
+        launch_started_at_ms: 123000,
+        current_tool_started_at_ms: 124000,
+        current_tool_ms: 0,
+        elapsed_ms: 0,
+        tool_started: 1,
+        tool_completed: 0,
+        tool_failed: 0,
+        tool_order: ['search'],
+      }],
+    }),
+  })
+
+  assert(Boolean(message), 'expected structured task stream message')
+  assert(message?.taskRows.length === 1, `expected one task row, got ${message?.taskRows.length}`)
+  const row = message!.taskRows[0]
+  assert(row?.launchIndex === 2, `unexpected launch index: ${row?.launchIndex}`)
+  assert(row?.childSessionId === 'child-session-2', `unexpected child session id: ${row?.childSessionId}`)
+  assert(row?.status === 'running', `unexpected status: ${row?.status}`)
+  assert(row?.agent === 'explorer-v2', `unexpected agent: ${row?.agent}`)
+  assert(row?.assignmentLabel === 'Backend map', `unexpected assignment label: ${row?.assignmentLabel}`)
+  assert(row?.modelLabel === 'test-provider / test-model', `unexpected model label: ${row?.modelLabel}`)
+  assert(row?.tool === 'search', `unexpected current tool: ${row?.tool}`)
+  assert(row?.previewKind === 'tool', `unexpected preview kind: ${row?.previewKind}`)
+  assert(row?.previewText === 'matched service_tools.go', `unexpected preview text: ${row?.previewText}`)
+  assert(row?.launchStartedAtMs === 123000, `unexpected launch start: ${row?.launchStartedAtMs}`)
+  assert(row?.currentToolStartedAtMs === 124000, `unexpected current tool start: ${row?.currentToolStartedAtMs}`)
+  assert(row?.terminal === false, 'running task stream row should not be terminal')
+}
+
+function testTaskRowsAcceptFinalPayloadSessionIdAlias(): void {
+  const message = buildStructuredToolMessage({
+    tool: 'task',
+    callId: 'call_task_final_session_alias',
+    outputText: JSON.stringify({
+      tool: 'task',
+      path_id: 'tool.task.v1',
+      status: 'ok',
+      launches: [{
+        launch_index: 1,
+        session_id: 'child-session-final',
+        subagent: 'explorer',
+        status: 'ok',
+        elapsed_ms: 1200,
+      }],
+    }),
+  })
+
+  assert(Boolean(message), 'expected structured final task message')
+  const row = message!.taskRows[0]
+  assert(row?.childSessionId === 'child-session-final', `expected session_id alias, got ${row?.childSessionId}`)
+  assert(row?.terminal === true, 'final ok payload should be terminal')
+}
+
 function testRunningTaskRowDoesNotUseStreamDurationAsDisplayTime(): void {
   const message = buildStructuredToolMessage({
     tool: 'task',
@@ -732,6 +815,8 @@ function main(): void {
   testBashToolMessageShowsCommandAsMetadata();
   testSearchToolPreservesContentMatchText();
   testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads();
+  testTaskRowsParseCanonicalStreamContractFields();
+  testTaskRowsAcceptFinalPayloadSessionIdAlias();
   testRunningTaskRowDoesNotUseStreamDurationAsDisplayTime();
   testTerminalTaskRowUsesFinalElapsedAsDisplayTime();
   testPlanManageShowsPlanLabelAndAction();
