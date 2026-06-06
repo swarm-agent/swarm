@@ -306,7 +306,7 @@ function updateBrowserNotificationSignals(summary: DesktopNotificationSummary): 
 
 function emptyVaultState(): DesktopStoreState['vault'] {
   return {
-    bootstrapped: false,
+    bootstrapped: true,
     loading: false,
     enabled: false,
     unlocked: true,

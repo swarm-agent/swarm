@@ -189,22 +189,12 @@ export function DesktopVaultShell() {
     vaultBootstrapped: useDesktopStore.getState().vault.bootstrapped,
   })
   const vault = useDesktopStore((state) => state.vault)
-  const bootstrapVault = useDesktopStore((state) => state.bootstrapVault)
   const onboardingFlowRequested = useDesktopStore((state) => state.onboardingFlowRequested)
   const clearOnboardingFlow = useDesktopStore((state) => state.clearOnboardingFlow)
   const [onboardingStatus, setOnboardingStatus] = useState<DesktopOnboardingStatus | null>(null)
   const [onboardingLoading, setOnboardingLoading] = useState(true)
   const [onboardingError, setOnboardingError] = useState<string | null>(null)
   const directLANDesktopWarning = useMemo(() => getDirectLANDesktopWarning(), [])
-  const onboardingNeedsBootstrap = onboardingStatus?.needsOnboarding ?? null
-
-  useEffect(() => {
-    if (directLANDesktopWarning || onboardingLoading || onboardingStatus === null || onboardingFlowRequested || onboardingStatus.needsOnboarding) {
-      return
-    }
-    debugLog('desktop-vault-shell', 'effect:bootstrap-vault-dispatch')
-    void bootstrapVault()
-  }, [bootstrapVault, directLANDesktopWarning, onboardingFlowRequested, onboardingLoading, onboardingNeedsBootstrap, onboardingStatus])
 
   useEffect(() => {
     if (directLANDesktopWarning) {
@@ -262,7 +252,7 @@ export function DesktopVaultShell() {
     return <DirectLANDesktopWarningScreen warning={directLANDesktopWarning} />
   }
 
-  if (onboardingError) {
+  if (onboardingFlowRequested && onboardingError) {
     return (
       <div className="absolute inset-0 flex items-center justify-center bg-[var(--app-bg)] px-6">
         <div className="max-w-xl rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-5 py-4 text-sm text-[var(--app-danger)]">
@@ -272,7 +262,7 @@ export function DesktopVaultShell() {
     )
   }
 
-  if (onboardingLoading || onboardingStatus === null) {
+  if (onboardingFlowRequested && (onboardingLoading || onboardingStatus === null)) {
     return (
       <div className="absolute inset-0 flex items-center justify-center bg-[var(--app-bg)] text-sm text-[var(--app-text-muted)]">
         Loading Swarm…
@@ -280,7 +270,7 @@ export function DesktopVaultShell() {
     )
   }
 
-  if (onboardingFlowRequested || onboardingStatus.needsOnboarding) {
+  if (onboardingStatus !== null && (onboardingStatus.needsOnboarding || onboardingFlowRequested)) {
     return (
       <DesktopOnboardingGate
         status={onboardingStatus}
@@ -291,14 +281,6 @@ export function DesktopVaultShell() {
           clearOnboardingFlow()
         }}
       />
-    )
-  }
-
-  if (!vault.bootstrapped) {
-    return (
-      <div className="absolute inset-0 flex items-center justify-center bg-[var(--app-bg)] text-sm text-[var(--app-text-muted)]">
-        Loading vault…
-      </div>
     )
   }
 
