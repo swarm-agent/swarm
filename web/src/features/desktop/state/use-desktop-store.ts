@@ -1346,7 +1346,7 @@ function applyAuthoritativeSessionStatus(
     case 'running':
     case 'blocked':
       session.live.status = status
-      if (status === 'running' && session.live.startedAt === null) {
+      if ((status === 'starting' || status === 'running') && session.live.startedAt === null) {
         session.live.startedAt = ts
       }
       break
@@ -1410,6 +1410,83 @@ function mergeMessagesCache(sessionId: string, messages: ChatMessageRecord[]): v
 
 function isSendSessionMessageResult(value: unknown): value is SendSessionMessageResult {
   return Boolean(value && typeof value === 'object' && ('message' in value || 'runIntent' in value || 'session' in value))
+}
+
+function normalizeGlobalV3SessionPayload(eventType: string, payloadRecord: Record<string, unknown>): Record<string, unknown> {
+  if (!eventType.startsWith('session.')) {
+    return payloadRecord
+  }
+  const normalized: Record<string, unknown> = { ...payloadRecord }
+  const nestedSession = normalized.session && typeof normalized.session === 'object'
+    ? normalized.session as Record<string, unknown>
+    : null
+  const nestedMessage = normalized.message && typeof normalized.message === 'object'
+    ? normalized.message as Record<string, unknown>
+    : null
+  const nestedLifecycle = normalized.lifecycle && typeof normalized.lifecycle === 'object'
+    ? normalized.lifecycle as Record<string, unknown>
+    : null
+  const nestedRunIntent = normalized.run_intent && typeof normalized.run_intent === 'object'
+    ? normalized.run_intent as Record<string, unknown>
+    : null
+
+  if (typeof normalized.session_id !== 'string') {
+    if (typeof nestedSession?.id === 'string') {
+      normalized.session_id = nestedSession.id
+    } else if (typeof nestedMessage?.session_id === 'string') {
+      normalized.session_id = nestedMessage.session_id
+    } else if (typeof nestedLifecycle?.session_id === 'string') {
+      normalized.session_id = nestedLifecycle.session_id
+    } else if (typeof nestedRunIntent?.session_id === 'string') {
+      normalized.session_id = nestedRunIntent.session_id
+    }
+  }
+
+  if (eventType === 'session.created' || eventType === 'session.updated') {
+    if (nestedSession) {
+      return { ...nestedSession, ...normalized, session: nestedSession }
+    }
+    return normalized
+  }
+  if (eventType === 'session.title.updated' && nestedSession) {
+    return {
+      ...normalized,
+      title: typeof normalized.title === 'string'
+        ? normalized.title
+        : typeof nestedSession.title === 'string'
+          ? nestedSession.title
+          : normalized.title,
+      updated_at: typeof normalized.updated_at === 'number'
+        ? normalized.updated_at
+        : typeof nestedSession.updated_at === 'number'
+          ? nestedSession.updated_at
+          : normalized.updated_at,
+    }
+  }
+  if (eventType === 'session.run_intent.recorded' && nestedRunIntent) {
+    const status = typeof nestedRunIntent.status === 'string' ? nestedRunIntent.status.trim().toLowerCase() : ''
+    if (status === 'pending_executor') {
+      normalized.status = 'starting'
+      normalized.summary = normalized.summary ?? 'Pending executor…'
+    } else if (status === 'dispatch_blocked') {
+      normalized.status = 'blocked'
+      normalized.summary = normalized.summary ?? nestedRunIntent.blocked_reason ?? 'Dispatch blocked'
+      normalized.error = normalized.error ?? nestedRunIntent.blocked_reason ?? null
+    } else if (status === 'running') {
+      normalized.status = 'running'
+      normalized.summary = normalized.summary ?? 'Assistant responding…'
+    } else if (status === 'completed') {
+      normalized.status = 'idle'
+    } else if (status === 'failed') {
+      normalized.status = 'error'
+      normalized.error = normalized.error ?? nestedRunIntent.blocked_reason ?? 'Run failed'
+    }
+    if (typeof nestedRunIntent.run_id === 'string') {
+      normalized.run_id = nestedRunIntent.run_id
+    }
+    return normalized
+  }
+  return normalized
 }
 
 function applyV3MessageCommitResult(state: DesktopStoreState, sessionId: string, result: SendSessionMessageResult, ts: number): Partial<DesktopStoreState> {
@@ -2034,7 +2111,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
   const ts = typeof envelope.ts_unix_ms === 'number' ? envelope.ts_unix_ms : Date.now()
   const envelopeSeq = typeof envelope.global_seq === 'number' ? Math.max(0, envelope.global_seq) : 0
   const payload = envelope.payload && typeof envelope.payload === 'object' ? envelope.payload : {}
-  const payloadRecord = payload as Record<string, unknown>
+  let payloadRecord = payload as Record<string, unknown>
   if (eventType.startsWith('workspace.todo.')) {
     const workspacePath = typeof payloadRecord.workspace_path === 'string' ? payloadRecord.workspace_path.trim() : ''
     const summaryRecord = payloadRecord.summary && typeof payloadRecord.summary === 'object' ? payloadRecord.summary as Record<string, unknown> : null
@@ -2126,7 +2203,14 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
     }
     return { lastGlobalSeq: Math.max(state.lastGlobalSeq, envelope.global_seq ?? 0) }
   }
-  const sessionId = typeof payloadRecord.session_id === 'string' ? payloadRecord.session_id : typeof envelope.entity_id === 'string' ? envelope.entity_id : ''
+  payloadRecord = normalizeGlobalV3SessionPayload(eventType, payloadRecord)
+  const sessionId = typeof payloadRecord.session_id === 'string'
+    ? payloadRecord.session_id
+    : typeof payloadRecord.id === 'string' && eventType.startsWith('session.')
+      ? payloadRecord.id
+      : typeof envelope.entity_id === 'string'
+        ? envelope.entity_id
+        : ''
   if (eventType === 'notification.created' || eventType === 'notification.updated') {
     const record = notificationRecordFromRealtimePayload(payloadRecord)
     if (record) {
@@ -2694,6 +2778,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
       break
     }
     case 'session.status':
+    case 'session.run_intent.recorded':
       applyAuthoritativeSessionStatus(sessionId, session, typeof payloadRecord.status === 'string' ? payloadRecord.status : '', ts, eventType, {
         runId: typeof payloadRecord.run_id === 'string' ? payloadRecord.run_id : session.live.runId,
         summary: typeof payloadRecord.summary === 'string' ? payloadRecord.summary : session.live.summary,

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { afterEach, test } from 'node:test'
 
 import { queryClient } from '../../../app/query-client'
+import { sessionMessagesQueryKey } from '../../queries/query-options'
 import type { DesktopSessionRecord, DesktopStoreState } from '../types/realtime'
 import { applyEnvelope, useDesktopStore } from './use-desktop-store'
 import type { RunStreamEventMessage } from './run-stream-controller'
@@ -681,6 +682,153 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
 })
 
 // Keep the V3 stream path compatible with existing session envelope handling.
+test('global /ws V3 session title envelope updates Desktop title from canonical payload', () => {
+  const session = makeSession({ id: 'session-v3', title: 'New chat', sessionApi: 'v3' })
+  const patch = applyEnvelope(makeState(session), {
+    global_seq: 10,
+    stream: 'session:session-v3',
+    event_type: 'session.title.updated',
+    entity_id: 'session-v3',
+    ts_unix_ms: 100,
+    payload: {
+      session_id: 'session-v3',
+      title: 'Generated title',
+      updated_at: 100,
+      session: {
+        id: 'session-v3',
+        title: 'Generated title',
+        workspace_path: '/repo',
+        workspace_name: 'repo',
+        mode: 'auto',
+        session_api: 'v3',
+        message_count: 1,
+        created_at: 1,
+        updated_at: 100,
+      },
+    },
+  })
+
+  const updated = patch.sessions?.['session-v3']
+  assert.equal(updated?.title, 'Generated title')
+  assert.equal(updated?.sessionApi, 'v3')
+  assert.equal(updated?.live.lastEventType, null)
+  assert.equal(patch.lastGlobalSeq, 10)
+})
+
+test('global /ws V3 message and run-intent envelopes update Desktop canonical state', async () => {
+  const session = makeSession({ id: 'session-v3', sessionApi: 'v3' })
+  useDesktopStore.setState(makeState(session), true)
+
+  useDesktopStore.setState((state) => applyEnvelope(state, {
+    global_seq: 11,
+    stream: 'session:session-v3',
+    event_type: 'session.message.appended',
+    entity_id: 'session-v3',
+    ts_unix_ms: 101,
+    payload: {
+      session_id: 'session-v3',
+      message: {
+        id: 'msg-user-v3',
+        session_id: 'session-v3',
+        global_seq: 11,
+        role: 'user',
+        content: 'hello global',
+        created_at: 101,
+      },
+    },
+  }))
+  useDesktopStore.setState((state) => applyEnvelope(state, {
+    global_seq: 12,
+    stream: 'session:session-v3',
+    event_type: 'session.run_intent.recorded',
+    entity_id: 'session-v3',
+    ts_unix_ms: 102,
+    payload: {
+      session_id: 'session-v3',
+      run_intent: {
+        session_id: 'session-v3',
+        run_id: 'run-v3',
+        status: 'pending_executor',
+        event_seq: 12,
+        created_at: 102,
+        updated_at: 102,
+      },
+    },
+  }))
+
+  const updated = useDesktopStore.getState().sessions['session-v3']
+  assert.equal(updated.messageCount, 1)
+  assert.equal(updated.live.runId, 'run-v3')
+  assert.equal(updated.live.status, 'starting')
+  assert.equal(updated.live.summary, 'Pending executor…')
+  assert.equal(updated.live.lastEventType, 'session.run_intent.recorded')
+  assert.equal(useDesktopStore.getState().lastGlobalSeq, 12)
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(queryClient.getQueryData<unknown[]>(sessionMessagesQueryKey('session-v3'))?.length, 1)
+})
+
+test('global /ws V3 assistant lifecycle envelopes update Desktop live and message state', () => {
+  const originalWindow = globalThis.window
+  const testWindow = originalWindow ?? {} as typeof window
+  testWindow.setTimeout = ((callback: TimerHandler) => {
+    if (typeof callback === 'function') callback()
+    return 0
+  }) as typeof window.setTimeout
+  globalThis.window = testWindow
+  const session = makeSession({ id: 'session-v3', sessionApi: 'v3' })
+  useDesktopStore.setState(makeState(session), true)
+
+  try {
+    useDesktopStore.setState((state) => applyEnvelope(state, {
+      global_seq: 13,
+      stream: 'session:session-v3',
+      event_type: 'session.assistant.delta',
+      entity_id: 'session-v3',
+      ts_unix_ms: 103,
+      payload: { session_id: 'session-v3', run_id: 'run-v3', delta: 'hi' },
+    }))
+    let updated = useDesktopStore.getState().sessions['session-v3']
+    assert.equal(updated.live.assistantDraft, 'hi')
+    assert.equal(updated.live.status, 'running')
+    assert.equal(updated.live.lastEventType, 'session.assistant.delta')
+
+    useDesktopStore.setState((state) => applyEnvelope(state, {
+      global_seq: 14,
+      stream: 'session:session-v3',
+      event_type: 'session.assistant.completed',
+      entity_id: 'session-v3',
+      ts_unix_ms: 104,
+      payload: {
+        session_id: 'session-v3',
+        run_id: 'run-v3',
+        message: {
+          id: 'msg-assistant-v3',
+          session_id: 'session-v3',
+          global_seq: 14,
+          role: 'assistant',
+          content: 'hi',
+          created_at: 104,
+        },
+        run_intent: { session_id: 'session-v3', run_id: 'run-v3', status: 'completed' },
+      },
+    }))
+
+    updated = useDesktopStore.getState().sessions['session-v3']
+    assert.equal(updated.live.status, 'idle')
+    assert.equal(updated.live.runId, null)
+    assert.equal(updated.live.assistantDraft, '')
+    assert.equal(updated.live.lastEventType, 'session.assistant.completed')
+    assert.equal(updated.messageCount, 1)
+    assert.equal(useDesktopStore.getState().lastGlobalSeq, 14)
+  } finally {
+    if (originalWindow) {
+      globalThis.window = originalWindow
+    } else {
+      Reflect.deleteProperty(globalThis, 'window')
+    }
+  }
+})
+
 test('V3 session.created payload nesting maps through applyEnvelope', () => {
   const patch = applyEnvelope({ ...useDesktopStore.getState(), sessions: {}, lastGlobalSeq: 0 }, {
     event_type: 'session.created',
