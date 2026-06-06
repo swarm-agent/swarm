@@ -98,6 +98,121 @@ func TestSessionsV3TitleMutationPublishesCanonicalGlobalV3Payload(t *testing.T) 
 	t.Fatalf("missing session.title.updated global envelope in %+v", events)
 }
 
+func TestSessionsV3RepresentativeMutationsPublishGlobalV3Envelopes(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createGlobalV3TestSession(t, sessionSvc, "session-global-representative", "create-global-representative")
+
+	cases := []struct {
+		name      string
+		input     sessionruntime.SessionMutationInput
+		wantType  string
+		wantField string
+	}{
+		{
+			name: "message",
+			input: sessionruntime.SessionMutationInput{
+				Kind:    sessionruntime.SessionMutationAppendMessage,
+				Message: &pebblestore.MessageSnapshot{Role: "user", Content: "representative message"},
+			},
+			wantType:  "session.message.appended",
+			wantField: "representative message",
+		},
+		{
+			name: "lifecycle",
+			input: sessionruntime.SessionMutationInput{
+				Kind:      sessionruntime.SessionMutationUpsertLifecycle,
+				Lifecycle: &pebblestore.SessionLifecycleSnapshot{RunID: "run-global-lifecycle", Active: true, Phase: "running", OwnerTransport: "global-ws-test"},
+			},
+			wantType:  "session.lifecycle.updated",
+			wantField: "global-ws-test",
+		},
+		{
+			name: "run-intent",
+			input: sessionruntime.SessionMutationInput{
+				Kind:      sessionruntime.SessionMutationRecordRunIntent,
+				RunIntent: &pebblestore.V3SessionRunIntent{RunID: "run-global-intent", Status: pebblestore.V3RunIntentPendingExecutor},
+			},
+			wantType:  "session.run_intent.recorded",
+			wantField: "run-global-intent",
+		},
+		{
+			name: "assistant-delta",
+			input: sessionruntime.SessionMutationInput{
+				Kind:         sessionruntime.SessionMutationRecordDiagnostic,
+				EventType:    "session.assistant.delta",
+				EventPayload: json.RawMessage(`{"session_id":"session-global-representative","run_id":"run-global-assistant","delta":"hello from assistant"}`),
+			},
+			wantType:  "session.assistant.delta",
+			wantField: "hello from assistant",
+		},
+		{
+			name: "tool-started",
+			input: sessionruntime.SessionMutationInput{
+				Kind:         sessionruntime.SessionMutationRecordDiagnostic,
+				EventType:    "session.tool.started",
+				EventPayload: json.RawMessage(`{"session_id":"session-global-representative","run_id":"run-global-tool","tool_name":"shell","step_id":"step-1"}`),
+			},
+			wantType:  "session.tool.started",
+			wantField: "step-1",
+		},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := tc.input
+			input.SessionID = created.ID
+			input.UserID = testPrincipal().UserID
+			input.AccountScopeID = testPrincipal().AccountScopeID
+			input.ClientRequestID = "representative-" + tc.name
+			input.IdempotencyKey = input.ClientRequestID
+			input.PayloadHash = "hash-" + input.ClientRequestID
+			input.NowUnixMs = int64(6000 + i)
+			result, err := sessionSvc.ApplySessionMutation(input)
+			if err != nil {
+				t.Fatalf("apply %s mutation: %v", tc.name, err)
+			}
+			if err := server.publishCommittedSessionV3MutationResult(result); err != nil {
+				t.Fatalf("publish %s mutation globally: %v", tc.name, err)
+			}
+			event := assertGlobalV3EnvelopeForResult(t, server, result)
+			if event.EventType != tc.wantType {
+				t.Fatalf("global event type = %q, want %q", event.EventType, tc.wantType)
+			}
+			if !strings.Contains(string(event.Payload), tc.wantField) {
+				t.Fatalf("global payload for %s does not contain %q: %s", tc.name, tc.wantField, string(event.Payload))
+			}
+		})
+	}
+}
+
+func TestSessionsV3GlobalEnvelopePreservesSourceAndCausation(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createGlobalV3TestSession(t, sessionSvc, "session-global-source", "create-global-source")
+	result, err := sessionSvc.ApplySessionMutation(sessionruntime.SessionMutationInput{
+		SessionID:       created.ID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "message-global-source",
+		IdempotencyKey:  "message-global-source",
+		PayloadHash:     "hash-message-global-source",
+		Kind:            sessionruntime.SessionMutationAppendMessage,
+		Message:         &pebblestore.MessageSnapshot{Role: "user", Content: "source and causation"},
+		CausationID:     "cause-global-source",
+		CorrelationID:   "corr-global-source",
+		NowUnixMs:       7000,
+	})
+	if err != nil {
+		t.Fatalf("apply source mutation: %v", err)
+	}
+	if err := server.publishCommittedSessionV3MutationResult(result); err != nil {
+		t.Fatalf("publish source mutation globally: %v", err)
+	}
+	event := assertGlobalV3EnvelopeForResult(t, server, result)
+	if event.Source != "v3" || event.CausationID != "cause-global-source" || event.CorrelationID != "corr-global-source" {
+		t.Fatalf("global envelope metadata = %+v", event)
+	}
+}
+
 func TestSessionsV3ReplayedMutationDoesNotDuplicateGlobalEvent(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createGlobalV3TestSession(t, sessionSvc, "session-global-idempotent", "create-global-idempotent")
@@ -280,6 +395,22 @@ func TestSessionsV3CommittedMutationReachesGlobalWebsocketSessionWildcard(t *tes
 		t.Fatalf("global websocket event = %+v", *frame.Event)
 	}
 	assertJSONEqualRaw(t, frame.Event.Payload, result.Event.Payload)
+}
+
+func assertGlobalV3EnvelopeForResult(t *testing.T, server *Server, result sessionruntime.SessionMutationResult) pebblestore.EventEnvelope {
+	t.Helper()
+	events, err := server.events.ReadFrom(1, 200)
+	if err != nil {
+		t.Fatalf("read global event log: %v", err)
+	}
+	for _, event := range events {
+		if event.Stream == "session:"+result.Event.SessionID && event.EventType == result.Event.EventType && event.EntityID == result.Event.SessionID {
+			assertJSONEqualRaw(t, event.Payload, result.Event.Payload)
+			return event
+		}
+	}
+	t.Fatalf("missing global V3 event envelope for %s/%s in %+v", result.Event.SessionID, result.Event.EventType, events)
+	return pebblestore.EventEnvelope{}
 }
 
 func createGlobalV3TestSession(t *testing.T, sessionSvc *sessionruntime.Service, sessionID, requestID string) pebblestore.SessionSnapshot {
