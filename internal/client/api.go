@@ -3592,9 +3592,6 @@ func (c *API) StopSessionRun(ctx context.Context, sessionID, runID string) error
 	if runID == "" {
 		return errors.New("run id is required")
 	}
-	if isSessionV3ID(sessionID) {
-		return c.StopSessionV3Run(ctx, sessionID, runID, "")
-	}
 	session, err := c.GetSession(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("resolve session execution for stop: %w", err)
@@ -3615,11 +3612,6 @@ func (c *API) StopSessionRun(ctx context.Context, sessionID, runID string) error
 		}
 	}
 	return errors.New("session execution class is not available for stop")
-}
-
-func isSessionV3ID(sessionID string) bool {
-	sessionID = strings.TrimSpace(sessionID)
-	return strings.HasPrefix(sessionID, "v3session_") || strings.HasPrefix(sessionID, "session-v3")
 }
 
 func (c *API) StopSessionV3Run(ctx context.Context, sessionID, runID, reason string) error {

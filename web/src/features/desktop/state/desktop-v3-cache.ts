@@ -52,9 +52,6 @@ export function assertRawCanonicalDesktopV3SessionId(sessionId: string): string 
   if (!normalizedSessionId) {
     throw new Error('Desktop V3 requires a raw canonical session id.')
   }
-  if (normalizedSessionId.startsWith('v3session_')) {
-    throw new Error('Desktop V3 requires a raw canonical session id; prefixed route session ids are invalid.')
-  }
   return normalizedSessionId
 }
 

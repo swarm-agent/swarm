@@ -572,16 +572,12 @@ func sessionsV3MessagePayloadHash(sessionID string, req sessionsV3MessageRequest
 
 func stableSessionsV3PrimarySessionID(principal identity.Principal, clientRequestID string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(principal.AccountScopeID) + "\x00" + strings.TrimSpace(clientRequestID)))
-	return "v3session_" + hex.EncodeToString(sum[:16])
+	return hex.EncodeToString(sum[:16])
 }
 
 func stableSessionsV3PrimaryRunID(sessionID, clientRequestID string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(clientRequestID)))
 	return "v3run_" + hex.EncodeToString(sum[:16])
-}
-
-func isSessionsV3PrimarySessionID(sessionID string) bool {
-	return strings.HasPrefix(strings.TrimSpace(sessionID), "v3session_")
 }
 
 func normalizeSessionsV3ModelPreference(pref pebblestore.ModelPreference) pebblestore.ModelPreference {

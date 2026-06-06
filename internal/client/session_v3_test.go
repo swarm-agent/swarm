@@ -90,8 +90,8 @@ func TestSessionV3ClientUsesPrimaryRoutes(t *testing.T) {
 	if msg.RunIntent.Status != "pending_executor" || msg.Message.ID != "msg-2" {
 		t.Fatalf("message result = %#v", msg)
 	}
-	if err := api.StopSessionRun(context.Background(), "session-v3", "run-1"); err != nil {
-		t.Fatalf("StopSessionRun(v3) error = %v", err)
+	if err := api.StopSessionV3Run(context.Background(), "session-v3", "run-1", ""); err != nil {
+		t.Fatalf("StopSessionV3Run() error = %v", err)
 	}
 	want := []string{"POST /v3/sessions", "GET /v3/sessions/session-v3", "POST /v3/sessions/session-v3/messages", "POST /v3/sessions/session-v3/run/stop"}
 	if len(seen) != len(want) {

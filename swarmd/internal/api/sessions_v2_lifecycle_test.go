@@ -195,46 +195,6 @@ func TestSessionsV2LifecycleRejectsReservedEndpointIDs(t *testing.T) {
 	}
 }
 
-func TestSessionsV2LifecycleRejectsV3SessionIDsBeforeAuthorityLookup(t *testing.T) {
-	server := &Server{}
-
-	for _, tc := range []struct {
-		name   string
-		method string
-		path   string
-		body   string
-	}{
-		{name: "session", method: http.MethodGet, path: "/v2/sessions/v3session_backend_gate"},
-		{name: "messages", method: http.MethodPost, path: "/v2/sessions/v3session_backend_gate/messages", body: `{"role":"user","content":"wrong api"}`},
-		{name: "metadata", method: http.MethodGet, path: "/v2/sessions/v3session_backend_gate/metadata"},
-		{name: "run", method: http.MethodPost, path: "/v2/sessions/v3session_backend_gate/run", body: `{"prompt":"wrong api"}`},
-		{name: "run stream", method: http.MethodPost, path: "/v2/sessions/v3session_backend_gate/run/stream", body: `{"type":"run.start","prompt":"wrong api"}`},
-		{name: "plan by id", method: http.MethodGet, path: "/v2/sessions/v3session_backend_gate/plans/plan_backend_gate/history"},
-		{name: "permission resolve", method: http.MethodPost, path: "/v2/sessions/v3session_backend_gate/permissions/perm_backend_gate/resolve", body: `{"action":"deny_once"}`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(tc.method, tc.path, bytes.NewBufferString(tc.body))
-			if tc.body != "" {
-				req.Header.Set("Content-Type", "application/json")
-			}
-			rec := httptest.NewRecorder()
-
-			server.handlePrimarySessionV2ByID(rec, req)
-
-			if rec.Code != http.StatusBadRequest {
-				t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
-			}
-			body := rec.Body.String()
-			if !strings.Contains(body, "session_v2_bad_request") || !strings.Contains(body, "must use /v3/sessions endpoints") {
-				t.Fatalf("body = %s, want v3 session v2 route rejection", body)
-			}
-			if strings.Contains(body, "sessions v2 service is not configured") || strings.Contains(body, "authority") {
-				t.Fatalf("body = %s, v3 gate must reject before service or authority lookup", body)
-			}
-		})
-	}
-}
-
 func TestSessionsV2LifecycleRejectsMissingExecution(t *testing.T) {
 	server, sessionSvc := newSessionAccessModeTestServer(t, pebblestore.TopologyWorkspaceBindingAccessModeReadWrite)
 	pref := pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "medium"}

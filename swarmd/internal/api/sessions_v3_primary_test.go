@@ -495,7 +495,7 @@ func TestSessionsV3ExecutorRejectsDuplicateEnqueueRun(t *testing.T) {
 	exec := newSessionV3Executor(server)
 	exec.startDelay = 250 * time.Millisecond
 	server.v3SessionExecutor = exec
-	job := sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: "v3session_duplicate_enqueue", RunID: "run-duplicate"}
+	job := sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: "session-duplicate-enqueue", RunID: "run-duplicate"}
 	if !exec.EnqueueRun(job) {
 		t.Fatalf("first enqueue returned false")
 	}
@@ -2809,7 +2809,7 @@ func TestSessionsV3RuntimeInstructionsUseLegacyWorkspaceAndRuleContext(t *testin
 
 	now := time.Now().UnixMilli()
 	session := pebblestore.SessionSnapshot{
-		ID:                      "v3session_instruction_workspace_redline",
+		ID:                      "session-instruction-workspace-redline",
 		UserID:                  testPrincipal().UserID,
 		AccountScopeID:          testPrincipal().AccountScopeID,
 		WorkspacePath:           primary,

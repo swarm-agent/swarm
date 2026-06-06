@@ -35,6 +35,7 @@ type ProviderManagedToolInvokerConfig struct {
 	Principal            identity.Principal
 	Emit                 StreamHandler
 	ApplySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
+	ProviderManagedV3    bool
 	Policy               *permission.Policy
 	AgentProfile         pebblestore.AgentProfile
 }
@@ -53,6 +54,7 @@ type providerToolInvokerConfig struct {
 	principal            identity.Principal
 	emit                 StreamHandler
 	applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
+	providerManagedV3    bool
 	policy               *permission.Policy
 	agentProfile         pebblestore.AgentProfile
 }
@@ -72,6 +74,7 @@ func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerCon
 		principal:            config.Principal,
 		emit:                 config.Emit,
 		applySessionMutation: config.ApplySessionMutation,
+		providerManagedV3:    config.ProviderManagedV3,
 		policy:               config.Policy,
 		agentProfile:         config.AgentProfile,
 	}
@@ -324,7 +327,7 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 }
 
 func (s *Service) storeProviderManagedToolResult(config providerToolInvokerConfig, call tool.Call, metadata map[string]any, result tool.Result) error {
-	if isProviderManagedV3SessionID(config.sessionID) {
+	if config.providerManagedV3 {
 		return s.storeProviderManagedToolResultV3(config, call, metadata, result)
 	}
 	return s.storeProviderManagedToolResultLegacy(config, newToolCallSnapshot(call), metadata, newToolResultSnapshot(result))
@@ -518,8 +521,4 @@ func providerManagedV3ToolPayloadHash(sessionID, runID string, step int, call to
 	}
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:]), nil
-}
-
-func isProviderManagedV3SessionID(sessionID string) bool {
-	return strings.HasPrefix(strings.TrimSpace(sessionID), "v3session_")
 }

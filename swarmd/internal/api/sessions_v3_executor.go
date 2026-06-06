@@ -1114,6 +1114,7 @@ func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3Re
 		Policy:               policy,
 		Emit:                 e.emitSessionV3ProviderToolEvent(job),
 		ApplySessionMutation: e.server.applySessionV3PrimaryMutation,
+		ProviderManagedV3:    true,
 		AgentProfile:         resolved.AgentProfile,
 	})
 	if invoker == nil {

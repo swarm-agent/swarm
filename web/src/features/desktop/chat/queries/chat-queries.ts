@@ -199,13 +199,6 @@ function resolveSessionApiForSession(
   return options.sessionApi?.trim().toLowerCase() ?? "";
 }
 
-function assertRawCanonicalDesktopV3SessionId(sessionId: string): void {
-  const normalizedSessionId = sessionId.trim();
-  if (normalizedSessionId.startsWith("v3session_")) {
-    throw new Error("Desktop V3 requires a raw canonical session id; prefixed route session ids are invalid.");
-  }
-}
-
 function rejectV3SessionV2Subresource(_sessionId: string, _subresource: string): void {
   // Desktop V3 no longer infers session API from ID shape. Callers that know they
   // are operating on V3 sessions must use explicit V3 APIs/cache paths instead
@@ -951,7 +944,6 @@ export async function fetchSession(
 
   const sessionApi = resolveSessionApiForSession(normalizedSessionId, options) || "v3";
   if (sessionApi === "v3") {
-    assertRawCanonicalDesktopV3SessionId(normalizedSessionId);
     const response = await requestJson<V3HydratedSessionResponseWire>(
       `/v3/sessions/${encodeURIComponent(normalizedSessionId)}`,
     );
@@ -1045,9 +1037,6 @@ export async function fetchSessionMessages(
     search.set("after_seq", String(afterSeq));
   }
   const sessionApi = resolveSessionApiForSession(normalizedSessionId, options);
-  if (sessionApi === "v3") {
-    assertRawCanonicalDesktopV3SessionId(normalizedSessionId);
-  }
   const endpoint = sessionApi === "v3"
     ? `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/messages?${search.toString()}`
     : `/v2/sessions/${encodeURIComponent(normalizedSessionId)}/messages?${search.toString()}`;
@@ -1875,7 +1864,6 @@ export async function sendSessionMessage(
   const normalizedSessionId = sessionId.trim();
   const sessionApi = resolveSessionApiForSession(normalizedSessionId, options);
   if (sessionApi === "v3") {
-    assertRawCanonicalDesktopV3SessionId(normalizedSessionId);
     const clientRequestId = options.clientRequestId?.trim()
       || `desktop-v3-message:${normalizedSessionId}:${crypto.randomUUID()}`;
     const response = await requestJson<V3MessageCommitResponseWire>(
@@ -2010,7 +1998,6 @@ export async function openRunStream(
   const normalizedSessionId = sessionId.trim();
   const sessionApi = resolveSessionApiForSession(normalizedSessionId, options);
   if (sessionApi === "v3") {
-    assertRawCanonicalDesktopV3SessionId(normalizedSessionId);
     throw new Error("V3 sessions use the global /ws session:* connection");
   }
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -2032,7 +2019,6 @@ export async function stopSessionRun(
   const normalizedSessionId = sessionId.trim();
   const sessionApi = resolveSessionApiForSession(normalizedSessionId, options);
   if (sessionApi === "v3") {
-    assertRawCanonicalDesktopV3SessionId(normalizedSessionId);
     const response = await apiFetch(
       `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/run/stop`,
       {

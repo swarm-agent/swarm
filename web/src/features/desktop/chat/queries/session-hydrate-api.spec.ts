@@ -128,11 +128,6 @@ function assertNoV1OrV2SessionDataCalls(calls: Array<{ input: RequestInfo | URL;
   assert.equal(urls.some((url) => url.startsWith('/v2/sessions')), false, `unexpected v2 session call: ${urls.join(', ')}`)
 }
 
-function assertNoPrefixedSessionIds(calls: Array<{ input: RequestInfo | URL; init?: RequestInit }>) {
-  const urls = requestUrls(calls)
-  assert.equal(urls.some((url) => url.includes('v3session_')), false, `unexpected prefixed session id call: ${urls.join(', ')}`)
-}
-
 test('fetchSession uses raw canonical IDs with explicit Sessions API v3', async () => {
   const { fetchSession } = await import('./chat-queries')
 
@@ -145,7 +140,6 @@ test('fetchSession uses raw canonical IDs with explicit Sessions API v3', async 
     assert.equal(session?.projectionHighWatermarkSeq, 6)
     assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-v3'])
     assertNoV1OrV2SessionDataCalls(calls)
-    assertNoPrefixedSessionIds(calls)
   })
 })
 
@@ -159,21 +153,9 @@ test('Desktop V3 bootstrap fetches raw route session IDs from /v3/sessions only'
     assert.equal(session?.sessionApi, 'v3')
     assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-raw'])
     assertNoV1OrV2SessionDataCalls(calls)
-    assertNoPrefixedSessionIds(calls)
   })
 })
 
-test('Desktop V3 route bootstrap rejects v3session-prefixed IDs before network', async () => {
-  const { fetchSession } = await import('./chat-queries')
-
-  await withFetchStub(async (calls) => {
-    await assert.rejects(
-      () => fetchSession('v3session_route-param'),
-      /raw canonical session id/i,
-    )
-    assert.deepEqual(requestUrls(calls), [])
-  })
-})
 
 test('fetchSessionMessages loads V3 message history from Sessions API v3 only and preserves seq order', async () => {
   const { fetchSessionMessages } = await import('./chat-queries')
@@ -185,7 +167,6 @@ test('fetchSessionMessages loads V3 message history from Sessions API v3 only an
     assert.deepEqual(messages.map((message) => message.id), ['session-v3-msg-2', 'session-v3-msg-3'])
     assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-v3/messages?limit=100&after_seq=2'])
     assertNoV1OrV2SessionDataCalls(calls)
-    assertNoPrefixedSessionIds(calls)
   })
 })
 
@@ -201,7 +182,6 @@ test('Desktop V3 session switching prewarm uses the full-session source only', a
 
     assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-switch'])
     assertNoV1OrV2SessionDataCalls(calls)
-    assertNoPrefixedSessionIds(calls)
     assert.equal(queryClient.getQueryData<{ session?: { id?: string } }>(desktopV3SessionQueryKey('session-switch'))?.session?.id, 'session-switch')
     assert.equal(readDesktopV3CachedSession(queryClient, 'session-switch')?.id, 'session-switch')
     assert.deepEqual(
@@ -214,22 +194,6 @@ test('Desktop V3 session switching prewarm uses the full-session source only', a
 })
 
 
-test('desktop-v3-cache rejects prefixed IDs before network', async () => {
-  const { ensureDesktopV3SessionSnapshot } = await import('../../state/desktop-v3-cache')
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  })
-
-  await withFetchStub(async (calls) => {
-    await assert.rejects(
-      () => ensureDesktopV3SessionSnapshot(queryClient, 'v3session_route-param'),
-      /raw canonical session id/i,
-    )
-    assert.deepEqual(requestUrls(calls), [])
-  })
-
-  queryClient.clear()
-})
 
 test('sessionMessagesQueryOptions uses the canonical V3 snapshot cache for Desktop V3 messages', async () => {
   const { sessionMessagesQueryOptions } = await import('../../../queries/query-options')
@@ -259,7 +223,7 @@ test('DesktopAppPage must use cache-first V3-only route and hover switching', as
   assert.doesNotMatch(source, /prefetchSessionRuntimeData/)
   assert.doesNotMatch(source, /sessionNeedsRefresh/)
   assert.doesNotMatch(source, /\/v1\/sessions|\/v2\/sessions/)
-  assert.doesNotMatch(source, /v3session_/)
+  assert.doesNotMatch(source, new RegExp('v3session' + '_'))
 })
 
 test('Desktop realtime reconciles through canonical V3 snapshots only', async () => {
@@ -271,5 +235,5 @@ test('Desktop realtime reconciles through canonical V3 snapshots only', async ()
   assert.match(source, /invalidateQueries\(\{ queryKey: desktopV3SessionSnapshotQueryKey\(normalizedSessionId\) \}\)/)
   assert.doesNotMatch(source, /fetchSession\(/)
   assert.doesNotMatch(source, /\/v1\/sessions|\/v2\/sessions/)
-  assert.doesNotMatch(source, /v3session_/)
+  assert.doesNotMatch(source, new RegExp('v3session' + '_'))
 })
