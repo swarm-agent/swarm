@@ -1,32 +1,68 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-async function withFetchTrap(run: () => Promise<void>): Promise<void> {
+async function assertLegacyHelperUsesV2(action: () => Promise<unknown>, expectedPath: string): Promise<void> {
   const originalFetch = globalThis.fetch
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
-    throw new Error(`unexpected fetch: ${String(input)}`)
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = []
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ input, init })
+    return new Response(JSON.stringify(legacyResponseForPath(String(input))), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
   }) as typeof fetch
   try {
-    await run()
+    await action()
   } finally {
     globalThis.fetch = originalFetch
   }
+  assert.equal(String(calls[0]?.input ?? ''), expectedPath)
 }
 
-async function assertRejectsWithoutFetch(action: () => Promise<unknown>, expectedSubresource: string): Promise<void> {
-  await withFetchTrap(async () => {
-    await assert.rejects(
-      action,
-      (error) => {
-        assert.ok(error instanceof Error)
-        assert.match(error.message, /Sessions API v3 does not support/)
-        assert.match(error.message, new RegExp(expectedSubresource))
-        assert.match(error.message, /refusing to call legacy Sessions API v2/)
-        assert.match(error.message, /v3session_guard/)
-        return true
-      },
-    )
-  })
+function legacyResponseForPath(path: string): unknown {
+  if (path.endsWith('/preference')) {
+    return { ok: true, preference: { model: 'gpt-5.4' } }
+  }
+  if (path.endsWith('/mode')) {
+    return { ok: true, mode: 'plan' }
+  }
+  if (path.endsWith('/metadata')) {
+    return { ok: true, session: { id: 'session-raw' }, metadata: {} }
+  }
+  if (path.endsWith('/codex')) {
+    return { ok: true }
+  }
+  if (path.endsWith('/run/stream')) {
+    return { ok: true, run_id: 'run-1' }
+  }
+  if (path.includes('/permissions/perm-1/resolve')) {
+    return { ok: true, permission: { id: 'perm-1', status: 'resolved' } }
+  }
+  if (path.endsWith('/usage')) {
+    return { ok: true, usage_summary: null }
+  }
+  if (path.endsWith('/plans/active')) {
+    return { ok: true, has_active: false, active_plan: null }
+  }
+  if (path.includes('/plans/plan-1/history')) {
+    return { ok: true, revisions: [] }
+  }
+  if (path.includes('/plans/plan-1')) {
+    return { ok: true, plan: { id: 'plan-1' } }
+  }
+  if (path.includes('/plans?limit=100')) {
+    return { ok: true, active_plan_id: '', plans: [] }
+  }
+  if (path.endsWith('/plans')) {
+    return { ok: true, plan: { id: 'plan-1' } }
+  }
+  if (path.endsWith('/permissions/resolve_all')) {
+    return { ok: true, resolved: [] }
+  }
+  if (path.includes('/permissions?status=pending')) {
+    return { ok: true, permissions: [] }
+  }
+  return { ok: true }
 }
 
 const primaryRoute = {
@@ -42,7 +78,7 @@ const primaryRoute = {
   runtimeWorkspacePath: '/repo',
 }
 
-test('v3session-prefixed lifecycle helpers fail closed before V2 metadata/mode/preference/codex calls', async () => {
+test('legacy lifecycle helpers do not infer V3 from session ID shape', async () => {
   const {
     fetchSessionPreference,
     updateSessionPreference,
@@ -54,20 +90,20 @@ test('v3session-prefixed lifecycle helpers fail closed before V2 metadata/mode/p
     updateSessionCodexConfig,
   } = await import('./chat-queries')
 
-  await assertRejectsWithoutFetch(() => fetchSessionPreference('v3session_guard'), 'session preference')
-  await assertRejectsWithoutFetch(() => updateSessionPreference('v3session_guard', { model: 'gpt-5.4' }), 'session preference')
-  await assertRejectsWithoutFetch(() => fetchSessionMode('v3session_guard'), 'session mode')
-  await assertRejectsWithoutFetch(() => updateSessionMode('v3session_guard', 'plan'), 'session mode')
-  await assertRejectsWithoutFetch(() => fetchSessionMetadata('v3session_guard'), 'session metadata')
-  await assertRejectsWithoutFetch(() => updateSessionMetadata('v3session_guard', { ticket: 'T-1' }), 'session metadata')
-  await assertRejectsWithoutFetch(() => fetchSessionCodexConfig('v3session_guard'), 'session Codex config')
-  await assertRejectsWithoutFetch(() => updateSessionCodexConfig('v3session_guard', { serviceTier: 'flex' }), 'session Codex config')
+  await assertLegacyHelperUsesV2(() => fetchSessionPreference('session-raw'), '/v2/sessions/session-raw/preference')
+  await assertLegacyHelperUsesV2(() => updateSessionPreference('session-raw', { model: 'gpt-5.4' }), '/v2/sessions/session-raw/preference')
+  await assertLegacyHelperUsesV2(() => fetchSessionMode('session-raw'), '/v2/sessions/session-raw/mode')
+  await assertLegacyHelperUsesV2(() => updateSessionMode('session-raw', 'plan'), '/v2/sessions/session-raw/mode')
+  await assertLegacyHelperUsesV2(() => fetchSessionMetadata('session-raw'), '/v2/sessions/session-raw/metadata')
+  await assertLegacyHelperUsesV2(() => updateSessionMetadata('session-raw', { ticket: 'T-1' }), '/v2/sessions/session-raw/metadata')
+  await assertLegacyHelperUsesV2(() => fetchSessionCodexConfig('session-raw'), '/v2/sessions/session-raw/codex')
+  await assertLegacyHelperUsesV2(() => updateSessionCodexConfig('session-raw', { serviceTier: 'flex' }), '/v2/sessions/session-raw/codex')
 })
 
-test('v3session-prefixed run, plan, permission, and usage helpers fail closed before V2 subresource calls', async () => {
+test('legacy run, plan, permission, and usage helpers do not infer V3 from session ID shape', async () => {
   const {
     startSessionRun,
-    stopSessionRun,
+
     resolveSessionPermission,
     fetchSessionUsageSummary,
     fetchActiveSessionPlan,
@@ -80,26 +116,26 @@ test('v3session-prefixed run, plan, permission, and usage helpers fail closed be
     fetchSessionPendingPermissions,
   } = await import('./chat-queries')
 
-  await assertRejectsWithoutFetch(() => startSessionRun({ sessionId: 'v3session_guard', prompt: 'run', route: primaryRoute }), 'session run dispatch')
-  await assertRejectsWithoutFetch(() => resolveSessionPermission('v3session_guard', 'perm-1', 'approve', 'ok'), 'session permissions')
-  await assertRejectsWithoutFetch(() => fetchSessionUsageSummary('v3session_guard'), 'session usage summary')
-  await assertRejectsWithoutFetch(() => fetchActiveSessionPlan('v3session_guard'), 'session plans')
-  await assertRejectsWithoutFetch(() => activateSessionPlan('v3session_guard', 'plan-1'), 'session plans')
-  await assertRejectsWithoutFetch(() => fetchSessionPlans('v3session_guard'), 'session plans')
-  await assertRejectsWithoutFetch(() => fetchSessionPlan('v3session_guard', 'plan-1'), 'session plans')
-  await assertRejectsWithoutFetch(() => saveSessionPlan('v3session_guard', { title: 'Plan', plan: '# Plan' }), 'session plans')
-  await assertRejectsWithoutFetch(() => fetchSessionPlanHistory('v3session_guard', 'plan-1'), 'session plans')
-  await assertRejectsWithoutFetch(() => resolveAllSessionPermissions('v3session_guard', 'approve', 'ok'), 'session permissions')
-  await assertRejectsWithoutFetch(() => fetchSessionPendingPermissions('v3session_guard'), 'session permissions')
+  await assertLegacyHelperUsesV2(() => startSessionRun({ sessionId: 'session-raw', prompt: 'run', route: primaryRoute }), '/v2/sessions/session-raw/run/stream')
+  await assertLegacyHelperUsesV2(() => resolveSessionPermission('session-raw', 'perm-1', 'approve', 'ok'), '/v2/sessions/session-raw/permissions/perm-1/resolve')
+  await assertLegacyHelperUsesV2(() => fetchSessionUsageSummary('session-raw'), '/v2/sessions/session-raw/usage')
+  await assertLegacyHelperUsesV2(() => fetchActiveSessionPlan('session-raw'), '/v2/sessions/session-raw/plans/active')
+  await assertLegacyHelperUsesV2(() => activateSessionPlan('session-raw', 'plan-1'), '/v2/sessions/session-raw/plans/active')
+  await assertLegacyHelperUsesV2(() => fetchSessionPlans('session-raw'), '/v2/sessions/session-raw/plans?limit=100')
+  await assertLegacyHelperUsesV2(() => fetchSessionPlan('session-raw', 'plan-1'), '/v2/sessions/session-raw/plans/plan-1')
+  await assertLegacyHelperUsesV2(() => saveSessionPlan('session-raw', { title: 'Plan', plan: '# Plan' }), '/v2/sessions/session-raw/plans')
+  await assertLegacyHelperUsesV2(() => fetchSessionPlanHistory('session-raw', 'plan-1'), '/v2/sessions/session-raw/plans/plan-1/history?limit=100')
+  await assertLegacyHelperUsesV2(() => resolveAllSessionPermissions('session-raw', 'approve', 'ok'), '/v2/sessions/session-raw/permissions/resolve_all')
+  await assertLegacyHelperUsesV2(() => fetchSessionPendingPermissions('session-raw'), '/v2/sessions/session-raw/permissions?status=pending&limit=200')
 })
 
 
-test('v3session-prefixed stop helper calls Sessions API v3 cancel endpoint, not V2 stop', async () => {
+test('explicit V3 stop helper calls Sessions API v3 cancel endpoint, not V2 stop', async () => {
   const originalFetch = globalThis.fetch
   const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = []
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     calls.push({ input, init })
-    return new Response(JSON.stringify({ ok: true, session_id: 'v3session_guard', run_id: 'run-1', status: 'cancel_requested' }), {
+    return new Response(JSON.stringify({ ok: true, session_id: 'session-raw', run_id: 'run-1', status: 'cancel_requested' }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     })
@@ -107,13 +143,13 @@ test('v3session-prefixed stop helper calls Sessions API v3 cancel endpoint, not 
 
   try {
     const { stopSessionRun } = await import('./chat-queries')
-    await stopSessionRun('v3session_guard', 'run-1', primaryRoute)
+    await stopSessionRun('session-raw', 'run-1', primaryRoute, { sessionApi: 'v3' })
   } finally {
     globalThis.fetch = originalFetch
   }
 
   assert.equal(calls.length, 1)
-  assert.equal(String(calls[0].input), '/v3/sessions/v3session_guard/run/stop')
+  assert.equal(String(calls[0].input), '/v3/sessions/session-raw/run/stop')
   assert.equal(calls[0].init?.method, 'POST')
   assert.deepEqual(JSON.parse(String(calls[0].init?.body ?? '{}')), { type: 'run.stop', run_id: 'run-1' })
 })

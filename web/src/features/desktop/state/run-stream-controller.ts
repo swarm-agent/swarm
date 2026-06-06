@@ -176,8 +176,8 @@ export class DesktopRunStreamController {
     return accepted
   }
 
-  async stop(options: { sessionId: string; runId: string; route?: DesktopBackgroundRunStartOptions['route'] }): Promise<void> {
-    await stopSessionRun(options.sessionId, options.runId, options.route)
+  async stop(options: { sessionId: string; runId: string; route?: DesktopBackgroundRunStartOptions['route']; sessionApi?: string | null }): Promise<void> {
+    await stopSessionRun(options.sessionId, options.runId, options.route, { sessionApi: options.sessionApi })
   }
 
   async ensure(sessionId: string, runId?: string | null): Promise<void> {

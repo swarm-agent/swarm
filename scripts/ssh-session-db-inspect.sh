@@ -13,7 +13,7 @@ the Pebble DB, then restores the service if it was active.
 Common examples:
   scripts/ssh-session-db-inspect.sh <ssh-alias> --latest 5
   scripts/ssh-session-db-inspect.sh <ssh-alias> --session <session-id> --dump
-  scripts/ssh-session-db-inspect.sh <ssh-alias> --query "finished testing" --json --out /tmp/session-dump.json
+  scripts/ssh-session-db-inspect.sh <ssh-alias> --query "finished testing" --json --out session-dump.json
   scripts/ssh-session-db-inspect.sh <ssh-alias> --query "session.assistant.completed" --events 40
 
 Options:
@@ -298,7 +298,7 @@ if [ ! -d "$remote_dir/swarmd" ]; then
 fi
 
 go_bin=""
-for candidate in "$remote_dir/.tools/go/bin/go" "$remote_dir/tools/go/bin/go" /usr/local/go/bin/go /opt/homebrew/bin/go; do
+for candidate in "$remote_dir/.tools/go/bin/go" "$remote_dir/tools/go/bin/go"; do
   if [ -x "$candidate" ]; then
     go_bin="$candidate"
     break

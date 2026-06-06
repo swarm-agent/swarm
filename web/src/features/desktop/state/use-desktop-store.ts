@@ -3498,7 +3498,8 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
       return
     }
     set((state) => applyRunStreamFrame(state, normalizedSessionId, { type: 'run.stop.accepted', run_id: runId }, Date.now()))
-    await requireRunStreamController().stop({ sessionId: normalizedSessionId, runId, route })
+    const sessionApi = get().sessions[normalizedSessionId]?.sessionApi?.trim().toLowerCase() ?? ''
+    await requireRunStreamController().stop({ sessionId: normalizedSessionId, runId, route, sessionApi })
   },
   submitPrompt: async ({ sessionId, route = null, sessionApi = null, clientRequestId: providedClientRequestId = null, workspacePath, prompt, agentName, compact = false, targetKind = '', targetName = '' }: {
     sessionId: string | null

@@ -18,6 +18,8 @@ swarm_find_go_bin() {
   local candidate parent_root goroot_dir
   parent_root="$(cd -- "${root}/.." && pwd)"
   for candidate in \
+    "${root}"/.tools/go/bin/go \
+    "${parent_root}"/.tools/go/bin/go \
     "${root}"/.tools/go*/bin/go \
     "${parent_root}"/.tools/go*/bin/go
   do

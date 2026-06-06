@@ -29,8 +29,8 @@ test('canonical session workspace preserves runtime path when no host mirror pat
 
 test('canonical session workspace uses v2 source workspace path from binding metadata', () => {
   const facts = sessionWorkspaceFactsFromMetadata({
-    swarm_v2_workspace_binding_id: 'binding:replica:checkthis:/home/installer/swarm-go',
-    swarm_v2_source_workspace_path: '/home/installer/swarm-go',
+    swarm_v2_workspace_binding_id: 'binding:replica:checkthis:/workspaces/source-swarm-go',
+    swarm_v2_source_workspace_path: '/workspaces/source-swarm-go',
     swarm_v2_runtime_workspace_path: '/workspaces/swarm-go',
   })
 
@@ -38,6 +38,6 @@ test('canonical session workspace uses v2 source workspace path from binding met
     workspacePath: '/workspaces/swarm-go',
     sourceWorkspacePath: facts.sourceWorkspacePath,
     runtimeWorkspacePath: facts.runtimeWorkspacePath,
-  }), '/home/installer/swarm-go')
+  }), '/workspaces/source-swarm-go')
   assert.equal(facts.runtimeWorkspacePath, '/workspaces/swarm-go')
 })

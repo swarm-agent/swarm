@@ -51,7 +51,7 @@ test('desktop websocket clients bootstrap the local session cookie and do not se
     await openDesktopWebSocket()
     await openRunStream('session-local-auth')
     await assert.rejects(
-      () => openRunStream('v3session_zero', { sessionApi: 'v3', afterSeq: 0 }),
+      () => openRunStream('session-zero', { sessionApi: 'v3', afterSeq: 0 }),
       /global \/ws session:\* connection/,
     )
 

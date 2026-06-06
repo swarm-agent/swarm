@@ -23,7 +23,7 @@ Options:
   --model <model>                    AI model. Default: accounts/fireworks/models/kimi-k2p6
   --thinking <level>                 Thinking level. Default: low
   --fireworks-key-path <path>        Remote Fireworks key path used to seed credentials if needed.
-                                      If omitted, auto-detects exactly one /tmp/*fireworks*.key.
+                                      If omitted, auto-detects exactly one *fireworks*.key in the remote temp dir.
   --timeout-seconds <seconds>        Wait timeout. Default: 420
   --service <unit>                   Remote service unit for log capture. Default: swarm.service
   --open-only                        Stop after session-open diagnostics; skip the AI run.
@@ -254,11 +254,16 @@ set -euo pipefail
 api_url="${1%/}"
 key_path="${2:-}"
 if [ -z "${key_path}" ]; then
-  set -- /tmp/*fireworks*.key
+  remote_tmp_dir="${TMPDIR:-${XDG_RUNTIME_DIR:-}}"
+  if [ -z "${remote_tmp_dir}" ]; then
+    remote_tmp_dir="$(mktemp -d)"
+    rmdir "${remote_tmp_dir}"
+  fi
+  set -- "${remote_tmp_dir}"/*fireworks*.key
   if [ "$#" -eq 1 ] && [ -f "$1" ]; then
     key_path="$1"
   else
-    jq -nc --arg count "$#" '{ok:false,error:("no active fireworks credential and auto-detect expected exactly one /tmp/*fireworks*.key, found " + $count)}'
+    jq -nc --arg count "$#" --arg remote_tmp_dir "${remote_tmp_dir}" '{ok:false,error:("no active fireworks credential and auto-detect expected exactly one *fireworks*.key in " + $remote_tmp_dir + ", found " + $count)}'
     exit 22
   fi
 fi

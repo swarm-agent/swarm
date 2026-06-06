@@ -233,7 +233,7 @@ func TestSyncHostedMirrorOpenStateKeepsControllerRuntimePathFromChildMetadata(t 
 	svc.SetLocalSwarmIDResolver(func() string { return "controller-swarm" })
 	controllerDescriptor := HostedSessionDescriptor{
 		HostSwarmID:          "host-swarm",
-		HostWorkspacePath:    "/home/installer/swarm-go",
+		HostWorkspacePath:    "/workspaces/source-swarm-go",
 		RuntimeWorkspacePath: "/workspaces/swarm-go",
 		ChildSwarmID:         "managed-container-swarm",
 	}
@@ -251,13 +251,13 @@ func TestSyncHostedMirrorOpenStateKeepsControllerRuntimePathFromChildMetadata(t 
 
 	childDescriptor := HostedSessionDescriptor{
 		HostSwarmID:          "host-swarm",
-		HostWorkspacePath:    "/home/installer/swarm-go",
+		HostWorkspacePath:    "/workspaces/source-swarm-go",
 		RuntimeWorkspacePath: "/workspaces/swarm-go/.swarm/worktrees/session-managed-container-worktree",
 		ChildSwarmID:         "managed-container-swarm",
 	}
 	updated, err := svc.SyncHostedMirrorOpenState("session-managed-container-worktree", childDescriptor.apply(pebblestore.SessionSnapshot{
 		ID:               "session-managed-container-worktree",
-		WorkspacePath:    "/home/installer/swarm-go",
+		WorkspacePath:    "/workspaces/source-swarm-go",
 		WorkspaceName:    "swarm-go",
 		Title:            "Managed container worktree",
 		Mode:             ModeAuto,

@@ -121,10 +121,10 @@ test('session.created maps local-container v2 mirrored session back to source wo
       workspace_name: 'swarm-go',
       mode: 'auto',
       metadata: {
-        swarm_v2_workspace_binding_id: 'binding:replica:checkthis:/home/installer/swarm-go',
+        swarm_v2_workspace_binding_id: 'binding:replica:checkthis:/workspaces/source-swarm-go',
         swarm_v2_source_workspace_id: 'ws_primary',
         swarm_v2_source_workspace_name: 'swarm-go',
-        swarm_v2_source_workspace_path: '/home/installer/swarm-go',
+        swarm_v2_source_workspace_path: '/workspaces/source-swarm-go',
         swarm_v2_runtime_workspace_path: '/workspaces/swarm-go',
       },
       created_at: 1,
@@ -134,7 +134,7 @@ test('session.created maps local-container v2 mirrored session back to source wo
 
   const session = patch.sessions?.['session-local']
   assert.ok(session)
-  assert.equal(session.workspacePath, '/home/installer/swarm-go')
+  assert.equal(session.workspacePath, '/workspaces/source-swarm-go')
   assert.equal(session.runtimeWorkspacePath, '/workspaces/swarm-go')
   assert.equal(session.workspaceName, 'swarm-go')
 })
@@ -170,8 +170,8 @@ test('session.updated repairs a placeholder runtime workspace path when v2 bindi
       workspace_name: 'swarm-go',
       mode: 'auto',
       metadata: {
-        swarm_v2_workspace_binding_id: 'binding:replica:checkthis:/home/installer/swarm-go',
-        swarm_v2_source_workspace_path: '/home/installer/swarm-go',
+        swarm_v2_workspace_binding_id: 'binding:replica:checkthis:/workspaces/source-swarm-go',
+        swarm_v2_source_workspace_path: '/workspaces/source-swarm-go',
         swarm_v2_runtime_workspace_path: '/workspaces/swarm-go',
       },
       updated_at: 2,
@@ -180,6 +180,6 @@ test('session.updated repairs a placeholder runtime workspace path when v2 bindi
 
   const session = patch.sessions?.['session-local']
   assert.ok(session)
-  assert.equal(session.workspacePath, '/home/installer/swarm-go')
+  assert.equal(session.workspacePath, '/workspaces/source-swarm-go')
   assert.equal(session.runtimeWorkspacePath, '/workspaces/swarm-go')
 })

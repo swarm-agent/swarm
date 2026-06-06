@@ -49,16 +49,16 @@ type Entry struct {
 	State                   string                                 `json:"state,omitempty"`
 	LocalWorkspaceBindingID string                                 `json:"local_workspace_binding_id,omitempty"`
 	WorkspaceName           string                                 `json:"workspace_name"`
-	ThemeID             string                                 `json:"theme_id,omitempty"`
-	Directories         []string                               `json:"directories"`
-	IsGitRepo           bool                                   `json:"is_git_repo"`
-	ReplicationLinks    []pebblestore.WorkspaceReplicationLink `json:"replication_links,omitempty"`
-	SortIndex           int                                    `json:"sort_index"`
-	AddedAt             int64                                  `json:"added_at"`
-	UpdatedAt           int64                                  `json:"updated_at"`
-	LastSelectedAt      int64                                  `json:"last_selected_at"`
-	Active              bool                                   `json:"active"`
-	WorktreeEnabled     bool                                   `json:"worktree_enabled"`
+	ThemeID                 string                                 `json:"theme_id,omitempty"`
+	Directories             []string                               `json:"directories"`
+	IsGitRepo               bool                                   `json:"is_git_repo"`
+	ReplicationLinks        []pebblestore.WorkspaceReplicationLink `json:"replication_links,omitempty"`
+	SortIndex               int                                    `json:"sort_index"`
+	AddedAt                 int64                                  `json:"added_at"`
+	UpdatedAt               int64                                  `json:"updated_at"`
+	LastSelectedAt          int64                                  `json:"last_selected_at"`
+	Active                  bool                                   `json:"active"`
+	WorktreeEnabled         bool                                   `json:"worktree_enabled"`
 }
 
 type Scope struct {
