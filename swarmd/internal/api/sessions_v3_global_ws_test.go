@@ -12,6 +12,7 @@ import (
 
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/stream"
 )
 
 func TestSessionsV3CommittedMutationPublishesGlobalEventEnvelope(t *testing.T) {
@@ -133,6 +134,105 @@ func TestSessionsV3ReplayedMutationDoesNotDuplicateGlobalEvent(t *testing.T) {
 	}
 	if got := server.events.CurrentSequence(); got != afterFirst {
 		t.Fatalf("global sequence after replay = %d, want unchanged %d", got, afterFirst)
+	}
+}
+
+func TestGlobalWebsocketSessionWildcardExcludesLegacyV2SessionEvents(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	legacyPayload, err := json.Marshal(map[string]any{"session_id": "legacy-session", "title": "legacy"})
+	if err != nil {
+		t.Fatalf("marshal legacy payload: %v", err)
+	}
+	legacyEvent, err := server.events.Append("session:legacy-session", "session.updated", "legacy-session", legacyPayload, "", "")
+	if err != nil {
+		t.Fatalf("append legacy global event: %v", err)
+	}
+	v3Payload, err := json.Marshal(map[string]any{"session_id": "v3-session", "title": "v3"})
+	if err != nil {
+		t.Fatalf("marshal v3 payload: %v", err)
+	}
+	v3Event, err := server.events.AppendWithSource("session:v3-session", "session.title.updated", "v3-session", v3Payload, "v3", "", "")
+	if err != nil {
+		t.Fatalf("append v3 global event: %v", err)
+	}
+
+	hub := stream.NewHub(server.events)
+	httpServer := httptest.NewServer(hub)
+	defer httpServer.Close()
+
+	conn, _, err := gorillaws.DefaultDialer.Dial("ws"+strings.TrimPrefix(httpServer.URL, "http"), nil)
+	if err != nil {
+		t.Fatalf("dial global websocket: %v", err)
+	}
+	defer conn.Close()
+	readGlobalWSFrame(t, conn, "connected")
+	writeGlobalWSFrame(t, conn, map[string]any{"type": "subscribe", "channel": "session:*", "last_seen_seq": legacyEvent.GlobalSeq - 1})
+	readGlobalWSFrame(t, conn, "subscribed")
+
+	frame := readGlobalWSFrame(t, conn, "event")
+	if frame.Event == nil {
+		t.Fatalf("global websocket event frame missing event: %+v", frame)
+	}
+	if frame.Event.GlobalSeq != v3Event.GlobalSeq || frame.Event.Stream != "session:v3-session" || frame.Event.EventType != "session.title.updated" || frame.Event.Source != "v3" {
+		t.Fatalf("replayed event = %+v, want only V3 source event %+v", *frame.Event, v3Event)
+	}
+	readGlobalWSFrame(t, conn, "resume-complete")
+
+	liveLegacyPayload, err := json.Marshal(map[string]any{"session_id": "legacy-live", "title": "legacy live"})
+	if err != nil {
+		t.Fatalf("marshal live legacy payload: %v", err)
+	}
+	liveLegacy, err := server.events.Append("session:legacy-live", "session.updated", "legacy-live", liveLegacyPayload, "", "")
+	if err != nil {
+		t.Fatalf("append live legacy event: %v", err)
+	}
+	hub.Publish(liveLegacy)
+
+	liveV3Payload, err := json.Marshal(map[string]any{"session_id": "v3-live", "title": "v3 live"})
+	if err != nil {
+		t.Fatalf("marshal live v3 payload: %v", err)
+	}
+	liveV3, err := server.events.AppendWithSource("session:v3-live", "session.title.updated", "v3-live", liveV3Payload, "v3", "", "")
+	if err != nil {
+		t.Fatalf("append live v3 event: %v", err)
+	}
+	hub.Publish(liveV3)
+
+	frame = readGlobalWSFrame(t, conn, "event")
+	if frame.Event == nil {
+		t.Fatalf("global websocket live frame missing event: %+v", frame)
+	}
+	if frame.Event.GlobalSeq != liveV3.GlobalSeq || frame.Event.Stream != "session:v3-live" || frame.Event.Source != "v3" {
+		t.Fatalf("live event = %+v, want V3 event %+v", *frame.Event, liveV3)
+	}
+}
+
+func TestGlobalWebsocketSessionWildcardStillAllowsExactLegacySessionSubscription(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	payload, err := json.Marshal(map[string]any{"session_id": "legacy-exact", "title": "legacy exact"})
+	if err != nil {
+		t.Fatalf("marshal legacy exact payload: %v", err)
+	}
+	legacyEvent, err := server.events.Append("session:legacy-exact", "session.updated", "legacy-exact", payload, "", "")
+	if err != nil {
+		t.Fatalf("append legacy exact event: %v", err)
+	}
+
+	hub := stream.NewHub(server.events)
+	httpServer := httptest.NewServer(hub)
+	defer httpServer.Close()
+	conn, _, err := gorillaws.DefaultDialer.Dial("ws"+strings.TrimPrefix(httpServer.URL, "http"), nil)
+	if err != nil {
+		t.Fatalf("dial global websocket: %v", err)
+	}
+	defer conn.Close()
+	readGlobalWSFrame(t, conn, "connected")
+	writeGlobalWSFrame(t, conn, map[string]any{"type": "subscribe", "channel": "session:legacy-exact", "last_seen_seq": legacyEvent.GlobalSeq - 1})
+	readGlobalWSFrame(t, conn, "subscribed")
+
+	frame := readGlobalWSFrame(t, conn, "event")
+	if frame.Event == nil || frame.Event.GlobalSeq != legacyEvent.GlobalSeq || frame.Event.EventType != "session.updated" {
+		t.Fatalf("exact legacy session event = %+v, want %+v", frame.Event, legacyEvent)
 	}
 }
 

@@ -17,6 +17,7 @@ type EventEnvelope struct {
 	EntityID      string          `json:"entity_id"`
 	Payload       json.RawMessage `json:"payload"`
 	TsUnixMs      int64           `json:"ts_unix_ms"`
+	Source        string          `json:"source,omitempty"`
 	CausationID   string          `json:"causation_id,omitempty"`
 	CorrelationID string          `json:"correlation_id,omitempty"`
 }
@@ -50,6 +51,10 @@ func (l *EventLog) CurrentSequence() uint64 {
 }
 
 func (l *EventLog) Append(stream, eventType, entityID string, payload []byte, causationID, correlationID string) (EventEnvelope, error) {
+	return l.AppendWithSource(stream, eventType, entityID, payload, "", causationID, correlationID)
+}
+
+func (l *EventLog) AppendWithSource(stream, eventType, entityID string, payload []byte, source, causationID, correlationID string) (EventEnvelope, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -61,6 +66,7 @@ func (l *EventLog) Append(stream, eventType, entityID string, payload []byte, ca
 		EntityID:      entityID,
 		Payload:       append([]byte(nil), payload...),
 		TsUnixMs:      time.Now().UnixMilli(),
+		Source:        source,
 		CausationID:   causationID,
 		CorrelationID: correlationID,
 	}

@@ -130,7 +130,7 @@ func (h *Hub) Publish(event pebblestore.EventEnvelope) {
 	overflow := make([]string, 0, 4)
 
 	for _, client := range h.clients {
-		if !client.matches(event.Stream) {
+		if !client.matches(event) {
 			continue
 		}
 		if !client.enqueue(msg) {
@@ -216,7 +216,7 @@ func (h *Hub) replayToClient(client *clientConn, channel string, lastSeen uint64
 	}
 	for i := range events {
 		evt := events[i]
-		if !matchesChannel(channel, evt.Stream) {
+		if !matchesEvent(channel, evt) {
 			continue
 		}
 		client.enqueue(outbound{Type: "event", OK: true, Event: &evt, SentAtUnixMS: time.Now().UnixMilli()})
@@ -273,14 +273,14 @@ func (c *clientConn) unsubscribe(channel string) {
 	delete(c.subs, channel)
 }
 
-func (c *clientConn) matches(stream string) bool {
+func (c *clientConn) matches(event pebblestore.EventEnvelope) bool {
 	c.subsM.RLock()
 	defer c.subsM.RUnlock()
 	if len(c.subs) == 0 {
 		return false
 	}
 	for pattern := range c.subs {
-		if matchesChannel(pattern, stream) {
+		if matchesEvent(pattern, event) {
 			return true
 		}
 	}
@@ -304,6 +304,16 @@ func matchesChannel(pattern, stream string) bool {
 		return strings.HasPrefix(stream, prefix)
 	}
 	return false
+}
+
+func matchesEvent(pattern string, event pebblestore.EventEnvelope) bool {
+	if !matchesChannel(pattern, event.Stream) {
+		return false
+	}
+	if pattern == "session:*" && strings.TrimSpace(event.Source) != "v3" {
+		return false
+	}
+	return true
 }
 
 func ParseLastSeen(value string) uint64 {
