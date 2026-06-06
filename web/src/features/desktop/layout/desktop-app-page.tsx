@@ -13,8 +13,8 @@ import { useDesktopStore } from '../state/use-desktop-store'
 import { useWorkspaceLauncher } from '../../workspaces/launcher/state/use-workspace-launcher'
 import { applyDesktopRouteTheme } from './desktop-theme-controller'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
-import { agentStateQueryOptions, prefetchSessionRuntimeData, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
-import { getCachedDesktopV3SessionSnapshot, hydrateDesktopV3SessionSnapshot } from '../state/desktop-v3-cache'
+import { agentStateQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
+import { getCachedDesktopV3SessionSnapshot, hydrateDesktopV3SessionSnapshot, readDesktopV3CachedSession } from '../state/desktop-v3-cache'
 import type { DesktopSessionRecord } from '../types/realtime'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
 import { DesktopQuickSettingsModal, type QuickSettingsTabID } from '../settings/components/desktop-quick-settings-modal'
@@ -1284,7 +1284,7 @@ interface SessionRowProps {
   agentSummary: SessionAgentSummary
   agentsExpanded: boolean
   onSelect: (sessionId: string) => void
-  onPrefetch: (sessionId: string, sessionApi?: string | null) => void
+  onPrefetch: (sessionId: string) => void
   onToggleAgents: (sessionId: string) => void
 }
 
@@ -1330,8 +1330,8 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
           onSelect(session.id)
         }
       }}
-      onMouseEnter={() => onPrefetch(session.id, session.sessionApi)}
-      onFocus={() => onPrefetch(session.id, session.sessionApi)}
+      onMouseEnter={() => onPrefetch(session.id)}
+      onFocus={() => onPrefetch(session.id)}
       className={cn(
         'grid w-full min-w-0 gap-1 rounded-lg text-left transition-colors outline-none',
         isNestedSession ? 'px-2.5 py-1.5' : 'px-3 py-2',
@@ -2109,10 +2109,7 @@ export function DesktopAppPage() {
     }
 
     const routeSessionCached = Boolean(
-      normalizedRouteSessionId && (
-        getCachedDesktopV3SessionSnapshot(queryClient, normalizedRouteSessionId)
-          || useDesktopStore.getState().sessions[normalizedRouteSessionId]
-      ),
+      normalizedRouteSessionId && readDesktopV3CachedSession(queryClient, normalizedRouteSessionId),
     )
     debugLog('desktop-app-page', 'effect:v3-bootstrap-hydration-check', {
       routeSessionId: normalizedRouteSessionId,
@@ -2121,11 +2118,7 @@ export function DesktopAppPage() {
       routeSessionCached,
     })
 
-    if (normalizedRouteSessionId && !routeSessionCached) {
-      setRouteSessionPending(true)
-    } else if (!normalizedRouteSessionId) {
-      setRouteSessionPending(false)
-    }
+    setRouteSessionPending(Boolean(normalizedRouteSessionId && !routeSessionCached))
 
     const bootstrapTasks: Promise<void>[] = [
       queryClient.ensureQueryData(agentStateQueryOptions()).then(() => undefined),
@@ -2159,7 +2152,7 @@ export function DesktopAppPage() {
     }
   }, [bootstrapSessionIdsKey, queryClient, routeSessionId, upsertSession])
 
-  const routeSession = routeSessionId ? sessionById.get(routeSessionId) ?? null : null
+  const routeSession = routeSessionId ? readDesktopV3CachedSession(queryClient, routeSessionId) ?? null : null
 
   const selectedSession = routeSessionId ? routeSession : null
 
@@ -2337,7 +2330,7 @@ export function DesktopAppPage() {
   }, [navigate, routeSession?.id, routeSession?.workspacePath, routeSessionId, routeWorkspaceSlug, workspaceSlugByPath])
 
   const handleSelectSession = useCallback((sessionId: string) => {
-    const session = sessionById.get(sessionId)
+    const session = readDesktopV3CachedSession(queryClient, sessionId) ?? sessionById.get(sessionId)
     if (!session?.workspacePath) {
       return
     }
@@ -2351,7 +2344,7 @@ export function DesktopAppPage() {
         sessionId: session.id,
       },
     })
-  }, [navigate, sessionById, workspaceSlugByPath])
+  }, [navigate, queryClient, sessionById, workspaceSlugByPath])
 
   const handleSessionCreated = useCallback((session: DesktopSessionRecord) => {
     setActiveSession(session.id)
@@ -2684,9 +2677,22 @@ export function DesktopAppPage() {
     mobileSidebarSwipeRef.current = null
   }, [])
 
-  const handlePrefetchSession = useCallback((sessionId: string, sessionApi?: string | null) => {
-    void prefetchSessionRuntimeData(queryClient, sessionId, sessionApi)
-  }, [queryClient])
+  const handlePrefetchSession = useCallback((sessionId: string) => {
+    if (readDesktopV3CachedSession(queryClient, sessionId)) {
+      return
+    }
+    void hydrateDesktopV3SessionSnapshot(queryClient, sessionId)
+      .then((snapshot) => {
+        if (!snapshot) {
+          return
+        }
+        upsertSession(snapshot.session)
+        syncWorkspaceOverviewSession(queryClient, snapshot.session)
+      })
+      .catch((error) => {
+        console.error('[desktop-app] failed to prefetch desktop v3 session snapshot', error)
+      })
+  }, [queryClient, upsertSession])
 
   const handleToggleAgentSessions = useCallback((sessionId: string) => {
     setExpandedAgentSessions((current) => ({

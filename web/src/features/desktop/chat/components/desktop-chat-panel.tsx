@@ -1136,11 +1136,11 @@ export function DesktopChatPanel({
   const [selectedRouteId, setSelectedRouteId] = useState(() => defaultChatRoute?.id ?? 'host')
   const [draftRouteOverrideId, setDraftRouteOverrideId] = useState<string | null>(null)
 
-  const cachedMessages = sessionId ? queryClient.getQueryData<ChatMessageRecord[]>(sessionMessagesQueryOptions(sessionId).queryKey) : undefined
+  const cachedMessages = sessionId ? queryClient.getQueryData<ChatMessageRecord[]>(sessionMessagesQueryKey(sessionId)) : undefined
   const cachedPreference = sessionId ? queryClient.getQueryData<ResolvedSessionPreference>(sessionPreferenceQueryOptions(sessionId).queryKey) : undefined
 
   const messagesQuery = useQuery({
-    ...sessionMessagesQueryOptions(sessionId ?? '', liveSession?.sessionApi),
+    ...sessionMessagesQueryOptions(sessionId ?? '', liveSession?.sessionApi, queryClient),
     initialData: cachedMessages,
   })
 

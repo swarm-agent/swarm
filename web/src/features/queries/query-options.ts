@@ -39,12 +39,23 @@ export function sessionMessagesQueryKey(sessionId: string) {
   return ['session-messages', sessionId] as const
 }
 
-export function sessionMessagesQueryOptions(sessionId: string, sessionApi?: string | null) {
+export function sessionMessagesQueryOptions(sessionId: string, sessionApi?: string | null, queryClient?: QueryClient) {
+  const normalizedSessionId = sessionId.trim()
+  const normalizedSessionApi = sessionApi?.trim().toLowerCase() || 'v3'
   return {
-    queryKey: sessionMessagesQueryKey(sessionId),
-    queryFn: ({ signal }: { signal?: AbortSignal }) => fetchSessionMessages(sessionId, signal, 0, { sessionApi }),
+    queryKey: sessionMessagesQueryKey(normalizedSessionId),
+    queryFn: async ({ signal }: { signal?: AbortSignal }) => {
+      if (normalizedSessionApi === 'v3') {
+        if (!queryClient) {
+          throw new Error('Desktop V3 session messages require the canonical session snapshot cache.')
+        }
+        const snapshot = await ensureDesktopV3SessionSnapshot(queryClient, normalizedSessionId)
+        return snapshot?.messages ?? []
+      }
+      return fetchSessionMessages(normalizedSessionId, signal, 0, { sessionApi })
+    },
     staleTime: 60_000,
-    enabled: sessionId.trim() !== '',
+    enabled: normalizedSessionId !== '',
   }
 }
 

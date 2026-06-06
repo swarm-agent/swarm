@@ -191,7 +191,7 @@ test('fetchSessionMessages loads V3 message history from Sessions API v3 only an
 
 test('Desktop V3 session switching prewarm uses the full-session source only', async () => {
   const { ensureSessionRuntimeData, sessionMessagesQueryKey } = await import('../../../queries/query-options')
-  const { desktopV3SessionQueryKey } = await import('../../state/desktop-v3-cache')
+  const { desktopV3SessionQueryKey, readDesktopV3CachedSession } = await import('../../state/desktop-v3-cache')
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -203,6 +203,7 @@ test('Desktop V3 session switching prewarm uses the full-session source only', a
     assertNoV1OrV2SessionDataCalls(calls)
     assertNoPrefixedSessionIds(calls)
     assert.equal(queryClient.getQueryData<{ session?: { id?: string } }>(desktopV3SessionQueryKey('session-switch'))?.session?.id, 'session-switch')
+    assert.equal(readDesktopV3CachedSession(queryClient, 'session-switch')?.id, 'session-switch')
     assert.deepEqual(
       queryClient.getQueryData<Array<{ id: string }>>(sessionMessagesQueryKey('session-switch'))?.map((message) => message.id),
       ['session-switch-msg-1'],
@@ -230,10 +231,33 @@ test('desktop-v3-cache rejects prefixed IDs before network', async () => {
   queryClient.clear()
 })
 
-test('DesktopAppPage must not use legacy fetchSession as the route cache contract', async () => {
+test('sessionMessagesQueryOptions uses the canonical V3 snapshot cache for Desktop V3 messages', async () => {
+  const { sessionMessagesQueryOptions } = await import('../../../queries/query-options')
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+
+  await withFetchStub(async (calls) => {
+    const messages = await queryClient.fetchQuery(sessionMessagesQueryOptions('session-messages', 'v3', queryClient))
+
+    assert.deepEqual(messages.map((message) => message.id), ['session-messages-msg-1'])
+    assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-messages'])
+    assertNoV1OrV2SessionDataCalls(calls)
+  })
+
+  queryClient.clear()
+})
+
+
+test('DesktopAppPage must use cache-first V3-only route and hover switching', async () => {
   const source = await readFile(new URL('../../layout/desktop-app-page.tsx', import.meta.url), 'utf8')
 
+  assert.match(source, /readDesktopV3CachedSession\(queryClient, routeSessionId\)/)
+  assert.match(source, /readDesktopV3CachedSession\(queryClient, sessionId\)/)
+  assert.match(source, /hydrateDesktopV3SessionSnapshot\(queryClient, sessionId\)/)
   assert.doesNotMatch(source, /fetchSession\(/)
+  assert.doesNotMatch(source, /prefetchSessionRuntimeData/)
+  assert.doesNotMatch(source, /sessionNeedsRefresh/)
   assert.doesNotMatch(source, /\/v1\/sessions|\/v2\/sessions/)
   assert.doesNotMatch(source, /v3session_/)
 })
