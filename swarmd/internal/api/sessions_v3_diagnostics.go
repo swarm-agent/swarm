@@ -82,7 +82,9 @@ func (s *Server) appendSessionV3Diagnostic(input sessionV3DiagnosticInput) (sess
 	if err != nil {
 		return result, err
 	}
-	s.publishCommittedSessionV3MutationResult(result)
+	if err := s.publishCommittedSessionV3MutationResult(result); err != nil {
+		return result, err
+	}
 	return result, nil
 }
 
