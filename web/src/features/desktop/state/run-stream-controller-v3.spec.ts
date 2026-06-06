@@ -830,6 +830,81 @@ test('global /ws V3 assistant lifecycle envelopes update Desktop live and messag
   }
 })
 
+test('global /ws V3 lifecycle and tool envelopes update Desktop canonical live state', () => {
+  const session = makeSession({ id: 'session-v3', sessionApi: 'v3' })
+  useDesktopStore.setState(makeState(session), true)
+
+  useDesktopStore.setState((state) => applyEnvelope(state, {
+    global_seq: 15,
+    stream: 'session:session-v3',
+    event_type: 'session.lifecycle.updated',
+    entity_id: 'session-v3',
+    ts_unix_ms: 105,
+    payload: {
+      session_id: 'session-v3',
+      lifecycle: {
+        session_id: 'session-v3',
+        run_id: 'run-v3',
+        active: true,
+        status: 'running',
+        started_at: 105,
+        updated_at: 105,
+      },
+    },
+  }))
+  let updated = useDesktopStore.getState().sessions['session-v3']
+  assert.equal(updated.lifecycle?.active, true)
+  assert.equal(updated.live.status, 'running')
+  assert.equal(updated.live.runId, 'run-v3')
+  assert.equal(updated.live.lastEventType, 'session.lifecycle.updated')
+
+  useDesktopStore.setState((state) => applyEnvelope(state, {
+    global_seq: 16,
+    stream: 'session:session-v3',
+    event_type: 'session.tool.started',
+    entity_id: 'session-v3',
+    ts_unix_ms: 106,
+    payload: {
+      session_id: 'session-v3',
+      run_id: 'run-v3',
+      tool_name: 'read',
+      call_id: 'call-v3',
+      step_id: 'step-v3',
+      tool_instance_id: 'tool-v3',
+      arguments: '{"path":"README.md"}',
+      step: 1,
+    },
+  }))
+  useDesktopStore.setState((state) => applyEnvelope(state, {
+    global_seq: 17,
+    stream: 'session:session-v3',
+    event_type: 'session.tool.completed',
+    entity_id: 'session-v3',
+    ts_unix_ms: 107,
+    payload: {
+      session_id: 'session-v3',
+      run_id: 'run-v3',
+      tool_name: 'read',
+      call_id: 'call-v3',
+      step_id: 'step-v3',
+      tool_instance_id: 'tool-v3',
+      output: 'done',
+      raw_output: 'done',
+      step: 1,
+    },
+  }))
+
+  updated = useDesktopStore.getState().sessions['session-v3']
+  assert.equal(updated.live.retainedToolName, 'read')
+  assert.equal(updated.live.retainedToolCallId, 'call-v3')
+  assert.equal(updated.live.retainedToolOutput, 'done')
+  assert.equal(updated.live.toolHistory.length, 1)
+  assert.equal(updated.live.toolHistory[0]?.toolInstanceId, 'tool-v3')
+  assert.equal(updated.live.toolHistory[0]?.state, 'done')
+  assert.equal(updated.live.lastEventType, 'session.tool.completed')
+  assert.equal(useDesktopStore.getState().lastGlobalSeq, 17)
+})
+
 test('V3 session.created payload nesting maps through applyEnvelope', () => {
   const patch = applyEnvelope({ ...useDesktopStore.getState(), sessions: {}, lastGlobalSeq: 0 }, {
     event_type: 'session.created',
