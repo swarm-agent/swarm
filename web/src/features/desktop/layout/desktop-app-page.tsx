@@ -1498,7 +1498,6 @@ export function DesktopAppPage() {
   const [localContainerUpdateConfirm, setLocalContainerUpdateConfirm] = useState<LocalContainerUpdateConfirmState | null>(null)
   const [todoSavingWorkspacePath, setTodoSavingWorkspacePath] = useState<string | null>(null)
   const [workspaceLayout, setWorkspaceLayout] = useState<Record<string, SidebarWorkspaceLayout>>(() => loadSidebarWorkspaceLayout())
-  const [routeSessionPending, setRouteSessionPending] = useState(false)
   const [desktopV3Bootstrap, setDesktopV3Bootstrap] = useState<DesktopV3BootstrapState>({ status: 'idle', epoch: 0, error: null })
   const [sidebarNow, setSidebarNow] = useState(() => Date.now())
   const sidebarBodyRef = useRef<HTMLDivElement | null>(null)
@@ -2057,26 +2056,26 @@ export function DesktopAppPage() {
 
   const workspaceSlugByPath = useMemo(() => buildWorkspaceRouteSlugMap(mergedSidebarWorkspaceEntries), [mergedSidebarWorkspaceEntries])
 
-  const bootstrapSessionIds = useMemo<string[]>(() => {
+  const backgroundBootstrapSessionIds = useMemo<string[]>(() => {
+    const routeCriticalSessionId = routeSessionId.trim()
     const sessionIds = new Set<string>()
-    const addSessionId = (sessionId: string | null | undefined) => {
+    const addBackgroundSessionId = (sessionId: string | null | undefined) => {
       const normalizedSessionId = sessionId?.trim() ?? ''
-      if (normalizedSessionId) {
+      if (normalizedSessionId && normalizedSessionId !== routeCriticalSessionId) {
         sessionIds.add(normalizedSessionId)
       }
     }
 
-    addSessionId(routeSessionId)
-    addSessionId(activeSessionId)
+    addBackgroundSessionId(activeSessionId)
     for (const workspace of visibleSidebarWorkspaceEntries) {
       for (const session of sessionsByWorkspace.get(workspace.path) ?? []) {
-        addSessionId(session.id)
+        addBackgroundSessionId(session.id)
       }
     }
 
     return Array.from(sessionIds)
   }, [activeSessionId, routeSessionId, sessionsByWorkspace, visibleSidebarWorkspaceEntries])
-  const bootstrapSessionIdsKey = bootstrapSessionIds.join('\u0000')
+  const backgroundBootstrapSessionIdsKey = backgroundBootstrapSessionIds.join('\u0000')
 
   useEffect(() => {
     const normalizedRouteSessionId = routeSessionId?.trim() ?? ''
@@ -2084,10 +2083,7 @@ export function DesktopAppPage() {
     desktopV3BootstrapEpochRef.current = epoch
     let cancelled = false
     const isCurrentEpoch = () => !cancelled && desktopV3BootstrapEpochRef.current === epoch
-    if (bootstrapSessionIds.length === 0) {
-      if (!normalizedRouteSessionId) {
-        setRouteSessionPending(false)
-      }
+    if (backgroundBootstrapSessionIds.length === 0) {
       setDesktopV3Bootstrap({ status: 'idle', epoch, error: null })
       return
     }
@@ -2103,7 +2099,7 @@ export function DesktopAppPage() {
     }
 
     const idsToHydrate: string[] = []
-    for (const sessionId of bootstrapSessionIds) {
+    for (const sessionId of backgroundBootstrapSessionIds) {
       const cachedSnapshot = getCachedDesktopV3SessionSnapshot(queryClient, sessionId)
       if (cachedSnapshot) {
         applySnapshotSession(cachedSnapshot.session)
@@ -2117,12 +2113,10 @@ export function DesktopAppPage() {
     )
     debugLog('desktop-app-page', 'effect:v3-bootstrap-hydration-check', {
       routeSessionId: normalizedRouteSessionId,
-      sessionCount: bootstrapSessionIds.length,
+      backgroundSessionCount: backgroundBootstrapSessionIds.length,
       hydrateCount: idsToHydrate.length,
       routeSessionCached,
     })
-
-    setRouteSessionPending(Boolean(normalizedRouteSessionId && !routeSessionCached))
 
     const bootstrapTasks: Promise<void>[] = [
       queryClient.ensureQueryData(agentStateQueryOptions()).then(() => undefined),
@@ -2147,14 +2141,13 @@ export function DesktopAppPage() {
       } else {
         setDesktopV3Bootstrap({ status: 'ready', epoch, error: null })
       }
-      setRouteSessionPending(false)
     })
 
     return () => {
       cancelled = true
       abortController.abort()
     }
-  }, [bootstrapSessionIdsKey, queryClient, routeSessionId, upsertSession])
+  }, [backgroundBootstrapSessionIdsKey, queryClient, routeSessionId, upsertSession])
 
   const routeSession = routeSessionId ? readDesktopV3CachedSession(queryClient, routeSessionId) ?? null : null
 
@@ -3462,16 +3455,7 @@ export function DesktopAppPage() {
       ) : null}
 
       <main className="flex-1 min-w-0 min-h-0 flex flex-col h-full overflow-hidden sm:pr-[var(--app-safe-area-right)] sm:pl-[var(--app-safe-area-left)]">
-        {routeSessionId && routeSessionPending && !selectedSession ? (
-          <div className="flex h-full flex-1 items-center justify-center px-6">
-            <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">
-              <div className="text-lg font-semibold">Loading session…</div>
-              <p className="mt-2 text-sm text-[var(--app-text-muted)]">
-                Resolving the requested conversation.
-              </p>
-            </Card>
-          </div>
-        ) : routeSessionId && !selectedSession ? (
+        {routeSessionId && !selectedSession ? (
           <div className="flex h-full flex-1 items-center justify-center px-6">
             <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">
               <div className="text-lg font-semibold">Session not found</div>

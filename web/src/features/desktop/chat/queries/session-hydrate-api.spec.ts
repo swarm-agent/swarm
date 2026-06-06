@@ -398,14 +398,30 @@ test('DesktopChatPanel uses V3-native preference and mode paths', async () => {
 })
 
 
-test('DesktopAppPage must use cache-first V3-only route and hover switching', async () => {
+test('Desktop route loader owns the critical V3 session snapshot', async () => {
+  const routerSource = await readFile(new URL('../../../../app/router.tsx', import.meta.url), 'utf8')
+
+  assert.match(routerSource, /import \{ queryClient \} from '\.\/query-client'/)
+  assert.match(routerSource, /import \{ ensureDesktopV3SessionSnapshot \} from '\.\.\/features\/desktop\/state\/desktop-v3-cache'/)
+  assert.match(routerSource, /path: '\/\$workspaceSlug\/\$sessionId',[\s\S]*loader: \(\{ params \}\) => \{[\s\S]*return ensureDesktopV3SessionSnapshot\(queryClient, sessionId\)/)
+  assert.doesNotMatch(routerSource, /fetchSession\(/)
+  assert.doesNotMatch(routerSource, /\/v1\/sessions|\/v2\/sessions/)
+  assert.doesNotMatch(routerSource, new RegExp('v3session' + '_'))
+})
+
+test('DesktopAppPage must keep route-critical load out of sidebar/background V3 hydration', async () => {
   const source = await readFile(new URL('../../layout/desktop-app-page.tsx', import.meta.url), 'utf8')
 
   assert.match(source, /readDesktopV3CachedSession\(queryClient, routeSessionId\)/)
   assert.match(source, /readDesktopV3CachedSession\(queryClient, sessionId\)/)
+  assert.match(source, /const backgroundBootstrapSessionIds = useMemo/)
+  assert.match(source, /normalizedSessionId !== routeCriticalSessionId/)
+  assert.match(source, /for \(const sessionId of backgroundBootstrapSessionIds\)/)
   assert.match(source, /hydrateDesktopV3SessionSnapshot\(queryClient, sessionId/)
   assert.match(source, /PAIRING_REQUEST_INITIAL_REFRESH_DELAY_MS = 1_250/)
   assert.match(source, /window\.setTimeout\(refreshPairingRequests, PAIRING_REQUEST_INITIAL_REFRESH_DELAY_MS\)/)
+  assert.doesNotMatch(source, /addSessionId\(routeSessionId\)/)
+  assert.doesNotMatch(source, /const bootstrapSessionIds = useMemo/)
   assert.doesNotMatch(source, /refreshSessionPermissions\(normalizedRouteSessionId\)/)
   assert.doesNotMatch(source, /fetchSession\(/)
   assert.doesNotMatch(source, /prefetchSessionRuntimeData/)

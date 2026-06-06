@@ -1,4 +1,6 @@
 import { createRootRoute, createRoute, createRouter, lazyRouteComponent } from '@tanstack/react-router'
+import { queryClient } from './query-client'
+import { ensureDesktopV3SessionSnapshot } from '../features/desktop/state/desktop-v3-cache'
 import { DesktopVaultShell } from '../features/desktop/vault/components/desktop-vault-shell'
 
 const WorkspaceHomePage = lazyRouteComponent(() => import('../features/workspaces/pages/workspace-home-page'), 'WorkspaceHomePage')
@@ -132,6 +134,13 @@ const workspaceSessionRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/$workspaceSlug/$sessionId',
   parseParams: validateWorkspaceSessionParams,
+  loader: ({ params }) => {
+    const sessionId = params.sessionId.trim()
+    if (!sessionId) {
+      return null
+    }
+    return ensureDesktopV3SessionSnapshot(queryClient, sessionId)
+  },
   component: DesktopAppPage,
 })
 
