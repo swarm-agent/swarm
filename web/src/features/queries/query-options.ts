@@ -1,5 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { fetchAgentState, fetchAgentToolContract, fetchDraftModelPreference, fetchModelOptions, fetchSessionMessages, fetchSessionPreference } from '../desktop/chat/queries/chat-queries'
+import { ensureDesktopV3SessionSnapshot } from '../desktop/state/desktop-v3-cache'
 import { getUISettings } from '../desktop/settings/swarm/queries/get-ui-settings'
 import { fetchWorkspaceOverview } from '../workspaces/launcher/queries/fetch-workspace-overview'
 
@@ -102,6 +103,10 @@ export function ensureSessionRuntimeData(queryClient: QueryClient, sessionId: st
   const normalizedSessionId = sessionId.trim()
   if (!normalizedSessionId) {
     return Promise.resolve()
+  }
+
+  if ((sessionApi?.trim().toLowerCase() || 'v3') === 'v3') {
+    return ensureDesktopV3SessionSnapshot(queryClient, normalizedSessionId)
   }
 
   const messagesKey = sessionMessagesQueryKey(normalizedSessionId)

@@ -190,7 +190,8 @@ test('fetchSessionMessages loads V3 message history from Sessions API v3 only an
 })
 
 test('Desktop V3 session switching prewarm uses the full-session source only', async () => {
-  const { ensureSessionRuntimeData } = await import('../../../queries/query-options')
+  const { ensureSessionRuntimeData, sessionMessagesQueryKey } = await import('../../../queries/query-options')
+  const { desktopV3SessionQueryKey } = await import('../../state/desktop-v3-cache')
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -201,6 +202,29 @@ test('Desktop V3 session switching prewarm uses the full-session source only', a
     assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-switch'])
     assertNoV1OrV2SessionDataCalls(calls)
     assertNoPrefixedSessionIds(calls)
+    assert.equal(queryClient.getQueryData<{ session?: { id?: string } }>(desktopV3SessionQueryKey('session-switch'))?.session?.id, 'session-switch')
+    assert.deepEqual(
+      queryClient.getQueryData<Array<{ id: string }>>(sessionMessagesQueryKey('session-switch'))?.map((message) => message.id),
+      ['session-switch-msg-1'],
+    )
+  })
+
+  queryClient.clear()
+})
+
+
+test('desktop-v3-cache rejects prefixed IDs before network', async () => {
+  const { ensureDesktopV3SessionSnapshot } = await import('../../state/desktop-v3-cache')
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+
+  await withFetchStub(async (calls) => {
+    await assert.rejects(
+      () => ensureDesktopV3SessionSnapshot(queryClient, 'v3session_route-param'),
+      /raw canonical session id/i,
+    )
+    assert.deepEqual(requestUrls(calls), [])
   })
 
   queryClient.clear()
