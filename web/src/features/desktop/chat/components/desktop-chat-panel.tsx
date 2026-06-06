@@ -19,16 +19,11 @@ import {
 } from '../../../queries/query-options'
 import {
   createSession,
-  fetchActiveSessionPlan,
-  fetchSessionPlanHistory,
   resolveSessionPermission,
-  saveSessionPlan,
   startSessionRun,
-  updateSessionMetadata,
   updateDraftModelPreference,
-  updateSessionMode,
-  updateSessionPreference,
 } from '../queries/chat-queries'
+import { saveDesktopV3SessionPlan, updateDesktopV3SessionMetadata, updateDesktopV3SessionMode, updateDesktopV3SessionPreference } from '../../state/desktop-v3-cache'
 import type { AgentStateRecord, ChatMessageRecord, ResolvedSessionPreference, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
 import type { DesktopLiveAssistantSegment, DesktopLiveToolRecord, DesktopSessionRecord } from '../../types/realtime'
 import { Card } from '../../../../components/ui/card'
@@ -1137,15 +1132,15 @@ export function DesktopChatPanel({
   const [draftRouteOverrideId, setDraftRouteOverrideId] = useState<string | null>(null)
 
   const cachedMessages = sessionId ? queryClient.getQueryData<ChatMessageRecord[]>(sessionMessagesQueryKey(sessionId)) : undefined
-  const cachedPreference = sessionId ? queryClient.getQueryData<ResolvedSessionPreference>(sessionPreferenceQueryOptions(sessionId).queryKey) : undefined
+  const cachedPreference = sessionId ? queryClient.getQueryData<ResolvedSessionPreference>(sessionPreferenceQueryKey(sessionId)) : undefined
 
   const messagesQuery = useQuery({
-    ...sessionMessagesQueryOptions(sessionId ?? '', liveSession?.sessionApi, queryClient),
+    ...sessionMessagesQueryOptions(sessionId ?? '', queryClient),
     initialData: cachedMessages,
   })
 
   const sessionPreferenceQuery = useQuery({
-    ...sessionPreferenceQueryOptions(sessionId ?? ''),
+    ...sessionPreferenceQueryOptions(sessionId ?? '', queryClient),
     initialData: cachedPreference,
   })
 
@@ -1875,8 +1870,8 @@ export function DesktopChatPanel({
       return
     }
     lastAutoModeSyncRef.current = syncKey
-    void updateSessionMode(sessionId, nextMode).then((resolvedModeRaw) => {
-      const resolvedMode = normalizeSessionMode(resolvedModeRaw)
+    void updateDesktopV3SessionMode(queryClient, sessionId, nextMode).then((snapshot) => {
+      const resolvedMode = normalizeSessionMode(snapshot?.session.mode ?? nextMode)
       useDesktopStore.setState((state) => {
         const current = state.sessions[sessionId]
         if (!current) {
@@ -1897,7 +1892,7 @@ export function DesktopChatPanel({
       lastAutoModeSyncRef.current = ''
       setPanelError(error instanceof Error ? error.message : 'Failed to update session mode')
     })
-  }, [activeModeSourceProfile, draftSessionMode, isFlowSession, liveSession?.mode, session?.mode, sessionId])
+  }, [activeModeSourceProfile, draftSessionMode, isFlowSession, liveSession?.mode, queryClient, session?.mode, sessionId])
 
   const handleAgentSelect = useCallback(async (value: string) => {
     if (isFlowSession || resolvedLockedAgentName) {
@@ -1917,21 +1912,20 @@ export function DesktopChatPanel({
       : {}
     currentMetadata.subagent = nextAgent
     try {
-      const updatedSession = await updateSessionMetadata(sessionId, currentMetadata, activeChatRoute)
-      upsertSession(updatedSession)
+      const snapshot = await updateDesktopV3SessionMetadata(queryClient, sessionId, currentMetadata)
+      upsertSession(snapshot.session)
     } catch (error) {
       setCurrentSessionAgent(previousAgent)
       setPanelError(error instanceof Error ? error.message : 'Failed to update session agent')
     }
-  }, [activeChatRoute, currentSessionAgent, isFlowSession, liveSession?.metadata, resolvedLockedAgentName, sessionId, upsertSession])
+  }, [currentSessionAgent, isFlowSession, liveSession?.metadata, queryClient, resolvedLockedAgentName, sessionId, upsertSession])
 
   useEffect(() => {
     setPanelError(null)
     if (sessionId) {
-      void ensureSessionRuntimeData(queryClient, sessionId, liveSession?.sessionApi)
-      void refreshSessionPermissions(sessionId)
+      void ensureSessionRuntimeData(queryClient, sessionId)
     }
-  }, [liveSession?.sessionApi, queryClient, refreshSessionPermissions, sessionId])
+  }, [queryClient, refreshSessionPermissions, sessionId])
 
   useEffect(() => {
     if (!sessionId) {
@@ -2087,7 +2081,7 @@ export function DesktopChatPanel({
       return
     }
 
-    queryClient.setQueryData(sessionPreferenceQueryOptions(sessionId).queryKey, (current: ResolvedSessionPreference | undefined) => ({
+    queryClient.setQueryData(sessionPreferenceQueryKey(sessionId), (current: ResolvedSessionPreference | undefined) => ({
       ...(current ?? activePreferenceRecord),
       preference: {
         ...(current?.preference ?? activePreferenceRecord.preference),
@@ -2096,8 +2090,8 @@ export function DesktopChatPanel({
     }))
 
     try {
-      const resolved = await updateSessionPreference(sessionId, normalizedNext)
-      queryClient.setQueryData(sessionPreferenceQueryOptions(sessionId).queryKey, resolved)
+      const resolved = await updateDesktopV3SessionPreference(queryClient, sessionId, normalizedNext)
+      queryClient.setQueryData(sessionPreferenceQueryKey(sessionId), resolved)
     } catch (error) {
       setPanelError(error instanceof Error ? error.message : 'Failed to update model settings')
     }
@@ -2145,8 +2139,8 @@ export function DesktopChatPanel({
         } else {
           delete currentMetadata[COMPACT_THRESHOLD_METADATA_KEY]
         }
-        const updatedSession = await updateSessionMetadata(sessionId, currentMetadata, activeChatRoute)
-        upsertSession(updatedSession)
+        const snapshot = await updateDesktopV3SessionMetadata(queryClient, sessionId, currentMetadata)
+        upsertSession(snapshot.session)
       }
       await submitPrompt({
         sessionId,
@@ -2160,7 +2154,7 @@ export function DesktopChatPanel({
     } catch (error) {
       setPanelError(error instanceof Error ? error.message : 'Failed to compact context')
     }
-  }, [activeChatRoute, canStop, currentSessionAgent, liveSession?.metadata, resolvedLockedAgentName, sessionId, submitPrompt, submitting, upsertSession, workspaceName, workspacePath])
+  }, [canStop, currentSessionAgent, liveSession?.metadata, queryClient, resolvedLockedAgentName, sessionId, submitPrompt, submitting, upsertSession, workspaceName, workspacePath])
 
   const openCommitModal = useCallback(() => {
     setCommitModal((current) => ({
@@ -2218,9 +2212,9 @@ export function DesktopChatPanel({
       error: null,
     }))
     try {
-      const result = await fetchActiveSessionPlan(sessionId)
-      const visiblePlan = result.hasActive
-        ? result.plan
+      const snapshot = await ensureSessionRuntimeData(queryClient, sessionId)
+      const visiblePlan = snapshot?.hasActivePlan && snapshot.activePlan
+        ? snapshot.activePlan
         : {
             id: '',
             title: 'Current Plan',
@@ -2233,29 +2227,13 @@ export function DesktopChatPanel({
       setPlanModal({
         open: true,
         loading: false,
-        historyLoading: result.hasActive && result.plan.id.trim() !== '',
+        historyLoading: false,
         saving: false,
         error: null,
-        hasActive: result.hasActive,
+        hasActive: Boolean(snapshot?.hasActivePlan),
         plan: visiblePlan,
-        revisions: [],
+        revisions: snapshot?.planRevisions ?? [],
       })
-      if (result.hasActive && result.plan.id.trim()) {
-        try {
-          const revisions = await fetchSessionPlanHistory(sessionId, result.plan.id)
-          setPlanModal((current) => ({
-            ...current,
-            historyLoading: false,
-            revisions,
-          }))
-        } catch (historyError) {
-          setPlanModal((current) => ({
-            ...current,
-            historyLoading: false,
-            error: historyError instanceof Error ? historyError.message : 'Failed to load plan revision history',
-          }))
-        }
-      }
     } catch (error) {
       setPlanModal({
         open: true,
@@ -2268,7 +2246,7 @@ export function DesktopChatPanel({
         revisions: [],
       })
     }
-  }, [sessionId])
+  }, [sessionId, queryClient])
 
   const handleThinkingTagsToggle = useCallback(async (enabled: boolean) => {
     if (thinkingTagsSaving) {
@@ -2542,7 +2520,7 @@ export function DesktopChatPanel({
     setPlanModal((current) => ({ ...current, saving: true, error: null }))
     setPanelError(null)
     try {
-      const saved = await saveSessionPlan(sessionId, {
+      const snapshot = await saveDesktopV3SessionPlan(queryClient, sessionId, {
         id: currentPlan?.id,
         title: (currentPlan?.title?.trim() || 'Current Plan'),
         plan: planText,
@@ -2553,29 +2531,13 @@ export function DesktopChatPanel({
       setPlanModal({
         open: true,
         loading: false,
-        historyLoading: saved.id.trim() !== '',
+        historyLoading: false,
         saving: false,
         error: null,
-        hasActive: true,
-        plan: saved,
-        revisions: [],
+        hasActive: Boolean(snapshot.hasActivePlan),
+        plan: snapshot.activePlan,
+        revisions: snapshot.planRevisions,
       })
-      if (saved.id.trim()) {
-        try {
-          const revisions = await fetchSessionPlanHistory(sessionId, saved.id)
-          setPlanModal((current) => ({
-            ...current,
-            historyLoading: false,
-            revisions,
-          }))
-        } catch (historyError) {
-          setPlanModal((current) => ({
-            ...current,
-            historyLoading: false,
-            error: historyError instanceof Error ? historyError.message : 'Failed to load plan revision history',
-          }))
-        }
-      }
     } catch (error) {
       setPlanModal((current) => ({
         ...current,
@@ -2584,7 +2546,7 @@ export function DesktopChatPanel({
         error: error instanceof Error ? error.message : 'Failed to save current plan',
       }))
     }
-  }, [planModal.plan, sessionId])
+  }, [planModal.plan, queryClient, sessionId])
 
   const handleCommitModeChange = useCallback((mode: CommitMode) => {
     setCommitModal((current) => ({
@@ -2752,7 +2714,7 @@ export function DesktopChatPanel({
       }
     })
     try {
-      const resolvedMode = normalizeSessionMode(await updateSessionMode(sessionId, nextMode))
+      const resolvedMode = normalizeSessionMode((await updateDesktopV3SessionMode(queryClient, sessionId, nextMode))?.session.mode ?? nextMode)
       useDesktopStore.setState((state) => {
         const current = state.sessions[sessionId]
         if (!current) {
@@ -2786,7 +2748,7 @@ export function DesktopChatPanel({
         }
       })
     }
-  }, [draftSessionKey, selectedPrimaryAgentProfile?.exitPlanModeEnabled, sessionId, sessionMode, setSessionDraftMode])
+  }, [draftSessionKey, queryClient, selectedPrimaryAgentProfile?.exitPlanModeEnabled, sessionId, sessionMode, setSessionDraftMode])
 
   const handleResolvePermission = useCallback(async (
     action: 'approve' | 'deny' | 'approve_always' | 'always_allow' | 'always_deny',
@@ -2800,7 +2762,7 @@ export function DesktopChatPanel({
     setPermissionError(null)
     setResolvingPermissionIds((current) => new Set(current).add(permissionId))
     try {
-      const resolved = await resolveSessionPermission(sessionId, permissionId, action, reason, approvedArguments)
+      const resolved = await resolveSessionPermission(sessionId, permissionId, action, reason, approvedArguments, { sessionApi: liveSession?.sessionApi })
       useDesktopStore.setState((state) => {
         const existing = state.sessions[sessionId]
         if (!existing) {
@@ -2820,6 +2782,9 @@ export function DesktopChatPanel({
           },
         }
       })
+      if (liveSession?.sessionApi?.trim().toLowerCase() === 'v3') {
+        void refreshSessionPermissions(sessionId)
+      }
       const savedRulePreview = resolved.savedRule
         ? [resolved.savedRule.decision, resolved.savedRule.kind === 'bash_prefix' ? 'bash prefix:' : resolved.savedRule.kind === 'phrase' ? 'phrase:' : 'tool:', resolved.savedRule.kind === 'phrase' ? (resolved.savedRule.pattern || '') : resolved.savedRule.kind === 'bash_prefix' ? (resolved.savedRule.pattern || '') : (resolved.savedRule.tool || '')].filter(Boolean).join(' ')
         : null
@@ -2839,7 +2804,7 @@ export function DesktopChatPanel({
         return next
       })
     }
-  }, [activePermission, sessionId])
+  }, [activePermission, liveSession?.sessionApi, refreshSessionPermissions, sessionId])
 
   const handleMentionInsert = useCallback((name: string) => {
     const normalizedName = name.trim()

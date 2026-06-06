@@ -469,6 +469,7 @@ Use this workflow on every implementation task:
 2. Scope tightly.
    - Fix the requested problem fully.
    - Do not wander into unrelated refactors unless the user asks.
+   - When delegating work to agents, never soften or understate required product-contract work. Do not prompt agents with words such as `minimal` or `likely`; state the required canonical path, required replacement, and prohibited legacy behavior directly.
 3. Keep behavior deterministic.
    - Prefer one canonical path.
    - Prefer explicit failures over hidden fallback.

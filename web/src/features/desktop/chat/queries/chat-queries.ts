@@ -43,6 +43,7 @@ import {
   supportsCodex1MMode,
 } from "../services/model-options";
 import { parseStructuredToolMessage } from "../services/tool-message";
+import { countApprovalRequiredPermissions } from "../../permissions/services/permission-payload";
 
 interface SessionWire {
   id?: string;
@@ -121,10 +122,6 @@ interface ResolvePermissionResponseWire {
   };
 }
 
-interface PendingPermissionsResponseWire {
-  permissions?: ResolvePermissionResponseWire["permission"][];
-}
-
 interface MessageWire {
   id?: string;
   session_id?: string;
@@ -151,6 +148,8 @@ interface V3HydratedSessionResponseWire {
   projection?: SessionProjectionWire;
   messages?: MessagesResponseWire["messages"];
   events?: unknown[];
+  pending_permissions?: ResolvePermissionResponseWire["permission"][];
+  usage_summary?: SessionUsageSummaryWire | null;
 }
 
 interface V3RunIntentWire {
@@ -222,10 +221,6 @@ interface SessionPreferenceWire {
   max_output_tokens?: number;
 }
 
-interface SessionMetadataWire {
-  metadata?: Record<string, unknown>;
-}
-
 interface SessionCodexConfigWire {
   session_id?: string;
   provider?: string;
@@ -270,10 +265,6 @@ interface SessionUsageSummaryWire {
   total_tokens?: number;
   remaining_tokens?: number;
   updated_at?: number;
-}
-
-interface SessionUsageResponseWire {
-  usage_summary?: SessionUsageSummaryWire | null;
 }
 
 interface SessionPlanInfoWire {
@@ -337,24 +328,6 @@ interface SessionPlanWire {
   version?: number;
   parent_revision?: number;
   checkpoint?: boolean;
-}
-
-interface ActiveSessionPlanResponseWire {
-  has_active?: boolean;
-  active_plan?: SessionPlanWire | null;
-}
-
-interface SaveSessionPlanResponseWire {
-  plan?: SessionPlanWire | null;
-}
-
-interface SessionPlansResponseWire {
-  active_plan_id?: string;
-  plans?: SessionPlanWire[] | null;
-}
-
-interface SessionPlanHistoryResponseWire {
-  revisions?: SessionPlanWire[] | null;
 }
 
 interface ResolveAllPermissionsResponseWire {
@@ -656,9 +629,10 @@ function mapSessionPlanDocument(
   };
 }
 
-function mapSessionPlan(
-  plan: SessionPlanWire | null | undefined,
+export function mapDesktopSessionPlan(
+  value: unknown,
 ): DesktopSessionPlanRecord {
+  const plan = value as SessionPlanWire | null | undefined;
   return {
     id: String(plan?.id ?? "").trim(),
     title: String(plan?.title ?? "").trim(),
@@ -670,11 +644,12 @@ function mapSessionPlan(
   };
 }
 
-function mapSessionPlanRevision(
-  plan: SessionPlanWire | null | undefined,
+export function mapDesktopSessionPlanRevision(
+  value: unknown,
   index: number,
 ): DesktopSessionPlanRevisionRecord {
-  const base = mapSessionPlan(plan);
+  const plan = value as SessionPlanWire | null | undefined;
+  const base = mapDesktopSessionPlan(plan);
   const version = typeof plan?.version === "number" ? plan.version : 0;
   return {
     ...base,
@@ -701,6 +676,14 @@ function routeFromSessionMetadata(session: DesktopSessionRecord): DesktopChatRou
 
 export function mapDesktopSession(session: unknown): DesktopSessionRecord {
   return mapSession(session as SessionWire);
+}
+
+export function mapDesktopSessionUsageSummary(summary: unknown): DesktopSessionUsageRecord | null {
+  return mapSessionUsageSummary(summary as SessionUsageSummaryWire | null | undefined);
+}
+
+export function mapDesktopSessionPermission(permission: unknown): DesktopPermissionRecord {
+  return mapResolvedPermission(permission as ResolvePermissionResponseWire["permission"]);
 }
 
 function mapSessionProjectionToSession(session: SessionWire, projection: SessionProjectionWire | null | undefined): SessionWire {
@@ -952,7 +935,10 @@ export async function fetchSession(
       mappedSession,
       routeFromSessionMetadata(mappedSession),
     );
-    mapped.permissionsHydrated = false;
+    mapped.permissionsHydrated = true;
+    mapped.pendingPermissions = mapDesktopV3PendingPermissions(response.pending_permissions);
+    mapped.pendingPermissionCount = countApprovalRequiredPermissions(mapped.pendingPermissions, mapped.mode);
+    mapped.usage = mapSessionUsageSummary(response.usage_summary);
     return mapped.id ? applySessionProjectionCursor(mapped, response.projection) : null;
   }
 
@@ -966,6 +952,19 @@ export async function fetchSession(
   );
   mapped.permissionsHydrated = false;
   return mapped.id ? mapped : null;
+}
+
+function mapDesktopV3PendingPermissions(permissions: ResolvePermissionResponseWire["permission"][] | undefined): DesktopPermissionRecord[] {
+  return Array.isArray(permissions)
+    ? permissions
+        .map((permission) => mapResolvedPermission(permission))
+        .filter(
+          (permission) =>
+            permission.id !== "" &&
+            permission.sessionId !== "" &&
+            permission.status === "pending",
+        )
+    : [];
 }
 
 function mapResolvedPermission(
@@ -1107,45 +1106,6 @@ export async function updateSessionMode(
     },
   );
   return String(response.mode ?? "").trim() || "auto";
-}
-
-export async function fetchSessionMetadata(
-  sessionId: string,
-  signal?: AbortSignal,
-): Promise<Record<string, unknown>> {
-  rejectV3SessionV2Subresource(sessionId, "session metadata");
-  const response = await requestJson<SessionMetadataWire>(
-    `/v2/sessions/${encodeURIComponent(sessionId)}/metadata`,
-    { signal },
-  );
-  return response.metadata && typeof response.metadata === "object"
-    ? response.metadata
-    : {};
-}
-
-export async function updateSessionMetadata(
-  sessionId: string,
-  metadata: Record<string, unknown>,
-  route?: DesktopChatRoute | null,
-): Promise<DesktopSessionRecord> {
-  rejectV3SessionV2Subresource(sessionId, "session metadata");
-  const response = await requestJson<{ session?: SessionWire }>(
-    `/v2/sessions/${encodeURIComponent(sessionId)}/metadata`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        metadata: sanitizeSessionCreateV2Metadata(metadata) ?? {},
-      }),
-    },
-  );
-  const mappedSession = mapSession(response.session ?? {});
-  return applyDesktopChatRouteToSession(
-    mappedSession,
-    route ?? routeFromSessionMetadata(mappedSession),
-  );
 }
 
 export async function fetchSessionCodexConfig(
@@ -2077,10 +2037,17 @@ export async function resolveSessionPermission(
     | "always_deny",
   reason: string,
   approvedArguments?: Record<string, unknown>,
+  options: SessionDataRequestOptions = {},
 ): Promise<DesktopPermissionRecord> {
-  rejectV3SessionV2Subresource(sessionId, "session permissions");
+  const sessionApi = resolveSessionApiForSession(sessionId, options);
+  const endpoint = sessionApi === "v3"
+    ? `/v3/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(permissionId)}/resolve`
+    : `/v2/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(permissionId)}/resolve`;
+  if (sessionApi !== "v3") {
+    rejectV3SessionV2Subresource(sessionId, "session permissions");
+  }
   const response = await requestJson<ResolvePermissionResponseWire>(
-    `/v2/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(permissionId)}/resolve`,
+    endpoint,
     {
       method: "POST",
       headers: {
@@ -2096,131 +2063,6 @@ export async function resolveSessionPermission(
   return mapResolvedPermission(response.permission, response.saved_rule);
 }
 
-export async function fetchSessionUsageSummary(
-  sessionId: string,
-  signal?: AbortSignal,
-): Promise<DesktopSessionUsageRecord | null> {
-  rejectV3SessionV2Subresource(sessionId, "session usage summary");
-  const response = await requestJson<SessionUsageResponseWire>(
-    `/v2/sessions/${encodeURIComponent(sessionId)}/usage`,
-    { signal },
-  );
-  return mapSessionUsageSummary(response.usage_summary);
-}
-
-export async function fetchActiveSessionPlan(
-  sessionId: string,
-  signal?: AbortSignal,
-): Promise<{ hasActive: boolean; plan: DesktopSessionPlanRecord }> {
-  rejectV3SessionV2Subresource(sessionId, "session plans");
-  const response = await requestJson<ActiveSessionPlanResponseWire>(
-    `/v2/sessions/${encodeURIComponent(sessionId)}/plans/active`,
-    { signal },
-  );
-  return {
-    hasActive: Boolean(response.has_active),
-    plan: mapSessionPlan(response.active_plan),
-  };
-}
-
-export async function activateSessionPlan(
-  sessionId: string,
-  planId: string,
-): Promise<DesktopSessionPlanRecord> {
-  rejectV3SessionV2Subresource(sessionId, "session plans");
-  const response = await requestJson<ActiveSessionPlanResponseWire>(
-    `/v2/sessions/${encodeURIComponent(sessionId)}/plans/active`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ plan_id: planId.trim() }),
-    },
-  );
-  return mapSessionPlan(response.active_plan);
-}
-
-export async function fetchSessionPlans(
-  sessionId: string,
-  signal?: AbortSignal,
-): Promise<{ activePlanId: string; plans: DesktopSessionPlanRecord[] }> {
-  rejectV3SessionV2Subresource(sessionId, "session plans");
-  const response = await requestJson<SessionPlansResponseWire>(
-    `/v2/sessions/${encodeURIComponent(sessionId)}/plans?limit=100`,
-    { signal },
-  );
-  return {
-    activePlanId: String(response.active_plan_id ?? "").trim(),
-    plans: Array.isArray(response.plans)
-      ? response.plans.map((plan) => mapSessionPlan(plan))
-      : [],
-  };
-}
-
-export async function fetchSessionPlan(
-  sessionId: string,
-  planId: string,
-  signal?: AbortSignal,
-): Promise<DesktopSessionPlanRecord> {
-  rejectV3SessionV2Subresource(sessionId, "session plans");
-  const response = await requestJson<SaveSessionPlanResponseWire>(
-    `/v2/sessions/${encodeURIComponent(sessionId)}/plans/${encodeURIComponent(planId)}`,
-    { signal },
-  );
-  return mapSessionPlan(response.plan);
-}
-
-export async function saveSessionPlan(
-  sessionId: string,
-  input: {
-    id?: string;
-    title?: string;
-    plan?: string;
-    document?: unknown;
-    documentPatch?: unknown;
-    status?: string;
-    approvalState?: string;
-  },
-): Promise<DesktopSessionPlanRecord> {
-  rejectV3SessionV2Subresource(sessionId, "session plans");
-  const response = await requestJson<SaveSessionPlanResponseWire>(
-    `/v2/sessions/${encodeURIComponent(sessionId)}/plans`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        id: input.id?.trim() || undefined,
-        plan_id: input.id?.trim() || undefined,
-        title: input.title?.trim() || undefined,
-        plan: input.plan,
-        document: input.document ?? undefined,
-        document_patch: input.documentPatch ?? undefined,
-        status: input.status?.trim() || undefined,
-        approval_state: input.approvalState?.trim() || undefined,
-      }),
-    },
-  );
-  return mapSessionPlan(response.plan);
-}
-
-export async function fetchSessionPlanHistory(
-  sessionId: string,
-  planId: string,
-  signal?: AbortSignal,
-): Promise<DesktopSessionPlanRevisionRecord[]> {
-  rejectV3SessionV2Subresource(sessionId, "session plans");
-  const response = await requestJson<SessionPlanHistoryResponseWire>(
-    `/v2/sessions/${encodeURIComponent(sessionId)}/plans/${encodeURIComponent(planId)}/history?limit=100`,
-    { signal },
-  );
-  return Array.isArray(response.revisions)
-    ? response.revisions.map((revision, index) => mapSessionPlanRevision(revision, index))
-    : [];
-}
-
 export async function resolveAllSessionPermissions(
   sessionId: string,
   action:
@@ -2231,10 +2073,17 @@ export async function resolveAllSessionPermissions(
     | "always_deny",
   reason: string,
   limit?: number,
+  options: SessionDataRequestOptions = {},
 ): Promise<DesktopPermissionRecord[]> {
-  rejectV3SessionV2Subresource(sessionId, "session permissions");
+  const sessionApi = resolveSessionApiForSession(sessionId, options);
+  const endpoint = sessionApi === "v3"
+    ? `/v3/sessions/${encodeURIComponent(sessionId)}/permissions/resolve_all`
+    : `/v2/sessions/${encodeURIComponent(sessionId)}/permissions/resolve_all`;
+  if (sessionApi !== "v3") {
+    rejectV3SessionV2Subresource(sessionId, "session permissions");
+  }
   const response = await requestJson<ResolveAllPermissionsResponseWire>(
-    `/v2/sessions/${encodeURIComponent(sessionId)}/permissions/resolve_all`,
+    endpoint,
     {
       method: "POST",
       headers: {
@@ -2249,27 +2098,6 @@ export async function resolveAllSessionPermissions(
   );
   return Array.isArray(response.resolved)
     ? response.resolved.map((permission) => mapResolvedPermission(permission))
-    : [];
-}
-
-export async function fetchSessionPendingPermissions(
-  sessionId: string,
-  signal?: AbortSignal,
-): Promise<DesktopPermissionRecord[]> {
-  rejectV3SessionV2Subresource(sessionId, "session permissions");
-  const response = await requestJson<PendingPermissionsResponseWire>(
-    `/v2/sessions/${encodeURIComponent(sessionId)}/permissions?status=pending&limit=200`,
-    { signal },
-  );
-  return Array.isArray(response.permissions)
-    ? response.permissions
-        .map((permission) => mapResolvedPermission(permission))
-        .filter(
-          (permission) =>
-            permission.id !== "" &&
-            permission.sessionId !== "" &&
-            permission.status === "pending",
-        )
     : [];
 }
 

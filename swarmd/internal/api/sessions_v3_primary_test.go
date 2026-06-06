@@ -50,6 +50,74 @@ func TestSessionsV3PrimaryHandlersDoNotUseRuntimeDispatchOrRoutes(t *testing.T) 
 	}
 }
 
+func TestSessionsV3PrimaryModeAndPreferenceUseV3PrimaryMutation(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "mode-pref-create", "mode preference", pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "medium"})
+
+	modeReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/mode", bytes.NewBufferString(`{"mode":"plan"}`))
+	modeReq.Header.Set("Content-Type", "application/json")
+	modeRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(modeRec, withTestPrincipal(modeReq))
+	if modeRec.Code != http.StatusOK {
+		t.Fatalf("mode status = %d, want %d, body=%s", modeRec.Code, http.StatusOK, modeRec.Body.String())
+	}
+	var modePayload struct {
+		Session  pebblestore.SessionSnapshot   `json:"session"`
+		Events   []sessionruntime.SessionEvent `json:"events"`
+		Mutation sessionruntime.SessionMutationResult `json:"mutation"`
+	}
+	if err := json.Unmarshal(modeRec.Body.Bytes(), &modePayload); err != nil {
+		t.Fatalf("decode mode response: %v", err)
+	}
+	if modePayload.Session.Mode != "plan" || modePayload.Mutation.Event.EventType != "session.mode.updated" {
+		t.Fatalf("mode payload = %+v", modePayload)
+	}
+	if len(modePayload.Events) != 2 || modePayload.Events[1].EventType != "session.mode.updated" {
+		t.Fatalf("mode events = %+v", modePayload.Events)
+	}
+	var modeEventPayload map[string]any
+	if err := json.Unmarshal(modePayload.Mutation.Event.Payload, &modeEventPayload); err != nil {
+		t.Fatalf("decode mode event payload: %v", err)
+	}
+	if modeEventPayload["mode"] != "plan" {
+		t.Fatalf("mode event payload = %+v", modeEventPayload)
+	}
+
+	prefReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/preference", bytes.NewBufferString(`{"provider":"codex","model":"gpt-5.4","thinking":"high","service_tier":"fast"}`))
+	prefReq.Header.Set("Content-Type", "application/json")
+	prefRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(prefRec, withTestPrincipal(prefReq))
+	if prefRec.Code != http.StatusOK {
+		t.Fatalf("preference status = %d, want %d, body=%s", prefRec.Code, http.StatusOK, prefRec.Body.String())
+	}
+	var prefPayload struct {
+		Session         pebblestore.SessionSnapshot   `json:"session"`
+		Preference      pebblestore.ModelPreference   `json:"preference"`
+		Events          []sessionruntime.SessionEvent `json:"events"`
+		ContextWindow   int                           `json:"context_window"`
+		MaxOutputTokens int                           `json:"max_output_tokens"`
+		Mutation        sessionruntime.SessionMutationResult `json:"mutation"`
+	}
+	if err := json.Unmarshal(prefRec.Body.Bytes(), &prefPayload); err != nil {
+		t.Fatalf("decode preference response: %v", err)
+	}
+	if prefPayload.Session.Preference.Thinking != "high" || prefPayload.Preference.Thinking != "high" || prefPayload.Mutation.Event.EventType != "session.preference.updated" {
+		t.Fatalf("preference payload = %+v", prefPayload)
+	}
+	if len(prefPayload.Events) != 3 || prefPayload.Events[2].EventType != "session.preference.updated" {
+		t.Fatalf("preference events = %+v", prefPayload.Events)
+	}
+	var prefEventPayload struct {
+		Preference pebblestore.ModelPreference `json:"preference"`
+	}
+	if err := json.Unmarshal(prefPayload.Mutation.Event.Payload, &prefEventPayload); err != nil {
+		t.Fatalf("decode preference event payload: %v", err)
+	}
+	if prefEventPayload.Preference.Thinking != "high" || prefEventPayload.Preference.ServiceTier != "fast" {
+		t.Fatalf("preference event payload = %+v", prefEventPayload)
+	}
+}
+
 func TestSessionsV3PrimaryCreateListHydrateUsesPrimaryStoreOnly(t *testing.T) {
 	server, sessionSvc, _, routeStore, _ := newRoutedSessionTestServerWithSwarmStore(t)
 

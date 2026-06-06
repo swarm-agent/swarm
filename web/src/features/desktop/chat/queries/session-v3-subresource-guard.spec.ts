@@ -20,6 +20,9 @@ async function assertLegacyHelperUsesV2(action: () => Promise<unknown>, expected
 }
 
 function legacyResponseForPath(path: string): unknown {
+  if (path.includes('/permissions?status=pending') || path.endsWith('/usage')) {
+    throw new Error(`removed legacy Desktop V3 subresource helper requested: ${path}`)
+  }
   if (path.endsWith('/preference')) {
     return { ok: true, preference: { model: 'gpt-5.4' } }
   }
@@ -38,9 +41,6 @@ function legacyResponseForPath(path: string): unknown {
   if (path.includes('/permissions/perm-1/resolve')) {
     return { ok: true, permission: { id: 'perm-1', status: 'resolved' } }
   }
-  if (path.endsWith('/usage')) {
-    return { ok: true, usage_summary: null }
-  }
   if (path.endsWith('/plans/active')) {
     return { ok: true, has_active: false, active_plan: null }
   }
@@ -58,9 +58,6 @@ function legacyResponseForPath(path: string): unknown {
   }
   if (path.endsWith('/permissions/resolve_all')) {
     return { ok: true, resolved: [] }
-  }
-  if (path.includes('/permissions?status=pending')) {
-    return { ok: true, permissions: [] }
   }
   return { ok: true }
 }
@@ -84,8 +81,6 @@ test('legacy lifecycle helpers do not infer V3 from session ID shape', async () 
     updateSessionPreference,
     fetchSessionMode,
     updateSessionMode,
-    fetchSessionMetadata,
-    updateSessionMetadata,
     fetchSessionCodexConfig,
     updateSessionCodexConfig,
   } = await import('./chat-queries')
@@ -94,39 +89,35 @@ test('legacy lifecycle helpers do not infer V3 from session ID shape', async () 
   await assertLegacyHelperUsesV2(() => updateSessionPreference('session-raw', { model: 'gpt-5.4' }), '/v2/sessions/session-raw/preference')
   await assertLegacyHelperUsesV2(() => fetchSessionMode('session-raw'), '/v2/sessions/session-raw/mode')
   await assertLegacyHelperUsesV2(() => updateSessionMode('session-raw', 'plan'), '/v2/sessions/session-raw/mode')
-  await assertLegacyHelperUsesV2(() => fetchSessionMetadata('session-raw'), '/v2/sessions/session-raw/metadata')
-  await assertLegacyHelperUsesV2(() => updateSessionMetadata('session-raw', { ticket: 'T-1' }), '/v2/sessions/session-raw/metadata')
   await assertLegacyHelperUsesV2(() => fetchSessionCodexConfig('session-raw'), '/v2/sessions/session-raw/codex')
   await assertLegacyHelperUsesV2(() => updateSessionCodexConfig('session-raw', { serviceTier: 'flex' }), '/v2/sessions/session-raw/codex')
 })
 
-test('legacy run, plan, permission, and usage helpers do not infer V3 from session ID shape', async () => {
+test('legacy run, plan, and permission resolution helpers do not infer V3 from session ID shape', async () => {
   const {
     startSessionRun,
 
     resolveSessionPermission,
-    fetchSessionUsageSummary,
-    fetchActiveSessionPlan,
-    activateSessionPlan,
-    fetchSessionPlans,
-    fetchSessionPlan,
-    saveSessionPlan,
-    fetchSessionPlanHistory,
     resolveAllSessionPermissions,
-    fetchSessionPendingPermissions,
   } = await import('./chat-queries')
 
   await assertLegacyHelperUsesV2(() => startSessionRun({ sessionId: 'session-raw', prompt: 'run', route: primaryRoute }), '/v2/sessions/session-raw/run/stream')
   await assertLegacyHelperUsesV2(() => resolveSessionPermission('session-raw', 'perm-1', 'approve', 'ok'), '/v2/sessions/session-raw/permissions/perm-1/resolve')
-  await assertLegacyHelperUsesV2(() => fetchSessionUsageSummary('session-raw'), '/v2/sessions/session-raw/usage')
-  await assertLegacyHelperUsesV2(() => fetchActiveSessionPlan('session-raw'), '/v2/sessions/session-raw/plans/active')
-  await assertLegacyHelperUsesV2(() => activateSessionPlan('session-raw', 'plan-1'), '/v2/sessions/session-raw/plans/active')
-  await assertLegacyHelperUsesV2(() => fetchSessionPlans('session-raw'), '/v2/sessions/session-raw/plans?limit=100')
-  await assertLegacyHelperUsesV2(() => fetchSessionPlan('session-raw', 'plan-1'), '/v2/sessions/session-raw/plans/plan-1')
-  await assertLegacyHelperUsesV2(() => saveSessionPlan('session-raw', { title: 'Plan', plan: '# Plan' }), '/v2/sessions/session-raw/plans')
-  await assertLegacyHelperUsesV2(() => fetchSessionPlanHistory('session-raw', 'plan-1'), '/v2/sessions/session-raw/plans/plan-1/history?limit=100')
   await assertLegacyHelperUsesV2(() => resolveAllSessionPermissions('session-raw', 'approve', 'ok'), '/v2/sessions/session-raw/permissions/resolve_all')
-  await assertLegacyHelperUsesV2(() => fetchSessionPendingPermissions('session-raw'), '/v2/sessions/session-raw/permissions?status=pending&limit=200')
+})
+
+test('Desktop V3 removed standalone permission, usage, metadata, and plan subresource helper exports', async () => {
+  const queries = await import('./chat-queries')
+  assert.equal('fetchSessionPendingPermissions' in queries, false)
+  assert.equal('fetchSessionUsageSummary' in queries, false)
+  assert.equal('fetchSessionMetadata' in queries, false)
+  assert.equal('updateSessionMetadata' in queries, false)
+  assert.equal('fetchActiveSessionPlan' in queries, false)
+  assert.equal('activateSessionPlan' in queries, false)
+  assert.equal('fetchSessionPlans' in queries, false)
+  assert.equal('fetchSessionPlan' in queries, false)
+  assert.equal('saveSessionPlan' in queries, false)
+  assert.equal('fetchSessionPlanHistory' in queries, false)
 })
 
 

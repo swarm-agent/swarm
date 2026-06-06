@@ -51,11 +51,52 @@ type sessionsV3StopRequest struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+type sessionsV3ModeRequest struct {
+	Mode string `json:"mode"`
+}
+
+type sessionsV3PreferenceRequest struct {
+	Provider    *string `json:"provider,omitempty"`
+	Model       *string `json:"model,omitempty"`
+	Thinking    *string `json:"thinking,omitempty"`
+	ServiceTier *string `json:"service_tier,omitempty"`
+	ContextMode *string `json:"context_mode,omitempty"`
+}
+
+type sessionsV3MetadataRequest struct {
+	Metadata map[string]any `json:"metadata"`
+}
+
+type sessionsV3PlanUpsertRequest struct {
+	ID            string                            `json:"id"`
+	PlanID        string                            `json:"plan_id"`
+	Title         string                            `json:"title"`
+	Plan          string                            `json:"plan"`
+	Document      *pebblestore.SessionPlanDocument  `json:"document"`
+	DocumentPatch *sessionruntime.PlanDocumentPatch `json:"document_patch"`
+	Status        string                            `json:"status"`
+	ApprovalState string                            `json:"approval_state"`
+	UpdateSummary string                            `json:"update_summary"`
+	UpdateScope   string                            `json:"update_scope"`
+	Scope         string                            `json:"scope"`
+	UpdateKind    string                            `json:"update_kind"`
+	Checkpoint    bool                              `json:"checkpoint"`
+	Activate      *bool                             `json:"activate"`
+}
+
 type sessionsV3HydratedSession struct {
-	Session    pebblestore.SessionSnapshot      `json:"session"`
-	Projection sessionruntime.SessionProjection `json:"projection"`
-	Messages   []pebblestore.MessageSnapshot    `json:"messages"`
-	Events     []sessionruntime.SessionEvent    `json:"events"`
+	Session            pebblestore.SessionSnapshot       `json:"session"`
+	Projection         sessionruntime.SessionProjection  `json:"projection"`
+	Messages           []pebblestore.MessageSnapshot     `json:"messages"`
+	Events             []sessionruntime.SessionEvent     `json:"events"`
+	PendingPermissions []pebblestore.PermissionRecord    `json:"pending_permissions"`
+	UsageSummary       *pebblestore.SessionUsageSummary  `json:"usage_summary,omitempty"`
+	Preference         pebblestore.ModelPreference       `json:"preference"`
+	ContextWindow      int                               `json:"context_window"`
+	MaxOutputTokens    int                               `json:"max_output_tokens"`
+	HasActivePlan      bool                              `json:"has_active_plan"`
+	ActivePlan         pebblestore.SessionPlanSnapshot   `json:"active_plan,omitempty"`
+	PlanRevisions      []pebblestore.SessionPlanSnapshot `json:"plan_revisions"`
 }
 
 func (s *Server) handleSessionsV3Primary(w http.ResponseWriter, r *http.Request) {
@@ -109,13 +150,7 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 			writeSessionNotFound(w)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":         true,
-			"session":    hydrated.Session,
-			"projection": hydrated.Projection,
-			"messages":   hydrated.Messages,
-			"events":     hydrated.Events,
-		})
+		writeJSON(w, http.StatusOK, sessionsV3HydratedResponse(hydrated))
 	case "messages":
 		s.handleSessionV3PrimaryMessages(w, r, principal, sessionID)
 	case "events":
@@ -124,7 +159,27 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		s.handleSessionV3PrimaryStream(w, r, principal, sessionID)
 	case "run/stop":
 		s.handleSessionV3PrimaryRunStop(w, r, principal, sessionID)
+	case "mode":
+		s.handleSessionV3PrimaryMode(w, r, principal, sessionID)
+	case "preference":
+		s.handleSessionV3PrimaryPreference(w, r, principal, sessionID)
+	case "metadata":
+		s.handleSessionV3PrimaryMetadata(w, r, principal, sessionID)
+	case "plans":
+		s.handleSessionV3PrimaryPlans(w, r, principal, sessionID)
+	case "plans/active":
+		s.handleSessionV3PrimaryActivePlan(w, r, principal, sessionID)
+	case "permissions/resolve_all":
+		s.handleSessionV3PrimaryPermissionResolveAll(w, r, principal, sessionID)
 	default:
+		if strings.HasPrefix(subpath, "permissions/") && strings.HasSuffix(subpath, "/resolve") {
+			s.handleSessionV3PrimaryPermissionResolve(w, r, principal, sessionID, strings.TrimSuffix(strings.TrimPrefix(subpath, "permissions/"), "/resolve"))
+			return
+		}
+		if strings.HasPrefix(subpath, "plans/") {
+			s.handleSessionV3PrimaryPlanByID(w, r, principal, sessionID, strings.TrimPrefix(subpath, "plans/"))
+			return
+		}
 		writeError(w, http.StatusBadRequest, errors.New("unknown sessions v3 path"))
 	}
 }
@@ -392,7 +447,7 @@ func (s *Server) handleSessionV3PrimaryEvents(w http.ResponseWriter, r *http.Req
 	if !ok {
 		return
 	}
-	if _, found, err := s.hydrateSessionsV3Primary(principal, sessionID); err != nil {
+	if found, err := s.authorizeSessionsV3PrimarySession(principal, sessionID); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	} else if !found {
@@ -417,6 +472,371 @@ func (s *Server) handleSessionV3PrimaryEvents(w http.ResponseWriter, r *http.Req
 	})
 }
 
+func (s *Server) handleSessionV3PrimaryMode(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	var req sessionsV3ModeRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	mode := strings.ToLower(strings.TrimSpace(req.Mode))
+	if !sessionruntime.IsValidMode(mode) {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid mode %q", req.Mode))
+		return
+	}
+	mode = sessionruntime.NormalizeMode(mode)
+	hydrated, found, err := s.hydrateSessionsV3Primary(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !found {
+		writeSessionNotFound(w)
+		return
+	}
+	if sessionruntime.NormalizeMode(hydrated.Session.Mode) == mode {
+		writeJSON(w, http.StatusOK, sessionsV3HydratedResponse(hydrated))
+		return
+	}
+	next := hydrated.Session
+	next.Mode = mode
+	next.UpdatedAt = time.Now().UnixMilli()
+	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationUpdateMode, map[string]any{"mode": mode})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	eventPayload, err := json.Marshal(map[string]any{"session_id": sessionID, "mode": mode, "updated_at": next.UpdatedAt})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       sessionID,
+		UserID:          principal.UserID,
+		AccountScopeID:  principal.AccountScopeID,
+		ClientRequestID: "mode:" + sessionID + ":" + mode + ":" + fmt.Sprint(next.UpdatedAt),
+		IdempotencyKey:  "mode:" + sessionID + ":" + mode + ":" + fmt.Sprint(next.UpdatedAt),
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationUpdateMode,
+		EventPayload:    eventPayload,
+		Session:         &next,
+		NowUnixMs:       next.UpdatedAt,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	refreshed, _, err := s.hydrateSessionsV3Primary(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	response := sessionsV3HydratedResponse(refreshed)
+	response["mutation"] = result
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleSessionV3PrimaryPreference(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	var req sessionsV3PreferenceRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	hydrated, found, err := s.hydrateSessionsV3Primary(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !found {
+		writeSessionNotFound(w)
+		return
+	}
+	pref := mergeSessionsV3PreferenceUpdate(hydrated.Session.Preference, req)
+	if s.model == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("model service is not configured"))
+		return
+	}
+	resolved, err := s.model.ResolvePreference(pref)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	next := hydrated.Session
+	next.Preference = normalizeSessionsV3ModelPreference(resolved.Preference)
+	next.UpdatedAt = time.Now().UnixMilli()
+	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationUpdatePreference, map[string]any{"preference": next.Preference})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	eventPayload, err := json.Marshal(map[string]any{"session_id": sessionID, "preference": next.Preference, "updated_at": next.UpdatedAt})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       sessionID,
+		UserID:          principal.UserID,
+		AccountScopeID:  principal.AccountScopeID,
+		ClientRequestID: "preference:" + sessionID + ":" + fmt.Sprint(next.UpdatedAt),
+		IdempotencyKey:  "preference:" + sessionID + ":" + fmt.Sprint(next.UpdatedAt),
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationUpdatePreference,
+		EventPayload:    eventPayload,
+		Session:         &next,
+		NowUnixMs:       next.UpdatedAt,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	refreshed, _, err := s.hydrateSessionsV3Primary(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	response := sessionsV3HydratedResponse(refreshed)
+	response["mutation"] = result
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleSessionV3PrimaryMetadata(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	hydrated, found, err := s.hydrateSessionsV3Primary(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !found {
+		writeSessionNotFound(w)
+		return
+	}
+	if r.Method == http.MethodGet {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "metadata": hydrated.Session.Metadata})
+		return
+	}
+	var req sessionsV3MetadataRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	next := hydrated.Session
+	next.Metadata = mergeSessionsV3MetadataUpdate(hydrated.Session.Metadata, req.Metadata)
+	next.UpdatedAt = time.Now().UnixMilli()
+	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationUpdateMetadata, map[string]any{"metadata": next.Metadata})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	eventPayload, err := json.Marshal(map[string]any{"session_id": sessionID, "metadata": next.Metadata, "updated_at": next.UpdatedAt})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       sessionID,
+		UserID:          principal.UserID,
+		AccountScopeID:  principal.AccountScopeID,
+		ClientRequestID: "metadata:" + sessionID + ":" + fmt.Sprint(next.UpdatedAt),
+		IdempotencyKey:  "metadata:" + sessionID + ":" + fmt.Sprint(next.UpdatedAt),
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationUpdateMetadata,
+		EventPayload:    eventPayload,
+		Session:         &next,
+		NowUnixMs:       next.UpdatedAt,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	refreshed, _, err := s.hydrateSessionsV3Primary(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	response := sessionsV3HydratedResponse(refreshed)
+	response["mutation"] = result
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleSessionV3PrimaryActivePlan(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if found, err := s.authorizeSessionsV3PrimarySession(principal, sessionID); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	} else if !found {
+		writeSessionNotFound(w)
+		return
+	}
+	if r.Method == http.MethodGet {
+		plan, ok, err := s.sessions.GetActivePlan(sessionID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if !ok {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "has_active": false, "active_plan": nil})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "has_active": true, "active_plan": plan})
+		return
+	}
+	var req struct {
+		PlanID string `json:"plan_id"`
+		ID     string `json:"id"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	planID := strings.TrimSpace(req.PlanID)
+	if planID == "" {
+		planID = strings.TrimSpace(req.ID)
+	}
+	plan, event, err := s.sessions.SetActivePlan(sessionID, planID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if event != nil && s.hub != nil {
+		s.hub.Publish(*event)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "active_plan": plan})
+}
+
+func (s *Server) handleSessionV3PrimaryPlans(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if found, err := s.authorizeSessionsV3PrimarySession(principal, sessionID); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	} else if !found {
+		writeSessionNotFound(w)
+		return
+	}
+	if r.Method == http.MethodGet {
+		limit, ok := parseSessionsV2PositiveLimit(w, r, 100)
+		if !ok {
+			return
+		}
+		plans, activeID, err := s.sessions.ListPlans(sessionID, limit)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "active_plan_id": activeID, "count": len(plans), "plans": plans})
+		return
+	}
+	var req sessionsV3PlanUpsertRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	planID := strings.TrimSpace(req.PlanID)
+	if planID == "" {
+		planID = strings.TrimSpace(req.ID)
+	}
+	activate := true
+	if req.Activate != nil {
+		activate = *req.Activate
+	}
+	updateScope := strings.TrimSpace(req.UpdateScope)
+	if updateScope == "" {
+		updateScope = strings.TrimSpace(req.Scope)
+	}
+	metadata := sessionruntime.PlanSaveMetadata{UpdateSummary: req.UpdateSummary, UpdateScope: updateScope, UpdateKind: req.UpdateKind, Checkpoint: req.Checkpoint, Document: req.Document}
+	var plan pebblestore.SessionPlanSnapshot
+	var event *pebblestore.EventEnvelope
+	var err error
+	if req.DocumentPatch != nil {
+		activatePtr := &activate
+		plan, event, err = s.sessions.PatchPlan(sessionID, sessionruntime.PlanPatchOptions{PlanID: planID, Title: req.Title, Status: req.Status, ApprovalState: req.ApprovalState, Activate: activatePtr, Document: req.Document, DocumentPatch: req.DocumentPatch, Metadata: metadata})
+	} else {
+		plan, event, err = s.sessions.SavePlanWithMetadata(sessionID, planID, req.Title, req.Plan, req.Status, req.ApprovalState, activate, metadata)
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if event != nil && s.hub != nil {
+		s.hub.Publish(*event)
+	}
+	refreshed, _, err := s.hydrateSessionsV3Primary(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	response := sessionsV3HydratedResponse(refreshed)
+	response["plan"] = plan
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleSessionV3PrimaryPlanByID(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, tail string) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	if found, err := s.authorizeSessionsV3PrimarySession(principal, sessionID); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	} else if !found {
+		writeSessionNotFound(w)
+		return
+	}
+	if strings.HasSuffix(tail, "/history") {
+		planID := strings.TrimSpace(strings.TrimSuffix(tail, "/history"))
+		if planID == "" || strings.Contains(planID, "/") {
+			writeError(w, http.StatusBadRequest, errors.New("plan id is required"))
+			return
+		}
+		limit, ok := parseSessionsV2PositiveLimit(w, r, 100)
+		if !ok {
+			return
+		}
+		revisions, err := s.sessions.ListPlanRevisions(sessionID, planID, limit)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "plan_id": planID, "count": len(revisions), "revisions": revisions})
+		return
+	}
+	planID := strings.TrimSpace(tail)
+	if planID == "" || strings.Contains(planID, "/") {
+		writeError(w, http.StatusBadRequest, errors.New("plan id is required"))
+		return
+	}
+	plan, ok, err := s.sessions.GetPlan(sessionID, planID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "plan not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "plan": plan})
+}
+
 func (s *Server) handleSessionV3PrimaryRunStop(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -436,7 +856,7 @@ func (s *Server) handleSessionV3PrimaryRunStop(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, errors.New("run_id is required"))
 		return
 	}
-	if _, found, err := s.hydrateSessionsV3Primary(principal, sessionID); err != nil {
+	if found, err := s.authorizeSessionsV3PrimarySession(principal, sessionID); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	} else if !found {
@@ -469,6 +889,88 @@ func (s *Server) handleSessionV3PrimaryRunStop(w http.ResponseWriter, r *http.Re
 	})
 }
 
+func (s *Server) handleSessionV3PrimaryPermissionResolve(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, permissionID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if s.perm == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("permission service is not configured"))
+		return
+	}
+	permissionID = strings.Trim(permissionID, "/")
+	if permissionID == "" || strings.Contains(permissionID, "/") {
+		writeError(w, http.StatusBadRequest, errors.New("permission id is required"))
+		return
+	}
+	if found, err := s.authorizeSessionsV3PrimarySession(principal, sessionID); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	} else if !found {
+		writeSessionNotFound(w)
+		return
+	}
+	var req struct {
+		Action            string          `json:"action"`
+		Reason            string          `json:"reason"`
+		ApprovedArguments json.RawMessage `json:"approved_arguments,omitempty"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	record, savedRule, err := s.perm.ResolveWithPolicyAndArguments(sessionID, permissionID, req.Action, req.Reason, string(req.ApprovedArguments))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "permission": record, "saved_rule": savedRule})
+}
+
+func (s *Server) handleSessionV3PrimaryPermissionResolveAll(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if s.perm == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("permission service is not configured"))
+		return
+	}
+	if found, err := s.authorizeSessionsV3PrimarySession(principal, sessionID); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	} else if !found {
+		writeSessionNotFound(w)
+		return
+	}
+	var req struct {
+		Action string `json:"action"`
+		Reason string `json:"reason"`
+		Limit  int    `json:"limit"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	resolved, err := s.perm.ResolveAll(sessionID, req.Action, req.Reason, req.Limit)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "count": len(resolved), "resolved": resolved})
+}
+
+func (s *Server) authorizeSessionsV3PrimarySession(principal identity.Principal, sessionID string) (bool, error) {
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil || !ok {
+		return ok, err
+	}
+	if strings.TrimSpace(session.AccountScopeID) == "" || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		return false, nil
+	}
+	return true, nil
+}
+
 func (s *Server) hydrateSessionsV3Primary(principal identity.Principal, sessionID string) (sessionsV3HydratedSession, bool, error) {
 	hydrated, ok, err := s.sessions.HydrateSessionSnapshot(sessionID, 500, 500)
 	if err != nil || !ok {
@@ -477,7 +979,66 @@ func (s *Server) hydrateSessionsV3Primary(principal identity.Principal, sessionI
 	if strings.TrimSpace(hydrated.Session.AccountScopeID) == "" || strings.TrimSpace(hydrated.Session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
 		return sessionsV3HydratedSession{}, false, nil
 	}
-	return sessionsV3HydratedSession{Session: hydrated.Session, Projection: hydrated.Projection, Messages: hydrated.Messages, Events: hydrated.Events}, true, nil
+	pendingPermissions := []pebblestore.PermissionRecord{}
+	if s.perm != nil {
+		permissions, err := s.perm.ListPending(sessionID, 200)
+		if err != nil {
+			return sessionsV3HydratedSession{}, false, err
+		}
+		pendingPermissions = permissions
+	}
+	var usageSummary *pebblestore.SessionUsageSummary
+	if summary, hasSummary, err := s.sessions.GetUsageSummary(sessionID); err != nil {
+		return sessionsV3HydratedSession{}, false, err
+	} else if hasSummary {
+		usageSummary = &summary
+	}
+	hydrated.Session.Preference = normalizeSessionsV3ModelPreference(hydrated.Session.Preference)
+	preference := hydrated.Session.Preference
+	contextWindow := 0
+	maxOutputTokens := 0
+	if s.model != nil {
+		if resolved, err := s.model.ResolvePreference(hydrated.Session.Preference); err == nil {
+			preference = normalizeSessionsV3ModelPreference(resolved.Preference)
+			contextWindow = resolved.ContextWindow
+			maxOutputTokens = resolved.MaxOutputTokens
+		}
+	}
+	activePlan, hasActivePlan, err := s.sessions.GetActivePlan(sessionID)
+	if err != nil {
+		return sessionsV3HydratedSession{}, false, err
+	}
+	planRevisions := []pebblestore.SessionPlanSnapshot{}
+	if hasActivePlan && strings.TrimSpace(activePlan.ID) != "" {
+		revisions, err := s.sessions.ListPlanRevisions(sessionID, activePlan.ID, 100)
+		if err != nil {
+			return sessionsV3HydratedSession{}, false, err
+		}
+		planRevisions = revisions
+	}
+	return sessionsV3HydratedSession{Session: hydrated.Session, Projection: hydrated.Projection, Messages: hydrated.Messages, Events: hydrated.Events, PendingPermissions: pendingPermissions, UsageSummary: usageSummary, Preference: preference, ContextWindow: contextWindow, MaxOutputTokens: maxOutputTokens, HasActivePlan: hasActivePlan, ActivePlan: activePlan, PlanRevisions: planRevisions}, true, nil
+}
+
+func sessionsV3HydratedResponse(hydrated sessionsV3HydratedSession) map[string]any {
+	response := map[string]any{
+		"ok":                  true,
+		"session":             hydrated.Session,
+		"projection":          hydrated.Projection,
+		"messages":            hydrated.Messages,
+		"events":              hydrated.Events,
+		"pending_permissions": hydrated.PendingPermissions,
+		"usage_summary":       hydrated.UsageSummary,
+		"preference":          hydrated.Preference,
+		"context_window":      hydrated.ContextWindow,
+		"max_output_tokens":   hydrated.MaxOutputTokens,
+		"has_active_plan":     hydrated.HasActivePlan,
+		"active_plan":         nil,
+		"plan_revisions":      hydrated.PlanRevisions,
+	}
+	if hydrated.HasActivePlan {
+		response["active_plan"] = hydrated.ActivePlan
+	}
+	return response
 }
 
 func parseSessionsV3PrimaryPath(path string) (string, string, bool) {
@@ -532,6 +1093,40 @@ func sessionsV3CreatePayloadHash(sessionID string, req sessionsV3CreateRequest, 
 	}
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+func sessionsV3UpdatePayloadHash(sessionID, operation string, payload map[string]any) (string, error) {
+	canonical := map[string]any{
+		"operation":  strings.TrimSpace(operation),
+		"session_id": strings.TrimSpace(sessionID),
+		"payload":    cloneSessionsV3Metadata(payload),
+	}
+	raw, err := json.Marshal(canonical)
+	if err != nil {
+		return "", fmt.Errorf("marshal sessions v3 update payload hash: %w", err)
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func mergeSessionsV3PreferenceUpdate(current pebblestore.ModelPreference, req sessionsV3PreferenceRequest) pebblestore.ModelPreference {
+	next := normalizeSessionsV3ModelPreference(current)
+	if req.Provider != nil {
+		next.Provider = strings.ToLower(strings.TrimSpace(*req.Provider))
+	}
+	if req.Model != nil {
+		next.Model = strings.TrimSpace(*req.Model)
+	}
+	if req.Thinking != nil {
+		next.Thinking = strings.ToLower(strings.TrimSpace(*req.Thinking))
+	}
+	if req.ServiceTier != nil {
+		next.ServiceTier = strings.TrimSpace(*req.ServiceTier)
+	}
+	if req.ContextMode != nil {
+		next.ContextMode = strings.TrimSpace(*req.ContextMode)
+	}
+	return normalizeSessionsV3ModelPreference(next)
 }
 
 func sessionsV3MessagePayloadHash(sessionID string, req sessionsV3MessageRequest, message pebblestore.MessageSnapshot, runStatus, blockedReason string) (string, error) {
@@ -599,6 +1194,25 @@ func validateSessionsV3CreateMetadata(metadata map[string]any) error {
 		}
 	}
 	return nil
+}
+
+func mergeSessionsV3MetadataUpdate(current map[string]any, requested map[string]any) map[string]any {
+	metadata := cloneSessionsV3Metadata(current)
+	if metadata == nil {
+		metadata = make(map[string]any)
+	}
+	for key := range metadata {
+		if !isProtectedSessionsV3MetadataKey(key) {
+			delete(metadata, key)
+		}
+	}
+	for key, value := range requested {
+		if isProtectedSessionsV3MetadataKey(key) {
+			continue
+		}
+		metadata[key] = cloneSessionsV3MetadataValue(value)
+	}
+	return metadata
 }
 
 type sessionsV3ResolvedAgentIdentity struct {
@@ -874,7 +1488,22 @@ func cloneSessionsV3Metadata(in map[string]any) map[string]any {
 	}
 	out := make(map[string]any, len(in))
 	for key, value := range in {
-		out[key] = value
+		out[key] = cloneSessionsV3MetadataValue(value)
 	}
 	return out
+}
+
+func cloneSessionsV3MetadataValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneSessionsV3Metadata(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, child := range typed {
+			out[i] = cloneSessionsV3MetadataValue(child)
+		}
+		return out
+	default:
+		return value
+	}
 }

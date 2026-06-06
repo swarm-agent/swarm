@@ -18,6 +18,9 @@ const (
 	V3SessionMutationUpsertLifecycle  = "lifecycle.upsert"
 	V3SessionMutationRecordRunIntent  = "run_intent.record"
 	V3SessionMutationRecordDiagnostic = "diagnostic.record"
+	V3SessionMutationUpdateMode       = "session.mode.update"
+	V3SessionMutationUpdatePreference = "session.preference.update"
+	V3SessionMutationUpdateMetadata   = "session.metadata.update"
 	V3SessionMutationUpdateTitle      = "session.title.update"
 
 	V3SessionMutationResponseVersion = "v3.session_mutation.result.v1"
@@ -1123,6 +1126,39 @@ func (s *SessionStore) prepareV3SessionForMutation(input V3SessionMutationInput,
 		}
 		session := normalizeSessionOwnership(*input.Session)
 		session.ID = input.SessionID
+		if input.Kind != V3SessionMutationCreateSession {
+			current, ok, err := s.GetSession(input.SessionID)
+			if err != nil {
+				return SessionSnapshot{}, false, err
+			}
+			if !ok {
+				return SessionSnapshot{}, false, fmt.Errorf("session %q not found", input.SessionID)
+			}
+			if session.UserID == "" {
+				session.UserID = current.UserID
+			}
+			if session.AccountScopeID == "" {
+				session.AccountScopeID = current.AccountScopeID
+			}
+			if session.WorkspacePath == "" {
+				session.WorkspacePath = current.WorkspacePath
+			}
+			if session.WorkspaceName == "" {
+				session.WorkspaceName = current.WorkspaceName
+			}
+			if session.Title == "" {
+				session.Title = current.Title
+			}
+			if session.Mode == "" {
+				session.Mode = current.Mode
+			}
+			if session.CreatedAt == 0 {
+				session.CreatedAt = current.CreatedAt
+			}
+			if input.Kind != V3SessionMutationUpdateMetadata && len(session.Metadata) == 0 && len(current.Metadata) > 0 {
+				session.Metadata = cloneSessionMetadataMap(current.Metadata)
+			}
+		}
 		if session.UserID == "" {
 			session.UserID = input.UserID
 		}
@@ -1132,9 +1168,7 @@ func (s *SessionStore) prepareV3SessionForMutation(input V3SessionMutationInput,
 		if session.CreatedAt == 0 {
 			session.CreatedAt = now
 		}
-		if session.UpdatedAt == 0 {
-			session.UpdatedAt = now
-		}
+		session.UpdatedAt = now
 		session.Metadata = cloneSessionMetadataMap(session.Metadata)
 		return session, true, nil
 	}
@@ -1384,6 +1418,12 @@ func normalizeV3SessionEventType(input V3SessionMutationInput) string {
 		return "session.run_intent.recorded"
 	case V3SessionMutationRecordDiagnostic:
 		return "session.diagnostic"
+	case V3SessionMutationUpdateMode:
+		return "session.mode.updated"
+	case V3SessionMutationUpdatePreference:
+		return "session.preference.updated"
+	case V3SessionMutationUpdateMetadata:
+		return "session.metadata.updated"
 	case V3SessionMutationUpdateTitle:
 		return "session.title.updated"
 	default:

@@ -73,85 +73,40 @@ function callFor(calls: Array<{ input: RequestInfo | URL; init?: RequestInit }>,
   return call
 }
 
-test('primary desktop lifecycle helpers use native v2 metadata, mode, and codex endpoints', async () => {
-  const { fetchSessionMetadata, fetchSessionMode, fetchSessionCodexConfig, updateSessionCodexConfig } = await import('./chat-queries')
+test('primary desktop lifecycle helpers use native v2 mode and codex endpoints', async () => {
+  const { fetchSessionMode, fetchSessionCodexConfig, updateSessionCodexConfig } = await import('./chat-queries')
 
   await withFetchStub(async (calls) => {
-    const metadata = await fetchSessionMetadata('session-primary')
     const mode = await fetchSessionMode('session-primary')
     const codex = await fetchSessionCodexConfig('session-primary')
     const updatedCodex = await updateSessionCodexConfig('session-primary', { serviceTier: 'flex', contextMode: '1m' })
 
-    assert.deepEqual(metadata, { ticket: 'T-1' })
     assert.equal(mode, 'auto')
     assert.equal(codex.sessionId, 'session-primary')
     assert.equal(codex.serviceTier, 'flex')
     assert.equal(codex.contextMode, 'large')
     assert.equal(updatedCodex.serviceTier, 'flex')
     assert.equal(updatedCodex.contextMode, '1m')
-    assert.equal(callFor(calls, '/v2/sessions/session-primary/metadata').init?.method, undefined)
     assert.equal(callFor(calls, '/v2/sessions/session-primary/mode').init?.method, undefined)
     assert.equal(callFor(calls, '/v2/sessions/session-primary/codex').init?.method, undefined)
     assert.equal(calls.filter((entry) => String(entry.input) === '/v2/sessions/session-primary/codex' && entry.init?.method === 'POST').length, 1)
   })
 })
 
-test('primary desktop session metadata updates strip v2 authority keys recursively', async () => {
-  const { updateSessionMetadata } = await import('./chat-queries')
-
-  await withFetchStub(async (calls) => {
-    await updateSessionMetadata('session-primary', {
-      ticket: 'T-2',
-      swarm_v2_authority_container_id: 'forbidden-root',
-      execution_context: {
-        workspace_path: '/forbidden',
-        cwd: '/also-forbidden',
-        safe_note: 'kept',
-      },
-      children: [
-        {
-          target_swarm_id: 'forbidden-child',
-          safe_child: 'kept-child',
-        },
-      ],
-    })
-
-    const call = callFor(calls, '/v2/sessions/session-primary/metadata')
-    const body = JSON.parse(String(call.init?.body ?? '{}')) as Record<string, unknown>
-    const metadata = body.metadata as Record<string, unknown>
-    assert.equal(call.init?.method, 'POST')
-    assert.deepEqual(metadata, {
-      ticket: 'T-2',
-      execution_context: {
-        cwd: '/also-forbidden',
-        safe_note: 'kept',
-      },
-      children: [
-        {
-          safe_child: 'kept-child',
-        },
-      ],
-    })
-  })
+test('primary desktop session metadata helper exports are removed for Desktop V3', async () => {
+  const queries = await import('./chat-queries')
+  assert.equal('fetchSessionMetadata' in queries, false)
+  assert.equal('updateSessionMetadata' in queries, false)
 })
 
-test('primary desktop plan and permission helpers use native v2 lifecycle endpoints', async () => {
-  const { activateSessionPlan, fetchSessionPlans, fetchSessionPlan, resolveAllSessionPermissions } = await import('./chat-queries')
+
+test('primary desktop permission helper uses native v2 lifecycle endpoint outside Desktop V3 render data', async () => {
+  const { resolveAllSessionPermissions } = await import('./chat-queries')
 
   await withFetchStub(async (calls) => {
-    const active = await activateSessionPlan('session-primary', 'plan-1')
-    const plans = await fetchSessionPlans('session-primary')
-    const plan = await fetchSessionPlan('session-primary', 'plan-1')
     const resolved = await resolveAllSessionPermissions('session-primary', 'approve', 'ok', 25)
 
-    assert.equal(active.id, 'plan-1')
-    assert.equal(plans.activePlanId, 'plan-1')
-    assert.equal(plans.plans.length, 1)
-    assert.equal(plan.id, 'plan-1')
     assert.equal(resolved[0]?.id, 'perm-1')
-    assert.equal(callFor(calls, '/v2/sessions/session-primary/plans/active').init?.method, 'POST')
-    assert.equal(callFor(calls, '/v2/sessions/session-primary/plans?limit=100').init?.method, undefined)
-    assert.equal(callFor(calls, '/v2/sessions/session-primary/plans/plan-1').init?.method, undefined)
     assert.equal(callFor(calls, '/v2/sessions/session-primary/permissions/resolve_all').init?.method, 'POST')
   })
 })

@@ -17,8 +17,6 @@ import { setWorkspaceThemeCustomOptions } from '../../workspaces/launcher/servic
 import { openDesktopWebSocket } from '../realtime/client'
 import { disableVault, enableVault, exportVaultBundle, fetchVaultStatus, importVaultBundle, lockVault, unlockVault } from '../vault/api'
 import {
-  fetchSessionPendingPermissions,
-  fetchSessionUsageSummary,
   sendSessionMessage,
   type SendSessionMessageResult,
 } from '../chat/queries/chat-queries'
@@ -2895,44 +2893,7 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
     if (!normalizedSessionId) {
       return
     }
-    try {
-      const [pendingPermissions, usage] = await Promise.all([
-        fetchSessionPendingPermissions(normalizedSessionId),
-        fetchSessionUsageSummary(normalizedSessionId),
-      ])
-      set((state) => {
-        const existing = state.sessions[normalizedSessionId]
-        if (!existing) {
-          return state
-        }
-        const pendingPermissionCount = countApprovalRequiredPermissions(pendingPermissions, existing.mode)
-        const nextStatus = pendingPermissionCount > 0
-          ? 'blocked'
-          : existing.live.status === 'blocked'
-            ? nextLiveStatusAfterPermissionSync(existing)
-            : existing.live.status
-        const nextSession = {
-          ...existing,
-          permissionsHydrated: true,
-          live: {
-            ...existing.live,
-            status: nextStatus,
-          },
-          pendingPermissions,
-          pendingPermissionCount,
-          usage: usage ?? existing.usage,
-        }
-        syncBlockedSessionToWorkspaceOverview(queryClient, nextSession)
-        return {
-          sessions: {
-            ...state.sessions,
-            [normalizedSessionId]: nextSession,
-          },
-        }
-      })
-    } catch (error) {
-      console.error('[desktop-store] pending permission refresh failed', error)
-    }
+    requestAuthoritativeSessionSnapshot(normalizedSessionId)
   },
   refreshNotifications: async () => {
     set((state) => ({
@@ -3361,7 +3322,7 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
           const sessionId = typeof payload?.session_id === 'string' ? payload.session_id : ''
           const eventType = typeof message.event.event_type === 'string' ? message.event.event_type : ''
           if (sessionId && eventType === 'permission.summary.updated') {
-            void get().refreshSessionPermissions(sessionId)
+            requestAuthoritativeSessionSnapshot(sessionId)
           }
         } catch (error) {
           console.error('[desktop-store] socket parse failed', error)

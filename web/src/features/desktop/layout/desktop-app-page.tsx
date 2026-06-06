@@ -2093,9 +2093,6 @@ export function DesktopAppPage() {
       }
       upsertSession(session)
       syncWorkspaceOverviewSession(queryClient, session)
-      if (session.id === normalizedRouteSessionId) {
-        void useDesktopStore.getState().refreshSessionPermissions(normalizedRouteSessionId)
-      }
     }
 
     const idsToHydrate: string[] = []

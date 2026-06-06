@@ -1,5 +1,5 @@
 import type { QueryClient } from '@tanstack/react-query'
-import { fetchAgentState, fetchAgentToolContract, fetchDraftModelPreference, fetchModelOptions, fetchSessionMessages, fetchSessionPreference } from '../desktop/chat/queries/chat-queries'
+import { fetchAgentState, fetchAgentToolContract, fetchDraftModelPreference, fetchModelOptions } from '../desktop/chat/queries/chat-queries'
 import { ensureDesktopV3SessionSnapshot } from '../desktop/state/desktop-v3-cache'
 import { getUISettings } from '../desktop/settings/swarm/queries/get-ui-settings'
 import { fetchWorkspaceOverview } from '../workspaces/launcher/queries/fetch-workspace-overview'
@@ -39,20 +39,16 @@ export function sessionMessagesQueryKey(sessionId: string) {
   return ['session-messages', sessionId] as const
 }
 
-export function sessionMessagesQueryOptions(sessionId: string, sessionApi?: string | null, queryClient?: QueryClient) {
+export function sessionMessagesQueryOptions(sessionId: string, queryClient?: QueryClient) {
   const normalizedSessionId = sessionId.trim()
-  const normalizedSessionApi = sessionApi?.trim().toLowerCase() || 'v3'
   return {
     queryKey: sessionMessagesQueryKey(normalizedSessionId),
-    queryFn: async ({ signal }: { signal?: AbortSignal }) => {
-      if (normalizedSessionApi === 'v3') {
-        if (!queryClient) {
-          throw new Error('Desktop V3 session messages require the canonical session snapshot cache.')
-        }
-        const snapshot = await ensureDesktopV3SessionSnapshot(queryClient, normalizedSessionId)
-        return snapshot?.messages ?? []
+    queryFn: async () => {
+      if (!queryClient) {
+        throw new Error('Desktop V3 session messages require the canonical session snapshot cache.')
       }
-      return fetchSessionMessages(normalizedSessionId, signal, 0, { sessionApi })
+      const snapshot = await ensureDesktopV3SessionSnapshot(queryClient, normalizedSessionId)
+      return snapshot?.messages ?? []
     },
     staleTime: 60_000,
     enabled: normalizedSessionId !== '',
@@ -63,12 +59,19 @@ export function sessionPreferenceQueryKey(sessionId: string) {
   return ['session-preference', sessionId] as const
 }
 
-export function sessionPreferenceQueryOptions(sessionId: string) {
+export function sessionPreferenceQueryOptions(sessionId: string, queryClient?: QueryClient) {
+  const normalizedSessionId = sessionId.trim()
   return {
-    queryKey: sessionPreferenceQueryKey(sessionId),
-    queryFn: () => fetchSessionPreference(sessionId),
+    queryKey: sessionPreferenceQueryKey(normalizedSessionId),
+    queryFn: async () => {
+      if (!queryClient) {
+        throw new Error('Desktop V3 session preference requires the canonical session snapshot cache.')
+      }
+      const snapshot = await ensureDesktopV3SessionSnapshot(queryClient, normalizedSessionId)
+      return snapshot?.preference ?? { preference: { provider: '', model: '', thinking: '', serviceTier: '', contextMode: '', updatedAt: 0 }, contextWindow: 0, maxOutputTokens: 0 }
+    },
     staleTime: 60_000,
-    enabled: sessionId.trim() !== '',
+    enabled: normalizedSessionId !== '',
   }
 }
 
@@ -110,30 +113,20 @@ export function modelOptionsQueryOptions() {
   }
 }
 
-export function ensureSessionRuntimeData(queryClient: QueryClient, sessionId: string, sessionApi?: string | null) {
+export function ensureSessionRuntimeData(queryClient: QueryClient, sessionId: string) {
   const normalizedSessionId = sessionId.trim()
   if (!normalizedSessionId) {
     return Promise.resolve()
   }
 
-  if ((sessionApi?.trim().toLowerCase() || 'v3') === 'v3') {
-    return ensureDesktopV3SessionSnapshot(queryClient, normalizedSessionId)
-  }
-
-  const messagesKey = sessionMessagesQueryKey(normalizedSessionId)
-  const preferenceKey = sessionPreferenceQueryKey(normalizedSessionId)
-
-  return Promise.all([
-    queryClient.getQueryData(messagesKey) ? Promise.resolve() : queryClient.prefetchQuery(sessionMessagesQueryOptions(normalizedSessionId, sessionApi)),
-    queryClient.getQueryData(preferenceKey) ? Promise.resolve() : queryClient.prefetchQuery(sessionPreferenceQueryOptions(normalizedSessionId)),
-  ])
+  return ensureDesktopV3SessionSnapshot(queryClient, normalizedSessionId)
 }
 
-export async function prefetchSessionRuntimeData(queryClient: QueryClient, sessionId: string, sessionApi?: string | null) {
+export async function prefetchSessionRuntimeData(queryClient: QueryClient, sessionId: string) {
   const normalizedSessionId = sessionId.trim()
   if (!normalizedSessionId) {
     return
   }
 
-  await ensureSessionRuntimeData(queryClient, normalizedSessionId, sessionApi)
+  await ensureSessionRuntimeData(queryClient, normalizedSessionId)
 }

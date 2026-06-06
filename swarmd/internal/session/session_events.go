@@ -22,6 +22,9 @@ const (
 	SessionMutationUpsertLifecycle  = pebblestore.V3SessionMutationUpsertLifecycle
 	SessionMutationRecordRunIntent  = pebblestore.V3SessionMutationRecordRunIntent
 	SessionMutationRecordDiagnostic = pebblestore.V3SessionMutationRecordDiagnostic
+	SessionMutationUpdateMode       = pebblestore.V3SessionMutationUpdateMode
+	SessionMutationUpdatePreference = pebblestore.V3SessionMutationUpdatePreference
+	SessionMutationUpdateMetadata   = pebblestore.V3SessionMutationUpdateMetadata
 	SessionMutationUpdateTitle      = pebblestore.V3SessionMutationUpdateTitle
 
 	RunIntentPendingExecutor = pebblestore.V3RunIntentPendingExecutor
