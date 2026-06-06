@@ -863,6 +863,15 @@ func waitForSessionsV3Title(t *testing.T, sessionSvc *sessionruntime.Service, se
 	t.Fatalf("session title = %q, want %q", session.Title, want)
 }
 
+func sessionsV3EventsContainType(events []sessionruntime.SessionEvent, eventType string) bool {
+	for _, event := range events {
+		if event.EventType == eventType {
+			return true
+		}
+	}
+	return false
+}
+
 func TestSessionsV3PrimaryMessageIsIdempotent(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-idempotent-create","workspace_path":"/workspace/cp4","title":"CP4"}`))
@@ -1746,6 +1755,31 @@ func postSessionsV3PrimaryTestMessage(t *testing.T, server *Server, sessionID, c
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("message status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+func appendSessionsV3PrimaryTestSystemMessage(t *testing.T, server *Server, sessionID, clientRequestID, content string) {
+	t.Helper()
+	now := time.Now().UnixMilli()
+	message := pebblestore.MessageSnapshot{ID: "test-system-" + clientRequestID, Role: "system", Content: content, CreatedAt: now}
+	payloadHash, err := sessionV3ExecutorPayloadHash(sessionID, "test-system", sessionruntime.RunIntentRunning, "", "session.message.appended", clientRequestID+":"+content)
+	if err != nil {
+		t.Fatalf("hash system message payload: %v", err)
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       sessionID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationAppendMessage,
+		EventType:       "session.message.appended",
+		Message:         &message,
+		NowUnixMs:       now,
+	}); err != nil {
+		t.Fatalf("append system message: %v", err)
 	}
 }
 
@@ -2952,6 +2986,86 @@ func TestSessionsV3ExecutorUpdatesDefaultTitleWithMemoryAgentAfterFirstRun(t *te
 	}
 	if replay.Session == nil || replay.Session.Title != "Memory Agent Session Title Flow" {
 		t.Fatalf("replayed session = %+v", replay.Session)
+	}
+}
+
+func TestSessionsV3ExecutorUpdatesDefaultTitleWithSystemPreludeAfterFirstRun(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{responses: []provideriface.Response{{Text: "assistant answer"}, {Text: "System Prelude Session Title Flow"}}}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "title-model", Thinking: "low", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory title prompt"}); err != nil {
+		t.Fatalf("upsert memory agent: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "title-system-prelude-create", "New Session", pebblestore.ModelPreference{Provider: "test-provider", Model: "chat-model", Thinking: "medium"})
+	appendSessionsV3PrimaryTestSystemMessage(t, server, created.ID, "title-system-prelude-message", "Session mode changed to auto.")
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "title-system-prelude-user", "please title this first turn after prelude")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 3)
+	waitForSessionsV3Title(t, sessionSvc, created.ID, "System Prelude Session Title Flow")
+	if !server.WaitForInFlightRuns(2 * time.Second) {
+		t.Fatalf("server did not drain v3 title generation")
+	}
+	if runner.callCount != 2 {
+		t.Fatalf("provider call count = %d, want assistant + memory title", runner.callCount)
+	}
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 80)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if !sessionsV3EventsContainType(events, "session.title.updated") {
+		t.Fatalf("missing session.title.updated event: %+v", events)
+	}
+}
+
+func TestSessionsV3ExecutorUpdatesDefaultTitleAfterToolShapedFirstRun(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "facts.txt"), []byte("title tool fact"), 0o644); err != nil {
+		t.Fatalf("write workspace fact file: %v", err)
+	}
+	runner := &sessionsV3RecordingProviderRunner{responses: []provideriface.Response{
+		{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-read-title-facts", Name: "read", Arguments: `{"path":"facts.txt"}`}}},
+		{Text: "assistant answer after title tool"},
+		{Text: "Tool Assisted Session Title Flow"},
+	}}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	runSvc := runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, nil, nil)
+	server.runner = runSvc
+	server.SetBypassPermissions(true)
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"read": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
+		t.Fatalf("upsert tool-enabled swarm agent: %v", err)
+	}
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "title-model", Thinking: "low", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory title prompt"}); err != nil {
+		t.Fatalf("upsert memory agent: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "title-tool-run-create", "New Session", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "title-tool-run-message", "read facts.txt before naming this session")
+	waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 3)
+	waitForSessionsV3Title(t, sessionSvc, created.ID, "Tool Assisted Session Title Flow")
+	if !server.WaitForInFlightRuns(2 * time.Second) {
+		t.Fatalf("server did not drain v3 title generation")
+	}
+	if runner.callCount != 3 {
+		t.Fatalf("provider call count = %d, want tool request + continuation + memory title", runner.callCount)
+	}
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 80)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if !sessionsV3EventsContainType(events, "session.title.updated") {
+		t.Fatalf("missing session.title.updated event: %+v", events)
 	}
 }
 

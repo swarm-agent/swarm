@@ -727,6 +727,10 @@ func (e *sessionV3Executor) generateAndApplySessionV3Title(job sessionV3Executor
 	if err != nil || !ok || !shouldGenerateSessionV3Title(current) {
 		return
 	}
+	currentMessages, err := e.server.sessions.ListSessionMessages(job.SessionID, 0, sessionV3TitleConversationLimit)
+	if err != nil || !shouldGenerateSessionV3TitleWithMessages(current, currentMessages) {
+		return
+	}
 	now := time.Now().UnixMilli()
 	current.Title = title
 	current.UpdatedAt = now
@@ -1609,9 +1613,6 @@ func sessionsV3DecodeProviderToolResultRecord(raw string) (sessionV3ProviderTool
 }
 
 func shouldGenerateSessionV3Title(session pebblestore.SessionSnapshot) bool {
-	if session.MessageCount > 2 {
-		return false
-	}
 	if sessionV3TitleGenerationLocked(session.Metadata) {
 		return false
 	}
@@ -1626,10 +1627,13 @@ func shouldGenerateSessionV3TitleWithMessages(session pebblestore.SessionSnapsho
 	var userCount, assistantCount int
 	for _, message := range messages {
 		switch strings.ToLower(strings.TrimSpace(message.Role)) {
-		case "system":
+		case "system", "reasoning", "tool", "function":
 			continue
 		case "user":
 			userCount++
+			if userCount > 1 {
+				return false
+			}
 		case "assistant":
 			assistantCount++
 		default:
