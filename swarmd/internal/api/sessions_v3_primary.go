@@ -1227,22 +1227,26 @@ type sessionsV3ResolvedAgentIdentity struct {
 func (s *Server) resolveSessionsV3PrimaryCreateAgent(principal identity.Principal, requestedName string) (sessionsV3ResolvedAgentIdentity, error) {
 	requestedName = strings.TrimSpace(requestedName)
 	if s == nil || s.agents == nil {
-		return sessionsV3ResolvedAgentIdentity{}, errors.New("agent service is not configured")
+		if requestedName != "" && !strings.EqualFold(requestedName, "swarm") {
+			return sessionsV3ResolvedAgentIdentity{}, fmt.Errorf("agent %q cannot resolve without agent service", requestedName)
+		}
+		return sessionsV3ResolvedAgentIdentity{Name: "swarm", ResolvedName: "swarm", Mode: "primary", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: true}, nil
 	}
-	resolvedProfile, err := s.agents.ResolvePrimaryForAccount(principal.AccountScopeID, requestedName)
+	profile, err := s.agents.ResolvePrimaryForAccount(principal.AccountScopeID, requestedName)
 	if err != nil {
 		return sessionsV3ResolvedAgentIdentity{}, err
 	}
-	name := strings.TrimSpace(resolvedProfile.Name)
+	name := strings.TrimSpace(profile.Name)
 	if name == "" {
-		return sessionsV3ResolvedAgentIdentity{}, errors.New("resolved primary agent name is empty")
+		name = requestedName
 	}
-	profile, contract, err := s.agents.ResolveToolContractProfileForAccount(principal.AccountScopeID, name)
-	if err != nil {
-		return sessionsV3ResolvedAgentIdentity{}, err
+	if name == "" {
+		name = "swarm"
 	}
-	profile.ToolContract = contract
 	mode := strings.TrimSpace(profile.Mode)
+	if mode == "" {
+		mode = "primary"
+	}
 	if mode != "primary" {
 		return sessionsV3ResolvedAgentIdentity{}, fmt.Errorf("agent %q is not primary", name)
 	}
@@ -1255,8 +1259,18 @@ func (s *Server) resolveSessionsV3PrimaryCreateAgent(principal identity.Principa
 		Mode:                mode,
 		RuntimeMode:         pebblestore.AgentProfileRuntimeMode(profile),
 		ExitPlanModeEnabled: pebblestore.AgentExitPlanModeEnabled(profile),
-		ToolContractPreset:  strings.TrimSpace(contract.Preset),
+		ToolContractPreset:  sessionsV3AgentToolContractPreset(profile),
 	}, nil
+}
+
+func sessionsV3AgentToolContractPreset(profile pebblestore.AgentProfile) string {
+	if profile.ToolContract != nil {
+		return strings.TrimSpace(profile.ToolContract.Preset)
+	}
+	if profile.ToolScope != nil {
+		return strings.TrimSpace(profile.ToolScope.Preset)
+	}
+	return ""
 }
 
 func sessionsV3CreateServerMetadata(clientMetadata map[string]any, agent sessionsV3ResolvedAgentIdentity) map[string]any {

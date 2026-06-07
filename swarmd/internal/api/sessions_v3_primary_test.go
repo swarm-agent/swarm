@@ -2282,57 +2282,6 @@ func sessionsV3AssertToolIdentity(t *testing.T, events []sessionruntime.SessionE
 	}
 }
 
-func newSessionsV3ToolContractTestServer(t *testing.T) (*Server, *sessionruntime.Service, *pebblestore.AgentStore) {
-	t.Helper()
-	var server *Server
-	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "sessions-v3-tool-contract.pebble"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() {
-		if server != nil {
-			server.CancelInFlightRuns()
-			server.WaitForInFlightRuns(2 * time.Second)
-		}
-		_ = store.Close()
-	})
-	eventLog, err := pebblestore.NewEventLog(store)
-	if err != nil {
-		t.Fatalf("new event log: %v", err)
-	}
-	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
-	agentStore := pebblestore.NewAgentStore(store)
-	agentSvc := agentruntime.NewService(agentStore, eventLog)
-	if err := agentSvc.EnsureDefaults(); err != nil {
-		t.Fatalf("ensure agent defaults: %v", err)
-	}
-	if _, _, _, err := agentSvc.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm test primary prompt", ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{"read": {Enabled: pebblestore.BoolPtr(true)}}}}); err != nil {
-		t.Fatalf("create swarm agent: %v", err)
-	}
-	modelSvc := modelruntime.NewService(pebblestore.NewModelStore(store), eventLog, nil)
-	providers := registry.New()
-	permissionSvc := permission.NewService(pebblestore.NewPermissionStore(store), eventLog, nil)
-	permissionSvc.SetSessionResolver(sessionSvc)
-	runSvc := runruntime.NewService(sessionSvc, modelSvc, providers, tool.NewRuntime(1), permissionSvc, agentSvc, nil, nil)
-	server = NewServer(nil, agentSvc, modelSvc, runSvc, sessionSvc, nil, nil, nil, providers, permissionSvc, nil, eventLog, stream.NewHub(eventLog))
-	server.v3SessionExecutor = nil
-	return server, sessionSvc, agentStore
-}
-
-func storeSessionsV3MissingToolContractProfile(t *testing.T, agentStore *pebblestore.AgentStore, name string) {
-	t.Helper()
-	if err := agentStore.PutProfileForAccount(testPrincipal().AccountScopeID, pebblestore.AgentProfile{
-		Name:                name,
-		Mode:                agentruntime.ModePrimary,
-		Prompt:              "Swarm test primary prompt without tool contract",
-		RuntimeMode:         pebblestore.AgentRuntimeModePlanAuto,
-		ExitPlanModeEnabled: pebblestore.BoolPtr(true),
-		Enabled:             true,
-	}); err != nil {
-		t.Fatalf("store agent without tool_contract: %v", err)
-	}
-}
-
 func newSessionsV3PrimaryAPITestServer(t *testing.T, storePath string) (*Server, *sessionruntime.Service, func() error) {
 	t.Helper()
 	store, err := pebblestore.Open(storePath)
@@ -2497,79 +2446,6 @@ func TestSessionsV3ExecutorFlushesProviderDeltaAtSizeBoundary(t *testing.T) {
 	}
 	if strings.Join(got, "|") != "abcd|ef" {
 		t.Fatalf("coalesced deltas = %#v, want [abcd ef]", got)
-	}
-}
-
-func TestSessionsV3PrimaryCreateFailsWhenSavedProfileMissingToolContract(t *testing.T) {
-	server, _, agentStore := newSessionsV3ToolContractTestServer(t)
-	storeSessionsV3MissingToolContractProfile(t, agentStore, "swarm")
-
-	body := `{"client_request_id":"missing-contract-create","workspace_path":"/workspace/cp6","title":"missing contract"}`
-	req := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("create status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "tool_contract is required") {
-		t.Fatalf("create error body = %s, want missing tool_contract failure", rec.Body.String())
-	}
-}
-
-func TestSessionsV3ExecutorReResolvesSavedProfileToolContractAndFailsWhenMissing(t *testing.T) {
-	server, sessionSvc, agentStore := newSessionsV3ToolContractTestServer(t)
-	runner := installSessionsV3TestProvider(server, "should not run")
-	exec := newSessionV3Executor(server)
-	exec.startDelay = 0
-	server.v3SessionExecutor = exec
-
-	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "runtime-missing-contract-create", "runtime missing contract", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
-	storeSessionsV3MissingToolContractProfile(t, agentStore, "swarm")
-	postSessionsV3PrimaryTestMessage(t, server, created.ID, "runtime-missing-contract-message", "fail closed")
-	intent := waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentFailed)
-	if !strings.Contains(intent.BlockedReason, "tool_contract is required") {
-		t.Fatalf("run intent = %+v, want missing tool_contract failure", intent)
-	}
-	if runner.callCount != 0 {
-		t.Fatalf("provider call count = %d, want 0 when saved profile tool_contract is missing", runner.callCount)
-	}
-	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
-	if err != nil {
-		t.Fatalf("list messages: %v", err)
-	}
-	if len(messages) != 1 || messages[0].Role != "user" || messages[0].Content != "fail closed" {
-		t.Fatalf("messages after missing tool_contract failure = %+v", messages)
-	}
-}
-
-func TestSessionsV3ExecutorReResolvesSwitchedAgentIdentityAgainstSavedToolContract(t *testing.T) {
-	server, sessionSvc, agentStore := newSessionsV3ToolContractTestServer(t)
-	runner := installSessionsV3TestProvider(server, "should not run")
-	exec := newSessionV3Executor(server)
-	exec.startDelay = 0
-	server.v3SessionExecutor = exec
-
-	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "switched-missing-contract-create", "switched missing contract", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
-	storeSessionsV3MissingToolContractProfile(t, agentStore, "strict-primary")
-	current, ok, err := sessionSvc.GetSession(created.ID)
-	if err != nil || !ok {
-		t.Fatalf("get session before metadata switch: ok=%v err=%v", ok, err)
-	}
-	current.Metadata = cloneSessionsV3Metadata(current.Metadata)
-	current.Metadata["agent_name"] = "strict-primary"
-	current.Metadata["resolved_agent_name"] = "strict-primary"
-	if err := sessionSvc.Store().UpdateSession(current); err != nil {
-		t.Fatalf("switch durable agent metadata: %v", err)
-	}
-
-	postSessionsV3PrimaryTestMessage(t, server, created.ID, "switched-missing-contract-message", "fail switched identity")
-	intent := waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentFailed)
-	if !strings.Contains(intent.BlockedReason, "strict-primary") || !strings.Contains(intent.BlockedReason, "tool_contract is required") {
-		t.Fatalf("run intent = %+v, want switched missing tool_contract failure", intent)
-	}
-	if runner.callCount != 0 {
-		t.Fatalf("provider call count = %d, want 0 when switched saved profile tool_contract is missing", runner.callCount)
 	}
 }
 
@@ -3242,9 +3118,6 @@ func TestSessionsV3ProviderToolPersistenceUsesApplySessionMutationOnly(t *testin
 
 func TestSessionsV3ExecutorFailsClosedWhenProviderReturnsToolCalls(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"read": {Enabled: pebblestore.BoolPtr(false)}, "bash": {Enabled: pebblestore.BoolPtr(false)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
-		t.Fatalf("upsert no-tools swarm agent: %v", err)
-	}
 	runner := &sessionsV3RecordingProviderRunner{
 		text:          "needs a tool",
 		functionCalls: []provideriface.FunctionCall{{CallID: "call-1", Name: "bash", Arguments: "{}"}},
@@ -3280,7 +3153,7 @@ func TestSessionsV3ExecutorUpdatesDefaultTitleWithMemoryAgentAfterFirstRun(t *te
 	providers := registry.New()
 	providers.RegisterRunner(runner)
 	server.providers = providers
-	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "title-model", Thinking: "low", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory title prompt", ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}}); err != nil {
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "title-model", Thinking: "low", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory title prompt"}); err != nil {
 		t.Fatalf("upsert memory agent: %v", err)
 	}
 	exec := newSessionV3Executor(server)
@@ -3352,7 +3225,7 @@ func TestSessionsV3ExecutorUpdatesDefaultTitleWithSystemPreludeAfterFirstRun(t *
 	providers := registry.New()
 	providers.RegisterRunner(runner)
 	server.providers = providers
-	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "title-model", Thinking: "low", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory title prompt", ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}}); err != nil {
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "title-model", Thinking: "low", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory title prompt"}); err != nil {
 		t.Fatalf("upsert memory agent: %v", err)
 	}
 	exec := newSessionV3Executor(server)
@@ -3399,7 +3272,7 @@ func TestSessionsV3ExecutorUpdatesDefaultTitleAfterToolShapedFirstRun(t *testing
 	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"read": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
 		t.Fatalf("upsert tool-enabled swarm agent: %v", err)
 	}
-	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "title-model", Thinking: "low", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory title prompt", ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}}); err != nil {
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "title-model", Thinking: "low", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory title prompt"}); err != nil {
 		t.Fatalf("upsert memory agent: %v", err)
 	}
 	exec := newSessionV3Executor(server)
