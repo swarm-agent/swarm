@@ -126,23 +126,28 @@ func (s *Service) listCustomAgentToolsForRun(accountScopeID string) ([]pebblesto
 	return s.agents.ListCustomTools(2000)
 }
 
-func (s *Service) canonicalAgentToolNameSetForAccount(accountScopeID string) map[string]struct{} {
-	definitions := s.ListAgentToolDefinitionsForAccount(accountScopeID)
-	if len(definitions) == 0 {
-		return nil
+func commitOnlyToolNames() []string {
+	return []string{"git_status", "git_diff", "git_add", "git_commit"}
+}
+
+func allowCommitOnlyTools(profile pebblestore.AgentProfile) bool {
+	if strings.EqualFold(strings.TrimSpace(profile.Name), "commit") && profile.Mode == "background" {
+		return true
 	}
-	known := make(map[string]struct{}, len(definitions))
-	for _, definition := range definitions {
-		name := canonicalToolName(definition.Name)
-		if name == "" {
-			continue
+	contract := profile.ToolContract
+	if contract == nil {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(contract.Preset), "background_commit") {
+		return true
+	}
+	for _, name := range commitOnlyToolNames() {
+		cfg, ok := contract.Tools[name]
+		if ok && cfg.Enabled != nil && *cfg.Enabled {
+			return true
 		}
-		known[name] = struct{}{}
 	}
-	if len(known) == 0 {
-		return nil
-	}
-	return known
+	return false
 }
 
 func (s *Service) ResolveAgentToolContract(profile pebblestore.AgentProfile) (ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
@@ -154,15 +159,10 @@ func (s *Service) ResolveAgentToolContractForAccount(accountScopeID string, prof
 }
 
 func (s *Service) resolveAgentToolContractForAccount(accountScopeID string, profile pebblestore.AgentProfile) (ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
-	knownTools := s.canonicalAgentToolNameSetForAccount(accountScopeID)
+	knownTools := s.knownRunToolNamesForAccount(accountScopeID)
+	customTools := s.customAgentToolNameSetForAccount(accountScopeID)
 	if len(knownTools) == 0 {
-		return ResolvedAgentToolContract{}, nil, nil, fmt.Errorf("agent tool inventory is not configured")
-	}
-	if profile.ToolScope != nil {
-		return ResolvedAgentToolContract{}, nil, nil, fmt.Errorf("legacy tool_scope is not supported for agent tool hydration; use tool_contract")
-	}
-	if profile.ToolContract == nil {
-		return ResolvedAgentToolContract{}, nil, nil, fmt.Errorf("agent tool_contract is required for tool hydration")
+		return ResolvedAgentToolContract{}, nil, nil, fmt.Errorf("tool runtime is not configured")
 	}
 
 	resolved := ResolvedAgentToolContract{
@@ -173,13 +173,51 @@ func (s *Service) resolveAgentToolContractForAccount(accountScopeID string, prof
 		resolved.Tools[name] = ResolvedAgentTool{Enabled: false, Source: "default"}
 	}
 
-	activePreset := strings.TrimSpace(profile.ToolContract.Preset)
-	inheritPolicy := profile.ToolContract.InheritPolicy
-	if err := applyNamedAgentPreset(resolved.Tools, knownTools, activePreset); err != nil {
-		return ResolvedAgentToolContract{}, nil, nil, err
+	if pebblestore.AgentExitPlanModeEnabled(profile) {
+		for name := range knownTools {
+			if _, ok := customTools[name]; ok {
+				continue
+			}
+			resolved.Tools[name] = ResolvedAgentTool{Enabled: true, Source: "plan_mode"}
+		}
+	} else {
+		applyExecutionSettingBaseline(resolved.Tools, pebblestore.NormalizeAgentExecutionSetting(profile.ExecutionSetting))
 	}
-	if err := applyExplicitAgentTools(resolved.Tools, profile.ToolContract.Tools, "tool_contract"); err != nil {
-		return ResolvedAgentToolContract{}, nil, nil, err
+
+	activePreset := ""
+	inheritPolicy := false
+	if profile.ToolContract != nil {
+		activePreset = strings.TrimSpace(profile.ToolContract.Preset)
+		inheritPolicy = profile.ToolContract.InheritPolicy
+		if err := applyNamedAgentPreset(resolved.Tools, knownTools, activePreset); err != nil {
+			return ResolvedAgentToolContract{}, nil, nil, err
+		}
+		applyExplicitAgentTools(resolved.Tools, profile.ToolContract.Tools, "tool_contract")
+	} else if profile.ToolScope != nil {
+		activePreset = strings.TrimSpace(profile.ToolScope.Preset)
+		inheritPolicy = profile.ToolScope.InheritPolicy
+		if err := applyNamedAgentPreset(resolved.Tools, knownTools, activePreset); err != nil {
+			return ResolvedAgentToolContract{}, nil, nil, err
+		}
+		applyLegacyToolScope(resolved.Tools, profile.ToolScope)
+	}
+
+	if !pebblestore.AgentExitPlanModeEnabled(profile) {
+		state := resolved.Tools["exit_plan_mode"]
+		state.Enabled = false
+		state.BashPrefixes = nil
+		state.Source = "plan_mode_disabled"
+		resolved.Tools["exit_plan_mode"] = state
+	}
+
+	if !allowCommitOnlyTools(profile) {
+		for _, name := range commitOnlyToolNames() {
+			state := resolved.Tools[name]
+			state.Enabled = false
+			state.BashPrefixes = nil
+			state.Source = "commit_only"
+			resolved.Tools[name] = state
+		}
 	}
 
 	resolved.RawPreset = activePreset
@@ -187,6 +225,7 @@ func (s *Service) resolveAgentToolContractForAccount(accountScopeID string, prof
 
 	policyRules := make([]permission.PolicyRule, 0, len(knownTools)+8)
 	disabled := make(map[string]bool, len(knownTools))
+	emitAllowRules := !pebblestore.AgentExitPlanModeEnabled(profile)
 	for name, state := range resolved.Tools {
 		name = canonicalToolName(name)
 		if name == "" {
@@ -212,11 +251,13 @@ func (s *Service) resolveAgentToolContractForAccount(accountScopeID string, prof
 			})
 			continue
 		}
-		policyRules = append(policyRules, permission.PolicyRule{
-			Kind:     permission.PolicyRuleKindTool,
-			Decision: permission.PolicyDecisionAllow,
-			Tool:     name,
-		})
+		if emitAllowRules {
+			policyRules = append(policyRules, permission.PolicyRule{
+				Kind:     permission.PolicyRuleKindTool,
+				Decision: permission.PolicyDecisionAllow,
+				Tool:     name,
+			})
+		}
 	}
 
 	for name, state := range resolved.Tools {
@@ -244,6 +285,40 @@ func (s *Service) resolveAgentToolContractForAccount(accountScopeID string, prof
 	return resolved, &compiled, disabled, nil
 }
 
+func applyExecutionSettingBaseline(target map[string]ResolvedAgentTool, setting string) {
+	enable := func(source string, names ...string) {
+		for _, name := range names {
+			name = canonicalToolName(name)
+			if name == "" {
+				continue
+			}
+			target[name] = ResolvedAgentTool{Enabled: true, Source: source}
+		}
+	}
+	disable := func(source string, names ...string) {
+		for _, name := range names {
+			name = canonicalToolName(name)
+			if name == "" {
+				continue
+			}
+			target[name] = ResolvedAgentTool{Enabled: false, Source: source}
+		}
+	}
+
+	switch setting {
+	case pebblestore.AgentExecutionSettingRead:
+		enable("execution_setting:read",
+			"read", "search", "list", "websearch", "webfetch", "skill_use", "plan_manage", "ask_user", "exit_plan_mode",
+		)
+		disable("execution_setting:read", "write", "edit", "bash", "task")
+	case pebblestore.AgentExecutionSettingReadWrite:
+		enable("execution_setting:readwrite",
+			"read", "search", "list", "write", "edit", "websearch", "webfetch", "skill_use", "plan_manage", "ask_user", "exit_plan_mode",
+		)
+		disable("execution_setting:readwrite", "bash", "task")
+	}
+}
+
 func applyNamedAgentPreset(target map[string]ResolvedAgentTool, knownTools map[string]struct{}, preset string) error {
 	preset = strings.ToLower(strings.TrimSpace(preset))
 	if preset == "" || preset == "custom" {
@@ -252,48 +327,42 @@ func applyNamedAgentPreset(target map[string]ResolvedAgentTool, knownTools map[s
 	for name := range knownTools {
 		target[name] = ResolvedAgentTool{Enabled: false, Source: "preset:" + preset}
 	}
-	enable := func(names ...string) error {
-		for _, rawName := range names {
-			name := canonicalToolName(rawName)
+	enable := func(names ...string) {
+		for _, name := range names {
+			name = canonicalToolName(name)
 			if name == "" {
 				continue
 			}
-			if _, ok := knownTools[name]; !ok {
-				return fmt.Errorf("tool contract preset %q references unknown tool %q", preset, rawName)
-			}
 			target[name] = ResolvedAgentTool{Enabled: true, Source: "preset:" + preset}
 		}
-		return nil
 	}
 	switch preset {
 	case "read_only":
-		return enable("read", "search", "list", "websearch", "webfetch", "skill_use", "plan_manage", "ask_user", "exit_plan_mode")
+		enable("read", "search", "list", "websearch", "webfetch", "skill_use", "plan_manage", "ask_user", "exit_plan_mode")
 	case "integration_builder":
-		return enable("read", "search", "list", "websearch", "webfetch", "manage_integrations")
+		enable("read", "search", "list", "websearch", "webfetch", "manage_integrations")
 	case "read_write":
-		return enable("read", "search", "list", "write", "edit", "websearch", "webfetch", "skill_use", "plan_manage", "ask_user", "exit_plan_mode")
+		enable("read", "search", "list", "write", "edit", "websearch", "webfetch", "skill_use", "plan_manage", "ask_user", "exit_plan_mode")
 	case "bash_git_only":
-		if err := enable("read", "search", "list", "bash", "skill_use", "plan_manage", "ask_user", "exit_plan_mode"); err != nil {
-			return err
-		}
+		enable("read", "search", "list", "bash", "skill_use", "plan_manage", "ask_user", "exit_plan_mode")
 		target["bash"] = ResolvedAgentTool{
 			Enabled:      true,
 			Source:       "preset:" + preset,
 			BashPrefixes: []string{"git status", "git diff", "git log", "git show"},
 		}
 	case "background_commit":
-		return enable("read", "search", "list", "git_status", "git_diff", "git_add", "git_commit")
+		enable("read", "search", "list", "git_status", "git_diff", "git_add", "git_commit")
 	default:
 		return fmt.Errorf("unsupported tool contract preset %q", preset)
 	}
 	return nil
 }
 
-func applyExplicitAgentTools(target map[string]ResolvedAgentTool, tools map[string]pebblestore.AgentToolConfig, sourcePrefix string) error {
+func applyExplicitAgentTools(target map[string]ResolvedAgentTool, tools map[string]pebblestore.AgentToolConfig, sourcePrefix string) {
 	for rawName, cfg := range tools {
 		name := resolveExplicitAgentToolName(target, rawName)
 		if name == "" {
-			return fmt.Errorf("tool contract references unknown tool %q", strings.TrimSpace(rawName))
+			continue
 		}
 		state := target[name]
 		if cfg.Enabled != nil {
@@ -308,7 +377,6 @@ func applyExplicitAgentTools(target map[string]ResolvedAgentTool, tools map[stri
 		state.Source = sourcePrefix + "." + name
 		target[name] = state
 	}
-	return nil
 }
 
 func resolveExplicitAgentToolName(target map[string]ResolvedAgentTool, rawName string) string {
@@ -331,5 +399,32 @@ func resolveExplicitAgentToolName(target map[string]ResolvedAgentTool, rawName s
 			return underscored
 		}
 	}
-	return ""
+	return name
+}
+
+func applyLegacyToolScope(target map[string]ResolvedAgentTool, scope *pebblestore.AgentToolScope) {
+	if scope == nil {
+		return
+	}
+	for _, name := range scope.AllowTools {
+		name = canonicalToolName(name)
+		if name == "" {
+			continue
+		}
+		target[name] = ResolvedAgentTool{Enabled: true, Source: "legacy.tool_scope"}
+	}
+	for _, name := range scope.DenyTools {
+		name = canonicalToolName(name)
+		if name == "" {
+			continue
+		}
+		target[name] = ResolvedAgentTool{Enabled: false, Source: "legacy.tool_scope"}
+	}
+	if len(scope.BashPrefixes) > 0 {
+		target["bash"] = ResolvedAgentTool{
+			Enabled:      true,
+			BashPrefixes: append([]string(nil), scope.BashPrefixes...),
+			Source:       "legacy.tool_scope.bash",
+		}
+	}
 }

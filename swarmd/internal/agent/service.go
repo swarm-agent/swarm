@@ -185,9 +185,6 @@ func (s *Service) ensureDefaultsForAccount(accountScopeID string) error {
 			return err
 		}
 	}
-	if err := s.reconcileBuiltInDefaultToolContractsForAccountLocked(accountScopeID, now); err != nil {
-		return err
-	}
 	if current, ok, err := s.getProfileForAccountLocked(accountScopeID, "parallel"); err != nil {
 		return err
 	} else if ok && shouldReconcileBuiltInParallel(current) {
@@ -246,91 +243,26 @@ func defaultMemoryPrompt() string {
 		"Do not push unless the user explicitly requested push.")
 }
 
-func defaultPrimaryToolContract() *pebblestore.AgentToolContract {
-	return &pebblestore.AgentToolContract{
-		Preset: "custom",
-		Tools: enabledAgentToolContractTools(
-			"ask_user",
-			"bash",
-			"edit",
-			"exit_plan_mode",
-			"list",
-			"manage_agent",
-			"manage_flow",
-			"manage_image",
-			"manage_integrations",
-			"manage_skill",
-			"manage_theme",
-			"manage_todos",
-			"manage_worktree",
-			"plan_manage",
-			"read",
-			"search",
-			"skill_use",
-			"task",
-			"webdownload",
-			"webfetch",
-			"websearch",
-			"write",
-		),
-	}
-}
-
-func defaultExplorerToolContract() *pebblestore.AgentToolContract {
-	return &pebblestore.AgentToolContract{Preset: "read_only"}
-}
-
-func defaultReadWriteToolContract() *pebblestore.AgentToolContract {
-	return &pebblestore.AgentToolContract{Preset: "read_write"}
-}
-
 func defaultMemoryToolContract() *pebblestore.AgentToolContract {
-	tools := enabledAgentToolContractTools("git_status", "git_diff", "git_add", "git_commit")
-	for _, name := range []string{"bash", "write", "edit", "websearch", "webfetch", "skill_use", "plan_manage", "ask_user", "exit_plan_mode", "task"} {
-		tools[name] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(false)}
-	}
 	return &pebblestore.AgentToolContract{
 		Preset: "background_commit",
-		Tools:  tools,
+		Tools: map[string]pebblestore.AgentToolConfig{
+			"git_status":     {Enabled: pebblestore.BoolPtr(true)},
+			"git_diff":       {Enabled: pebblestore.BoolPtr(true)},
+			"git_add":        {Enabled: pebblestore.BoolPtr(true)},
+			"git_commit":     {Enabled: pebblestore.BoolPtr(true)},
+			"bash":           {Enabled: pebblestore.BoolPtr(false)},
+			"write":          {Enabled: pebblestore.BoolPtr(false)},
+			"edit":           {Enabled: pebblestore.BoolPtr(false)},
+			"websearch":      {Enabled: pebblestore.BoolPtr(false)},
+			"webfetch":       {Enabled: pebblestore.BoolPtr(false)},
+			"skill_use":      {Enabled: pebblestore.BoolPtr(false)},
+			"plan_manage":    {Enabled: pebblestore.BoolPtr(false)},
+			"ask_user":       {Enabled: pebblestore.BoolPtr(false)},
+			"exit_plan_mode": {Enabled: pebblestore.BoolPtr(false)},
+			"task":           {Enabled: pebblestore.BoolPtr(false)},
+		},
 	}
-}
-
-func enabledAgentToolContractTools(names ...string) map[string]pebblestore.AgentToolConfig {
-	tools := make(map[string]pebblestore.AgentToolConfig, len(names))
-	for _, name := range names {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		tools[name] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(true)}
-	}
-	return tools
-}
-
-func (s *Service) reconcileBuiltInDefaultToolContractsForAccountLocked(accountScopeID string, now int64) error {
-	for _, defaultProfile := range defaultProfiles(now) {
-		name := strings.TrimSpace(defaultProfile.Name)
-		if name == "" || name == "memory" {
-			continue
-		}
-		current, ok, err := s.getProfileForAccountLocked(accountScopeID, name)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			continue
-		}
-		if current.ToolContract != nil && current.ToolScope == nil {
-			continue
-		}
-		current.ToolContract = pebblestore.CloneAgentToolContract(defaultProfile.ToolContract)
-		current.ToolScope = nil
-		current.UpdatedAt = now
-		if err := s.putProfileForAccountLocked(accountScopeID, current); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func shouldReconcileBuiltInMemory(profile pebblestore.AgentProfile) bool {
@@ -1055,11 +987,6 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 		}
 		if input.ToolContract == nil {
 			profile.ToolContract = pebblestore.CloneAgentToolContract(existing.ToolContract)
-		}
-	}
-	if !ok && profile.ToolContract == nil {
-		if defaultProfile, defaultOK := defaultProfileByName(profile.Name, time.Now().UnixMilli()); defaultOK {
-			profile.ToolContract = pebblestore.CloneAgentToolContract(defaultProfile.ToolContract)
 		}
 	}
 	if profile.Name == "swarm" {
@@ -1847,9 +1774,8 @@ func defaultProfiles(now int64) []pebblestore.AgentProfile {
 				"Delegate specialized work when needed, then merge results into one coherent answer.\n" +
 				"Keep responses concise, factual, and implementation-focused.\n" +
 				"Respect workspace boundaries and permission outcomes at all times."),
-			ToolContract: defaultPrimaryToolContract(),
-			Enabled:      true,
-			UpdatedAt:    now,
+			Enabled:   true,
+			UpdatedAt: now,
 		},
 		{
 			Name:             "explorer",
@@ -1862,9 +1788,8 @@ func defaultProfiles(now int64) []pebblestore.AgentProfile {
 				"You are Explorer, a subagent focused on repository inspection and evidence collection.\n" +
 				"Map files, summarize architecture and execution flow, and surface likely attack points.\n" +
 				"Provide precise findings with path/line evidence, then end with a `Relevant filepaths:` list and why each file matters."),
-			ToolContract: defaultExplorerToolContract(),
-			Enabled:      true,
-			UpdatedAt:    now,
+			Enabled:   true,
+			UpdatedAt: now,
 		},
 		{
 			Name:                "memory",
@@ -1889,9 +1814,8 @@ func defaultProfiles(now int64) []pebblestore.AgentProfile {
 			Prompt: strings.TrimSpace("" +
 				"You are Parallel, a creative execution subagent.\n" +
 				"Generate component-level outputs and parallel alternatives while keeping implementation practical."),
-			ToolContract: defaultReadWriteToolContract(),
-			Enabled:      true,
-			UpdatedAt:    now,
+			Enabled:   true,
+			UpdatedAt: now,
 		},
 		{
 			Name:             "clone",
@@ -1903,9 +1827,8 @@ func defaultProfiles(now int64) []pebblestore.AgentProfile {
 			Prompt: strings.TrimSpace("" +
 				"You are Clone, a fast implementation subagent mirroring Swarm behavior.\n" +
 				"Execute concrete file-change tasks and report exact edits with minimal narrative."),
-			ToolContract: defaultReadWriteToolContract(),
-			Enabled:      true,
-			UpdatedAt:    now,
+			Enabled:   true,
+			UpdatedAt: now,
 		},
 	}
 }

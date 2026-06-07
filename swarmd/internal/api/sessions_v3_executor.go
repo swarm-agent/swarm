@@ -1233,14 +1233,11 @@ func (e *sessionV3Executor) recordProviderToolEvent(job sessionV3ExecutorJob, ev
 
 func (e *sessionV3Executor) sessionV3CompiledToolPolicy(resolved sessionV3ResolvedRuntime) (*permission.Policy, error) {
 	if e == nil || e.server == nil || e.server.runner == nil {
-		return nil, errors.New("run service is not configured")
+		return nil, nil
 	}
 	_, policy, _, err := e.server.runner.ResolveAgentToolContractForAccount(resolved.Session.AccountScopeID, resolved.AgentProfile)
 	if err != nil {
 		return nil, err
-	}
-	if policy == nil {
-		return nil, errors.New("resolved agent tool policy is empty")
 	}
 	return policy, nil
 }
@@ -1374,7 +1371,7 @@ func (e *sessionV3Executor) composeSessionV3InstructionsLegacy(scope tool.Worksp
 
 func (e *sessionV3Executor) resolveSessionV3ProviderTools(accountScopeID string, agentProfile pebblestore.AgentProfile) ([]provideriface.ToolDefinition, error) {
 	if e == nil || e.server == nil || e.server.runner == nil {
-		return nil, errors.New("run service is not configured")
+		return nil, nil
 	}
 	contract, _, disabled, err := e.server.runner.ResolveAgentToolContractForAccount(accountScopeID, agentProfile)
 	if err != nil {
@@ -1382,37 +1379,18 @@ func (e *sessionV3Executor) resolveSessionV3ProviderTools(accountScopeID string,
 	}
 	definitions := sessionsV3ProviderToolDefinitions(e.server.runner.ListAgentToolDefinitionsForAccount(accountScopeID))
 	if len(definitions) == 0 {
-		return nil, errors.New("agent tool inventory is empty")
-	}
-	availableDefinitions := make(map[string]provideriface.ToolDefinition, len(definitions))
-	for _, definition := range definitions {
-		name := agentToolCanonicalName(definition.Name)
-		if name == "" {
-			continue
-		}
-		if _, ok := availableDefinitions[name]; !ok {
-			availableDefinitions[name] = definition
-		}
-	}
-	if len(availableDefinitions) == 0 {
-		return nil, errors.New("agent tool inventory has no canonical provider tools")
+		return nil, nil
 	}
 	allowed := make(map[string]bool, len(contract.Tools))
 	for name, state := range contract.Tools {
-		name = agentToolCanonicalName(name)
+		name = strings.TrimSpace(name)
 		if name != "" && state.Enabled {
-			if disabled[name] {
-				continue
-			}
-			if _, ok := availableDefinitions[name]; !ok {
-				return nil, fmt.Errorf("resolved agent tool %q is missing from provider inventory", name)
-			}
 			allowed[name] = true
 		}
 	}
 	filtered := make([]provideriface.ToolDefinition, 0, len(definitions))
 	for _, definition := range definitions {
-		name := agentToolCanonicalName(definition.Name)
+		name := strings.TrimSpace(definition.Name)
 		if name == "" || disabled[name] || !allowed[name] {
 			continue
 		}
