@@ -44,8 +44,8 @@ func TestSessionsV3PrimaryHydrateIncludesPermissionsAndUsage(t *testing.T) {
 		t.Fatalf("hydrate status = %d, want %d, body=%s", hydrateRec.Code, http.StatusOK, hydrateRec.Body.String())
 	}
 	var hydrated struct {
-		OK                 bool                            `json:"ok"`
-		PendingPermissions []pebblestore.PermissionRecord  `json:"pending_permissions"`
+		OK                 bool                             `json:"ok"`
+		PendingPermissions []pebblestore.PermissionRecord   `json:"pending_permissions"`
 		UsageSummary       *pebblestore.SessionUsageSummary `json:"usage_summary"`
 	}
 	if err := json.Unmarshal(hydrateRec.Body.Bytes(), &hydrated); err != nil {

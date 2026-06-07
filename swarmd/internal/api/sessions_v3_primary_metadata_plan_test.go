@@ -23,7 +23,7 @@ func TestSessionsV3PrimaryMetadataUpdateUsesV3Mutation(t *testing.T) {
 	}
 
 	var payload struct {
-		Session  pebblestore.SessionSnapshot    `json:"session"`
+		Session  pebblestore.SessionSnapshot         `json:"session"`
 		Mutation pebblestore.V3SessionMutationResult `json:"mutation"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
@@ -65,8 +65,8 @@ func TestSessionsV3PrimaryHydrateIncludesActivePlanAndHistory(t *testing.T) {
 	}
 
 	var hydrated struct {
-		HasActivePlan bool                            `json:"has_active_plan"`
-		ActivePlan    pebblestore.SessionPlanSnapshot `json:"active_plan"`
+		HasActivePlan bool                              `json:"has_active_plan"`
+		ActivePlan    pebblestore.SessionPlanSnapshot   `json:"active_plan"`
 		Revisions     []pebblestore.SessionPlanSnapshot `json:"plan_revisions"`
 	}
 	if err := json.Unmarshal(hydrateRec.Body.Bytes(), &hydrated); err != nil {
