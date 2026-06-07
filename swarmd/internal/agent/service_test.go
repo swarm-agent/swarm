@@ -134,6 +134,43 @@ func TestServicePublishesCustomToolMutationEvents(t *testing.T) {
 	}
 }
 
+func TestDefaultProfilesHaveToolContracts(t *testing.T) {
+	svc, _ := newTestService(t)
+	if err := svc.EnsureDefaults(); err != nil {
+		t.Fatalf("EnsureDefaults() error = %v", err)
+	}
+
+	state, err := svc.ListState(2000)
+	if err != nil {
+		t.Fatalf("ListState() error = %v", err)
+	}
+	if len(state.Profiles) == 0 {
+		t.Fatalf("default profiles missing")
+	}
+	for _, profile := range state.Profiles {
+		if profile.ToolContract == nil {
+			t.Fatalf("default profile %q missing tool contract", profile.Name)
+		}
+		if profile.ToolScope != nil {
+			t.Fatalf("default profile %q has legacy tool scope: %+v", profile.Name, profile.ToolScope)
+		}
+	}
+
+	swarm, ok, err := svc.GetProfile("swarm")
+	if err != nil || !ok {
+		t.Fatalf("GetProfile(swarm) ok=%v err=%v", ok, err)
+	}
+	if swarm.ToolContract.Preset != "custom" {
+		t.Fatalf("swarm tool contract preset = %q, want custom", swarm.ToolContract.Preset)
+	}
+	for _, toolName := range []string{"read", "search", "list", "write", "edit", "bash", "task", "manage_agent", "manage_flow", "manage_todos"} {
+		state, ok := swarm.ToolContract.Tools[toolName]
+		if !ok || state.Enabled == nil || !*state.Enabled {
+			t.Fatalf("swarm default tool %q = %+v, want explicitly enabled", toolName, state)
+		}
+	}
+}
+
 func TestIntegrationBuilderIsTransientAndHiddenFromNormalAgentAPIs(t *testing.T) {
 	svc, agents := newTestService(t)
 	if err := svc.EnsureDefaults(); err != nil {

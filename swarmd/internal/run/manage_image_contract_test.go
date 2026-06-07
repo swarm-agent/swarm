@@ -1,6 +1,7 @@
 package run
 
 import (
+	"strings"
 	"testing"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -14,6 +15,7 @@ func TestManageImageToolContractCanonicalizationAndOptIn(t *testing.T) {
 		Name:             "image-worker",
 		Mode:             "background",
 		ExecutionSetting: readwrite,
+		ToolContract:     &pebblestore.AgentToolContract{},
 	}
 	resolved, _, disabled, err := svc.ResolveAgentToolContract(profile)
 	if err != nil {
@@ -39,6 +41,43 @@ func TestManageImageToolContractCanonicalizationAndOptIn(t *testing.T) {
 	}
 	if disabled["manage_image"] {
 		t.Fatalf("manage-image should not remain disabled after explicit opt-in: %#v", disabled)
+	}
+}
+
+func TestResolveAgentToolContractRejectsFallbackHydration(t *testing.T) {
+	svc := NewService(nil, nil, nil, tool.NewRuntime(1), nil, nil, nil, nil)
+	enabled := true
+
+	_, _, _, err := svc.ResolveAgentToolContract(pebblestore.AgentProfile{
+		Name:                "planner",
+		Mode:                "subagent",
+		ExitPlanModeEnabled: pebblestore.BoolPtr(true),
+	})
+	if err == nil || !strings.Contains(err.Error(), "tool_contract") {
+		t.Fatalf("missing tool_contract error = %v, want tool_contract requirement", err)
+	}
+
+	_, _, _, err = svc.ResolveAgentToolContract(pebblestore.AgentProfile{
+		Name: "legacy-scope",
+		Mode: "subagent",
+		ToolScope: &pebblestore.AgentToolScope{
+			AllowTools: []string{"read"},
+		},
+		ToolContract: &pebblestore.AgentToolContract{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "legacy tool_scope") {
+		t.Fatalf("legacy tool_scope error = %v, want hard error", err)
+	}
+
+	_, _, _, err = svc.ResolveAgentToolContract(pebblestore.AgentProfile{
+		Name: "unknown-tool",
+		Mode: "subagent",
+		ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{
+			"definitely_not_a_tool": {Enabled: &enabled},
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unknown tool") {
+		t.Fatalf("unknown tool error = %v, want unknown tool hard error", err)
 	}
 }
 
