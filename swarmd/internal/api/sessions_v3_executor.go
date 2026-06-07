@@ -1233,7 +1233,7 @@ func (e *sessionV3Executor) recordProviderToolEvent(job sessionV3ExecutorJob, ev
 
 func (e *sessionV3Executor) sessionV3CompiledToolPolicy(resolved sessionV3ResolvedRuntime) (*permission.Policy, error) {
 	if e == nil || e.server == nil || e.server.runner == nil {
-		return nil, nil
+		return nil, errors.New("tool runtime is not configured")
 	}
 	_, policy, _, err := e.server.runner.ResolveAgentToolContractForAccount(resolved.Session.AccountScopeID, resolved.AgentProfile)
 	if err != nil {
@@ -1274,10 +1274,11 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if e.server.agents == nil {
 		return sessionV3ResolvedRuntime{}, errors.New("agent service is not configured")
 	}
-	agentProfile, err := e.server.agents.ResolvePrimaryForAccount(session.AccountScopeID, agentName)
+	agentProfile, contract, err := e.server.agents.ResolveToolContractProfileForAccount(session.AccountScopeID, agentName)
 	if err != nil {
 		return sessionV3ResolvedRuntime{}, err
 	}
+	agentProfile.ToolContract = contract
 	if !agentProfile.Enabled {
 		return sessionV3ResolvedRuntime{}, fmt.Errorf("agent %q is disabled", strings.TrimSpace(agentProfile.Name))
 	}
@@ -1371,7 +1372,7 @@ func (e *sessionV3Executor) composeSessionV3InstructionsLegacy(scope tool.Worksp
 
 func (e *sessionV3Executor) resolveSessionV3ProviderTools(accountScopeID string, agentProfile pebblestore.AgentProfile) ([]provideriface.ToolDefinition, error) {
 	if e == nil || e.server == nil || e.server.runner == nil {
-		return nil, nil
+		return nil, errors.New("tool runtime is not configured")
 	}
 	contract, _, disabled, err := e.server.runner.ResolveAgentToolContractForAccount(accountScopeID, agentProfile)
 	if err != nil {
@@ -1379,7 +1380,7 @@ func (e *sessionV3Executor) resolveSessionV3ProviderTools(accountScopeID string,
 	}
 	definitions := sessionsV3ProviderToolDefinitions(e.server.runner.ListAgentToolDefinitionsForAccount(accountScopeID))
 	if len(definitions) == 0 {
-		return nil, nil
+		return nil, errors.New("tool runtime has no tool definitions")
 	}
 	allowed := make(map[string]bool, len(contract.Tools))
 	for name, state := range contract.Tools {
