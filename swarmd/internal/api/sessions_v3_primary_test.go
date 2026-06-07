@@ -3579,3 +3579,86 @@ func (r *sessionsV3RecordingProviderRunner) CreateResponseStreaming(ctx context.
 	}
 	return response, nil
 }
+
+func TestSessionsV3PrimaryAlwaysAllowPersistsInPermissionsPolicyView(t *testing.T) {
+	server, sessionSvc, permissionSvc, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	session, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		SessionID:      "session-v3-policy-source",
+		Title:          "V3 Policy Source",
+		WorkspacePath:  "/host/workspace",
+		WorkspaceName:  "workspace",
+		Mode:           sessionruntime.ModeAuto,
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: testPrincipal().AccountScopeID,
+		Preference: &pebblestore.ModelPreference{
+			Provider: "test-provider",
+			Model:    "test-model",
+			Thinking: "medium",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	pending, err := permissionSvc.CreatePending(permission.CreateInput{
+		SessionID:     session.ID,
+		RunID:         "run-policy-source",
+		CallID:        "call-policy-source",
+		ToolName:      "bash",
+		ToolArguments: `{"command":"git status"}`,
+		Requirement:   "tool",
+		Mode:          sessionruntime.ModeAuto,
+	})
+	if err != nil {
+		t.Fatalf("create pending permission: %v", err)
+	}
+
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, withTestPrincipal(r))
+	}))
+	defer httpServer.Close()
+
+	resolveBody := []byte(`{"action":"allow_always","reason":"ok"}`)
+	resp, err := http.Post(httpServer.URL+"/v3/sessions/"+session.ID+"/permissions/"+pending.ID+"/resolve", "application/json", bytes.NewReader(resolveBody))
+	if err != nil {
+		t.Fatalf("resolve permission: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("resolve status = %d", resp.StatusCode)
+	}
+
+	policyResp, err := http.Get(httpServer.URL + "/v1/permissions")
+	if err != nil {
+		t.Fatalf("get permissions policy: %v", err)
+	}
+	defer policyResp.Body.Close()
+	if policyResp.StatusCode != http.StatusOK {
+		t.Fatalf("policy status = %d", policyResp.StatusCode)
+	}
+	var payload struct {
+		Policy permission.Policy `json:"policy"`
+	}
+	if err := json.NewDecoder(policyResp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode policy response: %v", err)
+	}
+	foundAllowRule := false
+	for _, rule := range payload.Policy.Rules {
+		if rule.Decision == permission.PolicyDecisionAllow && rule.Kind == permission.PolicyRuleKindBashPrefix && rule.Tool == "bash" && rule.Pattern == "git" {
+			foundAllowRule = true
+			break
+		}
+	}
+	if !foundAllowRule {
+		t.Fatalf("policy rules = %+v, want always-allow rule visible in /permissions", payload.Policy.Rules)
+	}
+
+	globalPolicy, err := permissionSvc.CurrentPolicy()
+	if err != nil {
+		t.Fatalf("current global policy: %v", err)
+	}
+	for _, rule := range globalPolicy.Rules {
+		if rule.Decision == permission.PolicyDecisionAllow && rule.Kind == permission.PolicyRuleKindBashPrefix && rule.Tool == "bash" && rule.Pattern == "git" {
+			t.Fatalf("global policy rules = %+v, want no leaked V3 rule", globalPolicy.Rules)
+		}
+	}
+}

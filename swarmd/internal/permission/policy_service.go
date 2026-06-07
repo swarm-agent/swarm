@@ -297,7 +297,11 @@ func (s *Service) ResolveWithPolicyAndArguments(sessionID, permissionID, action,
 		if err != nil {
 			return pebblestore.PermissionRecord{}, nil, err
 		}
-		persisted, err := s.UpsertRule(rule)
+		accountScopeID, err := s.accountScopeIDForSession(sessionID)
+		if err != nil {
+			return pebblestore.PermissionRecord{}, nil, err
+		}
+		persisted, err := s.UpsertRuleForAccount(accountScopeID, rule)
 		if err != nil {
 			return pebblestore.PermissionRecord{}, nil, err
 		}
@@ -347,6 +351,28 @@ func (s *Service) lookupPermission(sessionID, permissionID string) (pebblestore.
 		return pebblestore.PermissionRecord{}, fmt.Errorf("permission %q not found", permissionID)
 	}
 	return record, nil
+}
+
+func (s *Service) accountScopeIDForSession(sessionID string) (string, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return "", errors.New("session id is required")
+	}
+	if s == nil || s.sessions == nil {
+		return "", errors.New("session account scope is required for persistent permission rules")
+	}
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("session %q not found", sessionID)
+	}
+	accountScopeID := strings.TrimSpace(session.AccountScopeID)
+	if accountScopeID == "" {
+		return "", errors.New("session account scope is required for persistent permission rules")
+	}
+	return accountScopeID, nil
 }
 
 func allowRuleSupported(toolName string) bool {
