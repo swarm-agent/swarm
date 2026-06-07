@@ -134,6 +134,32 @@ func (s *Service) ResolveAgentToolContractForAccount(accountScopeID string, prof
 	return s.resolveAgentToolContractForAccount(strings.TrimSpace(accountScopeID), strings.TrimSpace(profile.Name))
 }
 
+func (s *Service) CompileStoredV3AgentToolContract(accountScopeID string, profile pebblestore.AgentProfile) (ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	name := strings.TrimSpace(profile.Name)
+	if name == "" {
+		return ResolvedAgentToolContract{}, nil, nil, fmt.Errorf("stored v3 agent profile is missing name")
+	}
+	if profile.ToolContract == nil {
+		return ResolvedAgentToolContract{}, nil, nil, fmt.Errorf("stored v3 agent profile %q tool_contract is not configured", name)
+	}
+	knownTools := s.knownRunToolNamesForAccount(accountScopeID)
+	if len(knownTools) == 0 {
+		return ResolvedAgentToolContract{}, nil, nil, fmt.Errorf("tool runtime is not configured")
+	}
+	if err := validateStoredV3AgentToolContractRuntime(name, profile.ToolContract, knownTools); err != nil {
+		return ResolvedAgentToolContract{}, nil, nil, err
+	}
+	resolved, policy, disabled, err := s.compileResolvedAgentToolContract(accountScopeID, profile)
+	if err != nil {
+		return ResolvedAgentToolContract{}, nil, nil, err
+	}
+	if err := validateResolvedV3AgentToolRuntime(name, resolved, knownTools); err != nil {
+		return ResolvedAgentToolContract{}, nil, nil, err
+	}
+	return resolved, policy, disabled, nil
+}
+
 func (s *Service) resolveAgentToolContractForAccount(accountScopeID, name string) (ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
 	if s == nil || s.agents == nil {
 		return ResolvedAgentToolContract{}, nil, nil, fmt.Errorf("agent service is not configured")
@@ -266,6 +292,46 @@ func applyNamedAgentPreset(target map[string]ResolvedAgentTool, knownTools map[s
 		enable("read", "search", "list", "git_status", "git_diff", "git_add", "git_commit")
 	default:
 		return fmt.Errorf("unsupported tool contract preset %q", preset)
+	}
+	return nil
+}
+
+func validateStoredV3AgentToolContractRuntime(agentName string, contract *pebblestore.AgentToolContract, knownTools map[string]struct{}) error {
+	if contract == nil {
+		return fmt.Errorf("stored v3 agent profile %q tool_contract is not configured", strings.TrimSpace(agentName))
+	}
+	for rawName := range contract.Tools {
+		name := canonicalToolName(rawName)
+		if name == "" {
+			return fmt.Errorf("stored v3 agent profile %q tool_contract contains an empty tool name", strings.TrimSpace(agentName))
+		}
+		if _, ok := knownTools[name]; ok {
+			continue
+		}
+		if strings.Contains(name, "_") {
+			if _, ok := knownTools[strings.ReplaceAll(name, "_", "-")]; ok {
+				continue
+			}
+		}
+		if strings.Contains(name, "-") {
+			if _, ok := knownTools[strings.ReplaceAll(name, "-", "_")]; ok {
+				continue
+			}
+		}
+		return fmt.Errorf("stored v3 agent profile %q tool_contract references unavailable tool runtime %q", strings.TrimSpace(agentName), rawName)
+	}
+	return nil
+}
+
+func validateResolvedV3AgentToolRuntime(agentName string, resolved ResolvedAgentToolContract, knownTools map[string]struct{}) error {
+	for rawName, state := range resolved.Tools {
+		if !state.Enabled {
+			continue
+		}
+		name := canonicalToolName(rawName)
+		if _, ok := knownTools[name]; !ok {
+			return fmt.Errorf("stored v3 agent profile %q tool_contract enables unavailable tool runtime %q", strings.TrimSpace(agentName), rawName)
+		}
 	}
 	return nil
 }

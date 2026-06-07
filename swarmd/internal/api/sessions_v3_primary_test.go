@@ -505,6 +505,50 @@ func TestSessionsV3PrimaryDispatchAuthorityRecordsSpecificBlockedReasonsWithoutB
 	}
 }
 
+func TestSessionsV3ExecutorUsesStoredAgentProfileSnapshotOnly(t *testing.T) {
+	server, sessionSvc, closeStore := newSessionsV3PrimaryAPITestServer(t, filepath.Join(t.TempDir(), "stored-profile.pebble"))
+	defer func() { _ = closeStore() }()
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "stored-profile-create", "stored profile", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	storedProfile, err := sessionV3AgentProfileFromMetadata(created.Metadata)
+	if err != nil {
+		t.Fatalf("stored profile missing from created session metadata: %v", err)
+	}
+	if storedProfile.ToolContract == nil || storedProfile.ToolContract.Tools["read"].Enabled == nil || !*storedProfile.ToolContract.Tools["read"].Enabled {
+		t.Fatalf("created session did not persist selected saved ToolContract snapshot: %+v", storedProfile.ToolContract)
+	}
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{
+		Name:    "swarm",
+		Mode:    agentruntime.ModePrimary,
+		Enabled: pebblestore.BoolPtr(true),
+		Prompt:  "MUTATED PROMPT THAT MUST NOT BE USED",
+		ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
+			"search": {Enabled: pebblestore.BoolPtr(true)},
+		}},
+	}); err != nil {
+		t.Fatalf("mutate saved agent after session create: %v", err)
+	}
+	runner := installSessionsV3TestProvider(server, "snapshot provider response")
+	server.v3SessionExecutor = newSessionV3Executor(server)
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "stored-profile-message", "use stored profile")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+	if runner.callCount != 1 {
+		t.Fatalf("provider call count = %d, want 1", runner.callCount)
+	}
+	if !strings.Contains(runner.lastRequest.Instructions, "Swarm test primary prompt") {
+		t.Fatalf("provider instructions did not use stored profile prompt; instructions=%q", runner.lastRequest.Instructions)
+	}
+	if strings.Contains(runner.lastRequest.Instructions, "MUTATED PROMPT") {
+		t.Fatalf("provider instructions used re-resolved mutated agent profile; instructions=%q", runner.lastRequest.Instructions)
+	}
+	toolNames := sessionsV3ProviderRequestToolNames(runner.lastRequest.Tools)
+	if !toolNames["read"] {
+		t.Fatalf("provider tools = %v, want stored read tool", toolNames)
+	}
+	if toolNames["search"] {
+		t.Fatalf("provider tools = %v, used mutated saved profile instead of stored snapshot", toolNames)
+	}
+}
+
 func TestSessionsV3PrimaryProviderVerticalSlicePersistsAssistantOnce(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	runner := &sessionsV3RecordingProviderRunner{text: "provider assistant response"}
@@ -2299,7 +2343,7 @@ func newSessionsV3PrimaryAPITestServer(t *testing.T, storePath string) (*Server,
 		_ = store.Close()
 		t.Fatalf("ensure agent defaults: %v", err)
 	}
-	if _, _, _, err := agentSvc.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm test primary prompt"}); err != nil {
+	if _, _, _, err := agentSvc.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm test primary prompt", ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{"read": {Enabled: pebblestore.BoolPtr(true)}}}}); err != nil {
 		_ = store.Close()
 		t.Fatalf("create swarm agent: %v", err)
 	}
@@ -3359,6 +3403,17 @@ func createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t *testing.T, 
 		t.Fatalf("decode create response: %v", err)
 	}
 	return created.Session
+}
+
+func sessionsV3ProviderRequestToolNames(tools []provideriface.ToolDefinition) map[string]bool {
+	out := make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		name := strings.TrimSpace(tool.Name)
+		if name != "" {
+			out[name] = true
+		}
+	}
+	return out
 }
 
 type sessionsV3RecordingProviderRunner struct {

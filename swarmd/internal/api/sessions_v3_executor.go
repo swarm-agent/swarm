@@ -1235,7 +1235,11 @@ func (e *sessionV3Executor) sessionV3CompiledToolPolicy(resolved sessionV3Resolv
 	if e == nil || e.server == nil || e.server.runner == nil {
 		return nil, nil
 	}
-	_, policy, _, err := e.server.runner.ResolveAgentToolContractForAccount(resolved.Session.AccountScopeID, resolved.AgentProfile)
+	compiler, ok := e.server.runner.(sessionsV3StoredAgentToolContractCompiler)
+	if !ok || compiler == nil {
+		return nil, errors.New("v3 tool contract compiler is not configured")
+	}
+	_, policy, _, err := compiler.CompileStoredV3AgentToolContract(resolved.Session.AccountScopeID, resolved.AgentProfile)
 	if err != nil {
 		return nil, err
 	}
@@ -1267,22 +1271,31 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(job.Principal.AccountScopeID) {
 		return sessionV3ResolvedRuntime{}, errors.New("session principal account mismatch")
 	}
-	agentName := strings.TrimSpace(firstNonEmpty(sessionV3MetadataString(session.Metadata, "resolved_agent_name"), sessionV3MetadataString(session.Metadata, "agent_name")))
-	if agentName == "" {
-		return sessionV3ResolvedRuntime{}, errors.New("v3 session is missing durable agent identity")
-	}
-	if e.server.agents == nil {
-		return sessionV3ResolvedRuntime{}, errors.New("agent service is not configured")
-	}
-	agentProfile, err := e.server.agents.ResolvePrimaryForAccount(session.AccountScopeID, agentName)
+	agentProfile, err := sessionV3AgentProfileFromMetadata(session.Metadata)
 	if err != nil {
 		return sessionV3ResolvedRuntime{}, err
 	}
 	if !agentProfile.Enabled {
 		return sessionV3ResolvedRuntime{}, fmt.Errorf("agent %q is disabled", strings.TrimSpace(agentProfile.Name))
 	}
-	if strings.TrimSpace(agentProfile.Mode) != "primary" {
-		return sessionV3ResolvedRuntime{}, fmt.Errorf("agent %q is not primary", strings.TrimSpace(agentProfile.Name))
+	if strings.TrimSpace(agentProfile.Name) == "" {
+		return sessionV3ResolvedRuntime{}, errors.New("stored v3 agent profile is missing name")
+	}
+	if strings.TrimSpace(agentProfile.Mode) == "" {
+		return sessionV3ResolvedRuntime{}, fmt.Errorf("stored v3 agent profile %q is missing mode", strings.TrimSpace(agentProfile.Name))
+	}
+	if strings.TrimSpace(agentProfile.RuntimeMode) == "" {
+		return sessionV3ResolvedRuntime{}, fmt.Errorf("stored v3 agent profile %q is missing runtime_mode", strings.TrimSpace(agentProfile.Name))
+	}
+	if agentProfile.ExitPlanModeEnabled == nil {
+		return sessionV3ResolvedRuntime{}, fmt.Errorf("stored v3 agent profile %q is missing exit_plan_mode_enabled", strings.TrimSpace(agentProfile.Name))
+	}
+	compiler, ok := e.server.runner.(sessionsV3StoredAgentToolContractCompiler)
+	if !ok || compiler == nil {
+		return sessionV3ResolvedRuntime{}, errors.New("v3 tool contract compiler is not configured")
+	}
+	if _, _, _, err := compiler.CompileStoredV3AgentToolContract(session.AccountScopeID, agentProfile); err != nil {
+		return sessionV3ResolvedRuntime{}, err
 	}
 	pref, contextWindow, err := e.resolveSessionV3ProviderPreference(applySessionV3AgentPreferenceOverrides(session.Preference, agentProfile))
 	if err != nil {
@@ -1373,7 +1386,11 @@ func (e *sessionV3Executor) resolveSessionV3ProviderTools(accountScopeID string,
 	if e == nil || e.server == nil || e.server.runner == nil {
 		return nil, nil
 	}
-	contract, _, disabled, err := e.server.runner.ResolveAgentToolContractForAccount(accountScopeID, agentProfile)
+	compiler, ok := e.server.runner.(sessionsV3StoredAgentToolContractCompiler)
+	if !ok || compiler == nil {
+		return nil, errors.New("v3 tool contract compiler is not configured")
+	}
+	contract, _, disabled, err := compiler.CompileStoredV3AgentToolContract(accountScopeID, agentProfile)
 	if err != nil {
 		return nil, err
 	}

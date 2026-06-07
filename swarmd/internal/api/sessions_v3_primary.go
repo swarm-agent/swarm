@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/permission"
+	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -1222,55 +1224,66 @@ type sessionsV3ResolvedAgentIdentity struct {
 	RuntimeMode         string
 	ExitPlanModeEnabled bool
 	ToolContractPreset  string
+	Profile             pebblestore.AgentProfile
+}
+
+type sessionsV3StoredAgentToolContractCompiler interface {
+	CompileStoredV3AgentToolContract(accountScopeID string, profile pebblestore.AgentProfile) (runruntime.ResolvedAgentToolContract, *permission.Policy, map[string]bool, error)
 }
 
 func (s *Server) resolveSessionsV3PrimaryCreateAgent(principal identity.Principal, requestedName string) (sessionsV3ResolvedAgentIdentity, error) {
 	requestedName = strings.TrimSpace(requestedName)
-	if s == nil || s.agents == nil {
-		if requestedName != "" && !strings.EqualFold(requestedName, "swarm") {
-			return sessionsV3ResolvedAgentIdentity{}, fmt.Errorf("agent %q cannot resolve without agent service", requestedName)
-		}
-		return sessionsV3ResolvedAgentIdentity{Name: "swarm", ResolvedName: "swarm", Mode: "primary", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: true}, nil
+	if requestedName == "" {
+		return sessionsV3ResolvedAgentIdentity{}, errors.New("agent_name is required")
 	}
-	profile, err := s.agents.ResolvePrimaryForAccount(principal.AccountScopeID, requestedName)
+	if s == nil || s.agents == nil {
+		return sessionsV3ResolvedAgentIdentity{}, errors.New("agent service is not configured")
+	}
+	profile, ok, err := s.agents.GetProfileForAccount(principal.AccountScopeID, requestedName)
 	if err != nil {
 		return sessionsV3ResolvedAgentIdentity{}, err
 	}
+	if !ok {
+		return sessionsV3ResolvedAgentIdentity{}, fmt.Errorf("agent %q not found", requestedName)
+	}
 	name := strings.TrimSpace(profile.Name)
 	if name == "" {
-		name = requestedName
-	}
-	if name == "" {
-		name = "swarm"
+		return sessionsV3ResolvedAgentIdentity{}, fmt.Errorf("agent %q saved profile is missing name", requestedName)
 	}
 	mode := strings.TrimSpace(profile.Mode)
 	if mode == "" {
-		mode = "primary"
-	}
-	if mode != "primary" {
-		return sessionsV3ResolvedAgentIdentity{}, fmt.Errorf("agent %q is not primary", name)
+		return sessionsV3ResolvedAgentIdentity{}, fmt.Errorf("agent %q saved profile is missing mode", name)
 	}
 	if !profile.Enabled {
 		return sessionsV3ResolvedAgentIdentity{}, fmt.Errorf("agent %q is disabled", name)
+	}
+	if profile.ToolContract == nil {
+		return sessionsV3ResolvedAgentIdentity{}, fmt.Errorf("agent %q tool_contract is not configured", name)
+	}
+	runtimeMode := strings.TrimSpace(profile.RuntimeMode)
+	if runtimeMode == "" {
+		return sessionsV3ResolvedAgentIdentity{}, fmt.Errorf("agent %q saved profile is missing runtime_mode", name)
+	}
+	if profile.ExitPlanModeEnabled == nil {
+		return sessionsV3ResolvedAgentIdentity{}, fmt.Errorf("agent %q saved profile is missing exit_plan_mode_enabled", name)
+	}
+	compiler, ok := s.runner.(sessionsV3StoredAgentToolContractCompiler)
+	if !ok || compiler == nil {
+		return sessionsV3ResolvedAgentIdentity{}, errors.New("v3 tool contract compiler is not configured")
+	}
+	profile = cloneSessionsV3AgentProfile(profile)
+	if _, _, _, err := compiler.CompileStoredV3AgentToolContract(principal.AccountScopeID, profile); err != nil {
+		return sessionsV3ResolvedAgentIdentity{}, err
 	}
 	return sessionsV3ResolvedAgentIdentity{
 		Name:                name,
 		ResolvedName:        name,
 		Mode:                mode,
-		RuntimeMode:         pebblestore.AgentProfileRuntimeMode(profile),
-		ExitPlanModeEnabled: pebblestore.AgentExitPlanModeEnabled(profile),
-		ToolContractPreset:  sessionsV3AgentToolContractPreset(profile),
+		RuntimeMode:         runtimeMode,
+		ExitPlanModeEnabled: *profile.ExitPlanModeEnabled,
+		ToolContractPreset:  strings.TrimSpace(profile.ToolContract.Preset),
+		Profile:             profile,
 	}, nil
-}
-
-func sessionsV3AgentToolContractPreset(profile pebblestore.AgentProfile) string {
-	if profile.ToolContract != nil {
-		return strings.TrimSpace(profile.ToolContract.Preset)
-	}
-	if profile.ToolScope != nil {
-		return strings.TrimSpace(profile.ToolScope.Preset)
-	}
-	return ""
 }
 
 func sessionsV3CreateServerMetadata(clientMetadata map[string]any, agent sessionsV3ResolvedAgentIdentity) map[string]any {
@@ -1283,6 +1296,7 @@ func sessionsV3CreateServerMetadata(clientMetadata map[string]any, agent session
 	metadata["agent_mode"] = agent.Mode
 	metadata["runtime_mode"] = agent.RuntimeMode
 	metadata["exit_plan_mode_enabled"] = agent.ExitPlanModeEnabled
+	metadata["agent_profile"] = cloneSessionsV3AgentProfile(agent.Profile)
 	if agent.ToolContractPreset != "" {
 		metadata["tool_contract_preset"] = agent.ToolContractPreset
 	}
@@ -1443,6 +1457,7 @@ func sessionsV3AuthorityInt(authority map[string]any, keys ...string) int {
 func isProtectedSessionsV3MetadataKey(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
 	case "agent_name",
+		"agent_profile",
 		"resolved_agent_name",
 		"agent_mode",
 		"runtime_mode",
@@ -1482,6 +1497,44 @@ func isProtectedSessionsV3MetadataKey(key string) bool {
 	}
 }
 
+func sessionV3AgentProfileFromMetadata(metadata map[string]any) (pebblestore.AgentProfile, error) {
+	raw, ok := metadata["agent_profile"]
+	if !ok || raw == nil {
+		return pebblestore.AgentProfile{}, errors.New("v3 session is missing stored agent profile")
+	}
+	switch typed := raw.(type) {
+	case pebblestore.AgentProfile:
+		return cloneSessionsV3AgentProfile(typed), nil
+	case map[string]any:
+		var profile pebblestore.AgentProfile
+		encoded, err := json.Marshal(typed)
+		if err != nil {
+			return pebblestore.AgentProfile{}, err
+		}
+		if err := json.Unmarshal(encoded, &profile); err != nil {
+			return pebblestore.AgentProfile{}, err
+		}
+		return cloneSessionsV3AgentProfile(profile), nil
+	default:
+		encoded, err := json.Marshal(raw)
+		if err != nil {
+			return pebblestore.AgentProfile{}, err
+		}
+		var profile pebblestore.AgentProfile
+		if err := json.Unmarshal(encoded, &profile); err != nil {
+			return pebblestore.AgentProfile{}, err
+		}
+		return cloneSessionsV3AgentProfile(profile), nil
+	}
+}
+
+func cloneSessionsV3AgentProfile(profile pebblestore.AgentProfile) pebblestore.AgentProfile {
+	profile.ExitPlanModeEnabled = pebblestore.CloneBoolPtr(profile.ExitPlanModeEnabled)
+	profile.ToolScope = pebblestore.CloneAgentToolScope(profile.ToolScope)
+	profile.ToolContract = pebblestore.CloneAgentToolContract(profile.ToolContract)
+	return profile
+}
+
 func cloneSessionsV3Metadata(in map[string]any) map[string]any {
 	if len(in) == 0 {
 		return nil
@@ -1495,6 +1548,8 @@ func cloneSessionsV3Metadata(in map[string]any) map[string]any {
 
 func cloneSessionsV3MetadataValue(value any) any {
 	switch typed := value.(type) {
+	case pebblestore.AgentProfile:
+		return cloneSessionsV3AgentProfile(typed)
 	case map[string]any:
 		return cloneSessionsV3Metadata(typed)
 	case []any:
