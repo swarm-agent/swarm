@@ -88,7 +88,7 @@ func TestExecuteExitPlanModeRejectsAutoModeBeforeSaving(t *testing.T) {
 		t.Fatalf("marshal args: %v", err)
 	}
 
-	raw, err := runSvc.executeExitPlanModeTool(sessionID, sessionruntime.ModeAuto, pebblestore.AgentProfile{Name: "swarm"}, string(rawArgs), "")
+	raw, err := runSvc.executeExitPlanModeTool(sessionID, sessionruntime.ModeAuto, pebblestore.AgentProfile{Name: "swarm"}, string(rawArgs), "", nil)
 	if err != nil {
 		t.Fatalf("auto exit_plan_mode: %v output=%s", err, raw)
 	}

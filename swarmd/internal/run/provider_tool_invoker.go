@@ -201,7 +201,7 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 			principal = config.principal
 		}
 		ctx = identity.ContextWithPrincipal(ctx, principal)
-		handled, controlResult, controlErr := s.executeControlPlaneTool(ctx, config.sessionID, config.sessionMode, config.agentProfile, config.step, call, feedback.ApprovedArguments, config.emit)
+		handled, controlResult, controlErr := s.executeControlPlaneToolWithMutation(ctx, config.sessionID, config.sessionMode, config.agentProfile, config.step, call, feedback.ApprovedArguments, config.emit, config.applySessionMutation)
 		if handled {
 			if config.emit != nil {
 				config.emit(StreamEvent{

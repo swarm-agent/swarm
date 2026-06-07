@@ -3127,6 +3127,107 @@ func TestSessionsV3ExecutorPersistsFailureWhenToolLoopExceedsBound(t *testing.T)
 	}
 }
 
+func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRuntime(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := t.TempDir()
+	runner := &sessionsV3RecordingProviderRunner{}
+	runner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		switch runner.callCount {
+		case 1:
+			if req.ToolInvoker == nil {
+				return provideriface.Response{}, fmt.Errorf("missing provider-managed tool invoker")
+			}
+			if !strings.Contains(req.Instructions, "Current session mode: plan.") {
+				return provideriface.Response{}, fmt.Errorf("initial instructions did not use plan mode:\n%s", req.Instructions)
+			}
+			document := map[string]any{"info": map[string]any{"goal": "continue in auto"}, "checkpoints": []map[string]any{{"id": "cp-1", "title": "continue", "status": "pending"}}}
+			args := mustSessionsV3TestJSON(t, map[string]any{"title": "Plan: continue", "document": document})
+			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-exit-plan", Name: "exit_plan_mode", Arguments: args})
+			if err != nil {
+				return provideriface.Response{}, err
+			}
+			if !result.RestartTurn {
+				return provideriface.Response{}, fmt.Errorf("exit_plan_mode result did not request turn restart: %+v", result)
+			}
+			return provideriface.Response{RestartTurn: true}, nil
+		case 2:
+			if !strings.Contains(req.Instructions, "Current session mode: auto.") {
+				return provideriface.Response{}, fmt.Errorf("continuation instructions did not refresh to auto mode:\n%s", req.Instructions)
+			}
+			if len(req.Input) != 3 || !sessionsV3ProviderInputHasTopLevelType(req.Input, "function_call") || !sessionsV3ProviderInputHasTopLevelType(req.Input, "function_call_output") {
+				return provideriface.Response{}, fmt.Errorf("exit_plan_mode continuation input = %+v, want user plus structured tool call/output", req.Input)
+			}
+			if req.ToolInvoker == nil {
+				return provideriface.Response{}, fmt.Errorf("missing refreshed provider-managed tool invoker")
+			}
+			writeArgs := mustSessionsV3TestJSON(t, map[string]any{"path": "after-exit.txt", "content": "auto write allowed"})
+			writeResult, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-write-after-exit", Name: "write", Arguments: writeArgs})
+			if err != nil {
+				return provideriface.Response{}, err
+			}
+			if writeResult.Error != "" {
+				return provideriface.Response{}, fmt.Errorf("write after exit_plan_mode was not authorized with refreshed auto mode: %+v", writeResult)
+			}
+			return provideriface.Response{Text: "continued in auto"}, nil
+		default:
+			return provideriface.Response{}, fmt.Errorf("unexpected provider call %d", runner.callCount)
+		}
+	}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	runSvc := runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, nil, nil)
+	server.runner = runSvc
+	server.SetBypassPermissions(true)
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"exit_plan_mode": {Enabled: pebblestore.BoolPtr(true)}, "write": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
+		t.Fatalf("upsert exit-plan swarm agent: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-exit-plan-restart-create", "provider exit plan restart", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	if created.Mode != sessionruntime.ModePlan {
+		t.Fatalf("created session mode = %q, want plan", created.Mode)
+	}
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-exit-plan-restart-message", "exit plan mode and continue")
+	waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
+
+	stored, ok, err := sessionSvc.GetSession(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get session after exit plan: ok=%t err=%v", ok, err)
+	}
+	if stored.Mode != sessionruntime.ModeAuto {
+		t.Fatalf("session mode after exit_plan_mode = %q, want auto", stored.Mode)
+	}
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 4 || messages[0].Role != "user" || messages[1].Role != "tool" || messages[2].Role != "tool" || messages[3].Role != "assistant" || messages[3].Content != "continued in auto" {
+		t.Fatalf("messages after exit plan restart = %+v", messages)
+	}
+	if !strings.Contains(messages[2].Content, "auto write allowed") {
+		t.Fatalf("post-exit write tool message = %+v", messages[2])
+	}
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 40)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	seenModeEvent := false
+	for _, event := range events {
+		if event.EventType == "session.mode.updated" {
+			seenModeEvent = true
+		}
+	}
+	if !seenModeEvent {
+		t.Fatalf("missing canonical session.mode.updated event after exit_plan_mode: %+v", events)
+	}
+	if runner.callCount != 2 {
+		t.Fatalf("provider call count = %d, want exit plan plus refreshed continuation", runner.callCount)
+	}
+}
+
 func TestSessionsV3ExecutorContinuesAfterProviderManagedRestartTurn(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	workspace := t.TempDir()
@@ -3489,6 +3590,15 @@ func TestSessionsV3ExecutorDoesNotRetitleExplicitTitle(t *testing.T) {
 func createSessionsV3PrimaryTestSessionWithPreference(t *testing.T, server *Server, clientRequestID, title string, pref pebblestore.ModelPreference) pebblestore.SessionSnapshot {
 	t.Helper()
 	return createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, clientRequestID, title, t.TempDir(), pref)
+}
+
+func mustSessionsV3TestJSON(t *testing.T, value any) string {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal json: %v", err)
+	}
+	return string(raw)
 }
 
 func createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t *testing.T, server *Server, clientRequestID, title, workspacePath string, pref pebblestore.ModelPreference) pebblestore.SessionSnapshot {

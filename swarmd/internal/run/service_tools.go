@@ -2,6 +2,8 @@ package run
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -600,6 +602,10 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 }
 
 func (s *Service) executeControlPlaneTool(ctx context.Context, sessionID, sessionMode string, agentProfile pebblestore.AgentProfile, step int, call tool.Call, approvedArguments string, emit StreamHandler) (bool, tool.Result, error) {
+	return s.executeControlPlaneToolWithMutation(ctx, sessionID, sessionMode, agentProfile, step, call, approvedArguments, emit, nil)
+}
+
+func (s *Service) executeControlPlaneToolWithMutation(ctx context.Context, sessionID, sessionMode string, agentProfile pebblestore.AgentProfile, step int, call tool.Call, approvedArguments string, emit StreamHandler, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (bool, tool.Result, error) {
 	name := canonicalToolName(call.Name)
 	result := tool.Result{
 		CallID: strings.TrimSpace(call.CallID),
@@ -643,7 +649,7 @@ func (s *Service) executeControlPlaneTool(ctx context.Context, sessionID, sessio
 		result.Output = output
 		return true, result, err
 	case "exit_plan_mode":
-		output, err := s.executeExitPlanModeTool(sessionID, sessionMode, agentProfile, call.Arguments, approvedArguments)
+		output, err := s.executeExitPlanModeTool(sessionID, sessionMode, agentProfile, call.Arguments, approvedArguments, applySessionMutation)
 		result.Output = output
 		return true, result, err
 	case "plan_manage":
@@ -1213,7 +1219,7 @@ func decodeAskUserFeedback(feedback string) (string, map[string]string) {
 	return "", answers
 }
 
-func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentProfile pebblestore.AgentProfile, arguments, feedback string) (string, error) {
+func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentProfile pebblestore.AgentProfile, arguments, feedback string, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
 	arguments = strings.TrimSpace(arguments)
 	if arguments == "" {
 		arguments = "{}"
@@ -1381,7 +1387,11 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 	}
 	planID = strings.TrimSpace(savedPlan.ID)
 
-	if _, setModeEnv, err := s.sessions.SetMode(sessionID, sessionruntime.ModeAuto); err != nil {
+	if applySessionMutation != nil {
+		if err := s.applyExitPlanModeV3ModeMutation(sessionID, sessionruntime.ModeAuto, applySessionMutation); err != nil {
+			return "", fmt.Errorf("exit_plan_mode failed to set mode: %w", err)
+		}
+	} else if _, setModeEnv, err := s.sessions.SetMode(sessionID, sessionruntime.ModeAuto); err != nil {
 		return "", fmt.Errorf("exit_plan_mode failed to set mode: %w", err)
 	} else if setModeEnv != nil {
 		s.publishEventEnvelope(*setModeEnv)
@@ -1410,6 +1420,56 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 		return "", marshalErr
 	}
 	return string(encoded), nil
+}
+
+func (s *Service) applyExitPlanModeV3ModeMutation(sessionID, mode string, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) error {
+	if applySessionMutation == nil {
+		return errors.New("v3 mode mutation callback is not configured")
+	}
+	if s == nil || s.sessions == nil {
+		return errors.New("session service is not configured")
+	}
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("session %q not found", strings.TrimSpace(sessionID))
+	}
+	mode = sessionruntime.NormalizeMode(mode)
+	if sessionruntime.NormalizeMode(session.Mode) == mode {
+		return nil
+	}
+	now := time.Now().UnixMilli()
+	next := session
+	next.Mode = mode
+	next.UpdatedAt = now
+	eventPayload, err := json.Marshal(map[string]any{"session_id": sessionID, "mode": mode, "updated_at": now})
+	if err != nil {
+		return err
+	}
+	payloadHash := exitPlanModeV3ModePayloadHash(sessionID, mode, now)
+	clientRequestID := fmt.Sprintf("exit_plan_mode:mode:%s:%s:%d", strings.TrimSpace(sessionID), mode, now)
+	_, err = applySessionMutation(sessionruntime.SessionMutationInput{
+		SessionID:       sessionID,
+		UserID:          session.UserID,
+		AccountScopeID:  session.AccountScopeID,
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationUpdateMode,
+		EventType:       "session.mode.updated",
+		EventPayload:    eventPayload,
+		Session:         &next,
+		NowUnixMs:       now,
+	})
+	return err
+}
+
+func exitPlanModeV3ModePayloadHash(sessionID, mode string, now int64) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00exit_plan_mode\x00" + strings.TrimSpace(mode) + "\x00" + fmt.Sprint(now)))
+	return hex.EncodeToString(sum[:])
 }
 
 func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (string, error) {

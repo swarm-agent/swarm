@@ -49,7 +49,7 @@ func TestExecuteExitPlanModePersistsStructuredDocument(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal args: %v", err)
 	}
-	raw, err := runSvc.executeExitPlanModeTool(sessionID, sessionruntime.ModePlan, pebblestore.AgentProfile{Name: "swarm"}, string(rawArgs), "")
+	raw, err := runSvc.executeExitPlanModeTool(sessionID, sessionruntime.ModePlan, pebblestore.AgentProfile{Name: "swarm"}, string(rawArgs), "", nil)
 	if err != nil {
 		t.Fatalf("exit plan mode: %v output=%s", err, raw)
 	}
