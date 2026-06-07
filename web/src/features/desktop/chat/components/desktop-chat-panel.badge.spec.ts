@@ -259,6 +259,46 @@ test('desktop timeline orders canonical messages and retained live items by one 
   ])
 })
 
+test('desktop timeline keeps testbench interleaved read/list/search stream in session order', () => {
+  const liveTool = (callId: string, tool: string, timelineSeq: number): NonNullable<ChatMessageRecord['toolMessage']> => ({
+    pathId: 'run.v3.provider-tool-result.v1',
+    tool,
+    callId,
+    toolInstanceId: `step-${timelineSeq}:${callId}`,
+    target: null,
+    commandText: '',
+    argumentsText: '{}',
+    output: `${tool} output`,
+    completedOutput: `${tool} output`,
+    error: '',
+    durationMs: 0,
+    summary: tool,
+    state: 'done',
+    timelineSeq,
+    editDiff: null,
+    previewLines: [],
+    taskRows: [],
+  })
+
+  const ordered = orderDesktopTimelineItems([
+    { type: 'message', message: makeMessage({ id: 'assistant-hello', globalSeq: 16, role: 'assistant', content: 'HELLO' }) },
+    { type: 'live-tool', toolMessage: liveTool('call-list', 'list', 17) },
+    { type: 'message', message: makeMessage({ id: 'assistant-two', globalSeq: 20, role: 'assistant', content: 'SENTENCE TWO' }) },
+    { type: 'live-tool', toolMessage: liveTool('call-read', 'read', 21) },
+    { type: 'message', message: makeMessage({ id: 'assistant-three', globalSeq: 24, role: 'assistant', content: 'SENTENCE THREE' }) },
+    { type: 'live-tool', toolMessage: liveTool('call-search', 'search', 25) },
+  ])
+
+  assert.deepEqual(ordered.map((item) => item.type === 'message' ? item.message.content : item.toolMessage.tool), [
+    'HELLO',
+    'list',
+    'SENTENCE TWO',
+    'read',
+    'SENTENCE THREE',
+    'search',
+  ])
+})
+
 test('flow sessions are treated as read-only flow identity and resolve their real flow agent name', () => {
   const session = makeSession({
     metadata: {

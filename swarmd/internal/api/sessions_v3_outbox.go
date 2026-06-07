@@ -63,7 +63,7 @@ func (s *Server) publishCommittedSessionV3GlobalEvent(event sessionruntime.Sessi
 	if s.events == nil {
 		return errors.New("global event log is not configured for v3 session events")
 	}
-	appended, err := s.events.AppendWithSource("session:"+sessionID, eventType, sessionID, event.Payload, "v3", event.CausationID, event.CorrelationID)
+	appended, err := s.events.AppendWithSourceSeq("session:"+sessionID, eventType, sessionID, event.Payload, "v3", event.Seq, event.CausationID, event.CorrelationID)
 	if err != nil {
 		return fmt.Errorf("append committed v3 session event to global stream: %w", err)
 	}

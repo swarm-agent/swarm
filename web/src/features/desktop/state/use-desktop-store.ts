@@ -53,6 +53,7 @@ import type { DurableNotificationRecord, NotificationSummaryRecord } from '../no
 
 export interface EventEnvelope<T = Record<string, unknown>> {
   global_seq?: number
+  source_seq?: number
   stream?: string
   event_type?: string
   entity_id?: string
@@ -2022,7 +2023,11 @@ function applyRunStreamResumeFailure(state: DesktopStoreState, sessionId: string
 export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope): Partial<DesktopStoreState> {
   const eventType = typeof envelope.event_type === 'string' ? envelope.event_type : ''
   const ts = typeof envelope.ts_unix_ms === 'number' ? envelope.ts_unix_ms : Date.now()
-  const envelopeSeq = typeof envelope.global_seq === 'number' ? Math.max(0, envelope.global_seq) : 0
+  const envelopeSeq = typeof envelope.source_seq === 'number' && envelope.source_seq > 0
+    ? Math.max(0, envelope.source_seq)
+    : typeof envelope.global_seq === 'number'
+      ? Math.max(0, envelope.global_seq)
+      : 0
   const payload = envelope.payload && typeof envelope.payload === 'object' ? envelope.payload : {}
   let payloadRecord = payload as Record<string, unknown>
   if (eventType.startsWith('workspace.todo.')) {

@@ -1016,6 +1016,40 @@ test('global /ws V3 permission envelopes hydrate canonical modal state without p
 })
 
 
+test('global /ws V3 interleaved live timeline uses session source sequence instead of global stream sequence', () => {
+  const session = makeSession({ id: 'session-v3', sessionApi: 'v3' })
+  useDesktopStore.setState(makeState(session), true)
+
+  const emit = (globalSeq: number, sourceSeq: number, eventType: string, payload: Record<string, unknown>) => {
+    useDesktopStore.setState((state) => applyEnvelope(state, {
+      global_seq: globalSeq,
+      source_seq: sourceSeq,
+      stream: 'session:session-v3',
+      event_type: eventType,
+      entity_id: 'session-v3',
+      ts_unix_ms: globalSeq,
+      payload: { session_id: 'session-v3', run_id: 'run-v3', ...payload },
+    }))
+  }
+
+  emit(1960, 15, 'session.assistant.delta', { delta: 'HELLO' })
+  emit(1961, 16, 'session.message.appended', {
+    message: { id: 'msg-assistant-1', session_id: 'session-v3', global_seq: 16, role: 'assistant', content: 'HELLO', created_at: 1961 },
+  })
+  emit(1962, 17, 'session.tool.started', { tool_name: 'list', call_id: 'call-list', step_id: 'step-1', tool_instance_id: 'step-1:call-list', arguments: '{}', step: 1 })
+  emit(1963, 18, 'session.tool.completed', { tool_name: 'list', call_id: 'call-list', step_id: 'step-1', tool_instance_id: 'step-1:call-list', output: 'listed', raw_output: 'listed', step: 1 })
+  emit(1964, 19, 'session.assistant.delta', { delta: 'SENTENCE TWO' })
+  emit(1965, 20, 'session.message.appended', {
+    message: { id: 'msg-assistant-2', session_id: 'session-v3', global_seq: 20, role: 'assistant', content: 'SENTENCE TWO', created_at: 1965 },
+  })
+  emit(1966, 21, 'session.tool.started', { tool_name: 'read', call_id: 'call-read', step_id: 'step-2', tool_instance_id: 'step-2:call-read', arguments: '{}', step: 2 })
+
+  const updated = useDesktopStore.getState().sessions['session-v3']
+  assert.deepEqual(updated.live.toolHistory.map((item) => [item.callId, item.seq]), [['call-read', 21], ['call-list', 17]])
+  assert.equal(updated.live.seq, 21)
+  assert.equal(useDesktopStore.getState().lastGlobalSeq, 1966)
+})
+
 test('global /ws V3 lifecycle and tool envelopes update Desktop canonical live state', () => {
   const session = makeSession({ id: 'session-v3', sessionApi: 'v3' })
   useDesktopStore.setState(makeState(session), true)
