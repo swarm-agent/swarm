@@ -34,6 +34,9 @@ async function withFetchStub(
     if (v3MetadataMatch) {
       const sessionId = decodeURIComponent(v3MetadataMatch[1])
       const payload = v3HydratedSessionPayload(sessionId)
+      if (sessionId === 'session-config') {
+        payload.session.mode = 'plan'
+      }
       const body = JSON.parse(String(init?.body ?? '{}')) as { metadata?: Record<string, unknown> }
       payload.session.metadata = body.metadata ?? {}
       return jsonResponse(payload)
@@ -41,7 +44,12 @@ async function withFetchStub(
 
     const v3PlansMatch = /^\/v3\/sessions\/([^/?]+)\/plans$/.exec(url)
     if (v3PlansMatch) {
-      return jsonResponse(v3HydratedSessionPayload(decodeURIComponent(v3PlansMatch[1])))
+      const sessionId = decodeURIComponent(v3PlansMatch[1])
+      const payload = v3HydratedSessionPayload(sessionId)
+      if (sessionId === 'session-config') {
+        payload.session.mode = 'plan'
+      }
+      return jsonResponse(payload)
     }
 
     const v3SessionMatch = /^\/v3\/sessions\/([^/?]+)$/.exec(url)
@@ -415,7 +423,13 @@ test('DesktopAppPage must keep route-critical load out of sidebar/background V3 
   assert.match(source, /readDesktopV3CachedSession\(queryClient, routeSessionId\)/)
   assert.match(source, /readDesktopV3CachedSession\(queryClient, sessionId\)/)
   assert.match(source, /const backgroundBootstrapSessionIds = useMemo/)
-  assert.match(source, /normalizedSessionId !== routeCriticalSessionId/)
+  const backgroundBootstrapSource = source.slice(
+    source.indexOf('const backgroundBootstrapSessionIds = useMemo'),
+    source.indexOf('const backgroundBootstrapSessionIdsKey = backgroundBootstrapSessionIds.join'),
+  )
+  assert.match(backgroundBootstrapSource, /activeBackgroundSessionId/)
+  assert.match(backgroundBootstrapSource, /activeBackgroundSessionId === routeCriticalSessionId/)
+  assert.doesNotMatch(backgroundBootstrapSource, /visibleSidebarWorkspaceEntries|sessionsByWorkspace/)
   assert.match(source, /for \(const sessionId of backgroundBootstrapSessionIds\)/)
   assert.match(source, /hydrateDesktopV3SessionSnapshot\(queryClient, sessionId/)
   assert.match(source, /PAIRING_REQUEST_INITIAL_REFRESH_DELAY_MS = 1_250/)

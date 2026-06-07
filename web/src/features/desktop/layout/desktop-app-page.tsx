@@ -2058,23 +2058,16 @@ export function DesktopAppPage() {
 
   const backgroundBootstrapSessionIds = useMemo<string[]>(() => {
     const routeCriticalSessionId = routeSessionId.trim()
-    const sessionIds = new Set<string>()
-    const addBackgroundSessionId = (sessionId: string | null | undefined) => {
-      const normalizedSessionId = sessionId?.trim() ?? ''
-      if (normalizedSessionId && normalizedSessionId !== routeCriticalSessionId) {
-        sessionIds.add(normalizedSessionId)
-      }
+    const activeBackgroundSessionId = activeSessionId?.trim() ?? ''
+    if (!activeBackgroundSessionId || activeBackgroundSessionId === routeCriticalSessionId) {
+      return []
     }
 
-    addBackgroundSessionId(activeSessionId)
-    for (const workspace of visibleSidebarWorkspaceEntries) {
-      for (const session of sessionsByWorkspace.get(workspace.path) ?? []) {
-        addBackgroundSessionId(session.id)
-      }
-    }
-
-    return Array.from(sessionIds)
-  }, [activeSessionId, routeSessionId, sessionsByWorkspace, visibleSidebarWorkspaceEntries])
+    // Sidebar rows render from workspace overview summaries plus live session state. Do not
+    // hydrate every visible sidebar row with full V3 snapshots on refresh; explicit hover,
+    // focus, or route navigation owns those non-critical snapshot loads.
+    return [activeBackgroundSessionId]
+  }, [activeSessionId, routeSessionId])
   const backgroundBootstrapSessionIdsKey = backgroundBootstrapSessionIds.join('\u0000')
 
   useEffect(() => {
