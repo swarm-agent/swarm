@@ -62,8 +62,8 @@ func TestSessionsV3PrimaryModeAndPreferenceUseV3PrimaryMutation(t *testing.T) {
 		t.Fatalf("mode status = %d, want %d, body=%s", modeRec.Code, http.StatusOK, modeRec.Body.String())
 	}
 	var modePayload struct {
-		Session  pebblestore.SessionSnapshot   `json:"session"`
-		Events   []sessionruntime.SessionEvent `json:"events"`
+		Session  pebblestore.SessionSnapshot          `json:"session"`
+		Events   []sessionruntime.SessionEvent        `json:"events"`
 		Mutation sessionruntime.SessionMutationResult `json:"mutation"`
 	}
 	if err := json.Unmarshal(modeRec.Body.Bytes(), &modePayload); err != nil {
@@ -91,11 +91,11 @@ func TestSessionsV3PrimaryModeAndPreferenceUseV3PrimaryMutation(t *testing.T) {
 		t.Fatalf("preference status = %d, want %d, body=%s", prefRec.Code, http.StatusOK, prefRec.Body.String())
 	}
 	var prefPayload struct {
-		Session         pebblestore.SessionSnapshot   `json:"session"`
-		Preference      pebblestore.ModelPreference   `json:"preference"`
-		Events          []sessionruntime.SessionEvent `json:"events"`
-		ContextWindow   int                           `json:"context_window"`
-		MaxOutputTokens int                           `json:"max_output_tokens"`
+		Session         pebblestore.SessionSnapshot          `json:"session"`
+		Preference      pebblestore.ModelPreference          `json:"preference"`
+		Events          []sessionruntime.SessionEvent        `json:"events"`
+		ContextWindow   int                                  `json:"context_window"`
+		MaxOutputTokens int                                  `json:"max_output_tokens"`
 		Mutation        sessionruntime.SessionMutationResult `json:"mutation"`
 	}
 	if err := json.Unmarshal(prefRec.Body.Bytes(), &prefPayload); err != nil {
@@ -1224,6 +1224,168 @@ func TestSessionsV3PrimaryStreamTransitionsFromReplayToLiveEvents(t *testing.T) 
 	}
 }
 
+func TestSessionsV3PrimaryParentStreamDeliversLiveChildEvents(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	parent := createSessionsV3PrimaryTestSession(t, server, "cp9-parent-live-create", "CP9 parent live")
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, withTestPrincipal(r))
+	}))
+	defer httpServer.Close()
+
+	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, parent.ID, "after_seq=1")
+	defer conn.Close()
+	started := readSessionsV3PrimaryStreamFrame(t, conn)
+	complete := readSessionsV3PrimaryStreamFrame(t, conn)
+	if started.Type != "replay.started" || complete.Type != "replay.complete" || complete.LastSeq != 1 {
+		t.Fatalf("initial parent stream frames started=%+v complete=%+v", started, complete)
+	}
+
+	principal := testPrincipal()
+	child := pebblestore.SessionSnapshot{
+		ID:             "cp9-child-live",
+		UserID:         principal.UserID,
+		AccountScopeID: principal.AccountScopeID,
+		WorkspacePath:  parent.WorkspacePath,
+		WorkspaceName:  parent.WorkspaceName,
+		Title:          "CP9 child live",
+		Mode:           "auto",
+		Metadata: map[string]any{
+			"parent_session_id": parent.ID,
+			"lineage_kind":      "delegated_subagent",
+		},
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: child.ID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: "cp9-child-live-create", IdempotencyKey: "cp9-child-live-create", PayloadHash: "hash-cp9-child-live-create", Kind: sessionruntime.SessionMutationCreateSession, Session: &child, NowUnixMs: time.Now().UnixMilli()}); err != nil {
+		t.Fatalf("create child session mutation: %v", err)
+	}
+	created := readSessionsV3PrimaryStreamFrame(t, conn)
+	if created.Type != "event" || created.Relation != "child" || created.ParentSessionID != parent.ID || created.SessionID != child.ID || created.LineageKind != "delegated_subagent" || created.Event == nil || created.Event.SessionID != child.ID || created.Event.Seq != 1 || created.Event.EventType != "session.created" || created.AfterSeq != 1 || created.LastSeq != 1 {
+		t.Fatalf("child created frame = %+v", created)
+	}
+
+	message := pebblestore.MessageSnapshot{ID: "cp9-child-live-message", SessionID: child.ID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, Role: "user", Content: "child live progress", CreatedAt: time.Now().UnixMilli()}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: child.ID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: "cp9-child-live-message", IdempotencyKey: "cp9-child-live-message", PayloadHash: "hash-cp9-child-live-message", Kind: sessionruntime.SessionMutationAppendMessage, Message: &message, NowUnixMs: time.Now().UnixMilli()}); err != nil {
+		t.Fatalf("append child message mutation: %v", err)
+	}
+	progress := readSessionsV3PrimaryStreamFrame(t, conn)
+	if progress.Type != "event" || progress.Relation != "child" || progress.ParentSessionID != parent.ID || progress.SessionID != child.ID || progress.Event == nil || progress.Event.SessionID != child.ID || progress.Event.Seq != 2 || progress.Event.EventType != "session.message.appended" || progress.AfterSeq != 1 || progress.LastSeq != 1 {
+		t.Fatalf("child progress frame = %+v", progress)
+	}
+}
+
+func TestSessionsV3PrimaryParentStreamReplaysKnownChildEvents(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	parent := createSessionsV3PrimaryTestSession(t, server, "cp9-parent-replay-create", "CP9 parent replay")
+	principal := testPrincipal()
+	child := pebblestore.SessionSnapshot{
+		ID:             "cp9-child-replay",
+		UserID:         principal.UserID,
+		AccountScopeID: principal.AccountScopeID,
+		WorkspacePath:  parent.WorkspacePath,
+		WorkspaceName:  parent.WorkspaceName,
+		Title:          "CP9 child replay",
+		Mode:           "auto",
+		Metadata: map[string]any{
+			"parent_session_id": parent.ID,
+			"lineage_kind":      "delegated_subagent",
+		},
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: child.ID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: "cp9-child-replay-create", IdempotencyKey: "cp9-child-replay-create", PayloadHash: "hash-cp9-child-replay-create", Kind: sessionruntime.SessionMutationCreateSession, Session: &child, NowUnixMs: time.Now().UnixMilli()}); err != nil {
+		t.Fatalf("create child session mutation: %v", err)
+	}
+	message := pebblestore.MessageSnapshot{ID: "cp9-child-replay-message", SessionID: child.ID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, Role: "assistant", Content: "child replay progress", CreatedAt: time.Now().UnixMilli()}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: child.ID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: "cp9-child-replay-message", IdempotencyKey: "cp9-child-replay-message", PayloadHash: "hash-cp9-child-replay-message", Kind: sessionruntime.SessionMutationAppendMessage, Message: &message, NowUnixMs: time.Now().UnixMilli()}); err != nil {
+		t.Fatalf("append child message mutation: %v", err)
+	}
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, withTestPrincipal(r))
+	}))
+	defer httpServer.Close()
+
+	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, parent.ID, "after_seq=1")
+	defer conn.Close()
+	started := readSessionsV3PrimaryStreamFrame(t, conn)
+	childCreated := readSessionsV3PrimaryStreamFrame(t, conn)
+	childProgress := readSessionsV3PrimaryStreamFrame(t, conn)
+	complete := readSessionsV3PrimaryStreamFrame(t, conn)
+	if started.Type != "replay.started" || started.HighWatermarkSeq != 1 {
+		t.Fatalf("replay started = %+v", started)
+	}
+	if childCreated.Type != "event" || childCreated.Relation != "child" || childCreated.SessionID != child.ID || childCreated.Event == nil || childCreated.Event.Seq != 1 || childCreated.Event.EventType != "session.created" || childCreated.LastSeq != 1 {
+		t.Fatalf("child replay created = %+v", childCreated)
+	}
+	if childProgress.Type != "event" || childProgress.Relation != "child" || childProgress.SessionID != child.ID || childProgress.Event == nil || childProgress.Event.Seq != 2 || childProgress.Event.EventType != "session.message.appended" || childProgress.LastSeq != 1 {
+		t.Fatalf("child replay progress = %+v", childProgress)
+	}
+	if complete.Type != "replay.complete" || complete.LastSeq != 1 {
+		t.Fatalf("replay complete = %+v", complete)
+	}
+}
+
+func TestSessionsV3PrimaryParentStreamChildGapDoesNotPoisonParentCursor(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	parent := createSessionsV3PrimaryTestSession(t, server, "cp9-parent-child-gap-create", "CP9 parent child gap")
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, withTestPrincipal(r))
+	}))
+	defer httpServer.Close()
+
+	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, parent.ID, "after_seq=1")
+	defer conn.Close()
+	started := readSessionsV3PrimaryStreamFrame(t, conn)
+	complete := readSessionsV3PrimaryStreamFrame(t, conn)
+	if started.Type != "replay.started" || complete.Type != "replay.complete" || complete.LastSeq != 1 {
+		t.Fatalf("initial parent stream frames started=%+v complete=%+v", started, complete)
+	}
+
+	principal := testPrincipal()
+	childID := "cp9-child-gap"
+	server.v3SessionStreams.registerLineage(sessionV3StreamLineage{ChildSessionID: childID, ParentSessionID: parent.ID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, LineageKind: "delegated_subagent"})
+	server.publishCommittedSessionV3Event(sessionruntime.SessionEvent{SessionID: childID, Seq: 2, EventType: "session.message.appended"})
+	childGap := readSessionsV3PrimaryStreamFrame(t, conn)
+	if childGap.Type != "cursor.error" || childGap.Relation != "child" || childGap.SessionID != childID || childGap.ParentSessionID != parent.ID || !strings.Contains(childGap.Error, "child refetch required") {
+		t.Fatalf("child gap frame = %+v", childGap)
+	}
+
+	postSessionsV3PrimaryTestMessage(t, server, parent.ID, "cp9-parent-after-child-gap-message", "parent still streams")
+	parentEvent := readSessionsV3PrimaryStreamFrame(t, conn)
+	if parentEvent.Type != "event" || parentEvent.Relation != "self" || parentEvent.SessionID != parent.ID || parentEvent.Event == nil || parentEvent.Event.Seq != 2 || parentEvent.Event.EventType != "session.message.appended" {
+		t.Fatalf("parent event after child gap = %+v", parentEvent)
+	}
+}
+
+func TestSessionsV3PrimaryStreamHubRoutesChildEventsOnlyToMatchingParentScope(t *testing.T) {
+	hub := newSessionV3StreamHub()
+	const parentID = "cp9-parent-scope"
+	const childID = "cp9-child-scope"
+	allowed := hub.subscribeScoped(parentID, "user-a", "account-a")
+	denied := hub.subscribeScoped(parentID, "user-b", "account-b")
+	unrelated := hub.subscribeScoped("cp9-unrelated-parent", "user-a", "account-a")
+	defer hub.unsubscribe(allowed)
+	defer hub.unsubscribe(denied)
+	defer hub.unsubscribe(unrelated)
+	hub.registerLineage(sessionV3StreamLineage{ChildSessionID: childID, ParentSessionID: parentID, UserID: "user-a", AccountScopeID: "account-a", LineageKind: "delegated_subagent"})
+
+	hub.publish(sessionruntime.SessionEvent{SessionID: childID, Seq: 1, EventType: "session.message.appended"})
+	select {
+	case routed := <-allowed.send:
+		if routed.Relation != "child" || routed.ParentSessionID != parentID || routed.Event.SessionID != childID {
+			t.Fatalf("allowed routed event = %+v", routed)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("matching parent subscriber did not receive child event")
+	}
+	select {
+	case routed := <-denied.send:
+		t.Fatalf("cross-account subscriber received child event: %+v", routed)
+	default:
+	}
+	select {
+	case routed := <-unrelated.send:
+		t.Fatalf("unrelated parent subscriber received child event: %+v", routed)
+	default:
+	}
+}
+
 func TestSessionsV3PrimaryStreamPublishesExecutorCommittedEventsAndReplaysThem(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	installSessionsV3TestProvider(server, "stream committed assistant")
@@ -1409,9 +1571,9 @@ func TestSessionsV3PrimaryStreamHubMarksSlowConsumerAndOtherSubscribersContinue(
 	for i := 0; i < eventCount; i++ {
 		hub.publish(sessionruntime.SessionEvent{SessionID: sessionID, Seq: uint64(i + 1), EventType: "session.message.appended"})
 		select {
-		case event := <-fast.send:
-			if event.Seq != uint64(i+1) {
-				t.Fatalf("fast event %d seq = %d", i, event.Seq)
+		case routed := <-fast.send:
+			if routed.Event.Seq != uint64(i+1) {
+				t.Fatalf("fast event %d seq = %d", i, routed.Event.Seq)
 			}
 		case <-time.After(2 * time.Second):
 			t.Fatalf("fast subscriber did not receive event %d after slow subscriber was removed", i+1)

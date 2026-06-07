@@ -37,6 +37,7 @@ func (s *Server) publishCommittedSessionV3MutationResult(result sessionruntime.S
 	if err := s.publishCommittedSessionV3GlobalEvent(result.Event); err != nil {
 		return err
 	}
+	s.registerSessionV3StreamLineageFromResult(result)
 	s.publishCommittedSessionV3Event(result.Event)
 	if result.RealtimeOutbox != nil {
 		s.publishCommittedV3RealtimeOutbox(*result.RealtimeOutbox)
