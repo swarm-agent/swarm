@@ -505,6 +505,88 @@ func TestSessionsV3PrimaryDispatchAuthorityRecordsSpecificBlockedReasonsWithoutB
 	}
 }
 
+func TestSessionsV3PrimaryAgentSwitchUpdatesStoredProfileAndRuntime(t *testing.T) {
+	server, sessionSvc, closeStore := newSessionsV3PrimaryAPITestServer(t, filepath.Join(t.TempDir(), "agent-switch.pebble"))
+	defer func() { _ = closeStore() }()
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{
+		Name:                "explorer",
+		Mode:                agentruntime.ModeSubagent,
+		Provider:            "test-provider",
+		Model:               "test-model",
+		Thinking:            "high",
+		RuntimeMode:         pebblestore.AgentRuntimeModeRead,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false),
+		ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
+			"search": {Enabled: pebblestore.BoolPtr(true)},
+		}},
+		Enabled: pebblestore.BoolPtr(true),
+		Prompt:  "Explorer switched prompt",
+	}); err != nil {
+		t.Fatalf("create explorer agent: %v", err)
+	}
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "agent-switch-create", "agent switch", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/agent", bytes.NewBufferString(`{"agent_name":"explorer"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("agent switch status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Session.Metadata["agent_name"] != "explorer" || payload.Session.Metadata["resolved_agent_name"] != "explorer" || payload.Session.Metadata["agent_mode"] != agentruntime.ModeSubagent || payload.Session.Metadata["runtime_mode"] != pebblestore.AgentRuntimeModeRead {
+		t.Fatalf("switched metadata = %+v", payload.Session.Metadata)
+	}
+	if _, ok := payload.Session.Metadata["subagent"]; ok {
+		t.Fatalf("agent switch left client-side subagent override in metadata: %+v", payload.Session.Metadata)
+	}
+	profile, err := sessionV3AgentProfileFromMetadata(payload.Session.Metadata)
+	if err != nil {
+		t.Fatalf("switched profile missing: %v", err)
+	}
+	if profile.Name != "explorer" || profile.Mode != agentruntime.ModeSubagent || profile.ToolContract == nil || profile.ToolContract.Tools["search"].Enabled == nil || !*profile.ToolContract.Tools["search"].Enabled {
+		t.Fatalf("switched profile = %+v", profile)
+	}
+	stored, ok, err := sessionSvc.GetSession(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get switched session ok=%v err=%v", ok, err)
+	}
+	if stored.Metadata["agent_name"] != "explorer" {
+		t.Fatalf("stored switched metadata = %+v", stored.Metadata)
+	}
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	seenAgentEvent := false
+	for _, event := range events {
+		if event.EventType == "session.agent.updated" {
+			seenAgentEvent = true
+		}
+	}
+	if !seenAgentEvent {
+		t.Fatalf("missing session.agent.updated event: %+v", events)
+	}
+
+	exec := newSessionV3Executor(server)
+	resolved, err := exec.resolveSessionV3Runtime(sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: created.ID, RunID: "agent-switch-runtime"})
+	if err != nil {
+		t.Fatalf("resolve switched runtime: %v", err)
+	}
+	if resolved.AgentProfile.Name != "explorer" || !strings.Contains(resolved.Instructions, "- name: explorer") || !strings.Contains(resolved.Instructions, "Explorer switched prompt") {
+		t.Fatalf("resolved switched instructions/profile = %+v instructions=%s", resolved.AgentProfile, resolved.Instructions)
+	}
+	toolNames := sessionsV3ProviderRequestToolNames(resolved.Tools)
+	if !toolNames["search"] || toolNames["read"] {
+		t.Fatalf("resolved switched tools = %v", toolNames)
+	}
+}
+
 func TestSessionsV3ExecutorUsesStoredAgentProfileSnapshotOnly(t *testing.T) {
 	server, sessionSvc, closeStore := newSessionsV3PrimaryAPITestServer(t, filepath.Join(t.TempDir(), "stored-profile.pebble"))
 	defer func() { _ = closeStore() }()
@@ -3607,6 +3689,7 @@ func createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t *testing.T, 
 		"client_request_id": clientRequestID,
 		"workspace_path":    workspacePath,
 		"title":             title,
+		"mode":              sessionruntime.ModeAuto,
 		"agent_name":        "swarm",
 		"preference":        pref,
 	}

@@ -776,6 +776,15 @@ function isDisplayableAgentLabel(value: unknown): value is string {
   return !normalized.includes('.')
 }
 
+function metadataStringValue(metadata: Record<string, unknown> | null | undefined, key: string): string {
+  const value = metadata?.[key]
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function sessionAgentNameFromMetadata(metadata: Record<string, unknown> | null | undefined): string {
+  return metadataStringValue(metadata, 'agent_name') || metadataStringValue(metadata, 'resolved_agent_name')
+}
+
 function resolveRunStreamId(session: DesktopSessionRecord | undefined, runId?: string | null): string {
   const explicitRunId = runId?.trim() ?? ''
   if (explicitRunId) {
@@ -2375,6 +2384,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
       })
       break
     }
+    case 'session.agent.updated':
     case 'session.metadata.updated': {
       const metadata = payloadRecord.metadata && typeof payloadRecord.metadata === 'object'
         ? payloadRecord.metadata as Record<string, unknown>
@@ -3571,7 +3581,7 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
       const session = { ...ensureSession(state, targetSessionId), live: { ...ensureSession(state, targetSessionId).live } }
       session.live.status = session.lifecycle?.active ? session.live.status : 'starting'
       session.live.startedAt = session.lifecycle?.active ? session.live.startedAt : submitStartedAt
-      session.live.agentName = targetName.trim() || agentName.trim() || session.live.agentName
+      session.live.agentName = targetName.trim() || session.live.agentName || sessionAgentNameFromMetadata(session.metadata) || agentName.trim()
       session.live.runId = null
       session.live.seq = 0
       session.live.awaitingAck = true

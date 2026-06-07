@@ -56,6 +56,10 @@ type sessionsV3ModeRequest struct {
 	Mode string `json:"mode"`
 }
 
+type sessionsV3AgentRequest struct {
+	AgentName string `json:"agent_name"`
+}
+
 type sessionsV3PreferenceRequest struct {
 	Provider    *string `json:"provider,omitempty"`
 	Model       *string `json:"model,omitempty"`
@@ -162,6 +166,8 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		s.handleSessionV3PrimaryRunStop(w, r, principal, sessionID)
 	case "mode":
 		s.handleSessionV3PrimaryMode(w, r, principal, sessionID)
+	case "agent":
+		s.handleSessionV3PrimaryAgent(w, r, principal, sessionID)
 	case "preference":
 		s.handleSessionV3PrimaryPreference(w, r, principal, sessionID)
 	case "metadata":
@@ -524,6 +530,71 @@ func (s *Server) handleSessionV3PrimaryMode(w http.ResponseWriter, r *http.Reque
 		PayloadHash:     payloadHash,
 		RequestHash:     payloadHash,
 		Kind:            sessionruntime.SessionMutationUpdateMode,
+		EventPayload:    eventPayload,
+		Session:         &next,
+		NowUnixMs:       next.UpdatedAt,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	refreshed, _, err := s.hydrateSessionsV3Primary(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	response := sessionsV3HydratedResponse(refreshed)
+	response["mutation"] = result
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleSessionV3PrimaryAgent(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	var req sessionsV3AgentRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	resolvedAgent, err := s.resolveSessionsV3PrimaryCreateAgent(principal, req.AgentName)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	hydrated, found, err := s.hydrateSessionsV3Primary(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !found {
+		writeSessionNotFound(w)
+		return
+	}
+	next := hydrated.Session
+	next.Metadata = sessionsV3AgentSwitchMetadata(hydrated.Session.Metadata, resolvedAgent)
+	next.UpdatedAt = time.Now().UnixMilli()
+	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationUpdateMetadata, map[string]any{"agent_name": resolvedAgent.Name, "metadata": next.Metadata})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	eventPayload, err := json.Marshal(map[string]any{"session_id": sessionID, "agent_name": resolvedAgent.Name, "resolved_agent_name": resolvedAgent.ResolvedName, "agent_mode": resolvedAgent.Mode, "runtime_mode": resolvedAgent.RuntimeMode, "metadata": next.Metadata, "updated_at": next.UpdatedAt})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       sessionID,
+		UserID:          principal.UserID,
+		AccountScopeID:  principal.AccountScopeID,
+		ClientRequestID: "agent:" + sessionID + ":" + resolvedAgent.Name + ":" + fmt.Sprint(next.UpdatedAt),
+		IdempotencyKey:  "agent:" + sessionID + ":" + resolvedAgent.Name + ":" + fmt.Sprint(next.UpdatedAt),
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationUpdateMetadata,
+		EventType:       "session.agent.updated",
 		EventPayload:    eventPayload,
 		Session:         &next,
 		NowUnixMs:       next.UpdatedAt,
@@ -1300,6 +1371,17 @@ func sessionsV3CreateServerMetadata(clientMetadata map[string]any, agent session
 		metadata["tool_contract_preset"] = agent.ToolContractPreset
 	}
 	return metadata
+}
+
+func sessionsV3AgentSwitchMetadata(current map[string]any, agent sessionsV3ResolvedAgentIdentity) map[string]any {
+	metadata := cloneSessionsV3Metadata(current)
+	if metadata == nil {
+		metadata = make(map[string]any, 8)
+	}
+	for _, key := range []string{"agent_name", "agent_profile", "resolved_agent_name", "agent_mode", "runtime_mode", "exit_plan_mode_enabled", "tool_contract_preset", "subagent", "requested_subagent"} {
+		delete(metadata, key)
+	}
+	return sessionsV3CreateServerMetadata(metadata, agent)
 }
 
 func sessionsV3PrimaryAuthorityStatus(req sessionsV3MessageRequest) string {

@@ -266,6 +266,25 @@ export async function updateDesktopV3SessionPreference(
   return snapshot.preference
 }
 
+export async function updateDesktopV3SessionAgent(
+  queryClient: QueryClient,
+  sessionId: string,
+  agentName: string,
+): Promise<DesktopV3SessionSnapshot> {
+  const normalizedSessionId = assertRawCanonicalDesktopV3SessionId(sessionId)
+  const response = await requestJson<V3HydratedSessionResponseWire>(
+    `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/agent`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_name: agentName.trim() }),
+    },
+  )
+  const snapshot = requireDesktopV3SessionSnapshot(response, 'agent update')
+  writeDesktopV3SessionSnapshot(queryClient, snapshot)
+  return snapshot
+}
+
 export async function updateDesktopV3SessionMetadata(
   queryClient: QueryClient,
   sessionId: string,

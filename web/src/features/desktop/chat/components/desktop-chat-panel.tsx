@@ -23,7 +23,7 @@ import {
   startSessionRun,
   updateDraftModelPreference,
 } from '../queries/chat-queries'
-import { saveDesktopV3SessionPlan, updateDesktopV3SessionMetadata, updateDesktopV3SessionMode, updateDesktopV3SessionPreference } from '../../state/desktop-v3-cache'
+import { saveDesktopV3SessionPlan, updateDesktopV3SessionAgent, updateDesktopV3SessionMetadata, updateDesktopV3SessionMode, updateDesktopV3SessionPreference } from '../../state/desktop-v3-cache'
 import type { AgentStateRecord, ChatMessageRecord, ResolvedSessionPreference, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
 import type { DesktopLiveAssistantSegment, DesktopLiveToolRecord, DesktopSessionRecord } from '../../types/realtime'
 import { Card } from '../../../../components/ui/card'
@@ -1900,25 +1900,26 @@ export function DesktopChatPanel({
     }
     const nextAgent = value.trim() || 'swarm'
     const previousAgent = currentSessionAgent
+    const previousSelectedAgent = selectedPrimaryAgent
     setPanelError(null)
-    setSelectedPrimaryAgent(nextAgent)
-    setCurrentSessionAgent(nextAgent)
     if (!sessionId) {
+      setSelectedPrimaryAgent(nextAgent)
+      setCurrentSessionAgent(nextAgent)
       return
     }
-    const liveSessionMetadata = metadataRecord(liveSession?.metadata)
-    const currentMetadata = liveSessionMetadata
-      ? { ...liveSessionMetadata }
-      : {}
-    currentMetadata.subagent = nextAgent
+    setSelectedPrimaryAgent(nextAgent)
     try {
-      const snapshot = await updateDesktopV3SessionMetadata(queryClient, sessionId, currentMetadata)
+      const snapshot = await updateDesktopV3SessionAgent(queryClient, sessionId, nextAgent)
       upsertSession(snapshot.session)
+      const serverAgent = resolveSessionEffectiveAgentName(snapshot.session, agentState.activePrimary)
+      setSelectedPrimaryAgent(serverAgent)
+      setCurrentSessionAgent(serverAgent)
     } catch (error) {
+      setSelectedPrimaryAgent(previousSelectedAgent)
       setCurrentSessionAgent(previousAgent)
       setPanelError(error instanceof Error ? error.message : 'Failed to update session agent')
     }
-  }, [currentSessionAgent, isFlowSession, liveSession?.metadata, queryClient, resolvedLockedAgentName, sessionId, upsertSession])
+  }, [agentState.activePrimary, currentSessionAgent, isFlowSession, queryClient, resolvedLockedAgentName, selectedPrimaryAgent, sessionId, upsertSession])
 
   useEffect(() => {
     setPanelError(null)

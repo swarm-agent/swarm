@@ -20,6 +20,19 @@ async function withFetchStub(
       return jsonResponse(payload)
     }
 
+    const v3AgentMatch = /^\/v3\/sessions\/([^/?]+)\/agent$/.exec(url)
+    if (v3AgentMatch) {
+      const sessionId = decodeURIComponent(v3AgentMatch[1])
+      const payload = v3HydratedSessionPayload(sessionId)
+      const body = JSON.parse(String(init?.body ?? '{}')) as { agent_name?: string }
+      payload.session.metadata = {
+        agent_name: body.agent_name ?? '',
+        resolved_agent_name: body.agent_name ?? '',
+        agent_mode: 'subagent',
+      }
+      return jsonResponse(payload)
+    }
+
     const v3PreferenceMatch = /^\/v3\/sessions\/([^/?]+)\/preference$/.exec(url)
     if (v3PreferenceMatch) {
       const sessionId = decodeURIComponent(v3PreferenceMatch[1])
@@ -323,9 +336,9 @@ test('sessionPreferenceQueryOptions uses the canonical V3 snapshot cache for Des
   queryClient.clear()
 })
 
-test('Desktop V3 preference, mode, metadata, and plan mutations use V3 session update endpoints only', async () => {
+test('Desktop V3 preference, mode, agent, metadata, and plan mutations use V3 session update endpoints only', async () => {
   const { sessionPreferenceQueryKey } = await import('../../../queries/query-options')
-  const { desktopV3SessionSnapshotQueryKey, saveDesktopV3SessionPlan, updateDesktopV3SessionMetadata, updateDesktopV3SessionMode, updateDesktopV3SessionPreference } = await import('../../state/desktop-v3-cache')
+  const { desktopV3SessionSnapshotQueryKey, saveDesktopV3SessionPlan, updateDesktopV3SessionAgent, updateDesktopV3SessionMetadata, updateDesktopV3SessionMode, updateDesktopV3SessionPreference } = await import('../../state/desktop-v3-cache')
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -333,23 +346,28 @@ test('Desktop V3 preference, mode, metadata, and plan mutations use V3 session u
   await withFetchStub(async (calls) => {
     const modeSnapshot = await updateDesktopV3SessionMode(queryClient, 'session-config', 'plan')
     const preference = await updateDesktopV3SessionPreference(queryClient, 'session-config', { provider: 'codex', model: 'gpt-5.4', thinking: 'medium' })
-    const metadataSnapshot = await updateDesktopV3SessionMetadata(queryClient, 'session-config', { subagent: 'clone' })
+    const agentSnapshot = await updateDesktopV3SessionAgent(queryClient, 'session-config', 'explorer')
+    const metadataSnapshot = await updateDesktopV3SessionMetadata(queryClient, 'session-config', { compact_threshold: 80 })
     const planSnapshot = await saveDesktopV3SessionPlan(queryClient, 'session-config', { title: 'Current Plan', plan: '# Plan' })
 
     assert.equal(modeSnapshot.session.mode, 'plan')
     assert.equal(preference.preference.model, 'gpt-5.4')
-    assert.equal(metadataSnapshot.session.metadata?.subagent, 'clone')
+    assert.equal(agentSnapshot.session.metadata?.agent_name, 'explorer')
+    assert.equal(metadataSnapshot.session.metadata?.compact_threshold, 80)
     assert.equal(planSnapshot.activePlan?.id, 'plan-1')
     assert.deepEqual(requestUrls(calls), [
       '/v3/sessions/session-config/mode',
       '/v3/sessions/session-config/preference',
+      '/v3/sessions/session-config/agent',
       '/v3/sessions/session-config/metadata',
       '/v3/sessions/session-config/plans',
     ])
+    assert.equal(JSON.parse(String(calls[2].init?.body ?? '{}')).agent_name, 'explorer')
     assert.equal(calls[0].init?.method, 'POST')
     assert.equal(calls[1].init?.method, 'POST')
     assert.equal(calls[2].init?.method, 'POST')
     assert.equal(calls[3].init?.method, 'POST')
+    assert.equal(calls[4].init?.method, 'POST')
     assertNoV1OrV2SessionDataCalls(calls)
     assert.equal(queryClient.getQueryData<{ session: { id: string; mode: string } }>(desktopV3SessionSnapshotQueryKey('session-config'))?.session.mode, 'plan')
     assert.equal(queryClient.getQueryData<{ preference: { model: string } }>(sessionPreferenceQueryKey('session-config'))?.preference.model, 'gpt-5.4')
@@ -397,6 +415,8 @@ test('DesktopChatPanel uses V3-native preference and mode paths', async () => {
 
   assert.match(source, /updateDesktopV3SessionMode\(queryClient, sessionId, nextMode\)/)
   assert.match(source, /updateDesktopV3SessionPreference\(queryClient, sessionId, normalizedNext\)/)
+  assert.match(source, /updateDesktopV3SessionAgent\(queryClient, sessionId, nextAgent\)/)
+  assert.doesNotMatch(source, /currentMetadata\.subagent\s*=/)
   assert.match(source, /updateDesktopV3SessionMetadata\(queryClient, sessionId, currentMetadata\)/)
   assert.match(source, /saveDesktopV3SessionPlan\(queryClient, sessionId,/)
   assert.match(source, /sessionPreferenceQueryOptions\(sessionId \?\? '', queryClient\)/)

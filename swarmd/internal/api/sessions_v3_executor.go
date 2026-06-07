@@ -558,6 +558,8 @@ type sessionV3ResolvedRuntime struct {
 
 type sessionV3AssistantResponse struct {
 	Content            string
+	AgentName          string
+	ResolvedAgentName  string
 	ExecutorKind       string
 	ProviderID         string
 	Model              string
@@ -570,6 +572,12 @@ func (r sessionV3AssistantResponse) metadata(runID string) map[string]any {
 	metadata := map[string]any{
 		"run_id":        strings.TrimSpace(runID),
 		"executor_kind": strings.TrimSpace(r.ExecutorKind),
+	}
+	if agentName := strings.TrimSpace(r.AgentName); agentName != "" {
+		metadata["agent_name"] = agentName
+	}
+	if resolvedAgentName := strings.TrimSpace(r.ResolvedAgentName); resolvedAgentName != "" {
+		metadata["resolved_agent_name"] = resolvedAgentName
 	}
 	if metadata["executor_kind"] == "" {
 		metadata["executor_kind"] = "v3_provider"
@@ -919,8 +927,11 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	if providerRunnerID == "" {
 		providerRunnerID = providerID
 	}
+	agentName := strings.TrimSpace(resolved.AgentProfile.Name)
 	assistant := sessionV3AssistantResponse{
 		Content:            content,
+		AgentName:          agentName,
+		ResolvedAgentName:  agentName,
 		ExecutorKind:       "v3_provider",
 		ProviderID:         providerRunnerID,
 		Model:              model,
@@ -1053,8 +1064,11 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		}
 		preToolContent := strings.TrimSpace(streamed.String())
 		if preToolContent != "" {
+			agentName := strings.TrimSpace(resolved.AgentProfile.Name)
 			segment := sessionV3AssistantResponse{
 				Content:            preToolContent,
+				AgentName:          agentName,
+				ResolvedAgentName:  agentName,
 				ExecutorKind:       "v3_provider",
 				ProviderID:         strings.TrimSpace(runner.ID()),
 				Model:              strings.TrimSpace(firstNonEmpty(response.Model, baseReq.Model)),
