@@ -127,14 +127,26 @@ func (s *Service) listCustomAgentToolsForRun(accountScopeID string) ([]pebblesto
 }
 
 func (s *Service) ResolveAgentToolContract(profile pebblestore.AgentProfile) (ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
-	return s.resolveAgentToolContractForAccount("", profile)
+	return s.compileResolvedAgentToolContract("", profile)
 }
 
 func (s *Service) ResolveAgentToolContractForAccount(accountScopeID string, profile pebblestore.AgentProfile) (ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
-	return s.resolveAgentToolContractForAccount(strings.TrimSpace(accountScopeID), profile)
+	return s.resolveAgentToolContractForAccount(strings.TrimSpace(accountScopeID), strings.TrimSpace(profile.Name))
 }
 
-func (s *Service) resolveAgentToolContractForAccount(accountScopeID string, profile pebblestore.AgentProfile) (ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
+func (s *Service) resolveAgentToolContractForAccount(accountScopeID, name string) (ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
+	if s == nil || s.agents == nil {
+		return ResolvedAgentToolContract{}, nil, nil, fmt.Errorf("agent service is not configured")
+	}
+	profile, contract, err := s.agents.ResolveToolContractProfileForAccount(accountScopeID, name)
+	if err != nil {
+		return ResolvedAgentToolContract{}, nil, nil, err
+	}
+	profile.ToolContract = contract
+	return s.compileResolvedAgentToolContract(accountScopeID, profile)
+}
+
+func (s *Service) compileResolvedAgentToolContract(accountScopeID string, profile pebblestore.AgentProfile) (ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
 	knownTools := s.knownRunToolNamesForAccount(accountScopeID)
 	if len(knownTools) == 0 {
 		return ResolvedAgentToolContract{}, nil, nil, fmt.Errorf("tool runtime is not configured")

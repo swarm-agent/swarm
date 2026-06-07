@@ -324,22 +324,14 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			methodNotAllowed(w)
 			return
 		}
-		profile, ok, err := s.agents.GetProfileForAccount(principal.AccountScopeID, name)
+		profile, _, err := s.agents.ResolveToolContractProfileForAccount(principal.AccountScopeID, name)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		if !ok {
-			if isIntegrationFlowRequest(r) {
-				profile, err = s.agents.ResolveIntegrationBuilderAgent(name)
-				if err != nil {
-					writeError(w, http.StatusNotFound, errors.New("agent not found"))
-					return
-				}
-			} else {
-				writeError(w, http.StatusNotFound, errors.New("agent not found"))
-				return
+			status := http.StatusBadRequest
+			if strings.Contains(err.Error(), "not found") {
+				status = http.StatusNotFound
 			}
+			writeError(w, status, err)
+			return
 		}
 		if s.runner == nil {
 			writeError(w, http.StatusInternalServerError, errors.New("run service not configured"))

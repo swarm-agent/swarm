@@ -992,6 +992,32 @@ func (s *Service) GetProfileForAccount(accountScopeID, name string) (pebblestore
 	return s.getProfileForAccount(accountScopeID, name)
 }
 
+func (s *Service) ResolveToolContractProfile(name string) (pebblestore.AgentProfile, *pebblestore.AgentToolContract, error) {
+	return s.resolveToolContractProfileForAccount("", name)
+}
+
+func (s *Service) ResolveToolContractProfileForAccount(accountScopeID, name string) (pebblestore.AgentProfile, *pebblestore.AgentToolContract, error) {
+	accountScopeID, err := s.requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return pebblestore.AgentProfile{}, nil, err
+	}
+	return s.resolveToolContractProfileForAccount(accountScopeID, name)
+}
+
+func (s *Service) resolveToolContractProfileForAccount(accountScopeID, name string) (pebblestore.AgentProfile, *pebblestore.AgentToolContract, error) {
+	profile, ok, err := s.getProfileForAccount(accountScopeID, name)
+	if err != nil {
+		return pebblestore.AgentProfile{}, nil, err
+	}
+	if !ok {
+		return pebblestore.AgentProfile{}, nil, fmt.Errorf("agent %q not found", normalizeName(name))
+	}
+	if err := requireAgentToolContract(profile); err != nil {
+		return pebblestore.AgentProfile{}, nil, err
+	}
+	return profile, profile.ToolContract, nil
+}
+
 func (s *Service) getProfileForAccount(accountScopeID, name string) (pebblestore.AgentProfile, bool, error) {
 	name = normalizeName(name)
 	if name == "" {
@@ -1064,8 +1090,6 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 		if input.ToolContract == nil {
 			profile.ToolContract = pebblestore.CloneAgentToolContract(existing.ToolContract)
 		}
-	} else if input.ToolContract == nil {
-		profile.ToolContract = builtInDefaultToolContract(profile.Name)
 	}
 	if profile.Name == "swarm" {
 		profile.Mode = ModePrimary
@@ -1532,8 +1556,6 @@ func (s *Service) previewUpsertForAccount(accountScopeID string, input UpsertInp
 		if input.Enabled == nil {
 			profile.Enabled = before.Enabled
 		}
-	} else if input.ToolContract == nil {
-		profile.ToolContract = builtInDefaultToolContract(profile.Name)
 	}
 	if profile.Name == "swarm" {
 		profile.Mode = ModePrimary
