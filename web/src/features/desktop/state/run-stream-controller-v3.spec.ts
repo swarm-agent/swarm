@@ -615,7 +615,7 @@ test('desktop V3 canonical session updates do not depend on V3-only realtime soc
   assert.doesNotMatch(storeSource, /resolveV3RealtimeSubscriptions/)
   assert.doesNotMatch(storeSource, /applyV3RealtimeFrame/)
   assert.doesNotMatch(storeSource, /subscribe\.session/)
-  assert.match(storeSource, /if \(sessionApi === 'v3'\) \{\n\s+set\(\{ realtimeDesired: true \}\)\n\s+await get\(\)\.connect\(\)\n\s+\}/)
+  assert.match(storeSource, /if \(sessionApi === 'v3'\) \{\n\s+set\(\{ realtimeDesired: true \}\)\n\s+await get\(\)\.connect\(\)\n\s+requireRunStreamController\(\)\.close\(normalizedSessionId\)\n\s+return\n\s+\}/)
   assert.match(panelSource, /liveSession\?\.sessionApi\?\.trim\(\)\.toLowerCase\(\) === 'v3'/)
   assert.match(panelSource, /session\.tool\.started/)
   assert.match(panelSource, /session\.tool\.delta/)
@@ -747,10 +747,10 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
     })
 
     const urls = calls.map((entry) => String(entry.input)).sort()
-    assert.deepEqual(urls, ['/v3/sessions/session-v3/messages', '/v1/auth/desktop/session', '/v1/auth/desktop/session'].sort())
+    assert.deepEqual(urls, ['/v3/sessions/session-v3/messages', '/v1/auth/desktop/session'].sort())
     assert.equal(urls.some((url) => url.startsWith('/v1/swarm/managed-hosts/sessions')), false)
     assert.equal(urls.some((url) => url.startsWith('/v2/sessions')), false)
-    assert.deepEqual(websocketURLs, ['ws://127.0.0.1:7777/ws', 'ws://127.0.0.1:7777/v3/sessions/session-v3/stream?after_seq=3'])
+    assert.deepEqual(websocketURLs, ['ws://127.0.0.1:7777/ws'])
     const body = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>
     assert.deepEqual(body, {
       client_request_id: 'desktop-v3-message:test-submit',

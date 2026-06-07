@@ -3502,10 +3502,6 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
     if (!normalizedSessionId) {
       return
     }
-    const sessionApi = get().sessions[normalizedSessionId]?.sessionApi?.trim().toLowerCase() ?? ''
-    if (sessionApi === 'v3') {
-      return
-    }
     requireRunStreamController().close(normalizedSessionId)
   },
   ensureRunStream: async (sessionId: string, runId?: string | null) => {
@@ -3517,6 +3513,8 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
     if (sessionApi === 'v3') {
       set({ realtimeDesired: true })
       await get().connect()
+      requireRunStreamController().close(normalizedSessionId)
+      return
     }
     await requireRunStreamController().ensure(normalizedSessionId, runId)
   },
@@ -3606,7 +3604,7 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
         set({ realtimeDesired: true })
         await get().connect()
         if (runIntentId) {
-          await requireRunStreamController().ensure(targetSessionId, runIntentId)
+          requireRunStreamController().close(targetSessionId)
         }
         return
       }
