@@ -1132,6 +1132,10 @@ func (e *sessionV3Executor) emitSessionV3ProviderToolEvent(job sessionV3Executor
 			deltaIndex++
 			eventDeltaIndex = deltaIndex
 			mu.Unlock()
+		case runruntime.StreamEventPermissionReq:
+			eventType = "permission.requested"
+		case runruntime.StreamEventPermissionUpdate:
+			eventType = "permission.updated"
 		default:
 			return
 		}
@@ -1174,6 +1178,13 @@ func (e *sessionV3Executor) recordProviderToolEvent(job sessionV3ExecutorJob, ev
 		"tool_name":        toolName,
 		"call_id":          callID,
 		"tool_instance_id": toolInstanceID,
+	}
+	if eventType == "permission.requested" || eventType == "permission.updated" {
+		payload["type"] = eventType
+		payload["session_id"] = strings.TrimSpace(firstNonEmpty(event.SessionID, job.SessionID))
+		if event.Permission != nil {
+			payload["permission"] = event.Permission
+		}
 	}
 	if args := strings.TrimSpace(event.Arguments); args != "" {
 		payload["arguments"] = args
@@ -1322,10 +1333,10 @@ func (e *sessionV3Executor) composeSessionV3Instructions(scope tool.WorkspaceSco
 	if hydrator, ok := e.server.runner.(interface {
 		ComposeRuntimeInstructions(tool.WorkspaceScope, string, bool, pebblestore.AgentProfile, string) string
 	}); ok && hydrator != nil {
-		return hydrator.ComposeRuntimeInstructions(scope, mode, e.server.BypassPermissions(), agentProfile, "")
+		return hydrator.ComposeRuntimeInstructions(scope, mode, e.server.permissionBypassForAccount(scope.Principal.AccountScopeID), agentProfile, "")
 	}
 	hydrator := runruntime.NewService(e.server.sessions, e.server.model, e.server.providers, nil, nil, e.server.agents, e.server.discovery, e.server.events)
-	return hydrator.ComposeRuntimeInstructions(scope, mode, e.server.BypassPermissions(), agentProfile, "")
+	return hydrator.ComposeRuntimeInstructions(scope, mode, e.server.permissionBypassForAccount(scope.Principal.AccountScopeID), agentProfile, "")
 }
 
 func (e *sessionV3Executor) composeSessionV3InstructionsLegacy(scope tool.WorkspaceScope, mode string, agentProfile pebblestore.AgentProfile) string {

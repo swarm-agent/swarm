@@ -454,14 +454,26 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 			decisions[i].Result.Error = message
 			continue
 		}
+		accountScopeID := ""
+		if s.sessions != nil {
+			if session, ok, sessionErr := s.sessions.GetSession(sessionID); sessionErr != nil {
+				decisions[i].Err = sessionErr
+				decisions[i].Result.Output = permissionOutputPayload(false, "error", "permission authorization failed", toolCalls[i].Name, toolCalls[i].Arguments)
+				decisions[i].Result.Error = fmt.Sprintf("permission authorization failed: %v", sessionErr)
+				continue
+			} else if ok {
+				accountScopeID = strings.TrimSpace(session.AccountScopeID)
+			}
+		}
 		auth, err := s.permissions.AuthorizeToolCall(permission.AuthorizationInput{
-			SessionID:     sessionID,
-			RunID:         runID,
-			CallID:        toolCalls[i].CallID,
-			ToolName:      toolCalls[i].Name,
-			ToolArguments: permissionArguments,
-			Mode:          sessionMode,
-			Overlay:       overlay,
+			SessionID:      sessionID,
+			AccountScopeID: accountScopeID,
+			RunID:          runID,
+			CallID:         toolCalls[i].CallID,
+			ToolName:       toolCalls[i].Name,
+			ToolArguments:  permissionArguments,
+			Mode:           sessionMode,
+			Overlay:        overlay,
 		})
 		if err != nil {
 			decisions[i].Err = err

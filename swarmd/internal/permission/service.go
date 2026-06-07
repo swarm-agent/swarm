@@ -45,10 +45,20 @@ type Service struct {
 	bypassPermissions       bool
 	retainToolOutputHistory bool
 
-	mu         sync.Mutex
-	waiters    map[string][]chan pebblestore.PermissionRecord
-	counter    atomic.Uint64
-	reconciled bool
+	mu                   sync.Mutex
+	waiters              map[string][]chan pebblestore.PermissionRecord
+	permissionStateCache map[string]permissionStateCacheEntry
+	counter              atomic.Uint64
+	reconciled           bool
+}
+
+type permissionStateCacheEntry struct {
+	AccountScopeID    string
+	Policy            Policy
+	BypassPermissions bool
+	LoadedAt          int64
+	PolicyUpdatedAt   int64
+	BypassUpdatedAt   int64
 }
 
 type CreateInput struct {
@@ -70,13 +80,14 @@ const (
 )
 
 type AuthorizationInput struct {
-	SessionID     string
-	RunID         string
-	CallID        string
-	ToolName      string
-	ToolArguments string
-	Mode          string
-	Overlay       *Policy
+	SessionID      string
+	AccountScopeID string
+	RunID          string
+	CallID         string
+	ToolName       string
+	ToolArguments  string
+	Mode           string
+	Overlay        *Policy
 }
 
 type AuthorizationResult struct {
@@ -116,11 +127,12 @@ type HostedPermissionSync interface {
 
 func NewService(store *pebblestore.PermissionStore, events *pebblestore.EventLog, publish func(pebblestore.EventEnvelope)) *Service {
 	return &Service{
-		store:       store,
-		events:      events,
-		publish:     publish,
-		principalID: defaultPrincipalID,
-		waiters:     make(map[string][]chan pebblestore.PermissionRecord),
+		store:                store,
+		events:               events,
+		publish:              publish,
+		principalID:          defaultPrincipalID,
+		waiters:              make(map[string][]chan pebblestore.PermissionRecord),
+		permissionStateCache: make(map[string]permissionStateCacheEntry),
 	}
 }
 
@@ -156,14 +168,30 @@ func (s *Service) SetBypassPermissions(enabled bool) {
 	if s == nil {
 		return
 	}
+	now := time.Now().UnixMilli()
+	s.mu.Lock()
 	s.bypassPermissions = enabled
+	s.invalidatePermissionStateCacheLocked("")
+	for accountScopeID, entry := range s.permissionStateCache {
+		entry.BypassPermissions = enabled
+		entry.BypassUpdatedAt = now
+		entry.LoadedAt = now
+		s.permissionStateCache[accountScopeID] = entry
+	}
+	s.mu.Unlock()
 }
 
 func (s *Service) BypassPermissions() bool {
 	if s == nil {
 		return false
 	}
-	return s.bypassPermissions
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, err := s.loadPermissionStateLocked("")
+	if err != nil {
+		return s.bypassPermissions
+	}
+	return state.BypassPermissions
 }
 
 func (s *Service) SetRetainToolOutputHistory(enabled bool) {
@@ -264,16 +292,23 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 		requirement = "tool"
 	}
 
+	state, err := s.CurrentPermissionStateForAccount(input.AccountScopeID)
+	if err != nil {
+		return AuthorizationResult{}, err
+	}
 	effectiveMode := strings.TrimSpace(input.Mode)
-	if s.BypassPermissions() {
-		if effectiveMode == "" {
-			effectiveMode = "plan"
+	if state.BypassPermissions {
+		result := AuthorizationResult{
+			Decision:    AuthorizationApprove,
+			Requirement: requirement,
+			Reason:      "permissions are bypassed",
+			Source:      "bypass_permissions",
 		}
-		effectiveMode += "+bypass_permissions"
+		return result, nil
 	}
 	input.Mode = effectiveMode
 
-	explain, err := s.ExplainTool(effectiveMode, input.ToolName, input.ToolArguments, input.Overlay)
+	explain, err := s.ExplainToolForAccount(input.AccountScopeID, effectiveMode, input.ToolName, input.ToolArguments, input.Overlay)
 	if err != nil {
 		return AuthorizationResult{}, err
 	}

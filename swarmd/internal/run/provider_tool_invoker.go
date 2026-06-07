@@ -166,16 +166,6 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 		call.Arguments = "{}"
 	}
 
-	if config.emit != nil {
-		config.emit(StreamEvent{
-			Type:      StreamEventToolStarted,
-			Step:      config.step,
-			ToolName:  name,
-			CallID:    callID,
-			Arguments: call.Arguments,
-		})
-	}
-
 	permissionSessionID := strings.TrimSpace(config.permissionSessionID)
 	if permissionSessionID == "" {
 		permissionSessionID = strings.TrimSpace(config.sessionID)
@@ -184,21 +174,19 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 	gatedResults := []tool.Result{{CallID: call.CallID, Name: call.Name}}
 	approvedCalls := []tool.Call{call}
 	permissionFeedback := []PermissionFeedback(nil)
-	if !config.providerManagedV3 {
-		var err error
-		gatedResults, approvedCalls, _, _, permissionFeedback, err = s.gateToolCalls(
-			ctx,
-			permissionSessionID,
-			config.runID,
-			config.step,
-			config.sessionMode,
-			[]tool.Call{call},
-			config.emit,
-			config.policy,
-		)
-		if err != nil {
-			return tool.Result{}, err
-		}
+	var err error
+	gatedResults, approvedCalls, _, _, permissionFeedback, err = s.gateToolCalls(
+		ctx,
+		permissionSessionID,
+		config.runID,
+		config.step,
+		config.sessionMode,
+		[]tool.Call{call},
+		config.emit,
+		config.policy,
+	)
+	if err != nil {
+		return tool.Result{}, err
 	}
 
 	result := gatedResults[0]
@@ -215,6 +203,15 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 		ctx = identity.ContextWithPrincipal(ctx, principal)
 		handled, controlResult, controlErr := s.executeControlPlaneTool(ctx, config.sessionID, config.sessionMode, config.agentProfile, config.step, call, feedback.ApprovedArguments, config.emit)
 		if handled {
+			if config.emit != nil {
+				config.emit(StreamEvent{
+					Type:      StreamEventToolStarted,
+					Step:      config.step,
+					ToolName:  name,
+					CallID:    callID,
+					Arguments: call.Arguments,
+				})
+			}
 			result = controlResult
 			if controlErr != nil {
 				result.Error = strings.TrimSpace(controlErr.Error())
@@ -245,32 +242,39 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 					workspaceCtx.OriginWorkspaceRoots = []string{workspaceCtx.OriginWorkspacePath}
 				}
 				runtimeCalls := []tool.Call{call}
-				if !config.providerManagedV3 {
-					scopeResults, scopeApprovedCalls, _, _, scopeErr := s.gateWorkspaceScopeCalls(
-						ctx,
-						config.sessionID,
-						permissionSessionID,
-						config.runID,
-						config.step,
-						config.sessionMode,
-						workspaceCtx.OriginWorkspacePath,
-						config.workspaceName,
-						principal,
-						&workspaceCtx,
-						[]tool.Call{call},
-						config.emit,
-					)
-					if scopeErr != nil {
-						return tool.Result{}, scopeErr
-					}
-					if len(scopeApprovedCalls) == 0 && len(scopeResults) > 0 {
-						result = scopeResults[0]
-						runtimeCalls = nil
-					} else {
-						runtimeCalls = scopeApprovedCalls
-					}
+				scopeResults, scopeApprovedCalls, _, _, scopeErr := s.gateWorkspaceScopeCalls(
+					ctx,
+					config.sessionID,
+					permissionSessionID,
+					config.runID,
+					config.step,
+					config.sessionMode,
+					workspaceCtx.OriginWorkspacePath,
+					config.workspaceName,
+					principal,
+					&workspaceCtx,
+					[]tool.Call{call},
+					config.emit,
+				)
+				if scopeErr != nil {
+					return tool.Result{}, scopeErr
+				}
+				if len(scopeApprovedCalls) == 0 && len(scopeResults) > 0 {
+					result = scopeResults[0]
+					runtimeCalls = nil
+				} else {
+					runtimeCalls = scopeApprovedCalls
 				}
 				if len(runtimeCalls) > 0 {
+					if config.emit != nil {
+						config.emit(StreamEvent{
+							Type:      StreamEventToolStarted,
+							Step:      config.step,
+							ToolName:  name,
+							CallID:    callID,
+							Arguments: call.Arguments,
+						})
+					}
 					runtimeCtx := tool.WithWorkspaceScope(ctx, tool.WorkspaceScope{
 						PrimaryPath: workspaceCtx.WorkspacePath,
 						Roots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),

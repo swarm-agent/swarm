@@ -6,6 +6,7 @@ import { sessionMessagesQueryKey } from '../../queries/query-options'
 import type { DesktopSessionRecord, DesktopStoreState } from '../types/realtime'
 import { applyEnvelope, useDesktopStore } from './use-desktop-store'
 import type { RunStreamEventMessage } from './run-stream-controller'
+import { permissionRequiresApproval } from '../permissions/services/permission-payload'
 
 function emptyLiveState(): DesktopSessionRecord['live'] {
   return {
@@ -927,6 +928,93 @@ test('global /ws V3 assistant lifecycle envelopes update Desktop live and messag
     }
   }
 })
+
+test('global /ws V3 permission envelopes hydrate canonical modal state without polling', () => {
+  const session = makeSession({
+    id: 'session-v3',
+    sessionApi: 'v3',
+    live: { ...emptyLiveState(), status: 'running', runId: 'run-v3', startedAt: 100 },
+  })
+  useDesktopStore.setState(makeState(session), true)
+
+  useDesktopStore.setState((state) => applyEnvelope(state, {
+    global_seq: 15,
+    stream: 'session:session-v3',
+    event_type: 'permission.requested',
+    entity_id: 'session-v3',
+    ts_unix_ms: 105,
+    payload: {
+      session_id: 'session-v3',
+      permission: {
+        id: 'perm-v3-stream',
+        session_id: 'session-v3',
+        run_id: 'run-v3',
+        call_id: 'call-v3',
+        tool_name: 'bash',
+        tool_arguments: '{"command":"git status"}',
+        status: 'pending',
+        requirement: 'tool_call',
+        mode: 'auto',
+        created_at: 105,
+        updated_at: 105,
+        permission_requested_at: 105,
+      },
+    },
+  }))
+
+  let updated = useDesktopStore.getState().sessions['session-v3']
+  assert.equal(updated.sessionApi, 'v3')
+  assert.equal(updated.permissionsHydrated, true)
+  assert.equal(updated.pendingPermissions.length, 1)
+  assert.equal(updated.pendingPermissionCount, 1)
+  assert.equal(updated.live.status, 'blocked')
+  assert.equal(updated.live.lastEventType, 'permission.requested')
+  assert.equal(updated.live.lastEventAt, 105)
+  assert.equal(useDesktopStore.getState().lastGlobalSeq, 15)
+
+  const activePermission = updated.permissionsHydrated
+    ? updated.pendingPermissions.find((permission) => permission.status === 'pending' && permissionRequiresApproval(permission, updated.mode)) ?? null
+    : null
+  assert.ok(activePermission, 'expected the canonical store state to make DesktopPermissionModal open')
+  assert.equal(activePermission.id, 'perm-v3-stream')
+
+  useDesktopStore.setState((state) => applyEnvelope(state, {
+    global_seq: 16,
+    stream: 'session:session-v3',
+    event_type: 'permission.updated',
+    entity_id: 'session-v3',
+    ts_unix_ms: 106,
+    payload: {
+      session_id: 'session-v3',
+      permission: {
+        id: 'perm-v3-stream',
+        session_id: 'session-v3',
+        run_id: 'run-v3',
+        call_id: 'call-v3',
+        tool_name: 'bash',
+        tool_arguments: '{"command":"git status"}',
+        status: 'approved',
+        decision: 'approve',
+        requirement: 'tool_call',
+        mode: 'auto',
+        created_at: 105,
+        updated_at: 106,
+        resolved_at: 106,
+        permission_requested_at: 105,
+      },
+    },
+  }))
+
+  updated = useDesktopStore.getState().sessions['session-v3']
+  assert.equal(updated.permissionsHydrated, true)
+  assert.deepEqual(updated.pendingPermissions, [])
+  assert.equal(updated.pendingPermissionCount, 0)
+  assert.equal(updated.live.status, 'running')
+  assert.equal(updated.live.lastEventType, 'permission.updated')
+  assert.equal(updated.live.lastEventAt, 106)
+  assert.equal(useDesktopStore.getState().lastGlobalSeq, 16)
+})
+
 
 test('global /ws V3 lifecycle and tool envelopes update Desktop canonical live state', () => {
   const session = makeSession({ id: 'session-v3', sessionApi: 'v3' })

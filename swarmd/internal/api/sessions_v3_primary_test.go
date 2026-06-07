@@ -1550,6 +1550,121 @@ func TestSessionsV3PrimaryLiveStreamPublishesProviderToolProgressAndCommittedCom
 	}
 }
 
+func TestSessionsV3PrimaryLiveStreamPublishesPermissionEventsBeforeProviderToolStart(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := t.TempDir()
+	runner := &sessionsV3RecordingProviderRunner{responses: []provideriface.Response{
+		{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-permission-ask", Name: "ask-user", Arguments: `{"question":"Continue?","options":["yes","no"]}`}}},
+		{Text: "final answer after permission approval"},
+	}}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	runSvc := runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, nil, nil)
+	server.runner = runSvc
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"ask_user": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
+		t.Fatalf("upsert ask-user-enabled swarm agent: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, withTestPrincipal(r))
+	}))
+	defer httpServer.Close()
+
+	created := createSessionsV3PrimaryHTTPTestSession(t, httpServer.URL, "permission-stream-create", "permission stream", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	defer conn.Close()
+	replayStarted := readSessionsV3PrimaryStreamFrame(t, conn)
+	replayComplete := readSessionsV3PrimaryStreamFrame(t, conn)
+	if replayStarted.Type != "replay.started" || replayComplete.Type != "replay.complete" {
+		t.Fatalf("initial stream replay frames = %+v %+v", replayStarted, replayComplete)
+	}
+
+	postSessionsV3PrimaryHTTPTestMessage(t, httpServer.URL, created.ID, "permission-stream-message", "ask before continuing")
+
+	var permissionID string
+	seen := make([]string, 0, 8)
+	for permissionID == "" {
+		frame := readSessionsV3PrimaryStreamFrame(t, conn)
+		if frame.Type != "event" || frame.Event == nil {
+			continue
+		}
+		eventType := strings.TrimSpace(frame.Event.EventType)
+		seen = append(seen, eventType)
+		if eventType == "session.tool.started" {
+			t.Fatalf("session.tool.started was published before permission.requested; seen=%v", seen)
+		}
+		if eventType != "permission.requested" {
+			continue
+		}
+		var payload struct {
+			RunID          string                        `json:"run_id"`
+			SessionID      string                        `json:"session_id"`
+			Step           int                           `json:"step"`
+			ToolName       string                        `json:"tool_name"`
+			CallID         string                        `json:"call_id"`
+			ToolInstanceID string                        `json:"tool_instance_id"`
+			Permission     *pebblestore.PermissionRecord `json:"permission"`
+		}
+		if err := json.Unmarshal(frame.Event.Payload, &payload); err != nil {
+			t.Fatalf("decode permission.requested payload: %v", err)
+		}
+		if payload.Permission == nil || strings.TrimSpace(payload.Permission.ID) == "" || payload.Permission.Status != pebblestore.PermissionStatusPending {
+			t.Fatalf("permission.requested payload missing pending permission: %+v", payload)
+		}
+		if payload.SessionID != created.ID || payload.ToolName != "ask-user" || payload.CallID != "call-permission-ask" || payload.Step != 1 || payload.ToolInstanceID != "step-1:call-permission-ask" {
+			t.Fatalf("permission.requested payload identity = %+v", payload)
+		}
+		permissionID = payload.Permission.ID
+	}
+
+	resolvePayload := []byte(`{"action":"allow_once","reason":"ok","approved_arguments":"yes"}`)
+	resp, err := http.Post(httpServer.URL+"/v3/sessions/"+created.ID+"/permissions/"+permissionID+"/resolve", "application/json", bytes.NewReader(resolvePayload))
+	if err != nil {
+		t.Fatalf("resolve permission over HTTP: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("resolve permission status = %d", resp.StatusCode)
+	}
+
+	wantSuffix := []string{"permission.updated", "session.tool.started", "session.tool.completed", "session.assistant.completed"}
+	seenSuffix := make([]string, 0, len(wantSuffix))
+	for len(seenSuffix) < len(wantSuffix) {
+		frame := readSessionsV3PrimaryStreamFrame(t, conn)
+		if frame.Type != "event" || frame.Event == nil {
+			continue
+		}
+		eventType := strings.TrimSpace(frame.Event.EventType)
+		if eventType == "session.message.appended" || eventType == "session.assistant.started" || eventType == "session.assistant.delta" {
+			continue
+		}
+		seenSuffix = append(seenSuffix, eventType)
+		if eventType == "permission.updated" {
+			var payload struct {
+				Permission *pebblestore.PermissionRecord `json:"permission"`
+			}
+			if err := json.Unmarshal(frame.Event.Payload, &payload); err != nil {
+				t.Fatalf("decode permission.updated payload: %v", err)
+			}
+			if payload.Permission == nil || payload.Permission.ID != permissionID || payload.Permission.Status != pebblestore.PermissionStatusApproved {
+				t.Fatalf("permission.updated payload = %+v", payload)
+			}
+		}
+	}
+	for i, wantType := range wantSuffix {
+		if seenSuffix[i] != wantType {
+			t.Fatalf("event order after resolve = %v, want suffix %v", seenSuffix, wantSuffix)
+		}
+	}
+	if runner.callCount != 2 {
+		t.Fatalf("provider call count = %d, want tool request plus final", runner.callCount)
+	}
+}
+
 func TestSessionsV3PrimaryStreamDoesNotRepublishReplayedMutations(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSession(t, server, "cp4-no-republish-create", "CP4 no republish")

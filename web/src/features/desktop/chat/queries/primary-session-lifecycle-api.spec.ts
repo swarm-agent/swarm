@@ -100,14 +100,15 @@ test('primary desktop session metadata helper exports are removed for Desktop V3
 })
 
 
-test('primary desktop permission helper uses native v2 lifecycle endpoint outside Desktop V3 render data', async () => {
+test('primary desktop permission helper cannot fall back to legacy V2 permission resolution', async () => {
   const { resolveAllSessionPermissions } = await import('./chat-queries')
 
   await withFetchStub(async (calls) => {
-    const resolved = await resolveAllSessionPermissions('session-primary', 'approve', 'ok', 25)
-
-    assert.equal(resolved[0]?.id, 'perm-1')
-    assert.equal(callFor(calls, '/v2/sessions/session-primary/permissions/resolve_all').init?.method, 'POST')
+    await assert.rejects(
+      () => resolveAllSessionPermissions('session-primary', 'approve', 'ok', 25),
+      /requires explicit Sessions API v3 context/,
+    )
+    assert.equal(calls.length, 0)
   })
 })
 

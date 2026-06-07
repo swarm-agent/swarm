@@ -2655,6 +2655,8 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
           session.live.status = nextLiveStatusAfterPermissionSync(session)
         }
         session.pendingPermissionCount = pendingPermissionCount
+        session.live.lastEventType = eventType
+        session.live.lastEventAt = ts
         notifications.unshift(
           makeNotification(
             sessionId,

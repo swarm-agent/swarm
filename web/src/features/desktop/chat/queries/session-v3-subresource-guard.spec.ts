@@ -93,17 +93,39 @@ test('legacy lifecycle helpers do not infer V3 from session ID shape', async () 
   await assertLegacyHelperUsesV2(() => updateSessionCodexConfig('session-raw', { serviceTier: 'flex' }), '/v2/sessions/session-raw/codex')
 })
 
-test('legacy run, plan, and permission resolution helpers do not infer V3 from session ID shape', async () => {
-  const {
-    startSessionRun,
-
-    resolveSessionPermission,
-    resolveAllSessionPermissions,
-  } = await import('./chat-queries')
+test('legacy run helper does not infer V3 from session ID shape', async () => {
+  const { startSessionRun } = await import('./chat-queries')
 
   await assertLegacyHelperUsesV2(() => startSessionRun({ sessionId: 'session-raw', prompt: 'run', route: primaryRoute }), '/v2/sessions/session-raw/run/stream')
-  await assertLegacyHelperUsesV2(() => resolveSessionPermission('session-raw', 'perm-1', 'approve', 'ok'), '/v2/sessions/session-raw/permissions/perm-1/resolve')
-  await assertLegacyHelperUsesV2(() => resolveAllSessionPermissions('session-raw', 'approve', 'ok'), '/v2/sessions/session-raw/permissions/resolve_all')
+})
+
+
+test('Desktop permission resolution requires explicit V3 context and cannot fall back to V2', async () => {
+  const { resolveSessionPermission, resolveAllSessionPermissions } = await import('./chat-queries')
+  const originalFetch = globalThis.fetch
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = []
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ input, init })
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  try {
+    await assert.rejects(
+      () => resolveSessionPermission('session-raw', 'perm-1', 'approve', 'ok'),
+      /requires explicit Sessions API v3 context/,
+    )
+    await assert.rejects(
+      () => resolveAllSessionPermissions('session-raw', 'approve', 'ok'),
+      /requires explicit Sessions API v3 context/,
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  assert.deepEqual(calls, [])
 })
 
 test('Desktop V3 removed standalone permission, usage, metadata, and plan subresource helper exports', async () => {

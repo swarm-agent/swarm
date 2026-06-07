@@ -27,7 +27,11 @@ func (s *Service) CurrentPolicyForAccount(accountScopeID string) (Policy, error)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.loadPolicyLocked(accountScopeID)
+	state, err := s.loadPermissionStateLocked(accountScopeID)
+	if err != nil {
+		return Policy{}, err
+	}
+	return state.Policy, nil
 }
 
 func (s *Service) ExportPolicyState() (ManagedPolicyState, error) {
@@ -35,13 +39,18 @@ func (s *Service) ExportPolicyState() (ManagedPolicyState, error) {
 }
 
 func (s *Service) ExportPolicyStateForAccount(accountScopeID string) (ManagedPolicyState, error) {
-	policy, err := s.CurrentPolicyForAccount(accountScopeID)
+	if s == nil {
+		return ManagedPolicyState{Policy: DefaultPolicy(), ExportedAt: time.Now().UnixMilli()}, nil
+	}
+	s.mu.Lock()
+	state, err := s.loadPermissionStateLocked(accountScopeID)
+	s.mu.Unlock()
 	if err != nil {
 		return ManagedPolicyState{}, err
 	}
 	return ManagedPolicyState{
-		Policy:            NormalizePolicy(policy),
-		BypassPermissions: s.BypassPermissions(),
+		Policy:            NormalizePolicy(state.Policy),
+		BypassPermissions: state.BypassPermissions,
 		ExportedAt:        time.Now().UnixMilli(),
 	}, nil
 }
@@ -58,19 +67,37 @@ func (s *Service) ApplyManagedPolicyStateForAccount(accountScopeID string, state
 		return ManagedPolicyState{}, errors.New("account scope ID is required")
 	}
 	policy := NormalizePolicy(state.Policy)
+	now := time.Now().UnixMilli()
 	if policy.UpdatedAt <= 0 {
-		policy.UpdatedAt = time.Now().UnixMilli()
+		policy.UpdatedAt = now
 	}
 	s.mu.Lock()
 	if err := s.persistPolicyLocked(accountScopeID, policy); err != nil {
 		s.mu.Unlock()
 		return ManagedPolicyState{}, err
 	}
+	s.bypassPermissions = state.BypassPermissions
+	s.permissionStateCache[permissionStateCacheKey(accountScopeID)] = permissionStateCacheEntry{
+		AccountScopeID:    strings.TrimSpace(accountScopeID),
+		Policy:            NormalizePolicy(policy),
+		BypassPermissions: state.BypassPermissions,
+		LoadedAt:          now,
+		PolicyUpdatedAt:   policy.UpdatedAt,
+		BypassUpdatedAt:   now,
+	}
+	for cachedAccountScopeID, cached := range s.permissionStateCache {
+		if cachedAccountScopeID == permissionStateCacheKey(accountScopeID) {
+			continue
+		}
+		cached.BypassPermissions = state.BypassPermissions
+		cached.BypassUpdatedAt = now
+		cached.LoadedAt = now
+		s.permissionStateCache[cachedAccountScopeID] = cached
+	}
 	s.mu.Unlock()
-	s.SetBypassPermissions(state.BypassPermissions)
 	return ManagedPolicyState{
 		Policy:            policy,
-		BypassPermissions: s.BypassPermissions(),
+		BypassPermissions: state.BypassPermissions,
 		ExportedAt:        time.Now().UnixMilli(),
 	}, nil
 }
@@ -80,15 +107,19 @@ func (s *Service) ExplainTool(mode, toolName, toolArguments string, overlay *Pol
 }
 
 func (s *Service) ExplainToolForAccount(accountScopeID, mode, toolName, toolArguments string, overlay *Policy) (PolicyExplain, error) {
-	policy, err := s.CurrentPolicyForAccount(accountScopeID)
+	state, err := s.CurrentPermissionStateForAccount(accountScopeID)
 	if err != nil {
 		return PolicyExplain{}, err
 	}
+	policy := state.Policy
 	if overlay != nil {
 		policy = NormalizePolicy(Policy{
 			Version: 1,
 			Rules:   append(append([]PolicyRule(nil), overlay.Rules...), policy.Rules...),
 		})
+	}
+	if state.BypassPermissions {
+		mode = policyModeWithBypass(strings.TrimSpace(mode), true)
 	}
 	return ExplainPolicy(mode, toolName, toolArguments, policy), nil
 }
@@ -110,10 +141,11 @@ func (s *Service) UpsertRuleForAccount(accountScopeID string, rule PolicyRule) (
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	policy, err := s.loadPolicyLocked(accountScopeID)
+	state, err := s.loadPermissionStateLocked(accountScopeID)
 	if err != nil {
 		return PolicyRule{}, err
 	}
+	policy := state.Policy
 
 	signature := policyRuleSignature(normalized)
 	matched := -1
@@ -148,6 +180,7 @@ func (s *Service) UpsertRuleForAccount(accountScopeID string, rule PolicyRule) (
 	if err := s.persistPolicyLocked(accountScopeID, policy); err != nil {
 		return PolicyRule{}, err
 	}
+	s.cachePermissionStateLocked(accountScopeID, policy, state.BypassPermissions, now, state.BypassUpdatedAt)
 	return normalized, nil
 }
 
@@ -167,10 +200,11 @@ func (s *Service) RemoveRuleForAccount(accountScopeID, ruleID string) (bool, err
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	policy, err := s.loadPolicyLocked(accountScopeID)
+	state, err := s.loadPermissionStateLocked(accountScopeID)
 	if err != nil {
 		return false, err
 	}
+	policy := state.Policy
 
 	next := make([]PolicyRule, 0, len(policy.Rules))
 	removed := false
@@ -185,10 +219,12 @@ func (s *Service) RemoveRuleForAccount(accountScopeID, ruleID string) (bool, err
 		return false, nil
 	}
 	policy.Rules = next
-	policy.UpdatedAt = time.Now().UnixMilli()
+	now := time.Now().UnixMilli()
+	policy.UpdatedAt = now
 	if err := s.persistPolicyLocked(accountScopeID, policy); err != nil {
 		return false, err
 	}
+	s.cachePermissionStateLocked(accountScopeID, policy, state.BypassPermissions, now, state.BypassUpdatedAt)
 	return true, nil
 }
 
@@ -201,14 +237,20 @@ func (s *Service) ResetPolicyForAccount(accountScopeID string) (Policy, error) {
 		return Policy{}, errors.New("permission service is not configured")
 	}
 	policy := DefaultPolicy()
-	policy.UpdatedAt = time.Now().UnixMilli()
+	now := time.Now().UnixMilli()
+	policy.UpdatedAt = now
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	state, err := s.loadPermissionStateLocked(accountScopeID)
+	if err != nil {
+		return Policy{}, err
+	}
 
 	if err := s.persistPolicyLocked(accountScopeID, policy); err != nil {
 		return Policy{}, err
 	}
+	s.cachePermissionStateLocked(accountScopeID, policy, state.BypassPermissions, now, state.BypassUpdatedAt)
 	return policy, nil
 }
 
@@ -319,24 +361,6 @@ func allowRuleSupported(toolName string) bool {
 func (s *Service) newPolicyRuleID(now int64) string {
 	seq := s.counter.Add(1)
 	return fmt.Sprintf("rule_%d_%d", now, seq)
-}
-
-func (s *Service) loadPolicyLocked(accountScopeID string) (Policy, error) {
-	if s.store == nil {
-		return DefaultPolicy(), nil
-	}
-	raw, ok, err := s.store.GetPolicyForAccount(accountScopeID)
-	if err != nil {
-		return Policy{}, err
-	}
-	if !ok || strings.TrimSpace(string(raw)) == "" {
-		return DefaultPolicy(), nil
-	}
-	var policy Policy
-	if err := json.Unmarshal(raw, &policy); err != nil {
-		return Policy{}, err
-	}
-	return NormalizePolicy(policy), nil
 }
 
 func (s *Service) persistPolicyLocked(accountScopeID string, policy Policy) error {

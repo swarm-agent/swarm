@@ -2042,14 +2042,11 @@ export async function resolveSessionPermission(
   options: SessionDataRequestOptions = {},
 ): Promise<DesktopPermissionRecord> {
   const sessionApi = resolveSessionApiForSession(sessionId, options);
-  const endpoint = sessionApi === "v3"
-    ? `/v3/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(permissionId)}/resolve`
-    : `/v2/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(permissionId)}/resolve`;
   if (sessionApi !== "v3") {
-    rejectV3SessionV2Subresource(sessionId, "session permissions");
+    throw new Error("Desktop permission resolution requires explicit Sessions API v3 context");
   }
   const response = await requestJson<ResolvePermissionResponseWire>(
-    endpoint,
+    `/v3/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(permissionId)}/resolve`,
     {
       method: "POST",
       headers: {
@@ -2078,14 +2075,11 @@ export async function resolveAllSessionPermissions(
   options: SessionDataRequestOptions = {},
 ): Promise<DesktopPermissionRecord[]> {
   const sessionApi = resolveSessionApiForSession(sessionId, options);
-  const endpoint = sessionApi === "v3"
-    ? `/v3/sessions/${encodeURIComponent(sessionId)}/permissions/resolve_all`
-    : `/v2/sessions/${encodeURIComponent(sessionId)}/permissions/resolve_all`;
   if (sessionApi !== "v3") {
-    rejectV3SessionV2Subresource(sessionId, "session permissions");
+    throw new Error("Desktop bulk permission resolution requires explicit Sessions API v3 context");
   }
   const response = await requestJson<ResolveAllPermissionsResponseWire>(
-    endpoint,
+    `/v3/sessions/${encodeURIComponent(sessionId)}/permissions/resolve_all`,
     {
       method: "POST",
       headers: {

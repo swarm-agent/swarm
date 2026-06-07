@@ -257,6 +257,7 @@ type permissionService interface {
 	MarkToolCompleted(sessionID, runID, callID string, step int, result tool.Result, completedAt int64) (pebblestore.PermissionRecord, bool, error)
 	SetBypassPermissions(enabled bool)
 	BypassPermissions() bool
+	CurrentPermissionStateForAccount(accountScopeID string) (permission.PermissionState, error)
 }
 
 type notificationService interface {
@@ -373,6 +374,22 @@ func (s *Server) SetIdentitySessionService(sessionSvc *identity.SessionService) 
 func (s *Server) BypassPermissions() bool {
 	if s == nil {
 		return false
+	}
+	if s.perm != nil {
+		return s.perm.BypassPermissions()
+	}
+	return s.bypassPermissions
+}
+
+func (s *Server) permissionBypassForAccount(accountScopeID string) bool {
+	if s == nil {
+		return false
+	}
+	if s.perm != nil {
+		state, err := s.perm.CurrentPermissionStateForAccount(accountScopeID)
+		if err == nil {
+			return state.BypassPermissions
+		}
 	}
 	return s.bypassPermissions
 }
@@ -4784,7 +4801,7 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "policy": policy, "bypass_permissions": s.BypassPermissions()})
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "policy": policy, "bypass_permissions": s.permissionBypassForAccount(accountScopeID)})
 		case http.MethodPost:
 			var req struct {
 				Kind     string `json:"kind"`
