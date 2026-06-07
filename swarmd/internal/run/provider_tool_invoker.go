@@ -36,7 +36,6 @@ type ProviderManagedToolInvokerConfig struct {
 	Emit                 StreamHandler
 	ApplySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
 	ProviderManagedV3    bool
-	Policy               *permission.Policy
 	AgentProfile         pebblestore.AgentProfile
 }
 
@@ -75,7 +74,6 @@ func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerCon
 		emit:                 config.Emit,
 		applySessionMutation: config.ApplySessionMutation,
 		providerManagedV3:    config.ProviderManagedV3,
-		policy:               config.Policy,
 		agentProfile:         config.AgentProfile,
 	}
 }
@@ -183,18 +181,24 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 		permissionSessionID = strings.TrimSpace(config.sessionID)
 	}
 
-	gatedResults, approvedCalls, _, _, permissionFeedback, err := s.gateToolCalls(
-		ctx,
-		permissionSessionID,
-		config.runID,
-		config.step,
-		config.sessionMode,
-		[]tool.Call{call},
-		config.emit,
-		config.policy,
-	)
-	if err != nil {
-		return tool.Result{}, err
+	gatedResults := []tool.Result{{CallID: call.CallID, Name: call.Name}}
+	approvedCalls := []tool.Call{call}
+	permissionFeedback := []PermissionFeedback(nil)
+	if !config.providerManagedV3 {
+		var err error
+		gatedResults, approvedCalls, _, _, permissionFeedback, err = s.gateToolCalls(
+			ctx,
+			permissionSessionID,
+			config.runID,
+			config.step,
+			config.sessionMode,
+			[]tool.Call{call},
+			config.emit,
+			config.policy,
+		)
+		if err != nil {
+			return tool.Result{}, err
+		}
 	}
 
 	result := gatedResults[0]
@@ -240,33 +244,40 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 				if len(workspaceCtx.OriginWorkspaceRoots) == 0 && strings.TrimSpace(workspaceCtx.OriginWorkspacePath) != "" {
 					workspaceCtx.OriginWorkspaceRoots = []string{workspaceCtx.OriginWorkspacePath}
 				}
-				scopeResults, scopeApprovedCalls, _, _, scopeErr := s.gateWorkspaceScopeCalls(
-					ctx,
-					config.sessionID,
-					permissionSessionID,
-					config.runID,
-					config.step,
-					config.sessionMode,
-					workspaceCtx.OriginWorkspacePath,
-					config.workspaceName,
-					principal,
-					&workspaceCtx,
-					[]tool.Call{call},
-					config.emit,
-				)
-				if scopeErr != nil {
-					return tool.Result{}, scopeErr
+				runtimeCalls := []tool.Call{call}
+				if !config.providerManagedV3 {
+					scopeResults, scopeApprovedCalls, _, _, scopeErr := s.gateWorkspaceScopeCalls(
+						ctx,
+						config.sessionID,
+						permissionSessionID,
+						config.runID,
+						config.step,
+						config.sessionMode,
+						workspaceCtx.OriginWorkspacePath,
+						config.workspaceName,
+						principal,
+						&workspaceCtx,
+						[]tool.Call{call},
+						config.emit,
+					)
+					if scopeErr != nil {
+						return tool.Result{}, scopeErr
+					}
+					if len(scopeApprovedCalls) == 0 && len(scopeResults) > 0 {
+						result = scopeResults[0]
+						runtimeCalls = nil
+					} else {
+						runtimeCalls = scopeApprovedCalls
+					}
 				}
-				if len(scopeApprovedCalls) == 0 && len(scopeResults) > 0 {
-					result = scopeResults[0]
-				} else if len(scopeApprovedCalls) > 0 {
+				if len(runtimeCalls) > 0 {
 					runtimeCtx := tool.WithWorkspaceScope(ctx, tool.WorkspaceScope{
 						PrimaryPath: workspaceCtx.WorkspacePath,
 						Roots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
 						Principal:   principal,
 						SessionID:   strings.TrimSpace(config.sessionID),
 					})
-					executed := s.tools.ExecuteBatchStreamingWithProgress(runtimeCtx, workspaceCtx.WorkspacePath, scopeApprovedCalls, func(_ int, current tool.Call, progress tool.Progress) {
+					executed := s.tools.ExecuteBatchStreamingWithProgress(runtimeCtx, workspaceCtx.WorkspacePath, runtimeCalls, func(_ int, current tool.Call, progress tool.Progress) {
 						if config.emit == nil {
 							return
 						}

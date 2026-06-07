@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
-	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -1087,10 +1086,6 @@ func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3Re
 	if !ok || builder == nil {
 		return nil, errors.New("run service does not support provider-managed tool execution")
 	}
-	policy, err := e.sessionV3CompiledToolPolicy(resolved)
-	if err != nil {
-		return nil, err
-	}
 	workspacePath := strings.TrimSpace(resolved.Scope.PrimaryPath)
 	roots := append([]string(nil), resolved.Scope.Roots...)
 	if len(roots) == 0 && workspacePath != "" {
@@ -1111,7 +1106,6 @@ func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3Re
 		WorkspaceOriginRoots: roots,
 		WorkspaceName:        resolved.Session.WorkspaceName,
 		Principal:            job.Principal,
-		Policy:               policy,
 		Emit:                 e.emitSessionV3ProviderToolEvent(job),
 		ApplySessionMutation: e.server.applySessionV3PrimaryMutation,
 		ProviderManagedV3:    true,
@@ -1231,21 +1225,6 @@ func (e *sessionV3Executor) recordProviderToolEvent(job sessionV3ExecutorJob, ev
 	return err
 }
 
-func (e *sessionV3Executor) sessionV3CompiledToolPolicy(resolved sessionV3ResolvedRuntime) (*permission.Policy, error) {
-	if e == nil || e.server == nil || e.server.runner == nil {
-		return nil, nil
-	}
-	compiler, ok := e.server.runner.(sessionsV3StoredAgentToolContractCompiler)
-	if !ok || compiler == nil {
-		return nil, errors.New("v3 tool contract compiler is not configured")
-	}
-	_, policy, _, err := compiler.CompileStoredV3AgentToolContract(resolved.Session.AccountScopeID, resolved.AgentProfile)
-	if err != nil {
-		return nil, err
-	}
-	return policy, nil
-}
-
 func (e *sessionV3Executor) sessionV3ProviderContinuationInput(job sessionV3ExecutorJob) []map[string]any {
 	if e == nil || e.server == nil || e.server.sessions == nil {
 		return nil
@@ -1294,7 +1273,7 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if !ok || compiler == nil {
 		return sessionV3ResolvedRuntime{}, errors.New("v3 tool contract compiler is not configured")
 	}
-	if _, _, _, err := compiler.CompileStoredV3AgentToolContract(session.AccountScopeID, agentProfile); err != nil {
+	if _, _, err := compiler.CompileStoredV3AgentToolContract(session.AccountScopeID, agentProfile); err != nil {
 		return sessionV3ResolvedRuntime{}, err
 	}
 	pref, contextWindow, err := e.resolveSessionV3ProviderPreference(applySessionV3AgentPreferenceOverrides(session.Preference, agentProfile))
@@ -1390,7 +1369,7 @@ func (e *sessionV3Executor) resolveSessionV3ProviderTools(accountScopeID string,
 	if !ok || compiler == nil {
 		return nil, errors.New("v3 tool contract compiler is not configured")
 	}
-	contract, _, disabled, err := compiler.CompileStoredV3AgentToolContract(accountScopeID, agentProfile)
+	contract, disabled, err := compiler.CompileStoredV3AgentToolContract(accountScopeID, agentProfile)
 	if err != nil {
 		return nil, err
 	}

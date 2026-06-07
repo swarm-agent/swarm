@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
-	"swarm/packages/swarmd/internal/permission"
 	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -1228,7 +1227,7 @@ type sessionsV3ResolvedAgentIdentity struct {
 }
 
 type sessionsV3StoredAgentToolContractCompiler interface {
-	CompileStoredV3AgentToolContract(accountScopeID string, profile pebblestore.AgentProfile) (runruntime.ResolvedAgentToolContract, *permission.Policy, map[string]bool, error)
+	CompileStoredV3AgentToolContract(accountScopeID string, profile pebblestore.AgentProfile) (runruntime.ResolvedAgentToolContract, map[string]bool, error)
 }
 
 func (s *Server) resolveSessionsV3PrimaryCreateAgent(principal identity.Principal, requestedName string) (sessionsV3ResolvedAgentIdentity, error) {
@@ -1272,7 +1271,7 @@ func (s *Server) resolveSessionsV3PrimaryCreateAgent(principal identity.Principa
 		return sessionsV3ResolvedAgentIdentity{}, errors.New("v3 tool contract compiler is not configured")
 	}
 	profile = cloneSessionsV3AgentProfile(profile)
-	if _, _, _, err := compiler.CompileStoredV3AgentToolContract(principal.AccountScopeID, profile); err != nil {
+	if _, _, err := compiler.CompileStoredV3AgentToolContract(principal.AccountScopeID, profile); err != nil {
 		return sessionsV3ResolvedAgentIdentity{}, err
 	}
 	return sessionsV3ResolvedAgentIdentity{

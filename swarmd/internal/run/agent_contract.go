@@ -134,30 +134,30 @@ func (s *Service) ResolveAgentToolContractForAccount(accountScopeID string, prof
 	return s.resolveAgentToolContractForAccount(strings.TrimSpace(accountScopeID), strings.TrimSpace(profile.Name))
 }
 
-func (s *Service) CompileStoredV3AgentToolContract(accountScopeID string, profile pebblestore.AgentProfile) (ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
+func (s *Service) CompileStoredV3AgentToolContract(accountScopeID string, profile pebblestore.AgentProfile) (ResolvedAgentToolContract, map[string]bool, error) {
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	name := strings.TrimSpace(profile.Name)
 	if name == "" {
-		return ResolvedAgentToolContract{}, nil, nil, fmt.Errorf("stored v3 agent profile is missing name")
+		return ResolvedAgentToolContract{}, nil, fmt.Errorf("stored v3 agent profile is missing name")
 	}
 	if profile.ToolContract == nil {
-		return ResolvedAgentToolContract{}, nil, nil, fmt.Errorf("stored v3 agent profile %q tool_contract is not configured", name)
+		return ResolvedAgentToolContract{}, nil, fmt.Errorf("stored v3 agent profile %q tool_contract is not configured", name)
 	}
 	knownTools := s.knownRunToolNamesForAccount(accountScopeID)
 	if len(knownTools) == 0 {
-		return ResolvedAgentToolContract{}, nil, nil, fmt.Errorf("tool runtime is not configured")
+		return ResolvedAgentToolContract{}, nil, fmt.Errorf("tool runtime is not configured")
 	}
 	if err := validateStoredV3AgentToolContractRuntime(name, profile.ToolContract, knownTools); err != nil {
-		return ResolvedAgentToolContract{}, nil, nil, err
+		return ResolvedAgentToolContract{}, nil, err
 	}
-	resolved, policy, disabled, err := s.compileResolvedAgentToolContract(accountScopeID, profile)
+	resolved, _, disabled, err := s.compileResolvedAgentToolContract(accountScopeID, profile)
 	if err != nil {
-		return ResolvedAgentToolContract{}, nil, nil, err
+		return ResolvedAgentToolContract{}, nil, err
 	}
 	if err := validateResolvedV3AgentToolRuntime(name, resolved, knownTools); err != nil {
-		return ResolvedAgentToolContract{}, nil, nil, err
+		return ResolvedAgentToolContract{}, nil, err
 	}
-	return resolved, policy, disabled, nil
+	return resolved, disabled, nil
 }
 
 func (s *Service) resolveAgentToolContractForAccount(accountScopeID, name string) (ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {

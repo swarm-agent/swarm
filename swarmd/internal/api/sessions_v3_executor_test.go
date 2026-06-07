@@ -48,8 +48,8 @@ func (r *sessionsV3ProviderToolsRunner) ResolveAgentToolContractForAccount(strin
 	return r.contract, nil, r.disabled, nil
 }
 
-func (r *sessionsV3ProviderToolsRunner) CompileStoredV3AgentToolContract(string, pebblestore.AgentProfile) (runruntime.ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
-	return r.contract, nil, r.disabled, nil
+func (r *sessionsV3ProviderToolsRunner) CompileStoredV3AgentToolContract(string, pebblestore.AgentProfile) (runruntime.ResolvedAgentToolContract, map[string]bool, error) {
+	return r.contract, r.disabled, nil
 }
 
 func TestResolveSessionV3ProviderToolsCanonicalizesDefinitionNames(t *testing.T) {
