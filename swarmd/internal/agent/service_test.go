@@ -36,11 +36,12 @@ func TestServicePublishesAgentMutationEvents(t *testing.T) {
 	})
 	enabled := true
 	profile, version, event, err := svc.Upsert(UpsertInput{
-		Name:        "publisher-probe",
-		Mode:        ModeSubagent,
-		Description: "publisher probe",
-		Prompt:      "Probe event publishing.",
-		Enabled:     &enabled,
+		Name:         "publisher-probe",
+		Mode:         ModeSubagent,
+		Description:  "publisher probe",
+		Prompt:       "Probe event publishing.",
+		ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"},
+		Enabled:      &enabled,
 	})
 	if err != nil {
 		t.Fatalf("Upsert() error = %v", err)
@@ -333,11 +334,12 @@ func TestDeleteSwarmRequiresAnotherPrimary(t *testing.T) {
 
 	enabled := true
 	if _, _, _, err := svc.Upsert(UpsertInput{
-		Name:        "replacement",
-		Mode:        ModePrimary,
-		Description: "replacement primary",
-		Prompt:      "Handle primary tasks.",
-		Enabled:     &enabled,
+		Name:         "replacement",
+		Mode:         ModePrimary,
+		Description:  "replacement primary",
+		Prompt:       "Handle primary tasks.",
+		ToolContract: &pebblestore.AgentToolContract{Preset: "read_write"},
+		Enabled:      &enabled,
 	}); err != nil {
 		t.Fatalf("create replacement primary: %v", err)
 	}
@@ -361,11 +363,12 @@ func TestDeletePrimaryRequiresAnotherPrimaryForEveryPrimary(t *testing.T) {
 	svc, _ := newTestService(t)
 	enabled := true
 	if _, _, _, err := svc.Upsert(UpsertInput{
-		Name:        "solo",
-		Mode:        ModePrimary,
-		Description: "only primary",
-		Prompt:      "Handle primary tasks.",
-		Enabled:     &enabled,
+		Name:         "solo",
+		Mode:         ModePrimary,
+		Description:  "only primary",
+		Prompt:       "Handle primary tasks.",
+		ToolContract: &pebblestore.AgentToolContract{Preset: "read_write"},
+		Enabled:      &enabled,
 	}); err != nil {
 		t.Fatalf("create solo primary: %v", err)
 	}

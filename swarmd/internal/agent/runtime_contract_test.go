@@ -10,10 +10,11 @@ import (
 func TestUpsertPlanAutoClearsExecutionSetting(t *testing.T) {
 	svc, _ := newTestService(t)
 	profile, _, _, err := svc.Upsert(UpsertInput{
-		Name:        "planner",
-		Mode:        ModeSubagent,
-		Prompt:      "Plan first.",
-		RuntimeMode: pebblestore.AgentRuntimeModePlanAuto,
+		Name:         "planner",
+		Mode:         ModeSubagent,
+		Prompt:       "Plan first.",
+		RuntimeMode:  pebblestore.AgentRuntimeModePlanAuto,
+		ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"},
 	})
 	if err != nil {
 		t.Fatalf("Upsert() error = %v", err)
@@ -37,6 +38,7 @@ func TestUpsertRejectsPlanAutoWithExecutionSettingAlias(t *testing.T) {
 		Prompt:           "Plan first.",
 		RuntimeMode:      pebblestore.AgentRuntimeModePlanAuto,
 		ExecutionSetting: pebblestore.AgentExecutionSettingRead,
+		ToolContract:     &pebblestore.AgentToolContract{Preset: "read_only"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "plan_auto cannot include execution_setting") {
 		t.Fatalf("Upsert() error = %v, want plan_auto/execution_setting contradiction", err)

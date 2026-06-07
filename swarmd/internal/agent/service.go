@@ -170,6 +170,9 @@ func (s *Service) ensureDefaultsForAccount(accountScopeID string) error {
 	}
 
 	now := time.Now().UnixMilli()
+	if err := s.backfillBuiltInToolContractsForAccountLocked(accountScopeID, now); err != nil {
+		return err
+	}
 	if current, ok, err := s.getProfileForAccountLocked(accountScopeID, "memory"); err != nil {
 		return err
 	} else if ok && shouldReconcileBuiltInMemory(current) {
@@ -303,6 +306,54 @@ func defaultMemoryToolContract() *pebblestore.AgentToolContract {
 	}
 }
 
+func builtInDefaultToolContract(name string) *pebblestore.AgentToolContract {
+	switch normalizeName(name) {
+	case "swarm":
+		return defaultSwarmToolContract()
+	case "explorer":
+		return defaultExplorerToolContract()
+	case "memory":
+		return defaultMemoryToolContract()
+	case "parallel", "clone":
+		return defaultReadWriteSubagentToolContract()
+	default:
+		return nil
+	}
+}
+
+func (s *Service) backfillBuiltInToolContractsForAccountLocked(accountScopeID string, now int64) error {
+	for _, profile := range defaultProfiles(now) {
+		current, ok, err := s.getProfileForAccountLocked(accountScopeID, profile.Name)
+		if err != nil {
+			return err
+		}
+		if !ok || current.ToolContract != nil {
+			continue
+		}
+		contract := builtInDefaultToolContract(current.Name)
+		if contract == nil {
+			continue
+		}
+		current.ToolContract = contract
+		current.UpdatedAt = now
+		if err := s.putProfileForAccountLocked(accountScopeID, current); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func requireAgentToolContract(profile pebblestore.AgentProfile) error {
+	if profile.ToolContract != nil {
+		return nil
+	}
+	name := strings.TrimSpace(profile.Name)
+	if name == "" {
+		name = "agent"
+	}
+	return fmt.Errorf("agent %q tool_contract is required", name)
+}
+
 func shouldReconcileBuiltInMemory(profile pebblestore.AgentProfile) bool {
 	if strings.TrimSpace(profile.Name) != "memory" {
 		return false
@@ -313,22 +364,7 @@ func shouldReconcileBuiltInMemory(profile pebblestore.AgentProfile) bool {
 	if pebblestore.AgentProfileRuntimeMode(profile) != pebblestore.AgentRuntimeModeReadWrite {
 		return true
 	}
-	if profile.ToolContract == nil || strings.TrimSpace(profile.ToolContract.Preset) != "background_commit" {
-		return true
-	}
-	for _, toolName := range []string{"git_status", "git_diff", "git_add", "git_commit"} {
-		state, ok := profile.ToolContract.Tools[toolName]
-		if !ok || state.Enabled == nil || !*state.Enabled {
-			return true
-		}
-	}
-	for _, toolName := range []string{"websearch", "webfetch", "skill_use", "plan_manage", "ask_user", "task", "bash", "write", "edit", "exit_plan_mode"} {
-		state, ok := profile.ToolContract.Tools[toolName]
-		if !ok || state.Enabled == nil || *state.Enabled {
-			return true
-		}
-	}
-	return false
+	return profile.ToolContract == nil
 }
 
 func reconcileBuiltInMemory(profile pebblestore.AgentProfile, now int64) pebblestore.AgentProfile {
@@ -338,7 +374,9 @@ func reconcileBuiltInMemory(profile pebblestore.AgentProfile, now int64) pebbles
 	profile.RuntimeMode = pebblestore.AgentRuntimeModeReadWrite
 	profile.ExecutionSetting = pebblestore.AgentExecutionSettingReadWrite
 	profile.ExitPlanModeEnabled = pebblestore.BoolPtr(false)
-	profile.ToolContract = defaultMemoryToolContract()
+	if profile.ToolContract == nil {
+		profile.ToolContract = defaultMemoryToolContract()
+	}
 	profile.Enabled = true
 	profile.UpdatedAt = now
 	if prompt := strings.TrimSpace(profile.Prompt); prompt == "" || strings.EqualFold(prompt, oldDefaultMemoryPrompt()) {
@@ -840,7 +878,7 @@ func (s *Service) assignCustomToolForAccount(accountScopeID, agentName, toolName
 	}
 	contract := pebblestore.CloneAgentToolContract(profile.ToolContract)
 	if contract == nil {
-		contract = &pebblestore.AgentToolContract{}
+		return pebblestore.AgentProfile{}, 0, nil, fmt.Errorf("agent %q tool_contract is not configured", agentName)
 	}
 	if contract.Tools == nil {
 		contract.Tools = make(map[string]pebblestore.AgentToolConfig)
@@ -1026,6 +1064,8 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 		if input.ToolContract == nil {
 			profile.ToolContract = pebblestore.CloneAgentToolContract(existing.ToolContract)
 		}
+	} else if input.ToolContract == nil {
+		profile.ToolContract = builtInDefaultToolContract(profile.Name)
 	}
 	if profile.Name == "swarm" {
 		profile.Mode = ModePrimary
@@ -1044,6 +1084,9 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 		return pebblestore.AgentProfile{}, 0, nil, err
 	}
 	profile = pebblestore.NormalizeAgentProfile(profile)
+	if err := requireAgentToolContract(profile); err != nil {
+		return pebblestore.AgentProfile{}, 0, nil, err
+	}
 	profile.UpdatedAt = time.Now().UnixMilli()
 	if err := s.putProfileForAccountLocked(accountScopeID, profile); err != nil {
 		return pebblestore.AgentProfile{}, 0, nil, err
@@ -1489,6 +1532,8 @@ func (s *Service) previewUpsertForAccount(accountScopeID string, input UpsertInp
 		if input.Enabled == nil {
 			profile.Enabled = before.Enabled
 		}
+	} else if input.ToolContract == nil {
+		profile.ToolContract = builtInDefaultToolContract(profile.Name)
 	}
 	if profile.Name == "swarm" {
 		profile.Mode = ModePrimary
@@ -1505,6 +1550,9 @@ func (s *Service) previewUpsertForAccount(accountScopeID string, input UpsertInp
 		return PreviewUpsertResult{}, err
 	}
 	profile = pebblestore.NormalizeAgentProfile(profile)
+	if err := requireAgentToolContract(profile); err != nil {
+		return PreviewUpsertResult{}, err
+	}
 	result := PreviewUpsertResult{After: profile, Exists: ok}
 	if ok {
 		beforeCopy := before

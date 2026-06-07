@@ -717,7 +717,7 @@ func TestFlowsV3RejectsUnknownDisabledAndMismatchedAgents(t *testing.T) {
 		{name: "disabled profile", agent: flow.AgentSelection{ProfileName: "disabled-memory", ProfileMode: "subagent"}, prepare: func(t *testing.T, server *Server) {
 			t.Helper()
 			enabled := false
-			_, _, _, err := server.agents.UpsertForAccount(testAccountScopeID, agentruntime.UpsertInput{Name: "disabled-memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "test-model", Thinking: "medium", ProviderSet: true, ModelSet: true, ThinkingSet: true, Enabled: &enabled})
+			_, _, _, err := server.agents.UpsertForAccount(testAccountScopeID, agentruntime.UpsertInput{Name: "disabled-memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "test-model", Thinking: "medium", ProviderSet: true, ModelSet: true, ThinkingSet: true, ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}, Enabled: &enabled})
 			if err != nil {
 				t.Fatalf("upsert disabled profile: %v", err)
 			}

@@ -433,6 +433,7 @@ func TestPrepareDelegatedSubagentLaunchCreatesCanonicalV3ChildSession(t *testing
 		RuntimeMode:         pebblestore.AgentRuntimeModeReadWrite,
 		ExecutionSetting:    pebblestore.AgentExecutionSettingReadWrite,
 		ExitPlanModeEnabled: pebblestore.BoolPtr(false),
+		ToolContract:        &pebblestore.AgentToolContract{Preset: "read_write"},
 		Enabled:             pebblestore.BoolPtr(true),
 	}); err != nil {
 		t.Fatalf("create account-scoped reviewer: %v", err)
@@ -632,6 +633,7 @@ func newTaskLaunchPermissionTestService(t *testing.T) (*Service, string, func())
 		Prompt:           "Disabled.",
 		RuntimeMode:      pebblestore.AgentRuntimeModeRead,
 		ExecutionSetting: pebblestore.AgentExecutionSettingRead,
+		ToolContract:     &pebblestore.AgentToolContract{Preset: "read_only"},
 		Enabled:          pebblestore.BoolPtr(false),
 	}); err != nil {
 		cleanup()
@@ -716,6 +718,7 @@ func newTaskLaunchPermissionServiceWithPermissions(t *testing.T) (*Service, stri
 		Prompt:           "Review carefully.",
 		RuntimeMode:      pebblestore.AgentRuntimeModeRead,
 		ExecutionSetting: pebblestore.AgentExecutionSettingRead,
+		ToolContract:     &pebblestore.AgentToolContract{Preset: "read_only"},
 		Enabled:          pebblestore.BoolPtr(true),
 	}); err != nil {
 		cleanup()

@@ -486,6 +486,7 @@ func ensureFlowTestAgent(t *testing.T, server *Server) {
 		ThinkingSet:         true,
 		ExecutionSetting:    pebblestore.AgentExecutionSettingRead,
 		ExitPlanModeEnabled: pebblestore.BoolPtr(false),
+		ToolContract:        &pebblestore.AgentToolContract{Preset: "read_only"},
 		Prompt:              "Flow test agent",
 		Enabled:             &enabled,
 	})

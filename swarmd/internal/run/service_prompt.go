@@ -237,17 +237,12 @@ func (s *Service) resolveAgentForAccount(accountScopeID, name string) (pebblesto
 		}
 		return s.agents.ResolveAgent(name)
 	}
-	return pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
-		Name:                "swarm",
-		Mode:                agentruntime.ModePrimary,
-		Provider:            "",
-		Prompt:              "You are Swarm, the primary orchestration agent. Execute user tasks with concise, concrete outcomes. Match execution depth to request scope and avoid unnecessary delegation for narrow asks.",
-		RuntimeMode:         pebblestore.AgentRuntimeModePlanAuto,
-		ExitPlanModeEnabled: pebblestore.BoolPtr(true),
-		Enabled:             true,
-		UpdatedAt:           0,
-		Description:         "fallback primary agent",
-	}), nil
+	profile, ok := agentruntime.DefaultProfileByName("swarm")
+	if !ok {
+		return pebblestore.AgentProfile{}, fmt.Errorf("default agent %q not found", "swarm")
+	}
+	profile.Description = "fallback primary agent"
+	return profile, nil
 }
 
 func (s *Service) composeInstructions(workspacePath string, agentProfile pebblestore.AgentProfile, userInstructions string) string {

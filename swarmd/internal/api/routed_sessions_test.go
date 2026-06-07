@@ -2899,7 +2899,7 @@ func newRoutedSessionTestServerWithSwarmStore(t *testing.T) (*Server, *sessionru
 	if err := agentSvc.EnsureDefaults(); err != nil {
 		t.Fatalf("ensure agent defaults: %v", err)
 	}
-	if _, _, _, err := agentSvc.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm test primary prompt"}); err != nil {
+	if _, _, _, err := agentSvc.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm test primary prompt", ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{"read": {Enabled: pebblestore.BoolPtr(true)}}}}); err != nil {
 		t.Fatalf("create swarm agent: %v", err)
 	}
 	routeStore := pebblestore.NewSessionRouteStore(store)

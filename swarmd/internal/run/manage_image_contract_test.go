@@ -14,6 +14,7 @@ func TestManageImageToolContractCanonicalizationAndOptIn(t *testing.T) {
 		Name:             "image-worker",
 		Mode:             "background",
 		ExecutionSetting: readwrite,
+		ToolContract:     &pebblestore.AgentToolContract{Preset: "read_write"},
 	}
 	resolved, _, disabled, err := svc.ResolveAgentToolContract(profile)
 	if err != nil {

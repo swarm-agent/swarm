@@ -206,7 +206,7 @@ func TestPushManagedSyncToLocalChildrenPushesAgentsAndCredentials(t *testing.T) 
 		t.Fatalf("put local node: %v", err)
 	}
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
-	if _, _, _, err := agentSvc.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "probe", Mode: agentruntime.ModeSubagent, Prompt: "sync me", Enabled: pebblestore.BoolPtr(true)}); err != nil {
+	if _, _, _, err := agentSvc.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "probe", Mode: agentruntime.ModeSubagent, Prompt: "sync me", ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}, Enabled: pebblestore.BoolPtr(true)}); err != nil {
 		t.Fatalf("upsert agent: %v", err)
 	}
 	authSvc := authruntime.NewService(pebblestore.NewAuthStore(store), events)
@@ -562,7 +562,7 @@ func TestPushManagedSyncToManagedHostsPushesAgentsAndCredentials(t *testing.T) {
 		t.Fatalf("put trusted peer: %v", err)
 	}
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
-	if _, _, _, err := agentSvc.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "managed-probe", Mode: agentruntime.ModeSubagent, Prompt: "sync me", Enabled: pebblestore.BoolPtr(true)}); err != nil {
+	if _, _, _, err := agentSvc.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "managed-probe", Mode: agentruntime.ModeSubagent, Prompt: "sync me", ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}, Enabled: pebblestore.BoolPtr(true)}); err != nil {
 		t.Fatalf("upsert agent: %v", err)
 	}
 	authSvc := authruntime.NewService(pebblestore.NewAuthStore(store), events)
@@ -759,10 +759,10 @@ func TestManagedHostAgentPermissionAndModelSyncAreAccountScoped(t *testing.T) {
 	}
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
 	enabled := true
-	if _, _, _, err := agentSvc.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "account-a-agent", Mode: agentruntime.ModeSubagent, Prompt: "sync A", Enabled: &enabled}); err != nil {
+	if _, _, _, err := agentSvc.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "account-a-agent", Mode: agentruntime.ModeSubagent, Prompt: "sync A", ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}, Enabled: &enabled}); err != nil {
 		t.Fatalf("upsert account agent: %v", err)
 	}
-	if _, _, _, err := agentSvc.UpsertForAccount("account-b", agentruntime.UpsertInput{Name: "account-b-agent", Mode: agentruntime.ModeSubagent, Prompt: "do not sync", Enabled: &enabled}); err != nil {
+	if _, _, _, err := agentSvc.UpsertForAccount("account-b", agentruntime.UpsertInput{Name: "account-b-agent", Mode: agentruntime.ModeSubagent, Prompt: "do not sync", ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}, Enabled: &enabled}); err != nil {
 		t.Fatalf("upsert other account agent: %v", err)
 	}
 	modelSvc := modelruntime.NewService(pebblestore.NewModelStore(store), events, nil)
