@@ -340,35 +340,46 @@ func (s *Service) prepareDelegatedSubagentLaunch(parentSession pebblestore.Sessi
 		childWorkspaceID = strings.TrimSpace(allocation.WorkspaceID)
 	}
 
-	createOptions := sessionruntime.CreateSessionOptions{
-		SessionID:     childSessionID,
-		Title:         childTitle,
-		WorkspacePath: childWorkspacePath,
-		WorkspaceName: childWorkspaceName,
-		Preference:    &preference,
-		Metadata:      childMetadata,
-	}
-	if childWorktreeEnabled {
-		createOptions.Worktree = &sessionruntime.CreateSessionWorktree{
-			RootPath:    childWorktreeRootPath,
-			BaseBranch:  childWorktreeBaseBranch,
-			BranchName:  childWorktreeBranch,
-			WorkspaceID: childWorkspaceID,
-		}
-	}
-	childSession, childCreatedEnv, err := s.sessions.CreateSessionWithOptions(createOptions)
-	if err != nil {
-		return taskLaunchPrepared{}, fmt.Errorf("task failed to create subagent session: %w", err)
-	}
-	if childCreatedEnv != nil {
-		s.publishEventEnvelope(*childCreatedEnv)
-	}
-
 	childMode := effectiveTaskChildMode(sessionMode)
-	if _, setModeEnv, setModeErr := s.sessions.SetMode(childSession.ID, childMode); setModeErr != nil {
-		return taskLaunchPrepared{}, fmt.Errorf("task failed to set subagent mode: %w", setModeErr)
-	} else if setModeEnv != nil {
-		s.publishEventEnvelope(*setModeEnv)
+	if childWorkspaceID != "" {
+		childMetadata["workspace_id"] = childWorkspaceID
+	}
+	nowMS := time.Now().UnixMilli()
+	childSession := pebblestore.SessionSnapshot{
+		ID:                 childSessionID,
+		UserID:             strings.TrimSpace(parentSession.UserID),
+		AccountScopeID:     strings.TrimSpace(parentSession.AccountScopeID),
+		WorkspacePath:      childWorkspacePath,
+		WorkspaceName:      childWorkspaceName,
+		Title:              childTitle,
+		Mode:               childMode,
+		Preference:         preference,
+		Metadata:           childMetadata,
+		CreatedAt:          nowMS,
+		UpdatedAt:          nowMS,
+		WorktreeEnabled:    childWorktreeEnabled,
+		WorktreeRootPath:   childWorktreeRootPath,
+		WorktreeBaseBranch: childWorktreeBaseBranch,
+		WorktreeBranch:     childWorktreeBranch,
+	}
+	payloadHash := "task-child-create:" + childSessionID
+	created, err := s.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{
+		SessionID:       childSessionID,
+		UserID:          strings.TrimSpace(parentSession.UserID),
+		AccountScopeID:  strings.TrimSpace(parentSession.AccountScopeID),
+		ClientRequestID: "task-child-create:" + childSessionID,
+		IdempotencyKey:  "task-child-create:" + childSessionID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationCreateSession,
+		Session:         &childSession,
+		NowUnixMs:       nowMS,
+	})
+	if err != nil {
+		return taskLaunchPrepared{}, fmt.Errorf("task failed to create canonical v3 subagent session: %w", err)
+	}
+	if created.Session != nil {
+		childSession = *created.Session
 	}
 
 	launch.RequestedSubagent = requestedSubagent

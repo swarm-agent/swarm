@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -414,6 +415,167 @@ func TestBuildTaskLaunchPermissionPayloadIncludesResolvedToolSummary(t *testing.
 	if stringSliceContains(tools.AllowedTools, "bash") {
 		t.Fatalf("allowed tools include bash despite task launch disabled overlay: %v", tools.AllowedTools)
 	}
+}
+
+func TestPrepareDelegatedSubagentLaunchCreatesCanonicalV3ChildSession(t *testing.T) {
+	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	const accountScopeID = "account-cp7"
+	const userID = "user-cp7"
+	if _, _, _, err := svc.agents.UpsertForAccount(accountScopeID, agentruntime.UpsertInput{
+		Name:                "reviewer",
+		Mode:                agentruntime.ModeSubagent,
+		Description:         "Review specialist",
+		Provider:            "static",
+		Model:               "review-model",
+		Prompt:              "Review carefully.",
+		RuntimeMode:         pebblestore.AgentRuntimeModeReadWrite,
+		ExecutionSetting:    pebblestore.AgentExecutionSettingReadWrite,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false),
+		Enabled:             pebblestore.BoolPtr(true),
+	}); err != nil {
+		t.Fatalf("create account-scoped reviewer: %v", err)
+	}
+	if _, _, _, err := svc.agents.SetActiveSubagentForAccount(accountScopeID, "purpose-review", "reviewer"); err != nil {
+		t.Fatalf("set account-scoped active subagent: %v", err)
+	}
+	parent, _, err := svc.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		UserID:         userID,
+		AccountScopeID: accountScopeID,
+		Title:          "Parent",
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "workspace",
+		Mode:           sessionruntime.ModeAuto,
+		Preference: &pebblestore.ModelPreference{
+			Provider: "parent-provider",
+			Model:    "parent-model",
+			Thinking: "high",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create account-scoped parent session: %v", err)
+	}
+
+	launch, err := svc.prepareDelegatedSubagentLaunch(parent, sessionruntime.ModePlan, taskLaunchPrepared{
+		LaunchIndex:       7,
+		RequestedSubagent: "purpose-review",
+		MetaPrompt:        "Map backend files",
+	}, "repo map", "")
+	if err != nil {
+		t.Fatalf("prepare delegated launch: %v", err)
+	}
+
+	childID := strings.TrimSpace(launch.ChildSession.ID)
+	if childID == "" {
+		t.Fatalf("child session id is empty")
+	}
+	if childID == parent.ID {
+		t.Fatalf("child session reused parent id %q", childID)
+	}
+	if strings.Contains(childID, "/") || strings.Contains(childID, ":") {
+		t.Fatalf("child session id %q is not a raw canonical session id", childID)
+	}
+	child, ok, err := svc.sessions.GetSession(childID)
+	if err != nil {
+		t.Fatalf("load child session: %v", err)
+	}
+	if !ok {
+		t.Fatalf("child session %q was not persisted", childID)
+	}
+	if child.ID != launch.ChildSession.ID {
+		t.Fatalf("persisted child id = %q, launch id = %q", child.ID, launch.ChildSession.ID)
+	}
+	if child.Mode != sessionruntime.ModeAuto || launch.ChildMode != sessionruntime.ModeAuto {
+		t.Fatalf("child mode = %q launch mode = %q, want auto", child.Mode, launch.ChildMode)
+	}
+	if child.AccountScopeID != parent.AccountScopeID {
+		t.Fatalf("child account scope = %q, want parent account scope %q", child.AccountScopeID, parent.AccountScopeID)
+	}
+	if child.UserID != parent.UserID {
+		t.Fatalf("child user id = %q, want parent user id %q", child.UserID, parent.UserID)
+	}
+	if child.WorkspacePath != parent.WorkspacePath || child.WorkspaceName != parent.WorkspaceName {
+		t.Fatalf("child workspace = %q/%q, want parent workspace %q/%q", child.WorkspacePath, child.WorkspaceName, parent.WorkspacePath, parent.WorkspaceName)
+	}
+	if child.Preference.Provider != "static" || child.Preference.Model != "review-model" {
+		t.Fatalf("child preference = %q/%q, want static/review-model", child.Preference.Provider, child.Preference.Model)
+	}
+
+	metadata := child.Metadata
+	checks := map[string]string{
+		"parent_session_id":  parent.ID,
+		"parent_title":       parent.Title,
+		"lineage_kind":       "delegated_subagent",
+		"lineage_label":      "@reviewer",
+		"launch_source":      "task",
+		"requested_subagent": "purpose-review",
+		"subagent":           "reviewer",
+		"assignment_label":   "Map backend files",
+		"subagent_provider":  "static",
+		"subagent_model":     "review-model",
+		"runtime_state":      "standby",
+	}
+	for key, want := range checks {
+		if got := strings.TrimSpace(metadataStringForTest(metadata, key)); got != want {
+			t.Fatalf("metadata[%q] = %q, want %q; metadata=%#v", key, got, want, metadata)
+		}
+	}
+	if got, ok := metadata["title_locked"].(bool); !ok || !got {
+		t.Fatalf("metadata[title_locked] = %#v, want true", metadata["title_locked"])
+	}
+	if got, ok := metadata["title_pending"].(bool); !ok || got {
+		t.Fatalf("metadata[title_pending] = %#v, want false", metadata["title_pending"])
+	}
+	if got := metadataStringForTest(metadata, "launch_index"); got != "7" {
+		t.Fatalf("metadata[launch_index] = %q, want 7", got)
+	}
+	if got := strings.TrimSpace(metadataStringForTest(metadata, "workspace_id")); got == "" {
+		t.Fatalf("metadata[workspace_id] is empty")
+	}
+
+	hydrated, ok, err := svc.sessions.HydrateSessionSnapshot(childID, 500, 500)
+	if err != nil {
+		t.Fatalf("hydrate child session through V3 snapshot path: %v", err)
+	}
+	if !ok {
+		t.Fatalf("child session %q not found through V3 snapshot path", childID)
+	}
+	if hydrated.Session.ID != childID {
+		t.Fatalf("hydrated session id = %q, want %q", hydrated.Session.ID, childID)
+	}
+	if got := strings.TrimSpace(metadataStringForTest(hydrated.Session.Metadata, "parent_session_id")); got != parent.ID {
+		t.Fatalf("hydrated parent_session_id = %q, want %q", got, parent.ID)
+	}
+	if len(hydrated.Events) != 1 || hydrated.Events[0].EventType != "session.created" || hydrated.Events[0].SessionID != childID {
+		t.Fatalf("hydrated V3 events = %#v, want single child session.created", hydrated.Events)
+	}
+	var createdPayload struct {
+		Session *pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(hydrated.Events[0].Payload, &createdPayload); err != nil {
+		t.Fatalf("decode V3 session.created payload: %v", err)
+	}
+	if createdPayload.Session == nil || createdPayload.Session.ID != childID {
+		t.Fatalf("V3 session.created payload session = %#v, want child %q", createdPayload.Session, childID)
+	}
+	if got := strings.TrimSpace(metadataStringForTest(createdPayload.Session.Metadata, "parent_session_id")); got != parent.ID {
+		t.Fatalf("V3 session.created parent_session_id = %q, want %q", got, parent.ID)
+	}
+	if got := strings.TrimSpace(metadataStringForTest(createdPayload.Session.Metadata, "lineage_kind")); got != "delegated_subagent" {
+		t.Fatalf("V3 session.created lineage_kind = %q, want delegated_subagent", got)
+	}
+}
+
+func metadataStringForTest(metadata map[string]any, key string) string {
+	value, ok := metadata[key]
+	if !ok || value == nil {
+		return ""
+	}
+	if typed, ok := value.(string); ok {
+		return typed
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
 }
 
 func stringSliceContains(values []string, want string) bool {

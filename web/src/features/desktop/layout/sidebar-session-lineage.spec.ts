@@ -204,6 +204,24 @@ test('session lineage keeps real subagent children labeled as subagents', () => 
   assert.deepEqual(sessionChildDescriptor(session), { kind: 'subagent', label: '@parallel', assignmentLabel: null })
 })
 
+test('canonical delegated subagent V3 metadata classifies child as subagent lineage', () => {
+  const session = makeSession({
+    id: 'child-session',
+    metadata: {
+      parent_session_id: 'parent-session',
+      lineage_kind: 'delegated_subagent',
+      lineage_label: '@reviewer',
+      requested_subagent: 'purpose-review',
+      subagent: 'reviewer',
+      assignment_label: 'Map backend files',
+      launch_source: 'task',
+    },
+  })
+
+  assert.equal(sessionParentSessionID(session), 'parent-session')
+  assert.deepEqual(sessionChildDescriptor(session), { kind: 'subagent', label: '@reviewer', assignmentLabel: 'Map backend files' })
+})
+
 test('flow child sessions never collapse into fake subagent lineage even when requested_subagent metadata exists', () => {
   const session = makeSession({
     id: 'flow-child-session',
