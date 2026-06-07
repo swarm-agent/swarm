@@ -243,6 +243,44 @@ func defaultMemoryPrompt() string {
 		"Do not push unless the user explicitly requested push.")
 }
 
+func defaultSwarmToolContract() *pebblestore.AgentToolContract {
+	return &pebblestore.AgentToolContract{
+		Preset: "custom",
+		Tools: map[string]pebblestore.AgentToolConfig{
+			"read":                {Enabled: pebblestore.BoolPtr(true)},
+			"search":              {Enabled: pebblestore.BoolPtr(true)},
+			"list":                {Enabled: pebblestore.BoolPtr(true)},
+			"write":               {Enabled: pebblestore.BoolPtr(true)},
+			"edit":                {Enabled: pebblestore.BoolPtr(true)},
+			"bash":                {Enabled: pebblestore.BoolPtr(true)},
+			"websearch":           {Enabled: pebblestore.BoolPtr(true)},
+			"webfetch":            {Enabled: pebblestore.BoolPtr(true)},
+			"webdownload":         {Enabled: pebblestore.BoolPtr(true)},
+			"task":                {Enabled: pebblestore.BoolPtr(true)},
+			"skill_use":           {Enabled: pebblestore.BoolPtr(true)},
+			"manage_skill":        {Enabled: pebblestore.BoolPtr(true)},
+			"manage_agent":        {Enabled: pebblestore.BoolPtr(true)},
+			"manage_flow":         {Enabled: pebblestore.BoolPtr(true)},
+			"manage_integrations": {Enabled: pebblestore.BoolPtr(true)},
+			"manage_image":        {Enabled: pebblestore.BoolPtr(true)},
+			"manage_theme":        {Enabled: pebblestore.BoolPtr(true)},
+			"manage_worktree":     {Enabled: pebblestore.BoolPtr(true)},
+			"manage_todos":        {Enabled: pebblestore.BoolPtr(true)},
+			"plan_manage":         {Enabled: pebblestore.BoolPtr(true)},
+			"ask_user":            {Enabled: pebblestore.BoolPtr(true)},
+			"exit_plan_mode":      {Enabled: pebblestore.BoolPtr(true)},
+		},
+	}
+}
+
+func defaultExplorerToolContract() *pebblestore.AgentToolContract {
+	return &pebblestore.AgentToolContract{Preset: "read_only"}
+}
+
+func defaultReadWriteSubagentToolContract() *pebblestore.AgentToolContract {
+	return &pebblestore.AgentToolContract{Preset: "read_write"}
+}
+
 func defaultMemoryToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{
 		Preset: "background_commit",
@@ -1774,8 +1812,9 @@ func defaultProfiles(now int64) []pebblestore.AgentProfile {
 				"Delegate specialized work when needed, then merge results into one coherent answer.\n" +
 				"Keep responses concise, factual, and implementation-focused.\n" +
 				"Respect workspace boundaries and permission outcomes at all times."),
-			Enabled:   true,
-			UpdatedAt: now,
+			ToolContract: defaultSwarmToolContract(),
+			Enabled:      true,
+			UpdatedAt:    now,
 		},
 		{
 			Name:             "explorer",
@@ -1788,8 +1827,9 @@ func defaultProfiles(now int64) []pebblestore.AgentProfile {
 				"You are Explorer, a subagent focused on repository inspection and evidence collection.\n" +
 				"Map files, summarize architecture and execution flow, and surface likely attack points.\n" +
 				"Provide precise findings with path/line evidence, then end with a `Relevant filepaths:` list and why each file matters."),
-			Enabled:   true,
-			UpdatedAt: now,
+			ToolContract: defaultExplorerToolContract(),
+			Enabled:      true,
+			UpdatedAt:    now,
 		},
 		{
 			Name:                "memory",
@@ -1814,8 +1854,9 @@ func defaultProfiles(now int64) []pebblestore.AgentProfile {
 			Prompt: strings.TrimSpace("" +
 				"You are Parallel, a creative execution subagent.\n" +
 				"Generate component-level outputs and parallel alternatives while keeping implementation practical."),
-			Enabled:   true,
-			UpdatedAt: now,
+			ToolContract: defaultReadWriteSubagentToolContract(),
+			Enabled:      true,
+			UpdatedAt:    now,
 		},
 		{
 			Name:             "clone",
@@ -1827,8 +1868,9 @@ func defaultProfiles(now int64) []pebblestore.AgentProfile {
 			Prompt: strings.TrimSpace("" +
 				"You are Clone, a fast implementation subagent mirroring Swarm behavior.\n" +
 				"Execute concrete file-change tasks and report exact edits with minimal narrative."),
-			Enabled:   true,
-			UpdatedAt: now,
+			ToolContract: defaultReadWriteSubagentToolContract(),
+			Enabled:      true,
+			UpdatedAt:    now,
 		},
 	}
 }

@@ -134,6 +134,82 @@ func TestServicePublishesCustomToolMutationEvents(t *testing.T) {
 	}
 }
 
+func TestEnsureDefaultsPersistsCanonicalBuiltInToolContracts(t *testing.T) {
+	svc, agents := newTestService(t)
+	if err := svc.EnsureDefaults(); err != nil {
+		t.Fatalf("EnsureDefaults() error = %v", err)
+	}
+
+	wantPresets := map[string]string{
+		"swarm":    "custom",
+		"explorer": "read_only",
+		"memory":   "background_commit",
+		"parallel": "read_write",
+		"clone":    "read_write",
+	}
+	for name, wantPreset := range wantPresets {
+		profile, ok, err := agents.GetProfile(name)
+		if err != nil {
+			t.Fatalf("GetProfile(%s) error = %v", name, err)
+		}
+		if !ok {
+			t.Fatalf("GetProfile(%s) missing", name)
+		}
+		if profile.ToolContract == nil {
+			t.Fatalf("%s missing tool contract", name)
+		}
+		if profile.ToolContract.Preset != wantPreset {
+			t.Fatalf("%s tool contract preset = %q, want %q", name, profile.ToolContract.Preset, wantPreset)
+		}
+	}
+
+	swarm, ok, err := agents.GetProfile("swarm")
+	if err != nil || !ok {
+		t.Fatalf("GetProfile(swarm) ok=%v err=%v", ok, err)
+	}
+	for _, toolName := range []string{"read", "search", "list", "write", "edit", "bash", "task", "manage_agent", "manage_todos", "plan_manage", "ask_user", "exit_plan_mode"} {
+		cfg, ok := swarm.ToolContract.Tools[toolName]
+		if !ok || cfg.Enabled == nil || !*cfg.Enabled {
+			t.Fatalf("swarm tool %s = %+v, want explicitly enabled", toolName, cfg)
+		}
+	}
+
+	memory, ok, err := agents.GetProfile("memory")
+	if err != nil || !ok {
+		t.Fatalf("GetProfile(memory) ok=%v err=%v", ok, err)
+	}
+	for _, toolName := range []string{"git_status", "git_diff", "git_add", "git_commit"} {
+		cfg, ok := memory.ToolContract.Tools[toolName]
+		if !ok || cfg.Enabled == nil || !*cfg.Enabled {
+			t.Fatalf("memory tool %s = %+v, want explicitly enabled", toolName, cfg)
+		}
+	}
+}
+
+func TestRestoreDefaultsPersistsCanonicalBuiltInToolContracts(t *testing.T) {
+	svc, agents := newTestService(t)
+	state, _, _, err := svc.RestoreDefaults()
+	if err != nil {
+		t.Fatalf("RestoreDefaults() error = %v", err)
+	}
+	if len(state.Profiles) == 0 {
+		t.Fatalf("RestoreDefaults() returned no profiles")
+	}
+
+	for _, name := range []string{"swarm", "explorer", "memory", "parallel", "clone"} {
+		profile, ok, err := agents.GetProfile(name)
+		if err != nil {
+			t.Fatalf("GetProfile(%s) error = %v", name, err)
+		}
+		if !ok {
+			t.Fatalf("GetProfile(%s) missing", name)
+		}
+		if profile.ToolContract == nil {
+			t.Fatalf("%s missing tool contract after RestoreDefaults", name)
+		}
+	}
+}
+
 func TestIntegrationBuilderIsTransientAndHiddenFromNormalAgentAPIs(t *testing.T) {
 	svc, agents := newTestService(t)
 	if err := svc.EnsureDefaults(); err != nil {
