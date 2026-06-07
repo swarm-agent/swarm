@@ -3180,6 +3180,90 @@ func TestSessionsV3ExecutorContinuesAfterProviderManagedRestartTurn(t *testing.T
 	}
 }
 
+func TestSessionsV3ExecutorRefreshesRuntimeAfterExitPlanModeRestartTurn(t *testing.T) {
+	server, sessionSvc, permissionSvc, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := t.TempDir()
+	providers := registry.New()
+	runner := &sessionsV3RecordingProviderRunner{}
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	runSvc := runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), permissionSvc, server.agents, nil, nil)
+	server.runner = runSvc
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"exit_plan_mode": {Enabled: pebblestore.BoolPtr(true)}, "write": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
+		t.Fatalf("upsert plan-auto swarm agent: %v", err)
+	}
+	if _, err := permissionSvc.ApplyManagedPolicyStateForAccount(testPrincipal().AccountScopeID, permission.ManagedPolicyState{Policy: permission.Policy{Version: 1, Rules: []permission.PolicyRule{{Kind: permission.PolicyRuleKindTool, Decision: permission.PolicyDecisionAllow, Tool: "exit_plan_mode"}}}}); err != nil {
+		t.Fatalf("allow exit_plan_mode policy: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	exitPlanArgs, err := json.Marshal(map[string]any{
+		"title": "Plan: same stream refresh",
+		"document": map[string]any{
+			"title":       "Plan: same stream refresh",
+			"info":        map[string]any{"goal": "verify same-stream mode refresh"},
+			"checkpoints": []map[string]any{{"id": "cp-1", "title": "continue in auto", "status": "pending"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal exit plan args: %v", err)
+	}
+	runner.handler = func(ctx context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		switch runner.callCount {
+		case 1:
+			if !strings.Contains(req.Instructions, "Current session mode: plan.") {
+				return provideriface.Response{}, fmt.Errorf("initial instructions missing plan mode: %s", req.Instructions)
+			}
+			if req.ToolInvoker == nil {
+				return provideriface.Response{}, fmt.Errorf("missing provider-managed tool invoker")
+			}
+			result, err := req.ToolInvoker.ExecuteTool(ctx, provideriface.ToolInvocation{CallID: "call-exit-plan-mode", Name: "exit_plan_mode", Arguments: string(exitPlanArgs)})
+			if err != nil {
+				return provideriface.Response{}, err
+			}
+			if !result.RestartTurn {
+				return provideriface.Response{}, fmt.Errorf("exit_plan_mode result did not request turn restart: %+v", result)
+			}
+			return provideriface.Response{RestartTurn: true}, nil
+		case 2:
+			if !strings.Contains(req.Instructions, "Current session mode: auto.") || strings.Contains(req.Instructions, "Current session mode: plan.") {
+				return provideriface.Response{}, fmt.Errorf("continuation instructions did not refresh to auto mode: %s", req.Instructions)
+			}
+			if req.ToolInvoker == nil {
+				return provideriface.Response{}, fmt.Errorf("missing refreshed provider-managed tool invoker")
+			}
+			if _, err := req.ToolInvoker.ExecuteTool(ctx, provideriface.ToolInvocation{CallID: "call-write-after-auto", Name: "write", Arguments: `{"path":"after-auto.txt","content":"same stream auto write"}`}); err != nil {
+				return provideriface.Response{}, err
+			}
+			return provideriface.Response{Text: "continued in auto after exit_plan_mode"}, nil
+		default:
+			return provideriface.Response{}, fmt.Errorf("unexpected provider call count %d", runner.callCount)
+		}
+	}
+
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "exit-plan-refresh-create", "exit plan refresh", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	if created.Mode != sessionruntime.ModePlan {
+		t.Fatalf("created session mode = %q, want plan", created.Mode)
+	}
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "exit-plan-refresh-message", "draft a plan then continue")
+	waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
+	updated, ok, err := sessionSvc.GetSession(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get updated session: ok=%t err=%v", ok, err)
+	}
+	if updated.Mode != sessionruntime.ModeAuto {
+		t.Fatalf("session mode after exit_plan_mode = %q, want auto", updated.Mode)
+	}
+	if runner.callCount != 2 {
+		t.Fatalf("provider call count = %d, want exit_plan_mode restart plus auto continuation", runner.callCount)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "after-auto.txt")); err != nil {
+		t.Fatalf("write after same-stream auto continuation did not run: %v", err)
+	}
+}
+
 func TestSessionsV3RuntimeInstructionsUseLegacyWorkspaceAndRuleContext(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	primary := t.TempDir()
