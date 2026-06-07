@@ -16,6 +16,9 @@ export type RunStreamEventMessage = {
   type?: string
   ok?: boolean
   session_id?: string
+  parent_session_id?: string
+  relation?: string
+  lineage_kind?: string
   run_id?: string
   seq?: number
   error?: string
@@ -132,6 +135,10 @@ function normalizeLifecycleInactive(payload: RunStreamEventMessage): boolean {
 function isTerminalSessionStatus(payload: RunStreamEventMessage): boolean {
   const normalized = String(payload.status ?? '').trim().toLowerCase()
   return normalized === 'idle' || normalized === 'error'
+}
+
+function isChildRelationFrame(payload: RunStreamEventMessage): boolean {
+  return String(payload.relation ?? '').trim().toLowerCase() === 'child'
 }
 
 function isSessionAlreadyActiveRunError(message: string): boolean {
@@ -311,6 +318,9 @@ export class DesktopRunStreamController {
         }
 
         if (type === 'cursor.error') {
+          if (isChildRelationFrame(payload)) {
+            return
+          }
           const message = String(payload.error ?? 'V3 session stream cursor failed')
           this.options.onReconnectPending(entry.sessionId, message, ts)
           this.cancelReconnect(entry)
@@ -395,6 +405,9 @@ export class DesktopRunStreamController {
     const request = this.options.getResumeRequest(entry.sessionId, entry.desiredRunId)
     if (!request || request.runId !== entry.desiredRunId) {
       this.close(entry.sessionId)
+      return
+    }
+    if (request.sessionApi?.trim().toLowerCase() === 'v3') {
       return
     }
     try {

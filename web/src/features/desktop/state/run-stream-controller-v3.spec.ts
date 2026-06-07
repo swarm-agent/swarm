@@ -503,6 +503,105 @@ test('V3 replay control frames update cursor state without V2 resume semantics',
   assert.equal(updated.live.awaitingAck, false)
 })
 
+test('parent V3 stream child relation frames update canonical child session live state', () => {
+  const parent = makeSession({ id: 'parent-v3', sessionApi: 'v3', workspacePath: '/repo', workspaceName: 'repo', lastEventSeq: 1, projectionHighWatermarkSeq: 1 })
+  useDesktopStore.setState(makeState(parent), true)
+
+  useDesktopStore.getState().__testApplyRunStreamFrame?.('parent-v3', {
+    type: 'event',
+    ok: true,
+    session_id: 'child-v3',
+    parent_session_id: 'parent-v3',
+    relation: 'child',
+    lineage_kind: 'delegated_subagent',
+    after_seq: 1,
+    last_seq: 1,
+    event: {
+      id: 'v3evt_child-v3_00000000000000000001',
+      session_id: 'child-v3',
+      seq: 1,
+      event_type: 'session.tool.started',
+      ts_unix_ms: 40,
+      payload: {
+        session_id: 'child-v3',
+        run_id: 'child-run-v3',
+        step_id: 'child-step-1',
+        tool_instance_id: 'child-tool-1',
+        tool_name: 'bash',
+        call_id: 'child-call-1',
+        arguments: '{"command":"echo child"}',
+        step: 1,
+      },
+    },
+  }, 41)
+
+  const state = useDesktopStore.getState()
+  const parentAfter = state.sessions['parent-v3']
+  const child = state.sessions['child-v3']
+  assert.equal(parentAfter.lastEventSeq, 1)
+  assert.equal(parentAfter.live.lastEventType, null)
+  assert.equal(state.lastGlobalSeq, 0)
+  assert.equal(child.sessionApi, 'v3')
+  assert.equal(child.workspacePath, '/repo')
+  assert.equal(child.metadata?.parent_session_id, 'parent-v3')
+  assert.equal(child.metadata?.lineage_kind, 'delegated_subagent')
+  assert.equal(child.lastEventSeq, 1)
+  assert.equal(child.projectionHighWatermarkSeq, 1)
+  assert.equal(child.live.runId, 'child-run-v3')
+  assert.equal(child.live.status, 'running')
+  assert.equal(child.live.toolName, 'bash')
+  assert.equal(child.live.toolCallId, 'child-call-1')
+  assert.equal(child.live.lastEventType, 'session.tool.started')
+})
+
+test('parent V3 stream child cursor errors do not refetch or poison parent session state', async () => {
+  const originalWindow = globalThis.window
+  const originalFetch = globalThis.fetch
+  const fetchCalls: Array<RequestInfo | URL> = []
+  globalThis.window = {
+    ...(originalWindow ?? {}),
+    setTimeout: ((callback: TimerHandler) => {
+      if (typeof callback === 'function') callback()
+      return 0
+    }) as typeof window.setTimeout,
+  } as Window & typeof globalThis
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    fetchCalls.push(input)
+    return new Response(JSON.stringify({ ok: false }), { status: 500 })
+  }) as typeof fetch
+
+  try {
+    const parent = makeSession({ id: 'parent-v3', sessionApi: 'v3', workspacePath: '/repo', workspaceName: 'repo', lastEventSeq: 7, projectionHighWatermarkSeq: 7 })
+    const child = makeSession({ id: 'child-v3', sessionApi: 'v3', workspacePath: '/repo', workspaceName: 'repo', lastEventSeq: 2, projectionHighWatermarkSeq: 2 })
+    useDesktopStore.setState({ ...makeState(parent), sessions: { [parent.id]: parent, [child.id]: child } }, true)
+
+    useDesktopStore.getState().__testApplyRunStreamFrame?.('parent-v3', {
+      type: 'cursor.error',
+      ok: false,
+      session_id: 'child-v3',
+      parent_session_id: 'parent-v3',
+      relation: 'child',
+      after_seq: 7,
+      next_seq: 5,
+      error: 'child event sequence gap at 5, want 3; child refetch required',
+    }, 50)
+    await new Promise((resolve) => setImmediate(resolve))
+
+    const state = useDesktopStore.getState()
+    assert.equal(state.sessions['parent-v3'].lastEventSeq, 7)
+    assert.equal(state.sessions['parent-v3'].live.lastEventType, null)
+    assert.equal(state.sessions['child-v3'].lastEventSeq, 2)
+    assert.deepEqual(fetchCalls.map(String), [])
+  } finally {
+    globalThis.fetch = originalFetch
+    if (originalWindow) {
+      globalThis.window = originalWindow
+    } else {
+      Reflect.deleteProperty(globalThis, 'window')
+    }
+  }
+})
+
 test('desktop V3 canonical session updates do not depend on V3-only realtime sockets', async () => {
   const { readFile } = await import('node:fs/promises')
   const controllerSource = await readFile(new URL('./run-stream-controller.ts', import.meta.url), 'utf8')
@@ -510,19 +609,18 @@ test('desktop V3 canonical session updates do not depend on V3-only realtime soc
   const panelSource = await readFile(new URL('../chat/components/desktop-chat-panel.tsx', import.meta.url), 'utf8')
   const storeSource = await readFile(new URL('./use-desktop-store.ts', import.meta.url), 'utf8')
 
-  assert.match(querySource, /V3 sessions use the global \/ws session:\* connection/)
+  assert.match(querySource, /\/v3\/sessions\/\$\{encodeURIComponent\(normalizedSessionId\)\}\/stream/)
   assert.doesNotMatch(storeSource, /DesktopV3RealtimeController/)
   assert.doesNotMatch(storeSource, /requireV3RealtimeController/)
   assert.doesNotMatch(storeSource, /resolveV3RealtimeSubscriptions/)
   assert.doesNotMatch(storeSource, /applyV3RealtimeFrame/)
   assert.doesNotMatch(storeSource, /subscribe\.session/)
-  assert.match(storeSource, /if \(sessionApi === 'v3'\) \{\n\s+set\(\{ realtimeDesired: true \}\)\n\s+await get\(\)\.connect\(\)\n\s+return\n\s+\}/)
+  assert.match(storeSource, /if \(sessionApi === 'v3'\) \{\n\s+set\(\{ realtimeDesired: true \}\)\n\s+await get\(\)\.connect\(\)\n\s+\}/)
   assert.match(panelSource, /liveSession\?\.sessionApi\?\.trim\(\)\.toLowerCase\(\) === 'v3'/)
   assert.match(panelSource, /session\.tool\.started/)
   assert.match(panelSource, /session\.tool\.delta/)
   assert.match(panelSource, /session\.tool\.completed/)
   assert.doesNotMatch(controllerSource, /\/v3\/sessions\/[^`]+\/stream/)
-  assert.doesNotMatch(querySource, /\/v3\/sessions\/[^`]+\/stream/)
   assert.doesNotMatch(querySource, /\/v3\/sessions\/[^`]+\/run\/stream/)
 })
 
@@ -649,10 +747,10 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
     })
 
     const urls = calls.map((entry) => String(entry.input)).sort()
-    assert.deepEqual(urls, ['/v3/sessions/session-v3/messages', '/v1/auth/desktop/session'].sort())
+    assert.deepEqual(urls, ['/v3/sessions/session-v3/messages', '/v1/auth/desktop/session', '/v1/auth/desktop/session'].sort())
     assert.equal(urls.some((url) => url.startsWith('/v1/swarm/managed-hosts/sessions')), false)
     assert.equal(urls.some((url) => url.startsWith('/v2/sessions')), false)
-    assert.deepEqual(websocketURLs, ['ws://127.0.0.1:7777/ws'])
+    assert.deepEqual(websocketURLs, ['ws://127.0.0.1:7777/ws', 'ws://127.0.0.1:7777/v3/sessions/session-v3/stream?after_seq=3'])
     const body = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>
     assert.deepEqual(body, {
       client_request_id: 'desktop-v3-message:test-submit',

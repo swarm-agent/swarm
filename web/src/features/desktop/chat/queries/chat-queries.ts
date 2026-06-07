@@ -1957,15 +1957,17 @@ export async function openRunStream(
 ): Promise<WebSocket> {
   const normalizedSessionId = sessionId.trim();
   const sessionApi = resolveSessionApiForSession(normalizedSessionId, options);
-  if (sessionApi === "v3") {
-    throw new Error("V3 sessions use the global /ws session:* connection");
-  }
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   await ensureDesktopSession(true);
   const url = new URL(
-    `/v2/sessions/${encodeURIComponent(normalizedSessionId)}/run/stream`,
+    sessionApi === "v3"
+      ? `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/stream`
+      : `/v2/sessions/${encodeURIComponent(normalizedSessionId)}/run/stream`,
     `${protocol}//${window.location.host}`,
   );
+  if (sessionApi === "v3") {
+    url.searchParams.set("after_seq", String(Math.max(0, options.afterSeq ?? 0)));
+  }
   return new WebSocket(url);
 }
 

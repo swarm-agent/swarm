@@ -801,9 +801,6 @@ function resolveRunStreamResumeRequest(sessionId: string, fallbackRunId?: string
     return null
   }
   const sessionApi = session.sessionApi?.trim().toLowerCase() ?? ''
-  if (sessionApi === 'v3') {
-    return null
-  }
   if (session.live.status === 'idle' || session.live.status === 'error') {
     return null
   }
@@ -827,8 +824,11 @@ function resolveRunStreamResumeRequest(sessionId: string, fallbackRunId?: string
   return {
     sessionId: normalizedSessionId,
     runId,
-    lastSeq: session.live.seq ?? 0,
+    lastSeq: sessionApi === 'v3'
+      ? Math.max(0, session.lastEventSeq ?? session.live.seq ?? 0)
+      : session.live.seq ?? 0,
     sessionApi: session.sessionApi,
+    afterSeq: sessionApi === 'v3' ? Math.max(0, session.lastEventSeq ?? 0) : undefined,
   }
 }
 
@@ -1567,10 +1567,55 @@ function v3SessionStreamEventEnvelope(payload: RunStreamEventMessage): EventEnve
   }
 }
 
+function isV3ChildSessionStreamFrame(payload: RunStreamEventMessage): boolean {
+  return String(payload.relation ?? '').trim().toLowerCase() === 'child'
+}
+
+function v3StreamTargetSessionId(parentSessionId: string, payload: RunStreamEventMessage): string {
+  if (!isV3ChildSessionStreamFrame(payload)) {
+    return parentSessionId
+  }
+  return String(payload.event?.session_id ?? payload.session_id ?? '').trim() || parentSessionId
+}
+
+function ensureChildStreamSession(
+  state: DesktopStoreState,
+  parentSessionId: string,
+  childSessionId: string,
+  payload: RunStreamEventMessage,
+): DesktopSessionRecord | null {
+  const normalizedChildSessionId = childSessionId.trim()
+  if (!normalizedChildSessionId || normalizedChildSessionId === parentSessionId) {
+    return null
+  }
+  const existing = state.sessions[normalizedChildSessionId]
+  if (existing) {
+    return existing
+  }
+  const parent = state.sessions[parentSessionId]
+  const eventTs = typeof payload.event?.ts_unix_ms === 'number' && payload.event.ts_unix_ms > 0
+    ? payload.event.ts_unix_ms
+    : 1
+  return {
+    ...ensureSession(state, normalizedChildSessionId),
+    title: 'Subagent',
+    workspacePath: parent?.workspacePath ?? '',
+    workspaceName: parent?.workspaceName ?? '',
+    createdAt: eventTs,
+    updatedAt: eventTs,
+    metadata: {
+      parent_session_id: parentSessionId,
+      lineage_kind: String(payload.lineage_kind ?? 'delegated_subagent').trim() || 'delegated_subagent',
+    },
+    sessionApi: 'v3',
+  }
+}
+
 function applyV3SessionStreamFrame(state: DesktopStoreState, sessionId: string, payload: RunStreamEventMessage, ts: number): Partial<DesktopStoreState> | null {
   const type = String(payload.type ?? '').trim()
+  const targetSessionId = v3StreamTargetSessionId(sessionId, payload)
   if (type === 'keepalive') {
-    const existing = state.sessions[sessionId]
+    const existing = state.sessions[targetSessionId]
     if (!existing) {
       return {}
     }
@@ -1578,7 +1623,7 @@ function applyV3SessionStreamFrame(state: DesktopStoreState, sessionId: string, 
     return {
       sessions: {
         ...state.sessions,
-        [sessionId]: mergeSessionRecords(existing, {
+        [targetSessionId]: mergeSessionRecords(existing, {
           ...existing,
           sessionApi: existing.sessionApi || 'v3',
           lastEventSeq: Math.max(existing.lastEventSeq ?? 0, lastSeq),
@@ -1595,7 +1640,7 @@ function applyV3SessionStreamFrame(state: DesktopStoreState, sessionId: string, 
     }
   }
   if (type === 'replay.started' || type === 'replay.complete') {
-    const existing = state.sessions[sessionId]
+    const existing = state.sessions[targetSessionId]
     if (!existing) {
       return {}
     }
@@ -1606,7 +1651,7 @@ function applyV3SessionStreamFrame(state: DesktopStoreState, sessionId: string, 
     return {
       sessions: {
         ...state.sessions,
-        [sessionId]: mergeSessionRecords(existing, {
+        [targetSessionId]: mergeSessionRecords(existing, {
           ...existing,
           sessionApi: existing.sessionApi || 'v3',
           lastEventSeq: Math.max(existing.lastEventSeq ?? 0, lastSeq),
@@ -1623,21 +1668,21 @@ function applyV3SessionStreamFrame(state: DesktopStoreState, sessionId: string, 
     }
   }
   if (type === 'cursor.error') {
-    const existing = state.sessions[sessionId]
-    if (existing) {
-      requestAuthoritativeSessionSnapshot(sessionId)
+    const existing = state.sessions[targetSessionId]
+    if (existing && !isV3ChildSessionStreamFrame(payload)) {
+      requestAuthoritativeSessionSnapshot(targetSessionId)
     }
     return {}
   }
   if (type === 'error') {
-    const existing = state.sessions[sessionId]
+    const existing = state.sessions[targetSessionId]
     if (!existing) {
       return {}
     }
     return {
       sessions: {
         ...state.sessions,
-        [sessionId]: mergeSessionRecords(existing, {
+        [targetSessionId]: mergeSessionRecords(existing, {
           ...existing,
           sessionApi: existing.sessionApi || 'v3',
           live: {
@@ -1657,12 +1702,24 @@ function applyV3SessionStreamFrame(state: DesktopStoreState, sessionId: string, 
   if (!envelope) {
     return null
   }
-  const patch = applyEnvelope(state, envelope)
+  const frameState = isV3ChildSessionStreamFrame(payload) && targetSessionId !== sessionId && !state.sessions[targetSessionId]
+    ? {
+        ...state,
+        sessions: {
+          ...state.sessions,
+          [targetSessionId]: ensureChildStreamSession(state, sessionId, targetSessionId, payload) ?? ensureSession(state, targetSessionId),
+        },
+      }
+    : state
+  const patch = applyEnvelope(frameState, envelope)
+  if (isV3ChildSessionStreamFrame(payload)) {
+    patch.lastGlobalSeq = state.lastGlobalSeq
+  }
   const eventSeq = typeof payload.event?.seq === 'number' ? Math.max(0, payload.event.seq) : 0
   const highWatermark = typeof payload.high_watermark_seq === 'number' ? Math.max(0, payload.high_watermark_seq) : eventSeq
   const v3EventType = String(payload.event?.event_type ?? type).trim()
-  const patchedSessions = patch.sessions ?? state.sessions
-  const existing = patchedSessions[sessionId]
+  const patchedSessions = patch.sessions ?? frameState.sessions
+  const existing = patchedSessions[targetSessionId]
   if (!existing) {
     return patch
   }
@@ -1670,7 +1727,7 @@ function applyV3SessionStreamFrame(state: DesktopStoreState, sessionId: string, 
     ...patch,
     sessions: {
       ...patchedSessions,
-      [sessionId]: mergeSessionRecords(existing, {
+      [targetSessionId]: mergeSessionRecords(existing, {
         ...existing,
         sessionApi: existing.sessionApi || 'v3',
         lastEventSeq: Math.max(existing.lastEventSeq ?? 0, eventSeq),
@@ -3460,7 +3517,6 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
     if (sessionApi === 'v3') {
       set({ realtimeDesired: true })
       await get().connect()
-      return
     }
     await requireRunStreamController().ensure(normalizedSessionId, runId)
   },
@@ -3538,15 +3594,20 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
       if (effectiveSessionApi === 'v3' && !compact) {
         const clientRequestId = providedClientRequestId?.trim() || `desktop-v3-message:${targetSessionId}:${submitStartedAt}`
         const result = await sendSessionMessage(targetSessionId, 'user', trimmedPrompt, route, { sessionApi: 'v3', clientRequestId })
+        let runIntentId = ''
         if (isSendSessionMessageResult(result)) {
           const committedMessages = result.message
             ? [result.message]
             : result.messages ?? []
           mergeMessagesCache(targetSessionId, committedMessages)
           set((state) => applyV3MessageCommitResult(state, targetSessionId, result, Date.now()))
+          runIntentId = result.runIntent?.runId ?? ''
         }
         set({ realtimeDesired: true })
         await get().connect()
+        if (runIntentId) {
+          await requireRunStreamController().ensure(targetSessionId, runIntentId)
+        }
         return
       }
 
