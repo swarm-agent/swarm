@@ -1400,15 +1400,22 @@ func (e *sessionV3Executor) resolveSessionV3ProviderTools(accountScopeID string,
 	}
 	allowed := make(map[string]bool, len(contract.Tools))
 	for name, state := range contract.Tools {
-		name = strings.TrimSpace(name)
+		name = agentToolCanonicalName(name)
 		if name != "" && state.Enabled {
 			allowed[name] = true
 		}
 	}
+	disabledCanonical := make(map[string]bool, len(disabled))
+	for name, isDisabled := range disabled {
+		name = agentToolCanonicalName(name)
+		if name != "" && isDisabled {
+			disabledCanonical[name] = true
+		}
+	}
 	filtered := make([]provideriface.ToolDefinition, 0, len(definitions))
 	for _, definition := range definitions {
-		name := strings.TrimSpace(definition.Name)
-		if name == "" || disabled[name] || !allowed[name] {
+		name := agentToolCanonicalName(definition.Name)
+		if name == "" || disabledCanonical[name] || !allowed[name] {
 			continue
 		}
 		filtered = append(filtered, definition)
