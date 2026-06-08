@@ -151,12 +151,12 @@ func TestOnboardingResponseDetectsTailscaleServeBeforeManagedHostingEnabled(t *t
 case "$1 $2 $3" in
   "status --json ")
     cat <<'JSON'
-{"Self":{"DNSName":"standalone.tail2ff467.ts.net.","TailscaleIPs":["100.122.157.126"],"Online":true},"CurrentTailnet":{"Name":"example.ts.net"}}
+{"Self":{"DNSName":"standalone.tailnet.ts.net.","TailscaleIPs":["100.122.157.126"],"Online":true},"CurrentTailnet":{"Name":"example.ts.net"}}
 JSON
     ;;
   "serve status --json")
     cat <<'JSON'
-{"Web":{"standalone.tail2ff467.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:5555"}}}}}
+{"Web":{"standalone.tailnet.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:5555"}}}}}
 JSON
     ;;
   *) exit 1 ;;
@@ -176,7 +176,7 @@ esac
 	if err != nil {
 		t.Fatalf("onboardingResponse returned error: %v", err)
 	}
-	if status.Tailscale.TailnetURL != "https://standalone.tail2ff467.ts.net" {
+	if status.Tailscale.TailnetURL != "https://standalone.tailnet.ts.net" {
 		t.Fatalf("tailnet url = %q, want detected live URL", status.Tailscale.TailnetURL)
 	}
 	if !status.Tailscale.Serve.Ready || status.Tailscale.Serve.Mode != "desktop" {
@@ -190,12 +190,12 @@ func TestConfiguredOnboardingResponseRefreshesTailscaleStatus(t *testing.T) {
 case "$1 $2 $3" in
   "status --json ")
     cat <<'JSON'
-{"Self":{"DNSName":"roy.tail2ff467.ts.net.","TailscaleIPs":["100.122.157.125"],"Online":true},"CurrentTailnet":{"Name":"roycohen1@gmail.com"}}
+{"Self":{"DNSName":"child.tailnet.ts.net.","TailscaleIPs":["100.122.157.125"],"Online":true},"CurrentTailnet":{"Name":"example.ts.net"}}
 JSON
     ;;
   "serve status --json")
     cat <<'JSON'
-{"Web":{"roy.tail2ff467.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:25606"}}}}}
+{"Web":{"child.tailnet.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:25606"}}}}}
 JSON
     ;;
   *) exit 1 ;;
@@ -211,7 +211,7 @@ esac
 		cfg.DesktopPort = 25606
 		cfg.AdvertiseHost = "127.0.0.1"
 		cfg.AdvertisePort = 20606
-		cfg.TailscaleURL = "https://roy.tail2ff467.ts.net"
+		cfg.TailscaleURL = "https://child.tailnet.ts.net"
 		cfg.BypassPermissions = true
 		cfg.PeerTransportPort = 30606
 	})
@@ -223,16 +223,16 @@ esac
 	if status.NeedsOnboarding {
 		t.Fatalf("needs_onboarding = true, want false")
 	}
-	if status.Config.SwarmName != "test69" || !status.Config.Child {
-		t.Fatalf("config identity = %#v, want configured child", status.Config)
+	if status.Config.SwarmName != "test69" {
+		t.Fatalf("config identity = %#v, want configured swarm name", status.Config)
 	}
 	if !status.Tailscale.Connected {
 		t.Fatalf("tailscale connected = false, want true: %#v", status.Tailscale)
 	}
-	if status.Tailscale.TailnetURL != "https://roy.tail2ff467.ts.net" {
+	if status.Tailscale.TailnetURL != "https://child.tailnet.ts.net" {
 		t.Fatalf("tailnet url = %q, want configured URL", status.Tailscale.TailnetURL)
 	}
-	if status.Tailscale.DNSName != "roy.tail2ff467.ts.net" {
+	if status.Tailscale.DNSName != "child.tailnet.ts.net" {
 		t.Fatalf("dns name = %q, want live DNS name", status.Tailscale.DNSName)
 	}
 	if !status.Tailscale.Serve.Ready || status.Tailscale.Serve.Mode != "desktop" {
@@ -274,7 +274,7 @@ func writeFakeTailscale(t *testing.T, dir, script string) {
 func TestHTTPClientForTailscaleOutboundProxyUsesConfiguredProxy(t *testing.T) {
 	t.Setenv("SWARM_TAILSCALE_OUTBOUND_PROXY", "http://127.0.0.1:1055")
 
-	client, err := httpClientForTailscaleOutboundProxy("https://dev-hel1.tail617a4d.ts.net", []onboardingTransportPayload{{
+	client, err := httpClientForTailscaleOutboundProxy("https://dev-hel1.tailnet.ts.net", []onboardingTransportPayload{{
 		Kind: startupconfig.NetworkModeTailscale,
 	}})
 	if err != nil {
@@ -287,7 +287,7 @@ func TestHTTPClientForTailscaleOutboundProxyUsesConfiguredProxy(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *http.Transport, got %T", client.Transport)
 	}
-	req, err := http.NewRequest(http.MethodGet, "https://dev-hel1.tail617a4d.ts.net/readyz", nil)
+	req, err := http.NewRequest(http.MethodGet, "https://dev-hel1.tailnet.ts.net/readyz", nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}

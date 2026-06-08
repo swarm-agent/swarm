@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 cd "${ROOT_DIR}"
 
-echo "[secret-check] scanning tracked and untracked non-ignored files for credential/key patterns"
+echo "[secret-check] scanning tracked and untracked non-ignored files for credential/key and private tailnet patterns"
 hits="$(
   rg -n -I --hidden \
     --glob '!.git/**' \
@@ -24,6 +24,27 @@ hits="$(
 if [[ -n "${hits}" ]]; then
   echo "[secret-check] FAIL: possible secret material found:"
   echo "${hits}"
+  exit 1
+fi
+
+private_tailnet_hits="$(
+  rg -n -I --hidden \
+    --glob '!.git/**' \
+    --glob '!**/node_modules/**' \
+    --glob '!**/dist/**' \
+    --glob '!**/.cache/**' \
+    --glob '!**/.tools/**' \
+    --glob '!**/.swarm/**' \
+    --glob '!**/.bin/**' \
+    --glob '!**/*.svg' \
+    --glob '!scripts/check-secrets.sh' \
+    '([A-Za-z0-9-]+\.)?tail[0-9a-z]{6,}\.ts\.net' \
+    "${ROOT_DIR}" || true
+)"
+
+if [[ -n "${private_tailnet_hits}" ]]; then
+  echo "[secret-check] FAIL: possible private Tailscale tailnet URL found:"
+  echo "${private_tailnet_hits}"
   exit 1
 fi
 

@@ -2362,12 +2362,28 @@ export function DesktopAppPage() {
     })
   }, [navigate, routeSession?.id, routeSession?.workspacePath, routeSessionId, routeWorkspaceSlug, workspaceSlugByPath])
 
-  const handleSelectSession = useCallback((sessionId: string) => {
-    const session = readDesktopV3CachedSession(queryClient, sessionId) ?? sessionById.get(sessionId)
+  const handleSelectSession = useCallback(async (sessionId: string) => {
+    const normalizedSessionId = sessionId.trim()
+    const cachedSnapshot = readDesktopV3CachedSession(queryClient, normalizedSessionId)
+    let session = cachedSnapshot ?? sessionById.get(normalizedSessionId)
     if (!session?.workspacePath) {
       return
     }
     setMobileSidebarOpen(false)
+
+    if (!cachedSnapshot) {
+      try {
+        const snapshot = await hydrateDesktopV3SessionSnapshot(queryClient, normalizedSessionId)
+        if (snapshot?.session) {
+          session = snapshot.session
+          upsertSession(snapshot.session)
+          syncWorkspaceOverviewSession(queryClient, snapshot.session)
+        }
+      } catch (error) {
+        console.warn('[desktop-app] failed to prehydrate sidebar session before navigation', error)
+      }
+    }
+
     const workspaceSlug = workspaceSlugByPath.get(session.workspacePath)
       ?? workspaceRouteSlugBase({ path: session.workspacePath, workspaceName: session.workspaceName })
     void navigate({
@@ -2377,7 +2393,7 @@ export function DesktopAppPage() {
         sessionId: session.id,
       },
     })
-  }, [navigate, queryClient, sessionById, workspaceSlugByPath])
+  }, [navigate, queryClient, sessionById, upsertSession, workspaceSlugByPath])
 
   const handleSessionCreated = useCallback((session: DesktopSessionRecord) => {
     setActiveSession(session.id)

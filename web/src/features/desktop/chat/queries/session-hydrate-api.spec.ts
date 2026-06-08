@@ -505,7 +505,9 @@ test('DesktopAppPage must keep route-critical load out of sidebar/background V3 
 
   assert.match(source, /desktopV3SessionQueryOptions\(routeSessionId\)/)
   assert.match(source, /routeSessionSnapshotQuery\.data\?\.session/)
-  assert.match(source, /readDesktopV3CachedSession\(queryClient, sessionId\)/)
+  assert.match(source, /const cachedSnapshot = readDesktopV3CachedSession\(queryClient, normalizedSessionId\)/)
+  assert.match(source, /await hydrateDesktopV3SessionSnapshot\(queryClient, normalizedSessionId\)/)
+  assert.match(source, /syncWorkspaceOverviewSession\(queryClient, snapshot\.session\)/)
   assert.match(source, /const backgroundBootstrapSessionIds = useMemo/)
   const backgroundBootstrapSource = source.slice(
     source.indexOf('const backgroundBootstrapSessionIds = useMemo'),

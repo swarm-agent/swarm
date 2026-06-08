@@ -30,6 +30,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Check for committed secrets
+        run: ./scripts/check-secrets.sh
+
       - name: Set up Go
         uses: actions/setup-go@v6
         with:

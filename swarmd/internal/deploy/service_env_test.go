@@ -89,8 +89,8 @@ func TestResolveLocalContainerBootstrapTargetsLoopbackBindPrefersLocalTransport(
 			Transports: []swarmruntime.TransportSummary{
 				{
 					Kind:    startupconfig.NetworkModeTailscale,
-					Primary: "https://dev-hel1.tail617a4d.ts.net",
-					All:     []string{"https://dev-hel1.tail617a4d.ts.net", "100.101.195.59"},
+					Primary: "https://dev-hel1.tailnet.ts.net",
+					All:     []string{"https://dev-hel1.tailnet.ts.net", "100.101.195.59"},
 				},
 			},
 		},
@@ -125,8 +125,8 @@ func TestResolveLocalContainerBootstrapTargetsLoopbackBindFallsBackToHostDrivenW
 			Transports: []swarmruntime.TransportSummary{
 				{
 					Kind:    startupconfig.NetworkModeTailscale,
-					Primary: "https://dev-hel1.tail617a4d.ts.net",
-					All:     []string{"https://dev-hel1.tail617a4d.ts.net", "100.101.195.59"},
+					Primary: "https://dev-hel1.tailnet.ts.net",
+					All:     []string{"https://dev-hel1.tailnet.ts.net", "100.101.195.59"},
 				},
 			},
 		},
