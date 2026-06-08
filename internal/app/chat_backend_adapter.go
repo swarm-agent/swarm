@@ -373,32 +373,65 @@ func (b *apiChatBackend) consumeSessionV3Run(ctx context.Context, sessionID stri
 		if onEvent != nil {
 			onEvent(event)
 		}
-		switch strings.ToLower(strings.TrimSpace(event.Type)) {
-		case "message.stored":
-			if event.Message != nil && strings.EqualFold(strings.TrimSpace(event.Message.Role), "assistant") {
-				response.AssistantMessage = *event.Message
-				response.PrimaryRunStatus = "completed"
+		if event.Message != nil && strings.EqualFold(strings.TrimSpace(event.Message.Role), "assistant") {
+			response.AssistantMessage = *event.Message
+		}
+		if runIntent, ok := v3RunIntentFromEvent(*frame.Event); ok && v3RunIntentMatchesRun(runIntent, runID) {
+			response.PrimaryRunStatus = strings.TrimSpace(runIntent.Status)
+			response.PrimaryBlockedReason = strings.TrimSpace(runIntent.BlockedReason)
+			if v3RunIntentStatusTerminal(runIntent.Status) {
+				if onEvent != nil {
+					onEvent(ui.ChatRunStreamEvent{Type: "session.lifecycle.updated", SessionID: sessionID, RunID: runIntent.RunID, Lifecycle: primaryRunIntentLifecycle(sessionID, runIntent)})
+				}
 				cancel()
 			}
-		case "turn.completed":
-			response.PrimaryRunStatus = "completed"
-			cancel()
-		case "turn.error":
-			response.PrimaryRunStatus = "failed"
-			response.PrimaryBlockedReason = strings.TrimSpace(event.Error)
-			cancel()
 		}
 	})
 	if err != nil {
-		if response.AssistantMessage.Content != "" || strings.EqualFold(response.PrimaryRunStatus, "completed") {
+		if v3RunIntentStatusTerminal(response.PrimaryRunStatus) {
 			return response, nil
 		}
 		return ui.ChatRunResponse{}, err
 	}
-	if strings.TrimSpace(response.AssistantMessage.Content) == "" && strings.EqualFold(response.PrimaryRunStatus, "completed") {
+	if strings.TrimSpace(response.AssistantMessage.Content) == "" && v3RunIntentStatusTerminal(response.PrimaryRunStatus) {
 		response.NoAssistant = true
 	}
 	return response, nil
+}
+
+func v3RunIntentFromEvent(event client.SessionV3Event) (client.SessionV3RunIntent, bool) {
+	var payload map[string]any
+	if len(event.Payload) > 0 {
+		_ = json.Unmarshal(event.Payload, &payload)
+	}
+	intentPayload, _ := payload["run_intent"].(map[string]any)
+	intent := client.SessionV3RunIntent{
+		SessionID:     firstNonEmptyV3String(stringValue(intentPayload, "session_id"), stringValue(payload, "session_id"), strings.TrimSpace(event.SessionID)),
+		RunID:         firstNonEmptyV3String(stringValue(intentPayload, "run_id"), stringValue(payload, "run_id")),
+		Status:        firstNonEmptyV3String(stringValue(intentPayload, "status"), stringValue(payload, "status")),
+		BlockedReason: firstNonEmptyV3String(stringValue(intentPayload, "blocked_reason"), stringValue(payload, "blocked_reason"), stringValue(payload, "error")),
+		CreatedAt:     firstNonZeroInt64(int64Number(intentPayload, "created_at"), int64Number(payload, "created_at")),
+		UpdatedAt:     firstNonZeroInt64(int64Number(intentPayload, "updated_at"), int64Number(payload, "updated_at"), event.TsUnixMS),
+		EventSeq:      firstNonZeroUint64(uint64Number(intentPayload, "event_seq"), uint64Number(payload, "event_seq"), event.Seq),
+	}
+	if strings.TrimSpace(intent.RunID) == "" || strings.TrimSpace(intent.Status) == "" {
+		return client.SessionV3RunIntent{}, false
+	}
+	return intent, true
+}
+
+func v3RunIntentMatchesRun(intent client.SessionV3RunIntent, runID string) bool {
+	runID = strings.TrimSpace(runID)
+	return runID == "" || strings.TrimSpace(intent.RunID) == runID
+}
+
+func v3RunIntentStatusTerminal(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "completed", "failed", "dispatch_blocked":
+		return true
+	default:
+		return false
+	}
 }
 
 func v3StreamEventToChatEvent(event client.SessionV3Event) ui.ChatRunStreamEvent {
@@ -511,6 +544,10 @@ func uint64Number(payload map[string]any, key string) uint64 {
 		if value > 0 {
 			return uint64(value)
 		}
+	case int64:
+		if value > 0 {
+			return uint64(value)
+		}
 	case uint64:
 		return value
 	}
@@ -525,6 +562,17 @@ func int64Number(payload map[string]any, key string) int64 {
 		return value
 	case int:
 		return int64(value)
+	case uint64:
+		return int64(value)
+	}
+	return 0
+}
+
+func firstNonZeroUint64(values ...uint64) uint64 {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
 	}
 	return 0
 }

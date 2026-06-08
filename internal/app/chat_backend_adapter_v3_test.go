@@ -34,10 +34,11 @@ func TestAPIChatBackendV3RunTurnConsumesCommittedAssistantStream(t *testing.T) {
 			})
 		case r.Method == http.MethodGet && r.URL.Path == "/v3/realtime/stream":
 			writeTestV3RealtimeFrames(t, w, r,
-				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.started", "session_id": "session-v3", "subscription_id": "active-turn", "after_seq": 2, "high_watermark_seq": 5},
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.started", "session_id": "session-v3", "subscription_id": "active-turn", "after_seq": 2, "high_watermark_seq": 6},
 				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "event_type": "session.assistant.started", "last_seq": 3, "event": map[string]any{"id": "evt-3", "session_id": "session-v3", "seq": 3, "event_type": "session.assistant.started", "ts_unix_ms": 30, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "running"}}},
 				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "event_type": "session.assistant.delta", "last_seq": 4, "event": map[string]any{"id": "evt-4", "session_id": "session-v3", "seq": 4, "event_type": "session.assistant.delta", "ts_unix_ms": 31, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "delta": "hel"}}},
-				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "event_type": "session.assistant.completed", "last_seq": 5, "event": map[string]any{"id": "evt-5", "session_id": "session-v3", "seq": 5, "event_type": "session.assistant.completed", "ts_unix_ms": 32, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "completed", "message": map[string]any{"id": "msg-assistant", "session_id": "session-v3", "global_seq": 5, "role": "assistant", "content": "hello", "created_at": 32, "metadata": map[string]any{"run_id": "run-1"}}, "run_intent": map[string]any{"run_id": "run-1", "status": "completed"}}}},
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "event_type": "session.assistant.completed", "last_seq": 5, "event": map[string]any{"id": "evt-5", "session_id": "session-v3", "seq": 5, "event_type": "session.assistant.completed", "ts_unix_ms": 32, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "running", "message": map[string]any{"id": "msg-assistant", "session_id": "session-v3", "global_seq": 5, "role": "assistant", "content": "hello", "created_at": 32, "metadata": map[string]any{"run_id": "run-1"}}, "run_intent": map[string]any{"run_id": "run-1", "status": "running"}}}},
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "event_type": "session.run_intent.recorded", "last_seq": 6, "event": map[string]any{"id": "evt-6", "session_id": "session-v3", "seq": 6, "event_type": "session.run_intent.recorded", "ts_unix_ms": 33, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "completed", "run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "completed", "event_seq": 6, "updated_at": 33}}}},
 			)
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
@@ -59,7 +60,10 @@ func TestAPIChatBackendV3RunTurnConsumesCommittedAssistantStream(t *testing.T) {
 	if len(gotPaths) != 2 || gotPaths[0] != "POST /v3/sessions/session-v3/messages" || gotPaths[1] != "GET /v3/realtime/stream" {
 		t.Fatalf("paths = %#v", gotPaths)
 	}
-	if len(events) < 5 {
+	if resp.PrimaryRunStatus != "completed" {
+		t.Fatalf("primary run status = %q", resp.PrimaryRunStatus)
+	}
+	if len(events) < 6 {
 		t.Fatalf("events len = %d: %#v", len(events), events)
 	}
 	if events[2].Type != "session.lifecycle.updated" || events[2].Lifecycle == nil || !events[2].Lifecycle.Active || events[2].Lifecycle.Phase != "running" {
@@ -69,7 +73,62 @@ func TestAPIChatBackendV3RunTurnConsumesCommittedAssistantStream(t *testing.T) {
 		t.Fatalf("delta event = %#v", events[3])
 	}
 	if events[4].Type != "message.stored" || events[4].Message == nil || events[4].Message.ID != "msg-assistant" {
-		t.Fatalf("completed event = %#v", events[4])
+		t.Fatalf("completed message event = %#v", events[4])
+	}
+	if events[5].Type != "session.run_intent.recorded" {
+		t.Fatalf("run intent event = %#v", events[5])
+	}
+	terminalLifecycle := events[len(events)-1]
+	if terminalLifecycle.Type != "session.lifecycle.updated" || terminalLifecycle.Lifecycle == nil || terminalLifecycle.Lifecycle.Active || terminalLifecycle.Lifecycle.Phase != "completed" {
+		t.Fatalf("terminal lifecycle event = %#v", terminalLifecycle)
+	}
+}
+
+func TestAPIChatBackendV3RunTurnDoesNotCompleteOnAssistantMessageStored(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v3/sessions/session-v3/messages":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":         true,
+				"session":    map[string]any{"id": "session-v3", "workspace_path": "/workspace", "workspace_name": "workspace", "title": "V3", "mode": "auto"},
+				"projection": map[string]any{"session_id": "session-v3", "last_event_seq": 2, "projection_high_watermark_seq": 2},
+				"message":    map[string]any{"id": "msg-user", "session_id": "session-v3", "global_seq": 2, "role": "user", "content": "hello"},
+				"run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "pending_executor", "event_seq": 2},
+				"messages":   []any{},
+				"events":     []any{},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/realtime/stream":
+			writeTestV3RealtimeFrames(t, w, r,
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.started", "session_id": "session-v3", "subscription_id": "active-turn", "after_seq": 2, "high_watermark_seq": 5},
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "event_type": "session.message.appended", "last_seq": 3, "event": map[string]any{"id": "evt-3", "session_id": "session-v3", "seq": 3, "event_type": "session.message.appended", "ts_unix_ms": 30, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "running", "message": map[string]any{"id": "msg-assistant", "session_id": "session-v3", "global_seq": 3, "role": "assistant", "content": "hello", "created_at": 30, "metadata": map[string]any{"run_id": "run-1"}}, "run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "running", "event_seq": 3}}}},
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "event_type": "session.tool.started", "last_seq": 4, "event": map[string]any{"id": "evt-4", "session_id": "session-v3", "seq": 4, "event_type": "session.tool.started", "ts_unix_ms": 31, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "tool_name": "bash", "call_id": "call-1", "arguments": "{}", "step": 1, "run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "running", "event_seq": 4}}}},
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "event_type": "session.run_intent.recorded", "last_seq": 5, "event": map[string]any{"id": "evt-5", "session_id": "session-v3", "seq": 5, "event_type": "session.run_intent.recorded", "ts_unix_ms": 32, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "completed", "run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "completed", "event_seq": 5, "updated_at": 32}}}},
+			)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	backend := newAPIChatBackend(testAPIWithToken(server.URL), "v3")
+	var events []ui.ChatRunStreamEvent
+	resp, err := backend.RunTurnStream(context.Background(), "session-v3", ui.ChatRunRequest{Prompt: "hello"}, func(event ui.ChatRunStreamEvent) {
+		events = append(events, event)
+	})
+	if err != nil {
+		t.Fatalf("RunTurnStream() error = %v", err)
+	}
+	if resp.PrimaryRunStatus != "completed" || resp.AssistantMessage.ID != "msg-assistant" {
+		t.Fatalf("response = %#v", resp)
+	}
+	if len(events) < 6 {
+		t.Fatalf("events len = %d: %#v", len(events), events)
+	}
+	if events[2].Type != "message.stored" || events[2].Message == nil || events[2].Message.ID != "msg-assistant" {
+		t.Fatalf("assistant message event = %#v", events[2])
+	}
+	if events[3].Type != "tool.started" {
+		t.Fatalf("adapter stopped before durable terminal run intent; event[3] = %#v", events[3])
 	}
 }
 
