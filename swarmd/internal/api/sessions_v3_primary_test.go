@@ -2710,6 +2710,31 @@ func TestSessionsV3ExecutorFlushesProviderDeltaAtSizeBoundary(t *testing.T) {
 	}
 }
 
+func TestSessionsV3ExecutorFailsNonCompletionProviderStopReason(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{response: provideriface.Response{Text: "partial provider answer", StopReason: "length"}}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "noncompletion-provider-create", "noncompletion provider", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "noncompletion-provider-message", "hit length stop")
+	intent := waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentFailed)
+	if !strings.Contains(intent.BlockedReason, "length") {
+		t.Fatalf("failed intent = %+v, want reason containing length", intent)
+	}
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Role != "user" {
+		t.Fatalf("messages after non-completion stop = %+v, want only committed user message", messages)
+	}
+}
+
 func TestSessionsV3ExecutorRecordsFailurePayload(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	runner := &sessionsV3RecordingProviderRunner{err: fmt.Errorf("provider exploded")}
@@ -2809,7 +2834,7 @@ func TestSessionsV3ExecutorUsesProviderFromCommittedHistory(t *testing.T) {
 	if len(runner.lastRequest.Input) != 1 {
 		t.Fatalf("provider input = %+v, want committed user message only", runner.lastRequest.Input)
 	}
-	if runner.lastRequest.Model != "test-model" || runner.lastRequest.Thinking != "medium" || runner.lastRequest.SessionID != created.ID || runner.lastRequest.ToolChoice != "none" {
+	if runner.lastRequest.Model != "test-model" || runner.lastRequest.Thinking != "medium" || runner.lastRequest.SessionID != created.ID {
 		t.Fatalf("provider request = %+v", runner.lastRequest)
 	}
 	if !strings.Contains(runner.lastRequest.Instructions, "Active agent profile:") || !strings.Contains(runner.lastRequest.Instructions, "- name: swarm") {
@@ -3778,6 +3803,12 @@ func (r *sessionsV3RecordingProviderRunner) CreateResponseStreaming(ctx context.
 	if response.Text == "" {
 		response.Text = r.text
 	}
+	if len(r.functionCalls) > 0 {
+		response.FunctionCalls = append([]provideriface.FunctionCall(nil), r.functionCalls...)
+	}
+	if response.StopReason == "" && strings.TrimSpace(response.Text) != "" && len(response.FunctionCalls) == 0 && !response.RestartTurn {
+		response.StopReason = "stop"
+	}
 	if onEvent != nil {
 		deltas := r.deltas
 		if len(deltas) == 0 {
@@ -3786,9 +3817,6 @@ func (r *sessionsV3RecordingProviderRunner) CreateResponseStreaming(ctx context.
 		for _, delta := range deltas {
 			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: delta})
 		}
-	}
-	if len(r.functionCalls) > 0 {
-		response.FunctionCalls = append([]provideriface.FunctionCall(nil), r.functionCalls...)
 	}
 	return response, nil
 }

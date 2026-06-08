@@ -373,7 +373,8 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 	response, err := e.assistantResponse(runCtx, job)
 	if err != nil {
 		if !e.isRunCanceled(job) {
-			_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, err.Error(), "session.run.failed")
+			classification := sessionV3TerminalClassifier.Classify(TerminalClassifierInput{Err: err})
+			_, _ = e.recordRunStatus(job, classification.Status, classification.Reason, classification.EventType)
 		}
 		return
 	}
@@ -605,6 +606,14 @@ func (e *sessionV3Executor) completeRun(job sessionV3ExecutorJob, response sessi
 		return sessionruntime.SessionMutationResult{}, context.Canceled
 	}
 	content := response.Content
+	classification := sessionV3TerminalClassifier.Classify(TerminalClassifierInput{
+		ProviderID:      response.ProviderID,
+		StopReason:      response.StopReason,
+		HasFinalContent: strings.TrimSpace(content) != "",
+	})
+	if classification.Status != sessionruntime.RunIntentCompleted {
+		return e.recordRunStatus(job, classification.Status, classification.Reason, classification.EventType)
+	}
 	now := time.Now().UnixMilli()
 	message := pebblestore.MessageSnapshot{
 		ID:        sessionV3AssistantMessageID(job.SessionID, job.RunID),
@@ -1036,6 +1045,16 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		if len(response.FunctionCalls) == 0 && !response.RestartTurn {
 			finalStreamed.WriteString(streamed.String())
 			return response, finalStreamed.String(), totalFlushCount, nil
+		}
+		classification := sessionV3TerminalClassifier.Classify(TerminalClassifierInput{
+			ProviderID:       runner.ID(),
+			StopReason:       response.StopReason,
+			HasFinalContent:  strings.TrimSpace(firstNonEmpty(response.Text, streamed.String())) != "",
+			HasFunctionCalls: len(response.FunctionCalls) > 0,
+			RestartTurn:      response.RestartTurn,
+		})
+		if classification.Status != sessionruntime.RunIntentRunning {
+			return provideriface.Response{}, "", totalFlushCount, errors.New(classification.Reason)
 		}
 		if len(response.FunctionCalls) == 0 {
 			if response.RestartTurn {
