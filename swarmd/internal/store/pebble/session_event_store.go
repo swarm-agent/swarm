@@ -1085,8 +1085,10 @@ func (s *SessionStore) validateV3RunIntentTransition(sessionID string, incoming 
 		return V3SessionRunIntent{}, err
 	}
 	if ok {
-		if incoming.CreatedAt == 0 {
+		if existing.CreatedAt != 0 {
 			incoming.CreatedAt = existing.CreatedAt
+		} else if incoming.CreatedAt == 0 {
+			incoming.CreatedAt = existing.UpdatedAt
 		}
 		switch status {
 		case V3RunIntentPendingExecutor:

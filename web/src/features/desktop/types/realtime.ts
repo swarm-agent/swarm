@@ -12,6 +12,16 @@ export interface DesktopSessionUsageRecord {
   updatedAt: number
 }
 
+export interface DesktopRunIntentRecord {
+  sessionId: string
+  runId: string
+  status: string
+  blockedReason: string
+  createdAt: number
+  updatedAt: number
+  eventSeq: number
+}
+
 export interface DesktopLiveAssistantSegment {
   id: string
   content: string
@@ -84,6 +94,7 @@ export interface DesktopSessionRecord {
     error: string | null
     ownerTransport: string | null
   } | null
+  runIntent?: DesktopRunIntentRecord | null
   live: {
     runId: string | null
     agentName: string | null

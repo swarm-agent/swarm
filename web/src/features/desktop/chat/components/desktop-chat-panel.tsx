@@ -1569,18 +1569,23 @@ export function DesktopChatPanel({
     && lifecyclePhase === ''
     && liveRunId !== ''
     && liveSession?.live.summary === 'Reconnecting…'
-  const lifecycleStartedAt = lifecycleActive && typeof lifecycle?.startedAt === 'number' && lifecycle.startedAt > 0 ? lifecycle.startedAt : 0
+  const activeRunIntent = liveSession?.runIntent && ['pending_executor', 'running'].includes(liveSession.runIntent.status.trim().toLowerCase())
+    ? liveSession.runIntent
+    : null
+  const durableRunIntentStartedAt = activeRunIntent && activeRunIntent.createdAt > 0 ? activeRunIntent.createdAt : 0
+  const activeRunIntentPendingExecutor = activeRunIntent?.status.trim().toLowerCase() === 'pending_executor'
   const liveStartedAt = typeof liveSession?.live.startedAt === 'number' && liveSession.live.startedAt > 0 ? liveSession.live.startedAt : 0
-  const activeRunStartedAt = lifecycleStartedAt || liveStartedAt
-  const awaitingLifecycleStart = !lifecycleActive && (Boolean(liveSession?.live.awaitingAck) || liveSession?.live.status === 'starting')
-  const resumableRunId = lifecycleRunId || liveRunId
+  const activeRunStartedAt = durableRunIntentStartedAt || liveStartedAt
+  const awaitingLifecycleStart = Boolean(activeRunIntentPendingExecutor || (!lifecycleActive && (liveSession?.live.awaitingAck || liveSession?.live.status === 'starting')))
+  const resumableRunId = activeRunIntent?.runId || lifecycleRunId || liveRunId
+  const durableRunActive = activeRunIntent !== null
   const submitting = awaitingLifecycleStart || reconnectingRun || (lifecycleActive && lifecyclePhase === 'starting')
-  const canStop = (lifecycleActive && lifecycleRunId !== '') || reconnectingRun || (awaitingLifecycleStart && liveRunId !== '')
-  const showRunTimer = activeRunStartedAt > 0 && (lifecycleActive || awaitingLifecycleStart || liveSession?.live.status === 'running' || liveSession?.live.status === 'blocked')
+  const canStop = (durableRunActive && resumableRunId !== '') || reconnectingRun || (lifecycleActive && lifecycleRunId !== '') || (awaitingLifecycleStart && liveRunId !== '')
+  const showRunTimer = activeRunStartedAt > 0 && (durableRunActive || lifecycleActive || awaitingLifecycleStart || liveSession?.live.status === 'running' || liveSession?.live.status === 'blocked')
   const runTimerLabel = showRunTimer ? formatDurationCompact(timerNow - activeRunStartedAt) : reconnectingRun ? 'Reconnecting…' : ''
   const savedRuleCountdown = savedRuleCountdownSeconds(lastSavedRuleExpiresAt, savedRuleCountdownNow)
-  const composerDisabled = awaitingLifecycleStart || reconnectingRun || (lifecycleActive && lifecyclePhase === 'starting')
-  const runActive = canStop || submitting || lifecycleActive
+  const composerDisabled = durableRunActive || awaitingLifecycleStart || reconnectingRun || (lifecycleActive && lifecyclePhase === 'starting')
+  const runActive = canStop || submitting || lifecycleActive || durableRunActive
   const showDictationButton = !runActive && dictationSupported
   const dictationButtonDisabled = composerDisabled
   const dictationComposer = dictationEnabled

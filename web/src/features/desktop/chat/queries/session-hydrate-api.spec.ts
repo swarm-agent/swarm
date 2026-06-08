@@ -177,6 +177,9 @@ function v3HydratedSessionPayload(sessionId: string) {
       { id: `${sessionId}-perm-1`, session_id: sessionId, run_id: 'run-1', call_id: 'call-1', tool_name: 'bash', tool_arguments: '{}', status: 'pending', requirement: 'approval', mode: 'auto', created_at: 6, updated_at: 6 },
     ],
     usage_summary: { session_id: sessionId, provider: 'codex', model: 'gpt-5.4', source: 'provider', context_window: 1000, total_tokens: 42, remaining_tokens: 958, updated_at: 6 },
+    active_run_intent: sessionId === 'session-v3-active'
+      ? { session_id: sessionId, run_id: 'run-active', status: 'running', created_at: 1000, updated_at: 4000, event_seq: 9 }
+      : null,
     agent_model_policy: {
       agent_name: 'explorer',
       resolved_agent_name: 'explorer',
@@ -252,6 +255,21 @@ test('Desktop V3 bootstrap fetches raw route session IDs from /v3/sessions only'
     assert.equal(session?.sessionApi, 'v3')
     assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-raw'])
     assertNoV1OrV2SessionDataCalls(calls)
+  })
+})
+
+test('fetchSession hydrates active V3 run state from durable run intent created_at', async () => {
+  const { fetchSession } = await import('./chat-queries')
+
+  await withFetchStub(async () => {
+    const session = await fetchSession('session-v3-active', { sessionApi: 'v3' })
+
+    assert.equal(session?.runIntent?.runId, 'run-active')
+    assert.equal(session?.runIntent?.status, 'running')
+    assert.equal(session?.live.runId, 'run-active')
+    assert.equal(session?.live.status, 'running')
+    assert.equal(session?.live.startedAt, 1000)
+    assert.equal(session?.live.lastEventAt, 4000)
   })
 })
 

@@ -61,6 +61,7 @@ function makeSession(input: Partial<DesktopSessionRecord> & Pick<DesktopSessionR
     pendingPermissions: input.pendingPermissions ?? [],
     pendingPermissionCount: input.pendingPermissionCount ?? 0,
     usage: input.usage ?? null,
+    runIntent: input.runIntent ?? null,
   }
 }
 
@@ -1268,6 +1269,39 @@ test('V3 assistant completed without durable run intent does not unlock Desktop 
   await new Promise((resolve) => setImmediate(resolve))
 })
 
+test('V3 active run-intent record preserves durable created_at for active Desktop run state', () => {
+  const session = makeSession({ id: 'session-v3', sessionApi: 'v3' })
+  useDesktopStore.setState(makeState(session), true)
+
+  useDesktopStore.setState((state) => applyEnvelope(state, {
+    global_seq: 20,
+    source_seq: 20,
+    stream: 'session:session-v3',
+    event_type: 'session.run_intent.recorded',
+    entity_id: 'session-v3',
+    ts_unix_ms: 300,
+    payload: {
+      session_id: 'session-v3',
+      run_intent: {
+        session_id: 'session-v3',
+        run_id: 'run-v3',
+        status: 'running',
+        created_at: 100,
+        updated_at: 300,
+        event_seq: 20,
+      },
+    },
+  }))
+
+  const updated = useDesktopStore.getState().sessions['session-v3']
+  assert.equal(updated.runIntent?.runId, 'run-v3')
+  assert.equal(updated.runIntent?.status, 'running')
+  assert.equal(updated.live.status, 'running')
+  assert.equal(updated.live.runId, 'run-v3')
+  assert.equal(updated.live.startedAt, 100)
+  assert.equal(updated.live.lastEventType, 'session.run_intent.recorded')
+})
+
 test('V3 terminal run-intent record clears active Desktop lifecycle state', () => {
   const session = makeSession({
     id: 'session-v3',
@@ -1310,6 +1344,7 @@ test('V3 terminal run-intent record clears active Desktop lifecycle state', () =
 
   const updated = useDesktopStore.getState().sessions['session-v3']
   assert.equal(updated.lifecycle, null)
+  assert.equal(updated.runIntent, null)
   assert.equal(updated.live.status, 'idle')
   assert.equal(updated.live.runId, null)
   assert.equal(updated.live.startedAt, null)

@@ -95,6 +95,7 @@ export function mergeSessionRecords(existing: DesktopSessionRecord | null, incom
     gitCommittedAdditions: incoming.gitCommittedAdditions ?? existing.gitCommittedAdditions ?? 0,
     gitCommittedDeletions: incoming.gitCommittedDeletions ?? existing.gitCommittedDeletions ?? 0,
     lifecycle: incoming.lifecycle ?? existing.lifecycle,
+    runIntent: incoming.runIntent === undefined ? existing.runIntent ?? null : incoming.runIntent,
     live: mergeSessionLiveState(existing.live, incoming.live),
     pendingPermissions: incoming.pendingPermissions,
     pendingPermissionCount: incoming.pendingPermissionCount,

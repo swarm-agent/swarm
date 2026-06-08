@@ -96,6 +96,7 @@ type sessionsV3HydratedSession struct {
 	Events             []sessionruntime.SessionEvent     `json:"events"`
 	PendingPermissions []pebblestore.PermissionRecord    `json:"pending_permissions"`
 	UsageSummary       *pebblestore.SessionUsageSummary  `json:"usage_summary,omitempty"`
+	ActiveRunIntent    *pebblestore.V3SessionRunIntent   `json:"active_run_intent,omitempty"`
 	Preference         pebblestore.ModelPreference       `json:"preference"`
 	ContextWindow      int                               `json:"context_window"`
 	MaxOutputTokens    int                               `json:"max_output_tokens"`
@@ -1086,6 +1087,26 @@ func (s *Server) hydrateSessionsV3Primary(principal identity.Principal, sessionI
 	} else if hasSummary {
 		usageSummary = &summary
 	}
+	var activeRunIntent *pebblestore.V3SessionRunIntent
+	if intent, ok, err := s.sessions.GetSessionActiveRunIntent(sessionID); err != nil {
+		return sessionsV3HydratedSession{}, false, err
+	} else if ok && sessionV3RunIntentStatusActive(intent.Status) {
+		activeRunIntent = &intent
+	} else {
+		intents, err := s.sessions.ListSessionRunIntents(sessionID, 0, 500)
+		if err != nil {
+			return sessionsV3HydratedSession{}, false, err
+		}
+		for i := range intents {
+			if !sessionV3RunIntentStatusActive(intents[i].Status) {
+				continue
+			}
+			if activeRunIntent == nil || intents[i].EventSeq > activeRunIntent.EventSeq || (intents[i].EventSeq == activeRunIntent.EventSeq && intents[i].UpdatedAt > activeRunIntent.UpdatedAt) {
+				candidate := intents[i]
+				activeRunIntent = &candidate
+			}
+		}
+	}
 	hydrated.Session.Preference = normalizeSessionsV3ModelPreference(hydrated.Session.Preference)
 	preference := hydrated.Session.Preference
 	contextWindow := 0
@@ -1115,7 +1136,7 @@ func (s *Server) hydrateSessionsV3Primary(principal identity.Principal, sessionI
 		}
 		planRevisions = revisions
 	}
-	return sessionsV3HydratedSession{Session: hydrated.Session, Projection: hydrated.Projection, Messages: hydrated.Messages, Events: hydrated.Events, PendingPermissions: pendingPermissions, UsageSummary: usageSummary, Preference: preference, ContextWindow: contextWindow, MaxOutputTokens: maxOutputTokens, AgentModelPolicy: agentModelPolicy, HasActivePlan: hasActivePlan, ActivePlan: activePlan, PlanRevisions: planRevisions}, true, nil
+	return sessionsV3HydratedSession{Session: hydrated.Session, Projection: hydrated.Projection, Messages: hydrated.Messages, Events: hydrated.Events, PendingPermissions: pendingPermissions, UsageSummary: usageSummary, ActiveRunIntent: activeRunIntent, Preference: preference, ContextWindow: contextWindow, MaxOutputTokens: maxOutputTokens, AgentModelPolicy: agentModelPolicy, HasActivePlan: hasActivePlan, ActivePlan: activePlan, PlanRevisions: planRevisions}, true, nil
 }
 
 func (s *Server) sessionsV3AgentModelPolicy(session pebblestore.SessionSnapshot, defaultPreference pebblestore.ModelPreference, defaultContextWindow, defaultMaxOutputTokens int) sessionsV3AgentModelPolicy {
@@ -1196,6 +1217,7 @@ func sessionsV3HydratedResponse(hydrated sessionsV3HydratedSession) map[string]a
 		"events":              hydrated.Events,
 		"pending_permissions": hydrated.PendingPermissions,
 		"usage_summary":       hydrated.UsageSummary,
+		"active_run_intent":   hydrated.ActiveRunIntent,
 		"preference":          hydrated.Preference,
 		"context_window":      hydrated.ContextWindow,
 		"max_output_tokens":   hydrated.MaxOutputTokens,

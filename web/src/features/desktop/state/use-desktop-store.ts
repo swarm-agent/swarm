@@ -38,6 +38,7 @@ import type {
   DesktopNotificationRecord,
   DesktopNotificationSummary,
   DesktopLiveToolRecord,
+  DesktopRunIntentRecord,
   DesktopSessionRecord,
   DesktopStoreState,
 } from '../types/realtime'
@@ -785,10 +786,24 @@ function sessionAgentNameFromMetadata(metadata: Record<string, unknown> | null |
   return metadataStringValue(metadata, 'agent_name') || metadataStringValue(metadata, 'resolved_agent_name')
 }
 
+function v3RunIntentStatusActive(status: string): boolean {
+  const normalized = status.trim().toLowerCase()
+  return normalized === 'pending_executor' || normalized === 'running'
+}
+
+function activeV3RunIntent(session: DesktopSessionRecord | undefined): DesktopRunIntentRecord | null {
+  const intent = session?.runIntent
+  return intent && v3RunIntentStatusActive(intent.status) ? intent : null
+}
+
 function resolveRunStreamId(session: DesktopSessionRecord | undefined, runId?: string | null): string {
   const explicitRunId = runId?.trim() ?? ''
   if (explicitRunId) {
     return explicitRunId
+  }
+  const intentRunId = activeV3RunIntent(session)?.runId.trim() ?? ''
+  if (intentRunId) {
+    return intentRunId
   }
   const liveRunId = session?.live.runId?.trim() ?? ''
   if (liveRunId) {
@@ -811,7 +826,12 @@ function resolveRunStreamResumeRequest(sessionId: string, fallbackRunId?: string
     return null
   }
   const sessionApi = session.sessionApi?.trim().toLowerCase() ?? ''
-  if (session.live.status === 'idle' || session.live.status === 'error') {
+  const activeRunIntent = activeV3RunIntent(session)
+  if (sessionApi === 'v3') {
+    if (!activeRunIntent && (session.live.status === 'idle' || session.live.status === 'error')) {
+      return null
+    }
+  } else if (session.live.status === 'idle' || session.live.status === 'error') {
     return null
   }
   const runId = resolveRunStreamId(session, fallbackRunId)
@@ -1138,6 +1158,7 @@ function ensureSession(state: DesktopStoreState, sessionId: string): DesktopSess
     gitCommittedAdditions: 0,
     gitCommittedDeletions: 0,
     lifecycle: null,
+    runIntent: null,
     live: emptyLiveState(),
     pendingPermissions: [],
     pendingPermissionCount: 0,
@@ -1292,7 +1313,10 @@ function patchWorkspaceTodoSummary(workspacePath: string, summary: WorkspaceTodo
   })
 }
 
-function nextLiveStatusAfterPermissionSync(session: Pick<DesktopSessionRecord, 'lifecycle' | 'live'>): DesktopSessionRecord['live']['status'] {
+function nextLiveStatusAfterPermissionSync(session: Pick<DesktopSessionRecord, 'lifecycle' | 'runIntent' | 'live'>): DesktopSessionRecord['live']['status'] {
+  if (session.runIntent && v3RunIntentStatusActive(session.runIntent.status)) {
+    return session.runIntent.status.trim().toLowerCase() === 'pending_executor' ? 'starting' : 'running'
+  }
   if (session.lifecycle?.active || session.live.runId || session.live.awaitingAck || session.live.startedAt !== null) {
     return 'running'
   }
@@ -1423,7 +1447,12 @@ function v3PayloadString(payloadRecord: Record<string, unknown> | null | undefin
   return typeof value === 'string' ? value.trim() : ''
 }
 
-function v3DurableRunIntent(payloadRecord: Record<string, unknown>, eventType: string): { runId: string; status: string; error: string } | null {
+function v3PayloadNumber(payloadRecord: Record<string, unknown> | null | undefined, key: string): number {
+  const value = payloadRecord?.[key]
+  return typeof value === 'number' ? value : 0
+}
+
+function v3DurableRunIntent(payloadRecord: Record<string, unknown>, eventType: string): (DesktopRunIntentRecord & { error: string }) | null {
   const nestedRunIntent = v3RunIntentPayload(payloadRecord)
   const runId = v3PayloadString(nestedRunIntent, 'run_id')
     || (eventType === 'session.run_intent.recorded' || eventType.startsWith('session.run.') ? v3PayloadString(payloadRecord, 'run_id') : '')
@@ -1432,10 +1461,16 @@ function v3DurableRunIntent(payloadRecord: Record<string, unknown>, eventType: s
   if (!runId || !status) {
     return null
   }
+  const blockedReason = v3PayloadString(nestedRunIntent, 'blocked_reason')
   return {
+    sessionId: v3PayloadString(nestedRunIntent, 'session_id') || v3PayloadString(payloadRecord, 'session_id'),
     runId,
     status: status.toLowerCase(),
-    error: v3PayloadString(payloadRecord, 'error') || v3PayloadString(nestedRunIntent, 'blocked_reason'),
+    blockedReason,
+    createdAt: v3PayloadNumber(nestedRunIntent, 'created_at'),
+    updatedAt: v3PayloadNumber(nestedRunIntent, 'updated_at') || v3PayloadNumber(payloadRecord, 'updated_at'),
+    eventSeq: v3PayloadNumber(nestedRunIntent, 'event_seq'),
+    error: v3PayloadString(payloadRecord, 'error') || blockedReason,
   }
 }
 
@@ -1560,6 +1595,11 @@ function applyV3MessageCommitResult(state: DesktopStoreState, sessionId: string,
     : runStatus === 'pending_executor'
       ? 'starting'
       : session.live.status
+  if (runIntent && v3RunIntentStatusActive(runStatus)) {
+    session.runIntent = runIntent
+  } else if (runIntent && v3RunIntentStatusTerminal(runStatus)) {
+    session.runIntent = null
+  }
   if ((runStatus === 'pending_executor' || runStatus === 'dispatch_blocked') && session.live.startedAt === null) {
     session.live.startedAt = runStartedAt
   }
@@ -2766,13 +2806,29 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
       break
     }
     case 'session.status':
-    case 'session.run_intent.recorded':
+    case 'session.run_intent.recorded': {
+      const durableRunIntent = eventType === 'session.run_intent.recorded'
+        ? v3DurableRunIntent(payloadRecord, eventType)
+        : null
+      if (durableRunIntent) {
+        if (v3RunIntentStatusActive(durableRunIntent.status)) {
+          session.runIntent = durableRunIntent
+          session.live.runId = durableRunIntent.runId
+          session.live.startedAt = durableRunIntent.createdAt > 0 ? durableRunIntent.createdAt : session.live.startedAt
+        } else if (v3RunIntentStatusTerminal(durableRunIntent.status)) {
+          session.runIntent = null
+        }
+      }
       applyAuthoritativeSessionStatus(sessionId, session, typeof payloadRecord.status === 'string' ? payloadRecord.status : '', ts, eventType, {
-        runId: typeof payloadRecord.run_id === 'string' ? payloadRecord.run_id : session.live.runId,
+        runId: durableRunIntent?.runId || (typeof payloadRecord.run_id === 'string' ? payloadRecord.run_id : session.live.runId),
         summary: typeof payloadRecord.summary === 'string' ? payloadRecord.summary : session.live.summary,
-        error: typeof payloadRecord.error === 'string' ? payloadRecord.error : null,
+        error: durableRunIntent?.error || (typeof payloadRecord.error === 'string' ? payloadRecord.error : null),
       })
+      if (durableRunIntent && v3RunIntentStatusActive(durableRunIntent.status) && session.live.startedAt === null) {
+        session.live.startedAt = durableRunIntent.createdAt > 0 ? durableRunIntent.createdAt : ts
+      }
       break
+    }
     case 'run.turn.started':
       session.live.runId = typeof payloadRecord.run_id === 'string' ? payloadRecord.run_id : session.live.runId
       if (isDisplayableAgentLabel(payloadRecord.agent)) {

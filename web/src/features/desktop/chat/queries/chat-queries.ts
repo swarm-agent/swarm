@@ -6,6 +6,7 @@ import {
 } from "../../../../app/api";
 import type {
   DesktopPermissionRecord,
+  DesktopRunIntentRecord,
   DesktopSessionRecord,
   DesktopSessionUsageRecord,
 } from "../../types/realtime";
@@ -150,6 +151,7 @@ interface V3HydratedSessionResponseWire {
   events?: unknown[];
   pending_permissions?: ResolvePermissionResponseWire["permission"][];
   usage_summary?: SessionUsageSummaryWire | null;
+  active_run_intent?: V3RunIntentWire | null;
 }
 
 interface V3RunIntentWire {
@@ -168,15 +170,7 @@ interface V3MessageCommitResponseWire extends V3HydratedSessionResponseWire {
   run_intent?: V3RunIntentWire | null;
 }
 
-export interface V3RunIntentRecord {
-  sessionId: string;
-  runId: string;
-  status: string;
-  blockedReason: string;
-  createdAt: number;
-  updatedAt: number;
-  eventSeq: number;
-}
+export type V3RunIntentRecord = DesktopRunIntentRecord;
 
 export interface SendSessionMessageResult {
   ok?: boolean;
@@ -736,7 +730,7 @@ function mapChatMessage(message: MessageWire): ChatMessageRecord {
   };
 }
 
-function mapV3RunIntent(intent: V3RunIntentWire | null | undefined): V3RunIntentRecord | null {
+function mapV3RunIntent(intent: V3RunIntentWire | null | undefined): DesktopRunIntentRecord | null {
   if (!intent || typeof intent !== "object") {
     return null;
   }
@@ -761,6 +755,53 @@ function mapV3MessageCommitResponse(response: V3MessageCommitResponseWire): Send
     messages: Array.isArray(response.messages) ? response.messages.map(mapChatMessage) : [],
     runIntent: mapV3RunIntent(response.run_intent),
     events: Array.isArray(response.events) ? response.events : [],
+  };
+}
+
+function mapLiveStatusFromRunIntent(status: string): DesktopSessionRecord["live"]["status"] {
+  switch (status.trim().toLowerCase()) {
+    case "pending_executor":
+      return "starting";
+    case "running":
+      return "running";
+    case "dispatch_blocked":
+      return "blocked";
+    case "failed":
+    case "cancelled":
+    case "expired":
+    case "interrupted":
+      return "error";
+    case "completed":
+      return "idle";
+    default:
+      return "idle";
+  }
+}
+
+function v3RunIntentStatusActive(status: string): boolean {
+  const normalized = status.trim().toLowerCase();
+  return normalized === "pending_executor" || normalized === "running";
+}
+
+function applyActiveRunIntent(session: DesktopSessionRecord, runIntent: DesktopRunIntentRecord | null): DesktopSessionRecord {
+  if (!runIntent || !v3RunIntentStatusActive(runIntent.status)) {
+    return { ...session, runIntent: null };
+  }
+  return {
+    ...session,
+    sessionApi: session.sessionApi || "v3",
+    runIntent,
+    live: {
+      ...session.live,
+      runId: runIntent.runId || session.live.runId,
+      startedAt: runIntent.createdAt > 0 ? runIntent.createdAt : session.live.startedAt,
+      status: mapLiveStatusFromRunIntent(runIntent.status),
+      summary: runIntent.status.trim().toLowerCase() === "pending_executor"
+        ? "Pending executor…"
+        : session.live.summary,
+      error: null,
+      lastEventAt: runIntent.updatedAt > 0 ? runIntent.updatedAt : session.live.lastEventAt,
+    },
   };
 }
 
@@ -891,6 +932,7 @@ function mapSession(session: SessionWire): DesktopSessionRecord {
         ? session.git_committed_deletions
         : 0,
     lifecycle,
+    runIntent: null,
     live: {
       ...emptyLiveState(),
       runId: lifecycle?.active ? lifecycle.runId : null,
@@ -930,7 +972,10 @@ export async function fetchSession(
     const response = await requestJson<V3HydratedSessionResponseWire>(
       `/v3/sessions/${encodeURIComponent(normalizedSessionId)}`,
     );
-    const mappedSession = mapSession(mapSessionProjectionToSession(response.session ?? {}, response.projection));
+    const mappedSession = applyActiveRunIntent(
+      mapSession(mapSessionProjectionToSession(response.session ?? {}, response.projection)),
+      mapV3RunIntent(response.active_run_intent),
+    );
     const mapped = applyDesktopChatRouteToSession(
       mappedSession,
       routeFromSessionMetadata(mappedSession),
