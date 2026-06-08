@@ -4,13 +4,37 @@ import { prefetchSessionRuntimeData } from '../features/queries/query-options'
 import { DesktopVaultShell } from '../features/desktop/vault/components/desktop-vault-shell'
 
 const WorkspaceHomePage = lazyRouteComponent(() => import('../features/workspaces/pages/workspace-home-page'), 'WorkspaceHomePage')
-const DesktopAppPage = lazyRouteComponent(() => import('../features/desktop/layout/desktop-app-page'), 'DesktopAppPage')
+const importDesktopAppPage = () => import('../features/desktop/layout/desktop-app-page')
+const DesktopAppPage = lazyRouteComponent(importDesktopAppPage, 'DesktopAppPage')
 const DesktopSettingsPage = lazyRouteComponent(() => import('../features/desktop/settings/components/desktop-settings-page'), 'DesktopSettingsPage')
 const IntegrationsPage = lazyRouteComponent(() => import('../features/desktop/integrations/pages/integrations-page'), 'IntegrationsPage')
 const SwarmToolsPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/swarm-tools-page'), 'SwarmToolsPage')
 const VideoToolPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/video-tool-page'), 'VideoToolPage')
 const ImageToolPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/image-tool-page'), 'ImageToolPage')
 const FlowRedirectRoute = lazyRouteComponent(() => import('./flow-redirect-route'), 'FlowRedirectRoute')
+
+const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'integrations', 'tools', 'flow'])
+const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'flow'])
+
+function currentWorkspaceSessionRoute(pathname: string): { sessionId: string } | null {
+  const parts = pathname.split('/').map((part) => decodeURIComponent(part).trim()).filter(Boolean)
+  if (parts.length !== 2) {
+    return null
+  }
+  const [workspaceSlug, sessionId] = parts
+  if (!workspaceSlug || !sessionId || ROOT_RESERVED_ROUTE_SEGMENTS.has(workspaceSlug) || WORKSPACE_RESERVED_ROUTE_SEGMENTS.has(sessionId)) {
+    return null
+  }
+  return { sessionId }
+}
+
+if (typeof window !== 'undefined') {
+  const route = currentWorkspaceSessionRoute(window.location.pathname)
+  if (route) {
+    void importDesktopAppPage()
+    void prefetchSessionRuntimeData(queryClient, route.sessionId)
+  }
+}
 
 function validateWorkspaceParams(params: Record<string, unknown>): { workspaceSlug: string } {
   const workspaceSlug = typeof params.workspaceSlug === 'string' ? params.workspaceSlug.trim() : ''

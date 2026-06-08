@@ -70,6 +70,16 @@ interface V3RunIntentWire {
   event_seq?: number
 }
 
+declare global {
+  interface Window {
+    __swarmV3SessionPreload?: {
+      sessionId?: string
+      startedAt?: number
+      promise?: Promise<V3HydratedSessionResponseWire | null>
+    }
+  }
+}
+
 interface V3HydratedSessionResponseWire {
   session?: V3SessionWire
   projection?: V3SessionProjectionWire
@@ -304,8 +314,24 @@ export async function hydrateDesktopV3SessionSnapshot(
   return snapshot
 }
 
+function readPreloadedDesktopV3SessionResponse(sessionId: string): Promise<V3HydratedSessionResponseWire | null> | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
+  const preload = window.__swarmV3SessionPreload
+  if (!preload?.promise || String(preload.sessionId ?? '').trim() !== sessionId) {
+    return null
+  }
+  window.__swarmV3SessionPreload = undefined
+  return preload.promise
+}
+
 export async function fetchDesktopV3SessionSnapshot(sessionId: string, signal?: AbortSignal): Promise<DesktopV3SessionSnapshot | null> {
   const normalizedSessionId = assertRawCanonicalDesktopV3SessionId(sessionId)
+  const preloadedResponse = await readPreloadedDesktopV3SessionResponse(normalizedSessionId)
+  if (preloadedResponse) {
+    return mapDesktopV3SessionSnapshot(preloadedResponse)
+  }
   const response = await requestJson<V3HydratedSessionResponseWire>(
     `/v3/sessions/${encodeURIComponent(normalizedSessionId)}`,
     { signal },
