@@ -24,7 +24,7 @@ import {
   updateDraftModelPreference,
 } from '../queries/chat-queries'
 import { getCachedDesktopV3SessionSnapshot, saveDesktopV3SessionPlan, updateDesktopV3SessionAgent, updateDesktopV3SessionMetadata, updateDesktopV3SessionMode, updateDesktopV3SessionPreference } from '../../state/desktop-v3-cache'
-import type { AgentStateRecord, ChatMessageRecord, ResolvedSessionPreference, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
+import type { AgentModelPolicyRecord, AgentProfileRecord, AgentStateRecord, ChatMessageRecord, ModelOptionRecord, ResolvedSessionPreference, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
 import type { DesktopLiveAssistantSegment, DesktopLiveToolRecord, DesktopSessionRecord } from '../../types/realtime'
 import { Card } from '../../../../components/ui/card'
 import { ChatMarkdown } from './chat-markdown'
@@ -446,6 +446,86 @@ export function visibleDesktopChatMessages(messages: ChatMessageRecord[]): ChatM
 
 function optionKey(provider: string, model: string, contextMode = ''): string {
   return `${provider}:${model}:${contextMode.trim().toLowerCase()}`
+}
+
+function modelOptionForPreference(
+  options: ModelOptionRecord[],
+  preference: ResolvedSessionPreference['preference'],
+): ModelOptionRecord | null {
+  const provider = preference.provider.trim()
+  const model = preference.model.trim()
+  if (!provider || !model) {
+    return null
+  }
+  const exactKey = optionKey(provider, model, preference.contextMode)
+  return options.find((option) => option.key === exactKey)
+    ?? options.find((option) => option.provider === provider && option.model === model)
+    ?? null
+}
+
+function agentPresetPreference(profile: AgentProfileRecord | null | undefined): ResolvedSessionPreference['preference'] | null {
+  const provider = profile?.provider.trim() ?? ''
+  const model = profile?.model.trim() ?? ''
+  if (!provider || !model) {
+    return null
+  }
+  return {
+    provider,
+    model,
+    thinking: normalizeThinkingValue(profile?.thinking || defaultThinkingForProvider(provider)),
+    serviceTier: '',
+    contextMode: '',
+    updatedAt: profile?.updatedAt ?? 0,
+  }
+}
+
+function agentPolicyFromProfile(
+  profile: AgentProfileRecord | null | undefined,
+  options: ModelOptionRecord[],
+): AgentModelPolicyRecord | null {
+  const preference = agentPresetPreference(profile)
+  if (!preference) {
+    return null
+  }
+  const option = modelOptionForPreference(options, preference)
+  const resolvedPreference = option
+    ? {
+        ...preference,
+        provider: option.provider,
+        model: option.model,
+        contextMode: option.contextMode,
+        thinking: normalizeThinkingValue(preference.thinking || option.thinking || defaultThinkingForProvider(option.provider)),
+      }
+    : preference
+  const contextWindow = option?.contextWindow ?? 0
+  return {
+    agentName: profile?.name.trim() ?? '',
+    resolvedAgentName: profile?.name.trim() ?? '',
+    source: 'agent_preset',
+    locked: true,
+    reason: agentModelLockedMessage(profile?.name ?? ''),
+    preference: resolvedPreference,
+    contextWindow,
+    maxOutputTokens: 0,
+  }
+}
+
+function preferenceFromAgentPolicy(policy: AgentModelPolicyRecord | null): ResolvedSessionPreference | null {
+  if (!policy?.locked) {
+    return null
+  }
+  return {
+    preference: {
+      provider: policy.preference.provider,
+      model: policy.preference.model,
+      thinking: normalizeThinkingValue(policy.preference.thinking),
+      serviceTier: policy.preference.serviceTier,
+      contextMode: policy.preference.contextMode,
+      updatedAt: policy.preference.updatedAt,
+    },
+    contextWindow: policy.contextWindow,
+    maxOutputTokens: policy.maxOutputTokens,
+  }
 }
 
 type ScrollMetrics = Pick<HTMLElement, 'scrollHeight' | 'scrollTop' | 'clientHeight'>
@@ -1158,9 +1238,26 @@ export function DesktopChatPanel({
   const sessionPreference = sessionPreferenceQuery.data ?? emptyPreference()
   const draftPreference = draftPreferenceQuery.data ?? emptyPreference()
   const desktopV3Snapshot = sessionId ? getCachedDesktopV3SessionSnapshot(queryClient, sessionId) : null
-  const activeAgentModelPolicy = sessionId ? desktopV3Snapshot?.agentModelPolicy ?? null : null
+  const selectedAgentProfileForModel = useMemo(
+    () => agentState.profiles.find((profile) => profile.name === selectedPrimaryAgent) ?? null,
+    [agentState.profiles, selectedPrimaryAgent],
+  )
+  const selectedAgentModelPolicy = useMemo(
+    () => agentPolicyFromProfile(selectedAgentProfileForModel, modelOptions),
+    [modelOptions, selectedAgentProfileForModel],
+  )
+  const cachedAgentModelPolicy = sessionId ? desktopV3Snapshot?.agentModelPolicy ?? null : null
+  const cachedAgentModelPolicyMatchesSelection = !cachedAgentModelPolicy?.agentName
+    || !selectedPrimaryAgent
+    || cachedAgentModelPolicy.agentName === selectedPrimaryAgent
+    || cachedAgentModelPolicy.resolvedAgentName === selectedPrimaryAgent
+  const activeAgentModelPolicy = sessionId
+    ? selectedAgentModelPolicy ?? (cachedAgentModelPolicyMatchesSelection ? cachedAgentModelPolicy : null)
+    : null
   const activeAgentModelLocked = Boolean(activeAgentModelPolicy?.locked)
-  const activePreferenceRecord = sessionId ? sessionPreference : draftPreference
+  const activePreferenceRecord = sessionId
+    ? preferenceFromAgentPolicy(activeAgentModelPolicy) ?? sessionPreference
+    : draftPreference
 
   const composer = useDesktopStore((state) => state.getSessionDraft(sessionId, workspacePath))
   const composerDraftKey = sessionId ?? draftSessionKey
@@ -1669,7 +1766,7 @@ export function DesktopChatPanel({
         activePreferenceRecord.preference.contextMode,
       )
     : ''
-  const selectedModelOption = resolvedModelOptions.find((option) => option.key === selectedModelKey) ?? null
+  const selectedModelOption = modelOptionForPreference(resolvedModelOptions, activePreferenceRecord.preference)
   const selectedModelAvailable = selectedModelKey !== '' && selectedModelOption !== null
   const selectedContextWindow = useMemo(
     () => effectiveContextWindow(
@@ -1920,6 +2017,7 @@ export function DesktopChatPanel({
     try {
       const snapshot = await updateDesktopV3SessionAgent(queryClient, sessionId, nextAgent)
       upsertSession(snapshot.session)
+      queryClient.setQueryData(sessionPreferenceQueryKey(sessionId), snapshot.preference)
       const serverAgent = resolveSessionEffectiveAgentName(snapshot.session, agentState.activePrimary)
       setSelectedPrimaryAgent(serverAgent)
       setCurrentSessionAgent(serverAgent)
