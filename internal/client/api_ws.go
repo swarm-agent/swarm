@@ -166,10 +166,14 @@ func dialDaemonWS(ctx context.Context, baseURL, token, socketPath, wsPath, clien
 	}
 	host := net.JoinHostPort(hostName, port)
 
+	path := normalizeDaemonWSPath(wsPath)
+	if strings.TrimSpace(wsPath) == "" && strings.TrimSpace(parsed.Path) != "" {
+		path = normalizeDaemonWSPath(parsed.Path)
+	}
 	wsURL := &url.URL{
 		Scheme: wsScheme,
 		Host:   host,
-		Path:   normalizeDaemonWSPath(wsPath),
+		Path:   path,
 	}
 	if clientID = strings.TrimSpace(clientID); clientID != "" {
 		q := wsURL.Query()

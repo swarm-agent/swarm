@@ -90,6 +90,7 @@ type SessionSummary struct {
 	Metadata                   map[string]any
 	PendingPermissionCount     int
 	Lifecycle                  *client.SessionLifecycleSnapshot
+	ActiveRunIntent            *client.SessionV3RunIntent
 	SessionExecution           *client.SessionExecutionV2
 	Preference                 client.ModelPreference
 	WorktreeEnabled            bool

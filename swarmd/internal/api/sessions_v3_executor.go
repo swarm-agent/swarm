@@ -30,7 +30,7 @@ const (
 	sessionV3ExecutorDefaultStartDelay        = 10 * time.Millisecond
 	sessionV3ExecutorRecoveryLimit            = 500
 	sessionV3ExecutorDefaultRunningStaleAfter = 5 * time.Minute
-	sessionV3ProviderToolLoopMaxSteps         = 8
+	sessionV3ProviderIdenticalToolCallLimit   = 5
 	sessionV3AssistantDeltaFlushMaxBytes      = 512
 	sessionV3AssistantDeltaFlushMaxDelay      = 100 * time.Millisecond
 	sessionV3RunStopDefaultReason             = "run stopped by user"
@@ -993,10 +993,10 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		return provideriface.Response{}, "", 0, errors.New("provider runner is not configured")
 	}
 	input := append([]map[string]any(nil), baseReq.Input...)
-	var lastResponse provideriface.Response
 	var finalStreamed strings.Builder
 	var totalFlushCount int
-	for step := 1; step <= sessionV3ProviderToolLoopMaxSteps; step++ {
+	identicalCalls := sessionV3ProviderIdenticalToolCallTracker{}
+	for step := 1; ; step++ {
 		toolsEnabled := len(baseReq.Tools) > 0 && !strings.EqualFold(strings.TrimSpace(baseReq.ToolChoice), "none")
 		var toolInvoker provideriface.ToolInvoker
 		if toolsEnabled {
@@ -1041,10 +1041,12 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		if progressErr != nil {
 			return provideriface.Response{}, "", totalFlushCount, progressErr
 		}
-		lastResponse = response
 		totalFlushCount += coalescer.FlushCount()
 		if len(response.FunctionCalls) == 0 && !response.RestartTurn {
 			finalStreamed.WriteString(streamed.String())
+			if strings.TrimSpace(response.StopReason) == "" && strings.TrimSpace(firstNonEmpty(response.Text, streamed.String())) != "" {
+				response.StopReason = "stop"
+			}
 			return response, finalStreamed.String(), totalFlushCount, nil
 		}
 		classification := sessionV3TerminalClassifier.Classify(TerminalClassifierInput{
@@ -1107,6 +1109,9 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		toolResults := make([]provideriface.ToolExecutionResult, 0, len(response.FunctionCalls))
 		restartAfterTools := false
 		for _, call := range response.FunctionCalls {
+			if identicalCount, key := identicalCalls.Observe(call); identicalCount >= sessionV3ProviderIdenticalToolCallLimit {
+				return provideriface.Response{}, "", totalFlushCount, fmt.Errorf("v3 provider repeated identical tool call %d times: %s", sessionV3ProviderIdenticalToolCallLimit, key)
+			}
 			result, err := toolInvoker.ExecuteTool(ctx, provideriface.ToolInvocation{
 				CallID:    strings.TrimSpace(call.CallID),
 				Name:      strings.TrimSpace(call.Name),
@@ -1137,10 +1142,37 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			}
 		}
 	}
-	if len(lastResponse.FunctionCalls) > 0 || lastResponse.RestartTurn {
-		return provideriface.Response{}, "", totalFlushCount, fmt.Errorf("v3 provider tool loop exceeded %d steps", sessionV3ProviderToolLoopMaxSteps)
+}
+
+type sessionV3ProviderIdenticalToolCallTracker struct {
+	lastKey string
+	count   int
+}
+
+func (t *sessionV3ProviderIdenticalToolCallTracker) Observe(call provideriface.FunctionCall) (int, string) {
+	key := sessionV3ProviderCanonicalToolCallKey(call)
+	if key == t.lastKey {
+		t.count++
+	} else {
+		t.lastKey = key
+		t.count = 1
 	}
-	return lastResponse, finalStreamed.String(), totalFlushCount, nil
+	return t.count, key
+}
+
+func sessionV3ProviderCanonicalToolCallKey(call provideriface.FunctionCall) string {
+	name := strings.TrimSpace(call.Name)
+	args := strings.TrimSpace(call.Arguments)
+	canonicalArgs := args
+	if args != "" {
+		var decoded any
+		if err := json.Unmarshal([]byte(args), &decoded); err == nil {
+			if encoded, err := json.Marshal(decoded); err == nil {
+				canonicalArgs = string(encoded)
+			}
+		}
+	}
+	return name + ":" + canonicalArgs
 }
 
 func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3ResolvedRuntime, job sessionV3ExecutorJob, step int) (provideriface.ToolInvoker, error) {

@@ -2793,12 +2793,14 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 		WorktreeBranchName:       worktreeBranchName,
 	}
 	session := client.SessionSummary{}
+	var activeRunIntent *client.SessionV3RunIntent
 	if allowTUICWDPrimary {
 		createdV3, err := a.api.CreateSessionV3WithOptions(ctx, createOptions)
 		if err != nil {
 			return err
 		}
 		session = createdV3.Session
+		activeRunIntent = cloneClientSessionV3RunIntent(createdV3.ActiveRunIntent)
 	} else {
 		createdV2, err := a.api.CreateSessionWithOptions(ctx, createOptions)
 		if err != nil {
@@ -2821,6 +2823,7 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 		WorktreeBaseBranch:         strings.TrimSpace(session.WorktreeBaseBranch),
 		WorktreeBranch:             strings.TrimSpace(session.WorktreeBranch),
 		SessionAPI:                 strings.TrimSpace(session.SessionAPI),
+		ActiveRunIntent:            activeRunIntent,
 		LastEventSeq:               session.LastEventSeq,
 		ProjectionHighWatermarkSeq: session.ProjectionHighWatermarkSeq,
 	}
@@ -2831,6 +2834,9 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 		created.WorkspaceName = workspaceName
 	}
 	created.WorkspaceName = a.contextDisplayNameForPath(created.WorkspacePath, created.WorkspaceName)
+	if lifecycle := v3RunIntentSessionLifecycle(created.ID, activeRunIntent); lifecycle != nil {
+		created.Lifecycle = lifecycle
+	}
 	if created.Title == "" {
 		created.Title = title
 	}
@@ -3971,6 +3977,34 @@ func cloneClientSessionLifecycle(lifecycle *client.SessionLifecycleSnapshot) *cl
 	return &copy
 }
 
+func cloneClientSessionV3RunIntent(intent *client.SessionV3RunIntent) *client.SessionV3RunIntent {
+	if intent == nil {
+		return nil
+	}
+	copy := *intent
+	return &copy
+}
+
+func v3RunIntentSessionLifecycle(sessionID string, intent *client.SessionV3RunIntent) *client.SessionLifecycleSnapshot {
+	lifecycle := activeRunIntentLifecycle(sessionID, intent)
+	if lifecycle == nil {
+		return nil
+	}
+	return &client.SessionLifecycleSnapshot{
+		SessionID:      lifecycle.SessionID,
+		RunID:          lifecycle.RunID,
+		Active:         lifecycle.Active,
+		Phase:          lifecycle.Phase,
+		StartedAt:      lifecycle.StartedAt,
+		EndedAt:        lifecycle.EndedAt,
+		UpdatedAt:      lifecycle.UpdatedAt,
+		Generation:     lifecycle.Generation,
+		StopReason:     lifecycle.StopReason,
+		Error:          lifecycle.Error,
+		OwnerTransport: lifecycle.OwnerTransport,
+	}
+}
+
 func cloneSessionExecutionV2(execution *client.SessionExecutionV2) *client.SessionExecutionV2 {
 	if execution == nil {
 		return nil
@@ -4054,6 +4088,12 @@ func mergeHomeSessionSummary(current, incoming model.SessionSummary) model.Sessi
 	}
 	if incoming.Lifecycle != nil {
 		merged.Lifecycle = cloneClientSessionLifecycle(incoming.Lifecycle)
+	}
+	if incoming.ActiveRunIntent != nil {
+		merged.ActiveRunIntent = cloneClientSessionV3RunIntent(incoming.ActiveRunIntent)
+		if lifecycle := v3RunIntentSessionLifecycle(merged.ID, incoming.ActiveRunIntent); lifecycle != nil {
+			merged.Lifecycle = lifecycle
+		}
 	}
 	if incoming.SessionExecution != nil {
 		merged.SessionExecution = cloneSessionExecutionV2(incoming.SessionExecution)

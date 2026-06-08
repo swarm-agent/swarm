@@ -299,9 +299,6 @@ func (c *API) streamSessionV3Replay(ctx context.Context, sessionID string, after
 			if onFrame != nil {
 				onFrame(frame)
 			}
-			if isTerminalSessionV3Event(event.EventType) {
-				return nil
-			}
 		}
 		if onFrame != nil {
 			onFrame(SessionV3StreamFrame{Type: "replay.complete", OK: true, SessionID: sessionID, LastSeq: lastSeq, HighWatermarkSeq: replay.HighWatermarkSeq, NextSeq: replay.NextSeq, Projection: replay.Projection})
@@ -311,15 +308,6 @@ func (c *API) streamSessionV3Replay(ctx context.Context, sessionID string, after
 			return nil
 		case <-time.After(250 * time.Millisecond):
 		}
-	}
-}
-
-func isTerminalSessionV3Event(eventType string) bool {
-	switch strings.TrimSpace(eventType) {
-	case "session.assistant.completed", "session.run.failed", "session.assistant.failed":
-		return true
-	default:
-		return false
 	}
 }
 
@@ -370,7 +358,7 @@ func (c *API) streamSessionV3WebSocket(ctx context.Context, sessionID string, af
 			if onFrame != nil {
 				onFrame(frame)
 			}
-			return frame.Err()
+			continue
 		case "event":
 			if frame.Event == nil {
 				return errors.New("sessions v3 stream event frame missing event")

@@ -780,10 +780,11 @@ type SessionV3Event struct {
 }
 
 type SessionV3Hydrated struct {
-	Session    SessionSummary      `json:"session"`
-	Projection SessionV3Projection `json:"projection"`
-	Messages   []SessionMessage    `json:"messages"`
-	Events     []SessionV3Event    `json:"events"`
+	Session         SessionSummary      `json:"session"`
+	Projection      SessionV3Projection `json:"projection"`
+	Messages        []SessionMessage    `json:"messages"`
+	Events          []SessionV3Event    `json:"events"`
+	ActiveRunIntent *SessionV3RunIntent `json:"active_run_intent,omitempty"`
 }
 
 type SessionV3MessageOptions struct {
@@ -2901,17 +2902,18 @@ func (c *API) CreateSessionV3WithOptions(ctx context.Context, options SessionCre
 		req["metadata"] = options.Metadata
 	}
 	var resp struct {
-		OK         bool                `json:"ok"`
-		Session    SessionSummary      `json:"session"`
-		Projection SessionV3Projection `json:"projection"`
-		Messages   []SessionMessage    `json:"messages"`
-		Events     []SessionV3Event    `json:"events"`
+		OK              bool                `json:"ok"`
+		Session         SessionSummary      `json:"session"`
+		Projection      SessionV3Projection `json:"projection"`
+		Messages        []SessionMessage    `json:"messages"`
+		Events          []SessionV3Event    `json:"events"`
+		ActiveRunIntent *SessionV3RunIntent `json:"active_run_intent"`
 	}
 	if err := c.postJSON(ctx, sessionV3PrimaryPath("", ""), req, &resp, true); err != nil {
 		return SessionV3Hydrated{}, err
 	}
 	resp.Session = markSessionV3(resp.Session, resp.Projection)
-	return SessionV3Hydrated{Session: resp.Session, Projection: resp.Projection, Messages: resp.Messages, Events: resp.Events}, nil
+	return SessionV3Hydrated{Session: resp.Session, Projection: resp.Projection, Messages: resp.Messages, Events: resp.Events, ActiveRunIntent: resp.ActiveRunIntent}, nil
 }
 
 func (c *API) GetSessionV3(ctx context.Context, sessionID string) (SessionV3Hydrated, error) {
@@ -2920,17 +2922,18 @@ func (c *API) GetSessionV3(ctx context.Context, sessionID string) (SessionV3Hydr
 		return SessionV3Hydrated{}, errors.New("session id is required")
 	}
 	var resp struct {
-		OK         bool                `json:"ok"`
-		Session    SessionSummary      `json:"session"`
-		Projection SessionV3Projection `json:"projection"`
-		Messages   []SessionMessage    `json:"messages"`
-		Events     []SessionV3Event    `json:"events"`
+		OK              bool                `json:"ok"`
+		Session         SessionSummary      `json:"session"`
+		Projection      SessionV3Projection `json:"projection"`
+		Messages        []SessionMessage    `json:"messages"`
+		Events          []SessionV3Event    `json:"events"`
+		ActiveRunIntent *SessionV3RunIntent `json:"active_run_intent"`
 	}
 	if err := c.getJSON(ctx, sessionV3PrimaryPath(sessionID, ""), &resp, true); err != nil {
 		return SessionV3Hydrated{}, err
 	}
 	resp.Session = markSessionV3(resp.Session, resp.Projection)
-	return SessionV3Hydrated{Session: resp.Session, Projection: resp.Projection, Messages: resp.Messages, Events: resp.Events}, nil
+	return SessionV3Hydrated{Session: resp.Session, Projection: resp.Projection, Messages: resp.Messages, Events: resp.Events, ActiveRunIntent: resp.ActiveRunIntent}, nil
 }
 
 func (c *API) ListSessionV3Messages(ctx context.Context, sessionID string, afterSeq uint64, limit int) ([]SessionMessage, error) {

@@ -3208,15 +3208,59 @@ func TestSessionsV3ExecutorCompletesAfterPreToolDeltaAndThreeToolCalls(t *testin
 	}
 }
 
-func TestSessionsV3ExecutorPersistsFailureWhenToolLoopExceedsBound(t *testing.T) {
+func TestSessionsV3ExecutorCompletesAfterMoreThanEightVariedToolCalls(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := t.TempDir()
+	responses := make([]provideriface.Response, 0, 10)
+	for i := 0; i < 9; i++ {
+		name := fmt.Sprintf("file-%02d.txt", i)
+		if err := os.WriteFile(filepath.Join(workspace, name), []byte(fmt.Sprintf("tool result %02d", i)), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		responses = append(responses, provideriface.Response{FunctionCalls: []provideriface.FunctionCall{{CallID: fmt.Sprintf("call-read-%02d", i), Name: "read", Arguments: fmt.Sprintf(`{"path":"%s"}`, name)}}})
+	}
+	responses = append(responses, provideriface.Response{Text: "final answer after nine tool calls"})
+	runner := &sessionsV3RecordingProviderRunner{responses: responses}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	runSvc := runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, nil, nil)
+	server.runner = runSvc
+	server.SetBypassPermissions(true)
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"read": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
+		t.Fatalf("upsert tool-enabled swarm agent: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-varied-tools-create", "provider varied tools", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-varied-tools-message", "read many different files")
+	intent := waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
+	if intent.BlockedReason != "" {
+		t.Fatalf("completed intent has blocked reason: %+v", intent)
+	}
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 11 || messages[10].Role != "assistant" || messages[10].Content != "final answer after nine tool calls" {
+		t.Fatalf("messages after varied tool calls = %+v", messages)
+	}
+	if runner.callCount != 10 {
+		t.Fatalf("provider call count = %d, want nine tool calls plus final", runner.callCount)
+	}
+}
+
+func TestSessionsV3ExecutorPersistsFailureWhenToolCallRepeatsFiveConsecutiveTimes(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	workspace := t.TempDir()
 	if err := os.WriteFile(filepath.Join(workspace, "loop.txt"), []byte("loop tool result"), 0o644); err != nil {
 		t.Fatalf("write loop file: %v", err)
 	}
-	responses := make([]provideriface.Response, 0, sessionV3ProviderToolLoopMaxSteps)
-	for i := 0; i < sessionV3ProviderToolLoopMaxSteps; i++ {
-		responses = append(responses, provideriface.Response{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-reused", Name: "read", Arguments: `{"path":"loop.txt"}`}}})
+	responses := make([]provideriface.Response, 0, sessionV3ProviderIdenticalToolCallLimit)
+	for i := 0; i < sessionV3ProviderIdenticalToolCallLimit; i++ {
+		responses = append(responses, provideriface.Response{FunctionCalls: []provideriface.FunctionCall{{CallID: fmt.Sprintf("call-reused-%d", i), Name: "read", Arguments: `{"path":"loop.txt"}`}}})
 	}
 	runner := &sessionsV3RecordingProviderRunner{responses: responses}
 	providers := registry.New()
@@ -3235,15 +3279,15 @@ func TestSessionsV3ExecutorPersistsFailureWhenToolLoopExceedsBound(t *testing.T)
 	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-tool-bound-create", "provider tool bound", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
 	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-tool-bound-message", "keep reading forever")
 	intent := waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentFailed)
-	if !strings.Contains(intent.BlockedReason, fmt.Sprintf("tool loop exceeded %d steps", sessionV3ProviderToolLoopMaxSteps)) {
+	if !strings.Contains(intent.BlockedReason, fmt.Sprintf("repeated identical tool call %d times", sessionV3ProviderIdenticalToolCallLimit)) || !strings.Contains(intent.BlockedReason, `read:{"path":"loop.txt"}`) {
 		t.Fatalf("failed intent = %+v", intent)
 	}
 	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 20)
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
 	}
-	if len(messages) != sessionV3ProviderToolLoopMaxSteps+1 {
-		t.Fatalf("messages after bounded failure = %d %+v, want user plus one tool per step", len(messages), messages)
+	if len(messages) != sessionV3ProviderIdenticalToolCallLimit {
+		t.Fatalf("messages after repeated-call failure = %d %+v, want user plus four tool results before the fifth repeated call is blocked", len(messages), messages)
 	}
 	for i, message := range messages[1:] {
 		if message.Role != "tool" || !strings.Contains(message.Content, "loop tool result") {

@@ -25,19 +25,21 @@ func TestSessionV3ClientUsesPrimaryRoutes(t *testing.T) {
 				t.Fatalf("v3 create included workspace_binding_id: %#v", body)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"ok":         true,
-				"session":    map[string]any{"id": "session-v3", "workspace_path": body["workspace_path"], "workspace_name": body["workspace_name"], "title": body["title"], "mode": body["mode"]},
-				"projection": map[string]any{"session_id": "session-v3", "last_event_seq": 1, "projection_high_watermark_seq": 1},
-				"messages":   []any{},
-				"events":     []any{},
+				"ok":                true,
+				"session":           map[string]any{"id": "session-v3", "workspace_path": body["workspace_path"], "workspace_name": body["workspace_name"], "title": body["title"], "mode": body["mode"]},
+				"projection":        map[string]any{"session_id": "session-v3", "last_event_seq": 1, "projection_high_watermark_seq": 1},
+				"messages":          []any{},
+				"events":            []any{},
+				"active_run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-create", "status": "running", "created_at": 1000, "updated_at": 1001, "event_seq": 1},
 			})
 		case r.Method == http.MethodGet && r.URL.Path == "/v3/sessions/session-v3":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"ok":         true,
-				"session":    map[string]any{"id": "session-v3", "workspace_path": "/workspace", "workspace_name": "workspace", "title": "V3", "mode": "auto"},
-				"projection": map[string]any{"session_id": "session-v3", "last_event_seq": 2, "projection_high_watermark_seq": 2},
-				"messages":   []map[string]any{{"id": "msg-1", "session_id": "session-v3", "global_seq": 2, "role": "user", "content": "hi"}},
-				"events":     []any{},
+				"ok":                true,
+				"session":           map[string]any{"id": "session-v3", "workspace_path": "/workspace", "workspace_name": "workspace", "title": "V3", "mode": "auto"},
+				"projection":        map[string]any{"session_id": "session-v3", "last_event_seq": 2, "projection_high_watermark_seq": 2},
+				"messages":          []map[string]any{{"id": "msg-1", "session_id": "session-v3", "global_seq": 2, "role": "user", "content": "hi"}},
+				"events":            []any{},
+				"active_run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-active", "status": "running", "created_at": 2000, "updated_at": 2001, "event_seq": 2},
 			})
 		case r.Method == http.MethodPost && r.URL.Path == "/v3/sessions/session-v3/messages":
 			var body map[string]any
@@ -80,8 +82,15 @@ func TestSessionV3ClientUsesPrimaryRoutes(t *testing.T) {
 	if created.Session.SessionAPI != "v3" || created.Session.ProjectionHighWatermarkSeq != 1 {
 		t.Fatalf("created session = %#v", created.Session)
 	}
-	if _, err := api.GetSessionV3(context.Background(), "session-v3"); err != nil {
+	if created.ActiveRunIntent == nil || created.ActiveRunIntent.RunID != "run-create" || created.ActiveRunIntent.CreatedAt != 1000 {
+		t.Fatalf("created active_run_intent = %#v", created.ActiveRunIntent)
+	}
+	hydrated, err := api.GetSessionV3(context.Background(), "session-v3")
+	if err != nil {
 		t.Fatalf("GetSessionV3() error = %v", err)
+	}
+	if hydrated.ActiveRunIntent == nil || hydrated.ActiveRunIntent.RunID != "run-active" || hydrated.ActiveRunIntent.CreatedAt != 2000 {
+		t.Fatalf("hydrated active_run_intent = %#v", hydrated.ActiveRunIntent)
 	}
 	msg, err := api.SendSessionV3Message(context.Background(), "session-v3", SessionV3MessageOptions{Content: "hi"})
 	if err != nil {
@@ -171,5 +180,85 @@ func TestStreamSessionsV3RealtimeMultiplexesSubscriptionsAndIsolatesGaps(t *test
 	}
 	if !sawGap || !sawB {
 		t.Fatalf("frames did not prove gap isolation; sawGap=%v sawB=%v frames=%#v", sawGap, sawB, frames)
+	}
+}
+
+func TestStreamSessionV3ReplayDoesNotStopOnAssistantCompleted(t *testing.T) {
+	var replayCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v3/sessions/session-v3/events" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		replayCalls++
+		lastSeq := uint64(2)
+		if replayCalls == 1 {
+			lastSeq = 1
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":                 true,
+			"session_id":         "session-v3",
+			"projection":         map[string]any{"session_id": "session-v3", "last_event_seq": lastSeq, "projection_high_watermark_seq": lastSeq},
+			"high_watermark_seq": lastSeq,
+			"next_seq":           lastSeq + 1,
+			"events":             []any{map[string]any{"id": "evt-1", "session_id": "session-v3", "seq": 1, "event_type": "session.assistant.completed", "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "running"}}},
+		})
+	}))
+	defer server.Close()
+
+	api := New(server.URL)
+	api.SetToken("test-token")
+	ctx, cancel := context.WithCancel(context.Background())
+	var frames []SessionV3StreamFrame
+	err := api.StreamSessionV3Replay(ctx, "session-v3", 0, func(frame SessionV3StreamFrame) {
+		frames = append(frames, frame)
+		if frame.Type == "replay.complete" && replayCalls >= 2 {
+			cancel()
+		}
+	})
+	if err != nil {
+		t.Fatalf("StreamSessionV3Replay() error = %v", err)
+	}
+	if replayCalls < 2 {
+		t.Fatalf("replay stopped on assistant.completed after %d calls; frames=%#v", replayCalls, frames)
+	}
+}
+
+func TestStreamSessionV3WebSocketDeliversCursorErrorWithoutClosing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v3/sessions/session-v3/stream" {
+			t.Fatalf("websocket path = %s %s, want GET /v3/sessions/session-v3/stream", r.Method, r.URL.Path)
+		}
+		conn, rw, err := hijackLifecycleTestWebsocket(w, r)
+		if err != nil {
+			t.Fatalf("hijack websocket: %v", err)
+		}
+		defer conn.Close()
+		if _, _, err := readClientLifecycleTestFrame(rw); err != nil {
+			t.Fatalf("read stream hello: %v", err)
+		}
+		writeServerLifecycleTestFrame(t, conn, map[string]any{"type": "cursor.error", "session_id": "session-v3", "error": "gap"})
+		writeServerLifecycleTestFrame(t, conn, map[string]any{"type": "event", "session_id": "session-v3", "last_seq": 1, "event": map[string]any{"id": "evt-1", "session_id": "session-v3", "seq": 1, "event_type": "session.assistant.delta", "payload": map[string]any{"session_id": "session-v3", "delta": "after"}}})
+	}))
+	defer server.Close()
+
+	api := New(server.URL)
+	api.SetToken("test-token")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var sawCursorError, sawEvent bool
+	err := api.StreamSessionV3(ctx, "session-v3", 0, func(frame SessionV3StreamFrame) {
+		if frame.Type == "cursor.error" {
+			sawCursorError = true
+		}
+		if frame.Type == "event" && frame.Event != nil && frame.Event.Seq == 1 {
+			sawEvent = true
+			cancel()
+		}
+	})
+	if err != nil {
+		t.Fatalf("StreamSessionV3() error = %v", err)
+	}
+	if !sawCursorError || !sawEvent {
+		t.Fatalf("frames did not prove cursor.error was non-terminal; sawCursorError=%v sawEvent=%v", sawCursorError, sawEvent)
 	}
 }

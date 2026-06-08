@@ -581,6 +581,13 @@ func ptrChatMessageRecord(record ui.ChatMessageRecord) *ui.ChatMessageRecord {
 	return &record
 }
 
+func activeRunIntentLifecycle(sessionID string, intent *client.SessionV3RunIntent) *ui.ChatSessionLifecycle {
+	if intent == nil || strings.TrimSpace(intent.RunID) == "" || v3RunIntentStatusTerminal(intent.Status) {
+		return nil
+	}
+	return primaryRunIntentLifecycle(sessionID, *intent)
+}
+
 func primaryRunIntentLifecycle(sessionID string, intent client.SessionV3RunIntent) *ui.ChatSessionLifecycle {
 	status := strings.ToLower(strings.TrimSpace(intent.Status))
 	phase := status
