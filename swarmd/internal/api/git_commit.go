@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -146,21 +147,41 @@ func runWorkspaceGitCommit(parent context.Context, workspacePath, message string
 	ctx, cancel := context.WithTimeout(parent, workspaceGitCommitTimeout)
 	defer cancel()
 
+	secretCheckOutput, secretCheckErr := runWorkspaceGitSecretCheck(ctx, workspacePath)
+	if secretCheckErr != nil {
+		combined := strings.TrimSpace(secretCheckOutput)
+		response := workspaceGitCommitResponse{
+			OK:            false,
+			WorkspacePath: workspacePath,
+			CWD:           workspacePath,
+			Argv:          []string{"scripts/check-secrets.sh"},
+			ExitCode:      workspaceGitCommandExitCode(secretCheckErr),
+			TimedOut:      errors.Is(ctx.Err(), context.DeadlineExceeded),
+			Output:        combined,
+			Summary:       "secret check failed before git commit",
+		}
+		if combined != "" {
+			response.Error = fmt.Sprintf("secret check failed before git commit: %s", combined)
+		} else {
+			response.Error = fmt.Sprintf("secret check failed before git commit: %v", secretCheckErr)
+		}
+		return response, errors.New(response.Error)
+	}
+
 	cmd := exec.CommandContext(ctx, "git", argv...)
 	cmd.Dir = workspacePath
 	cmd.Env = filteredWorkspaceGitCommitEnv(os.Environ())
 	output, err := cmd.CombinedOutput()
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
-	exitCode := 0
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		} else {
-			exitCode = -1
-		}
+	exitCode := workspaceGitCommandExitCode(err)
+	combinedParts := []string{}
+	if strings.TrimSpace(secretCheckOutput) != "" {
+		combinedParts = append(combinedParts, strings.TrimSpace(secretCheckOutput))
 	}
-	combined := strings.TrimSpace(string(output))
+	if strings.TrimSpace(string(output)) != "" {
+		combinedParts = append(combinedParts, strings.TrimSpace(string(output)))
+	}
+	combined := strings.Join(combinedParts, "\n")
 	response := workspaceGitCommitResponse{
 		OK:            err == nil,
 		WorkspacePath: workspacePath,
@@ -180,6 +201,40 @@ func runWorkspaceGitCommit(parent context.Context, workspacePath, message string
 		return response, errors.New(response.Error)
 	}
 	return response, nil
+}
+
+func runWorkspaceGitSecretCheck(parent context.Context, workspacePath string) (string, error) {
+	rootCmd := exec.CommandContext(parent, "git", "rev-parse", "--show-toplevel")
+	rootCmd.Dir = workspacePath
+	rootCmd.Env = filteredWorkspaceGitCommitEnv(os.Environ())
+	rootOutput, err := rootCmd.CombinedOutput()
+	if err != nil {
+		return string(rootOutput), err
+	}
+	repoRoot := strings.TrimSpace(string(rootOutput))
+	if repoRoot == "" {
+		return "", errors.New("git rev-parse returned an empty repository root")
+	}
+	secretCheckScript := filepath.Join(repoRoot, "scripts", "check-secrets.sh")
+	if _, err := os.Stat(secretCheckScript); err != nil {
+		return "", err
+	}
+	cmd := exec.CommandContext(parent, "bash", secretCheckScript)
+	cmd.Dir = repoRoot
+	cmd.Env = filteredWorkspaceGitCommitEnv(os.Environ())
+	output, err := cmd.CombinedOutput()
+	return string(output), err
+}
+
+func workspaceGitCommandExitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	return -1
 }
 
 func filteredWorkspaceGitCommitEnv(base []string) []string {

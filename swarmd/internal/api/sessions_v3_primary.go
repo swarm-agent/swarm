@@ -20,7 +20,7 @@ import (
 
 const (
 	sessionsV3PrimaryPrefix                  = "/v3/sessions/"
-	sessionsV3PrimaryDefaultMessageTailLimit = 50
+	sessionsV3PrimaryDefaultMessageTailLimit = 500
 	sessionsV3PrimaryDefaultEventLimit       = 0
 )
 
