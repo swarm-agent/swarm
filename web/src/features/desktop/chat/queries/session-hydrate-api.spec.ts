@@ -327,6 +327,29 @@ test('Desktop V3 session switching prewarm uses the full-session source only', a
   queryClient.clear()
 })
 
+test('Desktop V3 snapshot hydration restores active run intent from the canonical route source', async () => {
+  const { hydrateDesktopV3SessionSnapshot, readDesktopV3CachedSession } = await import('../../state/desktop-v3-cache')
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+
+  await withFetchStub(async (calls) => {
+    const snapshot = await hydrateDesktopV3SessionSnapshot(queryClient, 'session-v3-active')
+    const cached = readDesktopV3CachedSession(queryClient, 'session-v3-active')
+
+    assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-v3-active'])
+    assertNoV1OrV2SessionDataCalls(calls)
+    assert.equal(snapshot?.session.runIntent?.runId, 'run-active')
+    assert.equal(cached?.runIntent?.status, 'running')
+    assert.equal(cached?.live.runId, 'run-active')
+    assert.equal(cached?.live.status, 'running')
+    assert.equal(cached?.live.startedAt, 1000)
+    assert.equal(cached?.live.lastEventAt, 4000)
+  })
+
+  queryClient.clear()
+})
+
 
 
 test('sessionMessagesQueryOptions uses the canonical V3 snapshot cache for Desktop V3 messages', async () => {

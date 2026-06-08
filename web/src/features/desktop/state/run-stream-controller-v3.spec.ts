@@ -1269,6 +1269,66 @@ test('V3 assistant completed without durable run intent does not unlock Desktop 
   await new Promise((resolve) => setImmediate(resolve))
 })
 
+test('V3 assistant completed with durable terminal run intent unlocks Desktop live state', async () => {
+  const session = makeSession({
+    id: 'session-v3',
+    sessionApi: 'v3',
+    runIntent: {
+      sessionId: 'session-v3',
+      runId: 'run-v3',
+      status: 'running',
+      createdAt: 100,
+      updatedAt: 120,
+      eventSeq: 2,
+    },
+    live: { ...emptyLiveState(), status: 'running', runId: 'run-v3', startedAt: 100, assistantDraft: 'all done!' },
+  })
+  useDesktopStore.setState(makeState(session), true)
+
+  useDesktopStore.getState().__testApplyRunStreamFrame?.('session-v3', {
+    type: 'event',
+    ok: true,
+    session_id: 'session-v3',
+    last_seq: 25,
+    event: {
+      id: 'v3evt_session-v3_00000000000000000025',
+      session_id: 'session-v3',
+      seq: 25,
+      event_type: 'session.assistant.completed',
+      ts_unix_ms: 300,
+      payload: {
+        session_id: 'session-v3',
+        run_id: 'run-v3',
+        status: 'completed',
+        run_intent: {
+          session_id: 'session-v3',
+          run_id: 'run-v3',
+          status: 'completed',
+          created_at: 100,
+          updated_at: 300,
+          event_seq: 25,
+        },
+        message: {
+          id: 'msg-assistant-v3',
+          session_id: 'session-v3',
+          global_seq: 25,
+          role: 'assistant',
+          content: 'all done!',
+          created_at: 300,
+        },
+      },
+    },
+  }, 300)
+
+  const updated = useDesktopStore.getState().sessions['session-v3']
+  assert.equal(updated.runIntent, null)
+  assert.equal(updated.live.status, 'idle')
+  assert.equal(updated.live.runId, null)
+  assert.equal(updated.live.startedAt, null)
+  assert.equal(updated.live.lastEventType, 'session.assistant.completed')
+  await new Promise((resolve) => setImmediate(resolve))
+})
+
 test('V3 active run-intent record preserves durable created_at for active Desktop run state', () => {
   const session = makeSession({ id: 'session-v3', sessionApi: 'v3' })
   useDesktopStore.setState(makeState(session), true)

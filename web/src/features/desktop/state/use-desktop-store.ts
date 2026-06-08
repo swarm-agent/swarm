@@ -2678,6 +2678,9 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
     case 'session.run.completed': {
       const terminalRunIntent = v3TerminalRunIntent(payloadRecord, eventType)
       if (!sessionUsesV3Api(session) || terminalRunIntent?.status === 'completed') {
+        if (terminalRunIntent) {
+          session.runIntent = null
+        }
         cancelDraftFlush(sessionId)
         session.live.status = 'idle'
         session.live.runId = null
@@ -2704,6 +2707,9 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
         session.messageCount += 1
       }
       if (!sessionUsesV3Api(session) || terminalRunIntent?.status === 'completed') {
+        if (terminalRunIntent) {
+          session.runIntent = null
+        }
         session.live.status = 'idle'
         session.live.runId = null
         session.live.startedAt = null
@@ -2730,6 +2736,9 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
         || 'Run failed'
       const isTerminalError = terminalRunIntent !== null && terminalRunIntent.status !== 'completed'
       if (!sessionUsesV3Api(session) || isTerminalError) {
+        if (terminalRunIntent) {
+          session.runIntent = null
+        }
         cancelDraftFlush(sessionId)
         session.live.status = 'error'
         session.live.runId = null

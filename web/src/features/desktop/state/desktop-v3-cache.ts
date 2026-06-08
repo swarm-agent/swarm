@@ -5,7 +5,7 @@ import { mapDesktopSession, mapDesktopSessionPermission, mapDesktopSessionPlan, 
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import type { AgentModelPolicyRecord, ChatMessageRecord, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord, ResolvedSessionPreference } from '../chat/types/chat'
-import type { DesktopSessionRecord } from '../types/realtime'
+import type { DesktopRunIntentRecord, DesktopSessionRecord } from '../types/realtime'
 
 interface V3SessionWire {
   id?: string
@@ -53,6 +53,16 @@ interface V3AgentModelPolicyWire {
   max_output_tokens?: number
 }
 
+interface V3RunIntentWire {
+  session_id?: string
+  run_id?: string
+  status?: string
+  blocked_reason?: string
+  created_at?: number
+  updated_at?: number
+  event_seq?: number
+}
+
 interface V3HydratedSessionResponseWire {
   session?: V3SessionWire
   projection?: V3SessionProjectionWire
@@ -60,6 +70,7 @@ interface V3HydratedSessionResponseWire {
   events?: unknown[]
   pending_permissions?: unknown[]
   usage_summary?: unknown
+  active_run_intent?: V3RunIntentWire | null
   preference?: V3PreferenceWire
   context_window?: number
   max_output_tokens?: number
@@ -190,8 +201,71 @@ function mapDesktopV3AgentModelPolicy(policy: V3AgentModelPolicyWire | null | un
   }
 }
 
+function mapV3RunIntent(intent: V3RunIntentWire | null | undefined): DesktopRunIntentRecord | null {
+  if (!intent || typeof intent !== 'object') {
+    return null
+  }
+  return {
+    sessionId: String(intent.session_id ?? '').trim(),
+    runId: String(intent.run_id ?? '').trim(),
+    status: String(intent.status ?? '').trim(),
+    blockedReason: String(intent.blocked_reason ?? '').trim(),
+    createdAt: typeof intent.created_at === 'number' ? intent.created_at : 0,
+    updatedAt: typeof intent.updated_at === 'number' ? intent.updated_at : 0,
+    eventSeq: typeof intent.event_seq === 'number' ? intent.event_seq : 0,
+  }
+}
+
+function v3RunIntentStatusActive(status: string): boolean {
+  const normalized = status.trim().toLowerCase()
+  return normalized === 'pending_executor' || normalized === 'running'
+}
+
+function mapLiveStatusFromRunIntent(status: string): DesktopSessionRecord['live']['status'] {
+  switch (status.trim().toLowerCase()) {
+    case 'pending_executor':
+      return 'starting'
+    case 'running':
+      return 'running'
+    case 'dispatch_blocked':
+      return 'blocked'
+    case 'failed':
+    case 'cancelled':
+    case 'expired':
+    case 'interrupted':
+      return 'error'
+    default:
+      return 'idle'
+  }
+}
+
+function applyActiveRunIntent(session: DesktopSessionRecord, runIntent: DesktopRunIntentRecord | null): DesktopSessionRecord {
+  if (!runIntent || !v3RunIntentStatusActive(runIntent.status)) {
+    return { ...session, runIntent: null }
+  }
+  return {
+    ...session,
+    sessionApi: session.sessionApi || 'v3',
+    runIntent,
+    live: {
+      ...session.live,
+      runId: runIntent.runId || session.live.runId,
+      startedAt: runIntent.createdAt > 0 ? runIntent.createdAt : session.live.startedAt,
+      status: mapLiveStatusFromRunIntent(runIntent.status),
+      summary: runIntent.status.trim().toLowerCase() === 'pending_executor'
+        ? 'Pending executor…'
+        : session.live.summary,
+      error: null,
+      lastEventAt: runIntent.updatedAt > 0 ? runIntent.updatedAt : session.live.lastEventAt,
+    },
+  }
+}
+
 export function mapDesktopV3SessionSnapshot(response: V3HydratedSessionResponseWire): DesktopV3SessionSnapshot | null {
-  const mappedBaseSession = mapDesktopSession(mapProjectionToSession(response.session ?? {}, response.projection))
+  const mappedBaseSession = applyActiveRunIntent(
+    mapDesktopSession(mapProjectionToSession(response.session ?? {}, response.projection)),
+    mapV3RunIntent(response.active_run_intent),
+  )
   if (!mappedBaseSession.id) {
     return null
   }
