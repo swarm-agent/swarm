@@ -94,6 +94,82 @@ func TestV3RealtimeReplaysCommittedOutboxRowAfterPublishCrashWindow(t *testing.T
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, created.ID, committed.Event.Seq)
 }
 
+func TestV3RealtimeReplayAfterReconnectCarriesDurableTerminalRunIntent(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createV3RealtimeTestSession(t, server, "session-realtime-terminal", "create-realtime-terminal")
+
+	pending, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       created.ID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "message-realtime-terminal",
+		IdempotencyKey:  "message-realtime-terminal",
+		PayloadHash:     "hash-message-realtime-terminal",
+		Kind:            sessionruntime.SessionMutationAppendMessage,
+		Message:         &pebblestore.MessageSnapshot{Role: "user", Content: "cancel me durably"},
+		RunIntent:       &pebblestore.V3SessionRunIntent{RunID: "run-realtime-terminal", Status: sessionruntime.RunIntentPendingExecutor},
+		NowUnixMs:       2000,
+	})
+	if err != nil {
+		t.Fatalf("record pending terminal replay run: %v", err)
+	}
+	running, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       created.ID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "running-realtime-terminal",
+		IdempotencyKey:  "running-realtime-terminal",
+		PayloadHash:     "hash-running-realtime-terminal",
+		Kind:            sessionruntime.SessionMutationRecordRunIntent,
+		EventType:       "session.assistant.started",
+		RunIntent:       &pebblestore.V3SessionRunIntent{RunID: "run-realtime-terminal", Status: sessionruntime.RunIntentRunning},
+		NowUnixMs:       3000,
+	})
+	if err != nil {
+		t.Fatalf("record running terminal replay run: %v", err)
+	}
+	cancelled, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       created.ID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "cancelled-realtime-terminal",
+		IdempotencyKey:  "cancelled-realtime-terminal",
+		PayloadHash:     "hash-cancelled-realtime-terminal",
+		Kind:            sessionruntime.SessionMutationRecordRunIntent,
+		EventType:       "session.run.cancelled",
+		RunIntent:       &pebblestore.V3SessionRunIntent{RunID: "run-realtime-terminal", Status: sessionruntime.RunIntentCancelled, BlockedReason: "stop from test"},
+		NowUnixMs:       4000,
+	})
+	if err != nil {
+		t.Fatalf("record cancelled terminal replay run: %v", err)
+	}
+	if _, ok, err := sessionSvc.GetSessionActiveRunIntent(created.ID); err != nil || ok {
+		t.Fatalf("active run pointer after terminal = ok:%v err:%v", ok, err)
+	}
+
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: created.ID, SubscriptionID: "sub-terminal", AfterSeq: pending.Event.Seq})
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, created.ID, 0)
+	replayedRunning := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, replayedRunning, V3RealtimeKindEvent, created.ID, running.Event.Seq)
+	replayedTerminal := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, replayedTerminal, V3RealtimeKindEvent, created.ID, cancelled.Event.Seq)
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, created.ID, cancelled.Event.Seq)
+
+	var terminalPayload struct {
+		Status    string                         `json:"status"`
+		RunIntent pebblestore.V3SessionRunIntent `json:"run_intent"`
+	}
+	if err := json.Unmarshal(replayedTerminal.Event.Payload, &terminalPayload); err != nil {
+		t.Fatalf("decode terminal replay payload: %v", err)
+	}
+	if replayedTerminal.Event.EventType != "session.run.cancelled" || terminalPayload.Status != sessionruntime.RunIntentCancelled || terminalPayload.RunIntent.Status != sessionruntime.RunIntentCancelled {
+		t.Fatalf("terminal replay frame = %+v payload=%+v", replayedTerminal, terminalPayload)
+	}
+}
+
 func TestV3RealtimeEndpointResumeDeliversAuthorizedSubscribedEventsAndSkipsOnlyServerFilteredRows(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	a := createV3RealtimeTestSession(t, server, "session-realtime-resume-a", "create-realtime-resume-a")

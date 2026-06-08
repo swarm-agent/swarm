@@ -244,16 +244,16 @@ func (e *sessionV3Executor) CancelRun(job sessionV3ExecutorJob, reason string) (
 	if ok {
 		switch intent.Status {
 		case sessionruntime.RunIntentPendingExecutor, sessionruntime.RunIntentRunning:
-			result, err := e.recordRunStatus(job, sessionruntime.RunIntentFailed, reason, "session.run.failed")
+			result, err := e.recordRunStatus(job, sessionruntime.RunIntentCancelled, reason, "session.run.cancelled")
 			return result, true, err
-		case sessionruntime.RunIntentFailed:
+		case sessionruntime.RunIntentCancelled:
 			if strings.TrimSpace(intent.BlockedReason) == reason {
 				return sessionruntime.SessionMutationResult{SessionID: job.SessionID, RunIntent: &intent}, true, nil
 			}
 		}
 	}
 	if tracked {
-		result, err := e.recordRunStatus(job, sessionruntime.RunIntentFailed, reason, "session.run.failed")
+		result, err := e.recordRunStatus(job, sessionruntime.RunIntentCancelled, reason, "session.run.cancelled")
 		return result, true, err
 	}
 	return sessionruntime.SessionMutationResult{}, false, fmt.Errorf("v3 run %q is not active", job.RunID)
@@ -321,7 +321,7 @@ func (e *sessionV3Executor) recoverDurableRuns(ctx context.Context) {
 }
 
 func (e *sessionV3Executor) failStaleRunningRunForRecovery(job sessionV3ExecutorJob) error {
-	_, err := e.recordRunStatus(job, sessionruntime.RunIntentFailed, "executor interrupted during daemon restart", "session.run.failed")
+	_, err := e.recordRunStatus(job, sessionruntime.RunIntentInterrupted, "executor interrupted during daemon restart", "session.run.interrupted")
 	return err
 }
 
@@ -403,11 +403,12 @@ func (e *sessionV3Executor) recordRunStatus(job sessionV3ExecutorJob, status, re
 		UpdatedAt:     now,
 	}
 	var eventPayload json.RawMessage
-	if eventType == "session.run.failed" {
+	if strings.HasPrefix(eventType, "session.run.") {
 		raw, err := json.Marshal(map[string]any{
-			"run_id": job.RunID,
-			"status": status,
-			"error":  strings.TrimSpace(reason),
+			"run_id":     job.RunID,
+			"status":     status,
+			"error":      strings.TrimSpace(reason),
+			"run_intent": intent,
 		})
 		if err != nil {
 			return sessionruntime.SessionMutationResult{}, err

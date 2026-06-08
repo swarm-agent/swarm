@@ -851,9 +851,9 @@ func TestSessionsV3ExecutorFailsStaleRunningRunAfterRestartWithoutResume(t *test
 	exec := newSessionV3Executor(restarted)
 	exec.startDelay = 0
 	restarted.v3SessionExecutor = exec
-	intent := waitForSessionsV3RunIntentStatus(t, restartedSessions, created.ID, sessionruntime.RunIntentFailed)
+	intent := waitForSessionsV3RunIntentStatus(t, restartedSessions, created.ID, sessionruntime.RunIntentInterrupted)
 	if !strings.Contains(intent.BlockedReason, "executor interrupted during daemon restart") {
-		t.Fatalf("failed intent = %+v", intent)
+		t.Fatalf("interrupted intent = %+v", intent)
 	}
 	if runner.callCount != 0 {
 		t.Fatalf("provider call count = %d, want 0 for stale interrupted run", runner.callCount)
@@ -903,9 +903,15 @@ func TestSessionsV3PrimaryRunStopCancelsActiveExecutorAndSuppressesLateOutput(t 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("stop status = %d, body=%s", rec.Code, rec.Body.String())
 	}
-	failed := waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentFailed)
-	if failed.RunID != intent.RunID || failed.BlockedReason != "stop from test" {
-		t.Fatalf("failed intent = %+v", failed)
+	var stopResp struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &stopResp); err != nil || stopResp.Status != sessionruntime.RunIntentCancelled {
+		t.Fatalf("stop response status = %+v err=%v body=%s", stopResp, err, rec.Body.String())
+	}
+	cancelled := waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCancelled)
+	if cancelled.RunID != intent.RunID || cancelled.BlockedReason != "stop from test" {
+		t.Fatalf("cancelled intent = %+v", cancelled)
 	}
 	close(releaseLate)
 	if !server.WaitForInFlightRuns(2 * time.Second) {
@@ -948,9 +954,15 @@ func TestSessionsV3PrimaryRunStopCancelsBeforeExecutorStart(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("queued stop status = %d, body=%s", rec.Code, rec.Body.String())
 	}
-	failed := waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentFailed)
-	if failed.RunID != intent.RunID || failed.BlockedReason != sessionV3RunStopDefaultReason {
-		t.Fatalf("failed intent = %+v", failed)
+	var stopResp struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &stopResp); err != nil || stopResp.Status != sessionruntime.RunIntentCancelled {
+		t.Fatalf("queued stop response status = %+v err=%v body=%s", stopResp, err, rec.Body.String())
+	}
+	cancelled := waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCancelled)
+	if cancelled.RunID != intent.RunID || cancelled.BlockedReason != sessionV3RunStopDefaultReason {
+		t.Fatalf("cancelled intent = %+v", cancelled)
 	}
 	if !server.WaitForInFlightRuns(2 * time.Second) {
 		t.Fatalf("executor did not drain after queued cancel")

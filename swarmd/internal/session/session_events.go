@@ -31,6 +31,9 @@ const (
 	RunIntentRunning         = pebblestore.V3RunIntentRunning
 	RunIntentCompleted       = pebblestore.V3RunIntentCompleted
 	RunIntentFailed          = pebblestore.V3RunIntentFailed
+	RunIntentCancelled       = pebblestore.V3RunIntentCancelled
+	RunIntentExpired         = pebblestore.V3RunIntentExpired
+	RunIntentInterrupted     = pebblestore.V3RunIntentInterrupted
 	RunIntentDispatchBlocked = pebblestore.V3RunIntentDispatchBlocked
 )
 

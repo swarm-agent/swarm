@@ -427,7 +427,7 @@ func v3RunIntentMatchesRun(intent client.SessionV3RunIntent, runID string) bool 
 
 func v3RunIntentStatusTerminal(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "completed", "failed", "dispatch_blocked":
+	case "completed", "failed", "cancelled", "expired", "interrupted", "dispatch_blocked":
 		return true
 	default:
 		return false
@@ -488,7 +488,7 @@ func v3StreamEventToChatEvent(event client.SessionV3Event) ui.ChatRunStreamEvent
 		out.RawOutput = stringValue(payload, "raw_output")
 		out.Step = int(int64Number(payload, "step"))
 		out.DurationMS = int64Number(payload, "duration_ms")
-	case "session.run.failed", "session.assistant.failed":
+	case "session.run.failed", "session.run.cancelled", "session.run.expired", "session.run.interrupted", "session.assistant.failed":
 		out.Type = "turn.error"
 		if out.Error == "" {
 			out.Error = "Run failed"
@@ -594,7 +594,7 @@ func primaryRunIntentLifecycle(sessionID string, intent client.SessionV3RunInten
 		active = true
 	case "running":
 		active = true
-	case "completed", "failed", "dispatch_blocked":
+	case "completed", "failed", "cancelled", "expired", "interrupted", "dispatch_blocked":
 		active = false
 	}
 	return &ui.ChatSessionLifecycle{

@@ -31,6 +31,9 @@ const (
 	V3RunIntentRunning         = "running"
 	V3RunIntentCompleted       = "completed"
 	V3RunIntentFailed          = "failed"
+	V3RunIntentCancelled       = "cancelled"
+	V3RunIntentExpired         = "expired"
+	V3RunIntentInterrupted     = "interrupted"
 	V3RunIntentDispatchBlocked = "dispatch_blocked"
 )
 
@@ -1094,9 +1097,9 @@ func (s *SessionStore) validateV3RunIntentTransition(sessionID string, incoming 
 			if existing.Status != V3RunIntentPendingExecutor && existing.Status != V3RunIntentRunning {
 				return V3SessionRunIntent{}, fmt.Errorf("v3 run %q is %s, cannot claim or update", incoming.RunID, existing.Status)
 			}
-		case V3RunIntentCompleted, V3RunIntentFailed:
+		case V3RunIntentCompleted, V3RunIntentFailed, V3RunIntentCancelled, V3RunIntentExpired, V3RunIntentInterrupted:
 			if existing.Status != V3RunIntentRunning && existing.Status != V3RunIntentPendingExecutor {
-				return V3SessionRunIntent{}, fmt.Errorf("v3 run %q is %s, cannot complete", incoming.RunID, existing.Status)
+				return V3SessionRunIntent{}, fmt.Errorf("v3 run %q is %s, cannot terminate", incoming.RunID, existing.Status)
 			}
 		}
 	} else if status != V3RunIntentPendingExecutor && status != V3RunIntentDispatchBlocked {
@@ -1112,7 +1115,7 @@ func (s *SessionStore) validateV3RunIntentTransition(sessionID string, incoming 
 
 func isV3RunIntentTerminal(status string) bool {
 	switch strings.TrimSpace(status) {
-	case V3RunIntentCompleted, V3RunIntentFailed, V3RunIntentDispatchBlocked:
+	case V3RunIntentCompleted, V3RunIntentFailed, V3RunIntentCancelled, V3RunIntentExpired, V3RunIntentInterrupted, V3RunIntentDispatchBlocked:
 		return true
 	default:
 		return false

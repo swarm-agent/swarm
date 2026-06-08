@@ -1223,3 +1223,95 @@ test('V3 ensureRunStream uses only the global /ws socket and subscribes session 
     globalThis.WebSocket = originalWebSocket
   }
 })
+
+
+test('V3 assistant completed without durable run intent does not unlock Desktop live state', async () => {
+  const session = makeSession({
+    id: 'session-v3',
+    sessionApi: 'v3',
+    live: { ...emptyLiveState(), status: 'running', runId: 'run-v3', startedAt: 100, assistantDraft: 'hello' },
+  })
+  useDesktopStore.setState(makeState(session), true)
+
+  useDesktopStore.getState().__testApplyRunStreamFrame?.('session-v3', {
+    type: 'event',
+    ok: true,
+    session_id: 'session-v3',
+    last_seq: 2,
+    event: {
+      id: 'v3evt_session-v3_00000000000000000002',
+      session_id: 'session-v3',
+      seq: 2,
+      event_type: 'session.assistant.completed',
+      ts_unix_ms: 200,
+      payload: {
+        session_id: 'session-v3',
+        run_id: 'run-v3',
+        message: {
+          id: 'msg-assistant-v3',
+          session_id: 'session-v3',
+          global_seq: 2,
+          role: 'assistant',
+          content: 'hello',
+          created_at: 200,
+        },
+      },
+    },
+  }, 200)
+
+  const updated = useDesktopStore.getState().sessions['session-v3']
+  assert.equal(updated.live.status, 'running')
+  assert.equal(updated.live.runId, 'run-v3')
+  assert.equal(updated.live.startedAt, 100)
+  assert.equal(updated.live.lastEventType, 'session.assistant.completed')
+  assert.equal(updated.messageCount, 1)
+  await new Promise((resolve) => setImmediate(resolve))
+})
+
+test('V3 terminal run-intent record clears active Desktop lifecycle state', () => {
+  const session = makeSession({
+    id: 'session-v3',
+    sessionApi: 'v3',
+    lifecycle: {
+      sessionId: 'session-v3',
+      runId: 'run-v3',
+      active: true,
+      phase: 'running',
+      startedAt: 100,
+      endedAt: 0,
+      updatedAt: 100,
+      generation: 1,
+      stopReason: null,
+      error: null,
+      ownerTransport: null,
+    },
+    live: { ...emptyLiveState(), status: 'running', runId: 'run-v3', startedAt: 100 },
+  })
+  useDesktopStore.setState(makeState(session), true)
+
+  useDesktopStore.setState((state) => applyEnvelope(state, {
+    global_seq: 20,
+    source_seq: 20,
+    stream: 'session:session-v3',
+    event_type: 'session.run_intent.recorded',
+    entity_id: 'session-v3',
+    ts_unix_ms: 300,
+    payload: {
+      session_id: 'session-v3',
+      run_intent: {
+        session_id: 'session-v3',
+        run_id: 'run-v3',
+        status: 'completed',
+        event_seq: 20,
+        updated_at: 300,
+      },
+    },
+  }))
+
+  const updated = useDesktopStore.getState().sessions['session-v3']
+  assert.equal(updated.lifecycle, null)
+  assert.equal(updated.live.status, 'idle')
+  assert.equal(updated.live.runId, null)
+  assert.equal(updated.live.startedAt, null)
+  assert.equal(updated.live.lastEventType, 'session.run_intent.recorded')
+})

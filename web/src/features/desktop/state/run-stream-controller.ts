@@ -62,6 +62,13 @@ export type RunStreamEventMessage = {
     error?: string
     owner_transport?: string
   }
+  run_intent?: {
+    session_id?: string
+    run_id?: string
+    status?: string
+    blocked_reason?: string
+    error?: string
+  }
   message?: {
     id?: string
     session_id?: string
@@ -102,6 +109,7 @@ type SessionControllerEntry = {
   desiredRunId: string | null
   socket: WebSocket | null
   socketRunId: string | null
+  socketSessionApi: string | null
   reconnectTimer: number | null
   reconnectAttempt: number
   generation: number
@@ -125,16 +133,106 @@ function reconnectDelayMs(attempt: number): number {
   return Math.max(RECONNECT_BASE_DELAY_MS, baseDelay + jitterOffset)
 }
 
-function normalizeLifecycleInactive(payload: RunStreamEventMessage): boolean {
-  if (!payload.lifecycle || typeof payload.lifecycle !== 'object') {
-    return false
+function recordString(record: Record<string, unknown> | null | undefined, key: string): string {
+  const value = record?.[key]
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function eventPayloadRecord(payload: RunStreamEventMessage): Record<string, unknown> | null {
+  const record = payload.event?.payload
+  return record && typeof record === 'object' ? record : null
+}
+
+function directRunIntentRecord(payload: RunStreamEventMessage): Record<string, unknown> | null {
+  const intent = payload.run_intent
+  return intent && typeof intent === 'object' ? intent as Record<string, unknown> : null
+}
+
+function nestedRunIntentRecord(payload: RunStreamEventMessage): Record<string, unknown> | null {
+  const eventPayload = eventPayloadRecord(payload)
+  const intent = eventPayload?.run_intent
+  if (intent && typeof intent === 'object') {
+    return intent as Record<string, unknown>
   }
-  return payload.lifecycle.active === false
+  return directRunIntentRecord(payload)
+}
+
+function v3RunIntentStatusTerminal(status: string): boolean {
+  switch (status.trim().toLowerCase()) {
+    case 'completed':
+    case 'failed':
+    case 'cancelled':
+    case 'expired':
+    case 'interrupted':
+    case 'dispatch_blocked':
+      return true
+    default:
+      return false
+  }
+}
+
+function v3RunIntentEventType(payload: RunStreamEventMessage): string {
+  return String(payload.event?.event_type ?? payload.type ?? '').trim()
+}
+
+function v3FrameRunIntent(payload: RunStreamEventMessage): { runId: string; status: string } | null {
+  const eventPayload = eventPayloadRecord(payload)
+  const intent = nestedRunIntentRecord(payload)
+  const eventType = v3RunIntentEventType(payload)
+  const runId = recordString(intent, 'run_id')
+    || (eventType === 'session.run_intent.recorded' || eventType.startsWith('session.run.') ? recordString(eventPayload, 'run_id') || String(payload.run_id ?? '').trim() : '')
+  const status = recordString(intent, 'status')
+    || (eventType === 'session.run_intent.recorded' || eventType.startsWith('session.run.') ? recordString(eventPayload, 'status') || String(payload.status ?? '').trim() : '')
+  if (!runId || !status) {
+    return null
+  }
+  return { runId, status }
+}
+
+function lifecycleRecord(payload: RunStreamEventMessage): Record<string, unknown> | null {
+  if (payload.lifecycle && typeof payload.lifecycle === 'object') {
+    return payload.lifecycle as Record<string, unknown>
+  }
+  const eventPayload = eventPayloadRecord(payload)
+  const nestedLifecycle = eventPayload?.lifecycle
+  if (nestedLifecycle && typeof nestedLifecycle === 'object') {
+    return nestedLifecycle as Record<string, unknown>
+  }
+  return v3RunIntentEventType(payload) === 'session.lifecycle.updated' ? eventPayload : null
+}
+
+function normalizeLifecycleInactive(payload: RunStreamEventMessage): boolean {
+  const lifecycle = lifecycleRecord(payload)
+  return lifecycle?.active === false
+}
+
+function lifecycleRunId(payload: RunStreamEventMessage): string {
+  return recordString(lifecycleRecord(payload), 'run_id')
 }
 
 function isTerminalSessionStatus(payload: RunStreamEventMessage): boolean {
   const normalized = String(payload.status ?? '').trim().toLowerCase()
   return normalized === 'idle' || normalized === 'error'
+}
+
+function isV3SessionApi(sessionApi: string | null | undefined): boolean {
+  return sessionApi?.trim().toLowerCase() === 'v3'
+}
+
+function runIdsMatch(frameRunId: string, activeRunId: string | null): boolean {
+  const normalizedActiveRunId = activeRunId?.trim() ?? ''
+  return normalizedActiveRunId === '' || frameRunId.trim() === normalizedActiveRunId
+}
+
+function isTerminalV3Frame(payload: RunStreamEventMessage, activeRunId: string | null): boolean {
+  const runIntent = v3FrameRunIntent(payload)
+  if (runIntent && runIdsMatch(runIntent.runId, activeRunId) && v3RunIntentStatusTerminal(runIntent.status)) {
+    return true
+  }
+  if (!normalizeLifecycleInactive(payload)) {
+    return false
+  }
+  return runIdsMatch(lifecycleRunId(payload), activeRunId)
 }
 
 function isChildRelationFrame(payload: RunStreamEventMessage): boolean {
@@ -247,6 +345,7 @@ export class DesktopRunStreamController {
       desiredRunId: null,
       socket: null,
       socketRunId: null,
+      socketSessionApi: null,
       reconnectTimer: null,
       reconnectAttempt: 0,
       generation: 0,
@@ -273,6 +372,7 @@ export class DesktopRunStreamController {
       }
       entry.socket = socket
       entry.socketRunId = resumeRequest.runId
+      entry.socketSessionApi = resumeRequest.sessionApi ?? null
       this.attachSocket(entry, socket, generation)
       this.noteActivity(entry, generation)
       if (socket.readyState === WebSocket.OPEN) {
@@ -354,12 +454,15 @@ export class DesktopRunStreamController {
           return
         }
 
-        if (
-          type === 'turn.completed'
-          || type === 'turn.error'
-          || normalizeLifecycleInactive(payload)
-          || (type === 'session.status' && isTerminalSessionStatus(payload))
-        ) {
+        const terminalFrame = isV3SessionApi(entry.socketSessionApi)
+          ? isTerminalV3Frame(payload, entry.desiredRunId)
+          : (
+              type === 'turn.completed'
+              || type === 'turn.error'
+              || normalizeLifecycleInactive(payload)
+              || (type === 'session.status' && isTerminalSessionStatus(payload))
+            )
+        if (terminalFrame) {
           entry.desiredRunId = null
           this.cancelReconnect(entry)
           this.closeSocket(entry, true)
@@ -391,6 +494,7 @@ export class DesktopRunStreamController {
       }
       entry.socket = null
       entry.socketRunId = null
+      entry.socketSessionApi = null
       if (!entry.desiredRunId) {
         this.maybeDeleteEntry(entry)
         return
@@ -526,6 +630,7 @@ export class DesktopRunStreamController {
     if (clearActiveSocket || entry.socket === socket) {
       entry.socket = null
       entry.socketRunId = null
+      entry.socketSessionApi = null
     }
     socket.close()
   }

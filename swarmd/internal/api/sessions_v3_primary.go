@@ -968,11 +968,15 @@ func (s *Server) handleSessionV3PrimaryRunStop(w http.ResponseWriter, r *http.Re
 	if s.perm != nil {
 		_, _ = s.perm.CancelRunPending(sessionID, runID, reason)
 	}
+	status := sessionruntime.RunIntentCancelled
+	if result.RunIntent != nil && strings.TrimSpace(result.RunIntent.Status) != "" {
+		status = strings.TrimSpace(result.RunIntent.Status)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":         true,
 		"session_id": sessionID,
 		"run_id":     runID,
-		"status":     sessionruntime.RunIntentFailed,
+		"status":     status,
 		"reason":     reason,
 		"mutation":   result,
 	})

@@ -132,6 +132,47 @@ func TestAPIChatBackendV3RunTurnDoesNotCompleteOnAssistantMessageStored(t *testi
 	}
 }
 
+func TestAPIChatBackendV3RunTurnTreatsCancelledRunIntentAsTerminal(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v3/sessions/session-v3/messages":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":         true,
+				"session":    map[string]any{"id": "session-v3", "workspace_path": "/workspace", "workspace_name": "workspace", "title": "V3", "mode": "auto"},
+				"projection": map[string]any{"session_id": "session-v3", "last_event_seq": 2, "projection_high_watermark_seq": 2},
+				"message":    map[string]any{"id": "msg-user", "session_id": "session-v3", "global_seq": 2, "role": "user", "content": "hello"},
+				"run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "pending_executor", "event_seq": 2},
+				"messages":   []any{},
+				"events":     []any{},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/realtime/stream":
+			writeTestV3RealtimeFrames(t, w, r,
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.started", "session_id": "session-v3", "subscription_id": "active-turn", "after_seq": 2, "high_watermark_seq": 3},
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "event_type": "session.run.cancelled", "last_seq": 3, "event": map[string]any{"id": "evt-3", "session_id": "session-v3", "seq": 3, "event_type": "session.run.cancelled", "ts_unix_ms": 30, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "cancelled", "error": "stop from test", "run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "cancelled", "blocked_reason": "stop from test", "event_seq": 3, "updated_at": 30}}}},
+			)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	backend := newAPIChatBackend(testAPIWithToken(server.URL), "v3")
+	var events []ui.ChatRunStreamEvent
+	resp, err := backend.RunTurnStream(context.Background(), "session-v3", ui.ChatRunRequest{Prompt: "hello"}, func(event ui.ChatRunStreamEvent) {
+		events = append(events, event)
+	})
+	if err != nil {
+		t.Fatalf("RunTurnStream() error = %v", err)
+	}
+	if resp.PrimaryRunStatus != "cancelled" || !resp.NoAssistant || resp.PrimaryBlockedReason != "stop from test" {
+		t.Fatalf("response = %#v", resp)
+	}
+	terminalLifecycle := events[len(events)-1]
+	if terminalLifecycle.Type != "session.lifecycle.updated" || terminalLifecycle.Lifecycle == nil || terminalLifecycle.Lifecycle.Active || terminalLifecycle.Lifecycle.Phase != "cancelled" {
+		t.Fatalf("terminal lifecycle = %#v", terminalLifecycle)
+	}
+}
+
 func TestAPIChatBackendV3RunTurnCommitsPrimaryMessageOnly(t *testing.T) {
 	var gotPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

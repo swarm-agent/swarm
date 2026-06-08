@@ -1319,7 +1319,8 @@ function applyAuthoritativeSessionStatus(
   session.live.lastEventAt = ts
   session.live.awaitingAck = false
 
-  if (session.lifecycle) {
+  const runIntentTerminalStatus = eventType === 'session.run_intent.recorded' && (status === 'idle' || status === 'error' || status === 'blocked')
+  if (session.lifecycle && !runIntentTerminalStatus) {
     if (summary) {
       session.live.summary = summary
     }
@@ -1327,6 +1328,9 @@ function applyAuthoritativeSessionStatus(
       session.live.error = error
     }
     return
+  }
+  if (runIntentTerminalStatus) {
+    session.lifecycle = null
   }
 
   session.live.error = error || null
@@ -1409,6 +1413,55 @@ function isSendSessionMessageResult(value: unknown): value is SendSessionMessage
   return Boolean(value && typeof value === 'object' && ('message' in value || 'runIntent' in value || 'session' in value))
 }
 
+function v3RunIntentPayload(payloadRecord: Record<string, unknown>): Record<string, unknown> | null {
+  const runIntent = payloadRecord.run_intent
+  return runIntent && typeof runIntent === 'object' ? runIntent as Record<string, unknown> : null
+}
+
+function v3PayloadString(payloadRecord: Record<string, unknown> | null | undefined, key: string): string {
+  const value = payloadRecord?.[key]
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function v3DurableRunIntent(payloadRecord: Record<string, unknown>, eventType: string): { runId: string; status: string; error: string } | null {
+  const nestedRunIntent = v3RunIntentPayload(payloadRecord)
+  const runId = v3PayloadString(nestedRunIntent, 'run_id')
+    || (eventType === 'session.run_intent.recorded' || eventType.startsWith('session.run.') ? v3PayloadString(payloadRecord, 'run_id') : '')
+  const status = v3PayloadString(nestedRunIntent, 'status')
+    || (eventType === 'session.run_intent.recorded' || eventType.startsWith('session.run.') ? v3PayloadString(payloadRecord, 'status') : '')
+  if (!runId || !status) {
+    return null
+  }
+  return {
+    runId,
+    status: status.toLowerCase(),
+    error: v3PayloadString(payloadRecord, 'error') || v3PayloadString(nestedRunIntent, 'blocked_reason'),
+  }
+}
+
+function v3RunIntentStatusTerminal(status: string): boolean {
+  switch (status.trim().toLowerCase()) {
+    case 'completed':
+    case 'failed':
+    case 'cancelled':
+    case 'expired':
+    case 'interrupted':
+    case 'dispatch_blocked':
+      return true
+    default:
+      return false
+  }
+}
+
+function v3TerminalRunIntent(payloadRecord: Record<string, unknown>, eventType: string): { runId: string; status: string; error: string } | null {
+  const runIntent = v3DurableRunIntent(payloadRecord, eventType)
+  return runIntent && v3RunIntentStatusTerminal(runIntent.status) ? runIntent : null
+}
+
+function sessionUsesV3Api(session: DesktopSessionRecord): boolean {
+  return session.sessionApi?.trim().toLowerCase() === 'v3'
+}
+
 function normalizeGlobalV3SessionPayload(eventType: string, payloadRecord: Record<string, unknown>): Record<string, unknown> {
   if (!eventType.startsWith('session.')) {
     return payloadRecord
@@ -1474,7 +1527,7 @@ function normalizeGlobalV3SessionPayload(eventType: string, payloadRecord: Recor
       normalized.summary = normalized.summary ?? 'Assistant responding…'
     } else if (status === 'completed') {
       normalized.status = 'idle'
-    } else if (status === 'failed') {
+    } else if (status === 'failed' || status === 'cancelled' || status === 'expired' || status === 'interrupted') {
       normalized.status = 'error'
       normalized.error = normalized.error ?? nestedRunIntent.blocked_reason ?? 'Run failed'
     }
@@ -2583,24 +2636,25 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
       break
     }
     case 'session.run.completed': {
-      cancelDraftFlush(sessionId)
-      session.live.status = 'idle'
-      session.live.runId = null
-      session.live.startedAt = null
-      session.live.awaitingAck = false
-      session.live.summary = null
-      session.live.error = null
+      const terminalRunIntent = v3TerminalRunIntent(payloadRecord, eventType)
+      if (!sessionUsesV3Api(session) || terminalRunIntent?.status === 'completed') {
+        cancelDraftFlush(sessionId)
+        session.live.status = 'idle'
+        session.live.runId = null
+        session.live.startedAt = null
+        session.live.awaitingAck = false
+        session.live.summary = null
+        session.live.error = null
+        retainLiveToolState(session.live, 'done')
+        resetLiveToolState(session.live)
+        resetLiveReasoningState(session.live)
+      }
       session.live.lastEventType = eventType
       session.live.lastEventAt = ts
-      retainLiveToolState(session.live, 'done')
-      resetLiveToolState(session.live)
-      resetLiveReasoningState(session.live)
       break
     }
     case 'session.assistant.completed': {
-      const runIntent = payloadRecord.run_intent && typeof payloadRecord.run_intent === 'object'
-        ? payloadRecord.run_intent as Record<string, unknown>
-        : null
+      const terminalRunIntent = v3TerminalRunIntent(payloadRecord, eventType)
       const normalized = normalizeMessage(payloadRecord.message as RunStreamEventMessage['message'], sessionId)
       if (normalized) {
         const finalizedAssistantDraft = session.live.assistantDraft
@@ -2609,48 +2663,47 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
         resetLiveAssistantState(session.live)
         session.messageCount += 1
       }
-      session.live.status = 'idle'
-      session.live.runId = null
-      session.live.startedAt = null
-      session.live.awaitingAck = false
-      session.live.summary = null
-      session.live.error = null
-      session.live.lastEventType = eventType
-      session.live.lastEventAt = ts
-      if (typeof runIntent?.status === 'string' && runIntent.status.trim().toLowerCase() === 'completed') {
+      if (!sessionUsesV3Api(session) || terminalRunIntent?.status === 'completed') {
+        session.live.status = 'idle'
+        session.live.runId = null
+        session.live.startedAt = null
+        session.live.awaitingAck = false
+        session.live.summary = null
+        session.live.error = null
         resetLiveToolState(session.live)
         resetLiveReasoningState(session.live)
       }
+      session.live.lastEventType = eventType
+      session.live.lastEventAt = ts
       break
     }
     case 'session.run.failed':
+    case 'session.run.cancelled':
+    case 'session.run.expired':
+    case 'session.run.interrupted':
     case 'session.assistant.failed': {
-      const runIntent = payloadRecord.run_intent && typeof payloadRecord.run_intent === 'object'
-        ? payloadRecord.run_intent as Record<string, unknown>
-        : null
-      const runId = typeof payloadRecord.run_id === 'string'
-        ? payloadRecord.run_id.trim()
-        : typeof runIntent?.run_id === 'string'
-          ? runIntent.run_id.trim()
-          : ''
-      const error = typeof payloadRecord.error === 'string' && payloadRecord.error.trim() !== ''
-        ? payloadRecord.error.trim()
-        : typeof runIntent?.blocked_reason === 'string' && runIntent.blocked_reason.trim() !== ''
-          ? runIntent.blocked_reason.trim()
-          : 'Run failed'
-      cancelDraftFlush(sessionId)
-      session.live.status = 'error'
-      session.live.runId = null
-      session.live.startedAt = null
-      session.live.awaitingAck = false
-      session.live.summary = error
-      session.live.error = error
+      const terminalRunIntent = v3TerminalRunIntent(payloadRecord, eventType)
+      const runId = terminalRunIntent?.runId
+        || (typeof payloadRecord.run_id === 'string' ? payloadRecord.run_id.trim() : '')
+      const error = terminalRunIntent?.error
+        || (typeof payloadRecord.error === 'string' && payloadRecord.error.trim() !== '' ? payloadRecord.error.trim() : '')
+        || 'Run failed'
+      const isTerminalError = terminalRunIntent !== null && terminalRunIntent.status !== 'completed'
+      if (!sessionUsesV3Api(session) || isTerminalError) {
+        cancelDraftFlush(sessionId)
+        session.live.status = 'error'
+        session.live.runId = null
+        session.live.startedAt = null
+        session.live.awaitingAck = false
+        session.live.summary = error
+        session.live.error = error
+        retainLiveToolState(session.live, 'error')
+        resetLiveToolState(session.live)
+        resetLiveReasoningState(session.live)
+        notifications.unshift(makeNotification(sessionId, runId || session.live.runId, eventType, 'Run failed', error, 'error', ts))
+      }
       session.live.lastEventType = eventType
       session.live.lastEventAt = ts
-      retainLiveToolState(session.live, 'error')
-      resetLiveToolState(session.live)
-      resetLiveReasoningState(session.live)
-      notifications.unshift(makeNotification(sessionId, runId || session.live.runId, eventType, 'Run failed', error, 'error', ts))
       break
     }
     case 'permission.requested':
@@ -2844,7 +2897,10 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
   if (envelopeSeq > 0) {
     session.live.seq = Math.max(session.live.seq, envelopeSeq)
   }
-  const merged = mergeSessionRecords(state.sessions[sessionId] ?? null, session)
+  let merged = mergeSessionRecords(state.sessions[sessionId] ?? null, session)
+  if (eventType === 'session.run_intent.recorded' && v3RunIntentStatusTerminal(v3PayloadString(v3RunIntentPayload(payloadRecord), 'status'))) {
+    merged = { ...merged, lifecycle: null }
+  }
   sessions[sessionId] = merged
   syncBlockedSessionToWorkspaceOverview(queryClient, merged)
   if (sessionRequiresSnapshotHydration(merged, eventType)) {

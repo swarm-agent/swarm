@@ -163,7 +163,7 @@ func sessionV3StopReasonIsFailure(normalized string) bool {
 
 func sessionV3RunIntentStatusTerminal(status string) bool {
 	switch strings.TrimSpace(status) {
-	case sessionruntime.RunIntentCompleted, sessionruntime.RunIntentFailed, sessionruntime.RunIntentDispatchBlocked:
+	case sessionruntime.RunIntentCompleted, sessionruntime.RunIntentFailed, sessionruntime.RunIntentCancelled, sessionruntime.RunIntentExpired, sessionruntime.RunIntentInterrupted, sessionruntime.RunIntentDispatchBlocked:
 		return true
 	default:
 		return false

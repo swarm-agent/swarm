@@ -70,7 +70,7 @@ func TestTerminalClassifierContinuationAndMalformedTerminals(t *testing.T) {
 }
 
 func TestSessionV3RunIntentStatusHelpers(t *testing.T) {
-	for _, status := range []string{sessionruntime.RunIntentCompleted, sessionruntime.RunIntentFailed, sessionruntime.RunIntentDispatchBlocked} {
+	for _, status := range []string{sessionruntime.RunIntentCompleted, sessionruntime.RunIntentFailed, sessionruntime.RunIntentCancelled, sessionruntime.RunIntentExpired, sessionruntime.RunIntentInterrupted, sessionruntime.RunIntentDispatchBlocked} {
 		if !sessionV3RunIntentStatusTerminal(status) || sessionV3RunIntentStatusActive(status) {
 			t.Fatalf("status %q terminal/active helpers disagree", status)
 		}
