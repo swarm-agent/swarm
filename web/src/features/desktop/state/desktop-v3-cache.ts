@@ -4,8 +4,20 @@ import { applyDesktopChatRouteToSession, desktopChatRouteFromSessionMetadata } f
 import { mapDesktopSession, mapDesktopSessionPermission, mapDesktopSessionPlan, mapDesktopSessionPlanRevision, mapDesktopSessionUsageSummary } from '../chat/queries/chat-queries'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
-import type { AgentModelPolicyRecord, ChatMessageRecord, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord, ResolvedSessionPreference } from '../chat/types/chat'
+import type { AgentModelPolicyRecord, ChatMessageRecord, ResolvedSessionPreference } from '../chat/types/chat'
 import type { DesktopRunIntentRecord, DesktopSessionRecord } from '../types/realtime'
+import {
+  desktopV3SessionQueryKey,
+  desktopV3SessionSnapshotQueryKey,
+  mergeDesktopV3DurableCachePatch,
+  type DesktopV3ProjectionCursor,
+  type DesktopV3SessionSnapshot,
+} from './desktop-v3-durable-reducer'
+export {
+  desktopV3SessionQueryKey,
+  desktopV3SessionSnapshotQueryKey,
+  type DesktopV3SessionSnapshot,
+} from './desktop-v3-durable-reducer'
 
 interface V3SessionWire {
   id?: string
@@ -25,12 +37,7 @@ interface V3PreferenceWire {
   updated_at?: number
 }
 
-interface V3SessionProjectionWire {
-  session_id?: string
-  last_event_seq?: number
-  projection_high_watermark_seq?: number
-  updated_at?: number
-}
+type V3SessionProjectionWire = DesktopV3ProjectionCursor
 
 interface V3MessageWire {
   id?: string
@@ -71,6 +78,8 @@ interface V3HydratedSessionResponseWire {
   pending_permissions?: unknown[]
   usage_summary?: unknown
   active_run_intent?: V3RunIntentWire | null
+  applied_seq?: number
+  high_watermark?: number
   preference?: V3PreferenceWire
   context_window?: number
   max_output_tokens?: number
@@ -80,40 +89,12 @@ interface V3HydratedSessionResponseWire {
   plan_revisions?: unknown[]
 }
 
-export interface DesktopV3SessionSnapshot {
-  source: 'v3'
-  session: DesktopSessionRecord
-  messages: ChatMessageRecord[]
-  events: unknown[]
-  projection: V3SessionProjectionWire | null
-  preference: ResolvedSessionPreference
-  agentModelPolicy: AgentModelPolicyRecord | null
-  hasActivePlan: boolean
-  activePlan: DesktopSessionPlanRecord | null
-  planRevisions: DesktopSessionPlanRevisionRecord[]
-  hydratedAt: number
-}
-
 export function assertRawCanonicalDesktopV3SessionId(sessionId: string): string {
   const normalizedSessionId = sessionId.trim()
   if (!normalizedSessionId) {
     throw new Error('Desktop V3 requires a raw canonical session id.')
   }
   return normalizedSessionId
-}
-
-export function desktopV3SessionSnapshotQueryKey(sessionId: string) {
-  return ['desktop-v3-session-snapshot', sessionId.trim()] as const
-}
-
-export const desktopV3SessionQueryKey = desktopV3SessionSnapshotQueryKey
-
-function sessionMessagesQueryKey(sessionId: string) {
-  return ['session-messages', sessionId.trim()] as const
-}
-
-function sessionPreferenceQueryKey(sessionId: string) {
-  return ['session-preference', sessionId.trim()] as const
 }
 
 function mapProjectionToSession(session: V3SessionWire, projection: V3SessionProjectionWire | null | undefined): V3SessionWire {
@@ -292,6 +273,8 @@ export function mapDesktopV3SessionSnapshot(response: V3HydratedSessionResponseW
     projection: response.projection ?? null,
     preference: mapDesktopV3SessionPreference(response),
     agentModelPolicy: mapDesktopV3AgentModelPolicy(response.agent_model_policy),
+    appliedSeq: Math.max(0, response.applied_seq ?? response.projection?.last_event_seq ?? session.lastEventSeq ?? 0),
+    highWatermark: Math.max(0, response.high_watermark ?? response.projection?.projection_high_watermark_seq ?? session.projectionHighWatermarkSeq ?? 0),
     hasActivePlan: Boolean(response.has_active_plan),
     activePlan: response.has_active_plan ? mapDesktopSessionPlan(response.active_plan) : null,
     planRevisions: Array.isArray(response.plan_revisions)
@@ -467,9 +450,7 @@ export function writeDesktopV3SessionSnapshot(
     return
   }
 
-  queryClient.setQueryData(desktopV3SessionSnapshotQueryKey(sessionId), snapshot)
-  queryClient.setQueryData(sessionMessagesQueryKey(sessionId), snapshot.messages)
-  queryClient.setQueryData(sessionPreferenceQueryKey(sessionId), snapshot.preference)
+  mergeDesktopV3DurableCachePatch(queryClient, { sessionId, snapshot })
 }
 
 export async function ensureDesktopV3SessionSnapshot(

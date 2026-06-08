@@ -22,9 +22,10 @@ import {
 } from '../chat/queries/chat-queries'
 import type { DesktopChatRoute } from '../chat/services/chat-routing'
 import { gitStatusQueryKey } from '../git/api'
-import { agentStateQueryOptions, sessionMessagesQueryKey, sessionMessagesQueryOptions, sessionPreferenceQueryKey, uiSettingsQueryKey } from '../../queries/query-options'
+import { agentStateQueryOptions, sessionMessagesQueryOptions, sessionPreferenceQueryKey, uiSettingsQueryKey } from '../../queries/query-options'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { mergeMessageIntoCache } from '../chat/services/message-cache'
+import { mergeDesktopV3DurableCachePatch } from './desktop-v3-durable-reducer'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import { normalizeSwarmSettings, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import {
@@ -1424,13 +1425,16 @@ function updateMessagesCache(sessionId: string, message: ChatMessageRecord, afte
   })
 }
 
-function mergeMessagesCache(sessionId: string, messages: ChatMessageRecord[]): void {
-  if (messages.length === 0) {
+function mergeMessagesCache(sessionId: string, messages: ChatMessageRecord[], cursor?: { appliedSeq?: number; highWatermark?: number }): void {
+  if (messages.length === 0 && !cursor) {
     return
   }
-  queryClient.setQueryData(sessionMessagesQueryKey(sessionId), (current: ChatMessageRecord[] | undefined) => (
-    messages.reduce<ChatMessageRecord[]>((merged, message) => mergeMessageIntoCache(merged, message), current ?? [])
-  ))
+  mergeDesktopV3DurableCachePatch(queryClient, {
+    sessionId,
+    messages,
+    appliedSeq: cursor?.appliedSeq,
+    highWatermark: cursor?.highWatermark,
+  })
 }
 
 function isSendSessionMessageResult(value: unknown): value is SendSessionMessageResult {
@@ -2950,6 +2954,12 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
         } else {
           updateMessagesCache(normalized.sessionId, normalized)
         }
+        mergeDesktopV3DurableCachePatch(queryClient, {
+          sessionId: normalized.sessionId,
+          messages: [normalized],
+          appliedSeq: envelopeSeq,
+          highWatermark: envelopeSeq,
+        })
       }
       break
     }
@@ -2967,6 +2977,12 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
     merged = { ...merged, lifecycle: null }
   }
   sessions[sessionId] = merged
+  mergeDesktopV3DurableCachePatch(queryClient, {
+    sessionId,
+    session: merged,
+    appliedSeq: envelopeSeq,
+    highWatermark: envelopeSeq,
+  })
   syncBlockedSessionToWorkspaceOverview(queryClient, merged)
   if (sessionRequiresSnapshotHydration(merged, eventType)) {
     requestAuthoritativeSessionSnapshot(sessionId)
@@ -3735,7 +3751,15 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
           const committedMessages = result.message
             ? [result.message]
             : result.messages ?? []
-          mergeMessagesCache(targetSessionId, committedMessages)
+          const committedAppliedSeq = Math.max(
+            result.session?.lastEventSeq ?? 0,
+            result.runIntent?.eventSeq ?? 0,
+            ...committedMessages.map((message) => message.globalSeq),
+          )
+          mergeMessagesCache(targetSessionId, committedMessages, {
+            appliedSeq: committedAppliedSeq,
+            highWatermark: Math.max(result.session?.projectionHighWatermarkSeq ?? 0, committedAppliedSeq),
+          })
           set((state) => applyV3MessageCommitResult(state, targetSessionId, result, Date.now()))
           runIntentId = result.runIntent?.runId ?? ''
         }

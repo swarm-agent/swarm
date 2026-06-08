@@ -1,3 +1,4 @@
+import type { QueryClient } from "@tanstack/react-query";
 import {
   requestJson,
   apiFetch,
@@ -45,6 +46,7 @@ import {
 } from "../services/model-options";
 import { parseStructuredToolMessage } from "../services/tool-message";
 import { countApprovalRequiredPermissions } from "../../permissions/services/permission-payload";
+import { mergeDesktopV3DurableCachePatch } from "../../state/desktop-v3-durable-reducer";
 
 interface SessionWire {
   id?: string;
@@ -135,6 +137,15 @@ interface MessageWire {
 
 interface MessagesResponseWire {
   messages?: MessageWire[];
+  applied_seq?: number;
+  high_watermark?: number;
+  oldest_seq?: number;
+  newest_seq?: number;
+  next_before_seq?: number;
+  next_after_seq?: number;
+  has_more?: boolean;
+  has_more_older?: boolean;
+  has_more_newer?: boolean;
 }
 
 interface SessionProjectionWire {
@@ -179,6 +190,19 @@ export interface SendSessionMessageResult {
   messages?: ChatMessageRecord[];
   runIntent?: V3RunIntentRecord | null;
   events?: unknown[];
+}
+
+export interface FetchSessionMessagesResult {
+  messages: ChatMessageRecord[];
+  appliedSeq: number;
+  highWatermark: number;
+  oldestSeq: number;
+  newestSeq: number;
+  nextBeforeSeq: number;
+  nextAfterSeq: number;
+  hasMore: boolean;
+  hasMoreOlder: boolean;
+  hasMoreNewer: boolean;
 }
 
 interface SessionDataRequestOptions {
@@ -1073,11 +1097,14 @@ export async function fetchSessionMessages(
   sessionId: string,
   signal?: AbortSignal,
   afterSeq = 0,
-  options: SessionDataRequestOptions = {},
-): Promise<ChatMessageRecord[]> {
+  options: SessionDataRequestOptions & { beforeSeq?: number; limit?: number; queryClient?: QueryClient } = {},
+): Promise<FetchSessionMessagesResult> {
   const normalizedSessionId = sessionId.trim();
-  const search = new URLSearchParams({ limit: "100" });
-  if (afterSeq > 0) {
+  const search = new URLSearchParams({ limit: String(options.limit && options.limit > 0 ? Math.floor(options.limit) : 100) });
+  const beforeSeq = options.beforeSeq && options.beforeSeq > 0 ? Math.floor(options.beforeSeq) : 0;
+  if (beforeSeq > 0) {
+    search.set("before_seq", String(beforeSeq));
+  } else if (afterSeq > 0) {
     search.set("after_seq", String(afterSeq));
   }
   const sessionApi = resolveSessionApiForSession(normalizedSessionId, options);
@@ -1088,9 +1115,36 @@ export async function fetchSessionMessages(
     endpoint,
     { signal },
   );
-  return Array.isArray(response.messages)
+  const messages = Array.isArray(response.messages)
     ? response.messages.map(mapChatMessage)
     : [];
+  const newestSeq = typeof response.newest_seq === "number"
+    ? response.newest_seq
+    : messages.reduce((max, message) => Math.max(max, message.globalSeq), 0);
+  const oldestSeq = typeof response.oldest_seq === "number"
+    ? response.oldest_seq
+    : messages.reduce((min, message) => min === 0 ? message.globalSeq : Math.min(min, message.globalSeq), 0);
+  const result = {
+    messages,
+    appliedSeq: typeof response.applied_seq === "number" ? Math.max(0, response.applied_seq) : newestSeq,
+    highWatermark: typeof response.high_watermark === "number" ? Math.max(0, response.high_watermark) : newestSeq,
+    oldestSeq,
+    newestSeq,
+    nextBeforeSeq: typeof response.next_before_seq === "number" ? response.next_before_seq : oldestSeq,
+    nextAfterSeq: typeof response.next_after_seq === "number" ? response.next_after_seq : newestSeq,
+    hasMore: Boolean(response.has_more),
+    hasMoreOlder: Boolean(response.has_more_older),
+    hasMoreNewer: Boolean(response.has_more_newer),
+  };
+  if (sessionApi === "v3" && options.queryClient) {
+    mergeDesktopV3DurableCachePatch(options.queryClient, {
+      sessionId: normalizedSessionId,
+      messages: result.messages,
+      appliedSeq: result.appliedSeq,
+      highWatermark: result.highWatermark,
+    });
+  }
+  return result;
 }
 
 export async function fetchSessionPreference(

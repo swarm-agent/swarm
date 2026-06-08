@@ -80,6 +80,10 @@ async function withFetchStub(
           { id: `${sessionId}-msg-2`, session_id: sessionId, global_seq: 3, role: 'user', content: 'second', created_at: 3 },
           { id: `${sessionId}-msg-3`, session_id: sessionId, global_seq: 4, role: 'assistant', content: 'third', created_at: 4 },
         ],
+        oldest_seq: 3,
+        newest_seq: 4,
+        next_after_seq: 4,
+        has_more_newer: true,
       })
     }
 
@@ -278,10 +282,14 @@ test('fetchSessionMessages loads V3 message history from Sessions API v3 only an
   const { fetchSessionMessages } = await import('./chat-queries')
 
   await withFetchStub(async (calls) => {
-    const messages = await fetchSessionMessages('session-v3', undefined, 2, { sessionApi: 'v3' })
+    const result = await fetchSessionMessages('session-v3', undefined, 2, { sessionApi: 'v3' })
 
-    assert.deepEqual(messages.map((message) => message.globalSeq), [3, 4])
-    assert.deepEqual(messages.map((message) => message.id), ['session-v3-msg-2', 'session-v3-msg-3'])
+    assert.deepEqual(result.messages.map((message) => message.globalSeq), [3, 4])
+    assert.deepEqual(result.messages.map((message) => message.id), ['session-v3-msg-2', 'session-v3-msg-3'])
+    assert.equal(result.appliedSeq, 4)
+    assert.equal(result.highWatermark, 4)
+    assert.equal(result.nextAfterSeq, 4)
+    assert.equal(result.hasMoreNewer, true)
     assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-v3/messages?limit=100&after_seq=2'])
     assertNoV1OrV2SessionDataCalls(calls)
   })
@@ -542,4 +550,43 @@ test('Desktop V3 has no standalone permission list or usage subresource helpers'
   assert.doesNotMatch(source, /PendingPermissionsResponseWire|SessionUsageResponseWire/)
   assert.doesNotMatch(source, /permissions\?status=pending/)
   assert.doesNotMatch(source, /\/usage`/)
+})
+
+test('Desktop V3 durable reducer idempotently merges hydration, socket, and page messages with cursors', async () => {
+  const { mergeDesktopV3DurableCachePatch, desktopV3SessionSnapshotQueryKey } = await import('../../state/desktop-v3-durable-reducer')
+  const { sessionMessagesQueryKey } = await import('../../../queries/query-options')
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+
+  await withFetchStub(async () => {
+    const { fetchDesktopV3SessionSnapshot } = await import('../../state/desktop-v3-cache')
+    const snapshot = await fetchDesktopV3SessionSnapshot('session-reducer')
+    assert.ok(snapshot)
+    const hydrated = mergeDesktopV3DurableCachePatch(queryClient, { snapshot })
+    assert.equal(hydrated?.appliedSeq, 7)
+    assert.equal(hydrated?.highWatermark, 7)
+
+    const socketMessage = { id: 'session-reducer-msg-2', sessionId: 'session-reducer', globalSeq: 8, role: 'assistant', content: 'durable socket', createdAt: 8 }
+    mergeDesktopV3DurableCachePatch(queryClient, { sessionId: 'session-reducer', messages: [socketMessage], appliedSeq: 8, highWatermark: 9 })
+    mergeDesktopV3DurableCachePatch(queryClient, { sessionId: 'session-reducer', messages: [socketMessage], appliedSeq: 8, highWatermark: 9 })
+    mergeDesktopV3DurableCachePatch(queryClient, {
+      sessionId: 'session-reducer',
+      messages: [{ id: 'session-reducer-msg-0', sessionId: 'session-reducer', globalSeq: 1, role: 'user', content: 'older page', createdAt: 1 }],
+      appliedSeq: 1,
+      highWatermark: 1,
+    })
+
+    assert.deepEqual(
+      queryClient.getQueryData<Array<{ id: string }>>(sessionMessagesQueryKey('session-reducer'))?.map((message) => message.id),
+      ['session-reducer-msg-0', 'session-reducer-msg-1', 'session-reducer-msg-2'],
+    )
+    const { fetchSessionMessages } = await import('./chat-queries')
+    await fetchSessionMessages('session-reducer', undefined, 8, { sessionApi: 'v3', queryClient })
+    const reduced = queryClient.getQueryData<{ appliedSeq: number; highWatermark: number }>(desktopV3SessionSnapshotQueryKey('session-reducer'))
+    assert.equal(reduced?.appliedSeq, 8)
+    assert.equal(reduced?.highWatermark, 9)
+  })
+
+  queryClient.clear()
 })
