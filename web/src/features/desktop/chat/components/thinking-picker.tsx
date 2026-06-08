@@ -10,6 +10,8 @@ interface ThinkingPickerProps {
   tagsEnabled?: boolean
   onToggleTags?: (enabled: boolean) => void
   tagsBusy?: boolean
+  disabled?: boolean
+  disabledReason?: string
 }
 
 const DROPDOWN_WIDTH = 170
@@ -26,6 +28,8 @@ export function ThinkingPicker({
   tagsEnabled,
   onToggleTags,
   tagsBusy = false,
+  disabled = false,
+  disabledReason = '',
 }: ThinkingPickerProps) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
@@ -94,9 +98,10 @@ export function ThinkingPicker({
   }, [open])
 
   const handleSelect = useCallback((v: string) => {
+    if (disabled) return
     onSelect(v)
     setOpen(false)
-  }, [onSelect])
+  }, [disabled, onSelect])
 
   const dropdown = open && position ? createPortal(
     <div
@@ -169,12 +174,16 @@ export function ThinkingPicker({
       <button
         ref={triggerRef}
         type="button"
-        onClick={() => setOpen((prev) => !prev)}
-        title={`${label}: ${displayLabel}`}
+        onClick={() => {
+          if (disabled) return
+          setOpen((prev) => !prev)
+        }}
+        disabled={disabled}
+        title={disabled ? disabledReason : `${label}: ${displayLabel}`}
         aria-label={`${label}: ${displayLabel}`}
         aria-haspopup="menu"
         aria-expanded={open}
-        className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--app-text-muted)] transition hover:text-[var(--app-text)]"
+        className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--app-text-muted)] transition hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-60"
       >
         <PickerIcon size={13} className="shrink-0 text-[var(--app-text-subtle)]" />
         <span className="max-w-[4.75rem] truncate">{displayLabel}</span>

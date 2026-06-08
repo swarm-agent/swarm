@@ -99,9 +99,21 @@ type sessionsV3HydratedSession struct {
 	Preference         pebblestore.ModelPreference       `json:"preference"`
 	ContextWindow      int                               `json:"context_window"`
 	MaxOutputTokens    int                               `json:"max_output_tokens"`
+	AgentModelPolicy   sessionsV3AgentModelPolicy        `json:"agent_model_policy"`
 	HasActivePlan      bool                              `json:"has_active_plan"`
 	ActivePlan         pebblestore.SessionPlanSnapshot   `json:"active_plan,omitempty"`
 	PlanRevisions      []pebblestore.SessionPlanSnapshot `json:"plan_revisions"`
+}
+
+type sessionsV3AgentModelPolicy struct {
+	AgentName       string                      `json:"agent_name"`
+	ResolvedAgent   string                      `json:"resolved_agent_name"`
+	Source          string                      `json:"source"`
+	Locked          bool                        `json:"locked"`
+	Reason          string                      `json:"reason,omitempty"`
+	Preference      pebblestore.ModelPreference `json:"preference"`
+	ContextWindow   int                         `json:"context_window"`
+	MaxOutputTokens int                         `json:"max_output_tokens"`
 }
 
 func (s *Server) handleSessionsV3Primary(w http.ResponseWriter, r *http.Request) {
@@ -632,6 +644,11 @@ func (s *Server) handleSessionV3PrimaryPreference(w http.ResponseWriter, r *http
 		writeSessionNotFound(w)
 		return
 	}
+	agentModelPolicy := s.sessionsV3AgentModelPolicy(hydrated.Session, hydrated.Session.Preference, 0, 0)
+	if agentModelPolicy.Locked {
+		writeError(w, http.StatusBadRequest, errors.New(agentModelPolicy.Reason))
+		return
+	}
 	pref := mergeSessionsV3PreferenceUpdate(hydrated.Session.Preference, req)
 	if s.model == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("model service is not configured"))
@@ -1076,6 +1093,12 @@ func (s *Server) hydrateSessionsV3Primary(principal identity.Principal, sessionI
 			maxOutputTokens = resolved.MaxOutputTokens
 		}
 	}
+	agentModelPolicy := s.sessionsV3AgentModelPolicy(hydrated.Session, preference, contextWindow, maxOutputTokens)
+	if agentModelPolicy.Locked {
+		preference = agentModelPolicy.Preference
+		contextWindow = agentModelPolicy.ContextWindow
+		maxOutputTokens = agentModelPolicy.MaxOutputTokens
+	}
 	activePlan, hasActivePlan, err := s.sessions.GetActivePlan(sessionID)
 	if err != nil {
 		return sessionsV3HydratedSession{}, false, err
@@ -1088,7 +1111,76 @@ func (s *Server) hydrateSessionsV3Primary(principal identity.Principal, sessionI
 		}
 		planRevisions = revisions
 	}
-	return sessionsV3HydratedSession{Session: hydrated.Session, Projection: hydrated.Projection, Messages: hydrated.Messages, Events: hydrated.Events, PendingPermissions: pendingPermissions, UsageSummary: usageSummary, Preference: preference, ContextWindow: contextWindow, MaxOutputTokens: maxOutputTokens, HasActivePlan: hasActivePlan, ActivePlan: activePlan, PlanRevisions: planRevisions}, true, nil
+	return sessionsV3HydratedSession{Session: hydrated.Session, Projection: hydrated.Projection, Messages: hydrated.Messages, Events: hydrated.Events, PendingPermissions: pendingPermissions, UsageSummary: usageSummary, Preference: preference, ContextWindow: contextWindow, MaxOutputTokens: maxOutputTokens, AgentModelPolicy: agentModelPolicy, HasActivePlan: hasActivePlan, ActivePlan: activePlan, PlanRevisions: planRevisions}, true, nil
+}
+
+func (s *Server) sessionsV3AgentModelPolicy(session pebblestore.SessionSnapshot, defaultPreference pebblestore.ModelPreference, defaultContextWindow, defaultMaxOutputTokens int) sessionsV3AgentModelPolicy {
+	policy := sessionsV3AgentModelPolicy{
+		AgentName:       sessionsV3MetadataString(session.Metadata, "agent_name"),
+		ResolvedAgent:   sessionsV3MetadataString(session.Metadata, "resolved_agent_name"),
+		Source:          "default",
+		Locked:          false,
+		Preference:      normalizeSessionsV3ModelPreference(defaultPreference),
+		ContextWindow:   defaultContextWindow,
+		MaxOutputTokens: defaultMaxOutputTokens,
+	}
+	if policy.AgentName == "" {
+		policy.AgentName = policy.ResolvedAgent
+	}
+	if policy.ResolvedAgent == "" {
+		policy.ResolvedAgent = policy.AgentName
+	}
+	profile, err := sessionV3AgentProfileFromMetadata(session.Metadata)
+	if err != nil {
+		return policy
+	}
+	if strings.TrimSpace(profile.Name) != "" {
+		policy.AgentName = strings.TrimSpace(profile.Name)
+		policy.ResolvedAgent = strings.TrimSpace(profile.Name)
+	}
+	agentPref := sessionsV3AgentPresetPreference(profile)
+	if strings.TrimSpace(agentPref.Provider) == "" || strings.TrimSpace(agentPref.Model) == "" {
+		return policy
+	}
+	policy.Source = "agent_preset"
+	policy.Locked = true
+	policy.Reason = "Agent model is set in agent settings; set the agent model to Default to choose a different model."
+	policy.Preference = normalizeSessionsV3ModelPreference(agentPref)
+	policy.ContextWindow = 0
+	policy.MaxOutputTokens = 0
+	if s != nil && s.model != nil {
+		if resolved, err := s.model.ResolvePreference(policy.Preference); err == nil {
+			policy.Preference = normalizeSessionsV3ModelPreference(resolved.Preference)
+			policy.ContextWindow = resolved.ContextWindow
+			policy.MaxOutputTokens = resolved.MaxOutputTokens
+		}
+	}
+	return policy
+}
+
+func sessionsV3AgentPresetPreference(profile pebblestore.AgentProfile) pebblestore.ModelPreference {
+	provider := strings.ToLower(strings.TrimSpace(profile.Provider))
+	model := strings.TrimSpace(profile.Model)
+	if provider == "" || model == "" {
+		return pebblestore.ModelPreference{}
+	}
+	return pebblestore.ModelPreference{
+		Provider:  provider,
+		Model:     model,
+		Thinking:  normalizeSessionV3ThinkingWithProvider(provider, profile.Thinking),
+		UpdatedAt: profile.UpdatedAt,
+	}
+}
+
+func sessionsV3MetadataString(metadata map[string]any, key string) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	value, ok := metadata[key]
+	if !ok || value == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
 }
 
 func sessionsV3HydratedResponse(hydrated sessionsV3HydratedSession) map[string]any {
@@ -1103,6 +1195,7 @@ func sessionsV3HydratedResponse(hydrated sessionsV3HydratedSession) map[string]a
 		"preference":          hydrated.Preference,
 		"context_window":      hydrated.ContextWindow,
 		"max_output_tokens":   hydrated.MaxOutputTokens,
+		"agent_model_policy":  hydrated.AgentModelPolicy,
 		"has_active_plan":     hydrated.HasActivePlan,
 		"active_plan":         nil,
 		"plan_revisions":      hydrated.PlanRevisions,

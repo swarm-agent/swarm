@@ -23,7 +23,7 @@ import {
   startSessionRun,
   updateDraftModelPreference,
 } from '../queries/chat-queries'
-import { saveDesktopV3SessionPlan, updateDesktopV3SessionAgent, updateDesktopV3SessionMetadata, updateDesktopV3SessionMode, updateDesktopV3SessionPreference } from '../../state/desktop-v3-cache'
+import { getCachedDesktopV3SessionSnapshot, saveDesktopV3SessionPlan, updateDesktopV3SessionAgent, updateDesktopV3SessionMetadata, updateDesktopV3SessionMode, updateDesktopV3SessionPreference } from '../../state/desktop-v3-cache'
 import type { AgentStateRecord, ChatMessageRecord, ResolvedSessionPreference, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
 import type { DesktopLiveAssistantSegment, DesktopLiveToolRecord, DesktopSessionRecord } from '../../types/realtime'
 import { Card } from '../../../../components/ui/card'
@@ -863,6 +863,11 @@ function hasExplicitPreference(preference: ResolvedSessionPreference['preference
   return preference.provider.trim() !== '' && preference.model.trim() !== '' && normalizeThinkingValue(preference.thinking).trim() !== ''
 }
 
+function agentModelLockedMessage(agentName: string): string {
+  const label = agentName.trim() || 'this agent'
+  return `${label} has a preset model. Set the agent model to Default in Agents settings before choosing another model.`
+}
+
 function defaultThinkingForProvider(provider: string): string {
   switch (provider.trim().toLowerCase()) {
     case 'copilot':
@@ -1152,6 +1157,9 @@ export function DesktopChatPanel({
 
   const sessionPreference = sessionPreferenceQuery.data ?? emptyPreference()
   const draftPreference = draftPreferenceQuery.data ?? emptyPreference()
+  const desktopV3Snapshot = sessionId ? getCachedDesktopV3SessionSnapshot(queryClient, sessionId) : null
+  const activeAgentModelPolicy = sessionId ? desktopV3Snapshot?.agentModelPolicy ?? null : null
+  const activeAgentModelLocked = Boolean(activeAgentModelPolicy?.locked)
   const activePreferenceRecord = sessionId ? sessionPreference : draftPreference
 
   const composer = useDesktopStore((state) => state.getSessionDraft(sessionId, workspacePath))
@@ -1683,6 +1691,7 @@ export function DesktopChatPanel({
   const canSendWithSelectedPreference = hasExplicitPreference(activePreferenceRecord.preference) && selectedModelAvailable
   const fastSupported = supportsCodexFastMode(activePreferenceRecord.preference.provider, activePreferenceRecord.preference.model)
   const fastValue = fastToggleFromPreference(activePreferenceRecord.preference)
+  const agentModelLockReason = activeAgentModelPolicy?.reason || agentModelLockedMessage(activeAgentModelPolicy?.agentName || currentSessionAgent)
 
   const actionablePendingPermissions = useMemo(
     () => (liveSession?.pendingPermissions ?? []).filter((permission) => {
@@ -2054,6 +2063,10 @@ export function DesktopChatPanel({
 
   const handlePreferenceChange = useCallback(async (next: ResolvedSessionPreference['preference']) => {
     setPanelError(null)
+    if (activeAgentModelLocked) {
+      setPanelError(activeAgentModelPolicy?.reason || agentModelLockedMessage(activeAgentModelPolicy?.agentName || currentSessionAgent))
+      return
+    }
     const normalizedNext = {
       ...next,
       thinking: normalizeThinkingValue(next.thinking),
@@ -2096,9 +2109,13 @@ export function DesktopChatPanel({
     } catch (error) {
       setPanelError(error instanceof Error ? error.message : 'Failed to update model settings')
     }
-  }, [activePreferenceRecord, queryClient, sessionId])
+  }, [activeAgentModelLocked, activeAgentModelPolicy?.agentName, activeAgentModelPolicy?.reason, activePreferenceRecord, currentSessionAgent, queryClient, sessionId])
 
   const handleModelChange = useCallback((value: string) => {
+    if (activeAgentModelLocked) {
+      setPanelError(activeAgentModelPolicy?.reason || agentModelLockedMessage(activeAgentModelPolicy?.agentName || currentSessionAgent))
+      return
+    }
     const option = resolvedModelOptions.find((entry) => entry.key === value)
     const nextProvider = option?.provider ?? ''
     const next = {
@@ -2109,19 +2126,27 @@ export function DesktopChatPanel({
       thinking: activePreferenceRecord.preference.thinking || option?.thinking || defaultThinkingForProvider(nextProvider),
     }
     void handlePreferenceChange(next)
-  }, [activePreferenceRecord.preference, handlePreferenceChange, resolvedModelOptions])
+  }, [activeAgentModelLocked, activeAgentModelPolicy?.agentName, activeAgentModelPolicy?.reason, activePreferenceRecord.preference, currentSessionAgent, handlePreferenceChange, resolvedModelOptions])
 
   const handleThinkingChange = useCallback((value: string) => {
+    if (activeAgentModelLocked) {
+      setPanelError(activeAgentModelPolicy?.reason || agentModelLockedMessage(activeAgentModelPolicy?.agentName || currentSessionAgent))
+      return
+    }
     void handlePreferenceChange({
       ...activePreferenceRecord.preference,
       thinking: value,
     })
-  }, [activePreferenceRecord.preference, handlePreferenceChange])
+  }, [activeAgentModelLocked, activeAgentModelPolicy?.agentName, activeAgentModelPolicy?.reason, activePreferenceRecord.preference, currentSessionAgent, handlePreferenceChange])
 
   const handleFastChange = useCallback((value: string) => {
+    if (activeAgentModelLocked) {
+      setPanelError(activeAgentModelPolicy?.reason || agentModelLockedMessage(activeAgentModelPolicy?.agentName || currentSessionAgent))
+      return
+    }
     const nextFast = normalizeFastToggle(value)
     void handlePreferenceChange(buildFastPreference(activePreferenceRecord.preference, nextFast))
-  }, [activePreferenceRecord.preference, handlePreferenceChange])
+  }, [activeAgentModelLocked, activeAgentModelPolicy?.agentName, activeAgentModelPolicy?.reason, activePreferenceRecord.preference, currentSessionAgent, handlePreferenceChange])
 
   const handleCompact = useCallback(async (rawInput = '') => {
     if (!sessionId || canStop || submitting) {
@@ -3390,6 +3415,8 @@ export function DesktopChatPanel({
                     selectedKey={selectedModelAvailable ? selectedModelKey : ''}
                     onSelect={handleModelChange}
                     openSignal={modelPickerOpenSignal}
+                    disabled={activeAgentModelLocked}
+                    disabledReason={agentModelLockReason}
                   />
 
                   <ThinkingPicker
@@ -3402,6 +3429,8 @@ export function DesktopChatPanel({
                       void handleThinkingTagsToggle(enabled)
                     }}
                     tagsBusy={thinkingTagsSaving}
+                    disabled={activeAgentModelLocked}
+                    disabledReason={agentModelLockReason}
                   />
 
                   {fastSupported ? (
@@ -3410,6 +3439,8 @@ export function DesktopChatPanel({
                       options={FAST_ON_OFF_OPTIONS}
                       onSelect={handleFastChange}
                       label="Fast"
+                      disabled={activeAgentModelLocked}
+                      disabledReason={agentModelLockReason}
                     />
                   ) : null}
 
@@ -3458,9 +3489,9 @@ export function DesktopChatPanel({
                   <div ref={mobileSettingsRef} className="absolute bottom-[100%] left-0 z-50 mb-2 flex w-[max(260px,100%)] flex-col gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-[var(--shadow-panel)]">
                     {!isFlowSession && !resolvedLockedAgentName && !hideModeSelector ? <ModePicker mode={sessionMode === 'auto' ? 'auto' : 'plan'} onSelect={handleModeChange} /> : null}
                     {!isFlowSession && !resolvedLockedAgentName ? <AgentPicker currentAgent={currentSessionAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} onSelect={(value) => { void handleAgentSelect(value) }} dropdownAlign="left" /> : null}
-                    <ModelPicker options={resolvedModelOptions} selectedKey={selectedModelAvailable ? selectedModelKey : ''} onSelect={handleModelChange} openSignal={modelPickerOpenSignal} />
-                    <ThinkingPicker value={normalizedThinking} options={THINKING_OPTIONS} onSelect={handleThinkingChange} label="Thinking" tagsEnabled={thinkingTagsEnabled} onToggleTags={(enabled) => { void handleThinkingTagsToggle(enabled) }} tagsBusy={thinkingTagsSaving} />
-                    {fastSupported ? <ThinkingPicker value={fastValue} options={FAST_ON_OFF_OPTIONS} onSelect={handleFastChange} label="Fast" /> : null}
+                    <ModelPicker options={resolvedModelOptions} selectedKey={selectedModelAvailable ? selectedModelKey : ''} onSelect={handleModelChange} openSignal={modelPickerOpenSignal} disabled={activeAgentModelLocked} disabledReason={agentModelLockReason} />
+                    <ThinkingPicker value={normalizedThinking} options={THINKING_OPTIONS} onSelect={handleThinkingChange} label="Thinking" tagsEnabled={thinkingTagsEnabled} onToggleTags={(enabled) => { void handleThinkingTagsToggle(enabled) }} tagsBusy={thinkingTagsSaving} disabled={activeAgentModelLocked} disabledReason={agentModelLockReason} />
+                    {fastSupported ? <ThinkingPicker value={fastValue} options={FAST_ON_OFF_OPTIONS} onSelect={handleFastChange} label="Fast" disabled={activeAgentModelLocked} disabledReason={agentModelLockReason} /> : null}
                   </div>
                 ) : null}
 

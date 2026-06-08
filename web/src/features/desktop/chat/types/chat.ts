@@ -146,6 +146,17 @@ export interface ResolvedSessionPreference {
   maxOutputTokens: number;
 }
 
+export interface AgentModelPolicyRecord {
+  agentName: string;
+  resolvedAgentName: string;
+  source: string;
+  locked: boolean;
+  reason: string;
+  preference: SessionPreferenceRecord;
+  contextWindow: number;
+  maxOutputTokens: number;
+}
+
 export interface AgentToolScopeRecord {
   preset: string;
   allowTools: string[];

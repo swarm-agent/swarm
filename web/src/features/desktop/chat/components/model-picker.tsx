@@ -9,11 +9,13 @@ interface ModelPickerProps {
   selectedKey: string
   onSelect: (key: string) => void
   openSignal?: number
+  disabled?: boolean
+  disabledReason?: string
 }
 
 const DROPDOWN_WIDTH = 640
 
-export function ModelPicker({ options, selectedKey, onSelect, openSignal = 0 }: ModelPickerProps) {
+export function ModelPicker({ options, selectedKey, onSelect, openSignal = 0, disabled = false, disabledReason = '' }: ModelPickerProps) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const dropdownRef = useRef<HTMLDivElement | null>(null)
@@ -121,8 +123,10 @@ export function ModelPicker({ options, selectedKey, onSelect, openSignal = 0 }: 
     if (openSignal <= 0) {
       return
     }
-    setOpen(true)
-  }, [openSignal])
+    if (!disabled) {
+      setOpen(true)
+    }
+  }, [disabled, openSignal])
 
   useEffect(() => {
     if (!open) {
@@ -292,8 +296,13 @@ export function ModelPicker({ options, selectedKey, onSelect, openSignal = 0 }: 
       <button
         ref={triggerRef}
         type="button"
-        onClick={() => setOpen((prev) => !prev)}
-        className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--app-text-muted)] hover:text-[var(--app-text)] transition"
+        onClick={() => {
+          if (disabled) return
+          setOpen((prev) => !prev)
+        }}
+        disabled={disabled}
+        title={disabled ? disabledReason : displayLabel}
+        className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--app-text-muted)] hover:text-[var(--app-text)] transition disabled:cursor-not-allowed disabled:opacity-60"
       >
         <Cpu size={13} className="shrink-0 text-[var(--app-text-subtle)]" />
         <span className="max-w-[140px] truncate">{displayLabel}</span>

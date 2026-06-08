@@ -177,6 +177,16 @@ function v3HydratedSessionPayload(sessionId: string) {
       { id: `${sessionId}-perm-1`, session_id: sessionId, run_id: 'run-1', call_id: 'call-1', tool_name: 'bash', tool_arguments: '{}', status: 'pending', requirement: 'approval', mode: 'auto', created_at: 6, updated_at: 6 },
     ],
     usage_summary: { session_id: sessionId, provider: 'codex', model: 'gpt-5.4', source: 'provider', context_window: 1000, total_tokens: 42, remaining_tokens: 958, updated_at: 6 },
+    agent_model_policy: {
+      agent_name: 'explorer',
+      resolved_agent_name: 'explorer',
+      source: 'agent_preset',
+      locked: true,
+      reason: 'Agent model is set in agent settings; set the agent model to Default to choose a different model.',
+      preference: { provider: 'codex', model: 'gpt-5.4', thinking: 'medium', service_tier: 'flex', context_mode: 'large', updated_at: 2 },
+      context_window: 1000,
+      max_output_tokens: 8192,
+    },
     has_active_plan: true,
     active_plan: v3PlanPayload('plan-1'),
     plan_revisions: [v3PlanPayload('plan-1', 1)],
@@ -329,6 +339,8 @@ test('sessionPreferenceQueryOptions uses the canonical V3 snapshot cache for Des
 
     assert.equal(preference.preference.provider, 'codex')
     assert.equal(preference.preference.model, 'gpt-5.4')
+    assert.equal(queryClient.getQueryData<{ agentModelPolicy: { locked: boolean; source: string } }>(['desktop-v3-session-snapshot', 'session-preference'])?.agentModelPolicy?.locked, true)
+    assert.equal(queryClient.getQueryData<{ agentModelPolicy: { locked: boolean; source: string } }>(['desktop-v3-session-snapshot', 'session-preference'])?.agentModelPolicy?.source, 'agent_preset')
     assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-preference'])
     assertNoV1OrV2SessionDataCalls(calls)
   })

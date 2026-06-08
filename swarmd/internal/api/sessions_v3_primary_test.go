@@ -542,6 +542,26 @@ func TestSessionsV3PrimaryAgentSwitchUpdatesStoredProfileAndRuntime(t *testing.T
 	if payload.Session.Metadata["agent_name"] != "explorer" || payload.Session.Metadata["resolved_agent_name"] != "explorer" || payload.Session.Metadata["agent_mode"] != agentruntime.ModeSubagent || payload.Session.Metadata["runtime_mode"] != pebblestore.AgentRuntimeModeRead {
 		t.Fatalf("switched metadata = %+v", payload.Session.Metadata)
 	}
+	var hydratePolicy struct {
+		Preference       pebblestore.ModelPreference `json:"preference"`
+		AgentModelPolicy sessionsV3AgentModelPolicy  `json:"agent_model_policy"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &hydratePolicy); err != nil {
+		t.Fatalf("decode model policy: %v", err)
+	}
+	if !hydratePolicy.AgentModelPolicy.Locked || hydratePolicy.AgentModelPolicy.Source != "agent_preset" || hydratePolicy.AgentModelPolicy.Preference.Model != "test-model" || hydratePolicy.AgentModelPolicy.Preference.Thinking != "high" {
+		t.Fatalf("agent model policy = %+v", hydratePolicy.AgentModelPolicy)
+	}
+	if hydratePolicy.Preference.Model != "test-model" || hydratePolicy.Preference.Thinking != "high" {
+		t.Fatalf("hydrated effective preference = %+v", hydratePolicy.Preference)
+	}
+	prefReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/preference", bytes.NewBufferString(`{"provider":"codex","model":"gpt-5.4","thinking":"medium"}`))
+	prefReq.Header.Set("Content-Type", "application/json")
+	prefRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(prefRec, withTestPrincipal(prefReq))
+	if prefRec.Code != http.StatusBadRequest || !strings.Contains(prefRec.Body.String(), "Default") {
+		t.Fatalf("locked preference status = %d body=%s", prefRec.Code, prefRec.Body.String())
+	}
 	if _, ok := payload.Session.Metadata["subagent"]; ok {
 		t.Fatalf("agent switch left client-side subagent override in metadata: %+v", payload.Session.Metadata)
 	}

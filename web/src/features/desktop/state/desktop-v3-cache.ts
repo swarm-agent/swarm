@@ -4,7 +4,7 @@ import { applyDesktopChatRouteToSession, desktopChatRouteFromSessionMetadata } f
 import { mapDesktopSession, mapDesktopSessionPermission, mapDesktopSessionPlan, mapDesktopSessionPlanRevision, mapDesktopSessionUsageSummary } from '../chat/queries/chat-queries'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
-import type { ChatMessageRecord, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord, ResolvedSessionPreference } from '../chat/types/chat'
+import type { AgentModelPolicyRecord, ChatMessageRecord, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord, ResolvedSessionPreference } from '../chat/types/chat'
 import type { DesktopSessionRecord } from '../types/realtime'
 
 interface V3SessionWire {
@@ -42,6 +42,17 @@ interface V3MessageWire {
   metadata?: Record<string, unknown>
 }
 
+interface V3AgentModelPolicyWire {
+  agent_name?: string
+  resolved_agent_name?: string
+  source?: string
+  locked?: boolean
+  reason?: string
+  preference?: V3PreferenceWire
+  context_window?: number
+  max_output_tokens?: number
+}
+
 interface V3HydratedSessionResponseWire {
   session?: V3SessionWire
   projection?: V3SessionProjectionWire
@@ -52,6 +63,7 @@ interface V3HydratedSessionResponseWire {
   preference?: V3PreferenceWire
   context_window?: number
   max_output_tokens?: number
+  agent_model_policy?: V3AgentModelPolicyWire
   has_active_plan?: boolean
   active_plan?: unknown
   plan_revisions?: unknown[]
@@ -64,6 +76,7 @@ export interface DesktopV3SessionSnapshot {
   events: unknown[]
   projection: V3SessionProjectionWire | null
   preference: ResolvedSessionPreference
+  agentModelPolicy: AgentModelPolicyRecord | null
   hasActivePlan: boolean
   activePlan: DesktopSessionPlanRecord | null
   planRevisions: DesktopSessionPlanRevisionRecord[]
@@ -140,20 +153,40 @@ function mapChatMessage(message: V3MessageWire): ChatMessageRecord {
   }
 }
 
+function mapPreferenceWire(source: V3PreferenceWire | null | undefined) {
+  return {
+    provider: String(source?.provider ?? '').trim(),
+    model: String(source?.model ?? '').trim(),
+    thinking: String(source?.thinking ?? '').trim(),
+    serviceTier: String(source?.service_tier ?? '').trim(),
+    contextMode: String(source?.context_mode ?? '').trim(),
+    updatedAt: typeof source?.updated_at === 'number' ? source.updated_at : 0,
+  }
+}
+
 function mapDesktopV3SessionPreference(response: V3HydratedSessionResponseWire): ResolvedSessionPreference {
   const sessionSource = response.session?.preference
   const source: V3PreferenceWire = response.preference ?? sessionSource ?? {}
   return {
-    preference: {
-      provider: String(source.provider ?? '').trim(),
-      model: String(source.model ?? '').trim(),
-      thinking: String(source.thinking ?? '').trim(),
-      serviceTier: String(source.service_tier ?? '').trim(),
-      contextMode: String(source.context_mode ?? '').trim(),
-      updatedAt: typeof source.updated_at === 'number' ? source.updated_at : 0,
-    },
+    preference: mapPreferenceWire(source),
     contextWindow: typeof response.context_window === 'number' ? response.context_window : 0,
     maxOutputTokens: typeof response.max_output_tokens === 'number' ? response.max_output_tokens : 0,
+  }
+}
+
+function mapDesktopV3AgentModelPolicy(policy: V3AgentModelPolicyWire | null | undefined): AgentModelPolicyRecord | null {
+  if (!policy || typeof policy !== 'object') {
+    return null
+  }
+  return {
+    agentName: String(policy.agent_name ?? '').trim(),
+    resolvedAgentName: String(policy.resolved_agent_name ?? '').trim(),
+    source: String(policy.source ?? '').trim(),
+    locked: Boolean(policy.locked),
+    reason: String(policy.reason ?? '').trim(),
+    preference: mapPreferenceWire(policy.preference),
+    contextWindow: typeof policy.context_window === 'number' ? policy.context_window : 0,
+    maxOutputTokens: typeof policy.max_output_tokens === 'number' ? policy.max_output_tokens : 0,
   }
 }
 
@@ -184,6 +217,7 @@ export function mapDesktopV3SessionSnapshot(response: V3HydratedSessionResponseW
     events: Array.isArray(response.events) ? response.events : [],
     projection: response.projection ?? null,
     preference: mapDesktopV3SessionPreference(response),
+    agentModelPolicy: mapDesktopV3AgentModelPolicy(response.agent_model_policy),
     hasActivePlan: Boolean(response.has_active_plan),
     activePlan: response.has_active_plan ? mapDesktopSessionPlan(response.active_plan) : null,
     planRevisions: Array.isArray(response.plan_revisions)

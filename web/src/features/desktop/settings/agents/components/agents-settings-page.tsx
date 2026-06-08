@@ -467,7 +467,7 @@ function agentRuntimeSummary(profile: AgentProfileRecord): string {
 
 function agentProviderModelSummary(
   profile: AgentProfileRecord,
-  fallback = "Provider/model inherited",
+  fallback = "Default model",
 ): string {
   const provider = profile.provider.trim();
   const model = profile.model.trim();
@@ -475,6 +475,15 @@ function agentProviderModelSummary(
     return `${provider}/${model}`;
   }
   return fallback;
+}
+
+function formatCurrentDefaultModel(preview: ProviderDefaultsPreviewRecord | null): string {
+  const provider = preview?.provider?.trim() || "";
+  const model = preview?.primaryModel?.trim() || "";
+  if (provider && model) {
+    return `${provider}/${model}`;
+  }
+  return "the current default model";
 }
 
 function utilityAIForProfiles(
@@ -1082,6 +1091,7 @@ export function AgentsSettingsPage() {
   const profiles = agentState?.profiles ?? [];
   const activePrimary = agentState?.activePrimary?.trim() || "swarm";
   const providerDefaultsPreview = agentState?.providerDefaultsPreview ?? null;
+  const currentDefaultModelLabel = formatCurrentDefaultModel(providerDefaultsPreview);
 
   const [viewMode, setViewMode] = useState<"list" | "edit">("list");
   const [selectedKey, setSelectedKey] = useState<string>("");
@@ -2056,7 +2066,7 @@ export function AgentsSettingsPage() {
                     disabled={busy}
                     className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
                   >
-                    <option value="">Inherit</option>
+                    <option value="">Default</option>
                     {providerOptions.map((provider) => (
                       <option key={provider} value={provider}>
                         {provider}
@@ -2070,10 +2080,11 @@ export function AgentsSettingsPage() {
                 </div>
               </div>
 
-              <div className="flex items-center border-b border-[var(--app-border)] px-4 py-3">
-                <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
-                  Model
-                </label>
+              <div className="border-b border-[var(--app-border)] px-4 py-3">
+                <div className="flex items-center">
+                  <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
+                    Model
+                  </label>
                 <div className="relative w-full">
                   <select
                     value={form.model}
@@ -2086,7 +2097,7 @@ export function AgentsSettingsPage() {
                     disabled={busy || !form.provider.trim()}
                     className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
                   >
-                    <option value="">Inherit</option>
+                    <option value="">Default</option>
                     {modelChoices.map((model) => (
                       <option key={model} value={model}>
                         {model}
@@ -2098,6 +2109,10 @@ export function AgentsSettingsPage() {
                     className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]"
                   />
                 </div>
+                </div>
+                <p className="mt-2 pl-[25%] text-xs leading-5 text-[var(--app-text-muted)]">
+                  Default means this agent uses your current default chat model ({currentDefaultModelLabel}) and stays switchable in chat. Choose a provider/model here to lock the agent to that preset.
+                </p>
               </div>
 
               <div className="flex items-center px-4 py-3">
