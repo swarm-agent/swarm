@@ -132,37 +132,88 @@ func getJSONFromReader(reader pebble.Reader, key string, out any) (bool, error) 
 	return true, nil
 }
 
+type scanRangeOptions struct {
+	Prefix     string
+	StartKey   string
+	LowerBound string
+	UpperBound string
+	Limit      int
+	Reverse    bool
+}
+
 func iteratePrefixFromReader(reader pebble.Reader, prefix string, limit int, visit func(key string, value []byte) error) error {
-	if strings.TrimSpace(prefix) == "" {
-		return errors.New("iterate prefix must not be empty")
+	return scanRangeFromReader(reader, scanRangeOptions{Prefix: prefix, Limit: limit}, func(key string, value []byte) (bool, error) {
+		return true, visit(key, value)
+	})
+}
+
+func scanRangeFromReader(reader pebble.Reader, opts scanRangeOptions, visit func(key string, value []byte) (bool, error)) error {
+	prefix := strings.TrimSpace(opts.Prefix)
+	lower := strings.TrimSpace(opts.LowerBound)
+	upper := strings.TrimSpace(opts.UpperBound)
+	if prefix != "" {
+		if lower == "" {
+			lower = prefix
+		}
+		if upper == "" {
+			upper = prefix + "\xff"
+		}
 	}
+	if lower == "" || upper == "" {
+		return errors.New("scan range bounds are required")
+	}
+	limit := opts.Limit
 	if limit <= 0 {
 		limit = 1000
 	}
 
 	iter, err := reader.NewIter(&pebble.IterOptions{
-		LowerBound: []byte(prefix),
-		UpperBound: []byte(prefix + "\xff"),
+		LowerBound: []byte(lower),
+		UpperBound: []byte(upper),
 	})
 	if err != nil {
-		return fmt.Errorf("create prefix iterator: %w", err)
+		return fmt.Errorf("create range iterator: %w", err)
 	}
 	defer iter.Close()
 
+	startKey := strings.TrimSpace(opts.StartKey)
+	var valid bool
+	if opts.Reverse {
+		if startKey != "" {
+			valid = iter.SeekLT([]byte(startKey))
+		} else {
+			valid = iter.Last()
+		}
+	} else {
+		if startKey != "" {
+			valid = iter.SeekGE([]byte(startKey))
+		} else {
+			valid = iter.First()
+		}
+	}
+
 	count := 0
-	for iter.First(); iter.Valid(); iter.Next() {
+	for ; valid; count++ {
 		if count >= limit {
 			break
 		}
 		key := string(append([]byte(nil), iter.Key()...))
 		value := append([]byte(nil), iter.Value()...)
-		if err := visit(key, value); err != nil {
+		cont, err := visit(key, value)
+		if err != nil {
 			return err
 		}
-		count++
+		if !cont {
+			break
+		}
+		if opts.Reverse {
+			valid = iter.Prev()
+		} else {
+			valid = iter.Next()
+		}
 	}
 	if err := iter.Error(); err != nil {
-		return fmt.Errorf("iterate prefix %q: %w", prefix, err)
+		return fmt.Errorf("scan range %q..%q: %w", lower, upper, err)
 	}
 	return nil
 }

@@ -302,14 +302,15 @@ test('Desktop V3 permission resolve uses Sessions API v3 only', async () => {
 })
 
 
-test('Desktop V3 session switching prewarm uses the full-session source only', async () => {
-  const { ensureSessionRuntimeData, sessionMessagesQueryKey } = await import('../../../queries/query-options')
+test('Desktop V3 session switching prewarm uses background React Query snapshot hydration', async () => {
+  const { ensureSessionRuntimeData, prefetchSessionRuntimeData, sessionMessagesQueryKey } = await import('../../../queries/query-options')
   const { desktopV3SessionQueryKey, readDesktopV3CachedSession } = await import('../../state/desktop-v3-cache')
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
 
   await withFetchStub(async (calls) => {
+    await prefetchSessionRuntimeData(queryClient, 'session-switch')
     await ensureSessionRuntimeData(queryClient, 'session-switch')
 
     assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-switch'])
@@ -479,12 +480,13 @@ test('DesktopChatPanel uses V3-native preference and mode paths', async () => {
 })
 
 
-test('Desktop route loader owns the critical V3 session snapshot', async () => {
+test('Desktop route loader does not block route commit on the V3 session snapshot', async () => {
   const routerSource = await readFile(new URL('../../../../app/router.tsx', import.meta.url), 'utf8')
 
   assert.match(routerSource, /import \{ queryClient \} from '\.\/query-client'/)
-  assert.match(routerSource, /import \{ ensureDesktopV3SessionSnapshot \} from '\.\.\/features\/desktop\/state\/desktop-v3-cache'/)
-  assert.match(routerSource, /path: '\/\$workspaceSlug\/\$sessionId',[\s\S]*loader: \(\{ params \}\) => \{[\s\S]*return ensureDesktopV3SessionSnapshot\(queryClient, sessionId\)/)
+  assert.match(routerSource, /import \{ prefetchSessionRuntimeData \} from '\.\.\/features\/queries\/query-options'/)
+  assert.match(routerSource, /path: '\/\$workspaceSlug\/\$sessionId',[\s\S]*loader: \(\{ params \}\) => \{[\s\S]*void prefetchSessionRuntimeData\(queryClient, sessionId\)[\s\S]*return \{ sessionId \}/)
+  assert.doesNotMatch(routerSource, /ensureDesktopV3SessionSnapshot\(queryClient, sessionId\)/)
   assert.doesNotMatch(routerSource, /fetchSession\(/)
   assert.doesNotMatch(routerSource, /\/v1\/sessions|\/v2\/sessions/)
   assert.doesNotMatch(routerSource, new RegExp('v3session' + '_'))
@@ -493,7 +495,8 @@ test('Desktop route loader owns the critical V3 session snapshot', async () => {
 test('DesktopAppPage must keep route-critical load out of sidebar/background V3 hydration', async () => {
   const source = await readFile(new URL('../../layout/desktop-app-page.tsx', import.meta.url), 'utf8')
 
-  assert.match(source, /readDesktopV3CachedSession\(queryClient, routeSessionId\)/)
+  assert.match(source, /desktopV3SessionQueryOptions\(routeSessionId\)/)
+  assert.match(source, /routeSessionSnapshotQuery\.data\?\.session/)
   assert.match(source, /readDesktopV3CachedSession\(queryClient, sessionId\)/)
   assert.match(source, /const backgroundBootstrapSessionIds = useMemo/)
   const backgroundBootstrapSource = source.slice(

@@ -580,20 +580,21 @@ func listV3SessionEventsFromReader(reader pebble.Reader, sessionID string, after
 	if limit <= 0 {
 		limit = 500
 	}
+	if afterSeq == ^uint64(0) {
+		return []V3SessionEvent{}, nil
+	}
 	out := make([]V3SessionEvent, 0, limit)
-	err := iteratePrefixFromReader(reader, V3SessionEventPrefix(sessionID), 100000, func(_ string, value []byte) error {
-		if len(out) >= limit {
-			return nil
-		}
+	prefix := V3SessionEventPrefix(sessionID)
+	err := scanRangeFromReader(reader, scanRangeOptions{Prefix: prefix, StartKey: KeyV3SessionEvent(sessionID, afterSeq+1), Limit: limit}, func(_ string, value []byte) (bool, error) {
 		var event V3SessionEvent
 		if err := json.Unmarshal(value, &event); err != nil {
-			return err
+			return false, err
 		}
 		if event.Seq <= afterSeq {
-			return nil
+			return true, nil
 		}
 		out = append(out, event)
-		return nil
+		return len(out) < limit, nil
 	})
 	return out, err
 }
@@ -766,13 +767,19 @@ func (s *SessionStore) hydrateV3SessionSnapshotFromReader(reader pebble.Reader, 
 	if err != nil || !projectionOK {
 		return V3SessionHydration{}, projectionOK, err
 	}
-	messages, err := listV3SessionMessagesFromReader(reader, sessionID, 0, messageLimit)
-	if err != nil {
-		return V3SessionHydration{}, false, err
+	messages := []MessageSnapshot{}
+	if messageLimit > 0 {
+		messages, err = listV3SessionMessageTailFromReader(reader, sessionID, messageLimit)
+		if err != nil {
+			return V3SessionHydration{}, false, err
+		}
 	}
-	events, err := listV3SessionEventsFromReader(reader, sessionID, 0, eventLimit)
-	if err != nil {
-		return V3SessionHydration{}, false, err
+	events := []V3SessionEvent{}
+	if eventLimit > 0 {
+		events, err = listV3SessionEventsFromReader(reader, sessionID, 0, eventLimit)
+		if err != nil {
+			return V3SessionHydration{}, false, err
+		}
 	}
 	return V3SessionHydration{Session: session, Projection: projection, Messages: messages, Events: events}, true, nil
 }
@@ -789,6 +796,14 @@ func (s *SessionStore) ListV3SessionMessages(sessionID string, afterSeq uint64, 
 	return listV3SessionMessagesFromReader(s.store.db, sessionID, afterSeq, limit)
 }
 
+func (s *SessionStore) ListV3SessionMessageTail(sessionID string, limit int) ([]MessageSnapshot, error) {
+	return listV3SessionMessageTailFromReader(s.store.db, sessionID, limit)
+}
+
+func (s *SessionStore) ListV3SessionMessagesBefore(sessionID string, beforeSeq uint64, limit int) ([]MessageSnapshot, error) {
+	return listV3SessionMessagesBeforeFromReader(s.store.db, sessionID, beforeSeq, limit)
+}
+
 func listV3SessionMessagesFromReader(reader pebble.Reader, sessionID string, afterSeq uint64, limit int) ([]MessageSnapshot, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
@@ -797,22 +812,63 @@ func listV3SessionMessagesFromReader(reader pebble.Reader, sessionID string, aft
 	if limit <= 0 {
 		limit = 500
 	}
+	if afterSeq == ^uint64(0) {
+		return []MessageSnapshot{}, nil
+	}
 	out := make([]MessageSnapshot, 0, limit)
-	err := iteratePrefixFromReader(reader, V3SessionMessagePrefix(sessionID), 100000, func(_ string, value []byte) error {
+	prefix := V3SessionMessagePrefix(sessionID)
+	err := scanRangeFromReader(reader, scanRangeOptions{Prefix: prefix, StartKey: KeyV3SessionMessage(sessionID, afterSeq+1), Limit: limit}, func(_ string, value []byte) (bool, error) {
 		var message MessageSnapshot
 		if err := json.Unmarshal(value, &message); err != nil {
-			return err
+			return false, err
 		}
 		if message.GlobalSeq <= afterSeq {
-			return nil
+			return true, nil
 		}
-		if len(out) < limit {
-			message.Metadata = sanitizeMessageMetadata(message.Metadata)
-			out = append(out, message)
-		}
-		return nil
+		message.Metadata = sanitizeMessageMetadata(message.Metadata)
+		out = append(out, message)
+		return len(out) < limit, nil
 	})
 	return out, err
+}
+
+func listV3SessionMessageTailFromReader(reader pebble.Reader, sessionID string, limit int) ([]MessageSnapshot, error) {
+	return listV3SessionMessagesBeforeFromReader(reader, sessionID, 0, limit)
+}
+
+func listV3SessionMessagesBeforeFromReader(reader pebble.Reader, sessionID string, beforeSeq uint64, limit int) ([]MessageSnapshot, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, errors.New("session id is required")
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	out := make([]MessageSnapshot, 0, limit)
+	prefix := V3SessionMessagePrefix(sessionID)
+	startKey := ""
+	if beforeSeq > 0 {
+		startKey = KeyV3SessionMessage(sessionID, beforeSeq)
+	}
+	err := scanRangeFromReader(reader, scanRangeOptions{Prefix: prefix, StartKey: startKey, Limit: limit, Reverse: true}, func(_ string, value []byte) (bool, error) {
+		var message MessageSnapshot
+		if err := json.Unmarshal(value, &message); err != nil {
+			return false, err
+		}
+		if beforeSeq > 0 && message.GlobalSeq >= beforeSeq {
+			return true, nil
+		}
+		message.Metadata = sanitizeMessageMetadata(message.Metadata)
+		out = append(out, message)
+		return len(out) < limit, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
 }
 
 func (s *SessionStore) GetV3SessionRunIntent(sessionID, runID string) (V3SessionRunIntent, bool, error) {
@@ -944,20 +1000,21 @@ func (s *SessionStore) ListV3RealtimeOutboxAfter(afterEndpointSeq uint64, limit 
 	if limit <= 0 {
 		limit = 500
 	}
+	if afterEndpointSeq == ^uint64(0) {
+		return []V3RealtimeOutboxRecord{}, nil
+	}
 	out := make([]V3RealtimeOutboxRecord, 0, limit)
-	err := s.store.IteratePrefix(V3RealtimeOutboxPrefix(), 100000, func(_ string, value []byte) error {
-		if len(out) >= limit {
-			return nil
-		}
+	prefix := V3RealtimeOutboxPrefix()
+	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, StartKey: KeyV3RealtimeOutbox(afterEndpointSeq + 1), Limit: limit}, func(_ string, value []byte) (bool, error) {
 		var record V3RealtimeOutboxRecord
 		if err := json.Unmarshal(value, &record); err != nil {
-			return err
+			return false, err
 		}
 		if record.EndpointSeq <= afterEndpointSeq {
-			return nil
+			return true, nil
 		}
 		out = append(out, record)
-		return nil
+		return len(out) < limit, nil
 	})
 	return out, err
 }

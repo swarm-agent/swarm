@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,7 +18,11 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-const sessionsV3PrimaryPrefix = "/v3/sessions/"
+const (
+	sessionsV3PrimaryPrefix                  = "/v3/sessions/"
+	sessionsV3PrimaryDefaultMessageTailLimit = 50
+	sessionsV3PrimaryDefaultEventLimit       = 0
+)
 
 // V3 primary write handlers delegate through the ApplySessionMutation boundary.
 
@@ -104,6 +109,8 @@ type sessionsV3HydratedSession struct {
 	HasActivePlan      bool                              `json:"has_active_plan"`
 	ActivePlan         pebblestore.SessionPlanSnapshot   `json:"active_plan,omitempty"`
 	PlanRevisions      []pebblestore.SessionPlanSnapshot `json:"plan_revisions"`
+	AppliedSeq         uint64                            `json:"applied_seq"`
+	HighWatermark      uint64                            `json:"high_watermark"`
 }
 
 type sessionsV3AgentModelPolicy struct {
@@ -159,7 +166,11 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 			methodNotAllowed(w)
 			return
 		}
-		hydrated, found, err := s.hydrateSessionsV3Primary(principal, sessionID)
+		messageLimit, eventLimit, ok := parseSessionsV3HydrationLimits(w, r)
+		if !ok {
+			return
+		}
+		hydrated, found, err := s.hydrateSessionsV3PrimaryWithLimits(principal, sessionID, messageLimit, eventLimit)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -336,23 +347,29 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 		return
 	}
 	if r.Method == http.MethodGet {
-		afterSeq, limit, ok := parseAfterSeqAndLimit(w, r, 500)
+		afterSeq, beforeSeq, hasBeforeSeq, limit, ok := parseSessionsV3MessagesPageQuery(w, r, 500)
 		if !ok {
 			return
 		}
-		if _, found, err := s.hydrateSessionsV3Primary(principal, sessionID); err != nil {
+		if found, err := s.authorizeSessionsV3PrimarySession(principal, sessionID); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		} else if !found {
 			writeSessionNotFound(w)
 			return
 		}
-		messages, err := s.sessions.ListSessionMessages(sessionID, afterSeq, limit)
+		var messages []pebblestore.MessageSnapshot
+		var err error
+		if hasBeforeSeq {
+			messages, err = s.sessions.ListSessionMessagesBefore(sessionID, beforeSeq, limit)
+		} else {
+			messages, err = s.sessions.ListSessionMessages(sessionID, afterSeq, limit)
+		}
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "messages": messages})
+		writeJSON(w, http.StatusOK, sessionsV3MessagesPageResponse(sessionID, messages, afterSeq, beforeSeq, hasBeforeSeq))
 		return
 	}
 
@@ -489,6 +506,8 @@ func (s *Server) handleSessionV3PrimaryEvents(w http.ResponseWriter, r *http.Req
 		"run_intents":        replay.RunIntents,
 		"high_watermark_seq": replay.HighWatermarkSeq,
 		"next_seq":           replay.NextSeq,
+		"applied_seq":        replay.NextSeq,
+		"high_watermark":     replay.Projection.ProjectionHighWatermarkSeq,
 	})
 }
 
@@ -1066,7 +1085,11 @@ func (s *Server) authorizeSessionsV3PrimarySession(principal identity.Principal,
 }
 
 func (s *Server) hydrateSessionsV3Primary(principal identity.Principal, sessionID string) (sessionsV3HydratedSession, bool, error) {
-	hydrated, ok, err := s.sessions.HydrateSessionSnapshot(sessionID, 500, 500)
+	return s.hydrateSessionsV3PrimaryWithLimits(principal, sessionID, sessionsV3PrimaryDefaultMessageTailLimit, sessionsV3PrimaryDefaultEventLimit)
+}
+
+func (s *Server) hydrateSessionsV3PrimaryWithLimits(principal identity.Principal, sessionID string, messageLimit, eventLimit int) (sessionsV3HydratedSession, bool, error) {
+	hydrated, ok, err := s.sessions.HydrateSessionSnapshot(sessionID, messageLimit, eventLimit)
 	if err != nil || !ok {
 		return sessionsV3HydratedSession{}, ok, err
 	}
@@ -1092,20 +1115,6 @@ func (s *Server) hydrateSessionsV3Primary(principal identity.Principal, sessionI
 		return sessionsV3HydratedSession{}, false, err
 	} else if ok && sessionV3RunIntentStatusActive(intent.Status) {
 		activeRunIntent = &intent
-	} else {
-		intents, err := s.sessions.ListSessionRunIntents(sessionID, 0, 500)
-		if err != nil {
-			return sessionsV3HydratedSession{}, false, err
-		}
-		for i := range intents {
-			if !sessionV3RunIntentStatusActive(intents[i].Status) {
-				continue
-			}
-			if activeRunIntent == nil || intents[i].EventSeq > activeRunIntent.EventSeq || (intents[i].EventSeq == activeRunIntent.EventSeq && intents[i].UpdatedAt > activeRunIntent.UpdatedAt) {
-				candidate := intents[i]
-				activeRunIntent = &candidate
-			}
-		}
 	}
 	hydrated.Session.Preference = normalizeSessionsV3ModelPreference(hydrated.Session.Preference)
 	preference := hydrated.Session.Preference
@@ -1136,7 +1145,7 @@ func (s *Server) hydrateSessionsV3Primary(principal identity.Principal, sessionI
 		}
 		planRevisions = revisions
 	}
-	return sessionsV3HydratedSession{Session: hydrated.Session, Projection: hydrated.Projection, Messages: hydrated.Messages, Events: hydrated.Events, PendingPermissions: pendingPermissions, UsageSummary: usageSummary, ActiveRunIntent: activeRunIntent, Preference: preference, ContextWindow: contextWindow, MaxOutputTokens: maxOutputTokens, AgentModelPolicy: agentModelPolicy, HasActivePlan: hasActivePlan, ActivePlan: activePlan, PlanRevisions: planRevisions}, true, nil
+	return sessionsV3HydratedSession{Session: hydrated.Session, Projection: hydrated.Projection, Messages: hydrated.Messages, Events: hydrated.Events, PendingPermissions: pendingPermissions, UsageSummary: usageSummary, ActiveRunIntent: activeRunIntent, Preference: preference, ContextWindow: contextWindow, MaxOutputTokens: maxOutputTokens, AgentModelPolicy: agentModelPolicy, HasActivePlan: hasActivePlan, ActivePlan: activePlan, PlanRevisions: planRevisions, AppliedSeq: hydrated.Projection.LastEventSeq, HighWatermark: hydrated.Projection.ProjectionHighWatermarkSeq}, true, nil
 }
 
 func (s *Server) sessionsV3AgentModelPolicy(session pebblestore.SessionSnapshot, defaultPreference pebblestore.ModelPreference, defaultContextWindow, defaultMaxOutputTokens int) sessionsV3AgentModelPolicy {
@@ -1225,6 +1234,8 @@ func sessionsV3HydratedResponse(hydrated sessionsV3HydratedSession) map[string]a
 		"has_active_plan":     hydrated.HasActivePlan,
 		"active_plan":         nil,
 		"plan_revisions":      hydrated.PlanRevisions,
+		"applied_seq":         hydrated.AppliedSeq,
+		"high_watermark":      hydrated.HighWatermark,
 	}
 	if hydrated.HasActivePlan {
 		response["active_plan"] = hydrated.ActivePlan
@@ -1254,6 +1265,102 @@ func parseSessionsV3PrimaryPath(path string) (string, string, bool) {
 		return sessionID, "", true
 	}
 	return sessionID, strings.Join(parts[1:], "/"), true
+}
+
+func parseSessionsV3HydrationLimits(w http.ResponseWriter, r *http.Request) (int, int, bool) {
+	messageLimit := sessionsV3PrimaryDefaultMessageTailLimit
+	if raw := strings.TrimSpace(firstNonEmpty(r.URL.Query().Get("message_limit"), r.URL.Query().Get("tail_limit"))); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 {
+			writeError(w, http.StatusBadRequest, errors.New("message_limit must be a non-negative integer"))
+			return 0, 0, false
+		}
+		messageLimit = parsed
+	}
+	eventLimit := sessionsV3PrimaryDefaultEventLimit
+	if raw := strings.TrimSpace(r.URL.Query().Get("event_limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 {
+			writeError(w, http.StatusBadRequest, errors.New("event_limit must be a non-negative integer"))
+			return 0, 0, false
+		}
+		eventLimit = parsed
+	}
+	return messageLimit, eventLimit, true
+}
+
+func parseSessionsV3MessagesPageQuery(w http.ResponseWriter, r *http.Request, defaultLimit int) (uint64, uint64, bool, int, bool) {
+	afterSeq := uint64(0)
+	if raw := strings.TrimSpace(r.URL.Query().Get("after_seq")); raw != "" {
+		parsed, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, errors.New("after_seq must be an unsigned integer"))
+			return 0, 0, false, 0, false
+		}
+		afterSeq = parsed
+	}
+	beforeSeq := uint64(0)
+	hasBeforeSeq := false
+	if raw := strings.TrimSpace(r.URL.Query().Get("before_seq")); raw != "" {
+		parsed, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, errors.New("before_seq must be an unsigned integer"))
+			return 0, 0, false, 0, false
+		}
+		beforeSeq = parsed
+		hasBeforeSeq = true
+	}
+	if hasBeforeSeq && strings.TrimSpace(r.URL.Query().Get("after_seq")) != "" {
+		writeError(w, http.StatusBadRequest, errors.New("after_seq and before_seq cannot be combined"))
+		return 0, 0, false, 0, false
+	}
+	limit := defaultLimit
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			writeError(w, http.StatusBadRequest, errors.New("limit must be a positive integer"))
+			return 0, 0, false, 0, false
+		}
+		limit = parsed
+	}
+	return afterSeq, beforeSeq, hasBeforeSeq, limit, true
+}
+
+func sessionsV3MessagesPageResponse(sessionID string, messages []pebblestore.MessageSnapshot, afterSeq, beforeSeq uint64, hasBeforeSeq bool) map[string]any {
+	oldestSeq := uint64(0)
+	newestSeq := uint64(0)
+	if len(messages) > 0 {
+		oldestSeq = messages[0].GlobalSeq
+		newestSeq = messages[len(messages)-1].GlobalSeq
+	}
+	response := map[string]any{
+		"ok":          true,
+		"session_id":  sessionID,
+		"messages":    messages,
+		"count":       len(messages),
+		"oldest_seq":  oldestSeq,
+		"newest_seq":  newestSeq,
+		"has_more":    false,
+		"page_cursor": nil,
+	}
+	if hasBeforeSeq {
+		response["before_seq"] = beforeSeq
+		response["has_more_older"] = len(messages) > 0 && oldestSeq > 1
+		if len(messages) > 0 {
+			response["next_before_seq"] = oldestSeq
+			response["page_cursor"] = oldestSeq
+		}
+		response["has_more"] = response["has_more_older"]
+		return response
+	}
+	response["after_seq"] = afterSeq
+	if len(messages) > 0 {
+		response["next_after_seq"] = newestSeq
+		response["page_cursor"] = newestSeq
+	}
+	response["has_more_newer"] = len(messages) > 0
+	response["has_more"] = len(messages) > 0
+	return response
 }
 
 func sessionsV3CreatePayloadHash(sessionID string, req sessionsV3CreateRequest, workspaceName, title string, metadata map[string]any) (string, error) {

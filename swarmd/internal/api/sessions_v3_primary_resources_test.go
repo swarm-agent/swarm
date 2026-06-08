@@ -77,7 +77,7 @@ func TestSessionsV3PrimaryHydrateIncludesActiveRunIntentFromDurableStore(t *test
 func TestSessionsV3PrimaryHydrateIncludesPermissionsAndUsage(t *testing.T) {
 	server, sessionSvc, permissionSvc, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 
-	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"v3-resources-create","workspace_path":"/workspace/v3","title":"V3 Resources","mode":"auto"}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"v3-resources-create","workspace_path":"/workspace/v3","title":"V3 Resources","mode":"auto","agent_name":"swarm"}`))
 	createReq.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(createRec, withTestPrincipal(createReq))
@@ -125,7 +125,7 @@ func TestSessionsV3PrimaryHydrateIncludesPermissionsAndUsage(t *testing.T) {
 func TestSessionsV3PrimaryPermissionResolveUsesV3Path(t *testing.T) {
 	server, _, permissionSvc, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 
-	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"v3-permission-create","workspace_path":"/workspace/v3","title":"V3 Permission","mode":"auto"}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"v3-permission-create","workspace_path":"/workspace/v3","title":"V3 Permission","mode":"auto","agent_name":"swarm"}`))
 	createReq.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(createRec, withTestPrincipal(createReq))

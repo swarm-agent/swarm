@@ -121,7 +121,7 @@ func TestSessionsV3PrimaryModeAndPreferenceUseV3PrimaryMutation(t *testing.T) {
 func TestSessionsV3PrimaryCreateListHydrateUsesPrimaryStoreOnly(t *testing.T) {
 	server, sessionSvc, _, routeStore, _ := newRoutedSessionTestServerWithSwarmStore(t)
 
-	body := `{"client_request_id":"create-v3-1","workspace_path":"/workspace/v3","workspace_name":"v3","title":"V3 Primary","mode":"auto","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"},"metadata":{"purpose":"cp3"}}`
+	body := `{"client_request_id":"create-v3-1","workspace_path":"/workspace/v3","workspace_name":"v3","title":"V3 Primary","mode":"auto","agent_name":"swarm","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"},"metadata":{"purpose":"cp3"}}`
 	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(body))
 	createReq.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
@@ -153,10 +153,10 @@ func TestSessionsV3PrimaryCreateListHydrateUsesPrimaryStoreOnly(t *testing.T) {
 	if createPayload.Session.Metadata["agent_name"] != "swarm" || createPayload.Session.Metadata["resolved_agent_name"] != "swarm" || createPayload.Session.Metadata["agent_mode"] != "primary" || createPayload.Session.Metadata["runtime_mode"] != pebblestore.AgentRuntimeModePlanAuto {
 		t.Fatalf("server-owned agent metadata = %+v", createPayload.Session.Metadata)
 	}
-	if createPayload.Projection.LastEventSeq != 1 || len(createPayload.Events) != 1 || createPayload.Events[0].EventType != "session.created" || len(createPayload.Messages) != 0 {
+	if createPayload.Projection.LastEventSeq != 1 || len(createPayload.Events) != 0 || len(createPayload.Messages) != 0 {
 		t.Fatalf("projection/events/messages = %+v %+v %+v", createPayload.Projection, createPayload.Events, createPayload.Messages)
 	}
-	if createPayload.Mutation.FirstSeq != 1 || createPayload.Mutation.LastSeq != 1 || createPayload.Mutation.ResponseStatus != pebblestore.V3SessionMutationStatusCompleted {
+	if createPayload.Mutation.FirstSeq != 1 || createPayload.Mutation.LastSeq != 1 || createPayload.Mutation.ResponseStatus != pebblestore.V3SessionMutationStatusCompleted || createPayload.Mutation.Event.EventType != "session.created" {
 		t.Fatalf("mutation result = %+v", createPayload.Mutation)
 	}
 	if _, ok, err := sessionSvc.GetSessionProjection(createPayload.Session.ID); err != nil || !ok {
@@ -186,7 +186,7 @@ func TestSessionsV3PrimaryCreateListHydrateUsesPrimaryStoreOnly(t *testing.T) {
 	if err := json.Unmarshal(hydrateRec.Body.Bytes(), &hydrated); err != nil {
 		t.Fatalf("decode hydrate response: %v", err)
 	}
-	if !hydrated.OK || hydrated.Session.ID != createPayload.Session.ID || len(hydrated.Events) != 1 || len(hydrated.Messages) != 0 {
+	if !hydrated.OK || hydrated.Session.ID != createPayload.Session.ID || len(hydrated.Events) != 0 || len(hydrated.Messages) != 0 {
 		t.Fatalf("hydrated = %+v", hydrated)
 	}
 
@@ -215,7 +215,7 @@ func TestSessionsV3PrimaryHydratesAfterStoreRestart(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "sessions-v3-primary.pebble")
 	server, _, closeStore := newSessionsV3PrimaryAPITestServer(t, storePath)
 
-	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"restart-create","workspace_path":"/workspace/restart","title":"Restarted V3","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"restart-create","workspace_path":"/workspace/restart","title":"Restarted V3","agent_name":"swarm","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`))
 	createReq.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(createRec, withTestPrincipal(createReq))
@@ -248,7 +248,7 @@ func TestSessionsV3PrimaryHydratesAfterStoreRestart(t *testing.T) {
 	if err := json.Unmarshal(hydrateRec.Body.Bytes(), &hydrated); err != nil {
 		t.Fatalf("decode hydrate response: %v", err)
 	}
-	if hydrated.Session.ID != created.Session.ID || hydrated.Projection.ProjectionHighWatermarkSeq != 1 || len(hydrated.Events) != 1 {
+	if hydrated.Session.ID != created.Session.ID || hydrated.Projection.ProjectionHighWatermarkSeq != 1 || len(hydrated.Events) != 0 {
 		t.Fatalf("hydrated after restart = %+v", hydrated)
 	}
 }
@@ -258,8 +258,8 @@ func TestSessionsV3PrimaryCreateRejectsProtectedAuthorityMetadata(t *testing.T) 
 		name string
 		body string
 	}{
-		{name: "authority", body: `{"client_request_id":"protected-metadata","workspace_path":"/workspace/v3","metadata":{"runtime_swarm_id":"container-swarm"}}`},
-		{name: "agent spoof", body: `{"client_request_id":"protected-agent-metadata","workspace_path":"/workspace/v3","metadata":{"agent_name":"spoof"}}`},
+		{name: "authority", body: `{"client_request_id":"protected-metadata","workspace_path":"/workspace/v3","agent_name":"swarm","metadata":{"runtime_swarm_id":"container-swarm"}}`},
+		{name: "agent spoof", body: `{"client_request_id":"protected-agent-metadata","workspace_path":"/workspace/v3","agent_name":"swarm","metadata":{"agent_name":"spoof"}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server, sessionSvc, _, routeStore, _ := newRoutedSessionTestServerWithSwarmStore(t)
@@ -285,7 +285,7 @@ func TestSessionsV3PrimaryCreateRejectsProtectedAuthorityMetadata(t *testing.T) 
 
 func TestSessionsV3PrimaryMessagesCommitUserMessageAndPendingExecutorIntent(t *testing.T) {
 	server, sessionSvc, _, routeStore, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-create","workspace_path":"/workspace/cp4","title":"CP4"}`))
+	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-create","workspace_path":"/workspace/cp4","title":"CP4","agent_name":"swarm"}`))
 	create.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(createRec, withTestPrincipal(create))
@@ -322,13 +322,13 @@ func TestSessionsV3PrimaryMessagesCommitUserMessageAndPendingExecutorIntent(t *t
 	if !payload.OK || payload.Message == nil || payload.Message.Content != "hello cp4" || payload.Message.Role != "user" {
 		t.Fatalf("message payload = %+v", payload)
 	}
-	if payload.Session.MessageCount != 1 || payload.Projection.LastEventSeq != 2 || len(payload.Events) != 2 || len(payload.Messages) != 1 {
+	if payload.Session.MessageCount != 1 || payload.Projection.LastEventSeq != 2 || len(payload.Events) != 0 || len(payload.Messages) != 1 {
 		t.Fatalf("session/projection/events/messages = %+v %+v %+v %+v", payload.Session, payload.Projection, payload.Events, payload.Messages)
 	}
 	if payload.RunIntent == nil || payload.RunIntent.Status != sessionruntime.RunIntentPendingExecutor || payload.RunIntent.BlockedReason != "" || payload.RunIntent.EventSeq != 2 {
 		t.Fatalf("run intent = %+v", payload.RunIntent)
 	}
-	if payload.Mutation.FirstSeq != 2 || payload.Mutation.Message == nil || payload.Mutation.RunIntent == nil {
+	if payload.Mutation.FirstSeq != 2 || payload.Mutation.Message == nil || payload.Mutation.RunIntent == nil || payload.Mutation.Event.EventType != "session.message.appended" {
 		t.Fatalf("mutation = %+v", payload.Mutation)
 	}
 	if routes, err := routeStore.List(10); err != nil || len(routes) != 0 {
@@ -361,7 +361,7 @@ func TestSessionsV3PrimaryMessagesCommitUserMessageAndPendingExecutorIntent(t *t
 
 func TestSessionsV3PrimaryMessageWithInvalidDispatchAuthorityStillCommitsAndBlocks(t *testing.T) {
 	server, sessionSvc, _, routeStore, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-invalid-authority-create","workspace_path":"/workspace/cp4","title":"CP4"}`))
+	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-invalid-authority-create","workspace_path":"/workspace/cp4","title":"CP4","agent_name":"swarm"}`))
 	create.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(createRec, withTestPrincipal(create))
@@ -1100,7 +1100,7 @@ func sessionsV3EventsContainType(events []sessionruntime.SessionEvent, eventType
 
 func TestSessionsV3PrimaryMessageIsIdempotent(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-idempotent-create","workspace_path":"/workspace/cp4","title":"CP4"}`))
+	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-idempotent-create","workspace_path":"/workspace/cp4","title":"CP4","agent_name":"swarm"}`))
 	create.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(createRec, withTestPrincipal(create))
@@ -1143,14 +1143,14 @@ func TestSessionsV3PrimaryMessageIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list events: %v", err)
 	}
-	if len(events) < 2 || len(second.Events) < 2 || events[1].EventType != "session.message.appended" {
-		t.Fatalf("events persisted=%+v second=%+v", events, second.Events)
+	if len(events) < 2 || len(second.Events) != 0 || events[1].EventType != "session.message.appended" || second.Mutation.Event.EventType != "session.message.appended" {
+		t.Fatalf("events persisted=%+v second=%+v mutation=%+v", events, second.Events, second.Mutation)
 	}
 }
 
 func TestSessionsV3PrimaryConcurrentDistinctMessagesAllocateContiguousSeq(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-concurrent-create","workspace_path":"/workspace/cp4","title":"CP4"}`))
+	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-concurrent-create","workspace_path":"/workspace/cp4","title":"CP4","agent_name":"swarm"}`))
 	create.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(createRec, withTestPrincipal(create))
@@ -1220,7 +1220,7 @@ func TestSessionsV3PrimaryEventsReplayCursorAndRestart(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "sessions-v3-events.pebble")
 	server, _, closeStore := newSessionsV3PrimaryAPITestServer(t, storePath)
 
-	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp5-create","workspace_path":"/workspace/cp5","title":"CP5"}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp5-create","workspace_path":"/workspace/cp5","title":"CP5","agent_name":"swarm"}`))
 	createReq.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(createRec, withTestPrincipal(createReq))
@@ -1283,7 +1283,7 @@ func TestSessionsV3PrimaryEventsReplayCursorAndRestart(t *testing.T) {
 
 func TestSessionsV3PrimaryCreateIsIdempotent(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	body := `{"client_request_id":"same-create","workspace_path":"/workspace/v3","title":"V3 Idempotent","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`
+	body := `{"client_request_id":"same-create","workspace_path":"/workspace/v3","title":"V3 Idempotent","agent_name":"swarm","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`
 
 	post := func() (int, string) {
 		req := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(body))
@@ -1319,8 +1319,8 @@ func TestSessionsV3PrimaryCreateIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list events: %v", err)
 	}
-	if len(events) != 1 || len(second.Events) != 1 {
-		t.Fatalf("events persisted=%+v second=%+v", events, second.Events)
+	if len(events) != 1 || len(second.Events) != 0 || second.Mutation.Event.EventType != "session.created" {
+		t.Fatalf("events persisted=%+v second=%+v mutation=%+v", events, second.Events, second.Mutation)
 	}
 }
 

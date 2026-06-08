@@ -14,7 +14,7 @@ import { useWorkspaceLauncher } from '../../workspaces/launcher/state/use-worksp
 import { applyDesktopRouteTheme } from './desktop-theme-controller'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
 import { agentStateQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
-import { getCachedDesktopV3SessionSnapshot, hydrateDesktopV3SessionSnapshot, readDesktopV3CachedSession } from '../state/desktop-v3-cache'
+import { desktopV3SessionQueryOptions, getCachedDesktopV3SessionSnapshot, hydrateDesktopV3SessionSnapshot, readDesktopV3CachedSession, writeDesktopV3SessionSnapshot } from '../state/desktop-v3-cache'
 import type { DesktopSessionRecord } from '../types/realtime'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
 import { DesktopQuickSettingsModal, type QuickSettingsTabID } from '../settings/components/desktop-quick-settings-modal'
@@ -45,6 +45,7 @@ import { fetchSwarmTargets, selectSwarmTarget, type SwarmTarget } from '../swarm
 import { fetchRemoteDeploySessions, type RemoteDeploySession } from '../swarm/api/deploy-container'
 import { approveRemoteSwarmPairing, fetchPendingRemoteSwarmPairings, type RemoteSwarmPendingPairing } from '../onboarding/api'
 import { ManagedHostLinkRequestModal, activePendingPairings, managedHostTargetFromPairingResult } from '../swarm/components/managed-host-link-request-modal'
+import { mapDesktopSession } from '../chat/queries/chat-queries'
 import { buildDesktopChatRouteOptions, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../chat/services/chat-routing'
 import { fetchGitStatus, gitStatusQueryKey, startGitRealtime } from '../git/api'
 import type { GitFileStatus, GitSnapshot } from '../git/types'
@@ -1512,6 +1513,20 @@ export function DesktopAppPage() {
     () => (routeWorkspaceSlug ? resolveWorkspaceBySlug(workspaces, routeWorkspaceSlug) : null),
     [routeWorkspaceSlug, workspaces],
   )
+  const routeSessionSnapshotQuery = useQuery({
+    ...desktopV3SessionQueryOptions(routeSessionId),
+    enabled: routeSessionId !== '',
+    initialData: routeSessionId ? getCachedDesktopV3SessionSnapshot(queryClient, routeSessionId) ?? undefined : undefined,
+  })
+  useEffect(() => {
+    const snapshot = routeSessionSnapshotQuery.data
+    if (!routeSessionId || !snapshot) {
+      return
+    }
+    writeDesktopV3SessionSnapshot(queryClient, snapshot)
+    upsertSession(snapshot.session)
+    syncWorkspaceOverviewSession(queryClient, snapshot.session)
+  }, [queryClient, routeSessionId, routeSessionSnapshotQuery.data, upsertSession])
   useEffect(() => {
     if (!desktopToast) {
       return
@@ -1531,10 +1546,19 @@ export function DesktopAppPage() {
     }
     return buildTemporaryWorkspaceEntry(candidatePath, workspaceName)
   }, [activeWorkspacePath, routeSessionId, routeWorkspace, routeWorkspaceSlug, workspaceByPath])
+  const cachedRouteSession = useMemo<DesktopSessionRecord | null>(() => {
+    if (!routeSessionId) {
+      return null
+    }
+    return routeSessionSnapshotQuery.data?.session
+      ?? readDesktopV3CachedSession(queryClient, routeSessionId)
+      ?? liveSessions[routeSessionId]
+      ?? null
+  }, [liveSessions, queryClient, routeSessionId, routeSessionSnapshotQuery.data?.session])
+
   const selectedWorkspacePath = useMemo<string | null>(() => {
-    const routeSession = routeSessionId ? liveSessions[routeSessionId] ?? null : null
-    if (routeSession?.workspacePath) {
-      return routeSession.workspacePath
+    if (cachedRouteSession?.workspacePath) {
+      return cachedRouteSession.workspacePath
     }
     if (routeWorkspace?.path) {
       return routeWorkspace.path
@@ -1543,7 +1567,7 @@ export function DesktopAppPage() {
       return temporaryRouteWorkspace.path
     }
     return null
-  }, [liveSessions, routeSessionId, routeWorkspace?.path, temporaryRouteWorkspace])
+  }, [cachedRouteSession?.workspacePath, routeWorkspace?.path, temporaryRouteWorkspace])
   const savedSelectedWorkspace = selectedWorkspacePath ? workspaceByPath.get(selectedWorkspacePath) ?? null : null
   const selectedWorkspace = savedSelectedWorkspace ?? (temporaryRouteWorkspace?.path === selectedWorkspacePath ? temporaryRouteWorkspace : null)
   const sidebarWorkspaceEntries = useMemo<WorkspaceEntry[]>(() => {
@@ -2142,9 +2166,28 @@ export function DesktopAppPage() {
     }
   }, [backgroundBootstrapSessionIdsKey, queryClient, routeSessionId, upsertSession])
 
-  const routeSession = routeSessionId ? readDesktopV3CachedSession(queryClient, routeSessionId) ?? null : null
+  const routeSession = routeSessionId
+    ? routeSessionSnapshotQuery.data?.session
+      ?? readDesktopV3CachedSession(queryClient, routeSessionId)
+      ?? liveSessions[routeSessionId]
+      ?? sessionById.get(routeSessionId)
+      ?? null
+    : null
+  const routeFallbackSession = useMemo<DesktopSessionRecord | null>(() => {
+    if (!routeSessionId || routeSessionSnapshotQuery.isError || !selectedWorkspacePath) {
+      return null
+    }
+    return mapDesktopSession({
+      id: routeSessionId,
+      title: 'Loading session…',
+      workspace_path: selectedWorkspacePath,
+      workspace_name: selectedWorkspace?.workspaceName ?? fallbackWorkspaceNameFromPath(selectedWorkspacePath),
+      mode: 'auto',
+      session_api: 'v3',
+    })
+  }, [routeSessionId, routeSessionSnapshotQuery.isError, selectedWorkspace?.workspaceName, selectedWorkspacePath])
 
-  const selectedSession = routeSessionId ? routeSession : null
+  const selectedSession = routeSessionId ? routeSession ?? routeFallbackSession : null
 
   useEffect(() => {
     if (!selectedWorkspacePath) {
@@ -3451,9 +3494,11 @@ export function DesktopAppPage() {
         {routeSessionId && !selectedSession ? (
           <div className="flex h-full flex-1 items-center justify-center px-6">
             <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">
-              <div className="text-lg font-semibold">Session not found</div>
+              <div className="text-lg font-semibold">{routeSessionSnapshotQuery.isError ? 'Session not found' : 'Loading session…'}</div>
               <p className="mt-2 text-sm text-[var(--app-text-muted)]">
-                We couldn’t find that session in cache or on the server.
+                {routeSessionSnapshotQuery.isError
+                  ? 'We couldn’t find that session in cache or on the server.'
+                  : 'Opening the chat shell while the latest V3 snapshot hydrates in the background.'}
               </p>
             </Card>
           </div>
