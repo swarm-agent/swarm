@@ -1251,13 +1251,11 @@ export function DesktopChatPanel({
     || !selectedPrimaryAgent
     || cachedAgentModelPolicy.agentName === selectedPrimaryAgent
     || cachedAgentModelPolicy.resolvedAgentName === selectedPrimaryAgent
-  const activeAgentModelPolicy = sessionId
-    ? selectedAgentModelPolicy ?? (cachedAgentModelPolicyMatchesSelection ? cachedAgentModelPolicy : null)
-    : null
+  const activeAgentModelPolicy = selectedAgentModelPolicy
+    ?? (sessionId && cachedAgentModelPolicyMatchesSelection ? cachedAgentModelPolicy : null)
   const activeAgentModelLocked = Boolean(activeAgentModelPolicy?.locked)
-  const activePreferenceRecord = sessionId
-    ? preferenceFromAgentPolicy(activeAgentModelPolicy) ?? sessionPreference
-    : draftPreference
+  const activePreferenceRecord = preferenceFromAgentPolicy(activeAgentModelPolicy)
+    ?? (sessionId ? sessionPreference : draftPreference)
 
   const composer = useDesktopStore((state) => state.getSessionDraft(sessionId, workspacePath))
   const composerDraftKey = sessionId ?? draftSessionKey
