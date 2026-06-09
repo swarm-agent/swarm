@@ -705,6 +705,41 @@ function resetLiveReasoningState(live: DesktopSessionRecord['live']): void {
   live.reasoningStartedAt = null
 }
 
+function v3ReasoningDeltaText(payload: Record<string, unknown>): string {
+  const delta = typeof payload.delta === 'string' ? payload.delta : ''
+  if (delta !== '') {
+    return delta
+  }
+  return typeof payload.summary === 'string' ? payload.summary : ''
+}
+
+function applyLiveReasoningSnapshot(session: DesktopSessionRecord, payload: Record<string, unknown>, eventType: string, ts: number, envelopeSeq: number): void {
+  const runId = typeof payload.run_id === 'string' ? payload.run_id.trim() : ''
+  if (runId) {
+    session.live.runId = runId
+  }
+  const text = v3ReasoningDeltaText(payload).trim()
+  const isStarted = eventType === 'session.reasoning.started'
+  const isCompleted = eventType === 'session.reasoning.completed'
+  if (text !== '') {
+    session.live.reasoningText = text
+    session.live.reasoningSummary = text
+  }
+  if (isStarted || (text !== '' && session.live.reasoningState === 'idle')) {
+    session.live.reasoningSegment += 1
+    session.live.reasoningStartedAt = session.live.reasoningStartedAt ?? ts
+  }
+  session.live.reasoningState = isCompleted ? 'done' : 'running'
+  session.live.status = 'running'
+  session.live.awaitingAck = false
+  session.live.startedAt = session.live.startedAt ?? ts
+  session.live.summary = isCompleted ? 'Thinking complete' : 'Thinking…'
+  session.live.error = null
+  session.live.seq = Math.max(session.live.seq, envelopeSeq)
+  session.live.lastEventType = eventType
+  session.live.lastEventAt = ts
+}
+
 function appendLiveToolOutput(current: string, chunk: string): string {
   const normalized = normalizeLiveToolText(chunk)
   if (normalized.trim() === '') {
@@ -2664,6 +2699,20 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
       session.live.error = null
       session.live.lastEventType = eventType
       session.live.lastEventAt = ts
+      break
+    }
+    case 'session.reasoning.started':
+    case 'session.reasoning.delta':
+    case 'session.reasoning.completed': {
+      applyLiveReasoningSnapshot(session, payloadRecord, eventType, ts, envelopeSeq)
+      scheduleDraftFlush(sessionId, {
+        assistantDraft: session.live.assistantDraft,
+        reasoningSummary: session.live.reasoningSummary,
+        reasoningText: session.live.reasoningText,
+        reasoningState: session.live.reasoningState,
+        reasoningSegment: session.live.reasoningSegment,
+        toolOutput: session.live.toolOutput,
+      })
       break
     }
     case 'session.tool.started':

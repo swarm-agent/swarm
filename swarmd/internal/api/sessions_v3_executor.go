@@ -460,6 +460,105 @@ func (e *sessionV3Executor) recordRunProgress(job sessionV3ExecutorJob, deltaInd
 	})
 }
 
+func (e *sessionV3Executor) recordRunReasoningEvent(job sessionV3ExecutorJob, eventType string, step, eventIndex int, reasoningKey, delta, summary string) (sessionruntime.SessionMutationResult, error) {
+	if e.isRunCanceled(job) {
+		return sessionruntime.SessionMutationResult{}, context.Canceled
+	}
+	eventType = strings.TrimSpace(eventType)
+	if eventType == "" {
+		return sessionruntime.SessionMutationResult{}, errors.New("v3 reasoning event type is required")
+	}
+	reasoningKey = sessionV3NormalizeReasoningKey(reasoningKey)
+	now := time.Now().UnixMilli()
+	payload := map[string]any{
+		"session_id":    job.SessionID,
+		"run_id":        job.RunID,
+		"step":          step,
+		"reasoning_key": reasoningKey,
+	}
+	if eventIndex > 0 {
+		payload["delta_index"] = eventIndex
+	}
+	if delta != "" {
+		payload["delta"] = delta
+	}
+	if summary != "" {
+		payload["summary"] = summary
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return sessionruntime.SessionMutationResult{}, err
+	}
+	intent := pebblestore.V3SessionRunIntent{RunID: job.RunID, Status: sessionruntime.RunIntentRunning, UpdatedAt: now}
+	payloadHash, err := sessionV3ExecutorPayloadHash(job.SessionID, job.RunID, sessionruntime.RunIntentRunning, "", eventType, fmt.Sprintf("%d:%d:%s:%s:%s", step, eventIndex, reasoningKey, delta, summary))
+	if err != nil {
+		return sessionruntime.SessionMutationResult{}, err
+	}
+	clientRequestID := sessionV3ExecutorReasoningClientRequestID(eventType, job.RunID, step, reasoningKey, eventIndex)
+	return e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       job.SessionID,
+		UserID:          job.Principal.UserID,
+		AccountScopeID:  job.Principal.AccountScopeID,
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationRecordRunIntent,
+		EventType:       eventType,
+		EventPayload:    raw,
+		RunIntent:       &intent,
+		NowUnixMs:       now,
+	})
+}
+
+func (e *sessionV3Executor) recordReasoningMessage(job sessionV3ExecutorJob, step int, reasoningKey, content string) (sessionruntime.SessionMutationResult, error) {
+	if e.isRunCanceled(job) {
+		return sessionruntime.SessionMutationResult{}, context.Canceled
+	}
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return sessionruntime.SessionMutationResult{}, nil
+	}
+	reasoningKey = sessionV3NormalizeReasoningKey(reasoningKey)
+	now := time.Now().UnixMilli()
+	metadata := map[string]any{
+		"run_id":        job.RunID,
+		"executor_kind": "v3_provider",
+		"segment_kind":  "reasoning",
+		"step":          step,
+		"step_id":       sessionV3ProviderToolStepID(step),
+		"reasoning_key": reasoningKey,
+	}
+	message := pebblestore.MessageSnapshot{
+		ID:        sessionV3ReasoningMessageID(job.SessionID, job.RunID, step, reasoningKey),
+		Role:      "reasoning",
+		Content:   content,
+		CreatedAt: now,
+		Metadata:  metadata,
+	}
+	intent := pebblestore.V3SessionRunIntent{RunID: job.RunID, Status: sessionruntime.RunIntentRunning, UpdatedAt: now}
+	eventType := "session.message.appended"
+	payloadHash, err := sessionV3ExecutorPayloadHash(job.SessionID, job.RunID, sessionruntime.RunIntentRunning, "", eventType, fmt.Sprintf("reasoning:%d:%s:%s", step, reasoningKey, content))
+	if err != nil {
+		return sessionruntime.SessionMutationResult{}, err
+	}
+	clientRequestID := sessionV3ExecutorReasoningClientRequestID("session.reasoning.message", job.RunID, step, reasoningKey, 0)
+	return e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       job.SessionID,
+		UserID:          job.Principal.UserID,
+		AccountScopeID:  job.Principal.AccountScopeID,
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationAppendMessage,
+		EventType:       eventType,
+		Message:         &message,
+		RunIntent:       &intent,
+		NowUnixMs:       now,
+	})
+}
+
 type sessionV3AssistantDeltaCoalescer struct {
 	exec            *sessionV3Executor
 	job             sessionV3ExecutorJob
@@ -1003,17 +1102,73 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		coalescer.nextDeltaIndex = totalFlushCount
 		var progressErr error
 		streamIndex := 0
+		activeReasoningKey := ""
+		reasoningByKey := make(map[string]string, 4)
+		reasoningOrder := make([]string, 0, 4)
+		reasoningEventIndex := 0
+		rememberReasoningKey := func(key string) string {
+			key = sessionV3NormalizeReasoningKey(key)
+			if _, ok := reasoningByKey[key]; !ok {
+				reasoningOrder = append(reasoningOrder, key)
+			}
+			return key
+		}
+		rebuildReasoningSummary := func() string {
+			parts := make([]string, 0, len(reasoningOrder))
+			for _, key := range reasoningOrder {
+				if content := strings.TrimSpace(reasoningByKey[key]); content != "" {
+					parts = append(parts, content)
+				}
+			}
+			return strings.TrimSpace(strings.Join(parts, "\n\n"))
+		}
 		response, err := runner.CreateResponseStreaming(ctx, req, func(event provideriface.StreamEvent) {
 			streamIndex++
 			e.recordSessionV3Diagnostic(job, "session.diagnostic.provider.stream", "backend.provider", fmt.Sprintf("step-%d-stream-%06d", step, streamIndex), sessionV3ProviderStreamEventDiagnostic(event, step, streamIndex))
-			if event.Type != provideriface.StreamEventOutputTextDelta {
-				return
-			}
-			streamed.WriteString(event.Delta)
-			if progressErr == nil {
-				progressErr = coalescer.Add(event.Delta)
+			switch event.Type {
+			case provideriface.StreamEventOutputTextDelta:
+				streamed.WriteString(event.Delta)
+				if progressErr == nil {
+					progressErr = coalescer.Add(event.Delta)
+				}
+			case provideriface.StreamEventReasoningSummaryDelta:
+				reasoningKey := rememberReasoningKey(event.ReasoningKey)
+				if activeReasoningKey != reasoningKey {
+					if activeReasoningKey != "" {
+						reasoningEventIndex++
+						if progressErr == nil {
+							_, progressErr = e.recordRunReasoningEvent(job, "session.reasoning.completed", step, reasoningEventIndex, activeReasoningKey, "", strings.TrimSpace(reasoningByKey[activeReasoningKey]))
+						}
+					}
+					activeReasoningKey = reasoningKey
+					reasoningEventIndex++
+					if progressErr == nil {
+						_, progressErr = e.recordRunReasoningEvent(job, "session.reasoning.started", step, reasoningEventIndex, reasoningKey, "", "")
+					}
+				}
+				snapshot := strings.TrimSpace(event.Delta)
+				if snapshot == "" || snapshot == strings.TrimSpace(reasoningByKey[reasoningKey]) {
+					return
+				}
+				reasoningByKey[reasoningKey] = snapshot
+				reasoningEventIndex++
+				if progressErr == nil {
+					_, progressErr = e.recordRunReasoningEvent(job, "session.reasoning.delta", step, reasoningEventIndex, reasoningKey, snapshot, "")
+				}
 			}
 		})
+		if activeReasoningKey != "" {
+			summary := strings.TrimSpace(reasoningByKey[activeReasoningKey])
+			reasoningEventIndex++
+			if progressErr == nil {
+				_, progressErr = e.recordRunReasoningEvent(job, "session.reasoning.completed", step, reasoningEventIndex, activeReasoningKey, "", summary)
+			}
+		}
+		if summary := rebuildReasoningSummary(); summary != "" && progressErr == nil {
+			if _, err := e.recordReasoningMessage(job, step, activeReasoningKey, summary); err != nil {
+				progressErr = err
+			}
+		}
 		if flushErr := coalescer.Flush(); flushErr != nil && progressErr == nil {
 			progressErr = flushErr
 		}
@@ -1951,6 +2106,34 @@ func sessionV3AssistantSegmentMessageID(sessionID, runID string, step int) strin
 	}
 	sum := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(runID) + "\x00assistant\x00pre_tool\x00" + strconv.Itoa(step)))
 	return "v3msg_assistant_" + hex.EncodeToString(sum[:16])
+}
+
+func sessionV3ReasoningMessageID(sessionID, runID string, step int, reasoningKey string) string {
+	if step <= 0 {
+		step = 1
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(runID) + "\x00reasoning\x00" + strconv.Itoa(step) + "\x00" + sessionV3NormalizeReasoningKey(reasoningKey)))
+	return "v3msg_reasoning_" + hex.EncodeToString(sum[:16])
+}
+
+func sessionV3NormalizeReasoningKey(key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "default"
+	}
+	return key
+}
+
+func sessionV3ExecutorReasoningClientRequestID(eventType, runID string, step int, reasoningKey string, eventIndex int) string {
+	label := strings.NewReplacer(".", "_", "/", "_", " ", "_", ":", "_").Replace(strings.TrimSpace(eventType))
+	key := strings.NewReplacer(".", "_", "/", "_", " ", "_", ":", "_").Replace(sessionV3NormalizeReasoningKey(reasoningKey))
+	if step <= 0 {
+		step = 1
+	}
+	if eventIndex > 0 {
+		return fmt.Sprintf("v3-executor-%s-%s-%04d-%s-%04d", label, strings.TrimSpace(runID), step, key, eventIndex)
+	}
+	return fmt.Sprintf("v3-executor-%s-%s-%04d-%s", label, strings.TrimSpace(runID), step, key)
 }
 
 func sessionV3ExecutorPayloadHash(sessionID, runID, status, reason, eventType, content string) (string, error) {

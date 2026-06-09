@@ -1635,6 +1635,78 @@ func TestSessionsV3PrimaryStreamPublishesExecutorCommittedEventsAndReplaysThem(t
 	}
 }
 
+func TestSessionsV3PrimaryStreamCarriesProviderReasoningEventsAndMessage(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := installSessionsV3TestProvider(server, "final answer after reasoning")
+	runner.handler = func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if onEvent != nil {
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, ReasoningKey: "summary-1", Delta: "Inspecting"})
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, ReasoningKey: "summary-1", Delta: "Inspecting files"})
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: "final answer after reasoning"})
+		}
+		return provideriface.Response{Text: "final answer after reasoning", StopReason: "stop"}, nil
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	exec.deltaFlushMaxDelay = time.Hour
+	server.v3SessionExecutor = exec
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "reasoning-create", "reasoning stream", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, withTestPrincipal(r))
+	}))
+	defer httpServer.Close()
+
+	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	defer conn.Close()
+	_ = readSessionsV3PrimaryStreamFrame(t, conn)
+	_ = readSessionsV3PrimaryStreamFrame(t, conn)
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "reasoning-message", "think then answer")
+	seen := map[string]int{}
+	for {
+		frame := readSessionsV3PrimaryStreamFrame(t, conn)
+		if frame.Type != "event" || frame.Event == nil {
+			continue
+		}
+		seen[frame.Event.EventType]++
+		if frame.Event.EventType == "session.reasoning.delta" {
+			var payload struct {
+				RunID        string `json:"run_id"`
+				ReasoningKey string `json:"reasoning_key"`
+				Delta        string `json:"delta"`
+			}
+			if err := json.Unmarshal(frame.Event.Payload, &payload); err != nil {
+				t.Fatalf("decode reasoning delta payload: %v", err)
+			}
+			if payload.RunID == "" || payload.ReasoningKey != "summary-1" || payload.Delta == "" {
+				t.Fatalf("unexpected reasoning delta payload: %+v", payload)
+			}
+		}
+		if frame.Event.EventType == "session.assistant.completed" {
+			break
+		}
+	}
+	for _, want := range []string{"session.reasoning.started", "session.reasoning.delta", "session.reasoning.completed"} {
+		if seen[want] == 0 {
+			t.Fatalf("missing %s in live stream; seen=%v", want, seen)
+		}
+	}
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages after reasoning run: %v", err)
+	}
+	var reasoningMessage *pebblestore.MessageSnapshot
+	for i := range messages {
+		if messages[i].Role == "reasoning" {
+			reasoningMessage = &messages[i]
+			break
+		}
+	}
+	if reasoningMessage == nil || reasoningMessage.Content != "Inspecting files" || reasoningMessage.Metadata["reasoning_key"] != "summary-1" {
+		t.Fatalf("reasoning message = %+v; all messages=%+v", reasoningMessage, messages)
+	}
+}
+
 func TestSessionsV3PrimaryLiveStreamPublishesProviderToolProgressAndCommittedCompletion(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	workspace := t.TempDir()

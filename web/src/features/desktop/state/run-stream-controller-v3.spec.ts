@@ -240,6 +240,63 @@ test('V3 stream maps committed assistant lifecycle events into live draft and fi
   }
 })
 
+test('V3 stream maps reasoning events into live thinking state', () => {
+  const session = makeSession({ id: 'session-v3', sessionApi: 'v3', lastEventSeq: 1, projectionHighWatermarkSeq: 1 })
+  useDesktopStore.setState(makeState(session), true)
+
+  useDesktopStore.getState().__testApplyRunStreamFrame?.('session-v3', {
+    type: 'event',
+    ok: true,
+    session_id: 'session-v3',
+    last_seq: 2,
+    event: {
+      id: 'v3evt_session-v3_00000000000000000002',
+      session_id: 'session-v3',
+      seq: 2,
+      event_type: 'session.reasoning.started',
+      ts_unix_ms: 30,
+      payload: { session_id: 'session-v3', run_id: 'run-v3', step: 1, reasoning_key: 'summary-1' },
+    },
+  }, 30)
+  useDesktopStore.getState().__testApplyRunStreamFrame?.('session-v3', {
+    type: 'event',
+    ok: true,
+    session_id: 'session-v3',
+    last_seq: 3,
+    event: {
+      id: 'v3evt_session-v3_00000000000000000003',
+      session_id: 'session-v3',
+      seq: 3,
+      event_type: 'session.reasoning.delta',
+      ts_unix_ms: 31,
+      payload: { session_id: 'session-v3', run_id: 'run-v3', step: 1, reasoning_key: 'summary-1', delta: 'Inspecting files' },
+    },
+  }, 31)
+  useDesktopStore.getState().__testApplyRunStreamFrame?.('session-v3', {
+    type: 'event',
+    ok: true,
+    session_id: 'session-v3',
+    last_seq: 4,
+    event: {
+      id: 'v3evt_session-v3_00000000000000000004',
+      session_id: 'session-v3',
+      seq: 4,
+      event_type: 'session.reasoning.completed',
+      ts_unix_ms: 32,
+      payload: { session_id: 'session-v3', run_id: 'run-v3', step: 1, reasoning_key: 'summary-1', summary: 'Inspecting files' },
+    },
+  }, 32)
+
+  const updated = useDesktopStore.getState().sessions['session-v3']
+  assert.equal(updated.live.runId, 'run-v3')
+  assert.equal(updated.live.status, 'running')
+  assert.equal(updated.live.reasoningText, 'Inspecting files')
+  assert.equal(updated.live.reasoningSummary, 'Inspecting files')
+  assert.equal(updated.live.reasoningState, 'done')
+  assert.equal(updated.live.reasoningSegment, 1)
+  assert.equal(updated.live.lastEventType, 'session.reasoning.completed')
+})
+
 test('V3 stream maps committed run failures into replayable error state', () => {
   const session = makeSession({ id: 'session-v3', sessionApi: 'v3', live: { ...emptyLiveState(), status: 'running', runId: 'run-v3', assistantDraft: 'partial' } })
   useDesktopStore.setState(makeState(session), true)
