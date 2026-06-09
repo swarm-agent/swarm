@@ -29,6 +29,7 @@ import type { DesktopLiveAssistantSegment, DesktopLiveToolRecord, DesktopSession
 import { Card } from '../../../../components/ui/card'
 import { ChatMarkdown } from './chat-markdown'
 import { buildStructuredToolMessage } from '../services/tool-message'
+import { normalizeReasoningSnapshot } from '../services/reasoning-normalizer'
 import { ModelPicker } from './model-picker'
 import { ModePicker } from './mode-picker'
 import { ThinkingPicker } from './thinking-picker'
@@ -931,7 +932,8 @@ function renderReasoningBody(text: string, summary: string, thinkingTagsEnabled:
   if (!thinkingTagsEnabled) {
     return ''
   }
-  return text || summary || 'Thinking…'
+  const normalized = normalizeReasoningSnapshot(text || summary, 'codex')
+  return normalized.markdown || normalized.text || text || summary || 'Thinking…'
 }
 
 function normalizeThinkingValue(value: string): string {
