@@ -1586,6 +1586,11 @@ export function DesktopChatPanel({
   const savedRuleCountdown = savedRuleCountdownSeconds(lastSavedRuleExpiresAt, savedRuleCountdownNow)
   const composerDisabled = durableRunActive || awaitingLifecycleStart || reconnectingRun || (lifecycleActive && lifecyclePhase === 'starting')
   const runActive = canStop || submitting || lifecycleActive || durableRunActive
+  const terminalUserStopSummary = !lifecycleActive && (lifecyclePhase === 'cancelled' || lifecyclePhase === 'canceled')
+    ? (lifecycleStopReason || liveSession?.live.summary || 'Stream cancelled by user.')
+    : !runActive && liveSession?.live.summary?.trim() === 'Run paused by user'
+      ? 'Run paused by user'
+      : ''
   const showDictationButton = !runActive && dictationSupported
   const dictationButtonDisabled = composerDisabled
   const dictationComposer = dictationEnabled
@@ -3392,9 +3397,9 @@ export function DesktopChatPanel({
               <span className="shrink-0 text-xs text-[var(--app-text-muted)]">Disappears in {savedRuleCountdown}s</span>
             </div>
           ) : null}
-          {!lifecycleActive && (lifecyclePhase === 'cancelled' || lifecyclePhase === 'canceled') ? (
+          {terminalUserStopSummary ? (
             <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-sm text-[var(--app-warning-text)]">
-              {lifecycleStopReason || liveSession?.live.summary || 'Stream cancelled by user.'}
+              {terminalUserStopSummary}
             </div>
           ) : null}
           {mentionPaletteIsActive ? (

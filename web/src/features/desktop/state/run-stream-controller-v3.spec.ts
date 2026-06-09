@@ -760,7 +760,7 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
       content: 'hello primary',
     })
 
-    const updated = useDesktopStore.getState().sessions['session-v3']
+    let updated = useDesktopStore.getState().sessions['session-v3']
     assert.equal(updated.sessionApi, 'v3')
     assert.equal(updated.lastEventSeq, 3)
     assert.equal(updated.projectionHighWatermarkSeq, 3)
@@ -773,12 +773,69 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
     const stopCall = calls.find((entry) => String(entry.input) === '/v3/sessions/session-v3/run/stop')
     assert.ok(stopCall)
     assert.deepEqual(JSON.parse(String(stopCall.init?.body ?? '{}')), { type: 'run.stop', run_id: 'v3run-session-v3-2' })
+    updated = useDesktopStore.getState().sessions['session-v3']
+    assert.equal(updated.runIntent, null)
+    assert.equal(updated.live.status, 'idle')
+    assert.equal(updated.live.runId, null)
+    assert.equal(updated.live.error, null)
+    assert.equal(updated.live.summary, 'Run paused by user')
+    assert.equal(updated.live.lastEventType, 'session.run.cancelled')
     assert.equal(websocketCloseCount, 0)
   } finally {
     useDesktopStore.getState().disconnect()
     globalThis.fetch = originalFetch
     globalThis.window = originalWindow
     globalThis.WebSocket = originalWebSocket
+  }
+})
+
+test('V3 stop resolves active lifecycle run id when live run id is not hydrated', async () => {
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ input, init })
+    const url = String(input)
+    if (url === '/v3/sessions/session-v3/run/stop') {
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    throw new Error(`unexpected fetch: ${url}`)
+  }) as typeof fetch
+
+  try {
+    const session = makeSession({
+      id: 'session-v3',
+      sessionApi: 'v3',
+      lifecycle: {
+        sessionId: 'session-v3',
+        runId: 'run-lifecycle-only',
+        active: true,
+        phase: 'running',
+        startedAt: 10,
+        endedAt: 0,
+        updatedAt: 20,
+        generation: 1,
+        stopReason: null,
+        error: null,
+        ownerTransport: 'background_api',
+      },
+      live: { ...emptyLiveState(), status: 'running', startedAt: 10, runId: null },
+    })
+    useDesktopStore.setState(makeState(session), true)
+
+    await useDesktopStore.getState().stopRun('session-v3')
+
+    const stopCall = calls.find((entry) => String(entry.input) === '/v3/sessions/session-v3/run/stop')
+    assert.ok(stopCall)
+    assert.deepEqual(JSON.parse(String(stopCall.init?.body ?? '{}')), { type: 'run.stop', run_id: 'run-lifecycle-only' })
+    const updated = useDesktopStore.getState().sessions['session-v3']
+    assert.equal(updated.live.status, 'idle')
+    assert.equal(updated.live.summary, 'Run paused by user')
+    assert.equal(updated.live.runId, null)
+  } finally {
+    globalThis.fetch = originalFetch
   }
 })
 

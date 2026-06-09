@@ -94,6 +94,15 @@ const RESUME_STALE_GRACE_MS = 5_000
 const NEW_SESSION_DRAFT_KEY_PREFIX = '__workspace__:'
 const MAX_LIVE_TOOL_OUTPUT_CHARS = 4000
 const MAX_LIVE_TOOL_HISTORY = 20
+const USER_STOP_SUMMARY = 'Run paused by user'
+
+function userFacingRunStopReason(reason: string | null | undefined): string {
+  const normalized = reason?.trim() ?? ''
+  if (!normalized || normalized.toLowerCase() === 'run stopped by user') {
+    return USER_STOP_SUMMARY
+  }
+  return normalized
+}
 
 function isTaskToolPayload(record: Record<string, unknown> | null): boolean {
   if (!record) {
@@ -816,6 +825,20 @@ function resolveRunStreamId(session: DesktopSessionRecord | undefined, runId?: s
   return ''
 }
 
+function resolveStopRunId(session: DesktopSessionRecord | undefined): string {
+  const intentRunId = activeV3RunIntent(session)?.runId.trim() ?? ''
+  if (intentRunId) {
+    return intentRunId
+  }
+  if (session?.lifecycle?.active) {
+    const lifecycleRunId = session.lifecycle.runId?.trim() ?? ''
+    if (lifecycleRunId) {
+      return lifecycleRunId
+    }
+  }
+  return session?.live.runId?.trim() ?? ''
+}
+
 function resolveRunStreamResumeRequest(sessionId: string, fallbackRunId?: string | null): { sessionId: string; runId: string; lastSeq: number; sessionApi?: string | null; afterSeq?: number } | null {
   const normalizedSessionId = sessionId.trim()
   if (!normalizedSessionId) {
@@ -1383,7 +1406,7 @@ function applyAuthoritativeSessionStatus(
       session.live.startedAt = null
       retainLiveToolState(session.live, 'done')
       resetLiveToolState(session.live)
-      session.live.summary = null
+      session.live.summary = summary || null
       resetLiveReasoningState(session.live)
       session.live.error = null
       break
@@ -1566,7 +1589,11 @@ function normalizeGlobalV3SessionPayload(eventType: string, payloadRecord: Recor
       normalized.summary = normalized.summary ?? 'Assistant responding…'
     } else if (status === 'completed') {
       normalized.status = 'idle'
-    } else if (status === 'failed' || status === 'cancelled' || status === 'expired' || status === 'interrupted') {
+    } else if (status === 'cancelled') {
+      normalized.status = 'idle'
+      normalized.summary = normalized.summary ?? userFacingRunStopReason(typeof nestedRunIntent.blocked_reason === 'string' ? nestedRunIntent.blocked_reason : '')
+      normalized.error = null
+    } else if (status === 'failed' || status === 'expired' || status === 'interrupted') {
       normalized.status = 'error'
       normalized.error = normalized.error ?? nestedRunIntent.blocked_reason ?? 'Run failed'
     }
@@ -1721,6 +1748,54 @@ function ensureChildStreamSession(
 function applyV3SessionStreamFrame(state: DesktopStoreState, sessionId: string, payload: RunStreamEventMessage, ts: number): Partial<DesktopStoreState> | null {
   const type = String(payload.type ?? '').trim()
   const targetSessionId = v3StreamTargetSessionId(sessionId, payload)
+  if (type === 'run.stop.accepted') {
+    const existing = state.sessions[targetSessionId]
+    if (!existing) {
+      return {}
+    }
+    return {
+      sessions: {
+        ...state.sessions,
+        [targetSessionId]: mergeSessionRecords(existing, {
+          ...existing,
+          sessionApi: existing.sessionApi || 'v3',
+          live: {
+            ...existing.live,
+            runId: String(payload.run_id ?? '').trim() || existing.live.runId,
+            awaitingAck: false,
+            error: null,
+            summary: 'Stopping…',
+            lastEventType: 'run.stop.accepted',
+            lastEventAt: ts,
+          },
+        }),
+      },
+    }
+  }
+  if (type === 'session.run.cancelled') {
+    const eventPayload: Record<string, unknown> = {
+      session_id: targetSessionId,
+      run_id: typeof payload.run_id === 'string' ? payload.run_id : undefined,
+      status: typeof payload.status === 'string' ? payload.status : 'cancelled',
+      error: typeof payload.error === 'string' ? payload.error : USER_STOP_SUMMARY,
+      run_intent: payload.run_intent && typeof payload.run_intent === 'object'
+        ? payload.run_intent
+        : {
+            session_id: targetSessionId,
+            run_id: typeof payload.run_id === 'string' ? payload.run_id : undefined,
+            status: 'cancelled',
+            blocked_reason: typeof payload.error === 'string' ? payload.error : USER_STOP_SUMMARY,
+          },
+    }
+    return applyEnvelope(state, {
+      global_seq: typeof payload.seq === 'number' ? payload.seq : undefined,
+      stream: `v3/session:${targetSessionId}`,
+      event_type: 'session.run.cancelled',
+      entity_id: targetSessionId,
+      ts_unix_ms: ts,
+      payload: eventPayload,
+    })
+  }
   if (type === 'keepalive') {
     const existing = state.sessions[targetSessionId]
     if (!existing) {
@@ -1844,7 +1919,7 @@ function applyV3SessionStreamFrame(state: DesktopStoreState, sessionId: string, 
           lastEventType: v3EventType || type,
           lastEventAt: ts,
           awaitingAck: false,
-          error: v3EventType === 'session.run.failed' ? existing.live.error : null,
+          error: ['session.run.failed', 'session.run.cancelled', 'session.run.expired', 'session.run.interrupted', 'session.assistant.failed'].includes(v3EventType) ? existing.live.error : null,
         },
       }),
     },
@@ -2735,25 +2810,26 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
       const terminalRunIntent = v3TerminalRunIntent(payloadRecord, eventType)
       const runId = terminalRunIntent?.runId
         || (typeof payloadRecord.run_id === 'string' ? payloadRecord.run_id.trim() : '')
-      const error = terminalRunIntent?.error
+      const rawError = terminalRunIntent?.error
         || (typeof payloadRecord.error === 'string' && payloadRecord.error.trim() !== '' ? payloadRecord.error.trim() : '')
-        || 'Run failed'
+      const isUserCancellation = eventType === 'session.run.cancelled' || terminalRunIntent?.status === 'cancelled'
+      const error = isUserCancellation ? userFacingRunStopReason(rawError) : rawError || 'Run failed'
       const isTerminalError = terminalRunIntent !== null && terminalRunIntent.status !== 'completed'
       if (!sessionUsesV3Api(session) || isTerminalError) {
         if (terminalRunIntent) {
           session.runIntent = null
         }
         cancelDraftFlush(sessionId)
-        session.live.status = 'error'
+        session.live.status = isUserCancellation ? 'idle' : 'error'
         session.live.runId = null
         session.live.startedAt = null
         session.live.awaitingAck = false
         session.live.summary = error
-        session.live.error = error
-        retainLiveToolState(session.live, 'error')
+        session.live.error = isUserCancellation ? null : error
+        retainLiveToolState(session.live, isUserCancellation ? 'done' : 'error')
         resetLiveToolState(session.live)
         resetLiveReasoningState(session.live)
-        notifications.unshift(makeNotification(sessionId, runId || session.live.runId, eventType, 'Run failed', error, 'error', ts))
+        notifications.unshift(makeNotification(sessionId, runId || session.live.runId, eventType, isUserCancellation ? 'Run paused' : 'Run failed', error, isUserCancellation ? 'warning' : 'error', ts))
       }
       session.live.lastEventType = eventType
       session.live.lastEventAt = ts
@@ -3677,13 +3753,31 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
     if (!normalizedSessionId) {
       return
     }
-    const runId = get().sessions[normalizedSessionId]?.live.runId?.trim() ?? ''
+    const session = get().sessions[normalizedSessionId]
+    const runId = resolveStopRunId(session)
     if (!runId) {
       return
     }
     set((state) => applyRunStreamFrame(state, normalizedSessionId, { type: 'run.stop.accepted', run_id: runId }, Date.now()))
-    const sessionApi = get().sessions[normalizedSessionId]?.sessionApi?.trim().toLowerCase() ?? ''
+    const sessionApi = session?.sessionApi?.trim().toLowerCase() ?? ''
     await requireRunStreamController().stop({ sessionId: normalizedSessionId, runId, route, sessionApi })
+    if (sessionApi === 'v3') {
+      const stoppedAt = Date.now()
+      set((state) => applyRunStreamFrame(state, normalizedSessionId, {
+        type: 'session.run.cancelled',
+        session_id: normalizedSessionId,
+        run_id: runId,
+        status: 'cancelled',
+        error: USER_STOP_SUMMARY,
+        run_intent: {
+          session_id: normalizedSessionId,
+          run_id: runId,
+          status: 'cancelled',
+          blocked_reason: USER_STOP_SUMMARY,
+          updated_at: stoppedAt,
+        },
+      }, stoppedAt))
+    }
   },
   submitPrompt: async ({ sessionId, route = null, sessionApi = null, clientRequestId: providedClientRequestId = null, workspacePath, prompt, agentName, compact = false, targetKind = '', targetName = '' }: {
     sessionId: string | null

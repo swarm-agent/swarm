@@ -397,23 +397,13 @@ func (e *sessionV3Executor) recordRunStatus(job sessionV3ExecutorJob, status, re
 	}
 	now := time.Now().UnixMilli()
 	intent := pebblestore.V3SessionRunIntent{
-		RunID:         job.RunID,
-		Status:        status,
-		BlockedReason: strings.TrimSpace(reason),
-		UpdatedAt:     now,
-	}
-	var eventPayload json.RawMessage
-	if strings.HasPrefix(eventType, "session.run.") {
-		raw, err := json.Marshal(map[string]any{
-			"run_id":     job.RunID,
-			"status":     status,
-			"error":      strings.TrimSpace(reason),
-			"run_intent": intent,
-		})
-		if err != nil {
-			return sessionruntime.SessionMutationResult{}, err
-		}
-		eventPayload = raw
+		SessionID:      job.SessionID,
+		UserID:         job.Principal.UserID,
+		AccountScopeID: job.Principal.AccountScopeID,
+		RunID:          job.RunID,
+		Status:         status,
+		BlockedReason:  strings.TrimSpace(reason),
+		UpdatedAt:      now,
 	}
 	payloadHash, err := sessionV3ExecutorPayloadHash(job.SessionID, job.RunID, status, reason, eventType, "")
 	if err != nil {
@@ -429,7 +419,6 @@ func (e *sessionV3Executor) recordRunStatus(job sessionV3ExecutorJob, status, re
 		RequestHash:     payloadHash,
 		Kind:            sessionruntime.SessionMutationRecordRunIntent,
 		EventType:       eventType,
-		EventPayload:    eventPayload,
 		RunIntent:       &intent,
 		NowUnixMs:       now,
 	})

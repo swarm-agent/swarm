@@ -913,6 +913,7 @@ func TestSessionsV3PrimaryRunStopCancelsActiveExecutorAndSuppressesLateOutput(t 
 	if cancelled.RunID != intent.RunID || cancelled.BlockedReason != "stop from test" {
 		t.Fatalf("cancelled intent = %+v", cancelled)
 	}
+	assertSessionsV3CancelledRunEvent(t, sessionSvc, created.ID, intent.RunID, "stop from test")
 	close(releaseLate)
 	if !server.WaitForInFlightRuns(2 * time.Second) {
 		t.Fatalf("executor did not drain after active cancel")
@@ -964,6 +965,7 @@ func TestSessionsV3PrimaryRunStopCancelsBeforeExecutorStart(t *testing.T) {
 	if cancelled.RunID != intent.RunID || cancelled.BlockedReason != sessionV3RunStopDefaultReason {
 		t.Fatalf("cancelled intent = %+v", cancelled)
 	}
+	assertSessionsV3CancelledRunEvent(t, sessionSvc, created.ID, intent.RunID, sessionV3RunStopDefaultReason)
 	if !server.WaitForInFlightRuns(2 * time.Second) {
 		t.Fatalf("executor did not drain after queued cancel")
 	}
@@ -1070,6 +1072,38 @@ func waitForSessionsV3RunIntentStatus(t *testing.T, sessionSvc *sessionruntime.S
 	intents, _ := sessionSvc.Store().ListV3SessionRunIntents(sessionID, 0, 10)
 	t.Fatalf("run intent status %q not found: %+v", want, intents)
 	return sessionruntime.SessionRunIntent{}
+}
+
+func assertSessionsV3CancelledRunEvent(t *testing.T, sessionSvc *sessionruntime.Service, sessionID, runID, reason string) {
+	t.Helper()
+	events, err := sessionSvc.ListSessionEvents(sessionID, 0, 50)
+	if err != nil {
+		t.Fatalf("list cancellation events: %v", err)
+	}
+	for _, event := range events {
+		if event.EventType != "session.run.cancelled" {
+			continue
+		}
+		var payload struct {
+			RunID     string `json:"run_id"`
+			Status    string `json:"status"`
+			Error     string `json:"error"`
+			RunIntent struct {
+				RunID         string `json:"run_id"`
+				Status        string `json:"status"`
+				BlockedReason string `json:"blocked_reason"`
+				EventSeq      uint64 `json:"event_seq"`
+			} `json:"run_intent"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("decode cancellation payload: %v payload=%s", err, string(event.Payload))
+		}
+		if payload.RunID == runID && payload.Status == sessionruntime.RunIntentCancelled && payload.RunIntent.RunID == runID && payload.RunIntent.Status == sessionruntime.RunIntentCancelled && payload.RunIntent.BlockedReason == reason && payload.RunIntent.EventSeq == event.Seq {
+			return
+		}
+		t.Fatalf("unexpected cancellation payload: event=%+v payload=%+v want_run=%q want_reason=%q", event, payload, runID, reason)
+	}
+	t.Fatalf("session.run.cancelled event for run %q not found in %+v", runID, events)
 }
 
 func waitForSessionsV3Title(t *testing.T, sessionSvc *sessionruntime.Service, sessionID, want string) {

@@ -68,6 +68,9 @@ export type RunStreamEventMessage = {
     status?: string
     blocked_reason?: string
     error?: string
+    created_at?: number
+    updated_at?: number
+    event_seq?: number
   }
   message?: {
     id?: string
