@@ -1663,47 +1663,57 @@ func TestSessionsV3PrimaryStreamCarriesProviderReasoningEventsAndMessage(t *test
 
 	postSessionsV3PrimaryTestMessage(t, server, created.ID, "reasoning-message", "think then answer")
 	seen := map[string]int{}
+	var thinkingDeltaPayload struct {
+		RunID    string         `json:"run_id"`
+		ToolName string         `json:"tool_name"`
+		Output   string         `json:"output"`
+		Metadata map[string]any `json:"metadata"`
+	}
 	for {
 		frame := readSessionsV3PrimaryStreamFrame(t, conn)
 		if frame.Type != "event" || frame.Event == nil {
 			continue
 		}
 		seen[frame.Event.EventType]++
-		if frame.Event.EventType == "session.reasoning.delta" {
+		if frame.Event.EventType == "session.tool.delta" {
 			var payload struct {
-				RunID        string `json:"run_id"`
-				ReasoningKey string `json:"reasoning_key"`
-				Delta        string `json:"delta"`
+				RunID    string         `json:"run_id"`
+				ToolName string         `json:"tool_name"`
+				Output   string         `json:"output"`
+				Metadata map[string]any `json:"metadata"`
 			}
 			if err := json.Unmarshal(frame.Event.Payload, &payload); err != nil {
-				t.Fatalf("decode reasoning delta payload: %v", err)
+				t.Fatalf("decode thinking tool delta payload: %v", err)
 			}
-			if payload.RunID == "" || payload.ReasoningKey != "summary-1" || payload.Delta == "" {
-				t.Fatalf("unexpected reasoning delta payload: %+v", payload)
+			if payload.ToolName == sessionV3ReasoningToolName {
+				thinkingDeltaPayload = payload
 			}
 		}
 		if frame.Event.EventType == "session.assistant.completed" {
 			break
 		}
 	}
-	for _, want := range []string{"session.reasoning.started", "session.reasoning.delta", "session.reasoning.completed"} {
+	for _, want := range []string{"session.tool.started", "session.tool.delta", "session.tool.completed"} {
 		if seen[want] == 0 {
 			t.Fatalf("missing %s in live stream; seen=%v", want, seen)
 		}
+	}
+	if thinkingDeltaPayload.RunID == "" || thinkingDeltaPayload.ToolName != sessionV3ReasoningToolName || thinkingDeltaPayload.Output == "" || thinkingDeltaPayload.Metadata["reasoning_key"] != "summary-1" {
+		t.Fatalf("unexpected thinking tool delta payload: %+v", thinkingDeltaPayload)
 	}
 	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
 	if err != nil {
 		t.Fatalf("list messages after reasoning run: %v", err)
 	}
-	var reasoningMessage *pebblestore.MessageSnapshot
+	var thinkingToolMessage *pebblestore.MessageSnapshot
 	for i := range messages {
-		if messages[i].Role == "reasoning" {
-			reasoningMessage = &messages[i]
+		if messages[i].Role == "tool" && messages[i].Metadata["timeline_kind"] == "thinking" {
+			thinkingToolMessage = &messages[i]
 			break
 		}
 	}
-	if reasoningMessage == nil || reasoningMessage.Content != "Inspecting files" || reasoningMessage.Metadata["reasoning_key"] != "summary-1" {
-		t.Fatalf("reasoning message = %+v; all messages=%+v", reasoningMessage, messages)
+	if thinkingToolMessage == nil || thinkingToolMessage.Metadata["reasoning_key"] != "summary-1" {
+		t.Fatalf("thinking tool message = %+v; all messages=%+v", thinkingToolMessage, messages)
 	}
 }
 

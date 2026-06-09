@@ -15,6 +15,7 @@ interface ChatMarkdownProps {
   content: string;
   className?: string;
   toolMessage?: StructuredToolMessage | null;
+  thinkingTagsEnabled?: boolean;
 }
 
 function resolveToolState(toolMessage: StructuredToolMessage): ToolState {
@@ -745,9 +746,11 @@ function SearchToolView({
 export function ToolMessageView({
   toolMessage,
   isGroupItem,
+  thinkingTagsEnabled = true,
 }: {
   toolMessage: StructuredToolMessage;
   isGroupItem?: boolean;
+  thinkingTagsEnabled?: boolean;
 }) {
   const toolTheme = getToolTheme(toolMessage.tool);
   const ToolIcon = toolTheme.icon;
@@ -768,6 +771,7 @@ export function ToolMessageView({
   const previewLanguage = inferToolSyntaxLanguage(toolMessage.target || pathFromToolSummary(toolMessage.summary));
   const shellPreview = false;
   const plainPreview = shouldRenderPreviewAsPlain(toolMessage.tool);
+  const showPreview = toolMessage.tool.trim().toLowerCase() !== 'thinking' || thinkingTagsEnabled;
 
   return (
     <div className={isGroupItem ? "py-2" : "mb-2 min-w-0 py-2"}>
@@ -823,6 +827,7 @@ export function ToolMessageView({
         {!toolMessage.editDiff &&
         toolMessage.tool !== "search" &&
         !(toolMessage.tool === "task" && toolMessage.taskRows.length > 0) &&
+        showPreview &&
         (toolMessage.previewLines.length > 0 || toolMessage.commandText) ? (
           <PreviewLinesView
             lines={toolMessage.previewLines}
@@ -901,9 +906,10 @@ function ChatMarkdownInner({
   content,
   className,
   toolMessage,
+  thinkingTagsEnabled = true,
 }: ChatMarkdownProps) {
   if (toolMessage) {
-    return <ToolMessageView toolMessage={toolMessage} />;
+    return <ToolMessageView toolMessage={toolMessage} thinkingTagsEnabled={thinkingTagsEnabled} />;
   }
 
   return (

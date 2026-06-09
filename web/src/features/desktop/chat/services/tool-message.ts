@@ -133,6 +133,9 @@ function summarizeToolOutput(
   const effective = outputJson ?? argumentsJson;
   if (!effective) return toolName || "tool";
   const tool = toolName.toLowerCase();
+  if (tool === "thinking") {
+    return "THINKING";
+  }
 
   switch (tool) {
     case "compact": {
@@ -991,6 +994,9 @@ function extractPreviewLines(
   argumentsJson: Record<string, unknown> | null,
 ): string[] {
   const tool = toolName.toLowerCase();
+  if (tool === "thinking") {
+    return previewTextLines(outputText, 6);
+  }
   const effective = outputJson ?? argumentsJson;
   if (!effective) return [];
 

@@ -3257,7 +3257,7 @@ export function DesktopChatPanel({
                   style={{ transform: `translateY(${virtualItem.start}px)` }}
                 >
                   <article className="w-full min-w-0">
-                    <ChatMarkdown content="" toolMessage={item.toolMessage} />
+                    <ChatMarkdown content="" toolMessage={item.toolMessage} thinkingTagsEnabled={thinkingTagsEnabled} />
                   </article>
                 </div>
               )
@@ -3352,7 +3352,7 @@ export function DesktopChatPanel({
                       {messageRoleLabel(message.role, resolveMessageAssistantLabel(message, currentSessionAgent))}
                     </div>
                   ) : null}
-                  <ChatMarkdown content={message.content} toolMessage={message.toolMessage ?? null} />
+                  <ChatMarkdown content={message.content} toolMessage={message.toolMessage ?? null} thinkingTagsEnabled={thinkingTagsEnabled} />
                 </article>
               </div>
             )
