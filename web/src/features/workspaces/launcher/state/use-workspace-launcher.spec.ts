@@ -17,3 +17,10 @@ test('launcher initial refresh can avoid duplicate overview and browse waterfall
   assert.match(source, /if \(!autoRefresh\) \{\s*setLoading\(false\)\s*return\s*\}/s)
   assert.match(source, /if \(browseDuringRefresh\) \{\s*if \(roots\.length > 0\)/s)
 })
+
+test('launcher query-cache subscription ignores observer churn and defers React state sync', () => {
+  assert.match(source, /if \(event\.type !== 'updated'\) \{\s*return\s*\}/s)
+  assert.match(source, /scheduleCacheSync\(syncFromOverviewCache\)/)
+  assert.match(source, /scheduleCacheSync\(syncFromUISettingsCache\)/)
+  assert.doesNotMatch(source, /const queryKey = event\?\.query\?\.queryKey/)
+})

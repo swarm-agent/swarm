@@ -417,19 +417,30 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
       setGlobalThemeId(normalizeGlobalThemeSettings(settings).activeId)
     }
 
+    const scheduleCacheSync = (sync: () => void) => {
+      const setTimeoutFn = typeof window !== 'undefined' ? window.setTimeout.bind(window) : setTimeout
+      setTimeoutFn(sync, 0)
+    }
+
     syncFromOverviewCache()
     syncFromUISettingsCache()
     return queryClient.getQueryCache().subscribe((event) => {
-      const queryKey = event?.query?.queryKey
+      // React Query also emits observer option/result notifications while hooks are
+      // rendering. Updating launcher state from those notifications can recurse
+      // through React's setOptions path and trigger error #185 in production.
+      if (event.type !== 'updated') {
+        return
+      }
+      const queryKey = event.query.queryKey
       if (!Array.isArray(queryKey)) {
         return
       }
       if (isDefaultWorkspaceOverviewKey(queryKey)) {
-        syncFromOverviewCache()
+        scheduleCacheSync(syncFromOverviewCache)
         return
       }
       if (queryKey.length === 1 && queryKey[0] === settingsKey[0]) {
-        syncFromUISettingsCache()
+        scheduleCacheSync(syncFromUISettingsCache)
       }
     })
   }, [queryClient])
