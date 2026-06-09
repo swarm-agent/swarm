@@ -297,38 +297,6 @@ test('V3 stream maps reasoning events into live thinking state', () => {
   assert.equal(updated.live.lastEventType, 'session.reasoning.completed')
 })
 
-test('V3 stream normalizes Codex Responses API reasoning snapshots', () => {
-  const session = makeSession({ id: 'session-v3', sessionApi: 'v3', lastEventSeq: 1, projectionHighWatermarkSeq: 1 })
-  useDesktopStore.setState(makeState(session), true)
-
-  useDesktopStore.getState().__testApplyRunStreamFrame?.('session-v3', {
-    type: 'event',
-    ok: true,
-    session_id: 'session-v3',
-    last_seq: 2,
-    event: {
-      id: 'v3evt_session-v3_00000000000000000002',
-      session_id: 'session-v3',
-      seq: 2,
-      event_type: 'session.reasoning.delta',
-      ts_unix_ms: 31,
-      payload: {
-        session_id: 'session-v3',
-        run_id: 'run-v3',
-        step: 1,
-        reasoning_key: 'summary|rs_1|output:0|summary:0',
-        delta: '**Planning codebase review**\n\nThe user wants me to search the codebase to see if it is launch-ready.',
-      },
-    },
-  }, 31)
-
-  const updated = useDesktopStore.getState().sessions['session-v3']
-  assert.equal(updated.live.reasoningSummary, 'Planning codebase review')
-  assert.equal(updated.live.reasoningText, 'The user wants me to search the codebase to see if it is launch-ready.')
-  assert.equal(updated.live.reasoningState, 'running')
-})
-
-
 test('V3 stream maps committed run failures into replayable error state', () => {
   const session = makeSession({ id: 'session-v3', sessionApi: 'v3', live: { ...emptyLiveState(), status: 'running', runId: 'run-v3', assistantDraft: 'partial' } })
   useDesktopStore.setState(makeState(session), true)

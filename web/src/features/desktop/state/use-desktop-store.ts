@@ -24,7 +24,6 @@ import type { DesktopChatRoute } from '../chat/services/chat-routing'
 import { gitStatusQueryKey } from '../git/api'
 import { agentStateQueryOptions, sessionMessagesQueryOptions, sessionPreferenceQueryKey, uiSettingsQueryKey } from '../../queries/query-options'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
-import { normalizeReasoningSnapshot } from '../chat/services/reasoning-normalizer'
 import { mergeMessageIntoCache } from '../chat/services/message-cache'
 import { mergeDesktopV3DurableCachePatch } from './desktop-v3-durable-reducer'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
@@ -719,15 +718,14 @@ function applyLiveReasoningSnapshot(session: DesktopSessionRecord, payload: Reco
   if (runId) {
     session.live.runId = runId
   }
-  const rawText = v3ReasoningDeltaText(payload).trim()
-  const normalizedReasoning = normalizeReasoningSnapshot(rawText, 'codex')
+  const text = v3ReasoningDeltaText(payload).trim()
   const isStarted = eventType === 'session.reasoning.started'
   const isCompleted = eventType === 'session.reasoning.completed'
-  if (rawText !== '') {
-    session.live.reasoningText = normalizedReasoning.text || rawText
-    session.live.reasoningSummary = normalizedReasoning.summary || normalizedReasoning.text || rawText
+  if (text !== '') {
+    session.live.reasoningText = text
+    session.live.reasoningSummary = text
   }
-  if (isStarted || (rawText !== '' && session.live.reasoningState === 'idle')) {
+  if (isStarted || (text !== '' && session.live.reasoningState === 'idle')) {
     session.live.reasoningSegment += 1
     session.live.reasoningStartedAt = session.live.reasoningStartedAt ?? ts
   }
