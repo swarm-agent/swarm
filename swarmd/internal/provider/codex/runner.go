@@ -58,6 +58,43 @@ func (r *Runner) CreateResponseStreaming(ctx context.Context, req provideriface.
 				Delta:        event.Delta,
 				ReasoningKey: event.ReasoningKey,
 			})
+		case StreamEventToolCallStarted:
+			onEvent(provideriface.StreamEvent{
+				Type:          provideriface.StreamEventToolCallStarted,
+				ToolCallID:    event.ToolCallID,
+				ToolCallIndex: cloneIntPtr(event.ToolCallIndex),
+				ToolName:      event.ToolName,
+				Metadata:      cloneMapStringAny(event.Metadata),
+			})
+		case StreamEventToolCallArgumentsDelta:
+			onEvent(provideriface.StreamEvent{
+				Type:           provideriface.StreamEventToolCallArgumentsDelta,
+				Delta:          event.Delta,
+				ToolCallID:     event.ToolCallID,
+				ToolCallIndex:  cloneIntPtr(event.ToolCallIndex),
+				ToolName:       event.ToolName,
+				ArgumentsDelta: event.ArgumentsDelta,
+				Metadata:       cloneMapStringAny(event.Metadata),
+			})
+		case StreamEventToolCallArgumentsSnapshot:
+			onEvent(provideriface.StreamEvent{
+				Type:              provideriface.StreamEventToolCallArgumentsSnapshot,
+				ToolCallID:        event.ToolCallID,
+				ToolCallIndex:     cloneIntPtr(event.ToolCallIndex),
+				ToolName:          event.ToolName,
+				Arguments:         event.Arguments,
+				ArgumentsSnapshot: event.ArgumentsSnapshot,
+				Metadata:          cloneMapStringAny(event.Metadata),
+			})
+		case StreamEventToolCallCompleted:
+			onEvent(provideriface.StreamEvent{
+				Type:          provideriface.StreamEventToolCallCompleted,
+				ToolCallID:    event.ToolCallID,
+				ToolCallIndex: cloneIntPtr(event.ToolCallIndex),
+				ToolName:      event.ToolName,
+				Arguments:     event.Arguments,
+				Metadata:      cloneMapStringAny(event.Metadata),
+			})
 		}
 	})
 	if err != nil {
@@ -484,4 +521,23 @@ func cloneBoolPointer(value *bool) *bool {
 	}
 	out := *value
 	return &out
+}
+
+func cloneIntPtr(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	out := *value
+	return &out
+}
+
+func cloneMapStringAny(value map[string]any) map[string]any {
+	if len(value) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(value))
+	for key, item := range value {
+		out[key] = item
+	}
+	return out
 }

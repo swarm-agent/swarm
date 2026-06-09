@@ -219,6 +219,10 @@ const (
 	StreamEventOutputTextDelta              StreamEventType = "response.output_text.delta"
 	StreamEventReasoningSummaryDelta        StreamEventType = "response.reasoning_summary_text.delta"
 	StreamEventAssistantCommentary          StreamEventType = "response.assistant_commentary.delta"
+	StreamEventToolCallStarted              StreamEventType = "response.tool_call.started"
+	StreamEventToolCallArgumentsDelta       StreamEventType = "response.tool_call.arguments.delta"
+	StreamEventToolCallArgumentsSnapshot    StreamEventType = "response.tool_call.arguments.snapshot"
+	StreamEventToolCallCompleted            StreamEventType = "response.tool_call.completed"
 	StreamEventImageGenerationPartialImage  StreamEventType = "response.image_generation_call.partial_image"
 	StreamEventImageGenerationCallCompleted StreamEventType = "response.image_generation_call.completed"
 )
@@ -228,6 +232,13 @@ type StreamEvent struct {
 	Delta             string
 	Phase             provideriface.AssistantPhase
 	ReasoningKey      string
+	ToolCallID        string
+	ToolCallIndex     *int
+	ToolName          string
+	Arguments         string
+	ArgumentsDelta    string
+	ArgumentsSnapshot string
+	Metadata          map[string]any
 	ItemID            string
 	OutputIndex       int
 	SequenceNumber    int
@@ -1196,6 +1207,10 @@ type streamDecodeState struct {
 	imageGenerationResults  map[string]string
 	imageGenerationPartials []map[string]any
 	imageGenerationFinals   []map[string]any
+	toolCallArguments       map[string]string
+	toolCallStarted         map[string]struct{}
+	toolCallCompleted       map[string]struct{}
+	toolCallsByIndex        map[int]StreamEvent
 	rawEvents               []map[string]any
 	sawPayload              bool
 }
@@ -1254,12 +1269,19 @@ func processResponseStreamEvent(eventName string, payload string, state *streamD
 		if text != "" {
 			state.outputText = mergeOutputTextSnapshot(state.outputText, text)
 		}
+	case "response.function_call_arguments.delta", "response.function_call.arguments.delta",
+		"response.custom_tool_call_input.delta", "response.custom_tool_call.input.delta":
+		emitToolCallArgumentsDeltaEvent(state, decoded, onEvent)
+	case "response.function_call_arguments.done", "response.function_call.arguments.done",
+		"response.custom_tool_call_input.done", "response.custom_tool_call.input.done":
+		emitToolCallCompletedEvent(state, decoded, onEvent)
 	case "response.output_item.added", "response.output_item.done":
 		item := extractOutputItemFromEvent(decoded)
 		if len(item) == 0 {
 			break
 		}
 		recordOutputItemEvent(state, item, decoded)
+		emitToolCallOutputItemEvent(eventName, state, item, decoded, onEvent)
 		if text := extractOutputTextFromOutputItem(item); strings.TrimSpace(text) != "" {
 			phase := outputItemAssistantPhase(item)
 			next, appended := mergeStreamDelta(state.outputText, text)
@@ -1326,6 +1348,316 @@ func extractOutputItemFromEvent(decoded map[string]any) map[string]any {
 		return nil
 	}
 	return cloneMapAny(item)
+}
+
+func emitToolCallOutputItemEvent(eventName string, state *streamDecodeState, item map[string]any, event map[string]any, onEvent func(StreamEvent)) {
+	if onEvent == nil || len(item) == 0 || !isToolCallOutputItem(item) {
+		return
+	}
+	streamEvent := streamEventToolCallFromOutputItem(item, event)
+	rememberToolCallEvent(state, streamEvent)
+	if streamEvent.ToolCallID == "" && streamEvent.ToolName == "" {
+		return
+	}
+	key := toolCallStreamKey(streamEvent)
+	if key == "" {
+		return
+	}
+	ensureToolCallStarted(state, key, streamEvent, onEvent)
+	if toolCallCompletedSeen(state, key) {
+		return
+	}
+
+	snapshot := strings.TrimSpace(streamEvent.ArgumentsSnapshot)
+	if snapshot != "" {
+		if state != nil {
+			if state.toolCallArguments == nil {
+				state.toolCallArguments = make(map[string]string, 4)
+			}
+			state.toolCallArguments[key] = snapshot
+		}
+		onEvent(StreamEvent{
+			Type:              StreamEventToolCallArgumentsSnapshot,
+			ToolCallID:        streamEvent.ToolCallID,
+			ToolCallIndex:     cloneIntPtr(streamEvent.ToolCallIndex),
+			ToolName:          streamEvent.ToolName,
+			ArgumentsSnapshot: snapshot,
+			Metadata:          cloneMapAny(streamEvent.Metadata),
+		})
+	}
+
+	if strings.EqualFold(strings.TrimSpace(eventName), "response.output_item.done") || strings.EqualFold(strings.TrimSpace(asString(item["status"])), "completed") {
+		emitCompletedToolCall(state, key, streamEvent, onEvent)
+	}
+}
+
+func emitToolCallArgumentsDeltaEvent(state *streamDecodeState, event map[string]any, onEvent func(StreamEvent)) {
+	if onEvent == nil || len(event) == 0 {
+		return
+	}
+	streamEvent := mergeToolCallEventWithState(state, streamEventToolCallFromArgumentEvent(event))
+	if streamEvent.ToolCallID == "" && streamEvent.ToolName == "" {
+		return
+	}
+	key := toolCallStreamKey(streamEvent)
+	if key == "" {
+		return
+	}
+	ensureToolCallStarted(state, key, streamEvent, onEvent)
+
+	delta := firstNonEmpty(
+		asString(event["delta"]),
+		asString(event["arguments_delta"]),
+		asString(event["input_delta"]),
+	)
+	if delta == "" {
+		return
+	}
+	if state != nil {
+		if state.toolCallArguments == nil {
+			state.toolCallArguments = make(map[string]string, 4)
+		}
+		state.toolCallArguments[key] += delta
+	}
+	onEvent(StreamEvent{
+		Type:           StreamEventToolCallArgumentsDelta,
+		ToolCallID:     streamEvent.ToolCallID,
+		ToolCallIndex:  cloneIntPtr(streamEvent.ToolCallIndex),
+		ToolName:       streamEvent.ToolName,
+		ArgumentsDelta: delta,
+		Delta:          delta,
+		Metadata:       cloneMapAny(streamEvent.Metadata),
+	})
+}
+
+func emitToolCallCompletedEvent(state *streamDecodeState, event map[string]any, onEvent func(StreamEvent)) {
+	if onEvent == nil || len(event) == 0 {
+		return
+	}
+	streamEvent := mergeToolCallEventWithState(state, streamEventToolCallFromArgumentEvent(event))
+	if streamEvent.ToolCallID == "" && streamEvent.ToolName == "" {
+		return
+	}
+	key := toolCallStreamKey(streamEvent)
+	if key == "" {
+		return
+	}
+	ensureToolCallStarted(state, key, streamEvent, onEvent)
+	if streamEvent.Arguments == "" && state != nil && state.toolCallArguments != nil {
+		streamEvent.Arguments = strings.TrimSpace(state.toolCallArguments[key])
+	}
+	emitCompletedToolCall(state, key, streamEvent, onEvent)
+}
+
+func ensureToolCallStarted(state *streamDecodeState, key string, event StreamEvent, onEvent func(StreamEvent)) {
+	if onEvent == nil || key == "" {
+		return
+	}
+	if state != nil {
+		if state.toolCallStarted == nil {
+			state.toolCallStarted = make(map[string]struct{}, 4)
+		}
+		if _, exists := state.toolCallStarted[key]; exists {
+			return
+		}
+		state.toolCallStarted[key] = struct{}{}
+	}
+	onEvent(StreamEvent{
+		Type:          StreamEventToolCallStarted,
+		ToolCallID:    event.ToolCallID,
+		ToolCallIndex: cloneIntPtr(event.ToolCallIndex),
+		ToolName:      event.ToolName,
+		Metadata:      cloneMapAny(event.Metadata),
+	})
+}
+
+func emitCompletedToolCall(state *streamDecodeState, key string, event StreamEvent, onEvent func(StreamEvent)) {
+	if onEvent == nil || key == "" {
+		return
+	}
+	if state != nil {
+		if state.toolCallCompleted == nil {
+			state.toolCallCompleted = make(map[string]struct{}, 4)
+		}
+		if toolCallCompletedSeen(state, key) {
+			return
+		}
+		state.toolCallCompleted[key] = struct{}{}
+		if event.Arguments == "" && state.toolCallArguments != nil {
+			event.Arguments = strings.TrimSpace(state.toolCallArguments[key])
+		}
+	}
+	onEvent(StreamEvent{
+		Type:          StreamEventToolCallCompleted,
+		ToolCallID:    event.ToolCallID,
+		ToolCallIndex: cloneIntPtr(event.ToolCallIndex),
+		ToolName:      event.ToolName,
+		Arguments:     strings.TrimSpace(event.Arguments),
+		Metadata:      cloneMapAny(event.Metadata),
+	})
+}
+
+func toolCallCompletedSeen(state *streamDecodeState, key string) bool {
+	if state == nil || state.toolCallCompleted == nil || key == "" {
+		return false
+	}
+	_, exists := state.toolCallCompleted[key]
+	return exists
+}
+
+func streamEventToolCallFromOutputItem(item map[string]any, event map[string]any) StreamEvent {
+	index := intPointerFromAny(firstPresentValue(event, item, "output_index"))
+	arguments := strings.TrimSpace(asString(item["arguments"]))
+	if arguments == "" {
+		switch typed := item["arguments"].(type) {
+		case map[string]any, []any:
+			arguments = strings.TrimSpace(normalizeArguments(typed))
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(asString(item["type"])), "custom_tool_call") {
+		arguments = strings.TrimSpace(firstNonEmpty(asString(item["input"]), asString(item["arguments"])))
+	}
+	return StreamEvent{
+		ToolCallID:        toolCallIDFromMaps(item, event),
+		ToolCallIndex:     index,
+		ToolName:          toolCallNameFromMap(item),
+		Arguments:         arguments,
+		ArgumentsSnapshot: arguments,
+		Metadata:          toolCallEventMetadata(item, event),
+	}
+}
+
+func streamEventToolCallFromArgumentEvent(event map[string]any) StreamEvent {
+	arguments := strings.TrimSpace(firstNonEmpty(
+		asString(event["arguments"]),
+		asString(event["input"]),
+		asString(event["arguments_done"]),
+		asString(event["input_done"]),
+	))
+	return StreamEvent{
+		ToolCallID:    toolCallIDFromMaps(event),
+		ToolCallIndex: intPointerFromAny(firstPresentValue(event, nil, "output_index", "item_index")),
+		ToolName:      toolCallNameFromMap(event),
+		Arguments:     arguments,
+		Metadata:      toolCallEventMetadata(nil, event),
+	}
+}
+
+func rememberToolCallEvent(state *streamDecodeState, event StreamEvent) {
+	if state == nil || event.ToolCallIndex == nil {
+		return
+	}
+	if state.toolCallsByIndex == nil {
+		state.toolCallsByIndex = make(map[int]StreamEvent, 4)
+	}
+	state.toolCallsByIndex[*event.ToolCallIndex] = event
+}
+
+func mergeToolCallEventWithState(state *streamDecodeState, event StreamEvent) StreamEvent {
+	if state == nil || event.ToolCallIndex == nil || state.toolCallsByIndex == nil {
+		return event
+	}
+	known, ok := state.toolCallsByIndex[*event.ToolCallIndex]
+	if !ok {
+		return event
+	}
+	if known.ToolCallID != "" {
+		event.ToolCallID = known.ToolCallID
+	}
+	if event.ToolName == "" {
+		event.ToolName = known.ToolName
+	}
+	if event.Metadata == nil {
+		event.Metadata = cloneMapAny(known.Metadata)
+	}
+	return event
+}
+
+func isToolCallOutputItem(item map[string]any) bool {
+	switch strings.TrimSpace(asString(item["type"])) {
+	case "function_call", "custom_tool_call":
+		return true
+	default:
+		return false
+	}
+}
+
+func toolCallIDFromMaps(maps ...map[string]any) string {
+	for _, item := range maps {
+		if len(item) == 0 {
+			continue
+		}
+		for _, key := range []string{"call_id", "item_id", "id"} {
+			if value := strings.TrimSpace(asString(item[key])); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func toolCallNameFromMap(item map[string]any) string {
+	if len(item) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(firstNonEmpty(asString(item["name"]), asString(item["tool_name"])))
+}
+
+func toolCallStreamKey(event StreamEvent) string {
+	if event.ToolCallID != "" {
+		return "id:" + event.ToolCallID
+	}
+	if event.ToolCallIndex != nil {
+		return fmt.Sprintf("idx:%d", *event.ToolCallIndex)
+	}
+	if event.ToolName != "" {
+		return "name:" + event.ToolName
+	}
+	return ""
+}
+
+func toolCallEventMetadata(item map[string]any, event map[string]any) map[string]any {
+	metadata := make(map[string]any, 4)
+	if itemType := strings.TrimSpace(asString(item["type"])); itemType != "" {
+		metadata["provider_item_type"] = itemType
+	}
+	if itemID := strings.TrimSpace(asString(item["id"])); itemID != "" {
+		metadata["provider_item_id"] = itemID
+	}
+	if eventType := strings.TrimSpace(asString(event["type"])); eventType != "" {
+		metadata["provider_event_type"] = eventType
+	}
+	if outputIndex, ok := asInt64(firstPresentValue(event, item, "output_index")); ok {
+		metadata["provider_output_index"] = outputIndex
+	}
+	if len(metadata) == 0 {
+		return nil
+	}
+	return metadata
+}
+
+func firstPresentValue(primary map[string]any, secondary map[string]any, keys ...string) any {
+	for _, key := range keys {
+		if primary != nil {
+			if value, exists := primary[key]; exists {
+				return value
+			}
+		}
+		if secondary != nil {
+			if value, exists := secondary[key]; exists {
+				return value
+			}
+		}
+	}
+	return nil
+}
+
+func intPointerFromAny(value any) *int {
+	if number, ok := asInt64(value); ok {
+		out := int(number)
+		return &out
+	}
+	return nil
 }
 
 func streamEventImageGenerationPartialImage(event map[string]any) StreamEvent {
