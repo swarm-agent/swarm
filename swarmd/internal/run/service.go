@@ -213,45 +213,56 @@ const (
 	StreamEventReasoningCompleted  = "reasoning.completed"
 	StreamEventReasoningSummary    = "reasoning.summary"
 	StreamEventUsageUpdated        = "usage.updated"
-	StreamEventToolStarted         = "tool.started"
-	StreamEventToolDelta           = "tool.delta"
-	StreamEventToolCompleted       = "tool.completed"
-	StreamEventMessageStored       = "message.stored"
-	StreamEventMessageUpdated      = "message.updated"
-	StreamEventPermissionReq       = "permission.requested"
-	StreamEventPermissionUpdate    = "permission.updated"
-	StreamEventSessionTitle        = "session.title.updated"
-	StreamEventSessionBranch       = "session.branch.updated"
-	StreamEventSessionWarning      = "session.title.warning"
+	// Provider tool-call construction events are emitted while the model/provider
+	// is assembling a tool call. They must remain distinct from the runtime tool
+	// execution events below.
+	StreamEventProviderToolCallStarted           = "response.tool_call.started"
+	StreamEventProviderToolCallArgumentsDelta    = "response.tool_call.arguments.delta"
+	StreamEventProviderToolCallArgumentsSnapshot = "response.tool_call.arguments.snapshot"
+	StreamEventProviderToolCallCompleted         = "response.tool_call.completed"
+	StreamEventToolStarted                       = "tool.started"
+	StreamEventToolDelta                         = "tool.delta"
+	StreamEventToolCompleted                     = "tool.completed"
+	StreamEventMessageStored                     = "message.stored"
+	StreamEventMessageUpdated                    = "message.updated"
+	StreamEventPermissionReq                     = "permission.requested"
+	StreamEventPermissionUpdate                  = "permission.updated"
+	StreamEventSessionTitle                      = "session.title.updated"
+	StreamEventSessionBranch                     = "session.branch.updated"
+	StreamEventSessionWarning                    = "session.title.warning"
 )
 
 type StreamEvent struct {
-	Type         string                                `json:"type"`
-	SessionID    string                                `json:"session_id,omitempty"`
-	RunID        string                                `json:"run_id,omitempty"`
-	Agent        string                                `json:"agent,omitempty"`
-	Status       string                                `json:"status,omitempty"`
-	Step         int                                   `json:"step,omitempty"`
-	ReasoningKey string                                `json:"reasoning_key,omitempty"`
-	Delta        string                                `json:"delta,omitempty"`
-	Summary      string                                `json:"summary,omitempty"`
-	ToolName     string                                `json:"tool_name,omitempty"`
-	CallID       string                                `json:"call_id,omitempty"`
-	Arguments    string                                `json:"arguments,omitempty"`
-	Output       string                                `json:"output,omitempty"`
-	RawOutput    string                                `json:"raw_output,omitempty"`
-	Error        string                                `json:"error,omitempty"`
-	DurationMS   int64                                 `json:"duration_ms,omitempty"`
-	Message      *pebblestore.MessageSnapshot          `json:"message,omitempty"`
-	Permission   *pebblestore.PermissionRecord         `json:"permission,omitempty"`
-	TurnUsage    *pebblestore.SessionTurnUsageSnapshot `json:"turn_usage,omitempty"`
-	UsageSummary *pebblestore.SessionUsageSummary      `json:"usage_summary,omitempty"`
-	Metadata     map[string]any                        `json:"metadata,omitempty"`
-	Title        string                                `json:"title,omitempty"`
-	TitleStage   string                                `json:"title_stage,omitempty"`
-	Warning      string                                `json:"warning,omitempty"`
-	Branch       string                                `json:"branch,omitempty"`
-	Lifecycle    *pebblestore.SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
+	Type              string                                `json:"type"`
+	SessionID         string                                `json:"session_id,omitempty"`
+	RunID             string                                `json:"run_id,omitempty"`
+	Agent             string                                `json:"agent,omitempty"`
+	Status            string                                `json:"status,omitempty"`
+	Step              int                                   `json:"step,omitempty"`
+	ReasoningKey      string                                `json:"reasoning_key,omitempty"`
+	Delta             string                                `json:"delta,omitempty"`
+	Summary           string                                `json:"summary,omitempty"`
+	ToolName          string                                `json:"tool_name,omitempty"`
+	CallID            string                                `json:"call_id,omitempty"`
+	ToolCallID        string                                `json:"tool_call_id,omitempty"`
+	ToolCallIndex     *int                                  `json:"tool_call_index,omitempty"`
+	Arguments         string                                `json:"arguments,omitempty"`
+	ArgumentsDelta    string                                `json:"arguments_delta,omitempty"`
+	ArgumentsSnapshot string                                `json:"arguments_snapshot,omitempty"`
+	Output            string                                `json:"output,omitempty"`
+	RawOutput         string                                `json:"raw_output,omitempty"`
+	Error             string                                `json:"error,omitempty"`
+	DurationMS        int64                                 `json:"duration_ms,omitempty"`
+	Message           *pebblestore.MessageSnapshot          `json:"message,omitempty"`
+	Permission        *pebblestore.PermissionRecord         `json:"permission,omitempty"`
+	TurnUsage         *pebblestore.SessionTurnUsageSnapshot `json:"turn_usage,omitempty"`
+	UsageSummary      *pebblestore.SessionUsageSummary      `json:"usage_summary,omitempty"`
+	Metadata          map[string]any                        `json:"metadata,omitempty"`
+	Title             string                                `json:"title,omitempty"`
+	TitleStage        string                                `json:"title_stage,omitempty"`
+	Warning           string                                `json:"warning,omitempty"`
+	Branch            string                                `json:"branch,omitempty"`
+	Lifecycle         *pebblestore.SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
 }
 
 func sessionStatusForEvent(event StreamEvent) string {
@@ -1675,6 +1686,11 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				if updateStepReasoning(reasoningKey, event.Delta) != "" {
 					emitReasoningSnapshotIfDue(reasoningKey, false)
 				}
+			case provideriface.StreamEventToolCallStarted,
+				provideriface.StreamEventToolCallArgumentsDelta,
+				provideriface.StreamEventToolCallArgumentsSnapshot,
+				provideriface.StreamEventToolCallCompleted:
+				emit(providerToolConstructionStreamEvent(step, event))
 			}
 		})
 		if stopErr := ctx.Err(); stopErr != nil {

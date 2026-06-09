@@ -248,11 +248,18 @@ func sessionV3ProviderRequestDiagnostic(req provideriface.Request) map[string]an
 
 func sessionV3ProviderStreamEventDiagnostic(event provideriface.StreamEvent, step, index int) map[string]any {
 	return map[string]any{
-		"step":          step,
-		"stream_index":  index,
-		"type":          event.Type,
-		"delta":         event.Delta,
-		"phase":         event.Phase,
-		"reasoning_key": event.ReasoningKey,
+		"step":               step,
+		"stream_index":       index,
+		"type":               event.Type,
+		"delta":              event.Delta,
+		"phase":              event.Phase,
+		"reasoning_key":      event.ReasoningKey,
+		"tool_call_id":       event.ToolCallID,
+		"tool_call_index":    event.ToolCallIndex,
+		"tool_name":          event.ToolName,
+		"arguments":          event.Arguments,
+		"arguments_delta":    event.ArgumentsDelta,
+		"arguments_snapshot": event.ArgumentsSnapshot,
+		"metadata":           event.Metadata,
 	}
 }

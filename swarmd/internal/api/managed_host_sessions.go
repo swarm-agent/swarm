@@ -1480,7 +1480,7 @@ func (s *Server) publishManagedHostSessionEventToPrimary(event runruntime.Stream
 		return nil
 	}
 	target := swarmTarget{SwarmID: primarySwarmID, BackendURL: primaryBackendURL}
-	payloadBytes, err := json.Marshal(runStreamWireEvent{Type: event.Type, SessionID: event.SessionID, RunID: event.RunID, Agent: event.Agent, Step: event.Step, Delta: event.Delta, Summary: event.Summary, ToolName: event.ToolName, CallID: event.CallID, Arguments: event.Arguments, Output: event.Output, RawOutput: event.RawOutput, Error: event.Error, DurationMS: event.DurationMS, Message: event.Message, Permission: event.Permission, TurnUsage: event.TurnUsage, UsageSummary: event.UsageSummary, Title: event.Title, TitleStage: event.TitleStage, Warning: event.Warning, Lifecycle: event.Lifecycle})
+	payloadBytes, err := json.Marshal(runStreamWireEvent{Type: event.Type, SessionID: event.SessionID, RunID: event.RunID, Agent: event.Agent, Step: event.Step, Delta: event.Delta, Summary: event.Summary, ToolName: event.ToolName, CallID: event.CallID, ToolCallID: event.ToolCallID, ToolCallIndex: event.ToolCallIndex, Arguments: event.Arguments, ArgumentsDelta: event.ArgumentsDelta, ArgumentsSnapshot: event.ArgumentsSnapshot, Metadata: event.Metadata, Output: event.Output, RawOutput: event.RawOutput, Error: event.Error, DurationMS: event.DurationMS, Message: event.Message, Permission: event.Permission, TurnUsage: event.TurnUsage, UsageSummary: event.UsageSummary, Title: event.Title, TitleStage: event.TitleStage, Warning: event.Warning, Lifecycle: event.Lifecycle})
 	if err != nil {
 		return err
 	}

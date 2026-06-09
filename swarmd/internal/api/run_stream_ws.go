@@ -69,34 +69,39 @@ type runStreamKeepaliveMessage struct {
 }
 
 type runStreamWireEvent struct {
-	Type         string                                `json:"type"`
-	SessionID    string                                `json:"session_id,omitempty"`
-	RunID        string                                `json:"run_id,omitempty"`
-	Seq          uint64                                `json:"seq,omitempty"`
-	Agent        string                                `json:"agent,omitempty"`
-	Step         int                                   `json:"step,omitempty"`
-	Delta        string                                `json:"delta,omitempty"`
-	Summary      string                                `json:"summary,omitempty"`
-	ToolName     string                                `json:"tool_name,omitempty"`
-	CallID       string                                `json:"call_id,omitempty"`
-	Arguments    string                                `json:"arguments,omitempty"`
-	Output       string                                `json:"output,omitempty"`
-	RawOutput    string                                `json:"raw_output,omitempty"`
-	Error        string                                `json:"error,omitempty"`
-	DurationMS   int64                                 `json:"duration_ms,omitempty"`
-	Message      *pebblestore.MessageSnapshot          `json:"message,omitempty"`
-	Permission   *pebblestore.PermissionRecord         `json:"permission,omitempty"`
-	TurnUsage    *pebblestore.SessionTurnUsageSnapshot `json:"turn_usage,omitempty"`
-	UsageSummary *pebblestore.SessionUsageSummary      `json:"usage_summary,omitempty"`
-	Title        string                                `json:"title,omitempty"`
-	TitleStage   string                                `json:"title_stage,omitempty"`
-	UpdatedAt    int64                                 `json:"updated_at,omitempty"`
-	Warning      string                                `json:"warning,omitempty"`
-	Lifecycle    *pebblestore.SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
-	Result       runruntime.RunResult                  `json:"result,omitempty"`
-	Background   bool                                  `json:"background,omitempty"`
-	TargetKind   string                                `json:"target_kind,omitempty"`
-	TargetName   string                                `json:"target_name,omitempty"`
+	Type              string                                `json:"type"`
+	SessionID         string                                `json:"session_id,omitempty"`
+	RunID             string                                `json:"run_id,omitempty"`
+	Seq               uint64                                `json:"seq,omitempty"`
+	Agent             string                                `json:"agent,omitempty"`
+	Step              int                                   `json:"step,omitempty"`
+	Delta             string                                `json:"delta,omitempty"`
+	Summary           string                                `json:"summary,omitempty"`
+	ToolName          string                                `json:"tool_name,omitempty"`
+	CallID            string                                `json:"call_id,omitempty"`
+	ToolCallID        string                                `json:"tool_call_id,omitempty"`
+	ToolCallIndex     *int                                  `json:"tool_call_index,omitempty"`
+	Arguments         string                                `json:"arguments,omitempty"`
+	ArgumentsDelta    string                                `json:"arguments_delta,omitempty"`
+	ArgumentsSnapshot string                                `json:"arguments_snapshot,omitempty"`
+	Metadata          map[string]any                        `json:"metadata,omitempty"`
+	Output            string                                `json:"output,omitempty"`
+	RawOutput         string                                `json:"raw_output,omitempty"`
+	Error             string                                `json:"error,omitempty"`
+	DurationMS        int64                                 `json:"duration_ms,omitempty"`
+	Message           *pebblestore.MessageSnapshot          `json:"message,omitempty"`
+	Permission        *pebblestore.PermissionRecord         `json:"permission,omitempty"`
+	TurnUsage         *pebblestore.SessionTurnUsageSnapshot `json:"turn_usage,omitempty"`
+	UsageSummary      *pebblestore.SessionUsageSummary      `json:"usage_summary,omitempty"`
+	Title             string                                `json:"title,omitempty"`
+	TitleStage        string                                `json:"title_stage,omitempty"`
+	UpdatedAt         int64                                 `json:"updated_at,omitempty"`
+	Warning           string                                `json:"warning,omitempty"`
+	Lifecycle         *pebblestore.SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
+	Result            runruntime.RunResult                  `json:"result,omitempty"`
+	Background        bool                                  `json:"background,omitempty"`
+	TargetKind        string                                `json:"target_kind,omitempty"`
+	TargetName        string                                `json:"target_name,omitempty"`
 }
 
 type runStreamReplayFrame struct {
@@ -401,28 +406,33 @@ func runStreamLifecycleIsBackground(lifecycle *pebblestore.SessionLifecycleSnaps
 
 func (m *runStreamManager) publishRuntimeEvent(runID string, event runruntime.StreamEvent) {
 	msg := runStreamWireEvent{
-		Type:         strings.TrimSpace(event.Type),
-		SessionID:    strings.TrimSpace(event.SessionID),
-		RunID:        strings.TrimSpace(event.RunID),
-		Agent:        strings.TrimSpace(event.Agent),
-		Step:         event.Step,
-		Delta:        event.Delta,
-		Summary:      event.Summary,
-		ToolName:     event.ToolName,
-		CallID:       event.CallID,
-		Arguments:    event.Arguments,
-		Output:       event.Output,
-		RawOutput:    event.RawOutput,
-		Error:        event.Error,
-		DurationMS:   event.DurationMS,
-		Message:      event.Message,
-		Permission:   event.Permission,
-		TurnUsage:    event.TurnUsage,
-		UsageSummary: event.UsageSummary,
-		Title:        event.Title,
-		TitleStage:   event.TitleStage,
-		Warning:      event.Warning,
-		Lifecycle:    event.Lifecycle,
+		Type:              strings.TrimSpace(event.Type),
+		SessionID:         strings.TrimSpace(event.SessionID),
+		RunID:             strings.TrimSpace(event.RunID),
+		Agent:             strings.TrimSpace(event.Agent),
+		Step:              event.Step,
+		Delta:             event.Delta,
+		Summary:           event.Summary,
+		ToolName:          event.ToolName,
+		CallID:            event.CallID,
+		ToolCallID:        event.ToolCallID,
+		ToolCallIndex:     event.ToolCallIndex,
+		Arguments:         event.Arguments,
+		ArgumentsDelta:    event.ArgumentsDelta,
+		ArgumentsSnapshot: event.ArgumentsSnapshot,
+		Metadata:          event.Metadata,
+		Output:            event.Output,
+		RawOutput:         event.RawOutput,
+		Error:             event.Error,
+		DurationMS:        event.DurationMS,
+		Message:           event.Message,
+		Permission:        event.Permission,
+		TurnUsage:         event.TurnUsage,
+		UsageSummary:      event.UsageSummary,
+		Title:             event.Title,
+		TitleStage:        event.TitleStage,
+		Warning:           event.Warning,
+		Lifecycle:         event.Lifecycle,
 	}
 	if event.Lifecycle != nil {
 		msg.Background = runStreamLifecycleIsBackground(event.Lifecycle)

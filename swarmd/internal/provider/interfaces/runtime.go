@@ -101,6 +101,14 @@ const (
 	StreamEventOutputTextDelta       StreamEventType = "response.output_text.delta"
 	StreamEventReasoningSummaryDelta StreamEventType = "response.reasoning_summary_text.delta"
 	StreamEventAssistantCommentary   StreamEventType = "response.assistant_commentary.delta"
+
+	// Tool-call construction events describe provider/model output while a tool call
+	// is being assembled. They are intentionally separate from Swarm runtime tool
+	// execution events such as tool.started/tool.delta/tool.completed.
+	StreamEventToolCallStarted           StreamEventType = "response.tool_call.started"
+	StreamEventToolCallArgumentsDelta    StreamEventType = "response.tool_call.arguments.delta"
+	StreamEventToolCallArgumentsSnapshot StreamEventType = "response.tool_call.arguments.snapshot"
+	StreamEventToolCallCompleted         StreamEventType = "response.tool_call.completed"
 )
 
 type StreamEvent struct {
@@ -108,6 +116,20 @@ type StreamEvent struct {
 	Delta        string
 	Phase        AssistantPhase
 	ReasoningKey string
+
+	// Tool-call construction identity/content. Providers should populate the
+	// stable fields as soon as they are known; ToolCallIndex may be present before
+	// a provider call ID exists. ArgumentsDelta is append-only when available,
+	// while ArgumentsSnapshot is a replacement snapshot for providers that stream
+	// full argument states instead of byte deltas. Arguments is the final argument
+	// string for StreamEventToolCallCompleted.
+	ToolCallID        string
+	ToolCallIndex     *int
+	ToolName          string
+	Arguments         string
+	ArgumentsDelta    string
+	ArgumentsSnapshot string
+	Metadata          map[string]any
 }
 
 type Runner interface {
