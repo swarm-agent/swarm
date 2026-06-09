@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -462,7 +463,7 @@ func TestPrepareDelegatedSubagentLaunchCreatesCanonicalV3ChildSession(t *testing
 		LaunchIndex:       7,
 		RequestedSubagent: "purpose-review",
 		MetaPrompt:        "Map backend files",
-	}, "repo map", "")
+	}, "repo map", "", nil)
 	if err != nil {
 		t.Fatalf("prepare delegated launch: %v", err)
 	}
@@ -565,6 +566,82 @@ func TestPrepareDelegatedSubagentLaunchCreatesCanonicalV3ChildSession(t *testing
 	}
 	if got := strings.TrimSpace(metadataStringForTest(createdPayload.Session.Metadata, "lineage_kind")); got != "delegated_subagent" {
 		t.Fatalf("V3 session.created lineage_kind = %q, want delegated_subagent", got)
+	}
+}
+
+func TestAppendRunMessageUsesV3MutationCallbackWhenProvided(t *testing.T) {
+	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	const accountScopeID = "account-cp2"
+	const userID = "user-cp2"
+	session, _, err := svc.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		UserID:         userID,
+		AccountScopeID: accountScopeID,
+		Title:          "Child",
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "workspace",
+		Mode:           sessionruntime.ModeAuto,
+		Metadata: map[string]any{
+			"parent_session_id": "parent-cp2",
+			"lineage_kind":      "delegated_subagent",
+		},
+		Preference: &pebblestore.ModelPreference{Provider: "static", Model: "review-model", Thinking: "low"},
+	})
+	if err != nil {
+		t.Fatalf("create child session: %v", err)
+	}
+	var captured []sessionruntime.SessionMutationInput
+	apply := func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+		captured = append(captured, input)
+		return svc.sessions.ApplySessionMutation(input)
+	}
+	message, _, legacyEvent, err := svc.appendRunMessage(runAppendMessageInput{
+		SessionID:            session.ID,
+		Role:                 "assistant",
+		Content:              "child response",
+		Metadata:             map[string]any{"source": messageMetadataSourceRunTurn},
+		RunID:                "run-cp2",
+		Step:                 2,
+		LogicalKey:           "assistant:2",
+		Principal:            identity.Principal{Type: identity.PrincipalTypeUser, UserID: userID, AccountScopeID: accountScopeID},
+		ApplySessionMutation: apply,
+	})
+	if err != nil {
+		t.Fatalf("append run message: %v", err)
+	}
+	if legacyEvent != nil {
+		t.Fatalf("appendRunMessage returned legacy event despite V3 callback: %#v", legacyEvent)
+	}
+	if len(captured) != 1 {
+		t.Fatalf("captured mutations = %d, want 1", len(captured))
+	}
+	input := captured[0]
+	if input.Kind != sessionruntime.SessionMutationAppendMessage {
+		t.Fatalf("mutation kind = %q, want append message", input.Kind)
+	}
+	if input.ClientRequestID == "" || input.ClientRequestID != input.IdempotencyKey {
+		t.Fatalf("invalid idempotency fields: client=%q key=%q", input.ClientRequestID, input.IdempotencyKey)
+	}
+	if input.PayloadHash == "" || input.PayloadHash != input.RequestHash {
+		t.Fatalf("invalid payload hash fields: payload=%q request=%q", input.PayloadHash, input.RequestHash)
+	}
+	if input.Message == nil || input.Message.ID == "" || input.Message.Role != "assistant" || input.Message.Content != "child response" {
+		t.Fatalf("unexpected mutation message: %#v", input.Message)
+	}
+
+	hydrated, ok, err := svc.sessions.HydrateSessionSnapshot(session.ID, 500, 500)
+	if err != nil {
+		t.Fatalf("hydrate session: %v", err)
+	}
+	if !ok {
+		t.Fatalf("session %q not found through V3 hydration", session.ID)
+	}
+	if len(hydrated.Messages) != 1 || hydrated.Messages[0].ID != message.ID || hydrated.Messages[0].Content != "child response" {
+		t.Fatalf("hydrated V3 messages = %#v, want appended child response %q", hydrated.Messages, message.ID)
+	}
+	if len(hydrated.Events) != 1 || hydrated.Events[0].EventType != "session.message.appended" {
+		t.Fatalf("hydrated V3 events = %#v, want single message append event", hydrated.Events)
 	}
 }
 

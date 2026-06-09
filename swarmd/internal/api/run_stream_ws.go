@@ -945,10 +945,11 @@ func (s *Server) startRunStreamExecution(runID, sessionID string, inbound runStr
 		}
 		runCtx = identity.ContextWithPrincipal(runCtx, principal)
 		result, err := s.runner.RunTurnStreaming(runCtx, sessionID, inbound.RunRequest, runruntime.RunStartMeta{
-			RunID:           runID,
-			OwnerTransport:  runStreamOwnerTransport(inbound.RunRequest),
-			IntegrationFlow: integrationCtx.IntegrationFlow,
-			Principal:       principal,
+			RunID:                runID,
+			OwnerTransport:       runStreamOwnerTransport(inbound.RunRequest),
+			IntegrationFlow:      integrationCtx.IntegrationFlow,
+			Principal:            principal,
+			ApplySessionMutation: s.applySessionV3PrimaryMutation,
 		}, func(event runruntime.StreamEvent) {
 			if !startSignaled && strings.EqualFold(strings.TrimSpace(event.Type), runruntime.StreamEventSessionLifecycle) && event.Lifecycle != nil && event.Lifecycle.Active {
 				startSignaled = true

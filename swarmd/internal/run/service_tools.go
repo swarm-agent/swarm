@@ -280,7 +280,7 @@ func emitTaskStreamDelta(parentSessionID string, emit StreamHandler, step int, t
 	})
 }
 
-func (s *Service) prepareDelegatedSubagentLaunch(parentSession pebblestore.SessionSnapshot, sessionMode string, launch taskLaunchPrepared, description, targetedSubagentName string) (taskLaunchPrepared, error) {
+func (s *Service) prepareDelegatedSubagentLaunch(parentSession pebblestore.SessionSnapshot, sessionMode string, launch taskLaunchPrepared, description, targetedSubagentName string, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (taskLaunchPrepared, error) {
 	requestedSubagent := strings.TrimSpace(launch.RequestedSubagent)
 	if requestedSubagent == "" {
 		return taskLaunchPrepared{}, errors.New("task launch requires saved subagent name or purpose")
@@ -365,7 +365,11 @@ func (s *Service) prepareDelegatedSubagentLaunch(parentSession pebblestore.Sessi
 		WorktreeBranch:     childWorktreeBranch,
 	}
 	payloadHash := "task-child-create:" + childSessionID
-	created, err := s.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{
+	applyMutation := applySessionMutation
+	if applyMutation == nil {
+		applyMutation = s.sessions.ApplySessionMutation
+	}
+	created, err := applyMutation(sessionruntime.SessionMutationInput{
 		SessionID:       childSessionID,
 		UserID:          strings.TrimSpace(parentSession.UserID),
 		AccountScopeID:  strings.TrimSpace(parentSession.AccountScopeID),
@@ -657,7 +661,8 @@ func (s *Service) executeControlPlaneToolWithMutation(ctx context.Context, sessi
 		result.Output = output
 		return true, result, err
 	case "task":
-		output, err := s.executeTaskTool(ctx, sessionID, sessionMode, step, call, emit)
+		principal, _ := identity.PrincipalFromContext(ctx)
+		output, err := s.executeTaskToolWithParsed(ctx, sessionID, sessionMode, step, call, emit, taskExecutionRequest{Principal: principal, ApplySessionMutation: applySessionMutation})
 		result.Output = output
 		return true, result, err
 	default:
@@ -2015,6 +2020,7 @@ type taskExecutionRequest struct {
 	PermissionSessionID  string
 	TargetedSubagentName string
 	Principal            identity.Principal
+	ApplySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
 }
 
 func executeTaskLaunchesInParallel[T any](ctx context.Context, launchCount int, runOne func(context.Context, int) (T, error)) ([]T, []error) {
@@ -2116,7 +2122,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			RequestedSubagent: requestedSubagent,
 			MetaPrompt:        metaPrompt,
 			AssignmentLabel:   spec.AssignmentLabel,
-		}, description, strings.TrimSpace(req.TargetedSubagentName))
+		}, description, strings.TrimSpace(req.TargetedSubagentName), req.ApplySessionMutation)
 		if prepareErr != nil {
 			return "", prepareErr
 		}
@@ -2254,10 +2260,11 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			TargetName: launch.SubagentProfile.Name,
 			AgentName:  launch.SubagentProfile.Name,
 		}, RunStartMeta{
-			AllowSubagent:       true,
-			DisabledTools:       taskDisabledTools(false),
-			PermissionSessionID: sessionID,
-			Principal:           req.Principal,
+			AllowSubagent:        true,
+			DisabledTools:        taskDisabledTools(false),
+			PermissionSessionID:  sessionID,
+			Principal:            req.Principal,
+			ApplySessionMutation: req.ApplySessionMutation,
 		}, func(event StreamEvent) {
 			eventType := strings.ToLower(strings.TrimSpace(event.Type))
 			switch eventType {

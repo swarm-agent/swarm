@@ -8,6 +8,7 @@ import (
 
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
@@ -52,14 +53,15 @@ type RunRequest struct {
 }
 
 type RunStartMeta struct {
-	AllowSubagent       bool
-	DisabledTools       map[string]bool
-	PermissionSessionID string
-	RunID               string
-	OwnerTransport      string
-	CompiledPolicy      *permission.Policy
-	IntegrationFlow     bool
-	Principal           identity.Principal
+	AllowSubagent        bool
+	DisabledTools        map[string]bool
+	PermissionSessionID  string
+	RunID                string
+	OwnerTransport       string
+	CompiledPolicy       *permission.Policy
+	IntegrationFlow      bool
+	Principal            identity.Principal
+	ApplySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
 }
 
 func (r RunRequest) Normalized() RunRequest {
@@ -90,23 +92,24 @@ func (r RunRequest) Normalized() RunRequest {
 func NewRunOptions(request RunRequest, meta RunStartMeta) RunOptions {
 	request = request.Normalized()
 	return RunOptions{
-		Prompt:              request.Prompt,
-		AgentName:           request.AgentName,
-		Instructions:        request.Instructions,
-		Compact:             request.Compact,
-		AllowSubagent:       meta.AllowSubagent,
-		DisabledTools:       cloneDisabledTools(meta.DisabledTools),
-		PermissionSessionID: strings.TrimSpace(meta.PermissionSessionID),
-		RunID:               strings.TrimSpace(meta.RunID),
-		TargetKind:          request.TargetKind,
-		TargetName:          request.TargetName,
-		Background:          request.Background,
-		OwnerTransport:      strings.TrimSpace(meta.OwnerTransport),
-		ToolScope:           request.ToolScope,
-		CompiledPolicy:      meta.CompiledPolicy,
-		ExecutionContext:    request.ExecutionContext,
-		IntegrationFlow:     meta.IntegrationFlow,
-		Principal:           meta.Principal,
+		Prompt:               request.Prompt,
+		AgentName:            request.AgentName,
+		Instructions:         request.Instructions,
+		Compact:              request.Compact,
+		AllowSubagent:        meta.AllowSubagent,
+		DisabledTools:        cloneDisabledTools(meta.DisabledTools),
+		PermissionSessionID:  strings.TrimSpace(meta.PermissionSessionID),
+		RunID:                strings.TrimSpace(meta.RunID),
+		TargetKind:           request.TargetKind,
+		TargetName:           request.TargetName,
+		Background:           request.Background,
+		OwnerTransport:       strings.TrimSpace(meta.OwnerTransport),
+		ToolScope:            request.ToolScope,
+		CompiledPolicy:       meta.CompiledPolicy,
+		ExecutionContext:     request.ExecutionContext,
+		IntegrationFlow:      meta.IntegrationFlow,
+		Principal:            meta.Principal,
+		ApplySessionMutation: meta.ApplySessionMutation,
 	}
 }
 

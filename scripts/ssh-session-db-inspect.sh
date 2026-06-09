@@ -20,7 +20,6 @@ Options:
   --remote-dir <path>   Remote swarm-go checkout path; auto-discovered by default.
   --service <unit>      Remote service unit. Default: swarm.service
   --db-path <path>      Pebble DB path. Default: /var/lib/swarmd/swarmd.pebble
-  --no-stop             Do not stop/restart the service before inspecting.
 
 Selection/search:
   --latest <n>          Inspect latest n sessions. Default: 5
@@ -62,7 +61,6 @@ shift
 REMOTE_DIR=""
 SERVICE_UNIT="swarm.service"
 DB_PATH="/var/lib/swarmd/swarmd.pebble"
-STOP_SERVICE="true"
 LATEST="5"
 SESSION_ID=""
 QUERY=""
@@ -90,10 +88,6 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || fail "--db-path requires a value"
       DB_PATH="$2"
       shift 2
-      ;;
-    --no-stop)
-      STOP_SERVICE="false"
-      shift
       ;;
     --latest)
       [[ $# -ge 2 ]] || fail "--latest requires a value"
@@ -187,7 +181,6 @@ ssh "${SSH_ALIAS}" 'bash -s' -- \
   "remote_dir_b64=$(b64 "${REMOTE_DIR}")" \
   "service_unit_b64=$(b64 "${SERVICE_UNIT}")" \
   "db_path_b64=$(b64 "${DB_PATH}")" \
-  "stop_service=${STOP_SERVICE}" \
   "latest=${LATEST}" \
   "session_id_b64=$(b64 "${SESSION_ID}")" \
   "query_b64=$(b64 "${QUERY}")" \
@@ -203,7 +196,6 @@ set -euo pipefail
 remote_dir=""
 service_unit="swarm.service"
 db_path="/var/lib/swarmd/swarmd.pebble"
-stop_service="true"
 latest="5"
 session_id=""
 query=""
@@ -226,7 +218,6 @@ for arg in "$@"; do
     remote_dir_b64=*) remote_dir="$(decode_b64 "${arg#remote_dir_b64=}")" ;;
     service_unit_b64=*) service_unit="$(decode_b64 "${arg#service_unit_b64=}")" ;;
     db_path_b64=*) db_path="$(decode_b64 "${arg#db_path_b64=}")" ;;
-    stop_service=*) stop_service="${arg#stop_service=}" ;;
     latest=*) latest="${arg#latest=}" ;;
     session_id_b64=*) session_id="$(decode_b64 "${arg#session_id_b64=}")" ;;
     query_b64=*) query="$(decode_b64 "${arg#query_b64=}")" ;;
@@ -248,10 +239,6 @@ is_user_active() { systemctl --user is-active --quiet "$service_unit" >/dev/null
 is_system_active() { systemctl is-active --quiet "$service_unit" >/dev/null 2>&1; }
 
 stop_remote_service() {
-  if [ "$stop_service" != "true" ]; then
-    printf 'ssh-session-db-inspect: service stop skipped\n' >&2
-    return
-  fi
   if is_user_active; then
     service_was_active="true"
     service_scope="user"
@@ -274,7 +261,7 @@ restore_remote_service() {
     return
   fi
   restored="true"
-  if [ "$stop_service" != "true" ] || [ "$service_was_active" != "true" ]; then
+  if [ "$service_was_active" != "true" ]; then
     return
   fi
   printf 'ssh-session-db-inspect: restoring %s service %s\n' "$service_scope" "$service_unit" >&2

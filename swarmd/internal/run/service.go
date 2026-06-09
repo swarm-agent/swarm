@@ -2,6 +2,8 @@ package run
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -113,23 +115,24 @@ type worktreeService interface {
 }
 
 type RunOptions struct {
-	Prompt              string
-	AgentName           string
-	Instructions        string
-	Compact             bool
-	AllowSubagent       bool
-	DisabledTools       map[string]bool
-	PermissionSessionID string
-	RunID               string
-	TargetKind          string
-	TargetName          string
-	Background          bool
-	OwnerTransport      string
-	ToolScope           *RunToolScope
-	CompiledPolicy      *permission.Policy
-	ExecutionContext    *RunExecutionContext
-	IntegrationFlow     bool
-	Principal           identity.Principal
+	Prompt               string
+	AgentName            string
+	Instructions         string
+	Compact              bool
+	AllowSubagent        bool
+	DisabledTools        map[string]bool
+	PermissionSessionID  string
+	RunID                string
+	TargetKind           string
+	TargetName           string
+	Background           bool
+	OwnerTransport       string
+	ToolScope            *RunToolScope
+	CompiledPolicy       *permission.Policy
+	ExecutionContext     *RunExecutionContext
+	IntegrationFlow      bool
+	Principal            identity.Principal
+	ApplySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
 }
 
 type RunResult struct {
@@ -265,7 +268,155 @@ func sessionStatusForEvent(event StreamEvent) string {
 	}
 }
 
-func (s *Service) persistReasoningMessageSnapshot(sessionID string, message *pebblestore.MessageSnapshot, content string) (*pebblestore.MessageSnapshot, *pebblestore.EventEnvelope, StreamEvent, error) {
+type runAppendMessageInput struct {
+	SessionID            string
+	Role                 string
+	Content              string
+	Metadata             map[string]any
+	RunID                string
+	Step                 int
+	LogicalKey           string
+	Principal            identity.Principal
+	ApplySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
+}
+
+func (s *Service) appendRunMessage(input runAppendMessageInput) (pebblestore.MessageSnapshot, pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, error) {
+	if s == nil || s.sessions == nil {
+		return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, nil, errors.New("session service is not configured")
+	}
+	sessionID := strings.TrimSpace(input.SessionID)
+	role := strings.ToLower(strings.TrimSpace(input.Role))
+	content := strings.TrimSpace(input.Content)
+	if sessionID == "" {
+		return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, nil, errors.New("session id is required")
+	}
+	if !isRunMessageRoleAllowed(role) {
+		return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, nil, fmt.Errorf("invalid role %q", role)
+	}
+	if content == "" {
+		return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, nil, errors.New("message content is required")
+	}
+	metadata := cloneGenericMap(input.Metadata)
+	if input.ApplySessionMutation == nil {
+		return s.sessions.AppendMessage(sessionID, role, content, metadata)
+	}
+
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, nil, err
+	}
+	if !ok {
+		return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, nil, fmt.Errorf("session %q not found", sessionID)
+	}
+	principal := input.Principal
+	if strings.TrimSpace(principal.UserID) == "" {
+		principal.UserID = strings.TrimSpace(session.UserID)
+	}
+	if strings.TrimSpace(principal.AccountScopeID) == "" {
+		principal.AccountScopeID = strings.TrimSpace(session.AccountScopeID)
+	}
+	now := time.Now().UnixMilli()
+	logicalKey := strings.TrimSpace(input.LogicalKey)
+	if logicalKey == "" {
+		logicalKey = fmt.Sprintf("%s:%d", role, now)
+	}
+	runID := strings.TrimSpace(input.RunID)
+	message := pebblestore.MessageSnapshot{
+		ID:             runMessageV3ID(sessionID, runID, logicalKey, role),
+		SessionID:      sessionID,
+		UserID:         strings.TrimSpace(principal.UserID),
+		AccountScopeID: strings.TrimSpace(principal.AccountScopeID),
+		Role:           role,
+		Content:        content,
+		Metadata:       metadata,
+		CreatedAt:      now,
+	}
+	payloadHash, err := runMessageV3PayloadHash(sessionID, runID, logicalKey, input.Step, role, content, metadata)
+	if err != nil {
+		return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, nil, err
+	}
+	clientRequestID := runMessageV3ClientRequestID(sessionID, runID, logicalKey)
+	mutation, err := input.ApplySessionMutation(sessionruntime.SessionMutationInput{
+		SessionID:       sessionID,
+		UserID:          strings.TrimSpace(principal.UserID),
+		AccountScopeID:  strings.TrimSpace(principal.AccountScopeID),
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationAppendMessage,
+		EventType:       "session.message.appended",
+		Message:         &message,
+		NowUnixMs:       now,
+	})
+	if err != nil {
+		return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, nil, err
+	}
+	if mutation.Message != nil {
+		message = *mutation.Message
+	}
+	if mutation.Session != nil {
+		session = *mutation.Session
+	} else if updated, found, getErr := s.sessions.GetSession(sessionID); getErr != nil {
+		return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, nil, getErr
+	} else if found {
+		session = updated
+	}
+	return message, session, nil, nil
+}
+
+func isRunMessageRoleAllowed(role string) bool {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "user", "assistant", "system", "tool", "reasoning":
+		return true
+	default:
+		return false
+	}
+}
+
+func runMessageV3ClientRequestID(sessionID, runID, logicalKey string) string {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		runID = "session:" + strings.TrimSpace(sessionID)
+	}
+	logicalKey = strings.TrimSpace(logicalKey)
+	if logicalKey == "" {
+		logicalKey = "message"
+	}
+	return "run-message:" + runID + ":" + logicalKey
+}
+
+func runMessageV3ID(sessionID, runID, logicalKey, role string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(runID) + "\x00" + strings.TrimSpace(logicalKey) + "\x00" + strings.TrimSpace(role)))
+	return "v3msg_run_" + hex.EncodeToString(sum[:16])
+}
+
+func runMessageContentKey(content string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(content)))
+	return hex.EncodeToString(sum[:8])
+}
+
+func runMessageV3PayloadHash(sessionID, runID, logicalKey string, step int, role, content string, metadata map[string]any) (string, error) {
+	payload := map[string]any{
+		"session_id":  strings.TrimSpace(sessionID),
+		"run_id":      strings.TrimSpace(runID),
+		"logical_key": strings.TrimSpace(logicalKey),
+		"step":        step,
+		"role":        strings.TrimSpace(role),
+		"content":     strings.TrimSpace(content),
+	}
+	if len(metadata) > 0 {
+		payload["metadata"] = cloneGenericMap(metadata)
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("marshal v3 run message payload hash: %w", err)
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func (s *Service) persistReasoningMessageSnapshot(sessionID string, message *pebblestore.MessageSnapshot, content string, appendInput runAppendMessageInput) (*pebblestore.MessageSnapshot, *pebblestore.EventEnvelope, StreamEvent, error) {
 	if s == nil || s.sessions == nil {
 		return message, nil, StreamEvent{}, errors.New("session service is not configured")
 	}
@@ -273,8 +424,19 @@ func (s *Service) persistReasoningMessageSnapshot(sessionID string, message *peb
 	if content == "" {
 		return message, nil, StreamEvent{}, nil
 	}
+	appendInput.SessionID = sessionID
+	appendInput.Role = "reasoning"
+	appendInput.Content = content
+	if appendInput.ApplySessionMutation != nil {
+		appendInput.LogicalKey = strings.TrimSpace(appendInput.LogicalKey) + ":" + runMessageContentKey(content)
+		stored, _, env, err := s.appendRunMessage(appendInput)
+		if err != nil {
+			return nil, nil, StreamEvent{}, err
+		}
+		return &stored, env, StreamEvent{Type: StreamEventMessageStored, Message: &stored}, nil
+	}
 	if message == nil || strings.TrimSpace(message.ID) == "" || message.GlobalSeq == 0 {
-		stored, _, env, err := s.sessions.AppendMessage(sessionID, "reasoning", content, nil)
+		stored, _, env, err := s.appendRunMessage(appendInput)
 		if err != nil {
 			return nil, nil, StreamEvent{}, err
 		}
@@ -479,7 +641,7 @@ func (s *Service) runTargetedSubagent(ctx context.Context, parentSession pebbles
 	launch, err := s.prepareDelegatedSubagentLaunch(parentSession, sessionruntime.NormalizeMode(parentSession.Mode), taskLaunchPrepared{
 		LaunchIndex:       1,
 		RequestedSubagent: targetName,
-	}, description, targetName)
+	}, description, targetName, options.ApplySessionMutation)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -532,8 +694,9 @@ func (s *Service) runTargetedSubagent(ctx context.Context, parentSession pebbles
 		AllowSubagent: true,
 		// Targeted subagent runs should honor the saved subagent profile's
 		// resolved tool contract instead of inheriting the generic task baseline.
-		PermissionSessionID: parentSession.ID,
-		Principal:           options.Principal,
+		PermissionSessionID:  parentSession.ID,
+		Principal:            options.Principal,
+		ApplySessionMutation: options.ApplySessionMutation,
 	}, func(event StreamEvent) {
 		switch strings.TrimSpace(event.Type) {
 		case StreamEventStepStarted:
@@ -747,7 +910,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		if onEvent != nil {
 			onEvent(StreamEvent{Type: StreamEventTurnError, SessionID: sessionID, RunID: runID, Error: terminalErrText})
 		}
-		s.persistRunFailure(sessionID, runErr)
+		s.persistRunFailure(sessionID, runErr, runAppendMessageInput{RunID: runID, LogicalKey: "system:run_failure", Principal: options.Principal, ApplySessionMutation: options.ApplySessionMutation})
 	}()
 
 	if sessionID == "" {
@@ -815,6 +978,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	if runID == "" {
 		runID = s.newRunID()
 	}
+	options.RunID = runID
 	compiledPolicy := options.CompiledPolicy
 	effectiveDisabledTools := cloneDisabledTools(options.DisabledTools)
 	if agentPolicy, agentDisabled, scopeErr := s.compileAgentToolScopeForAccount(options.Principal.AccountScopeID, agentProfile); scopeErr != nil {
@@ -972,7 +1136,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		titleEligible, titleEligibilityErr = s.shouldGenerateMemorySessionTitleForNextUserMessage(sessionID, sessionSnapshot)
 	}
 	if !manualCompact {
-		userMessage, _, userEvent, err = s.sessions.AppendMessage(sessionID, "user", prompt, runMessageMetadataWith(runMessageMetadata, map[string]any{"source": messageMetadataSourceRunTurn}))
+		userMessage, _, userEvent, err = s.appendRunMessage(runAppendMessageInput{SessionID: sessionID, Role: "user", Content: prompt, Metadata: runMessageMetadataWith(runMessageMetadata, map[string]any{"source": messageMetadataSourceRunTurn}), RunID: runID, Step: 0, LogicalKey: "user", Principal: options.Principal, ApplySessionMutation: options.ApplySessionMutation})
 		if err != nil {
 			return RunResult{}, err
 		}
@@ -1067,6 +1231,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			resolvedPreference.MaxOutputTokens,
 			0,
 			emit,
+			runAppendMessageInput{RunID: runID, Principal: options.Principal, ApplySessionMutation: options.ApplySessionMutation},
 		); compactErr != nil {
 			return RunResult{}, compactErr
 		} else if len(compactedInput) > 0 {
@@ -1104,7 +1269,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		if compactErr != nil {
 			return RunResult{}, fmt.Errorf("manual compact failed: %w", compactErr)
 		}
-		if toolMessage, persistErr := persistMemoryCompactionToolMessage(s.sessions, sessionID, &events, &toolMessages, compactionToolStream); persistErr != nil {
+		if toolMessage, persistErr := s.persistMemoryCompactionToolMessage(sessionID, &events, &toolMessages, compactionToolStream, runAppendMessageInput{RunID: runID, Step: stepsCompleted, LogicalKey: fmt.Sprintf("tool:%d:%s", stepsCompleted, strings.TrimSpace(compactionToolStream.CallID)), Principal: options.Principal, ApplySessionMutation: options.ApplySessionMutation}); persistErr != nil {
 			return RunResult{}, persistErr
 		} else if toolMessage != nil {
 			emit(StreamEvent{Type: StreamEventMessageStored, Step: stepsCompleted, Message: toolMessage})
@@ -1118,6 +1283,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			resolvedPreference.Preference.Model,
 			stepsCompleted,
 			emit,
+			runAppendMessageInput{RunID: runID, Step: stepsCompleted, LogicalKey: fmt.Sprintf("system:context_compaction:%d", stepsCompleted), Principal: options.Principal, ApplySessionMutation: options.ApplySessionMutation},
 		)
 		if compactErr != nil {
 			return RunResult{}, fmt.Errorf("manual compact post-processing failed: %w", compactErr)
@@ -1138,7 +1304,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 		reasoningSummary = fmt.Sprintf("Context compacted into checkpoint #%d.", compactIndex)
 		assistantText := buildManualCompactionAssistantText(compactedSummary, compactIndex, attachedPlanLabel)
-		assistantMessage, _, assistantEvent, appendErr := s.sessions.AppendMessage(sessionID, "assistant", assistantText, runMessageMetadataWith(runMessageMetadata, map[string]any{"source": "manual_context_compaction_ack"}))
+		assistantMessage, _, assistantEvent, appendErr := s.appendRunMessage(runAppendMessageInput{SessionID: sessionID, Role: "assistant", Content: assistantText, Metadata: runMessageMetadataWith(runMessageMetadata, map[string]any{"source": "manual_context_compaction_ack"}), RunID: runID, Step: stepsCompleted, LogicalKey: "assistant:manual_context_compaction_ack", Principal: options.Principal, ApplySessionMutation: options.ApplySessionMutation})
 		if appendErr != nil {
 			return RunResult{}, appendErr
 		}
@@ -1178,7 +1344,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		if assistantText == "" {
 			return pebblestore.MessageSnapshot{}, false, nil
 		}
-		assistantMessage, _, assistantEvent, appendErr := s.sessions.AppendMessage(sessionID, "assistant", assistantText, runMessageMetadata)
+		assistantMessage, _, assistantEvent, appendErr := s.appendRunMessage(runAppendMessageInput{SessionID: sessionID, Role: "assistant", Content: assistantText, Metadata: runMessageMetadata, RunID: runID, Step: step, LogicalKey: fmt.Sprintf("assistant:%d", step), Principal: options.Principal, ApplySessionMutation: options.ApplySessionMutation})
 		if appendErr != nil {
 			return pebblestore.MessageSnapshot{}, false, appendErr
 		}
@@ -1214,7 +1380,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		if compactErr != nil {
 			return false, fmt.Errorf("context overflow compact continuation failed: %w", compactErr)
 		}
-		if toolMessage, persistErr := persistMemoryCompactionToolMessage(s.sessions, sessionID, &events, &toolMessages, compactionToolStream); persistErr != nil {
+		if toolMessage, persistErr := s.persistMemoryCompactionToolMessage(sessionID, &events, &toolMessages, compactionToolStream, runAppendMessageInput{RunID: runID, Step: step, LogicalKey: fmt.Sprintf("tool:%d:%s", step, strings.TrimSpace(compactionToolStream.CallID)), Principal: options.Principal, ApplySessionMutation: options.ApplySessionMutation}); persistErr != nil {
 			return false, persistErr
 		} else if toolMessage != nil {
 			emit(StreamEvent{Type: StreamEventMessageStored, Step: step, Message: toolMessage})
@@ -1228,6 +1394,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			resolvedPreference.Preference.Model,
 			step,
 			emit,
+			runAppendMessageInput{RunID: runID, Step: step, LogicalKey: fmt.Sprintf("system:context_compaction:%d", step), Principal: options.Principal, ApplySessionMutation: options.ApplySessionMutation},
 		)
 		if compactErr != nil {
 			return false, fmt.Errorf("context overflow compact bookkeeping failed: %w", compactErr)
@@ -1353,7 +1520,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			key = rememberReasoningKey(key)
 			stepReasoningByKey[key] = content
 			stepReasoningSummary = rebuildStepReasoningSummary()
-			nextMessage, messageEvent, streamEvent, err := s.persistReasoningMessageSnapshot(sessionID, stepReasoningMessages[key], content)
+			nextMessage, messageEvent, streamEvent, err := s.persistReasoningMessageSnapshot(sessionID, stepReasoningMessages[key], content, runAppendMessageInput{RunID: runID, Step: step, LogicalKey: "reasoning:" + key, Principal: options.Principal, ApplySessionMutation: options.ApplySessionMutation})
 			if err != nil {
 				stepReasoningErr = err
 				return
@@ -1467,6 +1634,8 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				principal:            options.Principal,
 				emit:                 emit,
 				policy:               compiledPolicy,
+				applySessionMutation: options.ApplySessionMutation,
+				providerManagedV3:    options.ApplySessionMutation != nil,
 			}),
 		}
 		runRequestDebugEvent("provider_request", map[string]any{
@@ -1606,7 +1775,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				if commentaryText == "" {
 					continue
 				}
-				commentaryMessage, _, commentaryEvent, appendErr := s.sessions.AppendMessage(sessionID, "assistant", commentaryText, runMessageMetadataWith(runMessageMetadata, map[string]any{"phase": string(provideriface.AssistantPhaseCommentary)}))
+				commentaryMessage, _, commentaryEvent, appendErr := s.appendRunMessage(runAppendMessageInput{SessionID: sessionID, Role: "assistant", Content: commentaryText, Metadata: runMessageMetadataWith(runMessageMetadata, map[string]any{"phase": string(provideriface.AssistantPhaseCommentary)}), RunID: runID, Step: step, LogicalKey: fmt.Sprintf("assistant_commentary:%d:%d", step, len(commentaryMessages)+1), Principal: options.Principal, ApplySessionMutation: options.ApplySessionMutation})
 				if appendErr != nil {
 					return RunResult{}, appendErr
 				}
@@ -1934,7 +2103,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			})
 
 			toolHistoryText := formatToolHistoryWithMetadata(call, toolCallMetadata[i], result)
-			storedToolMessage, _, event, appendErr := s.sessions.AppendMessage(sessionID, "tool", toolHistoryText, nil)
+			storedToolMessage, _, event, appendErr := s.appendRunMessage(runAppendMessageInput{SessionID: sessionID, Role: "tool", Content: toolHistoryText, RunID: runID, Step: step, LogicalKey: fmt.Sprintf("tool:%d:%s", step, strings.TrimSpace(call.CallID)), Principal: options.Principal, ApplySessionMutation: options.ApplySessionMutation})
 			if appendErr != nil {
 				return RunResult{}, appendErr
 			}
@@ -1986,7 +2155,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	if !flushedFinalAssistant {
 		assistantText := "No assistant text output."
 		var assistantEvent *pebblestore.EventEnvelope
-		assistantMessage, _, assistantEvent, err = s.sessions.AppendMessage(sessionID, "assistant", assistantText, runMessageMetadata)
+		assistantMessage, _, assistantEvent, err = s.appendRunMessage(runAppendMessageInput{SessionID: sessionID, Role: "assistant", Content: assistantText, Metadata: runMessageMetadata, RunID: runID, Step: stepsCompleted, LogicalKey: fmt.Sprintf("assistant:%d:fallback", stepsCompleted), Principal: options.Principal, ApplySessionMutation: options.ApplySessionMutation})
 		if err != nil {
 			return RunResult{}, err
 		}
@@ -2023,7 +2192,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	}, nil
 }
 
-func (s *Service) persistRunFailure(sessionID string, runErr error) {
+func (s *Service) persistRunFailure(sessionID string, runErr error, appendInput runAppendMessageInput) {
 	if s == nil || s.sessions == nil || runErr == nil {
 		return
 	}
@@ -2038,7 +2207,10 @@ func (s *Service) persistRunFailure(sessionID string, runErr error) {
 	if content == "" {
 		return
 	}
-	_, _, _, _ = s.sessions.AppendMessage(sessionID, "system", content, nil)
+	appendInput.SessionID = sessionID
+	appendInput.Role = "system"
+	appendInput.Content = content
+	_, _, _, _ = s.appendRunMessage(appendInput)
 }
 
 func formatRunFailureMessage(runErr error) string {
@@ -2221,8 +2393,8 @@ func (stream *memoryCompactionToolStream) SetCompactIndex(compactIndex int) {
 	stream.CallID = memoryCompactionToolCallID(stream.Origin, compactIndex)
 }
 
-func persistMemoryCompactionToolMessage(sessionSvc *sessionruntime.Service, sessionID string, events *[]pebblestore.EventEnvelope, toolMessages *[]pebblestore.MessageSnapshot, stream *memoryCompactionToolStream) (*pebblestore.MessageSnapshot, error) {
-	if sessionSvc == nil || stream == nil || !stream.Finalized {
+func (s *Service) persistMemoryCompactionToolMessage(sessionID string, events *[]pebblestore.EventEnvelope, toolMessages *[]pebblestore.MessageSnapshot, stream *memoryCompactionToolStream, appendInput runAppendMessageInput) (*pebblestore.MessageSnapshot, error) {
+	if s == nil || s.sessions == nil || stream == nil || !stream.Finalized {
 		return nil, nil
 	}
 	output := strings.TrimSpace(stream.Output)
@@ -2244,7 +2416,10 @@ func persistMemoryCompactionToolMessage(sessionSvc *sessionruntime.Service, sess
 		Output:     output,
 		DurationMS: durationMS,
 	}
-	message, _, event, err := sessionSvc.AppendMessage(sessionID, "tool", formatToolHistory(call, result), nil)
+	appendInput.SessionID = sessionID
+	appendInput.Role = "tool"
+	appendInput.Content = formatToolHistory(call, result)
+	message, _, event, err := s.appendRunMessage(appendInput)
 	if err != nil {
 		return nil, err
 	}
@@ -2391,7 +2566,7 @@ func isCompactionCheckpointMessage(content string) bool {
 	return strings.HasPrefix(content, contextCompactionMarkerPrefix)
 }
 
-func (s *Service) applyContextCompactionArtifacts(sessionID, compactSummary, origin string, contextWindow int, providerID, modelName string, step int, emit StreamHandler) (*pebblestore.SessionUsageSummary, int, []pebblestore.EventEnvelope, error) {
+func (s *Service) applyContextCompactionArtifacts(sessionID, compactSummary, origin string, contextWindow int, providerID, modelName string, step int, emit StreamHandler, appendInput runAppendMessageInput) (*pebblestore.SessionUsageSummary, int, []pebblestore.EventEnvelope, error) {
 	if s == nil || s.sessions == nil {
 		return nil, 0, nil, errors.New("run service is not fully configured")
 	}
@@ -2412,7 +2587,14 @@ func (s *Service) applyContextCompactionArtifacts(sessionID, compactSummary, ori
 	nextTitle, compactIndex := nextCompactSessionTitle(session.Title)
 	checkpoint := buildCompactionCheckpointMessage(compactSummary, origin, compactIndex, compactedActivePlanLabel(activePlan))
 	checkpointMetadata := compactedContextCheckpointMetadata(activePlan)
-	checkpointMessage, _, checkpointEvent, err := s.sessions.AppendMessage(sessionID, "system", checkpoint, checkpointMetadata)
+	appendInput.SessionID = sessionID
+	appendInput.Role = "system"
+	appendInput.Content = checkpoint
+	appendInput.Metadata = checkpointMetadata
+	if strings.TrimSpace(appendInput.LogicalKey) == "" {
+		appendInput.LogicalKey = fmt.Sprintf("system:context_compaction:%d", compactIndex)
+	}
+	checkpointMessage, _, checkpointEvent, err := s.appendRunMessage(appendInput)
 	if err != nil {
 		return nil, 0, nil, err
 	}
