@@ -194,14 +194,14 @@ printf 'ssh-fast-test: fetching bundled commit %s\n' "${local_head}"
 git bundle verify "${remote_bundle_path}" >/dev/null
 git fetch --force "${remote_bundle_path}" HEAD
 git reset --hard
-git clean -fdx -e .tools/go/
+git clean -fdx -e .tools/go/ -e .cache/
 if [ -n "${local_branch}" ]; then
   git checkout -B "${local_branch}" FETCH_HEAD
 else
   git checkout --detach FETCH_HEAD
 fi
 git reset --hard FETCH_HEAD
-git clean -fdx -e .tools/go/
+git clean -fdx -e .tools/go/ -e .cache/
 current_head="$(git rev-parse --verify HEAD)"
 if [ "${current_head}" != "${local_head}" ]; then
   printf 'ssh-fast-test: remote HEAD %s != bundled HEAD %s\n' "${current_head}" "${local_head}" >&2
