@@ -60,30 +60,13 @@ func (r *Runner) CreateResponseStreaming(ctx context.Context, req provideriface.
 	}
 	stream := client.Messages.NewStreaming(ctx, params)
 	message := anthropicapi.Message{}
-	var textBuilder strings.Builder
-	var thinkingBuilder strings.Builder
+	streamState := newAnthropicStreamState()
 	for stream.Next() {
 		event := stream.Current()
 		if err := message.Accumulate(event); err != nil {
 			return provideriface.Response{}, fmt.Errorf("accumulate anthropic stream: %w", err)
 		}
-		if onEvent != nil {
-			switch variant := event.AsAny().(type) {
-			case anthropicapi.ContentBlockDeltaEvent:
-				switch delta := variant.Delta.AsAny().(type) {
-				case anthropicapi.TextDelta:
-					if strings.TrimSpace(delta.Text) != "" {
-						textBuilder.WriteString(delta.Text)
-						onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: delta.Text})
-					}
-				case anthropicapi.ThinkingDelta:
-					if strings.TrimSpace(delta.Thinking) != "" {
-						thinkingBuilder.WriteString(delta.Thinking)
-						onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, Delta: delta.Thinking})
-					}
-				}
-			}
-		}
+		streamState.HandleEvent(event, onEvent)
 	}
 	if err := stream.Err(); err != nil {
 		return provideriface.Response{}, err
@@ -93,12 +76,112 @@ func (r *Runner) CreateResponseStreaming(ctx context.Context, req provideriface.
 		response.Model = modelName
 	}
 	if strings.TrimSpace(response.Text) == "" {
-		response.Text = strings.TrimSpace(textBuilder.String())
+		response.Text = strings.TrimSpace(streamState.Text())
 	}
 	if strings.TrimSpace(response.ReasoningSummary) == "" {
-		response.ReasoningSummary = strings.TrimSpace(thinkingBuilder.String())
+		response.ReasoningSummary = strings.TrimSpace(streamState.Thinking())
 	}
 	return response, nil
+}
+
+type anthropicStreamState struct {
+	textBuilder   strings.Builder
+	thinkingByKey map[int64]string
+	thinkingOrder []int64
+	activeIndex   int64
+}
+
+func newAnthropicStreamState() *anthropicStreamState {
+	return &anthropicStreamState{activeIndex: -1, thinkingByKey: make(map[int64]string, 4)}
+}
+
+func (s *anthropicStreamState) HandleEvent(event anthropicapi.MessageStreamEventUnion, onEvent func(provideriface.StreamEvent)) {
+	if s == nil {
+		return
+	}
+	switch variant := event.AsAny().(type) {
+	case anthropicapi.ContentBlockStartEvent:
+		s.activeIndex = variant.Index
+		switch block := variant.ContentBlock.AsAny().(type) {
+		case anthropicapi.ThinkingBlock:
+			if thinking := block.Thinking; strings.TrimSpace(thinking) != "" {
+				next := s.appendThinking(variant.Index, thinking)
+				if onEvent != nil {
+					onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, Delta: next, ReasoningKey: anthropicReasoningKey(variant.Index)})
+				}
+			}
+		}
+	case anthropicapi.ContentBlockDeltaEvent:
+		if s.activeIndex < 0 {
+			s.activeIndex = variant.Index
+		}
+		reasoningKey := anthropicReasoningKey(variant.Index)
+		switch delta := variant.Delta.AsAny().(type) {
+		case anthropicapi.TextDelta:
+			if strings.TrimSpace(delta.Text) != "" {
+				s.textBuilder.WriteString(delta.Text)
+				if onEvent != nil {
+					onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: delta.Text})
+				}
+			}
+		case anthropicapi.ThinkingDelta:
+			if strings.TrimSpace(delta.Thinking) != "" {
+				next := s.appendThinking(variant.Index, delta.Thinking)
+				if onEvent != nil {
+					onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, Delta: next, ReasoningKey: reasoningKey})
+				}
+			}
+		case anthropicapi.SignatureDelta:
+			// Anthropic emits a signature_delta after a thinking block. The signature is
+			// transport verification metadata, not user-visible reasoning text.
+		}
+	case anthropicapi.ContentBlockStopEvent:
+		if variant.Index == s.activeIndex {
+			s.activeIndex = -1
+		}
+	}
+}
+
+func (s *anthropicStreamState) Text() string {
+	if s == nil {
+		return ""
+	}
+	return s.textBuilder.String()
+}
+
+func (s *anthropicStreamState) Thinking() string {
+	if s == nil || len(s.thinkingOrder) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(s.thinkingOrder))
+	for _, index := range s.thinkingOrder {
+		if thinking := strings.TrimSpace(s.thinkingByKey[index]); thinking != "" {
+			parts = append(parts, thinking)
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func (s *anthropicStreamState) appendThinking(index int64, delta string) string {
+	if s == nil {
+		return ""
+	}
+	if s.thinkingByKey == nil {
+		s.thinkingByKey = make(map[int64]string, 4)
+	}
+	if _, ok := s.thinkingByKey[index]; !ok {
+		s.thinkingOrder = append(s.thinkingOrder, index)
+	}
+	next := s.thinkingByKey[index] + delta
+	s.thinkingByKey[index] = next
+	return next
+}
+
+func anthropicReasoningKey(index int64) string {
+	if index < 0 {
+		return "anthropic-thinking"
+	}
+	return fmt.Sprintf("anthropic-thinking-%d", index)
 }
 
 func (r *Runner) buildRequest(ctx context.Context, req provideriface.Request) (anthropicapi.Client, string, anthropicapi.MessageNewParams, error) {

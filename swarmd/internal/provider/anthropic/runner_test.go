@@ -149,6 +149,88 @@ func anthropicapiMessageParamsForCacheTest(tools []anthropicapi.ToolUnionParam, 
 	return params
 }
 
+func TestAnthropicStreamStateEmitsThinkingDeltasWithStableReasoningKey(t *testing.T) {
+	state := newAnthropicStreamState()
+	var events []provideriface.StreamEvent
+	emit := func(event provideriface.StreamEvent) {
+		events = append(events, event)
+	}
+
+	for _, raw := range []string{
+		`{"type":"content_block_start","index":1,"content_block":{"type":"thinking","thinking":"Plan: "}}`,
+		`{"type":"content_block_delta","index":1,"delta":{"type":"thinking_delta","thinking":"inspect "}}`,
+		`{"type":"content_block_delta","index":1,"delta":{"type":"thinking_delta","thinking":"adapter"}}`,
+		`{"type":"content_block_delta","index":1,"delta":{"type":"signature_delta","signature":"transport-signature"}}`,
+		`{"type":"content_block_stop","index":1}`,
+		`{"type":"content_block_start","index":2,"content_block":{"type":"redacted_thinking","data":"encrypted"}}`,
+		`{"type":"content_block_stop","index":2}`,
+		`{"type":"content_block_start","index":3,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":3,"delta":{"type":"text_delta","text":"final answer"}}`,
+	} {
+		event := mustAnthropicStreamEvent(t, raw)
+		state.HandleEvent(event, emit)
+	}
+
+	if got, want := state.Thinking(), "Plan: inspect adapter"; got != want {
+		t.Fatalf("thinking snapshot = %q, want %q", got, want)
+	}
+	if got, want := state.Text(), "final answer"; got != want {
+		t.Fatalf("text snapshot = %q, want %q", got, want)
+	}
+	if len(events) != 4 {
+		t.Fatalf("event count = %d, want 4: %+v", len(events), events)
+	}
+	for i, event := range events[:3] {
+		if event.Type != provideriface.StreamEventReasoningSummaryDelta || event.ReasoningKey != "anthropic-thinking-1" {
+			t.Fatalf("thinking event %d = %+v", i, event)
+		}
+	}
+	if events[0].Delta != "Plan: " || events[1].Delta != "Plan: inspect " || events[2].Delta != "Plan: inspect adapter" {
+		t.Fatalf("unexpected thinking snapshots: %+v", events[:3])
+	}
+	if events[3].Type != provideriface.StreamEventOutputTextDelta || events[3].Delta != "final answer" {
+		t.Fatalf("text event = %+v", events[3])
+	}
+}
+
+func TestAnthropicMessageToResponseCollectsThinkingAndIgnoresRedactedThinking(t *testing.T) {
+	message := anthropicapi.Message{}
+	for _, raw := range []string{
+		`{"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"visible"}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" thinking"}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"signature"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"encrypted"}}`,
+		`{"type":"content_block_stop","index":1}`,
+		`{"type":"content_block_start","index":2,"content_block":{"type":"text","text":"answer"}}`,
+		`{"type":"content_block_stop","index":2}`,
+		`{"type":"message_stop"}`,
+	} {
+		event := mustAnthropicStreamEvent(t, raw)
+		if err := message.Accumulate(event); err != nil {
+			t.Fatalf("accumulate %s: %v", raw, err)
+		}
+	}
+
+	response := anthropicMessageToResponse(message)
+	if response.Text != "answer" {
+		t.Fatalf("response text = %q", response.Text)
+	}
+	if response.ReasoningSummary != "visible thinking" {
+		t.Fatalf("response reasoning = %q", response.ReasoningSummary)
+	}
+}
+
+func mustAnthropicStreamEvent(t *testing.T, raw string) anthropicapi.MessageStreamEventUnion {
+	t.Helper()
+	var event anthropicapi.MessageStreamEventUnion
+	if err := event.UnmarshalJSON([]byte(raw)); err != nil {
+		t.Fatalf("unmarshal stream event %s: %v", raw, err)
+	}
+	return event
+}
+
 func TestBuildAnthropicContentBlocksDoNotEmitPerMessageCacheControls(t *testing.T) {
 	blocks, err := buildAnthropicContentBlocks([]any{
 		map[string]any{"type": "input_text", "text": "hello"},
