@@ -7,6 +7,7 @@ import type { DesktopSessionRecord, DesktopStoreState } from '../types/realtime'
 import { applyEnvelope, useDesktopStore } from './use-desktop-store'
 import type { RunStreamEventMessage } from './run-stream-controller'
 import { permissionRequiresApproval } from '../permissions/services/permission-payload'
+import { buildStructuredToolMessage } from '../chat/services/tool-message'
 
 function emptyLiveState(): DesktopSessionRecord['live'] {
   return {
@@ -555,6 +556,103 @@ test('parent V3 stream child relation frames update canonical child session live
   assert.equal(child.live.toolCallId, 'child-call-1')
   assert.equal(child.live.lastEventType, 'session.tool.started')
 })
+
+test('parent V3 task stream card remains renderable while child relation tool frames stream', () => {
+  const parent = makeSession({ id: 'parent-v3', sessionApi: 'v3', workspacePath: '/repo', workspaceName: 'repo', lastEventSeq: 1, projectionHighWatermarkSeq: 1 })
+  useDesktopStore.setState(makeState(parent), true)
+
+  const emitParentTaskDelta = (seq: number, currentTool: string, previewText: string) => {
+    useDesktopStore.getState().__testApplyRunStreamFrame?.('parent-v3', {
+      type: 'event',
+      ok: true,
+      session_id: 'parent-v3',
+      last_seq: seq,
+      event: {
+        id: `v3evt_parent-v3_${String(seq).padStart(20, '0')}`,
+        session_id: 'parent-v3',
+        seq,
+        event_type: 'session.tool.delta',
+        ts_unix_ms: 60 + seq,
+        payload: {
+          session_id: 'parent-v3',
+          run_id: 'parent-run-v3',
+          step_id: 'parent-step-1',
+          tool_instance_id: 'parent-task-tool-1',
+          tool_name: 'task',
+          call_id: 'parent-task-call-1',
+          output: JSON.stringify({
+            tool: 'task',
+            path_id: 'tool.task.stream.v1',
+            status: 'running',
+            phase: 'tool.delta',
+            launches: [{
+              launch_index: 1,
+              child_session_id: 'child-v3',
+              subagent: 'explorer',
+              status: 'running',
+              current_tool: currentTool,
+              current_preview_kind: 'tool',
+              current_preview_text: previewText,
+            }],
+          }),
+        },
+      },
+    }, 60 + seq)
+  }
+
+  emitParentTaskDelta(2, 'search', 'searching repo')
+  useDesktopStore.getState().__testApplyRunStreamFrame?.('parent-v3', {
+    type: 'event',
+    ok: true,
+    session_id: 'child-v3',
+    parent_session_id: 'parent-v3',
+    relation: 'child',
+    lineage_kind: 'delegated_subagent',
+    after_seq: 2,
+    last_seq: 2,
+    event: {
+      id: 'v3evt_child-v3_00000000000000000001',
+      session_id: 'child-v3',
+      seq: 1,
+      event_type: 'session.tool.started',
+      ts_unix_ms: 70,
+      payload: {
+        session_id: 'child-v3',
+        run_id: 'child-run-v3',
+        step_id: 'child-step-1',
+        tool_instance_id: 'child-tool-1',
+        tool_name: 'bash',
+        call_id: 'child-call-1',
+        arguments: '{"command":"echo child"}',
+        step: 1,
+      },
+    },
+  }, 70)
+  emitParentTaskDelta(3, 'read', 'reading file')
+
+  const state = useDesktopStore.getState()
+  const parentAfter = state.sessions['parent-v3']
+  const child = state.sessions['child-v3']
+  assert.equal(parentAfter.live.toolName, 'task')
+  assert.equal(parentAfter.live.toolCallId, 'parent-task-call-1')
+  assert.equal(child.live.toolName, 'bash')
+
+  const taskHistory = parentAfter.live.toolHistory?.find((entry) => entry.toolName === 'task')
+  assert.ok(taskHistory, 'expected parent task live tool history to remain present')
+  assert.doesNotThrow(() => JSON.parse(taskHistory.toolOutput), 'parent task stream output must remain a single JSON payload')
+  const toolMessage = buildStructuredToolMessage({
+    tool: 'task',
+    callId: taskHistory.callId,
+    toolInstanceId: taskHistory.toolInstanceId,
+    outputText: taskHistory.toolOutput,
+    state: 'running',
+  })
+  assert.equal(toolMessage?.taskRows.length, 1)
+  assert.equal(toolMessage?.taskRows[0]?.childSessionId, 'child-v3')
+  assert.equal(toolMessage?.taskRows[0]?.tool, 'read')
+  assert.equal(toolMessage?.taskRows[0]?.previewText, 'reading file')
+})
+
 
 test('parent V3 stream child cursor errors do not refetch or poison parent session state', async () => {
   const originalWindow = globalThis.window

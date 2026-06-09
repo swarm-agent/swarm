@@ -646,11 +646,15 @@ function upsertLiveToolHistory(
   const key = liveToolKey(input)
   const existing = (live.toolHistory ?? []).find((item) => item.key === key)
   const outputDelta = input.rawOutput ?? input.output ?? ''
+  const existingOutput = existing?.toolOutput ?? ''
+  const normalizedToolName = (input.toolName || existing?.toolName || '').trim().toLowerCase()
   const nextOutput = input.rawOutput !== undefined && input.rawOutput !== null
     ? replaceLiveToolOutput(input.rawOutput)
     : input.output
-      ? appendLiveToolOutput(existing?.toolOutput ?? '', input.output)
-      : existing?.toolOutput ?? ''
+      ? normalizedToolName === 'task'
+        ? mergedTaskToolDelta(existingOutput, input.output)
+        : appendLiveToolOutput(existingOutput, input.output)
+      : existingOutput
   const next: DesktopLiveToolRecord = {
     key,
     sessionId: input.sessionId,
