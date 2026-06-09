@@ -194,14 +194,14 @@ printf 'ssh-fast-test: fetching bundled commit %s\n' "${local_head}"
 git bundle verify "${remote_bundle_path}" >/dev/null
 git fetch --force "${remote_bundle_path}" HEAD
 git reset --hard
-git clean -fdx -e .tools/go/ -e .cache/
+git clean -fdx -e .tools/go/ -e .cache/ -e web/node_modules/ -e node_modules/
 if [ -n "${local_branch}" ]; then
   git checkout -B "${local_branch}" FETCH_HEAD
 else
   git checkout --detach FETCH_HEAD
 fi
 git reset --hard FETCH_HEAD
-git clean -fdx -e .tools/go/ -e .cache/
+git clean -fdx -e .tools/go/ -e .cache/ -e web/node_modules/ -e node_modules/
 current_head="$(git rev-parse --verify HEAD)"
 if [ "${current_head}" != "${local_head}" ]; then
   printf 'ssh-fast-test: remote HEAD %s != bundled HEAD %s\n' "${current_head}" "${local_head}" >&2
@@ -254,6 +254,14 @@ END {
     cp "${tmp_conf}" /etc/swarmd/swarm.conf 2>/dev/null || sudo -n cp "${tmp_conf}" /etc/swarmd/swarm.conf
     rm -f "${tmp_conf}"
   fi
+fi
+if [ ! -f web/node_modules/vite/bin/vite.js ]; then
+  printf 'ssh-fast-test: installing remote web dependencies\n'
+  if ! command -v pnpm >/dev/null 2>&1; then
+    printf 'ssh-fast-test: pnpm is required to install web dependencies\n' >&2
+    exit 1
+  fi
+  (cd web && pnpm install --frozen-lockfile)
 fi
 ./rebuild s
 if [ "${restart_service}" = 'true' ]; then
