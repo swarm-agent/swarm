@@ -16,6 +16,8 @@ import type {
   DesktopSessionRecord,
   DesktopSessionUsageRecord,
 } from '../types/realtime'
+import { parseStructuredToolMessage } from '../chat/services/tool-message'
+import { mergeSessionRecords } from './session-records'
 
 export interface DesktopV3WorksetRequest {
   sessionIds?: string[]
@@ -327,28 +329,117 @@ export function applyWorksetToDesktopDB(workset: DesktopV3Workset, request: Desk
   upsertDesktopDbRecord(desktopWorksetWatermarksCollection, workset.watermarks)
 }
 
+export interface DesktopDbDurablePatch {
+  sessionId?: string
+  session?: DesktopSessionRecord | null
+  messages?: ChatMessageRecord[]
+  appliedSeq?: number
+  highWatermark?: number
+}
+
+export function mergeDesktopDBDurablePatch(patch: DesktopDbDurablePatch): DesktopSessionRecord | null {
+  const normalizedSessionId = (patch.sessionId || patch.session?.id || '').trim()
+  if (!normalizedSessionId) {
+    return null
+  }
+
+  for (const message of patch.messages ?? []) {
+    upsertDesktopDbRecord(desktopMessagesCollection, message)
+  }
+
+  const appliedSeq = typeof patch.appliedSeq === 'number' ? Math.max(0, patch.appliedSeq) : 0
+  const highWatermark = typeof patch.highWatermark === 'number' ? Math.max(0, patch.highWatermark) : appliedSeq
+  const currentSession = desktopSessionsCollection.get(normalizedSessionId) ?? null
+  const incomingSession = patch.session ?? null
+  let mergedSession = incomingSession
+    ? mergeSessionRecords(currentSession, incomingSession)
+    : currentSession
+  if (mergedSession && (appliedSeq > 0 || highWatermark > 0)) {
+    mergedSession = {
+      ...mergedSession,
+      lastEventSeq: Math.max(mergedSession.lastEventSeq ?? 0, appliedSeq),
+      projectionHighWatermarkSeq: Math.max(mergedSession.projectionHighWatermarkSeq ?? 0, highWatermark),
+      live: {
+        ...mergedSession.live,
+        seq: Math.max(mergedSession.live.seq ?? 0, appliedSeq),
+      },
+    }
+  }
+  if (mergedSession) {
+    upsertDesktopDbRecord(desktopSessionsCollection, mergedSession)
+    upsertDesktopDbRecord(desktopSessionReadinessCollection, desktopDbReadySession(normalizedSessionId, Date.now()))
+  }
+  upsertDesktopDbRecord(desktopProjectionsCollection, {
+    sessionId: normalizedSessionId,
+    session_id: normalizedSessionId,
+    last_event_seq: Math.max(appliedSeq, currentSession?.lastEventSeq ?? 0, incomingSession?.lastEventSeq ?? 0),
+    projection_high_watermark_seq: Math.max(highWatermark, currentSession?.projectionHighWatermarkSeq ?? 0, incomingSession?.projectionHighWatermarkSeq ?? 0),
+    updated_at: Date.now(),
+  })
+  return mergedSession
+}
+
 export function applyDurableEventToDesktopDB(event: unknown): void {
-  const record = event && typeof event === 'object' ? event as Record<string, unknown> : null
-  const payload = record?.payload && typeof record.payload === 'object' ? record.payload as Record<string, unknown> : record
+  const envelope = event && typeof event === 'object' ? event as Record<string, unknown> : null
+  const eventType = typeof envelope?.event_type === 'string' ? envelope.event_type : ''
+  const ts = typeof envelope?.ts_unix_ms === 'number' ? envelope.ts_unix_ms : Date.now()
+  const eventSeq = typeof envelope?.source_seq === 'number' && envelope.source_seq > 0
+    ? Math.max(0, envelope.source_seq)
+    : typeof envelope?.global_seq === 'number'
+      ? Math.max(0, envelope.global_seq)
+      : 0
+  const payload = envelope?.payload && typeof envelope.payload === 'object'
+    ? envelope.payload as Record<string, unknown>
+    : envelope
   if (!payload) {
     return
   }
 
-  if (isDesktopSessionRecord(payload.session)) {
-    upsertDesktopDbRecord(desktopSessionsCollection, payload.session)
-    upsertDesktopDbRecord(desktopSessionReadinessCollection, desktopDbReadySession(payload.session.id, Date.now()))
+  const normalizedPayload = normalizeDesktopDbDurablePayload(eventType, payload)
+  const sessionId = desktopDbPayloadString(normalizedPayload, 'session_id')
+    || (eventType.startsWith('session.') ? desktopDbPayloadString(normalizedPayload, 'id') : '')
+    || desktopDbPayloadString(envelope, 'entity_id')
+    || desktopDbPayloadString(normalizedPayload.session as Record<string, unknown> | null, 'id')
+
+  const sessionPatch = desktopDbSessionPatchFromDurablePayload(eventType, normalizedPayload, sessionId, ts, eventSeq)
+  const messages = desktopDbMessagesFromDurablePayload(eventType, normalizedPayload, sessionId)
+  if (sessionPatch || messages.length > 0 || eventSeq > 0) {
+    mergeDesktopDBDurablePatch({
+      sessionId,
+      session: sessionPatch,
+      messages,
+      appliedSeq: eventSeq,
+      highWatermark: eventSeq,
+    })
   }
-  if (isChatMessageRecord(payload.message)) {
-    upsertDesktopDbRecord(desktopMessagesCollection, payload.message)
+
+  const preference = desktopDbPreferenceFromDurablePayload(normalizedPayload, sessionId, ts)
+  if (preference) {
+    upsertDesktopDbRecord(desktopPreferencesCollection, preference)
   }
-  if (isDesktopPermissionRecord(payload.permission)) {
-    upsertDesktopDbRecord(desktopPermissionsCollection, payload.permission)
+
+  const permission = desktopDbPermissionFromDurablePayload(normalizedPayload)
+  if (permission) {
+    if (permission.status.trim().toLowerCase() === 'pending') {
+      upsertDesktopDbRecord(desktopPermissionsCollection, permission)
+    } else if (desktopPermissionsCollection.has(permission.id)) {
+      desktopPermissionsCollection.delete(permission.id)
+    }
   }
-  if (isDesktopRunIntentRecord(payload.runIntent) || isDesktopRunIntentRecord(payload.run_intent)) {
-    upsertDesktopDbRecord(desktopRunIntentsCollection, (payload.runIntent ?? payload.run_intent) as DesktopRunIntentRecord)
+
+  const runIntent = desktopDbRunIntentFromDurablePayload(normalizedPayload, eventType, sessionId)
+  if (runIntent) {
+    if (desktopDbRunIntentStatusTerminal(runIntent.status)) {
+      if (desktopRunIntentsCollection.has(runIntent.sessionId)) {
+        desktopRunIntentsCollection.delete(runIntent.sessionId)
+      }
+    } else {
+      upsertDesktopDbRecord(desktopRunIntentsCollection, runIntent)
+    }
   }
-  if (isDesktopNotificationRecord(payload.notification)) {
-    upsertDesktopDbRecord(desktopNotificationsCollection, payload.notification)
+
+  if (isDesktopNotificationRecord(normalizedPayload.notification)) {
+    upsertDesktopDbRecord(desktopNotificationsCollection, normalizedPayload.notification)
   }
 }
 
@@ -509,20 +600,347 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object')
 }
 
-function isDesktopSessionRecord(value: unknown): value is DesktopSessionRecord {
-  return isRecord(value) && typeof value.id === 'string' && typeof value.title === 'string' && typeof value.workspacePath === 'string'
+function desktopDbPayloadString(record: Record<string, unknown> | null | undefined, key: string): string {
+  const value = record?.[key]
+  return typeof value === 'string' ? value.trim() : ''
 }
 
-function isChatMessageRecord(value: unknown): value is ChatMessageRecord {
-  return isRecord(value) && typeof value.id === 'string' && typeof value.sessionId === 'string' && typeof value.content === 'string'
+function desktopDbPayloadNumber(record: Record<string, unknown> | null | undefined, key: string): number {
+  const value = record?.[key]
+  return typeof value === 'number' ? value : 0
 }
 
-function isDesktopPermissionRecord(value: unknown): value is DesktopPermissionRecord {
-  return isRecord(value) && typeof value.id === 'string' && typeof value.sessionId === 'string' && typeof value.status === 'string'
+function desktopDbNestedRecord(record: Record<string, unknown>, key: string): Record<string, unknown> | null {
+  const value = record[key]
+  return isRecord(value) ? value : null
 }
 
-function isDesktopRunIntentRecord(value: unknown): value is DesktopRunIntentRecord {
-  return isRecord(value) && typeof value.sessionId === 'string' && typeof value.runId === 'string' && typeof value.status === 'string'
+function normalizeDesktopDbDurablePayload(eventType: string, payload: Record<string, unknown>): Record<string, unknown> {
+  if (!eventType.startsWith('session.')) {
+    return payload
+  }
+  const normalized: Record<string, unknown> = { ...payload }
+  const nestedSession = desktopDbNestedRecord(normalized, 'session')
+  const nestedMessage = desktopDbNestedRecord(normalized, 'message')
+  const nestedLifecycle = desktopDbNestedRecord(normalized, 'lifecycle')
+  const nestedRunIntent = desktopDbNestedRecord(normalized, 'run_intent')
+  if (typeof normalized.session_id !== 'string') {
+    normalized.session_id = desktopDbPayloadString(nestedSession, 'id')
+      || desktopDbPayloadString(nestedMessage, 'session_id')
+      || desktopDbPayloadString(nestedLifecycle, 'session_id')
+      || desktopDbPayloadString(nestedRunIntent, 'session_id')
+      || normalized.session_id
+  }
+  if ((eventType === 'session.created' || eventType === 'session.updated') && nestedSession) {
+    return { ...nestedSession, ...normalized, session: nestedSession }
+  }
+  if (eventType === 'session.run_intent.recorded' && nestedRunIntent) {
+    const status = desktopDbPayloadString(nestedRunIntent, 'status').toLowerCase()
+    if (status === 'pending_executor') {
+      normalized.status = 'starting'
+      normalized.summary = normalized.summary ?? 'Pending executor…'
+    } else if (status === 'dispatch_blocked') {
+      normalized.status = 'blocked'
+      normalized.summary = normalized.summary ?? nestedRunIntent.blocked_reason ?? 'Dispatch blocked'
+      normalized.error = normalized.error ?? nestedRunIntent.blocked_reason ?? null
+    } else if (status === 'running') {
+      normalized.status = 'running'
+      normalized.summary = normalized.summary ?? 'Assistant responding…'
+    } else if (status === 'completed' || status === 'cancelled') {
+      normalized.status = 'idle'
+      normalized.error = status === 'cancelled' ? null : normalized.error
+    } else if (status === 'failed' || status === 'expired' || status === 'interrupted') {
+      normalized.status = 'error'
+      normalized.error = normalized.error ?? nestedRunIntent.blocked_reason ?? 'Run failed'
+    }
+    normalized.run_id = desktopDbPayloadString(nestedRunIntent, 'run_id') || normalized.run_id
+  }
+  return normalized
+}
+
+function desktopDbEmptyLiveState(): DesktopSessionRecord['live'] {
+  return {
+    runId: null,
+    agentName: null,
+    startedAt: null,
+    status: 'idle',
+    step: 0,
+    toolName: null,
+    toolCallId: null,
+    toolArguments: null,
+    toolOutput: '',
+    retainedToolName: null,
+    retainedToolCallId: null,
+    retainedToolArguments: null,
+    retainedToolOutput: '',
+    retainedToolState: null,
+    toolHistory: [],
+    summary: null,
+    lastEventType: null,
+    lastEventAt: null,
+    error: null,
+    seq: 0,
+    assistantDraft: '',
+    retainedAssistantSegments: [],
+    reasoningSummary: '',
+    reasoningText: '',
+    reasoningState: 'idle',
+    reasoningSegment: 0,
+    reasoningStartedAt: null,
+    awaitingAck: false,
+  }
+}
+
+function desktopDbEnsureSession(sessionId: string): DesktopSessionRecord {
+  return desktopSessionsCollection.get(sessionId) ?? {
+    id: sessionId,
+    title: 'New Session',
+    workspacePath: '',
+    workspaceName: '',
+    mode: 'auto',
+    metadata: undefined,
+    messageCount: 0,
+    updatedAt: 0,
+    createdAt: 0,
+    permissionsHydrated: false,
+    gitCommitDetected: false,
+    gitCommitCount: 0,
+    gitCommittedFileCount: 0,
+    gitCommittedAdditions: 0,
+    gitCommittedDeletions: 0,
+    lifecycle: null,
+    runIntent: null,
+    live: desktopDbEmptyLiveState(),
+    pendingPermissions: [],
+    pendingPermissionCount: 0,
+    usage: null,
+  }
+}
+
+function desktopDbMessageFromWire(message: unknown, fallbackSessionId: string): ChatMessageRecord | null {
+  if (!isRecord(message)) {
+    return null
+  }
+  const sessionId = desktopDbPayloadString(message, 'session_id') || desktopDbPayloadString(message, 'sessionId') || fallbackSessionId
+  const role = desktopDbPayloadString(message, 'role')
+  const content = typeof message.content === 'string' ? message.content : ''
+  if (!sessionId || !role || content === '') {
+    return null
+  }
+  const globalSeq = desktopDbPayloadNumber(message, 'global_seq') || desktopDbPayloadNumber(message, 'globalSeq')
+  return {
+    id: desktopDbPayloadString(message, 'id') || `${sessionId}:${globalSeq}`,
+    sessionId,
+    globalSeq,
+    role,
+    content,
+    createdAt: desktopDbPayloadNumber(message, 'created_at') || desktopDbPayloadNumber(message, 'createdAt') || Date.now(),
+    metadata: isRecord(message.metadata) ? message.metadata : undefined,
+    toolMessage: parseStructuredToolMessage(content),
+  }
+}
+
+function desktopDbMessagesFromDurablePayload(eventType: string, payload: Record<string, unknown>, fallbackSessionId: string): ChatMessageRecord[] {
+  const messages: ChatMessageRecord[] = []
+  const nestedMessage = desktopDbMessageFromWire(payload.message, fallbackSessionId)
+  if (nestedMessage) {
+    messages.push(nestedMessage)
+  }
+  if ((eventType === 'session.message.appended' || eventType === 'run.message.stored' || eventType === 'run.message.updated') && messages.length === 0) {
+    const directMessage = desktopDbMessageFromWire(payload, fallbackSessionId)
+    if (directMessage) {
+      messages.push(directMessage)
+    }
+  }
+  return messages
+}
+
+function desktopDbRunIntentStatusTerminal(status: string): boolean {
+  switch (status.trim().toLowerCase()) {
+    case 'completed':
+    case 'failed':
+    case 'cancelled':
+    case 'expired':
+    case 'interrupted':
+    case 'dispatch_blocked':
+      return true
+    default:
+      return false
+  }
+}
+
+function desktopDbRunIntentStatusActive(status: string): boolean {
+  switch (status.trim().toLowerCase()) {
+    case 'pending_executor':
+    case 'running':
+    case 'blocked':
+      return true
+    default:
+      return false
+  }
+}
+
+function desktopDbRunIntentFromDurablePayload(payload: Record<string, unknown>, eventType: string, fallbackSessionId: string): DesktopRunIntentRecord | null {
+  const intent = desktopDbNestedRecord(payload, 'run_intent') ?? desktopDbNestedRecord(payload, 'runIntent')
+  const source = intent ?? payload
+  const runId = desktopDbPayloadString(source, 'run_id') || desktopDbPayloadString(source, 'runId')
+  const status = desktopDbPayloadString(source, 'status')
+  if (!runId || !status || (eventType !== 'session.run_intent.recorded' && !intent)) {
+    return null
+  }
+  return {
+    sessionId: desktopDbPayloadString(source, 'session_id') || desktopDbPayloadString(source, 'sessionId') || fallbackSessionId,
+    runId,
+    status: status.toLowerCase(),
+    blockedReason: desktopDbPayloadString(source, 'blocked_reason') || desktopDbPayloadString(source, 'blockedReason') || desktopDbPayloadString(payload, 'error'),
+    createdAt: desktopDbPayloadNumber(source, 'created_at') || desktopDbPayloadNumber(source, 'createdAt'),
+    updatedAt: desktopDbPayloadNumber(source, 'updated_at') || desktopDbPayloadNumber(source, 'updatedAt') || desktopDbPayloadNumber(payload, 'updated_at'),
+    eventSeq: desktopDbPayloadNumber(source, 'event_seq') || desktopDbPayloadNumber(source, 'eventSeq'),
+  }
+}
+
+function desktopDbLifecycleFromDurablePayload(payload: Record<string, unknown>, fallbackSessionId: string): DesktopSessionRecord['lifecycle'] {
+  const source = desktopDbNestedRecord(payload, 'lifecycle')
+  if (!source) {
+    return null
+  }
+  const sessionId = desktopDbPayloadString(source, 'session_id') || fallbackSessionId
+  if (!sessionId) {
+    return null
+  }
+  return {
+    sessionId,
+    runId: desktopDbPayloadString(source, 'run_id') || null,
+    active: Boolean(source.active),
+    phase: desktopDbPayloadString(source, 'phase'),
+    startedAt: desktopDbPayloadNumber(source, 'started_at'),
+    endedAt: desktopDbPayloadNumber(source, 'ended_at'),
+    updatedAt: desktopDbPayloadNumber(source, 'updated_at'),
+    generation: desktopDbPayloadNumber(source, 'generation'),
+    stopReason: desktopDbPayloadString(source, 'stop_reason') || null,
+    error: desktopDbPayloadString(source, 'error') || null,
+    ownerTransport: desktopDbPayloadString(source, 'owner_transport') || null,
+  }
+}
+
+function desktopDbSessionPatchFromDurablePayload(
+  eventType: string,
+  payload: Record<string, unknown>,
+  sessionId: string,
+  ts: number,
+  eventSeq: number,
+): DesktopSessionRecord | null {
+  if (!sessionId) {
+    return null
+  }
+  const existing = desktopDbEnsureSession(sessionId)
+  const session = { ...existing, live: { ...existing.live }, pendingPermissions: [...existing.pendingPermissions] }
+  session.updatedAt = Math.max(session.updatedAt, desktopDbPayloadNumber(payload, 'updated_at'), ts)
+  if (eventSeq > 0) {
+    session.lastEventSeq = Math.max(session.lastEventSeq ?? 0, eventSeq)
+    session.projectionHighWatermarkSeq = Math.max(session.projectionHighWatermarkSeq ?? 0, eventSeq)
+    session.live.seq = Math.max(session.live.seq, eventSeq)
+  }
+  const nestedSession = desktopDbNestedRecord(payload, 'session')
+  const sessionSource = eventType === 'session.created' || eventType === 'session.updated' ? payload : nestedSession
+  if (sessionSource) {
+    session.title = desktopDbPayloadString(sessionSource, 'title') || session.title
+    session.workspacePath = desktopDbPayloadString(sessionSource, 'workspace_path') || session.workspacePath
+    session.workspaceName = desktopDbPayloadString(sessionSource, 'workspace_name') || session.workspaceName
+    session.mode = desktopDbPayloadString(sessionSource, 'mode') || session.mode
+    session.metadata = isRecord(sessionSource.metadata) ? sessionSource.metadata : session.metadata
+    session.sessionApi = desktopDbPayloadString(sessionSource, 'session_api') || session.sessionApi || 'v3'
+    session.messageCount = Math.max(session.messageCount, desktopDbPayloadNumber(sessionSource, 'message_count'))
+    session.createdAt = desktopDbPayloadNumber(sessionSource, 'created_at') || session.createdAt || ts
+    session.lastEventSeq = Math.max(session.lastEventSeq ?? 0, desktopDbPayloadNumber(sessionSource, 'last_event_seq'))
+    session.projectionHighWatermarkSeq = Math.max(session.projectionHighWatermarkSeq ?? 0, desktopDbPayloadNumber(sessionSource, 'projection_high_watermark_seq'))
+  }
+  const lifecycle = desktopDbLifecycleFromDurablePayload(payload, sessionId)
+  if (lifecycle) {
+    session.lifecycle = lifecycle
+    session.live.runId = lifecycle.active ? lifecycle.runId : null
+    session.live.startedAt = lifecycle.active && lifecycle.startedAt > 0 ? lifecycle.startedAt : null
+    session.live.status = lifecycle.active ? (lifecycle.phase === 'blocked' ? 'blocked' : lifecycle.phase === 'starting' ? 'starting' : 'running') : lifecycle.phase === 'errored' ? 'error' : 'idle'
+    session.live.error = lifecycle.phase === 'errored' ? lifecycle.error || lifecycle.stopReason : null
+  }
+  const runIntent = desktopDbRunIntentFromDurablePayload(payload, eventType, sessionId)
+  if (runIntent) {
+    if (desktopDbRunIntentStatusActive(runIntent.status)) {
+      session.runIntent = runIntent
+      session.live.runId = runIntent.runId
+      session.live.startedAt = runIntent.createdAt > 0 ? runIntent.createdAt : session.live.startedAt
+    } else if (desktopDbRunIntentStatusTerminal(runIntent.status)) {
+      session.runIntent = null
+      session.lifecycle = null
+    }
+  }
+  const status = desktopDbPayloadString(payload, 'status')
+  if (status) {
+    const normalizedStatus = status.toLowerCase()
+    session.live.status = normalizedStatus === 'blocked' ? 'blocked' : normalizedStatus === 'starting' ? 'starting' : normalizedStatus === 'running' ? 'running' : normalizedStatus === 'error' ? 'error' : normalizedStatus === 'idle' ? 'idle' : session.live.status
+    session.live.summary = desktopDbPayloadString(payload, 'summary') || session.live.summary
+    session.live.error = desktopDbPayloadString(payload, 'error') || (normalizedStatus === 'error' ? 'Run failed' : null)
+    if (normalizedStatus === 'idle' || normalizedStatus === 'error') {
+      session.live.runId = null
+      session.live.startedAt = null
+    }
+  }
+  if (eventType === 'session.title.updated') {
+    session.title = desktopDbPayloadString(payload, 'title') || session.title
+  }
+  if (eventType === 'session.message.appended' || eventType === 'run.message.stored' || eventType === 'run.message.updated') {
+    session.messageCount += 1
+  }
+  session.live.lastEventType = eventType || session.live.lastEventType
+  session.live.lastEventAt = ts
+  session.live.awaitingAck = false
+  return session
+}
+
+function desktopDbPreferenceFromDurablePayload(payload: Record<string, unknown>, sessionId: string, ts: number): DesktopDbPreferenceRecord | null {
+  const source = desktopDbNestedRecord(payload, 'preference')
+  if (!source || !sessionId) {
+    return null
+  }
+  return {
+    sessionId,
+    preference: {
+      provider: desktopDbPayloadString(source, 'provider'),
+      model: desktopDbPayloadString(source, 'model'),
+      thinking: desktopDbPayloadString(source, 'thinking'),
+      serviceTier: desktopDbPayloadString(source, 'service_tier'),
+      contextMode: desktopDbPayloadString(source, 'context_mode'),
+      updatedAt: desktopDbPayloadNumber(source, 'updated_at') || ts,
+    },
+    contextWindow: 0,
+    maxOutputTokens: 0,
+  }
+}
+
+function desktopDbPermissionFromDurablePayload(payload: Record<string, unknown>): DesktopPermissionRecord | null {
+  const source = desktopDbNestedRecord(payload, 'permission') ?? payload
+  const id = desktopDbPayloadString(source, 'id')
+  const sessionId = desktopDbPayloadString(source, 'session_id')
+  if (!id || !sessionId) {
+    return null
+  }
+  return {
+    id,
+    sessionId,
+    runId: desktopDbPayloadString(source, 'run_id'),
+    callId: desktopDbPayloadString(source, 'call_id'),
+    toolName: desktopDbPayloadString(source, 'tool_name'),
+    toolArguments: desktopDbPayloadString(source, 'tool_arguments'),
+    status: desktopDbPayloadString(source, 'status'),
+    decision: desktopDbPayloadString(source, 'decision'),
+    reason: desktopDbPayloadString(source, 'reason'),
+    requirement: desktopDbPayloadString(source, 'requirement'),
+    mode: desktopDbPayloadString(source, 'mode'),
+    createdAt: desktopDbPayloadNumber(source, 'created_at'),
+    updatedAt: desktopDbPayloadNumber(source, 'updated_at'),
+    resolvedAt: desktopDbPayloadNumber(source, 'resolved_at'),
+    permissionRequestedAt: desktopDbPayloadNumber(source, 'permission_requested_at'),
+  }
 }
 
 function isDesktopNotificationRecord(value: unknown): value is DesktopNotificationRecord {

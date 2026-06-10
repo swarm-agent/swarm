@@ -46,7 +46,7 @@ import {
 } from "../services/model-options";
 import { parseStructuredToolMessage } from "../services/tool-message";
 import { countApprovalRequiredPermissions } from "../../permissions/services/permission-payload";
-import { mergeDesktopV3DurableCachePatch } from "../../state/desktop-v3-durable-reducer";
+import { mergeDesktopDBDurablePatch } from "../../state/desktop-db";
 
 interface SessionWire {
   id?: string;
@@ -1136,8 +1136,8 @@ export async function fetchSessionMessages(
     hasMoreOlder: Boolean(response.has_more_older),
     hasMoreNewer: Boolean(response.has_more_newer),
   };
-  if (sessionApi === "v3" && options.queryClient) {
-    mergeDesktopV3DurableCachePatch(options.queryClient, {
+  if (sessionApi === "v3") {
+    mergeDesktopDBDurablePatch({
       sessionId: normalizedSessionId,
       messages: result.messages,
       appliedSeq: result.appliedSeq,

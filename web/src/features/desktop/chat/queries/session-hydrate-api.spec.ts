@@ -599,19 +599,69 @@ test('DesktopAppPage derives route readiness and cached switching from TanStack 
   assert.doesNotMatch(source, new RegExp('v3session' + '_'))
 })
 
-test('Desktop realtime reconciles through canonical V3 snapshots only', async () => {
+test('Desktop realtime applies durable session events into TanStack DB', async () => {
   const source = await readFile(new URL('../../state/use-desktop-store.ts', import.meta.url), 'utf8')
 
-  assert.match(source, /hydrateDesktopV3WorksetSession\(queryClient, normalizedSessionId\)/)
-  assert.match(source, /getCachedDesktopV3SessionSnapshot\(queryClient, sessionId\)/)
-  assert.match(source, /if \(eventType\.startsWith\('session\.'\) && hasCanonicalV3Snapshot\)/)
-  assert.match(source, /invalidateQueries\(\{ queryKey: desktopV3SessionSnapshotQueryKey\(normalizedSessionId\) \}\)/)
-  assert.match(source, /requestScopedSessionWorkset\(sessionId\)/)
+  assert.match(source, /applyDurableEventToDesktopDB\(message\.event \?\? \{\}\)/)
+  assert.match(source, /const backendDerivedDesktopEvent = eventType\.startsWith\('session\.'\) \|\| eventType\.startsWith\('permission\.'\)/)
+  assert.match(source, /if \(backendDerivedDesktopEvent\) \{\n\s+set\(\(state\) => \(\{ lastGlobalSeq:/)
+  assert.doesNotMatch(source, /set\(\(state\) => applyEnvelope\(state, message\.event \?\? \{\}\)\)\n\s+const payload/)
+  assert.doesNotMatch(source, /mergeDesktopV3DurableCachePatch\(queryClient/)
   assert.doesNotMatch(source, /requestAuthoritativeSessionSnapshot/)
   assert.doesNotMatch(source, /fetchSession\(/)
   assert.doesNotMatch(source, /fetchSessionPendingPermissions|fetchSessionUsageSummary/)
   assert.doesNotMatch(source, /\/v1\/sessions|\/v2\/sessions/)
   assert.doesNotMatch(source, new RegExp('v3session' + '_'))
+
+  const {
+    applyDurableEventToDesktopDB,
+    desktopMessagesCollection,
+    desktopRunIntentsCollection,
+    desktopSessionsCollection,
+    readDesktopDbMessages,
+    readDesktopDbSession,
+  } = await import('../../state/desktop-db')
+
+  const sessionId = 'session-db-realtime'
+  if (desktopSessionsCollection.has(sessionId)) {
+    desktopSessionsCollection.delete(sessionId)
+  }
+  if (desktopRunIntentsCollection.has(sessionId)) {
+    desktopRunIntentsCollection.delete(sessionId)
+  }
+  for (const message of Array.from(desktopMessagesCollection.values())) {
+    if (message.sessionId === sessionId) {
+      const key = desktopMessagesCollection.getKeyFromItem(message)
+      if (desktopMessagesCollection.has(key)) {
+        desktopMessagesCollection.delete(key)
+      }
+    }
+  }
+
+  applyDurableEventToDesktopDB({
+    global_seq: 41,
+    event_type: 'session.run_intent.recorded',
+    entity_id: sessionId,
+    ts_unix_ms: 410,
+    payload: {
+      session_id: sessionId,
+      run_intent: { session_id: sessionId, run_id: 'run-db', status: 'pending_executor', created_at: 123, updated_at: 124, event_seq: 41 },
+    },
+  })
+  applyDurableEventToDesktopDB({
+    global_seq: 42,
+    event_type: 'session.message.appended',
+    entity_id: sessionId,
+    ts_unix_ms: 420,
+    payload: {
+      session_id: sessionId,
+      message: { id: 'msg-db-1', session_id: sessionId, global_seq: 42, role: 'assistant', content: 'db durable', created_at: 420 },
+    },
+  })
+
+  assert.equal(readDesktopDbSession(sessionId)?.runIntent?.runId, 'run-db')
+  assert.equal(readDesktopDbSession(sessionId)?.live.startedAt, 123)
+  assert.deepEqual(readDesktopDbMessages(sessionId).map((message) => message.id), ['msg-db-1'])
 })
 
 test('Desktop V3 has no standalone permission list or usage subresource helpers', async () => {

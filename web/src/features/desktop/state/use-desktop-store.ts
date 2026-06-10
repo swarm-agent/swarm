@@ -25,7 +25,7 @@ import { gitStatusQueryKey } from '../git/api'
 import { agentStateQueryOptions, sessionMessagesQueryOptions, sessionPreferenceQueryKey, uiSettingsQueryKey } from '../../queries/query-options'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { mergeMessageIntoCache } from '../chat/services/message-cache'
-import { mergeDesktopV3DurableCachePatch } from './desktop-v3-durable-reducer'
+import { applyDurableEventToDesktopDB, mergeDesktopDBDurablePatch } from './desktop-db'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import { normalizeSwarmSettings, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import {
@@ -1484,18 +1484,6 @@ function updateMessagesCache(sessionId: string, message: ChatMessageRecord, afte
   deferDesktopCacheMutation('message cache sync', () => {
     queryClient.setQueryData(sessionMessagesQueryOptions(sessionId).queryKey, (current: ChatMessageRecord[] | undefined) => mergeMessageIntoCache(current, message))
     afterSync?.()
-  })
-}
-
-function mergeMessagesCache(sessionId: string, messages: ChatMessageRecord[], cursor?: { appliedSeq?: number; highWatermark?: number }): void {
-  if (messages.length === 0 && !cursor) {
-    return
-  }
-  mergeDesktopV3DurableCachePatch(queryClient, {
-    sessionId,
-    messages,
-    appliedSeq: cursor?.appliedSeq,
-    highWatermark: cursor?.highWatermark,
   })
 }
 
@@ -3083,7 +3071,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
         } else {
           updateMessagesCache(normalized.sessionId, normalized)
         }
-        mergeDesktopV3DurableCachePatch(queryClient, {
+        mergeDesktopDBDurablePatch({
           sessionId: normalized.sessionId,
           messages: [normalized],
           appliedSeq: envelopeSeq,
@@ -3106,7 +3094,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
     merged = { ...merged, lifecycle: null }
   }
   sessions[sessionId] = merged
-  mergeDesktopV3DurableCachePatch(queryClient, {
+  mergeDesktopDBDurablePatch({
     sessionId,
     session: merged,
     appliedSeq: envelopeSeq,
@@ -3657,10 +3645,16 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
           if (message.type !== 'event' || !message.event) {
             return
           }
-          set((state) => applyEnvelope(state, message.event ?? {}))
+          applyDurableEventToDesktopDB(message.event ?? {})
           const payload = message.event.payload && typeof message.event.payload === 'object' ? message.event.payload as Record<string, unknown> : null
           const sessionId = typeof payload?.session_id === 'string' ? payload.session_id : ''
           const eventType = typeof message.event.event_type === 'string' ? message.event.event_type : ''
+          const backendDerivedDesktopEvent = eventType.startsWith('session.') || eventType.startsWith('permission.')
+          if (backendDerivedDesktopEvent) {
+            set((state) => ({ lastGlobalSeq: Math.max(state.lastGlobalSeq, message.event?.global_seq ?? 0) }))
+          } else {
+            set((state) => applyEnvelope(state, message.event ?? {}))
+          }
           if (sessionId && eventType === 'permission.summary.updated') {
             requestScopedSessionWorkset(sessionId)
           }
@@ -3903,7 +3897,10 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
             result.runIntent?.eventSeq ?? 0,
             ...committedMessages.map((message) => message.globalSeq),
           )
-          mergeMessagesCache(targetSessionId, committedMessages, {
+          mergeDesktopDBDurablePatch({
+            sessionId: targetSessionId,
+            session: result.session ?? null,
+            messages: committedMessages,
             appliedSeq: committedAppliedSeq,
             highWatermark: Math.max(result.session?.projectionHighWatermarkSeq ?? 0, committedAppliedSeq),
           })
