@@ -2067,8 +2067,15 @@ export function DesktopAppPage() {
 
   const desktopV3WorksetScopeKey = useMemo(() => {
     const workspacePaths = mergedSidebarWorkspaceEntries.map((workspace) => workspace.path).sort()
-    return `${routeSessionId.trim()}\u0000${workspacePaths.join('\u0000')}`
-  }, [mergedSidebarWorkspaceEntries, routeSessionId])
+    return workspacePaths.join('\u0000')
+  }, [mergedSidebarWorkspaceEntries])
+
+  const applyDesktopV3WorksetSessions = useCallback((sessions: DesktopSessionRecord[]) => {
+    for (const session of sessions) {
+      upsertSession(session)
+      syncWorkspaceOverviewSession(queryClient, session)
+    }
+  }, [queryClient, upsertSession])
 
   useEffect(() => {
     const epoch = desktopV3BootstrapEpochRef.current + 1
@@ -2076,24 +2083,12 @@ export function DesktopAppPage() {
     let cancelled = false
     const isCurrentEpoch = () => !cancelled && desktopV3BootstrapEpochRef.current === epoch
     const abortController = new AbortController()
-    const routeCriticalSessionId = routeSessionId.trim()
     const workspacePaths = mergedSidebarWorkspaceEntries.map((workspace) => workspace.path).filter((path) => path.trim() !== '')
 
     setDesktopV3Bootstrap({ status: 'running', epoch, error: null })
     debugLog('desktop-app-page', 'effect:v3-workset-bootstrap', {
-      routeSessionId: routeCriticalSessionId,
       workspaceCount: workspacePaths.length,
     })
-
-    const applyWorksetSessions = (sessions: DesktopSessionRecord[]) => {
-      if (!isCurrentEpoch()) {
-        return
-      }
-      for (const session of sessions) {
-        upsertSession(session)
-        syncWorkspaceOverviewSession(queryClient, session)
-      }
-    }
 
     const bootstrapTasks: Promise<void>[] = [
       queryClient.ensureQueryData(agentStateQueryOptions()).then(() => undefined),
@@ -2104,21 +2099,11 @@ export function DesktopAppPage() {
           history: { mode: 'full', maxMessagesPerSession: 200, maxEventsPerSession: 500, manifestPolicy: 'manifest' },
           responseBudget: { maxBytes: 2 * 1024 * 1024, allowManifest: true },
         }, { signal: abortController.signal })
-        applyWorksetSessions(workset.sessionOrder.map((sessionId) => workset.sessionsById[sessionId]).filter(Boolean))
+        if (isCurrentEpoch()) {
+          applyDesktopV3WorksetSessions(workset.sessionOrder.map((sessionId) => workset.sessionsById[sessionId]).filter(Boolean))
+        }
       }),
     ]
-
-    if (routeCriticalSessionId && !getCachedDesktopV3WorksetSession(queryClient, routeCriticalSessionId)) {
-      bootstrapTasks.push(
-        hydrateDesktopV3Workset(queryClient, {
-          sessionIds: [routeCriticalSessionId],
-          history: { mode: 'full', maxMessagesPerSession: 200, maxEventsPerSession: 500, manifestPolicy: 'manifest' },
-          responseBudget: { maxBytes: 2 * 1024 * 1024, allowManifest: true },
-        }, { signal: abortController.signal }).then((workset) => {
-          applyWorksetSessions(workset.sessionOrder.map((sessionId) => workset.sessionsById[sessionId]).filter(Boolean))
-        }),
-      )
-    }
 
     void Promise.allSettled(bootstrapTasks).then((results) => {
       if (!isCurrentEpoch()) {
@@ -2138,7 +2123,37 @@ export function DesktopAppPage() {
       cancelled = true
       abortController.abort()
     }
-  }, [desktopV3WorksetScopeKey, queryClient, routeSessionId, upsertSession])
+  }, [applyDesktopV3WorksetSessions, desktopV3WorksetScopeKey, queryClient])
+
+  useEffect(() => {
+    const routeCriticalSessionId = routeSessionId.trim()
+    if (!routeCriticalSessionId || getCachedDesktopV3WorksetSession(queryClient, routeCriticalSessionId)) {
+      return
+    }
+    if (desktopV3Bootstrap.status !== 'ready' && desktopV3Bootstrap.status !== 'error') {
+      return
+    }
+
+    const abortController = new AbortController()
+    debugLog('desktop-app-page', 'effect:v3-workset-route-gap', { routeSessionId: routeCriticalSessionId })
+    void hydrateDesktopV3Workset(queryClient, {
+      sessionIds: [routeCriticalSessionId],
+      history: { mode: 'full', maxMessagesPerSession: 200, maxEventsPerSession: 500, manifestPolicy: 'manifest' },
+      responseBudget: { maxBytes: 2 * 1024 * 1024, allowManifest: true },
+    }, { signal: abortController.signal }).then((workset) => {
+      if (!abortController.signal.aborted) {
+        applyDesktopV3WorksetSessions(workset.sessionOrder.map((sessionId) => workset.sessionsById[sessionId]).filter(Boolean))
+      }
+    }).catch((error) => {
+      if (!abortController.signal.aborted) {
+        console.error('[desktop-app] failed to hydrate route desktop v3 workset data', error)
+      }
+    })
+
+    return () => {
+      abortController.abort()
+    }
+  }, [applyDesktopV3WorksetSessions, desktopV3Bootstrap.status, queryClient, routeSessionId])
 
   const routeSession = routeSessionId
     ? readDesktopV3CachedSession(queryClient, routeSessionId)
@@ -2335,7 +2350,7 @@ export function DesktopAppPage() {
     })
   }, [navigate, routeSession?.id, routeSession?.workspacePath, routeSessionId, routeWorkspaceSlug, workspaceSlugByPath])
 
-  const handleSelectSession = useCallback(async (sessionId: string) => {
+  const handleSelectSession = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()
     const session = readDesktopV3CachedSession(queryClient, normalizedSessionId) ?? sessionById.get(normalizedSessionId)
     if (!session?.workspacePath) {

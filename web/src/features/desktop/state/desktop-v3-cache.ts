@@ -974,6 +974,14 @@ export function getCachedDesktopV3SessionSnapshot(queryClient: QueryClient, sess
   return queryClient.getQueryData<DesktopV3SessionSnapshot>(desktopV3SessionSnapshotQueryKey(normalizedSessionId)) ?? null
 }
 
+export function getCachedDesktopV3SessionSnapshotOnly(queryClient: QueryClient, sessionId: string): DesktopV3SessionSnapshot | null {
+  const normalizedSessionId = sessionId.trim()
+  if (!normalizedSessionId) {
+    return null
+  }
+  return queryClient.getQueryData<DesktopV3SessionSnapshot>(desktopV3SessionSnapshotQueryKey(normalizedSessionId)) ?? null
+}
+
 export function readDesktopV3CachedSession(queryClient: QueryClient, sessionId: string): DesktopSessionRecord | null {
   return getCachedDesktopV3WorksetSession(queryClient, sessionId) ?? getCachedDesktopV3SessionSnapshot(queryClient, sessionId)?.session ?? null
 }

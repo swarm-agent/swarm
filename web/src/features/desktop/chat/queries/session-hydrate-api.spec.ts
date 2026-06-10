@@ -372,9 +372,9 @@ test('Desktop V3 permission resolve uses Sessions API v3 only', async () => {
 })
 
 
-test('Desktop V3 session switching prewarm uses background React Query workset hydration', async () => {
+test('Desktop V3 session switching prewarm uses background React Query workset hydration only for uncached sessions', async () => {
   const { ensureSessionRuntimeData, prefetchSessionRuntimeData, sessionMessagesQueryKey } = await import('../../../queries/query-options')
-  const { desktopV3SessionQueryKey, readDesktopV3CachedSession } = await import('../../state/desktop-v3-cache')
+  const { desktopV3SessionQueryKey, hydrateDesktopV3Workset, readDesktopV3CachedSession } = await import('../../state/desktop-v3-cache')
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -393,6 +393,21 @@ test('Desktop V3 session switching prewarm uses background React Query workset h
     assert.deepEqual(
       queryClient.getQueryData<Array<{ id: string }>>(sessionMessagesQueryKey('session-switch'))?.map((message) => message.id),
       ['session-switch-msg-1'],
+    )
+  })
+
+  await withFetchStub(async (calls) => {
+    await hydrateDesktopV3Workset(queryClient, { sessionIds: ['session-cached-switch'] })
+    assert.deepEqual(requestUrls(calls), ['/v3/sessions:workset'])
+
+    await prefetchSessionRuntimeData(queryClient, 'session-cached-switch')
+    await ensureSessionRuntimeData(queryClient, 'session-cached-switch')
+
+    assert.deepEqual(requestUrls(calls), ['/v3/sessions:workset'])
+    assert.equal(readDesktopV3CachedSession(queryClient, 'session-cached-switch')?.id, 'session-cached-switch')
+    assert.deepEqual(
+      queryClient.getQueryData<Array<{ id: string }>>(sessionMessagesQueryKey('session-cached-switch'))?.map((message) => message.id),
+      ['session-cached-switch-msg-1'],
     )
   })
 
@@ -569,13 +584,16 @@ test('DesktopAppPage must keep route-critical load out of sidebar/background V3 
   assert.match(source, /hydrateDesktopV3Workset\(queryClient, \{/)
   assert.match(source, /workspacePath,/)
   assert.match(source, /recent: \{ limit: 50 \}/)
+  assert.match(source, /effect:v3-workset-route-gap/)
   assert.match(source, /sessionIds: \[routeCriticalSessionId\]/)
   assert.match(source, /readDesktopV3CachedSession\(queryClient, routeSessionId\)/)
+  assert.match(source, /const handleSelectSession = useCallback\(\(sessionId: string\) => \{/)
   assert.match(source, /const session = readDesktopV3CachedSession\(queryClient, normalizedSessionId\) \?\? sessionById\.get\(normalizedSessionId\)/)
   assert.match(source, /desktopV3WorksetHasOmission\(queryClient, normalizedSessionId\)/)
   assert.doesNotMatch(source, /routeSessionSnapshotQuery/)
   assert.doesNotMatch(source, /backgroundBootstrapSessionIds/)
   assert.doesNotMatch(source, /await hydrateDesktopV3SessionSnapshot\(queryClient, normalizedSessionId\)/)
+  assert.doesNotMatch(source, /const handleSelectSession = useCallback\(async/)
   assert.match(source, /PAIRING_REQUEST_INITIAL_REFRESH_DELAY_MS = 1_250/)
   assert.match(source, /window\.setTimeout\(refreshPairingRequests, PAIRING_REQUEST_INITIAL_REFRESH_DELAY_MS\)/)
   assert.doesNotMatch(source, /addSessionId\(routeSessionId\)/)

@@ -1,6 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { fetchAgentState, fetchAgentToolContract, fetchDraftModelPreference, fetchModelOptions } from '../desktop/chat/queries/chat-queries'
-import { desktopV3SessionQueryKey, desktopV3SessionQueryOptions, ensureDesktopV3SessionSnapshot, writeDesktopV3SessionSnapshot, type DesktopV3SessionSnapshot } from '../desktop/state/desktop-v3-cache'
+import { desktopV3SessionQueryKey, desktopV3SessionQueryOptions, ensureDesktopV3SessionSnapshot, getCachedDesktopV3SessionSnapshotOnly, writeDesktopV3SessionSnapshot, type DesktopV3SessionSnapshot } from '../desktop/state/desktop-v3-cache'
 import { getUISettings } from '../desktop/settings/swarm/queries/get-ui-settings'
 import { fetchWorkspaceOverview } from '../workspaces/launcher/queries/fetch-workspace-overview'
 
@@ -125,6 +125,12 @@ export function ensureSessionRuntimeData(queryClient: QueryClient, sessionId: st
 export function prefetchSessionRuntimeData(queryClient: QueryClient, sessionId: string) {
   const normalizedSessionId = sessionId.trim()
   if (!normalizedSessionId) {
+    return Promise.resolve()
+  }
+
+  const cachedSnapshot = getCachedDesktopV3SessionSnapshotOnly(queryClient, normalizedSessionId)
+  if (cachedSnapshot) {
+    writeDesktopV3SessionSnapshot(queryClient, cachedSnapshot)
     return Promise.resolve()
   }
 
