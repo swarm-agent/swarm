@@ -88,6 +88,13 @@ func (s *Service) HydrateSessionSnapshot(sessionID string, messageLimit, eventLi
 	return s.store.HydrateV3SessionSnapshot(sessionID, messageLimit, eventLimit)
 }
 
+func (s *Service) BuildSessionWorkset(options pebblestore.V3SessionWorksetOptions) (pebblestore.V3SessionWorksetResult, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.V3SessionWorksetResult{}, errors.New("session store is not configured")
+	}
+	return s.store.BuildV3SessionWorkset(options)
+}
+
 func (s *Service) ReplaySessionEvents(sessionID string, afterSeq uint64, limit int) (SessionReplay, error) {
 	if s == nil || s.store == nil {
 		return SessionReplay{}, errors.New("session store is not configured")
