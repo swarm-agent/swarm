@@ -14,8 +14,8 @@ import { useWorkspaceLauncher } from '../../workspaces/launcher/state/use-worksp
 import { applyDesktopRouteTheme } from './desktop-theme-controller'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
 import { agentStateQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
-import { desktopV3WorksetHasOmission, getCachedDesktopV3WorksetSession, hydrateDesktopV3Workset, readDesktopV3CachedSession } from '../state/desktop-v3-cache'
-import { readDesktopDbSession, useDesktopWorkspaceSessions } from '../state/desktop-db'
+import { hydrateDesktopV3Workset } from '../state/desktop-v3-cache'
+import { ensureDesktopDBRouteSession, readDesktopDbSession, useDesktopRouteReadiness, useDesktopSession, useDesktopWorkspaceSessions } from '../state/desktop-db'
 import type { DesktopSessionRecord } from '../types/realtime'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
 import { DesktopQuickSettingsModal, type QuickSettingsTabID } from '../settings/components/desktop-quick-settings-modal'
@@ -46,7 +46,6 @@ import { fetchSwarmTargets, selectSwarmTarget, type SwarmTarget } from '../swarm
 import { fetchRemoteDeploySessions, type RemoteDeploySession } from '../swarm/api/deploy-container'
 import { approveRemoteSwarmPairing, fetchPendingRemoteSwarmPairings, type RemoteSwarmPendingPairing } from '../onboarding/api'
 import { ManagedHostLinkRequestModal, activePendingPairings, managedHostTargetFromPairingResult } from '../swarm/components/managed-host-link-request-modal'
-import { mapDesktopSession } from '../chat/queries/chat-queries'
 import { buildDesktopChatRouteOptions, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../chat/services/chat-routing'
 import { fetchGitStatus, gitStatusQueryKey, startGitRealtime } from '../git/api'
 import type { GitFileStatus, GitSnapshot } from '../git/types'
@@ -68,7 +67,6 @@ const MOBILE_SIDEBAR_SWIPE_EDGE_PX = 28
 const MOBILE_SIDEBAR_SWIPE_MIN_X_PX = 72
 const MOBILE_SIDEBAR_SWIPE_MAX_Y_PX = 48
 type MobileSidebarSwipeState = { startX: number; startY: number; tracking: boolean; completed: boolean; mode: 'open' | 'close' }
-type DesktopV3BootstrapState = { status: 'idle' | 'running' | 'ready' | 'error'; epoch: number; error: string | null }
 const UPDATE_STATUS_REFETCH_INTERVAL_MS = 5 * 60_000
 const SWARM_TARGET_REFETCH_INTERVAL_MS = 10_000
 const PAIRING_REQUEST_INITIAL_REFRESH_DELAY_MS = 1_250
@@ -1499,12 +1497,11 @@ export function DesktopAppPage() {
   const [localContainerUpdateConfirm, setLocalContainerUpdateConfirm] = useState<LocalContainerUpdateConfirmState | null>(null)
   const [todoSavingWorkspacePath, setTodoSavingWorkspacePath] = useState<string | null>(null)
   const [workspaceLayout, setWorkspaceLayout] = useState<Record<string, SidebarWorkspaceLayout>>(() => loadSidebarWorkspaceLayout())
-  const [desktopV3Bootstrap, setDesktopV3Bootstrap] = useState<DesktopV3BootstrapState>({ status: 'idle', epoch: 0, error: null })
   const [sidebarNow, setSidebarNow] = useState(() => Date.now())
   const sidebarBodyRef = useRef<HTMLDivElement | null>(null)
   const mobileSidebarSwipeRef = useRef<MobileSidebarSwipeState | null>(null)
   const resizeStateRef = useRef<SidebarResizeState | null>(null)
-  const desktopV3BootstrapEpochRef = useRef(0)
+  const desktopV3WorksetBootstrapEpochRef = useRef(0)
   const workspaceByPath = useMemo<Map<string, WorkspaceEntry>>(
     () => new Map(workspaces.map((workspace) => [workspace.path, workspace] as const)),
     [workspaces],
@@ -1532,15 +1529,14 @@ export function DesktopAppPage() {
     }
     return buildTemporaryWorkspaceEntry(candidatePath, workspaceName)
   }, [activeWorkspacePath, routeSessionId, routeWorkspace, routeWorkspaceSlug, workspaceByPath])
+  const dbRouteSession = useDesktopSession(routeSessionId)
   const cachedRouteSession = useMemo<DesktopSessionRecord | null>(() => {
     if (!routeSessionId) {
       return null
     }
-    return readDesktopV3CachedSession(queryClient, routeSessionId)
-      ?? readDesktopDbSession(routeSessionId)
-      ?? liveSessions[routeSessionId]
+    return dbRouteSession
       ?? null
-  }, [liveSessions, queryClient, routeSessionId])
+  }, [dbRouteSession, routeSessionId])
 
   const selectedWorkspacePath = useMemo<string | null>(() => {
     if (cachedRouteSession?.workspacePath) {
@@ -2083,14 +2079,13 @@ export function DesktopAppPage() {
   }, [queryClient])
 
   useEffect(() => {
-    const epoch = desktopV3BootstrapEpochRef.current + 1
-    desktopV3BootstrapEpochRef.current = epoch
+    const epoch = desktopV3WorksetBootstrapEpochRef.current + 1
+    desktopV3WorksetBootstrapEpochRef.current = epoch
     let cancelled = false
-    const isCurrentEpoch = () => !cancelled && desktopV3BootstrapEpochRef.current === epoch
+    const isCurrentEpoch = () => !cancelled && desktopV3WorksetBootstrapEpochRef.current === epoch
     const abortController = new AbortController()
     const workspacePaths = mergedSidebarWorkspaceEntries.map((workspace) => workspace.path).filter((path) => path.trim() !== '')
 
-    setDesktopV3Bootstrap({ status: 'running', epoch, error: null })
     debugLog('desktop-app-page', 'effect:v3-workset-bootstrap', {
       workspaceCount: workspacePaths.length,
     })
@@ -2117,11 +2112,7 @@ export function DesktopAppPage() {
       }
       const rejected = results.filter((result) => result.status === 'rejected')
       if (rejected.length > 0) {
-        const error = rejected.map((result) => result.reason).join('\n')
         console.error('[desktop-app] failed to hydrate desktop v3 workset bootstrap data', rejected.map((result) => result.reason))
-        setDesktopV3Bootstrap({ status: 'error', epoch, error })
-      } else {
-        setDesktopV3Bootstrap({ status: 'ready', epoch, error: null })
       }
     })
 
@@ -2131,57 +2122,23 @@ export function DesktopAppPage() {
     }
   }, [applyDesktopV3WorksetSessions, desktopV3WorksetScopeKey, queryClient])
 
+  const routeReadiness = useDesktopRouteReadiness({ workspacePath: selectedWorkspacePath }, routeSessionId)
+
   useEffect(() => {
     const routeCriticalSessionId = routeSessionId.trim()
-    if (!routeCriticalSessionId || getCachedDesktopV3WorksetSession(queryClient, routeCriticalSessionId)) {
+    if (!routeCriticalSessionId) {
       return
     }
-    if (desktopV3Bootstrap.status !== 'ready' && desktopV3Bootstrap.status !== 'error') {
-      return
-    }
-
-    const abortController = new AbortController()
-    debugLog('desktop-app-page', 'effect:v3-workset-route-gap', { routeSessionId: routeCriticalSessionId })
-    void hydrateDesktopV3Workset(queryClient, {
-      sessionIds: [routeCriticalSessionId],
-      history: { mode: 'full', maxMessagesPerSession: 200, maxEventsPerSession: 0, manifestPolicy: 'manifest', includeEvents: false },
-    }, { signal: abortController.signal }).then((workset) => {
-      if (!abortController.signal.aborted) {
-        applyDesktopV3WorksetSessions(workset.sessionOrder.map((sessionId) => workset.sessionsById[sessionId]).filter(Boolean))
-      }
-    }).catch((error) => {
-      if (!abortController.signal.aborted) {
-        console.error('[desktop-app] failed to hydrate route desktop v3 workset data', error)
-      }
+    debugLog('desktop-app-page', 'effect:desktop-db-route-readiness', { routeSessionId: routeCriticalSessionId })
+    void ensureDesktopDBRouteSession({ workspacePath: selectedWorkspacePath }, routeCriticalSessionId).catch((error) => {
+      console.error('[desktop-app] failed to reconcile route session readiness', error)
     })
+  }, [routeSessionId, selectedWorkspacePath])
 
-    return () => {
-      abortController.abort()
-    }
-  }, [applyDesktopV3WorksetSessions, desktopV3Bootstrap.status, queryClient, routeSessionId])
-
-  const routeSession = routeSessionId
-    ? readDesktopV3CachedSession(queryClient, routeSessionId)
-      ?? readDesktopDbSession(routeSessionId)
-      ?? liveSessions[routeSessionId]
-      ?? sessionById.get(routeSessionId)
-      ?? null
-    : null
-  const routeFallbackSession = useMemo<DesktopSessionRecord | null>(() => {
-    if (!routeSessionId || !selectedWorkspacePath) {
-      return null
-    }
-    return mapDesktopSession({
-      id: routeSessionId,
-      title: 'Loading session…',
-      workspace_path: selectedWorkspacePath,
-      workspace_name: selectedWorkspace?.workspaceName ?? fallbackWorkspaceNameFromPath(selectedWorkspacePath),
-      mode: 'auto',
-      session_api: 'v3',
-    })
-  }, [routeSessionId, selectedWorkspace?.workspaceName, selectedWorkspacePath])
-
-  const selectedSession = routeSessionId ? routeSession ?? routeFallbackSession : null
+  const routeSession = routeSessionId && routeReadiness?.ready ? dbRouteSession : null
+  const selectedSession = routeSessionId ? routeSession : null
+  const routeReadinessStatus = routeSessionId ? routeReadiness?.status ?? 'loading' : 'idle'
+  const routeSessionUnavailable = Boolean(routeSessionId && !selectedSession && (routeReadinessStatus === 'missing' || routeReadinessStatus === 'omitted' || routeReadinessStatus === 'error'))
 
   useEffect(() => {
     if (!selectedWorkspacePath) {
@@ -2358,7 +2315,7 @@ export function DesktopAppPage() {
 
   const handleSelectSession = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()
-    const session = readDesktopV3CachedSession(queryClient, normalizedSessionId) ?? readDesktopDbSession(normalizedSessionId) ?? sessionById.get(normalizedSessionId)
+    const session = readDesktopDbSession(normalizedSessionId) ?? sessionById.get(normalizedSessionId)
     if (!session?.workspacePath) {
       return
     }
@@ -2373,7 +2330,7 @@ export function DesktopAppPage() {
         sessionId: session.id,
       },
     })
-  }, [navigate, queryClient, sessionById, workspaceSlugByPath])
+  }, [navigate, sessionById, workspaceSlugByPath])
 
   const handleSessionCreated = useCallback((session: DesktopSessionRecord) => {
     setActiveSession(session.id)
@@ -2707,14 +2664,8 @@ export function DesktopAppPage() {
   }, [])
 
   const handlePrefetchSession = useCallback((sessionId: string) => {
-    const normalizedSessionId = sessionId.trim()
-    if (!normalizedSessionId || readDesktopV3CachedSession(queryClient, normalizedSessionId)) {
-      return
-    }
-    if (desktopV3WorksetHasOmission(queryClient, normalizedSessionId)) {
-      return
-    }
-  }, [queryClient])
+    void sessionId
+  }, [])
 
   const handleToggleAgentSessions = useCallback((sessionId: string) => {
     setExpandedAgentSessions((current) => ({
@@ -3440,9 +3391,7 @@ export function DesktopAppPage() {
   return (
     <div
       className="absolute inset-0 flex h-full min-h-0 w-full overflow-hidden bg-[var(--app-surface)] p-0 text-[var(--app-text)]"
-      data-v3-bootstrap-status={desktopV3Bootstrap.status}
-      data-v3-bootstrap-epoch={desktopV3Bootstrap.epoch}
-      data-v3-bootstrap-error={desktopV3Bootstrap.error ?? undefined}
+      data-v3-route-readiness={routeReadinessStatus}
       onTouchStart={handleMobileSidebarTouchStart}
       onTouchMove={handleMobileSidebarTouchMove}
       onTouchEnd={handleMobileSidebarTouchEnd}
@@ -3480,12 +3429,21 @@ export function DesktopAppPage() {
       ) : null}
 
       <main className="flex-1 min-w-0 min-h-0 flex flex-col h-full overflow-hidden sm:pr-[var(--app-safe-area-right)] sm:pl-[var(--app-safe-area-left)]">
-        {routeSessionId && !selectedSession ? (
+        {routeSessionUnavailable ? (
+          <div className="flex h-full flex-1 items-center justify-center px-6">
+            <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">
+              <div className="text-lg font-semibold">Session not available</div>
+              <p className="mt-2 text-sm text-[var(--app-text-muted)]">
+                TanStack DB route readiness marked this session as {routeReadinessStatus}. Refresh the workspace if this session was just created elsewhere.
+              </p>
+            </Card>
+          </div>
+        ) : routeSessionId && !selectedSession ? (
           <div className="flex h-full flex-1 items-center justify-center px-6">
             <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">
               <div className="text-lg font-semibold">{'Loading session…'}</div>
               <p className="mt-2 text-sm text-[var(--app-text-muted)]">
-                Opening the chat shell while the V3 workset cache hydrates in the background.
+                Waiting for TanStack DB route readiness.
               </p>
             </Card>
           </div>

@@ -371,50 +371,26 @@ test('Desktop V3 permission resolve uses Sessions API v3 only', async () => {
 })
 
 
-test('Desktop V3 session switching prewarm uses background React Query workset hydration only for uncached sessions', async () => {
-  const { ensureSessionRuntimeData, prefetchSessionRuntimeData, sessionMessagesQueryKey } = await import('../../../queries/query-options')
-  const { desktopV3SessionQueryKey, hydrateDesktopV3Workset, readDesktopV3CachedSession } = await import('../../state/desktop-v3-cache')
-  const { readDesktopDbMessages, readDesktopDbSession, readDesktopDbSessionReadiness } = await import('../../state/desktop-db')
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  })
+test('Desktop DB direct-route recovery hydrates a missing session through one scoped workset request', async () => {
+  const { ensureDesktopDBRouteSession, readDesktopDbMessages, readDesktopDbSession, readDesktopDbSessionReadiness } = await import('../../state/desktop-db')
 
   await withFetchStub(async (calls) => {
-    await prefetchSessionRuntimeData(queryClient, 'session-switch')
-    await ensureSessionRuntimeData(queryClient, 'session-switch')
+    const readiness = await ensureDesktopDBRouteSession('', 'session-switch')
 
+    assert.equal(readiness.ready, true)
+    assert.equal(readiness.status, 'ready')
     assert.deepEqual(requestUrls(calls), ['/v3/sessions:workset'])
     assert.deepEqual(JSON.parse(String(calls[0]?.init?.body ?? '{}')).session_ids, ['session-switch'])
     assertNoV1OrV2SessionDataCalls(calls)
-    assert.equal(readDesktopV3CachedSession(queryClient, 'session-switch')?.pendingPermissions.length, 1)
-    assert.equal(readDesktopV3CachedSession(queryClient, 'session-switch')?.usage?.totalTokens, 42)
     assert.equal(readDesktopDbSession('session-switch')?.id, 'session-switch')
     assert.equal(readDesktopDbMessages('session-switch').map((message) => message.id).join(','), 'session-switch-msg-1')
     assert.equal(readDesktopDbSessionReadiness('session-switch')?.ready, true)
-    assert.equal(queryClient.getQueryData<{ session?: { id?: string } }>(desktopV3SessionQueryKey('session-switch'))?.session?.id, 'session-switch')
-    assert.equal(readDesktopV3CachedSession(queryClient, 'session-switch')?.id, 'session-switch')
-    assert.deepEqual(
-      queryClient.getQueryData<Array<{ id: string }>>(sessionMessagesQueryKey('session-switch'))?.map((message) => message.id),
-      ['session-switch-msg-1'],
-    )
+    assert.equal(readDesktopDbSessionReadiness('session-switch')?.status, 'ready')
+
+    const callCountAfterDbReady = calls.length
+    await ensureDesktopDBRouteSession('', 'session-switch')
+    assert.equal(calls.length, callCountAfterDbReady, 'DB-ready route/session switching must not fetch')
   })
-
-  await withFetchStub(async (calls) => {
-    await hydrateDesktopV3Workset(queryClient, { sessionIds: ['session-cached-switch'] })
-    assert.deepEqual(requestUrls(calls), ['/v3/sessions:workset'])
-
-    await prefetchSessionRuntimeData(queryClient, 'session-cached-switch')
-    await ensureSessionRuntimeData(queryClient, 'session-cached-switch')
-
-    assert.deepEqual(requestUrls(calls), ['/v3/sessions:workset'])
-    assert.equal(readDesktopV3CachedSession(queryClient, 'session-cached-switch')?.id, 'session-cached-switch')
-    assert.deepEqual(
-      queryClient.getQueryData<Array<{ id: string }>>(sessionMessagesQueryKey('session-cached-switch'))?.map((message) => message.id),
-      ['session-cached-switch-msg-1'],
-    )
-  })
-
-  queryClient.clear()
 })
 
 test('Desktop V3 workset hydration restores active run intent from the canonical route source', async () => {
@@ -583,18 +559,25 @@ test('Desktop route loader does not block route commit on the V3 session snapsho
   assert.doesNotMatch(routerSource, new RegExp('v3session' + '_'))
 })
 
-test('DesktopAppPage must keep route-critical load out of sidebar/background V3 hydration', async () => {
+test('DesktopAppPage derives route readiness and cached switching from TanStack DB only', async () => {
   const source = await readFile(new URL('../../layout/desktop-app-page.tsx', import.meta.url), 'utf8')
 
   assert.match(source, /hydrateDesktopV3Workset\(queryClient, \{/)
-  assert.match(source, /workspacePath,/)
+  assert.match(source, /workspacePaths,/)
   assert.match(source, /recent: \{ limit: 50 \}/)
-  assert.match(source, /effect:v3-workset-route-gap/)
-  assert.match(source, /sessionIds: \[routeCriticalSessionId\]/)
-  assert.match(source, /readDesktopV3CachedSession\(queryClient, routeSessionId\)/)
-  assert.match(source, /const handleSelectSession = useCallback\(\(sessionId: string\) => \{/)
-  assert.match(source, /const session = readDesktopV3CachedSession\(queryClient, normalizedSessionId\) \?\? readDesktopDbSession\(normalizedSessionId\) \?\? sessionById\.get\(normalizedSessionId\)/)
-  assert.match(source, /desktopV3WorksetHasOmission\(queryClient, normalizedSessionId\)/)
+  assert.match(source, /useDesktopRouteReadiness\(\{ workspacePath: selectedWorkspacePath \}, routeSessionId\)/)
+  assert.match(source, /ensureDesktopDBRouteSession\(\{ workspacePath: selectedWorkspacePath \}, routeCriticalSessionId\)/)
+  assert.match(source, /const routeSession = routeSessionId && routeReadiness\?\.ready \? dbRouteSession : null/)
+  assert.match(source, /const routeReadinessStatus = routeSessionId \? routeReadiness\?\.status \?\? 'loading' : 'idle'/)
+  assert.match(source, /const session = readDesktopDbSession\(normalizedSessionId\) \?\? sessionById\.get\(normalizedSessionId\)/)
+  assert.match(source, /data-v3-route-readiness=/)
+  assert.doesNotMatch(source, /desktopV3Bootstrap/)
+  assert.doesNotMatch(source, /DesktopV3BootstrapState/)
+  assert.doesNotMatch(source, /effect:v3-workset-route-gap/)
+  assert.doesNotMatch(source, /sessionIds: \[routeCriticalSessionId\]/)
+  assert.doesNotMatch(source, /readDesktopV3CachedSession\(queryClient, routeSessionId\)/)
+  assert.doesNotMatch(source, /getCachedDesktopV3WorksetSession\(queryClient, routeCriticalSessionId\)/)
+  assert.doesNotMatch(source, /desktopV3WorksetHasOmission\(queryClient, normalizedSessionId\)/)
   assert.doesNotMatch(source, /routeSessionSnapshotQuery/)
   assert.doesNotMatch(source, /backgroundBootstrapSessionIds/)
   assert.doesNotMatch(source, /await hydrateDesktopV3SessionSnapshot\(queryClient, normalizedSessionId\)/)

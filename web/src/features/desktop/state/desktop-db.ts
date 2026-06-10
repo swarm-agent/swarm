@@ -147,9 +147,11 @@ export interface DesktopDbSessionEventRecord {
 
 export interface DesktopDbSessionReadinessRecord {
   sessionId: string
+  status: 'loading' | 'ready' | 'omitted' | 'missing' | 'error'
   ready: boolean
   missingResources: string[]
   omittedResources: string[]
+  error: string | null
   updatedAt: number
 }
 
@@ -260,26 +262,63 @@ export function readDesktopDbSessionReadiness(sessionId: string): DesktopDbSessi
 
 export function applyWorksetToDesktopDB(workset: DesktopV3Workset, request: DesktopV3WorksetRequest | null = null): void {
   const now = Date.now()
-  replaceDesktopDbCollection(desktopSessionsCollection, Object.values(workset.sessionsById))
-  replaceDesktopDbCollection(desktopMessagesCollection, Object.values(workset.messagesBySession).flat())
-  replaceDesktopDbCollection(desktopProjectionsCollection, Object.entries(workset.projectionsBySession).map(([sessionId, projection]) => ({ ...projection, sessionId })))
-  replaceDesktopDbCollection(desktopPreferencesCollection, Object.entries(workset.preferencesBySession).map(([sessionId, preference]) => ({ ...preference, sessionId })))
-  replaceDesktopDbCollection(desktopAgentModelPolicyCollection, Object.entries(workset.agentModelPolicyBySession).map(([sessionId, policy]) => ({ sessionId, policy })))
-  replaceDesktopDbCollection(desktopPlansCollection, Object.entries(workset.plansBySession).map(([sessionId, plan]) => ({ sessionId, plan, hasActivePlan: workset.hasActivePlanBySession[sessionId] ?? Boolean(plan) })))
-  replaceDesktopDbCollection(desktopPlanRevisionsCollection, Object.entries(workset.planRevisionsBySession).flatMap(([sessionId, revisions]) => revisions.map((revision) => ({ ...revision, sessionId }))))
-  replaceDesktopDbCollection(desktopPermissionsCollection, Object.values(workset.sessionsById).flatMap((session) => session.pendingPermissions))
-  replaceDesktopDbCollection(desktopUsageCollection, Object.values(workset.sessionsById).map((session) => session.usage).filter((usage): usage is DesktopSessionUsageRecord => Boolean(usage)))
-  replaceDesktopDbCollection(desktopRunIntentsCollection, Object.values(workset.sessionsById).map((session) => session.runIntent).filter((intent): intent is DesktopRunIntentRecord => Boolean(intent)))
-  replaceDesktopDbCollection(desktopEventsCollection, Object.entries(workset.eventsBySession).flatMap(([sessionId, events]) => events.map((event, index) => ({ id: desktopDbEventKey(sessionId, index, event), sessionId, event }))))
-  replaceDesktopDbCollection(desktopHistoryChunksCollection, Object.entries(workset.historyChunksById).map(([chunkId, chunk]) => ({ ...chunk, id: chunk.id || chunkId })))
-  replaceDesktopDbCollection(desktopWorksetOmissionsCollection, workset.omissions)
-  replaceDesktopDbCollection(desktopWorkspacesCollection, desktopDbWorkspacesFromSessions(Object.values(workset.sessionsById)))
-  replaceDesktopDbCollection(desktopSessionReadinessCollection, workset.sessionOrder.map((sessionId) => desktopDbReadySession(sessionId, now)))
+  const requestSessionIds = (request?.sessionIds ?? []).map((sessionId) => sessionId.trim()).filter(Boolean)
+  const sessionScoped = requestSessionIds.length > 0
+  const worksetSessionIds = new Set([...requestSessionIds, ...(workset.sessionOrder.length > 0 ? workset.sessionOrder : Object.keys(workset.sessionsById))])
+  const sessions = Object.values(workset.sessionsById)
+  const messages = Object.values(workset.messagesBySession).flat()
+  const projections = Object.entries(workset.projectionsBySession).map(([sessionId, projection]) => ({ ...projection, sessionId }))
+  const preferences = Object.entries(workset.preferencesBySession).map(([sessionId, preference]) => ({ ...preference, sessionId }))
+  const policies = Object.entries(workset.agentModelPolicyBySession).map(([sessionId, policy]) => ({ sessionId, policy }))
+  const plans = Object.entries(workset.plansBySession).map(([sessionId, plan]) => ({ sessionId, plan, hasActivePlan: workset.hasActivePlanBySession[sessionId] ?? Boolean(plan) }))
+  const planRevisions = Object.entries(workset.planRevisionsBySession).flatMap(([sessionId, revisions]) => revisions.map((revision) => ({ ...revision, sessionId })))
+  const permissions = sessions.flatMap((session) => session.pendingPermissions)
+  const usages = sessions.map((session) => session.usage).filter((usage): usage is DesktopSessionUsageRecord => Boolean(usage))
+  const runIntents = sessions.map((session) => session.runIntent).filter((intent): intent is DesktopRunIntentRecord => Boolean(intent))
+  const events = Object.entries(workset.eventsBySession).flatMap(([sessionId, items]) => items.map((event, index) => ({ id: desktopDbEventKey(sessionId, index, event), sessionId, event })))
+  const historyChunks = Object.entries(workset.historyChunksById).map(([chunkId, chunk]) => ({ ...chunk, id: chunk.id || chunkId }))
+  const workspaces = desktopDbWorkspacesFromSessions(sessions)
+  const readiness = workset.sessionOrder.map((sessionId) => desktopDbReadySession(sessionId, now))
+
+  if (sessionScoped) {
+    replaceDesktopDbRecordsForSessions(desktopSessionsCollection, worksetSessionIds, (session) => session.id, sessions)
+    replaceDesktopDbRecordsForSessions(desktopMessagesCollection, worksetSessionIds, (message) => message.sessionId, messages)
+    replaceDesktopDbRecordsForSessions(desktopProjectionsCollection, worksetSessionIds, (projection) => projection.sessionId ?? projection.session_id ?? '', projections)
+    replaceDesktopDbRecordsForSessions(desktopPreferencesCollection, worksetSessionIds, (preference) => preference.sessionId, preferences)
+    replaceDesktopDbRecordsForSessions(desktopAgentModelPolicyCollection, worksetSessionIds, (policy) => policy.sessionId, policies)
+    replaceDesktopDbRecordsForSessions(desktopPlansCollection, worksetSessionIds, (plan) => plan.sessionId, plans)
+    replaceDesktopDbRecordsForSessions(desktopPlanRevisionsCollection, worksetSessionIds, (revision) => revision.sessionId, planRevisions)
+    replaceDesktopDbRecordsForSessions(desktopPermissionsCollection, worksetSessionIds, (permission) => permission.sessionId, permissions)
+    replaceDesktopDbRecordsForSessions(desktopUsageCollection, worksetSessionIds, (usage) => usage.sessionId, usages)
+    replaceDesktopDbRecordsForSessions(desktopRunIntentsCollection, worksetSessionIds, (intent) => intent.sessionId, runIntents)
+    replaceDesktopDbRecordsForSessions(desktopEventsCollection, worksetSessionIds, (event) => event.sessionId, events)
+    replaceDesktopDbRecordsForSessions(desktopHistoryChunksCollection, worksetSessionIds, (chunk) => chunk.sessionId, historyChunks)
+    replaceDesktopDbRecordsForSessions(desktopWorksetOmissionsCollection, worksetSessionIds, (omission) => omission.sessionId, workset.omissions)
+    upsertDesktopDbWorkspaces(workspaces)
+    upsertDesktopDbRecords(desktopSessionReadinessCollection, readiness)
+  } else {
+    replaceDesktopDbCollection(desktopSessionsCollection, sessions)
+    replaceDesktopDbCollection(desktopMessagesCollection, messages)
+    replaceDesktopDbCollection(desktopProjectionsCollection, projections)
+    replaceDesktopDbCollection(desktopPreferencesCollection, preferences)
+    replaceDesktopDbCollection(desktopAgentModelPolicyCollection, policies)
+    replaceDesktopDbCollection(desktopPlansCollection, plans)
+    replaceDesktopDbCollection(desktopPlanRevisionsCollection, planRevisions)
+    replaceDesktopDbCollection(desktopPermissionsCollection, permissions)
+    replaceDesktopDbCollection(desktopUsageCollection, usages)
+    replaceDesktopDbCollection(desktopRunIntentsCollection, runIntents)
+    replaceDesktopDbCollection(desktopEventsCollection, events)
+    replaceDesktopDbCollection(desktopHistoryChunksCollection, historyChunks)
+    replaceDesktopDbCollection(desktopWorksetOmissionsCollection, workset.omissions)
+    replaceDesktopDbCollection(desktopWorkspacesCollection, workspaces)
+    replaceDesktopDbCollection(desktopSessionReadinessCollection, readiness)
+  }
+
   const meta: DesktopV3WorksetMetaRecord = {
     id: 'desktop-v3-workset',
     source: 'v3-workset',
     endpoint: '/v3/sessions:workset',
-    sessionOrder: workset.sessionOrder,
+    sessionOrder: sessionScoped ? mergeDesktopDbSessionOrder(workset.sessionOrder) : workset.sessionOrder,
     request,
     loadedAt: workset.loadedAt,
   }
@@ -321,9 +360,26 @@ export async function ensureDesktopDBRouteSession(_workspaceScope: DesktopWorksp
     upsertDesktopDbRecord(desktopSessionReadinessCollection, ready)
     return ready
   }
-  const missing = desktopDbMissingSession(normalizedSessionId, Date.now())
-  upsertDesktopDbRecord(desktopSessionReadinessCollection, missing)
-  return missing
+
+  upsertDesktopDbRecord(desktopSessionReadinessCollection, desktopDbPendingSession(normalizedSessionId, Date.now()))
+  try {
+    const { fetchDesktopV3Workset } = await import('./desktop-v3-cache')
+    const request = desktopDbRouteWorksetRequest(normalizedSessionId)
+    const workset = await fetchDesktopV3Workset(request)
+    applyWorksetToDesktopDB(workset, request)
+    if (readDesktopDbSession(normalizedSessionId)) {
+      const ready = desktopDbReadySession(normalizedSessionId, Date.now())
+      upsertDesktopDbRecord(desktopSessionReadinessCollection, ready)
+      return ready
+    }
+    const missing = desktopDbMissingSession(normalizedSessionId, Date.now(), workset.omissions.filter((omission) => omission.sessionId === normalizedSessionId).map((omission) => omission.resource))
+    upsertDesktopDbRecord(desktopSessionReadinessCollection, missing)
+    return missing
+  } catch (error) {
+    const failed = desktopDbErrorSession(normalizedSessionId, Date.now(), error)
+    upsertDesktopDbRecord(desktopSessionReadinessCollection, failed)
+    throw error
+  }
 }
 
 export function useDesktopRouteReadiness(_workspaceScope: DesktopWorkspaceScope, sessionId: string | null | undefined): DesktopDbSessionReadinessRecord | null {
@@ -375,11 +431,26 @@ function useDesktopCollectionState<T extends object>(collection: DesktopDbCollec
 }
 
 function desktopDbReadySession(sessionId: string, updatedAt: number): DesktopDbSessionReadinessRecord {
-  return { sessionId, ready: true, missingResources: [], omittedResources: [], updatedAt }
+  return { sessionId, status: 'ready', ready: true, missingResources: [], omittedResources: [], error: null, updatedAt }
 }
 
-function desktopDbMissingSession(sessionId: string, updatedAt: number): DesktopDbSessionReadinessRecord {
-  return { sessionId, ready: false, missingResources: ['session'], omittedResources: [], updatedAt }
+function desktopDbPendingSession(sessionId: string, updatedAt: number): DesktopDbSessionReadinessRecord {
+  return { sessionId, status: 'loading', ready: false, missingResources: [], omittedResources: [], error: null, updatedAt }
+}
+
+function desktopDbMissingSession(sessionId: string, updatedAt: number, omittedResources: string[] = []): DesktopDbSessionReadinessRecord {
+  return { sessionId, status: omittedResources.length > 0 ? 'omitted' : 'missing', ready: false, missingResources: ['session'], omittedResources, error: null, updatedAt }
+}
+
+function desktopDbErrorSession(sessionId: string, updatedAt: number, error: unknown): DesktopDbSessionReadinessRecord {
+  return { sessionId, status: 'error', ready: false, missingResources: [], omittedResources: [], error: error instanceof Error ? error.message : String(error), updatedAt }
+}
+
+function desktopDbRouteWorksetRequest(sessionId: string): DesktopV3WorksetRequest {
+  return {
+    sessionIds: [sessionId],
+    history: { mode: 'full', maxMessagesPerSession: 200, maxEventsPerSession: 0, manifestPolicy: 'manifest', includeEvents: false },
+  }
 }
 
 function desktopDbWorkspacePaths(workspaceScope: DesktopWorkspaceScope): Set<string> {
@@ -459,4 +530,40 @@ export function replaceDesktopDbCollection<T extends object>(collection: Desktop
   for (const record of records) {
     upsertDesktopDbRecord(collection, record)
   }
+}
+
+function upsertDesktopDbRecords<T extends object>(collection: DesktopDbCollection<T>, records: T[]): void {
+  for (const record of records) {
+    upsertDesktopDbRecord(collection, record)
+  }
+}
+
+function replaceDesktopDbRecordsForSessions<T extends object>(collection: DesktopDbCollection<T>, sessionIds: Set<string>, getSessionId: (record: T) => string, records: T[]): void {
+  for (const record of Array.from(collection.values())) {
+    if (sessionIds.has(getSessionId(record))) {
+      collection.delete(collection.getKeyFromItem(record))
+    }
+  }
+  upsertDesktopDbRecords(collection, records)
+}
+
+function upsertDesktopDbWorkspaces(records: DesktopDbWorkspaceRecord[]): void {
+  for (const record of records) {
+    const current = desktopWorkspacesCollection.get(record.workspacePath)
+    if (!current) {
+      upsertDesktopDbRecord(desktopWorkspacesCollection, record)
+      continue
+    }
+    upsertDesktopDbRecord(desktopWorkspacesCollection, {
+      ...current,
+      workspaceName: record.workspaceName || current.workspaceName,
+      sessionIds: Array.from(new Set([...record.sessionIds, ...current.sessionIds])),
+      updatedAt: Math.max(current.updatedAt, record.updatedAt),
+    })
+  }
+}
+
+function mergeDesktopDbSessionOrder(sessionOrder: string[]): string[] {
+  const existing = desktopWorksetMetaCollection.get('desktop-v3-workset')?.sessionOrder ?? []
+  return Array.from(new Set([...sessionOrder, ...existing]))
 }
