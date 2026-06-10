@@ -46,6 +46,21 @@ test('mergeMessageIntoCache replaces matching pending user message with authorit
   assert.deepEqual(messages, [authoritative])
 })
 
+test('mergeMessageIntoCache matches pending and canonical user messages by client request id', () => {
+  const pending = createPendingUserMessage('session-a', 'same text', 3)
+  const authoritative = message({
+    id: 'msg_00004',
+    sessionId: 'session-a',
+    globalSeq: 4,
+    role: 'user',
+    content: 'edited text',
+    createdAt: 1234,
+    metadata: { client_request_id: pending.metadata?.client_request_id },
+  })
+
+  assert.deepEqual(mergeMessageIntoCache([pending], authoritative), [authoritative])
+})
+
 test('mergeMessageIntoCache isolates identical pending messages by session id', () => {
   const pending = createPendingUserMessage('session-a', 'same text', 3)
   const authoritative = message({

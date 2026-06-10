@@ -17,6 +17,7 @@ import type {
   DesktopSessionRecord,
   DesktopSessionUsageRecord,
 } from '../types/realtime'
+import { mergeMessageIntoCache } from '../chat/services/message-cache'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { appendLiveAssistantSegment } from './live-assistant-segments'
 import { mergeSessionRecords } from './session-records'
@@ -348,8 +349,8 @@ export function mergeDesktopDBDurablePatch(patch: DesktopDbDurablePatch): Deskto
     return null
   }
 
-  for (const message of patch.messages ?? []) {
-    upsertDesktopDbRecord(desktopMessagesCollection, message)
+  if (patch.messages?.length) {
+    mergeDesktopDbMessagesForSession(normalizedSessionId, patch.messages)
   }
 
   const appliedSeq = typeof patch.appliedSeq === 'number' ? Math.max(0, patch.appliedSeq) : 0
@@ -1521,6 +1522,15 @@ function desktopDbPermissionFromDurablePayload(payload: Record<string, unknown>)
 
 function isDesktopNotificationRecord(value: unknown): value is DesktopNotificationRecord {
   return isRecord(value) && typeof value.id === 'string' && typeof value.title === 'string' && typeof value.eventType === 'string'
+}
+
+function mergeDesktopDbMessagesForSession(sessionId: string, incoming: ChatMessageRecord[]): void {
+  if (incoming.length === 0) {
+    return
+  }
+  const current = readDesktopDbMessages(sessionId)
+  const merged = incoming.reduce<ChatMessageRecord[]>((messages, message) => mergeMessageIntoCache(messages, message), current)
+  replaceDesktopDbRecordsForSessions(desktopMessagesCollection, new Set([sessionId]), (message) => message.sessionId, merged)
 }
 
 export function upsertDesktopDbRecord<T extends object>(collection: DesktopDbCollection<T>, record: T): void {

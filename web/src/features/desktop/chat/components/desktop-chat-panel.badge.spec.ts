@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import type { DesktopLiveAssistantSegment, DesktopSessionRecord } from '../../types/realtime'
 import type { ChatMessageRecord } from '../types/chat'
-import { buildLiveToolMessages, desktopChatVirtualItemKey, formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, isSilentSpeechRecognitionError, liveAssistantDraftHasCanonicalReplay, metadataTodoSummary, orderDesktopTimelineItems, resolveMessageAssistantLabel, resolveSessionEffectiveAgentName, retainedAssistantSegmentsWithoutCanonicalReplay, savedRuleCountdownSeconds, sessionUsesReadOnlyFlowIdentity, shouldShowScrollLockReturnButton, visibleDesktopChatMessages } from './desktop-chat-panel'
+import { buildLiveToolMessages, dedupeMessages, desktopChatVirtualItemKey, formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, isSilentSpeechRecognitionError, liveAssistantDraftHasCanonicalReplay, metadataTodoSummary, orderDesktopTimelineItems, resolveMessageAssistantLabel, resolveSessionEffectiveAgentName, retainedAssistantSegmentsWithoutCanonicalReplay, savedRuleCountdownSeconds, sessionUsesReadOnlyFlowIdentity, shouldShowScrollLockReturnButton, visibleDesktopChatMessages } from './desktop-chat-panel'
 
 test('formatAgentTodoBadge shows progress-first badge with active count', () => {
   assert.equal(formatAgentTodoBadge({ taskCount: 6, openCount: 2, inProgressCount: 1, activeText: '' }), '4/6 complete • 1 active')
@@ -416,4 +416,41 @@ test('thinking tags visibility is part of desktop virtual item keys', () => {
   assert.equal(desktopChatVirtualItemKey(baseKey, true), 'thinking-tags:on:message-reasoning-1')
   assert.equal(desktopChatVirtualItemKey(baseKey, false), 'thinking-tags:off:message-reasoning-1')
   assert.notEqual(desktopChatVirtualItemKey(baseKey, true), desktopChatVirtualItemKey(baseKey, false))
+})
+
+test('dedupeMessages reconciles pending user messages without dropping unrelated sequence collisions', () => {
+  const pending = makeMessage({
+    id: 'pending-user:session-1:12',
+    sessionId: 'session-1',
+    globalSeq: 12,
+    role: 'user',
+    content: 'send this',
+    metadata: { client_request_id: 'desktop-v3-message:pending-user:session-1:12' },
+  })
+  const canonical = makeMessage({
+    id: 'msg-user-12',
+    sessionId: 'session-1',
+    globalSeq: 12,
+    role: 'user',
+    content: 'send this',
+    metadata: { client_request_id: 'desktop-v3-message:pending-user:session-1:12' },
+  })
+  const liveTool = makeMessage({
+    id: 'live-tool:call-12',
+    sessionId: 'session-1',
+    globalSeq: 12,
+    role: 'tool',
+    content: '{"path_id":"run.tool-history.v2","tool":"bash","call_id":"call-12"}',
+  })
+  const assistant = makeMessage({
+    id: 'msg-assistant-12',
+    sessionId: 'session-1',
+    globalSeq: 12,
+    role: 'assistant',
+    content: 'working',
+  })
+
+  const deduped = dedupeMessages([pending, liveTool, assistant, canonical])
+
+  assert.deepEqual(deduped.map((message) => message.id), ['msg-user-12', 'live-tool:call-12', 'msg-assistant-12'])
 })

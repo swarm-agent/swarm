@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict'
 import { beforeEach, test } from 'node:test'
 
+import type { ChatMessageRecord } from '../chat/types/chat'
+import { createPendingUserMessage } from '../chat/services/message-cache'
 import type { DesktopSessionRecord } from '../types/realtime'
 
 import {
   applyDurableEventToDesktopDB,
   applyOptimisticRunStartToDesktopDB,
   applyRunIntentToDesktopDB,
+  mergeDesktopDBDurablePatch,
   desktopMessagesCollection,
   desktopRunIntentsCollection,
   desktopSessionsCollection,
@@ -20,6 +23,8 @@ const testSessionIds = [
   'session-db-live-reasoning',
   'session-db-live-tool',
   'session-db-optimistic-run',
+  'session-db-pending-reconcile',
+  'session-db-seq-collision',
 ]
 
 function emptyLiveState(): DesktopSessionRecord['live'] {
@@ -52,6 +57,13 @@ function emptyLiveState(): DesktopSessionRecord['live'] {
     reasoningSegment: 0,
     reasoningStartedAt: null,
     awaitingAck: false,
+  }
+}
+
+function message(input: Partial<ChatMessageRecord> & Pick<ChatMessageRecord, 'id' | 'sessionId' | 'globalSeq' | 'role' | 'content'>): ChatMessageRecord {
+  return {
+    createdAt: input.createdAt ?? input.globalSeq,
+    ...input,
   }
 }
 
@@ -318,6 +330,81 @@ test('Desktop DB durable reducer streams live tool calls and retained completed 
   assert.equal(session?.live.toolHistory?.[0]?.completedAt, 320)
   assert.equal(session?.live.lastEventType, 'session.tool.completed')
   assert.equal(session?.live.seq, 32)
+})
+
+
+test('Desktop DB durable patch replaces matching pending user message with canonical message', () => {
+  const sessionId = 'session-db-pending-reconcile'
+  seedSession(sessionId)
+  const pending = createPendingUserMessage(sessionId, 'send this', 10)
+  upsertDesktopDbRecord(desktopMessagesCollection, pending)
+
+  mergeDesktopDBDurablePatch({
+    sessionId,
+    messages: [message({
+      id: 'msg-canonical-user',
+      sessionId,
+      globalSeq: 11,
+      role: 'user',
+      content: 'send this',
+      createdAt: 1100,
+      metadata: { client_request_id: pending.metadata?.client_request_id },
+    })],
+    appliedSeq: 11,
+    highWatermark: 11,
+  })
+
+  const messages = readDesktopDbMessages(sessionId)
+  assert.deepEqual(messages.map((entry) => entry.id), ['msg-canonical-user'])
+  assert.equal(messages[0]?.metadata?.client_request_id, pending.metadata?.client_request_id)
+})
+
+test('Desktop DB durable patch preserves unrelated live tool messages with same sequence', () => {
+  const sessionId = 'session-db-seq-collision'
+  seedSession(sessionId)
+  upsertDesktopDbRecord(desktopMessagesCollection, message({
+    id: 'live-tool:call-bash',
+    sessionId,
+    globalSeq: 12,
+    role: 'tool',
+    content: '{"path_id":"run.tool-history.v2","tool":"bash","call_id":"call-bash"}',
+    createdAt: 1200,
+    toolMessage: {
+      pathId: 'run.tool-history.v2',
+      tool: 'bash',
+      callId: 'call-bash',
+      target: '',
+      argumentsText: '{}',
+      argumentsJson: {},
+      output: '',
+      completedOutput: '',
+      error: '',
+      durationMs: 0,
+      summary: 'bash',
+      state: 'running',
+      editDiff: null,
+      searchData: null,
+      previewLines: [],
+      taskRows: [],
+    },
+  }))
+
+  mergeDesktopDBDurablePatch({
+    sessionId,
+    messages: [message({
+      id: 'msg-assistant-same-seq',
+      sessionId,
+      globalSeq: 12,
+      role: 'assistant',
+      content: 'working',
+      createdAt: 1210,
+    })],
+    appliedSeq: 12,
+    highWatermark: 12,
+  })
+
+  const ids = readDesktopDbMessages(sessionId).map((entry) => entry.id)
+  assert.deepEqual(ids, ['live-tool:call-bash', 'msg-assistant-same-seq'])
 })
 
 

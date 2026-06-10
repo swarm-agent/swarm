@@ -57,7 +57,7 @@ import {
   resolveDesktopChatRouteFromSession,
 } from '../services/chat-routing'
 import { buildDesktopSlashPaletteState, type DesktopSlashCommand } from '../services/slash-commands'
-import { createPendingUserMessage } from '../services/message-cache'
+import { createPendingUserMessage, mergeMessageIntoCache } from '../services/message-cache'
 import type { SettingsTabID } from '../../settings/types/settings-tabs'
 import type { QuickSettingsTabID } from '../../settings/components/desktop-quick-settings-modal'
 import type { WorkspaceOverviewTopologyRoute } from '../../../workspaces/launcher/types/workspace-overview'
@@ -392,12 +392,8 @@ function messageSort(left: ChatMessageRecord, right: ChatMessageRecord): number 
   return left.globalSeq - right.globalSeq
 }
 
-function dedupeMessages(messages: ChatMessageRecord[]): ChatMessageRecord[] {
-  const map = new Map<number, ChatMessageRecord>()
-  for (const message of messages) {
-    map.set(message.globalSeq, message)
-  }
-  return Array.from(map.values()).sort(messageSort)
+export function dedupeMessages(messages: ChatMessageRecord[]): ChatMessageRecord[] {
+  return messages.reduce<ChatMessageRecord[]>((merged, message) => mergeMessageIntoCache(merged, message), []).sort(messageSort)
 }
 
 function messageRoleLabel(role: string, assistantLabel = 'Swarm'): string {

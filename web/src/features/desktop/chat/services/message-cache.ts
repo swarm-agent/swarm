@@ -15,21 +15,40 @@ export function isPendingUserMessage(message: ChatMessageRecord): boolean {
 
 export function createPendingUserMessage(sessionId: string, prompt: string, baselineSeq: number): ChatMessageRecord {
   const normalizedBaselineSeq = Number.isFinite(baselineSeq) ? Math.max(0, Math.floor(baselineSeq)) : 0
+  const id = `pending-user:${sessionId}:${normalizedBaselineSeq + 1}`
   return {
-    id: `pending-user:${sessionId}:${normalizedBaselineSeq + 1}`,
+    id,
     sessionId,
     globalSeq: normalizedBaselineSeq + 1,
     role: 'user',
     content: prompt,
     createdAt: Date.now(),
+    metadata: { client_request_id: `desktop-v3-message:${id}` },
   }
 }
 
+function messageMetadataString(message: ChatMessageRecord, key: string): string {
+  const value = message.metadata?.[key]
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function messageClientRequestId(message: ChatMessageRecord): string {
+  return messageMetadataString(message, 'client_request_id')
+    || messageMetadataString(message, 'clientRequestId')
+    || messageMetadataString(message, 'request_id')
+    || messageMetadataString(message, 'requestId')
+}
+
 function samePendingUserMessage(left: ChatMessageRecord, right: ChatMessageRecord): boolean {
-  return left.sessionId === right.sessionId
-    && left.role === 'user'
-    && right.role === 'user'
-    && left.content.trim() === right.content.trim()
+  if (left.sessionId !== right.sessionId || left.role !== 'user' || right.role !== 'user') {
+    return false
+  }
+  const leftRequestId = messageClientRequestId(left)
+  const rightRequestId = messageClientRequestId(right)
+  if (leftRequestId && rightRequestId) {
+    return leftRequestId === rightRequestId
+  }
+  return left.content.trim() === right.content.trim()
 }
 
 function isSameCanonicalMessage(left: ChatMessageRecord, right: ChatMessageRecord): boolean {
