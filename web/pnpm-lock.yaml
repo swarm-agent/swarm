@@ -838,6 +838,8 @@ packages:
       yaml:
         optional: true
 
+snapshots:
+
   '@emnapi/core@1.10.0':
     dependencies:
       '@emnapi/wasi-threads': 1.2.1
