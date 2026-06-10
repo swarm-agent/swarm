@@ -724,7 +724,7 @@ function sessionHasPendingPermission(session: DesktopSessionRecord): boolean {
   return sessionPendingPermissionCount(session) > 0
 }
 
-function sessionStatusTone(session: DesktopSessionRecord): 'blocked' | 'running' | 'error' | 'idle' {
+export function sessionStatusTone(session: DesktopSessionRecord): 'blocked' | 'running' | 'error' | 'idle' {
   if (sessionHasPendingPermission(session)) {
     return 'blocked'
   }
@@ -1012,11 +1012,14 @@ function sessionIsActive(session: DesktopSessionRecord): boolean {
 }
 
 function sessionActivityAnchor(session: DesktopSessionRecord): number {
-  return session.live.startedAt
+  const startedAt = session.live.startedAt
     ?? (session.lifecycle?.startedAt && session.lifecycle.startedAt > 0 ? session.lifecycle.startedAt : null)
-    ?? session.live.lastEventAt
-    ?? session.updatedAt
     ?? 0
+  return Math.max(
+    session.live.lastEventAt ?? 0,
+    startedAt,
+    session.updatedAt ?? 0,
+  )
 }
 
 function sessionDurableActivityAt(session: DesktopSessionRecord): number {
@@ -1055,7 +1058,7 @@ function sessionShouldPinInSidebar(session: DesktopSessionRecord, now: number): 
     && sessionSidebarSortAnchor(session) > 0
 }
 
-function compareSidebarSessions(left: DesktopSessionRecord, right: DesktopSessionRecord, now: number): number {
+export function compareSidebarSessions(left: DesktopSessionRecord, right: DesktopSessionRecord, now: number): number {
   const leftPinned = sessionShouldPinInSidebar(left, now)
   const rightPinned = sessionShouldPinInSidebar(right, now)
   if (leftPinned !== rightPinned) {
@@ -1063,7 +1066,13 @@ function compareSidebarSessions(left: DesktopSessionRecord, right: DesktopSessio
   }
 
   if (leftPinned && rightPinned) {
-    const anchorDelta = sessionSidebarSortAnchor(left) - sessionSidebarSortAnchor(right)
+    const leftActive = sessionIsActive(left)
+    const rightActive = sessionIsActive(right)
+    if (leftActive !== rightActive) {
+      return leftActive ? -1 : 1
+    }
+
+    const anchorDelta = sessionSidebarSortAnchor(right) - sessionSidebarSortAnchor(left)
     if (anchorDelta !== 0) {
       return anchorDelta
     }
@@ -1082,18 +1091,18 @@ function compareSidebarSessions(left: DesktopSessionRecord, right: DesktopSessio
   return left.id.localeCompare(right.id)
 }
 
-function sessionStatusDetail(session: DesktopSessionRecord, now: number): string {
+export function sessionStatusDetail(session: DesktopSessionRecord, now: number): string {
   return formatRelativeTime(sessionSidebarDisplayTimestamp(session), now)
 }
 
-function sessionTimerLabel(session: DesktopSessionRecord, now: number): string {
+export function sessionTimerLabel(session: DesktopSessionRecord, now: number): string {
   const activeSince = session.live.startedAt ?? session.live.lastEventAt ?? session.updatedAt
   return typeof activeSince === 'number' && activeSince > 0
     ? formatDurationCompact(now - activeSince)
     : 'live'
 }
 
-function sessionActivityLabel(session: DesktopSessionRecord): string {
+export function sessionActivityLabel(session: DesktopSessionRecord): string {
   if (sessionHasPendingPermission(session)) {
     return 'Needs approval'
   }

@@ -1,0 +1,130 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+
+import type { DesktopSessionRecord } from '../types/realtime'
+import {
+  compareSidebarSessions,
+  sessionActivityLabel,
+  sessionStatusDetail,
+  sessionStatusTone,
+  sessionTimerLabel,
+} from './desktop-app-page'
+
+function makeSession(id: string, overrides: Partial<DesktopSessionRecord> = {}): DesktopSessionRecord {
+  return {
+    id,
+    title: id,
+    workspacePath: '/repo',
+    workspaceName: 'repo',
+    mode: 'auto',
+    metadata: undefined,
+    messageCount: 0,
+    updatedAt: 1_000,
+    createdAt: 500,
+    permissionsHydrated: false,
+    lifecycle: null,
+    live: {
+      runId: null,
+      agentName: null,
+      startedAt: null,
+      status: 'idle',
+      step: 0,
+      toolName: null,
+      toolCallId: null,
+      toolArguments: null,
+      toolOutput: '',
+      retainedToolName: null,
+      retainedToolCallId: null,
+      retainedToolArguments: null,
+      retainedToolOutput: '',
+      retainedToolState: null,
+      toolHistory: [],
+      summary: null,
+      lastEventType: null,
+      lastEventAt: null,
+      error: null,
+      seq: 0,
+      assistantDraft: '',
+      retainedAssistantSegments: [],
+      reasoningSummary: '',
+      reasoningText: '',
+      reasoningState: 'idle',
+      reasoningSegment: 0,
+      reasoningStartedAt: null,
+      awaitingAck: false,
+    },
+    pendingPermissions: [],
+    pendingPermissionCount: 0,
+    usage: null,
+    ...overrides,
+  }
+}
+
+test('sidebar labels are derived from DB live tool state', () => {
+  const session = makeSession('live-tool', {
+    updatedAt: 10_000,
+    live: {
+      ...makeSession('base').live,
+      status: 'running',
+      runId: 'run-live-tool',
+      startedAt: 10_000,
+      lastEventAt: 12_500,
+      lastEventType: 'session.tool.delta',
+      toolName: 'manage-image',
+      toolCallId: 'call-image',
+      summary: 'manage-image',
+    },
+  })
+
+  assert.equal(sessionStatusTone(session), 'running')
+  assert.equal(sessionActivityLabel(session), 'manage-image')
+  assert.equal(sessionTimerLabel(session, 15_250), '5s')
+  assert.equal(sessionStatusDetail(session, 15_250), 'just now')
+})
+
+test('sidebar active sort anchors to latest DB live event, not original run start', () => {
+  const olderRunWithFreshToolEvent = makeSession('older-run-fresh-tool', {
+    updatedAt: 11_000,
+    live: {
+      ...makeSession('base').live,
+      status: 'running',
+      runId: 'run-older',
+      startedAt: 1_000,
+      lastEventAt: 20_000,
+      lastEventType: 'session.tool.delta',
+      toolName: 'bash',
+    },
+  })
+  const newerRunWithoutFreshEvent = makeSession('newer-run-stale', {
+    updatedAt: 19_000,
+    live: {
+      ...makeSession('base').live,
+      status: 'running',
+      runId: 'run-newer',
+      startedAt: 10_000,
+      lastEventAt: 10_500,
+      lastEventType: 'session.assistant.delta',
+    },
+  })
+
+  assert.equal(compareSidebarSessions(olderRunWithFreshToolEvent, newerRunWithoutFreshEvent, 20_500) < 0, true)
+})
+
+test('sidebar active sort keeps active DB sessions pinned above recent idle rows', () => {
+  const active = makeSession('active', {
+    updatedAt: 1_000,
+    live: {
+      ...makeSession('base').live,
+      status: 'running',
+      runId: 'run-active',
+      startedAt: 1_000,
+      lastEventAt: 1_500,
+    },
+  })
+  const recentIdle = makeSession('recent-idle', {
+    updatedAt: 20_000,
+    live: makeSession('base').live,
+  })
+
+  assert.equal(compareSidebarSessions(active, recentIdle, 20_500) < 0, true)
+})

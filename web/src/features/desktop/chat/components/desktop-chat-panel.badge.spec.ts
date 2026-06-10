@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import type { DesktopLiveAssistantSegment, DesktopSessionRecord } from '../../types/realtime'
 import type { ChatMessageRecord } from '../types/chat'
-import { buildLiveToolMessages, dedupeMessages, desktopChatVirtualItemKey, formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, isSilentSpeechRecognitionError, liveAssistantDraftHasCanonicalReplay, metadataTodoSummary, orderDesktopTimelineItems, resolveMessageAssistantLabel, resolveSessionEffectiveAgentName, retainedAssistantSegmentsWithoutCanonicalReplay, savedRuleCountdownSeconds, sessionUsesReadOnlyFlowIdentity, shouldShowScrollLockReturnButton, visibleDesktopChatMessages } from './desktop-chat-panel'
+import { buildLiveToolMessages, dedupeMessages, desktopChatVirtualItemKey, formatAgentTodoBadge, formatMobileAgentTodoBadge, imageSidebarStateFromToolMessage, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, isSilentSpeechRecognitionError, liveAssistantDraftHasCanonicalReplay, metadataTodoSummary, orderDesktopTimelineItems, resolveMessageAssistantLabel, resolveSessionEffectiveAgentName, retainedAssistantSegmentsWithoutCanonicalReplay, savedRuleCountdownSeconds, sessionUsesReadOnlyFlowIdentity, shouldShowScrollLockReturnButton, visibleDesktopChatMessages } from './desktop-chat-panel'
 
 test('formatAgentTodoBadge shows progress-first badge with active count', () => {
   assert.equal(formatAgentTodoBadge({ taskCount: 6, openCount: 2, inProgressCount: 1, activeText: '' }), '4/6 complete • 1 active')
@@ -160,6 +160,45 @@ test('buildLiveToolMessages renders every live tool history entry with stable in
   assert.deepEqual(messages.map((message) => message.callId), ['call-reused', 'call-reused'])
   assert.deepEqual(messages.map((message) => message.toolInstanceId), ['step-1:call-reused', 'step-2:call-reused'])
   assert.deepEqual(messages.map((message) => message.output), ['first output', 'second output'])
+})
+
+test('DB-sourced live manage-image tool messages drive the image sidebar state', () => {
+  const session = makeSession()
+  session.live.toolHistory = [
+    {
+      key: 'session-1\u001frun-image\u001fstep-image\u001fcall-image\u001fstep-image:call-image',
+      sessionId: 'session-1',
+      runId: 'run-image',
+      stepId: 'step-image',
+      callId: 'call-image',
+      toolInstanceId: 'step-image:call-image',
+      toolName: 'manage-image',
+      toolArguments: '{"thread_id":"thread-image","title":"Sidebar image","provider":"openai","model":"gpt-image-1","count":2}',
+      toolOutput: '{"thread_id":"thread-image","status":"generating","saved_count":1,"requested_count":2}',
+      state: 'running',
+      step: 3,
+      seq: 42,
+      startedAt: 40,
+      updatedAt: 42,
+      completedAt: null,
+    },
+  ]
+
+  const [toolMessage] = buildLiveToolMessages(session)
+  const sidebarState = imageSidebarStateFromToolMessage(toolMessage)
+
+  assert.equal(toolMessage?.tool, 'manage-image')
+  assert.equal(toolMessage?.timelineSeq, 42)
+  assert.deepEqual(sidebarState, {
+    open: true,
+    threadId: 'thread-image',
+    title: 'Sidebar image',
+    provider: 'openai',
+    model: 'gpt-image-1',
+    requestedCount: 2,
+    savedCount: 1,
+    status: 'generating',
+  })
 })
 
 test('desktop live timeline orders assistant segments and tool calls by V3 event sequence', () => {

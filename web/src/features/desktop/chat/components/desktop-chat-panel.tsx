@@ -562,7 +562,7 @@ function jsonNumberValue(record: Record<string, unknown> | null | undefined, key
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
-function imageSidebarStateFromToolMessage(toolMessage: NonNullable<ChatMessageRecord['toolMessage']> | null | undefined): ImageSessionSidebarState | null {
+export function imageSidebarStateFromToolMessage(toolMessage: NonNullable<ChatMessageRecord['toolMessage']> | null | undefined): ImageSessionSidebarState | null {
   if (!toolMessage) {
     return null
   }
