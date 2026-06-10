@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import type { DesktopLiveAssistantSegment, DesktopSessionRecord } from '../../types/realtime'
 import type { ChatMessageRecord } from '../types/chat'
-import { buildLiveToolMessages, desktopChatVirtualItemKey, formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, isSilentSpeechRecognitionError, metadataTodoSummary, orderDesktopTimelineItems, resolveMessageAssistantLabel, resolveSessionEffectiveAgentName, retainedAssistantSegmentsWithoutCanonicalReplay, savedRuleCountdownSeconds, sessionUsesReadOnlyFlowIdentity, shouldShowScrollLockReturnButton, visibleDesktopChatMessages } from './desktop-chat-panel'
+import { buildLiveToolMessages, desktopChatVirtualItemKey, formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, isSilentSpeechRecognitionError, liveAssistantDraftHasCanonicalReplay, metadataTodoSummary, orderDesktopTimelineItems, resolveMessageAssistantLabel, resolveSessionEffectiveAgentName, retainedAssistantSegmentsWithoutCanonicalReplay, savedRuleCountdownSeconds, sessionUsesReadOnlyFlowIdentity, shouldShowScrollLockReturnButton, visibleDesktopChatMessages } from './desktop-chat-panel'
 
 test('formatAgentTodoBadge shows progress-first badge with active count', () => {
   assert.equal(formatAgentTodoBadge({ taskCount: 6, openCount: 2, inProgressCount: 1, activeText: '' }), '4/6 complete • 1 active')
@@ -380,6 +380,15 @@ test('desktop chat keeps retained assistant replay segments until matching canon
     retainedAssistantSegmentsWithoutCanonicalReplay(segments, [makeMessage({ role: 'tool', content: 'First streamed answer.' })]).map((segment) => segment.id),
     ['live-assistant:1:1:0'],
   )
+})
+
+test('desktop chat suppresses live assistant draft once matching canonical assistant loads', () => {
+  const messages = [makeMessage({ role: 'assistant', content: 'Hey! What can I help with?' })]
+
+  assert.equal(liveAssistantDraftHasCanonicalReplay('Hey! What can I help with?', messages), true)
+  assert.equal(liveAssistantDraftHasCanonicalReplay(' Hey! What can I help with?\r\n', messages), true)
+  assert.equal(liveAssistantDraftHasCanonicalReplay('Still streaming…', messages), false)
+  assert.equal(liveAssistantDraftHasCanonicalReplay('Hey! What can I help with?', [makeMessage({ role: 'tool', content: 'Hey! What can I help with?' })]), false)
 })
 
 test('desktop chat shows the context compact checkpoint and hides the duplicate ack', () => {

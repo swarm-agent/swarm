@@ -856,6 +856,26 @@ function normalizeAssistantReplayContent(value: string): string {
   return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim()
 }
 
+function canonicalAssistantReplayContents(messages: ChatMessageRecord[]): Set<string> {
+  return new Set(
+    messages
+      .filter((message) => message.role.trim().toLowerCase() === 'assistant')
+      .map((message) => normalizeAssistantReplayContent(message.content))
+      .filter((content) => content !== ''),
+  )
+}
+
+export function liveAssistantDraftHasCanonicalReplay(
+  draft: string,
+  messages: ChatMessageRecord[],
+): boolean {
+  const content = normalizeAssistantReplayContent(draft)
+  if (!content) {
+    return false
+  }
+  return canonicalAssistantReplayContents(messages).has(content)
+}
+
 export function retainedAssistantSegmentsWithoutCanonicalReplay(
   segments: DesktopLiveAssistantSegment[],
   messages: ChatMessageRecord[],
@@ -864,12 +884,7 @@ export function retainedAssistantSegmentsWithoutCanonicalReplay(
     return segments
   }
 
-  const canonicalAssistantContents = new Set(
-    messages
-      .filter((message) => message.role.trim().toLowerCase() === 'assistant')
-      .map((message) => normalizeAssistantReplayContent(message.content))
-      .filter((content) => content !== ''),
-  )
+  const canonicalAssistantContents = canonicalAssistantReplayContents(messages)
 
   if (canonicalAssistantContents.size === 0) {
     return segments
@@ -1556,7 +1571,9 @@ export function DesktopChatPanel({
   )
   const shouldRenderLiveToolMessage = renderableLiveToolMessages.length > 0
   const shouldRenderLiveAssistantDraft =
-    liveAssistantDraft !== '' && !renderableLiveToolMessages.some((message) => message.tool.trim().toLowerCase() === 'task')
+    liveAssistantDraft !== ''
+    && !liveAssistantDraftHasCanonicalReplay(liveAssistantDraft, displayedMessages)
+    && !renderableLiveToolMessages.some((message) => message.tool.trim().toLowerCase() === 'task')
   const loadingMessages = sessionId !== null && messagesQuery.isLoading && messages.length === 0
   const lifecycle = liveSession?.lifecycle ?? null
   const lifecyclePhase = lifecycle?.phase.trim().toLowerCase() ?? ''
