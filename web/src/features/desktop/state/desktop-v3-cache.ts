@@ -4,12 +4,13 @@ import { applyDesktopChatRouteToSession, desktopChatRouteFromSessionMetadata } f
 import { mapDesktopSession, mapDesktopSessionPermission, mapDesktopSessionPlan, mapDesktopSessionPlanRevision, mapDesktopSessionUsageSummary } from '../chat/queries/chat-queries'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
-import type { AgentModelPolicyRecord, ChatMessageRecord, ResolvedSessionPreference } from '../chat/types/chat'
+import type { AgentModelPolicyRecord, ChatMessageRecord, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord, ResolvedSessionPreference } from '../chat/types/chat'
 import type { DesktopRunIntentRecord, DesktopSessionRecord } from '../types/realtime'
 import {
   desktopV3SessionQueryKey,
   desktopV3SessionSnapshotQueryKey,
   mergeDesktopV3DurableCachePatch,
+  mergeDesktopV3Messages,
   type DesktopV3ProjectionCursor,
   type DesktopV3SessionSnapshot,
 } from './desktop-v3-durable-reducer'
@@ -97,6 +98,134 @@ interface V3HydratedSessionResponseWire {
   has_active_plan?: boolean
   active_plan?: unknown
   plan_revisions?: unknown[]
+}
+
+export interface DesktopV3WorksetRequest {
+  sessionIds?: string[]
+  workspacePath?: string
+  recent?: {
+    limit?: number
+    beforeUpdatedAt?: number | null
+    beforeSessionId?: string
+  }
+  history?: {
+    mode?: 'none' | 'tail' | 'full'
+    maxMessagesPerSession?: number
+    maxEventsPerSession?: number
+    manifestPolicy?: 'error' | 'omit' | 'manifest'
+  }
+  responseBudget?: {
+    maxBytes?: number
+    allowManifest?: boolean
+  }
+}
+
+interface V3WorksetRequestWire {
+  session_ids?: string[]
+  workspace?: { workspace_path?: string }
+  recent?: { limit?: number; before_updated_at?: number | null; before_session_id?: string }
+  history?: { mode?: string; max_messages_per_session?: number; max_events_per_session?: number; manifest_policy?: string }
+  response_budget?: { max_bytes?: number; allow_manifest?: boolean }
+}
+
+export interface DesktopV3HistoryChunkDescriptor {
+  chunk_id?: string
+  resource?: string
+  from_seq?: number
+  to_seq?: number
+  message_count?: number
+  event_count?: number
+  byte_estimate?: number
+  complete?: boolean
+}
+
+export interface DesktopV3HistoryChunk {
+  chunk_id?: string
+  resource?: string
+  messages?: V3MessageWire[]
+  events?: unknown[]
+}
+
+export interface DesktopV3WorksetOmission {
+  session_id?: string
+  resource?: string
+  reason?: string
+  next_cursor?: string
+  manifest_ref?: string
+}
+
+export interface DesktopV3WorksetPagination {
+  next_before_updated_at?: number | null
+  next_before_session_id?: string
+  has_more?: boolean
+}
+
+export interface DesktopV3WorksetWatermarks {
+  loaded_at?: number
+  max_updated_at?: number
+}
+
+interface V3WorksetResponseWire {
+  sessions_by_id?: Record<string, V3SessionWire>
+  projections_by_session?: Record<string, V3SessionProjectionWire>
+  messages_by_session?: Record<string, V3MessageWire[]>
+  events_by_session?: Record<string, unknown[]>
+  plans_by_session?: Record<string, unknown>
+  plan_revisions_by_session?: Record<string, unknown[]>
+  permissions_by_session?: Record<string, unknown[]>
+  usage_by_session?: Record<string, unknown>
+  preferences_by_session?: Record<string, V3PreferenceWire>
+  agent_model_policy_by_session?: Record<string, V3AgentModelPolicyWire>
+  run_intents_by_session?: Record<string, V3RunIntentWire[]>
+  history_manifests_by_session?: Record<string, DesktopV3HistoryChunkDescriptor[]>
+  history_chunks_by_id?: Record<string, DesktopV3HistoryChunk>
+  omissions?: DesktopV3WorksetOmission[]
+  pagination?: DesktopV3WorksetPagination
+  watermarks?: DesktopV3WorksetWatermarks
+  budget?: { max_bytes?: number; used_bytes?: number }
+  session_order?: string[]
+}
+
+export interface DesktopV3Workset {
+  source: 'v3-workset'
+  sessionsById: Record<string, DesktopSessionRecord>
+  projectionsBySession: Record<string, DesktopV3ProjectionCursor>
+  messagesBySession: Record<string, ChatMessageRecord[]>
+  eventsBySession: Record<string, unknown[]>
+  preferencesBySession: Record<string, ResolvedSessionPreference>
+  agentModelPolicyBySession: Record<string, AgentModelPolicyRecord | null>
+  hasActivePlanBySession: Record<string, boolean>
+  plansBySession: Record<string, DesktopSessionPlanRecord | null>
+  planRevisionsBySession: Record<string, DesktopSessionPlanRevisionRecord[]>
+  appliedSeqBySession: Record<string, number>
+  highWatermarkBySession: Record<string, number>
+  historyManifestsBySession: Record<string, DesktopV3HistoryChunkDescriptor[]>
+  historyChunksById: Record<string, DesktopV3HistoryChunk>
+  omissions: DesktopV3WorksetOmission[]
+  pagination: DesktopV3WorksetPagination
+  watermarks: DesktopV3WorksetWatermarks
+  budget: { max_bytes?: number; used_bytes?: number }
+  sessionOrder: string[]
+  loadedAt: number
+}
+
+const DEFAULT_WORKSET_HISTORY = {
+  mode: 'full' as const,
+  maxMessagesPerSession: 200,
+  maxEventsPerSession: 500,
+  manifestPolicy: 'manifest' as const,
+}
+const DEFAULT_WORKSET_RESPONSE_BUDGET = {
+  maxBytes: 2 * 1024 * 1024,
+  allowManifest: true,
+}
+
+export function desktopV3WorksetCacheQueryKey() {
+  return ['desktop-v3-workset-cache'] as const
+}
+
+export function desktopV3WorksetQueryKey(scope: string) {
+  return ['desktop-v3-workset', scope.trim()] as const
 }
 
 export function assertRawCanonicalDesktopV3SessionId(sessionId: string): string {
@@ -252,6 +381,22 @@ function applyActiveRunIntent(session: DesktopSessionRecord, runIntent: DesktopR
   }
 }
 
+function latestActiveRunIntent(intents: V3RunIntentWire[] | undefined): V3RunIntentWire | null {
+  if (!Array.isArray(intents) || intents.length === 0) {
+    return null
+  }
+  const active = intents.filter((intent) => v3RunIntentStatusActive(String(intent.status ?? '')))
+  const candidates = active.length > 0 ? active : intents
+  return candidates.reduce<V3RunIntentWire | null>((latest, intent) => {
+    if (!latest) {
+      return intent
+    }
+    const latestSeq = typeof latest.event_seq === 'number' ? latest.event_seq : 0
+    const intentSeq = typeof intent.event_seq === 'number' ? intent.event_seq : 0
+    return intentSeq >= latestSeq ? intent : latest
+  }, null)
+}
+
 export function mapDesktopV3SessionSnapshot(response: V3HydratedSessionResponseWire): DesktopV3SessionSnapshot | null {
   const mappedBaseSession = applyActiveRunIntent(
     mapDesktopSession(mapProjectionToSession(response.session ?? {}, response.projection)),
@@ -278,7 +423,7 @@ export function mapDesktopV3SessionSnapshot(response: V3HydratedSessionResponseW
       pendingPermissionCount: countApprovalRequiredPermissions(pendingPermissions, session.mode),
       usage: mapDesktopSessionUsageSummary(response.usage_summary),
     },
-    messages: Array.isArray(response.messages) ? response.messages.map(mapChatMessage) : [],
+    messages: Array.isArray(response.messages) ? response.messages.map(mapChatMessage).filter((message) => message.id !== '' && message.sessionId !== '') : [],
     events: Array.isArray(response.events) ? response.events : [],
     projection: response.projection ?? null,
     preference: mapDesktopV3SessionPreference(response),
@@ -294,6 +439,327 @@ export function mapDesktopV3SessionSnapshot(response: V3HydratedSessionResponseW
   }
 }
 
+function firstPlanForSession(value: unknown): unknown {
+  return Array.isArray(value) ? value[0] : value
+}
+
+function worksetChunkMessagesForSession(response: V3WorksetResponseWire, sessionId: string): V3MessageWire[] {
+  const chunks = response.history_chunks_by_id ?? {}
+  const messages: V3MessageWire[] = []
+  for (const chunk of Object.values(chunks)) {
+    if (chunk?.resource && chunk.resource !== 'messages') {
+      continue
+    }
+    for (const message of chunk?.messages ?? []) {
+      if (String(message.session_id ?? '').trim() === sessionId) {
+        messages.push(message)
+      }
+    }
+  }
+  return messages
+}
+
+function worksetChunkEventsForSession(response: V3WorksetResponseWire, sessionId: string): unknown[] {
+  const chunks = response.history_chunks_by_id ?? {}
+  const events: unknown[] = []
+  for (const chunk of Object.values(chunks)) {
+    if (chunk?.resource && chunk.resource !== 'events') {
+      continue
+    }
+    for (const event of chunk?.events ?? []) {
+      const record = event && typeof event === 'object' ? event as Record<string, unknown> : null
+      if (!record || String(record.session_id ?? '').trim() === sessionId) {
+        events.push(event)
+      }
+    }
+  }
+  return events
+}
+
+function worksetSessionResponse(response: V3WorksetResponseWire, sessionId: string): V3HydratedSessionResponseWire {
+  const session = response.sessions_by_id?.[sessionId]
+  const projection = response.projections_by_session?.[sessionId]
+  const inlineMessages = response.messages_by_session?.[sessionId] ?? []
+  const chunkMessages = worksetChunkMessagesForSession(response, sessionId)
+  const inlineEvents = response.events_by_session?.[sessionId] ?? []
+  const chunkEvents = worksetChunkEventsForSession(response, sessionId)
+  const activePlan = firstPlanForSession(response.plans_by_session?.[sessionId])
+  const runIntent = latestActiveRunIntent(response.run_intents_by_session?.[sessionId])
+  return {
+    session,
+    projection,
+    messages: [...inlineMessages, ...chunkMessages],
+    events: [...inlineEvents, ...chunkEvents],
+    pending_permissions: response.permissions_by_session?.[sessionId] ?? [],
+    usage_summary: response.usage_by_session?.[sessionId],
+    preference: response.preferences_by_session?.[sessionId] ?? session?.preference,
+    agent_model_policy: response.agent_model_policy_by_session?.[sessionId],
+    active_run_intent: runIntent,
+    has_active_plan: Boolean(activePlan),
+    active_plan: activePlan,
+    plan_revisions: response.plan_revisions_by_session?.[sessionId] ?? [],
+  }
+}
+
+function sessionOrderFromWorkset(response: V3WorksetResponseWire): string[] {
+  const seen = new Set<string>()
+  const ordered: string[] = []
+  for (const sessionId of response.session_order ?? []) {
+    const normalized = sessionId.trim()
+    if (normalized && !seen.has(normalized)) {
+      seen.add(normalized)
+      ordered.push(normalized)
+    }
+  }
+  for (const sessionId of Object.keys(response.sessions_by_id ?? {})) {
+    const normalized = sessionId.trim()
+    if (normalized && !seen.has(normalized)) {
+      seen.add(normalized)
+      ordered.push(normalized)
+    }
+  }
+  return ordered
+}
+
+export function mapDesktopV3Workset(response: V3WorksetResponseWire): DesktopV3Workset {
+  const sessionOrder = sessionOrderFromWorkset(response)
+  const sessionsById: Record<string, DesktopSessionRecord> = {}
+  const projectionsBySession: Record<string, DesktopV3ProjectionCursor> = {}
+  const messagesBySession: Record<string, ChatMessageRecord[]> = {}
+  const eventsBySession: Record<string, unknown[]> = {}
+  const preferencesBySession: Record<string, ResolvedSessionPreference> = {}
+  const agentModelPolicyBySession: Record<string, AgentModelPolicyRecord | null> = {}
+  const hasActivePlanBySession: Record<string, boolean> = {}
+  const plansBySession: Record<string, DesktopSessionPlanRecord | null> = {}
+  const planRevisionsBySession: Record<string, DesktopSessionPlanRevisionRecord[]> = {}
+  const appliedSeqBySession: Record<string, number> = {}
+  const highWatermarkBySession: Record<string, number> = {}
+
+  for (const sessionId of sessionOrder) {
+    const snapshot = mapDesktopV3SessionSnapshot(worksetSessionResponse(response, sessionId))
+    if (!snapshot?.session.id) {
+      continue
+    }
+    sessionsById[snapshot.session.id] = snapshot.session
+    if (snapshot.projection) {
+      projectionsBySession[snapshot.session.id] = snapshot.projection
+    }
+    messagesBySession[snapshot.session.id] = snapshot.messages
+    eventsBySession[snapshot.session.id] = snapshot.events
+    preferencesBySession[snapshot.session.id] = snapshot.preference
+    agentModelPolicyBySession[snapshot.session.id] = snapshot.agentModelPolicy
+    hasActivePlanBySession[snapshot.session.id] = snapshot.hasActivePlan
+    plansBySession[snapshot.session.id] = snapshot.activePlan
+    planRevisionsBySession[snapshot.session.id] = snapshot.planRevisions
+    appliedSeqBySession[snapshot.session.id] = snapshot.appliedSeq
+    highWatermarkBySession[snapshot.session.id] = snapshot.highWatermark
+  }
+
+  return {
+    source: 'v3-workset',
+    sessionsById,
+    projectionsBySession,
+    messagesBySession,
+    eventsBySession,
+    preferencesBySession,
+    agentModelPolicyBySession,
+    hasActivePlanBySession,
+    plansBySession,
+    planRevisionsBySession,
+    appliedSeqBySession,
+    highWatermarkBySession,
+    historyManifestsBySession: response.history_manifests_by_session ?? {},
+    historyChunksById: response.history_chunks_by_id ?? {},
+    omissions: response.omissions ?? [],
+    pagination: response.pagination ?? { has_more: false },
+    watermarks: response.watermarks ?? {},
+    budget: response.budget ?? {},
+    sessionOrder: sessionOrder.filter((sessionId) => Boolean(sessionsById[sessionId])),
+    loadedAt: Date.now(),
+  }
+}
+
+function mergeRecord<T>(current: Record<string, T>, incoming: Record<string, T>): Record<string, T> {
+  return { ...current, ...incoming }
+}
+
+function mergeWorksetMessages(current: Record<string, ChatMessageRecord[]>, incoming: Record<string, ChatMessageRecord[]>): Record<string, ChatMessageRecord[]> {
+  const next = { ...current }
+  for (const [sessionId, messages] of Object.entries(incoming)) {
+    next[sessionId] = mergeDesktopV3Messages(next[sessionId], messages)
+  }
+  return next
+}
+
+function mergeWorksetEvents(current: Record<string, unknown[]>, incoming: Record<string, unknown[]>): Record<string, unknown[]> {
+  return { ...current, ...incoming }
+}
+
+function mergeSessionOrder(current: string[], incoming: string[]): string[] {
+  const seen = new Set<string>()
+  const next: string[] = []
+  for (const sessionId of [...incoming, ...current]) {
+    const normalized = sessionId.trim()
+    if (normalized && !seen.has(normalized)) {
+      seen.add(normalized)
+      next.push(normalized)
+    }
+  }
+  return next
+}
+
+function mergeDesktopV3Worksets(current: DesktopV3Workset | null | undefined, incoming: DesktopV3Workset): DesktopV3Workset {
+  if (!current) {
+    return incoming
+  }
+  return {
+    ...incoming,
+    sessionsById: mergeRecord(current.sessionsById, incoming.sessionsById),
+    projectionsBySession: mergeRecord(current.projectionsBySession, incoming.projectionsBySession),
+    messagesBySession: mergeWorksetMessages(current.messagesBySession, incoming.messagesBySession),
+    eventsBySession: mergeWorksetEvents(current.eventsBySession, incoming.eventsBySession),
+    preferencesBySession: mergeRecord(current.preferencesBySession, incoming.preferencesBySession),
+    agentModelPolicyBySession: mergeRecord(current.agentModelPolicyBySession, incoming.agentModelPolicyBySession),
+    hasActivePlanBySession: mergeRecord(current.hasActivePlanBySession, incoming.hasActivePlanBySession),
+    plansBySession: mergeRecord(current.plansBySession, incoming.plansBySession),
+    planRevisionsBySession: mergeRecord(current.planRevisionsBySession, incoming.planRevisionsBySession),
+    appliedSeqBySession: mergeRecord(current.appliedSeqBySession, incoming.appliedSeqBySession),
+    highWatermarkBySession: mergeRecord(current.highWatermarkBySession, incoming.highWatermarkBySession),
+    historyManifestsBySession: mergeRecord(current.historyManifestsBySession, incoming.historyManifestsBySession),
+    historyChunksById: mergeRecord(current.historyChunksById, incoming.historyChunksById),
+    omissions: [...current.omissions, ...incoming.omissions],
+    sessionOrder: mergeSessionOrder(current.sessionOrder, incoming.sessionOrder),
+    loadedAt: incoming.loadedAt,
+  }
+}
+
+export function desktopV3SessionSnapshotFromWorkset(workset: DesktopV3Workset | null | undefined, sessionId: string): DesktopV3SessionSnapshot | null {
+  const normalizedSessionId = sessionId.trim()
+  if (!workset || !normalizedSessionId) {
+    return null
+  }
+  const session = workset.sessionsById[normalizedSessionId]
+  if (!session) {
+    return null
+  }
+  return {
+    source: 'v3',
+    session,
+    messages: workset.messagesBySession[normalizedSessionId] ?? [],
+    events: workset.eventsBySession[normalizedSessionId] ?? [],
+    projection: workset.projectionsBySession[normalizedSessionId] ?? null,
+    preference: workset.preferencesBySession[normalizedSessionId] ?? mapDesktopV3SessionPreference({ session: { id: session.id, preference: undefined } }),
+    agentModelPolicy: workset.agentModelPolicyBySession[normalizedSessionId] ?? null,
+    hasActivePlan: workset.hasActivePlanBySession[normalizedSessionId] ?? false,
+    activePlan: workset.plansBySession[normalizedSessionId] ?? null,
+    planRevisions: workset.planRevisionsBySession[normalizedSessionId] ?? [],
+    appliedSeq: workset.appliedSeqBySession[normalizedSessionId] ?? Math.max(0, session.lastEventSeq ?? 0),
+    highWatermark: workset.highWatermarkBySession[normalizedSessionId] ?? Math.max(0, session.projectionHighWatermarkSeq ?? session.lastEventSeq ?? 0),
+    hydratedAt: workset.loadedAt,
+  }
+}
+
+export function writeDesktopV3Workset(queryClient: QueryClient, workset: DesktopV3Workset): DesktopV3Workset {
+  const cacheKey = desktopV3WorksetCacheQueryKey()
+  const current = queryClient.getQueryData<DesktopV3Workset>(cacheKey) ?? null
+  const merged = mergeDesktopV3Worksets(current, workset)
+  queryClient.setQueryData(cacheKey, merged)
+  for (const sessionId of workset.sessionOrder) {
+    const snapshot = desktopV3SessionSnapshotFromWorkset(merged, sessionId)
+    if (snapshot) {
+      mergeDesktopV3DurableCachePatch(queryClient, { sessionId, snapshot })
+    }
+  }
+  return merged
+}
+
+export function getCachedDesktopV3Workset(queryClient: QueryClient): DesktopV3Workset | null {
+  return queryClient.getQueryData<DesktopV3Workset>(desktopV3WorksetCacheQueryKey()) ?? null
+}
+
+export function getCachedDesktopV3WorksetSession(queryClient: QueryClient, sessionId: string): DesktopSessionRecord | null {
+  const normalizedSessionId = sessionId.trim()
+  if (!normalizedSessionId) {
+    return null
+  }
+  return getCachedDesktopV3Workset(queryClient)?.sessionsById[normalizedSessionId] ?? null
+}
+
+export function desktopV3WorksetHasOmission(queryClient: QueryClient, sessionId: string, resource?: string): boolean {
+  const normalizedSessionId = sessionId.trim()
+  if (!normalizedSessionId) {
+    return false
+  }
+  const workset = getCachedDesktopV3Workset(queryClient)
+  return Boolean(workset?.omissions.some((omission) => {
+    if (String(omission.session_id ?? '').trim() !== normalizedSessionId) {
+      return false
+    }
+    return !resource || String(omission.resource ?? '').trim() === resource
+  }))
+}
+
+function toWorksetRequestWire(input: DesktopV3WorksetRequest): V3WorksetRequestWire {
+  const sessionIds = (input.sessionIds ?? []).map((sessionId) => sessionId.trim()).filter(Boolean)
+  const workspacePath = input.workspacePath?.trim() ?? ''
+  const recent = input.recent
+  const history = { ...DEFAULT_WORKSET_HISTORY, ...(input.history ?? {}) }
+  const responseBudget = { ...DEFAULT_WORKSET_RESPONSE_BUDGET, ...(input.responseBudget ?? {}) }
+  return {
+    session_ids: sessionIds.length > 0 ? sessionIds : undefined,
+    workspace: workspacePath ? { workspace_path: workspacePath } : undefined,
+    recent: recent
+      ? {
+          limit: recent.limit,
+          before_updated_at: recent.beforeUpdatedAt ?? undefined,
+          before_session_id: recent.beforeSessionId?.trim() || undefined,
+        }
+      : undefined,
+    history: {
+      mode: history.mode,
+      max_messages_per_session: history.maxMessagesPerSession,
+      max_events_per_session: history.maxEventsPerSession,
+      manifest_policy: history.manifestPolicy,
+    },
+    response_budget: {
+      max_bytes: responseBudget.maxBytes,
+      allow_manifest: responseBudget.allowManifest,
+    },
+  }
+}
+
+function assertWorksetSelector(input: DesktopV3WorksetRequest): void {
+  const hasSessionIds = (input.sessionIds ?? []).some((sessionId) => sessionId.trim() !== '')
+  const hasWorkspace = Boolean(input.workspacePath?.trim())
+  const hasRecent = typeof input.recent?.limit === 'number' && input.recent.limit > 0
+  if (!hasSessionIds && !hasWorkspace && !hasRecent) {
+    throw new Error('Desktop V3 workset request requires session ids, workspace path, or recent limit.')
+  }
+}
+
+export async function fetchDesktopV3Workset(input: DesktopV3WorksetRequest, signal?: AbortSignal): Promise<DesktopV3Workset> {
+  assertWorksetSelector(input)
+  const response = await requestJson<V3WorksetResponseWire>(
+    '/v3/sessions:workset',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(toWorksetRequestWire(input)),
+      signal,
+    },
+  )
+  return mapDesktopV3Workset(response)
+}
+
+export async function hydrateDesktopV3Workset(
+  queryClient: QueryClient,
+  input: DesktopV3WorksetRequest,
+  options: { signal?: AbortSignal } = {},
+): Promise<DesktopV3Workset> {
+  const workset = await fetchDesktopV3Workset(input, options.signal)
+  return writeDesktopV3Workset(queryClient, workset)
+}
+
 function requireDesktopV3SessionSnapshot(response: V3HydratedSessionResponseWire, action: string): DesktopV3SessionSnapshot {
   const snapshot = mapDesktopV3SessionSnapshot(response)
   if (!snapshot) {
@@ -302,16 +768,22 @@ function requireDesktopV3SessionSnapshot(response: V3HydratedSessionResponseWire
   return snapshot
 }
 
+export async function hydrateDesktopV3WorksetSession(
+  queryClient: QueryClient,
+  sessionId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<DesktopV3SessionSnapshot | null> {
+  const normalizedSessionId = assertRawCanonicalDesktopV3SessionId(sessionId)
+  const workset = await hydrateDesktopV3Workset(queryClient, { sessionIds: [normalizedSessionId] }, options)
+  return desktopV3SessionSnapshotFromWorkset(workset, normalizedSessionId)
+}
+
 export async function hydrateDesktopV3SessionSnapshot(
   queryClient: QueryClient,
   sessionId: string,
   options: { signal?: AbortSignal } = {},
 ): Promise<DesktopV3SessionSnapshot | null> {
-  const snapshot = await fetchDesktopV3SessionSnapshot(sessionId, options.signal)
-  if (snapshot) {
-    writeDesktopV3SessionSnapshot(queryClient, snapshot)
-  }
-  return snapshot
+  return hydrateDesktopV3WorksetSession(queryClient, sessionId, options)
 }
 
 function readPreloadedDesktopV3SessionResponse(sessionId: string): Promise<V3HydratedSessionResponseWire | null> | null {
@@ -332,11 +804,8 @@ export async function fetchDesktopV3SessionSnapshot(sessionId: string, signal?: 
   if (preloadedResponse) {
     return mapDesktopV3SessionSnapshot(preloadedResponse)
   }
-  const response = await requestJson<V3HydratedSessionResponseWire>(
-    `/v3/sessions/${encodeURIComponent(normalizedSessionId)}`,
-    { signal },
-  )
-  return mapDesktopV3SessionSnapshot(response)
+  const workset = await fetchDesktopV3Workset({ sessionIds: [normalizedSessionId] }, signal)
+  return desktopV3SessionSnapshotFromWorkset(workset, normalizedSessionId)
 }
 
 export async function updateDesktopV3SessionMode(
@@ -462,7 +931,7 @@ export function desktopV3SessionQueryOptions(sessionId: string) {
   return {
     queryKey: desktopV3SessionQueryKey(normalizedSessionId),
     queryFn: ({ signal }: { signal?: AbortSignal }) => fetchDesktopV3SessionSnapshot(normalizedSessionId, signal),
-    staleTime: 60_000,
+    staleTime: Number.POSITIVE_INFINITY,
     enabled: normalizedSessionId !== '',
   }
 }
@@ -484,17 +953,13 @@ export async function ensureDesktopV3SessionSnapshot(
   sessionId: string,
 ): Promise<DesktopV3SessionSnapshot | null> {
   const normalizedSessionId = assertRawCanonicalDesktopV3SessionId(sessionId)
-  const cached = queryClient.getQueryData<DesktopV3SessionSnapshot>(desktopV3SessionSnapshotQueryKey(normalizedSessionId))
+  const cached = getCachedDesktopV3SessionSnapshot(queryClient, normalizedSessionId)
   if (cached) {
     writeDesktopV3SessionSnapshot(queryClient, cached)
     return cached
   }
 
-  const fetched = await queryClient.fetchQuery(desktopV3SessionQueryOptions(normalizedSessionId))
-  if (fetched) {
-    writeDesktopV3SessionSnapshot(queryClient, fetched)
-  }
-  return fetched
+  return hydrateDesktopV3WorksetSession(queryClient, normalizedSessionId)
 }
 
 export function getCachedDesktopV3SessionSnapshot(queryClient: QueryClient, sessionId: string): DesktopV3SessionSnapshot | null {
@@ -502,9 +967,13 @@ export function getCachedDesktopV3SessionSnapshot(queryClient: QueryClient, sess
   if (!normalizedSessionId) {
     return null
   }
+  const worksetSnapshot = desktopV3SessionSnapshotFromWorkset(getCachedDesktopV3Workset(queryClient), normalizedSessionId)
+  if (worksetSnapshot) {
+    return worksetSnapshot
+  }
   return queryClient.getQueryData<DesktopV3SessionSnapshot>(desktopV3SessionSnapshotQueryKey(normalizedSessionId)) ?? null
 }
 
 export function readDesktopV3CachedSession(queryClient: QueryClient, sessionId: string): DesktopSessionRecord | null {
-  return getCachedDesktopV3SessionSnapshot(queryClient, sessionId)?.session ?? null
+  return getCachedDesktopV3WorksetSession(queryClient, sessionId) ?? getCachedDesktopV3SessionSnapshot(queryClient, sessionId)?.session ?? null
 }

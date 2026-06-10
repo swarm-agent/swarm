@@ -14,7 +14,7 @@ import { useWorkspaceLauncher } from '../../workspaces/launcher/state/use-worksp
 import { applyDesktopRouteTheme } from './desktop-theme-controller'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
 import { agentStateQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
-import { desktopV3SessionQueryOptions, getCachedDesktopV3SessionSnapshot, hydrateDesktopV3SessionSnapshot, readDesktopV3CachedSession, writeDesktopV3SessionSnapshot } from '../state/desktop-v3-cache'
+import { desktopV3WorksetHasOmission, getCachedDesktopV3WorksetSession, hydrateDesktopV3Workset, readDesktopV3CachedSession } from '../state/desktop-v3-cache'
 import type { DesktopSessionRecord } from '../types/realtime'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
 import { DesktopQuickSettingsModal, type QuickSettingsTabID } from '../settings/components/desktop-quick-settings-modal'
@@ -1513,20 +1513,6 @@ export function DesktopAppPage() {
     () => (routeWorkspaceSlug ? resolveWorkspaceBySlug(workspaces, routeWorkspaceSlug) : null),
     [routeWorkspaceSlug, workspaces],
   )
-  const routeSessionSnapshotQuery = useQuery({
-    ...desktopV3SessionQueryOptions(routeSessionId),
-    enabled: routeSessionId !== '',
-    initialData: routeSessionId ? getCachedDesktopV3SessionSnapshot(queryClient, routeSessionId) ?? undefined : undefined,
-  })
-  useEffect(() => {
-    const snapshot = routeSessionSnapshotQuery.data
-    if (!routeSessionId || !snapshot) {
-      return
-    }
-    writeDesktopV3SessionSnapshot(queryClient, snapshot)
-    upsertSession(snapshot.session)
-    syncWorkspaceOverviewSession(queryClient, snapshot.session)
-  }, [queryClient, routeSessionId, routeSessionSnapshotQuery.data, upsertSession])
   useEffect(() => {
     if (!desktopToast) {
       return
@@ -1550,11 +1536,10 @@ export function DesktopAppPage() {
     if (!routeSessionId) {
       return null
     }
-    return routeSessionSnapshotQuery.data?.session
-      ?? readDesktopV3CachedSession(queryClient, routeSessionId)
+    return readDesktopV3CachedSession(queryClient, routeSessionId)
       ?? liveSessions[routeSessionId]
       ?? null
-  }, [liveSessions, queryClient, routeSessionId, routeSessionSnapshotQuery.data?.session])
+  }, [liveSessions, queryClient, routeSessionId])
 
   const selectedWorkspacePath = useMemo<string | null>(() => {
     if (cachedRouteSession?.workspacePath) {
@@ -2080,71 +2065,60 @@ export function DesktopAppPage() {
 
   const workspaceSlugByPath = useMemo(() => buildWorkspaceRouteSlugMap(mergedSidebarWorkspaceEntries), [mergedSidebarWorkspaceEntries])
 
-  const backgroundBootstrapSessionIds = useMemo<string[]>(() => {
-    const routeCriticalSessionId = routeSessionId.trim()
-    const activeBackgroundSessionId = activeSessionId?.trim() ?? ''
-    if (!activeBackgroundSessionId || activeBackgroundSessionId === routeCriticalSessionId) {
-      return []
-    }
-
-    // Sidebar rows render from workspace overview summaries plus live session state. Do not
-    // hydrate every visible sidebar row with full V3 snapshots on refresh; explicit hover,
-    // focus, or route navigation owns those non-critical snapshot loads.
-    return [activeBackgroundSessionId]
-  }, [activeSessionId, routeSessionId])
-  const backgroundBootstrapSessionIdsKey = backgroundBootstrapSessionIds.join('\u0000')
+  const desktopV3WorksetScopeKey = useMemo(() => {
+    const workspacePaths = mergedSidebarWorkspaceEntries.map((workspace) => workspace.path).sort()
+    return `${routeSessionId.trim()}\u0000${workspacePaths.join('\u0000')}`
+  }, [mergedSidebarWorkspaceEntries, routeSessionId])
 
   useEffect(() => {
-    const normalizedRouteSessionId = routeSessionId?.trim() ?? ''
     const epoch = desktopV3BootstrapEpochRef.current + 1
     desktopV3BootstrapEpochRef.current = epoch
     let cancelled = false
     const isCurrentEpoch = () => !cancelled && desktopV3BootstrapEpochRef.current === epoch
-    if (backgroundBootstrapSessionIds.length === 0) {
-      setDesktopV3Bootstrap({ status: 'idle', epoch, error: null })
-      return
-    }
-
     const abortController = new AbortController()
+    const routeCriticalSessionId = routeSessionId.trim()
+    const workspacePaths = mergedSidebarWorkspaceEntries.map((workspace) => workspace.path).filter((path) => path.trim() !== '')
+
     setDesktopV3Bootstrap({ status: 'running', epoch, error: null })
-    const applySnapshotSession = (session: DesktopSessionRecord) => {
+    debugLog('desktop-app-page', 'effect:v3-workset-bootstrap', {
+      routeSessionId: routeCriticalSessionId,
+      workspaceCount: workspacePaths.length,
+    })
+
+    const applyWorksetSessions = (sessions: DesktopSessionRecord[]) => {
       if (!isCurrentEpoch()) {
         return
       }
-      upsertSession(session)
-      syncWorkspaceOverviewSession(queryClient, session)
-    }
-
-    const idsToHydrate: string[] = []
-    for (const sessionId of backgroundBootstrapSessionIds) {
-      const cachedSnapshot = getCachedDesktopV3SessionSnapshot(queryClient, sessionId)
-      if (cachedSnapshot) {
-        applySnapshotSession(cachedSnapshot.session)
-        continue
+      for (const session of sessions) {
+        upsertSession(session)
+        syncWorkspaceOverviewSession(queryClient, session)
       }
-      idsToHydrate.push(sessionId)
     }
-
-    const routeSessionCached = Boolean(
-      normalizedRouteSessionId && readDesktopV3CachedSession(queryClient, normalizedRouteSessionId),
-    )
-    debugLog('desktop-app-page', 'effect:v3-bootstrap-hydration-check', {
-      routeSessionId: normalizedRouteSessionId,
-      backgroundSessionCount: backgroundBootstrapSessionIds.length,
-      hydrateCount: idsToHydrate.length,
-      routeSessionCached,
-    })
 
     const bootstrapTasks: Promise<void>[] = [
       queryClient.ensureQueryData(agentStateQueryOptions()).then(() => undefined),
-      ...idsToHydrate.map(async (sessionId) => {
-        const snapshot = await hydrateDesktopV3SessionSnapshot(queryClient, sessionId, { signal: abortController.signal })
-        if (!snapshot || cancelled) {
-          return
-        }
-        applySnapshotSession(snapshot.session)
+      ...workspacePaths.map(async (workspacePath) => {
+        const workset = await hydrateDesktopV3Workset(queryClient, {
+          workspacePath,
+          recent: { limit: 50 },
+          history: { mode: 'full', maxMessagesPerSession: 200, maxEventsPerSession: 500, manifestPolicy: 'manifest' },
+          responseBudget: { maxBytes: 2 * 1024 * 1024, allowManifest: true },
+        }, { signal: abortController.signal })
+        applyWorksetSessions(workset.sessionOrder.map((sessionId) => workset.sessionsById[sessionId]).filter(Boolean))
       }),
     ]
+
+    if (routeCriticalSessionId && !getCachedDesktopV3WorksetSession(queryClient, routeCriticalSessionId)) {
+      bootstrapTasks.push(
+        hydrateDesktopV3Workset(queryClient, {
+          sessionIds: [routeCriticalSessionId],
+          history: { mode: 'full', maxMessagesPerSession: 200, maxEventsPerSession: 500, manifestPolicy: 'manifest' },
+          responseBudget: { maxBytes: 2 * 1024 * 1024, allowManifest: true },
+        }, { signal: abortController.signal }).then((workset) => {
+          applyWorksetSessions(workset.sessionOrder.map((sessionId) => workset.sessionsById[sessionId]).filter(Boolean))
+        }),
+      )
+    }
 
     void Promise.allSettled(bootstrapTasks).then((results) => {
       if (!isCurrentEpoch()) {
@@ -2153,7 +2127,7 @@ export function DesktopAppPage() {
       const rejected = results.filter((result) => result.status === 'rejected')
       if (rejected.length > 0) {
         const error = rejected.map((result) => result.reason).join('\n')
-        console.error('[desktop-app] failed to hydrate desktop v3 bootstrap data', rejected.map((result) => result.reason))
+        console.error('[desktop-app] failed to hydrate desktop v3 workset bootstrap data', rejected.map((result) => result.reason))
         setDesktopV3Bootstrap({ status: 'error', epoch, error })
       } else {
         setDesktopV3Bootstrap({ status: 'ready', epoch, error: null })
@@ -2164,17 +2138,16 @@ export function DesktopAppPage() {
       cancelled = true
       abortController.abort()
     }
-  }, [backgroundBootstrapSessionIdsKey, queryClient, routeSessionId, upsertSession])
+  }, [desktopV3WorksetScopeKey, queryClient, routeSessionId, upsertSession])
 
   const routeSession = routeSessionId
-    ? routeSessionSnapshotQuery.data?.session
-      ?? readDesktopV3CachedSession(queryClient, routeSessionId)
+    ? readDesktopV3CachedSession(queryClient, routeSessionId)
       ?? liveSessions[routeSessionId]
       ?? sessionById.get(routeSessionId)
       ?? null
     : null
   const routeFallbackSession = useMemo<DesktopSessionRecord | null>(() => {
-    if (!routeSessionId || routeSessionSnapshotQuery.isError || !selectedWorkspacePath) {
+    if (!routeSessionId || !selectedWorkspacePath) {
       return null
     }
     return mapDesktopSession({
@@ -2185,7 +2158,7 @@ export function DesktopAppPage() {
       mode: 'auto',
       session_api: 'v3',
     })
-  }, [routeSessionId, routeSessionSnapshotQuery.isError, selectedWorkspace?.workspaceName, selectedWorkspacePath])
+  }, [routeSessionId, selectedWorkspace?.workspaceName, selectedWorkspacePath])
 
   const selectedSession = routeSessionId ? routeSession ?? routeFallbackSession : null
 
@@ -2364,25 +2337,11 @@ export function DesktopAppPage() {
 
   const handleSelectSession = useCallback(async (sessionId: string) => {
     const normalizedSessionId = sessionId.trim()
-    const cachedSnapshot = readDesktopV3CachedSession(queryClient, normalizedSessionId)
-    let session = cachedSnapshot ?? sessionById.get(normalizedSessionId)
+    const session = readDesktopV3CachedSession(queryClient, normalizedSessionId) ?? sessionById.get(normalizedSessionId)
     if (!session?.workspacePath) {
       return
     }
     setMobileSidebarOpen(false)
-
-    if (!cachedSnapshot) {
-      try {
-        const snapshot = await hydrateDesktopV3SessionSnapshot(queryClient, normalizedSessionId)
-        if (snapshot?.session) {
-          session = snapshot.session
-          upsertSession(snapshot.session)
-          syncWorkspaceOverviewSession(queryClient, snapshot.session)
-        }
-      } catch (error) {
-        console.warn('[desktop-app] failed to prehydrate sidebar session before navigation', error)
-      }
-    }
 
     const workspaceSlug = workspaceSlugByPath.get(session.workspacePath)
       ?? workspaceRouteSlugBase({ path: session.workspacePath, workspaceName: session.workspaceName })
@@ -2393,7 +2352,7 @@ export function DesktopAppPage() {
         sessionId: session.id,
       },
     })
-  }, [navigate, queryClient, sessionById, upsertSession, workspaceSlugByPath])
+  }, [navigate, queryClient, sessionById, workspaceSlugByPath])
 
   const handleSessionCreated = useCallback((session: DesktopSessionRecord) => {
     setActiveSession(session.id)
@@ -2727,21 +2686,14 @@ export function DesktopAppPage() {
   }, [])
 
   const handlePrefetchSession = useCallback((sessionId: string) => {
-    if (readDesktopV3CachedSession(queryClient, sessionId)) {
+    const normalizedSessionId = sessionId.trim()
+    if (!normalizedSessionId || readDesktopV3CachedSession(queryClient, normalizedSessionId)) {
       return
     }
-    void hydrateDesktopV3SessionSnapshot(queryClient, sessionId)
-      .then((snapshot) => {
-        if (!snapshot) {
-          return
-        }
-        upsertSession(snapshot.session)
-        syncWorkspaceOverviewSession(queryClient, snapshot.session)
-      })
-      .catch((error) => {
-        console.error('[desktop-app] failed to prefetch desktop v3 session snapshot', error)
-      })
-  }, [queryClient, upsertSession])
+    if (desktopV3WorksetHasOmission(queryClient, normalizedSessionId)) {
+      return
+    }
+  }, [queryClient])
 
   const handleToggleAgentSessions = useCallback((sessionId: string) => {
     setExpandedAgentSessions((current) => ({
@@ -3510,11 +3462,9 @@ export function DesktopAppPage() {
         {routeSessionId && !selectedSession ? (
           <div className="flex h-full flex-1 items-center justify-center px-6">
             <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">
-              <div className="text-lg font-semibold">{routeSessionSnapshotQuery.isError ? 'Session not found' : 'Loading session…'}</div>
+              <div className="text-lg font-semibold">{'Loading session…'}</div>
               <p className="mt-2 text-sm text-[var(--app-text-muted)]">
-                {routeSessionSnapshotQuery.isError
-                  ? 'We couldn’t find that session in cache or on the server.'
-                  : 'Opening the chat shell while the latest V3 snapshot hydrates in the background.'}
+                Opening the chat shell while the V3 workset cache hydrates in the background.
               </p>
             </Card>
           </div>

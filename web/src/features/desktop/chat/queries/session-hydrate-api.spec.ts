@@ -65,6 +65,14 @@ async function withFetchStub(
       return jsonResponse(payload)
     }
 
+    if (url === '/v3/sessions:workset') {
+      const body = JSON.parse(String(init?.body ?? '{}')) as { session_ids?: string[]; recent?: { limit?: number }; workspace?: { workspace_path?: string } }
+      const sessionIds = Array.isArray(body.session_ids) && body.session_ids.length > 0
+        ? body.session_ids
+        : ['session-workset-a', 'session-workset-b'].slice(0, body.recent?.limit ?? 2)
+      return jsonResponse(v3WorksetPayload(sessionIds))
+    }
+
     const v3SessionMatch = /^\/v3\/sessions\/([^/?]+)$/.exec(url)
     if (v3SessionMatch) {
       return jsonResponse(v3HydratedSessionPayload(decodeURIComponent(v3SessionMatch[1])))
@@ -200,6 +208,60 @@ function v3HydratedSessionPayload(sessionId: string) {
   }
 }
 
+
+function v3WorksetPayload(sessionIds: string[]) {
+  const sessionsById: Record<string, unknown> = {}
+  const projectionsBySession: Record<string, unknown> = {}
+  const messagesBySession: Record<string, unknown[]> = {}
+  const eventsBySession: Record<string, unknown[]> = {}
+  const permissionsBySession: Record<string, unknown[]> = {}
+  const usageBySession: Record<string, unknown> = {}
+  const preferencesBySession: Record<string, unknown> = {}
+  const agentModelPolicyBySession: Record<string, unknown> = {}
+  const runIntentsBySession: Record<string, unknown[]> = {}
+  const plansBySession: Record<string, unknown> = {}
+  const planRevisionsBySession: Record<string, unknown[]> = {}
+  const historyManifestsBySession: Record<string, unknown[]> = {}
+
+  for (const sessionId of sessionIds) {
+    const payload = v3HydratedSessionPayload(sessionId)
+    sessionsById[sessionId] = payload.session
+    projectionsBySession[sessionId] = payload.projection
+    messagesBySession[sessionId] = payload.messages
+    eventsBySession[sessionId] = payload.events
+    permissionsBySession[sessionId] = payload.pending_permissions
+    usageBySession[sessionId] = payload.usage_summary
+    preferencesBySession[sessionId] = payload.preference ?? payload.session.preference
+    agentModelPolicyBySession[sessionId] = payload.agent_model_policy
+    runIntentsBySession[sessionId] = payload.active_run_intent ? [payload.active_run_intent] : []
+    plansBySession[sessionId] = payload.active_plan
+    planRevisionsBySession[sessionId] = payload.plan_revisions
+    historyManifestsBySession[sessionId] = []
+  }
+
+  return {
+    ok: true,
+    sessions_by_id: sessionsById,
+    projections_by_session: projectionsBySession,
+    messages_by_session: messagesBySession,
+    events_by_session: eventsBySession,
+    plans_by_session: plansBySession,
+    plan_revisions_by_session: planRevisionsBySession,
+    permissions_by_session: permissionsBySession,
+    usage_by_session: usageBySession,
+    preferences_by_session: preferencesBySession,
+    agent_model_policy_by_session: agentModelPolicyBySession,
+    run_intents_by_session: runIntentsBySession,
+    history_manifests_by_session: historyManifestsBySession,
+    history_chunks_by_id: {},
+    omissions: [],
+    pagination: { has_more: false },
+    watermarks: { loaded_at: 10, max_updated_at: 5 },
+    budget: { max_bytes: 2097152, used_bytes: 1024 },
+    session_order: sessionIds,
+  }
+}
+
 function v3PlanPayload(planId: string, version = 0) {
   return {
     id: planId,
@@ -310,7 +372,7 @@ test('Desktop V3 permission resolve uses Sessions API v3 only', async () => {
 })
 
 
-test('Desktop V3 session switching prewarm uses background React Query snapshot hydration', async () => {
+test('Desktop V3 session switching prewarm uses background React Query workset hydration', async () => {
   const { ensureSessionRuntimeData, prefetchSessionRuntimeData, sessionMessagesQueryKey } = await import('../../../queries/query-options')
   const { desktopV3SessionQueryKey, readDesktopV3CachedSession } = await import('../../state/desktop-v3-cache')
   const queryClient = new QueryClient({
@@ -321,7 +383,8 @@ test('Desktop V3 session switching prewarm uses background React Query snapshot 
     await prefetchSessionRuntimeData(queryClient, 'session-switch')
     await ensureSessionRuntimeData(queryClient, 'session-switch')
 
-    assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-switch'])
+    assert.deepEqual(requestUrls(calls), ['/v3/sessions:workset'])
+    assert.deepEqual(JSON.parse(String(calls[0]?.init?.body ?? '{}')).session_ids, ['session-switch'])
     assertNoV1OrV2SessionDataCalls(calls)
     assert.equal(readDesktopV3CachedSession(queryClient, 'session-switch')?.pendingPermissions.length, 1)
     assert.equal(readDesktopV3CachedSession(queryClient, 'session-switch')?.usage?.totalTokens, 42)
@@ -336,17 +399,17 @@ test('Desktop V3 session switching prewarm uses background React Query snapshot 
   queryClient.clear()
 })
 
-test('Desktop V3 snapshot hydration restores active run intent from the canonical route source', async () => {
-  const { hydrateDesktopV3SessionSnapshot, readDesktopV3CachedSession } = await import('../../state/desktop-v3-cache')
+test('Desktop V3 workset hydration restores active run intent from the canonical route source', async () => {
+  const { hydrateDesktopV3WorksetSession, readDesktopV3CachedSession } = await import('../../state/desktop-v3-cache')
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
 
   await withFetchStub(async (calls) => {
-    const snapshot = await hydrateDesktopV3SessionSnapshot(queryClient, 'session-v3-active')
+    const snapshot = await hydrateDesktopV3WorksetSession(queryClient, 'session-v3-active')
     const cached = readDesktopV3CachedSession(queryClient, 'session-v3-active')
 
-    assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-v3-active'])
+    assert.deepEqual(requestUrls(calls), ['/v3/sessions:workset'])
     assertNoV1OrV2SessionDataCalls(calls)
     assert.equal(snapshot?.session.runIntent?.runId, 'run-active')
     assert.equal(cached?.runIntent?.status, 'running')
@@ -371,7 +434,7 @@ test('sessionMessagesQueryOptions uses the canonical V3 snapshot cache for Deskt
     const messages = await queryClient.fetchQuery(sessionMessagesQueryOptions('session-messages', queryClient))
 
     assert.deepEqual(messages.map((message) => message.id), ['session-messages-msg-1'])
-    assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-messages'])
+    assert.deepEqual(requestUrls(calls), ['/v3/sessions:workset'])
     assertNoV1OrV2SessionDataCalls(calls)
   })
 
@@ -391,7 +454,7 @@ test('sessionPreferenceQueryOptions uses the canonical V3 snapshot cache for Des
     assert.equal(preference.preference.model, 'gpt-5.4')
     assert.equal(queryClient.getQueryData<{ agentModelPolicy: { locked: boolean; source: string } }>(['desktop-v3-session-snapshot', 'session-preference'])?.agentModelPolicy?.locked, true)
     assert.equal(queryClient.getQueryData<{ agentModelPolicy: { locked: boolean; source: string } }>(['desktop-v3-session-snapshot', 'session-preference'])?.agentModelPolicy?.source, 'agent_preset')
-    assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-preference'])
+    assert.deepEqual(requestUrls(calls), ['/v3/sessions:workset'])
     assertNoV1OrV2SessionDataCalls(calls)
   })
 
@@ -503,21 +566,16 @@ test('Desktop route loader does not block route commit on the V3 session snapsho
 test('DesktopAppPage must keep route-critical load out of sidebar/background V3 hydration', async () => {
   const source = await readFile(new URL('../../layout/desktop-app-page.tsx', import.meta.url), 'utf8')
 
-  assert.match(source, /desktopV3SessionQueryOptions\(routeSessionId\)/)
-  assert.match(source, /routeSessionSnapshotQuery\.data\?\.session/)
-  assert.match(source, /const cachedSnapshot = readDesktopV3CachedSession\(queryClient, normalizedSessionId\)/)
-  assert.match(source, /await hydrateDesktopV3SessionSnapshot\(queryClient, normalizedSessionId\)/)
-  assert.match(source, /syncWorkspaceOverviewSession\(queryClient, snapshot\.session\)/)
-  assert.match(source, /const backgroundBootstrapSessionIds = useMemo/)
-  const backgroundBootstrapSource = source.slice(
-    source.indexOf('const backgroundBootstrapSessionIds = useMemo'),
-    source.indexOf('const backgroundBootstrapSessionIdsKey = backgroundBootstrapSessionIds.join'),
-  )
-  assert.match(backgroundBootstrapSource, /activeBackgroundSessionId/)
-  assert.match(backgroundBootstrapSource, /activeBackgroundSessionId === routeCriticalSessionId/)
-  assert.doesNotMatch(backgroundBootstrapSource, /visibleSidebarWorkspaceEntries|sessionsByWorkspace/)
-  assert.match(source, /for \(const sessionId of backgroundBootstrapSessionIds\)/)
-  assert.match(source, /hydrateDesktopV3SessionSnapshot\(queryClient, sessionId/)
+  assert.match(source, /hydrateDesktopV3Workset\(queryClient, \{/)
+  assert.match(source, /workspacePath,/)
+  assert.match(source, /recent: \{ limit: 50 \}/)
+  assert.match(source, /sessionIds: \[routeCriticalSessionId\]/)
+  assert.match(source, /readDesktopV3CachedSession\(queryClient, routeSessionId\)/)
+  assert.match(source, /const session = readDesktopV3CachedSession\(queryClient, normalizedSessionId\) \?\? sessionById\.get\(normalizedSessionId\)/)
+  assert.match(source, /desktopV3WorksetHasOmission\(queryClient, normalizedSessionId\)/)
+  assert.doesNotMatch(source, /routeSessionSnapshotQuery/)
+  assert.doesNotMatch(source, /backgroundBootstrapSessionIds/)
+  assert.doesNotMatch(source, /await hydrateDesktopV3SessionSnapshot\(queryClient, normalizedSessionId\)/)
   assert.match(source, /PAIRING_REQUEST_INITIAL_REFRESH_DELAY_MS = 1_250/)
   assert.match(source, /window\.setTimeout\(refreshPairingRequests, PAIRING_REQUEST_INITIAL_REFRESH_DELAY_MS\)/)
   assert.doesNotMatch(source, /addSessionId\(routeSessionId\)/)
@@ -533,11 +591,12 @@ test('DesktopAppPage must keep route-critical load out of sidebar/background V3 
 test('Desktop realtime reconciles through canonical V3 snapshots only', async () => {
   const source = await readFile(new URL('../../state/use-desktop-store.ts', import.meta.url), 'utf8')
 
-  assert.match(source, /hydrateDesktopV3SessionSnapshot\(queryClient, normalizedSessionId\)/)
+  assert.match(source, /hydrateDesktopV3WorksetSession\(queryClient, normalizedSessionId\)/)
   assert.match(source, /getCachedDesktopV3SessionSnapshot\(queryClient, sessionId\)/)
   assert.match(source, /if \(eventType\.startsWith\('session\.'\) && hasCanonicalV3Snapshot\)/)
   assert.match(source, /invalidateQueries\(\{ queryKey: desktopV3SessionSnapshotQueryKey\(normalizedSessionId\) \}\)/)
-  assert.match(source, /requestAuthoritativeSessionSnapshot\(sessionId\)/)
+  assert.match(source, /requestScopedSessionWorkset\(sessionId\)/)
+  assert.doesNotMatch(source, /requestAuthoritativeSessionSnapshot/)
   assert.doesNotMatch(source, /fetchSession\(/)
   assert.doesNotMatch(source, /fetchSessionPendingPermissions|fetchSessionUsageSummary/)
   assert.doesNotMatch(source, /\/v1\/sessions|\/v2\/sessions/)

@@ -47,7 +47,7 @@ import type { ChatMessageRecord } from '../chat/types/chat'
 import type { VaultStatus } from '../vault/types'
 import { DesktopRunStreamController, type RunStreamEventMessage } from './run-stream-controller'
 import { sessionRequiresSnapshotHydration } from './session-snapshot-hydration'
-import { desktopV3SessionSnapshotQueryKey, getCachedDesktopV3SessionSnapshot, hydrateDesktopV3SessionSnapshot } from './desktop-v3-cache'
+import { desktopV3SessionSnapshotQueryKey, getCachedDesktopV3SessionSnapshot, hydrateDesktopV3WorksetSession } from './desktop-v3-cache'
 import { mergeSessionRecords } from './session-records'
 import { appendLiveAssistantSegment } from './live-assistant-segments'
 import { clearNotifications as clearDurableNotifications, fetchNotifications, fetchNotificationSummary, updateNotification } from '../notifications/api'
@@ -114,7 +114,7 @@ function isTaskToolPayload(record: Record<string, unknown> | null): boolean {
 }
 const draftFlushTimers = new Map<string, number>()
 const pendingDraftFlush = new Map<string, DraftFlushState>()
-const pendingSessionSnapshotHydrations = new Set<string>()
+const pendingSessionWorksetHydrations = new Set<string>()
 let desktopRealtimeSocket: WebSocket | null = null
 let desktopRealtimeLastActivityAt = 0
 let desktopRealtimeConnectingStartedAt = 0
@@ -1325,26 +1325,26 @@ function invalidateAuthoritativeSessionSnapshot(sessionId: string): void {
   })
 }
 
-function requestAuthoritativeSessionSnapshot(sessionId: string): void {
+function requestScopedSessionWorkset(sessionId: string): void {
   const normalizedSessionId = sessionId.trim()
-  if (!normalizedSessionId || pendingSessionSnapshotHydrations.has(normalizedSessionId)) {
+  if (!normalizedSessionId || pendingSessionWorksetHydrations.has(normalizedSessionId)) {
     return
   }
 
-  pendingSessionSnapshotHydrations.add(normalizedSessionId)
+  pendingSessionWorksetHydrations.add(normalizedSessionId)
   const setTimeoutFn = typeof window !== 'undefined' ? window.setTimeout.bind(window) : setTimeout
   setTimeoutFn(() => {
     void (async () => {
       try {
-        const snapshot = await hydrateDesktopV3SessionSnapshot(queryClient, normalizedSessionId)
+        const snapshot = await hydrateDesktopV3WorksetSession(queryClient, normalizedSessionId)
         if (!snapshot) {
           return
         }
         useDesktopStore.getState().upsertSession(snapshot.session)
       } catch (error) {
-        console.error('[desktop-store] authoritative desktop v3 session hydration failed', error)
+        console.error('[desktop-store] scoped desktop v3 workset hydration failed', error)
       } finally {
-        pendingSessionSnapshotHydrations.delete(normalizedSessionId)
+        pendingSessionWorksetHydrations.delete(normalizedSessionId)
       }
     })()
   }, 0)
@@ -1891,7 +1891,7 @@ function applyV3SessionStreamFrame(state: DesktopStoreState, sessionId: string, 
   if (type === 'cursor.error') {
     const existing = state.sessions[targetSessionId]
     if (existing && !isV3ChildSessionStreamFrame(payload)) {
-      requestAuthoritativeSessionSnapshot(targetSessionId)
+      requestScopedSessionWorkset(targetSessionId)
     }
     return {}
   }
@@ -3114,7 +3114,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
   })
   syncBlockedSessionToWorkspaceOverview(queryClient, merged)
   if (sessionRequiresSnapshotHydration(merged, eventType)) {
-    requestAuthoritativeSessionSnapshot(sessionId)
+    requestScopedSessionWorkset(sessionId)
   }
 
   const nextActiveWorkspacePath = state.activeSessionId === merged.id
@@ -3233,7 +3233,7 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
     if (!normalizedSessionId) {
       return
     }
-    requestAuthoritativeSessionSnapshot(normalizedSessionId)
+    requestScopedSessionWorkset(normalizedSessionId)
   },
   refreshNotifications: async () => {
     set((state) => ({
@@ -3662,7 +3662,7 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
           const sessionId = typeof payload?.session_id === 'string' ? payload.session_id : ''
           const eventType = typeof message.event.event_type === 'string' ? message.event.event_type : ''
           if (sessionId && eventType === 'permission.summary.updated') {
-            requestAuthoritativeSessionSnapshot(sessionId)
+            requestScopedSessionWorkset(sessionId)
           }
         } catch (error) {
           console.error('[desktop-store] socket parse failed', error)
