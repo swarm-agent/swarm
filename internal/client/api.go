@@ -787,6 +787,111 @@ type SessionV3Hydrated struct {
 	ActiveRunIntent *SessionV3RunIntent `json:"active_run_intent,omitempty"`
 }
 
+type SessionV3WorksetRequest struct {
+	SessionIDs     []string                       `json:"session_ids,omitempty"`
+	Workspace      SessionV3WorksetWorkspace      `json:"workspace,omitempty"`
+	Recent         SessionV3WorksetRecent         `json:"recent,omitempty"`
+	History        SessionV3WorksetHistory        `json:"history,omitempty"`
+	ResponseBudget SessionV3WorksetResponseBudget `json:"response_budget,omitempty"`
+}
+
+type SessionV3WorksetWorkspace struct {
+	WorkspacePath string `json:"workspace_path,omitempty"`
+}
+
+type SessionV3WorksetRecent struct {
+	Limit           int    `json:"limit,omitempty"`
+	BeforeUpdatedAt *int64 `json:"before_updated_at,omitempty"`
+	BeforeSessionID string `json:"before_session_id,omitempty"`
+}
+
+type SessionV3WorksetHistory struct {
+	Mode                  string `json:"mode,omitempty"`
+	MaxMessagesPerSession int    `json:"max_messages_per_session,omitempty"`
+	MaxEventsPerSession   int    `json:"max_events_per_session,omitempty"`
+	ManifestPolicy        string `json:"manifest_policy,omitempty"`
+}
+
+type SessionV3WorksetResponseBudget struct {
+	MaxBytes      int  `json:"max_bytes,omitempty"`
+	AllowManifest bool `json:"allow_manifest,omitempty"`
+}
+
+type SessionV3Workset struct {
+	OK                        bool                                      `json:"ok"`
+	SessionsByID              map[string]SessionSummary                 `json:"sessions_by_id"`
+	ProjectionsBySession      map[string]SessionV3Projection            `json:"projections_by_session"`
+	MessagesBySession         map[string][]SessionMessage               `json:"messages_by_session"`
+	EventsBySession           map[string][]SessionV3Event               `json:"events_by_session"`
+	PlansBySession            map[string][]SessionPlan                  `json:"plans_by_session"`
+	PlanRevisionsBySession    map[string][]SessionPlan                  `json:"plan_revisions_by_session"`
+	PermissionsBySession      map[string][]PermissionRecord             `json:"permissions_by_session"`
+	UsageBySession            map[string]SessionUsageSummary            `json:"usage_by_session"`
+	PreferencesBySession      map[string]ModelPreference                `json:"preferences_by_session"`
+	AgentModelPolicyBySession map[string]SessionV3AgentModelPolicy      `json:"agent_model_policy_by_session"`
+	RunIntentsBySession       map[string][]SessionV3RunIntent           `json:"run_intents_by_session"`
+	HistoryManifestsBySession map[string][]SessionV3HistoryManifestItem `json:"history_manifests_by_session"`
+	HistoryChunksByID         map[string]SessionV3HistoryChunk          `json:"history_chunks_by_id"`
+	Omissions                 []SessionV3WorksetOmission                `json:"omissions"`
+	Pagination                SessionV3WorksetPagination                `json:"pagination"`
+	Watermarks                SessionV3WorksetWatermarks                `json:"watermarks"`
+	Budget                    SessionV3WorksetBudgetAccounting          `json:"budget"`
+	SessionOrder              []string                                  `json:"session_order"`
+}
+
+type SessionV3AgentModelPolicy struct {
+	AgentName       string          `json:"agent_name"`
+	ResolvedAgent   string          `json:"resolved_agent_name"`
+	Source          string          `json:"source"`
+	Locked          bool            `json:"locked"`
+	Reason          string          `json:"reason,omitempty"`
+	Preference      ModelPreference `json:"preference"`
+	ContextWindow   int             `json:"context_window"`
+	MaxOutputTokens int             `json:"max_output_tokens"`
+}
+
+type SessionV3HistoryManifestItem struct {
+	ChunkID      string `json:"chunk_id"`
+	Resource     string `json:"resource"`
+	FromSeq      uint64 `json:"from_seq"`
+	ToSeq        uint64 `json:"to_seq"`
+	MessageCount int    `json:"message_count"`
+	EventCount   int    `json:"event_count"`
+	ByteEstimate int    `json:"byte_estimate"`
+	Complete     bool   `json:"complete"`
+}
+
+type SessionV3HistoryChunk struct {
+	ChunkID  string           `json:"chunk_id"`
+	Resource string           `json:"resource"`
+	Messages []SessionMessage `json:"messages,omitempty"`
+	Events   []SessionV3Event `json:"events,omitempty"`
+}
+
+type SessionV3WorksetOmission struct {
+	SessionID   string `json:"session_id,omitempty"`
+	Resource    string `json:"resource"`
+	Reason      string `json:"reason"`
+	NextCursor  string `json:"next_cursor,omitempty"`
+	ManifestRef string `json:"manifest_ref,omitempty"`
+}
+
+type SessionV3WorksetPagination struct {
+	NextBeforeUpdatedAt *int64 `json:"next_before_updated_at,omitempty"`
+	NextBeforeSessionID string `json:"next_before_session_id,omitempty"`
+	HasMore             bool   `json:"has_more"`
+}
+
+type SessionV3WorksetWatermarks struct {
+	LoadedAt     int64 `json:"loaded_at"`
+	MaxUpdatedAt int64 `json:"max_updated_at,omitempty"`
+}
+
+type SessionV3WorksetBudgetAccounting struct {
+	MaxBytes  int `json:"max_bytes,omitempty"`
+	UsedBytes int `json:"used_bytes,omitempty"`
+}
+
 type SessionV3MessageOptions struct {
 	ClientRequestID   string
 	MessageID         string
@@ -2934,6 +3039,17 @@ func (c *API) GetSessionV3(ctx context.Context, sessionID string) (SessionV3Hydr
 	}
 	resp.Session = markSessionV3(resp.Session, resp.Projection)
 	return SessionV3Hydrated{Session: resp.Session, Projection: resp.Projection, Messages: resp.Messages, Events: resp.Events, ActiveRunIntent: resp.ActiveRunIntent}, nil
+}
+
+func (c *API) GetSessionV3Workset(ctx context.Context, req SessionV3WorksetRequest) (SessionV3Workset, error) {
+	var workset SessionV3Workset
+	if err := c.postJSON(ctx, "/v3/sessions:workset", req, &workset, true); err != nil {
+		return SessionV3Workset{}, err
+	}
+	for id, session := range workset.SessionsByID {
+		workset.SessionsByID[id] = markSessionV3(session, workset.ProjectionsBySession[id])
+	}
+	return workset, nil
 }
 
 func (c *API) ListSessionV3Messages(ctx context.Context, sessionID string, afterSeq uint64, limit int) ([]SessionMessage, error) {
