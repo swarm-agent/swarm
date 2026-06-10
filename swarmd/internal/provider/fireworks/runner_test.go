@@ -112,3 +112,62 @@ func TestBuildChatCompletionRequestTaskToolHasNoNestedCombinators(t *testing.T) 
 		}
 	}
 }
+
+func TestBuildChatCompletionRequestMapsThinkingToReasoningEffort(t *testing.T) {
+	req := buildChatCompletionRequest(provideriface.Request{
+		Model:    "test-model",
+		Thinking: "high",
+	})
+	if req.ReasoningEffort != "high" {
+		t.Fatalf("reasoning_effort = %q, want high", req.ReasoningEffort)
+	}
+
+	req = buildChatCompletionRequest(provideriface.Request{
+		Model:    "test-model",
+		Thinking: "xhigh",
+	})
+	if req.ReasoningEffort != "" {
+		t.Fatalf("reasoning_effort = %q, want omitted for unsupported level", req.ReasoningEffort)
+	}
+}
+
+func TestParseChatCompletionResponseExtractsReasoningContent(t *testing.T) {
+	response := parseChatCompletionResponse(chatCompletionResponse{
+		ID:    "chatcmpl-test",
+		Model: "accounts/fireworks/models/reasoning",
+		Choices: []chatCompletionChoice{{
+			Message: chatCompletionMessage{
+				Role:             "assistant",
+				ReasoningContent: " inspect adapter ",
+				Content:          " final answer ",
+			},
+			FinishReason: "stop",
+		}},
+	})
+	if response.ReasoningSummary != "inspect adapter" {
+		t.Fatalf("reasoning summary = %q, want inspect adapter", response.ReasoningSummary)
+	}
+	if response.Text != "final answer" {
+		t.Fatalf("text = %q, want final answer", response.Text)
+	}
+}
+
+func TestFireworksStreamStateAccumulatesReasoningContent(t *testing.T) {
+	state := newFireworksStreamState()
+	state.apply(chatCompletionChunk{Choices: []chatCompletionChoice{{
+		Index: 0,
+		Delta: &chatCompletionMessageDelta{ReasoningContent: "Plan: "},
+	}}})
+	state.apply(chatCompletionChunk{Choices: []chatCompletionChoice{{
+		Index: 0,
+		Delta: &chatCompletionMessageDelta{ReasoningContent: "inspect", Content: "done"},
+	}}})
+
+	response := parseChatCompletionResponse(state.response())
+	if response.ReasoningSummary != "Plan: inspect" {
+		t.Fatalf("reasoning summary = %q, want Plan: inspect", response.ReasoningSummary)
+	}
+	if response.Text != "done" {
+		t.Fatalf("text = %q, want done", response.Text)
+	}
+}

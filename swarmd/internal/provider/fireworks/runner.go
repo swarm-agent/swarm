@@ -101,6 +101,7 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 		"model":      modelID,
 		"payload":    fireworksDebugJSONValue(payload),
 	})
+	reasoningByKey := make(map[string]string, 4)
 	decoded, err := r.client.CreateChatCompletionStream(ctx, record.APIKey, payload, func(chunk chatCompletionChunk) error {
 		if fireworksDebugChunkInteresting(chunk) {
 			fireworksDebugEvent("stream_chunk", map[string]any{
@@ -110,7 +111,15 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 			})
 		}
 		for _, choice := range chunk.Choices {
-			if choice.Delta != nil && choice.Delta.Content != "" && onEvent != nil {
+			if choice.Delta == nil || onEvent == nil {
+				continue
+			}
+			if choice.Delta.ReasoningContent != "" {
+				reasoningKey := fireworksReasoningKey(choice.Index)
+				reasoningByKey[reasoningKey] += choice.Delta.ReasoningContent
+				onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, Delta: reasoningByKey[reasoningKey], ReasoningKey: reasoningKey})
+			}
+			if choice.Delta.Content != "" {
 				onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: choice.Delta.Content})
 			}
 		}
@@ -150,8 +159,9 @@ func (r *Runner) activeCredential(ctx context.Context) (pebblestore.AuthCredenti
 
 func buildChatCompletionRequest(req provideriface.Request) chatCompletionRequest {
 	out := chatCompletionRequest{
-		Model:    strings.TrimSpace(req.Model),
-		Messages: buildChatCompletionMessages(req),
+		Model:           strings.TrimSpace(req.Model),
+		Messages:        buildChatCompletionMessages(req),
+		ReasoningEffort: fireworksReasoningEffort(req.Thinking),
 	}
 	if len(req.Tools) > 0 {
 		out.Tools = make([]chatCompletionTool, 0, len(req.Tools))
@@ -347,6 +357,22 @@ func schemaString(value any) string {
 	}
 }
 
+func fireworksReasoningEffort(thinking string) string {
+	switch strings.ToLower(strings.TrimSpace(thinking)) {
+	case "low", "medium", "high":
+		return strings.ToLower(strings.TrimSpace(thinking))
+	default:
+		return ""
+	}
+}
+
+func fireworksReasoningKey(index int) string {
+	if index < 0 {
+		return "fireworks-reasoning"
+	}
+	return fmt.Sprintf("fireworks-reasoning-%d", index)
+}
+
 func mapToolChoice(choice string) any {
 	choice = strings.ToLower(strings.TrimSpace(choice))
 	switch choice {
@@ -370,14 +396,16 @@ func parseChatCompletionResponse(resp chatCompletionResponse) provideriface.Resp
 	}
 	choice := resp.Choices[0]
 	out.StopReason = strings.TrimSpace(choice.FinishReason)
-	text, functionCalls := parseMessage(choice.Message)
+	text, reasoningSummary, functionCalls := parseMessage(choice.Message)
 	out.Text = text
+	out.ReasoningSummary = reasoningSummary
 	out.FunctionCalls = functionCalls
 	return out
 }
 
-func parseMessage(message chatCompletionMessage) (string, []provideriface.FunctionCall) {
+func parseMessage(message chatCompletionMessage) (string, string, []provideriface.FunctionCall) {
 	text := extractTextContent(message.Content)
+	reasoningSummary := strings.TrimSpace(message.ReasoningContent)
 	calls := make([]provideriface.FunctionCall, 0, len(message.ToolCalls))
 	for i, call := range message.ToolCalls {
 		name := strings.TrimSpace(call.Function.Name)
@@ -400,7 +428,7 @@ func parseMessage(message chatCompletionMessage) (string, []provideriface.Functi
 			Arguments: arguments,
 		})
 	}
-	return strings.TrimSpace(text), calls
+	return strings.TrimSpace(text), reasoningSummary, calls
 }
 
 func parseUsage(usage *chatCompletionUsage) provideriface.TokenUsage {
@@ -544,7 +572,7 @@ func fireworksDebugJSONValue(value any) any {
 func fireworksDebugChunkInteresting(chunk chatCompletionChunk) bool {
 	for _, choice := range chunk.Choices {
 		if choice.Delta != nil {
-			if strings.TrimSpace(choice.Delta.Content) != "" || len(choice.Delta.ToolCalls) > 0 {
+			if strings.TrimSpace(choice.Delta.Content) != "" || strings.TrimSpace(choice.Delta.ReasoningContent) != "" || len(choice.Delta.ToolCalls) > 0 {
 				return true
 			}
 		}

@@ -30,6 +30,7 @@ type chatCompletionRequest struct {
 	Tools             []chatCompletionTool `json:"tools,omitempty"`
 	ToolChoice        any                  `json:"tool_choice,omitempty"`
 	ParallelToolCalls *bool                `json:"parallel_tool_calls,omitempty"`
+	ReasoningEffort   string               `json:"reasoning_effort,omitempty"`
 	Stream            bool                 `json:"stream,omitempty"`
 }
 
@@ -59,15 +60,17 @@ type chatCompletionChoice struct {
 }
 
 type chatCompletionMessage struct {
-	Role      string                   `json:"role,omitempty"`
-	Content   any                      `json:"content,omitempty"`
-	ToolCalls []chatCompletionToolCall `json:"tool_calls,omitempty"`
+	Role             string                   `json:"role,omitempty"`
+	Content          any                      `json:"content,omitempty"`
+	ReasoningContent string                   `json:"reasoning_content,omitempty"`
+	ToolCalls        []chatCompletionToolCall `json:"tool_calls,omitempty"`
 }
 
 type chatCompletionMessageDelta struct {
-	Role      string                        `json:"role,omitempty"`
-	Content   string                        `json:"content,omitempty"`
-	ToolCalls []chatCompletionToolCallDelta `json:"tool_calls,omitempty"`
+	Role             string                        `json:"role,omitempty"`
+	Content          string                        `json:"content,omitempty"`
+	ReasoningContent string                        `json:"reasoning_content,omitempty"`
+	ToolCalls        []chatCompletionToolCallDelta `json:"tool_calls,omitempty"`
 }
 
 type chatCompletionToolCall struct {
@@ -271,6 +274,9 @@ func (s *fireworksStreamState) apply(chunk chatCompletionChunk) {
 			if next.Delta.Content != "" {
 				current, _ := choice.Message.Content.(string)
 				choice.Message.Content = current + next.Delta.Content
+			}
+			if next.Delta.ReasoningContent != "" {
+				choice.Message.ReasoningContent += next.Delta.ReasoningContent
 			}
 			for _, delta := range next.Delta.ToolCalls {
 				call := s.toolCalls[delta.Index]
