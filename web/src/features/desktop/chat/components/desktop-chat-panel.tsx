@@ -8,12 +8,7 @@ import { useDesktopStore } from '../../state/use-desktop-store'
 import {
   agentStateQueryOptions,
   draftModelQueryOptions,
-  ensureSessionRuntimeData,
   modelOptionsQueryOptions,
-  sessionMessagesQueryKey,
-  sessionMessagesQueryOptions,
-  sessionPreferenceQueryKey,
-  sessionPreferenceQueryOptions,
   uiSettingsQueryKey,
   uiSettingsQueryOptions,
 } from '../../../queries/query-options'
@@ -23,7 +18,7 @@ import {
   startSessionRun,
   updateDraftModelPreference,
 } from '../queries/chat-queries'
-import { getCachedDesktopV3SessionSnapshot, saveDesktopV3SessionPlan, updateDesktopV3SessionAgent, updateDesktopV3SessionMetadata, updateDesktopV3SessionMode, updateDesktopV3SessionPreference } from '../../state/desktop-v3-cache'
+import { saveDesktopV3SessionPlan, updateDesktopV3SessionAgent, updateDesktopV3SessionMetadata, updateDesktopV3SessionMode, updateDesktopV3SessionPreference } from '../../state/desktop-v3-cache'
 import type { AgentModelPolicyRecord, AgentProfileRecord, AgentStateRecord, ChatMessageRecord, ModelOptionRecord, ResolvedSessionPreference, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
 import type { DesktopLiveAssistantSegment, DesktopLiveToolRecord, DesktopSessionRecord } from '../../types/realtime'
 import { Card } from '../../../../components/ui/card'
@@ -62,12 +57,26 @@ import {
   resolveDesktopChatRouteFromSession,
 } from '../services/chat-routing'
 import { buildDesktopSlashPaletteState, type DesktopSlashCommand } from '../services/slash-commands'
-import { appendPendingUserMessage, createPendingUserMessage, removePendingUserMessage } from '../services/message-cache'
+import { createPendingUserMessage } from '../services/message-cache'
 import type { SettingsTabID } from '../../settings/types/settings-tabs'
 import type { QuickSettingsTabID } from '../../settings/components/desktop-quick-settings-modal'
 import type { WorkspaceOverviewTopologyRoute } from '../../../workspaces/launcher/types/workspace-overview'
 import { ImageSessionSidebar, type ImageSessionSidebarState } from '../../tools/components/image-session-sidebar'
 import { commitWorkspaceChanges } from '../../git/api'
+import {
+  desktopMessagesCollection,
+  desktopPreferencesCollection,
+  desktopSessionReadinessCollection,
+  desktopSessionsCollection,
+  upsertDesktopDbRecord,
+  useDesktopActiveRun,
+  useDesktopAgentModelPolicy,
+  useDesktopMessages,
+  useDesktopPlan,
+  useDesktopPlanRevisions,
+  useDesktopPreference,
+  useDesktopSession,
+} from '../../state/desktop-db'
 
 const THINKING_OPTIONS = ['off', 'low', 'medium', 'high', 'xhigh']
 const FAST_ON_OFF_OPTIONS = ['off', 'on']
@@ -1162,8 +1171,6 @@ export function DesktopChatPanel({
 }: DesktopChatPanelProps) {
   const queryClient = useQueryClient()
   const sessionId = session?.id ?? null
-  const upsertSession = useDesktopStore((state) => state.upsertSession)
-  const refreshSessionPermissions = useDesktopStore((state) => state.refreshSessionPermissions)
   const ensureRunStream = useDesktopStore((state) => state.ensureRunStream)
   const submitPrompt = useDesktopStore((state) => state.submitPrompt)
   const stopRun = useDesktopStore((state) => state.stopRun)
@@ -1214,9 +1221,9 @@ export function DesktopChatPanel({
   const { data: modelOptions = [] } = useQuery(modelOptionsQueryOptions())
   const uiSettingsQuery = useQuery(uiSettingsQueryOptions())
 
-  const storedSession = useDesktopStore((state) => (sessionId ? state.sessions[sessionId] ?? null : null))
-  const liveSession = useDesktopStore((state) => (sessionId ? state.sessions[sessionId] ?? session : session))
-  const trackedCommitSession = useDesktopStore((state) => (commitModal.targetSessionId ? state.sessions[commitModal.targetSessionId] ?? null : null))
+  const dbSession = useDesktopSession(sessionId)
+  const liveSession = dbSession ?? session
+  const trackedCommitSession = useDesktopSession(commitModal.targetSessionId)
   const draftSessionMode = useDesktopStore((state) => state.getSessionDraftMode(null, workspacePath))
   const draftSessionKey = `__workspace__:${workspacePath}`
   const routeOptions = useMemo(() => buildDesktopChatRouteOptions({
@@ -1231,18 +1238,12 @@ export function DesktopChatPanel({
   const [selectedRouteId, setSelectedRouteId] = useState(() => defaultChatRoute?.id ?? 'host')
   const [draftRouteOverrideId, setDraftRouteOverrideId] = useState<string | null>(null)
 
-  const cachedMessages = sessionId ? queryClient.getQueryData<ChatMessageRecord[]>(sessionMessagesQueryKey(sessionId)) : undefined
-  const cachedPreference = sessionId ? queryClient.getQueryData<ResolvedSessionPreference>(sessionPreferenceQueryKey(sessionId)) : undefined
-
-  const messagesQuery = useQuery({
-    ...sessionMessagesQueryOptions(sessionId ?? '', queryClient),
-    initialData: cachedMessages,
-  })
-
-  const sessionPreferenceQuery = useQuery({
-    ...sessionPreferenceQueryOptions(sessionId ?? '', queryClient),
-    initialData: cachedPreference,
-  })
+  const dbMessages = useDesktopMessages(sessionId)
+  const dbPreference = useDesktopPreference(sessionId)
+  const dbActiveRun = useDesktopActiveRun(sessionId)
+  const dbAgentModelPolicy = useDesktopAgentModelPolicy(sessionId)
+  const dbPlan = useDesktopPlan(sessionId)
+  const dbPlanRevisions = useDesktopPlanRevisions(sessionId)
 
   const draftPreferenceQuery = useQuery({
     ...draftModelQueryOptions(),
@@ -1250,9 +1251,8 @@ export function DesktopChatPanel({
     initialData: queryClient.getQueryData<ResolvedSessionPreference>(draftModelQueryOptions().queryKey),
   })
 
-  const sessionPreference = sessionPreferenceQuery.data ?? emptyPreference()
+  const sessionPreference = dbPreference ?? emptyPreference()
   const draftPreference = draftPreferenceQuery.data ?? emptyPreference()
-  const desktopV3Snapshot = sessionId ? getCachedDesktopV3SessionSnapshot(queryClient, sessionId) : null
   const selectedAgentProfileForModel = useMemo(
     () => agentState.profiles.find((profile) => profile.name === selectedPrimaryAgent) ?? null,
     [agentState.profiles, selectedPrimaryAgent],
@@ -1261,7 +1261,7 @@ export function DesktopChatPanel({
     () => agentPolicyFromProfile(selectedAgentProfileForModel, modelOptions),
     [modelOptions, selectedAgentProfileForModel],
   )
-  const cachedAgentModelPolicy = sessionId ? desktopV3Snapshot?.agentModelPolicy ?? null : null
+  const cachedAgentModelPolicy = sessionId ? dbAgentModelPolicy : null
   const cachedAgentModelPolicyMatchesSelection = !cachedAgentModelPolicy?.agentName
     || !selectedPrimaryAgent
     || cachedAgentModelPolicy.agentName === selectedPrimaryAgent
@@ -1556,7 +1556,7 @@ export function DesktopChatPanel({
     }
   }, [slashPalette.matches, slashSelectionIndex])
 
-  const messages = useMemo(() => dedupeMessages(messagesQuery.data ?? []), [messagesQuery.data])
+  const messages = useMemo(() => dedupeMessages(dbMessages), [dbMessages])
   const displayedMessages = useMemo(() => visibleDesktopChatMessages(messages), [messages])
   const liveAssistantDraft = liveSession?.live.assistantDraft ?? ''
   const retainedAssistantSegments = liveSession?.live.retainedAssistantSegments ?? []
@@ -1574,7 +1574,7 @@ export function DesktopChatPanel({
     liveAssistantDraft !== ''
     && !liveAssistantDraftHasCanonicalReplay(liveAssistantDraft, displayedMessages)
     && !renderableLiveToolMessages.some((message) => message.tool.trim().toLowerCase() === 'task')
-  const loadingMessages = sessionId !== null && messagesQuery.isLoading && messages.length === 0
+  const loadingMessages = false
   const lifecycle = liveSession?.lifecycle ?? null
   const lifecyclePhase = lifecycle?.phase.trim().toLowerCase() ?? ''
   const lifecycleStopReason = lifecycle?.stopReason?.trim() ?? ''
@@ -1586,8 +1586,8 @@ export function DesktopChatPanel({
     && lifecyclePhase === ''
     && liveRunId !== ''
     && liveSession?.live.summary === 'Reconnecting…'
-  const activeRunIntent = liveSession?.runIntent && ['pending_executor', 'running'].includes(liveSession.runIntent.status.trim().toLowerCase())
-    ? liveSession.runIntent
+  const activeRunIntent = dbActiveRun && ['pending_executor', 'running'].includes(dbActiveRun.status.trim().toLowerCase())
+    ? dbActiveRun
     : null
   const durableRunIntentStartedAt = activeRunIntent && activeRunIntent.createdAt > 0 ? activeRunIntent.createdAt : 0
   const activeRunIntentPendingExecutor = activeRunIntent?.status.trim().toLowerCase() === 'pending_executor'
@@ -1947,7 +1947,7 @@ export function DesktopChatPanel({
     }
     const nextMode = desiredSessionModeForAgent(activeModeSourceProfile, liveSession?.mode ?? session?.mode ?? draftSessionMode)
     if (sessionId) {
-      const currentMode = normalizeSessionMode(useDesktopStore.getState().sessions[sessionId]?.mode ?? liveSession?.mode ?? session?.mode ?? nextMode)
+      const currentMode = normalizeSessionMode(liveSession?.mode ?? session?.mode ?? nextMode)
       if (currentMode === nextMode) {
         return
       }
@@ -1956,21 +1956,6 @@ export function DesktopChatPanel({
           return
         }
       }
-      useDesktopStore.setState((state) => {
-        const current = state.sessions[sessionId]
-        if (!current || normalizeSessionMode(current.mode) === nextMode) {
-          return state
-        }
-        return {
-          sessions: {
-            ...state.sessions,
-            [sessionId]: {
-              ...current,
-              mode: nextMode,
-            },
-          },
-        }
-      })
       return
     }
     if (normalizeSessionMode(draftSessionMode) === nextMode) {
@@ -2001,23 +1986,7 @@ export function DesktopChatPanel({
       return
     }
     lastAutoModeSyncRef.current = syncKey
-    void updateDesktopV3SessionMode(queryClient, sessionId, nextMode).then((snapshot) => {
-      const resolvedMode = normalizeSessionMode(snapshot?.session.mode ?? nextMode)
-      useDesktopStore.setState((state) => {
-        const current = state.sessions[sessionId]
-        if (!current) {
-          return state
-        }
-        return {
-          sessions: {
-            ...state.sessions,
-            [sessionId]: {
-              ...current,
-              mode: resolvedMode,
-            },
-          },
-        }
-      })
+    void updateDesktopV3SessionMode(queryClient, sessionId, nextMode).then(() => {
       lastAutoModeSyncRef.current = ''
     }).catch((error) => {
       lastAutoModeSyncRef.current = ''
@@ -2041,8 +2010,6 @@ export function DesktopChatPanel({
     setSelectedPrimaryAgent(nextAgent)
     try {
       const snapshot = await updateDesktopV3SessionAgent(queryClient, sessionId, nextAgent)
-      upsertSession(snapshot.session)
-      queryClient.setQueryData(sessionPreferenceQueryKey(sessionId), snapshot.preference)
       const serverAgent = resolveSessionEffectiveAgentName(snapshot.session, agentState.activePrimary)
       setSelectedPrimaryAgent(serverAgent)
       setCurrentSessionAgent(serverAgent)
@@ -2051,14 +2018,11 @@ export function DesktopChatPanel({
       setCurrentSessionAgent(previousAgent)
       setPanelError(error instanceof Error ? error.message : 'Failed to update session agent')
     }
-  }, [agentState.activePrimary, currentSessionAgent, isFlowSession, queryClient, resolvedLockedAgentName, selectedPrimaryAgent, sessionId, upsertSession])
+  }, [agentState.activePrimary, currentSessionAgent, isFlowSession, queryClient, resolvedLockedAgentName, selectedPrimaryAgent, sessionId])
 
   useEffect(() => {
     setPanelError(null)
-    if (sessionId) {
-      void ensureSessionRuntimeData(queryClient, sessionId)
-    }
-  }, [queryClient, refreshSessionPermissions, sessionId])
+  }, [sessionId])
 
   useEffect(() => {
     if (!sessionId) {
@@ -2076,20 +2040,6 @@ export function DesktopChatPanel({
     }
     void ensureRunStream(sessionId, resumableRunId)
   }, [awaitingLifecycleStart, ensureRunStream, lifecycleActive, liveSession?.sessionApi, reconnectingRun, resumableRunId, sessionId])
-
-  useEffect(() => {
-    if (!session || storedSession) {
-      return
-    }
-    upsertSession(session)
-  }, [session, storedSession, upsertSession])
-
-  useEffect(() => {
-    if (!messagesQuery.error) {
-      return
-    }
-    setPanelError(messagesQuery.error instanceof Error ? messagesQuery.error.message : 'Failed to load conversation')
-  }, [messagesQuery.error])
 
   useEffect(() => {
     if (!commitModal.targetSessionId || commitModal.status !== 'running') {
@@ -2218,21 +2168,21 @@ export function DesktopChatPanel({
       return
     }
 
-    queryClient.setQueryData(sessionPreferenceQueryKey(sessionId), (current: ResolvedSessionPreference | undefined) => ({
-      ...(current ?? activePreferenceRecord),
+    upsertDesktopDbRecord(desktopPreferencesCollection, {
+      ...(dbPreference ?? activePreferenceRecord),
       preference: {
-        ...(current?.preference ?? activePreferenceRecord.preference),
+        ...activePreferenceRecord.preference,
         ...normalizedNext,
       },
-    }))
+      sessionId,
+    })
 
     try {
-      const resolved = await updateDesktopV3SessionPreference(queryClient, sessionId, normalizedNext)
-      queryClient.setQueryData(sessionPreferenceQueryKey(sessionId), resolved)
+      await updateDesktopV3SessionPreference(queryClient, sessionId, normalizedNext)
     } catch (error) {
       setPanelError(error instanceof Error ? error.message : 'Failed to update model settings')
     }
-  }, [activeAgentModelLocked, activeAgentModelPolicy?.agentName, activeAgentModelPolicy?.reason, activePreferenceRecord, currentSessionAgent, queryClient, sessionId])
+  }, [activeAgentModelLocked, activeAgentModelPolicy?.agentName, activeAgentModelPolicy?.reason, activePreferenceRecord, currentSessionAgent, dbPreference, queryClient, sessionId])
 
   const handleModelChange = useCallback((value: string) => {
     if (activeAgentModelLocked) {
@@ -2288,8 +2238,7 @@ export function DesktopChatPanel({
         } else {
           delete currentMetadata[COMPACT_THRESHOLD_METADATA_KEY]
         }
-        const snapshot = await updateDesktopV3SessionMetadata(queryClient, sessionId, currentMetadata)
-        upsertSession(snapshot.session)
+        await updateDesktopV3SessionMetadata(queryClient, sessionId, currentMetadata)
       }
       await submitPrompt({
         sessionId,
@@ -2303,7 +2252,7 @@ export function DesktopChatPanel({
     } catch (error) {
       setPanelError(error instanceof Error ? error.message : 'Failed to compact context')
     }
-  }, [canStop, currentSessionAgent, liveSession?.metadata, queryClient, resolvedLockedAgentName, sessionId, submitPrompt, submitting, upsertSession, workspaceName, workspacePath])
+  }, [canStop, currentSessionAgent, liveSession?.metadata, queryClient, resolvedLockedAgentName, sessionId, submitPrompt, submitting, workspaceName, workspacePath])
 
   const openCommitModal = useCallback(() => {
     setCommitModal((current) => ({
@@ -2351,51 +2300,29 @@ export function DesktopChatPanel({
       })
       return
     }
+    const visiblePlan = dbPlan?.hasActivePlan && dbPlan.plan
+      ? dbPlan.plan
+      : {
+          id: '',
+          title: 'Current Plan',
+          plan: '',
+          document: null,
+          status: 'draft',
+          approvalState: '',
+          updatedAt: 0,
+        }
     setPanelError(null)
-    setPlanModal((current) => ({
-      ...current,
+    setPlanModal({
       open: true,
-      loading: true,
+      loading: false,
       historyLoading: false,
       saving: false,
       error: null,
-    }))
-    try {
-      const snapshot = await ensureSessionRuntimeData(queryClient, sessionId)
-      const visiblePlan = snapshot?.hasActivePlan && snapshot.activePlan
-        ? snapshot.activePlan
-        : {
-            id: '',
-            title: 'Current Plan',
-            plan: '',
-            document: null,
-            status: 'draft',
-            approvalState: '',
-            updatedAt: 0,
-          }
-      setPlanModal({
-        open: true,
-        loading: false,
-        historyLoading: false,
-        saving: false,
-        error: null,
-        hasActive: Boolean(snapshot?.hasActivePlan),
-        plan: visiblePlan,
-        revisions: snapshot?.planRevisions ?? [],
-      })
-    } catch (error) {
-      setPlanModal({
-        open: true,
-        loading: false,
-        historyLoading: false,
-        saving: false,
-        error: error instanceof Error ? error.message : 'Failed to load current plan',
-        hasActive: false,
-        plan: null,
-        revisions: [],
-      })
-    }
-  }, [sessionId, queryClient])
+      hasActive: Boolean(dbPlan?.hasActivePlan),
+      plan: visiblePlan,
+      revisions: dbPlanRevisions,
+    })
+  }, [dbPlan, dbPlanRevisions, sessionId])
 
   const handleThinkingTagsToggle = useCallback(async (enabled: boolean) => {
     if (thinkingTagsSaving) {
@@ -2536,7 +2463,7 @@ export function DesktopChatPanel({
       commitDictationDraft(true)
       dictationAcceptLateResultRef.current = false
     }
-    const prompt = useDesktopStore.getState().getSessionDraft(sessionId, workspacePath).trim()
+    const prompt = composer.trim()
     if (!prompt) {
       return
     }
@@ -2572,24 +2499,34 @@ export function DesktopChatPanel({
             worktreeMode: activeChatRoute.swarmId && workspaceWorktreeEnabled ? 'on' : 'off',
             worktreeUseCurrentBranch: activeChatRoute.swarmId && workspaceWorktreeEnabled ? true : undefined,
           })
-        upsertSession(targetSession)
-        queryClient.setQueryData(sessionPreferenceQueryKey(targetSession.id), {
+        upsertDesktopDbRecord(desktopSessionsCollection, targetSession)
+        upsertDesktopDbRecord(desktopSessionReadinessCollection, {
+          sessionId: targetSession.id,
+          status: 'ready',
+          ready: true,
+          missingResources: [],
+          omittedResources: [],
+          error: null,
+          updatedAt: Date.now(),
+        })
+        upsertDesktopDbRecord(desktopPreferencesCollection, {
           ...activePreferenceRecord,
           preference: {
             ...activePreferenceRecord.preference,
           },
+          sessionId: targetSession.id,
         })
         onSessionCreated(targetSession)
       }
 
-      const cachedTargetMessages = queryClient.getQueryData<ChatMessageRecord[]>(sessionMessagesQueryKey(targetSession.id)) ?? []
+      const targetMessages = targetSession.id === sessionId ? messages : []
       const pendingMessage = createPendingUserMessage(
         targetSession.id,
         prompt,
-        cachedTargetMessages[cachedTargetMessages.length - 1]?.globalSeq ?? 0,
+        targetMessages[targetMessages.length - 1]?.globalSeq ?? 0,
       )
       pendingMessageId = pendingMessage.id
-      queryClient.setQueryData(sessionMessagesQueryKey(targetSession.id), (current: ChatMessageRecord[] | undefined) => appendPendingUserMessage(current, pendingMessage))
+      upsertDesktopDbRecord(desktopMessagesCollection, pendingMessage)
 
       await submitPrompt({
         sessionId: targetSession.id,
@@ -2606,13 +2543,12 @@ export function DesktopChatPanel({
     } catch (error) {
       setPanelError(error instanceof Error ? error.message : 'Failed to send prompt')
       if (targetSession?.id) {
-        if (pendingMessageId) {
-          queryClient.setQueryData(sessionMessagesQueryKey(targetSession.id), (current: ChatMessageRecord[] | undefined) => removePendingUserMessage(current, pendingMessageId))
+        if (pendingMessageId && desktopMessagesCollection.has(`${targetSession.id}:${pendingMessageId}`)) {
+          desktopMessagesCollection.delete(`${targetSession.id}:${pendingMessageId}`)
         }
-        void queryClient.invalidateQueries({ queryKey: sessionMessagesQueryKey(targetSession.id) })
       }
     }
-  }, [activeChatRoute, activePreferenceRecord, canSendWithSelectedPreference, commitDictationDraft, currentSessionAgent, effectiveSessionMode, mentionSubagents, onSessionCreated, queryClient, resolvedLockedAgentName, session, sessionCreateOverride, sessionId, stopDictation, submitPrompt, submitting, upsertSession, workspaceName, workspacePath, workspaceWorktreeEnabled])
+  }, [activeChatRoute, activePreferenceRecord, canSendWithSelectedPreference, commitDictationDraft, composer, currentSessionAgent, effectiveSessionMode, mentionSubagents, messages, onSessionCreated, resolvedLockedAgentName, session, sessionCreateOverride, sessionId, stopDictation, submitPrompt, submitting, workspaceName, workspacePath, workspaceWorktreeEnabled])
 
   const handleStop = useCallback(async () => {
     if (!sessionId) {
@@ -2763,7 +2699,7 @@ export function DesktopChatPanel({
           route: activeChatRoute,
         })
         targetSession = createdSession
-        upsertSession(createdSession)
+        upsertDesktopDbRecord(desktopSessionsCollection, createdSession)
         prompt = 'Review the git diff in scope, prepare the right staged set, and create the commit now.'
         runInstructions = buildCommitAgentInstructions(instructions)
         targetKind = 'background'
@@ -2793,7 +2729,7 @@ export function DesktopChatPanel({
         setPanelError(null)
         const summary = committed.output?.trim() || committed.summary?.trim() || 'Manual git commit completed.'
         onToast?.({ message: summary, tone: 'success' })
-        upsertSession({
+        upsertDesktopDbRecord(desktopSessionsCollection, {
           ...session,
           live: {
             ...session.live,
@@ -2834,7 +2770,7 @@ export function DesktopChatPanel({
         error: error instanceof Error ? error.message : 'Failed to start save run.',
       }))
     }
-  }, [activeChatRoute, activePreferenceRecord.preference, commitModal.instructions, commitModal.mode, onToast, selectedPrimaryAgent, session, upsertSession, workspaceName])
+  }, [activeChatRoute, activePreferenceRecord.preference, commitModal.instructions, commitModal.mode, onToast, selectedPrimaryAgent, session, workspaceName])
 
 
   const handleModeChange = useCallback(async (nextMode: 'plan' | 'auto') => {
@@ -2846,56 +2782,20 @@ export function DesktopChatPanel({
       setSessionDraftMode(draftSessionKey, nextMode)
       return
     }
-    const previousMode = normalizeSessionMode(useDesktopStore.getState().sessions[sessionId]?.mode ?? sessionMode)
-    useDesktopStore.setState((state) => {
-      const current = state.sessions[sessionId]
-      if (!current) {
-        return state
-      }
-      return {
-        sessions: {
-          ...state.sessions,
-          [sessionId]: {
-            ...current,
-            mode: nextMode,
-          },
-        },
-      }
-    })
-    try {
-      const resolvedMode = normalizeSessionMode((await updateDesktopV3SessionMode(queryClient, sessionId, nextMode))?.session.mode ?? nextMode)
-      useDesktopStore.setState((state) => {
-        const current = state.sessions[sessionId]
-        if (!current) {
-          return state
-        }
-        return {
-          sessions: {
-            ...state.sessions,
-            [sessionId]: {
-              ...current,
-              mode: resolvedMode,
-            },
-          },
-        }
+    const currentSession = liveSession ?? session
+    if (currentSession) {
+      upsertDesktopDbRecord(desktopSessionsCollection, {
+        ...currentSession,
+        mode: nextMode,
       })
+    }
+    try {
+      await updateDesktopV3SessionMode(queryClient, sessionId, nextMode)
     } catch (error) {
       setPanelError(error instanceof Error ? error.message : 'Failed to update session mode')
-      useDesktopStore.setState((state) => {
-        const current = state.sessions[sessionId]
-        if (!current) {
-          return state
-        }
-        return {
-          sessions: {
-            ...state.sessions,
-            [sessionId]: {
-              ...current,
-              mode: previousMode,
-            },
-          },
-        }
-      })
+      if (currentSession) {
+        upsertDesktopDbRecord(desktopSessionsCollection, currentSession)
+      }
     }
   }, [draftSessionKey, queryClient, selectedPrimaryAgentProfile?.exitPlanModeEnabled, sessionId, sessionMode, setSessionDraftMode])
 
@@ -2912,27 +2812,16 @@ export function DesktopChatPanel({
     setResolvingPermissionIds((current) => new Set(current).add(permissionId))
     try {
       const resolved = await resolveSessionPermission(sessionId, permissionId, action, reason, approvedArguments, { sessionApi: liveSession?.sessionApi })
-      useDesktopStore.setState((state) => {
-        const existing = state.sessions[sessionId]
-        if (!existing) {
-          return state
-        }
+      const existing = liveSession ?? session
+      if (existing) {
         const nextPermissions = existing.pendingPermissions
           .filter((item) => item.id !== resolved.id)
           .concat(resolved.status === 'pending' ? [resolved] : [])
-        return {
-          sessions: {
-            ...state.sessions,
-            [sessionId]: {
-              ...existing,
-              pendingPermissions: nextPermissions,
-              pendingPermissionCount: countApprovalRequiredPermissions(nextPermissions, existing.mode),
-            },
-          },
-        }
-      })
-      if (liveSession?.sessionApi?.trim().toLowerCase() === 'v3') {
-        void refreshSessionPermissions(sessionId)
+        upsertDesktopDbRecord(desktopSessionsCollection, {
+          ...existing,
+          pendingPermissions: nextPermissions,
+          pendingPermissionCount: countApprovalRequiredPermissions(nextPermissions, existing.mode),
+        })
       }
       const savedRulePreview = resolved.savedRule
         ? [resolved.savedRule.decision, resolved.savedRule.kind === 'bash_prefix' ? 'bash prefix:' : resolved.savedRule.kind === 'phrase' ? 'phrase:' : 'tool:', resolved.savedRule.kind === 'phrase' ? (resolved.savedRule.pattern || '') : resolved.savedRule.kind === 'bash_prefix' ? (resolved.savedRule.pattern || '') : (resolved.savedRule.tool || '')].filter(Boolean).join(' ')
@@ -2953,7 +2842,7 @@ export function DesktopChatPanel({
         return next
       })
     }
-  }, [activePermission, liveSession?.sessionApi, refreshSessionPermissions, sessionId])
+  }, [activePermission, liveSession, session, sessionId])
 
   const handleMentionInsert = useCallback((name: string) => {
     const normalizedName = name.trim()

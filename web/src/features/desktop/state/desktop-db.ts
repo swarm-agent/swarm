@@ -422,6 +422,26 @@ export function useDesktopActiveRun(sessionId: string | null | undefined): Deskt
   return normalizedSessionId ? state.get(normalizedSessionId) ?? null : null
 }
 
+export function useDesktopAgentModelPolicy(sessionId: string | null | undefined): AgentModelPolicyRecord | null {
+  const state = useDesktopCollectionState(desktopAgentModelPolicyCollection)
+  const normalizedSessionId = sessionId?.trim() ?? ''
+  return normalizedSessionId ? state.get(normalizedSessionId)?.policy ?? null : null
+}
+
+export function useDesktopPlan(sessionId: string | null | undefined): DesktopDbSessionPlanRecord | null {
+  const state = useDesktopCollectionState(desktopPlansCollection)
+  const normalizedSessionId = sessionId?.trim() ?? ''
+  return normalizedSessionId ? state.get(normalizedSessionId) ?? null : null
+}
+
+export function useDesktopPlanRevisions(sessionId: string | null | undefined): DesktopDbSessionPlanRevisionRecord[] {
+  const revisions = useDesktopCollectionData(desktopPlanRevisionsCollection)
+  const normalizedSessionId = sessionId?.trim() ?? ''
+  return normalizedSessionId
+    ? revisions.filter((revision) => revision.sessionId === normalizedSessionId).sort((left, right) => right.updatedAt - left.updatedAt || right.version - left.version)
+    : []
+}
+
 function useDesktopCollectionData<T extends object>(collection: DesktopDbCollection<T>): T[] {
   return useLiveQuery(() => collection, [collection]).data ?? []
 }

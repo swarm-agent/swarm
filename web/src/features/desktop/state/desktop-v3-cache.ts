@@ -6,13 +6,18 @@ import {
   desktopDbHistoryChunkKey,
   desktopDbOmissionKey,
   desktopEventsCollection,
+  desktopMessagesCollection,
   desktopPlansCollection,
   desktopPlanRevisionsCollection,
   desktopPreferencesCollection,
   desktopProjectionsCollection,
+  desktopRunIntentsCollection,
+  desktopSessionReadinessCollection,
+  desktopSessionsCollection,
   desktopWorksetOmissionsCollection,
   readDesktopDbMessages,
   readDesktopDbSession,
+  upsertDesktopDbRecord,
   type DesktopV3HistoryChunkRecord,
   type DesktopV3Workset,
   type DesktopV3WorksetOmissionRecord,
@@ -985,6 +990,29 @@ export function writeDesktopV3SessionSnapshot(
   const sessionId = snapshot.session.id.trim()
   if (!sessionId) {
     return
+  }
+
+  upsertDesktopDbRecord(desktopSessionsCollection, snapshot.session)
+  upsertDesktopDbRecord(desktopSessionReadinessCollection, {
+    sessionId,
+    status: 'ready',
+    ready: true,
+    missingResources: [],
+    omittedResources: [],
+    error: null,
+    updatedAt: Date.now(),
+  })
+  for (const message of snapshot.messages) {
+    upsertDesktopDbRecord(desktopMessagesCollection, message)
+  }
+  upsertDesktopDbRecord(desktopPreferencesCollection, { ...snapshot.preference, sessionId })
+  upsertDesktopDbRecord(desktopAgentModelPolicyCollection, { sessionId, policy: snapshot.agentModelPolicy })
+  upsertDesktopDbRecord(desktopPlansCollection, { sessionId, plan: snapshot.activePlan, hasActivePlan: snapshot.hasActivePlan })
+  for (const revision of snapshot.planRevisions) {
+    upsertDesktopDbRecord(desktopPlanRevisionsCollection, { ...revision, sessionId })
+  }
+  if (snapshot.session.runIntent) {
+    upsertDesktopDbRecord(desktopRunIntentsCollection, snapshot.session.runIntent)
   }
 
   mergeDesktopV3DurableCachePatch(queryClient, { sessionId, snapshot })

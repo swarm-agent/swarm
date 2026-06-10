@@ -15,13 +15,12 @@ import { applyDesktopRouteTheme } from './desktop-theme-controller'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
 import { agentStateQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
 import { hydrateDesktopV3Workset } from '../state/desktop-v3-cache'
-import { ensureDesktopDBRouteSession, readDesktopDbSession, useDesktopRouteReadiness, useDesktopSession, useDesktopWorkspaceSessions } from '../state/desktop-db'
+import { ensureDesktopDBRouteSession, useDesktopRouteReadiness, useDesktopSession, useDesktopWorkspaceSessions } from '../state/desktop-db'
 import type { DesktopSessionRecord } from '../types/realtime'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
 import { DesktopQuickSettingsModal, type QuickSettingsTabID } from '../settings/components/desktop-quick-settings-modal'
 import { DesktopChatPanel } from '../chat/components/desktop-chat-panel'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
-import { syncWorkspaceOverviewSession } from '../../workspaces/launcher/services/workspace-overview-cache'
 import { buildWorkspaceRouteSlugMap, resolveWorkspaceBySlug, workspaceRouteSlugBase } from '../../workspaces/launcher/services/workspace-route'
 import type { WorkspaceEntry } from '../../workspaces/launcher/types/workspace'
 import { WorkspaceTodoModal } from '../../workspaces/todos/components/workspace-todo-modal'
@@ -1290,7 +1289,8 @@ interface SessionRowProps {
 }
 
 function SessionRow({ active, now, session: initialSession, fallbackSwarmName, routeOptions, workspaceSlug, depth = 0, childLabel = null, childAssignmentLabel = null, childKind = 'root', agentSummary, agentsExpanded, onSelect, onPrefetch, onToggleAgents }: SessionRowProps) {
-  const session = useDesktopStore((state) => state.sessions[initialSession.id] ?? initialSession)
+  const dbSession = useDesktopSession(initialSession.id)
+  const session = dbSession ?? initialSession
   const activeSession = sessionIsActive(session)
   const originLabel = sessionOriginLabel(session, routeOptions, fallbackSwarmName)
   const backgroundInfo = sessionBackgroundInfo(session, originLabel)
@@ -1456,13 +1456,8 @@ export function DesktopAppPage() {
   const pwaDebugEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has(PWA_DEBUG_QUERY_PARAM)
   const { workspaces, selectingPath, savingPath, saveWorkspace, setWorktreeEnabled, loading: launcherWorkspacesLoading } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
   const connectionState = useDesktopStore((state) => state.connectionState)
-  const liveSessions = useDesktopStore((state) => state.sessions)
-  const activeSessionId = useDesktopStore((state) => state.activeSessionId)
-  const activeWorkspacePath = useDesktopStore((state) => state.activeWorkspacePath)
   const refreshNotifications = useDesktopStore((state) => state.refreshNotifications)
   const notificationCenter = useDesktopStore((state) => state.notificationCenter)
-  const setActiveSession = useDesktopStore((state) => state.setActiveSession)
-  const setActiveWorkspacePath = useDesktopStore((state) => state.setActiveWorkspacePath)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [expandedAgentSessions, setExpandedAgentSessions] = useState<Record<string, boolean>>({})
@@ -1519,16 +1514,11 @@ export function DesktopAppPage() {
   }, [desktopToast])
 
   const temporaryRouteWorkspace = useMemo<WorkspaceEntry | null>(() => {
-    const candidatePath = activeWorkspacePath?.trim() ?? ''
-    if (!routeWorkspaceSlug || routeSessionId || routeWorkspace || !candidatePath || workspaceByPath.has(candidatePath)) {
+    if (!routeWorkspaceSlug || routeSessionId || routeWorkspace) {
       return null
     }
-    const workspaceName = fallbackWorkspaceNameFromPath(candidatePath)
-    if (workspaceRouteSlugBase({ path: candidatePath, workspaceName }) !== routeWorkspaceSlug) {
-      return null
-    }
-    return buildTemporaryWorkspaceEntry(candidatePath, workspaceName)
-  }, [activeWorkspacePath, routeSessionId, routeWorkspace, routeWorkspaceSlug, workspaceByPath])
+    return null
+  }, [routeSessionId, routeWorkspace, routeWorkspaceSlug])
   const dbRouteSession = useDesktopSession(routeSessionId)
   const cachedRouteSession = useMemo<DesktopSessionRecord | null>(() => {
     if (!routeSessionId) {
@@ -1761,13 +1751,10 @@ export function DesktopAppPage() {
       routeWorkspaceSlug,
       routeSessionId,
       selectedWorkspacePath,
-      activeWorkspacePath,
-      activeSessionId,
-      liveSessionCount: Object.keys(liveSessions).length,
       workspacesLoading,
       connectionState,
     })
-  }, [activeSessionId, activeWorkspacePath, connectionState, liveSessions, routeSessionId, routeWorkspaceSlug, selectedWorkspacePath, workspacesLoading])
+  }, [connectionState, routeSessionId, routeWorkspaceSlug, selectedWorkspacePath, workspacesLoading])
 
   useEffect(() => {
     debugLog('desktop-app-page', 'overview-query-state', {
@@ -2012,57 +1999,31 @@ export function DesktopAppPage() {
     saveStoredValue(DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY, JSON.stringify(workspaceLayout))
   }, [workspaceLayout])
 
+  const desktopDbSessions = useDesktopWorkspaceSessions({ workspacePaths: mergedSidebarWorkspaceEntries.map((workspace) => workspace.path) })
+
   const sessionsByWorkspace = useMemo<Map<string, DesktopSessionRecord[]>>(() => {
     const grouped = new Map<string, DesktopSessionRecord[]>()
 
     for (const workspace of mergedSidebarWorkspaceEntries) {
       grouped.set(workspace.path, [])
     }
-    for (const workspace of overviewQuery.data?.workspaces ?? []) {
-      grouped.set(workspace.path, workspace.sessions)
-    }
-    for (const session of Object.values(liveSessions)) {
+    for (const session of desktopDbSessions) {
       const workspacePath = session.workspacePath?.trim()
       if (!workspacePath || !grouped.has(workspacePath)) {
         continue
       }
-      const existing = grouped.get(workspacePath) ?? []
-      const existingIndex = existing.findIndex((entry) => entry.id === session.id)
-      if (existingIndex >= 0) {
-        const next = [...existing]
-        next[existingIndex] = session
-        grouped.set(workspacePath, next)
-        continue
-      }
-      grouped.set(workspacePath, [session, ...existing])
+      grouped.set(workspacePath, [...(grouped.get(workspacePath) ?? []), session])
+    }
+    for (const [workspacePath, sessions] of grouped.entries()) {
+      grouped.set(workspacePath, [...sessions].sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id)))
     }
 
     return grouped
-  }, [liveSessions, overviewQuery.data?.workspaces, mergedSidebarWorkspaceEntries])
-
-  const desktopDbSessions = useDesktopWorkspaceSessions({ workspacePaths: mergedSidebarWorkspaceEntries.map((workspace) => workspace.path) })
-
-  const allSessions = useMemo<DesktopSessionRecord[]>(
-    () => {
-      const sessionMap = new Map<string, DesktopSessionRecord>()
-      for (const session of Array.from(sessionsByWorkspace.values()).flat()) {
-        sessionMap.set(session.id, session)
-      }
-      for (const session of desktopDbSessions) {
-        sessionMap.set(session.id, session)
-      }
-      const activeSession = activeSessionId ? useDesktopStore.getState().sessions[activeSessionId] : null
-      if (activeSession?.id) {
-        sessionMap.set(activeSession.id, activeSession)
-      }
-      return Array.from(sessionMap.values())
-    },
-    [activeSessionId, desktopDbSessions, sessionsByWorkspace],
-  )
+  }, [desktopDbSessions, mergedSidebarWorkspaceEntries])
 
   const sessionById = useMemo<Map<string, DesktopSessionRecord>>(
-    () => new Map(allSessions.map((session) => [session.id, session] as const)),
-    [allSessions],
+    () => new Map(desktopDbSessions.map((session) => [session.id, session] as const)),
+    [desktopDbSessions],
   )
 
   const workspaceSlugByPath = useMemo(() => buildWorkspaceRouteSlugMap(mergedSidebarWorkspaceEntries), [mergedSidebarWorkspaceEntries])
@@ -2071,12 +2032,6 @@ export function DesktopAppPage() {
     const workspacePaths = mergedSidebarWorkspaceEntries.map((workspace) => workspace.path).sort()
     return workspacePaths.join('\u0000')
   }, [mergedSidebarWorkspaceEntries])
-
-  const applyDesktopV3WorksetSessions = useCallback((sessions: DesktopSessionRecord[]) => {
-    for (const session of sessions) {
-      syncWorkspaceOverviewSession(queryClient, session)
-    }
-  }, [queryClient])
 
   useEffect(() => {
     const epoch = desktopV3WorksetBootstrapEpochRef.current + 1
@@ -2095,14 +2050,11 @@ export function DesktopAppPage() {
     ]
     if (workspacePaths.length > 0) {
       bootstrapTasks.push((async () => {
-        const workset = await hydrateDesktopV3Workset(queryClient, {
+        await hydrateDesktopV3Workset(queryClient, {
           workspacePaths,
           recent: { limit: 50 },
           history: { mode: 'full', maxMessagesPerSession: 200, maxEventsPerSession: 0, manifestPolicy: 'manifest', includeEvents: false },
         }, { signal: abortController.signal })
-        if (isCurrentEpoch()) {
-          applyDesktopV3WorksetSessions(workset.sessionOrder.map((sessionId) => workset.sessionsById[sessionId]).filter(Boolean))
-        }
       })())
     }
 
@@ -2120,7 +2072,7 @@ export function DesktopAppPage() {
       cancelled = true
       abortController.abort()
     }
-  }, [applyDesktopV3WorksetSessions, desktopV3WorksetScopeKey, queryClient])
+  }, [desktopV3WorksetScopeKey, queryClient])
 
   const routeReadiness = useDesktopRouteReadiness({ workspacePath: selectedWorkspacePath }, routeSessionId)
 
@@ -2142,17 +2094,7 @@ export function DesktopAppPage() {
 
   useEffect(() => {
     if (!selectedWorkspacePath) {
-      if (activeWorkspacePath !== null) {
-        setActiveWorkspacePath(null)
-      }
-      if (activeSessionId !== null) {
-        setActiveSession(null)
-      }
       return
-    }
-
-    if (selectedWorkspacePath !== activeWorkspacePath) {
-      setActiveWorkspacePath(selectedWorkspacePath)
     }
 
     if (routeSessionId || selectedSession?.id) {
@@ -2171,18 +2113,7 @@ export function DesktopAppPage() {
         }
       })
     }
-
-    if (routeSessionId && selectedSession?.id) {
-      if (selectedSession.id !== activeSessionId) {
-        setActiveSession(selectedSession.id)
-      }
-      return
-    }
-
-    if (activeSessionId !== null) {
-      setActiveSession(null)
-    }
-  }, [activeSessionId, activeWorkspacePath, routeSessionId, selectedSession, selectedWorkspacePath, setActiveSession, setActiveWorkspacePath])
+  }, [routeSessionId, selectedSession?.id, selectedWorkspacePath])
 
   const stopResize = useCallback(() => {
     resizeStateRef.current = null
@@ -2315,7 +2246,7 @@ export function DesktopAppPage() {
 
   const handleSelectSession = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()
-    const session = readDesktopDbSession(normalizedSessionId) ?? sessionById.get(normalizedSessionId)
+    const session = sessionById.get(normalizedSessionId)
     if (!session?.workspacePath) {
       return
     }
@@ -2333,10 +2264,6 @@ export function DesktopAppPage() {
   }, [navigate, sessionById, workspaceSlugByPath])
 
   const handleSessionCreated = useCallback((session: DesktopSessionRecord) => {
-    setActiveSession(session.id)
-    if (session.workspacePath) {
-      setActiveWorkspacePath(session.workspacePath)
-    }
     if (!session.workspacePath) {
       return
     }
@@ -2349,22 +2276,20 @@ export function DesktopAppPage() {
         sessionId: session.id,
       },
     })
-  }, [navigate, setActiveSession, setActiveWorkspacePath, workspaceSlugByPath])
+  }, [navigate, workspaceSlugByPath])
 
   const chatWorkspacePath = selectedSession?.workspacePath || selectedWorkspace?.path || ''
   const chatWorkspaceName = selectedSession?.workspaceName || selectedWorkspace?.workspaceName || ''
 
   const handleStartNewSessionInWorkspace = useCallback((wsPath: string, wsName: string) => {
     setMobileSidebarOpen(false)
-    setActiveSession(null)
-    setActiveWorkspacePath(wsPath)
     const workspaceSlug = workspaceSlugByPath.get(wsPath)
       ?? workspaceRouteSlugBase({ path: wsPath, workspaceName: wsName })
     void navigate({
       to: '/$workspaceSlug',
       params: { workspaceSlug },
     })
-  }, [navigate, setActiveSession, setActiveWorkspacePath, workspaceSlugByPath])
+  }, [navigate, workspaceSlugByPath])
 
   const handleOpenSettingsTab = useCallback((tab: SettingsTabID) => {
     setQuickSettingsTab(null)
@@ -2603,9 +2528,8 @@ export function DesktopAppPage() {
 
   const handleOpenWorkspaceLauncher = useCallback(() => {
     setMobileSidebarOpen(false)
-    setActiveSession(null)
     void navigate({ to: '/' })
-  }, [navigate, setActiveSession])
+  }, [navigate])
 
   const handleOpenMobileSidebar = useCallback(() => {
     setSidebarCollapsed(false)
@@ -2972,7 +2896,6 @@ export function DesktopAppPage() {
                         className="grid min-h-[30px] min-w-0 grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-l-md px-2 text-left font-inherit hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
                         onClick={() => {
                           setMobileSidebarOpen(false)
-                          setActiveSession(null)
                         }}
                         aria-label="Open workspace settings"
                         title="Workspace settings"
@@ -3028,7 +2951,6 @@ export function DesktopAppPage() {
                           className="mt-1 flex min-h-[30px] w-full items-center gap-2 px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
                           onClick={() => {
                             setMobileSidebarOpen(false)
-                            setActiveSession(null)
                           }}
                         >
                           <Home size={14} className="shrink-0" />
