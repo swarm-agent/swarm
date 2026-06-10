@@ -257,7 +257,6 @@ function v3WorksetPayload(sessionIds: string[]) {
     omissions: [],
     pagination: { has_more: false },
     watermarks: { loaded_at: 10, max_updated_at: 5 },
-    budget: { max_bytes: 2097152, used_bytes: 1024 },
     session_order: sessionIds,
   }
 }

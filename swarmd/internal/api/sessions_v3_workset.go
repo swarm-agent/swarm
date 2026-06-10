@@ -10,11 +10,10 @@ import (
 )
 
 type sessionsV3WorksetRequest struct {
-	SessionIDs     []string                        `json:"session_ids,omitempty"`
-	Workspace      sessionsV3WorksetWorkspace      `json:"workspace,omitempty"`
-	Recent         sessionsV3WorksetRecent         `json:"recent,omitempty"`
-	History        sessionsV3WorksetHistory        `json:"history,omitempty"`
-	ResponseBudget sessionsV3WorksetResponseBudget `json:"response_budget,omitempty"`
+	SessionIDs []string                   `json:"session_ids,omitempty"`
+	Workspace  sessionsV3WorksetWorkspace `json:"workspace,omitempty"`
+	Recent     sessionsV3WorksetRecent    `json:"recent,omitempty"`
+	History    sessionsV3WorksetHistory   `json:"history,omitempty"`
 }
 
 type sessionsV3WorksetWorkspace struct {
@@ -32,11 +31,6 @@ type sessionsV3WorksetHistory struct {
 	MaxMessagesPerSession int    `json:"max_messages_per_session,omitempty"`
 	MaxEventsPerSession   int    `json:"max_events_per_session,omitempty"`
 	ManifestPolicy        string `json:"manifest_policy,omitempty"`
-}
-
-type sessionsV3WorksetResponseBudget struct {
-	MaxBytes      int  `json:"max_bytes,omitempty"`
-	AllowManifest bool `json:"allow_manifest,omitempty"`
 }
 
 func (s *Server) handleSessionsV3Workset(w http.ResponseWriter, r *http.Request) {
@@ -71,10 +65,6 @@ func (s *Server) handleSessionsV3Workset(w http.ResponseWriter, r *http.Request)
 			MaxEventsPerSession:   req.History.MaxEventsPerSession,
 			ManifestPolicy:        req.History.ManifestPolicy,
 		},
-		ResponseBudget: pebblestore.V3SessionWorksetResponseBudget{
-			MaxBytes:      req.ResponseBudget.MaxBytes,
-			AllowManifest: req.ResponseBudget.AllowManifest,
-		},
 	}
 	workset, err := s.sessions.BuildSessionWorkset(options)
 	if err != nil {
@@ -103,7 +93,6 @@ func sessionsV3WorksetResponse(workset pebblestore.V3SessionWorksetResult) map[s
 		"omissions":                     workset.Omissions,
 		"pagination":                    workset.Pagination,
 		"watermarks":                    workset.Watermarks,
-		"budget":                        workset.Budget,
 		"session_order":                 workset.SessionOrder,
 	}
 }

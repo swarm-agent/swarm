@@ -17,7 +17,7 @@ func TestSessionsV3WorksetEndpointSupportsPaginationAndManifests(t *testing.T) {
 	appendSessionsV3PrimaryMessageForWorksetTest(t, server, createdB.ID, "first")
 	appendSessionsV3PrimaryMessageForWorksetTest(t, server, createdB.ID, "second")
 
-	body := `{"session_ids":["` + createdB.ID + `"],"recent":{"limit":1},"history":{"mode":"full","max_messages_per_session":1,"manifest_policy":"manifest"},"response_budget":{"allow_manifest":true}}`
+	body := `{"session_ids":["` + createdB.ID + `"],"recent":{"limit":1},"history":{"mode":"full","max_messages_per_session":1,"manifest_policy":"manifest"}}`
 	req := httptest.NewRequest(http.MethodPost, "/v3/sessions:workset", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -48,21 +48,6 @@ func TestSessionsV3WorksetEndpointSupportsPaginationAndManifests(t *testing.T) {
 	}
 	if len(payload.SessionOrder) != 1 || payload.SessionOrder[0] != createdB.ID {
 		t.Fatalf("session_order = %+v", payload.SessionOrder)
-	}
-}
-
-func TestSessionsV3WorksetEndpointRejectsBudgetWithoutManifest(t *testing.T) {
-	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	created := createSessionsV3PrimaryTestSession(t, server, "workset-budget", "Workset Budget")
-	appendSessionsV3PrimaryMessageForWorksetTest(t, server, created.ID, "large budget failure message")
-
-	body := `{"session_ids":["` + created.ID + `"],"history":{"mode":"full","manifest_policy":"error"},"response_budget":{"max_bytes":20}}`
-	req := httptest.NewRequest(http.MethodPost, "/v3/sessions:workset", bytes.NewBufferString(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("workset budget status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 }
 

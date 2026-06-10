@@ -788,11 +788,10 @@ type SessionV3Hydrated struct {
 }
 
 type SessionV3WorksetRequest struct {
-	SessionIDs     []string                       `json:"session_ids,omitempty"`
-	Workspace      SessionV3WorksetWorkspace      `json:"workspace,omitempty"`
-	Recent         SessionV3WorksetRecent         `json:"recent,omitempty"`
-	History        SessionV3WorksetHistory        `json:"history,omitempty"`
-	ResponseBudget SessionV3WorksetResponseBudget `json:"response_budget,omitempty"`
+	SessionIDs []string                  `json:"session_ids,omitempty"`
+	Workspace  SessionV3WorksetWorkspace `json:"workspace,omitempty"`
+	Recent     SessionV3WorksetRecent    `json:"recent,omitempty"`
+	History    SessionV3WorksetHistory   `json:"history,omitempty"`
 }
 
 type SessionV3WorksetWorkspace struct {
@@ -810,11 +809,6 @@ type SessionV3WorksetHistory struct {
 	MaxMessagesPerSession int    `json:"max_messages_per_session,omitempty"`
 	MaxEventsPerSession   int    `json:"max_events_per_session,omitempty"`
 	ManifestPolicy        string `json:"manifest_policy,omitempty"`
-}
-
-type SessionV3WorksetResponseBudget struct {
-	MaxBytes      int  `json:"max_bytes,omitempty"`
-	AllowManifest bool `json:"allow_manifest,omitempty"`
 }
 
 type SessionV3Workset struct {
@@ -835,7 +829,6 @@ type SessionV3Workset struct {
 	Omissions                 []SessionV3WorksetOmission                `json:"omissions"`
 	Pagination                SessionV3WorksetPagination                `json:"pagination"`
 	Watermarks                SessionV3WorksetWatermarks                `json:"watermarks"`
-	Budget                    SessionV3WorksetBudgetAccounting          `json:"budget"`
 	SessionOrder              []string                                  `json:"session_order"`
 }
 
@@ -857,7 +850,6 @@ type SessionV3HistoryManifestItem struct {
 	ToSeq        uint64 `json:"to_seq"`
 	MessageCount int    `json:"message_count"`
 	EventCount   int    `json:"event_count"`
-	ByteEstimate int    `json:"byte_estimate"`
 	Complete     bool   `json:"complete"`
 }
 
@@ -885,11 +877,6 @@ type SessionV3WorksetPagination struct {
 type SessionV3WorksetWatermarks struct {
 	LoadedAt     int64 `json:"loaded_at"`
 	MaxUpdatedAt int64 `json:"max_updated_at,omitempty"`
-}
-
-type SessionV3WorksetBudgetAccounting struct {
-	MaxBytes  int `json:"max_bytes,omitempty"`
-	UsedBytes int `json:"used_bytes,omitempty"`
 }
 
 type SessionV3MessageOptions struct {

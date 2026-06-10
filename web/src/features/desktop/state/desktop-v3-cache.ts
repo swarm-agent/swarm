@@ -114,10 +114,6 @@ export interface DesktopV3WorksetRequest {
     maxEventsPerSession?: number
     manifestPolicy?: 'error' | 'omit' | 'manifest'
   }
-  responseBudget?: {
-    maxBytes?: number
-    allowManifest?: boolean
-  }
 }
 
 interface V3WorksetRequestWire {
@@ -125,7 +121,6 @@ interface V3WorksetRequestWire {
   workspace?: { workspace_path?: string }
   recent?: { limit?: number; before_updated_at?: number | null; before_session_id?: string }
   history?: { mode?: string; max_messages_per_session?: number; max_events_per_session?: number; manifest_policy?: string }
-  response_budget?: { max_bytes?: number; allow_manifest?: boolean }
 }
 
 export interface DesktopV3HistoryChunkDescriptor {
@@ -135,7 +130,6 @@ export interface DesktopV3HistoryChunkDescriptor {
   to_seq?: number
   message_count?: number
   event_count?: number
-  byte_estimate?: number
   complete?: boolean
 }
 
@@ -182,7 +176,6 @@ interface V3WorksetResponseWire {
   omissions?: DesktopV3WorksetOmission[]
   pagination?: DesktopV3WorksetPagination
   watermarks?: DesktopV3WorksetWatermarks
-  budget?: { max_bytes?: number; used_bytes?: number }
   session_order?: string[]
 }
 
@@ -204,7 +197,6 @@ export interface DesktopV3Workset {
   omissions: DesktopV3WorksetOmission[]
   pagination: DesktopV3WorksetPagination
   watermarks: DesktopV3WorksetWatermarks
-  budget: { max_bytes?: number; used_bytes?: number }
   sessionOrder: string[]
   loadedAt: number
 }
@@ -214,10 +206,6 @@ const DEFAULT_WORKSET_HISTORY = {
   maxMessagesPerSession: 200,
   maxEventsPerSession: 500,
   manifestPolicy: 'manifest' as const,
-}
-const DEFAULT_WORKSET_RESPONSE_BUDGET = {
-  maxBytes: 2 * 1024 * 1024,
-  allowManifest: true,
 }
 
 export function desktopV3WorksetCacheQueryKey() {
@@ -573,7 +561,6 @@ export function mapDesktopV3Workset(response: V3WorksetResponseWire): DesktopV3W
     omissions: response.omissions ?? [],
     pagination: response.pagination ?? { has_more: false },
     watermarks: response.watermarks ?? {},
-    budget: response.budget ?? {},
     sessionOrder: sessionOrder.filter((sessionId) => Boolean(sessionsById[sessionId])),
     loadedAt: Date.now(),
   }
@@ -704,7 +691,6 @@ function toWorksetRequestWire(input: DesktopV3WorksetRequest): V3WorksetRequestW
   const workspacePath = input.workspacePath?.trim() ?? ''
   const recent = input.recent
   const history = { ...DEFAULT_WORKSET_HISTORY, ...(input.history ?? {}) }
-  const responseBudget = { ...DEFAULT_WORKSET_RESPONSE_BUDGET, ...(input.responseBudget ?? {}) }
   return {
     session_ids: sessionIds.length > 0 ? sessionIds : undefined,
     workspace: workspacePath ? { workspace_path: workspacePath } : undefined,
@@ -720,10 +706,6 @@ function toWorksetRequestWire(input: DesktopV3WorksetRequest): V3WorksetRequestW
       max_messages_per_session: history.maxMessagesPerSession,
       max_events_per_session: history.maxEventsPerSession,
       manifest_policy: history.manifestPolicy,
-    },
-    response_budget: {
-      max_bytes: responseBudget.maxBytes,
-      allow_manifest: responseBudget.allowManifest,
     },
   }
 }

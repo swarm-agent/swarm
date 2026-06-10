@@ -20,7 +20,6 @@ const (
 	V3SessionWorksetManifestPolicyOmit     = "omit"
 	V3SessionWorksetManifestPolicyManifest = "manifest"
 
-	V3SessionWorksetOmissionResponseBudget   = "response_budget"
 	V3SessionWorksetOmissionRequiresManifest = "requires_manifest"
 	V3SessionWorksetOmissionPageBoundary     = "page_boundary"
 )
@@ -33,7 +32,6 @@ type V3SessionWorksetOptions struct {
 	RecentBeforeUpdatedAt *int64
 	RecentBeforeSessionID string
 	History               V3SessionWorksetHistoryOptions
-	ResponseBudget        V3SessionWorksetResponseBudget
 }
 
 type V3SessionWorksetHistoryOptions struct {
@@ -41,11 +39,6 @@ type V3SessionWorksetHistoryOptions struct {
 	MaxMessagesPerSession int
 	MaxEventsPerSession   int
 	ManifestPolicy        string
-}
-
-type V3SessionWorksetResponseBudget struct {
-	MaxBytes      int
-	AllowManifest bool
 }
 
 type V3SessionWorksetResult struct {
@@ -59,7 +52,6 @@ type V3SessionWorksetResult struct {
 	Omissions                 []V3SessionWorksetOmission                   `json:"omissions"`
 	Pagination                V3SessionWorksetPagination                   `json:"pagination"`
 	Watermarks                V3SessionWorksetWatermarks                   `json:"watermarks"`
-	Budget                    V3SessionWorksetBudgetAccounting             `json:"budget,omitempty"`
 	SessionOrder              []string                                     `json:"session_order"`
 }
 
@@ -81,7 +73,6 @@ type V3SessionHistoryChunkDescriptor struct {
 	ToSeq        uint64 `json:"to_seq"`
 	MessageCount int    `json:"message_count"`
 	EventCount   int    `json:"event_count"`
-	ByteEstimate int    `json:"byte_estimate"`
 	Complete     bool   `json:"complete"`
 }
 
@@ -98,46 +89,6 @@ type V3SessionWorksetOmission struct {
 	Reason      string `json:"reason"`
 	NextCursor  string `json:"next_cursor,omitempty"`
 	ManifestRef string `json:"manifest_ref,omitempty"`
-}
-
-type V3SessionWorksetBudgetAccounting struct {
-	MaxBytes  int `json:"max_bytes,omitempty"`
-	UsedBytes int `json:"used_bytes,omitempty"`
-}
-
-type v3WorksetBudgetTracker struct {
-	max  int
-	used int
-}
-
-func (b *v3WorksetBudgetTracker) add(resource string, value any) error {
-	if b == nil || b.max <= 0 {
-		return nil
-	}
-	payload, err := json.Marshal(value)
-	if err != nil {
-		return fmt.Errorf("estimate %s bytes: %w", resource, err)
-	}
-	if b.used+len(payload) > b.max {
-		return fmt.Errorf("%s exceeds response budget", resource)
-	}
-	b.used += len(payload)
-	return nil
-}
-
-func (b *v3WorksetBudgetTracker) estimate(value any) int {
-	payload, err := json.Marshal(value)
-	if err != nil {
-		return 0
-	}
-	return len(payload)
-}
-
-func (b *v3WorksetBudgetTracker) canAdd(value any) bool {
-	if b == nil || b.max <= 0 {
-		return true
-	}
-	return b.used+b.estimate(value) <= b.max
 }
 
 func (s *SessionStore) BuildV3SessionWorkset(options V3SessionWorksetOptions) (result V3SessionWorksetResult, err error) {
@@ -202,10 +153,8 @@ func (s *SessionStore) buildV3SessionWorksetFromReader(reader pebble.Reader, opt
 		Omissions:                 []V3SessionWorksetOmission{},
 		Pagination:                pagination,
 		Watermarks:                V3SessionWorksetWatermarks{LoadedAt: time.Now().UnixMilli()},
-		Budget:                    V3SessionWorksetBudgetAccounting{MaxBytes: options.ResponseBudget.MaxBytes},
 		SessionOrder:              make([]string, 0, len(selected)),
 	}
-	budget := &v3WorksetBudgetTracker{max: options.ResponseBudget.MaxBytes}
 	for _, session := range selected {
 		if strings.TrimSpace(session.ID) == "" {
 			continue
@@ -220,12 +169,6 @@ func (s *SessionStore) buildV3SessionWorksetFromReader(reader pebble.Reader, opt
 		if result.Watermarks.MaxUpdatedAt == 0 || session.UpdatedAt > result.Watermarks.MaxUpdatedAt {
 			result.Watermarks.MaxUpdatedAt = session.UpdatedAt
 		}
-		if err := budget.add("session", session); err != nil {
-			return V3SessionWorksetResult{}, err
-		}
-		if err := budget.add("projection", projection); err != nil {
-			return V3SessionWorksetResult{}, err
-		}
 		result.SessionsByID[session.ID] = session
 		result.ProjectionsBySession[session.ID] = projection
 		result.MessagesBySession[session.ID] = []MessageSnapshot{}
@@ -233,11 +176,10 @@ func (s *SessionStore) buildV3SessionWorksetFromReader(reader pebble.Reader, opt
 		result.RunIntentsBySession[session.ID] = []V3SessionRunIntent{}
 		result.HistoryManifestsBySession[session.ID] = []V3SessionHistoryChunkDescriptor{}
 		result.SessionOrder = append(result.SessionOrder, session.ID)
-		if err := s.addV3SessionWorksetHistory(reader, options, session, projection, budget, &result); err != nil {
+		if err := s.addV3SessionWorksetHistory(reader, options, session, projection, &result); err != nil {
 			return V3SessionWorksetResult{}, err
 		}
 	}
-	result.Budget.UsedBytes = budget.used
 	return result, nil
 }
 
@@ -372,7 +314,7 @@ func sortV3WorksetSessions(sessions []SessionSnapshot) {
 	})
 }
 
-func (s *SessionStore) addV3SessionWorksetHistory(reader pebble.Reader, options V3SessionWorksetOptions, session SessionSnapshot, projection V3SessionProjection, budget *v3WorksetBudgetTracker, result *V3SessionWorksetResult) error {
+func (s *SessionStore) addV3SessionWorksetHistory(reader pebble.Reader, options V3SessionWorksetOptions, session SessionSnapshot, projection V3SessionProjection, result *V3SessionWorksetResult) error {
 	switch options.History.Mode {
 	case V3SessionWorksetHistoryModeNone:
 		return nil
@@ -380,19 +322,19 @@ func (s *SessionStore) addV3SessionWorksetHistory(reader pebble.Reader, options 
 	default:
 		return fmt.Errorf("unsupported workset history mode %q", options.History.Mode)
 	}
-	if err := s.addV3SessionWorksetMessages(reader, options, session, budget, result); err != nil {
+	if err := s.addV3SessionWorksetMessages(reader, options, session, result); err != nil {
 		return err
 	}
-	if err := s.addV3SessionWorksetEvents(reader, options, session, projection, budget, result); err != nil {
+	if err := s.addV3SessionWorksetEvents(reader, options, session, projection, result); err != nil {
 		return err
 	}
-	return s.addV3SessionWorksetRunIntents(reader, options, session, projection, budget, result)
+	return s.addV3SessionWorksetRunIntents(reader, options, session, projection, result)
 }
 
-func (s *SessionStore) addV3SessionWorksetMessages(reader pebble.Reader, options V3SessionWorksetOptions, session SessionSnapshot, budget *v3WorksetBudgetTracker, result *V3SessionWorksetResult) error {
+func (s *SessionStore) addV3SessionWorksetMessages(reader pebble.Reader, options V3SessionWorksetOptions, session SessionSnapshot, result *V3SessionWorksetResult) error {
 	limit, capped := v3WorksetResourceLimit(options.History.Mode, options.History.MaxMessagesPerSession, session.MessageCount)
 	if limit == 0 && session.MessageCount > 0 {
-		return s.handleV3WorksetResourceOmission(options, session.ID, "messages", V3SessionWorksetOmissionRequiresManifest, fmt.Sprintf("%s:messages:1", session.ID), nil, budget, result)
+		return s.handleV3WorksetResourceOmission(options, session.ID, "messages", V3SessionWorksetOmissionRequiresManifest, fmt.Sprintf("%s:messages:1", session.ID), nil, result)
 	}
 	messages := []MessageSnapshot{}
 	var err error
@@ -407,26 +349,20 @@ func (s *SessionStore) addV3SessionWorksetMessages(reader pebble.Reader, options
 		}
 	}
 	if capped || len(messages) < session.MessageCount {
-		if err := s.handleV3WorksetResourceOmission(options, session.ID, "messages", V3SessionWorksetOmissionRequiresManifest, v3WorksetMessagesNextCursor(session.ID, messages), &messages, budget, result); err != nil {
+		if err := s.handleV3WorksetResourceOmission(options, session.ID, "messages", V3SessionWorksetOmissionRequiresManifest, v3WorksetMessagesNextCursor(session.ID, messages), &messages, result); err != nil {
 			return err
 		}
 		return nil
-	}
-	if !budget.canAdd(messages) {
-		return s.handleV3WorksetResourceOmission(options, session.ID, "messages", V3SessionWorksetOmissionResponseBudget, v3WorksetMessagesNextCursor(session.ID, messages), &messages, budget, result)
-	}
-	if err := budget.add("messages", messages); err != nil {
-		return err
 	}
 	result.MessagesBySession[session.ID] = messages
 	return nil
 }
 
-func (s *SessionStore) addV3SessionWorksetEvents(reader pebble.Reader, options V3SessionWorksetOptions, session SessionSnapshot, projection V3SessionProjection, budget *v3WorksetBudgetTracker, result *V3SessionWorksetResult) error {
+func (s *SessionStore) addV3SessionWorksetEvents(reader pebble.Reader, options V3SessionWorksetOptions, session SessionSnapshot, projection V3SessionProjection, result *V3SessionWorksetResult) error {
 	totalEvents := int(projection.LastEventSeq)
 	limit, capped := v3WorksetResourceLimit(options.History.Mode, options.History.MaxEventsPerSession, totalEvents)
 	if limit == 0 && totalEvents > 0 {
-		return s.handleV3WorksetResourceOmission(options, session.ID, "events", V3SessionWorksetOmissionRequiresManifest, fmt.Sprintf("%s:events:1", session.ID), nil, budget, result)
+		return s.handleV3WorksetResourceOmission(options, session.ID, "events", V3SessionWorksetOmissionRequiresManifest, fmt.Sprintf("%s:events:1", session.ID), nil, result)
 	}
 	events := []V3SessionEvent{}
 	if limit > 0 {
@@ -437,22 +373,16 @@ func (s *SessionStore) addV3SessionWorksetEvents(reader pebble.Reader, options V
 		events = loaded
 	}
 	if capped || len(events) < totalEvents {
-		if err := s.handleV3WorksetResourceOmission(options, session.ID, "events", V3SessionWorksetOmissionRequiresManifest, v3WorksetEventsNextCursor(session.ID, events), &events, budget, result); err != nil {
+		if err := s.handleV3WorksetResourceOmission(options, session.ID, "events", V3SessionWorksetOmissionRequiresManifest, v3WorksetEventsNextCursor(session.ID, events), &events, result); err != nil {
 			return err
 		}
 		return nil
-	}
-	if !budget.canAdd(events) {
-		return s.handleV3WorksetResourceOmission(options, session.ID, "events", V3SessionWorksetOmissionResponseBudget, v3WorksetEventsNextCursor(session.ID, events), &events, budget, result)
-	}
-	if err := budget.add("events", events); err != nil {
-		return err
 	}
 	result.EventsBySession[session.ID] = events
 	return nil
 }
 
-func (s *SessionStore) addV3SessionWorksetRunIntents(reader pebble.Reader, options V3SessionWorksetOptions, session SessionSnapshot, projection V3SessionProjection, budget *v3WorksetBudgetTracker, result *V3SessionWorksetResult) error {
+func (s *SessionStore) addV3SessionWorksetRunIntents(reader pebble.Reader, options V3SessionWorksetOptions, session SessionSnapshot, projection V3SessionProjection, result *V3SessionWorksetResult) error {
 	if projection.LastEventSeq == 0 {
 		return nil
 	}
@@ -462,12 +392,6 @@ func (s *SessionStore) addV3SessionWorksetRunIntents(reader pebble.Reader, optio
 	}
 	intents, err := listV3SessionRunIntentsFromReader(reader, session.ID, 0, limit)
 	if err != nil {
-		return err
-	}
-	if !budget.canAdd(intents) {
-		return s.handleV3WorksetResourceOmission(options, session.ID, "run_intents", V3SessionWorksetOmissionResponseBudget, "", nil, budget, result)
-	}
-	if err := budget.add("run_intents", intents); err != nil {
 		return err
 	}
 	result.RunIntentsBySession[session.ID] = intents
@@ -487,34 +411,19 @@ func v3WorksetResourceLimit(mode string, requested, total int) (limit int, cappe
 	return 0, true
 }
 
-func (s *SessionStore) handleV3WorksetResourceOmission(options V3SessionWorksetOptions, sessionID, resource, reason, nextCursor string, inline any, budget *v3WorksetBudgetTracker, result *V3SessionWorksetResult) error {
+func (s *SessionStore) handleV3WorksetResourceOmission(options V3SessionWorksetOptions, sessionID, resource, reason, nextCursor string, inline any, result *V3SessionWorksetResult) error {
 	switch options.History.ManifestPolicy {
 	case V3SessionWorksetManifestPolicyOmit:
 		omission := V3SessionWorksetOmission{SessionID: sessionID, Resource: resource, Reason: reason, NextCursor: nextCursor}
-		if err := budget.add("omission", omission); err != nil {
-			return err
-		}
 		result.Omissions = append(result.Omissions, omission)
 		return nil
 	case V3SessionWorksetManifestPolicyManifest:
-		if reason == V3SessionWorksetOmissionResponseBudget && !options.ResponseBudget.AllowManifest {
-			return fmt.Errorf("%s for %s requires response_budget.allow_manifest", reason, resource)
-		}
-		descriptor, chunk := v3WorksetHistoryDescriptor(sessionID, resource, inline, budget)
-		if err := budget.add("history manifest", descriptor); err != nil {
-			return err
-		}
+		descriptor, chunk := v3WorksetHistoryDescriptor(sessionID, resource, inline)
 		result.HistoryManifestsBySession[sessionID] = append(result.HistoryManifestsBySession[sessionID], descriptor)
 		manifestRef := fmt.Sprintf("%s:%s", sessionID, resource)
 		omission := V3SessionWorksetOmission{SessionID: sessionID, Resource: resource, Reason: reason, NextCursor: nextCursor, ManifestRef: manifestRef}
-		if err := budget.add("omission", omission); err != nil {
-			return err
-		}
 		result.Omissions = append(result.Omissions, omission)
-		if inline != nil && budget.canAdd(chunk) {
-			if err := budget.add("history chunk", chunk); err != nil {
-				return err
-			}
+		if inline != nil {
 			result.HistoryChunksByID[chunk.ChunkID] = chunk
 		}
 		return nil
@@ -525,7 +434,7 @@ func (s *SessionStore) handleV3WorksetResourceOmission(options V3SessionWorksetO
 	}
 }
 
-func v3WorksetHistoryDescriptor(sessionID, resource string, inline any, budget *v3WorksetBudgetTracker) (V3SessionHistoryChunkDescriptor, V3SessionHistoryChunk) {
+func v3WorksetHistoryDescriptor(sessionID, resource string, inline any) (V3SessionHistoryChunkDescriptor, V3SessionHistoryChunk) {
 	descriptor := V3SessionHistoryChunkDescriptor{Resource: resource, Complete: true}
 	chunk := V3SessionHistoryChunk{Resource: resource}
 	switch values := inline.(type) {
@@ -555,7 +464,6 @@ func v3WorksetHistoryDescriptor(sessionID, resource string, inline any, budget *
 		descriptor.ToSeq = descriptor.FromSeq
 	}
 	descriptor.ChunkID = fmt.Sprintf("%s:%s:%d-%d", sessionID, resource, descriptor.FromSeq, descriptor.ToSeq)
-	descriptor.ByteEstimate = budget.estimate(chunk)
 	chunk.ChunkID = descriptor.ChunkID
 	return descriptor, chunk
 }

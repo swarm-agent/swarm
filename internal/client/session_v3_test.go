@@ -146,7 +146,7 @@ func TestSessionV3WorksetClientPreservesNormalizedContract(t *testing.T) {
 			"agent_model_policy_by_session": map[string]any{"session-a": map[string]any{"agent_name": "swarm", "resolved_agent_name": "swarm", "source": "agent_preset", "locked": true, "preference": map[string]any{"provider": "openai", "model": "gpt"}, "context_window": 100, "max_output_tokens": 20}},
 			"run_intents_by_session":        map[string]any{"session-a": []map[string]any{{"session_id": "session-a", "run_id": "run-1", "status": "running", "created_at": 1001, "updated_at": 1002, "event_seq": 2}}},
 			"history_manifests_by_session": map[string]any{
-				"session-a": []map[string]any{{"chunk_id": "session-a:messages:1-1", "resource": "messages", "from_seq": 1, "to_seq": 1, "message_count": 1, "event_count": 0, "byte_estimate": 128, "complete": true}},
+				"session-a": []map[string]any{{"chunk_id": "session-a:messages:1-1", "resource": "messages", "from_seq": 1, "to_seq": 1, "message_count": 1, "event_count": 0, "complete": true}},
 			},
 			"history_chunks_by_id": map[string]any{
 				"session-a:messages:1-1": map[string]any{"chunk_id": "session-a:messages:1-1", "resource": "messages", "messages": []map[string]any{{"id": "msg-1", "session_id": "session-a", "global_seq": 1, "role": "user", "content": "hi", "created_at": 1000}}},
@@ -154,7 +154,6 @@ func TestSessionV3WorksetClientPreservesNormalizedContract(t *testing.T) {
 			"omissions":     []map[string]any{{"session_id": "session-a", "resource": "messages", "reason": "requires_manifest", "next_cursor": "session-a:messages:2", "manifest_ref": "session-a:messages"}},
 			"pagination":    map[string]any{"next_before_updated_at": 1234, "next_before_session_id": "session-a", "has_more": true},
 			"watermarks":    map[string]any{"loaded_at": 3000, "max_updated_at": 2000},
-			"budget":        map[string]any{"max_bytes": 4096, "used_bytes": 1024},
 			"session_order": []string{"session-a"},
 		})
 	}))
@@ -173,7 +172,6 @@ func TestSessionV3WorksetClientPreservesNormalizedContract(t *testing.T) {
 			MaxEventsPerSession:   2,
 			ManifestPolicy:        "manifest",
 		},
-		ResponseBudget: SessionV3WorksetResponseBudget{MaxBytes: 4096, AllowManifest: true},
 	})
 	if err != nil {
 		t.Fatalf("GetSessionV3Workset() error = %v", err)
@@ -183,9 +181,6 @@ func TestSessionV3WorksetClientPreservesNormalizedContract(t *testing.T) {
 	}
 	if gotRequest.Recent.BeforeUpdatedAt == nil || *gotRequest.Recent.BeforeUpdatedAt != beforeUpdatedAt || gotRequest.Recent.BeforeSessionID != "session-z" {
 		t.Fatalf("recent cursor not encoded: %#v", gotRequest.Recent)
-	}
-	if gotRequest.ResponseBudget.MaxBytes != 4096 || !gotRequest.ResponseBudget.AllowManifest {
-		t.Fatalf("response budget not encoded: %#v", gotRequest.ResponseBudget)
 	}
 	if gotRequest.History.Mode != "full" || gotRequest.History.ManifestPolicy != "manifest" || gotRequest.History.MaxMessagesPerSession != 1 || gotRequest.History.MaxEventsPerSession != 2 {
 		t.Fatalf("history request not encoded: %#v", gotRequest.History)
@@ -199,8 +194,8 @@ func TestSessionV3WorksetClientPreservesNormalizedContract(t *testing.T) {
 	if workset.Pagination.NextBeforeUpdatedAt == nil || *workset.Pagination.NextBeforeUpdatedAt != 1234 || workset.Pagination.NextBeforeSessionID != "session-a" || !workset.Pagination.HasMore {
 		t.Fatalf("pagination not decoded: %#v", workset.Pagination)
 	}
-	if workset.Budget.MaxBytes != 4096 || workset.Budget.UsedBytes != 1024 || workset.Watermarks.LoadedAt != 3000 {
-		t.Fatalf("budget/watermarks not decoded: budget=%#v watermarks=%#v", workset.Budget, workset.Watermarks)
+	if workset.Watermarks.LoadedAt != 3000 {
+		t.Fatalf("watermarks not decoded: watermarks=%#v", workset.Watermarks)
 	}
 	manifest := workset.HistoryManifestsBySession["session-a"]
 	if len(manifest) != 1 || manifest[0].ChunkID != "session-a:messages:1-1" || manifest[0].MessageCount != 1 || !manifest[0].Complete {

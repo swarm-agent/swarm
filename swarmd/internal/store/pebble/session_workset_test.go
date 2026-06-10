@@ -84,24 +84,7 @@ func TestBuildV3SessionWorksetUsesSessionIDTieBreaker(t *testing.T) {
 	}
 }
 
-func TestBuildV3SessionWorksetBudgetExceededWithoutManifestFails(t *testing.T) {
-	store := openV3SessionEventTestStore(t)
-	sessions := NewSessionStore(store)
-	createV3WorksetSessionForTest(t, sessions, "session-budget-error", "/workspace/budget", 1000)
-	appendV3WorksetMessageForTest(t, sessions, "session-budget-error", "large message that cannot fit into a tiny response budget", 2000)
-
-	_, err := sessions.BuildV3SessionWorkset(V3SessionWorksetOptions{
-		AccountScopeID: "account-1",
-		SessionIDs:     []string{"session-budget-error"},
-		History:        V3SessionWorksetHistoryOptions{Mode: V3SessionWorksetHistoryModeFull, ManifestPolicy: V3SessionWorksetManifestPolicyError},
-		ResponseBudget: V3SessionWorksetResponseBudget{MaxBytes: 20},
-	})
-	if err == nil {
-		t.Fatalf("expected budget error")
-	}
-}
-
-func TestBuildV3SessionWorksetBudgetExceededWithManifest(t *testing.T) {
+func TestBuildV3SessionWorksetCappedHistoryWithManifest(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
 	createV3WorksetSessionForTest(t, sessions, "session-budget-manifest", "/workspace/budget", 1000)
@@ -112,10 +95,9 @@ func TestBuildV3SessionWorksetBudgetExceededWithManifest(t *testing.T) {
 		AccountScopeID: "account-1",
 		SessionIDs:     []string{"session-budget-manifest"},
 		History:        V3SessionWorksetHistoryOptions{Mode: V3SessionWorksetHistoryModeFull, MaxMessagesPerSession: 1, ManifestPolicy: V3SessionWorksetManifestPolicyManifest},
-		ResponseBudget: V3SessionWorksetResponseBudget{AllowManifest: true},
 	})
 	if err != nil {
-		t.Fatalf("build manifest workset: %v", err)
+		t.Fatalf("build capped manifest workset: %v", err)
 	}
 	if len(workset.MessagesBySession["session-budget-manifest"]) != 0 {
 		t.Fatalf("messages should be omitted when manifest is required: %+v", workset.MessagesBySession["session-budget-manifest"])

@@ -2097,7 +2097,6 @@ export function DesktopAppPage() {
           workspacePath,
           recent: { limit: 50 },
           history: { mode: 'full', maxMessagesPerSession: 200, maxEventsPerSession: 500, manifestPolicy: 'manifest' },
-          responseBudget: { maxBytes: 2 * 1024 * 1024, allowManifest: true },
         }, { signal: abortController.signal })
         if (isCurrentEpoch()) {
           applyDesktopV3WorksetSessions(workset.sessionOrder.map((sessionId) => workset.sessionsById[sessionId]).filter(Boolean))
@@ -2139,7 +2138,6 @@ export function DesktopAppPage() {
     void hydrateDesktopV3Workset(queryClient, {
       sessionIds: [routeCriticalSessionId],
       history: { mode: 'full', maxMessagesPerSession: 200, maxEventsPerSession: 500, manifestPolicy: 'manifest' },
-      responseBudget: { maxBytes: 2 * 1024 * 1024, allowManifest: true },
     }, { signal: abortController.signal }).then((workset) => {
       if (!abortController.signal.aborted) {
         applyDesktopV3WorksetSessions(workset.sessionOrder.map((sessionId) => workset.sessionsById[sessionId]).filter(Boolean))

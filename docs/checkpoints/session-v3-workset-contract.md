@@ -2,7 +2,7 @@
 
 Status: CP-Redo-1 contract source of truth.
 
-This document defines the load-time V3 workset API contract for Desktop. Backend storage/API is the source of truth for session selection, stable ordering, pagination, response budgeting, explicit omissions, and history manifests. Desktop must load a bounded workset page into a normalized cache and switch locally for sessions present in that cache.
+This document defines the load-time V3 workset API contract for Desktop. Backend storage/API is the source of truth for session selection, stable ordering, pagination, explicit omissions, and history manifests. Desktop must load a bounded workset page into a normalized cache and switch locally for sessions present in that cache.
 
 ## Endpoint
 
@@ -27,10 +27,6 @@ The endpoint returns a normalized workset response. It is not a single-session s
     "max_messages_per_session": 200,
     "max_events_per_session": 500,
     "manifest_policy": "manifest"
-  },
-  "response_budget": {
-    "max_bytes": 2097152,
-    "allow_manifest": true
   }
 }
 ```
@@ -65,29 +61,17 @@ A page cursor based only on timestamp can be ambiguous when multiple sessions sh
 
 - `none`: return session metadata/projections only.
 - `tail`: return the newest bounded message/event tail.
-- `full`: return complete history unless bounded by explicit history limits or response budget.
+- `full`: return complete history unless bounded by explicit history limits.
 
 `history.max_messages_per_session` and `history.max_events_per_session` are hard per-session caps for inline history. If a session has more messages/events than these caps, the backend must not silently truncate. It must either fail or return explicit omissions/manifests according to `history.manifest_policy`.
 
 `history.manifest_policy` values:
 
-- `error`: if requested history cannot be returned fully inline within the per-session caps and response budget, the endpoint fails clearly.
+- `error`: if requested history cannot be returned fully inline within the per-session caps, the endpoint fails clearly.
 - `omit`: return available session metadata and explicit omission entries for missing history.
-- `manifest`: return manifest descriptors for history chunks that are not fully included inline. This requires `response_budget.allow_manifest: true` when the response budget is what forces chunking.
+- `manifest`: return manifest descriptors for history chunks that are not fully included inline.
 
-`full` means complete unless a declared budget or cap forces an explicit `error`, `omit`, or `manifest` result. Hidden tail caps are forbidden.
-
-## Response budget contract
-
-`response_budget.max_bytes` is a maximum approximate response payload budget for the whole workset response. The backend owns budget accounting; Desktop must not guess by issuing many single-session hydrates.
-
-Rules:
-
-- Budget applies to the full normalized workset response, not independently to each session.
-- Budget exhaustion must never silently truncate sessions, messages, events, plans, permissions, usage, preferences, run intents, manifests, or chunks.
-- If `response_budget.allow_manifest` is false and the requested response cannot fit, the endpoint must fail clearly or return explicit omissions according to `history.manifest_policy` when that policy permits omission.
-- If `response_budget.allow_manifest` is true and `history.manifest_policy` is `manifest`, the backend should include chunk manifests and as many complete inline chunks as fit.
-- Budget accounting must leave the response structurally valid: all references must either resolve to included normalized maps/chunks or appear in `omissions` with a reason and cursor/manifest reference.
+`full` means complete unless a declared cap forces an explicit `error`, `omit`, or `manifest` result. Hidden tail caps are forbidden.
 
 ## Response contract
 
@@ -154,7 +138,6 @@ If a page boundary prevents inclusion of a session or history segment that Deskt
   "to_seq": 200,
   "message_count": 200,
   "event_count": 0,
-  "byte_estimate": 65536,
   "complete": true
 }
 ```
@@ -166,7 +149,6 @@ Descriptor fields:
 - `from_seq` / `to_seq`: inclusive primary session sequence bounds covered by the chunk.
 - `message_count`: number of messages covered by the chunk.
 - `event_count`: number of events covered by the chunk.
-- `byte_estimate`: backend estimate used for response budgeting.
 - `complete`: true only when the descriptor fully covers the stated sequence range.
 
 `history_chunks_by_id[chunk_id]` contains chunks included in the response. A manifest may describe chunks not included inline; those missing chunks must be fetchable later through an explicit workset/chunk follow-up contract, not through ad hoc per-session snapshot hydrate fanout.
@@ -179,7 +161,7 @@ Every omitted selected resource must be represented explicitly:
 {
   "session_id": "session_123",
   "resource": "messages",
-  "reason": "response_budget",
+  "reason": "requires_manifest",
   "next_cursor": "session_123:messages:201",
   "manifest_ref": "session_123:messages"
 }
@@ -187,7 +169,6 @@ Every omitted selected resource must be represented explicitly:
 
 Allowed `reason` values for CP-Redo:
 
-- `response_budget`: omitted because the response-level byte budget would be exceeded.
 - `requires_manifest`: omitted because the request requires manifest handling but manifests were not allowed or not requested.
 - `page_boundary`: omitted because the resource belongs to a later page of the selected scope.
 
@@ -201,7 +182,7 @@ Rules:
 
 ## Desktop load and switch rules
 
-Desktop initial load must call `POST /v3/sessions:workset` with an explicit selector, history policy, and response budget, then seed a normalized client-side cache from the response.
+Desktop initial load must call `POST /v3/sessions:workset` with an explicit selector and history policy, then seed a normalized client-side cache from the response.
 
 For sessions already present in the loaded workset and not explicitly omitted for the requested render path:
 
@@ -221,7 +202,7 @@ Those follow-up fetches must use the workset/page/chunk contract. They must not 
 ## Implementation attack points for later checkpoints
 
 - Backend API: add `POST /v3/sessions:workset` route/handler with typed request and normalized response structs.
-- Pebble/store: add stable recent selection, pagination metadata, response budget accounting, history manifest/chunk construction, and explicit omissions.
+- Pebble/store: add stable recent selection, pagination metadata, history manifest/chunk construction, and explicit omissions.
 - Go client: add typed request/response structs preserving normalized maps, pagination, manifests, chunks, and omissions.
 - Desktop cache: replace snapshot-per-session authoritative switching with one load-time normalized workset seed and local selectors.
 - Desktop layout/store: remove `routeSessionSnapshotQuery`, switch-time `hydrateDesktopV3SessionSnapshot`, hover prefetch hydration, and store-triggered `requestAuthoritativeSessionSnapshot` from the cached-session switch path.
