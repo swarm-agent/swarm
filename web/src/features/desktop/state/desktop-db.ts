@@ -8,6 +8,7 @@ import type {
   ResolvedSessionPreference,
 } from '../chat/types/chat'
 import type {
+  DesktopLiveToolRecord,
   DesktopNotificationCenterRecord,
   DesktopNotificationRecord,
   DesktopNotificationSummary,
@@ -17,6 +18,7 @@ import type {
   DesktopSessionUsageRecord,
 } from '../types/realtime'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
+import { appendLiveAssistantSegment } from './live-assistant-segments'
 import { mergeSessionRecords } from './session-records'
 
 export interface DesktopV3WorksetRequest {
@@ -169,6 +171,9 @@ export interface DesktopDbNotificationSummaryRecord extends DesktopNotificationS
 }
 
 export type DesktopDbCollection<T extends object> = Collection<T, string>
+
+const MAX_LIVE_TOOL_OUTPUT_CHARS = 4000
+const MAX_LIVE_TOOL_HISTORY = 20
 
 function createDesktopCollection<T extends object>(id: string, getKey: (item: T) => string): DesktopDbCollection<T> {
   return createCollection<T, string>(
@@ -691,6 +696,281 @@ function desktopDbEmptyLiveState(): DesktopSessionRecord['live'] {
   }
 }
 
+function retainDesktopDbLiveTail(value: string, maxChars: number): string {
+  if (value.length <= maxChars) {
+    return value
+  }
+  return '…' + value.slice(value.length - maxChars + 1)
+}
+
+function normalizeDesktopDbLiveToolText(value: string): string {
+  return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+}
+
+function resetDesktopDbLiveToolState(live: DesktopSessionRecord['live']): void {
+  live.toolName = null
+  live.toolCallId = null
+  live.toolArguments = null
+  live.toolOutput = ''
+}
+
+function retainDesktopDbLiveToolState(
+  live: DesktopSessionRecord['live'],
+  state: DesktopSessionRecord['live']['retainedToolState'],
+): void {
+  const toolName = live.toolName?.trim() ?? ''
+  const toolCallId = live.toolCallId?.trim() ?? ''
+  const toolArguments = live.toolArguments?.trim() ?? ''
+  const toolOutput = live.toolOutput.trim()
+  if (!toolName && !toolCallId && !toolArguments && !toolOutput) {
+    return
+  }
+  live.retainedToolName = toolName || live.retainedToolName
+  live.retainedToolCallId = toolCallId || live.retainedToolCallId
+  live.retainedToolArguments = toolArguments || live.retainedToolArguments
+  live.retainedToolOutput = toolOutput || live.retainedToolOutput
+  live.retainedToolState = state
+}
+
+function resetDesktopDbRetainedLiveToolState(live: DesktopSessionRecord['live']): void {
+  live.retainedToolName = null
+  live.retainedToolCallId = null
+  live.retainedToolArguments = null
+  live.retainedToolOutput = ''
+  live.retainedToolState = null
+}
+
+function flushDesktopDbLiveAssistantDraftToSegment(live: DesktopSessionRecord['live'], createdAt: number): void {
+  const draft = live.assistantDraft.trim()
+  if (!draft) {
+    return
+  }
+  live.retainedAssistantSegments = appendLiveAssistantSegment(live.retainedAssistantSegments, draft, createdAt, live.seq)
+  live.assistantDraft = ''
+}
+
+function resetDesktopDbLiveAssistantState(live: DesktopSessionRecord['live']): void {
+  live.assistantDraft = ''
+  live.retainedAssistantSegments = []
+}
+
+function resetDesktopDbLiveReasoningState(live: DesktopSessionRecord['live']): void {
+  live.reasoningSummary = ''
+  live.reasoningText = ''
+  live.reasoningState = 'idle'
+  live.reasoningStartedAt = null
+}
+
+function desktopDbReasoningDeltaText(payload: Record<string, unknown>): string {
+  const delta = typeof payload.delta === 'string' ? payload.delta : ''
+  if (delta !== '') {
+    return delta
+  }
+  return typeof payload.summary === 'string' ? payload.summary : ''
+}
+
+function applyDesktopDbLiveReasoningSnapshot(session: DesktopSessionRecord, payload: Record<string, unknown>, eventType: string, ts: number, eventSeq: number): void {
+  const runId = desktopDbPayloadString(payload, 'run_id')
+  if (runId) {
+    session.live.runId = runId
+  }
+  const text = desktopDbReasoningDeltaText(payload).trim()
+  const isStarted = eventType === 'session.reasoning.started'
+  const isCompleted = eventType === 'session.reasoning.completed'
+  if (text !== '') {
+    session.live.reasoningText = text
+    session.live.reasoningSummary = text
+  }
+  if (isStarted || (text !== '' && session.live.reasoningState === 'idle')) {
+    session.live.reasoningSegment += 1
+    session.live.reasoningStartedAt = session.live.reasoningStartedAt ?? ts
+  }
+  session.live.reasoningState = isCompleted ? 'done' : 'running'
+  session.live.status = 'running'
+  session.live.awaitingAck = false
+  session.live.startedAt = session.live.startedAt ?? ts
+  session.live.summary = isCompleted ? 'Thinking complete' : 'Thinking…'
+  session.live.error = null
+  session.live.seq = Math.max(session.live.seq, eventSeq)
+  session.live.lastEventType = eventType
+  session.live.lastEventAt = ts
+}
+
+function appendDesktopDbLiveToolOutput(current: string, chunk: string): string {
+  const normalized = normalizeDesktopDbLiveToolText(chunk)
+  if (normalized.trim() === '') {
+    return current
+  }
+  return retainDesktopDbLiveTail(current + normalized, MAX_LIVE_TOOL_OUTPUT_CHARS)
+}
+
+function replaceDesktopDbLiveToolOutput(value: string): string {
+  const normalized = normalizeDesktopDbLiveToolText(value).trim()
+  if (!normalized) {
+    return ''
+  }
+  const parsed = parseDesktopDbToolDeltaOutputRecord(normalized)
+  if (isDesktopDbTaskToolPayload(parsed)) {
+    return JSON.stringify(parsed)
+  }
+  return retainDesktopDbLiveTail(normalized, MAX_LIVE_TOOL_OUTPUT_CHARS)
+}
+
+function parseDesktopDbToolDeltaOutputRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== 'string') {
+    return null
+  }
+  const trimmed = value.trim()
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+    return null
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null
+  } catch {
+    return null
+  }
+}
+
+function isDesktopDbTaskToolPayload(value: Record<string, unknown> | null): boolean {
+  return Boolean(value && (Array.isArray(value.launches) || typeof value.status === 'string' || typeof value.summary === 'string'))
+}
+
+function mergedDesktopDbTaskToolDelta(current: string, next: string): string {
+  const nextRecord = parseDesktopDbToolDeltaOutputRecord(next)
+  if (!nextRecord) {
+    return appendDesktopDbLiveToolOutput(current, next)
+  }
+  const currentRecord = parseDesktopDbToolDeltaOutputRecord(current)
+  const merged: Record<string, unknown> = {
+    ...(currentRecord ?? {}),
+    ...nextRecord,
+  }
+  const nextLaunches = Array.isArray(nextRecord.launches)
+    ? nextRecord.launches.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry))
+    : []
+  const currentLaunches = Array.isArray(currentRecord?.launches)
+    ? currentRecord.launches.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry))
+    : []
+  if (nextLaunches.length > 0 || currentLaunches.length > 0) {
+    const launchMap = new Map<number, Record<string, unknown>>()
+    for (const launch of currentLaunches) {
+      const index = typeof launch.launch_index === 'number' ? launch.launch_index : launchMap.size + 1
+      launchMap.set(index, launch)
+    }
+    for (const launch of nextLaunches) {
+      const index = typeof launch.launch_index === 'number' ? launch.launch_index : launchMap.size + 1
+      launchMap.set(index, {
+        ...(launchMap.get(index) ?? {}),
+        ...launch,
+      })
+    }
+    merged.launches = Array.from(launchMap.entries())
+      .sort((left, right) => left[0] - right[0])
+      .map(([, launch]) => launch)
+  }
+  return JSON.stringify(merged)
+}
+
+function desktopDbLiveToolKey(input: { sessionId: string; runId: string; stepId: string; callId: string; toolInstanceId: string }): string {
+  return [input.sessionId, input.runId, input.stepId, input.callId, input.toolInstanceId].join('\u001f')
+}
+
+function upsertDesktopDbLiveToolHistory(
+  live: DesktopSessionRecord['live'],
+  input: {
+    sessionId: string
+    runId: string
+    stepId: string
+    callId: string
+    toolInstanceId: string
+    toolName: string
+    toolArguments?: string | null
+    output?: string | null
+    rawOutput?: string | null
+    state: DesktopLiveToolRecord['state']
+    step?: number | null
+    seq?: number | null
+    ts: number
+  },
+): void {
+  if (!input.runId || !input.stepId || !input.callId || !input.toolInstanceId) {
+    return
+  }
+  const key = desktopDbLiveToolKey(input)
+  const existing = (live.toolHistory ?? []).find((item) => item.key === key)
+  const outputDelta = input.rawOutput ?? input.output ?? ''
+  const existingOutput = existing?.toolOutput ?? ''
+  const normalizedToolName = (input.toolName || existing?.toolName || '').trim().toLowerCase()
+  const nextOutput = input.rawOutput !== undefined && input.rawOutput !== null
+    ? replaceDesktopDbLiveToolOutput(input.rawOutput)
+    : input.output
+      ? normalizedToolName === 'task'
+        ? mergedDesktopDbTaskToolDelta(existingOutput, input.output)
+        : appendDesktopDbLiveToolOutput(existingOutput, input.output)
+      : existingOutput
+  const next: DesktopLiveToolRecord = {
+    key,
+    sessionId: input.sessionId,
+    runId: input.runId,
+    stepId: input.stepId,
+    callId: input.callId,
+    toolInstanceId: input.toolInstanceId,
+    toolName: input.toolName || existing?.toolName || null,
+    toolArguments: input.toolArguments ?? existing?.toolArguments ?? null,
+    toolOutput: outputDelta ? nextOutput : existing?.toolOutput ?? '',
+    state: input.state,
+    step: input.step ?? existing?.step ?? null,
+    seq: existing?.seq ?? input.seq ?? undefined,
+    startedAt: existing?.startedAt ?? input.ts,
+    updatedAt: input.ts,
+    completedAt: input.state === 'done' || input.state === 'error' ? input.ts : existing?.completedAt ?? null,
+  }
+  const rest = (live.toolHistory ?? []).filter((item) => item.key !== key)
+  live.toolHistory = [next, ...rest].slice(0, MAX_LIVE_TOOL_HISTORY)
+}
+
+function desktopDbRunTerminalStatusFromEvent(eventType: string, payload: Record<string, unknown>): string {
+  const runIntent = desktopDbRunIntentFromDurablePayload(payload, eventType, desktopDbPayloadString(payload, 'session_id'))
+  if (runIntent?.status) {
+    return runIntent.status.trim().toLowerCase()
+  }
+  return desktopDbPayloadString(payload, 'status').toLowerCase()
+}
+
+function desktopDbTerminalStatusFromEventType(eventType: string): string {
+  switch (eventType) {
+    case 'session.run.completed':
+    case 'session.assistant.completed':
+      return 'completed'
+    case 'session.run.cancelled':
+      return 'cancelled'
+    case 'session.run.expired':
+      return 'expired'
+    case 'session.run.interrupted':
+      return 'interrupted'
+    case 'session.run.failed':
+    case 'session.assistant.failed':
+      return 'failed'
+    default:
+      return ''
+  }
+}
+
+function desktopDbSessionUsesV3Api(session: DesktopSessionRecord): boolean {
+  return session.sessionApi?.trim().toLowerCase() === 'v3'
+}
+
+function desktopDbUserFacingRunStopReason(error: string): string {
+  const trimmed = error.trim()
+  if (!trimmed || trimmed === 'run_stopped') {
+    return 'Run stopped'
+  }
+  return trimmed
+}
+
 function desktopDbEnsureSession(sessionId: string): DesktopSessionRecord {
   return desktopSessionsCollection.get(sessionId) ?? {
     id: sessionId,
@@ -891,6 +1171,185 @@ function desktopDbSessionPatchFromDurablePayload(
   if (eventType === 'session.message.appended' || eventType === 'run.message.stored' || eventType === 'run.message.updated') {
     session.messageCount += 1
   }
+
+  switch (eventType) {
+    case 'session.assistant.started': {
+      const runIntentRecord = desktopDbNestedRecord(payload, 'run_intent')
+      const runId = desktopDbPayloadString(payload, 'run_id') || desktopDbPayloadString(runIntentRecord, 'run_id')
+      if (runId) {
+        session.live.runId = runId
+      }
+      session.live.status = 'running'
+      session.live.awaitingAck = false
+      session.live.startedAt = session.live.startedAt ?? ts
+      session.live.summary = 'Assistant responding…'
+      session.live.error = null
+      resetDesktopDbLiveToolState(session.live)
+      resetDesktopDbLiveReasoningState(session.live)
+      break
+    }
+    case 'session.assistant.delta': {
+      const runId = desktopDbPayloadString(payload, 'run_id')
+      if (runId) {
+        session.live.runId = runId
+      }
+      const delta = typeof payload.delta === 'string' ? payload.delta : ''
+      if (delta) {
+        session.live.assistantDraft += delta
+      }
+      session.live.status = 'running'
+      session.live.awaitingAck = false
+      session.live.startedAt = session.live.startedAt ?? ts
+      session.live.summary = 'Streaming response…'
+      session.live.error = null
+      break
+    }
+    case 'session.reasoning.started':
+    case 'session.reasoning.delta':
+    case 'session.reasoning.completed':
+      applyDesktopDbLiveReasoningSnapshot(session, payload, eventType, ts, eventSeq)
+      break
+    case 'session.tool.started':
+    case 'session.tool.delta':
+    case 'session.tool.completed': {
+      const runId = desktopDbPayloadString(payload, 'run_id')
+      const toolName = desktopDbPayloadString(payload, 'tool_name')
+      const callId = desktopDbPayloadString(payload, 'call_id')
+      const stepId = desktopDbPayloadString(payload, 'step_id')
+      const toolInstanceId = desktopDbPayloadString(payload, 'tool_instance_id')
+      const isToolStarted = eventType === 'session.tool.started'
+      const isToolDelta = eventType === 'session.tool.delta'
+      const isToolCompleted = eventType === 'session.tool.completed'
+      if (runId) {
+        session.live.runId = runId
+      }
+      session.live.status = 'running'
+      session.live.awaitingAck = false
+      session.live.startedAt = session.live.startedAt ?? ts
+      session.live.error = null
+      if (typeof payload.step === 'number') {
+        session.live.step = payload.step
+      }
+      if (isToolStarted) {
+        flushDesktopDbLiveAssistantDraftToSegment(session.live, ts)
+        resetDesktopDbRetainedLiveToolState(session.live)
+        session.live.toolOutput = ''
+      }
+      session.live.toolName = toolName || session.live.toolName
+      session.live.toolCallId = callId || session.live.toolCallId
+      if (typeof payload.arguments === 'string') {
+        session.live.toolArguments = payload.arguments.trim() || null
+      }
+      if (typeof payload.summary === 'string' && payload.summary.trim() !== '') {
+        session.live.summary = payload.summary.trim()
+      } else if (session.live.toolName?.trim()) {
+        session.live.summary = session.live.toolName.trim()
+      }
+      upsertDesktopDbLiveToolHistory(session.live, {
+        sessionId,
+        runId,
+        stepId,
+        callId,
+        toolInstanceId,
+        toolName,
+        toolArguments: typeof payload.arguments === 'string' ? payload.arguments.trim() || null : null,
+        output: typeof payload.output === 'string' ? payload.output : null,
+        rawOutput: typeof payload.raw_output === 'string' ? payload.raw_output : null,
+        state: isToolCompleted ? 'done' : 'running',
+        step: typeof payload.step === 'number' ? payload.step : null,
+        seq: eventSeq,
+        ts,
+      })
+      if (isToolDelta && typeof payload.output === 'string') {
+        session.live.toolOutput = session.live.toolName === 'task'
+          ? mergedDesktopDbTaskToolDelta(session.live.toolOutput, payload.output)
+          : appendDesktopDbLiveToolOutput(session.live.toolOutput, payload.output)
+      } else if (isToolCompleted) {
+        session.live.toolOutput = typeof payload.raw_output === 'string'
+          ? replaceDesktopDbLiveToolOutput(payload.raw_output)
+          : typeof payload.output === 'string'
+            ? replaceDesktopDbLiveToolOutput(payload.output)
+            : session.live.toolOutput
+        retainDesktopDbLiveToolState(session.live, 'done')
+        resetDesktopDbLiveToolState(session.live)
+      }
+      break
+    }
+    case 'session.run.started':
+    case 'session.run.running': {
+      const runId = desktopDbPayloadString(payload, 'run_id')
+      if (runId) {
+        session.live.runId = runId
+      }
+      session.live.status = 'running'
+      session.live.awaitingAck = false
+      session.live.startedAt = session.live.startedAt ?? ts
+      session.live.summary = 'Assistant responding…'
+      session.live.error = null
+      break
+    }
+    case 'session.run.completed':
+    case 'session.assistant.completed': {
+      const durableTerminalStatus = desktopDbRunTerminalStatusFromEvent(eventType, payload)
+      const terminalStatus = durableTerminalStatus || desktopDbTerminalStatusFromEventType(eventType)
+      const shouldUnlock = desktopDbSessionUsesV3Api(session)
+        ? durableTerminalStatus === 'completed'
+        : terminalStatus === 'completed'
+      if (eventType === 'session.assistant.completed') {
+        const message = desktopDbMessageFromWire(payload.message, sessionId)
+        if (message) {
+          resetDesktopDbLiveAssistantState(session.live)
+          session.messageCount += 1
+        }
+      }
+      if (shouldUnlock) {
+        session.runIntent = null
+        session.lifecycle = null
+        session.live.status = 'idle'
+        session.live.runId = null
+        session.live.startedAt = null
+        session.live.awaitingAck = false
+        session.live.summary = null
+        session.live.error = null
+        retainDesktopDbLiveToolState(session.live, 'done')
+        resetDesktopDbLiveToolState(session.live)
+        resetDesktopDbLiveReasoningState(session.live)
+      }
+      break
+    }
+    case 'session.run.failed':
+    case 'session.run.cancelled':
+    case 'session.run.expired':
+    case 'session.run.interrupted':
+    case 'session.assistant.failed': {
+      const durableTerminalStatus = desktopDbRunTerminalStatusFromEvent(eventType, payload)
+      const terminalStatus = durableTerminalStatus || desktopDbTerminalStatusFromEventType(eventType)
+      const shouldApplyTerminal = desktopDbSessionUsesV3Api(session)
+        ? durableTerminalStatus !== '' && durableTerminalStatus !== 'completed'
+        : terminalStatus !== '' && terminalStatus !== 'completed'
+      if (!shouldApplyTerminal) {
+        break
+      }
+      const rawError = desktopDbPayloadString(payload, 'error') || desktopDbPayloadString(payload, 'blocked_reason')
+      const isUserCancellation = eventType === 'session.run.cancelled' || terminalStatus === 'cancelled'
+      const error = isUserCancellation ? desktopDbUserFacingRunStopReason(rawError) : rawError || 'Run failed'
+      session.runIntent = null
+      session.lifecycle = null
+      session.live.status = isUserCancellation ? 'idle' : 'error'
+      session.live.runId = null
+      session.live.startedAt = null
+      session.live.awaitingAck = false
+      session.live.summary = error
+      session.live.error = isUserCancellation ? null : error
+      retainDesktopDbLiveToolState(session.live, isUserCancellation ? 'done' : 'error')
+      resetDesktopDbLiveToolState(session.live)
+      resetDesktopDbLiveReasoningState(session.live)
+      break
+    }
+    default:
+      break
+  }
+
   session.live.lastEventType = eventType || session.live.lastEventType
   session.live.lastEventAt = ts
   session.live.awaitingAck = false
