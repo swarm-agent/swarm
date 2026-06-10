@@ -3,7 +3,7 @@ import { afterEach, test } from 'node:test'
 
 import { queryClient } from '../../../app/query-client'
 import { sessionMessagesQueryKey } from '../../queries/query-options'
-import { readDesktopDbMessages } from './desktop-db'
+import { desktopRunIntentsCollection, readDesktopDbMessages, readDesktopDbSession } from './desktop-db'
 import type { DesktopSessionRecord, DesktopStoreState } from '../types/realtime'
 import { applyEnvelope, useDesktopStore } from './use-desktop-store'
 import type { RunStreamEventMessage } from './run-stream-controller'
@@ -88,6 +88,9 @@ afterEach(async () => {
     realtimeDesired: false,
     connectionState: 'idle',
   })
+  for (const runIntent of Array.from(desktopRunIntentsCollection.values())) {
+    desktopRunIntentsCollection.delete(desktopRunIntentsCollection.getKeyFromItem(runIntent))
+  }
   queryClient.clear()
   await new Promise((resolve) => setImmediate(resolve))
 })
@@ -924,6 +927,16 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
     assert.equal(updated.live.status, 'starting')
     assert.equal(updated.live.startedAt, 20)
     assert.equal(updated.live.lastEventType, 'run.pending_executor')
+    const dbUpdated = readDesktopDbSession('session-v3')
+    assert.equal(dbUpdated?.sessionApi, 'v3')
+    assert.ok((dbUpdated?.lastEventSeq ?? 0) >= 3)
+    assert.ok((dbUpdated?.projectionHighWatermarkSeq ?? 0) >= 3)
+    assert.equal(dbUpdated?.live.runId, 'v3run-session-v3-2')
+    assert.equal(dbUpdated?.live.status, 'starting')
+    assert.equal(dbUpdated?.live.startedAt, 20)
+    assert.equal(dbUpdated?.live.awaitingAck, false)
+    assert.equal(dbUpdated?.live.lastEventType, 'run.pending_executor')
+    assert.equal(desktopRunIntentsCollection.get('session-v3')?.runId, 'v3run-session-v3-2')
 
     await useDesktopStore.getState().stopRun('session-v3')
     const stopCall = calls.find((entry) => String(entry.input) === '/v3/sessions/session-v3/run/stop')

@@ -384,6 +384,123 @@ export function mergeDesktopDBDurablePatch(patch: DesktopDbDurablePatch): Deskto
   return mergedSession
 }
 
+export function applyOptimisticRunStartToDesktopDB(input: {
+  sessionId: string
+  startedAt: number
+  agentName?: string | null
+  targetName?: string | null
+}): DesktopSessionRecord | null {
+  const sessionId = input.sessionId.trim()
+  if (!sessionId) {
+    return null
+  }
+  const startedAt = input.startedAt > 0 ? input.startedAt : Date.now()
+  const existing = desktopDbEnsureSession(sessionId)
+  const session: DesktopSessionRecord = {
+    ...existing,
+    sessionApi: existing.sessionApi || 'v3',
+    updatedAt: Math.max(existing.updatedAt, startedAt),
+    live: { ...existing.live },
+    pendingPermissions: [...existing.pendingPermissions],
+  }
+  const agentName = input.targetName?.trim() || session.live.agentName || input.agentName?.trim() || null
+  if (agentName) {
+    session.live.agentName = agentName
+  }
+  if (!session.lifecycle?.active) {
+    session.live.status = 'starting'
+    session.live.startedAt = startedAt
+  }
+  session.live.runId = null
+  session.live.seq = 0
+  session.live.awaitingAck = true
+  session.live.summary = 'Starting…'
+  session.live.error = null
+  session.live.lastEventType = 'run.starting'
+  session.live.lastEventAt = startedAt
+  resetDesktopDbLiveAssistantState(session.live)
+  resetDesktopDbLiveToolState(session.live)
+  resetDesktopDbLiveReasoningState(session.live)
+  resetDesktopDbRetainedLiveToolState(session.live)
+  session.live.reasoningSegment = 0
+  if (desktopRunIntentsCollection.has(sessionId)) {
+    desktopRunIntentsCollection.delete(sessionId)
+  }
+  upsertDesktopDbRecord(desktopSessionsCollection, session)
+  upsertDesktopDbRecord(desktopSessionReadinessCollection, desktopDbReadySession(sessionId, Date.now()))
+  return session
+}
+
+export function applyRunIntentToDesktopDB(sessionId: string, runIntent: DesktopRunIntentRecord | null | undefined, ts = Date.now()): DesktopSessionRecord | null {
+  const normalizedSessionId = (sessionId || runIntent?.sessionId || '').trim()
+  if (!normalizedSessionId || !runIntent) {
+    return null
+  }
+  const status = runIntent.status.trim().toLowerCase()
+  const normalizedRunIntent: DesktopRunIntentRecord = {
+    ...runIntent,
+    sessionId: runIntent.sessionId.trim() || normalizedSessionId,
+    status,
+  }
+  const existing = desktopDbEnsureSession(normalizedSessionId)
+  const session: DesktopSessionRecord = {
+    ...existing,
+    sessionApi: existing.sessionApi || 'v3',
+    updatedAt: Math.max(existing.updatedAt, normalizedRunIntent.updatedAt, ts),
+    live: { ...existing.live },
+    pendingPermissions: [...existing.pendingPermissions],
+  }
+  session.live.awaitingAck = false
+  session.live.lastEventAt = normalizedRunIntent.updatedAt > 0 ? normalizedRunIntent.updatedAt : ts
+  session.live.error = null
+
+  if (desktopDbRunIntentStatusActive(status)) {
+    upsertDesktopDbRecord(desktopRunIntentsCollection, normalizedRunIntent)
+    session.runIntent = normalizedRunIntent
+    session.live.runId = normalizedRunIntent.runId || session.live.runId
+    session.live.startedAt = session.live.startedAt ?? (normalizedRunIntent.createdAt > 0 ? normalizedRunIntent.createdAt : ts)
+    session.live.status = status === 'pending_executor' ? 'starting' : 'running'
+    session.live.summary = status === 'pending_executor'
+      ? 'Pending executor…'
+      : session.live.summary || 'Assistant responding…'
+    session.live.lastEventType = status === 'pending_executor' ? 'run.pending_executor' : 'run.running'
+  } else if (status === 'dispatch_blocked') {
+    if (desktopRunIntentsCollection.has(normalizedSessionId)) {
+      desktopRunIntentsCollection.delete(normalizedSessionId)
+    }
+    session.runIntent = null
+    session.live.runId = normalizedRunIntent.runId || session.live.runId
+    session.live.startedAt = session.live.startedAt ?? (normalizedRunIntent.createdAt > 0 ? normalizedRunIntent.createdAt : ts)
+    session.live.status = 'blocked'
+    session.live.summary = normalizedRunIntent.blockedReason || 'Dispatch blocked'
+    session.live.error = normalizedRunIntent.blockedReason || null
+    session.live.lastEventType = 'run.dispatch_blocked'
+  } else if (desktopDbRunIntentStatusTerminal(status)) {
+    if (desktopRunIntentsCollection.has(normalizedSessionId)) {
+      desktopRunIntentsCollection.delete(normalizedSessionId)
+    }
+    session.runIntent = null
+    session.lifecycle = null
+    session.live.runId = null
+    session.live.startedAt = null
+    session.live.status = status === 'completed' || status === 'cancelled' ? 'idle' : 'error'
+    session.live.summary = status === 'completed' ? null : normalizedRunIntent.blockedReason || (status === 'cancelled' ? 'Run stopped' : 'Run failed')
+    session.live.error = status === 'completed' || status === 'cancelled' ? null : session.live.summary
+    session.live.lastEventType = `run.${status}`
+  } else {
+    return existing
+  }
+
+  if (normalizedRunIntent.eventSeq > 0) {
+    session.lastEventSeq = Math.max(session.lastEventSeq ?? 0, normalizedRunIntent.eventSeq)
+    session.projectionHighWatermarkSeq = Math.max(session.projectionHighWatermarkSeq ?? 0, normalizedRunIntent.eventSeq)
+    session.live.seq = Math.max(session.live.seq, normalizedRunIntent.eventSeq)
+  }
+  upsertDesktopDbRecord(desktopSessionsCollection, session)
+  upsertDesktopDbRecord(desktopSessionReadinessCollection, desktopDbReadySession(normalizedSessionId, Date.now()))
+  return session
+}
+
 export function applyDurableEventToDesktopDB(event: unknown): void {
   const envelope = event && typeof event === 'object' ? event as Record<string, unknown> : null
   const eventType = typeof envelope?.event_type === 'string' ? envelope.event_type : ''

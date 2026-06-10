@@ -24,7 +24,7 @@ import type { DesktopChatRoute } from '../chat/services/chat-routing'
 import { gitStatusQueryKey } from '../git/api'
 import { agentStateQueryOptions, sessionPreferenceQueryKey, uiSettingsQueryKey } from '../../queries/query-options'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
-import { applyDurableEventToDesktopDB, ensureDesktopDBRouteSession, mergeDesktopDBDurablePatch, readDesktopDbSession } from './desktop-db'
+import { applyDurableEventToDesktopDB, applyOptimisticRunStartToDesktopDB, applyRunIntentToDesktopDB, ensureDesktopDBRouteSession, mergeDesktopDBDurablePatch, readDesktopDbSession } from './desktop-db'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import { normalizeSwarmSettings, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import type {
@@ -3875,7 +3875,17 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
       throw new Error('submitPrompt requires an attached session')
     }
 
+    const effectiveSessionApi = sessionApi?.trim().toLowerCase() || get().sessions[targetSessionId]?.sessionApi?.trim().toLowerCase() || ''
+
     get().closeRunStream(targetSessionId)
+    if (effectiveSessionApi === 'v3') {
+      applyOptimisticRunStartToDesktopDB({
+        sessionId: targetSessionId,
+        startedAt: submitStartedAt,
+        agentName,
+        targetName,
+      })
+    }
 
     set((state: DesktopStoreState) => {
       cancelDraftFlush(targetSessionId)
@@ -3907,7 +3917,6 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
     })
 
     try {
-      const effectiveSessionApi = sessionApi?.trim().toLowerCase() || get().sessions[targetSessionId]?.sessionApi?.trim().toLowerCase() || ''
       if (effectiveSessionApi === 'v3' && !compact) {
         const clientRequestId = providedClientRequestId?.trim() || `desktop-v3-message:${targetSessionId}:${submitStartedAt}`
         const result = await sendSessionMessage(targetSessionId, 'user', trimmedPrompt, route, { sessionApi: 'v3', clientRequestId })
@@ -3921,6 +3930,7 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
             result.runIntent?.eventSeq ?? 0,
             ...committedMessages.map((message) => message.globalSeq),
           )
+          const resultAppliedAt = Date.now()
           mergeDesktopDBDurablePatch({
             sessionId: targetSessionId,
             session: result.session ?? null,
@@ -3928,7 +3938,8 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
             appliedSeq: committedAppliedSeq,
             highWatermark: Math.max(result.session?.projectionHighWatermarkSeq ?? 0, committedAppliedSeq),
           })
-          set((state: DesktopStoreState) => applyV3MessageCommitResult(state, targetSessionId, result, Date.now()))
+          applyRunIntentToDesktopDB(targetSessionId, result.runIntent, resultAppliedAt)
+          set((state: DesktopStoreState) => applyV3MessageCommitResult(state, targetSessionId, result, resultAppliedAt))
           runIntentId = result.runIntent?.runId ?? ''
         }
         set({ realtimeDesired: true })
@@ -3951,6 +3962,18 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
       })
       const acceptedRunId = accepted.run_id?.trim() ?? ''
       const acceptedStatus = accepted.status?.trim().toLowerCase() ?? ''
+      if (effectiveSessionApi === 'v3' && acceptedRunId) {
+        const acceptedAt = Date.now()
+        applyRunIntentToDesktopDB(targetSessionId, {
+          sessionId: targetSessionId,
+          runId: acceptedRunId,
+          status: acceptedStatus || 'running',
+          blockedReason: '',
+          createdAt: submitStartedAt,
+          updatedAt: acceptedAt,
+          eventSeq: 0,
+        }, acceptedAt)
+      }
       set((state: DesktopStoreState) => {
         const existing = state.sessions[targetSessionId]
         if (!existing) {

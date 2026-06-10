@@ -5,6 +5,8 @@ import type { DesktopSessionRecord } from '../types/realtime'
 
 import {
   applyDurableEventToDesktopDB,
+  applyOptimisticRunStartToDesktopDB,
+  applyRunIntentToDesktopDB,
   desktopMessagesCollection,
   desktopRunIntentsCollection,
   desktopSessionsCollection,
@@ -17,6 +19,7 @@ const testSessionIds = [
   'session-db-live-assistant',
   'session-db-live-reasoning',
   'session-db-live-tool',
+  'session-db-optimistic-run',
 ]
 
 function emptyLiveState(): DesktopSessionRecord['live'] {
@@ -315,4 +318,62 @@ test('Desktop DB durable reducer streams live tool calls and retained completed 
   assert.equal(session?.live.toolHistory?.[0]?.completedAt, 320)
   assert.equal(session?.live.lastEventType, 'session.tool.completed')
   assert.equal(session?.live.seq, 32)
+})
+
+
+test('Desktop DB optimistic submit state starts and reconciles the header timer run state', () => {
+  const sessionId = 'session-db-optimistic-run'
+  seedSession(sessionId)
+
+  applyOptimisticRunStartToDesktopDB({
+    sessionId,
+    startedAt: 1000,
+    agentName: 'swarm',
+  })
+
+  let session = readDesktopDbSession(sessionId)
+  assert.equal(session?.live.status, 'starting')
+  assert.equal(session?.live.startedAt, 1000)
+  assert.equal(session?.live.awaitingAck, true)
+  assert.equal(session?.live.summary, 'Starting…')
+  assert.equal(session?.live.lastEventType, 'run.starting')
+  assert.equal(desktopRunIntentsCollection.get(sessionId), undefined)
+
+  applyRunIntentToDesktopDB(sessionId, {
+    sessionId,
+    runId: 'run-optimistic',
+    status: 'pending_executor',
+    blockedReason: '',
+    createdAt: 1010,
+    updatedAt: 1020,
+    eventSeq: 40,
+  }, 1020)
+
+  session = readDesktopDbSession(sessionId)
+  assert.equal(session?.live.status, 'starting')
+  assert.equal(session?.live.runId, 'run-optimistic')
+  assert.equal(session?.live.startedAt, 1000)
+  assert.equal(session?.live.awaitingAck, false)
+  assert.equal(session?.live.summary, 'Pending executor…')
+  assert.equal(session?.live.lastEventType, 'run.pending_executor')
+  assert.equal(session?.live.seq, 40)
+  assert.equal(desktopRunIntentsCollection.get(sessionId)?.runId, 'run-optimistic')
+
+  applyRunIntentToDesktopDB(sessionId, {
+    sessionId,
+    runId: 'run-optimistic',
+    status: 'completed',
+    blockedReason: '',
+    createdAt: 1010,
+    updatedAt: 2000,
+    eventSeq: 41,
+  }, 2000)
+
+  session = readDesktopDbSession(sessionId)
+  assert.equal(session?.live.status, 'idle')
+  assert.equal(session?.live.runId, null)
+  assert.equal(session?.live.startedAt, null)
+  assert.equal(session?.live.awaitingAck, false)
+  assert.equal(session?.live.lastEventType, 'run.completed')
+  assert.equal(desktopRunIntentsCollection.get(sessionId), undefined)
 })
