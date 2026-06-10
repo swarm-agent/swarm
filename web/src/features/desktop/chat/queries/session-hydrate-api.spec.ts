@@ -394,15 +394,15 @@ test('Desktop DB direct-route recovery hydrates a missing session through one sc
 })
 
 test('Desktop V3 workset hydration restores active run intent from the canonical route source', async () => {
-  const { hydrateDesktopV3WorksetSession, readDesktopV3CachedSession } = await import('../../state/desktop-v3-cache')
+  const { fetchAndApplyDesktopDBWorksetSession, readDesktopDBHydratedSession } = await import('../../state/desktop-db-workset')
   const { readDesktopDbSession } = await import('../../state/desktop-db')
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
 
   await withFetchStub(async (calls) => {
-    const snapshot = await hydrateDesktopV3WorksetSession(queryClient, 'session-v3-active')
-    const cached = readDesktopV3CachedSession(queryClient, 'session-v3-active')
+    const snapshot = await fetchAndApplyDesktopDBWorksetSession(queryClient, 'session-v3-active')
+    const cached = readDesktopDBHydratedSession(queryClient, 'session-v3-active')
 
     assert.deepEqual(requestUrls(calls), ['/v3/sessions:workset'])
     assertNoV1OrV2SessionDataCalls(calls)
@@ -459,7 +459,7 @@ test('sessionPreferenceQueryOptions uses the canonical V3 snapshot cache for Des
 
 test('Desktop V3 preference, mode, agent, metadata, and plan mutations use V3 session update endpoints only', async () => {
   const { sessionPreferenceQueryKey } = await import('../../../queries/query-options')
-  const { desktopV3SessionSnapshotQueryKey, saveDesktopV3SessionPlan, updateDesktopV3SessionAgent, updateDesktopV3SessionMetadata, updateDesktopV3SessionMode, updateDesktopV3SessionPreference } = await import('../../state/desktop-v3-cache')
+  const { desktopDBSessionSnapshotQueryKey, saveDesktopV3SessionPlan, updateDesktopV3SessionAgent, updateDesktopV3SessionMetadata, updateDesktopV3SessionMode, updateDesktopV3SessionPreference } = await import('../../state/desktop-db-workset')
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -490,7 +490,7 @@ test('Desktop V3 preference, mode, agent, metadata, and plan mutations use V3 se
     assert.equal(calls[3].init?.method, 'POST')
     assert.equal(calls[4].init?.method, 'POST')
     assertNoV1OrV2SessionDataCalls(calls)
-    assert.equal(queryClient.getQueryData<{ session: { id: string; mode: string } }>(desktopV3SessionSnapshotQueryKey('session-config'))?.session.mode, 'plan')
+    assert.equal(queryClient.getQueryData<{ session: { id: string; mode: string } }>(desktopDBSessionSnapshotQueryKey('session-config'))?.session.mode, 'plan')
     assert.equal(queryClient.getQueryData<{ preference: { model: string } }>(sessionPreferenceQueryKey('session-config'))?.preference.model, 'gpt-5.4')
   })
 
@@ -498,7 +498,7 @@ test('Desktop V3 preference, mode, agent, metadata, and plan mutations use V3 se
 })
 
 test('Desktop V3 preference and mode mutations reject non-canonical update responses', async () => {
-  const { updateDesktopV3SessionMode, updateDesktopV3SessionPreference } = await import('../../state/desktop-v3-cache')
+  const { updateDesktopV3SessionMode, updateDesktopV3SessionPreference } = await import('../../state/desktop-db-workset')
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -556,7 +556,7 @@ test('Desktop route loader does not block route commit on the V3 session snapsho
   assert.match(routerSource, /import \{ queryClient \} from '\.\/query-client'/)
   assert.match(routerSource, /import \{ prefetchSessionRuntimeData \} from '\.\.\/features\/queries\/query-options'/)
   assert.match(routerSource, /path: '\/\$workspaceSlug\/\$sessionId',[\s\S]*loader: \(\{ params \}\) => \{[\s\S]*void prefetchSessionRuntimeData\(queryClient, sessionId\)[\s\S]*return \{ sessionId \}/)
-  assert.doesNotMatch(routerSource, /ensureDesktopV3SessionSnapshot\(queryClient, sessionId\)/)
+  assert.doesNotMatch(routerSource, /ensureDesktopDBSessionSnapshot\(queryClient, sessionId\)/)
   assert.doesNotMatch(routerSource, /fetchSession\(/)
   assert.doesNotMatch(routerSource, /\/v1\/sessions|\/v2\/sessions/)
   assert.doesNotMatch(routerSource, new RegExp('v3session' + '_'))
@@ -565,7 +565,7 @@ test('Desktop route loader does not block route commit on the V3 session snapsho
 test('DesktopAppPage derives route readiness and cached switching from TanStack DB only', async () => {
   const source = await readFile(new URL('../../layout/desktop-app-page.tsx', import.meta.url), 'utf8')
 
-  assert.match(source, /hydrateDesktopV3Workset\(queryClient, \{/)
+  assert.match(source, /fetchAndApplyDesktopDBWorkset\(queryClient, \{/)
   assert.match(source, /workspacePaths,/)
   assert.match(source, /recent: \{ limit: 50 \}/)
   assert.match(source, /useDesktopRouteReadiness\(\{ workspacePath: selectedWorkspacePath \}, routeSessionId\)/)
@@ -580,12 +580,12 @@ test('DesktopAppPage derives route readiness and cached switching from TanStack 
   assert.doesNotMatch(source, /DesktopV3BootstrapState/)
   assert.doesNotMatch(source, /effect:v3-workset-route-gap/)
   assert.doesNotMatch(source, /sessionIds: \[routeCriticalSessionId\]/)
-  assert.doesNotMatch(source, /readDesktopV3CachedSession\(queryClient, routeSessionId\)/)
-  assert.doesNotMatch(source, /getCachedDesktopV3WorksetSession\(queryClient, routeCriticalSessionId\)/)
+  assert.doesNotMatch(source, /readDesktopDBHydratedSession\(queryClient, routeSessionId\)/)
+  assert.doesNotMatch(source, /readDesktopDBWorksetSession\(queryClient, routeCriticalSessionId\)/)
   assert.doesNotMatch(source, /desktopV3WorksetHasOmission\(queryClient, normalizedSessionId\)/)
   assert.doesNotMatch(source, /routeSessionSnapshotQuery/)
   assert.doesNotMatch(source, /backgroundBootstrapSessionIds/)
-  assert.doesNotMatch(source, /await hydrateDesktopV3SessionSnapshot\(queryClient, normalizedSessionId\)/)
+  assert.doesNotMatch(source, /await fetchAndApplyDesktopDBSessionSnapshot\(queryClient, normalizedSessionId\)/)
   assert.doesNotMatch(source, /const handleSelectSession = useCallback\(async/)
   assert.match(source, /PAIRING_REQUEST_INITIAL_REFRESH_DELAY_MS = 1_250/)
   assert.match(source, /window\.setTimeout\(refreshPairingRequests, PAIRING_REQUEST_INITIAL_REFRESH_DELAY_MS\)/)
@@ -600,13 +600,13 @@ test('DesktopAppPage derives route readiness and cached switching from TanStack 
 })
 
 test('Desktop realtime applies durable session events into TanStack DB', async () => {
-  const source = await readFile(new URL('../../state/use-desktop-store.ts', import.meta.url), 'utf8')
+  const source = await readFile(new URL('../../state/desktop-ui-store.ts', import.meta.url), 'utf8')
 
   assert.match(source, /applyDurableEventToDesktopDB\(message\.event \?\? \{\}\)/)
   assert.match(source, /const backendDerivedDesktopEvent = eventType\.startsWith\('session\.'\) \|\| eventType\.startsWith\('permission\.'\)/)
-  assert.match(source, /if \(backendDerivedDesktopEvent\) \{\n\s+set\(\(state\) => \(\{ lastGlobalSeq:/)
+  assert.match(source, /if \(backendDerivedDesktopEvent\) \{\n\s+set\(\(state(?:: DesktopStoreState)?\) => \(\{ lastGlobalSeq:/)
   assert.doesNotMatch(source, /set\(\(state\) => applyEnvelope\(state, message\.event \?\? \{\}\)\)\n\s+const payload/)
-  assert.doesNotMatch(source, /mergeDesktopV3DurableCachePatch\(queryClient/)
+  assert.doesNotMatch(source, /mergeDesktopDBSnapshotPatch\(queryClient/)
   assert.doesNotMatch(source, /requestAuthoritativeSessionSnapshot/)
   assert.doesNotMatch(source, /fetchSession\(/)
   assert.doesNotMatch(source, /fetchSessionPendingPermissions|fetchSessionUsageSummary/)
@@ -675,24 +675,24 @@ test('Desktop V3 has no standalone permission list or usage subresource helpers'
 })
 
 test('Desktop V3 durable reducer idempotently merges hydration, socket, and page messages with cursors', async () => {
-  const { mergeDesktopV3DurableCachePatch, desktopV3SessionSnapshotQueryKey } = await import('../../state/desktop-v3-durable-reducer')
+  const { mergeDesktopDBSnapshotPatch, desktopDBSessionSnapshotQueryKey } = await import('../../state/desktop-db-snapshot')
   const { sessionMessagesQueryKey } = await import('../../../queries/query-options')
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
 
   await withFetchStub(async () => {
-    const { fetchDesktopV3SessionSnapshot } = await import('../../state/desktop-v3-cache')
-    const snapshot = await fetchDesktopV3SessionSnapshot('session-reducer')
+    const { fetchDesktopDBSessionSnapshot } = await import('../../state/desktop-db-workset')
+    const snapshot = await fetchDesktopDBSessionSnapshot('session-reducer')
     assert.ok(snapshot)
-    const hydrated = mergeDesktopV3DurableCachePatch(queryClient, { snapshot })
+    const hydrated = mergeDesktopDBSnapshotPatch(queryClient, { snapshot })
     assert.equal(hydrated?.appliedSeq, 7)
     assert.equal(hydrated?.highWatermark, 7)
 
     const socketMessage = { id: 'session-reducer-msg-2', sessionId: 'session-reducer', globalSeq: 8, role: 'assistant', content: 'durable socket', createdAt: 8 }
-    mergeDesktopV3DurableCachePatch(queryClient, { sessionId: 'session-reducer', messages: [socketMessage], appliedSeq: 8, highWatermark: 9 })
-    mergeDesktopV3DurableCachePatch(queryClient, { sessionId: 'session-reducer', messages: [socketMessage], appliedSeq: 8, highWatermark: 9 })
-    mergeDesktopV3DurableCachePatch(queryClient, {
+    mergeDesktopDBSnapshotPatch(queryClient, { sessionId: 'session-reducer', messages: [socketMessage], appliedSeq: 8, highWatermark: 9 })
+    mergeDesktopDBSnapshotPatch(queryClient, { sessionId: 'session-reducer', messages: [socketMessage], appliedSeq: 8, highWatermark: 9 })
+    mergeDesktopDBSnapshotPatch(queryClient, {
       sessionId: 'session-reducer',
       messages: [{ id: 'session-reducer-msg-0', sessionId: 'session-reducer', globalSeq: 1, role: 'user', content: 'older page', createdAt: 1 }],
       appliedSeq: 1,
@@ -705,7 +705,7 @@ test('Desktop V3 durable reducer idempotently merges hydration, socket, and page
     )
     const { fetchSessionMessages } = await import('./chat-queries')
     await fetchSessionMessages('session-reducer', undefined, 8, { sessionApi: 'v3', queryClient })
-    const reduced = queryClient.getQueryData<{ appliedSeq: number; highWatermark: number }>(desktopV3SessionSnapshotQueryKey('session-reducer'))
+    const reduced = queryClient.getQueryData<{ appliedSeq: number; highWatermark: number }>(desktopDBSessionSnapshotQueryKey('session-reducer'))
     assert.equal(reduced?.appliedSeq, 8)
     assert.equal(reduced?.highWatermark, 9)
   })

@@ -1,14 +1,14 @@
 import { useEffect } from 'react'
 import { useMatchRoute } from '@tanstack/react-router'
 import { debugLog } from '../../../lib/debug-log'
-import { useDesktopStore } from '../state/use-desktop-store'
+import { useDesktopUiStore } from '../state/desktop-ui-store'
 
 export function DesktopRealtimeBootstrap() {
-  const hydrate = useDesktopStore((state) => state.hydrate)
-  const disconnect = useDesktopStore((state) => state.disconnect)
-  const reconnectIfStale = useDesktopStore((state) => state.reconnectIfStale)
-  const vault = useDesktopStore((state) => state.vault)
-  const refreshNotifications = useDesktopStore((state) => state.refreshNotifications)
+  const hydrate = useDesktopUiStore((state) => state.hydrate)
+  const disconnect = useDesktopUiStore((state) => state.disconnect)
+  const reconnectIfStale = useDesktopUiStore((state) => state.reconnectIfStale)
+  const vault = useDesktopUiStore((state) => state.vault)
+  const refreshNotifications = useDesktopUiStore((state) => state.refreshNotifications)
   const matchRoute = useMatchRoute()
   const inDesktopApp = Boolean(matchRoute({ to: '/', fuzzy: false }))
     || Boolean(matchRoute({ to: '/$workspaceSlug', fuzzy: false }))

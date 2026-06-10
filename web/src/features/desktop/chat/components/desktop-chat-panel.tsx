@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronDown, Clock3, Home, ListChecks, LoaderCircle, MessageSquareText, Mic, Minimize2, Plus, Save, Send, Settings2, ShieldAlert, Sparkles, Square, X } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
-import { useDesktopStore } from '../../state/use-desktop-store'
+import { useDesktopUiStore } from '../../state/desktop-ui-store'
 import {
   agentStateQueryOptions,
   draftModelQueryOptions,
@@ -18,7 +18,7 @@ import {
   startSessionRun,
   updateDraftModelPreference,
 } from '../queries/chat-queries'
-import { saveDesktopV3SessionPlan, updateDesktopV3SessionAgent, updateDesktopV3SessionMetadata, updateDesktopV3SessionMode, updateDesktopV3SessionPreference } from '../../state/desktop-v3-cache'
+import { saveDesktopV3SessionPlan, updateDesktopV3SessionAgent, updateDesktopV3SessionMetadata, updateDesktopV3SessionMode, updateDesktopV3SessionPreference } from '../../state/desktop-db-workset'
 import type { AgentModelPolicyRecord, AgentProfileRecord, AgentStateRecord, ChatMessageRecord, ModelOptionRecord, ResolvedSessionPreference, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
 import type { DesktopLiveAssistantSegment, DesktopLiveToolRecord, DesktopSessionRecord } from '../../types/realtime'
 import { Card } from '../../../../components/ui/card'
@@ -1171,11 +1171,11 @@ export function DesktopChatPanel({
 }: DesktopChatPanelProps) {
   const queryClient = useQueryClient()
   const sessionId = session?.id ?? null
-  const ensureRunStream = useDesktopStore((state) => state.ensureRunStream)
-  const submitPrompt = useDesktopStore((state) => state.submitPrompt)
-  const stopRun = useDesktopStore((state) => state.stopRun)
-  const setSessionDraft = useDesktopStore((state) => state.setSessionDraft)
-  const setSessionDraftMode = useDesktopStore((state) => state.setSessionDraftMode)
+  const ensureRunStream = useDesktopUiStore((state) => state.ensureRunStream)
+  const submitPrompt = useDesktopUiStore((state) => state.submitPrompt)
+  const stopRun = useDesktopUiStore((state) => state.stopRun)
+  const setSessionDraft = useDesktopUiStore((state) => state.setSessionDraft)
+  const setSessionDraftMode = useDesktopUiStore((state) => state.setSessionDraftMode)
   const [panelError, setPanelError] = useState<string | null>(null)
   const [selectedPrimaryAgent, setSelectedPrimaryAgent] = useState('swarm')
   const [currentSessionAgent, setCurrentSessionAgent] = useState('swarm')
@@ -1224,7 +1224,7 @@ export function DesktopChatPanel({
   const dbSession = useDesktopSession(sessionId)
   const liveSession = dbSession ?? session
   const trackedCommitSession = useDesktopSession(commitModal.targetSessionId)
-  const draftSessionMode = useDesktopStore((state) => state.getSessionDraftMode(null, workspacePath))
+  const draftSessionMode = useDesktopUiStore((state) => state.getSessionDraftMode(null, workspacePath))
   const draftSessionKey = `__workspace__:${workspacePath}`
   const routeOptions = useMemo(() => buildDesktopChatRouteOptions({
     hostSwarmName,
@@ -1272,7 +1272,7 @@ export function DesktopChatPanel({
   const activePreferenceRecord = preferenceFromAgentPolicy(activeAgentModelPolicy)
     ?? (sessionId ? sessionPreference : draftPreference)
 
-  const composer = useDesktopStore((state) => state.getSessionDraft(sessionId, workspacePath))
+  const composer = useDesktopUiStore((state) => state.getSessionDraft(sessionId, workspacePath))
   const composerDraftKey = sessionId ?? draftSessionKey
   const setComposerDraft = useCallback((value: string) => {
     setSessionDraft(composerDraftKey, value)

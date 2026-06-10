@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Outlet } from '@tanstack/react-router'
 import { requestJson } from '../../../../app/api'
 import { debugLog, createDebugTimer } from '../../../../lib/debug-log'
-import { useDesktopStore } from '../../state/use-desktop-store'
+import { useDesktopUiStore } from '../../state/desktop-ui-store'
 import { DesktopRealtimeBootstrap } from '../../realtime/desktop-realtime-bootstrap'
 import { DesktopVaultGate } from './desktop-vault-gate'
 import { DesktopOnboardingGate } from '../../onboarding/components/desktop-onboarding-gate'
@@ -186,11 +186,11 @@ function mapOnboardingBootstrapStatus(onboarding: DesktopOnboardingStatusWire): 
 
 export function DesktopVaultShell() {
   debugLog('desktop-vault-shell', 'render', {
-    vaultBootstrapped: useDesktopStore.getState().vault.bootstrapped,
+    vaultBootstrapped: useDesktopUiStore.getState().vault.bootstrapped,
   })
-  const vault = useDesktopStore((state) => state.vault)
-  const onboardingFlowRequested = useDesktopStore((state) => state.onboardingFlowRequested)
-  const clearOnboardingFlow = useDesktopStore((state) => state.clearOnboardingFlow)
+  const vault = useDesktopUiStore((state) => state.vault)
+  const onboardingFlowRequested = useDesktopUiStore((state) => state.onboardingFlowRequested)
+  const clearOnboardingFlow = useDesktopUiStore((state) => state.clearOnboardingFlow)
   const [onboardingStatus, setOnboardingStatus] = useState<DesktopOnboardingStatus | null>(null)
   const [onboardingLoading, setOnboardingLoading] = useState(true)
   const [onboardingError, setOnboardingError] = useState<string | null>(null)

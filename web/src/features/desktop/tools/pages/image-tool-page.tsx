@@ -7,7 +7,7 @@ import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/d
 import { Select } from '../../../../components/ui/select'
 import { Textarea } from '../../../../components/ui/textarea'
 import { apiFetch, requestJson } from '../../../../app/api'
-import { useDesktopStore } from '../../state/use-desktop-store'
+import { useDesktopUiStore } from '../../state/desktop-ui-store'
 import { listWorkspaces } from '../../../workspaces/launcher/queries/list-workspaces'
 import { uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
 import { normalizeGlobalThemeSettings, normalizeImageDefaultModel, type UISettingsWire } from '../../settings/swarm/types/swarm-settings'
@@ -295,8 +295,8 @@ export function ImageToolPage() {
   const rootImageToolSessionMatch = matchRoute({ to: '/tools/image/$imageSessionId', fuzzy: false })
   const routeWorkspaceSlug = workspaceImageToolSessionMatch ? workspaceImageToolSessionMatch.workspaceSlug.trim() : workspaceImageToolMatch ? workspaceImageToolMatch.workspaceSlug.trim() : ''
   const routeImageSessionId = workspaceImageToolSessionMatch ? workspaceImageToolSessionMatch.imageSessionId.trim() : rootImageToolSessionMatch ? rootImageToolSessionMatch.imageSessionId.trim() : ''
-  const activeSessionId = useDesktopStore((state) => state.activeSessionId)
-  const activeWorkspacePath = useDesktopStore((state) => state.activeWorkspacePath)
+  const activeSessionId = useDesktopUiStore((state) => state.activeSessionId)
+  const activeWorkspacePath = useDesktopUiStore((state) => state.activeWorkspacePath)
 
   const [createError, setCreateError] = useState<string | null>(null)
   const [generationError, setGenerationError] = useState<string | null>(null)

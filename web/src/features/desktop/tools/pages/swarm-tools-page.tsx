@@ -4,7 +4,7 @@ import { ArrowLeft, Film, Image, Sparkles } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Card } from '../../../../components/ui/card'
 import { cn } from '../../../../lib/cn'
-import { useDesktopStore } from '../../state/use-desktop-store'
+import { useDesktopUiStore } from '../../state/desktop-ui-store'
 
 type ToolCard = {
   id: string
@@ -37,7 +37,7 @@ export function SwarmToolsPage() {
   const toolsRouteMatch = matchRoute({ to: '/tools', fuzzy: false })
   const workspaceToolsRouteMatch = matchRoute({ to: '/$workspaceSlug/tools', fuzzy: false })
   const routeWorkspaceSlug = workspaceToolsRouteMatch ? workspaceToolsRouteMatch.workspaceSlug.trim() : ''
-  const activeSessionId = useDesktopStore((state) => state.activeSessionId)
+  const activeSessionId = useDesktopUiStore((state) => state.activeSessionId)
 
   const backLabel = routeWorkspaceSlug ? (activeSessionId ? 'Back to chat' : 'Back to workspace') : 'Back to launcher'
   const handleBack = useMemo(() => {

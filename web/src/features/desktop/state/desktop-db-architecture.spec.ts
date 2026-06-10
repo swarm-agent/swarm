@@ -118,7 +118,7 @@ test('route readiness and cached session switching do not depend on the old work
         return true
       }
       const source = readText(filePath)
-      return /desktop-v3-cache|desktop-v3-durable-reducer|hydrateDesktopV3|readDesktopV3CachedSession|getCachedDesktopV3/.test(source)
+      return /desktop-v3-cache|desktop-v3-durable-reducer|hydrateDesktopV3|getCachedDesktopV3/.test(source)
     })
     .map(desktopRelative)
     .sort()

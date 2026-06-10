@@ -454,9 +454,9 @@ export async function ensureDesktopDBRouteSession(_workspaceScope: DesktopWorksp
 
   upsertDesktopDbRecord(desktopSessionReadinessCollection, desktopDbPendingSession(normalizedSessionId, Date.now()))
   try {
-    const { fetchDesktopV3Workset } = await import('./desktop-v3-cache')
+    const { fetchDesktopDBWorkset } = await import('./desktop-db-workset')
     const request = desktopDbRouteWorksetRequest(normalizedSessionId)
-    const workset = await fetchDesktopV3Workset(request)
+    const workset = await fetchDesktopDBWorkset(request)
     applyWorksetToDesktopDB(workset, request)
     if (readDesktopDbSession(normalizedSessionId)) {
       const ready = desktopDbReadySession(normalizedSessionId, Date.now())

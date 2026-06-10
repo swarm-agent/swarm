@@ -27,7 +27,7 @@ import {
   type FlowWorkspaceEntry,
 } from '../api'
 import { agentStateQueryOptions } from '../../../../queries/query-options'
-import { useDesktopStore } from '../../../state/use-desktop-store'
+import { useDesktopUiStore } from '../../../state/desktop-ui-store'
 
 type FlowStatus = 'active' | 'paused' | 'draft' | 'needs_review' | 'failed'
 type FlowMode = 'Scheduled background job' | 'Manual one-shot'
@@ -1595,7 +1595,7 @@ export function FlowsSettingsPage() {
   const workspaceFlowDetailMatch = matchRoute({ to: '/$workspaceSlug/flow/$flowId', fuzzy: false })
   const routeWorkspaceSlug = (workspaceFlowDetailMatch ? workspaceFlowDetailMatch.workspaceSlug : workspaceFlowMatch ? workspaceFlowMatch.workspaceSlug : '').trim()
   const routeFlowID = (workspaceFlowDetailMatch ? workspaceFlowDetailMatch.flowId : globalFlowMatch ? globalFlowMatch.flowId : '').trim()
-  const activeSessionId = useDesktopStore((state) => state.activeSessionId)
+  const activeSessionId = useDesktopUiStore((state) => state.activeSessionId)
   const flowsQuery = useQuery({ queryKey: flowsQueryKey, queryFn: ({ signal }) => fetchFlows(signal) })
   const swarmTargetsQuery = useQuery({ queryKey: flowSwarmTargetsQueryKey, queryFn: fetchFlowSwarmTargets })
   const agentStateQuery = useQuery(agentStateQueryOptions())

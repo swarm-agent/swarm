@@ -32,18 +32,18 @@ import { countApprovalRequiredPermissions } from '../permissions/services/permis
 import type { AgentModelPolicyRecord, ChatMessageRecord, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord, ResolvedSessionPreference } from '../chat/types/chat'
 import type { DesktopRunIntentRecord, DesktopSessionRecord } from '../types/realtime'
 import {
-  desktopV3SessionQueryKey,
-  desktopV3SessionSnapshotQueryKey,
-  mergeDesktopV3DurableCachePatch,
+  desktopDBSessionQueryKey,
+  desktopDBSessionSnapshotQueryKey,
+  mergeDesktopDBSnapshotPatch,
   mergeDesktopV3Messages,
   type DesktopV3ProjectionCursor,
-  type DesktopV3SessionSnapshot,
-} from './desktop-v3-durable-reducer'
+  type DesktopDBSessionSnapshot,
+} from './desktop-db-snapshot'
 export {
-  desktopV3SessionQueryKey,
-  desktopV3SessionSnapshotQueryKey,
-  type DesktopV3SessionSnapshot,
-} from './desktop-v3-durable-reducer'
+  desktopDBSessionQueryKey,
+  desktopDBSessionSnapshotQueryKey,
+  type DesktopDBSessionSnapshot,
+} from './desktop-db-snapshot'
 
 interface V3SessionWire {
   id?: string
@@ -197,11 +197,11 @@ const DEFAULT_WORKSET_HISTORY = {
   includeEvents: false,
 }
 
-export function desktopV3WorksetCacheQueryKey() {
+export function desktopDBWorksetCacheQueryKey() {
   return ['desktop-v3-workset-cache'] as const
 }
 
-export function desktopV3WorksetQueryKey(scope: string) {
+export function desktopDBWorksetQueryKey(scope: string) {
   return ['desktop-v3-workset', scope.trim()] as const
 }
 
@@ -374,7 +374,7 @@ function latestActiveRunIntent(intents: V3RunIntentWire[] | undefined): V3RunInt
   }, null)
 }
 
-export function mapDesktopV3SessionSnapshot(response: V3HydratedSessionResponseWire): DesktopV3SessionSnapshot | null {
+export function mapDesktopDBSessionSnapshot(response: V3HydratedSessionResponseWire): DesktopDBSessionSnapshot | null {
   const mappedBaseSession = applyActiveRunIntent(
     mapDesktopSession(mapProjectionToSession(response.session ?? {}, response.projection)),
     mapV3RunIntent(response.active_run_intent),
@@ -570,7 +570,7 @@ export function mapDesktopV3Workset(response: V3WorksetResponseWire): DesktopV3W
   const highWatermarkBySession: Record<string, number> = {}
 
   for (const sessionId of sessionOrder) {
-    const snapshot = mapDesktopV3SessionSnapshot(worksetSessionResponse(response, sessionId))
+    const snapshot = mapDesktopDBSessionSnapshot(worksetSessionResponse(response, sessionId))
     if (!snapshot?.session.id) {
       continue
     }
@@ -674,7 +674,7 @@ function mergeDesktopV3Worksets(current: DesktopV3Workset | null | undefined, in
   }
 }
 
-export function desktopV3SessionSnapshotFromWorkset(workset: DesktopV3Workset | null | undefined, sessionId: string): DesktopV3SessionSnapshot | null {
+export function desktopDBSessionSnapshotFromWorkset(workset: DesktopV3Workset | null | undefined, sessionId: string): DesktopDBSessionSnapshot | null {
   const normalizedSessionId = sessionId.trim()
   if (!workset || !normalizedSessionId) {
     return null
@@ -700,8 +700,8 @@ export function desktopV3SessionSnapshotFromWorkset(workset: DesktopV3Workset | 
   }
 }
 
-export function writeDesktopV3Workset(queryClient: QueryClient, workset: DesktopV3Workset, request: DesktopV3WorksetRequest | null = null): DesktopV3Workset {
-  const cacheKey = desktopV3WorksetCacheQueryKey()
+export function writeDesktopDBWorkset(queryClient: QueryClient, workset: DesktopV3Workset, request: DesktopV3WorksetRequest | null = null): DesktopV3Workset {
+  const cacheKey = desktopDBWorksetCacheQueryKey()
   const current = queryClient.getQueryData<DesktopV3Workset>(cacheKey) ?? null
   const merged = mergeDesktopV3Worksets(current, workset)
   applyWorksetToDesktopDB(merged, request)
@@ -709,16 +709,16 @@ export function writeDesktopV3Workset(queryClient: QueryClient, workset: Desktop
   return merged
 }
 
-export function getCachedDesktopV3Workset(queryClient: QueryClient): DesktopV3Workset | null {
-  return queryClient.getQueryData<DesktopV3Workset>(desktopV3WorksetCacheQueryKey()) ?? null
+export function readDesktopDBWorkset(queryClient: QueryClient): DesktopV3Workset | null {
+  return queryClient.getQueryData<DesktopV3Workset>(desktopDBWorksetCacheQueryKey()) ?? null
 }
 
-export function getCachedDesktopV3WorksetSession(queryClient: QueryClient, sessionId: string): DesktopSessionRecord | null {
+export function readDesktopDBWorksetSession(queryClient: QueryClient, sessionId: string): DesktopSessionRecord | null {
   const normalizedSessionId = sessionId.trim()
   if (!normalizedSessionId) {
     return null
   }
-  return readDesktopDbSession(normalizedSessionId) ?? getCachedDesktopV3Workset(queryClient)?.sessionsById[normalizedSessionId] ?? null
+  return readDesktopDbSession(normalizedSessionId) ?? readDesktopDBWorkset(queryClient)?.sessionsById[normalizedSessionId] ?? null
 }
 
 export function desktopV3WorksetHasOmission(queryClient: QueryClient, sessionId: string, resource?: string): boolean {
@@ -735,7 +735,7 @@ export function desktopV3WorksetHasOmission(queryClient: QueryClient, sessionId:
   if (dbOmission) {
     return true
   }
-  const workset = getCachedDesktopV3Workset(queryClient)
+  const workset = readDesktopDBWorkset(queryClient)
   return Boolean(workset?.omissions.some((omission) => {
     if (omission.sessionId !== normalizedSessionId) {
       return false
@@ -782,7 +782,7 @@ function assertWorksetSelector(input: DesktopV3WorksetRequest): void {
   }
 }
 
-export async function fetchDesktopV3Workset(input: DesktopV3WorksetRequest, signal?: AbortSignal): Promise<DesktopV3Workset> {
+export async function fetchDesktopDBWorkset(input: DesktopV3WorksetRequest, signal?: AbortSignal): Promise<DesktopV3Workset> {
   assertWorksetSelector(input)
   const response = await requestJson<V3WorksetResponseWire>(
     '/v3/sessions:workset',
@@ -796,39 +796,39 @@ export async function fetchDesktopV3Workset(input: DesktopV3WorksetRequest, sign
   return mapDesktopV3Workset(response)
 }
 
-export async function hydrateDesktopV3Workset(
+export async function fetchAndApplyDesktopDBWorkset(
   queryClient: QueryClient,
   input: DesktopV3WorksetRequest,
   options: { signal?: AbortSignal } = {},
 ): Promise<DesktopV3Workset> {
-  const workset = await fetchDesktopV3Workset(input, options.signal)
-  return writeDesktopV3Workset(queryClient, workset, input)
+  const workset = await fetchDesktopDBWorkset(input, options.signal)
+  return writeDesktopDBWorkset(queryClient, workset, input)
 }
 
-function requireDesktopV3SessionSnapshot(response: V3HydratedSessionResponseWire, action: string): DesktopV3SessionSnapshot {
-  const snapshot = mapDesktopV3SessionSnapshot(response)
+function requireDesktopDBSessionSnapshot(response: V3HydratedSessionResponseWire, action: string): DesktopDBSessionSnapshot {
+  const snapshot = mapDesktopDBSessionSnapshot(response)
   if (!snapshot) {
     throw new Error(`Desktop V3 ${action} requires a hydrated canonical session snapshot.`)
   }
   return snapshot
 }
 
-export async function hydrateDesktopV3WorksetSession(
+export async function fetchAndApplyDesktopDBWorksetSession(
   queryClient: QueryClient,
   sessionId: string,
   options: { signal?: AbortSignal } = {},
-): Promise<DesktopV3SessionSnapshot | null> {
+): Promise<DesktopDBSessionSnapshot | null> {
   const normalizedSessionId = assertRawCanonicalDesktopV3SessionId(sessionId)
-  const workset = await hydrateDesktopV3Workset(queryClient, { sessionIds: [normalizedSessionId] }, options)
-  return desktopV3SessionSnapshotFromWorkset(workset, normalizedSessionId)
+  const workset = await fetchAndApplyDesktopDBWorkset(queryClient, { sessionIds: [normalizedSessionId] }, options)
+  return desktopDBSessionSnapshotFromWorkset(workset, normalizedSessionId)
 }
 
-export async function hydrateDesktopV3SessionSnapshot(
+export async function fetchAndApplyDesktopDBSessionSnapshot(
   queryClient: QueryClient,
   sessionId: string,
   options: { signal?: AbortSignal } = {},
-): Promise<DesktopV3SessionSnapshot | null> {
-  return hydrateDesktopV3WorksetSession(queryClient, sessionId, options)
+): Promise<DesktopDBSessionSnapshot | null> {
+  return fetchAndApplyDesktopDBWorksetSession(queryClient, sessionId, options)
 }
 
 function readPreloadedDesktopV3SessionResponse(sessionId: string): Promise<V3HydratedSessionResponseWire | null> | null {
@@ -843,23 +843,23 @@ function readPreloadedDesktopV3SessionResponse(sessionId: string): Promise<V3Hyd
   return preload.promise
 }
 
-export async function fetchDesktopV3SessionSnapshot(sessionId: string, signal?: AbortSignal): Promise<DesktopV3SessionSnapshot | null> {
+export async function fetchDesktopDBSessionSnapshot(sessionId: string, signal?: AbortSignal): Promise<DesktopDBSessionSnapshot | null> {
   const normalizedSessionId = assertRawCanonicalDesktopV3SessionId(sessionId)
   const preloadedResponse = await readPreloadedDesktopV3SessionResponse(normalizedSessionId)
   if (preloadedResponse) {
-    return mapDesktopV3SessionSnapshot(preloadedResponse)
+    return mapDesktopDBSessionSnapshot(preloadedResponse)
   }
   const request = { sessionIds: [normalizedSessionId] }
-  const workset = await fetchDesktopV3Workset(request, signal)
+  const workset = await fetchDesktopDBWorkset(request, signal)
   applyWorksetToDesktopDB(workset, request)
-  return desktopV3SessionSnapshotFromWorkset(workset, normalizedSessionId)
+  return desktopDBSessionSnapshotFromWorkset(workset, normalizedSessionId)
 }
 
 export async function updateDesktopV3SessionMode(
   queryClient: QueryClient,
   sessionId: string,
   mode: string,
-): Promise<DesktopV3SessionSnapshot> {
+): Promise<DesktopDBSessionSnapshot> {
   const normalizedSessionId = assertRawCanonicalDesktopV3SessionId(sessionId)
   const response = await requestJson<V3HydratedSessionResponseWire>(
     `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/mode`,
@@ -869,8 +869,8 @@ export async function updateDesktopV3SessionMode(
       body: JSON.stringify({ mode }),
     },
   )
-  const snapshot = requireDesktopV3SessionSnapshot(response, 'mode update')
-  writeDesktopV3SessionSnapshot(queryClient, snapshot)
+  const snapshot = requireDesktopDBSessionSnapshot(response, 'mode update')
+  writeDesktopDBSessionSnapshot(queryClient, snapshot)
   return snapshot
 }
 
@@ -894,8 +894,8 @@ export async function updateDesktopV3SessionPreference(
       }),
     },
   )
-  const snapshot = requireDesktopV3SessionSnapshot(response, 'preference update')
-  writeDesktopV3SessionSnapshot(queryClient, snapshot)
+  const snapshot = requireDesktopDBSessionSnapshot(response, 'preference update')
+  writeDesktopDBSessionSnapshot(queryClient, snapshot)
   return snapshot.preference
 }
 
@@ -903,7 +903,7 @@ export async function updateDesktopV3SessionAgent(
   queryClient: QueryClient,
   sessionId: string,
   agentName: string,
-): Promise<DesktopV3SessionSnapshot> {
+): Promise<DesktopDBSessionSnapshot> {
   const normalizedSessionId = assertRawCanonicalDesktopV3SessionId(sessionId)
   const response = await requestJson<V3HydratedSessionResponseWire>(
     `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/agent`,
@@ -913,8 +913,8 @@ export async function updateDesktopV3SessionAgent(
       body: JSON.stringify({ agent_name: agentName.trim() }),
     },
   )
-  const snapshot = requireDesktopV3SessionSnapshot(response, 'agent update')
-  writeDesktopV3SessionSnapshot(queryClient, snapshot)
+  const snapshot = requireDesktopDBSessionSnapshot(response, 'agent update')
+  writeDesktopDBSessionSnapshot(queryClient, snapshot)
   return snapshot
 }
 
@@ -922,7 +922,7 @@ export async function updateDesktopV3SessionMetadata(
   queryClient: QueryClient,
   sessionId: string,
   metadata: Record<string, unknown>,
-): Promise<DesktopV3SessionSnapshot> {
+): Promise<DesktopDBSessionSnapshot> {
   const normalizedSessionId = assertRawCanonicalDesktopV3SessionId(sessionId)
   const response = await requestJson<V3HydratedSessionResponseWire>(
     `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/metadata`,
@@ -932,8 +932,8 @@ export async function updateDesktopV3SessionMetadata(
       body: JSON.stringify({ metadata }),
     },
   )
-  const snapshot = requireDesktopV3SessionSnapshot(response, 'metadata update')
-  writeDesktopV3SessionSnapshot(queryClient, snapshot)
+  const snapshot = requireDesktopDBSessionSnapshot(response, 'metadata update')
+  writeDesktopDBSessionSnapshot(queryClient, snapshot)
   return snapshot
 }
 
@@ -949,7 +949,7 @@ export async function saveDesktopV3SessionPlan(
     status?: string;
     approvalState?: string;
   },
-): Promise<DesktopV3SessionSnapshot> {
+): Promise<DesktopDBSessionSnapshot> {
   const normalizedSessionId = assertRawCanonicalDesktopV3SessionId(sessionId)
   const response = await requestJson<V3HydratedSessionResponseWire>(
     `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/plans`,
@@ -968,24 +968,24 @@ export async function saveDesktopV3SessionPlan(
       }),
     },
   )
-  const snapshot = requireDesktopV3SessionSnapshot(response, 'plan save')
-  writeDesktopV3SessionSnapshot(queryClient, snapshot)
+  const snapshot = requireDesktopDBSessionSnapshot(response, 'plan save')
+  writeDesktopDBSessionSnapshot(queryClient, snapshot)
   return snapshot
 }
 
-export function desktopV3SessionQueryOptions(sessionId: string) {
+export function desktopDBSessionQueryOptions(sessionId: string) {
   const normalizedSessionId = sessionId.trim()
   return {
-    queryKey: desktopV3SessionQueryKey(normalizedSessionId),
-    queryFn: ({ signal }: { signal?: AbortSignal }) => fetchDesktopV3SessionSnapshot(normalizedSessionId, signal),
+    queryKey: desktopDBSessionQueryKey(normalizedSessionId),
+    queryFn: ({ signal }: { signal?: AbortSignal }) => fetchDesktopDBSessionSnapshot(normalizedSessionId, signal),
     staleTime: Number.POSITIVE_INFINITY,
     enabled: normalizedSessionId !== '',
   }
 }
 
-export function writeDesktopV3SessionSnapshot(
+export function writeDesktopDBSessionSnapshot(
   queryClient: QueryClient,
-  snapshot: DesktopV3SessionSnapshot,
+  snapshot: DesktopDBSessionSnapshot,
 ): void {
   const sessionId = snapshot.session.id.trim()
   if (!sessionId) {
@@ -1015,24 +1015,24 @@ export function writeDesktopV3SessionSnapshot(
     upsertDesktopDbRecord(desktopRunIntentsCollection, snapshot.session.runIntent)
   }
 
-  mergeDesktopV3DurableCachePatch(queryClient, { sessionId, snapshot })
+  mergeDesktopDBSnapshotPatch(queryClient, { sessionId, snapshot })
 }
 
-export async function ensureDesktopV3SessionSnapshot(
+export async function ensureDesktopDBSessionSnapshot(
   queryClient: QueryClient,
   sessionId: string,
-): Promise<DesktopV3SessionSnapshot | null> {
+): Promise<DesktopDBSessionSnapshot | null> {
   const normalizedSessionId = assertRawCanonicalDesktopV3SessionId(sessionId)
-  const cached = getCachedDesktopV3SessionSnapshot(queryClient, normalizedSessionId)
+  const cached = readDesktopDBSessionSnapshot(queryClient, normalizedSessionId)
   if (cached) {
-    writeDesktopV3SessionSnapshot(queryClient, cached)
+    writeDesktopDBSessionSnapshot(queryClient, cached)
     return cached
   }
 
-  return hydrateDesktopV3WorksetSession(queryClient, normalizedSessionId)
+  return fetchAndApplyDesktopDBWorksetSession(queryClient, normalizedSessionId)
 }
 
-function desktopV3SessionSnapshotFromDesktopDB(sessionId: string): DesktopV3SessionSnapshot | null {
+function desktopDBSessionSnapshotFromDesktopDB(sessionId: string): DesktopDBSessionSnapshot | null {
   const normalizedSessionId = sessionId.trim()
   const session = readDesktopDbSession(normalizedSessionId)
   if (!session) {
@@ -1062,30 +1062,30 @@ function desktopV3SessionSnapshotFromDesktopDB(sessionId: string): DesktopV3Sess
   }
 }
 
-export function getCachedDesktopV3SessionSnapshot(queryClient: QueryClient, sessionId: string): DesktopV3SessionSnapshot | null {
+export function readDesktopDBSessionSnapshot(queryClient: QueryClient, sessionId: string): DesktopDBSessionSnapshot | null {
   const normalizedSessionId = sessionId.trim()
   if (!normalizedSessionId) {
     return null
   }
-  const worksetSnapshot = desktopV3SessionSnapshotFromWorkset(getCachedDesktopV3Workset(queryClient), normalizedSessionId)
+  const worksetSnapshot = desktopDBSessionSnapshotFromWorkset(readDesktopDBWorkset(queryClient), normalizedSessionId)
   if (worksetSnapshot) {
     return worksetSnapshot
   }
-  return desktopV3SessionSnapshotFromDesktopDB(normalizedSessionId)
-    ?? queryClient.getQueryData<DesktopV3SessionSnapshot>(desktopV3SessionSnapshotQueryKey(normalizedSessionId))
+  return desktopDBSessionSnapshotFromDesktopDB(normalizedSessionId)
+    ?? queryClient.getQueryData<DesktopDBSessionSnapshot>(desktopDBSessionSnapshotQueryKey(normalizedSessionId))
     ?? null
 }
 
-export function getCachedDesktopV3SessionSnapshotOnly(queryClient: QueryClient, sessionId: string): DesktopV3SessionSnapshot | null {
+export function readDesktopDBSessionSnapshotOnly(queryClient: QueryClient, sessionId: string): DesktopDBSessionSnapshot | null {
   const normalizedSessionId = sessionId.trim()
   if (!normalizedSessionId) {
     return null
   }
-  return desktopV3SessionSnapshotFromDesktopDB(normalizedSessionId)
-    ?? queryClient.getQueryData<DesktopV3SessionSnapshot>(desktopV3SessionSnapshotQueryKey(normalizedSessionId))
+  return desktopDBSessionSnapshotFromDesktopDB(normalizedSessionId)
+    ?? queryClient.getQueryData<DesktopDBSessionSnapshot>(desktopDBSessionSnapshotQueryKey(normalizedSessionId))
     ?? null
 }
 
-export function readDesktopV3CachedSession(queryClient: QueryClient, sessionId: string): DesktopSessionRecord | null {
-  return getCachedDesktopV3WorksetSession(queryClient, sessionId) ?? getCachedDesktopV3SessionSnapshot(queryClient, sessionId)?.session ?? null
+export function readDesktopDBHydratedSession(queryClient: QueryClient, sessionId: string): DesktopSessionRecord | null {
+  return readDesktopDBWorksetSession(queryClient, sessionId) ?? readDesktopDBSessionSnapshot(queryClient, sessionId)?.session ?? null
 }

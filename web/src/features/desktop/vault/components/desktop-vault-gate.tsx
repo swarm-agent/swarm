@@ -3,11 +3,11 @@ import { Lock, Key, Shield, ChevronLeft } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Card } from '../../../../components/ui/card'
 import { Input } from '../../../../components/ui/input'
-import { useDesktopStore } from '../../state/use-desktop-store'
+import { useDesktopUiStore } from '../../state/desktop-ui-store'
 
 export function DesktopVaultGate() {
-  const vault = useDesktopStore((state) => state.vault)
-  const unlock = useDesktopStore((state) => state.unlockVault)
+  const vault = useDesktopUiStore((state) => state.vault)
+  const unlock = useDesktopUiStore((state) => state.unlockVault)
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [view, setView] = useState<'locked' | 'unlocking'>('locked')

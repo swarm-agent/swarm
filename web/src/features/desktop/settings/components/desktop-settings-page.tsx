@@ -13,7 +13,7 @@ import { WorktreeSettingsPage } from '../worktrees/components/worktree-settings-
 import { DesktopSwarmDashboard } from '../../swarm/desktop-swarm-dashboard'
 import { cn } from '../../../../lib/cn'
 import { normalizeSettingsTabID, type SettingsTabID } from '../types/settings-tabs'
-import { useDesktopStore } from '../../state/use-desktop-store'
+import { useDesktopUiStore } from '../../state/desktop-ui-store'
 
 const settingsTabs: Array<{ id: SettingsTabID; label: string; icon: LucideIcon }> = [
   { id: 'account', label: 'Account', icon: UserRound },
@@ -38,7 +38,7 @@ export function DesktopSettingsPage() {
   const settingsRouteMatch = matchRoute({ to: '/settings', fuzzy: false })
   const workspaceSettingsMatch = matchRoute({ to: '/$workspaceSlug/settings', fuzzy: false })
   const routeWorkspaceSlug = workspaceSettingsMatch ? workspaceSettingsMatch.workspaceSlug.trim() : ''
-  const activeSessionId = useDesktopStore((state) => state.activeSessionId)
+  const activeSessionId = useDesktopUiStore((state) => state.activeSessionId)
   const search = useSearch({ strict: false }) as SettingsSearchParams
   const [activeTab, setActiveTab] = useState<SettingsTabID>(() => normalizeSettingsTabID(search.tab))
 

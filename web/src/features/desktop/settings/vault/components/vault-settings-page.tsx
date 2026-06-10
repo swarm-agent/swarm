@@ -3,7 +3,7 @@ import { Lock, Unlock, Key, Shield, Download, Upload, AlertCircle, CheckCircle2 
 import { Button } from "../../../../../components/ui/button";
 import { Dialog, DialogBackdrop, DialogPanel } from "../../../../../components/ui/dialog";
 import { Input } from "../../../../../components/ui/input";
-import { useDesktopStore } from "../../../state/use-desktop-store";
+import { useDesktopUiStore } from "../../../state/desktop-ui-store";
 
 function downloadBundle(bundle: Uint8Array, filename: string) {
   const blob = new Blob([Uint8Array.from(bundle)], {
@@ -35,13 +35,13 @@ function timestampedBundleName() {
 }
 
 export function VaultSettingsPage() {
-  const vault = useDesktopStore((state) => state.vault);
-  const enableVault = useDesktopStore((state) => state.enableVault);
-  const unlockVault = useDesktopStore((state) => state.unlockVault);
-  const exportBundle = useDesktopStore((state) => state.exportVaultBundle);
-  const importBundle = useDesktopStore((state) => state.importVaultBundle);
-  const lockVault = useDesktopStore((state) => state.lockVault);
-  const disableVault = useDesktopStore((state) => state.disableVault);
+  const vault = useDesktopUiStore((state) => state.vault);
+  const enableVault = useDesktopUiStore((state) => state.enableVault);
+  const unlockVault = useDesktopUiStore((state) => state.unlockVault);
+  const exportBundle = useDesktopUiStore((state) => state.exportVaultBundle);
+  const importBundle = useDesktopUiStore((state) => state.importVaultBundle);
+  const lockVault = useDesktopUiStore((state) => state.lockVault);
+  const disableVault = useDesktopUiStore((state) => state.disableVault);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");

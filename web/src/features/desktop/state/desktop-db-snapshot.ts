@@ -11,7 +11,7 @@ export interface DesktopV3ProjectionCursor {
   updated_at?: number
 }
 
-export interface DesktopV3SessionSnapshot {
+export interface DesktopDBSessionSnapshot {
   source: 'v3'
   session: DesktopSessionRecord
   messages: ChatMessageRecord[]
@@ -27,9 +27,9 @@ export interface DesktopV3SessionSnapshot {
   hydratedAt: number
 }
 
-export interface DesktopV3DurableCachePatch {
+export interface DesktopDBSnapshotPatch {
   sessionId?: string
-  snapshot?: DesktopV3SessionSnapshot | null
+  snapshot?: DesktopDBSessionSnapshot | null
   session?: DesktopSessionRecord | null
   messages?: ChatMessageRecord[]
   events?: unknown[]
@@ -50,11 +50,11 @@ const EMPTY_PREFERENCE: ResolvedSessionPreference = {
   maxOutputTokens: 0,
 }
 
-export function desktopV3SessionSnapshotQueryKey(sessionId: string) {
+export function desktopDBSessionSnapshotQueryKey(sessionId: string) {
   return ['desktop-v3-session-snapshot', sessionId.trim()] as const
 }
 
-export const desktopV3SessionQueryKey = desktopV3SessionSnapshotQueryKey
+export const desktopDBSessionQueryKey = desktopDBSessionSnapshotQueryKey
 
 export function desktopV3SessionMessagesQueryKey(sessionId: string) {
   return ['session-messages', sessionId.trim()] as const
@@ -68,7 +68,7 @@ export function mergeDesktopV3Messages(current: ChatMessageRecord[] | undefined,
   return (incoming ?? []).reduce<ChatMessageRecord[]>((merged, message) => mergeMessageIntoCache(merged, message), current ?? [])
 }
 
-function resolvePatchSessionId(patch: DesktopV3DurableCachePatch): string {
+function resolvePatchSessionId(patch: DesktopDBSnapshotPatch): string {
   return (patch.sessionId
     ?? patch.snapshot?.session.id
     ?? patch.session?.id
@@ -107,7 +107,7 @@ function mergeEvents(current: unknown[] | undefined, incoming: unknown[] | undef
   return merged
 }
 
-function emptySnapshot(session: DesktopSessionRecord): DesktopV3SessionSnapshot {
+function emptySnapshot(session: DesktopSessionRecord): DesktopDBSessionSnapshot {
   return {
     source: 'v3',
     session: { ...session, sessionApi: session.sessionApi || 'v3' },
@@ -126,10 +126,10 @@ function emptySnapshot(session: DesktopSessionRecord): DesktopV3SessionSnapshot 
 }
 
 export function reduceDesktopV3DurableCache(
-  current: DesktopV3SessionSnapshot | null | undefined,
-  patch: DesktopV3DurableCachePatch,
+  current: DesktopDBSessionSnapshot | null | undefined,
+  patch: DesktopDBSnapshotPatch,
   currentMessages?: ChatMessageRecord[],
-): DesktopV3SessionSnapshot | null {
+): DesktopDBSessionSnapshot | null {
   const incoming = patch.snapshot ?? null
   const session = patch.session ?? incoming?.session ?? null
   const base = incoming ?? current ?? (session ? emptySnapshot(session) : null)
@@ -181,14 +181,14 @@ export function reduceDesktopV3DurableCache(
   }
 }
 
-export function mergeDesktopV3DurableCachePatch(queryClient: QueryClient, patch: DesktopV3DurableCachePatch): DesktopV3SessionSnapshot | null {
+export function mergeDesktopDBSnapshotPatch(queryClient: QueryClient, patch: DesktopDBSnapshotPatch): DesktopDBSessionSnapshot | null {
   const sessionId = resolvePatchSessionId(patch)
   if (!sessionId) {
     return null
   }
-  const snapshotKey = desktopV3SessionSnapshotQueryKey(sessionId)
+  const snapshotKey = desktopDBSessionSnapshotQueryKey(sessionId)
   const messagesKey = desktopV3SessionMessagesQueryKey(sessionId)
-  const currentSnapshot = queryClient.getQueryData<DesktopV3SessionSnapshot>(snapshotKey) ?? null
+  const currentSnapshot = queryClient.getQueryData<DesktopDBSessionSnapshot>(snapshotKey) ?? null
   const currentMessages = queryClient.getQueryData<ChatMessageRecord[]>(messagesKey) ?? undefined
   const next = reduceDesktopV3DurableCache(currentSnapshot, { ...patch, sessionId }, currentMessages)
   if (!next) {

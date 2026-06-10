@@ -6,7 +6,7 @@ import { Button } from '../../../../components/ui/button'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
 import { requestJson } from '../../../../app/api'
-import { useDesktopStore } from '../../state/use-desktop-store'
+import { useDesktopUiStore } from '../../state/desktop-ui-store'
 import { createSession, fetchDraftModelPreference } from '../../chat/queries/chat-queries'
 import { listWorkspaces } from '../../../workspaces/launcher/queries/list-workspaces'
 import { uiSettingsQueryOptions } from '../../../queries/query-options'
@@ -496,11 +496,11 @@ export function VideoToolPage() {
   const matchRoute = useMatchRoute()
   const workspaceVideoToolMatch = matchRoute({ to: '/$workspaceSlug/tools/video', fuzzy: false })
   const routeWorkspaceSlug = workspaceVideoToolMatch ? workspaceVideoToolMatch.workspaceSlug.trim() : ''
-  const activeSessionId = useDesktopStore((state) => state.activeSessionId)
-  const activeWorkspacePath = useDesktopStore((state) => state.activeWorkspacePath)
-  const setActiveSession = useDesktopStore((state) => state.setActiveSession)
-  const setActiveWorkspacePath = useDesktopStore((state) => state.setActiveWorkspacePath)
-  const upsertSession = useDesktopStore((state) => state.upsertSession)
+  const activeSessionId = useDesktopUiStore((state) => state.activeSessionId)
+  const activeWorkspacePath = useDesktopUiStore((state) => state.activeWorkspacePath)
+  const setActiveSession = useDesktopUiStore((state) => state.setActiveSession)
+  const setActiveWorkspacePath = useDesktopUiStore((state) => state.setActiveWorkspacePath)
+  const upsertSession = useDesktopUiStore((state) => state.upsertSession)
 
   const [pickerOpen, setPickerOpen] = useState(false)
   const [browser, setBrowser] = useState<WorkspaceBrowseResult | null>(null)

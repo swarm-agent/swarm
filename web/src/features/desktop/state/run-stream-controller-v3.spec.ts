@@ -3,6 +3,7 @@ import { afterEach, test } from 'node:test'
 
 import { queryClient } from '../../../app/query-client'
 import { sessionMessagesQueryKey } from '../../queries/query-options'
+import { readDesktopDbMessages } from './desktop-db'
 import type { DesktopSessionRecord, DesktopStoreState } from '../types/realtime'
 import { applyEnvelope, useDesktopStore } from './use-desktop-store'
 import type { RunStreamEventMessage } from './run-stream-controller'
@@ -764,7 +765,7 @@ test('desktop V3 canonical session updates do not depend on V3-only realtime soc
   const controllerSource = await readFile(new URL('./run-stream-controller.ts', import.meta.url), 'utf8')
   const querySource = await readFile(new URL('../chat/queries/chat-queries.ts', import.meta.url), 'utf8')
   const panelSource = await readFile(new URL('../chat/components/desktop-chat-panel.tsx', import.meta.url), 'utf8')
-  const storeSource = await readFile(new URL('./use-desktop-store.ts', import.meta.url), 'utf8')
+  const storeSource = await readFile(new URL('./desktop-ui-store.ts', import.meta.url), 'utf8')
 
   assert.match(querySource, /\/v3\/sessions\/\$\{encodeURIComponent\(normalizedSessionId\)\}\/stream/)
   assert.doesNotMatch(storeSource, /DesktopV3RealtimeController/)
@@ -1077,7 +1078,7 @@ test('global /ws V3 message and run-intent envelopes update Desktop canonical st
   assert.equal(updated.live.lastEventType, 'session.run_intent.recorded')
   assert.equal(useDesktopStore.getState().lastGlobalSeq, 12)
   await new Promise((resolve) => setTimeout(resolve, 0))
-  assert.equal(queryClient.getQueryData<unknown[]>(sessionMessagesQueryKey('session-v3'))?.length, 1)
+  assert.ok(readDesktopDbMessages('session-v3').some((message) => message.id === 'msg-user-v3'))
 })
 
 test('global /ws V3 assistant lifecycle envelopes update Desktop live and message state', () => {

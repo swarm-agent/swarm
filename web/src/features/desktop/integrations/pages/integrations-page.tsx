@@ -9,7 +9,7 @@ import { Input } from '../../../../components/ui/input'
 import { DesktopChatPanel } from '../../chat/components/desktop-chat-panel'
 import { fetchDraftModelPreference, fetchSession } from '../../chat/queries/chat-queries'
 import type { DesktopSessionRecord } from '../../types/realtime'
-import { useDesktopStore } from '../../state/use-desktop-store'
+import { useDesktopUiStore } from '../../state/desktop-ui-store'
 import { uiSettingsQueryOptions } from '../../../queries/query-options'
 import { getSwarmSettings } from '../../settings/swarm/queries/get-swarm-settings'
 import { normalizeGlobalThemeSettings } from '../../settings/swarm/types/swarm-settings'
@@ -61,9 +61,9 @@ export function IntegrationsPage() {
   const queryClient = useQueryClient()
   const routeSessionMatch = matchRoute({ to: '/integrations/$sessionId', fuzzy: false })
   const routeSessionId = routeSessionMatch ? routeSessionMatch.sessionId.trim() : ''
-  const setActiveSession = useDesktopStore((state) => state.setActiveSession)
-  const setActiveWorkspacePath = useDesktopStore((state) => state.setActiveWorkspacePath)
-  const upsertSession = useDesktopStore((state) => state.upsertSession)
+  const setActiveSession = useDesktopUiStore((state) => state.setActiveSession)
+  const setActiveWorkspacePath = useDesktopUiStore((state) => state.setActiveWorkspacePath)
+  const upsertSession = useDesktopUiStore((state) => state.upsertSession)
 
   const [newIntegrationName, setNewIntegrationName] = useState('')
   const [creatingIntegration, setCreatingIntegration] = useState(false)

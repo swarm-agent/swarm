@@ -9,12 +9,12 @@ import { Card } from '../../../components/ui/card'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
 import { DesktopNotificationsModal } from '../notifications/components/desktop-notifications-modal'
 import { cn } from '../../../lib/cn'
-import { useDesktopStore } from '../state/use-desktop-store'
+import { useDesktopUiStore } from '../state/desktop-ui-store'
 import { useWorkspaceLauncher } from '../../workspaces/launcher/state/use-workspace-launcher'
 import { applyDesktopRouteTheme } from './desktop-theme-controller'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
 import { agentStateQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
-import { hydrateDesktopV3Workset } from '../state/desktop-v3-cache'
+import { fetchAndApplyDesktopDBWorkset } from '../state/desktop-db-workset'
 import { ensureDesktopDBRouteSession, useDesktopRouteReadiness, useDesktopSession, useDesktopWorkspaceSessions } from '../state/desktop-db'
 import type { DesktopSessionRecord } from '../types/realtime'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
@@ -245,9 +245,9 @@ function GitDetailsOverlay({ state, snapshot, loading, error, onRefresh, onClose
 }
 
 function DesktopNotificationsOverlay({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
-  const connectionState = useDesktopStore((state) => state.connectionState)
-  const notificationCenter = useDesktopStore((state) => state.notificationCenter)
-  const updateNotificationRecord = useDesktopStore((state) => state.updateNotificationRecord)
+  const connectionState = useDesktopUiStore((state) => state.connectionState)
+  const notificationCenter = useDesktopUiStore((state) => state.notificationCenter)
+  const updateNotificationRecord = useDesktopUiStore((state) => state.updateNotificationRecord)
   return (
     <DesktopNotificationsModal
       open={open}
@@ -266,7 +266,7 @@ function DesktopNotificationsOverlay({ open, onOpenChange }: { open: boolean; on
         await updateNotificationRecord(record.id, { muted: true })
       }}
       onClearAll={async () => {
-        await useDesktopStore.getState().clearNotifications()
+        await useDesktopUiStore.getState().clearNotifications()
       }}
     />
   )
@@ -1455,9 +1455,9 @@ export function DesktopAppPage() {
   const routeSessionId = (!isFlowRoute && workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
   const pwaDebugEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has(PWA_DEBUG_QUERY_PARAM)
   const { workspaces, selectingPath, savingPath, saveWorkspace, setWorktreeEnabled, loading: launcherWorkspacesLoading } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
-  const connectionState = useDesktopStore((state) => state.connectionState)
-  const refreshNotifications = useDesktopStore((state) => state.refreshNotifications)
-  const notificationCenter = useDesktopStore((state) => state.notificationCenter)
+  const connectionState = useDesktopUiStore((state) => state.connectionState)
+  const refreshNotifications = useDesktopUiStore((state) => state.refreshNotifications)
+  const notificationCenter = useDesktopUiStore((state) => state.notificationCenter)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [expandedAgentSessions, setExpandedAgentSessions] = useState<Record<string, boolean>>({})
@@ -2050,7 +2050,7 @@ export function DesktopAppPage() {
     ]
     if (workspacePaths.length > 0) {
       bootstrapTasks.push((async () => {
-        await hydrateDesktopV3Workset(queryClient, {
+        await fetchAndApplyDesktopDBWorkset(queryClient, {
           workspacePaths,
           recent: { limit: 50 },
           history: { mode: 'full', maxMessagesPerSession: 200, maxEventsPerSession: 0, manifestPolicy: 'manifest', includeEvents: false },

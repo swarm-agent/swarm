@@ -27,7 +27,7 @@ import {
 import { fetchSwarmTargets, type SwarmTarget } from '../api/swarm-targets'
 import { listWorkspaces } from '../../../workspaces/launcher/queries/list-workspaces'
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
-import { useDesktopStore } from '../../state/use-desktop-store'
+import { useDesktopUiStore } from '../../state/desktop-ui-store'
 
 interface AddSwarmModalProps {
   open: boolean
@@ -248,7 +248,7 @@ export function AddSwarmModal({
   >(null)
   const [packagePlatformInfoOpen, setPackagePlatformInfoOpen] = useState(false)
 
-  const vault = useDesktopStore((state) => state.vault)
+  const vault = useDesktopUiStore((state) => state.vault)
   const runtimeChoice = useMemo(
     () =>
       selectedRuntime && runtimeStatus.available.includes(selectedRuntime)
