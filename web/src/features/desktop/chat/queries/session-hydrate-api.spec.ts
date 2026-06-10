@@ -374,6 +374,7 @@ test('Desktop V3 permission resolve uses Sessions API v3 only', async () => {
 test('Desktop V3 session switching prewarm uses background React Query workset hydration only for uncached sessions', async () => {
   const { ensureSessionRuntimeData, prefetchSessionRuntimeData, sessionMessagesQueryKey } = await import('../../../queries/query-options')
   const { desktopV3SessionQueryKey, hydrateDesktopV3Workset, readDesktopV3CachedSession } = await import('../../state/desktop-v3-cache')
+  const { readDesktopDbMessages, readDesktopDbSession, readDesktopDbSessionReadiness } = await import('../../state/desktop-db')
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -387,6 +388,9 @@ test('Desktop V3 session switching prewarm uses background React Query workset h
     assertNoV1OrV2SessionDataCalls(calls)
     assert.equal(readDesktopV3CachedSession(queryClient, 'session-switch')?.pendingPermissions.length, 1)
     assert.equal(readDesktopV3CachedSession(queryClient, 'session-switch')?.usage?.totalTokens, 42)
+    assert.equal(readDesktopDbSession('session-switch')?.id, 'session-switch')
+    assert.equal(readDesktopDbMessages('session-switch').map((message) => message.id).join(','), 'session-switch-msg-1')
+    assert.equal(readDesktopDbSessionReadiness('session-switch')?.ready, true)
     assert.equal(queryClient.getQueryData<{ session?: { id?: string } }>(desktopV3SessionQueryKey('session-switch'))?.session?.id, 'session-switch')
     assert.equal(readDesktopV3CachedSession(queryClient, 'session-switch')?.id, 'session-switch')
     assert.deepEqual(
@@ -415,6 +419,7 @@ test('Desktop V3 session switching prewarm uses background React Query workset h
 
 test('Desktop V3 workset hydration restores active run intent from the canonical route source', async () => {
   const { hydrateDesktopV3WorksetSession, readDesktopV3CachedSession } = await import('../../state/desktop-v3-cache')
+  const { readDesktopDbSession } = await import('../../state/desktop-db')
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -427,6 +432,7 @@ test('Desktop V3 workset hydration restores active run intent from the canonical
     assertNoV1OrV2SessionDataCalls(calls)
     assert.equal(snapshot?.session.runIntent?.runId, 'run-active')
     assert.equal(cached?.runIntent?.status, 'running')
+    assert.equal(readDesktopDbSession('session-v3-active')?.runIntent?.runId, 'run-active')
     assert.equal(cached?.live.runId, 'run-active')
     assert.equal(cached?.live.status, 'running')
     assert.equal(cached?.live.startedAt, 1000)
@@ -587,7 +593,7 @@ test('DesktopAppPage must keep route-critical load out of sidebar/background V3 
   assert.match(source, /sessionIds: \[routeCriticalSessionId\]/)
   assert.match(source, /readDesktopV3CachedSession\(queryClient, routeSessionId\)/)
   assert.match(source, /const handleSelectSession = useCallback\(\(sessionId: string\) => \{/)
-  assert.match(source, /const session = readDesktopV3CachedSession\(queryClient, normalizedSessionId\) \?\? sessionById\.get\(normalizedSessionId\)/)
+  assert.match(source, /const session = readDesktopV3CachedSession\(queryClient, normalizedSessionId\) \?\? readDesktopDbSession\(normalizedSessionId\) \?\? sessionById\.get\(normalizedSessionId\)/)
   assert.match(source, /desktopV3WorksetHasOmission\(queryClient, normalizedSessionId\)/)
   assert.doesNotMatch(source, /routeSessionSnapshotQuery/)
   assert.doesNotMatch(source, /backgroundBootstrapSessionIds/)

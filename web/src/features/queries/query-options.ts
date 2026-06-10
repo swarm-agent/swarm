@@ -48,6 +48,9 @@ export function sessionMessagesQueryOptions(sessionId: string, queryClient?: Que
         throw new Error('Desktop V3 session messages require the canonical session snapshot cache.')
       }
       const snapshot = await ensureDesktopV3SessionSnapshot(queryClient, normalizedSessionId)
+      if (snapshot) {
+        writeDesktopV3SessionSnapshot(queryClient, snapshot)
+      }
       return snapshot?.messages ?? []
     },
     staleTime: 60_000,
@@ -68,6 +71,9 @@ export function sessionPreferenceQueryOptions(sessionId: string, queryClient?: Q
         throw new Error('Desktop V3 session preference requires the canonical session snapshot cache.')
       }
       const snapshot = await ensureDesktopV3SessionSnapshot(queryClient, normalizedSessionId)
+      if (snapshot) {
+        writeDesktopV3SessionSnapshot(queryClient, snapshot)
+      }
       return snapshot?.preference ?? { preference: { provider: '', model: '', thinking: '', serviceTier: '', contextMode: '', updatedAt: 0 }, contextWindow: 0, maxOutputTokens: 0 }
     },
     staleTime: 60_000,

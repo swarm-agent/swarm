@@ -36,11 +36,11 @@ export interface DesktopV3WorksetRequest {
 }
 
 export interface DesktopV3ProjectionRecord {
-  sessionId: string
+  sessionId?: string
+  session_id?: string
   last_event_seq?: number
   projection_high_watermark_seq?: number
   updated_at?: number
-  [key: string]: unknown
 }
 
 export interface DesktopV3HistoryChunkDescriptor {
@@ -182,7 +182,7 @@ export const desktopUsageCollection = createDesktopCollection<DesktopSessionUsag
 export const desktopPreferencesCollection = createDesktopCollection<DesktopDbPreferenceRecord>('desktop-v3-preferences', (preference) => preference.sessionId)
 export const desktopAgentModelPolicyCollection = createDesktopCollection<DesktopDbAgentModelPolicyRecord>('desktop-v3-agent-model-policy', (policy) => policy.sessionId)
 export const desktopRunIntentsCollection = createDesktopCollection<DesktopRunIntentRecord>('desktop-v3-run-intents', (intent) => intent.sessionId)
-export const desktopProjectionsCollection = createDesktopCollection<DesktopV3ProjectionRecord>('desktop-v3-projections', (projection) => projection.sessionId)
+export const desktopProjectionsCollection = createDesktopCollection<DesktopV3ProjectionRecord>('desktop-v3-projections', (projection) => projection.sessionId ?? projection.session_id ?? '')
 export const desktopPlansCollection = createDesktopCollection<DesktopDbSessionPlanRecord>('desktop-v3-plans', (plan) => plan.sessionId)
 export const desktopPlanRevisionsCollection = createDesktopCollection<DesktopDbSessionPlanRevisionRecord>('desktop-v3-plan-revisions', desktopDbPlanRevisionKey)
 export const desktopEventsCollection = createDesktopCollection<DesktopDbSessionEventRecord>('desktop-v3-events', (event) => event.id)

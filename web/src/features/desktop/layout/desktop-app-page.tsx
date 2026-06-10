@@ -15,6 +15,7 @@ import { applyDesktopRouteTheme } from './desktop-theme-controller'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
 import { agentStateQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
 import { desktopV3WorksetHasOmission, getCachedDesktopV3WorksetSession, hydrateDesktopV3Workset, readDesktopV3CachedSession } from '../state/desktop-v3-cache'
+import { readDesktopDbSession, useDesktopWorkspaceSessions } from '../state/desktop-db'
 import type { DesktopSessionRecord } from '../types/realtime'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
 import { DesktopQuickSettingsModal, type QuickSettingsTabID } from '../settings/components/desktop-quick-settings-modal'
@@ -1464,7 +1465,6 @@ export function DesktopAppPage() {
   const notificationCenter = useDesktopStore((state) => state.notificationCenter)
   const setActiveSession = useDesktopStore((state) => state.setActiveSession)
   const setActiveWorkspacePath = useDesktopStore((state) => state.setActiveWorkspacePath)
-  const upsertSession = useDesktopStore((state) => state.upsertSession)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [expandedAgentSessions, setExpandedAgentSessions] = useState<Record<string, boolean>>({})
@@ -1537,6 +1537,7 @@ export function DesktopAppPage() {
       return null
     }
     return readDesktopV3CachedSession(queryClient, routeSessionId)
+      ?? readDesktopDbSession(routeSessionId)
       ?? liveSessions[routeSessionId]
       ?? null
   }, [liveSessions, queryClient, routeSessionId])
@@ -2043,10 +2044,15 @@ export function DesktopAppPage() {
     return grouped
   }, [liveSessions, overviewQuery.data?.workspaces, mergedSidebarWorkspaceEntries])
 
+  const desktopDbSessions = useDesktopWorkspaceSessions({ workspacePaths: mergedSidebarWorkspaceEntries.map((workspace) => workspace.path) })
+
   const allSessions = useMemo<DesktopSessionRecord[]>(
     () => {
       const sessionMap = new Map<string, DesktopSessionRecord>()
       for (const session of Array.from(sessionsByWorkspace.values()).flat()) {
+        sessionMap.set(session.id, session)
+      }
+      for (const session of desktopDbSessions) {
         sessionMap.set(session.id, session)
       }
       const activeSession = activeSessionId ? useDesktopStore.getState().sessions[activeSessionId] : null
@@ -2055,7 +2061,7 @@ export function DesktopAppPage() {
       }
       return Array.from(sessionMap.values())
     },
-    [activeSessionId, sessionsByWorkspace],
+    [activeSessionId, desktopDbSessions, sessionsByWorkspace],
   )
 
   const sessionById = useMemo<Map<string, DesktopSessionRecord>>(
@@ -2072,10 +2078,9 @@ export function DesktopAppPage() {
 
   const applyDesktopV3WorksetSessions = useCallback((sessions: DesktopSessionRecord[]) => {
     for (const session of sessions) {
-      upsertSession(session)
       syncWorkspaceOverviewSession(queryClient, session)
     }
-  }, [queryClient, upsertSession])
+  }, [queryClient])
 
   useEffect(() => {
     const epoch = desktopV3BootstrapEpochRef.current + 1
@@ -2157,6 +2162,7 @@ export function DesktopAppPage() {
 
   const routeSession = routeSessionId
     ? readDesktopV3CachedSession(queryClient, routeSessionId)
+      ?? readDesktopDbSession(routeSessionId)
       ?? liveSessions[routeSessionId]
       ?? sessionById.get(routeSessionId)
       ?? null
@@ -2352,7 +2358,7 @@ export function DesktopAppPage() {
 
   const handleSelectSession = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()
-    const session = readDesktopV3CachedSession(queryClient, normalizedSessionId) ?? sessionById.get(normalizedSessionId)
+    const session = readDesktopV3CachedSession(queryClient, normalizedSessionId) ?? readDesktopDbSession(normalizedSessionId) ?? sessionById.get(normalizedSessionId)
     if (!session?.workspacePath) {
       return
     }
