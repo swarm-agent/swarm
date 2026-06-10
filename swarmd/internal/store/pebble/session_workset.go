@@ -359,20 +359,21 @@ func (s *SessionStore) addV3SessionWorksetMessages(reader pebble.Reader, options
 }
 
 func (s *SessionStore) addV3SessionWorksetEvents(reader pebble.Reader, options V3SessionWorksetOptions, session SessionSnapshot, projection V3SessionProjection, result *V3SessionWorksetResult) error {
-	totalEvents := int(projection.LastEventSeq)
-	limit, capped := v3WorksetResourceLimit(options.History.Mode, options.History.MaxEventsPerSession, totalEvents)
-	if limit == 0 && totalEvents > 0 {
+	if projection.LastEventSeq == 0 {
+		return nil
+	}
+	limit := options.History.MaxEventsPerSession
+	if limit <= 0 && options.History.Mode == V3SessionWorksetHistoryModeFull {
+		limit = int(projection.LastEventSeq)
+	}
+	if limit <= 0 {
 		return s.handleV3WorksetResourceOmission(options, session.ID, "events", V3SessionWorksetOmissionRequiresManifest, fmt.Sprintf("%s:events:1", session.ID), nil, result)
 	}
-	events := []V3SessionEvent{}
-	if limit > 0 {
-		loaded, err := listV3SessionEventsFromReader(reader, session.ID, 0, limit)
-		if err != nil {
-			return err
-		}
-		events = loaded
+	events, capped, err := listV3SessionWorksetEventsFromReader(reader, session.ID, 0, limit)
+	if err != nil {
+		return err
 	}
-	if capped || len(events) < totalEvents {
+	if capped {
 		if err := s.handleV3WorksetResourceOmission(options, session.ID, "events", V3SessionWorksetOmissionRequiresManifest, v3WorksetEventsNextCursor(session.ID, events), &events, result); err != nil {
 			return err
 		}
@@ -380,6 +381,42 @@ func (s *SessionStore) addV3SessionWorksetEvents(reader pebble.Reader, options V
 	}
 	result.EventsBySession[session.ID] = events
 	return nil
+}
+
+func listV3SessionWorksetEventsFromReader(reader pebble.Reader, sessionID string, afterSeq uint64, limit int) ([]V3SessionEvent, bool, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, false, errors.New("session id is required")
+	}
+	if limit <= 0 {
+		return []V3SessionEvent{}, false, nil
+	}
+	out := make([]V3SessionEvent, 0, limit)
+	capped := false
+	prefix := V3SessionEventPrefix(sessionID)
+	err := scanRangeFromReader(reader, scanRangeOptions{Prefix: prefix, StartKey: KeyV3SessionEvent(sessionID, afterSeq+1), Limit: int(^uint(0) >> 1)}, func(_ string, value []byte) (bool, error) {
+		var event V3SessionEvent
+		if err := json.Unmarshal(value, &event); err != nil {
+			return false, err
+		}
+		if event.Seq <= afterSeq || v3SessionWorksetEventOmitted(event) {
+			return true, nil
+		}
+		if len(out) >= limit {
+			capped = true
+			return false, nil
+		}
+		out = append(out, event)
+		return true, nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return out, capped, nil
+}
+
+func v3SessionWorksetEventOmitted(event V3SessionEvent) bool {
+	return strings.HasPrefix(strings.TrimSpace(event.EventType), "session.diagnostic")
 }
 
 func (s *SessionStore) addV3SessionWorksetRunIntents(reader pebble.Reader, options V3SessionWorksetOptions, session SessionSnapshot, projection V3SessionProjection, result *V3SessionWorksetResult) error {

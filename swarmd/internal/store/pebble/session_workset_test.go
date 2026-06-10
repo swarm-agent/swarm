@@ -1,6 +1,9 @@
 package pebblestore
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestBuildV3SessionWorksetPaginatesRecentSessions(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
@@ -133,6 +136,32 @@ func TestBuildV3SessionWorksetPerSessionOmittedHistory(t *testing.T) {
 	}
 }
 
+func TestBuildV3SessionWorksetOmitsDiagnosticEvents(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3WorksetSessionForTest(t, sessions, "session-diagnostics", "/workspace/diagnostics", 1000)
+	appendV3WorksetDiagnosticForTest(t, sessions, "session-diagnostics", "session.diagnostic.store.result", 2000)
+	appendV3WorksetDiagnosticForTest(t, sessions, "session-diagnostics", "session.diagnostic.provider.response", 3000)
+	appendV3WorksetMessageForTest(t, sessions, "session-diagnostics", "visible", 4000)
+
+	workset, err := sessions.BuildV3SessionWorkset(V3SessionWorksetOptions{
+		AccountScopeID: "account-1",
+		SessionIDs:     []string{"session-diagnostics"},
+		History:        V3SessionWorksetHistoryOptions{Mode: V3SessionWorksetHistoryModeFull, ManifestPolicy: V3SessionWorksetManifestPolicyManifest},
+	})
+	if err != nil {
+		t.Fatalf("build diagnostic-filtered workset: %v", err)
+	}
+	for _, event := range workset.EventsBySession["session-diagnostics"] {
+		if v3SessionWorksetEventOmitted(event) {
+			t.Fatalf("diagnostic event leaked into workset: %+v", event)
+		}
+	}
+	if len(workset.EventsBySession["session-diagnostics"]) != 2 {
+		t.Fatalf("events = %+v, want create + message events only", workset.EventsBySession["session-diagnostics"])
+	}
+}
+
 func createV3WorksetSessionForTest(t *testing.T, sessions *SessionStore, sessionID, workspacePath string, updatedAt int64) {
 	t.Helper()
 	_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
@@ -173,5 +202,29 @@ func appendV3WorksetMessageForTest(t *testing.T, sessions *SessionStore, session
 	})
 	if err != nil {
 		t.Fatalf("append workset message %s: %v", sessionID, err)
+	}
+}
+func appendV3WorksetDiagnosticForTest(t *testing.T, sessions *SessionStore, sessionID, eventType string, now int64) {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"diagnostic": "large payload should not be sent to desktop workset",
+		"value":      string(make([]byte, 1024)),
+	})
+	if err != nil {
+		t.Fatalf("marshal diagnostic payload: %v", err)
+	}
+	_, err = sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:      sessionID,
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		IdempotencyKey: "diagnostic-" + sessionID + eventType,
+		PayloadHash:    "hash-diagnostic-" + sessionID + eventType,
+		Kind:           V3SessionMutationRecordDiagnostic,
+		EventType:      eventType,
+		EventPayload:   payload,
+		NowUnixMs:      now,
+	})
+	if err != nil {
+		t.Fatalf("append diagnostic event %s: %v", sessionID, err)
 	}
 }
