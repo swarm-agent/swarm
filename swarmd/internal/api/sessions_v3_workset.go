@@ -17,7 +17,8 @@ type sessionsV3WorksetRequest struct {
 }
 
 type sessionsV3WorksetWorkspace struct {
-	WorkspacePath string `json:"workspace_path,omitempty"`
+	WorkspacePath  string   `json:"workspace_path,omitempty"`
+	WorkspacePaths []string `json:"workspace_paths,omitempty"`
 }
 
 type sessionsV3WorksetRecent struct {
@@ -31,6 +32,7 @@ type sessionsV3WorksetHistory struct {
 	MaxMessagesPerSession int    `json:"max_messages_per_session,omitempty"`
 	MaxEventsPerSession   int    `json:"max_events_per_session,omitempty"`
 	ManifestPolicy        string `json:"manifest_policy,omitempty"`
+	IncludeEvents         bool   `json:"include_events,omitempty"`
 }
 
 func (s *Server) handleSessionsV3Workset(w http.ResponseWriter, r *http.Request) {
@@ -56,6 +58,7 @@ func (s *Server) handleSessionsV3Workset(w http.ResponseWriter, r *http.Request)
 		AccountScopeID:        principal.AccountScopeID,
 		SessionIDs:            req.SessionIDs,
 		WorkspacePath:         req.Workspace.WorkspacePath,
+		WorkspacePaths:        req.Workspace.WorkspacePaths,
 		RecentLimit:           req.Recent.Limit,
 		RecentBeforeUpdatedAt: req.Recent.BeforeUpdatedAt,
 		RecentBeforeSessionID: strings.TrimSpace(req.Recent.BeforeSessionID),
@@ -64,6 +67,7 @@ func (s *Server) handleSessionsV3Workset(w http.ResponseWriter, r *http.Request)
 			MaxMessagesPerSession: req.History.MaxMessagesPerSession,
 			MaxEventsPerSession:   req.History.MaxEventsPerSession,
 			ManifestPolicy:        req.History.ManifestPolicy,
+			IncludeEvents:         req.History.IncludeEvents,
 		},
 	}
 	workset, err := s.sessions.BuildSessionWorkset(options)

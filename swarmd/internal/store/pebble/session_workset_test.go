@@ -102,8 +102,11 @@ func TestBuildV3SessionWorksetCappedHistoryWithManifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build capped manifest workset: %v", err)
 	}
-	if len(workset.MessagesBySession["session-budget-manifest"]) != 0 {
-		t.Fatalf("messages should be omitted when manifest is required: %+v", workset.MessagesBySession["session-budget-manifest"])
+	if len(workset.MessagesBySession["session-budget-manifest"]) != 1 {
+		t.Fatalf("messages should remain inline for local switching: %+v", workset.MessagesBySession["session-budget-manifest"])
+	}
+	if len(workset.HistoryChunksByID) != 0 {
+		t.Fatalf("manifest should not inline history chunk bodies: %+v", workset.HistoryChunksByID)
 	}
 	if len(workset.HistoryManifestsBySession["session-budget-manifest"]) == 0 || len(workset.Omissions) == 0 {
 		t.Fatalf("manifest/omissions missing: manifests=%+v omissions=%+v", workset.HistoryManifestsBySession, workset.Omissions)
@@ -136,7 +139,7 @@ func TestBuildV3SessionWorksetPerSessionOmittedHistory(t *testing.T) {
 	}
 }
 
-func TestBuildV3SessionWorksetOmitsDiagnosticEvents(t *testing.T) {
+func TestBuildV3SessionWorksetOmitsEventsByDefault(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
 	createV3WorksetSessionForTest(t, sessions, "session-diagnostics", "/workspace/diagnostics", 1000)
@@ -150,15 +153,35 @@ func TestBuildV3SessionWorksetOmitsDiagnosticEvents(t *testing.T) {
 		History:        V3SessionWorksetHistoryOptions{Mode: V3SessionWorksetHistoryModeFull, ManifestPolicy: V3SessionWorksetManifestPolicyManifest},
 	})
 	if err != nil {
-		t.Fatalf("build diagnostic-filtered workset: %v", err)
+		t.Fatalf("build event-omitted workset: %v", err)
 	}
-	for _, event := range workset.EventsBySession["session-diagnostics"] {
+	if len(workset.EventsBySession["session-diagnostics"]) != 0 {
+		t.Fatalf("events should be omitted by default: %+v", workset.EventsBySession["session-diagnostics"])
+	}
+}
+
+func TestBuildV3SessionWorksetIncludesNonDiagnosticEventsWhenRequested(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3WorksetSessionForTest(t, sessions, "session-events", "/workspace/events", 1000)
+	appendV3WorksetDiagnosticForTest(t, sessions, "session-events", "session.diagnostic.store.result", 2000)
+	appendV3WorksetMessageForTest(t, sessions, "session-events", "visible", 4000)
+
+	workset, err := sessions.BuildV3SessionWorkset(V3SessionWorksetOptions{
+		AccountScopeID: "account-1",
+		SessionIDs:     []string{"session-events"},
+		History:        V3SessionWorksetHistoryOptions{Mode: V3SessionWorksetHistoryModeFull, ManifestPolicy: V3SessionWorksetManifestPolicyManifest, IncludeEvents: true},
+	})
+	if err != nil {
+		t.Fatalf("build event-included workset: %v", err)
+	}
+	for _, event := range workset.EventsBySession["session-events"] {
 		if v3SessionWorksetEventOmitted(event) {
 			t.Fatalf("diagnostic event leaked into workset: %+v", event)
 		}
 	}
-	if len(workset.EventsBySession["session-diagnostics"]) != 2 {
-		t.Fatalf("events = %+v, want create + message events only", workset.EventsBySession["session-diagnostics"])
+	if len(workset.EventsBySession["session-events"]) != 2 {
+		t.Fatalf("events = %+v, want create + message events only", workset.EventsBySession["session-events"])
 	}
 }
 

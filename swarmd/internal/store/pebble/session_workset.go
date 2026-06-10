@@ -28,6 +28,7 @@ type V3SessionWorksetOptions struct {
 	AccountScopeID        string
 	SessionIDs            []string
 	WorkspacePath         string
+	WorkspacePaths        []string
 	RecentLimit           int
 	RecentBeforeUpdatedAt *int64
 	RecentBeforeSessionID string
@@ -39,6 +40,7 @@ type V3SessionWorksetHistoryOptions struct {
 	MaxMessagesPerSession int
 	MaxEventsPerSession   int
 	ManifestPolicy        string
+	IncludeEvents         bool
 }
 
 type V3SessionWorksetResult struct {
@@ -96,7 +98,7 @@ func (s *SessionStore) BuildV3SessionWorkset(options V3SessionWorksetOptions) (r
 		return V3SessionWorksetResult{}, errors.New("session store is not configured")
 	}
 	options = normalizeV3SessionWorksetOptions(options)
-	if len(options.SessionIDs) == 0 && options.RecentLimit <= 0 && strings.TrimSpace(options.WorkspacePath) == "" {
+	if len(options.SessionIDs) == 0 && options.RecentLimit <= 0 && strings.TrimSpace(options.WorkspacePath) == "" && len(options.WorkspacePaths) == 0 {
 		return V3SessionWorksetResult{}, errors.New("at least one workset selector is required")
 	}
 	snapshot := s.store.db.NewSnapshot()
@@ -111,6 +113,7 @@ func (s *SessionStore) BuildV3SessionWorkset(options V3SessionWorksetOptions) (r
 func normalizeV3SessionWorksetOptions(options V3SessionWorksetOptions) V3SessionWorksetOptions {
 	options.AccountScopeID = strings.TrimSpace(options.AccountScopeID)
 	options.WorkspacePath = strings.TrimSpace(options.WorkspacePath)
+	options.WorkspacePaths = normalizeV3SessionWorksetWorkspacePaths(options.WorkspacePath, options.WorkspacePaths)
 	options.RecentBeforeSessionID = strings.TrimSpace(options.RecentBeforeSessionID)
 	seen := map[string]struct{}{}
 	ids := make([]string, 0, len(options.SessionIDs))
@@ -237,7 +240,7 @@ func (s *SessionStore) selectV3RecentWorksetSessions(reader pebble.Reader, optio
 			return false, err
 		}
 		session = normalizeSessionOwnership(session)
-		if strings.TrimSpace(session.ID) == "" || !v3SessionWorksetSessionVisible(session, options.AccountScopeID, options.WorkspacePath) {
+		if strings.TrimSpace(session.ID) == "" || !v3SessionWorksetSessionVisibleForWorkspaces(session, options.AccountScopeID, options.WorkspacePath, options.WorkspacePaths) {
 			return true, nil
 		}
 		if !v3SessionWorksetBeforeCursor(session, options.RecentBeforeUpdatedAt, options.RecentBeforeSessionID) {
@@ -267,6 +270,54 @@ func (s *SessionStore) selectV3RecentWorksetSessions(reader pebble.Reader, optio
 		candidates = candidates[:limit]
 	}
 	return candidates, pagination, nil
+}
+
+func normalizeV3SessionWorksetWorkspacePaths(workspacePath string, workspacePaths []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(workspacePaths)+1)
+	appendPath := func(path string) {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			return
+		}
+		normalized, err := normalizeSessionPath(path)
+		if err != nil {
+			return
+		}
+		if _, ok := seen[normalized]; ok {
+			return
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	appendPath(workspacePath)
+	for _, path := range workspacePaths {
+		appendPath(path)
+	}
+	return out
+}
+
+func v3SessionWorksetSessionVisibleForWorkspaces(session SessionSnapshot, accountScopeID, workspacePath string, workspacePaths []string) bool {
+	if !v3SessionWorksetSessionVisible(session, accountScopeID, "") {
+		return false
+	}
+	paths := workspacePaths
+	if len(paths) == 0 {
+		paths = normalizeV3SessionWorksetWorkspacePaths(workspacePath, nil)
+	}
+	if len(paths) == 0 {
+		return true
+	}
+	normalizedSessionPath, err := normalizeSessionPath(session.WorkspacePath)
+	if err != nil {
+		return false
+	}
+	for _, path := range paths {
+		if normalizedSessionPath == path {
+			return true
+		}
+	}
+	return false
 }
 
 func v3SessionWorksetSessionVisible(session SessionSnapshot, accountScopeID, workspacePath string) bool {
@@ -325,8 +376,10 @@ func (s *SessionStore) addV3SessionWorksetHistory(reader pebble.Reader, options 
 	if err := s.addV3SessionWorksetMessages(reader, options, session, result); err != nil {
 		return err
 	}
-	if err := s.addV3SessionWorksetEvents(reader, options, session, projection, result); err != nil {
-		return err
+	if options.History.IncludeEvents {
+		if err := s.addV3SessionWorksetEvents(reader, options, session, projection, result); err != nil {
+			return err
+		}
 	}
 	return s.addV3SessionWorksetRunIntents(reader, options, session, projection, result)
 }
@@ -349,6 +402,7 @@ func (s *SessionStore) addV3SessionWorksetMessages(reader pebble.Reader, options
 		}
 	}
 	if capped || len(messages) < session.MessageCount {
+		result.MessagesBySession[session.ID] = messages
 		if err := s.handleV3WorksetResourceOmission(options, session.ID, "messages", V3SessionWorksetOmissionRequiresManifest, v3WorksetMessagesNextCursor(session.ID, messages), &messages, result); err != nil {
 			return err
 		}
@@ -455,14 +509,11 @@ func (s *SessionStore) handleV3WorksetResourceOmission(options V3SessionWorksetO
 		result.Omissions = append(result.Omissions, omission)
 		return nil
 	case V3SessionWorksetManifestPolicyManifest:
-		descriptor, chunk := v3WorksetHistoryDescriptor(sessionID, resource, inline)
+		descriptor, _ := v3WorksetHistoryDescriptor(sessionID, resource, inline)
 		result.HistoryManifestsBySession[sessionID] = append(result.HistoryManifestsBySession[sessionID], descriptor)
 		manifestRef := fmt.Sprintf("%s:%s", sessionID, resource)
 		omission := V3SessionWorksetOmission{SessionID: sessionID, Resource: resource, Reason: reason, NextCursor: nextCursor, ManifestRef: manifestRef}
 		result.Omissions = append(result.Omissions, omission)
-		if inline != nil {
-			result.HistoryChunksByID[chunk.ChunkID] = chunk
-		}
 		return nil
 	case V3SessionWorksetManifestPolicyError:
 		fallthrough

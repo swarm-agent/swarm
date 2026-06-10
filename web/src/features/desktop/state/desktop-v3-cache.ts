@@ -103,6 +103,7 @@ interface V3HydratedSessionResponseWire {
 export interface DesktopV3WorksetRequest {
   sessionIds?: string[]
   workspacePath?: string
+  workspacePaths?: string[]
   recent?: {
     limit?: number
     beforeUpdatedAt?: number | null
@@ -113,14 +114,15 @@ export interface DesktopV3WorksetRequest {
     maxMessagesPerSession?: number
     maxEventsPerSession?: number
     manifestPolicy?: 'error' | 'omit' | 'manifest'
+    includeEvents?: boolean
   }
 }
 
 interface V3WorksetRequestWire {
   session_ids?: string[]
-  workspace?: { workspace_path?: string }
+  workspace?: { workspace_path?: string; workspace_paths?: string[] }
   recent?: { limit?: number; before_updated_at?: number | null; before_session_id?: string }
-  history?: { mode?: string; max_messages_per_session?: number; max_events_per_session?: number; manifest_policy?: string }
+  history?: { mode?: string; max_messages_per_session?: number; max_events_per_session?: number; manifest_policy?: string; include_events?: boolean }
 }
 
 export interface DesktopV3HistoryChunkDescriptor {
@@ -204,8 +206,9 @@ export interface DesktopV3Workset {
 const DEFAULT_WORKSET_HISTORY = {
   mode: 'full' as const,
   maxMessagesPerSession: 200,
-  maxEventsPerSession: 500,
+  maxEventsPerSession: 0,
   manifestPolicy: 'manifest' as const,
+  includeEvents: false,
 }
 
 export function desktopV3WorksetCacheQueryKey() {
@@ -689,11 +692,15 @@ export function desktopV3WorksetHasOmission(queryClient: QueryClient, sessionId:
 function toWorksetRequestWire(input: DesktopV3WorksetRequest): V3WorksetRequestWire {
   const sessionIds = (input.sessionIds ?? []).map((sessionId) => sessionId.trim()).filter(Boolean)
   const workspacePath = input.workspacePath?.trim() ?? ''
+  const workspacePaths = (input.workspacePaths ?? []).map((path) => path.trim()).filter(Boolean)
   const recent = input.recent
   const history = { ...DEFAULT_WORKSET_HISTORY, ...(input.history ?? {}) }
   return {
     session_ids: sessionIds.length > 0 ? sessionIds : undefined,
-    workspace: workspacePath ? { workspace_path: workspacePath } : undefined,
+    workspace: workspacePath || workspacePaths.length > 0 ? {
+      workspace_path: workspacePath || undefined,
+      workspace_paths: workspacePaths.length > 0 ? workspacePaths : undefined,
+    } : undefined,
     recent: recent
       ? {
           limit: recent.limit,
@@ -706,13 +713,14 @@ function toWorksetRequestWire(input: DesktopV3WorksetRequest): V3WorksetRequestW
       max_messages_per_session: history.maxMessagesPerSession,
       max_events_per_session: history.maxEventsPerSession,
       manifest_policy: history.manifestPolicy,
+      include_events: history.includeEvents,
     },
   }
 }
 
 function assertWorksetSelector(input: DesktopV3WorksetRequest): void {
   const hasSessionIds = (input.sessionIds ?? []).some((sessionId) => sessionId.trim() !== '')
-  const hasWorkspace = Boolean(input.workspacePath?.trim())
+  const hasWorkspace = Boolean(input.workspacePath?.trim()) || Boolean(input.workspacePaths?.some((path) => path.trim() !== ''))
   const hasRecent = typeof input.recent?.limit === 'number' && input.recent.limit > 0
   if (!hasSessionIds && !hasWorkspace && !hasRecent) {
     throw new Error('Desktop V3 workset request requires session ids, workspace path, or recent limit.')

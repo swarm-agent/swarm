@@ -28,7 +28,10 @@ func TestSessionsV3WorksetEndpointSupportsPaginationAndManifests(t *testing.T) {
 	var payload struct {
 		OK                        bool                                                     `json:"ok"`
 		SessionsByID              map[string]pebblestore.SessionSnapshot                   `json:"sessions_by_id"`
+		MessagesBySession         map[string][]pebblestore.MessageSnapshot                 `json:"messages_by_session"`
+		EventsBySession           map[string][]pebblestore.V3SessionEvent                  `json:"events_by_session"`
 		HistoryManifestsBySession map[string][]pebblestore.V3SessionHistoryChunkDescriptor `json:"history_manifests_by_session"`
+		HistoryChunksByID         map[string]pebblestore.V3SessionHistoryChunk             `json:"history_chunks_by_id"`
 		Omissions                 []pebblestore.V3SessionWorksetOmission                   `json:"omissions"`
 		Pagination                pebblestore.V3SessionWorksetPagination                   `json:"pagination"`
 		SessionOrder              []string                                                 `json:"session_order"`
@@ -39,6 +42,15 @@ func TestSessionsV3WorksetEndpointSupportsPaginationAndManifests(t *testing.T) {
 	_ = createdA
 	if !payload.OK || payload.SessionsByID[createdB.ID].ID != createdB.ID {
 		t.Fatalf("sessions_by_id = %+v", payload.SessionsByID)
+	}
+	if len(payload.MessagesBySession[createdB.ID]) != 1 {
+		t.Fatalf("messages_by_session = %+v", payload.MessagesBySession)
+	}
+	if len(payload.EventsBySession[createdB.ID]) != 0 {
+		t.Fatalf("events should be omitted by default: %+v", payload.EventsBySession)
+	}
+	if len(payload.HistoryChunksByID) != 0 {
+		t.Fatalf("history_chunks_by_id should be metadata-only for manifests: %+v", payload.HistoryChunksByID)
 	}
 	if len(payload.HistoryManifestsBySession[createdB.ID]) == 0 || len(payload.Omissions) == 0 {
 		t.Fatalf("manifest/omissions missing: %+v %+v", payload.HistoryManifestsBySession, payload.Omissions)
