@@ -2972,16 +2972,34 @@ func (c *API) CreateSessionV3WithOptions(ctx context.Context, options SessionCre
 	if workspacePath == "" {
 		return SessionV3Hydrated{}, errors.New("workspace path is required")
 	}
+	swarmID := strings.TrimSpace(options.SwarmID)
+	if swarmID == "" {
+		return SessionV3Hydrated{}, errors.New("v3 primary create requires swarm_id")
+	}
+	workspaceBindingID := strings.TrimSpace(options.WorkspaceBindingID)
+	if workspaceBindingID == "" {
+		return SessionV3Hydrated{}, errors.New("v3 primary create requires workspace_binding_id")
+	}
+	if targetKind := strings.ToLower(strings.TrimSpace(options.TargetKind)); targetKind != "" && targetKind != "host" && targetKind != "self" {
+		return SessionV3Hydrated{}, fmt.Errorf("v3 primary create does not support target kind %q", strings.TrimSpace(options.TargetKind))
+	}
+	if targetRelationship := strings.ToLower(strings.TrimSpace(options.TargetRelationship)); targetRelationship != "" && targetRelationship != "self" {
+		return SessionV3Hydrated{}, fmt.Errorf("v3 primary create does not support target relationship %q", strings.TrimSpace(options.TargetRelationship))
+	}
 	mode := strings.ToLower(strings.TrimSpace(options.Mode))
 	if mode != "auto" {
 		mode = "plan"
 	}
 	req := map[string]any{
-		"client_request_id": newSessionV3ClientRequestID("create"),
-		"title":             strings.TrimSpace(options.Title),
-		"workspace_path":    workspacePath,
-		"workspace_name":    strings.TrimSpace(options.WorkspaceName),
-		"mode":              mode,
+		"client_request_id":    newSessionV3ClientRequestID("create"),
+		"title":                strings.TrimSpace(options.Title),
+		"workspace_path":       workspacePath,
+		"workspace_name":       strings.TrimSpace(options.WorkspaceName),
+		"workspace_binding_id": workspaceBindingID,
+		"swarm_id":             swarmID,
+		"target_kind":          "host",
+		"target_relationship":  "self",
+		"mode":                 mode,
 		"preference": map[string]string{
 			"provider":     strings.TrimSpace(options.Preference.Provider),
 			"model":        strings.TrimSpace(options.Preference.Model),
@@ -2989,6 +3007,12 @@ func (c *API) CreateSessionV3WithOptions(ctx context.Context, options SessionCre
 			"service_tier": strings.TrimSpace(options.Preference.ServiceTier),
 			"context_mode": strings.TrimSpace(options.Preference.ContextMode),
 		},
+	}
+	if hostWorkspacePath := strings.TrimSpace(options.HostWorkspacePath); hostWorkspacePath != "" {
+		req["host_workspace_path"] = hostWorkspacePath
+	}
+	if runtimeWorkspacePath := strings.TrimSpace(options.RuntimeWorkspacePath); runtimeWorkspacePath != "" {
+		req["runtime_workspace_path"] = runtimeWorkspacePath
 	}
 	if len(options.Metadata) > 0 {
 		req["metadata"] = options.Metadata

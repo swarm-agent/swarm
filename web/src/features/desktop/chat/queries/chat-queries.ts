@@ -1834,6 +1834,7 @@ function sessionCreateV2RequestBody(input: {
 }
 
 function sessionCreateV3RequestBody(input: {
+  target: { swarmId: string; workspaceBindingId: string };
   title?: string;
   workspacePath: string;
   workspaceName: string;
@@ -1846,6 +1847,8 @@ function sessionCreateV3RequestBody(input: {
   const title = optionalString(input.title)
   return stripUndefinedFields({
     client_request_id: `desktop-v3-create:${crypto.randomUUID()}`,
+    swarm_id: input.target.swarmId,
+    workspace_binding_id: input.target.workspaceBindingId,
     title: title || undefined,
     workspace_path: input.workspacePath,
     workspace_name: input.workspaceName,
@@ -1876,6 +1879,7 @@ export async function createSession(input: {
   }
   const body = target.sessionApi === "v3"
     ? sessionCreateV3RequestBody({
+      target: { swarmId: target.swarmId, workspaceBindingId: target.workspaceBindingId },
       title: input.title,
       workspacePath: input.workspacePath,
       workspaceName: input.workspaceName,

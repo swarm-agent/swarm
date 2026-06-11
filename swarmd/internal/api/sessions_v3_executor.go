@@ -26,7 +26,6 @@ import (
 )
 
 const (
-	sessionV3ExecutorQueueSize                = 128
 	sessionV3ExecutorDefaultStartDelay        = 10 * time.Millisecond
 	sessionV3ExecutorRecoveryLimit            = 500
 	sessionV3ExecutorDefaultRunningStaleAfter = 5 * time.Minute
@@ -60,7 +59,7 @@ type sessionV3ExecutorRunState struct {
 
 type sessionV3Executor struct {
 	server *Server
-	queue  chan sessionV3ExecutorJob
+	ctx    context.Context
 
 	startDelay         time.Duration
 	modelDelay         time.Duration
@@ -75,9 +74,13 @@ type sessionV3Executor struct {
 }
 
 func newSessionV3Executor(server *Server) *sessionV3Executor {
+	ctx := context.Background()
+	if server != nil && server.runCtx != nil {
+		ctx = server.runCtx
+	}
 	exec := &sessionV3Executor{
 		server:             server,
-		queue:              make(chan sessionV3ExecutorJob, sessionV3ExecutorQueueSize),
+		ctx:                ctx,
 		startDelay:         sessionV3ExecutorDefaultStartDelay,
 		runningStaleAfter:  sessionV3ExecutorDefaultRunningStaleAfter,
 		deltaFlushMaxBytes: sessionV3AssistantDeltaFlushMaxBytes,
@@ -86,11 +89,6 @@ func newSessionV3Executor(server *Server) *sessionV3Executor {
 		activeBySession:    make(map[string]string),
 		runStates:          make(map[string]*sessionV3ExecutorRunState),
 	}
-	ctx := context.Background()
-	if server != nil && server.runCtx != nil {
-		ctx = server.runCtx
-	}
-	go exec.loop(ctx)
 	exec.recoverDurableRuns(ctx)
 	return exec
 }
@@ -102,6 +100,13 @@ func (e *sessionV3Executor) EnqueueRun(job sessionV3ExecutorJob) bool {
 	job.SessionID = strings.TrimSpace(job.SessionID)
 	job.RunID = strings.TrimSpace(job.RunID)
 	if job.SessionID == "" || job.RunID == "" {
+		return false
+	}
+	ctx := e.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
 		return false
 	}
 	runKey := sessionV3ExecutorRunKey(job.SessionID, job.RunID)
@@ -124,28 +129,8 @@ func (e *sessionV3Executor) EnqueueRun(job sessionV3ExecutorJob) bool {
 	}
 	e.mu.Unlock()
 
-	select {
-	case e.queue <- job:
-		return true
-	default:
-		e.finish(job)
-		return false
-	}
-}
-
-func (e *sessionV3Executor) loop(ctx context.Context) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case job := <-e.queue:
-			if ctx.Err() != nil {
-				e.finish(job)
-				continue
-			}
-			e.run(ctx, job)
-		}
-	}
+	go e.run(ctx, job)
+	return true
 }
 
 func (e *sessionV3Executor) finish(job sessionV3ExecutorJob) {

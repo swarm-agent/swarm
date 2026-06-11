@@ -12,50 +12,40 @@ import (
 	"swarm-refactor/swarmtui/internal/ui"
 )
 
-func TestOpenChatSessionCreatePayloadUsesHostRouteAuthority(t *testing.T) {
+func TestOpenChatSessionCreatePayloadUsesV3PrimaryHostRouteAuthority(t *testing.T) {
 	got := captureOpenChatSessionCreateRequest(t, model.ChatRoute{ID: "host", SwarmID: "host-swarm", WorkspaceBindingID: "local-binding", TargetKind: "host", TargetRelationship: "self"}, "host-swarm", "local-binding", testWorkspacePath, "plan")
 
+	if got.path != "/v3/sessions" {
+		t.Fatalf("create path = %q, want /v3/sessions", got.path)
+	}
 	if got.bodyString("swarm_id") != "host-swarm" {
 		t.Fatalf("swarm_id = %q, want host-swarm", got.bodyString("swarm_id"))
 	}
 	if got.bodyString("workspace_binding_id") != "local-binding" {
 		t.Fatalf("workspace_binding_id = %q, want local-binding", got.bodyString("workspace_binding_id"))
 	}
-	if got.sessionExecution == nil || got.sessionExecution.RuntimeSwarmID != "host-swarm" || got.sessionExecution.WorkspaceBindingID != "local-binding" {
-		t.Fatalf("session execution = %#v, want host-swarm/local-binding", got.sessionExecution)
-	}
-	assertV2PrimaryCreatePayload(t, got.body, "local-binding", "plan")
-	assertCreateMetadataStrictV2Safe(t, got.metadata)
-}
-
-func TestOpenChatSessionCreatePayloadUsesV3PrimaryForTUICWDHostRoute(t *testing.T) {
-	got := captureOpenChatSessionCreateRequestWithWorktreeSettings(t, model.ChatRoute{ID: "host", TUIPrimaryCWD: true}, "host-swarm", "", testWorkspacePath, "plan", client.WorktreeSettings{
-		WorkspacePath:    testWorkspacePath,
-		Enabled:          true,
-		UseCurrentBranch: false,
-		BaseBranch:       "main",
-		BranchName:       "feature/<id>",
-	})
-
-	if got.path != "/v3/sessions" {
-		t.Fatalf("create path = %q, want /v3/sessions", got.path)
-	}
-	if _, ok := got.body["swarm_id"]; ok {
-		t.Fatalf("swarm_id present in v3 primary create: %#v", got.body["swarm_id"])
-	}
-	if _, ok := got.body["workspace_binding_id"]; ok {
-		t.Fatalf("workspace_binding_id present in v3 primary create: %#v", got.body["workspace_binding_id"])
+	if got.bodyString("target_kind") != "host" || got.bodyString("target_relationship") != "self" {
+		t.Fatalf("target = %q/%q, want host/self", got.bodyString("target_kind"), got.bodyString("target_relationship"))
 	}
 	if got.bodyString("workspace_path") != testWorkspacePath {
 		t.Fatalf("workspace_path = %q, want %q", got.bodyString("workspace_path"), testWorkspacePath)
 	}
-	if got.bodyString("workspace_name") == "" {
-		t.Fatalf("workspace_name missing in v3 primary create: %#v", got.body)
+}
+
+func TestOpenChatSessionCreateRejectsUnboundHostRoute(t *testing.T) {
+	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
+	t.Setenv("DATA_DIR", "")
+	homeModel := model.HomeModel{
+		ModelProvider:      "anthropic",
+		ModelName:          "claude",
+		ThinkingLevel:      "auto",
+		CurrentSwarmTarget: &model.SwarmTarget{SwarmID: "host-swarm"},
+		ChatRoutes:         []model.ChatRoute{{ID: "host", SwarmID: "host-swarm", TargetKind: "host", TargetRelationship: "self", TUIPrimaryCWD: true}},
 	}
-	for _, key := range []string{"worktree_mode", "worktree_use_current_branch", "worktree_base_branch", "worktree_branch_name"} {
-		if _, ok := got.body[key]; ok {
-			t.Fatalf("%s present in v3 primary create: %#v", key, got.body[key])
-		}
+	homePage := ui.NewHomePage(homeModel)
+	app := &App{api: testAPIWithToken("http://127.0.0.1"), startupCWD: testWorkspacePath, workspacePath: testWorkspacePath, selectedChatRouteID: "host", home: homePage, homeModel: homeModel, streamEvents: make(chan client.StreamEventEnvelope, 1)}
+	if err := app.openChatSession("New Session", ""); err == nil || !strings.Contains(err.Error(), "workspace binding id is required") {
+		t.Fatalf("openChatSession() error = %v, want workspace binding requirement", err)
 	}
 }
 

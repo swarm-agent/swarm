@@ -5,12 +5,14 @@ usage() {
   cat >&2 <<'USAGE'
 Usage: scripts/local-session-db-inspect.sh [options]
 
-Reusable local Swarm session DB inspector. It searches or dumps sessions directly
-from the local Pebble DB. It does not call the Swarm API.
+Reusable local Swarm session DB inspector. It searches or dumps sessions from
+the local Pebble DB. It does not call the Swarm API. Use --copy-db to inspect
+a temporary DB copy without stopping a running local Swarm service.
 
 Examples:
   scripts/local-session-db-inspect.sh --latest 5
   scripts/local-session-db-inspect.sh --session <session-id> --dump
+  scripts/local-session-db-inspect.sh --session <session-id> --copy-db --dump
   scripts/local-session-db-inspect.sh --query "session.diagnostic.provider" --events 40
   scripts/local-session-db-inspect.sh --session <session-id> --dump --json --out tmp/session-dump.json
 
@@ -18,6 +20,9 @@ Options:
   --db-path <path>      Pebble DB path. Default: /var/lib/swarmd/swarmd.pebble
   --service <unit>      Service unit for --stop-service. Default: swarm.service
   --stop-service        Stop active local service before opening DB, then restore it.
+  --copy-db             Copy DB to a temporary directory first, then inspect copy.
+  --copy-attempts <n>   Attempts for --copy-db if active DB copy is inconsistent. Default: 3
+  --keep-copy           Keep the temporary copied DB and print its path.
 
 Selection/search:
   --latest <n>          Inspect latest n sessions. Default: 5
@@ -54,6 +59,9 @@ ROOT_MODULE="$(awk '$1 == "module" { print $2; exit }' "${ROOT_DIR}/go.mod")"
 DB_PATH="/var/lib/swarmd/swarmd.pebble"
 SERVICE_UNIT="swarm.service"
 STOP_SERVICE="false"
+COPY_DB="false"
+COPY_ATTEMPTS="3"
+KEEP_COPY="false"
 LATEST="5"
 SESSION_ID=""
 QUERY=""
@@ -79,6 +87,19 @@ while [[ $# -gt 0 ]]; do
       ;;
     --stop-service)
       STOP_SERVICE="true"
+      shift
+      ;;
+    --copy-db)
+      COPY_DB="true"
+      shift
+      ;;
+    --copy-attempts)
+      [[ $# -ge 2 ]] || fail "--copy-attempts requires a value"
+      COPY_ATTEMPTS="$2"
+      shift 2
+      ;;
+    --keep-copy)
+      KEEP_COPY="true"
       shift
       ;;
     --latest)
@@ -138,7 +159,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-for pair in "latest:${LATEST}" "scan-limit:${SCAN_LIMIT}" "messages:${MESSAGE_LIMIT}" "events:${EVENT_LIMIT}"; do
+for pair in "latest:${LATEST}" "scan-limit:${SCAN_LIMIT}" "messages:${MESSAGE_LIMIT}" "events:${EVENT_LIMIT}" "copy-attempts:${COPY_ATTEMPTS}"; do
   name="${pair%%:*}"
   value="${pair#*:}"
   [[ "${value}" =~ ^[0-9]+$ ]] || fail "--${name} must be an integer"
@@ -147,7 +168,10 @@ done
 [[ -d "${SWARMD_DIR}" ]] || fail "missing swarmd directory at ${SWARMD_DIR}"
 [[ -f "${GO_LIB}" ]] || fail "missing go resolver script at ${GO_LIB}"
 [[ -n "${ROOT_MODULE}" ]] || fail "could not resolve root Go module path"
-[[ -e "${DB_PATH}" ]] || fail "db path does not exist: ${DB_PATH}"
+[[ -d "${DB_PATH}" ]] || fail "db path does not exist or is not a directory: ${DB_PATH}"
+if [[ "${STOP_SERVICE}" == "true" && "${COPY_DB}" == "true" ]]; then
+  fail "--stop-service and --copy-db are mutually exclusive"
+fi
 if [[ -n "${OUT_PATH}" && "${OUT_PATH}" != /* ]]; then
   OUT_PATH="${ROOT_DIR}/${OUT_PATH}"
 fi
@@ -177,10 +201,35 @@ if [[ "${STOP_SERVICE}" == "true" ]]; then
 fi
 
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/swarm-sessiondbinspect.XXXXXX")"
+INSPECT_DB_PATH="${DB_PATH}"
+COPIED_DB_PATH=""
 cleanup_tmpdir() {
+  if [[ "${KEEP_COPY}" == "true" && -n "${COPIED_DB_PATH}" ]]; then
+    printf 'local-session-db-inspect: kept copied db %s\n' "${COPIED_DB_PATH}" >&2
+    return
+  fi
   rm -rf "${tmpdir}"
 }
 trap 'cleanup_tmpdir; restore_service' EXIT
+
+if [[ "${COPY_DB}" == "true" ]]; then
+  require_command cp
+  COPIED_DB_PATH="${tmpdir}/swarmd.pebble.copy"
+  printf 'local-session-db-inspect: copying active db %s -> %s\n' "${DB_PATH}" "${COPIED_DB_PATH}" >&2
+  copy_ok="false"
+  for attempt in $(seq 1 "${COPY_ATTEMPTS}"); do
+    rm -rf "${COPIED_DB_PATH}"
+    mkdir -p "${COPIED_DB_PATH}"
+    if cp -a "${DB_PATH}/." "${COPIED_DB_PATH}/"; then
+      copy_ok="true"
+      break
+    fi
+    printf 'local-session-db-inspect: copy attempt %s/%s failed; retrying\n' "${attempt}" "${COPY_ATTEMPTS}" >&2
+    sleep 0.2
+  done
+  [[ "${copy_ok}" == "true" ]] || fail "failed to copy db after ${COPY_ATTEMPTS} attempts"
+  INSPECT_DB_PATH="${COPIED_DB_PATH}"
+fi
 
 cat >"${tmpdir}/go.mod" <<EOF_GO_MOD
 module swarm/packages/swarmd/cmd/sessiondbinspectlocal
@@ -211,6 +260,7 @@ import (
 type report struct {
 	GeneratedAtUnixMs int64         `json:"generated_at_unix_ms"`
 	DBPath            string        `json:"db_path"`
+	SourceDBPath      string        `json:"source_db_path,omitempty"`
 	SessionCount      int           `json:"session_count"`
 	ScannedCount      int           `json:"scanned_count"`
 	MatchedCount      int           `json:"matched_count"`
@@ -244,6 +294,7 @@ type sessionDump struct {
 
 func main() {
 	dbPath := flag.String("db", "", "path to swarmd Pebble DB")
+	sourceDBPath := flag.String("source-db", "", "original source DB path when inspecting a copy")
 	latest := flag.Int("latest", 5, "latest sessions to inspect when no search is provided")
 	sessionID := flag.String("session", "", "exact session id")
 	query := flag.String("query", "", "case-insensitive search text")
@@ -317,6 +368,7 @@ func main() {
 	result := report{
 		GeneratedAtUnixMs: time.Now().UnixMilli(),
 		DBPath:            strings.TrimSpace(*dbPath),
+		SourceDBPath:      strings.TrimSpace(*sourceDBPath),
 		SessionCount:      len(allSessions),
 		ScannedCount:      len(scanned),
 		MatchedCount:      len(selected),
@@ -389,7 +441,11 @@ func sessionMatches(session pebblestore.SessionSnapshot, needle string) bool {
 }
 
 func printText(r report) {
-	fmt.Printf("generated_at=%s db=%s sessions=%d scanned=%d matched=%d\n", unixMilli(r.GeneratedAtUnixMs), r.DBPath, r.SessionCount, r.ScannedCount, r.MatchedCount)
+	fmt.Printf("generated_at=%s db=%s", unixMilli(r.GeneratedAtUnixMs), r.DBPath)
+	if strings.TrimSpace(r.SourceDBPath) != "" {
+		fmt.Printf(" source_db=%s", r.SourceDBPath)
+	}
+	fmt.Printf(" sessions=%d scanned=%d matched=%d\n", r.SessionCount, r.ScannedCount, r.MatchedCount)
 	fmt.Printf("selection latest=%d session_id=%q query=%q all=%t dump=%t\n", r.Selection.Latest, r.Selection.SessionID, r.Selection.Query, r.Selection.All, r.Selection.Dump)
 	for index, item := range r.Sessions {
 		s := item.Session
@@ -561,7 +617,7 @@ func oneLine(value string, limit int) string {
 }
 EOF_GO
 
-cmd=("${GO_BIN}" run "." --db "${DB_PATH}" --latest "${LATEST}" --scan-limit "${SCAN_LIMIT}" --messages "${MESSAGE_LIMIT}" --events "${EVENT_LIMIT}")
+cmd=("${GO_BIN}" run "." --db "${INSPECT_DB_PATH}" --source-db "${DB_PATH}" --latest "${LATEST}" --scan-limit "${SCAN_LIMIT}" --messages "${MESSAGE_LIMIT}" --events "${EVENT_LIMIT}")
 if [[ -n "${SESSION_ID}" ]]; then cmd+=(--session "${SESSION_ID}"); fi
 if [[ -n "${QUERY}" ]]; then cmd+=(--query "${QUERY}"); fi
 if [[ "${ALL}" == "true" ]]; then cmd+=(--all); fi
@@ -572,6 +628,7 @@ if [[ "${JSON_OUTPUT}" == "true" ]]; then cmd+=(--json); fi
   cd "${tmpdir}"
   export GOCACHE="${GOCACHE:-${ROOT_DIR}/.cache/go-build}"
   mkdir -p "${GOCACHE}"
+  "${GO_BIN}" mod tidy >/dev/null
   if [[ -n "${OUT_PATH}" ]]; then
     mkdir -p "$(dirname "${OUT_PATH}")"
     "${cmd[@]}" >"${OUT_PATH}"

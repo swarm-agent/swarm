@@ -27,16 +27,22 @@ const (
 // V3 primary write handlers delegate through the ApplySessionMutation boundary.
 
 type sessionsV3CreateRequest struct {
-	SessionID       string                      `json:"session_id,omitempty"`
-	ClientRequestID string                      `json:"client_request_id,omitempty"`
-	IdempotencyKey  string                      `json:"idempotency_key,omitempty"`
-	Title           string                      `json:"title,omitempty"`
-	WorkspacePath   string                      `json:"workspace_path"`
-	WorkspaceName   string                      `json:"workspace_name,omitempty"`
-	Mode            string                      `json:"mode,omitempty"`
-	AgentName       string                      `json:"agent_name,omitempty"`
-	Preference      pebblestore.ModelPreference `json:"preference,omitempty"`
-	Metadata        map[string]any              `json:"metadata,omitempty"`
+	SessionID            string                      `json:"session_id,omitempty"`
+	ClientRequestID      string                      `json:"client_request_id,omitempty"`
+	IdempotencyKey       string                      `json:"idempotency_key,omitempty"`
+	Title                string                      `json:"title,omitempty"`
+	WorkspacePath        string                      `json:"workspace_path"`
+	WorkspaceName        string                      `json:"workspace_name,omitempty"`
+	WorkspaceBindingID   string                      `json:"workspace_binding_id,omitempty"`
+	SwarmID              string                      `json:"swarm_id,omitempty"`
+	TargetKind           string                      `json:"target_kind,omitempty"`
+	TargetRelationship   string                      `json:"target_relationship,omitempty"`
+	HostWorkspacePath    string                      `json:"host_workspace_path,omitempty"`
+	RuntimeWorkspacePath string                      `json:"runtime_workspace_path,omitempty"`
+	Mode                 string                      `json:"mode,omitempty"`
+	AgentName            string                      `json:"agent_name,omitempty"`
+	Preference           pebblestore.ModelPreference `json:"preference,omitempty"`
+	Metadata             map[string]any              `json:"metadata,omitempty"`
 }
 
 type sessionsV3MessageRequest struct {
@@ -230,12 +236,12 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 	if sessionID == "" {
 		sessionID = stableSessionsV3PrimarySessionID(principal, clientRequestID)
 	}
-	workspacePath := strings.TrimSpace(req.WorkspacePath)
-	if workspacePath == "" {
-		writeError(w, http.StatusBadRequest, errors.New("workspace_path is required"))
+	if err := validateSessionsV3CreateMetadata(req.Metadata); err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := validateSessionsV3CreateMetadata(req.Metadata); err != nil {
+	binding, err := s.resolveSessionsV3PrimaryBinding(principal, req)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -244,7 +250,8 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	workspaceName := strings.TrimSpace(req.WorkspaceName)
+	workspacePath := binding.SourceWorkspacePath
+	workspaceName := binding.SourceWorkspaceName
 	if workspaceName == "" {
 		workspaceName = filepath.Base(workspacePath)
 		if workspaceName == "." || workspaceName == string(filepath.Separator) {
@@ -265,11 +272,11 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 		Title:          title,
 		Mode:           sessionruntime.NormalizeMode(req.Mode),
 		Preference:     normalizeSessionsV3ModelPreference(req.Preference),
-		Metadata:       sessionsV3CreateServerMetadata(req.Metadata, resolvedAgent),
+		Metadata:       sessionsV3CreateServerMetadata(req.Metadata, resolvedAgent, binding),
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
-	payloadHash, err := sessionsV3CreatePayloadHash(sessionID, req, workspaceName, title, session.Metadata)
+	payloadHash, err := sessionsV3CreatePayloadHash(sessionID, req, workspacePath, workspaceName, title, session.Metadata)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -1363,27 +1370,178 @@ func sessionsV3MessagesPageResponse(sessionID string, messages []pebblestore.Mes
 	return response
 }
 
-func sessionsV3CreatePayloadHash(sessionID string, req sessionsV3CreateRequest, workspaceName, title string, metadata map[string]any) (string, error) {
+type sessionsV3PrimaryBinding struct {
+	RuntimeSwarmID            string
+	WorkspaceBindingID        string
+	SourceWorkspaceID         string
+	SourceWorkspaceGeneration int64
+	SourceWorkspaceName       string
+	SourceWorkspacePath       string
+	RuntimeWorkspacePath      string
+	PlacementGeneration       int
+	BindingGeneration         int
+}
+
+func (s *Server) resolveSessionsV3PrimaryBinding(principal identity.Principal, req sessionsV3CreateRequest) (sessionsV3PrimaryBinding, error) {
+	if s == nil || s.topology == nil {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary topology is not configured")
+	}
+	localNode, localOK, err := s.swarmLocalNode()
+	if err != nil {
+		return sessionsV3PrimaryBinding{}, err
+	}
+	primarySwarmID := strings.TrimSpace(localNode.SwarmID)
+	if !localOK || primarySwarmID == "" {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary local node identity is required")
+	}
+	swarmID := strings.TrimSpace(req.SwarmID)
+	if swarmID == "" {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary swarm_id is required")
+	}
+	if swarmID != primarySwarmID {
+		return sessionsV3PrimaryBinding{}, fmt.Errorf("sessions v3 primary swarm_id %q is not the primary runtime", swarmID)
+	}
+	if targetKind := strings.ToLower(strings.TrimSpace(req.TargetKind)); targetKind != "" && targetKind != "host" && targetKind != "self" {
+		return sessionsV3PrimaryBinding{}, fmt.Errorf("sessions v3 primary target_kind %q is not primary host", strings.TrimSpace(req.TargetKind))
+	}
+	if targetRelationship := strings.ToLower(strings.TrimSpace(req.TargetRelationship)); targetRelationship != "" && targetRelationship != "self" {
+		return sessionsV3PrimaryBinding{}, fmt.Errorf("sessions v3 primary target_relationship %q is not self", strings.TrimSpace(req.TargetRelationship))
+	}
+	workspaceBindingID := strings.TrimSpace(req.WorkspaceBindingID)
+	if workspaceBindingID == "" {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary workspace_binding_id is required")
+	}
+	runtimeRecord, runtimeOK, err := s.topology.GetRuntimeForAccount(principal.AccountScopeID, swarmID)
+	if err != nil {
+		return sessionsV3PrimaryBinding{}, err
+	}
+	if !runtimeOK {
+		return sessionsV3PrimaryBinding{}, fmt.Errorf("sessions v3 primary runtime %q was not found", swarmID)
+	}
+	if strings.TrimSpace(runtimeRecord.SwarmID) != swarmID {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary runtime identity mismatch")
+	}
+	if strings.TrimSpace(runtimeRecord.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary runtime account scope does not match principal")
+	}
+	if strings.TrimSpace(runtimeRecord.UserID) != "" && strings.TrimSpace(runtimeRecord.UserID) != strings.TrimSpace(principal.UserID) {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary runtime user does not match principal")
+	}
+	placement, placementOK, err := s.topology.GetRuntimePlacementForAccount(principal.AccountScopeID, swarmID)
+	if err != nil {
+		return sessionsV3PrimaryBinding{}, err
+	}
+	if !placementOK {
+		return sessionsV3PrimaryBinding{}, fmt.Errorf("sessions v3 primary runtime placement for %q was not found", swarmID)
+	}
+	if strings.TrimSpace(placement.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary runtime placement account scope does not match principal")
+	}
+	if strings.TrimSpace(placement.State) != pebblestore.TopologyRuntimePlacementStateActive {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary runtime placement is not active")
+	}
+	if strings.TrimSpace(placement.RuntimeSwarmID) != swarmID || strings.TrimSpace(placement.AuthorityHostSwarmID) != swarmID {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary runtime placement does not match selected self authority")
+	}
+	if strings.TrimSpace(placement.RuntimeKind) != pebblestore.TopologyRuntimeKindHost {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary runtime placement kind must be host")
+	}
+	if strings.TrimSpace(placement.AuthorityContainerID) != "" {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary runtime placement authority container id must be empty")
+	}
+	if placement.PlacementGeneration <= 0 {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary runtime placement generation is required")
+	}
+	binding, bindingOK, err := s.topology.GetWorkspaceBindingForAccount(principal.AccountScopeID, workspaceBindingID)
+	if err != nil {
+		return sessionsV3PrimaryBinding{}, err
+	}
+	if !bindingOK {
+		return sessionsV3PrimaryBinding{}, fmt.Errorf("sessions v3 primary workspace binding %q was not found", workspaceBindingID)
+	}
+	if strings.TrimSpace(binding.BindingID) != workspaceBindingID {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary workspace binding id mismatch")
+	}
+	if strings.TrimSpace(binding.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary workspace binding account scope does not match principal")
+	}
+	if strings.TrimSpace(binding.UserID) != "" && strings.TrimSpace(binding.UserID) != strings.TrimSpace(principal.UserID) {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary workspace binding user does not match principal")
+	}
+	if strings.TrimSpace(binding.State) != pebblestore.TopologyWorkspaceBindingStateBound {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary workspace binding is not bound")
+	}
+	if strings.TrimSpace(binding.SourceWorkspaceID) == "" || binding.SourceWorkspaceGeneration <= 0 || strings.TrimSpace(binding.SourceWorkspacePath) == "" {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary workspace binding source workspace identity is incomplete")
+	}
+	if strings.TrimSpace(binding.DestinationWorkspacePath) == "" {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary workspace binding destination workspace path is required")
+	}
+	if binding.PlacementGeneration != placement.PlacementGeneration || binding.BindingGeneration <= 0 {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary workspace binding generation does not match placement")
+	}
+	if strings.TrimSpace(binding.AttestedByHostSwarmID) != strings.TrimSpace(placement.AuthorityHostSwarmID) {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary workspace binding attesting host does not match authority host")
+	}
+	if strings.TrimSpace(binding.AccessMode) != pebblestore.TopologyWorkspaceBindingAccessModeReadWrite || !binding.Writable {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary workspace binding must be read_write and writable")
+	}
+	if strings.TrimSpace(binding.DestinationRuntimeSwarmID) != swarmID || strings.TrimSpace(binding.DestinationAuthorityHostSwarmID) != swarmID {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary workspace binding does not match selected self authority")
+	}
+	if strings.TrimSpace(binding.DestinationRuntimeKind) != pebblestore.TopologyRuntimeKindHost {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary workspace binding destination runtime kind must be host")
+	}
+	if strings.TrimSpace(binding.DestinationContainerID) != "" {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary workspace binding destination container id must be empty")
+	}
+	if requestedWorkspacePath := strings.TrimSpace(req.WorkspacePath); requestedWorkspacePath != "" && filepath.Clean(requestedWorkspacePath) != filepath.Clean(strings.TrimSpace(binding.SourceWorkspacePath)) {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary workspace_path does not match workspace binding source")
+	}
+	if requestedHostWorkspacePath := strings.TrimSpace(req.HostWorkspacePath); requestedHostWorkspacePath != "" && filepath.Clean(requestedHostWorkspacePath) != filepath.Clean(strings.TrimSpace(binding.SourceWorkspacePath)) {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary host_workspace_path does not match workspace binding source")
+	}
+	if requestedRuntimeWorkspacePath := strings.TrimSpace(req.RuntimeWorkspacePath); requestedRuntimeWorkspacePath != "" && filepath.Clean(requestedRuntimeWorkspacePath) != filepath.Clean(strings.TrimSpace(binding.DestinationWorkspacePath)) {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary runtime_workspace_path does not match workspace binding destination")
+	}
+	return sessionsV3PrimaryBinding{
+		RuntimeSwarmID:            swarmID,
+		WorkspaceBindingID:        workspaceBindingID,
+		SourceWorkspaceID:         strings.TrimSpace(binding.SourceWorkspaceID),
+		SourceWorkspaceGeneration: binding.SourceWorkspaceGeneration,
+		SourceWorkspaceName:       strings.TrimSpace(binding.SourceWorkspaceName),
+		SourceWorkspacePath:       strings.TrimSpace(binding.SourceWorkspacePath),
+		RuntimeWorkspacePath:      strings.TrimSpace(binding.DestinationWorkspacePath),
+		PlacementGeneration:       placement.PlacementGeneration,
+		BindingGeneration:         binding.BindingGeneration,
+	}, nil
+}
+
+func sessionsV3CreatePayloadHash(sessionID string, req sessionsV3CreateRequest, workspacePath, workspaceName, title string, metadata map[string]any) (string, error) {
 	canonical := struct {
-		Operation     string                      `json:"operation"`
-		SessionID     string                      `json:"session_id"`
-		Title         string                      `json:"title"`
-		WorkspacePath string                      `json:"workspace_path"`
-		WorkspaceName string                      `json:"workspace_name"`
-		Mode          string                      `json:"mode"`
-		AgentName     string                      `json:"agent_name,omitempty"`
-		Preference    pebblestore.ModelPreference `json:"preference"`
-		Metadata      map[string]any              `json:"metadata,omitempty"`
+		Operation          string                      `json:"operation"`
+		SessionID          string                      `json:"session_id"`
+		Title              string                      `json:"title"`
+		WorkspacePath      string                      `json:"workspace_path"`
+		WorkspaceName      string                      `json:"workspace_name"`
+		WorkspaceBindingID string                      `json:"workspace_binding_id"`
+		SwarmID            string                      `json:"swarm_id"`
+		Mode               string                      `json:"mode"`
+		AgentName          string                      `json:"agent_name,omitempty"`
+		Preference         pebblestore.ModelPreference `json:"preference"`
+		Metadata           map[string]any              `json:"metadata,omitempty"`
 	}{
-		Operation:     sessionruntime.SessionMutationCreateSession,
-		SessionID:     strings.TrimSpace(sessionID),
-		Title:         title,
-		WorkspacePath: strings.TrimSpace(req.WorkspacePath),
-		WorkspaceName: workspaceName,
-		Mode:          sessionruntime.NormalizeMode(req.Mode),
-		AgentName:     strings.TrimSpace(req.AgentName),
-		Preference:    normalizeSessionsV3ModelPreference(req.Preference),
-		Metadata:      cloneSessionsV3Metadata(metadata),
+		Operation:          sessionruntime.SessionMutationCreateSession,
+		SessionID:          strings.TrimSpace(sessionID),
+		Title:              title,
+		WorkspacePath:      strings.TrimSpace(workspacePath),
+		WorkspaceName:      workspaceName,
+		WorkspaceBindingID: strings.TrimSpace(req.WorkspaceBindingID),
+		SwarmID:            strings.TrimSpace(req.SwarmID),
+		Mode:               sessionruntime.NormalizeMode(req.Mode),
+		AgentName:          strings.TrimSpace(req.AgentName),
+		Preference:         normalizeSessionsV3ModelPreference(req.Preference),
+		Metadata:           cloneSessionsV3Metadata(metadata),
 	}
 	raw, err := json.Marshal(canonical)
 	if err != nil {
@@ -1582,10 +1740,10 @@ func (s *Server) resolveSessionsV3PrimaryCreateAgent(principal identity.Principa
 	}, nil
 }
 
-func sessionsV3CreateServerMetadata(clientMetadata map[string]any, agent sessionsV3ResolvedAgentIdentity) map[string]any {
+func sessionsV3CreateServerMetadata(clientMetadata map[string]any, agent sessionsV3ResolvedAgentIdentity, binding sessionsV3PrimaryBinding) map[string]any {
 	metadata := cloneSessionsV3Metadata(clientMetadata)
 	if metadata == nil {
-		metadata = make(map[string]any, 8)
+		metadata = make(map[string]any, 24)
 	}
 	metadata["agent_name"] = agent.Name
 	metadata["resolved_agent_name"] = agent.ResolvedName
@@ -1593,6 +1751,19 @@ func sessionsV3CreateServerMetadata(clientMetadata map[string]any, agent session
 	metadata["runtime_mode"] = agent.RuntimeMode
 	metadata["exit_plan_mode_enabled"] = agent.ExitPlanModeEnabled
 	metadata["agent_profile"] = cloneSessionsV3AgentProfile(agent.Profile)
+	metadata["swarm_v3_execution_class"] = sessionruntime.SessionExecutionClassPrimary
+	metadata["swarm_v3_runtime_swarm_id"] = binding.RuntimeSwarmID
+	metadata["swarm_v3_runtime_kind"] = pebblestore.TopologyRuntimeKindHost
+	metadata["swarm_v3_authority_host_swarm_id"] = binding.RuntimeSwarmID
+	metadata["swarm_v3_workspace_binding_id"] = binding.WorkspaceBindingID
+	metadata["swarm_v3_source_workspace_id"] = binding.SourceWorkspaceID
+	metadata["swarm_v3_source_workspace_generation"] = fmt.Sprintf("%d", binding.SourceWorkspaceGeneration)
+	metadata["swarm_v3_source_workspace_name"] = binding.SourceWorkspaceName
+	metadata["swarm_v3_source_workspace_path"] = binding.SourceWorkspacePath
+	metadata["swarm_v3_runtime_workspace_path"] = binding.RuntimeWorkspacePath
+	metadata["swarm_v3_placement_generation"] = binding.PlacementGeneration
+	metadata["swarm_v3_binding_generation"] = binding.BindingGeneration
+	metadata["local_workspace_binding_id"] = binding.WorkspaceBindingID
 	if agent.ToolContractPreset != "" {
 		metadata["tool_contract_preset"] = agent.ToolContractPreset
 	}
@@ -1607,7 +1778,16 @@ func sessionsV3AgentSwitchMetadata(current map[string]any, agent sessionsV3Resol
 	for _, key := range []string{"agent_name", "agent_profile", "resolved_agent_name", "agent_mode", "runtime_mode", "exit_plan_mode_enabled", "tool_contract_preset", "subagent", "requested_subagent"} {
 		delete(metadata, key)
 	}
-	return sessionsV3CreateServerMetadata(metadata, agent)
+	metadata["agent_name"] = agent.Name
+	metadata["resolved_agent_name"] = agent.ResolvedName
+	metadata["agent_mode"] = agent.Mode
+	metadata["runtime_mode"] = agent.RuntimeMode
+	metadata["exit_plan_mode_enabled"] = agent.ExitPlanModeEnabled
+	metadata["agent_profile"] = cloneSessionsV3AgentProfile(agent.Profile)
+	if agent.ToolContractPreset != "" {
+		metadata["tool_contract_preset"] = agent.ToolContractPreset
+	}
+	return metadata
 }
 
 func sessionsV3PrimaryAuthorityStatus(req sessionsV3MessageRequest) string {
@@ -1796,8 +1976,17 @@ func isProtectedSessionsV3MetadataKey(key string) bool {
 		"swarm_v2_workspace_binding_id",
 		"swarm_v3_execution_class",
 		"swarm_v3_runtime_swarm_id",
+		"swarm_v3_runtime_kind",
 		"swarm_v3_authority_host_swarm_id",
-		"swarm_v3_authority_container_id":
+		"swarm_v3_authority_container_id",
+		"swarm_v3_workspace_binding_id",
+		"swarm_v3_source_workspace_id",
+		"swarm_v3_source_workspace_generation",
+		"swarm_v3_source_workspace_name",
+		"swarm_v3_source_workspace_path",
+		"swarm_v3_runtime_workspace_path",
+		"swarm_v3_placement_generation",
+		"swarm_v3_binding_generation":
 		return true
 	default:
 		return false

@@ -9,6 +9,7 @@ import {
   applyDurableEventToDesktopDB,
   applyOptimisticRunStartToDesktopDB,
   applyRunIntentToDesktopDB,
+  applyWorksetToDesktopDB,
   mergeDesktopDBDurablePatch,
   desktopMessagesCollection,
   desktopRunIntentsCollection,
@@ -16,6 +17,7 @@ import {
   readDesktopDbMessages,
   readDesktopDbSession,
   upsertDesktopDbRecord,
+  type DesktopV3Workset,
 } from './desktop-db'
 
 const testSessionIds = [
@@ -25,6 +27,7 @@ const testSessionIds = [
   'session-db-optimistic-run',
   'session-db-pending-reconcile',
   'session-db-seq-collision',
+  'session-db-workset-pending',
 ]
 
 function emptyLiveState(): DesktopSessionRecord['live'] {
@@ -111,6 +114,39 @@ function clearSessionRecords(sessionId: string): void {
 
 function seedSession(sessionId: string): void {
   upsertDesktopDbRecord(desktopSessionsCollection, makeSession(sessionId))
+}
+
+function worksetForSession(sessionId: string, messages: ChatMessageRecord[]): DesktopV3Workset {
+  return {
+    source: 'v3-workset',
+    sessionsById: { [sessionId]: makeSession(sessionId, { messageCount: messages.length }) },
+    projectionsBySession: {},
+    messagesBySession: { [sessionId]: messages },
+    eventsBySession: {},
+    preferencesBySession: {},
+    agentModelPolicyBySession: {},
+    hasActivePlanBySession: {},
+    plansBySession: {},
+    planRevisionsBySession: {},
+    appliedSeqBySession: {},
+    highWatermarkBySession: {},
+    historyManifestsBySession: {},
+    historyChunksById: {},
+    omissions: [],
+    pagination: {
+      id: 'desktop-v3-workset-pagination',
+      nextBeforeUpdatedAt: null,
+      nextBeforeSessionId: '',
+      hasMore: false,
+    },
+    watermarks: {
+      id: 'desktop-v3-workset-watermarks',
+      loadedAt: 1,
+      maxUpdatedAt: 1,
+    },
+    sessionOrder: [sessionId],
+    loadedAt: 1,
+  }
 }
 
 function emit(event: {
@@ -357,6 +393,43 @@ test('Desktop DB durable patch replaces matching pending user message with canon
   const messages = readDesktopDbMessages(sessionId)
   assert.deepEqual(messages.map((entry) => entry.id), ['msg-canonical-user'])
   assert.equal(messages[0]?.metadata?.client_request_id, pending.metadata?.client_request_id)
+})
+
+test('Desktop DB workset apply preserves pending user message until canonical message arrives', () => {
+  const sessionId = 'session-db-workset-pending'
+  seedSession(sessionId)
+  const existing = message({
+    id: 'msg-existing',
+    sessionId,
+    globalSeq: 10,
+    role: 'assistant',
+    content: 'ready',
+    createdAt: 1000,
+  })
+  const pending = createPendingUserMessage(sessionId, 'send this', 10)
+  upsertDesktopDbRecord(desktopMessagesCollection, existing)
+  upsertDesktopDbRecord(desktopMessagesCollection, pending)
+
+  applyWorksetToDesktopDB(worksetForSession(sessionId, [existing]), { sessionIds: [sessionId] })
+
+  let messages = readDesktopDbMessages(sessionId)
+  assert.deepEqual(messages.map((entry) => entry.id), ['msg-existing', pending.id])
+  assert.equal(messages[1]?.content, 'send this')
+
+  const canonical = message({
+    id: 'msg-canonical-user',
+    sessionId,
+    globalSeq: 11,
+    role: 'user',
+    content: 'send this',
+    createdAt: 1100,
+    metadata: { client_request_id: pending.metadata?.client_request_id },
+  })
+  applyWorksetToDesktopDB(worksetForSession(sessionId, [existing, canonical]), { sessionIds: [sessionId] })
+
+  messages = readDesktopDbMessages(sessionId)
+  assert.deepEqual(messages.map((entry) => entry.id), ['msg-existing', 'msg-canonical-user'])
+  assert.equal(messages[1]?.metadata?.client_request_id, pending.metadata?.client_request_id)
 })
 
 test('Desktop DB durable patch preserves unrelated live tool messages with same sequence', () => {

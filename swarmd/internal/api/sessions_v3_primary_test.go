@@ -121,7 +121,8 @@ func TestSessionsV3PrimaryModeAndPreferenceUseV3PrimaryMutation(t *testing.T) {
 func TestSessionsV3PrimaryCreateListHydrateUsesPrimaryStoreOnly(t *testing.T) {
 	server, sessionSvc, _, routeStore, _ := newRoutedSessionTestServerWithSwarmStore(t)
 
-	body := `{"client_request_id":"create-v3-1","workspace_path":"/workspace/v3","workspace_name":"v3","title":"V3 Primary","mode":"auto","agent_name":"swarm","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"},"metadata":{"purpose":"cp3"}}`
+	bindingID := seedSessionsV3PrimaryAuthority(t, server, "/workspace/v3")
+	body := `{"client_request_id":"create-v3-1","workspace_path":"/workspace/v3","workspace_name":"v3","swarm_id":"host-swarm-id","workspace_binding_id":"` + bindingID + `","target_kind":"host","target_relationship":"self","title":"V3 Primary","mode":"auto","agent_name":"swarm","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"},"metadata":{"purpose":"cp3"}}`
 	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(body))
 	createReq.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
@@ -215,7 +216,8 @@ func TestSessionsV3PrimaryHydratesAfterStoreRestart(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "sessions-v3-primary.pebble")
 	server, _, closeStore := newSessionsV3PrimaryAPITestServer(t, storePath)
 
-	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"restart-create","workspace_path":"/workspace/restart","title":"Restarted V3","agent_name":"swarm","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`))
+	bindingID := seedSessionsV3PrimaryAuthority(t, server, "/workspace/restart")
+	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"restart-create","workspace_path":"/workspace/restart","swarm_id":"host-swarm-id","workspace_binding_id":"`+bindingID+`","target_kind":"host","target_relationship":"self","title":"Restarted V3","agent_name":"swarm","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`))
 	createReq.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(createRec, withTestPrincipal(createReq))
@@ -285,7 +287,8 @@ func TestSessionsV3PrimaryCreateRejectsProtectedAuthorityMetadata(t *testing.T) 
 
 func TestSessionsV3PrimaryMessagesCommitUserMessageAndPendingExecutorIntent(t *testing.T) {
 	server, sessionSvc, _, routeStore, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-create","workspace_path":"/workspace/cp4","title":"CP4","agent_name":"swarm"}`))
+	bindingID := seedSessionsV3PrimaryAuthority(t, server, "/workspace/cp4")
+	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-create","workspace_path":"/workspace/cp4","swarm_id":"host-swarm-id","workspace_binding_id":"`+bindingID+`","target_kind":"host","target_relationship":"self","title":"CP4","agent_name":"swarm"}`))
 	create.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(createRec, withTestPrincipal(create))
@@ -361,7 +364,8 @@ func TestSessionsV3PrimaryMessagesCommitUserMessageAndPendingExecutorIntent(t *t
 
 func TestSessionsV3PrimaryMessageWithInvalidDispatchAuthorityStillCommitsAndBlocks(t *testing.T) {
 	server, sessionSvc, _, routeStore, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-invalid-authority-create","workspace_path":"/workspace/cp4","title":"CP4","agent_name":"swarm"}`))
+	bindingID := seedSessionsV3PrimaryAuthority(t, server, "/workspace/cp4")
+	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-invalid-authority-create","workspace_path":"/workspace/cp4","swarm_id":"host-swarm-id","workspace_binding_id":"`+bindingID+`","target_kind":"host","target_relationship":"self","title":"CP4","agent_name":"swarm"}`))
 	create.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(createRec, withTestPrincipal(create))
@@ -716,6 +720,39 @@ func TestSessionsV3ExecutorRejectsDuplicateEnqueueRun(t *testing.T) {
 	if exec.EnqueueRun(job) {
 		t.Fatalf("duplicate enqueue returned true while original run was still queued/in-flight")
 	}
+	server.CancelInFlightRuns()
+	if !server.WaitForInFlightRuns(2 * time.Second) {
+		t.Fatalf("executor did not drain after cancellation")
+	}
+}
+
+func TestSessionsV3ExecutorRunsDifferentSessionsConcurrently(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 500 * time.Millisecond
+	server.v3SessionExecutor = exec
+
+	if !exec.EnqueueRun(sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: "session-concurrent-a", RunID: "run-concurrent-a"}) {
+		t.Fatalf("first enqueue returned false")
+	}
+	if !exec.EnqueueRun(sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: "session-concurrent-b", RunID: "run-concurrent-b"}) {
+		t.Fatalf("second enqueue returned false")
+	}
+
+	deadline := time.After(2 * time.Second)
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if server.ActiveRunCount() >= 2 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("active runs = %d, want at least 2 concurrent runs", server.ActiveRunCount())
+		case <-tick.C:
+		}
+	}
+
 	server.CancelInFlightRuns()
 	if !server.WaitForInFlightRuns(2 * time.Second) {
 		t.Fatalf("executor did not drain after cancellation")
@@ -1134,7 +1171,8 @@ func sessionsV3EventsContainType(events []sessionruntime.SessionEvent, eventType
 
 func TestSessionsV3PrimaryMessageIsIdempotent(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-idempotent-create","workspace_path":"/workspace/cp4","title":"CP4","agent_name":"swarm"}`))
+	bindingID := seedSessionsV3PrimaryAuthority(t, server, "/workspace/cp4")
+	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-idempotent-create","workspace_path":"/workspace/cp4","swarm_id":"host-swarm-id","workspace_binding_id":"`+bindingID+`","target_kind":"host","target_relationship":"self","title":"CP4","agent_name":"swarm"}`))
 	create.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(createRec, withTestPrincipal(create))
@@ -1184,7 +1222,8 @@ func TestSessionsV3PrimaryMessageIsIdempotent(t *testing.T) {
 
 func TestSessionsV3PrimaryConcurrentDistinctMessagesAllocateContiguousSeq(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-concurrent-create","workspace_path":"/workspace/cp4","title":"CP4","agent_name":"swarm"}`))
+	bindingID := seedSessionsV3PrimaryAuthority(t, server, "/workspace/cp4")
+	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-concurrent-create","workspace_path":"/workspace/cp4","swarm_id":"host-swarm-id","workspace_binding_id":"`+bindingID+`","target_kind":"host","target_relationship":"self","title":"CP4","agent_name":"swarm"}`))
 	create.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(createRec, withTestPrincipal(create))
@@ -1254,7 +1293,8 @@ func TestSessionsV3PrimaryEventsReplayCursorAndRestart(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "sessions-v3-events.pebble")
 	server, _, closeStore := newSessionsV3PrimaryAPITestServer(t, storePath)
 
-	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp5-create","workspace_path":"/workspace/cp5","title":"CP5","agent_name":"swarm"}`))
+	bindingID := seedSessionsV3PrimaryAuthority(t, server, "/workspace/cp5")
+	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp5-create","workspace_path":"/workspace/cp5","swarm_id":"host-swarm-id","workspace_binding_id":"`+bindingID+`","target_kind":"host","target_relationship":"self","title":"CP5","agent_name":"swarm"}`))
 	createReq.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(createRec, withTestPrincipal(createReq))
@@ -1317,7 +1357,8 @@ func TestSessionsV3PrimaryEventsReplayCursorAndRestart(t *testing.T) {
 
 func TestSessionsV3PrimaryCreateIsIdempotent(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	body := `{"client_request_id":"same-create","workspace_path":"/workspace/v3","title":"V3 Idempotent","agent_name":"swarm","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`
+	bindingID := seedSessionsV3PrimaryAuthority(t, server, "/workspace/v3")
+	body := `{"client_request_id":"same-create","workspace_path":"/workspace/v3","swarm_id":"host-swarm-id","workspace_binding_id":"` + bindingID + `","target_kind":"host","target_relationship":"self","title":"V3 Idempotent","agent_name":"swarm","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`
 
 	post := func() (int, string) {
 		req := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(body))
@@ -2338,6 +2379,52 @@ func installSessionsV3TestProvider(server *Server, text string) *sessionsV3Recor
 	return runner
 }
 
+func seedSessionsV3PrimaryAuthority(t *testing.T, server *Server, workspacePath string) string {
+	t.Helper()
+	if server == nil || server.topology == nil || server.swarmStore == nil {
+		t.Fatal("server topology and swarm store are required")
+	}
+	workspacePath = strings.TrimSpace(workspacePath)
+	if workspacePath == "" {
+		t.Fatal("workspace path is required")
+	}
+	now := time.Now().UnixMilli()
+	if _, err := server.swarmStore.PutLocalNode(pebblestore.SwarmLocalNodeRecord{SwarmID: "host-swarm-id", Name: "host-swarm", Role: "master", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("put local node: %v", err)
+	}
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{SwarmID: "host-swarm-id", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, Name: "host-swarm", Role: "master", Relationship: "self", Status: "online", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("upsert local runtime: %v", err)
+	}
+	if _, err := server.topology.EnsureLocalSelfPlacementForPrincipal(testPrincipal().AccountScopeID, testPrincipal().UserID); err != nil {
+		t.Fatalf("ensure self placement: %v", err)
+	}
+	bindingID := "binding-v3-primary-" + strings.NewReplacer("/", "-", " ", "-", "_", "-").Replace(strings.Trim(workspacePath, "/"))
+	if _, err := server.topology.UpsertWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
+		BindingID:                       bindingID,
+		UserID:                          testPrincipal().UserID,
+		AccountScopeID:                  testPrincipal().AccountScopeID,
+		SourceWorkspaceID:               "workspace-v3-" + bindingID,
+		SourceWorkspaceGeneration:       1,
+		SourceWorkspacePath:             workspacePath,
+		SourceWorkspaceName:             filepath.Base(workspacePath),
+		DestinationRuntimeSwarmID:       "host-swarm-id",
+		DestinationAuthorityHostSwarmID: "host-swarm-id",
+		DestinationHostSwarmID:          "host-swarm-id",
+		DestinationRuntimeKind:          pebblestore.TopologyRuntimeKindHost,
+		DestinationWorkspacePath:        workspacePath,
+		PlacementGeneration:             1,
+		BindingGeneration:               1,
+		State:                           pebblestore.TopologyWorkspaceBindingStateBound,
+		AccessMode:                      pebblestore.TopologyWorkspaceBindingAccessModeReadWrite,
+		MaterializationKind:             pebblestore.TopologyWorkspaceBindingMaterializationSource,
+		AttestedByHostSwarmID:           "host-swarm-id",
+		Writable:                        true,
+	}); err != nil {
+		t.Fatalf("upsert v3 binding: %v", err)
+	}
+	return bindingID
+}
+
 func createSessionsV3PrimaryTestSession(t *testing.T, server *Server, clientRequestID, title string) pebblestore.SessionSnapshot {
 	t.Helper()
 	return createSessionsV3PrimaryTestSessionWithWorkspace(t, server, clientRequestID, title, "/workspace/cp6")
@@ -2345,7 +2432,8 @@ func createSessionsV3PrimaryTestSession(t *testing.T, server *Server, clientRequ
 
 func createSessionsV3PrimaryTestSessionWithWorkspace(t *testing.T, server *Server, clientRequestID, title, workspacePath string) pebblestore.SessionSnapshot {
 	t.Helper()
-	body := fmt.Sprintf(`{"client_request_id":%q,"workspace_path":%q,"title":%q,"agent_name":"swarm"}`, clientRequestID, workspacePath, title)
+	bindingID := seedSessionsV3PrimaryAuthority(t, server, workspacePath)
+	body := fmt.Sprintf(`{"client_request_id":%q,"workspace_path":%q,"swarm_id":"host-swarm-id","workspace_binding_id":%q,"target_kind":"host","target_relationship":"self","title":%q,"agent_name":"swarm"}`, clientRequestID, workspacePath, bindingID, title)
 	req := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

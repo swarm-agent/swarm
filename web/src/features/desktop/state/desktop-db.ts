@@ -17,7 +17,7 @@ import type {
   DesktopSessionRecord,
   DesktopSessionUsageRecord,
 } from '../types/realtime'
-import { mergeMessageIntoCache } from '../chat/services/message-cache'
+import { isPendingUserMessage, mergeMessageIntoCache } from '../chat/services/message-cache'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import { appendLiveAssistantSegment } from './live-assistant-segments'
@@ -291,7 +291,7 @@ export function applyWorksetToDesktopDB(workset: DesktopV3Workset, request: Desk
 
   if (sessionScoped) {
     replaceDesktopDbRecordsForSessions(desktopSessionsCollection, worksetSessionIds, (session) => session.id, sessions)
-    replaceDesktopDbRecordsForSessions(desktopMessagesCollection, worksetSessionIds, (message) => message.sessionId, messages)
+    replaceDesktopDbMessagesForSessions(worksetSessionIds, messages)
     replaceDesktopDbRecordsForSessions(desktopProjectionsCollection, worksetSessionIds, (projection) => projection.sessionId ?? projection.session_id ?? '', projections)
     replaceDesktopDbRecordsForSessions(desktopPreferencesCollection, worksetSessionIds, (preference) => preference.sessionId, preferences)
     replaceDesktopDbRecordsForSessions(desktopAgentModelPolicyCollection, worksetSessionIds, (policy) => policy.sessionId, policies)
@@ -307,7 +307,7 @@ export function applyWorksetToDesktopDB(workset: DesktopV3Workset, request: Desk
     upsertDesktopDbRecords(desktopSessionReadinessCollection, readiness)
   } else {
     replaceDesktopDbCollection(desktopSessionsCollection, sessions)
-    replaceDesktopDbCollection(desktopMessagesCollection, messages)
+    replaceDesktopDbMessagesCollection(worksetSessionIds, messages)
     replaceDesktopDbCollection(desktopProjectionsCollection, projections)
     replaceDesktopDbCollection(desktopPreferencesCollection, preferences)
     replaceDesktopDbCollection(desktopAgentModelPolicyCollection, policies)
@@ -1604,6 +1604,35 @@ function replaceDesktopDbRecordsForSessions<T extends object>(collection: Deskto
     }
   }
   upsertDesktopDbRecords(collection, records)
+}
+
+function mergeWithPendingDesktopDbMessages(sessionIds: Set<string>, records: ChatMessageRecord[]): ChatMessageRecord[] {
+  const mergedBySession = new Map<string, ChatMessageRecord[]>()
+  for (const current of Array.from(desktopMessagesCollection.values())) {
+    if (sessionIds.has(current.sessionId) && isPendingUserMessage(current)) {
+      mergedBySession.set(current.sessionId, mergeMessageIntoCache(mergedBySession.get(current.sessionId), current))
+    }
+  }
+  for (const record of records) {
+    if (!sessionIds.has(record.sessionId)) {
+      continue
+    }
+    mergedBySession.set(record.sessionId, mergeMessageIntoCache(mergedBySession.get(record.sessionId), record))
+  }
+  return Array.from(mergedBySession.values()).flat()
+}
+
+function replaceDesktopDbMessagesForSessions(sessionIds: Set<string>, records: ChatMessageRecord[]): void {
+  replaceDesktopDbRecordsForSessions(
+    desktopMessagesCollection,
+    sessionIds,
+    (message) => message.sessionId,
+    mergeWithPendingDesktopDbMessages(sessionIds, records),
+  )
+}
+
+function replaceDesktopDbMessagesCollection(sessionIds: Set<string>, records: ChatMessageRecord[]): void {
+  replaceDesktopDbCollection(desktopMessagesCollection, mergeWithPendingDesktopDbMessages(sessionIds, records))
 }
 
 function upsertDesktopDbWorkspaces(records: DesktopDbWorkspaceRecord[]): void {

@@ -18,11 +18,14 @@ func TestSessionV3ClientUsesPrimaryRoutes(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatalf("decode create: %v", err)
 			}
-			if _, ok := body["swarm_id"]; ok {
-				t.Fatalf("v3 create included swarm_id: %#v", body)
+			if body["swarm_id"] != "host-swarm" {
+				t.Fatalf("v3 create swarm_id = %#v, want host-swarm", body["swarm_id"])
 			}
-			if _, ok := body["workspace_binding_id"]; ok {
-				t.Fatalf("v3 create included workspace_binding_id: %#v", body)
+			if body["workspace_binding_id"] != "binding-primary" {
+				t.Fatalf("v3 create workspace_binding_id = %#v, want binding-primary", body["workspace_binding_id"])
+			}
+			if body["target_kind"] != "host" || body["target_relationship"] != "self" {
+				t.Fatalf("v3 create target = %#v/%#v, want host/self", body["target_kind"], body["target_relationship"])
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"ok":                true,
@@ -75,7 +78,7 @@ func TestSessionV3ClientUsesPrimaryRoutes(t *testing.T) {
 
 	api := New(server.URL)
 	api.SetToken("test-token")
-	created, err := api.CreateSessionV3WithOptions(context.Background(), SessionCreateOptions{Title: "V3", WorkspacePath: "/workspace", WorkspaceName: "workspace", Mode: "auto"})
+	created, err := api.CreateSessionV3WithOptions(context.Background(), SessionCreateOptions{Title: "V3", WorkspacePath: "/workspace", WorkspaceName: "workspace", WorkspaceBindingID: "binding-primary", SwarmID: "host-swarm", TargetKind: "host", TargetRelationship: "self", Mode: "auto"})
 	if err != nil {
 		t.Fatalf("CreateSessionV3WithOptions() error = %v", err)
 	}
