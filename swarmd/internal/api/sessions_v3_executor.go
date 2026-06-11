@@ -1007,7 +1007,7 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	if !ok {
 		return sessionV3AssistantResponse{}, fmt.Errorf("provider %q is configured but not runnable yet", providerID)
 	}
-	messages, err := e.server.sessions.ListSessionMessages(job.SessionID, 0, 500)
+	messages, err := e.sessionV3ProviderContextMessages(job)
 	if err != nil {
 		return sessionV3AssistantResponse{}, err
 	}
@@ -1543,14 +1543,33 @@ func (e *sessionV3Executor) recordProviderToolEvent(job sessionV3ExecutorJob, ev
 }
 
 func (e *sessionV3Executor) sessionV3ProviderContinuationInput(job sessionV3ExecutorJob) []map[string]any {
-	if e == nil || e.server == nil || e.server.sessions == nil {
-		return nil
-	}
-	messages, err := e.server.sessions.ListSessionMessages(job.SessionID, 0, 500)
+	messages, err := e.sessionV3ProviderContextMessages(job)
 	if err != nil || len(messages) == 0 {
 		return nil
 	}
 	return sessionsV3ProviderInput(messages)
+}
+
+func (e *sessionV3Executor) sessionV3ProviderContextMessages(job sessionV3ExecutorJob) ([]pebblestore.MessageSnapshot, error) {
+	if e == nil || e.server == nil || e.server.sessions == nil {
+		return nil, errors.New("v3 executor is not configured")
+	}
+	session, ok, err := e.server.sessions.GetSession(job.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("session %q not found", job.SessionID)
+	}
+	limit := session.MessageCount + 8
+	if limit < 500 {
+		limit = 500
+	}
+	messages, err := e.server.sessions.ListSessionMessages(job.SessionID, 0, limit)
+	if err != nil {
+		return nil, err
+	}
+	return runruntime.CompactMessagesForProviderContext(messages, 500), nil
 }
 
 func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (sessionV3ResolvedRuntime, error) {

@@ -2477,6 +2477,31 @@ func postSessionsV3PrimaryTestMessage(t *testing.T, server *Server, sessionID, c
 	}
 }
 
+func appendSessionsV3PrimaryTestUserMessage(t *testing.T, server *Server, sessionID, clientRequestID, content string) {
+	t.Helper()
+	now := time.Now().UnixMilli()
+	message := pebblestore.MessageSnapshot{ID: "test-user-" + clientRequestID, Role: "user", Content: content, CreatedAt: now}
+	payloadHash, err := sessionV3ExecutorPayloadHash(sessionID, "test-user", sessionruntime.RunIntentRunning, "", "session.message.appended", clientRequestID+":"+content)
+	if err != nil {
+		t.Fatalf("hash user message payload: %v", err)
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       sessionID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationAppendMessage,
+		EventType:       "session.message.appended",
+		Message:         &message,
+		NowUnixMs:       now,
+	}); err != nil {
+		t.Fatalf("append user message: %v", err)
+	}
+}
+
 func appendSessionsV3PrimaryTestSystemMessage(t *testing.T, server *Server, sessionID, clientRequestID, content string) {
 	t.Helper()
 	now := time.Now().UnixMilli()
@@ -3958,6 +3983,136 @@ func TestSessionsV3RuntimeInstructionsUseLegacyWorkspaceAndRuleContext(t *testin
 		if !strings.Contains(resolved.Instructions, want) {
 			t.Fatalf("resolved instructions missing %q:\n%s", want, resolved.Instructions)
 		}
+	}
+}
+
+func TestSessionsV3CompactEndpointSlicesRepeatedCompactionFromLatestCheckpoint(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	const (
+		oldRaw  = "session 0 raw transcript must be dropped before compact two"
+		newRaw  = "session 1 new slice must be retained before compact two"
+		summary = "summary one carries original request"
+	)
+	runner := &sessionsV3RecordingProviderRunner{handler: func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		switch req.SessionID {
+		default:
+		}
+		if strings.Contains(req.Instructions, "Master harness prompt") {
+			// Memory compaction has its own instructions; this assertion belongs to the main-agent test below.
+			t.Fatalf("memory compact unexpectedly used main-agent instructions: %q", req.Instructions)
+		}
+		if !strings.Contains(req.Instructions, "memory compact agent") {
+			t.Fatalf("compact did not use memory agent instructions: %q", req.Instructions)
+		}
+		if !strings.Contains(fmt.Sprint(req.Input), oldRaw) && !strings.Contains(fmt.Sprint(req.Input), summary) {
+			t.Fatalf("compact request missing prior context/checkpoint: %+v", req.Input)
+		}
+		if strings.Contains(fmt.Sprint(req.Input), newRaw) {
+			if strings.Contains(fmt.Sprint(req.Input), oldRaw) {
+				t.Fatalf("second compact oversent pre-checkpoint transcript: %+v", req.Input)
+			}
+			if !strings.Contains(fmt.Sprint(req.Input), summary) {
+				t.Fatalf("second compact missing previous checkpoint summary: %+v", req.Input)
+			}
+			return provideriface.Response{Text: "summary two", Model: "test-model", StopReason: "stop"}, nil
+		}
+		if !strings.Contains(fmt.Sprint(req.Input), oldRaw) {
+			t.Fatalf("first compact missing original raw transcript: %+v", req.Input)
+		}
+		return provideriface.Response{Text: summary, Model: "test-model", StopReason: "stop"}, nil
+	}}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	server.runner = runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, server.discovery, nil)
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "test-model", Thinking: "medium", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory compact prompt", ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}}); err != nil {
+		t.Fatalf("upsert memory agent: %v", err)
+	}
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "compact-slice-create", "compact slice", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	appendSessionsV3PrimaryTestUserMessage(t, server, created.ID, "compact-slice-old", oldRaw)
+	postSessionsV3CompactTestRequest(t, server, created.ID, "compact-slice-one")
+	appendSessionsV3PrimaryTestUserMessage(t, server, created.ID, "compact-slice-new", newRaw)
+	postSessionsV3CompactTestRequest(t, server, created.ID, "compact-slice-two")
+	if runner.callCount != 2 {
+		t.Fatalf("compact provider call count = %d, want 2", runner.callCount)
+	}
+}
+
+func TestSessionsV3ProviderInputAfterCompactUsesCheckpointAndRuntimePayload(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	primary := t.TempDir()
+	if err := os.WriteFile(filepath.Join(primary, "AGENTS.md"), []byte("# Primary compact rule\nPost compact rule payload."), 0o644); err != nil {
+		t.Fatalf("write AGENTS.md: %v", err)
+	}
+	server.discovery = discovery.NewService()
+	runner := &sessionsV3RecordingProviderRunner{handler: func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		inputText := fmt.Sprint(req.Input)
+		for _, want := range []string{"[context-compact]", "summary one carries original request", "new user after compact"} {
+			if !strings.Contains(inputText, want) {
+				t.Fatalf("provider input missing %q: %+v", want, req.Input)
+			}
+		}
+		if strings.Contains(inputText, "old raw before compact") {
+			t.Fatalf("provider input retained pre-compact raw transcript: %+v", req.Input)
+		}
+		for _, want := range []string{"Master harness prompt (applies to every agent run):", "Workspace scope:", "Loaded instruction sources:", "Post compact rule payload."} {
+			if !strings.Contains(req.Instructions, want) {
+				t.Fatalf("runtime instructions missing %q:\n%s", want, req.Instructions)
+			}
+		}
+		return provideriface.Response{Text: "post compact answer", Model: "test-model", StopReason: "stop"}, nil
+	}}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	server.runner = runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, server.discovery, nil)
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
+		t.Fatalf("upsert swarm agent: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "compact-runtime-create", "compact runtime", primary, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	appendSessionsV3PrimaryTestUserMessage(t, server, created.ID, "compact-runtime-old", "old raw before compact")
+	appendSessionsV3PrimaryTestSystemMessage(t, server, created.ID, "compact-runtime-checkpoint", "[context-compact] index=2 origin=manual\n\nCompacted recap:\nsummary one carries original request")
+	appendSessionsV3PrimaryTestUserMessage(t, server, created.ID, "compact-runtime-new", "new user after compact")
+	runID := "compact-runtime-run"
+	payloadHash, err := sessionV3ExecutorPayloadHash(created.ID, runID, sessionruntime.RunIntentPendingExecutor, "", "session.message.appended", "compact-runtime-run")
+	if err != nil {
+		t.Fatalf("hash pending run: %v", err)
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       created.ID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "compact-runtime-run",
+		IdempotencyKey:  "compact-runtime-run",
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationRecordRunIntent,
+		EventType:       "session.message.appended",
+		RunIntent:       &pebblestore.V3SessionRunIntent{RunID: runID, Status: sessionruntime.RunIntentPendingExecutor},
+		NowUnixMs:       time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("record pending run: %v", err)
+	}
+	if _, err := exec.assistantResponse(context.Background(), sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: created.ID, RunID: runID}); err != nil {
+		t.Fatalf("assistant response: %v", err)
+	}
+	if runner.callCount != 1 {
+		t.Fatalf("provider call count = %d, want 1", runner.callCount)
+	}
+}
+
+func postSessionsV3CompactTestRequest(t *testing.T, server *Server, sessionID, clientRequestID string) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+sessionID+"/compact", bytes.NewBufferString(fmt.Sprintf(`{"client_request_id":%q}`, clientRequestID)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("compact status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 }
 

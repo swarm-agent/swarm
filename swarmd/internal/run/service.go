@@ -1192,11 +1192,12 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		return result, nil
 	}
 
-	messages, err := s.listRunMessages(sessionID, 0, defaultHistoryLimit, options.ApplySessionMutation != nil)
+	historyLimit := sessionContextHistoryFetchLimit(sessionSnapshot, defaultHistoryLimit)
+	messages, err := s.listRunMessages(sessionID, 0, historyLimit, options.ApplySessionMutation != nil)
 	if err != nil {
 		return RunResult{}, err
 	}
-	messages = trimMessagesToLatestCompactionCheckpoint(messages)
+	messages = compactMessagesForProviderContext(messages, defaultHistoryLimit)
 
 	input := buildInput(messages)
 	rawToolDefinitions := convertToolDefinitions(s.ListAgentToolDefinitionsForAccount(options.Principal.AccountScopeID))
@@ -2564,6 +2565,14 @@ func emitMemoryCompactionStatus(emit StreamHandler, step int, summary string) {
 	emit(StreamEvent{Type: StreamEventSessionStatus, Status: "compacting", Step: step, Summary: summary})
 }
 
+func TrimMessagesToLatestCompactionCheckpoint(messages []pebblestore.MessageSnapshot) []pebblestore.MessageSnapshot {
+	return trimMessagesToLatestCompactionCheckpoint(messages)
+}
+
+func CompactMessagesForProviderContext(messages []pebblestore.MessageSnapshot, limit int) []pebblestore.MessageSnapshot {
+	return compactMessagesForProviderContext(messages, limit)
+}
+
 func trimMessagesToLatestCompactionCheckpoint(messages []pebblestore.MessageSnapshot) []pebblestore.MessageSnapshot {
 	latest := -1
 	for i := range messages {
@@ -2576,9 +2585,40 @@ func trimMessagesToLatestCompactionCheckpoint(messages []pebblestore.MessageSnap
 		latest = i
 	}
 	if latest < 0 {
-		return messages
+		return append([]pebblestore.MessageSnapshot(nil), messages...)
 	}
 	return append([]pebblestore.MessageSnapshot(nil), messages[latest:]...)
+}
+
+func compactMessagesForProviderContext(messages []pebblestore.MessageSnapshot, limit int) []pebblestore.MessageSnapshot {
+	messages = trimMessagesToLatestCompactionCheckpoint(messages)
+	if limit <= 0 || len(messages) <= limit {
+		return append([]pebblestore.MessageSnapshot(nil), messages...)
+	}
+	if len(messages) > 0 && strings.ToLower(strings.TrimSpace(messages[0].Role)) == "system" && isCompactionCheckpointMessage(messages[0].Content) {
+		if limit == 1 {
+			return append([]pebblestore.MessageSnapshot(nil), messages[0])
+		}
+		out := make([]pebblestore.MessageSnapshot, 0, limit)
+		out = append(out, messages[0])
+		tail := messages[1:]
+		if len(tail) > limit-1 {
+			tail = tail[len(tail)-(limit-1):]
+		}
+		out = append(out, tail...)
+		return out
+	}
+	return append([]pebblestore.MessageSnapshot(nil), messages[len(messages)-limit:]...)
+}
+
+func sessionContextHistoryFetchLimit(session pebblestore.SessionSnapshot, baseLimit int) int {
+	if baseLimit <= 0 {
+		baseLimit = defaultHistoryLimit
+	}
+	if session.MessageCount <= baseLimit {
+		return baseLimit
+	}
+	return session.MessageCount + memoryCompactionHistorySlack
 }
 
 func isCompactionCheckpointMessage(content string) bool {
