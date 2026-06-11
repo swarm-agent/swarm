@@ -39,10 +39,13 @@ type V3RealtimeFrame struct {
 	SessionID        string               `json:"session_id,omitempty"`
 	SubscriptionID   string               `json:"subscription_id,omitempty"`
 	AfterSeq         uint64               `json:"after_seq,omitempty"`
+	AfterRev         uint64               `json:"afterRev,omitempty"`
 	LastSeq          uint64               `json:"last_seq,omitempty"`
 	NextSeq          uint64               `json:"next_seq,omitempty"`
 	HighWatermarkSeq uint64               `json:"high_watermark_seq,omitempty"`
 	EndpointCursor   string               `json:"endpoint_cursor,omitempty"`
+	Rev              uint64               `json:"rev,omitempty"`
+	PrevRev          uint64               `json:"prevRev"`
 	EventType        string               `json:"event_type,omitempty"`
 	Event            *SessionV3Event      `json:"event,omitempty"`
 	Projection       *SessionV3Projection `json:"projection,omitempty"`
@@ -200,6 +203,12 @@ func applyV3RealtimeSessionOrder(lastSeqBySession map[string]uint64, frame *V3Re
 	if frame.Event.SessionID != sessionID {
 		return errors.New("v3 realtime event session_id conflicts with payload session_id")
 	}
+	if frame.Rev == 0 {
+		return errors.New("v3 realtime event missing rev")
+	}
+	if frame.Rev != frame.PrevRev+1 {
+		return errors.New("v3 realtime event requires continuous rev/prevRev")
+	}
 	if frame.Event.Seq == 0 {
 		return errors.New("v3 realtime event missing event.seq")
 	}
@@ -218,6 +227,8 @@ func applyV3RealtimeSessionOrder(lastSeqBySession map[string]uint64, frame *V3Re
 				ProtocolVersion:  v3RealtimeProtocolVersion,
 				Kind:             v3RealtimeKindCursorError,
 				SessionID:        sessionID,
+				Rev:              frame.Rev,
+				PrevRev:          frame.PrevRev,
 				LastSeq:          lastSeq,
 				NextSeq:          frame.Event.Seq,
 				HighWatermarkSeq: frame.HighWatermarkSeq,

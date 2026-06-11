@@ -62,7 +62,7 @@ func TestV3RealtimeContractRoundTripsEveryMessageType(t *testing.T) {
 		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindHighWater, SessionID: "session-a", HighWatermarkSeq: 12, EndpointCursor: "cursor-12"},
 		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: "session-a", SubscriptionID: "sub-a", AfterSeq: 10},
 		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindUnsubscribe, SessionID: "session-a", SubscriptionID: "sub-a"},
-		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: "cursor-12"},
+		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, AfterRev: 12},
 		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindAuthDenied, SessionID: "session-b", ErrorCode: "auth_denied", Error: "not authorized"},
 		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSlowConsumer, SessionID: "session-a", NextSeq: 13, ErrorCode: "slow_consumer", Reason: "reconnect required"},
 	}
@@ -87,6 +87,8 @@ func TestV3RealtimeContractRejectsInvalidMessages(t *testing.T) {
 		"missing protocol":             func(m V3RealtimeMessage) V3RealtimeMessage { m.Protocol = ""; return m },
 		"wrong protocol version":       func(m V3RealtimeMessage) V3RealtimeMessage { m.ProtocolVersion = 2; return m },
 		"missing session id":           func(m V3RealtimeMessage) V3RealtimeMessage { m.SessionID = ""; return m },
+		"missing rev":                  func(m V3RealtimeMessage) V3RealtimeMessage { m.Rev = 0; return m },
+		"non-continuous rev prevRev":   func(m V3RealtimeMessage) V3RealtimeMessage { m.PrevRev = 1; return m },
 		"missing event seq":            func(m V3RealtimeMessage) V3RealtimeMessage { m.Event.Seq = 0; return m },
 		"conflicting session identity": func(m V3RealtimeMessage) V3RealtimeMessage { m.Event.SessionID = "session-b"; return m },
 		"unsupported kind":             func(m V3RealtimeMessage) V3RealtimeMessage { m.Kind = "sessionV3StreamFrame"; return m },
@@ -138,6 +140,8 @@ func validV3RealtimeEventMessage(t *testing.T) V3RealtimeMessage {
 		LastSeq:          3,
 		HighWatermarkSeq: 3,
 		EndpointCursor:   "cursor-3",
+		Rev:              3,
+		PrevRev:          2,
 		EventType:        "session.message.appended",
 		Event:            &sessionruntime.SessionEvent{ID: "event-3", SessionID: "session-a", Seq: 3, EventType: "session.message.appended", Payload: payload, TsUnixMs: 1234},
 	}

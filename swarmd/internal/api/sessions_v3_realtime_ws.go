@@ -132,7 +132,7 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 					}
 				}
 			case V3RealtimeKindResume:
-				resumeSeq := parseV3RealtimeEndpointCursor(message.EndpointCursor)
+				resumeSeq := firstNonZeroUint64(message.AfterRev, parseV3RealtimeEndpointCursor(message.EndpointCursor))
 				advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, lastEndpointSeq, resumeSeq, subs)
 				if !ok {
 					return
@@ -306,6 +306,8 @@ func (s *Server) sendV3RealtimeOutboxEvent(conn *transportws.Conn, record sessio
 		LastSeq:          record.Event.Seq,
 		HighWatermarkSeq: record.Projection.ProjectionHighWatermarkSeq,
 		EndpointCursor:   record.EndpointCursor,
+		Rev:              record.EndpointSeq,
+		PrevRev:          record.EndpointSeq - 1,
 		EventType:        record.Event.EventType,
 		Event:            &record.Event,
 		Projection:       &record.Projection,
@@ -341,4 +343,13 @@ func pebbleV3RealtimeOutboxCursor(seq uint64) string {
 		return ""
 	}
 	return fmt.Sprintf("cursor-%d", seq)
+}
+
+func firstNonZeroUint64(values ...uint64) uint64 {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
+	}
+	return 0
 }

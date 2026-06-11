@@ -38,6 +38,9 @@ func TestV3RealtimePublishesCommittedOutboxEventAndReplaysAfterReconnect(t *test
 	if live.EndpointCursor != appendResult.RealtimeOutbox.EndpointCursor || live.Event.EventType != "session.message.appended" {
 		t.Fatalf("live realtime event = %+v outbox=%+v", live, appendResult.RealtimeOutbox)
 	}
+	if live.Rev != appendResult.RealtimeOutbox.EndpointSeq || live.PrevRev != appendResult.RealtimeOutbox.EndpointSeq-1 {
+		t.Fatalf("live realtime rev metadata = rev:%d prevRev:%d outbox=%+v", live.Rev, live.PrevRev, appendResult.RealtimeOutbox)
+	}
 
 	outboxRows, err := sessionSvc.ListRealtimeOutboxForSessionAfterSeq(created.ID, 0, 10)
 	if err != nil {
@@ -188,7 +191,7 @@ func TestV3RealtimeEndpointResumeDeliversAuthorizedSubscribedEventsAndSkipsOnlyS
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindEvent, b.ID, bAppend.Event.Seq)
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, b.ID, bAppend.Event.Seq)
 
-	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: "cursor-5"})
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, AfterRev: 5})
 	appendAfterResume := appendV3RealtimeTestMessage(t, server, b.ID, "message-realtime-resume-b-2", "b-two")
 	live := readV3RealtimeFrame(t, conn)
 	assertV3RealtimeFrame(t, live, V3RealtimeKindEvent, b.ID, appendAfterResume.Event.Seq)

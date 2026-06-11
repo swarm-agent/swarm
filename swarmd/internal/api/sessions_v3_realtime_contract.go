@@ -33,10 +33,13 @@ type V3RealtimeMessage struct {
 	SessionID        string                            `json:"session_id,omitempty"`
 	SubscriptionID   string                            `json:"subscription_id,omitempty"`
 	AfterSeq         uint64                            `json:"after_seq,omitempty"`
+	AfterRev         uint64                            `json:"afterRev,omitempty"`
 	LastSeq          uint64                            `json:"last_seq,omitempty"`
 	NextSeq          uint64                            `json:"next_seq,omitempty"`
 	HighWatermarkSeq uint64                            `json:"high_watermark_seq,omitempty"`
 	EndpointCursor   string                            `json:"endpoint_cursor,omitempty"`
+	Rev              uint64                            `json:"rev,omitempty"`
+	PrevRev          uint64                            `json:"prevRev"`
 	EventType        string                            `json:"event_type,omitempty"`
 	Event            *sessionruntime.SessionEvent      `json:"event,omitempty"`
 	Projection       *sessionruntime.SessionProjection `json:"projection,omitempty"`
@@ -94,8 +97,8 @@ func ValidateV3RealtimeMessage(message V3RealtimeMessage) error {
 		}
 		return nil
 	case V3RealtimeKindResume:
-		if strings.TrimSpace(message.EndpointCursor) == "" {
-			return errors.New("v3 realtime resume requires endpoint_cursor")
+		if strings.TrimSpace(message.EndpointCursor) == "" && message.AfterRev == 0 {
+			return errors.New("v3 realtime resume requires endpoint_cursor or afterRev")
 		}
 		return nil
 	default:
@@ -128,6 +131,12 @@ func validateV3RealtimeEventMessage(message V3RealtimeMessage) error {
 	}
 	if strings.TrimSpace(message.EndpointCursor) == "" {
 		return errors.New("v3 realtime event requires endpoint_cursor")
+	}
+	if message.Rev == 0 {
+		return errors.New("v3 realtime event requires rev")
+	}
+	if message.Rev != message.PrevRev+1 {
+		return errors.New("v3 realtime event requires continuous rev/prevRev")
 	}
 	if message.Event == nil {
 		return errors.New("v3 realtime event requires event")
