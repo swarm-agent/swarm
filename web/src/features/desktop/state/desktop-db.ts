@@ -1,4 +1,4 @@
-import { createCollection, localOnlyCollectionOptions, type Collection } from '@tanstack/db'
+import { BasicIndex, createCollection, eq, inArray, localOnlyCollectionOptions, type Collection } from '@tanstack/db'
 import { useLiveQuery } from '@tanstack/react-db'
 import type {
   AgentModelPolicyRecord,
@@ -208,6 +208,21 @@ export const desktopNotificationsCollection = createDesktopCollection<DesktopNot
 export const desktopNotificationCenterCollection = createDesktopCollection<DesktopNotificationCenterRecord>('desktop-v3-notification-center', (notification) => notification.id)
 export const desktopNotificationSummaryCollection = createDesktopCollection<DesktopDbNotificationSummaryRecord>('desktop-v3-notification-summary', (summary) => summary.id)
 
+const desktopMessagesBySessionIndex = desktopMessagesCollection.createIndex((message) => message.sessionId, { name: 'desktop_messages_by_session_id', indexType: BasicIndex })
+const desktopMessagesBySessionSeqIndex = desktopMessagesCollection.createIndex((message) => [message.sessionId, message.globalSeq], { name: 'desktop_messages_by_session_id_global_seq', indexType: BasicIndex })
+const desktopSessionsByWorkspaceIndex = desktopSessionsCollection.createIndex((session) => session.workspacePath, { name: 'desktop_sessions_by_workspace_id', indexType: BasicIndex })
+const desktopSessionsByUpdatedAtIndex = desktopSessionsCollection.createIndex((session) => session.updatedAt, { name: 'desktop_sessions_by_updated_at', indexType: BasicIndex })
+const desktopPlanRevisionsBySessionIndex = desktopPlanRevisionsCollection.createIndex((revision) => revision.sessionId, { name: 'desktop_plan_revisions_by_session_id', indexType: BasicIndex })
+const desktopRunIntentsBySessionStatusIndex = desktopRunIntentsCollection.createIndex((intent) => [intent.sessionId, intent.status], { name: 'desktop_run_intents_by_session_id_status', indexType: BasicIndex })
+const desktopPermissionsBySessionRunIndex = desktopPermissionsCollection.createIndex((permission) => [permission.sessionId, permission.runId], { name: 'desktop_permissions_by_session_id_run_id', indexType: BasicIndex })
+
+void desktopMessagesBySessionSeqIndex
+void desktopSessionsByWorkspaceIndex
+void desktopSessionsByUpdatedAtIndex
+void desktopPlanRevisionsBySessionIndex
+void desktopRunIntentsBySessionStatusIndex
+void desktopPermissionsBySessionRunIndex
+
 export const desktopDb = {
   sessions: desktopSessionsCollection,
   messages: desktopMessagesCollection,
@@ -260,9 +275,17 @@ export function readDesktopDbSession(sessionId: string): DesktopSessionRecord | 
 
 export function readDesktopDbMessages(sessionId: string): ChatMessageRecord[] {
   const normalizedSessionId = sessionId.trim()
-  return Array.from(desktopMessagesCollection.values())
-    .filter((message) => message.sessionId === normalizedSessionId)
-    .sort((left, right) => left.globalSeq - right.globalSeq || left.createdAt - right.createdAt)
+  if (!normalizedSessionId) {
+    return []
+  }
+  const messages: ChatMessageRecord[] = []
+  for (const key of desktopMessagesBySessionIndex.lookup('eq', normalizedSessionId)) {
+    const message = desktopMessagesCollection.get(key)
+    if (message) {
+      messages.push(message)
+    }
+  }
+  return messages.sort((left, right) => left.globalSeq - right.globalSeq || left.createdAt - right.createdAt)
 }
 
 export function readDesktopDbSessionReadiness(sessionId: string): DesktopDbSessionReadinessRecord | null {
@@ -599,71 +622,127 @@ export async function ensureDesktopDBRouteSession(_workspaceScope: DesktopWorksp
 }
 
 export function useDesktopRouteReadiness(_workspaceScope: DesktopWorkspaceScope, sessionId: string | null | undefined): DesktopDbSessionReadinessRecord | null {
-  const state = useDesktopCollectionState(desktopSessionReadinessCollection)
   const normalizedSessionId = sessionId?.trim() ?? ''
-  return normalizedSessionId ? state.get(normalizedSessionId) ?? null : null
+  const { data } = useLiveQuery(
+    (query) => normalizedSessionId
+      ? query.from({ readiness: desktopSessionReadinessCollection })
+        .where(({ readiness }) => eq(readiness.sessionId, normalizedSessionId))
+        .findOne()
+      : undefined,
+    [normalizedSessionId],
+  )
+  return (data as DesktopDbSessionReadinessRecord | undefined) ?? null
 }
 
 export function useDesktopWorkspaceSessions(workspaceScope: DesktopWorkspaceScope): DesktopSessionRecord[] {
-  const sessions = useDesktopCollectionData(desktopSessionsCollection)
-  const workspacePaths = desktopDbWorkspacePaths(workspaceScope)
-  return sessions
-    .filter((session) => workspacePaths.size === 0 || workspacePaths.has(session.workspacePath))
-    .sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id))
+  const workspacePaths = Array.from(desktopDbWorkspacePaths(workspaceScope)).sort()
+  const workspaceKey = workspacePaths.join('\u0000')
+  const { data } = useLiveQuery(
+    (query) => {
+      const scopedQuery = query.from({ session: desktopSessionsCollection })
+      const filteredQuery = workspacePaths.length === 0
+        ? scopedQuery
+        : scopedQuery.where(({ session }) => inArray(session.workspacePath, workspacePaths))
+      return filteredQuery
+        .orderBy(({ session }) => session.updatedAt, 'desc')
+        .orderBy(({ session }) => session.id)
+    },
+    [workspaceKey],
+  )
+  return (data as DesktopSessionRecord[] | undefined) ?? []
 }
 
 export function useDesktopSession(sessionId: string | null | undefined): DesktopSessionRecord | null {
-  const state = useDesktopCollectionState(desktopSessionsCollection)
   const normalizedSessionId = sessionId?.trim() ?? ''
-  return normalizedSessionId ? state.get(normalizedSessionId) ?? null : null
+  const { data } = useLiveQuery(
+    (query) => normalizedSessionId
+      ? query.from({ session: desktopSessionsCollection })
+        .where(({ session }) => eq(session.id, normalizedSessionId))
+        .findOne()
+      : undefined,
+    [normalizedSessionId],
+  )
+  return (data as DesktopSessionRecord | undefined) ?? null
 }
 
 export function useDesktopMessages(sessionId: string | null | undefined): ChatMessageRecord[] {
-  const messages = useDesktopCollectionData(desktopMessagesCollection)
   const normalizedSessionId = sessionId?.trim() ?? ''
-  return normalizedSessionId
-    ? messages.filter((message) => message.sessionId === normalizedSessionId).sort((left, right) => left.globalSeq - right.globalSeq || left.createdAt - right.createdAt)
-    : []
+  const { data } = useLiveQuery(
+    (query) => normalizedSessionId
+      ? query.from({ message: desktopMessagesCollection })
+        .where(({ message }) => eq(message.sessionId, normalizedSessionId))
+        .orderBy(({ message }) => message.globalSeq)
+        .orderBy(({ message }) => message.createdAt)
+      : undefined,
+    [normalizedSessionId],
+  )
+  return (data as ChatMessageRecord[] | undefined) ?? []
 }
 
 export function useDesktopPreference(sessionId: string | null | undefined): ResolvedSessionPreference | null {
-  const state = useDesktopCollectionState(desktopPreferencesCollection)
   const normalizedSessionId = sessionId?.trim() ?? ''
-  return normalizedSessionId ? state.get(normalizedSessionId) ?? null : null
+  const { data } = useLiveQuery(
+    (query) => normalizedSessionId
+      ? query.from({ preference: desktopPreferencesCollection })
+        .where(({ preference }) => eq(preference.sessionId, normalizedSessionId))
+        .findOne()
+      : undefined,
+    [normalizedSessionId],
+  )
+  return (data as DesktopDbPreferenceRecord | undefined) ?? null
 }
 
 export function useDesktopActiveRun(sessionId: string | null | undefined): DesktopRunIntentRecord | null {
-  const state = useDesktopCollectionState(desktopRunIntentsCollection)
   const normalizedSessionId = sessionId?.trim() ?? ''
-  return normalizedSessionId ? state.get(normalizedSessionId) ?? null : null
+  const { data } = useLiveQuery(
+    (query) => normalizedSessionId
+      ? query.from({ runIntent: desktopRunIntentsCollection })
+        .where(({ runIntent }) => eq(runIntent.sessionId, normalizedSessionId))
+        .findOne()
+      : undefined,
+    [normalizedSessionId],
+  )
+  return (data as DesktopRunIntentRecord | undefined) ?? null
 }
 
 export function useDesktopAgentModelPolicy(sessionId: string | null | undefined): AgentModelPolicyRecord | null {
-  const state = useDesktopCollectionState(desktopAgentModelPolicyCollection)
   const normalizedSessionId = sessionId?.trim() ?? ''
-  return normalizedSessionId ? state.get(normalizedSessionId)?.policy ?? null : null
+  const { data } = useLiveQuery(
+    (query) => normalizedSessionId
+      ? query.from({ policy: desktopAgentModelPolicyCollection })
+        .where(({ policy }) => eq(policy.sessionId, normalizedSessionId))
+        .findOne()
+      : undefined,
+    [normalizedSessionId],
+  )
+  return (data as DesktopDbAgentModelPolicyRecord | undefined)?.policy ?? null
 }
 
 export function useDesktopPlan(sessionId: string | null | undefined): DesktopDbSessionPlanRecord | null {
-  const state = useDesktopCollectionState(desktopPlansCollection)
   const normalizedSessionId = sessionId?.trim() ?? ''
-  return normalizedSessionId ? state.get(normalizedSessionId) ?? null : null
+  const { data } = useLiveQuery(
+    (query) => normalizedSessionId
+      ? query.from({ plan: desktopPlansCollection })
+        .where(({ plan }) => eq(plan.sessionId, normalizedSessionId))
+        .findOne()
+      : undefined,
+    [normalizedSessionId],
+  )
+  return (data as DesktopDbSessionPlanRecord | undefined) ?? null
 }
 
 export function useDesktopPlanRevisions(sessionId: string | null | undefined): DesktopDbSessionPlanRevisionRecord[] {
-  const revisions = useDesktopCollectionData(desktopPlanRevisionsCollection)
   const normalizedSessionId = sessionId?.trim() ?? ''
-  return normalizedSessionId
-    ? revisions.filter((revision) => revision.sessionId === normalizedSessionId).sort((left, right) => right.updatedAt - left.updatedAt || right.version - left.version)
-    : []
-}
-
-function useDesktopCollectionData<T extends object>(collection: DesktopDbCollection<T>): T[] {
-  return useLiveQuery(() => collection, [collection]).data ?? []
-}
-
-function useDesktopCollectionState<T extends object>(collection: DesktopDbCollection<T>): Map<string, T> {
-  return useLiveQuery(() => collection, [collection]).state ?? new Map<string, T>()
+  const { data } = useLiveQuery(
+    (query) => normalizedSessionId
+      ? query.from({ revision: desktopPlanRevisionsCollection })
+        .where(({ revision }) => eq(revision.sessionId, normalizedSessionId))
+        .orderBy(({ revision }) => revision.updatedAt, 'desc')
+        .orderBy(({ revision }) => revision.version, 'desc')
+      : undefined,
+    [normalizedSessionId],
+  )
+  return (data as DesktopDbSessionPlanRevisionRecord[] | undefined) ?? []
 }
 
 function desktopDbReadySession(sessionId: string, updatedAt: number): DesktopDbSessionReadinessRecord {
@@ -1608,9 +1687,11 @@ function replaceDesktopDbRecordsForSessions<T extends object>(collection: Deskto
 
 function mergeWithPendingDesktopDbMessages(sessionIds: Set<string>, records: ChatMessageRecord[]): ChatMessageRecord[] {
   const mergedBySession = new Map<string, ChatMessageRecord[]>()
-  for (const current of Array.from(desktopMessagesCollection.values())) {
-    if (sessionIds.has(current.sessionId) && isPendingUserMessage(current)) {
-      mergedBySession.set(current.sessionId, mergeMessageIntoCache(mergedBySession.get(current.sessionId), current))
+  for (const sessionId of sessionIds) {
+    for (const current of readDesktopDbMessages(sessionId)) {
+      if (isPendingUserMessage(current)) {
+        mergedBySession.set(current.sessionId, mergeMessageIntoCache(mergedBySession.get(current.sessionId), current))
+      }
     }
   }
   for (const record of records) {
@@ -1623,12 +1704,13 @@ function mergeWithPendingDesktopDbMessages(sessionIds: Set<string>, records: Cha
 }
 
 function replaceDesktopDbMessagesForSessions(sessionIds: Set<string>, records: ChatMessageRecord[]): void {
-  replaceDesktopDbRecordsForSessions(
-    desktopMessagesCollection,
-    sessionIds,
-    (message) => message.sessionId,
-    mergeWithPendingDesktopDbMessages(sessionIds, records),
-  )
+  const merged = mergeWithPendingDesktopDbMessages(sessionIds, records)
+  for (const sessionId of sessionIds) {
+    for (const key of Array.from(desktopMessagesBySessionIndex.lookup('eq', sessionId))) {
+      desktopMessagesCollection.delete(key)
+    }
+  }
+  upsertDesktopDbRecords(desktopMessagesCollection, merged)
 }
 
 function replaceDesktopDbMessagesCollection(sessionIds: Set<string>, records: ChatMessageRecord[]): void {
