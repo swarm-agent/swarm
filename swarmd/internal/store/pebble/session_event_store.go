@@ -18,6 +18,7 @@ const (
 	V3SessionMutationUpsertLifecycle  = "lifecycle.upsert"
 	V3SessionMutationRecordRunIntent  = "run_intent.record"
 	V3SessionMutationRecordDiagnostic = "diagnostic.record"
+	V3SessionMutationRecordUsage      = "usage.record"
 	V3SessionMutationUpdateMode       = "session.mode.update"
 	V3SessionMutationUpdatePreference = "session.preference.update"
 	V3SessionMutationUpdateMetadata   = "session.metadata.update"
@@ -60,6 +61,7 @@ type V3SessionMutationInput struct {
 	Message         *MessageSnapshot          `json:"message,omitempty"`
 	Lifecycle       *SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
 	RunIntent       *V3SessionRunIntent       `json:"run_intent,omitempty"`
+	TurnUsage       *SessionTurnUsageSnapshot `json:"turn_usage,omitempty"`
 	NowUnixMs       int64                     `json:"now_unix_ms,omitempty"`
 }
 
@@ -80,6 +82,8 @@ type V3SessionMutationResult struct {
 	Message         *MessageSnapshot           `json:"message,omitempty"`
 	Lifecycle       *SessionLifecycleSnapshot  `json:"lifecycle,omitempty"`
 	RunIntent       *V3SessionRunIntent        `json:"run_intent,omitempty"`
+	TurnUsage       *SessionTurnUsageSnapshot  `json:"turn_usage,omitempty"`
+	UsageSummary    *SessionUsageSummary       `json:"usage_summary,omitempty"`
 	Projection      V3SessionProjection        `json:"projection"`
 	Idempotency     V3SessionIdempotencyRecord `json:"idempotency"`
 	RealtimeOutbox  *V3RealtimeOutboxRecord    `json:"realtime_outbox,omitempty"`
@@ -193,17 +197,19 @@ type V3SessionHydration struct {
 }
 
 type v3SessionEventReplayPayload struct {
-	SessionID string                    `json:"session_id,omitempty"`
-	Seq       uint64                    `json:"seq,omitempty"`
-	Kind      string                    `json:"kind,omitempty"`
-	Session   *SessionSnapshot          `json:"session,omitempty"`
-	Message   *MessageSnapshot          `json:"message,omitempty"`
-	Lifecycle *SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
-	RunIntent *V3SessionRunIntent       `json:"run_intent,omitempty"`
-	MessageID string                    `json:"message_id,omitempty"`
-	Role      string                    `json:"role,omitempty"`
-	RunID     string                    `json:"run_id,omitempty"`
-	Status    string                    `json:"status,omitempty"`
+	SessionID    string                    `json:"session_id,omitempty"`
+	Seq          uint64                    `json:"seq,omitempty"`
+	Kind         string                    `json:"kind,omitempty"`
+	Session      *SessionSnapshot          `json:"session,omitempty"`
+	Message      *MessageSnapshot          `json:"message,omitempty"`
+	Lifecycle    *SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
+	RunIntent    *V3SessionRunIntent       `json:"run_intent,omitempty"`
+	TurnUsage    *SessionTurnUsageSnapshot `json:"turn_usage,omitempty"`
+	UsageSummary *SessionUsageSummary      `json:"usage_summary,omitempty"`
+	MessageID    string                    `json:"message_id,omitempty"`
+	Role         string                    `json:"role,omitempty"`
+	RunID        string                    `json:"run_id,omitempty"`
+	Status       string                    `json:"status,omitempty"`
 }
 
 func KeyV3SessionSequence(sessionID string) string {
@@ -355,7 +361,11 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
-	payload, err := input.v3EventPayload(seq, session, message, lifecycle, runIntent)
+	turnUsage, usageSummary, usageProvided, err := s.prepareV3UsageForMutation(input, now)
+	if err != nil {
+		return V3SessionMutationResult{}, err
+	}
+	payload, err := input.v3EventPayload(seq, session, message, lifecycle, runIntent, turnUsage, usageSummary)
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
@@ -391,6 +401,9 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	}
 	if runIntentProvided {
 		storedResult.RunID = runIntent.RunID
+	}
+	if usageProvided {
+		storedResult.RunID = turnUsage.RunID
 	}
 	idempotency := V3SessionIdempotencyRecord{
 		SessionID:       input.SessionID,
@@ -486,6 +499,32 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			}
 		}
 	}
+	if usageProvided {
+		usagePayload, err := json.Marshal(turnUsage)
+		if err != nil {
+			return V3SessionMutationResult{}, fmt.Errorf("marshal v3 turn usage %q/%q: %w", turnUsage.SessionID, turnUsage.RunID, err)
+		}
+		if err := batch.Set([]byte(KeySessionTurnUsage(turnUsage.SessionID, turnUsage.RunID)), usagePayload, nil); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		if turnUsage.AccountScopeID != "" {
+			if err := batch.Set([]byte(KeySessionTurnUsageByAccount(turnUsage.AccountScopeID, turnUsage.SessionID, turnUsage.RunID)), []byte(turnUsage.RunID), nil); err != nil {
+				return V3SessionMutationResult{}, err
+			}
+		}
+		summaryPayload, err := json.Marshal(usageSummary)
+		if err != nil {
+			return V3SessionMutationResult{}, fmt.Errorf("marshal v3 usage summary %q: %w", usageSummary.SessionID, err)
+		}
+		if err := batch.Set([]byte(KeySessionUsageSummary(usageSummary.SessionID)), summaryPayload, nil); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		if usageSummary.AccountScopeID != "" {
+			if err := batch.Set([]byte(KeySessionUsageSummaryByAccount(usageSummary.AccountScopeID, usageSummary.SessionID)), summaryPayload, nil); err != nil {
+				return V3SessionMutationResult{}, err
+			}
+		}
+	}
 	if runIntentProvided {
 		previousRunIntent, previousRunIntentOK, err := s.GetV3SessionRunIntent(runIntent.SessionID, runIntent.RunID)
 		if err != nil {
@@ -552,6 +591,10 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	}
 	if runIntentProvided {
 		result.RunIntent = &runIntent
+	}
+	if usageProvided {
+		result.TurnUsage = &turnUsage
+		result.UsageSummary = &usageSummary
 	}
 	return result, nil
 }
@@ -1181,6 +1224,107 @@ func isV3RunIntentTerminal(status string) bool {
 	}
 }
 
+func (s *SessionStore) prepareV3UsageForMutation(input V3SessionMutationInput, now int64) (SessionTurnUsageSnapshot, SessionUsageSummary, bool, error) {
+	if input.TurnUsage == nil {
+		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, false, nil
+	}
+	usage := sanitizeTurnUsageSnapshot(*input.TurnUsage)
+	usage.SessionID = input.SessionID
+	if usage.RunID == "" {
+		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, false, errors.New("turn usage run id is required")
+	}
+	session, ok, err := s.GetSession(input.SessionID)
+	if err != nil {
+		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, false, err
+	}
+	if !ok {
+		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, false, fmt.Errorf("session %q not found", input.SessionID)
+	}
+	previous, hadPrevious, err := s.GetTurnUsage(input.SessionID, usage.RunID)
+	if err != nil {
+		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, false, err
+	}
+	summary, hasSummary, err := s.GetUsageSummary(input.SessionID)
+	if err != nil {
+		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, false, err
+	}
+	if !hasSummary {
+		summary = SessionUsageSummary{SessionID: input.SessionID}
+	}
+	if hadPrevious {
+		summary = applyUsageDelta(summary, previous, -1)
+	} else {
+		summary.TurnCount++
+	}
+	usage.UserID = firstNonEmpty(usage.UserID, input.UserID, session.UserID)
+	usage.AccountScopeID = firstNonEmpty(usage.AccountScopeID, input.AccountScopeID, session.AccountScopeID)
+	if usage.CreatedAt <= 0 {
+		if hadPrevious && previous.CreatedAt > 0 {
+			usage.CreatedAt = previous.CreatedAt
+		} else {
+			usage.CreatedAt = now
+		}
+	}
+	usage.UpdatedAt = now
+	if usage.ContextWindow > 0 {
+		summary.ContextWindow = usage.ContextWindow
+	} else if summary.ContextWindow > 0 {
+		usage.ContextWindow = summary.ContextWindow
+	}
+	summary = applyUsageDelta(summary, usage, 1)
+	summary.SessionID = input.SessionID
+	summary.UserID = firstNonEmpty(summary.UserID, usage.UserID)
+	summary.AccountScopeID = firstNonEmpty(summary.AccountScopeID, usage.AccountScopeID)
+	if usage.Provider != "" {
+		summary.Provider = usage.Provider
+	}
+	if usage.Model != "" {
+		summary.Model = usage.Model
+	}
+	if usage.Source != "" {
+		summary.Source = usage.Source
+	}
+	summary.LastTransport = strings.ToLower(strings.TrimSpace(usage.Transport))
+	if usage.ConnectedViaWS != nil {
+		connected := *usage.ConnectedViaWS
+		summary.LastConnectedViaWS = &connected
+	} else {
+		summary.LastConnectedViaWS = nil
+	}
+	summary.LastRunID = usage.RunID
+	summary.UpdatedAt = now
+	if summary.ContextWindow > 0 {
+		used := usage.TotalTokens
+		if used <= 0 && usage.InputTokens > 0 {
+			used = usage.InputTokens
+		}
+		if used <= 0 {
+			used = summary.TotalTokens
+		}
+		if used < 0 {
+			used = 0
+		}
+		remaining := int64(summary.ContextWindow) - used
+		if remaining < 0 {
+			remaining = 0
+		}
+		summary.RemainingTokens = remaining
+	} else {
+		summary.RemainingTokens = 0
+	}
+	return usage, summary, true, nil
+}
+
+func applyUsageDelta(summary SessionUsageSummary, usage SessionTurnUsageSnapshot, sign int64) SessionUsageSummary {
+	summary.InputTokens += sign * usage.InputTokens
+	summary.OutputTokens += sign * usage.OutputTokens
+	summary.ThinkingTokens += sign * usage.ThinkingTokens
+	summary.CacheReadTokens += sign * usage.CacheReadTokens
+	summary.CacheWriteTokens += sign * usage.CacheWriteTokens
+	summary.TotalTokens += sign * usage.TotalTokens
+	return summary
+}
+
 func (s *SessionStore) prepareV3SessionForMutation(input V3SessionMutationInput, seq uint64, now int64) (SessionSnapshot, bool, error) {
 	if input.Session != nil {
 		if input.Kind == V3SessionMutationCreateSession && seq > 1 {
@@ -1480,6 +1624,8 @@ func normalizeV3SessionEventType(input V3SessionMutationInput) string {
 		return "session.run_intent.recorded"
 	case V3SessionMutationRecordDiagnostic:
 		return "session.diagnostic"
+	case V3SessionMutationRecordUsage:
+		return "run.usage.updated"
 	case V3SessionMutationUpdateMode:
 		return "session.mode.updated"
 	case V3SessionMutationUpdatePreference:
@@ -1493,7 +1639,7 @@ func normalizeV3SessionEventType(input V3SessionMutationInput) string {
 	}
 }
 
-func (input V3SessionMutationInput) v3EventPayload(seq uint64, session SessionSnapshot, message MessageSnapshot, lifecycle SessionLifecycleSnapshot, runIntent V3SessionRunIntent) (json.RawMessage, error) {
+func (input V3SessionMutationInput) v3EventPayload(seq uint64, session SessionSnapshot, message MessageSnapshot, lifecycle SessionLifecycleSnapshot, runIntent V3SessionRunIntent, turnUsage SessionTurnUsageSnapshot, usageSummary SessionUsageSummary) (json.RawMessage, error) {
 	if len(input.EventPayload) > 0 {
 		return append(json.RawMessage(nil), input.EventPayload...), nil
 	}
@@ -1522,6 +1668,15 @@ func (input V3SessionMutationInput) v3EventPayload(seq uint64, session SessionSn
 		payload.RunIntent = &intent
 		payload.RunID = intent.RunID
 		payload.Status = intent.Status
+	}
+	if turnUsage.RunID != "" {
+		usage := turnUsage
+		payload.TurnUsage = &usage
+		payload.RunID = usage.RunID
+	}
+	if usageSummary.SessionID != "" {
+		summary := usageSummary
+		payload.UsageSummary = &summary
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

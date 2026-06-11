@@ -80,7 +80,12 @@ func (s *Server) handleSessionsV3Workset(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, sessionsV3WorksetResponse(workset, permissionsBySession))
+	usageBySession, err := s.sessionsV3WorksetUsageSummaries(workset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sessionsV3WorksetResponse(workset, permissionsBySession, usageBySession))
 }
 
 func (s *Server) sessionsV3WorksetPendingPermissions(workset pebblestore.V3SessionWorksetResult) (map[string]any, error) {
@@ -98,9 +103,29 @@ func (s *Server) sessionsV3WorksetPendingPermissions(workset pebblestore.V3Sessi
 	return permissionsBySession, nil
 }
 
-func sessionsV3WorksetResponse(workset pebblestore.V3SessionWorksetResult, permissionsBySession map[string]any) map[string]any {
+func (s *Server) sessionsV3WorksetUsageSummaries(workset pebblestore.V3SessionWorksetResult) (map[string]any, error) {
+	usageBySession := map[string]any{}
+	if s == nil || s.sessions == nil {
+		return usageBySession, nil
+	}
+	for sessionID := range workset.SessionsByID {
+		summary, ok, err := s.sessions.GetUsageSummary(sessionID)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			usageBySession[sessionID] = summary
+		}
+	}
+	return usageBySession, nil
+}
+
+func sessionsV3WorksetResponse(workset pebblestore.V3SessionWorksetResult, permissionsBySession map[string]any, usageBySession map[string]any) map[string]any {
 	if permissionsBySession == nil {
 		permissionsBySession = map[string]any{}
+	}
+	if usageBySession == nil {
+		usageBySession = map[string]any{}
 	}
 	return map[string]any{
 		"ok":                            true,
@@ -111,7 +136,7 @@ func sessionsV3WorksetResponse(workset pebblestore.V3SessionWorksetResult, permi
 		"plans_by_session":              map[string]any{},
 		"plan_revisions_by_session":     map[string]any{},
 		"permissions_by_session":        permissionsBySession,
-		"usage_by_session":              map[string]any{},
+		"usage_by_session":              usageBySession,
 		"preferences_by_session":        map[string]any{},
 		"agent_model_policy_by_session": map[string]any{},
 		"run_intents_by_session":        workset.RunIntentsBySession,

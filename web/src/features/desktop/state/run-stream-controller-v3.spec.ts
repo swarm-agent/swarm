@@ -3,7 +3,7 @@ import { afterEach, test } from 'node:test'
 
 import { queryClient } from '../../../app/query-client'
 import { sessionMessagesQueryKey } from '../../queries/query-options'
-import { desktopRunIntentsCollection, readDesktopDbMessages, readDesktopDbSession } from './desktop-db'
+import { desktopRunIntentsCollection, readDesktopDbMessages, readDesktopDbSession, readDesktopDbUsage } from './desktop-db'
 import type { DesktopSessionRecord, DesktopStoreState } from '../types/realtime'
 import { applyEnvelope, useDesktopStore } from './use-desktop-store'
 import type { RunStreamEventMessage } from './run-stream-controller'
@@ -131,6 +131,49 @@ test('V3 stream frame application commits ordered durable message events and cur
   assert.equal(updated.messageCount, 1)
   assert.equal(updated.live.lastEventType, 'session.message.appended')
   assert.equal(updated.live.lastEventAt, 11)
+})
+
+test('V3 stream applies provider usage updates from durable session events', () => {
+  const session = makeSession({ id: 'session-v3', lastEventSeq: 1, projectionHighWatermarkSeq: 1 })
+  useDesktopStore.setState(makeState(session), true)
+
+  useDesktopStore.getState().__testApplyRunStreamFrame?.('session-v3', {
+    type: 'event',
+    ok: true,
+    session_id: 'session-v3',
+    last_seq: 2,
+    event: {
+      id: 'v3evt_session-v3_00000000000000000002',
+      session_id: 'session-v3',
+      seq: 2,
+      event_type: 'run.usage.updated',
+      ts_unix_ms: 20,
+      payload: {
+        session_id: 'session-v3',
+        run_id: 'run-v3',
+        usage_summary: {
+          session_id: 'session-v3',
+          provider: 'any-provider',
+          model: 'provider-model',
+          source: 'provider_api_usage',
+          context_window: 1000,
+          total_tokens: 250,
+          remaining_tokens: 750,
+          updated_at: 20,
+        },
+      },
+    },
+  }, 21)
+
+  const updated = useDesktopStore.getState().sessions['session-v3']
+  assert.equal(updated.usage?.provider, 'any-provider')
+  assert.equal(updated.usage?.model, 'provider-model')
+  assert.equal(updated.usage?.contextWindow, 1000)
+  assert.equal(updated.usage?.remainingTokens, 750)
+  assert.equal(updated.live.lastEventType, 'run.usage.updated')
+  assert.equal(updated.lastEventSeq, 2)
+  const cachedUsage = readDesktopDbUsage('session-v3')
+  assert.equal(cachedUsage?.remainingTokens, 750)
 })
 
 test('V3 stream maps committed assistant lifecycle events into live draft and final message state', () => {

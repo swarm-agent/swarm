@@ -17,6 +17,7 @@ import { setWorkspaceThemeCustomOptions } from '../../workspaces/launcher/servic
 import { openDesktopWebSocket } from '../realtime/client'
 import { disableVault, enableVault, exportVaultBundle, fetchVaultStatus, importVaultBundle, lockVault, unlockVault } from '../vault/api'
 import {
+  mapDesktopSessionUsageSummary,
   sendSessionMessage,
   type SendSessionMessageResult,
 } from '../chat/queries/chat-queries'
@@ -2480,6 +2481,13 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
   if (durableUpdatedAt > 0) {
     session.updatedAt = Math.max(session.updatedAt, durableUpdatedAt)
   }
+  const usageSummary = eventType === 'run.usage.updated'
+    ? mapDesktopSessionUsageSummary(payloadRecord.usage_summary)
+    : null
+  if (usageSummary) {
+    session.usage = usageSummary
+    session.updatedAt = Math.max(session.updatedAt, usageSummary.updatedAt)
+  }
 
   switch (eventType) {
     case 'session.created':
@@ -3124,6 +3132,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
   mergeDesktopDBDurablePatch({
     sessionId,
     session: merged,
+    usage: usageSummary,
     appliedSeq: envelopeSeq,
     highWatermark: envelopeSeq,
   })

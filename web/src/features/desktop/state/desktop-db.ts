@@ -273,6 +273,17 @@ export function readDesktopDbSession(sessionId: string): DesktopSessionRecord | 
   return desktopSessionsCollection.get(sessionId.trim()) ?? null
 }
 
+export function readDesktopDbUsage(sessionId: string): DesktopSessionUsageRecord | null {
+  return desktopUsageCollection.get(sessionId.trim()) ?? null
+}
+
+export function upsertDesktopDbUsage(usage: DesktopSessionUsageRecord | null | undefined): void {
+  if (!usage?.sessionId?.trim()) {
+    return
+  }
+  upsertDesktopDbRecord(desktopUsageCollection, usage)
+}
+
 export function readDesktopDbMessages(sessionId: string): ChatMessageRecord[] {
   const normalizedSessionId = sessionId.trim()
   if (!normalizedSessionId) {
@@ -363,6 +374,7 @@ export interface DesktopDbDurablePatch {
   sessionId?: string
   session?: DesktopSessionRecord | null
   messages?: ChatMessageRecord[]
+  usage?: DesktopSessionUsageRecord | null
   appliedSeq?: number
   highWatermark?: number
 }
@@ -376,6 +388,9 @@ export function mergeDesktopDBDurablePatch(patch: DesktopDbDurablePatch): Deskto
   if (patch.messages?.length) {
     mergeDesktopDbMessagesForSession(normalizedSessionId, patch.messages)
   }
+  if (patch.usage?.sessionId) {
+    upsertDesktopDbUsage(patch.usage)
+  }
 
   const appliedSeq = typeof patch.appliedSeq === 'number' ? Math.max(0, patch.appliedSeq) : 0
   const highWatermark = typeof patch.highWatermark === 'number' ? Math.max(0, patch.highWatermark) : appliedSeq
@@ -384,6 +399,12 @@ export function mergeDesktopDBDurablePatch(patch: DesktopDbDurablePatch): Deskto
   let mergedSession = incomingSession
     ? mergeSessionRecords(currentSession, incomingSession)
     : currentSession
+  if (mergedSession && patch.usage) {
+    mergedSession = {
+      ...mergedSession,
+      usage: patch.usage,
+    }
+  }
   if (mergedSession && (appliedSeq > 0 || highWatermark > 0)) {
     mergedSession = {
       ...mergedSession,

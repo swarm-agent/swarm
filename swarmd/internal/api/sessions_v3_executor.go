@@ -1014,6 +1014,23 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		"model":    modelName,
 		"result":   sessionV3ProviderResponseDiagnostic(response, streamed, flushCount),
 	})
+	usageProviderID := strings.TrimSpace(runner.ID())
+	if usageProviderID == "" {
+		usageProviderID = providerID
+	}
+	usageModel := strings.TrimSpace(response.Model)
+	if usageModel == "" {
+		usageModel = modelName
+	}
+	if _, recorded, usageErr := e.recordProviderUsage(job, resolved, usageProviderID, usageModel, response.Usage, time.Now().UnixMilli()); usageErr != nil {
+		return sessionV3AssistantResponse{}, usageErr
+	} else if recorded {
+		e.recordSessionV3Diagnostic(job, "session.diagnostic.provider.usage", "backend.provider", "usage-recorded", map[string]any{
+			"provider": usageProviderID,
+			"model":    usageModel,
+			"usage":    response.Usage,
+		})
+	}
 	content := strings.TrimSpace(response.Text)
 	if content == "" {
 		content = strings.TrimSpace(streamed)

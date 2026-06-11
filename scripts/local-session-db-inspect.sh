@@ -13,6 +13,7 @@ Examples:
   scripts/local-session-db-inspect.sh --latest 5
   scripts/local-session-db-inspect.sh --session <session-id> --dump
   scripts/local-session-db-inspect.sh --session <session-id> --copy-db --dump
+  scripts/local-session-db-inspect.sh --session-url https://<provider-host>/<workspace>/<session-id>
   scripts/local-session-db-inspect.sh --query "session.diagnostic.provider" --events 40
   scripts/local-session-db-inspect.sh --session <session-id> --dump --json --out tmp/session-dump.json
 
@@ -26,7 +27,8 @@ Options:
 
 Selection/search:
   --latest <n>          Inspect latest n sessions. Default: 5
-  --session <id>        Inspect one exact session id.
+  --session <id|url>    Inspect one exact session id. A URL uses its last path segment.
+  --session-url <url>    Extract the session id from a URL, copy DB, dump JSON to /tmp.
   --query <text>        Search session id/title/workspace/metadata/messages/events.
   --all                 Inspect all sessions scanned by --scan-limit.
   --scan-limit <n>      Max sessions to scan from newest first. Default: 1000
@@ -37,6 +39,7 @@ Output shaping:
   --dump                Dump all messages/events for selected sessions.
   --json                Emit JSON instead of human-readable text.
   --out <path>          Write full output to a local path instead of stdout.
+                        When --session-url is used, defaults to a /tmp dump file.
   -h, --help            Show this help.
 USAGE
 }
@@ -48,6 +51,27 @@ fail() {
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "missing required command: $1"
+}
+
+session_input_is_url_or_path() {
+  [[ "$1" == *"://"* || "$1" == */* ]]
+}
+
+extract_session_id() {
+  local value="$1"
+  value="${value%%#*}"
+  value="${value%%\?*}"
+  value="${value%/}"
+  value="${value##*/}"
+  printf '%s' "${value}"
+}
+
+safe_session_filename() {
+  local value="$1"
+  value="$(printf '%s' "${value}" | tr -c 'A-Za-z0-9_.-' '_')"
+  value="${value:0:80}"
+  [[ -n "${value}" ]] || value="session"
+  printf '%s' "${value}"
 }
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -64,6 +88,7 @@ COPY_ATTEMPTS="3"
 KEEP_COPY="false"
 LATEST="5"
 SESSION_ID=""
+SESSION_URL_MODE="false"
 QUERY=""
 ALL="false"
 SCAN_LIMIT="1000"
@@ -109,7 +134,18 @@ while [[ $# -gt 0 ]]; do
       ;;
     --session)
       [[ $# -ge 2 ]] || fail "--session requires a value"
-      SESSION_ID="$2"
+      if session_input_is_url_or_path "$2"; then
+        SESSION_URL_MODE="true"
+        SESSION_ID="$(extract_session_id "$2")"
+      else
+        SESSION_ID="$2"
+      fi
+      shift 2
+      ;;
+    --session-url)
+      [[ $# -ge 2 ]] || fail "--session-url requires a value"
+      SESSION_URL_MODE="true"
+      SESSION_ID="$(extract_session_id "$2")"
       shift 2
       ;;
     --query)
@@ -164,6 +200,16 @@ for pair in "latest:${LATEST}" "scan-limit:${SCAN_LIMIT}" "messages:${MESSAGE_LI
   value="${pair#*:}"
   [[ "${value}" =~ ^[0-9]+$ ]] || fail "--${name} must be an integer"
 done
+if [[ "${SESSION_URL_MODE}" == "true" ]]; then
+  [[ -n "${SESSION_ID}" ]] || fail "could not extract session id from URL"
+  COPY_DB="true"
+  DUMP="true"
+  JSON_OUTPUT="true"
+  if [[ -z "${OUT_PATH}" ]]; then
+    OUT_PATH="${TMPDIR:-/tmp}/swarm-sessiondump-$(safe_session_filename "${SESSION_ID}")-$(date -u +%Y%m%dT%H%M%SZ)-$$.json"
+  fi
+fi
+
 [[ -n "${DB_PATH}" ]] || fail "empty database path"
 [[ -d "${SWARMD_DIR}" ]] || fail "missing swarmd directory at ${SWARMD_DIR}"
 [[ -f "${GO_LIB}" ]] || fail "missing go resolver script at ${GO_LIB}"
@@ -200,15 +246,35 @@ if [[ "${STOP_SERVICE}" == "true" ]]; then
   fi
 fi
 
-tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/swarm-sessiondbinspect.XXXXXX")"
+TMP_BASE="$(cd -- "${TMPDIR:-/tmp}" && pwd)"
+tmpdir="$(mktemp -d "${TMP_BASE}/swarm-sessiondbinspect.XXXXXX")"
 INSPECT_DB_PATH="${DB_PATH}"
 COPIED_DB_PATH=""
+safe_tmpdir_path() {
+  [[ -n "${tmpdir:-}" && "${tmpdir}" == "${TMP_BASE}/swarm-sessiondbinspect."* && -d "${tmpdir}" ]]
+}
+safe_copied_db_path() {
+  [[ -n "${COPIED_DB_PATH:-}" && "${COPIED_DB_PATH}" == "${tmpdir}/"* && "$(basename -- "${COPIED_DB_PATH}")" == "swarmd.pebble.copy" && "${COPIED_DB_PATH}" != "${DB_PATH}" ]]
+}
 cleanup_tmpdir() {
   if [[ "${KEEP_COPY}" == "true" && -n "${COPIED_DB_PATH}" ]]; then
     printf 'local-session-db-inspect: kept copied db %s\n' "${COPIED_DB_PATH}" >&2
     return
   fi
-  rm -rf "${tmpdir}"
+  if [[ -n "${COPIED_DB_PATH}" && -e "${COPIED_DB_PATH}" ]]; then
+    if safe_copied_db_path; then
+      rm -rf "${COPIED_DB_PATH}"
+      printf 'local-session-db-inspect: deleted copied db %s\n' "${COPIED_DB_PATH}" >&2
+    else
+      printf 'local-session-db-inspect: refusing to delete unsafe copied db path %s\n' "${COPIED_DB_PATH}" >&2
+      return
+    fi
+  fi
+  if safe_tmpdir_path; then
+    rm -rf "${tmpdir}"
+  else
+    printf 'local-session-db-inspect: refusing to delete unsafe tmpdir path %s\n' "${tmpdir:-}" >&2
+  fi
 }
 trap 'cleanup_tmpdir; restore_service' EXIT
 
@@ -363,6 +429,11 @@ func main() {
 			candidate.V3Projection = &p
 		}
 		selected = append(selected, candidate)
+	}
+
+	if exactSessionID != "" && len(selected) == 0 {
+		fmt.Fprintf(os.Stderr, "session not found: %s\n", exactSessionID)
+		os.Exit(1)
 	}
 
 	result := report{
@@ -634,6 +705,7 @@ if [[ "${JSON_OUTPUT}" == "true" ]]; then cmd+=(--json); fi
     "${cmd[@]}" >"${OUT_PATH}"
     bytes="$(wc -c <"${OUT_PATH}" | tr -d ' ')"
     printf 'local-session-db-inspect: wrote output %s (%s bytes)\n' "${OUT_PATH}" "${bytes}" >&2
+    printf 'session_id=%s output_path=%s output_bytes=%s\n' "${SESSION_ID}" "${OUT_PATH}" "${bytes}"
   else
     "${cmd[@]}"
   fi

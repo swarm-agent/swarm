@@ -3058,6 +3058,114 @@ func TestSessionsV3ExecutorUsesProviderFromCommittedHistory(t *testing.T) {
 	}
 }
 
+func TestSessionV3ProviderUsageRecordAcceptsAnyProviderWithUsage(t *testing.T) {
+	usage, ok := sessionV3ProviderUsageRecord("acme-ai", "acme-model", 1234, "run-any-provider", provideriface.TokenUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15, Source: "acme_api_usage", Transport: "websocket"})
+	if !ok {
+		t.Fatal("generic provider usage was not tracked")
+	}
+	if usage.Provider != "acme-ai" || usage.Model != "acme-model" || usage.ContextWindow != 1234 || usage.TotalTokens != 15 || usage.Source != "acme_api_usage" {
+		t.Fatalf("usage record = %+v", usage)
+	}
+}
+
+func TestSessionsV3ExecutorStreamsAndPersistsCodexUsage(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{
+		id:   "codex",
+		text: "codex answer",
+		response: provideriface.Response{
+			ID:         "resp_codex_usage_1",
+			Model:      "gpt-5.5",
+			StopReason: "stop",
+			Usage: provideriface.TokenUsage{
+				InputTokens:     12731,
+				OutputTokens:    7,
+				TotalTokens:     12738,
+				CacheReadTokens: 11776,
+				Source:          "codex_api_usage",
+				Transport:       "websocket",
+				ConnectedViaWS:  pebblestore.BoolPtr(true),
+			},
+		},
+	}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	workspace := t.TempDir()
+	bindingID := seedSessionsV3PrimaryAuthority(t, server, workspace)
+	createBody := fmt.Sprintf(`{"client_request_id":"codex-usage-create","workspace_path":%q,"swarm_id":"host-swarm-id","workspace_binding_id":%q,"target_kind":"host","target_relationship":"self","title":"codex usage","mode":"auto","agent_name":"swarm","preference":{"provider":"codex","model":"gpt-5.5","thinking":"high"}}`, workspace, bindingID)
+	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(createBody))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(createRec, withTestPrincipal(createReq))
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, want %d, body=%s", createRec.Code, http.StatusOK, createRec.Body.String())
+	}
+	var createdResp struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createdResp); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	created := createdResp.Session
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "codex-usage-message", "check usage")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+
+	summary, ok, err := sessionSvc.GetUsageSummary(created.ID)
+	if err != nil {
+		t.Fatalf("get usage summary: %v", err)
+	}
+	if !ok {
+		t.Fatal("usage summary missing")
+	}
+	if summary.Provider != "codex" || summary.Model != "gpt-5.5" || summary.Source != "codex_api_usage" {
+		t.Fatalf("usage summary identity = %+v", summary)
+	}
+	if summary.InputTokens != 12731 || summary.OutputTokens != 7 || summary.TotalTokens != 12738 || summary.CacheReadTokens != 11776 {
+		t.Fatalf("usage summary tokens = %+v", summary)
+	}
+	if summary.ContextWindow <= 0 || summary.RemainingTokens <= 0 {
+		t.Fatalf("usage summary context window not populated: %+v", summary)
+	}
+
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 100)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	var usageEvent *sessionruntime.SessionEvent
+	for i := range events {
+		if events[i].EventType == "run.usage.updated" {
+			usageEvent = &events[i]
+			break
+		}
+	}
+	if usageEvent == nil {
+		t.Fatalf("run.usage.updated event missing: %+v", events)
+	}
+	var payload struct {
+		TurnUsage    pebblestore.SessionTurnUsageSnapshot `json:"turn_usage"`
+		UsageSummary pebblestore.SessionUsageSummary      `json:"usage_summary"`
+	}
+	if err := json.Unmarshal(usageEvent.Payload, &payload); err != nil {
+		t.Fatalf("decode usage event payload: %v", err)
+	}
+	if payload.TurnUsage.InputTokens != 12731 || payload.UsageSummary.TotalTokens != 12738 {
+		t.Fatalf("usage event payload = %+v", payload)
+	}
+
+	hydrated, ok, err := server.hydrateSessionsV3PrimaryWithLimits(testPrincipal(), created.ID, 10, 100)
+	if err != nil || !ok {
+		t.Fatalf("hydrate session ok=%v err=%v", ok, err)
+	}
+	if hydrated.UsageSummary == nil || hydrated.UsageSummary.TotalTokens != 12738 {
+		t.Fatalf("hydrated usage summary = %+v", hydrated.UsageSummary)
+	}
+}
+
 func TestSessionsV3ExecutorUsesAutoToolChoiceWhenToolsResolved(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	runner := &sessionsV3RecordingProviderRunner{text: "tool-enabled answer"}
@@ -4030,6 +4138,7 @@ func sessionsV3ProviderRequestToolNames(tools []provideriface.ToolDefinition) ma
 }
 
 type sessionsV3RecordingProviderRunner struct {
+	id            string
 	text          string
 	deltas        []string
 	err           error
@@ -4042,7 +4151,12 @@ type sessionsV3RecordingProviderRunner struct {
 	requests      []provideriface.Request
 }
 
-func (r *sessionsV3RecordingProviderRunner) ID() string { return "test-provider" }
+func (r *sessionsV3RecordingProviderRunner) ID() string {
+	if strings.TrimSpace(r.id) != "" {
+		return strings.TrimSpace(r.id)
+	}
+	return "test-provider"
+}
 func (r *sessionsV3RecordingProviderRunner) CreateResponse(ctx context.Context, req provideriface.Request) (provideriface.Response, error) {
 	return r.CreateResponseStreaming(ctx, req, nil)
 }

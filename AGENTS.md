@@ -256,6 +256,22 @@ For a clean database validation when the user says "Rebuild from 0", first commi
 
 Do not replace this flow with ad-hoc `scp`/`rsync` plus manual rebuild steps unless the script itself is broken and you are fixing it. This is the canonical fast manual testing path for "ssh alias" requests.
 
+## Local Session DB Inspection
+
+When a user says "dump this session" or asks to inspect a session using a provider/browser URL and does not explicitly ask to SSH, use the local inspector instead of writing throwaway Pebble snippets. Extract the session id from the URL's last path segment and run:
+
+```bash
+./scripts/local-session-db-inspect.sh --session-url <provider-url>
+```
+
+`--session-url` copies the configured local Pebble DB, dumps the exact session to a JSON file under `${TMPDIR:-/tmp}`, prints `session_id`, `output_path`, and `output_bytes`, then deletes only the temporary copied DB. Use `--db-path <path>` only when the local daemon is explicitly using a non-default canonical DB path. Do not use the SSH inspector unless the user asks for an SSH alias or remote host.
+
+Use the script's built-in help for current flags:
+
+```bash
+./scripts/local-session-db-inspect.sh --help
+```
+
 ## SSH Alias Session DB Inspection
 
 When a user asks to inspect, search, or dump remote Swarm sessions from an SSH alias, use `scripts/ssh-session-db-inspect.sh` instead of writing throwaway Pebble inspection snippets. It is intentionally general, not V3-only:

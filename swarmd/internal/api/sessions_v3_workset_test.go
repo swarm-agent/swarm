@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -60,6 +62,64 @@ func TestSessionsV3WorksetEndpointSupportsPaginationAndManifests(t *testing.T) {
 	}
 	if len(payload.SessionOrder) != 1 || payload.SessionOrder[0] != createdB.ID {
 		t.Fatalf("session_order = %+v", payload.SessionOrder)
+	}
+}
+
+func TestSessionsV3WorksetEndpointReturnsPersistedUsage(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "workset-usage", "Workset Usage")
+	now := time.Now().UnixMilli()
+	turnUsage := pebblestore.SessionTurnUsageSnapshot{
+		SessionID:     created.ID,
+		RunID:         "run-workset-usage",
+		Provider:      "codex",
+		Model:         "gpt-5.5",
+		Source:        "codex_api_usage",
+		ContextWindow: 1000,
+		InputTokens:   200,
+		OutputTokens:  50,
+		TotalTokens:   250,
+	}
+	payloadHash, err := sessionV3UsagePayloadHash(created.ID, turnUsage.RunID, turnUsage)
+	if err != nil {
+		t.Fatalf("hash usage payload: %v", err)
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       created.ID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "workset-usage-record",
+		IdempotencyKey:  "workset-usage-record",
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationRecordUsage,
+		EventType:       "run.usage.updated",
+		TurnUsage:       &turnUsage,
+		NowUnixMs:       now,
+	}); err != nil {
+		t.Fatalf("record usage: %v", err)
+	}
+
+	body := `{"session_ids":["` + created.ID + `"],"history":{"mode":"none"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions:workset", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("workset status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		UsageBySession map[string]pebblestore.SessionUsageSummary `json:"usage_by_session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode workset response: %v", err)
+	}
+	usage, ok := payload.UsageBySession[created.ID]
+	if !ok {
+		t.Fatalf("usage_by_session missing session %q: %+v", created.ID, payload.UsageBySession)
+	}
+	if usage.ContextWindow != 1000 || usage.TotalTokens != 250 || usage.RemainingTokens != 750 {
+		t.Fatalf("usage summary = %+v", usage)
 	}
 }
 
