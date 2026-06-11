@@ -3100,9 +3100,6 @@ func findUsageObject(responseObj map[string]any, decoded map[string]any) (map[st
 			return usage, "response.usage", true
 		}
 	}
-	if usage, ok := decoded["usage"].(map[string]any); ok && len(usage) > 0 {
-		return usage, "usage", true
-	}
 	return nil, "", false
 }
 

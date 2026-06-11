@@ -1039,23 +1039,6 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		"model":    modelName,
 		"result":   sessionV3ProviderResponseDiagnostic(response, streamed, flushCount),
 	})
-	usageProviderID := strings.TrimSpace(runner.ID())
-	if usageProviderID == "" {
-		usageProviderID = providerID
-	}
-	usageModel := strings.TrimSpace(response.Model)
-	if usageModel == "" {
-		usageModel = modelName
-	}
-	if _, recorded, usageErr := e.recordProviderUsage(job, resolved, usageProviderID, usageModel, response.Usage, time.Now().UnixMilli()); usageErr != nil {
-		return sessionV3AssistantResponse{}, usageErr
-	} else if recorded {
-		e.recordSessionV3Diagnostic(job, "session.diagnostic.provider.usage", "backend.provider", "usage-recorded", map[string]any{
-			"provider": usageProviderID,
-			"model":    usageModel,
-			"usage":    response.Usage,
-		})
-	}
 	content := strings.TrimSpace(response.Text)
 	if content == "" {
 		content = strings.TrimSpace(streamed)
@@ -1246,6 +1229,24 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			return provideriface.Response{}, "", totalFlushCount, progressErr
 		}
 		totalFlushCount += coalescer.FlushCount()
+		usageProviderID := strings.TrimSpace(runner.ID())
+		if usageProviderID == "" {
+			usageProviderID = strings.TrimSpace(resolved.Preference.Provider)
+		}
+		usageModel := strings.TrimSpace(response.Model)
+		if usageModel == "" {
+			usageModel = strings.TrimSpace(baseReq.Model)
+		}
+		if _, recorded, usageErr := e.recordProviderUsage(job, resolved, usageProviderID, usageModel, step, response.Usage, time.Now().UnixMilli()); usageErr != nil {
+			return provideriface.Response{}, "", totalFlushCount, usageErr
+		} else if recorded {
+			e.recordSessionV3Diagnostic(job, "session.diagnostic.provider.usage", "backend.provider", fmt.Sprintf("step-%d-usage-recorded", step), map[string]any{
+				"step":     step,
+				"provider": usageProviderID,
+				"model":    usageModel,
+				"usage":    response.Usage,
+			})
+		}
 		if len(response.FunctionCalls) == 0 && !response.RestartTurn {
 			finalStreamed.WriteString(streamed.String())
 			if strings.TrimSpace(response.StopReason) == "" && strings.TrimSpace(firstNonEmpty(response.Text, streamed.String())) != "" {

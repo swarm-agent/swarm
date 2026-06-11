@@ -3095,16 +3095,6 @@ func TestSessionsV3ExecutorUsesProviderFromCommittedHistory(t *testing.T) {
 	}
 }
 
-func TestSessionV3ProviderUsageRecordAcceptsAnyProviderWithUsage(t *testing.T) {
-	usage, ok := sessionV3ProviderUsageRecord("acme-ai", "acme-model", 1234, "run-any-provider", provideriface.TokenUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15, Source: "acme_api_usage", Transport: "websocket"})
-	if !ok {
-		t.Fatal("generic provider usage was not tracked")
-	}
-	if usage.Provider != "acme-ai" || usage.Model != "acme-model" || usage.ContextWindow != 1234 || usage.TotalTokens != 15 || usage.Source != "acme_api_usage" {
-		t.Fatalf("usage record = %+v", usage)
-	}
-}
-
 func TestSessionsV3ExecutorStreamsAndPersistsCodexUsage(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	runner := &sessionsV3RecordingProviderRunner{
@@ -3122,6 +3112,7 @@ func TestSessionsV3ExecutorStreamsAndPersistsCodexUsage(t *testing.T) {
 				Source:          "codex_api_usage",
 				Transport:       "websocket",
 				ConnectedViaWS:  pebblestore.BoolPtr(true),
+				APIUsageRawPath: "response.usage",
 			},
 		},
 	}
@@ -3166,7 +3157,7 @@ func TestSessionsV3ExecutorStreamsAndPersistsCodexUsage(t *testing.T) {
 		t.Fatalf("usage summary tokens = %+v", summary)
 	}
 	if summary.ContextWindow <= 0 || summary.RemainingTokens != int64(summary.ContextWindow)-summary.TotalTokens {
-		t.Fatalf("usage summary remaining should use accumulated normalized usage: %+v", summary)
+		t.Fatalf("usage summary remaining should use latest normalized provider usage: %+v", summary)
 	}
 	_, usageSummary2, _, err := sessionSvc.RecordTurnUsage(created.ID, pebblestore.SessionTurnUsageSnapshot{
 		RunID:           "codex-usage-second-response",
@@ -3183,11 +3174,11 @@ func TestSessionsV3ExecutorStreamsAndPersistsCodexUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("record second usage: %v", err)
 	}
-	if usageSummary2.TotalTokens <= int64(usageSummary2.ContextWindow) {
-		t.Fatalf("test setup did not exceed context window: %+v", usageSummary2)
+	if usageSummary2.TotalTokens != 116283 {
+		t.Fatalf("usage summary should keep latest provider snapshot, got %+v", usageSummary2)
 	}
-	if usageSummary2.RemainingTokens != 0 {
-		t.Fatalf("remaining tokens should clamp to zero from accumulated usage, got %+v", usageSummary2)
+	if usageSummary2.RemainingTokens != int64(usageSummary2.ContextWindow)-116283 {
+		t.Fatalf("remaining tokens should use latest provider snapshot, got %+v", usageSummary2)
 	}
 
 	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 100)
@@ -3219,8 +3210,89 @@ func TestSessionsV3ExecutorStreamsAndPersistsCodexUsage(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("hydrate session ok=%v err=%v", ok, err)
 	}
-	if hydrated.UsageSummary == nil || hydrated.UsageSummary.TotalTokens != usageSummary2.TotalTokens || hydrated.UsageSummary.RemainingTokens != 0 {
+	if hydrated.UsageSummary == nil || hydrated.UsageSummary.TotalTokens != usageSummary2.TotalTokens || hydrated.UsageSummary.RemainingTokens != usageSummary2.RemainingTokens {
 		t.Fatalf("hydrated usage summary = %+v", hydrated.UsageSummary)
+	}
+}
+
+func TestSessionsV3ProviderToolLoopRecordsCodexUsagePerProviderStep(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{
+		id: "codex",
+		responses: []provideriface.Response{
+			{
+				ID:          "resp_codex_usage_step_1",
+				Model:       "gpt-5.5",
+				RestartTurn: true,
+				Usage: provideriface.TokenUsage{
+					InputTokens:     100,
+					TotalTokens:     100,
+					Source:          "codex_api_usage",
+					Transport:       "websocket",
+					ConnectedViaWS:  pebblestore.BoolPtr(true),
+					APIUsageRawPath: "response.usage",
+				},
+			},
+			{
+				ID:         "resp_codex_usage_step_2",
+				Model:      "gpt-5.5",
+				Text:       "done",
+				StopReason: "stop",
+				Usage: provideriface.TokenUsage{
+					InputTokens:     200,
+					OutputTokens:    5,
+					TotalTokens:     205,
+					Source:          "codex_api_usage",
+					Transport:       "websocket",
+					ConnectedViaWS:  pebblestore.BoolPtr(true),
+					APIUsageRawPath: "response.usage",
+				},
+			},
+		},
+	}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "codex-step-usage-create", "codex step usage", pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.5", Thinking: "high"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "codex-step-usage-message", "check usage cadence")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+	if runner.callCount != 2 {
+		t.Fatalf("provider call count = %d, want 2", runner.callCount)
+	}
+
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 100)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	var payloads []struct {
+		TurnUsage    pebblestore.SessionTurnUsageSnapshot `json:"turn_usage"`
+		UsageSummary pebblestore.SessionUsageSummary      `json:"usage_summary"`
+	}
+	for _, event := range events {
+		if event.EventType != "run.usage.updated" {
+			continue
+		}
+		var payload struct {
+			TurnUsage    pebblestore.SessionTurnUsageSnapshot `json:"turn_usage"`
+			UsageSummary pebblestore.SessionUsageSummary      `json:"usage_summary"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("decode usage payload: %v", err)
+		}
+		payloads = append(payloads, payload)
+	}
+	if len(payloads) != 2 {
+		t.Fatalf("usage event count = %d, want 2 events=%+v", len(payloads), events)
+	}
+	if payloads[0].TurnUsage.Steps != 1 || payloads[0].TurnUsage.TotalTokens != 100 || payloads[0].UsageSummary.TotalTokens != 100 {
+		t.Fatalf("first usage payload = %+v", payloads[0])
+	}
+	if payloads[1].TurnUsage.Steps != 2 || payloads[1].TurnUsage.TotalTokens != 205 || payloads[1].UsageSummary.TotalTokens != 205 {
+		t.Fatalf("second usage payload = %+v", payloads[1])
 	}
 }
 
