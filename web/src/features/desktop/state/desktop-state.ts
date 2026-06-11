@@ -257,7 +257,7 @@ function upsertSessionPayload(state: DesktopState, payload: Record<string, unkno
 
   const sessionsById = {
     ...state.sessionsById,
-    [session.id]: session as DesktopSessionRecord,
+    [session.id]: session as unknown as DesktopSessionRecord,
   }
 
   return {
@@ -310,7 +310,7 @@ function upsertMessagePayload(state: DesktopState, payload: Record<string, unkno
     return null
   }
 
-  const typedMessage = message as ChatMessageRecord
+  const typedMessage = message as unknown as ChatMessageRecord
   const current = state.messagesBySessionId[typedMessage.sessionId] ?? []
   const withoutExisting = current.filter((existing) => existing.id !== typedMessage.id)
 
@@ -388,7 +388,7 @@ function deleteByIdPayload<StateKey extends 'permissionsById' | 'notificationsBy
 
   return {
     ...state,
-    [stateKey]: omitKey(state[stateKey], id),
+    [stateKey]: omitKey(state[stateKey] as unknown as Record<string, never>, id) as DesktopState[StateKey],
   }
 }
 
@@ -414,7 +414,7 @@ function setSessionValuePayload<
   if (value === null) {
     return {
       ...state,
-      [stateKey]: omitKey(state[stateKey], sessionId),
+      [stateKey]: omitKey(state[stateKey] as unknown as Record<string, never>, sessionId) as DesktopState[StateKey],
     }
   }
 
