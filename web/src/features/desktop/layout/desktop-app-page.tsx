@@ -14,7 +14,7 @@ import { useWorkspaceLauncher } from '../../workspaces/launcher/state/use-worksp
 import { applyDesktopRouteTheme } from './desktop-theme-controller'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
 import { agentStateQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
-import { fetchAndApplyDesktopDBWorkset } from '../state/desktop-db-workset'
+import { fetchAndApplyDesktopDBWorkset, seedDesktopDBWorksetFromDurableCache } from '../state/desktop-db-workset'
 import { ensureDesktopDBRouteSession, useDesktopRouteReadiness, useDesktopSession, useDesktopWorkspaceSessions } from '../state/desktop-db'
 import type { DesktopSessionRecord } from '../types/realtime'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
@@ -2054,11 +2054,16 @@ export function DesktopAppPage() {
     ]
     if (workspacePaths.length > 0) {
       bootstrapTasks.push((async () => {
-        await fetchAndApplyDesktopDBWorkset(queryClient, {
+        const request = {
           workspacePaths,
           recent: { limit: 50 },
-          history: { mode: 'full', maxMessagesPerSession: 200, maxEventsPerSession: 0, manifestPolicy: 'manifest', includeEvents: false },
-        }, { signal: abortController.signal })
+          history: { mode: 'full' as const, maxEventsPerSession: 0, manifestPolicy: 'manifest' as const, includeEvents: false },
+        }
+        await seedDesktopDBWorksetFromDurableCache(queryClient, request)
+        if (!isCurrentEpoch()) {
+          return
+        }
+        await fetchAndApplyDesktopDBWorkset(queryClient, request, { signal: abortController.signal })
       })())
     }
 

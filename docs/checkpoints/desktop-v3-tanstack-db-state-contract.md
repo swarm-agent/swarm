@@ -1,6 +1,8 @@
 # Desktop V3 TanStack DB state contract
 
-Status: CP-db-1 architecture rail for the Desktop V3 state replacement.
+Status: Superseded. Do not implement this rail. Use `docs/checkpoints/desktop-v3-external-store-state-contract.md` instead.
+
+Previous status: CP-db-1 architecture rail for the Desktop V3 state replacement.
 
 Desktop V3 must have one frontend authority for backend-derived data: TanStack DB. The backend remains the source of truth, and `POST /v3/sessions:workset` remains the bootstrap/sync input. React Query is allowed only as a transport/mutation layer that moves wire data into TanStack DB; it must not be read as an authoritative cache for Desktop routing, readiness, sidebar selection, chat rendering, permissions, plans, usage, or session metadata.
 

@@ -402,6 +402,33 @@ test('Desktop DB direct-route recovery hydrates a missing session and its active
   })
 })
 
+test('Desktop V3 durable workset cache seeds TanStack DB immediately without sidebar network hydration', async () => {
+  const { mapDesktopV3Workset, seedDesktopDBWorksetFromDurableCache, writeDesktopDBDurableWorkset } = await import('../../state/desktop-db-workset')
+  const { readDesktopDbMessages, readDesktopDbSession } = await import('../../state/desktop-db')
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  const request = {
+    workspacePaths: ['/repo'],
+    recent: { limit: 50 },
+    history: { mode: 'full' as const, maxEventsPerSession: 0, manifestPolicy: 'manifest' as const, includeEvents: false },
+  }
+  const workset = mapDesktopV3Workset(v3WorksetPayload(['session-durable-cache']))
+  await writeDesktopDBDurableWorkset(request, workset)
+
+  await withFetchStub(async (calls) => {
+    const seeded = await seedDesktopDBWorksetFromDurableCache(queryClient, request)
+
+    assert.equal(seeded?.sessionsById['session-durable-cache']?.id, 'session-durable-cache')
+    assert.equal(readDesktopDbSession('session-durable-cache')?.id, 'session-durable-cache')
+    assert.deepEqual(readDesktopDbMessages('session-durable-cache').map((message) => message.id), ['session-durable-cache-msg-1'])
+    assert.deepEqual(requestUrls(calls), [], 'durable cache seeding must not perform sidebar network hydration')
+    assertNoV1OrV2SessionDataCalls(calls)
+  })
+
+  queryClient.clear()
+})
+
 test('Desktop V3 workset hydration restores active run intent and active plan from the canonical route source', async () => {
   const { fetchAndApplyDesktopDBWorksetSession, readDesktopDBHydratedSession } = await import('../../state/desktop-db-workset')
   const { desktopPlansCollection, readDesktopDbSession } = await import('../../state/desktop-db')
@@ -577,9 +604,11 @@ test('Desktop route loader does not block route commit on the V3 session snapsho
 test('DesktopAppPage derives route readiness and cached switching from TanStack DB only', async () => {
   const source = await readFile(new URL('../../layout/desktop-app-page.tsx', import.meta.url), 'utf8')
 
-  assert.match(source, /fetchAndApplyDesktopDBWorkset\(queryClient, \{/)
+  assert.match(source, /seedDesktopDBWorksetFromDurableCache\(queryClient, request\)/)
+  assert.match(source, /fetchAndApplyDesktopDBWorkset\(queryClient, request,/)
   assert.match(source, /workspacePaths,/)
   assert.match(source, /recent: \{ limit: 50 \}/)
+  assert.doesNotMatch(source, /maxMessagesPerSession/)
   assert.match(source, /useDesktopRouteReadiness\(\{ workspacePath: selectedWorkspacePath \}, routeSessionId\)/)
   assert.match(source, /ensureDesktopDBRouteSession\(\{ workspacePath: selectedWorkspacePath \}, routeCriticalSessionId\)/)
   assert.match(source, /const routeSession = routeSessionId && routeReadiness\?\.ready \? dbRouteSession : null/)

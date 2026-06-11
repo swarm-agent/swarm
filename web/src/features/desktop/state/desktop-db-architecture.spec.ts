@@ -8,34 +8,42 @@ const webRoot = path.join(repoRoot, 'web')
 const desktopRoot = path.join(webRoot, 'src/features/desktop')
 const stateRoot = path.join(desktopRoot, 'state')
 const packageJsonPath = path.join(webRoot, 'package.json')
-const desktopDbPath = path.join(stateRoot, 'desktop-db.ts')
-const legacyStorePath = path.join(stateRoot, 'use-desktop-store.ts')
 
-const backendDerivedDesktopDataTerms = [
-  'sessions',
-  'session',
-  'messages',
-  'message',
-  'permissions',
-  'permission',
-  'plans',
-  'plan',
-  'usage',
-  'preference',
-  'agentModelPolicy',
-  'runIntent',
-  'projection',
-  'notificationCenter',
-  'vault',
+const externalStorePath = path.join(stateRoot, 'desktop-state-store.ts')
+const reducerPath = path.join(stateRoot, 'desktop-state.ts')
+const reducerSpecPath = path.join(stateRoot, 'desktop-state.spec.ts')
+const streamPath = path.join(stateRoot, 'desktop-state-stream.ts')
+const realtimeClientPath = path.join(desktopRoot, 'realtime/client.ts')
+const legacyDesktopDbPath = path.join(stateRoot, 'desktop-db.ts')
+
+const forbiddenPackageNames = ['@tanstack/db', '@tanstack/react-db'] as const
+
+const forbiddenDesktopDbPatterns: Array<{ label: string; pattern: RegExp }> = [
+  { label: '@tanstack/db import', pattern: /(?:from\s+['"]@tanstack\/db['"]|import\s*\([^)]*['"]@tanstack\/db['"])/ },
+  { label: '@tanstack/react-db import', pattern: /(?:from\s+['"]@tanstack\/react-db['"]|import\s*\([^)]*['"]@tanstack\/react-db['"])/ },
+  { label: 'useLiveQuery', pattern: /\buseLiveQuery\b/ },
+  { label: 'createCollection', pattern: /\bcreateCollection\s*(?:<|\()/ },
+  { label: 'localOnlyCollectionOptions', pattern: /\blocalOnlyCollectionOptions\b/ },
+  { label: 'BasicIndex', pattern: /\bBasicIndex\b/ },
+  { label: 'TanStack Collection type', pattern: /\bCollection\s*</ },
+  { label: 'Desktop DB collection symbol', pattern: /\bdesktop[A-Za-z0-9]*Collection\b/ },
 ]
 
-const allowedLegacyStoreFiles = new Set([
-  // The file may remain only while later checkpoints delete it. No production reader may import it.
-  'state/use-desktop-store.ts',
-])
+const legacyCanonicalMutationHelpers = [
+  'mergeDesktopDBDurablePatch',
+  'applyDurableEventToDesktopDB',
+  'applyOptimisticRunStartToDesktopDB',
+  'applyRunIntentToDesktopDB',
+  'desktopPlansCollection',
+  'ensureDesktopDBRouteSession',
+]
 
 function readText(filePath: string): string {
   return readFileSync(filePath, 'utf8')
+}
+
+function readJson<T>(filePath: string): T {
+  return JSON.parse(readText(filePath)) as T
 }
 
 function walkFiles(root: string): string[] {
@@ -59,157 +67,165 @@ function desktopRelative(filePath: string): string {
   return path.relative(desktopRoot, filePath).split(path.sep).join('/')
 }
 
-function exportedFunctionSource(source: string, name: string): string {
-  const start = source.indexOf(`export function ${name}`)
-  assert.notEqual(start, -1, `missing exported function ${name}`)
-  const bodyStart = source.indexOf('{', start)
-  assert.notEqual(bodyStart, -1, `missing body for exported function ${name}`)
-  let depth = 0
-  for (let index = bodyStart; index < source.length; index += 1) {
-    const char = source[index]
-    if (char === '{') {
-      depth += 1
-    } else if (char === '}') {
-      depth -= 1
-      if (depth === 0) {
-        return source.slice(start, index + 1)
-      }
-    }
-  }
-  assert.fail(`unterminated body for exported function ${name}`)
+function stateRelative(filePath: string): string {
+  return path.relative(stateRoot, filePath).split(path.sep).join('/')
 }
 
-function importsLegacyDesktopStore(source: string): boolean {
-  return /from\s+['"][^'"]*use-desktop-store['"]/.test(source)
+function isTestFile(filePath: string): boolean {
+  return /(?:^|\.)(?:spec|test|e2e\.spec)\.tsx?$/.test(path.basename(filePath))
 }
 
-function mentionsBackendDerivedDesktopData(source: string): boolean {
-  return backendDerivedDesktopDataTerms.some((term) => new RegExp(`\\b${term}\\b`, 'i').test(source))
+function productionDesktopFiles(): string[] {
+  return walkFiles(desktopRoot).filter((filePath) => !isTestFile(filePath))
 }
 
-test('Desktop V3 declares TanStack DB, not Zustand, as the frontend state authority dependency', () => {
-  const pkg = JSON.parse(readText(packageJsonPath)) as { dependencies?: Record<string, string> }
-  const dependencies = pkg.dependencies ?? {}
+function productionStateFiles(): string[] {
+  return walkFiles(stateRoot).filter((filePath) => !isTestFile(filePath))
+}
 
-  assert.ok(dependencies['@tanstack/db'], 'web/package.json must depend on @tanstack/db')
-  assert.equal(dependencies.zustand, undefined, 'zustand must be removed from the Desktop V3 data path dependencies')
+function matchingLineNumbers(source: string, pattern: RegExp): number[] {
+  return source
+    .split('\n')
+    .map((line, index) => ({ line, number: index + 1 }))
+    .filter(({ line }) => pattern.test(line))
+    .map(({ number }) => number)
+}
+
+function formatOffenders(offenders: string[]): string {
+  return offenders.length === 0 ? '(none)' : `\n${offenders.map((offender) => `- ${offender}`).join('\n')}`
+}
+
+function assertNoOffenders(message: string, offenders: string[]): void {
+  assert.deepEqual(offenders, [], `${message}${formatOffenders(offenders)}`)
+}
+
+function assertFileExists(filePath: string, label: string): void {
+  assert.equal(existsSync(filePath), true, `missing ${label}: ${path.relative(repoRoot, filePath)}`)
+}
+
+test('Desktop V3 package dependencies do not include TanStack DB authority packages', () => {
+  const pkg = readJson<{ dependencies?: Record<string, string>; devDependencies?: Record<string, string> }>(packageJsonPath)
+  const dependencyScopes = [pkg.dependencies ?? {}, pkg.devDependencies ?? {}]
+  const offenders = forbiddenPackageNames.filter((packageName) => dependencyScopes.some((dependencies) => dependencies[packageName]))
+
+  assertNoOffenders('Desktop V3 must not depend on TanStack DB authority packages.', offenders)
 })
 
-test('Desktop V3 has a canonical TanStack DB module for backend-derived state', () => {
-  assert.equal(existsSync(desktopDbPath), true, 'missing web/src/features/desktop/state/desktop-db.ts')
-
-  const source = existsSync(desktopDbPath) ? readText(desktopDbPath) : ''
-  assert.match(source, /@tanstack\/db/, 'desktop-db.ts must import TanStack DB')
-  assert.match(source, /\/v3\/sessions:workset|DesktopV3Workset/, 'desktop-db.ts must model the V3 workset bootstrap input')
-})
-
-test('the legacy Zustand desktop store is not an authoritative backend-derived store', () => {
-  if (!existsSync(legacyStorePath)) {
-    assert.ok(true)
-    return
-  }
-
-  const source = readText(legacyStorePath)
-  assert.doesNotMatch(source, /from\s+['"]zustand['"]/, 'use-desktop-store.ts must not create a Zustand store')
-  assert.doesNotMatch(source, /create\s*</, 'use-desktop-store.ts must not create an authoritative store')
-  assert.doesNotMatch(source, /sessions\s*:/, 'use-desktop-store.ts must not own backend-derived sessions')
-})
-
-test('production Desktop readers do not import useDesktopStore for backend-derived data', () => {
-  const offenders = walkFiles(desktopRoot)
-    .filter((filePath) => !filePath.endsWith('.spec.ts') && !filePath.endsWith('.spec.tsx') && !filePath.endsWith('.e2e.spec.ts') && !filePath.endsWith('.e2e.spec.tsx'))
-    .filter((filePath) => !allowedLegacyStoreFiles.has(desktopRelative(filePath)))
-    .filter((filePath) => {
-      const source = readText(filePath)
-      return importsLegacyDesktopStore(source) && mentionsBackendDerivedDesktopData(source)
+test('Desktop production source does not import or instantiate TanStack DB collections', () => {
+  const offenders = productionDesktopFiles().flatMap((filePath) => {
+    const source = readText(filePath)
+    const relative = desktopRelative(filePath)
+    return forbiddenDesktopDbPatterns.flatMap(({ label, pattern }) => {
+      const lines = matchingLineNumbers(source, pattern)
+      return lines.map((line) => `${relative}:${line} ${label}`)
     })
-    .map(desktopRelative)
+  }).sort()
+
+  assertNoOffenders('Desktop V3 production source must not contain TanStack DB / React DB / live-query collection authority.', offenders)
+})
+
+test('the legacy desktop-db.ts authority module is gone instead of living beside the external store', () => {
+  assert.equal(existsSync(legacyDesktopDbPath), false, 'delete web/src/features/desktop/state/desktop-db.ts after migrating its callers; do not keep a compatibility fork')
+})
+
+test('Desktop production source has no old DB mutation helpers or route hydration authority calls', () => {
+  const patterns = legacyCanonicalMutationHelpers.map((name) => ({ name, pattern: new RegExp(`\\b${name}\\b`) }))
+  const offenders = productionDesktopFiles().flatMap((filePath) => {
+    const source = readText(filePath)
+    const relative = desktopRelative(filePath)
+    return patterns.flatMap(({ name, pattern }) => matchingLineNumbers(source, pattern).map((line) => `${relative}:${line} ${name}`))
+  }).sort()
+
+  assertNoOffenders('Canonical Desktop state must change only through snapshot replacement or daemon events, not old DB helper paths.', offenders)
+})
+
+test('React Query is not used by Desktop state modules as a core-state authority', () => {
+  const offenders = productionStateFiles().flatMap((filePath) => {
+    const source = readText(filePath)
+    const relative = `state/${stateRelative(filePath)}`
+    const lines = matchingLineNumbers(source, /@tanstack\/react-query|\bQueryClient\b|\buseQueryClient\b|\buseQuery\b|queryClient\.(?:getQueryData|setQueryData|fetchQuery|ensureQueryData)/)
+    return lines.map((line) => `${relative}:${line}`)
+  }).sort()
+
+  assertNoOffenders('Desktop core state modules must not use React Query cache as canonical daemon state.', offenders)
+})
+
+test('Desktop V3 has exactly one canonical useSyncExternalStore projection store', () => {
+  assertFileExists(externalStorePath, 'Desktop external store module')
+
+  const source = readText(externalStorePath)
+  assert.match(source, /from\s+['"]react['"]/, 'desktop-state-store.ts must import useSyncExternalStore from react')
+  assert.match(source, /\buseSyncExternalStore\b/, 'desktop-state-store.ts must use useSyncExternalStore')
+  assert.match(source, /export\s+function\s+useDesktopState\b/, 'desktop-state-store.ts must export useDesktopState')
+  assert.match(source, /export\s+function\s+getDesktopSnapshot\b/, 'desktop-state-store.ts must export getDesktopSnapshot')
+  assert.match(source, /export\s+function\s+subscribeDesktop\b/, 'desktop-state-store.ts must export subscribeDesktop')
+  assert.match(source, /export\s+function\s+replaceDesktopFromSnapshot\b/, 'desktop-state-store.ts must export replaceDesktopFromSnapshot')
+  assert.match(source, /export\s+function\s+applyDesktopDaemonEvent\b/, 'desktop-state-store.ts must export applyDesktopDaemonEvent')
+  assert.match(source, /export\s+function\s+markDesktopStale\b/, 'desktop-state-store.ts must export markDesktopStale')
+  assert.doesNotMatch(source, /@tanstack\/db|@tanstack\/react-db|@tanstack\/react-query/, 'desktop-state-store.ts must not import TanStack DB, React DB, or React Query')
+
+  const canonicalStoreOwners = productionStateFiles()
+    .filter((filePath) => /\buseSyncExternalStore\b/.test(readText(filePath)))
+    .map((filePath) => `state/${stateRelative(filePath)}`)
     .sort()
 
-  assert.deepEqual(offenders, [], `backend-derived Desktop reads must come from TanStack DB, not useDesktopStore: ${offenders.join(', ')}`)
+  assert.deepEqual(canonicalStoreOwners, ['state/desktop-state-store.ts'], `only desktop-state-store.ts may own the canonical external store; found ${formatOffenders(canonicalStoreOwners)}`)
 })
 
-test('route readiness and cached session switching do not depend on the old workset/query cache authority', () => {
-  const offenders = walkFiles(desktopRoot)
-    .filter((filePath) => !filePath.endsWith('.spec.ts') && !filePath.endsWith('.spec.tsx') && !filePath.endsWith('.e2e.spec.ts') && !filePath.endsWith('.e2e.spec.tsx'))
-    .filter((filePath) => {
-      const relative = desktopRelative(filePath)
-      if (relative === 'state/desktop-v3-cache.ts' || relative === 'state/desktop-v3-durable-reducer.ts') {
-        return true
-      }
-      const source = readText(filePath)
-      return /desktop-v3-cache|desktop-v3-durable-reducer|hydrateDesktopV3|getCachedDesktopV3/.test(source)
-    })
-    .map(desktopRelative)
-    .sort()
+test('Desktop V3 has one reducer boundary for snapshot replacement and daemon events', () => {
+  assertFileExists(reducerPath, 'Desktop reducer module')
 
-  assert.deepEqual(offenders, [], `cached-session readiness must be TanStack DB-derived, not old query/cache authority: ${offenders.join(', ')}`)
+  const source = readText(reducerPath)
+  assert.match(source, /export\s+type\s+DesktopState\b|export\s+interface\s+DesktopState\b/, 'desktop-state.ts must export DesktopState')
+  assert.match(source, /export\s+type\s+DesktopDaemonSnapshot\b|export\s+interface\s+DesktopDaemonSnapshot\b/, 'desktop-state.ts must export DesktopDaemonSnapshot')
+  assert.match(source, /export\s+type\s+DesktopDaemonEvent\b|export\s+interface\s+DesktopDaemonEvent\b/, 'desktop-state.ts must export DesktopDaemonEvent')
+  assert.match(source, /export\s+function\s+createEmptyDesktopState\b/, 'desktop-state.ts must export createEmptyDesktopState')
+  assert.match(source, /export\s+function\s+desktopReducer\b/, 'desktop-state.ts must export desktopReducer')
+  assert.match(source, /snapshot\/replace/, 'desktopReducer must have a snapshot/replace action')
+  assert.match(source, /daemon\/event/, 'desktopReducer must have a daemon/event action')
+  assert.match(source, /connection\/stale/, 'desktopReducer must have a connection/stale action')
+  assert.match(source, /prevRev/, 'desktopReducer must check prevRev continuity before applying daemon payloads')
+  assert.match(source, /Number\.isFinite|isFinite/, 'desktopReducer must reject missing or non-finite rev metadata')
+  assert.doesNotMatch(source, /@tanstack\/db|@tanstack\/react-db|@tanstack\/react-query|useLiveQuery|createCollection|localOnlyCollectionOptions/, 'desktop-state.ts must be plain reducer code, not a DB/cache authority')
 })
 
-test('Desktop V3 hot message reads use scoped TanStack DB queries, not collection-wide subscriptions', () => {
-  const source = readText(desktopDbPath)
-  const hook = exportedFunctionSource(source, 'useDesktopMessages')
-  const reader = exportedFunctionSource(source, 'readDesktopDbMessages')
+test('Desktop reducer tests encode revision guard behavior', () => {
+  assertFileExists(reducerSpecPath, 'Desktop reducer unit test module')
 
-  assert.match(hook, /useLiveQuery\(\s*\(query\)\s*=>/, 'useDesktopMessages must create a query-shaped live query')
-  assert.match(hook, /from\(\{\s*message:\s*desktopMessagesCollection\s*\}\)/, 'useDesktopMessages must query from desktopMessagesCollection')
-  assert.match(hook, /where\(\(\{\s*message\s*\}\)\s*=>\s*eq\(message\.sessionId,\s*normalizedSessionId\)\)/, 'useDesktopMessages must scope by sessionId in the query')
-  assert.match(hook, /orderBy\(\(\{\s*message\s*\}\)\s*=>\s*message\.globalSeq\)/, 'useDesktopMessages must order in the query by globalSeq')
-  assert.match(hook, /orderBy\(\(\{\s*message\s*\}\)\s*=>\s*message\.createdAt\)/, 'useDesktopMessages must order in the query by createdAt')
-  assert.doesNotMatch(hook, /useLiveQuery\(\s*\(\)\s*=>\s*desktopMessagesCollection/, 'useDesktopMessages must not subscribe to the full message collection')
-  assert.doesNotMatch(hook, /useDesktopCollectionData\(desktopMessagesCollection\)/, 'useDesktopMessages must not read all messages through a helper')
-  assert.doesNotMatch(hook, /\.filter\(\s*\(?message\)?\s*=>\s*message\.sessionId\s*===/, 'useDesktopMessages must not filter session messages after reading all messages')
-  assert.doesNotMatch(hook, /\?\?\s*\[\]/, 'useDesktopMessages must not allocate a fresh empty array fallback each render')
-  assert.match(hook, /\?\?\s*EMPTY_DESKTOP_MESSAGES/, 'useDesktopMessages must use a stable empty array fallback')
-
-  assert.doesNotMatch(reader, /Array\.from\(desktopMessagesCollection\.values\(\)\)\s*\.filter/, 'per-session message snapshots must not scan all messages')
-  assert.match(reader, /desktopMessagesBySessionIndex\.lookup\('eq',\s*normalizedSessionId\)/, 'per-session message snapshots must use the sessionId index')
+  const source = readText(reducerSpecPath)
+  assert.match(source, /snapshot\s+replacement|snapshot\/replace|replace.*snapshot/i, 'reducer tests must cover snapshot replacement')
+  assert.match(source, /prevRev\s*={0,3}\s*state\.rev|matching\s+prevRev|continuous\s+rev/i, 'reducer tests must cover valid prevRev continuity')
+  assert.match(source, /prevRev\s*!={0,2}\s*state\.rev|mismatch|stale/i, 'reducer tests must cover prevRev mismatch causing stale/resync')
+  assert.match(source, /duplicate|old\s+event|rev\s*<=\s*state\.rev/i, 'reducer tests must cover duplicate/old events')
+  assert.match(source, /non-finite|Number\.isFinite|missing.*rev|invalid.*rev/i, 'reducer tests must cover missing or non-finite revision metadata')
+  assert.match(source, /resync|stale.*snapshot|clears\s+stale/i, 'reducer tests must cover resync snapshot clearing stale state')
 })
 
-test('Desktop V3 workspace, route readiness, and single-record hooks use scoped queries', () => {
-  const source = readText(desktopDbPath)
-  const workspaceSessions = exportedFunctionSource(source, 'useDesktopWorkspaceSessions')
-  const routeReadiness = exportedFunctionSource(source, 'useDesktopRouteReadiness')
-  const activeRun = exportedFunctionSource(source, 'useDesktopActiveRun')
-  const preference = exportedFunctionSource(source, 'useDesktopPreference')
-  const planRevisions = exportedFunctionSource(source, 'useDesktopPlanRevisions')
+test('Desktop stream lifecycle is a snapshot-first reducer feed, not a second store owner', () => {
+  assertFileExists(streamPath, 'Desktop stream lifecycle module')
 
-  assert.match(workspaceSessions, /from\(\{\s*session:\s*desktopSessionsCollection\s*\}\)/, 'workspace sessions must query from desktopSessionsCollection')
-  assert.match(workspaceSessions, /where\(\(\{\s*session\s*\}\)\s*=>\s*inArray\(session\.workspacePath,\s*workspacePaths\)\)/, 'workspace sessions must scope by workspace in the query')
-  assert.match(workspaceSessions, /orderBy\(\(\{\s*session\s*\}\)\s*=>\s*session\.updatedAt,\s*'desc'\)/, 'workspace sessions must order in the query')
-  assert.doesNotMatch(workspaceSessions, /useDesktopCollectionData\(desktopSessionsCollection\)/, 'workspace sessions must not subscribe to all sessions through a helper')
-  assert.doesNotMatch(workspaceSessions, /\.filter\(\s*\(?session\)?\s*=>/, 'workspace sessions must not filter sessions after collection-wide subscription')
-
-  assert.match(routeReadiness, /from\(\{\s*readiness:\s*desktopSessionReadinessCollection\s*\}\)/, 'route readiness must query the readiness row')
-  assert.match(routeReadiness, /where\(\(\{\s*readiness\s*\}\)\s*=>\s*eq\(readiness\.sessionId,\s*normalizedSessionId\)\)/, 'route readiness must scope by sessionId in the query')
-  assert.doesNotMatch(routeReadiness, /useDesktopCollectionState\(/, 'route readiness must not depend on a broad collection state subscription')
-
-  assert.match(activeRun, /from\(\{\s*runIntent:\s*desktopRunIntentsCollection\s*\}\)/, 'active run must query run intents by session')
-  assert.match(activeRun, /findOne\(\)/, 'active run must be a single-row query')
-  assert.match(preference, /from\(\{\s*preference:\s*desktopPreferencesCollection\s*\}\)/, 'preference must query preferences by session')
-  assert.match(preference, /findOne\(\)/, 'preference must be a single-row query')
-  assert.match(planRevisions, /from\(\{\s*revision:\s*desktopPlanRevisionsCollection\s*\}\)/, 'plan revisions must query plan revisions by session')
-  assert.doesNotMatch(planRevisions, /\?\?\s*\[\]/, 'useDesktopPlanRevisions must not allocate a fresh empty array fallback each render')
-  assert.match(planRevisions, /\?\?\s*EMPTY_DESKTOP_PLAN_REVISIONS/, 'useDesktopPlanRevisions must use a stable empty array fallback')
+  const source = readText(streamPath)
+  assert.match(source, /replaceDesktopFromSnapshot/, 'stream boot must replace store from snapshot before live patches')
+  assert.match(source, /applyDesktopDaemonEvent/, 'stream must apply daemon events through the external-store reducer entrypoint')
+  assert.match(source, /afterRev|prevRev|rev/, 'stream must subscribe/resume with revision metadata')
+  assert.match(source, /slow_consumer|cursor_error|reconnect_required|resync|overflow/, 'stream must resync on slow consumer, cursor error, reconnect required, or queue overflow')
+  assert.doesNotMatch(source, /new\s+Map\s*\([^)]*\)|createCollection|localOnlyCollectionOptions|useLiveQuery|@tanstack\/react-query/, 'stream module must not create a second canonical store/cache authority')
 })
 
-test('Desktop V3 scoped query indexes are declared for hot read predicates', () => {
-  const source = readText(desktopDbPath)
+test('Desktop V3 final stack is React, TypeScript, WebSocket, one external store, and one reducer', () => {
+  const pkg = readJson<{ dependencies?: Record<string, string>; devDependencies?: Record<string, string> }>(packageJsonPath)
+  const dependencies = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) }
 
-  assert.match(source, /desktopMessagesCollection\.createIndex\(\(message\)\s*=>\s*message\.sessionId,\s*\{\s*name:\s*'desktop_messages_by_session_id',\s*indexType:\s*BasicIndex\s*\}\)/)
-  assert.match(source, /desktopMessagesCollection\.createIndex\(\(message\)\s*=>\s*\[message\.sessionId,\s*message\.globalSeq\]/)
-  assert.match(source, /desktopSessionsCollection\.createIndex\(\(session\)\s*=>\s*session\.workspacePath/)
-  assert.match(source, /desktopPlanRevisionsCollection\.createIndex\(\(revision\)\s*=>\s*revision\.sessionId/)
-  assert.match(source, /desktopRunIntentsCollection\.createIndex\(\(intent\)\s*=>\s*\[intent\.sessionId,\s*intent\.status\]/)
-  assert.match(source, /desktopPermissionsCollection\.createIndex\(\(permission\)\s*=>\s*\[permission\.sessionId,\s*permission\.runId\]/)
-})
+  assert.ok(dependencies.react, 'React must remain in the final stack')
+  assert.ok(dependencies.typescript, 'TypeScript must remain in the final stack')
+  assertFileExists(realtimeClientPath, 'existing Desktop WebSocket client')
+  assertFileExists(externalStorePath, 'useSyncExternalStore Desktop store')
+  assertFileExists(reducerPath, 'Desktop reducer')
+  assertFileExists(reducerSpecPath, 'Desktop reducer tests')
 
-test('Desktop V3 sidebar and route code do not subscribe to the full message collection for live status', () => {
-  const desktopAppPagePath = path.join(desktopRoot, 'layout/desktop-app-page.tsx')
-  const source = readText(desktopAppPagePath)
+  const realtimeSource = readText(realtimeClientPath)
+  assert.match(realtimeSource, /WebSocket/, 'Desktop realtime client must use the existing WebSocket transport')
 
-  assert.match(source, /useDesktopWorkspaceSessions\(\{ workspacePaths: mergedSidebarWorkspaceEntries\.map\(\(workspace\) => workspace\.path\) \}\)/)
-  assert.match(source, /useDesktopRouteReadiness\(\{ workspacePath: selectedWorkspacePath \}, routeSessionId\)/)
-  assert.doesNotMatch(source, /desktopMessagesCollection/, 'sidebar/route code must not read the full messages collection')
-  assert.doesNotMatch(source, /useLiveQuery\(\s*\(\)\s*=>\s*desktopMessagesCollection/, 'sidebar/route code must not subscribe to all messages')
+  const forbiddenDependencyOffenders = forbiddenPackageNames.filter((packageName) => dependencies[packageName])
+  assertNoOffenders('Final stack must not include TanStack DB packages.', forbiddenDependencyOffenders)
 })

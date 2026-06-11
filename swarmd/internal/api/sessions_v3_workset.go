@@ -85,7 +85,12 @@ func (s *Server) handleSessionsV3Workset(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, sessionsV3WorksetResponse(workset, permissionsBySession, usageBySession))
+	plansBySession, planRevisionsBySession, err := s.sessionsV3WorksetPlans(workset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sessionsV3WorksetResponse(workset, permissionsBySession, usageBySession, plansBySession, planRevisionsBySession))
 }
 
 func (s *Server) sessionsV3WorksetPendingPermissions(workset pebblestore.V3SessionWorksetResult) (map[string]any, error) {
@@ -120,12 +125,42 @@ func (s *Server) sessionsV3WorksetUsageSummaries(workset pebblestore.V3SessionWo
 	return usageBySession, nil
 }
 
-func sessionsV3WorksetResponse(workset pebblestore.V3SessionWorksetResult, permissionsBySession map[string]any, usageBySession map[string]any) map[string]any {
+func (s *Server) sessionsV3WorksetPlans(workset pebblestore.V3SessionWorksetResult) (map[string]any, map[string]any, error) {
+	plansBySession := map[string]any{}
+	planRevisionsBySession := map[string]any{}
+	if s == nil || s.sessions == nil {
+		return plansBySession, planRevisionsBySession, nil
+	}
+	for sessionID := range workset.SessionsByID {
+		plan, ok, err := s.sessions.GetActivePlan(sessionID)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !ok {
+			continue
+		}
+		plansBySession[sessionID] = plan
+		revisions, err := s.sessions.ListPlanRevisions(sessionID, plan.ID, 100)
+		if err != nil {
+			return nil, nil, err
+		}
+		planRevisionsBySession[sessionID] = revisions
+	}
+	return plansBySession, planRevisionsBySession, nil
+}
+
+func sessionsV3WorksetResponse(workset pebblestore.V3SessionWorksetResult, permissionsBySession map[string]any, usageBySession map[string]any, plansBySession map[string]any, planRevisionsBySession map[string]any) map[string]any {
 	if permissionsBySession == nil {
 		permissionsBySession = map[string]any{}
 	}
 	if usageBySession == nil {
 		usageBySession = map[string]any{}
+	}
+	if plansBySession == nil {
+		plansBySession = map[string]any{}
+	}
+	if planRevisionsBySession == nil {
+		planRevisionsBySession = map[string]any{}
 	}
 	return map[string]any{
 		"ok":                            true,
@@ -133,8 +168,8 @@ func sessionsV3WorksetResponse(workset pebblestore.V3SessionWorksetResult, permi
 		"projections_by_session":        workset.ProjectionsBySession,
 		"messages_by_session":           workset.MessagesBySession,
 		"events_by_session":             workset.EventsBySession,
-		"plans_by_session":              map[string]any{},
-		"plan_revisions_by_session":     map[string]any{},
+		"plans_by_session":              plansBySession,
+		"plan_revisions_by_session":     planRevisionsBySession,
 		"permissions_by_session":        permissionsBySession,
 		"usage_by_session":              usageBySession,
 		"preferences_by_session":        map[string]any{},

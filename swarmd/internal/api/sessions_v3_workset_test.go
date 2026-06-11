@@ -65,6 +65,37 @@ func TestSessionsV3WorksetEndpointSupportsPaginationAndManifests(t *testing.T) {
 	}
 }
 
+func TestSessionsV3WorksetEndpointReturnsActivePlansAndRevisions(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "workset-plan", "Workset Plan")
+	plan, _, err := server.sessions.SavePlan(created.ID, "plan-workset", "Workset Plan", "# Plan", "draft", "draft", true)
+	if err != nil {
+		t.Fatalf("save plan: %v", err)
+	}
+
+	body := `{"session_ids":["` + created.ID + `"],"history":{"mode":"none"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions:workset", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("workset status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		PlansBySession         map[string]pebblestore.SessionPlanSnapshot   `json:"plans_by_session"`
+		PlanRevisionsBySession map[string][]pebblestore.SessionPlanSnapshot `json:"plan_revisions_by_session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode workset response: %v", err)
+	}
+	if payload.PlansBySession[created.ID].ID != plan.ID || payload.PlansBySession[created.ID].Plan != "# Plan" {
+		t.Fatalf("plans_by_session = %+v", payload.PlansBySession)
+	}
+	if len(payload.PlanRevisionsBySession[created.ID]) == 0 || payload.PlanRevisionsBySession[created.ID][0].ID != plan.ID {
+		t.Fatalf("plan_revisions_by_session = %+v", payload.PlanRevisionsBySession)
+	}
+}
+
 func TestSessionsV3WorksetEndpointReturnsPersistedUsage(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSession(t, server, "workset-usage", "Workset Usage")

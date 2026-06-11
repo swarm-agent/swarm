@@ -1,5 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query'
-import { requestJson } from '../../../app/api'
+import { apiFetch, readErrorMessage, requestJson } from '../../../app/api'
+import { createDebugTimer, debugLog } from '../../../lib/debug-log'
 import {
   applyWorksetToDesktopDB,
   desktopAgentModelPolicyCollection,
@@ -191,11 +192,24 @@ interface V3WorksetResponseWire {
 
 const DEFAULT_WORKSET_HISTORY = {
   mode: 'full' as const,
-  maxMessagesPerSession: 200,
   maxEventsPerSession: 0,
   manifestPolicy: 'manifest' as const,
   includeEvents: false,
 }
+
+const DESKTOP_DB_WORKSET_DURABLE_DB_NAME = 'swarm-desktop-v3-workset-cache'
+const DESKTOP_DB_WORKSET_DURABLE_DB_VERSION = 1
+const DESKTOP_DB_WORKSET_DURABLE_STORE = 'worksets'
+
+interface DesktopDBDurableWorksetEntry {
+  id: string
+  request: DesktopV3WorksetRequest
+  workset: DesktopV3Workset
+  savedAt: number
+}
+
+const memoryDurableWorksets = new Map<string, DesktopDBDurableWorksetEntry>()
+let durableWorksetDBPromise: Promise<IDBDatabase> | null = null
 
 export function desktopDBWorksetCacheQueryKey() {
   return ['desktop-v3-workset-cache'] as const
@@ -203,6 +217,109 @@ export function desktopDBWorksetCacheQueryKey() {
 
 export function desktopDBWorksetQueryKey(scope: string) {
   return ['desktop-v3-workset', scope.trim()] as const
+}
+
+function normalizedWorksetRequest(input: DesktopV3WorksetRequest): DesktopV3WorksetRequest {
+  return {
+    sessionIds: (input.sessionIds ?? []).map((sessionId) => sessionId.trim()).filter(Boolean),
+    workspacePath: input.workspacePath?.trim() || undefined,
+    workspacePaths: (input.workspacePaths ?? []).map((workspacePath) => workspacePath.trim()).filter(Boolean).sort(),
+    recent: input.recent
+      ? {
+          limit: input.recent.limit,
+          beforeUpdatedAt: input.recent.beforeUpdatedAt ?? undefined,
+          beforeSessionId: input.recent.beforeSessionId?.trim() || undefined,
+        }
+      : undefined,
+    history: input.history
+      ? {
+          mode: input.history.mode,
+          maxMessagesPerSession: input.history.maxMessagesPerSession,
+          maxEventsPerSession: input.history.maxEventsPerSession,
+          manifestPolicy: input.history.manifestPolicy,
+          includeEvents: input.history.includeEvents,
+        }
+      : undefined,
+  }
+}
+
+export function desktopDBWorksetDurableCacheKey(input: DesktopV3WorksetRequest): string {
+  return JSON.stringify(normalizedWorksetRequest(input))
+}
+
+function openDesktopDBWorksetDurableDB(): Promise<IDBDatabase | null> {
+  if (typeof indexedDB === 'undefined') {
+    return Promise.resolve(null)
+  }
+  if (durableWorksetDBPromise) {
+    return durableWorksetDBPromise
+  }
+  const promise = new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(DESKTOP_DB_WORKSET_DURABLE_DB_NAME, DESKTOP_DB_WORKSET_DURABLE_DB_VERSION)
+    request.onupgradeneeded = () => {
+      const db = request.result
+      if (!db.objectStoreNames.contains(DESKTOP_DB_WORKSET_DURABLE_STORE)) {
+        db.createObjectStore(DESKTOP_DB_WORKSET_DURABLE_STORE, { keyPath: 'id' })
+      }
+    }
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error ?? new Error('failed to open Desktop V3 workset durable cache'))
+    request.onblocked = () => reject(new Error('Desktop V3 workset durable cache open was blocked'))
+  }).catch((error) => {
+    durableWorksetDBPromise = null
+    throw error
+  })
+  durableWorksetDBPromise = promise
+  return promise
+}
+
+export async function readDesktopDBDurableWorkset(input: DesktopV3WorksetRequest): Promise<DesktopV3Workset | null> {
+  const id = desktopDBWorksetDurableCacheKey(input)
+  const db = await openDesktopDBWorksetDurableDB()
+  if (!db) {
+    return memoryDurableWorksets.get(id)?.workset ?? null
+  }
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(DESKTOP_DB_WORKSET_DURABLE_STORE, 'readonly')
+    const store = transaction.objectStore(DESKTOP_DB_WORKSET_DURABLE_STORE)
+    const request = store.get(id)
+    request.onsuccess = () => resolve((request.result as DesktopDBDurableWorksetEntry | undefined)?.workset ?? null)
+    request.onerror = () => reject(request.error ?? new Error('failed to read Desktop V3 workset durable cache'))
+  })
+}
+
+export async function writeDesktopDBDurableWorkset(input: DesktopV3WorksetRequest, workset: DesktopV3Workset): Promise<void> {
+  const entry: DesktopDBDurableWorksetEntry = {
+    id: desktopDBWorksetDurableCacheKey(input),
+    request: normalizedWorksetRequest(input),
+    workset,
+    savedAt: Date.now(),
+  }
+  const db = await openDesktopDBWorksetDurableDB()
+  if (!db) {
+    memoryDurableWorksets.set(entry.id, entry)
+    return
+  }
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction(DESKTOP_DB_WORKSET_DURABLE_STORE, 'readwrite')
+    const store = transaction.objectStore(DESKTOP_DB_WORKSET_DURABLE_STORE)
+    const request = store.put(entry)
+    request.onsuccess = () => resolve()
+    request.onerror = () => reject(request.error ?? new Error('failed to write Desktop V3 workset durable cache'))
+  })
+}
+
+export async function seedDesktopDBWorksetFromDurableCache(queryClient: QueryClient, input: DesktopV3WorksetRequest): Promise<DesktopV3Workset | null> {
+  const finishRead = createDebugTimer('desktop-db-workset', 'durable-cache-read', { key: desktopDBWorksetDurableCacheKey(input) })
+  const cached = await readDesktopDBDurableWorkset(input)
+  finishRead({ hit: Boolean(cached), sessionCount: cached?.sessionOrder.length ?? 0 })
+  if (!cached) {
+    return null
+  }
+  const finishApply = createDebugTimer('desktop-db-workset', 'durable-cache-apply', { sessionCount: cached.sessionOrder.length })
+  writeDesktopDBWorkset(queryClient, cached, input, { persist: false })
+  finishApply({ sessionCount: cached.sessionOrder.length })
+  return cached
 }
 
 export function assertRawCanonicalDesktopV3SessionId(sessionId: string): string {
@@ -700,12 +817,24 @@ export function desktopDBSessionSnapshotFromWorkset(workset: DesktopV3Workset | 
   }
 }
 
-export function writeDesktopDBWorkset(queryClient: QueryClient, workset: DesktopV3Workset, request: DesktopV3WorksetRequest | null = null): DesktopV3Workset {
+export function writeDesktopDBWorkset(
+  queryClient: QueryClient,
+  workset: DesktopV3Workset,
+  request: DesktopV3WorksetRequest | null = null,
+  options: { persist?: boolean } = {},
+): DesktopV3Workset {
   const cacheKey = desktopDBWorksetCacheQueryKey()
   const current = queryClient.getQueryData<DesktopV3Workset>(cacheKey) ?? null
   const merged = mergeDesktopV3Worksets(current, workset)
+  const finishApply = createDebugTimer('desktop-db-workset', 'tanstack-db-write', { sessionCount: merged.sessionOrder.length })
   applyWorksetToDesktopDB(merged, request)
+  finishApply({ sessionCount: merged.sessionOrder.length })
   queryClient.setQueryData(cacheKey, merged)
+  if (options.persist !== false && request) {
+    void writeDesktopDBDurableWorkset(request, merged).catch((error) => {
+      debugLog('desktop-db-workset', 'durable-cache-write:error', { message: error instanceof Error ? error.message : String(error) })
+    })
+  }
   return merged
 }
 
@@ -784,16 +913,31 @@ function assertWorksetSelector(input: DesktopV3WorksetRequest): void {
 
 export async function fetchDesktopDBWorkset(input: DesktopV3WorksetRequest, signal?: AbortSignal): Promise<DesktopV3Workset> {
   assertWorksetSelector(input)
-  const response = await requestJson<V3WorksetResponseWire>(
+  const body = JSON.stringify(toWorksetRequestWire(input))
+  const finishRequest = createDebugTimer('desktop-db-workset', 'workset-request', { endpoint: '/v3/sessions:workset', requestBytes: body.length })
+  const response = await apiFetch(
     '/v3/sessions:workset',
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(toWorksetRequestWire(input)),
+      body,
       signal,
     },
   )
-  return mapDesktopV3Workset(response)
+  finishRequest({ ok: response.ok, status: response.status })
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response))
+  }
+  const finishText = createDebugTimer('desktop-db-workset', 'workset-response-text')
+  const text = await response.text()
+  finishText({ responseBytes: text.length })
+  const finishParse = createDebugTimer('desktop-db-workset', 'workset-json-parse', { responseBytes: text.length })
+  const parsed = JSON.parse(text) as V3WorksetResponseWire
+  finishParse({ sessionCount: Object.keys(parsed.sessions_by_id ?? {}).length })
+  const finishMap = createDebugTimer('desktop-db-workset', 'workset-map')
+  const workset = mapDesktopV3Workset(parsed)
+  finishMap({ sessionCount: workset.sessionOrder.length, messageCount: Object.values(workset.messagesBySession).reduce((total, messages) => total + messages.length, 0) })
+  return workset
 }
 
 export async function fetchAndApplyDesktopDBWorkset(

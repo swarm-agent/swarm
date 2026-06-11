@@ -789,7 +789,7 @@ function desktopDbErrorSession(sessionId: string, updatedAt: number, error: unkn
 function desktopDbRouteWorksetRequest(sessionId: string): DesktopV3WorksetRequest {
   return {
     sessionIds: [sessionId],
-    history: { mode: 'full', maxMessagesPerSession: 200, maxEventsPerSession: 0, manifestPolicy: 'manifest', includeEvents: false },
+    history: { mode: 'full', maxEventsPerSession: 0, manifestPolicy: 'manifest', includeEvents: false },
   }
 }
 
