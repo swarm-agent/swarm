@@ -176,6 +176,8 @@ export type DesktopDbCollection<T extends object> = Collection<T, string>
 
 const MAX_LIVE_TOOL_OUTPUT_CHARS = 4000
 const MAX_LIVE_TOOL_HISTORY = 20
+const EMPTY_DESKTOP_MESSAGES: ChatMessageRecord[] = []
+const EMPTY_DESKTOP_PLAN_REVISIONS: DesktopDbSessionPlanRevisionRecord[] = []
 
 function createDesktopCollection<T extends object>(id: string, getKey: (item: T) => string): DesktopDbCollection<T> {
   return createCollection<T, string>(
@@ -699,7 +701,7 @@ export function useDesktopMessages(sessionId: string | null | undefined): ChatMe
       : undefined,
     [normalizedSessionId],
   )
-  return (data as ChatMessageRecord[] | undefined) ?? []
+  return (data as ChatMessageRecord[] | undefined) ?? EMPTY_DESKTOP_MESSAGES
 }
 
 export function useDesktopPreference(sessionId: string | null | undefined): ResolvedSessionPreference | null {
@@ -765,7 +767,7 @@ export function useDesktopPlanRevisions(sessionId: string | null | undefined): D
       : undefined,
     [normalizedSessionId],
   )
-  return (data as DesktopDbSessionPlanRevisionRecord[] | undefined) ?? []
+  return (data as DesktopDbSessionPlanRevisionRecord[] | undefined) ?? EMPTY_DESKTOP_PLAN_REVISIONS
 }
 
 function desktopDbReadySession(sessionId: string, updatedAt: number): DesktopDbSessionReadinessRecord {

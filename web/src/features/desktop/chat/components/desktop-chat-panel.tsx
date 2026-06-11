@@ -85,6 +85,20 @@ const DICTATION_RESTART_DELAY_MS = 180
 const DICTATION_FINAL_FLUSH_MS = 450
 const ALWAYS_APPLY_SAVED_NOTICE_MS = 5_000
 const RETURN_TO_SCROLL_LOCK_MIN_DISTANCE_PX = 48
+const RENDER_DIAGNOSTIC_STORAGE_KEY = 'swarm.web.debug.newSessionRender'
+const RENDER_DIAGNOSTIC_QUERY_PARAM = 'newSessionRenderDebug'
+const RENDER_STORM_WINDOW_MS = 1_000
+const RENDER_STORM_THRESHOLD = 60
+const RENDER_STORM_LOG_INTERVAL_MS = 250
+
+type RenderDiagnosticSnapshot = Record<string, unknown>
+type RenderDiagnosticState = {
+  renderCount: number
+  windowStartedAt: number
+  windowCount: number
+  lastLogAt: number
+  lastSnapshot: RenderDiagnosticSnapshot | null
+}
 
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike
 
@@ -139,6 +153,94 @@ function getSpeechRecognitionConstructor(): SpeechRecognitionConstructor | null 
   }
   const speechWindow = window as SpeechRecognitionWindow
   return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition ?? null
+}
+
+function renderDiagnosticsEnabled(): boolean {
+  if (typeof window === 'undefined') {
+    return false
+  }
+  try {
+    const params = new URLSearchParams(window.location.search)
+    if (params.has(RENDER_DIAGNOSTIC_QUERY_PARAM)) {
+      const value = params.get(RENDER_DIAGNOSTIC_QUERY_PARAM)
+      return value === null || !['0', 'false', 'off', 'no'].includes(value.trim().toLowerCase())
+    }
+    const stored = window.localStorage.getItem(RENDER_DIAGNOSTIC_STORAGE_KEY)
+    return stored !== null && ['1', 'true', 'yes', 'on', 'debug'].includes(stored.trim().toLowerCase())
+  } catch {
+    return false
+  }
+}
+
+function renderDiagnosticNow(): number {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now()
+}
+
+function renderDiagnosticValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return { kind: 'array', length: value.length }
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    return {
+      kind: 'object',
+      id: typeof record.id === 'string' ? record.id : undefined,
+      length: typeof record.length === 'number' ? record.length : undefined,
+      status: typeof record.status === 'string' ? record.status : undefined,
+      mode: typeof record.mode === 'string' ? record.mode : undefined,
+    }
+  }
+  return value
+}
+
+function diffRenderDiagnosticSnapshots(previous: RenderDiagnosticSnapshot | null, next: RenderDiagnosticSnapshot): Record<string, { previous: unknown; next: unknown; sameRef: boolean }> {
+  const diff: Record<string, { previous: unknown; next: unknown; sameRef: boolean }> = {}
+  for (const key of Object.keys(next)) {
+    const previousValue = previous?.[key]
+    const nextValue = next[key]
+    if (previous && Object.is(previousValue, nextValue)) {
+      continue
+    }
+    diff[key] = {
+      previous: renderDiagnosticValue(previousValue),
+      next: renderDiagnosticValue(nextValue),
+      sameRef: previous ? Object.is(previousValue, nextValue) : false,
+    }
+  }
+  return diff
+}
+
+function logRenderDiagnostics(state: RenderDiagnosticState, snapshot: RenderDiagnosticSnapshot): void {
+  if (!renderDiagnosticsEnabled()) {
+    return
+  }
+  const now = renderDiagnosticNow()
+  if (now - state.windowStartedAt > RENDER_STORM_WINDOW_MS) {
+    state.windowStartedAt = now
+    state.windowCount = 0
+  }
+  state.renderCount += 1
+  state.windowCount += 1
+  const storm = state.windowCount >= RENDER_STORM_THRESHOLD
+  const changed = diffRenderDiagnosticSnapshots(state.lastSnapshot, snapshot)
+  const changedKeys = Object.keys(changed)
+  if (storm || changedKeys.length > 0) {
+    const shouldLog = storm || now - state.lastLogAt >= RENDER_STORM_LOG_INTERVAL_MS
+    if (shouldLog) {
+      state.lastLogAt = now
+      console.info('[swarm:new-session-render-diagnostics]', {
+        t: Math.round(now * 10) / 10,
+        renderCount: state.renderCount,
+        windowCount: state.windowCount,
+        storm,
+        changedKeys,
+        changed,
+      })
+    }
+  }
+  state.lastSnapshot = snapshot
 }
 
 function appendDictationText(base: string, addition: string): string {
@@ -1188,6 +1290,13 @@ export function DesktopChatPanel({
   const [thinkingTagsSaving, setThinkingTagsSaving] = useState(false)
   const [defaultNewSessionMode, setDefaultNewSessionMode] = useState<'auto' | 'plan'>('auto')
   const [imageSidebar, setImageSidebar] = useState<ImageSessionSidebarState | null>(null)
+  const renderDiagnosticStateRef = useRef<RenderDiagnosticState>({
+    renderCount: 0,
+    windowStartedAt: 0,
+    windowCount: 0,
+    lastLogAt: 0,
+    lastSnapshot: null,
+  })
 
   const scrollerRef = useRef<HTMLDivElement | null>(null)
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null)
@@ -1269,6 +1378,31 @@ export function DesktopChatPanel({
     ?? (sessionId ? sessionPreference : draftPreference)
 
   const composer = useDesktopUiStore((state) => state.getSessionDraft(sessionId, workspacePath))
+  logRenderDiagnostics(renderDiagnosticStateRef.current, {
+    pathname: typeof window !== 'undefined' ? window.location.pathname : '',
+    sessionId,
+    workspacePath,
+    workspaceName,
+    session,
+    dbSession,
+    liveSession,
+    dbMessages,
+    dbPreference,
+    dbActiveRun,
+    dbAgentModelPolicy,
+    dbPlan,
+    dbPlanRevisions,
+    draftPreference,
+    draftSessionMode,
+    composer,
+    routeOptions,
+    selectedRouteId,
+    draftRouteOverrideId,
+    agentState,
+    modelOptions,
+    uiSettings: uiSettingsQuery.data,
+    queryFetchStatus: uiSettingsQuery.fetchStatus,
+  })
   const composerDraftKey = sessionId ?? draftSessionKey
   const setComposerDraft = useCallback((value: string) => {
     setSessionDraft(composerDraftKey, value)

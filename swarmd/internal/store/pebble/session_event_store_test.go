@@ -400,6 +400,60 @@ func openV3SessionEventTestStore(t *testing.T) *Store {
 	return store
 }
 
+func TestApplyV3SessionMutationUsageSummaryUsesLatestProviderTotal(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "session-codex-usage")
+
+	// Exact run.usage.updated sequence from session 5eec75c3eccbb18c3b564e0595593034.
+	// The frontend usage summary must expose the normalized provider snapshot, not
+	// a cumulative sum of earlier provider snapshots.
+	turns := []SessionTurnUsageSnapshot{
+		{RunID: "v3run_29e56b20903b242c097a7587864be713", Provider: "codex", Model: "gpt-5.5", Source: "codex_api_usage", Transport: "websocket", ContextWindow: 272000, InputTokens: 62318, OutputTokens: 326, ThinkingTokens: 132, CacheReadTokens: 42496, TotalTokens: 62644},
+		{RunID: "v3run_d094c6c72e8f6e1f4dc208fcf4761432", Provider: "codex", Model: "gpt-5.5", Source: "codex_api_usage", Transport: "websocket", ContextWindow: 272000, InputTokens: 236524, OutputTokens: 349, CacheReadTokens: 233472, TotalTokens: 236873},
+		{RunID: "v3run_1355cbbfd88e2202707210e104721b4a", Provider: "codex", Model: "gpt-5.5", Source: "codex_api_usage", Transport: "websocket", ContextWindow: 272000, InputTokens: 245356, OutputTokens: 407, ThinkingTokens: 153, CacheReadTokens: 244736, TotalTokens: 245763},
+		{RunID: "v3run_4dffeb36e1b4a3a8b5427fe84af0df07", Provider: "codex", Model: "gpt-5.5", Source: "codex_api_usage", Transport: "websocket", ContextWindow: 272000, InputTokens: 246838, OutputTokens: 6, CacheReadTokens: 246272, TotalTokens: 246844},
+		{RunID: "v3run_1c156b38c995f0d31179b89fa34a7ef5", Provider: "codex", Model: "gpt-5.5", Source: "codex_api_usage", Transport: "websocket", ContextWindow: 272000, InputTokens: 248409, OutputTokens: 408, CacheReadTokens: 247296, TotalTokens: 248817},
+		{RunID: "v3run_08a297a10aa085dcc48999c205746870", Provider: "codex", Model: "gpt-5.5", Source: "codex_api_usage", Transport: "websocket", ContextWindow: 272000, InputTokens: 252016, OutputTokens: 224, CacheReadTokens: 249344, TotalTokens: 252240},
+		{RunID: "v3run_6fc277f9f80963b2e215b32605387ee2", Provider: "codex", Model: "gpt-5.5", Source: "codex_api_usage", Transport: "websocket", ContextWindow: 272000, InputTokens: 252648, OutputTokens: 96, CacheReadTokens: 248320, TotalTokens: 252744},
+	}
+
+	var summary SessionUsageSummary
+	for index, turn := range turns {
+		result, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+			SessionID:      "session-codex-usage",
+			UserID:         "user-1",
+			AccountScopeID: "account-1",
+			IdempotencyKey: fmt.Sprintf("usage-%d", index),
+			PayloadHash:    fmt.Sprintf("hash-usage-%d", index),
+			Kind:           V3SessionMutationRecordUsage,
+			EventType:      "run.usage.updated",
+			TurnUsage:      &turn,
+			NowUnixMs:      int64(2000 + index),
+		})
+		if err != nil {
+			t.Fatalf("record usage %s: %v", turn.RunID, err)
+		}
+		if result.UsageSummary == nil {
+			t.Fatalf("record usage %s missing usage summary", turn.RunID)
+		}
+		summary = *result.UsageSummary
+	}
+
+	if summary.TotalTokens != 252744 {
+		t.Fatalf("summary total tokens = %d, want latest normalized codex total 252744", summary.TotalTokens)
+	}
+	if summary.RemainingTokens != 19256 {
+		t.Fatalf("summary remaining tokens = %d, want 272000 - 252744 = 19256", summary.RemainingTokens)
+	}
+	if summary.InputTokens != 252648 || summary.OutputTokens != 96 || summary.CacheReadTokens != 248320 {
+		t.Fatalf("summary token fields = input %d output %d cache_read %d, want latest provider snapshot", summary.InputTokens, summary.OutputTokens, summary.CacheReadTokens)
+	}
+	if summary.TurnCount != len(turns) {
+		t.Fatalf("summary turn count = %d, want %d", summary.TurnCount, len(turns))
+	}
+}
+
 func TestApplyV3SessionMutationRealtimeOutboxIsAtomicAndOrdered(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)

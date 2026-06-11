@@ -37,7 +37,9 @@ Output shaping:
   --messages <n>        Tail messages per selected session. Default: 12
   --events <n>          Tail V3 events per selected session. Default: 24
   --dump                Dump all messages/events for selected sessions.
-  --json                Emit JSON instead of human-readable text.
+  --outbox              Include realtime outbox records. Off by default because it scans global outbox.
+  --json                Emit compact JSON instead of human-readable text.
+  --pretty-json         Pretty-print JSON output. Slower/larger; compact is default.
   --out <path>          Write full output to a local path instead of stdout.
                         When --session-url is used, defaults to a /tmp dump file.
   -h, --help            Show this help.
@@ -95,7 +97,9 @@ SCAN_LIMIT="1000"
 MESSAGE_LIMIT="12"
 EVENT_LIMIT="24"
 DUMP="false"
+INCLUDE_OUTBOX="false"
 JSON_OUTPUT="false"
+PRETTY_JSON="false"
 OUT_PATH=""
 
 while [[ $# -gt 0 ]]; do
@@ -176,7 +180,16 @@ while [[ $# -gt 0 ]]; do
       DUMP="true"
       shift
       ;;
+    --outbox)
+      INCLUDE_OUTBOX="true"
+      shift
+      ;;
     --json)
+      JSON_OUTPUT="true"
+      shift
+      ;;
+    --pretty-json)
+      PRETTY_JSON="true"
       JSON_OUTPUT="true"
       shift
       ;;
@@ -369,7 +382,9 @@ func main() {
 	messageLimit := flag.Int("messages", 12, "tail messages per session")
 	eventLimit := flag.Int("events", 24, "tail events per session")
 	dump := flag.Bool("dump", false, "dump all messages and events for matched sessions")
+	includeOutbox := flag.Bool("outbox", false, "include realtime outbox records")
 	jsonOutput := flag.Bool("json", false, "emit json")
+	prettyJSON := flag.Bool("pretty-json", false, "pretty-print json output")
 	flag.Parse()
 
 	if strings.TrimSpace(*dbPath) == "" {
@@ -386,49 +401,54 @@ func main() {
 
 	sessions := pebblestore.NewSessionStore(store)
 	permissions := pebblestore.NewPermissionStore(store)
-	allSessions, err := sessions.ListSessions(10000)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "list sessions: %v\n", err)
-		os.Exit(1)
-	}
-	sort.Slice(allSessions, func(i, j int) bool { return allSessions[i].UpdatedAt > allSessions[j].UpdatedAt })
-
-	scanned := bounded(allSessions, positive(*scanLimit, 1000))
 	selected := make([]sessionDump, 0)
 	needle := strings.ToLower(strings.TrimSpace(*query))
 	exactSessionID := strings.TrimSpace(*sessionID)
 	latestLimit := positive(*latest, 5)
+	allSessions := []pebblestore.SessionSnapshot{}
+	scanned := []pebblestore.SessionSnapshot{}
 
-	for index, session := range scanned {
-		legacyMessages, _ := sessions.ListMessages(session.ID, 0, 100000)
-		v3Messages, _ := sessions.ListV3SessionMessages(session.ID, 0, 100000)
-		v3Events, _ := sessions.ListV3SessionEvents(session.ID, 0, 100000)
-		v3Intents, _ := sessions.ListV3SessionRunIntents(session.ID, 0, 1000)
-		v3Outbox, _ := sessions.ListV3RealtimeOutboxForSessionAfterSeq(session.ID, 0, 100000)
-		permissionRecords, _ := permissions.ListPermissions(session.ID, 1000)
-		pendingPermissions, _ := permissions.ListPendingPermissions(session.ID, 1000)
-		projection, hasProjection, _ := sessions.GetV3SessionProjection(session.ID)
+	if exactSessionID != "" {
+		session, ok, err := sessions.GetSession(exactSessionID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "get session %s: %v\n", exactSessionID, err)
+			os.Exit(1)
+		}
+		if !ok {
+			fmt.Fprintf(os.Stderr, "session not found: %s\n", exactSessionID)
+			os.Exit(1)
+		}
+		allSessions = append(allSessions, session)
+		scanned = append(scanned, session)
+		selected = append(selected, buildSessionDump(sessions, permissions, session, "session id", nil, nil, nil, false, *messageLimit, *eventLimit, *dump, *includeOutbox))
+	} else {
+		var err error
+		allSessions, err = sessions.ListSessions(10000)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "list sessions: %v\n", err)
+			os.Exit(1)
+		}
+		sort.Slice(allSessions, func(i, j int) bool { return allSessions[i].UpdatedAt > allSessions[j].UpdatedAt })
+		scanned = bounded(allSessions, positive(*scanLimit, 1000))
 
-		include, reason := shouldInclude(session, legacyMessages, v3Messages, v3Events, exactSessionID, needle, *all, index, latestLimit)
-		if !include {
-			continue
+		for index, session := range scanned {
+			var legacyMessages []pebblestore.MessageSnapshot
+			var v3Messages []pebblestore.MessageSnapshot
+			var v3Events []pebblestore.V3SessionEvent
+			historyLoaded := false
+			include, reason := shouldInclude(session, legacyMessages, v3Messages, v3Events, exactSessionID, needle, *all, index, latestLimit)
+			if !include && needle != "" {
+				legacyMessages, _ = sessions.ListMessages(session.ID, 0, 100000)
+				v3Messages, _ = sessions.ListV3SessionMessages(session.ID, 0, 100000)
+				v3Events, _ = sessions.ListV3SessionEvents(session.ID, 0, 100000)
+				historyLoaded = true
+				include, reason = shouldInclude(session, legacyMessages, v3Messages, v3Events, exactSessionID, needle, *all, index, latestLimit)
+			}
+			if !include {
+				continue
+			}
+			selected = append(selected, buildSessionDump(sessions, permissions, session, reason, legacyMessages, v3Messages, v3Events, historyLoaded, *messageLimit, *eventLimit, *dump, *includeOutbox))
 		}
-		candidate := sessionDump{
-			Session:        session,
-			LegacyMessages: trimMessages(legacyMessages, *messageLimit, *dump),
-			Permissions:    permissionRecords,
-			PendingPermissions: pendingPermissions,
-			V3Messages:     trimMessages(v3Messages, *messageLimit, *dump),
-			V3RunIntents:   v3Intents,
-			V3Events:       trimEvents(v3Events, *eventLimit, *dump),
-			V3Outbox:       trimOutbox(v3Outbox, *eventLimit, *dump),
-			MatchedReason:  reason,
-		}
-		if hasProjection {
-			p := projection
-			candidate.V3Projection = &p
-		}
-		selected = append(selected, candidate)
 	}
 
 	if exactSessionID != "" && len(selected) == 0 {
@@ -458,7 +478,9 @@ func main() {
 
 	if *jsonOutput {
 		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
+		if *prettyJSON {
+			encoder.SetIndent("", "  ")
+		}
 		if err := encoder.Encode(result); err != nil {
 			fmt.Fprintf(os.Stderr, "encode json: %v\n", err)
 			os.Exit(1)
@@ -466,6 +488,38 @@ func main() {
 		return
 	}
 	printText(result)
+}
+
+func buildSessionDump(sessions *pebblestore.SessionStore, permissions *pebblestore.PermissionStore, session pebblestore.SessionSnapshot, reason string, legacyMessages, v3Messages []pebblestore.MessageSnapshot, v3Events []pebblestore.V3SessionEvent, historyLoaded bool, messageLimit, eventLimit int, dump bool, includeOutbox bool) sessionDump {
+	if !historyLoaded {
+		legacyMessages, _ = sessions.ListMessages(session.ID, 0, 100000)
+		v3Messages, _ = sessions.ListV3SessionMessages(session.ID, 0, 100000)
+		v3Events, _ = sessions.ListV3SessionEvents(session.ID, 0, 100000)
+	}
+	v3Intents, _ := sessions.ListV3SessionRunIntents(session.ID, 0, 1000)
+	v3Outbox := []pebblestore.V3RealtimeOutboxRecord{}
+	if includeOutbox {
+		v3Outbox, _ = sessions.ListV3RealtimeOutboxForSessionAfterSeq(session.ID, 0, 100000)
+	}
+	permissionRecords, _ := permissions.ListPermissions(session.ID, 1000)
+	pendingPermissions, _ := permissions.ListPendingPermissions(session.ID, 1000)
+	projection, hasProjection, _ := sessions.GetV3SessionProjection(session.ID)
+	candidate := sessionDump{
+		Session:            session,
+		LegacyMessages:    trimMessages(legacyMessages, messageLimit, dump),
+		Permissions:       permissionRecords,
+		PendingPermissions: pendingPermissions,
+		V3Messages:        trimMessages(v3Messages, messageLimit, dump),
+		V3RunIntents:      v3Intents,
+		V3Events:          trimEvents(v3Events, eventLimit, dump),
+		V3Outbox:          trimOutbox(v3Outbox, eventLimit, dump),
+		MatchedReason:     reason,
+	}
+	if hasProjection {
+		p := projection
+		candidate.V3Projection = &p
+	}
+	return candidate
 }
 
 func shouldInclude(session pebblestore.SessionSnapshot, legacyMessages, v3Messages []pebblestore.MessageSnapshot, v3Events []pebblestore.V3SessionEvent, sessionID, needle string, all bool, index, latest int) (bool, string) {
@@ -693,13 +747,14 @@ if [[ -n "${SESSION_ID}" ]]; then cmd+=(--session "${SESSION_ID}"); fi
 if [[ -n "${QUERY}" ]]; then cmd+=(--query "${QUERY}"); fi
 if [[ "${ALL}" == "true" ]]; then cmd+=(--all); fi
 if [[ "${DUMP}" == "true" ]]; then cmd+=(--dump); fi
+if [[ "${INCLUDE_OUTBOX}" == "true" ]]; then cmd+=(--outbox); fi
 if [[ "${JSON_OUTPUT}" == "true" ]]; then cmd+=(--json); fi
+if [[ "${PRETTY_JSON}" == "true" ]]; then cmd+=(--pretty-json); fi
 
 (
   cd "${tmpdir}"
   export GOCACHE="${GOCACHE:-${ROOT_DIR}/.cache/go-build}"
   mkdir -p "${GOCACHE}"
-  "${GO_BIN}" mod tidy >/dev/null
   if [[ -n "${OUT_PATH}" ]]; then
     mkdir -p "$(dirname "${OUT_PATH}")"
     "${cmd[@]}" >"${OUT_PATH}"

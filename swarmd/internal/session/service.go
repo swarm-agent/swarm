@@ -1529,9 +1529,7 @@ func (s *Service) RecordTurnUsage(sessionID string, usage pebblestore.SessionTur
 		summary = pebblestore.SessionUsageSummary{SessionID: sessionID}
 	}
 
-	if hadPrevious {
-		summary = applyTurnUsageDelta(summary, previous, -1)
-	} else {
+	if !hadPrevious {
 		summary.TurnCount++
 	}
 
@@ -1556,7 +1554,6 @@ func (s *Service) RecordTurnUsage(sessionID string, usage pebblestore.SessionTur
 	} else if summary.ContextWindow > 0 {
 		usage.ContextWindow = summary.ContextWindow
 	}
-	summary = applyTurnUsageDelta(summary, usage, 1)
 	summary.SessionID = sessionID
 	if strings.TrimSpace(summary.UserID) == "" {
 		summary.UserID = usage.UserID
@@ -1581,16 +1578,7 @@ func (s *Service) RecordTurnUsage(sessionID string, usage pebblestore.SessionTur
 	}
 	summary.LastRunID = usage.RunID
 	summary.UpdatedAt = now
-	if summary.ContextWindow > 0 {
-		usedForRemaining := remainingUsageTokens(usage, summary)
-		remaining := int64(summary.ContextWindow) - usedForRemaining
-		if remaining < 0 {
-			remaining = 0
-		}
-		summary.RemainingTokens = remaining
-	} else {
-		summary.RemainingTokens = 0
-	}
+	summary = pebblestore.ApplyProviderUsageSnapshotToSummary(summary, usage)
 	normalizeUsageSummary(&summary)
 
 	if err := s.store.PutTurnUsage(usage); err != nil {
@@ -2232,44 +2220,6 @@ func normalizeTurnUsage(usage *pebblestore.SessionTurnUsageSnapshot) {
 func boolPointer(value bool) *bool {
 	out := value
 	return &out
-}
-
-func applyTurnUsageDelta(summary pebblestore.SessionUsageSummary, usage pebblestore.SessionTurnUsageSnapshot, sign int64) pebblestore.SessionUsageSummary {
-	summary.InputTokens += sign * usage.InputTokens
-	summary.OutputTokens += sign * usage.OutputTokens
-	summary.ThinkingTokens += sign * usage.ThinkingTokens
-	summary.CacheReadTokens += sign * usage.CacheReadTokens
-	summary.CacheWriteTokens += sign * usage.CacheWriteTokens
-	summary.TotalTokens += sign * usage.TotalTokens
-	return summary
-}
-
-func remainingUsageTokens(usage pebblestore.SessionTurnUsageSnapshot, summary pebblestore.SessionUsageSummary) int64 {
-	source := strings.ToLower(strings.TrimSpace(usage.Source))
-	used := usage.TotalTokens
-	switch source {
-	case "copilot_session_usage":
-		// Copilot session.usage_info reports current conversation occupancy via CurrentTokens.
-		// Persist that snapshot in TotalTokens and do not fall back to accumulated session totals.
-	case "google_api_usage":
-		// Gemini context occupancy should be API-sourced only. If total is omitted,
-		// fall back to API prompt tokens (still API-reported) and never to session sums.
-		if used <= 0 && usage.InputTokens > 0 {
-			used = usage.InputTokens
-		}
-	default:
-		// Normalized provider response usage records are stored per turn/step and
-		// accumulated in the summary. Use the same accumulated basis for remaining
-		// context; otherwise a later single-response snapshot can make the UI show
-		// stale remaining capacity even after accumulated usage exceeds the window.
-		if summary.TotalTokens > 0 {
-			used = summary.TotalTokens
-		}
-	}
-	if used < 0 {
-		return 0
-	}
-	return used
 }
 
 func normalizeUsageSummary(summary *pebblestore.SessionUsageSummary) {

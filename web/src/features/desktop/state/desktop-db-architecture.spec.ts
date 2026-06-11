@@ -159,6 +159,8 @@ test('Desktop V3 hot message reads use scoped TanStack DB queries, not collectio
   assert.doesNotMatch(hook, /useLiveQuery\(\s*\(\)\s*=>\s*desktopMessagesCollection/, 'useDesktopMessages must not subscribe to the full message collection')
   assert.doesNotMatch(hook, /useDesktopCollectionData\(desktopMessagesCollection\)/, 'useDesktopMessages must not read all messages through a helper')
   assert.doesNotMatch(hook, /\.filter\(\s*\(?message\)?\s*=>\s*message\.sessionId\s*===/, 'useDesktopMessages must not filter session messages after reading all messages')
+  assert.doesNotMatch(hook, /\?\?\s*\[\]/, 'useDesktopMessages must not allocate a fresh empty array fallback each render')
+  assert.match(hook, /\?\?\s*EMPTY_DESKTOP_MESSAGES/, 'useDesktopMessages must use a stable empty array fallback')
 
   assert.doesNotMatch(reader, /Array\.from\(desktopMessagesCollection\.values\(\)\)\s*\.filter/, 'per-session message snapshots must not scan all messages')
   assert.match(reader, /desktopMessagesBySessionIndex\.lookup\('eq',\s*normalizedSessionId\)/, 'per-session message snapshots must use the sessionId index')
@@ -170,6 +172,7 @@ test('Desktop V3 workspace, route readiness, and single-record hooks use scoped 
   const routeReadiness = exportedFunctionSource(source, 'useDesktopRouteReadiness')
   const activeRun = exportedFunctionSource(source, 'useDesktopActiveRun')
   const preference = exportedFunctionSource(source, 'useDesktopPreference')
+  const planRevisions = exportedFunctionSource(source, 'useDesktopPlanRevisions')
 
   assert.match(workspaceSessions, /from\(\{\s*session:\s*desktopSessionsCollection\s*\}\)/, 'workspace sessions must query from desktopSessionsCollection')
   assert.match(workspaceSessions, /where\(\(\{\s*session\s*\}\)\s*=>\s*inArray\(session\.workspacePath,\s*workspacePaths\)\)/, 'workspace sessions must scope by workspace in the query')
@@ -185,6 +188,9 @@ test('Desktop V3 workspace, route readiness, and single-record hooks use scoped 
   assert.match(activeRun, /findOne\(\)/, 'active run must be a single-row query')
   assert.match(preference, /from\(\{\s*preference:\s*desktopPreferencesCollection\s*\}\)/, 'preference must query preferences by session')
   assert.match(preference, /findOne\(\)/, 'preference must be a single-row query')
+  assert.match(planRevisions, /from\(\{\s*revision:\s*desktopPlanRevisionsCollection\s*\}\)/, 'plan revisions must query plan revisions by session')
+  assert.doesNotMatch(planRevisions, /\?\?\s*\[\]/, 'useDesktopPlanRevisions must not allocate a fresh empty array fallback each render')
+  assert.match(planRevisions, /\?\?\s*EMPTY_DESKTOP_PLAN_REVISIONS/, 'useDesktopPlanRevisions must use a stable empty array fallback')
 })
 
 test('Desktop V3 scoped query indexes are declared for hot read predicates', () => {

@@ -39,13 +39,7 @@ func sessionV3ShouldTrackProviderUsage(providerID string, usage provideriface.To
 	if strings.TrimSpace(providerID) == "" {
 		return false
 	}
-	if usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.ThinkingTokens > 0 || usage.TotalTokens > 0 || usage.CacheReadTokens > 0 || usage.CacheWriteTokens > 0 {
-		return true
-	}
-	if strings.TrimSpace(usage.Source) != "" || strings.TrimSpace(usage.Transport) != "" || usage.ConnectedViaWS != nil {
-		return true
-	}
-	return len(usage.APIUsageRaw) > 0 || len(usage.APIUsageHistory) > 0 || strings.TrimSpace(usage.APIUsageRawPath) != "" || len(usage.APIUsagePaths) > 0
+	return usage.TotalTokens > 0
 }
 
 func (e *sessionV3Executor) recordProviderUsage(job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, providerID string, modelName string, usage provideriface.TokenUsage, now int64) (sessionruntime.SessionMutationResult, bool, error) {

@@ -1251,9 +1251,7 @@ func (s *SessionStore) prepareV3UsageForMutation(input V3SessionMutationInput, n
 	if !hasSummary {
 		summary = SessionUsageSummary{SessionID: input.SessionID}
 	}
-	if hadPrevious {
-		summary = applyUsageDelta(summary, previous, -1)
-	} else {
+	if !hadPrevious {
 		summary.TurnCount++
 	}
 	usage.UserID = firstNonEmpty(usage.UserID, input.UserID, session.UserID)
@@ -1271,7 +1269,6 @@ func (s *SessionStore) prepareV3UsageForMutation(input V3SessionMutationInput, n
 	} else if summary.ContextWindow > 0 {
 		usage.ContextWindow = summary.ContextWindow
 	}
-	summary = applyUsageDelta(summary, usage, 1)
 	summary.SessionID = input.SessionID
 	summary.UserID = firstNonEmpty(summary.UserID, usage.UserID)
 	summary.AccountScopeID = firstNonEmpty(summary.AccountScopeID, usage.AccountScopeID)
@@ -1293,51 +1290,8 @@ func (s *SessionStore) prepareV3UsageForMutation(input V3SessionMutationInput, n
 	}
 	summary.LastRunID = usage.RunID
 	summary.UpdatedAt = now
-	if summary.ContextWindow > 0 {
-		used := remainingUsageTokens(usage, summary)
-		remaining := int64(summary.ContextWindow) - used
-		if remaining < 0 {
-			remaining = 0
-		}
-		summary.RemainingTokens = remaining
-	} else {
-		summary.RemainingTokens = 0
-	}
+	summary = ApplyProviderUsageSnapshotToSummary(summary, usage)
 	return usage, summary, true, nil
-}
-
-func applyUsageDelta(summary SessionUsageSummary, usage SessionTurnUsageSnapshot, sign int64) SessionUsageSummary {
-	summary.InputTokens += sign * usage.InputTokens
-	summary.OutputTokens += sign * usage.OutputTokens
-	summary.ThinkingTokens += sign * usage.ThinkingTokens
-	summary.CacheReadTokens += sign * usage.CacheReadTokens
-	summary.CacheWriteTokens += sign * usage.CacheWriteTokens
-	summary.TotalTokens += sign * usage.TotalTokens
-	return summary
-}
-
-func remainingUsageTokens(usage SessionTurnUsageSnapshot, summary SessionUsageSummary) int64 {
-	source := strings.ToLower(strings.TrimSpace(usage.Source))
-	used := usage.TotalTokens
-	switch source {
-	case "copilot_session_usage":
-		// Copilot session.usage_info is a current occupancy snapshot.
-	case "google_api_usage":
-		// Gemini context occupancy should be API-sourced only.
-		if used <= 0 && usage.InputTokens > 0 {
-			used = usage.InputTokens
-		}
-	default:
-		// Normalized provider response usage records are accumulated in summary.
-		// Use that same accumulated basis for remaining context.
-		if summary.TotalTokens > 0 {
-			used = summary.TotalTokens
-		}
-	}
-	if used < 0 {
-		return 0
-	}
-	return used
 }
 
 func (s *SessionStore) prepareV3SessionForMutation(input V3SessionMutationInput, seq uint64, now int64) (SessionSnapshot, bool, error) {

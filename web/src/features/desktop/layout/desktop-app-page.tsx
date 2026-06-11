@@ -1067,13 +1067,13 @@ export function compareSidebarSessions(left: DesktopSessionRecord, right: Deskto
       return leftActive ? -1 : 1
     }
 
-    const anchorDelta = sessionSidebarSortAnchor(left) - sessionSidebarSortAnchor(right)
+    const anchorDelta = sessionSidebarSortAnchor(right) - sessionSidebarSortAnchor(left)
     if (anchorDelta !== 0) {
       return anchorDelta
     }
   }
 
-  const startedDelta = sessionStartedSortAnchor(left) - sessionStartedSortAnchor(right)
+  const startedDelta = sessionStartedSortAnchor(right) - sessionStartedSortAnchor(left)
   if (startedDelta !== 0) {
     return startedDelta
   }

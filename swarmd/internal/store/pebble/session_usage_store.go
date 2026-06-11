@@ -59,6 +59,32 @@ type SessionUsageSummary struct {
 	UpdatedAt          int64  `json:"updated_at"`
 }
 
+func ApplyProviderUsageSnapshotToSummary(summary SessionUsageSummary, usage SessionTurnUsageSnapshot) SessionUsageSummary {
+	summary.InputTokens = clampUsageTokenCount(usage.InputTokens)
+	summary.OutputTokens = clampUsageTokenCount(usage.OutputTokens)
+	summary.ThinkingTokens = clampUsageTokenCount(usage.ThinkingTokens)
+	summary.CacheReadTokens = clampUsageTokenCount(usage.CacheReadTokens)
+	summary.CacheWriteTokens = clampUsageTokenCount(usage.CacheWriteTokens)
+	summary.TotalTokens = clampUsageTokenCount(usage.TotalTokens)
+	if summary.ContextWindow > 0 {
+		remaining := int64(summary.ContextWindow) - summary.TotalTokens
+		if remaining < 0 {
+			remaining = 0
+		}
+		summary.RemainingTokens = remaining
+	} else {
+		summary.RemainingTokens = 0
+	}
+	return summary
+}
+
+func clampUsageTokenCount(value int64) int64 {
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
 func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 	record = sanitizeTurnUsageSnapshot(record)
 	payload, err := json.Marshal(record)
