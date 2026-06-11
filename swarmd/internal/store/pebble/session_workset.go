@@ -44,6 +44,7 @@ type V3SessionWorksetHistoryOptions struct {
 }
 
 type V3SessionWorksetResult struct {
+	Rev                       uint64                                       `json:"rev"`
 	SessionsByID              map[string]SessionSnapshot                   `json:"sessions_by_id"`
 	ProjectionsBySession      map[string]V3SessionProjection               `json:"projections_by_session"`
 	MessagesBySession         map[string][]MessageSnapshot                 `json:"messages_by_session"`
@@ -145,7 +146,12 @@ func (s *SessionStore) buildV3SessionWorksetFromReader(reader pebble.Reader, opt
 	if err != nil {
 		return V3SessionWorksetResult{}, err
 	}
+	rev, err := readV3RealtimeOutboxSequenceFromReader(reader)
+	if err != nil {
+		return V3SessionWorksetResult{}, err
+	}
 	result := V3SessionWorksetResult{
+		Rev:                       rev,
 		SessionsByID:              map[string]SessionSnapshot{},
 		ProjectionsBySession:      map[string]V3SessionProjection{},
 		MessagesBySession:         map[string][]MessageSnapshot{},
@@ -184,6 +190,18 @@ func (s *SessionStore) buildV3SessionWorksetFromReader(reader pebble.Reader, opt
 		}
 	}
 	return result, nil
+}
+
+func readV3RealtimeOutboxSequenceFromReader(reader pebble.Reader) (uint64, error) {
+	raw, ok, err := getBytesFromReader(reader, KeyV3RealtimeOutboxSequence())
+	if err != nil || !ok {
+		return 0, err
+	}
+	seq, err := bytesToUint64(raw)
+	if err != nil {
+		return 0, fmt.Errorf("decode v3 realtime outbox sequence: %w", err)
+	}
+	return seq, nil
 }
 
 func (s *SessionStore) selectV3SessionWorksetSessions(reader pebble.Reader, options V3SessionWorksetOptions) ([]SessionSnapshot, V3SessionWorksetPagination, error) {

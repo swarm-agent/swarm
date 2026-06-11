@@ -29,6 +29,7 @@ func TestSessionsV3WorksetEndpointSupportsPaginationAndManifests(t *testing.T) {
 	}
 	var payload struct {
 		OK                        bool                                                     `json:"ok"`
+		Rev                       uint64                                                   `json:"rev"`
 		SessionsByID              map[string]pebblestore.SessionSnapshot                   `json:"sessions_by_id"`
 		MessagesBySession         map[string][]pebblestore.MessageSnapshot                 `json:"messages_by_session"`
 		EventsBySession           map[string][]pebblestore.V3SessionEvent                  `json:"events_by_session"`
@@ -44,6 +45,9 @@ func TestSessionsV3WorksetEndpointSupportsPaginationAndManifests(t *testing.T) {
 	_ = createdA
 	if !payload.OK || payload.SessionsByID[createdB.ID].ID != createdB.ID {
 		t.Fatalf("sessions_by_id = %+v", payload.SessionsByID)
+	}
+	if payload.Rev == 0 {
+		t.Fatalf("workset rev = %d, want non-zero daemon revision", payload.Rev)
 	}
 	if len(payload.MessagesBySession[createdB.ID]) != 1 {
 		t.Fatalf("messages_by_session = %+v", payload.MessagesBySession)

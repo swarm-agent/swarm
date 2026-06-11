@@ -1088,15 +1088,7 @@ func (s *SessionStore) ListV3RealtimeOutboxForSessionAfterSeq(sessionID string, 
 }
 
 func (s *SessionStore) readV3RealtimeOutboxSequence() (uint64, error) {
-	raw, ok, err := s.store.GetBytes(KeyV3RealtimeOutboxSequence())
-	if err != nil || !ok {
-		return 0, err
-	}
-	seq, err := bytesToUint64(raw)
-	if err != nil {
-		return 0, fmt.Errorf("decode v3 realtime outbox sequence: %w", err)
-	}
-	return seq, nil
+	return readV3RealtimeOutboxSequenceFromReader(s.store.db)
 }
 
 func (s *SessionStore) readV3SessionSequence(sessionID string) (uint64, error) {

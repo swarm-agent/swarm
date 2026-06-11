@@ -164,6 +164,7 @@ func sessionsV3WorksetResponse(workset pebblestore.V3SessionWorksetResult, permi
 	}
 	return map[string]any{
 		"ok":                            true,
+		"rev":                           workset.Rev,
 		"sessions_by_id":                workset.SessionsByID,
 		"projections_by_session":        workset.ProjectionsBySession,
 		"messages_by_session":           workset.MessagesBySession,
