@@ -19,6 +19,7 @@ import type {
 } from '../types/realtime'
 import { mergeMessageIntoCache } from '../chat/services/message-cache'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
+import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import { appendLiveAssistantSegment } from './live-assistant-segments'
 import { mergeSessionRecords } from './session-records'
 
@@ -548,6 +549,7 @@ export function applyDurableEventToDesktopDB(event: unknown): void {
     } else if (desktopPermissionsCollection.has(permission.id)) {
       desktopPermissionsCollection.delete(permission.id)
     }
+    applyPermissionToDesktopDBSession(permission, ts)
   }
 
   const runIntent = desktopDbRunIntentFromDurablePayload(normalizedPayload, eventType, sessionId)
@@ -1518,6 +1520,39 @@ function desktopDbPermissionFromDurablePayload(payload: Record<string, unknown>)
     resolvedAt: desktopDbPayloadNumber(source, 'resolved_at'),
     permissionRequestedAt: desktopDbPayloadNumber(source, 'permission_requested_at'),
   }
+}
+
+function applyPermissionToDesktopDBSession(permission: DesktopPermissionRecord, ts: number): void {
+  const sessionId = permission.sessionId.trim()
+  if (!sessionId) {
+    return
+  }
+  const existing = desktopDbEnsureSession(sessionId)
+  const pendingPermissions = existing.pendingPermissions.filter((item) => item.id !== permission.id)
+  if (permission.status.trim().toLowerCase() === 'pending') {
+    pendingPermissions.unshift(permission)
+  }
+  const pendingPermissionCount = countApprovalRequiredPermissions(pendingPermissions, existing.mode)
+  const session: DesktopSessionRecord = {
+    ...existing,
+    sessionApi: existing.sessionApi || 'v3',
+    permissionsHydrated: true,
+    pendingPermissions,
+    pendingPermissionCount,
+    updatedAt: Math.max(existing.updatedAt, permission.updatedAt, permission.permissionRequestedAt, ts),
+    live: { ...existing.live },
+  }
+  if (!session.lifecycle && pendingPermissionCount > 0) {
+    session.live.status = 'blocked'
+  } else if (!session.lifecycle && session.live.status === 'blocked') {
+    session.live.status = session.runIntent ? 'running' : 'idle'
+  }
+  session.live.lastEventType = permission.status.trim().toLowerCase() === 'pending'
+    ? 'permission.requested'
+    : 'permission.updated'
+  session.live.lastEventAt = ts
+  upsertDesktopDbRecord(desktopSessionsCollection, session)
+  upsertDesktopDbRecord(desktopSessionReadinessCollection, desktopDbReadySession(sessionId, Date.now()))
 }
 
 function isDesktopNotificationRecord(value: unknown): value is DesktopNotificationRecord {

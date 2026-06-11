@@ -258,7 +258,7 @@ func runInstallCommand(args []string) error {
 		fmt.Println("Swarm service installed, enabled, and started.")
 	} else {
 		fmt.Println("Swarm runtime and launchers installed. No daemon service was installed or started.")
-		fmt.Println("Configure your supervisor to run: /usr/local/bin/swarm server run")
+		fmt.Println("Configure your supervisor to run: /usr/local/bin/swarm main server run")
 	}
 	return nil
 }

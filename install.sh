@@ -146,7 +146,7 @@ run_privileged() {
   fi
   if ! command -v sudo >/dev/null 2>&1; then
     echo "Swarm installs to /usr/local and stores daemon state under /etc, /var, and /run." >&2
-    echo "Install sudo or pre-create the Swarm-owned system directories before running install.sh." >&2
+    echo "Install sudo before running install.sh, or pre-create the Swarm-owned system directories." >&2
     return 1
   fi
   sudo "$@"
@@ -311,7 +311,7 @@ enable_start_service() {
   fi
   if ! run_privileged systemctl enable --now swarm.service; then
     echo "failed to enable/start swarm.service" >&2
-    echo "Remediation: inspect with 'systemctl status swarm.service' and retry with 'sudo systemctl enable --now swarm.service'." >&2
+    echo "Remediation: inspect with 'systemctl status swarm.service' and rerun install.sh after fixing the reported systemd error." >&2
     return 1
   fi
   print_ok
@@ -467,11 +467,11 @@ print_path_refresh_instructions() {
 
 print_no_service_commands() {
   printf '\nNo service manager was configured. To run Swarm, configure your supervisor to execute:\n'
-  printf '  /usr/local/bin/swarm server run\n'
+  printf '  /usr/local/bin/swarm main server run\n'
   printf '\nOr install/start the systemd service later with:\n'
   printf '  swarm install --service\n'
   printf '\nIf PATH still fails, run it directly:\n'
-  printf '  /usr/local/bin/swarm server run\n'
+  printf '  /usr/local/bin/swarm main server run\n'
 }
 
 print_service_commands() {

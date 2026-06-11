@@ -2171,6 +2171,15 @@ func runSystemdServiceCommands(scope systemdServiceScope, unit string, commands 
 			return err
 		}
 		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Stdin = os.Stdin
+		if filepath.Base(args[0]) == "sudo" {
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("%s: %w", strings.Join(args[1:], " "), err)
+			}
+			continue
+		}
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			trimmed := strings.TrimSpace(string(output))
@@ -2214,7 +2223,7 @@ func systemctlManageArgs(scope systemdServiceScope, args ...string) ([]string, e
 		if err != nil {
 			return nil, errors.New("sudo not found; cannot manage systemd system service")
 		}
-		return append([]string{sudoPath, "-n", systemctlPath}, args...), nil
+		return append([]string{sudoPath, systemctlPath}, args...), nil
 	default:
 		return nil, fmt.Errorf("unknown systemd service scope %q", scope)
 	}

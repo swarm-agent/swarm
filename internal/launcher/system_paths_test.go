@@ -48,7 +48,7 @@ func TestRenderSystemdServiceUnitIncludesStorageDirectives(t *testing.T) {
 		"Environment=SWARMD_RUNTIME_DIR=" + runtimeRoot,
 		"Environment=SWARMD_CONFIG_DIR=" + configRoot,
 		"Environment=SWARMD_LOG_DIR=" + logsRoot,
-		"ExecStart=" + filepath.Join(systemRoot, "bin", "swarm") + " server run",
+		"ExecStart=" + filepath.Join(systemRoot, "bin", "swarm") + " main server run",
 		"WorkingDirectory=/",
 	} {
 		if !strings.Contains(unit, needle) {

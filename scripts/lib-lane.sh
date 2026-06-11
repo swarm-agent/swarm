@@ -103,7 +103,7 @@ swarm_run_privileged() {
   fi
   if ! command -v sudo >/dev/null 2>&1; then
     echo "Swarm uses system locations under /usr/local, /etc, /var, and /run." >&2
-    echo "Install sudo or create/chown those Swarm directories before running this command." >&2
+    echo "Install sudo before running this command, or create/chown those Swarm directories." >&2
     return 1
   fi
   sudo "$@"
@@ -167,7 +167,7 @@ swarm_provision_systemd_service_unit() {
   local target_path tmp_path swarm_bin data_root cache_root runtime_root config_root log_root owner
   target_path="/etc"/systemd/system/swarm.service
   tmp_path="$(mktemp "${TMPDIR:-/tmp}/swarmd-service.XXXXXX")"
-  swarm_bin="$(swarm_lane_bin_dir main)/swarm"
+  swarm_bin="/usr/local/bin/swarm"
   owner="$(swarm_current_owner_spec)"
   data_root="$(swarm_daemon_data_root main)"
   cache_root="/var/cache/swarmd"
@@ -184,7 +184,7 @@ Wants=network-online.target
 Type=simple
 User=${owner%:*}
 Group=${owner#*:}
-ExecStart=${swarm_bin} server run
+ExecStart=${swarm_bin} main server run
 Restart=on-failure
 RestartSec=2
 StateDirectory=swarmd
@@ -213,11 +213,7 @@ EOF
     return 1
   fi
   rm -f "${tmp_path}"
-  if [[ "$(id -u)" == "0" ]]; then
-    swarm_run_privileged systemctl daemon-reload
-  else
-    swarm_run_privileged systemctl daemon-reload >/dev/null 2>&1 || true
-  fi
+  swarm_run_privileged systemctl daemon-reload
 }
 
 swarm_provision_system_paths() {

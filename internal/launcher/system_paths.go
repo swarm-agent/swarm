@@ -140,7 +140,7 @@ func EnsureSystemdServiceUnit() error {
 	if err := installTextFileIfChanged(path, content, 0o644, "systemd service unit"); err != nil {
 		return err
 	}
-	if err := runPrivilegedCommand("systemctl", "daemon-reload"); err != nil && os.Geteuid() == 0 {
+	if err := runPrivilegedCommand("systemctl", "daemon-reload"); err != nil {
 		return fmt.Errorf("reload systemd after service unit update: %w", err)
 	}
 	return nil
@@ -158,7 +158,7 @@ Wants=network-online.target
 Type=simple
 User=%s
 Group=%s
-ExecStart=%s server run
+ExecStart=%s main server run
 Restart=on-failure
 RestartSec=2
 StateDirectory=swarmd

@@ -75,10 +75,33 @@ func (s *Server) handleSessionsV3Workset(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, sessionsV3WorksetResponse(workset))
+	permissionsBySession, err := s.sessionsV3WorksetPendingPermissions(workset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sessionsV3WorksetResponse(workset, permissionsBySession))
 }
 
-func sessionsV3WorksetResponse(workset pebblestore.V3SessionWorksetResult) map[string]any {
+func (s *Server) sessionsV3WorksetPendingPermissions(workset pebblestore.V3SessionWorksetResult) (map[string]any, error) {
+	permissionsBySession := map[string]any{}
+	if s == nil || s.perm == nil {
+		return permissionsBySession, nil
+	}
+	for sessionID := range workset.SessionsByID {
+		permissions, err := s.perm.ListPending(sessionID, 200)
+		if err != nil {
+			return nil, err
+		}
+		permissionsBySession[sessionID] = permissions
+	}
+	return permissionsBySession, nil
+}
+
+func sessionsV3WorksetResponse(workset pebblestore.V3SessionWorksetResult, permissionsBySession map[string]any) map[string]any {
+	if permissionsBySession == nil {
+		permissionsBySession = map[string]any{}
+	}
 	return map[string]any{
 		"ok":                            true,
 		"sessions_by_id":                workset.SessionsByID,
@@ -87,7 +110,7 @@ func sessionsV3WorksetResponse(workset pebblestore.V3SessionWorksetResult) map[s
 		"events_by_session":             workset.EventsBySession,
 		"plans_by_session":              map[string]any{},
 		"plan_revisions_by_session":     map[string]any{},
-		"permissions_by_session":        map[string]any{},
+		"permissions_by_session":        permissionsBySession,
 		"usage_by_session":              map[string]any{},
 		"preferences_by_session":        map[string]any{},
 		"agent_model_policy_by_session": map[string]any{},
