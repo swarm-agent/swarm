@@ -18,7 +18,7 @@ import {
   startSessionRun,
   updateDraftModelPreference,
 } from '../queries/chat-queries'
-import { saveDesktopV3SessionPlan, updateDesktopV3SessionAgent, updateDesktopV3SessionMetadata, updateDesktopV3SessionMode, updateDesktopV3SessionPreference } from '../../state/desktop-db-workset'
+import { fetchAndApplyDesktopDBWorksetSession, saveDesktopV3SessionPlan, updateDesktopV3SessionAgent, updateDesktopV3SessionMetadata, updateDesktopV3SessionMode, updateDesktopV3SessionPreference } from '../../state/desktop-db-workset'
 import type { AgentModelPolicyRecord, AgentProfileRecord, AgentStateRecord, ChatMessageRecord, ModelOptionRecord, ResolvedSessionPreference, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
 import type { DesktopLiveAssistantSegment, DesktopLiveToolRecord, DesktopSessionRecord } from '../../types/realtime'
 import { Card } from '../../../../components/ui/card'
@@ -2310,7 +2310,7 @@ export function DesktopChatPanel({
     setPanelError(null)
     setPlanModal({
       open: true,
-      loading: false,
+      loading: true,
       historyLoading: false,
       saving: false,
       error: null,
@@ -2318,7 +2318,30 @@ export function DesktopChatPanel({
       plan: visiblePlan,
       revisions: dbPlanRevisions,
     })
-  }, [dbPlan, dbPlanRevisions, sessionId])
+    try {
+      const snapshot = await fetchAndApplyDesktopDBWorksetSession(queryClient, sessionId)
+      if (!snapshot) {
+        setPlanModal((current) => ({ ...current, loading: false }))
+        return
+      }
+      setPlanModal({
+        open: true,
+        loading: false,
+        historyLoading: false,
+        saving: false,
+        error: null,
+        hasActive: Boolean(snapshot.hasActivePlan),
+        plan: snapshot.activePlan ?? visiblePlan,
+        revisions: snapshot.planRevisions,
+      })
+    } catch (error) {
+      setPlanModal((current) => ({
+        ...current,
+        loading: false,
+        error: error instanceof Error ? error.message : 'Failed to load current plan',
+      }))
+    }
+  }, [dbPlan, dbPlanRevisions, queryClient, sessionId])
 
   const handleThinkingTagsToggle = useCallback(async (enabled: boolean) => {
     if (thinkingTagsSaving) {

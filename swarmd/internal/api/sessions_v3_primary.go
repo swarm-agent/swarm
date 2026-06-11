@@ -63,6 +63,15 @@ type sessionsV3StopRequest struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+type sessionsV3CompactRequest struct {
+	ClientRequestID string `json:"client_request_id,omitempty"`
+	IdempotencyKey  string `json:"idempotency_key,omitempty"`
+	RunID           string `json:"run_id,omitempty"`
+	Note            string `json:"note,omitempty"`
+	AgentName       string `json:"agent_name,omitempty"`
+	Instructions    string `json:"instructions,omitempty"`
+}
+
 type sessionsV3ModeRequest struct {
 	Mode string `json:"mode"`
 }
@@ -194,6 +203,8 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		s.handleSessionV3PrimaryStream(w, r, principal, sessionID)
 	case "run/stop":
 		s.handleSessionV3PrimaryRunStop(w, r, principal, sessionID)
+	case "compact":
+		s.handleSessionV3PrimaryCompact(w, r, principal, sessionID)
 	case "mode":
 		s.handleSessionV3PrimaryMode(w, r, principal, sessionID)
 	case "agent":
@@ -456,6 +467,9 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 	var enqueueJob *sessionV3ExecutorJob
 	if !result.Replayed && result.RunIntent != nil && result.RunIntent.Status == sessionruntime.RunIntentPendingExecutor && s.v3SessionExecutor != nil {
 		enqueueJob = &sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: result.RunIntent.RunID}
+	}
+	if !result.Replayed && result.Message != nil && result.RunIntent != nil && s.v3SessionExecutor != nil {
+		s.v3SessionExecutor.maybeStartSessionV3TitleFlow(sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: result.RunIntent.RunID}, result)
 	}
 	updated, found, err := s.hydrateSessionsV3Primary(principal, sessionID)
 	if err != nil {

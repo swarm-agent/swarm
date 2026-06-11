@@ -267,6 +267,13 @@ function v3PlanPayload(planId: string, version = 0) {
     session_id: 'session-v3',
     title: 'Current Plan',
     plan: '# Plan',
+    document: {
+      id: planId,
+      title: 'Current Plan',
+      status: 'draft',
+      info: { goal: 'Ship V3 plan hydration', relevant_files: ['web/src/features/desktop/state/desktop-db-workset.ts'] },
+      checkpoints: [{ id: 'cp-1', title: 'Hydrate plan', status: 'pending' }],
+    },
     status: 'draft',
     approval_state: '',
     updated_at: 8,
@@ -371,8 +378,8 @@ test('Desktop V3 permission resolve uses Sessions API v3 only', async () => {
 })
 
 
-test('Desktop DB direct-route recovery hydrates a missing session through one scoped workset request', async () => {
-  const { ensureDesktopDBRouteSession, readDesktopDbMessages, readDesktopDbSession, readDesktopDbSessionReadiness } = await import('../../state/desktop-db')
+test('Desktop DB direct-route recovery hydrates a missing session and its active plan through one scoped workset request', async () => {
+  const { desktopPlansCollection, ensureDesktopDBRouteSession, readDesktopDbMessages, readDesktopDbSession, readDesktopDbSessionReadiness } = await import('../../state/desktop-db')
 
   await withFetchStub(async (calls) => {
     const readiness = await ensureDesktopDBRouteSession('', 'session-switch')
@@ -386,16 +393,18 @@ test('Desktop DB direct-route recovery hydrates a missing session through one sc
     assert.equal(readDesktopDbMessages('session-switch').map((message) => message.id).join(','), 'session-switch-msg-1')
     assert.equal(readDesktopDbSessionReadiness('session-switch')?.ready, true)
     assert.equal(readDesktopDbSessionReadiness('session-switch')?.status, 'ready')
+    assert.equal(desktopPlansCollection.get('session-switch')?.plan?.id, 'plan-1')
+    assert.equal(desktopPlansCollection.get('session-switch')?.plan?.plan, '# Plan')
 
     const callCountAfterDbReady = calls.length
     await ensureDesktopDBRouteSession('', 'session-switch')
-    assert.equal(calls.length, callCountAfterDbReady, 'DB-ready route/session switching must not fetch')
+    assert.equal(calls.length, callCountAfterDbReady, 'DB-ready route/session switching with plan hydration must not fetch')
   })
 })
 
-test('Desktop V3 workset hydration restores active run intent from the canonical route source', async () => {
+test('Desktop V3 workset hydration restores active run intent and active plan from the canonical route source', async () => {
   const { fetchAndApplyDesktopDBWorksetSession, readDesktopDBHydratedSession } = await import('../../state/desktop-db-workset')
-  const { readDesktopDbSession } = await import('../../state/desktop-db')
+  const { desktopPlansCollection, readDesktopDbSession } = await import('../../state/desktop-db')
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -407,6 +416,9 @@ test('Desktop V3 workset hydration restores active run intent from the canonical
     assert.deepEqual(requestUrls(calls), ['/v3/sessions:workset'])
     assertNoV1OrV2SessionDataCalls(calls)
     assert.equal(snapshot?.session.runIntent?.runId, 'run-active')
+    assert.equal(snapshot?.activePlan?.id, 'plan-1')
+    assert.equal(snapshot?.activePlan?.document?.info.goal, 'Ship V3 plan hydration')
+    assert.equal(desktopPlansCollection.get('session-v3-active')?.plan?.document?.info.goal, 'Ship V3 plan hydration')
     assert.equal(cached?.runIntent?.status, 'running')
     assert.equal(readDesktopDbSession('session-v3-active')?.runIntent?.runId, 'run-active')
     assert.equal(cached?.live.runId, 'run-active')

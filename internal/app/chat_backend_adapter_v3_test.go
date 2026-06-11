@@ -224,6 +224,61 @@ func TestAPIChatBackendV3RunTurnCommitsPrimaryMessageOnly(t *testing.T) {
 	}
 }
 
+func TestAPIChatBackendV3CompactUsesNativeCompactEndpoint(t *testing.T) {
+	var gotPaths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPaths = append(gotPaths, r.Method+" "+r.URL.Path)
+		if strings.Contains(r.URL.Path, "/v2/") || strings.Contains(r.URL.Path, "/run/stream") || strings.Contains(r.URL.Path, "/messages") {
+			t.Fatalf("v3 compact must not route through v2/messages/run stream: %s %s", r.Method, r.URL.Path)
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/v3/sessions/session-v3/compact" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode compact: %v", err)
+		}
+		if body["note"] != "keep constraints" {
+			t.Fatalf("compact body = %#v", body)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":      true,
+			"session": map[string]any{"id": "session-v3", "workspace_path": "/workspace", "workspace_name": "workspace", "title": "V3 (Compact #2)", "mode": "auto"},
+			"result": map[string]any{
+				"session_id": "session-v3", "agent": "swarm", "model": "gpt-test", "thinking": "medium", "reasoning_summary": "Context compacted into checkpoint #2.", "steps": 1,
+				"usage_summary":     map[string]any{"session_id": "session-v3", "provider": "test", "model": "gpt-test", "source": "context_compaction_reset", "context_window": 1000, "remaining_tokens": 1000},
+				"assistant_message": map[string]any{"id": "msg-ack", "session_id": "session-v3", "role": "assistant", "content": "Manual context compact complete (Compact #2)."},
+			},
+			"events": []any{
+				map[string]any{"type": "usage.updated", "session_id": "session-v3", "run_id": "run-compact", "usage_summary": map[string]any{"session_id": "session-v3", "provider": "test", "model": "gpt-test", "source": "context_compaction_reset", "context_window": 1000, "remaining_tokens": 1000}},
+				map[string]any{"type": "message.stored", "session_id": "session-v3", "run_id": "run-compact", "message": map[string]any{"id": "msg-ack", "session_id": "session-v3", "role": "assistant", "content": "Manual context compact complete (Compact #2)."}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	backend := newAPIChatBackend(testAPIWithToken(server.URL), "v3")
+	var events []ui.ChatRunStreamEvent
+	resp, err := backend.RunTurnStream(context.Background(), "session-v3", ui.ChatRunRequest{Prompt: "keep constraints", Compact: true}, func(event ui.ChatRunStreamEvent) {
+		events = append(events, event)
+	})
+	if err != nil {
+		t.Fatalf("RunTurnStream() error = %v", err)
+	}
+	if len(gotPaths) != 1 || gotPaths[0] != "POST /v3/sessions/session-v3/compact" {
+		t.Fatalf("paths = %#v", gotPaths)
+	}
+	if resp.UsageSummary == nil || resp.UsageSummary.ContextWindow != 1000 || resp.UsageSummary.RemainingTokens != 1000 {
+		t.Fatalf("usage summary did not reset context window: %+v", resp.UsageSummary)
+	}
+	if resp.AssistantMessage.ID != "msg-ack" || !strings.Contains(resp.AssistantMessage.Content, "Manual context compact complete") {
+		t.Fatalf("assistant ack = %+v", resp.AssistantMessage)
+	}
+	if len(events) != 2 || events[0].Type != "usage.updated" || events[1].Type != "message.stored" {
+		t.Fatalf("events = %#v", events)
+	}
+}
+
 func TestAPIChatBackendV3ActiveTurnUsesLiveWebSocketStream(t *testing.T) {
 	body, err := os.ReadFile("chat_backend_adapter.go")
 	if err != nil {

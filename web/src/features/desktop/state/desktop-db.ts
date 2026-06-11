@@ -612,10 +612,12 @@ export function applyDurableEventToDesktopDB(event: unknown): void {
   }
 }
 
-export async function ensureDesktopDBRouteSession(_workspaceScope: DesktopWorkspaceScope, sessionId: string): Promise<DesktopDbSessionReadinessRecord> {
+export async function ensureDesktopDBRouteSession(_workspaceScope: DesktopWorkspaceScope, sessionId: string, options: { force?: boolean } = {}): Promise<DesktopDbSessionReadinessRecord> {
   const normalizedSessionId = sessionId.trim()
+  const existingSession = readDesktopDbSession(normalizedSessionId)
   const existingReadiness = readDesktopDbSessionReadiness(normalizedSessionId)
-  if (existingReadiness?.ready || readDesktopDbSession(normalizedSessionId)) {
+  const hasPlanHydration = desktopPlansCollection.has(normalizedSessionId)
+  if (!options.force && (existingReadiness?.ready || existingSession) && hasPlanHydration) {
     const ready = desktopDbReadySession(normalizedSessionId, Date.now())
     upsertDesktopDbRecord(desktopSessionReadinessCollection, ready)
     return ready

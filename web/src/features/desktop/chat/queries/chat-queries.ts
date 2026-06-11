@@ -181,6 +181,17 @@ interface V3MessageCommitResponseWire extends V3HydratedSessionResponseWire {
   run_intent?: V3RunIntentWire | null;
 }
 
+interface V3CompactResponseWire {
+  ok?: boolean;
+  session?: SessionWire;
+  projection?: SessionProjectionWire;
+  result?: {
+    usage_summary?: SessionUsageSummaryWire | null;
+    assistant_message?: MessageWire;
+  };
+  events?: unknown[];
+}
+
 export type V3RunIntentRecord = DesktopRunIntentRecord;
 
 export interface SendSessionMessageResult {
@@ -189,6 +200,14 @@ export interface SendSessionMessageResult {
   message?: ChatMessageRecord | null;
   messages?: ChatMessageRecord[];
   runIntent?: V3RunIntentRecord | null;
+  events?: unknown[];
+}
+
+export interface CompactSessionV3Result {
+  ok?: boolean;
+  session?: DesktopSessionRecord;
+  assistantMessage?: ChatMessageRecord | null;
+  usageSummary?: DesktopSessionUsageRecord | null;
   events?: unknown[];
 }
 
@@ -778,6 +797,20 @@ function mapV3MessageCommitResponse(response: V3MessageCommitResponseWire): Send
     message: response.message ? mapChatMessage(response.message) : null,
     messages: Array.isArray(response.messages) ? response.messages.map(mapChatMessage) : [],
     runIntent: mapV3RunIntent(response.run_intent),
+    events: Array.isArray(response.events) ? response.events : [],
+  };
+}
+
+function mapV3CompactResponse(response: V3CompactResponseWire): CompactSessionV3Result {
+  const mappedSession = mapSession(mapSessionProjectionToSession(response.session ?? {}, response.projection));
+  const session = mappedSession.id
+    ? { ...applySessionProjectionCursor(mappedSession, response.projection), sessionApi: "v3" }
+    : undefined;
+  return {
+    ok: response.ok,
+    session,
+    assistantMessage: response.result?.assistant_message ? mapChatMessage(response.result.assistant_message) : null,
+    usageSummary: mapDesktopSessionUsageSummary(response.result?.usage_summary ?? null),
     events: Array.isArray(response.events) ? response.events : [],
   };
 }
@@ -1915,6 +1948,34 @@ export async function createSession(input: {
     input.route,
   );
   return applySessionProjectionCursor(mapped, response.projection);
+}
+
+export async function compactSessionV3(
+  sessionId: string,
+  options: { note?: string | null; agentName?: string | null; instructions?: string | null; clientRequestId?: string | null } = {},
+): Promise<CompactSessionV3Result> {
+  const normalizedSessionId = sessionId.trim();
+  if (!normalizedSessionId) {
+    throw new Error("session id is required");
+  }
+  const clientRequestId = options.clientRequestId?.trim()
+    || `desktop-v3-compact:${normalizedSessionId}:${crypto.randomUUID()}`;
+  const response = await requestJson<V3CompactResponseWire>(
+    `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/compact`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        client_request_id: clientRequestId,
+        note: options.note?.trim() ?? "",
+        agent_name: options.agentName?.trim() ?? "",
+        instructions: options.instructions?.trim() ?? "",
+      }),
+    },
+  );
+  return mapV3CompactResponse(response);
 }
 
 export async function sendSessionMessage(

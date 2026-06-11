@@ -1011,25 +1011,23 @@ function sessionIsActive(session: DesktopSessionRecord): boolean {
   return sessionHasPendingPermission(session) || session.live.awaitingAck || ['starting', 'running', 'blocked'].includes(session.live.status)
 }
 
-function sessionActivityAnchor(session: DesktopSessionRecord): number {
-  const startedAt = session.live.startedAt
-    ?? (session.lifecycle?.startedAt && session.lifecycle.startedAt > 0 ? session.lifecycle.startedAt : null)
-    ?? 0
-  return Math.max(
-    session.live.lastEventAt ?? 0,
-    startedAt,
-    session.updatedAt ?? 0,
-  )
+function positiveTimestamp(value: number | null | undefined): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0
+}
+
+function sessionStartedSortAnchor(session: DesktopSessionRecord): number {
+  return positiveTimestamp(session.live.startedAt)
+    || positiveTimestamp(session.lifecycle?.startedAt)
+    || positiveTimestamp(session.createdAt)
+    || positiveTimestamp(session.updatedAt)
 }
 
 function sessionDurableActivityAt(session: DesktopSessionRecord): number {
-  if (session.updatedAt > 0) {
-    return session.updatedAt
+  const updatedAt = positiveTimestamp(session.updatedAt)
+  if (updatedAt > 0) {
+    return updatedAt
   }
-  if (session.createdAt > 0) {
-    return session.createdAt
-  }
-  return 0
+  return positiveTimestamp(session.createdAt)
 }
 
 function sessionSidebarDisplayTimestamp(session: DesktopSessionRecord): number | null {
@@ -1041,10 +1039,7 @@ function sessionSidebarDisplayTimestamp(session: DesktopSessionRecord): number |
 }
 
 function sessionSidebarSortAnchor(session: DesktopSessionRecord): number {
-  if (sessionIsActive(session)) {
-    return sessionActivityAnchor(session)
-  }
-  return sessionDurableActivityAt(session)
+  return sessionStartedSortAnchor(session)
 }
 
 function sessionShouldPinInSidebar(session: DesktopSessionRecord, now: number): boolean {
@@ -1072,20 +1067,20 @@ export function compareSidebarSessions(left: DesktopSessionRecord, right: Deskto
       return leftActive ? -1 : 1
     }
 
-    const anchorDelta = sessionSidebarSortAnchor(right) - sessionSidebarSortAnchor(left)
+    const anchorDelta = sessionSidebarSortAnchor(left) - sessionSidebarSortAnchor(right)
     if (anchorDelta !== 0) {
       return anchorDelta
     }
   }
 
-  const updatedDelta = right.updatedAt - left.updatedAt
-  if (updatedDelta !== 0) {
-    return updatedDelta
+  const startedDelta = sessionStartedSortAnchor(left) - sessionStartedSortAnchor(right)
+  if (startedDelta !== 0) {
+    return startedDelta
   }
 
-  const createdDelta = right.createdAt - left.createdAt
-  if (createdDelta !== 0) {
-    return createdDelta
+  const updatedDelta = positiveTimestamp(right.updatedAt) - positiveTimestamp(left.updatedAt)
+  if (updatedDelta !== 0) {
+    return updatedDelta
   }
 
   return left.id.localeCompare(right.id)

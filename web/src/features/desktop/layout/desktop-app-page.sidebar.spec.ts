@@ -82,9 +82,10 @@ test('sidebar labels are derived from DB live tool state', () => {
   assert.equal(sessionStatusDetail(session, 15_250), 'just now')
 })
 
-test('sidebar active sort anchors to latest DB live event, not original run start', () => {
+test('sidebar active sort anchors to run start time, not latest DB live event', () => {
   const olderRunWithFreshToolEvent = makeSession('older-run-fresh-tool', {
-    updatedAt: 11_000,
+    updatedAt: 20_000,
+    createdAt: 1_000,
     live: {
       ...makeSession('base').live,
       status: 'running',
@@ -96,7 +97,8 @@ test('sidebar active sort anchors to latest DB live event, not original run star
     },
   })
   const newerRunWithoutFreshEvent = makeSession('newer-run-stale', {
-    updatedAt: 19_000,
+    updatedAt: 10_500,
+    createdAt: 10_000,
     live: {
       ...makeSession('base').live,
       status: 'running',
@@ -108,6 +110,18 @@ test('sidebar active sort anchors to latest DB live event, not original run star
   })
 
   assert.equal(compareSidebarSessions(olderRunWithFreshToolEvent, newerRunWithoutFreshEvent, 20_500) < 0, true)
+})
+
+test('sidebar active sort keeps initial start-time order when an older row streams', () => {
+  const sessions = [
+    makeSession('0', { updatedAt: 10_000, createdAt: 10_000, live: { ...makeSession('base').live, status: 'running', startedAt: 10_000, lastEventAt: 10_000 } }),
+    makeSession('1', { updatedAt: 20_000, createdAt: 20_000, live: { ...makeSession('base').live, status: 'running', startedAt: 20_000, lastEventAt: 20_000 } }),
+    makeSession('2', { updatedAt: 30_000, createdAt: 30_000, live: { ...makeSession('base').live, status: 'running', startedAt: 30_000, lastEventAt: 30_000 } }),
+    makeSession('3', { updatedAt: 100_000, createdAt: 40_000, live: { ...makeSession('base').live, status: 'running', startedAt: 40_000, lastEventAt: 100_000 } }),
+    makeSession('4', { updatedAt: 50_000, createdAt: 50_000, live: { ...makeSession('base').live, status: 'running', startedAt: 50_000, lastEventAt: 50_000 } }),
+  ]
+
+  assert.deepEqual([...sessions].sort((left, right) => compareSidebarSessions(left, right, 100_500)).map((session) => session.id), ['0', '1', '2', '3', '4'])
 })
 
 test('sidebar active sort keeps active DB sessions pinned above recent idle rows', () => {

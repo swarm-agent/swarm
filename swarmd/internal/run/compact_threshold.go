@@ -148,6 +148,7 @@ func (s *Service) maybeAutoCompactRunContext(ctx context.Context, sessionID, run
 		maxOutputTokens,
 		false,
 		contextCompactionOriginThreshold,
+		appendInput.ApplySessionMutation != nil,
 		step,
 		1,
 		emit,

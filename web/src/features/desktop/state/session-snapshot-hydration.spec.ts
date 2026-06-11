@@ -74,7 +74,19 @@ test('requires authoritative hydration when a later stream event only created a 
     },
   })
 
-  assert.equal(sessionRequiresSnapshotHydration(session, 'session.lifecycle.updated'), true)
+  assert.equal(sessionRequiresSnapshotHydration(session, 'session.lifecycle.updated', { hasPlanHydration: true }), true)
+})
+
+test('hydrates a viewed session until the active plan record is present', () => {
+  const session = makeSession({
+    workspacePath: '/host/workspace',
+    workspaceName: 'workspace',
+    createdAt: 1,
+    updatedAt: 2,
+  })
+
+  assert.equal(sessionRequiresSnapshotHydration(session, 'session.mode.updated', { hasPlanHydration: false }), true)
+  assert.equal(sessionRequiresSnapshotHydration(session, 'session.mode.updated', { hasPlanHydration: true }), false)
 })
 
 test('does not hydrate again for a full session.created snapshot', () => {

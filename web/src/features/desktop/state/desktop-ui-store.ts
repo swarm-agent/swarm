@@ -17,6 +17,7 @@ import { setWorkspaceThemeCustomOptions } from '../../workspaces/launcher/servic
 import { openDesktopWebSocket } from '../realtime/client'
 import { disableVault, enableVault, exportVaultBundle, fetchVaultStatus, importVaultBundle, lockVault, unlockVault } from '../vault/api'
 import {
+  compactSessionV3,
   mapDesktopSessionUsageSummary,
   sendSessionMessage,
   type SendSessionMessageResult,
@@ -25,7 +26,7 @@ import type { DesktopChatRoute } from '../chat/services/chat-routing'
 import { gitStatusQueryKey } from '../git/api'
 import { agentStateQueryOptions, sessionPreferenceQueryKey, uiSettingsQueryKey } from '../../queries/query-options'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
-import { applyDurableEventToDesktopDB, applyOptimisticRunStartToDesktopDB, applyRunIntentToDesktopDB, ensureDesktopDBRouteSession, mergeDesktopDBDurablePatch, readDesktopDbSession } from './desktop-db'
+import { applyDurableEventToDesktopDB, applyOptimisticRunStartToDesktopDB, applyRunIntentToDesktopDB, desktopPlansCollection, ensureDesktopDBRouteSession, mergeDesktopDBDurablePatch, readDesktopDbSession } from './desktop-db'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import { normalizeSwarmSettings, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import type {
@@ -1361,16 +1362,16 @@ function invalidateAuthoritativeSessionSnapshot(sessionId: string): void {
   }
 }
 
-function requestScopedSessionWorkset(sessionId: string): void {
+function requestScopedSessionWorkset(sessionId: string, options: { force?: boolean } = {}): void {
   const normalizedSessionId = sessionId.trim()
-  if (!normalizedSessionId || pendingSessionWorksetHydrations.has(normalizedSessionId)) {
+  if (!normalizedSessionId || (pendingSessionWorksetHydrations.has(normalizedSessionId) && !options.force)) {
     return
   }
 
   pendingSessionWorksetHydrations.add(normalizedSessionId)
   const setTimeoutFn = typeof window !== 'undefined' ? window.setTimeout.bind(window) : setTimeout
   setTimeoutFn(() => {
-    void ensureDesktopDBRouteSession({}, normalizedSessionId)
+    void ensureDesktopDBRouteSession({}, normalizedSessionId, { force: options.force })
       .catch((error) => {
         console.error('[desktop-store] scoped desktop v3 DB hydration failed', error)
       })
@@ -2585,6 +2586,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
     }
     case 'session.mode.updated':
       session.mode = typeof payloadRecord.mode === 'string' ? payloadRecord.mode : session.mode
+      requestScopedSessionWorkset(sessionId, { force: true })
       notifications.unshift(makeNotification(sessionId, session.live.runId, eventType, 'Mode updated', session.mode, 'info', ts))
       break
     case 'session.preference.updated': {
@@ -3137,7 +3139,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
     highWatermark: envelopeSeq,
   })
   syncBlockedSessionToWorkspaceOverview(queryClient, merged)
-  if (sessionRequiresSnapshotHydration(merged, eventType)) {
+  if (sessionRequiresSnapshotHydration(merged, eventType, { hasPlanHydration: desktopPlansCollection.has(sessionId) })) {
     requestScopedSessionWorkset(sessionId)
   }
 
@@ -3884,7 +3886,7 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
       throw new Error('submitPrompt requires an attached session')
     }
 
-    const effectiveSessionApi = sessionApi?.trim().toLowerCase() || get().sessions[targetSessionId]?.sessionApi?.trim().toLowerCase() || ''
+    const effectiveSessionApi = compact ? 'v3' : (sessionApi?.trim().toLowerCase() || get().sessions[targetSessionId]?.sessionApi?.trim().toLowerCase() || '')
 
     get().closeRunStream(targetSessionId)
     if (effectiveSessionApi === 'v3') {
@@ -3900,6 +3902,9 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
       cancelDraftFlush(targetSessionId)
       const sessions = { ...state.sessions }
       const session = { ...ensureSession(state, targetSessionId), live: { ...ensureSession(state, targetSessionId).live } }
+      if (effectiveSessionApi === 'v3') {
+        session.sessionApi = 'v3'
+      }
       session.live.status = session.lifecycle?.active ? session.live.status : 'starting'
       session.live.startedAt = session.lifecycle?.active ? session.live.startedAt : submitStartedAt
       session.live.agentName = targetName.trim() || session.live.agentName || sessionAgentNameFromMetadata(session.metadata) || agentName.trim()
@@ -3926,7 +3931,57 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
     })
 
     try {
-      if (effectiveSessionApi === 'v3' && !compact) {
+      if (effectiveSessionApi === 'v3' && compact) {
+        const clientRequestId = providedClientRequestId?.trim() || `desktop-v3-compact:${targetSessionId}:${submitStartedAt}`
+        const result = await compactSessionV3(targetSessionId, { note: trimmedPrompt, agentName, clientRequestId })
+        const eventFrames = result.events ?? []
+        for (const event of eventFrames) {
+          if (event && typeof event === 'object') {
+            set((state: DesktopStoreState) => applyRunStreamFrame(state, targetSessionId, event as RunStreamEventMessage, Date.now()))
+          }
+        }
+        const assistantMessage = result.assistantMessage ?? null
+        const appliedSeq = Math.max(
+          result.session?.lastEventSeq ?? 0,
+          assistantMessage?.globalSeq ?? 0,
+        )
+        const mergedSession = mergeDesktopDBDurablePatch({
+          sessionId: targetSessionId,
+          session: result.session ?? null,
+          messages: assistantMessage ? [assistantMessage] : [],
+          usage: result.usageSummary ?? null,
+          appliedSeq,
+          highWatermark: Math.max(result.session?.projectionHighWatermarkSeq ?? 0, appliedSeq),
+        })
+        set((state: DesktopStoreState) => {
+          const existing = mergedSession ?? state.sessions[targetSessionId]
+          if (!existing) {
+            return state
+          }
+          return {
+            sessions: {
+              ...state.sessions,
+              [targetSessionId]: mergeSessionRecords(state.sessions[targetSessionId] ?? null, {
+                ...existing,
+                sessionApi: 'v3',
+                usage: result.usageSummary ?? existing.usage,
+                live: {
+                  ...existing.live,
+                  status: 'idle',
+                  awaitingAck: false,
+                  error: null,
+                  summary: assistantMessage?.content || 'Compact complete',
+                  lastEventType: 'session.compact.completed',
+                  lastEventAt: Date.now(),
+                },
+              }),
+            },
+          }
+        })
+        return
+      }
+
+      if (effectiveSessionApi === 'v3') {
         const clientRequestId = providedClientRequestId?.trim() || `desktop-v3-message:${targetSessionId}:${submitStartedAt}`
         const result = await sendSessionMessage(targetSessionId, 'user', trimmedPrompt, route, { sessionApi: 'v3', clientRequestId })
         let runIntentId = ''

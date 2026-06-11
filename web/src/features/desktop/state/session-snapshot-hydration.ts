@@ -1,6 +1,6 @@
 import type { DesktopSessionRecord } from '../types/realtime'
 
-export function sessionRequiresSnapshotHydration(session: DesktopSessionRecord, eventType: string): boolean {
+export function sessionRequiresSnapshotHydration(session: DesktopSessionRecord, eventType: string, options: { hasPlanHydration?: boolean } = {}): boolean {
   if (!session.id.trim()) {
     return false
   }
@@ -13,4 +13,5 @@ export function sessionRequiresSnapshotHydration(session: DesktopSessionRecord, 
   return !session.workspacePath.trim()
     || !session.workspaceName.trim()
     || session.createdAt <= 0
+    || !options.hasPlanHydration
 }

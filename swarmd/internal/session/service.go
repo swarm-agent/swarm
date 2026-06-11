@@ -2247,21 +2247,24 @@ func applyTurnUsageDelta(summary pebblestore.SessionUsageSummary, usage pebblest
 func remainingUsageTokens(usage pebblestore.SessionTurnUsageSnapshot, summary pebblestore.SessionUsageSummary) int64 {
 	source := strings.ToLower(strings.TrimSpace(usage.Source))
 	used := usage.TotalTokens
-	if source == "google_api_usage" {
+	switch source {
+	case "copilot_session_usage":
+		// Copilot session.usage_info reports current conversation occupancy via CurrentTokens.
+		// Persist that snapshot in TotalTokens and do not fall back to accumulated session totals.
+	case "google_api_usage":
 		// Gemini context occupancy should be API-sourced only. If total is omitted,
 		// fall back to API prompt tokens (still API-reported) and never to session sums.
 		if used <= 0 && usage.InputTokens > 0 {
 			used = usage.InputTokens
 		}
-	} else if source == "copilot_session_usage" {
-		// Copilot session.usage_info reports current conversation occupancy via CurrentTokens.
-		// Persist that snapshot in TotalTokens and do not fall back to accumulated session totals.
-		if used < 0 {
-			used = 0
+	default:
+		// Normalized provider response usage records are stored per turn/step and
+		// accumulated in the summary. Use the same accumulated basis for remaining
+		// context; otherwise a later single-response snapshot can make the UI show
+		// stale remaining capacity even after accumulated usage exceeds the window.
+		if summary.TotalTokens > 0 {
+			used = summary.TotalTokens
 		}
-		return used
-	} else if used <= 0 {
-		used = summary.TotalTokens
 	}
 	if used < 0 {
 		return 0

@@ -284,6 +284,38 @@ func (b *apiChatBackend) RunTurn(ctx context.Context, sessionID string, req ui.C
 
 func (b *apiChatBackend) RunTurnStream(ctx context.Context, sessionID string, req ui.ChatRunRequest, onEvent func(ui.ChatRunStreamEvent)) (ui.ChatRunResponse, error) {
 	if strings.EqualFold(strings.TrimSpace(b.sessionAPI), "v3") {
+		if req.Compact {
+			result, err := b.api.CompactSessionV3(ctx, sessionID, client.SessionV3CompactOptions{Note: req.Prompt, AgentName: req.AgentName, Instructions: req.Instructions})
+			if err != nil {
+				return ui.ChatRunResponse{}, err
+			}
+			for _, event := range result.Events {
+				if onEvent != nil {
+					onEvent(convertClientRunStreamEvent(event))
+				}
+			}
+			toolMessages := make([]ui.ChatMessageRecord, 0, len(result.Result.ToolMessages))
+			for _, message := range result.Result.ToolMessages {
+				toolMessages = append(toolMessages, convertClientMessage(message))
+			}
+			commentary := make([]ui.ChatMessageRecord, 0, len(result.Result.Commentary))
+			for _, message := range result.Result.Commentary {
+				commentary = append(commentary, convertClientMessage(message))
+			}
+			return ui.ChatRunResponse{
+				Model:            result.Result.Model,
+				Thinking:         result.Result.Thinking,
+				ReasoningSummary: result.Result.ReasoningSummary,
+				TurnUsage:        convertClientTurnUsage(result.Result.TurnUsage),
+				UsageSummary:     convertClientUsageSummary(result.Result.UsageSummary),
+				UserMessage:      convertClientMessage(result.Result.UserMessage),
+				ToolMessages:     toolMessages,
+				Commentary:       commentary,
+				AssistantMessage: convertClientMessage(result.Result.AssistantMessage),
+				TargetKind:       result.Result.TargetKind,
+				TargetName:       result.Result.TargetName,
+			}, nil
+		}
 		result, err := b.api.SendSessionV3Message(ctx, sessionID, client.SessionV3MessageOptions{Role: "user", Content: req.Prompt})
 		if err != nil {
 			return ui.ChatRunResponse{}, err

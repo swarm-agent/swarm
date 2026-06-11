@@ -11,6 +11,31 @@ async function withFetchStub(
     calls.push({ input, init })
     const url = String(input)
 
+    if (url === '/v3/sessions/session-v3/compact') {
+      const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+      return jsonResponse({
+        ok: true,
+        session: {
+          id: 'session-v3',
+          title: 'V3 session (Compact #2)',
+          workspace_path: '/repo',
+          workspace_name: 'repo',
+          mode: 'auto',
+          session_api: 'v3',
+          message_count: 2,
+          updated_at: 8,
+          created_at: 1,
+        },
+        result: {
+          usage_summary: { session_id: 'session-v3', provider: 'test', model: 'gpt-test', source: 'context_compaction_reset', context_window: 1000, remaining_tokens: 1000, updated_at: 8 },
+          assistant_message: { id: 'msg-compact-ack', session_id: 'session-v3', global_seq: 4, role: 'assistant', content: `Manual context compact complete: ${body.note}`, created_at: 8 },
+        },
+        events: [
+          { type: 'message.stored', session_id: 'session-v3', run_id: 'run-compact', message: { id: 'msg-compact-ack', session_id: 'session-v3', global_seq: 4, role: 'assistant', content: `Manual context compact complete: ${body.note}`, created_at: 8 } },
+        ],
+      })
+    }
+
     if (url === '/v3/sessions/session-v3/messages' || url === '/v3/sessions/session-auto/messages') {
       const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
       const sessionId = url.includes('/session-auto/') ? 'session-auto' : 'session-v3'
@@ -142,6 +167,32 @@ test('V3 send requires explicit API selection for raw canonical session IDs', as
   })
 })
 
+test('compactSessionV3 uses only the native Sessions V3 compact endpoint', async () => {
+  const { compactSessionV3 } = await import('./chat-queries')
+
+  await withFetchStub(async (calls) => {
+    const response = await compactSessionV3('session-v3', {
+      note: 'keep constraints',
+      agentName: 'swarm',
+      clientRequestId: 'desktop-v3-compact:session-v3:test-request',
+    })
+
+    assert.deepEqual(calls.map((entry) => String(entry.input)), ['/v3/sessions/session-v3/compact'])
+    assertNoV1OrV2SessionCalls(calls)
+    const body = requestBody(calls[0])
+    assert.equal(body.client_request_id, 'desktop-v3-compact:session-v3:test-request')
+    assert.equal(body.note, 'keep constraints')
+    assert.equal(body.agent_name, 'swarm')
+    assert.equal(Object.hasOwn(body, 'target_swarm_id'), false)
+    assert.equal(Object.hasOwn(body, 'session_id'), false)
+
+    assert.equal(response.session?.sessionApi, 'v3')
+    assert.equal(response.assistantMessage?.id, 'msg-compact-ack')
+    assert.equal(response.usageSummary?.remainingTokens, 1000)
+    assert.equal(response.events?.length, 1)
+  })
+})
+
 test('legacy non-V3 send keeps existing v2 message endpoint', async () => {
   const { sendSessionMessage } = await import('./chat-queries')
 
@@ -160,10 +211,16 @@ test('desktop store V3 submit path uses message commit helper instead of V2 run 
   assert.match(source, /sendSessionMessage\(targetSessionId, 'user', trimmedPrompt, route, \{ sessionApi: 'v3', clientRequestId \}\)/)
   const panelSource = await readFile(new URL('../components/desktop-chat-panel.tsx', import.meta.url), 'utf8')
   assert.match(panelSource, /clientRequestId: pendingMessageId \? `desktop-v3-message:\$\{pendingMessageId\}` : undefined/)
-  assert.match(source, /effectiveSessionApi === 'v3' && !compact/)
+  assert.match(source, /const effectiveSessionApi = compact \? 'v3'/)
+  assert.match(source, /effectiveSessionApi === 'v3' && compact/)
+  assert.match(source, /compactSessionV3\(targetSessionId, \{ note: trimmedPrompt, agentName, clientRequestId \}\)/)
+  assert.match(source, /effectiveSessionApi === 'v3'/)
   assert.match(source, /applyV3MessageCommitResult/)
   assert.match(source, /set\(\{ realtimeDesired: true \}\)/)
   assert.match(source, /await get\(\)\.connect\(\)/)
   assert.doesNotMatch(source, /requireV3RealtimeController/)
   assert.doesNotMatch(source, /requireRunStreamController\(\)\.ensure\(targetSessionId, committedRunId\)/)
+  const panelSourceAfterCompactFix = await readFile(new URL('../components/desktop-chat-panel.tsx', import.meta.url), 'utf8')
+  assert.match(panelSourceAfterCompactFix, /sessionApi: 'v3',[\s\S]*compact: true/)
+  assert.doesNotMatch(panelSourceAfterCompactFix, /sessionApi: liveSession\?\.sessionApi,[\s\S]*compact: true/)
 })

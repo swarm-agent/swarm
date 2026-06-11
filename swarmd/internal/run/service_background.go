@@ -45,6 +45,7 @@ type RunRequest struct {
 	AgentName        string               `json:"agent_name,omitempty"`
 	Instructions     string               `json:"instructions,omitempty"`
 	Compact          bool                 `json:"compact,omitempty"`
+	CompactOrigin    string               `json:"compact_origin,omitempty"`
 	TargetKind       string               `json:"target_kind,omitempty"`
 	TargetName       string               `json:"target_name,omitempty"`
 	Background       bool                 `json:"background,omitempty"`
@@ -96,6 +97,7 @@ func NewRunOptions(request RunRequest, meta RunStartMeta) RunOptions {
 		AgentName:            request.AgentName,
 		Instructions:         request.Instructions,
 		Compact:              request.Compact,
+		CompactOrigin:        request.CompactOrigin,
 		AllowSubagent:        meta.AllowSubagent,
 		DisabledTools:        cloneDisabledTools(meta.DisabledTools),
 		PermissionSessionID:  strings.TrimSpace(meta.PermissionSessionID),

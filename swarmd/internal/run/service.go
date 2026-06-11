@@ -119,6 +119,7 @@ type RunOptions struct {
 	AgentName            string
 	Instructions         string
 	Compact              bool
+	CompactOrigin        string
 	AllowSubagent        bool
 	DisabledTools        map[string]bool
 	PermissionSessionID  string
@@ -932,6 +933,10 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		permissionSessionID = sessionID
 	}
 	manualCompact := options.Compact
+	compactOrigin := normalizeContextCompactionOrigin(options.CompactOrigin)
+	if strings.TrimSpace(options.CompactOrigin) == "" {
+		compactOrigin = contextCompactionOriginManual
+	}
 	prompt := strings.TrimSpace(options.Prompt)
 	if prompt == "" && !manualCompact {
 		return RunResult{}, errors.New("prompt is required")
@@ -1187,7 +1192,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		return result, nil
 	}
 
-	messages, err := s.sessions.ListMessages(sessionID, 0, defaultHistoryLimit)
+	messages, err := s.listRunMessages(sessionID, 0, defaultHistoryLimit, options.ApplySessionMutation != nil)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -1271,7 +1276,8 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			resolvedPreference.ContextWindow,
 			resolvedPreference.MaxOutputTokens,
 			true,
-			contextCompactionOriginManual,
+			compactOrigin,
+			options.ApplySessionMutation != nil,
 			stepsCompleted,
 			1,
 			emit,
@@ -1288,7 +1294,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		resetSummary, compactIndex, compactEvents, compactErr := s.applyContextCompactionArtifacts(
 			sessionID,
 			compactedSummary,
-			contextCompactionOriginManual,
+			compactOrigin,
 			resolvedPreference.ContextWindow,
 			providerID,
 			resolvedPreference.Preference.Model,
@@ -1383,6 +1389,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			resolvedPreference.MaxOutputTokens,
 			false,
 			contextCompactionOriginOverflow,
+			options.ApplySessionMutation != nil,
 			step,
 			contextCompactionAttempts,
 			emit,
@@ -2767,7 +2774,7 @@ func compactedActivePlanLabel(activePlan *pebblestore.SessionPlanSnapshot) strin
 	}
 }
 
-func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, runPrompt, assistantDraft string, basePreference pebblestore.ModelPreference, contextWindow, maxOutputTokens int, returnFullCompactionResponse bool, origin string, step, attempt int, emit StreamHandler, streamOut ...**memoryCompactionToolStream) (string, error) {
+func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, runPrompt, assistantDraft string, basePreference pebblestore.ModelPreference, contextWindow, maxOutputTokens int, returnFullCompactionResponse bool, origin string, preferV3Messages bool, step, attempt int, emit StreamHandler, streamOut ...**memoryCompactionToolStream) (string, error) {
 	toolStream := newMemoryCompactionToolStream(emit, step, origin, attempt)
 	if len(streamOut) > 0 && streamOut[0] != nil {
 		*streamOut[0] = toolStream
@@ -2822,7 +2829,7 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 	}
 	thinking := normalizeThinkingWithProvider(providerID, preference.Thinking)
 	contextWindow, maxOutputTokens = s.resolveMemoryCompactionLimits(providerID, modelName, preference.ContextMode, contextWindow, maxOutputTokens)
-	messages, err := s.listMessagesForMemoryCompaction(sessionID)
+	messages, err := s.listMessagesForMemoryCompaction(sessionID, preferV3Messages)
 	if err != nil {
 		err = fmt.Errorf("list session messages for compaction: %w", err)
 		finishFailure(err)
@@ -3035,7 +3042,7 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 	return "", finalErr
 }
 
-func (s *Service) listMessagesForMemoryCompaction(sessionID string) ([]pebblestore.MessageSnapshot, error) {
+func (s *Service) listMessagesForMemoryCompaction(sessionID string, preferV3Messages bool) ([]pebblestore.MessageSnapshot, error) {
 	if s == nil || s.sessions == nil {
 		return nil, errors.New("session service is not configured")
 	}
@@ -3054,11 +3061,31 @@ func (s *Service) listMessagesForMemoryCompaction(sessionID string) ([]pebblesto
 	if limit <= 0 {
 		limit = defaultHistoryLimit
 	}
-	messages, err := s.sessions.ListMessages(sessionID, 0, limit)
+	messages, err := s.listRunMessages(sessionID, 0, limit, preferV3Messages)
 	if err != nil {
 		return nil, err
 	}
 	return trimMessagesToLatestCompactionCheckpoint(messages), nil
+}
+
+func (s *Service) listRunMessages(sessionID string, afterSeq uint64, limit int, preferV3Messages bool) ([]pebblestore.MessageSnapshot, error) {
+	if s == nil || s.sessions == nil {
+		return nil, errors.New("session service is not configured")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, errors.New("session id is required")
+	}
+	if preferV3Messages {
+		messages, err := s.sessions.ListSessionMessages(sessionID, afterSeq, limit)
+		if err != nil {
+			return nil, err
+		}
+		if len(messages) > 0 {
+			return messages, nil
+		}
+	}
+	return s.sessions.ListMessages(sessionID, afterSeq, limit)
 }
 
 func buildMemoryCompactionTranscript(messages []pebblestore.MessageSnapshot, assistantDraft string) string {

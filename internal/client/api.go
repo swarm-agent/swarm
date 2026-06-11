@@ -889,6 +889,20 @@ type SessionV3MessageOptions struct {
 	DispatchAuthority map[string]any
 }
 
+type SessionV3CompactOptions struct {
+	ClientRequestID string
+	RunID           string
+	Note            string
+	AgentName       string
+	Instructions    string
+}
+
+type SessionV3CompactResult struct {
+	Session SessionSummary          `json:"session"`
+	Result  SessionRunResult        `json:"result"`
+	Events  []SessionRunStreamEvent `json:"events"`
+}
+
 type SessionV3MessageResult struct {
 	Session    SessionSummary      `json:"session"`
 	Projection SessionV3Projection `json:"projection"`
@@ -3109,6 +3123,36 @@ func (c *API) ReplaySessionV3Events(ctx context.Context, sessionID string, after
 		replay.Session = &marked
 	}
 	return replay, nil
+}
+
+func (c *API) CompactSessionV3(ctx context.Context, sessionID string, options SessionV3CompactOptions) (SessionV3CompactResult, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return SessionV3CompactResult{}, errors.New("session id is required")
+	}
+	req := map[string]any{
+		"client_request_id": strings.TrimSpace(options.ClientRequestID),
+		"note":              strings.TrimSpace(options.Note),
+		"agent_name":        strings.TrimSpace(options.AgentName),
+		"instructions":      strings.TrimSpace(options.Instructions),
+	}
+	if req["client_request_id"] == "" {
+		req["client_request_id"] = newSessionV3ClientRequestID("compact")
+	}
+	if value := strings.TrimSpace(options.RunID); value != "" {
+		req["run_id"] = value
+	}
+	var resp struct {
+		OK      bool                    `json:"ok"`
+		Session SessionSummary          `json:"session"`
+		Result  SessionRunResult        `json:"result"`
+		Events  []SessionRunStreamEvent `json:"events"`
+	}
+	if err := c.postJSON(ctx, sessionV3PrimaryPath(sessionID, "compact"), req, &resp, true); err != nil {
+		return SessionV3CompactResult{}, err
+	}
+	resp.Session = markSessionV3(resp.Session, SessionV3Projection{})
+	return SessionV3CompactResult{Session: resp.Session, Result: resp.Result, Events: resp.Events}, nil
 }
 
 func (c *API) SendSessionV3Message(ctx context.Context, sessionID string, options SessionV3MessageOptions) (SessionV3MessageResult, error) {

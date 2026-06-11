@@ -1111,6 +1111,18 @@ func waitForSessionsV3RunIntentStatus(t *testing.T, sessionSvc *sessionruntime.S
 	return sessionruntime.SessionRunIntent{}
 }
 
+func currentSessionsV3RunIntentStatus(t *testing.T, sessionSvc *sessionruntime.Service, sessionID string) string {
+	t.Helper()
+	intents, err := sessionSvc.Store().ListV3SessionRunIntents(sessionID, 0, 10)
+	if err != nil {
+		t.Fatalf("list run intents: %v", err)
+	}
+	if len(intents) == 0 {
+		t.Fatalf("no run intents for session %q", sessionID)
+	}
+	return intents[0].Status
+}
+
 func assertSessionsV3CancelledRunEvent(t *testing.T, sessionSvc *sessionruntime.Service, sessionID, runID, reason string) {
 	t.Helper()
 	events, err := sessionSvc.ListSessionEvents(sessionID, 0, 50)
@@ -3078,9 +3090,9 @@ func TestSessionsV3ExecutorStreamsAndPersistsCodexUsage(t *testing.T) {
 			Model:      "gpt-5.5",
 			StopReason: "stop",
 			Usage: provideriface.TokenUsage{
-				InputTokens:     12731,
-				OutputTokens:    7,
-				TotalTokens:     12738,
+				InputTokens:     180000,
+				OutputTokens:    10,
+				TotalTokens:     180010,
 				CacheReadTokens: 11776,
 				Source:          "codex_api_usage",
 				Transport:       "websocket",
@@ -3125,11 +3137,32 @@ func TestSessionsV3ExecutorStreamsAndPersistsCodexUsage(t *testing.T) {
 	if summary.Provider != "codex" || summary.Model != "gpt-5.5" || summary.Source != "codex_api_usage" {
 		t.Fatalf("usage summary identity = %+v", summary)
 	}
-	if summary.InputTokens != 12731 || summary.OutputTokens != 7 || summary.TotalTokens != 12738 || summary.CacheReadTokens != 11776 {
+	if summary.InputTokens != 180000 || summary.OutputTokens != 10 || summary.TotalTokens != 180010 || summary.CacheReadTokens != 11776 {
 		t.Fatalf("usage summary tokens = %+v", summary)
 	}
-	if summary.ContextWindow <= 0 || summary.RemainingTokens <= 0 {
-		t.Fatalf("usage summary context window not populated: %+v", summary)
+	if summary.ContextWindow <= 0 || summary.RemainingTokens != int64(summary.ContextWindow)-summary.TotalTokens {
+		t.Fatalf("usage summary remaining should use accumulated normalized usage: %+v", summary)
+	}
+	_, usageSummary2, _, err := sessionSvc.RecordTurnUsage(created.ID, pebblestore.SessionTurnUsageSnapshot{
+		RunID:           "codex-usage-second-response",
+		Provider:        "codex",
+		Model:           "gpt-5.5",
+		Source:          "codex_api_usage",
+		Transport:       "websocket",
+		ContextWindow:   summary.ContextWindow,
+		InputTokens:     116011,
+		OutputTokens:    272,
+		TotalTokens:     116283,
+		CacheReadTokens: 115200,
+	})
+	if err != nil {
+		t.Fatalf("record second usage: %v", err)
+	}
+	if usageSummary2.TotalTokens <= int64(usageSummary2.ContextWindow) {
+		t.Fatalf("test setup did not exceed context window: %+v", usageSummary2)
+	}
+	if usageSummary2.RemainingTokens != 0 {
+		t.Fatalf("remaining tokens should clamp to zero from accumulated usage, got %+v", usageSummary2)
 	}
 
 	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 100)
@@ -3153,7 +3186,7 @@ func TestSessionsV3ExecutorStreamsAndPersistsCodexUsage(t *testing.T) {
 	if err := json.Unmarshal(usageEvent.Payload, &payload); err != nil {
 		t.Fatalf("decode usage event payload: %v", err)
 	}
-	if payload.TurnUsage.InputTokens != 12731 || payload.UsageSummary.TotalTokens != 12738 {
+	if payload.TurnUsage.InputTokens != 180000 || payload.UsageSummary.TotalTokens != 180010 {
 		t.Fatalf("usage event payload = %+v", payload)
 	}
 
@@ -3161,8 +3194,81 @@ func TestSessionsV3ExecutorStreamsAndPersistsCodexUsage(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("hydrate session ok=%v err=%v", ok, err)
 	}
-	if hydrated.UsageSummary == nil || hydrated.UsageSummary.TotalTokens != 12738 {
+	if hydrated.UsageSummary == nil || hydrated.UsageSummary.TotalTokens != usageSummary2.TotalTokens || hydrated.UsageSummary.RemainingTokens != 0 {
 		t.Fatalf("hydrated usage summary = %+v", hydrated.UsageSummary)
+	}
+}
+
+func TestSessionsV3CompactEndpointRunsManualCompactAndResetsUsage(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	const userContent = "v3 compact must hydrate this primary transcript"
+	runner := &sessionsV3RecordingProviderRunner{handler: func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if !sessionsV3ProviderInputContainsContentText(req.Input, userContent) {
+			t.Fatalf("memory compact request did not include v3 transcript content: %+v", req.Input)
+		}
+		if !strings.Contains(req.Instructions, "memory compact agent") {
+			t.Fatalf("compact did not use memory agent instructions: %q", req.Instructions)
+		}
+		return provideriface.Response{Text: "compact summary", Model: "test-model", StopReason: "stop", Usage: provideriface.TokenUsage{InputTokens: 5, OutputTokens: 2, TotalTokens: 7, Source: "test_usage"}}, nil
+	}}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	server.runner = runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, nil, nil)
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "test-model", Thinking: "medium", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory compact prompt", ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}}); err != nil {
+		t.Fatalf("upsert memory agent: %v", err)
+	}
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "compact-create", "compact", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	now := time.Now().UnixMilli()
+	message := pebblestore.MessageSnapshot{ID: "test-user-compact-v3-message", SessionID: created.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, Role: "user", Content: userContent, CreatedAt: now}
+	payloadHash, err := sessionV3ExecutorPayloadHash(created.ID, "compact-fixture", sessionruntime.RunIntentRunning, "", "session.message.appended", "compact-v3-message:"+userContent)
+	if err != nil {
+		t.Fatalf("hash compact fixture message payload: %v", err)
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: created.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ClientRequestID: "compact-v3-message", IdempotencyKey: "compact-v3-message", PayloadHash: payloadHash, RequestHash: payloadHash, Kind: sessionruntime.SessionMutationAppendMessage, EventType: "session.message.appended", Message: &message, NowUnixMs: now}); err != nil {
+		t.Fatalf("append compact fixture message: %v", err)
+	}
+	_, _, _, err = sessionSvc.RecordTurnUsage(created.ID, pebblestore.SessionTurnUsageSnapshot{RunID: "before-compact", Provider: "test-provider", Model: "test-model", Source: "test_usage", ContextWindow: 1000, TotalTokens: 900})
+	if err != nil {
+		t.Fatalf("record usage: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/compact", bytes.NewBufferString(`{"client_request_id":"compact-now","note":"keep constraints"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("compact status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var resp struct {
+		Result runruntime.RunResult `json:"result"`
+		Events []map[string]any     `json:"events"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode compact response: %v", err)
+	}
+	if resp.Result.UsageSummary == nil || resp.Result.UsageSummary.ContextWindow != 1000 || resp.Result.UsageSummary.RemainingTokens != 1000 || resp.Result.UsageSummary.Source != "context_compaction_reset" {
+		t.Fatalf("compact usage summary = %+v", resp.Result.UsageSummary)
+	}
+	if runner.callCount == 0 {
+		t.Fatalf("compact did not invoke memory provider")
+	}
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	var sawManualCheckpoint bool
+	for _, msg := range messages {
+		if msg.Role == "system" && strings.Contains(msg.Content, "[context-compact]") {
+			if !strings.Contains(msg.Content, "origin=manual") {
+				t.Fatalf("compact checkpoint missing manual origin: %s", msg.Content)
+			}
+			sawManualCheckpoint = true
+		}
+	}
+	if !sawManualCheckpoint {
+		t.Fatalf("manual compact checkpoint missing from messages: %+v", messages)
 	}
 }
 
@@ -3904,11 +4010,16 @@ func TestSessionsV3ExecutorFailsClosedWhenProviderReturnsToolCalls(t *testing.T)
 
 func TestSessionsV3ExecutorUpdatesDefaultTitleWithMemoryAgentAfterFirstRun(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	runner := &sessionsV3RecordingProviderRunner{responses: []provideriface.Response{{Text: "assistant answer"}, {Text: "Memory Agent Session Title Flow"}}}
+	runner := &sessionsV3RecordingProviderRunner{handler: func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if strings.Contains(req.Instructions, "You generate deterministic session titles") {
+			return provideriface.Response{Text: "Memory Agent Session Title Flow", StopReason: "stop"}, nil
+		}
+		return provideriface.Response{Text: "assistant answer", StopReason: "stop"}, nil
+	}}
 	providers := registry.New()
 	providers.RegisterRunner(runner)
 	server.providers = providers
-	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "title-model", Thinking: "low", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory title prompt"}); err != nil {
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "title-model", Thinking: "low", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory title prompt", ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}}); err != nil {
 		t.Fatalf("upsert memory agent: %v", err)
 	}
 	exec := newSessionV3Executor(server)
@@ -3931,13 +4042,13 @@ func TestSessionsV3ExecutorUpdatesDefaultTitleWithMemoryAgentAfterFirstRun(t *te
 		t.Fatalf("session title = %q", stored.Title)
 	}
 	if runner.callCount != 2 {
-		t.Fatalf("provider call count = %d, want assistant + memory title", runner.callCount)
+		t.Fatalf("provider call count = %d, want memory title + assistant", runner.callCount)
 	}
-	if !strings.Contains(runner.requests[1].Instructions, "Memory title prompt") || !strings.Contains(runner.requests[1].Instructions, "You generate deterministic session titles") {
-		t.Fatalf("memory title instructions = %q", runner.requests[1].Instructions)
+	if !strings.Contains(runner.requests[0].Instructions, "Memory title prompt") || !strings.Contains(runner.requests[0].Instructions, "You generate deterministic session titles") {
+		t.Fatalf("memory title instructions = %q", runner.requests[0].Instructions)
 	}
-	if runner.requests[1].Model != "title-model" || runner.requests[1].Thinking != "low" || runner.requests[1].ToolChoice != "none" {
-		t.Fatalf("memory title request = %+v", runner.requests[1])
+	if runner.requests[0].Model != "title-model" || runner.requests[0].Thinking != "low" || runner.requests[0].ToolChoice != "none" {
+		t.Fatalf("memory title request = %+v", runner.requests[0])
 	}
 	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 80)
 	if err != nil {
@@ -3974,13 +4085,69 @@ func TestSessionsV3ExecutorUpdatesDefaultTitleWithMemoryAgentAfterFirstRun(t *te
 	}
 }
 
-func TestSessionsV3ExecutorUpdatesDefaultTitleWithSystemPreludeAfterFirstRun(t *testing.T) {
+func TestSessionsV3ExecutorStartsTitleBeforeAssistantCompletes(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	runner := &sessionsV3RecordingProviderRunner{responses: []provideriface.Response{{Text: "assistant answer"}, {Text: "System Prelude Session Title Flow"}}}
+	assistantStarted := make(chan struct{})
+	allowAssistant := make(chan struct{})
+	runner := &sessionsV3RecordingProviderRunner{handler: func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if strings.Contains(req.Instructions, "You generate deterministic session titles") {
+			return provideriface.Response{Text: "Immediate First Message Async Title", StopReason: "stop"}, nil
+		}
+		close(assistantStarted)
+		select {
+		case <-allowAssistant:
+			return provideriface.Response{Text: "assistant answer", StopReason: "stop"}, nil
+		case <-ctx.Done():
+			return provideriface.Response{}, ctx.Err()
+		}
+	}}
 	providers := registry.New()
 	providers.RegisterRunner(runner)
 	server.providers = providers
-	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "title-model", Thinking: "low", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory title prompt"}); err != nil {
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "title-model", Thinking: "low", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory title prompt", ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}}); err != nil {
+		t.Fatalf("upsert memory agent: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "title-immediate-create", "New Session", pebblestore.ModelPreference{Provider: "test-provider", Model: "chat-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "title-immediate-message", "title immediately before assistant completes")
+	select {
+	case <-assistantStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("assistant provider call did not start")
+	}
+	waitForSessionsV3Title(t, sessionSvc, created.ID, "Immediate First Message Async Title")
+	if status := currentSessionsV3RunIntentStatus(t, sessionSvc, created.ID); status != sessionruntime.RunIntentRunning {
+		t.Fatalf("run status after title = %q, want still running", status)
+	}
+	close(allowAssistant)
+	waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
+	if !server.WaitForInFlightRuns(2 * time.Second) {
+		t.Fatalf("server did not drain v3 run")
+	}
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 80)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if !sessionsV3EventsContainType(events, "session.title.updated") {
+		t.Fatalf("missing session.title.updated event: %+v", events)
+	}
+}
+
+func TestSessionsV3ExecutorUpdatesDefaultTitleWithSystemPreludeAfterFirstRun(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{handler: func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if strings.Contains(req.Instructions, "You generate deterministic session titles") {
+			return provideriface.Response{Text: "System Prelude Session Title Flow", StopReason: "stop"}, nil
+		}
+		return provideriface.Response{Text: "assistant answer", StopReason: "stop"}, nil
+	}}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "title-model", Thinking: "low", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory title prompt", ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}}); err != nil {
 		t.Fatalf("upsert memory agent: %v", err)
 	}
 	exec := newSessionV3Executor(server)
@@ -4013,10 +4180,16 @@ func TestSessionsV3ExecutorUpdatesDefaultTitleAfterToolShapedFirstRun(t *testing
 	if err := os.WriteFile(filepath.Join(workspace, "facts.txt"), []byte("title tool fact"), 0o644); err != nil {
 		t.Fatalf("write workspace fact file: %v", err)
 	}
-	runner := &sessionsV3RecordingProviderRunner{responses: []provideriface.Response{
-		{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-read-title-facts", Name: "read", Arguments: `{"path":"facts.txt"}`}}},
-		{Text: "assistant answer after title tool"},
-		{Text: "Tool Assisted Session Title Flow"},
+	var assistantCalls int
+	runner := &sessionsV3RecordingProviderRunner{handler: func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if strings.Contains(req.Instructions, "You generate deterministic session titles") {
+			return provideriface.Response{Text: "Tool Assisted Session Title Flow", StopReason: "stop"}, nil
+		}
+		assistantCalls++
+		if assistantCalls == 1 {
+			return provideriface.Response{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-read-title-facts", Name: "read", Arguments: `{"path":"facts.txt"}`}}}, nil
+		}
+		return provideriface.Response{Text: "assistant answer after title tool", StopReason: "stop"}, nil
 	}}
 	providers := registry.New()
 	providers.RegisterRunner(runner)
@@ -4027,7 +4200,7 @@ func TestSessionsV3ExecutorUpdatesDefaultTitleAfterToolShapedFirstRun(t *testing
 	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"read": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
 		t.Fatalf("upsert tool-enabled swarm agent: %v", err)
 	}
-	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "title-model", Thinking: "low", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory title prompt"}); err != nil {
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "title-model", Thinking: "low", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory title prompt", ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}}); err != nil {
 		t.Fatalf("upsert memory agent: %v", err)
 	}
 	exec := newSessionV3Executor(server)
@@ -4043,7 +4216,7 @@ func TestSessionsV3ExecutorUpdatesDefaultTitleAfterToolShapedFirstRun(t *testing
 		t.Fatalf("server did not drain v3 title generation")
 	}
 	if runner.callCount != 3 {
-		t.Fatalf("provider call count = %d, want tool request + continuation + memory title", runner.callCount)
+		t.Fatalf("provider call count = %d, want memory title + tool request + continuation", runner.callCount)
 	}
 	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 80)
 	if err != nil {
@@ -4098,13 +4271,19 @@ func mustSessionsV3TestJSON(t *testing.T, value any) string {
 
 func createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t *testing.T, server *Server, clientRequestID, title, workspacePath string, pref pebblestore.ModelPreference) pebblestore.SessionSnapshot {
 	t.Helper()
+	bindingID := seedSessionsV3PrimaryAuthority(t, server, workspacePath)
 	payload := map[string]any{
-		"client_request_id": clientRequestID,
-		"workspace_path":    workspacePath,
-		"title":             title,
-		"mode":              sessionruntime.ModeAuto,
-		"agent_name":        "swarm",
-		"preference":        pref,
+		"client_request_id":    clientRequestID,
+		"workspace_path":       workspacePath,
+		"workspace_name":       filepath.Base(workspacePath),
+		"swarm_id":             "host-swarm-id",
+		"workspace_binding_id": bindingID,
+		"target_kind":          "host",
+		"target_relationship":  "self",
+		"title":                title,
+		"mode":                 sessionruntime.ModeAuto,
+		"agent_name":           "swarm",
+		"preference":           pref,
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -4138,6 +4317,7 @@ func sessionsV3ProviderRequestToolNames(tools []provideriface.ToolDefinition) ma
 }
 
 type sessionsV3RecordingProviderRunner struct {
+	mu            sync.Mutex
 	id            string
 	text          string
 	deltas        []string
@@ -4161,30 +4341,37 @@ func (r *sessionsV3RecordingProviderRunner) CreateResponse(ctx context.Context, 
 	return r.CreateResponseStreaming(ctx, req, nil)
 }
 func (r *sessionsV3RecordingProviderRunner) CreateResponseStreaming(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+	r.mu.Lock()
 	r.callCount++
+	callCount := r.callCount
 	r.lastRequest = req
 	r.requests = append(r.requests, req)
-	if r.handler != nil {
-		return r.handler(ctx, req, onEvent)
-	}
-	if r.err != nil {
-		return provideriface.Response{}, r.err
-	}
+	handler := r.handler
+	err := r.err
 	response := r.response
-	if len(r.responses) >= r.callCount {
-		response = r.responses[r.callCount-1]
+	if len(r.responses) >= callCount {
+		response = r.responses[callCount-1]
+	}
+	functionCalls := append([]provideriface.FunctionCall(nil), r.functionCalls...)
+	deltas := append([]string(nil), r.deltas...)
+	text := r.text
+	r.mu.Unlock()
+	if handler != nil {
+		return handler(ctx, req, onEvent)
+	}
+	if err != nil {
+		return provideriface.Response{}, err
 	}
 	if response.Text == "" {
-		response.Text = r.text
+		response.Text = text
 	}
-	if len(r.functionCalls) > 0 {
-		response.FunctionCalls = append([]provideriface.FunctionCall(nil), r.functionCalls...)
+	if len(functionCalls) > 0 {
+		response.FunctionCalls = functionCalls
 	}
 	if response.StopReason == "" && strings.TrimSpace(response.Text) != "" && len(response.FunctionCalls) == 0 && !response.RestartTurn {
 		response.StopReason = "stop"
 	}
 	if onEvent != nil {
-		deltas := r.deltas
 		if len(deltas) == 0 {
 			deltas = []string{response.Text}
 		}

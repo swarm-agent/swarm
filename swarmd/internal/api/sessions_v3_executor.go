@@ -360,22 +360,27 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 	response, err := e.assistantResponse(runCtx, job)
 	if err != nil {
 		if !e.isRunCanceled(job) {
-			classification := sessionV3TerminalClassifier.Classify(TerminalClassifierInput{Err: err})
-			_, _ = e.recordRunStatus(job, classification.Status, classification.Reason, classification.EventType)
+			if sessionV3IsContextOverflowDiagnostic(err.Error()) {
+				response, err = e.contextOverflowCompactedAssistantResponse(runCtx, job, err)
+			}
+			if err != nil {
+				classification := sessionV3TerminalClassifier.Classify(TerminalClassifierInput{Err: err})
+				_, _ = e.recordRunStatus(job, classification.Status, classification.Reason, classification.EventType)
+			}
 		}
-		return
+		if err != nil {
+			return
+		}
 	}
 	if e.isRunCanceled(job) || runCtx.Err() != nil {
 		return
 	}
-	result, err := e.completeRun(job, response)
-	if err != nil {
+	if _, err := e.completeRun(job, response); err != nil {
 		if !e.isRunCanceled(job) {
 			_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, err.Error(), "session.run.failed")
 		}
 		return
 	}
-	e.maybeStartSessionV3TitleFlow(job, result)
 }
 
 func (e *sessionV3Executor) recordRunStatus(job sessionV3ExecutorJob, status, reason, eventType string) (sessionruntime.SessionMutationResult, error) {
@@ -966,6 +971,26 @@ func (e *sessionV3Executor) assistantResponse(ctx context.Context, job sessionV3
 		return sessionV3AssistantResponse{}, err
 	}
 	return e.providerAssistantResponse(ctx, job, resolved)
+}
+
+func (e *sessionV3Executor) contextOverflowCompactedAssistantResponse(ctx context.Context, job sessionV3ExecutorJob, cause error) (sessionV3AssistantResponse, error) {
+	if e == nil || e.server == nil || e.server.runner == nil {
+		return sessionV3AssistantResponse{}, cause
+	}
+	result, err := e.server.runner.RunTurn(ctx, job.SessionID, runruntime.RunRequest{Prompt: "context overflow compact request", Compact: true, CompactOrigin: "overflow"}, runruntime.RunStartMeta{RunID: job.RunID + "-overflow-compact", Principal: job.Principal, ApplySessionMutation: e.server.applySessionV3PrimaryMutation})
+	if err != nil {
+		return sessionV3AssistantResponse{}, fmt.Errorf("v3 context overflow compact failed: %w", err)
+	}
+	content := strings.TrimSpace(result.AssistantMessage.Content)
+	if content == "" {
+		content = "Context overflow compact complete. Continue from the compacted checkpoint."
+	}
+	return sessionV3AssistantResponse{Content: content, AgentName: result.Agent, ResolvedAgentName: result.Agent, ExecutorKind: "v3_provider", ProviderID: "compact", Model: result.Model, StopReason: "stop"}, nil
+}
+
+func sessionV3IsContextOverflowDiagnostic(detail string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(detail))
+	return strings.Contains(normalized, "context_length_exceeded") || strings.Contains(normalized, "context window") || strings.Contains(normalized, "context length") || strings.Contains(normalized, "maximum context")
 }
 
 func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime) (sessionV3AssistantResponse, error) {
@@ -1920,23 +1945,21 @@ func shouldGenerateSessionV3TitleWithMessages(session pebblestore.SessionSnapsho
 	if !shouldGenerateSessionV3Title(session) {
 		return false
 	}
-	var userCount, assistantCount int
+	var userCount int
 	for _, message := range messages {
 		switch strings.ToLower(strings.TrimSpace(message.Role)) {
-		case "system", "reasoning", "tool", "function":
+		case "system", "reasoning", "tool", "function", "assistant":
 			continue
 		case "user":
 			userCount++
 			if userCount > 1 {
 				return false
 			}
-		case "assistant":
-			assistantCount++
 		default:
 			return false
 		}
 	}
-	return userCount == 1 && assistantCount >= 1
+	return userCount == 1
 }
 
 func sessionV3TitleGenerationLocked(metadata map[string]any) bool {
