@@ -85,12 +85,13 @@ func (s *Server) handleSessionsV3Workset(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	preferencesBySession, agentModelPolicyBySession := s.sessionsV3WorksetPreferencesAndPolicies(workset)
 	plansBySession, planRevisionsBySession, err := s.sessionsV3WorksetPlans(workset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, sessionsV3WorksetResponse(workset, permissionsBySession, usageBySession, plansBySession, planRevisionsBySession))
+	writeJSON(w, http.StatusOK, sessionsV3WorksetResponse(workset, permissionsBySession, usageBySession, preferencesBySession, agentModelPolicyBySession, plansBySession, planRevisionsBySession))
 }
 
 func (s *Server) sessionsV3WorksetPendingPermissions(workset pebblestore.V3SessionWorksetResult) (map[string]any, error) {
@@ -125,6 +126,37 @@ func (s *Server) sessionsV3WorksetUsageSummaries(workset pebblestore.V3SessionWo
 	return usageBySession, nil
 }
 
+func (s *Server) sessionsV3WorksetPreferencesAndPolicies(workset pebblestore.V3SessionWorksetResult) (map[string]any, map[string]any) {
+	preferencesBySession := map[string]any{}
+	agentModelPolicyBySession := map[string]any{}
+	for sessionID, session := range workset.SessionsByID {
+		session.Preference = normalizeSessionsV3ModelPreference(session.Preference)
+		preference := session.Preference
+		contextWindow := 0
+		maxOutputTokens := 0
+		if s != nil && s.model != nil {
+			if resolved, err := s.model.ResolvePreference(session.Preference); err == nil {
+				preference = normalizeSessionsV3ModelPreference(resolved.Preference)
+				contextWindow = resolved.ContextWindow
+				maxOutputTokens = resolved.MaxOutputTokens
+			}
+		}
+		agentModelPolicy := s.sessionsV3AgentModelPolicy(session, preference, contextWindow, maxOutputTokens)
+		if agentModelPolicy.Locked {
+			preference = agentModelPolicy.Preference
+			contextWindow = agentModelPolicy.ContextWindow
+			maxOutputTokens = agentModelPolicy.MaxOutputTokens
+		}
+		preferencesBySession[sessionID] = map[string]any{
+			"preference":        preference,
+			"context_window":    contextWindow,
+			"max_output_tokens": maxOutputTokens,
+		}
+		agentModelPolicyBySession[sessionID] = agentModelPolicy
+	}
+	return preferencesBySession, agentModelPolicyBySession
+}
+
 func (s *Server) sessionsV3WorksetPlans(workset pebblestore.V3SessionWorksetResult) (map[string]any, map[string]any, error) {
 	plansBySession := map[string]any{}
 	planRevisionsBySession := map[string]any{}
@@ -149,12 +181,18 @@ func (s *Server) sessionsV3WorksetPlans(workset pebblestore.V3SessionWorksetResu
 	return plansBySession, planRevisionsBySession, nil
 }
 
-func sessionsV3WorksetResponse(workset pebblestore.V3SessionWorksetResult, permissionsBySession map[string]any, usageBySession map[string]any, plansBySession map[string]any, planRevisionsBySession map[string]any) map[string]any {
+func sessionsV3WorksetResponse(workset pebblestore.V3SessionWorksetResult, permissionsBySession map[string]any, usageBySession map[string]any, preferencesBySession map[string]any, agentModelPolicyBySession map[string]any, plansBySession map[string]any, planRevisionsBySession map[string]any) map[string]any {
 	if permissionsBySession == nil {
 		permissionsBySession = map[string]any{}
 	}
 	if usageBySession == nil {
 		usageBySession = map[string]any{}
+	}
+	if preferencesBySession == nil {
+		preferencesBySession = map[string]any{}
+	}
+	if agentModelPolicyBySession == nil {
+		agentModelPolicyBySession = map[string]any{}
 	}
 	if plansBySession == nil {
 		plansBySession = map[string]any{}
@@ -173,8 +211,8 @@ func sessionsV3WorksetResponse(workset pebblestore.V3SessionWorksetResult, permi
 		"plan_revisions_by_session":     planRevisionsBySession,
 		"permissions_by_session":        permissionsBySession,
 		"usage_by_session":              usageBySession,
-		"preferences_by_session":        map[string]any{},
-		"agent_model_policy_by_session": map[string]any{},
+		"preferences_by_session":        preferencesBySession,
+		"agent_model_policy_by_session": agentModelPolicyBySession,
 		"run_intents_by_session":        workset.RunIntentsBySession,
 		"history_manifests_by_session":  workset.HistoryManifestsBySession,
 		"history_chunks_by_id":          workset.HistoryChunksByID,

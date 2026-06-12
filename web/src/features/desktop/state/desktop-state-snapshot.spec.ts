@@ -116,6 +116,37 @@ test('normalizeDesktopStateSnapshot builds a plain replacement snapshot from wor
   assert.equal(snapshot.routeReadinessBySessionId?.next?.ready, true)
 })
 
+test('normalizeDesktopStateSnapshot hydrates persisted V3 provider tool messages', () => {
+  const toolEnvelope = JSON.stringify({
+    path_id: 'run.v3.provider-tool-result.v1',
+    type: 'v3_provider_tool_result',
+    tool_name: 'read',
+    call_id: 'call-read',
+    tool_instance_id: 'step-1:call-read',
+    arguments: '{"path":"facts.txt"}',
+    output: 'file contents',
+    completed_output: 'file contents',
+  })
+
+  const snapshot = normalizeDesktopStateSnapshot({
+    rev: 43,
+    sessions_by_id: {
+      next: sessionWire('next', 30),
+    },
+    session_order: ['next'],
+    messages_by_session: {
+      next: [{ id: 'tool-message-1', session_id: 'next', global_seq: 2, role: 'tool', content: toolEnvelope, created_at: 2 }],
+    },
+  })
+
+  const message = snapshot.messagesBySessionId?.next?.[0]
+  assert.equal(message?.role, 'tool')
+  assert.equal(message?.toolMessage?.pathId, 'run.v3.provider-tool-result.v1')
+  assert.equal(message?.toolMessage?.tool, 'read')
+  assert.equal(message?.toolMessage?.toolInstanceId, 'step-1:call-read')
+  assert.equal(message?.toolMessage?.completedOutput, 'file contents')
+})
+
 test('loadDesktopStateSnapshot fetches the workset endpoint and replaces old store state exactly once', async () => {
   replaceDesktopFromSnapshot({
     rev: 10,

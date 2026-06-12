@@ -1,4 +1,5 @@
 import { apiFetch, readErrorMessage } from '../../../app/api'
+import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import type { AgentModelPolicyRecord, ChatMessageRecord, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord, ResolvedSessionPreference, SessionPreferenceRecord } from '../chat/types/chat'
 import type { DesktopPermissionRecord, DesktopRunIntentRecord, DesktopSessionRecord, DesktopSessionUsageRecord } from '../types/realtime'
 import type { DesktopDaemonSnapshot, DesktopSessionReadinessRecord, DesktopWorkspaceRecord } from './desktop-state'
@@ -356,14 +357,16 @@ function mapMessagesBySession(source: Record<string, MessageWire[]> | undefined)
 }
 
 function mapMessage(message: MessageWire): ChatMessageRecord {
+  const content = String(message.content ?? '')
   return {
     id: String(message.id ?? '').trim(),
     sessionId: String(message.session_id ?? '').trim(),
     globalSeq: numberValue(message.global_seq),
     role: String(message.role ?? '').trim(),
-    content: String(message.content ?? ''),
+    content,
     createdAt: numberValue(message.created_at),
     metadata: message.metadata,
+    toolMessage: parseStructuredToolMessage(content),
   }
 }
 

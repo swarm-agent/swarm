@@ -559,6 +559,30 @@ func TestSessionsV3PrimaryAgentSwitchUpdatesStoredProfileAndRuntime(t *testing.T
 	if hydratePolicy.Preference.Model != "test-model" || hydratePolicy.Preference.Thinking != "high" {
 		t.Fatalf("hydrated effective preference = %+v", hydratePolicy.Preference)
 	}
+	worksetReq := httptest.NewRequest(http.MethodPost, "/v3/sessions:workset", bytes.NewBufferString(`{"session_ids":["`+created.ID+`"]}`))
+	worksetReq.Header.Set("Content-Type", "application/json")
+	worksetRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(worksetRec, withTestPrincipal(worksetReq))
+	if worksetRec.Code != http.StatusOK {
+		t.Fatalf("workset status = %d body=%s", worksetRec.Code, worksetRec.Body.String())
+	}
+	var worksetPayload struct {
+		PreferencesBySession map[string]struct {
+			Preference pebblestore.ModelPreference `json:"preference"`
+		} `json:"preferences_by_session"`
+		AgentModelPolicyBySession map[string]sessionsV3AgentModelPolicy `json:"agent_model_policy_by_session"`
+	}
+	if err := json.Unmarshal(worksetRec.Body.Bytes(), &worksetPayload); err != nil {
+		t.Fatalf("decode workset response: %v", err)
+	}
+	worksetPreference, ok := worksetPayload.PreferencesBySession[created.ID]
+	if !ok || worksetPreference.Preference.Model != "test-model" || worksetPreference.Preference.Thinking != "high" {
+		t.Fatalf("workset preference = %+v ok=%t", worksetPayload.PreferencesBySession[created.ID], ok)
+	}
+	worksetPolicy, ok := worksetPayload.AgentModelPolicyBySession[created.ID]
+	if !ok || !worksetPolicy.Locked || worksetPolicy.Source != "agent_preset" || worksetPolicy.Preference.Model != "test-model" || worksetPolicy.Preference.Thinking != "high" {
+		t.Fatalf("workset agent model policy = %+v ok=%t", worksetPayload.AgentModelPolicyBySession[created.ID], ok)
+	}
 	prefReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/preference", bytes.NewBufferString(`{"provider":"codex","model":"gpt-5.4","thinking":"medium"}`))
 	prefReq.Header.Set("Content-Type", "application/json")
 	prefRec := httptest.NewRecorder()
