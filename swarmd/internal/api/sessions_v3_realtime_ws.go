@@ -82,19 +82,17 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 				continue
 			}
 			subID := "sub-" + sessionID
-			var last uint64
-			var ok bool
-			if endpointCursor > 0 {
-				last, ok = s.v3RealtimePrimeSubscriptionAtEndpointCursor(conn, principal, subID, sessionID, endpointCursor)
-			} else {
-				last, ok = s.v3RealtimeSubscribeSession(conn, principal, subID, sessionID, 0)
-			}
+			last, ok := s.v3RealtimePrimeSubscriptionAtEndpointCursor(conn, principal, subID, sessionID, endpointCursor)
 			if ok {
 				subs[sessionID] = v3RealtimeSubscription{SessionID: sessionID, SubscriptionID: subID, LastSeq: last}
 			}
 		}
 	}
-	if endpointCursor > 0 {
+	if err := s.sendV3RealtimeMessage(conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindHello, EndpointCursor: pebbleV3RealtimeOutboxCursor(endpointCursor)}); err != nil {
+		return
+	}
+
+	if len(subs) > 0 {
 		if !s.v3RealtimeSendReplayStartForSubscriptions(conn, subs, endpointCursor) {
 			return
 		}
@@ -143,47 +141,44 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 		case message := <-readMessages:
 			switch message.Kind {
 			case V3RealtimeKindSubscribe:
+				endpointSeq := lastEndpointSeq
 				if strings.TrimSpace(message.EndpointCursor) != "" {
-					endpointSeq, err := parseV3RealtimeEndpointCursorStrict(message.EndpointCursor)
+					parsed, err := parseV3RealtimeEndpointCursorStrict(message.EndpointCursor)
 					if err != nil {
 						_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(message.SessionID, "endpoint_cursor_malformed", err.Error(), lastEndpointSeq, 0))
 						return
 					}
-					if endpointSeq > 0 {
-						if ok := s.v3RealtimeValidateEndpointCursor(conn, endpointSeq); !ok {
+					if parsed > 0 {
+						if ok := s.v3RealtimeValidateEndpointCursor(conn, parsed); !ok {
 							return
 						}
 					}
-					last, ok := s.v3RealtimePrimeSubscriptionAtEndpointCursor(conn, principal, message.SubscriptionID, message.SessionID, endpointSeq)
-					if ok {
-						newSub := v3RealtimeSubscription{SessionID: message.SessionID, SubscriptionID: message.SubscriptionID, LastSeq: last}
-						newSubOnly := map[string]v3RealtimeSubscription{message.SessionID: newSub}
-						if !s.v3RealtimeSendReplayStartForSubscriptions(conn, newSubOnly, endpointSeq) {
-							return
-						}
-						combined := cloneV3RealtimeSubscriptions(subs)
-						combined[message.SessionID] = newSub
-						catchUpFrom := lastEndpointSeq
-						if endpointSeq < catchUpFrom {
-							catchUpFrom = endpointSeq
-						}
-						advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, catchUpFrom, endpointSeq, combined)
-						if !ok {
-							return
-						}
-						if !s.v3RealtimeSendReplayDoneForSubscriptions(conn, map[string]v3RealtimeSubscription{message.SessionID: advanced.Subscriptions[message.SessionID]}, advanced.EndpointSeq) {
-							return
-						}
-						subs = advanced.Subscriptions
-						if advanced.EndpointSeq > lastEndpointSeq {
-							lastEndpointSeq = advanced.EndpointSeq
-						}
-					}
-					continue
+					endpointSeq = parsed
 				}
-				last, ok := s.v3RealtimeSubscribeSession(conn, principal, message.SubscriptionID, message.SessionID, message.AfterSeq)
+				last, ok := s.v3RealtimePrimeSubscriptionAtEndpointCursor(conn, principal, message.SubscriptionID, message.SessionID, endpointSeq)
 				if ok {
-					subs[message.SessionID] = v3RealtimeSubscription{SessionID: message.SessionID, SubscriptionID: message.SubscriptionID, LastSeq: last}
+					newSub := v3RealtimeSubscription{SessionID: message.SessionID, SubscriptionID: message.SubscriptionID, LastSeq: last}
+					newSubOnly := map[string]v3RealtimeSubscription{message.SessionID: newSub}
+					if !s.v3RealtimeSendReplayStartForSubscriptions(conn, newSubOnly, endpointSeq) {
+						return
+					}
+					combined := cloneV3RealtimeSubscriptions(subs)
+					combined[message.SessionID] = newSub
+					catchUpFrom := lastEndpointSeq
+					if endpointSeq < catchUpFrom {
+						catchUpFrom = endpointSeq
+					}
+					advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, catchUpFrom, endpointSeq, combined)
+					if !ok {
+						return
+					}
+					if !s.v3RealtimeSendReplayDoneForSubscriptions(conn, map[string]v3RealtimeSubscription{message.SessionID: advanced.Subscriptions[message.SessionID]}, advanced.EndpointSeq) {
+						return
+					}
+					subs = advanced.Subscriptions
+					if advanced.EndpointSeq > lastEndpointSeq {
+						lastEndpointSeq = advanced.EndpointSeq
+					}
 				}
 			case V3RealtimeKindUnsubscribe:
 				for sessionID, sub := range subs {
@@ -197,19 +192,62 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 					_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", "endpoint_cursor_malformed", err.Error(), lastEndpointSeq, 0))
 					return
 				}
-				if resumeSeq == 0 {
-					resumeSeq = message.AfterRev
+				if resumeSeq > 0 {
+					if ok := s.v3RealtimeValidateEndpointCursor(conn, resumeSeq); !ok {
+						return
+					}
 				}
-				advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, lastEndpointSeq, resumeSeq, subs)
+				combined := cloneV3RealtimeSubscriptions(subs)
+				catchUpFrom := lastEndpointSeq
+				for _, requestedSub := range message.Subscriptions {
+					subCursor := resumeSeq
+					if strings.TrimSpace(requestedSub.EndpointCursor) != "" {
+						parsed, err := parseV3RealtimeEndpointCursorStrict(requestedSub.EndpointCursor)
+						if err != nil {
+							_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(requestedSub.SessionID, "endpoint_cursor_malformed", err.Error(), lastEndpointSeq, 0))
+							return
+						}
+						if parsed > 0 {
+							if ok := s.v3RealtimeValidateEndpointCursor(conn, parsed); !ok {
+								return
+							}
+						}
+						subCursor = parsed
+					}
+					last, ok := s.v3RealtimePrimeSubscriptionAtEndpointCursor(conn, principal, requestedSub.SubscriptionID, requestedSub.SessionID, subCursor)
+					if !ok {
+						return
+					}
+					newSub := v3RealtimeSubscription{SessionID: requestedSub.SessionID, SubscriptionID: requestedSub.SubscriptionID, LastSeq: last}
+					if !s.v3RealtimeSendReplayStartForSubscriptions(conn, map[string]v3RealtimeSubscription{requestedSub.SessionID: newSub}, subCursor) {
+						return
+					}
+					combined[requestedSub.SessionID] = newSub
+					if subCursor < catchUpFrom {
+						catchUpFrom = subCursor
+					}
+				}
+				advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, catchUpFrom, resumeSeq, combined)
 				if !ok {
 					return
+				}
+				if len(message.Subscriptions) > 0 {
+					doneSubs := make(map[string]v3RealtimeSubscription, len(message.Subscriptions))
+					for _, requestedSub := range message.Subscriptions {
+						if sub, ok := advanced.Subscriptions[requestedSub.SessionID]; ok {
+							doneSubs[requestedSub.SessionID] = sub
+						}
+					}
+					if !s.v3RealtimeSendReplayDoneForSubscriptions(conn, doneSubs, advanced.EndpointSeq) {
+						return
+					}
 				}
 				subs = advanced.Subscriptions
 				lastEndpointSeq = advanced.EndpointSeq
 				lastKeepaliveSeq = advanced.EndpointSeq
 			}
-		case record := <-sub.send:
-			advanced, ok := s.v3RealtimeProcessOutboxRecord(conn, principal, record, lastEndpointSeq, subs)
+		case <-sub.send:
+			advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, lastEndpointSeq, lastEndpointSeq, subs)
 			if !ok {
 				return
 			}
@@ -393,54 +431,6 @@ func (s *Server) v3RealtimePrimeSubscriptionAtEndpointCursor(conn *transportws.C
 		}
 		records = next
 	}
-	return lastSeq, true
-}
-
-func (s *Server) v3RealtimeSubscribeSession(conn *transportws.Conn, principal identity.Principal, subscriptionID, sessionID string, afterSeq uint64) (uint64, bool) {
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", "missing_session_id", "subscribe.session requires session_id", 0, 0))
-		return 0, false
-	}
-	if _, found, err := s.hydrateSessionsV3Primary(principal, sessionID); err != nil {
-		_ = s.sendV3RealtimeMessage(conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindAuthDenied, SessionID: sessionID, ErrorCode: "auth_denied", Error: err.Error()})
-		return 0, false
-	} else if !found {
-		_ = s.sendV3RealtimeMessage(conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindAuthDenied, SessionID: sessionID, ErrorCode: "not_found", Error: "session not found"})
-		return 0, false
-	}
-	projection, ok, err := s.sessions.GetSessionProjection(sessionID)
-	if err != nil || !ok {
-		msg := "session projection not found"
-		if err != nil {
-			msg = err.Error()
-		}
-		_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(sessionID, "projection_missing", msg, afterSeq, 0))
-		return 0, false
-	}
-	if afterSeq > projection.ProjectionHighWatermarkSeq {
-		_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(sessionID, "cursor_ahead", "after_seq is ahead of projection high watermark; refetch required", afterSeq, projection.ProjectionHighWatermarkSeq))
-		return 0, false
-	}
-
-	_ = s.sendV3RealtimeMessage(conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindReplayStart, SessionID: sessionID, SubscriptionID: subscriptionID, AfterSeq: afterSeq, HighWatermarkSeq: projection.ProjectionHighWatermarkSeq})
-	records, err := s.sessions.ListRealtimeOutboxForSessionAfterSeq(sessionID, afterSeq, v3RealtimeReplayLimit)
-	if err != nil {
-		_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(sessionID, "replay_failed", err.Error(), afterSeq, projection.ProjectionHighWatermarkSeq))
-		return afterSeq, false
-	}
-	lastSeq := afterSeq
-	for _, record := range records {
-		if record.Event.Seq != lastSeq+1 {
-			_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(sessionID, "session_cursor_gap", fmt.Sprintf("session event sequence gap at %d, want %d; refetch required", record.Event.Seq, lastSeq+1), lastSeq, record.Event.Seq))
-			return lastSeq, false
-		}
-		if !s.sendV3RealtimeOutboxEvent(conn, record) {
-			return lastSeq, false
-		}
-		lastSeq = record.Event.Seq
-	}
-	_ = s.sendV3RealtimeMessage(conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindReplayDone, SessionID: sessionID, SubscriptionID: subscriptionID, LastSeq: lastSeq, NextSeq: lastSeq + 1, HighWatermarkSeq: projection.ProjectionHighWatermarkSeq})
 	return lastSeq, true
 }
 

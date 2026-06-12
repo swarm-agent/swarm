@@ -54,6 +54,7 @@ func TestV3RealtimeEndpointExistsAndIsNotLegacyStream(t *testing.T) {
 
 func TestV3RealtimeContractRoundTripsEveryMessageType(t *testing.T) {
 	messages := []V3RealtimeMessage{
+		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindHello, EndpointCursor: "cursor-7"},
 		validV3RealtimeEventMessage(t),
 		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindReplayStart, SessionID: "session-a", EndpointCursor: "cursor-7", HighWatermarkSeq: 10},
 		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindReplayDone, SessionID: "session-a", LastSeq: 10, NextSeq: 11, HighWatermarkSeq: 10, EndpointCursor: "cursor-10"},
@@ -106,7 +107,7 @@ func TestV3RealtimeContractResumeCarriesEndpointCursorAndSubscriptions(t *testin
 }
 
 func TestV3RealtimeContractRejectsLegacySessionResumeCursors(t *testing.T) {
-	canonical := V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: "cursor-42"}
+	canonical := V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: "cursor-42", Subscriptions: []V3RealtimeSubscriptionRequest{{SessionID: "session-a", SubscriptionID: "sub-a"}}}
 	if err := ValidateV3RealtimeMessage(canonical); err != nil {
 		t.Fatalf("canonical endpoint_cursor resume rejected: %v", err)
 	}

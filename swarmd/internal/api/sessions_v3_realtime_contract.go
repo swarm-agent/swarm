@@ -13,6 +13,7 @@ const (
 	V3RealtimeStreamPath       = "/v3/realtime/stream"
 	V3RealtimeProtocol         = "v3.realtime"
 	V3RealtimeProtocolVersion  = 1
+	V3RealtimeKindHello        = "hello"
 	V3RealtimeKindEvent        = "event"
 	V3RealtimeKindReplayStart  = "replay.started"
 	V3RealtimeKindReplayDone   = "replay.complete"
@@ -26,6 +27,12 @@ const (
 	V3RealtimeKindSlowConsumer = "slow_consumer.reconnect_required"
 )
 
+type V3RealtimeSubscriptionRequest struct {
+	SessionID      string `json:"session_id"`
+	SubscriptionID string `json:"subscription_id"`
+	EndpointCursor string `json:"endpoint_cursor,omitempty"`
+}
+
 type V3RealtimeMessage struct {
 	Protocol         string                            `json:"protocol"`
 	ProtocolVersion  int                               `json:"protocol_version"`
@@ -38,6 +45,7 @@ type V3RealtimeMessage struct {
 	NextSeq          uint64                            `json:"next_seq,omitempty"`
 	HighWatermarkSeq uint64                            `json:"high_watermark_seq,omitempty"`
 	EndpointCursor   string                            `json:"endpoint_cursor,omitempty"`
+	Subscriptions    []V3RealtimeSubscriptionRequest   `json:"subscriptions,omitempty"`
 	Rev              uint64                            `json:"rev,omitempty"`
 	PrevRev          uint64                            `json:"prevRev"`
 	EventType        string                            `json:"event_type,omitempty"`
@@ -66,19 +74,24 @@ func ValidateV3RealtimeMessage(message V3RealtimeMessage) error {
 	if !v3RealtimeKindAllowed(kind) {
 		return fmt.Errorf("unsupported v3 realtime kind %q", kind)
 	}
+	if message.AfterSeq != 0 {
+		return errors.New("v3 realtime uses endpoint_cursor for transport resume; after_seq is not accepted")
+	}
+	if message.AfterRev != 0 {
+		return errors.New("v3 realtime uses endpoint_cursor for transport resume; afterRev is not accepted")
+	}
 	switch kind {
+	case V3RealtimeKindHello:
+		return nil
 	case V3RealtimeKindEvent:
 		return validateV3RealtimeEventMessage(message)
 	case V3RealtimeKindReplayStart:
-		return validateV3RealtimeSessionCursorMessage(message, true)
+		return validateV3RealtimeSessionCursorMessage(message)
 	case V3RealtimeKindReplayDone, V3RealtimeKindHighWater:
-		return validateV3RealtimeSessionCursorMessage(message, false)
+		return validateV3RealtimeSessionCursorMessage(message)
 	case V3RealtimeKindKeepalive:
 		return nil
 	case V3RealtimeKindCursorError, V3RealtimeKindAuthDenied, V3RealtimeKindSlowConsumer:
-		if err := validateV3RealtimeSessionCursorMessage(message, false); err != nil {
-			return err
-		}
 		if strings.TrimSpace(message.ErrorCode) == "" {
 			return fmt.Errorf("v3 realtime %s requires error_code", kind)
 		}
@@ -97,10 +110,10 @@ func ValidateV3RealtimeMessage(message V3RealtimeMessage) error {
 		}
 		return nil
 	case V3RealtimeKindResume:
-		if strings.TrimSpace(message.EndpointCursor) == "" && message.AfterRev == 0 {
-			return errors.New("v3 realtime resume requires endpoint_cursor or afterRev")
+		if strings.TrimSpace(message.EndpointCursor) == "" {
+			return errors.New("v3 realtime resume requires endpoint_cursor")
 		}
-		return nil
+		return validateV3RealtimeSubscriptionRequests(message.Subscriptions)
 	default:
 		return fmt.Errorf("unsupported v3 realtime kind %q", kind)
 	}
@@ -108,19 +121,28 @@ func ValidateV3RealtimeMessage(message V3RealtimeMessage) error {
 
 func v3RealtimeKindAllowed(kind string) bool {
 	switch kind {
-	case V3RealtimeKindEvent, V3RealtimeKindReplayStart, V3RealtimeKindReplayDone, V3RealtimeKindCursorError, V3RealtimeKindKeepalive, V3RealtimeKindHighWater, V3RealtimeKindSubscribe, V3RealtimeKindUnsubscribe, V3RealtimeKindResume, V3RealtimeKindAuthDenied, V3RealtimeKindSlowConsumer:
+	case V3RealtimeKindHello, V3RealtimeKindEvent, V3RealtimeKindReplayStart, V3RealtimeKindReplayDone, V3RealtimeKindCursorError, V3RealtimeKindKeepalive, V3RealtimeKindHighWater, V3RealtimeKindSubscribe, V3RealtimeKindUnsubscribe, V3RealtimeKindResume, V3RealtimeKindAuthDenied, V3RealtimeKindSlowConsumer:
 		return true
 	default:
 		return false
 	}
 }
 
-func validateV3RealtimeSessionCursorMessage(message V3RealtimeMessage, requireAfterSeq bool) error {
+func validateV3RealtimeSessionCursorMessage(message V3RealtimeMessage) error {
 	if strings.TrimSpace(message.SessionID) == "" {
 		return fmt.Errorf("v3 realtime %s requires session_id", message.Kind)
 	}
-	if requireAfterSeq && message.AfterSeq == 0 && message.LastSeq != 0 {
-		return fmt.Errorf("v3 realtime %s after_seq must describe the replay cursor", message.Kind)
+	return nil
+}
+
+func validateV3RealtimeSubscriptionRequests(subscriptions []V3RealtimeSubscriptionRequest) error {
+	for _, sub := range subscriptions {
+		if strings.TrimSpace(sub.SessionID) == "" {
+			return errors.New("v3 realtime resume subscription requires session_id")
+		}
+		if strings.TrimSpace(sub.SubscriptionID) == "" {
+			return errors.New("v3 realtime resume subscription requires subscription_id")
+		}
 	}
 	return nil
 }

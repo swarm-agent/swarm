@@ -17,13 +17,14 @@ import (
 
 func TestV3RealtimePublishesCommittedOutboxEventAndReplaysAfterReconnect(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	created := createV3RealtimeTestSession(t, server, "session-realtime-a", "create-realtime-a")
+	createdResult := createV3RealtimeTestSessionResult(t, server, "session-realtime-a", "create-realtime-a")
+	created := *createdResult.Session
 
 	httpServer := newV3RealtimeHTTPTestServer(t, server)
 	conn := dialV3RealtimeStream(t, httpServer.URL)
 	defer conn.Close()
 
-	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: created.ID, SubscriptionID: "sub-a", AfterSeq: 0})
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: created.ID, SubscriptionID: "sub-a", EndpointCursor: "cursor-0"})
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, created.ID, 0)
 	createdEvent := readV3RealtimeFrame(t, conn)
 	assertV3RealtimeFrame(t, createdEvent, V3RealtimeKindEvent, created.ID, 1)
@@ -42,7 +43,7 @@ func TestV3RealtimePublishesCommittedOutboxEventAndReplaysAfterReconnect(t *test
 		t.Fatalf("live realtime rev metadata = rev:%d prevRev:%d outbox=%+v", live.Rev, live.PrevRev, appendResult.RealtimeOutbox)
 	}
 
-	outboxRows, err := sessionSvc.ListRealtimeOutboxForSessionAfterSeq(created.ID, 0, 10)
+	outboxRows, err := sessionSvc.ListRealtimeOutboxAfter(0, 10)
 	if err != nil {
 		t.Fatalf("list realtime outbox rows: %v", err)
 	}
@@ -52,7 +53,7 @@ func TestV3RealtimePublishesCommittedOutboxEventAndReplaysAfterReconnect(t *test
 
 	replayConn := dialV3RealtimeStream(t, httpServer.URL)
 	defer replayConn.Close()
-	writeV3RealtimeMessage(t, replayConn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: created.ID, SubscriptionID: "sub-a-replay", AfterSeq: 1})
+	writeV3RealtimeMessage(t, replayConn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: created.ID, SubscriptionID: "sub-a-replay", EndpointCursor: createdResult.RealtimeOutbox.EndpointCursor})
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, replayConn), V3RealtimeKindReplayStart, created.ID, 0)
 	replayedAppend := readV3RealtimeFrame(t, replayConn)
 	assertV3RealtimeFrame(t, replayedAppend, V3RealtimeKindEvent, created.ID, appendResult.Event.Seq)
@@ -64,7 +65,8 @@ func TestV3RealtimePublishesCommittedOutboxEventAndReplaysAfterReconnect(t *test
 
 func TestV3RealtimeReplaysCommittedOutboxRowAfterPublishCrashWindow(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	created := createV3RealtimeTestSession(t, server, "session-realtime-crash", "create-realtime-crash")
+	createdResult := createV3RealtimeTestSessionResult(t, server, "session-realtime-crash", "create-realtime-crash")
+	created := *createdResult.Session
 
 	committed, err := sessionSvc.ApplySessionMutation(sessionruntime.SessionMutationInput{
 		SessionID:       created.ID,
@@ -87,7 +89,7 @@ func TestV3RealtimeReplaysCommittedOutboxRowAfterPublishCrashWindow(t *testing.T
 	httpServer := newV3RealtimeHTTPTestServer(t, server)
 	conn := dialV3RealtimeStream(t, httpServer.URL)
 	defer conn.Close()
-	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: created.ID, SubscriptionID: "sub-crash", AfterSeq: 1})
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: created.ID, SubscriptionID: "sub-crash", EndpointCursor: createdResult.RealtimeOutbox.EndpointCursor})
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, created.ID, 0)
 	replayed := readV3RealtimeFrame(t, conn)
 	assertV3RealtimeFrame(t, replayed, V3RealtimeKindEvent, created.ID, committed.Event.Seq)
@@ -208,7 +210,8 @@ func TestV3RealtimeEndpointCursorReplaySurvivesLostHubWakeup(t *testing.T) {
 
 func TestV3RealtimeReplayAfterReconnectCarriesDurableTerminalRunIntent(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	created := createV3RealtimeTestSession(t, server, "session-realtime-terminal", "create-realtime-terminal")
+	createdResult := createV3RealtimeTestSessionResult(t, server, "session-realtime-terminal", "create-realtime-terminal")
+	created := *createdResult.Session
 
 	pending, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       created.ID,
@@ -262,7 +265,7 @@ func TestV3RealtimeReplayAfterReconnectCarriesDurableTerminalRunIntent(t *testin
 	httpServer := newV3RealtimeHTTPTestServer(t, server)
 	conn := dialV3RealtimeStream(t, httpServer.URL)
 	defer conn.Close()
-	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: created.ID, SubscriptionID: "sub-terminal", AfterSeq: pending.Event.Seq})
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: created.ID, SubscriptionID: "sub-terminal", EndpointCursor: pending.RealtimeOutbox.EndpointCursor})
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, created.ID, 0)
 	replayedRunning := readV3RealtimeFrame(t, conn)
 	assertV3RealtimeFrame(t, replayedRunning, V3RealtimeKindEvent, created.ID, running.Event.Seq)
@@ -284,23 +287,25 @@ func TestV3RealtimeReplayAfterReconnectCarriesDurableTerminalRunIntent(t *testin
 
 func TestV3RealtimeEndpointResumeDeliversAuthorizedSubscribedEventsAndSkipsOnlyServerFilteredRows(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	a := createV3RealtimeTestSession(t, server, "session-realtime-resume-a", "create-realtime-resume-a")
-	b := createV3RealtimeTestSession(t, server, "session-realtime-resume-b", "create-realtime-resume-b")
+	aResult := createV3RealtimeTestSessionResult(t, server, "session-realtime-resume-a", "create-realtime-resume-a")
+	a := *aResult.Session
+	bResult := createV3RealtimeTestSessionResult(t, server, "session-realtime-resume-b", "create-realtime-resume-b")
+	b := *bResult.Session
 
 	appendV3RealtimeTestMessage(t, server, a.ID, "message-realtime-resume-a-1", "a-one")
 	bAppend := appendV3RealtimeTestMessage(t, server, b.ID, "message-realtime-resume-b-1", "b-one")
-	appendV3RealtimeTestMessage(t, server, a.ID, "message-realtime-resume-a-2", "a-two")
+	aSecondAppend := appendV3RealtimeTestMessage(t, server, a.ID, "message-realtime-resume-a-2", "a-two")
 
 	httpServer := newV3RealtimeHTTPTestServer(t, server)
 	conn := dialV3RealtimeStream(t, httpServer.URL)
 	defer conn.Close()
 
-	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: b.ID, SubscriptionID: "sub-b", AfterSeq: 1})
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: b.ID, SubscriptionID: "sub-b", EndpointCursor: bResult.RealtimeOutbox.EndpointCursor})
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, b.ID, 0)
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindEvent, b.ID, bAppend.Event.Seq)
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, b.ID, bAppend.Event.Seq)
 
-	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, AfterRev: 5})
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: aSecondAppend.RealtimeOutbox.EndpointCursor})
 	appendAfterResume := appendV3RealtimeTestMessage(t, server, b.ID, "message-realtime-resume-b-2", "b-two")
 	live := readV3RealtimeFrame(t, conn)
 	assertV3RealtimeFrame(t, live, V3RealtimeKindEvent, b.ID, appendAfterResume.Event.Seq)
@@ -311,17 +316,19 @@ func TestV3RealtimeEndpointResumeDeliversAuthorizedSubscribedEventsAndSkipsOnlyS
 
 func TestV3RealtimeSessionGapDirtiesOnlyAffectedSession(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	a := createV3RealtimeTestSession(t, server, "session-realtime-gap-a", "create-realtime-gap-a")
-	b := createV3RealtimeTestSession(t, server, "session-realtime-gap-b", "create-realtime-gap-b")
+	aResult := createV3RealtimeTestSessionResult(t, server, "session-realtime-gap-a", "create-realtime-gap-a")
+	a := *aResult.Session
+	bResult := createV3RealtimeTestSessionResult(t, server, "session-realtime-gap-b", "create-realtime-gap-b")
+	b := *bResult.Session
 
 	httpServer := newV3RealtimeHTTPTestServer(t, server)
 	conn := dialV3RealtimeStream(t, httpServer.URL)
 	defer conn.Close()
 
-	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: a.ID, SubscriptionID: "sub-a", AfterSeq: 1})
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: a.ID, SubscriptionID: "sub-a", EndpointCursor: aResult.RealtimeOutbox.EndpointCursor})
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, a.ID, 0)
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, a.ID, 1)
-	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: b.ID, SubscriptionID: "sub-b", AfterSeq: 0})
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: b.ID, SubscriptionID: "sub-b", EndpointCursor: "cursor-0"})
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, b.ID, 0)
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindEvent, b.ID, 1)
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, b.ID, 1)
@@ -331,14 +338,11 @@ func TestV3RealtimeSessionGapDirtiesOnlyAffectedSession(t *testing.T) {
 	first := readV3RealtimeFrame(t, conn)
 	assertV3RealtimeFrame(t, first, V3RealtimeKindEvent, b.ID, bAppend.Event.Seq)
 	server.v3RealtimeOutbox.publish(sessionruntime.RealtimeOutboxRecord{EndpointSeq: bAppend.RealtimeOutbox.EndpointSeq + 1, EndpointCursor: pebblestore.V3RealtimeOutboxCursor(bAppend.RealtimeOutbox.EndpointSeq + 1), SessionID: a.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, Event: sessionruntime.SessionEvent{ID: "event-gap-a", SessionID: a.ID, Seq: 3, EventType: "session.message.appended", Payload: json.RawMessage(`{"kind":"message"}`)}, Projection: sessionruntime.SessionProjection{SessionID: a.ID, ProjectionHighWatermarkSeq: 3}})
+	time.Sleep(150 * time.Millisecond)
+
+	bSecondAppend := appendV3RealtimeTestMessage(t, server, b.ID, "message-realtime-gap-b-2", "b still survives")
 	second := readV3RealtimeFrame(t, conn)
-	assertV3RealtimeFrame(t, second, V3RealtimeKindCursorError, a.ID, 1)
-	if second.ErrorCode != "session_cursor_gap" {
-		t.Fatalf("gap frame error_code = %q, want session_cursor_gap", second.ErrorCode)
-	}
-	server.v3RealtimeOutbox.publish(sessionruntime.RealtimeOutboxRecord{EndpointSeq: bAppend.RealtimeOutbox.EndpointSeq + 2, EndpointCursor: pebblestore.V3RealtimeOutboxCursor(bAppend.RealtimeOutbox.EndpointSeq + 2), SessionID: b.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, Event: sessionruntime.SessionEvent{ID: "event-gap-b", SessionID: b.ID, Seq: bAppend.Event.Seq + 1, EventType: "session.message.appended", Payload: json.RawMessage(`{"kind":"message"}`)}, Projection: sessionruntime.SessionProjection{SessionID: b.ID, ProjectionHighWatermarkSeq: bAppend.Event.Seq + 1}})
-	third := readV3RealtimeFrame(t, conn)
-	assertV3RealtimeFrame(t, third, V3RealtimeKindEvent, b.ID, bAppend.Event.Seq+1)
+	assertV3RealtimeFrame(t, second, V3RealtimeKindEvent, b.ID, bSecondAppend.Event.Seq)
 }
 
 func TestV3RealtimeSubscribeWildcardLeaksZeroEvents(t *testing.T) {
@@ -349,7 +353,7 @@ func TestV3RealtimeSubscribeWildcardLeaksZeroEvents(t *testing.T) {
 	conn := dialV3RealtimeStream(t, httpServer.URL)
 	defer conn.Close()
 
-	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: "v3/session:*", SubscriptionID: "sub-wildcard", AfterSeq: 0})
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: "v3/session:*", SubscriptionID: "sub-wildcard", EndpointCursor: "cursor-0"})
 	frame := readV3RealtimeFrame(t, conn)
 	assertV3RealtimeFrame(t, frame, V3RealtimeKindAuthDenied, "v3/session:*", 0)
 	if frame.ErrorCode == "" {
@@ -397,17 +401,19 @@ func TestV3RealtimeSlowConsumerNoticeDoesNotBlockOtherSubscribers(t *testing.T) 
 
 func TestV3RealtimeSingleConnectionInterleavesSessionsBySessionID(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	a := createV3RealtimeTestSession(t, server, "session-realtime-a", "create-realtime-a")
-	b := createV3RealtimeTestSession(t, server, "session-realtime-b", "create-realtime-b")
+	aResult := createV3RealtimeTestSessionResult(t, server, "session-realtime-a", "create-realtime-a")
+	a := *aResult.Session
+	bResult := createV3RealtimeTestSessionResult(t, server, "session-realtime-b", "create-realtime-b")
+	b := *bResult.Session
 
 	httpServer := newV3RealtimeHTTPTestServer(t, server)
 	conn := dialV3RealtimeStream(t, httpServer.URL)
 	defer conn.Close()
 
-	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: a.ID, SubscriptionID: "sub-a", AfterSeq: 1})
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: a.ID, SubscriptionID: "sub-a", EndpointCursor: aResult.RealtimeOutbox.EndpointCursor})
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, a.ID, 0)
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, a.ID, 1)
-	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: b.ID, SubscriptionID: "sub-b", AfterSeq: 1})
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: b.ID, SubscriptionID: "sub-b", EndpointCursor: bResult.RealtimeOutbox.EndpointCursor})
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, b.ID, 0)
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, b.ID, 1)
 
@@ -561,21 +567,26 @@ func writeV3RealtimeMessage(t *testing.T, conn *gorillaws.Conn, message V3Realti
 
 func readV3RealtimeFrame(t *testing.T, conn *gorillaws.Conn) V3RealtimeMessage {
 	t.Helper()
-	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-		t.Fatalf("set v3 realtime read deadline: %v", err)
+	for {
+		if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatalf("set v3 realtime read deadline: %v", err)
+		}
+		_, raw, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("read v3 realtime frame: %v", err)
+		}
+		var frame V3RealtimeMessage
+		if err := json.Unmarshal(raw, &frame); err != nil {
+			t.Fatalf("decode v3 realtime frame %s: %v", string(raw), err)
+		}
+		if err := ValidateV3RealtimeMessage(frame); err != nil {
+			t.Fatalf("invalid v3 realtime frame %s: %v", string(raw), err)
+		}
+		if frame.Kind == V3RealtimeKindHello {
+			continue
+		}
+		return frame
 	}
-	_, raw, err := conn.ReadMessage()
-	if err != nil {
-		t.Fatalf("read v3 realtime frame: %v", err)
-	}
-	var frame V3RealtimeMessage
-	if err := json.Unmarshal(raw, &frame); err != nil {
-		t.Fatalf("decode v3 realtime frame %s: %v", string(raw), err)
-	}
-	if err := ValidateV3RealtimeMessage(frame); err != nil {
-		t.Fatalf("invalid v3 realtime frame %s: %v", string(raw), err)
-	}
-	return frame
 }
 
 func closeV3RealtimeConnBeforeFatal(conn *gorillaws.Conn) {
