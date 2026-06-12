@@ -58,9 +58,10 @@ type sessionsV3MessageRequest struct {
 }
 
 type sessionsV3StopRequest struct {
-	Type   string `json:"type,omitempty"`
-	RunID  string `json:"run_id"`
-	Reason string `json:"reason,omitempty"`
+	Type          string `json:"type,omitempty"`
+	RunID         string `json:"run_id"`
+	TargetSwarmID string `json:"target_swarm_id"`
+	Reason        string `json:"reason,omitempty"`
 }
 
 type sessionsV3CompactRequest struct {
@@ -986,7 +987,12 @@ func (s *Server) handleSessionV3PrimaryRunStop(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, errors.New("run_id is required"))
 		return
 	}
-	if found, err := s.authorizeSessionsV3PrimarySession(principal, sessionID); err != nil {
+	targetSwarmID := strings.TrimSpace(req.TargetSwarmID)
+	if targetSwarmID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("target_swarm_id is required"))
+		return
+	}
+	if found, err := s.validateSessionsV3PrimaryStopTarget(principal, sessionID, targetSwarmID); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	} else if !found {
@@ -1101,6 +1107,35 @@ func (s *Server) authorizeSessionsV3PrimarySession(principal identity.Principal,
 	}
 	if strings.TrimSpace(session.AccountScopeID) == "" || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
 		return false, nil
+	}
+	return true, nil
+}
+
+func (s *Server) validateSessionsV3PrimaryStopTarget(principal identity.Principal, sessionID, targetSwarmID string) (bool, error) {
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil || !ok {
+		return ok, err
+	}
+	if strings.TrimSpace(session.AccountScopeID) == "" || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		return false, nil
+	}
+	localNode, localOK, err := s.swarmLocalNode()
+	if err != nil {
+		return false, err
+	}
+	primarySwarmID := strings.TrimSpace(localNode.SwarmID)
+	if !localOK || primarySwarmID == "" {
+		return false, errors.New("sessions v3 primary local node identity is required")
+	}
+	if strings.TrimSpace(targetSwarmID) == "" {
+		return false, errors.New("target_swarm_id is required")
+	}
+	if strings.TrimSpace(targetSwarmID) != primarySwarmID {
+		return false, fmt.Errorf("target_swarm_id %q is not the primary runtime", strings.TrimSpace(targetSwarmID))
+	}
+	metadataSwarmID := sessionsV3MetadataString(session.Metadata, "swarm_v3_runtime_swarm_id")
+	if metadataSwarmID != "" && metadataSwarmID != primarySwarmID {
+		return false, fmt.Errorf("session runtime swarm_id %q is not the primary runtime", metadataSwarmID)
 	}
 	return true, nil
 }

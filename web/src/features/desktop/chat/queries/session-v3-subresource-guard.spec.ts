@@ -164,5 +164,5 @@ test('explicit V3 stop helper calls Sessions API v3 cancel endpoint, not V2 stop
   assert.equal(calls.length, 1)
   assert.equal(String(calls[0].input), '/v3/sessions/session-raw/run/stop')
   assert.equal(calls[0].init?.method, 'POST')
-  assert.deepEqual(JSON.parse(String(calls[0].init?.body ?? '{}')), { type: 'run.stop', run_id: 'run-1' })
+  assert.deepEqual(JSON.parse(String(calls[0].init?.body ?? '{}')), { type: 'run.stop', run_id: 'run-1', target_swarm_id: 'primary-swarm' })
 })

@@ -4,7 +4,7 @@ import type { AgentModelPolicyRecord, ChatMessageRecord, DesktopSessionPlanRecor
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import type { DesktopPermissionRecord, DesktopRunIntentRecord, DesktopSessionRecord, DesktopSessionUsageRecord } from '../types/realtime'
 import type { DesktopDaemonSnapshot, DesktopSessionReadinessRecord, DesktopWorkspaceRecord } from './desktop-state'
-import { replaceDesktopFromSnapshot } from './desktop-state-store'
+import { mergeDesktopSnapshot, replaceDesktopFromSnapshot } from './desktop-state-store'
 
 export interface DesktopStateSnapshotRequest {
   sessionIds?: string[]
@@ -220,6 +220,12 @@ export async function loadDesktopStateSnapshot(input: DesktopStateSnapshotReques
   return snapshot
 }
 
+export async function mergeDesktopStateSnapshot(input: DesktopStateSnapshotRequest, signal?: AbortSignal): Promise<DesktopDaemonSnapshot> {
+  const snapshot = await fetchDesktopStateSnapshot(input, signal)
+  mergeDesktopSnapshot(snapshot)
+  return snapshot
+}
+
 export function normalizeDesktopStateSnapshot(response: DesktopStateWorksetResponseWire): DesktopDaemonSnapshot {
   assertSnapshotRevision(response.rev)
   const permissionsBySessionId = mapPermissionsBySession(response.permissions_by_session)
@@ -313,10 +319,27 @@ function mapSession(session: SessionWire, fallbackId = '', pendingPermissions: D
   const sessionPendingPermissions = pendingPermissions.filter((permission) => permission.sessionId === id && permission.status.trim().toLowerCase() === 'pending')
   const pendingPermissionCount = countApprovalRequiredPermissions(sessionPendingPermissions, mode)
   const baseLive = emptyLiveState()
+  const runIntent = session.run_intent ? mapRunIntent(session.run_intent) : null
   if (!lifecycle && pendingPermissionCount > 0) {
     baseLive.status = 'blocked'
     baseLive.lastEventType = 'permission.requested'
     baseLive.lastEventAt = Math.max(...sessionPendingPermissions.map((permission) => permission.permissionRequestedAt || permission.updatedAt || permission.createdAt || 0), 0) || null
+  }
+  if (lifecycle?.active) {
+    baseLive.runId = lifecycle.runId
+    baseLive.startedAt = lifecycle.startedAt > 0 ? lifecycle.startedAt : null
+    baseLive.status = lifecycle.phase === 'blocked' ? 'blocked' : lifecycle.phase === 'starting' ? 'starting' : 'running'
+    baseLive.lastEventType = 'session.lifecycle.updated'
+    baseLive.lastEventAt = lifecycle.updatedAt > 0 ? lifecycle.updatedAt : lifecycle.startedAt > 0 ? lifecycle.startedAt : null
+    baseLive.error = lifecycle.error || lifecycle.stopReason
+  }
+  if (runIntent && snapshotRunIntentStatusActive(runIntent.status)) {
+    baseLive.runId = runIntent.runId || baseLive.runId
+    baseLive.startedAt = runIntent.createdAt > 0 ? runIntent.createdAt : baseLive.startedAt
+    baseLive.status = runIntent.status.trim().toLowerCase() === 'pending_executor' ? 'starting' : 'running'
+    baseLive.lastEventType = 'session.run_intent.recorded'
+    baseLive.lastEventAt = runIntent.updatedAt > 0 ? runIntent.updatedAt : runIntent.createdAt > 0 ? runIntent.createdAt : baseLive.lastEventAt
+    baseLive.error = null
   }
   return {
     id,
@@ -352,12 +375,17 @@ function mapSession(session: SessionWire, fallbackId = '', pendingPermissions: D
     gitCommittedAdditions: numberValue(session.git_committed_additions),
     gitCommittedDeletions: numberValue(session.git_committed_deletions),
     lifecycle,
-    runIntent: session.run_intent ? mapRunIntent(session.run_intent) : null,
+    runIntent,
     live: baseLive,
     pendingPermissions: sessionPendingPermissions,
     pendingPermissionCount,
     usage: null,
   }
+}
+
+function snapshotRunIntentStatusActive(status: string): boolean {
+  const normalized = status.trim().toLowerCase()
+  return normalized === 'pending_executor' || normalized === 'running'
 }
 
 function mapMessagesBySession(source: Record<string, MessageWire[]> | undefined): Record<string, ChatMessageRecord[]> {

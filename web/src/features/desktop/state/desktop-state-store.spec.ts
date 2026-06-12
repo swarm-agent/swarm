@@ -5,6 +5,7 @@ import {
   applyDesktopDaemonEvent,
   getDesktopSnapshot,
   markDesktopStale,
+  mergeDesktopSnapshot,
   replaceDesktopFromSnapshot,
   subscribeDesktop,
 } from './desktop-state-store'
@@ -73,6 +74,74 @@ test('replaceDesktopFromSnapshot replaces the external store snapshot and notifi
   unsubscribe()
   replaceDesktopFromSnapshot({ rev: 13 })
   assert.deepEqual(notifications, [12])
+})
+
+test('mergeDesktopSnapshot upserts scoped hydration without dropping other cached sessions', () => {
+  replaceDesktopFromSnapshot({
+    rev: 40,
+    sessionsById: {
+      active: session('active', 40),
+      other: session('other', 20),
+    },
+    sessionOrder: ['active', 'other'],
+    messagesBySessionId: {
+      active: [{ id: 'active-message', sessionId: 'active', role: 'assistant', content: 'streaming', createdAt: 40, globalSeq: 40 }],
+      other: [{ id: 'other-message', sessionId: 'other', role: 'assistant', content: 'cached', createdAt: 20, globalSeq: 20 }],
+    },
+  })
+
+  mergeDesktopSnapshot({
+    rev: 42,
+    sessionsById: {
+      active: { ...session('active', 42), title: 'Updated active' },
+    },
+    sessionOrder: ['active'],
+    messagesBySessionId: {
+      active: [{ id: 'active-message-2', sessionId: 'active', role: 'assistant', content: 'updated', createdAt: 42, globalSeq: 42 }],
+    },
+  })
+
+  const snapshot = getDesktopSnapshot()
+  assert.equal(snapshot.rev, 42)
+  assert.equal(snapshot.sessionsById.active?.title, 'Updated active')
+  assert.equal(snapshot.sessionsById.other?.title, 'Session other')
+  assert.deepEqual(snapshot.sessionOrder, ['active', 'other'])
+  assert.deepEqual(snapshot.messagesBySessionId.active?.map((message) => message.id), ['active-message-2'])
+  assert.deepEqual(snapshot.messagesBySessionId.other?.map((message) => message.id), ['other-message'])
+})
+
+test('mergeDesktopSnapshot does not roll back newer live stream state from a delayed scoped snapshot', () => {
+  const streaming = session('streaming', 50)
+  streaming.lastEventSeq = 50
+  streaming.projectionHighWatermarkSeq = 50
+  streaming.live.status = 'running'
+  streaming.live.runId = 'run-live'
+  streaming.live.seq = 50
+  streaming.live.summary = 'Streaming response...'
+
+  replaceDesktopFromSnapshot({
+    rev: 50,
+    sessionsById: { streaming },
+    sessionOrder: ['streaming'],
+    runIntentsBySessionId: {
+      streaming: { sessionId: 'streaming', runId: 'run-live', status: 'running', blockedReason: '', createdAt: 50, updatedAt: 50, eventSeq: 50 },
+    },
+  })
+
+  mergeDesktopSnapshot({
+    rev: 51,
+    sessionsById: {
+      streaming: { ...session('streaming', 45), lastEventSeq: 45, projectionHighWatermarkSeq: 45 },
+    },
+    sessionOrder: ['streaming'],
+  })
+
+  const merged = getDesktopSnapshot().sessionsById.streaming
+  assert.equal(merged?.updatedAt, 50)
+  assert.equal(merged?.live.status, 'running')
+  assert.equal(merged?.live.runId, 'run-live')
+  assert.equal(merged?.live.seq, 50)
+  assert.equal(getDesktopSnapshot().runIntentsBySessionId.streaming?.runId, 'run-live')
 })
 
 test('applyDesktopDaemonEvent patches through the reducer and emits only on state changes', () => {

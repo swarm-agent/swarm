@@ -1,6 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { apiFetch, readErrorMessage, requestJson } from '../../../app/api'
-import { loadDesktopStateSnapshot } from './desktop-state-snapshot'
+import { mergeDesktopStateSnapshot } from './desktop-state-snapshot'
 import { createDebugTimer, debugLog } from '../../../lib/debug-log'
 import {
   applyWorksetToDesktopDB,
@@ -1015,7 +1015,7 @@ export async function updateDesktopV3SessionMode(
     },
   )
   const snapshot = requireDesktopDBSessionSnapshot(response, 'mode update')
-  await loadDesktopStateSnapshot({ sessionIds: [normalizedSessionId] })
+  await mergeDesktopStateSnapshot({ sessionIds: [normalizedSessionId] })
   return snapshot
 }
 
@@ -1040,7 +1040,7 @@ export async function updateDesktopV3SessionPreference(
     },
   )
   const snapshot = requireDesktopDBSessionSnapshot(response, 'preference update')
-  await loadDesktopStateSnapshot({ sessionIds: [normalizedSessionId] })
+  await mergeDesktopStateSnapshot({ sessionIds: [normalizedSessionId] })
   return snapshot.preference
 }
 
@@ -1059,7 +1059,7 @@ export async function updateDesktopV3SessionAgent(
     },
   )
   const snapshot = requireDesktopDBSessionSnapshot(response, 'agent update')
-  await loadDesktopStateSnapshot({ sessionIds: [normalizedSessionId] })
+  await mergeDesktopStateSnapshot({ sessionIds: [normalizedSessionId] })
   return snapshot
 }
 
@@ -1078,7 +1078,7 @@ export async function updateDesktopV3SessionMetadata(
     },
   )
   const snapshot = requireDesktopDBSessionSnapshot(response, 'metadata update')
-  await loadDesktopStateSnapshot({ sessionIds: [normalizedSessionId] })
+  await mergeDesktopStateSnapshot({ sessionIds: [normalizedSessionId] })
   return snapshot
 }
 
@@ -1114,7 +1114,7 @@ export async function saveDesktopV3SessionPlan(
     },
   )
   const snapshot = requireDesktopDBSessionSnapshot(response, 'plan save')
-  await loadDesktopStateSnapshot({ sessionIds: [normalizedSessionId] })
+  await mergeDesktopStateSnapshot({ sessionIds: [normalizedSessionId] })
   return snapshot
 }
 

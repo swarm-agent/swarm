@@ -144,6 +144,42 @@ test('normalizeDesktopStateSnapshot builds a plain replacement snapshot from wor
   assert.equal(snapshot.routeReadinessBySessionId?.next?.ready, true)
 })
 
+test('normalizeDesktopStateSnapshot maps active run intent into live sidebar state', () => {
+  const snapshot = normalizeDesktopStateSnapshot({
+    rev: 44,
+    sessions_by_id: {
+      active: {
+        ...sessionWire('active', 40),
+        run_intent: {
+          session_id: 'active',
+          run_id: 'run-active',
+          status: 'running',
+          created_at: 38,
+          updated_at: 40,
+          event_seq: 7,
+        },
+      },
+    },
+    session_order: ['active'],
+    run_intents_by_session: {
+      active: [{
+        session_id: 'active',
+        run_id: 'run-active',
+        status: 'running',
+        created_at: 38,
+        updated_at: 40,
+        event_seq: 7,
+      }],
+    },
+  })
+
+  const session = snapshot.sessionsById?.active
+  assert.equal(session?.runIntent?.runId, 'run-active')
+  assert.equal(session?.live.status, 'running')
+  assert.equal(session?.live.runId, 'run-active')
+  assert.equal(session?.live.startedAt, 38)
+})
+
 test('normalizeDesktopStateSnapshot hydrates persisted V3 provider tool messages', () => {
   const toolEnvelope = JSON.stringify({
     path_id: 'run.v3.provider-tool-result.v1',

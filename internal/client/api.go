@@ -3772,7 +3772,14 @@ func (c *API) StopSessionRun(ctx context.Context, sessionID, runID string) error
 		return fmt.Errorf("resolve session execution for stop: %w", err)
 	}
 	if strings.EqualFold(strings.TrimSpace(session.SessionAPI), "v3") {
-		return c.StopSessionV3Run(ctx, sessionID, runID, "")
+		targetSwarmID := ""
+		if session.SessionExecution != nil {
+			targetSwarmID = strings.TrimSpace(session.SessionExecution.RuntimeSwarmID)
+		}
+		if targetSwarmID == "" {
+			return errors.New("primary stop swarm target is not configured")
+		}
+		return c.StopSessionV3Run(ctx, sessionID, runID, targetSwarmID, "")
 	}
 	if session.SessionExecution != nil {
 		switch strings.TrimSpace(session.SessionExecution.ExecutionClass) {
@@ -3789,16 +3796,20 @@ func (c *API) StopSessionRun(ctx context.Context, sessionID, runID string) error
 	return errors.New("session execution class is not available for stop")
 }
 
-func (c *API) StopSessionV3Run(ctx context.Context, sessionID, runID, reason string) error {
+func (c *API) StopSessionV3Run(ctx context.Context, sessionID, runID, targetSwarmID, reason string) error {
 	sessionID = strings.TrimSpace(sessionID)
 	runID = strings.TrimSpace(runID)
+	targetSwarmID = strings.TrimSpace(targetSwarmID)
 	if sessionID == "" {
 		return errors.New("session id is required")
 	}
 	if runID == "" {
 		return errors.New("run id is required")
 	}
-	body := map[string]any{"type": "run.stop", "run_id": runID}
+	if targetSwarmID == "" {
+		return errors.New("target swarm id is required")
+	}
+	body := map[string]any{"type": "run.stop", "run_id": runID, "target_swarm_id": targetSwarmID}
 	if reason = strings.TrimSpace(reason); reason != "" {
 		body["reason"] = reason
 	}

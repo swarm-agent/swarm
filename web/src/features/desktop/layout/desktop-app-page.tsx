@@ -15,7 +15,7 @@ import { applyDesktopRouteTheme } from './desktop-theme-controller'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
 import { agentStateQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
 import { fetchDesktopStateSnapshot } from '../state/desktop-state-snapshot'
-import { replaceDesktopFromSnapshot, useDesktopRouteReadiness, useDesktopSession, useDesktopWorkspaceSessions } from '../state/desktop-state-store'
+import { mergeDesktopSnapshot, useDesktopRouteReadiness, useDesktopSession, useDesktopWorkspaceSessions } from '../state/desktop-state-store'
 import type { DesktopSessionRecord } from '../types/realtime'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
 import { DesktopQuickSettingsModal, type QuickSettingsTabID } from '../settings/components/desktop-quick-settings-modal'
@@ -2063,7 +2063,7 @@ export function DesktopAppPage() {
         if (!isCurrentEpoch()) {
           return
         }
-        replaceDesktopFromSnapshot(snapshot)
+        mergeDesktopSnapshot(snapshot)
       })())
     }
 
@@ -2100,7 +2100,7 @@ export function DesktopAppPage() {
     }, abortController.signal)
       .then((snapshot) => {
         if (!abortController.signal.aborted) {
-          replaceDesktopFromSnapshot(snapshot)
+          mergeDesktopSnapshot(snapshot)
         }
       })
       .catch((error) => {

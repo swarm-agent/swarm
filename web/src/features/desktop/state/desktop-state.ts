@@ -9,6 +9,7 @@ import { mergeMessageIntoCache } from '../chat/services/message-cache'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import { appendLiveAssistantSegment } from './live-assistant-segments'
+import { mergeSessionRecords } from './session-records'
 import type {
   DesktopNotificationCenterRecord,
   DesktopNotificationSummary,
@@ -86,6 +87,7 @@ export interface DesktopDaemonEvent {
 
 export type DesktopStateAction =
   | { type: 'snapshot/replace'; snapshot: DesktopDaemonSnapshot }
+  | { type: 'snapshot/merge'; snapshot: DesktopDaemonSnapshot }
   | { type: 'daemon/event'; event: DesktopDaemonEvent }
   | { type: 'connection/stale'; reason: string }
   | { type: 'connection/status'; status: DesktopStateStatus; error?: string | null }
@@ -126,6 +128,8 @@ export function desktopReducer(state: DesktopState, action: DesktopStateAction):
   switch (action.type) {
     case 'snapshot/replace':
       return replaceFromSnapshot(state, action.snapshot)
+    case 'snapshot/merge':
+      return mergeFromSnapshot(state, action.snapshot)
     case 'daemon/event':
       return applyDaemonEvent(state, action.event)
     case 'connection/stale':
@@ -170,6 +174,87 @@ function replaceFromSnapshot(state: DesktopState, snapshot: DesktopDaemonSnapsho
     agentModelPolicyBySessionId: cloneRecord(snapshot.agentModelPolicyBySessionId),
     routeReadinessBySessionId: cloneReadinessRecord(snapshot.routeReadinessBySessionId),
   }
+}
+
+function mergeFromSnapshot(state: DesktopState, snapshot: DesktopDaemonSnapshot): DesktopState {
+  if (!isValidRevision(snapshot.rev)) {
+    return markStale(state, 'snapshot missing valid rev')
+  }
+
+  const incomingUsageBySessionId = cloneRecord(snapshot.usageBySessionId)
+  const incomingSessionsById = attachUsageToSessions(cloneRecord(snapshot.sessionsById), incomingUsageBySessionId)
+  const sessionsById = { ...state.sessionsById }
+  for (const [sessionId, incomingSession] of Object.entries(incomingSessionsById)) {
+    sessionsById[sessionId] = mergeSnapshotSessionRecord(state.sessionsById[sessionId] ?? null, incomingSession)
+  }
+  const runIntentScopedSessionIds = Object.entries(incomingSessionsById)
+    .filter(([sessionId, incomingSession]) => {
+      const existing = state.sessionsById[sessionId]
+      return !existing || sessionSequence(existing) <= sessionSequence(incomingSession)
+    })
+    .map(([sessionId]) => sessionId)
+  const runIntentsBySessionId = mergeSessionValueRecord(state.runIntentsBySessionId, snapshot.runIntentsBySessionId, runIntentScopedSessionIds)
+
+  return {
+    ...state,
+    rev: Math.max(state.rev, snapshot.rev),
+    status: 'ready',
+    staleReason: null,
+    resyncRequested: false,
+    lastError: null,
+    sessionsById,
+    sessionOrder: normalizeSessionOrder(sessionsById, mergeSessionOrder(state.sessionOrder, snapshot.sessionOrder)),
+    messagesBySessionId: mergeArrayRecord(state.messagesBySessionId, snapshot.messagesBySessionId),
+    permissionsById: {
+      ...state.permissionsById,
+      ...cloneRecord(snapshot.permissionsById),
+    },
+    plansBySessionId: {
+      ...state.plansBySessionId,
+      ...cloneRecord(snapshot.plansBySessionId),
+    },
+    planRevisionsBySessionId: mergeArrayRecord(state.planRevisionsBySessionId, snapshot.planRevisionsBySessionId),
+    usageBySessionId: {
+      ...state.usageBySessionId,
+      ...incomingUsageBySessionId,
+    },
+    runIntentsBySessionId,
+    workspacesByPath: mergeWorkspaceRecord(state.workspacesByPath, snapshot.workspacesByPath),
+    notificationsById: {
+      ...state.notificationsById,
+      ...cloneRecord(snapshot.notificationsById),
+    },
+    notificationSummary: snapshot.notificationSummary ? { ...snapshot.notificationSummary } : state.notificationSummary,
+    preferencesBySessionId: {
+      ...state.preferencesBySessionId,
+      ...cloneRecord(snapshot.preferencesBySessionId),
+    },
+    agentModelPolicyBySessionId: {
+      ...state.agentModelPolicyBySessionId,
+      ...cloneRecord(snapshot.agentModelPolicyBySessionId),
+    },
+    routeReadinessBySessionId: mergeReadinessRecord(state.routeReadinessBySessionId, snapshot.routeReadinessBySessionId),
+  }
+}
+
+function mergeSnapshotSessionRecord(existing: DesktopSessionRecord | null, incoming: DesktopSessionRecord): DesktopSessionRecord {
+  const merged = mergeSessionRecords(existing, incoming)
+  if (!existing) {
+    return merged
+  }
+  if (sessionSequence(existing) <= sessionSequence(incoming)) {
+    return merged
+  }
+  return {
+    ...merged,
+    lifecycle: existing.lifecycle,
+    runIntent: existing.runIntent,
+    live: existing.live,
+  }
+}
+
+function sessionSequence(session: DesktopSessionRecord): number {
+  return Math.max(session.lastEventSeq ?? 0, session.projectionHighWatermarkSeq ?? 0, session.live.seq ?? 0)
 }
 
 function applyDaemonEvent(state: DesktopState, event: DesktopDaemonEvent): DesktopState {
@@ -1365,6 +1450,24 @@ function normalizeSessionOrder(sessionsById: Record<string, DesktopSessionRecord
   return [...order, ...sortSessionOrder(pickKeys(sessions, allIds))]
 }
 
+function mergeSessionOrder(currentOrder: string[], incomingOrder: string[] | undefined): string[] {
+  const order: string[] = []
+  const seen = new Set<string>()
+  for (const id of incomingOrder ?? []) {
+    if (!seen.has(id)) {
+      seen.add(id)
+      order.push(id)
+    }
+  }
+  for (const id of currentOrder) {
+    if (!seen.has(id)) {
+      seen.add(id)
+      order.push(id)
+    }
+  }
+  return order
+}
+
 function sortSessionOrder(sessionsById: Record<string, DesktopSessionRecord>): string[] {
   return Object.values(sessionsById)
     .sort((left, right) => (right.updatedAt - left.updatedAt) || left.id.localeCompare(right.id))
@@ -1439,11 +1542,53 @@ function cloneArrayRecord<T>(record: Record<string, T[]> | undefined): Record<st
   return Object.fromEntries(Object.entries(record).map(([key, value]) => [key, [...value]]))
 }
 
+function mergeArrayRecord<T>(current: Record<string, T[]>, incoming: Record<string, T[]> | undefined): Record<string, T[]> {
+  if (!incoming) {
+    return current
+  }
+  return {
+    ...current,
+    ...cloneArrayRecord(incoming),
+  }
+}
+
+function mergeSessionValueRecord<T>(current: Record<string, T>, incoming: Record<string, T> | undefined, scopedSessionIds: string[]): Record<string, T> {
+  const next = { ...current }
+  for (const sessionId of scopedSessionIds) {
+    delete next[sessionId]
+  }
+  return {
+    ...next,
+    ...cloneRecord(incoming),
+  }
+}
+
 function cloneWorkspaceRecord(record: Record<string, DesktopWorkspaceRecord> | undefined): Record<string, DesktopWorkspaceRecord> {
   if (!record) {
     return {}
   }
   return Object.fromEntries(Object.entries(record).map(([key, value]) => [key, cloneWorkspace(value)]))
+}
+
+function mergeWorkspaceRecord(current: Record<string, DesktopWorkspaceRecord>, incoming: Record<string, DesktopWorkspaceRecord> | undefined): Record<string, DesktopWorkspaceRecord> {
+  if (!incoming) {
+    return current
+  }
+  const next = { ...current }
+  for (const [path, workspace] of Object.entries(incoming)) {
+    const existing = next[path]
+    if (!existing) {
+      next[path] = cloneWorkspace(workspace)
+      continue
+    }
+    next[path] = {
+      ...existing,
+      ...workspace,
+      sessionIds: mergeStringList(workspace.sessionIds, existing.sessionIds),
+      updatedAt: Math.max(existing.updatedAt, workspace.updatedAt),
+    }
+  }
+  return next
 }
 
 function cloneReadinessRecord(record: Record<string, DesktopSessionReadinessRecord> | undefined): Record<string, DesktopSessionReadinessRecord> {
@@ -1453,11 +1598,33 @@ function cloneReadinessRecord(record: Record<string, DesktopSessionReadinessReco
   return Object.fromEntries(Object.entries(record).map(([key, value]) => [key, cloneReadiness(value)]))
 }
 
+function mergeReadinessRecord(current: Record<string, DesktopSessionReadinessRecord>, incoming: Record<string, DesktopSessionReadinessRecord> | undefined): Record<string, DesktopSessionReadinessRecord> {
+  if (!incoming) {
+    return current
+  }
+  return {
+    ...current,
+    ...cloneReadinessRecord(incoming),
+  }
+}
+
 function cloneWorkspace(workspace: DesktopWorkspaceRecord): DesktopWorkspaceRecord {
   return {
     ...workspace,
     sessionIds: [...workspace.sessionIds],
   }
+}
+
+function mergeStringList(primary: string[], secondary: string[]): string[] {
+  const seen = new Set<string>()
+  const merged: string[] = []
+  for (const value of [...primary, ...secondary]) {
+    if (!seen.has(value)) {
+      seen.add(value)
+      merged.push(value)
+    }
+  }
+  return merged
 }
 
 function cloneReadiness(readiness: DesktopSessionReadinessRecord): DesktopSessionReadinessRecord {

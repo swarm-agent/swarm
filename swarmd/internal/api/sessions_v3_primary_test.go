@@ -957,7 +957,7 @@ func TestSessionsV3PrimaryRunStopCancelsActiveExecutorAndSuppressesLateOutput(t 
 		t.Fatalf("provider was not entered")
 	}
 	intent := waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentRunning)
-	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/run/stop", bytes.NewBufferString(fmt.Sprintf(`{"type":"run.stop","run_id":%q,"reason":"stop from test"}`, intent.RunID)))
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/run/stop", bytes.NewBufferString(fmt.Sprintf(`{"type":"run.stop","run_id":%q,"target_swarm_id":"host-swarm-id","reason":"stop from test"}`, intent.RunID)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
@@ -1009,7 +1009,7 @@ func TestSessionsV3PrimaryRunStopCancelsBeforeExecutorStart(t *testing.T) {
 	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "queued-cancel-create", "queued cancel", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
 	postSessionsV3PrimaryTestMessage(t, server, created.ID, "queued-cancel-message", "cancel before start")
 	intent := waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentPendingExecutor)
-	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/run/stop", bytes.NewBufferString(fmt.Sprintf(`{"type":"run.stop","run_id":%q}`, intent.RunID)))
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/run/stop", bytes.NewBufferString(fmt.Sprintf(`{"type":"run.stop","run_id":%q,"target_swarm_id":"host-swarm-id"}`, intent.RunID)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
@@ -1039,6 +1039,46 @@ func TestSessionsV3PrimaryRunStopCancelsBeforeExecutorStart(t *testing.T) {
 	}
 	if len(messages) != 1 || messages[0].Role != "user" {
 		t.Fatalf("messages after queued cancel = %+v", messages)
+	}
+}
+
+func TestSessionsV3PrimaryRunStopRequiresPrimaryTarget(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{text: "should not run"}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 500 * time.Millisecond
+	server.v3SessionExecutor = exec
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "target-stop-create", "target stop", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "target-stop-message", "validate stop target")
+	intent := waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentPendingExecutor)
+
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "missing target", body: fmt.Sprintf(`{"type":"run.stop","run_id":%q}`, intent.RunID), want: "target_swarm_id is required"},
+		{name: "wrong target", body: fmt.Sprintf(`{"type":"run.stop","run_id":%q,"target_swarm_id":"child-swarm"}`, intent.RunID), want: "child-swarm"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/run/stop", bytes.NewBufferString(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), tc.want) {
+				t.Fatalf("stop status/body = %d %s, want 400 containing %q", rec.Code, rec.Body.String(), tc.want)
+			}
+		})
+	}
+	current, ok, err := sessionSvc.GetSessionRunIntent(created.ID, intent.RunID)
+	if err != nil || !ok {
+		t.Fatalf("get run intent after rejected stop ok=%v err=%v", ok, err)
+	}
+	if current.Status != sessionruntime.RunIntentPendingExecutor {
+		t.Fatalf("run status after rejected stop = %q, want pending_executor", current.Status)
 	}
 }
 

@@ -127,6 +127,10 @@ export function replaceDesktopFromSnapshot(snapshot: DesktopDaemonSnapshot): Des
   return dispatchDesktopState({ type: 'snapshot/replace', snapshot })
 }
 
+export function mergeDesktopSnapshot(snapshot: DesktopDaemonSnapshot): DesktopState {
+  return dispatchDesktopState({ type: 'snapshot/merge', snapshot })
+}
+
 export function applyDesktopDaemonEvent(event: DesktopDaemonEvent): DesktopState {
   return dispatchDesktopState({ type: 'daemon/event', event })
 }

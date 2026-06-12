@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { applyDesktopChatRouteToSession, buildDesktopChatRouteOptions, desktopChatRouteFromSessionMetadata, desktopChatRouteID, getDesktopSessionCreateV2Target, isManagedHostDesktopChatRoute, isPrimaryDesktopChatRoute, resolveDesktopChatRouteById, resolveDesktopChatRouteFromSession, withDesktopChatRoute, type DesktopChatRoute } from './chat-routing'
+import { applyDesktopChatRouteToSession, buildDesktopChatRouteOptions, desktopChatRouteFromSessionMetadata, desktopChatRouteID, getDesktopSessionCreateTarget, getDesktopSessionStopTarget, isManagedHostDesktopChatRoute, isPrimaryDesktopChatRoute, resolveDesktopChatRouteById, resolveDesktopChatRouteFromSession, withDesktopChatRoute, type DesktopChatRoute } from './chat-routing'
 import type { DesktopSessionRecord } from '../../types/realtime'
 
 const remoteRoute: DesktopChatRoute = {
@@ -561,8 +561,8 @@ test('buildDesktopChatRouteOptions includes local self binding for host route wh
 })
 
 
-test('getDesktopSessionCreateV2Target maps primary to V3 and local-container to V2 without path inference', () => {
-  assert.deepEqual(getDesktopSessionCreateV2Target({
+test('getDesktopSessionCreateTarget only maps primary self target to V3', () => {
+  assert.deepEqual(getDesktopSessionCreateTarget({
     ...remoteRoute,
     swarmId: 'primary-swarm',
     targetKind: 'host',
@@ -579,7 +579,7 @@ test('getDesktopSessionCreateV2Target maps primary to V3 and local-container to 
   })
 
   for (const targetKind of ['container', 'local-container', 'local_container', 'mirrored_child', 'child']) {
-    assert.deepEqual(getDesktopSessionCreateV2Target({
+    const target = getDesktopSessionCreateTarget({
       ...remoteRoute,
       targetKind,
       targetRelationship: 'child',
@@ -588,22 +588,43 @@ test('getDesktopSessionCreateV2Target maps primary to V3 and local-container to 
       hostWorkspacePath: '',
       runtimeWorkspacePath: '',
       workspaceName: '',
-    }), {
-      sessionApi: 'v2',
-      endpoint: '/v2/sessions/local-containers',
-      swarmId: 'child-swarm',
-      workspaceBindingId: 'binding-child',
     })
+    assert.equal(target.sessionApi, null)
+    assert.equal(target.endpoint, null)
+    assert.match(target.unsupportedReason, /primary self V3 target/)
   }
 })
 
-test('getDesktopSessionCreateV2Target blocks managed and missing-binding routes', () => {
-  assert.deepEqual(getDesktopSessionCreateV2Target(managedHostRoute), {
+test('getDesktopSessionCreateTarget blocks managed and missing-binding routes', () => {
+  assert.deepEqual(getDesktopSessionCreateTarget(managedHostRoute), {
     sessionApi: null,
     endpoint: null,
-    unsupportedReason: 'Managed-host v2 session create is not implemented yet.',
+    unsupportedReason: 'Desktop sessions only support the primary self V3 target.',
   })
-  const missingBinding = getDesktopSessionCreateV2Target({ ...remoteRoute, targetKind: 'local-container', workspaceBindingId: '' })
+  const missingBinding = getDesktopSessionCreateTarget({ ...remoteRoute, targetKind: 'host', targetRelationship: 'self', workspaceBindingId: '' })
   assert.equal(missingBinding.endpoint, null)
   assert.match(missingBinding.unsupportedReason, /workspace_binding_id/)
+})
+
+test('getDesktopSessionStopTarget only allows primary self V3 target', () => {
+  assert.deepEqual(getDesktopSessionStopTarget({
+    ...remoteRoute,
+    swarmId: 'primary-swarm',
+    targetKind: 'host',
+    targetRelationship: 'self',
+  }), {
+    sessionApi: 'v3',
+    endpoint: '/v3/sessions/{session_id}/run/stop',
+    targetSwarmId: 'primary-swarm',
+  })
+
+  for (const route of [
+    { ...remoteRoute, swarmId: 'child-swarm', targetKind: 'local-container', targetRelationship: 'child' },
+    managedHostRoute,
+    { ...remoteRoute, swarmId: '', targetKind: 'host', targetRelationship: 'self' },
+  ]) {
+    const target = getDesktopSessionStopTarget(route)
+    assert.equal(target.sessionApi, null)
+    assert.equal(target.endpoint, null)
+  }
 })

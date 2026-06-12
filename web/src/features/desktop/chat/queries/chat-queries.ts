@@ -29,6 +29,7 @@ import {
   applyDesktopChatRouteToSession,
   desktopChatRouteFromSessionMetadata,
   getDesktopSessionCreateTarget,
+  getDesktopSessionStopTarget,
   type DesktopChatRoute,
 } from "../services/chat-routing";
 import {
@@ -1941,8 +1942,18 @@ export async function stopSessionRun(
   options: SessionDataRequestOptions = {},
 ): Promise<void> {
   const normalizedSessionId = sessionId.trim();
-  void route;
+  const normalizedRunId = runId.trim();
   resolveSessionApiForSession(normalizedSessionId, options);
+  if (!normalizedSessionId) {
+    throw new Error("session id is required");
+  }
+  if (!normalizedRunId) {
+    throw new Error("run id is required");
+  }
+  const target = getDesktopSessionStopTarget(route);
+  if (target.sessionApi !== "v3") {
+    throw new Error(target.unsupportedReason);
+  }
   const response = await apiFetch(
     `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/run/stop`,
     {
@@ -1950,7 +1961,11 @@ export async function stopSessionRun(
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ type: "run.stop", run_id: runId }),
+      body: JSON.stringify({
+        type: "run.stop",
+        run_id: normalizedRunId,
+        target_swarm_id: target.targetSwarmId,
+      }),
     },
   );
   if (!response.ok) {

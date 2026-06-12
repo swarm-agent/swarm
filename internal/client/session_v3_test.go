@@ -66,7 +66,7 @@ func TestSessionV3ClientUsesPrimaryRoutes(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatalf("decode stop: %v", err)
 			}
-			if body["type"] != "run.stop" || body["run_id"] != "run-1" {
+			if body["type"] != "run.stop" || body["run_id"] != "run-1" || body["target_swarm_id"] != "host-swarm" {
 				t.Fatalf("stop body = %#v", body)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "session_id": "session-v3", "run_id": "run-1", "status": "failed"})
@@ -102,7 +102,7 @@ func TestSessionV3ClientUsesPrimaryRoutes(t *testing.T) {
 	if msg.RunIntent.Status != "pending_executor" || msg.Message.ID != "msg-2" {
 		t.Fatalf("message result = %#v", msg)
 	}
-	if err := api.StopSessionV3Run(context.Background(), "session-v3", "run-1", ""); err != nil {
+	if err := api.StopSessionV3Run(context.Background(), "session-v3", "run-1", "host-swarm", ""); err != nil {
 		t.Fatalf("StopSessionV3Run() error = %v", err)
 	}
 	want := []string{"POST /v3/sessions", "GET /v3/sessions/session-v3", "POST /v3/sessions/session-v3/messages", "POST /v3/sessions/session-v3/run/stop"}

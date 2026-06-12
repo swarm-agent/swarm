@@ -239,6 +239,10 @@ export type DesktopSessionCreateTarget =
   | { sessionApi: 'v3'; endpoint: '/v3/sessions'; swarmId: string; workspaceBindingId: string }
   | { sessionApi: null; endpoint: null; unsupportedReason: string }
 
+export type DesktopSessionStopTarget =
+  | { sessionApi: 'v3'; endpoint: '/v3/sessions/{session_id}/run/stop'; targetSwarmId: string }
+  | { sessionApi: null; endpoint: null; unsupportedReason: string }
+
 function normalizedRouteLabel(value: string | null | undefined): string {
   return value?.trim().toLowerCase() ?? ''
 }
@@ -271,6 +275,20 @@ export function getDesktopSessionCreateTarget(route: DesktopChatRoute | null | u
     return { sessionApi: 'v3', endpoint: '/v3/sessions', swarmId, workspaceBindingId }
   }
   return { sessionApi: null, endpoint: null, unsupportedReason: `Desktop sessions only support the primary self V3 target, got ${relationship || 'unknown'}/${targetKind || 'unknown'}.` }
+}
+
+export function getDesktopSessionStopTarget(route: DesktopChatRoute | null | undefined): DesktopSessionStopTarget {
+  const swarmId = route?.swarmId?.trim() ?? ''
+  const relationship = normalizedRouteLabel(route?.targetRelationship)
+  const targetKind = normalizedRouteLabel(route?.targetKind)
+
+  if (!swarmId) {
+    return { sessionApi: null, endpoint: null, unsupportedReason: 'Sessions API stop requires a selected primary swarm_id.' }
+  }
+  if (relationship === 'self' && targetKind === 'host') {
+    return { sessionApi: 'v3', endpoint: '/v3/sessions/{session_id}/run/stop', targetSwarmId: swarmId }
+  }
+  return { sessionApi: null, endpoint: null, unsupportedReason: `Desktop stop only supports the primary self V3 target, got ${relationship || 'unknown'}/${targetKind || 'unknown'}.` }
 }
 
 export function withDesktopChatRoute(path: string, route: DesktopChatRoute | null | undefined): string {

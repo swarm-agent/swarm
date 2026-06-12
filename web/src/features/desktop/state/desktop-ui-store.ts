@@ -25,7 +25,7 @@ import type { DesktopChatRoute } from '../chat/services/chat-routing'
 import { gitStatusQueryKey } from '../git/api'
 import { agentStateQueryOptions, sessionPreferenceQueryKey, uiSettingsQueryKey } from '../../queries/query-options'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
-import { applyDesktopDurableEventEnvelope, getDesktopSnapshot, replaceDesktopFromSnapshot } from './desktop-state-store'
+import { applyDesktopDurableEventEnvelope, getDesktopSnapshot, mergeDesktopSnapshot } from './desktop-state-store'
 import { fetchDesktopStateSnapshot } from './desktop-state-snapshot'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import { normalizeSwarmSettings, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
@@ -1367,7 +1367,7 @@ function requestScopedSessionWorkset(sessionId: string, options: { force?: boole
       history: { mode: 'full', maxEventsPerSession: 0, manifestPolicy: 'manifest', includeEvents: false },
     })
       .then((snapshot) => {
-        replaceDesktopFromSnapshot(snapshot)
+        mergeDesktopSnapshot(snapshot)
       })
       .catch((error) => {
         console.error('[desktop-store] scoped desktop v3 state hydration failed', error)
