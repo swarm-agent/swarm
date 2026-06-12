@@ -454,7 +454,7 @@ func TestV3RealtimeSourceGuardRequiresNativeOutboxAndRejectsOldTransport(t *test
 
 func TestPublishCommittedSessionV3MutationResultWakesOnlyRealtimeOutbox(t *testing.T) {
 	body := readSourceFileForTest(t, "sessions_v3_outbox.go")
-	publishBody := sourceBetweenForTest(t, body, "func (s *Server) publishCommittedSessionV3MutationResult", "func (s *Server) publishCommittedSessionV3GlobalEvent")
+	publishBody := sourceBetweenForTest(t, body, "func (s *Server) publishCommittedSessionV3MutationResult", "func (s *Server) publishCommittedV3RealtimeOutbox")
 	for _, required := range []string{"publishCommittedV3RealtimeOutbox"} {
 		if !strings.Contains(publishBody, required) {
 			t.Fatalf("publishCommittedSessionV3MutationResult missing canonical realtime outbox wake %q", required)
@@ -464,6 +464,23 @@ func TestPublishCommittedSessionV3MutationResultWakesOnlyRealtimeOutbox(t *testi
 		if strings.Contains(publishBody, forbidden) {
 			t.Fatalf("publishCommittedSessionV3MutationResult still fans out to legacy session transport via %q", forbidden)
 		}
+	}
+}
+
+func TestPublishCommittedSessionV3MutationResultDoesNotRequireLegacyMirrors(t *testing.T) {
+	server := &Server{v3RealtimeOutbox: newV3RealtimeOutboxHub()}
+	event := sessionruntime.SessionEvent{SessionID: "session-outbox-only", Seq: 1, EventType: "session.message.appended", Payload: json.RawMessage(`{"ok":true}`)}
+	result := sessionruntime.SessionMutationResult{
+		SessionID: "session-outbox-only",
+		Event:     event,
+		RealtimeOutbox: &sessionruntime.RealtimeOutboxRecord{
+			EndpointSeq: 1,
+			SessionID:   "session-outbox-only",
+			Event:       event,
+		},
+	}
+	if err := server.publishCommittedSessionV3MutationResult(result); err != nil {
+		t.Fatalf("publish committed mutation without legacy mirrors: %v", err)
 	}
 }
 

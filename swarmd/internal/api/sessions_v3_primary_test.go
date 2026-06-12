@@ -1631,71 +1631,6 @@ func TestSessionsV3PrimaryParentStreamReplaysKnownChildEvents(t *testing.T) {
 	}
 }
 
-func TestSessionsV3PrimaryParentStreamChildGapDoesNotPoisonParentCursor(t *testing.T) {
-	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	parent := createSessionsV3PrimaryTestSession(t, server, "cp9-parent-child-gap-create", "CP9 parent child gap")
-	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		server.Handler().ServeHTTP(w, withTestPrincipal(r))
-	}))
-	defer httpServer.Close()
-
-	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, parent.ID, "after_seq=1")
-	defer conn.Close()
-	started := readSessionsV3PrimaryStreamFrame(t, conn)
-	complete := readSessionsV3PrimaryStreamFrame(t, conn)
-	if started.Type != "replay.started" || complete.Type != "replay.complete" || complete.LastSeq != 1 {
-		t.Fatalf("initial parent stream frames started=%+v complete=%+v", started, complete)
-	}
-
-	principal := testPrincipal()
-	childID := "cp9-child-gap"
-	server.v3SessionStreams.registerLineage(sessionV3StreamLineage{ChildSessionID: childID, ParentSessionID: parent.ID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, LineageKind: "delegated_subagent"})
-	server.publishCommittedSessionV3Event(sessionruntime.SessionEvent{SessionID: childID, Seq: 2, EventType: "session.message.appended"})
-	childGap := readSessionsV3PrimaryStreamFrame(t, conn)
-	if childGap.Type != "cursor.error" || childGap.Relation != "child" || childGap.SessionID != childID || childGap.ParentSessionID != parent.ID || !strings.Contains(childGap.Error, "child refetch required") {
-		t.Fatalf("child gap frame = %+v", childGap)
-	}
-
-	postSessionsV3PrimaryTestMessage(t, server, parent.ID, "cp9-parent-after-child-gap-message", "parent still streams")
-	parentEvent := readSessionsV3PrimaryStreamFrame(t, conn)
-	if parentEvent.Type != "event" || parentEvent.Relation != "self" || parentEvent.SessionID != parent.ID || parentEvent.Event == nil || parentEvent.Event.Seq != 2 || parentEvent.Event.EventType != "session.message.appended" {
-		t.Fatalf("parent event after child gap = %+v", parentEvent)
-	}
-}
-
-func TestSessionsV3PrimaryStreamHubRoutesChildEventsOnlyToMatchingParentScope(t *testing.T) {
-	hub := newSessionV3StreamHub()
-	const parentID = "cp9-parent-scope"
-	const childID = "cp9-child-scope"
-	allowed := hub.subscribeScoped(parentID, "user-a", "account-a")
-	denied := hub.subscribeScoped(parentID, "user-b", "account-b")
-	unrelated := hub.subscribeScoped("cp9-unrelated-parent", "user-a", "account-a")
-	defer hub.unsubscribe(allowed)
-	defer hub.unsubscribe(denied)
-	defer hub.unsubscribe(unrelated)
-	hub.registerLineage(sessionV3StreamLineage{ChildSessionID: childID, ParentSessionID: parentID, UserID: "user-a", AccountScopeID: "account-a", LineageKind: "delegated_subagent"})
-
-	hub.publish(sessionruntime.SessionEvent{SessionID: childID, Seq: 1, EventType: "session.message.appended"})
-	select {
-	case routed := <-allowed.send:
-		if routed.Relation != "child" || routed.ParentSessionID != parentID || routed.Event.SessionID != childID {
-			t.Fatalf("allowed routed event = %+v", routed)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatalf("matching parent subscriber did not receive child event")
-	}
-	select {
-	case routed := <-denied.send:
-		t.Fatalf("cross-account subscriber received child event: %+v", routed)
-	default:
-	}
-	select {
-	case routed := <-unrelated.send:
-		t.Fatalf("unrelated parent subscriber received child event: %+v", routed)
-	default:
-	}
-}
-
 func TestSessionsV3PrimaryStreamPublishesExecutorCommittedEventsAndReplaysThem(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	installSessionsV3TestProvider(server, "stream committed assistant")
@@ -2063,60 +1998,6 @@ func TestSessionsV3PrimaryStreamCursorErrors(t *testing.T) {
 	}
 }
 
-func TestSessionsV3PrimaryStreamHubMarksSlowConsumerAndOtherSubscribersContinue(t *testing.T) {
-	hub := newSessionV3StreamHub()
-	const sessionID = "v3_test_slow_consumer"
-	slow := hub.subscribe(sessionID)
-	fast := hub.subscribe(sessionID)
-	if slow == nil || fast == nil {
-		t.Fatalf("subscribers were not created")
-	}
-	defer hub.unsubscribe(slow)
-	defer hub.unsubscribe(fast)
-
-	const eventCount = sessionV3StreamSubscriberBufSize + 2
-	for i := 0; i < eventCount; i++ {
-		hub.publish(sessionruntime.SessionEvent{SessionID: sessionID, Seq: uint64(i + 1), EventType: "session.message.appended"})
-		select {
-		case routed := <-fast.send:
-			if routed.Event.Seq != uint64(i+1) {
-				t.Fatalf("fast event %d seq = %d", i, routed.Event.Seq)
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatalf("fast subscriber did not receive event %d after slow subscriber was removed", i+1)
-		}
-	}
-
-	select {
-	case notice := <-slow.slow:
-		if notice.NextSeq == 0 || !strings.Contains(notice.Reason, "slow_consumer") {
-			t.Fatalf("slow consumer notice = %+v", notice)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatalf("slow consumer was not marked when subscriber queue filled")
-	}
-
-	drainedSlow := 0
-	for {
-		select {
-		case <-slow.send:
-			drainedSlow++
-		default:
-			goto drained
-		}
-	}
-drained:
-	if drainedSlow != sessionV3StreamSubscriberBufSize {
-		t.Fatalf("slow subscriber buffered events = %d, want %d", drainedSlow, sessionV3StreamSubscriberBufSize)
-	}
-	hub.publish(sessionruntime.SessionEvent{SessionID: sessionID, Seq: eventCount + 1, EventType: "session.message.appended"})
-	select {
-	case event := <-slow.send:
-		t.Fatalf("slow subscriber received event after slow-consumer removal: %+v", event)
-	default:
-	}
-}
-
 func TestSessionsV3PrimaryStandalonePathsWorkWithDispatchServicesDisabled(t *testing.T) {
 	t.Setenv("SWARM_API_NO_AUTH", "1")
 	storePath := filepath.Join(t.TempDir(), "sessions-v3-standalone.pebble")
@@ -2436,12 +2317,12 @@ func TestSessionsV3PrimaryStreamHandlerDoesNotUseV2RunStreamOrRuntime(t *testing
 	if err != nil {
 		t.Fatalf("read sessions_v3_stream_ws.go: %v", err)
 	}
-	for _, required := range []string{"ReplaySessionEvents", "GetSessionProjection", "handleSessionV3PrimaryStream", "sessionV3StreamHub"} {
+	for _, required := range []string{"ListRealtimeOutboxAfter", "ListRealtimeOutboxForSessionAfterSeq", "handleSessionV3PrimaryStream", "v3RealtimeOutbox"} {
 		if !strings.Contains(string(body), required) {
-			t.Fatalf("sessions_v3_stream_ws.go missing required V3 stream symbol %q", required)
+			t.Fatalf("sessions_v3_stream_ws.go missing required outbox-backed V3 stream symbol %q", required)
 		}
 	}
-	for _, forbidden := range []string{"runStreamManager", "handleRunStream", "proxyManagedHostRunStream", "dispatchRemoteRuntime", "routedSessionTarget", "gorillaws"} {
+	for _, forbidden := range []string{"ReplaySessionEvents", "sessionV3StreamHub", "runStreamManager", "handleRunStream", "proxyManagedHostRunStream", "dispatchRemoteRuntime", "routedSessionTarget", "gorillaws"} {
 		if strings.Contains(string(body), forbidden) {
 			t.Fatalf("sessions_v3_stream_ws.go contains forbidden runtime/v2 stream symbol %q", forbidden)
 		}

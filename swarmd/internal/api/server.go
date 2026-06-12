@@ -82,7 +82,6 @@ type Server struct {
 	model                       *model.Service
 	runner                      runService
 	runStreams                  *runStreamManager
-	v3SessionStreams            *sessionV3StreamHub
 	v3RealtimeOutbox            *v3RealtimeOutboxHub
 	v3SessionExecutor           *sessionV3Executor
 	sessions                    *sessionruntime.Service
@@ -301,7 +300,6 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 		model:                modelSvc,
 		runner:               runSvc,
 		runStreams:           newRunStreamManager(),
-		v3SessionStreams:     newSessionV3StreamHub(),
 		v3RealtimeOutbox:     newV3RealtimeOutboxHub(),
 		sessions:             sessionSvc,
 		workspace:            workspaceSvc,
