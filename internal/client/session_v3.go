@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -13,6 +14,7 @@ const (
 	v3RealtimeStreamPath       = "/v3/realtime/stream"
 	v3RealtimeProtocol         = "v3.realtime"
 	v3RealtimeProtocolVersion  = 1
+	v3RealtimeKindHello        = "hello"
 	v3RealtimeKindEvent        = "event"
 	v3RealtimeKindReplayStart  = "replay.started"
 	v3RealtimeKindReplayDone   = "replay.complete"
@@ -28,7 +30,8 @@ const (
 
 type V3RealtimeSubscription struct {
 	SessionID      string
-	AfterSeq       uint64
+	EndpointCursor string
+	LastSeq        uint64
 	SubscriptionID string
 }
 
@@ -101,8 +104,12 @@ func (c *API) StreamSessionsV3Realtime(ctx context.Context, subscriptions []V3Re
 		return errors.New("at least one v3 realtime session subscription is required")
 	}
 
+	streamPath := v3RealtimeStreamPath
+	if len(normalized) == 1 && strings.TrimSpace(normalized[0].EndpointCursor) != "" {
+		streamPath = streamPath + "?endpoint_cursor=" + url.QueryEscape(strings.TrimSpace(normalized[0].EndpointCursor))
+	}
 	baseURL, _, socketPath := c.requestTarget()
-	conn, err := dialDaemonWS(ctx, baseURL, c.Token(), socketPath, v3RealtimeStreamPath, "")
+	conn, err := dialDaemonWS(ctx, baseURL, c.Token(), socketPath, streamPath, "")
 	if err != nil {
 		return fmt.Errorf("connect v3 realtime stream: %w", err)
 	}
@@ -110,14 +117,14 @@ func (c *API) StreamSessionsV3Realtime(ctx context.Context, subscriptions []V3Re
 
 	lastSeqBySession := make(map[string]uint64, len(normalized))
 	for _, sub := range normalized {
-		lastSeqBySession[sub.SessionID] = sub.AfterSeq
+		lastSeqBySession[sub.SessionID] = sub.LastSeq
 		msg := V3RealtimeFrame{
 			Protocol:        v3RealtimeProtocol,
 			ProtocolVersion: v3RealtimeProtocolVersion,
 			Kind:            v3RealtimeKindSubscribe,
 			SessionID:       sub.SessionID,
 			SubscriptionID:  strings.TrimSpace(sub.SubscriptionID),
-			AfterSeq:        sub.AfterSeq,
+			EndpointCursor:  strings.TrimSpace(sub.EndpointCursor),
 		}
 		raw, err := json.Marshal(msg)
 		if err != nil {
@@ -164,7 +171,14 @@ func (c *API) StreamSessionsV3Realtime(ctx context.Context, subscriptions []V3Re
 				onFrame(frame)
 			}
 			return frame.Err()
-		case v3RealtimeKindReplayStart, v3RealtimeKindReplayDone, v3RealtimeKindKeepalive, v3RealtimeKindHighWater:
+		case v3RealtimeKindReplayStart, v3RealtimeKindReplayDone:
+			// Replay control frames can carry the session-local sequence boundary that
+			// corresponds to the endpoint cursor. The endpoint cursor remains the only
+			// transport resume token; event.seq is used only for idempotent reduction.
+			if frame.SessionID != "" && frame.LastSeq > lastSeqBySession[frame.SessionID] {
+				lastSeqBySession[frame.SessionID] = frame.LastSeq
+			}
+		case v3RealtimeKindHello, v3RealtimeKindKeepalive, v3RealtimeKindHighWater:
 			// Control frames are delivered to the caller, but they do not advance
 			// application order. Only event.seq advances session state.
 		default:

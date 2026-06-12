@@ -19,6 +19,7 @@ import (
 
 func TestAPIChatBackendV3RunTurnConsumesCommittedAssistantStream(t *testing.T) {
 	var gotPaths []string
+	var gotRealtimeQuery string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPaths = append(gotPaths, r.Method+" "+r.URL.Path)
 		switch {
@@ -31,10 +32,12 @@ func TestAPIChatBackendV3RunTurnConsumesCommittedAssistantStream(t *testing.T) {
 				"run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "pending_executor", "event_seq": 2},
 				"messages":   []any{},
 				"events":     []any{},
+				"mutation":   map[string]any{"realtime_outbox": map[string]any{"endpoint_cursor": "cursor-2", "endpoint_seq": 2, "session_id": "session-v3"}},
 			})
 		case r.Method == http.MethodGet && r.URL.Path == "/v3/realtime/stream":
+			gotRealtimeQuery = r.URL.RawQuery
 			writeTestV3RealtimeFrames(t, w, r,
-				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.started", "session_id": "session-v3", "subscription_id": "active-turn", "after_seq": 2, "high_watermark_seq": 6},
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.started", "session_id": "session-v3", "subscription_id": "active-turn", "endpoint_cursor": "cursor-2", "last_seq": 2, "high_watermark_seq": 6},
 				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "event_type": "session.assistant.started", "last_seq": 3, "event": map[string]any{"id": "evt-3", "session_id": "session-v3", "seq": 3, "event_type": "session.assistant.started", "ts_unix_ms": 30, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "running"}}},
 				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "event_type": "session.assistant.delta", "last_seq": 4, "event": map[string]any{"id": "evt-4", "session_id": "session-v3", "seq": 4, "event_type": "session.assistant.delta", "ts_unix_ms": 31, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "delta": "hel"}}},
 				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "event_type": "session.assistant.completed", "last_seq": 5, "event": map[string]any{"id": "evt-5", "session_id": "session-v3", "seq": 5, "event_type": "session.assistant.completed", "ts_unix_ms": 32, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "running", "message": map[string]any{"id": "msg-assistant", "session_id": "session-v3", "global_seq": 5, "role": "assistant", "content": "hello", "created_at": 32, "metadata": map[string]any{"run_id": "run-1"}}, "run_intent": map[string]any{"run_id": "run-1", "status": "running"}}}},
@@ -59,6 +62,9 @@ func TestAPIChatBackendV3RunTurnConsumesCommittedAssistantStream(t *testing.T) {
 	}
 	if len(gotPaths) != 2 || gotPaths[0] != "POST /v3/sessions/session-v3/messages" || gotPaths[1] != "GET /v3/realtime/stream" {
 		t.Fatalf("paths = %#v", gotPaths)
+	}
+	if !strings.Contains(gotRealtimeQuery, "endpoint_cursor=cursor-2") {
+		t.Fatalf("realtime query = %q, want endpoint_cursor from committed mutation outbox", gotRealtimeQuery)
 	}
 	if resp.PrimaryRunStatus != "completed" {
 		t.Fatalf("primary run status = %q", resp.PrimaryRunStatus)
@@ -96,10 +102,11 @@ func TestAPIChatBackendV3RunTurnDoesNotCompleteOnAssistantMessageStored(t *testi
 				"run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "pending_executor", "event_seq": 2},
 				"messages":   []any{},
 				"events":     []any{},
+				"mutation":   map[string]any{"realtime_outbox": map[string]any{"endpoint_cursor": "cursor-2", "endpoint_seq": 2, "session_id": "session-v3"}},
 			})
 		case r.Method == http.MethodGet && r.URL.Path == "/v3/realtime/stream":
 			writeTestV3RealtimeFrames(t, w, r,
-				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.started", "session_id": "session-v3", "subscription_id": "active-turn", "after_seq": 2, "high_watermark_seq": 5},
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.started", "session_id": "session-v3", "subscription_id": "active-turn", "endpoint_cursor": "cursor-2", "last_seq": 2, "high_watermark_seq": 5},
 				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "event_type": "session.message.appended", "last_seq": 3, "event": map[string]any{"id": "evt-3", "session_id": "session-v3", "seq": 3, "event_type": "session.message.appended", "ts_unix_ms": 30, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "running", "message": map[string]any{"id": "msg-assistant", "session_id": "session-v3", "global_seq": 3, "role": "assistant", "content": "hello", "created_at": 30, "metadata": map[string]any{"run_id": "run-1"}}, "run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "running", "event_seq": 3}}}},
 				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "event_type": "session.tool.started", "last_seq": 4, "event": map[string]any{"id": "evt-4", "session_id": "session-v3", "seq": 4, "event_type": "session.tool.started", "ts_unix_ms": 31, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "tool_name": "bash", "call_id": "call-1", "arguments": "{}", "step": 1, "run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "running", "event_seq": 4}}}},
 				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "event_type": "session.run_intent.recorded", "last_seq": 5, "event": map[string]any{"id": "evt-5", "session_id": "session-v3", "seq": 5, "event_type": "session.run_intent.recorded", "ts_unix_ms": 32, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "completed", "run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "completed", "event_seq": 5, "updated_at": 32}}}},
@@ -144,10 +151,11 @@ func TestAPIChatBackendV3RunTurnTreatsCancelledRunIntentAsTerminal(t *testing.T)
 				"run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "pending_executor", "event_seq": 2},
 				"messages":   []any{},
 				"events":     []any{},
+				"mutation":   map[string]any{"realtime_outbox": map[string]any{"endpoint_cursor": "cursor-2", "endpoint_seq": 2, "session_id": "session-v3"}},
 			})
 		case r.Method == http.MethodGet && r.URL.Path == "/v3/realtime/stream":
 			writeTestV3RealtimeFrames(t, w, r,
-				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.started", "session_id": "session-v3", "subscription_id": "active-turn", "after_seq": 2, "high_watermark_seq": 3},
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.started", "session_id": "session-v3", "subscription_id": "active-turn", "endpoint_cursor": "cursor-2", "last_seq": 2, "high_watermark_seq": 3},
 				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "event_type": "session.run.cancelled", "last_seq": 3, "event": map[string]any{"id": "evt-3", "session_id": "session-v3", "seq": 3, "event_type": "session.run.cancelled", "ts_unix_ms": 30, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "cancelled", "error": "stop from test", "run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "cancelled", "blocked_reason": "stop from test", "event_seq": 3, "updated_at": 30}}}},
 			)
 		default:
@@ -293,10 +301,11 @@ func TestAPIChatBackendV3RunTurnRefetchesOnRealtimeCursorGap(t *testing.T) {
 				"run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "pending_executor", "event_seq": 2},
 				"messages":   []any{},
 				"events":     []any{},
+				"mutation":   map[string]any{"realtime_outbox": map[string]any{"endpoint_cursor": "cursor-2", "endpoint_seq": 2, "session_id": "session-v3"}},
 			})
 		case r.Method == http.MethodGet && r.URL.Path == "/v3/realtime/stream":
 			writeTestV3RealtimeFrames(t, w, r,
-				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.started", "session_id": "session-v3", "subscription_id": "active-turn", "after_seq": 2, "high_watermark_seq": 6},
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.started", "session_id": "session-v3", "subscription_id": "active-turn", "endpoint_cursor": "cursor-2", "last_seq": 2, "high_watermark_seq": 6},
 				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "event_type": "session.assistant.delta", "last_seq": 4, "rev": 2, "prevRev": 1, "event": map[string]any{"id": "evt-4", "session_id": "session-v3", "seq": 4, "event_type": "session.assistant.delta", "ts_unix_ms": 31, "payload": json.RawMessage(`{"session_id":"session-v3","run_id":"run-1","delta":"gap"}`)}},
 			)
 		case r.Method == http.MethodGet && r.URL.Path == "/v3/sessions/session-v3":
@@ -449,6 +458,9 @@ func writeTestV3RealtimeFrames(t *testing.T, w http.ResponseWriter, r *http.Requ
 	}
 	if subscribe["protocol"] != "v3.realtime" || subscribe["kind"] != "subscribe.session" || subscribe["session_id"] != "session-v3" {
 		t.Fatalf("subscribe frame = %#v", subscribe)
+	}
+	if _, hasAfterSeq := subscribe["after_seq"]; hasAfterSeq {
+		t.Fatalf("canonical realtime subscribe must not use after_seq: %#v", subscribe)
 	}
 	nextRev := uint64(1)
 	for _, frame := range frames {

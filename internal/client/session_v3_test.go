@@ -315,9 +315,9 @@ func TestStreamSessionsV3RealtimeMultiplexesSubscriptionsAndIsolatesGaps(t *test
 			}
 			subscribes = append(subscribes, msg)
 		}
-		writeServerLifecycleTestFrame(t, conn, map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.started", "session_id": "session-a", "after_seq": 1})
+		writeServerLifecycleTestFrame(t, conn, map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.started", "session_id": "session-a", "endpoint_cursor": "cursor-10", "last_seq": 1})
 		writeServerLifecycleTestFrame(t, conn, map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.complete", "session_id": "session-a", "last_seq": 1})
-		writeServerLifecycleTestFrame(t, conn, map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.started", "session_id": "session-b", "after_seq": 1})
+		writeServerLifecycleTestFrame(t, conn, map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.started", "session_id": "session-b", "endpoint_cursor": "cursor-10", "last_seq": 1})
 		writeServerLifecycleTestFrame(t, conn, map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.complete", "session_id": "session-b", "last_seq": 1})
 		writeServerLifecycleTestFrame(t, conn, map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-a", "event_type": "session.assistant.delta", "last_seq": 3, "high_watermark_seq": 3, "rev": 2, "prevRev": 1, "event": map[string]any{"id": "evt-a-3", "session_id": "session-a", "seq": 3, "event_type": "session.assistant.delta", "payload": map[string]any{"session_id": "session-a", "delta": "gap"}}})
 		writeServerLifecycleTestFrame(t, conn, map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-b", "event_type": "session.assistant.delta", "last_seq": 2, "rev": 3, "prevRev": 2, "event": map[string]any{"id": "evt-b-2", "session_id": "session-b", "seq": 2, "event_type": "session.assistant.delta", "payload": map[string]any{"session_id": "session-b", "delta": "ok"}}})
@@ -329,7 +329,7 @@ func TestStreamSessionsV3RealtimeMultiplexesSubscriptionsAndIsolatesGaps(t *test
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var frames []V3RealtimeFrame
-	err := api.StreamSessionsV3Realtime(ctx, []V3RealtimeSubscription{{SessionID: "session-a", AfterSeq: 1, SubscriptionID: "sub-a"}, {SessionID: "session-b", AfterSeq: 1, SubscriptionID: "sub-b"}}, func(frame V3RealtimeFrame) {
+	err := api.StreamSessionsV3Realtime(ctx, []V3RealtimeSubscription{{SessionID: "session-a", EndpointCursor: "cursor-10", LastSeq: 1, SubscriptionID: "sub-a"}, {SessionID: "session-b", EndpointCursor: "cursor-10", LastSeq: 1, SubscriptionID: "sub-b"}}, func(frame V3RealtimeFrame) {
 		frames = append(frames, frame)
 		if frame.Kind == "event" && frame.SessionID == "session-b" && frame.Event != nil && frame.Event.Seq == 2 {
 			cancel()
@@ -341,8 +341,11 @@ func TestStreamSessionsV3RealtimeMultiplexesSubscriptionsAndIsolatesGaps(t *test
 	if gotPath != "/v3/realtime/stream" {
 		t.Fatalf("got path = %q", gotPath)
 	}
-	if len(subscribes) != 2 || subscribes[0]["kind"] != "subscribe.session" || subscribes[0]["session_id"] != "session-a" || subscribes[0]["after_seq"] != float64(1) || subscribes[1]["session_id"] != "session-b" {
+	if len(subscribes) != 2 || subscribes[0]["kind"] != "subscribe.session" || subscribes[0]["session_id"] != "session-a" || subscribes[0]["endpoint_cursor"] != "cursor-10" || subscribes[1]["session_id"] != "session-b" || subscribes[1]["endpoint_cursor"] != "cursor-10" {
 		t.Fatalf("subscribes = %#v", subscribes)
+	}
+	if _, ok := subscribes[0]["after_seq"]; ok {
+		t.Fatalf("canonical realtime subscribe must not use after_seq: %#v", subscribes[0])
 	}
 	var sawGap, sawB bool
 	for _, frame := range frames {

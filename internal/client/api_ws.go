@@ -63,6 +63,10 @@ type wsClientConn struct {
 }
 
 func (c *API) StreamEvents(ctx context.Context, lastSeen uint64, channels []string, onEvent func(StreamEventEnvelope)) error {
+	return c.StreamEventsWithReady(ctx, lastSeen, channels, nil, onEvent)
+}
+
+func (c *API) StreamEventsWithReady(ctx context.Context, lastSeen uint64, channels []string, onReady func(), onEvent func(StreamEventEnvelope)) error {
 	if c == nil {
 		return errors.New("api client is not configured")
 	}
@@ -123,7 +127,15 @@ func (c *API) StreamEvents(ctx context.Context, lastSeen uint64, channels []stri
 		if err := json.Unmarshal(raw, &message); err != nil {
 			continue
 		}
-		if strings.ToLower(strings.TrimSpace(message.Type)) != "event" || message.Event == nil {
+		messageType := strings.ToLower(strings.TrimSpace(message.Type))
+		if messageType == "subscribed" {
+			if onReady != nil {
+				onReady()
+				onReady = nil
+			}
+			continue
+		}
+		if messageType != "event" || message.Event == nil {
 			continue
 		}
 		if onEvent != nil {
@@ -170,10 +182,16 @@ func dialDaemonWS(ctx context.Context, baseURL, token, socketPath, wsPath, clien
 	if strings.TrimSpace(wsPath) == "" && strings.TrimSpace(parsed.Path) != "" {
 		path = normalizeDaemonWSPath(parsed.Path)
 	}
+	rawQuery := ""
+	if idx := strings.Index(path, "?"); idx >= 0 {
+		rawQuery = path[idx+1:]
+		path = path[:idx]
+	}
 	wsURL := &url.URL{
-		Scheme: wsScheme,
-		Host:   host,
-		Path:   path,
+		Scheme:   wsScheme,
+		Host:     host,
+		Path:     path,
+		RawQuery: rawQuery,
 	}
 	if clientID = strings.TrimSpace(clientID); clientID != "" {
 		q := wsURL.Query()

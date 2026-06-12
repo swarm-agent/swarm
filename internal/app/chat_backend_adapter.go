@@ -303,7 +303,11 @@ func (b *apiChatBackend) RunTurnStream(ctx context.Context, sessionID string, re
 				PrimaryBlockedReason: strings.TrimSpace(result.RunIntent.BlockedReason),
 			}, nil
 		}
-		streamResp, streamErr := b.consumeSessionV3Run(ctx, sessionID, result.RunIntent, onEvent)
+		endpointCursor := ""
+		if result.RealtimeOutbox != nil {
+			endpointCursor = strings.TrimSpace(result.RealtimeOutbox.EndpointCursor)
+		}
+		streamResp, streamErr := b.consumeSessionV3Run(ctx, sessionID, result.RunIntent, endpointCursor, onEvent)
 		if streamErr != nil {
 			return ui.ChatRunResponse{}, streamErr
 		}
@@ -317,19 +321,19 @@ func (b *apiChatBackend) RunTurnStream(ctx context.Context, sessionID string, re
 	return ui.ChatRunResponse{}, errTUIRetiredSessionAPI("run turn for non-v3 TUI session")
 }
 
-func (b *apiChatBackend) consumeSessionV3Run(ctx context.Context, sessionID string, intent client.SessionV3RunIntent, onEvent func(ui.ChatRunStreamEvent)) (ui.ChatRunResponse, error) {
+func (b *apiChatBackend) consumeSessionV3Run(ctx context.Context, sessionID string, intent client.SessionV3RunIntent, endpointCursor string, onEvent func(ui.ChatRunStreamEvent)) (ui.ChatRunResponse, error) {
 	var response ui.ChatRunResponse
 	runID := strings.TrimSpace(intent.RunID)
 	response.PrimaryRunStatus = strings.TrimSpace(intent.Status)
 	response.PrimaryBlockedReason = strings.TrimSpace(intent.BlockedReason)
-	afterSeq := intent.EventSeq
+	lastSeq := intent.EventSeq
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	refetched := false
-	currentAfterSeq := afterSeq
+	currentLastSeq := lastSeq
 	shouldRefetch := false
 	var refetchFrame client.V3RealtimeFrame
-	err := b.api.StreamSessionsV3Realtime(streamCtx, []client.V3RealtimeSubscription{{SessionID: sessionID, AfterSeq: afterSeq, SubscriptionID: "active-turn"}}, func(frame client.V3RealtimeFrame) {
+	err := b.api.StreamSessionsV3Realtime(streamCtx, []client.V3RealtimeSubscription{{SessionID: sessionID, EndpointCursor: endpointCursor, LastSeq: lastSeq, SubscriptionID: "active-turn"}}, func(frame client.V3RealtimeFrame) {
 		frameKind := strings.ToLower(strings.TrimSpace(frame.Kind))
 		if frameKind == "cursor.error" || frameKind == "slow_consumer.reconnect_required" {
 			shouldRefetch = true
@@ -337,8 +341,8 @@ func (b *apiChatBackend) consumeSessionV3Run(ctx context.Context, sessionID stri
 			cancel()
 			return
 		}
-		if frame.Event != nil && frame.Event.Seq > currentAfterSeq {
-			currentAfterSeq = frame.Event.Seq
+		if frame.Event != nil && frame.Event.Seq > currentLastSeq {
+			currentLastSeq = frame.Event.Seq
 		}
 		if frame.Event == nil || strings.ToLower(strings.TrimSpace(frame.Kind)) != "event" {
 			return
@@ -369,7 +373,7 @@ func (b *apiChatBackend) consumeSessionV3Run(ctx context.Context, sessionID stri
 	})
 	if shouldRefetch {
 		refetched = true
-		hydrated, refetchErr := b.refetchSessionV3RunAfterRealtimeGap(ctx, sessionID, runID, currentAfterSeq, refetchFrame, onEvent)
+		hydrated, refetchErr := b.refetchSessionV3RunAfterRealtimeGap(ctx, sessionID, runID, currentLastSeq, refetchFrame, onEvent)
 		if refetchErr != nil {
 			return ui.ChatRunResponse{}, refetchErr
 		}

@@ -781,20 +781,21 @@ type SessionV3Event struct {
 }
 
 type SessionV3Hydrated struct {
-	Session            SessionSummary            `json:"session"`
-	Projection         SessionV3Projection       `json:"projection"`
-	Messages           []SessionMessage          `json:"messages"`
-	Events             []SessionV3Event          `json:"events"`
-	PendingPermissions []PermissionRecord        `json:"pending_permissions,omitempty"`
-	UsageSummary       *SessionUsageSummary      `json:"usage_summary,omitempty"`
-	ActiveRunIntent    *SessionV3RunIntent       `json:"active_run_intent,omitempty"`
-	Preference         ModelPreference           `json:"preference,omitempty"`
-	ContextWindow      int                       `json:"context_window,omitempty"`
-	MaxOutputTokens    int                       `json:"max_output_tokens,omitempty"`
-	AgentModelPolicy   SessionV3AgentModelPolicy `json:"agent_model_policy,omitempty"`
-	HasActivePlan      bool                      `json:"has_active_plan,omitempty"`
-	ActivePlan         *SessionPlan              `json:"active_plan,omitempty"`
-	PlanRevisions      []SessionPlan             `json:"plan_revisions,omitempty"`
+	Session                SessionSummary            `json:"session"`
+	Projection             SessionV3Projection       `json:"projection"`
+	Messages               []SessionMessage          `json:"messages"`
+	Events                 []SessionV3Event          `json:"events"`
+	SnapshotEndpointCursor string                    `json:"snapshot_endpoint_cursor,omitempty"`
+	PendingPermissions     []PermissionRecord        `json:"pending_permissions,omitempty"`
+	UsageSummary           *SessionUsageSummary      `json:"usage_summary,omitempty"`
+	ActiveRunIntent        *SessionV3RunIntent       `json:"active_run_intent,omitempty"`
+	Preference             ModelPreference           `json:"preference,omitempty"`
+	ContextWindow          int                       `json:"context_window,omitempty"`
+	MaxOutputTokens        int                       `json:"max_output_tokens,omitempty"`
+	AgentModelPolicy       SessionV3AgentModelPolicy `json:"agent_model_policy,omitempty"`
+	HasActivePlan          bool                      `json:"has_active_plan,omitempty"`
+	ActivePlan             *SessionPlan              `json:"active_plan,omitempty"`
+	PlanRevisions          []SessionPlan             `json:"plan_revisions,omitempty"`
 }
 
 type SessionV3WorksetRequest struct {
@@ -930,12 +931,33 @@ type SessionV3CompactResult struct {
 }
 
 type SessionV3MessageResult struct {
-	Session    SessionSummary      `json:"session"`
-	Projection SessionV3Projection `json:"projection"`
-	Message    SessionMessage      `json:"message"`
-	RunIntent  SessionV3RunIntent  `json:"run_intent"`
-	Messages   []SessionMessage    `json:"messages"`
-	Events     []SessionV3Event    `json:"events"`
+	Session        SessionSummary              `json:"session"`
+	Projection     SessionV3Projection         `json:"projection"`
+	Message        SessionMessage              `json:"message"`
+	RunIntent      SessionV3RunIntent          `json:"run_intent"`
+	Messages       []SessionMessage            `json:"messages"`
+	Events         []SessionV3Event            `json:"events"`
+	RealtimeOutbox *SessionV3RealtimeOutboxRow `json:"realtime_outbox,omitempty"`
+}
+
+type SessionV3MutationResult struct {
+	SessionID      string                      `json:"session_id"`
+	PrimarySeq     uint64                      `json:"primary_seq"`
+	FirstSeq       uint64                      `json:"first_seq"`
+	LastSeq        uint64                      `json:"last_seq"`
+	Event          SessionV3Event              `json:"event"`
+	Projection     SessionV3Projection         `json:"projection"`
+	RealtimeOutbox *SessionV3RealtimeOutboxRow `json:"realtime_outbox,omitempty"`
+	Replayed       bool                        `json:"replayed,omitempty"`
+}
+
+type SessionV3RealtimeOutboxRow struct {
+	EndpointSeq    uint64              `json:"endpoint_seq"`
+	EndpointCursor string              `json:"endpoint_cursor"`
+	SessionID      string              `json:"session_id"`
+	Event          SessionV3Event      `json:"event"`
+	Projection     SessionV3Projection `json:"projection"`
+	CreatedAt      int64               `json:"created_at"`
 }
 
 type SessionV3Replay struct {
@@ -3299,19 +3321,25 @@ func (c *API) SendSessionV3Message(ctx context.Context, sessionID string, option
 		req["dispatch_authority"] = options.DispatchAuthority
 	}
 	var resp struct {
-		OK         bool                `json:"ok"`
-		Session    SessionSummary      `json:"session"`
-		Projection SessionV3Projection `json:"projection"`
-		Message    SessionMessage      `json:"message"`
-		RunIntent  SessionV3RunIntent  `json:"run_intent"`
-		Messages   []SessionMessage    `json:"messages"`
-		Events     []SessionV3Event    `json:"events"`
+		OK             bool                        `json:"ok"`
+		Session        SessionSummary              `json:"session"`
+		Projection     SessionV3Projection         `json:"projection"`
+		Message        SessionMessage              `json:"message"`
+		RunIntent      SessionV3RunIntent          `json:"run_intent"`
+		Messages       []SessionMessage            `json:"messages"`
+		Events         []SessionV3Event            `json:"events"`
+		Mutation       SessionV3MutationResult     `json:"mutation"`
+		RealtimeOutbox *SessionV3RealtimeOutboxRow `json:"realtime_outbox,omitempty"`
 	}
 	if err := c.postJSON(ctx, sessionV3PrimaryPath(sessionID, "messages"), req, &resp, true); err != nil {
 		return SessionV3MessageResult{}, err
 	}
 	resp.Session = markSessionV3(resp.Session, resp.Projection)
-	return SessionV3MessageResult{Session: resp.Session, Projection: resp.Projection, Message: resp.Message, RunIntent: resp.RunIntent, Messages: resp.Messages, Events: resp.Events}, nil
+	realtimeOutbox := resp.RealtimeOutbox
+	if realtimeOutbox == nil && resp.Mutation.RealtimeOutbox != nil {
+		realtimeOutbox = resp.Mutation.RealtimeOutbox
+	}
+	return SessionV3MessageResult{Session: resp.Session, Projection: resp.Projection, Message: resp.Message, RunIntent: resp.RunIntent, Messages: resp.Messages, Events: resp.Events, RealtimeOutbox: realtimeOutbox}, nil
 }
 
 func (c *API) GetSession(ctx context.Context, sessionID string) (SessionSummary, error) {
