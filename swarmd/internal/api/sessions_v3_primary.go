@@ -2143,7 +2143,10 @@ func isProtectedSessionsV3MetadataKey(key string) bool {
 		"swarm_v3_source_workspace_path",
 		"swarm_v3_runtime_workspace_path",
 		"swarm_v3_placement_generation",
-		"swarm_v3_binding_generation":
+		"swarm_v3_binding_generation",
+		"swarm_v3_tui_directory_session",
+		"swarm_v3_tui_cwd_path",
+		"swarm_v3_tui_original_cwd_path":
 		return true
 	default:
 		return false
