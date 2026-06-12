@@ -920,7 +920,7 @@ function resolveRunStreamResumeRequest(sessionId: string, fallbackRunId?: string
   if (!session) {
     return null
   }
-  const sessionApi = session.sessionApi?.trim().toLowerCase() ?? ''
+  const sessionApi = session.sessionApi?.trim().toLowerCase() || 'v3'
   const activeRunIntent = activeV3RunIntent(session)
   if (sessionApi === 'v3') {
     if (!activeRunIntent && (session.live.status === 'idle' || session.live.status === 'error')) {
@@ -3737,7 +3737,7 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
     if (!normalizedSessionId) {
       return
     }
-    const sessionApi = get().sessions[normalizedSessionId]?.sessionApi?.trim().toLowerCase() ?? ''
+    const sessionApi = get().sessions[normalizedSessionId]?.sessionApi?.trim().toLowerCase() || 'v3'
     if (sessionApi === 'v3') {
       set({ realtimeDesired: true })
       await get().connect()
@@ -3756,7 +3756,7 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
     if (!runId) {
       return
     }
-    const sessionApi = session?.sessionApi?.trim().toLowerCase() ?? ''
+    const sessionApi = session?.sessionApi?.trim().toLowerCase() || 'v3'
     await requireRunStreamController().stop({ sessionId: normalizedSessionId, runId, route, sessionApi })
     if (sessionApi === 'v3') {
       requestScopedSessionWorkset(normalizedSessionId, { force: true })
@@ -3787,7 +3787,11 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
       throw new Error('submitPrompt requires an attached session')
     }
 
-    const effectiveSessionApi = compact ? 'v3' : (sessionApi?.trim().toLowerCase() || get().sessions[targetSessionId]?.sessionApi?.trim().toLowerCase() || '')
+    const requestedSessionApi = sessionApi?.trim().toLowerCase() || get().sessions[targetSessionId]?.sessionApi?.trim().toLowerCase() || 'v3'
+    if (requestedSessionApi !== 'v3') {
+      throw new Error('Desktop sessions only support Sessions API v3.')
+    }
+    const effectiveSessionApi = 'v3'
 
     get().closeRunStream(targetSessionId)
     set((state: DesktopStoreState) => {

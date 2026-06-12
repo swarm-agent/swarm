@@ -237,10 +237,7 @@ export function isLocalContainerDesktopChatRoute(route: DesktopChatRoute | null 
 
 export type DesktopSessionCreateTarget =
   | { sessionApi: 'v3'; endpoint: '/v3/sessions'; swarmId: string; workspaceBindingId: string }
-  | { sessionApi: 'v2'; endpoint: '/v2/sessions/local-containers'; swarmId: string; workspaceBindingId: string }
   | { sessionApi: null; endpoint: null; unsupportedReason: string }
-
-export type DesktopSessionCreateV2Target = DesktopSessionCreateTarget
 
 function normalizedRouteLabel(value: string | null | undefined): string {
   return value?.trim().toLowerCase() ?? ''
@@ -255,14 +252,14 @@ function isLocalContainerDesktopRouteKind(value: string | null | undefined): boo
     || normalized === 'child'
 }
 
-export function getDesktopSessionCreateV2Target(route: DesktopChatRoute | null | undefined): DesktopSessionCreateV2Target {
+export function getDesktopSessionCreateTarget(route: DesktopChatRoute | null | undefined): DesktopSessionCreateTarget {
   const swarmId = route?.swarmId?.trim() ?? ''
   const workspaceBindingId = route?.workspaceBindingId?.trim() ?? ''
   const relationship = normalizedRouteLabel(route?.targetRelationship)
   const targetKind = normalizedRouteLabel(route?.targetKind)
 
   if (relationship === 'managed') {
-    return { sessionApi: null, endpoint: null, unsupportedReason: 'Managed-host v2 session create is not implemented yet.' }
+    return { sessionApi: null, endpoint: null, unsupportedReason: 'Desktop sessions only support the primary self V3 target.' }
   }
   if (!swarmId) {
     return { sessionApi: null, endpoint: null, unsupportedReason: 'Sessions API create requires a selected swarm_id.' }
@@ -273,10 +270,7 @@ export function getDesktopSessionCreateV2Target(route: DesktopChatRoute | null |
   if (relationship === 'self' && targetKind === 'host') {
     return { sessionApi: 'v3', endpoint: '/v3/sessions', swarmId, workspaceBindingId }
   }
-  if (relationship === 'child' && isLocalContainerDesktopRouteKind(targetKind)) {
-    return { sessionApi: 'v2', endpoint: '/v2/sessions/local-containers', swarmId, workspaceBindingId }
-  }
-  return { sessionApi: null, endpoint: null, unsupportedReason: `Sessions API create does not support route target ${relationship || 'unknown'}/${targetKind || 'unknown'}.` }
+  return { sessionApi: null, endpoint: null, unsupportedReason: `Desktop sessions only support the primary self V3 target, got ${relationship || 'unknown'}/${targetKind || 'unknown'}.` }
 }
 
 export function withDesktopChatRoute(path: string, route: DesktopChatRoute | null | undefined): string {

@@ -28,10 +28,7 @@ import type {
 import {
   applyDesktopChatRouteToSession,
   desktopChatRouteFromSessionMetadata,
-  getDesktopSessionCreateV2Target,
-  isLocalContainerDesktopChatRoute,
-  isManagedHostDesktopChatRoute,
-  isPrimaryDesktopChatRoute,
+  getDesktopSessionCreateTarget,
   type DesktopChatRoute,
 } from "../services/chat-routing";
 import {
@@ -231,41 +228,19 @@ function resolveSessionApiForSession(
   _sessionId: string,
   options: SessionDataRequestOptions = {},
 ): string {
-  return options.sessionApi?.trim().toLowerCase() ?? "";
+  const sessionApi = options.sessionApi?.trim().toLowerCase() ?? "";
+  if (sessionApi && sessionApi !== "v3") {
+    throw new Error("Desktop sessions only support Sessions API v3.");
+  }
+  return "v3";
 }
 
-function rejectV3SessionV2Subresource(_sessionId: string, _subresource: string): void {
-  // Desktop V3 no longer infers session API from ID shape. Callers that know they
-  // are operating on V3 sessions must use explicit V3 APIs/cache paths instead
-  // of these legacy V2 subresource helpers.
+function rejectLegacyDesktopSessionPath(_sessionId: string, subresource: string): never {
+  throw new Error(`Legacy desktop session ${subresource} is disabled; use Sessions API v3.`);
 }
 
 interface SendSessionMessageOptions extends SessionDataRequestOptions {
   clientRequestId?: string | null;
-}
-
-interface SessionPreferenceWire {
-  preference?: {
-    provider?: string;
-    model?: string;
-    thinking?: string;
-    service_tier?: string;
-    context_mode?: string;
-    updated_at?: number;
-  };
-  context_window?: number;
-  max_output_tokens?: number;
-}
-
-interface SessionCodexConfigWire {
-  session_id?: string;
-  provider?: string;
-  model?: string;
-  thinking?: string;
-  service_tier?: string;
-  context_mode?: string;
-  effective_context_window?: number;
-  updated_at?: number;
 }
 
 export interface DesktopSessionCodexConfig {
@@ -595,24 +570,6 @@ function mapSessionUsageSummary(
     totalTokens,
     remainingTokens,
     updatedAt,
-  };
-}
-
-function mapSessionCodexConfig(
-  config: SessionCodexConfigWire | null | undefined,
-): DesktopSessionCodexConfig {
-  return {
-    sessionId: String(config?.session_id ?? "").trim(),
-    provider: String(config?.provider ?? "").trim(),
-    model: String(config?.model ?? "").trim(),
-    thinking: String(config?.thinking ?? "").trim(),
-    serviceTier: String(config?.service_tier ?? "").trim(),
-    contextMode: String(config?.context_mode ?? "").trim(),
-    effectiveContextWindow:
-      typeof config?.effective_context_window === "number"
-        ? config.effective_context_window
-        : 0,
-    updatedAt: typeof config?.updated_at === "number" ? config.updated_at : 0,
   };
 }
 
@@ -1023,36 +980,23 @@ export async function fetchSession(
     return null;
   }
 
-  const sessionApi = resolveSessionApiForSession(normalizedSessionId, options) || "v3";
-  if (sessionApi === "v3") {
-    const response = await requestJson<V3HydratedSessionResponseWire>(
-      `/v3/sessions/${encodeURIComponent(normalizedSessionId)}`,
-    );
-    const mappedSession = applyActiveRunIntent(
-      mapSession(mapSessionProjectionToSession(response.session ?? {}, response.projection)),
-      mapV3RunIntent(response.active_run_intent),
-    );
-    const mapped = applyDesktopChatRouteToSession(
-      mappedSession,
-      routeFromSessionMetadata(mappedSession),
-    );
-    mapped.permissionsHydrated = true;
-    mapped.pendingPermissions = mapDesktopV3PendingPermissions(response.pending_permissions);
-    mapped.pendingPermissionCount = countApprovalRequiredPermissions(mapped.pendingPermissions, mapped.mode);
-    mapped.usage = mapSessionUsageSummary(response.usage_summary);
-    return mapped.id ? applySessionProjectionCursor(mapped, response.projection) : null;
-  }
-
-  const response = await requestJson<{ session?: SessionWire }>(
-    `/v2/sessions/${encodeURIComponent(normalizedSessionId)}`,
+  resolveSessionApiForSession(normalizedSessionId, options);
+  const response = await requestJson<V3HydratedSessionResponseWire>(
+    `/v3/sessions/${encodeURIComponent(normalizedSessionId)}`,
   );
-  const mappedSession = mapSession(response.session ?? {});
+  const mappedSession = applyActiveRunIntent(
+    mapSession(mapSessionProjectionToSession(response.session ?? {}, response.projection)),
+    mapV3RunIntent(response.active_run_intent),
+  );
   const mapped = applyDesktopChatRouteToSession(
     mappedSession,
     routeFromSessionMetadata(mappedSession),
   );
-  mapped.permissionsHydrated = false;
-  return mapped.id ? mapped : null;
+  mapped.permissionsHydrated = true;
+  mapped.pendingPermissions = mapDesktopV3PendingPermissions(response.pending_permissions);
+  mapped.pendingPermissionCount = countApprovalRequiredPermissions(mapped.pendingPermissions, mapped.mode);
+  mapped.usage = mapSessionUsageSummary(response.usage_summary);
+  return mapped.id ? applySessionProjectionCursor(mapped, response.projection) : null;
 }
 
 function mapDesktopV3PendingPermissions(permissions: ResolvePermissionResponseWire["permission"][] | undefined): DesktopPermissionRecord[] {
@@ -1139,12 +1083,9 @@ export async function fetchSessionMessages(
   } else if (afterSeq > 0) {
     search.set("after_seq", String(afterSeq));
   }
-  const sessionApi = resolveSessionApiForSession(normalizedSessionId, options);
-  const endpoint = sessionApi === "v3"
-    ? `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/messages?${search.toString()}`
-    : `/v2/sessions/${encodeURIComponent(normalizedSessionId)}/messages?${search.toString()}`;
+  resolveSessionApiForSession(normalizedSessionId, options);
   const response = await requestJson<MessagesResponseWire>(
-    endpoint,
+    `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/messages?${search.toString()}`,
     { signal },
   );
   const messages = Array.isArray(response.messages)
@@ -1175,135 +1116,48 @@ export async function fetchSessionPreference(
   sessionId: string,
   signal?: AbortSignal,
 ): Promise<ResolvedSessionPreference> {
-  rejectV3SessionV2Subresource(sessionId, "session preference");
-  const response = await requestJson<SessionPreferenceWire>(
-    `/v2/sessions/${encodeURIComponent(sessionId)}/preference`,
-    { signal },
-  );
-  return {
-    preference: {
-      provider: String(response.preference?.provider ?? "").trim(),
-      model: String(response.preference?.model ?? "").trim(),
-      thinking: String(response.preference?.thinking ?? "").trim(),
-      serviceTier: String(response.preference?.service_tier ?? "").trim(),
-      contextMode: String(response.preference?.context_mode ?? "").trim(),
-      updatedAt:
-        typeof response.preference?.updated_at === "number"
-          ? response.preference.updated_at
-          : 0,
-    },
-    contextWindow:
-      typeof response.context_window === "number" ? response.context_window : 0,
-    maxOutputTokens:
-      typeof response.max_output_tokens === "number"
-        ? response.max_output_tokens
-        : 0,
-  };
+  void signal;
+  return rejectLegacyDesktopSessionPath(sessionId, "preference");
 }
 
 export async function fetchSessionMode(
   sessionId: string,
   signal?: AbortSignal,
 ): Promise<string> {
-  rejectV3SessionV2Subresource(sessionId, "session mode");
-  const response = await requestJson<{ mode?: string }>(
-    `/v2/sessions/${encodeURIComponent(sessionId)}/mode`,
-    { signal },
-  );
-  return String(response.mode ?? "").trim() || "auto";
+  void signal;
+  return rejectLegacyDesktopSessionPath(sessionId, "mode");
 }
 
 export async function updateSessionMode(
   sessionId: string,
   mode: string,
 ): Promise<string> {
-  rejectV3SessionV2Subresource(sessionId, "session mode");
-  const response = await requestJson<{ mode?: string }>(
-    `/v2/sessions/${encodeURIComponent(sessionId)}/mode`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ mode }),
-    },
-  );
-  return String(response.mode ?? "").trim() || "auto";
+  void mode;
+  return rejectLegacyDesktopSessionPath(sessionId, "mode update");
 }
 
 export async function fetchSessionCodexConfig(
   sessionId: string,
   signal?: AbortSignal,
 ): Promise<DesktopSessionCodexConfig> {
-  rejectV3SessionV2Subresource(sessionId, "session Codex config");
-  const response = await requestJson<SessionCodexConfigWire>(
-    `/v2/sessions/${encodeURIComponent(sessionId)}/codex`,
-    { signal },
-  );
-  return mapSessionCodexConfig(response);
+  void signal;
+  return rejectLegacyDesktopSessionPath(sessionId, "Codex config");
 }
 
 export async function updateSessionCodexConfig(
   sessionId: string,
   input: { serviceTier?: string; contextMode?: string },
 ): Promise<DesktopSessionCodexConfig> {
-  rejectV3SessionV2Subresource(sessionId, "session Codex config");
-  const response = await requestJson<SessionCodexConfigWire>(
-    `/v2/sessions/${encodeURIComponent(sessionId)}/codex`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        service_tier: input.serviceTier,
-        context_mode: input.contextMode,
-      }),
-    },
-  );
-  return mapSessionCodexConfig(response);
+  void input;
+  return rejectLegacyDesktopSessionPath(sessionId, "Codex config update");
 }
 
 export async function updateSessionPreference(
   sessionId: string,
   input: Partial<ResolvedSessionPreference["preference"]>,
 ): Promise<ResolvedSessionPreference> {
-  rejectV3SessionV2Subresource(sessionId, "session preference");
-  const response = await requestJson<SessionPreferenceWire>(
-    `/v2/sessions/${encodeURIComponent(sessionId)}/preference`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        provider: input.provider,
-        model: input.model,
-        thinking: input.thinking,
-        service_tier: input.serviceTier,
-        context_mode: input.contextMode,
-      }),
-    },
-  );
-  return {
-    preference: {
-      provider: String(response.preference?.provider ?? "").trim(),
-      model: String(response.preference?.model ?? "").trim(),
-      thinking: String(response.preference?.thinking ?? "").trim(),
-      serviceTier: String(response.preference?.service_tier ?? "").trim(),
-      contextMode: String(response.preference?.context_mode ?? "").trim(),
-      updatedAt:
-        typeof response.preference?.updated_at === "number"
-          ? response.preference.updated_at
-          : Date.now(),
-    },
-    contextWindow:
-      typeof response.context_window === "number" ? response.context_window : 0,
-    maxOutputTokens:
-      typeof response.max_output_tokens === "number"
-        ? response.max_output_tokens
-        : 0,
-  };
+  void input;
+  return rejectLegacyDesktopSessionPath(sessionId, "preference update");
 }
 
 export async function fetchDraftModelPreference(
@@ -1728,7 +1582,7 @@ export async function activatePrimaryAgent(name: string): Promise<void> {
   });
 }
 
-const SESSION_CREATE_V2_FORBIDDEN_METADATA_KEYS = new Set([
+const SESSION_CREATE_FORBIDDEN_METADATA_KEYS = new Set([
   'workspace_name',
   'workspace_path',
   'host_workspace_path',
@@ -1743,7 +1597,7 @@ const SESSION_CREATE_V2_FORBIDDEN_METADATA_KEYS = new Set([
   'owner_transport',
 ])
 
-const SESSION_CREATE_V2_FORBIDDEN_METADATA_PREFIXES = [
+const SESSION_CREATE_FORBIDDEN_METADATA_PREFIXES = [
   'swarm_route_',
   'swarm_routed_',
   'swarm_managed_',
@@ -1752,7 +1606,7 @@ const SESSION_CREATE_V2_FORBIDDEN_METADATA_PREFIXES = [
   'managed_host',
 ]
 
-const SESSION_CREATE_V2_FORBIDDEN_METADATA_PARTS = [
+const SESSION_CREATE_FORBIDDEN_METADATA_PARTS = [
   'workspace_name',
   'workspace_path',
   'path',
@@ -1764,42 +1618,42 @@ const SESSION_CREATE_V2_FORBIDDEN_METADATA_PARTS = [
   'target',
 ]
 
-function isForbiddenSessionCreateV2MetadataKey(key: string): boolean {
+function isForbiddenSessionCreateMetadataKey(key: string): boolean {
   const normalized = key.trim().toLowerCase()
   if (!normalized) {
     return true
   }
-  if (SESSION_CREATE_V2_FORBIDDEN_METADATA_KEYS.has(normalized)) {
+  if (SESSION_CREATE_FORBIDDEN_METADATA_KEYS.has(normalized)) {
     return true
   }
-  if (SESSION_CREATE_V2_FORBIDDEN_METADATA_PREFIXES.some((prefix) => normalized.startsWith(prefix))) {
+  if (SESSION_CREATE_FORBIDDEN_METADATA_PREFIXES.some((prefix) => normalized.startsWith(prefix))) {
     return true
   }
-  return SESSION_CREATE_V2_FORBIDDEN_METADATA_PARTS.some((part) => normalized.includes(part))
+  return SESSION_CREATE_FORBIDDEN_METADATA_PARTS.some((part) => normalized.includes(part))
 }
 
-function sanitizeSessionCreateV2MetadataValue(value: unknown): unknown {
+function sanitizeSessionCreateMetadataValue(value: unknown): unknown {
   if (Array.isArray(value)) {
-    return value.map((child) => sanitizeSessionCreateV2MetadataValue(child))
+    return value.map((child) => sanitizeSessionCreateMetadataValue(child))
   }
   if (!value || typeof value !== 'object') {
     return value
   }
   const sanitized: Record<string, unknown> = {}
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    if (isForbiddenSessionCreateV2MetadataKey(key)) {
+    if (isForbiddenSessionCreateMetadataKey(key)) {
       continue
     }
-    sanitized[key] = sanitizeSessionCreateV2MetadataValue(child)
+    sanitized[key] = sanitizeSessionCreateMetadataValue(child)
   }
   return sanitized
 }
 
-export function sanitizeSessionCreateV2Metadata(metadata: Record<string, unknown> | null | undefined): Record<string, unknown> | undefined {
+export function sanitizeSessionCreateMetadata(metadata: Record<string, unknown> | null | undefined): Record<string, unknown> | undefined {
   if (!metadata || typeof metadata !== 'object') {
     return undefined
   }
-  const sanitized = sanitizeSessionCreateV2MetadataValue(metadata) as Record<string, unknown>
+  const sanitized = sanitizeSessionCreateMetadataValue(metadata) as Record<string, unknown>
   return Object.keys(sanitized).length > 0 ? sanitized : undefined
 }
 
@@ -1828,35 +1682,6 @@ function sessionCreatePreferenceBody(preferenceInput: ResolvedSessionPreference[
   return preference
 }
 
-function sessionCreateV2RequestBody(input: {
-  target: { swarmId: string; workspaceBindingId: string };
-  title?: string;
-  mode: string;
-  agentName?: string;
-  metadata?: Record<string, unknown>;
-  preference: ResolvedSessionPreference["preference"];
-  worktreeMode?: string;
-  worktreeUseCurrentBranch?: boolean;
-  worktreeBaseBranch?: string;
-  worktreeBranchName?: string;
-}): Record<string, unknown> {
-  const worktreeMode = optionalString(input.worktreeMode) ?? "off"
-  const preference = sessionCreatePreferenceBody(input.preference)
-  return stripUndefinedFields({
-    swarm_id: input.target.swarmId,
-    workspace_binding_id: input.target.workspaceBindingId,
-    title: input.title ?? "",
-    mode: input.mode,
-    agent_name: input.agentName?.trim() ?? "",
-    worktree_mode: worktreeMode,
-    worktree_use_current_branch: worktreeMode === "on" ? input.worktreeUseCurrentBranch : undefined,
-    worktree_base_branch: worktreeMode === "on" ? optionalString(input.worktreeBaseBranch) : undefined,
-    worktree_branch_name: worktreeMode === "on" ? optionalString(input.worktreeBranchName) : undefined,
-    preference: Object.keys(preference).length > 0 ? preference : undefined,
-    metadata: sanitizeSessionCreateV2Metadata(input.metadata),
-  })
-}
-
 function sessionCreateV3RequestBody(input: {
   target: { swarmId: string; workspaceBindingId: string };
   title?: string;
@@ -1879,7 +1704,7 @@ function sessionCreateV3RequestBody(input: {
     mode: input.mode,
     agent_name: input.agentName?.trim() || undefined,
     preference: Object.keys(preference).length > 0 ? preference : undefined,
-    metadata: sanitizeSessionCreateV2Metadata(input.metadata),
+    metadata: sanitizeSessionCreateMetadata(input.metadata),
   })
 }
 
@@ -1897,33 +1722,20 @@ export async function createSession(input: {
   worktreeBaseBranch?: string;
   worktreeBranchName?: string;
 }): Promise<DesktopSessionRecord> {
-  const target = getDesktopSessionCreateV2Target(input.route)
+  const target = getDesktopSessionCreateTarget(input.route)
   if (target.endpoint === null) {
     throw new Error(target.unsupportedReason)
   }
-  const body = target.sessionApi === "v3"
-    ? sessionCreateV3RequestBody({
-      target: { swarmId: target.swarmId, workspaceBindingId: target.workspaceBindingId },
-      title: input.title,
-      workspacePath: input.workspacePath,
-      workspaceName: input.workspaceName,
-      mode: input.mode,
-      agentName: input.agentName,
-      metadata: input.metadata,
-      preference: input.preference,
-    })
-    : sessionCreateV2RequestBody({
-      target: { swarmId: target.swarmId, workspaceBindingId: target.workspaceBindingId },
-      title: input.title,
-      mode: input.mode,
-      agentName: input.agentName,
-      metadata: input.metadata,
-      preference: input.preference,
-      worktreeMode: input.worktreeMode,
-      worktreeUseCurrentBranch: input.worktreeUseCurrentBranch,
-      worktreeBaseBranch: input.worktreeBaseBranch,
-      worktreeBranchName: input.worktreeBranchName,
-    })
+  const body = sessionCreateV3RequestBody({
+    target: { swarmId: target.swarmId, workspaceBindingId: target.workspaceBindingId },
+    title: input.title,
+    workspacePath: input.workspacePath,
+    workspaceName: input.workspaceName,
+    mode: input.mode,
+    agentName: input.agentName,
+    metadata: input.metadata,
+    preference: input.preference,
+  })
   const response = await requestJson<V3HydratedSessionResponseWire & { session_execution?: Record<string, unknown> }>(
     target.endpoint,
     {
@@ -1977,44 +1789,25 @@ export async function sendSessionMessage(
   options: SendSessionMessageOptions = {},
 ): Promise<SendSessionMessageResult | unknown> {
   const normalizedSessionId = sessionId.trim();
-  const sessionApi = resolveSessionApiForSession(normalizedSessionId, options);
-  if (sessionApi === "v3") {
-    const clientRequestId = options.clientRequestId?.trim()
-      || `desktop-v3-message:${normalizedSessionId}:${crypto.randomUUID()}`;
-    const response = await requestJson<V3MessageCommitResponseWire>(
-      `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/messages`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          client_request_id: clientRequestId,
-          role,
-          content,
-        }),
-      },
-    );
-    return mapV3MessageCommitResponse(response);
-  }
-
-  const managedHost = isManagedHostDesktopChatRoute(route)
-  return requestJson(
-    managedHost
-      ? "/v1/swarm/managed-hosts/sessions/message"
-      : `/v2/sessions/${encodeURIComponent(normalizedSessionId)}/messages`,
+  void route;
+  resolveSessionApiForSession(normalizedSessionId, options);
+  const clientRequestId = options.clientRequestId?.trim()
+    || `desktop-v3-message:${normalizedSessionId}:${crypto.randomUUID()}`;
+  const response = await requestJson<V3MessageCommitResponseWire>(
+    `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/messages`,
     {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(
-        managedHost
-          ? { target_swarm_id: route?.swarmId?.trim() ?? "", session_id: normalizedSessionId, role, content }
-          : { role, content },
-      ),
+      body: JSON.stringify({
+        client_request_id: clientRequestId,
+        role,
+        content,
+      }),
     },
   );
+  return mapV3MessageCommitResponse(response);
 }
 
 export interface DesktopBackgroundRunStartOptions {
@@ -2060,7 +1853,6 @@ export async function startSessionRun(
   options: DesktopBackgroundRunStartOptions,
 ): Promise<DesktopRunAccepted> {
   const sessionId = options.sessionId.trim();
-  rejectV3SessionV2Subresource(sessionId, "session run dispatch");
   if (!sessionId) {
     throw new Error("session id is required");
   }
@@ -2068,42 +1860,61 @@ export async function startSessionRun(
   if (!prompt && !options.compact) {
     throw new Error("prompt is required");
   }
+  void options.route;
+  void options.stream;
+  void options.toolScope;
+  void options.executionContext;
 
-  const managedHost = isManagedHostDesktopChatRoute(options.route);
-  const primaryEndpoint = options.stream === false ? "run" : "run/stream";
-  const effectiveAgentName = managedHost
-    ? (options.agentName?.trim() ?? "")
-    : (options.targetName?.trim() || options.agentName?.trim() || "");
-  const nativePrimaryBody = {
-    type: "run.start",
-    prompt,
-    agent_name: effectiveAgentName,
-    instructions: options.instructions?.trim() ?? "",
-    compact: Boolean(options.compact),
-    background: Boolean(options.background),
-  };
-  const managedHostBody = {
-    ...nativePrimaryBody,
-    agent_name: options.agentName?.trim() ?? "",
-    target_swarm_id: options.route?.swarmId?.trim() ?? "",
-    session_id: sessionId,
-    target_kind: options.targetKind?.trim() ?? "",
-    target_name: options.targetName?.trim() ?? "",
-    tool_scope: options.toolScope,
-    execution_context: options.executionContext,
-  };
-  return requestJson<DesktopRunAccepted>(
-    managedHost
-      ? "/v1/swarm/managed-hosts/sessions/run"
-      : `/v2/sessions/${encodeURIComponent(sessionId)}/${primaryEndpoint}`,
+  if (options.compact) {
+    const result = await compactSessionV3(sessionId, {
+      note: prompt,
+      agentName: options.agentName,
+      instructions: options.instructions,
+      clientRequestId: `desktop-v3-compact:${sessionId}:${crypto.randomUUID()}`,
+    });
+    return {
+      ok: result.ok,
+      session_id: sessionId,
+      run_id: "",
+      status: "completed",
+      background: Boolean(options.background),
+      target_kind: options.targetKind?.trim() ?? "",
+      target_name: options.targetName?.trim() ?? "",
+    };
+  }
+
+  const instructions = options.instructions?.trim() ?? "";
+  const content = instructions ? `${prompt}\n\n${instructions}` : prompt;
+  const response = await requestJson<V3MessageCommitResponseWire>(
+    `/v3/sessions/${encodeURIComponent(sessionId)}/messages`,
     {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(managedHost ? managedHostBody : nativePrimaryBody),
+      body: JSON.stringify({
+        client_request_id: `desktop-v3-message:${sessionId}:${crypto.randomUUID()}`,
+        role: "user",
+        content,
+        metadata: sanitizeSessionCreateMetadata({
+          background: Boolean(options.background),
+          agent_name: options.agentName?.trim() || undefined,
+          target_kind: options.targetKind?.trim() || undefined,
+          target_name: options.targetName?.trim() || undefined,
+        }),
+      }),
     },
   );
+  const runIntent = mapV3RunIntent(response.run_intent);
+  return {
+    ok: response.ok,
+    session_id: sessionId,
+    run_id: runIntent?.runId ?? "",
+    status: runIntent?.status ?? "",
+    background: Boolean(options.background),
+    target_kind: options.targetKind?.trim() ?? "",
+    target_name: options.targetName?.trim() ?? "",
+  };
 }
 
 export async function openRunStream(
@@ -2111,18 +1922,14 @@ export async function openRunStream(
   options: { sessionApi?: string | null; afterSeq?: number } = {},
 ): Promise<WebSocket> {
   const normalizedSessionId = sessionId.trim();
-  const sessionApi = resolveSessionApiForSession(normalizedSessionId, options);
+  resolveSessionApiForSession(normalizedSessionId, options);
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   await ensureDesktopSession(true);
   const url = new URL(
-    sessionApi === "v3"
-      ? `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/stream`
-      : `/v2/sessions/${encodeURIComponent(normalizedSessionId)}/run/stream`,
+    `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/stream`,
     `${protocol}//${window.location.host}`,
   );
-  if (sessionApi === "v3") {
-    url.searchParams.set("after_seq", String(Math.max(0, options.afterSeq ?? 0)));
-  }
+  url.searchParams.set("after_seq", String(Math.max(0, options.afterSeq ?? 0)));
   return new WebSocket(url);
 }
 
@@ -2134,48 +1941,16 @@ export async function stopSessionRun(
   options: SessionDataRequestOptions = {},
 ): Promise<void> {
   const normalizedSessionId = sessionId.trim();
-  const sessionApi = resolveSessionApiForSession(normalizedSessionId, options);
-  if (sessionApi === "v3") {
-    const response = await apiFetch(
-      `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/run/stop`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ type: "run.stop", run_id: runId }),
-      },
-    );
-    if (!response.ok) {
-      throw new Error(await readErrorMessage(response));
-    }
-    return;
-  }
-  const managedHost = isManagedHostDesktopChatRoute(route);
-  const primaryTarget = isPrimaryDesktopChatRoute(route);
-  const localContainerTarget = isLocalContainerDesktopChatRoute(route);
-  if (!managedHost && !primaryTarget && !localContainerTarget) {
-    throw new Error("Unsupported desktop chat stop route.");
-  }
-  const targetSwarmId = route?.swarmId?.trim() ?? "";
-  const endpoint = managedHost
-    ? "/v1/swarm/managed-hosts/sessions/stop"
-    : primaryTarget
-      ? `/v2/sessions/${encodeURIComponent(sessionId)}/run/stop/primary`
-      : `/v2/sessions/${encodeURIComponent(sessionId)}/run/stop/local-container`;
-  const body = managedHost
-    ? { type: "run.stop", target_swarm_id: targetSwarmId, session_id: sessionId, run_id: runId }
-    : primaryTarget
-      ? { type: "run.stop", target_swarm_id: targetSwarmId, run_id: runId }
-      : { type: "run.stop", run_id: runId };
+  void route;
+  resolveSessionApiForSession(normalizedSessionId, options);
   const response = await apiFetch(
-    endpoint,
+    `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/run/stop`,
     {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ type: "run.stop", run_id: runId }),
     },
   );
   if (!response.ok) {
