@@ -407,29 +407,11 @@ func (s *Server) v3RealtimePrimeSubscriptionAtEndpointCursor(conn *transportws.C
 		return 0, false
 	}
 	lastSeq := uint64(0)
-	records, err := s.sessions.ListRealtimeOutboxAfter(0, v3RealtimeReplayLimit)
-	if err != nil {
+	if record, ok, err := s.sessions.LastRealtimeOutboxForSessionAtOrBeforeEndpoint(sessionID, endpointSeq); err != nil {
 		_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(sessionID, "replay_failed", err.Error(), 0, endpointSeq))
 		return 0, false
-	}
-	for len(records) > 0 {
-		for _, record := range records {
-			if record.EndpointSeq > endpointSeq {
-				return lastSeq, true
-			}
-			if record.SessionID == sessionID && record.Event.Seq > lastSeq {
-				lastSeq = record.Event.Seq
-			}
-		}
-		if len(records) < v3RealtimeReplayLimit {
-			break
-		}
-		next, err := s.sessions.ListRealtimeOutboxAfter(records[len(records)-1].EndpointSeq, v3RealtimeReplayLimit)
-		if err != nil {
-			_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(sessionID, "replay_failed", err.Error(), lastSeq, endpointSeq))
-			return lastSeq, false
-		}
-		records = next
+	} else if ok {
+		lastSeq = record.Event.Seq
 	}
 	return lastSeq, true
 }

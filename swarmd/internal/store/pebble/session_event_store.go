@@ -285,6 +285,30 @@ func V3RealtimeOutboxPrefix() string {
 	return "v3/realtime_outbox/"
 }
 
+func KeyV3RealtimeOutboxBySessionEndpoint(sessionID string, endpointSeq uint64) string {
+	return fmt.Sprintf("v3/realtime_outbox_by_session_endpoint/%s/%020d", keyPart(sessionID), endpointSeq)
+}
+
+func V3RealtimeOutboxBySessionEndpointPrefix(sessionID string) string {
+	return fmt.Sprintf("v3/realtime_outbox_by_session_endpoint/%s/", keyPart(sessionID))
+}
+
+func KeyV3RealtimeOutboxBySessionSeq(sessionID string, eventSeq uint64) string {
+	return fmt.Sprintf("v3/realtime_outbox_by_session_seq/%s/%020d", keyPart(sessionID), eventSeq)
+}
+
+func V3RealtimeOutboxBySessionSeqPrefix(sessionID string) string {
+	return fmt.Sprintf("v3/realtime_outbox_by_session_seq/%s/", keyPart(sessionID))
+}
+
+func KeyV3RealtimeOutboxByAuthScope(accountScopeID, userID string, endpointSeq uint64) string {
+	return fmt.Sprintf("v3/realtime_outbox_by_auth/%s/%s/%020d", keyPart(accountScopeID), keyPart(userID), endpointSeq)
+}
+
+func V3RealtimeOutboxByAuthScopePrefix(accountScopeID, userID string) string {
+	return fmt.Sprintf("v3/realtime_outbox_by_auth/%s/%s/", keyPart(accountScopeID), keyPart(userID))
+}
+
 func V3RealtimeOutboxCursor(endpointSeq uint64) string {
 	return fmt.Sprintf("cursor-%d", endpointSeq)
 }
@@ -467,6 +491,15 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		return V3SessionMutationResult{}, err
 	}
 	if err := batch.Set([]byte(KeyV3RealtimeOutbox(endpointSeq)), realtimeOutboxPayload, nil); err != nil {
+		return V3SessionMutationResult{}, err
+	}
+	if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionEndpoint(input.SessionID, endpointSeq)), realtimeOutboxPayload, nil); err != nil {
+		return V3SessionMutationResult{}, err
+	}
+	if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionSeq(input.SessionID, seq)), realtimeOutboxPayload, nil); err != nil {
+		return V3SessionMutationResult{}, err
+	}
+	if err := batch.Set([]byte(KeyV3RealtimeOutboxByAuthScope(input.AccountScopeID, input.UserID, endpointSeq)), realtimeOutboxPayload, nil); err != nil {
 		return V3SessionMutationResult{}, err
 	}
 	if err := batch.Set([]byte(KeyV3SessionProjection(input.SessionID)), projectionPayload, nil); err != nil {
@@ -1075,29 +1108,183 @@ func (s *SessionStore) ListV3RealtimeOutboxAfter(afterEndpointSeq uint64, limit 
 	return out, err
 }
 
+func (s *SessionStore) ListV3RealtimeOutboxForAuthScopeAfter(accountScopeID, userID string, afterEndpointSeq uint64, limit int) ([]V3RealtimeOutboxRecord, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	userID = strings.TrimSpace(userID)
+	if limit <= 0 {
+		limit = 500
+	}
+	if afterEndpointSeq == ^uint64(0) {
+		return []V3RealtimeOutboxRecord{}, nil
+	}
+	type authScope struct {
+		accountScopeID string
+		userID         string
+	}
+	scopes := []authScope{{accountScopeID: "", userID: ""}}
+	if accountScopeID != "" {
+		scopes = append(scopes, authScope{accountScopeID: accountScopeID, userID: ""})
+	}
+	if userID != "" {
+		scopes = append(scopes, authScope{accountScopeID: "", userID: userID})
+	}
+	if accountScopeID != "" || userID != "" {
+		scopes = append(scopes, authScope{accountScopeID: accountScopeID, userID: userID})
+	}
+	seenScopes := map[string]bool{}
+	merged := make([]V3RealtimeOutboxRecord, 0, limit)
+	for _, scope := range scopes {
+		scopeKey := scope.accountScopeID + "\x00" + scope.userID
+		if seenScopes[scopeKey] {
+			continue
+		}
+		seenScopes[scopeKey] = true
+		records, err := s.listV3RealtimeOutboxForExactAuthScopeAfter(scope.accountScopeID, scope.userID, afterEndpointSeq, limit)
+		if err != nil {
+			return nil, err
+		}
+		merged = append(merged, records...)
+	}
+	sort.SliceStable(merged, func(i, j int) bool { return merged[i].EndpointSeq < merged[j].EndpointSeq })
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+	return merged, nil
+}
+
+func (s *SessionStore) listV3RealtimeOutboxForExactAuthScopeAfter(accountScopeID, userID string, afterEndpointSeq uint64, limit int) ([]V3RealtimeOutboxRecord, error) {
+	out := make([]V3RealtimeOutboxRecord, 0, limit)
+	prefix := V3RealtimeOutboxByAuthScopePrefix(accountScopeID, userID)
+	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, StartKey: KeyV3RealtimeOutboxByAuthScope(accountScopeID, userID, afterEndpointSeq+1), Limit: limit}, func(_ string, value []byte) (bool, error) {
+		var record V3RealtimeOutboxRecord
+		if err := json.Unmarshal(value, &record); err != nil {
+			return false, err
+		}
+		if record.EndpointSeq <= afterEndpointSeq {
+			return true, nil
+		}
+		if record.AccountScopeID != accountScopeID || record.UserID != userID {
+			return true, nil
+		}
+		out = append(out, record)
+		return len(out) < limit, nil
+	})
+	return out, err
+}
+
+func (s *SessionStore) ListV3RealtimeOutboxForSessionAfterEndpoint(sessionID string, afterEndpointSeq uint64, limit int) ([]V3RealtimeOutboxRecord, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, errors.New("session id is required")
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	if afterEndpointSeq == ^uint64(0) {
+		return []V3RealtimeOutboxRecord{}, nil
+	}
+	out := make([]V3RealtimeOutboxRecord, 0, limit)
+	prefix := V3RealtimeOutboxBySessionEndpointPrefix(sessionID)
+	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, StartKey: KeyV3RealtimeOutboxBySessionEndpoint(sessionID, afterEndpointSeq+1), Limit: limit}, func(_ string, value []byte) (bool, error) {
+		var record V3RealtimeOutboxRecord
+		if err := json.Unmarshal(value, &record); err != nil {
+			return false, err
+		}
+		if record.EndpointSeq <= afterEndpointSeq || record.SessionID != sessionID {
+			return true, nil
+		}
+		out = append(out, record)
+		return len(out) < limit, nil
+	})
+	return out, err
+}
+
+func (s *SessionStore) ListV3RealtimeOutboxForSessionsAfterEndpoint(sessionIDs []string, afterEndpointSeq uint64, limit int) ([]V3RealtimeOutboxRecord, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	if afterEndpointSeq == ^uint64(0) {
+		return []V3RealtimeOutboxRecord{}, nil
+	}
+	seen := make(map[string]bool, len(sessionIDs))
+	merged := make([]V3RealtimeOutboxRecord, 0, limit)
+	for _, sessionID := range sessionIDs {
+		sessionID = strings.TrimSpace(sessionID)
+		if sessionID == "" || seen[sessionID] {
+			continue
+		}
+		seen[sessionID] = true
+		records, err := s.ListV3RealtimeOutboxForSessionAfterEndpoint(sessionID, afterEndpointSeq, limit)
+		if err != nil {
+			return nil, err
+		}
+		merged = append(merged, records...)
+	}
+	sort.SliceStable(merged, func(i, j int) bool { return merged[i].EndpointSeq < merged[j].EndpointSeq })
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+	return merged, nil
+}
+
+func (s *SessionStore) LastV3RealtimeOutboxForSessionAtOrBeforeEndpoint(sessionID string, endpointSeq uint64) (V3RealtimeOutboxRecord, bool, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return V3RealtimeOutboxRecord{}, false, errors.New("session id is required")
+	}
+	if endpointSeq == 0 {
+		return V3RealtimeOutboxRecord{}, false, nil
+	}
+	prefix := V3RealtimeOutboxBySessionEndpointPrefix(sessionID)
+	startKey := ""
+	if endpointSeq != ^uint64(0) {
+		startKey = KeyV3RealtimeOutboxBySessionEndpoint(sessionID, endpointSeq+1)
+	}
+	var out V3RealtimeOutboxRecord
+	found := false
+	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, StartKey: startKey, Limit: 1, Reverse: true}, func(_ string, value []byte) (bool, error) {
+		var record V3RealtimeOutboxRecord
+		if err := json.Unmarshal(value, &record); err != nil {
+			return false, err
+		}
+		if record.SessionID != sessionID || record.EndpointSeq > endpointSeq {
+			return true, nil
+		}
+		out = record
+		found = true
+		return false, nil
+	})
+	if err != nil {
+		return V3RealtimeOutboxRecord{}, false, err
+	}
+	return out, found, nil
+}
+
 func (s *SessionStore) ListV3RealtimeOutboxForSessionAfterSeq(sessionID string, afterSeq uint64, limit int) ([]V3RealtimeOutboxRecord, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return nil, errors.New("session id is required")
 	}
-	records, err := s.ListV3RealtimeOutboxAfter(0, 100000)
-	if err != nil {
-		return nil, err
-	}
 	if limit <= 0 {
 		limit = 500
 	}
+	if afterSeq == ^uint64(0) {
+		return []V3RealtimeOutboxRecord{}, nil
+	}
 	out := make([]V3RealtimeOutboxRecord, 0, limit)
-	for _, record := range records {
-		if len(out) >= limit {
-			break
+	prefix := V3RealtimeOutboxBySessionSeqPrefix(sessionID)
+	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, StartKey: KeyV3RealtimeOutboxBySessionSeq(sessionID, afterSeq+1), Limit: limit}, func(_ string, value []byte) (bool, error) {
+		var record V3RealtimeOutboxRecord
+		if err := json.Unmarshal(value, &record); err != nil {
+			return false, err
 		}
 		if record.SessionID != sessionID || record.Event.Seq <= afterSeq {
-			continue
+			return true, nil
 		}
 		out = append(out, record)
-	}
-	return out, nil
+		return len(out) < limit, nil
+	})
+	return out, err
 }
 
 func (s *SessionStore) readV3RealtimeOutboxSequence() (uint64, error) {

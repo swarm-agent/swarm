@@ -109,6 +109,34 @@ func (s *Service) ListRealtimeOutboxAfter(afterEndpointSeq uint64, limit int) ([
 	return s.store.ListV3RealtimeOutboxAfter(afterEndpointSeq, limit)
 }
 
+func (s *Service) ListRealtimeOutboxForAuthScopeAfter(accountScopeID, userID string, afterEndpointSeq uint64, limit int) ([]RealtimeOutboxRecord, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ListV3RealtimeOutboxForAuthScopeAfter(accountScopeID, userID, afterEndpointSeq, limit)
+}
+
+func (s *Service) ListRealtimeOutboxForSessionAfterEndpoint(sessionID string, afterEndpointSeq uint64, limit int) ([]RealtimeOutboxRecord, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ListV3RealtimeOutboxForSessionAfterEndpoint(sessionID, afterEndpointSeq, limit)
+}
+
+func (s *Service) ListRealtimeOutboxForSessionsAfterEndpoint(sessionIDs []string, afterEndpointSeq uint64, limit int) ([]RealtimeOutboxRecord, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ListV3RealtimeOutboxForSessionsAfterEndpoint(sessionIDs, afterEndpointSeq, limit)
+}
+
+func (s *Service) LastRealtimeOutboxForSessionAtOrBeforeEndpoint(sessionID string, endpointSeq uint64) (RealtimeOutboxRecord, bool, error) {
+	if s == nil || s.store == nil {
+		return RealtimeOutboxRecord{}, false, errors.New("session store is not configured")
+	}
+	return s.store.LastV3RealtimeOutboxForSessionAtOrBeforeEndpoint(sessionID, endpointSeq)
+}
+
 func (s *Service) CurrentRealtimeOutboxCursor() (string, error) {
 	if s == nil || s.store == nil {
 		return "", errors.New("session store is not configured")

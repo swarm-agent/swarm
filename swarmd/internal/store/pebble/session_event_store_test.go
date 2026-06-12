@@ -370,10 +370,15 @@ func TestApplyV3SessionMutationConcurrentIdempotentAppendAllocatesOneSeq(t *test
 
 func createV3SessionForTest(t *testing.T, sessions *SessionStore, sessionID string) {
 	t.Helper()
-	_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+	createV3SessionForStoreTest(t, sessions, sessionID, "user-1", "account-1")
+}
+
+func createV3SessionForStoreTest(t *testing.T, sessions *SessionStore, sessionID, userID, accountScopeID string) V3SessionMutationResult {
+	t.Helper()
+	result, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
 		SessionID:      sessionID,
-		UserID:         "user-1",
-		AccountScopeID: "account-1",
+		UserID:         userID,
+		AccountScopeID: accountScopeID,
 		IdempotencyKey: fmt.Sprintf("create-%s", sessionID),
 		RequestHash:    fmt.Sprintf("hash-create-%s", sessionID),
 		Kind:           V3SessionMutationCreateSession,
@@ -388,6 +393,28 @@ func createV3SessionForTest(t *testing.T, sessions *SessionStore, sessionID stri
 	if err != nil {
 		t.Fatalf("create test v3 session: %v", err)
 	}
+	return result
+}
+
+func appendV3SessionMessageForStoreTest(t *testing.T, sessions *SessionStore, sessionID, idempotencyKey, content, userID, accountScopeID string) V3SessionMutationResult {
+	t.Helper()
+	result, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:      sessionID,
+		UserID:         userID,
+		AccountScopeID: accountScopeID,
+		IdempotencyKey: idempotencyKey,
+		RequestHash:    fmt.Sprintf("hash-%s", idempotencyKey),
+		Kind:           V3SessionMutationAppendMessage,
+		Message:        &MessageSnapshot{Role: "user", Content: content},
+		NowUnixMs:      2000,
+	})
+	if err != nil {
+		t.Fatalf("append test v3 session message: %v", err)
+	}
+	if result.RealtimeOutbox == nil {
+		t.Fatalf("append result missing realtime outbox: %+v", result)
+	}
+	return result
 }
 
 func openV3SessionEventTestStore(t *testing.T) *Store {
@@ -503,6 +530,151 @@ func TestApplyV3SessionMutationRealtimeOutboxIsAtomicAndOrdered(t *testing.T) {
 	}
 	if len(sessionRecords) != 1 || sessionRecords[0].Event.ID != appendResult.Event.ID {
 		t.Fatalf("session outbox after seq 1 = %+v, want append event %q", sessionRecords, appendResult.Event.ID)
+	}
+}
+
+func TestV3RealtimeOutboxIndexesReplaySessionsInEndpointOrder(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "session-index-a")
+	createV3SessionForTest(t, sessions, "session-index-b")
+
+	a1 := appendV3SessionMessageForStoreTest(t, sessions, "session-index-a", "index-a-1", "a one", "user-1", "account-1")
+	b1 := appendV3SessionMessageForStoreTest(t, sessions, "session-index-b", "index-b-1", "b one", "user-1", "account-1")
+	a2 := appendV3SessionMessageForStoreTest(t, sessions, "session-index-a", "index-a-2", "a two", "user-1", "account-1")
+
+	all, err := sessions.ListV3RealtimeOutboxForSessionsAfterEndpoint([]string{"session-index-b", "session-index-a"}, a1.RealtimeOutbox.EndpointSeq-1, 10)
+	if err != nil {
+		t.Fatalf("list sessions after endpoint: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("indexed session replay rows = %d %+v, want a1,b1,a2", len(all), all)
+	}
+	want := []uint64{a1.RealtimeOutbox.EndpointSeq, b1.RealtimeOutbox.EndpointSeq, a2.RealtimeOutbox.EndpointSeq}
+	for i, record := range all {
+		if record.EndpointSeq != want[i] {
+			t.Fatalf("indexed replay[%d].EndpointSeq = %d, want %d; rows=%+v", i, record.EndpointSeq, want[i], all)
+		}
+	}
+
+	lastA, ok, err := sessions.LastV3RealtimeOutboxForSessionAtOrBeforeEndpoint("session-index-a", b1.RealtimeOutbox.EndpointSeq)
+	if err != nil || !ok {
+		t.Fatalf("last session a before endpoint ok=%v err=%v", ok, err)
+	}
+	if lastA.Event.ID != a1.Event.ID || lastA.Event.Seq != a1.Event.Seq {
+		t.Fatalf("last session a before b endpoint = %+v, want %+v", lastA, a1.Event)
+	}
+}
+
+func TestV3RealtimeOutboxAuthScopeIndexReturnsOnlyAuthorizedRowsInEndpointOrder(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForStoreTest(t, sessions, "session-auth-a", "user-a", "account-a")
+	createV3SessionForStoreTest(t, sessions, "session-auth-b", "user-b", "account-b")
+	createV3SessionForStoreTest(t, sessions, "session-auth-shared", "", "account-a")
+
+	a1 := appendV3SessionMessageForStoreTest(t, sessions, "session-auth-a", "auth-a-1", "a one", "user-a", "account-a")
+	b1 := appendV3SessionMessageForStoreTest(t, sessions, "session-auth-b", "auth-b-1", "b one", "user-b", "account-b")
+	shared := appendV3SessionMessageForStoreTest(t, sessions, "session-auth-shared", "auth-shared-1", "shared", "", "account-a")
+	a2 := appendV3SessionMessageForStoreTest(t, sessions, "session-auth-a", "auth-a-2", "a two", "user-a", "account-a")
+
+	records, err := sessions.ListV3RealtimeOutboxForAuthScopeAfter("account-a", "user-a", a1.RealtimeOutbox.EndpointSeq-1, 10)
+	if err != nil {
+		t.Fatalf("list auth-scoped outbox: %v", err)
+	}
+	wantIDs := []string{a1.Event.ID, shared.Event.ID, a2.Event.ID}
+	if len(records) != len(wantIDs) {
+		t.Fatalf("auth-scoped rows = %d %+v, want %d", len(records), records, len(wantIDs))
+	}
+	for i, record := range records {
+		if record.Event.ID != wantIDs[i] {
+			t.Fatalf("auth-scoped row[%d] = event %q session %q, want event %q; all=%+v", i, record.Event.ID, record.SessionID, wantIDs[i], records)
+		}
+		if record.Event.ID == b1.Event.ID || record.AccountScopeID == "account-b" || record.UserID == "user-b" {
+			t.Fatalf("auth-scoped replay leaked unauthorized row: %+v", record)
+		}
+	}
+	if records[len(records)-1].EndpointSeq != a2.RealtimeOutbox.EndpointSeq {
+		t.Fatalf("authorized replay did not advance to latest visible endpoint: got %d want %d", records[len(records)-1].EndpointSeq, a2.RealtimeOutbox.EndpointSeq)
+	}
+}
+
+func TestV3RealtimeOutboxSessionSeqIndexDoesNotMissRowsPastOldGlobalScanCap(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "session-scan-cap-target")
+
+	const fillerRows = 100000
+	batch := store.NewBatch()
+	for endpointSeq := uint64(2); endpointSeq <= fillerRows+1; endpointSeq++ {
+		record := V3RealtimeOutboxRecord{
+			EndpointSeq:    endpointSeq,
+			EndpointCursor: V3RealtimeOutboxCursor(endpointSeq),
+			SessionID:      fmt.Sprintf("session-scan-cap-filler-%06d", endpointSeq),
+			UserID:         "user-1",
+			AccountScopeID: "account-1",
+			Event:          V3SessionEvent{ID: fmt.Sprintf("filler-%06d", endpointSeq), SessionID: fmt.Sprintf("session-scan-cap-filler-%06d", endpointSeq), Seq: 1, EventType: "session.message.appended", Payload: json.RawMessage(`{"kind":"message"}`)},
+			Projection:     V3SessionProjection{SessionID: fmt.Sprintf("session-scan-cap-filler-%06d", endpointSeq), LastEventSeq: 1, ProjectionHighWatermarkSeq: 1},
+			CreatedAt:      int64(endpointSeq),
+		}
+		payload, err := json.Marshal(record)
+		if err != nil {
+			t.Fatalf("marshal filler outbox: %v", err)
+		}
+		if err := batch.Set([]byte(KeyV3RealtimeOutbox(endpointSeq)), payload, nil); err != nil {
+			t.Fatalf("set filler outbox: %v", err)
+		}
+		if endpointSeq%5000 == 0 {
+			if err := batch.Commit(nil); err != nil {
+				t.Fatalf("commit filler batch: %v", err)
+			}
+			if err := batch.Close(); err != nil {
+				t.Fatalf("close filler batch: %v", err)
+			}
+			batch = store.NewBatch()
+		}
+	}
+	targetEndpointSeq := uint64(fillerRows + 2)
+	target := V3RealtimeOutboxRecord{
+		EndpointSeq:    targetEndpointSeq,
+		EndpointCursor: V3RealtimeOutboxCursor(targetEndpointSeq),
+		SessionID:      "session-scan-cap-target",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		Event:          V3SessionEvent{ID: "target-past-scan-cap", SessionID: "session-scan-cap-target", Seq: 2, EventType: "session.message.appended", Payload: json.RawMessage(`{"kind":"message"}`)},
+		Projection:     V3SessionProjection{SessionID: "session-scan-cap-target", LastEventSeq: 2, ProjectionHighWatermarkSeq: 2},
+		CreatedAt:      int64(targetEndpointSeq),
+	}
+	targetPayload, err := json.Marshal(target)
+	if err != nil {
+		t.Fatalf("marshal target outbox: %v", err)
+	}
+	for _, key := range []string{
+		KeyV3RealtimeOutbox(targetEndpointSeq),
+		KeyV3RealtimeOutboxBySessionEndpoint(target.SessionID, targetEndpointSeq),
+		KeyV3RealtimeOutboxBySessionSeq(target.SessionID, target.Event.Seq),
+		KeyV3RealtimeOutboxByAuthScope(target.AccountScopeID, target.UserID, targetEndpointSeq),
+	} {
+		if err := batch.Set([]byte(key), targetPayload, nil); err != nil {
+			t.Fatalf("set target index %q: %v", key, err)
+		}
+	}
+	if err := batch.Set([]byte(KeyV3RealtimeOutboxSequence()), uint64ToBytes(targetEndpointSeq), nil); err != nil {
+		t.Fatalf("set outbox sequence: %v", err)
+	}
+	if err := batch.Commit(nil); err != nil {
+		t.Fatalf("commit target batch: %v", err)
+	}
+	if err := batch.Close(); err != nil {
+		t.Fatalf("close target batch: %v", err)
+	}
+
+	records, err := sessions.ListV3RealtimeOutboxForSessionAfterSeq("session-scan-cap-target", 1, 1)
+	if err != nil {
+		t.Fatalf("list target session outbox: %v", err)
+	}
+	if len(records) != 1 || records[0].EndpointSeq != targetEndpointSeq || records[0].Event.ID != target.Event.ID {
+		t.Fatalf("session indexed replay past scan cap = %+v, want target endpoint %d", records, targetEndpointSeq)
 	}
 }
 
