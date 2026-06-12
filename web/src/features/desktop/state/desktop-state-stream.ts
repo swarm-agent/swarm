@@ -1,7 +1,13 @@
-import { openDesktopWebSocket } from '../realtime/client'
-import { applyDesktopDaemonEvent, getDesktopSnapshot, markDesktopStale, replaceDesktopFromSnapshot } from './desktop-state-store'
-import { fetchDesktopStateSnapshot } from './desktop-state-snapshot'
-import type { DesktopDaemonEvent } from './desktop-state'
+import { openDesktopWebSocket, type OpenDesktopWebSocketOptions } from '../realtime/client'
+import {
+  applyDesktopDaemonEvent,
+  markDesktopStale,
+  replaceDesktopFromSnapshot,
+} from './desktop-state-store'
+import { fetchDesktopStateSnapshot, type DesktopStateSnapshotRequest } from './desktop-state-snapshot'
+import type { DesktopDaemonEvent, DesktopDaemonSnapshot } from './desktop-state'
+
+export const DEFAULT_DESKTOP_STREAM_QUEUE_LIMIT = 1024
 
 export type DesktopRealtimeControlKind =
   | 'keepalive'
@@ -32,60 +38,180 @@ export interface DesktopStateStreamHandle {
   close(): void
 }
 
+interface DesktopStateStreamSocket {
+  addEventListener(type: 'message' | 'error' | 'close', listener: (event: MessageEvent | Event) => void): void
+  close(): void
+}
+
 export interface DesktopStateStreamOptions {
-  snapshotRequest?: Parameters<typeof fetchDesktopStateSnapshot>[0]
+  snapshotRequest?: DesktopStateSnapshotRequest
   afterRev?: number
+  queueLimit?: number
   onControlFrame?: (frame: DesktopRealtimeFrame) => void
   onError?: (error: Error) => void
+  openSocket?: (options: OpenDesktopWebSocketOptions) => Promise<DesktopStateStreamSocket>
+  fetchSnapshot?: (request: DesktopStateSnapshotRequest, signal?: AbortSignal) => Promise<DesktopDaemonSnapshot>
+}
+
+export interface DesktopRealtimeFrameResult {
+  kind: 'event' | 'control'
+  resyncRequired: boolean
+  reason?: string
 }
 
 export async function startDesktopStateStream(options: DesktopStateStreamOptions = {}): Promise<DesktopStateStreamHandle> {
-  const snapshot = await fetchDesktopStateSnapshot(options.snapshotRequest ?? {})
-  replaceDesktopFromSnapshot(snapshot)
-  const afterRev = options.afterRev ?? snapshot.rev
-  const socket = await openDesktopWebSocket({ afterRev })
-  let closed = false
+  const queueLimit = normalizeQueueLimit(options.queueLimit)
+  const openSocket = options.openSocket ?? openDesktopWebSocket
+  const fetchSnapshot = options.fetchSnapshot ?? fetchDesktopStateSnapshot
+  const snapshotRequest = options.snapshotRequest ?? {}
+  const abortController = new AbortController()
+  const queue: unknown[] = []
 
-  socket.addEventListener('message', (message) => {
+  let closed = false
+  let draining = false
+  let resyncing = false
+  let socket: DesktopStateStreamSocket | null = null
+
+  const closeCurrentSocket = () => {
+    const current = socket
+    socket = null
+    if (current) {
+      current.close()
+    }
+  }
+
+  const connect = async (afterRev: number): Promise<void> => {
     if (closed) {
       return
     }
-    try {
-      handleDesktopRealtimeFrame(message.data, options)
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error))
-      applyDesktopDaemonEvent({ rev: getDesktopSnapshot().rev + 1, prevRev: Number.NaN, type: 'desktop/stream/error', payload: { error: err.message } })
-      options.onError?.(err)
+    const nextSocket = await openSocket({ afterRev })
+    if (closed) {
+      nextSocket.close()
+      return
     }
-  })
+    socket = nextSocket
+    nextSocket.addEventListener('message', (message) => {
+      if (closed || resyncing || socket !== nextSocket) {
+        return
+      }
+      enqueueFrame((message as MessageEvent).data)
+    })
+    nextSocket.addEventListener('error', () => {
+      if (closed || resyncing || socket !== nextSocket) {
+        return
+      }
+      requestResync('desktop realtime websocket error')
+    })
+    nextSocket.addEventListener('close', () => {
+      if (closed || resyncing || socket !== nextSocket) {
+        return
+      }
+      requestResync('desktop realtime websocket closed')
+    })
+  }
 
-  socket.addEventListener('error', () => {
-    applyDesktopDaemonEvent({ rev: getDesktopSnapshot().rev + 1, prevRev: Number.NaN, type: 'desktop/stream/error', payload: { error: 'websocket error' } })
-  })
+  const reloadSnapshotAndReconnect = async (reason: string): Promise<void> => {
+    try {
+      const snapshot = await fetchSnapshot(snapshotRequest, abortController.signal)
+      if (closed) {
+        return
+      }
+      replaceDesktopFromSnapshot(snapshot)
+      await connect(snapshot.rev)
+    } catch (error) {
+      if (closed) {
+        return
+      }
+      const err = error instanceof Error ? error : new Error(String(error))
+      markDesktopStale(`${reason}; snapshot reload failed: ${err.message}`)
+      options.onError?.(err)
+    } finally {
+      resyncing = false
+    }
+  }
+
+  const requestResync = (reason: string): void => {
+    if (closed) {
+      return
+    }
+    queue.length = 0
+    closeCurrentSocket()
+    markDesktopStale(reason)
+    if (resyncing) {
+      return
+    }
+    resyncing = true
+    void reloadSnapshotAndReconnect(reason)
+  }
+
+  const drainQueue = (): void => {
+    draining = false
+    while (!closed && !resyncing && queue.length > 0) {
+      const raw = queue.shift()
+      try {
+        const result = handleDesktopRealtimeFrame(raw, options)
+        if (result.resyncRequired) {
+          requestResync(result.reason ?? 'desktop realtime resync required')
+          return
+        }
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error))
+        requestResync(`desktop realtime frame error: ${err.message}`)
+        options.onError?.(err)
+        return
+      }
+    }
+  }
+
+  const enqueueFrame = (raw: unknown): void => {
+    if (queue.length >= queueLimit) {
+      requestResync(`desktop realtime event queue overflow (${queueLimit})`)
+      return
+    }
+    queue.push(raw)
+    if (!draining) {
+      draining = true
+      queueMicrotask(drainQueue)
+    }
+  }
+
+  const snapshot = await fetchSnapshot(snapshotRequest, abortController.signal)
+  replaceDesktopFromSnapshot(snapshot)
+  await connect(options.afterRev ?? snapshot.rev)
 
   return {
     close() {
       closed = true
-      socket.close()
+      queue.length = 0
+      abortController.abort()
+      closeCurrentSocket()
     },
   }
 }
 
-export function handleDesktopRealtimeFrame(raw: unknown, options: DesktopStateStreamOptions = {}): void {
+export function handleDesktopRealtimeFrame(raw: unknown, options: DesktopStateStreamOptions = {}): DesktopRealtimeFrameResult {
   const frame = parseDesktopRealtimeFrame(raw)
   if (frame.protocol !== 'v3.realtime' || frame.protocol_version !== 1) {
     throw new Error('Desktop realtime frame has invalid protocol metadata.')
   }
 
   if (frame.kind === 'event') {
-    applyDesktopDaemonEvent(frameToDaemonEvent(frame))
-    return
+    const event = frameToDaemonEvent(frame)
+    const next = applyDesktopDaemonEvent(event)
+    if (next.status === 'stale' && next.resyncRequested) {
+      return { kind: 'event', resyncRequired: true, reason: next.staleReason ?? 'desktop realtime event requires resync' }
+    }
+    return { kind: 'event', resyncRequired: false }
   }
 
   if (isResyncControlFrame(frame.kind)) {
-    markDesktopStale(`desktop realtime ${frame.kind}: ${frame.error ?? frame.reason ?? frame.error_code ?? 'resync required'}`)
+    const reason = `desktop realtime ${frame.kind}: ${frame.error ?? frame.reason ?? frame.error_code ?? 'resync required'}`
+    markDesktopStale(reason)
+    options.onControlFrame?.(frame)
+    return { kind: 'control', resyncRequired: true, reason }
   }
   options.onControlFrame?.(frame)
+  return { kind: 'control', resyncRequired: false }
 }
 
 function frameToDaemonEvent(frame: DesktopRealtimeFrame): DesktopDaemonEvent {
@@ -124,3 +250,9 @@ function isResyncControlFrame(kind: string | undefined): kind is DesktopRealtime
   return kind === 'cursor.error' || kind === 'auth.denied' || kind === 'slow_consumer.reconnect_required'
 }
 
+function normalizeQueueLimit(limit: number | undefined): number {
+  if (typeof limit !== 'number' || !Number.isFinite(limit)) {
+    return DEFAULT_DESKTOP_STREAM_QUEUE_LIMIT
+  }
+  return Math.max(1, Math.floor(limit))
+}
