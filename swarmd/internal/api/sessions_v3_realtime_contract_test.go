@@ -55,14 +55,14 @@ func TestV3RealtimeEndpointExistsAndIsNotLegacyStream(t *testing.T) {
 func TestV3RealtimeContractRoundTripsEveryMessageType(t *testing.T) {
 	messages := []V3RealtimeMessage{
 		validV3RealtimeEventMessage(t),
-		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindReplayStart, SessionID: "session-a", AfterSeq: 7, HighWatermarkSeq: 10},
-		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindReplayDone, SessionID: "session-a", LastSeq: 10, NextSeq: 11, HighWatermarkSeq: 10},
-		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindCursorError, SessionID: "session-a", LastSeq: 7, HighWatermarkSeq: 12, ErrorCode: "cursor_gap", Error: "refetch required"},
+		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindReplayStart, SessionID: "session-a", EndpointCursor: "cursor-7", HighWatermarkSeq: 10},
+		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindReplayDone, SessionID: "session-a", LastSeq: 10, NextSeq: 11, HighWatermarkSeq: 10, EndpointCursor: "cursor-10"},
+		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindCursorError, SessionID: "session-a", LastSeq: 7, HighWatermarkSeq: 12, EndpointCursor: "cursor-7", ErrorCode: "cursor_gap", Error: "refetch required"},
 		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindKeepalive, SessionID: "session-a", LastSeq: 10, EndpointCursor: "cursor-10"},
 		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindHighWater, SessionID: "session-a", HighWatermarkSeq: 12, EndpointCursor: "cursor-12"},
-		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: "session-a", SubscriptionID: "sub-a", AfterSeq: 10},
+		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: "session-a", SubscriptionID: "sub-a", EndpointCursor: "cursor-10"},
 		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindUnsubscribe, SessionID: "session-a", SubscriptionID: "sub-a"},
-		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, AfterRev: 12},
+		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: "cursor-12"},
 		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindAuthDenied, SessionID: "session-b", ErrorCode: "auth_denied", Error: "not authorized"},
 		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSlowConsumer, SessionID: "session-a", NextSeq: 13, ErrorCode: "slow_consumer", Reason: "reconnect required"},
 	}
@@ -77,6 +77,49 @@ func TestV3RealtimeContractRoundTripsEveryMessageType(t *testing.T) {
 		}
 		if err := ValidateV3RealtimeMessage(decoded); err != nil {
 			t.Fatalf("validate %s after round trip: %v\njson=%s", msg.Kind, err, string(raw))
+		}
+	}
+}
+
+func TestV3RealtimeContractResumeCarriesEndpointCursorAndSubscriptions(t *testing.T) {
+	raw := []byte(`{"protocol":"v3.realtime","protocol_version":1,"kind":"resume","endpoint_cursor":"cursor-42","subscriptions":[{"session_id":"session-a","subscription_id":"sub-a"}]}`)
+	var decoded V3RealtimeMessage
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("decode canonical resume message: %v", err)
+	}
+	if err := ValidateV3RealtimeMessage(decoded); err != nil {
+		t.Fatalf("canonical resume message rejected: %v", err)
+	}
+	encoded, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatalf("marshal canonical resume message: %v", err)
+	}
+	encodedText := string(encoded)
+	if !strings.Contains(encodedText, `"endpoint_cursor":"cursor-42"`) || !strings.Contains(encodedText, `"subscriptions"`) {
+		t.Fatalf("canonical resume must preserve endpoint_cursor and subscriptions, got %s", encodedText)
+	}
+	for _, forbidden := range []string{`"after_seq"`, `"afterRev"`} {
+		if strings.Contains(encodedText, forbidden) {
+			t.Fatalf("canonical resume encoded forbidden legacy cursor %s in %s", forbidden, encodedText)
+		}
+	}
+}
+
+func TestV3RealtimeContractRejectsLegacySessionResumeCursors(t *testing.T) {
+	canonical := V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: "cursor-42"}
+	if err := ValidateV3RealtimeMessage(canonical); err != nil {
+		t.Fatalf("canonical endpoint_cursor resume rejected: %v", err)
+	}
+
+	tests := map[string]V3RealtimeMessage{
+		"subscribe after_seq":                  {Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: "session-a", SubscriptionID: "sub-a", AfterSeq: 10},
+		"subscribe endpoint_cursor plus after": {Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: "session-a", SubscriptionID: "sub-a", EndpointCursor: "cursor-10", AfterSeq: 10},
+		"resume afterRev":                      {Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, AfterRev: 10},
+		"resume endpoint_cursor plus afterRev": {Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: "cursor-10", AfterRev: 10},
+	}
+	for name, msg := range tests {
+		if err := ValidateV3RealtimeMessage(msg); err == nil {
+			t.Fatalf("%s: legacy cursor validation succeeded unexpectedly: %+v", name, msg)
 		}
 	}
 }

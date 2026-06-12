@@ -97,6 +97,115 @@ func TestV3RealtimeReplaysCommittedOutboxRowAfterPublishCrashWindow(t *testing.T
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, created.ID, committed.Event.Seq)
 }
 
+func TestV3RealtimeHydrationSnapshotEndpointCursorHandoffReplaysOnlyRowsAfterCursor(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-handoff", "create-realtime-handoff")
+	if created.RealtimeOutbox == nil {
+		t.Fatalf("created mutation missing realtime outbox: %+v", created)
+	}
+
+	snapshotCursor := hydrateV3RealtimeSnapshotEndpointCursor(t, server, created.SessionID)
+	if snapshotCursor != created.RealtimeOutbox.EndpointCursor {
+		t.Fatalf("snapshot_endpoint_cursor = %q, want create endpoint cursor %q", snapshotCursor, created.RealtimeOutbox.EndpointCursor)
+	}
+	firstMissed := appendV3RealtimeTestMessage(t, server, created.SessionID, "message-realtime-handoff-1", "handoff one")
+	secondMissed := appendV3RealtimeTestMessage(t, server, created.SessionID, "message-realtime-handoff-2", "handoff two")
+
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStreamWithQuery(t, httpServer.URL, "endpoint_cursor="+snapshotCursor+"&sessions="+created.SessionID)
+	defer conn.Close()
+
+	started := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, started, V3RealtimeKindReplayStart, created.SessionID, 0)
+	if started.EndpointCursor != snapshotCursor || started.AfterSeq != 0 || started.AfterRev != 0 {
+		closeV3RealtimeConnBeforeFatal(conn)
+		t.Fatalf("replay start cursor = endpoint:%q after_seq:%d afterRev:%d, want endpoint_cursor %q only", started.EndpointCursor, started.AfterSeq, started.AfterRev, snapshotCursor)
+	}
+	first := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, first, V3RealtimeKindEvent, created.SessionID, firstMissed.Event.Seq)
+	second := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, second, V3RealtimeKindEvent, created.SessionID, secondMissed.Event.Seq)
+	if first.EndpointCursor != firstMissed.RealtimeOutbox.EndpointCursor || second.EndpointCursor != secondMissed.RealtimeOutbox.EndpointCursor || first.Rev >= second.Rev {
+		t.Fatalf("handoff replay order = first %+v second %+v", first, second)
+	}
+	completed := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, completed, V3RealtimeKindReplayDone, created.SessionID, secondMissed.Event.Seq)
+	if completed.EndpointCursor != secondMissed.RealtimeOutbox.EndpointCursor || completed.AfterSeq != 0 || completed.AfterRev != 0 {
+		t.Fatalf("replay complete cursor = endpoint:%q after_seq:%d afterRev:%d, want endpoint cursor %q only", completed.EndpointCursor, completed.AfterSeq, completed.AfterRev, secondMissed.RealtimeOutbox.EndpointCursor)
+	}
+}
+
+func TestV3RealtimeReconnectWithEndpointCursorReplaysMissedRowsInEndpointOrder(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-endpoint-reconnect", "create-realtime-endpoint-reconnect")
+	checkpointCursor := created.RealtimeOutbox.EndpointCursor
+	firstMissed := appendV3RealtimeTestMessage(t, server, created.SessionID, "message-realtime-endpoint-reconnect-1", "missed one")
+	secondMissed := appendV3RealtimeTestMessage(t, server, created.SessionID, "message-realtime-endpoint-reconnect-2", "missed two")
+
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStreamWithQuery(t, httpServer.URL, "endpoint_cursor="+checkpointCursor+"&sessions="+created.SessionID)
+	defer conn.Close()
+
+	started := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, started, V3RealtimeKindReplayStart, created.SessionID, 0)
+	if started.EndpointCursor != checkpointCursor || started.AfterSeq != 0 || started.AfterRev != 0 {
+		closeV3RealtimeConnBeforeFatal(conn)
+		t.Fatalf("reconnect replay start cursor = endpoint:%q after_seq:%d afterRev:%d, want endpoint_cursor %q only", started.EndpointCursor, started.AfterSeq, started.AfterRev, checkpointCursor)
+	}
+	for i, want := range []sessionruntime.SessionMutationResult{firstMissed, secondMissed} {
+		frame := readV3RealtimeFrame(t, conn)
+		assertV3RealtimeFrame(t, frame, V3RealtimeKindEvent, created.SessionID, want.Event.Seq)
+		if frame.EndpointCursor != want.RealtimeOutbox.EndpointCursor || frame.Rev != want.RealtimeOutbox.EndpointSeq {
+			t.Fatalf("replayed[%d] = %+v, want outbox %+v", i, frame, want.RealtimeOutbox)
+		}
+	}
+	completed := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, completed, V3RealtimeKindReplayDone, created.SessionID, secondMissed.Event.Seq)
+	if completed.EndpointCursor != secondMissed.RealtimeOutbox.EndpointCursor {
+		t.Fatalf("reconnect replay complete endpoint_cursor = %q, want %q", completed.EndpointCursor, secondMissed.RealtimeOutbox.EndpointCursor)
+	}
+}
+
+func TestV3RealtimeEndpointCursorReplaySurvivesLostHubWakeup(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-lost-wakeup", "create-realtime-lost-wakeup")
+	checkpointCursor := created.RealtimeOutbox.EndpointCursor
+
+	committed, err := sessionSvc.ApplySessionMutation(sessionruntime.SessionMutationInput{
+		SessionID:       created.SessionID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "message-realtime-lost-wakeup",
+		IdempotencyKey:  "message-realtime-lost-wakeup",
+		PayloadHash:     "hash-message-realtime-lost-wakeup",
+		Kind:            sessionruntime.SessionMutationAppendMessage,
+		Message:         &pebblestore.MessageSnapshot{Role: "user", Content: "committed without hub wakeup"},
+		NowUnixMs:       2000,
+	})
+	if err != nil {
+		t.Fatalf("commit mutation without hub wakeup: %v", err)
+	}
+	if committed.RealtimeOutbox == nil {
+		t.Fatalf("committed mutation missing realtime outbox: %+v", committed)
+	}
+
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStreamWithQuery(t, httpServer.URL, "endpoint_cursor="+checkpointCursor+"&sessions="+created.SessionID)
+	defer conn.Close()
+
+	started := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, started, V3RealtimeKindReplayStart, created.SessionID, 0)
+	if started.EndpointCursor != checkpointCursor || started.AfterSeq != 0 || started.AfterRev != 0 {
+		closeV3RealtimeConnBeforeFatal(conn)
+		t.Fatalf("lost-wakeup replay start cursor = endpoint:%q after_seq:%d afterRev:%d, want endpoint_cursor %q only", started.EndpointCursor, started.AfterSeq, started.AfterRev, checkpointCursor)
+	}
+	replayed := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, replayed, V3RealtimeKindEvent, created.SessionID, committed.Event.Seq)
+	if replayed.EndpointCursor != committed.RealtimeOutbox.EndpointCursor || replayed.Event.EventType != "session.message.appended" {
+		t.Fatalf("lost-wakeup replay = %+v committed outbox=%+v", replayed, committed.RealtimeOutbox)
+	}
+}
+
 func TestV3RealtimeReplayAfterReconnectCarriesDurableTerminalRunIntent(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createV3RealtimeTestSession(t, server, "session-realtime-terminal", "create-realtime-terminal")
@@ -318,9 +427,14 @@ func TestV3RealtimeSourceGuardRequiresNativeOutboxAndRejectsOldTransport(t *test
 	for _, file := range []string{"sessions_v3_realtime_ws.go", "sessions_v3_realtime_hub.go", "sessions_v3_outbox.go"} {
 		body := readSourceFileForTest(t, file)
 		if file == "sessions_v3_realtime_ws.go" {
-			for _, required := range []string{"V3RealtimeKindSubscribe", "ListRealtimeOutboxForSessionAfterSeq", "sendV3RealtimeOutboxEvent"} {
+			for _, required := range []string{"V3RealtimeKindResume", "ListRealtimeOutboxAfter", "sendV3RealtimeOutboxEvent"} {
 				if !strings.Contains(body, required) {
 					t.Fatalf("%s missing V3-native realtime symbol %q", file, required)
+				}
+			}
+			for _, forbidden := range []string{"ListRealtimeOutboxForSessionAfterSeq", "message.AfterSeq", "message.AfterRev", "firstNonZeroUint64(message.AfterRev"} {
+				if strings.Contains(body, forbidden) {
+					t.Fatalf("%s contains forbidden session-cursor replay dependency %q", file, forbidden)
 				}
 			}
 		}
@@ -328,6 +442,21 @@ func TestV3RealtimeSourceGuardRequiresNativeOutboxAndRejectsOldTransport(t *test
 			if strings.Contains(body, forbidden) {
 				t.Fatalf("%s contains forbidden old realtime dependency %q", file, forbidden)
 			}
+		}
+	}
+}
+
+func TestPublishCommittedSessionV3MutationResultWakesOnlyRealtimeOutbox(t *testing.T) {
+	body := readSourceFileForTest(t, "sessions_v3_outbox.go")
+	publishBody := sourceBetweenForTest(t, body, "func (s *Server) publishCommittedSessionV3MutationResult", "func (s *Server) publishCommittedSessionV3GlobalEvent")
+	for _, required := range []string{"publishCommittedV3RealtimeOutbox"} {
+		if !strings.Contains(publishBody, required) {
+			t.Fatalf("publishCommittedSessionV3MutationResult missing canonical realtime outbox wake %q", required)
+		}
+	}
+	for _, forbidden := range []string{"s.publishCommittedSessionV3GlobalEvent(", "s.registerSessionV3StreamLineageFromResult(", "s.publishCommittedSessionV3Event("} {
+		if strings.Contains(publishBody, forbidden) {
+			t.Fatalf("publishCommittedSessionV3MutationResult still fans out to legacy session transport via %q", forbidden)
 		}
 	}
 }
@@ -342,6 +471,15 @@ func newV3RealtimeHTTPTestServer(t *testing.T, server *Server) *httptest.Server 
 }
 
 func createV3RealtimeTestSession(t *testing.T, server *Server, sessionID, requestID string) pebblestore.SessionSnapshot {
+	t.Helper()
+	result := createV3RealtimeTestSessionResult(t, server, sessionID, requestID)
+	if result.Session == nil {
+		t.Fatalf("create realtime test session result missing session: %+v", result)
+	}
+	return *result.Session
+}
+
+func createV3RealtimeTestSessionResult(t *testing.T, server *Server, sessionID, requestID string) sessionruntime.SessionMutationResult {
 	t.Helper()
 	result, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       sessionID,
@@ -364,10 +502,7 @@ func createV3RealtimeTestSession(t *testing.T, server *Server, sessionID, reques
 	if err != nil {
 		t.Fatalf("create realtime test session %s: %v", sessionID, err)
 	}
-	if result.Session == nil {
-		t.Fatalf("create realtime test session result missing session: %+v", result)
-	}
-	return *result.Session
+	return result
 }
 
 func appendV3RealtimeTestMessage(t *testing.T, server *Server, sessionID, requestID, content string) sessionruntime.SessionMutationResult {
@@ -394,7 +529,15 @@ func appendV3RealtimeTestMessage(t *testing.T, server *Server, sessionID, reques
 
 func dialV3RealtimeStream(t *testing.T, baseURL string) *gorillaws.Conn {
 	t.Helper()
+	return dialV3RealtimeStreamWithQuery(t, baseURL, "")
+}
+
+func dialV3RealtimeStreamWithQuery(t *testing.T, baseURL, query string) *gorillaws.Conn {
+	t.Helper()
 	wsURL := "ws" + strings.TrimPrefix(baseURL, "http") + V3RealtimeStreamPath
+	if strings.TrimSpace(query) != "" {
+		wsURL += "?" + strings.TrimPrefix(query, "?")
+	}
 	conn, resp, err := gorillaws.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		if resp != nil {
@@ -435,6 +578,11 @@ func readV3RealtimeFrame(t *testing.T, conn *gorillaws.Conn) V3RealtimeMessage {
 	return frame
 }
 
+func closeV3RealtimeConnBeforeFatal(conn *gorillaws.Conn) {
+	_ = conn.Close()
+	time.Sleep(25 * time.Millisecond)
+}
+
 func assertNoV3RealtimeFrame(t *testing.T, conn *gorillaws.Conn, wait time.Duration) {
 	t.Helper()
 	if err := conn.SetReadDeadline(time.Now().Add(wait)); err != nil {
@@ -462,6 +610,25 @@ func assertV3RealtimeFrame(t *testing.T, frame V3RealtimeMessage, kind, sessionI
 	}
 }
 
+func hydrateV3RealtimeSnapshotEndpointCursor(t *testing.T, server *Server, sessionID string) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+sessionID, nil)
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("hydrate session status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode hydrate response: %v", err)
+	}
+	cursor, _ := payload["snapshot_endpoint_cursor"].(string)
+	if strings.TrimSpace(cursor) == "" {
+		t.Fatalf("hydrate response missing snapshot_endpoint_cursor: %+v", payload)
+	}
+	return cursor
+}
+
 func readSourceFileForTest(t *testing.T, path string) string {
 	t.Helper()
 	raw, err := os.ReadFile(path)
@@ -469,4 +636,17 @@ func readSourceFileForTest(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(raw)
+}
+
+func sourceBetweenForTest(t *testing.T, source, start, end string) string {
+	t.Helper()
+	startIndex := strings.Index(source, start)
+	if startIndex < 0 {
+		t.Fatalf("source missing start marker %q", start)
+	}
+	endIndex := strings.Index(source[startIndex:], end)
+	if endIndex < 0 {
+		t.Fatalf("source missing end marker %q after %q", end, start)
+	}
+	return source[startIndex : startIndex+endIndex]
 }
