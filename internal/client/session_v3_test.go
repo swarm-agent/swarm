@@ -216,6 +216,81 @@ func TestSessionV3WorksetClientPreservesNormalizedContract(t *testing.T) {
 	}
 }
 
+func TestSessionV3TUIWorksetClientUsesTUIRouteAndScope(t *testing.T) {
+	var gotPath string
+	var gotRequest SessionV3TUIWorksetRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.Method + " " + r.URL.Path
+		if r.Method != http.MethodPost || r.URL.Path != "/v3/tui/sessions:workset" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotRequest); err != nil {
+			t.Fatalf("decode tui workset request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": true,
+			"sessions_by_id": map[string]any{
+				"session-a": map[string]any{"id": "session-a", "workspace_path": "/workspace-a", "title": "A", "mode": "plan", "updated_at": 2000},
+			},
+			"projections_by_session": map[string]any{
+				"session-a": map[string]any{"session_id": "session-a", "last_event_seq": 9, "projection_high_watermark_seq": 10, "updated_at": 2000},
+			},
+			"messages_by_session":          map[string]any{},
+			"events_by_session":            map[string]any{},
+			"plans_by_session":             map[string]any{},
+			"plan_revisions_by_session":    map[string]any{},
+			"permissions_by_session":       map[string]any{},
+			"usage_by_session":             map[string]any{},
+			"preferences_by_session":       map[string]any{},
+			"run_intents_by_session":       map[string]any{},
+			"history_manifests_by_session": map[string]any{},
+			"history_chunks_by_id":         map[string]any{},
+			"pagination":                   map[string]any{},
+			"watermarks":                   map[string]any{"loaded_at": 3000},
+			"session_order":                []string{"session-a"},
+		})
+	}))
+	defer server.Close()
+
+	api := New(server.URL)
+	api.SetToken("test-token")
+	beforeUpdatedAt := int64(5000)
+	workset, err := api.GetSessionV3TUIWorkset(context.Background(), SessionV3TUIWorksetRequest{
+		SessionIDs: []string{"session-a"},
+		Scope: SessionV3TUIWorksetScope{
+			WorkspacePath:  "/workspace-a",
+			WorkspacePaths: []string{"/workspace-b"},
+			CWDPath:        "/cwd-only",
+		},
+		Recent: SessionV3WorksetRecent{Limit: 25, BeforeUpdatedAt: &beforeUpdatedAt, BeforeSessionID: "session-z"},
+		History: SessionV3WorksetHistory{
+			Mode:                  "tail",
+			MaxMessagesPerSession: 5,
+			MaxEventsPerSession:   6,
+			ManifestPolicy:        "manifest",
+			IncludeEvents:         true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("GetSessionV3TUIWorkset() error = %v", err)
+	}
+	if gotPath != "POST /v3/tui/sessions:workset" {
+		t.Fatalf("request path = %q", gotPath)
+	}
+	if gotRequest.Scope.WorkspacePath != "/workspace-a" || len(gotRequest.Scope.WorkspacePaths) != 1 || gotRequest.Scope.WorkspacePaths[0] != "/workspace-b" || gotRequest.Scope.CWDPath != "/cwd-only" {
+		t.Fatalf("scope not encoded: %#v", gotRequest.Scope)
+	}
+	if gotRequest.Recent.BeforeUpdatedAt == nil || *gotRequest.Recent.BeforeUpdatedAt != beforeUpdatedAt || gotRequest.Recent.BeforeSessionID != "session-z" || gotRequest.Recent.Limit != 25 {
+		t.Fatalf("recent not encoded: %#v", gotRequest.Recent)
+	}
+	if gotRequest.History.Mode != "tail" || !gotRequest.History.IncludeEvents || gotRequest.History.MaxMessagesPerSession != 5 || gotRequest.History.MaxEventsPerSession != 6 {
+		t.Fatalf("history not encoded: %#v", gotRequest.History)
+	}
+	if workset.SessionOrder[0] != "session-a" || workset.SessionsByID["session-a"].SessionAPI != "v3" || workset.SessionsByID["session-a"].LastEventSeq != 9 || workset.SessionsByID["session-a"].ProjectionHighWatermarkSeq != 10 {
+		t.Fatalf("session not marked from projection: %#v", workset.SessionsByID["session-a"])
+	}
+}
+
 func TestStreamSessionsV3RealtimeMultiplexesSubscriptionsAndIsolatesGaps(t *testing.T) {
 	var gotPath string
 	var subscribes []map[string]any

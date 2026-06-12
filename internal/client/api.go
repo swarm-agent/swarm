@@ -795,7 +795,21 @@ type SessionV3WorksetRequest struct {
 }
 
 type SessionV3WorksetWorkspace struct {
-	WorkspacePath string `json:"workspace_path,omitempty"`
+	WorkspacePath  string   `json:"workspace_path,omitempty"`
+	WorkspacePaths []string `json:"workspace_paths,omitempty"`
+}
+
+type SessionV3TUIWorksetRequest struct {
+	SessionIDs []string                 `json:"session_ids,omitempty"`
+	Scope      SessionV3TUIWorksetScope `json:"scope"`
+	Recent     SessionV3WorksetRecent   `json:"recent,omitempty"`
+	History    SessionV3WorksetHistory  `json:"history,omitempty"`
+}
+
+type SessionV3TUIWorksetScope struct {
+	WorkspacePath  string   `json:"workspace_path,omitempty"`
+	WorkspacePaths []string `json:"workspace_paths,omitempty"`
+	CWDPath        string   `json:"cwd_path,omitempty"`
 }
 
 type SessionV3WorksetRecent struct {
@@ -809,6 +823,7 @@ type SessionV3WorksetHistory struct {
 	MaxMessagesPerSession int    `json:"max_messages_per_session,omitempty"`
 	MaxEventsPerSession   int    `json:"max_events_per_session,omitempty"`
 	ManifestPolicy        string `json:"manifest_policy,omitempty"`
+	IncludeEvents         bool   `json:"include_events,omitempty"`
 }
 
 type SessionV3Workset struct {
@@ -3072,10 +3087,22 @@ func (c *API) GetSessionV3Workset(ctx context.Context, req SessionV3WorksetReque
 	if err := c.postJSON(ctx, "/v3/sessions:workset", req, &workset, true); err != nil {
 		return SessionV3Workset{}, err
 	}
+	return normalizeSessionV3Workset(workset), nil
+}
+
+func (c *API) GetSessionV3TUIWorkset(ctx context.Context, req SessionV3TUIWorksetRequest) (SessionV3Workset, error) {
+	var workset SessionV3Workset
+	if err := c.postJSON(ctx, "/v3/tui/sessions:workset", req, &workset, true); err != nil {
+		return SessionV3Workset{}, err
+	}
+	return normalizeSessionV3Workset(workset), nil
+}
+
+func normalizeSessionV3Workset(workset SessionV3Workset) SessionV3Workset {
 	for id, session := range workset.SessionsByID {
 		workset.SessionsByID[id] = markSessionV3(session, workset.ProjectionsBySession[id])
 	}
-	return workset, nil
+	return workset
 }
 
 func (c *API) ListSessionV3Messages(ctx context.Context, sessionID string, afterSeq uint64, limit int) ([]SessionMessage, error) {

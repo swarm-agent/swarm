@@ -292,6 +292,15 @@ type App struct {
 	releaseUpdateRequested bool
 
 	pendingLocalContainerUpdate *localContainerUpdateConfirmation
+
+	sessionWorksetPagination tuiSessionWorksetPagination
+}
+
+type tuiSessionWorksetPagination struct {
+	NextBeforeUpdatedAt *int64
+	NextBeforeSessionID string
+	HasMore             bool
+	LoadedAt            int64
 }
 
 func New() (*App, error) {
@@ -3441,8 +3450,12 @@ func (a *App) backgroundSessionSummaries() []model.BackgroundSessionSummary {
 	if a == nil {
 		return nil
 	}
+	return backgroundSessionSummariesForSessions(a.homeModel.RecentSessions, a.homeModel.BackgroundSessions)
+}
+
+func backgroundSessionSummariesForSessions(summaries []model.SessionSummary, existing []model.BackgroundSessionSummary) []model.BackgroundSessionSummary {
 	records := make([]model.BackgroundSessionSummary, 0)
-	for _, summary := range a.homeModel.RecentSessions {
+	for _, summary := range summaries {
 		metadata := summary.Metadata
 		if len(metadata) == 0 {
 			continue
@@ -3507,13 +3520,13 @@ func (a *App) backgroundSessionSummaries() []model.BackgroundSessionSummary {
 		}
 		records = append(records, record)
 	}
-	for _, record := range a.homeModel.BackgroundSessions {
+	for _, record := range existing {
 		if strings.TrimSpace(record.ChildSessionID) == "" {
 			continue
 		}
 		found := false
-		for _, existing := range records {
-			if strings.TrimSpace(existing.ChildSessionID) == strings.TrimSpace(record.ChildSessionID) {
+		for _, existingRecord := range records {
+			if strings.TrimSpace(existingRecord.ChildSessionID) == strings.TrimSpace(record.ChildSessionID) {
 				found = true
 				break
 			}
@@ -4109,6 +4122,57 @@ func modelSessionSummaryFromClient(record client.SessionSummary) model.SessionSu
 	}
 }
 
+func modelSessionSummariesFromTUIWorkset(workset client.SessionV3Workset) []model.SessionSummary {
+	clientSummaries := sessionSummariesFromTUIWorkset(workset)
+	modelSummaries := make([]model.SessionSummary, 0, len(clientSummaries))
+	for _, session := range clientSummaries {
+		summary := modelSessionSummaryFromClient(session)
+		metadata := cloneMetadataMap(summary.Metadata)
+		if preference, ok := workset.PreferencesBySession[session.ID]; ok {
+			summary.Preference = mergeClientModelPreference(summary.Preference, preference)
+		}
+		if permissions, ok := workset.PermissionsBySession[session.ID]; ok {
+			summary.PendingPermissionCount = len(permissions)
+			metadata = putSessionWorksetMetadata(metadata, "v3_pending_permissions", permissions)
+		}
+		if usage, ok := workset.UsageBySession[session.ID]; ok {
+			metadata = putSessionWorksetMetadata(metadata, "v3_usage_summary", usage)
+		}
+		if plans, ok := workset.PlansBySession[session.ID]; ok {
+			metadata = putSessionWorksetMetadata(metadata, "v3_plans", plans)
+		}
+		if revisions, ok := workset.PlanRevisionsBySession[session.ID]; ok {
+			metadata = putSessionWorksetMetadata(metadata, "v3_plan_revisions", revisions)
+		}
+		if policy, ok := workset.AgentModelPolicyBySession[session.ID]; ok {
+			metadata = putSessionWorksetMetadata(metadata, "v3_agent_model_policy", policy)
+		}
+		if intents := workset.RunIntentsBySession[session.ID]; len(intents) > 0 {
+			intent := intents[0]
+			summary.ActiveRunIntent = cloneClientSessionV3RunIntent(&intent)
+			metadata = putSessionWorksetMetadata(metadata, "v3_run_intents", intents)
+			if lifecycle := v3RunIntentSessionLifecycle(summary.ID, &intent); lifecycle != nil {
+				summary.Lifecycle = lifecycle
+			}
+		}
+		if projection, ok := workset.ProjectionsBySession[session.ID]; ok {
+			summary.LastEventSeq = projection.LastEventSeq
+			summary.ProjectionHighWatermarkSeq = projection.ProjectionHighWatermarkSeq
+		}
+		summary.Metadata = metadata
+		modelSummaries = append(modelSummaries, summary)
+	}
+	return applySessionDepths(modelSummaries)
+}
+
+func putSessionWorksetMetadata(metadata map[string]any, key string, value any) map[string]any {
+	if metadata == nil {
+		metadata = make(map[string]any, 1)
+	}
+	metadata[key] = value
+	return metadata
+}
+
 func chatSessionTabsWithExtras(summaries []model.SessionSummary, extras []client.SessionSummary) []ui.ChatSessionTab {
 	merged := make([]model.SessionSummary, 0, len(summaries)+len(extras))
 	indexByID := make(map[string]int, len(summaries)+len(extras))
@@ -4183,10 +4247,120 @@ func (a *App) activeLocalWorkspaceBindingID() string {
 }
 
 func (a *App) listSessionsForActiveContext(ctx context.Context, limit int, workspacePath string) ([]client.SessionSummary, error) {
-	if a == nil || a.api == nil {
-		return nil, errors.New("api is unavailable")
+	workset, err := a.loadTUISessionWorksetForPath(ctx, limit, workspacePath)
+	if err != nil {
+		return nil, err
 	}
-	return nil, errTUIRetiredSessionAPI("list sessions; use /v3/tui/sessions:workset")
+	return sessionSummariesFromTUIWorkset(workset), nil
+}
+
+func (a *App) loadTUISessionWorksetForPath(ctx context.Context, limit int, path string) (client.SessionV3Workset, error) {
+	path = normalizePath(strings.TrimSpace(path))
+	if path == "" {
+		return client.SessionV3Workset{}, errors.New("workspace path is required")
+	}
+	return a.loadTUISessionWorkset(ctx, tuiSessionWorksetLoadOptions{Limit: limit, WorkspacePaths: []string{path}})
+}
+
+type tuiSessionWorksetLoadOptions struct {
+	Limit           int
+	WorkspacePaths  []string
+	CWDPath         string
+	BeforeUpdatedAt *int64
+	BeforeSessionID string
+}
+
+func (a *App) loadTUISessionWorkset(ctx context.Context, opts tuiSessionWorksetLoadOptions) (client.SessionV3Workset, error) {
+	if a == nil || a.api == nil {
+		return client.SessionV3Workset{}, errors.New("api is unavailable")
+	}
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = homeRecentSessionLimit
+	}
+	workspacePaths := canonicalUniquePaths(opts.WorkspacePaths)
+	cwdPath := normalizePath(strings.TrimSpace(opts.CWDPath))
+	if len(workspacePaths) == 0 && cwdPath == "" {
+		return client.SessionV3Workset{}, errors.New("tui workset scope is required")
+	}
+	return a.api.GetSessionV3TUIWorkset(ctx, client.SessionV3TUIWorksetRequest{
+		Scope: client.SessionV3TUIWorksetScope{
+			WorkspacePaths: workspacePaths,
+			CWDPath:        cwdPath,
+		},
+		Recent: client.SessionV3WorksetRecent{
+			Limit:           limit,
+			BeforeUpdatedAt: opts.BeforeUpdatedAt,
+			BeforeSessionID: strings.TrimSpace(opts.BeforeSessionID),
+		},
+		History: client.SessionV3WorksetHistory{
+			Mode:                  "tail",
+			MaxMessagesPerSession: 20,
+			MaxEventsPerSession:   50,
+			ManifestPolicy:        "manifest",
+			IncludeEvents:         true,
+		},
+	})
+}
+
+func canonicalUniquePaths(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	seen := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		path = normalizePath(strings.TrimSpace(path))
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		out = append(out, path)
+	}
+	return out
+}
+
+func sessionSummariesFromTUIWorkset(workset client.SessionV3Workset) []client.SessionSummary {
+	out := make([]client.SessionSummary, 0, len(workset.SessionOrder))
+	seen := make(map[string]struct{}, len(workset.SessionsByID))
+	appendID := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		summary, ok := workset.SessionsByID[id]
+		if !ok {
+			return
+		}
+		seen[id] = struct{}{}
+		out = append(out, summary)
+	}
+	for _, id := range workset.SessionOrder {
+		appendID(id)
+	}
+	if len(seen) < len(workset.SessionsByID) {
+		ids := make([]string, 0, len(workset.SessionsByID)-len(seen))
+		for id := range workset.SessionsByID {
+			if _, ok := seen[id]; !ok {
+				ids = append(ids, id)
+			}
+		}
+		sort.SliceStable(ids, func(i, j int) bool {
+			left := workset.SessionsByID[ids[i]]
+			right := workset.SessionsByID[ids[j]]
+			if left.UpdatedAt == right.UpdatedAt {
+				return strings.TrimSpace(left.ID) < strings.TrimSpace(right.ID)
+			}
+			return left.UpdatedAt > right.UpdatedAt
+		})
+		for _, id := range ids {
+			appendID(id)
+		}
+	}
+	return out
 }
 
 const (
@@ -7235,8 +7409,6 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		agentErr         error
 		contextReport    client.ContextReport
 		contextErr       error
-		sessions         []client.SessionSummary
-		sessionsErr      error
 	)
 	var refreshWG sync.WaitGroup
 	refreshWG.Add(9)
@@ -7400,7 +7572,19 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		errorsSeen = append(errorsSeen, "cwd route resolver unavailable")
 	}
 
-	sessions, sessionsErr = a.listSessionsForActiveContext(ctx, homeRecentSessionLimit, contextPath)
+	sessionScopePaths := make([]string, 0, len(next.Workspaces)+1)
+	cwdSessionScope := ""
+	if activeIsWorkspace {
+		for _, ws := range next.Workspaces {
+			if path := normalizePath(ws.Path); path != "" {
+				sessionScopePaths = append(sessionScopePaths, path)
+			}
+		}
+	}
+	if len(sessionScopePaths) == 0 {
+		cwdSessionScope = contextPath
+	}
+	sessionWorkset, sessionsErr := a.loadTUISessionWorkset(ctx, tuiSessionWorksetLoadOptions{Limit: homeRecentSessionLimit, WorkspacePaths: sessionScopePaths, CWDPath: cwdSessionScope})
 
 	gitStatus, _ := gitStatusForPath(activePath)
 	if activeIsWorkspace {
@@ -7493,14 +7677,8 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		errorsSeen = append(errorsSeen, "context scan unavailable")
 	}
 
-	// Home does not render usage summaries, so avoid one /usage request per
-	// session during startup and keep the initial recent-session slice small.
 	if sessionsErr == nil {
-		modelSessions := make([]model.SessionSummary, 0, len(sessions))
-		for _, session := range sessions {
-			modelSessions = append(modelSessions, modelSessionSummaryFromClient(session))
-		}
-		for _, session := range applySessionDepths(modelSessions) {
+		for _, session := range modelSessionSummariesFromTUIWorkset(sessionWorkset) {
 			title := strings.TrimSpace(session.Title)
 			if title == "" {
 				title = session.ID
@@ -7508,8 +7686,15 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 			session.Title = title
 			next.RecentSessions = append(next.RecentSessions, session)
 		}
+		next.BackgroundSessions = backgroundSessionSummariesForSessions(next.RecentSessions, next.BackgroundSessions)
+		a.sessionWorksetPagination = tuiSessionWorksetPagination{
+			NextBeforeUpdatedAt: sessionWorkset.Pagination.NextBeforeUpdatedAt,
+			NextBeforeSessionID: strings.TrimSpace(sessionWorkset.Pagination.NextBeforeSessionID),
+			HasMore:             sessionWorkset.Pagination.HasMore,
+			LoadedAt:            sessionWorkset.Watermarks.LoadedAt,
+		}
 	} else {
-		errorsSeen = append(errorsSeen, "session list unavailable")
+		errorsSeen = append(errorsSeen, "session workset unavailable")
 	}
 
 	next.QuickActions = homeQuickActions(next)
