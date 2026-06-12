@@ -96,7 +96,18 @@ test('normalizeDesktopStateSnapshot builds a plain replacement snapshot from wor
       next: [{ id: 'message-2', session_id: 'next', global_seq: 2, role: 'assistant', content: 'two', created_at: 2 }],
     },
     permissions_by_session: {
-      next: [{ id: 'permission-1', session_id: 'next', status: 'pending' }],
+      next: [{
+        id: 'permission-1',
+        session_id: 'next',
+        run_id: 'run-new',
+        call_id: 'call-bash',
+        tool_name: 'bash',
+        tool_arguments: '{"cmd":"git status"}',
+        status: 'pending',
+        requirement: 'bash',
+        mode: 'auto',
+        permission_requested_at: 35,
+      }],
     },
     run_intents_by_session: {
       next: [
@@ -111,6 +122,10 @@ test('normalizeDesktopStateSnapshot builds a plain replacement snapshot from wor
   assert.equal(snapshot.sessionsById?.next?.workspacePath, '/workspace/next')
   assert.equal(snapshot.messagesBySessionId?.next?.[0]?.id, 'message-2')
   assert.equal(snapshot.permissionsById?.['permission-1']?.sessionId, 'next')
+  assert.equal(snapshot.sessionsById?.next?.permissionsHydrated, true)
+  assert.equal(snapshot.sessionsById?.next?.pendingPermissions[0]?.id, 'permission-1')
+  assert.equal(snapshot.sessionsById?.next?.pendingPermissionCount, 1)
+  assert.equal(snapshot.sessionsById?.next?.live.status, 'blocked')
   assert.equal(snapshot.runIntentsBySessionId?.next?.runId, 'run-new')
   assert.equal(snapshot.workspacesByPath?.['/workspace/next']?.sessionIds[0], 'next')
   assert.equal(snapshot.routeReadinessBySessionId?.next?.ready, true)

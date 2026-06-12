@@ -1,6 +1,7 @@
 import { apiFetch, readErrorMessage } from '../../../app/api'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import type { AgentModelPolicyRecord, ChatMessageRecord, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord, ResolvedSessionPreference, SessionPreferenceRecord } from '../chat/types/chat'
+import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import type { DesktopPermissionRecord, DesktopRunIntentRecord, DesktopSessionRecord, DesktopSessionUsageRecord } from '../types/realtime'
 import type { DesktopDaemonSnapshot, DesktopSessionReadinessRecord, DesktopWorkspaceRecord } from './desktop-state'
 import { replaceDesktopFromSnapshot } from './desktop-state-store'
@@ -221,7 +222,8 @@ export async function loadDesktopStateSnapshot(input: DesktopStateSnapshotReques
 
 export function normalizeDesktopStateSnapshot(response: DesktopStateWorksetResponseWire): DesktopDaemonSnapshot {
   assertSnapshotRevision(response.rev)
-  const sessionsById = mapSessions(response.sessions_by_id)
+  const permissionsBySessionId = mapPermissionsBySession(response.permissions_by_session)
+  const sessionsById = mapSessions(response.sessions_by_id, permissionsBySessionId)
   const sessionOrder = normalizeSessionOrder(sessionsById, response.session_order)
 
   return {
@@ -229,7 +231,7 @@ export function normalizeDesktopStateSnapshot(response: DesktopStateWorksetRespo
     sessionsById,
     sessionOrder,
     messagesBySessionId: mapMessagesBySession(response.messages_by_session),
-    permissionsById: permissionsById(response.permissions_by_session),
+    permissionsById: permissionsById(permissionsBySessionId),
     plansBySessionId: mapFirstSessionValues(response.plans_by_session, mapPlan),
     planRevisionsBySessionId: mapPlanRevisions(response.plan_revisions_by_session),
     usageBySessionId: mapUsageBySession(response.usage_by_session),
@@ -275,10 +277,14 @@ function assertSnapshotRevision(rev: unknown): asserts rev is number {
   }
 }
 
-function mapSessions(source: Record<string, SessionWire> | undefined): Record<string, DesktopSessionRecord> {
+function mapSessions(source: Record<string, SessionWire> | undefined, permissionsBySessionId: Record<string, DesktopPermissionRecord[]>): Record<string, DesktopSessionRecord> {
   const sessions: Record<string, DesktopSessionRecord> = {}
   for (const [fallbackId, session] of Object.entries(source ?? {})) {
-    const mapped = mapSession(session, fallbackId)
+    const explicitId = String(session.id ?? '').trim()
+    const pendingPermissions = explicitId && explicitId !== fallbackId
+      ? [...(permissionsBySessionId[fallbackId] ?? []), ...(permissionsBySessionId[explicitId] ?? [])]
+      : permissionsBySessionId[fallbackId] ?? []
+    const mapped = mapSession(session, fallbackId, pendingPermissions)
     if (mapped.id) {
       sessions[mapped.id] = mapped
     }
@@ -286,7 +292,7 @@ function mapSessions(source: Record<string, SessionWire> | undefined): Record<st
   return sessions
 }
 
-function mapSession(session: SessionWire, fallbackId = ''): DesktopSessionRecord {
+function mapSession(session: SessionWire, fallbackId = '', pendingPermissions: DesktopPermissionRecord[] = []): DesktopSessionRecord {
   const id = String(session.id ?? fallbackId).trim()
   const lifecycle = session.lifecycle && typeof session.lifecycle === 'object'
     ? {
@@ -303,12 +309,21 @@ function mapSession(session: SessionWire, fallbackId = ''): DesktopSessionRecord
         ownerTransport: String(session.lifecycle.owner_transport ?? '').trim() || null,
       }
     : null
+  const mode = String(session.mode ?? 'auto').trim() || 'auto'
+  const sessionPendingPermissions = pendingPermissions.filter((permission) => permission.sessionId === id && permission.status.trim().toLowerCase() === 'pending')
+  const pendingPermissionCount = countApprovalRequiredPermissions(sessionPendingPermissions, mode)
+  const baseLive = emptyLiveState()
+  if (!lifecycle && pendingPermissionCount > 0) {
+    baseLive.status = 'blocked'
+    baseLive.lastEventType = 'permission.requested'
+    baseLive.lastEventAt = Math.max(...sessionPendingPermissions.map((permission) => permission.permissionRequestedAt || permission.updatedAt || permission.createdAt || 0), 0) || null
+  }
   return {
     id,
     title: String(session.title ?? '').trim(),
     workspacePath: String(session.workspace_path ?? '').trim(),
     workspaceName: String(session.workspace_name ?? '').trim(),
-    mode: String(session.mode ?? 'auto').trim() || 'auto',
+    mode,
     metadata: session.metadata && typeof session.metadata === 'object' ? session.metadata : undefined,
     sessionApi: String(session.session_api ?? '').trim(),
     lastEventSeq: numberValue(session.last_event_seq),
@@ -338,9 +353,9 @@ function mapSession(session: SessionWire, fallbackId = ''): DesktopSessionRecord
     gitCommittedDeletions: numberValue(session.git_committed_deletions),
     lifecycle,
     runIntent: session.run_intent ? mapRunIntent(session.run_intent) : null,
-    live: emptyLiveState(),
-    pendingPermissions: [],
-    pendingPermissionCount: 0,
+    live: baseLive,
+    pendingPermissions: sessionPendingPermissions,
+    pendingPermissionCount,
     usage: null,
   }
 }
@@ -370,11 +385,28 @@ function mapMessage(message: MessageWire): ChatMessageRecord {
   }
 }
 
-function permissionsById(source: Record<string, PermissionWire[]> | undefined): Record<string, DesktopPermissionRecord> {
+function mapPermissionsBySession(source: Record<string, PermissionWire[]> | undefined): Record<string, DesktopPermissionRecord[]> {
+  const permissionsBySessionId: Record<string, DesktopPermissionRecord[]> = {}
+  for (const [sessionId, records] of Object.entries(source ?? {})) {
+    const mapped = (records ?? [])
+      .map(mapPermission)
+      .filter((permission) => permission.id && permission.sessionId && permission.status.trim().toLowerCase() === 'pending')
+      .sort((left, right) =>
+        (right.permissionRequestedAt - left.permissionRequestedAt)
+        || (right.updatedAt - left.updatedAt)
+        || left.id.localeCompare(right.id),
+      )
+    if (mapped.length > 0) {
+      permissionsBySessionId[sessionId] = mapped
+    }
+  }
+  return permissionsBySessionId
+}
+
+function permissionsById(source: Record<string, DesktopPermissionRecord[]> | undefined): Record<string, DesktopPermissionRecord> {
   const permissions: Record<string, DesktopPermissionRecord> = {}
   for (const records of Object.values(source ?? {})) {
-    for (const permissionWire of records ?? []) {
-      const permission = mapPermission(permissionWire)
+    for (const permission of records ?? []) {
       if (permission.id) {
         permissions[permission.id] = permission
       }
