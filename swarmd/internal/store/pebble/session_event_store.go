@@ -190,10 +190,11 @@ type V3SessionReplay struct {
 }
 
 type V3SessionHydration struct {
-	Session    SessionSnapshot     `json:"session"`
-	Projection V3SessionProjection `json:"projection"`
-	Messages   []MessageSnapshot   `json:"messages"`
-	Events     []V3SessionEvent    `json:"events"`
+	Session                SessionSnapshot     `json:"session"`
+	Projection             V3SessionProjection `json:"projection"`
+	Messages               []MessageSnapshot   `json:"messages"`
+	Events                 []V3SessionEvent    `json:"events"`
+	SnapshotEndpointCursor string              `json:"snapshot_endpoint_cursor"`
 }
 
 type v3SessionEventReplayPayload struct {
@@ -824,7 +825,11 @@ func (s *SessionStore) hydrateV3SessionSnapshotFromReader(reader pebble.Reader, 
 			return V3SessionHydration{}, false, err
 		}
 	}
-	return V3SessionHydration{Session: session, Projection: projection, Messages: messages, Events: events}, true, nil
+	snapshotEndpointSeq, err := readV3RealtimeOutboxSequenceFromReader(reader)
+	if err != nil {
+		return V3SessionHydration{}, false, err
+	}
+	return V3SessionHydration{Session: session, Projection: projection, Messages: messages, Events: events, SnapshotEndpointCursor: V3RealtimeOutboxCursor(snapshotEndpointSeq)}, true, nil
 }
 
 func (s *SessionStore) GetV3SessionIdempotencyRecord(accountScopeID, sessionID, idempotencyKey string) (V3SessionIdempotencyRecord, bool, error) {
@@ -1037,6 +1042,14 @@ func (s *SessionStore) GetV3RealtimeOutbox(endpointSeq uint64) (V3RealtimeOutbox
 		return V3RealtimeOutboxRecord{}, ok, err
 	}
 	return record, true, nil
+}
+
+func (s *SessionStore) CurrentV3RealtimeOutboxCursor() (string, error) {
+	seq, err := s.readV3RealtimeOutboxSequence()
+	if err != nil {
+		return "", err
+	}
+	return V3RealtimeOutboxCursor(seq), nil
 }
 
 func (s *SessionStore) ListV3RealtimeOutboxAfter(afterEndpointSeq uint64, limit int) ([]V3RealtimeOutboxRecord, error) {

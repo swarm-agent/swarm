@@ -109,6 +109,13 @@ func (s *Service) ListRealtimeOutboxAfter(afterEndpointSeq uint64, limit int) ([
 	return s.store.ListV3RealtimeOutboxAfter(afterEndpointSeq, limit)
 }
 
+func (s *Service) CurrentRealtimeOutboxCursor() (string, error) {
+	if s == nil || s.store == nil {
+		return "", errors.New("session store is not configured")
+	}
+	return s.store.CurrentV3RealtimeOutboxCursor()
+}
+
 func (s *Service) ListRealtimeOutboxForSessionAfterSeq(sessionID string, afterSeq uint64, limit int) ([]RealtimeOutboxRecord, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("session store is not configured")

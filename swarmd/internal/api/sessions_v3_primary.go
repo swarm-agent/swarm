@@ -111,22 +111,23 @@ type sessionsV3PlanUpsertRequest struct {
 }
 
 type sessionsV3HydratedSession struct {
-	Session            pebblestore.SessionSnapshot       `json:"session"`
-	Projection         sessionruntime.SessionProjection  `json:"projection"`
-	Messages           []pebblestore.MessageSnapshot     `json:"messages"`
-	Events             []sessionruntime.SessionEvent     `json:"events"`
-	PendingPermissions []pebblestore.PermissionRecord    `json:"pending_permissions"`
-	UsageSummary       *pebblestore.SessionUsageSummary  `json:"usage_summary,omitempty"`
-	ActiveRunIntent    *pebblestore.V3SessionRunIntent   `json:"active_run_intent,omitempty"`
-	Preference         pebblestore.ModelPreference       `json:"preference"`
-	ContextWindow      int                               `json:"context_window"`
-	MaxOutputTokens    int                               `json:"max_output_tokens"`
-	AgentModelPolicy   sessionsV3AgentModelPolicy        `json:"agent_model_policy"`
-	HasActivePlan      bool                              `json:"has_active_plan"`
-	ActivePlan         pebblestore.SessionPlanSnapshot   `json:"active_plan,omitempty"`
-	PlanRevisions      []pebblestore.SessionPlanSnapshot `json:"plan_revisions"`
-	AppliedSeq         uint64                            `json:"applied_seq"`
-	HighWatermark      uint64                            `json:"high_watermark"`
+	Session                pebblestore.SessionSnapshot       `json:"session"`
+	Projection             sessionruntime.SessionProjection  `json:"projection"`
+	Messages               []pebblestore.MessageSnapshot     `json:"messages"`
+	Events                 []sessionruntime.SessionEvent     `json:"events"`
+	PendingPermissions     []pebblestore.PermissionRecord    `json:"pending_permissions"`
+	UsageSummary           *pebblestore.SessionUsageSummary  `json:"usage_summary,omitempty"`
+	ActiveRunIntent        *pebblestore.V3SessionRunIntent   `json:"active_run_intent,omitempty"`
+	Preference             pebblestore.ModelPreference       `json:"preference"`
+	ContextWindow          int                               `json:"context_window"`
+	MaxOutputTokens        int                               `json:"max_output_tokens"`
+	AgentModelPolicy       sessionsV3AgentModelPolicy        `json:"agent_model_policy"`
+	HasActivePlan          bool                              `json:"has_active_plan"`
+	ActivePlan             pebblestore.SessionPlanSnapshot   `json:"active_plan,omitempty"`
+	PlanRevisions          []pebblestore.SessionPlanSnapshot `json:"plan_revisions"`
+	AppliedSeq             uint64                            `json:"applied_seq"`
+	HighWatermark          uint64                            `json:"high_watermark"`
+	SnapshotEndpointCursor string                            `json:"snapshot_endpoint_cursor"`
 }
 
 type sessionsV3AgentModelPolicy struct {
@@ -1357,7 +1358,7 @@ func (s *Server) hydrateSessionsV3PrimaryWithLimits(principal identity.Principal
 		}
 		planRevisions = revisions
 	}
-	return sessionsV3HydratedSession{Session: hydrated.Session, Projection: hydrated.Projection, Messages: hydrated.Messages, Events: hydrated.Events, PendingPermissions: pendingPermissions, UsageSummary: usageSummary, ActiveRunIntent: activeRunIntent, Preference: preference, ContextWindow: contextWindow, MaxOutputTokens: maxOutputTokens, AgentModelPolicy: agentModelPolicy, HasActivePlan: hasActivePlan, ActivePlan: activePlan, PlanRevisions: planRevisions, AppliedSeq: hydrated.Projection.LastEventSeq, HighWatermark: hydrated.Projection.ProjectionHighWatermarkSeq}, true, nil
+	return sessionsV3HydratedSession{Session: hydrated.Session, Projection: hydrated.Projection, Messages: hydrated.Messages, Events: hydrated.Events, PendingPermissions: pendingPermissions, UsageSummary: usageSummary, ActiveRunIntent: activeRunIntent, Preference: preference, ContextWindow: contextWindow, MaxOutputTokens: maxOutputTokens, AgentModelPolicy: agentModelPolicy, HasActivePlan: hasActivePlan, ActivePlan: activePlan, PlanRevisions: planRevisions, AppliedSeq: hydrated.Projection.LastEventSeq, HighWatermark: hydrated.Projection.ProjectionHighWatermarkSeq, SnapshotEndpointCursor: hydrated.SnapshotEndpointCursor}, true, nil
 }
 
 func (s *Server) sessionsV3AgentModelPolicy(session pebblestore.SessionSnapshot, defaultPreference pebblestore.ModelPreference, defaultContextWindow, defaultMaxOutputTokens int) sessionsV3AgentModelPolicy {
@@ -1431,23 +1432,24 @@ func sessionsV3MetadataString(metadata map[string]any, key string) string {
 
 func sessionsV3HydratedResponse(hydrated sessionsV3HydratedSession) map[string]any {
 	response := map[string]any{
-		"ok":                  true,
-		"session":             hydrated.Session,
-		"projection":          hydrated.Projection,
-		"messages":            hydrated.Messages,
-		"events":              hydrated.Events,
-		"pending_permissions": hydrated.PendingPermissions,
-		"usage_summary":       hydrated.UsageSummary,
-		"active_run_intent":   hydrated.ActiveRunIntent,
-		"preference":          hydrated.Preference,
-		"context_window":      hydrated.ContextWindow,
-		"max_output_tokens":   hydrated.MaxOutputTokens,
-		"agent_model_policy":  hydrated.AgentModelPolicy,
-		"has_active_plan":     hydrated.HasActivePlan,
-		"active_plan":         nil,
-		"plan_revisions":      hydrated.PlanRevisions,
-		"applied_seq":         hydrated.AppliedSeq,
-		"high_watermark":      hydrated.HighWatermark,
+		"ok":                       true,
+		"session":                  hydrated.Session,
+		"projection":               hydrated.Projection,
+		"messages":                 hydrated.Messages,
+		"events":                   hydrated.Events,
+		"pending_permissions":      hydrated.PendingPermissions,
+		"usage_summary":            hydrated.UsageSummary,
+		"active_run_intent":        hydrated.ActiveRunIntent,
+		"preference":               hydrated.Preference,
+		"context_window":           hydrated.ContextWindow,
+		"max_output_tokens":        hydrated.MaxOutputTokens,
+		"agent_model_policy":       hydrated.AgentModelPolicy,
+		"has_active_plan":          hydrated.HasActivePlan,
+		"active_plan":              nil,
+		"plan_revisions":           hydrated.PlanRevisions,
+		"applied_seq":              hydrated.AppliedSeq,
+		"high_watermark":           hydrated.HighWatermark,
+		"snapshot_endpoint_cursor": hydrated.SnapshotEndpointCursor,
 	}
 	if hydrated.HasActivePlan {
 		response["active_plan"] = hydrated.ActivePlan

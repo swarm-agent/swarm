@@ -2873,6 +2873,10 @@ func newRoutedSessionTestServer(t *testing.T) (*Server, *sessionruntime.Service,
 func newRoutedSessionTestServerWithSwarmStore(t *testing.T) (*Server, *sessionruntime.Service, *permission.Service, *pebblestore.SessionRouteStore, *pebblestore.SwarmStore) {
 	t.Helper()
 	t.Setenv("SWARM_API_NO_AUTH", "1")
+	// Keep V3 realtime contract tests deterministic regardless of the developer
+	// shell. Optional diagnostics are durable V3 events and would otherwise add
+	// extra outbox rows/cursors to test fixtures.
+	t.Setenv("SWARM_V3_DIAGNOSTICS", "0")
 
 	var server *Server
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "routed-session-api.pebble"))
