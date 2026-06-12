@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestListPendingPermissionsRequestsPendingStatus(t *testing.T) {
+func TestListPendingPermissionsRequestsV3PrimaryPendingStatus(t *testing.T) {
 	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
 	t.Setenv("DATA_DIR", "")
 
@@ -43,8 +43,8 @@ func TestListPendingPermissionsRequestsPendingStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListPendingPermissions() error = %v", err)
 	}
-	if gotPath != "/v2/sessions/session-test/permissions" {
-		t.Fatalf("request path = %q, want /v2/sessions/session-test/permissions", gotPath)
+	if gotPath != "/v3/sessions/session-test/permissions" {
+		t.Fatalf("request path = %q, want /v3/sessions/session-test/permissions", gotPath)
 	}
 	if gotQuery != "status=pending&limit=200" {
 		t.Fatalf("request query = %q, want status=pending&limit=200", gotQuery)

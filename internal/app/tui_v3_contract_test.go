@@ -42,6 +42,7 @@ func TestTUIChatBackendContractDoesNotCallLegacySessionAPIs(t *testing.T) {
 		"RunSessionWithOptions(":       "TUI chat turns must use v3 message commit plus realtime",
 		"RunSessionStreamWithOptions(": "TUI chat turns must use v3 realtime, not legacy run stream",
 		"StopSessionRun(":              "TUI chat stop must use v3 primary stop directly",
+		"sessionV2LifecyclePath(":      "TUI chat permissions/plans must use v3 primary routes, not v2 lifecycle routes",
 		"/v1/sessions":                 "TUI chat backend must not call v1 session routes",
 		"/v2/sessions":                 "TUI chat backend must not call v2 session routes",
 	})

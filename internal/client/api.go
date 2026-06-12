@@ -3117,12 +3117,27 @@ func (c *API) CreateSessionV3TUIWithOptions(ctx context.Context, options Session
 }
 
 func (c *API) GetSessionV3(ctx context.Context, sessionID string) (SessionV3Hydrated, error) {
+	return c.GetSessionV3WithLimits(ctx, sessionID, 0, 0)
+}
+
+func (c *API) GetSessionV3WithLimits(ctx context.Context, sessionID string, messageLimit, eventLimit int) (SessionV3Hydrated, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return SessionV3Hydrated{}, errors.New("session id is required")
 	}
+	path := sessionV3PrimaryPath(sessionID, "")
+	query := url.Values{}
+	if messageLimit > 0 {
+		query.Set("message_limit", strconv.Itoa(messageLimit))
+	}
+	if eventLimit > 0 {
+		query.Set("event_limit", strconv.Itoa(eventLimit))
+	}
+	if len(query) > 0 {
+		path += "?" + query.Encode()
+	}
 	var resp SessionV3Hydrated
-	if err := c.getJSON(ctx, sessionV3PrimaryPath(sessionID, ""), &resp, true); err != nil {
+	if err := c.getJSON(ctx, path, &resp, true); err != nil {
 		return SessionV3Hydrated{}, err
 	}
 	resp.Session = markSessionV3(resp.Session, resp.Projection)
@@ -3809,7 +3824,7 @@ func (c *API) ListPendingPermissions(ctx context.Context, sessionID string, limi
 	if limit <= 0 {
 		limit = 200
 	}
-	path := sessionV2LifecyclePath(sessionID, "permissions") + "?status=pending&limit=" + strconv.Itoa(limit)
+	path := sessionV3PrimaryPath(sessionID, "permissions") + "?status=pending&limit=" + strconv.Itoa(limit)
 	var resp struct {
 		OK          bool               `json:"ok"`
 		SessionID   string             `json:"session_id"`
@@ -3830,7 +3845,7 @@ func (c *API) ListPermissions(ctx context.Context, sessionID string, limit int) 
 	if limit <= 0 {
 		limit = 200
 	}
-	path := sessionV2LifecyclePath(sessionID, "permissions") + "?limit=" + strconv.Itoa(limit)
+	path := sessionV3PrimaryPath(sessionID, "permissions") + "?limit=" + strconv.Itoa(limit)
 	var resp struct {
 		OK          bool               `json:"ok"`
 		SessionID   string             `json:"session_id"`
@@ -3863,7 +3878,7 @@ func (c *API) ResolvePermissionWithArguments(ctx context.Context, sessionID, per
 	if approvedArguments = strings.TrimSpace(approvedArguments); approvedArguments != "" {
 		req["approved_arguments"] = json.RawMessage(approvedArguments)
 	}
-	path := sessionV2LifecyclePath(sessionID, "permissions/"+url.PathEscape(permissionID)+"/resolve")
+	path := sessionV3PrimaryPath(sessionID, "permissions/"+url.PathEscape(permissionID)+"/resolve")
 	var resp struct {
 		OK         bool             `json:"ok"`
 		SessionID  string           `json:"session_id"`
@@ -3889,7 +3904,7 @@ func (c *API) ResolveAllPermissions(ctx context.Context, sessionID, action, reas
 		"reason": strings.TrimSpace(reason),
 		"limit":  1000,
 	}
-	path := sessionV2LifecyclePath(sessionID, "permissions/resolve_all")
+	path := sessionV3PrimaryPath(sessionID, "permissions/resolve_all")
 	var resp struct {
 		OK        bool               `json:"ok"`
 		SessionID string             `json:"session_id"`

@@ -279,6 +279,69 @@ func TestAPIChatBackendV3CompactUsesNativeCompactEndpoint(t *testing.T) {
 	}
 }
 
+func TestAPIChatBackendV3RunTurnRefetchesOnRealtimeCursorGap(t *testing.T) {
+	var gotPaths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPaths = append(gotPaths, r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v3/sessions/session-v3/messages":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":         true,
+				"session":    map[string]any{"id": "session-v3", "workspace_path": "/workspace", "workspace_name": "workspace", "title": "V3", "mode": "auto"},
+				"projection": map[string]any{"session_id": "session-v3", "last_event_seq": 2, "projection_high_watermark_seq": 2},
+				"message":    map[string]any{"id": "msg-user", "session_id": "session-v3", "global_seq": 2, "role": "user", "content": "hello"},
+				"run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "pending_executor", "event_seq": 2},
+				"messages":   []any{},
+				"events":     []any{},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/realtime/stream":
+			writeTestV3RealtimeFrames(t, w, r,
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.started", "session_id": "session-v3", "subscription_id": "active-turn", "after_seq": 2, "high_watermark_seq": 6},
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "event_type": "session.assistant.delta", "last_seq": 4, "rev": 2, "prevRev": 1, "event": map[string]any{"id": "evt-4", "session_id": "session-v3", "seq": 4, "event_type": "session.assistant.delta", "ts_unix_ms": 31, "payload": json.RawMessage(`{"session_id":"session-v3","run_id":"run-1","delta":"gap"}`)}},
+			)
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/sessions/session-v3":
+			if r.URL.Query().Get("event_limit") != "200" || r.URL.Query().Get("message_limit") != "500" {
+				t.Fatalf("refetch query = %q", r.URL.RawQuery)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":         true,
+				"session":    map[string]any{"id": "session-v3", "workspace_path": "/workspace", "workspace_name": "workspace", "title": "V3", "mode": "auto"},
+				"projection": map[string]any{"session_id": "session-v3", "last_event_seq": 6, "projection_high_watermark_seq": 6},
+				"messages": []any{
+					map[string]any{"id": "msg-user", "session_id": "session-v3", "global_seq": 2, "role": "user", "content": "hello"},
+					map[string]any{"id": "msg-assistant", "session_id": "session-v3", "global_seq": 5, "role": "assistant", "content": "hello after refetch", "metadata": map[string]any{"run_id": "run-1"}},
+				},
+				"events": []any{
+					map[string]any{"id": "evt-5", "session_id": "session-v3", "seq": 5, "event_type": "session.assistant.completed", "ts_unix_ms": 32, "payload": json.RawMessage(`{"session_id":"session-v3","run_id":"run-1","message":{"id":"msg-assistant","session_id":"session-v3","global_seq":5,"role":"assistant","content":"hello after refetch","metadata":{"run_id":"run-1"}}}`)},
+					map[string]any{"id": "evt-6", "session_id": "session-v3", "seq": 6, "event_type": "session.run_intent.recorded", "ts_unix_ms": 33, "payload": json.RawMessage(`{"session_id":"session-v3","run_id":"run-1","status":"completed","run_intent":{"session_id":"session-v3","run_id":"run-1","status":"completed","event_seq":6}}`)},
+				},
+				"pending_permissions": []any{},
+			})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	backend := newAPIChatBackend(testAPIWithToken(server.URL), "v3")
+	var events []ui.ChatRunStreamEvent
+	resp, err := backend.RunTurnStream(context.Background(), "session-v3", ui.ChatRunRequest{Prompt: "hello"}, func(event ui.ChatRunStreamEvent) {
+		events = append(events, event)
+	})
+	if err != nil {
+		t.Fatalf("RunTurnStream() error = %v", err)
+	}
+	if resp.PrimaryRunStatus != "completed" || resp.AssistantMessage.Content != "hello after refetch" {
+		t.Fatalf("response = %#v", resp)
+	}
+	if len(gotPaths) != 3 || !strings.HasPrefix(gotPaths[2], "GET /v3/sessions/session-v3?") {
+		t.Fatalf("paths = %#v", gotPaths)
+	}
+	if len(events) < 2 || events[2].Type != "session.refetched" {
+		t.Fatalf("events = %#v, want session.refetched after local gap", events)
+	}
+}
+
 func TestAPIChatBackendV3ActiveTurnUsesLiveWebSocketStream(t *testing.T) {
 	body, err := os.ReadFile("chat_backend_adapter.go")
 	if err != nil {
@@ -292,6 +355,35 @@ func TestAPIChatBackendV3ActiveTurnUsesLiveWebSocketStream(t *testing.T) {
 		if strings.Contains(source, forbidden) {
 			t.Fatalf("V3 active turn consumption must not use %s in place of the native realtime websocket", forbidden)
 		}
+	}
+}
+
+func TestAPIChatBackendV3MapsPermissionAndUsageRealtimeEvents(t *testing.T) {
+	requested := v3StreamEventToChatEvent(client.SessionV3Event{
+		SessionID: "session-v3",
+		EventType: "permission.requested",
+		Payload:   json.RawMessage(`{"session_id":"session-v3","run_id":"run-v3","tool_name":"ask-user","call_id":"call-perm","permission":{"id":"perm-1","session_id":"session-v3","run_id":"run-v3","call_id":"call-perm","tool_name":"ask-user","tool_arguments":"{\"question\":\"Continue?\"}","status":"pending","mode":"auto"}}`),
+	})
+	if requested.Type != "permission.requested" || requested.Permission == nil || requested.Permission.ID != "perm-1" || requested.ToolName != "ask-user" || requested.CallID != "call-perm" {
+		t.Fatalf("mapped permission.requested = %#v", requested)
+	}
+
+	updated := v3StreamEventToChatEvent(client.SessionV3Event{
+		SessionID: "session-v3",
+		EventType: "permission.updated",
+		Payload:   json.RawMessage(`{"session_id":"session-v3","run_id":"run-v3","permission":{"id":"perm-1","session_id":"session-v3","run_id":"run-v3","call_id":"call-perm","tool_name":"ask-user","status":"approved","decision":"allow_once","reason":"ok"}}`),
+	})
+	if updated.Type != "permission.updated" || updated.Permission == nil || updated.Permission.Status != "approved" || updated.Permission.Decision != "allow_once" {
+		t.Fatalf("mapped permission.updated = %#v", updated)
+	}
+
+	usage := v3StreamEventToChatEvent(client.SessionV3Event{
+		SessionID: "session-v3",
+		EventType: "usage.updated",
+		Payload:   json.RawMessage(`{"session_id":"session-v3","run_id":"run-v3","turn_usage":{"session_id":"session-v3","run_id":"run-v3","context_window":1000,"total_tokens":42,"transport":"websocket","connected_via_websocket":true},"usage_summary":{"session_id":"session-v3","context_window":1000,"total_tokens":42,"remaining_tokens":958,"last_run_id":"run-v3"}}`),
+	})
+	if usage.Type != "usage.updated" || usage.TurnUsage == nil || usage.TurnUsage.TotalTokens != 42 || usage.UsageSummary == nil || usage.UsageSummary.RemainingTokens != 958 {
+		t.Fatalf("mapped usage.updated = %#v", usage)
 	}
 }
 
@@ -358,7 +450,17 @@ func writeTestV3RealtimeFrames(t *testing.T, w http.ResponseWriter, r *http.Requ
 	if subscribe["protocol"] != "v3.realtime" || subscribe["kind"] != "subscribe.session" || subscribe["session_id"] != "session-v3" {
 		t.Fatalf("subscribe frame = %#v", subscribe)
 	}
+	nextRev := uint64(1)
 	for _, frame := range frames {
+		if frame["kind"] == "event" {
+			if _, ok := frame["rev"]; !ok {
+				frame["rev"] = nextRev
+				frame["prevRev"] = nextRev - 1
+				nextRev++
+			} else if rev, ok := numericTestFrameValue(frame["rev"]); ok {
+				nextRev = rev + 1
+			}
+		}
 		raw, err := json.Marshal(frame)
 		if err != nil {
 			t.Fatalf("marshal websocket frame: %v", err)
@@ -370,6 +472,26 @@ func writeTestV3RealtimeFrames(t *testing.T, w http.ResponseWriter, r *http.Requ
 			t.Fatalf("flush websocket frame: %v", err)
 		}
 	}
+}
+
+func numericTestFrameValue(value any) (uint64, bool) {
+	switch v := value.(type) {
+	case uint64:
+		return v, true
+	case int:
+		if v >= 0 {
+			return uint64(v), true
+		}
+	case int64:
+		if v >= 0 {
+			return uint64(v), true
+		}
+	case float64:
+		if v >= 0 {
+			return uint64(v), true
+		}
+	}
+	return 0, false
 }
 
 func readTestWebSocketText(r *bufio.Reader) (byte, []byte, error) {

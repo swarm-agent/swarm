@@ -66,13 +66,13 @@ func TestPrimaryLifecycleMethodsUseV2SessionPaths(t *testing.T) {
 			return err
 		}},
 		{"set active plan", http.MethodPost, "/v2/sessions/session-1/plans/active", func(api *API) error { _, err := api.SetActiveSessionPlan(ctx, sessionID, planID); return err }},
-		{"list pending permissions", http.MethodGet, "/v2/sessions/session-1/permissions", func(api *API) error { _, err := api.ListPendingPermissions(ctx, sessionID, 20); return err }},
-		{"list permissions", http.MethodGet, "/v2/sessions/session-1/permissions", func(api *API) error { _, err := api.ListPermissions(ctx, sessionID, 20); return err }},
-		{"resolve permission", http.MethodPost, "/v2/sessions/session-1/permissions/permission-1/resolve", func(api *API) error {
+		{"list pending permissions", http.MethodGet, "/v3/sessions/session-1/permissions", func(api *API) error { _, err := api.ListPendingPermissions(ctx, sessionID, 20); return err }},
+		{"list permissions", http.MethodGet, "/v3/sessions/session-1/permissions", func(api *API) error { _, err := api.ListPermissions(ctx, sessionID, 20); return err }},
+		{"resolve permission", http.MethodPost, "/v3/sessions/session-1/permissions/permission-1/resolve", func(api *API) error {
 			_, err := api.ResolvePermissionWithArguments(ctx, sessionID, permissionID, "approve_once", "ok", `{"cmd":"true"}`)
 			return err
 		}},
-		{"resolve all permissions", http.MethodPost, "/v2/sessions/session-1/permissions/resolve_all", func(api *API) error {
+		{"resolve all permissions", http.MethodPost, "/v3/sessions/session-1/permissions/resolve_all", func(api *API) error {
 			_, err := api.ResolveAllPermissions(ctx, sessionID, "deny_once", "no")
 			return err
 		}},
@@ -340,11 +340,11 @@ func writeLifecycleTestResponse(t *testing.T, w http.ResponseWriter, r *http.Req
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "session_id": sessionID, "plan": map[string]any{"id": planID, "session_id": sessionID, "title": "Plan"}})
 	case "/v2/sessions/" + sessionID + "/plans/active":
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "session_id": sessionID, "has_active": true, "active_plan": map[string]any{"id": planID, "session_id": sessionID, "title": "Plan", "active": true}})
-	case "/v2/sessions/" + sessionID + "/permissions":
+	case "/v2/sessions/" + sessionID + "/permissions", "/v3/sessions/" + sessionID + "/permissions":
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "session_id": sessionID, "count": 0, "permissions": []any{}})
-	case "/v2/sessions/" + sessionID + "/permissions/" + permissionID + "/resolve":
+	case "/v2/sessions/" + sessionID + "/permissions/" + permissionID + "/resolve", "/v3/sessions/" + sessionID + "/permissions/" + permissionID + "/resolve":
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "session_id": sessionID, "permission": map[string]any{"id": permissionID, "session_id": sessionID}})
-	case "/v2/sessions/" + sessionID + "/permissions/resolve_all":
+	case "/v2/sessions/" + sessionID + "/permissions/resolve_all", "/v3/sessions/" + sessionID + "/permissions/resolve_all":
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "session_id": sessionID, "count": 0, "resolved": []any{}})
 	case "/v2/sessions/" + sessionID + "/run":
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": map[string]any{"session_id": sessionID}})

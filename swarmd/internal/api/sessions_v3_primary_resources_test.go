@@ -77,19 +77,9 @@ func TestSessionsV3PrimaryHydrateIncludesActiveRunIntentFromDurableStore(t *test
 func TestSessionsV3PrimaryHydrateIncludesPermissionsAndUsage(t *testing.T) {
 	server, sessionSvc, permissionSvc, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 
-	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"v3-resources-create","workspace_path":"/workspace/v3","title":"V3 Resources","mode":"auto","agent_name":"swarm"}`))
-	createReq.Header.Set("Content-Type", "application/json")
-	createRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(createRec, withTestPrincipal(createReq))
-	if createRec.Code != http.StatusOK {
-		t.Fatalf("create status = %d, want %d, body=%s", createRec.Code, http.StatusOK, createRec.Body.String())
-	}
-	var created struct {
-		Session pebblestore.SessionSnapshot `json:"session"`
-	}
-	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
-		t.Fatalf("decode create response: %v", err)
-	}
+	created := struct {
+		Session pebblestore.SessionSnapshot
+	}{Session: createSessionsV3PrimaryResourceTestSession(t, server, "session-v3-resources", "V3 Resources")}
 
 	pending, err := permissionSvc.CreatePending(permission.CreateInput{SessionID: created.Session.ID, RunID: "run-v3", CallID: "call-v3", ToolName: "bash", ToolArguments: "{}", Requirement: "approval", Mode: "auto"})
 	if err != nil {
@@ -122,25 +112,61 @@ func TestSessionsV3PrimaryHydrateIncludesPermissionsAndUsage(t *testing.T) {
 	}
 }
 
-func TestSessionsV3PrimaryPermissionResolveUsesV3Path(t *testing.T) {
+func createSessionsV3PrimaryResourceTestSession(t *testing.T, server *Server, sessionID, title string) pebblestore.SessionSnapshot {
+	t.Helper()
+	now := int64(1000)
+	session := pebblestore.SessionSnapshot{
+		ID:             sessionID,
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: testPrincipal().AccountScopeID,
+		WorkspacePath:  "/workspace/v3",
+		WorkspaceName:  "v3",
+		Title:          title,
+		Mode:           sessionruntime.ModeAuto,
+		Preference:     pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "medium"},
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:      sessionID,
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: testPrincipal().AccountScopeID,
+		IdempotencyKey: sessionID + "-create",
+		PayloadHash:    sessionID + "-hash",
+		Kind:           sessionruntime.SessionMutationCreateSession,
+		Session:        &session,
+		NowUnixMs:      now,
+	}); err != nil {
+		t.Fatalf("create v3 session: %v", err)
+	}
+	return session
+}
+
+func TestSessionsV3PrimaryPermissionsListAndResolveUseV3Path(t *testing.T) {
 	server, _, permissionSvc, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 
-	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"v3-permission-create","workspace_path":"/workspace/v3","title":"V3 Permission","mode":"auto","agent_name":"swarm"}`))
-	createReq.Header.Set("Content-Type", "application/json")
-	createRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(createRec, withTestPrincipal(createReq))
-	if createRec.Code != http.StatusOK {
-		t.Fatalf("create status = %d, want %d, body=%s", createRec.Code, http.StatusOK, createRec.Body.String())
-	}
-	var created struct {
-		Session pebblestore.SessionSnapshot `json:"session"`
-	}
-	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
-		t.Fatalf("decode create response: %v", err)
-	}
+	created := struct {
+		Session pebblestore.SessionSnapshot
+	}{Session: createSessionsV3PrimaryResourceTestSession(t, server, "session-v3-permission", "V3 Permission")}
 	pending, err := permissionSvc.CreatePending(permission.CreateInput{SessionID: created.Session.ID, RunID: "run-v3", CallID: "call-v3", ToolName: "bash", ToolArguments: "{}", Requirement: "approval", Mode: "auto"})
 	if err != nil {
 		t.Fatalf("create pending permission: %v", err)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+created.Session.ID+"/permissions?status=pending&limit=20", nil)
+	listRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(listRec, withTestPrincipal(listReq))
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list permissions status = %d, want %d, body=%s", listRec.Code, http.StatusOK, listRec.Body.String())
+	}
+	var listed struct {
+		Permissions []pebblestore.PermissionRecord `json:"permissions"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(listed.Permissions) != 1 || listed.Permissions[0].ID != pending.ID {
+		t.Fatalf("listed permissions = %+v", listed.Permissions)
 	}
 
 	resolveReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.Session.ID+"/permissions/"+pending.ID+"/resolve", bytes.NewBufferString(`{"action":"approve","reason":"v3"}`))

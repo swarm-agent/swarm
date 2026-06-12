@@ -325,7 +325,21 @@ func (b *apiChatBackend) consumeSessionV3Run(ctx context.Context, sessionID stri
 	afterSeq := intent.EventSeq
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	refetched := false
+	currentAfterSeq := afterSeq
+	shouldRefetch := false
+	var refetchFrame client.V3RealtimeFrame
 	err := b.api.StreamSessionsV3Realtime(streamCtx, []client.V3RealtimeSubscription{{SessionID: sessionID, AfterSeq: afterSeq, SubscriptionID: "active-turn"}}, func(frame client.V3RealtimeFrame) {
+		frameKind := strings.ToLower(strings.TrimSpace(frame.Kind))
+		if frameKind == "cursor.error" || frameKind == "slow_consumer.reconnect_required" {
+			shouldRefetch = true
+			refetchFrame = frame
+			cancel()
+			return
+		}
+		if frame.Event != nil && frame.Event.Seq > currentAfterSeq {
+			currentAfterSeq = frame.Event.Seq
+		}
 		if frame.Event == nil || strings.ToLower(strings.TrimSpace(frame.Kind)) != "event" {
 			return
 		}
@@ -353,16 +367,102 @@ func (b *apiChatBackend) consumeSessionV3Run(ctx context.Context, sessionID stri
 			}
 		}
 	})
-	if err != nil {
+	if shouldRefetch {
+		refetched = true
+		hydrated, refetchErr := b.refetchSessionV3RunAfterRealtimeGap(ctx, sessionID, runID, currentAfterSeq, refetchFrame, onEvent)
+		if refetchErr != nil {
+			return ui.ChatRunResponse{}, refetchErr
+		}
+		response = mergeSessionV3HydratedRunResponse(response, hydrated, runID)
+		if strings.TrimSpace(response.PrimaryRunStatus) == "" {
+			response.PrimaryRunStatus = strings.TrimSpace(intent.Status)
+		}
+	} else if err != nil {
 		if v3RunIntentStatusTerminal(response.PrimaryRunStatus) {
 			return response, nil
 		}
 		return ui.ChatRunResponse{}, err
 	}
-	if strings.TrimSpace(response.AssistantMessage.Content) == "" && v3RunIntentStatusTerminal(response.PrimaryRunStatus) {
+	if !refetched && strings.TrimSpace(response.AssistantMessage.Content) == "" && v3RunIntentStatusTerminal(response.PrimaryRunStatus) {
 		response.NoAssistant = true
 	}
 	return response, nil
+}
+
+func (b *apiChatBackend) refetchSessionV3RunAfterRealtimeGap(ctx context.Context, sessionID, runID string, afterSeq uint64, frame client.V3RealtimeFrame, onEvent func(ui.ChatRunStreamEvent)) (client.SessionV3Hydrated, error) {
+	hydrated, err := b.api.GetSessionV3WithLimits(ctx, sessionID, 500, 200)
+	if err != nil {
+		return client.SessionV3Hydrated{}, err
+	}
+	if onEvent != nil {
+		warning := strings.TrimSpace(frame.Error)
+		if warning == "" {
+			warning = strings.TrimSpace(frame.Reason)
+		}
+		if warning == "" {
+			warning = "v3 realtime cursor gap; refetched session state"
+		}
+		onEvent(ui.ChatRunStreamEvent{Type: "session.refetched", SessionID: sessionID, RunID: runID, Warning: warning})
+		for _, event := range hydrated.Events {
+			if event.Seq <= afterSeq {
+				continue
+			}
+			chatEvent := v3StreamEventToChatEvent(event)
+			if strings.TrimSpace(chatEvent.SessionID) == "" {
+				chatEvent.SessionID = sessionID
+			}
+			if strings.TrimSpace(chatEvent.RunID) == "" {
+				chatEvent.RunID = runID
+			}
+			onEvent(chatEvent)
+		}
+	}
+	return hydrated, nil
+}
+
+func mergeSessionV3HydratedRunResponse(response ui.ChatRunResponse, hydrated client.SessionV3Hydrated, runID string) ui.ChatRunResponse {
+	for i := len(hydrated.Messages) - 1; i >= 0; i-- {
+		message := hydrated.Messages[i]
+		if !strings.EqualFold(strings.TrimSpace(message.Role), "assistant") {
+			continue
+		}
+		messageRunID := stringValue(message.Metadata, "run_id")
+		if runID != "" && messageRunID != "" && messageRunID != runID {
+			continue
+		}
+		response.AssistantMessage = convertClientMessage(message)
+		response.NoAssistant = false
+		break
+	}
+	if intent, ok := latestV3RunIntentFromEvents(hydrated.Events, runID); ok {
+		response.PrimaryRunStatus = strings.TrimSpace(intent.Status)
+		response.PrimaryBlockedReason = strings.TrimSpace(intent.BlockedReason)
+	}
+	if hydrated.ActiveRunIntent != nil && v3RunIntentMatchesRun(*hydrated.ActiveRunIntent, runID) {
+		response.PrimaryRunStatus = strings.TrimSpace(hydrated.ActiveRunIntent.Status)
+		response.PrimaryBlockedReason = strings.TrimSpace(hydrated.ActiveRunIntent.BlockedReason)
+	}
+	if hydrated.UsageSummary != nil {
+		response.UsageSummary = convertClientUsageSummary(hydrated.UsageSummary)
+	}
+	if strings.TrimSpace(response.AssistantMessage.Content) == "" && v3RunIntentStatusTerminal(response.PrimaryRunStatus) {
+		response.NoAssistant = true
+	}
+	return response
+}
+
+func latestV3RunIntentFromEvents(events []client.SessionV3Event, runID string) (client.SessionV3RunIntent, bool) {
+	var latest client.SessionV3RunIntent
+	ok := false
+	for _, event := range events {
+		intent, found := v3RunIntentFromEvent(event)
+		if !found || !v3RunIntentMatchesRun(intent, runID) {
+			continue
+		}
+		latest = intent
+		ok = true
+	}
+	return latest, ok
 }
 
 func v3RunIntentFromEvent(event client.SessionV3Event) (client.SessionV3RunIntent, bool) {
@@ -425,6 +525,22 @@ func v3StreamEventToChatEvent(event client.SessionV3Event) ui.ChatRunStreamEvent
 	case "session.assistant.completed":
 		out.Type = "message.stored"
 		out.Message = messageFromV3Payload(payload, out.SessionID)
+	case "session.message.updated":
+		out.Type = "message.updated"
+		out.Message = messageFromV3Payload(payload, out.SessionID)
+	case "usage.updated", "session.usage.updated":
+		out.Type = "usage.updated"
+		out.TurnUsage = turnUsageFromV3Payload(payload)
+		out.UsageSummary = usageSummaryFromV3Payload(payload)
+	case "permission.requested", "permission.updated":
+		out.Type = strings.TrimSpace(event.EventType)
+		out.Permission = permissionFromV3Payload(payload)
+		if out.ToolName == "" && out.Permission != nil {
+			out.ToolName = out.Permission.ToolName
+		}
+		if out.CallID == "" && out.Permission != nil {
+			out.CallID = out.Permission.CallID
+		}
 	case "session.tool.started":
 		out.Type = "tool.started"
 		out.ToolName = firstNonEmptyV3String(stringValue(payload, "tool_name"), "tool")
@@ -482,6 +598,58 @@ func messageFromV3Payload(payload map[string]any, fallbackSessionID string) *ui.
 		Metadata:  metadata,
 	}
 	return &message
+}
+
+func permissionFromV3Payload(payload map[string]any) *ui.ChatPermissionRecord {
+	permissionPayload, _ := payload["permission"].(map[string]any)
+	if len(permissionPayload) == 0 {
+		return nil
+	}
+	raw, err := json.Marshal(permissionPayload)
+	if err != nil {
+		return nil
+	}
+	var record client.PermissionRecord
+	if err := json.Unmarshal(raw, &record); err != nil {
+		return nil
+	}
+	converted := convertClientPermission(record)
+	return &converted
+}
+
+func turnUsageFromV3Payload(payload map[string]any) *ui.ChatTurnUsage {
+	usagePayload, _ := payload["turn_usage"].(map[string]any)
+	if len(usagePayload) == 0 {
+		usagePayload, _ = payload["usage"].(map[string]any)
+	}
+	if len(usagePayload) == 0 {
+		return nil
+	}
+	raw, err := json.Marshal(usagePayload)
+	if err != nil {
+		return nil
+	}
+	var usage client.SessionTurnUsage
+	if err := json.Unmarshal(raw, &usage); err != nil {
+		return nil
+	}
+	return convertClientTurnUsage(&usage)
+}
+
+func usageSummaryFromV3Payload(payload map[string]any) *ui.ChatUsageSummary {
+	summaryPayload, _ := payload["usage_summary"].(map[string]any)
+	if len(summaryPayload) == 0 {
+		return nil
+	}
+	raw, err := json.Marshal(summaryPayload)
+	if err != nil {
+		return nil
+	}
+	var summary client.SessionUsageSummary
+	if err := json.Unmarshal(raw, &summary); err != nil {
+		return nil
+	}
+	return convertClientUsageSummary(&summary)
 }
 
 func stringValue(payload map[string]any, key string) string {

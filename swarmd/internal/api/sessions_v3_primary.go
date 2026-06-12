@@ -218,6 +218,8 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		s.handleSessionV3PrimaryPlans(w, r, principal, sessionID)
 	case "plans/active":
 		s.handleSessionV3PrimaryActivePlan(w, r, principal, sessionID)
+	case "permissions":
+		s.handleSessionV3PrimaryPermissions(w, r, principal, sessionID)
 	case "permissions/resolve_all":
 		s.handleSessionV3PrimaryPermissionResolveAll(w, r, principal, sessionID)
 	default:
@@ -1027,6 +1029,52 @@ func (s *Server) handleSessionV3PrimaryRunStop(w http.ResponseWriter, r *http.Re
 		"reason":     reason,
 		"mutation":   result,
 	})
+}
+
+func (s *Server) handleSessionV3PrimaryPermissions(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	if s.perm == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("permission service is not configured"))
+		return
+	}
+	if found, err := s.authorizeSessionsV3PrimarySession(principal, sessionID); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	} else if !found {
+		writeSessionNotFound(w)
+		return
+	}
+	limit := 200
+	if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+		parsed, err := strconv.Atoi(rawLimit)
+		if err != nil || parsed < 0 {
+			writeError(w, http.StatusBadRequest, errors.New("limit must be a non-negative integer"))
+			return
+		}
+		if parsed > 0 {
+			limit = parsed
+		}
+	}
+	status := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("status")))
+	var records []pebblestore.PermissionRecord
+	var err error
+	switch status {
+	case "", "all":
+		records, err = s.perm.ListPermissions(sessionID, limit)
+	case "pending":
+		records, err = s.perm.ListPending(sessionID, limit)
+	default:
+		writeError(w, http.StatusBadRequest, errors.New("unsupported permission status"))
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "count": len(records), "permissions": records})
 }
 
 func (s *Server) handleSessionV3PrimaryPermissionResolve(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, permissionID string) {
