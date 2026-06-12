@@ -5,6 +5,10 @@ import type {
   DesktopSessionPlanRevisionRecord,
   ResolvedSessionPreference,
 } from '../chat/types/chat'
+import { mergeMessageIntoCache } from '../chat/services/message-cache'
+import { parseStructuredToolMessage } from '../chat/services/tool-message'
+import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
+import { appendLiveAssistantSegment } from './live-assistant-segments'
 import type {
   DesktopNotificationCenterRecord,
   DesktopNotificationSummary,
@@ -236,7 +240,7 @@ function applyDaemonPayload(state: DesktopState, event: DesktopDaemonEvent): Des
     case 'desktop/route-readiness/set':
       return setSessionValuePayload(state, payload, 'readiness', 'routeReadinessBySessionId')
     default:
-      return null
+      return applyDurableSessionPayload(state, event.type, payload)
   }
 }
 
@@ -427,6 +431,771 @@ function setSessionValuePayload<
   }
 }
 
+function applyDurableSessionPayload(state: DesktopState, eventType: string, rawPayload: Record<string, unknown>): DesktopState | null {
+  if (!eventType.startsWith('session.') && !eventType.startsWith('permission.')) {
+    return null
+  }
+  const payload = normalizeDurablePayload(eventType, rawPayload)
+  const sessionId = payloadString(payload, 'session_id')
+    || (eventType.startsWith('session.') ? payloadString(payload, 'id') : '')
+    || payloadString(payloadRecord(payload, 'session'), 'id')
+    || payloadString(payloadRecord(payload, 'message'), 'session_id')
+    || payloadString(payloadRecord(payload, 'permission'), 'session_id')
+  if (!sessionId) {
+    return null
+  }
+
+  let next = state
+  const currentSession = ensureReducerSession(next, sessionId)
+  const session = durableSessionPatch(currentSession, eventType, payload, sessionId)
+  next = {
+    ...next,
+    sessionsById: {
+      ...next.sessionsById,
+      [sessionId]: session,
+    },
+    sessionOrder: sortSessionOrder({ ...next.sessionsById, [sessionId]: session }),
+    routeReadinessBySessionId: {
+      ...next.routeReadinessBySessionId,
+      [sessionId]: readySession(sessionId, Date.now()),
+    },
+  }
+
+  const messages = durableMessages(eventType, payload, sessionId)
+  if (messages.length > 0) {
+    next = mergeReducerMessages(next, sessionId, messages)
+  }
+
+  const permission = durablePermission(payload)
+  if (permission) {
+    next = applyReducerPermission(next, permission, sessionId)
+  }
+
+  const preference = durablePreference(payload)
+  if (preference) {
+    next = {
+      ...next,
+      preferencesBySessionId: {
+        ...next.preferencesBySessionId,
+        [sessionId]: preference,
+      },
+    }
+  }
+
+  const runIntent = durableRunIntent(payload, eventType, sessionId)
+  if (runIntent) {
+    const runIntentsBySessionId = { ...next.runIntentsBySessionId }
+    if (runIntentStatusTerminal(runIntent.status)) {
+      delete runIntentsBySessionId[runIntent.sessionId]
+    } else {
+      runIntentsBySessionId[runIntent.sessionId] = runIntent
+    }
+    next = { ...next, runIntentsBySessionId }
+  }
+
+  return next
+}
+
+
+function normalizeDurablePayload(eventType: string, payload: Record<string, unknown>): Record<string, unknown> {
+  if (!eventType.startsWith('session.')) {
+    return payload
+  }
+  const normalized: Record<string, unknown> = { ...payload }
+  const nestedSession = payloadRecord(normalized, 'session')
+  const nestedMessage = payloadRecord(normalized, 'message')
+  const nestedLifecycle = payloadRecord(normalized, 'lifecycle')
+  const nestedRunIntent = payloadRecord(normalized, 'run_intent')
+  if (typeof normalized.session_id !== 'string') {
+    normalized.session_id = payloadString(nestedSession, 'id')
+      || payloadString(nestedMessage, 'session_id')
+      || payloadString(nestedLifecycle, 'session_id')
+      || payloadString(nestedRunIntent, 'session_id')
+      || normalized.session_id
+  }
+  if ((eventType === 'session.created' || eventType === 'session.updated') && nestedSession) {
+    return { ...nestedSession, ...normalized, session: nestedSession }
+  }
+  if (eventType === 'session.run_intent.recorded' && nestedRunIntent) {
+    const status = payloadString(nestedRunIntent, 'status').toLowerCase()
+    if (status === 'pending_executor') {
+      normalized.status = 'starting'
+      normalized.summary = normalized.summary ?? 'Pending executor…'
+    } else if (status === 'dispatch_blocked') {
+      normalized.status = 'blocked'
+      normalized.summary = normalized.summary ?? nestedRunIntent.blocked_reason ?? 'Dispatch blocked'
+      normalized.error = normalized.error ?? nestedRunIntent.blocked_reason ?? null
+    } else if (status === 'running') {
+      normalized.status = 'running'
+      normalized.summary = normalized.summary ?? 'Assistant responding…'
+    } else if (status === 'completed' || status === 'cancelled') {
+      normalized.status = 'idle'
+      normalized.error = status === 'cancelled' ? null : normalized.error
+    } else if (status === 'failed' || status === 'expired' || status === 'interrupted') {
+      normalized.status = 'error'
+      normalized.error = normalized.error ?? nestedRunIntent.blocked_reason ?? 'Run failed'
+    }
+    normalized.run_id = payloadString(nestedRunIntent, 'run_id') || normalized.run_id
+  }
+  return normalized
+}
+
+function ensureReducerSession(state: DesktopState, sessionId: string): DesktopSessionRecord {
+  return state.sessionsById[sessionId] ?? {
+    id: sessionId,
+    title: 'New Session',
+    workspacePath: '',
+    workspaceName: '',
+    mode: 'auto',
+    metadata: undefined,
+    messageCount: 0,
+    updatedAt: 0,
+    createdAt: 0,
+    permissionsHydrated: false,
+    gitCommitDetected: false,
+    gitCommitCount: 0,
+    gitCommittedFileCount: 0,
+    gitCommittedAdditions: 0,
+    gitCommittedDeletions: 0,
+    lifecycle: null,
+    runIntent: null,
+    live: emptyLiveState(),
+    pendingPermissions: [],
+    pendingPermissionCount: 0,
+    usage: null,
+  }
+}
+
+function emptyLiveState(): DesktopSessionRecord['live'] {
+  return {
+    runId: null,
+    agentName: null,
+    startedAt: null,
+    status: 'idle',
+    step: 0,
+    toolName: null,
+    toolCallId: null,
+    toolArguments: null,
+    toolOutput: '',
+    retainedToolName: null,
+    retainedToolCallId: null,
+    retainedToolArguments: null,
+    retainedToolOutput: '',
+    retainedToolState: null,
+    toolHistory: [],
+    summary: null,
+    lastEventType: null,
+    lastEventAt: null,
+    error: null,
+    seq: 0,
+    assistantDraft: '',
+    retainedAssistantSegments: [],
+    reasoningSummary: '',
+    reasoningText: '',
+    reasoningState: 'idle',
+    reasoningSegment: 0,
+    reasoningStartedAt: null,
+    awaitingAck: false,
+  }
+}
+
+function durableSessionPatch(existing: DesktopSessionRecord, eventType: string, payload: Record<string, unknown>, sessionId: string): DesktopSessionRecord {
+  const ts = payloadNumber(payload, 'ts_unix_ms') || Date.now()
+  const eventSeq = payloadNumber(payload, 'source_seq') || payloadNumber(payload, 'global_seq')
+  const session: DesktopSessionRecord = {
+    ...existing,
+    live: { ...existing.live },
+    pendingPermissions: [...existing.pendingPermissions],
+    updatedAt: Math.max(existing.updatedAt, payloadNumber(payload, 'updated_at'), ts),
+  }
+  if (eventSeq > 0) {
+    session.lastEventSeq = Math.max(session.lastEventSeq ?? 0, eventSeq)
+    session.projectionHighWatermarkSeq = Math.max(session.projectionHighWatermarkSeq ?? 0, eventSeq)
+    session.live.seq = Math.max(session.live.seq, eventSeq)
+  }
+  const nestedSession = payloadRecord(payload, 'session')
+  const sessionSource = eventType === 'session.created' || eventType === 'session.updated' ? payload : nestedSession
+  if (sessionSource) {
+    session.title = payloadString(sessionSource, 'title') || session.title
+    session.workspacePath = payloadString(sessionSource, 'workspace_path') || session.workspacePath
+    session.workspaceName = payloadString(sessionSource, 'workspace_name') || session.workspaceName
+    session.mode = payloadString(sessionSource, 'mode') || session.mode
+    session.metadata = isRecord(sessionSource.metadata) ? sessionSource.metadata : session.metadata
+    session.sessionApi = payloadString(sessionSource, 'session_api') || session.sessionApi || 'v3'
+    session.messageCount = Math.max(session.messageCount, payloadNumber(sessionSource, 'message_count'))
+    session.createdAt = payloadNumber(sessionSource, 'created_at') || session.createdAt || ts
+    session.lastEventSeq = Math.max(session.lastEventSeq ?? 0, payloadNumber(sessionSource, 'last_event_seq'))
+    session.projectionHighWatermarkSeq = Math.max(session.projectionHighWatermarkSeq ?? 0, payloadNumber(sessionSource, 'projection_high_watermark_seq'))
+  }
+  const lifecycle = durableLifecycle(payload, sessionId)
+  if (lifecycle) {
+    session.lifecycle = lifecycle
+    session.live.runId = lifecycle.active ? lifecycle.runId : null
+    session.live.startedAt = lifecycle.active && lifecycle.startedAt > 0 ? lifecycle.startedAt : null
+    session.live.status = lifecycle.active ? (lifecycle.phase === 'blocked' ? 'blocked' : lifecycle.phase === 'starting' ? 'starting' : 'running') : lifecycle.phase === 'errored' ? 'error' : 'idle'
+    session.live.error = lifecycle.phase === 'errored' ? lifecycle.error || lifecycle.stopReason : null
+  }
+  const runIntent = durableRunIntent(payload, eventType, sessionId)
+  if (runIntent) {
+    if (runIntentStatusActive(runIntent.status)) {
+      session.runIntent = runIntent
+      session.live.runId = runIntent.runId
+      session.live.startedAt = runIntent.createdAt > 0 ? runIntent.createdAt : session.live.startedAt
+    } else if (runIntentStatusTerminal(runIntent.status)) {
+      session.runIntent = null
+      session.lifecycle = null
+    }
+  }
+  const status = payloadString(payload, 'status')
+  if (status) {
+    const normalizedStatus = status.toLowerCase()
+    session.live.status = normalizedStatus === 'blocked' ? 'blocked' : normalizedStatus === 'starting' ? 'starting' : normalizedStatus === 'running' ? 'running' : normalizedStatus === 'error' ? 'error' : normalizedStatus === 'idle' ? 'idle' : session.live.status
+    session.live.summary = payloadString(payload, 'summary') || session.live.summary
+    session.live.error = payloadString(payload, 'error') || (normalizedStatus === 'error' ? 'Run failed' : null)
+    if (normalizedStatus === 'idle' || normalizedStatus === 'error') {
+      session.live.runId = null
+      session.live.startedAt = null
+    }
+  }
+
+  switch (eventType) {
+    case 'session.title.updated':
+      session.title = payloadString(payload, 'title') || session.title
+      break
+    case 'session.assistant.started':
+      session.live.runId = payloadString(payload, 'run_id') || payloadString(payloadRecord(payload, 'run_intent'), 'run_id') || session.live.runId
+      session.live.status = 'running'
+      session.live.awaitingAck = false
+      session.live.startedAt = session.live.startedAt ?? ts
+      session.live.summary = 'Assistant responding…'
+      session.live.error = null
+      resetLiveTool(session.live)
+      resetLiveReasoning(session.live)
+      break
+    case 'session.assistant.delta': {
+      const delta = typeof payload.delta === 'string' ? payload.delta : ''
+      session.live.runId = payloadString(payload, 'run_id') || session.live.runId
+      if (delta) {
+        session.live.assistantDraft += delta
+      }
+      session.live.status = 'running'
+      session.live.awaitingAck = false
+      session.live.startedAt = session.live.startedAt ?? ts
+      session.live.summary = 'Streaming response…'
+      session.live.error = null
+      break
+    }
+    case 'session.reasoning.started':
+    case 'session.reasoning.delta':
+    case 'session.reasoning.completed':
+      applyReasoning(session, payload, eventType, ts, eventSeq)
+      break
+    case 'session.tool.started':
+    case 'session.tool.delta':
+    case 'session.tool.completed':
+      applyTool(session, payload, eventType, ts, eventSeq, sessionId)
+      break
+    case 'session.run.started':
+    case 'session.run.running':
+      session.live.runId = payloadString(payload, 'run_id') || session.live.runId
+      session.live.status = 'running'
+      session.live.awaitingAck = false
+      session.live.startedAt = session.live.startedAt ?? ts
+      session.live.summary = 'Assistant responding…'
+      session.live.error = null
+      break
+    case 'session.run.completed':
+    case 'session.assistant.completed': {
+      const durableTerminalStatus = runTerminalStatusFromEvent(eventType, payload, sessionId)
+      const terminalStatus = durableTerminalStatus || terminalStatusFromEventType(eventType)
+      const shouldUnlock = session.sessionApi?.trim().toLowerCase() === 'v3' ? durableTerminalStatus === 'completed' : terminalStatus === 'completed'
+      if (eventType === 'session.assistant.completed' && durableMessageFromWire(payload.message, sessionId)) {
+        resetLiveAssistant(session.live)
+        session.messageCount += 1
+      }
+      if (shouldUnlock) {
+        session.runIntent = null
+        session.lifecycle = null
+        session.live.status = 'idle'
+        session.live.runId = null
+        session.live.startedAt = null
+        session.live.awaitingAck = false
+        session.live.summary = null
+        session.live.error = null
+        retainLiveTool(session.live, 'done')
+        resetLiveTool(session.live)
+        resetLiveReasoning(session.live)
+      }
+      break
+    }
+    case 'session.run.failed':
+    case 'session.run.cancelled':
+    case 'session.run.expired':
+    case 'session.run.interrupted':
+    case 'session.assistant.failed': {
+      const durableTerminalStatus = runTerminalStatusFromEvent(eventType, payload, sessionId)
+      const terminalStatus = durableTerminalStatus || terminalStatusFromEventType(eventType)
+      const shouldApplyTerminal = session.sessionApi?.trim().toLowerCase() === 'v3' ? durableTerminalStatus !== '' && durableTerminalStatus !== 'completed' : terminalStatus !== '' && terminalStatus !== 'completed'
+      if (!shouldApplyTerminal) {
+        break
+      }
+      const rawError = payloadString(payload, 'error') || payloadString(payload, 'blocked_reason')
+      const isUserCancellation = eventType === 'session.run.cancelled' || terminalStatus === 'cancelled'
+      const error = isUserCancellation ? userFacingStopReason(rawError) : rawError || 'Run failed'
+      session.runIntent = null
+      session.lifecycle = null
+      session.live.status = isUserCancellation ? 'idle' : 'error'
+      session.live.runId = null
+      session.live.startedAt = null
+      session.live.awaitingAck = false
+      session.live.summary = error
+      session.live.error = isUserCancellation ? null : error
+      retainLiveTool(session.live, isUserCancellation ? 'done' : 'error')
+      resetLiveTool(session.live)
+      resetLiveReasoning(session.live)
+      break
+    }
+    default:
+      break
+  }
+  session.live.lastEventType = eventType || session.live.lastEventType
+  session.live.lastEventAt = ts
+  session.live.awaitingAck = false
+  return session
+}
+
+function durableMessages(eventType: string, payload: Record<string, unknown>, fallbackSessionId: string): ChatMessageRecord[] {
+  const messages: ChatMessageRecord[] = []
+  const nestedMessage = durableMessageFromWire(payload.message, fallbackSessionId)
+  if (nestedMessage) {
+    messages.push(nestedMessage)
+  }
+  if ((eventType === 'session.message.appended' || eventType === 'run.message.stored' || eventType === 'run.message.updated') && messages.length === 0) {
+    const directMessage = durableMessageFromWire(payload, fallbackSessionId)
+    if (directMessage) {
+      messages.push(directMessage)
+    }
+  }
+  return messages
+}
+
+function durableMessageFromWire(message: unknown, fallbackSessionId: string): ChatMessageRecord | null {
+  if (!isRecord(message)) {
+    return null
+  }
+  const sessionId = payloadString(message, 'session_id') || payloadString(message, 'sessionId') || fallbackSessionId
+  const role = payloadString(message, 'role')
+  const content = typeof message.content === 'string' ? message.content : ''
+  if (!sessionId || !role || content === '') {
+    return null
+  }
+  const globalSeq = payloadNumber(message, 'global_seq') || payloadNumber(message, 'globalSeq')
+  return {
+    id: payloadString(message, 'id') || `${sessionId}:${globalSeq}`,
+    sessionId,
+    globalSeq,
+    role,
+    content,
+    createdAt: payloadNumber(message, 'created_at') || payloadNumber(message, 'createdAt') || Date.now(),
+    metadata: isRecord(message.metadata) ? message.metadata : undefined,
+    toolMessage: parseStructuredToolMessage(content),
+  }
+}
+
+function durableRunIntent(payload: Record<string, unknown>, eventType: string, fallbackSessionId: string): DesktopRunIntentRecord | null {
+  const intent = payloadRecord(payload, 'run_intent') ?? payloadRecord(payload, 'runIntent')
+  const source = intent ?? payload
+  const runId = payloadString(source, 'run_id') || payloadString(source, 'runId')
+  const status = payloadString(source, 'status')
+  if (!runId || !status || (eventType !== 'session.run_intent.recorded' && !intent)) {
+    return null
+  }
+  return {
+    sessionId: payloadString(source, 'session_id') || payloadString(source, 'sessionId') || fallbackSessionId,
+    runId,
+    status: status.toLowerCase(),
+    blockedReason: payloadString(source, 'blocked_reason') || payloadString(source, 'blockedReason') || payloadString(payload, 'error'),
+    createdAt: payloadNumber(source, 'created_at') || payloadNumber(source, 'createdAt'),
+    updatedAt: payloadNumber(source, 'updated_at') || payloadNumber(source, 'updatedAt') || payloadNumber(payload, 'updated_at'),
+    eventSeq: payloadNumber(source, 'event_seq') || payloadNumber(source, 'eventSeq'),
+  }
+}
+
+function durableLifecycle(payload: Record<string, unknown>, fallbackSessionId: string): DesktopSessionRecord['lifecycle'] {
+  const source = payloadRecord(payload, 'lifecycle')
+  if (!source) {
+    return null
+  }
+  const sessionId = payloadString(source, 'session_id') || fallbackSessionId
+  if (!sessionId) {
+    return null
+  }
+  return {
+    sessionId,
+    runId: payloadString(source, 'run_id') || null,
+    active: Boolean(source.active),
+    phase: payloadString(source, 'phase'),
+    startedAt: payloadNumber(source, 'started_at'),
+    endedAt: payloadNumber(source, 'ended_at'),
+    updatedAt: payloadNumber(source, 'updated_at'),
+    generation: payloadNumber(source, 'generation'),
+    stopReason: payloadString(source, 'stop_reason') || null,
+    error: payloadString(source, 'error') || null,
+    ownerTransport: payloadString(source, 'owner_transport') || null,
+  }
+}
+
+function durablePreference(payload: Record<string, unknown>): ResolvedSessionPreference | null {
+  const source = payloadRecord(payload, 'preference')
+  if (!source) {
+    return null
+  }
+  return {
+    preference: {
+      provider: payloadString(source, 'provider'),
+      model: payloadString(source, 'model'),
+      thinking: payloadString(source, 'thinking'),
+      serviceTier: payloadString(source, 'service_tier'),
+      contextMode: payloadString(source, 'context_mode'),
+      updatedAt: payloadNumber(source, 'updated_at') || Date.now(),
+    },
+    contextWindow: 0,
+    maxOutputTokens: 0,
+  }
+}
+
+function durablePermission(payload: Record<string, unknown>): DesktopPermissionRecord | null {
+  const source = payloadRecord(payload, 'permission') ?? payload
+  const id = payloadString(source, 'id')
+  const sessionId = payloadString(source, 'session_id')
+  if (!id || !sessionId) {
+    return null
+  }
+  return {
+    id,
+    sessionId,
+    runId: payloadString(source, 'run_id'),
+    callId: payloadString(source, 'call_id'),
+    toolName: payloadString(source, 'tool_name'),
+    toolArguments: payloadString(source, 'tool_arguments'),
+    status: payloadString(source, 'status'),
+    decision: payloadString(source, 'decision'),
+    reason: payloadString(source, 'reason'),
+    requirement: payloadString(source, 'requirement'),
+    mode: payloadString(source, 'mode'),
+    createdAt: payloadNumber(source, 'created_at'),
+    updatedAt: payloadNumber(source, 'updated_at'),
+    resolvedAt: payloadNumber(source, 'resolved_at'),
+    permissionRequestedAt: payloadNumber(source, 'permission_requested_at'),
+  }
+}
+
+function applyReducerPermission(state: DesktopState, permission: DesktopPermissionRecord, sessionId: string): DesktopState {
+  const permissionsById = { ...state.permissionsById }
+  if (permission.status.trim().toLowerCase() === 'pending') {
+    permissionsById[permission.id] = permission
+  } else {
+    delete permissionsById[permission.id]
+  }
+  const existing = state.sessionsById[sessionId] ?? ensureReducerSession(state, sessionId)
+  const pendingPermissions = existing.pendingPermissions.filter((item) => item.id !== permission.id)
+  if (permission.status.trim().toLowerCase() === 'pending') {
+    pendingPermissions.unshift(permission)
+  }
+  const pendingPermissionCount = countApprovalRequiredPermissions(pendingPermissions, existing.mode)
+  const session: DesktopSessionRecord = {
+    ...existing,
+    permissionsHydrated: true,
+    pendingPermissions,
+    pendingPermissionCount,
+    updatedAt: Math.max(existing.updatedAt, permission.updatedAt, permission.permissionRequestedAt, Date.now()),
+    live: { ...existing.live },
+  }
+  if (!session.lifecycle && pendingPermissionCount > 0) {
+    session.live.status = 'blocked'
+  } else if (!session.lifecycle && session.live.status === 'blocked') {
+    session.live.status = session.runIntent ? 'running' : 'idle'
+  }
+  session.live.lastEventType = permission.status.trim().toLowerCase() === 'pending' ? 'permission.requested' : 'permission.updated'
+  session.live.lastEventAt = Date.now()
+  return {
+    ...state,
+    permissionsById,
+    sessionsById: {
+      ...state.sessionsById,
+      [sessionId]: session,
+    },
+    sessionOrder: sortSessionOrder({ ...state.sessionsById, [sessionId]: session }),
+  }
+}
+
+function readySession(sessionId: string, updatedAt: number): DesktopSessionReadinessRecord {
+  return { sessionId, status: 'ready', ready: true, missingResources: [], omittedResources: [], error: null, updatedAt }
+}
+
+function payloadRecord(record: Record<string, unknown> | null | undefined, key: string): Record<string, unknown> | null {
+  const value = record?.[key]
+  return isRecord(value) ? value : null
+}
+
+function payloadString(record: Record<string, unknown> | null | undefined, key: string): string {
+  const value = record?.[key]
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function payloadNumber(record: Record<string, unknown> | null | undefined, key: string): number {
+  const value = record?.[key]
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0
+}
+
+function runIntentStatusTerminal(status: string): boolean {
+  switch (status.trim().toLowerCase()) {
+    case 'completed':
+    case 'failed':
+    case 'cancelled':
+    case 'expired':
+    case 'interrupted':
+    case 'dispatch_blocked':
+      return true
+    default:
+      return false
+  }
+}
+
+function runIntentStatusActive(status: string): boolean {
+  switch (status.trim().toLowerCase()) {
+    case 'pending_executor':
+    case 'running':
+    case 'blocked':
+      return true
+    default:
+      return false
+  }
+}
+
+function terminalStatusFromEventType(eventType: string): string {
+  switch (eventType) {
+    case 'session.run.completed':
+    case 'session.assistant.completed':
+      return 'completed'
+    case 'session.run.cancelled':
+      return 'cancelled'
+    case 'session.run.expired':
+      return 'expired'
+    case 'session.run.interrupted':
+      return 'interrupted'
+    case 'session.run.failed':
+    case 'session.assistant.failed':
+      return 'failed'
+    default:
+      return ''
+  }
+}
+
+function runTerminalStatusFromEvent(eventType: string, payload: Record<string, unknown>, sessionId: string): string {
+  const runIntent = durableRunIntent(payload, eventType, sessionId)
+  return runIntent?.status.trim().toLowerCase() || payloadString(payload, 'status').toLowerCase()
+}
+
+function userFacingStopReason(reason: string): string {
+  const trimmed = reason.trim()
+  return !trimmed || trimmed === 'run_stopped' ? 'Run stopped' : trimmed
+}
+
+function resetLiveTool(live: DesktopSessionRecord['live']): void {
+  live.toolName = null
+  live.toolCallId = null
+  live.toolArguments = null
+  live.toolOutput = ''
+}
+
+function retainLiveTool(live: DesktopSessionRecord['live'], state: DesktopSessionRecord['live']['retainedToolState']): void {
+  const toolName = live.toolName?.trim() ?? ''
+  const toolCallId = live.toolCallId?.trim() ?? ''
+  const toolArguments = live.toolArguments?.trim() ?? ''
+  const toolOutput = live.toolOutput.trim()
+  if (!toolName && !toolCallId && !toolArguments && !toolOutput) {
+    return
+  }
+  live.retainedToolName = toolName || live.retainedToolName
+  live.retainedToolCallId = toolCallId || live.retainedToolCallId
+  live.retainedToolArguments = toolArguments || live.retainedToolArguments
+  live.retainedToolOutput = toolOutput || live.retainedToolOutput
+  live.retainedToolState = state
+}
+
+function resetRetainedLiveTool(live: DesktopSessionRecord['live']): void {
+  live.retainedToolName = null
+  live.retainedToolCallId = null
+  live.retainedToolArguments = null
+  live.retainedToolOutput = ''
+  live.retainedToolState = null
+}
+
+function resetLiveAssistant(live: DesktopSessionRecord['live']): void {
+  live.assistantDraft = ''
+  live.retainedAssistantSegments = []
+}
+
+function resetLiveReasoning(live: DesktopSessionRecord['live']): void {
+  live.reasoningSummary = ''
+  live.reasoningText = ''
+  live.reasoningState = 'idle'
+  live.reasoningStartedAt = null
+}
+
+function flushAssistantDraftToSegment(live: DesktopSessionRecord['live'], createdAt: number): void {
+  const draft = live.assistantDraft.trim()
+  if (!draft) {
+    return
+  }
+  live.retainedAssistantSegments = appendLiveAssistantSegment(live.retainedAssistantSegments, draft, createdAt, live.seq)
+  live.assistantDraft = ''
+}
+
+function applyReasoning(session: DesktopSessionRecord, payload: Record<string, unknown>, eventType: string, ts: number, eventSeq: number): void {
+  session.live.runId = payloadString(payload, 'run_id') || session.live.runId
+  const text = (typeof payload.delta === 'string' ? payload.delta : typeof payload.summary === 'string' ? payload.summary : '').trim()
+  const isStarted = eventType === 'session.reasoning.started'
+  const isCompleted = eventType === 'session.reasoning.completed'
+  if (text) {
+    session.live.reasoningText = text
+    session.live.reasoningSummary = text
+  }
+  if (isStarted || (text && session.live.reasoningState === 'idle')) {
+    session.live.reasoningSegment += 1
+    session.live.reasoningStartedAt = session.live.reasoningStartedAt ?? ts
+  }
+  session.live.reasoningState = isCompleted ? 'done' : 'running'
+  session.live.status = 'running'
+  session.live.awaitingAck = false
+  session.live.startedAt = session.live.startedAt ?? ts
+  session.live.summary = isCompleted ? 'Thinking complete' : 'Thinking…'
+  session.live.error = null
+  session.live.seq = Math.max(session.live.seq, eventSeq)
+}
+
+function applyTool(session: DesktopSessionRecord, payload: Record<string, unknown>, eventType: string, ts: number, eventSeq: number, sessionId: string): void {
+  const runId = payloadString(payload, 'run_id')
+  const toolName = payloadString(payload, 'tool_name')
+  const callId = payloadString(payload, 'call_id')
+  const stepId = payloadString(payload, 'step_id')
+  const toolInstanceId = payloadString(payload, 'tool_instance_id')
+  const isToolStarted = eventType === 'session.tool.started'
+  const isToolDelta = eventType === 'session.tool.delta'
+  const isToolCompleted = eventType === 'session.tool.completed'
+  session.live.runId = runId || session.live.runId
+  session.live.status = 'running'
+  session.live.awaitingAck = false
+  session.live.startedAt = session.live.startedAt ?? ts
+  session.live.error = null
+  if (typeof payload.step === 'number') {
+    session.live.step = payload.step
+  }
+  if (isToolStarted) {
+    flushAssistantDraftToSegment(session.live, ts)
+    resetRetainedLiveTool(session.live)
+    session.live.toolOutput = ''
+  }
+  session.live.toolName = toolName || session.live.toolName
+  session.live.toolCallId = callId || session.live.toolCallId
+  if (typeof payload.arguments === 'string') {
+    session.live.toolArguments = payload.arguments.trim() || null
+  }
+  session.live.summary = payloadString(payload, 'summary') || session.live.toolName?.trim() || session.live.summary
+  upsertToolHistory(session.live, {
+    sessionId,
+    runId,
+    stepId,
+    callId,
+    toolInstanceId,
+    toolName,
+    toolArguments: typeof payload.arguments === 'string' ? payload.arguments.trim() || null : null,
+    output: typeof payload.output === 'string' ? payload.output : null,
+    rawOutput: typeof payload.raw_output === 'string' ? payload.raw_output : null,
+    state: isToolCompleted ? 'done' : 'running',
+    step: typeof payload.step === 'number' ? payload.step : null,
+    seq: eventSeq,
+    ts,
+  })
+  if (isToolDelta && typeof payload.output === 'string') {
+    session.live.toolOutput = appendLiveToolOutput(session.live.toolOutput, payload.output)
+  } else if (isToolCompleted) {
+    session.live.toolOutput = typeof payload.raw_output === 'string'
+      ? replaceLiveToolOutput(payload.raw_output)
+      : typeof payload.output === 'string'
+        ? replaceLiveToolOutput(payload.output)
+        : session.live.toolOutput
+    retainLiveTool(session.live, 'done')
+    resetLiveTool(session.live)
+  }
+}
+
+function upsertToolHistory(live: DesktopSessionRecord['live'], input: {
+  sessionId: string
+  runId: string
+  stepId: string
+  callId: string
+  toolInstanceId: string
+  toolName: string
+  toolArguments?: string | null
+  output?: string | null
+  rawOutput?: string | null
+  state: DesktopSessionRecord['live']['retainedToolState'] & ('running' | 'done' | 'error')
+  step?: number | null
+  seq?: number | null
+  ts: number
+}): void {
+  if (!input.runId || !input.stepId || !input.callId || !input.toolInstanceId) {
+    return
+  }
+  const key = [input.sessionId, input.runId, input.stepId, input.callId, input.toolInstanceId].join('\u001f')
+  const existing = (live.toolHistory ?? []).find((item) => item.key === key)
+  const outputDelta = input.rawOutput ?? input.output ?? ''
+  const existingOutput = existing?.toolOutput ?? ''
+  const nextOutput = input.rawOutput !== undefined && input.rawOutput !== null
+    ? replaceLiveToolOutput(input.rawOutput)
+    : input.output
+      ? appendLiveToolOutput(existingOutput, input.output)
+      : existingOutput
+  const next = {
+    key,
+    sessionId: input.sessionId,
+    runId: input.runId,
+    stepId: input.stepId,
+    callId: input.callId,
+    toolInstanceId: input.toolInstanceId,
+    toolName: input.toolName || existing?.toolName || null,
+    toolArguments: input.toolArguments ?? existing?.toolArguments ?? null,
+    toolOutput: outputDelta ? nextOutput : existing?.toolOutput ?? '',
+    state: input.state,
+    step: input.step ?? existing?.step ?? null,
+    seq: existing?.seq ?? input.seq ?? undefined,
+    startedAt: existing?.startedAt ?? input.ts,
+    updatedAt: input.ts,
+    completedAt: input.state === 'done' || input.state === 'error' ? input.ts : existing?.completedAt ?? null,
+  }
+  const rest = (live.toolHistory ?? []).filter((item) => item.key !== key)
+  live.toolHistory = [next, ...rest].slice(0, 20)
+}
+
+function appendLiveToolOutput(current: string, chunk: string): string {
+  const normalized = chunk.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  if (normalized.trim() === '') {
+    return current
+  }
+  return retainTail(current + normalized, 4000)
+}
+
+function replaceLiveToolOutput(value: string): string {
+  const normalized = value.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim()
+  return normalized ? retainTail(normalized, 4000) : ''
+}
+
+function retainTail(value: string, maxChars: number): string {
+  return value.length <= maxChars ? value : '…' + value.slice(value.length - maxChars + 1)
+}
+
 function replaceSessionArrayPayload<StateKey extends 'planRevisionsBySessionId'>(
   state: DesktopState,
   payload: Record<string, unknown>,
@@ -480,6 +1249,17 @@ function sortSessionOrder(sessionsById: Record<string, DesktopSessionRecord>): s
 
 function sortMessages(messages: ChatMessageRecord[]): ChatMessageRecord[] {
   return [...messages].sort((left, right) => (left.globalSeq - right.globalSeq) || (left.createdAt - right.createdAt) || left.id.localeCompare(right.id))
+}
+
+function mergeReducerMessages(state: DesktopState, sessionId: string, incoming: ChatMessageRecord[]): DesktopState {
+  const merged = incoming.reduce<ChatMessageRecord[]>((messages, message) => mergeMessageIntoCache(messages, message), state.messagesBySessionId[sessionId] ?? [])
+  return {
+    ...state,
+    messagesBySessionId: {
+      ...state.messagesBySessionId,
+      [sessionId]: sortMessages(merged),
+    },
+  }
 }
 
 function isValidRevision(value: unknown): value is number {

@@ -643,13 +643,18 @@ test('DesktopAppPage derives route readiness and cached switching from the exter
   assert.doesNotMatch(source, new RegExp('v3session' + '_'))
 })
 
-test('Desktop realtime applies durable session events into TanStack DB', async () => {
+test('Desktop realtime applies durable session events into the external Desktop state store', async () => {
   const source = await readFile(new URL('../../state/desktop-ui-store.ts', import.meta.url), 'utf8')
 
-  assert.match(source, /applyDurableEventToDesktopDB\(message\.event \?\? \{\}\)/)
+  assert.match(source, /applyDesktopDurableEventEnvelope\(message\.event \?\? \{\}\)/)
   assert.match(source, /const backendDerivedDesktopEvent = eventType\.startsWith\('session\.'\) \|\| eventType\.startsWith\('permission\.'\)/)
   assert.match(source, /if \(backendDerivedDesktopEvent\) \{\n\s+set\(\(state(?:: DesktopStoreState)?\) => \(\{ lastGlobalSeq:/)
-  assert.doesNotMatch(source, /set\(\(state\) => applyEnvelope\(state, message\.event \?\? \{\}\)\)\n\s+const payload/)
+  assert.doesNotMatch(source, /applyDurableEventToDesktopDB/)
+  assert.doesNotMatch(source, /mergeDesktopDBDurablePatch/)
+  assert.doesNotMatch(source, /applyRunIntentToDesktopDB/)
+  assert.doesNotMatch(source, /applyOptimisticRunStartToDesktopDB/)
+  assert.doesNotMatch(source, /ensureDesktopDBRouteSession/)
+  assert.doesNotMatch(source, /desktopPlansCollection/)
   assert.doesNotMatch(source, /mergeDesktopDBSnapshotPatch\(queryClient/)
   assert.doesNotMatch(source, /requestAuthoritativeSessionSnapshot/)
   assert.doesNotMatch(source, /fetchSession\(/)
@@ -657,55 +662,39 @@ test('Desktop realtime applies durable session events into TanStack DB', async (
   assert.doesNotMatch(source, /\/v1\/sessions|\/v2\/sessions/)
   assert.doesNotMatch(source, new RegExp('v3session' + '_'))
 
-  const {
-    applyDurableEventToDesktopDB,
-    desktopMessagesCollection,
-    desktopRunIntentsCollection,
-    desktopSessionsCollection,
-    readDesktopDbMessages,
-    readDesktopDbSession,
-  } = await import('../../state/desktop-db')
+  const { applyDesktopDurableEventEnvelope, getDesktopSnapshot, replaceDesktopFromSnapshot } = await import('../../state/desktop-state-store')
 
-  const sessionId = 'session-db-realtime'
-  if (desktopSessionsCollection.has(sessionId)) {
-    desktopSessionsCollection.delete(sessionId)
-  }
-  if (desktopRunIntentsCollection.has(sessionId)) {
-    desktopRunIntentsCollection.delete(sessionId)
-  }
-  for (const message of Array.from(desktopMessagesCollection.values())) {
-    if (message.sessionId === sessionId) {
-      const key = desktopMessagesCollection.getKeyFromItem(message)
-      if (desktopMessagesCollection.has(key)) {
-        desktopMessagesCollection.delete(key)
-      }
-    }
-  }
+  const sessionId = 'session-external-realtime'
+  replaceDesktopFromSnapshot({ rev: 0 })
 
-  applyDurableEventToDesktopDB({
+  applyDesktopDurableEventEnvelope({
     global_seq: 41,
+    source_seq: 41,
     event_type: 'session.run_intent.recorded',
     entity_id: sessionId,
     ts_unix_ms: 410,
     payload: {
       session_id: sessionId,
-      run_intent: { session_id: sessionId, run_id: 'run-db', status: 'pending_executor', created_at: 123, updated_at: 124, event_seq: 41 },
+      run_intent: { session_id: sessionId, run_id: 'run-external', status: 'pending_executor', created_at: 123, updated_at: 124, event_seq: 41 },
     },
   })
-  applyDurableEventToDesktopDB({
+  applyDesktopDurableEventEnvelope({
     global_seq: 42,
+    source_seq: 42,
     event_type: 'session.message.appended',
     entity_id: sessionId,
     ts_unix_ms: 420,
     payload: {
       session_id: sessionId,
-      message: { id: 'msg-db-1', session_id: sessionId, global_seq: 42, role: 'assistant', content: 'db durable', created_at: 420 },
+      message: { id: 'msg-external-1', session_id: sessionId, global_seq: 42, role: 'assistant', content: 'external durable', created_at: 420 },
     },
   })
 
-  assert.equal(readDesktopDbSession(sessionId)?.runIntent?.runId, 'run-db')
-  assert.equal(readDesktopDbSession(sessionId)?.live.startedAt, 123)
-  assert.deepEqual(readDesktopDbMessages(sessionId).map((message) => message.id), ['msg-db-1'])
+  const snapshot = getDesktopSnapshot()
+  assert.equal(snapshot.runIntentsBySessionId[sessionId]?.runId, 'run-external')
+  assert.equal(snapshot.sessionsById[sessionId]?.runIntent?.runId, 'run-external')
+  assert.equal(snapshot.sessionsById[sessionId]?.live.startedAt, 123)
+  assert.deepEqual(snapshot.messagesBySessionId[sessionId]?.map((message) => message.id), ['msg-external-1'])
 })
 
 test('Desktop V3 has no standalone permission list or usage subresource helpers', async () => {

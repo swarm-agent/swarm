@@ -26,7 +26,8 @@ import type { DesktopChatRoute } from '../chat/services/chat-routing'
 import { gitStatusQueryKey } from '../git/api'
 import { agentStateQueryOptions, sessionPreferenceQueryKey, uiSettingsQueryKey } from '../../queries/query-options'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
-import { applyDurableEventToDesktopDB, applyOptimisticRunStartToDesktopDB, applyRunIntentToDesktopDB, desktopPlansCollection, ensureDesktopDBRouteSession, mergeDesktopDBDurablePatch, readDesktopDbSession } from './desktop-db'
+import { applyDesktopDurableEventEnvelope, getDesktopSnapshot, replaceDesktopFromSnapshot } from './desktop-state-store'
+import { fetchDesktopStateSnapshot } from './desktop-state-snapshot'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import { normalizeSwarmSettings, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import type {
@@ -1371,9 +1372,15 @@ function requestScopedSessionWorkset(sessionId: string, options: { force?: boole
   pendingSessionWorksetHydrations.add(normalizedSessionId)
   const setTimeoutFn = typeof window !== 'undefined' ? window.setTimeout.bind(window) : setTimeout
   setTimeoutFn(() => {
-    void ensureDesktopDBRouteSession({}, normalizedSessionId, { force: options.force })
+    void fetchDesktopStateSnapshot({
+      sessionIds: [normalizedSessionId],
+      history: { mode: 'full', maxEventsPerSession: 0, manifestPolicy: 'manifest', includeEvents: false },
+    })
+      .then((snapshot) => {
+        replaceDesktopFromSnapshot(snapshot)
+      })
       .catch((error) => {
-        console.error('[desktop-store] scoped desktop v3 DB hydration failed', error)
+        console.error('[desktop-store] scoped desktop v3 state hydration failed', error)
       })
       .finally(() => {
         pendingSessionWorksetHydrations.delete(normalizedSessionId)
@@ -1511,8 +1518,7 @@ function draftKeyForSession(sessionId: string | null, workspacePath?: string | n
   return `${NEW_SESSION_DRAFT_KEY_PREFIX}${normalizedWorkspacePath}`
 }
 
-function updateMessagesCache(sessionId: string, message: ChatMessageRecord, afterSync?: () => void): void {
-  mergeDesktopDBDurablePatch({ sessionId, messages: [message] })
+function updateMessagesCache(_sessionId: string, _message: ChatMessageRecord, afterSync?: () => void): void {
   afterSync?.()
 }
 
@@ -2465,7 +2471,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
     return { lastGlobalSeq: Math.max(state.lastGlobalSeq, envelope.global_seq ?? 0) }
   }
 
-  const hasCanonicalV3Snapshot = Boolean(readDesktopDbSession(sessionId))
+  const hasCanonicalV3Snapshot = Boolean(getDesktopSnapshot().sessionsById[sessionId])
   if (eventType.startsWith('session.') && hasCanonicalV3Snapshot) {
     invalidateAuthoritativeSessionSnapshot(sessionId)
   }
@@ -3108,12 +3114,6 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
         } else {
           updateMessagesCache(normalized.sessionId, normalized)
         }
-        mergeDesktopDBDurablePatch({
-          sessionId: normalized.sessionId,
-          messages: [normalized],
-          appliedSeq: envelopeSeq,
-          highWatermark: envelopeSeq,
-        })
       }
       break
     }
@@ -3131,15 +3131,8 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
     merged = { ...merged, lifecycle: null }
   }
   sessions[sessionId] = merged
-  mergeDesktopDBDurablePatch({
-    sessionId,
-    session: merged,
-    usage: usageSummary,
-    appliedSeq: envelopeSeq,
-    highWatermark: envelopeSeq,
-  })
   syncBlockedSessionToWorkspaceOverview(queryClient, merged)
-  if (sessionRequiresSnapshotHydration(merged, eventType, { hasPlanHydration: desktopPlansCollection.has(sessionId) })) {
+  if (sessionRequiresSnapshotHydration(merged, eventType, { hasPlanHydration: Boolean(getDesktopSnapshot().plansBySessionId[sessionId]) })) {
     requestScopedSessionWorkset(sessionId)
   }
 
@@ -3680,7 +3673,7 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
           if (message.type !== 'event' || !message.event) {
             return
           }
-          applyDurableEventToDesktopDB(message.event ?? {})
+          applyDesktopDurableEventEnvelope(message.event ?? {})
           const payload = message.event.payload && typeof message.event.payload === 'object' ? message.event.payload as Record<string, unknown> : null
           const sessionId = typeof payload?.session_id === 'string' ? payload.session_id : ''
           const eventType = typeof message.event.event_type === 'string' ? message.event.event_type : ''
@@ -3889,15 +3882,6 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
     const effectiveSessionApi = compact ? 'v3' : (sessionApi?.trim().toLowerCase() || get().sessions[targetSessionId]?.sessionApi?.trim().toLowerCase() || '')
 
     get().closeRunStream(targetSessionId)
-    if (effectiveSessionApi === 'v3') {
-      applyOptimisticRunStartToDesktopDB({
-        sessionId: targetSessionId,
-        startedAt: submitStartedAt,
-        agentName,
-        targetName,
-      })
-    }
-
     set((state: DesktopStoreState) => {
       cancelDraftFlush(targetSessionId)
       const sessions = { ...state.sessions }
@@ -3941,20 +3925,8 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
           }
         }
         const assistantMessage = result.assistantMessage ?? null
-        const appliedSeq = Math.max(
-          result.session?.lastEventSeq ?? 0,
-          assistantMessage?.globalSeq ?? 0,
-        )
-        const mergedSession = mergeDesktopDBDurablePatch({
-          sessionId: targetSessionId,
-          session: result.session ?? null,
-          messages: assistantMessage ? [assistantMessage] : [],
-          usage: result.usageSummary ?? null,
-          appliedSeq,
-          highWatermark: Math.max(result.session?.projectionHighWatermarkSeq ?? 0, appliedSeq),
-        })
         set((state: DesktopStoreState) => {
-          const existing = mergedSession ?? state.sessions[targetSessionId]
+          const existing = result.session ?? state.sessions[targetSessionId]
           if (!existing) {
             return state
           }
@@ -3986,23 +3958,7 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
         const result = await sendSessionMessage(targetSessionId, 'user', trimmedPrompt, route, { sessionApi: 'v3', clientRequestId })
         let runIntentId = ''
         if (isSendSessionMessageResult(result)) {
-          const committedMessages = result.message
-            ? [result.message]
-            : result.messages ?? []
-          const committedAppliedSeq = Math.max(
-            result.session?.lastEventSeq ?? 0,
-            result.runIntent?.eventSeq ?? 0,
-            ...committedMessages.map((message) => message.globalSeq),
-          )
           const resultAppliedAt = Date.now()
-          mergeDesktopDBDurablePatch({
-            sessionId: targetSessionId,
-            session: result.session ?? null,
-            messages: committedMessages,
-            appliedSeq: committedAppliedSeq,
-            highWatermark: Math.max(result.session?.projectionHighWatermarkSeq ?? 0, committedAppliedSeq),
-          })
-          applyRunIntentToDesktopDB(targetSessionId, result.runIntent, resultAppliedAt)
           set((state: DesktopStoreState) => applyV3MessageCommitResult(state, targetSessionId, result, resultAppliedAt))
           runIntentId = result.runIntent?.runId ?? ''
         }
@@ -4026,18 +3982,6 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
       })
       const acceptedRunId = accepted.run_id?.trim() ?? ''
       const acceptedStatus = accepted.status?.trim().toLowerCase() ?? ''
-      if (effectiveSessionApi === 'v3' && acceptedRunId) {
-        const acceptedAt = Date.now()
-        applyRunIntentToDesktopDB(targetSessionId, {
-          sessionId: targetSessionId,
-          runId: acceptedRunId,
-          status: acceptedStatus || 'running',
-          blockedReason: '',
-          createdAt: submitStartedAt,
-          updatedAt: acceptedAt,
-          eventSeq: 0,
-        }, acceptedAt)
-      }
       set((state: DesktopStoreState) => {
         const existing = state.sessions[targetSessionId]
         if (!existing) {

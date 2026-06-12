@@ -130,12 +130,49 @@ export function applyDesktopDaemonEvent(event: DesktopDaemonEvent): DesktopState
   return dispatchDesktopState({ type: 'daemon/event', event })
 }
 
+export function applyDesktopDurableEventEnvelope(event: unknown): DesktopState {
+  const envelope = event && typeof event === 'object' ? event as Record<string, unknown> : null
+  const eventType = typeof envelope?.event_type === 'string' ? envelope.event_type.trim() : ''
+  if (!envelope || !eventType) {
+    return markDesktopStale('durable event missing event_type')
+  }
+
+  const payload = envelope.payload && typeof envelope.payload === 'object'
+    ? {
+        ...envelope.payload as Record<string, unknown>,
+        event_type: eventType,
+        source_seq: (envelope.payload as Record<string, unknown>).source_seq ?? envelope.source_seq,
+        global_seq: (envelope.payload as Record<string, unknown>).global_seq ?? envelope.global_seq,
+        ts_unix_ms: (envelope.payload as Record<string, unknown>).ts_unix_ms ?? envelope.ts_unix_ms,
+      }
+    : envelope
+  const currentRev = desktopState.rev
+  const explicitRev = positiveNumber(envelope.rev)
+  const rev = explicitRev || currentRev + 1
+  const prevRev = explicitRev ? finiteNumber(envelope.prevRev) ?? Math.max(0, explicitRev - 1) : currentRev
+
+  return applyDesktopDaemonEvent({
+    rev,
+    prevRev,
+    type: eventType,
+    payload,
+  })
+}
+
 export function markDesktopStale(reason: string): DesktopState {
   return dispatchDesktopState({ type: 'connection/stale', reason })
 }
 
 export function setDesktopConnectionStatus(status: DesktopStateStatus, error?: string | null): DesktopState {
   return dispatchDesktopState({ type: 'connection/status', status, error })
+}
+
+function positiveNumber(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0
+}
+
+function finiteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : null
 }
 
 function desktopWorkspaceScopeKey(workspaceScope: DesktopWorkspaceScope): string {
