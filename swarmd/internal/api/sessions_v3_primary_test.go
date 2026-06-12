@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -4671,6 +4672,86 @@ func (r *sessionsV3RecordingProviderRunner) CreateResponseStreaming(ctx context.
 		}
 	}
 	return response, nil
+}
+
+func TestSessionsV3PrimaryPermissionResolvePublishesImmediateV3Update(t *testing.T) {
+	server, sessionSvc, permissionSvc, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := t.TempDir()
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "permission-immediate-create", "permission immediate", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	runID := "run-permission-immediate"
+	now := time.Now().UnixMilli()
+	pendingIntent := pebblestore.V3SessionRunIntent{SessionID: created.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, RunID: runID, Status: sessionruntime.RunIntentPendingExecutor, UpdatedAt: now}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: created.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ClientRequestID: "permission-immediate-pending", IdempotencyKey: "permission-immediate-pending", PayloadHash: "permission-immediate-pending-hash", RequestHash: "permission-immediate-pending-hash", Kind: sessionruntime.SessionMutationRecordRunIntent, EventType: "session.assistant.queued", RunIntent: &pendingIntent, NowUnixMs: now}); err != nil {
+		t.Fatalf("record pending intent: %v", err)
+	}
+	runningIntent := pendingIntent
+	runningIntent.Status = sessionruntime.RunIntentRunning
+	runningIntent.UpdatedAt = now + 1
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: created.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ClientRequestID: "permission-immediate-running", IdempotencyKey: "permission-immediate-running", PayloadHash: "permission-immediate-running-hash", RequestHash: "permission-immediate-running-hash", Kind: sessionruntime.SessionMutationRecordRunIntent, EventType: "session.assistant.started", RunIntent: &runningIntent, NowUnixMs: now + 1}); err != nil {
+		t.Fatalf("record running intent: %v", err)
+	}
+
+	callArgs := `{"command":"printf immediate\\n","timeout_ms":1000}`
+	pending, err := permissionSvc.CreatePending(permission.CreateInput{SessionID: created.ID, RunID: runID, Step: 3, CallID: "call-immediate-permission", ToolName: "bash", ToolArguments: callArgs, ToolCallArguments: callArgs, Requirement: "tool", Mode: sessionruntime.ModeAuto})
+	if err != nil {
+		t.Fatalf("create pending permission: %v", err)
+	}
+
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, withTestPrincipal(r))
+	}))
+	defer httpServer.Close()
+
+	resolvePayload := []byte(`{"action":"allow_once","reason":"ok"}`)
+	resp, err := http.Post(httpServer.URL+"/v3/sessions/"+created.ID+"/permissions/"+pending.ID+"/resolve", "application/json", bytes.NewReader(resolvePayload))
+	if err != nil {
+		t.Fatalf("resolve permission over HTTP: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("resolve status = %d body=%s", resp.StatusCode, string(body))
+	}
+	var payload struct {
+		Published bool                                 `json:"published"`
+		Mutation  sessionruntime.SessionMutationResult `json:"mutation"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode resolve response: %v", err)
+	}
+	if !payload.Published || payload.Mutation.Event.EventType != "permission.updated" || payload.Mutation.Replayed {
+		t.Fatalf("resolve response mutation = published:%t mutation:%+v", payload.Published, payload.Mutation)
+	}
+
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list session events: %v", err)
+	}
+	var update *sessionruntime.SessionEvent
+	for _, event := range events {
+		if event.EventType == "permission.updated" {
+			copy := event
+			update = &copy
+		}
+	}
+	if update == nil {
+		t.Fatalf("missing immediate permission.updated event: %+v", events)
+	}
+	var updatePayload struct {
+		RunID          string                       `json:"run_id"`
+		Step           int                          `json:"step"`
+		ToolName       string                       `json:"tool_name"`
+		CallID         string                       `json:"call_id"`
+		ToolInstanceID string                       `json:"tool_instance_id"`
+		Arguments      string                       `json:"arguments"`
+		Permission     pebblestore.PermissionRecord `json:"permission"`
+	}
+	if err := json.Unmarshal(update.Payload, &updatePayload); err != nil {
+		t.Fatalf("decode permission.updated payload: %v", err)
+	}
+	if updatePayload.RunID != runID || updatePayload.Step != 3 || updatePayload.ToolName != "bash" || updatePayload.CallID != "call-immediate-permission" || updatePayload.ToolInstanceID != "step-3:call-immediate-permission" || updatePayload.Arguments != callArgs || updatePayload.Permission.ID != pending.ID || updatePayload.Permission.Status != pebblestore.PermissionStatusApproved {
+		t.Fatalf("permission.updated payload = %+v", updatePayload)
+	}
 }
 
 func TestSessionsV3PrimaryAlwaysAllowPersistsInPermissionsPolicyView(t *testing.T) {

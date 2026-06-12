@@ -1064,7 +1064,12 @@ func (s *Server) handleSessionV3PrimaryPermissionResolve(w http.ResponseWriter, 
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "permission": record, "saved_rule": savedRule})
+	mutation, published, err := s.publishSessionV3PermissionUpdatedFromRecord(principal, sessionID, record)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "permission": record, "saved_rule": savedRule, "mutation": mutation, "published": published})
 }
 
 func (s *Server) handleSessionV3PrimaryPermissionResolveAll(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
@@ -1097,7 +1102,110 @@ func (s *Server) handleSessionV3PrimaryPermissionResolveAll(w http.ResponseWrite
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "count": len(resolved), "resolved": resolved})
+	mutations := make([]sessionruntime.SessionMutationResult, 0, len(resolved))
+	for _, record := range resolved {
+		mutation, published, err := s.publishSessionV3PermissionUpdatedFromRecord(principal, sessionID, record)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if published {
+			mutations = append(mutations, mutation)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "count": len(resolved), "resolved": resolved, "mutations": mutations})
+}
+
+func (s *Server) publishSessionV3PermissionUpdatedFromRecord(principal identity.Principal, sessionID string, record pebblestore.PermissionRecord) (sessionruntime.SessionMutationResult, bool, error) {
+	if s == nil || s.sessions == nil {
+		return sessionruntime.SessionMutationResult{}, false, errors.New("sessions v3 service is not configured")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(record.SessionID)
+	}
+	if sessionID == "" {
+		return sessionruntime.SessionMutationResult{}, false, errors.New("session id is required")
+	}
+	if strings.TrimSpace(record.SessionID) != "" && strings.TrimSpace(record.SessionID) != sessionID {
+		return sessionruntime.SessionMutationResult{}, false, errors.New("permission belongs to a different session")
+	}
+	runID := strings.TrimSpace(record.RunID)
+	callID := strings.TrimSpace(record.CallID)
+	if runID == "" || callID == "" {
+		return sessionruntime.SessionMutationResult{}, false, nil
+	}
+	existingIntent, ok, err := s.sessions.GetSessionRunIntent(sessionID, runID)
+	if err != nil {
+		return sessionruntime.SessionMutationResult{}, false, err
+	}
+	if !ok || strings.TrimSpace(existingIntent.Status) != sessionruntime.RunIntentRunning {
+		return sessionruntime.SessionMutationResult{}, false, nil
+	}
+	step := record.Step
+	if step <= 0 {
+		step = 1
+	}
+	toolName := strings.TrimSpace(record.ToolName)
+	if toolName == "" {
+		toolName = "tool"
+	}
+	arguments := strings.TrimSpace(firstNonEmpty(record.ToolCallArguments, record.ToolArguments))
+	stepID := sessionV3ProviderToolStepID(step)
+	toolInstanceID := sessionV3ProviderToolInstanceID(step, callID)
+	payload := map[string]any{
+		"run_id":           runID,
+		"step":             step,
+		"step_id":          stepID,
+		"tool_name":        toolName,
+		"call_id":          callID,
+		"tool_instance_id": toolInstanceID,
+		"type":             "permission.updated",
+		"session_id":       sessionID,
+		"permission":       record,
+	}
+	if arguments != "" {
+		payload["arguments"] = arguments
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return sessionruntime.SessionMutationResult{}, false, err
+	}
+	payloadHash, err := sessionV3ExecutorPayloadHash(sessionID, runID, sessionruntime.RunIntentRunning, "", "permission.updated", string(raw))
+	if err != nil {
+		return sessionruntime.SessionMutationResult{}, false, err
+	}
+	clientRequestID := sessionV3ProviderToolEventClientRequestID("permission.updated", runID, step, callID, 0)
+	now := time.Now().UnixMilli()
+	intent := pebblestore.V3SessionRunIntent{RunID: runID, Status: sessionruntime.RunIntentRunning, UpdatedAt: now}
+	if principal.Valid() {
+		intent.UserID = strings.TrimSpace(principal.UserID)
+		intent.AccountScopeID = strings.TrimSpace(principal.AccountScopeID)
+	} else if session, ok, sessionErr := s.sessions.GetSession(sessionID); sessionErr != nil {
+		return sessionruntime.SessionMutationResult{}, false, sessionErr
+	} else if ok {
+		intent.UserID = strings.TrimSpace(session.UserID)
+		intent.AccountScopeID = strings.TrimSpace(session.AccountScopeID)
+		principal = identity.Principal{Type: identity.PrincipalTypeUser, UserID: session.UserID, AccountScopeID: session.AccountScopeID}
+	}
+	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       sessionID,
+		UserID:          strings.TrimSpace(principal.UserID),
+		AccountScopeID:  strings.TrimSpace(principal.AccountScopeID),
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationRecordRunIntent,
+		EventType:       "permission.updated",
+		EventPayload:    raw,
+		RunIntent:       &intent,
+		NowUnixMs:       now,
+	})
+	if err != nil {
+		return result, false, err
+	}
+	return result, !result.Replayed, nil
 }
 
 func (s *Server) authorizeSessionsV3PrimarySession(principal identity.Principal, sessionID string) (bool, error) {

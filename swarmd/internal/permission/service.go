@@ -62,13 +62,15 @@ type permissionStateCacheEntry struct {
 }
 
 type CreateInput struct {
-	SessionID     string
-	RunID         string
-	CallID        string
-	ToolName      string
-	ToolArguments string
-	Requirement   string
-	Mode          string
+	SessionID         string
+	RunID             string
+	Step              int
+	CallID            string
+	ToolName          string
+	ToolArguments     string
+	ToolCallArguments string
+	Requirement       string
+	Mode              string
 }
 
 type AuthorizationDecision string
@@ -80,14 +82,16 @@ const (
 )
 
 type AuthorizationInput struct {
-	SessionID      string
-	AccountScopeID string
-	RunID          string
-	CallID         string
-	ToolName       string
-	ToolArguments  string
-	Mode           string
-	Overlay        *Policy
+	SessionID         string
+	AccountScopeID    string
+	RunID             string
+	Step              int
+	CallID            string
+	ToolName          string
+	ToolArguments     string
+	ToolCallArguments string
+	Mode              string
+	Overlay           *Policy
 }
 
 type AuthorizationResult struct {
@@ -329,13 +333,15 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 		return result, nil
 	default:
 		record, err := s.CreatePending(CreateInput{
-			SessionID:     sessionID,
-			RunID:         input.RunID,
-			CallID:        input.CallID,
-			ToolName:      input.ToolName,
-			ToolArguments: input.ToolArguments,
-			Requirement:   requirement,
-			Mode:          input.Mode,
+			SessionID:         sessionID,
+			RunID:             input.RunID,
+			Step:              input.Step,
+			CallID:            input.CallID,
+			ToolName:          input.ToolName,
+			ToolArguments:     input.ToolArguments,
+			ToolCallArguments: input.ToolCallArguments,
+			Requirement:       requirement,
+			Mode:              input.Mode,
 		})
 		if err != nil {
 			return AuthorizationResult{}, err
@@ -371,9 +377,11 @@ func (s *Service) CreatePending(input CreateInput) (pebblestore.PermissionRecord
 		ID:                  s.newPermissionID(now, sessionID, runID, strings.TrimSpace(input.CallID)),
 		SessionID:           sessionID,
 		RunID:               runID,
+		Step:                input.Step,
 		CallID:              strings.TrimSpace(input.CallID),
 		ToolName:            strings.TrimSpace(input.ToolName),
 		ToolArguments:       permissionStoredArguments(input.ToolArguments),
+		ToolCallArguments:   permissionStoredArguments(input.ToolCallArguments),
 		Requirement:         strings.TrimSpace(strings.ToLower(input.Requirement)),
 		Mode:                strings.TrimSpace(strings.ToLower(input.Mode)),
 		Status:              pebblestore.PermissionStatusPending,

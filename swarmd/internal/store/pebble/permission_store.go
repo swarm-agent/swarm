@@ -37,6 +37,7 @@ type PermissionRecord struct {
 	CallID              string `json:"call_id"`
 	ToolName            string `json:"tool_name"`
 	ToolArguments       string `json:"tool_arguments"`
+	ToolCallArguments   string `json:"tool_call_arguments,omitempty"`
 	ApprovedArguments   string `json:"approved_arguments,omitempty"`
 	Requirement         string `json:"requirement"`
 	Mode                string `json:"mode"`
@@ -387,6 +388,7 @@ func (s *PermissionStore) ListRunPermissions(sessionID, runID string, limit int)
 
 func sanitizePermissionRecord(record PermissionRecord) PermissionRecord {
 	record.ToolArguments = sanitizePermissionArguments(record.ToolArguments)
+	record.ToolCallArguments = sanitizePermissionArguments(record.ToolCallArguments)
 	record.ApprovedArguments = sanitizePermissionArguments(record.ApprovedArguments)
 	record.Output = sanitizePermissionOutput(record.Output)
 	record.Error = privacy.SanitizeText(record.Error)

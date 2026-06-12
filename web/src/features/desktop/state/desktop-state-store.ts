@@ -161,6 +161,11 @@ export function applyDesktopDurableEventEnvelope(event: unknown): DesktopState {
     prevRev,
     type: eventType,
     payload,
+    stream: typeof envelope.stream === 'string' ? envelope.stream : undefined,
+    entityId: typeof envelope.entity_id === 'string' ? envelope.entity_id : undefined,
+    globalSeq: positiveNumber(envelope.global_seq) || undefined,
+    sourceSeq: positiveNumber(envelope.source_seq) || undefined,
+    tsUnixMs: positiveNumber(envelope.ts_unix_ms) || undefined,
   })
 }
 

@@ -83,6 +83,11 @@ export interface DesktopDaemonEvent {
   prevRev: number
   type: string
   payload?: unknown
+  stream?: string
+  entityId?: string
+  globalSeq?: number
+  sourceSeq?: number
+  tsUnixMs?: number
 }
 
 export type DesktopStateAction =
@@ -330,7 +335,7 @@ function applyDaemonPayload(state: DesktopState, event: DesktopDaemonEvent): Des
     case 'desktop/route-readiness/set':
       return setSessionValuePayload(state, payload, 'readiness', 'routeReadinessBySessionId')
     default:
-      return applyDurableSessionPayload(state, event.type, payload)
+      return applyDurableSessionPayload(state, event, payload)
   }
 }
 
@@ -622,16 +627,13 @@ function setSessionValuePayload<
   }
 }
 
-function applyDurableSessionPayload(state: DesktopState, eventType: string, rawPayload: Record<string, unknown>): DesktopState | null {
+function applyDurableSessionPayload(state: DesktopState, event: DesktopDaemonEvent, rawPayload: Record<string, unknown>): DesktopState | null {
+  const eventType = event.type
   if (!eventType.startsWith('session.') && !eventType.startsWith('permission.')) {
     return null
   }
   const payload = normalizeDurablePayload(eventType, rawPayload)
-  const sessionId = payloadString(payload, 'session_id')
-    || (eventType.startsWith('session.') ? payloadString(payload, 'id') : '')
-    || payloadString(payloadRecord(payload, 'session'), 'id')
-    || payloadString(payloadRecord(payload, 'message'), 'session_id')
-    || payloadString(payloadRecord(payload, 'permission'), 'session_id')
+  const sessionId = durableSessionIdFromEvent(eventType, payload, event)
   if (!sessionId) {
     return null
   }
@@ -687,6 +689,32 @@ function applyDurableSessionPayload(state: DesktopState, eventType: string, rawP
   return next
 }
 
+function durableSessionIdFromEvent(eventType: string, payload: Record<string, unknown>, event: DesktopDaemonEvent): string {
+  const envelopeSessionId = eventType.startsWith('session.') || eventType.startsWith('permission.')
+    ? payloadString({ entity_id: event.entityId }, 'entity_id') || durableSessionIdFromStream(event.stream)
+    : ''
+  if (envelopeSessionId) {
+    return envelopeSessionId
+  }
+  return payloadString(payload, 'session_id')
+    || (eventType.startsWith('session.') ? payloadString(payload, 'id') : '')
+    || payloadString(payloadRecord(payload, 'session'), 'id')
+    || payloadString(payloadRecord(payload, 'message'), 'session_id')
+    || payloadString(payloadRecord(payload, 'permission'), 'session_id')
+}
+
+function durableSessionIdFromStream(stream: unknown): string {
+  const value = typeof stream === 'string' ? stream.trim() : ''
+  const sessionPrefix = 'session:'
+  if (value.startsWith(sessionPrefix)) {
+    return value.slice(sessionPrefix.length).trim()
+  }
+  const v3SessionPrefix = 'v3/session:'
+  if (value.startsWith(v3SessionPrefix)) {
+    return value.slice(v3SessionPrefix.length).trim()
+  }
+  return ''
+}
 
 function normalizeDurablePayload(eventType: string, payload: Record<string, unknown>): Record<string, unknown> {
   if (!eventType.startsWith('session.')) {
@@ -1346,6 +1374,25 @@ function applyTool(session: DesktopSessionRecord, payload: Record<string, unknow
     retainLiveTool(session.live, 'done')
     resetLiveTool(session.live)
   }
+  logDesktopToolStreamUpdate({
+    sessionId,
+    eventType,
+    toolName: toolName || session.live.sidebarToolName || session.live.toolName || '',
+    callId: callId || session.live.toolCallId || '',
+    step: typeof payload.step === 'number' ? payload.step : session.live.step,
+    seq: eventSeq,
+  })
+}
+
+function logDesktopToolStreamUpdate(update: {
+  sessionId: string
+  eventType: string
+  toolName: string
+  callId: string
+  step: number
+  seq: number
+}): void {
+  console.log('[desktop-sidebar] session.tool update', update)
 }
 
 function upsertToolHistory(live: DesktopSessionRecord['live'], input: {

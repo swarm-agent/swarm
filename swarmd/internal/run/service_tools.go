@@ -472,14 +472,16 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 			}
 		}
 		auth, err := s.permissions.AuthorizeToolCall(permission.AuthorizationInput{
-			SessionID:      sessionID,
-			AccountScopeID: accountScopeID,
-			RunID:          runID,
-			CallID:         toolCalls[i].CallID,
-			ToolName:       toolCalls[i].Name,
-			ToolArguments:  permissionArguments,
-			Mode:           sessionMode,
-			Overlay:        overlay,
+			SessionID:         sessionID,
+			AccountScopeID:    accountScopeID,
+			RunID:             runID,
+			Step:              step,
+			CallID:            toolCalls[i].CallID,
+			ToolName:          toolCalls[i].Name,
+			ToolArguments:     permissionArguments,
+			ToolCallArguments: strings.TrimSpace(toolCalls[i].Arguments),
+			Mode:              sessionMode,
+			Overlay:           overlay,
 		})
 		if err != nil {
 			decisions[i].Err = err
@@ -521,7 +523,7 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 					Step:       step,
 					ToolName:   strings.TrimSpace(toolCalls[i].Name),
 					CallID:     strings.TrimSpace(toolCalls[i].CallID),
-					Arguments:  strings.TrimSpace(toolCalls[i].Arguments),
+					Arguments:  strings.TrimSpace(firstNonEmptyString(record.ToolCallArguments, record.ToolArguments)),
 					Permission: record,
 				})
 			}
@@ -546,7 +548,7 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 						Step:       step,
 						ToolName:   strings.TrimSpace(call.Name),
 						CallID:     strings.TrimSpace(call.CallID),
-						Arguments:  strings.TrimSpace(call.Arguments),
+						Arguments:  strings.TrimSpace(firstNonEmptyString(resolved.ToolCallArguments, resolved.ToolArguments)),
 						Permission: &resolved,
 					})
 				}

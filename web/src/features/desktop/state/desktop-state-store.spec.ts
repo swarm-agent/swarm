@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   applyDesktopDaemonEvent,
+  applyDesktopDurableEventEnvelope,
   getDesktopSnapshot,
   markDesktopStale,
   mergeDesktopSnapshot,
@@ -174,6 +175,57 @@ test('applyDesktopDaemonEvent patches through the reducer and emits only on stat
   assert.equal(getDesktopSnapshot().sessionsById.duplicate, undefined)
   assert.equal(notificationCount, 1)
   unsubscribe()
+})
+
+test('applyDesktopDurableEventEnvelope routes session tool events by global stream envelope identity', () => {
+  replaceDesktopFromSnapshot({ rev: 0 })
+  const originalConsoleLog = console.log
+  const logs: unknown[][] = []
+  console.log = (...args: unknown[]) => {
+    logs.push(args)
+  }
+  try {
+    applyDesktopDurableEventEnvelope({
+      global_seq: 100,
+      source_seq: 7,
+      stream: 'session:session-from-envelope',
+      entity_id: 'session-from-envelope',
+      event_type: 'session.tool.started',
+      ts_unix_ms: 1234,
+      payload: {
+        run_id: 'run-1',
+        tool_name: 'read',
+        call_id: 'call-1',
+        step_id: 'step-1',
+        tool_instance_id: 'step-1:call-1',
+        arguments: '{"path":"file.ts"}',
+        step: 1,
+      },
+    })
+  } finally {
+    console.log = originalConsoleLog
+  }
+
+  const session = getDesktopSnapshot().sessionsById['session-from-envelope']
+  assert.ok(session)
+  assert.equal(session.live.status, 'running')
+  assert.equal(session.live.sidebarToolName, 'read')
+  assert.equal(session.live.toolName, 'read')
+  assert.equal(session.live.toolCallId, 'call-1')
+  assert.equal(session.live.lastEventType, 'session.tool.started')
+  assert.equal(session.live.seq, 7)
+  assert.equal(getDesktopSnapshot().sessionsById['']?.live.sidebarToolName, undefined)
+  assert.deepEqual(logs, [[
+    '[desktop-sidebar] session.tool update',
+    {
+      sessionId: 'session-from-envelope',
+      eventType: 'session.tool.started',
+      toolName: 'read',
+      callId: 'call-1',
+      step: 1,
+      seq: 7,
+    },
+  ]])
 })
 
 test('markDesktopStale updates canonical stale state and requests resync', () => {
