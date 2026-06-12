@@ -137,3 +137,52 @@ func TestChatFooterUsesLocalSwarmNameForHostRoute(t *testing.T) {
 		t.Fatalf("chat primary footer token = %q, want local swarm name", tokens[0].Text)
 	}
 }
+
+func TestHomeAndChatFootersShareActionSlots(t *testing.T) {
+	home := NewHomePage(model.HomeModel{
+		ServerMode:    "local",
+		ActiveAgent:   "swarm",
+		ModelProvider: "anthropic",
+		ModelName:     "claude",
+		ChatRoutes:    []model.ChatRoute{{ID: "host", Label: "host"}},
+	})
+	home.SetSwarmName("Local Desk")
+	chat := NewChatPage(ChatPageOptions{
+		SessionID:      "session-test",
+		ShowHeader:     true,
+		SessionMode:    "auto",
+		AuthConfigured: true,
+		SwarmName:      "Local Desk",
+		ModelProvider:  "anthropic",
+		ModelName:      "claude",
+		Meta:           ChatSessionMeta{Route: "host", Agent: "swarm"},
+	})
+
+	homeTokens := home.homeFooterTokens()
+	chatTokens := chat.footerSettingsTokens()
+	if len(homeTokens) != len(chatTokens) {
+		t.Fatalf("footer token counts differ: home=%d chat=%d", len(homeTokens), len(chatTokens))
+	}
+	for i := range homeTokens {
+		if homeTokens[i].Action != chatTokens[i].Action {
+			t.Fatalf("footer token %d action differs: home=%q chat=%q", i, homeTokens[i].Action, chatTokens[i].Action)
+		}
+	}
+}
+
+func TestFooterStateKeepsPageSpecificRightFacts(t *testing.T) {
+	home := NewHomePage(model.HomeModel{WorktreesEnabled: true, Version: "1.2.3"})
+	homeState := home.homeFooterState()
+	if got := strings.Join(homeState.RightFacts, "|"); !strings.Contains(got, "wt on") || !strings.Contains(got, "v 1.2.3") {
+		t.Fatalf("home footer right facts = %#v, want worktree and version facts", homeState.RightFacts)
+	}
+
+	chat := NewChatPage(ChatPageOptions{SessionID: "session-test", AuthConfigured: true, Meta: ChatSessionMeta{WorktreeEnabled: true}})
+	chat.contextUsageSet = true
+	chat.contextWindow = 1000
+	chat.contextRemain = 250
+	chatState := chat.chatFooterState()
+	if got := strings.Join(chatState.RightFacts, "|"); !strings.Contains(got, "wt on") || !strings.Contains(got, "25% left") {
+		t.Fatalf("chat footer right facts = %#v, want worktree and context facts", chatState.RightFacts)
+	}
+}
