@@ -10,6 +10,7 @@ import type {
 import type {
   DesktopRunIntentRecord,
   DesktopSessionRecord,
+  DesktopSessionUsageRecord,
 } from '../types/realtime'
 import {
   createEmptyDesktopState,
@@ -57,7 +58,7 @@ export function getDesktopSnapshot(): DesktopState {
 
 export function useDesktopSession(sessionId: string | null | undefined): DesktopSessionRecord | null {
   const normalizedSessionId = sessionId?.trim() ?? ''
-  return useDesktopState((state) => normalizedSessionId ? state.sessionsById[normalizedSessionId] ?? null : null)
+  return useDesktopState((state) => normalizedSessionId ? selectDesktopSession(state, normalizedSessionId) : null)
 }
 
 export function useDesktopWorkspaceSessions(workspaceScope: DesktopWorkspaceScope): DesktopSessionRecord[] {
@@ -201,10 +202,27 @@ function desktopWorkspacePaths(workspaceScope: DesktopWorkspaceScope): string[] 
 function selectDesktopWorkspaceSessions(state: DesktopState, workspaceKey: string): DesktopSessionRecord[] {
   const workspacePaths = new Set(workspaceKey ? workspaceKey.split('\u0000') : [])
   const sessions = state.sessionOrder
-    .map((sessionId) => state.sessionsById[sessionId])
+    .map((sessionId) => selectDesktopSession(state, sessionId))
     .filter((session): session is DesktopSessionRecord => Boolean(session))
     .filter((session) => workspacePaths.size === 0 || workspacePaths.has(session.workspacePath?.trim() ?? ''))
   return [...sessions].sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id))
+}
+
+function selectDesktopSession(state: DesktopState, sessionId: string): DesktopSessionRecord | null {
+  const session = state.sessionsById[sessionId]
+  if (!session) {
+    return null
+  }
+  const usage = state.usageBySessionId[sessionId] as DesktopSessionUsageRecord | undefined
+  const runIntent = state.runIntentsBySessionId[sessionId]
+  const changed = Boolean((usage && usage !== session.usage) || (runIntent && runIntent !== session.runIntent))
+  return changed
+    ? {
+        ...session,
+        usage: usage ?? session.usage,
+        runIntent: runIntent ?? session.runIntent,
+      }
+    : session
 }
 
 function dispatchDesktopState(action: Parameters<typeof desktopReducer>[1]): DesktopState {

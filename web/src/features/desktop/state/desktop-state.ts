@@ -146,19 +146,22 @@ function replaceFromSnapshot(state: DesktopState, snapshot: DesktopDaemonSnapsho
     return markStale(state, 'snapshot missing valid rev')
   }
 
+  const usageBySessionId = cloneRecord(snapshot.usageBySessionId)
+  const sessionsById = attachUsageToSessions(cloneRecord(snapshot.sessionsById), usageBySessionId)
+
   return {
     rev: snapshot.rev,
     status: 'ready',
     staleReason: null,
     resyncRequested: false,
     lastError: null,
-    sessionsById: cloneRecord(snapshot.sessionsById),
-    sessionOrder: normalizeSessionOrder(snapshot.sessionsById, snapshot.sessionOrder),
+    sessionsById,
+    sessionOrder: normalizeSessionOrder(sessionsById, snapshot.sessionOrder),
     messagesBySessionId: cloneArrayRecord(snapshot.messagesBySessionId),
     permissionsById: cloneRecord(snapshot.permissionsById),
     plansBySessionId: cloneRecord(snapshot.plansBySessionId),
     planRevisionsBySessionId: cloneArrayRecord(snapshot.planRevisionsBySessionId),
-    usageBySessionId: cloneRecord(snapshot.usageBySessionId),
+    usageBySessionId,
     runIntentsBySessionId: cloneRecord(snapshot.runIntentsBySessionId),
     workspacesByPath: cloneWorkspaceRecord(snapshot.workspacesByPath),
     notificationsById: cloneRecord(snapshot.notificationsById),
@@ -222,7 +225,9 @@ function applyDaemonPayload(state: DesktopState, event: DesktopDaemonEvent): Des
     case 'desktop/plan-revisions/replace':
       return replaceSessionArrayPayload(state, payload, 'revisions', 'planRevisionsBySessionId')
     case 'desktop/usage/set':
-      return setSessionValuePayload(state, payload, 'usage', 'usageBySessionId')
+      return applyUsageSetPayload(state, payload)
+    case 'run.usage.updated':
+      return applyUsageUpdatedPayload(state, payload)
     case 'desktop/run-intent/set':
       return setSessionValuePayload(state, payload, 'runIntent', 'runIntentsBySessionId')
     case 'desktop/workspace/upsert':
@@ -241,6 +246,107 @@ function applyDaemonPayload(state: DesktopState, event: DesktopDaemonEvent): Des
       return setSessionValuePayload(state, payload, 'readiness', 'routeReadinessBySessionId')
     default:
       return applyDurableSessionPayload(state, event.type, payload)
+  }
+}
+
+function applyUsageUpdatedPayload(state: DesktopState, payload: Record<string, unknown>): DesktopState {
+  const usage = usageFromPayload(payload)
+  const sessionId = usage?.sessionId || payloadString(payload, 'session_id')
+  if (!sessionId) {
+    return state
+  }
+
+  const usageBySessionId = usage
+    ? {
+        ...state.usageBySessionId,
+        [sessionId]: usage,
+      }
+    : state.usageBySessionId
+  const existing = state.sessionsById[sessionId]
+  if (!existing) {
+    return {
+      ...state,
+      usageBySessionId,
+    }
+  }
+
+  const eventSeq = payloadNumber(payload, 'source_seq') || payloadNumber(payload, 'global_seq')
+  const ts = payloadNumber(payload, 'ts_unix_ms') || Date.now()
+  const session: DesktopSessionRecord = {
+    ...existing,
+    usage: usage ?? existing.usage,
+    updatedAt: Math.max(existing.updatedAt, usage?.updatedAt ?? 0, ts),
+    lastEventSeq: eventSeq > 0 ? Math.max(existing.lastEventSeq ?? 0, eventSeq) : existing.lastEventSeq,
+    projectionHighWatermarkSeq: eventSeq > 0 ? Math.max(existing.projectionHighWatermarkSeq ?? 0, eventSeq) : existing.projectionHighWatermarkSeq,
+    live: {
+      ...existing.live,
+      lastEventType: 'run.usage.updated',
+      lastEventAt: ts,
+      seq: eventSeq > 0 ? Math.max(existing.live.seq ?? 0, eventSeq) : existing.live.seq,
+    },
+  }
+
+  return {
+    ...state,
+    sessionsById: {
+      ...state.sessionsById,
+      [sessionId]: session,
+    },
+    sessionOrder: sortSessionOrder({ ...state.sessionsById, [sessionId]: session }),
+    usageBySessionId,
+    routeReadinessBySessionId: {
+      ...state.routeReadinessBySessionId,
+      [sessionId]: readySession(sessionId, ts),
+    },
+  }
+}
+
+function applyUsageSetPayload(state: DesktopState, payload: Record<string, unknown>): DesktopState | null {
+  const sessionId = stringValue(payload.sessionId)
+  if (!sessionId) {
+    return null
+  }
+
+  const value = payload.usage
+  if (value === undefined) {
+    return null
+  }
+
+  if (value === null) {
+    const existing = state.sessionsById[sessionId]
+    return {
+      ...state,
+      sessionsById: existing
+        ? {
+            ...state.sessionsById,
+            [sessionId]: {
+              ...existing,
+              usage: null,
+            },
+          }
+        : state.sessionsById,
+      usageBySessionId: omitKey(state.usageBySessionId, sessionId),
+    }
+  }
+
+  const usage = value as DesktopSessionUsageRecord
+  const existing = state.sessionsById[sessionId]
+  return {
+    ...state,
+    sessionsById: existing
+      ? {
+          ...state.sessionsById,
+          [sessionId]: {
+            ...existing,
+            usage,
+            updatedAt: Math.max(existing.updatedAt, usage.updatedAt),
+          },
+        }
+      : state.sessionsById,
+    usageBySessionId: {
+      ...state.usageBySessionId,
+      [sessionId]: usage,
+    },
   }
 }
 
@@ -933,6 +1039,24 @@ function readySession(sessionId: string, updatedAt: number): DesktopSessionReadi
   return { sessionId, status: 'ready', ready: true, missingResources: [], omittedResources: [], error: null, updatedAt }
 }
 
+function usageFromPayload(payload: Record<string, unknown>): DesktopSessionUsageRecord | null {
+  const source = payloadRecord(payload, 'usage_summary') ?? payload
+  const sessionId = payloadString(source, 'session_id') || payloadString(payload, 'session_id')
+  if (!sessionId) {
+    return null
+  }
+  return {
+    sessionId,
+    provider: payloadString(source, 'provider'),
+    model: payloadString(source, 'model'),
+    source: payloadString(source, 'source'),
+    contextWindow: payloadNumber(source, 'context_window'),
+    totalTokens: payloadNumber(source, 'total_tokens'),
+    remainingTokens: payloadNumber(source, 'remaining_tokens'),
+    updatedAt: payloadNumber(source, 'updated_at'),
+  }
+}
+
 function payloadRecord(record: Record<string, unknown> | null | undefined, key: string): Record<string, unknown> | null {
   const value = record?.[key]
   return isRecord(value) ? value : null
@@ -1284,6 +1408,28 @@ function isObjectWithStringId(value: unknown): value is { id: string } & Record<
 
 function cloneRecord<T>(record: Record<string, T> | undefined): Record<string, T> {
   return record ? { ...record } : {}
+}
+
+function attachUsageToSessions(
+  sessionsById: Record<string, DesktopSessionRecord>,
+  usageBySessionId: Record<string, DesktopSessionUsageRecord>,
+): Record<string, DesktopSessionRecord> {
+  let next = sessionsById
+  for (const [sessionId, usage] of Object.entries(usageBySessionId)) {
+    const session = next[sessionId]
+    if (!session || session.usage === usage) {
+      continue
+    }
+    if (next === sessionsById) {
+      next = { ...sessionsById }
+    }
+    next[sessionId] = {
+      ...session,
+      usage,
+      updatedAt: Math.max(session.updatedAt, usage.updatedAt),
+    }
+  }
+  return next
 }
 
 function cloneArrayRecord<T>(record: Record<string, T[]> | undefined): Record<string, T[]> {

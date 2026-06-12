@@ -104,6 +104,32 @@ test('snapshot replacement sets state.rev, replaces old records, and clears stal
   assert.equal(next.messagesBySessionId.next?.[0]?.id, 'next-message')
 })
 
+test('snapshot replacement hydrates session usage for context badge projections', () => {
+  const nextSession = session('next', 20)
+
+  const next = replaceSnapshot(createEmptyDesktopState(), {
+    rev: 9,
+    sessionsById: { [nextSession.id]: nextSession },
+    sessionOrder: [nextSession.id],
+    usageBySessionId: {
+      [nextSession.id]: {
+        sessionId: nextSession.id,
+        provider: 'codex',
+        model: 'gpt-5.4',
+        source: 'provider_api_usage',
+        contextWindow: 1000,
+        totalTokens: 250,
+        remainingTokens: 750,
+        updatedAt: 30,
+      },
+    },
+  })
+
+  assert.equal(next.sessionsById.next?.usage?.remainingTokens, 750)
+  assert.equal(next.sessionsById.next?.usage?.contextWindow, 1000)
+  assert.equal(next.sessionsById.next?.updatedAt, 30)
+})
+
 test('event with matching prevRev applies and advances state.rev', () => {
   const state = replaceSnapshot(createEmptyDesktopState(), { rev: 10 })
   const upserted = session('session-1', 30)
@@ -121,6 +147,43 @@ test('event with matching prevRev applies and advances state.rev', () => {
   assert.equal(next.staleReason, null)
   assert.equal(next.sessionsById['session-1'], upserted)
   assert.deepEqual(next.sessionOrder, ['session-1'])
+})
+
+test('usage events update session usage without marking the desktop state stale', () => {
+  const existing = session('session-1', 30)
+  const state = replaceSnapshot(createEmptyDesktopState(), {
+    rev: 10,
+    sessionsById: { [existing.id]: existing },
+    sessionOrder: [existing.id],
+  })
+
+  const next = applyEvent(state, {
+    rev: 11,
+    prevRev: 10,
+    type: 'run.usage.updated',
+    payload: {
+      session_id: existing.id,
+      source_seq: 4,
+      ts_unix_ms: 40,
+      usage_summary: {
+        session_id: existing.id,
+        provider: 'codex',
+        model: 'gpt-5.4',
+        source: 'provider_api_usage',
+        context_window: 1000,
+        total_tokens: 250,
+        remaining_tokens: 750,
+        updated_at: 40,
+      },
+    },
+  })
+
+  assert.equal(next.status, 'ready')
+  assert.equal(next.staleReason, null)
+  assert.equal(next.usageBySessionId['session-1']?.remainingTokens, 750)
+  assert.equal(next.sessionsById['session-1']?.usage?.remainingTokens, 750)
+  assert.equal(next.sessionsById['session-1']?.live.lastEventType, 'run.usage.updated')
+  assert.equal(next.sessionsById['session-1']?.lastEventSeq, 4)
 })
 
 test('event with prevRev mismatch marks stale and does not apply payload', () => {
