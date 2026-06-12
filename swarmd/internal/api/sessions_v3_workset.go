@@ -161,7 +161,12 @@ func (s *Server) writeSessionsV3Workset(w http.ResponseWriter, options pebblesto
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, sessionsV3WorksetResponse(workset, permissionsBySession, usageBySession, preferencesBySession, agentModelPolicyBySession, plansBySession, planRevisionsBySession))
+	snapshotEndpointCursor, err := s.sessions.CurrentRealtimeOutboxCursor()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sessionsV3WorksetResponse(workset, permissionsBySession, usageBySession, preferencesBySession, agentModelPolicyBySession, plansBySession, planRevisionsBySession, snapshotEndpointCursor))
 }
 
 func canonicalSessionsV3WorksetWorkspacePaths(workspace sessionsV3WorksetWorkspace) ([]string, error) {
@@ -309,7 +314,7 @@ func (s *Server) sessionsV3WorksetPlans(workset pebblestore.V3SessionWorksetResu
 	return plansBySession, planRevisionsBySession, nil
 }
 
-func sessionsV3WorksetResponse(workset pebblestore.V3SessionWorksetResult, permissionsBySession map[string]any, usageBySession map[string]any, preferencesBySession map[string]any, agentModelPolicyBySession map[string]any, plansBySession map[string]any, planRevisionsBySession map[string]any) map[string]any {
+func sessionsV3WorksetResponse(workset pebblestore.V3SessionWorksetResult, permissionsBySession map[string]any, usageBySession map[string]any, preferencesBySession map[string]any, agentModelPolicyBySession map[string]any, plansBySession map[string]any, planRevisionsBySession map[string]any, snapshotEndpointCursor string) map[string]any {
 	if permissionsBySession == nil {
 		permissionsBySession = map[string]any{}
 	}
@@ -331,6 +336,7 @@ func sessionsV3WorksetResponse(workset pebblestore.V3SessionWorksetResult, permi
 	return map[string]any{
 		"ok":                            true,
 		"rev":                           workset.Rev,
+		"snapshot_endpoint_cursor":      snapshotEndpointCursor,
 		"sessions_by_id":                workset.SessionsByID,
 		"projections_by_session":        workset.ProjectionsBySession,
 		"messages_by_session":           workset.MessagesBySession,

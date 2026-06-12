@@ -485,15 +485,16 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":         true,
-		"session":    updated.Session,
-		"projection": updated.Projection,
-		"message":    result.Message,
-		"run_intent": result.RunIntent,
-		"messages":   updated.Messages,
-		"events":     updated.Events,
-		"mutation":   result,
-		"previous":   hydrated.Projection,
+		"ok":              true,
+		"session":         updated.Session,
+		"projection":      updated.Projection,
+		"message":         result.Message,
+		"run_intent":      result.RunIntent,
+		"messages":        updated.Messages,
+		"events":          updated.Events,
+		"realtime_outbox": result.RealtimeOutbox,
+		"mutation":        result,
+		"previous":        hydrated.Projection,
 	})
 	if enqueueJob != nil {
 		s.v3SessionExecutor.EnqueueRun(*enqueueJob)

@@ -45,6 +45,7 @@ function mergeSessionLiveState(
   const existingHasAssistantDetails = liveHasAssistantDetails(existing)
   const incomingHasReasoningDetails = liveHasReasoningDetails(incoming)
   const existingHasReasoningDetails = liveHasReasoningDetails(existing)
+  const incomingClearsAssistantDetails = liveClearsAssistantDetails(incoming)
 
   return {
     ...incoming,
@@ -60,10 +61,14 @@ function mergeSessionLiveState(
     retainedToolOutput: mergeLiveToolValue(existing.retainedToolOutput, incoming.retainedToolOutput, existingHasToolDetails, incomingHasToolDetails),
     retainedToolState: mergeLiveToolValue(existing.retainedToolState, incoming.retainedToolState, existingHasToolDetails, incomingHasToolDetails),
     summary: mergeLiveSummary(existing, incoming, existingHasToolDetails, incomingHasToolDetails),
-    assistantDraft: incoming.assistantDraft || (!incomingHasAssistantDetails && existingHasAssistantDetails ? existing.assistantDraft : incoming.assistantDraft),
-    retainedAssistantSegments: incomingRetainedAssistantSegments.length > 0
+    assistantDraft: incomingClearsAssistantDetails
+      ? incoming.assistantDraft
+      : incoming.assistantDraft || (!incomingHasAssistantDetails && existingHasAssistantDetails ? existing.assistantDraft : incoming.assistantDraft),
+    retainedAssistantSegments: incomingClearsAssistantDetails
       ? incomingRetainedAssistantSegments
-      : existingRetainedAssistantSegments,
+      : incomingRetainedAssistantSegments.length > 0
+        ? incomingRetainedAssistantSegments
+        : existingRetainedAssistantSegments,
     reasoningSummary: incoming.reasoningSummary || (!incomingHasReasoningDetails && existingHasReasoningDetails ? existing.reasoningSummary : incoming.reasoningSummary),
     reasoningText: incoming.reasoningText || (!incomingHasReasoningDetails && existingHasReasoningDetails ? existing.reasoningText : incoming.reasoningText),
     reasoningState: incomingHasReasoningDetails || !existingHasReasoningDetails ? incoming.reasoningState : existing.reasoningState,
@@ -72,6 +77,20 @@ function mergeSessionLiveState(
     toolHistory: incomingToolHistory.length > 0
       ? incomingToolHistory
       : existingToolHistory,
+  }
+}
+
+function liveClearsAssistantDetails(live: DesktopSessionRecord['live']): boolean {
+  switch (live.lastEventType) {
+    case 'session.assistant.completed':
+    case 'session.assistant.failed':
+    case 'session.run.completed':
+    case 'session.run.cancelled':
+    case 'session.run.expired':
+    case 'session.run.interrupted':
+      return live.assistantDraft === '' && (live.retainedAssistantSegments?.length ?? 0) === 0
+    default:
+      return false
   }
 }
 

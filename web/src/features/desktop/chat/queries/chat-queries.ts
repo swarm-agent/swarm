@@ -172,10 +172,22 @@ interface V3RunIntentWire {
   event_seq?: number;
 }
 
+interface V3RealtimeOutboxWire {
+  endpoint_seq?: number;
+  endpoint_cursor?: string;
+  session_id?: string;
+}
+
+interface V3MutationWire {
+  realtime_outbox?: V3RealtimeOutboxWire | null;
+}
+
 interface V3MessageCommitResponseWire extends V3HydratedSessionResponseWire {
   ok?: boolean;
   message?: MessageWire;
   run_intent?: V3RunIntentWire | null;
+  realtime_outbox?: V3RealtimeOutboxWire | null;
+  mutation?: V3MutationWire | null;
 }
 
 interface V3CompactResponseWire {
@@ -198,6 +210,11 @@ export interface SendSessionMessageResult {
   messages?: ChatMessageRecord[];
   runIntent?: V3RunIntentRecord | null;
   events?: unknown[];
+  realtimeOutbox?: {
+    endpointSeq: number;
+    endpointCursor: string;
+    sessionId: string;
+  } | null;
 }
 
 export interface CompactSessionV3Result {
@@ -746,6 +763,17 @@ function mapV3RunIntent(intent: V3RunIntentWire | null | undefined): DesktopRunI
   };
 }
 
+function mapV3RealtimeOutbox(row: V3RealtimeOutboxWire | null | undefined): SendSessionMessageResult['realtimeOutbox'] {
+  if (!row || typeof row !== 'object') {
+    return null;
+  }
+  return {
+    endpointSeq: typeof row.endpoint_seq === 'number' ? row.endpoint_seq : 0,
+    endpointCursor: String(row.endpoint_cursor ?? '').trim(),
+    sessionId: String(row.session_id ?? '').trim(),
+  };
+}
+
 function mapV3MessageCommitResponse(response: V3MessageCommitResponseWire): SendSessionMessageResult {
   const mappedSession = mapSession(mapSessionProjectionToSession(response.session ?? {}, response.projection));
   const session = mappedSession.id ? applySessionProjectionCursor(mappedSession, response.projection) : undefined;
@@ -756,6 +784,7 @@ function mapV3MessageCommitResponse(response: V3MessageCommitResponseWire): Send
     messages: Array.isArray(response.messages) ? response.messages.map(mapChatMessage) : [],
     runIntent: mapV3RunIntent(response.run_intent),
     events: Array.isArray(response.events) ? response.events : [],
+    realtimeOutbox: mapV3RealtimeOutbox(response.realtime_outbox ?? response.mutation?.realtime_outbox),
   };
 }
 
@@ -1789,7 +1818,7 @@ export async function sendSessionMessage(
   content: string,
   route?: DesktopChatRoute | null,
   options: SendSessionMessageOptions = {},
-): Promise<SendSessionMessageResult | unknown> {
+): Promise<SendSessionMessageResult> {
   const normalizedSessionId = sessionId.trim();
   void route;
   resolveSessionApiForSession(normalizedSessionId, options);

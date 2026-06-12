@@ -182,6 +182,7 @@ interface PlanWire {
 
 interface DesktopStateWorksetResponseWire {
   rev?: number
+  snapshot_endpoint_cursor?: string
   sessions_by_id?: Record<string, SessionWire>
   messages_by_session?: Record<string, MessageWire[]>
   permissions_by_session?: Record<string, PermissionWire[]>
@@ -231,6 +232,11 @@ export function normalizeDesktopStateSnapshot(response: DesktopStateWorksetRespo
   const permissionsBySessionId = mapPermissionsBySession(response.permissions_by_session)
   const sessionsById = mapSessions(response.sessions_by_id, permissionsBySessionId)
   const sessionOrder = normalizeSessionOrder(sessionsById, response.session_order)
+
+  const snapshotEndpointCursor = String(response.snapshot_endpoint_cursor ?? '').trim()
+  if (snapshotEndpointCursor && typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('desktop:v3-realtime-snapshot-cursor', { detail: { endpointCursor: snapshotEndpointCursor } }))
+  }
 
   return {
     rev: response.rev,
