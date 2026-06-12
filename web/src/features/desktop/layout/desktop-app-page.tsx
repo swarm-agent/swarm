@@ -15,7 +15,7 @@ import { applyDesktopRouteTheme } from './desktop-theme-controller'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
 import { agentStateQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
 import { fetchDesktopStateSnapshot } from '../state/desktop-state-snapshot'
-import { mergeDesktopSnapshot, useDesktopRouteReadiness, useDesktopSession, useDesktopWorkspaceSessions } from '../state/desktop-state-store'
+import { getDesktopSnapshot, mergeDesktopSnapshot, useDesktopRouteReadiness, useDesktopSession, useDesktopWorkspaceSessions } from '../state/desktop-state-store'
 import type { DesktopSessionRecord } from '../types/realtime'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
 import { DesktopQuickSettingsModal, type QuickSettingsTabID } from '../settings/components/desktop-quick-settings-modal'
@@ -2309,6 +2309,26 @@ export function DesktopAppPage() {
   const handleSessionCreated = useCallback((session: DesktopSessionRecord) => {
     if (!session.workspacePath) {
       return
+    }
+    const sessionId = session.id.trim()
+    if (sessionId) {
+      const now = Date.now()
+      mergeDesktopSnapshot({
+        rev: getDesktopSnapshot().rev + 1,
+        sessionsById: { [sessionId]: session },
+        sessionOrder: [sessionId],
+        routeReadinessBySessionId: {
+          [sessionId]: {
+            sessionId,
+            status: 'ready',
+            ready: true,
+            missingResources: [],
+            omittedResources: [],
+            error: null,
+            updatedAt: now,
+          },
+        },
+      })
     }
     const workspaceSlug = workspaceSlugByPath.get(session.workspacePath)
       ?? workspaceRouteSlugBase({ path: session.workspacePath, workspaceName: session.workspaceName })
