@@ -2703,6 +2703,27 @@ func (a *App) buildPlanExitModalBody(title string) string {
 	return strings.Join(lines, "\n")
 }
 
+const tuiRetiredSessionAPIMessage = "TUI v1/v2 session APIs are retired; use a v3 session"
+
+func errTUIRetiredSessionAPI(operation string) error {
+	operation = strings.TrimSpace(operation)
+	if operation == "" {
+		return errors.New(tuiRetiredSessionAPIMessage)
+	}
+	return fmt.Errorf("%s: %s", operation, tuiRetiredSessionAPIMessage)
+}
+
+func requireTUIV3SessionAPI(sessionAPI, operation string) error {
+	if strings.EqualFold(strings.TrimSpace(sessionAPI), "v3") {
+		return nil
+	}
+	label := strings.TrimSpace(sessionAPI)
+	if label == "" {
+		label = "legacy"
+	}
+	return fmt.Errorf("%s (session_api=%s)", errTUIRetiredSessionAPI(operation), label)
+}
+
 func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 	if a.api == nil {
 		return errors.New("api client is not configured")
@@ -2725,6 +2746,9 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 	useV3Primary := isPrimaryHostChatRoute(route) && strings.TrimSpace(route.WorkspaceBindingID) != ""
 	if strings.TrimSpace(route.WorkspaceBindingID) == "" {
 		return errors.New("workspace binding id is required")
+	}
+	if !useV3Primary {
+		return errTUIRetiredSessionAPI("create session for non-v3 TUI route")
 	}
 	createSwarmID := createSessionSwarmIDForRoute(route, a.homeModel.CurrentSwarmTarget)
 
@@ -2791,22 +2815,12 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 		WorktreeBaseBranch:       worktreeBaseBranch,
 		WorktreeBranchName:       worktreeBranchName,
 	}
-	session := client.SessionSummary{}
-	var activeRunIntent *client.SessionV3RunIntent
-	if useV3Primary {
-		createdV3, err := a.api.CreateSessionV3WithOptions(ctx, createOptions)
-		if err != nil {
-			return err
-		}
-		session = createdV3.Session
-		activeRunIntent = cloneClientSessionV3RunIntent(createdV3.ActiveRunIntent)
-	} else {
-		createdV2, err := a.api.CreateSessionWithOptions(ctx, createOptions)
-		if err != nil {
-			return err
-		}
-		session = createdV2
+	createdV3, err := a.api.CreateSessionV3WithOptions(ctx, createOptions)
+	if err != nil {
+		return err
 	}
+	session := createdV3.Session
+	activeRunIntent := cloneClientSessionV3RunIntent(createdV3.ActiveRunIntent)
 	warning := strings.TrimSpace(session.Warning)
 	created := model.SessionSummary{
 		ID:                         strings.TrimSpace(session.ID),
@@ -2859,6 +2873,9 @@ func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt str
 	sessionID := strings.TrimSpace(summary.ID)
 	if sessionID == "" {
 		return errors.New("session id is required")
+	}
+	if err := requireTUIV3SessionAPI(summary.SessionAPI, "open session"); err != nil {
+		return err
 	}
 	summary.WorkspaceName = a.contextDisplayNameForPath(summary.WorkspacePath, summary.WorkspaceName)
 	title := strings.TrimSpace(summary.Title)
@@ -4213,10 +4230,7 @@ func (a *App) listSessionsForActiveContext(ctx context.Context, limit int, works
 	if a == nil || a.api == nil {
 		return nil, errors.New("api is unavailable")
 	}
-	if bindingID := a.activeLocalWorkspaceBindingID(); bindingID != "" {
-		return a.api.ListSessionsForWorkspaceBinding(ctx, limit, bindingID)
-	}
-	return a.api.ListSessionsForExactCWD(ctx, limit, workspacePath)
+	return nil, errTUIRetiredSessionAPI("list sessions; use /v3/tui/sessions:workset")
 }
 
 const (
@@ -7430,11 +7444,7 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		errorsSeen = append(errorsSeen, "cwd route resolver unavailable")
 	}
 
-	if bindingID := localWorkspaceBindingIDForActiveWorkspace(next, activePath); bindingID != "" {
-		sessions, sessionsErr = a.api.ListSessionsForWorkspaceBinding(ctx, homeRecentSessionLimit, bindingID)
-	} else {
-		sessions, sessionsErr = a.api.ListSessionsForExactCWD(ctx, homeRecentSessionLimit, contextPath)
-	}
+	sessions, sessionsErr = a.listSessionsForActiveContext(ctx, homeRecentSessionLimit, contextPath)
 
 	gitStatus, _ := gitStatusForPath(activePath)
 	if activeIsWorkspace {

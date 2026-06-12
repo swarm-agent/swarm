@@ -1,4 +1,3 @@
-import { openDesktopWebSocket, type OpenDesktopWebSocketOptions } from '../realtime/client'
 import {
   applyDesktopDaemonEvent,
   markDesktopStale,
@@ -49,7 +48,7 @@ export interface DesktopStateStreamOptions {
   queueLimit?: number
   onControlFrame?: (frame: DesktopRealtimeFrame) => void
   onError?: (error: Error) => void
-  openSocket?: (options: OpenDesktopWebSocketOptions) => Promise<DesktopStateStreamSocket>
+  openSocket?: (options: { afterRev?: number }) => Promise<DesktopStateStreamSocket>
   fetchSnapshot?: (request: DesktopStateSnapshotRequest, signal?: AbortSignal) => Promise<DesktopDaemonSnapshot>
 }
 
@@ -61,7 +60,10 @@ export interface DesktopRealtimeFrameResult {
 
 export async function startDesktopStateStream(options: DesktopStateStreamOptions = {}): Promise<DesktopStateStreamHandle> {
   const queueLimit = normalizeQueueLimit(options.queueLimit)
-  const openSocket = options.openSocket ?? openDesktopWebSocket
+  const openSocket = options.openSocket
+  if (!openSocket) {
+    throw new Error('Desktop state stream requires an explicit V3 realtime socket. The desktop app uses the global /ws stream.')
+  }
   const fetchSnapshot = options.fetchSnapshot ?? fetchDesktopStateSnapshot
   const snapshotRequest = options.snapshotRequest ?? {}
   const abortController = new AbortController()

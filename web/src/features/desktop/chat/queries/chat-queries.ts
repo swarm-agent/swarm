@@ -513,6 +513,7 @@ function emptyLiveState(): DesktopSessionRecord["live"] {
     status: "idle",
     step: 0,
     toolName: null,
+    sidebarToolName: null,
     toolCallId: null,
     toolArguments: null,
     toolOutput: "",
@@ -1943,17 +1944,14 @@ export async function stopSessionRun(
 ): Promise<void> {
   const normalizedSessionId = sessionId.trim();
   const normalizedRunId = runId.trim();
-  resolveSessionApiForSession(normalizedSessionId, options);
+  void options;
   if (!normalizedSessionId) {
     throw new Error("session id is required");
   }
-  if (!normalizedRunId) {
-    throw new Error("run id is required");
-  }
   const target = getDesktopSessionStopTarget(route);
-  if (target.sessionApi !== "v3") {
-    throw new Error(target.unsupportedReason);
-  }
+  const targetSwarmId = target.sessionApi === "v3"
+    ? target.targetSwarmId
+    : route?.swarmId?.trim() ?? "";
   const response = await apiFetch(
     `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/run/stop`,
     {
@@ -1964,7 +1962,7 @@ export async function stopSessionRun(
       body: JSON.stringify({
         type: "run.stop",
         run_id: normalizedRunId,
-        target_swarm_id: target.targetSwarmId,
+        target_swarm_id: targetSwarmId,
       }),
     },
   );

@@ -30,6 +30,7 @@ function makeSession(id: string, overrides: Partial<DesktopSessionRecord> = {}):
       status: 'idle',
       step: 0,
       toolName: null,
+    sidebarToolName: null,
       toolCallId: null,
       toolArguments: null,
       toolOutput: '',
@@ -60,7 +61,7 @@ function makeSession(id: string, overrides: Partial<DesktopSessionRecord> = {}):
   }
 }
 
-test('sidebar labels are derived from DB live tool state', () => {
+test('sidebar labels render the direct stream tool label', () => {
   const session = makeSession('live-tool', {
     updatedAt: 10_000,
     live: {
@@ -71,15 +72,75 @@ test('sidebar labels are derived from DB live tool state', () => {
       lastEventAt: 12_500,
       lastEventType: 'session.tool.delta',
       toolName: 'manage-image',
+      sidebarToolName: 'read',
       toolCallId: 'call-image',
       summary: 'manage-image',
     },
   })
 
   assert.equal(sessionStatusTone(session), 'running')
-  assert.equal(sessionActivityLabel(session), 'manage-image')
+  assert.equal(sessionActivityLabel(session), 'read')
   assert.equal(sessionTimerLabel(session, 15_250), '5s')
   assert.equal(sessionStatusDetail(session, 15_250), 'just now')
+})
+
+test('sidebar labels do not fall back to retained tool state', () => {
+  const session = makeSession('retained-tool', {
+    updatedAt: 10_000,
+    live: {
+      ...makeSession('base').live,
+      status: 'running',
+      runId: 'run-retained-tool',
+      startedAt: 10_000,
+      lastEventAt: 12_500,
+      lastEventType: 'session.tool.completed',
+      toolName: null,
+    sidebarToolName: null,
+      retainedToolName: 'bash',
+      retainedToolState: 'done',
+      summary: 'Assistant responding…',
+    },
+  })
+
+  assert.equal(sessionActivityLabel(session), '')
+})
+
+test('sidebar labels do not fall back to live tool history', () => {
+  const session = makeSession('history-tool', {
+    updatedAt: 10_000,
+    live: {
+      ...makeSession('base').live,
+      status: 'running',
+      runId: 'run-history-tool',
+      startedAt: 10_000,
+      lastEventAt: 12_500,
+      lastEventType: 'session.tool.delta',
+      toolName: null,
+    sidebarToolName: null,
+      summary: 'Streaming response…',
+      toolHistory: [
+        {
+          key: 'history-tool',
+          sessionId: 'history-tool',
+          runId: 'run-history-tool',
+          stepId: 'step-1',
+          callId: 'call-read',
+          toolInstanceId: 'step-1:call-read',
+          toolName: 'read',
+          toolArguments: null,
+          toolOutput: '',
+          state: 'running',
+          step: 1,
+          seq: 22,
+          startedAt: 11_000,
+          updatedAt: 12_500,
+          completedAt: null,
+        },
+      ],
+    },
+  })
+
+  assert.equal(sessionActivityLabel(session), '')
 })
 
 test('sidebar active sort anchors to run start time, not latest DB live event', () => {

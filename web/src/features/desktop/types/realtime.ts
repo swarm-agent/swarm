@@ -102,6 +102,7 @@ export interface DesktopSessionRecord {
     status: 'idle' | 'starting' | 'running' | 'blocked' | 'error'
     step: number
     toolName: string | null
+    sidebarToolName: string | null
     toolCallId: string | null
     toolArguments: string | null
     toolOutput: string
@@ -288,6 +289,6 @@ export interface DesktopStoreState {
   }) => Promise<void>
   ensureRunStream: (sessionId: string, runId?: string | null) => Promise<void>
   closeRunStream: (sessionId: string) => void
-  stopRun: (sessionId: string, route?: DesktopChatRoute | null) => Promise<void>
+  stopRun: (sessionId: string, route?: DesktopChatRoute | null, runId?: string | null) => Promise<void>
   __testApplyRunStreamFrame?: (sessionId: string, payload: Record<string, unknown>, ts?: number) => void
 }

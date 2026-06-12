@@ -38,6 +38,7 @@ function emptyLiveState(): DesktopSessionRecord['live'] {
     status: 'idle',
     step: 0,
     toolName: null,
+    sidebarToolName: null,
     toolCallId: null,
     toolArguments: null,
     toolOutput: '',
@@ -311,6 +312,7 @@ test('Desktop DB durable reducer streams live tool calls and retained completed 
   assert.equal(session?.live.status, 'running')
   assert.equal(session?.live.runId, 'run-live-tool')
   assert.equal(session?.live.toolName, 'read')
+  assert.equal(session?.live.sidebarToolName, 'read')
   assert.equal(session?.live.toolCallId, 'call-live-tool')
   assert.equal(session?.live.toolArguments, '{"path":"README.md"}')
   assert.equal(session?.live.summary, 'read')
@@ -334,6 +336,7 @@ test('Desktop DB durable reducer streams live tool calls and retained completed 
 
   session = readDesktopDbSession(sessionId)
   assert.equal(session?.live.toolOutput, 'partial output')
+  assert.equal(session?.live.sidebarToolName, 'read')
   assert.equal(session?.live.toolHistory?.[0]?.toolOutput, 'partial output')
   assert.equal(session?.live.toolHistory?.[0]?.seq, 30)
 
@@ -356,6 +359,7 @@ test('Desktop DB durable reducer streams live tool calls and retained completed 
 
   session = readDesktopDbSession(sessionId)
   assert.equal(session?.live.toolName, null)
+  assert.equal(session?.live.sidebarToolName, 'read')
   assert.equal(session?.live.toolOutput, '')
   assert.equal(session?.live.retainedToolName, 'read')
   assert.equal(session?.live.retainedToolCallId, 'call-live-tool')

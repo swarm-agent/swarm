@@ -895,6 +895,7 @@ function desktopDbEmptyLiveState(): DesktopSessionRecord['live'] {
     status: 'idle',
     step: 0,
     toolName: null,
+    sidebarToolName: null,
     toolCallId: null,
     toolArguments: null,
     toolOutput: '',
@@ -936,6 +937,10 @@ function resetDesktopDbLiveToolState(live: DesktopSessionRecord['live']): void {
   live.toolCallId = null
   live.toolArguments = null
   live.toolOutput = ''
+}
+
+function resetDesktopDbSidebarLiveToolName(live: DesktopSessionRecord['live']): void {
+  live.sidebarToolName = null
 }
 
 function retainDesktopDbLiveToolState(
@@ -1459,6 +1464,7 @@ function desktopDbSessionPatchFromDurablePayload(
         resetDesktopDbRetainedLiveToolState(session.live)
         session.live.toolOutput = ''
       }
+      session.live.sidebarToolName = toolName || null
       session.live.toolName = toolName || session.live.toolName
       session.live.toolCallId = callId || session.live.toolCallId
       if (typeof payload.arguments === 'string') {
@@ -1533,6 +1539,7 @@ function desktopDbSessionPatchFromDurablePayload(
         session.live.runId = null
         session.live.startedAt = null
         session.live.awaitingAck = false
+        resetDesktopDbSidebarLiveToolName(session.live)
         session.live.summary = null
         session.live.error = null
         retainDesktopDbLiveToolState(session.live, 'done')
@@ -1563,6 +1570,7 @@ function desktopDbSessionPatchFromDurablePayload(
       session.live.runId = null
       session.live.startedAt = null
       session.live.awaitingAck = false
+      resetDesktopDbSidebarLiveToolName(session.live)
       session.live.summary = error
       session.live.error = isUserCancellation ? null : error
       retainDesktopDbLiveToolState(session.live, isUserCancellation ? 'done' : 'error')

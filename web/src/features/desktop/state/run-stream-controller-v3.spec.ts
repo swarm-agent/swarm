@@ -7,6 +7,7 @@ import { desktopRunIntentsCollection, readDesktopDbMessages, readDesktopDbSessio
 import type { DesktopSessionRecord, DesktopStoreState } from '../types/realtime'
 import { applyEnvelope, useDesktopStore } from './use-desktop-store'
 import type { RunStreamEventMessage } from './run-stream-controller'
+import type { DesktopChatRoute } from '../chat/services/chat-routing'
 import { permissionRequiresApproval } from '../permissions/services/permission-payload'
 import { buildStructuredToolMessage } from '../chat/services/tool-message'
 
@@ -18,6 +19,7 @@ function emptyLiveState(): DesktopSessionRecord['live'] {
     status: 'idle',
     step: 0,
     toolName: null,
+    sidebarToolName: null,
     toolCallId: null,
     toolArguments: null,
     toolOutput: '',
@@ -73,6 +75,20 @@ function makeState(session: DesktopSessionRecord): DesktopStoreState {
     sessions: { [session.id]: session },
     lastGlobalSeq: 0,
   }
+}
+
+const primaryRoute: DesktopChatRoute = {
+  id: 'host:binding:local-binding',
+  label: 'primary',
+  swarmId: 'primary-swarm',
+  targetKind: 'host',
+  targetRelationship: 'self',
+  hostSwarmId: 'primary-swarm',
+  hostSwarmName: 'primary',
+  hostWorkspacePath: '/repo',
+  hostWorkspaceName: 'swarm-go',
+  runtimeWorkspacePath: '/repo',
+  workspaceBindingId: 'local-binding',
 }
 
 afterEach(async () => {
@@ -393,6 +409,7 @@ test('V3 stream maps session.tool events into live tool state', () => {
 
   let updated = useDesktopStore.getState().sessions['session-v3']
   assert.equal(updated.live.toolName, 'bash')
+  assert.equal(updated.live.sidebarToolName, 'bash')
   assert.equal(updated.live.toolCallId, 'call-1')
   assert.equal(updated.live.toolArguments, '{"command":"echo hi"}')
   assert.equal(updated.live.summary, 'bash')
@@ -415,6 +432,7 @@ test('V3 stream maps session.tool events into live tool state', () => {
 
   updated = useDesktopStore.getState().sessions['session-v3']
   assert.equal(updated.live.toolOutput, 'chunk')
+  assert.equal(updated.live.sidebarToolName, 'bash')
   assert.equal(updated.live.lastEventType, 'session.tool.delta')
 
   useDesktopStore.getState().__testApplyRunStreamFrame?.('session-v3', {
@@ -434,6 +452,7 @@ test('V3 stream maps session.tool events into live tool state', () => {
 
   updated = useDesktopStore.getState().sessions['session-v3']
   assert.equal(updated.live.toolName, null)
+  assert.equal(updated.live.sidebarToolName, 'bash')
   assert.equal(updated.live.retainedToolName, 'bash')
   assert.equal(updated.live.retainedToolOutput, 'raw done')
   assert.equal(updated.live.retainedToolState, 'done')
@@ -518,6 +537,7 @@ test('V3 stream retains sequence on interleaved assistant segments and live tool
   const updated = useDesktopStore.getState().sessions['session-v3']
   assert.deepEqual(updated.live.retainedAssistantSegments.map((segment) => [segment.content, segment.seq]), [['SEGMENT A', 2], ['SEGMENT B', 5]])
   assert.deepEqual(updated.live.toolHistory?.map((item) => [item.callId, item.seq]), [['call-2', 6], ['call-1', 3]])
+  assert.equal(updated.live.sidebarToolName, 'list')
 })
 
 test('V3 assistant draft promotion ignores stale scheduled flushes after tool start', () => {
@@ -981,23 +1001,82 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
     assert.equal(dbUpdated?.live.lastEventType, 'run.pending_executor')
     assert.equal(desktopRunIntentsCollection.get('session-v3')?.runId, 'v3run-session-v3-2')
 
-    await useDesktopStore.getState().stopRun('session-v3')
+    await useDesktopStore.getState().stopRun('session-v3', primaryRoute)
     const stopCall = calls.find((entry) => String(entry.input) === '/v3/sessions/session-v3/run/stop')
     assert.ok(stopCall)
-    assert.deepEqual(JSON.parse(String(stopCall.init?.body ?? '{}')), { type: 'run.stop', run_id: 'v3run-session-v3-2' })
+    assert.deepEqual(JSON.parse(String(stopCall.init?.body ?? '{}')), { type: 'run.stop', run_id: 'v3run-session-v3-2', target_swarm_id: 'primary-swarm' })
     updated = useDesktopStore.getState().sessions['session-v3']
-    assert.equal(updated.runIntent, null)
-    assert.equal(updated.live.status, 'idle')
-    assert.equal(updated.live.runId, null)
-    assert.equal(updated.live.error, null)
-    assert.equal(updated.live.summary, 'Run paused by user')
-    assert.equal(updated.live.lastEventType, 'session.run.cancelled')
+    assert.equal(updated.live.status, 'starting')
+    assert.equal(updated.live.runId, 'v3run-session-v3-2')
     assert.equal(websocketCloseCount, 0)
   } finally {
     useDesktopStore.getState().disconnect()
     globalThis.fetch = originalFetch
     globalThis.window = originalWindow
     globalThis.WebSocket = originalWebSocket
+  }
+})
+
+test('V3 stop sends request even when no run id is hydrated so backend returns the stop error', async () => {
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ input, init })
+    const url = String(input)
+    if (url === '/v3/sessions/session-v3/run/stop') {
+      return new Response(JSON.stringify({ error: 'run_id is required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    throw new Error(`unexpected fetch: ${url}`)
+  }) as typeof fetch
+
+  try {
+    const session = makeSession({ id: 'session-v3', sessionApi: 'v3' })
+    useDesktopStore.setState(makeState(session), true)
+
+    await assert.rejects(
+      () => useDesktopStore.getState().stopRun('session-v3', primaryRoute),
+      /run_id is required/,
+    )
+
+    const stopCall = calls.find((entry) => String(entry.input) === '/v3/sessions/session-v3/run/stop')
+    assert.ok(stopCall)
+    assert.deepEqual(JSON.parse(String(stopCall.init?.body ?? '{}')), { type: 'run.stop', run_id: '', target_swarm_id: 'primary-swarm' })
+    assert.equal(calls.length, 1)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('V3 stop sends explicit run id from caller when store state has no hydrated run id', async () => {
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ input, init })
+    const url = String(input)
+    if (url === '/v3/sessions/session-v3/run/stop') {
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    throw new Error(`unexpected fetch: ${url}`)
+  }) as typeof fetch
+
+  try {
+    const session = makeSession({ id: 'session-v3', sessionApi: 'v3' })
+    useDesktopStore.setState(makeState(session), true)
+
+    await useDesktopStore.getState().stopRun('session-v3', primaryRoute, 'run-from-stop-button')
+
+    const stopCall = calls.find((entry) => String(entry.input) === '/v3/sessions/session-v3/run/stop')
+    assert.ok(stopCall)
+    assert.deepEqual(JSON.parse(String(stopCall.init?.body ?? '{}')), { type: 'run.stop', run_id: 'run-from-stop-button', target_swarm_id: 'primary-swarm' })
+    assert.equal(calls.length, 1)
+  } finally {
+    globalThis.fetch = originalFetch
   }
 })
 
@@ -1037,15 +1116,12 @@ test('V3 stop resolves active lifecycle run id when live run id is not hydrated'
     })
     useDesktopStore.setState(makeState(session), true)
 
-    await useDesktopStore.getState().stopRun('session-v3')
+    await useDesktopStore.getState().stopRun('session-v3', primaryRoute)
 
     const stopCall = calls.find((entry) => String(entry.input) === '/v3/sessions/session-v3/run/stop')
     assert.ok(stopCall)
-    assert.deepEqual(JSON.parse(String(stopCall.init?.body ?? '{}')), { type: 'run.stop', run_id: 'run-lifecycle-only' })
-    const updated = useDesktopStore.getState().sessions['session-v3']
-    assert.equal(updated.live.status, 'idle')
-    assert.equal(updated.live.summary, 'Run paused by user')
-    assert.equal(updated.live.runId, null)
+    assert.deepEqual(JSON.parse(String(stopCall.init?.body ?? '{}')), { type: 'run.stop', run_id: 'run-lifecycle-only', target_swarm_id: 'primary-swarm' })
+    assert.equal(calls.length, 1)
   } finally {
     globalThis.fetch = originalFetch
   }

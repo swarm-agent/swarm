@@ -371,6 +371,7 @@ function mapOverviewSession(session: WorkspaceOverviewSessionWire, preferRuntime
       status: lifecycleStatus,
       step: 0,
       toolName: null,
+    sidebarToolName: null,
       toolCallId: null,
       toolArguments: null,
       toolOutput: '',

@@ -4,7 +4,10 @@ import test from 'node:test'
 import { getDesktopSnapshot, replaceDesktopFromSnapshot } from './desktop-state-store'
 import { startDesktopStateStream } from './desktop-state-stream'
 import type { DesktopDaemonSnapshot } from './desktop-state'
-import type { OpenDesktopWebSocketOptions } from '../realtime/client'
+
+interface V3RealtimeSocketOptions {
+  afterRev?: number
+}
 
 class MockDesktopSocket {
   closed = false
@@ -40,13 +43,13 @@ class MockDesktopSocket {
 
 interface StreamHarness {
   sockets: MockDesktopSocket[]
-  openCalls: OpenDesktopWebSocketOptions[]
+  openCalls: V3RealtimeSocketOptions[]
   start(snapshots: DesktopDaemonSnapshot[], queueLimit?: number): ReturnType<typeof startDesktopStateStream>
 }
 
 function createHarness(): StreamHarness {
   const sockets: MockDesktopSocket[] = []
-  const openCalls: OpenDesktopWebSocketOptions[] = []
+  const openCalls: V3RealtimeSocketOptions[] = []
 
   return {
     sockets,

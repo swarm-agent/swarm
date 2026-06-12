@@ -39,17 +39,103 @@ function mergeSessionLiveState(
   const existingRetainedAssistantSegments = existing.retainedAssistantSegments ?? []
   const incomingToolHistory = incoming.toolHistory ?? []
   const existingToolHistory = existing.toolHistory ?? []
+  const incomingHasToolDetails = liveHasToolDetails(incoming)
+  const existingHasToolDetails = liveHasToolDetails(existing)
+  const incomingHasAssistantDetails = liveHasAssistantDetails(incoming)
+  const existingHasAssistantDetails = liveHasAssistantDetails(existing)
+  const incomingHasReasoningDetails = liveHasReasoningDetails(incoming)
+  const existingHasReasoningDetails = liveHasReasoningDetails(existing)
 
   return {
     ...incoming,
     seq: Math.max(existing.seq ?? 0, incoming.seq ?? 0),
+    toolName: mergeLiveToolValue(existing.toolName, incoming.toolName, existingHasToolDetails, incomingHasToolDetails),
+    sidebarToolName: mergeLiveToolValue(existing.sidebarToolName, incoming.sidebarToolName, existingHasToolDetails, incomingHasToolDetails),
+    toolCallId: mergeLiveToolValue(existing.toolCallId, incoming.toolCallId, existingHasToolDetails, incomingHasToolDetails),
+    toolArguments: mergeLiveToolValue(existing.toolArguments, incoming.toolArguments, existingHasToolDetails, incomingHasToolDetails),
+    toolOutput: mergeLiveToolValue(existing.toolOutput, incoming.toolOutput, existingHasToolDetails, incomingHasToolDetails),
+    retainedToolName: mergeLiveToolValue(existing.retainedToolName, incoming.retainedToolName, existingHasToolDetails, incomingHasToolDetails),
+    retainedToolCallId: mergeLiveToolValue(existing.retainedToolCallId, incoming.retainedToolCallId, existingHasToolDetails, incomingHasToolDetails),
+    retainedToolArguments: mergeLiveToolValue(existing.retainedToolArguments, incoming.retainedToolArguments, existingHasToolDetails, incomingHasToolDetails),
+    retainedToolOutput: mergeLiveToolValue(existing.retainedToolOutput, incoming.retainedToolOutput, existingHasToolDetails, incomingHasToolDetails),
+    retainedToolState: mergeLiveToolValue(existing.retainedToolState, incoming.retainedToolState, existingHasToolDetails, incomingHasToolDetails),
+    summary: mergeLiveSummary(existing, incoming, existingHasToolDetails, incomingHasToolDetails),
+    assistantDraft: incoming.assistantDraft || (!incomingHasAssistantDetails && existingHasAssistantDetails ? existing.assistantDraft : incoming.assistantDraft),
     retainedAssistantSegments: incomingRetainedAssistantSegments.length > 0
       ? incomingRetainedAssistantSegments
       : existingRetainedAssistantSegments,
+    reasoningSummary: incoming.reasoningSummary || (!incomingHasReasoningDetails && existingHasReasoningDetails ? existing.reasoningSummary : incoming.reasoningSummary),
+    reasoningText: incoming.reasoningText || (!incomingHasReasoningDetails && existingHasReasoningDetails ? existing.reasoningText : incoming.reasoningText),
+    reasoningState: incomingHasReasoningDetails || !existingHasReasoningDetails ? incoming.reasoningState : existing.reasoningState,
+    reasoningSegment: Math.max(existing.reasoningSegment ?? 0, incoming.reasoningSegment ?? 0),
+    reasoningStartedAt: incoming.reasoningStartedAt || (!incomingHasReasoningDetails && existingHasReasoningDetails ? existing.reasoningStartedAt : incoming.reasoningStartedAt),
     toolHistory: incomingToolHistory.length > 0
       ? incomingToolHistory
       : existingToolHistory,
   }
+}
+
+function mergeLiveToolValue<T extends string | null>(
+  existing: T,
+  incoming: T,
+  existingHasToolDetails: boolean,
+  incomingHasToolDetails: boolean,
+): T {
+  return incoming || (!incomingHasToolDetails && existingHasToolDetails ? existing : incoming)
+}
+
+function liveHasToolDetails(live: DesktopSessionRecord['live']): boolean {
+  return Boolean(
+    live.toolName?.trim()
+    || live.sidebarToolName?.trim()
+    || live.toolCallId?.trim()
+    || live.toolArguments?.trim()
+    || live.toolOutput.trim()
+    || live.retainedToolName?.trim()
+    || live.retainedToolCallId?.trim()
+    || live.retainedToolArguments?.trim()
+    || live.retainedToolOutput.trim()
+    || live.retainedToolState
+    || (live.toolHistory?.length ?? 0) > 0,
+  )
+}
+
+function liveHasAssistantDetails(live: DesktopSessionRecord['live']): boolean {
+  return Boolean(live.assistantDraft.trim() || live.retainedAssistantSegments.length > 0)
+}
+
+function liveHasReasoningDetails(live: DesktopSessionRecord['live']): boolean {
+  return Boolean(
+    live.reasoningSummary.trim()
+    || live.reasoningText.trim()
+    || live.reasoningState !== 'idle'
+    || live.reasoningSegment > 0
+    || live.reasoningStartedAt !== null,
+  )
+}
+
+function mergeLiveSummary(
+  existing: DesktopSessionRecord['live'],
+  incoming: DesktopSessionRecord['live'],
+  existingHasToolDetails: boolean,
+  incomingHasToolDetails: boolean,
+): string | null {
+  const incomingSummary = incoming.summary?.trim() ?? ''
+  if (incomingSummary) {
+    if (!incomingHasToolDetails && existingHasToolDetails && isGenericAssistantSummary(incomingSummary)) {
+      return existing.summary || existing.toolName || existing.retainedToolName || incoming.summary
+    }
+    return incoming.summary
+  }
+  if (!incomingHasToolDetails && existingHasToolDetails) {
+    return existing.summary
+  }
+  return incoming.summary
+}
+
+function isGenericAssistantSummary(summary: string): boolean {
+  const normalized = summary.trim().toLowerCase()
+  return normalized === 'assistant responding...' || normalized === 'assistant responding…' || normalized === 'streaming response...' || normalized === 'streaming response…'
 }
 
 export function mergeSessionRecords(existing: DesktopSessionRecord | null, incoming: DesktopSessionRecord): DesktopSessionRecord {

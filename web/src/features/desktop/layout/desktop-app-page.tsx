@@ -968,6 +968,10 @@ function sidebarSummaryLabel(session: DesktopSessionRecord): string {
     summary.includes('\n')
     || normalized === 'starting...'
     || normalized === 'starting…'
+    || normalized === 'assistant responding...'
+    || normalized === 'assistant responding…'
+    || normalized === 'streaming response...'
+    || normalized === 'streaming response…'
     || normalized.startsWith('tool.')
     || normalized.startsWith('tool:')
     || normalized.startsWith('turn.')
@@ -1005,6 +1009,13 @@ function sidebarCompactionLabel(session: DesktopSessionRecord): string {
     default:
       return 'Compact'
   }
+}
+
+function sidebarLiveToolLabel(session: DesktopSessionRecord): string {
+  if (!['starting', 'running', 'blocked'].includes(session.live.status)) {
+    return ''
+  }
+  return session.live.sidebarToolName?.trim() ?? ''
 }
 
 function sessionIsActive(session: DesktopSessionRecord): boolean {
@@ -1102,20 +1113,21 @@ export function sessionActivityLabel(session: DesktopSessionRecord): string {
     return 'Needs approval'
   }
 
+  const toolLabel = sidebarLiveToolLabel(session)
   switch (session.live.status) {
     case 'blocked':
-      return session.live.toolName?.trim()
+      return toolLabel
         || sidebarSummaryLabel(session)
-        || 'running'
+        || ''
     case 'error':
       return 'failed'
     case 'starting':
-      return 'Starting'
+      return toolLabel || 'Starting'
     case 'running':
       return sidebarCompactionLabel(session)
-        || session.live.toolName?.trim()
+        || toolLabel
         || sidebarSummaryLabel(session)
-        || 'running'
+        || ''
     default:
       return ''
   }
@@ -1298,13 +1310,10 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
   const activeSession = sessionIsActive(session)
   const originLabel = sessionOriginLabel(session, routeOptions, fallbackSwarmName)
   const backgroundInfo = sessionBackgroundInfo(session, originLabel)
-  const timerLabel = activeSession ? sessionTimerLabel(session, now) : ''
   const bottomLeftLabel = backgroundInfo?.targetLabel || originLabel
-  const bottomRightLabel = backgroundInfo?.active
-    ? timerLabel
-    : activeSession
-      ? sessionActivityLabel(session) || sessionMeta(session) || ''
-      : sessionStatusDetail(session, now) || sessionMeta(session) || ''
+  const bottomRightLabel = activeSession
+    ? sessionActivityLabel(session)
+    : sessionStatusDetail(session, now) || sessionMeta(session) || ''
   const commitSummary = sessionCommitSummary(session)
   const committedFileSummary = sessionCommittedFileSummary(session)
   const committedDeltaSummary = sessionCommittedDeltaSummary(session)
@@ -1387,7 +1396,7 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
             </span>
           ) : null}
         </div>
-        <span className={cn('shrink-0 text-[var(--app-text-subtle)]', backgroundInfo?.active ? 'font-mono tabular-nums' : null)}>{bottomRightLabel}</span>
+        <span className="shrink-0 text-[var(--app-text-subtle)]">{bottomRightLabel}</span>
       </div>
       {session.worktreeEnabled || commitMetaLabel || hasAgentChildren ? (
         <div className="flex items-center justify-between gap-3 text-[10px] leading-4 text-[var(--app-text-subtle)] min-w-0 w-full">

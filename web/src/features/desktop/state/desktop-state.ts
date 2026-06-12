@@ -765,6 +765,7 @@ function emptyLiveState(): DesktopSessionRecord['live'] {
     status: 'idle',
     step: 0,
     toolName: null,
+    sidebarToolName: null,
     toolCallId: null,
     toolArguments: null,
     toolOutput: '',
@@ -911,6 +912,7 @@ function durableSessionPatch(existing: DesktopSessionRecord, eventType: string, 
         session.live.runId = null
         session.live.startedAt = null
         session.live.awaitingAck = false
+        resetSidebarLiveToolName(session.live)
         session.live.summary = null
         session.live.error = null
         retainLiveTool(session.live, 'done')
@@ -939,6 +941,7 @@ function durableSessionPatch(existing: DesktopSessionRecord, eventType: string, 
       session.live.runId = null
       session.live.startedAt = null
       session.live.awaitingAck = false
+      resetSidebarLiveToolName(session.live)
       session.live.summary = error
       session.live.error = isUserCancellation ? null : error
       retainLiveTool(session.live, isUserCancellation ? 'done' : 'error')
@@ -1218,6 +1221,10 @@ function resetLiveTool(live: DesktopSessionRecord['live']): void {
   live.toolOutput = ''
 }
 
+function resetSidebarLiveToolName(live: DesktopSessionRecord['live']): void {
+  live.sidebarToolName = null
+}
+
 function retainLiveTool(live: DesktopSessionRecord['live'], state: DesktopSessionRecord['live']['retainedToolState']): void {
   const toolName = live.toolName?.trim() ?? ''
   const toolCallId = live.toolCallId?.trim() ?? ''
@@ -1306,6 +1313,7 @@ function applyTool(session: DesktopSessionRecord, payload: Record<string, unknow
     resetRetainedLiveTool(session.live)
     session.live.toolOutput = ''
   }
+  session.live.sidebarToolName = toolName || null
   session.live.toolName = toolName || session.live.toolName
   session.live.toolCallId = callId || session.live.toolCallId
   if (typeof payload.arguments === 'string') {

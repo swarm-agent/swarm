@@ -598,6 +598,7 @@ function emptyLiveState(): DesktopSessionRecord['live'] {
     status: 'idle',
     step: 0,
     toolName: null,
+    sidebarToolName: null,
     toolCallId: null,
     toolArguments: null,
     toolOutput: '',
@@ -639,6 +640,10 @@ function resetLiveToolState(live: DesktopSessionRecord['live']): void {
   live.toolCallId = null
   live.toolArguments = null
   live.toolOutput = ''
+}
+
+function resetSidebarLiveToolName(live: DesktopSessionRecord['live']): void {
+  live.sidebarToolName = null
 }
 
 function retainLiveToolState(
@@ -896,7 +901,11 @@ function resolveRunStreamId(session: DesktopSessionRecord | undefined, runId?: s
   return ''
 }
 
-function resolveStopRunId(session: DesktopSessionRecord | undefined): string {
+function resolveStopRunId(session: DesktopSessionRecord | undefined, runId?: string | null): string {
+  const explicitRunId = runId?.trim() ?? ''
+  if (explicitRunId) {
+    return explicitRunId
+  }
   const intentRunId = activeV3RunIntent(session)?.runId.trim() ?? ''
   if (intentRunId) {
     return intentRunId
@@ -2713,6 +2722,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
         resetRetainedLiveToolState(session.live)
         session.live.toolOutput = ''
       }
+      session.live.sidebarToolName = toolName || null
       session.live.toolName = toolName || session.live.toolName
       session.live.toolCallId = callId || session.live.toolCallId
       if (typeof payloadRecord.arguments === 'string') {
@@ -2787,6 +2797,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
         session.live.runId = null
         session.live.startedAt = null
         session.live.awaitingAck = false
+        resetSidebarLiveToolName(session.live)
         session.live.summary = null
         session.live.error = null
         retainLiveToolState(session.live, 'done')
@@ -2815,6 +2826,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
         session.live.runId = null
         session.live.startedAt = null
         session.live.awaitingAck = false
+        resetSidebarLiveToolName(session.live)
         session.live.summary = null
         session.live.error = null
         resetLiveToolState(session.live)
@@ -2846,6 +2858,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
         session.live.runId = null
         session.live.startedAt = null
         session.live.awaitingAck = false
+        resetSidebarLiveToolName(session.live)
         session.live.summary = error
         session.live.error = isUserCancellation ? null : error
         retainLiveToolState(session.live, isUserCancellation ? 'done' : 'error')
@@ -2966,6 +2979,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
       cancelDraftFlush(sessionId)
       session.live.runId = typeof payloadRecord.run_id === 'string' ? payloadRecord.run_id : session.live.runId
       session.live.toolName = typeof payloadRecord.tool_name === 'string' ? payloadRecord.tool_name : session.live.toolName
+      session.live.sidebarToolName = typeof payloadRecord.tool_name === 'string' ? payloadRecord.tool_name.trim() || null : null
       session.live.step = typeof payloadRecord.step === 'number' ? payloadRecord.step : session.live.step
       session.live.lastEventType = eventType
       session.live.lastEventAt = ts
@@ -2981,6 +2995,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
       break
     case 'run.tool.delta':
       session.live.toolName = typeof payloadRecord.tool_name === 'string' ? payloadRecord.tool_name : session.live.toolName
+      session.live.sidebarToolName = typeof payloadRecord.tool_name === 'string' ? payloadRecord.tool_name.trim() || null : null
       session.live.lastEventType = eventType
       session.live.lastEventAt = ts
       if (typeof payloadRecord.arguments === 'string') {
@@ -3000,6 +3015,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
       break
     case 'run.tool.completed':
       session.live.toolName = typeof payloadRecord.tool_name === 'string' ? payloadRecord.tool_name : session.live.toolName
+      session.live.sidebarToolName = typeof payloadRecord.tool_name === 'string' ? payloadRecord.tool_name.trim() || null : null
       session.live.lastEventType = eventType
       session.live.lastEventAt = ts
       if (typeof payloadRecord.arguments === 'string') {
@@ -3746,18 +3762,15 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
     }
     await requireRunStreamController().ensure(normalizedSessionId, runId)
   },
-  stopRun: async (sessionId, route = null) => {
+  stopRun: async (sessionId, route = null, runId = null) => {
     const normalizedSessionId = sessionId.trim()
     if (!normalizedSessionId) {
       return
     }
     const session = get().sessions[normalizedSessionId]
-    const runId = resolveStopRunId(session)
-    if (!runId) {
-      return
-    }
+    const resolvedRunId = resolveStopRunId(session, runId)
     const sessionApi = session?.sessionApi?.trim().toLowerCase() || 'v3'
-    await requireRunStreamController().stop({ sessionId: normalizedSessionId, runId, route, sessionApi })
+    await requireRunStreamController().stop({ sessionId: normalizedSessionId, runId: resolvedRunId, route, sessionApi })
     if (sessionApi === 'v3') {
       requestScopedSessionWorkset(normalizedSessionId, { force: true })
     }

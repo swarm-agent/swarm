@@ -88,6 +88,7 @@ function makeSession(overrides: Partial<DesktopSessionRecord> = {}): DesktopSess
       status: 'idle',
       step: 0,
       toolName: null,
+    sidebarToolName: null,
       toolCallId: null,
       toolArguments: null,
       toolOutput: '',
