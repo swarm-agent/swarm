@@ -25,14 +25,15 @@ const (
 )
 
 type V3SessionWorksetOptions struct {
-	AccountScopeID        string
-	SessionIDs            []string
-	WorkspacePath         string
-	WorkspacePaths        []string
-	RecentLimit           int
-	RecentBeforeUpdatedAt *int64
-	RecentBeforeSessionID string
-	History               V3SessionWorksetHistoryOptions
+	AccountScopeID                     string
+	SessionIDs                         []string
+	WorkspacePath                      string
+	WorkspacePaths                     []string
+	RestrictSessionIDsToWorkspacePaths bool
+	RecentLimit                        int
+	RecentBeforeUpdatedAt              *int64
+	RecentBeforeSessionID              string
+	History                            V3SessionWorksetHistoryOptions
 }
 
 type V3SessionWorksetHistoryOptions struct {
@@ -224,6 +225,9 @@ func (s *SessionStore) selectV3SessionWorksetSessions(reader pebble.Reader, opti
 			return nil, V3SessionWorksetPagination{}, err
 		}
 		if !ok || !v3SessionWorksetSessionVisible(session, options.AccountScopeID, "") {
+			continue
+		}
+		if options.RestrictSessionIDsToWorkspacePaths && !v3SessionWorksetSessionVisibleForWorkspaces(session, options.AccountScopeID, options.WorkspacePath, options.WorkspacePaths) {
 			continue
 		}
 		appendSession(session)

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -19,7 +21,7 @@ func TestSessionsV3WorksetEndpointSupportsPaginationAndManifests(t *testing.T) {
 	appendSessionsV3PrimaryMessageForWorksetTest(t, server, createdB.ID, "first")
 	appendSessionsV3PrimaryMessageForWorksetTest(t, server, createdB.ID, "second")
 
-	body := `{"session_ids":["` + createdB.ID + `"],"recent":{"limit":1},"history":{"mode":"full","max_messages_per_session":1,"manifest_policy":"manifest"}}`
+	body := `{"session_ids":["` + createdB.ID + `"],"workspace":{"workspace_path":"/workspace/cp6"},"recent":{"limit":1},"history":{"mode":"full","max_messages_per_session":1,"manifest_policy":"manifest"}}`
 	req := httptest.NewRequest(http.MethodPost, "/v3/sessions:workset", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -166,5 +168,171 @@ func appendSessionsV3PrimaryMessageForWorksetTest(t *testing.T, server *Server, 
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("append message status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+func TestSessionsV3TUIWorksetEndpointScopesWorkspaceAndCWD(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspaceA := filepath.Join(t.TempDir(), "workspace-a")
+	workspaceB := filepath.Join(t.TempDir(), "workspace-b")
+	cwd := filepath.Join(t.TempDir(), "cwd-only")
+	for _, path := range []string{workspaceA, workspaceB, cwd} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", path, err)
+		}
+	}
+	workspaceA = mustEvalSymlinkForWorksetTest(t, workspaceA)
+	workspaceB = mustEvalSymlinkForWorksetTest(t, workspaceB)
+	cwd = mustEvalSymlinkForWorksetTest(t, cwd)
+
+	createdA := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "tui-workset-a", "TUI Workset A", workspaceA)
+	createdB := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "tui-workset-b", "TUI Workset B", workspaceB)
+	createdCWD := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "tui-workset-cwd", "TUI Workset CWD", cwd)
+
+	workspacePayload := postSessionsV3TUIWorksetForTest(t, server, http.StatusOK, map[string]any{
+		"scope":   map[string]any{"workspace_path": workspaceA},
+		"recent":  map[string]any{"limit": 20},
+		"history": map[string]any{"mode": "none"},
+	})
+	assertSessionsV3WorksetIDs(t, workspacePayload, createdA.ID)
+
+	multiPayload := postSessionsV3TUIWorksetForTest(t, server, http.StatusOK, map[string]any{
+		"scope":   map[string]any{"workspace_paths": []string{workspaceA, workspaceB}},
+		"recent":  map[string]any{"limit": 20},
+		"history": map[string]any{"mode": "none"},
+	})
+	assertSessionsV3WorksetIDs(t, multiPayload, createdB.ID, createdA.ID)
+
+	cwdPayload := postSessionsV3TUIWorksetForTest(t, server, http.StatusOK, map[string]any{
+		"scope":   map[string]any{"cwd_path": cwd},
+		"recent":  map[string]any{"limit": 20},
+		"history": map[string]any{"mode": "none"},
+	})
+	assertSessionsV3WorksetIDs(t, cwdPayload, createdCWD.ID)
+}
+
+func TestSessionsV3TUIWorksetEndpointRejectsEmptyAndNonCanonicalSelectors(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	postSessionsV3TUIWorksetForTest(t, server, http.StatusBadRequest, map[string]any{
+		"scope":  map[string]any{},
+		"recent": map[string]any{"limit": 10},
+	})
+	postSessionsV3TUIWorksetForTest(t, server, http.StatusBadRequest, map[string]any{
+		"scope":  map[string]any{"workspace_path": "relative/path"},
+		"recent": map[string]any{"limit": 10},
+	})
+	postSessionsV3TUIWorksetForTest(t, server, http.StatusBadRequest, map[string]any{
+		"scope":  map[string]any{"workspace_path": "/tmp/../tmp"},
+		"recent": map[string]any{"limit": 10},
+	})
+}
+
+func TestSessionsV3TUIWorksetEndpointFiltersSessionIDsByExplicitScopeAndAccount(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspaceA := filepath.Join(t.TempDir(), "workspace-a")
+	workspaceB := filepath.Join(t.TempDir(), "workspace-b")
+	for _, path := range []string{workspaceA, workspaceB} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", path, err)
+		}
+	}
+	workspaceA = mustEvalSymlinkForWorksetTest(t, workspaceA)
+	workspaceB = mustEvalSymlinkForWorksetTest(t, workspaceB)
+
+	createdA := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "tui-scope-a", "TUI Scope A", workspaceA)
+	createdB := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "tui-scope-b", "TUI Scope B", workspaceB)
+	createSessionsV3WorksetForeignAccountSession(t, sessionSvc, "foreign-session", workspaceA)
+
+	payload := postSessionsV3TUIWorksetForTest(t, server, http.StatusOK, map[string]any{
+		"session_ids": []string{createdA.ID, createdB.ID, "foreign-session"},
+		"scope":       map[string]any{"workspace_path": workspaceA},
+		"history":     map[string]any{"mode": "none"},
+	})
+	assertSessionsV3WorksetIDs(t, payload, createdA.ID)
+}
+
+func TestSessionsV3WorksetEndpointRejectsUnscopedRecentSelector(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "main-workset-unscoped", "Main Workset Unscoped")
+
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions:workset", bytes.NewBufferString(`{"session_ids":["`+created.ID+`"],"recent":{"limit":10},"history":{"mode":"none"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unscoped recent status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+func postSessionsV3TUIWorksetForTest(t *testing.T, server *Server, wantStatus int, body map[string]any) map[string]pebblestore.SessionSnapshot {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal tui workset body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v3/tui/sessions:workset", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != wantStatus {
+		t.Fatalf("tui workset status = %d, want %d, body=%s", rec.Code, wantStatus, rec.Body.String())
+	}
+	if wantStatus != http.StatusOK {
+		return nil
+	}
+	var payload struct {
+		SessionsByID map[string]pebblestore.SessionSnapshot `json:"sessions_by_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode tui workset response: %v", err)
+	}
+	return payload.SessionsByID
+}
+
+func assertSessionsV3WorksetIDs(t *testing.T, sessions map[string]pebblestore.SessionSnapshot, want ...string) {
+	t.Helper()
+	if len(sessions) != len(want) {
+		t.Fatalf("sessions_by_id len = %d, want %d: %+v", len(sessions), len(want), sessions)
+	}
+	for _, id := range want {
+		if sessions[id].ID != id {
+			t.Fatalf("sessions_by_id missing %q: %+v", id, sessions)
+		}
+	}
+}
+
+func mustEvalSymlinkForWorksetTest(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("eval symlinks %s: %v", path, err)
+	}
+	return resolved
+}
+
+func createSessionsV3WorksetForeignAccountSession(t *testing.T, sessionSvc *sessionruntime.Service, sessionID, workspacePath string) {
+	t.Helper()
+	_, err := sessionSvc.ApplySessionMutation(sessionruntime.SessionMutationInput{
+		SessionID:      sessionID,
+		UserID:         "foreign-user",
+		AccountScopeID: "foreign-account",
+		IdempotencyKey: "create-" + sessionID,
+		PayloadHash:    "hash-create-" + sessionID,
+		RequestHash:    "hash-create-" + sessionID,
+		Kind:           sessionruntime.SessionMutationCreateSession,
+		Session: &pebblestore.SessionSnapshot{
+			ID:             sessionID,
+			UserID:         "foreign-user",
+			AccountScopeID: "foreign-account",
+			WorkspacePath:  workspacePath,
+			WorkspaceName:  filepath.Base(workspacePath),
+			Title:          sessionID,
+			CreatedAt:      time.Now().UnixMilli(),
+			UpdatedAt:      time.Now().UnixMilli(),
+		},
+		NowUnixMs: time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("create foreign account session: %v", err)
 	}
 }
