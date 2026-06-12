@@ -14,8 +14,8 @@ import { useWorkspaceLauncher } from '../../workspaces/launcher/state/use-worksp
 import { applyDesktopRouteTheme } from './desktop-theme-controller'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
 import { agentStateQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
-import { fetchAndApplyDesktopDBWorkset, seedDesktopDBWorksetFromDurableCache } from '../state/desktop-db-workset'
-import { ensureDesktopDBRouteSession, useDesktopRouteReadiness, useDesktopSession, useDesktopWorkspaceSessions } from '../state/desktop-db'
+import { fetchDesktopStateSnapshot } from '../state/desktop-state-snapshot'
+import { replaceDesktopFromSnapshot, useDesktopRouteReadiness, useDesktopSession, useDesktopWorkspaceSessions } from '../state/desktop-state-store'
 import type { DesktopSessionRecord } from '../types/realtime'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
 import { DesktopQuickSettingsModal, type QuickSettingsTabID } from '../settings/components/desktop-quick-settings-modal'
@@ -2003,7 +2003,7 @@ export function DesktopAppPage() {
     saveStoredValue(DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY, JSON.stringify(workspaceLayout))
   }, [workspaceLayout])
 
-  const desktopDbSessions = useDesktopWorkspaceSessions({ workspacePaths: mergedSidebarWorkspaceEntries.map((workspace) => workspace.path) })
+  const desktopStateSessions = useDesktopWorkspaceSessions({ workspacePaths: mergedSidebarWorkspaceEntries.map((workspace) => workspace.path) })
 
   const sessionsByWorkspace = useMemo<Map<string, DesktopSessionRecord[]>>(() => {
     const grouped = new Map<string, DesktopSessionRecord[]>()
@@ -2011,7 +2011,7 @@ export function DesktopAppPage() {
     for (const workspace of mergedSidebarWorkspaceEntries) {
       grouped.set(workspace.path, [])
     }
-    for (const session of desktopDbSessions) {
+    for (const session of desktopStateSessions) {
       const workspacePath = session.workspacePath?.trim()
       if (!workspacePath || !grouped.has(workspacePath)) {
         continue
@@ -2023,11 +2023,11 @@ export function DesktopAppPage() {
     }
 
     return grouped
-  }, [desktopDbSessions, mergedSidebarWorkspaceEntries])
+  }, [desktopStateSessions, mergedSidebarWorkspaceEntries])
 
   const sessionById = useMemo<Map<string, DesktopSessionRecord>>(
-    () => new Map(desktopDbSessions.map((session) => [session.id, session] as const)),
-    [desktopDbSessions],
+    () => new Map(desktopStateSessions.map((session) => [session.id, session] as const)),
+    [desktopStateSessions],
   )
 
   const workspaceSlugByPath = useMemo(() => buildWorkspaceRouteSlugMap(mergedSidebarWorkspaceEntries), [mergedSidebarWorkspaceEntries])
@@ -2059,11 +2059,11 @@ export function DesktopAppPage() {
           recent: { limit: 50 },
           history: { mode: 'full' as const, maxEventsPerSession: 0, manifestPolicy: 'manifest' as const, includeEvents: false },
         }
-        await seedDesktopDBWorksetFromDurableCache(queryClient, request)
+        const snapshot = await fetchDesktopStateSnapshot(request, abortController.signal)
         if (!isCurrentEpoch()) {
           return
         }
-        await fetchAndApplyDesktopDBWorkset(queryClient, request, { signal: abortController.signal })
+        replaceDesktopFromSnapshot(snapshot)
       })())
     }
 
@@ -2087,14 +2087,29 @@ export function DesktopAppPage() {
 
   useEffect(() => {
     const routeCriticalSessionId = routeSessionId.trim()
-    if (!routeCriticalSessionId) {
+    if (!routeCriticalSessionId || routeReadiness?.ready || dbRouteSession) {
       return
     }
-    debugLog('desktop-app-page', 'effect:desktop-db-route-readiness', { routeSessionId: routeCriticalSessionId })
-    void ensureDesktopDBRouteSession({ workspacePath: selectedWorkspacePath }, routeCriticalSessionId).catch((error) => {
-      console.error('[desktop-app] failed to reconcile route session readiness', error)
-    })
-  }, [routeSessionId, selectedWorkspacePath])
+    debugLog('desktop-app-page', 'effect:desktop-state-route-readiness', { routeSessionId: routeCriticalSessionId })
+    const abortController = new AbortController()
+    void fetchDesktopStateSnapshot({
+      sessionIds: [routeCriticalSessionId],
+      workspacePaths: desktopV3WorksetScopeKey ? desktopV3WorksetScopeKey.split('\u0000') : [],
+      recent: { limit: 50 },
+      history: { mode: 'full', maxEventsPerSession: 0, manifestPolicy: 'manifest', includeEvents: false },
+    }, abortController.signal)
+      .then((snapshot) => {
+        if (!abortController.signal.aborted) {
+          replaceDesktopFromSnapshot(snapshot)
+        }
+      })
+      .catch((error) => {
+        if (!abortController.signal.aborted) {
+          console.error('[desktop-app] failed to reconcile route session readiness', error)
+        }
+      })
+    return () => abortController.abort()
+  }, [dbRouteSession, desktopV3WorksetScopeKey, routeReadiness?.ready, routeSessionId])
 
   const routeSession = routeSessionId && routeReadiness?.ready ? dbRouteSession : null
   const selectedSession = routeSessionId ? routeSession : null
@@ -3365,7 +3380,7 @@ export function DesktopAppPage() {
             <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">
               <div className="text-lg font-semibold">Session not available</div>
               <p className="mt-2 text-sm text-[var(--app-text-muted)]">
-                TanStack DB route readiness marked this session as {routeReadinessStatus}. Refresh the workspace if this session was just created elsewhere.
+                Desktop state route readiness marked this session as {routeReadinessStatus}. Refresh the workspace if this session was just created elsewhere.
               </p>
             </Card>
           </div>

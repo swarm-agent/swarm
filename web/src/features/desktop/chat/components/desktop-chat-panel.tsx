@@ -69,6 +69,8 @@ import {
   desktopSessionReadinessCollection,
   desktopSessionsCollection,
   upsertDesktopDbRecord,
+} from '../../state/desktop-db'
+import {
   useDesktopActiveRun,
   useDesktopAgentModelPolicy,
   useDesktopMessages,
@@ -76,7 +78,7 @@ import {
   useDesktopPlanRevisions,
   useDesktopPreference,
   useDesktopSession,
-} from '../../state/desktop-db'
+} from '../../state/desktop-state-store'
 
 const THINKING_OPTIONS = ['off', 'low', 'medium', 'high', 'xhigh']
 const FAST_ON_OFF_OPTIONS = ['off', 'on']
