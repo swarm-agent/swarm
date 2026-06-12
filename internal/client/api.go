@@ -695,6 +695,7 @@ type SessionExecutionV2 struct {
 type SessionCreateOptions struct {
 	Title                    string
 	WorkspacePath            string
+	CWDPath                  string
 	HostWorkspacePath        string
 	RuntimeWorkspacePath     string
 	WorkspaceName            string
@@ -780,11 +781,20 @@ type SessionV3Event struct {
 }
 
 type SessionV3Hydrated struct {
-	Session         SessionSummary      `json:"session"`
-	Projection      SessionV3Projection `json:"projection"`
-	Messages        []SessionMessage    `json:"messages"`
-	Events          []SessionV3Event    `json:"events"`
-	ActiveRunIntent *SessionV3RunIntent `json:"active_run_intent,omitempty"`
+	Session            SessionSummary            `json:"session"`
+	Projection         SessionV3Projection       `json:"projection"`
+	Messages           []SessionMessage          `json:"messages"`
+	Events             []SessionV3Event          `json:"events"`
+	PendingPermissions []PermissionRecord        `json:"pending_permissions,omitempty"`
+	UsageSummary       *SessionUsageSummary      `json:"usage_summary,omitempty"`
+	ActiveRunIntent    *SessionV3RunIntent       `json:"active_run_intent,omitempty"`
+	Preference         ModelPreference           `json:"preference,omitempty"`
+	ContextWindow      int                       `json:"context_window,omitempty"`
+	MaxOutputTokens    int                       `json:"max_output_tokens,omitempty"`
+	AgentModelPolicy   SessionV3AgentModelPolicy `json:"agent_model_policy,omitempty"`
+	HasActivePlan      bool                      `json:"has_active_plan,omitempty"`
+	ActivePlan         *SessionPlan              `json:"active_plan,omitempty"`
+	PlanRevisions      []SessionPlan             `json:"plan_revisions,omitempty"`
 }
 
 type SessionV3WorksetRequest struct {
@@ -2960,6 +2970,20 @@ func sessionV3PrimaryPath(sessionID, suffix string) string {
 	return path
 }
 
+func sessionV3TUIPath(sessionID, suffix string) string {
+	path := "/v3/tui/sessions"
+	if id := strings.TrimSpace(sessionID); id != "" {
+		path += "/" + url.PathEscape(id)
+	}
+	if suffix = strings.TrimSpace(suffix); suffix != "" {
+		if !strings.HasPrefix(suffix, "/") {
+			suffix = "/" + suffix
+		}
+		path += suffix
+	}
+	return path
+}
+
 func newSessionV3ClientRequestID(prefix string) string {
 	prefix = strings.Trim(strings.TrimSpace(prefix), "-")
 	if prefix == "" {
@@ -3047,19 +3071,49 @@ func (c *API) CreateSessionV3WithOptions(ctx context.Context, options SessionCre
 	if len(options.Metadata) > 0 {
 		req["metadata"] = options.Metadata
 	}
-	var resp struct {
-		OK              bool                `json:"ok"`
-		Session         SessionSummary      `json:"session"`
-		Projection      SessionV3Projection `json:"projection"`
-		Messages        []SessionMessage    `json:"messages"`
-		Events          []SessionV3Event    `json:"events"`
-		ActiveRunIntent *SessionV3RunIntent `json:"active_run_intent"`
-	}
+	var resp SessionV3Hydrated
 	if err := c.postJSON(ctx, sessionV3PrimaryPath("", ""), req, &resp, true); err != nil {
 		return SessionV3Hydrated{}, err
 	}
 	resp.Session = markSessionV3(resp.Session, resp.Projection)
-	return SessionV3Hydrated{Session: resp.Session, Projection: resp.Projection, Messages: resp.Messages, Events: resp.Events, ActiveRunIntent: resp.ActiveRunIntent}, nil
+	return resp, nil
+}
+
+func (c *API) CreateSessionV3TUIWithOptions(ctx context.Context, options SessionCreateOptions) (SessionV3Hydrated, error) {
+	cwdPath := strings.TrimSpace(options.CWDPath)
+	if cwdPath == "" {
+		cwdPath = strings.TrimSpace(options.WorkspacePath)
+	}
+	if cwdPath == "" {
+		return SessionV3Hydrated{}, errors.New("cwd path is required")
+	}
+	mode := strings.ToLower(strings.TrimSpace(options.Mode))
+	if mode != "auto" {
+		mode = "plan"
+	}
+	req := map[string]any{
+		"client_request_id": newSessionV3ClientRequestID("tui-create"),
+		"cwd_path":          cwdPath,
+		"title":             strings.TrimSpace(options.Title),
+		"mode":              mode,
+		"agent_name":        strings.TrimSpace(options.AgentName),
+		"preference": map[string]string{
+			"provider":     strings.TrimSpace(options.Preference.Provider),
+			"model":        strings.TrimSpace(options.Preference.Model),
+			"thinking":     strings.TrimSpace(options.Preference.Thinking),
+			"service_tier": strings.TrimSpace(options.Preference.ServiceTier),
+			"context_mode": strings.TrimSpace(options.Preference.ContextMode),
+		},
+	}
+	if len(options.Metadata) > 0 {
+		req["metadata"] = options.Metadata
+	}
+	var resp SessionV3Hydrated
+	if err := c.postJSON(ctx, sessionV3TUIPath("", ""), req, &resp, true); err != nil {
+		return SessionV3Hydrated{}, err
+	}
+	resp.Session = markSessionV3(resp.Session, resp.Projection)
+	return resp, nil
 }
 
 func (c *API) GetSessionV3(ctx context.Context, sessionID string) (SessionV3Hydrated, error) {
@@ -3067,19 +3121,36 @@ func (c *API) GetSessionV3(ctx context.Context, sessionID string) (SessionV3Hydr
 	if sessionID == "" {
 		return SessionV3Hydrated{}, errors.New("session id is required")
 	}
-	var resp struct {
-		OK              bool                `json:"ok"`
-		Session         SessionSummary      `json:"session"`
-		Projection      SessionV3Projection `json:"projection"`
-		Messages        []SessionMessage    `json:"messages"`
-		Events          []SessionV3Event    `json:"events"`
-		ActiveRunIntent *SessionV3RunIntent `json:"active_run_intent"`
-	}
+	var resp SessionV3Hydrated
 	if err := c.getJSON(ctx, sessionV3PrimaryPath(sessionID, ""), &resp, true); err != nil {
 		return SessionV3Hydrated{}, err
 	}
 	resp.Session = markSessionV3(resp.Session, resp.Projection)
-	return SessionV3Hydrated{Session: resp.Session, Projection: resp.Projection, Messages: resp.Messages, Events: resp.Events, ActiveRunIntent: resp.ActiveRunIntent}, nil
+	return resp, nil
+}
+
+func (c *API) GetSessionV3TUI(ctx context.Context, sessionID, workspacePath, cwdPath string) (SessionV3Hydrated, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return SessionV3Hydrated{}, errors.New("session id is required")
+	}
+	query := url.Values{}
+	if workspacePath = strings.TrimSpace(workspacePath); workspacePath != "" {
+		query.Set("workspace_path", workspacePath)
+	}
+	if cwdPath = strings.TrimSpace(cwdPath); cwdPath != "" {
+		query.Set("cwd_path", cwdPath)
+	}
+	if len(query) == 0 {
+		return SessionV3Hydrated{}, errors.New("workspace path or cwd path is required")
+	}
+	path := sessionV3TUIPath(sessionID, "") + "?" + query.Encode()
+	var resp SessionV3Hydrated
+	if err := c.getJSON(ctx, path, &resp, true); err != nil {
+		return SessionV3Hydrated{}, err
+	}
+	resp.Session = markSessionV3(resp.Session, resp.Projection)
+	return resp, nil
 }
 
 func (c *API) GetSessionV3Workset(ctx context.Context, req SessionV3WorksetRequest) (SessionV3Workset, error) {
@@ -3381,6 +3452,17 @@ func (c *API) GetSessionUsage(ctx context.Context, sessionID string, limit int) 
 	return resp.UsageSummary, resp.HasUsageSummary, resp.TurnUsage, nil
 }
 
+func (c *API) GetSessionV3Usage(ctx context.Context, sessionID string) (SessionUsageSummary, bool, []SessionTurnUsage, error) {
+	hydrated, err := c.GetSessionV3(ctx, sessionID)
+	if err != nil {
+		return SessionUsageSummary{}, false, nil, err
+	}
+	if hydrated.UsageSummary == nil {
+		return SessionUsageSummary{}, false, nil, nil
+	}
+	return *hydrated.UsageSummary, true, nil, nil
+}
+
 func (c *API) GetSessionMode(ctx context.Context, sessionID string) (string, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
@@ -3396,6 +3478,14 @@ func (c *API) GetSessionMode(ctx context.Context, sessionID string) (string, err
 		return "", err
 	}
 	return strings.TrimSpace(resp.Mode), nil
+}
+
+func (c *API) GetSessionV3Mode(ctx context.Context, sessionID string) (string, error) {
+	hydrated, err := c.GetSessionV3(ctx, sessionID)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(hydrated.Session.Mode), nil
 }
 
 func (c *API) SetSessionMode(ctx context.Context, sessionID, mode string) (string, error) {
@@ -3416,6 +3506,21 @@ func (c *API) SetSessionMode(ctx context.Context, sessionID, mode string) (strin
 		return "", err
 	}
 	return strings.TrimSpace(resp.Mode), nil
+}
+
+func (c *API) SetSessionV3Mode(ctx context.Context, sessionID, mode string) (string, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return "", errors.New("session id is required")
+	}
+	req := map[string]string{
+		"mode": strings.TrimSpace(mode),
+	}
+	var resp SessionV3Hydrated
+	if err := c.postJSON(ctx, sessionV3PrimaryPath(sessionID, "mode"), req, &resp, true); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(resp.Session.Mode), nil
 }
 
 func (c *API) UpdateSessionMetadata(ctx context.Context, sessionID string, metadata map[string]any) (SessionSummary, error) {
@@ -3502,6 +3607,14 @@ func (c *API) GetSessionPreference(ctx context.Context, sessionID string) (Model
 	return resolved, nil
 }
 
+func (c *API) GetSessionV3Preference(ctx context.Context, sessionID string) (ModelResolved, error) {
+	hydrated, err := c.GetSessionV3(ctx, sessionID)
+	if err != nil {
+		return ModelResolved{}, err
+	}
+	return ModelResolved{Preference: hydrated.Preference, ContextWindow: hydrated.ContextWindow, MaxOutputTokens: hydrated.MaxOutputTokens}, nil
+}
+
 func (c *API) SetSessionPreference(ctx context.Context, sessionID string, req map[string]any) (ModelResolved, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
@@ -3513,6 +3626,18 @@ func (c *API) SetSessionPreference(ctx context.Context, sessionID string, req ma
 		return ModelResolved{}, err
 	}
 	return resolved, nil
+}
+
+func (c *API) SetSessionV3Preference(ctx context.Context, sessionID string, req map[string]any) (ModelResolved, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ModelResolved{}, errors.New("session id is required")
+	}
+	var resp SessionV3Hydrated
+	if err := c.postJSON(ctx, sessionV3PrimaryPath(sessionID, "preference"), req, &resp, true); err != nil {
+		return ModelResolved{}, err
+	}
+	return ModelResolved{Preference: resp.Preference, ContextWindow: resp.ContextWindow, MaxOutputTokens: resp.MaxOutputTokens}, nil
 }
 
 func (c *API) ListSessionPlans(ctx context.Context, sessionID string, limit int) ([]SessionPlan, string, error) {
@@ -3600,6 +3725,41 @@ func (c *API) GetActiveSessionPlan(ctx context.Context, sessionID string) (Sessi
 		return SessionPlan{}, false, err
 	}
 	return resp.ActivePlan, resp.HasActive, nil
+}
+
+func (c *API) GetActiveSessionV3Plan(ctx context.Context, sessionID string) (SessionPlan, bool, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return SessionPlan{}, false, errors.New("session id is required")
+	}
+	path := sessionV3PrimaryPath(sessionID, "plans/active")
+	var resp struct {
+		OK         bool        `json:"ok"`
+		SessionID  string      `json:"session_id"`
+		HasActive  bool        `json:"has_active"`
+		ActivePlan SessionPlan `json:"active_plan"`
+	}
+	if err := c.getJSON(ctx, path, &resp, true); err != nil {
+		return SessionPlan{}, false, err
+	}
+	return resp.ActivePlan, resp.HasActive, nil
+}
+
+func (c *API) SaveSessionV3Plan(ctx context.Context, sessionID string, req SessionPlanUpsertRequest) (SessionPlan, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return SessionPlan{}, errors.New("session id is required")
+	}
+	path := sessionV3PrimaryPath(sessionID, "plans")
+	var resp struct {
+		OK        bool        `json:"ok"`
+		SessionID string      `json:"session_id"`
+		Plan      SessionPlan `json:"plan"`
+	}
+	if err := c.postJSON(ctx, path, req, &resp, true); err != nil {
+		return SessionPlan{}, err
+	}
+	return resp.Plan, nil
 }
 
 func (c *API) SaveSessionPlan(ctx context.Context, sessionID string, req SessionPlanUpsertRequest) (SessionPlan, error) {

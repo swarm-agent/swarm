@@ -37,14 +37,18 @@ func convertChatRunExecutionContext(ctx *ui.ChatRunExecutionContext) *client.Run
 }
 
 type apiChatBackend struct {
-	api        *client.API
-	sessionAPI string
+	api           *client.API
+	sessionAPI    string
+	targetSwarmID string
 }
 
 func newAPIChatBackend(api *client.API, sessionAPI ...string) *apiChatBackend {
 	backend := &apiChatBackend{api: api, sessionAPI: "v3"}
 	if len(sessionAPI) > 0 {
 		backend.sessionAPI = strings.ToLower(strings.TrimSpace(sessionAPI[0]))
+	}
+	if len(sessionAPI) > 1 {
+		backend.targetSwarmID = strings.TrimSpace(sessionAPI[1])
 	}
 	return backend
 }
@@ -65,7 +69,7 @@ func (b *apiChatBackend) LoadMessages(ctx context.Context, sessionID string, aft
 }
 
 func (b *apiChatBackend) GetSessionUsageSummary(ctx context.Context, sessionID string) (*ui.ChatUsageSummary, error) {
-	summary, hasSummary, _, err := b.api.GetSessionUsage(ctx, sessionID, 1)
+	summary, hasSummary, _, err := b.api.GetSessionV3Usage(ctx, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -76,15 +80,15 @@ func (b *apiChatBackend) GetSessionUsageSummary(ctx context.Context, sessionID s
 }
 
 func (b *apiChatBackend) GetSessionMode(ctx context.Context, sessionID string) (string, error) {
-	return b.api.GetSessionMode(ctx, sessionID)
+	return b.api.GetSessionV3Mode(ctx, sessionID)
 }
 
 func (b *apiChatBackend) SetSessionMode(ctx context.Context, sessionID, mode string) (string, error) {
-	return b.api.SetSessionMode(ctx, sessionID, mode)
+	return b.api.SetSessionV3Mode(ctx, sessionID, mode)
 }
 
 func (b *apiChatBackend) GetSessionPreference(ctx context.Context, sessionID string) (string, string, string, string, string, int, error) {
-	resolved, err := b.api.GetSessionPreference(ctx, sessionID)
+	resolved, err := b.api.GetSessionV3Preference(ctx, sessionID)
 	if err != nil {
 		return "", "", "", "", "", 0, err
 	}
@@ -92,7 +96,7 @@ func (b *apiChatBackend) GetSessionPreference(ctx context.Context, sessionID str
 }
 
 func (b *apiChatBackend) SetSessionPreference(ctx context.Context, sessionID, provider, model, thinking, serviceTier, contextMode string) (string, string, string, string, string, int, error) {
-	resolved, err := b.api.SetSessionPreference(ctx, sessionID, map[string]any{
+	resolved, err := b.api.SetSessionV3Preference(ctx, sessionID, map[string]any{
 		"provider":     provider,
 		"model":        model,
 		"thinking":     thinking,
@@ -106,7 +110,7 @@ func (b *apiChatBackend) SetSessionPreference(ctx context.Context, sessionID, pr
 }
 
 func (b *apiChatBackend) GetActiveSessionPlan(ctx context.Context, sessionID string) (ui.ChatSessionPlan, bool, error) {
-	plan, ok, err := b.api.GetActiveSessionPlan(ctx, sessionID)
+	plan, ok, err := b.api.GetActiveSessionV3Plan(ctx, sessionID)
 	if err != nil {
 		return ui.ChatSessionPlan{}, false, err
 	}
@@ -117,7 +121,7 @@ func (b *apiChatBackend) GetActiveSessionPlan(ctx context.Context, sessionID str
 }
 
 func (b *apiChatBackend) SaveSessionPlan(ctx context.Context, sessionID string, plan ui.ChatSessionPlan) (ui.ChatSessionPlan, error) {
-	saved, err := b.api.SaveSessionPlan(ctx, sessionID, client.SessionPlanUpsertRequest{
+	saved, err := b.api.SaveSessionV3Plan(ctx, sessionID, client.SessionPlanUpsertRequest{
 		ID:            strings.TrimSpace(plan.ID),
 		PlanID:        strings.TrimSpace(plan.ID),
 		Title:         strings.TrimSpace(plan.Title),
@@ -239,7 +243,10 @@ func (b *apiChatBackend) ResolveAllPermissions(ctx context.Context, sessionID, a
 }
 
 func (b *apiChatBackend) StopRun(ctx context.Context, sessionID, runID string) error {
-	return b.api.StopSessionRun(ctx, sessionID, runID)
+	if err := requireTUIV3SessionAPI(b.sessionAPI, "stop chat run"); err != nil {
+		return err
+	}
+	return b.api.StopSessionV3Run(ctx, sessionID, runID, b.targetSwarmID, "")
 }
 
 func (b *apiChatBackend) RunTurn(ctx context.Context, sessionID string, req ui.ChatRunRequest) (ui.ChatRunResponse, error) {

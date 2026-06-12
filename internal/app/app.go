@@ -2752,11 +2752,13 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 	}
 	workspaceName := a.contextDisplayNameForPath(workspacePath, activeWorkspaceName)
 	route := a.selectedChatRouteForWorkspace(workspacePath)
-	useV3Primary := isPrimaryHostChatRoute(route) && strings.TrimSpace(route.WorkspaceBindingID) != ""
-	if strings.TrimSpace(route.WorkspaceBindingID) == "" {
+	knownWorkspacePath := strings.TrimSpace(a.activeWorkspacePath())
+	useV3Primary := knownWorkspacePath != "" && isPrimaryHostChatRoute(route) && strings.TrimSpace(route.WorkspaceBindingID) != ""
+	useV3Directory := knownWorkspacePath == ""
+	if !useV3Primary && !useV3Directory && strings.TrimSpace(route.WorkspaceBindingID) == "" {
 		return errors.New("workspace binding id is required")
 	}
-	if !useV3Primary {
+	if !useV3Primary && !useV3Directory {
 		return errTUIRetiredSessionAPI("create session for non-v3 TUI route")
 	}
 	createSwarmID := createSessionSwarmIDForRoute(route, a.homeModel.CurrentSwarmTarget)
@@ -2791,7 +2793,7 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 	var worktreeUseCurrentBranch *bool
 	worktreeBaseBranch := ""
 	worktreeBranchName := ""
-	if strings.TrimSpace(route.WorkspaceBindingID) != "" {
+	if useV3Primary {
 		settings, err := a.api.GetWorktreeSettings(ctx, workspacePath)
 		if err != nil {
 			return fmt.Errorf("get worktree settings: %w", err)
@@ -2824,7 +2826,14 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 		WorktreeBaseBranch:       worktreeBaseBranch,
 		WorktreeBranchName:       worktreeBranchName,
 	}
-	createdV3, err := a.api.CreateSessionV3WithOptions(ctx, createOptions)
+	var createdV3 client.SessionV3Hydrated
+	var err error
+	if useV3Directory {
+		createOptions.CWDPath = workspacePath
+		createdV3, err = a.api.CreateSessionV3TUIWithOptions(ctx, createOptions)
+	} else {
+		createdV3, err = a.api.CreateSessionV3WithOptions(ctx, createOptions)
+	}
 	if err != nil {
 		return err
 	}
@@ -2902,18 +2911,36 @@ func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt str
 	contextWindow := 0
 	if a.api != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		if resolved, err := a.api.GetSessionPreference(ctx, sessionID); err == nil {
-			modelProvider = strings.TrimSpace(resolved.Preference.Provider)
-			modelName = strings.TrimSpace(resolved.Preference.Model)
-			thinkingLevel = strings.TrimSpace(resolved.Preference.Thinking)
-			serviceTier = strings.TrimSpace(resolved.Preference.ServiceTier)
-			contextMode = strings.TrimSpace(resolved.Preference.ContextMode)
-			contextWindow = resolved.ContextWindow
+		workspaceScope := ""
+		cwdScope := ""
+		if strings.TrimSpace(a.activeWorkspacePath()) != "" {
+			workspaceScope = strings.TrimSpace(summary.WorkspacePath)
+		} else {
+			cwdScope = strings.TrimSpace(summary.WorkspacePath)
 		}
-		if mode, err := a.api.GetSessionMode(ctx, sessionID); err == nil {
-			summary.Mode = mode
-		}
+		hydrated, err := a.api.GetSessionV3TUI(ctx, sessionID, workspaceScope, cwdScope)
 		cancel()
+		if err != nil {
+			return fmt.Errorf("hydrate v3 session: %w", err)
+		}
+		if strings.TrimSpace(hydrated.Session.ID) != "" {
+			summary = mergeHomeSessionSummary(summary, modelSessionSummaryFromClient(hydrated.Session))
+		}
+		if len(hydrated.PendingPermissions) > 0 {
+			summary.PendingPermissionCount = len(hydrated.PendingPermissions)
+		}
+		if hydrated.ActiveRunIntent != nil {
+			summary.ActiveRunIntent = cloneClientSessionV3RunIntent(hydrated.ActiveRunIntent)
+			if lifecycle := v3RunIntentSessionLifecycle(summary.ID, hydrated.ActiveRunIntent); lifecycle != nil {
+				summary.Lifecycle = lifecycle
+			}
+		}
+		modelProvider = strings.TrimSpace(hydrated.Preference.Provider)
+		modelName = strings.TrimSpace(hydrated.Preference.Model)
+		thinkingLevel = strings.TrimSpace(hydrated.Preference.Thinking)
+		serviceTier = strings.TrimSpace(hydrated.Preference.ServiceTier)
+		contextMode = strings.TrimSpace(hydrated.Preference.ContextMode)
+		contextWindow = hydrated.ContextWindow
 	}
 	if modelProvider == "" && modelName == "" {
 		modelProvider = strings.TrimSpace(summary.Preference.Provider)
@@ -3094,7 +3121,7 @@ func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName
 	}
 
 	a.chat = ui.NewChatPage(ui.ChatPageOptions{
-		Backend:            newAPIChatBackend(a.api, sessionAPI),
+		Backend:            newAPIChatBackend(a.api, sessionAPI, targetSwarmIDForV3Session(sessionMetadata, a.homeModel.CurrentSwarmTarget)),
 		SessionID:          strings.TrimSpace(sessionID),
 		SessionTitle:       strings.TrimSpace(sessionTitle),
 		InitialPrompt:      strings.TrimSpace(initialPrompt),
@@ -3996,6 +4023,19 @@ func cloneSessionExecutionV2(execution *client.SessionExecutionV2) *client.Sessi
 	}
 	copy := *execution
 	return &copy
+}
+
+func targetSwarmIDForV3Session(metadata map[string]any, target *model.SwarmTarget) string {
+	if value := consumeStringMetadata(metadata, "swarm_v3_runtime_swarm_id"); value != "" {
+		return value
+	}
+	if value := consumeStringMetadata(metadata, "swarm_v3_authority_host_swarm_id"); value != "" {
+		return value
+	}
+	if isPrimaryHostSwarmTarget(target) {
+		return strings.TrimSpace(target.SwarmID)
+	}
+	return ""
 }
 
 func sessionExecutionRuntimeSwarmID(summary model.SessionSummary) string {

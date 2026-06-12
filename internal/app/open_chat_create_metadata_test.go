@@ -32,7 +32,7 @@ func TestOpenChatSessionCreatePayloadUsesV3PrimaryHostRouteAuthority(t *testing.
 	}
 }
 
-func TestOpenChatSessionCreateRejectsUnboundHostRoute(t *testing.T) {
+func TestOpenChatSessionCreateUsesV3TUIDirectoryRouteWithoutWorkspaceBinding(t *testing.T) {
 	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
 	t.Setenv("DATA_DIR", "")
 	homeModel := model.HomeModel{
@@ -43,9 +43,68 @@ func TestOpenChatSessionCreateRejectsUnboundHostRoute(t *testing.T) {
 		ChatRoutes:         []model.ChatRoute{{ID: "host", SwarmID: "host-swarm", TargetKind: "host", TargetRelationship: "self", TUIPrimaryCWD: true}},
 	}
 	homePage := ui.NewHomePage(homeModel)
-	app := &App{api: testAPIWithToken("http://127.0.0.1"), startupCWD: testWorkspacePath, workspacePath: testWorkspacePath, selectedChatRouteID: "host", home: homePage, homeModel: homeModel, streamEvents: make(chan client.StreamEventEnvelope, 1)}
-	if err := app.openChatSession("New Session", ""); err == nil || !strings.Contains(err.Error(), "workspace binding id is required") {
-		t.Fatalf("openChatSession() error = %v, want workspace binding requirement", err)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v3/tui/sessions":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode tui create: %v", err)
+			}
+			if got := bodyString(body, "cwd_path"); got != testWorkspacePath {
+				t.Fatalf("cwd_path = %q, want %q", got, testWorkspacePath)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"session": map[string]any{
+					"id":             "session-1",
+					"workspace_path": testWorkspacePath,
+					"workspace_name": "swarm-go",
+					"title":          "New Session",
+					"mode":           "auto",
+					"metadata": map[string]any{
+						"swarm_v3_runtime_swarm_id":      "host-swarm",
+						"swarm_v3_tui_directory_session": true,
+						"swarm_v3_tui_cwd_path":          testWorkspacePath,
+					},
+				},
+				"projection": map[string]any{"session_id": "session-1", "last_event_seq": 1, "projection_high_watermark_seq": 1},
+				"preference": map[string]any{"provider": "anthropic", "model": "claude", "thinking": "auto"},
+				"messages":   []any{},
+				"events":     []any{},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/tui/sessions/session-1" && r.URL.Query().Get("cwd_path") != "":
+			if got := r.URL.Query().Get("cwd_path"); got != testWorkspacePath {
+				t.Fatalf("open cwd_path = %q, want %q", got, testWorkspacePath)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":         true,
+				"session":    map[string]any{"id": "session-1", "workspace_path": testWorkspacePath, "workspace_name": "swarm-go", "title": "New Session", "mode": "auto", "metadata": map[string]any{"swarm_v3_runtime_swarm_id": "host-swarm"}},
+				"projection": map[string]any{"session_id": "session-1", "last_event_seq": 1, "projection_high_watermark_seq": 1},
+				"preference": map[string]any{"provider": "anthropic", "model": "claude", "thinking": "auto"},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/providers":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "providers": []any{}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/models/favorites":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "favorites": []any{}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/model/catalog":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "models": []any{}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/sessions/session-1/messages":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "session_id": "session-1", "messages": []any{}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/tui/sessions/session-1":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":         true,
+				"session":    map[string]any{"id": "session-1", "workspace_path": testWorkspacePath, "workspace_name": "swarm-go", "title": "New Session", "mode": "auto", "metadata": map[string]any{"swarm_v3_runtime_swarm_id": "host-swarm"}},
+				"projection": map[string]any{"session_id": "session-1", "last_event_seq": 1, "projection_high_watermark_seq": 1},
+				"preference": map[string]any{"provider": "anthropic", "model": "claude", "thinking": "auto"},
+			})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+	app := &App{api: testAPIWithToken(server.URL), startupCWD: testWorkspacePath, workspacePath: "", selectedChatRouteID: "host", home: homePage, homeModel: homeModel, streamEvents: make(chan client.StreamEventEnvelope, 1)}
+	if err := app.openChatSession("New Session", ""); err != nil {
+		t.Fatalf("openChatSession() error = %v", err)
 	}
 }
 
@@ -219,26 +278,28 @@ func captureOpenChatSessionCreateRequestWithWorktreeSettings(t *testing.T, route
 				settings.WorkspacePath = workspacePath
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "worktrees": settings})
-		case r.Method == http.MethodGet && (r.URL.Path == "/v2/sessions/session-1/preference" || r.URL.Path == "/v3/sessions/session-1/preference"):
+		case r.Method == http.MethodGet && (r.URL.Path == "/v3/tui/sessions/session-1" || r.URL.Path == "/v3/sessions/session-1"):
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"preference": map[string]any{
-					"provider": "anthropic",
-					"model":    "claude",
-					"thinking": "auto",
+				"ok": true,
+				"session": map[string]any{
+					"id":             "session-1",
+					"workspace_path": captured.bodyString("workspace_path"),
+					"workspace_name": captured.bodyString("workspace_name"),
+					"title":          "New Session",
+					"mode":           captured.bodyString("mode"),
+					"metadata":       captured.metadata,
 				},
+				"projection": map[string]any{"session_id": "session-1", "last_event_seq": 1, "projection_high_watermark_seq": 1},
+				"preference": map[string]any{"provider": "anthropic", "model": "claude", "thinking": "auto"},
 			})
-		case r.Method == http.MethodGet && (r.URL.Path == "/v2/sessions/session-1/mode" || r.URL.Path == "/v3/sessions/session-1/mode"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "mode": captured.bodyString("mode")})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/providers":
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "providers": []any{}})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/models/favorites":
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "favorites": []any{}})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/model/catalog":
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "models": []any{}})
-		case r.Method == http.MethodGet && (r.URL.Path == "/v1/sessions/session-1/messages" || r.URL.Path == "/v2/sessions/session-1/messages" || r.URL.Path == "/v3/sessions/session-1/messages"):
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/sessions/session-1/messages":
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "session_id": "session-1", "messages": []any{}})
-		case r.Method == http.MethodGet && (r.URL.Path == "/v1/sessions/session-1/usage" || r.URL.Path == "/v2/sessions/session-1/usage"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "session_id": "session-1", "has_usage_summary": false, "turn_usage_records": []any{}})
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}

@@ -41,6 +41,7 @@ func TestTUIChatBackendContractDoesNotCallLegacySessionAPIs(t *testing.T) {
 		"ListSessionMessages(":         "TUI chat message loads must use v3 messages/workset hydration",
 		"RunSessionWithOptions(":       "TUI chat turns must use v3 message commit plus realtime",
 		"RunSessionStreamWithOptions(": "TUI chat turns must use v3 realtime, not legacy run stream",
+		"StopSessionRun(":              "TUI chat stop must use v3 primary stop directly",
 		"/v1/sessions":                 "TUI chat backend must not call v1 session routes",
 		"/v2/sessions":                 "TUI chat backend must not call v2 session routes",
 	})
@@ -49,8 +50,9 @@ func TestTUIChatBackendContractDoesNotCallLegacySessionAPIs(t *testing.T) {
 func TestTUIV3EndpointNamesAreCanonical(t *testing.T) {
 	const primary = "/v3/sessions"
 	const workset = "/v3/sessions:workset"
+	const tuiSessions = "/v3/tui/sessions"
 	const tuiWorkset = "/v3/tui/sessions:workset"
-	for name, route := range map[string]string{"primary": primary, "workset": workset, "tuiWorkset": tuiWorkset} {
+	for name, route := range map[string]string{"primary": primary, "workset": workset, "tuiSessions": tuiSessions, "tuiWorkset": tuiWorkset} {
 		if !strings.HasPrefix(route, "/v3/") {
 			t.Fatalf("%s route = %q, want v3 route", name, route)
 		}
