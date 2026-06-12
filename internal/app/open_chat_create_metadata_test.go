@@ -49,7 +49,7 @@ func TestOpenChatSessionCreateRejectsUnboundHostRoute(t *testing.T) {
 	}
 }
 
-func TestOpenChatSessionCreatePayloadUsesWorktreeSettingsForBoundHostRoute(t *testing.T) {
+func TestOpenChatSessionCreatePayloadStaysOnV3WhenWorktreeSettingsEnabled(t *testing.T) {
 	got := captureOpenChatSessionCreateRequestWithWorktreeSettings(t, model.ChatRoute{ID: "host", SwarmID: "host-swarm", WorkspaceBindingID: "local-binding", TargetKind: "host", TargetRelationship: "self"}, "host-swarm", "local-binding", testWorkspacePath, "plan", client.WorktreeSettings{
 		WorkspacePath:    testWorkspacePath,
 		Enabled:          true,
@@ -58,29 +58,25 @@ func TestOpenChatSessionCreatePayloadUsesWorktreeSettingsForBoundHostRoute(t *te
 		BranchName:       "feature/<id>",
 	})
 
+	if got.path != "/v3/sessions" {
+		t.Fatalf("create path = %q, want /v3/sessions", got.path)
+	}
 	if got.bodyString("workspace_binding_id") != "local-binding" {
 		t.Fatalf("workspace_binding_id = %q, want local-binding", got.bodyString("workspace_binding_id"))
 	}
-	if got.bodyString("worktree_mode") != "on" {
-		t.Fatalf("worktree_mode = %q, want on", got.bodyString("worktree_mode"))
+	if got.bodyString("workspace_path") != testWorkspacePath {
+		t.Fatalf("workspace_path = %q, want %q", got.bodyString("workspace_path"), testWorkspacePath)
 	}
-	if gotUseCurrent, ok := got.body["worktree_use_current_branch"].(bool); !ok || gotUseCurrent {
-		t.Fatalf("worktree_use_current_branch = %#v, want false", got.body["worktree_use_current_branch"])
-	}
-	if got.bodyString("worktree_base_branch") != "main" {
-		t.Fatalf("worktree_base_branch = %q, want main", got.bodyString("worktree_base_branch"))
-	}
-	if got.bodyString("worktree_branch_name") != "feature" {
-		t.Fatalf("worktree_branch_name = %q, want feature", got.bodyString("worktree_branch_name"))
-	}
-	for _, key := range []string{"workspace_name", "workspace_path", "host_workspace_path", "runtime_workspace_path", "target_swarm_id", "routing_hint"} {
+	for _, key := range []string{"target_swarm_id", "routing_hint"} {
 		if _, ok := got.body[key]; ok {
-			t.Fatalf("create payload contains strict-v2-invalid authority field %q in %#v", key, got.body)
+			t.Fatalf("create payload contains legacy routing field %q in %#v", key, got.body)
 		}
 	}
 }
 
-func TestOpenChatSessionCreatePayloadUsesSelectedRouteAuthority(t *testing.T) {
+func TestOpenChatSessionCreateRejectsRetiredNonV3Route(t *testing.T) {
+	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
+	t.Setenv("DATA_DIR", "")
 	route := model.ChatRoute{
 		ID:                   testRemoteRouteID,
 		Label:                "Child Desk",
@@ -91,22 +87,27 @@ func TestOpenChatSessionCreatePayloadUsesSelectedRouteAuthority(t *testing.T) {
 		TargetKind:           "container",
 		TargetRelationship:   "child",
 	}
-	got := captureOpenChatSessionCreateRequest(t, route, "host-swarm", "local-binding", testWorkspacePath, "auto")
+	homeModel := model.HomeModel{
+		ModelProvider:      "anthropic",
+		ModelName:          "claude",
+		ThinkingLevel:      "auto",
+		CurrentSwarmTarget: &model.SwarmTarget{SwarmID: "host-swarm"},
+		ChatRoutes:         []model.ChatRoute{route},
+		Workspaces: []model.Workspace{{
+			Name:                    "Host Repo",
+			Path:                    testWorkspacePath,
+			LocalWorkspaceBindingID: "local-binding",
+			TopologyRoutes:          topologyRoutesForTestChatRoute(route),
+		}},
+	}
+	homePage := ui.NewHomePage(homeModel)
+	homePage.SetSessionMode("auto")
+	app := &App{api: testAPIWithToken("http://127.0.0.1"), startupCWD: testWorkspacePath, workspacePath: testWorkspacePath, selectedChatRouteID: route.ID, home: homePage, homeModel: homeModel, streamEvents: make(chan client.StreamEventEnvelope, 1)}
 
-	if got.bodyString("swarm_id") != "child-swarm" {
-		t.Fatalf("swarm_id = %q, want child-swarm", got.bodyString("swarm_id"))
+	err := app.openChatSession("New Session", "")
+	if err == nil || !strings.Contains(err.Error(), tuiRetiredSessionAPIMessage) {
+		t.Fatalf("openChatSession() error = %v, want retired TUI session API error", err)
 	}
-	if got.bodyString("workspace_binding_id") != "binding-1" {
-		t.Fatalf("workspace_binding_id = %q, want binding-1", got.bodyString("workspace_binding_id"))
-	}
-	if got.path != "/v2/sessions/local-containers" {
-		t.Fatalf("create path = %q, want /v2/sessions/local-containers", got.path)
-	}
-	if got.sessionExecution == nil || got.sessionExecution.RuntimeSwarmID != "child-swarm" || got.sessionExecution.WorkspaceBindingID != "binding-1" || got.sessionExecution.ExecutionClass != "local_container" || got.sessionExecution.RuntimeKind != "container" {
-		t.Fatalf("session execution = %#v, want local_container child-swarm/binding-1", got.sessionExecution)
-	}
-	assertV2PrimaryCreatePayload(t, got.body, "binding-1", "auto")
-	assertCreateMetadataStrictV2Safe(t, got.metadata)
 }
 
 type capturedCreateRequest struct {

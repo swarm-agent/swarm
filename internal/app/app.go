@@ -3788,12 +3788,6 @@ func (a *App) commitExecutionContext(summary model.SessionSummary) *client.RunEx
 }
 
 func (a *App) createBackgroundCommitSession(ctx context.Context, parentSessionID string, parentSummary model.SessionSummary, instructions string) (model.SessionSummary, error) {
-	execCtx := a.commitExecutionContext(parentSummary)
-	workspaceName := strings.TrimSpace(parentSummary.WorkspaceName)
-	if workspaceName == "" {
-		workspaceName = directoryNameForPath(parentSummary.WorkspacePath)
-	}
-	metadata := a.commitLineageMetadata(parentSessionID, parentSummary, instructions)
 	workspaceBindingID := firstNonEmpty(sessionExecutionWorkspaceBindingID(parentSummary), consumeStringMetadata(parentSummary.Metadata, "local_workspace_binding_id"))
 	swarmID := sessionExecutionRuntimeSwarmID(parentSummary)
 	if workspaceBindingID == "" {
@@ -3802,45 +3796,7 @@ func (a *App) createBackgroundCommitSession(ctx context.Context, parentSessionID
 	if swarmID == "" {
 		return model.SessionSummary{}, errors.New("swarm id is required")
 	}
-	worktreeMode := strings.TrimSpace(execCtx.WorktreeMode)
-	if strings.EqualFold(worktreeMode, "inherit") {
-		worktreeMode = "off"
-	}
-	child, err := a.api.CreateSessionWithOptions(ctx, client.SessionCreateOptions{
-		Title:              a.commitSessionTitle(parentSummary.Title, instructions),
-		WorkspaceName:      workspaceName,
-		Mode:               "auto",
-		AgentName:          emptyFallback(strings.TrimSpace(a.homeModel.ActiveAgent), "swarm"),
-		WorkspaceBindingID: workspaceBindingID,
-		SwarmID:            swarmID,
-		ExecutionClass:     sessionExecutionClass(parentSummary),
-		TargetKind:         sessionExecutionRuntimeKind(parentSummary),
-		Metadata:           metadata,
-		Preference:         parentSummary.Preference,
-		WorktreeMode:       worktreeMode,
-	})
-	if err != nil {
-		return model.SessionSummary{}, err
-	}
-	metadata = mergeMetadataMaps(child.Metadata, metadata)
-	child.Metadata = metadata
-	return model.SessionSummary{
-		ID:                     strings.TrimSpace(child.ID),
-		WorkspacePath:          strings.TrimSpace(child.WorkspacePath),
-		WorkspaceName:          strings.TrimSpace(child.WorkspaceName),
-		Title:                  strings.TrimSpace(child.Title),
-		Mode:                   strings.TrimSpace(child.Mode),
-		Metadata:               metadata,
-		SessionExecution:       cloneSessionExecutionV2(child.SessionExecution),
-		Preference:             child.Preference,
-		WorktreeEnabled:        child.WorktreeEnabled,
-		WorktreeRootPath:       strings.TrimSpace(child.WorktreeRootPath),
-		WorktreeBaseBranch:     strings.TrimSpace(child.WorktreeBaseBranch),
-		WorktreeBranch:         strings.TrimSpace(child.WorktreeBranch),
-		UpdatedAgo:             formatAgo(child.UpdatedAt),
-		Lifecycle:              child.Lifecycle,
-		PendingPermissionCount: child.PendingPermissionCount,
-	}, nil
+	return model.SessionSummary{}, errTUIRetiredSessionAPI("create background commit session")
 }
 
 func (a *App) startBackgroundCommitRun(ctx context.Context, childSummary model.SessionSummary, instructions string) (client.BackgroundRunAccepted, error) {

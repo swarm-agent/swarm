@@ -42,7 +42,7 @@ type apiChatBackend struct {
 }
 
 func newAPIChatBackend(api *client.API, sessionAPI ...string) *apiChatBackend {
-	backend := &apiChatBackend{api: api}
+	backend := &apiChatBackend{api: api, sessionAPI: "v3"}
 	if len(sessionAPI) > 0 {
 		backend.sessionAPI = strings.ToLower(strings.TrimSpace(sessionAPI[0]))
 	}
@@ -50,15 +50,10 @@ func newAPIChatBackend(api *client.API, sessionAPI ...string) *apiChatBackend {
 }
 
 func (b *apiChatBackend) LoadMessages(ctx context.Context, sessionID string, afterSeq uint64, limit int) ([]ui.ChatMessageRecord, error) {
-	var (
-		messages []client.SessionMessage
-		err      error
-	)
-	if strings.EqualFold(strings.TrimSpace(b.sessionAPI), "v3") {
-		messages, err = b.api.ListSessionV3Messages(ctx, sessionID, afterSeq, limit)
-	} else {
-		messages, err = b.api.ListSessionMessages(ctx, sessionID, afterSeq, limit)
+	if err := requireTUIV3SessionAPI(b.sessionAPI, "load chat messages"); err != nil {
+		return nil, err
 	}
+	messages, err := b.api.ListSessionV3Messages(ctx, sessionID, afterSeq, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -248,38 +243,7 @@ func (b *apiChatBackend) StopRun(ctx context.Context, sessionID, runID string) e
 }
 
 func (b *apiChatBackend) RunTurn(ctx context.Context, sessionID string, req ui.ChatRunRequest) (ui.ChatRunResponse, error) {
-	result, err := b.api.RunSessionWithOptions(ctx, sessionID, req.Prompt, req.AgentName, req.Instructions, client.RunSessionOptions{
-		Compact:          req.Compact,
-		Background:       req.Background,
-		TargetKind:       req.TargetKind,
-		TargetName:       req.TargetName,
-		ToolScope:        convertChatRunToolScope(req.ToolScope),
-		ExecutionContext: convertChatRunExecutionContext(req.ExecutionContext),
-	})
-	if err != nil {
-		return ui.ChatRunResponse{}, err
-	}
-	toolMessages := make([]ui.ChatMessageRecord, 0, len(result.ToolMessages))
-	for _, message := range result.ToolMessages {
-		toolMessages = append(toolMessages, convertClientMessage(message))
-	}
-	commentary := make([]ui.ChatMessageRecord, 0, len(result.Commentary))
-	for _, message := range result.Commentary {
-		commentary = append(commentary, convertClientMessage(message))
-	}
-	return ui.ChatRunResponse{
-		Model:            result.Model,
-		Thinking:         result.Thinking,
-		ReasoningSummary: result.ReasoningSummary,
-		TurnUsage:        convertClientTurnUsage(result.TurnUsage),
-		UsageSummary:     convertClientUsageSummary(result.UsageSummary),
-		UserMessage:      convertClientMessage(result.UserMessage),
-		ToolMessages:     toolMessages,
-		Commentary:       commentary,
-		AssistantMessage: convertClientMessage(result.AssistantMessage),
-		TargetKind:       result.TargetKind,
-		TargetName:       result.TargetName,
-	}, nil
+	return b.RunTurnStream(ctx, sessionID, req, nil)
 }
 
 func (b *apiChatBackend) RunTurnStream(ctx context.Context, sessionID string, req ui.ChatRunRequest, onEvent func(ui.ChatRunStreamEvent)) (ui.ChatRunResponse, error) {
@@ -343,44 +307,7 @@ func (b *apiChatBackend) RunTurnStream(ctx context.Context, sessionID string, re
 		return streamResp, nil
 	}
 
-	result, err := b.api.RunSessionStreamWithOptions(ctx, sessionID, req.Prompt, req.AgentName, req.Instructions, client.RunSessionOptions{
-		Compact:          req.Compact,
-		Background:       req.Background,
-		TargetKind:       req.TargetKind,
-		TargetName:       req.TargetName,
-		ToolScope:        convertChatRunToolScope(req.ToolScope),
-		ExecutionContext: convertChatRunExecutionContext(req.ExecutionContext),
-	}, func(event client.SessionRunStreamEvent) {
-		if onEvent == nil {
-			return
-		}
-		onEvent(convertClientRunStreamEvent(event))
-	})
-	if err != nil {
-		return ui.ChatRunResponse{}, err
-	}
-
-	toolMessages := make([]ui.ChatMessageRecord, 0, len(result.ToolMessages))
-	for _, message := range result.ToolMessages {
-		toolMessages = append(toolMessages, convertClientMessage(message))
-	}
-	commentary := make([]ui.ChatMessageRecord, 0, len(result.Commentary))
-	for _, message := range result.Commentary {
-		commentary = append(commentary, convertClientMessage(message))
-	}
-	return ui.ChatRunResponse{
-		Model:            result.Model,
-		Thinking:         result.Thinking,
-		ReasoningSummary: result.ReasoningSummary,
-		TurnUsage:        convertClientTurnUsage(result.TurnUsage),
-		UsageSummary:     convertClientUsageSummary(result.UsageSummary),
-		UserMessage:      convertClientMessage(result.UserMessage),
-		ToolMessages:     toolMessages,
-		Commentary:       commentary,
-		AssistantMessage: convertClientMessage(result.AssistantMessage),
-		TargetKind:       result.TargetKind,
-		TargetName:       result.TargetName,
-	}, nil
+	return ui.ChatRunResponse{}, errTUIRetiredSessionAPI("run turn for non-v3 TUI session")
 }
 
 func (b *apiChatBackend) consumeSessionV3Run(ctx context.Context, sessionID string, intent client.SessionV3RunIntent, onEvent func(ui.ChatRunStreamEvent)) (ui.ChatRunResponse, error) {
