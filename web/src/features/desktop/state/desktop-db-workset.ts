@@ -1,5 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { apiFetch, readErrorMessage, requestJson } from '../../../app/api'
+import { loadDesktopStateSnapshot } from './desktop-state-snapshot'
 import { createDebugTimer, debugLog } from '../../../lib/debug-log'
 import {
   applyWorksetToDesktopDB,
@@ -1000,7 +1001,7 @@ export async function fetchDesktopDBSessionSnapshot(sessionId: string, signal?: 
 }
 
 export async function updateDesktopV3SessionMode(
-  queryClient: QueryClient,
+  _queryClient: QueryClient,
   sessionId: string,
   mode: string,
 ): Promise<DesktopDBSessionSnapshot> {
@@ -1014,12 +1015,12 @@ export async function updateDesktopV3SessionMode(
     },
   )
   const snapshot = requireDesktopDBSessionSnapshot(response, 'mode update')
-  writeDesktopDBSessionSnapshot(queryClient, snapshot)
+  await loadDesktopStateSnapshot({ sessionIds: [normalizedSessionId] })
   return snapshot
 }
 
 export async function updateDesktopV3SessionPreference(
-  queryClient: QueryClient,
+  _queryClient: QueryClient,
   sessionId: string,
   input: Partial<ResolvedSessionPreference['preference']>,
 ): Promise<ResolvedSessionPreference> {
@@ -1039,12 +1040,12 @@ export async function updateDesktopV3SessionPreference(
     },
   )
   const snapshot = requireDesktopDBSessionSnapshot(response, 'preference update')
-  writeDesktopDBSessionSnapshot(queryClient, snapshot)
+  await loadDesktopStateSnapshot({ sessionIds: [normalizedSessionId] })
   return snapshot.preference
 }
 
 export async function updateDesktopV3SessionAgent(
-  queryClient: QueryClient,
+  _queryClient: QueryClient,
   sessionId: string,
   agentName: string,
 ): Promise<DesktopDBSessionSnapshot> {
@@ -1058,12 +1059,12 @@ export async function updateDesktopV3SessionAgent(
     },
   )
   const snapshot = requireDesktopDBSessionSnapshot(response, 'agent update')
-  writeDesktopDBSessionSnapshot(queryClient, snapshot)
+  await loadDesktopStateSnapshot({ sessionIds: [normalizedSessionId] })
   return snapshot
 }
 
 export async function updateDesktopV3SessionMetadata(
-  queryClient: QueryClient,
+  _queryClient: QueryClient,
   sessionId: string,
   metadata: Record<string, unknown>,
 ): Promise<DesktopDBSessionSnapshot> {
@@ -1077,12 +1078,12 @@ export async function updateDesktopV3SessionMetadata(
     },
   )
   const snapshot = requireDesktopDBSessionSnapshot(response, 'metadata update')
-  writeDesktopDBSessionSnapshot(queryClient, snapshot)
+  await loadDesktopStateSnapshot({ sessionIds: [normalizedSessionId] })
   return snapshot
 }
 
 export async function saveDesktopV3SessionPlan(
-  queryClient: QueryClient,
+  _queryClient: QueryClient,
   sessionId: string,
   input: {
     id?: string;
@@ -1113,7 +1114,7 @@ export async function saveDesktopV3SessionPlan(
     },
   )
   const snapshot = requireDesktopDBSessionSnapshot(response, 'plan save')
-  writeDesktopDBSessionSnapshot(queryClient, snapshot)
+  await loadDesktopStateSnapshot({ sessionIds: [normalizedSessionId] })
   return snapshot
 }
 

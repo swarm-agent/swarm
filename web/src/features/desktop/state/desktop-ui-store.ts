@@ -20,7 +20,6 @@ import {
   compactSessionV3,
   mapDesktopSessionUsageSummary,
   sendSessionMessage,
-  type SendSessionMessageResult,
 } from '../chat/queries/chat-queries'
 import type { DesktopChatRoute } from '../chat/services/chat-routing'
 import { gitStatusQueryKey } from '../git/api'
@@ -868,15 +867,6 @@ function isDisplayableAgentLabel(value: unknown): value is string {
   return !normalized.includes('.')
 }
 
-function metadataStringValue(metadata: Record<string, unknown> | null | undefined, key: string): string {
-  const value = metadata?.[key]
-  return typeof value === 'string' ? value.trim() : ''
-}
-
-function sessionAgentNameFromMetadata(metadata: Record<string, unknown> | null | undefined): string {
-  return metadataStringValue(metadata, 'agent_name') || metadataStringValue(metadata, 'resolved_agent_name')
-}
-
 function v3RunIntentStatusActive(status: string): boolean {
   const normalized = status.trim().toLowerCase()
   return normalized === 'pending_executor' || normalized === 'running'
@@ -1522,10 +1512,6 @@ function updateMessagesCache(_sessionId: string, _message: ChatMessageRecord, af
   afterSync?.()
 }
 
-function isSendSessionMessageResult(value: unknown): value is SendSessionMessageResult {
-  return Boolean(value && typeof value === 'object' && ('message' in value || 'runIntent' in value || 'session' in value))
-}
-
 function v3RunIntentPayload(payloadRecord: Record<string, unknown>): Record<string, unknown> | null {
   const runIntent = payloadRecord.run_intent
   return runIntent && typeof runIntent === 'object' ? runIntent as Record<string, unknown> : null
@@ -1665,54 +1651,6 @@ function normalizeGlobalV3SessionPayload(eventType: string, payloadRecord: Recor
     return normalized
   }
   return normalized
-}
-
-function applyV3MessageCommitResult(state: DesktopStoreState, sessionId: string, result: SendSessionMessageResult, ts: number): Partial<DesktopStoreState> {
-  const existing = state.sessions[sessionId]
-  if (!existing) {
-    return {}
-  }
-  const runIntent = result.runIntent
-  const runStatus = runIntent?.status.trim().toLowerCase() ?? ''
-  const runStartedAt = runIntent?.createdAt && runIntent.createdAt > 0 ? runIntent.createdAt : ts
-  const sessions = { ...state.sessions }
-  const baseSession = result.session
-    ? mergeSessionRecords(existing, result.session)
-    : existing
-  const session = { ...baseSession, live: { ...baseSession.live } }
-  session.sessionApi = session.sessionApi || 'v3'
-  session.live.runId = runIntent?.runId || session.live.runId
-  session.live.awaitingAck = false
-  session.live.status = runStatus === 'dispatch_blocked'
-    ? 'blocked'
-    : runStatus === 'pending_executor'
-      ? 'starting'
-      : session.live.status
-  if (runIntent && v3RunIntentStatusActive(runStatus)) {
-    session.runIntent = runIntent
-  } else if (runIntent && v3RunIntentStatusTerminal(runStatus)) {
-    session.runIntent = null
-  }
-  if ((runStatus === 'pending_executor' || runStatus === 'dispatch_blocked') && session.live.startedAt === null) {
-    session.live.startedAt = runStartedAt
-  }
-  session.live.summary = runStatus === 'dispatch_blocked'
-    ? (runIntent?.blockedReason || 'Dispatch blocked')
-    : runStatus === 'pending_executor'
-      ? 'Pending executor…'
-      : session.live.summary
-  session.live.error = runStatus === 'dispatch_blocked'
-    ? (runIntent?.blockedReason || null)
-    : null
-  session.live.lastEventType = runStatus === 'dispatch_blocked'
-    ? 'run.dispatch_blocked'
-    : runStatus === 'pending_executor'
-      ? 'run.pending_executor'
-      : 'message.committed'
-  session.live.lastEventAt = ts
-  sessions[sessionId] = mergeSessionRecords(existing, session)
-  syncBlockedSessionToWorkspaceOverview(queryClient, sessions[sessionId])
-  return { sessions }
 }
 
 function deferAssistantFinalization(sessionId: string, message: ChatMessageRecord, assistantDraft: string): void {
@@ -3286,31 +3224,16 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
     }
   },
   clearNotifications: async () => {
-    const result = await clearDurableNotifications()
-    const summary: DesktopNotificationSummary = {
-      swarmID: result?.swarm_id ?? '',
-      totalCount: 0,
-      unreadCount: 0,
-      activeCount: 0,
-      updatedAt: Date.now(),
-    }
-    set((state: DesktopStoreState) => ({
-      notificationCenter: clearNotificationCenter(state.notificationCenter, summary),
-    }))
+    await clearDurableNotifications()
+    await get().refreshNotifications()
   },
   updateNotificationRecord: async (id, patch) => {
     const normalizedID = id.trim()
     if (!normalizedID) {
       return
     }
-    const { notification, summary } = await updateNotification(normalizedID, patch)
-    set((state: DesktopStoreState) => ({
-      notificationCenter: mergeNotificationCenterRecord(
-        state.notificationCenter,
-        notification,
-        summary ? mapNotificationSummary(summary) : null,
-      ),
-    }))
+    await updateNotification(normalizedID, patch)
+    await get().refreshNotifications()
   },
   setSessionDraft: (sessionId, draft) => {
     const key = sessionId.trim()
@@ -3833,25 +3756,10 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
     if (!runId) {
       return
     }
-    set((state: DesktopStoreState) => applyRunStreamFrame(state, normalizedSessionId, { type: 'run.stop.accepted', run_id: runId }, Date.now()))
     const sessionApi = session?.sessionApi?.trim().toLowerCase() ?? ''
     await requireRunStreamController().stop({ sessionId: normalizedSessionId, runId, route, sessionApi })
     if (sessionApi === 'v3') {
-      const stoppedAt = Date.now()
-      set((state: DesktopStoreState) => applyRunStreamFrame(state, normalizedSessionId, {
-        type: 'session.run.cancelled',
-        session_id: normalizedSessionId,
-        run_id: runId,
-        status: 'cancelled',
-        error: USER_STOP_SUMMARY,
-        run_intent: {
-          session_id: normalizedSessionId,
-          run_id: runId,
-          status: 'cancelled',
-          blocked_reason: USER_STOP_SUMMARY,
-          updated_at: stoppedAt,
-        },
-      }, stoppedAt))
+      requestScopedSessionWorkset(normalizedSessionId, { force: true })
     }
   },
   submitPrompt: async ({ sessionId, route = null, sessionApi = null, clientRequestId: providedClientRequestId = null, workspacePath, prompt, agentName, compact = false, targetKind = '', targetName = '' }: {
@@ -3884,32 +3792,12 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
     get().closeRunStream(targetSessionId)
     set((state: DesktopStoreState) => {
       cancelDraftFlush(targetSessionId)
-      const sessions = { ...state.sessions }
-      const session = { ...ensureSession(state, targetSessionId), live: { ...ensureSession(state, targetSessionId).live } }
-      if (effectiveSessionApi === 'v3') {
-        session.sessionApi = 'v3'
-      }
-      session.live.status = session.lifecycle?.active ? session.live.status : 'starting'
-      session.live.startedAt = session.lifecycle?.active ? session.live.startedAt : submitStartedAt
-      session.live.agentName = targetName.trim() || session.live.agentName || sessionAgentNameFromMetadata(session.metadata) || agentName.trim()
-      session.live.runId = null
-      session.live.seq = 0
-      session.live.awaitingAck = true
-      session.live.summary = 'Starting…'
-      session.live.error = null
-      resetLiveAssistantState(session.live)
-      resetLiveToolState(session.live)
-      resetLiveReasoningState(session.live)
-      session.live.reasoningSegment = 0
-      sessions[targetSessionId] = mergeSessionRecords(state.sessions[targetSessionId] ?? null, session)
-      syncBlockedSessionToWorkspaceOverview(queryClient, sessions[targetSessionId])
       const nextSessionDrafts = { ...state.sessionDrafts }
       nextSessionDrafts[targetSessionId] = ''
       if (sourceDraftKey !== targetSessionId) {
         delete nextSessionDrafts[sourceDraftKey]
       }
       return {
-        sessions,
         sessionDrafts: nextSessionDrafts,
       }
     })
@@ -3917,56 +3805,17 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
     try {
       if (effectiveSessionApi === 'v3' && compact) {
         const clientRequestId = providedClientRequestId?.trim() || `desktop-v3-compact:${targetSessionId}:${submitStartedAt}`
-        const result = await compactSessionV3(targetSessionId, { note: trimmedPrompt, agentName, clientRequestId })
-        const eventFrames = result.events ?? []
-        for (const event of eventFrames) {
-          if (event && typeof event === 'object') {
-            set((state: DesktopStoreState) => applyRunStreamFrame(state, targetSessionId, event as RunStreamEventMessage, Date.now()))
-          }
-        }
-        const assistantMessage = result.assistantMessage ?? null
-        set((state: DesktopStoreState) => {
-          const existing = result.session ?? state.sessions[targetSessionId]
-          if (!existing) {
-            return state
-          }
-          return {
-            sessions: {
-              ...state.sessions,
-              [targetSessionId]: mergeSessionRecords(state.sessions[targetSessionId] ?? null, {
-                ...existing,
-                sessionApi: 'v3',
-                usage: result.usageSummary ?? existing.usage,
-                live: {
-                  ...existing.live,
-                  status: 'idle',
-                  awaitingAck: false,
-                  error: null,
-                  summary: assistantMessage?.content || 'Compact complete',
-                  lastEventType: 'session.compact.completed',
-                  lastEventAt: Date.now(),
-                },
-              }),
-            },
-          }
-        })
+        await compactSessionV3(targetSessionId, { note: trimmedPrompt, agentName, clientRequestId })
+        requestScopedSessionWorkset(targetSessionId, { force: true })
         return
       }
 
       if (effectiveSessionApi === 'v3') {
         const clientRequestId = providedClientRequestId?.trim() || `desktop-v3-message:${targetSessionId}:${submitStartedAt}`
-        const result = await sendSessionMessage(targetSessionId, 'user', trimmedPrompt, route, { sessionApi: 'v3', clientRequestId })
-        let runIntentId = ''
-        if (isSendSessionMessageResult(result)) {
-          const resultAppliedAt = Date.now()
-          set((state: DesktopStoreState) => applyV3MessageCommitResult(state, targetSessionId, result, resultAppliedAt))
-          runIntentId = result.runIntent?.runId ?? ''
-        }
+        await sendSessionMessage(targetSessionId, 'user', trimmedPrompt, route, { sessionApi: 'v3', clientRequestId })
         set({ realtimeDesired: true })
         await get().connect()
-        if (runIntentId) {
-          requireRunStreamController().close(targetSessionId)
-        }
+        requestScopedSessionWorkset(targetSessionId, { force: true })
         return
       }
 

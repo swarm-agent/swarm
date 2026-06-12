@@ -36,7 +36,7 @@ import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
 import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thinking-tags-setting'
 import { saveDefaultWorkspaceRoute } from '../../settings/swarm/mutations/save-default-workspace-route'
 import { defaultWorkspaceRouteId, normalizeDefaultNewSessionMode, normalizeThinkingTagsEnabled } from '../../settings/swarm/types/swarm-settings'
-import { countApprovalRequiredPermissions, permissionRequiresApproval } from '../../permissions/services/permission-payload'
+import { permissionRequiresApproval } from '../../permissions/services/permission-payload'
 import { DesktopPlanModal } from './desktop-plan-modal'
 import { DesktopSlashCommandPanel } from './desktop-slash-command-panel'
 import { DesktopMentionPanel } from './desktop-mention-panel'
@@ -57,19 +57,12 @@ import {
   resolveDesktopChatRouteFromSession,
 } from '../services/chat-routing'
 import { buildDesktopSlashPaletteState, type DesktopSlashCommand } from '../services/slash-commands'
-import { createPendingUserMessage, mergeMessageIntoCache } from '../services/message-cache'
+import { mergeMessageIntoCache } from '../services/message-cache'
 import type { SettingsTabID } from '../../settings/types/settings-tabs'
 import type { QuickSettingsTabID } from '../../settings/components/desktop-quick-settings-modal'
 import type { WorkspaceOverviewTopologyRoute } from '../../../workspaces/launcher/types/workspace-overview'
 import { ImageSessionSidebar, type ImageSessionSidebarState } from '../../tools/components/image-session-sidebar'
 import { commitWorkspaceChanges } from '../../git/api'
-import {
-  desktopMessagesCollection,
-  desktopPreferencesCollection,
-  desktopSessionReadinessCollection,
-  desktopSessionsCollection,
-  upsertDesktopDbRecord,
-} from '../../state/desktop-db'
 import {
   useDesktopActiveRun,
   useDesktopAgentModelPolicy,
@@ -2300,21 +2293,12 @@ export function DesktopChatPanel({
       return
     }
 
-    upsertDesktopDbRecord(desktopPreferencesCollection, {
-      ...(dbPreference ?? activePreferenceRecord),
-      preference: {
-        ...activePreferenceRecord.preference,
-        ...normalizedNext,
-      },
-      sessionId,
-    })
-
     try {
       await updateDesktopV3SessionPreference(queryClient, sessionId, normalizedNext)
     } catch (error) {
       setPanelError(error instanceof Error ? error.message : 'Failed to update model settings')
     }
-  }, [activeAgentModelLocked, activeAgentModelPolicy?.agentName, activeAgentModelPolicy?.reason, activePreferenceRecord, currentSessionAgent, dbPreference, queryClient, sessionId])
+  }, [activeAgentModelLocked, activeAgentModelPolicy?.agentName, activeAgentModelPolicy?.reason, activePreferenceRecord, currentSessionAgent, queryClient, sessionId])
 
   const handleModelChange = useCallback((value: string) => {
     if (activeAgentModelLocked) {
@@ -2632,7 +2616,6 @@ export function DesktopChatPanel({
     setPanelError(null)
 
     let targetSession = session
-    let pendingMessageId = ''
     try {
       if (!canSendWithSelectedPreference) {
         throw new Error('Select an authenticated model and thinking level before sending')
@@ -2654,40 +2637,15 @@ export function DesktopChatPanel({
             worktreeMode: activeChatRoute.swarmId && workspaceWorktreeEnabled ? 'on' : 'off',
             worktreeUseCurrentBranch: activeChatRoute.swarmId && workspaceWorktreeEnabled ? true : undefined,
           })
-        upsertDesktopDbRecord(desktopSessionsCollection, targetSession)
-        upsertDesktopDbRecord(desktopSessionReadinessCollection, {
-          sessionId: targetSession.id,
-          status: 'ready',
-          ready: true,
-          missingResources: [],
-          omittedResources: [],
-          error: null,
-          updatedAt: Date.now(),
-        })
-        upsertDesktopDbRecord(desktopPreferencesCollection, {
-          ...activePreferenceRecord,
-          preference: {
-            ...activePreferenceRecord.preference,
-          },
-          sessionId: targetSession.id,
-        })
         onSessionCreated(targetSession)
       }
 
-      const targetMessages = targetSession.id === sessionId ? messages : []
-      const pendingMessage = createPendingUserMessage(
-        targetSession.id,
-        prompt,
-        targetMessages[targetMessages.length - 1]?.globalSeq ?? 0,
-      )
-      pendingMessageId = pendingMessage.id
-      upsertDesktopDbRecord(desktopMessagesCollection, pendingMessage)
-
+      const clientRequestId = `desktop-v3-message:${targetSession.id}:${Date.now()}`
       await submitPrompt({
         sessionId: targetSession.id,
         route: activeChatRoute,
         sessionApi: targetSession.sessionApi,
-        clientRequestId: pendingMessageId ? `desktop-v3-message:${pendingMessageId}` : undefined,
+        clientRequestId,
         workspacePath,
         workspaceName,
         prompt: runPrompt,
@@ -2697,11 +2655,6 @@ export function DesktopChatPanel({
       })
     } catch (error) {
       setPanelError(error instanceof Error ? error.message : 'Failed to send prompt')
-      if (targetSession?.id) {
-        if (pendingMessageId && desktopMessagesCollection.has(`${targetSession.id}:${pendingMessageId}`)) {
-          desktopMessagesCollection.delete(`${targetSession.id}:${pendingMessageId}`)
-        }
-      }
     }
   }, [activeChatRoute, activePreferenceRecord, canSendWithSelectedPreference, commitDictationDraft, composer, currentSessionAgent, effectiveSessionMode, mentionSubagents, messages, onSessionCreated, resolvedLockedAgentName, session, sessionCreateOverride, sessionId, stopDictation, submitPrompt, submitting, workspaceName, workspacePath, workspaceWorktreeEnabled])
 
@@ -2854,7 +2807,6 @@ export function DesktopChatPanel({
           route: activeChatRoute,
         })
         targetSession = createdSession
-        upsertDesktopDbRecord(desktopSessionsCollection, createdSession)
         prompt = 'Review the git diff in scope, prepare the right staged set, and create the commit now.'
         runInstructions = buildCommitAgentInstructions(instructions)
         targetKind = 'background'
@@ -2884,16 +2836,6 @@ export function DesktopChatPanel({
         setPanelError(null)
         const summary = committed.output?.trim() || committed.summary?.trim() || 'Manual git commit completed.'
         onToast?.({ message: summary, tone: 'success' })
-        upsertDesktopDbRecord(desktopSessionsCollection, {
-          ...session,
-          live: {
-            ...session.live,
-            status: 'idle',
-            awaitingAck: false,
-            summary,
-            error: null,
-          },
-        })
         return
       }
 
@@ -2937,20 +2879,10 @@ export function DesktopChatPanel({
       setSessionDraftMode(draftSessionKey, nextMode)
       return
     }
-    const currentSession = liveSession ?? session
-    if (currentSession) {
-      upsertDesktopDbRecord(desktopSessionsCollection, {
-        ...currentSession,
-        mode: nextMode,
-      })
-    }
     try {
       await updateDesktopV3SessionMode(queryClient, sessionId, nextMode)
     } catch (error) {
       setPanelError(error instanceof Error ? error.message : 'Failed to update session mode')
-      if (currentSession) {
-        upsertDesktopDbRecord(desktopSessionsCollection, currentSession)
-      }
     }
   }, [draftSessionKey, queryClient, selectedPrimaryAgentProfile?.exitPlanModeEnabled, sessionId, sessionMode, setSessionDraftMode])
 
@@ -2967,17 +2899,6 @@ export function DesktopChatPanel({
     setResolvingPermissionIds((current) => new Set(current).add(permissionId))
     try {
       const resolved = await resolveSessionPermission(sessionId, permissionId, action, reason, approvedArguments, { sessionApi: liveSession?.sessionApi })
-      const existing = liveSession ?? session
-      if (existing) {
-        const nextPermissions = existing.pendingPermissions
-          .filter((item) => item.id !== resolved.id)
-          .concat(resolved.status === 'pending' ? [resolved] : [])
-        upsertDesktopDbRecord(desktopSessionsCollection, {
-          ...existing,
-          pendingPermissions: nextPermissions,
-          pendingPermissionCount: countApprovalRequiredPermissions(nextPermissions, existing.mode),
-        })
-      }
       const savedRulePreview = resolved.savedRule
         ? [resolved.savedRule.decision, resolved.savedRule.kind === 'bash_prefix' ? 'bash prefix:' : resolved.savedRule.kind === 'phrase' ? 'phrase:' : 'tool:', resolved.savedRule.kind === 'phrase' ? (resolved.savedRule.pattern || '') : resolved.savedRule.kind === 'bash_prefix' ? (resolved.savedRule.pattern || '') : (resolved.savedRule.tool || '')].filter(Boolean).join(' ')
         : null

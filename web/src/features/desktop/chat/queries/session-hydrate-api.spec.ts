@@ -241,6 +241,7 @@ function v3WorksetPayload(sessionIds: string[]) {
 
   return {
     ok: true,
+    rev: 1,
     sessions_by_id: sessionsById,
     projections_by_session: projectionsBySession,
     messages_by_session: messagesBySession,
@@ -517,20 +518,25 @@ test('Desktop V3 preference, mode, agent, metadata, and plan mutations use V3 se
     assert.equal(planSnapshot.activePlan?.id, 'plan-1')
     assert.deepEqual(requestUrls(calls), [
       '/v3/sessions/session-config/mode',
+      '/v3/sessions:workset',
       '/v3/sessions/session-config/preference',
+      '/v3/sessions:workset',
       '/v3/sessions/session-config/agent',
+      '/v3/sessions:workset',
       '/v3/sessions/session-config/metadata',
+      '/v3/sessions:workset',
       '/v3/sessions/session-config/plans',
+      '/v3/sessions:workset',
     ])
-    assert.equal(JSON.parse(String(calls[2].init?.body ?? '{}')).agent_name, 'explorer')
+    assert.equal(JSON.parse(String(calls[4].init?.body ?? '{}')).agent_name, 'explorer')
     assert.equal(calls[0].init?.method, 'POST')
-    assert.equal(calls[1].init?.method, 'POST')
     assert.equal(calls[2].init?.method, 'POST')
-    assert.equal(calls[3].init?.method, 'POST')
     assert.equal(calls[4].init?.method, 'POST')
+    assert.equal(calls[6].init?.method, 'POST')
+    assert.equal(calls[8].init?.method, 'POST')
     assertNoV1OrV2SessionDataCalls(calls)
-    assert.equal(queryClient.getQueryData<{ session: { id: string; mode: string } }>(desktopDBSessionSnapshotQueryKey('session-config'))?.session.mode, 'plan')
-    assert.equal(queryClient.getQueryData<{ preference: { model: string } }>(sessionPreferenceQueryKey('session-config'))?.preference.model, 'gpt-5.4')
+    assert.equal(queryClient.getQueryData<{ session: { id: string; mode: string } }>(desktopDBSessionSnapshotQueryKey('session-config'))?.session.mode, undefined)
+    assert.equal(queryClient.getQueryData<{ preference: { model: string } }>(sessionPreferenceQueryKey('session-config'))?.preference.model, undefined)
   })
 
   queryClient.clear()
