@@ -369,6 +369,7 @@ func (s *Service) storeProviderManagedToolResultV3(config providerToolInvokerCon
 		return fmt.Errorf("marshal v3 provider tool result record: %w", err)
 	}
 	now := time.Now().UnixMilli()
+	eventType := providerManagedV3ToolTerminalEventType(result)
 	message := pebblestore.MessageSnapshot{
 		ID:        providerManagedV3ToolMessageID(config.sessionID, config.runID, config.step, call.CallID),
 		Role:      "tool",
@@ -376,12 +377,12 @@ func (s *Service) storeProviderManagedToolResultV3(config providerToolInvokerCon
 		CreatedAt: now,
 		Metadata:  messageMetadata,
 	}
-	payloadHash, err := providerManagedV3ToolPayloadHash(config.sessionID, config.runID, config.step, call, messageMetadata, result, content)
+	payloadHash, err := providerManagedV3ToolPayloadHash(eventType, config.sessionID, config.runID, config.step, call, messageMetadata, result, content)
 	if err != nil {
 		return err
 	}
 	clientRequestID := providerManagedV3ToolClientRequestID(config.runID, config.step, call.CallID)
-	eventPayload, err := providerManagedV3ToolEventPayload("session.tool.completed", config, call, metadata, result)
+	eventPayload, err := providerManagedV3ToolEventPayload(eventType, config, call, metadata, result, now)
 	if err != nil {
 		return err
 	}
@@ -398,7 +399,7 @@ func (s *Service) storeProviderManagedToolResultV3(config providerToolInvokerCon
 		PayloadHash:     payloadHash,
 		RequestHash:     payloadHash,
 		Kind:            sessionruntime.SessionMutationAppendMessage,
-		EventType:       "session.tool.completed",
+		EventType:       eventType,
 		EventPayload:    eventPayload,
 		Message:         &message,
 		NowUnixMs:       now,
@@ -412,7 +413,7 @@ func (s *Service) storeProviderManagedToolResultV3(config providerToolInvokerCon
 	return nil
 }
 
-func providerManagedV3ToolEventPayload(eventType string, config providerToolInvokerConfig, call tool.Call, metadata map[string]any, result tool.Result) (json.RawMessage, error) {
+func providerManagedV3ToolEventPayload(eventType string, config providerToolInvokerConfig, call tool.Call, metadata map[string]any, result tool.Result, recordedAt int64) (json.RawMessage, error) {
 	step := config.step
 	if step <= 0 {
 		step = 1
@@ -427,9 +428,13 @@ func providerManagedV3ToolEventPayload(eventType string, config providerToolInvo
 		"tool_name":        strings.TrimSpace(firstNonEmptyString(result.Name, call.Name, "tool")),
 		"call_id":          callID,
 		"tool_instance_id": toolInstanceID,
+		"recorded_at":      recordedAt,
 	}
 	if eventType = strings.TrimSpace(eventType); eventType != "" {
 		payload["type"] = eventType
+	}
+	if status := providerManagedV3ToolTerminalStatusForEventType(eventType); status != "" {
+		payload["status"] = status
 	}
 	if args := strings.TrimSpace(call.Arguments); args != "" {
 		payload["arguments"] = args
@@ -450,6 +455,30 @@ func providerManagedV3ToolEventPayload(eventType string, config providerToolInvo
 		payload["metadata"] = cloneGenericMap(metadata)
 	}
 	return json.Marshal(payload)
+}
+
+func providerManagedV3ToolTerminalEventType(result tool.Result) string {
+	errText := strings.ToLower(strings.TrimSpace(result.Error))
+	if errText == "" {
+		return "session.tool.completed"
+	}
+	if strings.Contains(errText, "context canceled") || strings.Contains(errText, "context cancelled") {
+		return "session.tool.cancelled"
+	}
+	return "session.tool.failed"
+}
+
+func providerManagedV3ToolTerminalStatusForEventType(eventType string) string {
+	switch strings.TrimSpace(eventType) {
+	case "session.tool.completed":
+		return "completed"
+	case "session.tool.failed":
+		return "failed"
+	case "session.tool.cancelled", "session.tool.canceled":
+		return "cancelled"
+	default:
+		return ""
+	}
 }
 
 func providerManagedV3ToolMessageMetadata(config providerToolInvokerConfig, call tool.Call, metadata map[string]any, result tool.Result) map[string]any {
@@ -504,9 +533,14 @@ func providerManagedV3ToolMessageID(sessionID, runID string, step int, callID st
 	return "v3msg_tool_" + hex.EncodeToString(sum[:16])
 }
 
-func providerManagedV3ToolPayloadHash(sessionID, runID string, step int, call tool.Call, metadata map[string]any, result tool.Result, content string) (string, error) {
+func providerManagedV3ToolPayloadHash(eventType, sessionID, runID string, step int, call tool.Call, metadata map[string]any, result tool.Result, content string) (string, error) {
+	eventType = strings.TrimSpace(eventType)
+	if eventType == "" {
+		eventType = "session.tool.completed"
+	}
 	canonical := struct {
 		Operation string         `json:"operation"`
+		EventType string         `json:"event_type"`
 		SessionID string         `json:"session_id"`
 		RunID     string         `json:"run_id"`
 		Step      int            `json:"step"`
@@ -518,7 +552,8 @@ func providerManagedV3ToolPayloadHash(sessionID, runID string, step int, call to
 		Error     string         `json:"error,omitempty"`
 		Content   string         `json:"content"`
 	}{
-		Operation: "v3.provider.tool.completed",
+		Operation: "v3.provider.tool.terminal",
+		EventType: eventType,
 		SessionID: strings.TrimSpace(sessionID),
 		RunID:     strings.TrimSpace(runID),
 		Step:      step,

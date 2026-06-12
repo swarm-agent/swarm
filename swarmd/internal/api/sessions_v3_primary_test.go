@@ -2183,6 +2183,73 @@ func TestSessionsV3PrimaryStreamCapturesRealProviderMultiToolLoopContinuity(t *t
 	sessionsV3AssertStreamStillOpenAfterCompletion(t, conn)
 }
 
+func TestSessionsV3PrimaryToolFailurePersistsDurableTerminalEvent(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := t.TempDir()
+	runner := &sessionsV3RecordingProviderRunner{responses: []provideriface.Response{
+		{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-read-missing", Name: "read", Arguments: `{"path":"missing.txt"}`}}},
+		{Text: "final answer after failed tool"},
+	}}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	runSvc := runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, nil, nil)
+	server.runner = runSvc
+	server.SetBypassPermissions(true)
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"read": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
+		t.Fatalf("upsert read-enabled swarm agent: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, withTestPrincipal(r))
+	}))
+	defer httpServer.Close()
+
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "tool-failure-create", "tool failure", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	snapshotCursor := hydrateV3RealtimeSnapshotEndpointCursor(t, server, created.ID)
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "tool-failure-message", "read a missing file then answer")
+	waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
+
+	conn := dialV3RealtimeStreamWithQuery(t, httpServer.URL, "endpoint_cursor="+snapshotCursor+"&sessions="+created.ID)
+	defer conn.Close()
+	startedReplay := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, startedReplay, V3RealtimeKindReplayStart, created.ID, 0)
+	seen := make(map[string]int)
+	for {
+		frame := readV3RealtimeFrame(t, conn)
+		if frame.Kind == V3RealtimeKindReplayDone {
+			break
+		}
+		if frame.Kind != V3RealtimeKindEvent || frame.Event == nil {
+			continue
+		}
+		eventType := strings.TrimSpace(frame.Event.EventType)
+		seen[eventType]++
+		if eventType == "session.tool.failed" {
+			var payload map[string]any
+			if err := json.Unmarshal(frame.Event.Payload, &payload); err != nil {
+				t.Fatalf("decode failed tool payload: %v", err)
+			}
+			if payload["run_id"] == "" || payload["tool_name"] != "read" || payload["call_id"] != "call-read-missing" || payload["step_id"] != "step-1" || payload["tool_instance_id"] != "step-1:call-read-missing" || payload["status"] != "failed" || payload["recorded_at"] == nil || strings.TrimSpace(fmt.Sprint(payload["error"])) == "" {
+				t.Fatalf("failed tool payload = %+v", payload)
+			}
+		}
+	}
+	if seen["session.tool.started"] != 1 || seen["session.tool.failed"] != 1 || seen["session.tool.completed"] != 0 {
+		t.Fatalf("tool lifecycle counts = %+v, want one started and one failed terminal only", seen)
+	}
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 80)
+	if err != nil {
+		t.Fatalf("list events after failed tool: %v", err)
+	}
+	sessionsV3AssertToolIdentity(t, events, "session.tool.started")
+	sessionsV3AssertToolIdentity(t, events, "session.tool.failed")
+}
+
 func TestSessionsV3PrimaryStreamDisambiguatesReusedProviderToolCallIDs(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	workspace := t.TempDir()

@@ -188,22 +188,28 @@ func validateV3RealtimeEventMessage(message V3RealtimeMessage) error {
 		return errors.New("v3 realtime event requires durable event payload")
 	}
 	if strings.HasPrefix(message.Event.EventType, "session.tool.") {
-		if err := validateV3RealtimeToolIdentity(message.Event.Payload); err != nil {
+		if err := validateV3RealtimeToolIdentity(message.Event.EventType, message.Event.Payload); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func validateV3RealtimeToolIdentity(raw json.RawMessage) error {
+func validateV3RealtimeToolIdentity(eventType string, raw json.RawMessage) error {
 	var payload map[string]any
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return fmt.Errorf("decode v3 realtime tool payload: %w", err)
 	}
-	for _, key := range []string{"run_id", "step_id", "call_id", "tool_instance_id"} {
+	for _, key := range []string{"run_id", "step_id", "call_id", "tool_instance_id", "tool_name", "recorded_at"} {
 		value, ok := payload[key]
 		if !ok || strings.TrimSpace(fmt.Sprint(value)) == "" {
 			return fmt.Errorf("v3 realtime tool event requires %s", key)
+		}
+	}
+	eventType = strings.TrimSpace(eventType)
+	if eventType == "session.tool.completed" || eventType == "session.tool.failed" || eventType == "session.tool.cancelled" || eventType == "session.tool.canceled" {
+		if strings.TrimSpace(fmt.Sprint(payload["status"])) == "" {
+			return errors.New("v3 realtime terminal tool event requires status")
 		}
 	}
 	return nil

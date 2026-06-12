@@ -175,7 +175,7 @@ func TestV3RealtimeSourceGuardRejectsOldTransportDependencies(t *testing.T) {
 
 func validV3RealtimeEventMessage(t *testing.T) V3RealtimeMessage {
 	t.Helper()
-	payload := json.RawMessage(`{"kind":"message","run_id":"run-1","step_id":"step-1","call_id":"call-1","tool_instance_id":"tool-1"}`)
+	payload := json.RawMessage(`{"kind":"message","run_id":"run-1","step_id":"step-1","call_id":"call-1","tool_instance_id":"tool-1","tool_name":"read","recorded_at":1234}`)
 	return V3RealtimeMessage{
 		Protocol:         V3RealtimeProtocol,
 		ProtocolVersion:  V3RealtimeProtocolVersion,

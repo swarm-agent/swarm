@@ -499,6 +499,7 @@ func (e *sessionV3Executor) recordReasoningToolEvent(job sessionV3ExecutorJob, e
 	stepID := sessionV3ProviderToolStepID(step)
 	toolInstanceID := sessionV3ProviderToolInstanceID(step, callID)
 	metadata := sessionV3ReasoningToolMetadata(job, step, reasoningKey)
+	now := time.Now().UnixMilli()
 	payload := map[string]any{
 		"path_id":          "run.v3.provider-tool-result.v1",
 		"type":             sessionV3ReasoningToolType,
@@ -510,6 +511,7 @@ func (e *sessionV3Executor) recordReasoningToolEvent(job sessionV3ExecutorJob, e
 		"tool_instance_id": toolInstanceID,
 		"arguments":        sessionV3ReasoningToolArguments(reasoningKey),
 		"metadata":         metadata,
+		"recorded_at":      now,
 		"summary":          "THINKING",
 	}
 	if output != "" {
@@ -519,6 +521,9 @@ func (e *sessionV3Executor) recordReasoningToolEvent(job sessionV3ExecutorJob, e
 		payload["raw_output"] = rawOutput
 		payload["completed_output"] = rawOutput
 	}
+	if eventType == "session.tool.completed" {
+		payload["status"] = "completed"
+	}
 	if eventIndex > 0 && eventType == "session.tool.delta" {
 		payload["delta_index"] = eventIndex
 	}
@@ -526,7 +531,6 @@ func (e *sessionV3Executor) recordReasoningToolEvent(job sessionV3ExecutorJob, e
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, err
 	}
-	now := time.Now().UnixMilli()
 	intent := pebblestore.V3SessionRunIntent{RunID: job.RunID, Status: sessionruntime.RunIntentRunning, UpdatedAt: now}
 	contentForHash := string(raw)
 	payloadHash, err := sessionV3ExecutorPayloadHash(job.SessionID, job.RunID, sessionruntime.RunIntentRunning, "", eventType, contentForHash)
@@ -1478,6 +1482,7 @@ func (e *sessionV3Executor) recordProviderToolEvent(job sessionV3ExecutorJob, ev
 	}
 	stepID := sessionV3ProviderToolStepID(step)
 	toolInstanceID := sessionV3ProviderToolInstanceID(step, callID)
+	now := time.Now().UnixMilli()
 	payload := map[string]any{
 		"run_id":           strings.TrimSpace(job.RunID),
 		"step":             step,
@@ -1485,6 +1490,7 @@ func (e *sessionV3Executor) recordProviderToolEvent(job sessionV3ExecutorJob, ev
 		"tool_name":        toolName,
 		"call_id":          callID,
 		"tool_instance_id": toolInstanceID,
+		"recorded_at":      now,
 	}
 	if eventType == "permission.requested" || eventType == "permission.updated" {
 		payload["type"] = eventType
@@ -1511,6 +1517,9 @@ func (e *sessionV3Executor) recordProviderToolEvent(job sessionV3ExecutorJob, ev
 	if deltaIndex > 0 {
 		payload["delta_index"] = deltaIndex
 	}
+	if status := sessionV3ProviderToolEventStatus(eventType); status != "" {
+		payload["status"] = status
+	}
 	if len(event.Metadata) > 0 {
 		payload["metadata"] = cloneSessionsV3Metadata(event.Metadata)
 	}
@@ -1524,7 +1533,6 @@ func (e *sessionV3Executor) recordProviderToolEvent(job sessionV3ExecutorJob, ev
 		return err
 	}
 	clientRequestID := sessionV3ProviderToolEventClientRequestID(eventType, job.RunID, step, callID, deltaIndex)
-	now := time.Now().UnixMilli()
 	intent := pebblestore.V3SessionRunIntent{RunID: job.RunID, Status: sessionruntime.RunIntentRunning, UpdatedAt: now}
 	_, err = e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       job.SessionID,
@@ -2162,6 +2170,21 @@ func sessionV3ProviderToolInstanceID(step int, callID string) string {
 		callID = "tool_call"
 	}
 	return sessionV3ProviderToolStepID(step) + ":" + callID
+}
+
+func sessionV3ProviderToolEventStatus(eventType string) string {
+	switch strings.TrimSpace(eventType) {
+	case "session.tool.started":
+		return "started"
+	case "session.tool.completed":
+		return "completed"
+	case "session.tool.failed":
+		return "failed"
+	case "session.tool.cancelled", "session.tool.canceled":
+		return "cancelled"
+	default:
+		return ""
+	}
 }
 
 func sessionV3ProviderToolEventClientRequestID(eventType, runID string, step int, callID string, deltaIndex int) string {
