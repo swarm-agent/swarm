@@ -203,3 +203,78 @@ test('sidebar active sort keeps active DB sessions pinned above recent idle rows
 
   assert.equal(compareSidebarSessions(active, recentIdle, 20_500) < 0, true)
 })
+
+test('sidebar stopped sort keeps active rows above a newly stopped long session', () => {
+  const active = makeSession('active', {
+    updatedAt: 40_000,
+    createdAt: 30_000,
+    live: {
+      ...makeSession('base').live,
+      status: 'running',
+      runId: 'run-active',
+      startedAt: 30_000,
+      lastEventAt: 40_000,
+    },
+  })
+  const stoppedLongSession = makeSession('stopped-long', {
+    updatedAt: 100_000,
+    createdAt: 1_000,
+    lifecycle: {
+      sessionId: 'stopped-long',
+      runId: 'run-stopped-long',
+      active: false,
+      phase: 'stopped',
+      startedAt: 1_000,
+      endedAt: 100_000,
+      updatedAt: 100_000,
+      generation: 1,
+      stopReason: 'completed',
+      error: null,
+      ownerTransport: null,
+    },
+    live: makeSession('base').live,
+  })
+
+  assert.equal(compareSidebarSessions(active, stoppedLongSession, 100_500) < 0, true)
+})
+
+test('sidebar stopped sort resolves long sessions by durable activity instead of start time', () => {
+  const stoppedLongSession = makeSession('stopped-long', {
+    updatedAt: 100_000,
+    createdAt: 1_000,
+    lifecycle: {
+      sessionId: 'stopped-long',
+      runId: 'run-stopped-long',
+      active: false,
+      phase: 'stopped',
+      startedAt: 1_000,
+      endedAt: 100_000,
+      updatedAt: 100_000,
+      generation: 1,
+      stopReason: 'completed',
+      error: null,
+      ownerTransport: null,
+    },
+    live: makeSession('base').live,
+  })
+  const previouslyNewerIdle = makeSession('previously-newer-idle', {
+    updatedAt: 90_000,
+    createdAt: 80_000,
+    lifecycle: {
+      sessionId: 'previously-newer-idle',
+      runId: 'run-previously-newer-idle',
+      active: false,
+      phase: 'stopped',
+      startedAt: 80_000,
+      endedAt: 90_000,
+      updatedAt: 90_000,
+      generation: 1,
+      stopReason: 'completed',
+      error: null,
+      ownerTransport: null,
+    },
+    live: makeSession('base').live,
+  })
+
+  assert.equal(compareSidebarSessions(stoppedLongSession, previouslyNewerIdle, 130_000) < 0, true)
+})

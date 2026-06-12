@@ -14,8 +14,9 @@ func TestPlanDocumentFromArgsAcceptsObjectAndJSONString(t *testing.T) {
 		"id":    "plan-object",
 		"title": "Object Plan",
 		"info": map[string]any{
-			"goal":             "object document",
-			"success_criteria": []any{"persist criteria"},
+			"goal":                "object document",
+			"success_criteria":    []any{"persist criteria"},
+			"validation_strategy": []any{"go test ./swarmd/internal/run", "go test ./swarmd/internal/session"},
 		},
 		"checkpoints": []any{map[string]any{"id": "cp-1", "title": "Object checkpoint"}},
 	}}, "exit_plan_mode")
@@ -25,14 +26,20 @@ func TestPlanDocumentFromArgsAcceptsObjectAndJSONString(t *testing.T) {
 	if objectDoc == nil || objectDoc.ID != "plan-object" || objectDoc.Info.SuccessCriteria[0] != "persist criteria" || len(objectDoc.Checkpoints) != 1 {
 		t.Fatalf("object document = %#v", objectDoc)
 	}
+	if objectDoc.Info.ValidationStrategy != "go test ./swarmd/internal/run; go test ./swarmd/internal/session" {
+		t.Fatalf("object validation_strategy = %q", objectDoc.Info.ValidationStrategy)
+	}
 
-	jsonDoc := `{"id":"plan-json","title":"JSON Plan","info":{"goal":"json document","success_criteria":["json criteria"]},"checkpoints":[{"id":"cp-1","title":"JSON checkpoint"}]}`
+	jsonDoc := `{"id":"plan-json","title":"JSON Plan","info":{"goal":"json document","success_criteria":["json criteria"],"validation":["json validation"]},"checkpoints":[{"id":"cp-1","title":"JSON checkpoint"}]}`
 	stringDoc, err := planDocumentFromArgsForTool(map[string]any{"document": jsonDoc}, "exit_plan_mode")
 	if err != nil {
 		t.Fatalf("parse JSON string document: %v", err)
 	}
 	if stringDoc == nil || stringDoc.ID != "plan-json" || stringDoc.Info.SuccessCriteria[0] != "json criteria" || len(stringDoc.Checkpoints) != 1 {
 		t.Fatalf("JSON string document = %#v", stringDoc)
+	}
+	if stringDoc.Info.ValidationStrategy != "json validation" {
+		t.Fatalf("JSON validation alias = %q", stringDoc.Info.ValidationStrategy)
 	}
 }
 

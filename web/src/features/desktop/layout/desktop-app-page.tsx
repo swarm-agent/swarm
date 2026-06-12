@@ -1050,7 +1050,10 @@ function sessionSidebarDisplayTimestamp(session: DesktopSessionRecord): number |
 }
 
 function sessionSidebarSortAnchor(session: DesktopSessionRecord): number {
-  return sessionStartedSortAnchor(session)
+  if (sessionIsActive(session)) {
+    return sessionStartedSortAnchor(session)
+  }
+  return sessionDurableActivityAt(session) || sessionStartedSortAnchor(session)
 }
 
 function sessionShouldPinInSidebar(session: DesktopSessionRecord, now: number): boolean {
@@ -1071,9 +1074,9 @@ export function compareSidebarSessions(left: DesktopSessionRecord, right: Deskto
     return leftPinned ? -1 : 1
   }
 
+  const leftActive = sessionIsActive(left)
+  const rightActive = sessionIsActive(right)
   if (leftPinned && rightPinned) {
-    const leftActive = sessionIsActive(left)
-    const rightActive = sessionIsActive(right)
     if (leftActive !== rightActive) {
       return leftActive ? -1 : 1
     }
@@ -1081,6 +1084,13 @@ export function compareSidebarSessions(left: DesktopSessionRecord, right: Deskto
     const anchorDelta = sessionSidebarSortAnchor(right) - sessionSidebarSortAnchor(left)
     if (anchorDelta !== 0) {
       return anchorDelta
+    }
+  }
+
+  if (!leftActive && !rightActive) {
+    const activityDelta = sessionSidebarSortAnchor(right) - sessionSidebarSortAnchor(left)
+    if (activityDelta !== 0) {
+      return activityDelta
     }
   }
 
