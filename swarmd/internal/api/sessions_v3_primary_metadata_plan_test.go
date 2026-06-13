@@ -40,7 +40,7 @@ func TestSessionsV3PrimaryMetadataUpdateUsesV3Mutation(t *testing.T) {
 	}
 }
 
-func TestSessionsV3PrimaryHydrateIncludesActivePlanAndHistory(t *testing.T) {
+func TestSessionsV3PrimaryHydrateOmitsActivePlanAndHistory(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "plan-create", "plan", pebblestore.ModelPreference{})
 
@@ -66,16 +66,76 @@ func TestSessionsV3PrimaryHydrateIncludesActivePlanAndHistory(t *testing.T) {
 
 	var hydrated struct {
 		HasActivePlan bool                              `json:"has_active_plan"`
-		ActivePlan    pebblestore.SessionPlanSnapshot   `json:"active_plan"`
+		ActivePlan    *pebblestore.SessionPlanSnapshot  `json:"active_plan"`
 		Revisions     []pebblestore.SessionPlanSnapshot `json:"plan_revisions"`
 	}
 	if err := json.Unmarshal(hydrateRec.Body.Bytes(), &hydrated); err != nil {
 		t.Fatalf("decode hydrate response: %v", err)
 	}
-	if !hydrated.HasActivePlan || hydrated.ActivePlan.ID == "" || hydrated.ActivePlan.Plan != "# Plan v2" {
-		t.Fatalf("active plan = %+v has=%v", hydrated.ActivePlan, hydrated.HasActivePlan)
+	if hydrated.HasActivePlan || hydrated.ActivePlan != nil || len(hydrated.Revisions) != 0 {
+		t.Fatalf("routine hydrate should omit plan payloads, got active=%+v has=%v revisions=%d", hydrated.ActivePlan, hydrated.HasActivePlan, len(hydrated.Revisions))
 	}
-	if len(hydrated.Revisions) == 0 {
-		t.Fatalf("plan revisions missing: %+v", hydrated.Revisions)
+
+	activeReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+created.ID+"/plans/active", nil)
+	activeRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(activeRec, withTestPrincipal(activeReq))
+	if activeRec.Code != http.StatusOK {
+		t.Fatalf("active plan status = %d, want %d, body=%s", activeRec.Code, http.StatusOK, activeRec.Body.String())
+	}
+	var active struct {
+		HasActivePlan bool                            `json:"has_active"`
+		ActivePlan    pebblestore.SessionPlanSnapshot `json:"active_plan"`
+	}
+	if err := json.Unmarshal(activeRec.Body.Bytes(), &active); err != nil {
+		t.Fatalf("decode active plan response: %v", err)
+	}
+	if !active.HasActivePlan || active.ActivePlan.ID == "" || active.ActivePlan.Plan != "# Plan v2" {
+		t.Fatalf("active plan dedicated response = %+v has=%v", active.ActivePlan, active.HasActivePlan)
+	}
+
+	historyReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+created.ID+"/plans/"+active.ActivePlan.ID+"/history?limit=100", nil)
+	historyRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(historyRec, withTestPrincipal(historyReq))
+	if historyRec.Code != http.StatusOK {
+		t.Fatalf("plan history status = %d, want %d, body=%s", historyRec.Code, http.StatusOK, historyRec.Body.String())
+	}
+	var history struct {
+		Revisions []pebblestore.SessionPlanSnapshot `json:"revisions"`
+	}
+	if err := json.Unmarshal(historyRec.Body.Bytes(), &history); err != nil {
+		t.Fatalf("decode history response: %v", err)
+	}
+	if len(history.Revisions) == 0 {
+		t.Fatalf("plan revisions missing from dedicated history response: %+v", history.Revisions)
+	}
+}
+
+func TestSessionsV3PrimaryPlanSaveReturnsPlanDeltaOnly(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "plan-save-create", "plan save", pebblestore.ModelPreference{})
+
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/plans", bytes.NewBufferString(`{"title":"Current Plan","plan":"# Plan"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("plan save status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		Plan                pebblestore.SessionPlanSnapshot   `json:"plan"`
+		Session             *pebblestore.SessionSnapshot      `json:"session"`
+		Messages            []pebblestore.MessageSnapshot     `json:"messages"`
+		PlanRevisions       []pebblestore.SessionPlanSnapshot `json:"plan_revisions"`
+		PlanRevisionsBySess map[string]any                    `json:"plan_revisions_by_session"`
+		PlansBySess         map[string]any                    `json:"plans_by_session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode plan save response: %v", err)
+	}
+	if payload.Plan.ID == "" || payload.Plan.Plan != "# Plan" {
+		t.Fatalf("plan save response plan = %+v", payload.Plan)
+	}
+	if payload.Session != nil || payload.Messages != nil || payload.PlanRevisions != nil || payload.PlanRevisionsBySess != nil || payload.PlansBySess != nil {
+		t.Fatalf("plan save should return changed plan delta only, got body=%s", rec.Body.String())
 	}
 }

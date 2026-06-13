@@ -1,7 +1,8 @@
 import { apiFetch, readErrorMessage } from '../../../app/api'
 import { dedupeAndTrimMessages } from '../chat/services/message-cache'
+import { normalizeDesktopSessionPlan, normalizeDesktopSessionPlanRevisions, type DesktopSessionPlanWire } from '../chat/services/session-plan-record'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
-import type { AgentModelPolicyRecord, ChatMessageRecord, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord, ResolvedSessionPreference, SessionPreferenceRecord } from '../chat/types/chat'
+import type { AgentModelPolicyRecord, ChatMessageRecord, DesktopSessionPlanRevisionRecord, ResolvedSessionPreference, SessionPreferenceRecord } from '../chat/types/chat'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import type { DesktopPermissionRecord, DesktopRunIntentRecord, DesktopSessionRecord, DesktopSessionUsageRecord } from '../types/realtime'
 import type { DesktopDaemonSnapshot, DesktopSessionReadinessRecord, DesktopWorkspaceRecord } from './desktop-state'
@@ -170,24 +171,6 @@ interface RunIntentWire {
   event_seq?: number
 }
 
-interface PlanWire {
-  id?: string
-  title?: string
-  plan?: string
-  status?: string
-  approval_state?: string
-  updated_at?: number
-  created_at?: number
-  version?: number
-  prior_title?: string
-  prior_plan?: string
-  diff_lines?: unknown[]
-  update_summary?: string
-  update_scope?: string
-  update_kind?: string
-  parent_revision?: number
-  checkpoint?: boolean
-}
 
 interface DesktopStateWorksetResponseWire {
   rev?: number
@@ -195,8 +178,8 @@ interface DesktopStateWorksetResponseWire {
   sessions_by_id?: Record<string, SessionWire>
   messages_by_session?: Record<string, MessageWire[]>
   permissions_by_session?: Record<string, PermissionWire[]>
-  plans_by_session?: Record<string, PlanWire | PlanWire[] | null>
-  plan_revisions_by_session?: Record<string, PlanWire[]>
+  plans_by_session?: Record<string, DesktopSessionPlanWire | DesktopSessionPlanWire[] | null>
+  plan_revisions_by_session?: Record<string, DesktopSessionPlanWire[]>
   usage_by_session?: Record<string, UsageWire>
   preferences_by_session?: Record<string, ResolvedPreferenceWire | PreferenceWire>
   agent_model_policy_by_session?: Record<string, AgentModelPolicyWire | null>
@@ -284,7 +267,7 @@ export function normalizeDesktopStateSnapshot(response: DesktopStateWorksetRespo
     sessionOrder,
     messagesBySessionId: mapMessagesBySession(response.messages_by_session),
     permissionsById: permissionsById(permissionsBySessionId),
-    plansBySessionId: mapFirstSessionValues(response.plans_by_session, mapPlan),
+    plansBySessionId: mapFirstSessionValues(response.plans_by_session, normalizeDesktopSessionPlan),
     planRevisionsBySessionId: mapPlanRevisions(response.plan_revisions_by_session),
     usageBySessionId: mapUsageBySession(response.usage_by_session),
     runIntentsBySessionId: latestRunIntentBySessionId(response.run_intents_by_session),
@@ -589,39 +572,10 @@ function mapFirstSessionValues<T, R>(source: Record<string, T | T[] | null> | un
   return values
 }
 
-function mapPlan(plan: PlanWire): DesktopSessionPlanRecord {
-  return {
-    id: String(plan.id ?? '').trim(),
-    title: String(plan.title ?? '').trim(),
-    plan: String(plan.plan ?? ''),
-    document: null,
-    status: String(plan.status ?? '').trim(),
-    approvalState: String(plan.approval_state ?? '').trim(),
-    updatedAt: numberValue(plan.updated_at),
-  }
-}
-
-function mapPlanRevisions(source: Record<string, PlanWire[]> | undefined): Record<string, DesktopSessionPlanRevisionRecord[]> {
+function mapPlanRevisions(source: Record<string, DesktopSessionPlanWire[]> | undefined): Record<string, DesktopSessionPlanRevisionRecord[]> {
   const revisionsBySession: Record<string, DesktopSessionPlanRevisionRecord[]> = {}
   for (const [sessionId, revisions] of Object.entries(source ?? {})) {
-    revisionsBySession[sessionId] = (revisions ?? []).map((revision, index) => {
-      const plan = mapPlan(revision)
-      const version = numberValue(revision.version)
-      return {
-        ...plan,
-        key: `${plan.id || 'plan'}:${version}:${index}`,
-        createdAt: numberValue(revision.created_at),
-        priorTitle: String(revision.prior_title ?? ''),
-        priorPlan: String(revision.prior_plan ?? ''),
-        diffLines: Array.isArray(revision.diff_lines) ? revision.diff_lines.map((line) => String(line)) : [],
-        updateSummary: String(revision.update_summary ?? '').trim(),
-        updateScope: String(revision.update_scope ?? '').trim(),
-        updateKind: String(revision.update_kind ?? '').trim(),
-        version,
-        parentRevision: numberValue(revision.parent_revision),
-        checkpoint: Boolean(revision.checkpoint),
-      }
-    })
+    revisionsBySession[sessionId] = normalizeDesktopSessionPlanRevisions(revisions)
   }
   return revisionsBySession
 }

@@ -24,6 +24,8 @@ const (
 	sessionsV3PrimaryDefaultEventLimit       = 0
 	sessionsV3MessagesPageDefaultLimit       = 200
 	sessionsV3MessagesPageMaxLimit           = 200
+	sessionsV3PlansPageDefaultLimit          = 100
+	sessionsV3PlansPageMaxLimit              = 100
 )
 
 // V3 primary write handlers delegate through the ApplySessionMutation boundary.
@@ -874,7 +876,7 @@ func (s *Server) handleSessionV3PrimaryPlans(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if r.Method == http.MethodGet {
-		limit, ok := parseSessionsV2PositiveLimit(w, r, 100)
+		limit, ok := parseSessionsV3PlansLimit(w, r)
 		if !ok {
 			return
 		}
@@ -920,14 +922,7 @@ func (s *Server) handleSessionV3PrimaryPlans(w http.ResponseWriter, r *http.Requ
 	if event != nil && s.hub != nil {
 		s.hub.Publish(*event)
 	}
-	refreshed, _, err := s.hydrateSessionsV3Primary(principal, sessionID)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	response := sessionsV3HydratedResponse(refreshed)
-	response["plan"] = plan
-	writeJSON(w, http.StatusOK, response)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "plan": plan})
 }
 
 func (s *Server) handleSessionV3PrimaryPlanByID(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, tail string) {
@@ -948,7 +943,7 @@ func (s *Server) handleSessionV3PrimaryPlanByID(w http.ResponseWriter, r *http.R
 			writeError(w, http.StatusBadRequest, errors.New("plan id is required"))
 			return
 		}
-		limit, ok := parseSessionsV2PositiveLimit(w, r, 100)
+		limit, ok := parseSessionsV3PlansLimit(w, r)
 		if !ok {
 			return
 		}
@@ -1337,19 +1332,7 @@ func (s *Server) hydrateSessionsV3PrimaryWithLimits(principal identity.Principal
 		contextWindow = agentModelPolicy.ContextWindow
 		maxOutputTokens = agentModelPolicy.MaxOutputTokens
 	}
-	activePlan, hasActivePlan, err := s.sessions.GetActivePlan(sessionID)
-	if err != nil {
-		return sessionsV3HydratedSession{}, false, err
-	}
-	planRevisions := []pebblestore.SessionPlanSnapshot{}
-	if hasActivePlan && strings.TrimSpace(activePlan.ID) != "" {
-		revisions, err := s.sessions.ListPlanRevisions(sessionID, activePlan.ID, 100)
-		if err != nil {
-			return sessionsV3HydratedSession{}, false, err
-		}
-		planRevisions = revisions
-	}
-	return sessionsV3HydratedSession{Session: hydrated.Session, Projection: hydrated.Projection, Messages: hydrated.Messages, Events: hydrated.Events, PendingPermissions: pendingPermissions, UsageSummary: usageSummary, ActiveRunIntent: activeRunIntent, Preference: preference, ContextWindow: contextWindow, MaxOutputTokens: maxOutputTokens, AgentModelPolicy: agentModelPolicy, HasActivePlan: hasActivePlan, ActivePlan: activePlan, PlanRevisions: planRevisions, AppliedSeq: hydrated.Projection.LastEventSeq, HighWatermark: hydrated.Projection.ProjectionHighWatermarkSeq, SnapshotEndpointCursor: hydrated.SnapshotEndpointCursor}, true, nil
+	return sessionsV3HydratedSession{Session: hydrated.Session, Projection: hydrated.Projection, Messages: hydrated.Messages, Events: hydrated.Events, PendingPermissions: pendingPermissions, UsageSummary: usageSummary, ActiveRunIntent: activeRunIntent, Preference: preference, ContextWindow: contextWindow, MaxOutputTokens: maxOutputTokens, AgentModelPolicy: agentModelPolicy, PlanRevisions: []pebblestore.SessionPlanSnapshot{}, AppliedSeq: hydrated.Projection.LastEventSeq, HighWatermark: hydrated.Projection.ProjectionHighWatermarkSeq, SnapshotEndpointCursor: hydrated.SnapshotEndpointCursor}, true, nil
 }
 
 func (s *Server) sessionsV3AgentModelPolicy(session pebblestore.SessionSnapshot, defaultPreference pebblestore.ModelPreference, defaultContextWindow, defaultMaxOutputTokens int) sessionsV3AgentModelPolicy {
@@ -1470,6 +1453,18 @@ func parseSessionsV3PrimaryPath(path string) (string, string, bool) {
 		return sessionID, "", true
 	}
 	return sessionID, strings.Join(parts[1:], "/"), true
+}
+
+func parseSessionsV3PlansLimit(w http.ResponseWriter, r *http.Request) (int, bool) {
+	limit, ok := parseSessionsV2PositiveLimit(w, r, sessionsV3PlansPageDefaultLimit)
+	if !ok {
+		return 0, false
+	}
+	if limit > sessionsV3PlansPageMaxLimit {
+		writeError(w, http.StatusBadRequest, errors.New("plan limit cannot exceed 100"))
+		return 0, false
+	}
+	return limit, true
 }
 
 func parseSessionsV3HydrationLimits(w http.ResponseWriter, r *http.Request) (int, int, bool) {

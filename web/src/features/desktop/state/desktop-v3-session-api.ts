@@ -1,6 +1,7 @@
 import { requestJson } from '../../../app/api'
 import { fetchSessionMessages, type FetchSessionMessagesResult } from '../chat/queries/chat-queries'
 import { dedupeAndTrimMessages } from '../chat/services/message-cache'
+import { normalizeDesktopSessionPlan, normalizeDesktopSessionPlanRevisions, type DesktopSessionPlanWire } from '../chat/services/session-plan-record'
 import type {
   AgentModelPolicyRecord,
   ChatMessageRecord,
@@ -42,6 +43,19 @@ interface HydratedSessionResponseWire {
   session?: unknown
 }
 
+interface ActivePlanResponseWire {
+  has_active?: boolean
+  active_plan?: DesktopSessionPlanWire | null
+}
+
+interface PlanSaveResponseWire {
+  plan?: DesktopSessionPlanWire | null
+}
+
+interface PlanHistoryResponseWire {
+  revisions?: DesktopSessionPlanWire[]
+}
+
 export function assertRawCanonicalDesktopV3SessionId(sessionId: string): string {
   const normalizedSessionId = sessionId.trim()
   if (!normalizedSessionId) {
@@ -73,6 +87,44 @@ export function desktopV3SessionSnapshotFromState(state: DesktopState, sessionId
     appliedSeq,
     highWatermark,
     hydratedAt: Date.now(),
+  }
+}
+
+export async function fetchAndApplyDesktopV3PlanSnapshot(
+  sessionId: string,
+  options: { signal?: AbortSignal; includeHistory?: boolean } = {},
+): Promise<Pick<DesktopV3SessionSnapshot, 'hasActivePlan' | 'activePlan' | 'planRevisions'>> {
+  const normalizedSessionId = assertRawCanonicalDesktopV3SessionId(sessionId)
+  const active = await requestJson<ActivePlanResponseWire>(
+    `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/plans/active`,
+    { signal: options.signal },
+  )
+  const activePlan = active.active_plan ? normalizeDesktopSessionPlan(active.active_plan) : null
+  let planRevisions: DesktopSessionPlanRevisionRecord[] = []
+  if (options.includeHistory !== false && activePlan?.id) {
+    const history = await requestJson<PlanHistoryResponseWire>(
+      `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/plans/${encodeURIComponent(activePlan.id)}/history?limit=100`,
+      { signal: options.signal },
+    )
+    planRevisions = normalizeDesktopSessionPlanRevisions(history.revisions)
+  }
+  const snapshot = getV3RuntimeDesktopSnapshot()
+  const receivedAt = Date.now()
+  applyV3RuntimeEnvelope(createV3SnapshotEnvelope({
+    rev: snapshot.rev,
+    plansBySessionId: { [normalizedSessionId]: activePlan },
+    planRevisionsBySessionId: { [normalizedSessionId]: planRevisions },
+  }, {
+    mode: 'merge',
+    receivedAt,
+    sessionId: normalizedSessionId,
+    source: { kind: 'http', transport: 'http', name: 'v3-session-plan' },
+    id: `plans:${normalizedSessionId}:${activePlan?.id ?? 'none'}:${planRevisions.length}:${receivedAt}`,
+  }))
+  return {
+    hasActivePlan: Boolean(active.has_active || activePlan?.id || activePlan?.plan || activePlan?.title),
+    activePlan,
+    planRevisions,
   }
 }
 
@@ -209,9 +261,9 @@ export async function saveDesktopV3SessionPlan(
     status?: string
     approvalState?: string
   },
-): Promise<DesktopV3SessionSnapshot> {
+): Promise<Pick<DesktopV3SessionSnapshot, 'hasActivePlan' | 'activePlan' | 'planRevisions'>> {
   const normalizedSessionId = assertRawCanonicalDesktopV3SessionId(sessionId)
-  await requestJson<HydratedSessionResponseWire>(
+  const response = await requestJson<PlanSaveResponseWire>(
     `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/plans`,
     {
       method: 'POST',
@@ -228,5 +280,18 @@ export async function saveDesktopV3SessionPlan(
       }),
     },
   )
-  return refreshSessionAfterMutation(normalizedSessionId)
+  const savedPlan = response.plan ? normalizeDesktopSessionPlan(response.plan) : null
+  const snapshot = getV3RuntimeDesktopSnapshot()
+  const receivedAt = Date.now()
+  applyV3RuntimeEnvelope(createV3SnapshotEnvelope({
+    rev: snapshot.rev,
+    plansBySessionId: { [normalizedSessionId]: savedPlan },
+  }, {
+    mode: 'merge',
+    receivedAt,
+    sessionId: normalizedSessionId,
+    source: { kind: 'http', transport: 'http', name: 'v3-session-plan-save' },
+    id: `plans:save:${normalizedSessionId}:${savedPlan?.id ?? 'none'}:${receivedAt}`,
+  }))
+  return fetchAndApplyDesktopV3PlanSnapshot(normalizedSessionId)
 }

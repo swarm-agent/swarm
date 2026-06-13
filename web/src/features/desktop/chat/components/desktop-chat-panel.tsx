@@ -18,7 +18,7 @@ import {
   startSessionRun,
   updateDraftModelPreference,
 } from '../queries/chat-queries'
-import { fetchAndApplyDesktopV3SessionMessagesTail, fetchAndApplyDesktopV3SessionSnapshot, saveDesktopV3SessionPlan, updateDesktopV3SessionAgent, updateDesktopV3SessionMetadata, updateDesktopV3SessionMode, updateDesktopV3SessionPreference } from '../../state/desktop-v3-session-api'
+import { fetchAndApplyDesktopV3PlanSnapshot, fetchAndApplyDesktopV3SessionMessagesTail, saveDesktopV3SessionPlan, updateDesktopV3SessionAgent, updateDesktopV3SessionMetadata, updateDesktopV3SessionMode, updateDesktopV3SessionPreference } from '../../state/desktop-v3-session-api'
 import type { AgentModelPolicyRecord, AgentProfileRecord, AgentStateRecord, ChatMessageRecord, ModelOptionRecord, ResolvedSessionPreference, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
 import type { DesktopLiveAssistantSegment, DesktopLiveToolRecord, DesktopSessionRecord } from '../../types/realtime'
 import { Card } from '../../../../components/ui/card'
@@ -2335,7 +2335,7 @@ export function DesktopChatPanel({
       revisions: dbPlanRevisions,
     })
     try {
-      const snapshot = await fetchAndApplyDesktopV3SessionSnapshot(sessionId)
+      const snapshot = await fetchAndApplyDesktopV3PlanSnapshot(sessionId)
       if (!snapshot) {
         setPlanModal((current) => ({ ...current, loading: false }))
         return
@@ -2357,7 +2357,7 @@ export function DesktopChatPanel({
         error: error instanceof Error ? error.message : 'Failed to load current plan',
       }))
     }
-  }, [dbPlan, dbPlanRevisions, queryClient, sessionId])
+  }, [dbPlan, dbPlanRevisions, sessionId])
 
   const handleThinkingTagsToggle = useCallback(async (enabled: boolean) => {
     if (thinkingTagsSaving) {

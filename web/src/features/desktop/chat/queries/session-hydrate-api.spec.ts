@@ -55,14 +55,38 @@ async function withFetchStub(
       return jsonResponse(payload)
     }
 
+    const v3ActivePlanMatch = /^\/v3\/sessions\/([^/?]+)\/plans\/active$/.exec(url)
+    if (v3ActivePlanMatch) {
+      const sessionId = decodeURIComponent(v3ActivePlanMatch[1])
+      return jsonResponse({
+        ok: true,
+        session_id: sessionId,
+        has_active: true,
+        active_plan: v3PlanPayload('plan-1'),
+      })
+    }
+
+    const v3PlanHistoryMatch = /^\/v3\/sessions\/([^/?]+)\/plans\/([^/?]+)\/history\?limit=100$/.exec(url)
+    if (v3PlanHistoryMatch) {
+      const sessionId = decodeURIComponent(v3PlanHistoryMatch[1])
+      const planId = decodeURIComponent(v3PlanHistoryMatch[2])
+      return jsonResponse({
+        ok: true,
+        session_id: sessionId,
+        plan_id: planId,
+        count: 1,
+        revisions: [v3PlanPayload(planId, 1)],
+      })
+    }
+
     const v3PlansMatch = /^\/v3\/sessions\/([^/?]+)\/plans$/.exec(url)
     if (v3PlansMatch) {
       const sessionId = decodeURIComponent(v3PlansMatch[1])
-      const payload = v3HydratedSessionPayload(sessionId)
-      if (sessionId === 'session-config') {
-        payload.session.mode = 'plan'
-      }
-      return jsonResponse(payload)
+      return jsonResponse({
+        ok: true,
+        session_id: sessionId,
+        plan: v3PlanPayload('plan-1'),
+      })
     }
 
     if (url === '/v3/sessions:workset') {
@@ -452,6 +476,7 @@ test('DesktopChatPanel uses V3-native preference and mode paths', async () => {
   const source = await readFile(new URL('../components/desktop-chat-panel.tsx', import.meta.url), 'utf8')
 
   assert.match(source, /fetchAndApplyDesktopV3SessionMessagesTail\(sessionId, \{ signal: controller\.signal \}\)/)
+  assert.match(source, /fetchAndApplyDesktopV3PlanSnapshot\(sessionId\)/)
   assert.match(source, /const loadingMessages = messagesLoading/)
   assert.match(source, /updateDesktopV3SessionMode\(sessionId, nextMode\)/)
   assert.match(source, /updateDesktopV3SessionPreference\(sessionId, normalizedNext\)/)
@@ -459,6 +484,7 @@ test('DesktopChatPanel uses V3-native preference and mode paths', async () => {
   assert.doesNotMatch(source, /currentMetadata\.subagent\s*=/)
   assert.match(source, /updateDesktopV3SessionMetadata\(sessionId, currentMetadata\)/)
   assert.match(source, /saveDesktopV3SessionPlan\(sessionId,/)
+  assert.doesNotMatch(source, /const snapshot = await fetchAndApplyDesktopV3SessionSnapshot\(sessionId\)/)
   assert.match(source, /from '\.\.\/\.\.\/state\/desktop-state-store'/)
   assert.match(source, /useDesktopPreference\(sessionId\)/)
   assert.match(source, /useDesktopMessages\(sessionId\)/)
@@ -586,6 +612,36 @@ test('Desktop V3 has no standalone permission list or usage subresource helpers'
   assert.doesNotMatch(source, /permissions\?status=pending/)
   assert.doesNotMatch(source, /\/usage`/)
 })
+
+test('Desktop V3 plan modal uses dedicated plan endpoints instead of workset hydration', async () => {
+  const { fetchAndApplyDesktopV3PlanSnapshot, saveDesktopV3SessionPlan } = await import('../../state/desktop-v3-session-api')
+
+  await withFetchStub(async (calls) => {
+    const planSnapshot = await fetchAndApplyDesktopV3PlanSnapshot('session-plan')
+
+    assert.equal(planSnapshot.hasActivePlan, true)
+    assert.equal(planSnapshot.activePlan?.id, 'plan-1')
+    assert.equal(planSnapshot.activePlan?.document?.info.goal, 'Ship V3 plan hydration')
+    assert.equal(planSnapshot.planRevisions.length, 1)
+    assert.deepEqual(requestUrls(calls), [
+      '/v3/sessions/session-plan/plans/active',
+      '/v3/sessions/session-plan/plans/plan-1/history?limit=100',
+    ])
+  })
+
+  await withFetchStub(async (calls) => {
+    const saved = await saveDesktopV3SessionPlan('session-plan', { id: 'plan-1', title: 'Current Plan', plan: '# Updated' })
+
+    assert.equal(saved.activePlan?.id, 'plan-1')
+    assert.deepEqual(requestUrls(calls), [
+      '/v3/sessions/session-plan/plans',
+      '/v3/sessions/session-plan/plans/active',
+      '/v3/sessions/session-plan/plans/plan-1/history?limit=100',
+    ])
+    assert.equal(calls[0]?.init?.method, 'POST')
+  })
+})
+
 
 test('Desktop routine workset hydration callers are metadata-only and never request unbounded full history', async () => {
   const files = [
