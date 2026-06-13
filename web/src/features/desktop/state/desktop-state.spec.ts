@@ -74,6 +74,10 @@ function replaceSnapshot(state: DesktopState, snapshot: DesktopDaemonSnapshot): 
   return desktopReducer(state, { type: 'snapshot/replace', snapshot })
 }
 
+function mergeSnapshot(state: DesktopState, snapshot: DesktopDaemonSnapshot): DesktopState {
+  return desktopReducer(state, { type: 'snapshot/merge', snapshot })
+}
+
 function applyEvent(state: DesktopState, event: DesktopDaemonEvent): DesktopState {
   return desktopReducer(state, { type: 'daemon/event', event })
 }
@@ -103,6 +107,25 @@ test('snapshot replacement sets state.rev, replaces old records, and clears stal
   assert.deepEqual(Object.keys(next.sessionsById), ['next'])
   assert.equal(next.messagesBySessionId.old, undefined)
   assert.equal(next.messagesBySessionId.next?.[0]?.id, 'next-message')
+})
+
+test('metadata-only snapshot merge preserves existing messages when backend omits history resources', () => {
+  const activeSession = session('active', 20)
+  const existing = replaceSnapshot(createEmptyDesktopState(), {
+    rev: 5,
+    sessionsById: { [activeSession.id]: activeSession },
+    sessionOrder: [activeSession.id],
+    messagesBySessionId: { [activeSession.id]: [message(activeSession.id, 'hot-message', 5)] },
+  })
+
+  const merged = mergeSnapshot(existing, {
+    rev: 6,
+    sessionsById: { [activeSession.id]: { ...activeSession, updatedAt: 21 } },
+    sessionOrder: [activeSession.id],
+    messagesBySessionId: { [activeSession.id]: [] },
+  })
+
+  assert.deepEqual(merged.messagesBySessionId.active?.map((record) => record.id), ['hot-message'])
 })
 
 test('snapshot replacement hydrates session usage for context badge projections', () => {

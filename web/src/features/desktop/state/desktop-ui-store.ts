@@ -1420,7 +1420,7 @@ function requestScopedSessionWorkset(sessionId: string, options: { force?: boole
   setTimeoutFn(() => {
     void fetchDesktopStateSnapshot({
       sessionIds: [normalizedSessionId],
-      history: { mode: 'full', maxEventsPerSession: 0, manifestPolicy: 'manifest', includeEvents: false },
+      history: { mode: 'none', maxEventsPerSession: 0, manifestPolicy: 'manifest', includeEvents: false },
     })
       .then((snapshot) => {
         applyV3RuntimeEnvelope(createV3SnapshotEnvelope(snapshot, { mode: 'merge', receivedAt: Date.now() }))

@@ -209,7 +209,7 @@ function mergeFromSnapshot(state: DesktopState, snapshot: DesktopDaemonSnapshot)
     lastError: null,
     sessionsById,
     sessionOrder: normalizeSessionOrder(sessionsById, mergeSessionOrder(state.sessionOrder, snapshot.sessionOrder)),
-    messagesBySessionId: mergeArrayRecord(state.messagesBySessionId, snapshot.messagesBySessionId),
+    messagesBySessionId: mergeNonEmptyArrayRecord(state.messagesBySessionId, snapshot.messagesBySessionId),
     permissionsById: {
       ...state.permissionsById,
       ...cloneRecord(snapshot.permissionsById),
@@ -1605,6 +1605,19 @@ function mergeArrayRecord<T>(current: Record<string, T[]>, incoming: Record<stri
     ...current,
     ...cloneArrayRecord(incoming),
   }
+}
+
+function mergeNonEmptyArrayRecord<T>(current: Record<string, T[]>, incoming: Record<string, T[]> | undefined): Record<string, T[]> {
+  if (!incoming) {
+    return current
+  }
+  const nonEmpty: Record<string, T[]> = {}
+  for (const [key, value] of Object.entries(incoming)) {
+    if (value.length > 0) {
+      nonEmpty[key] = value
+    }
+  }
+  return Object.keys(nonEmpty).length > 0 ? mergeArrayRecord(current, nonEmpty) : current
 }
 
 function mergeSessionValueRecord<T>(current: Record<string, T>, incoming: Record<string, T> | undefined, scopedSessionIds: string[]): Record<string, T> {

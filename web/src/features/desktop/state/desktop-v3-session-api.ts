@@ -76,7 +76,10 @@ export async function fetchAndApplyDesktopV3SessionSnapshot(
   options: { signal?: AbortSignal } = {},
 ): Promise<DesktopV3SessionSnapshot | null> {
   const normalizedSessionId = assertRawCanonicalDesktopV3SessionId(sessionId)
-  await mergeDesktopStateSnapshot({ sessionIds: [normalizedSessionId] }, options.signal)
+  await mergeDesktopStateSnapshot({
+    sessionIds: [normalizedSessionId],
+    history: { mode: 'none', maxEventsPerSession: 0, manifestPolicy: 'manifest', includeEvents: false },
+  }, options.signal)
   return desktopV3SessionSnapshotFromState(getV3RuntimeDesktopSnapshot(), normalizedSessionId)
 }
 

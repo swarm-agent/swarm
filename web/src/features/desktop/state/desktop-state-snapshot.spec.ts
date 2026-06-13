@@ -249,6 +249,9 @@ test('loadDesktopStateSnapshot fetches the workset endpoint and replaces old sto
         manifest_policy: 'manifest',
         include_events: false,
       },
+      resources: {
+        run_intents: true,
+      },
     },
   }])
   assert.deepEqual(notifications, [12])

@@ -22,6 +22,13 @@ export interface DesktopStateSnapshotRequest {
     manifestPolicy?: 'error' | 'omit' | 'manifest'
     includeEvents?: boolean
   }
+  resources?: {
+    messages?: boolean
+    events?: boolean
+    runIntents?: boolean
+    activePlan?: boolean
+    planRevisions?: boolean
+  }
 }
 
 interface DesktopStateSnapshotRequestWire {
@@ -29,6 +36,7 @@ interface DesktopStateSnapshotRequestWire {
   workspace?: { workspace_path?: string; workspace_paths?: string[] }
   recent?: { limit?: number; before_updated_at?: number | null; before_session_id?: string }
   history?: { mode?: string; max_messages_per_session?: number; max_events_per_session?: number; manifest_policy?: string; include_events?: boolean }
+  resources?: { messages?: boolean; events?: boolean; run_intents?: boolean; active_plan?: boolean; plan_revisions?: boolean }
 }
 
 interface SessionWire {
@@ -196,10 +204,14 @@ interface DesktopStateWorksetResponseWire {
 }
 
 const DEFAULT_SNAPSHOT_HISTORY = {
-  mode: 'full' as const,
+  mode: 'none' as const,
   maxEventsPerSession: 0,
   manifestPolicy: 'manifest' as const,
   includeEvents: false,
+}
+
+const DEFAULT_SNAPSHOT_RESOURCES = {
+  runIntents: true,
 }
 
 export async function fetchDesktopStateSnapshot(input: DesktopStateSnapshotRequest, signal?: AbortSignal): Promise<DesktopDaemonSnapshot> {
@@ -287,6 +299,7 @@ function toSnapshotRequestWire(input: DesktopStateSnapshotRequest): DesktopState
   const workspacePath = input.workspacePath?.trim() ?? ''
   const workspacePaths = (input.workspacePaths ?? []).map((path) => path.trim()).filter(Boolean)
   const history = { ...DEFAULT_SNAPSHOT_HISTORY, ...(input.history ?? {}) }
+  const resources = { ...DEFAULT_SNAPSHOT_RESOURCES, ...(input.resources ?? {}) }
   return {
     session_ids: sessionIds.length > 0 ? sessionIds : undefined,
     workspace: workspacePath || workspacePaths.length > 0 ? {
@@ -306,6 +319,13 @@ function toSnapshotRequestWire(input: DesktopStateSnapshotRequest): DesktopState
       max_events_per_session: history.maxEventsPerSession,
       manifest_policy: history.manifestPolicy,
       include_events: history.includeEvents,
+    },
+    resources: {
+      messages: resources.messages || undefined,
+      events: resources.events || undefined,
+      run_intents: resources.runIntents || undefined,
+      active_plan: resources.activePlan || undefined,
+      plan_revisions: resources.planRevisions || undefined,
     },
   }
 }
@@ -424,7 +444,10 @@ function snapshotRunIntentStatusActive(status: string): boolean {
 function mapMessagesBySession(source: Record<string, MessageWire[]> | undefined): Record<string, ChatMessageRecord[]> {
   const messagesBySession: Record<string, ChatMessageRecord[]> = {}
   for (const [sessionId, messages] of Object.entries(source ?? {})) {
-    messagesBySession[sessionId] = (messages ?? [])
+    if (!messages || messages.length === 0) {
+      continue
+    }
+    messagesBySession[sessionId] = messages
       .map(mapMessage)
       .filter((message) => message.id && message.sessionId)
       .sort((left, right) => (left.globalSeq - right.globalSeq) || (left.createdAt - right.createdAt) || left.id.localeCompare(right.id))

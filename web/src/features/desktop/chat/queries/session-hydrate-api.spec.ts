@@ -66,11 +66,15 @@ async function withFetchStub(
     }
 
     if (url === '/v3/sessions:workset') {
-      const body = JSON.parse(String(init?.body ?? '{}')) as { session_ids?: string[]; recent?: { limit?: number }; workspace?: { workspace_path?: string } }
+      const body = JSON.parse(String(init?.body ?? '{}')) as { session_ids?: string[]; recent?: { limit?: number }; workspace?: { workspace_path?: string }; history?: { mode?: string }; resources?: { messages?: boolean; active_plan?: boolean; plan_revisions?: boolean } }
       const sessionIds = Array.isArray(body.session_ids) && body.session_ids.length > 0
         ? body.session_ids
         : ['session-workset-a', 'session-workset-b'].slice(0, body.recent?.limit ?? 2)
-      return jsonResponse(v3WorksetPayload(sessionIds))
+      return jsonResponse(v3WorksetPayload(sessionIds, {
+        includeMessages: body.resources?.messages === true || body.history?.mode === 'tail' || body.history?.mode === 'full',
+        includePlans: body.resources?.active_plan === true,
+        includePlanRevisions: body.resources?.plan_revisions === true,
+      }))
     }
 
     const v3SessionMatch = /^\/v3\/sessions\/([^/?]+)$/.exec(url)
@@ -209,7 +213,7 @@ function v3HydratedSessionPayload(sessionId: string) {
 }
 
 
-function v3WorksetPayload(sessionIds: string[]) {
+function v3WorksetPayload(sessionIds: string[], options: { includeMessages?: boolean; includePlans?: boolean; includePlanRevisions?: boolean } = {}) {
   const sessionsById: Record<string, unknown> = {}
   const projectionsBySession: Record<string, unknown> = {}
   const messagesBySession: Record<string, unknown[]> = {}
@@ -228,16 +232,20 @@ function v3WorksetPayload(sessionIds: string[]) {
     const payload = v3HydratedSessionPayload(sessionId)
     sessionsById[sessionId] = payload.session
     projectionsBySession[sessionId] = payload.projection
-    messagesBySession[sessionId] = payload.messages
-    eventsBySession[sessionId] = payload.events
+    messagesBySession[sessionId] = options.includeMessages ? payload.messages : []
+    eventsBySession[sessionId] = []
     permissionsBySession[sessionId] = payload.pending_permissions
     usageBySession[sessionId] = payload.usage_summary
     sessionPreferenceBySession[sessionId] = payload.preference ?? payload.session.preference
     preferencesBySession[sessionId] = sessionPreferenceBySession[sessionId]
     agentModelPolicyBySession[sessionId] = payload.agent_model_policy
     runIntentsBySession[sessionId] = payload.active_run_intent ? [payload.active_run_intent] : []
-    plansBySession[sessionId] = payload.active_plan
-    planRevisionsBySession[sessionId] = payload.plan_revisions
+    if (options.includePlans) {
+      plansBySession[sessionId] = payload.active_plan
+    }
+    if (options.includePlanRevisions) {
+      planRevisionsBySession[sessionId] = payload.plan_revisions
+    }
     historyManifestsBySession[sessionId] = []
   }
 
@@ -382,7 +390,7 @@ test('Desktop V3 permission resolve uses Sessions API v3 only', async () => {
 })
 
 
-test('sessionMessagesQueryOptions uses the canonical V3 snapshot cache for Desktop V3 messages', async () => {
+test('sessionMessagesQueryOptions uses metadata-only V3 snapshot hydration without loading messages', async () => {
   const { sessionMessagesQueryOptions } = await import('../../../queries/query-options')
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -391,7 +399,7 @@ test('sessionMessagesQueryOptions uses the canonical V3 snapshot cache for Deskt
   await withFetchStub(async (calls) => {
     const messages = await queryClient.fetchQuery(sessionMessagesQueryOptions('session-messages', queryClient))
 
-    assert.deepEqual(messages.map((message) => message.id), ['session-messages-msg-1'])
+    assert.deepEqual(messages.map((message) => message.id), [])
     assert.deepEqual(requestUrls(calls), ['/v3/sessions:workset'])
     assertNoV1OrV2SessionDataCalls(calls)
   })

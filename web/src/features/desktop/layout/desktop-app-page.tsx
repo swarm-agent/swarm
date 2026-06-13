@@ -2077,7 +2077,7 @@ export function DesktopAppPage() {
         const request = {
           workspacePaths,
           recent: { limit: 50 },
-          history: { mode: 'full' as const, maxEventsPerSession: 0, manifestPolicy: 'manifest' as const, includeEvents: false },
+          history: { mode: 'none' as const, maxEventsPerSession: 0, manifestPolicy: 'manifest' as const, includeEvents: false },
         }
         const snapshot = await fetchDesktopStateSnapshot(request, abortController.signal)
         if (!isCurrentEpoch()) {
@@ -2116,7 +2116,7 @@ export function DesktopAppPage() {
       sessionIds: [routeCriticalSessionId],
       workspacePaths: desktopV3WorksetScopeKey ? desktopV3WorksetScopeKey.split('\u0000') : [],
       recent: { limit: 50 },
-      history: { mode: 'full', maxEventsPerSession: 0, manifestPolicy: 'manifest', includeEvents: false },
+      history: { mode: 'none', maxEventsPerSession: 0, manifestPolicy: 'manifest', includeEvents: false },
     }, abortController.signal)
       .then((snapshot) => {
         if (!abortController.signal.aborted) {
