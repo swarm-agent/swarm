@@ -12,6 +12,7 @@ export type DesktopV3RealtimeFrame = RunStreamEventMessage & {
   protocol_version?: number
   kind?: string
   endpoint_cursor?: string
+  event_type?: string
   subscription_id?: string
   rev?: number
   prevRev?: number
