@@ -1792,6 +1792,11 @@ func (p *ChatPage) applyRunStreamEvent(event ChatRunStreamEvent, atUnix int64) {
 	if eventType == "" {
 		return
 	}
+	if eventType == "session.mode.updated" {
+		p.applySessionMode(event.SessionMode, false)
+		return
+	}
+
 	p.streamingRun = true
 	p.maybeCompleteThinkingBeforeEvent(event, eventType, atUnix)
 

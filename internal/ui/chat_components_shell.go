@@ -184,15 +184,13 @@ func (p *ChatPage) drawFooterBar(s tcell.Screen, rect Rect) {
 }
 
 func chatDisplayedMode(meta ChatSessionMeta, sessionMode string) string {
-	if meta.AgentRuntimeKnown {
-		if meta.AgentExitPlanMode {
-			return normalizeSessionMode(sessionMode)
-		}
+	mode := normalizeSessionMode(sessionMode)
+	if meta.AgentRuntimeKnown && !meta.AgentExitPlanMode {
 		if setting := normalizeAgentExecutionSetting(meta.AgentExecutionSetting); setting != "" {
 			return setting
 		}
 	}
-	return normalizeSessionMode(sessionMode)
+	return mode
 }
 
 func normalizeAgentExecutionSetting(setting string) string {

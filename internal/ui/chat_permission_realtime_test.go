@@ -1,6 +1,9 @@
 package ui
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestChatPermissionRealtimeUpdateDismissesResolvedSpecialModal(t *testing.T) {
 	page := NewChatPage(ChatPageOptions{SessionID: "session-1", SessionMode: "plan", AuthConfigured: true})
@@ -40,6 +43,34 @@ func TestChatPermissionRealtimeUpdateDismissesResolvedSpecialModal(t *testing.T)
 	}
 	if got := page.statusLine; got != "exit plan mode approved" {
 		t.Fatalf("statusLine = %q, want exit plan mode approved", got)
+	}
+}
+
+func TestChatRealtimeSessionModeUpdateSwitchesFooterOutOfPlanMode(t *testing.T) {
+	page := NewChatPage(ChatPageOptions{
+		SessionID:      "session-1",
+		SessionMode:    "plan",
+		AuthConfigured: true,
+		Meta: ChatSessionMeta{
+			Agent:                 "swarm",
+			AgentExecutionSetting: "readwrite",
+			AgentExitPlanMode:     true,
+			AgentRuntimeKnown:     true,
+		},
+	})
+	if got := page.footerSettingsLine(1000); !strings.Contains(got, "plan") {
+		t.Fatalf("footer before mode update = %q, want plan", got)
+	}
+
+	if !page.ApplySharedStreamEvent(ChatRunStreamEvent{Type: "session.mode.updated", SessionID: "session-1", SessionMode: "auto"}, 20) {
+		t.Fatal("session.mode.updated was not applied")
+	}
+
+	if got := page.SessionMode(); got != "auto" {
+		t.Fatalf("SessionMode = %q, want auto", got)
+	}
+	if got := page.footerSettingsLine(1000); !strings.Contains(got, "auto") || strings.Contains(got, "readwrite") {
+		t.Fatalf("footer after mode update = %q, want auto and no stale direct runtime mode", got)
 	}
 }
 

@@ -428,6 +428,17 @@ func TestAPIChatBackendV3ActiveTurnUsesLiveWebSocketStream(t *testing.T) {
 	}
 }
 
+func TestAPIChatBackendV3MapsSessionModeUpdatedRealtimeEvent(t *testing.T) {
+	event := v3StreamEventToChatEvent(client.SessionV3Event{
+		SessionID: "session-v3",
+		EventType: "session.mode.updated",
+		Payload:   json.RawMessage(`{"session_id":"session-v3","mode":"auto","updated_at":123}`),
+	})
+	if event.Type != "session.mode.updated" || event.SessionMode != "auto" {
+		t.Fatalf("mapped session.mode.updated = %#v", event)
+	}
+}
+
 func TestAPIChatBackendV3MapsPermissionAndUsageRealtimeEvents(t *testing.T) {
 	requested := v3StreamEventToChatEvent(client.SessionV3Event{
 		SessionID: "session-v3",

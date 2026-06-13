@@ -574,6 +574,9 @@ func v3StreamEventToChatEvent(event client.SessionV3Event) ui.ChatRunStreamEvent
 		if out.CallID == "" && out.Permission != nil {
 			out.CallID = out.Permission.CallID
 		}
+	case "session.mode.updated":
+		out.Type = "session.mode.updated"
+		out.SessionMode = stringValue(payload, "mode")
 	case "session.tool.started":
 		out.Type = "tool.started"
 		out.ToolName = firstNonEmptyV3String(stringValue(payload, "tool_name"), "tool")
@@ -614,7 +617,7 @@ func v3StreamEventToChatEvent(event client.SessionV3Event) ui.ChatRunStreamEvent
 		out.CallID = stringValue(payload, "call_id")
 		out.Arguments = rawStringValue(payload, "arguments")
 		out.Output = rawStringValue(payload, "output")
-		out.RawOutput = rawStringValue(payload, "raw_output")
+		out.RawOutput = firstNonEmptyV3String(rawStringValue(payload, "raw_output"), rawStringValue(payload, "completed_output"))
 		out.Step = int(int64Number(payload, "step"))
 		out.DurationMS = int64Number(payload, "duration_ms")
 		if isV3SyntheticReasoningToolPayload(payload) {
