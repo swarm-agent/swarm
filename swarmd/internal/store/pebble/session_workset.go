@@ -102,6 +102,11 @@ func (s *SessionStore) BuildV3SessionWorkset(options V3SessionWorksetOptions) (r
 		return V3SessionWorksetResult{}, errors.New("session store is not configured")
 	}
 	options = normalizeV3SessionWorksetOptions(options)
+	if options.RecentLimit > 0 {
+		if err := s.ensureSessionRecentIndex(); err != nil {
+			return V3SessionWorksetResult{}, err
+		}
+	}
 	if len(options.SessionIDs) == 0 && options.RecentLimit <= 0 && strings.TrimSpace(options.WorkspacePath) == "" && len(options.WorkspacePaths) == 0 {
 		return V3SessionWorksetResult{}, errors.New("at least one workset selector is required")
 	}
@@ -261,47 +266,7 @@ func (s *SessionStore) selectV3SessionWorksetSessions(reader pebble.Reader, opti
 }
 
 func (s *SessionStore) selectV3RecentWorksetSessions(reader pebble.Reader, options V3SessionWorksetOptions) ([]SessionSnapshot, V3SessionWorksetPagination, error) {
-	limit := options.RecentLimit
-	if limit <= 0 {
-		return nil, V3SessionWorksetPagination{}, nil
-	}
-	candidates := []SessionSnapshot{}
-	err := scanRangeFromReader(reader, scanRangeOptions{Prefix: SessionPrefix(), Limit: int(^uint(0) >> 1)}, func(_ string, value []byte) (bool, error) {
-		var session SessionSnapshot
-		if err := json.Unmarshal(value, &session); err != nil {
-			return false, err
-		}
-		session = normalizeSessionOwnership(session)
-		if strings.TrimSpace(session.ID) == "" || !v3SessionWorksetSessionVisibleForWorkspaces(session, options.AccountScopeID, options.WorkspacePath, options.WorkspacePaths) {
-			return true, nil
-		}
-		if !v3SessionWorksetBeforeCursor(session, options.RecentBeforeUpdatedAt, options.RecentBeforeSessionID) {
-			return true, nil
-		}
-		loaded, ok, err := s.getSessionFromReader(reader, session.ID)
-		if err != nil {
-			return false, err
-		}
-		if !ok {
-			return true, nil
-		}
-		candidates = append(candidates, loaded)
-		return true, nil
-	})
-	if err != nil {
-		return nil, V3SessionWorksetPagination{}, err
-	}
-	sortV3WorksetSessions(candidates)
-	pagination := V3SessionWorksetPagination{}
-	if len(candidates) > limit {
-		pagination.HasMore = true
-		boundary := candidates[limit-1]
-		next := boundary.UpdatedAt
-		pagination.NextBeforeUpdatedAt = &next
-		pagination.NextBeforeSessionID = boundary.ID
-		candidates = candidates[:limit]
-	}
-	return candidates, pagination, nil
+	return s.selectV3RecentWorksetSessionsFromIndex(reader, options)
 }
 
 func normalizeV3SessionWorksetWorkspacePaths(workspacePath string, workspacePaths []string) []string {
@@ -386,15 +351,6 @@ func v3SessionWorksetBeforeCursor(session SessionSnapshot, beforeUpdatedAt *int6
 		return false
 	}
 	return strings.TrimSpace(session.ID) < beforeSessionID
-}
-
-func sortV3WorksetSessions(sessions []SessionSnapshot) {
-	sort.SliceStable(sessions, func(i, j int) bool {
-		if sessions[i].UpdatedAt == sessions[j].UpdatedAt {
-			return sessions[i].ID > sessions[j].ID
-		}
-		return sessions[i].UpdatedAt > sessions[j].UpdatedAt
-	})
 }
 
 func (s *SessionStore) addV3SessionWorksetHistory(reader pebble.Reader, options V3SessionWorksetOptions, session SessionSnapshot, projection V3SessionProjection, result *V3SessionWorksetResult) error {

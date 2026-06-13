@@ -487,14 +487,43 @@ func TestAPIChatBackendV3PreservesAssistantDeltaWhitespace(t *testing.T) {
 	}
 }
 
-func TestAPIChatBackendV3MapsSyntheticThinkingToolEventsToReasoning(t *testing.T) {
+func TestAPIChatBackendV3MapsSessionReasoningEventsToReasoning(t *testing.T) {
+	started := v3StreamEventToChatEvent(client.SessionV3Event{
+		SessionID: "session-v3",
+		EventType: "session.reasoning.started",
+		Payload:   json.RawMessage(`{"session_id":"session-v3","run_id":"run-v3","reasoning_key":"r1"}`),
+	})
+	if started.Type != "reasoning.started" || started.ToolName != "" {
+		t.Fatalf("mapped reasoning started = %#v", started)
+	}
+
+	delta := v3StreamEventToChatEvent(client.SessionV3Event{
+		SessionID: "session-v3",
+		EventType: "session.reasoning.delta",
+		Payload:   json.RawMessage(`{"session_id":"session-v3","run_id":"run-v3","delta":" user","reasoning_key":"r1"}`),
+	})
+	if delta.Type != "reasoning.delta" || delta.Delta != " user" || delta.Output != "" || delta.ToolName != "" {
+		t.Fatalf("mapped reasoning delta = %#v", delta)
+	}
+
+	completed := v3StreamEventToChatEvent(client.SessionV3Event{
+		SessionID: "session-v3",
+		EventType: "session.reasoning.completed",
+		Payload:   json.RawMessage(`{"session_id":"session-v3","run_id":"run-v3","summary":"The user is greeting me.","reasoning_key":"r1"}`),
+	})
+	if completed.Type != "reasoning.completed" || completed.Summary != "The user is greeting me." || completed.ToolName != "" {
+		t.Fatalf("mapped reasoning completed = %#v", completed)
+	}
+}
+
+func TestAPIChatBackendV3MapsThinkingToolEventsToToolObjects(t *testing.T) {
 	started := v3StreamEventToChatEvent(client.SessionV3Event{
 		SessionID: "session-v3",
 		EventType: "session.tool.started",
 		Payload:   json.RawMessage(`{"session_id":"session-v3","run_id":"run-v3","tool_name":"thinking","call_id":"thinking-1","arguments":"{\"reasoning_key\":\"r1\"}","metadata":{"synthetic_tool":true,"timeline_kind":"thinking","segment_kind":"reasoning"}}`),
 	})
-	if started.Type != "reasoning.started" || started.ToolName != "" {
-		t.Fatalf("mapped synthetic started = %#v", started)
+	if started.Type != "tool.started" || started.ToolName != "thinking" || started.CallID != "thinking-1" || started.Arguments == "" {
+		t.Fatalf("mapped thinking started = %#v", started)
 	}
 
 	delta := v3StreamEventToChatEvent(client.SessionV3Event{
@@ -502,8 +531,8 @@ func TestAPIChatBackendV3MapsSyntheticThinkingToolEventsToReasoning(t *testing.T
 		EventType: "session.tool.delta",
 		Payload:   json.RawMessage(`{"session_id":"session-v3","run_id":"run-v3","tool_name":"thinking","call_id":"thinking-1","output":" user","metadata":{"synthetic_tool":true,"timeline_kind":"thinking","segment_kind":"reasoning"}}`),
 	})
-	if delta.Type != "reasoning.delta" || delta.Delta != " user" || delta.Output != "" || delta.ToolName != "" {
-		t.Fatalf("mapped synthetic delta = %#v", delta)
+	if delta.Type != "tool.delta" || delta.Output != " user" || delta.Delta != "" || delta.ToolName != "thinking" || delta.CallID != "thinking-1" {
+		t.Fatalf("mapped thinking delta = %#v", delta)
 	}
 
 	completed := v3StreamEventToChatEvent(client.SessionV3Event{
@@ -511,8 +540,8 @@ func TestAPIChatBackendV3MapsSyntheticThinkingToolEventsToReasoning(t *testing.T
 		EventType: "session.tool.completed",
 		Payload:   json.RawMessage(`{"session_id":"session-v3","run_id":"run-v3","tool_name":"thinking","call_id":"thinking-1","completed_output":"The user is greeting me.","metadata":{"synthetic_tool":true,"timeline_kind":"thinking","segment_kind":"reasoning"}}`),
 	})
-	if completed.Type != "reasoning.completed" || completed.Summary != "The user is greeting me." || completed.ToolName != "" {
-		t.Fatalf("mapped synthetic completed = %#v", completed)
+	if completed.Type != "tool.completed" || completed.ToolName != "thinking" || completed.RawOutput != "The user is greeting me." || completed.Summary != "" {
+		t.Fatalf("mapped thinking completed = %#v", completed)
 	}
 }
 
@@ -560,9 +589,10 @@ func TestAPIChatBackendV3DoesNotEndRunOnSyntheticReasoningToolCompletion(t *test
 	var sawThinkingCompleted, sawToolFailed, sawAssistant bool
 	for _, event := range events {
 		switch event.Type {
-		case "reasoning.completed":
-			sawThinkingCompleted = true
 		case "tool.completed":
+			if event.ToolName == "thinking" && event.RawOutput == "thinking done" {
+				sawThinkingCompleted = true
+			}
 			if event.ToolName == "list" && event.Error == "permission denied" {
 				sawToolFailed = true
 			}
@@ -573,7 +603,7 @@ func TestAPIChatBackendV3DoesNotEndRunOnSyntheticReasoningToolCompletion(t *test
 		}
 	}
 	if !sawThinkingCompleted || !sawToolFailed || !sawAssistant {
-		t.Fatalf("stream ended before post-tool events: thinking=%v failedTool=%v assistant=%v events=%#v", sawThinkingCompleted, sawToolFailed, sawAssistant, events)
+		t.Fatalf("stream ended before post-tool events: thinkingTool=%v failedTool=%v assistant=%v events=%#v", sawThinkingCompleted, sawToolFailed, sawAssistant, events)
 	}
 }
 

@@ -410,6 +410,7 @@ func (p Profile) EnvMap() map[string]string {
 		"SWARM_CONFIG_HOME":        p.ConfigHome,
 		"SWARM_STARTUP_CONFIG":     p.Startup.Path,
 		"SWARM_BYPASS_PERMISSIONS": boolString(p.Bypass),
+		"SWARM_V3_DIAGNOSTICS":     diagnosticsEnvValue(p.Startup.V3Diagnostics),
 		"SWARMD_LISTEN":            p.Listen,
 		"SWARMD_URL":               p.URL,
 		"SWARM_DESKTOP_PORT":       strconv.Itoa(p.DesktopPort),
@@ -554,6 +555,13 @@ func boolString(v bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+func diagnosticsEnvValue(enabled bool) string {
+	if enabled {
+		return "1"
+	}
+	return "0"
 }
 
 func FindGoBin(root string) (string, error) {

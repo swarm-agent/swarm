@@ -10,6 +10,7 @@ import { applyV3RuntimeEnvelope, createV3SnapshotEnvelope } from '../v3-runtime'
 
 export interface DesktopStateSnapshotRequest {
   sessionIds?: string[]
+  global?: boolean
   workspacePath?: string
   workspacePaths?: string[]
   recent?: {
@@ -35,6 +36,7 @@ export interface DesktopStateSnapshotRequest {
 
 interface DesktopStateSnapshotRequestWire {
   session_ids?: string[]
+  global?: boolean
   workspace?: { workspace_path?: string; workspace_paths?: string[] }
   recent?: { limit?: number; before_updated_at?: number | null; before_session_id?: string }
   history?: { mode?: string; max_messages_per_session?: number; max_events_per_session?: number; manifest_policy?: string; include_events?: boolean }
@@ -247,13 +249,14 @@ function desktopStateSnapshotEnvelopeId(mode: 'replace' | 'merge', snapshot: Des
     sessionOrder: snapshot.sessionOrder ?? [],
     sessions: Object.keys(snapshot.sessionsById ?? {}).sort(),
   }
-  return `snapshot:${mode}:rev:${snapshot.rev}:${JSON.stringify({ sessionIds, workspacePath, workspacePaths, recent, history, snapshotScope })}`
+  return `snapshot:${mode}:rev:${snapshot.rev}:${JSON.stringify({ sessionIds, global: Boolean(input.global), workspacePath, workspacePaths, recent, history, snapshotScope })}`
 }
 
 export function normalizeDesktopStateSnapshot(response: DesktopStateWorksetResponseWire): DesktopDaemonSnapshot {
   assertSnapshotRevision(response.rev)
   const permissionsBySessionId = mapPermissionsBySession(response.permissions_by_session)
-  const sessionsById = mapSessions(response.sessions_by_id, permissionsBySessionId)
+  const runIntentsBySessionId = latestRunIntentBySessionId(response.run_intents_by_session)
+  const sessionsById = mapSessions(response.sessions_by_id, permissionsBySessionId, runIntentsBySessionId)
   const sessionOrder = normalizeSessionOrder(sessionsById, response.session_order)
 
   const snapshotEndpointCursor = String(response.snapshot_endpoint_cursor ?? '').trim()
@@ -263,6 +266,7 @@ export function normalizeDesktopStateSnapshot(response: DesktopStateWorksetRespo
 
   return {
     rev: response.rev,
+    snapshotEndpointCursor,
     sessionsById,
     sessionOrder,
     messagesBySessionId: mapMessagesBySession(response.messages_by_session),
@@ -270,7 +274,7 @@ export function normalizeDesktopStateSnapshot(response: DesktopStateWorksetRespo
     plansBySessionId: mapFirstSessionValues(response.plans_by_session, normalizeDesktopSessionPlan),
     planRevisionsBySessionId: mapPlanRevisions(response.plan_revisions_by_session),
     usageBySessionId: mapUsageBySession(response.usage_by_session),
-    runIntentsBySessionId: latestRunIntentBySessionId(response.run_intents_by_session),
+    runIntentsBySessionId,
     workspacesByPath: workspacesByPath(Object.values(sessionsById)),
     preferencesBySessionId: mapPreferencesBySession(response.preferences_by_session),
     agentModelPolicyBySessionId: mapAgentPolicyBySession(response.agent_model_policy_by_session),
@@ -286,6 +290,7 @@ function toSnapshotRequestWire(input: DesktopStateSnapshotRequest): DesktopState
   const resources = { ...DEFAULT_SNAPSHOT_RESOURCES, ...(input.resources ?? {}) }
   return {
     session_ids: sessionIds.length > 0 ? sessionIds : undefined,
+    global: input.global || undefined,
     workspace: workspacePath || workspacePaths.length > 0 ? {
       workspace_path: workspacePath || undefined,
       workspace_paths: workspacePaths.length > 0 ? workspacePaths : undefined,
@@ -320,14 +325,19 @@ function assertSnapshotRevision(rev: unknown): asserts rev is number {
   }
 }
 
-function mapSessions(source: Record<string, SessionWire> | undefined, permissionsBySessionId: Record<string, DesktopPermissionRecord[]>): Record<string, DesktopSessionRecord> {
+function mapSessions(
+  source: Record<string, SessionWire> | undefined,
+  permissionsBySessionId: Record<string, DesktopPermissionRecord[]>,
+  runIntentsBySessionId: Record<string, DesktopRunIntentRecord>,
+): Record<string, DesktopSessionRecord> {
   const sessions: Record<string, DesktopSessionRecord> = {}
   for (const [fallbackId, session] of Object.entries(source ?? {})) {
     const explicitId = String(session.id ?? '').trim()
     const pendingPermissions = explicitId && explicitId !== fallbackId
       ? [...(permissionsBySessionId[fallbackId] ?? []), ...(permissionsBySessionId[explicitId] ?? [])]
       : permissionsBySessionId[fallbackId] ?? []
-    const mapped = mapSession(session, fallbackId, pendingPermissions)
+    const topLevelRunIntent = runIntentsBySessionId[explicitId] ?? runIntentsBySessionId[fallbackId] ?? null
+    const mapped = mapSession(session, fallbackId, pendingPermissions, topLevelRunIntent)
     if (mapped.id) {
       sessions[mapped.id] = mapped
     }
@@ -335,7 +345,7 @@ function mapSessions(source: Record<string, SessionWire> | undefined, permission
   return sessions
 }
 
-function mapSession(session: SessionWire, fallbackId = '', pendingPermissions: DesktopPermissionRecord[] = []): DesktopSessionRecord {
+function mapSession(session: SessionWire, fallbackId = '', pendingPermissions: DesktopPermissionRecord[] = [], topLevelRunIntent: DesktopRunIntentRecord | null = null): DesktopSessionRecord {
   const id = String(session.id ?? fallbackId).trim()
   const lifecycle = session.lifecycle && typeof session.lifecycle === 'object'
     ? {
@@ -356,7 +366,7 @@ function mapSession(session: SessionWire, fallbackId = '', pendingPermissions: D
   const sessionPendingPermissions = pendingPermissions.filter((permission) => permission.sessionId === id && permission.status.trim().toLowerCase() === 'pending')
   const pendingPermissionCount = countApprovalRequiredPermissions(sessionPendingPermissions, mode)
   const baseLive = emptyLiveState()
-  const runIntent = session.run_intent ? mapRunIntent(session.run_intent) : null
+  const runIntent = session.run_intent ? mapRunIntent(session.run_intent) : topLevelRunIntent
   if (!lifecycle && pendingPermissionCount > 0) {
     baseLive.status = 'blocked'
     baseLive.lastEventType = 'permission.requested'

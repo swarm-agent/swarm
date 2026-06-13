@@ -117,10 +117,21 @@ func TestBuildRequestPayloadSanitizesNativeResponseReplayItems(t *testing.T) {
 	if !ok {
 		t.Fatalf("input[1] = %#v, want object", decodedInput[1])
 	}
-	for _, key := range []string{"output_index", "content", "summary"} {
+	for _, key := range []string{"output_index"} {
 		if _, ok := reasoning[key]; ok {
 			t.Fatalf("reasoning.%s = %#v, want omitted in payload %s", key, reasoning[key], string(payload))
 		}
+	}
+	contentRaw, hasContent := reasoning["content"]
+	if !hasContent || contentRaw != nil {
+		t.Fatalf("reasoning.content = %#v, want explicit null in payload %s", contentRaw, string(payload))
+	}
+	summaryRaw, hasSummary := reasoning["summary"]
+	if !hasSummary {
+		t.Fatalf("reasoning.summary missing, want empty array in payload %s", string(payload))
+	}
+	if summary := asSlice(summaryRaw); len(summary) != 0 {
+		t.Fatalf("reasoning.summary = %#v, want empty array in payload %s", summaryRaw, string(payload))
 	}
 	if reasoning["encrypted_content"] != "encrypted" {
 		t.Fatalf("reasoning encrypted_content = %#v, want encrypted", reasoning["encrypted_content"])
@@ -149,6 +160,118 @@ func TestBuildRequestPayloadSanitizesNativeResponseReplayItems(t *testing.T) {
 	}
 	if contentItem["text"] != "hi" {
 		t.Fatalf("message content[0].text = %#v, want hi", contentItem["text"])
+	}
+}
+
+func TestBuildRequestPayloadNormalizesReasoningReplaySummaryToArray(t *testing.T) {
+	input := []map[string]any{
+		{
+			"type":              "reasoning",
+			"id":                "rs_missing_summary",
+			"encrypted_content": "encrypted-1",
+		},
+		{
+			"type":              "reasoning",
+			"id":                "rs_null_summary",
+			"summary":           nil,
+			"encrypted_content": "encrypted-2",
+		},
+		{
+			"type":              "reasoning",
+			"id":                "rs_bad_summary",
+			"summary":           "not-an-array",
+			"encrypted_content": "encrypted-3",
+		},
+		{
+			"type": "reasoning",
+			"id":   "rs_summary_text",
+			"summary": []any{
+				map[string]any{"type": "summary_text", "text": "kept"},
+			},
+			"encrypted_content": "encrypted-4",
+		},
+	}
+
+	payload, err := buildRequestPayload(Request{
+		Model: "gpt-5.5",
+		Input: input,
+	})
+	if err != nil {
+		t.Fatalf("buildRequestPayload error: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	decodedInput := asSlice(decoded["input"])
+	if len(decodedInput) != 4 {
+		t.Fatalf("input length = %d, want 4: %s", len(decodedInput), string(payload))
+	}
+	for index, item := range decodedInput {
+		reasoning, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("input[%d] = %#v, want object", index, item)
+		}
+		summaryRaw, hasSummary := reasoning["summary"]
+		if !hasSummary {
+			t.Fatalf("input[%d].summary missing in payload %s", index, string(payload))
+		}
+		summary, ok := summaryRaw.([]any)
+		if !ok {
+			t.Fatalf("input[%d].summary = %#v, want array in payload %s", index, summaryRaw, string(payload))
+		}
+		if index < 3 && len(summary) != 0 {
+			t.Fatalf("input[%d].summary = %#v, want empty array", index, summary)
+		}
+		if index == 3 && len(summary) != 1 {
+			t.Fatalf("input[%d].summary = %#v, want preserved summary_text item", index, summary)
+		}
+		contentRaw, hasContent := reasoning["content"]
+		if !hasContent || contentRaw != nil {
+			t.Fatalf("input[%d].content = %#v, want explicit null in payload %s", index, contentRaw, string(payload))
+		}
+	}
+}
+
+func TestBuildCodexWebsocketPayloadPreservesReasoningSummaryArray(t *testing.T) {
+	encoded, err := buildCodexWebsocketPayload(map[string]any{
+		"model": "gpt-5.5",
+		"input": []any{
+			map[string]any{
+				"type":              "reasoning",
+				"id":                "rs_1",
+				"summary":           []any{},
+				"content":           nil,
+				"encrypted_content": "encrypted",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildCodexWebsocketPayload error: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("decode websocket payload: %v", err)
+	}
+	input := asSlice(decoded["input"])
+	if len(input) != 1 {
+		t.Fatalf("input = %#v, want one item in payload %s", decoded["input"], string(encoded))
+	}
+	reasoning, ok := input[0].(map[string]any)
+	if !ok {
+		t.Fatalf("input[0] = %#v, want object", input[0])
+	}
+	summary, ok := reasoning["summary"].([]any)
+	if !ok {
+		t.Fatalf("reasoning.summary = %#v, want array in websocket payload %s", reasoning["summary"], string(encoded))
+	}
+	if len(summary) != 0 {
+		t.Fatalf("reasoning.summary = %#v, want empty array", summary)
+	}
+	if content, ok := reasoning["content"]; !ok || content != nil {
+		t.Fatalf("reasoning.content = %#v, want explicit null in websocket payload %s", content, string(encoded))
 	}
 }
 

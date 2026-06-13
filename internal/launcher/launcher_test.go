@@ -165,8 +165,21 @@ func TestEnvListStripsArtifactInstallPathOverrides(t *testing.T) {
 	if got := envValueFromList(env, "CUSTOM_VALUE"); got != "kept" {
 		t.Fatalf("CUSTOM_VALUE = %q, want kept", got)
 	}
+	if got := envValueFromList(env, "SWARM_V3_DIAGNOSTICS"); got != "0" {
+		t.Fatalf("SWARM_V3_DIAGNOSTICS = %q, want 0", got)
+	}
 	if got := envValueFromList(env, "LD_LIBRARY_PATH"); !strings.HasPrefix(got, filepath.Join(installRoot, "lib")) {
 		t.Fatalf("LD_LIBRARY_PATH = %q, want installed lib prefix", got)
+	}
+}
+
+func TestEnvListMapsV3DiagnosticsConfigToEnv(t *testing.T) {
+	profile := Profile{
+		Startup: startupconfig.FileConfig{V3Diagnostics: true},
+	}
+	env := profile.EnvList(nil)
+	if got := envValueFromList(env, "SWARM_V3_DIAGNOSTICS"); got != "1" {
+		t.Fatalf("SWARM_V3_DIAGNOSTICS = %q, want 1", got)
 	}
 }
 

@@ -214,7 +214,7 @@ interface DurableEventWire {
 
 export function createV3SnapshotEnvelope(snapshot: DesktopDaemonSnapshot, options: V3EnvelopeOptions & { mode?: 'replace' | 'merge' } = {}): V3SnapshotEnvelope {
   const mode = options.mode ?? 'replace'
-  const cursor = envelopeCursor({ rev: snapshot.rev, highWatermarkSeq: options.highWatermarkSeq })
+  const cursor = envelopeCursor({ endpointCursor: options.endpointCursor ?? snapshot.snapshotEndpointCursor, rev: snapshot.rev, highWatermarkSeq: options.highWatermarkSeq })
   return {
     kind: 'snapshot',
     mode,

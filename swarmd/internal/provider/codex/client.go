@@ -563,15 +563,27 @@ func sanitizeCodexRequestInputValue(value any) any {
 	switch typed := value.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(typed))
+		itemType := strings.ToLower(strings.TrimSpace(fmt.Sprint(typed["type"])))
 		for key, child := range typed {
 			if isCodexRequestInputResponseOnlyField(key) {
 				continue
 			}
 			sanitized := sanitizeCodexRequestInputValue(child)
+			if itemType == "reasoning" && strings.EqualFold(strings.TrimSpace(key), "content") {
+				if isCodexRequestInputEmptyValue(sanitized) {
+					out[key] = nil
+				} else {
+					out[key] = sanitized
+				}
+				continue
+			}
 			if isCodexRequestInputEmptyValue(sanitized) {
 				continue
 			}
 			out[key] = sanitized
+		}
+		if itemType == "reasoning" {
+			normalizeCodexReasoningReplayItem(out)
 		}
 		return out
 	case []any:
@@ -602,6 +614,29 @@ func sanitizeCodexRequestInputValue(value any) any {
 		return out
 	default:
 		return value
+	}
+}
+
+func normalizeCodexReasoningReplayItem(item map[string]any) {
+	if len(item) == 0 {
+		return
+	}
+	summary, ok := item["summary"]
+	if !ok || !isCodexRequestInputArrayValue(summary) {
+		item["summary"] = []any{}
+	}
+	content, ok := item["content"]
+	if !ok || !isCodexRequestInputArrayValue(content) || isCodexRequestInputEmptyValue(content) {
+		item["content"] = nil
+	}
+}
+
+func isCodexRequestInputArrayValue(value any) bool {
+	switch value.(type) {
+	case []any, []map[string]any:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1110,11 +1145,28 @@ func buildCodexWebsocketPayload(decoded map[string]any) ([]byte, error) {
 		return nil, fmt.Errorf("unsupported codex websocket request type %q", requestType)
 	}
 	normalizeCodexWebsocketToolParameters(decoded)
+	normalizeCodexWebsocketRequestInput(decoded)
 	encoded, err := json.Marshal(decoded)
 	if err != nil {
 		return nil, fmt.Errorf("encode codex websocket payload: %w", err)
 	}
 	return encoded, nil
+}
+
+func normalizeCodexWebsocketRequestInput(decoded map[string]any) {
+	if decoded == nil {
+		return
+	}
+	raw, ok := decoded["input"]
+	if !ok {
+		return
+	}
+	normalized := sanitizeCodexRequestInputValue(raw)
+	if normalized == nil {
+		decoded["input"] = []any{}
+		return
+	}
+	decoded["input"] = normalized
 }
 
 func normalizeCodexWebsocketToolParameters(decoded map[string]any) {
@@ -2306,11 +2358,11 @@ func extractResponseOutputItems(decoded map[string]any) []any {
 	}
 	if response, ok := decoded["response"].(map[string]any); ok {
 		if output := cloneSliceAny(asSlice(response["output"])); len(output) > 0 {
-			return output
+			return normalizeCodexResponseOutputItemsForReplay(output)
 		}
 	}
 	if output := cloneSliceAny(asSlice(decoded["output"])); len(output) > 0 {
-		return output
+		return normalizeCodexResponseOutputItemsForReplay(output)
 	}
 	return nil
 }
@@ -2321,7 +2373,7 @@ func mergeOutputItemsIntoResponse(responseObj map[string]any, outputItems []map[
 	}
 	existingRaw := asSlice(responseObj["output"])
 	if len(existingRaw) == 0 {
-		responseObj["output"] = mapsToAnySlice(outputItems)
+		responseObj["output"] = normalizeCodexResponseOutputMapsForReplay(outputItems)
 		return
 	}
 
@@ -2334,7 +2386,7 @@ func mergeOutputItemsIntoResponse(responseObj map[string]any, outputItems []map[
 		}
 		key := outputItemMergeKey(item, i)
 		seen[key] = struct{}{}
-		merged = append(merged, cloneMapAny(item))
+		merged = append(merged, normalizeCodexResponseOutputItemForReplay(item))
 	}
 	for i, item := range outputItems {
 		key := outputItemMergeKey(item, i+len(merged))
@@ -2342,9 +2394,47 @@ func mergeOutputItemsIntoResponse(responseObj map[string]any, outputItems []map[
 			continue
 		}
 		seen[key] = struct{}{}
-		merged = append(merged, cloneMapAny(item))
+		merged = append(merged, normalizeCodexResponseOutputItemForReplay(item))
 	}
 	responseObj["output"] = mapsToAnySlice(merged)
+}
+
+func normalizeCodexResponseOutputItemsForReplay(items []any) []any {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]any, 0, len(items))
+	for _, item := range items {
+		itemMap, ok := item.(map[string]any)
+		if !ok {
+			out = append(out, item)
+			continue
+		}
+		out = append(out, normalizeCodexResponseOutputItemForReplay(itemMap))
+	}
+	return out
+}
+
+func normalizeCodexResponseOutputMapsForReplay(items []map[string]any) []any {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]any, 0, len(items))
+	for _, item := range items {
+		if len(item) == 0 {
+			continue
+		}
+		out = append(out, normalizeCodexResponseOutputItemForReplay(item))
+	}
+	return out
+}
+
+func normalizeCodexResponseOutputItemForReplay(item map[string]any) map[string]any {
+	cloned := cloneMapAny(item)
+	if strings.EqualFold(strings.TrimSpace(asString(cloned["type"])), "reasoning") {
+		normalizeCodexReasoningReplayItem(cloned)
+	}
+	return cloned
 }
 
 func mapsToAnySlice(values []map[string]any) []any {

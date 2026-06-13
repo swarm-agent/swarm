@@ -142,6 +142,11 @@ const (
 	KeyIntegrationWorkspacePrefix                  = "integration/workspace/"
 	KeyIntegrationWorkspaceSessionPrefix           = "integration/workspace_session/"
 	KeyIntegrationWorkspaceSessionUpdatedPrefix    = "integration/workspace_session_updated/"
+	keySessionRecentIndexMeta                      = "session_recent_index/meta"
+	KeySessionRecentGlobalPrefix                   = "session_recent/global/"
+	KeySessionRecentAccountPrefix                  = "session_recent/account/"
+	KeySessionRecentWorkspacePrefix                = "session_recent/workspace/"
+	KeySessionRecentAccountWorkspacePrefix         = "session_recent/account_workspace/"
 	keyGlobalSequenceCounter                       = "meta/global_seq"
 )
 
@@ -335,6 +340,83 @@ func SessionByAccountPrefix(accountScopeID string) string {
 		return "session_by_account/"
 	}
 	return fmt.Sprintf("session_by_account/%s/", part)
+}
+
+func KeySessionRecentIndexMeta() string {
+	return keySessionRecentIndexMeta
+}
+
+func KeySessionRecentGlobal(updatedAt int64, sessionID string) string {
+	return KeySessionRecentGlobalPrefix + sessionRecentIndexOrderPart(updatedAt, sessionID)
+}
+
+func SessionRecentGlobalPrefix() string {
+	return KeySessionRecentGlobalPrefix
+}
+
+func KeySessionRecentForAccount(accountScopeID string, updatedAt int64, sessionID string) string {
+	return SessionRecentPrefixForAccount(accountScopeID) + sessionRecentIndexOrderPart(updatedAt, sessionID)
+}
+
+func SessionRecentPrefixForAccount(accountScopeID string) string {
+	part := keyPart(accountScopeID)
+	if part == "" {
+		return KeySessionRecentAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeySessionRecentAccountPrefix, part)
+}
+
+func KeySessionRecentForWorkspace(workspacePath string, updatedAt int64, sessionID string) string {
+	return SessionRecentPrefixForWorkspace(workspacePath) + sessionRecentIndexOrderPart(updatedAt, sessionID)
+}
+
+func SessionRecentPrefixForWorkspace(workspacePath string) string {
+	part := keyPart(workspacePath)
+	if part == "" {
+		return KeySessionRecentWorkspacePrefix
+	}
+	return fmt.Sprintf("%s%s/", KeySessionRecentWorkspacePrefix, part)
+}
+
+func KeySessionRecentForAccountWorkspace(accountScopeID, workspacePath string, updatedAt int64, sessionID string) string {
+	return SessionRecentPrefixForAccountWorkspace(accountScopeID, workspacePath) + sessionRecentIndexOrderPart(updatedAt, sessionID)
+}
+
+func SessionRecentPrefixForAccountWorkspace(accountScopeID, workspacePath string) string {
+	accountPart := keyPart(accountScopeID)
+	workspacePart := keyPart(workspacePath)
+	if accountPart == "" {
+		return SessionRecentPrefixForWorkspace(workspacePath)
+	}
+	if workspacePart == "" {
+		return fmt.Sprintf("%s%s/", KeySessionRecentAccountWorkspacePrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeySessionRecentAccountWorkspacePrefix, accountPart, workspacePart)
+}
+
+func sessionRecentIndexOrderPart(updatedAt int64, sessionID string) string {
+	return fmt.Sprintf("%018d/%s/%s", reverseMillis(updatedAt), sessionRecentDescSessionIDPart(sessionID), keyPart(sessionID))
+}
+
+func sessionRecentIndexStartAfter(prefix string, beforeUpdatedAt *int64, beforeSessionID string) string {
+	if beforeUpdatedAt == nil {
+		return ""
+	}
+	beforeSessionID = strings.TrimSpace(beforeSessionID)
+	if beforeSessionID == "" {
+		return fmt.Sprintf("%s%018d/\xff", prefix, reverseMillis(*beforeUpdatedAt))
+	}
+	return prefix + sessionRecentIndexOrderPart(*beforeUpdatedAt, beforeSessionID) + "\x00"
+}
+
+func sessionRecentDescSessionIDPart(sessionID string) string {
+	raw := append([]byte(strings.TrimSpace(sessionID)), 0)
+	var b strings.Builder
+	b.Grow(len(raw) * 2)
+	for _, c := range raw {
+		fmt.Fprintf(&b, "%02x", ^c)
+	}
+	return b.String()
 }
 
 func KeySessionRoute(sessionID string) string {

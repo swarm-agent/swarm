@@ -1,6 +1,22 @@
 package startupconfig
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestV3DiagnosticsConfigParsesAndFormats(t *testing.T) {
+	cfg, _, err := parseEntries("v3_diagnostics = true\n", Default(t.TempDir()+"/swarm.conf"))
+	if err != nil {
+		t.Fatalf("parseEntries: %v", err)
+	}
+	if !cfg.V3Diagnostics {
+		t.Fatalf("V3Diagnostics = false, want true")
+	}
+	if !containsLine(Format(cfg), "v3_diagnostics = true") {
+		t.Fatalf("formatted config missing v3_diagnostics = true")
+	}
+}
 
 func TestScrubManagedLinkStateClearsManagedFields(t *testing.T) {
 	cfg := Default(t.TempDir() + "/swarm.conf")
@@ -25,4 +41,13 @@ func TestScrubManagedLinkStateClearsManagedFields(t *testing.T) {
 	if cfg.ManagedHostSync.Mode != "" || len(cfg.ManagedHostSync.Modules) != 0 || cfg.ManagedHostSync.OwnerSwarmID != "" || cfg.ManagedHostSync.HostAPIBaseURL != "" || cfg.ManagedHostSync.SyncCredentialURL != "" || cfg.ManagedHostSync.SyncAgentURL != "" {
 		t.Fatalf("managed sync not scrubbed: %+v", cfg.ManagedHostSync)
 	}
+}
+
+func containsLine(text, want string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		if line == want {
+			return true
+		}
+	}
+	return false
 }

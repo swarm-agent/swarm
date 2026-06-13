@@ -14,6 +14,7 @@ const sessionsV3WorksetMaxResourcePageSize = 200
 
 type sessionsV3WorksetRequest struct {
 	SessionIDs []string                   `json:"session_ids,omitempty"`
+	Global     bool                       `json:"global,omitempty"`
 	Workspace  sessionsV3WorksetWorkspace `json:"workspace,omitempty"`
 	Recent     sessionsV3WorksetRecent    `json:"recent,omitempty"`
 	History    sessionsV3WorksetHistory   `json:"history,omitempty"`
@@ -136,8 +137,11 @@ func sessionsV3WorksetOptionsFromRequest(principal identity.Principal, req sessi
 	if err != nil {
 		return sessionsV3ResolvedWorksetOptions{}, err
 	}
-	if req.Recent.Limit > 0 && len(workspacePaths) == 0 {
-		return sessionsV3ResolvedWorksetOptions{}, errors.New("workset recent selector requires explicit workspace_path or workspace_paths")
+	if req.Global && len(workspacePaths) > 0 {
+		return sessionsV3ResolvedWorksetOptions{}, errors.New("workset global selector cannot be combined with workspace_path or workspace_paths")
+	}
+	if req.Recent.Limit > 0 && len(workspacePaths) == 0 && !req.Global {
+		return sessionsV3ResolvedWorksetOptions{}, errors.New("workset recent selector requires explicit workspace_path, workspace_paths, or global=true")
 	}
 	history, err := sessionsV3WorksetHistoryOptionsFromRequest(req.History, req.Resources)
 	if err != nil {

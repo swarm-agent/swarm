@@ -577,6 +577,19 @@ func v3StreamEventToChatEvent(event client.SessionV3Event) ui.ChatRunStreamEvent
 	case "session.mode.updated":
 		out.Type = "session.mode.updated"
 		out.SessionMode = stringValue(payload, "mode")
+	case "session.reasoning.started":
+		out.Type = "reasoning.started"
+		out.Summary = ""
+	case "session.reasoning.delta":
+		out.Type = "reasoning.delta"
+		out.Delta = rawStringValue(payload, "delta")
+		if out.Delta == "" {
+			out.Delta = rawStringValue(payload, "output")
+		}
+		out.Summary = rawStringValue(payload, "summary")
+	case "session.reasoning.completed":
+		out.Type = "reasoning.completed"
+		out.Summary = firstNonEmptyV3String(rawStringValue(payload, "summary"), rawStringValue(payload, "completed_output"), rawStringValue(payload, "raw_output"), rawStringValue(payload, "output"))
 	case "session.tool.started":
 		out.Type = "tool.started"
 		out.ToolName = firstNonEmptyV3String(stringValue(payload, "tool_name"), "tool")
@@ -586,12 +599,6 @@ func v3StreamEventToChatEvent(event client.SessionV3Event) ui.ChatRunStreamEvent
 		out.RawOutput = rawStringValue(payload, "raw_output")
 		out.Step = int(int64Number(payload, "step"))
 		out.DurationMS = int64Number(payload, "duration_ms")
-		if isV3SyntheticReasoningToolPayload(payload) {
-			out.Type = "reasoning.started"
-			out.ToolName = ""
-			out.Summary = ""
-			break
-		}
 		if out.Summary == "" {
 			out.Summary = out.ToolName
 		}
@@ -603,14 +610,6 @@ func v3StreamEventToChatEvent(event client.SessionV3Event) ui.ChatRunStreamEvent
 		out.RawOutput = rawStringValue(payload, "raw_output")
 		out.Step = int(int64Number(payload, "step"))
 		out.DurationMS = int64Number(payload, "duration_ms")
-		if isV3SyntheticReasoningToolPayload(payload) {
-			out.Type = "reasoning.delta"
-			out.ToolName = ""
-			out.Delta = out.Output
-			out.Output = ""
-			out.RawOutput = ""
-			break
-		}
 	case "session.tool.completed", "session.tool.failed":
 		out.Type = "tool.completed"
 		out.ToolName = firstNonEmptyV3String(stringValue(payload, "tool_name"), "tool")
@@ -620,14 +619,6 @@ func v3StreamEventToChatEvent(event client.SessionV3Event) ui.ChatRunStreamEvent
 		out.RawOutput = firstNonEmptyV3String(rawStringValue(payload, "raw_output"), rawStringValue(payload, "completed_output"))
 		out.Step = int(int64Number(payload, "step"))
 		out.DurationMS = int64Number(payload, "duration_ms")
-		if isV3SyntheticReasoningToolPayload(payload) {
-			out.Type = "reasoning.completed"
-			out.ToolName = ""
-			out.Summary = firstNonEmptyV3String(rawStringValue(payload, "completed_output"), out.RawOutput, out.Output)
-			out.Output = ""
-			out.RawOutput = ""
-			break
-		}
 	case "session.run.failed", "session.run.cancelled", "session.run.expired", "session.run.interrupted", "session.assistant.failed":
 		out.Type = "turn.error"
 		if out.Error == "" {
@@ -719,19 +710,6 @@ func rawStringValue(payload map[string]any, key string) string {
 		return value
 	}
 	return ""
-}
-
-func boolValue(payload map[string]any, key string) bool {
-	value, _ := payload[key].(bool)
-	return value
-}
-
-func isV3SyntheticReasoningToolPayload(payload map[string]any) bool {
-	metadata, _ := payload["metadata"].(map[string]any)
-	return boolValue(metadata, "synthetic_tool") ||
-		strings.EqualFold(stringValue(metadata, "timeline_kind"), "thinking") ||
-		strings.EqualFold(stringValue(metadata, "segment_kind"), "reasoning") ||
-		strings.EqualFold(stringValue(payload, "tool_name"), "thinking")
 }
 
 func firstNonEmptyV3String(values ...string) string {

@@ -475,6 +475,46 @@ func TestSessionsV3TUIWorksetEndpointFiltersSessionIDsByExplicitScopeAndAccount(
 	assertSessionsV3WorksetIDs(t, payload, createdA.ID)
 }
 
+func TestSessionsV3WorksetEndpointSupportsExplicitGlobalRecentDiscovery(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspaceA := filepath.Join(t.TempDir(), "workspace-a")
+	workspaceB := filepath.Join(t.TempDir(), "workspace-b")
+	for _, path := range []string{workspaceA, workspaceB} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", path, err)
+		}
+	}
+	workspaceA = mustEvalSymlinkForWorksetTest(t, workspaceA)
+	workspaceB = mustEvalSymlinkForWorksetTest(t, workspaceB)
+
+	createdA := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "global-workset-a", "Global Workset A", workspaceA)
+	createdB := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "global-workset-b", "Global Workset B", workspaceB)
+	createSessionsV3WorksetForeignAccountSession(t, sessionSvc, "foreign-global-workset", workspaceA)
+
+	payload := postSessionsV3WorksetForTest(t, server, http.StatusOK, map[string]any{
+		"global":    true,
+		"recent":    map[string]any{"limit": 20},
+		"history":   map[string]any{"mode": "none"},
+		"resources": map[string]any{"run_intents": true},
+	})
+	assertSessionsV3WorksetIDs(t, payload.SessionsByID, createdB.ID, createdA.ID)
+	if _, ok := payload.SessionsByID["foreign-global-workset"]; ok {
+		t.Fatalf("global workset included foreign account session: %+v", payload.SessionsByID)
+	}
+	if payload.SnapshotEndpointCursor == "" {
+		t.Fatalf("snapshot_endpoint_cursor is empty")
+	}
+	if len(payload.SessionOrder) != 2 || payload.SessionOrder[0] != createdB.ID || payload.SessionOrder[1] != createdA.ID {
+		t.Fatalf("session_order = %+v", payload.SessionOrder)
+	}
+	if _, ok := payload.ProjectionsBySession[createdA.ID]; !ok {
+		t.Fatalf("projections_by_session missing %q: %+v", createdA.ID, payload.ProjectionsBySession)
+	}
+	if _, ok := payload.RunIntentsBySession[createdA.ID]; !ok {
+		t.Fatalf("run_intents_by_session missing %q: %+v", createdA.ID, payload.RunIntentsBySession)
+	}
+}
+
 func TestSessionsV3WorksetEndpointRejectsUnscopedRecentSelector(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSession(t, server, "main-workset-unscoped", "Main Workset Unscoped")
@@ -486,6 +526,53 @@ func TestSessionsV3WorksetEndpointRejectsUnscopedRecentSelector(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("unscoped recent status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
+}
+
+func TestSessionsV3WorksetEndpointRejectsGlobalWorkspaceCombination(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	workspace = mustEvalSymlinkForWorksetTest(t, workspace)
+
+	postSessionsV3WorksetForTest(t, server, http.StatusBadRequest, map[string]any{
+		"global":    true,
+		"workspace": map[string]any{"workspace_path": workspace},
+		"recent":    map[string]any{"limit": 10},
+	})
+}
+
+type sessionsV3WorksetTestPayload struct {
+	OK                     bool                                        `json:"ok"`
+	SnapshotEndpointCursor string                                      `json:"snapshot_endpoint_cursor"`
+	SessionsByID           map[string]pebblestore.SessionSnapshot      `json:"sessions_by_id"`
+	ProjectionsBySession   map[string]pebblestore.V3SessionProjection  `json:"projections_by_session"`
+	RunIntentsBySession    map[string][]pebblestore.V3SessionRunIntent `json:"run_intents_by_session"`
+	SessionOrder           []string                                    `json:"session_order"`
+}
+
+func postSessionsV3WorksetForTest(t *testing.T, server *Server, wantStatus int, body map[string]any) sessionsV3WorksetTestPayload {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal workset body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions:workset", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != wantStatus {
+		t.Fatalf("workset status = %d, want %d, body=%s", rec.Code, wantStatus, rec.Body.String())
+	}
+	if wantStatus != http.StatusOK {
+		return sessionsV3WorksetTestPayload{}
+	}
+	var payload sessionsV3WorksetTestPayload
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode workset response: %v", err)
+	}
+	return payload
 }
 
 func postSessionsV3TUIWorksetForTest(t *testing.T, server *Server, wantStatus int, body map[string]any) map[string]pebblestore.SessionSnapshot {

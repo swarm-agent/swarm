@@ -545,6 +545,7 @@ export type RenderItem =
   | { type: 'message'; message: ChatMessageRecord; virtualKey?: string }
   | { type: 'live-tool'; toolMessage: NonNullable<ChatMessageRecord['toolMessage']> }
   | { type: 'live-assistant'; id: string; content: string; timelineSeq?: number }
+  | { type: 'live-reasoning'; id: string; text: string; summary: string; state: DesktopSessionRecord['live']['reasoningState']; startedAt: number | null; timelineSeq?: number }
 
 function jsonStringValue(record: Record<string, unknown> | null | undefined, key: string): string {
   const value = record?.[key]
@@ -607,6 +608,7 @@ function renderItemKey(item: RenderItem | undefined, index: number): string {
     case 'live-tool':
       return `live-tool:${item.toolMessage.toolInstanceId || item.toolMessage.callId || item.toolMessage.tool || 'active'}`
     case 'live-assistant':
+    case 'live-reasoning':
       return item.id
     default:
       return `render-item:${index}`
@@ -616,7 +618,7 @@ function renderItemKey(item: RenderItem | undefined, index: number): string {
 function renderItemTimelineSeq(item: RenderItem): number {
   const seq = item.type === 'message'
     ? item.message.globalSeq
-    : item.type === 'live-assistant'
+    : item.type === 'live-assistant' || item.type === 'live-reasoning'
       ? item.timelineSeq ?? 0
       : item.type === 'live-tool'
         ? item.toolMessage.timelineSeq ?? 0
@@ -676,6 +678,13 @@ function estimateRenderItemSize(item: RenderItem | undefined, thinkingTagsEnable
     }
     case 'live-assistant':
       return Math.min(640, 88 + (Math.ceil(Math.max(item.content.length, 1) / 100) * 22))
+    case 'live-reasoning': {
+      const base = 72
+      const reasoningLength = thinkingTagsEnabled ? (item.text || item.summary).length : 0
+      return thinkingTagsEnabled
+        ? Math.min(420, base + (Math.ceil(Math.max(reasoningLength, 1) / 100) * 22))
+        : base
+    }
     case 'message': {
       if (item.message.role === 'tool' && item.message.toolMessage) {
         const toolMessage = item.message.toolMessage
@@ -876,6 +885,59 @@ export function liveAssistantDraftHasCanonicalReplay(
     return false
   }
   return canonicalAssistantReplayContents(messages).has(content)
+}
+
+function canonicalReasoningReplayContents(messages: ChatMessageRecord[]): Set<string> {
+  return new Set(
+    messages
+      .filter((message) => message.role.trim().toLowerCase() === 'reasoning')
+      .map((message) => normalizeAssistantReplayContent(message.content))
+      .filter((content) => content !== ''),
+  )
+}
+
+function liveReasoningHasCanonicalReplay(
+  text: string,
+  summary: string,
+  messages: ChatMessageRecord[],
+): boolean {
+  const canonicalReasoningContents = canonicalReasoningReplayContents(messages)
+  if (canonicalReasoningContents.size === 0) {
+    return false
+  }
+  const normalizedText = normalizeAssistantReplayContent(text)
+  const normalizedSummary = normalizeAssistantReplayContent(summary)
+  return Boolean(
+    (normalizedText && canonicalReasoningContents.has(normalizedText))
+    || (normalizedSummary && canonicalReasoningContents.has(normalizedSummary)),
+  )
+}
+
+export function buildLiveReasoningItem(
+  session: DesktopSessionRecord | null | undefined,
+  messages: ChatMessageRecord[],
+): Extract<RenderItem, { type: 'live-reasoning' }> | null {
+  const live = session?.live
+  if (!live || live.reasoningState === 'idle') {
+    return null
+  }
+  const text = live.reasoningText.trim()
+  const summary = live.reasoningSummary.trim()
+  if (live.reasoningState === 'done' && liveReasoningHasCanonicalReplay(text, summary, messages)) {
+    return null
+  }
+  if (!text && !summary && live.reasoningState !== 'running') {
+    return null
+  }
+  return {
+    type: 'live-reasoning',
+    id: `live-reasoning:${live.runId || session?.id || 'active'}:${live.reasoningSegment}`,
+    text,
+    summary,
+    state: live.reasoningState,
+    startedAt: live.reasoningStartedAt,
+    timelineSeq: live.seq,
+  }
 }
 
 export function retainedAssistantSegmentsWithoutCanonicalReplay(
@@ -1588,6 +1650,7 @@ export function DesktopChatPanel({
     () => retainedAssistantSegmentsWithoutCanonicalReplay(retainedAssistantSegments, displayedMessages),
     [displayedMessages, retainedAssistantSegments],
   )
+  const liveReasoningItem = useMemo(() => buildLiveReasoningItem(liveSession, displayedMessages), [displayedMessages, liveSession])
   const liveToolMessages = useMemo(() => buildLiveToolMessages(liveSession), [liveSession])
   const renderableLiveToolMessages = useMemo(
     () => liveToolMessages.filter((message) => !hasCanonicalLiveToolReplacement(displayedMessages, message)),
@@ -1705,6 +1768,9 @@ export function DesktopChatPanel({
     for (const segment of renderableRetainedAssistantSegments) {
       items.push({ type: 'live-assistant', id: segment.id, content: segment.content, timelineSeq: segment.seq })
     }
+    if (liveReasoningItem) {
+      items.push(liveReasoningItem)
+    }
     if (shouldRenderLiveToolMessage) {
       for (const liveToolMessage of renderableLiveToolMessages) {
         items.push({ type: 'live-tool', toolMessage: liveToolMessage })
@@ -1714,7 +1780,7 @@ export function DesktopChatPanel({
       items.push({ type: 'live-assistant', id: liveAssistantDraftKey, content: liveAssistantDraft })
     }
     return orderDesktopTimelineItems(items)
-  }, [displayedMessages, liveAssistantDraft, liveAssistantDraftKey, renderableLiveToolMessages, renderableRetainedAssistantSegments, sessionId, shouldRenderLiveAssistantDraft, shouldRenderLiveToolMessage])
+  }, [displayedMessages, liveAssistantDraft, liveAssistantDraftKey, liveReasoningItem, renderableLiveToolMessages, renderableRetainedAssistantSegments, sessionId, shouldRenderLiveAssistantDraft, shouldRenderLiveToolMessage])
   const thinkingTagsMeasurementKey = desktopChatThinkingTagsMeasurementKey(thinkingTagsEnabled)
   const renderMeasurementKey = useMemo(
     () => [thinkingTagsMeasurementKey, ...renderItems.map((item) => {
@@ -1727,6 +1793,8 @@ export function DesktopChatPanel({
           return `lt:${item.toolMessage.toolInstanceId || item.toolMessage.callId || item.toolMessage.tool}:${item.toolMessage.output.length}:${item.toolMessage.completedOutput.length}:${item.toolMessage.taskRows.length}`
         case 'live-assistant':
           return `la:${item.content.length}`
+        case 'live-reasoning':
+          return `lr:${item.id}:${item.text.length}:${item.summary.length}:${item.state}`
         default:
           return 'unknown'
       }
@@ -3161,6 +3229,30 @@ export function DesktopChatPanel({
                       {currentSessionAgent || 'swarm'}
                     </div>
                     <ChatMarkdown content={item.content} toolMessage={null} />
+                  </article>
+                </div>
+              )
+            }
+
+            if (item.type === 'live-reasoning') {
+              const reasoningLabel = reasoningHeadline(item.state, item.startedAt, timerNow)
+              const reasoningBody = renderReasoningBody(item.text, item.summary, thinkingTagsEnabled)
+              return (
+                <div
+                  key={virtualItem.key}
+                  ref={rowVirtualizer.measureElement}
+                  data-index={virtualItem.index}
+                  data-testid="desktop-chat-row"
+                  data-render-item-type={item.type}
+                  data-render-item-key={String(virtualItem.key)}
+                  className="absolute left-0 top-0 w-full py-2 flex justify-center"
+                  style={{ transform: `translateY(${virtualItem.start}px)` }}
+                >
+                  <article className="w-full min-w-0 max-w-[980px] opacity-80">
+                    <div className="mb-1 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
+                      {reasoningLabel}
+                    </div>
+                    {reasoningBody ? <ChatMarkdown content={reasoningBody} toolMessage={null} thinkingTagsEnabled={thinkingTagsEnabled} /> : null}
                   </article>
                 </div>
               )

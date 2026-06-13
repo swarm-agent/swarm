@@ -138,7 +138,7 @@ test('normalizeDesktopStateSnapshot builds a plain replacement snapshot from wor
   assert.equal(snapshot.sessionsById?.next?.permissionsHydrated, true)
   assert.equal(snapshot.sessionsById?.next?.pendingPermissions[0]?.id, 'permission-1')
   assert.equal(snapshot.sessionsById?.next?.pendingPermissionCount, 1)
-  assert.equal(snapshot.sessionsById?.next?.live.status, 'blocked')
+  assert.equal(snapshot.sessionsById?.next?.live.status, 'running')
   assert.equal(snapshot.usageBySessionId?.next?.remainingTokens, 750)
   assert.equal(snapshot.runIntentsBySessionId?.next?.runId, 'run-new')
   assert.equal(snapshot.workspacesByPath?.['/workspace/next']?.sessionIds[0], 'next')
@@ -178,6 +178,32 @@ test('normalizeDesktopStateSnapshot maps active run intent into live sidebar sta
   assert.equal(session?.runIntent?.runId, 'run-active')
   assert.equal(session?.live.status, 'running')
   assert.equal(session?.live.runId, 'run-active')
+  assert.equal(session?.live.startedAt, 38)
+})
+
+test('normalizeDesktopStateSnapshot hydrates session live state from top-level run intents', () => {
+  const snapshot = normalizeDesktopStateSnapshot({
+    rev: 45,
+    sessions_by_id: {
+      active: sessionWire('active', 40),
+    },
+    session_order: ['active'],
+    run_intents_by_session: {
+      active: [{
+        session_id: 'active',
+        run_id: 'run-top-level',
+        status: 'running',
+        created_at: 38,
+        updated_at: 40,
+        event_seq: 7,
+      }],
+    },
+  })
+
+  const session = snapshot.sessionsById?.active
+  assert.equal(session?.runIntent?.runId, 'run-top-level')
+  assert.equal(session?.live.status, 'running')
+  assert.equal(session?.live.runId, 'run-top-level')
   assert.equal(session?.live.startedAt, 38)
 })
 

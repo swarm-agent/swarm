@@ -102,6 +102,7 @@ function shouldDeliverFrame(kind: string): boolean {
 export class DesktopV3RealtimeController {
   private readonly subscriptions = new Map<string, SubscriptionEntry>()
   private socket: WebSocket | null = null
+  private connecting: Promise<void> | null = null
   private reconnectTimer: number | null = null
   private livenessTimer: number | null = null
   private reconnectAttempt = 0
@@ -114,10 +115,10 @@ export class DesktopV3RealtimeController {
     this.endpointCursor = options.getEndpointCursor().trim()
   }
 
-  subscribeSession(sessionId: string, endpointCursor?: string | null): void {
+  subscribeSession(sessionId: string, endpointCursor?: string | null): Promise<void> {
     const normalizedSessionId = sessionId.trim()
     if (!normalizedSessionId) {
-      return
+      return Promise.resolve()
     }
     const existing = this.subscriptions.get(normalizedSessionId)
     const cursor = maxEndpointCursor(
@@ -133,13 +134,13 @@ export class DesktopV3RealtimeController {
     })
     this.desired = true
     if (existing && this.socket?.readyState === WebSocket.OPEN) {
-      return
+      return Promise.resolve()
     }
     if (this.socket?.readyState === WebSocket.OPEN) {
       this.sendSubscribe(this.socket, this.subscriptions.get(normalizedSessionId)!)
-      return
+      return Promise.resolve()
     }
-    void this.connect()
+    return this.connect()
   }
 
   syncSessions(subscriptions: DesktopV3RealtimeSubscription[], options: { resubscribe?: boolean } = {}): void {
@@ -174,6 +175,7 @@ export class DesktopV3RealtimeController {
     this.clearLiveness()
     const socket = this.socket
     this.socket = null
+    this.connecting = null
     this.lastActivityAt = 0
     this.generation += 1
     socket?.close()
@@ -198,6 +200,18 @@ export class DesktopV3RealtimeController {
     if (this.socket && (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING)) {
       return
     }
+    if (this.connecting) {
+      return this.connecting
+    }
+    this.connecting = this.openConnection()
+    try {
+      await this.connecting
+    } finally {
+      this.connecting = null
+    }
+  }
+
+  private async openConnection(): Promise<void> {
     this.clearReconnect()
     this.generation += 1
     const generation = this.generation
@@ -328,6 +342,7 @@ export class DesktopV3RealtimeController {
     this.clearLiveness()
     const socket = this.socket
     this.socket = null
+    this.connecting = null
     this.lastActivityAt = 0
     this.generation += 1
     socket?.close()

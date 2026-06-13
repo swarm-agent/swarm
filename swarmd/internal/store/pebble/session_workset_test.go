@@ -87,6 +87,104 @@ func TestBuildV3SessionWorksetUsesSessionIDTieBreaker(t *testing.T) {
 	}
 }
 
+func TestBuildV3SessionWorksetRecentIndexTracksUpdatesAndDeletes(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3WorksetSessionForTest(t, sessions, "session-old", "/workspace/index", 1000)
+	createV3WorksetSessionForTest(t, sessions, "session-delete", "/workspace/index", 3000)
+	createV3WorksetSessionForTest(t, sessions, "session-move", "/workspace/index", 2000)
+
+	updated, ok, err := sessions.GetSession("session-old")
+	if err != nil || !ok {
+		t.Fatalf("load session-old: ok=%t err=%v", ok, err)
+	}
+	updated.UpdatedAt = 5000
+	if err := sessions.UpdateSession(updated); err != nil {
+		t.Fatalf("update recent index session: %v", err)
+	}
+	moved, ok, err := sessions.GetSession("session-move")
+	if err != nil || !ok {
+		t.Fatalf("load session-move: ok=%t err=%v", ok, err)
+	}
+	moved.WorkspacePath = "/workspace/other"
+	moved.UpdatedAt = 6000
+	if err := sessions.UpdateSession(moved); err != nil {
+		t.Fatalf("move recent index session: %v", err)
+	}
+	if err := sessions.DeleteSession("session-delete"); err != nil {
+		t.Fatalf("delete recent index session: %v", err)
+	}
+
+	workset, err := sessions.BuildV3SessionWorkset(V3SessionWorksetOptions{
+		AccountScopeID: "account-1",
+		WorkspacePath:  "/workspace/index",
+		RecentLimit:    10,
+		History:        V3SessionWorksetHistoryOptions{Mode: V3SessionWorksetHistoryModeNone},
+	})
+	if err != nil {
+		t.Fatalf("build updated indexed workset: %v", err)
+	}
+	if got := workset.SessionOrder; len(got) != 1 || got[0] != "session-old" {
+		t.Fatalf("indexed update/delete order = %+v", got)
+	}
+}
+
+func TestBuildV3SessionWorksetBackfillsRecentIndexForExistingSessions(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	legacy := SessionSnapshot{
+		ID:             "legacy-session",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		WorkspacePath:  "/workspace/legacy",
+		WorkspaceName:  "workspace",
+		Title:          "legacy",
+		CreatedAt:      1000,
+		UpdatedAt:      1000,
+	}
+	if err := store.PutJSON(KeySession(legacy.ID), legacy); err != nil {
+		t.Fatalf("seed legacy session: %v", err)
+	}
+
+	workset, err := sessions.BuildV3SessionWorkset(V3SessionWorksetOptions{
+		AccountScopeID: "account-1",
+		WorkspacePath:  "/workspace/legacy",
+		RecentLimit:    10,
+		History:        V3SessionWorksetHistoryOptions{Mode: V3SessionWorksetHistoryModeNone},
+	})
+	if err != nil {
+		t.Fatalf("build backfilled indexed workset: %v", err)
+	}
+	if got := workset.SessionOrder; len(got) != 1 || got[0] != "legacy-session" {
+		t.Fatalf("backfilled order = %+v", got)
+	}
+	if _, ok, err := store.GetBytes(KeySessionRecentForAccountWorkspace("account-1", "/workspace/legacy", legacy.UpdatedAt, legacy.ID)); err != nil || !ok {
+		t.Fatalf("recent index was not backfilled: ok=%t err=%v", ok, err)
+	}
+}
+
+func TestBuildV3SessionWorksetGlobalRecentUsesAccountIndex(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3WorksetSessionForTest(t, sessions, "session-account", "/workspace/account", 2000)
+	foreign := SessionSnapshot{ID: "session-foreign", AccountScopeID: "account-2", WorkspacePath: "/workspace/account", Title: "foreign", CreatedAt: 3000, UpdatedAt: 3000}
+	if err := sessions.CreateSession(foreign); err != nil {
+		t.Fatalf("create foreign session: %v", err)
+	}
+
+	workset, err := sessions.BuildV3SessionWorkset(V3SessionWorksetOptions{
+		AccountScopeID: "account-1",
+		RecentLimit:    10,
+		History:        V3SessionWorksetHistoryOptions{Mode: V3SessionWorksetHistoryModeNone},
+	})
+	if err != nil {
+		t.Fatalf("build account global indexed workset: %v", err)
+	}
+	if got := workset.SessionOrder; len(got) != 1 || got[0] != "session-account" {
+		t.Fatalf("account global order = %+v", got)
+	}
+}
+
 func TestBuildV3SessionWorksetCappedHistoryWithManifest(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)

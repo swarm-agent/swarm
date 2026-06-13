@@ -63,6 +63,7 @@ export interface DesktopState {
 
 export interface DesktopDaemonSnapshot {
   rev: number
+  snapshotEndpointCursor?: string
   sessionsById?: Record<string, DesktopSessionRecord>
   sessionOrder?: string[]
   messagesBySessionId?: Record<string, ChatMessageRecord[]>
@@ -1411,25 +1412,6 @@ function applyTool(session: DesktopSessionRecord, payload: Record<string, unknow
     retainLiveTool(session.live, isToolFailed ? 'error' : 'done')
     resetLiveTool(session.live)
   }
-  logDesktopToolStreamUpdate({
-    sessionId,
-    eventType,
-    toolName: toolName || session.live.sidebarToolName || session.live.toolName || '',
-    callId: callId || session.live.toolCallId || '',
-    step: typeof payload.step === 'number' ? payload.step : session.live.step,
-    seq: eventSeq,
-  })
-}
-
-function logDesktopToolStreamUpdate(update: {
-  sessionId: string
-  eventType: string
-  toolName: string
-  callId: string
-  step: number
-  seq: number
-}): void {
-  console.log('[desktop-sidebar] session.tool update', update)
 }
 
 function upsertToolHistory(live: DesktopSessionRecord['live'], input: {

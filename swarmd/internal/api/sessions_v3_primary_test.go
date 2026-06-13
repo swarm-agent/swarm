@@ -1716,11 +1716,10 @@ func TestSessionsV3PrimaryStreamCarriesProviderReasoningEventsAndMessage(t *test
 
 	postSessionsV3PrimaryTestMessage(t, server, created.ID, "reasoning-message", "think then answer")
 	seen := map[string]int{}
-	var thinkingDeltaPayload struct {
-		RunID    string         `json:"run_id"`
-		ToolName string         `json:"tool_name"`
-		Output   string         `json:"output"`
-		Metadata map[string]any `json:"metadata"`
+	var reasoningDeltaPayload struct {
+		RunID        string `json:"run_id"`
+		Delta        string `json:"delta"`
+		ReasoningKey string `json:"reasoning_key"`
 	}
 	for {
 		frame := readSessionsV3PrimaryStreamFrame(t, conn)
@@ -1728,45 +1727,42 @@ func TestSessionsV3PrimaryStreamCarriesProviderReasoningEventsAndMessage(t *test
 			continue
 		}
 		seen[frame.Event.EventType]++
-		if frame.Event.EventType == "session.tool.delta" {
+		if frame.Event.EventType == "session.reasoning.delta" {
 			var payload struct {
-				RunID    string         `json:"run_id"`
-				ToolName string         `json:"tool_name"`
-				Output   string         `json:"output"`
-				Metadata map[string]any `json:"metadata"`
+				RunID        string `json:"run_id"`
+				Delta        string `json:"delta"`
+				ReasoningKey string `json:"reasoning_key"`
 			}
 			if err := json.Unmarshal(frame.Event.Payload, &payload); err != nil {
-				t.Fatalf("decode thinking tool delta payload: %v", err)
+				t.Fatalf("decode reasoning delta payload: %v", err)
 			}
-			if payload.ToolName == sessionV3ReasoningToolName {
-				thinkingDeltaPayload = payload
-			}
+			reasoningDeltaPayload = payload
 		}
 		if frame.Event.EventType == "session.assistant.completed" {
 			break
 		}
 	}
-	for _, want := range []string{"session.tool.started", "session.tool.delta", "session.tool.completed"} {
+	for _, want := range []string{"session.reasoning.started", "session.reasoning.delta", "session.reasoning.completed"} {
 		if seen[want] == 0 {
 			t.Fatalf("missing %s in live stream; seen=%v", want, seen)
 		}
 	}
-	if thinkingDeltaPayload.RunID == "" || thinkingDeltaPayload.ToolName != sessionV3ReasoningToolName || thinkingDeltaPayload.Output == "" || thinkingDeltaPayload.Metadata["reasoning_key"] != "summary-1" {
-		t.Fatalf("unexpected thinking tool delta payload: %+v", thinkingDeltaPayload)
+	for _, unwanted := range []string{"session.tool.started", "session.tool.delta", "session.tool.completed"} {
+		if seen[unwanted] != 0 {
+			t.Fatalf("unexpected synthetic reasoning tool event %s in live stream; seen=%v", unwanted, seen)
+		}
+	}
+	if reasoningDeltaPayload.RunID == "" || reasoningDeltaPayload.Delta != "Inspecting files" || reasoningDeltaPayload.ReasoningKey != "summary-1" {
+		t.Fatalf("unexpected reasoning delta payload: %+v", reasoningDeltaPayload)
 	}
 	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
 	if err != nil {
 		t.Fatalf("list messages after reasoning run: %v", err)
 	}
-	var thinkingToolMessage *pebblestore.MessageSnapshot
 	for i := range messages {
 		if messages[i].Role == "tool" && messages[i].Metadata["timeline_kind"] == "thinking" {
-			thinkingToolMessage = &messages[i]
-			break
+			t.Fatalf("unexpected synthetic thinking tool message: %+v; all messages=%+v", messages[i], messages)
 		}
-	}
-	if thinkingToolMessage == nil || thinkingToolMessage.Metadata["reasoning_key"] != "summary-1" {
-		t.Fatalf("thinking tool message = %+v; all messages=%+v", thinkingToolMessage, messages)
 	}
 }
 
@@ -3215,11 +3211,11 @@ func TestSessionsV3ExecutorReplaysCodexNativeOutputItems(t *testing.T) {
 	if _, ok := secondInput[1]["output_index"]; ok {
 		t.Fatalf("second provider input[1] includes response-only output_index: %#v", secondInput[1])
 	}
-	if _, ok := secondInput[1]["summary"]; ok {
-		t.Fatalf("second provider input[1] includes empty summary: %#v", secondInput[1])
+	if summary := cloneSessionsV3ProviderItemSlice(secondInput[1]["summary"]); len(summary) != 0 {
+		t.Fatalf("second provider input[1] summary = %#v, want empty array", secondInput[1]["summary"])
 	}
-	if _, ok := secondInput[1]["content"]; ok {
-		t.Fatalf("second provider input[1] includes empty content: %#v", secondInput[1])
+	if content, ok := secondInput[1]["content"]; !ok || content != nil {
+		t.Fatalf("second provider input[1] content = %#v, want explicit null", content)
 	}
 	if secondInput[2]["type"] != "message" || secondInput[2]["id"] != "msg_codex_native_1" {
 		t.Fatalf("second provider input[2] = %#v, want persisted Codex native output item", secondInput[2])

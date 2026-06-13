@@ -9,6 +9,7 @@ import type { RunStreamEventMessage } from './run-stream-controller'
 import type { DesktopChatRoute } from '../chat/services/chat-routing'
 import { permissionRequiresApproval } from '../permissions/services/permission-payload'
 import { buildStructuredToolMessage } from '../chat/services/tool-message'
+import { buildLiveReasoningItem, buildLiveToolMessages } from '../chat/components/desktop-chat-panel'
 
 function emptyLiveState(): DesktopSessionRecord['live'] {
   return {
@@ -352,7 +353,101 @@ test('V3 stream maps reasoning events into live thinking state', () => {
   assert.equal(updated.live.reasoningSummary, 'Inspecting files')
   assert.equal(updated.live.reasoningState, 'done')
   assert.equal(updated.live.reasoningSegment, 1)
+  assert.deepEqual(buildLiveReasoningItem(updated, []), {
+    type: 'live-reasoning',
+    id: 'live-reasoning:run-v3:1',
+    text: 'Inspecting files',
+    summary: 'Inspecting files',
+    state: 'done',
+    startedAt: 30,
+    timelineSeq: 4,
+  })
+  assert.equal(buildLiveReasoningItem(updated, [{
+    id: 'reasoning-canonical',
+    sessionId: 'session-v3',
+    role: 'reasoning',
+    content: 'Inspecting files',
+    createdAt: 40,
+    globalSeq: 4,
+  }]), null)
+  assert.equal(updated.live.sidebarToolName, null)
+  assert.equal(updated.live.toolName, null)
+  assert.equal(updated.live.toolOutput, '')
+  assert.deepEqual(updated.live.toolHistory, [])
   assert.equal(updated.live.lastEventType, 'session.reasoning.completed')
+})
+
+test('V3 stream parses thinking events as timeline tool objects', () => {
+  const session = makeSession({ id: 'session-v3', sessionApi: 'v3', lastEventSeq: 1, projectionHighWatermarkSeq: 1 })
+  useDesktopStore.setState(makeState(session), true)
+
+  const emitThinkingTool = (
+    seq: number,
+    eventType: 'session.tool.started' | 'session.tool.delta' | 'session.tool.completed',
+    payload: Record<string, unknown>,
+  ) => {
+    useDesktopStore.getState().__testApplyRunStreamFrame?.('session-v3', {
+      type: 'event',
+      ok: true,
+      session_id: 'session-v3',
+      last_seq: seq,
+      event: {
+        id: `v3evt_session-v3_${String(seq).padStart(20, '0')}`,
+        session_id: 'session-v3',
+        seq,
+        event_type: eventType,
+        ts_unix_ms: 30 + seq,
+        payload: {
+          session_id: 'session-v3',
+          run_id: 'run-v3',
+          step: 1,
+          step_id: 'step-1',
+          tool_instance_id: 'step-1:thinking-1',
+          tool_name: 'thinking',
+          call_id: 'thinking-1',
+          metadata: { synthetic_tool: true, timeline_kind: 'thinking', segment_kind: 'reasoning' },
+          ...payload,
+        },
+      },
+    }, 30 + seq)
+  }
+
+  emitThinkingTool(2, 'session.tool.started', { arguments: '{"reasoning_key":"summary-1"}' })
+
+  let updated = useDesktopStore.getState().sessions['session-v3']
+  assert.equal(updated.live.toolName, 'thinking')
+  assert.equal(updated.live.sidebarToolName, 'thinking')
+  assert.equal(updated.live.toolCallId, 'thinking-1')
+  assert.equal(updated.live.summary, 'thinking')
+  assert.equal(updated.live.reasoningState, 'idle')
+  assert.equal(updated.live.lastEventType, 'session.tool.started')
+  assert.deepEqual(buildLiveToolMessages(updated).map((message) => [message.tool, message.state, message.timelineSeq]), [['thinking', 'running', 2]])
+
+  emitThinkingTool(3, 'session.tool.delta', { output: 'Inspecting files' })
+
+  updated = useDesktopStore.getState().sessions['session-v3']
+  assert.equal(updated.live.toolOutput, 'Inspecting files')
+  assert.equal(updated.live.toolHistory?.[0]?.toolOutput, 'Inspecting files')
+  assert.deepEqual(buildLiveToolMessages(updated).map((message) => [message.tool, message.state, message.output, message.timelineSeq]), [['thinking', 'running', 'Inspecting files', 2]])
+
+  emitThinkingTool(4, 'session.tool.completed', { completed_output: 'Inspecting files' })
+
+  updated = useDesktopStore.getState().sessions['session-v3']
+  assert.equal(updated.live.runId, 'run-v3')
+  assert.equal(updated.live.reasoningText, '')
+  assert.equal(updated.live.reasoningSummary, '')
+  assert.equal(updated.live.reasoningState, 'idle')
+  assert.equal(updated.live.sidebarToolName, 'thinking')
+  assert.equal(updated.live.toolName, null)
+  assert.equal(updated.live.toolOutput, '')
+  assert.equal(updated.live.retainedToolName, 'thinking')
+  assert.equal(updated.live.retainedToolOutput, 'Inspecting files')
+  assert.equal(updated.live.toolHistory?.length, 1)
+  assert.equal(updated.live.toolHistory?.[0]?.toolName, 'thinking')
+  assert.equal(updated.live.toolHistory?.[0]?.state, 'done')
+  assert.equal(updated.live.toolHistory?.[0]?.toolOutput, 'Inspecting files')
+  assert.equal(updated.live.lastEventType, 'session.tool.completed')
+  assert.deepEqual(buildLiveToolMessages(updated).map((message) => [message.tool, message.state, message.completedOutput, message.timelineSeq]), [['thinking', 'done', 'Inspecting files', 2]])
 })
 
 test('V3 stream maps committed run failures into replayable error state', () => {
@@ -1062,7 +1157,108 @@ test('desktop V3 realtime controller consumes backend stream frames and renders 
   }
 })
 
-test('desktop V3 realtime resubscribes refreshed conversations from persisted subscription intent', async () => {
+test('desktop V3 realtime subscribes from active top-level snapshot run intent when session is temporarily idle', async () => {
+  const sent: Array<{ url: string; message: Record<string, unknown> }> = []
+  const websocketURLs: string[] = []
+  const originalFetch = globalThis.fetch
+  const originalWindow = globalThis.window
+  const originalWebSocket = globalThis.WebSocket
+
+  class FakeWebSocket extends EventTarget {
+    static CONNECTING = 0
+    static OPEN = 1
+    static CLOSING = 2
+    static CLOSED = 3
+    readyState = FakeWebSocket.OPEN
+    url: string
+
+    constructor(input: string | URL) {
+      super()
+      this.url = String(input)
+      websocketURLs.push(this.url)
+      queueMicrotask(() => this.dispatchEvent(new Event('open')))
+    }
+
+    close() {
+      this.readyState = FakeWebSocket.CLOSED
+      this.dispatchEvent(new Event('close'))
+    }
+
+    send(payload: string) {
+      sent.push({ url: this.url, message: JSON.parse(payload) as Record<string, unknown> })
+    }
+  }
+
+  globalThis.window = {
+    location: { protocol: 'http:', host: '127.0.0.1:7777' },
+    localStorage: {
+      getItem: () => null,
+      setItem: () => undefined,
+      removeItem: () => undefined,
+    },
+    addEventListener() {},
+    dispatchEvent: (() => true) as typeof window.dispatchEvent,
+    setTimeout: ((callback: TimerHandler, timeout?: number) => setTimeout(callback, timeout)) as typeof window.setTimeout,
+    clearTimeout: ((timer?: number) => clearTimeout(timer)) as typeof window.clearTimeout,
+    setInterval: ((callback: TimerHandler, timeout?: number) => setInterval(callback, timeout)) as typeof window.setInterval,
+    clearInterval: ((timer?: number) => clearInterval(timer)) as typeof window.clearInterval,
+  } as unknown as Window & typeof globalThis
+  globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input)
+    if (url === '/v1/auth/desktop/session') {
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    if (url === '/v3/sessions:workset') {
+      return new Response(JSON.stringify({ rev: getDesktopSnapshot().rev + 1, sessions_by_id: {}, session_order: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    throw new Error(`unexpected fetch: ${url}`)
+  }) as typeof fetch
+
+  try {
+    const sessionId = 'session-top-level-intent-subscribe'
+    mergeDesktopSnapshot({
+      rev: getDesktopSnapshot().rev + 1,
+      snapshotEndpointCursor: 'cursor-500',
+      runIntentsBySessionId: {
+        [sessionId]: {
+          sessionId,
+          runId: 'run-top-level-intent-subscribe',
+          status: 'running',
+          blockedReason: '',
+          createdAt: 10,
+          updatedAt: 11,
+          eventSeq: 2,
+        },
+      },
+    })
+    useDesktopStore.setState({
+      sessions: {
+        [sessionId]: makeSession({ id: sessionId, sessionApi: 'v3', live: emptyLiveState(), runIntent: null }),
+      },
+      realtimeDesired: false,
+      connectionState: 'idle',
+    })
+
+    useDesktopStore.getState().syncV3RealtimeSessions({ force: true })
+    await new Promise((resolve) => setImmediate(resolve))
+    await new Promise((resolve) => setImmediate(resolve))
+
+    const v3Socket = websocketURLs.find((url) => url.includes('/v3/realtime/stream'))
+    assert.ok(v3Socket, `expected canonical V3 realtime socket, got ${websocketURLs.join(', ')}`)
+    assert.equal(sent.some((entry) => entry.message.kind === 'subscribe.session' && entry.message.session_id === sessionId), true)
+  } finally {
+    useDesktopStore.getState().disconnect()
+    globalThis.fetch = originalFetch
+    globalThis.window = originalWindow
+    globalThis.WebSocket = originalWebSocket
+  }
+})
+
+test('desktop V3 realtime ignores persisted localStorage subscription intent authority', async () => {
   const sent: Array<{ url: string; message: Record<string, unknown> }> = []
   const websocketURLs: string[] = []
   const originalFetch = globalThis.fetch
@@ -1115,6 +1311,14 @@ test('desktop V3 realtime resubscribes refreshed conversations from persisted su
     if (url === '/v1/auth/desktop/session') {
       return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
+    if (url === '/v3/sessions:workset') {
+      return new Response(JSON.stringify({
+        rev: getDesktopSnapshot().rev + 1,
+        snapshot_endpoint_cursor: 'cursor-31005',
+        sessions_by_id: {},
+        session_order: [],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
     throw new Error(`unexpected fetch: ${url}`)
   }) as typeof fetch
 
@@ -1157,8 +1361,8 @@ test('desktop V3 realtime resubscribes refreshed conversations from persisted su
     const subscribeMessages = sent
       .map((entry) => entry.message)
       .filter((message) => message.kind === 'subscribe.session' && message.session_id === sessionId)
-    assert.equal(subscribeMessages.length >= 2, true, `expected refreshed resubscribe, got ${JSON.stringify(sent)}`)
-    assert.equal(websocketURLs.length, socketCountBeforeRefresh, 'refresh resync should reuse the existing V3 socket when it survived the reload boundary')
+    assert.equal(subscribeMessages.length, 1, `localStorage subscription intent must not create refreshed resubscribe: ${JSON.stringify(sent)}`)
+    assert.equal(websocketURLs.length, socketCountBeforeRefresh, 'localStorage subscription intent must not open a replacement V3 socket')
     assert.equal(websocketURLs.some((url) => url.includes('/v3/realtime/stream')), true)
   } finally {
     useDesktopStore.getState().disconnect()
@@ -1230,6 +1434,8 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
 
   globalThis.window = {
     location: { protocol: 'http:', host: '127.0.0.1:7777' },
+    addEventListener() {},
+    dispatchEvent: (() => true) as typeof window.dispatchEvent,
     setTimeout: ((callback: TimerHandler, timeout?: number) => setTimeout(callback, timeout)) as typeof window.setTimeout,
     clearTimeout: ((timer?: number) => clearTimeout(timer)) as typeof window.clearTimeout,
     setInterval: ((callback: TimerHandler, timeout?: number) => setInterval(callback, timeout)) as typeof window.setInterval,
@@ -1247,6 +1453,17 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
     }
     if (url === '/v3/sessions/session-v3/run/stop') {
       return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    if (url === '/v3/sessions:workset') {
+      return new Response(JSON.stringify({
+        rev: getDesktopSnapshot().rev + 1,
+        snapshot_endpoint_cursor: 'cursor-4',
+        sessions_by_id: {},
+        session_order: [],
+      }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })
@@ -1317,7 +1534,7 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
     })
 
     const urls = calls.map((entry) => String(entry.input)).sort()
-    assert.deepEqual(urls, ['/v3/sessions/session-v3/messages', '/v1/auth/desktop/session'].sort())
+    assert.deepEqual(urls, ['/v3/sessions/session-v3/messages', '/v3/sessions:workset', '/v1/auth/desktop/session', '/v1/auth/desktop/session'].sort())
     assert.equal(urls.some((url) => url.startsWith('/v1/swarm/managed-hosts/sessions')), false)
     assert.equal(urls.some((url) => url.startsWith('/v2/sessions')), false)
     assert.deepEqual(websocketURLs.sort(), ['ws://127.0.0.1:7777/v3/realtime/stream?endpoint_cursor=cursor-4', 'ws://127.0.0.1:7777/ws'].sort())
@@ -1882,6 +2099,17 @@ test('V3 ensureRunStream opens canonical realtime stream and keeps global /ws se
     const url = String(input)
     if (url === '/v1/auth/desktop/session') {
       return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    if (url === '/v3/sessions:workset') {
+      return new Response(JSON.stringify({
+        rev: getDesktopSnapshot().rev + 1,
+        snapshot_endpoint_cursor: 'cursor-4',
+        sessions_by_id: {},
+        session_order: [],
+      }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })

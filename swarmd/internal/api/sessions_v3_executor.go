@@ -32,8 +32,7 @@ const (
 	sessionV3ProviderIdenticalToolCallLimit   = 5
 	sessionV3AssistantDeltaFlushMaxBytes      = 512
 	sessionV3AssistantDeltaFlushMaxDelay      = 100 * time.Millisecond
-	sessionV3ReasoningToolName                = "thinking"
-	sessionV3ReasoningToolType                = "v3_provider_reasoning"
+	sessionV3ReasoningEventType               = "v3_provider_reasoning"
 	sessionV3RunStopDefaultReason             = "run stopped by user"
 	sessionV3TitleDefault                     = "New Session"
 	sessionV3TitleConversationLimit           = 24
@@ -452,79 +451,45 @@ func (e *sessionV3Executor) recordRunProgress(job sessionV3ExecutorJob, deltaInd
 	})
 }
 
-func sessionV3ReasoningToolCallID(step int, reasoningKey string) string {
+func sessionV3ReasoningEventID(step int, reasoningKey string) string {
 	if step <= 0 {
 		step = 1
 	}
 	reasoningKey = sessionV3NormalizeReasoningKey(reasoningKey)
-	sum := sha256.Sum256([]byte(strconv.Itoa(step) + "\x00" + reasoningKey + "\x00thinking"))
-	return "thinking_" + hex.EncodeToString(sum[:8])
+	sum := sha256.Sum256([]byte(strconv.Itoa(step) + "\x00" + reasoningKey + "\x00reasoning"))
+	return "reasoning_" + hex.EncodeToString(sum[:8])
 }
 
-func sessionV3ReasoningToolArguments(reasoningKey string) string {
-	raw, err := json.Marshal(map[string]any{"reasoning_key": sessionV3NormalizeReasoningKey(reasoningKey)})
-	if err != nil {
-		return "{}"
-	}
-	return string(raw)
-}
-
-func sessionV3ReasoningToolMetadata(job sessionV3ExecutorJob, step int, reasoningKey string) map[string]any {
-	return map[string]any{
-		"run_id":         strings.TrimSpace(job.RunID),
-		"executor_kind":  "v3_provider",
-		"segment_kind":   "reasoning",
-		"timeline_kind":  "thinking",
-		"reasoning_key":  sessionV3NormalizeReasoningKey(reasoningKey),
-		"step":           step,
-		"step_id":        sessionV3ProviderToolStepID(step),
-		"display_title":  "THINKING",
-		"synthetic_tool": true,
-	}
-}
-
-func (e *sessionV3Executor) recordReasoningToolEvent(job sessionV3ExecutorJob, eventType string, step, eventIndex int, reasoningKey, output, rawOutput string, appendMessage bool) (sessionruntime.SessionMutationResult, error) {
+func (e *sessionV3Executor) recordReasoningEvent(job sessionV3ExecutorJob, eventType string, step, eventIndex int, reasoningKey, delta, summary string) (sessionruntime.SessionMutationResult, error) {
 	if e.isRunCanceled(job) {
 		return sessionruntime.SessionMutationResult{}, context.Canceled
 	}
 	eventType = strings.TrimSpace(eventType)
 	if eventType == "" {
-		return sessionruntime.SessionMutationResult{}, errors.New("v3 reasoning tool event type is required")
+		return sessionruntime.SessionMutationResult{}, errors.New("v3 reasoning event type is required")
 	}
 	if step <= 0 {
 		step = 1
 	}
 	reasoningKey = sessionV3NormalizeReasoningKey(reasoningKey)
-	callID := sessionV3ReasoningToolCallID(step, reasoningKey)
-	stepID := sessionV3ProviderToolStepID(step)
-	toolInstanceID := sessionV3ProviderToolInstanceID(step, callID)
-	metadata := sessionV3ReasoningToolMetadata(job, step, reasoningKey)
 	now := time.Now().UnixMilli()
 	payload := map[string]any{
-		"path_id":          "run.v3.provider-tool-result.v1",
-		"type":             sessionV3ReasoningToolType,
-		"run_id":           strings.TrimSpace(job.RunID),
-		"step":             step,
-		"step_id":          stepID,
-		"tool_name":        sessionV3ReasoningToolName,
-		"call_id":          callID,
-		"tool_instance_id": toolInstanceID,
-		"arguments":        sessionV3ReasoningToolArguments(reasoningKey),
-		"metadata":         metadata,
-		"recorded_at":      now,
-		"summary":          "THINKING",
+		"path_id":       "run.v3.provider-reasoning.v1",
+		"type":          sessionV3ReasoningEventType,
+		"run_id":        strings.TrimSpace(job.RunID),
+		"step":          step,
+		"step_id":       sessionV3ProviderToolStepID(step),
+		"reasoning_id":  sessionV3ReasoningEventID(step, reasoningKey),
+		"reasoning_key": reasoningKey,
+		"recorded_at":   now,
 	}
-	if output != "" {
-		payload["output"] = output
+	if delta != "" {
+		payload["delta"] = delta
 	}
-	if rawOutput != "" {
-		payload["raw_output"] = rawOutput
-		payload["completed_output"] = rawOutput
+	if summary != "" {
+		payload["summary"] = summary
 	}
-	if eventType == "session.tool.completed" {
-		payload["status"] = "completed"
-	}
-	if eventIndex > 0 && eventType == "session.tool.delta" {
+	if eventIndex > 0 && eventType == "session.reasoning.delta" {
 		payload["delta_index"] = eventIndex
 	}
 	raw, err := json.Marshal(payload)
@@ -537,8 +502,8 @@ func (e *sessionV3Executor) recordReasoningToolEvent(job sessionV3ExecutorJob, e
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, err
 	}
-	clientRequestID := sessionV3ProviderToolEventClientRequestID(eventType, job.RunID, step, callID, eventIndex)
-	input := sessionruntime.SessionMutationInput{
+	clientRequestID := sessionV3ReasoningEventClientRequestID(eventType, job.RunID, step, reasoningKey, eventIndex)
+	return e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       job.SessionID,
 		UserID:          job.Principal.UserID,
 		AccountScopeID:  job.Principal.AccountScopeID,
@@ -551,19 +516,7 @@ func (e *sessionV3Executor) recordReasoningToolEvent(job sessionV3ExecutorJob, e
 		EventPayload:    raw,
 		RunIntent:       &intent,
 		NowUnixMs:       now,
-	}
-	if appendMessage && strings.TrimSpace(rawOutput) != "" {
-		message := pebblestore.MessageSnapshot{
-			ID:        sessionV3ReasoningToolMessageID(job.SessionID, job.RunID, step, reasoningKey),
-			Role:      "tool",
-			Content:   string(raw),
-			CreatedAt: now,
-			Metadata:  metadata,
-		}
-		input.Kind = sessionruntime.SessionMutationAppendMessage
-		input.Message = &message
-	}
-	return e.server.applySessionV3PrimaryMutation(input)
+	})
 }
 
 func sessionV3MergeReasoningSnapshotOrChunk(previous, incoming string) string {
@@ -576,18 +529,6 @@ func sessionV3MergeReasoningSnapshotOrChunk(previous, incoming string) string {
 		return incoming
 	}
 	return strings.TrimSpace(previous + incoming)
-}
-
-func sessionV3ReasoningAppendedChunk(previous, next string) string {
-	previous = strings.TrimSpace(previous)
-	next = strings.TrimSpace(next)
-	if next == "" || next == previous {
-		return ""
-	}
-	if previous != "" && strings.HasPrefix(next, previous) {
-		return strings.TrimPrefix(next, previous)
-	}
-	return next
 }
 
 type sessionV3AssistantDeltaCoalescer struct {
@@ -1179,12 +1120,12 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			}
 			return strings.TrimSpace(strings.Join(parts, "\n\n"))
 		}
-		completeActiveReasoning := func(appendMessage bool) {
+		completeActiveReasoning := func() {
 			if activeReasoningKey == "" || progressErr != nil {
 				return
 			}
 			summary := strings.TrimSpace(reasoningByKey[activeReasoningKey])
-			_, progressErr = e.recordReasoningToolEvent(job, "session.tool.completed", step, 0, activeReasoningKey, "", summary, appendMessage)
+			_, progressErr = e.recordReasoningEvent(job, "session.reasoning.completed", step, 0, activeReasoningKey, "", summary)
 		}
 		response, err := runner.CreateResponseStreaming(ctx, req, func(event provideriface.StreamEvent) {
 			streamIndex++
@@ -1198,10 +1139,10 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			case provideriface.StreamEventReasoningSummaryDelta:
 				reasoningKey := rememberReasoningKey(event.ReasoningKey)
 				if activeReasoningKey != reasoningKey {
-					completeActiveReasoning(true)
+					completeActiveReasoning()
 					activeReasoningKey = reasoningKey
 					if progressErr == nil {
-						_, progressErr = e.recordReasoningToolEvent(job, "session.tool.started", step, 0, reasoningKey, "", "", false)
+						_, progressErr = e.recordReasoningEvent(job, "session.reasoning.started", step, 0, reasoningKey, "", "")
 					}
 				}
 				previous := strings.TrimSpace(reasoningByKey[reasoningKey])
@@ -1210,17 +1151,17 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 					return
 				}
 				reasoningByKey[reasoningKey] = next
-				chunk := sessionV3ReasoningAppendedChunk(previous, next)
-				if chunk == "" {
-					return
-				}
 				reasoningEventIndex++
 				if progressErr == nil {
-					_, progressErr = e.recordReasoningToolEvent(job, "session.tool.delta", step, reasoningEventIndex, reasoningKey, chunk, "", false)
+					// Send the merged reasoning snapshot on every delta. Desktop replaces
+					// live thinking text from session.reasoning.delta, so emitting only
+					// appended chunks would make the visible thinking tag flicker or lose
+					// earlier words.
+					_, progressErr = e.recordReasoningEvent(job, "session.reasoning.delta", step, reasoningEventIndex, reasoningKey, next, "")
 				}
 			}
 		})
-		completeActiveReasoning(true)
+		completeActiveReasoning()
 		_ = rebuildReasoningSummary()
 		if flushErr := coalescer.Flush(); flushErr != nil && progressErr == nil {
 			progressErr = flushErr
@@ -1852,7 +1793,7 @@ func sessionsV3ProviderAssistantInputItem(content string) map[string]any {
 }
 
 func sessionV3ProviderNativeOutputItems(providerID string, raw map[string]any) []any {
-	if !strings.EqualFold(strings.TrimSpace(providerID), "codex") || len(raw) == 0 {
+	if !sessionV3ProviderSupportsNativeOutputReplay(providerID) || len(raw) == 0 {
 		return nil
 	}
 	if response, ok := raw["response"].(map[string]any); ok {
@@ -1863,11 +1804,16 @@ func sessionV3ProviderNativeOutputItems(providerID string, raw map[string]any) [
 	return cloneSessionsV3ProviderItemSlice(raw["output"])
 }
 
+func sessionV3ProviderSupportsNativeOutputReplay(providerID string) bool {
+	providerID = strings.ToLower(strings.TrimSpace(providerID))
+	return providerID == "codex" || strings.HasPrefix(providerID, "codex_")
+}
+
 func sessionsV3ProviderNativeInputItems(metadata map[string]any) []map[string]any {
 	if len(metadata) == 0 {
 		return nil
 	}
-	if !strings.EqualFold(strings.TrimSpace(fmt.Sprint(metadata["provider"])), "codex") {
+	if !sessionV3ProviderSupportsNativeOutputReplay(fmt.Sprint(metadata["provider"])) {
 		return nil
 	}
 	if !strings.EqualFold(strings.TrimSpace(fmt.Sprint(metadata["provider_output_format"])), "responses_api") {
@@ -1928,7 +1874,12 @@ func sessionsV3ProviderNativeRequestInputItem(item map[string]any) (map[string]a
 		out := map[string]any{"type": "reasoning"}
 		copySessionsV3ProviderNativeStringField(out, item, "id")
 		copySessionsV3ProviderNativeStringField(out, item, "status")
-		copySessionsV3ProviderNativeNonEmptyField(out, item, "summary")
+		out["summary"] = sessionsV3ProviderNativeReasoningSummary(item["summary"])
+		if content, ok := sessionsV3ProviderNativeReasoningContent(item["content"]); ok {
+			out["content"] = content
+		} else {
+			out["content"] = nil
+		}
 		copySessionsV3ProviderNativeStringField(out, item, "encrypted_content")
 		if len(out) <= 1 {
 			return nil, false
@@ -1938,6 +1889,58 @@ func sessionsV3ProviderNativeRequestInputItem(item map[string]any) (map[string]a
 		sanitized, ok := sessionsV3ProviderNativeStripResponseFields(item).(map[string]any)
 		return sanitized, ok && len(sanitized) > 0
 	}
+}
+
+func sessionsV3ProviderNativeReasoningSummary(value any) []any {
+	raw := cloneSessionsV3ProviderItemSlice(value)
+	if len(raw) == 0 {
+		return []any{}
+	}
+	out := make([]any, 0, len(raw))
+	for _, item := range raw {
+		itemMap, ok := item.(map[string]any)
+		if !ok || len(itemMap) == 0 {
+			continue
+		}
+		if contentType := strings.TrimSpace(fmt.Sprint(itemMap["type"])); contentType != "" && contentType != "summary_text" {
+			continue
+		}
+		text := strings.TrimSpace(fmt.Sprint(itemMap["text"]))
+		if text == "" {
+			continue
+		}
+		out = append(out, map[string]any{"type": "summary_text", "text": text})
+	}
+	return out
+}
+
+func sessionsV3ProviderNativeReasoningContent(value any) (any, bool) {
+	raw := cloneSessionsV3ProviderItemSlice(value)
+	if len(raw) == 0 {
+		return nil, false
+	}
+	out := make([]any, 0, len(raw))
+	for _, item := range raw {
+		itemMap, ok := item.(map[string]any)
+		if !ok || len(itemMap) == 0 {
+			continue
+		}
+		contentType := strings.TrimSpace(fmt.Sprint(itemMap["type"]))
+		switch contentType {
+		case "reasoning_text", "text":
+		default:
+			continue
+		}
+		text := strings.TrimSpace(fmt.Sprint(itemMap["text"]))
+		if text == "" {
+			continue
+		}
+		out = append(out, map[string]any{"type": contentType, "text": text})
+	}
+	if len(out) == 0 {
+		return nil, false
+	}
+	return out, true
 }
 
 func sessionsV3ProviderNativeMessageContent(value any) []map[string]any {
@@ -2489,6 +2492,15 @@ func sessionV3ProviderToolEventClientRequestID(eventType, runID string, step int
 	return fmt.Sprintf("v3-executor-%s-%s-%04d-%s", label, strings.TrimSpace(runID), step, callID)
 }
 
+func sessionV3ReasoningEventClientRequestID(eventType, runID string, step int, reasoningKey string, deltaIndex int) string {
+	label := strings.NewReplacer(".", "_", "/", "_", " ", "_").Replace(strings.TrimSpace(eventType))
+	reasoningID := strings.NewReplacer(".", "_", "/", "_", " ", "_", ":", "_").Replace(sessionV3ReasoningEventID(step, reasoningKey))
+	if deltaIndex > 0 {
+		return fmt.Sprintf("v3-executor-%s-%s-%04d-%s-%04d", label, strings.TrimSpace(runID), step, reasoningID, deltaIndex)
+	}
+	return fmt.Sprintf("v3-executor-%s-%s-%04d-%s", label, strings.TrimSpace(runID), step, reasoningID)
+}
+
 func sessionV3AssistantMessageID(sessionID, runID string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(runID) + "\x00assistant"))
 	return "v3msg_assistant_" + hex.EncodeToString(sum[:16])
@@ -2500,14 +2512,6 @@ func sessionV3AssistantSegmentMessageID(sessionID, runID string, step int) strin
 	}
 	sum := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(runID) + "\x00assistant\x00pre_tool\x00" + strconv.Itoa(step)))
 	return "v3msg_assistant_" + hex.EncodeToString(sum[:16])
-}
-
-func sessionV3ReasoningToolMessageID(sessionID, runID string, step int, reasoningKey string) string {
-	if step <= 0 {
-		step = 1
-	}
-	sum := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(runID) + "\x00thinking_tool\x00" + strconv.Itoa(step) + "\x00" + sessionV3NormalizeReasoningKey(reasoningKey)))
-	return "v3msg_tool_" + hex.EncodeToString(sum[:16])
 }
 
 func sessionV3NormalizeReasoningKey(key string) string {

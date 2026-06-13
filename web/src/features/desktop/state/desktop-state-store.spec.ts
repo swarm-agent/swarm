@@ -177,7 +177,7 @@ test('applyDesktopDaemonEvent patches through the reducer and emits only on stat
   unsubscribe()
 })
 
-test('applyDesktopDurableEventEnvelope routes session tool events by global stream envelope identity', () => {
+test('applyDesktopDurableEventEnvelope routes session tool events by global stream envelope identity without sidebar log spam', () => {
   replaceDesktopFromSnapshot({ rev: 0 })
   const originalConsoleLog = console.log
   const logs: unknown[][] = []
@@ -215,17 +215,7 @@ test('applyDesktopDurableEventEnvelope routes session tool events by global stre
   assert.equal(session.live.lastEventType, 'session.tool.started')
   assert.equal(session.live.seq, 7)
   assert.equal(getDesktopSnapshot().sessionsById['']?.live.sidebarToolName, undefined)
-  assert.deepEqual(logs, [[
-    '[desktop-sidebar] session.tool update',
-    {
-      sessionId: 'session-from-envelope',
-      eventType: 'session.tool.started',
-      toolName: 'read',
-      callId: 'call-1',
-      step: 1,
-      seq: 7,
-    },
-  ]])
+  assert.deepEqual(logs, [])
 })
 
 test('markDesktopStale updates canonical stale state and requests resync', () => {

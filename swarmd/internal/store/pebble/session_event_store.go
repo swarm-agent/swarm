@@ -1561,11 +1561,15 @@ func (s *SessionStore) setSessionInBatch(batch *pebble.Batch, session SessionSna
 	if err != nil {
 		return fmt.Errorf("marshal session %q: %w", session.ID, err)
 	}
+	var previous *SessionSnapshot
 	if existing, ok, err := s.GetSession(session.ID); err != nil {
 		return err
-	} else if ok && existing.AccountScopeID != "" && existing.AccountScopeID != session.AccountScopeID {
-		if err := batch.Delete([]byte(KeySessionByAccount(existing.AccountScopeID, session.ID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
-			return err
+	} else if ok {
+		previous = &existing
+		if existing.AccountScopeID != "" && existing.AccountScopeID != session.AccountScopeID {
+			if err := batch.Delete([]byte(KeySessionByAccount(existing.AccountScopeID, session.ID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+				return err
+			}
 		}
 	}
 	if err := batch.Set([]byte(KeySession(session.ID)), payload, nil); err != nil {
@@ -1575,6 +1579,9 @@ func (s *SessionStore) setSessionInBatch(batch *pebble.Batch, session SessionSna
 		if err := batch.Set([]byte(KeySessionByAccount(session.AccountScopeID, session.ID)), []byte(session.ID), nil); err != nil {
 			return err
 		}
+	}
+	if err := replaceSessionRecentIndexInBatch(batch, previous, &session); err != nil {
+		return err
 	}
 	return nil
 }

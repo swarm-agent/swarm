@@ -29,6 +29,7 @@ import { agentStateQueryOptions, uiSettingsQueryKey } from '../../queries/query-
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { applyV3RuntimeEnvelope, createV3SnapshotEnvelope, getV3RuntimeDesktopSnapshot, getV3RuntimeSnapshot, installV3RuntimePersistence, normalizeV3RealtimeFrame, restoreV3RuntimeFromPersistence } from '../v3-runtime'
 import { fetchDesktopStateSnapshot } from './desktop-state-snapshot'
+import type { DesktopDaemonSnapshot } from './desktop-state'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import { normalizeSwarmSettings, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import type {
@@ -163,16 +164,8 @@ let desktopRealtimeLastActivityAt = 0
 let desktopRealtimeConnectingStartedAt = 0
 let desktopV3RealtimeController: DesktopV3RealtimeController | null = null
 let desktopV3RealtimeEndpointCursor = ''
+let pendingDesktopV3GlobalDiscovery: Promise<DesktopDaemonSnapshot> | null = null
 let runStreamController: DesktopRunStreamController | null = null
-
-const DESKTOP_V3_REALTIME_SUBSCRIPTION_INTENTS_KEY = 'swarm.web.desktop.v3RealtimeSubscriptionIntents.v1'
-const DESKTOP_V3_REALTIME_SUBSCRIPTION_INTENT_MAX_AGE_MS = 24 * 60 * 60 * 1000
-
-type DesktopV3RealtimeSubscriptionIntent = {
-  sessionId: string
-  endpointCursor?: string
-  updatedAt: number
-}
 
 function requireRunStreamController(): DesktopRunStreamController {
   if (!runStreamController) {
@@ -188,102 +181,12 @@ function requireV3RealtimeController(): DesktopV3RealtimeController {
   return desktopV3RealtimeController
 }
 
-function desktopV3RealtimeSubscriptionIntentStorage(): Storage | null {
-  if (typeof window === 'undefined') {
-    return null
-  }
-  try {
-    return window.localStorage ?? null
-  } catch {
-    return null
-  }
-}
-
-function readDesktopV3RealtimeSubscriptionIntents(now = Date.now()): Map<string, DesktopV3RealtimeSubscriptionIntent> {
-  const storage = desktopV3RealtimeSubscriptionIntentStorage()
-  if (!storage) {
-    return new Map()
-  }
-  const raw = storage.getItem(DESKTOP_V3_REALTIME_SUBSCRIPTION_INTENTS_KEY)
-  if (!raw) {
-    return new Map()
-  }
-  try {
-    const decoded = JSON.parse(raw) as unknown
-    if (!Array.isArray(decoded)) {
-      return new Map()
-    }
-    const intents = new Map<string, DesktopV3RealtimeSubscriptionIntent>()
-    for (const item of decoded) {
-      if (!item || typeof item !== 'object') {
-        continue
-      }
-      const record = item as Record<string, unknown>
-      const sessionId = typeof record.sessionId === 'string' ? record.sessionId.trim() : ''
-      const updatedAt = typeof record.updatedAt === 'number' && Number.isFinite(record.updatedAt) ? record.updatedAt : 0
-      if (!sessionId || updatedAt <= 0 || now - updatedAt > DESKTOP_V3_REALTIME_SUBSCRIPTION_INTENT_MAX_AGE_MS) {
-        continue
-      }
-      const endpointCursor = typeof record.endpointCursor === 'string' ? record.endpointCursor.trim() : ''
-      intents.set(sessionId, { sessionId, endpointCursor: endpointCursor || undefined, updatedAt })
-    }
-    return intents
-  } catch {
-    return new Map()
-  }
-}
-
-function writeDesktopV3RealtimeSubscriptionIntents(intents: Map<string, DesktopV3RealtimeSubscriptionIntent>): void {
-  const storage = desktopV3RealtimeSubscriptionIntentStorage()
-  if (!storage) {
-    return
-  }
-  const payload = Array.from(intents.values())
-    .sort((left, right) => right.updatedAt - left.updatedAt || left.sessionId.localeCompare(right.sessionId))
-  try {
-    if (payload.length === 0) {
-      storage.removeItem(DESKTOP_V3_REALTIME_SUBSCRIPTION_INTENTS_KEY)
-    } else {
-      storage.setItem(DESKTOP_V3_REALTIME_SUBSCRIPTION_INTENTS_KEY, JSON.stringify(payload))
-    }
-  } catch {
-    // Best-effort browser refresh recovery only.
-  }
-}
-
-function rememberDesktopV3RealtimeSubscriptionIntent(sessionId: string, endpointCursor?: string | null): void {
+function subscribeDesktopV3RealtimeSession(sessionId: string, endpointCursor?: string | null): Promise<void> {
   const normalizedSessionId = sessionId.trim()
   if (!normalizedSessionId) {
-    return
+    return Promise.resolve()
   }
-  const intents = readDesktopV3RealtimeSubscriptionIntents()
-  const cursor = endpointCursor?.trim() || desktopV3RealtimeEndpointCursor || intents.get(normalizedSessionId)?.endpointCursor || ''
-  intents.set(normalizedSessionId, {
-    sessionId: normalizedSessionId,
-    endpointCursor: cursor || undefined,
-    updatedAt: Date.now(),
-  })
-  writeDesktopV3RealtimeSubscriptionIntents(intents)
-}
-
-function forgetDesktopV3RealtimeSubscriptionIntent(sessionId: string): void {
-  const normalizedSessionId = sessionId.trim()
-  if (!normalizedSessionId) {
-    return
-  }
-  const intents = readDesktopV3RealtimeSubscriptionIntents()
-  if (intents.delete(normalizedSessionId)) {
-    writeDesktopV3RealtimeSubscriptionIntents(intents)
-  }
-}
-
-function subscribeDesktopV3RealtimeSession(sessionId: string, endpointCursor?: string | null): void {
-  const normalizedSessionId = sessionId.trim()
-  if (!normalizedSessionId) {
-    return
-  }
-  rememberDesktopV3RealtimeSubscriptionIntent(normalizedSessionId, endpointCursor)
-  requireV3RealtimeController().subscribeSession(normalizedSessionId, endpointCursor)
+  return requireV3RealtimeController().subscribeSession(normalizedSessionId, endpointCursor)
 }
 
 if (typeof window !== 'undefined') {
@@ -811,6 +714,7 @@ function upsertLiveToolHistory(
     toolArguments?: string | null
     output?: string | null
     rawOutput?: string | null
+    completedOutput?: string | null
     state: DesktopLiveToolRecord['state']
     step?: number | null
     seq?: number | null
@@ -822,16 +726,18 @@ function upsertLiveToolHistory(
   }
   const key = liveToolKey(input)
   const existing = (live.toolHistory ?? []).find((item) => item.key === key)
-  const outputDelta = input.rawOutput ?? input.output ?? ''
+  const outputDelta = input.rawOutput ?? input.completedOutput ?? input.output ?? ''
   const existingOutput = existing?.toolOutput ?? ''
   const normalizedToolName = (input.toolName || existing?.toolName || '').trim().toLowerCase()
   const nextOutput = input.rawOutput !== undefined && input.rawOutput !== null
     ? replaceLiveToolOutput(input.rawOutput)
-    : input.output
-      ? normalizedToolName === 'task'
-        ? mergedTaskToolDelta(existingOutput, input.output)
-        : appendLiveToolOutput(existingOutput, input.output)
-      : existingOutput
+    : input.completedOutput !== undefined && input.completedOutput !== null
+      ? replaceLiveToolOutput(input.completedOutput)
+      : input.output
+        ? normalizedToolName === 'task'
+          ? mergedTaskToolDelta(existingOutput, input.output)
+          : appendLiveToolOutput(existingOutput, input.output)
+        : existingOutput
   const next: DesktopLiveToolRecord = {
     key,
     sessionId: input.sessionId,
@@ -1516,6 +1422,55 @@ function canFetchRelativeDesktopAPI(): boolean {
     && window.location.host.trim() !== ''
 }
 
+function applyDesktopGlobalDiscoverySnapshotToStore(snapshot: DesktopDaemonSnapshot): void {
+  const sessionsById = snapshot.sessionsById ?? {}
+  if (Object.keys(sessionsById).length === 0) {
+    return
+  }
+  useDesktopUiStore.setState((state: DesktopStoreState) => {
+    const sessions = { ...state.sessions }
+    for (const sessionId of snapshot.sessionOrder ?? Object.keys(sessionsById)) {
+      const session = sessionsById[sessionId]
+      if (!session?.id) {
+        continue
+      }
+      const merged = mergeExternalSessionRecord(sessions[session.id] ?? null, session)
+      sessions[session.id] = merged
+      syncBlockedSessionToWorkspaceOverview(queryClient, merged)
+    }
+    return { sessions }
+  })
+}
+
+async function refreshDesktopV3GlobalDiscovery(): Promise<DesktopDaemonSnapshot | null> {
+  if (!canFetchRelativeDesktopAPI()) {
+    return null
+  }
+  if (pendingDesktopV3GlobalDiscovery) {
+    return pendingDesktopV3GlobalDiscovery
+  }
+  pendingDesktopV3GlobalDiscovery = fetchDesktopStateSnapshot({
+    global: true,
+    recent: { limit: 50 },
+    history: { mode: 'none', maxEventsPerSession: 0, manifestPolicy: 'manifest', includeEvents: false },
+    resources: { runIntents: true },
+  })
+    .then((snapshot) => {
+      const cursor = snapshot.snapshotEndpointCursor?.trim() ?? ''
+      if (cursor) {
+        desktopV3RealtimeEndpointCursor = cursor
+        requireV3RealtimeController().setEndpointCursor(cursor)
+      }
+      applyV3RuntimeEnvelope(createV3SnapshotEnvelope(snapshot, { mode: 'merge', receivedAt: Date.now() }))
+      applyDesktopGlobalDiscoverySnapshotToStore(snapshot)
+      return snapshot
+    })
+    .finally(() => {
+      pendingDesktopV3GlobalDiscovery = null
+    })
+  return pendingDesktopV3GlobalDiscovery
+}
+
 function requestScopedSessionWorkset(sessionId: string, options: { force?: boolean } = {}): void {
   const normalizedSessionId = sessionId.trim()
   if (!normalizedSessionId || !canFetchRelativeDesktopAPI() || (pendingSessionWorksetHydrations.has(normalizedSessionId) && !options.force)) {
@@ -1702,7 +1657,6 @@ function applyV3MessageCommitResult(state: DesktopStoreState, sessionId: string,
   const runIntent = result.runIntent ?? null
   if (runIntent && v3RunIntentStatusActive(runIntent.status)) {
     incoming.runIntent = runIntent
-    rememberDesktopV3RealtimeSubscriptionIntent(normalizedSessionId, desktopV3RealtimeEndpointCursor)
     incoming.live = {
       ...incoming.live,
       runId: runIntent.runId || incoming.live.runId,
@@ -2123,7 +2077,8 @@ function applyV3SessionStreamFrame(state: DesktopStoreState, sessionId: string, 
   }
   const eventSeq = typeof payload.event?.seq === 'number' ? Math.max(0, payload.event.seq) : 0
   const highWatermark = typeof payload.high_watermark_seq === 'number' ? Math.max(0, payload.high_watermark_seq) : eventSeq
-  const v3EventType = String(payload.event?.event_type ?? type).trim()
+  const rawV3EventType = String(payload.event?.event_type ?? type).trim()
+  const v3EventType = rawV3EventType
   const patchedSessions = patch.sessions ?? frameState.sessions
   const existing = patchedSessions[targetSessionId]
   if (!existing) {
@@ -2929,6 +2884,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
         toolArguments: typeof payloadRecord.arguments === 'string' ? payloadRecord.arguments.trim() || null : null,
         output: typeof payloadRecord.output === 'string' ? payloadRecord.output : null,
         rawOutput: typeof payloadRecord.raw_output === 'string' ? payloadRecord.raw_output : null,
+        completedOutput: typeof payloadRecord.completed_output === 'string' ? payloadRecord.completed_output : null,
         state: isToolCompleted ? 'done' : 'running',
         step: typeof payloadRecord.step === 'number' ? payloadRecord.step : null,
         seq: envelopeSeq,
@@ -2949,9 +2905,11 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
       } else if (isToolCompleted) {
         session.live.toolOutput = typeof payloadRecord.raw_output === 'string'
           ? replaceLiveToolOutput(payloadRecord.raw_output)
-          : typeof payloadRecord.output === 'string'
-            ? replaceLiveToolOutput(payloadRecord.output)
-            : session.live.toolOutput
+          : typeof payloadRecord.completed_output === 'string'
+            ? replaceLiveToolOutput(payloadRecord.completed_output)
+            : typeof payloadRecord.output === 'string'
+              ? replaceLiveToolOutput(payloadRecord.output)
+              : session.live.toolOutput
         retainLiveToolState(session.live, 'done')
         resetLiveToolState(session.live)
       }
@@ -3269,9 +3227,6 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
   let merged = mergeSessionRecords(state.sessions[sessionId] ?? null, session)
   if (eventType === 'session.run_intent.recorded' && v3RunIntentStatusTerminal(v3PayloadString(v3RunIntentPayload(payloadRecord), 'status'))) {
     merged = { ...merged, lifecycle: null }
-    if (v3PayloadString(v3RunIntentPayload(payloadRecord), 'status').trim().toLowerCase() === 'completed') {
-      forgetDesktopV3RealtimeSubscriptionIntent(sessionId)
-    }
   }
   sessions[sessionId] = merged
   syncBlockedSessionToWorkspaceOverview(queryClient, merged)
@@ -3305,6 +3260,14 @@ function v3RealtimeSubscriptionsForState(state: DesktopStoreState): Array<{ sess
   }
   const subscriptions = new Map<string, { sessionId: string; endpointCursor?: string | null }>()
   const runtime = getV3RuntimeSnapshot()
+  const runtimeRunIntentsBySessionId = runtime.desktop.runIntentsBySessionId ?? {}
+  const globalEndpointCursor = runtime.cursorsByScope.global?.endpointCursor
+  for (const [sessionId, runIntent] of Object.entries(runtimeRunIntentsBySessionId)) {
+    const id = sessionId.trim() || runIntent.sessionId.trim()
+    if (id && v3RunIntentStatusActive(runIntent.status)) {
+      subscriptions.set(id, { sessionId: id, endpointCursor: desktopV3RealtimeEndpointCursor || runtime.cursorsByScope[`session:${id}`]?.endpointCursor || globalEndpointCursor })
+    }
+  }
   for (const session of sessions.values()) {
     const id = session.id.trim()
     if (!id || (session.sessionApi?.trim().toLowerCase() || 'v3') !== 'v3') {
@@ -3314,13 +3277,9 @@ function v3RealtimeSubscriptionsForState(state: DesktopStoreState): Array<{ sess
       || session.live.status === 'running'
       || session.live.awaitingAck
       || Boolean(session.live.runId)
-    if (liveActive || Boolean(session.lifecycle?.active) || Boolean(session.runIntent)) {
-      subscriptions.set(id, { sessionId: id, endpointCursor: desktopV3RealtimeEndpointCursor || runtime.cursorsByScope[`session:${id}`]?.endpointCursor })
-    }
-  }
-  for (const intent of readDesktopV3RealtimeSubscriptionIntents().values()) {
-    if (!subscriptions.has(intent.sessionId)) {
-      subscriptions.set(intent.sessionId, { sessionId: intent.sessionId, endpointCursor: intent.endpointCursor || desktopV3RealtimeEndpointCursor || runtime.cursorsByScope[`session:${intent.sessionId}`]?.endpointCursor })
+    const runtimeRunIntent = runtimeRunIntentsBySessionId[id]
+    if (liveActive || Boolean(session.lifecycle?.active) || v3RunIntentStatusActive(session.runIntent?.status ?? '') || v3RunIntentStatusActive(runtimeRunIntent?.status ?? '')) {
+      subscriptions.set(id, { sessionId: id, endpointCursor: desktopV3RealtimeEndpointCursor || runtime.cursorsByScope[`session:${id}`]?.endpointCursor || globalEndpointCursor })
     }
   }
   return Array.from(subscriptions.values())
@@ -3827,6 +3786,11 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
       debugLog('desktop-store', 'connect:skip', {
         reason: desktopRealtimeSocket ? 'socket-present' : 'already-connecting',
       })
+      try {
+        await refreshDesktopV3GlobalDiscovery()
+      } catch (error) {
+        console.error('[desktop-store] global V3 discovery refresh failed', error)
+      }
       get().syncV3RealtimeSessions()
       return
     }
@@ -3839,6 +3803,7 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
       reconnectTimer: null,
     })
     try {
+      await refreshDesktopV3GlobalDiscovery()
       const socket = await openDesktopWebSocket()
       debugLog('desktop-store', 'connect:websocket-created', { generation })
       if (get().connectionGeneration !== generation || !shouldMaintainDesktopRealtime(get())) {
@@ -4041,7 +4006,6 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
     socket?.close()
     requireRunStreamController().closeAll()
     requireV3RealtimeController().closeAll()
-    writeDesktopV3RealtimeSubscriptionIntents(new Map())
   },
   closeRunStream: (sessionId) => {
     const normalizedSessionId = sessionId.trim()
@@ -4058,8 +4022,8 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
     const sessionApi = get().sessions[normalizedSessionId]?.sessionApi?.trim().toLowerCase() || 'v3'
     if (sessionApi === 'v3') {
       set({ realtimeDesired: true })
-      subscribeDesktopV3RealtimeSession(normalizedSessionId, desktopV3RealtimeEndpointCursor)
       await get().connect()
+      await subscribeDesktopV3RealtimeSession(normalizedSessionId, desktopV3RealtimeEndpointCursor)
       requireRunStreamController().close(normalizedSessionId)
       return
     }
@@ -4123,7 +4087,9 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
       if (effectiveSessionApi === 'v3' && compact) {
         const clientRequestId = providedClientRequestId?.trim() || `desktop-v3-compact:${targetSessionId}:${submitStartedAt}`
         await compactSessionV3(targetSessionId, { note: trimmedPrompt, agentName, clientRequestId })
-        subscribeDesktopV3RealtimeSession(targetSessionId, desktopV3RealtimeEndpointCursor)
+        set({ realtimeDesired: true })
+        await get().connect()
+        await subscribeDesktopV3RealtimeSession(targetSessionId, desktopV3RealtimeEndpointCursor)
         requestScopedSessionWorkset(targetSessionId, { force: true })
         return
       }
@@ -4140,8 +4106,8 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
           }
         }
         set({ realtimeDesired: true })
-        subscribeDesktopV3RealtimeSession(targetSessionId, desktopV3RealtimeEndpointCursor)
         await get().connect()
+        await subscribeDesktopV3RealtimeSession(targetSessionId, desktopV3RealtimeEndpointCursor)
         return
       }
 
