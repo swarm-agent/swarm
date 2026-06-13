@@ -90,6 +90,67 @@ func TestAPIChatBackendV3RunTurnConsumesCommittedAssistantStream(t *testing.T) {
 	}
 }
 
+func TestAPIChatBackendV3RunTurnIgnoresDiagnosticRealtimeFrames(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v3/sessions/session-v3/messages":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":         true,
+				"session":    map[string]any{"id": "session-v3", "workspace_path": "/workspace", "workspace_name": "workspace", "title": "V3", "mode": "auto"},
+				"projection": map[string]any{"session_id": "session-v3", "last_event_seq": 2, "projection_high_watermark_seq": 2},
+				"message":    map[string]any{"id": "msg-user", "session_id": "session-v3", "global_seq": 2, "role": "user", "content": "hello"},
+				"run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "pending_executor", "event_seq": 2},
+				"messages":   []any{},
+				"events":     []any{},
+				"mutation":   map[string]any{"realtime_outbox": map[string]any{"endpoint_cursor": "cursor-2", "endpoint_seq": 2, "session_id": "session-v3"}},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/realtime/stream":
+			writeTestV3RealtimeFrames(t, w, r,
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.started", "session_id": "session-v3", "subscription_id": "active-turn", "endpoint_cursor": "cursor-2", "last_seq": 2, "high_watermark_seq": 8},
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "endpoint_cursor": "cursor-3", "event_type": "session.diagnostic.provider.stream", "last_seq": 3, "event": map[string]any{"id": "evt-3", "session_id": "session-v3", "seq": 3, "event_type": "session.diagnostic.provider.stream", "ts_unix_ms": 30, "payload": map[string]any{"diagnostic": true, "session_id": "session-v3", "run_id": "run-1", "payload": map[string]any{"delta": "DIAGNOSTIC PROVIDER TOKEN"}}}},
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "endpoint_cursor": "cursor-4", "event_type": "session.assistant.started", "last_seq": 4, "event": map[string]any{"id": "evt-4", "session_id": "session-v3", "seq": 4, "event_type": "session.assistant.started", "ts_unix_ms": 31, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "running", "run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "running", "event_seq": 4}}}},
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "endpoint_cursor": "cursor-5", "event_type": "session.assistant.delta", "last_seq": 5, "event": map[string]any{"id": "evt-5", "session_id": "session-v3", "seq": 5, "event_type": "session.assistant.delta", "ts_unix_ms": 32, "payload": map[string]any{"run_id": "run-1", "delta": "real assistant text"}}},
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "endpoint_cursor": "cursor-6", "event_type": "session.diagnostic.store.result", "last_seq": 6, "event": map[string]any{"id": "evt-6", "session_id": "session-v3", "seq": 6, "event_type": "session.diagnostic.store.result", "ts_unix_ms": 33, "payload": map[string]any{"diagnostic": true, "session_id": "session-v3", "run_id": "run-1", "payload": map[string]any{"event_type": "session.assistant.delta", "event_payload": map[string]any{"delta": "DUPLICATE FROM STORE DIAGNOSTIC"}}}}},
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "endpoint_cursor": "cursor-7", "event_type": "session.assistant.completed", "last_seq": 7, "event": map[string]any{"id": "evt-7", "session_id": "session-v3", "seq": 7, "event_type": "session.assistant.completed", "ts_unix_ms": 34, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "completed", "message": map[string]any{"id": "msg-assistant", "session_id": "session-v3", "global_seq": 7, "role": "assistant", "content": "real assistant text", "created_at": 34, "metadata": map[string]any{"run_id": "run-1"}}, "run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "completed", "event_seq": 7}}}},
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "endpoint_cursor": "cursor-8", "event_type": "session.run_intent.recorded", "last_seq": 8, "event": map[string]any{"id": "evt-8", "session_id": "session-v3", "seq": 8, "event_type": "session.run_intent.recorded", "ts_unix_ms": 35, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "completed", "run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "completed", "event_seq": 8}}}},
+			)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	backend := newAPIChatBackend(testAPIWithToken(server.URL), "v3")
+	var events []ui.ChatRunStreamEvent
+	resp, err := backend.RunTurnStream(context.Background(), "session-v3", ui.ChatRunRequest{Prompt: "hello"}, func(event ui.ChatRunStreamEvent) {
+		events = append(events, event)
+	})
+	if err != nil {
+		t.Fatalf("RunTurnStream() error = %v", err)
+	}
+	if resp.AssistantMessage.ID != "msg-assistant" || resp.AssistantMessage.Content != "real assistant text" || resp.PrimaryRunStatus != "completed" {
+		t.Fatalf("response = %#v", resp)
+	}
+	var deltaCount int
+	for _, event := range events {
+		if strings.HasPrefix(event.Type, "session.diagnostic.") {
+			t.Fatalf("diagnostic event leaked to TUI stream: %#v", event)
+		}
+		if strings.Contains(event.Delta, "DIAGNOSTIC") || strings.Contains(event.Output, "DIAGNOSTIC") {
+			t.Fatalf("diagnostic payload leaked to TUI stream: %#v", event)
+		}
+		if event.Type == "assistant.delta" {
+			deltaCount++
+			if event.Delta != "real assistant text" {
+				t.Fatalf("assistant delta = %#v", event)
+			}
+		}
+	}
+	if deltaCount != 1 {
+		t.Fatalf("assistant delta count = %d, events=%#v", deltaCount, events)
+	}
+}
+
 func TestAPIChatBackendV3RunTurnDoesNotCompleteOnAssistantMessageStored(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {

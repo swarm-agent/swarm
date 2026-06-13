@@ -347,6 +347,9 @@ func (b *apiChatBackend) consumeSessionV3Run(ctx context.Context, sessionID stri
 		if frame.Event == nil || strings.ToLower(strings.TrimSpace(frame.Kind)) != "event" {
 			return
 		}
+		if isV3DiagnosticEvent(frame.Event.EventType) {
+			return
+		}
 		event := v3StreamEventToChatEvent(*frame.Event)
 		if strings.TrimSpace(event.SessionID) != strings.TrimSpace(sessionID) {
 			return
@@ -502,6 +505,10 @@ func v3RunIntentStatusTerminal(status string) bool {
 	default:
 		return false
 	}
+}
+
+func isV3DiagnosticEvent(eventType string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(eventType)), "session.diagnostic.")
 }
 
 func v3StreamEventToChatEvent(event client.SessionV3Event) ui.ChatRunStreamEvent {
