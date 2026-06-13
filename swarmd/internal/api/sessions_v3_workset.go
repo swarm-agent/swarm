@@ -10,11 +10,14 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+const sessionsV3WorksetMaxResourcePageSize = 200
+
 type sessionsV3WorksetRequest struct {
 	SessionIDs []string                   `json:"session_ids,omitempty"`
 	Workspace  sessionsV3WorksetWorkspace `json:"workspace,omitempty"`
 	Recent     sessionsV3WorksetRecent    `json:"recent,omitempty"`
 	History    sessionsV3WorksetHistory   `json:"history,omitempty"`
+	Resources  sessionsV3WorksetResources `json:"resources,omitempty"`
 }
 
 type sessionsV3WorksetWorkspace struct {
@@ -47,6 +50,20 @@ type sessionsV3WorksetHistory struct {
 	MaxEventsPerSession   int    `json:"max_events_per_session,omitempty"`
 	ManifestPolicy        string `json:"manifest_policy,omitempty"`
 	IncludeEvents         bool   `json:"include_events,omitempty"`
+}
+
+type sessionsV3WorksetResources struct {
+	Messages      bool `json:"messages,omitempty"`
+	Events        bool `json:"events,omitempty"`
+	RunIntents    bool `json:"run_intents,omitempty"`
+	ActivePlan    bool `json:"active_plan,omitempty"`
+	PlanRevisions bool `json:"plan_revisions,omitempty"`
+}
+
+type sessionsV3ResolvedWorksetOptions struct {
+	Store                pebblestore.V3SessionWorksetOptions
+	IncludeActivePlan    bool
+	IncludePlanRevisions bool
 }
 
 func (s *Server) handleSessionsV3Workset(w http.ResponseWriter, r *http.Request) {
@@ -87,12 +104,13 @@ func (s *Server) handleSessionsV3TUIWorkset(w http.ResponseWriter, r *http.Reque
 		Workspace:  sessionsV3WorksetWorkspace{WorkspacePaths: workspacePaths},
 		Recent:     req.Recent,
 		History:    req.History,
+		Resources:  sessionsV3WorksetResources{},
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	options.RestrictSessionIDsToWorkspacePaths = true
+	options.Store.RestrictSessionIDsToWorkspacePaths = true
 	s.writeSessionsV3Workset(w, options)
 }
 
@@ -113,34 +131,85 @@ func (s *Server) sessionsV3WorksetPrincipal(w http.ResponseWriter, r *http.Reque
 	return principal, true
 }
 
-func sessionsV3WorksetOptionsFromRequest(principal identity.Principal, req sessionsV3WorksetRequest) (pebblestore.V3SessionWorksetOptions, error) {
+func sessionsV3WorksetOptionsFromRequest(principal identity.Principal, req sessionsV3WorksetRequest) (sessionsV3ResolvedWorksetOptions, error) {
 	workspacePaths, err := canonicalSessionsV3WorksetWorkspacePaths(req.Workspace)
 	if err != nil {
-		return pebblestore.V3SessionWorksetOptions{}, err
+		return sessionsV3ResolvedWorksetOptions{}, err
 	}
 	if req.Recent.Limit > 0 && len(workspacePaths) == 0 {
-		return pebblestore.V3SessionWorksetOptions{}, errors.New("workset recent selector requires explicit workspace_path or workspace_paths")
+		return sessionsV3ResolvedWorksetOptions{}, errors.New("workset recent selector requires explicit workspace_path or workspace_paths")
 	}
-	options := pebblestore.V3SessionWorksetOptions{
-		AccountScopeID:        principal.AccountScopeID,
-		SessionIDs:            req.SessionIDs,
-		WorkspacePaths:        workspacePaths,
-		RecentLimit:           req.Recent.Limit,
-		RecentBeforeUpdatedAt: req.Recent.BeforeUpdatedAt,
-		RecentBeforeSessionID: strings.TrimSpace(req.Recent.BeforeSessionID),
-		History: pebblestore.V3SessionWorksetHistoryOptions{
-			Mode:                  req.History.Mode,
-			MaxMessagesPerSession: req.History.MaxMessagesPerSession,
-			MaxEventsPerSession:   req.History.MaxEventsPerSession,
-			ManifestPolicy:        req.History.ManifestPolicy,
-			IncludeEvents:         req.History.IncludeEvents,
+	history, err := sessionsV3WorksetHistoryOptionsFromRequest(req.History, req.Resources)
+	if err != nil {
+		return sessionsV3ResolvedWorksetOptions{}, err
+	}
+	options := sessionsV3ResolvedWorksetOptions{
+		Store: pebblestore.V3SessionWorksetOptions{
+			AccountScopeID:        principal.AccountScopeID,
+			SessionIDs:            req.SessionIDs,
+			WorkspacePaths:        workspacePaths,
+			RecentLimit:           req.Recent.Limit,
+			RecentBeforeUpdatedAt: req.Recent.BeforeUpdatedAt,
+			RecentBeforeSessionID: strings.TrimSpace(req.Recent.BeforeSessionID),
+			History:               history,
+			IncludeRunIntents:     req.Resources.RunIntents,
 		},
+		IncludeActivePlan:    req.Resources.ActivePlan,
+		IncludePlanRevisions: req.Resources.PlanRevisions,
 	}
 	return options, nil
 }
 
-func (s *Server) writeSessionsV3Workset(w http.ResponseWriter, options pebblestore.V3SessionWorksetOptions) {
-	workset, err := s.sessions.BuildSessionWorkset(options)
+func sessionsV3WorksetHistoryOptionsFromRequest(req sessionsV3WorksetHistory, resources sessionsV3WorksetResources) (pebblestore.V3SessionWorksetHistoryOptions, error) {
+	mode := strings.TrimSpace(strings.ToLower(req.Mode))
+	if mode == "" && resources.Messages {
+		mode = pebblestore.V3SessionWorksetHistoryModeTail
+	}
+	maxMessages := req.MaxMessagesPerSession
+	if mode == "" {
+		mode = pebblestore.V3SessionWorksetHistoryModeNone
+	}
+	switch mode {
+	case pebblestore.V3SessionWorksetHistoryModeNone:
+		maxMessages = 0
+	case pebblestore.V3SessionWorksetHistoryModeTail:
+		if maxMessages <= 0 {
+			maxMessages = sessionsV3WorksetMaxResourcePageSize
+		}
+	case pebblestore.V3SessionWorksetHistoryModeFull:
+		if maxMessages <= 0 {
+			return pebblestore.V3SessionWorksetHistoryOptions{}, errors.New("workset history.mode=full requires max_messages_per_session")
+		}
+	default:
+		return pebblestore.V3SessionWorksetHistoryOptions{}, errors.New("unsupported workset history mode " + mode)
+	}
+	if maxMessages > sessionsV3WorksetMaxResourcePageSize {
+		return pebblestore.V3SessionWorksetHistoryOptions{}, errors.New("workset max_messages_per_session cannot exceed 200")
+	}
+	includeEvents := req.IncludeEvents || resources.Events
+	maxEvents := req.MaxEventsPerSession
+	if includeEvents && maxEvents <= 0 {
+		if resources.Events {
+			maxEvents = sessionsV3WorksetMaxResourcePageSize
+		} else {
+			return pebblestore.V3SessionWorksetHistoryOptions{}, errors.New("workset include_events requires max_events_per_session")
+		}
+	}
+	if maxEvents > sessionsV3WorksetMaxResourcePageSize {
+		return pebblestore.V3SessionWorksetHistoryOptions{}, errors.New("workset max_events_per_session cannot exceed 200")
+	}
+	return pebblestore.V3SessionWorksetHistoryOptions{
+		Mode:                  mode,
+		MaxMessagesPerSession: maxMessages,
+		MaxEventsPerSession:   maxEvents,
+		ManifestPolicy:        req.ManifestPolicy,
+		IncludeMessages:       mode == pebblestore.V3SessionWorksetHistoryModeTail || mode == pebblestore.V3SessionWorksetHistoryModeFull,
+		IncludeEvents:         includeEvents,
+	}, nil
+}
+
+func (s *Server) writeSessionsV3Workset(w http.ResponseWriter, options sessionsV3ResolvedWorksetOptions) {
+	workset, err := s.sessions.BuildSessionWorkset(options.Store)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -156,7 +225,7 @@ func (s *Server) writeSessionsV3Workset(w http.ResponseWriter, options pebblesto
 		return
 	}
 	preferencesBySession, agentModelPolicyBySession := s.sessionsV3WorksetPreferencesAndPolicies(workset)
-	plansBySession, planRevisionsBySession, err := s.sessionsV3WorksetPlans(workset)
+	plansBySession, planRevisionsBySession, err := s.sessionsV3WorksetPlans(options, workset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -290,9 +359,12 @@ func (s *Server) sessionsV3WorksetPreferencesAndPolicies(workset pebblestore.V3S
 	return preferencesBySession, agentModelPolicyBySession
 }
 
-func (s *Server) sessionsV3WorksetPlans(workset pebblestore.V3SessionWorksetResult) (map[string]any, map[string]any, error) {
+func (s *Server) sessionsV3WorksetPlans(options sessionsV3ResolvedWorksetOptions, workset pebblestore.V3SessionWorksetResult) (map[string]any, map[string]any, error) {
 	plansBySession := map[string]any{}
 	planRevisionsBySession := map[string]any{}
+	if !options.IncludeActivePlan && !options.IncludePlanRevisions {
+		return plansBySession, planRevisionsBySession, nil
+	}
 	if s == nil || s.sessions == nil {
 		return plansBySession, planRevisionsBySession, nil
 	}
@@ -304,12 +376,16 @@ func (s *Server) sessionsV3WorksetPlans(workset pebblestore.V3SessionWorksetResu
 		if !ok {
 			continue
 		}
-		plansBySession[sessionID] = plan
-		revisions, err := s.sessions.ListPlanRevisions(sessionID, plan.ID, 100)
-		if err != nil {
-			return nil, nil, err
+		if options.IncludeActivePlan {
+			plansBySession[sessionID] = plan
 		}
-		planRevisionsBySession[sessionID] = revisions
+		if options.IncludePlanRevisions {
+			revisions, err := s.sessions.ListPlanRevisions(sessionID, plan.ID, 100)
+			if err != nil {
+				return nil, nil, err
+			}
+			planRevisionsBySession[sessionID] = revisions
+		}
 	}
 	return plansBySession, planRevisionsBySession, nil
 }

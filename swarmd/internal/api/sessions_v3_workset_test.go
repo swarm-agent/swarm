@@ -72,7 +72,37 @@ func TestSessionsV3WorksetEndpointSupportsPaginationAndManifests(t *testing.T) {
 	}
 }
 
-func TestSessionsV3WorksetEndpointReturnsActivePlansAndRevisions(t *testing.T) {
+func TestSessionsV3WorksetEndpointOmitsPlansByDefault(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "workset-plan-default", "Workset Plan Default")
+	if _, _, err := server.sessions.SavePlan(created.ID, "plan-workset-default", "Workset Plan", "# Plan", "draft", "draft", true); err != nil {
+		t.Fatalf("save plan: %v", err)
+	}
+
+	body := `{"session_ids":["` + created.ID + `"],"history":{"mode":"none"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions:workset", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("workset status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		PlansBySession         map[string]pebblestore.SessionPlanSnapshot   `json:"plans_by_session"`
+		PlanRevisionsBySession map[string][]pebblestore.SessionPlanSnapshot `json:"plan_revisions_by_session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode workset response: %v", err)
+	}
+	if len(payload.PlansBySession) != 0 {
+		t.Fatalf("routine workset should not include plans_by_session: %+v", payload.PlansBySession)
+	}
+	if len(payload.PlanRevisionsBySession) != 0 {
+		t.Fatalf("routine workset should not include plan_revisions_by_session: %+v", payload.PlanRevisionsBySession)
+	}
+}
+
+func TestSessionsV3WorksetEndpointReturnsActivePlansAndRevisionsWhenRequested(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSession(t, server, "workset-plan", "Workset Plan")
 	plan, _, err := server.sessions.SavePlan(created.ID, "plan-workset", "Workset Plan", "# Plan", "draft", "draft", true)
@@ -80,7 +110,7 @@ func TestSessionsV3WorksetEndpointReturnsActivePlansAndRevisions(t *testing.T) {
 		t.Fatalf("save plan: %v", err)
 	}
 
-	body := `{"session_ids":["` + created.ID + `"],"history":{"mode":"none"}}`
+	body := `{"session_ids":["` + created.ID + `"],"history":{"mode":"none"},"resources":{"active_plan":true,"plan_revisions":true}}`
 	req := httptest.NewRequest(http.MethodPost, "/v3/sessions:workset", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -189,14 +219,29 @@ func TestSessionsV3WorksetEndpointOmittedHistoryIsMetadataOnly(t *testing.T) {
 	}
 }
 
-func TestSessionsV3WorksetEndpointFullHistoryWithoutCapReturnsEntireTranscript(t *testing.T) {
+func TestSessionsV3WorksetEndpointRejectsFullHistoryWithoutCap(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSession(t, server, "workset-full-history", "Workset Full History")
 	appendSessionsV3PrimaryMessageForWorksetTest(t, server, created.ID, "first")
-	appendSessionsV3PrimaryMessageForWorksetTest(t, server, created.ID, "second")
-	appendSessionsV3PrimaryMessageForWorksetTest(t, server, created.ID, "third")
 
 	body := `{"session_ids":["` + created.ID + `"],"history":{"mode":"full","manifest_policy":"manifest","include_events":false}}`
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions:workset", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("workset status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+func TestSessionsV3WorksetEndpointCapsExplicitHistoryAtTwoHundred(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "workset-bounded-history", "Workset Bounded History")
+	for i := 0; i < 205; i++ {
+		appendSessionsV3PrimaryMessageForWorksetTest(t, server, created.ID, "message-"+strconv.Itoa(i))
+	}
+
+	body := `{"session_ids":["` + created.ID + `"],"history":{"mode":"tail","manifest_policy":"manifest","include_events":false}}`
 	req := httptest.NewRequest(http.MethodPost, "/v3/sessions:workset", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -212,11 +257,14 @@ func TestSessionsV3WorksetEndpointFullHistoryWithoutCapReturnsEntireTranscript(t
 		t.Fatalf("decode workset response: %v", err)
 	}
 	messages := payload.MessagesBySession[created.ID]
-	if len(messages) != 3 {
-		t.Fatalf("full history without cap returned %d messages, want entire transcript of 3: %+v", len(messages), messages)
+	if len(messages) != 200 {
+		t.Fatalf("bounded tail history returned %d messages, want 200", len(messages))
 	}
-	if len(payload.Omissions) != 0 {
-		t.Fatalf("full history without cap should bypass omission/manifest safety, got %+v", payload.Omissions)
+	if messages[0].Content != "message-5" || messages[len(messages)-1].Content != "message-204" {
+		t.Fatalf("bounded tail messages = first %q last %q", messages[0].Content, messages[len(messages)-1].Content)
+	}
+	if len(payload.Omissions) == 0 {
+		t.Fatalf("bounded history should report omitted older messages")
 	}
 }
 

@@ -34,6 +34,7 @@ type V3SessionWorksetOptions struct {
 	RecentBeforeUpdatedAt              *int64
 	RecentBeforeSessionID              string
 	History                            V3SessionWorksetHistoryOptions
+	IncludeRunIntents                  bool
 }
 
 type V3SessionWorksetHistoryOptions struct {
@@ -41,6 +42,7 @@ type V3SessionWorksetHistoryOptions struct {
 	MaxMessagesPerSession int
 	MaxEventsPerSession   int
 	ManifestPolicy        string
+	IncludeMessages       bool
 	IncludeEvents         bool
 }
 
@@ -135,6 +137,9 @@ func normalizeV3SessionWorksetOptions(options V3SessionWorksetOptions) V3Session
 	if options.History.Mode == "" {
 		options.History.Mode = V3SessionWorksetHistoryModeNone
 	}
+	if options.History.Mode == V3SessionWorksetHistoryModeTail || options.History.Mode == V3SessionWorksetHistoryModeFull {
+		options.History.IncludeMessages = true
+	}
 	options.History.ManifestPolicy = strings.TrimSpace(strings.ToLower(options.History.ManifestPolicy))
 	if options.History.ManifestPolicy == "" {
 		options.History.ManifestPolicy = V3SessionWorksetManifestPolicyError
@@ -188,6 +193,11 @@ func (s *SessionStore) buildV3SessionWorksetFromReader(reader pebble.Reader, opt
 		result.SessionOrder = append(result.SessionOrder, session.ID)
 		if err := s.addV3SessionWorksetHistory(reader, options, session, projection, &result); err != nil {
 			return V3SessionWorksetResult{}, err
+		}
+		if options.IncludeRunIntents {
+			if err := s.addV3SessionWorksetRunIntents(reader, options, session, projection, &result); err != nil {
+				return V3SessionWorksetResult{}, err
+			}
 		}
 	}
 	return result, nil
@@ -389,21 +399,21 @@ func sortV3WorksetSessions(sessions []SessionSnapshot) {
 
 func (s *SessionStore) addV3SessionWorksetHistory(reader pebble.Reader, options V3SessionWorksetOptions, session SessionSnapshot, projection V3SessionProjection, result *V3SessionWorksetResult) error {
 	switch options.History.Mode {
-	case V3SessionWorksetHistoryModeNone:
-		return nil
-	case V3SessionWorksetHistoryModeTail, V3SessionWorksetHistoryModeFull:
+	case V3SessionWorksetHistoryModeNone, V3SessionWorksetHistoryModeTail, V3SessionWorksetHistoryModeFull:
 	default:
 		return fmt.Errorf("unsupported workset history mode %q", options.History.Mode)
 	}
-	if err := s.addV3SessionWorksetMessages(reader, options, session, result); err != nil {
-		return err
+	if options.History.IncludeMessages {
+		if err := s.addV3SessionWorksetMessages(reader, options, session, result); err != nil {
+			return err
+		}
 	}
 	if options.History.IncludeEvents {
 		if err := s.addV3SessionWorksetEvents(reader, options, session, projection, result); err != nil {
 			return err
 		}
 	}
-	return s.addV3SessionWorksetRunIntents(reader, options, session, projection, result)
+	return nil
 }
 
 func (s *SessionStore) addV3SessionWorksetMessages(reader pebble.Reader, options V3SessionWorksetOptions, session SessionSnapshot, result *V3SessionWorksetResult) error {
