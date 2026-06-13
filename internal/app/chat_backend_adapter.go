@@ -414,6 +414,9 @@ func (b *apiChatBackend) refetchSessionV3RunAfterRealtimeGap(ctx context.Context
 			if event.Seq <= afterSeq {
 				continue
 			}
+			if isV3DiagnosticEvent(event.EventType) {
+				continue
+			}
 			chatEvent := v3StreamEventToChatEvent(event)
 			if strings.TrimSpace(chatEvent.SessionID) == "" {
 				chatEvent.SessionID = sessionID
@@ -532,7 +535,7 @@ func v3StreamEventToChatEvent(event client.SessionV3Event) ui.ChatRunStreamEvent
 		out.Lifecycle = &ui.ChatSessionLifecycle{SessionID: out.SessionID, RunID: out.RunID, Active: true, Phase: "running", StartedAt: event.TsUnixMS, UpdatedAt: event.TsUnixMS}
 	case "session.assistant.delta":
 		out.Type = "assistant.delta"
-		out.Delta = stringValue(payload, "delta")
+		out.Delta = rawStringValue(payload, "delta")
 	case "session.assistant.completed":
 		out.Type = "message.stored"
 		out.Message = messageFromV3Payload(payload, out.SessionID)
@@ -556,11 +559,17 @@ func v3StreamEventToChatEvent(event client.SessionV3Event) ui.ChatRunStreamEvent
 		out.Type = "tool.started"
 		out.ToolName = firstNonEmptyV3String(stringValue(payload, "tool_name"), "tool")
 		out.CallID = stringValue(payload, "call_id")
-		out.Arguments = stringValue(payload, "arguments")
-		out.Output = stringValue(payload, "output")
-		out.RawOutput = stringValue(payload, "raw_output")
+		out.Arguments = rawStringValue(payload, "arguments")
+		out.Output = rawStringValue(payload, "output")
+		out.RawOutput = rawStringValue(payload, "raw_output")
 		out.Step = int(int64Number(payload, "step"))
 		out.DurationMS = int64Number(payload, "duration_ms")
+		if isV3SyntheticReasoningToolPayload(payload) {
+			out.Type = "reasoning.started"
+			out.ToolName = ""
+			out.Summary = ""
+			break
+		}
 		if out.Summary == "" {
 			out.Summary = out.ToolName
 		}
@@ -568,19 +577,35 @@ func v3StreamEventToChatEvent(event client.SessionV3Event) ui.ChatRunStreamEvent
 		out.Type = "tool.delta"
 		out.ToolName = firstNonEmptyV3String(stringValue(payload, "tool_name"), "tool")
 		out.CallID = stringValue(payload, "call_id")
-		out.Output = stringValue(payload, "output")
-		out.RawOutput = stringValue(payload, "raw_output")
+		out.Output = rawStringValue(payload, "output")
+		out.RawOutput = rawStringValue(payload, "raw_output")
 		out.Step = int(int64Number(payload, "step"))
 		out.DurationMS = int64Number(payload, "duration_ms")
+		if isV3SyntheticReasoningToolPayload(payload) {
+			out.Type = "reasoning.delta"
+			out.ToolName = ""
+			out.Delta = out.Output
+			out.Output = ""
+			out.RawOutput = ""
+			break
+		}
 	case "session.tool.completed":
 		out.Type = "tool.completed"
 		out.ToolName = firstNonEmptyV3String(stringValue(payload, "tool_name"), "tool")
 		out.CallID = stringValue(payload, "call_id")
-		out.Arguments = stringValue(payload, "arguments")
-		out.Output = stringValue(payload, "output")
-		out.RawOutput = stringValue(payload, "raw_output")
+		out.Arguments = rawStringValue(payload, "arguments")
+		out.Output = rawStringValue(payload, "output")
+		out.RawOutput = rawStringValue(payload, "raw_output")
 		out.Step = int(int64Number(payload, "step"))
 		out.DurationMS = int64Number(payload, "duration_ms")
+		if isV3SyntheticReasoningToolPayload(payload) {
+			out.Type = "reasoning.completed"
+			out.ToolName = ""
+			out.Summary = firstNonEmptyV3String(rawStringValue(payload, "completed_output"), out.RawOutput, out.Output)
+			out.Output = ""
+			out.RawOutput = ""
+			break
+		}
 	case "session.run.failed", "session.run.cancelled", "session.run.expired", "session.run.interrupted", "session.assistant.failed":
 		out.Type = "turn.error"
 		if out.Error == "" {
@@ -603,7 +628,7 @@ func messageFromV3Payload(payload map[string]any, fallbackSessionID string) *ui.
 		ID:        stringValue(messagePayload, "id"),
 		SessionID: firstNonEmptyV3String(stringValue(messagePayload, "session_id"), fallbackSessionID),
 		Role:      stringValue(messagePayload, "role"),
-		Content:   stringValue(messagePayload, "content"),
+		Content:   rawStringValue(messagePayload, "content"),
 		GlobalSeq: uint64Number(messagePayload, "global_seq"),
 		CreatedAt: int64Number(messagePayload, "created_at"),
 		Metadata:  metadata,
@@ -664,10 +689,27 @@ func usageSummaryFromV3Payload(payload map[string]any) *ui.ChatUsageSummary {
 }
 
 func stringValue(payload map[string]any, key string) string {
+	return strings.TrimSpace(rawStringValue(payload, key))
+}
+
+func rawStringValue(payload map[string]any, key string) string {
 	if value, ok := payload[key].(string); ok {
-		return strings.TrimSpace(value)
+		return value
 	}
 	return ""
+}
+
+func boolValue(payload map[string]any, key string) bool {
+	value, _ := payload[key].(bool)
+	return value
+}
+
+func isV3SyntheticReasoningToolPayload(payload map[string]any) bool {
+	metadata, _ := payload["metadata"].(map[string]any)
+	return boolValue(metadata, "synthetic_tool") ||
+		strings.EqualFold(stringValue(metadata, "timeline_kind"), "thinking") ||
+		strings.EqualFold(stringValue(metadata, "segment_kind"), "reasoning") ||
+		strings.EqualFold(stringValue(payload, "tool_name"), "thinking")
 }
 
 func firstNonEmptyV3String(values ...string) string {

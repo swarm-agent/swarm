@@ -1829,7 +1829,8 @@ func (p *ChatPage) applyRunStreamEvent(event ChatRunStreamEvent, atUnix int64) {
 		p.statusLine = fmt.Sprintf("thinking %s %s", p.spinnerFrame(), p.runElapsedLabel())
 	case "reasoning.delta":
 		p.startReasoningSegment(atUnix)
-		snapshot := canonicalThinkingText(event.Delta)
+		snapshot := mergeThinkingStream(p.liveThinking, event.Delta)
+		snapshot = canonicalThinkingText(snapshot)
 		if snapshot == "" {
 			return
 		}
@@ -1967,7 +1968,8 @@ func (p *ChatPage) applyRunStreamEvent(event ChatRunStreamEvent, atUnix int64) {
 			}
 			p.appendStoredMessageWithMetadata(msg.ID, role, msg.Content, msg.Metadata, msg.CreatedAt)
 		case "assistant":
-			if text := strings.TrimSpace(msg.Content); text != "" {
+			text := msg.Content
+			if strings.TrimSpace(text) != "" {
 				if isCommentaryMetadata(msg.Metadata) {
 					p.completeThinkingTimeline("done", msg.CreatedAt, "")
 					p.liveAssistant = mergeAssistantStream(p.liveAssistant, text)
@@ -1994,6 +1996,17 @@ func (p *ChatPage) applyRunStreamEvent(event ChatRunStreamEvent, atUnix int64) {
 			}
 			p.upsertStoredMessageWithMetadata(msg.ID, role, rawSummary, msg.Metadata, msg.CreatedAt)
 		case "tool":
+			if isSyntheticThinkingMetadata(msg.Metadata) {
+				entry := parseToolStreamEntry(msg.Content, msg.CreatedAt)
+				summary := firstNonEmptyStringUI(entry.Raw, entry.Output)
+				if normalized := normalizeThinkingSummary(summary); normalized != "" {
+					p.thinkingSummary = normalized
+					if strings.TrimSpace(event.RunID) != strings.TrimSpace(p.ownedRunID) || strings.TrimSpace(p.ownedRunID) == "" || !p.busy {
+						p.upsertStoredMessageWithMetadata(msg.ID, "reasoning", canonicalThinkingText(summary), msg.Metadata, msg.CreatedAt)
+					}
+				}
+				return
+			}
 			entry := parseToolStreamEntry(msg.Content, msg.CreatedAt)
 			p.upsertToolStreamEntry(entry)
 			callKey := toolReplayDedupKey(entry)
@@ -3140,6 +3153,21 @@ func isCommentaryMetadata(metadata map[string]any) bool {
 	}
 	value, _ := metadata["phase"].(string)
 	return strings.EqualFold(strings.TrimSpace(value), "commentary")
+}
+
+func isSyntheticThinkingMetadata(metadata map[string]any) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	if value, _ := metadata["synthetic_tool"].(bool); value {
+		return true
+	}
+	return metadataStringEquals(metadata, "timeline_kind", "thinking") || metadataStringEquals(metadata, "segment_kind", "reasoning")
+}
+
+func metadataStringEquals(metadata map[string]any, key, want string) bool {
+	value, _ := metadata[key].(string)
+	return strings.EqualFold(strings.TrimSpace(value), want)
 }
 
 func reasoningTimelineMetadata(runID int, segment int, startedAt int64, durationMS int64) map[string]any {

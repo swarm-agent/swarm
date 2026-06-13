@@ -457,6 +457,54 @@ func TestAPIChatBackendV3MapsPermissionAndUsageRealtimeEvents(t *testing.T) {
 	}
 }
 
+func TestAPIChatBackendV3PreservesAssistantDeltaWhitespace(t *testing.T) {
+	first := v3StreamEventToChatEvent(client.SessionV3Event{
+		SessionID: "session-v3",
+		EventType: "session.assistant.delta",
+		Payload:   json.RawMessage(`{"session_id":"session-v3","run_id":"run-v3","delta":"coding"}`),
+	})
+	second := v3StreamEventToChatEvent(client.SessionV3Event{
+		SessionID: "session-v3",
+		EventType: "session.assistant.delta",
+		Payload:   json.RawMessage(`{"session_id":"session-v3","run_id":"run-v3","delta":" assistant"}`),
+	})
+	if first.Type != "assistant.delta" || first.Delta != "coding" {
+		t.Fatalf("first delta = %#v", first)
+	}
+	if second.Type != "assistant.delta" || second.Delta != " assistant" {
+		t.Fatalf("second delta = %#v", second)
+	}
+}
+
+func TestAPIChatBackendV3MapsSyntheticThinkingToolEventsToReasoning(t *testing.T) {
+	started := v3StreamEventToChatEvent(client.SessionV3Event{
+		SessionID: "session-v3",
+		EventType: "session.tool.started",
+		Payload:   json.RawMessage(`{"session_id":"session-v3","run_id":"run-v3","tool_name":"thinking","call_id":"thinking-1","arguments":"{\"reasoning_key\":\"r1\"}","metadata":{"synthetic_tool":true,"timeline_kind":"thinking","segment_kind":"reasoning"}}`),
+	})
+	if started.Type != "reasoning.started" || started.ToolName != "" {
+		t.Fatalf("mapped synthetic started = %#v", started)
+	}
+
+	delta := v3StreamEventToChatEvent(client.SessionV3Event{
+		SessionID: "session-v3",
+		EventType: "session.tool.delta",
+		Payload:   json.RawMessage(`{"session_id":"session-v3","run_id":"run-v3","tool_name":"thinking","call_id":"thinking-1","output":" user","metadata":{"synthetic_tool":true,"timeline_kind":"thinking","segment_kind":"reasoning"}}`),
+	})
+	if delta.Type != "reasoning.delta" || delta.Delta != " user" || delta.Output != "" || delta.ToolName != "" {
+		t.Fatalf("mapped synthetic delta = %#v", delta)
+	}
+
+	completed := v3StreamEventToChatEvent(client.SessionV3Event{
+		SessionID: "session-v3",
+		EventType: "session.tool.completed",
+		Payload:   json.RawMessage(`{"session_id":"session-v3","run_id":"run-v3","tool_name":"thinking","call_id":"thinking-1","completed_output":"The user is greeting me.","metadata":{"synthetic_tool":true,"timeline_kind":"thinking","segment_kind":"reasoning"}}`),
+	})
+	if completed.Type != "reasoning.completed" || completed.Summary != "The user is greeting me." || completed.ToolName != "" {
+		t.Fatalf("mapped synthetic completed = %#v", completed)
+	}
+}
+
 func TestAPIChatBackendV3MapsSessionToolEventsToLiveToolStream(t *testing.T) {
 	started := v3StreamEventToChatEvent(client.SessionV3Event{
 		SessionID: "session-v3",
