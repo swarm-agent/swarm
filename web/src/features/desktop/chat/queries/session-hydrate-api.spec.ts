@@ -553,3 +553,48 @@ test('Desktop V3 has no standalone permission list or usage subresource helpers'
   assert.doesNotMatch(source, /permissions\?status=pending/)
   assert.doesNotMatch(source, /\/usage`/)
 })
+
+test('Desktop routine workset hydration callers are metadata-only and never request unbounded full history', async () => {
+  const files = [
+    '../../state/desktop-state-snapshot.ts',
+    '../../state/desktop-ui-store.ts',
+    '../../state/desktop-v3-session-api.ts',
+    '../../state/desktop-state-stream.ts',
+    '../../layout/desktop-app-page.tsx',
+  ] as const
+  const sources = await Promise.all(files.map(async (file) => ({
+    file,
+    source: await readFile(new URL(file, import.meta.url), 'utf8'),
+  })))
+
+  const allSource = sources.map(({ file, source }) => `\n@@FILE:${file}@@\n${source}`).join('\n')
+  const unboundedFullHistoryCallers = findUnboundedFullHistoryWorksetRequests(allSource)
+  assert.deepEqual(unboundedFullHistoryCallers, [], `routine workset callers must not request unbounded history.mode='full': ${unboundedFullHistoryCallers.join(', ')}`)
+
+  const snapshotSource = sources.find((entry) => entry.file.endsWith('desktop-state-snapshot.ts'))?.source ?? ''
+  assert.match(snapshotSource, /const DEFAULT_SNAPSHOT_HISTORY = \{\n\s+mode: 'none' as const,/, 'default workset snapshot history must be metadata-only')
+
+  const mutationSource = sources.find((entry) => entry.file.endsWith('desktop-v3-session-api.ts'))?.source ?? ''
+  assert.match(mutationSource, /mergeDesktopStateSnapshot\(\{\s*sessionIds: \[normalizedSessionId\],\s*history: \{ mode: 'none'/s, 'mutation refresh snapshots must explicitly request metadata-only history')
+})
+
+function findUnboundedFullHistoryWorksetRequests(source: string): string[] {
+  const offenders: string[] = []
+  for (const match of source.matchAll(/history:\s*\{[^}]*mode:\s*'full'[^}]*\}/g)) {
+    const request = match[0]
+    if (/maxMessagesPerSession\s*:\s*\d+/.test(request)) {
+      continue
+    }
+    const offset = match.index ?? 0
+    const prefix = source.slice(0, offset)
+    const line = prefix.split('\n').length
+    const fileMarkerOffset = prefix.lastIndexOf('@@FILE:')
+    const fileMarkerEnd = fileMarkerOffset >= 0 ? prefix.indexOf('@@', fileMarkerOffset + '@@FILE:'.length) : -1
+    const file = fileMarkerOffset >= 0 && fileMarkerEnd > fileMarkerOffset
+      ? prefix.slice(fileMarkerOffset + '@@FILE:'.length, fileMarkerEnd)
+      : 'unknown'
+    const fileLine = fileMarkerOffset >= 0 ? prefix.slice(fileMarkerEnd + '@@'.length, offset).split('\n').length : line
+    offenders.push(`${file}:${fileLine}`)
+  }
+  return offenders
+}

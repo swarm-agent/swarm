@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -157,6 +158,120 @@ func TestSessionsV3WorksetEndpointReturnsPersistedUsage(t *testing.T) {
 	}
 	if usage.ContextWindow != 1000 || usage.TotalTokens != 250 || usage.RemainingTokens != 750 {
 		t.Fatalf("usage summary = %+v", usage)
+	}
+}
+
+func TestSessionsV3WorksetEndpointOmittedHistoryIsMetadataOnly(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "workset-default-history", "Workset Default History")
+	appendSessionsV3PrimaryMessageForWorksetTest(t, server, created.ID, "first")
+	appendSessionsV3PrimaryMessageForWorksetTest(t, server, created.ID, "second")
+
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions:workset", bytes.NewBufferString(`{"session_ids":["`+created.ID+`"]}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("workset status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		MessagesBySession map[string][]pebblestore.MessageSnapshot `json:"messages_by_session"`
+		EventsBySession   map[string][]pebblestore.V3SessionEvent  `json:"events_by_session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode workset response: %v", err)
+	}
+	if got := len(payload.MessagesBySession[created.ID]); got != 0 {
+		t.Fatalf("omitted history should be metadata-only messages, got %d: %+v", got, payload.MessagesBySession[created.ID])
+	}
+	if got := len(payload.EventsBySession[created.ID]); got != 0 {
+		t.Fatalf("omitted history should be metadata-only events, got %d: %+v", got, payload.EventsBySession[created.ID])
+	}
+}
+
+func TestSessionsV3WorksetEndpointFullHistoryWithoutCapReturnsEntireTranscript(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "workset-full-history", "Workset Full History")
+	appendSessionsV3PrimaryMessageForWorksetTest(t, server, created.ID, "first")
+	appendSessionsV3PrimaryMessageForWorksetTest(t, server, created.ID, "second")
+	appendSessionsV3PrimaryMessageForWorksetTest(t, server, created.ID, "third")
+
+	body := `{"session_ids":["` + created.ID + `"],"history":{"mode":"full","manifest_policy":"manifest","include_events":false}}`
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions:workset", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("workset status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		MessagesBySession map[string][]pebblestore.MessageSnapshot `json:"messages_by_session"`
+		Omissions         []pebblestore.V3SessionWorksetOmission   `json:"omissions"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode workset response: %v", err)
+	}
+	messages := payload.MessagesBySession[created.ID]
+	if len(messages) != 3 {
+		t.Fatalf("full history without cap returned %d messages, want entire transcript of 3: %+v", len(messages), messages)
+	}
+	if len(payload.Omissions) != 0 {
+		t.Fatalf("full history without cap should bypass omission/manifest safety, got %+v", payload.Omissions)
+	}
+}
+
+func TestSessionsV3MessagesEndpointCurrentPaginationLacksNewestTailMode(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "messages-current-pagination", "Messages Current Pagination")
+	appendSessionsV3PrimaryMessageForWorksetTest(t, server, created.ID, "first")
+	appendSessionsV3PrimaryMessageForWorksetTest(t, server, created.ID, "second")
+	appendSessionsV3PrimaryMessageForWorksetTest(t, server, created.ID, "third")
+
+	fetch := func(path string) struct {
+		Messages      []pebblestore.MessageSnapshot `json:"messages"`
+		OldestSeq     uint64                        `json:"oldest_seq"`
+		NewestSeq     uint64                        `json:"newest_seq"`
+		NextBeforeSeq uint64                        `json:"next_before_seq"`
+		NextAfterSeq  uint64                        `json:"next_after_seq"`
+		HasMoreOlder  bool                          `json:"has_more_older"`
+		HasMoreNewer  bool                          `json:"has_more_newer"`
+	} {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("messages status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		var payload struct {
+			Messages      []pebblestore.MessageSnapshot `json:"messages"`
+			OldestSeq     uint64                        `json:"oldest_seq"`
+			NewestSeq     uint64                        `json:"newest_seq"`
+			NextBeforeSeq uint64                        `json:"next_before_seq"`
+			NextAfterSeq  uint64                        `json:"next_after_seq"`
+			HasMoreOlder  bool                          `json:"has_more_older"`
+			HasMoreNewer  bool                          `json:"has_more_newer"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode messages response: %v", err)
+		}
+		return payload
+	}
+
+	firstPage := fetch("/v3/sessions/" + created.ID + "/messages?limit=2")
+	if len(firstPage.Messages) != 2 || firstPage.Messages[0].Content != "first" || firstPage.Messages[1].Content != "second" {
+		t.Fatalf("default messages page should currently be after_seq=0 ascending, got %+v", firstPage.Messages)
+	}
+	if !firstPage.HasMoreNewer || firstPage.NextAfterSeq == 0 {
+		t.Fatalf("default messages page cursor metadata = %+v", firstPage)
+	}
+
+	olderPage := fetch("/v3/sessions/" + created.ID + "/messages?before_seq=" + strconv.FormatUint(firstPage.NewestSeq, 10) + "&limit=1")
+	if len(olderPage.Messages) != 1 || olderPage.Messages[0].Content != "first" {
+		t.Fatalf("before_seq page = %+v", olderPage.Messages)
+	}
+	if !olderPage.HasMoreOlder || olderPage.NextBeforeSeq == 0 {
+		t.Fatalf("before_seq cursor metadata = %+v", olderPage)
 	}
 }
 
