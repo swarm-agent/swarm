@@ -20,6 +20,7 @@ import {
   getV3RuntimeDesktopSnapshot,
   getV3RuntimeSnapshot,
   subscribeV3Runtime,
+  type V3RuntimeState,
 } from '../v3-runtime/v3-store'
 import {
   createV3ConnectionStaleEnvelope,
@@ -59,12 +60,15 @@ const EMPTY_DESKTOP_PLAN_REVISIONS: DesktopSessionPlanRevisionProjection[] = []
  * ../v3-runtime/v3-store. This module intentionally owns no mutable snapshot;
  * all reads subscribe to that store and all writes enter through V3 envelopes.
  */
+function useDesktopRuntimeSelector<Selected>(selector: (runtime: V3RuntimeState) => Selected): Selected {
+  const runtime = useSyncExternalStore(subscribeV3Runtime, getV3RuntimeSnapshot, getV3RuntimeSnapshot)
+  return selector(runtime)
+}
+
 export function useDesktopState(): DesktopState
 export function useDesktopState<Selected>(selector: (state: DesktopState) => Selected): Selected
 export function useDesktopState<Selected>(selector?: (state: DesktopState) => Selected): DesktopState | Selected {
-  const runtime = useSyncExternalStore(subscribeV3Runtime, getV3RuntimeSnapshot, getV3RuntimeSnapshot)
-  const state = runtime.desktop
-  return selector ? selector(state) : state
+  return useDesktopRuntimeSelector((runtime) => selector ? selector(runtime.desktop) : runtime.desktop)
 }
 
 export function getDesktopSnapshot(): DesktopState {
@@ -72,75 +76,39 @@ export function getDesktopSnapshot(): DesktopState {
 }
 
 export function useDesktopSession(sessionId: string | null | undefined): DesktopSessionRecord | null {
-  return useSyncExternalStore(
-    subscribeV3Runtime,
-    () => selectV3Session(getV3RuntimeSnapshot(), sessionId),
-    () => selectV3Session(getV3RuntimeSnapshot(), sessionId),
-  )
+  return useDesktopRuntimeSelector((runtime) => selectV3Session(runtime, sessionId))
 }
 
 export function useDesktopWorkspaceSessions(workspaceScope: DesktopWorkspaceScope): DesktopSessionRecord[] {
-  return useSyncExternalStore(
-    subscribeV3Runtime,
-    () => selectV3WorkspaceSessions(getV3RuntimeSnapshot(), workspaceScope),
-    () => selectV3WorkspaceSessions(getV3RuntimeSnapshot(), workspaceScope),
-  )
+  return useDesktopRuntimeSelector((runtime) => selectV3WorkspaceSessions(runtime, workspaceScope))
 }
 
 export function useDesktopRouteReadiness(_workspaceScope: DesktopWorkspaceScope, sessionId: string | null | undefined): DesktopSessionReadinessRecord | null {
-  return useSyncExternalStore(
-    subscribeV3Runtime,
-    () => selectV3RouteReadiness(getV3RuntimeSnapshot(), sessionId),
-    () => selectV3RouteReadiness(getV3RuntimeSnapshot(), sessionId),
-  )
+  return useDesktopRuntimeSelector((runtime) => selectV3RouteReadiness(runtime, sessionId))
 }
 
 export function useDesktopMessages(sessionId: string | null | undefined): ChatMessageRecord[] {
-  return useSyncExternalStore(
-    subscribeV3Runtime,
-    () => selectV3Messages(getV3RuntimeSnapshot(), sessionId) ?? EMPTY_DESKTOP_MESSAGES,
-    () => selectV3Messages(getV3RuntimeSnapshot(), sessionId) ?? EMPTY_DESKTOP_MESSAGES,
-  )
+  return useDesktopRuntimeSelector((runtime) => selectV3Messages(runtime, sessionId) ?? EMPTY_DESKTOP_MESSAGES)
 }
 
 export function useDesktopPreference(sessionId: string | null | undefined): ResolvedSessionPreference | null {
-  return useSyncExternalStore(
-    subscribeV3Runtime,
-    () => selectV3Preference(getV3RuntimeSnapshot(), sessionId),
-    () => selectV3Preference(getV3RuntimeSnapshot(), sessionId),
-  )
+  return useDesktopRuntimeSelector((runtime) => selectV3Preference(runtime, sessionId))
 }
 
 export function useDesktopActiveRun(sessionId: string | null | undefined): DesktopRunIntentRecord | null {
-  return useSyncExternalStore(
-    subscribeV3Runtime,
-    () => selectV3ActiveRun(getV3RuntimeSnapshot(), sessionId),
-    () => selectV3ActiveRun(getV3RuntimeSnapshot(), sessionId),
-  )
+  return useDesktopRuntimeSelector((runtime) => selectV3ActiveRun(runtime, sessionId))
 }
 
 export function useDesktopAgentModelPolicy(sessionId: string | null | undefined): AgentModelPolicyRecord | null {
-  return useSyncExternalStore(
-    subscribeV3Runtime,
-    () => selectV3AgentModelPolicy(getV3RuntimeSnapshot(), sessionId),
-    () => selectV3AgentModelPolicy(getV3RuntimeSnapshot(), sessionId),
-  )
+  return useDesktopRuntimeSelector((runtime) => selectV3AgentModelPolicy(runtime, sessionId))
 }
 
 export function useDesktopPlan(sessionId: string | null | undefined): DesktopSessionPlanProjection | null {
-  return useSyncExternalStore(
-    subscribeV3Runtime,
-    () => selectV3Plan(getV3RuntimeSnapshot(), sessionId),
-    () => selectV3Plan(getV3RuntimeSnapshot(), sessionId),
-  )
+  return useDesktopRuntimeSelector((runtime) => selectV3Plan(runtime, sessionId))
 }
 
 export function useDesktopPlanRevisions(sessionId: string | null | undefined): DesktopSessionPlanRevisionProjection[] {
-  return useSyncExternalStore(
-    subscribeV3Runtime,
-    () => selectV3PlanRevisions(getV3RuntimeSnapshot(), sessionId) ?? EMPTY_DESKTOP_PLAN_REVISIONS,
-    () => selectV3PlanRevisions(getV3RuntimeSnapshot(), sessionId) ?? EMPTY_DESKTOP_PLAN_REVISIONS,
-  )
+  return useDesktopRuntimeSelector((runtime) => selectV3PlanRevisions(runtime, sessionId) ?? EMPTY_DESKTOP_PLAN_REVISIONS)
 }
 
 export function subscribeDesktop(listener: DesktopStoreListener): () => void {

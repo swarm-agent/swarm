@@ -90,6 +90,22 @@ function v3Snapshot(messages: Record<string, unknown>[], active = true): Record<
   }
 }
 
+function v3WorksetSnapshot(messages: Record<string, unknown>[], active = true): Record<string, unknown> {
+  return {
+    rev: 1,
+    snapshot_endpoint_cursor: 'cursor-v3-markdown-stream-1',
+    sessions_by_id: { [SESSION_ID]: sessionWire(active) },
+    session_order: [SESSION_ID],
+    messages_by_session: { [SESSION_ID]: messages },
+    permissions_by_session: { [SESSION_ID]: [] },
+    preferences_by_session: { [SESSION_ID]: { preference: { provider: 'mock', model: 'v3-markdown-stream', thinking: '', updated_at: 0 }, context_window: 128000, max_output_tokens: 4096 } },
+    plans_by_session: { [SESSION_ID]: null },
+    plan_revisions_by_session: { [SESSION_ID]: [] },
+    usage_by_session: {},
+    run_intents_by_session: active ? { [SESSION_ID]: [{ session_id: SESSION_ID, run_id: RUN_ID, status: 'running', created_at: 1, updated_at: Date.now(), event_seq: 1 }] } : {},
+  }
+}
+
 async function startMockBackend(): Promise<{ server: Server; port: number; setMessages: (messages: Record<string, unknown>[], active?: boolean) => void }> {
   let sessionMessages: Record<string, unknown>[] = [userMessage()]
   let sessionActive = true
@@ -130,6 +146,7 @@ async function startMockBackend(): Promise<{ server: Server; port: number; setMe
         directories: [],
       })
     }
+    if (path === '/v3/sessions:workset') return writeJson(res, 200, v3WorksetSnapshot(sessionMessages, sessionActive))
     if (path === `/v3/sessions/${SESSION_ID}`) return writeJson(res, 200, v3Snapshot(sessionMessages, sessionActive))
     if (path === '/v1/notifications') {
       return writeJson(res, 200, { notifications: [], summary: { swarm_id: 'swarm-playwright', total_count: 0, unread_count: 0, active_count: 0, updated_at: 0 } })
@@ -258,11 +275,13 @@ async function installBrowserStreamControls(page: Page): Promise<void> {
               payload: body,
             },
           });
-        } else if (socket.url.includes('/v3/sessions/' + sessionId + '/stream')) {
+        } else if (socket.url.includes('/v3/realtime/stream') || socket.url.includes('/v3/sessions/' + sessionId + '/stream')) {
           socket.__emit({
-            type: 'event',
+            protocol: 'v3.realtime',
+            kind: 'event',
             ok: true,
             session_id: sessionId,
+            endpoint_cursor: 'cursor-' + seq,
             last_seq: seq,
             high_watermark_seq: seq,
             event: {
