@@ -164,6 +164,30 @@ func (s *Server) recordV3StoreResultDiagnostic(input sessionruntime.SessionMutat
 	payload := map[string]any{
 		"mutation_input":  input,
 		"mutation_result": result,
+		"summary": map[string]any{
+			"session_id":        input.SessionID,
+			"run_id":            runID,
+			"kind":              input.Kind,
+			"event_type":        input.EventType,
+			"client_request_id": input.ClientRequestID,
+			"idempotency_key":   input.IdempotencyKey,
+			"payload_hash":      input.PayloadHash,
+			"request_hash":      input.RequestHash,
+		},
+	}
+	if len(input.EventPayload) > 0 {
+		payload["incoming_event_payload"] = decodeSessionV3DiagnosticRawJSON(input.EventPayload)
+	}
+	if result.Conflict != nil {
+		payload["idempotency_conflict"] = map[string]any{
+			"code":                  result.Conflict.Code,
+			"message":               result.Conflict.Message,
+			"existing_payload_hash": result.Conflict.ExistingPayloadHash,
+			"incoming_payload_hash": result.Conflict.IncomingPayloadHash,
+			"client_request_id":     input.ClientRequestID,
+			"kind":                  input.Kind,
+			"event_type":            input.EventType,
+		}
 	}
 	if applyErr != nil {
 		payload["error"] = applyErr.Error()
@@ -180,6 +204,17 @@ func (s *Server) recordV3StoreResultDiagnostic(input sessionruntime.SessionMutat
 	}); err != nil {
 		log.Printf("warning: failed to record v3 store result diagnostic session=%q kind=%q request=%q: %v", input.SessionID, input.Kind, input.ClientRequestID, err)
 	}
+}
+
+func decodeSessionV3DiagnosticRawJSON(raw json.RawMessage) any {
+	if len(raw) == 0 {
+		return nil
+	}
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return map[string]any{"decode_error": err.Error(), "raw": string(raw)}
+	}
+	return decoded
 }
 
 func sessionV3StoreDiagnosticSequence(prefix, kind, requestID string, discriminator int64) string {

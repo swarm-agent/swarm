@@ -1483,24 +1483,29 @@ func (e *sessionV3Executor) recordProviderToolEvent(job sessionV3ExecutorJob, ev
 	stepID := sessionV3ProviderToolStepID(step)
 	toolInstanceID := sessionV3ProviderToolInstanceID(step, callID)
 	now := time.Now().UnixMilli()
-	payload := map[string]any{
-		"run_id":           strings.TrimSpace(job.RunID),
-		"step":             step,
-		"step_id":          stepID,
-		"tool_name":        toolName,
-		"call_id":          callID,
-		"tool_instance_id": toolInstanceID,
-		"recorded_at":      now,
-	}
-	if eventType == "permission.requested" || eventType == "permission.updated" {
-		payload["type"] = eventType
-		payload["session_id"] = strings.TrimSpace(firstNonEmpty(event.SessionID, job.SessionID))
-		if event.Permission != nil {
-			payload["permission"] = event.Permission
+	payload := map[string]any{}
+	if eventType == "permission.updated" {
+		payload = sessionV3PermissionUpdatedPayload(strings.TrimSpace(firstNonEmpty(event.SessionID, job.SessionID)), strings.TrimSpace(job.RunID), step, toolName, callID, strings.TrimSpace(event.Arguments), event.Permission)
+	} else {
+		payload = map[string]any{
+			"run_id":           strings.TrimSpace(job.RunID),
+			"step":             step,
+			"step_id":          stepID,
+			"tool_name":        toolName,
+			"call_id":          callID,
+			"tool_instance_id": toolInstanceID,
+			"recorded_at":      now,
 		}
-	}
-	if args := strings.TrimSpace(event.Arguments); args != "" {
-		payload["arguments"] = args
+		if eventType == "permission.requested" {
+			payload["type"] = eventType
+			payload["session_id"] = strings.TrimSpace(firstNonEmpty(event.SessionID, job.SessionID))
+			if event.Permission != nil {
+				payload["permission"] = event.Permission
+			}
+		}
+		if args := strings.TrimSpace(event.Arguments); args != "" {
+			payload["arguments"] = args
+		}
 	}
 	if output := event.Output; output != "" {
 		payload["output"] = output
@@ -2170,6 +2175,39 @@ func sessionV3ProviderToolInstanceID(step int, callID string) string {
 		callID = "tool_call"
 	}
 	return sessionV3ProviderToolStepID(step) + ":" + callID
+}
+
+func sessionV3PermissionUpdatedPayload(sessionID, runID string, step int, toolName, callID, arguments string, permission any) map[string]any {
+	sessionID = strings.TrimSpace(sessionID)
+	runID = strings.TrimSpace(runID)
+	if step <= 0 {
+		step = 1
+	}
+	toolName = strings.TrimSpace(toolName)
+	if toolName == "" {
+		toolName = "tool"
+	}
+	callID = strings.TrimSpace(callID)
+	if callID == "" {
+		callID = "tool_call"
+	}
+	payload := map[string]any{
+		"run_id":           runID,
+		"step":             step,
+		"step_id":          sessionV3ProviderToolStepID(step),
+		"tool_name":        toolName,
+		"call_id":          callID,
+		"tool_instance_id": sessionV3ProviderToolInstanceID(step, callID),
+		"type":             "permission.updated",
+		"session_id":       sessionID,
+	}
+	if permission != nil {
+		payload["permission"] = permission
+	}
+	if arguments = strings.TrimSpace(arguments); arguments != "" {
+		payload["arguments"] = arguments
+	}
+	return payload
 }
 
 func sessionV3ProviderToolEventStatus(eventType string) string {

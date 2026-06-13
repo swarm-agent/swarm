@@ -1201,22 +1201,7 @@ func (s *Server) publishSessionV3PermissionUpdatedFromRecord(principal identity.
 		toolName = "tool"
 	}
 	arguments := strings.TrimSpace(firstNonEmpty(record.ToolCallArguments, record.ToolArguments))
-	stepID := sessionV3ProviderToolStepID(step)
-	toolInstanceID := sessionV3ProviderToolInstanceID(step, callID)
-	payload := map[string]any{
-		"run_id":           runID,
-		"step":             step,
-		"step_id":          stepID,
-		"tool_name":        toolName,
-		"call_id":          callID,
-		"tool_instance_id": toolInstanceID,
-		"type":             "permission.updated",
-		"session_id":       sessionID,
-		"permission":       record,
-	}
-	if arguments != "" {
-		payload["arguments"] = arguments
-	}
+	payload := sessionV3PermissionUpdatedPayload(sessionID, runID, step, toolName, callID, arguments, record)
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, false, err

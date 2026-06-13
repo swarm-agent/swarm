@@ -4702,6 +4702,68 @@ func TestSessionsV3PrimaryPermissionResolvePublishesImmediateV3Update(t *testing
 	}
 }
 
+func TestSessionsV3PrimaryPermissionUpdatedDuplicateExecutorAndHTTPReplays(t *testing.T) {
+	server, sessionSvc, permissionSvc, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := t.TempDir()
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "permission-duplicate-create", "permission duplicate", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	runID := "run-permission-duplicate"
+	now := time.Now().UnixMilli()
+	pendingIntent := pebblestore.V3SessionRunIntent{SessionID: created.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, RunID: runID, Status: sessionruntime.RunIntentPendingExecutor, UpdatedAt: now}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: created.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ClientRequestID: "permission-duplicate-pending", IdempotencyKey: "permission-duplicate-pending", PayloadHash: "permission-duplicate-pending-hash", RequestHash: "permission-duplicate-pending-hash", Kind: sessionruntime.SessionMutationRecordRunIntent, EventType: "session.assistant.queued", RunIntent: &pendingIntent, NowUnixMs: now}); err != nil {
+		t.Fatalf("record pending intent: %v", err)
+	}
+	runningIntent := pendingIntent
+	runningIntent.Status = sessionruntime.RunIntentRunning
+	runningIntent.UpdatedAt = now + 1
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: created.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ClientRequestID: "permission-duplicate-running", IdempotencyKey: "permission-duplicate-running", PayloadHash: "permission-duplicate-running-hash", RequestHash: "permission-duplicate-running-hash", Kind: sessionruntime.SessionMutationRecordRunIntent, EventType: "session.assistant.started", RunIntent: &runningIntent, NowUnixMs: now + 1}); err != nil {
+		t.Fatalf("record running intent: %v", err)
+	}
+
+	callArgs := `{"command":"printf duplicate\\n","timeout_ms":1000}`
+	pending, err := permissionSvc.CreatePending(permission.CreateInput{SessionID: created.ID, RunID: runID, Step: 2, CallID: "call-duplicate-permission", ToolName: "bash", ToolArguments: callArgs, ToolCallArguments: callArgs, Requirement: "tool", Mode: sessionruntime.ModeAuto})
+	if err != nil {
+		t.Fatalf("create pending permission: %v", err)
+	}
+	resolved, _, err := permissionSvc.ResolveWithPolicyAndArguments(created.ID, pending.ID, "allow_once", "ok", "")
+	if err != nil {
+		t.Fatalf("resolve permission directly: %v", err)
+	}
+
+	exec := &sessionV3Executor{server: server}
+	if err := exec.recordProviderToolEvent(sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: created.ID, RunID: runID}, runruntime.StreamEvent{Type: runruntime.StreamEventPermissionUpdate, SessionID: created.ID, Step: 2, ToolName: "bash", CallID: "call-duplicate-permission", Arguments: callArgs, Permission: &resolved}, "permission.updated", 0); err != nil {
+		t.Fatalf("record executor permission.updated: %v", err)
+	}
+
+	mutation, published, err := server.publishSessionV3PermissionUpdatedFromRecord(testPrincipal(), created.ID, resolved)
+	if err != nil {
+		t.Fatalf("duplicate HTTP permission.updated should replay, got error: %v", err)
+	}
+	if published || !mutation.Replayed || mutation.Event.EventType != "permission.updated" {
+		t.Fatalf("duplicate publish = published:%t mutation:%+v, want replayed permission.updated", published, mutation)
+	}
+
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list session events: %v", err)
+	}
+	updates := 0
+	for _, event := range events {
+		if event.EventType == "permission.updated" {
+			updates++
+			var payload map[string]any
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatalf("decode permission.updated payload: %v", err)
+			}
+			if _, ok := payload["recorded_at"]; ok {
+				t.Fatalf("permission.updated payload should be idempotency-stable and omit recorded_at: %+v", payload)
+			}
+		}
+	}
+	if updates != 1 {
+		t.Fatalf("permission.updated event count = %d, want 1; events=%+v", updates, events)
+	}
+}
+
 func TestSessionsV3PrimaryAlwaysAllowPersistsInPermissionsPolicyView(t *testing.T) {
 	server, sessionSvc, permissionSvc, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	session, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
