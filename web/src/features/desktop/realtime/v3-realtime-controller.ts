@@ -142,9 +142,21 @@ export class DesktopV3RealtimeController {
     void this.connect()
   }
 
-  syncSessions(subscriptions: DesktopV3RealtimeSubscription[]): void {
+  syncSessions(subscriptions: DesktopV3RealtimeSubscription[], options: { resubscribe?: boolean } = {}): void {
     for (const sub of subscriptions) {
       this.subscribeSession(sub.sessionId, sub.endpointCursor)
+    }
+    if (subscriptions.length > 0 && options.resubscribe && this.socket?.readyState === WebSocket.OPEN) {
+      for (const sub of subscriptions) {
+        const entry = this.subscriptions.get(sub.sessionId.trim())
+        if (entry) {
+          this.sendSubscribe(this.socket, entry)
+        }
+      }
+      return
+    }
+    if (subscriptions.length > 0 && this.desired && (!this.socket || this.socket.readyState === WebSocket.CLOSED)) {
+      void this.connect()
     }
   }
 

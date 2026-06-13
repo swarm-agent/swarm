@@ -1062,6 +1062,112 @@ test('desktop V3 realtime controller consumes backend stream frames and renders 
   }
 })
 
+test('desktop V3 realtime resubscribes refreshed conversations from persisted subscription intent', async () => {
+  const sent: Array<{ url: string; message: Record<string, unknown> }> = []
+  const websocketURLs: string[] = []
+  const originalFetch = globalThis.fetch
+  const originalWindow = globalThis.window
+  const originalWebSocket = globalThis.WebSocket
+
+  const localStorageData = new Map<string, string>()
+  class FakeWebSocket extends EventTarget {
+    static CONNECTING = 0
+    static OPEN = 1
+    static CLOSING = 2
+    static CLOSED = 3
+    readyState = FakeWebSocket.OPEN
+    url: string
+
+    constructor(input: string | URL) {
+      super()
+      this.url = String(input)
+      websocketURLs.push(this.url)
+      queueMicrotask(() => this.dispatchEvent(new Event('open')))
+    }
+
+    close() {
+      this.readyState = FakeWebSocket.CLOSED
+      this.dispatchEvent(new Event('close'))
+    }
+
+    send(payload: string) {
+      sent.push({ url: this.url, message: JSON.parse(payload) as Record<string, unknown> })
+    }
+  }
+
+  globalThis.window = {
+    location: { protocol: 'http:', host: '127.0.0.1:7777' },
+    localStorage: {
+      getItem: (key: string) => localStorageData.get(key) ?? null,
+      setItem: (key: string, value: string) => { localStorageData.set(key, value) },
+      removeItem: (key: string) => { localStorageData.delete(key) },
+    },
+    addEventListener() {},
+    dispatchEvent: (() => true) as typeof window.dispatchEvent,
+    setTimeout: ((callback: TimerHandler, timeout?: number) => setTimeout(callback, timeout)) as typeof window.setTimeout,
+    clearTimeout: ((timer?: number) => clearTimeout(timer)) as typeof window.clearTimeout,
+    setInterval: ((callback: TimerHandler, timeout?: number) => setInterval(callback, timeout)) as typeof window.setInterval,
+    clearInterval: ((timer?: number) => clearInterval(timer)) as typeof window.clearInterval,
+  } as unknown as Window & typeof globalThis
+  globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input)
+    if (url === '/v1/auth/desktop/session') {
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    throw new Error(`unexpected fetch: ${url}`)
+  }) as typeof fetch
+
+  try {
+    const sessionId = 'session-refresh-resync'
+    const session = makeSession({
+      id: sessionId,
+      sessionApi: 'v3',
+      lifecycle: {
+        sessionId,
+        runId: 'run-refresh-resync',
+        active: true,
+        phase: 'running',
+        startedAt: 10,
+        endedAt: 0,
+        updatedAt: 11,
+        generation: 1,
+        stopReason: null,
+        error: null,
+        ownerTransport: null,
+      },
+      live: { ...emptyLiveState(), runId: 'run-refresh-resync', status: 'running' },
+    })
+    useDesktopStore.setState(makeState(session), true)
+    useDesktopStore.getState().ensureRunStream(sessionId)
+    await new Promise((resolve) => setImmediate(resolve))
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(sent.some((entry) => entry.message.kind === 'subscribe.session' && entry.message.session_id === sessionId), true)
+
+    const socketCountBeforeRefresh = websocketURLs.length
+    useDesktopStore.setState({
+      sessions: {},
+      realtimeDesired: false,
+      connectionState: 'idle',
+    })
+    useDesktopStore.getState().syncV3RealtimeSessions({ force: true })
+    await new Promise((resolve) => setImmediate(resolve))
+    await new Promise((resolve) => setImmediate(resolve))
+
+    const subscribeMessages = sent
+      .map((entry) => entry.message)
+      .filter((message) => message.kind === 'subscribe.session' && message.session_id === sessionId)
+    assert.equal(subscribeMessages.length >= 2, true, `expected refreshed resubscribe, got ${JSON.stringify(sent)}`)
+    assert.equal(websocketURLs.length, socketCountBeforeRefresh, 'refresh resync should reuse the existing V3 socket when it survived the reload boundary')
+    assert.equal(websocketURLs.some((url) => url.includes('/v3/realtime/stream')), true)
+  } finally {
+    useDesktopStore.getState().disconnect()
+    globalThis.fetch = originalFetch
+    globalThis.window = originalWindow
+    globalThis.WebSocket = originalWebSocket
+  }
+})
+
 test('desktop V3 canonical session updates use /v3/realtime/stream and leave run stream compatibility off', async () => {
   const { readFile } = await import('node:fs/promises')
   const controllerSource = await readFile(new URL('./run-stream-controller.ts', import.meta.url), 'utf8')
@@ -1073,7 +1179,7 @@ test('desktop V3 canonical session updates use /v3/realtime/stream and leave run
   assert.match(storeSource, /DesktopV3RealtimeController/)
   assert.match(storeSource, /requireV3RealtimeController/)
   assert.match(storeSource, /applyDesktopV3RealtimeFrame/)
-  assert.match(storeSource, /subscribeSession\(targetSessionId, desktopV3RealtimeEndpointCursor\)/)
+  assert.match(storeSource, /subscribeDesktopV3RealtimeSession\(targetSessionId, desktopV3RealtimeEndpointCursor\)/)
   assert.match(storeSource, /syncV3RealtimeSessions/)
   assert.match(panelSource, /liveSession\?\.sessionApi\?\.trim\(\)\.toLowerCase\(\) === 'v3'/)
   assert.match(panelSource, /session\.tool\.started/)

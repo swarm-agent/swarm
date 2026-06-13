@@ -734,6 +734,7 @@ function hasRenderableToolSnapshot(snapshot: {
 }
 
 type LiveToolSnapshot = {
+  pathId?: DesktopLiveToolRecord['pathId']
   toolName: string | null
   toolCallId: string | null
   toolInstanceId?: string | null
@@ -749,6 +750,7 @@ function liveToolRecordSnapshot(record: DesktopLiveToolRecord): LiveToolSnapshot
     return null
   }
   return {
+    pathId: record.pathId,
     toolName,
     toolCallId: record.callId,
     toolInstanceId: record.toolInstanceId,
@@ -767,6 +769,7 @@ function buildLiveToolMessageFromSnapshot(snapshot: LiveToolSnapshot): NonNullab
 
   const state = snapshot.state
   const toolMessage = buildStructuredToolMessage({
+    pathId: snapshot.pathId,
     tool: toolName,
     callId: snapshot.toolCallId ?? '',
     toolInstanceId: snapshot.toolInstanceId ?? '',

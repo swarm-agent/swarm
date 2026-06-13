@@ -126,11 +126,15 @@ export interface V3ConnectionStaleEnvelope extends V3EnvelopeBase {
 }
 
 export type V3ControlKind =
+  | 'hello'
   | 'keepalive'
   | 'replay.started'
   | 'replay.complete'
   | 'projection.high_watermark'
   | 'cursor.error'
+  | 'subscribe.session'
+  | 'unsubscribe.session'
+  | 'resume'
   | 'auth.denied'
   | 'slow_consumer.reconnect_required'
 
@@ -290,8 +294,13 @@ export function normalizeV3DurableEventEnvelope(raw: unknown, options: V3Durable
   const record = asRecord(raw)
   const wire = record as DurableEventWire | null
   const nestedEvent = asRecord(wire?.event)
-  const eventType = stringValue(wire?.event_type)
-    || stringValue(nestedEvent?.event_type)
+  const topLevelEventType = stringValue(wire?.event_type)
+  const nestedEventType = stringValue(nestedEvent?.event_type)
+  if (topLevelEventType && nestedEventType && topLevelEventType !== nestedEventType) {
+    throw new Error(`V3 realtime event_type mismatch: ${topLevelEventType} !== ${nestedEventType}`)
+  }
+  const eventType = topLevelEventType
+    || nestedEventType
     || stringValue(wire?.type)
   const globalSeq = positiveInteger(wire?.global_seq) ?? positiveInteger(nestedEvent?.seq)
   const sourceSeq = positiveInteger(wire?.source_seq) ?? positiveInteger(nestedEvent?.seq)
@@ -327,6 +336,9 @@ export function normalizeV3RealtimeFrame(raw: unknown, options: V3EnvelopeOption
   const protocol = stringValue(frame.protocol)
   if (protocol && protocol !== 'v3.realtime') {
     throw new Error(`Unsupported V3 realtime protocol: ${protocol}`)
+  }
+  if (frame.protocol_version !== undefined && frame.protocol_version !== 1) {
+    throw new Error(`Unsupported V3 realtime protocol_version: ${String(frame.protocol_version)}`)
   }
   const kind = stringValue(frame.kind ?? frame.type)
   if (kind === 'event') {
@@ -624,9 +636,10 @@ function eventIdentity(input: {
 }
 
 function normalizeEventPayload(eventType: string, wire: DurableEventWire | null, nestedEvent: Record<string, unknown> | null, sequence: { globalSeq?: number; sourceSeq?: number; tsUnixMs?: number }): unknown {
-  const payload = asRecord(wire?.payload) ?? asRecord(nestedEvent?.payload) ?? asRecord(wire) ?? {}
+  const payload = asRecord(nestedEvent?.payload) ?? asRecord(wire?.payload) ?? asRecord(wire) ?? {}
   return {
     ...payload,
+    session_id: payload.session_id ?? nestedEvent?.session_id ?? wire?.session_id,
     event_type: payloadString(payload, 'event_type') || eventType,
     global_seq: payload.global_seq ?? sequence.globalSeq,
     source_seq: payload.source_seq ?? sequence.sourceSeq,
@@ -654,11 +667,15 @@ function validEventEnvelope(envelope: V3EventEnvelope): V3EnvelopeValidation {
 }
 
 function isV3ControlKind(control: string): control is V3ControlKind {
-  return control === 'keepalive'
+  return control === 'hello'
+    || control === 'keepalive'
     || control === 'replay.started'
     || control === 'replay.complete'
     || control === 'projection.high_watermark'
     || control === 'cursor.error'
+    || control === 'subscribe.session'
+    || control === 'unsubscribe.session'
+    || control === 'resume'
     || control === 'auth.denied'
     || control === 'slow_consumer.reconnect_required'
 }

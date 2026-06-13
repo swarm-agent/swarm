@@ -106,11 +106,8 @@ function applyOptimisticSend(state: DesktopState, envelope: Extract<V3Envelope, 
 }
 
 function materializeDesktopEvent(state: DesktopState, event: V3CanonicalEvent): DesktopDaemonEvent {
-  const explicitRev = positiveInteger(event.rev)
-  const rev = explicitRev ?? state.rev + 1
-  const prevRev = explicitRev !== undefined
-    ? nonNegativeInteger(event.prevRev) ?? Math.max(0, rev - 1)
-    : state.rev
+  const rev = state.rev + 1
+  const prevRev = state.rev
   return {
     rev,
     prevRev,
@@ -166,8 +163,4 @@ function hasCursor(envelope: V3Envelope): boolean {
 
 function positiveInteger(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined
-}
-
-function nonNegativeInteger(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined
 }

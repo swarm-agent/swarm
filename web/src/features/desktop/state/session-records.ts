@@ -46,10 +46,20 @@ function mergeSessionLiveState(
   const incomingHasReasoningDetails = liveHasReasoningDetails(incoming)
   const existingHasReasoningDetails = liveHasReasoningDetails(existing)
   const incomingClearsAssistantDetails = liveClearsAssistantDetails(incoming)
+  const incomingTerminalStatus = incoming.status === 'idle' || incoming.status === 'error'
+  const preserveActiveExistingLive = liveHasActiveRun(existing) && !liveHasActiveRun(incoming) && !incomingClearsAssistantDetails && !incomingTerminalStatus
 
   return {
     ...incoming,
     seq: Math.max(existing.seq ?? 0, incoming.seq ?? 0),
+    runId: preserveActiveExistingLive ? existing.runId : incoming.runId,
+    startedAt: preserveActiveExistingLive ? existing.startedAt : incoming.startedAt,
+    status: preserveActiveExistingLive ? existing.status : incoming.status,
+    summary: preserveActiveExistingLive ? existing.summary : mergeLiveSummary(existing, incoming, existingHasToolDetails, incomingHasToolDetails),
+    lastEventType: preserveActiveExistingLive ? existing.lastEventType : incoming.lastEventType,
+    lastEventAt: preserveActiveExistingLive ? existing.lastEventAt : incoming.lastEventAt,
+    error: preserveActiveExistingLive ? existing.error : incoming.error,
+    awaitingAck: preserveActiveExistingLive ? existing.awaitingAck : incoming.awaitingAck,
     toolName: mergeLiveToolValue(existing.toolName, incoming.toolName, existingHasToolDetails, incomingHasToolDetails),
     sidebarToolName: mergeLiveToolValue(existing.sidebarToolName, incoming.sidebarToolName, existingHasToolDetails, incomingHasToolDetails),
     toolCallId: mergeLiveToolValue(existing.toolCallId, incoming.toolCallId, existingHasToolDetails, incomingHasToolDetails),
@@ -60,7 +70,6 @@ function mergeSessionLiveState(
     retainedToolArguments: mergeLiveToolValue(existing.retainedToolArguments, incoming.retainedToolArguments, existingHasToolDetails, incomingHasToolDetails),
     retainedToolOutput: mergeLiveToolValue(existing.retainedToolOutput, incoming.retainedToolOutput, existingHasToolDetails, incomingHasToolDetails),
     retainedToolState: mergeLiveToolValue(existing.retainedToolState, incoming.retainedToolState, existingHasToolDetails, incomingHasToolDetails),
-    summary: mergeLiveSummary(existing, incoming, existingHasToolDetails, incomingHasToolDetails),
     assistantDraft: incomingClearsAssistantDetails
       ? incoming.assistantDraft
       : incoming.assistantDraft || (!incomingHasAssistantDetails && existingHasAssistantDetails ? existing.assistantDraft : incoming.assistantDraft),
@@ -78,6 +87,17 @@ function mergeSessionLiveState(
       ? incomingToolHistory
       : existingToolHistory,
   }
+}
+
+function liveHasActiveRun(live: DesktopSessionRecord['live']): boolean {
+  const status = live.status.trim().toLowerCase()
+  return Boolean(
+    live.runId?.trim()
+    || live.awaitingAck
+    || status === 'starting'
+    || status === 'running'
+    || status === 'blocked',
+  )
 }
 
 function liveClearsAssistantDetails(live: DesktopSessionRecord['live']): boolean {
@@ -161,6 +181,7 @@ export function mergeSessionRecords(existing: DesktopSessionRecord | null, incom
   if (!existing) {
     return incoming
   }
+  const mergedLive = mergeSessionLiveState(existing.live, incoming.live)
 
   return {
     ...incoming,
@@ -200,10 +221,29 @@ export function mergeSessionRecords(existing: DesktopSessionRecord | null, incom
     gitCommittedAdditions: incoming.gitCommittedAdditions ?? existing.gitCommittedAdditions ?? 0,
     gitCommittedDeletions: incoming.gitCommittedDeletions ?? existing.gitCommittedDeletions ?? 0,
     lifecycle: incoming.lifecycle ?? existing.lifecycle,
-    runIntent: incoming.runIntent === undefined ? existing.runIntent ?? null : incoming.runIntent,
-    live: mergeSessionLiveState(existing.live, incoming.live),
+    runIntent: mergeSessionRunIntent(existing.runIntent, incoming.runIntent, mergedLive),
+    live: mergedLive,
     pendingPermissions: incoming.pendingPermissions,
     pendingPermissionCount: incoming.pendingPermissionCount,
     usage: incoming.usage ?? existing.usage,
   }
+}
+
+function mergeSessionRunIntent(
+  existing: DesktopSessionRecord['runIntent'],
+  incoming: DesktopSessionRecord['runIntent'] | undefined,
+  mergedLive: DesktopSessionRecord['live'],
+): DesktopSessionRecord['runIntent'] {
+  if (incoming === undefined) {
+    return existing ?? null
+  }
+  if (incoming === null && existing && liveHasActiveRun(mergedLive) && runIntentStatusActive(existing.status)) {
+    return existing
+  }
+  return incoming
+}
+
+function runIntentStatusActive(status: string): boolean {
+  const normalized = status.trim().toLowerCase()
+  return normalized === 'pending_executor' || normalized === 'running' || normalized === 'blocked'
 }

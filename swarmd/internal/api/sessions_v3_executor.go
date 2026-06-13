@@ -678,15 +678,16 @@ type sessionV3ResolvedRuntime struct {
 }
 
 type sessionV3AssistantResponse struct {
-	Content            string
-	AgentName          string
-	ResolvedAgentName  string
-	ExecutorKind       string
-	ProviderID         string
-	Model              string
-	ProviderResponseID string
-	StopReason         string
-	Usage              provideriface.TokenUsage
+	Content             string
+	AgentName           string
+	ResolvedAgentName   string
+	ExecutorKind        string
+	ProviderID          string
+	Model               string
+	ProviderResponseID  string
+	StopReason          string
+	Usage               provideriface.TokenUsage
+	ProviderOutputItems []any
 }
 
 func (r sessionV3AssistantResponse) metadata(runID string) map[string]any {
@@ -717,6 +718,10 @@ func (r sessionV3AssistantResponse) metadata(runID string) map[string]any {
 	}
 	if r.Usage.InputTokens != 0 || r.Usage.OutputTokens != 0 || r.Usage.ThinkingTokens != 0 || r.Usage.TotalTokens != 0 || r.Usage.CacheReadTokens != 0 || r.Usage.CacheWriteTokens != 0 || r.Usage.Source != "" || r.Usage.Transport != "" {
 		metadata["usage"] = r.Usage
+	}
+	if len(r.ProviderOutputItems) > 0 {
+		metadata["provider_output_format"] = "responses_api"
+		metadata["provider_output_items"] = cloneSessionsV3ProviderItems(r.ProviderOutputItems)
 	}
 	return metadata
 }
@@ -1078,15 +1083,16 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	}
 	agentName := strings.TrimSpace(resolved.AgentProfile.Name)
 	assistant := sessionV3AssistantResponse{
-		Content:            content,
-		AgentName:          agentName,
-		ResolvedAgentName:  agentName,
-		ExecutorKind:       "v3_provider",
-		ProviderID:         providerRunnerID,
-		Model:              model,
-		ProviderResponseID: strings.TrimSpace(response.ID),
-		StopReason:         strings.TrimSpace(response.StopReason),
-		Usage:              response.Usage,
+		Content:             content,
+		AgentName:           agentName,
+		ResolvedAgentName:   agentName,
+		ExecutorKind:        "v3_provider",
+		ProviderID:          providerRunnerID,
+		Model:               model,
+		ProviderResponseID:  strings.TrimSpace(response.ID),
+		StopReason:          strings.TrimSpace(response.StopReason),
+		Usage:               response.Usage,
+		ProviderOutputItems: sessionV3ProviderNativeOutputItems(providerRunnerID, response.Raw),
 	}
 	e.recordSessionV3Diagnostic(job, "session.diagnostic.backend.final", "backend.executor", "assistant-final", map[string]any{
 		"content":            content,
@@ -1821,6 +1827,10 @@ func sessionsV3ProviderInput(messages []pebblestore.MessageSnapshot) []map[strin
 		}
 		switch strings.ToLower(strings.TrimSpace(message.Role)) {
 		case "assistant":
+			if nativeItems := sessionsV3ProviderNativeInputItems(message.Metadata); len(nativeItems) > 0 {
+				input = append(input, nativeItems...)
+				continue
+			}
 			input = append(input, sessionsV3ProviderAssistantInputItem(content))
 		case "system":
 			input = append(input, map[string]any{"role": "user", "content": []map[string]any{{"type": "input_text", "text": "[system] " + content}}})
@@ -1839,6 +1849,251 @@ func sessionsV3ProviderInput(messages []pebblestore.MessageSnapshot) []map[strin
 
 func sessionsV3ProviderAssistantInputItem(content string) map[string]any {
 	return map[string]any{"role": "assistant", "content": []map[string]any{{"type": "output_text", "text": content}}}
+}
+
+func sessionV3ProviderNativeOutputItems(providerID string, raw map[string]any) []any {
+	if !strings.EqualFold(strings.TrimSpace(providerID), "codex") || len(raw) == 0 {
+		return nil
+	}
+	if response, ok := raw["response"].(map[string]any); ok {
+		if output := cloneSessionsV3ProviderItemSlice(response["output"]); len(output) > 0 {
+			return output
+		}
+	}
+	return cloneSessionsV3ProviderItemSlice(raw["output"])
+}
+
+func sessionsV3ProviderNativeInputItems(metadata map[string]any) []map[string]any {
+	if len(metadata) == 0 {
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(fmt.Sprint(metadata["provider"])), "codex") {
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(fmt.Sprint(metadata["provider_output_format"])), "responses_api") {
+		return nil
+	}
+	raw := cloneSessionsV3ProviderItemSlice(metadata["provider_output_items"])
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(raw))
+	for _, item := range raw {
+		itemMap, ok := item.(map[string]any)
+		if !ok || len(itemMap) == 0 {
+			return nil
+		}
+		sanitized, ok := sessionsV3ProviderNativeRequestInputItem(itemMap)
+		if !ok {
+			return nil
+		}
+		out = append(out, sanitized)
+	}
+	return out
+}
+
+func sessionsV3ProviderNativeRequestInputItem(item map[string]any) (map[string]any, bool) {
+	itemType := strings.ToLower(strings.TrimSpace(fmt.Sprint(item["type"])))
+	if itemType == "" {
+		return nil, false
+	}
+	switch itemType {
+	case "message":
+		out := map[string]any{"type": "message"}
+		copySessionsV3ProviderNativeStringField(out, item, "id")
+		copySessionsV3ProviderNativeStringField(out, item, "status")
+		copySessionsV3ProviderNativeStringField(out, item, "role")
+		content := sessionsV3ProviderNativeMessageContent(item["content"])
+		if len(content) == 0 {
+			return nil, false
+		}
+		out["content"] = content
+		return out, true
+	case "function_call":
+		out := map[string]any{"type": "function_call"}
+		copySessionsV3ProviderNativeStringField(out, item, "id")
+		copySessionsV3ProviderNativeStringField(out, item, "status")
+		copySessionsV3ProviderNativeStringField(out, item, "call_id")
+		copySessionsV3ProviderNativeStringField(out, item, "name")
+		copySessionsV3ProviderNativeStringField(out, item, "arguments")
+		return out, true
+	case "function_call_output":
+		out := map[string]any{"type": "function_call_output"}
+		copySessionsV3ProviderNativeStringField(out, item, "id")
+		copySessionsV3ProviderNativeStringField(out, item, "status")
+		copySessionsV3ProviderNativeStringField(out, item, "call_id")
+		copySessionsV3ProviderNativeStringField(out, item, "output")
+		return out, true
+	case "reasoning":
+		out := map[string]any{"type": "reasoning"}
+		copySessionsV3ProviderNativeStringField(out, item, "id")
+		copySessionsV3ProviderNativeStringField(out, item, "status")
+		copySessionsV3ProviderNativeNonEmptyField(out, item, "summary")
+		copySessionsV3ProviderNativeStringField(out, item, "encrypted_content")
+		if len(out) <= 1 {
+			return nil, false
+		}
+		return out, true
+	default:
+		sanitized, ok := sessionsV3ProviderNativeStripResponseFields(item).(map[string]any)
+		return sanitized, ok && len(sanitized) > 0
+	}
+}
+
+func sessionsV3ProviderNativeMessageContent(value any) []map[string]any {
+	raw := cloneSessionsV3ProviderItemSlice(value)
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(raw))
+	for _, item := range raw {
+		itemMap, ok := item.(map[string]any)
+		if !ok || len(itemMap) == 0 {
+			return nil
+		}
+		contentType := strings.TrimSpace(fmt.Sprint(itemMap["type"]))
+		if contentType == "" {
+			return nil
+		}
+		content := map[string]any{"type": contentType}
+		copySessionsV3ProviderNativeStringField(content, itemMap, "text")
+		copySessionsV3ProviderNativeStringField(content, itemMap, "refusal")
+		if len(content) <= 1 {
+			return nil
+		}
+		out = append(out, content)
+	}
+	return out
+}
+
+func copySessionsV3ProviderNativeStringField(dst, src map[string]any, key string) {
+	value, ok := src[key]
+	if !ok {
+		return
+	}
+	text := strings.TrimSpace(fmt.Sprint(value))
+	if text == "" {
+		return
+	}
+	dst[key] = text
+}
+
+func copySessionsV3ProviderNativeAnyField(dst, src map[string]any, key string) {
+	value, ok := src[key]
+	if !ok || value == nil {
+		return
+	}
+	dst[key] = sessionsV3ProviderNativeStripResponseFields(value)
+}
+
+func copySessionsV3ProviderNativeNonEmptyField(dst, src map[string]any, key string) {
+	value, ok := src[key]
+	if !ok || value == nil {
+		return
+	}
+	sanitized := sessionsV3ProviderNativeStripResponseFields(value)
+	if sessionsV3ProviderNativeIsEmptyValue(sanitized) {
+		return
+	}
+	dst[key] = sanitized
+}
+
+func sessionsV3ProviderNativeIsEmptyValue(value any) bool {
+	switch typed := value.(type) {
+	case nil:
+		return true
+	case string:
+		return strings.TrimSpace(typed) == ""
+	case []any:
+		return len(typed) == 0
+	case []map[string]any:
+		return len(typed) == 0
+	case map[string]any:
+		return len(typed) == 0
+	default:
+		return false
+	}
+}
+
+func sessionsV3ProviderNativeStripResponseFields(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, child := range typed {
+			switch strings.ToLower(strings.TrimSpace(key)) {
+			case "", "output_index", "phase", "logprobs", "annotations":
+				continue
+			default:
+				out[key] = sessionsV3ProviderNativeStripResponseFields(child)
+			}
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, child := range typed {
+			out = append(out, sessionsV3ProviderNativeStripResponseFields(child))
+		}
+		return out
+	case []map[string]any:
+		out := make([]any, 0, len(typed))
+		for _, child := range typed {
+			out = append(out, sessionsV3ProviderNativeStripResponseFields(child))
+		}
+		return out
+	default:
+		return typed
+	}
+}
+
+func cloneSessionsV3ProviderItems(items []any) []any {
+	if len(items) == 0 {
+		return nil
+	}
+	return cloneSessionsV3ProviderItemSlice(items)
+}
+
+func cloneSessionsV3ProviderItemSlice(value any) []any {
+	switch typed := value.(type) {
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, cloneSessionsV3ProviderItemValue(item))
+		}
+		return out
+	case []map[string]any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, cloneSessionsV3ProviderItemValue(item))
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func cloneSessionsV3ProviderItemValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, child := range typed {
+			out[key] = cloneSessionsV3ProviderItemValue(child)
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, child := range typed {
+			out = append(out, cloneSessionsV3ProviderItemValue(child))
+		}
+		return out
+	case []map[string]any:
+		out := make([]any, 0, len(typed))
+		for _, child := range typed {
+			out = append(out, cloneSessionsV3ProviderItemValue(child))
+		}
+		return out
+	default:
+		return typed
+	}
 }
 
 func sessionsV3ProviderToolMessageInput(content string, metadata map[string]any) ([]map[string]any, bool) {

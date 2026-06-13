@@ -5,6 +5,7 @@ import type { ChatMessageRecord } from '../chat/types/chat'
 import type { DesktopSessionRecord } from '../types/realtime'
 import {
   createV3RuntimeController,
+  createV3EventEnvelope,
   createV3SnapshotEnvelope,
   normalizeV3RealtimeFrame,
   selectV3Messages,
@@ -68,6 +69,14 @@ function message(sessionId: string, id: string, globalSeq: number): ChatMessageR
     role: 'assistant',
     content: `message ${id}`,
     createdAt: globalSeq,
+  }
+}
+
+function userMessage(sessionId: string, id: string, globalSeq: number): ChatMessageRecord {
+  return {
+    ...message(sessionId, id, globalSeq),
+    role: 'user',
+    content: `user ${id}`,
   }
 }
 
@@ -230,4 +239,155 @@ test('V3 selectors expose UI-safe projections from the runtime snapshot', () => 
   assert.deepEqual(selectV3Messages(snapshot, 's1').map((item) => item.id), ['m1'])
   assert.deepEqual(selectV3WorkspaceSessions(snapshot, '/workspace/a').map((item) => item.id), ['s1'])
   assert.deepEqual(selectV3WorkspaceSessions(snapshot, { workspacePaths: ['/workspace/b', '/workspace/a'] }).map((item) => item.id), ['s1', 's2'])
+})
+
+test('V3 runtime assistant deltas update canonical live draft without mutating message cache', () => {
+  const runtime = createV3RuntimeController()
+  runtime.applyEnvelope(createV3SnapshotEnvelope({
+    rev: 1,
+    sessionsById: { s1: session('s1', 1) },
+    sessionOrder: ['s1'],
+    messagesBySessionId: { s1: [userMessage('s1', 'm-user-1', 1)] },
+  }, { receivedAt: 1 }))
+
+  runtime.applyEnvelope(normalizeV3RealtimeFrame({
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'event',
+    session_id: 's1',
+    endpoint_cursor: 'cursor-2',
+    event_type: 'session.assistant.delta',
+    event: {
+      id: 'evt-s1-2',
+      session_id: 's1',
+      event_type: 'session.assistant.delta',
+      seq: 2,
+      ts_unix_ms: 2,
+      payload: { run_id: 'run-1', delta: 'hello ' },
+    },
+  }, { receivedAt: 2 }))
+  runtime.applyEnvelope(normalizeV3RealtimeFrame({
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'event',
+    session_id: 's1',
+    endpoint_cursor: 'cursor-3',
+    event_type: 'session.assistant.delta',
+    event: {
+      id: 'evt-s1-3',
+      session_id: 's1',
+      event_type: 'session.assistant.delta',
+      seq: 3,
+      ts_unix_ms: 3,
+      payload: { run_id: 'run-1', delta: 'world' },
+    },
+  }, { receivedAt: 3 }))
+
+  const snapshot = runtime.getSnapshot()
+  assert.equal(selectV3Session(snapshot, 's1')?.live.assistantDraft, 'hello world')
+  assert.equal(selectV3Session(snapshot, 's1')?.live.status, 'running')
+  assert.equal(selectV3Session(snapshot, 's1')?.live.awaitingAck, false)
+  assert.equal(selectV3Session(snapshot, 's1')?.live.summary, 'Streaming response…')
+  assert.equal(selectV3Session(snapshot, 's1')?.live.error, null)
+  assert.deepEqual(selectV3Messages(snapshot, 's1').map((item) => item.id), ['m-user-1'])
+  assert.deepEqual([
+    ...selectV3Messages(snapshot, 's1').map((item) => item.content),
+    selectV3Session(snapshot, 's1')?.live.assistantDraft,
+  ], ['user m-user-1', 'hello world'])
+})
+
+test('V3 runtime completion merges final assistant message and clears live draft without duplicates', () => {
+  const runtime = createV3RuntimeController()
+  runtime.applyEnvelope(createV3SnapshotEnvelope({
+    rev: 1,
+    sessionsById: { s1: session('s1', 1) },
+    sessionOrder: ['s1'],
+    messagesBySessionId: { s1: [userMessage('s1', 'm-user-1', 1)] },
+  }, { receivedAt: 1 }))
+  runtime.applyEnvelope(createV3EventEnvelope({
+    type: 'session.assistant.delta',
+    payload: { session_id: 's1', run_id: 'run-1', delta: 'hello world' },
+  }, { receivedAt: 2 }))
+
+  runtime.applyEnvelope(createV3EventEnvelope({
+    type: 'session.assistant.completed',
+    payload: {
+      session_id: 's1',
+      run_id: 'run-1',
+      status: 'completed',
+      message: {
+        id: 'm-assistant-2',
+        session_id: 's1',
+        global_seq: 2,
+        role: 'assistant',
+        content: 'hello world',
+        created_at: 2,
+      },
+      run_intent: { session_id: 's1', run_id: 'run-1', status: 'completed', updated_at: 2, event_seq: 2 },
+    },
+  }, { receivedAt: 3 }))
+
+  const snapshot = runtime.getSnapshot()
+  assert.equal(selectV3Session(snapshot, 's1')?.live.assistantDraft, '')
+  assert.deepEqual(selectV3Messages(snapshot, 's1').map((item) => item.id), ['m-user-1', 'm-assistant-2'])
+  assert.equal(selectV3Messages(snapshot, 's1').filter((item) => item.role === 'assistant' && item.content === 'hello world').length, 1)
+})
+
+test('V3 metadata-only snapshot merge preserves live draft and cached history', () => {
+  const runtime = createV3RuntimeController()
+  const base = session('s1', 1)
+  runtime.applyEnvelope(createV3SnapshotEnvelope({
+    rev: 1,
+    sessionsById: { s1: base },
+    sessionOrder: ['s1'],
+    messagesBySessionId: { s1: [userMessage('s1', 'm-user-1', 1)] },
+    runIntentsBySessionId: {
+      s1: { sessionId: 's1', runId: 'run-1', status: 'running', blockedReason: '', createdAt: 1, updatedAt: 1, eventSeq: 1 },
+    },
+  }, { receivedAt: 1 }))
+  runtime.applyEnvelope(createV3EventEnvelope({
+    type: 'session.assistant.delta',
+    payload: { session_id: 's1', run_id: 'run-1', delta: 'streaming' },
+  }, { receivedAt: 2 }))
+
+  runtime.applyEnvelope(createV3SnapshotEnvelope({
+    rev: runtime.getDesktopSnapshot().rev + 1,
+    sessionsById: { s1: { ...base, updatedAt: 3, lastEventSeq: 99, projectionHighWatermarkSeq: 99 } },
+    sessionOrder: ['s1'],
+    messagesBySessionId: { s1: [] },
+  }, {
+    mode: 'merge',
+    receivedAt: 3,
+    source: { kind: 'http', transport: 'http', name: 'metadata-only' },
+  }))
+
+  const snapshot = runtime.getSnapshot()
+  assert.equal(selectV3Session(snapshot, 's1')?.live.assistantDraft, 'streaming')
+  assert.equal(selectV3Session(snapshot, 's1')?.live.status, 'running')
+  assert.equal(selectV3Session(snapshot, 's1')?.live.runId, 'run-1')
+  assert.equal(selectV3Session(snapshot, 's1')?.runIntent?.runId, 'run-1')
+  assert.deepEqual(selectV3Messages(snapshot, 's1').map((item) => item.id), ['m-user-1'])
+})
+
+test('V3 message hot cache keeps newest 200 final messages while live draft stays transient', () => {
+  const runtime = createV3RuntimeController()
+  runtime.applyEnvelope(createV3SnapshotEnvelope({
+    rev: 1,
+    sessionsById: { s1: session('s1', 1) },
+    sessionOrder: ['s1'],
+    messagesBySessionId: {
+      s1: Array.from({ length: 201 }, (_, index) => message('s1', `m-${index + 1}`, index + 1)),
+    },
+  }, { receivedAt: 1 }))
+  runtime.applyEnvelope(createV3EventEnvelope({
+    type: 'session.assistant.delta',
+    payload: { session_id: 's1', run_id: 'run-1', delta: 'still live' },
+  }, { receivedAt: 2 }))
+
+  const snapshot = runtime.getSnapshot()
+  const messages = selectV3Messages(snapshot, 's1')
+  assert.equal(messages.length, 200)
+  assert.equal(messages[0]?.id, 'm-2')
+  assert.equal(messages[messages.length - 1]?.id, 'm-201')
+  assert.equal(selectV3Session(snapshot, 's1')?.live.assistantDraft, 'still live')
 })

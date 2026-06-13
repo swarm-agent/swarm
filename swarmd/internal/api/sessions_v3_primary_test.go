@@ -3108,6 +3108,147 @@ func TestSessionsV3ExecutorUsesProviderFromCommittedHistory(t *testing.T) {
 	}
 }
 
+func TestSessionsV3ExecutorReplaysCodexNativeOutputItems(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	firstOutput := []any{
+		map[string]any{
+			"type":              "reasoning",
+			"id":                "rs_codex_native_1",
+			"output_index":      float64(0),
+			"content":           []any{},
+			"summary":           []any{},
+			"encrypted_content": "encrypted-reasoning",
+		},
+		map[string]any{
+			"type":         "message",
+			"id":           "msg_codex_native_1",
+			"output_index": float64(1),
+			"phase":        "final_answer",
+			"role":         "assistant",
+			"status":       "completed",
+			"content": []any{
+				map[string]any{
+					"type":        "output_text",
+					"text":        "first answer",
+					"annotations": []any{},
+					"logprobs":    []any{},
+				},
+			},
+		},
+	}
+	runner := &sessionsV3RecordingProviderRunner{
+		id: "codex",
+		responses: []provideriface.Response{
+			{
+				ID:         "resp_codex_native_1",
+				Model:      "gpt-5.5",
+				Text:       "first answer",
+				StopReason: "stop",
+				Raw: map[string]any{
+					"response": map[string]any{
+						"id":     "resp_codex_native_1",
+						"output": firstOutput,
+					},
+				},
+			},
+			{
+				ID:         "resp_codex_native_2",
+				Model:      "gpt-5.5",
+				Text:       "second answer",
+				StopReason: "stop",
+				Raw: map[string]any{
+					"response": map[string]any{
+						"id": "resp_codex_native_2",
+						"output": []any{
+							map[string]any{
+								"type": "message",
+								"id":   "msg_codex_native_2",
+								"role": "assistant",
+								"content": []any{
+									map[string]any{"type": "output_text", "text": "second answer"},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "codex-native-create", "codex native", pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.5", Thinking: "high"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "codex-native-message-1", "first question")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 2 || messages[1].Metadata["provider_output_format"] != "responses_api" {
+		t.Fatalf("assistant metadata missing native output marker: %+v", messages)
+	}
+	if items := messages[1].Metadata["provider_output_items"]; len(cloneSessionsV3ProviderItemSlice(items)) != 2 {
+		t.Fatalf("assistant metadata native output = %#v, want two items", items)
+	}
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "codex-native-message-2", "second question")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 4)
+
+	runner.mu.Lock()
+	requests := append([]provideriface.Request(nil), runner.requests...)
+	runner.mu.Unlock()
+	if len(requests) != 2 {
+		t.Fatalf("provider request count = %d, want 2", len(requests))
+	}
+	secondInput := requests[1].Input
+	if len(secondInput) != 4 {
+		t.Fatalf("second provider input length = %d, want 4: %#v", len(secondInput), secondInput)
+	}
+	if secondInput[1]["type"] != "reasoning" || secondInput[1]["id"] != "rs_codex_native_1" || secondInput[1]["encrypted_content"] != "encrypted-reasoning" {
+		t.Fatalf("second provider input[1] = %#v, want persisted Codex reasoning item", secondInput[1])
+	}
+	if _, ok := secondInput[1]["output_index"]; ok {
+		t.Fatalf("second provider input[1] includes response-only output_index: %#v", secondInput[1])
+	}
+	if _, ok := secondInput[1]["summary"]; ok {
+		t.Fatalf("second provider input[1] includes empty summary: %#v", secondInput[1])
+	}
+	if _, ok := secondInput[1]["content"]; ok {
+		t.Fatalf("second provider input[1] includes empty content: %#v", secondInput[1])
+	}
+	if secondInput[2]["type"] != "message" || secondInput[2]["id"] != "msg_codex_native_1" {
+		t.Fatalf("second provider input[2] = %#v, want persisted Codex native output item", secondInput[2])
+	}
+	if _, ok := secondInput[2]["output_index"]; ok {
+		t.Fatalf("second provider input[2] includes response-only output_index: %#v", secondInput[2])
+	}
+	if _, ok := secondInput[2]["phase"]; ok {
+		t.Fatalf("second provider input[2] includes Swarm-only phase: %#v", secondInput[2])
+	}
+	content := cloneSessionsV3ProviderItemSlice(secondInput[2]["content"])
+	if len(content) != 1 {
+		t.Fatalf("native output content = %#v, want one item", secondInput[2]["content"])
+	}
+	contentItem, ok := content[0].(map[string]any)
+	if !ok || contentItem["text"] != "first answer" {
+		t.Fatalf("native output content[0] = %#v, want first answer", content[0])
+	}
+	if _, ok := contentItem["logprobs"]; ok {
+		t.Fatalf("native output content[0] includes response-only logprobs: %#v", contentItem)
+	}
+	if _, ok := contentItem["annotations"]; ok {
+		t.Fatalf("native output content[0] includes response-only annotations: %#v", contentItem)
+	}
+	if secondInput[3]["role"] != "user" {
+		t.Fatalf("second provider input[3] = %#v, want follow-up user message", secondInput[3])
+	}
+}
+
 func TestSessionsV3ExecutorStreamsAndPersistsCodexUsage(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	runner := &sessionsV3RecordingProviderRunner{

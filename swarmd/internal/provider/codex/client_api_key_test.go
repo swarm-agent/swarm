@@ -63,6 +63,95 @@ func TestBuildRequestPayloadRemovesFunctionCallMetadata(t *testing.T) {
 	}
 }
 
+func TestBuildRequestPayloadSanitizesNativeResponseReplayItems(t *testing.T) {
+	input := []map[string]any{
+		{
+			"role": "user",
+			"content": []any{
+				map[string]any{"type": "input_text", "text": "hello"},
+			},
+		},
+		{
+			"type":              "reasoning",
+			"id":                "rs_1",
+			"output_index":      float64(0),
+			"content":           []any{},
+			"summary":           []any{},
+			"encrypted_content": "encrypted",
+		},
+		{
+			"type":         "message",
+			"id":           "msg_1",
+			"output_index": float64(1),
+			"phase":        "final_answer",
+			"role":         "assistant",
+			"status":       "completed",
+			"content": []any{
+				map[string]any{
+					"type":        "output_text",
+					"text":        "hi",
+					"annotations": []any{},
+					"logprobs":    []any{},
+				},
+			},
+		},
+	}
+
+	payload, err := buildRequestPayload(Request{
+		Model: "gpt-5.5",
+		Input: input,
+	})
+	if err != nil {
+		t.Fatalf("buildRequestPayload error: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	decodedInput := asSlice(decoded["input"])
+	if len(decodedInput) != 3 {
+		t.Fatalf("input length = %d, want 3", len(decodedInput))
+	}
+	reasoning, ok := decodedInput[1].(map[string]any)
+	if !ok {
+		t.Fatalf("input[1] = %#v, want object", decodedInput[1])
+	}
+	for _, key := range []string{"output_index", "content", "summary"} {
+		if _, ok := reasoning[key]; ok {
+			t.Fatalf("reasoning.%s = %#v, want omitted in payload %s", key, reasoning[key], string(payload))
+		}
+	}
+	if reasoning["encrypted_content"] != "encrypted" {
+		t.Fatalf("reasoning encrypted_content = %#v, want encrypted", reasoning["encrypted_content"])
+	}
+	message, ok := decodedInput[2].(map[string]any)
+	if !ok {
+		t.Fatalf("input[2] = %#v, want object", decodedInput[2])
+	}
+	for _, key := range []string{"output_index", "phase"} {
+		if _, ok := message[key]; ok {
+			t.Fatalf("message.%s = %#v, want omitted in payload %s", key, message[key], string(payload))
+		}
+	}
+	content := asSlice(message["content"])
+	if len(content) != 1 {
+		t.Fatalf("message content = %#v, want one item", message["content"])
+	}
+	contentItem, ok := content[0].(map[string]any)
+	if !ok {
+		t.Fatalf("message content[0] = %#v, want object", content[0])
+	}
+	for _, key := range []string{"annotations", "logprobs"} {
+		if _, ok := contentItem[key]; ok {
+			t.Fatalf("message content[0].%s = %#v, want omitted in payload %s", key, contentItem[key], string(payload))
+		}
+	}
+	if contentItem["text"] != "hi" {
+		t.Fatalf("message content[0].text = %#v, want hi", contentItem["text"])
+	}
+}
+
 func TestSendRoutesAPIKeyAuthToOpenAIResponsesHTTP(t *testing.T) {
 	var gotAuth string
 	var gotAccountID string

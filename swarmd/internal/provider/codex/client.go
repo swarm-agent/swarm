@@ -550,13 +550,83 @@ func sanitizeCodexRequestInput(input []map[string]any) []map[string]any {
 	}
 	out := make([]map[string]any, 0, len(input))
 	for _, item := range input {
-		cloned := cloneMapAny(item)
-		if strings.EqualFold(strings.TrimSpace(asString(cloned["type"])), "function_call") {
-			delete(cloned, "metadata")
+		sanitized, ok := sanitizeCodexRequestInputValue(item).(map[string]any)
+		if !ok || len(sanitized) == 0 {
+			continue
 		}
-		out = append(out, cloned)
+		out = append(out, sanitized)
 	}
 	return out
+}
+
+func sanitizeCodexRequestInputValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, child := range typed {
+			if isCodexRequestInputResponseOnlyField(key) {
+				continue
+			}
+			sanitized := sanitizeCodexRequestInputValue(child)
+			if isCodexRequestInputEmptyValue(sanitized) {
+				continue
+			}
+			out[key] = sanitized
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, child := range typed {
+			sanitized := sanitizeCodexRequestInputValue(child)
+			if isCodexRequestInputEmptyValue(sanitized) {
+				continue
+			}
+			out = append(out, sanitized)
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	case []map[string]any:
+		out := make([]any, 0, len(typed))
+		for _, child := range typed {
+			sanitized := sanitizeCodexRequestInputValue(child)
+			if isCodexRequestInputEmptyValue(sanitized) {
+				continue
+			}
+			out = append(out, sanitized)
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func isCodexRequestInputResponseOnlyField(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "", "metadata", "output_index", "phase", "logprobs", "annotations":
+		return true
+	default:
+		return false
+	}
+}
+
+func isCodexRequestInputEmptyValue(value any) bool {
+	switch typed := value.(type) {
+	case nil:
+		return true
+	case []any:
+		return len(typed) == 0
+	case []map[string]any:
+		return len(typed) == 0
+	case map[string]any:
+		return len(typed) == 0
+	default:
+		return false
+	}
 }
 
 func reasoningPayload(thinking string) map[string]any {

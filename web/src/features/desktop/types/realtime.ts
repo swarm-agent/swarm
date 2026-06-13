@@ -36,6 +36,7 @@ export interface DesktopLiveToolRecord {
   stepId: string
   callId: string
   toolInstanceId: string
+  pathId?: 'run.tool-history.v2' | 'run.v3.provider-tool-result.v1'
   toolName: string | null
   toolArguments: string | null
   toolOutput: string
@@ -273,7 +274,7 @@ export interface DesktopStoreState {
   hydrate: () => Promise<void>
   connect: () => Promise<void>
   reconnectIfStale: (reason: string) => Promise<void>
-  syncV3RealtimeSessions: () => void
+  syncV3RealtimeSessions: (options?: { force?: boolean }) => void
   disconnect: () => void
   submitPrompt: (input: {
     sessionId: string | null

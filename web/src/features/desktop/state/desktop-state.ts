@@ -14,6 +14,7 @@ import type {
   DesktopNotificationCenterRecord,
   DesktopNotificationSummary,
   DesktopPermissionRecord,
+  DesktopLiveToolRecord,
   DesktopRunIntentRecord,
   DesktopSessionRecord,
   DesktopSessionUsageRecord,
@@ -198,7 +199,7 @@ function mergeFromSnapshot(state: DesktopState, snapshot: DesktopDaemonSnapshot)
       return !existing || sessionSequence(existing) <= sessionSequence(incomingSession)
     })
     .map(([sessionId]) => sessionId)
-  const runIntentsBySessionId = mergeSessionValueRecord(state.runIntentsBySessionId, snapshot.runIntentsBySessionId, runIntentScopedSessionIds)
+  const runIntentsBySessionId = mergeRunIntentRecord(state.runIntentsBySessionId, snapshot.runIntentsBySessionId, runIntentScopedSessionIds)
 
   return {
     ...state,
@@ -626,6 +627,9 @@ function setSessionValuePayload<
 
 function applyDurableSessionPayload(state: DesktopState, event: DesktopDaemonEvent, rawPayload: Record<string, unknown>): DesktopState | null {
   const eventType = event.type
+  if (eventType.startsWith('session.diagnostic')) {
+    return state
+  }
   if (!eventType.startsWith('session.') && !eventType.startsWith('permission.')) {
     return null
   }
@@ -866,10 +870,23 @@ function durableSessionPatch(existing: DesktopSessionRecord, eventType: string, 
   const status = payloadString(payload, 'status')
   if (status) {
     const normalizedStatus = status.toLowerCase()
-    session.live.status = normalizedStatus === 'blocked' ? 'blocked' : normalizedStatus === 'starting' ? 'starting' : normalizedStatus === 'running' ? 'running' : normalizedStatus === 'error' ? 'error' : normalizedStatus === 'idle' ? 'idle' : session.live.status
+    session.live.status = normalizedStatus === 'blocked' || normalizedStatus === 'dispatch_blocked'
+      ? 'blocked'
+      : normalizedStatus === 'starting' || normalizedStatus === 'pending_executor' || normalizedStatus === 'queued'
+        ? 'starting'
+        : normalizedStatus === 'running'
+          ? 'running'
+          : normalizedStatus === 'error' || normalizedStatus === 'failed' || normalizedStatus === 'expired' || normalizedStatus === 'interrupted'
+            ? 'error'
+            : normalizedStatus === 'idle' || normalizedStatus === 'completed' || normalizedStatus === 'cancelled'
+              ? 'idle'
+              : session.live.status
     session.live.summary = payloadString(payload, 'summary') || session.live.summary
-    session.live.error = payloadString(payload, 'error') || (normalizedStatus === 'error' ? 'Run failed' : null)
-    if (normalizedStatus === 'idle' || normalizedStatus === 'error') {
+    session.live.error = payloadString(payload, 'error')
+      || payloadString(payload, 'blocked_reason')
+      || payloadString(payloadRecord(payload, 'run_intent'), 'blocked_reason')
+      || (session.live.status === 'error' ? 'Run failed' : null)
+    if (session.live.status === 'idle' || session.live.status === 'error') {
       session.live.runId = null
       session.live.startedAt = null
     }
@@ -878,6 +895,16 @@ function durableSessionPatch(existing: DesktopSessionRecord, eventType: string, 
   switch (eventType) {
     case 'session.title.updated':
       session.title = payloadString(payload, 'title') || session.title
+      break
+    case 'session.assistant.queued':
+      session.live.runId = payloadString(payload, 'run_id') || payloadString(payloadRecord(payload, 'run_intent'), 'run_id') || session.live.runId
+      session.live.status = 'starting'
+      session.live.awaitingAck = false
+      session.live.startedAt = session.live.startedAt ?? ts
+      session.live.summary = 'Pending executor…'
+      session.live.error = null
+      resetLiveTool(session.live)
+      resetLiveReasoning(session.live)
       break
     case 'session.assistant.started':
       session.live.runId = payloadString(payload, 'run_id') || payloadString(payloadRecord(payload, 'run_intent'), 'run_id') || session.live.runId
@@ -910,6 +937,9 @@ function durableSessionPatch(existing: DesktopSessionRecord, eventType: string, 
     case 'session.tool.started':
     case 'session.tool.delta':
     case 'session.tool.completed':
+    case 'session.tool.failed':
+    case 'session.tool.cancelled':
+    case 'session.tool.canceled':
       applyTool(session, payload, eventType, ts, eventSeq, sessionId)
       break
     case 'session.run.started':
@@ -957,7 +987,9 @@ function durableSessionPatch(existing: DesktopSessionRecord, eventType: string, 
       if (!shouldApplyTerminal) {
         break
       }
-      const rawError = payloadString(payload, 'error') || payloadString(payload, 'blocked_reason')
+      const rawError = payloadString(payload, 'error')
+        || payloadString(payload, 'blocked_reason')
+        || payloadString(payloadRecord(payload, 'run_intent'), 'blocked_reason')
       const isUserCancellation = eventType === 'session.run.cancelled' || terminalStatus === 'cancelled'
       const error = isUserCancellation ? userFacingStopReason(rawError) : rawError || 'Run failed'
       session.runIntent = null
@@ -1322,9 +1354,13 @@ function applyTool(session: DesktopSessionRecord, payload: Record<string, unknow
   const callId = payloadString(payload, 'call_id')
   const stepId = payloadString(payload, 'step_id')
   const toolInstanceId = payloadString(payload, 'tool_instance_id')
+  const pathId = liveToolPathId(payloadString(payload, 'path_id'))
   const isToolStarted = eventType === 'session.tool.started'
   const isToolDelta = eventType === 'session.tool.delta'
   const isToolCompleted = eventType === 'session.tool.completed'
+  const isToolFailed = eventType === 'session.tool.failed'
+  const isToolCancelled = eventType === 'session.tool.cancelled' || eventType === 'session.tool.canceled'
+  const isToolTerminal = isToolCompleted || isToolFailed || isToolCancelled
   session.live.runId = runId || session.live.runId
   session.live.status = 'running'
   session.live.awaitingAck = false
@@ -1351,24 +1387,28 @@ function applyTool(session: DesktopSessionRecord, payload: Record<string, unknow
     stepId,
     callId,
     toolInstanceId,
+    pathId,
     toolName,
     toolArguments: typeof payload.arguments === 'string' ? payload.arguments.trim() || null : null,
     output: typeof payload.output === 'string' ? payload.output : null,
     rawOutput: typeof payload.raw_output === 'string' ? payload.raw_output : null,
-    state: isToolCompleted ? 'done' : 'running',
+    completedOutput: typeof payload.completed_output === 'string' ? payload.completed_output : null,
+    state: isToolTerminal ? (isToolFailed ? 'error' : 'done') : 'running',
     step: typeof payload.step === 'number' ? payload.step : null,
     seq: eventSeq,
     ts,
   })
   if (isToolDelta && typeof payload.output === 'string') {
     session.live.toolOutput = appendLiveToolOutput(session.live.toolOutput, payload.output)
-  } else if (isToolCompleted) {
+  } else if (isToolTerminal) {
     session.live.toolOutput = typeof payload.raw_output === 'string'
       ? replaceLiveToolOutput(payload.raw_output)
+      : typeof payload.completed_output === 'string'
+        ? replaceLiveToolOutput(payload.completed_output)
       : typeof payload.output === 'string'
         ? replaceLiveToolOutput(payload.output)
         : session.live.toolOutput
-    retainLiveTool(session.live, 'done')
+    retainLiveTool(session.live, isToolFailed ? 'error' : 'done')
     resetLiveTool(session.live)
   }
   logDesktopToolStreamUpdate({
@@ -1398,10 +1438,12 @@ function upsertToolHistory(live: DesktopSessionRecord['live'], input: {
   stepId: string
   callId: string
   toolInstanceId: string
+  pathId?: DesktopLiveToolRecord['pathId']
   toolName: string
   toolArguments?: string | null
   output?: string | null
   rawOutput?: string | null
+  completedOutput?: string | null
   state: DesktopSessionRecord['live']['retainedToolState'] & ('running' | 'done' | 'error')
   step?: number | null
   seq?: number | null
@@ -1412,10 +1454,12 @@ function upsertToolHistory(live: DesktopSessionRecord['live'], input: {
   }
   const key = [input.sessionId, input.runId, input.stepId, input.callId, input.toolInstanceId].join('\u001f')
   const existing = (live.toolHistory ?? []).find((item) => item.key === key)
-  const outputDelta = input.rawOutput ?? input.output ?? ''
+  const outputDelta = input.rawOutput ?? input.completedOutput ?? input.output ?? ''
   const existingOutput = existing?.toolOutput ?? ''
   const nextOutput = input.rawOutput !== undefined && input.rawOutput !== null
     ? replaceLiveToolOutput(input.rawOutput)
+    : input.completedOutput !== undefined && input.completedOutput !== null
+      ? replaceLiveToolOutput(input.completedOutput)
     : input.output
       ? appendLiveToolOutput(existingOutput, input.output)
       : existingOutput
@@ -1426,6 +1470,7 @@ function upsertToolHistory(live: DesktopSessionRecord['live'], input: {
     stepId: input.stepId,
     callId: input.callId,
     toolInstanceId: input.toolInstanceId,
+    pathId: input.pathId ?? existing?.pathId,
     toolName: input.toolName || existing?.toolName || null,
     toolArguments: input.toolArguments ?? existing?.toolArguments ?? null,
     toolOutput: outputDelta ? nextOutput : existing?.toolOutput ?? '',
@@ -1438,6 +1483,13 @@ function upsertToolHistory(live: DesktopSessionRecord['live'], input: {
   }
   const rest = (live.toolHistory ?? []).filter((item) => item.key !== key)
   live.toolHistory = [next, ...rest].slice(0, 20)
+}
+
+function liveToolPathId(value: string): DesktopLiveToolRecord['pathId'] | undefined {
+  if (value === 'run.tool-history.v2' || value === 'run.v3.provider-tool-result.v1') {
+    return value
+  }
+  return undefined
 }
 
 function appendLiveToolOutput(current: string, chunk: string): string {
@@ -1623,14 +1675,21 @@ function mergeArrayRecord<T>(current: Record<string, T[]>, incoming: Record<stri
   }
 }
 
-function mergeSessionValueRecord<T>(current: Record<string, T>, incoming: Record<string, T> | undefined, scopedSessionIds: string[]): Record<string, T> {
+function mergeRunIntentRecord(
+  current: Record<string, DesktopRunIntentRecord>,
+  incoming: Record<string, DesktopRunIntentRecord> | undefined,
+  scopedSessionIds: string[],
+): Record<string, DesktopRunIntentRecord> {
+  const incomingRecords = cloneRecord(incoming)
   const next = { ...current }
   for (const sessionId of scopedSessionIds) {
-    delete next[sessionId]
+    if (incomingRecords[sessionId] || !runIntentStatusActive(next[sessionId]?.status ?? '')) {
+      delete next[sessionId]
+    }
   }
   return {
     ...next,
-    ...cloneRecord(incoming),
+    ...incomingRecords,
   }
 }
 
