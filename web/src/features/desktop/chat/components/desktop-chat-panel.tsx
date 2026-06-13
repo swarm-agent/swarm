@@ -18,7 +18,7 @@ import {
   startSessionRun,
   updateDraftModelPreference,
 } from '../queries/chat-queries'
-import { fetchAndApplyDesktopDBWorksetSession, saveDesktopV3SessionPlan, updateDesktopV3SessionAgent, updateDesktopV3SessionMetadata, updateDesktopV3SessionMode, updateDesktopV3SessionPreference } from '../../state/desktop-db-workset'
+import { fetchAndApplyDesktopV3SessionSnapshot, saveDesktopV3SessionPlan, updateDesktopV3SessionAgent, updateDesktopV3SessionMetadata, updateDesktopV3SessionMode, updateDesktopV3SessionPreference } from '../../state/desktop-v3-session-api'
 import type { AgentModelPolicyRecord, AgentProfileRecord, AgentStateRecord, ChatMessageRecord, ModelOptionRecord, ResolvedSessionPreference, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
 import type { DesktopLiveAssistantSegment, DesktopLiveToolRecord, DesktopSessionRecord } from '../../types/realtime'
 import { Card } from '../../../../components/ui/card'
@@ -1975,7 +1975,7 @@ export function DesktopChatPanel({
       return
     }
     lastAutoModeSyncRef.current = syncKey
-    void updateDesktopV3SessionMode(queryClient, sessionId, nextMode).then(() => {
+    void updateDesktopV3SessionMode(sessionId, nextMode).then(() => {
       lastAutoModeSyncRef.current = ''
     }).catch((error) => {
       lastAutoModeSyncRef.current = ''
@@ -1998,7 +1998,7 @@ export function DesktopChatPanel({
     }
     setSelectedPrimaryAgent(nextAgent)
     try {
-      const snapshot = await updateDesktopV3SessionAgent(queryClient, sessionId, nextAgent)
+      const snapshot = await updateDesktopV3SessionAgent(sessionId, nextAgent)
       const serverAgent = resolveSessionEffectiveAgentName(snapshot.session, agentState.activePrimary)
       setSelectedPrimaryAgent(serverAgent)
       setCurrentSessionAgent(serverAgent)
@@ -2158,7 +2158,7 @@ export function DesktopChatPanel({
     }
 
     try {
-      await updateDesktopV3SessionPreference(queryClient, sessionId, normalizedNext)
+      await updateDesktopV3SessionPreference(sessionId, normalizedNext)
     } catch (error) {
       setPanelError(error instanceof Error ? error.message : 'Failed to update model settings')
     }
@@ -2218,7 +2218,7 @@ export function DesktopChatPanel({
         } else {
           delete currentMetadata[COMPACT_THRESHOLD_METADATA_KEY]
         }
-        await updateDesktopV3SessionMetadata(queryClient, sessionId, currentMetadata)
+        await updateDesktopV3SessionMetadata(sessionId, currentMetadata)
       }
       await submitPrompt({
         sessionId,
@@ -2303,7 +2303,7 @@ export function DesktopChatPanel({
       revisions: dbPlanRevisions,
     })
     try {
-      const snapshot = await fetchAndApplyDesktopDBWorksetSession(queryClient, sessionId)
+      const snapshot = await fetchAndApplyDesktopV3SessionSnapshot(sessionId)
       if (!snapshot) {
         setPlanModal((current) => ({ ...current, loading: false }))
         return
@@ -2577,7 +2577,7 @@ export function DesktopChatPanel({
     setPlanModal((current) => ({ ...current, saving: true, error: null }))
     setPanelError(null)
     try {
-      const snapshot = await saveDesktopV3SessionPlan(queryClient, sessionId, {
+      const snapshot = await saveDesktopV3SessionPlan(sessionId, {
         id: currentPlan?.id,
         title: (currentPlan?.title?.trim() || 'Current Plan'),
         plan: planText,
@@ -2744,7 +2744,7 @@ export function DesktopChatPanel({
       return
     }
     try {
-      await updateDesktopV3SessionMode(queryClient, sessionId, nextMode)
+      await updateDesktopV3SessionMode(sessionId, nextMode)
     } catch (error) {
       setPanelError(error instanceof Error ? error.message : 'Failed to update session mode')
     }

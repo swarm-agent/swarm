@@ -4,7 +4,6 @@ import type { AgentModelPolicyRecord, ChatMessageRecord, DesktopSessionPlanRecor
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import type { DesktopPermissionRecord, DesktopRunIntentRecord, DesktopSessionRecord, DesktopSessionUsageRecord } from '../types/realtime'
 import type { DesktopDaemonSnapshot, DesktopSessionReadinessRecord, DesktopWorkspaceRecord } from './desktop-state'
-import { mergeDesktopSnapshot, replaceDesktopFromSnapshot } from './desktop-state-store'
 import { applyV3RuntimeEnvelope, createV3SnapshotEnvelope } from '../v3-runtime'
 
 export interface DesktopStateSnapshotRequest {
@@ -218,16 +217,41 @@ export async function fetchDesktopStateSnapshot(input: DesktopStateSnapshotReque
 
 export async function loadDesktopStateSnapshot(input: DesktopStateSnapshotRequest, signal?: AbortSignal): Promise<DesktopDaemonSnapshot> {
   const snapshot = await fetchDesktopStateSnapshot(input, signal)
-  applyV3RuntimeEnvelope(createV3SnapshotEnvelope(snapshot, { mode: 'replace', receivedAt: Date.now() }))
-  replaceDesktopFromSnapshot(snapshot)
+  applyV3RuntimeEnvelope(createV3SnapshotEnvelope(snapshot, { mode: 'replace', receivedAt: Date.now(), id: desktopStateSnapshotEnvelopeId('replace', snapshot, input) }))
   return snapshot
 }
 
 export async function mergeDesktopStateSnapshot(input: DesktopStateSnapshotRequest, signal?: AbortSignal): Promise<DesktopDaemonSnapshot> {
   const snapshot = await fetchDesktopStateSnapshot(input, signal)
-  applyV3RuntimeEnvelope(createV3SnapshotEnvelope(snapshot, { mode: 'merge', receivedAt: Date.now() }))
-  mergeDesktopSnapshot(snapshot)
+  applyV3RuntimeEnvelope(createV3SnapshotEnvelope(snapshot, { mode: 'merge', receivedAt: Date.now(), id: desktopStateSnapshotEnvelopeId('merge', snapshot, input) }))
   return snapshot
+}
+
+function desktopStateSnapshotEnvelopeId(mode: 'replace' | 'merge', snapshot: DesktopDaemonSnapshot, input: DesktopStateSnapshotRequest): string {
+  const sessionIds = (input.sessionIds ?? []).map((sessionId) => sessionId.trim()).filter(Boolean).sort()
+  const workspacePath = input.workspacePath?.trim() ?? ''
+  const workspacePaths = (input.workspacePaths ?? []).map((path) => path.trim()).filter(Boolean).sort()
+  const recent = input.recent
+    ? {
+        limit: input.recent.limit ?? null,
+        beforeUpdatedAt: input.recent.beforeUpdatedAt ?? null,
+        beforeSessionId: input.recent.beforeSessionId?.trim() || '',
+      }
+    : null
+  const history = input.history
+    ? {
+        mode: input.history.mode ?? '',
+        maxMessagesPerSession: input.history.maxMessagesPerSession ?? null,
+        maxEventsPerSession: input.history.maxEventsPerSession ?? null,
+        manifestPolicy: input.history.manifestPolicy ?? '',
+        includeEvents: input.history.includeEvents ?? null,
+      }
+    : null
+  const snapshotScope = {
+    sessionOrder: snapshot.sessionOrder ?? [],
+    sessions: Object.keys(snapshot.sessionsById ?? {}).sort(),
+  }
+  return `snapshot:${mode}:rev:${snapshot.rev}:${JSON.stringify({ sessionIds, workspacePath, workspacePaths, recent, history, snapshotScope })}`
 }
 
 export function normalizeDesktopStateSnapshot(response: DesktopStateWorksetResponseWire): DesktopDaemonSnapshot {

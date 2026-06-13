@@ -25,10 +25,9 @@ import {
 } from '../chat/queries/chat-queries'
 import type { DesktopChatRoute } from '../chat/services/chat-routing'
 import { gitStatusQueryKey } from '../git/api'
-import { agentStateQueryOptions, sessionPreferenceQueryKey, uiSettingsQueryKey } from '../../queries/query-options'
+import { agentStateQueryOptions, uiSettingsQueryKey } from '../../queries/query-options'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
-import { applyDesktopDurableEventEnvelope, getDesktopSnapshot, mergeDesktopSnapshot } from './desktop-state-store'
-import { applyV3RuntimeEnvelope, createV3SnapshotEnvelope, installV3RuntimePersistence, normalizeV3RealtimeFrame, restoreV3RuntimeFromPersistence } from '../v3-runtime'
+import { applyV3RuntimeEnvelope, createV3SnapshotEnvelope, getV3RuntimeDesktopSnapshot, installV3RuntimePersistence, normalizeV3RealtimeFrame, restoreV3RuntimeFromPersistence } from '../v3-runtime'
 import { fetchDesktopStateSnapshot } from './desktop-state-snapshot'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import { normalizeSwarmSettings, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
@@ -1425,7 +1424,6 @@ function requestScopedSessionWorkset(sessionId: string, options: { force?: boole
     })
       .then((snapshot) => {
         applyV3RuntimeEnvelope(createV3SnapshotEnvelope(snapshot, { mode: 'merge', receivedAt: Date.now() }))
-        mergeDesktopSnapshot(snapshot)
       })
       .catch((error) => {
         console.error('[desktop-store] scoped desktop v3 state hydration failed', error)
@@ -2527,7 +2525,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
     return { lastGlobalSeq: Math.max(state.lastGlobalSeq, envelope.global_seq ?? 0) }
   }
 
-  const hasCanonicalV3Snapshot = Boolean(getDesktopSnapshot().sessionsById[sessionId])
+  const hasCanonicalV3Snapshot = Boolean(getV3RuntimeDesktopSnapshot().sessionsById[sessionId])
   if (eventType.startsWith('session.') && hasCanonicalV3Snapshot) {
     invalidateAuthoritativeSessionSnapshot(sessionId)
   }
@@ -2651,37 +2649,8 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
       requestScopedSessionWorkset(sessionId, { force: true })
       notifications.unshift(makeNotification(sessionId, session.live.runId, eventType, 'Mode updated', session.mode, 'info', ts))
       break
-    case 'session.preference.updated': {
-      const preferenceSource = payloadRecord.preference && typeof payloadRecord.preference === 'object'
-        ? payloadRecord.preference as Record<string, unknown>
-        : payloadRecord
-      deferDesktopCacheMutation('session preference sync', () => {
-        queryClient.setQueryData(sessionPreferenceQueryKey(sessionId), (current: {
-          preference?: {
-            provider?: string
-            model?: string
-            thinking?: string
-            serviceTier?: string
-            contextMode?: string
-            updatedAt?: number
-          }
-          contextWindow?: number
-          maxOutputTokens?: number
-        } | undefined) => ({
-          preference: {
-            provider: typeof preferenceSource.provider === 'string' ? preferenceSource.provider.trim() : '',
-            model: typeof preferenceSource.model === 'string' ? preferenceSource.model.trim() : '',
-            thinking: typeof preferenceSource.thinking === 'string' ? preferenceSource.thinking.trim() : '',
-            serviceTier: typeof preferenceSource.service_tier === 'string' ? preferenceSource.service_tier.trim() : '',
-            contextMode: typeof preferenceSource.context_mode === 'string' ? preferenceSource.context_mode.trim() : '',
-            updatedAt: typeof preferenceSource.updated_at === 'number' ? preferenceSource.updated_at : ts,
-          },
-          contextWindow: current?.contextWindow ?? 0,
-          maxOutputTokens: current?.maxOutputTokens ?? 0,
-        }))
-      })
+    case 'session.preference.updated':
       break
-    }
     case 'session.agent.updated':
     case 'session.metadata.updated': {
       const metadata = payloadRecord.metadata && typeof payloadRecord.metadata === 'object'
@@ -3195,7 +3164,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
   }
   sessions[sessionId] = merged
   syncBlockedSessionToWorkspaceOverview(queryClient, merged)
-  if (sessionRequiresSnapshotHydration(merged, eventType, { hasPlanHydration: Boolean(getDesktopSnapshot().plansBySessionId[sessionId]) })) {
+  if (sessionRequiresSnapshotHydration(merged, eventType, { hasPlanHydration: Boolean(getV3RuntimeDesktopSnapshot().plansBySessionId[sessionId]) })) {
     requestScopedSessionWorkset(sessionId)
   }
 
@@ -3217,7 +3186,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
 
 function v3RealtimeSubscriptionsForState(state: DesktopStoreState): Array<{ sessionId: string; endpointCursor?: string | null }> {
   const sessions = new Map<string, DesktopSessionRecord>()
-  for (const session of Object.values(getDesktopSnapshot().sessionsById)) {
+  for (const session of Object.values(getV3RuntimeDesktopSnapshot().sessionsById)) {
     sessions.set(session.id, session)
   }
   for (const session of Object.values(state.sessions)) {
@@ -3274,10 +3243,6 @@ function applyDesktopV3RealtimeFrame(sessionId: string, payload: DesktopV3Realti
     return runtimeOutcome.applied || runtimeOutcome.shouldAdvanceCursor || !runtimeOutcome.rejected
   }
   if (runtimeOutcome.applied) {
-    const envelope = v3SessionStreamEventEnvelope(payload as RunStreamEventMessage)
-    if (envelope) {
-      applyDesktopDurableEventEnvelope(envelope)
-    }
     useDesktopUiStore.setState((state: DesktopStoreState) => {
       const patch = applyV3SessionStreamFrame(state, frameSessionId, payload as RunStreamEventMessage, ts) ?? {}
       return patch
@@ -3820,7 +3785,6 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
           if (backendDerivedDesktopEvent) {
             set((state: DesktopStoreState) => ({ lastGlobalSeq: Math.max(state.lastGlobalSeq, message.event?.global_seq ?? 0) }))
           } else {
-            applyDesktopDurableEventEnvelope(message.event ?? {})
             set((state: DesktopStoreState) => applyEnvelope(state, message.event ?? {}))
           }
           if (sessionId && eventType === 'permission.summary.updated') {

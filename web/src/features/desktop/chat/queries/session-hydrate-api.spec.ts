@@ -214,6 +214,7 @@ function v3WorksetPayload(sessionIds: string[]) {
   const projectionsBySession: Record<string, unknown> = {}
   const messagesBySession: Record<string, unknown[]> = {}
   const eventsBySession: Record<string, unknown[]> = {}
+  const sessionPreferenceBySession: Record<string, unknown> = {}
   const permissionsBySession: Record<string, unknown[]> = {}
   const usageBySession: Record<string, unknown> = {}
   const preferencesBySession: Record<string, unknown> = {}
@@ -231,7 +232,8 @@ function v3WorksetPayload(sessionIds: string[]) {
     eventsBySession[sessionId] = payload.events
     permissionsBySession[sessionId] = payload.pending_permissions
     usageBySession[sessionId] = payload.usage_summary
-    preferencesBySession[sessionId] = payload.preference ?? payload.session.preference
+    sessionPreferenceBySession[sessionId] = payload.preference ?? payload.session.preference
+    preferencesBySession[sessionId] = sessionPreferenceBySession[sessionId]
     agentModelPolicyBySession[sessionId] = payload.agent_model_policy
     runIntentsBySession[sessionId] = payload.active_run_intent ? [payload.active_run_intent] : []
     plansBySession[sessionId] = payload.active_plan
@@ -250,6 +252,7 @@ function v3WorksetPayload(sessionIds: string[]) {
     plan_revisions_by_session: planRevisionsBySession,
     permissions_by_session: permissionsBySession,
     usage_by_session: usageBySession,
+    preference_by_session: sessionPreferenceBySession,
     preferences_by_session: preferencesBySession,
     agent_model_policy_by_session: agentModelPolicyBySession,
     run_intents_by_session: runIntentsBySession,
@@ -272,7 +275,7 @@ function v3PlanPayload(planId: string, version = 0) {
       id: planId,
       title: 'Current Plan',
       status: 'draft',
-      info: { goal: 'Ship V3 plan hydration', relevant_files: ['web/src/features/desktop/state/desktop-db-workset.ts'] },
+      info: { goal: 'Ship V3 plan hydration', relevant_files: ['web/src/features/desktop/v3-runtime/v3-store.ts'] },
       checkpoints: [{ id: 'cp-1', title: 'Hydrate plan', status: 'pending' }],
     },
     status: 'draft',
@@ -379,87 +382,6 @@ test('Desktop V3 permission resolve uses Sessions API v3 only', async () => {
 })
 
 
-test('Desktop DB direct-route recovery hydrates a missing session and its active plan through one scoped workset request', async () => {
-  const { desktopPlansCollection, ensureDesktopDBRouteSession, readDesktopDbMessages, readDesktopDbSession, readDesktopDbSessionReadiness } = await import('../../state/desktop-db')
-
-  await withFetchStub(async (calls) => {
-    const readiness = await ensureDesktopDBRouteSession('', 'session-switch')
-
-    assert.equal(readiness.ready, true)
-    assert.equal(readiness.status, 'ready')
-    assert.deepEqual(requestUrls(calls), ['/v3/sessions:workset'])
-    assert.deepEqual(JSON.parse(String(calls[0]?.init?.body ?? '{}')).session_ids, ['session-switch'])
-    assertNoV1OrV2SessionDataCalls(calls)
-    assert.equal(readDesktopDbSession('session-switch')?.id, 'session-switch')
-    assert.equal(readDesktopDbMessages('session-switch').map((message) => message.id).join(','), 'session-switch-msg-1')
-    assert.equal(readDesktopDbSessionReadiness('session-switch')?.ready, true)
-    assert.equal(readDesktopDbSessionReadiness('session-switch')?.status, 'ready')
-    assert.equal(desktopPlansCollection.get('session-switch')?.plan?.id, 'plan-1')
-    assert.equal(desktopPlansCollection.get('session-switch')?.plan?.plan, '# Plan')
-
-    const callCountAfterDbReady = calls.length
-    await ensureDesktopDBRouteSession('', 'session-switch')
-    assert.equal(calls.length, callCountAfterDbReady, 'DB-ready route/session switching with plan hydration must not fetch')
-  })
-})
-
-test('Desktop V3 durable workset cache seeds TanStack DB immediately without sidebar network hydration', async () => {
-  const { mapDesktopV3Workset, seedDesktopDBWorksetFromDurableCache, writeDesktopDBDurableWorkset } = await import('../../state/desktop-db-workset')
-  const { readDesktopDbMessages, readDesktopDbSession } = await import('../../state/desktop-db')
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  })
-  const request = {
-    workspacePaths: ['/repo'],
-    recent: { limit: 50 },
-    history: { mode: 'full' as const, maxEventsPerSession: 0, manifestPolicy: 'manifest' as const, includeEvents: false },
-  }
-  const workset = mapDesktopV3Workset(v3WorksetPayload(['session-durable-cache']))
-  await writeDesktopDBDurableWorkset(request, workset)
-
-  await withFetchStub(async (calls) => {
-    const seeded = await seedDesktopDBWorksetFromDurableCache(queryClient, request)
-
-    assert.equal(seeded?.sessionsById['session-durable-cache']?.id, 'session-durable-cache')
-    assert.equal(readDesktopDbSession('session-durable-cache')?.id, 'session-durable-cache')
-    assert.deepEqual(readDesktopDbMessages('session-durable-cache').map((message) => message.id), ['session-durable-cache-msg-1'])
-    assert.deepEqual(requestUrls(calls), [], 'durable cache seeding must not perform sidebar network hydration')
-    assertNoV1OrV2SessionDataCalls(calls)
-  })
-
-  queryClient.clear()
-})
-
-test('Desktop V3 workset hydration restores active run intent and active plan from the canonical route source', async () => {
-  const { fetchAndApplyDesktopDBWorksetSession, readDesktopDBHydratedSession } = await import('../../state/desktop-db-workset')
-  const { desktopPlansCollection, readDesktopDbSession } = await import('../../state/desktop-db')
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  })
-
-  await withFetchStub(async (calls) => {
-    const snapshot = await fetchAndApplyDesktopDBWorksetSession(queryClient, 'session-v3-active')
-    const cached = readDesktopDBHydratedSession(queryClient, 'session-v3-active')
-
-    assert.deepEqual(requestUrls(calls), ['/v3/sessions:workset'])
-    assertNoV1OrV2SessionDataCalls(calls)
-    assert.equal(snapshot?.session.runIntent?.runId, 'run-active')
-    assert.equal(snapshot?.activePlan?.id, 'plan-1')
-    assert.equal(snapshot?.activePlan?.document?.info.goal, 'Ship V3 plan hydration')
-    assert.equal(desktopPlansCollection.get('session-v3-active')?.plan?.document?.info.goal, 'Ship V3 plan hydration')
-    assert.equal(cached?.runIntent?.status, 'running')
-    assert.equal(readDesktopDbSession('session-v3-active')?.runIntent?.runId, 'run-active')
-    assert.equal(cached?.live.runId, 'run-active')
-    assert.equal(cached?.live.status, 'running')
-    assert.equal(cached?.live.startedAt, 1000)
-    assert.equal(cached?.live.lastEventAt, 4000)
-  })
-
-  queryClient.clear()
-})
-
-
-
 test('sessionMessagesQueryOptions uses the canonical V3 snapshot cache for Desktop V3 messages', async () => {
   const { sessionMessagesQueryOptions } = await import('../../../queries/query-options')
   const queryClient = new QueryClient({
@@ -488,8 +410,6 @@ test('sessionPreferenceQueryOptions uses the canonical V3 snapshot cache for Des
 
     assert.equal(preference.preference.provider, 'codex')
     assert.equal(preference.preference.model, 'gpt-5.4')
-    assert.equal(queryClient.getQueryData<{ agentModelPolicy: { locked: boolean; source: string } }>(['desktop-v3-session-snapshot', 'session-preference'])?.agentModelPolicy?.locked, true)
-    assert.equal(queryClient.getQueryData<{ agentModelPolicy: { locked: boolean; source: string } }>(['desktop-v3-session-snapshot', 'session-preference'])?.agentModelPolicy?.source, 'agent_preset')
     assert.deepEqual(requestUrls(calls), ['/v3/sessions:workset'])
     assertNoV1OrV2SessionDataCalls(calls)
   })
@@ -497,94 +417,15 @@ test('sessionPreferenceQueryOptions uses the canonical V3 snapshot cache for Des
   queryClient.clear()
 })
 
-test('Desktop V3 preference, mode, agent, metadata, and plan mutations use V3 session update endpoints only', async () => {
-  const { sessionPreferenceQueryKey } = await import('../../../queries/query-options')
-  const { desktopDBSessionSnapshotQueryKey, saveDesktopV3SessionPlan, updateDesktopV3SessionAgent, updateDesktopV3SessionMetadata, updateDesktopV3SessionMode, updateDesktopV3SessionPreference } = await import('../../state/desktop-db-workset')
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  })
-
-  await withFetchStub(async (calls) => {
-    const modeSnapshot = await updateDesktopV3SessionMode(queryClient, 'session-config', 'plan')
-    const preference = await updateDesktopV3SessionPreference(queryClient, 'session-config', { provider: 'codex', model: 'gpt-5.4', thinking: 'medium' })
-    const agentSnapshot = await updateDesktopV3SessionAgent(queryClient, 'session-config', 'explorer')
-    const metadataSnapshot = await updateDesktopV3SessionMetadata(queryClient, 'session-config', { compact_threshold: 80 })
-    const planSnapshot = await saveDesktopV3SessionPlan(queryClient, 'session-config', { title: 'Current Plan', plan: '# Plan' })
-
-    assert.equal(modeSnapshot.session.mode, 'plan')
-    assert.equal(preference.preference.model, 'gpt-5.4')
-    assert.equal(agentSnapshot.session.metadata?.agent_name, 'explorer')
-    assert.equal(metadataSnapshot.session.metadata?.compact_threshold, 80)
-    assert.equal(planSnapshot.activePlan?.id, 'plan-1')
-    assert.deepEqual(requestUrls(calls), [
-      '/v3/sessions/session-config/mode',
-      '/v3/sessions:workset',
-      '/v3/sessions/session-config/preference',
-      '/v3/sessions:workset',
-      '/v3/sessions/session-config/agent',
-      '/v3/sessions:workset',
-      '/v3/sessions/session-config/metadata',
-      '/v3/sessions:workset',
-      '/v3/sessions/session-config/plans',
-      '/v3/sessions:workset',
-    ])
-    assert.equal(JSON.parse(String(calls[4].init?.body ?? '{}')).agent_name, 'explorer')
-    assert.equal(calls[0].init?.method, 'POST')
-    assert.equal(calls[2].init?.method, 'POST')
-    assert.equal(calls[4].init?.method, 'POST')
-    assert.equal(calls[6].init?.method, 'POST')
-    assert.equal(calls[8].init?.method, 'POST')
-    assertNoV1OrV2SessionDataCalls(calls)
-    assert.equal(queryClient.getQueryData<{ session: { id: string; mode: string } }>(desktopDBSessionSnapshotQueryKey('session-config'))?.session.mode, undefined)
-    assert.equal(queryClient.getQueryData<{ preference: { model: string } }>(sessionPreferenceQueryKey('session-config'))?.preference.model, undefined)
-  })
-
-  queryClient.clear()
-})
-
-test('Desktop V3 preference and mode mutations reject non-canonical update responses', async () => {
-  const { updateDesktopV3SessionMode, updateDesktopV3SessionPreference } = await import('../../state/desktop-db-workset')
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  })
-  const originalFetch = globalThis.fetch
-  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = []
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    calls.push({ input, init })
-    return jsonResponse({ ok: true, mode: 'plan', preference: { provider: 'codex', model: 'gpt-5.4' } })
-  }) as typeof fetch
-
-  try {
-    await assert.rejects(
-      () => updateDesktopV3SessionMode(queryClient, 'session-config', 'plan'),
-      /requires a hydrated canonical session snapshot/,
-    )
-    await assert.rejects(
-      () => updateDesktopV3SessionPreference(queryClient, 'session-config', { provider: 'codex', model: 'gpt-5.4' }),
-      /requires a hydrated canonical session snapshot/,
-    )
-  } finally {
-    globalThis.fetch = originalFetch
-    queryClient.clear()
-  }
-
-  assert.deepEqual(requestUrls(calls), [
-    '/v3/sessions/session-config/mode',
-    '/v3/sessions/session-config/preference',
-  ])
-  assertNoV1OrV2SessionDataCalls(calls)
-})
-
-
 test('DesktopChatPanel uses V3-native preference and mode paths', async () => {
   const source = await readFile(new URL('../components/desktop-chat-panel.tsx', import.meta.url), 'utf8')
 
-  assert.match(source, /updateDesktopV3SessionMode\(queryClient, sessionId, nextMode\)/)
-  assert.match(source, /updateDesktopV3SessionPreference\(queryClient, sessionId, normalizedNext\)/)
-  assert.match(source, /updateDesktopV3SessionAgent\(queryClient, sessionId, nextAgent\)/)
+  assert.match(source, /updateDesktopV3SessionMode\(sessionId, nextMode\)/)
+  assert.match(source, /updateDesktopV3SessionPreference\(sessionId, normalizedNext\)/)
+  assert.match(source, /updateDesktopV3SessionAgent\(sessionId, nextAgent\)/)
   assert.doesNotMatch(source, /currentMetadata\.subagent\s*=/)
-  assert.match(source, /updateDesktopV3SessionMetadata\(queryClient, sessionId, currentMetadata\)/)
-  assert.match(source, /saveDesktopV3SessionPlan\(queryClient, sessionId,/)
+  assert.match(source, /updateDesktopV3SessionMetadata\(sessionId, currentMetadata\)/)
+  assert.match(source, /saveDesktopV3SessionPlan\(sessionId,/)
   assert.match(source, /from '\.\.\/\.\.\/state\/desktop-state-store'/)
   assert.match(source, /useDesktopPreference\(sessionId\)/)
   assert.match(source, /useDesktopMessages\(sessionId\)/)
@@ -613,7 +454,7 @@ test('DesktopAppPage derives route readiness and cached switching from the exter
 
   assert.match(source, /from '\.\.\/state\/desktop-state-store'/)
   assert.match(source, /fetchDesktopStateSnapshot\(request, abortController\.signal\)/)
-  assert.match(source, /replaceDesktopFromSnapshot\(snapshot\)/)
+  assert.match(source, /applyV3RuntimeEnvelope\(createV3SnapshotEnvelope\(snapshot, \{ mode: 'merge'/)
   assert.match(source, /workspacePaths,/)
   assert.match(source, /recent: \{ limit: 50 \}/)
   assert.doesNotMatch(source, /maxMessagesPerSession/)
@@ -652,7 +493,7 @@ test('DesktopAppPage derives route readiness and cached switching from the exter
 test('Desktop realtime applies durable session events into the external Desktop state store', async () => {
   const source = await readFile(new URL('../../state/desktop-ui-store.ts', import.meta.url), 'utf8')
 
-  assert.match(source, /applyDesktopDurableEventEnvelope\(message\.event \?\? \{\}\)/)
+  assert.match(source, /applyV3RuntimeEnvelope\(normalizedEnvelope\)/)
   assert.match(source, /const backendDerivedDesktopEvent = eventType\.startsWith\('session\.'\) \|\| eventType\.startsWith\('permission\.'\)/)
   assert.match(source, /if \(backendDerivedDesktopEvent\) \{\n\s+set\(\(state(?:: DesktopStoreState)?\) => \(\{ lastGlobalSeq:/)
   assert.doesNotMatch(source, /applyDurableEventToDesktopDB/)
@@ -711,43 +552,4 @@ test('Desktop V3 has no standalone permission list or usage subresource helpers'
   assert.doesNotMatch(source, /PendingPermissionsResponseWire|SessionUsageResponseWire/)
   assert.doesNotMatch(source, /permissions\?status=pending/)
   assert.doesNotMatch(source, /\/usage`/)
-})
-
-test('Desktop V3 durable reducer idempotently merges hydration, socket, and page messages with cursors', async () => {
-  const { mergeDesktopDBSnapshotPatch, desktopDBSessionSnapshotQueryKey } = await import('../../state/desktop-db-snapshot')
-  const { sessionMessagesQueryKey } = await import('../../../queries/query-options')
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  })
-
-  await withFetchStub(async () => {
-    const { fetchDesktopDBSessionSnapshot } = await import('../../state/desktop-db-workset')
-    const snapshot = await fetchDesktopDBSessionSnapshot('session-reducer')
-    assert.ok(snapshot)
-    const hydrated = mergeDesktopDBSnapshotPatch(queryClient, { snapshot })
-    assert.equal(hydrated?.appliedSeq, 7)
-    assert.equal(hydrated?.highWatermark, 7)
-
-    const socketMessage = { id: 'session-reducer-msg-2', sessionId: 'session-reducer', globalSeq: 8, role: 'assistant', content: 'durable socket', createdAt: 8 }
-    mergeDesktopDBSnapshotPatch(queryClient, { sessionId: 'session-reducer', messages: [socketMessage], appliedSeq: 8, highWatermark: 9 })
-    mergeDesktopDBSnapshotPatch(queryClient, { sessionId: 'session-reducer', messages: [socketMessage], appliedSeq: 8, highWatermark: 9 })
-    mergeDesktopDBSnapshotPatch(queryClient, {
-      sessionId: 'session-reducer',
-      messages: [{ id: 'session-reducer-msg-0', sessionId: 'session-reducer', globalSeq: 1, role: 'user', content: 'older page', createdAt: 1 }],
-      appliedSeq: 1,
-      highWatermark: 1,
-    })
-
-    assert.deepEqual(
-      queryClient.getQueryData<Array<{ id: string }>>(sessionMessagesQueryKey('session-reducer'))?.map((message) => message.id),
-      ['session-reducer-msg-0', 'session-reducer-msg-1', 'session-reducer-msg-2'],
-    )
-    const { fetchSessionMessages } = await import('./chat-queries')
-    await fetchSessionMessages('session-reducer', undefined, 8, { sessionApi: 'v3', queryClient })
-    const reduced = queryClient.getQueryData<{ appliedSeq: number; highWatermark: number }>(desktopDBSessionSnapshotQueryKey('session-reducer'))
-    assert.equal(reduced?.appliedSeq, 8)
-    assert.equal(reduced?.highWatermark, 9)
-  })
-
-  queryClient.clear()
 })

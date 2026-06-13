@@ -9,7 +9,8 @@ const desktopRoot = path.join(webRoot, 'src/features/desktop')
 const stateRoot = path.join(desktopRoot, 'state')
 const packageJsonPath = path.join(webRoot, 'package.json')
 
-const externalStorePath = path.join(stateRoot, 'desktop-state-store.ts')
+const v3RuntimeStorePath = path.join(desktopRoot, 'v3-runtime/v3-store.ts')
+const legacyExternalStoreFacadePath = path.join(stateRoot, 'desktop-state-store.ts')
 const reducerPath = path.join(stateRoot, 'desktop-state.ts')
 const reducerSpecPath = path.join(stateRoot, 'desktop-state.spec.ts')
 const streamPath = path.join(stateRoot, 'desktop-state-stream.ts')
@@ -139,37 +140,46 @@ test('Desktop production source has no old DB mutation helpers or route hydratio
   assertNoOffenders('Canonical Desktop state must change only through snapshot replacement or daemon events, not old DB helper paths.', offenders)
 })
 
-test('React Query is not used by Desktop state modules as a core-state authority', () => {
-  const offenders = productionStateFiles().flatMap((filePath) => {
+test('React Query is not used by Desktop V3 runtime/core-state modules as a core-state authority', () => {
+  const coreFiles = [
+    path.join(stateRoot, 'desktop-state-store.ts'),
+    path.join(stateRoot, 'desktop-state.ts'),
+    path.join(stateRoot, 'desktop-state-snapshot.ts'),
+    path.join(stateRoot, 'desktop-state-stream.ts'),
+    ...walkFiles(path.join(desktopRoot, 'v3-runtime')).filter((filePath) => !isTestFile(filePath)),
+  ]
+  const offenders = coreFiles.flatMap((filePath) => {
     const source = readText(filePath)
-    const relative = `state/${stateRelative(filePath)}`
+    const relative = desktopRelative(filePath)
     const lines = matchingLineNumbers(source, /@tanstack\/react-query|\bQueryClient\b|\buseQueryClient\b|\buseQuery\b|queryClient\.(?:getQueryData|setQueryData|fetchQuery|ensureQueryData)/)
     return lines.map((line) => `${relative}:${line}`)
   }).sort()
 
-  assertNoOffenders('Desktop core state modules must not use React Query cache as canonical daemon state.', offenders)
+  assertNoOffenders('Desktop V3 runtime/core state must not use React Query cache as canonical daemon state.', offenders)
 })
 
-test('Desktop V3 has exactly one canonical useSyncExternalStore projection store', () => {
-  assertFileExists(externalStorePath, 'Desktop external store module')
+test('Desktop V3 has exactly one canonical Zustand vanilla runtime store', () => {
+  assertFileExists(v3RuntimeStorePath, 'Desktop V3 runtime store module')
+  assertFileExists(legacyExternalStoreFacadePath, 'Desktop legacy external-store facade')
 
-  const source = readText(externalStorePath)
-  assert.match(source, /from\s+['"]react['"]/, 'desktop-state-store.ts must import useSyncExternalStore from react')
-  assert.match(source, /\buseSyncExternalStore\b/, 'desktop-state-store.ts must use useSyncExternalStore')
-  assert.match(source, /export\s+function\s+useDesktopState\b/, 'desktop-state-store.ts must export useDesktopState')
-  assert.match(source, /export\s+function\s+getDesktopSnapshot\b/, 'desktop-state-store.ts must export getDesktopSnapshot')
-  assert.match(source, /export\s+function\s+subscribeDesktop\b/, 'desktop-state-store.ts must export subscribeDesktop')
-  assert.match(source, /export\s+function\s+replaceDesktopFromSnapshot\b/, 'desktop-state-store.ts must export replaceDesktopFromSnapshot')
-  assert.match(source, /export\s+function\s+applyDesktopDaemonEvent\b/, 'desktop-state-store.ts must export applyDesktopDaemonEvent')
-  assert.match(source, /export\s+function\s+markDesktopStale\b/, 'desktop-state-store.ts must export markDesktopStale')
-  assert.doesNotMatch(source, /@tanstack\/db|@tanstack\/react-db|@tanstack\/react-query/, 'desktop-state-store.ts must not import TanStack DB, React DB, or React Query')
+  const source = readText(v3RuntimeStorePath)
+  assert.match(source, /from\s+['"]zustand\/vanilla['"]/, 'v3-store.ts must use Zustand vanilla')
+  assert.match(source, /\bcreateStore\b/, 'v3-store.ts must create the runtime store')
+  assert.match(source, /export\s+const\s+applyV3RuntimeEnvelope\b/, 'v3-store.ts must export the only runtime mutation gate')
+  assert.match(source, /export\s+const\s+getV3RuntimeDesktopSnapshot\b/, 'v3-store.ts must expose desktop reads')
+  assert.match(source, /export\s+const\s+subscribeV3Runtime\b/, 'v3-store.ts must expose subscriptions')
+  assert.doesNotMatch(source, /@tanstack\/db|@tanstack\/react-db|@tanstack\/react-query/, 'v3-store.ts must not import TanStack DB, React DB, or React Query')
 
-  const canonicalStoreOwners = productionStateFiles()
-    .filter((filePath) => /\buseSyncExternalStore\b/.test(readText(filePath)))
-    .map((filePath) => `state/${stateRelative(filePath)}`)
+  const canonicalStoreOwners = productionDesktopFiles()
+    .filter((filePath) => /\bcreateStore\s*</.test(readText(filePath)))
+    .map(desktopRelative)
     .sort()
 
-  assert.deepEqual(canonicalStoreOwners, ['state/desktop-state-store.ts'], `only desktop-state-store.ts may own the canonical external store; found ${formatOffenders(canonicalStoreOwners)}`)
+  assert.deepEqual(canonicalStoreOwners, ['v3-runtime/v3-store.ts'], `only v3-runtime/v3-store.ts may create the canonical V3 runtime store; found ${formatOffenders(canonicalStoreOwners)}`)
+
+  const facadeSource = readText(legacyExternalStoreFacadePath)
+  assert.match(facadeSource, /applyV3RuntimeEnvelope/, 'desktop-state-store.ts must be a compatibility facade over the V3 runtime')
+  assert.doesNotMatch(facadeSource, /let\s+desktopState\s*=|createEmptyDesktopState\(/, 'desktop-state-store.ts must not retain a second mutable Desktop snapshot')
 })
 
 test('Desktop V3 has one reducer boundary for snapshot replacement and daemon events', () => {
@@ -218,8 +228,9 @@ test('Desktop V3 final stack is React, TypeScript, WebSocket, one external store
 
   assert.ok(dependencies.react, 'React must remain in the final stack')
   assert.ok(dependencies.typescript, 'TypeScript must remain in the final stack')
+  assert.ok(dependencies.zustand, 'Zustand vanilla runtime must remain in the final stack')
   assertFileExists(realtimeClientPath, 'existing Desktop WebSocket client')
-  assertFileExists(externalStorePath, 'useSyncExternalStore Desktop store')
+  assertFileExists(v3RuntimeStorePath, 'Zustand vanilla Desktop V3 runtime store')
   assertFileExists(reducerPath, 'Desktop reducer')
   assertFileExists(reducerSpecPath, 'Desktop reducer tests')
 

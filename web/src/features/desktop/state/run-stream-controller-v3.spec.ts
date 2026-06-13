@@ -2,9 +2,7 @@ import assert from 'node:assert/strict'
 import { afterEach, test } from 'node:test'
 
 import { queryClient } from '../../../app/query-client'
-import { sessionMessagesQueryKey } from '../../queries/query-options'
 import { getDesktopSnapshot, mergeDesktopSnapshot } from './desktop-state-store'
-import { desktopRunIntentsCollection } from './desktop-db'
 import type { DesktopSessionRecord, DesktopStoreState } from '../types/realtime'
 import { applyEnvelope, useDesktopStore } from './use-desktop-store'
 import type { RunStreamEventMessage } from './run-stream-controller'
@@ -105,9 +103,6 @@ afterEach(async () => {
     realtimeDesired: false,
     connectionState: 'idle',
   })
-  for (const runIntent of Array.from(desktopRunIntentsCollection.values())) {
-    desktopRunIntentsCollection.delete(desktopRunIntentsCollection.getKeyFromItem(runIntent))
-  }
   queryClient.clear()
   await new Promise((resolve) => setImmediate(resolve))
 })

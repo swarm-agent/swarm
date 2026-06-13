@@ -15,8 +15,8 @@ import { applyDesktopRouteTheme } from './desktop-theme-controller'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
 import { agentStateQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
 import { fetchDesktopStateSnapshot } from '../state/desktop-state-snapshot'
-import { getDesktopSnapshot, mergeDesktopSnapshot, useDesktopRouteReadiness, useDesktopSession, useDesktopWorkspaceSessions } from '../state/desktop-state-store'
-import { applyV3RuntimeEnvelope, createV3SnapshotEnvelope } from '../v3-runtime'
+import { useDesktopRouteReadiness, useDesktopSession, useDesktopWorkspaceSessions } from '../state/desktop-state-store'
+import { applyV3RuntimeEnvelope, createV3SnapshotEnvelope, getV3RuntimeDesktopSnapshot } from '../v3-runtime'
 import type { DesktopSessionRecord } from '../types/realtime'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
 import { DesktopQuickSettingsModal, type QuickSettingsTabID } from '../settings/components/desktop-quick-settings-modal'
@@ -2084,7 +2084,6 @@ export function DesktopAppPage() {
           return
         }
         applyV3RuntimeEnvelope(createV3SnapshotEnvelope(snapshot, { mode: 'merge', receivedAt: Date.now() }))
-        mergeDesktopSnapshot(snapshot)
       })())
     }
 
@@ -2122,7 +2121,6 @@ export function DesktopAppPage() {
       .then((snapshot) => {
         if (!abortController.signal.aborted) {
           applyV3RuntimeEnvelope(createV3SnapshotEnvelope(snapshot, { mode: 'merge', receivedAt: Date.now() }))
-          mergeDesktopSnapshot(snapshot)
         }
       })
       .catch((error) => {
@@ -2316,8 +2314,8 @@ export function DesktopAppPage() {
     const sessionId = session.id.trim()
     if (sessionId) {
       const now = Date.now()
-      mergeDesktopSnapshot({
-        rev: getDesktopSnapshot().rev + 1,
+      applyV3RuntimeEnvelope(createV3SnapshotEnvelope({
+        rev: getV3RuntimeDesktopSnapshot().rev + 1,
         sessionsById: { [sessionId]: session },
         sessionOrder: [sessionId],
         routeReadinessBySessionId: {
@@ -2331,7 +2329,7 @@ export function DesktopAppPage() {
             updatedAt: now,
           },
         },
-      })
+      }, { mode: 'merge', receivedAt: now }))
     }
     const workspaceSlug = workspaceSlugByPath.get(session.workspacePath)
       ?? workspaceRouteSlugBase({ path: session.workspacePath, workspaceName: session.workspaceName })

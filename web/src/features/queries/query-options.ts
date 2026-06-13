@@ -1,6 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { fetchAgentState, fetchAgentToolContract, fetchDraftModelPreference, fetchModelOptions } from '../desktop/chat/queries/chat-queries'
-import { desktopDBSessionQueryKey, desktopDBSessionQueryOptions, ensureDesktopDBSessionSnapshot, readDesktopDBSessionSnapshotOnly, writeDesktopDBSessionSnapshot, type DesktopDBSessionSnapshot } from '../desktop/state/desktop-db-workset'
+import { fetchAndApplyDesktopV3SessionSnapshot } from '../desktop/state/desktop-v3-session-api'
 import { getUISettings } from '../desktop/settings/swarm/queries/get-ui-settings'
 import { fetchWorkspaceOverview } from '../workspaces/launcher/queries/fetch-workspace-overview'
 
@@ -44,13 +44,8 @@ export function sessionMessagesQueryOptions(sessionId: string, queryClient?: Que
   return {
     queryKey: sessionMessagesQueryKey(normalizedSessionId),
     queryFn: async () => {
-      if (!queryClient) {
-        throw new Error('Desktop V3 session messages require the canonical session snapshot cache.')
-      }
-      const snapshot = await ensureDesktopDBSessionSnapshot(queryClient, normalizedSessionId)
-      if (snapshot) {
-        writeDesktopDBSessionSnapshot(queryClient, snapshot)
-      }
+      void queryClient
+      const snapshot = await fetchAndApplyDesktopV3SessionSnapshot(normalizedSessionId)
       return snapshot?.messages ?? []
     },
     staleTime: 60_000,
@@ -67,13 +62,8 @@ export function sessionPreferenceQueryOptions(sessionId: string, queryClient?: Q
   return {
     queryKey: sessionPreferenceQueryKey(normalizedSessionId),
     queryFn: async () => {
-      if (!queryClient) {
-        throw new Error('Desktop V3 session preference requires the canonical session snapshot cache.')
-      }
-      const snapshot = await ensureDesktopDBSessionSnapshot(queryClient, normalizedSessionId)
-      if (snapshot) {
-        writeDesktopDBSessionSnapshot(queryClient, snapshot)
-      }
+      void queryClient
+      const snapshot = await fetchAndApplyDesktopV3SessionSnapshot(normalizedSessionId)
       return snapshot?.preference ?? { preference: { provider: '', model: '', thinking: '', serviceTier: '', contextMode: '', updatedAt: 0 }, contextWindow: 0, maxOutputTokens: 0 }
     },
     staleTime: 60_000,
@@ -125,7 +115,8 @@ export function ensureSessionRuntimeData(queryClient: QueryClient, sessionId: st
     return Promise.resolve()
   }
 
-  return ensureDesktopDBSessionSnapshot(queryClient, normalizedSessionId)
+  void queryClient
+  return fetchAndApplyDesktopV3SessionSnapshot(normalizedSessionId).then(() => undefined)
 }
 
 export function prefetchSessionRuntimeData(queryClient: QueryClient, sessionId: string) {
@@ -134,17 +125,6 @@ export function prefetchSessionRuntimeData(queryClient: QueryClient, sessionId: 
     return Promise.resolve()
   }
 
-  const cachedSnapshot = readDesktopDBSessionSnapshotOnly(queryClient, normalizedSessionId)
-  if (cachedSnapshot) {
-    writeDesktopDBSessionSnapshot(queryClient, cachedSnapshot)
-    return Promise.resolve()
-  }
-
-  return queryClient.prefetchQuery(desktopDBSessionQueryOptions(normalizedSessionId))
-    .then(() => {
-      const snapshot = queryClient.getQueryData<DesktopDBSessionSnapshot | null>(desktopDBSessionQueryKey(normalizedSessionId))
-      if (snapshot) {
-        writeDesktopDBSessionSnapshot(queryClient, snapshot)
-      }
-    })
+  void queryClient
+  return fetchAndApplyDesktopV3SessionSnapshot(normalizedSessionId).then(() => undefined)
 }
