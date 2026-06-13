@@ -66,7 +66,7 @@ export function applyV3Envelope(state: DesktopState, envelope: V3Envelope): V3En
         applied: false,
         rejected: false,
         stale: false,
-        shouldAdvanceCursor: false,
+        shouldAdvanceCursor: hasCursor(envelope),
         envelope,
       }
     default:

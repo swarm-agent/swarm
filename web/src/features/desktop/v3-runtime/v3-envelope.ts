@@ -98,6 +98,7 @@ export interface V3PersistedRestoreEnvelope extends V3EnvelopeBase {
   kind: 'persisted.restore'
   mode: 'replace' | 'merge'
   snapshot: DesktopDaemonSnapshot
+  cursorsByScope?: Record<string, V3EnvelopeCursor>
 }
 
 export interface V3EventEnvelope extends V3EnvelopeBase {
@@ -226,13 +227,14 @@ export function createV3SnapshotEnvelope(snapshot: DesktopDaemonSnapshot, option
   }
 }
 
-export function createV3PersistedRestoreEnvelope(snapshot: DesktopDaemonSnapshot, options: V3EnvelopeOptions & { mode?: 'replace' | 'merge' } = {}): V3PersistedRestoreEnvelope {
+export function createV3PersistedRestoreEnvelope(snapshot: DesktopDaemonSnapshot, options: V3EnvelopeOptions & { mode?: 'replace' | 'merge'; cursorsByScope?: Record<string, V3EnvelopeCursor> } = {}): V3PersistedRestoreEnvelope {
   const mode = options.mode ?? 'replace'
   const cursor = envelopeCursor({ rev: snapshot.rev, highWatermarkSeq: options.highWatermarkSeq })
   return {
     kind: 'persisted.restore',
     mode,
     snapshot,
+    cursorsByScope: options.cursorsByScope,
     meta: createMeta({
       id: options.id ?? `persisted.restore:${mode}:rev:${String(snapshot.rev)}`,
       source: createSource('persisted', { transport: 'indexeddb', ...(options.source ?? {}) }),

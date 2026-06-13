@@ -1,5 +1,6 @@
 export * from './v3-envelope'
 export * from './v3-reducer'
+export * from './v3-persistence'
 export * from './v3-selectors'
 export {
   applyV3RuntimeEnvelope,

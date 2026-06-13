@@ -7,6 +7,7 @@ import type { DesktopSessionRecord } from '../types/realtime'
 import {
   applyV3Envelope,
   createV3ConnectionStaleEnvelope,
+  createV3ControlEnvelope,
   createV3EventEnvelope,
   createV3OptimisticSendEnvelope,
   createV3PersistedRestoreEnvelope,
@@ -238,6 +239,23 @@ test('connection control envelopes route resync-required frames into stale state
   assert.equal(result.stale, true)
   assert.equal(result.shouldAdvanceCursor, false)
   assert.match(result.state.staleReason ?? '', /cursor_gone/)
+})
+
+test('replay control envelopes advance cursors without mutating desktop state', () => {
+  const base = applyV3Envelope(createEmptyDesktopState(), createV3SnapshotEnvelope({ rev: 1 })).state
+  const replayComplete = createV3ControlEnvelope('replay.complete', {
+    receivedAt: 20,
+    sessionId: 'session-1',
+    endpointCursor: 'cursor-20',
+    highWatermarkSeq: 20,
+  })
+
+  const result = applyV3Envelope(base, replayComplete)
+
+  assert.equal(result.applied, false)
+  assert.equal(result.rejected, false)
+  assert.equal(result.shouldAdvanceCursor, true)
+  assert.equal(result.state, base)
 })
 
 test('connection stale envelope validates explicit reason', () => {

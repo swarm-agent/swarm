@@ -148,11 +148,14 @@ function applyEnvelopeToStore(store: V3RuntimeStoreApi, envelope: V3Envelope): V
         appliedEnvelopeIds: current.appliedEnvelopeIds,
         appliedEnvelopeOrder: current.appliedEnvelopeOrder,
       }
+  const restoredCursors = envelope.kind === 'persisted.restore' && envelope.cursorsByScope
+    ? restorePersistedCursors(envelope.cursorsByScope, envelope)
+    : current.cursorsByScope
   const nextState: V3RuntimeState = {
     desktop: reducerResult.state,
     cursorsByScope: cursorScope
-      ? advanceCursor(current.cursorsByScope, cursorScope, envelope)
-      : current.cursorsByScope,
+      ? advanceCursor(restoredCursors, cursorScope, envelope)
+      : restoredCursors,
     appliedEnvelopeIds: remembered.appliedEnvelopeIds,
     appliedEnvelopeOrder: remembered.appliedEnvelopeOrder,
     lastApply: summary,
@@ -222,6 +225,19 @@ function rememberAppliedEnvelope(state: V3RuntimeState, envelopeId: string): Pic
     appliedEnvelopeIds: ids,
     appliedEnvelopeOrder: order,
   }
+}
+
+function restorePersistedCursors(cursors: Record<string, V3EnvelopeCursor>, envelope: V3Envelope): Record<string, V3RuntimeCursorState> {
+  const restored: Record<string, V3RuntimeCursorState> = {}
+  for (const [scope, cursor] of Object.entries(cursors)) {
+    restored[scope] = {
+      ...cursor,
+      envelopeId: envelope.meta.id,
+      sourceKind: envelope.meta.source.kind,
+      updatedAt: envelope.meta.receivedAt,
+    }
+  }
+  return restored
 }
 
 function advanceCursor(cursors: Record<string, V3RuntimeCursorState>, scope: string, envelope: V3Envelope): Record<string, V3RuntimeCursorState> {

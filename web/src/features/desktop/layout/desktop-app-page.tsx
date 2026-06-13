@@ -16,6 +16,7 @@ import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/serv
 import { agentStateQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
 import { fetchDesktopStateSnapshot } from '../state/desktop-state-snapshot'
 import { getDesktopSnapshot, mergeDesktopSnapshot, useDesktopRouteReadiness, useDesktopSession, useDesktopWorkspaceSessions } from '../state/desktop-state-store'
+import { applyV3RuntimeEnvelope, createV3SnapshotEnvelope } from '../v3-runtime'
 import type { DesktopSessionRecord } from '../types/realtime'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
 import { DesktopQuickSettingsModal, type QuickSettingsTabID } from '../settings/components/desktop-quick-settings-modal'
@@ -2082,6 +2083,7 @@ export function DesktopAppPage() {
         if (!isCurrentEpoch()) {
           return
         }
+        applyV3RuntimeEnvelope(createV3SnapshotEnvelope(snapshot, { mode: 'merge', receivedAt: Date.now() }))
         mergeDesktopSnapshot(snapshot)
       })())
     }
@@ -2119,6 +2121,7 @@ export function DesktopAppPage() {
     }, abortController.signal)
       .then((snapshot) => {
         if (!abortController.signal.aborted) {
+          applyV3RuntimeEnvelope(createV3SnapshotEnvelope(snapshot, { mode: 'merge', receivedAt: Date.now() }))
           mergeDesktopSnapshot(snapshot)
         }
       })

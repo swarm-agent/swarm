@@ -5,6 +5,7 @@ import { countApprovalRequiredPermissions } from '../permissions/services/permis
 import type { DesktopPermissionRecord, DesktopRunIntentRecord, DesktopSessionRecord, DesktopSessionUsageRecord } from '../types/realtime'
 import type { DesktopDaemonSnapshot, DesktopSessionReadinessRecord, DesktopWorkspaceRecord } from './desktop-state'
 import { mergeDesktopSnapshot, replaceDesktopFromSnapshot } from './desktop-state-store'
+import { applyV3RuntimeEnvelope, createV3SnapshotEnvelope } from '../v3-runtime'
 
 export interface DesktopStateSnapshotRequest {
   sessionIds?: string[]
@@ -217,12 +218,14 @@ export async function fetchDesktopStateSnapshot(input: DesktopStateSnapshotReque
 
 export async function loadDesktopStateSnapshot(input: DesktopStateSnapshotRequest, signal?: AbortSignal): Promise<DesktopDaemonSnapshot> {
   const snapshot = await fetchDesktopStateSnapshot(input, signal)
+  applyV3RuntimeEnvelope(createV3SnapshotEnvelope(snapshot, { mode: 'replace', receivedAt: Date.now() }))
   replaceDesktopFromSnapshot(snapshot)
   return snapshot
 }
 
 export async function mergeDesktopStateSnapshot(input: DesktopStateSnapshotRequest, signal?: AbortSignal): Promise<DesktopDaemonSnapshot> {
   const snapshot = await fetchDesktopStateSnapshot(input, signal)
+  applyV3RuntimeEnvelope(createV3SnapshotEnvelope(snapshot, { mode: 'merge', receivedAt: Date.now() }))
   mergeDesktopSnapshot(snapshot)
   return snapshot
 }

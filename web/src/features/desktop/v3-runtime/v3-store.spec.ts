@@ -171,6 +171,43 @@ test('V3 runtime store advances cursors only after successful reducer applicatio
   assert.equal(rejected.snapshot.desktop.messagesBySessionId.s1?.some((item) => item.id === 'm2'), false)
 })
 
+test('V3 runtime store does not advance realtime cursors for duplicate websocket/replay overlap', () => {
+  const runtime = createV3RuntimeController()
+  runtime.applyEnvelope(createV3SnapshotEnvelope({
+    rev: 10,
+    sessionsById: { s1: session('s1', 10) },
+    sessionOrder: ['s1'],
+  }, { receivedAt: 10 }))
+
+  const websocketFrame = {
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'event',
+    endpoint_cursor: 'cursor-11',
+    rev: 11,
+    prevRev: 10,
+    event_type: 'desktop/message/upsert',
+    event: {
+      id: 'event-s1-m1',
+      session_id: 's1',
+      event_type: 'desktop/message/upsert',
+      payload: { message: message('s1', 'm1', 11) },
+      seq: 11,
+    },
+  }
+  const applied = runtime.applyEnvelope(normalizeV3RealtimeFrame(websocketFrame, { receivedAt: 11 }))
+  const duplicateReplay = runtime.applyEnvelope(normalizeV3RealtimeFrame({
+    ...websocketFrame,
+    endpoint_cursor: 'cursor-12',
+  }, { receivedAt: 12 }))
+
+  assert.equal(applied.applied, true)
+  assert.equal(duplicateReplay.duplicate, true)
+  assert.equal(duplicateReplay.shouldAdvanceCursor, false)
+  assert.equal(runtime.getSnapshot().cursorsByScope['session:s1']?.endpointCursor, 'cursor-11')
+  assert.deepEqual(runtime.getDesktopSnapshot().messagesBySessionId.s1?.map((item) => item.id), ['m1'])
+})
+
 test('V3 selectors expose UI-safe projections from the runtime snapshot', () => {
   const runtime = createV3RuntimeController()
   runtime.applyEnvelope(createV3SnapshotEnvelope({

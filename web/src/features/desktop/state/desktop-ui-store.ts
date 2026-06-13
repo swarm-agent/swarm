@@ -28,6 +28,7 @@ import { gitStatusQueryKey } from '../git/api'
 import { agentStateQueryOptions, sessionPreferenceQueryKey, uiSettingsQueryKey } from '../../queries/query-options'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { applyDesktopDurableEventEnvelope, getDesktopSnapshot, mergeDesktopSnapshot } from './desktop-state-store'
+import { applyV3RuntimeEnvelope, createV3SnapshotEnvelope, installV3RuntimePersistence, normalizeV3RealtimeFrame, restoreV3RuntimeFromPersistence } from '../v3-runtime'
 import { fetchDesktopStateSnapshot } from './desktop-state-snapshot'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import { normalizeSwarmSettings, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
@@ -1423,6 +1424,7 @@ function requestScopedSessionWorkset(sessionId: string, options: { force?: boole
       history: { mode: 'full', maxEventsPerSession: 0, manifestPolicy: 'manifest', includeEvents: false },
     })
       .then((snapshot) => {
+        applyV3RuntimeEnvelope(createV3SnapshotEnvelope(snapshot, { mode: 'merge', receivedAt: Date.now() }))
         mergeDesktopSnapshot(snapshot)
       })
       .catch((error) => {
@@ -3247,27 +3249,44 @@ function persistDesktopV3EndpointCursor(payload: RunStreamEventMessage): void {
   }
 }
 
+function isSessionlessV3RealtimeControl(kind: string): boolean {
+  return kind === 'keepalive'
+    || kind === 'replay.started'
+    || kind === 'replay.complete'
+    || kind === 'projection.high_watermark'
+    || kind === 'slow_consumer.reconnect_required'
+}
+
 function applyDesktopV3RealtimeFrame(sessionId: string, payload: DesktopV3RealtimeFrame, ts: number): boolean {
   const normalizedSessionId = sessionId.trim() || String(payload.session_id ?? payload.event?.session_id ?? '').trim()
   const frameSessionId = normalizedSessionId || String(payload.event?.session_id ?? '').trim()
-  if (!frameSessionId && payload.type !== 'keepalive') {
+  const frameKind = String(payload.kind ?? payload.type ?? '').trim()
+  if (!frameSessionId && !isSessionlessV3RealtimeControl(frameKind)) {
     return false
   }
-  const eventType = String(payload.event?.event_type ?? payload.event_type ?? payload.type ?? '').trim()
+  const eventType = String(payload.event?.event_type ?? payload.event_type ?? frameKind).trim()
+  const normalizedEnvelope = normalizeV3RealtimeFrame(payload, { receivedAt: ts, sessionId: frameSessionId || undefined })
+  const runtimeOutcome = applyV3RuntimeEnvelope(normalizedEnvelope)
   if (eventType.startsWith('session.diagnostic.')) {
+    if (runtimeOutcome.applied || runtimeOutcome.shouldAdvanceCursor || !runtimeOutcome.rejected) {
+      persistDesktopV3EndpointCursor(payload as RunStreamEventMessage)
+    }
+    return runtimeOutcome.applied || runtimeOutcome.shouldAdvanceCursor || !runtimeOutcome.rejected
+  }
+  if (runtimeOutcome.applied) {
+    const envelope = v3SessionStreamEventEnvelope(payload as RunStreamEventMessage)
+    if (envelope) {
+      applyDesktopDurableEventEnvelope(envelope)
+    }
+    useDesktopUiStore.setState((state: DesktopStoreState) => {
+      const patch = applyV3SessionStreamFrame(state, frameSessionId, payload as RunStreamEventMessage, ts) ?? {}
+      return patch
+    })
+  }
+  if (runtimeOutcome.applied || runtimeOutcome.shouldAdvanceCursor) {
     persistDesktopV3EndpointCursor(payload as RunStreamEventMessage)
-    return true
   }
-  const envelope = v3SessionStreamEventEnvelope(payload as RunStreamEventMessage)
-  if (envelope) {
-    applyDesktopDurableEventEnvelope(envelope)
-  }
-  useDesktopUiStore.setState((state: DesktopStoreState) => {
-    const patch = applyV3SessionStreamFrame(state, frameSessionId, payload as RunStreamEventMessage, ts) ?? {}
-    return patch
-  })
-  persistDesktopV3EndpointCursor(payload as RunStreamEventMessage)
-  return true
+  return runtimeOutcome.applied || runtimeOutcome.shouldAdvanceCursor
 }
 
 runStreamController = new DesktopRunStreamController({
@@ -3679,6 +3698,8 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
     const finish = createDebugTimer('desktop-store', 'hydrate')
     set({ hydrating: true, realtimeDesired: true })
     try {
+      installV3RuntimePersistence()
+      await restoreV3RuntimeFromPersistence()
       if (!get().vault.bootstrapped) {
         debugLog('desktop-store', 'hydrate:bootstrapping-vault')
         await get().bootstrapVault()
