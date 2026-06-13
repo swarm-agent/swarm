@@ -1,4 +1,5 @@
 import { requestJson } from '../../../app/api'
+import { fetchSessionMessages, type FetchSessionMessagesResult } from '../chat/queries/chat-queries'
 import type {
   AgentModelPolicyRecord,
   ChatMessageRecord,
@@ -9,6 +10,7 @@ import type {
 import type { DesktopSessionRecord } from '../types/realtime'
 import type { DesktopState } from './desktop-state'
 import { mergeDesktopStateSnapshot } from './desktop-state-snapshot'
+import { applyV3RuntimeEnvelope, createV3SnapshotEnvelope } from '../v3-runtime'
 import { getV3RuntimeDesktopSnapshot } from '../v3-runtime/v3-store'
 
 export interface DesktopV3SessionSnapshot {
@@ -26,6 +28,8 @@ export interface DesktopV3SessionSnapshot {
   highWatermark: number
   hydratedAt: number
 }
+
+export const DESKTOP_V3_MESSAGE_PAGE_LIMIT = 200
 
 const EMPTY_PREFERENCE: ResolvedSessionPreference = {
   preference: { provider: '', model: '', thinking: '', serviceTier: '', contextMode: '', updatedAt: 0 },
@@ -81,6 +85,46 @@ export async function fetchAndApplyDesktopV3SessionSnapshot(
     history: { mode: 'none', maxEventsPerSession: 0, manifestPolicy: 'manifest', includeEvents: false },
   }, options.signal)
   return desktopV3SessionSnapshotFromState(getV3RuntimeDesktopSnapshot(), normalizedSessionId)
+}
+
+export async function fetchAndApplyDesktopV3SessionMessagesTail(
+  sessionId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<FetchSessionMessagesResult> {
+  const normalizedSessionId = assertRawCanonicalDesktopV3SessionId(sessionId)
+  const page = await fetchSessionMessages(normalizedSessionId, options.signal, 0, {
+    sessionApi: 'v3',
+    limit: DESKTOP_V3_MESSAGE_PAGE_LIMIT,
+    tail: true,
+  })
+  const snapshot = getV3RuntimeDesktopSnapshot()
+  const messages = mergeTailPageWithHotMessages(snapshot.messagesBySessionId[normalizedSessionId] ?? [], page)
+  const receivedAt = Date.now()
+  applyV3RuntimeEnvelope(createV3SnapshotEnvelope({
+    rev: snapshot.rev,
+    messagesBySessionId: { [normalizedSessionId]: messages },
+  }, {
+    mode: 'merge',
+    receivedAt,
+    sessionId: normalizedSessionId,
+    highWatermarkSeq: page.highWatermark,
+    source: { kind: 'http', transport: 'http', name: 'v3-session-messages-tail' },
+    id: `messages:tail:${normalizedSessionId}:${page.oldestSeq}:${page.newestSeq}:${page.messages.length}:${receivedAt}`,
+  }))
+  return page
+}
+
+function mergeTailPageWithHotMessages(existing: ChatMessageRecord[], page: FetchSessionMessagesResult): ChatMessageRecord[] {
+  const byId = new Map<string, ChatMessageRecord>()
+  for (const message of page.messages) {
+    byId.set(message.id, message)
+  }
+  for (const message of existing) {
+    if (message.globalSeq > page.newestSeq && !byId.has(message.id)) {
+      byId.set(message.id, message)
+    }
+  }
+  return [...byId.values()].sort((left, right) => (left.globalSeq - right.globalSeq) || (left.createdAt - right.createdAt) || left.id.localeCompare(right.id))
 }
 
 async function refreshSessionAfterMutation(sessionId: string): Promise<DesktopV3SessionSnapshot> {

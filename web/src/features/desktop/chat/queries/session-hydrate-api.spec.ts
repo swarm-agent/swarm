@@ -390,7 +390,7 @@ test('Desktop V3 permission resolve uses Sessions API v3 only', async () => {
 })
 
 
-test('sessionMessagesQueryOptions uses metadata-only V3 snapshot hydration without loading messages', async () => {
+test('sessionMessagesQueryOptions loads the bounded V3 tail page through the dedicated messages endpoint', async () => {
   const { sessionMessagesQueryOptions } = await import('../../../queries/query-options')
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -399,8 +399,31 @@ test('sessionMessagesQueryOptions uses metadata-only V3 snapshot hydration witho
   await withFetchStub(async (calls) => {
     const messages = await queryClient.fetchQuery(sessionMessagesQueryOptions('session-messages', queryClient))
 
-    assert.deepEqual(messages.map((message) => message.id), [])
-    assert.deepEqual(requestUrls(calls), ['/v3/sessions:workset'])
+    assert.deepEqual(messages.map((message) => message.id), ['session-messages-msg-2', 'session-messages-msg-3'])
+    assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-messages/messages?tail=true&limit=200'])
+    assertNoV1OrV2SessionDataCalls(calls)
+  })
+
+  queryClient.clear()
+})
+
+
+test('prefetchSessionRuntimeData hydrates metadata then the 200-message V3 tail page', async () => {
+  const { prefetchSessionRuntimeData } = await import('../../../queries/query-options')
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+
+  await withFetchStub(async (calls) => {
+    await prefetchSessionRuntimeData(queryClient, 'session-prefetch')
+
+    assert.deepEqual(requestUrls(calls), [
+      '/v3/sessions:workset',
+      '/v3/sessions/session-prefetch/messages?tail=true&limit=200',
+    ])
+    const worksetBody = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as { history?: { mode?: string }; resources?: { messages?: boolean } }
+    assert.equal(worksetBody.history?.mode, 'none')
+    assert.equal(worksetBody.resources?.messages, undefined)
     assertNoV1OrV2SessionDataCalls(calls)
   })
 
@@ -428,6 +451,8 @@ test('sessionPreferenceQueryOptions uses the canonical V3 snapshot cache for Des
 test('DesktopChatPanel uses V3-native preference and mode paths', async () => {
   const source = await readFile(new URL('../components/desktop-chat-panel.tsx', import.meta.url), 'utf8')
 
+  assert.match(source, /fetchAndApplyDesktopV3SessionMessagesTail\(sessionId, \{ signal: controller\.signal \}\)/)
+  assert.match(source, /const loadingMessages = messagesLoading/)
   assert.match(source, /updateDesktopV3SessionMode\(sessionId, nextMode\)/)
   assert.match(source, /updateDesktopV3SessionPreference\(sessionId, normalizedNext\)/)
   assert.match(source, /updateDesktopV3SessionAgent\(sessionId, nextAgent\)/)

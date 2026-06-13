@@ -1104,11 +1104,16 @@ export async function fetchSessionMessages(
   sessionId: string,
   signal?: AbortSignal,
   afterSeq = 0,
-  options: SessionDataRequestOptions & { beforeSeq?: number; limit?: number; queryClient?: QueryClient } = {},
+  options: SessionDataRequestOptions & { beforeSeq?: number; limit?: number; queryClient?: QueryClient; tail?: boolean } = {},
 ): Promise<FetchSessionMessagesResult> {
   const normalizedSessionId = sessionId.trim();
-  const search = new URLSearchParams({ limit: String(options.limit && options.limit > 0 ? Math.floor(options.limit) : 100) });
+  const search = new URLSearchParams();
   const beforeSeq = options.beforeSeq && options.beforeSeq > 0 ? Math.floor(options.beforeSeq) : 0;
+  const tail = Boolean(options.tail && beforeSeq <= 0 && afterSeq <= 0);
+  if (tail) {
+    search.set("tail", "true");
+  }
+  search.set("limit", String(options.limit && options.limit > 0 ? Math.floor(options.limit) : 100));
   if (beforeSeq > 0) {
     search.set("before_seq", String(beforeSeq));
   } else if (afterSeq > 0) {

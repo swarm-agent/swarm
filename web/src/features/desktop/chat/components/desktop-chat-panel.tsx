@@ -18,7 +18,7 @@ import {
   startSessionRun,
   updateDraftModelPreference,
 } from '../queries/chat-queries'
-import { fetchAndApplyDesktopV3SessionSnapshot, saveDesktopV3SessionPlan, updateDesktopV3SessionAgent, updateDesktopV3SessionMetadata, updateDesktopV3SessionMode, updateDesktopV3SessionPreference } from '../../state/desktop-v3-session-api'
+import { fetchAndApplyDesktopV3SessionMessagesTail, fetchAndApplyDesktopV3SessionSnapshot, saveDesktopV3SessionPlan, updateDesktopV3SessionAgent, updateDesktopV3SessionMetadata, updateDesktopV3SessionMode, updateDesktopV3SessionPreference } from '../../state/desktop-v3-session-api'
 import type { AgentModelPolicyRecord, AgentProfileRecord, AgentStateRecord, ChatMessageRecord, ModelOptionRecord, ResolvedSessionPreference, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
 import type { DesktopLiveAssistantSegment, DesktopLiveToolRecord, DesktopSessionRecord } from '../../types/realtime'
 import { Card } from '../../../../components/ui/card'
@@ -1167,6 +1167,8 @@ export function DesktopChatPanel({
   const setSessionDraft = useDesktopUiStore((state) => state.setSessionDraft)
   const setSessionDraftMode = useDesktopUiStore((state) => state.setSessionDraftMode)
   const [panelError, setPanelError] = useState<string | null>(null)
+  const [messagesLoading, setMessagesLoading] = useState(false)
+  const lastLoadedMessageTailSessionRef = useRef('')
   const [selectedPrimaryAgent, setSelectedPrimaryAgent] = useState('swarm')
   const [currentSessionAgent, setCurrentSessionAgent] = useState('swarm')
   const lastAutoModeSyncRef = useRef('')
@@ -1545,6 +1547,36 @@ export function DesktopChatPanel({
     }
   }, [slashPalette.matches, slashSelectionIndex])
 
+  useEffect(() => {
+    if (!sessionId) {
+      lastLoadedMessageTailSessionRef.current = ''
+      setMessagesLoading(false)
+      return
+    }
+    if (lastLoadedMessageTailSessionRef.current === sessionId) {
+      return
+    }
+    lastLoadedMessageTailSessionRef.current = sessionId
+    const controller = new AbortController()
+    setMessagesLoading(true)
+    fetchAndApplyDesktopV3SessionMessagesTail(sessionId, { signal: controller.signal })
+      .catch((error) => {
+        if (controller.signal.aborted) {
+          return
+        }
+        lastLoadedMessageTailSessionRef.current = ''
+        setPanelError(error instanceof Error ? error.message : 'Failed to load session messages')
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setMessagesLoading(false)
+        }
+      })
+    return () => {
+      controller.abort()
+    }
+  }, [sessionId])
+
   const messages = useMemo(() => dedupeMessages(dbMessages), [dbMessages])
   const displayedMessages = useMemo(() => visibleDesktopChatMessages(messages), [messages])
   const liveAssistantDraft = liveSession?.live.assistantDraft ?? ''
@@ -1563,7 +1595,7 @@ export function DesktopChatPanel({
     liveAssistantDraft !== ''
     && !liveAssistantDraftHasCanonicalReplay(liveAssistantDraft, displayedMessages)
     && !renderableLiveToolMessages.some((message) => message.tool.trim().toLowerCase() === 'task')
-  const loadingMessages = false
+  const loadingMessages = messagesLoading
   const lifecycle = liveSession?.lifecycle ?? null
   const lifecyclePhase = lifecycle?.phase.trim().toLowerCase() ?? ''
   const lifecycleStopReason = lifecycle?.stopReason?.trim() ?? ''
