@@ -5,7 +5,7 @@ import type {
   DesktopSessionPlanRevisionRecord,
   ResolvedSessionPreference,
 } from '../chat/types/chat'
-import { mergeMessageIntoCache } from '../chat/services/message-cache'
+import { dedupeAndTrimMessages, mergeMessageIntoCache } from '../chat/services/message-cache'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import { appendLiveAssistantSegment } from './live-assistant-segments'
@@ -166,7 +166,7 @@ function replaceFromSnapshot(state: DesktopState, snapshot: DesktopDaemonSnapsho
     lastError: null,
     sessionsById,
     sessionOrder: normalizeSessionOrder(sessionsById, snapshot.sessionOrder),
-    messagesBySessionId: cloneArrayRecord(snapshot.messagesBySessionId),
+    messagesBySessionId: cloneMessageRecord(snapshot.messagesBySessionId),
     permissionsById: cloneRecord(snapshot.permissionsById),
     plansBySessionId: cloneRecord(snapshot.plansBySessionId),
     planRevisionsBySessionId: cloneArrayRecord(snapshot.planRevisionsBySessionId),
@@ -209,7 +209,7 @@ function mergeFromSnapshot(state: DesktopState, snapshot: DesktopDaemonSnapshot)
     lastError: null,
     sessionsById,
     sessionOrder: normalizeSessionOrder(sessionsById, mergeSessionOrder(state.sessionOrder, snapshot.sessionOrder)),
-    messagesBySessionId: mergeNonEmptyArrayRecord(state.messagesBySessionId, snapshot.messagesBySessionId),
+    messagesBySessionId: mergeMessageRecord(state.messagesBySessionId, snapshot.messagesBySessionId),
     permissionsById: {
       ...state.permissionsById,
       ...cloneRecord(snapshot.permissionsById),
@@ -499,7 +499,7 @@ function replaceMessagesPayload(state: DesktopState, payload: Record<string, unk
     ...state,
     messagesBySessionId: {
       ...state.messagesBySessionId,
-      [sessionId]: sortMessages(payload.messages as ChatMessageRecord[]),
+      [sessionId]: dedupeAndTrimMessages(payload.messages as ChatMessageRecord[]),
     },
   }
 }
@@ -511,14 +511,11 @@ function upsertMessagePayload(state: DesktopState, payload: Record<string, unkno
   }
 
   const typedMessage = message as unknown as ChatMessageRecord
-  const current = state.messagesBySessionId[typedMessage.sessionId] ?? []
-  const withoutExisting = current.filter((existing) => existing.id !== typedMessage.id)
-
   return {
     ...state,
     messagesBySessionId: {
       ...state.messagesBySessionId,
-      [typedMessage.sessionId]: sortMessages([...withoutExisting, typedMessage]),
+      [typedMessage.sessionId]: mergeMessageIntoCache(state.messagesBySessionId[typedMessage.sessionId], typedMessage),
     },
   }
 }
@@ -1529,17 +1526,13 @@ function sortSessionOrder(sessionsById: Record<string, DesktopSessionRecord>): s
     .map((session) => session.id)
 }
 
-function sortMessages(messages: ChatMessageRecord[]): ChatMessageRecord[] {
-  return [...messages].sort((left, right) => (left.globalSeq - right.globalSeq) || (left.createdAt - right.createdAt) || left.id.localeCompare(right.id))
-}
-
 function mergeReducerMessages(state: DesktopState, sessionId: string, incoming: ChatMessageRecord[]): DesktopState {
   const merged = incoming.reduce<ChatMessageRecord[]>((messages, message) => mergeMessageIntoCache(messages, message), state.messagesBySessionId[sessionId] ?? [])
   return {
     ...state,
     messagesBySessionId: {
       ...state.messagesBySessionId,
-      [sessionId]: sortMessages(merged),
+      [sessionId]: dedupeAndTrimMessages(merged),
     },
   }
 }
@@ -1590,6 +1583,29 @@ function attachUsageToSessions(
   return next
 }
 
+function cloneMessageRecord(record: Record<string, ChatMessageRecord[]> | undefined): Record<string, ChatMessageRecord[]> {
+  if (!record) {
+    return {}
+  }
+  return Object.fromEntries(Object.entries(record).map(([key, value]) => [key, dedupeAndTrimMessages(value)]))
+}
+
+function mergeMessageRecord(
+  current: Record<string, ChatMessageRecord[]>,
+  incoming: Record<string, ChatMessageRecord[]> | undefined,
+): Record<string, ChatMessageRecord[]> {
+  if (!incoming) {
+    return current
+  }
+  const next = { ...current }
+  for (const [key, value] of Object.entries(incoming)) {
+    if (value.length > 0) {
+      next[key] = dedupeAndTrimMessages([...(current[key] ?? []), ...value])
+    }
+  }
+  return next
+}
+
 function cloneArrayRecord<T>(record: Record<string, T[]> | undefined): Record<string, T[]> {
   if (!record) {
     return {}
@@ -1605,19 +1621,6 @@ function mergeArrayRecord<T>(current: Record<string, T[]>, incoming: Record<stri
     ...current,
     ...cloneArrayRecord(incoming),
   }
-}
-
-function mergeNonEmptyArrayRecord<T>(current: Record<string, T[]>, incoming: Record<string, T[]> | undefined): Record<string, T[]> {
-  if (!incoming) {
-    return current
-  }
-  const nonEmpty: Record<string, T[]> = {}
-  for (const [key, value] of Object.entries(incoming)) {
-    if (value.length > 0) {
-      nonEmpty[key] = value
-    }
-  }
-  return Object.keys(nonEmpty).length > 0 ? mergeArrayRecord(current, nonEmpty) : current
 }
 
 function mergeSessionValueRecord<T>(current: Record<string, T>, incoming: Record<string, T> | undefined, scopedSessionIds: string[]): Record<string, T> {

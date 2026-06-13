@@ -1,12 +1,31 @@
 import type { ChatMessageRecord } from '../types/chat'
 
+export const DESKTOP_MESSAGE_HOT_CACHE_LIMIT = 200
+
 function messageSort(left: ChatMessageRecord, right: ChatMessageRecord): number {
   const leftSeq = Number.isFinite(left.globalSeq) ? left.globalSeq : 0
   const rightSeq = Number.isFinite(right.globalSeq) ? right.globalSeq : 0
   if (leftSeq !== rightSeq) {
     return leftSeq - rightSeq
   }
-  return left.createdAt - right.createdAt
+  return (left.createdAt - right.createdAt) || left.id.localeCompare(right.id)
+}
+
+function sortMessages(messages: ChatMessageRecord[]): ChatMessageRecord[] {
+  return [...messages].sort(messageSort)
+}
+
+function normalizeMessageLimit(limit: number): number {
+  return Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : DESKTOP_MESSAGE_HOT_CACHE_LIMIT
+}
+
+function trimMessageCache(messages: ChatMessageRecord[], limit = DESKTOP_MESSAGE_HOT_CACHE_LIMIT): ChatMessageRecord[] {
+  const normalizedLimit = normalizeMessageLimit(limit)
+  if (normalizedLimit === 0) {
+    return []
+  }
+  const sorted = sortMessages(messages)
+  return sorted.length > normalizedLimit ? sorted.slice(sorted.length - normalizedLimit) : sorted
 }
 
 export function isPendingUserMessage(message: ChatMessageRecord): boolean {
@@ -68,43 +87,52 @@ function shouldReplaceBySequence(existing: ChatMessageRecord, incoming: ChatMess
   return existing.role === incoming.role && !existing.toolMessage && !incoming.toolMessage
 }
 
-export function mergeMessageIntoCache(current: ChatMessageRecord[] | undefined, incoming: ChatMessageRecord): ChatMessageRecord[] {
+function mergeMessageIntoCacheUnbounded(current: ChatMessageRecord[] | undefined, incoming: ChatMessageRecord): ChatMessageRecord[] {
   const messages = current ?? []
   const canonicalIndex = messages.findIndex((entry) => isSameCanonicalMessage(entry, incoming))
   if (canonicalIndex >= 0) {
     const updated = [...messages]
     updated[canonicalIndex] = incoming
-    return updated.sort(messageSort)
+    return sortMessages(updated)
   }
 
   const pendingIndex = messages.findIndex((entry) => isPendingUserMessage(entry) && samePendingUserMessage(entry, incoming))
   if (pendingIndex >= 0) {
     const updated = [...messages]
     updated[pendingIndex] = incoming
-    return updated.sort(messageSort)
+    return sortMessages(updated)
   }
 
   const existingIndex = messages.findIndex((entry) => shouldReplaceBySequence(entry, incoming))
   if (existingIndex >= 0) {
     const updated = [...messages]
     updated[existingIndex] = incoming
-    return updated.sort(messageSort)
+    return sortMessages(updated)
   }
 
-  return [...messages, incoming].sort(messageSort)
+  return sortMessages([...messages, incoming])
+}
+
+export function dedupeAndTrimMessages(messages: ChatMessageRecord[], limit = DESKTOP_MESSAGE_HOT_CACHE_LIMIT): ChatMessageRecord[] {
+  const merged = messages.reduce<ChatMessageRecord[]>((current, incoming) => mergeMessageIntoCacheUnbounded(current, incoming), [])
+  return trimMessageCache(merged, limit)
+}
+
+export function mergeMessageIntoCache(current: ChatMessageRecord[] | undefined, incoming: ChatMessageRecord): ChatMessageRecord[] {
+  return trimMessageCache(mergeMessageIntoCacheUnbounded(current, incoming))
 }
 
 export function appendPendingUserMessage(current: ChatMessageRecord[] | undefined, pending: ChatMessageRecord): ChatMessageRecord[] {
   const messages = current ?? []
   if (messages.some((entry) => samePendingUserMessage(entry, pending) && !isPendingUserMessage(entry))) {
-    return messages.sort(messageSort)
+    return trimMessageCache(messages)
   }
   if (messages.some((entry) => entry.id === pending.id)) {
-    return messages.sort(messageSort)
+    return trimMessageCache(messages)
   }
   return mergeMessageIntoCache(messages, pending)
 }
 
 export function removePendingUserMessage(current: ChatMessageRecord[] | undefined, pendingId: string): ChatMessageRecord[] {
-  return (current ?? []).filter((entry) => entry.id !== pendingId).sort(messageSort)
+  return trimMessageCache((current ?? []).filter((entry) => entry.id !== pendingId))
 }

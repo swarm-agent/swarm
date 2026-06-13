@@ -1,4 +1,5 @@
 import { apiFetch, readErrorMessage } from '../../../app/api'
+import { dedupeAndTrimMessages } from '../chat/services/message-cache'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import type { AgentModelPolicyRecord, ChatMessageRecord, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord, ResolvedSessionPreference, SessionPreferenceRecord } from '../chat/types/chat'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
@@ -447,10 +448,9 @@ function mapMessagesBySession(source: Record<string, MessageWire[]> | undefined)
     if (!messages || messages.length === 0) {
       continue
     }
-    messagesBySession[sessionId] = messages
+    messagesBySession[sessionId] = dedupeAndTrimMessages(messages
       .map(mapMessage)
-      .filter((message) => message.id && message.sessionId)
-      .sort((left, right) => (left.globalSeq - right.globalSeq) || (left.createdAt - right.createdAt) || left.id.localeCompare(right.id))
+      .filter((message) => message.id && message.sessionId))
   }
   return messagesBySession
 }

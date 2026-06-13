@@ -128,6 +128,56 @@ test('metadata-only snapshot merge preserves existing messages when backend omit
   assert.deepEqual(merged.messagesBySessionId.active?.map((record) => record.id), ['hot-message'])
 })
 
+test('snapshot replacement trims messages to newest 200 and deduplicates by id', () => {
+  const activeSession = session('active', 20)
+  const messages = Array.from({ length: 205 }, (_, index) => message(activeSession.id, `msg-${index + 1}`, index + 1))
+  const updatedDuplicate = {
+    ...message(activeSession.id, 'msg-150', 150),
+    content: 'updated duplicate',
+    createdAt: 9999,
+  }
+
+  const next = replaceSnapshot(createEmptyDesktopState(), {
+    rev: 9,
+    sessionsById: { [activeSession.id]: activeSession },
+    sessionOrder: [activeSession.id],
+    messagesBySessionId: { [activeSession.id]: [messages[10]!, ...messages, updatedDuplicate] },
+  })
+
+  const hotMessages = next.messagesBySessionId[activeSession.id] ?? []
+  assert.equal(hotMessages.length, 200)
+  assert.equal(hotMessages[0]?.id, 'msg-6')
+  assert.equal(hotMessages[hotMessages.length - 1]?.id, 'msg-205')
+  assert.equal(hotMessages.find((record) => record.id === 'msg-150')?.content, 'updated duplicate')
+  assert.equal(hotMessages.filter((record) => record.id === 'msg-150').length, 1)
+})
+
+test('snapshot merge preserves newer streamed messages while trimming older hydrated messages', () => {
+  const activeSession = session('active', 20)
+  const existing = replaceSnapshot(createEmptyDesktopState(), {
+    rev: 5,
+    sessionsById: { [activeSession.id]: activeSession },
+    sessionOrder: [activeSession.id],
+    messagesBySessionId: {
+      [activeSession.id]: Array.from({ length: 200 }, (_, index) => message(activeSession.id, `msg-${index + 1}`, index + 1)),
+    },
+  })
+
+  const merged = mergeSnapshot(existing, {
+    rev: 6,
+    sessionsById: { [activeSession.id]: { ...activeSession, updatedAt: 21 } },
+    sessionOrder: [activeSession.id],
+    messagesBySessionId: {
+      [activeSession.id]: [message(activeSession.id, 'msg-201', 201)],
+    },
+  })
+
+  const hotMessages = merged.messagesBySessionId[activeSession.id] ?? []
+  assert.equal(hotMessages.length, 200)
+  assert.equal(hotMessages[0]?.id, 'msg-2')
+  assert.equal(hotMessages[hotMessages.length - 1]?.id, 'msg-201')
+})
+
 test('snapshot replacement hydrates session usage for context badge projections', () => {
   const nextSession = session('next', 20)
 

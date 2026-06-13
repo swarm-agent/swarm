@@ -1,5 +1,6 @@
 import { requestJson } from '../../../app/api'
 import { fetchSessionMessages, type FetchSessionMessagesResult } from '../chat/queries/chat-queries'
+import { dedupeAndTrimMessages } from '../chat/services/message-cache'
 import type {
   AgentModelPolicyRecord,
   ChatMessageRecord,
@@ -115,16 +116,8 @@ export async function fetchAndApplyDesktopV3SessionMessagesTail(
 }
 
 function mergeTailPageWithHotMessages(existing: ChatMessageRecord[], page: FetchSessionMessagesResult): ChatMessageRecord[] {
-  const byId = new Map<string, ChatMessageRecord>()
-  for (const message of page.messages) {
-    byId.set(message.id, message)
-  }
-  for (const message of existing) {
-    if (message.globalSeq > page.newestSeq && !byId.has(message.id)) {
-      byId.set(message.id, message)
-    }
-  }
-  return [...byId.values()].sort((left, right) => (left.globalSeq - right.globalSeq) || (left.createdAt - right.createdAt) || left.id.localeCompare(right.id))
+  const newerHotMessages = existing.filter((message) => message.globalSeq > page.newestSeq)
+  return dedupeAndTrimMessages([...page.messages, ...newerHotMessages], DESKTOP_V3_MESSAGE_PAGE_LIMIT)
 }
 
 async function refreshSessionAfterMutation(sessionId: string): Promise<DesktopV3SessionSnapshot> {
