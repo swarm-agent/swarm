@@ -268,59 +268,120 @@ func TestSessionsV3WorksetEndpointCapsExplicitHistoryAtTwoHundred(t *testing.T) 
 	}
 }
 
-func TestSessionsV3MessagesEndpointCurrentPaginationLacksNewestTailMode(t *testing.T) {
-	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	created := createSessionsV3PrimaryTestSession(t, server, "messages-current-pagination", "Messages Current Pagination")
-	appendSessionsV3PrimaryMessageForWorksetTest(t, server, created.ID, "first")
-	appendSessionsV3PrimaryMessageForWorksetTest(t, server, created.ID, "second")
-	appendSessionsV3PrimaryMessageForWorksetTest(t, server, created.ID, "third")
+type sessionsV3MessagesPageTestPayload struct {
+	Messages      []pebblestore.MessageSnapshot `json:"messages"`
+	Count         int                           `json:"count"`
+	Limit         int                           `json:"limit"`
+	OldestSeq     uint64                        `json:"oldest_seq"`
+	NewestSeq     uint64                        `json:"newest_seq"`
+	NextBeforeSeq uint64                        `json:"next_before_seq"`
+	NextAfterSeq  uint64                        `json:"next_after_seq"`
+	HasMoreOlder  bool                          `json:"has_more_older"`
+	HasMoreNewer  bool                          `json:"has_more_newer"`
+	HasMore       bool                          `json:"has_more"`
+	Tail          bool                          `json:"tail"`
+}
 
-	fetch := func(path string) struct {
-		Messages      []pebblestore.MessageSnapshot `json:"messages"`
-		OldestSeq     uint64                        `json:"oldest_seq"`
-		NewestSeq     uint64                        `json:"newest_seq"`
-		NextBeforeSeq uint64                        `json:"next_before_seq"`
-		NextAfterSeq  uint64                        `json:"next_after_seq"`
-		HasMoreOlder  bool                          `json:"has_more_older"`
-		HasMoreNewer  bool                          `json:"has_more_newer"`
-	} {
-		t.Helper()
+func TestSessionsV3MessagesEndpointSupportsBoundedTailBeforeAndAfterPages(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "messages-bounded-pagination", "Messages Bounded Pagination")
+	for i := 0; i < 405; i++ {
+		appendSessionsV3PrimaryMessageForWorksetTest(t, server, created.ID, "message-"+strconv.Itoa(i))
+	}
+
+	tailPage := fetchSessionsV3MessagesPageForWorksetTest(t, server, "/v3/sessions/"+created.ID+"/messages?tail=true&limit=200")
+	if len(tailPage.Messages) != 200 || tailPage.Count != 200 || tailPage.Limit != 200 {
+		t.Fatalf("tail page count/limit = count:%d len:%d limit:%d", tailPage.Count, len(tailPage.Messages), tailPage.Limit)
+	}
+	if tailPage.Messages[0].Content != "message-205" || tailPage.Messages[len(tailPage.Messages)-1].Content != "message-404" {
+		t.Fatalf("tail page messages = first %q last %q", tailPage.Messages[0].Content, tailPage.Messages[len(tailPage.Messages)-1].Content)
+	}
+	if !tailPage.Tail || !tailPage.HasMoreOlder || tailPage.HasMoreNewer || !tailPage.HasMore || tailPage.NextBeforeSeq != tailPage.OldestSeq || tailPage.NextAfterSeq != tailPage.NewestSeq {
+		t.Fatalf("tail page cursor metadata = %+v", tailPage)
+	}
+
+	olderPage := fetchSessionsV3MessagesPageForWorksetTest(t, server, "/v3/sessions/"+created.ID+"/messages?before_seq="+strconv.FormatUint(tailPage.NextBeforeSeq, 10)+"&limit=200")
+	if len(olderPage.Messages) != 200 || olderPage.Count != 200 {
+		t.Fatalf("older page count = count:%d len:%d", olderPage.Count, len(olderPage.Messages))
+	}
+	if olderPage.Messages[0].Content != "message-5" || olderPage.Messages[len(olderPage.Messages)-1].Content != "message-204" {
+		t.Fatalf("older page messages = first %q last %q", olderPage.Messages[0].Content, olderPage.Messages[len(olderPage.Messages)-1].Content)
+	}
+	if !olderPage.HasMoreOlder || !olderPage.HasMoreNewer || !olderPage.HasMore || olderPage.NextBeforeSeq != olderPage.OldestSeq || olderPage.NextAfterSeq != olderPage.NewestSeq {
+		t.Fatalf("older page cursor metadata = %+v", olderPage)
+	}
+
+	newerPage := fetchSessionsV3MessagesPageForWorksetTest(t, server, "/v3/sessions/"+created.ID+"/messages?after_seq="+strconv.FormatUint(olderPage.NewestSeq, 10)+"&limit=3")
+	if len(newerPage.Messages) != 3 || newerPage.Messages[0].Content != "message-205" || newerPage.Messages[2].Content != "message-207" {
+		t.Fatalf("newer page messages = %+v", newerPage.Messages)
+	}
+	if !newerPage.HasMoreOlder || !newerPage.HasMoreNewer || !newerPage.HasMore || newerPage.NextAfterSeq != newerPage.NewestSeq || newerPage.NextBeforeSeq != newerPage.OldestSeq {
+		t.Fatalf("newer page cursor metadata = %+v", newerPage)
+	}
+}
+
+func TestSessionsV3MessagesEndpointDefaultsAndCapsLimitAtTwoHundred(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "messages-default-cap", "Messages Default Cap")
+	for i := 0; i < 205; i++ {
+		appendSessionsV3PrimaryMessageForWorksetTest(t, server, created.ID, "message-"+strconv.Itoa(i))
+	}
+
+	defaultPage := fetchSessionsV3MessagesPageForWorksetTest(t, server, "/v3/sessions/"+created.ID+"/messages")
+	if len(defaultPage.Messages) != 200 || defaultPage.Limit != 200 {
+		t.Fatalf("default page count/limit = len:%d limit:%d", len(defaultPage.Messages), defaultPage.Limit)
+	}
+	if defaultPage.Messages[0].Content != "message-0" || defaultPage.Messages[len(defaultPage.Messages)-1].Content != "message-199" {
+		t.Fatalf("default page messages = first %q last %q", defaultPage.Messages[0].Content, defaultPage.Messages[len(defaultPage.Messages)-1].Content)
+	}
+	if defaultPage.HasMoreOlder || !defaultPage.HasMoreNewer {
+		t.Fatalf("default page cursor metadata = %+v", defaultPage)
+	}
+
+	cappedPage := fetchSessionsV3MessagesPageForWorksetTest(t, server, "/v3/sessions/"+created.ID+"/messages?tail=true&limit=500")
+	if len(cappedPage.Messages) != 200 || cappedPage.Limit != 200 {
+		t.Fatalf("capped page count/limit = len:%d limit:%d", len(cappedPage.Messages), cappedPage.Limit)
+	}
+	if cappedPage.Messages[0].Content != "message-5" || cappedPage.Messages[len(cappedPage.Messages)-1].Content != "message-204" {
+		t.Fatalf("capped tail messages = first %q last %q", cappedPage.Messages[0].Content, cappedPage.Messages[len(cappedPage.Messages)-1].Content)
+	}
+}
+
+func TestSessionsV3MessagesEndpointRejectsAmbiguousPageModes(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "messages-ambiguous-pagination", "Messages Ambiguous Pagination")
+	appendSessionsV3PrimaryMessageForWorksetTest(t, server, created.ID, "first")
+
+	paths := []string{
+		"/v3/sessions/" + created.ID + "/messages?after_seq=1&before_seq=2",
+		"/v3/sessions/" + created.ID + "/messages?tail=true&after_seq=1",
+		"/v3/sessions/" + created.ID + "/messages?tail=true&before_seq=2",
+		"/v3/sessions/" + created.ID + "/messages?limit=0",
+		"/v3/sessions/" + created.ID + "/messages?tail=maybe",
+	}
+	for _, path := range paths {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rec := httptest.NewRecorder()
 		server.Handler().ServeHTTP(rec, withTestPrincipal(req))
-		if rec.Code != http.StatusOK {
-			t.Fatalf("messages status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s status = %d, want %d, body=%s", path, rec.Code, http.StatusBadRequest, rec.Body.String())
 		}
-		var payload struct {
-			Messages      []pebblestore.MessageSnapshot `json:"messages"`
-			OldestSeq     uint64                        `json:"oldest_seq"`
-			NewestSeq     uint64                        `json:"newest_seq"`
-			NextBeforeSeq uint64                        `json:"next_before_seq"`
-			NextAfterSeq  uint64                        `json:"next_after_seq"`
-			HasMoreOlder  bool                          `json:"has_more_older"`
-			HasMoreNewer  bool                          `json:"has_more_newer"`
-		}
-		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-			t.Fatalf("decode messages response: %v", err)
-		}
-		return payload
 	}
+}
 
-	firstPage := fetch("/v3/sessions/" + created.ID + "/messages?limit=2")
-	if len(firstPage.Messages) != 2 || firstPage.Messages[0].Content != "first" || firstPage.Messages[1].Content != "second" {
-		t.Fatalf("default messages page should currently be after_seq=0 ascending, got %+v", firstPage.Messages)
+func fetchSessionsV3MessagesPageForWorksetTest(t *testing.T, server *Server, path string) sessionsV3MessagesPageTestPayload {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("messages status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if !firstPage.HasMoreNewer || firstPage.NextAfterSeq == 0 {
-		t.Fatalf("default messages page cursor metadata = %+v", firstPage)
+	var payload sessionsV3MessagesPageTestPayload
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode messages response: %v", err)
 	}
-
-	olderPage := fetch("/v3/sessions/" + created.ID + "/messages?before_seq=" + strconv.FormatUint(firstPage.NewestSeq, 10) + "&limit=1")
-	if len(olderPage.Messages) != 1 || olderPage.Messages[0].Content != "first" {
-		t.Fatalf("before_seq page = %+v", olderPage.Messages)
-	}
-	if !olderPage.HasMoreOlder || olderPage.NextBeforeSeq == 0 {
-		t.Fatalf("before_seq cursor metadata = %+v", olderPage)
-	}
+	return payload
 }
 
 func appendSessionsV3PrimaryMessageForWorksetTest(t *testing.T, server *Server, sessionID, content string) {

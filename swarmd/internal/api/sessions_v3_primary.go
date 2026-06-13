@@ -22,6 +22,8 @@ const (
 	sessionsV3PrimaryPrefix                  = "/v3/sessions/"
 	sessionsV3PrimaryDefaultMessageTailLimit = 500
 	sessionsV3PrimaryDefaultEventLimit       = 0
+	sessionsV3MessagesPageDefaultLimit       = 200
+	sessionsV3MessagesPageMaxLimit           = 200
 )
 
 // V3 primary write handlers delegate through the ApplySessionMutation boundary.
@@ -369,7 +371,7 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 		return
 	}
 	if r.Method == http.MethodGet {
-		afterSeq, beforeSeq, hasBeforeSeq, limit, ok := parseSessionsV3MessagesPageQuery(w, r, 500)
+		query, ok := parseSessionsV3MessagesPageQuery(w, r)
 		if !ok {
 			return
 		}
@@ -382,16 +384,19 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 		}
 		var messages []pebblestore.MessageSnapshot
 		var err error
-		if hasBeforeSeq {
-			messages, err = s.sessions.ListSessionMessagesBefore(sessionID, beforeSeq, limit)
+		fetchLimit := query.Limit + 1
+		if query.Tail {
+			messages, err = s.sessions.ListSessionMessageTail(sessionID, fetchLimit)
+		} else if query.HasBeforeSeq {
+			messages, err = s.sessions.ListSessionMessagesBefore(sessionID, query.BeforeSeq, fetchLimit)
 		} else {
-			messages, err = s.sessions.ListSessionMessages(sessionID, afterSeq, limit)
+			messages, err = s.sessions.ListSessionMessages(sessionID, query.AfterSeq, fetchLimit)
 		}
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, sessionsV3MessagesPageResponse(sessionID, messages, afterSeq, beforeSeq, hasBeforeSeq))
+		writeJSON(w, http.StatusOK, sessionsV3MessagesPageResponse(sessionID, messages, query))
 		return
 	}
 
@@ -1489,44 +1494,78 @@ func parseSessionsV3HydrationLimits(w http.ResponseWriter, r *http.Request) (int
 	return messageLimit, eventLimit, true
 }
 
-func parseSessionsV3MessagesPageQuery(w http.ResponseWriter, r *http.Request, defaultLimit int) (uint64, uint64, bool, int, bool) {
-	afterSeq := uint64(0)
+type sessionsV3MessagesPageQuery struct {
+	AfterSeq     uint64
+	BeforeSeq    uint64
+	HasBeforeSeq bool
+	Tail         bool
+	Limit        int
+}
+
+func parseSessionsV3MessagesPageQuery(w http.ResponseWriter, r *http.Request) (sessionsV3MessagesPageQuery, bool) {
+	query := sessionsV3MessagesPageQuery{Limit: sessionsV3MessagesPageDefaultLimit}
+	hasAfterSeq := false
 	if raw := strings.TrimSpace(r.URL.Query().Get("after_seq")); raw != "" {
 		parsed, err := strconv.ParseUint(raw, 10, 64)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, errors.New("after_seq must be an unsigned integer"))
-			return 0, 0, false, 0, false
+			return sessionsV3MessagesPageQuery{}, false
 		}
-		afterSeq = parsed
+		query.AfterSeq = parsed
+		hasAfterSeq = true
 	}
-	beforeSeq := uint64(0)
-	hasBeforeSeq := false
 	if raw := strings.TrimSpace(r.URL.Query().Get("before_seq")); raw != "" {
 		parsed, err := strconv.ParseUint(raw, 10, 64)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, errors.New("before_seq must be an unsigned integer"))
-			return 0, 0, false, 0, false
+			return sessionsV3MessagesPageQuery{}, false
 		}
-		beforeSeq = parsed
-		hasBeforeSeq = true
+		query.BeforeSeq = parsed
+		query.HasBeforeSeq = true
 	}
-	if hasBeforeSeq && strings.TrimSpace(r.URL.Query().Get("after_seq")) != "" {
+	if raw := strings.TrimSpace(r.URL.Query().Get("tail")); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, errors.New("tail must be a boolean"))
+			return sessionsV3MessagesPageQuery{}, false
+		}
+		query.Tail = parsed
+	}
+	if query.HasBeforeSeq && hasAfterSeq {
 		writeError(w, http.StatusBadRequest, errors.New("after_seq and before_seq cannot be combined"))
-		return 0, 0, false, 0, false
+		return sessionsV3MessagesPageQuery{}, false
 	}
-	limit := defaultLimit
+	if query.Tail && (query.HasBeforeSeq || hasAfterSeq) {
+		writeError(w, http.StatusBadRequest, errors.New("tail cannot be combined with after_seq or before_seq"))
+		return sessionsV3MessagesPageQuery{}, false
+	}
 	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
 		parsed, err := strconv.Atoi(raw)
 		if err != nil || parsed <= 0 {
 			writeError(w, http.StatusBadRequest, errors.New("limit must be a positive integer"))
-			return 0, 0, false, 0, false
+			return sessionsV3MessagesPageQuery{}, false
 		}
-		limit = parsed
+		query.Limit = parsed
 	}
-	return afterSeq, beforeSeq, hasBeforeSeq, limit, true
+	if query.Limit > sessionsV3MessagesPageMaxLimit {
+		query.Limit = sessionsV3MessagesPageMaxLimit
+	}
+	return query, true
 }
 
-func sessionsV3MessagesPageResponse(sessionID string, messages []pebblestore.MessageSnapshot, afterSeq, beforeSeq uint64, hasBeforeSeq bool) map[string]any {
+func sessionsV3MessagesPageResponse(sessionID string, messages []pebblestore.MessageSnapshot, query sessionsV3MessagesPageQuery) map[string]any {
+	hasMoreOlder := false
+	hasMoreNewer := false
+	if query.Tail || query.HasBeforeSeq {
+		if len(messages) > query.Limit {
+			hasMoreOlder = true
+			messages = messages[len(messages)-query.Limit:]
+		}
+	} else if len(messages) > query.Limit {
+		hasMoreNewer = true
+		messages = messages[:query.Limit]
+	}
+
 	oldestSeq := uint64(0)
 	newestSeq := uint64(0)
 	if len(messages) > 0 {
@@ -1534,32 +1573,49 @@ func sessionsV3MessagesPageResponse(sessionID string, messages []pebblestore.Mes
 		newestSeq = messages[len(messages)-1].GlobalSeq
 	}
 	response := map[string]any{
-		"ok":          true,
-		"session_id":  sessionID,
-		"messages":    messages,
-		"count":       len(messages),
-		"oldest_seq":  oldestSeq,
-		"newest_seq":  newestSeq,
-		"has_more":    false,
-		"page_cursor": nil,
+		"ok":              true,
+		"session_id":      sessionID,
+		"messages":        messages,
+		"count":           len(messages),
+		"limit":           query.Limit,
+		"oldest_seq":      oldestSeq,
+		"newest_seq":      newestSeq,
+		"has_more":        hasMoreOlder || hasMoreNewer,
+		"has_more_older":  hasMoreOlder,
+		"has_more_newer":  hasMoreNewer,
+		"next_before_seq": uint64(0),
+		"next_after_seq":  uint64(0),
+		"page_cursor":     nil,
 	}
-	if hasBeforeSeq {
-		response["before_seq"] = beforeSeq
-		response["has_more_older"] = len(messages) > 0 && oldestSeq > 1
+	if len(messages) > 0 {
+		response["next_before_seq"] = oldestSeq
+		response["next_after_seq"] = newestSeq
+	}
+	if query.Tail {
+		response["tail"] = true
+		response["has_more"] = hasMoreOlder
 		if len(messages) > 0 {
-			response["next_before_seq"] = oldestSeq
 			response["page_cursor"] = oldestSeq
 		}
-		response["has_more"] = response["has_more_older"]
 		return response
 	}
-	response["after_seq"] = afterSeq
+	if query.HasBeforeSeq {
+		hasMoreNewer = len(messages) > 0 && query.BeforeSeq > newestSeq
+		response["before_seq"] = query.BeforeSeq
+		response["has_more_newer"] = hasMoreNewer
+		response["has_more"] = hasMoreOlder || hasMoreNewer
+		if len(messages) > 0 {
+			response["page_cursor"] = oldestSeq
+		}
+		return response
+	}
+	hasMoreOlder = len(messages) > 0 && query.AfterSeq > 0
+	response["after_seq"] = query.AfterSeq
+	response["has_more_older"] = hasMoreOlder
+	response["has_more"] = hasMoreOlder || hasMoreNewer
 	if len(messages) > 0 {
-		response["next_after_seq"] = newestSeq
 		response["page_cursor"] = newestSeq
 	}
-	response["has_more_newer"] = len(messages) > 0
-	response["has_more"] = len(messages) > 0
 	return response
 }
 
