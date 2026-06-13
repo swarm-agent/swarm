@@ -481,6 +481,9 @@ func v3RunIntentFromEvent(event client.SessionV3Event) (client.SessionV3RunInten
 		_ = json.Unmarshal(event.Payload, &payload)
 	}
 	intentPayload, _ := payload["run_intent"].(map[string]any)
+	if len(intentPayload) == 0 && !v3EventMayCarryRunIntentStatus(event.EventType) {
+		return client.SessionV3RunIntent{}, false
+	}
 	intent := client.SessionV3RunIntent{
 		SessionID:     firstNonEmptyV3String(stringValue(intentPayload, "session_id"), stringValue(payload, "session_id"), strings.TrimSpace(event.SessionID)),
 		RunID:         firstNonEmptyV3String(stringValue(intentPayload, "run_id"), stringValue(payload, "run_id")),
@@ -494,6 +497,22 @@ func v3RunIntentFromEvent(event client.SessionV3Event) (client.SessionV3RunInten
 		return client.SessionV3RunIntent{}, false
 	}
 	return intent, true
+}
+
+func v3EventMayCarryRunIntentStatus(eventType string) bool {
+	switch strings.ToLower(strings.TrimSpace(eventType)) {
+	case "session.run_intent.recorded",
+		"session.run.failed",
+		"session.run.cancelled",
+		"session.run.expired",
+		"session.run.interrupted",
+		"session.assistant.started",
+		"session.assistant.completed",
+		"session.assistant.failed":
+		return true
+	default:
+		return false
+	}
 }
 
 func v3RunIntentMatchesRun(intent client.SessionV3RunIntent, runID string) bool {
@@ -589,7 +608,7 @@ func v3StreamEventToChatEvent(event client.SessionV3Event) ui.ChatRunStreamEvent
 			out.RawOutput = ""
 			break
 		}
-	case "session.tool.completed":
+	case "session.tool.completed", "session.tool.failed":
 		out.Type = "tool.completed"
 		out.ToolName = firstNonEmptyV3String(stringValue(payload, "tool_name"), "tool")
 		out.CallID = stringValue(payload, "call_id")

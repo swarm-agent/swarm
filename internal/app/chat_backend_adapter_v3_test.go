@@ -505,6 +505,67 @@ func TestAPIChatBackendV3MapsSyntheticThinkingToolEventsToReasoning(t *testing.T
 	}
 }
 
+func TestAPIChatBackendV3DoesNotEndRunOnSyntheticReasoningToolCompletion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v3/sessions/session-v3/messages":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":         true,
+				"session":    map[string]any{"id": "session-v3", "workspace_path": "/workspace", "workspace_name": "workspace", "title": "V3", "mode": "plan"},
+				"projection": map[string]any{"session_id": "session-v3", "last_event_seq": 2, "projection_high_watermark_seq": 2},
+				"message":    map[string]any{"id": "msg-user", "session_id": "session-v3", "global_seq": 2, "role": "user", "content": "hello"},
+				"run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "pending_executor", "event_seq": 2},
+				"messages":   []any{},
+				"events":     []any{},
+				"mutation":   map[string]any{"realtime_outbox": map[string]any{"endpoint_cursor": "cursor-2", "endpoint_seq": 2, "session_id": "session-v3"}},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/realtime/stream":
+			writeTestV3RealtimeFrames(t, w, r,
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.started", "session_id": "session-v3", "subscription_id": "active-turn", "endpoint_cursor": "cursor-2", "last_seq": 2, "high_watermark_seq": 8},
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "endpoint_cursor": "cursor-3", "event_type": "session.assistant.started", "last_seq": 3, "event": map[string]any{"id": "evt-3", "session_id": "session-v3", "seq": 3, "event_type": "session.assistant.started", "ts_unix_ms": 30, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "running", "run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "running", "event_seq": 3}}}},
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "endpoint_cursor": "cursor-4", "event_type": "session.assistant.delta", "last_seq": 4, "event": map[string]any{"id": "evt-4", "session_id": "session-v3", "seq": 4, "event_type": "session.assistant.delta", "ts_unix_ms": 31, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "delta": "Alright, quick test run!\n\n"}}},
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "endpoint_cursor": "cursor-5", "event_type": "session.tool.completed", "last_seq": 5, "event": map[string]any{"id": "evt-5", "session_id": "session-v3", "seq": 5, "event_type": "session.tool.completed", "ts_unix_ms": 32, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "tool_name": "thinking", "call_id": "thinking-1", "status": "completed", "completed_output": "thinking done", "metadata": map[string]any{"synthetic_tool": true, "timeline_kind": "thinking", "segment_kind": "reasoning"}}}},
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "endpoint_cursor": "cursor-6", "event_type": "session.tool.failed", "last_seq": 6, "event": map[string]any{"id": "evt-6", "session_id": "session-v3", "seq": 6, "event_type": "session.tool.failed", "ts_unix_ms": 33, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "tool_name": "list", "call_id": "call-list", "status": "failed", "error": "permission denied", "output": "permission denied"}}},
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "endpoint_cursor": "cursor-7", "event_type": "session.message.appended", "last_seq": 7, "event": map[string]any{"id": "evt-7", "session_id": "session-v3", "seq": 7, "event_type": "session.message.appended", "ts_unix_ms": 34, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "message": map[string]any{"id": "msg-assistant", "session_id": "session-v3", "global_seq": 7, "role": "assistant", "content": "Nice — still connected.", "created_at": 34, "metadata": map[string]any{"run_id": "run-1"}}, "run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "running", "event_seq": 7}}}},
+				map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-v3", "endpoint_cursor": "cursor-8", "event_type": "session.run_intent.recorded", "last_seq": 8, "event": map[string]any{"id": "evt-8", "session_id": "session-v3", "seq": 8, "event_type": "session.run_intent.recorded", "ts_unix_ms": 35, "payload": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "completed", "run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-1", "status": "completed", "event_seq": 8}}}},
+			)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	backend := newAPIChatBackend(testAPIWithToken(server.URL), "v3")
+	var events []ui.ChatRunStreamEvent
+	resp, err := backend.RunTurnStream(context.Background(), "session-v3", ui.ChatRunRequest{Prompt: "hello"}, func(event ui.ChatRunStreamEvent) {
+		events = append(events, event)
+	})
+	if err != nil {
+		t.Fatalf("RunTurnStream() error = %v", err)
+	}
+	if resp.PrimaryRunStatus != "completed" || resp.AssistantMessage.Content != "Nice — still connected." {
+		t.Fatalf("response = %#v", resp)
+	}
+	var sawThinkingCompleted, sawToolFailed, sawAssistant bool
+	for _, event := range events {
+		switch event.Type {
+		case "reasoning.completed":
+			sawThinkingCompleted = true
+		case "tool.completed":
+			if event.ToolName == "list" && event.Error == "permission denied" {
+				sawToolFailed = true
+			}
+		case "message.stored":
+			if event.Message != nil && event.Message.ID == "msg-assistant" {
+				sawAssistant = true
+			}
+		}
+	}
+	if !sawThinkingCompleted || !sawToolFailed || !sawAssistant {
+		t.Fatalf("stream ended before post-tool events: thinking=%v failedTool=%v assistant=%v events=%#v", sawThinkingCompleted, sawToolFailed, sawAssistant, events)
+	}
+}
+
 func TestAPIChatBackendV3MapsSessionToolEventsToLiveToolStream(t *testing.T) {
 	started := v3StreamEventToChatEvent(client.SessionV3Event{
 		SessionID: "session-v3",

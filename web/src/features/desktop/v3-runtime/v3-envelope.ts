@@ -682,10 +682,13 @@ function sessionIdFromEventPayload(eventType: string, payload: Record<string, un
     if (streamSessionId) return streamSessionId
   }
   return payloadString(payload, 'session_id')
+    || payloadString(payload, 'sessionId')
     || (eventType.startsWith('session.') ? payloadString(payload, 'id') : '')
     || payloadString(payloadRecord(payload, 'session'), 'id')
     || payloadString(payloadRecord(payload, 'message'), 'session_id')
+    || payloadString(payloadRecord(payload, 'message'), 'sessionId')
     || payloadString(payloadRecord(payload, 'permission'), 'session_id')
+    || payloadString(payloadRecord(payload, 'permission'), 'sessionId')
 }
 
 function sessionIdFromStream(stream: string): string {
