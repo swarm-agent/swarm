@@ -3076,6 +3076,7 @@ func (c *API) CreateSessionV3WithOptions(ctx context.Context, options SessionCre
 		"target_kind":          "host",
 		"target_relationship":  "self",
 		"mode":                 mode,
+		"agent_name":           strings.TrimSpace(options.AgentName),
 		"preference": map[string]string{
 			"provider":     strings.TrimSpace(options.Preference.Provider),
 			"model":        strings.TrimSpace(options.Preference.Model),
