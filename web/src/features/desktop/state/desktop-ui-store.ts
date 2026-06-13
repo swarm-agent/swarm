@@ -3253,6 +3253,11 @@ function applyDesktopV3RealtimeFrame(sessionId: string, payload: DesktopV3Realti
   if (!frameSessionId && payload.type !== 'keepalive') {
     return false
   }
+  const eventType = String(payload.event?.event_type ?? payload.event_type ?? payload.type ?? '').trim()
+  if (eventType.startsWith('session.diagnostic.')) {
+    persistDesktopV3EndpointCursor(payload as RunStreamEventMessage)
+    return true
+  }
   const envelope = v3SessionStreamEventEnvelope(payload as RunStreamEventMessage)
   if (envelope) {
     applyDesktopDurableEventEnvelope(envelope)
@@ -4081,6 +4086,9 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
   },
   __testApplyRunStreamFrame: (sessionId, payload, ts = Date.now()) => {
     set((state: DesktopStoreState) => applyRunStreamFrame(state, sessionId, payload as RunStreamEventMessage, ts))
+  },
+  __testApplyV3RealtimeFrame: (sessionId, payload, ts = Date.now()) => {
+    applyDesktopV3RealtimeFrame(sessionId, payload as DesktopV3RealtimeFrame, ts)
   },
 }))
 

@@ -65,6 +65,29 @@ function frameEndpointCursor(frame: DesktopV3RealtimeFrame): string {
   return cursor.startsWith('cursor-') ? cursor : ''
 }
 
+function endpointCursorSeq(cursor: string | null | undefined): number {
+  const normalized = cursor?.trim() ?? ''
+  if (!normalized.startsWith('cursor-')) {
+    return 0
+  }
+  const parsed = Number.parseInt(normalized.slice('cursor-'.length), 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+}
+
+function maxEndpointCursor(...cursors: Array<string | null | undefined>): string {
+  let best = ''
+  let bestSeq = 0
+  for (const cursor of cursors) {
+    const normalized = cursor?.trim() ?? ''
+    const seq = endpointCursorSeq(normalized)
+    if (seq >= bestSeq && normalized) {
+      best = normalized
+      bestSeq = seq
+    }
+  }
+  return best
+}
+
 function shouldDeliverFrame(kind: string): boolean {
   return kind === 'event'
     || kind === 'replay.started'
@@ -95,13 +118,22 @@ export class DesktopV3RealtimeController {
     if (!normalizedSessionId) {
       return
     }
-    const cursor = endpointCursor?.trim() || this.endpointCursor || this.options.getEndpointCursor().trim()
+    const existing = this.subscriptions.get(normalizedSessionId)
+    const cursor = maxEndpointCursor(
+      endpointCursor,
+      existing?.endpointCursor,
+      this.endpointCursor,
+      this.options.getEndpointCursor(),
+    )
     this.subscriptions.set(normalizedSessionId, {
       sessionId: normalizedSessionId,
-      subscriptionId: `desktop:${normalizedSessionId}`,
+      subscriptionId: existing?.subscriptionId || `desktop:${normalizedSessionId}`,
       endpointCursor: cursor,
     })
     this.desired = true
+    if (existing && this.socket?.readyState === WebSocket.OPEN) {
+      return
+    }
     if (this.socket?.readyState === WebSocket.OPEN) {
       this.sendSubscribe(this.socket, this.subscriptions.get(normalizedSessionId)!)
       return
@@ -165,9 +197,6 @@ export class DesktopV3RealtimeController {
       this.socket = socket
       this.attachSocket(socket, generation)
       this.noteActivity(generation)
-      if (socket.readyState === WebSocket.OPEN) {
-        this.sendAllSubscriptions(socket)
-      }
     } catch (error) {
       if (generation !== this.generation) {
         return
@@ -179,7 +208,8 @@ export class DesktopV3RealtimeController {
   }
 
   private attachSocket(socket: WebSocket, generation: number): void {
-    socket.addEventListener('open', () => {
+    let subscriptionsSent = false
+    const handleOpen = () => {
       if (generation !== this.generation || this.socket !== socket || !this.desired) {
         socket.close()
         return
@@ -187,8 +217,16 @@ export class DesktopV3RealtimeController {
       this.reconnectAttempt = 0
       this.clearReconnect()
       this.noteActivity(generation)
-      this.sendAllSubscriptions(socket)
-    })
+      if (!subscriptionsSent) {
+        subscriptionsSent = true
+        this.sendAllSubscriptions(socket)
+      }
+    }
+
+    socket.addEventListener('open', handleOpen)
+    if (socket.readyState === WebSocket.OPEN) {
+      queueMicrotask(handleOpen)
+    }
 
     socket.addEventListener('message', (event) => {
       if (generation !== this.generation || this.socket !== socket) {
@@ -212,7 +250,7 @@ export class DesktopV3RealtimeController {
         }
         const cursor = frameEndpointCursor(frame)
         if (cursor && applied) {
-          this.endpointCursor = cursor
+          this.advanceEndpointCursor(cursor)
         }
         if (kind === 'slow_consumer.reconnect_required') {
           this.forceReconnect('slow consumer')
@@ -259,6 +297,17 @@ export class DesktopV3RealtimeController {
       subscription_id: sub.subscriptionId,
       endpoint_cursor: sub.endpointCursor || this.endpointCursor || this.options.getEndpointCursor(),
     }))
+  }
+
+  private advanceEndpointCursor(cursor: string): void {
+    const nextCursor = maxEndpointCursor(cursor, this.endpointCursor)
+    if (!nextCursor) {
+      return
+    }
+    this.endpointCursor = nextCursor
+    for (const sub of this.subscriptions.values()) {
+      sub.endpointCursor = maxEndpointCursor(nextCursor, sub.endpointCursor)
+    }
   }
 
   private forceReconnect(reason: string): void {

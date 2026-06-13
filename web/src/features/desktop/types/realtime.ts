@@ -292,4 +292,5 @@ export interface DesktopStoreState {
   closeRunStream: (sessionId: string) => void
   stopRun: (sessionId: string, route?: DesktopChatRoute | null, runId?: string | null) => Promise<void>
   __testApplyRunStreamFrame?: (sessionId: string, payload: Record<string, unknown>, ts?: number) => void
+  __testApplyV3RealtimeFrame?: (sessionId: string, payload: Record<string, unknown>, ts?: number) => void
 }

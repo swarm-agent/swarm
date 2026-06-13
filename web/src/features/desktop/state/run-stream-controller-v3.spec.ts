@@ -3,6 +3,7 @@ import { afterEach, test } from 'node:test'
 
 import { queryClient } from '../../../app/query-client'
 import { sessionMessagesQueryKey } from '../../queries/query-options'
+import { getDesktopSnapshot, mergeDesktopSnapshot } from './desktop-state-store'
 import { desktopRunIntentsCollection } from './desktop-db'
 import type { DesktopSessionRecord, DesktopStoreState } from '../types/realtime'
 import { applyEnvelope, useDesktopStore } from './use-desktop-store'
@@ -825,6 +826,247 @@ test('parent V3 stream child cursor errors do not refetch or poison parent sessi
   }
 })
 
+test('desktop V3 realtime applies canonical event frames once and ignores diagnostic provider deltas', () => {
+  const sessionId = 'session-dump-shape'
+  const runId = 'v3run-dump-shape'
+  const session = makeSession({ id: sessionId, sessionApi: 'v3', workspacePath: '/repo', workspaceName: 'repo' })
+  useDesktopStore.setState(makeState(session), true)
+  mergeDesktopSnapshot({
+    rev: getDesktopSnapshot().rev + 1,
+    sessionsById: { [sessionId]: session },
+    sessionOrder: [sessionId],
+    messagesBySessionId: { [sessionId]: [] },
+  })
+
+  const eventFrame = (endpointCursor: string, seq: number, eventType: string, payload: Record<string, unknown>) => ({
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'event',
+    type: 'event',
+    session_id: sessionId,
+    endpoint_cursor: endpointCursor,
+    last_seq: seq,
+    high_watermark_seq: seq,
+    event_type: eventType,
+    event: {
+      id: `v3evt_${sessionId}_${String(seq).padStart(20, '0')}`,
+      session_id: sessionId,
+      seq,
+      event_type: eventType,
+      ts_unix_ms: 1000 + seq,
+      payload: { session_id: sessionId, seq, ...payload },
+    },
+  })
+
+  const apply = (endpointCursor: string, seq: number, eventType: string, payload: Record<string, unknown>) => {
+    useDesktopStore.getState().__testApplyV3RealtimeFrame?.(sessionId, eventFrame(endpointCursor, seq, eventType, payload), 1000 + seq)
+  }
+
+  apply('cursor-25531', 2, 'session.diagnostic.provider.stream', {
+    diagnostic: true,
+    payload: { type: 'response.output_text.delta', delta: 'DIAGNOSTIC-TEXT-SHOULD-NOT-RENDER' },
+    run_id: runId,
+  })
+  apply('cursor-25536', 7, 'session.assistant.started', {
+    kind: 'run_intent.record',
+    run_id: runId,
+    run_intent: { session_id: sessionId, run_id: runId, status: 'running', created_at: 1007, updated_at: 1007, event_seq: 7 },
+  })
+  apply('cursor-25636', 106, 'session.assistant.delta', { run_id: runId, delta: 'Hey! 👋\n\n' })
+  apply('cursor-25650', 120, 'session.assistant.delta', { run_id: runId, delta: "I'm your Swarm coding assistant, ready to help" })
+  apply('cursor-25664', 134, 'session.assistant.delta', { run_id: runId, delta: " with whatever you're working on in the `swarm" })
+  apply('cursor-25682', 152, 'session.assistant.delta', { run_id: runId, delta: '-go` workspace. What can I do for you today?' })
+
+  let live = useDesktopStore.getState().sessions[sessionId].live
+  const expected = "Hey! 👋\n\nI'm your Swarm coding assistant, ready to help with whatever you're working on in the `swarm-go` workspace. What can I do for you today?"
+  assert.equal(live.assistantDraft, expected)
+  assert.equal(live.assistantDraft.includes('DIAGNOSTIC-TEXT-SHOULD-NOT-RENDER'), false)
+
+  apply('cursor-25693', 163, 'session.assistant.completed', {
+    kind: 'message.append',
+    status: 'completed',
+    run_id: runId,
+    message: { id: 'msg-assistant-final', session_id: sessionId, global_seq: 163, role: 'assistant', content: expected, created_at: 1163 },
+    run_intent: { session_id: sessionId, run_id: runId, status: 'completed', updated_at: 1163, event_seq: 163 },
+  })
+
+  live = useDesktopStore.getState().sessions[sessionId].live
+  assert.equal(live.assistantDraft, '')
+  assert.equal(live.status, 'idle')
+
+  const canonicalMessages = getDesktopSnapshot().messagesBySessionId[sessionId] ?? []
+  assert.equal(canonicalMessages.filter((message) => message.role === 'assistant' && message.content === expected).length, 1)
+  assert.equal(canonicalMessages.some((message) => message.content.includes('DIAGNOSTIC-TEXT-SHOULD-NOT-RENDER')), false)
+  assert.equal(useDesktopStore.getState().sessions[sessionId].lastEventSeq, 163)
+})
+
+test('desktop V3 realtime controller consumes backend stream frames and renders assistant output once', async () => {
+  const websocketURLs: string[] = []
+  const sent: Array<{ url: string; message: Record<string, unknown> }> = []
+  const sockets: FakeRealtimeSocket[] = []
+  const originalFetch = globalThis.fetch
+  const originalWindow = globalThis.window
+  const originalWebSocket = globalThis.WebSocket
+
+  class FakeRealtimeSocket extends EventTarget {
+    static CONNECTING = 0
+    static OPEN = 1
+    static CLOSING = 2
+    static CLOSED = 3
+    readyState = FakeRealtimeSocket.OPEN
+    url: string
+
+    constructor(input: string | URL) {
+      super()
+      this.url = String(input)
+      websocketURLs.push(this.url)
+      sockets.push(this)
+    }
+
+    close() {
+      this.readyState = FakeRealtimeSocket.CLOSED
+      this.dispatchEvent(new Event('close'))
+    }
+
+    send(payload: string) {
+      sent.push({ url: this.url, message: JSON.parse(payload) as Record<string, unknown> })
+    }
+
+    serverMessage(payload: Record<string, unknown>) {
+      const event = new Event('message') as MessageEvent
+      Object.defineProperty(event, 'data', { value: JSON.stringify(payload) })
+      this.dispatchEvent(event)
+    }
+  }
+
+  globalThis.window = {
+    location: { protocol: 'http:', host: '127.0.0.1:7777' },
+    addEventListener() {},
+    dispatchEvent: (() => true) as typeof window.dispatchEvent,
+    setTimeout: ((callback: TimerHandler, timeout?: number) => setTimeout(callback, timeout)) as typeof window.setTimeout,
+    clearTimeout: ((timer?: number) => clearTimeout(timer)) as typeof window.clearTimeout,
+    setInterval: ((callback: TimerHandler, timeout?: number) => setInterval(callback, timeout)) as typeof window.setInterval,
+    clearInterval: ((timer?: number) => clearInterval(timer)) as typeof window.clearInterval,
+  } as unknown as Window & typeof globalThis
+  globalThis.WebSocket = FakeRealtimeSocket as unknown as typeof WebSocket
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input)
+    if (url === '/v1/auth/desktop/session') {
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    if (url === '/v3/sessions:workset') {
+      return new Response(JSON.stringify({
+        rev: getDesktopSnapshot().rev + 1,
+        snapshot_endpoint_cursor: 'cursor-31005',
+        sessions_by_id: {},
+        messages_by_session: {},
+        permissions_by_session: {},
+        session_order: [],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    throw new Error(`unexpected fetch: ${url}`)
+  }) as typeof fetch
+
+  try {
+    const sessionId = 'session-v3-live-stream'
+    const runId = 'run-v3-live-stream'
+    const session = makeSession({ id: sessionId, sessionApi: 'v3', workspacePath: '/repo', workspaceName: 'repo' })
+    useDesktopStore.setState(makeState(session), true)
+    mergeDesktopSnapshot({
+      rev: getDesktopSnapshot().rev + 1,
+      sessionsById: { [sessionId]: session },
+      sessionOrder: [sessionId],
+      messagesBySessionId: { [sessionId]: [] },
+    })
+
+    await useDesktopStore.getState().ensureRunStream(sessionId)
+    await new Promise((resolve) => setImmediate(resolve))
+    await new Promise((resolve) => setImmediate(resolve))
+
+    const v3Socket = sockets.find((socket) => socket.url.includes('/v3/realtime/stream'))
+    assert.ok(v3Socket, `expected canonical V3 realtime socket, got ${websocketURLs.join(', ')}`)
+    assert.equal(websocketURLs.some((url) => /\/v3\/sessions\/[^/]+\/stream/.test(url)), false)
+
+    const subscribeMessages = sent
+      .filter((entry) => entry.url === v3Socket.url)
+      .map((entry) => entry.message)
+      .filter((message) => message.kind === 'subscribe.session')
+    assert.equal(subscribeMessages.length, 1)
+    assert.equal(subscribeMessages[0]?.session_id, sessionId)
+    assert.equal('after_seq' in (subscribeMessages[0] ?? {}), false)
+    assert.equal('after_rev' in (subscribeMessages[0] ?? {}), false)
+    assert.equal(sent.some((entry) => entry.message.type === 'subscribe' && entry.message.channel === 'session:*'), false)
+
+    const eventFrame = (endpointCursor: string, seq: number, eventType: string, payload: Record<string, unknown>) => ({
+      protocol: 'v3.realtime',
+      protocol_version: 1,
+      kind: 'event',
+      type: 'event',
+      session_id: sessionId,
+      endpoint_cursor: endpointCursor,
+      last_seq: seq,
+      high_watermark_seq: seq,
+      event_type: eventType,
+      event: {
+        id: `v3evt_${sessionId}_${String(seq).padStart(20, '0')}`,
+        session_id: sessionId,
+        seq,
+        event_type: eventType,
+        ts_unix_ms: 2000 + seq,
+        payload: { session_id: sessionId, run_id: runId, ...payload },
+      },
+    })
+
+    v3Socket.serverMessage(eventFrame('cursor-31001', 2, 'session.diagnostic.provider.stream', {
+      diagnostic: true,
+      payload: { type: 'response.output_text.delta', delta: 'DIAGNOSTIC-SHOULD-NOT-RENDER' },
+    }))
+    v3Socket.serverMessage(eventFrame('cursor-31002', 3, 'session.assistant.started', { status: 'running' }))
+    v3Socket.serverMessage(eventFrame('cursor-31003', 4, 'session.assistant.delta', { delta: 'hello ' }))
+    v3Socket.serverMessage(eventFrame('cursor-31004', 5, 'session.assistant.delta', { delta: 'world' }))
+
+    let live = useDesktopStore.getState().sessions[sessionId].live
+    assert.equal(live.assistantDraft, 'hello world')
+    assert.equal(live.assistantDraft.includes('DIAGNOSTIC-SHOULD-NOT-RENDER'), false)
+    assert.equal(live.status, 'running')
+
+    v3Socket.serverMessage(eventFrame('cursor-31005', 6, 'session.assistant.completed', {
+      status: 'completed',
+      message: { id: 'msg-v3-live-stream-assistant', session_id: sessionId, global_seq: 6, role: 'assistant', content: 'hello world', created_at: 2006 },
+      run_intent: { session_id: sessionId, run_id: runId, status: 'completed', created_at: 2003, updated_at: 2006, event_seq: 6 },
+    }))
+
+    live = useDesktopStore.getState().sessions[sessionId].live
+    assert.equal(live.assistantDraft, '')
+    assert.equal(live.status, 'idle')
+    assert.equal(live.runId, null)
+    assert.equal(useDesktopStore.getState().sessions[sessionId].lastEventSeq, 6)
+
+    const canonicalMessages = getDesktopSnapshot().messagesBySessionId[sessionId] ?? []
+    assert.equal(canonicalMessages.filter((message) => message.role === 'assistant' && message.content === 'hello world').length, 1)
+    assert.equal(canonicalMessages.some((message) => message.content.includes('DIAGNOSTIC-SHOULD-NOT-RENDER')), false)
+
+    useDesktopStore.getState().syncV3RealtimeSessions()
+    await new Promise((resolve) => setImmediate(resolve))
+    const subscribeAfterSync = sent
+      .filter((entry) => entry.url === v3Socket.url)
+      .map((entry) => entry.message)
+      .filter((message) => message.kind === 'subscribe.session')
+    assert.equal(subscribeAfterSync.length, 1, 'store sync must not duplicate V3 realtime subscriptions')
+  } finally {
+    useDesktopStore.getState().disconnect()
+    globalThis.fetch = originalFetch
+    globalThis.window = originalWindow
+    globalThis.WebSocket = originalWebSocket
+  }
+})
+
 test('desktop V3 canonical session updates use /v3/realtime/stream and leave run stream compatibility off', async () => {
   const { readFile } = await import('node:fs/promises')
   const controllerSource = await readFile(new URL('./run-stream-controller.ts', import.meta.url), 'utf8')
@@ -1528,6 +1770,7 @@ test('V3 ensureRunStream opens canonical realtime stream and keeps global /ws se
   globalThis.window = {
     location: { protocol: 'http:', host: '127.0.0.1:7777' },
     addEventListener() {},
+    dispatchEvent: (() => true) as typeof window.dispatchEvent,
     setTimeout: ((callback: TimerHandler, timeout?: number) => setTimeout(callback, timeout)) as typeof window.setTimeout,
     clearTimeout: ((timer?: number) => clearTimeout(timer)) as typeof window.clearTimeout,
     setInterval: ((callback: TimerHandler, timeout?: number) => setInterval(callback, timeout)) as typeof window.setInterval,
