@@ -184,7 +184,7 @@ test('normalizeDesktopStateSnapshot hydrates session live state from top-level r
 })
 
 
-test('normalizeDesktopStateSnapshot treats terminal lifecycle as authoritative over stale run intents', () => {
+test('normalizeDesktopStateSnapshot treats durable active run intent as authoritative over stale lifecycle', () => {
   const snapshot = normalizeDesktopStateSnapshot({
     rev: 46,
     sessions_by_id: {
@@ -200,36 +200,28 @@ test('normalizeDesktopStateSnapshot treats terminal lifecycle as authoritative o
           updated_at: 50,
           generation: 1,
         },
-        run_intent: {
-          session_id: 'terminal',
-          run_id: 'run-stale',
-          status: 'running',
-          created_at: 30,
-          updated_at: 49,
-          event_seq: 9,
-        },
       },
     },
     session_order: ['terminal'],
-    run_intents_by_session: {
-      terminal: [{
+    current_run_intent_by_session: {
+      terminal: {
         session_id: 'terminal',
-        run_id: 'run-stale',
+        run_id: 'run-active-durable',
         status: 'pending_executor',
-        created_at: 30,
-        updated_at: 49,
-        event_seq: 9,
-      }],
+        created_at: 51,
+        updated_at: 52,
+        event_seq: 10,
+      },
     },
   })
 
   const session = snapshot.sessionsById?.terminal
   assert.equal(session?.lifecycle?.active, false)
-  assert.equal(session?.runIntent, null)
-  assert.equal(session?.live.status, 'idle')
-  assert.equal(session?.live.runId, null)
-  assert.equal(session?.live.startedAt, null)
-  assert.equal(snapshot.runIntentsBySessionId?.terminal, undefined)
+  assert.equal(session?.runIntent?.runId, 'run-active-durable')
+  assert.equal(session?.live.status, 'starting')
+  assert.equal(session?.live.runId, 'run-active-durable')
+  assert.equal(session?.live.startedAt, 51)
+  assert.equal(snapshot.runIntentsBySessionId?.terminal?.runId, 'run-active-durable')
 })
 
 test('normalizeDesktopStateSnapshot hydrates persisted V3 provider tool messages', () => {

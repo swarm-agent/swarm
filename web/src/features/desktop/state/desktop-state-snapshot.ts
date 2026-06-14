@@ -100,7 +100,7 @@ interface MessageWire {
   metadata?: Record<string, unknown>
 }
 
-interface RunIntentWire {
+export interface RunIntentWire {
   session_id?: string
   run_id?: string
   status?: string
@@ -120,13 +120,14 @@ interface EventWire {
   payload?: Record<string, unknown>
 }
 
-interface DesktopStateWorksetResponseWire {
+export interface DesktopStateWorksetResponseWire {
   rev?: number
   snapshot_endpoint_cursor?: string
   sessions_by_id?: Record<string, SessionWire>
   messages_by_session?: Record<string, MessageWire[]>
   events_by_session?: Record<string, EventWire[]>
   run_intents_by_session?: Record<string, RunIntentWire[]>
+  current_run_intent_by_session?: Record<string, RunIntentWire>
   session_order?: string[]
 }
 
@@ -195,7 +196,10 @@ function desktopStateSnapshotEnvelopeId(mode: 'replace' | 'merge', snapshot: Des
 
 export function normalizeDesktopStateSnapshot(response: DesktopStateWorksetResponseWire): DesktopDaemonSnapshot {
   assertSnapshotRevision(response.rev)
-  const rawRunIntentsBySessionId = latestRunIntentBySessionId(response.run_intents_by_session)
+  const rawRunIntentsBySessionId = {
+    ...latestRunIntentBySessionId(response.run_intents_by_session),
+    ...currentRunIntentBySessionId(response.current_run_intent_by_session),
+  }
   const sessionsById = mapSessions(response.sessions_by_id, rawRunIntentsBySessionId)
   const runIntentsBySessionId = activeRunIntentsForNonTerminalSessions(rawRunIntentsBySessionId, sessionsById)
   applyReasoningEventsBySession(sessionsById, response.events_by_session)
@@ -325,7 +329,7 @@ function mapSession(session: SessionWire, fallbackId = '', topLevelRunIntent: De
   const mode = String(session.mode ?? 'auto').trim() || 'auto'
   const baseLive = emptyLiveState()
   const mappedRunIntent = session.run_intent ? mapRunIntent(session.run_intent) : topLevelRunIntent
-  const runIntent = lifecycle && !lifecycle.active ? null : mappedRunIntent
+  const runIntent = mappedRunIntent
   if (lifecycle?.active) {
     baseLive.runId = lifecycle.runId
     baseLive.startedAt = lifecycle.startedAt > 0 ? lifecycle.startedAt : null
@@ -384,22 +388,20 @@ function mapSession(session: SessionWire, fallbackId = '', topLevelRunIntent: De
   }
 }
 
-function snapshotRunIntentStatusActive(status: string): boolean {
+export function snapshotRunIntentStatusActive(status: string): boolean {
   const normalized = status.trim().toLowerCase()
   return normalized === 'pending_executor' || normalized === 'running'
 }
 
 function activeRunIntentsForNonTerminalSessions(
   source: Record<string, DesktopRunIntentRecord>,
-  sessionsById: Record<string, DesktopSessionRecord>,
+  _sessionsById: Record<string, DesktopSessionRecord>,
 ): Record<string, DesktopRunIntentRecord> {
   const next: Record<string, DesktopRunIntentRecord> = {}
   for (const [sessionId, runIntent] of Object.entries(source)) {
-    const session = sessionsById[sessionId] ?? sessionsById[runIntent.sessionId]
-    if (session?.lifecycle && !session.lifecycle.active) {
-      continue
+    if (snapshotRunIntentStatusActive(runIntent.status)) {
+      next[sessionId] = runIntent
     }
-    next[sessionId] = runIntent
   }
   return next
 }
@@ -437,6 +439,16 @@ function latestRunIntentBySessionId(source: Record<string, RunIntentWire[]> | un
     const latest = [...(intents ?? [])].sort((left, right) => (numberValue(right.event_seq) - numberValue(left.event_seq)) || (numberValue(right.updated_at) - numberValue(left.updated_at)))[0]
     if (latest) {
       bySessionId[sessionId] = mapRunIntent({ ...latest, session_id: latest.session_id ?? sessionId })
+    }
+  }
+  return bySessionId
+}
+
+function currentRunIntentBySessionId(source: Record<string, RunIntentWire> | undefined): Record<string, DesktopRunIntentRecord> {
+  const bySessionId: Record<string, DesktopRunIntentRecord> = {}
+  for (const [sessionId, intent] of Object.entries(source ?? {})) {
+    if (intent) {
+      bySessionId[sessionId] = mapRunIntent({ ...intent, session_id: intent.session_id ?? sessionId })
     }
   }
   return bySessionId

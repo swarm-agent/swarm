@@ -80,6 +80,73 @@ function makeState(session: DesktopSessionRecord): DesktopStoreState {
   }
 }
 
+function makeReconnectResponse(sessionId: string, options: { runId?: string; status?: string; cursor?: string; rev?: number } = {}): Record<string, unknown> {
+  const runId = options.runId ?? `run-${sessionId}`
+  const status = options.status ?? 'running'
+  const cursor = options.cursor ?? 'cursor-500'
+  const updatedAt = 20
+  return {
+    ok: true,
+    rev: options.rev ?? getDesktopSnapshot().rev + 1,
+    snapshot_endpoint_cursor: cursor,
+    sessions_by_id: {
+      [sessionId]: {
+        id: sessionId,
+        title: 'V3 session',
+        workspace_path: '/repo',
+        workspace_name: 'repo',
+        mode: 'auto',
+        session_api: 'v3',
+        message_count: 0,
+        updated_at: updatedAt,
+        created_at: 1,
+      },
+    },
+    run_intents_by_session: {
+      [sessionId]: [{
+        session_id: sessionId,
+        run_id: runId,
+        status,
+        created_at: updatedAt,
+        updated_at: updatedAt,
+        event_seq: 2,
+      }],
+    },
+    current_run_intent_by_session: {
+      [sessionId]: {
+        session_id: sessionId,
+        run_id: runId,
+        status,
+        created_at: updatedAt,
+        updated_at: updatedAt,
+        event_seq: 2,
+      },
+    },
+    session_order: [sessionId],
+    subscriptions: [{
+      protocol: 'v3.realtime',
+      protocol_version: 1,
+      kind: 'subscribe.session',
+      session_id: sessionId,
+      subscription_id: `reconnect:${sessionId}`,
+      endpoint_cursor: cursor,
+    }],
+  }
+}
+
+function makeEmptyReconnectResponse(cursor = 'cursor-500'): Record<string, unknown> {
+  return {
+    ok: true,
+    rev: getDesktopSnapshot().rev + 1,
+    snapshot_endpoint_cursor: cursor,
+    sessions_by_id: {},
+    run_intents_by_session: {},
+    current_run_intent_by_session: {},
+    session_order: [],
+    subscriptions: [],
+  }
+}
+
 const primaryRoute: DesktopChatRoute = {
   id: 'host:binding:local-binding',
   label: 'primary',
@@ -1051,6 +1118,12 @@ test('desktop V3 realtime controller consumes backend stream frames and renders 
         headers: { 'Content-Type': 'application/json' },
       })
     }
+    if (url === '/v3/sessions:reconnect') {
+      return new Response(JSON.stringify(makeReconnectResponse('session-v3-live-stream', { runId: 'run-v3-live-stream', cursor: 'cursor-31005' })), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
     if (url === '/v3/sessions:workset') {
       return new Response(JSON.stringify({
         rev: getDesktopSnapshot().rev + 1,
@@ -1212,6 +1285,12 @@ test('desktop V3 realtime subscribes from active top-level snapshot run intent w
     if (url === '/v1/auth/desktop/session') {
       return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
+    if (url === '/v3/sessions:reconnect') {
+      return new Response(JSON.stringify(makeReconnectResponse('session-top-level-intent-subscribe', { runId: 'run-top-level-intent-subscribe', cursor: 'cursor-500' })), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
     if (url === '/v3/sessions:workset') {
       return new Response(JSON.stringify({ rev: getDesktopSnapshot().rev + 1, sessions_by_id: {}, session_order: [] }), {
         status: 200,
@@ -1314,6 +1393,9 @@ test('desktop V3 realtime ignores persisted localStorage subscription intent aut
     if (url === '/v1/auth/desktop/session') {
       return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
+    if (url === '/v3/sessions:reconnect') {
+      return new Response(JSON.stringify(makeReconnectResponse('session-refresh-resync', { runId: 'run-refresh-resync', cursor: 'cursor-31005' })), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
     if (url === '/v3/sessions:workset') {
       return new Response(JSON.stringify({
         rev: getDesktopSnapshot().rev + 1,
@@ -1364,7 +1446,7 @@ test('desktop V3 realtime ignores persisted localStorage subscription intent aut
     const subscribeMessages = sent
       .map((entry) => entry.message)
       .filter((message) => message.kind === 'subscribe.session' && message.session_id === sessionId)
-    assert.equal(subscribeMessages.length, 1, `localStorage subscription intent must not create refreshed resubscribe: ${JSON.stringify(sent)}`)
+    assert.equal(subscribeMessages.length, 2, `backend reconnect subscriptions should drive refreshed resubscribe: ${JSON.stringify(sent)}`)
     assert.equal(websocketURLs.length, socketCountBeforeRefresh, 'localStorage subscription intent must not open a replacement V3 socket')
     assert.equal(websocketURLs.some((url) => url.includes('/v3/realtime/stream')), true)
   } finally {
@@ -1386,8 +1468,8 @@ test('desktop V3 canonical session updates use /v3/realtime/stream and leave run
   assert.match(storeSource, /DesktopV3RealtimeController/)
   assert.match(storeSource, /requireV3RealtimeController/)
   assert.match(storeSource, /applyDesktopV3RealtimeFrame/)
-  assert.match(storeSource, /subscribeDesktopV3RealtimeSession\(targetSessionId, desktopV3RealtimeEndpointCursor\)/)
-  assert.match(storeSource, /syncV3RealtimeSessions/)
+  assert.match(storeSource, /fetchAndApplyDesktopV3Reconnect/)
+  assert.match(storeSource, /syncV3RealtimeSessionsFromReconnect/)
   assert.match(panelSource, /liveSession\?\.sessionApi\?\.trim\(\)\.toLowerCase\(\) === 'v3'/)
   assert.match(panelSource, /session\.tool\.started/)
   assert.match(panelSource, /session\.tool\.delta/)
@@ -1450,6 +1532,12 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
     const url = String(input)
     if (url === '/v1/auth/desktop/session') {
       return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    if (url === '/v3/sessions:reconnect') {
+      return new Response(JSON.stringify(makeReconnectResponse('session-v3', { runId: 'v3run-session-v3-2', status: 'pending_executor', cursor: 'cursor-4' })), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })
@@ -1537,7 +1625,7 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
     })
 
     const urls = calls.map((entry) => String(entry.input)).sort()
-    assert.deepEqual(urls, ['/v3/sessions/session-v3/messages', '/v3/sessions:workset', '/v1/auth/desktop/session', '/v1/auth/desktop/session'].sort())
+    assert.deepEqual(urls, ['/v3/sessions/session-v3/messages', '/v3/sessions:reconnect', '/v3/sessions:workset', '/v1/auth/desktop/session', '/v1/auth/desktop/session'].sort())
     assert.equal(urls.some((url) => url.startsWith('/v1/swarm/managed-hosts/sessions')), false)
     assert.equal(urls.some((url) => url.startsWith('/v2/sessions')), false)
     assert.deepEqual(websocketURLs.sort(), ['ws://127.0.0.1:7777/v3/realtime/stream?endpoint_cursor=cursor-4', 'ws://127.0.0.1:7777/ws'].sort())
@@ -1555,7 +1643,7 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
     assert.equal(updated.live.runId, 'v3run-session-v3-2')
     assert.equal(updated.live.status, 'starting')
     assert.equal(updated.live.startedAt, 20)
-    assert.equal(updated.live.lastEventType, 'run.pending_executor')
+    assert.equal(updated.live.lastEventType, 'session.run_intent.recorded')
 
     await useDesktopStore.getState().stopRun('session-v3', primaryRoute)
     const stopCall = calls.find((entry) => String(entry.input) === '/v3/sessions/session-v3/run/stop')
@@ -2159,6 +2247,12 @@ test('V3 ensureRunStream opens canonical realtime stream and keeps global /ws se
     const url = String(input)
     if (url === '/v1/auth/desktop/session') {
       return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    if (url === '/v3/sessions:reconnect') {
+      return new Response(JSON.stringify(makeReconnectResponse('session-v3-a', { runId: 'run-session-v3-a', cursor: 'cursor-4' })), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })

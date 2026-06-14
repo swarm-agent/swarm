@@ -27,9 +27,9 @@ import type { DesktopChatRoute } from '../chat/services/chat-routing'
 import { gitStatusQueryKey } from '../git/api'
 import { agentStateQueryOptions, uiSettingsQueryKey } from '../../queries/query-options'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
-import { applyV3RuntimeEnvelope, createV3SnapshotEnvelope, getV3RuntimeDesktopSnapshot, getV3RuntimeSnapshot, installV3RuntimePersistence, normalizeV3RealtimeFrame, restoreV3RuntimeFromPersistence } from '../v3-runtime'
+import { applyV3RuntimeEnvelope, createV3SnapshotEnvelope, getV3RuntimeDesktopSnapshot, installV3RuntimePersistence, normalizeV3RealtimeFrame, restoreV3RuntimeFromPersistence } from '../v3-runtime'
 import { fetchDesktopStateSnapshot } from './desktop-state-snapshot'
-import { fetchAndApplyDesktopV3SessionPermissions } from './desktop-v3-session-api'
+import { fetchAndApplyDesktopV3Reconnect, fetchAndApplyDesktopV3SessionPermissions, type DesktopV3ReconnectSnapshot } from './desktop-v3-session-api'
 import type { DesktopDaemonSnapshot } from './desktop-state'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import { normalizeSwarmSettings, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
@@ -167,6 +167,7 @@ let desktopRealtimeConnectingStartedAt = 0
 let desktopV3RealtimeController: DesktopV3RealtimeController | null = null
 let desktopV3RealtimeEndpointCursor = ''
 let pendingDesktopV3GlobalDiscovery: Promise<DesktopDaemonSnapshot> | null = null
+let pendingDesktopV3Reconnect: Promise<DesktopV3ReconnectSnapshot> | null = null
 let runStreamController: DesktopRunStreamController | null = null
 
 function requireRunStreamController(): DesktopRunStreamController {
@@ -181,14 +182,6 @@ function requireV3RealtimeController(): DesktopV3RealtimeController {
     throw new Error('desktop v3 realtime controller is not initialized')
   }
   return desktopV3RealtimeController
-}
-
-function subscribeDesktopV3RealtimeSession(sessionId: string, endpointCursor?: string | null): Promise<void> {
-  const normalizedSessionId = sessionId.trim()
-  if (!normalizedSessionId) {
-    return Promise.resolve()
-  }
-  return requireV3RealtimeController().subscribeSession(normalizedSessionId, endpointCursor)
 }
 
 if (typeof window !== 'undefined') {
@@ -3276,39 +3269,53 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
   }
 }
 
-function v3RealtimeSubscriptionsForState(state: DesktopStoreState): Array<{ sessionId: string; endpointCursor?: string | null }> {
-  const sessions = new Map<string, DesktopSessionRecord>()
-  for (const session of Object.values(getV3RuntimeDesktopSnapshot().sessionsById)) {
-    sessions.set(session.id, session)
-  }
-  for (const session of Object.values(state.sessions)) {
-    sessions.set(session.id, session)
-  }
-  const subscriptions = new Map<string, { sessionId: string; endpointCursor?: string | null }>()
-  const runtime = getV3RuntimeSnapshot()
-  const runtimeRunIntentsBySessionId = runtime.desktop.runIntentsBySessionId ?? {}
-  const globalEndpointCursor = runtime.cursorsByScope.global?.endpointCursor
-  for (const [sessionId, runIntent] of Object.entries(runtimeRunIntentsBySessionId)) {
-    const id = sessionId.trim() || runIntent.sessionId.trim()
-    if (id && v3RunIntentStatusActive(runIntent.status)) {
-      subscriptions.set(id, { sessionId: id, endpointCursor: desktopV3RealtimeEndpointCursor || runtime.cursorsByScope[`session:${id}`]?.endpointCursor || globalEndpointCursor })
+function applyDesktopV3ReconnectSnapshotToStore(snapshot: DesktopDaemonSnapshot): void {
+  const sessionsById = snapshot.sessionsById ?? {}
+  useDesktopUiStore.setState((state: DesktopStoreState) => {
+    const sessions = { ...state.sessions }
+    for (const sessionId of snapshot.sessionOrder ?? Object.keys(sessionsById)) {
+      const session = sessionsById[sessionId]
+      if (!session?.id) {
+        continue
+      }
+      const merged = mergeExternalSessionRecord(sessions[session.id] ?? null, session)
+      sessions[session.id] = merged
+      syncBlockedSessionToWorkspaceOverview(queryClient, merged)
     }
+    return { sessions }
+  })
+}
+
+async function syncV3RealtimeSessionsFromReconnect(options: { force?: boolean } = {}): Promise<void> {
+  if (!canFetchRelativeDesktopAPI()) {
+    return
   }
-  for (const session of sessions.values()) {
-    const id = session.id.trim()
-    if (!id || (session.sessionApi?.trim().toLowerCase() || 'v3') !== 'v3') {
-      continue
-    }
-    const liveActive = session.live.status === 'starting'
-      || session.live.status === 'running'
-      || session.live.awaitingAck
-      || Boolean(session.live.runId)
-    const runtimeRunIntent = runtimeRunIntentsBySessionId[id]
-    if (liveActive || Boolean(session.lifecycle?.active) || v3RunIntentStatusActive(session.runIntent?.status ?? '') || v3RunIntentStatusActive(runtimeRunIntent?.status ?? '')) {
-      subscriptions.set(id, { sessionId: id, endpointCursor: desktopV3RealtimeEndpointCursor || runtime.cursorsByScope[`session:${id}`]?.endpointCursor || globalEndpointCursor })
-    }
+  if (!pendingDesktopV3Reconnect) {
+    pendingDesktopV3Reconnect = fetchAndApplyDesktopV3Reconnect()
+      .then((result) => {
+        const cursor = result.snapshot.snapshotEndpointCursor?.trim() ?? ''
+        if (cursor) {
+          desktopV3RealtimeEndpointCursor = cursor
+          requireV3RealtimeController().setEndpointCursor(cursor)
+        }
+        applyDesktopV3ReconnectSnapshotToStore(result.snapshot)
+        return result
+      })
+      .finally(() => {
+        pendingDesktopV3Reconnect = null
+      })
   }
-  return Array.from(subscriptions.values())
+  const result = await pendingDesktopV3Reconnect
+  const subscriptions = result.subscriptions.map((subscription) => ({
+    sessionId: subscription.session_id,
+    subscriptionId: subscription.subscription_id,
+    endpointCursor: subscription.endpoint_cursor,
+  }))
+  const controller = requireV3RealtimeController()
+  controller.syncSessions(subscriptions, { resubscribe: Boolean(options.force), replace: true })
+  if (subscriptions.length > 0) {
+    await controller.connect()
+  }
 }
 
 function persistDesktopV3EndpointCursor(payload: RunStreamEventMessage): void {
@@ -3432,7 +3439,9 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
       const merged = mergeExternalSessionRecord(state.sessions[session.id] ?? null, session)
       syncBlockedSessionToWorkspaceOverview(queryClient, merged)
       if ((merged.sessionApi?.trim().toLowerCase() || 'v3') === 'v3') {
-        subscribeDesktopV3RealtimeSession(merged.id, desktopV3RealtimeEndpointCursor)
+        void syncV3RealtimeSessionsFromReconnect().catch((error) => {
+          console.error('[desktop-store] v3 reconnect sync failed', error)
+        })
       }
       const nextActiveWorkspacePath = state.activeSessionId === merged.id
         ? merged.workspacePath || state.activeWorkspacePath
@@ -3995,14 +4004,12 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
     if (!force && !shouldMaintainDesktopRealtime(current)) {
       return
     }
-    const subscriptions = v3RealtimeSubscriptionsForState(current)
-    if (subscriptions.length === 0) {
-      return
-    }
     if (force && !current.realtimeDesired) {
       set({ realtimeDesired: true })
     }
-    requireV3RealtimeController().syncSessions(subscriptions, { resubscribe: force })
+    void syncV3RealtimeSessionsFromReconnect({ force }).catch((error) => {
+      console.error('[desktop-store] v3 reconnect sync failed', error)
+    })
   },
   disconnect: () => {
     const current = get()
@@ -4049,7 +4056,7 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
     if (sessionApi === 'v3') {
       set({ realtimeDesired: true })
       await get().connect()
-      await subscribeDesktopV3RealtimeSession(normalizedSessionId, desktopV3RealtimeEndpointCursor)
+      await syncV3RealtimeSessionsFromReconnect({ force: true })
       requireRunStreamController().close(normalizedSessionId)
       return
     }
@@ -4115,7 +4122,7 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
         await compactSessionV3(targetSessionId, { note: trimmedPrompt, agentName, clientRequestId })
         set({ realtimeDesired: true })
         await get().connect()
-        await subscribeDesktopV3RealtimeSession(targetSessionId, desktopV3RealtimeEndpointCursor)
+        await syncV3RealtimeSessionsFromReconnect({ force: true })
         requestScopedSessionWorkset(targetSessionId, { force: true })
         return
       }
@@ -4133,7 +4140,7 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
         }
         set({ realtimeDesired: true })
         await get().connect()
-        await subscribeDesktopV3RealtimeSession(targetSessionId, desktopV3RealtimeEndpointCursor)
+        await syncV3RealtimeSessionsFromReconnect({ force: true })
         return
       }
 

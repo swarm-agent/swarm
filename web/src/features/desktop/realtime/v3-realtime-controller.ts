@@ -21,6 +21,7 @@ export type DesktopV3RealtimeFrame = RunStreamEventMessage & {
 
 type DesktopV3RealtimeSubscription = {
   sessionId: string
+  subscriptionId?: string | null
   endpointCursor?: string | null
 }
 
@@ -115,7 +116,7 @@ export class DesktopV3RealtimeController {
     this.endpointCursor = options.getEndpointCursor().trim()
   }
 
-  subscribeSession(sessionId: string, endpointCursor?: string | null): Promise<void> {
+  subscribeSession(sessionId: string, endpointCursor?: string | null, subscriptionId?: string | null): Promise<void> {
     const normalizedSessionId = sessionId.trim()
     if (!normalizedSessionId) {
       return Promise.resolve()
@@ -127,9 +128,10 @@ export class DesktopV3RealtimeController {
       this.endpointCursor,
       this.options.getEndpointCursor(),
     )
+    const normalizedSubscriptionId = subscriptionId?.trim() || existing?.subscriptionId || `desktop:${normalizedSessionId}`
     this.subscriptions.set(normalizedSessionId, {
       sessionId: normalizedSessionId,
-      subscriptionId: existing?.subscriptionId || `desktop:${normalizedSessionId}`,
+      subscriptionId: normalizedSubscriptionId,
       endpointCursor: cursor,
     })
     this.desired = true
@@ -143,20 +145,39 @@ export class DesktopV3RealtimeController {
     return this.connect()
   }
 
-  syncSessions(subscriptions: DesktopV3RealtimeSubscription[], options: { resubscribe?: boolean } = {}): void {
-    for (const sub of subscriptions) {
-      this.subscribeSession(sub.sessionId, sub.endpointCursor)
+  syncSessions(subscriptions: DesktopV3RealtimeSubscription[], options: { resubscribe?: boolean; replace?: boolean } = {}): void {
+    const normalized = subscriptions
+      .map((sub) => ({
+        sessionId: sub.sessionId.trim(),
+        subscriptionId: sub.subscriptionId?.trim() || null,
+        endpointCursor: sub.endpointCursor,
+      }))
+      .filter((sub) => sub.sessionId)
+    if (options.replace) {
+      const keep = new Set(normalized.map((sub) => sub.sessionId))
+      for (const sessionId of Array.from(this.subscriptions.keys())) {
+        if (!keep.has(sessionId)) {
+          this.subscriptions.delete(sessionId)
+        }
+      }
     }
-    if (subscriptions.length > 0 && options.resubscribe && this.socket?.readyState === WebSocket.OPEN) {
-      for (const sub of subscriptions) {
-        const entry = this.subscriptions.get(sub.sessionId.trim())
+    for (const sub of normalized) {
+      this.subscribeSession(sub.sessionId, sub.endpointCursor, sub.subscriptionId)
+    }
+    if (this.subscriptions.size === 0) {
+      this.desired = false
+      return
+    }
+    if (normalized.length > 0 && options.resubscribe && this.socket?.readyState === WebSocket.OPEN) {
+      for (const sub of normalized) {
+        const entry = this.subscriptions.get(sub.sessionId)
         if (entry) {
           this.sendSubscribe(this.socket, entry)
         }
       }
       return
     }
-    if (subscriptions.length > 0 && this.desired && (!this.socket || this.socket.readyState === WebSocket.CLOSED)) {
+    if (normalized.length > 0 && this.desired && (!this.socket || this.socket.readyState === WebSocket.CLOSED)) {
       void this.connect()
     }
   }

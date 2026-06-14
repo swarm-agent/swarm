@@ -10,8 +10,8 @@ import type {
   ResolvedSessionPreference,
 } from '../chat/types/chat'
 import type { DesktopPermissionRecord, DesktopSessionRecord, DesktopSessionUsageRecord } from '../types/realtime'
-import type { DesktopState } from './desktop-state'
-import { mergeDesktopStateSnapshot } from './desktop-state-snapshot'
+import type { DesktopState, DesktopDaemonSnapshot } from './desktop-state'
+import { mergeDesktopStateSnapshot, normalizeDesktopStateSnapshot, type DesktopStateWorksetResponseWire, type RunIntentWire } from './desktop-state-snapshot'
 import { applyV3RuntimeEnvelope, createV3EventEnvelope, createV3SnapshotEnvelope } from '../v3-runtime'
 import { getV3RuntimeDesktopSnapshot } from '../v3-runtime/v3-store'
 
@@ -90,6 +90,26 @@ interface PlanHistoryResponseWire {
   revisions?: DesktopSessionPlanWire[]
 }
 
+export interface DesktopV3ReconnectSubscription {
+  protocol: 'v3.realtime'
+  protocol_version: 1
+  kind: 'subscribe.session'
+  session_id: string
+  subscription_id: string
+  endpoint_cursor: string
+}
+
+interface DesktopV3ReconnectResponseWire extends DesktopStateWorksetResponseWire {
+  current_run_intent_by_session?: Record<string, RunIntentWire>
+  subscriptions?: DesktopV3ReconnectSubscription[]
+  diagnostics_by_session?: Record<string, unknown[]>
+}
+
+export interface DesktopV3ReconnectSnapshot {
+  snapshot: DesktopDaemonSnapshot
+  subscriptions: DesktopV3ReconnectSubscription[]
+}
+
 export function assertRawCanonicalDesktopV3SessionId(sessionId: string): string {
   const normalizedSessionId = sessionId.trim()
   if (!normalizedSessionId) {
@@ -160,6 +180,44 @@ export async function fetchAndApplyDesktopV3PlanSnapshot(
     activePlan,
     planRevisions,
   }
+}
+
+export async function fetchAndApplyDesktopV3Reconnect(options: { signal?: AbortSignal } = {}): Promise<DesktopV3ReconnectSnapshot> {
+  const response = await requestJson<DesktopV3ReconnectResponseWire>('/v3/sessions:reconnect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+    signal: options.signal,
+  })
+  const snapshot = normalizeDesktopStateSnapshot(response)
+  const receivedAt = Date.now()
+  applyV3RuntimeEnvelope(createV3SnapshotEnvelope(snapshot, {
+    mode: 'merge',
+    receivedAt,
+    id: `v3-reconnect:${snapshot.rev}:${snapshot.sessionOrder?.join(',') ?? ''}:${receivedAt}`,
+  }))
+  return {
+    snapshot,
+    subscriptions: normalizeDesktopV3ReconnectSubscriptions(response.subscriptions),
+  }
+}
+
+function normalizeDesktopV3ReconnectSubscriptions(source: DesktopV3ReconnectSubscription[] | undefined): DesktopV3ReconnectSubscription[] {
+  return (source ?? [])
+    .map((subscription) => ({
+      protocol: subscription.protocol,
+      protocol_version: subscription.protocol_version,
+      kind: subscription.kind,
+      session_id: String(subscription.session_id ?? '').trim(),
+      subscription_id: String(subscription.subscription_id ?? '').trim(),
+      endpoint_cursor: String(subscription.endpoint_cursor ?? '').trim(),
+    }))
+    .filter((subscription) => subscription.protocol === 'v3.realtime'
+      && subscription.protocol_version === 1
+      && subscription.kind === 'subscribe.session'
+      && subscription.session_id
+      && subscription.subscription_id
+      && subscription.endpoint_cursor)
 }
 
 export async function fetchAndApplyDesktopV3SessionSnapshot(

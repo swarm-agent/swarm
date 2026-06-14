@@ -583,16 +583,6 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		if err := batch.Set([]byte(statusKey), runPayload, nil); err != nil {
 			return V3SessionMutationResult{}, err
 		}
-		activeKey := KeyV3SessionRunIntentActive(runIntent.SessionID)
-		if isV3RunIntentTerminal(runIntent.Status) {
-			if err := batch.Delete([]byte(activeKey), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
-				return V3SessionMutationResult{}, err
-			}
-		} else if runIntent.Status == V3RunIntentRunning {
-			if err := batch.Set([]byte(activeKey), []byte(runIntent.RunID), nil); err != nil {
-				return V3SessionMutationResult{}, err
-			}
-		}
 	}
 	if err := batch.Set([]byte(idempotencyStoreKey), idempotencyPayload, nil); err != nil {
 		return V3SessionMutationResult{}, err
@@ -968,15 +958,23 @@ func (s *SessionStore) GetV3SessionActiveRunIntent(sessionID string) (V3SessionR
 	if sessionID == "" {
 		return V3SessionRunIntent{}, false, errors.New("session id is required")
 	}
-	raw, ok, err := s.store.GetBytes(KeyV3SessionRunIntentActive(sessionID))
-	if err != nil || !ok {
-		return V3SessionRunIntent{}, ok, err
+	intents, err := s.ListV3SessionRunIntents(sessionID, 0, 100000)
+	if err != nil {
+		return V3SessionRunIntent{}, false, err
 	}
-	runID := strings.TrimSpace(string(raw))
-	if runID == "" {
+	var current V3SessionRunIntent
+	for _, intent := range intents {
+		if !isV3RunIntentActive(intent.Status) {
+			continue
+		}
+		if current.RunID == "" || v3RunIntentLess(current, intent) {
+			current = intent
+		}
+	}
+	if current.RunID == "" {
 		return V3SessionRunIntent{}, false, nil
 	}
-	return s.GetV3SessionRunIntent(sessionID, runID)
+	return current, true, nil
 }
 
 func (s *SessionStore) ListV3SessionRunIntents(sessionID string, afterSeq uint64, limit int) ([]V3SessionRunIntent, error) {
@@ -1077,6 +1075,10 @@ func (s *SessionStore) GetV3RealtimeOutbox(endpointSeq uint64) (V3RealtimeOutbox
 		return V3RealtimeOutboxRecord{}, ok, err
 	}
 	return record, true, nil
+}
+
+func (s *SessionStore) CurrentV3RealtimeOutboxRevision() (uint64, error) {
+	return s.readV3RealtimeOutboxSequence()
 }
 
 func (s *SessionStore) CurrentV3RealtimeOutboxCursor() (string, error) {
@@ -1409,12 +1411,47 @@ func (s *SessionStore) validateV3RunIntentTransition(sessionID string, incoming 
 	return incoming, nil
 }
 
+func isV3RunIntentActive(status string) bool {
+	switch strings.TrimSpace(status) {
+	case V3RunIntentPendingExecutor, V3RunIntentRunning:
+		return true
+	default:
+		return false
+	}
+}
+
 func isV3RunIntentTerminal(status string) bool {
 	switch strings.TrimSpace(status) {
 	case V3RunIntentCompleted, V3RunIntentFailed, V3RunIntentCancelled, V3RunIntentExpired, V3RunIntentInterrupted, V3RunIntentDispatchBlocked:
 		return true
 	default:
 		return false
+	}
+}
+
+func v3RunIntentLess(a, b V3SessionRunIntent) bool {
+	aPriority := v3RunIntentPriority(a.Status)
+	bPriority := v3RunIntentPriority(b.Status)
+	if aPriority != bPriority {
+		return aPriority < bPriority
+	}
+	if a.UpdatedAt != b.UpdatedAt {
+		return a.UpdatedAt < b.UpdatedAt
+	}
+	if a.EventSeq != b.EventSeq {
+		return a.EventSeq < b.EventSeq
+	}
+	return strings.TrimSpace(a.RunID) < strings.TrimSpace(b.RunID)
+}
+
+func v3RunIntentPriority(status string) int {
+	switch strings.TrimSpace(status) {
+	case V3RunIntentRunning:
+		return 2
+	case V3RunIntentPendingExecutor:
+		return 1
+	default:
+		return 0
 	}
 }
 

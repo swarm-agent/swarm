@@ -137,6 +137,13 @@ func (s *Service) LastRealtimeOutboxForSessionAtOrBeforeEndpoint(sessionID strin
 	return s.store.LastV3RealtimeOutboxForSessionAtOrBeforeEndpoint(sessionID, endpointSeq)
 }
 
+func (s *Service) CurrentRealtimeOutboxRevision() (uint64, error) {
+	if s == nil || s.store == nil {
+		return 0, errors.New("session store is not configured")
+	}
+	return s.store.CurrentV3RealtimeOutboxRevision()
+}
+
 func (s *Service) CurrentRealtimeOutboxCursor() (string, error) {
 	if s == nil || s.store == nil {
 		return "", errors.New("session store is not configured")
