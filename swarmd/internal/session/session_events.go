@@ -12,6 +12,7 @@ type SessionEvent = pebblestore.V3SessionEvent
 type SessionProjection = pebblestore.V3SessionProjection
 type SessionRunIntent = pebblestore.V3SessionRunIntent
 type SessionRunState = pebblestore.V3SessionRunState
+type SessionRunStateRepairResult = pebblestore.V3SessionRunStateRepairResult
 type SessionReplay = pebblestore.V3SessionReplay
 type RealtimeOutboxRecord = pebblestore.V3RealtimeOutboxRecord
 
@@ -185,6 +186,13 @@ func (s *Service) ListActiveSessionRunStates(accountScopeID string, limit int) (
 		return nil, errors.New("session store is not configured")
 	}
 	return s.store.ListV3ActiveSessionRunStates(accountScopeID, limit)
+}
+
+func (s *Service) RepairSessionRunStatesFromLegacyRunIntents(accountScopeID string, limit int) (SessionRunStateRepairResult, error) {
+	if s == nil || s.store == nil {
+		return SessionRunStateRepairResult{}, errors.New("session store is not configured")
+	}
+	return s.store.RepairV3SessionRunStatesFromLegacyRunIntents(accountScopeID, limit)
 }
 
 func (s *Service) ListSessionRunIntents(sessionID string, afterSeq uint64, limit int) ([]SessionRunIntent, error) {

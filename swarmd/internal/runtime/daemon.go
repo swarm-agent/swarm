@@ -163,6 +163,14 @@ func New(cfg config.Config) (*Daemon, error) {
 	topologyStore := pebblestore.NewTopologyStore(store)
 	swarmStore := pebblestore.NewSwarmStore(store, topologyStore)
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
+	if repair, err := sessionSvc.RepairSessionRunStatesFromLegacyRunIntents("", 0); err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("repair v3 canonical run-state from legacy run intents: %w", err)
+	} else if repair.RepairedSessions > 0 {
+		log.Printf("repaired %d V3 canonical run-state records from legacy run intents", repair.RepairedSessions)
+	}
 	sessionSvc.SetHostedSync(sessionruntime.NewHostedSyncClient(cfg.ConfigPath, swarmStore))
 	sessionSvc.SetLocalSwarmIDResolver(func() string {
 		localNode, ok, err := swarmStore.GetLocalNode()

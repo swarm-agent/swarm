@@ -191,3 +191,131 @@ func TestV3RunIntentPreservesCreatedAtAcrossStatusTransitions(t *testing.T) {
 		t.Fatalf("failed indexed intents = %+v", failedIndexed)
 	}
 }
+
+func TestRepairV3SessionRunStateBackfillsLegacyRunIntentsOnly(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "session-legacy-repair")
+	createV3SessionForTest(t, sessions, "session-lifecycle-only")
+
+	legacyPending := V3SessionRunIntent{
+		SessionID:      "session-legacy-repair",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		RunID:          "run-pending-old",
+		Status:         V3RunIntentPendingExecutor,
+		CreatedAt:      2000,
+		UpdatedAt:      3000,
+		EventSeq:       2,
+	}
+	legacyRunning := V3SessionRunIntent{
+		SessionID:      "session-legacy-repair",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		RunID:          "run-running-new",
+		Status:         V3RunIntentRunning,
+		CreatedAt:      2500,
+		UpdatedAt:      3500,
+		EventSeq:       3,
+	}
+	if err := store.PutJSON(KeyV3SessionRunIntent(legacyPending.SessionID, legacyPending.RunID), legacyPending); err != nil {
+		t.Fatalf("seed legacy pending intent: %v", err)
+	}
+	if err := store.PutJSON(KeyV3SessionRunIntentStatus(legacyPending.Status, legacyPending.UpdatedAt, legacyPending.AccountScopeID, legacyPending.SessionID, legacyPending.RunID), legacyPending); err != nil {
+		t.Fatalf("seed pending status index: %v", err)
+	}
+	if err := store.PutJSON(KeyV3SessionRunIntent(legacyRunning.SessionID, legacyRunning.RunID), legacyRunning); err != nil {
+		t.Fatalf("seed legacy running intent: %v", err)
+	}
+	if err := store.PutJSON(KeyV3SessionRunIntentStatus(legacyRunning.Status, legacyRunning.UpdatedAt, legacyRunning.AccountScopeID, legacyRunning.SessionID, legacyRunning.RunID), legacyRunning); err != nil {
+		t.Fatalf("seed running status index: %v", err)
+	}
+	if err := store.PutJSON(KeySessionLifecycle("session-lifecycle-only"), SessionLifecycleSnapshot{
+		SessionID:      "session-lifecycle-only",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		RunID:          "run-lifecycle-only",
+		Active:         true,
+		Phase:          "running",
+		StartedAt:      2600,
+		UpdatedAt:      3600,
+	}); err != nil {
+		t.Fatalf("seed lifecycle-only active: %v", err)
+	}
+
+	repair, err := sessions.RepairV3SessionRunStatesFromLegacyRunIntents("account-1", 0)
+	if err != nil {
+		t.Fatalf("repair legacy run states: %v", err)
+	}
+	if repair.CandidateSessions != 1 || repair.RepairedSessions != 1 || repair.SkippedCanonical != 0 {
+		t.Fatalf("repair summary = %+v", repair)
+	}
+	state, ok, err := sessions.GetV3SessionRunState("session-legacy-repair")
+	if err != nil || !ok {
+		t.Fatalf("load repaired run state ok=%v err=%v", ok, err)
+	}
+	if !state.Active || state.RunID != "run-running-new" || state.Status != V3RunIntentRunning || state.EventSeq != 3 || state.StartedAt != 2500 {
+		t.Fatalf("repaired run state = %+v", state)
+	}
+	active, ok, err := sessions.GetV3SessionActiveRunIntent("session-legacy-repair")
+	if err != nil || !ok || active.RunID != "run-running-new" {
+		t.Fatalf("active run after repair ok=%v err=%v intent=%+v", ok, err, active)
+	}
+	if lifecycleState, ok, err := sessions.GetV3SessionRunState("session-lifecycle-only"); err != nil || ok {
+		t.Fatalf("lifecycle-only record must not repair canonical run state ok=%v err=%v state=%+v", ok, err, lifecycleState)
+	}
+}
+
+func TestRepairV3SessionRunStateDoesNotOverwriteCanonicalInactive(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "session-canonical-inactive")
+
+	legacyRunning := V3SessionRunIntent{
+		SessionID:      "session-canonical-inactive",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		RunID:          "run-stale-running",
+		Status:         V3RunIntentRunning,
+		CreatedAt:      2000,
+		UpdatedAt:      3000,
+		EventSeq:       2,
+	}
+	canonicalTerminal := V3SessionRunIntent{
+		SessionID:      "session-canonical-inactive",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		RunID:          "run-terminal",
+		Status:         V3RunIntentCompleted,
+		CreatedAt:      4000,
+		UpdatedAt:      5000,
+		EventSeq:       4,
+	}
+	if err := store.PutJSON(KeyV3SessionRunIntent(legacyRunning.SessionID, legacyRunning.RunID), legacyRunning); err != nil {
+		t.Fatalf("seed stale running intent: %v", err)
+	}
+	if err := store.PutJSON(KeyV3SessionRunIntentStatus(legacyRunning.Status, legacyRunning.UpdatedAt, legacyRunning.AccountScopeID, legacyRunning.SessionID, legacyRunning.RunID), legacyRunning); err != nil {
+		t.Fatalf("seed stale running status index: %v", err)
+	}
+	if err := store.PutJSON(KeyV3SessionRunIntentActive("session-canonical-inactive"), v3SessionRunStateFromIntent(canonicalTerminal)); err != nil {
+		t.Fatalf("seed canonical inactive run state: %v", err)
+	}
+
+	repair, err := sessions.RepairV3SessionRunStatesFromLegacyRunIntents("account-1", 0)
+	if err != nil {
+		t.Fatalf("repair legacy run states: %v", err)
+	}
+	if repair.CandidateSessions != 1 || repair.RepairedSessions != 0 || repair.SkippedCanonical != 1 {
+		t.Fatalf("repair summary = %+v", repair)
+	}
+	state, ok, err := sessions.GetV3SessionRunState("session-canonical-inactive")
+	if err != nil || !ok {
+		t.Fatalf("load canonical inactive ok=%v err=%v", ok, err)
+	}
+	if state.Active || state.RunID != "run-terminal" || state.Status != V3RunIntentCompleted {
+		t.Fatalf("canonical inactive was overwritten by repair: %+v", state)
+	}
+	if active, ok, err := sessions.GetV3SessionActiveRunIntent("session-canonical-inactive"); err != nil || ok {
+		t.Fatalf("canonical inactive must win over stale legacy scan ok=%v err=%v intent=%+v", ok, err, active)
+	}
+}

@@ -991,7 +991,19 @@ func (s *SessionStore) GetV3SessionRunState(sessionID string) (V3SessionRunState
 	if sessionID == "" {
 		return V3SessionRunState{}, false, errors.New("session id is required")
 	}
-	return getV3SessionRunStateFromReader(s.store.db, sessionID)
+	state, ok, err := getV3SessionRunStateFromReader(s.store.db, sessionID)
+	if err != nil || ok {
+		return state, ok, err
+	}
+	// Lazy legacy repair: old V3 data predates the canonical run-state key.
+	// Repair is deliberately sourced only from persisted non-terminal run intents,
+	// never from lifecycle records, and only when no canonical state exists.
+	if repaired, err := s.repairV3SessionRunStateForSession(sessionID); err != nil {
+		return V3SessionRunState{}, false, err
+	} else if repaired {
+		return getV3SessionRunStateFromReader(s.store.db, sessionID)
+	}
+	return V3SessionRunState{}, false, nil
 }
 
 func (s *SessionStore) GetV3SessionActiveRunIntent(sessionID string) (V3SessionRunIntent, bool, error) {
@@ -1003,6 +1015,9 @@ func (s *SessionStore) GetV3SessionActiveRunIntent(sessionID string) (V3SessionR
 }
 
 func (s *SessionStore) ListV3ActiveSessionRunStates(accountScopeID string, limit int) ([]V3SessionRunState, error) {
+	if _, err := s.RepairV3SessionRunStatesFromLegacyRunIntents(accountScopeID, 0); err != nil {
+		return nil, err
+	}
 	return listV3ActiveSessionRunStatesFromReader(s.store.db, accountScopeID, limit)
 }
 
@@ -1040,6 +1055,129 @@ func listV3ActiveSessionRunStatesFromReader(reader pebble.Reader, accountScopeID
 		return len(out) < limit, nil
 	})
 	return out, err
+}
+
+// V3SessionRunStateRepairResult summarizes legacy run-intent repair into the
+// canonical V3 run-state key. Repair candidates come only from non-terminal
+// run intents; lifecycle records are intentionally ignored.
+type V3SessionRunStateRepairResult struct {
+	CandidateSessions int `json:"candidate_sessions"`
+	RepairedSessions  int `json:"repaired_sessions"`
+	SkippedCanonical  int `json:"skipped_canonical"`
+}
+
+// RepairV3SessionRunStatesFromLegacyRunIntents backfills canonical run-state
+// records for legacy stores that have non-terminal run intents but no
+// v3/session_run_intent_active/<session_id> record. If multiple legacy
+// non-terminal intents exist for one session, the repair deterministically picks
+// the latest current run by: running over pending, latest updated_at, latest
+// event_seq, then lexicographically greatest run_id. Existing canonical records
+// are never overwritten, including inactive terminal records; canonical state is
+// the single source of truth once present.
+func (s *SessionStore) RepairV3SessionRunStatesFromLegacyRunIntents(accountScopeID string, limit int) (V3SessionRunStateRepairResult, error) {
+	if s == nil || s.store == nil {
+		return V3SessionRunStateRepairResult{}, errors.New("session store is not configured")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if limit <= 0 {
+		limit = 10000
+	}
+	candidates := make(map[string][]V3SessionRunIntent)
+	appendCandidates := func(status string) error {
+		intents, err := s.ListV3SessionRunIntentsByStatus(status, limit)
+		if err != nil {
+			return err
+		}
+		for _, intent := range intents {
+			sessionID := strings.TrimSpace(intent.SessionID)
+			if sessionID == "" || strings.TrimSpace(intent.RunID) == "" || !isV3RunIntentActive(intent.Status) {
+				continue
+			}
+			if accountScopeID != "" && strings.TrimSpace(intent.AccountScopeID) != accountScopeID {
+				continue
+			}
+			candidates[sessionID] = append(candidates[sessionID], intent)
+		}
+		return nil
+	}
+	if err := appendCandidates(V3RunIntentPendingExecutor); err != nil {
+		return V3SessionRunStateRepairResult{}, err
+	}
+	if err := appendCandidates(V3RunIntentRunning); err != nil {
+		return V3SessionRunStateRepairResult{}, err
+	}
+	result := V3SessionRunStateRepairResult{CandidateSessions: len(candidates)}
+	if len(candidates) == 0 {
+		return result, nil
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	for sessionID, intents := range candidates {
+		if _, ok, err := getV3SessionRunStateFromReader(s.store.db, sessionID); err != nil {
+			return V3SessionRunStateRepairResult{}, err
+		} else if ok {
+			result.SkippedCanonical++
+			continue
+		}
+		selected := selectV3LegacyRunStateRepairCandidate(intents)
+		if strings.TrimSpace(selected.RunID) == "" {
+			continue
+		}
+		if err := s.setV3SessionRunStateInBatch(batch, selected, V3SessionRunState{}, false); err != nil {
+			return V3SessionRunStateRepairResult{}, err
+		}
+		result.RepairedSessions++
+	}
+	if result.RepairedSessions == 0 {
+		return result, nil
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return V3SessionRunStateRepairResult{}, err
+	}
+	return result, nil
+}
+
+func (s *SessionStore) repairV3SessionRunStateForSession(sessionID string) (bool, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return false, errors.New("session id is required")
+	}
+	intents, err := s.ListV3SessionRunIntents(sessionID, 0, 10000)
+	if err != nil {
+		return false, err
+	}
+	candidates := make([]V3SessionRunIntent, 0, len(intents))
+	for _, intent := range intents {
+		if strings.TrimSpace(intent.SessionID) == sessionID && strings.TrimSpace(intent.RunID) != "" && isV3RunIntentActive(intent.Status) {
+			candidates = append(candidates, intent)
+		}
+	}
+	selected := selectV3LegacyRunStateRepairCandidate(candidates)
+	if strings.TrimSpace(selected.RunID) == "" {
+		return false, nil
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if err := s.setV3SessionRunStateInBatch(batch, selected, V3SessionRunState{}, false); err != nil {
+		return false, err
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func selectV3LegacyRunStateRepairCandidate(intents []V3SessionRunIntent) V3SessionRunIntent {
+	var selected V3SessionRunIntent
+	for _, intent := range intents {
+		if !isV3RunIntentActive(intent.Status) {
+			continue
+		}
+		if strings.TrimSpace(selected.RunID) == "" || v3RunIntentLess(selected, intent) {
+			selected = intent
+		}
+	}
+	return selected
 }
 
 func (s *SessionStore) ListV3SessionRunIntents(sessionID string, afterSeq uint64, limit int) ([]V3SessionRunIntent, error) {

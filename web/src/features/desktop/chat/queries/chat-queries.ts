@@ -847,7 +847,16 @@ function v3RunIntentStatusActive(status: string): boolean {
 
 function applyActiveRunIntent(session: DesktopSessionRecord, runIntent: DesktopRunIntentRecord | null): DesktopSessionRecord {
   if (!runIntent || !v3RunIntentStatusActive(runIntent.status)) {
-    return { ...session, runIntent: null };
+    return {
+      ...session,
+      runIntent: null,
+      live: {
+        ...session.live,
+        runId: null,
+        startedAt: null,
+        status: session.live.status === "error" ? "error" : "idle",
+      },
+    };
   }
   return {
     ...session,
@@ -901,13 +910,12 @@ function mapSession(session: SessionWire): DesktopSessionRecord {
         }
       : null;
   const normalizedLifecyclePhase = lifecycle?.phase.trim().toLowerCase() ?? "";
-  const liveStatus = lifecycle?.active
-    ? ((["starting", "running", "blocked"].includes(normalizedLifecyclePhase)
-        ? normalizedLifecyclePhase
-        : "running") as DesktopSessionRecord["live"]["status"])
-    : normalizedLifecyclePhase === "errored"
-      ? "error"
-      : "idle";
+  const terminalLifecycleSummary = normalizedLifecyclePhase === "errored"
+    ? (lifecycle?.error ?? lifecycle?.stopReason ?? null)
+    : (lifecycle?.stopReason ?? null);
+  const terminalLifecycleError = normalizedLifecyclePhase === "errored"
+    ? (lifecycle?.error ?? lifecycle?.stopReason ?? null)
+    : null;
   const metadata =
     session.metadata && typeof session.metadata === "object"
       ? (session.metadata as Record<string, unknown>)
@@ -997,22 +1005,9 @@ function mapSession(session: SessionWire): DesktopSessionRecord {
     runIntent: null,
     live: {
       ...emptyLiveState(),
-      runId: lifecycle?.active ? lifecycle.runId : null,
-      startedAt:
-        lifecycle?.active && lifecycle.startedAt > 0
-          ? lifecycle.startedAt
-          : null,
-      status: liveStatus,
       lastEventAt: lifecycle?.updatedAt ? lifecycle.updatedAt : null,
-      summary: lifecycle?.active
-        ? null
-        : normalizedLifecyclePhase === "errored"
-          ? (lifecycle?.error ?? lifecycle?.stopReason ?? null)
-          : (lifecycle?.stopReason ?? null),
-      error:
-        normalizedLifecyclePhase === "errored"
-          ? (lifecycle?.error ?? lifecycle?.stopReason ?? null)
-          : null,
+      summary: terminalLifecycleSummary,
+      error: terminalLifecycleError,
     },
     pendingPermissions: [],
     pendingPermissionCount: 0,
