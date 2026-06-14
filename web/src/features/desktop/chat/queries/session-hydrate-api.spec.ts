@@ -55,6 +55,19 @@ async function withFetchStub(
       })
     }
 
+    const v3PermissionsMatch = /^\/v3\/sessions\/([^/?]+)\/permissions\?status=pending&limit=200$/.exec(url)
+    if (v3PermissionsMatch) {
+      const sessionId = decodeURIComponent(v3PermissionsMatch[1])
+      return jsonResponse({
+        ok: true,
+        session_id: sessionId,
+        count: 1,
+        permissions: [
+          { id: `${sessionId}-perm-1`, session_id: sessionId, run_id: 'run-1', call_id: 'call-1', tool_name: 'bash', tool_arguments: '{}', status: 'pending', requirement: 'approval', mode: 'auto', created_at: 6, updated_at: 6 },
+        ],
+      })
+    }
+
     const v3MetadataMatch = /^\/v3\/sessions\/([^/?]+)\/metadata$/.exec(url)
     if (v3MetadataMatch) {
       const sessionId = decodeURIComponent(v3MetadataMatch[1])
@@ -252,7 +265,6 @@ function v3WorksetPayload(sessionIds: string[], options: { includeMessages?: boo
   const projectionsBySession: Record<string, unknown> = {}
   const messagesBySession: Record<string, unknown[]> = {}
   const eventsBySession: Record<string, unknown[]> = {}
-  const permissionsBySession: Record<string, unknown[]> = {}
   const runIntentsBySession: Record<string, unknown[]> = {}
   const historyManifestsBySession: Record<string, unknown[]> = {}
 
@@ -262,7 +274,6 @@ function v3WorksetPayload(sessionIds: string[], options: { includeMessages?: boo
     projectionsBySession[sessionId] = payload.projection
     messagesBySession[sessionId] = options.includeMessages ? payload.messages : []
     eventsBySession[sessionId] = []
-    permissionsBySession[sessionId] = payload.pending_permissions
     runIntentsBySession[sessionId] = payload.active_run_intent ? [payload.active_run_intent] : []
     historyManifestsBySession[sessionId] = []
   }
@@ -274,7 +285,6 @@ function v3WorksetPayload(sessionIds: string[], options: { includeMessages?: boo
     projections_by_session: projectionsBySession,
     messages_by_session: messagesBySession,
     events_by_session: eventsBySession,
-    permissions_by_session: permissionsBySession,
     run_intents_by_session: runIntentsBySession,
     history_manifests_by_session: historyManifestsBySession,
     history_chunks_by_id: {},
@@ -442,6 +452,23 @@ test('prefetchSessionRuntimeData hydrates metadata then the 200-message V3 tail 
   queryClient.clear()
 })
 
+test('sessionPermissionsQueryOptions uses the dedicated V3 session permissions API', async () => {
+  const { sessionPermissionsQueryOptions } = await import('../../../queries/query-options')
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+
+  await withFetchStub(async (calls) => {
+    const permissions = await queryClient.fetchQuery(sessionPermissionsQueryOptions('session-permissions', queryClient))
+
+    assert.equal(permissions[0]?.id, 'session-permissions-perm-1')
+    assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-permissions/permissions?status=pending&limit=200'])
+    assertNoV1OrV2SessionDataCalls(calls)
+  })
+
+  queryClient.clear()
+})
+
 test('sessionUsageQueryOptions uses the dedicated V3 session usage API', async () => {
   const { sessionUsageQueryOptions } = await import('../../../queries/query-options')
   const queryClient = new QueryClient({
@@ -494,6 +521,7 @@ test('DesktopChatPanel uses V3-native preference and mode paths', async () => {
   assert.match(source, /useDesktopPreference\(sessionId\)/)
   assert.match(source, /sessionPreferenceQueryOptions\(sessionId \?\? '', queryClient\)/)
   assert.match(source, /sessionUsageQueryOptions\(sessionId \?\? '', queryClient\)/)
+  assert.match(source, /sessionPermissionsQueryOptions\(sessionId \?\? '', queryClient\)/)
   assert.match(source, /useDesktopMessages\(sessionId\)/)
   assert.match(source, /useDesktopActiveRun\(sessionId\)/)
   assert.doesNotMatch(source, /sessionMessagesQueryOptions\(sessionId \?\? '', queryClient\)/)
@@ -611,7 +639,7 @@ test('Desktop realtime applies durable session events into the external Desktop 
   assert.deepEqual(snapshot.messagesBySessionId[sessionId]?.map((message) => message.id), ['msg-external-1'])
 })
 
-test('Desktop V3 has no standalone permission list or usage subresource helpers', async () => {
+test('Desktop V3 pending permission and usage helpers live outside legacy chat queries', async () => {
   const source = await readFile(new URL('./chat-queries.ts', import.meta.url), 'utf8')
 
   assert.doesNotMatch(source, /export async function fetchSessionPendingPermissions/)

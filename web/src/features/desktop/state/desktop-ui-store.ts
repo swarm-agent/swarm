@@ -29,6 +29,7 @@ import { agentStateQueryOptions, uiSettingsQueryKey } from '../../queries/query-
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { applyV3RuntimeEnvelope, createV3SnapshotEnvelope, getV3RuntimeDesktopSnapshot, getV3RuntimeSnapshot, installV3RuntimePersistence, normalizeV3RealtimeFrame, restoreV3RuntimeFromPersistence } from '../v3-runtime'
 import { fetchDesktopStateSnapshot } from './desktop-state-snapshot'
+import { fetchAndApplyDesktopV3SessionPermissions } from './desktop-v3-session-api'
 import type { DesktopDaemonSnapshot } from './desktop-state'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import { normalizeSwarmSettings, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
@@ -3466,7 +3467,7 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
     if (!normalizedSessionId) {
       return
     }
-    requestScopedSessionWorkset(normalizedSessionId)
+    await fetchAndApplyDesktopV3SessionPermissions(normalizedSessionId)
   },
   refreshNotifications: async () => {
     set((state: DesktopStoreState) => ({

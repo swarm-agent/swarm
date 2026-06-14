@@ -3,8 +3,7 @@ import { dedupeAndTrimMessages } from '../chat/services/message-cache'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { applyCanonicalReasoningEventToLiveHistory } from './live-reasoning-history'
 import type { ChatMessageRecord } from '../chat/types/chat'
-import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
-import type { DesktopPermissionRecord, DesktopRunIntentRecord, DesktopSessionRecord } from '../types/realtime'
+import type { DesktopRunIntentRecord, DesktopSessionRecord } from '../types/realtime'
 import type { DesktopDaemonSnapshot, DesktopSessionReadinessRecord, DesktopWorkspaceRecord } from './desktop-state'
 import { applyV3RuntimeEnvelope, createV3SnapshotEnvelope } from '../v3-runtime'
 
@@ -101,25 +100,6 @@ interface MessageWire {
   metadata?: Record<string, unknown>
 }
 
-interface PermissionWire {
-  id?: string
-  session_id?: string
-  run_id?: string
-  call_id?: string
-  tool_name?: string
-  tool_arguments?: string
-  approved_arguments?: string
-  status?: string
-  decision?: string
-  reason?: string
-  requirement?: string
-  mode?: string
-  created_at?: number
-  updated_at?: number
-  resolved_at?: number
-  permission_requested_at?: number
-}
-
 interface RunIntentWire {
   session_id?: string
   run_id?: string
@@ -146,7 +126,6 @@ interface DesktopStateWorksetResponseWire {
   sessions_by_id?: Record<string, SessionWire>
   messages_by_session?: Record<string, MessageWire[]>
   events_by_session?: Record<string, EventWire[]>
-  permissions_by_session?: Record<string, PermissionWire[]>
   run_intents_by_session?: Record<string, RunIntentWire[]>
   session_order?: string[]
 }
@@ -216,9 +195,8 @@ function desktopStateSnapshotEnvelopeId(mode: 'replace' | 'merge', snapshot: Des
 
 export function normalizeDesktopStateSnapshot(response: DesktopStateWorksetResponseWire): DesktopDaemonSnapshot {
   assertSnapshotRevision(response.rev)
-  const permissionsBySessionId = mapPermissionsBySession(response.permissions_by_session)
   const rawRunIntentsBySessionId = latestRunIntentBySessionId(response.run_intents_by_session)
-  const sessionsById = mapSessions(response.sessions_by_id, permissionsBySessionId, rawRunIntentsBySessionId)
+  const sessionsById = mapSessions(response.sessions_by_id, rawRunIntentsBySessionId)
   const runIntentsBySessionId = activeRunIntentsForNonTerminalSessions(rawRunIntentsBySessionId, sessionsById)
   applyReasoningEventsBySession(sessionsById, response.events_by_session)
   const sessionOrder = normalizeSessionOrder(sessionsById, response.session_order)
@@ -234,7 +212,7 @@ export function normalizeDesktopStateSnapshot(response: DesktopStateWorksetRespo
     sessionsById,
     sessionOrder,
     messagesBySessionId: mapMessagesBySession(response.messages_by_session),
-    permissionsById: permissionsById(permissionsBySessionId),
+    permissionsById: {},
     plansBySessionId: {},
     planRevisionsBySessionId: {},
     usageBySessionId: {},
@@ -313,17 +291,13 @@ function applyReasoningEventsBySession(
 
 function mapSessions(
   source: Record<string, SessionWire> | undefined,
-  permissionsBySessionId: Record<string, DesktopPermissionRecord[]>,
   runIntentsBySessionId: Record<string, DesktopRunIntentRecord>,
 ): Record<string, DesktopSessionRecord> {
   const sessions: Record<string, DesktopSessionRecord> = {}
   for (const [fallbackId, session] of Object.entries(source ?? {})) {
     const explicitId = String(session.id ?? '').trim()
-    const pendingPermissions = explicitId && explicitId !== fallbackId
-      ? [...(permissionsBySessionId[fallbackId] ?? []), ...(permissionsBySessionId[explicitId] ?? [])]
-      : permissionsBySessionId[fallbackId] ?? []
     const topLevelRunIntent = runIntentsBySessionId[explicitId] ?? runIntentsBySessionId[fallbackId] ?? null
-    const mapped = mapSession(session, fallbackId, pendingPermissions, topLevelRunIntent)
+    const mapped = mapSession(session, fallbackId, topLevelRunIntent)
     if (mapped.id) {
       sessions[mapped.id] = mapped
     }
@@ -331,7 +305,7 @@ function mapSessions(
   return sessions
 }
 
-function mapSession(session: SessionWire, fallbackId = '', pendingPermissions: DesktopPermissionRecord[] = [], topLevelRunIntent: DesktopRunIntentRecord | null = null): DesktopSessionRecord {
+function mapSession(session: SessionWire, fallbackId = '', topLevelRunIntent: DesktopRunIntentRecord | null = null): DesktopSessionRecord {
   const id = String(session.id ?? fallbackId).trim()
   const lifecycle = session.lifecycle && typeof session.lifecycle === 'object'
     ? {
@@ -349,16 +323,9 @@ function mapSession(session: SessionWire, fallbackId = '', pendingPermissions: D
       }
     : null
   const mode = String(session.mode ?? 'auto').trim() || 'auto'
-  const sessionPendingPermissions = pendingPermissions.filter((permission) => permission.sessionId === id && permission.status.trim().toLowerCase() === 'pending')
-  const pendingPermissionCount = countApprovalRequiredPermissions(sessionPendingPermissions, mode)
   const baseLive = emptyLiveState()
   const mappedRunIntent = session.run_intent ? mapRunIntent(session.run_intent) : topLevelRunIntent
   const runIntent = lifecycle && !lifecycle.active ? null : mappedRunIntent
-  if (!lifecycle && pendingPermissionCount > 0) {
-    baseLive.status = 'blocked'
-    baseLive.lastEventType = 'permission.requested'
-    baseLive.lastEventAt = Math.max(...sessionPendingPermissions.map((permission) => permission.permissionRequestedAt || permission.updatedAt || permission.createdAt || 0), 0) || null
-  }
   if (lifecycle?.active) {
     baseLive.runId = lifecycle.runId
     baseLive.startedAt = lifecycle.startedAt > 0 ? lifecycle.startedAt : null
@@ -388,7 +355,7 @@ function mapSession(session: SessionWire, fallbackId = '', pendingPermissions: D
     messageCount: numberValue(session.message_count),
     updatedAt: numberValue(session.updated_at),
     createdAt: numberValue(session.created_at),
-    permissionsHydrated: true,
+    permissionsHydrated: false,
     worktreeEnabled: Boolean(session.worktree_enabled),
     worktreeRootPath: String(session.worktree_root_path ?? '').trim(),
     worktreeBaseBranch: String(session.worktree_base_branch ?? '').trim(),
@@ -411,8 +378,8 @@ function mapSession(session: SessionWire, fallbackId = '', pendingPermissions: D
     lifecycle,
     runIntent,
     live: baseLive,
-    pendingPermissions: sessionPendingPermissions,
-    pendingPermissionCount,
+    pendingPermissions: [],
+    pendingPermissionCount: 0,
     usage: null,
   }
 }
@@ -461,57 +428,6 @@ function mapMessage(message: MessageWire): ChatMessageRecord {
     createdAt: numberValue(message.created_at),
     metadata: message.metadata,
     toolMessage: parseStructuredToolMessage(content),
-  }
-}
-
-function mapPermissionsBySession(source: Record<string, PermissionWire[]> | undefined): Record<string, DesktopPermissionRecord[]> {
-  const permissionsBySessionId: Record<string, DesktopPermissionRecord[]> = {}
-  for (const [sessionId, records] of Object.entries(source ?? {})) {
-    const mapped = (records ?? [])
-      .map(mapPermission)
-      .filter((permission) => permission.id && permission.sessionId && permission.status.trim().toLowerCase() === 'pending')
-      .sort((left, right) =>
-        (right.permissionRequestedAt - left.permissionRequestedAt)
-        || (right.updatedAt - left.updatedAt)
-        || left.id.localeCompare(right.id),
-      )
-    if (mapped.length > 0) {
-      permissionsBySessionId[sessionId] = mapped
-    }
-  }
-  return permissionsBySessionId
-}
-
-function permissionsById(source: Record<string, DesktopPermissionRecord[]> | undefined): Record<string, DesktopPermissionRecord> {
-  const permissions: Record<string, DesktopPermissionRecord> = {}
-  for (const records of Object.values(source ?? {})) {
-    for (const permission of records ?? []) {
-      if (permission.id) {
-        permissions[permission.id] = permission
-      }
-    }
-  }
-  return permissions
-}
-
-function mapPermission(permission: PermissionWire): DesktopPermissionRecord {
-  return {
-    id: String(permission.id ?? '').trim(),
-    sessionId: String(permission.session_id ?? '').trim(),
-    runId: String(permission.run_id ?? '').trim(),
-    callId: String(permission.call_id ?? '').trim(),
-    toolName: String(permission.tool_name ?? '').trim(),
-    toolArguments: String(permission.tool_arguments ?? ''),
-    approvedArguments: typeof permission.approved_arguments === 'string' ? permission.approved_arguments : undefined,
-    status: String(permission.status ?? '').trim(),
-    decision: String(permission.decision ?? '').trim(),
-    reason: String(permission.reason ?? '').trim(),
-    requirement: String(permission.requirement ?? '').trim(),
-    mode: String(permission.mode ?? '').trim(),
-    createdAt: numberValue(permission.created_at),
-    updatedAt: numberValue(permission.updated_at),
-    resolvedAt: numberValue(permission.resolved_at),
-    permissionRequestedAt: numberValue(permission.permission_requested_at),
   }
 }
 

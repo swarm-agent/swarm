@@ -1057,7 +1057,6 @@ test('desktop V3 realtime controller consumes backend stream frames and renders 
         snapshot_endpoint_cursor: 'cursor-31005',
         sessions_by_id: {},
         messages_by_session: {},
-        permissions_by_session: {},
         session_order: [],
       }), {
         status: 200,

@@ -9,6 +9,7 @@ import {
   agentStateQueryOptions,
   draftModelQueryOptions,
   modelOptionsQueryOptions,
+  sessionPermissionsQueryOptions,
   sessionPreferenceQueryOptions,
   sessionUsageQueryOptions,
   uiSettingsQueryKey,
@@ -1318,6 +1319,12 @@ export function DesktopChatPanel({
     ...sessionUsageQueryOptions(sessionId ?? '', queryClient),
     enabled: Boolean(sessionId),
     initialData: liveSession?.usage ?? undefined,
+  })
+
+  useQuery({
+    ...sessionPermissionsQueryOptions(sessionId ?? '', queryClient),
+    enabled: Boolean(sessionId),
+    initialData: liveSession?.permissionsHydrated ? liveSession.pendingPermissions : undefined,
   })
 
   const draftPreferenceQuery = useQuery({

@@ -235,8 +235,8 @@ export function mergeSessionRecords(existing: DesktopSessionRecord | null, incom
     lifecycle: incoming.lifecycle ?? existing.lifecycle,
     runIntent: mergeSessionRunIntent(existing.runIntent, incoming.runIntent, mergedLive),
     live: mergedLive,
-    pendingPermissions: incoming.pendingPermissions,
-    pendingPermissionCount: incoming.pendingPermissionCount,
+    pendingPermissions: incoming.permissionsHydrated ? incoming.pendingPermissions : existing.pendingPermissions,
+    pendingPermissionCount: incoming.permissionsHydrated ? incoming.pendingPermissionCount : existing.pendingPermissionCount,
     usage: incoming.usage ?? existing.usage,
   }
 }

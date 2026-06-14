@@ -1,6 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { fetchAgentState, fetchAgentToolContract, fetchDraftModelPreference, fetchModelOptions } from '../desktop/chat/queries/chat-queries'
-import { fetchAndApplyDesktopV3SessionMessagesTail, fetchAndApplyDesktopV3SessionPreference, fetchAndApplyDesktopV3SessionSnapshot, fetchAndApplyDesktopV3SessionUsage } from '../desktop/state/desktop-v3-session-api'
+import { fetchAndApplyDesktopV3SessionMessagesTail, fetchAndApplyDesktopV3SessionPermissions, fetchAndApplyDesktopV3SessionPreference, fetchAndApplyDesktopV3SessionSnapshot, fetchAndApplyDesktopV3SessionUsage } from '../desktop/state/desktop-v3-session-api'
 import { getUISettings } from '../desktop/settings/swarm/queries/get-ui-settings'
 import { fetchWorkspaceOverview } from '../workspaces/launcher/queries/fetch-workspace-overview'
 
@@ -72,6 +72,23 @@ export function sessionPreferenceQueryOptions(sessionId: string, queryClient?: Q
 
 export function sessionUsageQueryKey(sessionId: string) {
   return ['session-usage', sessionId] as const
+}
+
+export function sessionPermissionsQueryKey(sessionId: string) {
+  return ['session-permissions', sessionId] as const
+}
+
+export function sessionPermissionsQueryOptions(sessionId: string, queryClient?: QueryClient) {
+  const normalizedSessionId = sessionId.trim()
+  return {
+    queryKey: sessionPermissionsQueryKey(normalizedSessionId),
+    queryFn: async () => {
+      void queryClient
+      return fetchAndApplyDesktopV3SessionPermissions(normalizedSessionId)
+    },
+    staleTime: 10_000,
+    enabled: normalizedSessionId !== '',
+  }
 }
 
 export function sessionUsageQueryOptions(sessionId: string, queryClient?: QueryClient) {

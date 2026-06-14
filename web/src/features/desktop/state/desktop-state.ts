@@ -368,6 +368,8 @@ function applyDaemonPayload(state: DesktopState, event: DesktopDaemonEvent): Des
       return upsertByIdPayload(state, payload, 'permission', 'permissionsById')
     case 'desktop/permission/delete':
       return deleteByIdPayload(state, payload, 'permissionId', 'permissionsById')
+    case 'desktop/permissions/replace':
+      return replaceSessionPermissionsPayload(state, payload)
     case 'desktop/plan/set':
       return setSessionValuePayload(state, payload, 'plan', 'plansBySessionId')
     case 'desktop/plan-revisions/replace':
@@ -1189,26 +1191,70 @@ function durablePreference(payload: Record<string, unknown>): ResolvedSessionPre
 function durablePermission(payload: Record<string, unknown>): DesktopPermissionRecord | null {
   const source = payloadRecord(payload, 'permission') ?? payload
   const id = payloadString(source, 'id')
-  const sessionId = payloadString(source, 'session_id')
+  const sessionId = payloadString(source, 'session_id') || payloadString(source, 'sessionId')
   if (!id || !sessionId) {
     return null
   }
   return {
     id,
     sessionId,
-    runId: payloadString(source, 'run_id'),
-    callId: payloadString(source, 'call_id'),
-    toolName: payloadString(source, 'tool_name'),
-    toolArguments: payloadString(source, 'tool_arguments'),
+    runId: payloadString(source, 'run_id') || payloadString(source, 'runId'),
+    callId: payloadString(source, 'call_id') || payloadString(source, 'callId'),
+    toolName: payloadString(source, 'tool_name') || payloadString(source, 'toolName'),
+    toolArguments: payloadString(source, 'tool_arguments') || payloadString(source, 'toolArguments'),
     status: payloadString(source, 'status'),
     decision: payloadString(source, 'decision'),
     reason: payloadString(source, 'reason'),
     requirement: payloadString(source, 'requirement'),
     mode: payloadString(source, 'mode'),
-    createdAt: payloadNumber(source, 'created_at'),
-    updatedAt: payloadNumber(source, 'updated_at'),
-    resolvedAt: payloadNumber(source, 'resolved_at'),
-    permissionRequestedAt: payloadNumber(source, 'permission_requested_at'),
+    createdAt: payloadNumber(source, 'created_at') || payloadNumber(source, 'createdAt'),
+    updatedAt: payloadNumber(source, 'updated_at') || payloadNumber(source, 'updatedAt'),
+    resolvedAt: payloadNumber(source, 'resolved_at') || payloadNumber(source, 'resolvedAt'),
+    permissionRequestedAt: payloadNumber(source, 'permission_requested_at') || payloadNumber(source, 'permissionRequestedAt'),
+  }
+}
+
+function replaceSessionPermissionsPayload(state: DesktopState, payload: Record<string, unknown>): DesktopState | null {
+  const sessionId = payloadString(payload, 'sessionId') || payloadString(payload, 'session_id')
+  if (!sessionId) {
+    return null
+  }
+  const existing = state.sessionsById[sessionId] ?? ensureReducerSession(state, sessionId)
+  const permissions = Array.isArray(payload.permissions)
+    ? payload.permissions
+        .map((item) => isRecord(item) ? durablePermission(item) : null)
+        .filter((permission): permission is DesktopPermissionRecord => Boolean(permission && permission.sessionId === sessionId && permission.status.trim().toLowerCase() === 'pending'))
+    : []
+  const permissionsById = Object.fromEntries(Object.entries(state.permissionsById).filter(([, permission]) => permission.sessionId !== sessionId))
+  for (const permission of permissions) {
+    permissionsById[permission.id] = permission
+  }
+  const pendingPermissionCount = countApprovalRequiredPermissions(permissions, existing.mode)
+  const live = { ...existing.live }
+  if (!existing.lifecycle && pendingPermissionCount > 0) {
+    live.status = 'blocked'
+    live.lastEventType = 'permission.requested'
+    live.lastEventAt = Math.max(...permissions.map((permission) => permission.permissionRequestedAt || permission.updatedAt || permission.createdAt || 0), Date.now())
+  } else if (!existing.lifecycle && existing.live.status === 'blocked') {
+    live.status = existing.runIntent ? 'running' : 'idle'
+    live.lastEventType = pendingPermissionCount === 0 ? 'permission.updated' : existing.live.lastEventType
+    live.lastEventAt = pendingPermissionCount === 0 ? Date.now() : existing.live.lastEventAt
+  }
+  const session: DesktopSessionRecord = {
+    ...existing,
+    permissionsHydrated: true,
+    pendingPermissions: permissions,
+    pendingPermissionCount,
+    live,
+  }
+  return {
+    ...state,
+    permissionsById,
+    sessionsById: {
+      ...state.sessionsById,
+      [sessionId]: session,
+    },
+    sessionOrder: sortSessionOrder({ ...state.sessionsById, [sessionId]: session }),
   }
 }
 

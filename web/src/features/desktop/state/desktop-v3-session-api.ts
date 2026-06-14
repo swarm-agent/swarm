@@ -1,5 +1,5 @@
 import { requestJson } from '../../../app/api'
-import { fetchSessionMessages, type FetchSessionMessagesResult } from '../chat/queries/chat-queries'
+import { fetchSessionMessages, mapDesktopSessionPermission, type FetchSessionMessagesResult } from '../chat/queries/chat-queries'
 import { dedupeAndTrimMessages } from '../chat/services/message-cache'
 import { normalizeDesktopSessionPlan, normalizeDesktopSessionPlanRevisions, type DesktopSessionPlanWire } from '../chat/services/session-plan-record'
 import type {
@@ -9,7 +9,7 @@ import type {
   DesktopSessionPlanRevisionRecord,
   ResolvedSessionPreference,
 } from '../chat/types/chat'
-import type { DesktopSessionRecord, DesktopSessionUsageRecord } from '../types/realtime'
+import type { DesktopPermissionRecord, DesktopSessionRecord, DesktopSessionUsageRecord } from '../types/realtime'
 import type { DesktopState } from './desktop-state'
 import { mergeDesktopStateSnapshot } from './desktop-state-snapshot'
 import { applyV3RuntimeEnvelope, createV3EventEnvelope, createV3SnapshotEnvelope } from '../v3-runtime'
@@ -71,6 +71,10 @@ interface UsageWire {
 
 interface UsageResponseWire {
   usage_summary?: UsageWire | null
+}
+
+interface PermissionsResponseWire {
+  permissions?: unknown[]
 }
 
 interface ActivePlanResponseWire {
@@ -195,6 +199,18 @@ export async function fetchAndApplyDesktopV3SessionUsage(
   return applyDesktopV3SessionUsage(normalizedSessionId, response.usage_summary ?? null, 'v3-session-usage')
 }
 
+export async function fetchAndApplyDesktopV3SessionPermissions(
+  sessionId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<DesktopPermissionRecord[]> {
+  const normalizedSessionId = assertRawCanonicalDesktopV3SessionId(sessionId)
+  const response = await requestJson<PermissionsResponseWire>(
+    `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/permissions?status=pending&limit=200`,
+    { signal: options.signal },
+  )
+  return applyDesktopV3SessionPermissions(normalizedSessionId, response.permissions, 'v3-session-permissions')
+}
+
 export async function fetchAndApplyDesktopV3SessionMessagesTail(
   sessionId: string,
   options: { signal?: AbortSignal } = {},
@@ -308,6 +324,34 @@ function normalizeDesktopV3Preference(response: PreferenceResponseWire): Resolve
     contextWindow: numberValue(response.context_window),
     maxOutputTokens: numberValue(response.max_output_tokens),
   }
+}
+
+function applyDesktopV3SessionPermissions(
+  sessionId: string,
+  permissions: unknown[] | undefined,
+  sourceName: string,
+): DesktopPermissionRecord[] {
+  const pendingPermissions = Array.isArray(permissions)
+    ? permissions
+        .map((permission) => mapDesktopSessionPermission(permission))
+        .filter((permission) => permission.id && permission.sessionId === sessionId && permission.status.trim().toLowerCase() === 'pending')
+        .sort((left, right) =>
+          (right.permissionRequestedAt - left.permissionRequestedAt)
+          || (right.updatedAt - left.updatedAt)
+          || left.id.localeCompare(right.id),
+        )
+    : []
+  const receivedAt = Date.now()
+  applyV3RuntimeEnvelope(createV3EventEnvelope({
+    type: 'desktop/permissions/replace',
+    payload: { sessionId, permissions: pendingPermissions },
+  }, {
+    receivedAt,
+    sessionId,
+    source: { kind: 'http', transport: 'http', name: sourceName },
+    id: `permissions:${sessionId}:${pendingPermissions.length}:${receivedAt}`,
+  }))
+  return pendingPermissions
 }
 
 function applyDesktopV3SessionUsage(
