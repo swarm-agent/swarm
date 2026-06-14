@@ -114,6 +114,8 @@ export interface DesktopSessionRecord {
   runIntent?: DesktopRunIntentRecord | null
   live: {
     runId: string | null
+    terminalRunId?: string | null
+    terminalEventSeq?: number
     agentName: string | null
     startedAt: number | null
     status: 'idle' | 'starting' | 'running' | 'blocked' | 'error'

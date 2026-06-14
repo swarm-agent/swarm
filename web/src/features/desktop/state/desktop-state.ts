@@ -854,6 +854,8 @@ function ensureReducerSession(state: DesktopState, sessionId: string): DesktopSe
 function emptyLiveState(): DesktopSessionRecord['live'] {
   return {
     runId: null,
+    terminalRunId: null,
+    terminalEventSeq: 0,
     agentName: null,
     startedAt: null,
     status: 'idle',
@@ -920,6 +922,11 @@ function durableSessionPatch(existing: DesktopSessionRecord, eventType: string, 
   if (lifecycle) {
     session.lifecycle = lifecycle
     session.live.runId = lifecycle.active ? lifecycle.runId : null
+    if (lifecycle.active) {
+      clearTerminalRunMarker(session.live, lifecycle.runId)
+    } else {
+      markTerminalRun(session.live, lifecycle.runId || existing.live.runId || existing.runIntent?.runId, eventSeq)
+    }
     session.live.startedAt = lifecycle.active && lifecycle.startedAt > 0 ? lifecycle.startedAt : null
     session.live.status = lifecycle.active ? (lifecycle.phase === 'blocked' ? 'blocked' : lifecycle.phase === 'starting' ? 'starting' : 'running') : lifecycle.phase === 'errored' ? 'error' : 'idle'
     session.live.error = lifecycle.phase === 'errored' ? lifecycle.error || lifecycle.stopReason : null
@@ -929,13 +936,15 @@ function durableSessionPatch(existing: DesktopSessionRecord, eventType: string, 
   }
   const runIntent = durableRunIntent(payload, eventType, sessionId)
   if (runIntent) {
-    if (runIntentStatusActive(runIntent.status)) {
+    if (runIntentStatusActive(runIntent.status) && !eventRevivesTerminalRun(session, payload)) {
       session.runIntent = runIntent
       session.live.runId = runIntent.runId
+      clearTerminalRunMarker(session.live, runIntent.runId)
       session.live.startedAt = runIntent.createdAt > 0 ? runIntent.createdAt : session.live.startedAt
     } else if (runIntentStatusTerminal(runIntent.status)) {
       session.runIntent = null
       session.lifecycle = null
+      markTerminalRun(session.live, runIntent.runId, eventSeq)
     }
   }
   const status = payloadString(payload, 'status')
@@ -968,7 +977,11 @@ function durableSessionPatch(existing: DesktopSessionRecord, eventType: string, 
       session.title = payloadString(payload, 'title') || session.title
       break
     case 'session.assistant.queued':
+      if (eventRevivesTerminalRun(session, payload)) {
+        break
+      }
       session.live.runId = payloadString(payload, 'run_id') || payloadString(payloadRecord(payload, 'run_intent'), 'run_id') || session.live.runId
+      clearTerminalRunMarker(session.live, session.live.runId)
       session.live.status = 'starting'
       session.live.awaitingAck = false
       session.live.startedAt = session.live.startedAt ?? ts
@@ -978,7 +991,11 @@ function durableSessionPatch(existing: DesktopSessionRecord, eventType: string, 
       resetLiveReasoning(session.live)
       break
     case 'session.assistant.started':
+      if (eventRevivesTerminalRun(session, payload)) {
+        break
+      }
       session.live.runId = payloadString(payload, 'run_id') || payloadString(payloadRecord(payload, 'run_intent'), 'run_id') || session.live.runId
+      clearTerminalRunMarker(session.live, session.live.runId)
       session.live.status = 'running'
       session.live.awaitingAck = false
       session.live.startedAt = session.live.startedAt ?? ts
@@ -988,8 +1005,12 @@ function durableSessionPatch(existing: DesktopSessionRecord, eventType: string, 
       resetLiveReasoning(session.live)
       break
     case 'session.assistant.delta': {
+      if (eventRevivesTerminalRun(session, payload)) {
+        break
+      }
       const delta = typeof payload.delta === 'string' ? payload.delta : ''
       session.live.runId = payloadString(payload, 'run_id') || session.live.runId
+      clearTerminalRunMarker(session.live, session.live.runId)
       if (delta) {
         session.live.assistantDraft += delta
       }
@@ -1003,6 +1024,9 @@ function durableSessionPatch(existing: DesktopSessionRecord, eventType: string, 
     case 'session.reasoning.started':
     case 'session.reasoning.delta':
     case 'session.reasoning.completed':
+      if (eventRevivesTerminalRun(session, payload)) {
+        break
+      }
       applyReasoning(session, payload, eventType, ts, eventSeq)
       break
     case 'session.tool.started':
@@ -1015,7 +1039,11 @@ function durableSessionPatch(existing: DesktopSessionRecord, eventType: string, 
       break
     case 'session.run.started':
     case 'session.run.running':
+      if (eventRevivesTerminalRun(session, payload)) {
+        break
+      }
       session.live.runId = payloadString(payload, 'run_id') || session.live.runId
+      clearTerminalRunMarker(session.live, session.live.runId)
       session.live.status = 'running'
       session.live.awaitingAck = false
       session.live.startedAt = session.live.startedAt ?? ts
@@ -1034,6 +1062,7 @@ function durableSessionPatch(existing: DesktopSessionRecord, eventType: string, 
       if (shouldUnlock) {
         session.runIntent = null
         session.lifecycle = null
+        markTerminalRun(session.live, payloadString(payload, 'run_id') || payloadString(payloadRecord(payload, 'run_intent'), 'run_id') || session.live.runId, eventSeq)
         session.live.status = 'idle'
         session.live.runId = null
         session.live.startedAt = null
@@ -1066,6 +1095,7 @@ function durableSessionPatch(existing: DesktopSessionRecord, eventType: string, 
       const error = isUserCancellation ? userFacingStopReason(rawError) : rawError || 'Run failed'
       session.runIntent = null
       session.lifecycle = null
+      markTerminalRun(session.live, payloadString(payload, 'run_id') || payloadString(payloadRecord(payload, 'run_intent'), 'run_id') || session.live.runId, eventSeq)
       session.live.status = isUserCancellation ? 'idle' : 'error'
       session.live.runId = null
       session.live.startedAt = null
@@ -1383,6 +1413,36 @@ function runTerminalStatusFromEvent(eventType: string, payload: Record<string, u
   return runIntent?.status.trim().toLowerCase() || payloadString(payload, 'status').toLowerCase()
 }
 
+function markTerminalRun(live: DesktopSessionRecord['live'], runId: string | null | undefined, seq: number): void {
+  const normalizedRunId = runId?.trim() ?? ''
+  if (!normalizedRunId) {
+    return
+  }
+  live.terminalRunId = normalizedRunId
+  live.terminalEventSeq = Math.max(live.terminalEventSeq ?? 0, seq)
+}
+
+function clearTerminalRunMarker(live: DesktopSessionRecord['live'], runId: string | null | undefined): void {
+  const normalizedRunId = runId?.trim() ?? ''
+  if (!normalizedRunId || normalizedRunId === live.terminalRunId) {
+    return
+  }
+  live.terminalRunId = null
+  live.terminalEventSeq = 0
+}
+
+function eventRevivesTerminalRun(session: DesktopSessionRecord, payload: Record<string, unknown>): boolean {
+  if (session.sessionApi?.trim().toLowerCase() !== 'v3') {
+    return false
+  }
+  const terminalRunId = session.live.terminalRunId?.trim() ?? ''
+  if (!terminalRunId) {
+    return false
+  }
+  const runId = payloadString(payload, 'run_id') || payloadString(payloadRecord(payload, 'run_intent'), 'run_id')
+  return runId === terminalRunId
+}
+
 function userFacingStopReason(reason: string): string {
   const trimmed = reason.trim()
   return !trimmed || trimmed === 'run_stopped' ? 'Run stopped' : trimmed
@@ -1495,26 +1555,32 @@ function applyTool(session: DesktopSessionRecord, payload: Record<string, unknow
   const isToolFailed = eventType === 'session.tool.failed'
   const isToolCancelled = eventType === 'session.tool.cancelled' || eventType === 'session.tool.canceled'
   const isToolTerminal = isToolCompleted || isToolFailed || isToolCancelled
-  session.live.runId = runId || session.live.runId
-  session.live.status = 'running'
-  session.live.awaitingAck = false
-  session.live.startedAt = session.live.startedAt ?? ts
-  session.live.error = null
+  const afterTerminalRun = eventRevivesTerminalRun(session, payload)
+  if (!afterTerminalRun) {
+    session.live.runId = runId || session.live.runId
+    clearTerminalRunMarker(session.live, session.live.runId)
+    session.live.status = 'running'
+    session.live.awaitingAck = false
+    session.live.startedAt = session.live.startedAt ?? ts
+    session.live.error = null
+  }
   if (typeof payload.step === 'number') {
     session.live.step = payload.step
   }
-  if (isToolStarted) {
+  if (isToolStarted && !afterTerminalRun) {
     flushAssistantDraftToSegment(session.live, ts)
     resetRetainedLiveTool(session.live)
     session.live.toolOutput = ''
   }
-  session.live.sidebarToolName = toolName || null
-  session.live.toolName = toolName || session.live.toolName
-  session.live.toolCallId = callId || session.live.toolCallId
-  if (typeof payload.arguments === 'string') {
-    session.live.toolArguments = payload.arguments.trim() || null
+  if (!afterTerminalRun) {
+    session.live.sidebarToolName = toolName || null
+    session.live.toolName = toolName || session.live.toolName
+    session.live.toolCallId = callId || session.live.toolCallId
+    if (typeof payload.arguments === 'string') {
+      session.live.toolArguments = payload.arguments.trim() || null
+    }
+    session.live.summary = payloadString(payload, 'summary') || session.live.toolName?.trim() || session.live.summary
   }
-  session.live.summary = payloadString(payload, 'summary') || session.live.toolName?.trim() || session.live.summary
   upsertToolHistory(session.live, {
     sessionId,
     runId,
@@ -1532,6 +1598,9 @@ function applyTool(session: DesktopSessionRecord, payload: Record<string, unknow
     seq: eventSeq,
     ts,
   })
+  if (afterTerminalRun) {
+    return
+  }
   if (isToolDelta && typeof payload.output === 'string') {
     session.live.toolOutput = appendLiveToolOutput(session.live.toolOutput, payload.output)
   } else if (isToolTerminal) {

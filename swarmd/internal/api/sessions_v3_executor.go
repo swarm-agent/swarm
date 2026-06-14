@@ -1466,7 +1466,7 @@ func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3Re
 		WorkspaceName:        resolved.Session.WorkspaceName,
 		Principal:            job.Principal,
 		Emit:                 e.emitSessionV3ProviderToolEvent(job),
-		ApplySessionMutation: e.server.applySessionV3PrimaryMutation,
+		ApplySessionMutation: e.applySessionV3ProviderToolMutation(job),
 		ProviderManagedV3:    true,
 		AgentProfile:         resolved.AgentProfile,
 	})
@@ -1474,6 +1474,24 @@ func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3Re
 		return nil, errors.New("provider-managed tool invoker is not configured")
 	}
 	return invoker, nil
+}
+
+func (e *sessionV3Executor) applySessionV3ProviderToolMutation(job sessionV3ExecutorJob) func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+	return func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+		if sessionV3ProviderToolTerminalEvent(input.EventType) && e.isRunCanceled(job) {
+			return sessionruntime.SessionMutationResult{}, context.Canceled
+		}
+		return e.server.applySessionV3PrimaryMutation(input)
+	}
+}
+
+func sessionV3ProviderToolTerminalEvent(eventType string) bool {
+	switch strings.TrimSpace(eventType) {
+	case "session.tool.completed", "session.tool.failed", "session.tool.cancelled", "session.tool.canceled":
+		return true
+	default:
+		return false
+	}
 }
 
 func (e *sessionV3Executor) emitSessionV3ProviderToolEvent(job sessionV3ExecutorJob) runruntime.StreamHandler {

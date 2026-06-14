@@ -503,6 +503,8 @@ function normalizeSessionOrder(sessionsById: Record<string, DesktopSessionRecord
 function emptyLiveState(): DesktopSessionRecord['live'] {
   return {
     runId: null,
+    terminalRunId: null,
+    terminalEventSeq: 0,
     agentName: null,
     startedAt: null,
     status: 'idle',
