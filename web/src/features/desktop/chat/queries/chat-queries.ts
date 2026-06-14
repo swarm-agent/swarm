@@ -192,8 +192,14 @@ interface V3MessageCommitResponseWire extends V3HydratedSessionResponseWire {
 
 interface V3CompactResponseWire {
   ok?: boolean;
+  session_id?: string;
+  run_id?: string;
+  status?: string;
+  owner_transport?: string;
   session?: SessionWire;
   projection?: SessionProjectionWire;
+  run_intent?: V3RunIntentWire | null;
+  realtime_outbox?: V3RealtimeOutboxWire | null;
   result?: {
     usage_summary?: SessionUsageSummaryWire | null;
     assistant_message?: MessageWire;
@@ -219,7 +225,13 @@ export interface SendSessionMessageResult {
 
 export interface CompactSessionV3Result {
   ok?: boolean;
+  sessionId?: string;
+  runId?: string;
+  status?: string;
+  ownerTransport?: string;
   session?: DesktopSessionRecord;
+  runIntent?: V3RunIntentRecord | null;
+  realtimeOutbox?: SendSessionMessageResult['realtimeOutbox'];
   assistantMessage?: ChatMessageRecord | null;
   usageSummary?: DesktopSessionUsageRecord | null;
   events?: unknown[];
@@ -795,7 +807,13 @@ function mapV3CompactResponse(response: V3CompactResponseWire): CompactSessionV3
     : undefined;
   return {
     ok: response.ok,
+    sessionId: String(response.session_id ?? '').trim(),
+    runId: String(response.run_id ?? '').trim(),
+    status: String(response.status ?? '').trim(),
+    ownerTransport: String(response.owner_transport ?? '').trim(),
     session,
+    runIntent: mapV3RunIntent(response.run_intent),
+    realtimeOutbox: mapV3RealtimeOutbox(response.realtime_outbox),
     assistantMessage: response.result?.assistant_message ? mapChatMessage(response.result.assistant_message) : null,
     usageSummary: mapDesktopSessionUsageSummary(response.result?.usage_summary ?? null),
     events: Array.isArray(response.events) ? response.events : [],

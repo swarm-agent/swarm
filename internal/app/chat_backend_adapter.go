@@ -260,32 +260,29 @@ func (b *apiChatBackend) RunTurnStream(ctx context.Context, sessionID string, re
 			if err != nil {
 				return ui.ChatRunResponse{}, err
 			}
-			for _, event := range result.Events {
-				if onEvent != nil {
-					onEvent(convertClientRunStreamEvent(event))
-				}
+			runID := strings.TrimSpace(result.RunID)
+			if runID == "" {
+				runID = strings.TrimSpace(result.RunIntent.RunID)
 			}
-			toolMessages := make([]ui.ChatMessageRecord, 0, len(result.Result.ToolMessages))
-			for _, message := range result.Result.ToolMessages {
-				toolMessages = append(toolMessages, convertClientMessage(message))
+			intent := result.RunIntent
+			if strings.TrimSpace(intent.RunID) == "" {
+				intent.RunID = runID
 			}
-			commentary := make([]ui.ChatMessageRecord, 0, len(result.Result.Commentary))
-			for _, message := range result.Result.Commentary {
-				commentary = append(commentary, convertClientMessage(message))
+			if strings.TrimSpace(intent.Status) == "" {
+				intent.Status = "pending_executor"
 			}
-			return ui.ChatRunResponse{
-				Model:            result.Result.Model,
-				Thinking:         result.Result.Thinking,
-				ReasoningSummary: result.Result.ReasoningSummary,
-				TurnUsage:        convertClientTurnUsage(result.Result.TurnUsage),
-				UsageSummary:     convertClientUsageSummary(result.Result.UsageSummary),
-				UserMessage:      convertClientMessage(result.Result.UserMessage),
-				ToolMessages:     toolMessages,
-				Commentary:       commentary,
-				AssistantMessage: convertClientMessage(result.Result.AssistantMessage),
-				TargetKind:       result.Result.TargetKind,
-				TargetName:       result.Result.TargetName,
-			}, nil
+			if onEvent != nil {
+				onEvent(ui.ChatRunStreamEvent{Type: "session.lifecycle.updated", SessionID: sessionID, RunID: runID, Lifecycle: primaryRunIntentLifecycle(sessionID, intent)})
+			}
+			endpointCursor := ""
+			if result.RealtimeOutbox != nil {
+				endpointCursor = strings.TrimSpace(result.RealtimeOutbox.EndpointCursor)
+			}
+			streamResp, streamErr := b.consumeSessionV3Run(ctx, sessionID, intent, endpointCursor, onEvent)
+			if streamErr != nil {
+				return ui.ChatRunResponse{}, streamErr
+			}
+			return streamResp, nil
 		}
 		result, err := b.api.SendSessionV3Message(ctx, sessionID, client.SessionV3MessageOptions{Role: "user", Content: req.Prompt})
 		if err != nil {
@@ -367,7 +364,7 @@ func (b *apiChatBackend) consumeSessionV3Run(ctx context.Context, sessionID stri
 			response.PrimaryRunStatus = strings.TrimSpace(runIntent.Status)
 			response.PrimaryBlockedReason = strings.TrimSpace(runIntent.BlockedReason)
 			if v3RunIntentStatusTerminal(runIntent.Status) {
-				if onEvent != nil {
+				if event.Lifecycle == nil && onEvent != nil {
 					onEvent(ui.ChatRunStreamEvent{Type: "session.lifecycle.updated", SessionID: sessionID, RunID: runIntent.RunID, Lifecycle: primaryRunIntentLifecycle(sessionID, runIntent)})
 				}
 				cancel()
@@ -549,6 +546,9 @@ func v3StreamEventToChatEvent(event client.SessionV3Event) ui.ChatRunStreamEvent
 	case "session.message.appended":
 		out.Type = "message.stored"
 		out.Message = messageFromV3Payload(payload, out.SessionID)
+	case "session.lifecycle.updated":
+		out.Type = "session.lifecycle.updated"
+		out.Lifecycle = lifecycleFromV3Payload(payload, out.SessionID, out.RunID, event.TsUnixMS)
 	case "session.assistant.started":
 		out.Type = "session.lifecycle.updated"
 		out.Lifecycle = &ui.ChatSessionLifecycle{SessionID: out.SessionID, RunID: out.RunID, Active: true, Phase: "running", StartedAt: event.TsUnixMS, UpdatedAt: event.TsUnixMS}
@@ -556,8 +556,13 @@ func v3StreamEventToChatEvent(event client.SessionV3Event) ui.ChatRunStreamEvent
 		out.Type = "assistant.delta"
 		out.Delta = rawStringValue(payload, "delta")
 	case "session.assistant.completed":
-		out.Type = "message.stored"
-		out.Message = messageFromV3Payload(payload, out.SessionID)
+		if message := messageFromV3Payload(payload, out.SessionID); message != nil {
+			out.Type = "message.stored"
+			out.Message = message
+		} else {
+			out.Type = "turn.completed"
+			out.Summary = rawStringValue(payload, "summary")
+		}
 	case "session.message.updated":
 		out.Type = "message.updated"
 		out.Message = messageFromV3Payload(payload, out.SessionID)
@@ -624,6 +629,19 @@ func v3StreamEventToChatEvent(event client.SessionV3Event) ui.ChatRunStreamEvent
 		if out.Error == "" {
 			out.Error = "Run failed"
 		}
+	case "session.status":
+		out.Type = "session.status"
+		out.Status = stringValue(payload, "status")
+		out.Summary = rawStringValue(payload, "summary")
+	case "session.step.started":
+		out.Type = "step.started"
+		out.Step = int(int64Number(payload, "step"))
+	case "session.title.updated":
+		out.Type = "session.title.updated"
+		out.Title = stringValue(payload, "title")
+	}
+	if out.Status == "" {
+		out.Status = stringValue(payload, "status")
 	}
 	if out.RunID == "" && out.Message != nil {
 		out.RunID = stringValue(out.Message.Metadata, "run_id")
@@ -766,6 +784,30 @@ func firstNonZeroUint64(values ...uint64) uint64 {
 
 func ptrChatMessageRecord(record ui.ChatMessageRecord) *ui.ChatMessageRecord {
 	return &record
+}
+
+func lifecycleFromV3Payload(payload map[string]any, fallbackSessionID, fallbackRunID string, fallbackTs int64) *ui.ChatSessionLifecycle {
+	lifecyclePayload, _ := payload["lifecycle"].(map[string]any)
+	if len(lifecyclePayload) == 0 {
+		lifecyclePayload = payload
+	}
+	sessionID := firstNonEmptyV3String(stringValue(lifecyclePayload, "session_id"), fallbackSessionID)
+	runID := firstNonEmptyV3String(stringValue(lifecyclePayload, "run_id"), fallbackRunID)
+	phase := stringValue(lifecyclePayload, "phase")
+	active, _ := lifecyclePayload["active"].(bool)
+	return &ui.ChatSessionLifecycle{
+		SessionID:      sessionID,
+		RunID:          runID,
+		Active:         active,
+		Phase:          phase,
+		StartedAt:      firstNonZeroInt64(int64Number(lifecyclePayload, "started_at"), fallbackTs),
+		EndedAt:        int64Number(lifecyclePayload, "ended_at"),
+		UpdatedAt:      firstNonZeroInt64(int64Number(lifecyclePayload, "updated_at"), fallbackTs),
+		Generation:     uint64Number(lifecyclePayload, "generation"),
+		StopReason:     stringValue(lifecyclePayload, "stop_reason"),
+		Error:          stringValue(lifecyclePayload, "error"),
+		OwnerTransport: stringValue(lifecyclePayload, "owner_transport"),
+	}
 }
 
 func activeRunIntentLifecycle(sessionID string, intent *client.SessionV3RunIntent) *ui.ChatSessionLifecycle {

@@ -3534,18 +3534,25 @@ func TestSessionsV3CompactEndpointRunsManualCompactAndResetsUsage(t *testing.T) 
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("compact status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("compact status = %d, want %d, body=%s", rec.Code, http.StatusAccepted, rec.Body.String())
 	}
 	var resp struct {
-		Result runruntime.RunResult `json:"result"`
-		Events []map[string]any     `json:"events"`
+		RunID string `json:"run_id"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode compact response: %v", err)
 	}
-	if resp.Result.UsageSummary == nil || resp.Result.UsageSummary.ContextWindow != 1000 || resp.Result.UsageSummary.RemainingTokens != 1000 || resp.Result.UsageSummary.Source != "context_compaction_reset" {
-		t.Fatalf("compact usage summary = %+v", resp.Result.UsageSummary)
+	if strings.TrimSpace(resp.RunID) == "" {
+		t.Fatalf("compact response missing run id: %s", rec.Body.String())
+	}
+	waitForSessionsV3SpecificRunIntentStatus(t, sessionSvc, created.ID, resp.RunID, sessionruntime.RunIntentCompleted)
+	usageSummary, ok, err := sessionSvc.GetUsageSummary(created.ID)
+	if err != nil {
+		t.Fatalf("get usage summary: %v", err)
+	}
+	if !ok || usageSummary.ContextWindow != 1000 || usageSummary.RemainingTokens != 1000 || usageSummary.Source != "context_compaction_reset" {
+		t.Fatalf("compact usage summary = %+v", usageSummary)
 	}
 	if runner.callCount == 0 {
 		t.Fatalf("compact did not invoke memory provider")
@@ -4382,9 +4389,19 @@ func postSessionsV3CompactTestRequest(t *testing.T, server *Server, sessionID, c
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("compact status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("compact status = %d, want %d, body=%s", rec.Code, http.StatusAccepted, rec.Body.String())
 	}
+	var resp struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode compact response: %v", err)
+	}
+	if strings.TrimSpace(resp.RunID) == "" {
+		t.Fatalf("compact response missing run id: %s", rec.Body.String())
+	}
+	waitForSessionsV3SpecificRunIntentStatus(t, server.sessions, sessionID, resp.RunID, sessionruntime.RunIntentCompleted)
 }
 
 func TestSessionsV3ProviderToolPersistenceUsesApplySessionMutationOnly(t *testing.T) {

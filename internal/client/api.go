@@ -925,9 +925,16 @@ type SessionV3CompactOptions struct {
 }
 
 type SessionV3CompactResult struct {
-	Session SessionSummary          `json:"session"`
-	Result  SessionRunResult        `json:"result"`
-	Events  []SessionRunStreamEvent `json:"events"`
+	OK             bool                        `json:"ok"`
+	SessionID      string                      `json:"session_id,omitempty"`
+	RunID          string                      `json:"run_id,omitempty"`
+	Status         string                      `json:"status,omitempty"`
+	OwnerTransport string                      `json:"owner_transport,omitempty"`
+	Session        SessionSummary              `json:"session"`
+	Result         SessionRunResult            `json:"result"`
+	Events         []SessionRunStreamEvent     `json:"events"`
+	RunIntent      SessionV3RunIntent          `json:"run_intent"`
+	RealtimeOutbox *SessionV3RealtimeOutboxRow `json:"realtime_outbox,omitempty"`
 }
 
 type SessionV3MessageResult struct {
@@ -3279,17 +3286,16 @@ func (c *API) CompactSessionV3(ctx context.Context, sessionID string, options Se
 	if value := strings.TrimSpace(options.RunID); value != "" {
 		req["run_id"] = value
 	}
-	var resp struct {
-		OK      bool                    `json:"ok"`
-		Session SessionSummary          `json:"session"`
-		Result  SessionRunResult        `json:"result"`
-		Events  []SessionRunStreamEvent `json:"events"`
-	}
+	var resp SessionV3CompactResult
 	if err := c.postJSON(ctx, sessionV3PrimaryPath(sessionID, "compact"), req, &resp, true); err != nil {
 		return SessionV3CompactResult{}, err
 	}
 	resp.Session = markSessionV3(resp.Session, SessionV3Projection{})
-	return SessionV3CompactResult{Session: resp.Session, Result: resp.Result, Events: resp.Events}, nil
+	resp.SessionID = strings.TrimSpace(resp.SessionID)
+	resp.RunID = strings.TrimSpace(resp.RunID)
+	resp.Status = strings.TrimSpace(resp.Status)
+	resp.OwnerTransport = strings.TrimSpace(resp.OwnerTransport)
+	return resp, nil
 }
 
 func (c *API) SendSessionV3Message(ctx context.Context, sessionID string, options SessionV3MessageOptions) (SessionV3MessageResult, error) {
