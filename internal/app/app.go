@@ -898,6 +898,30 @@ func (a *App) applySessionStreamEvent(event client.StreamEventEnvelope) bool {
 		return a.applySwarmStreamEvent(event)
 	case "agent.profile.created", "agent.profile.updated", "agent.profile.deleted", "agent.active.updated", "agent.defaults.restored", "agent.defaults.reset", "agent.state.synced", "agent.custom_tool.created", "agent.custom_tool.updated", "agent.custom_tool.deleted", "agent.custom_tool.assigned", "agent.custom_tool.unassigned", "agent.active_subagent.updated", "agent.active_subagent.deleted":
 		return a.applyAgentStreamEvent(event)
+	case "session.created":
+		var session client.SessionSummary
+		if err := json.Unmarshal(event.Payload, &session); err != nil {
+			return false
+		}
+		if strings.TrimSpace(session.ID) == "" {
+			return false
+		}
+		session.SessionAPI = "v3"
+		a.upsertHomeSessionSummary(modelSessionSummaryFromClient(session))
+		return true
+	case "session.deleted", "session.closed":
+		sessionID := strings.TrimSpace(event.EntityID)
+		if sessionID == "" {
+			var payload struct {
+				ID        string `json:"id"`
+				SessionID string `json:"session_id"`
+			}
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				return false
+			}
+			sessionID = firstNonEmpty(strings.TrimSpace(payload.SessionID), strings.TrimSpace(payload.ID))
+		}
+		return a.removeHomeSessionSummary(sessionID)
 	case "session.title.updated":
 		var payload struct {
 			SessionID string `json:"session_id"`
@@ -2892,9 +2916,6 @@ func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt str
 	if sessionID == "" {
 		return errors.New("session id is required")
 	}
-	if err := requireTUIV3SessionAPI(summary.SessionAPI, "open session"); err != nil {
-		return err
-	}
 	summary.WorkspaceName = a.contextDisplayNameForPath(summary.WorkspacePath, summary.WorkspaceName)
 	title := strings.TrimSpace(summary.Title)
 	if title == "" {
@@ -2913,10 +2934,17 @@ func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt str
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		workspaceScope := ""
 		cwdScope := ""
+		scopePath := strings.TrimSpace(summary.WorkspacePath)
+		if scopePath == "" {
+			scopePath = strings.TrimSpace(a.activeContextPath())
+		}
+		if scopePath == "" {
+			scopePath = strings.TrimSpace(a.startupCWD)
+		}
 		if strings.TrimSpace(a.activeWorkspacePath()) != "" {
-			workspaceScope = strings.TrimSpace(summary.WorkspacePath)
+			workspaceScope = scopePath
 		} else {
-			cwdScope = strings.TrimSpace(summary.WorkspacePath)
+			cwdScope = scopePath
 		}
 		hydrated, err := a.api.GetSessionV3TUI(ctx, sessionID, workspaceScope, cwdScope)
 		cancel()
@@ -2925,6 +2953,9 @@ func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt str
 		}
 		if strings.TrimSpace(hydrated.Session.ID) != "" {
 			summary = mergeHomeSessionSummary(summary, modelSessionSummaryFromClient(hydrated.Session))
+		}
+		if err := requireTUIV3SessionAPI(summary.SessionAPI, "open hydrated session"); err != nil {
+			return err
 		}
 		if len(hydrated.PendingPermissions) > 0 {
 			summary.PendingPermissionCount = len(hydrated.PendingPermissions)
@@ -2941,6 +2972,8 @@ func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt str
 		serviceTier = strings.TrimSpace(hydrated.Preference.ServiceTier)
 		contextMode = strings.TrimSpace(hydrated.Preference.ContextMode)
 		contextWindow = hydrated.ContextWindow
+	} else if err := requireTUIV3SessionAPI(summary.SessionAPI, "open session"); err != nil {
+		return err
 	}
 	if modelProvider == "" && modelName == "" {
 		modelProvider = strings.TrimSpace(summary.Preference.Provider)
@@ -2948,6 +2981,9 @@ func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt str
 		thinkingLevel = strings.TrimSpace(summary.Preference.Thinking)
 		serviceTier = strings.TrimSpace(summary.Preference.ServiceTier)
 		contextMode = strings.TrimSpace(summary.Preference.ContextMode)
+	}
+	if hydratedTitle := strings.TrimSpace(summary.Title); hydratedTitle != "" {
+		title = hydratedTitle
 	}
 	openedSummary := model.SessionSummary{
 		ID:                         sessionID,
@@ -3694,6 +3730,48 @@ func (a *App) upsertHomeSessionSummary(summary model.SessionSummary) {
 	if a.chat != nil {
 		a.chat.SetSessionTabs(chatSessionTabsFromSummaries(next.RecentSessions))
 	}
+}
+
+func (a *App) removeHomeSessionSummary(sessionID string) bool {
+	if a == nil {
+		return false
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return false
+	}
+	next := a.homeModel
+	changed := false
+	if len(next.RecentSessions) > 0 {
+		filtered := next.RecentSessions[:0]
+		for _, summary := range next.RecentSessions {
+			if strings.TrimSpace(summary.ID) == sessionID {
+				changed = true
+				continue
+			}
+			filtered = append(filtered, summary)
+		}
+		next.RecentSessions = filtered
+	}
+	if len(next.BackgroundSessions) > 0 {
+		filtered := next.BackgroundSessions[:0]
+		for _, summary := range next.BackgroundSessions {
+			if strings.TrimSpace(summary.ChildSessionID) == sessionID {
+				changed = true
+				continue
+			}
+			filtered = append(filtered, summary)
+		}
+		next.BackgroundSessions = filtered
+	}
+	if !changed {
+		return false
+	}
+	a.applyHomeModel(next)
+	if a.chat != nil {
+		a.chat.SetSessionTabs(chatSessionTabsFromSummaries(next.RecentSessions))
+	}
+	return true
 }
 
 func (a *App) commitSessionTitle(parentTitle, instructions string) string {

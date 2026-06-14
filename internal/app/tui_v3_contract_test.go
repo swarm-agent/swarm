@@ -2,10 +2,14 @@ package app
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 
+	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/model"
 	"swarm-refactor/swarmtui/internal/ui"
 )
@@ -23,6 +27,85 @@ func TestTUIRejectsRetiredSessionAPIsOnOpenAndBackend(t *testing.T) {
 	}
 	if _, err := backend.RunTurnStream(context.Background(), "legacy-session", ui.ChatRunRequest{Prompt: "hello"}, nil); err == nil || !strings.Contains(err.Error(), tuiRetiredSessionAPIMessage) {
 		t.Fatalf("RunTurnStream() error = %v, want retired TUI session API error", err)
+	}
+}
+
+func TestTUIOpenSessionHydratesFromV3BeforeOpeningChat(t *testing.T) {
+	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
+	t.Setenv("DATA_DIR", "")
+
+	var hydrated bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/tui/sessions/session-1":
+			hydrated = true
+			if got := r.URL.Query().Get("workspace_path"); got != testWorkspacePath {
+				t.Fatalf("workspace_path = %q, want %q", got, testWorkspacePath)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"session": map[string]any{
+					"id":             "session-1",
+					"workspace_path": testWorkspacePath,
+					"workspace_name": "swarm-go",
+					"title":          "Hydrated Session",
+					"mode":           "auto",
+					"metadata": map[string]any{
+						"swarm_v3_runtime_swarm_id": "host-swarm",
+					},
+				},
+				"projection": map[string]any{"session_id": "session-1", "last_event_seq": 7, "projection_high_watermark_seq": 8},
+				"preference": map[string]any{"provider": "anthropic", "model": "claude", "thinking": "auto", "service_tier": "standard", "context_mode": "full"},
+				"messages":   []any{},
+				"events":     []any{},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/providers":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "providers": []any{}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/models/favorites":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "favorites": []any{}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/model/catalog":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "models": []any{}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/sessions/session-1/messages":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "session_id": "session-1", "messages": []any{}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/sessions/session-1":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":         true,
+				"session":    map[string]any{"id": "session-1", "workspace_path": testWorkspacePath, "workspace_name": "swarm-go", "title": "Hydrated Session", "mode": "auto"},
+				"projection": map[string]any{"session_id": "session-1", "last_event_seq": 7, "projection_high_watermark_seq": 8},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/sessions/session-1/permissions":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "session_id": "session-1", "permissions": []any{}})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	homeModel := model.HomeModel{RecentSessions: []model.SessionSummary{{ID: "session-1", Title: "stale", WorkspacePath: testWorkspacePath}}}
+	home := ui.NewHomePage(homeModel)
+	app := &App{
+		api:           testAPIWithToken(server.URL),
+		startupCWD:    testWorkspacePath,
+		workspacePath: testWorkspacePath,
+		home:          home,
+		homeModel:     homeModel,
+		streamEvents:  make(chan client.StreamEventEnvelope, 1),
+	}
+
+	if err := app.openSessionSummary(model.SessionSummary{ID: "session-1", Title: "stale", WorkspacePath: testWorkspacePath}, ""); err != nil {
+		t.Fatalf("openSessionSummary() error = %v", err)
+	}
+	if !hydrated {
+		t.Fatalf("openSessionSummary() did not hydrate through v3 TUI endpoint")
+	}
+	if app.chat == nil || app.chat.SessionID() != "session-1" {
+		t.Fatalf("chat session id = %q, want session-1", app.chat.SessionID())
+	}
+	if got := app.chat.SessionMode(); got != "auto" {
+		t.Fatalf("chat session mode = %q, want auto", got)
+	}
+	if summary, ok := app.sessionSummaryByID("session-1"); !ok || summary.SessionAPI != "v3" || summary.Title != "Hydrated Session" || summary.LastEventSeq != 7 || summary.ProjectionHighWatermarkSeq != 8 {
+		t.Fatalf("hydrated summary = %+v, ok=%v", summary, ok)
 	}
 }
 
