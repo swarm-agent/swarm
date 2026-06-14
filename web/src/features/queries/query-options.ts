@@ -1,6 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { fetchAgentState, fetchAgentToolContract, fetchDraftModelPreference, fetchModelOptions } from '../desktop/chat/queries/chat-queries'
-import { fetchAndApplyDesktopV3SessionMessagesTail, fetchAndApplyDesktopV3SessionSnapshot } from '../desktop/state/desktop-v3-session-api'
+import { fetchAndApplyDesktopV3SessionMessagesTail, fetchAndApplyDesktopV3SessionPreference, fetchAndApplyDesktopV3SessionSnapshot } from '../desktop/state/desktop-v3-session-api'
 import { getUISettings } from '../desktop/settings/swarm/queries/get-ui-settings'
 import { fetchWorkspaceOverview } from '../workspaces/launcher/queries/fetch-workspace-overview'
 
@@ -63,8 +63,7 @@ export function sessionPreferenceQueryOptions(sessionId: string, queryClient?: Q
     queryKey: sessionPreferenceQueryKey(normalizedSessionId),
     queryFn: async () => {
       void queryClient
-      const snapshot = await fetchAndApplyDesktopV3SessionSnapshot(normalizedSessionId)
-      return snapshot?.preference ?? { preference: { provider: '', model: '', thinking: '', serviceTier: '', contextMode: '', updatedAt: 0 }, contextWindow: 0, maxOutputTokens: 0 }
+      return fetchAndApplyDesktopV3SessionPreference(normalizedSessionId)
     },
     staleTime: 60_000,
     enabled: normalizedSessionId !== '',

@@ -99,7 +99,6 @@ function v3WorksetSnapshot(messages: Record<string, unknown>[], lifecycle: Recor
     session_order: [SESSION_ID],
     messages_by_session: { [SESSION_ID]: messages },
     permissions_by_session: { [SESSION_ID]: [] },
-    preferences_by_session: { [SESSION_ID]: { preference: { provider: 'mock', model: 'streaming-jitter', thinking: '', updated_at: 0 }, context_window: 128000, max_output_tokens: 4096 } },
     plans_by_session: { [SESSION_ID]: null },
     plan_revisions_by_session: { [SESSION_ID]: [] },
     usage_by_session: {},
@@ -196,6 +195,10 @@ async function startMockBackend(): Promise<{ server: Server; port: number; setMe
     }
     if (path === '/v3/sessions:workset') {
       writeJson(res, 200, v3WorksetSnapshot(sessionMessages))
+      return
+    }
+    if (path === `/v3/sessions/${SESSION_ID}/preference`) {
+      writeJson(res, 200, { preference: { provider: 'mock', model: 'streaming-jitter', thinking: '', updated_at: 0 }, context_window: 128000, max_output_tokens: 4096 })
       return
     }
     if (path === `/v3/sessions/${SESSION_ID}`) {

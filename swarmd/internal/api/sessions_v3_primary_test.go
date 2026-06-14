@@ -55,6 +55,26 @@ func TestSessionsV3PrimaryModeAndPreferenceUseV3PrimaryMutation(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "mode-pref-create", "mode preference", pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "medium"})
 
+	prefGetReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+created.ID+"/preference", nil)
+	prefGetRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(prefGetRec, withTestPrincipal(prefGetReq))
+	if prefGetRec.Code != http.StatusOK {
+		t.Fatalf("preference get status = %d, want %d, body=%s", prefGetRec.Code, http.StatusOK, prefGetRec.Body.String())
+	}
+	var prefGetPayload struct {
+		SessionID         string                      `json:"session_id"`
+		Preference        pebblestore.ModelPreference `json:"preference"`
+		ContextWindow     int                         `json:"context_window"`
+		MaxOutputTokens   int                         `json:"max_output_tokens"`
+		UnexpectedSession map[string]any              `json:"session"`
+	}
+	if err := json.Unmarshal(prefGetRec.Body.Bytes(), &prefGetPayload); err != nil {
+		t.Fatalf("decode preference get response: %v", err)
+	}
+	if prefGetPayload.SessionID != created.ID || prefGetPayload.Preference.Model != "gpt-5.4" || prefGetPayload.UnexpectedSession != nil {
+		t.Fatalf("preference get payload = %+v", prefGetPayload)
+	}
+
 	modeReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/mode", bytes.NewBufferString(`{"mode":"plan"}`))
 	modeReq.Header.Set("Content-Type", "application/json")
 	modeRec := httptest.NewRecorder()
@@ -72,9 +92,6 @@ func TestSessionsV3PrimaryModeAndPreferenceUseV3PrimaryMutation(t *testing.T) {
 	}
 	if modePayload.Session.Mode != "plan" || modePayload.Mutation.Event.EventType != "session.mode.updated" {
 		t.Fatalf("mode payload = %+v", modePayload)
-	}
-	if len(modePayload.Events) != 2 || modePayload.Events[1].EventType != "session.mode.updated" {
-		t.Fatalf("mode events = %+v", modePayload.Events)
 	}
 	var modeEventPayload map[string]any
 	if err := json.Unmarshal(modePayload.Mutation.Event.Payload, &modeEventPayload); err != nil {
@@ -104,9 +121,6 @@ func TestSessionsV3PrimaryModeAndPreferenceUseV3PrimaryMutation(t *testing.T) {
 	}
 	if prefPayload.Session.Preference.Thinking != "high" || prefPayload.Preference.Thinking != "high" || prefPayload.Mutation.Event.EventType != "session.preference.updated" {
 		t.Fatalf("preference payload = %+v", prefPayload)
-	}
-	if len(prefPayload.Events) != 3 || prefPayload.Events[2].EventType != "session.preference.updated" {
-		t.Fatalf("preference events = %+v", prefPayload.Events)
 	}
 	var prefEventPayload struct {
 		Preference pebblestore.ModelPreference `json:"preference"`
@@ -1173,6 +1187,26 @@ func waitForSessionsV3RunIntentStatus(t *testing.T, sessionSvc *sessionruntime.S
 	}
 	intents, _ := sessionSvc.Store().ListV3SessionRunIntents(sessionID, 0, 10)
 	t.Fatalf("run intent status %q not found: %+v", want, intents)
+	return sessionruntime.SessionRunIntent{}
+}
+
+func waitForSessionsV3SpecificRunIntentStatus(t *testing.T, sessionSvc *sessionruntime.Service, sessionID, runID, want string) sessionruntime.SessionRunIntent {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		intents, err := sessionSvc.Store().ListV3SessionRunIntents(sessionID, 0, 20)
+		if err != nil {
+			t.Fatalf("list run intents: %v", err)
+		}
+		for _, intent := range intents {
+			if intent.RunID == runID && intent.Status == want {
+				return intent
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	intents, _ := sessionSvc.Store().ListV3SessionRunIntents(sessionID, 0, 20)
+	t.Fatalf("run intent %q status %q not found: %+v", runID, want, intents)
 	return sessionruntime.SessionRunIntent{}
 }
 

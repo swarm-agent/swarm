@@ -98,7 +98,6 @@ function v3WorksetSnapshot(messages: Record<string, unknown>[], active = true): 
     session_order: [SESSION_ID],
     messages_by_session: { [SESSION_ID]: messages },
     permissions_by_session: { [SESSION_ID]: [] },
-    preferences_by_session: { [SESSION_ID]: { preference: { provider: 'mock', model: 'v3-markdown-stream', thinking: '', updated_at: 0 }, context_window: 128000, max_output_tokens: 4096 } },
     plans_by_session: { [SESSION_ID]: null },
     plan_revisions_by_session: { [SESSION_ID]: [] },
     usage_by_session: {},
@@ -147,6 +146,7 @@ async function startMockBackend(): Promise<{ server: Server; port: number; setMe
       })
     }
     if (path === '/v3/sessions:workset') return writeJson(res, 200, v3WorksetSnapshot(sessionMessages, sessionActive))
+    if (path === `/v3/sessions/${SESSION_ID}/preference`) return writeJson(res, 200, { preference: { provider: 'mock', model: 'v3-markdown-stream', thinking: '', updated_at: 0 }, context_window: 128000, max_output_tokens: 4096 })
     if (path === `/v3/sessions/${SESSION_ID}`) return writeJson(res, 200, v3Snapshot(sessionMessages, sessionActive))
     if (path === '/v1/notifications') {
       return writeJson(res, 200, { notifications: [], summary: { swarm_id: 'swarm-playwright', total_count: 0, unread_count: 0, active_count: 0, updated_at: 0 } })

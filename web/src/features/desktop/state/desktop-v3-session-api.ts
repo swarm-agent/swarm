@@ -43,6 +43,21 @@ interface HydratedSessionResponseWire {
   session?: unknown
 }
 
+interface PreferenceWire {
+  provider?: string
+  model?: string
+  thinking?: string
+  service_tier?: string
+  context_mode?: string
+  updated_at?: number
+}
+
+interface PreferenceResponseWire {
+  preference?: PreferenceWire
+  context_window?: number
+  max_output_tokens?: number
+}
+
 interface ActivePlanResponseWire {
   has_active?: boolean
   active_plan?: DesktopSessionPlanWire | null
@@ -141,6 +156,18 @@ export async function fetchAndApplyDesktopV3SessionSnapshot(
   return desktopV3SessionSnapshotFromState(getV3RuntimeDesktopSnapshot(), normalizedSessionId)
 }
 
+export async function fetchAndApplyDesktopV3SessionPreference(
+  sessionId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<ResolvedSessionPreference> {
+  const normalizedSessionId = assertRawCanonicalDesktopV3SessionId(sessionId)
+  const response = await requestJson<PreferenceResponseWire>(
+    `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/preference`,
+    { signal: options.signal },
+  )
+  return applyDesktopV3SessionPreference(normalizedSessionId, response, 'v3-session-preference')
+}
+
 export async function fetchAndApplyDesktopV3SessionMessagesTail(
   sessionId: string,
   options: { signal?: AbortSignal } = {},
@@ -202,7 +229,7 @@ export async function updateDesktopV3SessionPreference(
   input: Partial<ResolvedSessionPreference['preference']>,
 ): Promise<ResolvedSessionPreference> {
   const normalizedSessionId = assertRawCanonicalDesktopV3SessionId(sessionId)
-  await requestJson<HydratedSessionResponseWire>(
+  const response = await requestJson<PreferenceResponseWire>(
     `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/preference`,
     {
       method: 'POST',
@@ -216,7 +243,48 @@ export async function updateDesktopV3SessionPreference(
       }),
     },
   )
-  return (await refreshSessionAfterMutation(normalizedSessionId)).preference
+  return applyDesktopV3SessionPreference(normalizedSessionId, response, 'v3-session-preference-update')
+}
+
+function applyDesktopV3SessionPreference(
+  sessionId: string,
+  response: PreferenceResponseWire,
+  sourceName: string,
+): ResolvedSessionPreference {
+  const preference = normalizeDesktopV3Preference(response)
+  const snapshot = getV3RuntimeDesktopSnapshot()
+  const receivedAt = Date.now()
+  applyV3RuntimeEnvelope(createV3SnapshotEnvelope({
+    rev: snapshot.rev,
+    preferencesBySessionId: { [sessionId]: preference },
+  }, {
+    mode: 'merge',
+    receivedAt,
+    sessionId,
+    source: { kind: 'http', transport: 'http', name: sourceName },
+    id: `preference:${sessionId}:${preference.preference.updatedAt}:${receivedAt}`,
+  }))
+  return preference
+}
+
+function normalizeDesktopV3Preference(response: PreferenceResponseWire): ResolvedSessionPreference {
+  const preference = response.preference ?? {}
+  return {
+    preference: {
+      provider: String(preference.provider ?? '').trim(),
+      model: String(preference.model ?? '').trim(),
+      thinking: String(preference.thinking ?? '').trim(),
+      serviceTier: String(preference.service_tier ?? '').trim(),
+      contextMode: String(preference.context_mode ?? '').trim(),
+      updatedAt: numberValue(preference.updated_at),
+    },
+    contextWindow: numberValue(response.context_window),
+    maxOutputTokens: numberValue(response.max_output_tokens),
+  }
+}
+
+function numberValue(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 
 export async function updateDesktopV3SessionAgent(

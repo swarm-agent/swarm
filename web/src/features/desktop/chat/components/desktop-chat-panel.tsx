@@ -9,6 +9,7 @@ import {
   agentStateQueryOptions,
   draftModelQueryOptions,
   modelOptionsQueryOptions,
+  sessionPreferenceQueryOptions,
   uiSettingsQueryKey,
   uiSettingsQueryOptions,
 } from '../../../queries/query-options'
@@ -1306,13 +1307,19 @@ export function DesktopChatPanel({
   const dbPlan = useDesktopPlan(sessionId)
   const dbPlanRevisions = useDesktopPlanRevisions(sessionId)
 
+  const sessionPreferenceQuery = useQuery({
+    ...sessionPreferenceQueryOptions(sessionId ?? '', queryClient),
+    enabled: Boolean(sessionId),
+    initialData: dbPreference ?? undefined,
+  })
+
   const draftPreferenceQuery = useQuery({
     ...draftModelQueryOptions(),
     enabled: sessionId === null,
     initialData: queryClient.getQueryData<ResolvedSessionPreference>(draftModelQueryOptions().queryKey),
   })
 
-  const sessionPreference = dbPreference ?? emptyPreference()
+  const sessionPreference = dbPreference ?? sessionPreferenceQuery.data ?? emptyPreference()
   const draftPreference = draftPreferenceQuery.data ?? emptyPreference()
   const selectedAgentProfileForModel = useMemo(
     () => agentState.profiles.find((profile) => profile.name === selectedPrimaryAgent) ?? null,

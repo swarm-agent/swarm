@@ -679,8 +679,21 @@ func (s *Server) handleSessionV3PrimaryAgent(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) handleSessionV3PrimaryPreference(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
-	if r.Method != http.MethodPost {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
 		methodNotAllowed(w)
+		return
+	}
+	if r.Method == http.MethodGet {
+		response, found, err := s.sessionsV3PrimaryPreferenceResponse(principal, sessionID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if !found {
+			writeSessionNotFound(w)
+			return
+		}
+		writeJSON(w, http.StatusOK, response)
 		return
 	}
 	var req sessionsV3PreferenceRequest
@@ -1285,6 +1298,41 @@ func (s *Server) validateSessionsV3PrimaryStopTarget(principal identity.Principa
 
 func (s *Server) hydrateSessionsV3Primary(principal identity.Principal, sessionID string) (sessionsV3HydratedSession, bool, error) {
 	return s.hydrateSessionsV3PrimaryWithLimits(principal, sessionID, sessionsV3PrimaryDefaultMessageTailLimit, sessionsV3PrimaryDefaultEventLimit)
+}
+
+func (s *Server) sessionsV3PrimaryPreferenceResponse(principal identity.Principal, sessionID string) (map[string]any, bool, error) {
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	if strings.TrimSpace(session.AccountScopeID) == "" || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		return nil, false, nil
+	}
+	preference := normalizeSessionsV3ModelPreference(session.Preference)
+	contextWindow := 0
+	maxOutputTokens := 0
+	if s.model != nil {
+		resolved, err := s.model.ResolvePreference(preference)
+		if err != nil {
+			return nil, false, err
+		}
+		preference = normalizeSessionsV3ModelPreference(resolved.Preference)
+		contextWindow = resolved.ContextWindow
+		maxOutputTokens = resolved.MaxOutputTokens
+	}
+	agentModelPolicy := s.sessionsV3AgentModelPolicy(session, preference, contextWindow, maxOutputTokens)
+	if agentModelPolicy.Locked {
+		preference = agentModelPolicy.Preference
+		contextWindow = agentModelPolicy.ContextWindow
+		maxOutputTokens = agentModelPolicy.MaxOutputTokens
+	}
+	return map[string]any{
+		"ok":                true,
+		"session_id":        session.ID,
+		"preference":        preference,
+		"context_window":    contextWindow,
+		"max_output_tokens": maxOutputTokens,
+	}, true, nil
 }
 
 func (s *Server) hydrateSessionsV3PrimaryWithLimits(principal identity.Principal, sessionID string, messageLimit, eventLimit int) (sessionsV3HydratedSession, bool, error) {

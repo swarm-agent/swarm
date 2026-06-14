@@ -3,7 +3,7 @@ import { dedupeAndTrimMessages } from '../chat/services/message-cache'
 import { normalizeDesktopSessionPlan, normalizeDesktopSessionPlanRevisions, type DesktopSessionPlanWire } from '../chat/services/session-plan-record'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { applyCanonicalReasoningEventToLiveHistory } from './live-reasoning-history'
-import type { ChatMessageRecord, DesktopSessionPlanRevisionRecord, ResolvedSessionPreference, SessionPreferenceRecord } from '../chat/types/chat'
+import type { ChatMessageRecord, DesktopSessionPlanRevisionRecord } from '../chat/types/chat'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import type { DesktopPermissionRecord, DesktopRunIntentRecord, DesktopSessionRecord, DesktopSessionUsageRecord } from '../types/realtime'
 import type { DesktopDaemonSnapshot, DesktopSessionReadinessRecord, DesktopWorkspaceRecord } from './desktop-state'
@@ -134,27 +134,6 @@ interface UsageWire {
   updated_at?: number
 }
 
-interface PreferenceWire {
-  provider?: string
-  model?: string
-  thinking?: string
-  service_tier?: string
-  context_mode?: string
-  updated_at?: number
-}
-
-interface ResolvedPreferenceWire {
-  preference?: PreferenceWire
-  context_window?: number
-  max_output_tokens?: number
-  provider?: string
-  model?: string
-  thinking?: string
-  service_tier?: string
-  context_mode?: string
-  updated_at?: number
-}
-
 interface RunIntentWire {
   session_id?: string
   run_id?: string
@@ -185,7 +164,6 @@ interface DesktopStateWorksetResponseWire {
   plans_by_session?: Record<string, DesktopSessionPlanWire | DesktopSessionPlanWire[] | null>
   plan_revisions_by_session?: Record<string, DesktopSessionPlanWire[]>
   usage_by_session?: Record<string, UsageWire>
-  preferences_by_session?: Record<string, ResolvedPreferenceWire | PreferenceWire>
   run_intents_by_session?: Record<string, RunIntentWire[]>
   session_order?: string[]
 }
@@ -279,7 +257,6 @@ export function normalizeDesktopStateSnapshot(response: DesktopStateWorksetRespo
     usageBySessionId: mapUsageBySession(response.usage_by_session),
     runIntentsBySessionId,
     workspacesByPath: workspacesByPath(Object.values(sessionsById)),
-    preferencesBySessionId: mapPreferencesBySession(response.preferences_by_session),
     routeReadinessBySessionId: readySessions(sessionOrder),
   }
 }
@@ -572,30 +549,6 @@ function mapUsageBySession(source: Record<string, UsageWire> | undefined): Recor
     }
   }
   return usageBySession
-}
-
-function mapPreference(source: PreferenceWire | undefined): SessionPreferenceRecord {
-  return {
-    provider: String(source?.provider ?? '').trim(),
-    model: String(source?.model ?? '').trim(),
-    thinking: String(source?.thinking ?? '').trim(),
-    serviceTier: String(source?.service_tier ?? '').trim(),
-    contextMode: String(source?.context_mode ?? '').trim(),
-    updatedAt: numberValue(source?.updated_at),
-  }
-}
-
-function mapPreferencesBySession(source: Record<string, ResolvedPreferenceWire | PreferenceWire> | undefined): Record<string, ResolvedSessionPreference> {
-  const preferences: Record<string, ResolvedSessionPreference> = {}
-  for (const [sessionId, value] of Object.entries(source ?? {})) {
-    const resolved = value as ResolvedPreferenceWire
-    preferences[sessionId] = {
-      preference: mapPreference(resolved.preference ?? value as PreferenceWire),
-      contextWindow: numberValue(resolved.context_window),
-      maxOutputTokens: numberValue(resolved.max_output_tokens),
-    }
-  }
-  return preferences
 }
 
 function mapFirstSessionValues<T, R>(source: Record<string, T | T[] | null> | undefined, mapValue: (value: T) => R): Record<string, R | null> {
