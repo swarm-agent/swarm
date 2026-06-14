@@ -28,7 +28,7 @@ export function applyV3Envelope(state: DesktopState, envelope: V3Envelope): V3En
   switch (envelope.kind) {
     case 'snapshot':
       return reducerResult(state, envelope, desktopReducer(state, {
-        type: envelope.mode === 'replace' ? 'snapshot/replace' : 'snapshot/merge',
+        type: envelope.mode === 'replace' ? 'snapshot/replace' : envelope.mode === 'reconcile' ? 'snapshot/reconcile' : 'snapshot/merge',
         snapshot: envelope.snapshot,
       }))
     case 'persisted.restore':

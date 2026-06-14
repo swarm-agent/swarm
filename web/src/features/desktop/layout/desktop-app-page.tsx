@@ -2078,13 +2078,17 @@ export function DesktopAppPage() {
         const request = {
           workspacePaths,
           recent: { limit: 50 },
+          includeActive: true,
           history: { mode: 'none' as const, maxEventsPerSession: 0, manifestPolicy: 'manifest' as const, includeEvents: false },
         }
         const snapshot = await fetchDesktopStateSnapshot(request, abortController.signal)
         if (!isCurrentEpoch()) {
           return
         }
-        applyV3RuntimeEnvelope(createV3SnapshotEnvelope(snapshot, { mode: 'merge', receivedAt: Date.now() }))
+        applyV3RuntimeEnvelope(createV3SnapshotEnvelope({
+          ...snapshot,
+          reconcileSessionScope: { workspacePaths },
+        }, { mode: 'reconcile', receivedAt: Date.now() }))
         syncV3RealtimeSessions({ force: true })
       })())
     }

@@ -33,6 +33,7 @@ export interface DesktopStateSnapshotRequest {
     activePlan?: boolean
     planRevisions?: boolean
   }
+  includeActive?: boolean
 }
 
 interface DesktopStateSnapshotRequestWire {
@@ -42,6 +43,7 @@ interface DesktopStateSnapshotRequestWire {
   recent?: { limit?: number; before_updated_at?: number | null; before_session_id?: string }
   history?: { mode?: string; max_messages_per_session?: number; max_events_per_session?: number; manifest_policy?: string; include_events?: boolean }
   resources?: { messages?: boolean; events?: boolean; run_intents?: boolean; active_plan?: boolean; plan_revisions?: boolean }
+  include_active?: boolean
 }
 
 interface SessionWire {
@@ -329,6 +331,7 @@ function toSnapshotRequestWire(input: DesktopStateSnapshotRequest): DesktopState
       active_plan: resources.activePlan || undefined,
       plan_revisions: resources.planRevisions || undefined,
     },
+    include_active: input.includeActive || undefined,
   }
 }
 

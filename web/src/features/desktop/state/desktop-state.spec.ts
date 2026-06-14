@@ -109,6 +109,59 @@ test('snapshot replacement sets state.rev, replaces old records, and clears stal
   assert.equal(next.messagesBySessionId.next?.[0]?.id, 'next-message')
 })
 
+test('scoped snapshot reconciliation removes stale persisted sessions missing from canonical workset', () => {
+  const staleSession = session('stale-running', 10)
+  staleSession.live.status = 'running'
+  staleSession.live.runId = 'old-run'
+  const canonicalSession = session('canonical-active', 20)
+  canonicalSession.live.status = 'running'
+  canonicalSession.live.runId = 'new-run'
+  const otherWorkspaceSession = { ...session('other-workspace', 15), workspacePath: '/other', workspaceName: 'other' }
+  const previous = replaceSnapshot(createEmptyDesktopState(), {
+    rev: 5,
+    sessionsById: {
+      [staleSession.id]: staleSession,
+      [canonicalSession.id]: { ...canonicalSession, title: 'Old canonical' },
+      [otherWorkspaceSession.id]: otherWorkspaceSession,
+    },
+    sessionOrder: [staleSession.id, canonicalSession.id, otherWorkspaceSession.id],
+    messagesBySessionId: {
+      [staleSession.id]: [message(staleSession.id, 'stale-message', 1)],
+      [canonicalSession.id]: [message(canonicalSession.id, 'hot-message', 2)],
+    },
+    runIntentsBySessionId: {
+      [staleSession.id]: { sessionId: staleSession.id, runId: 'old-run', status: 'running', blockedReason: '', createdAt: 10, updatedAt: 10, eventSeq: 10 },
+    },
+    workspacesByPath: {
+      '/workspace': { path: '/workspace', name: 'workspace', sessionIds: [staleSession.id, canonicalSession.id] },
+      '/other': { path: '/other', name: 'other', sessionIds: [otherWorkspaceSession.id] },
+    },
+  })
+
+  const reconciled = desktopReducer(previous, {
+    type: 'snapshot/reconcile',
+    snapshot: {
+      rev: 6,
+      reconcileSessionScope: { workspacePaths: ['/workspace'] },
+      sessionsById: { [canonicalSession.id]: { ...canonicalSession, title: 'Canonical from API' } },
+      sessionOrder: [canonicalSession.id],
+      messagesBySessionId: { [canonicalSession.id]: [] },
+      workspacesByPath: {
+        '/workspace': { path: '/workspace', name: 'workspace', sessionIds: [canonicalSession.id] },
+      },
+    },
+  })
+
+  assert.equal(reconciled.sessionsById[staleSession.id], undefined)
+  assert.equal(reconciled.messagesBySessionId[staleSession.id], undefined)
+  assert.equal(reconciled.runIntentsBySessionId[staleSession.id], undefined)
+  assert.deepEqual(reconciled.workspacesByPath['/workspace']?.sessionIds, [canonicalSession.id])
+  assert.equal(reconciled.sessionsById[canonicalSession.id]?.title, 'Canonical from API')
+  assert.equal(reconciled.sessionsById[canonicalSession.id]?.live.status, 'running')
+  assert.deepEqual(reconciled.messagesBySessionId[canonicalSession.id]?.map((record) => record.id), ['hot-message'])
+  assert.equal(reconciled.sessionsById[otherWorkspaceSession.id]?.id, otherWorkspaceSession.id)
+})
+
 test('metadata-only snapshot merge preserves existing messages when backend omits history resources', () => {
   const activeSession = session('active', 20)
   const existing = replaceSnapshot(createEmptyDesktopState(), {

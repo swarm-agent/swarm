@@ -90,7 +90,7 @@ interface V3EnvelopeBase {
 
 export interface V3SnapshotEnvelope extends V3EnvelopeBase {
   kind: 'snapshot'
-  mode: 'replace' | 'merge'
+  mode: 'replace' | 'merge' | 'reconcile'
   snapshot: DesktopDaemonSnapshot
 }
 
@@ -202,6 +202,7 @@ interface DurableEventWire {
   subscription_id?: string
   rev?: number
   prevRev?: number
+  prev_rev?: number
   global_seq?: number
   source_seq?: number
   ts_unix_ms?: number
@@ -212,7 +213,7 @@ interface DurableEventWire {
   error_code?: string
 }
 
-export function createV3SnapshotEnvelope(snapshot: DesktopDaemonSnapshot, options: V3EnvelopeOptions & { mode?: 'replace' | 'merge' } = {}): V3SnapshotEnvelope {
+export function createV3SnapshotEnvelope(snapshot: DesktopDaemonSnapshot, options: V3EnvelopeOptions & { mode?: 'replace' | 'merge' | 'reconcile' } = {}): V3SnapshotEnvelope {
   const mode = options.mode ?? 'replace'
   const cursor = envelopeCursor({ endpointCursor: options.endpointCursor ?? snapshot.snapshotEndpointCursor, rev: snapshot.rev, highWatermarkSeq: options.highWatermarkSeq })
   return {
@@ -315,7 +316,7 @@ export function normalizeV3DurableEventEnvelope(raw: unknown, options: V3Durable
     stream,
     entityId,
     rev: positiveInteger(wire?.rev),
-    prevRev: nonNegativeInteger(wire?.prevRev),
+    prevRev: nonNegativeInteger(wire?.prevRev ?? wire?.prev_rev),
     globalSeq,
     sourceSeq,
     tsUnixMs,

@@ -62,9 +62,14 @@ export interface DesktopState {
   routeReadinessBySessionId: Record<string, DesktopSessionReadinessRecord>
 }
 
+export interface DesktopSnapshotReconcileScope {
+  workspacePaths?: string[]
+}
+
 export interface DesktopDaemonSnapshot {
   rev: number
   snapshotEndpointCursor?: string
+  reconcileSessionScope?: DesktopSnapshotReconcileScope
   sessionsById?: Record<string, DesktopSessionRecord>
   sessionOrder?: string[]
   messagesBySessionId?: Record<string, ChatMessageRecord[]>
@@ -96,6 +101,7 @@ export interface DesktopDaemonEvent {
 export type DesktopStateAction =
   | { type: 'snapshot/replace'; snapshot: DesktopDaemonSnapshot }
   | { type: 'snapshot/merge'; snapshot: DesktopDaemonSnapshot }
+  | { type: 'snapshot/reconcile'; snapshot: DesktopDaemonSnapshot }
   | { type: 'daemon/event'; event: DesktopDaemonEvent }
   | { type: 'connection/stale'; reason: string }
   | { type: 'connection/status'; status: DesktopStateStatus; error?: string | null }
@@ -138,6 +144,8 @@ export function desktopReducer(state: DesktopState, action: DesktopStateAction):
       return replaceFromSnapshot(state, action.snapshot)
     case 'snapshot/merge':
       return mergeFromSnapshot(state, action.snapshot)
+    case 'snapshot/reconcile':
+      return reconcileFromSnapshot(state, action.snapshot)
     case 'daemon/event':
       return applyDaemonEvent(state, action.event)
     case 'connection/stale':
@@ -242,6 +250,53 @@ function mergeFromSnapshot(state: DesktopState, snapshot: DesktopDaemonSnapshot)
       ...cloneRecord(snapshot.agentModelPolicyBySessionId),
     },
     routeReadinessBySessionId: mergeReadinessRecord(state.routeReadinessBySessionId, snapshot.routeReadinessBySessionId),
+  }
+}
+
+function reconcileFromSnapshot(state: DesktopState, snapshot: DesktopDaemonSnapshot): DesktopState {
+  const merged = mergeFromSnapshot(state, snapshot)
+  if (merged.status === 'stale' && merged.resyncRequested) {
+    return merged
+  }
+
+  const workspacePaths = new Set((snapshot.reconcileSessionScope?.workspacePaths ?? [])
+    .map((path) => path.trim())
+    .filter(Boolean))
+  if (workspacePaths.size === 0) {
+    return merged
+  }
+
+  const incomingSessionIds = new Set(Object.keys(snapshot.sessionsById ?? {}))
+  const removedSessionIds = new Set<string>()
+  const sessionsById = { ...merged.sessionsById }
+  for (const [sessionId, session] of Object.entries(merged.sessionsById)) {
+    if (incomingSessionIds.has(sessionId)) {
+      continue
+    }
+    if (!workspacePaths.has(session.workspacePath?.trim() ?? '')) {
+      continue
+    }
+    delete sessionsById[sessionId]
+    removedSessionIds.add(sessionId)
+  }
+  if (removedSessionIds.size === 0) {
+    return merged
+  }
+
+  return {
+    ...merged,
+    sessionsById,
+    sessionOrder: merged.sessionOrder.filter((sessionId) => sessionsById[sessionId]),
+    messagesBySessionId: omitSessionKeys(merged.messagesBySessionId, removedSessionIds),
+    permissionsById: Object.fromEntries(Object.entries(merged.permissionsById).filter(([, permission]) => !removedSessionIds.has(permission.sessionId))),
+    plansBySessionId: omitSessionKeys(merged.plansBySessionId, removedSessionIds),
+    planRevisionsBySessionId: omitSessionKeys(merged.planRevisionsBySessionId, removedSessionIds),
+    usageBySessionId: omitSessionKeys(merged.usageBySessionId, removedSessionIds),
+    runIntentsBySessionId: omitSessionKeys(merged.runIntentsBySessionId, removedSessionIds),
+    workspacesByPath: reconcileWorkspaceSessionLists(merged.workspacesByPath, snapshot.workspacesByPath, workspacePaths, removedSessionIds),
+    preferencesBySessionId: omitSessionKeys(merged.preferencesBySessionId, removedSessionIds),
+    agentModelPolicyBySessionId: omitSessionKeys(merged.agentModelPolicyBySessionId, removedSessionIds),
+    routeReadinessBySessionId: omitSessionKeys(merged.routeReadinessBySessionId, removedSessionIds),
   }
 }
 
@@ -1625,6 +1680,40 @@ function isObjectWithStringId(value: unknown): value is { id: string } & Record<
 
 function cloneRecord<T>(record: Record<string, T> | undefined): Record<string, T> {
   return record ? { ...record } : {}
+}
+
+function omitSessionKeys<T>(record: Record<string, T>, sessionIds: Set<string>): Record<string, T> {
+  if (sessionIds.size === 0) {
+    return record
+  }
+  const next = { ...record }
+  for (const sessionId of sessionIds) {
+    delete next[sessionId]
+  }
+  return next
+}
+
+function reconcileWorkspaceSessionLists(
+  current: Record<string, DesktopWorkspaceRecord>,
+  incoming: Record<string, DesktopWorkspaceRecord> | undefined,
+  workspacePaths: Set<string>,
+  removedSessionIds: Set<string>,
+): Record<string, DesktopWorkspaceRecord> {
+  const next = { ...current }
+  for (const workspacePath of workspacePaths) {
+    const existing = next[workspacePath]
+    if (!existing) {
+      continue
+    }
+    const incomingWorkspace = incoming?.[workspacePath]
+    next[workspacePath] = incomingWorkspace
+      ? cloneWorkspace(incomingWorkspace)
+      : {
+          ...existing,
+          sessionIds: existing.sessionIds.filter((sessionId) => !removedSessionIds.has(sessionId)),
+        }
+  }
+  return next
 }
 
 function attachUsageToSessions(

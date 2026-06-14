@@ -13,12 +13,13 @@ import (
 const sessionsV3WorksetMaxResourcePageSize = 200
 
 type sessionsV3WorksetRequest struct {
-	SessionIDs []string                   `json:"session_ids,omitempty"`
-	Global     bool                       `json:"global,omitempty"`
-	Workspace  sessionsV3WorksetWorkspace `json:"workspace,omitempty"`
-	Recent     sessionsV3WorksetRecent    `json:"recent,omitempty"`
-	History    sessionsV3WorksetHistory   `json:"history,omitempty"`
-	Resources  sessionsV3WorksetResources `json:"resources,omitempty"`
+	SessionIDs    []string                   `json:"session_ids,omitempty"`
+	Global        bool                       `json:"global,omitempty"`
+	Workspace     sessionsV3WorksetWorkspace `json:"workspace,omitempty"`
+	Recent        sessionsV3WorksetRecent    `json:"recent,omitempty"`
+	History       sessionsV3WorksetHistory   `json:"history,omitempty"`
+	Resources     sessionsV3WorksetResources `json:"resources,omitempty"`
+	IncludeActive bool                       `json:"include_active,omitempty"`
 }
 
 type sessionsV3WorksetWorkspace struct {
@@ -156,7 +157,8 @@ func sessionsV3WorksetOptionsFromRequest(principal identity.Principal, req sessi
 			RecentBeforeUpdatedAt: req.Recent.BeforeUpdatedAt,
 			RecentBeforeSessionID: strings.TrimSpace(req.Recent.BeforeSessionID),
 			History:               history,
-			IncludeRunIntents:     req.Resources.RunIntents,
+			IncludeRunIntents:     req.Resources.RunIntents || req.IncludeActive,
+			IncludeActiveSessions: req.IncludeActive,
 		},
 		IncludeActivePlan:    req.Resources.ActivePlan,
 		IncludePlanRevisions: req.Resources.PlanRevisions,
