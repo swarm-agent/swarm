@@ -228,7 +228,7 @@ export async function fetchAndApplyDesktopV3SessionSnapshot(
   await mergeDesktopStateSnapshot({
     sessionIds: [normalizedSessionId],
     history: { mode: 'none', maxEventsPerSession: 200, manifestPolicy: 'manifest', includeEvents: true },
-    resources: { events: true, runIntents: true },
+    resources: { events: true },
   }, options.signal)
   return desktopV3SessionSnapshotFromState(getV3RuntimeDesktopSnapshot(), normalizedSessionId)
 }

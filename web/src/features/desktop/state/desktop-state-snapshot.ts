@@ -138,10 +138,6 @@ const DEFAULT_SNAPSHOT_HISTORY = {
   includeEvents: false,
 }
 
-const DEFAULT_SNAPSHOT_RESOURCES = {
-  runIntents: true,
-}
-
 export async function fetchDesktopStateSnapshot(input: DesktopStateSnapshotRequest, signal?: AbortSignal): Promise<DesktopDaemonSnapshot> {
   const response = await apiFetch('/v3/sessions:workset', {
     method: 'POST',
@@ -196,10 +192,7 @@ function desktopStateSnapshotEnvelopeId(mode: 'replace' | 'merge', snapshot: Des
 
 export function normalizeDesktopStateSnapshot(response: DesktopStateWorksetResponseWire): DesktopDaemonSnapshot {
   assertSnapshotRevision(response.rev)
-  const rawRunIntentsBySessionId = {
-    ...latestRunIntentBySessionId(response.run_intents_by_session),
-    ...currentRunIntentBySessionId(response.current_run_intent_by_session),
-  }
+  const rawRunIntentsBySessionId = currentRunIntentBySessionId(response.current_run_intent_by_session)
   const sessionsById = mapSessions(response.sessions_by_id, rawRunIntentsBySessionId)
   const runIntentsBySessionId = activeRunIntentsForNonTerminalSessions(rawRunIntentsBySessionId, sessionsById)
   applyReasoningEventsBySession(sessionsById, response.events_by_session)
@@ -231,7 +224,7 @@ function toSnapshotRequestWire(input: DesktopStateSnapshotRequest): DesktopState
   const workspacePath = input.workspacePath?.trim() ?? ''
   const workspacePaths = (input.workspacePaths ?? []).map((path) => path.trim()).filter(Boolean)
   const history = { ...DEFAULT_SNAPSHOT_HISTORY, ...(input.history ?? {}) }
-  const resources = { ...DEFAULT_SNAPSHOT_RESOURCES, ...(input.resources ?? {}) }
+  const resources = input.resources ?? {}
   return {
     session_ids: sessionIds.length > 0 ? sessionIds : undefined,
     global: input.global || undefined,
@@ -431,17 +424,6 @@ function mapMessage(message: MessageWire): ChatMessageRecord {
     metadata: message.metadata,
     toolMessage: parseStructuredToolMessage(content),
   }
-}
-
-function latestRunIntentBySessionId(source: Record<string, RunIntentWire[]> | undefined): Record<string, DesktopRunIntentRecord> {
-  const bySessionId: Record<string, DesktopRunIntentRecord> = {}
-  for (const [sessionId, intents] of Object.entries(source ?? {})) {
-    const latest = [...(intents ?? [])].sort((left, right) => (numberValue(right.event_seq) - numberValue(left.event_seq)) || (numberValue(right.updated_at) - numberValue(left.updated_at)))[0]
-    if (latest) {
-      bySessionId[sessionId] = mapRunIntent({ ...latest, session_id: latest.session_id ?? sessionId })
-    }
-  }
-  return bySessionId
 }
 
 function currentRunIntentBySessionId(source: Record<string, RunIntentWire> | undefined): Record<string, DesktopRunIntentRecord> {

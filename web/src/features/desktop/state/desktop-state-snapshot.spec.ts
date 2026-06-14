@@ -96,12 +96,6 @@ test('normalizeDesktopStateSnapshot builds a plain replacement snapshot from wor
     messages_by_session: {
       next: [{ id: 'message-2', session_id: 'next', global_seq: 2, role: 'assistant', content: 'two', created_at: 2 }],
     },
-    run_intents_by_session: {
-      next: [
-        { session_id: 'next', run_id: 'run-old', status: 'completed', event_seq: 1 },
-        { session_id: 'next', run_id: 'run-new', status: 'running', event_seq: 3 },
-      ],
-    },
   })
 
   assert.equal(snapshot.rev, 42)
@@ -112,9 +106,9 @@ test('normalizeDesktopStateSnapshot builds a plain replacement snapshot from wor
   assert.equal(snapshot.sessionsById?.next?.permissionsHydrated, false)
   assert.deepEqual(snapshot.sessionsById?.next?.pendingPermissions, [])
   assert.equal(snapshot.sessionsById?.next?.pendingPermissionCount, 0)
-  assert.equal(snapshot.sessionsById?.next?.live.status, 'running')
+  assert.equal(snapshot.sessionsById?.next?.live.status, 'idle')
   assert.equal(snapshot.usageBySessionId?.next, undefined)
-  assert.equal(snapshot.runIntentsBySessionId?.next?.runId, 'run-new')
+  assert.equal(snapshot.runIntentsBySessionId?.next, undefined)
   assert.equal(snapshot.workspacesByPath?.['/workspace/next']?.sessionIds[0], 'next')
   assert.equal(snapshot.routeReadinessBySessionId?.next?.ready, true)
   assert.equal(snapshot.preferencesBySessionId, undefined)
@@ -138,16 +132,6 @@ test('normalizeDesktopStateSnapshot maps active run intent into live sidebar sta
       },
     },
     session_order: ['active'],
-    run_intents_by_session: {
-      active: [{
-        session_id: 'active',
-        run_id: 'run-active',
-        status: 'running',
-        created_at: 38,
-        updated_at: 40,
-        event_seq: 7,
-      }],
-    },
   })
 
   const session = snapshot.sessionsById?.active
@@ -157,7 +141,7 @@ test('normalizeDesktopStateSnapshot maps active run intent into live sidebar sta
   assert.equal(session?.live.startedAt, 38)
 })
 
-test('normalizeDesktopStateSnapshot hydrates session live state from top-level run intents', () => {
+test('normalizeDesktopStateSnapshot ignores legacy top-level run_intents_by_session for ordinary workset snapshots', () => {
   const snapshot = normalizeDesktopStateSnapshot({
     rev: 45,
     sessions_by_id: {
@@ -177,10 +161,10 @@ test('normalizeDesktopStateSnapshot hydrates session live state from top-level r
   })
 
   const session = snapshot.sessionsById?.active
-  assert.equal(session?.runIntent?.runId, 'run-top-level')
-  assert.equal(session?.live.status, 'running')
-  assert.equal(session?.live.runId, 'run-top-level')
-  assert.equal(session?.live.startedAt, 38)
+  assert.equal(session?.runIntent, null)
+  assert.equal(session?.live.status, 'idle')
+  assert.equal(session?.live.runId, null)
+  assert.equal(snapshot.runIntentsBySessionId?.active, undefined)
 })
 
 
@@ -292,9 +276,7 @@ test('loadDesktopStateSnapshot fetches the workset endpoint and replaces old sto
         manifest_policy: 'manifest',
         include_events: false,
       },
-      resources: {
-        run_intents: true,
-      },
+      resources: {},
     },
   }])
   assert.deepEqual(notifications, [12])

@@ -550,7 +550,7 @@ test('DesktopAppPage derives route readiness and cached switching from the exter
   assert.match(source, /applyV3RuntimeEnvelope\(createV3SnapshotEnvelope\(\{[\s\S]*\.\.\.snapshot,[\s\S]*reconcileSessionScope: \{ workspacePaths \},[\s\S]*\}, \{ mode: 'reconcile'/)
   assert.match(source, /workspacePaths,/)
   assert.match(source, /recent: \{ limit: 50 \}/)
-  assert.match(source, /includeActive: true/)
+  assert.doesNotMatch(source, /includeActive: true/)
   assert.doesNotMatch(source, /maxMessagesPerSession/)
   assert.match(source, /useDesktopRouteReadiness\(\{ workspacePath: selectedWorkspacePath \}, routeSessionId\)/)
   assert.match(source, /fetchDesktopStateSnapshot\(\{[\s\S]*sessionIds: \[routeCriticalSessionId\],[\s\S]*workspacePaths: desktopV3WorksetScopeKey \? desktopV3WorksetScopeKey\.split\('\\u0000'\) : \[\],[\s\S]*recent: \{ limit: 50 \}/)
@@ -714,6 +714,7 @@ test('Desktop routine workset hydration callers are metadata-only and never requ
 
   const snapshotSource = sources.find((entry) => entry.file.endsWith('desktop-state-snapshot.ts'))?.source ?? ''
   assert.match(snapshotSource, /const DEFAULT_SNAPSHOT_HISTORY = \{\n\s+mode: 'none' as const,/, 'default workset snapshot history must be metadata-only')
+  assert.doesNotMatch(allSource, /runIntents:\s*true|run_intents:\s*true|includeActive:\s*true/, 'routine Desktop workset callers must not request run intents or include_active')
 
   const mutationSource = sources.find((entry) => entry.file.endsWith('desktop-v3-session-api.ts'))?.source ?? ''
   assert.match(mutationSource, /mergeDesktopStateSnapshot\(\{\s*sessionIds: \[normalizedSessionId\],\s*history: \{ mode: 'none'/s, 'mutation refresh snapshots must explicitly request metadata-only history')

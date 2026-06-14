@@ -1465,7 +1465,6 @@ async function refreshDesktopV3GlobalDiscovery(): Promise<DesktopDaemonSnapshot 
     global: true,
     recent: { limit: 50 },
     history: { mode: 'none', maxEventsPerSession: 0, manifestPolicy: 'manifest', includeEvents: false },
-    resources: { runIntents: true },
   })
     .then((snapshot) => {
       const cursor = snapshot.snapshotEndpointCursor?.trim() ?? ''
@@ -1495,7 +1494,7 @@ function requestScopedSessionWorkset(sessionId: string, options: { force?: boole
     void fetchDesktopStateSnapshot({
       sessionIds: [normalizedSessionId],
       history: { mode: 'none', maxEventsPerSession: 200, manifestPolicy: 'manifest', includeEvents: true },
-      resources: { events: true, runIntents: true },
+      resources: { events: true },
     })
       .then((snapshot) => {
         applyV3RuntimeEnvelope(createV3SnapshotEnvelope(snapshot, { mode: 'merge', receivedAt: Date.now() }))
