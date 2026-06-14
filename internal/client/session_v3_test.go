@@ -231,7 +231,8 @@ func TestSessionV3TUIWorksetClientUsesTUIRouteAndScope(t *testing.T) {
 			t.Fatalf("decode tui workset request: %v", err)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"ok": true,
+			"ok":                       true,
+			"snapshot_endpoint_cursor": "endpoint-cursor-1",
 			"sessions_by_id": map[string]any{
 				"session-a": map[string]any{"id": "session-a", "workspace_path": "/workspace-a", "title": "A", "mode": "plan", "updated_at": 2000},
 			},
@@ -291,6 +292,9 @@ func TestSessionV3TUIWorksetClientUsesTUIRouteAndScope(t *testing.T) {
 	}
 	if workset.SessionOrder[0] != "session-a" || workset.SessionsByID["session-a"].SessionAPI != "v3" || workset.SessionsByID["session-a"].LastEventSeq != 9 || workset.SessionsByID["session-a"].ProjectionHighWatermarkSeq != 10 {
 		t.Fatalf("session not marked from projection: %#v", workset.SessionsByID["session-a"])
+	}
+	if workset.SnapshotEndpointCursor != "endpoint-cursor-1" {
+		t.Fatalf("SnapshotEndpointCursor = %q, want endpoint-cursor-1", workset.SnapshotEndpointCursor)
 	}
 }
 

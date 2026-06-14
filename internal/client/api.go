@@ -840,6 +840,7 @@ type SessionV3WorksetHistory struct {
 type SessionV3Workset struct {
 	OK                        bool                                      `json:"ok"`
 	Rev                       uint64                                    `json:"rev"`
+	SnapshotEndpointCursor    string                                    `json:"snapshot_endpoint_cursor,omitempty"`
 	SessionsByID              map[string]SessionSummary                 `json:"sessions_by_id"`
 	ProjectionsBySession      map[string]SessionV3Projection            `json:"projections_by_session"`
 	MessagesBySession         map[string][]SessionMessage               `json:"messages_by_session"`
