@@ -120,10 +120,18 @@ interface EventWire {
   payload?: Record<string, unknown>
 }
 
+interface ProjectionWire {
+  session_id?: string
+  last_event_seq?: number
+  projection_high_watermark_seq?: number
+  updated_at?: number
+}
+
 export interface DesktopStateWorksetResponseWire {
   rev?: number
   snapshot_endpoint_cursor?: string
   sessions_by_id?: Record<string, SessionWire>
+  projections_by_session?: Record<string, ProjectionWire>
   messages_by_session?: Record<string, MessageWire[]>
   events_by_session?: Record<string, EventWire[]>
   run_intents_by_session?: Record<string, RunIntentWire[]>
@@ -143,6 +151,19 @@ export async function fetchDesktopStateSnapshot(input: DesktopStateSnapshotReque
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(toSnapshotRequestWire(input)),
+    signal,
+  })
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response))
+  }
+  return normalizeDesktopStateSnapshot(await response.json() as DesktopStateWorksetResponseWire)
+}
+
+export async function fetchDesktopSessionDiscovery(input: DesktopStateSnapshotRequest, signal?: AbortSignal): Promise<DesktopDaemonSnapshot> {
+  const response = await apiFetch('/v3/sessions:discover', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(toDiscoveryRequestWire(input)),
     signal,
   })
   if (!response.ok) {
@@ -193,7 +214,7 @@ function desktopStateSnapshotEnvelopeId(mode: 'replace' | 'merge', snapshot: Des
 export function normalizeDesktopStateSnapshot(response: DesktopStateWorksetResponseWire): DesktopDaemonSnapshot {
   assertSnapshotRevision(response.rev)
   const rawRunIntentsBySessionId = currentRunIntentBySessionId(response.current_run_intent_by_session)
-  const sessionsById = mapSessions(response.sessions_by_id, rawRunIntentsBySessionId)
+  const sessionsById = mapSessions(applyProjectionsToSessions(response.sessions_by_id, response.projections_by_session), rawRunIntentsBySessionId)
   const runIntentsBySessionId = activeRunIntentsForNonTerminalSessions(rawRunIntentsBySessionId, sessionsById)
   applyReasoningEventsBySession(sessionsById, response.events_by_session)
   const sessionOrder = normalizeSessionOrder(sessionsById, response.session_order)
@@ -216,6 +237,27 @@ export function normalizeDesktopStateSnapshot(response: DesktopStateWorksetRespo
     runIntentsBySessionId,
     workspacesByPath: workspacesByPath(Object.values(sessionsById)),
     routeReadinessBySessionId: readySessions(sessionOrder),
+  }
+}
+
+function toDiscoveryRequestWire(input: DesktopStateSnapshotRequest): DesktopStateSnapshotRequestWire {
+  const sessionIds = (input.sessionIds ?? []).map((sessionId) => sessionId.trim()).filter(Boolean)
+  const workspacePath = input.workspacePath?.trim() ?? ''
+  const workspacePaths = (input.workspacePaths ?? []).map((path) => path.trim()).filter(Boolean)
+  return {
+    session_ids: sessionIds.length > 0 ? sessionIds : undefined,
+    global: input.global || undefined,
+    workspace: workspacePath || workspacePaths.length > 0 ? {
+      workspace_path: workspacePath || undefined,
+      workspace_paths: workspacePaths.length > 0 ? workspacePaths : undefined,
+    } : undefined,
+    recent: input.recent
+      ? {
+          limit: input.recent.limit,
+          before_updated_at: input.recent.beforeUpdatedAt ?? undefined,
+          before_session_id: input.recent.beforeSessionId?.trim() || undefined,
+        }
+      : undefined,
   }
 }
 
@@ -284,6 +326,30 @@ function applyReasoningEventsBySession(
       applyCanonicalReasoningEventToLiveHistory(session.live, payload, eventType, ts, seq)
     }
   }
+}
+
+function applyProjectionsToSessions(
+  sessionsById: Record<string, SessionWire> | undefined,
+  projectionsBySession: Record<string, ProjectionWire> | undefined,
+): Record<string, SessionWire> | undefined {
+  if (!sessionsById || Object.keys(projectionsBySession ?? {}).length === 0) {
+    return sessionsById
+  }
+  const next: Record<string, SessionWire> = {}
+  for (const [fallbackId, session] of Object.entries(sessionsById)) {
+    const explicitId = String(session.id ?? fallbackId).trim()
+    const projection = projectionsBySession?.[explicitId] ?? projectionsBySession?.[fallbackId]
+    next[fallbackId] = projection
+      ? {
+          ...session,
+          last_event_seq: numberValue(projection.last_event_seq),
+          projection_high_watermark_seq: numberValue(projection.projection_high_watermark_seq),
+          updated_at: Math.max(numberValue(session.updated_at), numberValue(projection.updated_at)),
+          session_api: session.session_api || 'v3',
+        }
+      : session
+  }
+  return next
 }
 
 function mapSessions(

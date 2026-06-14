@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { getDesktopSnapshot, replaceDesktopFromSnapshot, subscribeDesktop } from './desktop-state-store'
-import { loadDesktopStateSnapshot, normalizeDesktopStateSnapshot } from './desktop-state-snapshot'
+import { fetchDesktopSessionDiscovery, loadDesktopStateSnapshot, normalizeDesktopStateSnapshot } from './desktop-state-snapshot'
 import type { DesktopSessionRecord } from '../types/realtime'
 
 const originalFetch = globalThis.fetch
@@ -283,4 +283,45 @@ test('loadDesktopStateSnapshot fetches the workset endpoint and replaces old sto
   assert.equal(getDesktopSnapshot().rev, 12)
   assert.equal(getDesktopSnapshot().sessionsById.old, undefined)
   assert.equal(getDesktopSnapshot().sessionsById.next?.id, 'next')
+})
+
+
+test('fetchDesktopSessionDiscovery uses narrow metadata-only discovery endpoint', async () => {
+  const requests: Array<{ url: string; body: unknown }> = []
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    requests.push({
+      url: String(input),
+      body: init?.body ? JSON.parse(String(init.body)) : null,
+    })
+    return new Response(JSON.stringify({
+      rev: 14,
+      snapshot_endpoint_cursor: 'cursor-14',
+      sessions_by_id: { discovered: sessionWire('discovered', 20) },
+      projections_by_session: {
+        discovered: { session_id: 'discovered', last_event_seq: 9, projection_high_watermark_seq: 11, updated_at: 25 },
+      },
+      session_order: ['discovered'],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }) as typeof fetch
+
+  const snapshot = await fetchDesktopSessionDiscovery({
+    workspacePaths: ['/workspace/discovered'],
+    recent: { limit: 50 },
+    history: { mode: 'full', maxMessagesPerSession: 200, maxEventsPerSession: 200, includeEvents: true },
+    resources: { messages: true, events: true, runIntents: true },
+    includeActive: true,
+  })
+
+  assert.equal(snapshot.rev, 14)
+  assert.equal(snapshot.sessionsById.discovered?.lastEventSeq, 9)
+  assert.equal(snapshot.sessionsById.discovered?.projectionHighWatermarkSeq, 11)
+  assert.equal(snapshot.sessionsById.discovered?.updatedAt, 25)
+  assert.deepEqual(requests, [{
+    url: '/v3/sessions:discover',
+    body: {
+      workspace: { workspace_paths: ['/workspace/discovered'] },
+      recent: { limit: 50 },
+    },
+  }])
 })

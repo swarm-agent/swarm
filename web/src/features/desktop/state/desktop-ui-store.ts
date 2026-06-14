@@ -28,7 +28,7 @@ import { gitStatusQueryKey } from '../git/api'
 import { agentStateQueryOptions, uiSettingsQueryKey } from '../../queries/query-options'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { applyV3RuntimeEnvelope, createV3SnapshotEnvelope, getV3RuntimeDesktopSnapshot, installV3RuntimePersistence, normalizeV3RealtimeFrame, restoreV3RuntimeFromPersistence } from '../v3-runtime'
-import { fetchDesktopStateSnapshot } from './desktop-state-snapshot'
+import { fetchDesktopSessionDiscovery, fetchDesktopStateSnapshot } from './desktop-state-snapshot'
 import { fetchAndApplyDesktopV3Reconnect, fetchAndApplyDesktopV3SessionPermissions, type DesktopV3ReconnectSnapshot } from './desktop-v3-session-api'
 import type { DesktopDaemonSnapshot } from './desktop-state'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
@@ -1472,10 +1472,9 @@ async function refreshDesktopV3GlobalDiscovery(): Promise<DesktopDaemonSnapshot 
   if (pendingDesktopV3GlobalDiscovery) {
     return pendingDesktopV3GlobalDiscovery
   }
-  pendingDesktopV3GlobalDiscovery = fetchDesktopStateSnapshot({
+  pendingDesktopV3GlobalDiscovery = fetchDesktopSessionDiscovery({
     global: true,
     recent: { limit: 50 },
-    history: { mode: 'none', maxEventsPerSession: 0, manifestPolicy: 'manifest', includeEvents: false },
   })
     .then((snapshot) => {
       const cursor = snapshot.snapshotEndpointCursor?.trim() ?? ''

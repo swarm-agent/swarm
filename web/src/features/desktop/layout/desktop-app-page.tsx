@@ -14,7 +14,7 @@ import { useWorkspaceLauncher } from '../../workspaces/launcher/state/use-worksp
 import { applyDesktopRouteTheme } from './desktop-theme-controller'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
 import { agentStateQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
-import { fetchDesktopStateSnapshot } from '../state/desktop-state-snapshot'
+import { fetchDesktopSessionDiscovery, fetchDesktopStateSnapshot } from '../state/desktop-state-snapshot'
 import { useDesktopRouteReadiness, useDesktopSession, useDesktopWorkspaceSessions } from '../state/desktop-state-store'
 import { applyV3RuntimeEnvelope, createV3SnapshotEnvelope, getV3RuntimeDesktopSnapshot } from '../v3-runtime'
 import type { DesktopSessionRecord } from '../types/realtime'
@@ -2066,7 +2066,7 @@ export function DesktopAppPage() {
     const abortController = new AbortController()
     const workspacePaths = mergedSidebarWorkspaceEntries.map((workspace) => workspace.path).filter((path) => path.trim() !== '')
 
-    debugLog('desktop-app-page', 'effect:v3-workset-bootstrap', {
+    debugLog('desktop-app-page', 'effect:v3-discovery-bootstrap', {
       workspaceCount: workspacePaths.length,
     })
 
@@ -2078,9 +2078,8 @@ export function DesktopAppPage() {
         const request = {
           workspacePaths,
           recent: { limit: 50 },
-          history: { mode: 'none' as const, maxEventsPerSession: 0, manifestPolicy: 'manifest' as const, includeEvents: false },
         }
-        const snapshot = await fetchDesktopStateSnapshot(request, abortController.signal)
+        const snapshot = await fetchDesktopSessionDiscovery(request, abortController.signal)
         if (!isCurrentEpoch()) {
           return
         }
@@ -2098,7 +2097,7 @@ export function DesktopAppPage() {
       }
       const rejected = results.filter((result) => result.status === 'rejected')
       if (rejected.length > 0) {
-        console.error('[desktop-app] failed to hydrate desktop v3 workset bootstrap data', rejected.map((result) => result.reason))
+        console.error('[desktop-app] failed to hydrate desktop v3 discovery bootstrap data', rejected.map((result) => result.reason))
       }
     })
 

@@ -546,7 +546,7 @@ test('DesktopAppPage derives route readiness and cached switching from the exter
   const source = await readFile(new URL('../../layout/desktop-app-page.tsx', import.meta.url), 'utf8')
 
   assert.match(source, /from '\.\.\/state\/desktop-state-store'/)
-  assert.match(source, /fetchDesktopStateSnapshot\(request, abortController\.signal\)/)
+  assert.match(source, /fetchDesktopSessionDiscovery\(request, abortController\.signal\)/)
   assert.match(source, /applyV3RuntimeEnvelope\(createV3SnapshotEnvelope\(\{[\s\S]*\.\.\.snapshot,[\s\S]*reconcileSessionScope: \{ workspacePaths \},[\s\S]*\}, \{ mode: 'reconcile'/)
   assert.match(source, /workspacePaths,/)
   assert.match(source, /recent: \{ limit: 50 \}/)
@@ -580,6 +580,7 @@ test('DesktopAppPage derives route readiness and cached switching from the exter
   assert.doesNotMatch(source, /fetchSession\(/)
   assert.doesNotMatch(source, /prefetchSessionRuntimeData/)
   assert.doesNotMatch(source, /sessionNeedsRefresh/)
+  assert.doesNotMatch(source, /fetchDesktopStateSnapshot\(request, abortController\.signal\)/)
   assert.doesNotMatch(source, /\/v3\/sessions:workset[\s\S]*mode: 'replace'/)
   assert.doesNotMatch(source, /\/v1\/sessions|\/v2\/sessions/)
   assert.doesNotMatch(source, new RegExp('v3session' + '_'))
