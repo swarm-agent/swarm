@@ -105,3 +105,91 @@ test('workspace overview keeps topology routes by binding identity without requi
   assert.equal(overview.workspaces[0]?.topologyRoutes[0]?.workspaceBindingId, 'binding-1')
   assert.equal(overview.workspaces[0]?.topologyRoutes[0]?.runtimeWorkspacePath, '')
 })
+
+
+test('workspace overview derives live run state and runIntent from canonical active_run only', () => {
+  const response = responseForTarget('self', 'self')
+  const session = response.workspaces?.[0]?.sessions?.[0]
+  if (!session) {
+    throw new Error('missing overview session fixture')
+  }
+  session.lifecycle = {
+    session_id: 'session-1',
+    run_id: 'run-lifecycle-stale',
+    active: false,
+    phase: 'completed',
+    started_at: 10,
+    ended_at: 20,
+    updated_at: 20,
+    generation: 1,
+  }
+  session.active_run = {
+    run_id: 'run-canonical',
+    status: 'running',
+    created_at: 1_000,
+    updated_at: 1_500,
+    event_seq: 7,
+    last_seq: 9,
+  }
+  session.session_status = 'idle'
+
+  const mapped = mapWorkspaceOverviewResponse(response).workspaces[0]?.sessions[0]
+
+  assert.equal(mapped?.runIntent?.runId, 'run-canonical')
+  assert.equal(mapped?.runIntent?.status, 'running')
+  assert.equal(mapped?.runIntent?.createdAt, 1_000)
+  assert.equal(mapped?.live.runId, 'run-canonical')
+  assert.equal(mapped?.live.startedAt, 1_000)
+  assert.equal(mapped?.live.status, 'running')
+  assert.equal(mapped?.live.seq, 9)
+})
+
+test('workspace overview ignores lifecycle active and session_status without canonical active_run', () => {
+  const response = responseForTarget('self', 'self')
+  const session = response.workspaces?.[0]?.sessions?.[0]
+  if (!session) {
+    throw new Error('missing overview session fixture')
+  }
+  session.lifecycle = {
+    session_id: 'session-1',
+    run_id: 'run-lifecycle-only',
+    active: true,
+    phase: 'running',
+    started_at: 1_000,
+    ended_at: 0,
+    updated_at: 1_500,
+    generation: 1,
+  }
+  session.active_run = null
+  session.session_status = 'running'
+
+  const mapped = mapWorkspaceOverviewResponse(response).workspaces[0]?.sessions[0]
+
+  assert.equal(mapped?.runIntent, null)
+  assert.equal(mapped?.live.runId, null)
+  assert.equal(mapped?.live.startedAt, null)
+  assert.equal(mapped?.live.status, 'idle')
+})
+
+test('workspace overview treats terminal canonical active_run as inactive even with running session_status', () => {
+  const response = responseForTarget('self', 'self')
+  const session = response.workspaces?.[0]?.sessions?.[0]
+  if (!session) {
+    throw new Error('missing overview session fixture')
+  }
+  session.active_run = {
+    run_id: 'run-terminal',
+    status: 'cancelled',
+    created_at: 1_000,
+    updated_at: 2_000,
+    event_seq: 8,
+  }
+  session.session_status = 'running'
+
+  const mapped = mapWorkspaceOverviewResponse(response).workspaces[0]?.sessions[0]
+
+  assert.equal(mapped?.runIntent, null)
+  assert.equal(mapped?.live.runId, null)
+  assert.equal(mapped?.live.startedAt, null)
+  assert.equal(mapped?.live.status, 'idle')
+})

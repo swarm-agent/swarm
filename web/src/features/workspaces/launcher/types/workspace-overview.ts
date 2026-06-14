@@ -42,6 +42,10 @@ export interface WorkspaceOverviewActiveRunWire {
   run_id?: string
   status?: string
   last_seq?: number
+  created_at?: number
+  started_at?: number
+  updated_at?: number
+  event_seq?: number
 }
 
 export interface WorkspaceOverviewLifecycleWire {
@@ -285,7 +289,11 @@ function mapOverviewSession(session: WorkspaceOverviewSessionWire, preferRuntime
     : []
   const activeRun = session.active_run && typeof session.active_run === 'object' ? session.active_run : null
   const activeRunID = String(activeRun?.run_id ?? '').trim()
-  const sessionStatus = normalizeSessionStatus(String(session.session_status ?? ''))
+  const activeRunStatusText = String(activeRun?.status ?? '').trim()
+  const activeRunStatusNormalized = activeRunStatusText.toLowerCase()
+  const activeRunStatus: DesktopSessionRecord['live']['status'] = activeRunStatusNormalized === 'pending_executor'
+    ? 'starting'
+    : normalizeSessionStatus(activeRunStatusText)
   const lifecycle = session.lifecycle && typeof session.lifecycle === 'object'
     ? {
         sessionId: String(session.lifecycle.session_id ?? session.id ?? '').trim(),
@@ -301,16 +309,26 @@ function mapOverviewSession(session: WorkspaceOverviewSessionWire, preferRuntime
         ownerTransport: String(session.lifecycle.owner_transport ?? '').trim() || null,
       }
     : null
-  const activeRunId = lifecycle?.active
-    ? lifecycle.runId
-    : ['starting', 'running', 'blocked'].includes(sessionStatus)
-      ? (activeRunID || null)
-      : null
-  const lifecycleStatus = lifecycle?.active
-    ? normalizeSessionStatus(lifecycle.phase || 'running')
-    : lifecycle?.phase === 'errored'
-      ? 'error'
-      : sessionStatus
+  const activeRunId = activeRunID && ['starting', 'running'].includes(activeRunStatus)
+    ? activeRunID
+    : null
+  const liveStatus = activeRunId ? activeRunStatus : lifecycle?.phase === 'errored' ? 'error' : 'idle'
+  const activeRunCreatedAt = typeof activeRun?.created_at === 'number' && activeRun.created_at > 0
+    ? activeRun.created_at
+    : typeof activeRun?.started_at === 'number' && activeRun.started_at > 0
+      ? activeRun.started_at
+      : 0
+  const runIntent = activeRunId
+    ? {
+        sessionId: String(session.id ?? '').trim(),
+        runId: activeRunId,
+        status: activeRunStatusText || activeRunStatus,
+        blockedReason: '',
+        createdAt: activeRunCreatedAt,
+        updatedAt: typeof activeRun?.updated_at === 'number' ? activeRun.updated_at : activeRunCreatedAt,
+        eventSeq: typeof activeRun?.event_seq === 'number' ? activeRun.event_seq : 0,
+      }
+    : null
   const metadata = session.metadata && typeof session.metadata === 'object'
     ? session.metadata as Record<string, unknown>
     : undefined
@@ -367,8 +385,8 @@ function mapOverviewSession(session: WorkspaceOverviewSessionWire, preferRuntime
     live: {
       runId: activeRunId,
       agentName: null,
-      startedAt: lifecycle?.active && lifecycle.startedAt > 0 ? lifecycle.startedAt : null,
-      status: lifecycleStatus,
+      startedAt: activeRunId && activeRunCreatedAt > 0 ? activeRunCreatedAt : null,
+      status: liveStatus,
       step: 0,
       toolName: null,
     sidebarToolName: null,
@@ -394,6 +412,7 @@ function mapOverviewSession(session: WorkspaceOverviewSessionWire, preferRuntime
       reasoningStartedAt: null,
       awaitingAck: false,
     },
+    runIntent,
     pendingPermissions,
     pendingPermissionCount: typeof session.pending_permission_count === 'number'
       ? session.pending_permission_count

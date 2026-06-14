@@ -69,6 +69,16 @@ interface SessionWire {
     owner_transport?: string
   } | null
   run_intent?: RunIntentWire | null
+  active_run?: {
+    run_id?: string
+    status?: string
+    last_seq?: number
+    created_at?: number
+    started_at?: number
+    updated_at?: number
+    event_seq?: number
+  } | null
+  session_status?: string
   worktree_enabled?: boolean
   worktree_root_path?: string
   worktree_base_branch?: string
@@ -370,6 +380,9 @@ function mapSessions(
 
 function mapSession(session: SessionWire, fallbackId = '', topLevelRunIntent: DesktopRunIntentRecord | null = null): DesktopSessionRecord {
   const id = String(session.id ?? fallbackId).trim()
+  const overviewActiveRun = session.active_run && typeof session.active_run === 'object'
+    ? mapOverviewActiveRun(session.active_run, id)
+    : null
   const lifecycle = session.lifecycle && typeof session.lifecycle === 'object'
     ? {
         sessionId: String(session.lifecycle.session_id ?? id).trim(),
@@ -387,15 +400,11 @@ function mapSession(session: SessionWire, fallbackId = '', topLevelRunIntent: De
     : null
   const mode = String(session.mode ?? 'auto').trim() || 'auto'
   const baseLive = emptyLiveState()
-  const mappedRunIntent = session.run_intent ? mapRunIntent(session.run_intent) : topLevelRunIntent
+  const mappedRunIntent = session.run_intent ? mapRunIntent(session.run_intent) : topLevelRunIntent ?? overviewActiveRun
   const runIntent = mappedRunIntent
-  if (lifecycle?.active) {
-    baseLive.runId = lifecycle.runId
-    baseLive.startedAt = lifecycle.startedAt > 0 ? lifecycle.startedAt : null
-    baseLive.status = lifecycle.phase === 'blocked' ? 'blocked' : lifecycle.phase === 'starting' ? 'starting' : 'running'
-    baseLive.lastEventType = 'session.lifecycle.updated'
-    baseLive.lastEventAt = lifecycle.updatedAt > 0 ? lifecycle.updatedAt : lifecycle.startedAt > 0 ? lifecycle.startedAt : null
-    baseLive.error = lifecycle.error || lifecycle.stopReason
+  const sessionStatus = normalizeSessionStatus(String(session.session_status ?? ''))
+  if (sessionStatus !== 'idle') {
+    baseLive.status = sessionStatus
   }
   if (runIntent && snapshotRunIntentStatusActive(runIntent.status)) {
     baseLive.runId = runIntent.runId || baseLive.runId
@@ -489,6 +498,46 @@ function mapMessage(message: MessageWire): ChatMessageRecord {
     createdAt: numberValue(message.created_at),
     metadata: message.metadata,
     toolMessage: parseStructuredToolMessage(content),
+  }
+}
+
+function mapOverviewActiveRun(activeRun: NonNullable<SessionWire['active_run']>, sessionId: string): DesktopRunIntentRecord | null {
+  const runId = String(activeRun.run_id ?? '').trim()
+  const status = String(activeRun.status ?? '').trim()
+  if (!runId || !snapshotRunIntentStatusActive(status)) {
+    return null
+  }
+  const createdAt = numberValue(activeRun.created_at) || numberValue(activeRun.started_at)
+  const updatedAt = numberValue(activeRun.updated_at) || createdAt
+  return {
+    sessionId,
+    runId,
+    status,
+    blockedReason: '',
+    createdAt,
+    updatedAt,
+    eventSeq: numberValue(activeRun.event_seq) || numberValue(activeRun.last_seq),
+  }
+}
+
+function normalizeSessionStatus(status: string): DesktopSessionRecord['live']['status'] {
+  switch (status.trim().toLowerCase()) {
+    case 'pending_executor':
+    case 'starting':
+      return 'starting'
+    case 'running':
+      return 'running'
+    case 'blocked':
+    case 'dispatch_blocked':
+      return 'blocked'
+    case 'failed':
+    case 'errored':
+    case 'error':
+    case 'expired':
+    case 'interrupted':
+      return 'error'
+    default:
+      return 'idle'
   }
 }
 

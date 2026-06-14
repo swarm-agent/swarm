@@ -8,7 +8,20 @@ import {
   sessionStatusDetail,
   sessionStatusTone,
   sessionTimerLabel,
+  sessionActiveRunIntent,
 } from './desktop-app-page'
+
+function activeRunIntent(sessionId: string, runId: string, createdAt: number, updatedAt = createdAt) {
+  return {
+    sessionId,
+    runId,
+    status: 'running',
+    blockedReason: '',
+    createdAt,
+    updatedAt,
+    eventSeq: 1,
+  }
+}
 
 function makeSession(id: string, overrides: Partial<DesktopSessionRecord> = {}): DesktopSessionRecord {
   return {
@@ -23,6 +36,7 @@ function makeSession(id: string, overrides: Partial<DesktopSessionRecord> = {}):
     createdAt: 500,
     permissionsHydrated: false,
     lifecycle: null,
+    runIntent: null,
     live: {
       runId: null,
       agentName: null,
@@ -64,6 +78,7 @@ function makeSession(id: string, overrides: Partial<DesktopSessionRecord> = {}):
 test('sidebar labels render the direct stream tool label', () => {
   const session = makeSession('live-tool', {
     updatedAt: 10_000,
+    runIntent: activeRunIntent('live-tool', 'run-live-tool', 10_000, 12_500),
     live: {
       ...makeSession('base').live,
       status: 'running',
@@ -87,6 +102,7 @@ test('sidebar labels render the direct stream tool label', () => {
 test('sidebar labels do not fall back to retained tool state', () => {
   const session = makeSession('retained-tool', {
     updatedAt: 10_000,
+    runIntent: activeRunIntent('retained-tool', 'run-retained-tool', 10_000, 12_500),
     live: {
       ...makeSession('base').live,
       status: 'running',
@@ -108,6 +124,7 @@ test('sidebar labels do not fall back to retained tool state', () => {
 test('sidebar labels do not fall back to live tool history', () => {
   const session = makeSession('history-tool', {
     updatedAt: 10_000,
+    runIntent: activeRunIntent('history-tool', 'run-history-tool', 10_000, 12_500),
     live: {
       ...makeSession('base').live,
       status: 'running',
@@ -147,6 +164,7 @@ test('sidebar active sort anchors to run start time, not latest DB live event', 
   const olderRunWithFreshToolEvent = makeSession('older-run-fresh-tool', {
     updatedAt: 20_000,
     createdAt: 1_000,
+    runIntent: activeRunIntent('older-run-fresh-tool', 'run-older', 1_000, 20_000),
     live: {
       ...makeSession('base').live,
       status: 'running',
@@ -160,6 +178,7 @@ test('sidebar active sort anchors to run start time, not latest DB live event', 
   const newerRunWithoutFreshEvent = makeSession('newer-run-stale', {
     updatedAt: 10_500,
     createdAt: 10_000,
+    runIntent: activeRunIntent('newer-run-stale', 'run-newer', 10_000, 10_500),
     live: {
       ...makeSession('base').live,
       status: 'running',
@@ -175,11 +194,11 @@ test('sidebar active sort anchors to run start time, not latest DB live event', 
 
 test('sidebar active sort keeps initial start-time order when an older row streams', () => {
   const sessions = [
-    makeSession('0', { updatedAt: 50_000, createdAt: 50_000, live: { ...makeSession('base').live, status: 'running', startedAt: 50_000, lastEventAt: 50_000 } }),
-    makeSession('1', { updatedAt: 40_000, createdAt: 40_000, live: { ...makeSession('base').live, status: 'running', startedAt: 40_000, lastEventAt: 40_000 } }),
-    makeSession('2', { updatedAt: 30_000, createdAt: 30_000, live: { ...makeSession('base').live, status: 'running', startedAt: 30_000, lastEventAt: 30_000 } }),
-    makeSession('3', { updatedAt: 100_000, createdAt: 20_000, live: { ...makeSession('base').live, status: 'running', startedAt: 20_000, lastEventAt: 100_000 } }),
-    makeSession('4', { updatedAt: 10_000, createdAt: 10_000, live: { ...makeSession('base').live, status: 'running', startedAt: 10_000, lastEventAt: 10_000 } }),
+    makeSession('0', { updatedAt: 50_000, createdAt: 50_000, runIntent: activeRunIntent('0', 'run-0', 50_000), live: { ...makeSession('base').live, status: 'running', startedAt: 50_000, lastEventAt: 50_000 } }),
+    makeSession('1', { updatedAt: 40_000, createdAt: 40_000, runIntent: activeRunIntent('1', 'run-1', 40_000), live: { ...makeSession('base').live, status: 'running', startedAt: 40_000, lastEventAt: 40_000 } }),
+    makeSession('2', { updatedAt: 30_000, createdAt: 30_000, runIntent: activeRunIntent('2', 'run-2', 30_000), live: { ...makeSession('base').live, status: 'running', startedAt: 30_000, lastEventAt: 30_000 } }),
+    makeSession('3', { updatedAt: 100_000, createdAt: 20_000, runIntent: activeRunIntent('3', 'run-3', 20_000, 100_000), live: { ...makeSession('base').live, status: 'running', startedAt: 20_000, lastEventAt: 100_000 } }),
+    makeSession('4', { updatedAt: 10_000, createdAt: 10_000, runIntent: activeRunIntent('4', 'run-4', 10_000), live: { ...makeSession('base').live, status: 'running', startedAt: 10_000, lastEventAt: 10_000 } }),
   ]
 
   assert.deepEqual([...sessions].sort((left, right) => compareSidebarSessions(left, right, 100_500)).map((session) => session.id), ['0', '1', '2', '3', '4'])
@@ -188,6 +207,7 @@ test('sidebar active sort keeps initial start-time order when an older row strea
 test('sidebar active sort keeps active DB sessions pinned above recent idle rows', () => {
   const active = makeSession('active', {
     updatedAt: 1_000,
+    runIntent: activeRunIntent('active', 'run-active', 1_000, 1_500),
     live: {
       ...makeSession('base').live,
       status: 'running',
@@ -208,6 +228,7 @@ test('sidebar stopped sort keeps active rows above a newly stopped long session'
   const active = makeSession('active', {
     updatedAt: 40_000,
     createdAt: 30_000,
+    runIntent: activeRunIntent('active', 'run-active', 30_000, 40_000),
     live: {
       ...makeSession('base').live,
       status: 'running',
@@ -277,4 +298,83 @@ test('sidebar stopped sort resolves long sessions by durable activity instead of
   })
 
   assert.equal(compareSidebarSessions(stoppedLongSession, previouslyNewerIdle, 130_000) < 0, true)
+})
+
+
+test('sidebar active status and timer ignore lifecycle/live-only liveness without canonical active run', () => {
+  const liveOnly = makeSession('live-only', {
+    updatedAt: 20_000,
+    lifecycle: {
+      sessionId: 'live-only',
+      runId: 'run-lifecycle-only',
+      active: true,
+      phase: 'running',
+      startedAt: 1_000,
+      endedAt: 0,
+      updatedAt: 20_000,
+      generation: 1,
+      stopReason: null,
+      error: null,
+      ownerTransport: null,
+    },
+    live: {
+      ...makeSession('base').live,
+      status: 'running',
+      runId: 'run-live-only',
+      startedAt: 1_000,
+      lastEventAt: 20_000,
+    },
+  })
+
+  assert.equal(sessionActiveRunIntent(liveOnly), null)
+  assert.equal(sessionStatusTone(liveOnly), 'idle')
+  assert.equal(sessionActivityLabel(liveOnly), '')
+})
+
+test('sidebar stale inactive lifecycle cannot suppress canonical active timer/status', () => {
+  const canonical = makeSession('canonical-active', {
+    runIntent: activeRunIntent('canonical-active', 'run-canonical', 1_000, 2_000),
+    lifecycle: {
+      sessionId: 'canonical-active',
+      runId: 'run-canonical',
+      active: false,
+      phase: 'completed',
+      startedAt: 1_000,
+      endedAt: 1_500,
+      updatedAt: 1_500,
+      generation: 1,
+      stopReason: null,
+      error: null,
+      ownerTransport: null,
+    },
+    live: {
+      ...makeSession('base').live,
+      status: 'idle',
+      runId: null,
+      startedAt: null,
+    },
+  })
+
+  assert.equal(sessionActiveRunIntent(canonical)?.runId, 'run-canonical')
+  assert.equal(sessionStatusTone(canonical), 'running')
+  assert.equal(sessionTimerLabel(canonical, 2_500), '1s')
+})
+
+test('sidebar terminal canonical run intent clears active status even if live remains running', () => {
+  const terminal = makeSession('terminal-run', {
+    runIntent: {
+      ...activeRunIntent('terminal-run', 'run-terminal', 1_000, 2_000),
+      status: 'cancelled',
+    },
+    live: {
+      ...makeSession('base').live,
+      status: 'running',
+      runId: 'run-terminal',
+      startedAt: 1_000,
+    },
+  })
+
+  assert.equal(sessionActiveRunIntent(terminal), null)
+  assert.equal(sessionStatusTone(terminal), 'idle')
+  assert.equal(sessionActivityLabel(terminal), '')
 })

@@ -725,34 +725,40 @@ function sessionHasPendingPermission(session: DesktopSessionRecord): boolean {
   return sessionPendingPermissionCount(session) > 0
 }
 
+export function sessionActiveRunIntent(session: DesktopSessionRecord) {
+  const runIntent = session.runIntent
+  if (!runIntent) {
+    return null
+  }
+  const status = runIntent.status.trim().toLowerCase()
+  return status === 'pending_executor' || status === 'running' ? runIntent : null
+}
+
+function sessionHasCanonicalActiveRun(session: DesktopSessionRecord): boolean {
+  return Boolean(sessionActiveRunIntent(session)?.runId.trim())
+}
+
 export function sessionStatusTone(session: DesktopSessionRecord): 'blocked' | 'running' | 'error' | 'idle' {
   if (sessionHasPendingPermission(session)) {
     return 'blocked'
   }
-
-  switch (session.live.status) {
-    case 'blocked':
-      return session.live.runId || session.live.startedAt !== null || session.live.awaitingAck ? 'running' : 'idle'
-    case 'starting':
-    case 'running':
-      return 'running'
-    case 'error':
-      return 'error'
-    default:
-      return 'idle'
+  if (sessionHasCanonicalActiveRun(session)) {
+    return 'running'
   }
+  return session.live.status === 'error' ? 'error' : 'idle'
 }
 
 function sessionMeta(session: DesktopSessionRecord): string | null {
   if (sessionHasPendingPermission(session)) {
     return 'Blocked • needs approval'
   }
+  if (!sessionHasCanonicalActiveRun(session)) {
+    return session.live.status === 'error' ? 'failed' : null
+  }
 
   switch (session.live.status) {
     case 'blocked':
       return session.live.toolName ? `running ${session.live.toolName}` : 'running'
-    case 'error':
-      return 'failed'
     case 'starting':
       return 'running'
     case 'running':
@@ -1020,7 +1026,7 @@ function sidebarLiveToolLabel(session: DesktopSessionRecord): string {
 }
 
 function sessionIsActive(session: DesktopSessionRecord): boolean {
-  return sessionHasPendingPermission(session) || session.live.awaitingAck || ['starting', 'running', 'blocked'].includes(session.live.status)
+  return sessionHasPendingPermission(session) || sessionHasCanonicalActiveRun(session)
 }
 
 function positiveTimestamp(value: number | null | undefined): number {
@@ -1028,8 +1034,8 @@ function positiveTimestamp(value: number | null | undefined): number {
 }
 
 function sessionStartedSortAnchor(session: DesktopSessionRecord): number {
-  return positiveTimestamp(session.live.startedAt)
-    || positiveTimestamp(session.lifecycle?.startedAt)
+  return positiveTimestamp(sessionActiveRunIntent(session)?.createdAt)
+    || positiveTimestamp(session.live.startedAt)
     || positiveTimestamp(session.createdAt)
     || positiveTimestamp(session.updatedAt)
 }
@@ -1113,7 +1119,7 @@ export function sessionStatusDetail(session: DesktopSessionRecord, now: number):
 }
 
 export function sessionTimerLabel(session: DesktopSessionRecord, now: number): string {
-  const activeSince = session.live.startedAt ?? session.live.lastEventAt ?? session.updatedAt
+  const activeSince = sessionActiveRunIntent(session)?.createdAt ?? null
   return typeof activeSince === 'number' && activeSince > 0
     ? formatDurationCompact(now - activeSince)
     : 'live'
@@ -1124,24 +1130,19 @@ export function sessionActivityLabel(session: DesktopSessionRecord): string {
     return 'Needs approval'
   }
 
-  const toolLabel = sidebarLiveToolLabel(session)
-  switch (session.live.status) {
-    case 'blocked':
-      return toolLabel
-        || sidebarSummaryLabel(session)
-        || ''
-    case 'error':
-      return 'failed'
-    case 'starting':
-      return toolLabel || 'Starting'
-    case 'running':
-      return sidebarCompactionLabel(session)
-        || toolLabel
-        || sidebarSummaryLabel(session)
-        || ''
-    default:
-      return ''
+  if (!sessionHasCanonicalActiveRun(session)) {
+    return session.live.status === 'error' ? 'failed' : ''
   }
+
+  const toolLabel = sidebarLiveToolLabel(session)
+  const runStatus = sessionActiveRunIntent(session)?.status.trim().toLowerCase() ?? ''
+  if (runStatus === 'pending_executor') {
+    return toolLabel || 'Starting'
+  }
+  return sidebarCompactionLabel(session)
+    || toolLabel
+    || sidebarSummaryLabel(session)
+    || ''
 }
 
 interface SidebarSessionNode {

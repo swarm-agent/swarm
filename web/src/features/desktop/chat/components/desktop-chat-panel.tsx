@@ -23,7 +23,7 @@ import {
 } from '../queries/chat-queries'
 import { fetchAndApplyDesktopV3PlanSnapshot, fetchAndApplyDesktopV3SessionMessagesTail, saveDesktopV3SessionPlan, updateDesktopV3SessionAgent, updateDesktopV3SessionMetadata, updateDesktopV3SessionMode, updateDesktopV3SessionPreference } from '../../state/desktop-v3-session-api'
 import type { AgentModelPolicyRecord, AgentProfileRecord, AgentStateRecord, ChatMessageRecord, ModelOptionRecord, ResolvedSessionPreference, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
-import type { DesktopLiveAssistantSegment, DesktopLiveReasoningRecord, DesktopLiveToolRecord, DesktopSessionRecord } from '../../types/realtime'
+import type { DesktopLiveAssistantSegment, DesktopLiveReasoningRecord, DesktopLiveToolRecord, DesktopRunIntentRecord, DesktopSessionRecord } from '../../types/realtime'
 import { Card } from '../../../../components/ui/card'
 import { ChatMarkdown } from './chat-markdown'
 import { buildStructuredToolMessage } from '../services/tool-message'
@@ -1103,6 +1103,53 @@ function formatDurationCompact(durationMs: number): string {
   return `${minutes}m${String(seconds).padStart(2, '0')}s`
 }
 
+export interface DesktopChatRunControls {
+  activeRunIntent: DesktopRunIntentRecord | null
+  activeRunStartedAt: number
+  durableRunActive: boolean
+  resumableRunId: string
+  reconnectingRun: boolean
+  submitting: boolean
+  canStop: boolean
+  showRunTimer: boolean
+  runTimerLabel: string
+  composerDisabled: boolean
+  runActive: boolean
+}
+
+function canonicalActiveRunIntent(runIntent: DesktopRunIntentRecord | null | undefined): DesktopRunIntentRecord | null {
+  const status = runIntent?.status.trim().toLowerCase() ?? ''
+  return status === 'pending_executor' || status === 'running' ? runIntent ?? null : null
+}
+
+export function deriveDesktopChatRunControls(
+  runIntent: DesktopRunIntentRecord | null | undefined,
+  options: { liveSummary?: string | null; timerNow: number },
+): DesktopChatRunControls {
+  const activeRunIntent = canonicalActiveRunIntent(runIntent)
+  const activeRunStatus = activeRunIntent?.status.trim().toLowerCase() ?? ''
+  const activeRunStartedAt = activeRunIntent && activeRunIntent.createdAt > 0 ? activeRunIntent.createdAt : 0
+  const durableRunActive = activeRunIntent !== null
+  const resumableRunId = activeRunIntent?.runId.trim() ?? ''
+  const reconnectingRun = durableRunActive && options.liveSummary === 'Reconnecting…'
+  const submitting = activeRunStatus === 'pending_executor' || reconnectingRun
+  const canStop = durableRunActive && resumableRunId !== ''
+  const showRunTimer = activeRunStartedAt > 0 && durableRunActive
+  return {
+    activeRunIntent,
+    activeRunStartedAt,
+    durableRunActive,
+    resumableRunId,
+    reconnectingRun,
+    submitting,
+    canStop,
+    showRunTimer,
+    runTimerLabel: showRunTimer ? formatDurationCompact(options.timerNow - activeRunStartedAt) : reconnectingRun ? 'Reconnecting…' : '',
+    composerDisabled: durableRunActive,
+    runActive: durableRunActive,
+  }
+}
+
 
 function formatContextUsageBadgeLabel(usage: DesktopSessionRecord['usage'] | null): string {
   if (!usage || usage.contextWindow <= 0) {
@@ -1289,6 +1336,7 @@ export function DesktopChatPanel({
   const dbSession = useDesktopSession(sessionId)
   const liveSession = dbSession ?? session
   const trackedCommitSession = useDesktopSession(commitModal.targetSessionId)
+  const trackedCommitActiveRun = useDesktopActiveRun(commitModal.targetSessionId)
   const draftSessionMode = useDesktopUiStore((state) => state.getSessionDraftMode(null, workspacePath))
   const draftSessionKey = `__workspace__:${workspacePath}`
   const routeOptions = useMemo(() => buildDesktopChatRouteOptions({
@@ -1685,33 +1733,22 @@ export function DesktopChatPanel({
   const lifecycle = liveSession?.lifecycle ?? null
   const lifecyclePhase = lifecycle?.phase.trim().toLowerCase() ?? ''
   const lifecycleStopReason = lifecycle?.stopReason?.trim() ?? ''
-  const lifecycleActive = Boolean(lifecycle?.active)
-  const lifecycleRunId = lifecycleActive ? lifecycle?.runId?.trim() ?? '' : ''
   const liveRunId = liveSession?.live.runId?.trim() ?? ''
-  const liveAssistantDraftKey = `live-assistant:${liveRunId || 'draft'}`
-  const reconnectingRun = !lifecycleActive
-    && lifecyclePhase === ''
-    && liveRunId !== ''
-    && liveSession?.live.summary === 'Reconnecting…'
-  const lifecycleTerminal = lifecycle !== null && !lifecycleActive
-  const activeRunIntent = !lifecycleTerminal && dbActiveRun && ['pending_executor', 'running'].includes(dbActiveRun.status.trim().toLowerCase())
-    ? dbActiveRun
-    : null
-  const durableRunIntentStartedAt = activeRunIntent && activeRunIntent.createdAt > 0 ? activeRunIntent.createdAt : 0
-  const activeRunIntentPendingExecutor = activeRunIntent?.status.trim().toLowerCase() === 'pending_executor'
-  const liveStartedAt = typeof liveSession?.live.startedAt === 'number' && liveSession.live.startedAt > 0 ? liveSession.live.startedAt : 0
-  const activeRunStartedAt = durableRunIntentStartedAt || liveStartedAt
-  const awaitingLifecycleStart = Boolean(!lifecycleTerminal && (activeRunIntentPendingExecutor || (!lifecycleActive && (liveSession?.live.awaitingAck || liveSession?.live.status === 'starting'))))
-  const resumableRunId = activeRunIntent?.runId || lifecycleRunId || liveRunId
-  const durableRunActive = activeRunIntent !== null
-  const submitting = awaitingLifecycleStart || reconnectingRun || (lifecycleActive && lifecyclePhase === 'starting')
-  const canStop = (durableRunActive && resumableRunId !== '') || reconnectingRun || (lifecycleActive && lifecycleRunId !== '') || (awaitingLifecycleStart && liveRunId !== '')
-  const showRunTimer = activeRunStartedAt > 0 && (durableRunActive || lifecycleActive || awaitingLifecycleStart || liveSession?.live.status === 'running' || liveSession?.live.status === 'blocked')
-  const runTimerLabel = showRunTimer ? formatDurationCompact(timerNow - activeRunStartedAt) : reconnectingRun ? 'Reconnecting…' : ''
+  const {
+    activeRunIntent,
+    durableRunActive,
+    resumableRunId,
+    reconnectingRun,
+    submitting,
+    canStop,
+    showRunTimer,
+    runTimerLabel,
+    composerDisabled,
+    runActive,
+  } = deriveDesktopChatRunControls(dbActiveRun, { liveSummary: liveSession?.live.summary ?? null, timerNow })
+  const liveAssistantDraftKey = `live-assistant:${activeRunIntent?.runId || liveRunId || 'draft'}`
   const savedRuleCountdown = savedRuleCountdownSeconds(lastSavedRuleExpiresAt, savedRuleCountdownNow)
-  const composerDisabled = durableRunActive || awaitingLifecycleStart || reconnectingRun || (lifecycleActive && lifecyclePhase === 'starting')
-  const runActive = canStop || submitting || lifecycleActive || durableRunActive
-  const terminalUserStopSummary = !lifecycleActive && (lifecyclePhase === 'cancelled' || lifecyclePhase === 'canceled')
+  const terminalUserStopSummary = !durableRunActive && (lifecyclePhase === 'cancelled' || lifecyclePhase === 'canceled')
     ? (lifecycleStopReason || liveSession?.live.summary || 'Stream cancelled by user.')
     : !runActive && liveSession?.live.summary?.trim() === 'Run paused by user'
       ? 'Run paused by user'
@@ -2148,11 +2185,11 @@ export function DesktopChatPanel({
     if (!resumableRunId) {
       return
     }
-    if (!lifecycleActive && !reconnectingRun && !awaitingLifecycleStart) {
+    if (!durableRunActive && !reconnectingRun) {
       return
     }
     void ensureRunStream(sessionId, resumableRunId)
-  }, [awaitingLifecycleStart, ensureRunStream, lifecycleActive, liveSession?.sessionApi, reconnectingRun, resumableRunId, sessionId])
+  }, [durableRunActive, ensureRunStream, liveSession?.sessionApi, reconnectingRun, resumableRunId, sessionId])
 
   useEffect(() => {
     if (!commitModal.targetSessionId || commitModal.status !== 'running') {
@@ -2162,9 +2199,8 @@ export function DesktopChatPanel({
     if (!trackedSession) {
       return
     }
-    const lifecycleActive = Boolean(trackedSession.lifecycle?.active)
     const liveStatus = trackedSession.live.status
-    if (lifecycleActive || liveStatus === 'starting' || liveStatus === 'running' || liveStatus === 'blocked') {
+    if (trackedCommitActiveRun) {
       return
     }
     setCommitModal((current) => {
@@ -2184,7 +2220,7 @@ export function DesktopChatPanel({
         error: null,
       }
     })
-  }, [commitModal.status, commitModal.targetSessionId, trackedCommitSession])
+  }, [commitModal.status, commitModal.targetSessionId, trackedCommitActiveRun, trackedCommitSession])
 
   useEffect(() => {
     if (sessionId && shouldRenderLiveAssistantDraft && liveAssistantDraft !== '') {

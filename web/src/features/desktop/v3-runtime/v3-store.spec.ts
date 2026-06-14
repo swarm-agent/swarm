@@ -8,6 +8,7 @@ import {
   createV3EventEnvelope,
   createV3SnapshotEnvelope,
   normalizeV3RealtimeFrame,
+  selectV3ActiveRun,
   selectV3Messages,
   selectV3Session,
   selectV3WorkspaceSessions,
@@ -174,10 +175,10 @@ test('V3 runtime store advances cursors only after successful reducer applicatio
     },
   }, { receivedAt: 13 }))
 
-  assert.equal(rejected.rejected, true)
-  assert.equal(rejected.cursorScope, null)
-  assert.equal(rejected.snapshot.cursorsByScope['session:s1']?.endpointCursor, 'cursor-11')
-  assert.equal(rejected.snapshot.desktop.messagesBySessionId.s1?.some((item) => item.id === 'm2'), false)
+  assert.equal(rejected.rejected, false)
+  assert.equal(rejected.cursorScope, 'session:s1')
+  assert.equal(rejected.snapshot.cursorsByScope['session:s1']?.endpointCursor, 'cursor-13')
+  assert.equal(rejected.snapshot.desktop.messagesBySessionId.s1?.some((item) => item.id === 'm2'), true)
 })
 
 test('V3 runtime store does not advance realtime cursors for duplicate websocket/replay overlap', () => {
@@ -390,4 +391,99 @@ test('V3 message hot cache keeps newest 200 final messages while live draft stay
   assert.equal(messages[0]?.id, 'm-2')
   assert.equal(messages[messages.length - 1]?.id, 'm-201')
   assert.equal(selectV3Session(snapshot, 's1')?.live.assistantDraft, 'still live')
+})
+
+
+test('V3 active-run selector ignores stale inactive lifecycle when canonical run intent is active', () => {
+  const runtime = createV3RuntimeController()
+  runtime.applyEnvelope(createV3SnapshotEnvelope({
+    rev: 30,
+    sessionsById: {
+      s1: {
+        ...session('s1', 30),
+        lifecycle: {
+          sessionId: 's1',
+          runId: 'run-stale',
+          active: false,
+          phase: 'completed',
+          startedAt: 10,
+          endedAt: 20,
+          updatedAt: 20,
+          generation: 1,
+          stopReason: null,
+          error: null,
+          ownerTransport: null,
+        },
+      },
+    },
+    sessionOrder: ['s1'],
+    runIntentsBySessionId: {
+      s1: { sessionId: 's1', runId: 'run-canonical', status: 'running', blockedReason: '', createdAt: 30, updatedAt: 31, eventSeq: 31 },
+    },
+  }, { receivedAt: 30 }))
+
+  const snapshot = runtime.getSnapshot()
+  assert.equal(selectV3ActiveRun(snapshot, 's1')?.runId, 'run-canonical')
+  assert.equal(selectV3Session(snapshot, 's1')?.runIntent?.runId, 'run-canonical')
+})
+
+test('V3 active-run selector ignores lifecycle/live-only active state without canonical run intent', () => {
+  const runtime = createV3RuntimeController()
+  const liveOnly = session('s1', 40)
+  liveOnly.lifecycle = {
+    sessionId: 's1',
+    runId: 'run-lifecycle-only',
+    active: true,
+    phase: 'running',
+    startedAt: 40,
+    endedAt: 0,
+    updatedAt: 41,
+    generation: 1,
+    stopReason: null,
+    error: null,
+    ownerTransport: null,
+  }
+  liveOnly.live.status = 'running'
+  liveOnly.live.runId = 'run-live-only'
+  liveOnly.live.startedAt = 40
+
+  runtime.applyEnvelope(createV3SnapshotEnvelope({
+    rev: 40,
+    sessionsById: { s1: liveOnly },
+    sessionOrder: ['s1'],
+  }, { receivedAt: 40 }))
+
+  const snapshot = runtime.getSnapshot()
+  assert.equal(selectV3ActiveRun(snapshot, 's1'), null)
+  assert.equal(selectV3Session(snapshot, 's1')?.runIntent, null)
+})
+
+test('V3 terminal canonical run intent clears active selector despite stale live state', () => {
+  const runtime = createV3RuntimeController()
+  const active = session('s1', 50)
+  active.live.status = 'running'
+  active.live.runId = 'run-1'
+  active.live.startedAt = 50
+  runtime.applyEnvelope(createV3SnapshotEnvelope({
+    rev: 50,
+    sessionsById: { s1: active },
+    sessionOrder: ['s1'],
+    runIntentsBySessionId: {
+      s1: { sessionId: 's1', runId: 'run-1', status: 'running', blockedReason: '', createdAt: 50, updatedAt: 50, eventSeq: 50 },
+    },
+  }, { receivedAt: 50 }))
+
+  runtime.applyEnvelope(createV3EventEnvelope({
+    type: 'session.run_intent.recorded',
+    payload: {
+      session_id: 's1',
+      status: 'idle',
+      run_intent: { session_id: 's1', run_id: 'run-1', status: 'completed', updated_at: 60, event_seq: 60 },
+    },
+  }, { receivedAt: 60 }))
+
+  const snapshot = runtime.getSnapshot()
+  assert.equal(selectV3ActiveRun(snapshot, 's1'), null)
+  assert.equal(selectV3Session(snapshot, 's1')?.runIntent, null)
+  assert.equal(selectV3Session(snapshot, 's1')?.live.status, 'idle')
 })

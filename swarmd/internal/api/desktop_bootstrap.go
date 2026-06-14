@@ -595,7 +595,14 @@ func workspaceOverviewActiveRun(runState sessionruntime.SessionRunState, ok bool
 	if !ok || !runState.Active || strings.TrimSpace(runState.RunID) == "" {
 		return nil
 	}
-	return &runStreamActiveRun{RunID: strings.TrimSpace(runState.RunID), Status: strings.TrimSpace(runState.Status)}
+	return &runStreamActiveRun{
+		RunID:     strings.TrimSpace(runState.RunID),
+		Status:    strings.TrimSpace(runState.Status),
+		CreatedAt: runState.CreatedAt,
+		StartedAt: runState.StartedAt,
+		UpdatedAt: runState.UpdatedAt,
+		EventSeq:  runState.EventSeq,
+	}
 }
 
 func workspaceOverviewSessionStatus(runState sessionruntime.SessionRunState, ok bool) string {

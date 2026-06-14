@@ -130,9 +130,13 @@ type runStreamState struct {
 }
 
 type runStreamActiveRun struct {
-	RunID   string `json:"run_id"`
-	Status  string `json:"status"`
-	LastSeq uint64 `json:"last_seq,omitempty"`
+	RunID     string `json:"run_id"`
+	Status    string `json:"status"`
+	LastSeq   uint64 `json:"last_seq,omitempty"`
+	CreatedAt int64  `json:"created_at,omitempty"`
+	StartedAt int64  `json:"started_at,omitempty"`
+	UpdatedAt int64  `json:"updated_at,omitempty"`
+	EventSeq  uint64 `json:"event_seq,omitempty"`
 }
 
 type runStreamManager struct {

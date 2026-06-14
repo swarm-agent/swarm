@@ -136,6 +136,15 @@ test('flow background sessions expose target label and flow badge for sidebar ro
       error: null,
       ownerTransport: 'flow_scheduler',
     },
+    runIntent: {
+      sessionId: 'flow-session',
+      runId: 'run-flow',
+      status: 'running',
+      blockedReason: '',
+      createdAt: 1,
+      updatedAt: 2,
+      eventSeq: 2,
+    },
     live: {
       ...makeSession().live,
       status: 'running',
@@ -168,6 +177,15 @@ test('background sessions prefer resolved route label over target metadata', () 
       stopReason: null,
       error: null,
       ownerTransport: 'background_api',
+    },
+    runIntent: {
+      sessionId: 'background-session',
+      runId: 'run-background',
+      status: 'running',
+      blockedReason: '',
+      createdAt: 1,
+      updatedAt: 2,
+      eventSeq: 2,
     },
     live: {
       ...makeSession().live,
@@ -250,4 +268,40 @@ test('flow child sessions never collapse into fake subagent lineage even when re
 
   assert.equal(sessionParentSessionID(session), 'parent-session')
   assert.deepEqual(sessionChildDescriptor(session), { kind: 'background', label: 'flow', assignmentLabel: null })
+})
+
+
+test('sessionBackgroundInfo derives active badge only from canonical active run intent', () => {
+  const background = makeSession({ id: 'background-active' })
+  background.metadata = { launch_mode: 'background' }
+  background.lifecycle = {
+    sessionId: background.id,
+    runId: 'run-lifecycle-only',
+    active: true,
+    phase: 'running',
+    startedAt: 1,
+    endedAt: 0,
+    updatedAt: 1,
+    generation: 1,
+    stopReason: null,
+    error: null,
+    ownerTransport: null,
+  }
+  background.live.status = 'running'
+  background.live.runId = 'run-live-only'
+
+  assert.equal(sessionBackgroundInfo(background)?.active, false)
+
+  background.lifecycle = { ...background.lifecycle, active: false, phase: 'completed' }
+  background.runIntent = {
+    sessionId: background.id,
+    runId: 'run-canonical',
+    status: 'running',
+    blockedReason: '',
+    createdAt: 2,
+    updatedAt: 2,
+    eventSeq: 2,
+  }
+
+  assert.equal(sessionBackgroundInfo(background)?.active, true)
 })

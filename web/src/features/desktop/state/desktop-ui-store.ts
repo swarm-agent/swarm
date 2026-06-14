@@ -957,12 +957,12 @@ function resolveRunStreamId(session: DesktopSessionRecord | undefined, runId?: s
   if (intentRunId) {
     return intentRunId
   }
+  if (session && sessionUsesV3Api(session)) {
+    return ''
+  }
   const liveRunId = session?.live.runId?.trim() ?? ''
   if (liveRunId) {
     return liveRunId
-  }
-  if (session?.lifecycle?.active) {
-    return session.lifecycle.runId?.trim() ?? ''
   }
   return ''
 }
@@ -976,11 +976,8 @@ function resolveStopRunId(session: DesktopSessionRecord | undefined, runId?: str
   if (intentRunId) {
     return intentRunId
   }
-  if (session?.lifecycle?.active) {
-    const lifecycleRunId = session.lifecycle.runId?.trim() ?? ''
-    if (lifecycleRunId) {
-      return lifecycleRunId
-    }
+  if (session && sessionUsesV3Api(session)) {
+    return ''
   }
   return session?.live.runId?.trim() ?? ''
 }
@@ -998,7 +995,7 @@ function resolveRunStreamResumeRequest(sessionId: string, fallbackRunId?: string
   const sessionApi = session.sessionApi?.trim().toLowerCase() || 'v3'
   const activeRunIntent = activeV3RunIntent(session)
   if (sessionApi === 'v3') {
-    if (!activeRunIntent && (session.live.status === 'idle' || session.live.status === 'error')) {
+    if (!activeRunIntent) {
       return null
     }
   } else if (session.live.status === 'idle' || session.live.status === 'error') {
@@ -1008,17 +1005,7 @@ function resolveRunStreamResumeRequest(sessionId: string, fallbackRunId?: string
   if (!runId) {
     return null
   }
-  if (session.lifecycle && !session.lifecycle.active) {
-    const liveStatus = session.live.status
-    const canResumeNewlyAcceptedRun = session.live.awaitingAck
-      || liveStatus === 'starting'
-      || liveStatus === 'running'
-      || liveStatus === 'blocked'
-    if (!canResumeNewlyAcceptedRun) {
-      return null
-    }
-  }
-  if (session.live.summary?.trim() === 'Reconnecting…' && !session.lifecycle?.active && !session.live.runId?.trim()) {
+  if (session.live.summary?.trim() === 'Reconnecting…' && !activeRunIntent && !session.live.runId?.trim()) {
     return null
   }
   return {
@@ -1058,80 +1045,16 @@ function normalizeLifecycle(
   }
 }
 
-function lifecycleStatusForLive(session: DesktopSessionRecord, lifecycle: NonNullable<DesktopSessionRecord['lifecycle']>): DesktopSessionRecord['live']['status'] {
-  const phase = lifecycle.phase.trim().toLowerCase()
-  if (lifecycle.active) {
-    switch (phase) {
-      case 'blocked':
-      case 'starting':
-      case 'running':
-        return phase as DesktopSessionRecord['live']['status']
-      default:
-        return 'running'
-    }
-  }
-  if (phase === 'errored') {
-    return 'error'
-  }
-  return session.live.awaitingAck ? session.live.status : 'idle'
-}
-
-function lifecycleTerminalSummary(lifecycle: NonNullable<DesktopSessionRecord['lifecycle']>): string | null {
-  const phase = lifecycle.phase.trim().toLowerCase()
-  const stopReason = lifecycle.stopReason?.trim() ?? ''
-  const error = lifecycle.error?.trim() ?? ''
-  switch (phase) {
-    case 'cancelled':
-    case 'canceled':
-    case 'interrupted':
-    case 'completed':
-      return stopReason || null
-    case 'errored':
-      return error || stopReason || null
-    default:
-      return null
-  }
-}
-
 function applyLifecycleSnapshot(
-  sessionId: string,
+  _sessionId: string,
   session: DesktopSessionRecord,
   lifecycle: NonNullable<DesktopSessionRecord['lifecycle']>,
   ts: number,
   eventType: string,
 ): void {
-  const nextTs = lifecycle.updatedAt > 0 ? lifecycle.updatedAt : ts
-  const terminalRunId = !lifecycle.active ? (lifecycle.runId?.trim() || session.live.runId?.trim() || session.runIntent?.runId?.trim() || null) : null
   session.lifecycle = lifecycle
   session.live.lastEventType = eventType || session.live.lastEventType
-  session.live.lastEventAt = nextTs
-  session.live.awaitingAck = false
-  session.live.runId = lifecycle.active ? lifecycle.runId : null
-  if (lifecycle.active) {
-    clearTerminalRunMarker(session.live, lifecycle.runId)
-  } else {
-    markTerminalRun(session.live, terminalRunId, session.live.seq)
-  }
-  session.live.startedAt = lifecycle.active && lifecycle.startedAt > 0 ? lifecycle.startedAt : null
-  session.live.status = lifecycleStatusForLive(session, lifecycle)
-  session.live.error = lifecycle.phase.trim().toLowerCase() === 'errored'
-    ? (lifecycle.error?.trim() || lifecycle.stopReason?.trim() || null)
-    : null
-
-  if (lifecycle.active) {
-    return
-  }
-
-  session.runIntent = null
-  if (terminalRunId) {
-    requireRunStreamController().close(sessionId)
-  }
-  cancelDraftFlush(sessionId)
-  retainLiveToolState(session.live, lifecycle.phase.trim().toLowerCase() === 'errored' ? 'error' : 'done')
-  resetLiveToolState(session.live)
-  completeLiveReasoningState(session.live, nextTs, session.live.seq, lifecycle.phase.trim().toLowerCase() === 'errored' ? 'error' : 'done')
-  completeLiveReasoningHistory(session.live, nextTs, session.live.seq, lifecycle.phase.trim().toLowerCase() === 'errored' ? 'error' : 'done')
-  session.live.summary = lifecycleTerminalSummary(lifecycle)
+  session.live.lastEventAt = lifecycle.updatedAt > 0 ? lifecycle.updatedAt : ts
 }
 
 function makeNotification(sessionId: string | null, runId: string | null, eventType: string, title: string, detail: string, severity: 'info' | 'warning' | 'error', createdAt: number): DesktopNotificationRecord {
@@ -1544,12 +1467,9 @@ function patchWorkspaceTodoSummary(workspacePath: string, summary: WorkspaceTodo
   })
 }
 
-function nextLiveStatusAfterPermissionSync(session: Pick<DesktopSessionRecord, 'lifecycle' | 'runIntent' | 'live'>): DesktopSessionRecord['live']['status'] {
+function nextLiveStatusAfterPermissionSync(session: Pick<DesktopSessionRecord, 'runIntent'>): DesktopSessionRecord['live']['status'] {
   if (session.runIntent && v3RunIntentStatusActive(session.runIntent.status)) {
     return session.runIntent.status.trim().toLowerCase() === 'pending_executor' ? 'starting' : 'running'
-  }
-  if (session.lifecycle?.active || session.live.runId || session.live.awaitingAck || session.live.startedAt !== null) {
-    return 'running'
   }
   return 'idle'
 }
@@ -1575,17 +1495,18 @@ function applyAuthoritativeSessionStatus(
   session.live.awaitingAck = false
 
   const runIntentTerminalStatus = eventType === 'session.run_intent.recorded' && (status === 'idle' || status === 'error' || status === 'blocked')
-  if (session.lifecycle && !runIntentTerminalStatus) {
+  if (runIntentTerminalStatus) {
+    session.lifecycle = null
+  }
+  const hasCanonicalActiveRun = Boolean(activeV3RunIntent(session))
+  if (sessionUsesV3Api(session) && (status === 'starting' || status === 'running' || status === 'blocked') && !hasCanonicalActiveRun) {
     if (summary) {
       session.live.summary = summary
     }
-    if (error && session.lifecycle.phase.trim().toLowerCase() === 'errored') {
+    if (error) {
       session.live.error = error
     }
     return
-  }
-  if (runIntentTerminalStatus) {
-    session.lifecycle = null
   }
 
   session.live.error = error || null
@@ -2219,9 +2140,6 @@ function applyRunStreamFrame(state: DesktopStoreState, sessionId: string, payloa
       const lifecycle = normalizeLifecycle(lifecycleSource, sessionId)
       if (lifecycle) {
         applyLifecycleSnapshot(sessionId, session, lifecycle, ts, type)
-        if (!lifecycle.active && resolveRunStreamId(session) !== '') {
-          requireRunStreamController().close(sessionId)
-        }
       }
       break
     }
@@ -2365,10 +2283,6 @@ function applyRunStreamFrame(state: DesktopStoreState, sessionId: string, payloa
 function applyRunStreamSocketFailure(state: DesktopStoreState, sessionId: string, errorMessage: string, ts: number): Partial<DesktopStoreState> {
   const existing = state.sessions[sessionId]
   if (!existing) {
-    return {}
-  }
-
-  if (existing.lifecycle && !existing.lifecycle.active) {
     return {}
   }
 

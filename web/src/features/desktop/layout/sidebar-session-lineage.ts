@@ -1,4 +1,4 @@
-import type { DesktopSessionRecord } from '../types/realtime'
+import type { DesktopRunIntentRecord, DesktopSessionRecord } from '../types/realtime'
 
 export type SidebarSessionNodeKind = 'root' | 'subagent' | 'background'
 
@@ -84,13 +84,18 @@ function sessionBackgroundBadge(metadata: Record<string, unknown> | null): strin
   return sessionHasFlowIdentity(metadata) ? 'flow' : 'background'
 }
 
+function sessionActiveRunIntent(runIntent: DesktopRunIntentRecord | null | undefined): DesktopRunIntentRecord | null {
+  const status = runIntent?.status.trim().toLowerCase() ?? ''
+  return status === 'pending_executor' || status === 'running' ? runIntent ?? null : null
+}
+
 export function sessionBackgroundInfo(session: DesktopSessionRecord, fallbackTargetLabel = ''): SidebarSessionBackgroundInfo | null {
   const metadata = normalizeMetadataRecord(session.metadata)
   if (!sessionHasBackgroundLineage(metadata)) {
     return null
   }
   return {
-    active: session.lifecycle?.active === true || ['starting', 'running', 'blocked'].includes(session.live.status),
+    active: Boolean(sessionActiveRunIntent(session.runIntent)),
     badge: sessionBackgroundBadge(metadata),
     targetLabel: firstNonEmpty(
       fallbackTargetLabel,

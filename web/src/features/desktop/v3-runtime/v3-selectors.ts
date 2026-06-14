@@ -77,11 +77,8 @@ export function selectV3ActiveRun(runtime: V3RuntimeState, sessionId: string | n
   if (!normalizedSessionId) {
     return null
   }
-  const session = runtime.desktop.sessionsById[normalizedSessionId]
-  if (session?.lifecycle && !session.lifecycle.active) {
-    return null
-  }
-  return runtime.desktop.runIntentsBySessionId[normalizedSessionId] ?? null
+  const runIntent = runtime.desktop.runIntentsBySessionId[normalizedSessionId] ?? null
+  return runIntent && v3RunIntentStatusActive(runIntent.status) ? runIntent : null
 }
 
 export function selectV3AgentModelPolicy(runtime: V3RuntimeState, sessionId: string | null | undefined): AgentModelPolicyRecord | null {
@@ -118,15 +115,35 @@ function selectDesktopSession(state: DesktopState, sessionId: string): DesktopSe
     return null
   }
   const usage = state.usageBySessionId[sessionId] as DesktopSessionUsageRecord | undefined
-  const runIntent = state.runIntentsBySessionId[sessionId]
-  const changed = Boolean((usage && usage !== session.usage) || (runIntent && runIntent !== session.runIntent))
+  const runIntent = state.runIntentsBySessionId[sessionId] ?? null
+  const activeRunIntent = runIntent && v3RunIntentStatusActive(runIntent.status) ? runIntent : null
+  const projectedLive = activeRunIntent
+    ? {
+        ...session.live,
+        runId: activeRunIntent.runId,
+        startedAt: activeRunIntent.createdAt > 0 ? activeRunIntent.createdAt : session.live.startedAt,
+        status: activeRunIntent.status.trim().toLowerCase() === 'pending_executor' ? 'starting' as const : 'running' as const,
+      }
+    : session.live
+  const changed = Boolean(
+    (usage && usage !== session.usage)
+    || runIntent !== (session.runIntent ?? null)
+    || session.runIntent === undefined
+    || projectedLive !== session.live,
+  )
   return changed
     ? {
         ...session,
         usage: usage ?? session.usage,
-        runIntent: runIntent ?? session.runIntent,
+        runIntent,
+        live: projectedLive,
       }
     : session
+}
+
+function v3RunIntentStatusActive(status: string): boolean {
+  const normalized = status.trim().toLowerCase()
+  return normalized === 'pending_executor' || normalized === 'running'
 }
 
 function v3WorkspaceScopeKey(workspaceScope: V3WorkspaceScope): string {
