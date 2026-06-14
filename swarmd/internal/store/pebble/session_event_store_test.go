@@ -874,6 +874,7 @@ func TestV3SessionRunIntentStatusIndexesSupportRecoveryDiscovery(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
 	createV3SessionForTest(t, sessions, "session-recovery-index")
+	createV3SessionForTest(t, sessions, "session-recovery-index-2")
 
 	_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
 		SessionID:      "session-recovery-index",
@@ -903,7 +904,7 @@ func TestV3SessionRunIntentStatusIndexesSupportRecoveryDiscovery(t *testing.T) {
 		t.Fatalf("claim run: %v", err)
 	}
 	_, err = sessions.ApplyV3SessionMutation(V3SessionMutationInput{
-		SessionID:      "session-recovery-index",
+		SessionID:      "session-recovery-index-2",
 		UserID:         "user-1",
 		AccountScopeID: "account-1",
 		IdempotencyKey: "pending-run-2",

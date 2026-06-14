@@ -178,6 +178,20 @@ type V3SessionRunIntent struct {
 	EventSeq       uint64 `json:"event_seq"`
 }
 
+type V3SessionRunState struct {
+	SessionID      string `json:"session_id"`
+	UserID         string `json:"user_id,omitempty"`
+	AccountScopeID string `json:"account_scope_id,omitempty"`
+	RunID          string `json:"run_id"`
+	Active         bool   `json:"active"`
+	Status         string `json:"status"`
+	BlockedReason  string `json:"blocked_reason,omitempty"`
+	CreatedAt      int64  `json:"created_at"`
+	StartedAt      int64  `json:"started_at,omitempty"`
+	UpdatedAt      int64  `json:"updated_at"`
+	EventSeq       uint64 `json:"event_seq"`
+}
+
 type V3SessionReplay struct {
 	Session          *SessionSnapshot          `json:"session,omitempty"`
 	Projection       V3SessionProjection       `json:"projection"`
@@ -261,6 +275,18 @@ func V3SessionRunIntentPrefix(sessionID string) string {
 
 func KeyV3SessionRunIntentActive(sessionID string) string {
 	return fmt.Sprintf("v3/session_run_intent_active/%s", keyPart(sessionID))
+}
+
+func KeyV3SessionRunIntentActiveByAccount(accountScopeID string, updatedAt int64, sessionID, runID string) string {
+	return fmt.Sprintf("v3/session_run_intent_active_by_account/%s/%020d/%s/%s", keyPart(accountScopeID), reverseMillis(updatedAt), keyPart(sessionID), keyPart(runID))
+}
+
+func V3SessionRunIntentActiveByAccountPrefix(accountScopeID string) string {
+	part := keyPart(accountScopeID)
+	if part == "" {
+		return "v3/session_run_intent_active_by_account/"
+	}
+	return fmt.Sprintf("v3/session_run_intent_active_by_account/%s/", part)
 }
 
 func KeyV3SessionRunIntentStatus(status string, updatedAt int64, accountScopeID, sessionID, runID string) string {
@@ -566,6 +592,10 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		if err != nil {
 			return V3SessionMutationResult{}, err
 		}
+		previousRunState, previousRunStateOK, err := s.GetV3SessionRunState(runIntent.SessionID)
+		if err != nil {
+			return V3SessionMutationResult{}, err
+		}
 		runPayload, err := json.Marshal(runIntent)
 		if err != nil {
 			return V3SessionMutationResult{}, fmt.Errorf("marshal v3 run intent %q: %w", runIntent.RunID, err)
@@ -581,6 +611,9 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		}
 		statusKey := KeyV3SessionRunIntentStatus(runIntent.Status, runIntent.UpdatedAt, runIntent.AccountScopeID, runIntent.SessionID, runIntent.RunID)
 		if err := batch.Set([]byte(statusKey), runPayload, nil); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		if err := s.setV3SessionRunStateInBatch(batch, runIntent, previousRunState, previousRunStateOK); err != nil {
 			return V3SessionMutationResult{}, err
 		}
 	}
@@ -953,28 +986,60 @@ func (s *SessionStore) GetV3SessionRunIntent(sessionID, runID string) (V3Session
 	return intent, true, nil
 }
 
-func (s *SessionStore) GetV3SessionActiveRunIntent(sessionID string) (V3SessionRunIntent, bool, error) {
+func (s *SessionStore) GetV3SessionRunState(sessionID string) (V3SessionRunState, bool, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
-		return V3SessionRunIntent{}, false, errors.New("session id is required")
+		return V3SessionRunState{}, false, errors.New("session id is required")
 	}
-	intents, err := s.ListV3SessionRunIntents(sessionID, 0, 100000)
-	if err != nil {
+	return getV3SessionRunStateFromReader(s.store.db, sessionID)
+}
+
+func (s *SessionStore) GetV3SessionActiveRunIntent(sessionID string) (V3SessionRunIntent, bool, error) {
+	state, ok, err := s.GetV3SessionRunState(sessionID)
+	if err != nil || !ok || !state.Active || strings.TrimSpace(state.RunID) == "" {
 		return V3SessionRunIntent{}, false, err
 	}
-	var current V3SessionRunIntent
-	for _, intent := range intents {
-		if !isV3RunIntentActive(intent.Status) {
-			continue
-		}
-		if current.RunID == "" || v3RunIntentLess(current, intent) {
-			current = intent
-		}
+	return v3SessionRunIntentFromState(state), true, nil
+}
+
+func (s *SessionStore) ListV3ActiveSessionRunStates(accountScopeID string, limit int) ([]V3SessionRunState, error) {
+	return listV3ActiveSessionRunStatesFromReader(s.store.db, accountScopeID, limit)
+}
+
+func getV3SessionRunStateFromReader(reader pebble.Reader, sessionID string) (V3SessionRunState, bool, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return V3SessionRunState{}, false, errors.New("session id is required")
 	}
-	if current.RunID == "" {
-		return V3SessionRunIntent{}, false, nil
+	var state V3SessionRunState
+	ok, err := getJSONFromReader(reader, KeyV3SessionRunIntentActive(sessionID), &state)
+	if err != nil || !ok {
+		return V3SessionRunState{}, ok, err
 	}
-	return current, true, nil
+	return state, true, nil
+}
+
+func listV3ActiveSessionRunStatesFromReader(reader pebble.Reader, accountScopeID string, limit int) ([]V3SessionRunState, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	out := make([]V3SessionRunState, 0, limit)
+	prefix := V3SessionRunIntentActiveByAccountPrefix(accountScopeID)
+	err := scanRangeFromReader(reader, scanRangeOptions{Prefix: prefix, Limit: limit}, func(_ string, value []byte) (bool, error) {
+		var state V3SessionRunState
+		if err := json.Unmarshal(value, &state); err != nil {
+			return false, err
+		}
+		if !state.Active || strings.TrimSpace(state.RunID) == "" {
+			return true, nil
+		}
+		if strings.TrimSpace(accountScopeID) != "" && strings.TrimSpace(state.AccountScopeID) != "" && strings.TrimSpace(state.AccountScopeID) != strings.TrimSpace(accountScopeID) {
+			return true, nil
+		}
+		out = append(out, state)
+		return len(out) < limit, nil
+	})
+	return out, err
 }
 
 func (s *SessionStore) ListV3SessionRunIntents(sessionID string, afterSeq uint64, limit int) ([]V3SessionRunIntent, error) {
@@ -1371,6 +1436,73 @@ func (s *SessionStore) resultFromV3IdempotencyRecord(record V3SessionIdempotency
 	return result, nil
 }
 
+func (s *SessionStore) setV3SessionRunStateInBatch(batch *pebble.Batch, intent V3SessionRunIntent, previous V3SessionRunState, previousOK bool) error {
+	if batch == nil {
+		return errors.New("pebble batch is required")
+	}
+	state := v3SessionRunStateFromIntent(intent)
+	activeKey := KeyV3SessionRunIntentActive(state.SessionID)
+	if previousOK && previous.Active {
+		previousAccountKey := KeyV3SessionRunIntentActiveByAccount(previous.AccountScopeID, previous.UpdatedAt, previous.SessionID, previous.RunID)
+		if err := batch.Delete([]byte(previousAccountKey), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+			return err
+		}
+	}
+	payload, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("marshal v3 run state %q: %w", state.RunID, err)
+	}
+	if err := batch.Set([]byte(activeKey), payload, nil); err != nil {
+		return err
+	}
+	if state.Active {
+		accountKey := KeyV3SessionRunIntentActiveByAccount(state.AccountScopeID, state.UpdatedAt, state.SessionID, state.RunID)
+		if err := batch.Set([]byte(accountKey), payload, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func v3SessionRunStateFromIntent(intent V3SessionRunIntent) V3SessionRunState {
+	status := strings.TrimSpace(intent.Status)
+	updatedAt := intent.UpdatedAt
+	if updatedAt == 0 {
+		updatedAt = intent.CreatedAt
+	}
+	startedAt := int64(0)
+	if isV3RunIntentActive(status) {
+		startedAt = intent.CreatedAt
+	}
+	return V3SessionRunState{
+		SessionID:      strings.TrimSpace(intent.SessionID),
+		UserID:         strings.TrimSpace(intent.UserID),
+		AccountScopeID: strings.TrimSpace(intent.AccountScopeID),
+		RunID:          strings.TrimSpace(intent.RunID),
+		Active:         isV3RunIntentActive(status),
+		Status:         status,
+		BlockedReason:  strings.TrimSpace(intent.BlockedReason),
+		CreatedAt:      intent.CreatedAt,
+		StartedAt:      startedAt,
+		UpdatedAt:      updatedAt,
+		EventSeq:       intent.EventSeq,
+	}
+}
+
+func v3SessionRunIntentFromState(state V3SessionRunState) V3SessionRunIntent {
+	return V3SessionRunIntent{
+		SessionID:      strings.TrimSpace(state.SessionID),
+		UserID:         strings.TrimSpace(state.UserID),
+		AccountScopeID: strings.TrimSpace(state.AccountScopeID),
+		RunID:          strings.TrimSpace(state.RunID),
+		Status:         strings.TrimSpace(state.Status),
+		BlockedReason:  strings.TrimSpace(state.BlockedReason),
+		CreatedAt:      state.CreatedAt,
+		UpdatedAt:      state.UpdatedAt,
+		EventSeq:       state.EventSeq,
+	}
+}
+
 func (s *SessionStore) validateV3RunIntentTransition(sessionID string, incoming V3SessionRunIntent) (V3SessionRunIntent, error) {
 	status := strings.TrimSpace(incoming.Status)
 	if status == "" {
@@ -1405,7 +1537,7 @@ func (s *SessionStore) validateV3RunIntentTransition(sessionID string, incoming 
 	}
 	if active, activeOK, err := s.GetV3SessionActiveRunIntent(sessionID); err != nil {
 		return V3SessionRunIntent{}, err
-	} else if activeOK && active.RunID != incoming.RunID && status == V3RunIntentRunning {
+	} else if activeOK && active.RunID != incoming.RunID && isV3RunIntentActive(status) {
 		return V3SessionRunIntent{}, fmt.Errorf("session %q already has active v3 run %q", sessionID, active.RunID)
 	}
 	return incoming, nil

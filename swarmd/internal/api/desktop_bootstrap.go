@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"swarm/packages/swarmd/internal/identity"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/workspace"
 )
@@ -371,13 +372,13 @@ func (s *Server) workspaceOverviewSessionsByWorkspace(groups []pebblestore.Works
 					enriched.PendingPermissions = records
 					enriched.PendingPermissionCount = len(records)
 				}
-				if lifecycle := item.session.Lifecycle; lifecycle != nil && lifecycle.Active {
-					enriched.ActiveRun = &runStreamActiveRun{
-						RunID:  strings.TrimSpace(lifecycle.RunID),
-						Status: strings.TrimSpace(lifecycle.Phase),
-					}
+				if runState, ok, err := s.sessions.GetSessionRunState(item.session.ID); err != nil {
+					results <- jobResult{err: err}
+					continue
+				} else {
+					enriched.ActiveRun = workspaceOverviewActiveRun(runState, ok)
+					enriched.SessionStatus = workspaceOverviewSessionStatus(runState, ok)
 				}
-				enriched.SessionStatus = workspaceOverviewSessionStatus(item.session.Lifecycle)
 				results <- jobResult{
 					workspacePath: item.workspacePath,
 					index:         item.index,
@@ -590,29 +591,36 @@ func workspaceOverviewTopologyRouteID(runtimeSwarmID, workspaceBindingID string)
 	return "swarm:" + runtimeSwarmID + ":binding:" + workspaceBindingID
 }
 
-func workspaceOverviewSessionStatus(lifecycle *pebblestore.SessionLifecycleSnapshot) string {
-	if lifecycle == nil {
+func workspaceOverviewActiveRun(runState sessionruntime.SessionRunState, ok bool) *runStreamActiveRun {
+	if !ok || !runState.Active || strings.TrimSpace(runState.RunID) == "" {
+		return nil
+	}
+	return &runStreamActiveRun{RunID: strings.TrimSpace(runState.RunID), Status: strings.TrimSpace(runState.Status)}
+}
+
+func workspaceOverviewSessionStatus(runState sessionruntime.SessionRunState, ok bool) string {
+	if !ok {
 		return "idle"
 	}
-	phase := strings.ToLower(strings.TrimSpace(lifecycle.Phase))
-	if lifecycle.Active {
-		switch phase {
-		case "blocked":
-			return "blocked"
-		case "starting":
+	switch strings.ToLower(strings.TrimSpace(runState.Status)) {
+	case sessionruntime.RunIntentPendingExecutor:
+		if runState.Active {
 			return "starting"
-		case "running":
-			return "running"
-		default:
+		}
+	case sessionruntime.RunIntentRunning:
+		if runState.Active {
 			return "running"
 		}
+	case sessionruntime.RunIntentDispatchBlocked:
+		return "blocked"
+	case sessionruntime.RunIntentCancelled:
+		return "cancelled"
+	case sessionruntime.RunIntentFailed:
+		return "errored"
+	case sessionruntime.RunIntentInterrupted:
+		return "interrupted"
 	}
-	switch phase {
-	case "cancelled", "errored", "interrupted":
-		return phase
-	default:
-		return "idle"
-	}
+	return "idle"
 }
 
 func parsePositiveIntOrDefault(raw string, fallback int) int {

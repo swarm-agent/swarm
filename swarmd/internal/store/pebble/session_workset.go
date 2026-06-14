@@ -280,34 +280,13 @@ func (s *SessionStore) selectV3RecentWorksetSessions(reader pebble.Reader, optio
 }
 
 func (s *SessionStore) selectV3ActiveWorksetSessions(reader pebble.Reader, options V3SessionWorksetOptions) ([]SessionSnapshot, error) {
-	lifecycles := []SessionLifecycleSnapshot{}
-	if err := iteratePrefixFromReader(reader, SessionLifecyclePrefix(), sessionRecentIndexScanLimit(), func(_ string, value []byte) error {
-		var lifecycle SessionLifecycleSnapshot
-		if err := json.Unmarshal(value, &lifecycle); err != nil {
-			return fmt.Errorf("decode session lifecycle for active workset: %w", err)
-		}
-		lifecycle.SessionID = strings.TrimSpace(lifecycle.SessionID)
-		lifecycle.AccountScopeID = strings.TrimSpace(lifecycle.AccountScopeID)
-		if !lifecycle.Active || lifecycle.SessionID == "" {
-			return nil
-		}
-		if options.AccountScopeID != "" && lifecycle.AccountScopeID != "" && lifecycle.AccountScopeID != options.AccountScopeID {
-			return nil
-		}
-		lifecycles = append(lifecycles, lifecycle)
-		return nil
-	}); err != nil {
+	states, err := listV3ActiveSessionRunStatesFromReader(reader, options.AccountScopeID, sessionRecentIndexScanLimit())
+	if err != nil {
 		return nil, err
 	}
-	sort.Slice(lifecycles, func(i, j int) bool {
-		if lifecycles[i].UpdatedAt == lifecycles[j].UpdatedAt {
-			return lifecycles[i].SessionID < lifecycles[j].SessionID
-		}
-		return lifecycles[i].UpdatedAt > lifecycles[j].UpdatedAt
-	})
-	out := make([]SessionSnapshot, 0, len(lifecycles))
-	for _, lifecycle := range lifecycles {
-		session, ok, err := s.getSessionFromReader(reader, lifecycle.SessionID)
+	out := make([]SessionSnapshot, 0, len(states))
+	for _, state := range states {
+		session, ok, err := s.getSessionFromReader(reader, state.SessionID)
 		if err != nil {
 			return nil, err
 		}

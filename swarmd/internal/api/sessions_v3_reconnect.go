@@ -119,22 +119,15 @@ func (s *Server) sessionsV3ReconnectResponse(principal identity.Principal) (map[
 		if !sessionsV3ReconnectSessionVisible(hydrated.Session, principal.AccountScopeID) {
 			continue
 		}
+		current := bySession[sessionID][0]
 		allIntents, err := s.sessions.ListSessionRunIntents(sessionID, 0, sessionsV3ReconnectRunIntentListLimit)
 		if err != nil {
 			return nil, err
 		}
-		activeForSession := sessionsV3ReconnectActiveIntents(allIntents)
-		if len(activeForSession) == 0 {
-			continue
-		}
-		current := sessionsV3ReconnectCurrentRunIntent(activeForSession)
 		sessionsByID[sessionID] = hydrated.Session
 		projectionsBySession[sessionID] = hydrated.Projection
 		runIntentsBySession[sessionID] = allIntents
 		currentRunIntentBySession[sessionID] = current
-		if len(activeForSession) > 1 {
-			diagnosticsBySession[sessionID] = append(diagnosticsBySession[sessionID], sessionsV3ReconnectMultipleActiveDiagnostic(activeForSession, current))
-		}
 		eligible = append(eligible, sessionsV3ReconnectSessionCandidate{SessionID: sessionID, Session: hydrated.Session, Current: current})
 	}
 
@@ -190,22 +183,26 @@ func (s *Server) sessionsV3ReconnectResponse(principal identity.Principal) (map[
 }
 
 func (s *Server) sessionsV3ReconnectActiveRunIntents(principal identity.Principal) ([]sessionruntime.SessionRunIntent, error) {
-	statuses := []string{sessionruntime.RunIntentRunning, sessionruntime.RunIntentPendingExecutor}
-	out := []sessionruntime.SessionRunIntent{}
-	for _, status := range statuses {
-		intents, err := s.sessions.ListSessionRunIntentsByStatus(status, sessionsV3ReconnectRunIntentListLimit)
-		if err != nil {
-			return nil, err
+	states, err := s.sessions.ListActiveSessionRunStates(principal.AccountScopeID, sessionsV3ReconnectRunIntentListLimit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]sessionruntime.SessionRunIntent, 0, len(states))
+	for _, state := range states {
+		if !state.Active || strings.TrimSpace(state.RunID) == "" {
+			continue
 		}
-		for _, intent := range intents {
-			if !sessionV3RunIntentStatusActive(intent.Status) {
-				continue
-			}
-			if principal.AccountScopeID != "" && strings.TrimSpace(intent.AccountScopeID) != "" && strings.TrimSpace(intent.AccountScopeID) != principal.AccountScopeID {
-				continue
-			}
-			out = append(out, intent)
-		}
+		out = append(out, sessionruntime.SessionRunIntent{
+			SessionID:      strings.TrimSpace(state.SessionID),
+			UserID:         strings.TrimSpace(state.UserID),
+			AccountScopeID: strings.TrimSpace(state.AccountScopeID),
+			RunID:          strings.TrimSpace(state.RunID),
+			Status:         strings.TrimSpace(state.Status),
+			BlockedReason:  strings.TrimSpace(state.BlockedReason),
+			CreatedAt:      state.CreatedAt,
+			UpdatedAt:      state.UpdatedAt,
+			EventSeq:       state.EventSeq,
+		})
 	}
 	return out, nil
 }
