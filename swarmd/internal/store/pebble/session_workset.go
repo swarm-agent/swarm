@@ -280,7 +280,7 @@ func (s *SessionStore) selectV3RecentWorksetSessions(reader pebble.Reader, optio
 }
 
 func (s *SessionStore) selectV3ActiveWorksetSessions(reader pebble.Reader, options V3SessionWorksetOptions) ([]SessionSnapshot, error) {
-	states, err := listV3ActiveSessionRunStatesFromReader(reader, options.AccountScopeID, sessionRecentIndexScanLimit())
+	states, err := listV3ActiveSessionRunStatesFromReader(reader, options.AccountScopeID, 0)
 	if err != nil {
 		return nil, err
 	}

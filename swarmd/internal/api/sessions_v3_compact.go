@@ -57,23 +57,6 @@ func (s *Server) handleSessionV3PrimaryCompact(w http.ResponseWriter, r *http.Re
 	if runID == "" {
 		runID = stableSessionsV3PrimaryRunID(sessionID, clientRequestID)
 	}
-	if current, ok, err := s.sessions.GetLifecycle(sessionID); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	} else if ok && current.Active {
-		if !strings.EqualFold(strings.TrimSpace(current.RunID), runID) {
-			writeError(w, http.StatusConflict, runruntime.ErrSessionAlreadyActive)
-			return
-		}
-		writeJSON(w, http.StatusAccepted, map[string]any{
-			"ok":              true,
-			"session_id":      sessionID,
-			"run_id":          runID,
-			"status":          "accepted",
-			"owner_transport": sessionV3ManualCompactOwnerTransport,
-		})
-		return
-	}
 	if active, ok, err := s.sessions.GetSessionActiveRunIntent(sessionID); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -296,21 +279,21 @@ func (b *sessionV3ManualCompactEventBridge) v3EventForRuntimeEvent(event runrunt
 		lifecycle = &copy
 		payload["type"] = "session.lifecycle.updated"
 		payload["lifecycle"] = lifecycle
-		if lifecycle.Active {
+		switch strings.ToLower(strings.TrimSpace(lifecycle.Phase)) {
+		case "active", "running":
 			status = sessionruntime.RunIntentRunning
-		} else {
-			switch strings.ToLower(strings.TrimSpace(lifecycle.Phase)) {
-			case "completed":
-				status = sessionruntime.RunIntentCompleted
-			case "cancelled":
-				status = sessionruntime.RunIntentCancelled
-			case "interrupted":
-				status = sessionruntime.RunIntentInterrupted
-			case "errored":
-				status = sessionruntime.RunIntentFailed
-			default:
-				status = sessionruntime.RunIntentCompleted
-			}
+		case "completed":
+			status = sessionruntime.RunIntentCompleted
+		case "cancelled":
+			status = sessionruntime.RunIntentCancelled
+		case "interrupted":
+			status = sessionruntime.RunIntentInterrupted
+		case "errored":
+			status = sessionruntime.RunIntentFailed
+		default:
+			status = sessionruntime.RunIntentRunning
+		}
+		if status != sessionruntime.RunIntentRunning {
 			blockedReason = firstNonEmptyString(strings.TrimSpace(lifecycle.Error), strings.TrimSpace(lifecycle.StopReason))
 		}
 		return "session.lifecycle.updated", status, blockedReason, payload, lifecycle

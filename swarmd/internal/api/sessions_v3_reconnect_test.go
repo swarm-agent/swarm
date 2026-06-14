@@ -81,6 +81,24 @@ func TestSessionsV3ReconnectExcludesLifecycleActiveOnlySession(t *testing.T) {
 	}
 }
 
+func TestSessionsV3ReconnectIncludesCanonicalActiveWithStaleInactiveLifecycle(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "reconnect-stale-lifecycle", "Reconnect Stale Lifecycle")
+	recordSessionsV3ReconnectRunIntent(t, server, created.ID, "run-canonical", sessionruntime.RunIntentPendingExecutor, 1000)
+	recordSessionsV3ReconnectRunIntent(t, server, created.ID, "run-canonical", sessionruntime.RunIntentRunning, 2000)
+	recordSessionsV3ReconnectLifecycle(t, server, created.ID, false)
+
+	payload := postSessionsV3Reconnect(t, server)
+	if payload.SessionsByID[created.ID].ID != created.ID {
+		t.Fatalf("canonical active session missing with stale inactive lifecycle: %+v", payload.SessionsByID)
+	}
+	current := payload.CurrentRunIntentBySession[created.ID]
+	if current.RunID != "run-canonical" || current.Status != sessionruntime.RunIntentRunning {
+		t.Fatalf("current canonical intent = %+v", current)
+	}
+	assertSessionsV3ReconnectSubscription(t, payload, created.ID)
+}
+
 func TestSessionsV3ReconnectOrdersSessionsDeterministically(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	older := createSessionsV3PrimaryTestSession(t, server, "reconnect-order-older", "Reconnect Order Older")

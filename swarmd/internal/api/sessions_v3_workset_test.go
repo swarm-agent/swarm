@@ -435,6 +435,27 @@ func TestSessionsV3TUIWorksetEndpointScopesWorkspaceAndCWD(t *testing.T) {
 	assertSessionsV3WorksetIDs(t, cwdPayload, createdCWD.ID)
 }
 
+func TestSessionsV3WorksetIncludeActiveUsesCanonicalRunStateOnly(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	canonical := createSessionsV3PrimaryTestSession(t, server, "workset-canonical-active", "Workset Canonical Active")
+	lifecycleOnly := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "workset-lifecycle-only", "Workset Lifecycle Only", "/workspace/cp2-other")
+	recordSessionsV3ReconnectRunIntent(t, server, canonical.ID, "run-canonical", sessionruntime.RunIntentPendingExecutor, 1000)
+	recordSessionsV3ReconnectRunIntent(t, server, canonical.ID, "run-canonical", sessionruntime.RunIntentRunning, 2000)
+	recordSessionsV3ReconnectLifecycle(t, server, canonical.ID, false)
+	recordSessionsV3ReconnectLifecycle(t, server, lifecycleOnly.ID, true)
+
+	payload := postSessionsV3WorksetForTest(t, server, http.StatusOK, map[string]any{
+		"workspace":      map[string]any{"workspace_path": "/workspace/cp6"},
+		"include_active": true,
+		"history":        map[string]any{"mode": "none"},
+		"resources":      map[string]any{"run_intents": true},
+	})
+	assertSessionsV3WorksetIDs(t, payload.SessionsByID, canonical.ID)
+	if got := payload.RunIntentsBySession[canonical.ID]; len(got) == 0 || got[len(got)-1].RunID != "run-canonical" || got[len(got)-1].Status != sessionruntime.RunIntentRunning {
+		t.Fatalf("canonical run intents = %+v", got)
+	}
+}
+
 func TestSessionsV3TUIWorksetEndpointRejectsEmptyAndNonCanonicalSelectors(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	postSessionsV3TUIWorksetForTest(t, server, http.StatusBadRequest, map[string]any{

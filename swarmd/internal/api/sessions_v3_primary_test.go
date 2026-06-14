@@ -1039,6 +1039,12 @@ func TestSessionsV3PrimaryRunStopCancelsActiveExecutorAndSuppressesLateOutput(t 
 	if cancelled.RunID != intent.RunID || cancelled.BlockedReason != "stop from test" {
 		t.Fatalf("cancelled intent = %+v", cancelled)
 	}
+	if active, ok, err := sessionSvc.GetSessionActiveRunIntent(created.ID); err != nil || ok {
+		t.Fatalf("active run after cancellation = %+v ok=%v err=%v, want inactive", active, ok, err)
+	}
+	if state, ok, err := sessionSvc.GetSessionRunState(created.ID); err != nil || !ok || state.Active || state.Status != sessionruntime.RunIntentCancelled || state.RunID != intent.RunID {
+		t.Fatalf("canonical run state after cancellation = %+v ok=%v err=%v", state, ok, err)
+	}
 	assertSessionsV3CancelledRunEvent(t, sessionSvc, created.ID, intent.RunID, "stop from test")
 	close(releaseLate)
 	if !server.WaitForInFlightRuns(2 * time.Second) {
