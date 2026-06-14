@@ -1,9 +1,8 @@
 import { apiFetch, readErrorMessage } from '../../../app/api'
 import { dedupeAndTrimMessages } from '../chat/services/message-cache'
-import { normalizeDesktopSessionPlan, normalizeDesktopSessionPlanRevisions, type DesktopSessionPlanWire } from '../chat/services/session-plan-record'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { applyCanonicalReasoningEventToLiveHistory } from './live-reasoning-history'
-import type { ChatMessageRecord, DesktopSessionPlanRevisionRecord } from '../chat/types/chat'
+import type { ChatMessageRecord } from '../chat/types/chat'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import type { DesktopPermissionRecord, DesktopRunIntentRecord, DesktopSessionRecord } from '../types/realtime'
 import type { DesktopDaemonSnapshot, DesktopSessionReadinessRecord, DesktopWorkspaceRecord } from './desktop-state'
@@ -30,8 +29,6 @@ export interface DesktopStateSnapshotRequest {
     messages?: boolean
     events?: boolean
     runIntents?: boolean
-    activePlan?: boolean
-    planRevisions?: boolean
   }
   includeActive?: boolean
 }
@@ -42,7 +39,7 @@ interface DesktopStateSnapshotRequestWire {
   workspace?: { workspace_path?: string; workspace_paths?: string[] }
   recent?: { limit?: number; before_updated_at?: number | null; before_session_id?: string }
   history?: { mode?: string; max_messages_per_session?: number; max_events_per_session?: number; manifest_policy?: string; include_events?: boolean }
-  resources?: { messages?: boolean; events?: boolean; run_intents?: boolean; active_plan?: boolean; plan_revisions?: boolean }
+  resources?: { messages?: boolean; events?: boolean; run_intents?: boolean }
   include_active?: boolean
 }
 
@@ -150,8 +147,6 @@ interface DesktopStateWorksetResponseWire {
   messages_by_session?: Record<string, MessageWire[]>
   events_by_session?: Record<string, EventWire[]>
   permissions_by_session?: Record<string, PermissionWire[]>
-  plans_by_session?: Record<string, DesktopSessionPlanWire | DesktopSessionPlanWire[] | null>
-  plan_revisions_by_session?: Record<string, DesktopSessionPlanWire[]>
   run_intents_by_session?: Record<string, RunIntentWire[]>
   session_order?: string[]
 }
@@ -240,8 +235,8 @@ export function normalizeDesktopStateSnapshot(response: DesktopStateWorksetRespo
     sessionOrder,
     messagesBySessionId: mapMessagesBySession(response.messages_by_session),
     permissionsById: permissionsById(permissionsBySessionId),
-    plansBySessionId: mapFirstSessionValues(response.plans_by_session, normalizeDesktopSessionPlan),
-    planRevisionsBySessionId: mapPlanRevisions(response.plan_revisions_by_session),
+    plansBySessionId: {},
+    planRevisionsBySessionId: {},
     usageBySessionId: {},
     runIntentsBySessionId,
     workspacesByPath: workspacesByPath(Object.values(sessionsById)),
@@ -280,8 +275,6 @@ function toSnapshotRequestWire(input: DesktopStateSnapshotRequest): DesktopState
       messages: resources.messages || undefined,
       events: resources.events || undefined,
       run_intents: resources.runIntents || undefined,
-      active_plan: resources.activePlan || undefined,
-      plan_revisions: resources.planRevisions || undefined,
     },
     include_active: input.includeActive || undefined,
   }
@@ -520,23 +513,6 @@ function mapPermission(permission: PermissionWire): DesktopPermissionRecord {
     resolvedAt: numberValue(permission.resolved_at),
     permissionRequestedAt: numberValue(permission.permission_requested_at),
   }
-}
-
-function mapFirstSessionValues<T, R>(source: Record<string, T | T[] | null> | undefined, mapValue: (value: T) => R): Record<string, R | null> {
-  const values: Record<string, R | null> = {}
-  for (const [sessionId, value] of Object.entries(source ?? {})) {
-    const first = Array.isArray(value) ? value[0] : value
-    values[sessionId] = first ? mapValue(first) : null
-  }
-  return values
-}
-
-function mapPlanRevisions(source: Record<string, DesktopSessionPlanWire[]> | undefined): Record<string, DesktopSessionPlanRevisionRecord[]> {
-  const revisionsBySession: Record<string, DesktopSessionPlanRevisionRecord[]> = {}
-  for (const [sessionId, revisions] of Object.entries(source ?? {})) {
-    revisionsBySession[sessionId] = normalizeDesktopSessionPlanRevisions(revisions)
-  }
-  return revisionsBySession
 }
 
 function latestRunIntentBySessionId(source: Record<string, RunIntentWire[]> | undefined): Record<string, DesktopRunIntentRecord> {

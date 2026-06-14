@@ -102,14 +102,12 @@ async function withFetchStub(
     }
 
     if (url === '/v3/sessions:workset') {
-      const body = JSON.parse(String(init?.body ?? '{}')) as { session_ids?: string[]; recent?: { limit?: number }; workspace?: { workspace_path?: string }; history?: { mode?: string }; resources?: { messages?: boolean; active_plan?: boolean; plan_revisions?: boolean } }
+      const body = JSON.parse(String(init?.body ?? '{}')) as { session_ids?: string[]; recent?: { limit?: number }; workspace?: { workspace_path?: string }; history?: { mode?: string }; resources?: { messages?: boolean } }
       const sessionIds = Array.isArray(body.session_ids) && body.session_ids.length > 0
         ? body.session_ids
         : ['session-workset-a', 'session-workset-b'].slice(0, body.recent?.limit ?? 2)
       return jsonResponse(v3WorksetPayload(sessionIds, {
         includeMessages: body.resources?.messages === true || body.history?.mode === 'tail' || body.history?.mode === 'full',
-        includePlans: body.resources?.active_plan === true,
-        includePlanRevisions: body.resources?.plan_revisions === true,
       }))
     }
 
@@ -249,15 +247,13 @@ function v3HydratedSessionPayload(sessionId: string) {
 }
 
 
-function v3WorksetPayload(sessionIds: string[], options: { includeMessages?: boolean; includePlans?: boolean; includePlanRevisions?: boolean } = {}) {
+function v3WorksetPayload(sessionIds: string[], options: { includeMessages?: boolean } = {}) {
   const sessionsById: Record<string, unknown> = {}
   const projectionsBySession: Record<string, unknown> = {}
   const messagesBySession: Record<string, unknown[]> = {}
   const eventsBySession: Record<string, unknown[]> = {}
   const permissionsBySession: Record<string, unknown[]> = {}
   const runIntentsBySession: Record<string, unknown[]> = {}
-  const plansBySession: Record<string, unknown> = {}
-  const planRevisionsBySession: Record<string, unknown[]> = {}
   const historyManifestsBySession: Record<string, unknown[]> = {}
 
   for (const sessionId of sessionIds) {
@@ -268,12 +264,6 @@ function v3WorksetPayload(sessionIds: string[], options: { includeMessages?: boo
     eventsBySession[sessionId] = []
     permissionsBySession[sessionId] = payload.pending_permissions
     runIntentsBySession[sessionId] = payload.active_run_intent ? [payload.active_run_intent] : []
-    if (options.includePlans) {
-      plansBySession[sessionId] = payload.active_plan
-    }
-    if (options.includePlanRevisions) {
-      planRevisionsBySession[sessionId] = payload.plan_revisions
-    }
     historyManifestsBySession[sessionId] = []
   }
 
@@ -284,8 +274,6 @@ function v3WorksetPayload(sessionIds: string[], options: { includeMessages?: boo
     projections_by_session: projectionsBySession,
     messages_by_session: messagesBySession,
     events_by_session: eventsBySession,
-    plans_by_session: plansBySession,
-    plan_revisions_by_session: planRevisionsBySession,
     permissions_by_session: permissionsBySession,
     run_intents_by_session: runIntentsBySession,
     history_manifests_by_session: historyManifestsBySession,
@@ -647,6 +635,7 @@ test('Desktop V3 plan modal uses dedicated plan endpoints instead of workset hyd
       '/v3/sessions/session-plan/plans/active',
       '/v3/sessions/session-plan/plans/plan-1/history?limit=100',
     ])
+    assertNoV1OrV2SessionDataCalls(calls)
   })
 
   await withFetchStub(async (calls) => {
@@ -659,7 +648,22 @@ test('Desktop V3 plan modal uses dedicated plan endpoints instead of workset hyd
       '/v3/sessions/session-plan/plans/plan-1/history?limit=100',
     ])
     assert.equal(calls[0]?.init?.method, 'POST')
+    assertNoV1OrV2SessionDataCalls(calls)
   })
+})
+
+
+test('Desktop session metadata hydration is not gated on plan hydration', async () => {
+  const { sessionRequiresSnapshotHydration } = await import('../../state/session-snapshot-hydration')
+  const session = {
+    ...v3HydratedSessionPayload('session-plan-independent').session,
+    workspacePath: '/repo',
+    workspaceName: 'repo',
+    createdAt: 1,
+    id: 'session-plan-independent',
+  }
+
+  assert.equal(sessionRequiresSnapshotHydration(session, 'session.mode.updated'), false)
 })
 
 

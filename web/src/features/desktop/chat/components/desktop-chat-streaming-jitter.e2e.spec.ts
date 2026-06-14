@@ -99,8 +99,6 @@ function v3WorksetSnapshot(messages: Record<string, unknown>[], lifecycle: Recor
     session_order: [SESSION_ID],
     messages_by_session: { [SESSION_ID]: messages },
     permissions_by_session: { [SESSION_ID]: [] },
-    plans_by_session: { [SESSION_ID]: null },
-    plan_revisions_by_session: { [SESSION_ID]: [] },
     run_intents_by_session: lifecycle ? { [SESSION_ID]: [{ session_id: SESSION_ID, run_id: RUN_ID, status: 'running', created_at: 1, updated_at: 1, event_seq: 1 }] } : {},
   }
 }

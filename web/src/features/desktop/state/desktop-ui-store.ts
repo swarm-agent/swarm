@@ -3255,7 +3255,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
   }
   sessions[sessionId] = merged
   syncBlockedSessionToWorkspaceOverview(queryClient, merged)
-  if (sessionRequiresSnapshotHydration(merged, eventType, { hasPlanHydration: Boolean(getV3RuntimeDesktopSnapshot().plansBySessionId[sessionId]) })) {
+  if (sessionRequiresSnapshotHydration(merged, eventType)) {
     requestScopedSessionWorkset(sessionId)
   }
 
