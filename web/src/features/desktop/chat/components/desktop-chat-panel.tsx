@@ -65,7 +65,6 @@ import { ImageSessionSidebar, type ImageSessionSidebarState } from '../../tools/
 import { commitWorkspaceChanges } from '../../git/api'
 import {
   useDesktopActiveRun,
-  useDesktopAgentModelPolicy,
   useDesktopMessages,
   useDesktopPlan,
   useDesktopPlanRevisions,
@@ -1304,7 +1303,6 @@ export function DesktopChatPanel({
   const dbMessages = useDesktopMessages(sessionId)
   const dbPreference = useDesktopPreference(sessionId)
   const dbActiveRun = useDesktopActiveRun(sessionId)
-  const dbAgentModelPolicy = useDesktopAgentModelPolicy(sessionId)
   const dbPlan = useDesktopPlan(sessionId)
   const dbPlanRevisions = useDesktopPlanRevisions(sessionId)
 
@@ -1324,13 +1322,7 @@ export function DesktopChatPanel({
     () => agentPolicyFromProfile(selectedAgentProfileForModel, modelOptions),
     [modelOptions, selectedAgentProfileForModel],
   )
-  const cachedAgentModelPolicy = sessionId ? dbAgentModelPolicy : null
-  const cachedAgentModelPolicyMatchesSelection = !cachedAgentModelPolicy?.agentName
-    || !selectedPrimaryAgent
-    || cachedAgentModelPolicy.agentName === selectedPrimaryAgent
-    || cachedAgentModelPolicy.resolvedAgentName === selectedPrimaryAgent
   const activeAgentModelPolicy = selectedAgentModelPolicy
-    ?? (sessionId && cachedAgentModelPolicyMatchesSelection ? cachedAgentModelPolicy : null)
   const activeAgentModelLocked = Boolean(activeAgentModelPolicy?.locked)
   const activePreferenceRecord = preferenceFromAgentPolicy(activeAgentModelPolicy)
     ?? (sessionId ? sessionPreference : draftPreference)

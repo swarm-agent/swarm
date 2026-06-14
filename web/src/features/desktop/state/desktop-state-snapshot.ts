@@ -3,7 +3,7 @@ import { dedupeAndTrimMessages } from '../chat/services/message-cache'
 import { normalizeDesktopSessionPlan, normalizeDesktopSessionPlanRevisions, type DesktopSessionPlanWire } from '../chat/services/session-plan-record'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { applyCanonicalReasoningEventToLiveHistory } from './live-reasoning-history'
-import type { AgentModelPolicyRecord, ChatMessageRecord, DesktopSessionPlanRevisionRecord, ResolvedSessionPreference, SessionPreferenceRecord } from '../chat/types/chat'
+import type { ChatMessageRecord, DesktopSessionPlanRevisionRecord, ResolvedSessionPreference, SessionPreferenceRecord } from '../chat/types/chat'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import type { DesktopPermissionRecord, DesktopRunIntentRecord, DesktopSessionRecord, DesktopSessionUsageRecord } from '../types/realtime'
 import type { DesktopDaemonSnapshot, DesktopSessionReadinessRecord, DesktopWorkspaceRecord } from './desktop-state'
@@ -155,17 +155,6 @@ interface ResolvedPreferenceWire {
   updated_at?: number
 }
 
-interface AgentModelPolicyWire {
-  agent_name?: string
-  resolved_agent_name?: string
-  source?: string
-  locked?: boolean
-  reason?: string
-  preference?: PreferenceWire
-  context_window?: number
-  max_output_tokens?: number
-}
-
 interface RunIntentWire {
   session_id?: string
   run_id?: string
@@ -197,7 +186,6 @@ interface DesktopStateWorksetResponseWire {
   plan_revisions_by_session?: Record<string, DesktopSessionPlanWire[]>
   usage_by_session?: Record<string, UsageWire>
   preferences_by_session?: Record<string, ResolvedPreferenceWire | PreferenceWire>
-  agent_model_policy_by_session?: Record<string, AgentModelPolicyWire | null>
   run_intents_by_session?: Record<string, RunIntentWire[]>
   session_order?: string[]
 }
@@ -292,7 +280,6 @@ export function normalizeDesktopStateSnapshot(response: DesktopStateWorksetRespo
     runIntentsBySessionId,
     workspacesByPath: workspacesByPath(Object.values(sessionsById)),
     preferencesBySessionId: mapPreferencesBySession(response.preferences_by_session),
-    agentModelPolicyBySessionId: mapAgentPolicyBySession(response.agent_model_policy_by_session),
     routeReadinessBySessionId: readySessions(sessionOrder),
   }
 }
@@ -609,25 +596,6 @@ function mapPreferencesBySession(source: Record<string, ResolvedPreferenceWire |
     }
   }
   return preferences
-}
-
-function mapAgentPolicyBySession(source: Record<string, AgentModelPolicyWire | null> | undefined): Record<string, AgentModelPolicyRecord | null> {
-  const policies: Record<string, AgentModelPolicyRecord | null> = {}
-  for (const [sessionId, policy] of Object.entries(source ?? {})) {
-    policies[sessionId] = policy
-      ? {
-          agentName: String(policy.agent_name ?? '').trim(),
-          resolvedAgentName: String(policy.resolved_agent_name ?? '').trim(),
-          source: String(policy.source ?? '').trim(),
-          locked: Boolean(policy.locked),
-          reason: String(policy.reason ?? '').trim(),
-          preference: mapPreference(policy.preference),
-          contextWindow: numberValue(policy.context_window),
-          maxOutputTokens: numberValue(policy.max_output_tokens),
-        }
-      : null
-  }
-  return policies
 }
 
 function mapFirstSessionValues<T, R>(source: Record<string, T | T[] | null> | undefined, mapValue: (value: T) => R): Record<string, R | null> {

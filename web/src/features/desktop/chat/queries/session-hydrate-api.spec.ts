@@ -246,7 +246,6 @@ function v3WorksetPayload(sessionIds: string[], options: { includeMessages?: boo
   const permissionsBySession: Record<string, unknown[]> = {}
   const usageBySession: Record<string, unknown> = {}
   const preferencesBySession: Record<string, unknown> = {}
-  const agentModelPolicyBySession: Record<string, unknown> = {}
   const runIntentsBySession: Record<string, unknown[]> = {}
   const plansBySession: Record<string, unknown> = {}
   const planRevisionsBySession: Record<string, unknown[]> = {}
@@ -262,7 +261,6 @@ function v3WorksetPayload(sessionIds: string[], options: { includeMessages?: boo
     usageBySession[sessionId] = payload.usage_summary
     sessionPreferenceBySession[sessionId] = payload.preference ?? payload.session.preference
     preferencesBySession[sessionId] = sessionPreferenceBySession[sessionId]
-    agentModelPolicyBySession[sessionId] = payload.agent_model_policy
     runIntentsBySession[sessionId] = payload.active_run_intent ? [payload.active_run_intent] : []
     if (options.includePlans) {
       plansBySession[sessionId] = payload.active_plan
@@ -286,7 +284,6 @@ function v3WorksetPayload(sessionIds: string[], options: { includeMessages?: boo
     usage_by_session: usageBySession,
     preference_by_session: sessionPreferenceBySession,
     preferences_by_session: preferencesBySession,
-    agent_model_policy_by_session: agentModelPolicyBySession,
     run_intents_by_session: runIntentsBySession,
     history_manifests_by_session: historyManifestsBySession,
     history_chunks_by_id: {},

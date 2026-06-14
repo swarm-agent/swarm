@@ -143,6 +143,7 @@ test('normalizeDesktopStateSnapshot builds a plain replacement snapshot from wor
   assert.equal(snapshot.runIntentsBySessionId?.next?.runId, 'run-new')
   assert.equal(snapshot.workspacesByPath?.['/workspace/next']?.sessionIds[0], 'next')
   assert.equal(snapshot.routeReadinessBySessionId?.next?.ready, true)
+  assert.equal(snapshot.agentModelPolicyBySessionId, undefined)
 })
 
 test('normalizeDesktopStateSnapshot maps active run intent into live sidebar state', () => {
