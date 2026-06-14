@@ -561,7 +561,7 @@ func v3StreamEventToChatEvent(event client.SessionV3Event) ui.ChatRunStreamEvent
 	case "session.message.updated":
 		out.Type = "message.updated"
 		out.Message = messageFromV3Payload(payload, out.SessionID)
-	case "usage.updated", "session.usage.updated":
+	case "run.usage.updated", "usage.updated", "session.usage.updated":
 		out.Type = "usage.updated"
 		out.TurnUsage = turnUsageFromV3Payload(payload)
 		out.UsageSummary = usageSummaryFromV3Payload(payload)

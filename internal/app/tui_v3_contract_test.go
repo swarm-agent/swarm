@@ -54,10 +54,21 @@ func TestTUIOpenSessionHydratesFromV3BeforeOpeningChat(t *testing.T) {
 						"swarm_v3_runtime_swarm_id": "host-swarm",
 					},
 				},
-				"projection": map[string]any{"session_id": "session-1", "last_event_seq": 7, "projection_high_watermark_seq": 8},
-				"preference": map[string]any{"provider": "anthropic", "model": "claude", "thinking": "auto", "service_tier": "standard", "context_mode": "full"},
-				"messages":   []any{},
-				"events":     []any{},
+				"projection":     map[string]any{"session_id": "session-1", "last_event_seq": 7, "projection_high_watermark_seq": 8},
+				"preference":     map[string]any{"provider": "anthropic", "model": "claude", "thinking": "auto", "service_tier": "standard", "context_mode": "full"},
+				"context_window": 1000,
+				"usage_summary": map[string]any{
+					"session_id":        "session-1",
+					"provider":          "anthropic",
+					"model":             "claude",
+					"source":            "provider",
+					"context_window":    1000,
+					"total_tokens":      250,
+					"remaining_tokens":  750,
+					"cache_read_tokens": 0,
+				},
+				"messages": []any{},
+				"events":   []any{},
 			})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/providers":
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "providers": []any{}})
@@ -106,6 +117,10 @@ func TestTUIOpenSessionHydratesFromV3BeforeOpeningChat(t *testing.T) {
 	}
 	if summary, ok := app.sessionSummaryByID("session-1"); !ok || summary.SessionAPI != "v3" || summary.Title != "Hydrated Session" || summary.LastEventSeq != 7 || summary.ProjectionHighWatermarkSeq != 8 {
 		t.Fatalf("hydrated summary = %+v, ok=%v", summary, ok)
+	}
+	text := renderPageText(t, app.chat)
+	if !strings.Contains(text, "75% left") {
+		t.Fatalf("hydrated chat footer missing context usage: %q", text)
 	}
 }
 

@@ -119,33 +119,34 @@ type ChatSessionPaletteItem struct {
 }
 
 type ChatPageOptions struct {
-	Backend            ChatBackend
-	SessionID          string
-	SessionTitle       string
-	InitialPrompt      string
-	Presets            []string
-	SessionTabs        []ChatSessionTab
-	CommandSuggestions []CommandSuggestion
-	ShowHeader         bool
-	ShowThinkingTags   *bool
-	Meta               ChatSessionMeta
-	AuthConfigured     bool
-	ModelProvider      string
-	ModelName          string
-	AvailableModels    []ModelsModalEntry
-	ThinkingLevel      string
-	ServiceTier        string
-	ContextMode        string
-	ContextWindow      int
-	SessionMode        string
-	ToolStreamStyle    ChatToolStreamStyle
-	SwarmingTitle      string
-	SwarmingStatus     string
-	SwarmName          string
-	KeyBindings        *KeyBindings
-	OnAsyncEvent       func()
-	RequestAsyncRender func()
-	CopyText           func(string) error
+	Backend             ChatBackend
+	SessionID           string
+	SessionTitle        string
+	InitialPrompt       string
+	Presets             []string
+	SessionTabs         []ChatSessionTab
+	CommandSuggestions  []CommandSuggestion
+	ShowHeader          bool
+	ShowThinkingTags    *bool
+	Meta                ChatSessionMeta
+	AuthConfigured      bool
+	ModelProvider       string
+	ModelName           string
+	AvailableModels     []ModelsModalEntry
+	ThinkingLevel       string
+	ServiceTier         string
+	ContextMode         string
+	ContextWindow       int
+	InitialUsageSummary *ChatUsageSummary
+	SessionMode         string
+	ToolStreamStyle     ChatToolStreamStyle
+	SwarmingTitle       string
+	SwarmingStatus      string
+	SwarmName           string
+	KeyBindings         *KeyBindings
+	OnAsyncEvent        func()
+	RequestAsyncRender  func()
+	CopyText            func(string) error
 }
 
 type ChatToolStreamStyle struct {
@@ -582,6 +583,7 @@ func NewChatPage(opts ChatPageOptions) *ChatPage {
 		thinkingLevel:           strings.TrimSpace(opts.ThinkingLevel),
 		serviceTier:             strings.TrimSpace(opts.ServiceTier),
 		contextMode:             strings.TrimSpace(opts.ContextMode),
+		contextWindow:           opts.ContextWindow,
 		authConfigured:          opts.AuthConfigured,
 		streamedTools:           make(map[string]struct{}, 16),
 		sessionMode:             normalizeSessionMode(opts.SessionMode),
@@ -625,6 +627,7 @@ func NewChatPage(opts ChatPageOptions) *ChatPage {
 	}
 	p.setCommandSuggestions(opts.CommandSuggestions)
 	p.setMentionSubagents(meta.Subagents)
+	p.applyContextUsageSummary(opts.InitialUsageSummary)
 
 	if !p.authConfigured {
 		p.statusLine = "auth missing - run /auth"

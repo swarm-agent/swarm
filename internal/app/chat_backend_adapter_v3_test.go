@@ -460,11 +460,11 @@ func TestAPIChatBackendV3MapsPermissionAndUsageRealtimeEvents(t *testing.T) {
 
 	usage := v3StreamEventToChatEvent(client.SessionV3Event{
 		SessionID: "session-v3",
-		EventType: "usage.updated",
+		EventType: "run.usage.updated",
 		Payload:   json.RawMessage(`{"session_id":"session-v3","run_id":"run-v3","turn_usage":{"session_id":"session-v3","run_id":"run-v3","context_window":1000,"total_tokens":42,"transport":"websocket","connected_via_websocket":true},"usage_summary":{"session_id":"session-v3","context_window":1000,"total_tokens":42,"remaining_tokens":958,"last_run_id":"run-v3"}}`),
 	})
 	if usage.Type != "usage.updated" || usage.TurnUsage == nil || usage.TurnUsage.TotalTokens != 42 || usage.UsageSummary == nil || usage.UsageSummary.RemainingTokens != 958 {
-		t.Fatalf("mapped usage.updated = %#v", usage)
+		t.Fatalf("mapped run.usage.updated = %#v", usage)
 	}
 }
 

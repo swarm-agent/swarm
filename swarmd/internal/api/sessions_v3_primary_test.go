@@ -2934,6 +2934,55 @@ func TestSessionsV3ExecutorCoalescesProviderDeltas(t *testing.T) {
 	}
 }
 
+func TestSessionsV3ExecutorCoalescesProviderReasoningDeltas(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := installSessionsV3TestProvider(server, "final answer after coalesced reasoning")
+	runner.handler = func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if onEvent != nil {
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, ReasoningKey: "summary-1", Delta: "Inspecting"})
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, ReasoningKey: "summary-1", Delta: "Inspecting files"})
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, ReasoningKey: "summary-1", Delta: "Inspecting files carefully"})
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: "final answer after coalesced reasoning"})
+		}
+		return provideriface.Response{Text: "final answer after coalesced reasoning", StopReason: "stop"}, nil
+	}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	exec.reasoningDeltaFlushMaxBytes = 1024
+	exec.reasoningDeltaFlushMaxDelay = time.Hour
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "coalesced-reasoning-create", "coalesced reasoning", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "coalesced-reasoning-message", "coalesce reasoning deltas")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	var reasoningDeltas []sessionruntime.SessionEvent
+	for _, event := range events {
+		if event.EventType == "session.reasoning.delta" {
+			reasoningDeltas = append(reasoningDeltas, event)
+		}
+	}
+	if len(reasoningDeltas) != 1 {
+		t.Fatalf("reasoning delta events = %d, want one coalesced event events=%+v", len(reasoningDeltas), events)
+	}
+	var payload struct {
+		Delta string `json:"delta"`
+	}
+	if err := json.Unmarshal(reasoningDeltas[0].Payload, &payload); err != nil {
+		t.Fatalf("decode reasoning delta payload: %v", err)
+	}
+	if payload.Delta != "Inspecting files carefully" {
+		t.Fatalf("reasoning delta payload = %+v", payload)
+	}
+}
+
 func TestSessionsV3ExecutorFlushesProviderDeltaAtSizeBoundary(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	runner := &sessionsV3RecordingProviderRunner{deltas: []string{"ab", "cd", "ef"}, text: "abcdef"}

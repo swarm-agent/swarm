@@ -30,8 +30,10 @@ const (
 	sessionV3ExecutorRecoveryLimit            = 500
 	sessionV3ExecutorDefaultRunningStaleAfter = 5 * time.Minute
 	sessionV3ProviderIdenticalToolCallLimit   = 5
-	sessionV3AssistantDeltaFlushMaxBytes      = 512
-	sessionV3AssistantDeltaFlushMaxDelay      = 100 * time.Millisecond
+	sessionV3AssistantDeltaFlushMaxBytes      = 2048
+	sessionV3AssistantDeltaFlushMaxDelay      = 250 * time.Millisecond
+	sessionV3ReasoningDeltaFlushMaxBytes      = 4096
+	sessionV3ReasoningDeltaFlushMaxDelay      = 500 * time.Millisecond
 	sessionV3ReasoningEventType               = "v3_provider_reasoning"
 	sessionV3RunStopDefaultReason             = "run stopped by user"
 	sessionV3TitleDefault                     = "New Session"
@@ -60,11 +62,13 @@ type sessionV3Executor struct {
 	server *Server
 	ctx    context.Context
 
-	startDelay         time.Duration
-	modelDelay         time.Duration
-	runningStaleAfter  time.Duration
-	deltaFlushMaxBytes int
-	deltaFlushMaxDelay time.Duration
+	startDelay                  time.Duration
+	modelDelay                  time.Duration
+	runningStaleAfter           time.Duration
+	deltaFlushMaxBytes          int
+	deltaFlushMaxDelay          time.Duration
+	reasoningDeltaFlushMaxBytes int
+	reasoningDeltaFlushMaxDelay time.Duration
 
 	mu              sync.Mutex
 	inFlightRuns    map[string]bool
@@ -78,15 +82,17 @@ func newSessionV3Executor(server *Server) *sessionV3Executor {
 		ctx = server.runCtx
 	}
 	exec := &sessionV3Executor{
-		server:             server,
-		ctx:                ctx,
-		startDelay:         sessionV3ExecutorDefaultStartDelay,
-		runningStaleAfter:  sessionV3ExecutorDefaultRunningStaleAfter,
-		deltaFlushMaxBytes: sessionV3AssistantDeltaFlushMaxBytes,
-		deltaFlushMaxDelay: sessionV3AssistantDeltaFlushMaxDelay,
-		inFlightRuns:       make(map[string]bool),
-		activeBySession:    make(map[string]string),
-		runStates:          make(map[string]*sessionV3ExecutorRunState),
+		server:                      server,
+		ctx:                         ctx,
+		startDelay:                  sessionV3ExecutorDefaultStartDelay,
+		runningStaleAfter:           sessionV3ExecutorDefaultRunningStaleAfter,
+		deltaFlushMaxBytes:          sessionV3AssistantDeltaFlushMaxBytes,
+		deltaFlushMaxDelay:          sessionV3AssistantDeltaFlushMaxDelay,
+		reasoningDeltaFlushMaxBytes: sessionV3ReasoningDeltaFlushMaxBytes,
+		reasoningDeltaFlushMaxDelay: sessionV3ReasoningDeltaFlushMaxDelay,
+		inFlightRuns:                make(map[string]bool),
+		activeBySession:             make(map[string]string),
+		runStates:                   make(map[string]*sessionV3ExecutorRunState),
 	}
 	exec.recoverDurableRuns(ctx)
 	return exec
@@ -607,6 +613,88 @@ func (c *sessionV3AssistantDeltaCoalescer) shouldFlush(delta string) bool {
 	return false
 }
 
+type sessionV3ReasoningDeltaCoalescer struct {
+	exec            *sessionV3Executor
+	job             sessionV3ExecutorJob
+	step            int
+	reasoningKey    string
+	latestSnapshot  string
+	bufferStartedAt time.Time
+	nextDeltaIndex  int
+	flushCount      int
+}
+
+func newSessionV3ReasoningDeltaCoalescer(exec *sessionV3Executor, job sessionV3ExecutorJob, step int, reasoningKey string) *sessionV3ReasoningDeltaCoalescer {
+	return &sessionV3ReasoningDeltaCoalescer{exec: exec, job: job, step: step, reasoningKey: reasoningKey}
+}
+
+func (c *sessionV3ReasoningDeltaCoalescer) Add(snapshot string) error {
+	if c == nil {
+		return nil
+	}
+	snapshot = strings.TrimSpace(snapshot)
+	if snapshot == "" {
+		return nil
+	}
+	if c.bufferStartedAt.IsZero() {
+		c.bufferStartedAt = time.Now()
+	}
+	c.latestSnapshot = snapshot
+	if c.shouldFlush(snapshot) {
+		return c.Flush()
+	}
+	return nil
+}
+
+func (c *sessionV3ReasoningDeltaCoalescer) Flush() error {
+	if c == nil || strings.TrimSpace(c.latestSnapshot) == "" {
+		return nil
+	}
+	if c.exec == nil {
+		return errors.New("v3 reasoning delta coalescer missing executor")
+	}
+	snapshot := strings.TrimSpace(c.latestSnapshot)
+	c.latestSnapshot = ""
+	c.bufferStartedAt = time.Time{}
+	c.nextDeltaIndex++
+	if _, err := c.exec.recordReasoningEvent(c.job, "session.reasoning.delta", c.step, c.nextDeltaIndex, c.reasoningKey, snapshot, ""); err != nil {
+		return err
+	}
+	c.flushCount++
+	return nil
+}
+
+func (c *sessionV3ReasoningDeltaCoalescer) FlushCount() int {
+	if c == nil {
+		return 0
+	}
+	return c.flushCount
+}
+
+func (c *sessionV3ReasoningDeltaCoalescer) shouldFlush(snapshot string) bool {
+	if c == nil {
+		return false
+	}
+	if c.exec == nil {
+		return true
+	}
+	maxBytes := c.exec.reasoningDeltaFlushMaxBytes
+	if maxBytes <= 0 {
+		maxBytes = sessionV3ReasoningDeltaFlushMaxBytes
+	}
+	if len(snapshot) >= maxBytes {
+		return true
+	}
+	if strings.Contains(snapshot, "\n") {
+		return true
+	}
+	maxDelay := c.exec.reasoningDeltaFlushMaxDelay
+	if maxDelay > 0 && !c.bufferStartedAt.IsZero() && time.Since(c.bufferStartedAt) >= maxDelay {
+		return true
+	}
+	return false
+}
+
 type sessionV3ResolvedRuntime struct {
 	Session       pebblestore.SessionSnapshot
 	AgentProfile  pebblestore.AgentProfile
@@ -1103,7 +1191,7 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		activeReasoningKey := ""
 		reasoningByKey := make(map[string]string, 4)
 		reasoningOrder := make([]string, 0, 4)
-		reasoningEventIndex := 0
+		reasoningCoalescers := make(map[string]*sessionV3ReasoningDeltaCoalescer, 4)
 		rememberReasoningKey := func(key string) string {
 			key = sessionV3NormalizeReasoningKey(key)
 			if _, ok := reasoningByKey[key]; !ok {
@@ -1120,9 +1208,24 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			}
 			return strings.TrimSpace(strings.Join(parts, "\n\n"))
 		}
+		reasoningCoalescerForKey := func(key string) *sessionV3ReasoningDeltaCoalescer {
+			key = sessionV3NormalizeReasoningKey(key)
+			if coalescer := reasoningCoalescers[key]; coalescer != nil {
+				return coalescer
+			}
+			coalescer := newSessionV3ReasoningDeltaCoalescer(e, job, step, key)
+			reasoningCoalescers[key] = coalescer
+			return coalescer
+		}
 		completeActiveReasoning := func() {
 			if activeReasoningKey == "" || progressErr != nil {
 				return
+			}
+			if coalescer := reasoningCoalescers[activeReasoningKey]; coalescer != nil {
+				if flushErr := coalescer.Flush(); flushErr != nil {
+					progressErr = flushErr
+					return
+				}
 			}
 			summary := strings.TrimSpace(reasoningByKey[activeReasoningKey])
 			_, progressErr = e.recordReasoningEvent(job, "session.reasoning.completed", step, 0, activeReasoningKey, "", summary)
@@ -1151,13 +1254,11 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 					return
 				}
 				reasoningByKey[reasoningKey] = next
-				reasoningEventIndex++
 				if progressErr == nil {
-					// Send the merged reasoning snapshot on every delta. Desktop replaces
-					// live thinking text from session.reasoning.delta, so emitting only
-					// appended chunks would make the visible thinking tag flicker or lose
-					// earlier words.
-					_, progressErr = e.recordReasoningEvent(job, "session.reasoning.delta", step, reasoningEventIndex, reasoningKey, next, "")
+					// Send merged reasoning snapshots, but coalesce durable writes. Desktop
+					// replaces live thinking text from session.reasoning.delta, so flushed
+					// records must carry the latest snapshot rather than appended chunks.
+					progressErr = reasoningCoalescerForKey(reasoningKey).Add(next)
 				}
 			}
 		})

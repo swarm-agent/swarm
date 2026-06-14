@@ -1101,6 +1101,7 @@ function applyLifecycleSnapshot(
   eventType: string,
 ): void {
   const nextTs = lifecycle.updatedAt > 0 ? lifecycle.updatedAt : ts
+  const terminalRunId = !lifecycle.active ? (lifecycle.runId?.trim() || session.live.runId?.trim() || session.runIntent?.runId?.trim() || null) : null
   session.lifecycle = lifecycle
   session.live.lastEventType = eventType || session.live.lastEventType
   session.live.lastEventAt = nextTs
@@ -1116,6 +1117,10 @@ function applyLifecycleSnapshot(
     return
   }
 
+  session.runIntent = null
+  if (terminalRunId) {
+    requireRunStreamController().close(sessionId)
+  }
   cancelDraftFlush(sessionId)
   retainLiveToolState(session.live, lifecycle.phase.trim().toLowerCase() === 'errored' ? 'error' : 'done')
   resetLiveToolState(session.live)
@@ -3090,9 +3095,6 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
       const lifecycle = normalizeLifecycle(lifecycleSource, sessionId)
       if (lifecycle) {
         applyLifecycleSnapshot(sessionId, session, lifecycle, ts, eventType)
-        if (!lifecycle.active && resolveRunStreamId(session) !== '') {
-          requireRunStreamController().close(sessionId)
-        }
       }
       break
     }

@@ -2930,6 +2930,7 @@ func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt str
 	serviceTier := ""
 	contextMode := ""
 	contextWindow := 0
+	var initialUsageSummary *ui.ChatUsageSummary
 	if a.api != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		workspaceScope := ""
@@ -2972,6 +2973,7 @@ func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt str
 		serviceTier = strings.TrimSpace(hydrated.Preference.ServiceTier)
 		contextMode = strings.TrimSpace(hydrated.Preference.ContextMode)
 		contextWindow = hydrated.ContextWindow
+		initialUsageSummary = convertClientUsageSummary(hydrated.UsageSummary)
 	} else if err := requireTUIV3SessionAPI(summary.SessionAPI, "open session"); err != nil {
 		return err
 	}
@@ -3033,6 +3035,7 @@ func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt str
 		serviceTier,
 		contextMode,
 		contextWindow,
+		initialUsageSummary,
 		summary.SessionAPI,
 		summary.Metadata,
 	)
@@ -3121,7 +3124,7 @@ func normalizeAppSessionMode(mode string) string {
 	}
 }
 
-func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName, sessionMode, worktreeBranch string, worktreeEnabled bool, worktreeRootPath, initialPrompt, modelProvider, modelName, thinkingLevel, serviceTier, contextMode string, contextWindow int, sessionAPI string, sessionMetadata map[string]any) error {
+func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName, sessionMode, worktreeBranch string, worktreeEnabled bool, worktreeRootPath, initialPrompt, modelProvider, modelName, thinkingLevel, serviceTier, contextMode string, contextWindow int, initialUsageSummary *ui.ChatUsageSummary, sessionAPI string, sessionMetadata map[string]any) error {
 	dir := a.home.ActiveDirectory()
 	chatWorkspace := strings.TrimSpace(workspaceName)
 	chatPath := strings.TrimSpace(workspacePath)
@@ -3157,24 +3160,25 @@ func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName
 	}
 
 	a.chat = ui.NewChatPage(ui.ChatPageOptions{
-		Backend:            newAPIChatBackend(a.api, sessionAPI, targetSwarmIDForV3Session(sessionMetadata, a.homeModel.CurrentSwarmTarget)),
-		SessionID:          strings.TrimSpace(sessionID),
-		SessionTitle:       strings.TrimSpace(sessionTitle),
-		InitialPrompt:      strings.TrimSpace(initialPrompt),
-		Presets:            a.home.ModelPresets(),
-		SessionTabs:        chatSessionTabsFromSummaries(a.homeModel.RecentSessions),
-		CommandSuggestions: buildHomeCommandSuggestions(a.startupDevMode()),
-		ShowHeader:         a.config.Chat.ShowHeader,
-		AuthConfigured:     a.homeModel.AuthConfigured,
-		ShowThinkingTags:   boolPtr(a.config.Chat.ThinkingTags),
-		ModelProvider:      modelProvider,
-		ModelName:          modelName,
-		AvailableModels:    a.chatAvailableModels(modelProvider),
-		ThinkingLevel:      thinkingLevel,
-		ServiceTier:        serviceTier,
-		ContextMode:        contextMode,
-		ContextWindow:      contextWindow,
-		SessionMode:        sessionMode,
+		Backend:             newAPIChatBackend(a.api, sessionAPI, targetSwarmIDForV3Session(sessionMetadata, a.homeModel.CurrentSwarmTarget)),
+		SessionID:           strings.TrimSpace(sessionID),
+		SessionTitle:        strings.TrimSpace(sessionTitle),
+		InitialPrompt:       strings.TrimSpace(initialPrompt),
+		Presets:             a.home.ModelPresets(),
+		SessionTabs:         chatSessionTabsFromSummaries(a.homeModel.RecentSessions),
+		CommandSuggestions:  buildHomeCommandSuggestions(a.startupDevMode()),
+		ShowHeader:          a.config.Chat.ShowHeader,
+		AuthConfigured:      a.homeModel.AuthConfigured,
+		ShowThinkingTags:    boolPtr(a.config.Chat.ThinkingTags),
+		ModelProvider:       modelProvider,
+		ModelName:           modelName,
+		AvailableModels:     a.chatAvailableModels(modelProvider),
+		ThinkingLevel:       thinkingLevel,
+		ServiceTier:         serviceTier,
+		ContextMode:         contextMode,
+		ContextWindow:       contextWindow,
+		InitialUsageSummary: initialUsageSummary,
+		SessionMode:         sessionMode,
 		ToolStreamStyle: ui.ChatToolStreamStyle{
 			ShowAnchor:    boolPtr(a.config.Chat.ToolStream.ShowAnchor),
 			PulseFrames:   append([]string(nil), a.config.Chat.ToolStream.PulseFrames...),

@@ -266,8 +266,9 @@ function desktopStateSnapshotEnvelopeId(mode: 'replace' | 'merge', snapshot: Des
 export function normalizeDesktopStateSnapshot(response: DesktopStateWorksetResponseWire): DesktopDaemonSnapshot {
   assertSnapshotRevision(response.rev)
   const permissionsBySessionId = mapPermissionsBySession(response.permissions_by_session)
-  const runIntentsBySessionId = latestRunIntentBySessionId(response.run_intents_by_session)
-  const sessionsById = mapSessions(response.sessions_by_id, permissionsBySessionId, runIntentsBySessionId)
+  const rawRunIntentsBySessionId = latestRunIntentBySessionId(response.run_intents_by_session)
+  const sessionsById = mapSessions(response.sessions_by_id, permissionsBySessionId, rawRunIntentsBySessionId)
+  const runIntentsBySessionId = activeRunIntentsForNonTerminalSessions(rawRunIntentsBySessionId, sessionsById)
   applyReasoningEventsBySession(sessionsById, response.events_by_session)
   const sessionOrder = normalizeSessionOrder(sessionsById, response.session_order)
 
@@ -403,7 +404,8 @@ function mapSession(session: SessionWire, fallbackId = '', pendingPermissions: D
   const sessionPendingPermissions = pendingPermissions.filter((permission) => permission.sessionId === id && permission.status.trim().toLowerCase() === 'pending')
   const pendingPermissionCount = countApprovalRequiredPermissions(sessionPendingPermissions, mode)
   const baseLive = emptyLiveState()
-  const runIntent = session.run_intent ? mapRunIntent(session.run_intent) : topLevelRunIntent
+  const mappedRunIntent = session.run_intent ? mapRunIntent(session.run_intent) : topLevelRunIntent
+  const runIntent = lifecycle && !lifecycle.active ? null : mappedRunIntent
   if (!lifecycle && pendingPermissionCount > 0) {
     baseLive.status = 'blocked'
     baseLive.lastEventType = 'permission.requested'
@@ -470,6 +472,21 @@ function mapSession(session: SessionWire, fallbackId = '', pendingPermissions: D
 function snapshotRunIntentStatusActive(status: string): boolean {
   const normalized = status.trim().toLowerCase()
   return normalized === 'pending_executor' || normalized === 'running'
+}
+
+function activeRunIntentsForNonTerminalSessions(
+  source: Record<string, DesktopRunIntentRecord>,
+  sessionsById: Record<string, DesktopSessionRecord>,
+): Record<string, DesktopRunIntentRecord> {
+  const next: Record<string, DesktopRunIntentRecord> = {}
+  for (const [sessionId, runIntent] of Object.entries(source)) {
+    const session = sessionsById[sessionId] ?? sessionsById[runIntent.sessionId]
+    if (session?.lifecycle && !session.lifecycle.active) {
+      continue
+    }
+    next[sessionId] = runIntent
+  }
+  return next
 }
 
 function mapMessagesBySession(source: Record<string, MessageWire[]> | undefined): Record<string, ChatMessageRecord[]> {

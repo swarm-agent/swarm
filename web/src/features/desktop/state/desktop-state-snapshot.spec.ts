@@ -207,6 +207,55 @@ test('normalizeDesktopStateSnapshot hydrates session live state from top-level r
   assert.equal(session?.live.startedAt, 38)
 })
 
+
+test('normalizeDesktopStateSnapshot treats terminal lifecycle as authoritative over stale run intents', () => {
+  const snapshot = normalizeDesktopStateSnapshot({
+    rev: 46,
+    sessions_by_id: {
+      terminal: {
+        ...sessionWire('terminal', 50),
+        lifecycle: {
+          session_id: 'terminal',
+          run_id: 'run-stale',
+          active: false,
+          phase: 'completed',
+          started_at: 30,
+          ended_at: 50,
+          updated_at: 50,
+          generation: 1,
+        },
+        run_intent: {
+          session_id: 'terminal',
+          run_id: 'run-stale',
+          status: 'running',
+          created_at: 30,
+          updated_at: 49,
+          event_seq: 9,
+        },
+      },
+    },
+    session_order: ['terminal'],
+    run_intents_by_session: {
+      terminal: [{
+        session_id: 'terminal',
+        run_id: 'run-stale',
+        status: 'pending_executor',
+        created_at: 30,
+        updated_at: 49,
+        event_seq: 9,
+      }],
+    },
+  })
+
+  const session = snapshot.sessionsById?.terminal
+  assert.equal(session?.lifecycle?.active, false)
+  assert.equal(session?.runIntent, null)
+  assert.equal(session?.live.status, 'idle')
+  assert.equal(session?.live.runId, null)
+  assert.equal(session?.live.startedAt, null)
+  assert.equal(snapshot.runIntentsBySessionId?.terminal, undefined)
+})
+
 test('normalizeDesktopStateSnapshot hydrates persisted V3 provider tool messages', () => {
   const toolEnvelope = JSON.stringify({
     path_id: 'run.v3.provider-tool-result.v1',

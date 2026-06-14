@@ -20,6 +20,8 @@ const V3_RUNTIME_DB_NAME = 'swarm-desktop-v3-runtime'
 const V3_RUNTIME_DB_VERSION = 1
 const V3_RUNTIME_STORE = 'runtime-snapshots'
 const DEFAULT_RUNTIME_PERSISTENCE_KEY = 'default'
+const RUNTIME_PERSISTENCE_DEBOUNCE_MS = 500
+
 
 export interface V3RuntimePersistedSnapshot {
   id: string
@@ -37,6 +39,8 @@ export interface V3RuntimePersistenceController {
 
 let runtimeDBPromise: Promise<IDBDatabase> | null = null
 let defaultPersistenceUnsubscribe: (() => void) | null = null
+let persistenceWriteTimer: ReturnType<typeof setTimeout> | null = null
+let pendingPersistenceWrite: V3RuntimePersistenceController | null = null
 const memoryRuntimeSnapshots = new Map<string, V3RuntimePersistedSnapshot>()
 
 const defaultPersistenceController: V3RuntimePersistenceController = {
@@ -62,19 +66,54 @@ export function installV3RuntimePersistence(controller: V3RuntimePersistenceCont
       return
     }
     lastPersistedMutationSeq = snapshot.mutationSeq
-    void writeV3RuntimePersistedSnapshot(snapshot).catch((error) => {
-      console.error('[v3-runtime] persisted snapshot write failed', error)
-    })
+    scheduleV3RuntimePersistedSnapshotWrite(controller, shouldFlushPersistenceImmediately(lastApply.envelopeKind))
   })
 
   if (controller === defaultPersistenceController) {
     defaultPersistenceUnsubscribe = () => {
       unsubscribe()
+      flushPendingV3RuntimePersistedSnapshotWrite()
       defaultPersistenceUnsubscribe = null
     }
     return defaultPersistenceUnsubscribe
   }
-  return unsubscribe
+  return () => {
+    unsubscribe()
+    flushPendingV3RuntimePersistedSnapshotWrite()
+  }
+}
+
+export function flushPendingV3RuntimePersistedSnapshotWrite(): void {
+  if (persistenceWriteTimer) {
+    clearTimeout(persistenceWriteTimer)
+    persistenceWriteTimer = null
+  }
+  const pending = pendingPersistenceWrite
+  pendingPersistenceWrite = null
+  if (!pending) {
+    return
+  }
+  void writeV3RuntimePersistedSnapshot(pending.getSnapshot()).catch((error) => {
+    console.error('[v3-runtime] persisted snapshot write failed', error)
+  })
+}
+
+function scheduleV3RuntimePersistedSnapshotWrite(controller: V3RuntimePersistenceController, immediate: boolean): void {
+  pendingPersistenceWrite = controller
+  if (immediate) {
+    flushPendingV3RuntimePersistedSnapshotWrite()
+    return
+  }
+  if (persistenceWriteTimer) {
+    return
+  }
+  persistenceWriteTimer = setTimeout(() => {
+    flushPendingV3RuntimePersistedSnapshotWrite()
+  }, RUNTIME_PERSISTENCE_DEBOUNCE_MS)
+}
+
+function shouldFlushPersistenceImmediately(envelopeKind: string): boolean {
+  return envelopeKind === 'snapshot' || envelopeKind === 'persisted.restore' || envelopeKind === 'optimistic.send'
 }
 
 export async function restoreV3RuntimeFromPersistence(controller: V3RuntimePersistenceController = defaultPersistenceController): Promise<V3RuntimeApplyOutcome | null> {
@@ -132,6 +171,7 @@ export async function writeV3RuntimePersistedSnapshot(snapshot: V3RuntimeState, 
 }
 
 export function clearV3RuntimePersistenceForTests(): void {
+  flushPendingV3RuntimePersistedSnapshotWrite()
   memoryRuntimeSnapshots.clear()
   defaultPersistenceUnsubscribe?.()
 }

@@ -688,6 +688,12 @@ function applyDurableSessionPayload(state: DesktopState, event: DesktopDaemonEve
     }
     next = { ...next, runIntentsBySessionId }
   }
+  const lifecycle = durableLifecycle(payload, sessionId)
+  if (lifecycle && !lifecycle.active) {
+    const runIntentsBySessionId = { ...next.runIntentsBySessionId }
+    delete runIntentsBySessionId[sessionId]
+    next = { ...next, runIntentsBySessionId }
+  }
 
   return next
 }
@@ -860,6 +866,9 @@ function durableSessionPatch(existing: DesktopSessionRecord, eventType: string, 
     session.live.startedAt = lifecycle.active && lifecycle.startedAt > 0 ? lifecycle.startedAt : null
     session.live.status = lifecycle.active ? (lifecycle.phase === 'blocked' ? 'blocked' : lifecycle.phase === 'starting' ? 'starting' : 'running') : lifecycle.phase === 'errored' ? 'error' : 'idle'
     session.live.error = lifecycle.phase === 'errored' ? lifecycle.error || lifecycle.stopReason : null
+    if (!lifecycle.active) {
+      session.runIntent = null
+    }
   }
   const runIntent = durableRunIntent(payload, eventType, sessionId)
   if (runIntent) {

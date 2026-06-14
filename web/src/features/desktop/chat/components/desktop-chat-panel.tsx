@@ -1680,14 +1680,15 @@ export function DesktopChatPanel({
     && lifecyclePhase === ''
     && liveRunId !== ''
     && liveSession?.live.summary === 'Reconnecting…'
-  const activeRunIntent = dbActiveRun && ['pending_executor', 'running'].includes(dbActiveRun.status.trim().toLowerCase())
+  const lifecycleTerminal = lifecycle !== null && !lifecycleActive
+  const activeRunIntent = !lifecycleTerminal && dbActiveRun && ['pending_executor', 'running'].includes(dbActiveRun.status.trim().toLowerCase())
     ? dbActiveRun
     : null
   const durableRunIntentStartedAt = activeRunIntent && activeRunIntent.createdAt > 0 ? activeRunIntent.createdAt : 0
   const activeRunIntentPendingExecutor = activeRunIntent?.status.trim().toLowerCase() === 'pending_executor'
   const liveStartedAt = typeof liveSession?.live.startedAt === 'number' && liveSession.live.startedAt > 0 ? liveSession.live.startedAt : 0
   const activeRunStartedAt = durableRunIntentStartedAt || liveStartedAt
-  const awaitingLifecycleStart = Boolean(activeRunIntentPendingExecutor || (!lifecycleActive && (liveSession?.live.awaitingAck || liveSession?.live.status === 'starting')))
+  const awaitingLifecycleStart = Boolean(!lifecycleTerminal && (activeRunIntentPendingExecutor || (!lifecycleActive && (liveSession?.live.awaitingAck || liveSession?.live.status === 'starting'))))
   const resumableRunId = activeRunIntent?.runId || lifecycleRunId || liveRunId
   const durableRunActive = activeRunIntent !== null
   const submitting = awaitingLifecycleStart || reconnectingRun || (lifecycleActive && lifecyclePhase === 'starting')

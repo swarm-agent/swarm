@@ -7,6 +7,7 @@ import {
   clearV3RuntimePersistenceForTests,
   createV3RuntimeController,
   createV3SnapshotEnvelope,
+  flushPendingV3RuntimePersistedSnapshotWrite,
   installV3RuntimePersistence,
   normalizeV3RealtimeFrame,
   readV3RuntimePersistedSnapshot,
@@ -119,5 +120,66 @@ test('V3 runtime persistence stores compact snapshots and restores through persi
   assert.equal(restoredRuntime.getSnapshot().cursorsByScope['session:s1']?.endpointCursor, 'cursor-2')
   assert.equal(restoredRuntime.getSnapshot().cursorsByScope['session:s1']?.sourceKind, 'persisted')
 
+  clearV3RuntimePersistenceForTests()
+})
+
+
+test('V3 runtime persistence coalesces bursty live delta snapshots', async () => {
+  clearV3RuntimePersistenceForTests()
+  const runtime = createV3RuntimeController()
+  const unsubscribe = installV3RuntimePersistence(runtime)
+
+  runtime.applyEnvelope(createV3SnapshotEnvelope({
+    rev: 1,
+    sessionsById: { s1: session('s1', 1) },
+    sessionOrder: ['s1'],
+  }, { receivedAt: 1 }))
+
+  runtime.applyEnvelope(normalizeV3RealtimeFrame({
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'event',
+    endpoint_cursor: 'cursor-2',
+    rev: 2,
+    prevRev: 1,
+    high_watermark_seq: 2,
+    event_type: 'session.assistant.delta',
+    event: {
+      session_id: 's1',
+      event_type: 'session.assistant.delta',
+      seq: 2,
+      ts_unix_ms: 2,
+      payload: { session_id: 's1', run_id: 'run-1', delta: 'hello ' },
+    },
+  }, { receivedAt: 2 }))
+  runtime.applyEnvelope(normalizeV3RealtimeFrame({
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'event',
+    endpoint_cursor: 'cursor-3',
+    rev: 3,
+    prevRev: 2,
+    high_watermark_seq: 3,
+    event_type: 'session.assistant.delta',
+    event: {
+      session_id: 's1',
+      event_type: 'session.assistant.delta',
+      seq: 3,
+      ts_unix_ms: 3,
+      payload: { session_id: 's1', run_id: 'run-1', delta: 'world' },
+    },
+  }, { receivedAt: 3 }))
+
+  let persisted = await readV3RuntimePersistedSnapshot()
+  assert.equal(persisted?.desktop.sessionsById.s1?.live.assistantDraft, '')
+  assert.equal(persisted?.cursorsByScope['session:s1']?.endpointCursor, undefined)
+
+  flushPendingV3RuntimePersistedSnapshotWrite()
+  await flushPersistenceWrites()
+  persisted = await readV3RuntimePersistedSnapshot()
+  assert.equal(persisted?.desktop.sessionsById.s1?.live.assistantDraft, 'hello world')
+  assert.equal(persisted?.cursorsByScope['session:s1']?.endpointCursor, 'cursor-3')
+
+  unsubscribe()
   clearV3RuntimePersistenceForTests()
 })

@@ -74,7 +74,14 @@ export function selectV3Preference(runtime: V3RuntimeState, sessionId: string | 
 
 export function selectV3ActiveRun(runtime: V3RuntimeState, sessionId: string | null | undefined): DesktopRunIntentRecord | null {
   const normalizedSessionId = sessionId?.trim() ?? ''
-  return normalizedSessionId ? runtime.desktop.runIntentsBySessionId[normalizedSessionId] ?? null : null
+  if (!normalizedSessionId) {
+    return null
+  }
+  const session = runtime.desktop.sessionsById[normalizedSessionId]
+  if (session?.lifecycle && !session.lifecycle.active) {
+    return null
+  }
+  return runtime.desktop.runIntentsBySessionId[normalizedSessionId] ?? null
 }
 
 export function selectV3AgentModelPolicy(runtime: V3RuntimeState, sessionId: string | null | undefined): AgentModelPolicyRecord | null {
@@ -111,7 +118,7 @@ function selectDesktopSession(state: DesktopState, sessionId: string): DesktopSe
     return null
   }
   const usage = state.usageBySessionId[sessionId] as DesktopSessionUsageRecord | undefined
-  const runIntent = state.runIntentsBySessionId[sessionId]
+  const runIntent = session.lifecycle && !session.lifecycle.active ? undefined : state.runIntentsBySessionId[sessionId]
   const changed = Boolean((usage && usage !== session.usage) || (runIntent && runIntent !== session.runIntent))
   return changed
     ? {

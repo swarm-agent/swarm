@@ -2300,6 +2300,78 @@ test('V3 assistant completed with durable terminal run intent unlocks Desktop li
   await new Promise((resolve) => setImmediate(resolve))
 })
 
+
+test('V3 terminal lifecycle clears stale active run intent from Desktop live state', () => {
+  const session = makeSession({
+    id: 'session-v3',
+    sessionApi: 'v3',
+    runIntent: {
+      sessionId: 'session-v3',
+      runId: 'run-v3',
+      status: 'running',
+      createdAt: 100,
+      updatedAt: 120,
+      eventSeq: 2,
+    },
+    live: { ...emptyLiveState(), status: 'running', runId: 'run-v3', startedAt: 100 },
+  })
+  useDesktopStore.setState(makeState(session), true)
+  mergeDesktopSnapshot({
+    rev: 2,
+    sessionsById: { 'session-v3': session },
+    sessionOrder: ['session-v3'],
+    runIntentsBySessionId: {
+      'session-v3': {
+        sessionId: 'session-v3',
+        runId: 'run-v3',
+        status: 'running',
+        blockedReason: '',
+        createdAt: 100,
+        updatedAt: 120,
+        eventSeq: 2,
+      },
+    },
+  })
+
+  useDesktopStore.getState().__testApplyV3RealtimeFrame?.('session-v3', {
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'event',
+    type: 'event',
+    session_id: 'session-v3',
+    endpoint_cursor: 'cursor-30',
+    event_type: 'session.lifecycle.updated',
+    event: {
+      id: 'evt-session-v3-30',
+      session_id: 'session-v3',
+      event_type: 'session.lifecycle.updated',
+      seq: 30,
+      ts_unix_ms: 300,
+      payload: {
+        session_id: 'session-v3',
+        lifecycle: {
+          session_id: 'session-v3',
+          run_id: 'run-v3',
+          active: false,
+          phase: 'completed',
+          started_at: 100,
+          ended_at: 300,
+          updated_at: 300,
+          generation: 1,
+        },
+      },
+    },
+  }, 300)
+
+  const updated = useDesktopStore.getState().sessions['session-v3']
+  assert.equal(updated.lifecycle?.active, false)
+  assert.equal(updated.runIntent, null)
+  assert.equal(updated.live.status, 'idle')
+  assert.equal(updated.live.runId, null)
+  assert.equal(updated.live.startedAt, null)
+  assert.equal(getDesktopSnapshot().runIntentsBySessionId['session-v3'], undefined)
+})
+
 test('V3 active run-intent record preserves durable created_at for active Desktop run state', () => {
   const session = makeSession({ id: 'session-v3', sessionApi: 'v3' })
   useDesktopStore.setState(makeState(session), true)
