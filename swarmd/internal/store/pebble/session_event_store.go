@@ -198,19 +198,21 @@ type V3SessionHydration struct {
 }
 
 type v3SessionEventReplayPayload struct {
-	SessionID    string                    `json:"session_id,omitempty"`
-	Seq          uint64                    `json:"seq,omitempty"`
-	Kind         string                    `json:"kind,omitempty"`
-	Session      *SessionSnapshot          `json:"session,omitempty"`
-	Message      *MessageSnapshot          `json:"message,omitempty"`
-	Lifecycle    *SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
-	RunIntent    *V3SessionRunIntent       `json:"run_intent,omitempty"`
-	TurnUsage    *SessionTurnUsageSnapshot `json:"turn_usage,omitempty"`
-	UsageSummary *SessionUsageSummary      `json:"usage_summary,omitempty"`
-	MessageID    string                    `json:"message_id,omitempty"`
-	Role         string                    `json:"role,omitempty"`
-	RunID        string                    `json:"run_id,omitempty"`
-	Status       string                    `json:"status,omitempty"`
+	SessionID     string                    `json:"session_id,omitempty"`
+	Seq           uint64                    `json:"seq,omitempty"`
+	Kind          string                    `json:"kind,omitempty"`
+	Session       *SessionSnapshot          `json:"session,omitempty"`
+	Message       *MessageSnapshot          `json:"message,omitempty"`
+	Lifecycle     *SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
+	RunIntent     *V3SessionRunIntent       `json:"run_intent,omitempty"`
+	TurnUsage     *SessionTurnUsageSnapshot `json:"turn_usage,omitempty"`
+	UsageSummary  *SessionUsageSummary      `json:"usage_summary,omitempty"`
+	MessageID     string                    `json:"message_id,omitempty"`
+	Role          string                    `json:"role,omitempty"`
+	RunID         string                    `json:"run_id,omitempty"`
+	Status        string                    `json:"status,omitempty"`
+	BlockedReason string                    `json:"blocked_reason,omitempty"`
+	Error         string                    `json:"error,omitempty"`
 }
 
 func KeyV3SessionSequence(sessionID string) string {
@@ -1836,6 +1838,10 @@ func (input V3SessionMutationInput) v3EventPayload(seq uint64, session SessionSn
 		payload.RunIntent = &intent
 		payload.RunID = intent.RunID
 		payload.Status = intent.Status
+		payload.BlockedReason = intent.BlockedReason
+		if intent.Status == V3RunIntentFailed {
+			payload.Error = intent.BlockedReason
+		}
 	}
 	if turnUsage.RunID != "" {
 		usage := turnUsage
