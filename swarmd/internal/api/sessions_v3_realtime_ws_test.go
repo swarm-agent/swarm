@@ -452,17 +452,17 @@ func TestV3RealtimeSourceGuardRequiresNativeOutboxAndRejectsOldTransport(t *test
 	}
 }
 
-func TestPublishCommittedSessionV3MutationResultWakesOnlyRealtimeOutbox(t *testing.T) {
+func TestPublishCommittedSessionV3MutationResultWakesRealtimeOutboxAndGlobalDiscovery(t *testing.T) {
 	body := readSourceFileForTest(t, "sessions_v3_outbox.go")
-	publishBody := sourceBetweenForTest(t, body, "func (s *Server) publishCommittedSessionV3MutationResult", "func (s *Server) publishCommittedV3RealtimeOutbox")
-	for _, required := range []string{"publishCommittedV3RealtimeOutbox"} {
+	publishBody := sourceBetweenForTest(t, body, "func (s *Server) publishCommittedSessionV3MutationResult", "func (s *Server) publishCommittedSessionV3GlobalEvent")
+	for _, required := range []string{"publishCommittedV3RealtimeOutbox", "publishCommittedSessionV3GlobalEvent"} {
 		if !strings.Contains(publishBody, required) {
-			t.Fatalf("publishCommittedSessionV3MutationResult missing canonical realtime outbox wake %q", required)
+			t.Fatalf("publishCommittedSessionV3MutationResult missing committed event wake %q", required)
 		}
 	}
-	for _, forbidden := range []string{"s.publishCommittedSessionV3GlobalEvent(", "s.registerSessionV3StreamLineageFromResult(", "s.publishCommittedSessionV3Event("} {
+	for _, forbidden := range []string{"s.registerSessionV3StreamLineageFromResult(", "s.publishCommittedSessionV3Event("} {
 		if strings.Contains(publishBody, forbidden) {
-			t.Fatalf("publishCommittedSessionV3MutationResult still fans out to legacy session transport via %q", forbidden)
+			t.Fatalf("publishCommittedSessionV3MutationResult still fans out through retired session transport via %q", forbidden)
 		}
 	}
 }

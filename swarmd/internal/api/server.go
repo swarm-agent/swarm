@@ -2735,8 +2735,10 @@ func (s *Server) rollbackHostedSessionCreate(sessionID string) error {
 		}
 	}
 	if s.sessions != nil {
-		if err := s.sessions.DeleteSession(sessionID); err != nil {
+		if event, err := s.sessions.DeleteSessionWithEvent(sessionID); err != nil {
 			failures = append(failures, "delete session: "+err.Error())
+		} else if event != nil && s.hub != nil {
+			s.hub.Publish(*event)
 		}
 	}
 	if len(failures) == 0 {

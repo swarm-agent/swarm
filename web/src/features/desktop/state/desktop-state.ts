@@ -9,6 +9,7 @@ import { dedupeAndTrimMessages, mergeMessageIntoCache } from '../chat/services/m
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import { appendLiveAssistantSegment } from './live-assistant-segments'
+import { applyCanonicalReasoningEventToLiveHistory, completeLiveReasoningHistory } from './live-reasoning-history'
 import { mergeSessionRecords } from './session-records'
 import type {
   DesktopNotificationCenterRecord,
@@ -817,6 +818,9 @@ function emptyLiveState(): DesktopSessionRecord['live'] {
     reasoningState: 'idle',
     reasoningSegment: 0,
     reasoningStartedAt: null,
+    reasoningCompletedAt: null,
+    reasoningTimelineSeq: 0,
+    reasoningHistory: [],
     awaitingAck: false,
   }
 }
@@ -973,7 +977,8 @@ function durableSessionPatch(existing: DesktopSessionRecord, eventType: string, 
         session.live.error = null
         retainLiveTool(session.live, 'done')
         resetLiveTool(session.live)
-        resetLiveReasoning(session.live)
+        completeLiveReasoning(session.live, ts, eventSeq)
+        completeLiveReasoningHistory(session.live, ts, eventSeq)
       }
       break
     }
@@ -1004,7 +1009,8 @@ function durableSessionPatch(existing: DesktopSessionRecord, eventType: string, 
       session.live.error = isUserCancellation ? null : error
       retainLiveTool(session.live, isUserCancellation ? 'done' : 'error')
       resetLiveTool(session.live)
-      resetLiveReasoning(session.live)
+      completeLiveReasoning(session.live, ts, eventSeq, isUserCancellation ? 'done' : 'error')
+      completeLiveReasoningHistory(session.live, ts, eventSeq, isUserCancellation ? 'done' : 'error')
       break
     }
     default:
@@ -1316,6 +1322,20 @@ function resetLiveReasoning(live: DesktopSessionRecord['live']): void {
   live.reasoningText = ''
   live.reasoningState = 'idle'
   live.reasoningStartedAt = null
+  live.reasoningCompletedAt = null
+  live.reasoningTimelineSeq = 0
+  live.reasoningHistory = []
+}
+
+function completeLiveReasoning(live: DesktopSessionRecord['live'], ts: number, seq: number, state: 'done' | 'error' = 'done'): void {
+  if (live.reasoningState === 'idle') {
+    return
+  }
+  live.reasoningState = state === 'error' ? 'error' : 'done'
+  live.reasoningCompletedAt = live.reasoningCompletedAt ?? ts
+  if ((live.reasoningTimelineSeq ?? 0) <= 0 && seq > 0) {
+    live.reasoningTimelineSeq = seq
+  }
 }
 
 function flushAssistantDraftToSegment(live: DesktopSessionRecord['live'], createdAt: number): void {
@@ -1328,23 +1348,26 @@ function flushAssistantDraftToSegment(live: DesktopSessionRecord['live'], create
 }
 
 function applyReasoning(session: DesktopSessionRecord, payload: Record<string, unknown>, eventType: string, ts: number, eventSeq: number): void {
-  session.live.runId = payloadString(payload, 'run_id') || session.live.runId
-  const text = (typeof payload.delta === 'string' ? payload.delta : typeof payload.summary === 'string' ? payload.summary : '').trim()
-  const isStarted = eventType === 'session.reasoning.started'
-  const isCompleted = eventType === 'session.reasoning.completed'
-  if (text) {
-    session.live.reasoningText = text
-    session.live.reasoningSummary = text
+  const next = applyCanonicalReasoningEventToLiveHistory(session.live, payload, eventType, ts, eventSeq)
+  if (!next) {
+    session.live.seq = Math.max(session.live.seq, eventSeq)
+    return
   }
-  if (isStarted || (text && session.live.reasoningState === 'idle')) {
-    session.live.reasoningSegment += 1
-    session.live.reasoningStartedAt = session.live.reasoningStartedAt ?? ts
+  session.live.runId = next.runId
+  if (eventType === 'session.reasoning.started') {
+    flushAssistantDraftToSegment(session.live, ts)
+    session.live.reasoningSegment = Math.max(session.live.reasoningSegment, (session.live.reasoningHistory ?? []).length)
   }
-  session.live.reasoningState = isCompleted ? 'done' : 'running'
+  session.live.reasoningText = next.text
+  session.live.reasoningSummary = next.summary
+  session.live.reasoningState = next.state
+  session.live.reasoningStartedAt = next.startedAt
+  session.live.reasoningCompletedAt = next.completedAt
+  session.live.reasoningTimelineSeq = next.timelineSeq
   session.live.status = 'running'
   session.live.awaitingAck = false
   session.live.startedAt = session.live.startedAt ?? ts
-  session.live.summary = isCompleted ? 'Thinking complete' : 'Thinking…'
+  session.live.summary = eventType === 'session.reasoning.completed' ? 'Thinking complete' : 'Thinking…'
   session.live.error = null
   session.live.seq = Math.max(session.live.seq, eventSeq)
 }

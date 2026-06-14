@@ -446,16 +446,39 @@ func (s *Service) StoreMirroredTitle(sessionID, title string, updatedAt int64) (
 }
 
 func (s *Service) DeleteSession(sessionID string) error {
+	_, err := s.DeleteSessionWithEvent(sessionID)
+	return err
+}
+
+func (s *Service) DeleteSessionWithEvent(sessionID string) (*pebblestore.EventEnvelope, error) {
 	if s == nil || s.store == nil {
-		return errors.New("session service is not configured")
+		return nil, errors.New("session service is not configured")
 	}
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
-		return errors.New("session id is required")
+		return nil, errors.New("session id is required")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.store.DeleteSession(sessionID)
+	session, found, err := s.store.GetSession(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.store.DeleteSession(sessionID); err != nil {
+		return nil, err
+	}
+	if !found || s.events == nil {
+		return nil, nil
+	}
+	payload, err := json.Marshal(session)
+	if err != nil {
+		return nil, err
+	}
+	env, err := s.events.AppendWithSource("session:"+sessionID, "session.deleted", sessionID, payload, "v3", "", "")
+	if err != nil {
+		return nil, err
+	}
+	return &env, nil
 }
 
 func (s *Service) SetWorktreeBranch(sessionID, branch string) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, error) {

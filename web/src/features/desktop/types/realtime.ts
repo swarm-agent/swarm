@@ -48,6 +48,22 @@ export interface DesktopLiveToolRecord {
   completedAt: number | null
 }
 
+export interface DesktopLiveReasoningRecord {
+  key: string
+  runId: string
+  step: number
+  stepId: string
+  reasoningId: string
+  reasoningKey: string
+  text: string
+  summary: string
+  state: 'running' | 'done' | 'error'
+  startedAt: number
+  completedAt: number | null
+  timelineSeq: number
+  updatedSeq: number
+}
+
 export interface DesktopSessionRecord {
   id: string
   title: string
@@ -125,6 +141,9 @@ export interface DesktopSessionRecord {
     reasoningState: 'idle' | 'running' | 'done' | 'error'
     reasoningSegment: number
     reasoningStartedAt: number | null
+    reasoningCompletedAt?: number | null
+    reasoningTimelineSeq?: number
+    reasoningHistory?: DesktopLiveReasoningRecord[]
     awaitingAck: boolean
   }
   pendingPermissions: DesktopPermissionRecord[]

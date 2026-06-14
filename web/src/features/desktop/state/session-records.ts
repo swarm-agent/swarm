@@ -39,6 +39,8 @@ function mergeSessionLiveState(
   const existingRetainedAssistantSegments = existing.retainedAssistantSegments ?? []
   const incomingToolHistory = incoming.toolHistory ?? []
   const existingToolHistory = existing.toolHistory ?? []
+  const incomingReasoningHistory = incoming.reasoningHistory ?? []
+  const existingReasoningHistory = existing.reasoningHistory ?? []
   const incomingHasToolDetails = liveHasToolDetails(incoming)
   const existingHasToolDetails = liveHasToolDetails(existing)
   const incomingHasAssistantDetails = liveHasAssistantDetails(incoming)
@@ -83,6 +85,13 @@ function mergeSessionLiveState(
     reasoningState: incomingHasReasoningDetails || !existingHasReasoningDetails ? incoming.reasoningState : existing.reasoningState,
     reasoningSegment: Math.max(existing.reasoningSegment ?? 0, incoming.reasoningSegment ?? 0),
     reasoningStartedAt: incoming.reasoningStartedAt || (!incomingHasReasoningDetails && existingHasReasoningDetails ? existing.reasoningStartedAt : incoming.reasoningStartedAt),
+    reasoningCompletedAt: incoming.reasoningCompletedAt || (!incomingHasReasoningDetails && existingHasReasoningDetails ? existing.reasoningCompletedAt ?? null : incoming.reasoningCompletedAt ?? null),
+    reasoningTimelineSeq: (incoming.reasoningTimelineSeq ?? 0) > 0
+      ? incoming.reasoningTimelineSeq
+      : existing.reasoningTimelineSeq ?? 0,
+    reasoningHistory: incomingReasoningHistory.length > 0
+      ? incomingReasoningHistory
+      : existingReasoningHistory,
     toolHistory: incomingToolHistory.length > 0
       ? incomingToolHistory
       : existingToolHistory,
@@ -149,7 +158,10 @@ function liveHasReasoningDetails(live: DesktopSessionRecord['live']): boolean {
     || live.reasoningText.trim()
     || live.reasoningState !== 'idle'
     || live.reasoningSegment > 0
-    || live.reasoningStartedAt !== null,
+    || live.reasoningStartedAt !== null
+    || live.reasoningCompletedAt !== null
+    || (live.reasoningTimelineSeq ?? 0) > 0
+    || (live.reasoningHistory?.length ?? 0) > 0,
   )
 }
 

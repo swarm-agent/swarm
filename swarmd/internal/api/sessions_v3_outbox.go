@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"strings"
 
 	sessionruntime "swarm/packages/swarmd/internal/session"
 )
@@ -9,8 +10,9 @@ import (
 // applySessionV3PrimaryMutation is the only server-side V3 mutation entrypoint.
 // The store commits through ApplySessionMutation first; only the committed,
 // non-replayed durable realtime outbox row returned by that call is then used
-// to wake canonical realtime delivery. V3 session events are not mirrored to
-// global /ws session channels; /v3/realtime/stream is the single transport.
+// to wake canonical realtime delivery. The same committed event is also mirrored
+// to the global /ws session channel for cross-session discovery/list cleanup;
+// /v3/realtime/stream remains the canonical per-session event transport.
 func (s *Server) applySessionV3PrimaryMutation(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
 	if s == nil || s.sessions == nil {
 		return sessionruntime.SessionMutationResult{}, errors.New("sessions v3 service is not configured")
@@ -36,7 +38,25 @@ func (s *Server) publishCommittedSessionV3MutationResult(result sessionruntime.S
 	if result.RealtimeOutbox == nil || result.RealtimeOutbox.EndpointSeq == 0 {
 		return errors.New("committed v3 session mutation is missing durable realtime outbox record")
 	}
-	return s.publishCommittedV3RealtimeOutbox(*result.RealtimeOutbox)
+	if err := s.publishCommittedV3RealtimeOutbox(*result.RealtimeOutbox); err != nil {
+		return err
+	}
+	return s.publishCommittedSessionV3GlobalEvent(result)
+}
+
+func (s *Server) publishCommittedSessionV3GlobalEvent(result sessionruntime.SessionMutationResult) error {
+	if s == nil || s.events == nil || result.Event.Seq == 0 || strings.TrimSpace(result.Event.SessionID) == "" {
+		return nil
+	}
+	event := result.Event
+	env, err := s.events.AppendWithSourceSeq("session:"+event.SessionID, event.EventType, event.SessionID, event.Payload, "v3", event.Seq, event.CausationID, event.CorrelationID)
+	if err != nil {
+		return err
+	}
+	if s.hub != nil {
+		s.hub.Publish(env)
+	}
+	return nil
 }
 
 func (s *Server) publishCommittedV3RealtimeOutbox(record sessionruntime.RealtimeOutboxRecord) error {

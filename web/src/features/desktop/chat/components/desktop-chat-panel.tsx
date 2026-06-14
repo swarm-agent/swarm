@@ -20,7 +20,7 @@ import {
 } from '../queries/chat-queries'
 import { fetchAndApplyDesktopV3PlanSnapshot, fetchAndApplyDesktopV3SessionMessagesTail, saveDesktopV3SessionPlan, updateDesktopV3SessionAgent, updateDesktopV3SessionMetadata, updateDesktopV3SessionMode, updateDesktopV3SessionPreference } from '../../state/desktop-v3-session-api'
 import type { AgentModelPolicyRecord, AgentProfileRecord, AgentStateRecord, ChatMessageRecord, ModelOptionRecord, ResolvedSessionPreference, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
-import type { DesktopLiveAssistantSegment, DesktopLiveToolRecord, DesktopSessionRecord } from '../../types/realtime'
+import type { DesktopLiveAssistantSegment, DesktopLiveReasoningRecord, DesktopLiveToolRecord, DesktopSessionRecord } from '../../types/realtime'
 import { Card } from '../../../../components/ui/card'
 import { ChatMarkdown } from './chat-markdown'
 import { buildStructuredToolMessage } from '../services/tool-message'
@@ -545,7 +545,7 @@ export type RenderItem =
   | { type: 'message'; message: ChatMessageRecord; virtualKey?: string }
   | { type: 'live-tool'; toolMessage: NonNullable<ChatMessageRecord['toolMessage']> }
   | { type: 'live-assistant'; id: string; content: string; timelineSeq?: number }
-  | { type: 'live-reasoning'; id: string; text: string; summary: string; state: DesktopSessionRecord['live']['reasoningState']; startedAt: number | null; timelineSeq?: number }
+  | { type: 'live-reasoning'; id: string; text: string; summary: string; state: DesktopSessionRecord['live']['reasoningState']; startedAt: number | null; completedAt?: number | null; timelineSeq?: number }
 
 function jsonStringValue(record: Record<string, unknown> | null | undefined, key: string): string {
   const value = record?.[key]
@@ -913,31 +913,37 @@ function liveReasoningHasCanonicalReplay(
   )
 }
 
-export function buildLiveReasoningItem(
-  session: DesktopSessionRecord | null | undefined,
-  messages: ChatMessageRecord[],
-): Extract<RenderItem, { type: 'live-reasoning' }> | null {
-  const live = session?.live
-  if (!live || live.reasoningState === 'idle') {
+function liveReasoningRecordItem(record: DesktopLiveReasoningRecord, messages: ChatMessageRecord[]): Extract<RenderItem, { type: 'live-reasoning' }> | null {
+  const text = record.text.trim()
+  const summary = record.summary.trim()
+  if (record.state === 'done' && liveReasoningHasCanonicalReplay(text, summary, messages)) {
     return null
   }
-  const text = live.reasoningText.trim()
-  const summary = live.reasoningSummary.trim()
-  if (live.reasoningState === 'done' && liveReasoningHasCanonicalReplay(text, summary, messages)) {
-    return null
-  }
-  if (!text && !summary && live.reasoningState !== 'running') {
+  if (!text && !summary && record.state !== 'running') {
     return null
   }
   return {
     type: 'live-reasoning',
-    id: `live-reasoning:${live.runId || session?.id || 'active'}:${live.reasoningSegment}`,
+    id: `live-reasoning:${record.key}`,
     text,
     summary,
-    state: live.reasoningState,
-    startedAt: live.reasoningStartedAt,
-    timelineSeq: live.seq,
+    state: record.state,
+    startedAt: record.startedAt,
+    completedAt: record.completedAt,
+    timelineSeq: record.timelineSeq,
   }
+}
+
+export function buildLiveReasoningItems(
+  session: DesktopSessionRecord | null | undefined,
+  messages: ChatMessageRecord[],
+): Array<Extract<RenderItem, { type: 'live-reasoning' }>> {
+  const history = session?.live.reasoningHistory ?? []
+  return history
+    .slice()
+    .reverse()
+    .map((record) => liveReasoningRecordItem(record, messages))
+    .filter((item): item is Extract<RenderItem, { type: 'live-reasoning' }> => item !== null)
 }
 
 export function retainedAssistantSegmentsWithoutCanonicalReplay(
@@ -986,11 +992,12 @@ function reasoningStateLabel(state: DesktopSessionRecord['live']['reasoningState
   }
 }
 
-function reasoningElapsedLabel(startedAt: number | null, timerNow: number): string {
+function reasoningElapsedLabel(startedAt: number | null, timerNow: number, completedAt: number | null = null): string {
   if (typeof startedAt !== 'number' || startedAt <= 0) {
     return ''
   }
-  return formatDurationCompact(timerNow - startedAt)
+  const endAt = typeof completedAt === 'number' && completedAt > startedAt ? completedAt : timerNow
+  return formatDurationCompact(endAt - startedAt)
 }
 
 export function savedRuleCountdownSeconds(expiresAt: number | null, now: number): number {
@@ -1000,9 +1007,9 @@ export function savedRuleCountdownSeconds(expiresAt: number | null, now: number)
   return Math.max(0, Math.ceil((expiresAt - now) / 1000))
 }
 
-function reasoningHeadline(state: DesktopSessionRecord['live']['reasoningState'], startedAt: number | null, timerNow: number): string {
+function reasoningHeadline(state: DesktopSessionRecord['live']['reasoningState'], startedAt: number | null, timerNow: number, completedAt: number | null = null): string {
   const label = reasoningStateLabel(state)
-  const elapsed = reasoningElapsedLabel(startedAt, timerNow)
+  const elapsed = reasoningElapsedLabel(startedAt, timerNow, state === 'running' ? null : completedAt)
   return elapsed ? `${label} · ${elapsed}` : label
 }
 
@@ -1650,7 +1657,7 @@ export function DesktopChatPanel({
     () => retainedAssistantSegmentsWithoutCanonicalReplay(retainedAssistantSegments, displayedMessages),
     [displayedMessages, retainedAssistantSegments],
   )
-  const liveReasoningItem = useMemo(() => buildLiveReasoningItem(liveSession, displayedMessages), [displayedMessages, liveSession])
+  const liveReasoningItems = useMemo(() => buildLiveReasoningItems(liveSession, displayedMessages), [displayedMessages, liveSession])
   const liveToolMessages = useMemo(() => buildLiveToolMessages(liveSession), [liveSession])
   const renderableLiveToolMessages = useMemo(
     () => liveToolMessages.filter((message) => !hasCanonicalLiveToolReplacement(displayedMessages, message)),
@@ -1768,7 +1775,7 @@ export function DesktopChatPanel({
     for (const segment of renderableRetainedAssistantSegments) {
       items.push({ type: 'live-assistant', id: segment.id, content: segment.content, timelineSeq: segment.seq })
     }
-    if (liveReasoningItem) {
+    for (const liveReasoningItem of liveReasoningItems) {
       items.push(liveReasoningItem)
     }
     if (shouldRenderLiveToolMessage) {
@@ -1780,7 +1787,7 @@ export function DesktopChatPanel({
       items.push({ type: 'live-assistant', id: liveAssistantDraftKey, content: liveAssistantDraft })
     }
     return orderDesktopTimelineItems(items)
-  }, [displayedMessages, liveAssistantDraft, liveAssistantDraftKey, liveReasoningItem, renderableLiveToolMessages, renderableRetainedAssistantSegments, sessionId, shouldRenderLiveAssistantDraft, shouldRenderLiveToolMessage])
+  }, [displayedMessages, liveAssistantDraft, liveAssistantDraftKey, liveReasoningItems, renderableLiveToolMessages, renderableRetainedAssistantSegments, sessionId, shouldRenderLiveAssistantDraft, shouldRenderLiveToolMessage])
   const thinkingTagsMeasurementKey = desktopChatThinkingTagsMeasurementKey(thinkingTagsEnabled)
   const renderMeasurementKey = useMemo(
     () => [thinkingTagsMeasurementKey, ...renderItems.map((item) => {
@@ -3235,7 +3242,7 @@ export function DesktopChatPanel({
             }
 
             if (item.type === 'live-reasoning') {
-              const reasoningLabel = reasoningHeadline(item.state, item.startedAt, timerNow)
+              const reasoningLabel = reasoningHeadline(item.state, item.startedAt, timerNow, item.completedAt ?? null)
               const reasoningBody = renderReasoningBody(item.text, item.summary, thinkingTagsEnabled)
               return (
                 <div

@@ -135,7 +135,8 @@ export async function fetchAndApplyDesktopV3SessionSnapshot(
   const normalizedSessionId = assertRawCanonicalDesktopV3SessionId(sessionId)
   await mergeDesktopStateSnapshot({
     sessionIds: [normalizedSessionId],
-    history: { mode: 'none', maxEventsPerSession: 0, manifestPolicy: 'manifest', includeEvents: false },
+    history: { mode: 'none', maxEventsPerSession: 200, manifestPolicy: 'manifest', includeEvents: true },
+    resources: { events: true, runIntents: true },
   }, options.signal)
   return desktopV3SessionSnapshotFromState(getV3RuntimeDesktopSnapshot(), normalizedSessionId)
 }

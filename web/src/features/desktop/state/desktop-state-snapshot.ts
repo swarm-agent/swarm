@@ -2,6 +2,7 @@ import { apiFetch, readErrorMessage } from '../../../app/api'
 import { dedupeAndTrimMessages } from '../chat/services/message-cache'
 import { normalizeDesktopSessionPlan, normalizeDesktopSessionPlanRevisions, type DesktopSessionPlanWire } from '../chat/services/session-plan-record'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
+import { applyCanonicalReasoningEventToLiveHistory } from './live-reasoning-history'
 import type { AgentModelPolicyRecord, ChatMessageRecord, DesktopSessionPlanRevisionRecord, ResolvedSessionPreference, SessionPreferenceRecord } from '../chat/types/chat'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import type { DesktopPermissionRecord, DesktopRunIntentRecord, DesktopSessionRecord, DesktopSessionUsageRecord } from '../types/realtime'
@@ -174,11 +175,21 @@ interface RunIntentWire {
 }
 
 
+interface EventWire {
+  id?: string
+  session_id?: string
+  seq?: number
+  event_type?: string
+  ts_unix_ms?: number
+  payload?: Record<string, unknown>
+}
+
 interface DesktopStateWorksetResponseWire {
   rev?: number
   snapshot_endpoint_cursor?: string
   sessions_by_id?: Record<string, SessionWire>
   messages_by_session?: Record<string, MessageWire[]>
+  events_by_session?: Record<string, EventWire[]>
   permissions_by_session?: Record<string, PermissionWire[]>
   plans_by_session?: Record<string, DesktopSessionPlanWire | DesktopSessionPlanWire[] | null>
   plan_revisions_by_session?: Record<string, DesktopSessionPlanWire[]>
@@ -257,6 +268,7 @@ export function normalizeDesktopStateSnapshot(response: DesktopStateWorksetRespo
   const permissionsBySessionId = mapPermissionsBySession(response.permissions_by_session)
   const runIntentsBySessionId = latestRunIntentBySessionId(response.run_intents_by_session)
   const sessionsById = mapSessions(response.sessions_by_id, permissionsBySessionId, runIntentsBySessionId)
+  applyReasoningEventsBySession(sessionsById, response.events_by_session)
   const sessionOrder = normalizeSessionOrder(sessionsById, response.session_order)
 
   const snapshotEndpointCursor = String(response.snapshot_endpoint_cursor ?? '').trim()
@@ -322,6 +334,31 @@ function toSnapshotRequestWire(input: DesktopStateSnapshotRequest): DesktopState
 function assertSnapshotRevision(rev: unknown): asserts rev is number {
   if (typeof rev !== 'number' || !Number.isFinite(rev) || rev < 0) {
     throw new Error('Desktop state snapshot requires a valid daemon rev.')
+  }
+}
+
+function applyReasoningEventsBySession(
+  sessionsById: Record<string, DesktopSessionRecord>,
+  eventsBySession: Record<string, EventWire[]> | undefined,
+): void {
+  for (const [sessionId, events] of Object.entries(eventsBySession ?? {})) {
+    const session = sessionsById[sessionId]
+    if (!session) {
+      continue
+    }
+    for (const event of events.slice().sort((left, right) => numberValue(left.seq) - numberValue(right.seq))) {
+      const eventType = String(event.event_type ?? '').trim()
+      if (eventType !== 'session.reasoning.started' && eventType !== 'session.reasoning.delta' && eventType !== 'session.reasoning.completed') {
+        continue
+      }
+      const payload = event.payload && typeof event.payload === 'object' ? event.payload : null
+      if (!payload) {
+        continue
+      }
+      const seq = numberValue(event.seq)
+      const ts = numberValue(event.ts_unix_ms)
+      applyCanonicalReasoningEventToLiveHistory(session.live, payload, eventType, ts, seq)
+    }
   }
 }
 
@@ -695,6 +732,9 @@ function emptyLiveState(): DesktopSessionRecord['live'] {
     reasoningState: 'idle',
     reasoningSegment: 0,
     reasoningStartedAt: null,
+    reasoningCompletedAt: null,
+    reasoningTimelineSeq: 0,
+    reasoningHistory: [],
     awaitingAck: false,
   }
 }

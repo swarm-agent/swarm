@@ -9,7 +9,7 @@ import type { RunStreamEventMessage } from './run-stream-controller'
 import type { DesktopChatRoute } from '../chat/services/chat-routing'
 import { permissionRequiresApproval } from '../permissions/services/permission-payload'
 import { buildStructuredToolMessage } from '../chat/services/tool-message'
-import { buildLiveReasoningItem, buildLiveToolMessages } from '../chat/components/desktop-chat-panel'
+import { buildLiveReasoningItems, buildLiveToolMessages, orderDesktopTimelineItems } from '../chat/components/desktop-chat-panel'
 
 function emptyLiveState(): DesktopSessionRecord['live'] {
   return {
@@ -41,6 +41,9 @@ function emptyLiveState(): DesktopSessionRecord['live'] {
     reasoningState: 'idle',
     reasoningSegment: 0,
     reasoningStartedAt: null,
+    reasoningCompletedAt: null,
+    reasoningTimelineSeq: 0,
+    reasoningHistory: [],
     awaitingAck: false,
   }
 }
@@ -314,7 +317,7 @@ test('V3 stream maps reasoning events into live thinking state', () => {
       seq: 2,
       event_type: 'session.reasoning.started',
       ts_unix_ms: 30,
-      payload: { session_id: 'session-v3', run_id: 'run-v3', step: 1, reasoning_key: 'summary-1' },
+      payload: { session_id: 'session-v3', run_id: 'run-v3', step: 1, step_id: 'step-1', reasoning_id: 'reasoning-summary-1', reasoning_key: 'summary-1' },
     },
   }, 30)
   useDesktopStore.getState().__testApplyRunStreamFrame?.('session-v3', {
@@ -328,7 +331,7 @@ test('V3 stream maps reasoning events into live thinking state', () => {
       seq: 3,
       event_type: 'session.reasoning.delta',
       ts_unix_ms: 31,
-      payload: { session_id: 'session-v3', run_id: 'run-v3', step: 1, reasoning_key: 'summary-1', delta: 'Inspecting files' },
+      payload: { session_id: 'session-v3', run_id: 'run-v3', step: 1, step_id: 'step-1', reasoning_id: 'reasoning-summary-1', reasoning_key: 'summary-1', delta: 'Inspecting files' },
     },
   }, 31)
   useDesktopStore.getState().__testApplyRunStreamFrame?.('session-v3', {
@@ -342,7 +345,7 @@ test('V3 stream maps reasoning events into live thinking state', () => {
       seq: 4,
       event_type: 'session.reasoning.completed',
       ts_unix_ms: 32,
-      payload: { session_id: 'session-v3', run_id: 'run-v3', step: 1, reasoning_key: 'summary-1', summary: 'Inspecting files' },
+      payload: { session_id: 'session-v3', run_id: 'run-v3', step: 1, step_id: 'step-1', reasoning_id: 'reasoning-summary-1', reasoning_key: 'summary-1', summary: 'Inspecting files' },
     },
   }, 32)
 
@@ -353,23 +356,24 @@ test('V3 stream maps reasoning events into live thinking state', () => {
   assert.equal(updated.live.reasoningSummary, 'Inspecting files')
   assert.equal(updated.live.reasoningState, 'done')
   assert.equal(updated.live.reasoningSegment, 1)
-  assert.deepEqual(buildLiveReasoningItem(updated, []), {
+  assert.deepEqual(buildLiveReasoningItems(updated, []), [{
     type: 'live-reasoning',
-    id: 'live-reasoning:run-v3:1',
+    id: 'live-reasoning:run-v3:step-1:reasoning-summary-1',
     text: 'Inspecting files',
     summary: 'Inspecting files',
     state: 'done',
     startedAt: 30,
-    timelineSeq: 4,
-  })
-  assert.equal(buildLiveReasoningItem(updated, [{
+    completedAt: 32,
+    timelineSeq: 2,
+  }])
+  assert.deepEqual(buildLiveReasoningItems(updated, [{
     id: 'reasoning-canonical',
     sessionId: 'session-v3',
     role: 'reasoning',
     content: 'Inspecting files',
     createdAt: 40,
     globalSeq: 4,
-  }]), null)
+  }]), [])
   assert.equal(updated.live.sidebarToolName, null)
   assert.equal(updated.live.toolName, null)
   assert.equal(updated.live.toolOutput, '')
@@ -1915,7 +1919,43 @@ test('global /ws V3 permission envelopes hydrate canonical modal state without p
 })
 
 
-test('global /ws V3 interleaved live timeline uses session source sequence instead of global stream sequence', () => {
+test('global /ws V3 keeps multiple provider reasoning entries as distinct ordered timeline history', () => {
+  const session = makeSession({ id: 'session-v3', sessionApi: 'v3' })
+  useDesktopStore.setState(makeState(session), true)
+
+  const emit = (globalSeq: number, sourceSeq: number, eventType: string, payload: Record<string, unknown>) => {
+    useDesktopStore.setState((state) => applyEnvelope(state, {
+      global_seq: globalSeq,
+      source_seq: sourceSeq,
+      stream: 'session:session-v3',
+      event_type: eventType,
+      entity_id: 'session-v3',
+      ts_unix_ms: globalSeq,
+      payload: { session_id: 'session-v3', run_id: 'run-v3', ...payload },
+    }))
+  }
+
+  emit(2001, 11, 'session.reasoning.started', { step: 1, step_id: 'step-1', reasoning_id: 'reasoning-1', reasoning_key: 'summary-1' })
+  emit(2002, 12, 'session.reasoning.delta', { step: 1, step_id: 'step-1', reasoning_id: 'reasoning-1', reasoning_key: 'summary-1', delta: 'Thinking one' })
+  emit(2003, 13, 'session.reasoning.completed', { step: 1, step_id: 'step-1', reasoning_id: 'reasoning-1', reasoning_key: 'summary-1', summary: 'Thinking one' })
+  emit(2004, 14, 'session.reasoning.started', { step: 1, step_id: 'step-1', reasoning_id: 'reasoning-2', reasoning_key: 'summary-2' })
+  emit(2005, 15, 'session.reasoning.delta', { step: 1, step_id: 'step-1', reasoning_id: 'reasoning-2', reasoning_key: 'summary-2', delta: 'Thinking two' })
+  emit(2006, 16, 'session.reasoning.completed', { step: 1, step_id: 'step-1', reasoning_id: 'reasoning-2', reasoning_key: 'summary-2', summary: 'Thinking two' })
+  emit(2007, 17, 'session.reasoning.started', { step: 2, step_id: 'step-2', reasoning_id: 'reasoning-3', reasoning_key: 'summary-3' })
+  emit(2008, 18, 'session.reasoning.delta', { step: 2, step_id: 'step-2', reasoning_id: 'reasoning-3', reasoning_key: 'summary-3', delta: 'Thinking three' })
+
+  const updated = useDesktopStore.getState().sessions['session-v3']
+  assert.deepEqual(
+    buildLiveReasoningItems(updated, []).map((item) => [item.id, item.text, item.state, item.timelineSeq]),
+    [
+      ['live-reasoning:run-v3:step-1:reasoning-1', 'Thinking one', 'done', 11],
+      ['live-reasoning:run-v3:step-1:reasoning-2', 'Thinking two', 'done', 14],
+      ['live-reasoning:run-v3:step-2:reasoning-3', 'Thinking three', 'running', 17],
+    ],
+  )
+})
+
+test('global /ws V3 interleaved live timeline preserves provider reasoning and tool order by source sequence', () => {
   const session = makeSession({ id: 'session-v3', sessionApi: 'v3' })
   useDesktopStore.setState(makeState(session), true)
 
@@ -1935,18 +1975,39 @@ test('global /ws V3 interleaved live timeline uses session source sequence inste
   emit(1961, 16, 'session.message.appended', {
     message: { id: 'msg-assistant-1', session_id: 'session-v3', global_seq: 16, role: 'assistant', content: 'HELLO', created_at: 1961 },
   })
-  emit(1962, 17, 'session.tool.started', { tool_name: 'list', call_id: 'call-list', step_id: 'step-1', tool_instance_id: 'step-1:call-list', arguments: '{}', step: 1 })
-  emit(1963, 18, 'session.tool.completed', { tool_name: 'list', call_id: 'call-list', step_id: 'step-1', tool_instance_id: 'step-1:call-list', output: 'listed', raw_output: 'listed', step: 1 })
-  emit(1964, 19, 'session.assistant.delta', { delta: 'SENTENCE TWO' })
-  emit(1965, 20, 'session.message.appended', {
-    message: { id: 'msg-assistant-2', session_id: 'session-v3', global_seq: 20, role: 'assistant', content: 'SENTENCE TWO', created_at: 1965 },
+  emit(1962, 17, 'session.reasoning.started', { step: 1, step_id: 'step-1', reasoning_id: 'reasoning-summary-1', reasoning_key: 'summary-1' })
+  emit(1963, 18, 'session.reasoning.delta', { step: 1, step_id: 'step-1', reasoning_id: 'reasoning-summary-1', reasoning_key: 'summary-1', delta: 'Inspecting files' })
+  emit(1964, 19, 'session.reasoning.completed', { step: 1, step_id: 'step-1', reasoning_id: 'reasoning-summary-1', reasoning_key: 'summary-1', summary: 'Inspecting files' })
+  emit(1965, 20, 'session.tool.started', { tool_name: 'list', call_id: 'call-list', step_id: 'step-1', tool_instance_id: 'step-1:call-list', arguments: '{}', step: 1 })
+  emit(1966, 21, 'session.tool.completed', { tool_name: 'list', call_id: 'call-list', step_id: 'step-1', tool_instance_id: 'step-1:call-list', output: 'listed', raw_output: 'listed', step: 1 })
+  emit(1967, 22, 'session.assistant.delta', { delta: 'SENTENCE TWO' })
+  emit(1968, 23, 'session.message.appended', {
+    message: { id: 'msg-assistant-2', session_id: 'session-v3', global_seq: 23, role: 'assistant', content: 'SENTENCE TWO', created_at: 1968 },
   })
-  emit(1966, 21, 'session.tool.started', { tool_name: 'read', call_id: 'call-read', step_id: 'step-2', tool_instance_id: 'step-2:call-read', arguments: '{}', step: 2 })
+  emit(1969, 24, 'session.tool.started', { tool_name: 'read', call_id: 'call-read', step_id: 'step-2', tool_instance_id: 'step-2:call-read', arguments: '{}', step: 2 })
 
-  const updated = useDesktopStore.getState().sessions['session-v3']
-  assert.deepEqual(updated.live.toolHistory.map((item) => [item.callId, item.seq]), [['call-read', 21], ['call-list', 17]])
-  assert.equal(updated.live.seq, 21)
-  assert.equal(useDesktopStore.getState().lastGlobalSeq, 1966)
+  let updated = useDesktopStore.getState().sessions['session-v3']
+  assert.deepEqual(updated.live.toolHistory.map((item) => [item.callId, item.seq]), [['call-read', 24], ['call-list', 20]])
+  assert.deepEqual(
+    orderDesktopTimelineItems([
+      ...updated.live.retainedAssistantSegments.map((segment) => ({ type: 'live-assistant' as const, id: segment.id, content: segment.content, timelineSeq: segment.seq })),
+      ...buildLiveReasoningItems(updated, []),
+      ...buildLiveToolMessages(updated).map((toolMessage) => ({ type: 'live-tool' as const, toolMessage })),
+    ]).map((item) => item.type === 'live-tool' ? `${item.type}:${item.toolMessage.tool}:${item.toolMessage.timelineSeq}` : `${item.type}:${item.timelineSeq}`),
+    ['live-assistant:16', 'live-reasoning:17', 'live-tool:list:20', 'live-assistant:23', 'live-tool:read:24'],
+  )
+  assert.equal(updated.live.seq, 24)
+  assert.equal(useDesktopStore.getState().lastGlobalSeq, 1969)
+
+  emit(1970, 25, 'session.assistant.completed', {
+    message: { id: 'msg-assistant-final', session_id: 'session-v3', global_seq: 25, role: 'assistant', content: 'SENTENCE TWO', created_at: 1970 },
+    run_intent: { session_id: 'session-v3', run_id: 'run-v3', status: 'completed', event_seq: 25 },
+  })
+  updated = useDesktopStore.getState().sessions['session-v3']
+  assert.equal(updated.live.status, 'idle')
+  assert.equal(updated.live.reasoningText, 'Inspecting files')
+  assert.equal(updated.live.reasoningState, 'done')
+  assert.equal(buildLiveReasoningItems(updated, [])[0]?.timelineSeq, 17)
 })
 
 test('global /ws V3 lifecycle and tool envelopes update Desktop canonical live state', () => {

@@ -47,6 +47,7 @@ import { DesktopRunStreamController, type RunStreamEventMessage } from './run-st
 import { sessionRequiresSnapshotHydration } from './session-snapshot-hydration'
 import { mergeSessionRecords } from './session-records'
 import { appendLiveAssistantSegment } from './live-assistant-segments'
+import { applyCanonicalReasoningEventToLiveHistory, completeLiveReasoningHistory } from './live-reasoning-history'
 import { clearNotifications as clearDurableNotifications, fetchNotifications, fetchNotificationSummary, updateNotification } from '../notifications/api'
 import type { DurableNotificationRecord, NotificationSummaryRecord } from '../notifications/types'
 
@@ -654,6 +655,9 @@ function emptyLiveState(): DesktopSessionRecord['live'] {
     reasoningState: 'idle',
     reasoningSegment: 0,
     reasoningStartedAt: null,
+    reasoningCompletedAt: null,
+    reasoningTimelineSeq: 0,
+    reasoningHistory: [],
     awaitingAck: false,
   }
 }
@@ -786,37 +790,45 @@ function resetLiveReasoningState(live: DesktopSessionRecord['live']): void {
   live.reasoningText = ''
   live.reasoningState = 'idle'
   live.reasoningStartedAt = null
+  live.reasoningCompletedAt = null
+  live.reasoningTimelineSeq = 0
+  live.reasoningHistory = []
 }
 
-function v3ReasoningDeltaText(payload: Record<string, unknown>): string {
-  const delta = typeof payload.delta === 'string' ? payload.delta : ''
-  if (delta !== '') {
-    return delta
+function completeLiveReasoningState(live: DesktopSessionRecord['live'], ts: number, seq: number, state: 'done' | 'error' = 'done'): void {
+  if (live.reasoningState === 'idle') {
+    return
   }
-  return typeof payload.summary === 'string' ? payload.summary : ''
+  live.reasoningState = state === 'error' ? 'error' : 'done'
+  live.reasoningCompletedAt = live.reasoningCompletedAt ?? ts
+  if ((live.reasoningTimelineSeq ?? 0) <= 0 && seq > 0) {
+    live.reasoningTimelineSeq = seq
+  }
 }
 
 function applyLiveReasoningSnapshot(session: DesktopSessionRecord, payload: Record<string, unknown>, eventType: string, ts: number, envelopeSeq: number): void {
-  const runId = typeof payload.run_id === 'string' ? payload.run_id.trim() : ''
-  if (runId) {
-    session.live.runId = runId
+  const next = applyCanonicalReasoningEventToLiveHistory(session.live, payload, eventType, ts, envelopeSeq)
+  if (!next) {
+    session.live.seq = Math.max(session.live.seq, envelopeSeq)
+    session.live.lastEventType = eventType
+    session.live.lastEventAt = ts
+    return
   }
-  const text = v3ReasoningDeltaText(payload).trim()
-  const isStarted = eventType === 'session.reasoning.started'
-  const isCompleted = eventType === 'session.reasoning.completed'
-  if (text !== '') {
-    session.live.reasoningText = text
-    session.live.reasoningSummary = text
+  session.live.runId = next.runId
+  if (eventType === 'session.reasoning.started') {
+    flushLiveAssistantDraftToSegment(session.live, ts)
+    session.live.reasoningSegment = Math.max(session.live.reasoningSegment, (session.live.reasoningHistory ?? []).length)
   }
-  if (isStarted || (text !== '' && session.live.reasoningState === 'idle')) {
-    session.live.reasoningSegment += 1
-    session.live.reasoningStartedAt = session.live.reasoningStartedAt ?? ts
-  }
-  session.live.reasoningState = isCompleted ? 'done' : 'running'
+  session.live.reasoningText = next.text
+  session.live.reasoningSummary = next.summary
+  session.live.reasoningState = next.state
+  session.live.reasoningStartedAt = next.startedAt
+  session.live.reasoningCompletedAt = next.completedAt
+  session.live.reasoningTimelineSeq = next.timelineSeq
   session.live.status = 'running'
   session.live.awaitingAck = false
   session.live.startedAt = session.live.startedAt ?? ts
-  session.live.summary = isCompleted ? 'Thinking complete' : 'Thinking…'
+  session.live.summary = eventType === 'session.reasoning.completed' ? 'Thinking complete' : 'Thinking…'
   session.live.error = null
   session.live.seq = Math.max(session.live.seq, envelopeSeq)
   session.live.lastEventType = eventType
@@ -1107,7 +1119,8 @@ function applyLifecycleSnapshot(
   cancelDraftFlush(sessionId)
   retainLiveToolState(session.live, lifecycle.phase.trim().toLowerCase() === 'errored' ? 'error' : 'done')
   resetLiveToolState(session.live)
-  resetLiveReasoningState(session.live)
+  completeLiveReasoningState(session.live, nextTs, session.live.seq, lifecycle.phase.trim().toLowerCase() === 'errored' ? 'error' : 'done')
+  completeLiveReasoningHistory(session.live, nextTs, session.live.seq, lifecycle.phase.trim().toLowerCase() === 'errored' ? 'error' : 'done')
   session.live.summary = lifecycleTerminalSummary(lifecycle)
 }
 
@@ -1482,7 +1495,8 @@ function requestScopedSessionWorkset(sessionId: string, options: { force?: boole
   setTimeoutFn(() => {
     void fetchDesktopStateSnapshot({
       sessionIds: [normalizedSessionId],
-      history: { mode: 'none', maxEventsPerSession: 0, manifestPolicy: 'manifest', includeEvents: false },
+      history: { mode: 'none', maxEventsPerSession: 200, manifestPolicy: 'manifest', includeEvents: true },
+      resources: { events: true, runIntents: true },
     })
       .then((snapshot) => {
         applyV3RuntimeEnvelope(createV3SnapshotEnvelope(snapshot, { mode: 'merge', receivedAt: Date.now() }))
@@ -1592,7 +1606,8 @@ function applyAuthoritativeSessionStatus(
       retainLiveToolState(session.live, 'done')
       resetLiveToolState(session.live)
       session.live.summary = summary || null
-      resetLiveReasoningState(session.live)
+      completeLiveReasoningState(session.live, ts, session.live.seq)
+      completeLiveReasoningHistory(session.live, ts, session.live.seq)
       session.live.error = null
       break
     case 'error':
@@ -1602,6 +1617,8 @@ function applyAuthoritativeSessionStatus(
       retainLiveToolState(session.live, 'error')
       resetLiveToolState(session.live)
       session.live.summary = summary || null
+      completeLiveReasoningState(session.live, ts, session.live.seq, 'error')
+      completeLiveReasoningHistory(session.live, ts, session.live.seq, 'error')
       session.live.error = error || 'Run failed'
       break
     default:
@@ -2265,7 +2282,8 @@ function applyRunStreamFrame(state: DesktopStoreState, sessionId: string, payloa
         retainLiveToolState(session.live, 'done')
         resetLiveToolState(session.live)
         session.live.summary = null
-        resetLiveReasoningState(session.live)
+        completeLiveReasoningState(session.live, ts, session.live.seq)
+      completeLiveReasoningHistory(session.live, ts, session.live.seq)
         session.live.error = null
         session.live.runId = null
       }
@@ -2279,7 +2297,8 @@ function applyRunStreamFrame(state: DesktopStoreState, sessionId: string, payloa
         session.live.startedAt = null
         retainLiveToolState(session.live, 'error')
         resetLiveToolState(session.live)
-        resetLiveReasoningState(session.live)
+        completeLiveReasoningState(session.live, ts, session.live.seq, 'error')
+      completeLiveReasoningHistory(session.live, ts, session.live.seq, 'error')
         session.live.error = String(payload.error ?? 'Run failed')
         session.live.summary = null
         session.live.runId = null
@@ -2372,7 +2391,8 @@ function applyRunStreamResumeFailure(state: DesktopStoreState, sessionId: string
   if (!activeRunId) {
     session.live.startedAt = null
     resetLiveToolState(session.live)
-    resetLiveReasoningState(session.live)
+    completeLiveReasoningState(session.live, ts, session.live.seq, 'error')
+      completeLiveReasoningHistory(session.live, ts, session.live.seq, 'error')
   }
 
   sessions[sessionId] = mergeSessionRecords(existing, session)
@@ -2946,7 +2966,8 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
         session.live.error = null
         retainLiveToolState(session.live, 'done')
         resetLiveToolState(session.live)
-        resetLiveReasoningState(session.live)
+        completeLiveReasoningState(session.live, ts, envelopeSeq)
+        completeLiveReasoningHistory(session.live, ts, envelopeSeq)
       }
       session.live.lastEventType = eventType
       session.live.lastEventAt = ts
@@ -2974,7 +2995,8 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
         session.live.summary = null
         session.live.error = null
         resetLiveToolState(session.live)
-        resetLiveReasoningState(session.live)
+        completeLiveReasoningState(session.live, ts, envelopeSeq)
+        completeLiveReasoningHistory(session.live, ts, envelopeSeq)
       }
       session.live.lastEventType = eventType
       session.live.lastEventAt = ts
@@ -3007,7 +3029,8 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
         session.live.error = isUserCancellation ? null : error
         retainLiveToolState(session.live, isUserCancellation ? 'done' : 'error')
         resetLiveToolState(session.live)
-        resetLiveReasoningState(session.live)
+        completeLiveReasoningState(session.live, ts, envelopeSeq, isUserCancellation ? 'done' : 'error')
+        completeLiveReasoningHistory(session.live, ts, envelopeSeq, isUserCancellation ? 'done' : 'error')
         notifications.unshift(makeNotification(sessionId, runId || session.live.runId, eventType, isUserCancellation ? 'Run paused' : 'Run failed', error, isUserCancellation ? 'warning' : 'error', ts))
       }
       session.live.lastEventType = eventType
