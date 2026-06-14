@@ -116,18 +116,6 @@ test('normalizeDesktopStateSnapshot builds a plain replacement snapshot from wor
         { session_id: 'next', run_id: 'run-new', status: 'running', event_seq: 3 },
       ],
     },
-    usage_by_session: {
-      next: {
-        session_id: 'next',
-        provider: 'codex',
-        model: 'gpt-5.4',
-        source: 'provider_api_usage',
-        context_window: 1000,
-        total_tokens: 250,
-        remaining_tokens: 750,
-        updated_at: 34,
-      },
-    },
   })
 
   assert.equal(snapshot.rev, 42)
@@ -139,7 +127,7 @@ test('normalizeDesktopStateSnapshot builds a plain replacement snapshot from wor
   assert.equal(snapshot.sessionsById?.next?.pendingPermissions[0]?.id, 'permission-1')
   assert.equal(snapshot.sessionsById?.next?.pendingPermissionCount, 1)
   assert.equal(snapshot.sessionsById?.next?.live.status, 'running')
-  assert.equal(snapshot.usageBySessionId?.next?.remainingTokens, 750)
+  assert.equal(snapshot.usageBySessionId?.next, undefined)
   assert.equal(snapshot.runIntentsBySessionId?.next?.runId, 'run-new')
   assert.equal(snapshot.workspacesByPath?.['/workspace/next']?.sessionIds[0], 'next')
   assert.equal(snapshot.routeReadinessBySessionId?.next?.ready, true)

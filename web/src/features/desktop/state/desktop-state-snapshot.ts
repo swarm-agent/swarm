@@ -5,7 +5,7 @@ import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { applyCanonicalReasoningEventToLiveHistory } from './live-reasoning-history'
 import type { ChatMessageRecord, DesktopSessionPlanRevisionRecord } from '../chat/types/chat'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
-import type { DesktopPermissionRecord, DesktopRunIntentRecord, DesktopSessionRecord, DesktopSessionUsageRecord } from '../types/realtime'
+import type { DesktopPermissionRecord, DesktopRunIntentRecord, DesktopSessionRecord } from '../types/realtime'
 import type { DesktopDaemonSnapshot, DesktopSessionReadinessRecord, DesktopWorkspaceRecord } from './desktop-state'
 import { applyV3RuntimeEnvelope, createV3SnapshotEnvelope } from '../v3-runtime'
 
@@ -123,17 +123,6 @@ interface PermissionWire {
   permission_requested_at?: number
 }
 
-interface UsageWire {
-  session_id?: string
-  provider?: string
-  model?: string
-  source?: string
-  context_window?: number
-  total_tokens?: number
-  remaining_tokens?: number
-  updated_at?: number
-}
-
 interface RunIntentWire {
   session_id?: string
   run_id?: string
@@ -163,7 +152,6 @@ interface DesktopStateWorksetResponseWire {
   permissions_by_session?: Record<string, PermissionWire[]>
   plans_by_session?: Record<string, DesktopSessionPlanWire | DesktopSessionPlanWire[] | null>
   plan_revisions_by_session?: Record<string, DesktopSessionPlanWire[]>
-  usage_by_session?: Record<string, UsageWire>
   run_intents_by_session?: Record<string, RunIntentWire[]>
   session_order?: string[]
 }
@@ -254,7 +242,7 @@ export function normalizeDesktopStateSnapshot(response: DesktopStateWorksetRespo
     permissionsById: permissionsById(permissionsBySessionId),
     plansBySessionId: mapFirstSessionValues(response.plans_by_session, normalizeDesktopSessionPlan),
     planRevisionsBySessionId: mapPlanRevisions(response.plan_revisions_by_session),
-    usageBySessionId: mapUsageBySession(response.usage_by_session),
+    usageBySessionId: {},
     runIntentsBySessionId,
     workspacesByPath: workspacesByPath(Object.values(sessionsById)),
     routeReadinessBySessionId: readySessions(sessionOrder),
@@ -532,23 +520,6 @@ function mapPermission(permission: PermissionWire): DesktopPermissionRecord {
     resolvedAt: numberValue(permission.resolved_at),
     permissionRequestedAt: numberValue(permission.permission_requested_at),
   }
-}
-
-function mapUsageBySession(source: Record<string, UsageWire> | undefined): Record<string, DesktopSessionUsageRecord> {
-  const usageBySession: Record<string, DesktopSessionUsageRecord> = {}
-  for (const [sessionId, usage] of Object.entries(source ?? {})) {
-    usageBySession[sessionId] = {
-      sessionId: String(usage.session_id ?? sessionId).trim(),
-      provider: String(usage.provider ?? '').trim(),
-      model: String(usage.model ?? '').trim(),
-      source: String(usage.source ?? '').trim(),
-      contextWindow: numberValue(usage.context_window),
-      totalTokens: numberValue(usage.total_tokens),
-      remainingTokens: numberValue(usage.remaining_tokens),
-      updatedAt: numberValue(usage.updated_at),
-    }
-  }
-  return usageBySession
 }
 
 function mapFirstSessionValues<T, R>(source: Record<string, T | T[] | null> | undefined, mapValue: (value: T) => R): Record<string, R | null> {

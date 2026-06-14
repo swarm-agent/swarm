@@ -100,7 +100,6 @@ function v3WorksetSnapshot(messages: Record<string, unknown>[], active = true): 
     permissions_by_session: { [SESSION_ID]: [] },
     plans_by_session: { [SESSION_ID]: null },
     plan_revisions_by_session: { [SESSION_ID]: [] },
-    usage_by_session: {},
     run_intents_by_session: active ? { [SESSION_ID]: [{ session_id: SESSION_ID, run_id: RUN_ID, status: 'running', created_at: 1, updated_at: Date.now(), event_seq: 1 }] } : {},
   }
 }

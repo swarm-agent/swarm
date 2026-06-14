@@ -217,6 +217,8 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		s.handleSessionV3PrimaryAgent(w, r, principal, sessionID)
 	case "preference":
 		s.handleSessionV3PrimaryPreference(w, r, principal, sessionID)
+	case "usage":
+		s.handleSessionV3PrimaryUsage(w, r, principal, sessionID)
 	case "metadata":
 		s.handleSessionV3PrimaryMetadata(w, r, principal, sessionID)
 	case "plans":
@@ -675,6 +677,23 @@ func (s *Server) handleSessionV3PrimaryAgent(w http.ResponseWriter, r *http.Requ
 	}
 	response := sessionsV3HydratedResponse(refreshed)
 	response["mutation"] = result
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleSessionV3PrimaryUsage(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	response, found, err := s.sessionsV3PrimaryUsageResponse(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !found {
+		writeSessionNotFound(w)
+		return
+	}
 	writeJSON(w, http.StatusOK, response)
 }
 
@@ -1298,6 +1317,30 @@ func (s *Server) validateSessionsV3PrimaryStopTarget(principal identity.Principa
 
 func (s *Server) hydrateSessionsV3Primary(principal identity.Principal, sessionID string) (sessionsV3HydratedSession, bool, error) {
 	return s.hydrateSessionsV3PrimaryWithLimits(principal, sessionID, sessionsV3PrimaryDefaultMessageTailLimit, sessionsV3PrimaryDefaultEventLimit)
+}
+
+func (s *Server) sessionsV3PrimaryUsageResponse(principal identity.Principal, sessionID string) (map[string]any, bool, error) {
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	if strings.TrimSpace(session.AccountScopeID) == "" || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		return nil, false, nil
+	}
+	summary, hasSummary, err := s.sessions.GetUsageSummary(sessionID)
+	if err != nil {
+		return nil, false, err
+	}
+	var summaryPayload any
+	if hasSummary {
+		summaryPayload = summary
+	}
+	return map[string]any{
+		"ok":                true,
+		"session_id":        session.ID,
+		"has_usage_summary": hasSummary,
+		"usage_summary":     summaryPayload,
+	}, true, nil
 }
 
 func (s *Server) sessionsV3PrimaryPreferenceResponse(principal identity.Principal, sessionID string) (map[string]any, bool, error) {

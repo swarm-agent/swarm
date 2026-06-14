@@ -54,6 +54,56 @@ func TestSessionsV3PrimaryHandlersDoNotUseRuntimeDispatchOrRoutes(t *testing.T) 
 func TestSessionsV3PrimaryModeAndPreferenceUseV3PrimaryMutation(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "mode-pref-create", "mode preference", pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "medium"})
+	now := time.Now().UnixMilli()
+	turnUsage := pebblestore.SessionTurnUsageSnapshot{
+		SessionID:     created.ID,
+		RunID:         "run-session-usage",
+		Provider:      "codex",
+		Model:         "gpt-5.4",
+		Source:        "codex_api_usage",
+		ContextWindow: 1000,
+		InputTokens:   200,
+		OutputTokens:  50,
+		TotalTokens:   250,
+	}
+	payloadHash, err := sessionV3UsagePayloadHash(created.ID, turnUsage.RunID, turnUsage)
+	if err != nil {
+		t.Fatalf("hash usage payload: %v", err)
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       created.ID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "session-usage-record",
+		IdempotencyKey:  "session-usage-record",
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationRecordUsage,
+		EventType:       "run.usage.updated",
+		TurnUsage:       &turnUsage,
+		NowUnixMs:       now,
+	}); err != nil {
+		t.Fatalf("record usage: %v", err)
+	}
+
+	usageReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+created.ID+"/usage", nil)
+	usageRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(usageRec, withTestPrincipal(usageReq))
+	if usageRec.Code != http.StatusOK {
+		t.Fatalf("usage get status = %d, want %d, body=%s", usageRec.Code, http.StatusOK, usageRec.Body.String())
+	}
+	var usagePayload struct {
+		SessionID         string                          `json:"session_id"`
+		HasUsageSummary   bool                            `json:"has_usage_summary"`
+		UsageSummary      pebblestore.SessionUsageSummary `json:"usage_summary"`
+		UnexpectedSession map[string]any                  `json:"session"`
+	}
+	if err := json.Unmarshal(usageRec.Body.Bytes(), &usagePayload); err != nil {
+		t.Fatalf("decode usage get response: %v", err)
+	}
+	if usagePayload.SessionID != created.ID || !usagePayload.HasUsageSummary || usagePayload.UsageSummary.RemainingTokens != 750 || usagePayload.UnexpectedSession != nil {
+		t.Fatalf("usage get payload = %+v", usagePayload)
+	}
 
 	prefGetReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+created.ID+"/preference", nil)
 	prefGetRec := httptest.NewRecorder()

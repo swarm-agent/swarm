@@ -9,10 +9,10 @@ import type {
   DesktopSessionPlanRevisionRecord,
   ResolvedSessionPreference,
 } from '../chat/types/chat'
-import type { DesktopSessionRecord } from '../types/realtime'
+import type { DesktopSessionRecord, DesktopSessionUsageRecord } from '../types/realtime'
 import type { DesktopState } from './desktop-state'
 import { mergeDesktopStateSnapshot } from './desktop-state-snapshot'
-import { applyV3RuntimeEnvelope, createV3SnapshotEnvelope } from '../v3-runtime'
+import { applyV3RuntimeEnvelope, createV3EventEnvelope, createV3SnapshotEnvelope } from '../v3-runtime'
 import { getV3RuntimeDesktopSnapshot } from '../v3-runtime/v3-store'
 
 export interface DesktopV3SessionSnapshot {
@@ -56,6 +56,21 @@ interface PreferenceResponseWire {
   preference?: PreferenceWire
   context_window?: number
   max_output_tokens?: number
+}
+
+interface UsageWire {
+  session_id?: string
+  provider?: string
+  model?: string
+  source?: string
+  context_window?: number
+  total_tokens?: number
+  remaining_tokens?: number
+  updated_at?: number
+}
+
+interface UsageResponseWire {
+  usage_summary?: UsageWire | null
 }
 
 interface ActivePlanResponseWire {
@@ -166,6 +181,18 @@ export async function fetchAndApplyDesktopV3SessionPreference(
     { signal: options.signal },
   )
   return applyDesktopV3SessionPreference(normalizedSessionId, response, 'v3-session-preference')
+}
+
+export async function fetchAndApplyDesktopV3SessionUsage(
+  sessionId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<DesktopSessionUsageRecord | null> {
+  const normalizedSessionId = assertRawCanonicalDesktopV3SessionId(sessionId)
+  const response = await requestJson<UsageResponseWire>(
+    `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/usage`,
+    { signal: options.signal },
+  )
+  return applyDesktopV3SessionUsage(normalizedSessionId, response.usage_summary ?? null, 'v3-session-usage')
 }
 
 export async function fetchAndApplyDesktopV3SessionMessagesTail(
@@ -280,6 +307,62 @@ function normalizeDesktopV3Preference(response: PreferenceResponseWire): Resolve
     },
     contextWindow: numberValue(response.context_window),
     maxOutputTokens: numberValue(response.max_output_tokens),
+  }
+}
+
+function applyDesktopV3SessionUsage(
+  sessionId: string,
+  usage: UsageWire | null,
+  sourceName: string,
+): DesktopSessionUsageRecord | null {
+  const normalizedUsage = normalizeDesktopV3Usage(usage, sessionId)
+  const snapshot = getV3RuntimeDesktopSnapshot()
+  const receivedAt = Date.now()
+  if (!normalizedUsage) {
+    applyV3RuntimeEnvelope(createV3EventEnvelope({
+      type: 'desktop/usage/set',
+      payload: { sessionId, usage: null },
+    }, {
+      receivedAt,
+      sessionId,
+      source: { kind: 'http', transport: 'http', name: sourceName },
+    }))
+    return null
+  }
+  applyV3RuntimeEnvelope(createV3SnapshotEnvelope({
+    rev: snapshot.rev,
+    usageBySessionId: { [sessionId]: normalizedUsage },
+  }, {
+    mode: 'merge',
+    receivedAt,
+    sessionId,
+    source: { kind: 'http', transport: 'http', name: sourceName },
+    id: `usage:${sessionId}:${normalizedUsage.updatedAt}:${receivedAt}`,
+  }))
+  return normalizedUsage
+}
+
+function normalizeDesktopV3Usage(usage: UsageWire | null, fallbackSessionId: string): DesktopSessionUsageRecord | null {
+  if (!usage || typeof usage !== 'object') {
+    return null
+  }
+  const sessionId = String(usage.session_id ?? fallbackSessionId).trim()
+  const contextWindow = numberValue(usage.context_window)
+  const totalTokens = numberValue(usage.total_tokens)
+  const remainingTokens = numberValue(usage.remaining_tokens)
+  const updatedAt = numberValue(usage.updated_at)
+  if (!sessionId && contextWindow <= 0 && totalTokens <= 0 && remainingTokens <= 0 && updatedAt <= 0) {
+    return null
+  }
+  return {
+    sessionId,
+    provider: String(usage.provider ?? '').trim(),
+    model: String(usage.model ?? '').trim(),
+    source: String(usage.source ?? '').trim(),
+    contextWindow,
+    totalTokens,
+    remainingTokens,
+    updatedAt,
   }
 }
 

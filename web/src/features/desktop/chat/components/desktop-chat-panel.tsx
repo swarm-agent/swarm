@@ -10,6 +10,7 @@ import {
   draftModelQueryOptions,
   modelOptionsQueryOptions,
   sessionPreferenceQueryOptions,
+  sessionUsageQueryOptions,
   uiSettingsQueryKey,
   uiSettingsQueryOptions,
 } from '../../../queries/query-options'
@@ -1311,6 +1312,12 @@ export function DesktopChatPanel({
     ...sessionPreferenceQueryOptions(sessionId ?? '', queryClient),
     enabled: Boolean(sessionId),
     initialData: dbPreference ?? undefined,
+  })
+
+  useQuery({
+    ...sessionUsageQueryOptions(sessionId ?? '', queryClient),
+    enabled: Boolean(sessionId),
+    initialData: liveSession?.usage ?? undefined,
   })
 
   const draftPreferenceQuery = useQuery({

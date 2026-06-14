@@ -44,6 +44,17 @@ async function withFetchStub(
       })
     }
 
+    const v3UsageMatch = /^\/v3\/sessions\/([^/?]+)\/usage$/.exec(url)
+    if (v3UsageMatch) {
+      const sessionId = decodeURIComponent(v3UsageMatch[1])
+      return jsonResponse({
+        ok: true,
+        session_id: sessionId,
+        has_usage_summary: true,
+        usage_summary: { session_id: sessionId, provider: 'codex', model: 'gpt-5.4', source: 'provider', context_window: 1000, total_tokens: 42, remaining_tokens: 958, updated_at: 6 },
+      })
+    }
+
     const v3MetadataMatch = /^\/v3\/sessions\/([^/?]+)\/metadata$/.exec(url)
     if (v3MetadataMatch) {
       const sessionId = decodeURIComponent(v3MetadataMatch[1])
@@ -244,7 +255,6 @@ function v3WorksetPayload(sessionIds: string[], options: { includeMessages?: boo
   const messagesBySession: Record<string, unknown[]> = {}
   const eventsBySession: Record<string, unknown[]> = {}
   const permissionsBySession: Record<string, unknown[]> = {}
-  const usageBySession: Record<string, unknown> = {}
   const runIntentsBySession: Record<string, unknown[]> = {}
   const plansBySession: Record<string, unknown> = {}
   const planRevisionsBySession: Record<string, unknown[]> = {}
@@ -257,7 +267,6 @@ function v3WorksetPayload(sessionIds: string[], options: { includeMessages?: boo
     messagesBySession[sessionId] = options.includeMessages ? payload.messages : []
     eventsBySession[sessionId] = []
     permissionsBySession[sessionId] = payload.pending_permissions
-    usageBySession[sessionId] = payload.usage_summary
     runIntentsBySession[sessionId] = payload.active_run_intent ? [payload.active_run_intent] : []
     if (options.includePlans) {
       plansBySession[sessionId] = payload.active_plan
@@ -278,7 +287,6 @@ function v3WorksetPayload(sessionIds: string[], options: { includeMessages?: boo
     plans_by_session: plansBySession,
     plan_revisions_by_session: planRevisionsBySession,
     permissions_by_session: permissionsBySession,
-    usage_by_session: usageBySession,
     run_intents_by_session: runIntentsBySession,
     history_manifests_by_session: historyManifestsBySession,
     history_chunks_by_id: {},
@@ -446,6 +454,23 @@ test('prefetchSessionRuntimeData hydrates metadata then the 200-message V3 tail 
   queryClient.clear()
 })
 
+test('sessionUsageQueryOptions uses the dedicated V3 session usage API', async () => {
+  const { sessionUsageQueryOptions } = await import('../../../queries/query-options')
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+
+  await withFetchStub(async (calls) => {
+    const usage = await queryClient.fetchQuery(sessionUsageQueryOptions('session-usage', queryClient))
+
+    assert.equal(usage?.remainingTokens, 958)
+    assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-usage/usage'])
+    assertNoV1OrV2SessionDataCalls(calls)
+  })
+
+  queryClient.clear()
+})
+
 test('sessionPreferenceQueryOptions uses the dedicated V3 session preference API', async () => {
   const { sessionPreferenceQueryOptions } = await import('../../../queries/query-options')
   const queryClient = new QueryClient({
@@ -480,6 +505,7 @@ test('DesktopChatPanel uses V3-native preference and mode paths', async () => {
   assert.match(source, /from '\.\.\/\.\.\/state\/desktop-state-store'/)
   assert.match(source, /useDesktopPreference\(sessionId\)/)
   assert.match(source, /sessionPreferenceQueryOptions\(sessionId \?\? '', queryClient\)/)
+  assert.match(source, /sessionUsageQueryOptions\(sessionId \?\? '', queryClient\)/)
   assert.match(source, /useDesktopMessages\(sessionId\)/)
   assert.match(source, /useDesktopActiveRun\(sessionId\)/)
   assert.doesNotMatch(source, /sessionMessagesQueryOptions\(sessionId \?\? '', queryClient\)/)
