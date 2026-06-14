@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gorilla/websocket"
+
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -328,5 +330,83 @@ func TestSendRoutesAPIKeyAuthToOpenAIResponsesHTTP(t *testing.T) {
 	}
 	if strings.Join(deltas, "") != "ok" {
 		t.Fatalf("stream deltas = %q, want ok", strings.Join(deltas, ""))
+	}
+}
+
+func TestSendRetriesNormalWebsocketCloseAfterStreamStarted(t *testing.T) {
+	client := NewClient(nil)
+	calls := 0
+	client.sendWSFn = func(_ context.Context, _ pebblestore.CodexAuthRecord, _ []byte, onEvent func(StreamEvent)) (map[string]any, int, error) {
+		calls++
+		onEvent(StreamEvent{Type: StreamEventOutputTextDelta, Delta: "partial"})
+		if calls <= 3 {
+			return nil, 0, newStartedWebsocketStreamError(&websocket.CloseError{Code: websocket.CloseNormalClosure, Text: "normal"})
+		}
+		return map[string]any{
+			"id":          "resp_retry_ok",
+			"model":       "gpt-5.5",
+			"output_text": "partial done",
+		}, http.StatusOK, nil
+	}
+
+	var deltas []string
+	decoded, status, err := client.send(context.Background(), pebblestore.CodexAuthRecord{
+		Type:        pebblestore.CodexAuthTypeOAuth,
+		AccessToken: "access-token",
+	}, []byte(`{"model":"gpt-5.5","stream":true,"input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]}`), func(event StreamEvent) {
+		if event.Type == StreamEventOutputTextDelta {
+			deltas = append(deltas, event.Delta)
+		}
+	})
+	if err != nil {
+		t.Fatalf("send error: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if calls != 4 {
+		t.Fatalf("websocket attempts = %d, want 4", calls)
+	}
+	if got := strings.Join(deltas, ""); got != "partial" {
+		t.Fatalf("streamed deltas = %q, want one persisted partial without retry duplicates", got)
+	}
+	if decoded["id"] != "resp_retry_ok" {
+		t.Fatalf("decoded id = %#v, want resp_retry_ok", decoded["id"])
+	}
+}
+
+func TestSendFailsNormalWebsocketCloseAfterStartedRetriesExhausted(t *testing.T) {
+	client := NewClient(nil)
+	calls := 0
+	client.sendWSFn = func(_ context.Context, _ pebblestore.CodexAuthRecord, _ []byte, onEvent func(StreamEvent)) (map[string]any, int, error) {
+		calls++
+		onEvent(StreamEvent{Type: StreamEventOutputTextDelta, Delta: "partial"})
+		return nil, 0, newStartedWebsocketStreamError(&websocket.CloseError{Code: websocket.CloseNormalClosure, Text: "normal"})
+	}
+
+	var deltas []string
+	_, _, err := client.send(context.Background(), pebblestore.CodexAuthRecord{
+		Type:        pebblestore.CodexAuthTypeOAuth,
+		AccessToken: "access-token",
+	}, []byte(`{"model":"gpt-5.5","stream":true,"input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]}`), func(event StreamEvent) {
+		if event.Type == StreamEventOutputTextDelta {
+			deltas = append(deltas, event.Delta)
+		}
+	})
+	if err == nil {
+		t.Fatal("send error = nil, want started stream failure after retries")
+	}
+	if calls != 4 {
+		t.Fatalf("websocket attempts = %d, want 4", calls)
+	}
+	if got := strings.Join(deltas, ""); got != "partial" {
+		t.Fatalf("streamed deltas = %q, want one persisted partial without retry duplicates", got)
+	}
+}
+
+func TestShouldRetryStartedWebsocketStreamNormalClose(t *testing.T) {
+	err := newStartedWebsocketStreamError(&websocket.CloseError{Code: websocket.CloseNormalClosure, Text: "normal"})
+	if !shouldRetryStartedWebsocketStream(err) {
+		t.Fatal("normal close after payload started should be retried")
 	}
 }

@@ -35,6 +35,7 @@ type V3SessionWorksetOptions struct {
 	RecentBeforeSessionID              string
 	History                            V3SessionWorksetHistoryOptions
 	IncludeRunIntents                  bool
+	IncludeActiveSessions              bool
 }
 
 type V3SessionWorksetHistoryOptions struct {
@@ -258,6 +259,15 @@ func (s *SessionStore) selectV3SessionWorksetSessions(reader pebble.Reader, opti
 			appendSession(session)
 		}
 	}
+	if options.IncludeActiveSessions {
+		active, err := s.selectV3ActiveWorksetSessions(reader, options)
+		if err != nil {
+			return nil, V3SessionWorksetPagination{}, err
+		}
+		for _, session := range active {
+			appendSession(session)
+		}
+	}
 	selected := make([]SessionSnapshot, 0, len(order))
 	for _, id := range order {
 		selected = append(selected, byID[id])
@@ -267,6 +277,46 @@ func (s *SessionStore) selectV3SessionWorksetSessions(reader pebble.Reader, opti
 
 func (s *SessionStore) selectV3RecentWorksetSessions(reader pebble.Reader, options V3SessionWorksetOptions) ([]SessionSnapshot, V3SessionWorksetPagination, error) {
 	return s.selectV3RecentWorksetSessionsFromIndex(reader, options)
+}
+
+func (s *SessionStore) selectV3ActiveWorksetSessions(reader pebble.Reader, options V3SessionWorksetOptions) ([]SessionSnapshot, error) {
+	lifecycles := []SessionLifecycleSnapshot{}
+	if err := iteratePrefixFromReader(reader, SessionLifecyclePrefix(), sessionRecentIndexScanLimit(), func(_ string, value []byte) error {
+		var lifecycle SessionLifecycleSnapshot
+		if err := json.Unmarshal(value, &lifecycle); err != nil {
+			return fmt.Errorf("decode session lifecycle for active workset: %w", err)
+		}
+		lifecycle.SessionID = strings.TrimSpace(lifecycle.SessionID)
+		lifecycle.AccountScopeID = strings.TrimSpace(lifecycle.AccountScopeID)
+		if !lifecycle.Active || lifecycle.SessionID == "" {
+			return nil
+		}
+		if options.AccountScopeID != "" && lifecycle.AccountScopeID != "" && lifecycle.AccountScopeID != options.AccountScopeID {
+			return nil
+		}
+		lifecycles = append(lifecycles, lifecycle)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	sort.Slice(lifecycles, func(i, j int) bool {
+		if lifecycles[i].UpdatedAt == lifecycles[j].UpdatedAt {
+			return lifecycles[i].SessionID < lifecycles[j].SessionID
+		}
+		return lifecycles[i].UpdatedAt > lifecycles[j].UpdatedAt
+	})
+	out := make([]SessionSnapshot, 0, len(lifecycles))
+	for _, lifecycle := range lifecycles {
+		session, ok, err := s.getSessionFromReader(reader, lifecycle.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok || !v3SessionWorksetSessionVisibleForWorkspaces(session, options.AccountScopeID, options.WorkspacePath, options.WorkspacePaths) {
+			continue
+		}
+		out = append(out, session)
+	}
+	return out, nil
 }
 
 func normalizeV3SessionWorksetWorkspacePaths(workspacePath string, workspacePaths []string) []string {

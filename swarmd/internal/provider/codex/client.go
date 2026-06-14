@@ -868,10 +868,10 @@ func shouldRetryStartedWebsocketStream(err error) bool {
 	}
 	var closeErr *websocket.CloseError
 	if errors.As(err, &closeErr) {
-		return closeErr.Code == websocket.CloseAbnormalClosure
+		return closeErr.Code == websocket.CloseNormalClosure || closeErr.Code == websocket.CloseAbnormalClosure
 	}
 	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "close 1006") || strings.Contains(message, "unexpected eof")
+	return strings.Contains(message, "close 1000") || strings.Contains(message, "close 1006") || strings.Contains(message, "unexpected eof")
 }
 
 func mergeRetriedStreamText(current, attempt string) (string, string) {
