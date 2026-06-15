@@ -87,6 +87,19 @@ func TestV3SyncEndpointNamesAndLegacyWorksetGatesAreFrozen(t *testing.T) {
 			t.Fatalf("%s sync route = %q, want /v3/sync/*", name, route)
 		}
 	}
+	routeSource, err := os.ReadFile("server_routes.go")
+	if err != nil {
+		t.Fatalf("read server_routes.go: %v", err)
+	}
+	for _, required := range []string{
+		`mux.HandleFunc(V3SyncBootstrapPath, s.handleSessionsV3SyncBootstrap)`,
+		`mux.HandleFunc(V3SyncHydratePath, s.handleSessionsV3SyncHydrate)`,
+		`mux.HandleFunc(V3SyncStreamPath, s.handleSessionsV3SyncStream)`,
+	} {
+		if !strings.Contains(string(routeSource), required) {
+			t.Fatalf("canonical sync route is not registered: %s", required)
+		}
+	}
 	if V3SyncLegacySessionsWorksetPath != "/v3/sessions:workset" {
 		t.Fatalf("legacy sessions workset path = %q", V3SyncLegacySessionsWorksetPath)
 	}

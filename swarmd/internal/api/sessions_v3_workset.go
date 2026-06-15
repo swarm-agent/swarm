@@ -231,22 +231,6 @@ func (s *Server) writeSessionsV3Workset(w http.ResponseWriter, options sessionsV
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	permissionsBySession, err := s.sessionsV3WorksetPendingPermissions(workset)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	usageBySession, err := s.sessionsV3WorksetUsageSummaries(workset)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	preferencesBySession, agentModelPolicyBySession := s.sessionsV3WorksetPreferencesAndPolicies(workset)
-	plansBySession, planRevisionsBySession, err := s.sessionsV3WorksetPlans(options, workset)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
 	snapshotEndpointCursor, err := s.sessions.CurrentRealtimeOutboxCursor()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -257,7 +241,29 @@ func (s *Server) writeSessionsV3Workset(w http.ResponseWriter, options sessionsV
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, sessionsV3WorksetResponse(workset, permissionsBySession, usageBySession, preferencesBySession, agentModelPolicyBySession, plansBySession, planRevisionsBySession, signedSnapshotEndpointCursor))
+	response, err := s.sessionsV3WorksetResponseForResult(options, workset, signedSnapshotEndpointCursor)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) sessionsV3WorksetResponseForResult(options sessionsV3ResolvedWorksetOptions, workset pebblestore.V3SessionWorksetResult, snapshotEndpointCursor string) (map[string]any, error) {
+	permissionsBySession, err := s.sessionsV3WorksetPendingPermissions(workset)
+	if err != nil {
+		return nil, err
+	}
+	usageBySession, err := s.sessionsV3WorksetUsageSummaries(workset)
+	if err != nil {
+		return nil, err
+	}
+	preferencesBySession, agentModelPolicyBySession := s.sessionsV3WorksetPreferencesAndPolicies(workset)
+	plansBySession, planRevisionsBySession, err := s.sessionsV3WorksetPlans(options, workset)
+	if err != nil {
+		return nil, err
+	}
+	return sessionsV3WorksetResponse(workset, permissionsBySession, usageBySession, preferencesBySession, agentModelPolicyBySession, plansBySession, planRevisionsBySession, snapshotEndpointCursor), nil
 }
 
 func canonicalSessionsV3WorksetWorkspacePaths(workspace sessionsV3WorksetWorkspace) ([]string, error) {
