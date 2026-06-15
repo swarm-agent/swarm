@@ -276,6 +276,143 @@ func TestV3RealtimeIdleScanSendsZeroEventEndpointWatermark(t *testing.T) {
 	}
 }
 
+func TestV3RealtimeMixedScanSendsEndpointWatermarkAfterDeliveredEvent(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	createdA := createV3RealtimeTestSessionResult(t, server, "session-realtime-mixed-watermark-a", "create-realtime-mixed-watermark-a")
+	previousKeepaliveInterval := v3RealtimeKeepaliveInterval
+	v3RealtimeKeepaliveInterval = 25 * time.Millisecond
+	t.Cleanup(func() { v3RealtimeKeepaliveInterval = previousKeepaliveInterval })
+
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStreamWithQuery(t, httpServer.URL, "endpoint_cursor="+url.QueryEscape(createdA.RealtimeOutbox.EndpointCursor)+"&sessions="+createdA.SessionID)
+	defer conn.Close()
+
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, createdA.SessionID, 0)
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, createdA.SessionID, 1)
+
+	committedA, err := sessionSvc.ApplySessionMutation(sessionruntime.SessionMutationInput{
+		SessionID:       createdA.SessionID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "message-realtime-mixed-watermark-a",
+		IdempotencyKey:  "message-realtime-mixed-watermark-a",
+		PayloadHash:     "hash-message-realtime-mixed-watermark-a",
+		Kind:            sessionruntime.SessionMutationAppendMessage,
+		Message:         &pebblestore.MessageSnapshot{Role: "user", Content: "delivered before filtered"},
+		NowUnixMs:       2000,
+	})
+	if err != nil {
+		t.Fatalf("commit subscribed event without hub wakeup: %v", err)
+	}
+	committedB, err := sessionSvc.ApplySessionMutation(sessionruntime.SessionMutationInput{
+		SessionID:       "session-realtime-mixed-watermark-b",
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "create-realtime-mixed-watermark-b",
+		IdempotencyKey:  "create-realtime-mixed-watermark-b",
+		PayloadHash:     "hash-create-realtime-mixed-watermark-b",
+		Kind:            sessionruntime.SessionMutationCreateSession,
+		Session: &pebblestore.SessionSnapshot{
+			ID:             "session-realtime-mixed-watermark-b",
+			UserID:         testPrincipal().UserID,
+			AccountScopeID: testPrincipal().AccountScopeID,
+			WorkspacePath:  "/workspace/realtime",
+			WorkspaceName:  "realtime",
+			Title:          "session-realtime-mixed-watermark-b",
+		},
+		NowUnixMs: 3000,
+	})
+	if err != nil {
+		t.Fatalf("commit filtered session without hub wakeup: %v", err)
+	}
+
+	var delivered, watermark V3RealtimeMessage
+	for i := 0; i < 8 && (delivered.Kind == "" || watermark.Kind == ""); i++ {
+		frame := readV3RealtimeFrame(t, conn)
+		switch frame.Kind {
+		case V3RealtimeKindEvent:
+			if frame.SessionID != createdA.SessionID {
+				t.Fatalf("unexpected event while waiting for mixed watermark: %+v", frame)
+			}
+			delivered = frame
+		case V3RealtimeKindEndpointWatermark:
+			watermark = frame
+		case V3RealtimeKindKeepalive:
+			// Keep waiting for the catch-up tick that scans both committed rows.
+		default:
+			t.Fatalf("unexpected frame while waiting for mixed watermark: %+v", frame)
+		}
+	}
+	assertV3RealtimeFrame(t, delivered, V3RealtimeKindEvent, createdA.SessionID, committedA.Event.Seq)
+	assertV3RealtimeSignedCursorSeq(t, server, delivered.EndpointCursor, committedA.RealtimeOutbox.EndpointSeq)
+	assertV3RealtimeFrame(t, watermark, V3RealtimeKindEndpointWatermark, "", 0)
+	assertV3RealtimeSignedCursorSeq(t, server, watermark.EndpointCursor, committedB.RealtimeOutbox.EndpointSeq)
+	if watermark.HighWatermarkSeq != committedB.RealtimeOutbox.EndpointSeq || watermark.Rev != committedB.RealtimeOutbox.EndpointSeq || watermark.PrevRev != committedA.RealtimeOutbox.EndpointSeq {
+		t.Fatalf("mixed-scan watermark = %+v, want endpoint seq %d prev %d", watermark, committedB.RealtimeOutbox.EndpointSeq, committedA.RealtimeOutbox.EndpointSeq)
+	}
+}
+
+func TestV3RealtimeReconnectFromEndpointWatermarkDoesNotRescanFilteredRow(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	createdA := createV3RealtimeTestSessionResult(t, server, "session-realtime-watermark-reconnect-a", "create-realtime-watermark-reconnect-a")
+	previousKeepaliveInterval := v3RealtimeKeepaliveInterval
+	v3RealtimeKeepaliveInterval = 25 * time.Millisecond
+	t.Cleanup(func() { v3RealtimeKeepaliveInterval = previousKeepaliveInterval })
+
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStreamWithQuery(t, httpServer.URL, "endpoint_cursor="+url.QueryEscape(createdA.RealtimeOutbox.EndpointCursor)+"&sessions="+createdA.SessionID)
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, createdA.SessionID, 0)
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, createdA.SessionID, 1)
+
+	committedB, err := sessionSvc.ApplySessionMutation(sessionruntime.SessionMutationInput{
+		SessionID:       "session-realtime-watermark-reconnect-b",
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "create-realtime-watermark-reconnect-b",
+		IdempotencyKey:  "create-realtime-watermark-reconnect-b",
+		PayloadHash:     "hash-create-realtime-watermark-reconnect-b",
+		Kind:            sessionruntime.SessionMutationCreateSession,
+		Session: &pebblestore.SessionSnapshot{
+			ID:             "session-realtime-watermark-reconnect-b",
+			UserID:         testPrincipal().UserID,
+			AccountScopeID: testPrincipal().AccountScopeID,
+			WorkspacePath:  "/workspace/realtime",
+			WorkspaceName:  "realtime",
+			Title:          "session-realtime-watermark-reconnect-b",
+		},
+		NowUnixMs: 2000,
+	})
+	if err != nil {
+		t.Fatalf("commit filtered session without hub wakeup: %v", err)
+	}
+
+	var watermark V3RealtimeMessage
+	for i := 0; i < 5; i++ {
+		frame := readV3RealtimeFrame(t, conn)
+		if frame.Kind == V3RealtimeKindEndpointWatermark {
+			watermark = frame
+			break
+		}
+		if frame.Kind != V3RealtimeKindKeepalive {
+			t.Fatalf("unexpected frame while waiting for reconnect watermark: %+v", frame)
+		}
+	}
+	if watermark.Kind == "" {
+		t.Fatal("timed out waiting for reconnect watermark")
+	}
+	assertV3RealtimeSignedCursorSeq(t, server, watermark.EndpointCursor, committedB.RealtimeOutbox.EndpointSeq)
+	_ = conn.Close()
+	v3RealtimeKeepaliveInterval = time.Hour
+
+	replayConn := dialV3RealtimeStreamWithQuery(t, httpServer.URL, "endpoint_cursor="+url.QueryEscape(watermark.EndpointCursor)+"&sessions="+createdA.SessionID)
+	defer replayConn.Close()
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, replayConn), V3RealtimeKindReplayStart, createdA.SessionID, 0)
+	done := readV3RealtimeFrame(t, replayConn)
+	assertV3RealtimeFrame(t, done, V3RealtimeKindReplayDone, createdA.SessionID, 1)
+	assertV3RealtimeSignedCursorSeq(t, server, done.EndpointCursor, committedB.RealtimeOutbox.EndpointSeq)
+	assertNoV3RealtimeFrame(t, replayConn, 75*time.Millisecond)
+}
+
 func TestV3RealtimeEndpointCursorReplaySurvivesLostHubWakeup(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-lost-wakeup", "create-realtime-lost-wakeup")

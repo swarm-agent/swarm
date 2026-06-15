@@ -371,6 +371,58 @@ func TestStreamSessionsV3RealtimeMultiplexesSubscriptionsAndIsolatesGaps(t *test
 	}
 }
 
+func TestStreamSessionsV3RealtimeDeliversEndpointWatermarkWithoutChangingSessionOrder(t *testing.T) {
+	var gotPath, gotQuery string
+	var subscribe map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		if r.Method != http.MethodGet || r.URL.Path != "/v3/realtime/stream" {
+			t.Fatalf("websocket path = %s %s, want GET /v3/realtime/stream", r.Method, r.URL.Path)
+		}
+		conn, rw, err := hijackLifecycleTestWebsocket(w, r)
+		if err != nil {
+			t.Fatalf("hijack websocket: %v", err)
+		}
+		defer conn.Close()
+		_, payload, err := readClientLifecycleTestFrame(rw)
+		if err != nil {
+			t.Fatalf("read subscribe: %v", err)
+		}
+		if err := json.Unmarshal(payload, &subscribe); err != nil {
+			t.Fatalf("decode subscribe: %v", err)
+		}
+		writeServerLifecycleTestFrame(t, conn, map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.started", "session_id": "session-a", "endpoint_cursor": "cursor-1", "last_seq": 12})
+		writeServerLifecycleTestFrame(t, conn, map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.complete", "session_id": "session-a", "endpoint_cursor": "cursor-1", "last_seq": 12})
+		writeServerLifecycleTestFrame(t, conn, map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "endpoint.watermark", "endpoint_cursor": "cursor-2", "high_watermark_seq": 99, "rev": 99, "prevRev": 98})
+	}))
+	defer server.Close()
+
+	api := New(server.URL)
+	api.SetToken("test-token")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var frames []V3RealtimeFrame
+	err := api.StreamSessionsV3Realtime(ctx, []V3RealtimeSubscription{{SessionID: "session-a", EndpointCursor: "cursor-1", LastSeq: 12, SubscriptionID: "sub-a"}}, func(frame V3RealtimeFrame) {
+		frames = append(frames, frame)
+		if frame.Kind == v3RealtimeKindEndpointWatermark {
+			cancel()
+		}
+	})
+	if err != nil {
+		t.Fatalf("StreamSessionsV3Realtime() error = %v", err)
+	}
+	if gotPath != "/v3/realtime/stream" || gotQuery != "endpoint_cursor=cursor-1" {
+		t.Fatalf("realtime request path/query = %q?%q", gotPath, gotQuery)
+	}
+	if subscribe["endpoint_cursor"] != "cursor-1" || subscribe["session_id"] != "session-a" {
+		t.Fatalf("subscribe = %#v", subscribe)
+	}
+	if len(frames) != 3 || frames[2].Kind != v3RealtimeKindEndpointWatermark || frames[2].EndpointCursor != "cursor-2" || frames[2].LastSeq != 0 || frames[2].SessionID != "" {
+		t.Fatalf("frames = %#v, want endpoint watermark delivered without session last_seq", frames)
+	}
+}
+
 func TestStreamSessionV3ReplayDoesNotStopOnAssistantCompleted(t *testing.T) {
 	var replayCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

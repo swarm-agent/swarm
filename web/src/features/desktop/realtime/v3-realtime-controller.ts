@@ -87,6 +87,12 @@ function shouldDeliverFrame(kind: string): boolean {
     || kind === 'slow_consumer.reconnect_required'
 }
 
+function shouldAdvanceCursorForControlFrame(kind: string): boolean {
+  return kind === 'endpoint.watermark'
+    || kind === 'replay.complete'
+    || kind === 'keepalive'
+}
+
 export class DesktopV3RealtimeController {
   private readonly subscriptions = new Map<string, SubscriptionEntry>()
   private socket: WebSocket | null = null
@@ -109,12 +115,9 @@ export class DesktopV3RealtimeController {
       return Promise.resolve()
     }
     const existing = this.subscriptions.get(normalizedSessionId)
-    const cursor = firstEndpointCursor(
-      endpointCursor,
-      existing?.endpointCursor,
-      this.endpointCursor,
-      this.options.getEndpointCursor(),
-    )
+    const cursor = existing
+      ? firstEndpointCursor(existing.endpointCursor, this.endpointCursor, endpointCursor, this.options.getEndpointCursor())
+      : firstEndpointCursor(endpointCursor, this.endpointCursor, this.options.getEndpointCursor())
     const normalizedSubscriptionId = subscriptionId?.trim() || existing?.subscriptionId || `desktop:${normalizedSessionId}`
     this.subscriptions.set(normalizedSessionId, {
       sessionId: normalizedSessionId,
@@ -284,7 +287,7 @@ export class DesktopV3RealtimeController {
           }
         }
         const cursor = frameEndpointCursor(frame)
-        if (cursor && applied) {
+        if (cursor && (applied || shouldAdvanceCursorForControlFrame(kind))) {
           this.advanceEndpointCursor(cursor)
         }
         if (kind === 'slow_consumer.reconnect_required') {

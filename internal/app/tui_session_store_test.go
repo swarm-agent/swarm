@@ -89,6 +89,38 @@ func TestTUISessionStoreDesiredSubscriptionsUseEndpointCursorAndLastSeq(t *testi
 	}
 }
 
+func TestTUISessionStoreEndpointWatermarkAdvancesCursorWithoutMutatingLastSeq(t *testing.T) {
+	store := newTUISessionStore()
+	store.ResetFromWorkset(client.SessionV3Workset{
+		SnapshotEndpointCursor: "cursor-1",
+		SessionsByID:           map[string]client.SessionSummary{"a": {ID: "a", SessionAPI: "v3"}},
+		ProjectionsBySession:   map[string]client.SessionV3Projection{"a": {SessionID: "a", LastEventSeq: 12, ProjectionHighWatermarkSeq: 12}},
+		SessionOrder:           []string{"a"},
+	})
+
+	result := store.ApplyRealtimeFrame(client.V3RealtimeFrame{
+		Kind:             "endpoint.watermark",
+		EndpointCursor:   "cursor-2",
+		HighWatermarkSeq: 99,
+		Rev:              99,
+		PrevRev:          98,
+	})
+	if result.Changed || result.NeedsRehydrate {
+		t.Fatalf("endpoint watermark mutated application state: %#v", result)
+	}
+	if got := store.EndpointCursor(); got != "cursor-2" {
+		t.Fatalf("endpoint cursor = %q, want cursor-2", got)
+	}
+	subs := store.DesiredSubscriptions()
+	if len(subs) != 1 || subs[0].EndpointCursor != "cursor-2" || subs[0].LastSeq != 12 {
+		t.Fatalf("subscriptions after watermark = %#v", subs)
+	}
+	projection := store.workset.ProjectionsBySession["a"]
+	if projection.LastEventSeq != 12 || projection.ProjectionHighWatermarkSeq != 12 {
+		t.Fatalf("projection mutated from endpoint watermark: %#v", projection)
+	}
+}
+
 func TestTUISessionStoreRealtimeOrderingAndTerminalFrames(t *testing.T) {
 	store := newTUISessionStore()
 	store.ResetFromWorkset(client.SessionV3Workset{
