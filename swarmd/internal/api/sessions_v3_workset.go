@@ -12,6 +12,11 @@ import (
 
 const sessionsV3WorksetMaxResourcePageSize = 200
 
+// Legacy workset routes are intentionally still served while canonical durable
+// sync bootstrap/hydrate/stream APIs are brought to parity. Do not remove or
+// hard-block these handlers until every V3SyncWorksetRemovalGates item is
+// satisfied and captured in testbench evidence.
+
 type sessionsV3WorksetRequest struct {
 	SessionIDs    []string                   `json:"session_ids,omitempty"`
 	Global        bool                       `json:"global,omitempty"`

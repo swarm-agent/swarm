@@ -126,8 +126,8 @@ func TestTUIOpenSessionHydratesFromV3BeforeOpeningChat(t *testing.T) {
 
 func TestTUIAppSessionContractDoesNotCallLegacySessionAPIs(t *testing.T) {
 	assertSourceDoesNotContain(t, "app.go", map[string]string{
-		"ListSessionsForWorkspaceBinding(": "TUI session lists must use the v3 TUI workset endpoint, not v2 workspace binding lists",
-		"ListSessionsForExactCWD(":         "TUI session lists must use the v3 TUI workset endpoint, not v2 cwd lists",
+		"ListSessionsForWorkspaceBinding(": "TUI session lists must use the v3 TUI workset endpoint until durable sync parity is complete, not v2 workspace binding lists",
+		"ListSessionsForExactCWD(":         "TUI session lists must use the v3 TUI workset endpoint until durable sync parity is complete, not v2 cwd lists",
 		"CreateSessionWithOptions(":        "TUI session create must be v3-only",
 		"/v1/sessions":                     "TUI app code must not call v1 session routes",
 		"/v2/sessions":                     "TUI app code must not call v2 session routes",
@@ -151,13 +151,19 @@ func TestTUIV3EndpointNamesAreCanonical(t *testing.T) {
 	const workset = "/v3/sessions:workset"
 	const tuiSessions = "/v3/tui/sessions"
 	const tuiWorkset = "/v3/tui/sessions:workset"
-	for name, route := range map[string]string{"primary": primary, "workset": workset, "tuiSessions": tuiSessions, "tuiWorkset": tuiWorkset} {
+	const syncBootstrap = "/v3/sync/bootstrap"
+	const syncHydrate = "/v3/sync/hydrate"
+	const syncStream = "/v3/sync/stream"
+	for name, route := range map[string]string{"primary": primary, "workset": workset, "tuiSessions": tuiSessions, "tuiWorkset": tuiWorkset, "syncBootstrap": syncBootstrap, "syncHydrate": syncHydrate, "syncStream": syncStream} {
 		if !strings.HasPrefix(route, "/v3/") {
 			t.Fatalf("%s route = %q, want v3 route", name, route)
 		}
 	}
 	if workset == tuiWorkset {
 		t.Fatalf("TUI workset route must be distinct from main fail-closed workset route")
+	}
+	if !strings.HasPrefix(syncBootstrap, "/v3/sync/") || !strings.HasPrefix(syncHydrate, "/v3/sync/") || !strings.HasPrefix(syncStream, "/v3/sync/") {
+		t.Fatalf("durable sync endpoints must stay under /v3/sync")
 	}
 }
 
