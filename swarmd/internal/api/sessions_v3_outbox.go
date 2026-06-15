@@ -65,6 +65,11 @@ func (s *Server) publishCommittedSessionV3GlobalEvent(result sessionruntime.Sess
 	return appendCommittedSessionV3GlobalEvent(s, result.Event)
 }
 
+var publishCommittedV3RealtimeOutboxWake = func(hub *v3RealtimeOutboxHub, record sessionruntime.RealtimeOutboxRecord) error {
+	hub.publish(record)
+	return nil
+}
+
 func (s *Server) publishCommittedV3RealtimeOutbox(record sessionruntime.RealtimeOutboxRecord) error {
 	if s == nil {
 		return errors.New("server is not configured")
@@ -75,6 +80,5 @@ func (s *Server) publishCommittedV3RealtimeOutbox(record sessionruntime.Realtime
 	if s.v3RealtimeOutbox == nil {
 		s.v3RealtimeOutbox = newV3RealtimeOutboxHub()
 	}
-	s.v3RealtimeOutbox.publish(record)
-	return nil
+	return publishCommittedV3RealtimeOutboxWake(s.v3RealtimeOutbox, record)
 }

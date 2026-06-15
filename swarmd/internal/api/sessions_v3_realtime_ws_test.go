@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -713,6 +714,68 @@ func TestPublishCommittedSessionV3MutationResultWakesRealtimeOutboxAndGlobalDisc
 	}
 }
 
+func TestApplySessionV3PrimaryMutationAcceptsDurableCommitWhenRealtimeWakeFails(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-wake-fail", "create-realtime-wake-fail")
+	checkpointCursor := created.RealtimeOutbox.EndpointCursor
+
+	previousWake := publishCommittedV3RealtimeOutboxWake
+	publishCommittedV3RealtimeOutboxWake = func(*v3RealtimeOutboxHub, sessionruntime.RealtimeOutboxRecord) error {
+		return errors.New("simulated realtime wake failure after durable commit")
+	}
+	t.Cleanup(func() { publishCommittedV3RealtimeOutboxWake = previousWake })
+
+	input := sessionruntime.SessionMutationInput{
+		SessionID:       created.SessionID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "message-realtime-wake-fail",
+		IdempotencyKey:  "message-realtime-wake-fail",
+		PayloadHash:     "hash-message-realtime-wake-fail",
+		Kind:            sessionruntime.SessionMutationAppendMessage,
+		Message:         &pebblestore.MessageSnapshot{Role: "user", Content: "durable despite realtime wake failure"},
+		NowUnixMs:       2000,
+	}
+	committed, err := server.applySessionV3PrimaryMutation(input)
+	if err != nil {
+		t.Fatalf("apply mutation should accept durable commit despite post-commit realtime wake failure: %v", err)
+	}
+	if committed.RealtimeOutbox == nil || committed.Event.Seq != 2 {
+		t.Fatalf("committed mutation missing realtime outbox or seq: %+v", committed)
+	}
+	outboxRows, err := sessionSvc.ListRealtimeOutboxAfter(created.RealtimeOutbox.EndpointSeq, 10)
+	if err != nil {
+		t.Fatalf("list realtime outbox after failed wake: %v", err)
+	}
+	if len(outboxRows) != 1 || outboxRows[0].EndpointSeq != committed.RealtimeOutbox.EndpointSeq {
+		t.Fatalf("durable outbox rows after failed wake = %+v, want committed %+v", outboxRows, committed.RealtimeOutbox)
+	}
+
+	replayed, replayErr := server.applySessionV3PrimaryMutation(input)
+	if replayErr != nil {
+		t.Fatalf("idempotent retry after accepted durable commit: %v", replayErr)
+	}
+	if !replayed.Replayed || replayed.RealtimeOutbox != nil || replayed.Event.Seq != committed.Event.Seq {
+		t.Fatalf("idempotent retry = %+v, want replayed without duplicate outbox for committed seq %d", replayed, committed.Event.Seq)
+	}
+	outboxRowsAfterRetry, err := sessionSvc.ListRealtimeOutboxAfter(created.RealtimeOutbox.EndpointSeq, 10)
+	if err != nil {
+		t.Fatalf("list realtime outbox after idempotent retry: %v", err)
+	}
+	if len(outboxRowsAfterRetry) != 1 || outboxRowsAfterRetry[0].EndpointSeq != committed.RealtimeOutbox.EndpointSeq {
+		t.Fatalf("outbox rows after idempotent retry = %+v, want single committed row", outboxRowsAfterRetry)
+	}
+
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStreamWithQuery(t, httpServer.URL, "endpoint_cursor="+url.QueryEscape(checkpointCursor)+"&sessions="+created.SessionID)
+	defer conn.Close()
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, created.SessionID, 0)
+	replayedFrame := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, replayedFrame, V3RealtimeKindEvent, created.SessionID, committed.Event.Seq)
+	assertV3RealtimeSignedCursorSeq(t, server, replayedFrame.EndpointCursor, committed.RealtimeOutbox.EndpointSeq)
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, created.SessionID, committed.Event.Seq)
+}
+
 func TestApplySessionV3PrimaryMutationAcceptsDurableCommitWhenGlobalMirrorPublishFails(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-global-fail", "create-realtime-global-fail")
@@ -773,6 +836,54 @@ func TestApplySessionV3PrimaryMutationAcceptsDurableCommitWhenGlobalMirrorPublis
 	assertV3RealtimeFrame(t, replayedFrame, V3RealtimeKindEvent, created.SessionID, committed.Event.Seq)
 	assertV3RealtimeSignedCursorSeq(t, server, replayedFrame.EndpointCursor, committed.RealtimeOutbox.EndpointSeq)
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, created.SessionID, committed.Event.Seq)
+}
+
+func TestV3RealtimeSlowConsumerDropsAndReconnectCatchesUpFromDurableOutbox(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-slow-recover", "create-realtime-slow-recover")
+	slow := server.v3RealtimeOutbox.subscribe()
+	if slow == nil {
+		t.Fatal("slow test subscriber was nil")
+	}
+	defer server.v3RealtimeOutbox.unsubscribe(slow)
+
+	committed := make([]sessionruntime.SessionMutationResult, 0, v3RealtimeSubscriberBufSize+1)
+	for i := 0; i < v3RealtimeSubscriberBufSize+1; i++ {
+		committed = append(committed, appendV3RealtimeTestMessage(t, server, created.SessionID, fmt.Sprintf("message-realtime-slow-recover-%03d", i), fmt.Sprintf("slow durable %03d", i)))
+	}
+	lastCommitted := committed[len(committed)-1]
+	select {
+	case notice := <-slow.slow:
+		if notice.EndpointSeq != lastCommitted.RealtimeOutbox.EndpointSeq || !strings.Contains(notice.Reason, "reconnect required") {
+			t.Fatalf("slow notice = %+v, want endpoint seq %d reconnect", notice, lastCommitted.RealtimeOutbox.EndpointSeq)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for durable slow-consumer drop notice")
+	}
+
+	outboxRows, err := sessionSvc.ListRealtimeOutboxAfter(created.RealtimeOutbox.EndpointSeq, v3RealtimeSubscriberBufSize+2)
+	if err != nil {
+		t.Fatalf("list durable outbox after slow-consumer drop: %v", err)
+	}
+	if len(outboxRows) != len(committed) || outboxRows[len(outboxRows)-1].EndpointSeq != lastCommitted.RealtimeOutbox.EndpointSeq {
+		t.Fatalf("durable outbox rows after slow-consumer drop = len:%d last:%+v, want len:%d last endpoint:%d", len(outboxRows), outboxRows[len(outboxRows)-1], len(committed), lastCommitted.RealtimeOutbox.EndpointSeq)
+	}
+
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStreamWithQuery(t, httpServer.URL, "endpoint_cursor="+url.QueryEscape(created.RealtimeOutbox.EndpointCursor)+"&sessions="+created.SessionID)
+	defer conn.Close()
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, created.SessionID, 0)
+	seenSeqs := map[uint64]bool{}
+	for _, want := range committed {
+		frame := readV3RealtimeFrame(t, conn)
+		assertV3RealtimeFrame(t, frame, V3RealtimeKindEvent, created.SessionID, want.Event.Seq)
+		assertV3RealtimeSignedCursorSeq(t, server, frame.EndpointCursor, want.RealtimeOutbox.EndpointSeq)
+		if seenSeqs[frame.Event.Seq] {
+			t.Fatalf("duplicate event seq after slow-consumer reconnect: %d", frame.Event.Seq)
+		}
+		seenSeqs[frame.Event.Seq] = true
+	}
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, created.SessionID, lastCommitted.Event.Seq)
 }
 
 func TestV3RealtimeConnectedClientRepairsLostHubPublishFromDurableOutbox(t *testing.T) {
