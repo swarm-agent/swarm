@@ -69,7 +69,7 @@ func (s *Server) handleSessionsV3SyncBootstrap(w http.ResponseWriter, r *http.Re
 	}
 	response, err := s.sessionsV3SyncSnapshotResponse(options, selector, resources, req.KnownSessions)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeV3SyncCursorHTTPError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
@@ -92,7 +92,7 @@ func (s *Server) handleSessionsV3SyncHydrate(w http.ResponseWriter, r *http.Requ
 	}
 	response, err := s.sessionsV3SyncSnapshotResponse(options, selector, resources, req.KnownSessions)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeV3SyncCursorHTTPError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
@@ -204,6 +204,9 @@ func (s *Server) sessionsV3SyncSnapshotResponse(options sessionsV3ResolvedWorkse
 		return nil, err
 	}
 	scope := v3SyncCursorScopeForSnapshot(options.Principal, options.Surface, "v3.sync.snapshot", selector, resources)
+	if err := s.validateSessionsV3KnownEndpointCursors(scope, known); err != nil {
+		return nil, err
+	}
 	snapshotEndpointCursor, err := s.signV3SyncEndpointCursor(scope, workset.Rev)
 	if err != nil {
 		return nil, err
@@ -224,10 +227,25 @@ func (s *Server) sessionsV3SyncSnapshotResponse(options sessionsV3ResolvedWorkse
 	response["tombstones_by_session"] = map[string]any{}
 	response["replay_instructions"] = map[string]any{
 		"stream_path":                        V3SyncStreamPath,
+		"transport":                          "http_post",
 		"after_endpoint_cursor":              snapshotEndpointCursor,
 		"bootstrap_required_on_cursor_error": true,
 	}
 	return response, nil
+}
+
+func (s *Server) validateSessionsV3KnownEndpointCursors(scope v3SyncCursorScope, known map[string]sessionsV3KnownState) error {
+	for _, state := range known {
+		if strings.TrimSpace(state.EndpointCursor) == "" {
+			continue
+		}
+		if _, legacy, err := s.parseV3SyncEndpointCursor(state.EndpointCursor, scope); err != nil {
+			return err
+		} else if legacy {
+			return newV3SyncCursorError("endpoint_cursor_legacy_unsupported", errors.New("known_sessions.endpoint_cursor requires a signed scoped sync cursor"))
+		}
+	}
+	return nil
 }
 
 func normalizeV3SyncSurface(surface string) string {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cockroachdb/pebble"
@@ -23,6 +24,32 @@ const (
 	V3SessionWorksetOmissionRequiresManifest = "requires_manifest"
 	V3SessionWorksetOmissionPageBoundary     = "page_boundary"
 )
+
+var v3SessionWorksetAfterSnapshotHookForTest struct {
+	mu sync.Mutex
+	fn func()
+}
+
+func setV3SessionWorksetAfterSnapshotHookForTest(fn func()) func() {
+	v3SessionWorksetAfterSnapshotHookForTest.mu.Lock()
+	previous := v3SessionWorksetAfterSnapshotHookForTest.fn
+	v3SessionWorksetAfterSnapshotHookForTest.fn = fn
+	v3SessionWorksetAfterSnapshotHookForTest.mu.Unlock()
+	return func() {
+		v3SessionWorksetAfterSnapshotHookForTest.mu.Lock()
+		v3SessionWorksetAfterSnapshotHookForTest.fn = previous
+		v3SessionWorksetAfterSnapshotHookForTest.mu.Unlock()
+	}
+}
+
+func runV3SessionWorksetAfterSnapshotHook() {
+	v3SessionWorksetAfterSnapshotHookForTest.mu.Lock()
+	fn := v3SessionWorksetAfterSnapshotHookForTest.fn
+	v3SessionWorksetAfterSnapshotHookForTest.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
+}
 
 type V3SessionWorksetOptions struct {
 	AccountScopeID                     string
@@ -112,6 +139,7 @@ func (s *SessionStore) BuildV3SessionWorkset(options V3SessionWorksetOptions) (r
 		return V3SessionWorksetResult{}, errors.New("at least one workset selector is required")
 	}
 	snapshot := s.store.db.NewSnapshot()
+	runV3SessionWorksetAfterSnapshotHook()
 	defer func() {
 		if closeErr := snapshot.Close(); err == nil && closeErr != nil {
 			err = closeErr

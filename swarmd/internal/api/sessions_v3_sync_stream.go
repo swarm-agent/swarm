@@ -1,12 +1,14 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
 
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
+	transportws "swarm/packages/swarmd/internal/transport/ws"
 )
 
 type sessionsV3SyncStreamRequest struct {
@@ -22,7 +24,7 @@ type sessionsV3SyncStreamRequest struct {
 
 func (s *Server) handleSessionsV3SyncStream(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet && strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-		s.handleV3RealtimeStream(w, r)
+		s.writeV3SyncStreamWebsocketUnsupported(w, r)
 		return
 	}
 	principal, ok := s.sessionsV3SyncPrincipal(w, r, http.MethodPost)
@@ -79,8 +81,32 @@ func (s *Server) handleSessionsV3SyncStream(w http.ResponseWriter, r *http.Reque
 		"events":              visible,
 		"has_more":            len(records) == limit,
 		"selector":            selector,
-		"replay_instructions": map[string]any{"stream_path": V3SyncStreamPath, "after_endpoint_cursor": nextCursor, "bootstrap_required_on_cursor_error": true},
+		"replay_instructions": map[string]any{"stream_path": V3SyncStreamPath, "transport": "http_post", "after_endpoint_cursor": nextCursor, "bootstrap_required_on_cursor_error": true},
 	})
+}
+
+func (s *Server) writeV3SyncStreamWebsocketUnsupported(w http.ResponseWriter, r *http.Request) {
+	conn, err := transportws.Accept(w, r)
+	if err != nil {
+		if errors.Is(err, transportws.ErrUpgradeRequired) {
+			writeError(w, http.StatusUpgradeRequired, errors.New("websocket upgrade required"))
+			return
+		}
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	defer conn.Close()
+	raw, err := json.Marshal(map[string]any{
+		"protocol":           V3RealtimeProtocol,
+		"protocol_version":   V3RealtimeProtocolVersion,
+		"kind":               "cursor.error",
+		"code":               "sync_websocket_unsupported",
+		"message":            "/v3/sync/stream is HTTP POST only until snapshot-scope websocket sync is implemented",
+		"bootstrap_required": false,
+	})
+	if err == nil {
+		_ = conn.WriteText(raw)
+	}
 }
 
 func (s *Server) sessionsV3SyncOutboxRecordMatchesSelector(accountScopeID string, record sessionruntime.RealtimeOutboxRecord, selector sessionsV3SyncSelector) (bool, error) {
