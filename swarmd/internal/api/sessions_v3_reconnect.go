@@ -156,6 +156,10 @@ func (s *Server) sessionsV3ReconnectResponse(principal identity.Principal) (map[
 	if err != nil {
 		return nil, err
 	}
+	signedSnapshotEndpointCursor, err := s.signV3SyncEndpointCursorFromLegacy(v3SyncCursorScopeForRealtime(principal, "desktop"), snapshotEndpointCursor)
+	if err != nil {
+		return nil, err
+	}
 	subscriptions := make([]sessionsV3ReconnectSubscription, 0, len(sessionOrder))
 	for _, sessionID := range sessionOrder {
 		subscriptions = append(subscriptions, sessionsV3ReconnectSubscription{
@@ -164,14 +168,14 @@ func (s *Server) sessionsV3ReconnectResponse(principal identity.Principal) (map[
 			Kind:            V3RealtimeKindSubscribe,
 			SessionID:       sessionID,
 			SubscriptionID:  "reconnect:" + sessionID,
-			EndpointCursor:  snapshotEndpointCursor,
+			EndpointCursor:  signedSnapshotEndpointCursor,
 		})
 	}
 
 	return map[string]any{
 		"ok":                            true,
 		"rev":                           rev,
-		"snapshot_endpoint_cursor":      snapshotEndpointCursor,
+		"snapshot_endpoint_cursor":      signedSnapshotEndpointCursor,
 		"sessions_by_id":                sessionsByID,
 		"projections_by_session":        projectionsBySession,
 		"run_intents_by_session":        runIntentsBySession,

@@ -155,6 +155,13 @@ func TestV3SyncStaticGuardsCoverDesktopAndTUIProductionCallers(t *testing.T) {
 		`assertSourceDoesNotContain(t, "app.go"`,
 		`assertSourceDoesNotContain(t, "chat_backend_adapter.go"`,
 	})
+	realtimeController := filepath.Join("..", "..", "..", "web", "src", "features", "desktop", "realtime", "v3-realtime-controller.ts")
+	assertFileDoesNotContain(t, realtimeController, []string{
+		"endpointCursorSeq",
+		"Number.parseInt(normalized.slice",
+		"maxEndpointCursor",
+		"startsWith('cursor-')",
+	})
 	clientGuard := filepath.Join("..", "..", "..", "internal", "client", "session_v3_test.go")
 	assertFileContains(t, clientGuard, []string{
 		"TestSessionV3TUIWorksetClientUsesTUIRouteAndScope",
@@ -185,6 +192,20 @@ func assertFileContains(t *testing.T, path string, required []string) {
 	for _, needle := range required {
 		if !strings.Contains(source, needle) {
 			t.Fatalf("%s missing required static guard marker %q", path, needle)
+		}
+	}
+}
+
+func assertFileDoesNotContain(t *testing.T, path string, forbidden []string) {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	source := string(body)
+	for _, needle := range forbidden {
+		if strings.Contains(source, needle) {
+			t.Fatalf("%s contains forbidden numeric cursor parsing marker %q", path, needle)
 		}
 	}
 }

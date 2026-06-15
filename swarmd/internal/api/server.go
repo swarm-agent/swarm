@@ -83,6 +83,7 @@ type Server struct {
 	runner                      runService
 	runStreams                  *runStreamManager
 	v3RealtimeOutbox            *v3RealtimeOutboxHub
+	v3SyncCursors               *v3SyncCursorKeyring
 	v3SessionExecutor           *sessionV3Executor
 	sessions                    *sessionruntime.Service
 	workspace                   *workspace.Service

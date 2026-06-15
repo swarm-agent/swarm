@@ -28,7 +28,8 @@ func TestV3RealtimePublishesCommittedOutboxEventAndReplaysAfterReconnect(t *test
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, created.ID, 0)
 	createdEvent := readV3RealtimeFrame(t, conn)
 	assertV3RealtimeFrame(t, createdEvent, V3RealtimeKindEvent, created.ID, 1)
-	if createdEvent.EndpointCursor != "cursor-1" || createdEvent.Event.EventType != "session.created" {
+	assertV3RealtimeSignedCursorSeq(t, server, createdEvent.EndpointCursor, createdResult.RealtimeOutbox.EndpointSeq)
+	if createdEvent.Event.EventType != "session.created" {
 		t.Fatalf("created realtime event = %+v", createdEvent)
 	}
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, created.ID, 1)
@@ -36,7 +37,8 @@ func TestV3RealtimePublishesCommittedOutboxEventAndReplaysAfterReconnect(t *test
 	appendResult := appendV3RealtimeTestMessage(t, server, created.ID, "message-realtime-a", "hello realtime")
 	live := readV3RealtimeFrame(t, conn)
 	assertV3RealtimeFrame(t, live, V3RealtimeKindEvent, created.ID, appendResult.Event.Seq)
-	if live.EndpointCursor != appendResult.RealtimeOutbox.EndpointCursor || live.Event.EventType != "session.message.appended" {
+	assertV3RealtimeSignedCursorSeq(t, server, live.EndpointCursor, appendResult.RealtimeOutbox.EndpointSeq)
+	if live.Event.EventType != "session.message.appended" {
 		t.Fatalf("live realtime event = %+v outbox=%+v", live, appendResult.RealtimeOutbox)
 	}
 	if live.Rev != appendResult.RealtimeOutbox.EndpointSeq || live.PrevRev != appendResult.RealtimeOutbox.EndpointSeq-1 {
@@ -57,9 +59,7 @@ func TestV3RealtimePublishesCommittedOutboxEventAndReplaysAfterReconnect(t *test
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, replayConn), V3RealtimeKindReplayStart, created.ID, 0)
 	replayedAppend := readV3RealtimeFrame(t, replayConn)
 	assertV3RealtimeFrame(t, replayedAppend, V3RealtimeKindEvent, created.ID, appendResult.Event.Seq)
-	if replayedAppend.EndpointCursor != appendResult.RealtimeOutbox.EndpointCursor {
-		t.Fatalf("replayed endpoint cursor = %q, want %q", replayedAppend.EndpointCursor, appendResult.RealtimeOutbox.EndpointCursor)
-	}
+	assertV3RealtimeSignedCursorSeq(t, server, replayedAppend.EndpointCursor, appendResult.RealtimeOutbox.EndpointSeq)
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, replayConn), V3RealtimeKindReplayDone, created.ID, appendResult.Event.Seq)
 }
 
@@ -93,7 +93,8 @@ func TestV3RealtimeReplaysCommittedOutboxRowAfterPublishCrashWindow(t *testing.T
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, created.ID, 0)
 	replayed := readV3RealtimeFrame(t, conn)
 	assertV3RealtimeFrame(t, replayed, V3RealtimeKindEvent, created.ID, committed.Event.Seq)
-	if replayed.EndpointCursor != committed.RealtimeOutbox.EndpointCursor || replayed.Event.EventType != "session.message.appended" {
+	assertV3RealtimeSignedCursorSeq(t, server, replayed.EndpointCursor, committed.RealtimeOutbox.EndpointSeq)
+	if replayed.Event.EventType != "session.message.appended" {
 		t.Fatalf("crash-window replay = %+v committed outbox=%+v", replayed, committed.RealtimeOutbox)
 	}
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, created.ID, committed.Event.Seq)
@@ -107,9 +108,7 @@ func TestV3RealtimeHydrationSnapshotEndpointCursorHandoffReplaysOnlyRowsAfterCur
 	}
 
 	snapshotCursor := hydrateV3RealtimeSnapshotEndpointCursor(t, server, created.SessionID)
-	if snapshotCursor != created.RealtimeOutbox.EndpointCursor {
-		t.Fatalf("snapshot_endpoint_cursor = %q, want create endpoint cursor %q", snapshotCursor, created.RealtimeOutbox.EndpointCursor)
-	}
+	assertV3RealtimeSignedCursorSeq(t, server, snapshotCursor, created.RealtimeOutbox.EndpointSeq)
 	firstMissed := appendV3RealtimeTestMessage(t, server, created.SessionID, "message-realtime-handoff-1", "handoff one")
 	secondMissed := appendV3RealtimeTestMessage(t, server, created.SessionID, "message-realtime-handoff-2", "handoff two")
 
@@ -119,21 +118,25 @@ func TestV3RealtimeHydrationSnapshotEndpointCursorHandoffReplaysOnlyRowsAfterCur
 
 	started := readV3RealtimeFrame(t, conn)
 	assertV3RealtimeFrame(t, started, V3RealtimeKindReplayStart, created.SessionID, 0)
-	if started.EndpointCursor != snapshotCursor || started.AfterSeq != 0 || started.AfterRev != 0 {
+	assertV3RealtimeSignedCursorSeq(t, server, started.EndpointCursor, created.RealtimeOutbox.EndpointSeq)
+	if started.AfterSeq != 0 || started.AfterRev != 0 {
 		closeV3RealtimeConnBeforeFatal(conn)
-		t.Fatalf("replay start cursor = endpoint:%q after_seq:%d afterRev:%d, want endpoint_cursor %q only", started.EndpointCursor, started.AfterSeq, started.AfterRev, snapshotCursor)
+		t.Fatalf("replay start cursor = endpoint:%q after_seq:%d afterRev:%d", started.EndpointCursor, started.AfterSeq, started.AfterRev)
 	}
 	first := readV3RealtimeFrame(t, conn)
 	assertV3RealtimeFrame(t, first, V3RealtimeKindEvent, created.SessionID, firstMissed.Event.Seq)
 	second := readV3RealtimeFrame(t, conn)
 	assertV3RealtimeFrame(t, second, V3RealtimeKindEvent, created.SessionID, secondMissed.Event.Seq)
-	if first.EndpointCursor != firstMissed.RealtimeOutbox.EndpointCursor || second.EndpointCursor != secondMissed.RealtimeOutbox.EndpointCursor || first.Rev >= second.Rev {
+	assertV3RealtimeSignedCursorSeq(t, server, first.EndpointCursor, firstMissed.RealtimeOutbox.EndpointSeq)
+	assertV3RealtimeSignedCursorSeq(t, server, second.EndpointCursor, secondMissed.RealtimeOutbox.EndpointSeq)
+	if first.Rev >= second.Rev {
 		t.Fatalf("handoff replay order = first %+v second %+v", first, second)
 	}
 	completed := readV3RealtimeFrame(t, conn)
 	assertV3RealtimeFrame(t, completed, V3RealtimeKindReplayDone, created.SessionID, secondMissed.Event.Seq)
-	if completed.EndpointCursor != secondMissed.RealtimeOutbox.EndpointCursor || completed.AfterSeq != 0 || completed.AfterRev != 0 {
-		t.Fatalf("replay complete cursor = endpoint:%q after_seq:%d afterRev:%d, want endpoint cursor %q only", completed.EndpointCursor, completed.AfterSeq, completed.AfterRev, secondMissed.RealtimeOutbox.EndpointCursor)
+	assertV3RealtimeSignedCursorSeq(t, server, completed.EndpointCursor, secondMissed.RealtimeOutbox.EndpointSeq)
+	if completed.AfterSeq != 0 || completed.AfterRev != 0 {
+		t.Fatalf("replay complete cursor = endpoint:%q after_seq:%d afterRev:%d", completed.EndpointCursor, completed.AfterSeq, completed.AfterRev)
 	}
 }
 
@@ -150,22 +153,22 @@ func TestV3RealtimeReconnectWithEndpointCursorReplaysMissedRowsInEndpointOrder(t
 
 	started := readV3RealtimeFrame(t, conn)
 	assertV3RealtimeFrame(t, started, V3RealtimeKindReplayStart, created.SessionID, 0)
-	if started.EndpointCursor != checkpointCursor || started.AfterSeq != 0 || started.AfterRev != 0 {
+	assertV3RealtimeSignedCursorSeq(t, server, started.EndpointCursor, created.RealtimeOutbox.EndpointSeq)
+	if started.AfterSeq != 0 || started.AfterRev != 0 {
 		closeV3RealtimeConnBeforeFatal(conn)
-		t.Fatalf("reconnect replay start cursor = endpoint:%q after_seq:%d afterRev:%d, want endpoint_cursor %q only", started.EndpointCursor, started.AfterSeq, started.AfterRev, checkpointCursor)
+		t.Fatalf("reconnect replay start cursor = endpoint:%q after_seq:%d afterRev:%d", started.EndpointCursor, started.AfterSeq, started.AfterRev)
 	}
 	for i, want := range []sessionruntime.SessionMutationResult{firstMissed, secondMissed} {
 		frame := readV3RealtimeFrame(t, conn)
 		assertV3RealtimeFrame(t, frame, V3RealtimeKindEvent, created.SessionID, want.Event.Seq)
-		if frame.EndpointCursor != want.RealtimeOutbox.EndpointCursor || frame.Rev != want.RealtimeOutbox.EndpointSeq {
+		assertV3RealtimeSignedCursorSeq(t, server, frame.EndpointCursor, want.RealtimeOutbox.EndpointSeq)
+		if frame.Rev != want.RealtimeOutbox.EndpointSeq {
 			t.Fatalf("replayed[%d] = %+v, want outbox %+v", i, frame, want.RealtimeOutbox)
 		}
 	}
 	completed := readV3RealtimeFrame(t, conn)
 	assertV3RealtimeFrame(t, completed, V3RealtimeKindReplayDone, created.SessionID, secondMissed.Event.Seq)
-	if completed.EndpointCursor != secondMissed.RealtimeOutbox.EndpointCursor {
-		t.Fatalf("reconnect replay complete endpoint_cursor = %q, want %q", completed.EndpointCursor, secondMissed.RealtimeOutbox.EndpointCursor)
-	}
+	assertV3RealtimeSignedCursorSeq(t, server, completed.EndpointCursor, secondMissed.RealtimeOutbox.EndpointSeq)
 }
 
 func TestV3RealtimeEndpointCursorReplaySurvivesLostHubWakeup(t *testing.T) {
@@ -197,13 +200,15 @@ func TestV3RealtimeEndpointCursorReplaySurvivesLostHubWakeup(t *testing.T) {
 
 	started := readV3RealtimeFrame(t, conn)
 	assertV3RealtimeFrame(t, started, V3RealtimeKindReplayStart, created.SessionID, 0)
-	if started.EndpointCursor != checkpointCursor || started.AfterSeq != 0 || started.AfterRev != 0 {
+	assertV3RealtimeSignedCursorSeq(t, server, started.EndpointCursor, created.RealtimeOutbox.EndpointSeq)
+	if started.AfterSeq != 0 || started.AfterRev != 0 {
 		closeV3RealtimeConnBeforeFatal(conn)
-		t.Fatalf("lost-wakeup replay start cursor = endpoint:%q after_seq:%d afterRev:%d, want endpoint_cursor %q only", started.EndpointCursor, started.AfterSeq, started.AfterRev, checkpointCursor)
+		t.Fatalf("lost-wakeup replay start cursor = endpoint:%q after_seq:%d afterRev:%d", started.EndpointCursor, started.AfterSeq, started.AfterRev)
 	}
 	replayed := readV3RealtimeFrame(t, conn)
 	assertV3RealtimeFrame(t, replayed, V3RealtimeKindEvent, created.SessionID, committed.Event.Seq)
-	if replayed.EndpointCursor != committed.RealtimeOutbox.EndpointCursor || replayed.Event.EventType != "session.message.appended" {
+	assertV3RealtimeSignedCursorSeq(t, server, replayed.EndpointCursor, committed.RealtimeOutbox.EndpointSeq)
+	if replayed.Event.EventType != "session.message.appended" {
 		t.Fatalf("lost-wakeup replay = %+v committed outbox=%+v", replayed, committed.RealtimeOutbox)
 	}
 }
@@ -309,9 +314,7 @@ func TestV3RealtimeEndpointResumeDeliversAuthorizedSubscribedEventsAndSkipsOnlyS
 	appendAfterResume := appendV3RealtimeTestMessage(t, server, b.ID, "message-realtime-resume-b-2", "b-two")
 	live := readV3RealtimeFrame(t, conn)
 	assertV3RealtimeFrame(t, live, V3RealtimeKindEvent, b.ID, appendAfterResume.Event.Seq)
-	if live.EndpointCursor != appendAfterResume.RealtimeOutbox.EndpointCursor {
-		t.Fatalf("live endpoint cursor = %q, want %q", live.EndpointCursor, appendAfterResume.RealtimeOutbox.EndpointCursor)
-	}
+	assertV3RealtimeSignedCursorSeq(t, server, live.EndpointCursor, appendAfterResume.RealtimeOutbox.EndpointSeq)
 }
 
 func TestV3RealtimeSessionGapDirtiesOnlyAffectedSession(t *testing.T) {
@@ -635,6 +638,20 @@ func assertV3RealtimeFrame(t *testing.T, frame V3RealtimeMessage, kind, sessionI
 	}
 	if lastSeq != 0 && frame.LastSeq != lastSeq {
 		t.Fatalf("frame last_seq = %d, want %d: %+v", frame.LastSeq, lastSeq, frame)
+	}
+}
+
+func assertV3RealtimeSignedCursorSeq(t *testing.T, server *Server, raw string, want uint64) {
+	t.Helper()
+	seq, legacy, err := server.parseV3SyncEndpointCursor(raw, v3SyncCursorScopeForRealtime(testPrincipal(), "desktop"))
+	if err != nil {
+		t.Fatalf("parse signed endpoint cursor %q: %v", raw, err)
+	}
+	if legacy {
+		t.Fatalf("endpoint cursor %q is legacy numeric; want signed opaque cursor", raw)
+	}
+	if seq != want {
+		t.Fatalf("signed endpoint cursor seq = %d, want %d (cursor %q)", seq, want, raw)
 	}
 }
 

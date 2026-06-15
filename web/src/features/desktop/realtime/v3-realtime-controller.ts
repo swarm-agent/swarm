@@ -63,31 +63,17 @@ function frameSessionId(frame: DesktopV3RealtimeFrame): string {
 }
 
 function frameEndpointCursor(frame: DesktopV3RealtimeFrame): string {
-  const cursor = String(frame.endpoint_cursor ?? '').trim()
-  return cursor.startsWith('cursor-') ? cursor : ''
+  return String(frame.endpoint_cursor ?? '').trim()
 }
 
-function endpointCursorSeq(cursor: string | null | undefined): number {
-  const normalized = cursor?.trim() ?? ''
-  if (!normalized.startsWith('cursor-')) {
-    return 0
-  }
-  const parsed = Number.parseInt(normalized.slice('cursor-'.length), 10)
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
-}
-
-function maxEndpointCursor(...cursors: Array<string | null | undefined>): string {
-  let best = ''
-  let bestSeq = 0
+function firstEndpointCursor(...cursors: Array<string | null | undefined>): string {
   for (const cursor of cursors) {
     const normalized = cursor?.trim() ?? ''
-    const seq = endpointCursorSeq(normalized)
-    if (seq >= bestSeq && normalized) {
-      best = normalized
-      bestSeq = seq
+    if (normalized) {
+      return normalized
     }
   }
-  return best
+  return ''
 }
 
 function shouldDeliverFrame(kind: string): boolean {
@@ -122,7 +108,7 @@ export class DesktopV3RealtimeController {
       return Promise.resolve()
     }
     const existing = this.subscriptions.get(normalizedSessionId)
-    const cursor = maxEndpointCursor(
+    const cursor = firstEndpointCursor(
       endpointCursor,
       existing?.endpointCursor,
       this.endpointCursor,
@@ -348,13 +334,13 @@ export class DesktopV3RealtimeController {
   }
 
   private advanceEndpointCursor(cursor: string): void {
-    const nextCursor = maxEndpointCursor(cursor, this.endpointCursor)
+    const nextCursor = firstEndpointCursor(cursor, this.endpointCursor)
     if (!nextCursor) {
       return
     }
     this.endpointCursor = nextCursor
     for (const sub of this.subscriptions.values()) {
-      sub.endpointCursor = maxEndpointCursor(nextCursor, sub.endpointCursor)
+      sub.endpointCursor = firstEndpointCursor(nextCursor, sub.endpointCursor)
     }
   }
 

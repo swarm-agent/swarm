@@ -69,6 +69,8 @@ type sessionsV3WorksetResources struct {
 
 type sessionsV3ResolvedWorksetOptions struct {
 	Store                pebblestore.V3SessionWorksetOptions
+	Principal            identity.Principal
+	Surface              string
 	IncludeActivePlan    bool
 	IncludePlanRevisions bool
 }
@@ -88,6 +90,8 @@ func (s *Server) handleSessionsV3Workset(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	options.Principal = principal
+	options.Surface = "desktop"
 	s.writeSessionsV3Workset(w, options)
 }
 
@@ -117,6 +121,8 @@ func (s *Server) handleSessionsV3TUIWorkset(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	options.Principal = principal
+	options.Surface = "tui"
 	options.Store.RestrictSessionIDsToWorkspacePaths = true
 	s.writeSessionsV3Workset(w, options)
 }
@@ -246,7 +252,12 @@ func (s *Server) writeSessionsV3Workset(w http.ResponseWriter, options sessionsV
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, sessionsV3WorksetResponse(workset, permissionsBySession, usageBySession, preferencesBySession, agentModelPolicyBySession, plansBySession, planRevisionsBySession, snapshotEndpointCursor))
+	signedSnapshotEndpointCursor, err := s.signV3SyncEndpointCursorFromLegacy(v3SyncCursorScopeForRealtime(options.Principal, options.Surface), snapshotEndpointCursor)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sessionsV3WorksetResponse(workset, permissionsBySession, usageBySession, preferencesBySession, agentModelPolicyBySession, plansBySession, planRevisionsBySession, signedSnapshotEndpointCursor))
 }
 
 func canonicalSessionsV3WorksetWorkspacePaths(workspace sessionsV3WorksetWorkspace) ([]string, error) {

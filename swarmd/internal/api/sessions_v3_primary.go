@@ -1423,7 +1423,11 @@ func (s *Server) hydrateSessionsV3PrimaryWithLimits(principal identity.Principal
 		contextWindow = agentModelPolicy.ContextWindow
 		maxOutputTokens = agentModelPolicy.MaxOutputTokens
 	}
-	return sessionsV3HydratedSession{Session: hydrated.Session, Projection: hydrated.Projection, Messages: hydrated.Messages, Events: hydrated.Events, PendingPermissions: pendingPermissions, UsageSummary: usageSummary, ActiveRunIntent: activeRunIntent, Preference: preference, ContextWindow: contextWindow, MaxOutputTokens: maxOutputTokens, AgentModelPolicy: agentModelPolicy, PlanRevisions: []pebblestore.SessionPlanSnapshot{}, AppliedSeq: hydrated.Projection.LastEventSeq, HighWatermark: hydrated.Projection.ProjectionHighWatermarkSeq, SnapshotEndpointCursor: hydrated.SnapshotEndpointCursor}, true, nil
+	snapshotEndpointCursor, err := s.signV3SyncEndpointCursorFromLegacy(v3SyncCursorScopeForRealtime(principal, "desktop"), hydrated.SnapshotEndpointCursor)
+	if err != nil {
+		return sessionsV3HydratedSession{}, false, err
+	}
+	return sessionsV3HydratedSession{Session: hydrated.Session, Projection: hydrated.Projection, Messages: hydrated.Messages, Events: hydrated.Events, PendingPermissions: pendingPermissions, UsageSummary: usageSummary, ActiveRunIntent: activeRunIntent, Preference: preference, ContextWindow: contextWindow, MaxOutputTokens: maxOutputTokens, AgentModelPolicy: agentModelPolicy, PlanRevisions: []pebblestore.SessionPlanSnapshot{}, AppliedSeq: hydrated.Projection.LastEventSeq, HighWatermark: hydrated.Projection.ProjectionHighWatermarkSeq, SnapshotEndpointCursor: snapshotEndpointCursor}, true, nil
 }
 
 func (s *Server) sessionsV3AgentModelPolicy(session pebblestore.SessionSnapshot, defaultPreference pebblestore.ModelPreference, defaultContextWindow, defaultMaxOutputTokens int) sessionsV3AgentModelPolicy {

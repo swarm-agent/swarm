@@ -41,7 +41,12 @@ func (s *Server) handleSessionsV3Discovery(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, sessionsV3DiscoveryResponse(workset, snapshotEndpointCursor))
+	signedSnapshotEndpointCursor, err := s.signV3SyncEndpointCursorFromLegacy(v3SyncCursorScopeForRealtime(principal, "desktop"), snapshotEndpointCursor)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sessionsV3DiscoveryResponse(workset, signedSnapshotEndpointCursor))
 }
 
 func (s *Server) sessionsV3DiscoveryPrincipal(w http.ResponseWriter, r *http.Request) (identity.Principal, bool) {
