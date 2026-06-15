@@ -290,11 +290,17 @@ func (s *Server) v3RealtimeValidateEndpointCursor(conn *transportws.Conn, reques
 		return false
 	}
 	if requestedEndpointSeq > currentHead {
-		_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", "endpoint_cursor_ahead", "endpoint cursor is ahead of committed realtime outbox; reconnect required", currentHead, requestedEndpointSeq))
+		msg := NewV3RealtimeCursorError("", "endpoint_cursor_ahead", "endpoint cursor is ahead of committed realtime outbox; reconnect required", currentHead, requestedEndpointSeq)
+		msg.LatestEndpointSeq = currentHead
+		_ = s.sendV3RealtimeMessage(conn, msg)
 		return false
 	}
-	oldestAvailableEndpointSeq := uint64(0)
-	if requestedEndpointSeq < oldestAvailableEndpointSeq {
+	oldestAvailableEndpointSeq, err := s.v3RealtimeOldestAvailableEndpointSeq()
+	if err != nil {
+		_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", "endpoint_resume_failed", err.Error(), 0, requestedEndpointSeq))
+		return false
+	}
+	if oldestAvailableEndpointSeq > 0 && requestedEndpointSeq < oldestAvailableEndpointSeq {
 		msg := NewV3RealtimeCursorError("", "endpoint_cursor_too_old", fmt.Sprintf("endpoint cursor %d is no longer available; bootstrap required", requestedEndpointSeq), 0, requestedEndpointSeq)
 		msg.BootstrapRequired = true
 		msg.OldestAvailableEndpointSeq = oldestAvailableEndpointSeq
@@ -303,6 +309,16 @@ func (s *Server) v3RealtimeValidateEndpointCursor(conn *transportws.Conn, reques
 		return false
 	}
 	return true
+}
+
+func (s *Server) v3RealtimeOldestAvailableEndpointSeq() (uint64, error) {
+	if s != nil && s.v3RealtimeRetentionBoundary != nil {
+		return s.v3RealtimeRetentionBoundary()
+	}
+	// Durable realtime outbox compaction is not active yet. A zero boundary means
+	// every committed endpoint cursor remains replayable; retention/compaction will
+	// wire this to the store-maintained oldest retained endpoint sequence.
+	return 0, nil
 }
 
 func (s *Server) v3RealtimeCatchUpEndpointCursor(conn *transportws.Conn, principal identity.Principal, scope v3SyncCursorScope, currentEndpointSeq, requestedEndpointSeq uint64, subs map[string]v3RealtimeSubscription) (v3RealtimeAdvanceResult, bool) {
@@ -316,7 +332,9 @@ func (s *Server) v3RealtimeCatchUpEndpointCursor(conn *transportws.Conn, princip
 		}
 		if len(records) == 0 {
 			if requestedEndpointSeq > current {
-				_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", "endpoint_cursor_ahead", "endpoint cursor is ahead of committed realtime outbox; reconnect required", current, requestedEndpointSeq))
+				msg := NewV3RealtimeCursorError("", "endpoint_cursor_ahead", "endpoint cursor is ahead of committed realtime outbox; reconnect required", current, requestedEndpointSeq)
+				msg.LatestEndpointSeq = current
+				_ = s.sendV3RealtimeMessage(conn, msg)
 				return advanced, false
 			}
 			return advanced, true

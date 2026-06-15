@@ -13,14 +13,16 @@ Fireworks-backed V3 session turn.
 It verifies:
   - legacy Desktop/TUI workset and reconnect responses return opaque v3c1 cursors
   - /v3/realtime/stream accepts a valid v3c1 cursor and emits v3c1 cursors
-  - tampered and wrong-scope cursors fail closed with machine-readable WS errors
+  - tampered, wrong-scope, and ahead-of-head cursors fail closed with machine-readable WS errors
   - a v3c1 cursor remains valid across a swarm service restart
+  - live cursors are backed by a persistent v3sync-* key, not the default dev key
   - a Fireworks-backed assistant turn converges through realtime and durable replay
 
 Options:
   --primary-ssh <alias>      SSH alias for testbench. Default: testbench
   --api-url <url>            API URL used on remote host. Default: http://127.0.0.1:7781
   --service <unit>           systemd service to restart for key persistence. Default: swarm.service
+  --data-dir <path>          Remote swarmd data dir containing v3-sync-cursor.key. Default: /var/lib/swarmd or SWARMD_DATA_DIR
   --agent <name>             V3 agent name. Default: swarm
   --provider <provider>      Model provider. Default: fireworks
   --model <model>            Model id. Default: accounts/fireworks/models/kimi-k2p6
@@ -50,6 +52,7 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 PRIMARY_SSH="${SWARM_PRIMARY_SSH:-testbench}"
 API_URL="${SWARM_PRIMARY_API_URL:-http://127.0.0.1:7781}"
 SERVICE_UNIT="${SWARM_SERVICE_UNIT:-swarm.service}"
+DATA_DIR="${SWARMD_DATA_DIR:-/var/lib/swarmd}"
 AGENT_NAME="${SWARM_LIVE_STREAM_AGENT:-swarm}"
 PROVIDER="${SWARM_LIVE_STREAM_PROVIDER:-fireworks}"
 MODEL="${SWARM_LIVE_STREAM_MODEL:-accounts/fireworks/models/kimi-k2p6}"
@@ -71,6 +74,7 @@ while [[ $# -gt 0 ]]; do
     --primary-ssh|--ssh) PRIMARY_SSH="${2:-}"; shift 2 ;;
     --api-url|--primary-api-url) API_URL="${2:-}"; shift 2 ;;
     --service) SERVICE_UNIT="${2:-}"; shift 2 ;;
+    --data-dir) DATA_DIR="${2:-}"; shift 2 ;;
     --agent|--agent-name) AGENT_NAME="${2:-}"; shift 2 ;;
     --provider) PROVIDER="${2:-}"; shift 2 ;;
     --model) MODEL="${2:-}"; shift 2 ;;
@@ -94,6 +98,7 @@ require_command python3
 [[ -n "${PRIMARY_SSH}" ]] || fail "--primary-ssh is required"
 [[ -n "${API_URL}" ]] || fail "--api-url is required"
 [[ -n "${SERVICE_UNIT}" ]] || fail "--service is required"
+[[ -n "${DATA_DIR}" ]] || fail "--data-dir is required"
 [[ "${TIMEOUT_SECONDS}" =~ ^[0-9]+$ && "${TIMEOUT_SECONDS}" -gt 0 ]] || fail "--timeout-seconds must be a positive integer"
 API_URL="${API_URL%/}"
 
@@ -149,6 +154,32 @@ function tamperCursor(cursor) {
   assert(isV3Cursor(cursor), 'cannot tamper non-v3 cursor');
   const last = cursor.at(-1);
   return cursor.slice(0, -1) + (last === 'A' ? 'B' : 'A');
+}
+function decodeCursorPayload(cursor) {
+  assert(isV3Cursor(cursor), 'cannot decode non-v3 cursor');
+  const parts = cursor.slice('v3c1.'.length).split('.');
+  assert(parts.length === 2 && parts[0], 'malformed v3 cursor body');
+  return JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
+}
+function readPersistentCursorKey() {
+  const keyPath = path.join(cfg.dataDir, 'v3-sync-cursor.key');
+  try {
+    return fs.readFileSync(keyPath, 'utf8').trim();
+  } catch (err) {
+    const sudo = spawnSync('sudo', ['-n', 'cat', keyPath], { encoding: 'utf8' });
+    if (sudo.status === 0 && sudo.stdout.trim()) return sudo.stdout.trim();
+    throw new Error(`read persistent cursor key ${keyPath}: ${err instanceof Error ? err.message : String(err)}; sudo=${sudo.stderr || sudo.status}`);
+  }
+}
+function cursorWithEndpointSeqSignedByDataDirKey(cursor, afterEndpointSeq) {
+  const encodedKey = readPersistentCursorKey();
+  const key = Buffer.from(encodedKey, 'base64url');
+  assert(key.length >= 32, `persistent cursor key is too short: ${key.length}`);
+  const payload = decodeCursorPayload(cursor);
+  payload.after_endpoint_seq = afterEndpointSeq;
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const sig = crypto.createHmac('sha256', key).update(body).digest('base64url');
+  return `v3c1.${body}.${sig}`;
 }
 function redactHeaders(headers) {
   const out = {};
@@ -269,6 +300,9 @@ function summarizeRealtimeFrame(frame) {
     last_seq: frame.last_seq,
     high_watermark_seq: frame.high_watermark_seq,
     endpoint_cursor: frame.endpoint_cursor,
+    bootstrap_required: frame.bootstrap_required,
+    oldest_available_endpoint_seq: frame.oldest_available_endpoint_seq,
+    latest_endpoint_seq: frame.latest_endpoint_seq,
     error_code: frame.error_code,
     error: frame.error,
     event_seq: event?.seq,
@@ -415,9 +449,12 @@ const observed = {
   restartCursorAccepted: cfg.skipRestart,
   fireworksAssistantCompleted: false,
   realtimeEventCursors: 0,
+  aheadCursorRejected: false,
+  persistentKeyKid: false,
   cursorErrorsDuringValidStreams: [],
 };
 const cursorSamples = {};
+const cursorKids = {};
 const realtimeEventTypes = [];
 
 try {
@@ -459,6 +496,10 @@ try {
   observed.desktopWorksetCursor = isV3Cursor(desktopCursor);
   assert(observed.desktopWorksetCursor, `desktop workset cursor is not v3c1: ${desktopCursor}`);
   cursorSamples.desktop_workset = `${desktopCursor.slice(0, 32)}…`;
+  const desktopCursorPayload = decodeCursorPayload(desktopCursor);
+  cursorKids.desktop_workset = desktopCursorPayload.kid || '';
+  observed.persistentKeyKid = typeof desktopCursorPayload.kid === 'string' && desktopCursorPayload.kid.startsWith('v3sync-') && desktopCursorPayload.kid !== 'dev-v3-sync-cursor';
+  assert(observed.persistentKeyKid, `desktop workset cursor kid is not persistent v3sync-* kid: ${desktopCursorPayload.kid || '<missing>'}`);
 
   const tuiWorkset = (await apiJSON('POST', '/v3/tui/sessions:workset', token, {
     scope: { workspace_path: binding.source_workspace_path },
@@ -500,6 +541,14 @@ try {
   const wrongScopeFrames = await collectRealtime(wrongScopeRoute, token, 1200, (_frame, summary) => summary.kind === 'cursor.error');
   observed.wrongScopeCursorRejected = wrongScopeFrames.some(({ summary }) => summary.kind === 'cursor.error' && summary.error_code === 'endpoint_cursor_scope_mismatch');
   assert(observed.wrongScopeCursorRejected, `wrong-scope cursor was not rejected with endpoint_cursor_scope_mismatch: ${JSON.stringify(wrongScopeFrames.map(f => f.summary))}`);
+
+  const currentHead = Number(desktopCursorPayload.after_endpoint_seq || 0);
+  assert(Number.isSafeInteger(currentHead) && currentHead > 0, `desktop cursor missing usable after_endpoint_seq: ${desktopCursorPayload.after_endpoint_seq}`);
+  const aheadCursor = cursorWithEndpointSeqSignedByDataDirKey(desktopCursor, currentHead + 1);
+  const aheadRoute = `/v3/realtime/stream?endpoint_cursor=${encodeURIComponent(aheadCursor)}`;
+  const aheadFrames = await collectRealtime(aheadRoute, token, 1200, (_frame, summary) => summary.kind === 'cursor.error');
+  observed.aheadCursorRejected = aheadFrames.some(({ summary }) => summary.kind === 'cursor.error' && summary.error_code === 'endpoint_cursor_ahead' && Number(summary.latest_endpoint_seq || 0) === currentHead);
+  assert(observed.aheadCursorRejected, `ahead cursor was not rejected with endpoint_cursor_ahead/latest head ${currentHead}: ${JSON.stringify(aheadFrames.map(f => f.summary))}`);
 
   if (!cfg.skipRestart) {
     emit({ stage: 'restart.begin', service: cfg.serviceUnit });
@@ -551,20 +600,22 @@ try {
   const pass = Boolean(
     observed.desktopWorksetCursor && observed.tuiWorksetCursor && observed.reconnectCursor && observed.discoveryCursor &&
     observed.validWSCursorAccepted && observed.wsHelloCursor && observed.wsReplayCursor &&
-    observed.tamperedCursorRejected && observed.wrongScopeCursorRejected && observed.restartCursorAccepted &&
-    observed.fireworksAssistantCompleted && observed.realtimeEventCursors > 0 && observed.cursorErrorsDuringValidStreams.length === 0
+    observed.tamperedCursorRejected && observed.wrongScopeCursorRejected && observed.aheadCursorRejected && observed.restartCursorAccepted &&
+    observed.persistentKeyKid && observed.fireworksAssistantCompleted && observed.realtimeEventCursors > 0 && observed.cursorErrorsDuringValidStreams.length === 0
   );
   const summary = {
     ok: pass,
     primary_ssh: cfg.primarySSH,
     api_url: cfg.apiURL,
     service_unit: cfg.serviceUnit,
+    data_dir: cfg.dataDir,
     session_id: sessionID,
     run_id: runID,
     provider: cfg.provider,
     model: cfg.model,
     observed,
     cursor_samples: cursorSamples,
+    cursor_kids: cursorKids,
     realtime_event_count: realtimeEventTypes.length,
     realtime_event_types: realtimeEventTypes,
     db_event_count: events.events?.length ?? 0,
@@ -578,7 +629,7 @@ try {
   emit({ stage: 'final.summary', ...summary, realtime_event_types: undefined });
   if (!pass) process.exitCode = 1;
 } catch (err) {
-  const summary = { ok: false, error: err instanceof Error ? err.message : String(err), session_id: sessionID, run_id: runID, observed, cursor_samples: cursorSamples, artifacts: { frames: framesPath, requests: requestsPath, restart: restartPath, summary: summaryPath, function_chain: chainPath } };
+  const summary = { ok: false, error: err instanceof Error ? err.message : String(err), session_id: sessionID, run_id: runID, observed, cursor_samples: cursorSamples, cursor_kids: cursorKids, artifacts: { frames: framesPath, requests: requestsPath, restart: restartPath, summary: summaryPath, function_chain: chainPath } };
   fs.writeFileSync(summaryPath, JSON.stringify(summary, null, 2));
   writeFunctionChain(chainPath, summary);
   emit({ stage: 'error', error: summary.error, session_id: sessionID, run_id: runID });
@@ -598,7 +649,8 @@ function writeFunctionChain(file, summary) {
   lines.push('## What this runner proves');
   lines.push('- It uses the live SSH host API and real swarmd service, not mocks.');
   lines.push('- It checks Desktop workset, TUI workset, reconnect, and discovery cursor shape.');
-  lines.push('- It checks valid, tampered, and wrong-scope websocket cursor behavior.');
+  lines.push('- It checks valid, tampered, wrong-scope, and ahead-of-head websocket cursor behavior.');
+  lines.push('- It decodes cursor metadata to prove the live server uses a persistent v3sync-* key ID, not the default dev key.');
   lines.push('- It restarts the swarm service and reuses a pre-restart cursor to prove key persistence.');
   lines.push('- It posts a real V3 user message and waits for Fireworks-backed assistant output over realtime.');
   lines.push('');
@@ -607,6 +659,9 @@ function writeFunctionChain(file, summary) {
   lines.push('');
   lines.push('## Cursor samples');
   for (const [key, value] of Object.entries(summary.cursor_samples || {})) lines.push(`- ${key}: ${value}`);
+  lines.push('');
+  lines.push('## Cursor key IDs');
+  for (const [key, value] of Object.entries(summary.cursor_kids || {})) lines.push(`- ${key}: ${value}`);
   lines.push('');
   lines.push('## Artifacts');
   lines.push(`- HTTP request summaries: ${requestsPath}`);
@@ -618,14 +673,15 @@ function writeFunctionChain(file, summary) {
 NODE
 
 CONFIG_LOCAL="${ARTIFACT_DIR}/config.json"
-python3 - "$CONFIG_LOCAL" "$PRIMARY_SSH" "$API_URL" "$SERVICE_UNIT" "$AGENT_NAME" "$PROVIDER" "$MODEL" "$THINKING" "$PROMPT" "$TIMEOUT_SECONDS" "$SKIP_RESTART" <<'PY'
+python3 - "$CONFIG_LOCAL" "$PRIMARY_SSH" "$API_URL" "$SERVICE_UNIT" "$DATA_DIR" "$AGENT_NAME" "$PROVIDER" "$MODEL" "$THINKING" "$PROMPT" "$TIMEOUT_SECONDS" "$SKIP_RESTART" <<'PY'
 import json, sys
-path, primary, api, service, agent, provider, model, thinking, prompt, timeout, skip_restart = sys.argv[1:]
+path, primary, api, service, data_dir, agent, provider, model, thinking, prompt, timeout, skip_restart = sys.argv[1:]
 with open(path, 'w', encoding='utf-8') as f:
     json.dump({
         'primarySSH': primary,
         'apiURL': api,
         'serviceUnit': service,
+        'dataDir': data_dir,
         'agentName': agent,
         'provider': provider,
         'model': model,
@@ -690,7 +746,7 @@ if [[ ! -f "${SUMMARY_JSON}" ]]; then
   fail "remote run succeeded but summary was not copied back"
 fi
 
-jq '{ok, primary_ssh, api_url, service_unit, session_id, run_id, provider, model, observed, cursor_samples, realtime_event_count, db_event_count, tail_message_count, assistant_message_count, assistant_preview, artifacts}' "${SUMMARY_JSON}"
+jq '{ok, primary_ssh, api_url, service_unit, data_dir, session_id, run_id, provider, model, observed, cursor_samples, cursor_kids, realtime_event_count, db_event_count, tail_message_count, assistant_message_count, assistant_preview, artifacts}' "${SUMMARY_JSON}"
 log "v3-durable-sync-e2e: PASS"
 log "function chain: ${FUNCTION_CHAIN_MD}"
 log "frames: ${ARTIFACT_DIR}/remote-artifacts/realtime-frames.ndjson"

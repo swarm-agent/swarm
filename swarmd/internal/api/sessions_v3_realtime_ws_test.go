@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -169,6 +170,50 @@ func TestV3RealtimeReconnectWithEndpointCursorReplaysMissedRowsInEndpointOrder(t
 	completed := readV3RealtimeFrame(t, conn)
 	assertV3RealtimeFrame(t, completed, V3RealtimeKindReplayDone, created.SessionID, secondMissed.Event.Seq)
 	assertV3RealtimeSignedCursorSeq(t, server, completed.EndpointCursor, secondMissed.RealtimeOutbox.EndpointSeq)
+}
+
+func TestV3RealtimeEndpointCursorAheadFailsClosed(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-ahead", "create-realtime-ahead")
+	currentHead := created.RealtimeOutbox.EndpointSeq
+	scope := v3SyncCursorScopeForRealtime(testPrincipal(), "desktop")
+	aheadCursor, err := server.signV3SyncEndpointCursor(scope, currentHead+1)
+	if err != nil {
+		t.Fatalf("sign ahead cursor: %v", err)
+	}
+
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStreamWithQuery(t, httpServer.URL, "endpoint_cursor="+url.QueryEscape(aheadCursor))
+	defer conn.Close()
+
+	frame := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeCursorError(t, frame, "endpoint_cursor_ahead")
+	if frame.LatestEndpointSeq != currentHead {
+		t.Fatalf("ahead cursor frame latest_endpoint_seq = %d, want %d: %+v", frame.LatestEndpointSeq, currentHead, frame)
+	}
+}
+
+func TestV3RealtimeEndpointCursorTooOldRequiresBootstrap(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-too-old", "create-realtime-too-old")
+	currentHead := created.RealtimeOutbox.EndpointSeq
+	scope := v3SyncCursorScopeForRealtime(testPrincipal(), "desktop")
+	oldCursor, err := server.signV3SyncEndpointCursor(scope, currentHead)
+	if err != nil {
+		t.Fatalf("sign old cursor: %v", err)
+	}
+	retentionBoundary := currentHead + 1
+	server.v3RealtimeRetentionBoundary = func() (uint64, error) { return retentionBoundary, nil }
+
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStreamWithQuery(t, httpServer.URL, "endpoint_cursor="+url.QueryEscape(oldCursor))
+	defer conn.Close()
+
+	frame := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeCursorError(t, frame, "endpoint_cursor_too_old")
+	if !frame.BootstrapRequired || frame.OldestAvailableEndpointSeq != retentionBoundary || frame.LatestEndpointSeq != currentHead {
+		t.Fatalf("too-old cursor frame = %+v, want bootstrap boundary=%d head=%d", frame, retentionBoundary, currentHead)
+	}
 }
 
 func TestV3RealtimeEndpointCursorReplaySurvivesLostHubWakeup(t *testing.T) {
@@ -622,6 +667,16 @@ func assertNoV3RealtimeFrame(t *testing.T, conn *gorillaws.Conn, wait time.Durat
 	_, raw, err := conn.ReadMessage()
 	if err == nil {
 		t.Fatalf("unexpected v3 realtime frame: %s", string(raw))
+	}
+}
+
+func assertV3RealtimeCursorError(t *testing.T, frame V3RealtimeMessage, code string) {
+	t.Helper()
+	if frame.Protocol != V3RealtimeProtocol || frame.ProtocolVersion != V3RealtimeProtocolVersion || frame.Kind != V3RealtimeKindCursorError {
+		t.Fatalf("cursor error frame = %+v, want protocol=%s version=%d kind=%s", frame, V3RealtimeProtocol, V3RealtimeProtocolVersion, V3RealtimeKindCursorError)
+	}
+	if frame.ErrorCode != code {
+		t.Fatalf("cursor error code = %q, want %q: %+v", frame.ErrorCode, code, frame)
 	}
 }
 
