@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -710,6 +711,114 @@ func TestPublishCommittedSessionV3MutationResultWakesRealtimeOutboxAndGlobalDisc
 			t.Fatalf("publishCommittedSessionV3MutationResult still fans out through retired session transport via %q", forbidden)
 		}
 	}
+}
+
+func TestApplySessionV3PrimaryMutationAcceptsDurableCommitWhenGlobalMirrorPublishFails(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-global-fail", "create-realtime-global-fail")
+	checkpointCursor := created.RealtimeOutbox.EndpointCursor
+
+	previousAppend := appendCommittedSessionV3GlobalEvent
+	appendCommittedSessionV3GlobalEvent = func(*Server, sessionruntime.SessionEvent) error {
+		return errors.New("simulated global mirror failure after durable commit")
+	}
+	t.Cleanup(func() { appendCommittedSessionV3GlobalEvent = previousAppend })
+
+	input := sessionruntime.SessionMutationInput{
+		SessionID:       created.SessionID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "message-realtime-global-fail",
+		IdempotencyKey:  "message-realtime-global-fail",
+		PayloadHash:     "hash-message-realtime-global-fail",
+		Kind:            sessionruntime.SessionMutationAppendMessage,
+		Message:         &pebblestore.MessageSnapshot{Role: "user", Content: "durable despite global mirror failure"},
+		NowUnixMs:       2000,
+	}
+	committed, err := server.applySessionV3PrimaryMutation(input)
+	if err != nil {
+		t.Fatalf("apply mutation should accept durable commit despite post-commit global mirror failure: %v", err)
+	}
+	if committed.RealtimeOutbox == nil || committed.Event.Seq != 2 {
+		t.Fatalf("committed mutation missing realtime outbox or seq: %+v", committed)
+	}
+	outboxRows, err := sessionSvc.ListRealtimeOutboxAfter(created.RealtimeOutbox.EndpointSeq, 10)
+	if err != nil {
+		t.Fatalf("list realtime outbox after failed global mirror: %v", err)
+	}
+	if len(outboxRows) != 1 || outboxRows[0].EndpointSeq != committed.RealtimeOutbox.EndpointSeq {
+		t.Fatalf("durable outbox rows after failed global mirror = %+v, want committed %+v", outboxRows, committed.RealtimeOutbox)
+	}
+
+	replayed, replayErr := server.applySessionV3PrimaryMutation(input)
+	if replayErr != nil {
+		t.Fatalf("idempotent retry after accepted durable commit: %v", replayErr)
+	}
+	if !replayed.Replayed || replayed.RealtimeOutbox != nil || replayed.Event.Seq != committed.Event.Seq {
+		t.Fatalf("idempotent retry = %+v, want replayed without duplicate outbox for committed seq %d", replayed, committed.Event.Seq)
+	}
+	outboxRowsAfterRetry, err := sessionSvc.ListRealtimeOutboxAfter(created.RealtimeOutbox.EndpointSeq, 10)
+	if err != nil {
+		t.Fatalf("list realtime outbox after idempotent retry: %v", err)
+	}
+	if len(outboxRowsAfterRetry) != 1 || outboxRowsAfterRetry[0].EndpointSeq != committed.RealtimeOutbox.EndpointSeq {
+		t.Fatalf("outbox rows after idempotent retry = %+v, want single committed row", outboxRowsAfterRetry)
+	}
+
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStreamWithQuery(t, httpServer.URL, "endpoint_cursor="+url.QueryEscape(checkpointCursor)+"&sessions="+created.SessionID)
+	defer conn.Close()
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, created.SessionID, 0)
+	replayedFrame := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, replayedFrame, V3RealtimeKindEvent, created.SessionID, committed.Event.Seq)
+	assertV3RealtimeSignedCursorSeq(t, server, replayedFrame.EndpointCursor, committed.RealtimeOutbox.EndpointSeq)
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, created.SessionID, committed.Event.Seq)
+}
+
+func TestV3RealtimeConnectedClientRepairsLostHubPublishFromDurableOutbox(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-connected-repair", "create-realtime-connected-repair")
+	previousKeepaliveInterval := v3RealtimeKeepaliveInterval
+	v3RealtimeKeepaliveInterval = 25 * time.Millisecond
+	t.Cleanup(func() { v3RealtimeKeepaliveInterval = previousKeepaliveInterval })
+
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStreamWithQuery(t, httpServer.URL, "endpoint_cursor="+url.QueryEscape(created.RealtimeOutbox.EndpointCursor)+"&sessions="+created.SessionID)
+	defer conn.Close()
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, created.SessionID, 0)
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, created.SessionID, 1)
+
+	committed, err := sessionSvc.ApplySessionMutation(sessionruntime.SessionMutationInput{
+		SessionID:       created.SessionID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "message-realtime-connected-repair",
+		IdempotencyKey:  "message-realtime-connected-repair",
+		PayloadHash:     "hash-message-realtime-connected-repair",
+		Kind:            sessionruntime.SessionMutationAppendMessage,
+		Message:         &pebblestore.MessageSnapshot{Role: "user", Content: "durable row without hub publish"},
+		NowUnixMs:       2000,
+	})
+	if err != nil {
+		t.Fatalf("commit mutation without hub publish: %v", err)
+	}
+	if committed.RealtimeOutbox == nil {
+		t.Fatalf("committed mutation missing realtime outbox: %+v", committed)
+	}
+
+	var repaired V3RealtimeMessage
+	for i := 0; i < 5; i++ {
+		frame := readV3RealtimeFrame(t, conn)
+		if frame.Kind == V3RealtimeKindEvent {
+			repaired = frame
+			break
+		}
+		if frame.Kind != V3RealtimeKindKeepalive {
+			t.Fatalf("unexpected frame while waiting for durable catch-up repair: %+v", frame)
+		}
+	}
+	assertV3RealtimeFrame(t, repaired, V3RealtimeKindEvent, created.SessionID, committed.Event.Seq)
+	assertV3RealtimeSignedCursorSeq(t, server, repaired.EndpointCursor, committed.RealtimeOutbox.EndpointSeq)
 }
 
 func TestPublishCommittedSessionV3MutationResultDoesNotRequireLegacyMirrors(t *testing.T) {
