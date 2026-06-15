@@ -215,6 +215,89 @@ func TestSessionsV3SyncBootstrapRejectsKnownSessionLegacyEndpointCursor(t *testi
 	}
 }
 
+func TestSessionsV3SyncBootstrapReturnsDeletedSessionTombstone(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-tombstone", "Sync Tombstone", "/workspace/cp5-tombstone")
+	if err := server.sessions.DeleteSession(created.ID); err != nil {
+		t.Fatalf("delete session: %v", err)
+	}
+
+	body := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"/workspace/cp5-tombstone","recent":{"limit":10}},"history":{"mode":"none"}}`
+	req := httptest.NewRequest(http.MethodPost, V3SyncBootstrapPath, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bootstrap status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		SessionsByID        map[string]pebblestore.SessionSnapshot    `json:"sessions_by_id"`
+		TombstonesBySession map[string]pebblestore.V3SessionTombstone `json:"tombstones_by_session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+	if _, ok := payload.SessionsByID[created.ID]; ok {
+		t.Fatalf("deleted session still present in sessions_by_id: %+v", payload.SessionsByID[created.ID])
+	}
+	tombstone := payload.TombstonesBySession[created.ID]
+	if !tombstone.Deleted || tombstone.Kind != "deleted" || tombstone.Session.ID != created.ID || tombstone.WorkspacePath != "/workspace/cp5-tombstone" {
+		t.Fatalf("deleted tombstone invalid: %+v", tombstone)
+	}
+}
+
+func TestSessionsV3SyncWorkspaceStreamDoesNotDropDeletedMembershipEvent(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-delete-stream", "Sync Delete Stream", "/workspace/cp5-delete-stream")
+
+	bootstrapBody := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"/workspace/cp5-delete-stream","recent":{"limit":10}},"history":{"mode":"none"}}`
+	bootstrapReq := httptest.NewRequest(http.MethodPost, V3SyncBootstrapPath, bytes.NewBufferString(bootstrapBody))
+	bootstrapReq.Header.Set("Content-Type", "application/json")
+	bootstrapRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(bootstrapRec, withTestPrincipal(bootstrapReq))
+	if bootstrapRec.Code != http.StatusOK {
+		t.Fatalf("bootstrap status=%d body=%s", bootstrapRec.Code, bootstrapRec.Body.String())
+	}
+	var bootstrap struct {
+		SnapshotEndpointCursor string `json:"snapshot_endpoint_cursor"`
+	}
+	if err := json.Unmarshal(bootstrapRec.Body.Bytes(), &bootstrap); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+	if bootstrap.SnapshotEndpointCursor == "" {
+		t.Fatalf("bootstrap cursor missing")
+	}
+	if err := server.sessions.DeleteSession(created.ID); err != nil {
+		t.Fatalf("delete session: %v", err)
+	}
+
+	streamBody := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"/workspace/cp5-delete-stream","recent":{"limit":10}},"endpoint_cursor":"` + bootstrap.SnapshotEndpointCursor + `"}`
+	streamReq := httptest.NewRequest(http.MethodPost, V3SyncStreamPath, bytes.NewBufferString(streamBody))
+	streamReq.Header.Set("Content-Type", "application/json")
+	streamRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(streamRec, withTestPrincipal(streamReq))
+	if streamRec.Code != http.StatusOK {
+		t.Fatalf("stream status=%d body=%s", streamRec.Code, streamRec.Body.String())
+	}
+	var stream struct {
+		Events []struct {
+			SessionID string `json:"session_id"`
+			Event     struct {
+				EventType string `json:"event_type"`
+			} `json:"event"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(streamRec.Body.Bytes(), &stream); err != nil {
+		t.Fatalf("decode stream: %v", err)
+	}
+	for _, event := range stream.Events {
+		if event.SessionID == created.ID && event.Event.EventType == "session.deleted" {
+			return
+		}
+	}
+	t.Fatalf("workspace stream missed durable delete membership event for %s: %+v", created.ID, stream.Events)
+}
+
 func TestSessionsV3SyncStreamWebsocketIsExplicitlyUnsupportedForSnapshotCursor(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	httpServer := httptest.NewServer(server.Handler())

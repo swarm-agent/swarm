@@ -222,9 +222,13 @@ func (s *Server) sessionsV3SyncSnapshotResponse(options sessionsV3ResolvedWorkse
 		"resource_set":         scope.ResourceSet,
 	}
 	response["scope_id"] = scope.SelectorFilterHash + ":" + scope.ResourceSet
+	tombstones, err := s.sessionsV3SyncTombstonesBySession(options.Principal.AccountScopeID, selector)
+	if err != nil {
+		return nil, err
+	}
 	response["selector"] = selector
 	response["known_sessions"] = known
-	response["tombstones_by_session"] = map[string]any{}
+	response["tombstones_by_session"] = tombstones
 	response["replay_instructions"] = map[string]any{
 		"stream_path":                        V3SyncStreamPath,
 		"transport":                          "http_post",
@@ -232,6 +236,56 @@ func (s *Server) sessionsV3SyncSnapshotResponse(options sessionsV3ResolvedWorkse
 		"bootstrap_required_on_cursor_error": true,
 	}
 	return response, nil
+}
+
+func (s *Server) sessionsV3SyncTombstonesBySession(accountScopeID string, selector any) (map[string]any, error) {
+	out := map[string]any{}
+	if s == nil || s.sessions == nil {
+		return out, nil
+	}
+	tombstones, err := s.sessions.ListSessionTombstonesForAccount(accountScopeID, 1000)
+	if err != nil {
+		return nil, err
+	}
+	resolvedSelector, _ := selector.(sessionsV3SyncSelector)
+	for _, tombstone := range tombstones {
+		if !sessionsV3SyncTombstoneMatchesSelector(tombstone, resolvedSelector) {
+			continue
+		}
+		out[tombstone.SessionID] = tombstone
+	}
+	return out, nil
+}
+
+func sessionsV3SyncTombstoneMatchesSelector(tombstone pebblestore.V3SessionTombstone, selector sessionsV3SyncSelector) bool {
+	if strings.TrimSpace(tombstone.SessionID) == "" {
+		return false
+	}
+	switch strings.TrimSpace(selector.Kind) {
+	case "session_ids":
+		for _, id := range selector.SessionIDs {
+			if strings.TrimSpace(id) == tombstone.SessionID {
+				return true
+			}
+		}
+		return false
+	case "workspace", "tui":
+		paths, _ := canonicalSessionsV3TUIWorksetPaths(sessionsV3TUIWorksetScope{WorkspacePath: selector.WorkspacePath, WorkspacePaths: selector.WorkspacePaths, CWDPath: selector.CWDPath})
+		if len(paths) == 0 {
+			paths, _ = canonicalSessionsV3WorksetWorkspacePaths(sessionsV3WorksetWorkspace{WorkspacePath: selector.WorkspacePath, WorkspacePaths: selector.WorkspacePaths})
+		}
+		if len(paths) == 0 {
+			return true
+		}
+		for _, path := range paths {
+			if strings.TrimSpace(tombstone.WorkspacePath) != "" && strings.TrimSpace(path) != "" && strings.TrimSpace(tombstone.WorkspacePath) == strings.TrimSpace(path) {
+				return true
+			}
+		}
+		return false
+	default:
+		return true
+	}
 }
 
 func (s *Server) validateSessionsV3KnownEndpointCursors(scope v3SyncCursorScope, known map[string]sessionsV3KnownState) error {

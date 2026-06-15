@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/cockroachdb/pebble"
 
@@ -49,6 +50,21 @@ type SessionLifecycleSnapshot struct {
 	StopReason     string `json:"stop_reason,omitempty"`
 	Error          string `json:"error,omitempty"`
 	OwnerTransport string `json:"owner_transport,omitempty"`
+}
+
+type V3SessionTombstone struct {
+	SessionID      string          `json:"session_id"`
+	UserID         string          `json:"user_id,omitempty"`
+	AccountScopeID string          `json:"account_scope_id,omitempty"`
+	WorkspacePath  string          `json:"workspace_path,omitempty"`
+	Kind           string          `json:"kind"`
+	Deleted        bool            `json:"deleted,omitempty"`
+	Archived       bool            `json:"archived,omitempty"`
+	Hidden         bool            `json:"hidden,omitempty"`
+	EndpointSeq    uint64          `json:"endpoint_seq"`
+	EventSeq       uint64          `json:"event_seq"`
+	UpdatedAt      int64           `json:"updated_at"`
+	Session        SessionSnapshot `json:"session,omitempty"`
 }
 
 type SessionExecutionV2Record struct {
@@ -323,6 +339,77 @@ func (s *SessionStore) DeleteSession(sessionID string) error {
 	}
 	batch := s.store.NewBatch()
 	defer batch.Close()
+	if existing.ID != "" {
+		currentSeq, err := s.readV3SessionSequence(sessionID)
+		if err != nil {
+			return err
+		}
+		currentOutboxSeq, err := s.readV3RealtimeOutboxSequence()
+		if err != nil {
+			return err
+		}
+		seq := currentSeq + 1
+		endpointSeq := currentOutboxSeq + 1
+		now := time.Now().UnixMilli()
+		tombstone := V3SessionTombstone{
+			SessionID:      existing.ID,
+			UserID:         existing.UserID,
+			AccountScopeID: existing.AccountScopeID,
+			WorkspacePath:  existing.WorkspacePath,
+			Kind:           "deleted",
+			Deleted:        true,
+			EndpointSeq:    endpointSeq,
+			EventSeq:       seq,
+			UpdatedAt:      now,
+			Session:        existing,
+		}
+		payload, err := json.Marshal(v3SessionEventReplayPayload{SessionID: sessionID, Seq: seq, Kind: V3SessionMutationDeleteSession, Session: &existing, Tombstone: &tombstone})
+		if err != nil {
+			return fmt.Errorf("marshal v3 session delete payload %q: %w", sessionID, err)
+		}
+		event := V3SessionEvent{ID: fmt.Sprintf("v3evt_%s_%020d", sessionID, seq), SessionID: sessionID, Seq: seq, EventType: "session.deleted", Payload: payload, TsUnixMs: now}
+		projection := V3SessionProjection{SessionID: sessionID, LastEventSeq: seq, ProjectionHighWatermarkSeq: seq, UpdatedAt: now}
+		eventPayload, err := json.Marshal(event)
+		if err != nil {
+			return fmt.Errorf("marshal v3 session delete event %q: %w", sessionID, err)
+		}
+		projectionPayload, err := json.Marshal(projection)
+		if err != nil {
+			return fmt.Errorf("marshal v3 session delete projection %q: %w", sessionID, err)
+		}
+		realtimeOutbox := V3RealtimeOutboxRecord{EndpointSeq: endpointSeq, EndpointCursor: V3RealtimeOutboxCursor(endpointSeq), SessionID: sessionID, UserID: existing.UserID, AccountScopeID: existing.AccountScopeID, Event: event, Projection: projection, CreatedAt: now}
+		realtimeOutboxPayload, err := json.Marshal(realtimeOutbox)
+		if err != nil {
+			return fmt.Errorf("marshal v3 session delete outbox %q: %w", sessionID, err)
+		}
+		if err := batch.Set([]byte(KeyV3SessionSequence(sessionID)), uint64ToBytes(seq), nil); err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(KeyV3SessionEvent(sessionID, seq)), eventPayload, nil); err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(KeyV3RealtimeOutboxSequence()), uint64ToBytes(endpointSeq), nil); err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(KeyV3RealtimeOutbox(endpointSeq)), realtimeOutboxPayload, nil); err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionEndpoint(sessionID, endpointSeq)), realtimeOutboxPayload, nil); err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionSeq(sessionID, seq)), realtimeOutboxPayload, nil); err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(KeyV3RealtimeOutboxByAuthScope(existing.AccountScopeID, existing.UserID, endpointSeq)), realtimeOutboxPayload, nil); err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(KeyV3SessionProjection(sessionID)), projectionPayload, nil); err != nil {
+			return err
+		}
+		if err := setV3SessionTombstoneInBatch(batch, tombstone); err != nil {
+			return err
+		}
+	}
 	if err := batch.Delete([]byte(KeySession(sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
 		return err
 	}
@@ -349,6 +436,87 @@ func (s *SessionStore) DeleteSession(sessionID string) error {
 		}
 	}
 	return batch.Commit(pebble.Sync)
+}
+
+func normalizeV3SessionTombstone(tombstone V3SessionTombstone) V3SessionTombstone {
+	tombstone.SessionID = strings.TrimSpace(tombstone.SessionID)
+	tombstone.UserID = strings.TrimSpace(tombstone.UserID)
+	tombstone.AccountScopeID = strings.TrimSpace(tombstone.AccountScopeID)
+	tombstone.WorkspacePath = strings.TrimSpace(tombstone.WorkspacePath)
+	tombstone.Kind = strings.TrimSpace(strings.ToLower(tombstone.Kind))
+	if tombstone.Kind == "" {
+		switch {
+		case tombstone.Deleted:
+			tombstone.Kind = "deleted"
+		case tombstone.Archived:
+			tombstone.Kind = "archived"
+		case tombstone.Hidden:
+			tombstone.Kind = "hidden"
+		default:
+			tombstone.Kind = "changed"
+		}
+	}
+	tombstone.Session = normalizeSessionOwnership(tombstone.Session)
+	if tombstone.Session.ID != "" {
+		if tombstone.UserID == "" {
+			tombstone.UserID = tombstone.Session.UserID
+		}
+		if tombstone.AccountScopeID == "" {
+			tombstone.AccountScopeID = tombstone.Session.AccountScopeID
+		}
+		if tombstone.WorkspacePath == "" {
+			tombstone.WorkspacePath = tombstone.Session.WorkspacePath
+		}
+	}
+	return tombstone
+}
+
+func setV3SessionTombstoneInBatch(batch *pebble.Batch, tombstone V3SessionTombstone) error {
+	tombstone = normalizeV3SessionTombstone(tombstone)
+	if tombstone.SessionID == "" {
+		return errors.New("session tombstone session id is required")
+	}
+	payload, err := json.Marshal(tombstone)
+	if err != nil {
+		return fmt.Errorf("marshal v3 session tombstone %q: %w", tombstone.SessionID, err)
+	}
+	if err := batch.Set([]byte(KeyV3SessionTombstone(tombstone.SessionID)), payload, nil); err != nil {
+		return err
+	}
+	if tombstone.AccountScopeID != "" {
+		if err := batch.Set([]byte(KeyV3SessionTombstoneByAccount(tombstone.AccountScopeID, tombstone.SessionID)), payload, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *SessionStore) ListV3SessionTombstonesForAccount(accountScopeID string, limit int) ([]V3SessionTombstone, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if limit <= 0 {
+		limit = 500
+	}
+	prefix := V3SessionTombstonePrefix()
+	if accountScopeID != "" {
+		prefix = V3SessionTombstoneByAccountPrefix(accountScopeID)
+	}
+	out := make([]V3SessionTombstone, 0)
+	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, Limit: limit}, func(_ string, value []byte) (bool, error) {
+		var tombstone V3SessionTombstone
+		if err := json.Unmarshal(value, &tombstone); err != nil {
+			return false, err
+		}
+		tombstone = normalizeV3SessionTombstone(tombstone)
+		if accountScopeID != "" && tombstone.AccountScopeID != accountScopeID {
+			return true, nil
+		}
+		out = append(out, tombstone)
+		return len(out) < limit, nil
+	})
+	return out, err
 }
 
 func (s *SessionStore) GetSession(sessionID string) (SessionSnapshot, bool, error) {

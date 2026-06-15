@@ -15,6 +15,7 @@ type SessionRunState = pebblestore.V3SessionRunState
 type SessionRunStateRepairResult = pebblestore.V3SessionRunStateRepairResult
 type SessionReplay = pebblestore.V3SessionReplay
 type RealtimeOutboxRecord = pebblestore.V3RealtimeOutboxRecord
+type SessionTombstone = pebblestore.V3SessionTombstone
 
 type SessionIdempotencyRecord = pebblestore.V3SessionIdempotencyRecord
 
@@ -123,6 +124,13 @@ func (s *Service) ListRealtimeOutboxForSessionAfterEndpoint(sessionID string, af
 		return nil, errors.New("session store is not configured")
 	}
 	return s.store.ListV3RealtimeOutboxForSessionAfterEndpoint(sessionID, afterEndpointSeq, limit)
+}
+
+func (s *Service) ListSessionTombstonesForAccount(accountScopeID string, limit int) ([]SessionTombstone, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ListV3SessionTombstonesForAccount(accountScopeID, limit)
 }
 
 func (s *Service) ListRealtimeOutboxForSessionsAfterEndpoint(sessionIDs []string, afterEndpointSeq uint64, limit int) ([]RealtimeOutboxRecord, error) {

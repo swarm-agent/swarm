@@ -142,6 +142,8 @@ const (
 	KeyIntegrationWorkspacePrefix                  = "integration/workspace/"
 	KeyIntegrationWorkspaceSessionPrefix           = "integration/workspace_session/"
 	KeyIntegrationWorkspaceSessionUpdatedPrefix    = "integration/workspace_session_updated/"
+	KeyV3SessionTombstonePrefix                    = "v3/session_tombstone/"
+	KeyV3SessionTombstoneByAccountPrefix           = "v3/session_tombstone_by_account/"
 	keySessionRecentIndexMeta                      = "session_recent_index/meta"
 	KeySessionRecentGlobalPrefix                   = "session_recent/global/"
 	KeySessionRecentAccountPrefix                  = "session_recent/account/"
@@ -340,6 +342,26 @@ func SessionByAccountPrefix(accountScopeID string) string {
 		return "session_by_account/"
 	}
 	return fmt.Sprintf("session_by_account/%s/", part)
+}
+
+func KeyV3SessionTombstone(sessionID string) string {
+	return KeyV3SessionTombstonePrefix + keyPart(sessionID)
+}
+
+func V3SessionTombstonePrefix() string {
+	return KeyV3SessionTombstonePrefix
+}
+
+func KeyV3SessionTombstoneByAccount(accountScopeID, sessionID string) string {
+	return V3SessionTombstoneByAccountPrefix(accountScopeID) + keyPart(sessionID)
+}
+
+func V3SessionTombstoneByAccountPrefix(accountScopeID string) string {
+	part := keyPart(accountScopeID)
+	if part == "" {
+		return KeyV3SessionTombstoneByAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyV3SessionTombstoneByAccountPrefix, part)
 }
 
 func KeySessionRecentIndexMeta() string {

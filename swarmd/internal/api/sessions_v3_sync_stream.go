@@ -126,8 +126,14 @@ func (s *Server) sessionsV3SyncOutboxRecordMatchesSelector(accountScopeID string
 			return true, nil
 		}
 		session, found, err := s.sessions.GetSession(record.SessionID)
-		if err != nil || !found {
+		if err != nil {
 			return false, err
+		}
+		if !found {
+			// A missing current session may be a durable leave/delete transition. Keep
+			// the outbox row visible so clients can converge from the tombstone event
+			// instead of losing selector membership because current state disappeared.
+			return true, nil
 		}
 		paths, err := canonicalSessionsV3TUIWorksetPaths(sessionsV3TUIWorksetScope{WorkspacePath: selector.WorkspacePath, WorkspacePaths: selector.WorkspacePaths, CWDPath: selector.CWDPath})
 		if err != nil {

@@ -23,6 +23,7 @@ const (
 	V3SessionMutationUpdatePreference = "session.preference.update"
 	V3SessionMutationUpdateMetadata   = "session.metadata.update"
 	V3SessionMutationUpdateTitle      = "session.title.update"
+	V3SessionMutationDeleteSession    = "session.delete"
 
 	V3SessionMutationResponseVersion = "v3.session_mutation.result.v1"
 	V3SessionMutationStatusCompleted = "completed"
@@ -221,6 +222,7 @@ type v3SessionEventReplayPayload struct {
 	RunIntent     *V3SessionRunIntent       `json:"run_intent,omitempty"`
 	TurnUsage     *SessionTurnUsageSnapshot `json:"turn_usage,omitempty"`
 	UsageSummary  *SessionUsageSummary      `json:"usage_summary,omitempty"`
+	Tombstone     *V3SessionTombstone       `json:"tombstone,omitempty"`
 	MessageID     string                    `json:"message_id,omitempty"`
 	Role          string                    `json:"role,omitempty"`
 	RunID         string                    `json:"run_id,omitempty"`
