@@ -32,11 +32,20 @@ export interface DesktopStateSnapshotRequest {
   includeActive?: boolean
 }
 
-interface DesktopStateSnapshotRequestWire {
-  session_ids?: string[]
+interface DesktopStateSyncSelectorWire {
+  kind?: string
   global?: boolean
-  workspace?: { workspace_path?: string; workspace_paths?: string[] }
+  workspace_path?: string
+  workspace_paths?: string[]
+  session_ids?: string[]
   recent?: { limit?: number; before_updated_at?: number | null; before_session_id?: string }
+}
+
+interface DesktopStateSnapshotRequestWire {
+  surface: 'desktop'
+  selector_kind?: string
+  selector?: DesktopStateSyncSelectorWire
+  session_ids?: string[]
   history?: { mode?: string; max_messages_per_session?: number; max_events_per_session?: number; manifest_policy?: string; include_events?: boolean }
   resources?: { messages?: boolean; events?: boolean; run_intents?: boolean }
   include_active?: boolean
@@ -137,7 +146,7 @@ interface ProjectionWire {
   updated_at?: number
 }
 
-export interface DesktopStateWorksetResponseWire {
+export interface DesktopStateSyncResponseWire {
   rev?: number
   snapshot_endpoint_cursor?: string
   sessions_by_id?: Record<string, SessionWire>
@@ -157,7 +166,7 @@ const DEFAULT_SNAPSHOT_HISTORY = {
 }
 
 export async function fetchDesktopStateSnapshot(input: DesktopStateSnapshotRequest, signal?: AbortSignal): Promise<DesktopDaemonSnapshot> {
-  const response = await apiFetch('/v3/sessions:workset', {
+  const response = await apiFetch(desktopSyncSnapshotEndpoint(input), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(toSnapshotRequestWire(input)),
@@ -166,11 +175,11 @@ export async function fetchDesktopStateSnapshot(input: DesktopStateSnapshotReque
   if (!response.ok) {
     throw new Error(await readErrorMessage(response))
   }
-  return normalizeDesktopStateSnapshot(await response.json() as DesktopStateWorksetResponseWire)
+  return normalizeDesktopStateSnapshot(await response.json() as DesktopStateSyncResponseWire)
 }
 
 export async function fetchDesktopSessionDiscovery(input: DesktopStateSnapshotRequest, signal?: AbortSignal): Promise<DesktopDaemonSnapshot> {
-  const response = await apiFetch('/v3/sessions:discover', {
+  const response = await apiFetch('/v3/sync/bootstrap', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(toDiscoveryRequestWire(input)),
@@ -179,7 +188,7 @@ export async function fetchDesktopSessionDiscovery(input: DesktopStateSnapshotRe
   if (!response.ok) {
     throw new Error(await readErrorMessage(response))
   }
-  return normalizeDesktopStateSnapshot(await response.json() as DesktopStateWorksetResponseWire)
+  return normalizeDesktopStateSnapshot(await response.json() as DesktopStateSyncResponseWire)
 }
 
 export async function loadDesktopStateSnapshot(input: DesktopStateSnapshotRequest, signal?: AbortSignal): Promise<DesktopDaemonSnapshot> {
@@ -221,7 +230,7 @@ function desktopStateSnapshotEnvelopeId(mode: 'replace' | 'merge', snapshot: Des
   return `snapshot:${mode}:rev:${snapshot.rev}:${JSON.stringify({ sessionIds, global: Boolean(input.global), workspacePath, workspacePaths, recent, history, snapshotScope })}`
 }
 
-export function normalizeDesktopStateSnapshot(response: DesktopStateWorksetResponseWire): DesktopDaemonSnapshot {
+export function normalizeDesktopStateSnapshot(response: DesktopStateSyncResponseWire): DesktopDaemonSnapshot {
   assertSnapshotRevision(response.rev)
   const rawRunIntentsBySessionId = currentRunIntentBySessionId(response.current_run_intent_by_session)
   const sessionsById = mapSessions(applyProjectionsToSessions(response.sessions_by_id, response.projections_by_session), rawRunIntentsBySessionId)
@@ -251,46 +260,22 @@ export function normalizeDesktopStateSnapshot(response: DesktopStateWorksetRespo
 }
 
 function toDiscoveryRequestWire(input: DesktopStateSnapshotRequest): DesktopStateSnapshotRequestWire {
-  const sessionIds = (input.sessionIds ?? []).map((sessionId) => sessionId.trim()).filter(Boolean)
-  const workspacePath = input.workspacePath?.trim() ?? ''
-  const workspacePaths = (input.workspacePaths ?? []).map((path) => path.trim()).filter(Boolean)
   return {
-    session_ids: sessionIds.length > 0 ? sessionIds : undefined,
-    global: input.global || undefined,
-    workspace: workspacePath || workspacePaths.length > 0 ? {
-      workspace_path: workspacePath || undefined,
-      workspace_paths: workspacePaths.length > 0 ? workspacePaths : undefined,
-    } : undefined,
-    recent: input.recent
-      ? {
-          limit: input.recent.limit,
-          before_updated_at: input.recent.beforeUpdatedAt ?? undefined,
-          before_session_id: input.recent.beforeSessionId?.trim() || undefined,
-        }
-      : undefined,
+    surface: 'desktop',
+    selector_kind: desktopSyncSelectorKind(input),
+    selector: desktopSyncSelectorWire(input),
   }
 }
 
 function toSnapshotRequestWire(input: DesktopStateSnapshotRequest): DesktopStateSnapshotRequestWire {
   const sessionIds = (input.sessionIds ?? []).map((sessionId) => sessionId.trim()).filter(Boolean)
-  const workspacePath = input.workspacePath?.trim() ?? ''
-  const workspacePaths = (input.workspacePaths ?? []).map((path) => path.trim()).filter(Boolean)
   const history = { ...DEFAULT_SNAPSHOT_HISTORY, ...(input.history ?? {}) }
   const resources = input.resources ?? {}
   return {
+    surface: 'desktop',
+    selector_kind: desktopSyncSelectorKind(input),
+    selector: desktopSyncSelectorWire(input),
     session_ids: sessionIds.length > 0 ? sessionIds : undefined,
-    global: input.global || undefined,
-    workspace: workspacePath || workspacePaths.length > 0 ? {
-      workspace_path: workspacePath || undefined,
-      workspace_paths: workspacePaths.length > 0 ? workspacePaths : undefined,
-    } : undefined,
-    recent: input.recent
-      ? {
-          limit: input.recent.limit,
-          before_updated_at: input.recent.beforeUpdatedAt ?? undefined,
-          before_session_id: input.recent.beforeSessionId?.trim() || undefined,
-        }
-      : undefined,
     history: {
       mode: history.mode,
       max_messages_per_session: history.maxMessagesPerSession,
@@ -305,6 +290,43 @@ function toSnapshotRequestWire(input: DesktopStateSnapshotRequest): DesktopState
     },
     include_active: input.includeActive || undefined,
   }
+}
+
+function desktopSyncSnapshotEndpoint(input: DesktopStateSnapshotRequest): '/v3/sync/bootstrap' | '/v3/sync/hydrate' {
+  const sessionIds = (input.sessionIds ?? []).map((sessionId) => sessionId.trim()).filter(Boolean)
+  return sessionIds.length > 0 ? '/v3/sync/hydrate' : '/v3/sync/bootstrap'
+}
+
+function desktopSyncSelectorKind(input: DesktopStateSnapshotRequest): string {
+  const sessionIds = (input.sessionIds ?? []).map((sessionId) => sessionId.trim()).filter(Boolean)
+  const workspacePath = input.workspacePath?.trim() ?? ''
+  const workspacePaths = (input.workspacePaths ?? []).map((path) => path.trim()).filter(Boolean)
+  if (sessionIds.length > 0) return 'session_ids'
+  if (input.global) return 'global'
+  if (workspacePath || workspacePaths.length > 0) return 'workspace'
+  if (input.recent?.limit) return 'recent'
+  return 'global'
+}
+
+function desktopSyncSelectorWire(input: DesktopStateSnapshotRequest): DesktopStateSyncSelectorWire {
+  const sessionIds = (input.sessionIds ?? []).map((sessionId) => sessionId.trim()).filter(Boolean)
+  const workspacePath = input.workspacePath?.trim() ?? ''
+  const workspacePaths = (input.workspacePaths ?? []).map((path) => path.trim()).filter(Boolean)
+  const selector: DesktopStateSyncSelectorWire = {
+    kind: desktopSyncSelectorKind(input),
+    global: input.global || undefined,
+    session_ids: sessionIds.length > 0 ? sessionIds : undefined,
+    workspace_path: workspacePath || undefined,
+    workspace_paths: workspacePaths.length > 0 ? workspacePaths : undefined,
+    recent: input.recent
+      ? {
+          limit: input.recent.limit,
+          before_updated_at: input.recent.beforeUpdatedAt ?? undefined,
+          before_session_id: input.recent.beforeSessionId?.trim() || undefined,
+        }
+      : undefined,
+  }
+  return selector
 }
 
 function assertSnapshotRevision(rev: unknown): asserts rev is number {

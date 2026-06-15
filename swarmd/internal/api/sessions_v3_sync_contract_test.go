@@ -153,14 +153,17 @@ func TestV3SyncContractSourceGuardRejectsPrematureWorksetRemoval(t *testing.T) {
 func TestV3SyncStaticGuardsCoverDesktopAndTUIProductionCallers(t *testing.T) {
 	desktopGuard := filepath.Join("..", "..", "..", "web", "src", "features", "desktop", "chat", "queries", "session-hydrate-api.spec.ts")
 	assertFileContains(t, desktopGuard, []string{
-		"/v3/sessions:workset",
-		"routine workset callers must not request",
+		"/v3/sync/bootstrap",
+		"/v3/sync/hydrate",
+		"routine sync callers must not request",
 		"../../state/desktop-state-snapshot.ts",
 		"../../state/desktop-ui-store.ts",
 		"../../state/desktop-v3-session-api.ts",
 		"../../layout/desktop-app-page.tsx",
 		"findUnboundedFullHistoryWorksetRequests",
 	})
+	desktopRoot := filepath.Join("..", "..", "..", "web", "src", "features", "desktop")
+	assertProductionTreeDoesNotContain(t, desktopRoot, []string{"/v3/sessions:workset", "/v3/sessions:discover"})
 	tuiGuard := filepath.Join("..", "..", "..", "internal", "app", "tui_v3_contract_test.go")
 	assertFileContains(t, tuiGuard, []string{
 		"/v3/tui/sessions:workset",
@@ -238,4 +241,35 @@ func assertFileDoesNotContain(t *testing.T, path string, forbidden []string) {
 func assertProductionFileDoesNotContain(t *testing.T, path string, forbidden []string) {
 	t.Helper()
 	assertFileDoesNotContain(t, path, forbidden)
+}
+
+func assertProductionTreeDoesNotContain(t *testing.T, root string, forbidden []string) {
+	t.Helper()
+	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(path, ".spec.ts") || strings.HasSuffix(path, ".spec.tsx") || strings.HasSuffix(path, ".e2e.spec.ts") || strings.HasSuffix(path, ".e2e.spec.tsx") {
+			return nil
+		}
+		if !strings.HasSuffix(path, ".ts") && !strings.HasSuffix(path, ".tsx") {
+			return nil
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		source := string(body)
+		for _, needle := range forbidden {
+			if strings.Contains(source, needle) {
+				t.Fatalf("%s contains forbidden production legacy workset marker %q", path, needle)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("walk %s: %v", root, err)
+	}
 }

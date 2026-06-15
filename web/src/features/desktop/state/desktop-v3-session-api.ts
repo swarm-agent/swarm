@@ -11,7 +11,7 @@ import type {
 } from '../chat/types/chat'
 import type { DesktopPermissionRecord, DesktopSessionRecord, DesktopSessionUsageRecord } from '../types/realtime'
 import type { DesktopState, DesktopDaemonSnapshot } from './desktop-state'
-import { mergeDesktopStateSnapshot, normalizeDesktopStateSnapshot, type DesktopStateWorksetResponseWire, type RunIntentWire } from './desktop-state-snapshot'
+import { mergeDesktopStateSnapshot, normalizeDesktopStateSnapshot, type DesktopStateSyncResponseWire, type RunIntentWire } from './desktop-state-snapshot'
 import { applyV3RuntimeEnvelope, createV3EventEnvelope, createV3SnapshotEnvelope } from '../v3-runtime'
 import { getV3RuntimeDesktopSnapshot } from '../v3-runtime/v3-store'
 
@@ -99,7 +99,7 @@ export interface DesktopV3ReconnectSubscription {
   endpoint_cursor: string
 }
 
-interface DesktopV3ReconnectResponseWire extends DesktopStateWorksetResponseWire {
+interface DesktopV3ReconnectResponseWire extends DesktopStateSyncResponseWire {
   current_run_intent_by_session?: Record<string, RunIntentWire>
   subscriptions?: DesktopV3ReconnectSubscription[]
   diagnostics_by_session?: Record<string, unknown[]>

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { getDesktopSnapshot, replaceDesktopFromSnapshot, subscribeDesktop } from './desktop-state-store'
-import { fetchDesktopSessionDiscovery, loadDesktopStateSnapshot, normalizeDesktopStateSnapshot } from './desktop-state-snapshot'
+import { fetchDesktopSessionDiscovery, fetchDesktopStateSnapshot, loadDesktopStateSnapshot, normalizeDesktopStateSnapshot } from './desktop-state-snapshot'
 import type { DesktopSessionRecord } from '../types/realtime'
 
 const originalFetch = globalThis.fetch
@@ -85,7 +85,7 @@ test('normalizeDesktopStateSnapshot requires a valid daemon rev', () => {
   )
 })
 
-test('normalizeDesktopStateSnapshot builds a plain replacement snapshot from workset wire data', () => {
+test('normalizeDesktopStateSnapshot builds a plain replacement snapshot from sync wire data', () => {
   const snapshot = normalizeDesktopStateSnapshot({
     rev: 42,
     sessions_by_id: {
@@ -141,7 +141,7 @@ test('normalizeDesktopStateSnapshot maps active run intent into live sidebar sta
   assert.equal(session?.live.startedAt, 38)
 })
 
-test('normalizeDesktopStateSnapshot ignores legacy top-level run_intents_by_session for ordinary workset snapshots', () => {
+test('normalizeDesktopStateSnapshot ignores legacy top-level run_intents_by_session for ordinary sync snapshots', () => {
   const snapshot = normalizeDesktopStateSnapshot({
     rev: 45,
     sessions_by_id: {
@@ -239,7 +239,7 @@ test('normalizeDesktopStateSnapshot hydrates persisted V3 provider tool messages
   assert.equal(message?.toolMessage?.completedOutput, 'file contents')
 })
 
-test('loadDesktopStateSnapshot fetches the workset endpoint and replaces old store state exactly once', async () => {
+test('loadDesktopStateSnapshot fetches the sync bootstrap endpoint and replaces old store state exactly once', async () => {
   replaceDesktopFromSnapshot({
     rev: 10,
     sessionsById: { old: sessionRecord('old', 10) },
@@ -267,9 +267,11 @@ test('loadDesktopStateSnapshot fetches the workset endpoint and replaces old sto
 
   assert.equal(snapshot.rev, 12)
   assert.deepEqual(requests, [{
-    url: '/v3/sessions:workset',
+    url: '/v3/sync/bootstrap',
     body: {
-      recent: { limit: 1 },
+      surface: 'desktop',
+      selector_kind: 'recent',
+      selector: { kind: 'recent', recent: { limit: 1 } },
       history: {
         mode: 'none',
         max_events_per_session: 0,
@@ -286,7 +288,50 @@ test('loadDesktopStateSnapshot fetches the workset endpoint and replaces old sto
 })
 
 
-test('fetchDesktopSessionDiscovery uses narrow metadata-only discovery endpoint', async () => {
+test('fetchDesktopStateSnapshot hydrates targeted sessions through sync hydrate endpoint', async () => {
+  const requests: Array<{ url: string; body: unknown }> = []
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    requests.push({
+      url: String(input),
+      body: init?.body ? JSON.parse(String(init.body)) : null,
+    })
+    return new Response(JSON.stringify({
+      rev: 13,
+      snapshot_endpoint_cursor: 'cursor-13',
+      sessions_by_id: { targeted: sessionWire('targeted', 20) },
+      session_order: ['targeted'],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }) as typeof fetch
+
+  const snapshot = await fetchDesktopStateSnapshot({
+    sessionIds: ['targeted'],
+    history: { mode: 'none' },
+    resources: { events: true },
+  })
+
+  assert.equal(snapshot.rev, 13)
+  assert.equal(snapshot.sessionsById.targeted?.id, 'targeted')
+  assert.deepEqual(requests, [{
+    url: '/v3/sync/hydrate',
+    body: {
+      surface: 'desktop',
+      selector_kind: 'session_ids',
+      selector: { kind: 'session_ids', session_ids: ['targeted'] },
+      session_ids: ['targeted'],
+      history: {
+        mode: 'none',
+        max_events_per_session: 0,
+        manifest_policy: 'manifest',
+        include_events: false,
+      },
+      resources: { events: true },
+    },
+  }])
+})
+
+
+test('fetchDesktopSessionDiscovery uses narrow metadata-only sync bootstrap endpoint', async () => {
   const requests: Array<{ url: string; body: unknown }> = []
 
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -318,10 +363,15 @@ test('fetchDesktopSessionDiscovery uses narrow metadata-only discovery endpoint'
   assert.equal(snapshot.sessionsById.discovered?.projectionHighWatermarkSeq, 11)
   assert.equal(snapshot.sessionsById.discovered?.updatedAt, 25)
   assert.deepEqual(requests, [{
-    url: '/v3/sessions:discover',
+    url: '/v3/sync/bootstrap',
     body: {
-      workspace: { workspace_paths: ['/workspace/discovered'] },
-      recent: { limit: 50 },
+      surface: 'desktop',
+      selector_kind: 'workspace',
+      selector: {
+        kind: 'workspace',
+        workspace_paths: ['/workspace/discovered'],
+        recent: { limit: 50 },
+      },
     },
   }])
 })

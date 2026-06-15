@@ -114,11 +114,16 @@ async function withFetchStub(
       })
     }
 
-    if (url === '/v3/sessions:workset') {
-      const body = JSON.parse(String(init?.body ?? '{}')) as { session_ids?: string[]; recent?: { limit?: number }; workspace?: { workspace_path?: string }; history?: { mode?: string }; resources?: { messages?: boolean } }
-      const sessionIds = Array.isArray(body.session_ids) && body.session_ids.length > 0
+    if (url === '/v3/sync/bootstrap' || url === '/v3/sync/hydrate') {
+      const body = JSON.parse(String(init?.body ?? '{}')) as { session_ids?: string[]; selector?: { session_ids?: string[]; recent?: { limit?: number } }; history?: { mode?: string }; resources?: { messages?: boolean } }
+      const explicitSessionIds = Array.isArray(body.session_ids) && body.session_ids.length > 0
         ? body.session_ids
-        : ['session-workset-a', 'session-workset-b'].slice(0, body.recent?.limit ?? 2)
+        : Array.isArray(body.selector?.session_ids) && body.selector.session_ids.length > 0
+          ? body.selector.session_ids
+          : []
+      const sessionIds = explicitSessionIds.length > 0
+        ? explicitSessionIds
+        : ['session-sync-a', 'session-sync-b'].slice(0, body.selector?.recent?.limit ?? 2)
       return jsonResponse(v3WorksetPayload(sessionIds, {
         includeMessages: body.resources?.messages === true || body.history?.mode === 'tail' || body.history?.mode === 'full',
       }))
@@ -440,12 +445,14 @@ test('prefetchSessionRuntimeData hydrates metadata then the 200-message V3 tail 
     await prefetchSessionRuntimeData(queryClient, 'session-prefetch')
 
     assert.deepEqual(requestUrls(calls), [
-      '/v3/sessions:workset',
+      '/v3/sync/hydrate',
       '/v3/sessions/session-prefetch/messages?tail=true&limit=200',
     ])
-    const worksetBody = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as { history?: { mode?: string }; resources?: { messages?: boolean } }
-    assert.equal(worksetBody.history?.mode, 'none')
-    assert.equal(worksetBody.resources?.messages, undefined)
+    const syncBody = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as { surface?: string; selector_kind?: string; history?: { mode?: string }; resources?: { messages?: boolean } }
+    assert.equal(syncBody.surface, 'desktop')
+    assert.equal(syncBody.selector_kind, 'session_ids')
+    assert.equal(syncBody.history?.mode, 'none')
+    assert.equal(syncBody.resources?.messages, undefined)
     assertNoV1OrV2SessionDataCalls(calls)
   })
 
@@ -696,7 +703,7 @@ test('Desktop session metadata hydration is not gated on plan hydration', async 
 })
 
 
-test('Desktop routine workset hydration callers are metadata-only and never request unbounded full history', async () => {
+test('Desktop routine sync hydration callers are metadata-only and never request unbounded full history', async () => {
   const files = [
     '../../state/desktop-state-snapshot.ts',
     '../../state/desktop-ui-store.ts',
@@ -711,14 +718,18 @@ test('Desktop routine workset hydration callers are metadata-only and never requ
 
   const allSource = sources.map(({ file, source }) => `\n@@FILE:${file}@@\n${source}`).join('\n')
   const unboundedFullHistoryCallers = findUnboundedFullHistoryWorksetRequests(allSource)
-  assert.deepEqual(unboundedFullHistoryCallers, [], `routine workset callers must not request unbounded history.mode='full': ${unboundedFullHistoryCallers.join(', ')}`)
+  assert.deepEqual(unboundedFullHistoryCallers, [], `routine sync callers must not request unbounded history.mode='full': ${unboundedFullHistoryCallers.join(', ')}`)
 
   const snapshotSource = sources.find((entry) => entry.file.endsWith('desktop-state-snapshot.ts'))?.source ?? ''
-  assert.match(snapshotSource, /const DEFAULT_SNAPSHOT_HISTORY = \{\n\s+mode: 'none' as const,/, 'default workset snapshot history must be metadata-only')
-  assert.doesNotMatch(allSource, /runIntents:\s*true|run_intents:\s*true|includeActive:\s*true/, 'routine Desktop workset callers must not request run intents or include_active')
+  assert.match(snapshotSource, /const DEFAULT_SNAPSHOT_HISTORY = \{\n\s+mode: 'none' as const,/, 'default sync snapshot history must be metadata-only')
+  assert.match(snapshotSource, /apiFetch\(desktopSyncSnapshotEndpoint\(input\)/, 'Desktop snapshot fetches must route through canonical sync endpoint selection')
+  assert.match(snapshotSource, /'\/v3\/sync\/bootstrap'/, 'Desktop bootstrap sync endpoint must be canonical')
+  assert.match(snapshotSource, /'\/v3\/sync\/hydrate'/, 'Desktop hydrate sync endpoint must be canonical')
+  assert.doesNotMatch(allSource, /runIntents:\s*true|run_intents:\s*true|includeActive:\s*true/, 'routine Desktop sync callers must not request run intents or include_active')
+  assert.doesNotMatch(snapshotSource, /\/v3\/sessions:workset|\/v3\/sessions:discover/, 'Desktop snapshot transport must not call legacy workset/discovery endpoints')
 
   const mutationSource = sources.find((entry) => entry.file.endsWith('desktop-v3-session-api.ts'))?.source ?? ''
-  assert.match(mutationSource, /mergeDesktopStateSnapshot\(\{\s*sessionIds: \[normalizedSessionId\],\s*history: \{ mode: 'none'/s, 'mutation refresh snapshots must explicitly request metadata-only history')
+  assert.match(mutationSource, /mergeDesktopStateSnapshot\(\{\s*sessionIds: \[normalizedSessionId\],\s*history: \{ mode: 'none'/s, 'mutation refresh sync snapshots must explicitly request metadata-only history')
 })
 
 function findUnboundedFullHistoryWorksetRequests(source: string): string[] {
