@@ -34,26 +34,29 @@ type V3RealtimeSubscriptionRequest struct {
 }
 
 type V3RealtimeMessage struct {
-	Protocol         string                            `json:"protocol"`
-	ProtocolVersion  int                               `json:"protocol_version"`
-	Kind             string                            `json:"kind"`
-	SessionID        string                            `json:"session_id,omitempty"`
-	SubscriptionID   string                            `json:"subscription_id,omitempty"`
-	AfterSeq         uint64                            `json:"after_seq,omitempty"`
-	AfterRev         uint64                            `json:"afterRev,omitempty"`
-	LastSeq          uint64                            `json:"last_seq,omitempty"`
-	NextSeq          uint64                            `json:"next_seq,omitempty"`
-	HighWatermarkSeq uint64                            `json:"high_watermark_seq,omitempty"`
-	EndpointCursor   string                            `json:"endpoint_cursor,omitempty"`
-	Subscriptions    []V3RealtimeSubscriptionRequest   `json:"subscriptions,omitempty"`
-	Rev              uint64                            `json:"rev,omitempty"`
-	PrevRev          uint64                            `json:"prevRev"`
-	EventType        string                            `json:"event_type,omitempty"`
-	Event            *sessionruntime.SessionEvent      `json:"event,omitempty"`
-	Projection       *sessionruntime.SessionProjection `json:"projection,omitempty"`
-	ErrorCode        string                            `json:"error_code,omitempty"`
-	Error            string                            `json:"error,omitempty"`
-	Reason           string                            `json:"reason,omitempty"`
+	Protocol                   string                            `json:"protocol"`
+	ProtocolVersion            int                               `json:"protocol_version"`
+	Kind                       string                            `json:"kind"`
+	SessionID                  string                            `json:"session_id,omitempty"`
+	SubscriptionID             string                            `json:"subscription_id,omitempty"`
+	AfterSeq                   uint64                            `json:"after_seq,omitempty"`
+	AfterRev                   uint64                            `json:"afterRev,omitempty"`
+	LastSeq                    uint64                            `json:"last_seq,omitempty"`
+	NextSeq                    uint64                            `json:"next_seq,omitempty"`
+	HighWatermarkSeq           uint64                            `json:"high_watermark_seq,omitempty"`
+	EndpointCursor             string                            `json:"endpoint_cursor,omitempty"`
+	Subscriptions              []V3RealtimeSubscriptionRequest   `json:"subscriptions,omitempty"`
+	Rev                        uint64                            `json:"rev,omitempty"`
+	PrevRev                    uint64                            `json:"prevRev"`
+	EventType                  string                            `json:"event_type,omitempty"`
+	Event                      *sessionruntime.SessionEvent      `json:"event,omitempty"`
+	Projection                 *sessionruntime.SessionProjection `json:"projection,omitempty"`
+	ErrorCode                  string                            `json:"error_code,omitempty"`
+	Error                      string                            `json:"error,omitempty"`
+	Reason                     string                            `json:"reason,omitempty"`
+	BootstrapRequired          bool                              `json:"bootstrap_required,omitempty"`
+	OldestAvailableEndpointSeq uint64                            `json:"oldest_available_endpoint_seq,omitempty"`
+	LatestEndpointSeq          uint64                            `json:"latest_endpoint_seq,omitempty"`
 }
 
 func NewV3RealtimeMessage(kind string) V3RealtimeMessage {

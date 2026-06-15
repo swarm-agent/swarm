@@ -168,6 +168,18 @@ func TestV3SyncStaticGuardsCoverDesktopAndTUIProductionCallers(t *testing.T) {
 		"/v3/tui/sessions:workset",
 		"GetSessionV3TUIWorkset",
 	})
+	assertProductionFileDoesNotContain(t, filepath.Join("..", "..", "..", "internal", "client", "session_v3.go"), []string{
+		"TrimPrefix(raw, \"cursor-\")",
+		"strings.TrimPrefix(raw, \"cursor-\")",
+		"strconv.ParseUint(strings.TrimPrefix",
+		"ParseUint(rawEndpointCursor",
+	})
+	assertProductionFileDoesNotContain(t, filepath.Join("..", "..", "..", "internal", "app", "tui_realtime_controller.go"), []string{
+		"TrimPrefix(raw, \"cursor-\")",
+		"strings.TrimPrefix(raw, \"cursor-\")",
+		"strconv.ParseUint(strings.TrimPrefix",
+		"ParseUint(endpointCursor",
+	})
 }
 
 func assertExactStrings(t *testing.T, name string, got, want []string) {
@@ -208,4 +220,9 @@ func assertFileDoesNotContain(t *testing.T, path string, forbidden []string) {
 			t.Fatalf("%s contains forbidden numeric cursor parsing marker %q", path, needle)
 		}
 	}
+}
+
+func assertProductionFileDoesNotContain(t *testing.T, path string, forbidden []string) {
+	t.Helper()
+	assertFileDoesNotContain(t, path, forbidden)
 }

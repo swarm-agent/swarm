@@ -55,17 +55,53 @@ type v3SyncCursorKeyring struct {
 	CurrentKID string
 	CurrentKey []byte
 	Previous   map[string][]byte
+	Err        error
+}
+
+type v3SyncCursorError struct {
+	Code              string
+	BootstrapRequired bool
+	OldestAvailable   uint64
+	Latest            uint64
+	Err               error
+}
+
+func (e *v3SyncCursorError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Err != nil {
+		return e.Err.Error()
+	}
+	return e.Code
+}
+
+func (e *v3SyncCursorError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func newV3SyncCursorError(code string, err error) *v3SyncCursorError {
+	return &v3SyncCursorError{Code: code, Err: err}
 }
 
 func newV3SyncCursorKeyring(dataDir string) *v3SyncCursorKeyring {
 	key := v3SyncCursorDefaultKey
 	kid := v3SyncCursorDefaultKID
-	if strings.TrimSpace(dataDir) != "" {
-		if loaded, err := loadOrCreateV3SyncCursorKey(dataDir); err == nil && len(loaded) >= 32 {
-			key = loaded
-			sum := sha256.Sum256(loaded)
-			kid = "v3sync-" + hex.EncodeToString(sum[:6])
+	dataDir = strings.TrimSpace(dataDir)
+	if dataDir != "" {
+		loaded, err := loadOrCreateV3SyncCursorKey(dataDir)
+		if err != nil {
+			return &v3SyncCursorKeyring{Err: fmt.Errorf("load v3 sync cursor signing key: %w", err), Previous: map[string][]byte{}}
 		}
+		if len(loaded) < 32 {
+			return &v3SyncCursorKeyring{Err: fmt.Errorf("v3 sync cursor signing key is too short: %d bytes", len(loaded)), Previous: map[string][]byte{}}
+		}
+		key = loaded
+		sum := sha256.Sum256(loaded)
+		kid = "v3sync-" + hex.EncodeToString(sum[:6])
 	}
 	return &v3SyncCursorKeyring{CurrentKID: kid, CurrentKey: append([]byte(nil), key...), Previous: map[string][]byte{}}
 }
@@ -162,6 +198,12 @@ func (s *Server) signV3SyncEndpointCursor(scope v3SyncCursorScope, endpointSeq u
 		return "", nil
 	}
 	keyring := s.v3SyncCursorKeyring()
+	if keyring.Err != nil {
+		return "", keyring.Err
+	}
+	if len(keyring.CurrentKey) < 32 || strings.TrimSpace(keyring.CurrentKID) == "" {
+		return "", errors.New("v3 sync cursor signing key is not configured")
+	}
 	payload := v3SyncCursorPayload{
 		Version:            v3SyncCursorVersion,
 		Kind:               v3SyncCursorKindEndpoint,
@@ -208,7 +250,7 @@ func (s *Server) parseV3SyncEndpointCursor(raw string, expected v3SyncCursorScop
 	if strings.HasPrefix(raw, "cursor-") {
 		seq, err := strconv.ParseUint(strings.TrimPrefix(raw, "cursor-"), 10, 64)
 		if err != nil {
-			return 0, false, fmt.Errorf("malformed endpoint_cursor %q", raw)
+			return 0, false, newV3SyncCursorError("endpoint_cursor_malformed", fmt.Errorf("malformed endpoint_cursor %q", raw))
 		}
 		return seq, true, nil
 	}
@@ -217,7 +259,7 @@ func (s *Server) parseV3SyncEndpointCursor(raw string, expected v3SyncCursorScop
 		return 0, false, err
 	}
 	if payload.Kind != v3SyncCursorKindEndpoint {
-		return 0, false, fmt.Errorf("unsupported sync cursor kind %q", payload.Kind)
+		return 0, false, newV3SyncCursorError("endpoint_cursor_unsupported_kind", fmt.Errorf("unsupported sync cursor kind %q", payload.Kind))
 	}
 	if err := validateV3SyncCursorScope(payload, expected); err != nil {
 		return 0, false, err
@@ -227,30 +269,30 @@ func (s *Server) parseV3SyncEndpointCursor(raw string, expected v3SyncCursorScop
 
 func (s *Server) verifyV3SyncCursor(raw string) (v3SyncCursorPayload, error) {
 	if !strings.HasPrefix(raw, v3SyncCursorPrefix) {
-		return v3SyncCursorPayload{}, fmt.Errorf("malformed endpoint_cursor %q", raw)
+		return v3SyncCursorPayload{}, newV3SyncCursorError("endpoint_cursor_malformed", fmt.Errorf("malformed endpoint_cursor %q", raw))
 	}
 	parts := strings.Split(strings.TrimPrefix(raw, v3SyncCursorPrefix), ".")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return v3SyncCursorPayload{}, fmt.Errorf("malformed endpoint_cursor %q", raw)
+		return v3SyncCursorPayload{}, newV3SyncCursorError("endpoint_cursor_malformed", fmt.Errorf("malformed endpoint_cursor %q", raw))
 	}
 	payloadRaw, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		return v3SyncCursorPayload{}, fmt.Errorf("malformed endpoint_cursor payload: %w", err)
+		return v3SyncCursorPayload{}, newV3SyncCursorError("endpoint_cursor_malformed", fmt.Errorf("malformed endpoint_cursor payload: %w", err))
 	}
 	var payload v3SyncCursorPayload
 	if err := json.Unmarshal(payloadRaw, &payload); err != nil {
-		return v3SyncCursorPayload{}, fmt.Errorf("malformed endpoint_cursor payload: %w", err)
+		return v3SyncCursorPayload{}, newV3SyncCursorError("endpoint_cursor_malformed", fmt.Errorf("malformed endpoint_cursor payload: %w", err))
 	}
 	if payload.Version != v3SyncCursorVersion {
-		return v3SyncCursorPayload{}, fmt.Errorf("unsupported sync cursor version %d", payload.Version)
+		return v3SyncCursorPayload{}, newV3SyncCursorError("endpoint_cursor_unsupported_version", fmt.Errorf("unsupported sync cursor version %d", payload.Version))
 	}
 	key, ok := s.v3SyncCursorVerificationKey(payload.KID)
 	if !ok {
-		return v3SyncCursorPayload{}, fmt.Errorf("sync cursor signing key %q is unavailable", payload.KID)
+		return v3SyncCursorPayload{}, newV3SyncCursorError("endpoint_cursor_retired_key", fmt.Errorf("sync cursor signing key %q is unavailable", payload.KID))
 	}
 	want := signV3SyncCursorBody(parts[0], key)
 	if !hmac.Equal([]byte(want), []byte(parts[1])) {
-		return v3SyncCursorPayload{}, errors.New("sync cursor signature is invalid")
+		return v3SyncCursorPayload{}, newV3SyncCursorError("endpoint_cursor_tampered", errors.New("sync cursor signature is invalid"))
 	}
 	return payload, nil
 }
@@ -258,6 +300,9 @@ func (s *Server) verifyV3SyncCursor(raw string) (v3SyncCursorPayload, error) {
 func (s *Server) v3SyncCursorVerificationKey(kid string) ([]byte, bool) {
 	kid = strings.TrimSpace(kid)
 	keyring := s.v3SyncCursorKeyring()
+	if keyring.Err != nil {
+		return nil, false
+	}
 	if kid == keyring.CurrentKID {
 		return keyring.CurrentKey, true
 	}
@@ -283,7 +328,7 @@ func validateV3SyncCursorScope(payload v3SyncCursorPayload, expected v3SyncCurso
 	}
 	for _, check := range checks {
 		if strings.TrimSpace(check.got) != strings.TrimSpace(check.want) {
-			return fmt.Errorf("sync cursor scope mismatch for %s", check.name)
+			return newV3SyncCursorError("endpoint_cursor_scope_mismatch", fmt.Errorf("sync cursor scope mismatch for %s", check.name))
 		}
 	}
 	return nil

@@ -150,7 +150,7 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 				if strings.TrimSpace(message.EndpointCursor) != "" {
 					parsed, _, err := s.parseV3SyncEndpointCursor(message.EndpointCursor, scope)
 					if err != nil {
-						_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(message.SessionID, "endpoint_cursor_malformed", err.Error(), lastEndpointSeq, 0))
+						_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(message.SessionID, v3RealtimeCursorErrorCode(err), err.Error(), lastEndpointSeq, 0))
 						return
 					}
 					if parsed > 0 {
@@ -194,7 +194,7 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 			case V3RealtimeKindResume:
 				resumeSeq, _, err := s.parseV3SyncEndpointCursor(message.EndpointCursor, scope)
 				if err != nil {
-					_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", "endpoint_cursor_malformed", err.Error(), lastEndpointSeq, 0))
+					_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", v3RealtimeCursorErrorCode(err), err.Error(), lastEndpointSeq, 0))
 					return
 				}
 				if resumeSeq > 0 {
@@ -209,7 +209,7 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 					if strings.TrimSpace(requestedSub.EndpointCursor) != "" {
 						parsed, _, err := s.parseV3SyncEndpointCursor(requestedSub.EndpointCursor, scope)
 						if err != nil {
-							_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(requestedSub.SessionID, "endpoint_cursor_malformed", err.Error(), lastEndpointSeq, 0))
+							_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(requestedSub.SessionID, v3RealtimeCursorErrorCode(err), err.Error(), lastEndpointSeq, 0))
 							return
 						}
 						if parsed > 0 {
@@ -284,17 +284,22 @@ func (s *Server) v3RealtimeValidateEndpointCursor(conn *transportws.Conn, reques
 	if requestedEndpointSeq == 0 {
 		return true
 	}
-	rows, err := s.sessions.ListRealtimeOutboxAfter(requestedEndpointSeq-1, 1)
+	currentHead, err := s.sessions.CurrentRealtimeOutboxRevision()
 	if err != nil {
 		_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", "endpoint_resume_failed", err.Error(), 0, requestedEndpointSeq))
 		return false
 	}
-	if len(rows) == 0 {
-		_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", "endpoint_cursor_ahead", "endpoint cursor is ahead of committed realtime outbox; reconnect required", 0, requestedEndpointSeq))
+	if requestedEndpointSeq > currentHead {
+		_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", "endpoint_cursor_ahead", "endpoint cursor is ahead of committed realtime outbox; reconnect required", currentHead, requestedEndpointSeq))
 		return false
 	}
-	if rows[0].EndpointSeq != requestedEndpointSeq {
-		_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", "cursor_too_old", fmt.Sprintf("endpoint cursor %d is no longer available; rehydrate required", requestedEndpointSeq), 0, rows[0].EndpointSeq))
+	oldestAvailableEndpointSeq := uint64(0)
+	if requestedEndpointSeq < oldestAvailableEndpointSeq {
+		msg := NewV3RealtimeCursorError("", "endpoint_cursor_too_old", fmt.Sprintf("endpoint cursor %d is no longer available; bootstrap required", requestedEndpointSeq), 0, requestedEndpointSeq)
+		msg.BootstrapRequired = true
+		msg.OldestAvailableEndpointSeq = oldestAvailableEndpointSeq
+		msg.LatestEndpointSeq = currentHead
+		_ = s.sendV3RealtimeMessage(conn, msg)
 		return false
 	}
 	return true
@@ -489,17 +494,9 @@ func v3RealtimeCursorErrorCode(err error) string {
 	if err == nil {
 		return "endpoint_cursor_malformed"
 	}
-	message := err.Error()
-	switch {
-	case strings.Contains(message, "signature"):
-		return "endpoint_cursor_tampered"
-	case strings.Contains(message, "scope mismatch"):
-		return "endpoint_cursor_scope_mismatch"
-	case strings.Contains(message, "version"):
-		return "endpoint_cursor_unsupported_version"
-	case strings.Contains(message, "unavailable"):
-		return "endpoint_cursor_retired_key"
-	default:
-		return "endpoint_cursor_malformed"
+	var cursorErr *v3SyncCursorError
+	if errors.As(err, &cursorErr) && strings.TrimSpace(cursorErr.Code) != "" {
+		return cursorErr.Code
 	}
+	return "endpoint_cursor_malformed"
 }
