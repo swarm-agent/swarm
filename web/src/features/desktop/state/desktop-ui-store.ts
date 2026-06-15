@@ -1961,7 +1961,7 @@ function applyV3SessionStreamFrame(state: DesktopStoreState, sessionId: string, 
       payload: eventPayload,
     })
   }
-  if (type === 'keepalive') {
+  if (type === 'keepalive' || type === 'endpoint.watermark') {
     const existing = state.sessions[targetSessionId]
     if (!existing) {
       return {}
@@ -1974,10 +1974,10 @@ function applyV3SessionStreamFrame(state: DesktopStoreState, sessionId: string, 
           ...existing,
           sessionApi: existing.sessionApi || 'v3',
           lastEventSeq: Math.max(existing.lastEventSeq ?? 0, lastSeq),
-          projectionHighWatermarkSeq: Math.max(existing.projectionHighWatermarkSeq ?? 0, lastSeq),
+          projectionHighWatermarkSeq: Math.max(existing.projectionHighWatermarkSeq ?? 0, lastSeq, typeof payload.high_watermark_seq === 'number' ? Math.max(0, payload.high_watermark_seq) : 0),
           live: {
             ...existing.live,
-            lastEventType: 'keepalive',
+            lastEventType: type,
             lastEventAt: ts,
             awaitingAck: false,
             error: null,
@@ -3324,6 +3324,7 @@ function persistDesktopV3EndpointCursor(payload: RunStreamEventMessage): void {
 
 function isSessionlessV3RealtimeControl(kind: string): boolean {
   return kind === 'keepalive'
+    || kind === 'endpoint.watermark'
     || kind === 'replay.started'
     || kind === 'replay.complete'
     || kind === 'projection.high_watermark'

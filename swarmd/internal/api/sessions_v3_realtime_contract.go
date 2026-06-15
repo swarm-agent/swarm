@@ -10,21 +10,22 @@ import (
 )
 
 const (
-	V3RealtimeStreamPath       = "/v3/realtime/stream"
-	V3RealtimeProtocol         = "v3.realtime"
-	V3RealtimeProtocolVersion  = 1
-	V3RealtimeKindHello        = "hello"
-	V3RealtimeKindEvent        = "event"
-	V3RealtimeKindReplayStart  = "replay.started"
-	V3RealtimeKindReplayDone   = "replay.complete"
-	V3RealtimeKindCursorError  = "cursor.error"
-	V3RealtimeKindKeepalive    = "keepalive"
-	V3RealtimeKindHighWater    = "projection.high_watermark"
-	V3RealtimeKindSubscribe    = "subscribe.session"
-	V3RealtimeKindUnsubscribe  = "unsubscribe.session"
-	V3RealtimeKindResume       = "resume"
-	V3RealtimeKindAuthDenied   = "auth.denied"
-	V3RealtimeKindSlowConsumer = "slow_consumer.reconnect_required"
+	V3RealtimeStreamPath            = "/v3/realtime/stream"
+	V3RealtimeProtocol              = "v3.realtime"
+	V3RealtimeProtocolVersion       = 1
+	V3RealtimeKindHello             = "hello"
+	V3RealtimeKindEvent             = "event"
+	V3RealtimeKindReplayStart       = "replay.started"
+	V3RealtimeKindReplayDone        = "replay.complete"
+	V3RealtimeKindCursorError       = "cursor.error"
+	V3RealtimeKindKeepalive         = "keepalive"
+	V3RealtimeKindEndpointWatermark = "endpoint.watermark"
+	V3RealtimeKindHighWater         = "projection.high_watermark"
+	V3RealtimeKindSubscribe         = "subscribe.session"
+	V3RealtimeKindUnsubscribe       = "unsubscribe.session"
+	V3RealtimeKindResume            = "resume"
+	V3RealtimeKindAuthDenied        = "auth.denied"
+	V3RealtimeKindSlowConsumer      = "slow_consumer.reconnect_required"
 )
 
 type V3RealtimeSubscriptionRequest struct {
@@ -94,6 +95,11 @@ func ValidateV3RealtimeMessage(message V3RealtimeMessage) error {
 		return validateV3RealtimeSessionCursorMessage(message)
 	case V3RealtimeKindKeepalive:
 		return nil
+	case V3RealtimeKindEndpointWatermark:
+		if strings.TrimSpace(message.EndpointCursor) == "" {
+			return errors.New("v3 realtime endpoint.watermark requires endpoint_cursor")
+		}
+		return nil
 	case V3RealtimeKindCursorError, V3RealtimeKindAuthDenied, V3RealtimeKindSlowConsumer:
 		if strings.TrimSpace(message.ErrorCode) == "" {
 			return fmt.Errorf("v3 realtime %s requires error_code", kind)
@@ -124,7 +130,7 @@ func ValidateV3RealtimeMessage(message V3RealtimeMessage) error {
 
 func v3RealtimeKindAllowed(kind string) bool {
 	switch kind {
-	case V3RealtimeKindHello, V3RealtimeKindEvent, V3RealtimeKindReplayStart, V3RealtimeKindReplayDone, V3RealtimeKindCursorError, V3RealtimeKindKeepalive, V3RealtimeKindHighWater, V3RealtimeKindSubscribe, V3RealtimeKindUnsubscribe, V3RealtimeKindResume, V3RealtimeKindAuthDenied, V3RealtimeKindSlowConsumer:
+	case V3RealtimeKindHello, V3RealtimeKindEvent, V3RealtimeKindReplayStart, V3RealtimeKindReplayDone, V3RealtimeKindCursorError, V3RealtimeKindKeepalive, V3RealtimeKindEndpointWatermark, V3RealtimeKindHighWater, V3RealtimeKindSubscribe, V3RealtimeKindUnsubscribe, V3RealtimeKindResume, V3RealtimeKindAuthDenied, V3RealtimeKindSlowConsumer:
 		return true
 	default:
 		return false

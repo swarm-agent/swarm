@@ -216,6 +216,66 @@ func TestV3RealtimeEndpointCursorTooOldRequiresBootstrap(t *testing.T) {
 	}
 }
 
+func TestV3RealtimeIdleScanSendsZeroEventEndpointWatermark(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	createdA := createV3RealtimeTestSessionResult(t, server, "session-realtime-watermark-a", "create-realtime-watermark-a")
+	previousKeepaliveInterval := v3RealtimeKeepaliveInterval
+	v3RealtimeKeepaliveInterval = 25 * time.Millisecond
+	t.Cleanup(func() { v3RealtimeKeepaliveInterval = previousKeepaliveInterval })
+
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStreamWithQuery(t, httpServer.URL, "endpoint_cursor="+url.QueryEscape(createdA.RealtimeOutbox.EndpointCursor)+"&sessions="+createdA.SessionID)
+	defer conn.Close()
+
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, createdA.SessionID, 0)
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, createdA.SessionID, 1)
+
+	committedB, err := sessionSvc.ApplySessionMutation(sessionruntime.SessionMutationInput{
+		SessionID:       "session-realtime-watermark-b",
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "create-realtime-watermark-b",
+		IdempotencyKey:  "create-realtime-watermark-b",
+		PayloadHash:     "hash-create-realtime-watermark-b",
+		Kind:            sessionruntime.SessionMutationCreateSession,
+		Session: &pebblestore.SessionSnapshot{
+			ID:             "session-realtime-watermark-b",
+			UserID:         testPrincipal().UserID,
+			AccountScopeID: testPrincipal().AccountScopeID,
+			WorkspacePath:  "/workspace/realtime",
+			WorkspaceName:  "realtime",
+			Title:          "session-realtime-watermark-b",
+		},
+		NowUnixMs: 2000,
+	})
+	if err != nil {
+		t.Fatalf("commit filtered session without hub wakeup: %v", err)
+	}
+	if committedB.RealtimeOutbox == nil {
+		t.Fatalf("filtered commit missing realtime outbox: %+v", committedB)
+	}
+
+	var watermark V3RealtimeMessage
+	for i := 0; i < 5; i++ {
+		frame := readV3RealtimeFrame(t, conn)
+		if frame.Kind == V3RealtimeKindEndpointWatermark {
+			watermark = frame
+			break
+		}
+		if frame.Kind != V3RealtimeKindKeepalive {
+			t.Fatalf("unexpected frame while waiting for zero-event watermark: %+v", frame)
+		}
+	}
+	if watermark.Kind == "" {
+		t.Fatal("timed out waiting for zero-event watermark")
+	}
+	assertV3RealtimeFrame(t, watermark, V3RealtimeKindEndpointWatermark, "", 0)
+	assertV3RealtimeSignedCursorSeq(t, server, watermark.EndpointCursor, committedB.RealtimeOutbox.EndpointSeq)
+	if watermark.HighWatermarkSeq != committedB.RealtimeOutbox.EndpointSeq || watermark.Rev != committedB.RealtimeOutbox.EndpointSeq || watermark.PrevRev != createdA.RealtimeOutbox.EndpointSeq {
+		t.Fatalf("zero-event watermark = %+v, want endpoint seq %d prev %d", watermark, committedB.RealtimeOutbox.EndpointSeq, createdA.RealtimeOutbox.EndpointSeq)
+	}
+}
+
 func TestV3RealtimeEndpointCursorReplaySurvivesLostHubWakeup(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-lost-wakeup", "create-realtime-lost-wakeup")
@@ -409,7 +469,7 @@ func TestV3RealtimeSubscribeWildcardLeaksZeroEvents(t *testing.T) {
 	}
 
 	appendV3RealtimeTestMessage(t, server, created.ID, "message-realtime-auth-a", "secret")
-	assertNoV3RealtimeFrame(t, conn, 150*time.Millisecond)
+	assertNoV3RealtimeEventFrame(t, conn, 150*time.Millisecond)
 }
 
 func TestV3RealtimeSlowConsumerNoticeDoesNotBlockOtherSubscribers(t *testing.T) {
@@ -667,6 +727,27 @@ func assertNoV3RealtimeFrame(t *testing.T, conn *gorillaws.Conn, wait time.Durat
 	_, raw, err := conn.ReadMessage()
 	if err == nil {
 		t.Fatalf("unexpected v3 realtime frame: %s", string(raw))
+	}
+}
+
+func assertNoV3RealtimeEventFrame(t *testing.T, conn *gorillaws.Conn, wait time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(wait)
+	for time.Now().Before(deadline) {
+		if err := conn.SetReadDeadline(deadline); err != nil {
+			t.Fatalf("set v3 realtime read deadline: %v", err)
+		}
+		_, raw, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		var frame V3RealtimeMessage
+		if err := json.Unmarshal(raw, &frame); err != nil {
+			t.Fatalf("decode v3 realtime frame %s: %v", string(raw), err)
+		}
+		if frame.Kind == V3RealtimeKindEvent {
+			t.Fatalf("unexpected v3 realtime event frame: %s", string(raw))
+		}
 	}
 }
 

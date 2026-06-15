@@ -81,6 +81,7 @@ function shouldDeliverFrame(kind: string): boolean {
     || kind === 'replay.started'
     || kind === 'replay.complete'
     || kind === 'keepalive'
+    || kind === 'endpoint.watermark'
     || kind === 'cursor.error'
     || kind === 'auth.denied'
     || kind === 'slow_consumer.reconnect_required'

@@ -11,21 +11,22 @@ import (
 )
 
 const (
-	v3RealtimeStreamPath       = "/v3/realtime/stream"
-	v3RealtimeProtocol         = "v3.realtime"
-	v3RealtimeProtocolVersion  = 1
-	v3RealtimeKindHello        = "hello"
-	v3RealtimeKindEvent        = "event"
-	v3RealtimeKindReplayStart  = "replay.started"
-	v3RealtimeKindReplayDone   = "replay.complete"
-	v3RealtimeKindCursorError  = "cursor.error"
-	v3RealtimeKindKeepalive    = "keepalive"
-	v3RealtimeKindHighWater    = "projection.high_watermark"
-	v3RealtimeKindSubscribe    = "subscribe.session"
-	v3RealtimeKindUnsubscribe  = "unsubscribe.session"
-	v3RealtimeKindResume       = "resume"
-	v3RealtimeKindAuthDenied   = "auth.denied"
-	v3RealtimeKindSlowConsumer = "slow_consumer.reconnect_required"
+	v3RealtimeStreamPath            = "/v3/realtime/stream"
+	v3RealtimeProtocol              = "v3.realtime"
+	v3RealtimeProtocolVersion       = 1
+	v3RealtimeKindHello             = "hello"
+	v3RealtimeKindEvent             = "event"
+	v3RealtimeKindReplayStart       = "replay.started"
+	v3RealtimeKindReplayDone        = "replay.complete"
+	v3RealtimeKindCursorError       = "cursor.error"
+	v3RealtimeKindKeepalive         = "keepalive"
+	v3RealtimeKindEndpointWatermark = "endpoint.watermark"
+	v3RealtimeKindHighWater         = "projection.high_watermark"
+	v3RealtimeKindSubscribe         = "subscribe.session"
+	v3RealtimeKindUnsubscribe       = "unsubscribe.session"
+	v3RealtimeKindResume            = "resume"
+	v3RealtimeKindAuthDenied        = "auth.denied"
+	v3RealtimeKindSlowConsumer      = "slow_consumer.reconnect_required"
 )
 
 type V3RealtimeSubscription struct {
@@ -178,7 +179,7 @@ func (c *API) StreamSessionsV3Realtime(ctx context.Context, subscriptions []V3Re
 			if frame.SessionID != "" && frame.LastSeq > lastSeqBySession[frame.SessionID] {
 				lastSeqBySession[frame.SessionID] = frame.LastSeq
 			}
-		case v3RealtimeKindHello, v3RealtimeKindKeepalive, v3RealtimeKindHighWater:
+		case v3RealtimeKindHello, v3RealtimeKindKeepalive, v3RealtimeKindEndpointWatermark, v3RealtimeKindHighWater:
 			// Control frames are delivered to the caller, but they do not advance
 			// application order. Only event.seq advances session state.
 		default:

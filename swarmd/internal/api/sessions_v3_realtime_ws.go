@@ -14,10 +14,9 @@ import (
 	transportws "swarm/packages/swarmd/internal/transport/ws"
 )
 
-const (
-	v3RealtimeReplayLimit       = 500
-	v3RealtimeKeepaliveInterval = 15 * time.Second
-)
+const v3RealtimeReplayLimit = 500
+
+var v3RealtimeKeepaliveInterval = 15 * time.Second
 
 type v3RealtimeSubscription struct {
 	SessionID      string
@@ -101,7 +100,7 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 		if !s.v3RealtimeSendReplayStartForSubscriptions(conn, subs, endpointCursor, scope) {
 			return
 		}
-		advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, scope, lastEndpointSeq, endpointCursor, subs)
+		advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, scope, lastEndpointSeq, endpointCursor, subs, false)
 		if !ok {
 			return
 		}
@@ -173,7 +172,7 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 					if endpointSeq < catchUpFrom {
 						catchUpFrom = endpointSeq
 					}
-					advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, scope, catchUpFrom, endpointSeq, combined)
+					advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, scope, catchUpFrom, endpointSeq, combined, false)
 					if !ok {
 						return
 					}
@@ -232,7 +231,7 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 						catchUpFrom = subCursor
 					}
 				}
-				advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, scope, catchUpFrom, resumeSeq, combined)
+				advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, scope, catchUpFrom, resumeSeq, combined, false)
 				if !ok {
 					return
 				}
@@ -252,7 +251,7 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 				lastKeepaliveSeq = advanced.EndpointSeq
 			}
 		case <-sub.send:
-			advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, scope, lastEndpointSeq, lastEndpointSeq, subs)
+			advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, scope, lastEndpointSeq, lastEndpointSeq, subs, true)
 			if !ok {
 				return
 			}
@@ -262,6 +261,12 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 			_ = s.sendV3RealtimeMessage(conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSlowConsumer, NextSeq: slow.EndpointSeq, ErrorCode: "slow_consumer", Reason: slow.Reason})
 			return
 		case <-ticker.C:
+			advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, scope, lastEndpointSeq, lastEndpointSeq, subs, true)
+			if !ok {
+				return
+			}
+			subs = advanced.Subscriptions
+			lastEndpointSeq = advanced.EndpointSeq
 			keepaliveCursor, err := s.signV3SyncEndpointCursor(scope, lastEndpointSeq)
 			if err != nil {
 				_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", "cursor_sign_failed", err.Error(), lastEndpointSeq, lastEndpointSeq))
@@ -276,8 +281,9 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 }
 
 type v3RealtimeAdvanceResult struct {
-	EndpointSeq   uint64
-	Subscriptions map[string]v3RealtimeSubscription
+	EndpointSeq     uint64
+	Subscriptions   map[string]v3RealtimeSubscription
+	DeliveredEvents int
 }
 
 func (s *Server) v3RealtimeValidateEndpointCursor(conn *transportws.Conn, requestedEndpointSeq uint64) bool {
@@ -321,7 +327,8 @@ func (s *Server) v3RealtimeOldestAvailableEndpointSeq() (uint64, error) {
 	return 0, nil
 }
 
-func (s *Server) v3RealtimeCatchUpEndpointCursor(conn *transportws.Conn, principal identity.Principal, scope v3SyncCursorScope, currentEndpointSeq, requestedEndpointSeq uint64, subs map[string]v3RealtimeSubscription) (v3RealtimeAdvanceResult, bool) {
+func (s *Server) v3RealtimeCatchUpEndpointCursor(conn *transportws.Conn, principal identity.Principal, scope v3SyncCursorScope, currentEndpointSeq, requestedEndpointSeq uint64, subs map[string]v3RealtimeSubscription, emitZeroEventWatermark bool) (v3RealtimeAdvanceResult, bool) {
+	initialEndpointSeq := currentEndpointSeq
 	current := currentEndpointSeq
 	advanced := v3RealtimeAdvanceResult{EndpointSeq: current, Subscriptions: cloneV3RealtimeSubscriptions(subs)}
 	for {
@@ -337,53 +344,83 @@ func (s *Server) v3RealtimeCatchUpEndpointCursor(conn *transportws.Conn, princip
 				_ = s.sendV3RealtimeMessage(conn, msg)
 				return advanced, false
 			}
+			if emitZeroEventWatermark && !s.v3RealtimeSendZeroEventWatermark(conn, scope, initialEndpointSeq, advanced) {
+				return advanced, false
+			}
 			return advanced, true
 		}
 		for _, record := range records {
-			next, ok := s.v3RealtimeProcessOutboxRecord(conn, principal, scope, record, current, advanced.Subscriptions)
+			next, ok, delivered := s.v3RealtimeProcessOutboxRecord(conn, principal, scope, record, current, advanced.Subscriptions)
 			if !ok {
 				return advanced, false
+			}
+			next.DeliveredEvents = advanced.DeliveredEvents
+			if delivered {
+				next.DeliveredEvents++
 			}
 			advanced = next
 			current = next.EndpointSeq
 		}
 		if len(records) < v3RealtimeReplayLimit {
+			if emitZeroEventWatermark && !s.v3RealtimeSendZeroEventWatermark(conn, scope, initialEndpointSeq, advanced) {
+				return advanced, false
+			}
 			return advanced, true
 		}
 	}
 }
 
-func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal identity.Principal, scope v3SyncCursorScope, record sessionruntime.RealtimeOutboxRecord, lastEndpointSeq uint64, subs map[string]v3RealtimeSubscription) (v3RealtimeAdvanceResult, bool) {
+func (s *Server) v3RealtimeSendZeroEventWatermark(conn *transportws.Conn, scope v3SyncCursorScope, initialEndpointSeq uint64, advanced v3RealtimeAdvanceResult) bool {
+	if advanced.EndpointSeq <= initialEndpointSeq || advanced.DeliveredEvents > 0 {
+		return true
+	}
+	cursor, err := s.signV3SyncEndpointCursor(scope, advanced.EndpointSeq)
+	if err != nil {
+		_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", "cursor_sign_failed", err.Error(), initialEndpointSeq, advanced.EndpointSeq))
+		return false
+	}
+	return s.sendV3RealtimeMessage(conn, V3RealtimeMessage{
+		Protocol:         V3RealtimeProtocol,
+		ProtocolVersion:  V3RealtimeProtocolVersion,
+		Kind:             V3RealtimeKindEndpointWatermark,
+		EndpointCursor:   cursor,
+		HighWatermarkSeq: advanced.EndpointSeq,
+		Rev:              advanced.EndpointSeq,
+		PrevRev:          initialEndpointSeq,
+	}) == nil
+}
+
+func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal identity.Principal, scope v3SyncCursorScope, record sessionruntime.RealtimeOutboxRecord, lastEndpointSeq uint64, subs map[string]v3RealtimeSubscription) (v3RealtimeAdvanceResult, bool, bool) {
 	advanced := v3RealtimeAdvanceResult{EndpointSeq: lastEndpointSeq, Subscriptions: cloneV3RealtimeSubscriptions(subs)}
 	if record.EndpointSeq <= lastEndpointSeq {
-		return advanced, true
+		return advanced, true, false
 	}
 	if record.EndpointSeq != lastEndpointSeq+1 && lastEndpointSeq != 0 {
 		_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", "endpoint_cursor_gap", fmt.Sprintf("endpoint sequence gap at %d, want %d; reconnect required", record.EndpointSeq, lastEndpointSeq+1), lastEndpointSeq, record.EndpointSeq))
-		return advanced, false
+		return advanced, false, false
 	}
 	advanced.EndpointSeq = record.EndpointSeq
 	if !s.v3RealtimePrincipalCanSee(principal, record) {
-		return advanced, true
+		return advanced, true, false
 	}
 	subscription, ok := advanced.Subscriptions[record.SessionID]
 	if !ok {
-		return advanced, true
+		return advanced, true, false
 	}
 	if record.Event.Seq <= subscription.LastSeq {
-		return advanced, true
+		return advanced, true, false
 	}
 	if record.Event.Seq != subscription.LastSeq+1 {
 		_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(record.SessionID, "session_cursor_gap", fmt.Sprintf("session event sequence gap at %d, want %d; refetch required", record.Event.Seq, subscription.LastSeq+1), subscription.LastSeq, record.Event.Seq))
 		delete(advanced.Subscriptions, record.SessionID)
-		return advanced, true
+		return advanced, true, false
 	}
 	if !s.sendV3RealtimeOutboxEvent(conn, record, scope) {
-		return advanced, false
+		return advanced, false, false
 	}
 	subscription.LastSeq = record.Event.Seq
 	advanced.Subscriptions[record.SessionID] = subscription
-	return advanced, true
+	return advanced, true, true
 }
 
 func cloneV3RealtimeSubscriptions(in map[string]v3RealtimeSubscription) map[string]v3RealtimeSubscription {
