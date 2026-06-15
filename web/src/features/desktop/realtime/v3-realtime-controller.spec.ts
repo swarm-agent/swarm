@@ -3,7 +3,11 @@ import assert from 'node:assert/strict'
 
 import { DesktopV3RealtimeController } from './v3-realtime-controller'
 
-test('V3 realtime controller persists endpoint.watermark cursor without application mutation', async () => {
+const OPAQUE_CURSOR_1 = 'v3c1.test_payload_1.test_signature_1'
+const OPAQUE_CURSOR_2 = 'v3c1.test_payload_2.test_signature_2'
+const OPAQUE_CURSOR_3 = 'v3c1.test_payload_3.test_signature_3'
+
+async function withMockRealtime(run: (ctx: { sockets: Array<{ sent: unknown[]; emit: (payload: unknown) => void }> }) => Promise<void>): Promise<void> {
   const originalFetch = globalThis.fetch
   const originalWindow = globalThis.window
   const originalWebSocket = globalThis.WebSocket
@@ -28,6 +32,7 @@ test('V3 realtime controller persists endpoint.watermark cursor without applicat
     }
 
     close(): void {
+      if (this.readyState === FakeWebSocket.CLOSED) return
       this.readyState = FakeWebSocket.CLOSED
       this.dispatchEvent(new Event('close'))
     }
@@ -56,16 +61,26 @@ test('V3 realtime controller persists endpoint.watermark cursor without applicat
   globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket
 
   try {
+    await run({ sockets })
+  } finally {
+    globalThis.fetch = originalFetch
+    globalThis.window = originalWindow
+    globalThis.WebSocket = originalWebSocket
+  }
+}
+
+test('V3 realtime controller persists endpoint.watermark cursor without application mutation', async () => {
+  await withMockRealtime(async ({ sockets }) => {
     const delivered: string[] = []
     const controller = new DesktopV3RealtimeController({
-      getEndpointCursor: () => 'cursor-1',
+      getEndpointCursor: () => OPAQUE_CURSOR_1,
       onFrame: (_sessionId, frame) => {
         delivered.push(String(frame.kind ?? frame.type ?? ''))
         return false
       },
     })
 
-    await controller.subscribeSession('session-a', 'cursor-1', 'sub-a')
+    await controller.subscribeSession('session-a', OPAQUE_CURSOR_1, 'sub-a')
     await new Promise((resolve) => queueMicrotask(resolve))
     assert.equal(sockets.length, 1)
     assert.deepEqual(sockets[0].sent.at(-1), {
@@ -74,32 +89,52 @@ test('V3 realtime controller persists endpoint.watermark cursor without applicat
       kind: 'subscribe.session',
       session_id: 'session-a',
       subscription_id: 'sub-a',
-      endpoint_cursor: 'cursor-1',
+      endpoint_cursor: OPAQUE_CURSOR_1,
     })
 
     sockets[0].emit({
       protocol: 'v3.realtime',
       protocol_version: 1,
       kind: 'endpoint.watermark',
-      endpoint_cursor: 'cursor-2',
+      endpoint_cursor: OPAQUE_CURSOR_2,
       high_watermark_seq: 2,
       rev: 2,
       prevRev: 1,
     })
     assert.deepEqual(delivered, ['endpoint.watermark'])
 
-    controller.syncSessions([{ sessionId: 'session-a', endpointCursor: 'cursor-1', subscriptionId: 'sub-a' }], { resubscribe: true })
+    controller.syncSessions([{ sessionId: 'session-a', endpointCursor: OPAQUE_CURSOR_1, subscriptionId: 'sub-a' }], { resubscribe: true })
     assert.deepEqual(sockets[0].sent.at(-1), {
       protocol: 'v3.realtime',
       protocol_version: 1,
       kind: 'subscribe.session',
       session_id: 'session-a',
       subscription_id: 'sub-a',
-      endpoint_cursor: 'cursor-2',
+      endpoint_cursor: OPAQUE_CURSOR_2,
     })
-  } finally {
-    globalThis.fetch = originalFetch
-    globalThis.window = originalWindow
-    globalThis.WebSocket = originalWebSocket
-  }
+  })
+})
+
+test('V3 realtime controller keeps bootstrap cursor ahead of stale subscription cursor for durable reconnect repair', async () => {
+  await withMockRealtime(async ({ sockets }) => {
+    const controller = new DesktopV3RealtimeController({
+      getEndpointCursor: () => OPAQUE_CURSOR_1,
+      onFrame: () => true,
+    })
+
+    await controller.subscribeSession('session-a', OPAQUE_CURSOR_1, 'sub-a')
+    await new Promise((resolve) => queueMicrotask(resolve))
+
+    controller.setEndpointCursor(OPAQUE_CURSOR_3)
+    controller.syncSessions([{ sessionId: 'session-a', endpointCursor: OPAQUE_CURSOR_1, subscriptionId: 'sub-a' }], { resubscribe: true })
+
+    assert.deepEqual(sockets[0].sent.at(-1), {
+      protocol: 'v3.realtime',
+      protocol_version: 1,
+      kind: 'subscribe.session',
+      session_id: 'session-a',
+      subscription_id: 'sub-a',
+      endpoint_cursor: OPAQUE_CURSOR_3,
+    })
+  })
 })

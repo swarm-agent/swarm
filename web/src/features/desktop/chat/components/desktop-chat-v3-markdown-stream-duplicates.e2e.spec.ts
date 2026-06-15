@@ -13,6 +13,8 @@ const WORKSPACE_PATH = '/tmp/swarm-playwright-v3-markdown-stream'
 const WORKSPACE_NAME = 'V3 Markdown Stream'
 const WORKSPACE_SLUG = 'markdown-stream-vthree'
 const SENTINEL = 'SENTINEL-LOREM-STREAM'
+const OPAQUE_SNAPSHOT_CURSOR = 'v3c1.playwright_snapshot_payload.playwright_snapshot_signature'
+const OPAQUE_RECONNECT_CURSOR = 'v3c1.playwright_reconnect_payload.playwright_reconnect_signature'
 
 const MARKDOWN_CHUNKS = [
   '# Lorem ipsum streamed markdown\n\n',
@@ -90,23 +92,37 @@ function v3Snapshot(messages: Record<string, unknown>[], active = true): Record<
   }
 }
 
-function v3WorksetSnapshot(messages: Record<string, unknown>[], active = true): Record<string, unknown> {
+function v3SyncSnapshot(messages: Record<string, unknown>[], active = true, cursor = OPAQUE_SNAPSHOT_CURSOR): Record<string, unknown> {
   return {
     rev: 1,
-    snapshot_endpoint_cursor: 'cursor-v3-markdown-stream-1',
+    snapshot_endpoint_cursor: cursor,
     sessions_by_id: { [SESSION_ID]: sessionWire(active) },
     session_order: [SESSION_ID],
     messages_by_session: { [SESSION_ID]: messages },
-    run_intents_by_session: active ? { [SESSION_ID]: [{ session_id: SESSION_ID, run_id: RUN_ID, status: 'running', created_at: 1, updated_at: Date.now(), event_seq: 1 }] } : {},
+    current_run_intent_by_session: active ? { [SESSION_ID]: { session_id: SESSION_ID, run_id: RUN_ID, status: 'running', created_at: 1, updated_at: Date.now(), event_seq: 1 } } : {},
+    subscriptions: [{
+      protocol: 'v3.realtime',
+      protocol_version: 1,
+      kind: 'subscribe.session',
+      session_id: SESSION_ID,
+      subscription_id: `desktop:${SESSION_ID}`,
+      endpoint_cursor: cursor,
+    }],
   }
 }
 
-async function startMockBackend(): Promise<{ server: Server; port: number; setMessages: (messages: Record<string, unknown>[], active?: boolean) => void }> {
+async function startMockBackend(): Promise<{ server: Server; port: number; requests: string[]; setMessages: (messages: Record<string, unknown>[], active?: boolean) => void }> {
   let sessionMessages: Record<string, unknown>[] = [userMessage()]
   let sessionActive = true
+  const requests: string[] = []
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     const path = url.pathname
+    requests.push(path)
+
+    if (path === '/v3/sessions:workset' || path === '/v3/sessions:discover') {
+      return writeJson(res, 500, { error: `legacy desktop sync route forbidden in browser runtime test: ${path}` })
+    }
 
     if (path === '/v1/auth/desktop/session') return writeJson(res, 200, { ok: true })
     if (path === '/v1/vault') return writeJson(res, 200, { enabled: false, unlocked: true, unlock_required: false, storage_mode: 'memory' })
@@ -141,7 +157,8 @@ async function startMockBackend(): Promise<{ server: Server; port: number; setMe
         directories: [],
       })
     }
-    if (path === '/v3/sessions:workset') return writeJson(res, 200, v3WorksetSnapshot(sessionMessages, sessionActive))
+    if (path === '/v3/sync/bootstrap' || path === '/v3/sync/hydrate') return writeJson(res, 200, v3SyncSnapshot(sessionMessages, sessionActive))
+    if (path === '/v3/sessions:reconnect') return writeJson(res, 200, v3SyncSnapshot(sessionMessages, sessionActive, OPAQUE_RECONNECT_CURSOR))
     if (path === `/v3/sessions/${SESSION_ID}/preference`) return writeJson(res, 200, { preference: { provider: 'mock', model: 'v3-markdown-stream', thinking: '', updated_at: 0 }, context_window: 128000, max_output_tokens: 4096 })
     if (path === `/v3/sessions/${SESSION_ID}`) return writeJson(res, 200, v3Snapshot(sessionMessages, sessionActive))
     if (path === '/v1/notifications') {
@@ -157,6 +174,7 @@ async function startMockBackend(): Promise<{ server: Server; port: number; setMe
   return {
     server,
     port: address.port,
+    requests,
     setMessages: (messages: Record<string, unknown>[], active = false) => {
       sessionMessages = messages
       sessionActive = active
@@ -277,7 +295,7 @@ async function installBrowserStreamControls(page: Page): Promise<void> {
             kind: 'event',
             ok: true,
             session_id: sessionId,
-            endpoint_cursor: 'cursor-' + seq,
+            endpoint_cursor: 'v3c1.playwright_event_' + seq + '.playwright_event_signature_' + seq,
             last_seq: seq,
             high_watermark_seq: seq,
             event: {
@@ -322,7 +340,14 @@ test('desktop V3 markdown stream renders each delta once and finalizes to the sa
       throw new Error(`desktop chat scroller did not appear: ${error instanceof Error ? error.message : String(error)}\nconsole=${consoleLines.join('\n')}\nbody=${bodyText.slice(0, 4000)}`)
     }
     await page.waitForFunction(() => (window as any).__socketUrls?.().some((url: string) => url.endsWith('/ws')))
+    await page.waitForFunction(() => (window as any).__socketUrls?.().some((url: string) => url.includes('/v3/realtime/stream')))
     await page.waitForTimeout(250)
+
+    assert.ok(backend.requests.includes('/v3/sync/bootstrap'), `Desktop browser did not bootstrap through canonical sync API: ${backend.requests.join(',')}`)
+    assert.ok(backend.requests.includes('/v3/sessions:reconnect'), `Desktop browser did not request realtime durable reconnect subscriptions: ${backend.requests.join(',')}`)
+    assert.equal(backend.requests.some((path) => path === '/v3/sessions:workset' || path === '/v3/sessions:discover'), false, `Desktop browser hit legacy sync route: ${backend.requests.join(',')}`)
+    const websocketUrls = await page.evaluate(() => (window as any).__socketUrls?.() || []) as string[]
+    assert.ok(websocketUrls.some((url) => url.includes(`/v3/realtime/stream?endpoint_cursor=${encodeURIComponent(OPAQUE_RECONNECT_CURSOR)}`)), `Desktop V3 realtime stream did not use opaque reconnect cursor: ${websocketUrls.join(',')}`)
 
     for (let index = 0; index < MARKDOWN_CHUNKS.length; index += 1) {
       await page.evaluate(({ seq, runId, delta }) => {

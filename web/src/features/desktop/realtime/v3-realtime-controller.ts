@@ -175,7 +175,7 @@ export class DesktopV3RealtimeController {
   setEndpointCursor(endpointCursor: string | null | undefined): void {
     const cursor = endpointCursor?.trim() ?? ''
     if (cursor) {
-      this.endpointCursor = cursor
+      this.advanceEndpointCursor(cursor)
     }
   }
 

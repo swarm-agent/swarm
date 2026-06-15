@@ -6,9 +6,15 @@ import { fetchDesktopSessionDiscovery, fetchDesktopStateSnapshot, loadDesktopSta
 import type { DesktopSessionRecord } from '../types/realtime'
 
 const originalFetch = globalThis.fetch
+const originalWindow = globalThis.window
+const originalCustomEvent = globalThis.CustomEvent
+const OPAQUE_BOOTSTRAP_CURSOR = 'v3c1.test_payload_14.test_signature_14'
+const OPAQUE_HYDRATE_CURSOR = 'v3c1.test_payload_13.test_signature_13'
 
 test.afterEach(() => {
   globalThis.fetch = originalFetch
+  globalThis.window = originalWindow
+  globalThis.CustomEvent = originalCustomEvent
   replaceDesktopFromSnapshot({ rev: 0 })
 })
 
@@ -114,6 +120,34 @@ test('normalizeDesktopStateSnapshot builds a plain replacement snapshot from syn
   assert.equal(snapshot.preferencesBySessionId, undefined)
   assert.equal(snapshot.agentModelPolicyBySessionId, undefined)
 })
+
+test('normalizeDesktopStateSnapshot preserves and dispatches opaque snapshot cursor without parsing', () => {
+  const dispatched: unknown[] = []
+  globalThis.CustomEvent = class TestCustomEvent<T = unknown> extends Event {
+    readonly detail: T
+    constructor(type: string, init?: CustomEventInit<T>) {
+      super(type)
+      this.detail = init?.detail as T
+    }
+  } as typeof CustomEvent
+  globalThis.window = {
+    dispatchEvent: (event: Event) => {
+      dispatched.push((event as CustomEvent).detail)
+      return true
+    },
+  } as Window & typeof globalThis
+
+  const snapshot = normalizeDesktopStateSnapshot({
+    rev: 43,
+    snapshot_endpoint_cursor: OPAQUE_BOOTSTRAP_CURSOR,
+    sessions_by_id: { next: sessionWire('next', 30) },
+    session_order: ['next'],
+  })
+
+  assert.equal(snapshot.snapshotEndpointCursor, OPAQUE_BOOTSTRAP_CURSOR)
+  assert.deepEqual(dispatched, [{ endpointCursor: OPAQUE_BOOTSTRAP_CURSOR }])
+})
+
 
 test('normalizeDesktopStateSnapshot maps active run intent into live sidebar state', () => {
   const snapshot = normalizeDesktopStateSnapshot({
@@ -298,7 +332,7 @@ test('fetchDesktopStateSnapshot hydrates targeted sessions through sync hydrate 
     })
     return new Response(JSON.stringify({
       rev: 13,
-      snapshot_endpoint_cursor: 'cursor-13',
+      snapshot_endpoint_cursor: OPAQUE_HYDRATE_CURSOR,
       sessions_by_id: { targeted: sessionWire('targeted', 20) },
       session_order: ['targeted'],
     }), { status: 200, headers: { 'Content-Type': 'application/json' } })
@@ -311,6 +345,7 @@ test('fetchDesktopStateSnapshot hydrates targeted sessions through sync hydrate 
   })
 
   assert.equal(snapshot.rev, 13)
+  assert.equal(snapshot.snapshotEndpointCursor, OPAQUE_HYDRATE_CURSOR)
   assert.equal(snapshot.sessionsById.targeted?.id, 'targeted')
   assert.deepEqual(requests, [{
     url: '/v3/sync/hydrate',
@@ -341,7 +376,7 @@ test('fetchDesktopSessionDiscovery uses narrow metadata-only sync bootstrap endp
     })
     return new Response(JSON.stringify({
       rev: 14,
-      snapshot_endpoint_cursor: 'cursor-14',
+      snapshot_endpoint_cursor: OPAQUE_BOOTSTRAP_CURSOR,
       sessions_by_id: { discovered: sessionWire('discovered', 20) },
       projections_by_session: {
         discovered: { session_id: 'discovered', last_event_seq: 9, projection_high_watermark_seq: 11, updated_at: 25 },
@@ -359,6 +394,7 @@ test('fetchDesktopSessionDiscovery uses narrow metadata-only sync bootstrap endp
   })
 
   assert.equal(snapshot.rev, 14)
+  assert.equal(snapshot.snapshotEndpointCursor, OPAQUE_BOOTSTRAP_CURSOR)
   assert.equal(snapshot.sessionsById.discovered?.lastEventSeq, 9)
   assert.equal(snapshot.sessionsById.discovered?.projectionHighWatermarkSeq, 11)
   assert.equal(snapshot.sessionsById.discovered?.updatedAt, 25)
