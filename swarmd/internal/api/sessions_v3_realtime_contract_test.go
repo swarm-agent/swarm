@@ -60,6 +60,7 @@ func TestV3RealtimeContractRoundTripsEveryMessageType(t *testing.T) {
 		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindReplayDone, SessionID: "session-a", LastSeq: 10, NextSeq: 11, HighWatermarkSeq: 10, EndpointCursor: "cursor-10"},
 		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindCursorError, SessionID: "session-a", LastSeq: 7, HighWatermarkSeq: 12, EndpointCursor: "cursor-7", ErrorCode: "cursor_gap", Error: "refetch required"},
 		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindKeepalive, SessionID: "session-a", LastSeq: 10, EndpointCursor: "cursor-10"},
+		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindEndpointWatermark, HighWatermarkSeq: 12, EndpointCursor: "cursor-12", Rev: 12, PrevRev: 11},
 		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindHighWater, SessionID: "session-a", HighWatermarkSeq: 12, EndpointCursor: "cursor-12"},
 		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: "session-a", SubscriptionID: "sub-a", EndpointCursor: "cursor-10"},
 		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindUnsubscribe, SessionID: "session-a", SubscriptionID: "sub-a"},

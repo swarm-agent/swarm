@@ -466,6 +466,7 @@ Backend subscribe/replay transport:
 - Live delivery is subscription-based and session-scoped: a socket may multiplex multiple exact session subscriptions. Wildcard session subscriptions are not authority and must not leak events. Slow consumers are disconnected with `slow_consumer.reconnect_required` so they can rehydrate/resume instead of blocking publication.
 - Gap handling is explicit. A missing global endpoint row produces `cursor.error` such as `endpoint_cursor_gap`, `cursor_too_old`, or `endpoint_cursor_ahead`; a per-session sequence gap produces `session_cursor_gap` and drops that subscription. Clients must rehydrate or reconnect, not paper over gaps.
 - Keepalive frames are control frames (`kind:"keepalive"`) and do not advance application state. They can carry the latest endpoint cursor/last seq for liveness bookkeeping only.
+- Zero-event endpoint advancement is explicit: when durable outbox scanning advances the endpoint cursor without delivering any visible session event for the client's subscribed scope, the server emits a sessionless control frame (`kind:"endpoint.watermark"`) with `endpoint_cursor`, `high_watermark_seq`, `rev`, and `prevRev`. Clients persist this opaque cursor as scan progress without mutating per-session event state.
 
 Stream frame and object shape:
 - All frames share `protocol`, `protocol_version`, `kind`, optional `session_id`, optional `subscription_id`, optional `endpoint_cursor`, and error fields (`error_code`, `error`, `reason`) for control failures.

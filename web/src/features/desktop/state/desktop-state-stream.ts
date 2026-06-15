@@ -12,6 +12,7 @@ export type DesktopRealtimeControlKind =
   | 'keepalive'
   | 'replay.started'
   | 'replay.complete'
+  | 'endpoint.watermark'
   | 'projection.high_watermark'
   | 'cursor.error'
   | 'auth.denied'

@@ -444,6 +444,7 @@ const observed = {
   validWSCursorAccepted: false,
   wsHelloCursor: false,
   wsReplayCursor: false,
+  wsEndpointWatermark: false,
   tamperedCursorRejected: false,
   wrongScopeCursorRejected: false,
   restartCursorAccepted: cfg.skipRestart,
@@ -550,6 +551,37 @@ try {
   observed.aheadCursorRejected = aheadFrames.some(({ summary }) => summary.kind === 'cursor.error' && summary.error_code === 'endpoint_cursor_ahead' && Number(summary.latest_endpoint_seq || 0) === currentHead);
   assert(observed.aheadCursorRejected, `ahead cursor was not rejected with endpoint_cursor_ahead/latest head ${currentHead}: ${JSON.stringify(aheadFrames.map(f => f.summary))}`);
 
+  const watermarkFrames = [];
+  let watermarkRealtime = null;
+  try {
+    watermarkRealtime = await openRealtime(validRoute, token, (_frame, summary) => watermarkFrames.push({ summary }));
+    await sleep(250);
+    const watermarkCreate = (await apiJSON('POST', '/v3/sessions', token, {
+      client_request_id: `durable-sync-watermark-create:${suffix}`,
+      title: `Durable sync watermark ${suffix}`,
+      workspace_path: binding.source_workspace_path,
+      workspace_name: binding.source_workspace_name || 'swarm-go',
+      workspace_binding_id: binding.workspace_binding_id,
+      swarm_id: runtime.swarm_id,
+      target_kind: 'host',
+      target_relationship: 'self',
+      mode: 'auto',
+      agent_name: cfg.agentName,
+      preference: { provider: cfg.provider, model: cfg.model, thinking: cfg.thinking },
+      metadata: { durable_sync_e2e: suffix, watermark_probe: true },
+    }, 'sessions.v3.create.watermark_probe')).body;
+    const watermarkSeq = Number(watermarkCreate.realtime_outbox?.endpoint_seq || 0);
+    assert(Number.isSafeInteger(watermarkSeq) && watermarkSeq > currentHead, `watermark probe missing endpoint seq after ${currentHead}: ${JSON.stringify(watermarkCreate.realtime_outbox || {})}`);
+    const watermarkDeadline = Date.now() + 2500;
+    while (Date.now() < watermarkDeadline && !observed.wsEndpointWatermark) {
+      observed.wsEndpointWatermark = watermarkFrames.some(({ summary }) => summary.kind === 'endpoint.watermark' && isV3Cursor(summary.endpoint_cursor) && Number(summary.high_watermark_seq || summary.rev || 0) >= watermarkSeq);
+      await sleep(50);
+    }
+    assert(observed.wsEndpointWatermark, `zero-event websocket watermark did not advance through endpoint ${watermarkSeq}: ${JSON.stringify(watermarkFrames.map(f => f.summary))}`);
+  } finally {
+    try { watermarkRealtime?.close(); } catch {}
+  }
+
   if (!cfg.skipRestart) {
     emit({ stage: 'restart.begin', service: cfg.serviceUnit });
     restartService();
@@ -599,7 +631,7 @@ try {
 
   const pass = Boolean(
     observed.desktopWorksetCursor && observed.tuiWorksetCursor && observed.reconnectCursor && observed.discoveryCursor &&
-    observed.validWSCursorAccepted && observed.wsHelloCursor && observed.wsReplayCursor &&
+    observed.validWSCursorAccepted && observed.wsHelloCursor && observed.wsReplayCursor && observed.wsEndpointWatermark &&
     observed.tamperedCursorRejected && observed.wrongScopeCursorRejected && observed.aheadCursorRejected && observed.restartCursorAccepted &&
     observed.persistentKeyKid && observed.fireworksAssistantCompleted && observed.realtimeEventCursors > 0 && observed.cursorErrorsDuringValidStreams.length === 0
   );
@@ -649,7 +681,7 @@ function writeFunctionChain(file, summary) {
   lines.push('## What this runner proves');
   lines.push('- It uses the live SSH host API and real swarmd service, not mocks.');
   lines.push('- It checks Desktop workset, TUI workset, reconnect, and discovery cursor shape.');
-  lines.push('- It checks valid, tampered, wrong-scope, and ahead-of-head websocket cursor behavior.');
+  lines.push('- It checks valid, tampered, wrong-scope, ahead-of-head, and zero-event watermark websocket cursor behavior.');
   lines.push('- It decodes cursor metadata to prove the live server uses a persistent v3sync-* key ID, not the default dev key.');
   lines.push('- It restarts the swarm service and reuses a pre-restart cursor to prove key persistence.');
   lines.push('- It posts a real V3 user message and waits for Fireworks-backed assistant output over realtime.');

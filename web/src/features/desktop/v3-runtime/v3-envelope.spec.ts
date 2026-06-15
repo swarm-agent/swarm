@@ -241,21 +241,23 @@ test('connection control envelopes route resync-required frames into stale state
   assert.match(result.state.staleReason ?? '', /cursor_gone/)
 })
 
-test('replay control envelopes advance cursors without mutating desktop state', () => {
+test('replay and endpoint watermark control envelopes advance cursors without mutating desktop state', () => {
   const base = applyV3Envelope(createEmptyDesktopState(), createV3SnapshotEnvelope({ rev: 1 })).state
-  const replayComplete = createV3ControlEnvelope('replay.complete', {
-    receivedAt: 20,
-    sessionId: 'session-1',
-    endpointCursor: 'cursor-20',
-    highWatermarkSeq: 20,
-  })
+  for (const control of ['replay.complete', 'endpoint.watermark'] as const) {
+    const envelope = createV3ControlEnvelope(control, {
+      receivedAt: 20,
+      sessionId: control === 'replay.complete' ? 'session-1' : undefined,
+      endpointCursor: 'cursor-20',
+      highWatermarkSeq: 20,
+    })
 
-  const result = applyV3Envelope(base, replayComplete)
+    const result = applyV3Envelope(base, envelope)
 
-  assert.equal(result.applied, false)
-  assert.equal(result.rejected, false)
-  assert.equal(result.shouldAdvanceCursor, true)
-  assert.equal(result.state, base)
+    assert.equal(result.applied, false, control)
+    assert.equal(result.rejected, false, control)
+    assert.equal(result.shouldAdvanceCursor, true, control)
+    assert.equal(result.state, base, control)
+  }
 })
 
 test('connection stale envelope validates explicit reason', () => {
