@@ -32,6 +32,7 @@ import {
   type SessionV3MessageCommitResponseWire,
   type SessionV3MessageRole,
   type SessionV3RealtimeSubscriptionRequestWire,
+  type SessionV3RealtimeWorksetSubscriptionRequestWire,
   type SessionV3ReconnectSnapshot,
   type SessionV3ReconnectSubscriptionWire,
   type SessionV3WorksetRequestWire,
@@ -292,17 +293,23 @@ export class DesktopSessionV3Runtime {
     const wantedSubscriptions = Array.from(this.wantedSessionIds)
       .map((sessionId) => wantedSessionSubscription(sessionId, endpointCursor))
       .filter((subscription): subscription is SessionV3ReconnectSubscriptionWire => Boolean(subscription))
-    if (wantedSubscriptions.length === 0) {
-      return result
-    }
-    const subscriptions = mergeSubscriptions(result.subscriptions, wantedSubscriptions)
+    const resumeSubscriptions = (result.realtimeResume?.subscriptions ?? [])
+      .map((subscription) => reconnectSubscriptionFromResume(subscription, endpointCursor))
+      .filter((subscription): subscription is SessionV3ReconnectSubscriptionWire => Boolean(subscription))
+    const subscriptions = mergeSubscriptions(
+      mergeSubscriptions(result.subscriptions, resumeSubscriptions),
+      wantedSubscriptions,
+    )
+    const worksets = mergeWorksets(result.worksets, result.realtimeResume?.worksets ?? [])
     return {
       ...result,
       subscriptions,
+      worksets,
       realtimeResume: result.realtimeResume
         ? {
             ...result.realtimeResume,
-            subscriptions: mergeSubscriptions(result.realtimeResume.subscriptions ?? [], wantedSubscriptions),
+            subscriptions,
+            worksets,
           }
         : result.realtimeResume,
     }
@@ -323,7 +330,7 @@ export class DesktopSessionV3Runtime {
   private applyMutation(response: SessionV3HydratedSessionResponseWire, fallbackSessionId: string, signal?: AbortSignal): void {
     const sessionId = responseSessionId(response) || fallbackSessionId
     const result = this.dispatch({ type: 'mutation', response, sessionId, receivedAt: this.now() })
-    const cursor = responseEndpointCursor(response) || result.state.endpointCursor
+    const cursor = result.state.endpointCursor
     if (cursor) {
       this.transport.setEndpointCursor(cursor, 'snapshot')
     }
@@ -407,6 +414,24 @@ function wantedSessionSubscription(sessionId: string, endpointCursor: string): S
   }
 }
 
+function reconnectSubscriptionFromResume(
+  subscription: SessionV3RealtimeSubscriptionRequestWire,
+  endpointCursor: string,
+): SessionV3ReconnectSubscriptionWire | null {
+  const normalizedSessionId = normalizeString(subscription.session_id)
+  const normalizedSubscriptionId = normalizeString(subscription.subscription_id)
+  const normalizedEndpointCursor = normalizeString(subscription.endpoint_cursor) || normalizeString(endpointCursor)
+  if (!normalizedSessionId || !normalizedSubscriptionId || !normalizedEndpointCursor) return null
+  return {
+    protocol: SESSION_V3_REALTIME_PROTOCOL,
+    protocol_version: SESSION_V3_REALTIME_PROTOCOL_VERSION,
+    kind: 'subscribe.session',
+    session_id: normalizedSessionId,
+    subscription_id: normalizedSubscriptionId,
+    endpoint_cursor: normalizedEndpointCursor,
+  }
+}
+
 function mergeSubscriptions(
   base: SessionV3ReconnectSubscriptionWire[],
   extra: SessionV3ReconnectSubscriptionWire[],
@@ -433,16 +458,29 @@ function mergeSubscriptions(
   return output
 }
 
+function mergeWorksets(
+  base: SessionV3RealtimeWorksetSubscriptionRequestWire[],
+  extra: SessionV3RealtimeWorksetSubscriptionRequestWire[],
+): SessionV3RealtimeWorksetSubscriptionRequestWire[] {
+  const output = [...base]
+  const indexes = new Map(output.map((workset, index) => [workset.workset_id, index]))
+  for (const workset of extra) {
+    const index = indexes.get(workset.workset_id)
+    if (index === undefined) {
+      indexes.set(workset.workset_id, output.length)
+      output.push(workset)
+    } else {
+      output[index] = { ...output[index], ...workset }
+    }
+  }
+  return output
+}
+
 function responseSessionId(response: SessionV3HydratedSessionResponseWire): string {
   return normalizeString(response.session?.id)
     || normalizeString(response.projection?.session_id)
     || normalizeString(response.active_run_intent?.session_id)
     || normalizeString(response.run_intent?.session_id)
-}
-
-function responseEndpointCursor(response: SessionV3HydratedSessionResponseWire): string {
-  return normalizeString(response.realtime_outbox?.endpoint_cursor)
-    || normalizeString(response.mutation?.realtime_outbox?.endpoint_cursor)
 }
 
 export function runtimeClientId(): string {

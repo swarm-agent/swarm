@@ -266,6 +266,7 @@ test('stopRun applies mutation outbox without reconnecting or opening another V3
     status: 'cancelled',
     mutation: {
       realtime_outbox: {
+        endpoint_seq: 2,
         endpoint_cursor: 'cursor-2',
         session_id: 'session-1',
       },
@@ -369,4 +370,64 @@ test('refresh resets the V3 socket and reconnects once from the latest snapshot 
   assert.deepEqual(resume.worksets?.map((workset) => workset.workset_id), ['workset-1'])
   assert.equal(runtime.diagnostics().socketState, 'open')
   runtime.shutdown()
+})
+
+test('runtime resume preserves backend worksets while adding known session subscriptions', async () => {
+  installTransportGlobals()
+  const sockets: MockRealtimeSocket[] = []
+  MockRealtimeSocket.collect = sockets
+  const restoreWebSocket = installMockRealtimeSocketConstructor()
+  const runtime = new DesktopSessionV3Runtime({
+    wantedSessionIds: ['session-1'],
+    api: {
+      reconnectSessionV3: async () => ({
+        snapshot: {
+          rev: 10,
+          snapshotEndpointCursor: 'cursor-10',
+        },
+        endpointCursor: 'cursor-10',
+        clientId: 'client-1',
+        surface: 'desktop',
+        worksetId: 'workset-1',
+        subscriptions: [],
+        worksets: [],
+        realtimeResume: {
+          protocol: SESSION_V3_REALTIME_PROTOCOL,
+          protocol_version: SESSION_V3_REALTIME_PROTOCOL_VERSION,
+          kind: SESSION_V3_REALTIME_RESUME_KIND,
+          endpoint_cursor: 'cursor-10',
+          subscriptions: [],
+          worksets: [
+            {
+              workset_id: 'workset-1',
+              subscription_id: 'workset-sub-1',
+              selector: { kind: 'global', global: true },
+              auto_subscribe_sessions: true,
+            },
+          ],
+        },
+        diagnosticsBySession: {},
+        wire: { ok: true, rev: 10, snapshot_endpoint_cursor: 'cursor-10' },
+      }),
+    },
+    transportOptions: {
+      livenessTimeoutMs: 60_000,
+    },
+  })
+
+  try {
+    await runtime.boot()
+    assert.equal(sockets.length, 1)
+    sockets[0].open()
+
+    const resume = parseResume(sockets[0])
+    assert.equal(resume.endpoint_cursor, 'cursor-10')
+    assert.deepEqual(resume.worksets?.map((workset) => workset.workset_id), ['workset-1'])
+    assert.equal(resume.worksets?.[0]?.auto_subscribe_sessions, true)
+    assert.deepEqual(resume.subscriptions?.map((subscription) => subscription.session_id), ['session-1'])
+  } finally {
+    runtime.shutdown()
+    MockRealtimeSocket.collect = null
+    restoreWebSocket()
+  }
 })

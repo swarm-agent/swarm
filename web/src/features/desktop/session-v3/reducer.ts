@@ -240,6 +240,10 @@ export function applySessionV3RealtimeFrame(
   const kind = frameKind(frame)
   switch (kind) {
     case 'event':
+    case 'session.assistant.started':
+    case 'session.assistant.delta':
+    case 'session.assistant.completed':
+    case 'run.usage.updated':
       return applyRealtimeEventFrame(state, frame, action, frameId)
     case 'workset.session.discovered':
       return applyWorksetSessionFrame(state, frame, action, frameId, 'discovered')
@@ -277,8 +281,14 @@ export function applySessionV3MutationResult(
   response: SessionV3HydratedSessionResponseWire,
   action: Extract<SessionV3ReducerAction, { type: 'mutation' }>,
 ): SessionV3ReducerResult {
-  const endpointCursor = mutationEndpointCursor(response) || state.endpointCursor
-  const snapshot = mutationSnapshot(state.desktop.rev, response, action.sessionId)
+  const committedRev = mutationCommittedRevision(response)
+  const shouldApplyMutationCursor = committedRev !== undefined && committedRev >= state.desktop.rev
+  const endpointCursor = shouldApplyMutationCursor
+    ? mutationEndpointCursor(response) || state.endpointCursor
+    : state.endpointCursor
+  const snapshotRev = Math.max(state.desktop.rev, committedRev ?? state.desktop.rev)
+  const snapshot = mutationSnapshot(snapshotRev, response, action.sessionId)
+    ?? (committedRev !== undefined && committedRev > state.desktop.rev ? { rev: committedRev } : null)
   if (!snapshot) {
     return applyReducerDraft(state, action, { endpointCursor })
   }
@@ -520,8 +530,8 @@ function validateRealtimeFrame(frame: SessionV3RealtimeFrameWire): { ok: true } 
   }
   const kind = frameKind(frame)
   if (!kind) return { ok: false, reason: 'V3 realtime frame missing kind' }
-  if (kind === 'event' && !frameSessionId(frame)) return { ok: false, reason: 'V3 realtime event missing session_id' }
-  if ((kind === 'event' || kind === 'workset.session.discovered' || kind === 'workset.session.removed') && !frameEndpointCursor(frame)) {
+  if (isDirectDurableRealtimeEventKind(kind) && !frameSessionId(frame)) return { ok: false, reason: 'V3 realtime event missing session_id' }
+  if ((isDirectDurableRealtimeEventKind(kind) || kind === 'workset.session.discovered' || kind === 'workset.session.removed') && !frameEndpointCursor(frame)) {
     return { ok: false, reason: `V3 realtime ${kind} missing endpoint_cursor` }
   }
   return { ok: true }
@@ -529,7 +539,10 @@ function validateRealtimeFrame(frame: SessionV3RealtimeFrameWire): { ok: true } 
 
 function materializeRealtimeEvent(frame: SessionV3RealtimeFrameWire, currentRev: number): DesktopDaemonEvent {
   const event = frame.event ?? {}
-  const eventType = normalizeOptionalString(frame.event_type) || normalizeOptionalString(event.event_type) || 'event'
+  const kind = frameKind(frame)
+  const eventType = normalizeOptionalString(frame.event_type)
+    || normalizeOptionalString(event.event_type)
+    || (isDirectDurableRealtimeEventKind(kind) ? kind : 'event')
   const sourceSeq = positiveInteger(frame.source_seq) ?? positiveInteger(event.seq)
   const globalSeq = positiveInteger(frame.global_seq) ?? sourceSeq
   const payload = normalizeRealtimeEventPayload(frame, eventType, { globalSeq, sourceSeq })
@@ -815,8 +828,16 @@ function mutationEndpointCursor(response: SessionV3HydratedSessionResponseWire):
   return realtimeOutboxCursor(response.realtime_outbox) || realtimeOutboxCursor(response.mutation?.realtime_outbox)
 }
 
+function mutationCommittedRevision(response: SessionV3HydratedSessionResponseWire): number | undefined {
+  return realtimeOutboxRevision(response.realtime_outbox) ?? realtimeOutboxRevision(response.mutation?.realtime_outbox)
+}
+
 function realtimeOutboxCursor(outbox: SessionV3RealtimeOutboxWire | null | undefined): string {
   return normalizeOptionalString(outbox?.endpoint_cursor)
+}
+
+function realtimeOutboxRevision(outbox: SessionV3RealtimeOutboxWire | null | undefined): number | undefined {
+  return positiveInteger(outbox?.endpoint_seq)
 }
 
 function upsertSubscription(
@@ -903,6 +924,19 @@ function realtimeFrameIdentity(frame: SessionV3RealtimeFrameWire): string {
 
 function frameKind(frame: SessionV3RealtimeFrameWire): string {
   return normalizeOptionalString(frame.kind ?? frame.type)
+}
+
+function isDirectDurableRealtimeEventKind(kind: string): boolean {
+  switch (kind) {
+    case 'event':
+    case 'session.assistant.started':
+    case 'session.assistant.delta':
+    case 'session.assistant.completed':
+    case 'run.usage.updated':
+      return true
+    default:
+      return false
+  }
 }
 
 function frameSessionId(frame: SessionV3RealtimeFrameWire): string {
