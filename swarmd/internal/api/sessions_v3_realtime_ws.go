@@ -11,6 +11,7 @@ import (
 
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	transportws "swarm/packages/swarmd/internal/transport/ws"
 )
 
@@ -22,6 +23,8 @@ type v3RealtimeSubscription struct {
 	SessionID      string
 	SubscriptionID string
 	LastSeq        uint64
+	AutoSubscribed bool
+	WorksetIDs     map[string]struct{}
 }
 
 type v3RealtimeWorksetSubscription struct {
@@ -82,7 +85,6 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 	}
 	subs := map[string]v3RealtimeSubscription{}
 	worksets := map[string]v3RealtimeWorksetSubscription{}
-	_ = worksets
 	lastEndpointSeq := endpointCursor
 	lastKeepaliveSeq := endpointCursor
 
@@ -112,7 +114,7 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 		if !s.v3RealtimeSendReplayStartForSubscriptions(conn, subs, endpointCursor, scope) {
 			return
 		}
-		advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, scope, lastEndpointSeq, endpointCursor, subs, false)
+		advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, scope, lastEndpointSeq, endpointCursor, subs, worksets, false)
 		if !ok {
 			return
 		}
@@ -184,7 +186,7 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 					if endpointSeq < catchUpFrom {
 						catchUpFrom = endpointSeq
 					}
-					advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, scope, catchUpFrom, endpointSeq, combined, false)
+					advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, scope, catchUpFrom, endpointSeq, combined, worksets, false)
 					if !ok {
 						return
 					}
@@ -240,6 +242,7 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 						return
 					}
 					newSub := v3RealtimeSubscription{SessionID: requestedSub.SessionID, SubscriptionID: requestedSub.SubscriptionID, LastSeq: last}
+					newSub.WorksetIDs, newSub.AutoSubscribed = s.v3RealtimeMatchedWorksetIDsForSession(principal, requestedSub.SessionID, requestedWorksets)
 					requestedSubs[requestedSub.SessionID] = newSub
 					requestedSubCursors[requestedSub.SessionID] = subCursor
 					if subCursor < catchUpFrom {
@@ -251,7 +254,7 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 						return
 					}
 				}
-				advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, scope, catchUpFrom, resumeSeq, requestedSubs, len(requestedSubs) == 0)
+				advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, scope, catchUpFrom, resumeSeq, requestedSubs, requestedWorksets, len(requestedSubs) == 0)
 				if !ok {
 					return
 				}
@@ -272,7 +275,7 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 				lastKeepaliveSeq = advanced.EndpointSeq
 			}
 		case <-sub.send:
-			advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, scope, lastEndpointSeq, lastEndpointSeq, subs, true)
+			advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, scope, lastEndpointSeq, lastEndpointSeq, subs, worksets, true)
 			if !ok {
 				return
 			}
@@ -282,7 +285,7 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 			_ = s.sendV3RealtimeMessage(conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSlowConsumer, NextSeq: slow.EndpointSeq, ErrorCode: "slow_consumer", Reason: slow.Reason})
 			return
 		case <-ticker.C:
-			advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, scope, lastEndpointSeq, lastEndpointSeq, subs, true)
+			advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, scope, lastEndpointSeq, lastEndpointSeq, subs, worksets, true)
 			if !ok {
 				return
 			}
@@ -390,7 +393,7 @@ func (s *Server) v3RealtimeOldestAvailableEndpointSeq() (uint64, error) {
 	return 0, nil
 }
 
-func (s *Server) v3RealtimeCatchUpEndpointCursor(conn *transportws.Conn, principal identity.Principal, scope v3SyncCursorScope, currentEndpointSeq, requestedEndpointSeq uint64, subs map[string]v3RealtimeSubscription, emitZeroEventWatermark bool) (v3RealtimeAdvanceResult, bool) {
+func (s *Server) v3RealtimeCatchUpEndpointCursor(conn *transportws.Conn, principal identity.Principal, scope v3SyncCursorScope, currentEndpointSeq, requestedEndpointSeq uint64, subs map[string]v3RealtimeSubscription, worksets map[string]v3RealtimeWorksetSubscription, emitZeroEventWatermark bool) (v3RealtimeAdvanceResult, bool) {
 	initialEndpointSeq := currentEndpointSeq
 	current := currentEndpointSeq
 	advanced := v3RealtimeAdvanceResult{EndpointSeq: current, LastSentEndpointSeq: current, Subscriptions: cloneV3RealtimeSubscriptions(subs)}
@@ -413,7 +416,7 @@ func (s *Server) v3RealtimeCatchUpEndpointCursor(conn *transportws.Conn, princip
 			return advanced, true
 		}
 		for _, record := range records {
-			next, ok, delivered := s.v3RealtimeProcessOutboxRecord(conn, principal, scope, record, current, advanced.Subscriptions)
+			next, ok, delivered := s.v3RealtimeProcessOutboxRecord(conn, principal, scope, record, current, advanced.Subscriptions, worksets)
 			if !ok {
 				return advanced, false
 			}
@@ -455,7 +458,7 @@ func (s *Server) v3RealtimeSendEndpointWatermarkIfAdvanced(conn *transportws.Con
 	}) == nil
 }
 
-func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal identity.Principal, scope v3SyncCursorScope, record sessionruntime.RealtimeOutboxRecord, lastEndpointSeq uint64, subs map[string]v3RealtimeSubscription) (v3RealtimeAdvanceResult, bool, bool) {
+func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal identity.Principal, scope v3SyncCursorScope, record sessionruntime.RealtimeOutboxRecord, lastEndpointSeq uint64, subs map[string]v3RealtimeSubscription, worksets map[string]v3RealtimeWorksetSubscription) (v3RealtimeAdvanceResult, bool, bool) {
 	advanced := v3RealtimeAdvanceResult{EndpointSeq: lastEndpointSeq, LastSentEndpointSeq: lastEndpointSeq, Subscriptions: cloneV3RealtimeSubscriptions(subs)}
 	if record.EndpointSeq <= lastEndpointSeq {
 		return advanced, true, false
@@ -468,10 +471,43 @@ func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal
 	if !s.v3RealtimePrincipalCanSee(principal, record) {
 		return advanced, true, false
 	}
-	subscription, ok := advanced.Subscriptions[record.SessionID]
-	if !ok {
-		return advanced, true, false
+
+	subscription, subscribed := advanced.Subscriptions[record.SessionID]
+	if !subscribed {
+		match, ok := s.v3RealtimeMatchRecordWorkset(principal, record, worksets)
+		if !ok {
+			return advanced, true, false
+		}
+		if !match.AutoSubscribeSessions {
+			return advanced, true, false
+		}
+		primeAt := uint64(0)
+		if record.EndpointSeq > 0 {
+			primeAt = record.EndpointSeq - 1
+		}
+		last, ok := s.v3RealtimePrimeSubscriptionAtEndpointCursor(conn, principal, v3RealtimeAutoSubscriptionID(match, record.SessionID), record.SessionID, primeAt)
+		if !ok {
+			return advanced, false, false
+		}
+		subscription = v3RealtimeSubscription{SessionID: record.SessionID, SubscriptionID: v3RealtimeAutoSubscriptionID(match, record.SessionID), LastSeq: last, AutoSubscribed: true, WorksetIDs: map[string]struct{}{match.WorksetID: struct{}{}}}
+		advanced.Subscriptions[record.SessionID] = subscription
+		if !s.sendV3RealtimeWorksetSessionFrame(conn, V3RealtimeKindWorksetSessionDiscovered, match, subscription, record, scope) {
+			return advanced, false, false
+		}
+		advanced.LastSentEndpointSeq = record.EndpointSeq
+	} else if v3RealtimeRecordRemovesFromWorkset(record) && subscription.AutoSubscribed && len(subscription.WorksetIDs) > 0 {
+		for worksetID := range subscription.WorksetIDs {
+			workset, ok := worksets[worksetID]
+			if !ok {
+				continue
+			}
+			if !s.sendV3RealtimeWorksetSessionFrame(conn, V3RealtimeKindWorksetSessionRemoved, workset, subscription, record, scope) {
+				return advanced, false, false
+			}
+			advanced.LastSentEndpointSeq = record.EndpointSeq
+		}
 	}
+
 	if record.Event.Seq <= subscription.LastSeq {
 		return advanced, true, false
 	}
@@ -485,13 +521,150 @@ func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal
 	}
 	advanced.LastSentEndpointSeq = record.EndpointSeq
 	subscription.LastSeq = record.Event.Seq
-	advanced.Subscriptions[record.SessionID] = subscription
+	if v3RealtimeRecordRemovesFromWorkset(record) && subscription.AutoSubscribed {
+		delete(advanced.Subscriptions, record.SessionID)
+	} else {
+		advanced.Subscriptions[record.SessionID] = subscription
+	}
 	return advanced, true, true
+}
+
+func (s *Server) v3RealtimeMatchedWorksetIDsForSession(principal identity.Principal, sessionID string, worksets map[string]v3RealtimeWorksetSubscription) (map[string]struct{}, bool) {
+	if len(worksets) == 0 {
+		return nil, false
+	}
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil || !ok {
+		return nil, false
+	}
+	matched := map[string]struct{}{}
+	auto := false
+	for _, workset := range orderedV3RealtimeWorksets(worksets) {
+		if !v3RealtimeSessionMatchesWorksetSelector(principal, session, workset.Selector) {
+			continue
+		}
+		matched[workset.WorksetID] = struct{}{}
+		if workset.AutoSubscribeSessions {
+			auto = true
+		}
+	}
+	if len(matched) == 0 {
+		return nil, false
+	}
+	return matched, auto
+}
+
+func (s *Server) v3RealtimeMatchRecordWorkset(principal identity.Principal, record sessionruntime.RealtimeOutboxRecord, worksets map[string]v3RealtimeWorksetSubscription) (v3RealtimeWorksetSubscription, bool) {
+	if len(worksets) == 0 || v3RealtimeRecordRemovesFromWorkset(record) {
+		return v3RealtimeWorksetSubscription{}, false
+	}
+	session, ok, err := s.sessions.GetSession(record.SessionID)
+	if err != nil || !ok {
+		return v3RealtimeWorksetSubscription{}, false
+	}
+	for _, workset := range orderedV3RealtimeWorksets(worksets) {
+		if v3RealtimeSessionMatchesWorksetSelector(principal, session, workset.Selector) {
+			return workset, true
+		}
+	}
+	return v3RealtimeWorksetSubscription{}, false
+}
+
+func v3RealtimeSessionMatchesWorksetSelector(principal identity.Principal, session pebblestore.SessionSnapshot, selector V3RealtimeWorksetSelector) bool {
+	if strings.TrimSpace(session.AccountScopeID) == "" || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		return false
+	}
+	for _, sessionID := range selector.SessionIDs {
+		if strings.TrimSpace(sessionID) == session.ID {
+			return true
+		}
+	}
+	if strings.TrimSpace(selector.Kind) == "global" || selector.Global {
+		return true
+	}
+	paths := selector.WorkspacePaths
+	if strings.TrimSpace(selector.WorkspacePath) != "" {
+		paths = append([]string{selector.WorkspacePath}, paths...)
+	}
+	if len(paths) == 0 && selector.Recent.Limit > 0 {
+		return true
+	}
+	for _, path := range paths {
+		if strings.TrimSpace(path) == strings.TrimSpace(session.WorkspacePath) {
+			return true
+		}
+	}
+	return false
+}
+
+func orderedV3RealtimeWorksets(worksets map[string]v3RealtimeWorksetSubscription) []v3RealtimeWorksetSubscription {
+	out := make([]v3RealtimeWorksetSubscription, 0, len(worksets))
+	for _, workset := range worksets {
+		out = append(out, workset)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].WorksetID == out[j].WorksetID {
+			return out[i].SubscriptionID < out[j].SubscriptionID
+		}
+		return out[i].WorksetID < out[j].WorksetID
+	})
+	return out
+}
+
+func v3RealtimeAutoSubscriptionID(workset v3RealtimeWorksetSubscription, sessionID string) string {
+	base := strings.TrimSpace(workset.SubscriptionID)
+	if base == "" {
+		base = strings.TrimSpace(workset.WorksetID)
+	}
+	if base == "" {
+		base = "workset"
+	}
+	return base + ":session:" + strings.TrimSpace(sessionID)
+}
+
+func v3RealtimeRecordRemovesFromWorkset(record sessionruntime.RealtimeOutboxRecord) bool {
+	switch strings.TrimSpace(record.Event.EventType) {
+	case "session.archived", "session.deleted", "session.visibility.changed":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) sendV3RealtimeWorksetSessionFrame(conn *transportws.Conn, kind string, workset v3RealtimeWorksetSubscription, subscription v3RealtimeSubscription, record sessionruntime.RealtimeOutboxRecord, scope v3SyncCursorScope) bool {
+	cursor, err := s.signV3SyncEndpointCursor(scope, record.EndpointSeq)
+	if err != nil {
+		_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(record.SessionID, "cursor_sign_failed", err.Error(), record.EndpointSeq-1, record.EndpointSeq))
+		return false
+	}
+	message := V3RealtimeMessage{
+		Protocol:              V3RealtimeProtocol,
+		ProtocolVersion:       V3RealtimeProtocolVersion,
+		Kind:                  kind,
+		WorksetID:             workset.WorksetID,
+		WorksetSubscriptionID: workset.SubscriptionID,
+		SessionID:             record.SessionID,
+		SubscriptionID:        subscription.SubscriptionID,
+		AutoSubscribed:        subscription.AutoSubscribed,
+		EndpointCursor:        cursor,
+		Rev:                   record.EndpointSeq,
+		PrevRev:               record.EndpointSeq - 1,
+		EventType:             record.Event.EventType,
+		Projection:            &record.Projection,
+	}
+	return s.sendV3RealtimeMessage(conn, message) == nil
 }
 
 func cloneV3RealtimeSubscriptions(in map[string]v3RealtimeSubscription) map[string]v3RealtimeSubscription {
 	out := make(map[string]v3RealtimeSubscription, len(in))
 	for sessionID, sub := range in {
+		if sub.WorksetIDs != nil {
+			worksetIDs := make(map[string]struct{}, len(sub.WorksetIDs))
+			for worksetID := range sub.WorksetIDs {
+				worksetIDs[worksetID] = struct{}{}
+			}
+			sub.WorksetIDs = worksetIDs
+		}
 		out[sessionID] = sub
 	}
 	return out

@@ -10,22 +10,24 @@ import (
 )
 
 const (
-	V3RealtimeStreamPath            = "/v3/realtime/stream"
-	V3RealtimeProtocol              = "v3.realtime"
-	V3RealtimeProtocolVersion       = 1
-	V3RealtimeKindHello             = "hello"
-	V3RealtimeKindEvent             = "event"
-	V3RealtimeKindReplayStart       = "replay.started"
-	V3RealtimeKindReplayDone        = "replay.complete"
-	V3RealtimeKindCursorError       = "cursor.error"
-	V3RealtimeKindKeepalive         = "keepalive"
-	V3RealtimeKindEndpointWatermark = "endpoint.watermark"
-	V3RealtimeKindHighWater         = "projection.high_watermark"
-	V3RealtimeKindSubscribe         = "subscribe.session"
-	V3RealtimeKindUnsubscribe       = "unsubscribe.session"
-	V3RealtimeKindResume            = "resume"
-	V3RealtimeKindAuthDenied        = "auth.denied"
-	V3RealtimeKindSlowConsumer      = "slow_consumer.reconnect_required"
+	V3RealtimeStreamPath                   = "/v3/realtime/stream"
+	V3RealtimeProtocol                     = "v3.realtime"
+	V3RealtimeProtocolVersion              = 1
+	V3RealtimeKindHello                    = "hello"
+	V3RealtimeKindEvent                    = "event"
+	V3RealtimeKindReplayStart              = "replay.started"
+	V3RealtimeKindReplayDone               = "replay.complete"
+	V3RealtimeKindCursorError              = "cursor.error"
+	V3RealtimeKindKeepalive                = "keepalive"
+	V3RealtimeKindEndpointWatermark        = "endpoint.watermark"
+	V3RealtimeKindHighWater                = "projection.high_watermark"
+	V3RealtimeKindSubscribe                = "subscribe.session"
+	V3RealtimeKindUnsubscribe              = "unsubscribe.session"
+	V3RealtimeKindResume                   = "resume"
+	V3RealtimeKindWorksetSessionDiscovered = "workset.session.discovered"
+	V3RealtimeKindWorksetSessionRemoved    = "workset.session.removed"
+	V3RealtimeKindAuthDenied               = "auth.denied"
+	V3RealtimeKindSlowConsumer             = "slow_consumer.reconnect_required"
 )
 
 type V3RealtimeSubscriptionRequest struct {
@@ -58,6 +60,9 @@ type V3RealtimeMessage struct {
 	Kind                       string                                 `json:"kind"`
 	SessionID                  string                                 `json:"session_id,omitempty"`
 	SubscriptionID             string                                 `json:"subscription_id,omitempty"`
+	WorksetID                  string                                 `json:"workset_id,omitempty"`
+	WorksetSubscriptionID      string                                 `json:"workset_subscription_id,omitempty"`
+	AutoSubscribed             bool                                   `json:"auto_subscribed,omitempty"`
 	AfterSeq                   uint64                                 `json:"after_seq,omitempty"`
 	AfterRev                   uint64                                 `json:"afterRev,omitempty"`
 	LastSeq                    uint64                                 `json:"last_seq,omitempty"`
@@ -108,6 +113,8 @@ func ValidateV3RealtimeMessage(message V3RealtimeMessage) error {
 		return nil
 	case V3RealtimeKindEvent:
 		return validateV3RealtimeEventMessage(message)
+	case V3RealtimeKindWorksetSessionDiscovered, V3RealtimeKindWorksetSessionRemoved:
+		return validateV3RealtimeWorksetSessionMessage(message)
 	case V3RealtimeKindReplayStart:
 		return validateV3RealtimeSessionCursorMessage(message)
 	case V3RealtimeKindReplayDone, V3RealtimeKindHighWater:
@@ -152,7 +159,7 @@ func ValidateV3RealtimeMessage(message V3RealtimeMessage) error {
 
 func v3RealtimeKindAllowed(kind string) bool {
 	switch kind {
-	case V3RealtimeKindHello, V3RealtimeKindEvent, V3RealtimeKindReplayStart, V3RealtimeKindReplayDone, V3RealtimeKindCursorError, V3RealtimeKindKeepalive, V3RealtimeKindEndpointWatermark, V3RealtimeKindHighWater, V3RealtimeKindSubscribe, V3RealtimeKindUnsubscribe, V3RealtimeKindResume, V3RealtimeKindAuthDenied, V3RealtimeKindSlowConsumer:
+	case V3RealtimeKindHello, V3RealtimeKindEvent, V3RealtimeKindReplayStart, V3RealtimeKindReplayDone, V3RealtimeKindCursorError, V3RealtimeKindKeepalive, V3RealtimeKindEndpointWatermark, V3RealtimeKindHighWater, V3RealtimeKindSubscribe, V3RealtimeKindUnsubscribe, V3RealtimeKindResume, V3RealtimeKindWorksetSessionDiscovered, V3RealtimeKindWorksetSessionRemoved, V3RealtimeKindAuthDenied, V3RealtimeKindSlowConsumer:
 		return true
 	default:
 		return false
@@ -241,6 +248,34 @@ func validateV3RealtimeEventMessage(message V3RealtimeMessage) error {
 		if err := validateV3RealtimeToolIdentity(message.Event.EventType, message.Event.Payload); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func validateV3RealtimeWorksetSessionMessage(message V3RealtimeMessage) error {
+	if strings.TrimSpace(message.WorksetID) == "" {
+		return fmt.Errorf("v3 realtime %s requires workset_id", message.Kind)
+	}
+	if strings.TrimSpace(message.WorksetSubscriptionID) == "" {
+		return fmt.Errorf("v3 realtime %s requires workset_subscription_id", message.Kind)
+	}
+	if strings.TrimSpace(message.SessionID) == "" {
+		return fmt.Errorf("v3 realtime %s requires session_id", message.Kind)
+	}
+	if strings.TrimSpace(message.SubscriptionID) == "" && message.Kind == V3RealtimeKindWorksetSessionDiscovered && message.AutoSubscribed {
+		return errors.New("v3 realtime workset.session.discovered auto_subscribed requires subscription_id")
+	}
+	if strings.TrimSpace(message.EndpointCursor) == "" {
+		return fmt.Errorf("v3 realtime %s requires endpoint_cursor", message.Kind)
+	}
+	if message.Rev == 0 {
+		return fmt.Errorf("v3 realtime %s requires rev", message.Kind)
+	}
+	if message.Rev != message.PrevRev+1 {
+		return fmt.Errorf("v3 realtime %s requires continuous rev/prevRev", message.Kind)
+	}
+	if strings.TrimSpace(message.EventType) == "" {
+		return fmt.Errorf("v3 realtime %s requires event_type", message.Kind)
 	}
 	return nil
 }

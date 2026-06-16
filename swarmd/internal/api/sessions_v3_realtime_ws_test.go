@@ -588,6 +588,118 @@ func TestV3RealtimeEndpointResumeAtomicallyReplacesSubscriptions(t *testing.T) {
 	assertNoV3RealtimeEventFrame(t, conn, 150*time.Millisecond)
 }
 
+func TestV3RealtimeResumeInstallsWorksetAndDiscoversNewSession(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: "cursor-0", Worksets: []V3RealtimeWorksetSubscriptionRequest{v3RealtimeGlobalWorksetRequestForTest()}})
+	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-workset-discover", "create-realtime-workset-discover")
+
+	discovered := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, discovered, V3RealtimeKindWorksetSessionDiscovered, created.SessionID, 0)
+	if discovered.WorksetID != "desktop:global" || discovered.WorksetSubscriptionID != "desktop-client:desktop:global" || !discovered.AutoSubscribed || discovered.SubscriptionID == "" {
+		t.Fatalf("discovery frame = %+v", discovered)
+	}
+	assertV3RealtimeSignedCursorSeq(t, server, discovered.EndpointCursor, created.RealtimeOutbox.EndpointSeq)
+	event := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, event, V3RealtimeKindEvent, created.SessionID, created.Event.Seq)
+	if event.EventType != "session.created" {
+		t.Fatalf("discovered event frame = %+v", event)
+	}
+}
+
+func TestV3RealtimeWorksetReplayDiscoversSessionCommittedAfterSnapshotCursor(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	seed := createV3RealtimeTestSessionResult(t, server, "session-realtime-workset-replay-seed", "create-realtime-workset-replay-seed")
+	snapshotCursor := seed.RealtimeOutbox.EndpointCursor
+	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-workset-replay", "create-realtime-workset-replay")
+
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: snapshotCursor, Worksets: []V3RealtimeWorksetSubscriptionRequest{v3RealtimeGlobalWorksetRequestForTest()}})
+
+	discovered := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, discovered, V3RealtimeKindWorksetSessionDiscovered, created.SessionID, 0)
+	event := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, event, V3RealtimeKindEvent, created.SessionID, created.Event.Seq)
+}
+
+func TestV3RealtimeDoesNotAdvancePastUndiscoveredMatchingWorksetSession(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-workset-no-skip", "create-realtime-workset-no-skip")
+	appendResult := appendV3RealtimeTestMessage(t, server, created.SessionID, "message-realtime-workset-no-skip", "must not skip")
+
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: "cursor-0", Worksets: []V3RealtimeWorksetSubscriptionRequest{v3RealtimeGlobalWorksetRequestForTest()}})
+
+	discovered := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, discovered, V3RealtimeKindWorksetSessionDiscovered, created.SessionID, 0)
+	firstEvent := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, firstEvent, V3RealtimeKindEvent, created.SessionID, created.Event.Seq)
+	secondEvent := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, secondEvent, V3RealtimeKindEvent, created.SessionID, appendResult.Event.Seq)
+	assertV3RealtimeSignedCursorSeq(t, server, secondEvent.EndpointCursor, appendResult.RealtimeOutbox.EndpointSeq)
+}
+
+func TestV3RealtimeWorksetAutoSubscribeDeliversSubsequentEvents(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: "cursor-0", Worksets: []V3RealtimeWorksetSubscriptionRequest{v3RealtimeGlobalWorksetRequestForTest()}})
+
+	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-workset-auto", "create-realtime-workset-auto")
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindWorksetSessionDiscovered, created.SessionID, 0)
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindEvent, created.SessionID, created.Event.Seq)
+	appendResult := appendV3RealtimeTestMessage(t, server, created.SessionID, "message-realtime-workset-auto", "auto subscribed")
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindEvent, created.SessionID, appendResult.Event.Seq)
+}
+
+func TestV3RealtimeWorksetRemovalUnsubscribesOrDeactivatesSession(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-workset-remove", "create-realtime-workset-remove")
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: created.RealtimeOutbox.EndpointCursor, Worksets: []V3RealtimeWorksetSubscriptionRequest{v3RealtimeGlobalWorksetRequestForTest()}, Subscriptions: []V3RealtimeSubscriptionRequest{{SessionID: created.SessionID, SubscriptionID: "desktop-client:session:" + created.SessionID, EndpointCursor: created.RealtimeOutbox.EndpointCursor}}})
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, created.SessionID, 0)
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, created.SessionID, created.Event.Seq)
+
+	if err := sessionSvc.DeleteSession(created.SessionID); err != nil {
+		t.Fatalf("delete session: %v", err)
+	}
+	rows, err := sessionSvc.ListRealtimeOutboxAfter(created.RealtimeOutbox.EndpointSeq, 10)
+	if err != nil || len(rows) == 0 {
+		t.Fatalf("list delete outbox: rows=%+v err=%v", rows, err)
+	}
+	if err := server.publishCommittedV3RealtimeOutbox(rows[len(rows)-1]); err != nil {
+		t.Fatalf("publish delete outbox: %v", err)
+	}
+	removed := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, removed, V3RealtimeKindWorksetSessionRemoved, created.SessionID, 0)
+	event := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, event, V3RealtimeKindEvent, created.SessionID, created.Event.Seq+1)
+}
+
+func TestV3RealtimeResumeRejectsInvalidWorksetAtomically(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-invalid-workset", "create-realtime-invalid-workset")
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: created.RealtimeOutbox.EndpointCursor, Subscriptions: []V3RealtimeSubscriptionRequest{{SessionID: created.SessionID, SubscriptionID: "sub-valid", EndpointCursor: created.RealtimeOutbox.EndpointCursor}}, Worksets: []V3RealtimeWorksetSubscriptionRequest{{WorksetID: "bad", SubscriptionID: "bad-sub", Selector: V3RealtimeWorksetSelector{Kind: "workspace", WorkspacePath: "relative"}, AutoSubscribeSessions: true}}})
+	frame := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, frame, V3RealtimeKindAuthDenied, "", 0)
+	if frame.ErrorCode != "invalid_workset_selector" {
+		t.Fatalf("invalid workset frame = %+v", frame)
+	}
+}
+
 func TestV3RealtimeSessionGapDirtiesOnlyAffectedSession(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	aResult := createV3RealtimeTestSessionResult(t, server, "session-realtime-gap-a", "create-realtime-gap-a")
@@ -1143,6 +1255,10 @@ func assertV3RealtimeCursorError(t *testing.T, frame V3RealtimeMessage, code str
 	if frame.ErrorCode != code {
 		t.Fatalf("cursor error code = %q, want %q: %+v", frame.ErrorCode, code, frame)
 	}
+}
+
+func v3RealtimeGlobalWorksetRequestForTest() V3RealtimeWorksetSubscriptionRequest {
+	return V3RealtimeWorksetSubscriptionRequest{WorksetID: "desktop:global", SubscriptionID: "desktop-client:desktop:global", Surface: "desktop", Selector: V3RealtimeWorksetSelector{Kind: "global", Global: true, Recent: sessionsV3WorksetRecent{Limit: 100}}, AutoSubscribeSessions: true}
 }
 
 func assertV3RealtimeFrame(t *testing.T, frame V3RealtimeMessage, kind, sessionID string, lastSeq uint64) {
