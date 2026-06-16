@@ -175,10 +175,10 @@ test('V3 runtime store advances cursors only after successful reducer applicatio
     },
   }, { receivedAt: 13 }))
 
-  assert.equal(rejected.rejected, false)
-  assert.equal(rejected.cursorScope, 'session:s1')
-  assert.equal(rejected.snapshot.cursorsByScope['session:s1']?.endpointCursor, 'cursor-13')
-  assert.equal(rejected.snapshot.desktop.messagesBySessionId.s1?.some((item) => item.id === 'm2'), true)
+  assert.equal(rejected.rejected, true)
+  assert.equal(rejected.cursorScope, null)
+  assert.equal(rejected.snapshot.cursorsByScope['session:s1']?.endpointCursor, 'cursor-11')
+  assert.equal(rejected.snapshot.desktop.messagesBySessionId.s1?.some((item) => item.id === 'm2'), false)
 })
 
 test('V3 runtime store does not advance realtime cursors for duplicate websocket/replay overlap', () => {

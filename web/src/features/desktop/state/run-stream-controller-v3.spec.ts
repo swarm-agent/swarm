@@ -1084,6 +1084,13 @@ test('desktop V3 realtime controller consumes backend stream frames and renders 
       sockets.push(this)
     }
 
+    addEventListener(type: string, callback: EventListenerOrEventListenerObject) {
+      super.addEventListener(type, callback)
+      if (type === 'open') {
+        queueMicrotask(() => this.dispatchEvent(new Event('open')))
+      }
+    }
+
     close() {
       this.readyState = FakeRealtimeSocket.CLOSED
       this.dispatchEvent(new Event('close'))
@@ -1124,7 +1131,7 @@ test('desktop V3 realtime controller consumes backend stream frames and renders 
         headers: { 'Content-Type': 'application/json' },
       })
     }
-    if (url === '/v3/sessions:workset') {
+    if (url === '/v3/sync/bootstrap') {
       return new Response(JSON.stringify({
         rev: getDesktopSnapshot().rev + 1,
         snapshot_endpoint_cursor: 'cursor-31005',
@@ -1167,7 +1174,7 @@ test('desktop V3 realtime controller consumes backend stream frames and renders 
     assert.equal(subscribeMessages[0]?.session_id, sessionId)
     assert.equal('after_seq' in (subscribeMessages[0] ?? {}), false)
     assert.equal('after_rev' in (subscribeMessages[0] ?? {}), false)
-    assert.equal(sent.some((entry) => entry.message.type === 'subscribe' && entry.message.channel === 'session:*'), false)
+    assert.equal(sent.some((entry) => entry.message.type === 'subscribe' && entry.message.channel === 'session:*'), true)
 
     const eventFrame = (endpointCursor: string, seq: number, eventType: string, payload: Record<string, unknown>) => ({
       protocol: 'v3.realtime',
@@ -1291,7 +1298,7 @@ test('desktop V3 realtime subscribes from active top-level snapshot run intent w
         headers: { 'Content-Type': 'application/json' },
       })
     }
-    if (url === '/v3/sessions:workset') {
+    if (url === '/v3/sync/bootstrap') {
       return new Response(JSON.stringify({ rev: getDesktopSnapshot().rev + 1, sessions_by_id: {}, session_order: [] }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -1396,7 +1403,7 @@ test('desktop V3 realtime ignores persisted localStorage subscription intent aut
     if (url === '/v3/sessions:reconnect') {
       return new Response(JSON.stringify(makeReconnectResponse('session-refresh-resync', { runId: 'run-refresh-resync', cursor: 'cursor-31005' })), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
-    if (url === '/v3/sessions:workset') {
+    if (url === '/v3/sync/bootstrap') {
       return new Response(JSON.stringify({
         rev: getDesktopSnapshot().rev + 1,
         snapshot_endpoint_cursor: 'cursor-31005',
@@ -1548,7 +1555,7 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
         headers: { 'Content-Type': 'application/json' },
       })
     }
-    if (url === '/v3/sessions:workset') {
+    if (url === '/v3/sync/bootstrap') {
       return new Response(JSON.stringify({
         rev: getDesktopSnapshot().rev + 1,
         snapshot_endpoint_cursor: 'cursor-4',
@@ -1625,7 +1632,7 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
     })
 
     const urls = calls.map((entry) => String(entry.input)).sort()
-    assert.deepEqual(urls, ['/v3/sessions/session-v3/messages', '/v3/sessions:reconnect', '/v3/sessions:workset', '/v1/auth/desktop/session', '/v1/auth/desktop/session'].sort())
+    assert.deepEqual(urls, ['/v3/sessions/session-v3/messages', '/v3/sessions:reconnect', '/v3/sync/bootstrap', '/v1/auth/desktop/session', '/v1/auth/desktop/session'].sort())
     assert.equal(urls.some((url) => url.startsWith('/v1/swarm/managed-hosts/sessions')), false)
     assert.equal(urls.some((url) => url.startsWith('/v2/sessions')), false)
     assert.deepEqual(websocketURLs.sort(), ['ws://127.0.0.1:7777/v3/realtime/stream?endpoint_cursor=cursor-4', 'ws://127.0.0.1:7777/ws'].sort())
@@ -1923,6 +1930,14 @@ test('global /ws V3 permission envelopes hydrate canonical modal state without p
   const session = makeSession({
     id: 'session-v3',
     sessionApi: 'v3',
+    runIntent: {
+      sessionId: 'session-v3',
+      runId: 'run-v3',
+      status: 'running',
+      createdAt: 100,
+      updatedAt: 105,
+      eventSeq: 15,
+    },
     live: { ...emptyLiveState(), status: 'running', runId: 'run-v3', startedAt: 100 },
   })
   useDesktopStore.setState(makeState(session), true)
@@ -2192,7 +2207,153 @@ test('V3 session.created payload nesting maps through applyEnvelope', () => {
   assert.equal(patch.sessions?.['session-created']?.workspacePath, '/repo')
 })
 
-test('V3 ensureRunStream opens canonical realtime stream and keeps global /ws session wildcard off', async () => {
+test('global /ws session.created event triggers durable sync bootstrap before refresh', async () => {
+  const sent: Array<Record<string, unknown>> = []
+  const sockets: FakeGlobalSocket[] = []
+  const originalFetch = globalThis.fetch
+  const originalWindow = globalThis.window
+  const originalWebSocket = globalThis.WebSocket
+  let bootstrapCalls = 0
+
+  class FakeGlobalSocket extends EventTarget {
+    static CONNECTING = 0
+    static OPEN = 1
+    static CLOSING = 2
+    static CLOSED = 3
+    readyState = FakeGlobalSocket.OPEN
+    url: string
+
+    constructor(input: string | URL) {
+      super()
+      this.url = String(input)
+      sockets.push(this)
+    }
+
+    addEventListener(type: string, callback: EventListenerOrEventListenerObject) {
+      super.addEventListener(type, callback)
+      if (type === 'open') {
+        queueMicrotask(() => this.dispatchEvent(new Event('open')))
+      }
+    }
+
+    close() {
+      this.readyState = FakeGlobalSocket.CLOSED
+      this.dispatchEvent(new Event('close'))
+    }
+
+    send(payload: string) {
+      sent.push(JSON.parse(payload) as Record<string, unknown>)
+    }
+
+    serverMessage(payload: Record<string, unknown>) {
+      const event = new Event('message') as MessageEvent
+      Object.defineProperty(event, 'data', { value: JSON.stringify(payload) })
+      this.dispatchEvent(event)
+    }
+  }
+
+  globalThis.window = {
+    location: { protocol: 'http:', host: '127.0.0.1:7777' },
+    addEventListener() {},
+    dispatchEvent: (() => true) as typeof window.dispatchEvent,
+    setTimeout: ((callback: TimerHandler, timeout?: number) => setTimeout(callback, timeout)) as typeof window.setTimeout,
+    clearTimeout: ((timer?: number) => clearTimeout(timer)) as typeof window.clearTimeout,
+    setInterval: ((callback: TimerHandler, timeout?: number) => setInterval(callback, timeout)) as typeof window.setInterval,
+    clearInterval: ((timer?: number) => clearInterval(timer)) as typeof window.clearInterval,
+  } as unknown as Window & typeof globalThis
+  globalThis.WebSocket = FakeGlobalSocket as unknown as typeof WebSocket
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input)
+    if (url === '/v1/auth/desktop/session') {
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    if (url === '/v3/sessions:reconnect') {
+      return new Response(JSON.stringify(makeEmptyReconnectResponse('cursor-100')), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    if (url === '/v3/sync/bootstrap') {
+      bootstrapCalls += 1
+      const includeCreated = bootstrapCalls > 1
+      return new Response(JSON.stringify({
+        ok: true,
+        rev: getDesktopSnapshot().rev + 1,
+        snapshot_endpoint_cursor: `cursor-${100 + bootstrapCalls}`,
+        sessions_by_id: includeCreated
+          ? {
+              'phone-session': {
+                id: 'phone-session',
+                title: 'Phone created session',
+                workspace_path: '/repo',
+                workspace_name: 'repo',
+                mode: 'auto',
+                session_api: 'v3',
+                message_count: 0,
+                updated_at: 200,
+                created_at: 200,
+              },
+            }
+          : {},
+        session_order: includeCreated ? ['phone-session'] : [],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    throw new Error(`unexpected fetch: ${url}`)
+  }) as typeof fetch
+
+  try {
+    useDesktopStore.setState({
+      ...useDesktopStore.getState(),
+      sessions: {},
+      lastGlobalSeq: 0,
+      realtimeDesired: true,
+      connectionState: 'idle',
+    }, true)
+
+    await useDesktopStore.getState().connect()
+    await new Promise((resolve) => setImmediate(resolve))
+    await new Promise((resolve) => setImmediate(resolve))
+    const globalSocket = sockets.find((socket) => socket.url.endsWith('/ws'))
+    assert.ok(globalSocket)
+    assert.equal(sent.some((message) => message.type === 'subscribe' && message.channel === 'session:*'), true)
+    assert.equal(useDesktopStore.getState().sessions['phone-session'], undefined)
+
+    globalSocket.serverMessage({
+      type: 'event',
+      ok: true,
+      event: {
+        global_seq: 77,
+        stream: 'session:phone-session',
+        event_type: 'session.created',
+        entity_id: 'phone-session',
+        source: 'v3',
+        payload: {
+          session_id: 'phone-session',
+          session: {
+            id: 'phone-session',
+            title: 'Phone created session',
+            workspace_path: '/repo',
+            workspace_name: 'repo',
+            mode: 'auto',
+            session_api: 'v3',
+            created_at: 200,
+            updated_at: 200,
+          },
+        },
+      },
+    })
+    await new Promise((resolve) => setImmediate(resolve))
+    await new Promise((resolve) => setImmediate(resolve))
+
+    assert.equal(bootstrapCalls >= 2, true)
+    assert.equal(useDesktopStore.getState().sessions['phone-session']?.title, 'Phone created session')
+    assert.equal(useDesktopStore.getState().lastGlobalSeq, 77)
+  } finally {
+    useDesktopStore.getState().disconnect()
+    globalThis.fetch = originalFetch
+    globalThis.window = originalWindow
+    globalThis.WebSocket = originalWebSocket
+  }
+})
+
+test('V3 ensureRunStream opens canonical realtime stream and keeps global /ws session wildcard on', async () => {
   const websocketURLs: string[] = []
   const sent: Array<Record<string, unknown>> = []
   const originalFetch = globalThis.fetch
@@ -2257,7 +2418,7 @@ test('V3 ensureRunStream opens canonical realtime stream and keeps global /ws se
         headers: { 'Content-Type': 'application/json' },
       })
     }
-    if (url === '/v3/sessions:workset') {
+    if (url === '/v3/sync/bootstrap') {
       return new Response(JSON.stringify({
         rev: getDesktopSnapshot().rev + 1,
         snapshot_endpoint_cursor: 'cursor-4',
@@ -2278,7 +2439,7 @@ test('V3 ensureRunStream opens canonical realtime stream and keeps global /ws se
     await new Promise((resolve) => setImmediate(resolve))
 
     assert.deepEqual(websocketURLs.sort(), ['ws://127.0.0.1:7777/v3/realtime/stream?endpoint_cursor=cursor-4', 'ws://127.0.0.1:7777/ws'].sort())
-    assert.equal(sent.some((message) => message.type === 'subscribe' && message.channel === 'session:*'), false)
+    assert.equal(sent.some((message) => message.type === 'subscribe' && message.channel === 'session:*'), true)
     assert.equal(sent.some((message) => message.kind === 'subscribe.session'), true)
     assert.equal(websocketURLs.some((url) => url.includes('/v3/realtime/stream')), true)
   } finally {

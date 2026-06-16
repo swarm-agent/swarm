@@ -744,6 +744,15 @@ function applyDurableSessionPayload(state: DesktopState, event: DesktopDaemonEve
       runIntentsBySessionId[runIntent.sessionId] = runIntent
     }
     next = { ...next, runIntentsBySessionId }
+  } else {
+    const lifecycle = durableLifecycle(payload, sessionId)
+    if (lifecycle && !lifecycle.active) {
+      const lifecycleRunId = lifecycle.runId?.trim() ?? ''
+      const existingIntentRunId = next.runIntentsBySessionId[sessionId]?.runId.trim() ?? ''
+      if (!lifecycleRunId || lifecycleRunId === existingIntentRunId) {
+        next = { ...next, runIntentsBySessionId: omitKey(next.runIntentsBySessionId, sessionId) }
+      }
+    }
   }
   return next
 }
@@ -914,6 +923,35 @@ function durableSessionPatch(existing: DesktopSessionRecord, eventType: string, 
   const lifecycle = durableLifecycle(payload, sessionId)
   if (lifecycle) {
     session.lifecycle = lifecycle
+    const lifecycleRunId = lifecycle.runId?.trim() ?? ''
+    if (lifecycle.active) {
+      if (lifecycleRunId) {
+        session.live.runId = lifecycleRunId
+        clearTerminalRunMarker(session.live, lifecycleRunId)
+      }
+      session.live.startedAt = lifecycle.startedAt > 0 ? lifecycle.startedAt : session.live.startedAt ?? ts
+      const phase = lifecycle.phase.trim().toLowerCase()
+      session.live.status = phase === 'blocked' || phase === 'dispatch_blocked'
+        ? 'blocked'
+        : phase === 'pending_executor' || phase === 'pending' || phase === 'queued' || phase === 'starting'
+          ? 'starting'
+          : 'running'
+      session.live.awaitingAck = false
+      session.live.error = null
+    } else {
+      const existingRunId = session.live.runId?.trim() ?? ''
+      const existingIntentRunId = session.runIntent?.runId.trim() ?? ''
+      if (!lifecycleRunId || lifecycleRunId === existingRunId || lifecycleRunId === existingIntentRunId) {
+        session.runIntent = null
+        markTerminalRun(session.live, lifecycleRunId || existingRunId || existingIntentRunId, eventSeq)
+        session.live.status = 'idle'
+        session.live.runId = null
+        session.live.startedAt = null
+        session.live.awaitingAck = false
+        session.live.summary = null
+        session.live.error = null
+      }
+    }
   }
   const runIntent = durableRunIntent(payload, eventType, sessionId)
   if (runIntent) {
@@ -1169,7 +1207,7 @@ function durableLifecycle(payload: Record<string, unknown>, fallbackSessionId: s
     sessionId,
     runId: payloadString(source, 'run_id') || null,
     active: Boolean(source.active),
-    phase: payloadString(source, 'phase'),
+    phase: payloadString(source, 'phase') || payloadString(source, 'status'),
     startedAt: payloadNumber(source, 'started_at'),
     endedAt: payloadNumber(source, 'ended_at'),
     updatedAt: payloadNumber(source, 'updated_at'),

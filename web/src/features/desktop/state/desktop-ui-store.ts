@@ -976,6 +976,10 @@ function resolveStopRunId(session: DesktopSessionRecord | undefined, runId?: str
   if (intentRunId) {
     return intentRunId
   }
+  const lifecycleRunId = session?.lifecycle?.active ? session.lifecycle.runId?.trim() ?? '' : ''
+  if (lifecycleRunId) {
+    return lifecycleRunId
+  }
   if (session && sessionUsesV3Api(session)) {
     return ''
   }
@@ -1034,7 +1038,7 @@ function normalizeLifecycle(
     sessionId,
     runId: String(input.run_id ?? '').trim() || null,
     active: Boolean(input.active),
-    phase: String(input.phase ?? '').trim(),
+    phase: String(input.phase ?? input.status ?? '').trim(),
     startedAt: typeof input.started_at === 'number' ? input.started_at : 0,
     endedAt: typeof input.ended_at === 'number' ? input.ended_at : 0,
     updatedAt: typeof input.updated_at === 'number' ? input.updated_at : 0,
@@ -1055,6 +1059,33 @@ function applyLifecycleSnapshot(
   session.lifecycle = lifecycle
   session.live.lastEventType = eventType || session.live.lastEventType
   session.live.lastEventAt = lifecycle.updatedAt > 0 ? lifecycle.updatedAt : ts
+  const lifecycleRunId = lifecycle.runId?.trim() ?? ''
+  if (lifecycle.active) {
+    if (lifecycleRunId) {
+      session.live.runId = lifecycleRunId
+      clearTerminalRunMarker(session.live, lifecycleRunId)
+    }
+    session.live.startedAt = lifecycle.startedAt > 0 ? lifecycle.startedAt : session.live.startedAt ?? ts
+    session.live.status = nextLiveStatusAfterPermissionSync(session)
+    session.live.awaitingAck = false
+    session.live.error = null
+    return
+  }
+  const existingRunId = session.live.runId?.trim() ?? ''
+  const existingIntentRunId = session.runIntent?.runId.trim() ?? ''
+  if (!lifecycleRunId || lifecycleRunId === existingRunId || lifecycleRunId === existingIntentRunId) {
+    session.runIntent = null
+    markTerminalRun(session.live, lifecycleRunId || existingRunId || existingIntentRunId, 0)
+    cancelDraftFlush(_sessionId)
+    session.live.status = 'idle'
+    session.live.runId = null
+    session.live.startedAt = null
+    session.live.awaitingAck = false
+    session.live.summary = null
+    session.live.error = null
+    retainLiveToolState(session.live, 'done')
+    resetLiveToolState(session.live)
+  }
 }
 
 function makeNotification(sessionId: string | null, runId: string | null, eventType: string, title: string, detail: string, severity: 'info' | 'warning' | 'error', createdAt: number): DesktopNotificationRecord {
@@ -1467,9 +1498,19 @@ function patchWorkspaceTodoSummary(workspacePath: string, summary: WorkspaceTodo
   })
 }
 
-function nextLiveStatusAfterPermissionSync(session: Pick<DesktopSessionRecord, 'runIntent'>): DesktopSessionRecord['live']['status'] {
+function nextLiveStatusAfterPermissionSync(session: Pick<DesktopSessionRecord, 'runIntent' | 'lifecycle'>): DesktopSessionRecord['live']['status'] {
   if (session.runIntent && v3RunIntentStatusActive(session.runIntent.status)) {
     return session.runIntent.status.trim().toLowerCase() === 'pending_executor' ? 'starting' : 'running'
+  }
+  if (session.lifecycle?.active) {
+    const phase = session.lifecycle.phase.trim().toLowerCase()
+    if (phase === 'pending_executor' || phase === 'pending' || phase === 'queued' || phase === 'starting') {
+      return 'starting'
+    }
+    if (phase === 'blocked' || phase === 'dispatch_blocked') {
+      return 'blocked'
+    }
+    return 'running'
   }
   return 'idle'
 }
@@ -3835,7 +3876,11 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
       reconnectTimer: null,
     })
     try {
-      await refreshDesktopV3GlobalDiscovery()
+      try {
+        await refreshDesktopV3GlobalDiscovery()
+      } catch (error) {
+        console.error('[desktop-store] global V3 discovery refresh failed', error)
+      }
       const socket = await openDesktopWebSocket()
       debugLog('desktop-store', 'connect:websocket-created', { generation })
       if (get().connectionGeneration !== generation || !shouldMaintainDesktopRealtime(get())) {
@@ -3870,6 +3915,7 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
         socket.send(JSON.stringify({ type: 'subscribe', channel: 'system:agent', last_seen_seq: get().lastGlobalSeq }))
         socket.send(JSON.stringify({ type: 'subscribe', channel: 'workspace_todo:*', last_seen_seq: get().lastGlobalSeq }))
         socket.send(JSON.stringify({ type: 'subscribe', channel: 'swarm:*', last_seen_seq: get().lastGlobalSeq }))
+        socket.send(JSON.stringify({ type: 'subscribe', channel: 'session:*', last_seen_seq: get().lastGlobalSeq }))
         get().syncV3RealtimeSessions()
         deferDesktopCacheMutation('workspace overview refresh on realtime connect', () => {
           void queryClient.invalidateQueries({ queryKey: ['workspace-overview'] })
@@ -3885,7 +3931,11 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
         armLivenessTimer(generation)
         try {
           const message = JSON.parse(String(event.data)) as SocketMessage
-          if (message.type === 'pong' || message.type === 'connected' || message.type === 'subscribed' || message.type === 'resume-complete') {
+          if (message.type === 'connected') {
+            socket.send(JSON.stringify({ type: 'subscribe', channel: 'session:*', last_seen_seq: get().lastGlobalSeq }))
+            return
+          }
+          if (message.type === 'pong' || message.type === 'subscribed' || message.type === 'resume-complete') {
             return
           }
           if (message.type !== 'event' || !message.event) {
@@ -3897,6 +3947,13 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
           const backendDerivedDesktopEvent = eventType.startsWith('session.') || eventType.startsWith('permission.')
           if (backendDerivedDesktopEvent) {
             set((state: DesktopStoreState) => ({ lastGlobalSeq: Math.max(state.lastGlobalSeq, message.event?.global_seq ?? 0) }))
+            if (eventType === 'session.created' || eventType === 'session.updated' || eventType === 'session.deleted') {
+              void refreshDesktopV3GlobalDiscovery()
+                .then(() => get().syncV3RealtimeSessions({ force: true }))
+                .catch((error) => {
+                  console.error('[desktop-store] global V3 discovery refresh after session event failed', error)
+                })
+            }
           } else {
             set((state: DesktopStoreState) => applyEnvelope(state, message.event ?? {}))
           }
