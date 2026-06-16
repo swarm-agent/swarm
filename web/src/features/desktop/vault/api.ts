@@ -1,5 +1,4 @@
 import { requestJson } from "../../../app/api";
-import { createDebugTimer } from '../../../lib/debug-log'
 import {
   mapVaultStatus,
   type VaultImportResult,
@@ -39,9 +38,7 @@ function decodeVaultBundle(rawBundle: string | number[] | undefined): Uint8Array
 }
 
 export async function fetchVaultStatus(): Promise<VaultStatus> {
-  const finish = createDebugTimer('desktop-vault-api', 'fetchVaultStatus')
   const status = mapVaultStatus(await requestJson<VaultStatusWire>("/v1/vault"));
-  finish({ enabled: status.enabled, unlocked: status.unlocked, storageMode: status.storageMode })
   return status
 }
 

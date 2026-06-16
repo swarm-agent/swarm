@@ -3,7 +3,6 @@ import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent, ReactNode }
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, Link } from '@tanstack/react-router'
 import { Bell, Bot, Box, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, LayoutGrid, Link2, ListChecks, LoaderCircle, Menu, Pause, Play, Plus, RefreshCcw, Settings, Workflow, X, XCircle } from 'lucide-react'
-import { debugLog } from '../../../lib/debug-log'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
@@ -1452,7 +1451,6 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
 }
 
 export function DesktopAppPage() {
-  debugLog('desktop-app-page', 'render')
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const matchRoute = useMatchRoute()
@@ -1758,21 +1756,9 @@ export function DesktopAppPage() {
   }, [editingSidebarSwarmName, swarmName])
 
   useEffect(() => {
-    debugLog('desktop-app-page', 'route-state', {
-      routeWorkspaceSlug,
-      routeSessionId,
-      selectedWorkspacePath,
-      workspacesLoading,
-      connectionState,
-    })
   }, [connectionState, routeSessionId, routeWorkspaceSlug, selectedWorkspacePath, workspacesLoading])
 
   useEffect(() => {
-    debugLog('desktop-app-page', 'overview-query-state', {
-      status: overviewQuery.status,
-      fetchStatus: overviewQuery.fetchStatus,
-      workspaceCount: overviewQuery.data?.workspaces?.length ?? 0,
-    })
   }, [overviewQuery.data?.workspaces, overviewQuery.fetchStatus, overviewQuery.status])
 
   useEffect(() => {
@@ -2053,9 +2039,6 @@ export function DesktopAppPage() {
     const abortController = new AbortController()
     const workspacePaths = mergedSidebarWorkspaceEntries.map((workspace) => workspace.path).filter((path) => path.trim() !== '')
 
-    debugLog('desktop-app-page', 'effect:v3-discovery-bootstrap', {
-      workspaceCount: workspacePaths.length,
-    })
 
     const bootstrapTasks: Promise<void>[] = [
       queryClient.ensureQueryData(agentStateQueryOptions()).then(() => undefined),
@@ -2101,7 +2084,6 @@ export function DesktopAppPage() {
     if (!routeCriticalSessionId || routeReadiness?.ready || dbRouteSession) {
       return
     }
-    debugLog('desktop-app-page', 'effect:desktop-state-route-readiness', { routeSessionId: routeCriticalSessionId })
     const abortController = new AbortController()
     void fetchDesktopStateSnapshot({
       sessionIds: [routeCriticalSessionId],
@@ -2244,11 +2226,6 @@ export function DesktopAppPage() {
     if (!canonicalWorkspaceSlug || canonicalWorkspaceSlug === routeWorkspaceSlug) {
       return
     }
-    debugLog('desktop-app-page', 'effect:canonicalize-workspace-route', {
-      from: routeWorkspaceSlug,
-      to: canonicalWorkspaceSlug,
-      workspacePath: routeWorkspace.path,
-    })
     void navigate({
       to: '/$workspaceSlug',
       params: { workspaceSlug: canonicalWorkspaceSlug },
@@ -2264,12 +2241,6 @@ export function DesktopAppPage() {
     if (!canonicalWorkspaceSlug || (canonicalWorkspaceSlug === routeWorkspaceSlug && routeSession.id === routeSessionId)) {
       return
     }
-    debugLog('desktop-app-page', 'effect:canonicalize-session-route', {
-      fromWorkspaceSlug: routeWorkspaceSlug,
-      toWorkspaceSlug: canonicalWorkspaceSlug,
-      routeSessionId,
-      canonicalSessionId: routeSession.id,
-    })
     void navigate({
       to: '/$workspaceSlug/$sessionId',
       params: {

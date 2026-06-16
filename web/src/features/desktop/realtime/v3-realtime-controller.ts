@@ -25,6 +25,31 @@ type DesktopV3RealtimeSubscription = {
   endpointCursor?: string | null
 }
 
+export type DesktopV3RealtimeSubscriptionDiagnostics = {
+  sessionId: string
+  subscriptionId: string
+  endpointCursorPresent: boolean
+  subscribeSentAt: number
+  subscribeSentCount: number
+  lastFrameKind: string
+  lastEventType: string
+  lastFrameAt: number
+  lastReplayStartedAt: number
+  lastReplayCompleteAt: number
+  lastEventAt: number
+  lastEndpointCursorPresent: boolean
+}
+
+export type DesktopV3RealtimeDiagnostics = {
+  desired: boolean
+  socketState: 'none' | 'connecting' | 'open' | 'closing' | 'closed'
+  generation: number
+  endpointCursorPresent: boolean
+  reconnectAttempt: number
+  lastActivityAt: number
+  subscriptions: DesktopV3RealtimeSubscriptionDiagnostics[]
+}
+
 type DesktopV3RealtimeControllerOptions = {
   getEndpointCursor: () => string
   onFrame: (sessionId: string, payload: DesktopV3RealtimeFrame, ts: number) => boolean
@@ -36,6 +61,15 @@ type SubscriptionEntry = {
   sessionId: string
   subscriptionId: string
   endpointCursor: string
+  subscribeSentAt: number
+  subscribeSentCount: number
+  lastFrameKind: string
+  lastEventType: string
+  lastFrameAt: number
+  lastReplayStartedAt: number
+  lastReplayCompleteAt: number
+  lastEventAt: number
+  lastEndpointCursorPresent: boolean
 }
 
 function reconnectDelayMs(attempt: number): number {
@@ -93,6 +127,38 @@ function shouldAdvanceCursorForControlFrame(kind: string): boolean {
     || kind === 'keepalive'
 }
 
+function socketStateName(socket: WebSocket | null): DesktopV3RealtimeDiagnostics['socketState'] {
+  switch (socket?.readyState) {
+    case WebSocket.CONNECTING:
+      return 'connecting'
+    case WebSocket.OPEN:
+      return 'open'
+    case WebSocket.CLOSING:
+      return 'closing'
+    case WebSocket.CLOSED:
+      return 'closed'
+    default:
+      return 'none'
+  }
+}
+
+function subscriptionDiagnostics(sub: SubscriptionEntry): DesktopV3RealtimeSubscriptionDiagnostics {
+  return {
+    sessionId: sub.sessionId,
+    subscriptionId: sub.subscriptionId,
+    endpointCursorPresent: sub.endpointCursor.trim() !== '',
+    subscribeSentAt: sub.subscribeSentAt,
+    subscribeSentCount: sub.subscribeSentCount,
+    lastFrameKind: sub.lastFrameKind,
+    lastEventType: sub.lastEventType,
+    lastFrameAt: sub.lastFrameAt,
+    lastReplayStartedAt: sub.lastReplayStartedAt,
+    lastReplayCompleteAt: sub.lastReplayCompleteAt,
+    lastEventAt: sub.lastEventAt,
+    lastEndpointCursorPresent: sub.lastEndpointCursorPresent,
+  }
+}
+
 export class DesktopV3RealtimeController {
   private readonly subscriptions = new Map<string, SubscriptionEntry>()
   private socket: WebSocket | null = null
@@ -123,6 +189,15 @@ export class DesktopV3RealtimeController {
       sessionId: normalizedSessionId,
       subscriptionId: normalizedSubscriptionId,
       endpointCursor: cursor,
+      subscribeSentAt: existing?.subscribeSentAt ?? 0,
+      subscribeSentCount: existing?.subscribeSentCount ?? 0,
+      lastFrameKind: existing?.lastFrameKind ?? '',
+      lastEventType: existing?.lastEventType ?? '',
+      lastFrameAt: existing?.lastFrameAt ?? 0,
+      lastReplayStartedAt: existing?.lastReplayStartedAt ?? 0,
+      lastReplayCompleteAt: existing?.lastReplayCompleteAt ?? 0,
+      lastEventAt: existing?.lastEventAt ?? 0,
+      lastEndpointCursorPresent: existing?.lastEndpointCursorPresent ?? false,
     })
     this.desired = true
     if (existing && this.socket?.readyState === WebSocket.OPEN) {
@@ -176,6 +251,22 @@ export class DesktopV3RealtimeController {
     const cursor = endpointCursor?.trim() ?? ''
     if (cursor) {
       this.advanceEndpointCursor(cursor)
+    }
+  }
+
+  diagnostics(sessionId?: string | null): DesktopV3RealtimeDiagnostics {
+    const normalizedSessionId = sessionId?.trim() ?? ''
+    const subscriptions = normalizedSessionId
+      ? Array.from(this.subscriptions.values()).filter((sub) => sub.sessionId === normalizedSessionId)
+      : Array.from(this.subscriptions.values())
+    return {
+      desired: this.desired,
+      socketState: socketStateName(this.socket),
+      generation: this.generation,
+      endpointCursorPresent: this.endpointCursor.trim() !== '',
+      reconnectAttempt: this.reconnectAttempt,
+      lastActivityAt: this.lastActivityAt,
+      subscriptions: subscriptions.map(subscriptionDiagnostics),
     }
   }
 
@@ -287,6 +378,7 @@ export class DesktopV3RealtimeController {
           }
         }
         const cursor = frameEndpointCursor(frame)
+        this.noteSubscriptionFrame(sessionId, kind, String(frame.event?.event_type ?? frame.event_type ?? '').trim(), cursor, Date.now())
         if (cursor && (applied || shouldAdvanceCursorForControlFrame(kind))) {
           this.advanceEndpointCursor(cursor)
         }
@@ -327,6 +419,8 @@ export class DesktopV3RealtimeController {
   }
 
   private sendSubscribe(socket: WebSocket, sub: SubscriptionEntry): void {
+    sub.subscribeSentAt = Date.now()
+    sub.subscribeSentCount += 1
     socket.send(JSON.stringify({
       protocol: 'v3.realtime',
       protocol_version: 1,
@@ -335,6 +429,24 @@ export class DesktopV3RealtimeController {
       subscription_id: sub.subscriptionId,
       endpoint_cursor: sub.endpointCursor || this.endpointCursor || this.options.getEndpointCursor(),
     }))
+  }
+
+  private noteSubscriptionFrame(sessionId: string, kind: string, eventType: string, endpointCursor: string, ts: number): void {
+    const sub = this.subscriptions.get(sessionId)
+    if (!sub) {
+      return
+    }
+    sub.lastFrameKind = kind
+    sub.lastEventType = eventType
+    sub.lastFrameAt = ts
+    sub.lastEndpointCursorPresent = endpointCursor.trim() !== ''
+    if (kind === 'event') {
+      sub.lastEventAt = ts
+    } else if (kind === 'replay.started') {
+      sub.lastReplayStartedAt = ts
+    } else if (kind === 'replay.complete') {
+      sub.lastReplayCompleteAt = ts
+    }
   }
 
   private advanceEndpointCursor(cursor: string): void {

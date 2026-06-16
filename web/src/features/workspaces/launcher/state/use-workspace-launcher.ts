@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { debugLog, createDebugTimer } from '../../../../lib/debug-log'
 import { applyWorkspaceTheme, setWorkspaceThemeCustomOptions } from '../services/workspace-theme'
 import { normalizeGlobalThemeSettings, type UISettingsWire } from '../../../desktop/settings/swarm/types/swarm-settings'
 import { linkWorkspaceDirectory } from '../mutations/link-workspace-directory'
@@ -311,15 +310,6 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
   }, [queryClient])
 
   const refresh = useCallback(async (roots: string[] = []) => {
-    const finish = createDebugTimer('workspace-launcher', 'refresh', {
-      roots,
-      browserPresent: Boolean(browser),
-    })
-    debugLog('workspace-launcher', 'refresh:enter', {
-      roots,
-      browserPresent: Boolean(browser),
-      globalThemeId,
-    })
     setRefreshing(true)
     setLoadError(null)
 
@@ -327,11 +317,6 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
       const overview = await queryClient.fetchQuery({
         ...workspaceOverviewQueryOptions(roots, 25),
         staleTime: 0,
-      })
-      debugLog('workspace-launcher', 'refresh:overview-ready', {
-        workspaceCount: overview.workspaces.length,
-        discoveredCount: overview.discovered.length,
-        currentWorkspacePath: overview.currentWorkspace?.resolvedPath?.trim() || null,
       })
       const sorted = sortWorkspaces(overview.workspaces)
       const knownPaths = new Set(sorted.map((workspace) => workspace.path))
@@ -344,24 +329,17 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
       }
       if (browseDuringRefresh) {
         if (roots.length > 0) {
-          debugLog('workspace-launcher', 'refresh:browse-root', { root: roots[0] })
           await browsePath(roots[0])
         } else if (!browser) {
-          debugLog('workspace-launcher', 'refresh:browse-empty-root')
           await browsePath('')
         }
       }
-      finish({ ok: true, workspaceCount: sorted.length })
     } catch (err) {
-      debugLog('workspace-launcher', 'refresh:error', {
-        message: err instanceof Error ? err.message : String(err),
-      })
       if (isVaultLockedError(err)) {
         try {
           await refreshVaultStatus()
           const { vault } = useDesktopStore.getState()
           if (vault.enabled && !vault.unlocked) {
-            finish({ ok: false, stopped: 'vault-locked' })
             return
           }
         } catch {
@@ -369,7 +347,6 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
         }
       }
       setLoadError(err instanceof Error ? err.message : 'Failed to load workspaces')
-      finish({ ok: false })
     } finally {
       setLoading(false)
       setRefreshing(false)
@@ -381,7 +358,6 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
       setLoading(false)
       return
     }
-    debugLog('workspace-launcher', 'effect:initial-refresh')
     void refresh()
   }, [autoRefresh, refresh])
 

@@ -1,14 +1,8 @@
 import { requestJson } from '../../../../app/api'
-import { createDebugTimer } from '../../../../lib/debug-log'
 import { mapAuthCredential } from '../types/auth'
 import type { AuthCredentialListResponse, AuthCredentialListResponseWire } from '../types/auth'
 
 export async function listAuthCredentials(provider = '', query = '', limit = 200): Promise<AuthCredentialListResponse> {
-  const finish = createDebugTimer('desktop-auth-queries', 'listAuthCredentials', {
-    provider,
-    query,
-    limit,
-  })
   const params = new URLSearchParams()
   if (provider.trim() !== '') {
     params.set('provider', provider.trim())
@@ -26,6 +20,5 @@ export async function listAuthCredentials(provider = '', query = '', limit = 200
     records: Array.isArray(response.records) ? response.records.map(mapAuthCredential) : [],
     providers: Array.isArray(response.providers) ? response.providers.map((value) => String(value)) : [],
   }
-  finish({ total: result.total, providerCount: result.providers.length })
   return result
 }

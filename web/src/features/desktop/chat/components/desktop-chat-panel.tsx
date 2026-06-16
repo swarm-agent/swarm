@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronDown, Clock3, Home, ListChecks, LoaderCircle, MessageSquareText, Mic, Minimize2, Plus, Save, Send, Settings2, ShieldAlert, Sparkles, Square, X } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
-import { useDesktopUiStore } from '../../state/desktop-ui-store'
+import { getDesktopV3RealtimeDiagnostics, useDesktopUiStore } from '../../state/desktop-ui-store'
 import {
   agentStateQueryOptions,
   draftModelQueryOptions,
@@ -389,8 +389,33 @@ interface PlanModalState {
   revisions: DesktopSessionPlanRevisionRecord[]
 }
 
+type ExistingSessionStreamProbe = {
+  sessionId: string
+  clientRequestId: string
+  submittedAt: number
+  baselineMessageIds: Set<string>
+  baselineAssistantIds: Set<string>
+  baselineAssistantContent: string
+  baselineLastEventSeq: number
+  baselineRunId: string
+  submitDiagnostics: ReturnType<typeof getDesktopV3RealtimeDiagnostics>
+  emitted: boolean
+}
+
 function messageSort(left: ChatMessageRecord, right: ChatMessageRecord): number {
   return left.globalSeq - right.globalSeq
+}
+
+function assistantScreenText(messages: ChatMessageRecord[], liveDraft: string, retainedSegments: DesktopLiveAssistantSegment[]): string {
+  return [
+    ...messages.filter((message) => message.role === 'assistant').map((message) => message.content),
+    ...retainedSegments.map((segment) => segment.content),
+    liveDraft,
+  ].filter((value) => value.trim() !== '').join('\n\n')
+}
+
+function newAssistantMessages(messages: ChatMessageRecord[], baselineIds: Set<string>): ChatMessageRecord[] {
+  return messages.filter((message) => message.role === 'assistant' && !baselineIds.has(message.id))
 }
 
 export function dedupeMessages(messages: ChatMessageRecord[]): ChatMessageRecord[] {
@@ -1318,6 +1343,7 @@ export function DesktopChatPanel({
   const scrollToLatestFrameRef = useRef<number | null>(null)
   const [showScrollLockReturnButton, setShowScrollLockReturnButton] = useState(false)
   const liveAssistantHandoffRef = useRef<{ sessionId: string; content: string; key: string } | null>(null)
+  const existingSessionStreamProbeRef = useRef<ExistingSessionStreamProbe | null>(null)
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
   const dictationEnabledRef = useRef(false)
   const dictationCanRunRef = useRef(false)
@@ -1760,6 +1786,70 @@ export function DesktopChatPanel({
     : !runActive && liveSession?.live.summary?.trim() === 'Run paused by user'
       ? 'Run paused by user'
       : ''
+  useEffect(() => {
+    const probe = existingSessionStreamProbeRef.current
+    if (!probe || probe.emitted || probe.sessionId !== sessionId || runActive) {
+      return
+    }
+    const newAssistant = newAssistantMessages(displayedMessages, probe.baselineAssistantIds)
+    const cacheSession = liveSession ?? null
+    const cacheUpdated = Boolean(
+      cacheSession
+      && (
+        (cacheSession.lastEventSeq ?? 0) > probe.baselineLastEventSeq
+        || displayedMessages.some((message) => !probe.baselineMessageIds.has(message.id))
+        || newAssistant.length > 0
+      ),
+    )
+    const finalAssistantText = newAssistant.map((message) => message.content).join('\n\n')
+      || (assistantScreenText(displayedMessages, liveAssistantDraft, retainedAssistantSegments).startsWith(probe.baselineAssistantContent)
+        ? assistantScreenText(displayedMessages, liveAssistantDraft, retainedAssistantSegments).slice(probe.baselineAssistantContent.length).trim()
+        : assistantScreenText(displayedMessages, liveAssistantDraft, retainedAssistantSegments))
+    if (!cacheUpdated && finalAssistantText.trim() === '') {
+      return
+    }
+    probe.emitted = true
+    existingSessionStreamProbeRef.current = null
+    const completionDiagnostics = getDesktopV3RealtimeDiagnostics(probe.sessionId)
+    const subscription = completionDiagnostics?.subscriptions[0] ?? null
+    console.info('[existing-session-stream-complete]', {
+      sessionId: probe.sessionId,
+      clientRequestId: probe.clientRequestId,
+      submittedAt: probe.submittedAt,
+      completedAt: Date.now(),
+      reconnect: {
+        submit: probe.submitDiagnostics,
+        completion: completionDiagnostics,
+        socketState: completionDiagnostics?.socketState ?? 'none',
+        subscribed: Boolean(subscription && subscription.subscribeSentAt >= probe.submittedAt),
+        subscribeSentAt: subscription?.subscribeSentAt ?? 0,
+        subscribeSentCount: subscription?.subscribeSentCount ?? 0,
+        lastFrameKind: subscription?.lastFrameKind ?? '',
+        lastEventType: subscription?.lastEventType ?? '',
+        lastEventAt: subscription?.lastEventAt ?? 0,
+        replayStartedAt: subscription?.lastReplayStartedAt ?? 0,
+        replayCompleteAt: subscription?.lastReplayCompleteAt ?? 0,
+        endpointCursorPresent: subscription?.endpointCursorPresent ?? false,
+        lastEndpointCursorPresent: subscription?.lastEndpointCursorPresent ?? false,
+      },
+      streamedAssistantText: finalAssistantText,
+      screenAssistantText: assistantScreenText(displayedMessages, liveAssistantDraft, retainedAssistantSegments),
+      cache: {
+        updated: cacheUpdated,
+        source: 'v3-runtime-desktop-state',
+        sessionPresent: cacheSession !== null,
+        messageCount: displayedMessages.length,
+        assistantMessageIds: displayedMessages.filter((message) => message.role === 'assistant').map((message) => message.id),
+        newAssistantMessageIds: newAssistant.map((message) => message.id),
+        lastEventSeqBefore: probe.baselineLastEventSeq,
+        lastEventSeqAfter: cacheSession?.lastEventSeq ?? 0,
+        runIdBefore: probe.baselineRunId,
+        runIdAfter: liveRunId,
+        liveDraftLength: liveAssistantDraft.length,
+        retainedAssistantSegmentCount: retainedAssistantSegments.length,
+      },
+    })
+  }, [displayedMessages, liveAssistantDraft, liveRunId, liveSession, retainedAssistantSegments, runActive, sessionId])
   const showDictationButton = !runActive && dictationSupported
   const dictationButtonDisabled = composerDisabled
   const dictationComposer = dictationEnabled
@@ -2682,6 +2772,21 @@ export function DesktopChatPanel({
       }
 
       const clientRequestId = `desktop-v3-message:${targetSession.id}:${Date.now()}`
+      if (session) {
+        const existingSessionId = targetSession.id
+        existingSessionStreamProbeRef.current = {
+          sessionId: existingSessionId,
+          clientRequestId,
+          submittedAt: Date.now(),
+          baselineMessageIds: new Set(displayedMessages.map((message) => message.id)),
+          baselineAssistantIds: new Set(displayedMessages.filter((message) => message.role === 'assistant').map((message) => message.id)),
+          baselineAssistantContent: assistantScreenText(displayedMessages, liveAssistantDraft, retainedAssistantSegments),
+          baselineLastEventSeq: liveSession?.lastEventSeq ?? 0,
+          baselineRunId: liveRunId,
+          submitDiagnostics: getDesktopV3RealtimeDiagnostics(existingSessionId),
+          emitted: false,
+        }
+      }
       await submitPrompt({
         sessionId: targetSession.id,
         route: activeChatRoute,
@@ -2697,7 +2802,7 @@ export function DesktopChatPanel({
     } catch (error) {
       setPanelError(error instanceof Error ? error.message : 'Failed to send prompt')
     }
-  }, [activeChatRoute, activePreferenceRecord, canSendWithSelectedPreference, commitDictationDraft, composer, currentSessionAgent, effectiveSessionMode, mentionSubagents, onClearPendingWorktreeBranch, onSessionCreated, pendingWorktreeBranch, resolvedLockedAgentName, session, sessionCreateOverride, stopDictation, submitPrompt, submitting, workspaceName, workspacePath])
+  }, [activeChatRoute, activePreferenceRecord, canSendWithSelectedPreference, commitDictationDraft, composer, currentSessionAgent, displayedMessages, effectiveSessionMode, liveAssistantDraft, liveRunId, liveSession?.lastEventSeq, mentionSubagents, onClearPendingWorktreeBranch, onSessionCreated, pendingWorktreeBranch, resolvedLockedAgentName, retainedAssistantSegments, session, sessionCreateOverride, stopDictation, submitPrompt, submitting, workspaceName, workspacePath])
 
   const handleStop = useCallback(async () => {
     if (!sessionId) {

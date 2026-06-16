@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Outlet } from '@tanstack/react-router'
 import { requestJson } from '../../../../app/api'
-import { debugLog, createDebugTimer } from '../../../../lib/debug-log'
 import { useDesktopUiStore } from '../../state/desktop-ui-store'
 import { DesktopRealtimeBootstrap } from '../../realtime/desktop-realtime-bootstrap'
 import { DesktopVaultGate } from './desktop-vault-gate'
@@ -185,9 +184,6 @@ function mapOnboardingBootstrapStatus(onboarding: DesktopOnboardingStatusWire): 
 }
 
 export function DesktopVaultShell() {
-  debugLog('desktop-vault-shell', 'render', {
-    vaultBootstrapped: useDesktopUiStore.getState().vault.bootstrapped,
-  })
   const vault = useDesktopUiStore((state) => state.vault)
   const onboardingFlowRequested = useDesktopUiStore((state) => state.onboardingFlowRequested)
   const clearOnboardingFlow = useDesktopUiStore((state) => state.clearOnboardingFlow)
@@ -201,14 +197,8 @@ export function DesktopVaultShell() {
       setOnboardingLoading(false)
       return
     }
-    debugLog('desktop-vault-shell', 'effect:onboarding-check', {
-      onboardingFlowRequested,
-    })
 
     let cancelled = false
-    const finish = createDebugTimer('desktop-vault-shell', 'fetch-onboarding-status', {
-      onboardingFlowRequested,
-    })
     setOnboardingLoading(true)
     setOnboardingError(null)
 
@@ -216,35 +206,24 @@ export function DesktopVaultShell() {
       .then(mapOnboardingBootstrapStatus)
       .then((next) => {
         if (cancelled) {
-          finish({ cancelled: true, phase: 'then' })
           return
         }
-        debugLog('desktop-vault-shell', 'fetch-onboarding-status:resolved', {
-          needsOnboarding: next.needsOnboarding,
-          identityBootstrapped: next.identity.bootstrapped,
-        })
         setOnboardingStatus(next)
       })
       .catch((error) => {
         if (cancelled) {
-          finish({ cancelled: true, phase: 'catch' })
           return
         }
-        debugLog('desktop-vault-shell', 'fetch-onboarding-status:rejected', {
-          message: error instanceof Error ? error.message : String(error),
-        })
         setOnboardingError(error instanceof Error ? error.message : 'Failed to load onboarding')
       })
       .finally(() => {
         if (!cancelled) {
           setOnboardingLoading(false)
-          finish({ cancelled: false })
         }
       })
 
     return () => {
       cancelled = true
-      debugLog('desktop-vault-shell', 'effect:onboarding-cleanup')
     }
   }, [directLANDesktopWarning, onboardingFlowRequested])
 

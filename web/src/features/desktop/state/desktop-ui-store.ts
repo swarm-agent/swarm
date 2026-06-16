@@ -1,7 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import { createEmptyWorkspaceTodoSummary, type WorkspaceTodoSummary } from '../../workspaces/todos/types'
 import type { QueryClient } from '@tanstack/react-query'
-import { debugLog, createDebugTimer } from '../../../lib/debug-log'
 import { queryClient } from '../../../app/query-client'
 import {
   canonicalSessionWorkspaceName,
@@ -15,7 +14,7 @@ import {
 } from '../../workspaces/launcher/services/workspace-overview-cache'
 import { setWorkspaceThemeCustomOptions } from '../../workspaces/launcher/services/workspace-theme'
 import { openDesktopWebSocket } from '../realtime/client'
-import { DesktopV3RealtimeController, type DesktopV3RealtimeFrame } from '../realtime/v3-realtime-controller'
+import { DesktopV3RealtimeController, type DesktopV3RealtimeDiagnostics, type DesktopV3RealtimeFrame } from '../realtime/v3-realtime-controller'
 import { disableVault, enableVault, exportVaultBundle, fetchVaultStatus, importVaultBundle, lockVault, unlockVault } from '../vault/api'
 import {
   compactSessionV3,
@@ -182,6 +181,10 @@ function requireV3RealtimeController(): DesktopV3RealtimeController {
     throw new Error('desktop v3 realtime controller is not initialized')
   }
   return desktopV3RealtimeController
+}
+
+export function getDesktopV3RealtimeDiagnostics(sessionId?: string | null): DesktopV3RealtimeDiagnostics | null {
+  return desktopV3RealtimeController?.diagnostics(sessionId) ?? null
 }
 
 if (typeof window !== 'undefined') {
@@ -528,14 +531,6 @@ function startHeartbeat(socket: WebSocket, generation: number): void {
 
 function scheduleReconnect(reason: string): void {
   const current = useDesktopUiStore.getState()
-  debugLog('desktop-store', 'reconnect:schedule-check', {
-    reason,
-    connectionState: current.connectionState,
-    reconnectAttempt: current.reconnectAttempt,
-    realtimeDesired: current.realtimeDesired,
-    vaultEnabled: current.vault.enabled,
-    vaultUnlocked: current.vault.unlocked,
-  })
   if (!shouldMaintainDesktopRealtime(current)) {
     setConnectionClosed(current.connectionGeneration)
     return
@@ -565,10 +560,6 @@ function scheduleReconnect(reason: string): void {
     livenessTimer: null,
     reconnectAttempt: attempt + 1,
     connectionState: 'closed',
-  })
-  debugLog('desktop-store', 'reconnect:scheduled', {
-    reason,
-    reconnectAttempt: attempt + 1,
   })
   console.warn(`[desktop-store] scheduled reconnect after ${reason}`)
 }
@@ -3630,22 +3621,12 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
   },
   bootstrapVault: async () => {
     const current = get()
-    debugLog('desktop-store', 'bootstrapVault:enter', {
-      loading: current.vault.loading,
-      bootstrapped: current.vault.bootstrapped,
-    })
     if (current.vault.loading || current.vault.bootstrapped) {
       return
     }
-    const finish = createDebugTimer('desktop-store', 'bootstrapVault')
     set((state: DesktopStoreState) => ({ vault: { ...state.vault, loading: true, error: null } }))
     try {
       const status = await fetchVaultStatus()
-      debugLog('desktop-store', 'bootstrapVault:status', {
-        enabled: status.enabled,
-        unlocked: status.unlocked,
-        storageMode: status.storageMode,
-      })
       set((state: DesktopStoreState) => ({
         vault: applyVaultStatus(state.vault, status),
       }))
@@ -3655,11 +3636,7 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
           vault: applyVaultStatus(state.vault, status),
         }))
       }
-      finish({ ok: true })
     } catch (error) {
-      debugLog('desktop-store', 'bootstrapVault:error', {
-        message: error instanceof Error ? error.message : String(error),
-      })
       set((state: DesktopStoreState) => ({
         vault: {
           ...state.vault,
@@ -3668,7 +3645,6 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
           error: error instanceof Error ? error.message : 'Failed to load vault status',
         },
       }))
-      finish({ ok: false })
     }
   },
   refreshVaultStatus: async () => {
@@ -3833,68 +3809,39 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
   },
   hydrate: async () => {
     const current = get()
-    debugLog('desktop-store', 'hydrate:enter', {
-      hydrating: current.hydrating,
-      hydrated: current.hydrated,
-      vaultBootstrapped: current.vault.bootstrapped,
-      vaultEnabled: current.vault.enabled,
-      vaultUnlocked: current.vault.unlocked,
-      connectionState: current.connectionState,
-    })
     if (current.hydrating) {
       return
     }
-    const finish = createDebugTimer('desktop-store', 'hydrate')
     set({ hydrating: true, realtimeDesired: true })
     try {
       installV3RuntimePersistence()
       await restoreV3RuntimeFromPersistence()
       if (!get().vault.bootstrapped) {
-        debugLog('desktop-store', 'hydrate:bootstrapping-vault')
         await get().bootstrapVault()
       }
       if (get().vault.enabled && !get().vault.unlocked) {
-        debugLog('desktop-store', 'hydrate:stop-vault-locked')
         set({
           hydrated: true,
           hydrating: false,
         })
-        finish({ ok: true, stopped: 'vault-locked' })
         return
       }
       set({
         hydrated: true,
         hydrating: false,
       })
-      debugLog('desktop-store', 'hydrate:connect-dispatch')
       await get().connect()
-      finish({ ok: true, connectionState: get().connectionState })
     } catch (error) {
       console.error('[desktop-store] hydrate failed', error)
-      debugLog('desktop-store', 'hydrate:error', {
-        message: error instanceof Error ? error.message : String(error),
-      })
       set({ hydrating: false, hydrated: true })
-      finish({ ok: false })
     }
   },
   connect: async () => {
     const current = get()
-    debugLog('desktop-store', 'connect:enter', {
-      connectionState: current.connectionState,
-      hasSocket: Boolean(desktopRealtimeSocket),
-      realtimeDesired: current.realtimeDesired,
-      vaultEnabled: current.vault.enabled,
-      vaultUnlocked: current.vault.unlocked,
-    })
     if (!shouldMaintainDesktopRealtime(current)) {
-      debugLog('desktop-store', 'connect:skip', { reason: 'should-not-maintain-realtime' })
       return
     }
     if (desktopRealtimeSocket || current.connectionState === 'connecting') {
-      debugLog('desktop-store', 'connect:skip', {
-        reason: desktopRealtimeSocket ? 'socket-present' : 'already-connecting',
-      })
       try {
         await refreshDesktopV3GlobalDiscovery()
       } catch (error) {
@@ -3903,7 +3850,6 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
       get().syncV3RealtimeSessions()
       return
     }
-    const finish = createDebugTimer('desktop-store', 'connect')
     clearReconnectTimer(current)
     const generation = current.connectionGeneration + 1
     set({
@@ -3918,18 +3864,12 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
         console.error('[desktop-store] global V3 discovery refresh failed', error)
       }
       const socket = await openDesktopWebSocket()
-      debugLog('desktop-store', 'connect:websocket-created', { generation })
       if (get().connectionGeneration !== generation || !shouldMaintainDesktopRealtime(get())) {
         socket.close()
-        finish({ ok: false, stopped: 'stale-after-socket' })
         return
       }
       socket.addEventListener('open', () => {
         const state = get()
-        debugLog('desktop-store', 'socket:open', {
-          generation,
-          connectionState: state.connectionState,
-        })
         if (state.connectionGeneration !== generation || !shouldMaintainDesktopRealtime(state)) {
           socket.close()
           return
@@ -3956,7 +3896,6 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
         deferDesktopCacheMutation('workspace overview refresh on realtime connect', () => {
           void queryClient.invalidateQueries({ queryKey: ['workspace-overview'] })
         })
-        finish({ ok: true, phase: 'socket-open', generation })
       })
       socket.addEventListener('message', (event) => {
         const state = get()
@@ -4002,10 +3941,6 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
       })
       socket.addEventListener('close', () => {
         const state = get()
-        debugLog('desktop-store', 'socket:close', {
-          generation,
-          connectionState: state.connectionState,
-        })
         if (state.connectionGeneration !== generation) {
           return
         }
@@ -4016,10 +3951,6 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
       })
       socket.addEventListener('error', () => {
         const state = get()
-        debugLog('desktop-store', 'socket:error', {
-          generation,
-          connectionState: state.connectionState,
-        })
         if (state.connectionGeneration !== generation) {
           return
         }
@@ -4033,13 +3964,8 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
       set({ heartbeatTimer: null, livenessTimer: null })
     } catch (error) {
       console.error('[desktop-store] connect failed', error)
-      debugLog('desktop-store', 'connect:error', {
-        generation,
-        message: error instanceof Error ? error.message : String(error),
-      })
       const state = get()
       if (state.connectionGeneration !== generation) {
-        finish({ ok: false, stopped: 'stale-in-catch' })
         return
       }
       desktopRealtimeSocket = null
@@ -4047,21 +3973,11 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
       desktopRealtimeConnectingStartedAt = 0
       set({ connectionState: 'error' })
       scheduleReconnect('connect failure')
-      finish({ ok: false })
     }
   },
   reconnectIfStale: async (reason) => {
     const current = get()
     const staleReason = desktopRealtimeStaleReason(current, reason)
-    debugLog('desktop-store', 'reconnect-if-stale:check', {
-      reason,
-      staleReason,
-      connectionState: current.connectionState,
-      hasSocket: Boolean(desktopRealtimeSocket),
-      socketState: desktopRealtimeSocket?.readyState ?? null,
-      lastActivityAt: desktopRealtimeLastActivityAt,
-      connectingStartedAt: desktopRealtimeConnectingStartedAt,
-    })
     if (!staleReason) {
       await get().connect()
       get().syncV3RealtimeSessions()
@@ -4103,12 +4019,6 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
   },
   disconnect: () => {
     const current = get()
-    debugLog('desktop-store', 'disconnect:enter', {
-      connectionState: current.connectionState,
-      hasSocket: Boolean(desktopRealtimeSocket),
-      realtimeDesired: current.realtimeDesired,
-      runStreamCount: requireRunStreamController().activeSessionCount(),
-    })
     clearReconnectTimer(current)
     clearHeartbeatTimer(current)
     clearLivenessTimer(current)

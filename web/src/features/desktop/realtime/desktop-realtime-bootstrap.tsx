@@ -1,6 +1,5 @@
 import { useEffect } from 'react'
 import { useMatchRoute } from '@tanstack/react-router'
-import { debugLog } from '../../../lib/debug-log'
 import { useDesktopUiStore } from '../state/desktop-ui-store'
 
 export function DesktopRealtimeBootstrap() {
@@ -15,38 +14,22 @@ export function DesktopRealtimeBootstrap() {
     || Boolean(matchRoute({ to: '/$workspaceSlug/$sessionId', fuzzy: false }))
 
   useEffect(() => {
-    debugLog('desktop-realtime-bootstrap', 'effect:hydrate-check', {
-      inDesktopApp,
-      vaultEnabled: vault.enabled,
-      vaultUnlocked: vault.unlocked,
-    })
     if (!inDesktopApp || (vault.enabled && !vault.unlocked)) {
-      debugLog('desktop-realtime-bootstrap', 'effect:disconnect-before-hydrate', {
-        reason: !inDesktopApp ? 'outside-desktop-app' : 'vault-locked',
-      })
       disconnect()
       return
     }
-    debugLog('desktop-realtime-bootstrap', 'effect:hydrate-dispatch')
     void hydrate()
     void refreshNotifications()
     return () => {
-      debugLog('desktop-realtime-bootstrap', 'effect:cleanup-disconnect')
       disconnect()
     }
   }, [disconnect, hydrate, inDesktopApp, refreshNotifications, vault.enabled, vault.unlocked])
 
   useEffect(() => {
-    debugLog('desktop-realtime-bootstrap', 'effect:online-listener-check', {
-      inDesktopApp,
-      vaultEnabled: vault.enabled,
-      vaultUnlocked: vault.unlocked,
-    })
     if (!inDesktopApp || (vault.enabled && !vault.unlocked)) {
       return
     }
     const refreshRealtime = (reason: string) => {
-      debugLog('desktop-realtime-bootstrap', 'browser:realtime-resume-check', { reason })
       void reconnectIfStale(reason)
     }
     const handleOnline = () => {
@@ -69,7 +52,6 @@ export function DesktopRealtimeBootstrap() {
     window.addEventListener('pageshow', handlePageShow)
     document.addEventListener('visibilitychange', handleVisible)
     return () => {
-      debugLog('desktop-realtime-bootstrap', 'effect:remove-online-listener')
       window.removeEventListener('online', handleOnline)
       window.removeEventListener('focus', handleFocus)
       window.removeEventListener('pageshow', handlePageShow)
