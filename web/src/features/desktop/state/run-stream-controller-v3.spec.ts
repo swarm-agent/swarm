@@ -1534,6 +1534,7 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
   const originalWindow = globalThis.window
   const originalWebSocket = globalThis.WebSocket
 
+  const sent: Array<{ url: string; message: Record<string, unknown> }> = []
   class FakeWebSocket {
     static CONNECTING = 0
     static OPEN = 1
@@ -1562,7 +1563,9 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
       websocketCloseCount += 1
       this.readyState = FakeWebSocket.CLOSED
     }
-    send() {}
+    send(data: string) {
+      sent.push({ url: this.url, message: JSON.parse(data) as Record<string, unknown> })
+    }
   }
 
   globalThis.window = {
@@ -1585,7 +1588,7 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
       })
     }
     if (url === '/v3/sessions:reconnect') {
-      return new Response(JSON.stringify(makeReconnectResponse('session-v3', { runId: 'v3run-session-v3-2', status: 'pending_executor', cursor: 'cursor-4' })), {
+      return new Response(JSON.stringify(makeEmptyReconnectResponse('cursor-4')), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })
@@ -1682,6 +1685,14 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
     assert.equal(urls.some((url) => url.startsWith('/v1/swarm/managed-hosts/sessions')), false)
     assert.equal(urls.some((url) => url.startsWith('/v2/sessions')), false)
     assert.deepEqual(websocketURLs.sort(), ['ws://127.0.0.1:7777/v3/realtime/stream?endpoint_cursor=cursor-4', 'ws://127.0.0.1:7777/ws'].sort())
+    assert.deepEqual(sent.filter((entry) => entry.url.includes('/v3/realtime/stream')).map((entry) => entry.message), [{
+      protocol: 'v3.realtime',
+      protocol_version: 1,
+      kind: 'subscribe.session',
+      session_id: 'session-v3',
+      subscription_id: 'desktop:session-v3',
+      endpoint_cursor: 'cursor-4',
+    }])
     const body = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>
     assert.deepEqual(body, {
       client_request_id: 'desktop-v3-message:test-submit',
@@ -1699,7 +1710,7 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
     assert.equal(updated.live.runId, 'v3run-session-v3-2')
     assert.equal(updated.live.status, 'starting')
     assert.equal(updated.live.startedAt, 20)
-    assert.equal(updated.live.lastEventType, 'session.run_intent.recorded')
+    assert.equal(updated.live.lastEventType, 'run.pending_executor')
 
     await useDesktopStore.getState().stopRun('session-v3', primaryRoute)
     const stopCall = calls.find((entry) => String(entry.input) === '/v3/sessions/session-v3/run/stop')

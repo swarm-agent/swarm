@@ -188,6 +188,24 @@ export function getDesktopV3RealtimeDiagnostics(sessionId?: string | null): Desk
   return desktopV3RealtimeController?.diagnostics(sessionId) ?? null
 }
 
+async function subscribeDesktopV3SessionRealtime(sessionId: string, endpointCursor?: string | null): Promise<void> {
+  const normalizedSessionId = sessionId.trim()
+  if (!normalizedSessionId) {
+    return
+  }
+  const cursor = endpointCursor?.trim() ?? ''
+  if (cursor) {
+    desktopV3RealtimeEndpointCursor = cursor
+    requireV3RealtimeController().setEndpointCursor(cursor)
+  }
+  useDesktopUiStore.setState({ realtimeDesired: true })
+  await requireV3RealtimeController().subscribeSession(
+    normalizedSessionId,
+    cursor || desktopV3RealtimeEndpointCursor,
+    `desktop:${normalizedSessionId}`,
+  )
+}
+
 function desktopSocketStateName(socket: WebSocket | null): 'none' | 'connecting' | 'open' | 'closing' | 'closed' {
   switch (socket?.readyState) {
     case WebSocket.CONNECTING:
@@ -4251,14 +4269,17 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
         const clientRequestId = providedClientRequestId?.trim() || `desktop-v3-message:${targetSessionId}:${submitStartedAt}`
         const result = await sendSessionMessage(targetSessionId, 'user', trimmedPrompt, route, { sessionApi: 'v3', clientRequestId })
         set((state: DesktopStoreState) => applyV3MessageCommitResult(state, targetSessionId, result, Date.now()))
+        let mutationEndpointCursor = ''
         if (result && typeof result === 'object' && 'realtimeOutbox' in result) {
           const cursor = (result as { realtimeOutbox?: { endpointCursor?: string } | null }).realtimeOutbox?.endpointCursor?.trim() ?? ''
           if (cursor) {
+            mutationEndpointCursor = cursor
             desktopV3RealtimeEndpointCursor = cursor
             requireV3RealtimeController().setEndpointCursor(cursor)
           }
         }
         set({ realtimeDesired: true })
+        await subscribeDesktopV3SessionRealtime(targetSessionId, mutationEndpointCursor)
         await get().connect()
         await syncV3RealtimeSessionsFromReconnect({ force: true })
         return
