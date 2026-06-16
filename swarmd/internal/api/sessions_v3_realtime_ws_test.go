@@ -660,6 +660,146 @@ func TestV3RealtimeWorksetAutoSubscribeDeliversSubsequentEvents(t *testing.T) {
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindEvent, created.SessionID, appendResult.Event.Seq)
 }
 
+func TestV3RealtimeWorksetVisibilityChangedInDiscoversAndAutoSubscribes(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-workset-visibility-in", "create-realtime-workset-visibility-in")
+	moved := *created.Session
+	moved.WorkspacePath = "/workspace/visible"
+	moved.WorkspaceName = "visible"
+
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: created.RealtimeOutbox.EndpointCursor, Worksets: []V3RealtimeWorksetSubscriptionRequest{v3RealtimeWorkspaceWorksetRequestForTest("/workspace/visible")}})
+
+	visibilityChanged, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       moved.ID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "visibility-in-realtime-workset",
+		IdempotencyKey:  "visibility-in-realtime-workset",
+		PayloadHash:     "hash-visibility-in-realtime-workset",
+		Kind:            sessionruntime.SessionMutationUpdateMetadata,
+		EventType:       "session.visibility.changed",
+		Session:         &moved,
+		NowUnixMs:       2000,
+	})
+	if err != nil {
+		t.Fatalf("change session visibility into workset: %v", err)
+	}
+	if visibilityChanged.RealtimeOutbox == nil {
+		t.Fatalf("visibility changed mutation missing realtime outbox: %+v", visibilityChanged)
+	}
+
+	discovered := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, discovered, V3RealtimeKindWorksetSessionDiscovered, created.SessionID, 0)
+	if discovered.WorksetID != "desktop:workspace:/workspace/visible" || discovered.WorksetSubscriptionID != "desktop-client:desktop:workspace:/workspace/visible" || !discovered.AutoSubscribed || discovered.SubscriptionID == "" || discovered.EventType != "session.visibility.changed" {
+		t.Fatalf("visibility-in discovery frame = %+v", discovered)
+	}
+	assertV3RealtimeSignedCursorSeq(t, server, discovered.EndpointCursor, visibilityChanged.RealtimeOutbox.EndpointSeq)
+
+	event := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, event, V3RealtimeKindEvent, created.SessionID, visibilityChanged.Event.Seq)
+	if event.EventType != "session.visibility.changed" {
+		t.Fatalf("visibility-in event frame = %+v", event)
+	}
+
+	appendResult := appendV3RealtimeTestMessage(t, server, created.SessionID, "message-realtime-workset-visibility-in", "visibility-in auto subscribed")
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindEvent, created.SessionID, appendResult.Event.Seq)
+}
+
+func TestV3RealtimeWorksetVisibilityChangedStillInDoesNotRemove(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-workset-visibility-still-in", "create-realtime-workset-visibility-still-in")
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: "cursor-0", Worksets: []V3RealtimeWorksetSubscriptionRequest{v3RealtimeWorkspaceWorksetRequestForTest("/workspace/realtime")}})
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindWorksetSessionDiscovered, created.SessionID, 0)
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindEvent, created.SessionID, created.Event.Seq)
+
+	stillVisible := *created.Session
+	stillVisible.WorkspaceName = "still-visible"
+	visibilityChanged, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       stillVisible.ID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "visibility-still-in-realtime-workset",
+		IdempotencyKey:  "visibility-still-in-realtime-workset",
+		PayloadHash:     "hash-visibility-still-in-realtime-workset",
+		Kind:            sessionruntime.SessionMutationUpdateMetadata,
+		EventType:       "session.visibility.changed",
+		Session:         &stillVisible,
+		NowUnixMs:       2000,
+	})
+	if err != nil {
+		t.Fatalf("change session visibility within workset: %v", err)
+	}
+	if visibilityChanged.RealtimeOutbox == nil {
+		t.Fatalf("visibility still-in mutation missing realtime outbox: %+v", visibilityChanged)
+	}
+
+	event := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, event, V3RealtimeKindEvent, created.SessionID, visibilityChanged.Event.Seq)
+	if event.EventType != "session.visibility.changed" {
+		t.Fatalf("visibility still-in event frame = %+v", event)
+	}
+	assertV3RealtimeSignedCursorSeq(t, server, event.EndpointCursor, visibilityChanged.RealtimeOutbox.EndpointSeq)
+
+	appendResult := appendV3RealtimeTestMessage(t, server, created.SessionID, "message-realtime-workset-visibility-still-in", "still-in remains subscribed")
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindEvent, created.SessionID, appendResult.Event.Seq)
+}
+
+func TestV3RealtimeWorksetVisibilityChangedOutRemovesAndUnsubscribes(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-workset-visibility-out", "create-realtime-workset-visibility-out")
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: "cursor-0", Worksets: []V3RealtimeWorksetSubscriptionRequest{v3RealtimeWorkspaceWorksetRequestForTest("/workspace/realtime")}})
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindWorksetSessionDiscovered, created.SessionID, 0)
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindEvent, created.SessionID, created.Event.Seq)
+
+	movedOut := *created.Session
+	movedOut.WorkspacePath = "/workspace/other"
+	movedOut.WorkspaceName = "other"
+	visibilityChanged, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       movedOut.ID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "visibility-out-realtime-workset",
+		IdempotencyKey:  "visibility-out-realtime-workset",
+		PayloadHash:     "hash-visibility-out-realtime-workset",
+		Kind:            sessionruntime.SessionMutationUpdateMetadata,
+		EventType:       "session.visibility.changed",
+		Session:         &movedOut,
+		NowUnixMs:       2000,
+	})
+	if err != nil {
+		t.Fatalf("change session visibility out of workset: %v", err)
+	}
+	if visibilityChanged.RealtimeOutbox == nil {
+		t.Fatalf("visibility out mutation missing realtime outbox: %+v", visibilityChanged)
+	}
+
+	removed := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, removed, V3RealtimeKindWorksetSessionRemoved, created.SessionID, 0)
+	if removed.WorksetID != "desktop:workspace:/workspace/realtime" || removed.WorksetSubscriptionID != "desktop-client:desktop:workspace:/workspace/realtime" || !removed.AutoSubscribed || removed.SubscriptionID == "" || removed.EventType != "session.visibility.changed" {
+		t.Fatalf("visibility-out removed frame = %+v", removed)
+	}
+	assertV3RealtimeSignedCursorSeq(t, server, removed.EndpointCursor, visibilityChanged.RealtimeOutbox.EndpointSeq)
+
+	event := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, event, V3RealtimeKindEvent, created.SessionID, visibilityChanged.Event.Seq)
+	if event.EventType != "session.visibility.changed" {
+		t.Fatalf("visibility-out event frame = %+v", event)
+	}
+	assertV3RealtimeSignedCursorSeq(t, server, event.EndpointCursor, visibilityChanged.RealtimeOutbox.EndpointSeq)
+
+	appendV3RealtimeTestMessage(t, server, created.SessionID, "message-realtime-workset-visibility-out", "out is unsubscribed")
+	assertNoV3RealtimeEventFrame(t, conn, 150*time.Millisecond)
+}
+
 func TestV3RealtimeWorksetRemovalUnsubscribesOrDeactivatesSession(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-workset-remove", "create-realtime-workset-remove")
@@ -1259,6 +1399,11 @@ func assertV3RealtimeCursorError(t *testing.T, frame V3RealtimeMessage, code str
 
 func v3RealtimeGlobalWorksetRequestForTest() V3RealtimeWorksetSubscriptionRequest {
 	return V3RealtimeWorksetSubscriptionRequest{WorksetID: "desktop:global", SubscriptionID: "desktop-client:desktop:global", Surface: "desktop", Selector: V3RealtimeWorksetSelector{Kind: "global", Global: true, Recent: sessionsV3WorksetRecent{Limit: 100}}, AutoSubscribeSessions: true}
+}
+
+func v3RealtimeWorkspaceWorksetRequestForTest(workspacePath string) V3RealtimeWorksetSubscriptionRequest {
+	worksetID := "desktop:workspace:" + workspacePath
+	return V3RealtimeWorksetSubscriptionRequest{WorksetID: worksetID, SubscriptionID: "desktop-client:" + worksetID, Surface: "desktop", Selector: V3RealtimeWorksetSelector{Kind: "workspace", WorkspacePath: workspacePath}, AutoSubscribeSessions: true}
 }
 
 func assertV3RealtimeFrame(t *testing.T, frame V3RealtimeMessage, kind, sessionID string, lastSeq uint64) {

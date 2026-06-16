@@ -473,6 +473,7 @@ func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal
 	}
 
 	subscription, subscribed := advanced.Subscriptions[record.SessionID]
+	removeAutoSubscriptionAfterDelivery := false
 	if !subscribed {
 		match, ok := s.v3RealtimeMatchRecordWorkset(principal, record, worksets)
 		if !ok {
@@ -495,16 +496,29 @@ func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal
 			return advanced, false, false
 		}
 		advanced.LastSentEndpointSeq = record.EndpointSeq
-	} else if v3RealtimeRecordRemovesFromWorkset(record) && subscription.AutoSubscribed && len(subscription.WorksetIDs) > 0 {
-		for worksetID := range subscription.WorksetIDs {
-			workset, ok := worksets[worksetID]
-			if !ok {
-				continue
+	} else if subscription.AutoSubscribed {
+		removeFromSubscribedWorksets := v3RealtimeRecordRemovesFromWorkset(record)
+		if v3RealtimeRecordChangesVisibility(record) && !removeFromSubscribedWorksets {
+			matchedWorksetIDs, matched := s.v3RealtimeMatchedWorksetIDsForRecord(principal, record, worksets)
+			if matched {
+				subscription.WorksetIDs = matchedWorksetIDs
+				advanced.Subscriptions[record.SessionID] = subscription
+			} else {
+				removeFromSubscribedWorksets = true
 			}
-			if !s.sendV3RealtimeWorksetSessionFrame(conn, V3RealtimeKindWorksetSessionRemoved, workset, subscription, record, scope) {
-				return advanced, false, false
+		}
+		if removeFromSubscribedWorksets {
+			removeAutoSubscriptionAfterDelivery = true
+			for worksetID := range subscription.WorksetIDs {
+				workset, ok := worksets[worksetID]
+				if !ok {
+					continue
+				}
+				if !s.sendV3RealtimeWorksetSessionFrame(conn, V3RealtimeKindWorksetSessionRemoved, workset, subscription, record, scope) {
+					return advanced, false, false
+				}
+				advanced.LastSentEndpointSeq = record.EndpointSeq
 			}
-			advanced.LastSentEndpointSeq = record.EndpointSeq
 		}
 	}
 
@@ -521,7 +535,7 @@ func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal
 	}
 	advanced.LastSentEndpointSeq = record.EndpointSeq
 	subscription.LastSeq = record.Event.Seq
-	if v3RealtimeRecordRemovesFromWorkset(record) && subscription.AutoSubscribed {
+	if removeAutoSubscriptionAfterDelivery {
 		delete(advanced.Subscriptions, record.SessionID)
 	} else {
 		advanced.Subscriptions[record.SessionID] = subscription
@@ -537,6 +551,21 @@ func (s *Server) v3RealtimeMatchedWorksetIDsForSession(principal identity.Princi
 	if err != nil || !ok {
 		return nil, false
 	}
+	return v3RealtimeMatchedWorksetIDsForSnapshot(principal, session, worksets)
+}
+
+func (s *Server) v3RealtimeMatchedWorksetIDsForRecord(principal identity.Principal, record sessionruntime.RealtimeOutboxRecord, worksets map[string]v3RealtimeWorksetSubscription) (map[string]struct{}, bool) {
+	if len(worksets) == 0 {
+		return nil, false
+	}
+	session, ok := s.v3RealtimeSessionSnapshotForRecord(record)
+	if !ok {
+		return nil, false
+	}
+	return v3RealtimeMatchedWorksetIDsForSnapshot(principal, session, worksets)
+}
+
+func v3RealtimeMatchedWorksetIDsForSnapshot(principal identity.Principal, session pebblestore.SessionSnapshot, worksets map[string]v3RealtimeWorksetSubscription) (map[string]struct{}, bool) {
 	matched := map[string]struct{}{}
 	auto := false
 	for _, workset := range orderedV3RealtimeWorksets(worksets) {
@@ -558,16 +587,42 @@ func (s *Server) v3RealtimeMatchRecordWorkset(principal identity.Principal, reco
 	if len(worksets) == 0 || v3RealtimeRecordRemovesFromWorkset(record) {
 		return v3RealtimeWorksetSubscription{}, false
 	}
-	session, ok, err := s.sessions.GetSession(record.SessionID)
-	if err != nil || !ok {
+	session, ok := s.v3RealtimeSessionSnapshotForRecord(record)
+	if !ok {
 		return v3RealtimeWorksetSubscription{}, false
 	}
+	var fallback v3RealtimeWorksetSubscription
+	fallbackOK := false
 	for _, workset := range orderedV3RealtimeWorksets(worksets) {
-		if v3RealtimeSessionMatchesWorksetSelector(principal, session, workset.Selector) {
+		if !v3RealtimeSessionMatchesWorksetSelector(principal, session, workset.Selector) {
+			continue
+		}
+		if workset.AutoSubscribeSessions {
 			return workset, true
 		}
+		if !fallbackOK {
+			fallback = workset
+			fallbackOK = true
+		}
 	}
-	return v3RealtimeWorksetSubscription{}, false
+	return fallback, fallbackOK
+}
+
+func (s *Server) v3RealtimeSessionSnapshotForRecord(record sessionruntime.RealtimeOutboxRecord) (pebblestore.SessionSnapshot, bool) {
+	var payload struct {
+		Session *pebblestore.SessionSnapshot `json:"session,omitempty"`
+	}
+	if len(record.Event.Payload) > 0 {
+		if err := json.Unmarshal(record.Event.Payload, &payload); err == nil && payload.Session != nil && strings.TrimSpace(payload.Session.ID) != "" {
+			session := *payload.Session
+			return session, true
+		}
+	}
+	session, ok, err := s.sessions.GetSession(record.SessionID)
+	if err != nil || !ok {
+		return pebblestore.SessionSnapshot{}, false
+	}
+	return session, true
 }
 
 func v3RealtimeSessionMatchesWorksetSelector(principal identity.Principal, session pebblestore.SessionSnapshot, selector V3RealtimeWorksetSelector) bool {
@@ -624,11 +679,15 @@ func v3RealtimeAutoSubscriptionID(workset v3RealtimeWorksetSubscription, session
 
 func v3RealtimeRecordRemovesFromWorkset(record sessionruntime.RealtimeOutboxRecord) bool {
 	switch strings.TrimSpace(record.Event.EventType) {
-	case "session.archived", "session.deleted", "session.visibility.changed":
+	case "session.archived", "session.deleted":
 		return true
 	default:
 		return false
 	}
+}
+
+func v3RealtimeRecordChangesVisibility(record sessionruntime.RealtimeOutboxRecord) bool {
+	return strings.TrimSpace(record.Event.EventType) == "session.visibility.changed"
 }
 
 func (s *Server) sendV3RealtimeWorksetSessionFrame(conn *transportws.Conn, kind string, workset v3RealtimeWorksetSubscription, subscription v3RealtimeSubscription, record sessionruntime.RealtimeOutboxRecord, scope v3SyncCursorScope) bool {
