@@ -5,6 +5,7 @@ import test from 'node:test'
 
 const repoRoot = path.resolve(new URL('../../../../../', import.meta.url).pathname)
 const desktopRoot = path.join(repoRoot, 'web/src/features/desktop')
+const sessionV3Root = path.join(desktopRoot, 'session-v3')
 
 const forbiddenDesktopV3TransportPatterns: Array<{ label: string; pattern: RegExp }> = [
   { label: 'legacy /ws socket helper', pattern: /\bopenDesktopWebSocket\b/g },
@@ -14,9 +15,10 @@ const forbiddenDesktopV3TransportPatterns: Array<{ label: string; pattern: RegEx
   { label: 'legacy run stream owner singleton', pattern: /\brunStreamController\b/g },
   { label: 'legacy run stream owner factory', pattern: /\brequireRunStreamController\b/g },
   { label: 'per-session run stream opener', pattern: /\bopenRunStream\b/g },
+  { label: 'legacy run-stream module import', pattern: /from\s+['"][^'"]*run-stream-controller['"]|from\s+['"][^'"]*run-stream['"]/g },
   { label: 'legacy run start helper', pattern: /\bstartSessionRun\b/g },
   { label: 'legacy run stop helper', pattern: /\bstopSessionRun\b/g },
-  { label: 'per-session V3 stream endpoint', pattern: /\/v3\/sessions\/\$\{[^}]+\}\/stream/g },
+  { label: 'per-session V3 stream endpoint', pattern: /\/v3\/sessions\/(?:\$\{[^}]+\}|\{id\}|[^/`'"\s]+)\/stream/g },
   { label: 'after_seq transport resume query', pattern: /url\.searchParams\.set\(['"]after_seq['"]/g },
   { label: 'afterSeq transport resume input', pattern: /\bafterSeq\b/g },
   { label: 'afterRev realtime transport resume input', pattern: /\bafterRev\b/g },
@@ -41,6 +43,7 @@ const allowedCurrentForbiddenTransportFiles: Record<string, readonly string[]> =
   'legacy run stream owner singleton': ['state/desktop-ui-store.ts'],
   'legacy run stream owner factory': ['state/desktop-ui-store.ts'],
   'per-session run stream opener': ['chat/queries/chat-queries.ts', 'state/run-stream-controller.ts'],
+  'legacy run-stream module import': ['realtime/v3-realtime-controller.ts', 'state/desktop-ui-store.ts'],
   'legacy run start helper': [
     'chat/components/desktop-chat-panel.tsx',
     'chat/queries/chat-queries.ts',
@@ -128,6 +131,10 @@ function productionDesktopFiles(): string[] {
   return walkFiles(desktopRoot).filter((filePath) => !isTestFile(filePath))
 }
 
+function productionSessionV3Files(): string[] {
+  return walkFiles(sessionV3Root).filter((filePath) => !isTestFile(filePath))
+}
+
 function countPattern(source: string, pattern: RegExp): number {
   return Array.from(source.matchAll(new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`))).length
 }
@@ -137,6 +144,23 @@ function formatOffenders(offenders: Offender[]): string {
     ? '(none)'
     : `\n${offenders.map((offender) => `- ${offender.file}: ${offender.label} (${offender.count})`).join('\n')}`
 }
+
+test('session-v3 production runtime has no legacy desktop transports or resume inputs', () => {
+  const offenders = productionSessionV3Files().flatMap((filePath) => {
+    const source = readText(filePath)
+    const relative = desktopRelative(filePath)
+    return forbiddenDesktopV3TransportPatterns.flatMap(({ label, pattern }) => {
+      const count = countPattern(source, pattern)
+      return count === 0 ? [] : [{ file: relative, label, count }]
+    })
+  }).sort((left, right) => `${left.file}:${left.label}`.localeCompare(`${right.file}:${right.label}`))
+
+  assert.deepEqual(
+    offenders,
+    [],
+    `New session-v3 production code must stay endpoint_cursor-only and must not use /ws, per-session streams, after_seq/afterSeq/afterRev, or run-stream imports.${formatOffenders(offenders)}`,
+  )
+})
 
 test('Desktop V3 forbidden transport symbols remain confined to the known mixed-architecture files', () => {
   const offenders = productionDesktopFiles().flatMap((filePath) => {

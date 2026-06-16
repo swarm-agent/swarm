@@ -246,13 +246,26 @@ export class DesktopV3RealtimeTransport {
     if (result.realtimeResume && this.applyRealtimeResume(result.realtimeResume, { replace: true })) {
       return
     }
-    this.advanceEndpointCursor(result.endpointCursor, 'snapshot')
+    this.advanceEndpointCursor(result.endpointCursor || result.snapshot.snapshotEndpointCursor, 'snapshot')
     this.replaceRegistries({
       subscriptions: result.subscriptions,
       worksets: result.worksets,
       replace: true,
     })
     this.syncOpenSocketResume('reconnect snapshot applied')
+  }
+
+  resetForReconnectSnapshot(_reason = 'reconnect snapshot reset'): void {
+    this.desired = false
+    this.clearReconnect()
+    this.clearLiveness()
+    this.closeOwnedSocket()
+    this.reconnectAttempt = 0
+  }
+
+  resetFromReconnectSnapshot(result: SessionV3ReconnectSnapshot): void {
+    this.resetForReconnectSnapshot('reconnect snapshot applied')
+    this.applyReconnectSnapshot(result)
   }
 
   reconnect(reason = 'manual reconnect'): void {
@@ -450,6 +463,7 @@ export class DesktopV3RealtimeTransport {
       const existing = this.sessions.get(sessionId)
       if (existing?.autoDiscovered) {
         this.sessions.delete(sessionId)
+        this.syncOpenSocketResume('auto-discovered session removed')
       }
       return
     }

@@ -36,6 +36,8 @@ import type { DesktopState } from '../state/desktop-state'
 
 const DEFAULT_WORKSET_ID = 'desktop-v3-runtime:global'
 const DEFAULT_WORKSET_RECENT_LIMIT = 50
+const RUNTIME_CLIENT_ID_STORAGE_KEY = 'swarm.desktop.session-v3.client-id'
+const RUNTIME_CLIENT_ID_PREFIX = 'desktop-v3-runtime:'
 
 export type SessionV3RuntimeApi = {
   reconnectSessionV3: typeof reconnectSessionV3
@@ -163,8 +165,10 @@ export class DesktopSessionV3Runtime {
 
   async refresh(options: DesktopSessionV3RuntimeRefreshOptions = {}): Promise<SessionV3ReducerState> {
     this.shutdownRequested = false
-    await this.loadReconnect({ ...options, mode: options.mode ?? 'merge' }, true)
+    this.transport.resetForReconnectSnapshot(options.reason ?? 'refresh')
+    const result = await this.loadReconnect({ ...options, mode: options.mode ?? 'merge' }, false)
     if (this.shutdownRequested) return this.state
+    this.transport.applyReconnectSnapshot(result)
     this.syncWantedSessionsToTransport()
     await this.transport.start()
     return this.state
@@ -196,8 +200,15 @@ export class DesktopSessionV3Runtime {
     if (!sessionId) {
       throw new Error('Desktop session V3 runtime stopRun requires sessionId.')
     }
-    await this.api.stopSessionV3Run(sessionId, input, input)
-    await this.refresh({ signal: input.signal, reason: 'stopRun' })
+    const response = await this.api.stopSessionV3Run(sessionId, input, input)
+    if (response) {
+      this.applyMutation(response, sessionId, input.signal)
+      return
+    }
+    this.setWantedSessions([sessionId])
+    if (!input.signal?.aborted) {
+      void this.transport.start()
+    }
   }
 
   closeSession(sessionId: string): void {
@@ -409,11 +420,57 @@ function responseEndpointCursor(response: SessionV3HydratedSessionResponseWire):
     || normalizeString(response.mutation?.realtime_outbox?.endpoint_cursor)
 }
 
-function runtimeClientId(): string {
-  const random = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-    ? crypto.randomUUID()
-    : `${Date.now()}:${Math.random().toString(16).slice(2)}`
-  return `desktop-v3-runtime:${random}`
+export function runtimeClientId(): string {
+  const persisted = normalizeRuntimeClientId(readRuntimeClientId())
+  if (persisted) return persisted
+  const generated = `${RUNTIME_CLIENT_ID_PREFIX}${randomRuntimeClientIdSegment()}`
+  writeRuntimeClientId(generated)
+  return generated
+}
+
+function readRuntimeClientId(): string {
+  try {
+    return runtimeClientIdStorage()?.getItem(RUNTIME_CLIENT_ID_STORAGE_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+function writeRuntimeClientId(clientId: string): void {
+  try {
+    runtimeClientIdStorage()?.setItem(RUNTIME_CLIENT_ID_STORAGE_KEY, clientId)
+  } catch {
+    // localStorage can be unavailable in private/sandboxed contexts; runtimeClientId still returns a generated id.
+  }
+}
+
+function runtimeClientIdStorage(): Storage | null {
+  try {
+    const windowStorage = typeof window !== 'undefined' ? window.localStorage : null
+    if (windowStorage) return windowStorage
+  } catch {
+    // Ignore denied window.localStorage access.
+  }
+  try {
+    const globalStorage = (globalThis as typeof globalThis & { localStorage?: Storage }).localStorage
+    return globalStorage ?? null
+  } catch {
+    return null
+  }
+}
+
+function normalizeRuntimeClientId(value: unknown): string {
+  const normalized = normalizeString(value)
+  if (!normalized.startsWith(RUNTIME_CLIENT_ID_PREFIX)) return ''
+  if (normalized.length <= RUNTIME_CLIENT_ID_PREFIX.length || normalized.length > 200) return ''
+  return normalized
+}
+
+function randomRuntimeClientIdSegment(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `${Date.now()}:${Math.random().toString(16).slice(2)}`
 }
 
 function normalizeString(value: unknown): string {

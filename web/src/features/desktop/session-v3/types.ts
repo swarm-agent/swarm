@@ -393,6 +393,13 @@ export interface SessionV3CompactResponseWire extends SessionV3HydratedSessionRe
   }
 }
 
+export interface SessionV3RunStopResponseWire extends SessionV3HydratedSessionResponseWire {
+  session_id?: string
+  run_id?: string
+  status?: string
+  reason?: string
+}
+
 export interface SessionV3PreferenceWire {
   provider?: string
   model?: string

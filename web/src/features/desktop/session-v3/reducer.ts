@@ -346,7 +346,9 @@ function applyWorksetSessionFrame(
     : state.worksetsById
   return applyReducerDraft(state, action, {
     endpointCursor,
-    subscriptionsBySessionId: upsertSubscription(state.subscriptionsBySessionId, frame, action.receivedAt),
+    subscriptionsBySessionId: mode === 'discovered'
+      ? upsertSubscription(state.subscriptionsBySessionId, frame, action.receivedAt)
+      : removeAutoSubscription(state.subscriptionsBySessionId, sessionId, worksetId),
     worksetsById,
     discoveredSessionIds: mode === 'discovered' ? addUnique(state.discoveredSessionIds, sessionId) : state.discoveredSessionIds.filter((candidate) => candidate !== sessionId),
     removedSessionIds: mode === 'removed' ? addUnique(state.removedSessionIds, sessionId) : state.removedSessionIds.filter((candidate) => candidate !== sessionId),
@@ -828,6 +830,25 @@ function upsertSubscription(
   }
   const worksetId = normalizeOptionalString(frame.workset_id)
   const existing = current[sessionId]
+  const kind = frameKind(frame)
+  if (existing?.autoSubscribed === false && kind === 'workset.session.discovered') {
+    return {
+      ...current,
+      [sessionId]: {
+        ...existing,
+        worksetIds: worksetId ? addUnique(existing.worksetIds, worksetId) : existing.worksetIds,
+        updatedAt: normalizeReceivedAt(receivedAt),
+      },
+    }
+  }
+  const hasAutoSubscribedFlag = Object.prototype.hasOwnProperty.call(frame, 'auto_subscribed')
+  const autoSubscribed = existing?.autoSubscribed === false
+    ? false
+    : hasAutoSubscribedFlag
+      ? Boolean(frame.auto_subscribed)
+      : kind === 'subscribe.session'
+        ? false
+        : existing?.autoSubscribed ?? false
   return {
     ...current,
     [sessionId]: {
@@ -835,10 +856,35 @@ function upsertSubscription(
       subscriptionId,
       endpointCursor: frameEndpointCursor(frame) || existing?.endpointCursor || '',
       worksetIds: worksetId ? addUnique(existing?.worksetIds ?? [], worksetId) : existing?.worksetIds ?? [],
-      autoSubscribed: Boolean(frame.auto_subscribed) || existing?.autoSubscribed || false,
+      autoSubscribed,
       updatedAt: normalizeReceivedAt(receivedAt),
     },
   }
+}
+
+function removeAutoSubscription(
+  current: Record<string, SessionV3ReducerSubscriptionState>,
+  sessionId: string,
+  worksetId: string,
+): Record<string, SessionV3ReducerSubscriptionState> {
+  const existing = current[sessionId]
+  if (!existing) return current
+  const nextWorksetIds = worksetId
+    ? existing.worksetIds.filter((candidate) => candidate !== worksetId)
+    : []
+  if (!existing.autoSubscribed || nextWorksetIds.length > 0) {
+    if (nextWorksetIds.length === existing.worksetIds.length) return current
+    return {
+      ...current,
+      [sessionId]: {
+        ...existing,
+        worksetIds: nextWorksetIds,
+      },
+    }
+  }
+  const next = { ...current }
+  delete next[sessionId]
+  return next
 }
 
 function realtimeFrameIdentity(frame: SessionV3RealtimeFrameWire): string {

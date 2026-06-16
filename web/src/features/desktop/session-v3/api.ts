@@ -29,6 +29,7 @@ import type {
   SessionV3RealtimeResumeWire,
   SessionV3RealtimeWorksetSubscriptionRequestWire,
   SessionV3RunStopRequestWire,
+  SessionV3RunStopResponseWire,
   SessionV3SessionSnapshot,
   SessionV3SnapshotResult,
   SessionV3StateSnapshotRequest,
@@ -426,7 +427,7 @@ export async function stopSessionV3Run(
   sessionId: string,
   input: SessionV3StopRunInput,
   options: SessionV3RequestOptions = {},
-): Promise<void> {
+): Promise<SessionV3RunStopResponseWire | null> {
   const normalizedSessionId = assertSessionV3SessionId(sessionId)
   const normalizedRunId = input.runId.trim()
   if (!normalizedRunId) {
@@ -446,6 +447,14 @@ export async function stopSessionV3Run(
   if (!response.ok) {
     throw new Error(await readErrorMessage(response))
   }
+  if (response.status === 204) {
+    return null
+  }
+  const text = (await response.text()).trim()
+  if (!text) {
+    return null
+  }
+  return JSON.parse(text) as SessionV3RunStopResponseWire
 }
 
 export function sessionV3SessionSnapshotFromDaemonSnapshot(
