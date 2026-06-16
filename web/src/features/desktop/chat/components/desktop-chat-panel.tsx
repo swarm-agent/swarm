@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronDown, Clock3, Home, ListChecks, LoaderCircle, MessageSquareText, Mic, Minimize2, Plus, Save, Send, Settings2, ShieldAlert, Sparkles, Square, X } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
+import { debugLog } from '../../../../lib/debug-log'
 import { useDesktopUiStore } from '../../state/desktop-ui-store'
 import {
   agentStateQueryOptions,
@@ -1846,6 +1847,23 @@ export function DesktopChatPanel({
     }
     return orderDesktopTimelineItems(items)
   }, [displayedMessages, liveAssistantDraft, liveAssistantDraftKey, liveReasoningItems, renderableLiveToolMessages, renderableRetainedAssistantSegments, sessionId, shouldRenderLiveAssistantDraft, shouldRenderLiveToolMessage])
+  useEffect(() => {
+    debugLog('desktop-reasoning', 'chat-render-items', {
+      sessionId,
+      messageCount: displayedMessages.length,
+      messageRoles: displayedMessages.slice(-12).map((message) => ({ role: message.role, globalSeq: message.globalSeq, contentLength: message.content.length })),
+      liveReasoningCount: liveReasoningItems.length,
+      liveReasoningItems: liveReasoningItems.map((item) => ({ id: item.id, state: item.state, textLength: item.text.length, summaryLength: item.summary.length, timelineSeq: item.timelineSeq })),
+      renderItemCount: renderItems.length,
+      renderItems: renderItems.slice(-16).map((item) => item.type === 'message'
+        ? { type: item.type, role: item.message.role, globalSeq: item.message.globalSeq, contentLength: item.message.content.length }
+        : item.type === 'live-reasoning'
+          ? { type: item.type, id: item.id, state: item.state, textLength: item.text.length, summaryLength: item.summary.length, timelineSeq: item.timelineSeq }
+          : item.type === 'live-assistant'
+            ? { type: item.type, id: item.id, contentLength: item.content.length, timelineSeq: item.timelineSeq ?? null }
+            : { type: item.type, tool: item.toolMessage.tool, state: item.toolMessage.state, outputLength: item.toolMessage.output.length }),
+    })
+  }, [displayedMessages, liveReasoningItems, renderItems, sessionId])
   const thinkingTagsMeasurementKey = desktopChatThinkingTagsMeasurementKey(thinkingTagsEnabled)
   const renderMeasurementKey = useMemo(
     () => [thinkingTagsMeasurementKey, ...renderItems.map((item) => {

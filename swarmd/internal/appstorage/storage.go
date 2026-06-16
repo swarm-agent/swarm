@@ -74,7 +74,7 @@ func WorkspaceDataDir(workspacePath string, parts ...string) (string, error) {
 }
 
 // WorktreeDataDir returns the persistent app-owned directory for git worktrees
-// associated with a repository/workspace path. Worktrees contain user code
+// associated with a repository or workspace path. Worktrees contain user code
 // changes, so they are stored under the canonical data root rather than cache.
 func WorktreeDataDir(repoRoot string, parts ...string) (string, error) {
 	bucket, err := WorkspaceBucketName(repoRoot)
