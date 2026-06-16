@@ -39,7 +39,6 @@ const (
 	maxToolInputBytes            = 96 * 1024
 	maxToolInputPreview          = 1200
 	maxRulePromptFiles           = 3
-	maxRulePromptBytes           = 4000
 	runFailurePathID             = "run.turn.error.v3"
 	messageMetadataSourceRunTurn = "run_turn"
 	emptyStepRetryBase           = 250 * time.Millisecond

@@ -414,7 +414,7 @@ func composeRulesPromptBlock(rules []discovery.RuleSource) string {
 			name = filepath.Base(path)
 		}
 		lines = append(lines, "- "+name+": "+path)
-		if snippet := readPromptSnippet(path, maxRulePromptBytes); snippet != "" {
+		if snippet := readPromptSnippet(path); snippet != "" {
 			lines = append(lines, snippet)
 		}
 		added++
@@ -425,22 +425,15 @@ func composeRulesPromptBlock(rules []discovery.RuleSource) string {
 	return strings.Join(lines, "\n")
 }
 
-func readPromptSnippet(path string, maxBytes int) string {
-	if strings.TrimSpace(path) == "" || maxBytes <= 0 {
+func readPromptSnippet(path string) string {
+	if strings.TrimSpace(path) == "" {
 		return ""
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}
-	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "" {
-		return ""
-	}
-	if len(trimmed) > maxBytes {
-		trimmed = strings.TrimSpace(trimmed[:maxBytes]) + "\n...[truncated]"
-	}
-	return trimmed
+	return strings.TrimSpace(string(raw))
 }
 
 func composeModeAwareInstructions(baseInstructions, mode string, bypassPermissions bool, agentProfile pebblestore.AgentProfile) string {

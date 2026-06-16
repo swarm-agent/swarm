@@ -60,6 +60,28 @@ func TestRunWorkspaceScopeInjectsAccountScopedLinkedAgentsInstructions(t *testin
 	}
 }
 
+func TestRunWorkspaceScopeIncludesFullAgentsInstructions(t *testing.T) {
+	primary := t.TempDir()
+	const tailRule = "tail_runtime_rule_after_four_kilobytes: must_load"
+	largeRule := "# Large rule\n" + strings.Repeat("padding instruction line to exceed prior runtime prompt cap\n", 100) + tailRule
+	if len(largeRule) <= 4000 {
+		t.Fatalf("test rule length = %d, want over prior 4000-byte cap", len(largeRule))
+	}
+	writeTestFile(t, filepath.Join(primary, "AGENTS.md"), largeRule)
+
+	runSvc := NewService(nil, nil, nil, nil, nil, nil, discovery.NewService(), nil)
+	instructions := runSvc.composeInstructionsForScope(tool.WorkspaceScope{
+		PrimaryPath: primary,
+		Roots:       []string{primary},
+	}, pebblestore.AgentProfile{}, "")
+	if !strings.Contains(instructions, tailRule) {
+		t.Fatalf("instructions missing AGENTS.md content beyond prior 4000-byte cap")
+	}
+	if strings.Contains(instructions, "...[truncated]") {
+		t.Fatalf("instructions unexpectedly truncated AGENTS.md content")
+	}
+}
+
 func TestRunWorkspaceScopeIgnoresLegacyOnlyEntriesForPrincipalBackedRun(t *testing.T) {
 	primary := t.TempDir()
 	linked := t.TempDir()
