@@ -4669,6 +4669,111 @@ func TestSessionsV3ExecutorStartsTitleBeforeAssistantCompletes(t *testing.T) {
 	}
 }
 
+func TestSessionsV3ExecutorStartsTitleFromCommittedMutationHook(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{handler: func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if strings.Contains(req.Instructions, "You generate deterministic session titles") {
+			return provideriface.Response{Text: "Committed Mutation Hook Title Flow", StopReason: "stop"}, nil
+		}
+		return provideriface.Response{Text: "assistant answer", StopReason: "stop"}, nil
+	}}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "title-model", Thinking: "low", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory title prompt", ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}}); err != nil {
+		t.Fatalf("upsert memory agent: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "title-hook-create", "New Session", pebblestore.ModelPreference{Provider: "test-provider", Model: "chat-model", Thinking: "medium"})
+	now := time.Now().UnixMilli()
+	runID := "run-title-hook"
+	message := pebblestore.MessageSnapshot{ID: "msg-title-hook", Role: "user", Content: "title this hook committed v3 run", CreatedAt: now}
+	intent := pebblestore.V3SessionRunIntent{RunID: runID, Status: sessionruntime.RunIntentPendingExecutor, UpdatedAt: now}
+	payloadHash, err := sessionsV3MessagePayloadHash(created.ID, sessionsV3MessageRequest{ClientRequestID: "title-hook-message", Role: "user", Content: message.Content}, message, intent.Status, intent.BlockedReason)
+	if err != nil {
+		t.Fatalf("hash message payload: %v", err)
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       created.ID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "title-hook-message",
+		IdempotencyKey:  "title-hook-message",
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationAppendMessage,
+		EventType:       "session.message.appended",
+		Message:         &message,
+		RunIntent:       &intent,
+		NowUnixMs:       now,
+	}); err != nil {
+		t.Fatalf("apply message mutation: %v", err)
+	}
+
+	waitForSessionsV3Title(t, sessionSvc, created.ID, "Committed Mutation Hook Title Flow")
+	if !server.WaitForInFlightRuns(2 * time.Second) {
+		t.Fatalf("server did not drain v3 title hook run")
+	}
+	if runner.callCount != 1 {
+		t.Fatalf("provider call count = %d, want title", runner.callCount)
+	}
+}
+
+func TestSessionsV3ExecutorUpdatesTUITitleAfterFirstRun(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{handler: func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if strings.Contains(req.Instructions, "You generate deterministic session titles") {
+			return provideriface.Response{Text: "TUI V3 Async Title Flow", StopReason: "stop"}, nil
+		}
+		return provideriface.Response{Text: "assistant answer", StopReason: "stop"}, nil
+	}}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "title-model", Thinking: "low", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory title prompt", ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}}); err != nil {
+		t.Fatalf("upsert memory agent: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	workspace := t.TempDir()
+	seedSessionsV3PrimaryAuthority(t, server, workspace)
+	createBody := mustSessionsV3TestJSON(t, map[string]any{
+		"client_request_id": "title-tui-create",
+		"cwd_path":          workspace,
+		"title":             "New Session",
+		"mode":              sessionruntime.ModeAuto,
+		"agent_name":        "swarm",
+		"preference":        pebblestore.ModelPreference{Provider: "test-provider", Model: "chat-model", Thinking: "medium"},
+	})
+	createReq := httptest.NewRequest(http.MethodPost, "/v3/tui/sessions", bytes.NewBufferString(createBody))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(createRec, withTestPrincipal(createReq))
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("tui create status = %d, want %d, body=%s", createRec.Code, http.StatusOK, createRec.Body.String())
+	}
+	var created struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode tui create response: %v", err)
+	}
+	postSessionsV3PrimaryTestMessage(t, server, created.Session.ID, "title-tui-message", "please title this tui started run")
+
+	waitForSessionsV3Title(t, sessionSvc, created.Session.ID, "TUI V3 Async Title Flow")
+	if !server.WaitForInFlightRuns(2 * time.Second) {
+		t.Fatalf("server did not drain v3 tui title run")
+	}
+	if runner.callCount != 2 {
+		t.Fatalf("provider call count = %d, want title + assistant", runner.callCount)
+	}
+}
+
 func TestSessionsV3ExecutorUpdatesDefaultTitleWithSystemPreludeAfterFirstRun(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	runner := &sessionsV3RecordingProviderRunner{handler: func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {

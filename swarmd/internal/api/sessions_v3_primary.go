@@ -481,9 +481,6 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 	if !result.Replayed && result.RunIntent != nil && result.RunIntent.Status == sessionruntime.RunIntentPendingExecutor && s.v3SessionExecutor != nil {
 		enqueueJob = &sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: result.RunIntent.RunID}
 	}
-	if !result.Replayed && result.Message != nil && result.RunIntent != nil && s.v3SessionExecutor != nil {
-		s.v3SessionExecutor.maybeStartSessionV3TitleFlow(sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: result.RunIntent.RunID}, result)
-	}
 	updated, found, err := s.hydrateSessionsV3Primary(principal, sessionID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)

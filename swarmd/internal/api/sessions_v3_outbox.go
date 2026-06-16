@@ -5,6 +5,7 @@ import (
 	"log"
 	"strings"
 
+	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 )
 
@@ -23,7 +24,7 @@ func (s *Server) applySessionV3PrimaryMutation(input sessionruntime.SessionMutat
 		s.recordV3StoreResultDiagnostic(input, result, err)
 		return result, err
 	}
-	if err := s.publishCommittedSessionV3MutationResult(result); err != nil {
+	if err := s.publishCommittedSessionV3MutationInputResult(input, result); err != nil {
 		s.recordV3StoreResultDiagnostic(input, result, err)
 		return result, err
 	}
@@ -32,6 +33,10 @@ func (s *Server) applySessionV3PrimaryMutation(input sessionruntime.SessionMutat
 }
 
 func (s *Server) publishCommittedSessionV3MutationResult(result sessionruntime.SessionMutationResult) error {
+	return s.publishCommittedSessionV3MutationInputResult(sessionruntime.SessionMutationInput{}, result)
+}
+
+func (s *Server) publishCommittedSessionV3MutationInputResult(input sessionruntime.SessionMutationInput, result sessionruntime.SessionMutationResult) error {
 	if result.Replayed || result.Event.Seq == 0 {
 		return nil
 	}
@@ -44,7 +49,36 @@ func (s *Server) publishCommittedSessionV3MutationResult(result sessionruntime.S
 	if err := s.publishCommittedSessionV3GlobalEvent(result); err != nil {
 		log.Printf("warning: v3 session global mirror publish failed after durable commit session=%q seq=%d: %v", result.SessionID, result.Event.Seq, err)
 	}
+	s.maybeStartCommittedSessionV3TitleFlow(input, result)
 	return nil
+}
+
+func (s *Server) maybeStartCommittedSessionV3TitleFlow(input sessionruntime.SessionMutationInput, result sessionruntime.SessionMutationResult) {
+	if s == nil || s.v3SessionExecutor == nil || result.Replayed || result.Message == nil || result.RunIntent == nil {
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(result.Message.Role), "user") {
+		return
+	}
+	status := strings.TrimSpace(result.RunIntent.Status)
+	if status != sessionruntime.RunIntentPendingExecutor && status != sessionruntime.RunIntentRunning {
+		return
+	}
+	sessionID := firstNonEmpty(strings.TrimSpace(result.SessionID), strings.TrimSpace(input.SessionID), strings.TrimSpace(result.Message.SessionID), strings.TrimSpace(result.RunIntent.SessionID))
+	runID := strings.TrimSpace(result.RunIntent.RunID)
+	if sessionID == "" || runID == "" {
+		return
+	}
+	principal := identity.Principal{
+		Type:           identity.PrincipalTypeUser,
+		UserID:         firstNonEmpty(strings.TrimSpace(input.UserID), strings.TrimSpace(result.Message.UserID), strings.TrimSpace(result.RunIntent.UserID)),
+		AccountScopeID: firstNonEmpty(strings.TrimSpace(input.AccountScopeID), strings.TrimSpace(result.Message.AccountScopeID), strings.TrimSpace(result.RunIntent.AccountScopeID)),
+	}
+	if result.Session != nil {
+		principal.UserID = firstNonEmpty(principal.UserID, strings.TrimSpace(result.Session.UserID))
+		principal.AccountScopeID = firstNonEmpty(principal.AccountScopeID, strings.TrimSpace(result.Session.AccountScopeID))
+	}
+	s.v3SessionExecutor.maybeStartSessionV3TitleFlow(sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: runID}, result)
 }
 
 var appendCommittedSessionV3GlobalEvent = func(s *Server, event sessionruntime.SessionEvent) error {
