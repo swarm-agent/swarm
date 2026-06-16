@@ -27,7 +27,7 @@ import type { DesktopChatRoute } from '../chat/services/chat-routing'
 import { gitStatusQueryKey } from '../git/api'
 import { agentStateQueryOptions, uiSettingsQueryKey } from '../../queries/query-options'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
-import { applyV3RuntimeEnvelope, createV3SnapshotEnvelope, getV3RuntimeDesktopSnapshot, installV3RuntimePersistence, normalizeV3RealtimeFrame, restoreV3RuntimeFromPersistence } from '../v3-runtime'
+import { applyV3RuntimeEnvelope, createV3EventEnvelope, createV3SnapshotEnvelope, getV3RuntimeDesktopSnapshot, installV3RuntimePersistence, normalizeV3RealtimeFrame, restoreV3RuntimeFromPersistence } from '../v3-runtime'
 import { fetchDesktopSessionDiscovery, fetchDesktopStateSnapshot } from './desktop-state-snapshot'
 import { fetchAndApplyDesktopV3Reconnect, fetchAndApplyDesktopV3SessionPermissions, type DesktopV3ReconnectSnapshot } from './desktop-v3-session-api'
 import type { DesktopDaemonSnapshot } from './desktop-state'
@@ -785,10 +785,10 @@ function resetLiveReasoningState(live: DesktopSessionRecord['live']): void {
   live.reasoningSummary = ''
   live.reasoningText = ''
   live.reasoningState = 'idle'
+  live.reasoningSegment = 0
   live.reasoningStartedAt = null
   live.reasoningCompletedAt = null
   live.reasoningTimelineSeq = 0
-  live.reasoningHistory = []
 }
 
 function completeLiveReasoningState(live: DesktopSessionRecord['live'], ts: number, seq: number, state: 'done' | 'error' = 'done'): void {
@@ -1618,7 +1618,43 @@ function draftKeyForSession(sessionId: string | null, workspacePath?: string | n
   return `${NEW_SESSION_DRAFT_KEY_PREFIX}${normalizedWorkspacePath}`
 }
 
-function updateMessagesCache(_sessionId: string, _message: ChatMessageRecord, afterSync?: () => void): void {
+function updateMessagesCache(sessionId: string, message: ChatMessageRecord, afterSync?: () => void): void {
+  const normalizedSessionId = (message.sessionId || sessionId).trim()
+  const messageId = message.id.trim()
+  if (!normalizedSessionId || !messageId) {
+    afterSync?.()
+    return
+  }
+
+  const desktopSnapshot = getV3RuntimeDesktopSnapshot()
+  if (desktopSnapshot.status === 'loading') {
+    applyV3RuntimeEnvelope(createV3SnapshotEnvelope({ rev: 0 }, {
+      id: 'http.message.commit.bootstrap',
+      mode: 'replace',
+      receivedAt: Date.now(),
+      source: { kind: 'http', transport: 'http', name: 'v3-message-commit-bootstrap' },
+    }))
+  }
+  const runtimeRev = getV3RuntimeDesktopSnapshot().rev
+  applyV3RuntimeEnvelope(createV3EventEnvelope({
+    type: 'desktop/message/upsert',
+    payload: {
+      message: {
+        ...message,
+        sessionId: normalizedSessionId,
+      },
+    },
+    stream: `v3/session:${normalizedSessionId}`,
+    entityId: normalizedSessionId,
+    rev: runtimeRev + 1,
+    prevRev: runtimeRev,
+  }, {
+    id: `http.message.commit:${normalizedSessionId}:${messageId}:${message.globalSeq > 0 ? message.globalSeq : 0}:${Date.now()}:${Math.random()}`,
+    sessionId: normalizedSessionId,
+    entityId: normalizedSessionId,
+    source: { kind: 'http', transport: 'http', name: 'v3-message-commit' },
+    receivedAt: Date.now(),
+  }))
   afterSync?.()
 }
 
@@ -3167,7 +3203,6 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
       session.live.lastEventAt = ts
       resetLiveToolState(session.live)
       resetLiveReasoningState(session.live)
-      session.live.reasoningSegment = 0
       session.live.summary = typeof payloadRecord.agent === 'string' ? payloadRecord.agent : 'Running'
       break
     case 'run.step.started':

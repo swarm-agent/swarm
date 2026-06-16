@@ -1,4 +1,4 @@
-import type { DesktopSessionRecord } from '../types/realtime'
+import type { DesktopLiveReasoningRecord, DesktopSessionRecord } from '../types/realtime'
 
 function metadataString(metadata: Record<string, unknown> | undefined, key: string): string {
   const value = metadata?.[key]
@@ -89,13 +89,75 @@ function mergeSessionLiveState(
     reasoningTimelineSeq: (incoming.reasoningTimelineSeq ?? 0) > 0
       ? incoming.reasoningTimelineSeq
       : existing.reasoningTimelineSeq ?? 0,
-    reasoningHistory: incomingReasoningHistory.length > 0
-      ? incomingReasoningHistory
-      : existingReasoningHistory,
+    reasoningHistory: mergeReasoningHistory(existingReasoningHistory, incomingReasoningHistory),
     toolHistory: incomingToolHistory.length > 0
       ? incomingToolHistory
       : existingToolHistory,
   }
+}
+
+function mergeReasoningHistory(
+  existing: DesktopLiveReasoningRecord[],
+  incoming: DesktopLiveReasoningRecord[],
+): DesktopLiveReasoningRecord[] {
+  if (incoming.length === 0) {
+    return existing
+  }
+  const merged = existing.slice()
+  for (const record of incoming) {
+    const existingIndex = merged.findIndex((candidate) => reasoningHistoryRecordsMatch(candidate, record))
+    if (existingIndex >= 0) {
+      merged[existingIndex] = mergeReasoningHistoryRecord(merged[existingIndex], record)
+    } else {
+      merged.push(record)
+    }
+  }
+  return merged.sort((a, b) => {
+    if (a.timelineSeq !== b.timelineSeq) {
+      return b.timelineSeq - a.timelineSeq
+    }
+    if (a.startedAt !== b.startedAt) {
+      return b.startedAt - a.startedAt
+    }
+    return b.key.localeCompare(a.key)
+  })
+}
+
+function mergeReasoningHistoryRecord(
+  existing: DesktopLiveReasoningRecord,
+  incoming: DesktopLiveReasoningRecord,
+): DesktopLiveReasoningRecord {
+  const existingSeq = existing.updatedSeq || existing.timelineSeq || 0
+  const incomingSeq = incoming.updatedSeq || incoming.timelineSeq || 0
+  if (incomingSeq < existingSeq) {
+    return existing
+  }
+  return incoming
+}
+
+function reasoningHistoryRecordsMatch(a: DesktopLiveReasoningRecord, b: DesktopLiveReasoningRecord): boolean {
+  const aKey = a.key.trim()
+  const bKey = b.key.trim()
+  if (aKey && bKey && aKey === bKey) {
+    return true
+  }
+  const aRunId = a.runId.trim()
+  const bRunId = b.runId.trim()
+  const aStepId = a.stepId.trim()
+  const bStepId = b.stepId.trim()
+  const aReasoningId = a.reasoningId.trim()
+  const bReasoningId = b.reasoningId.trim()
+  if (aRunId && bRunId && aStepId && bStepId && aReasoningId && bReasoningId
+    && aRunId === bRunId && aStepId === bStepId && aReasoningId === bReasoningId) {
+    return true
+  }
+  const aReasoningKey = a.reasoningKey.trim()
+  const bReasoningKey = b.reasoningKey.trim()
+  if (aRunId && bRunId && aStepId && bStepId && aReasoningKey && bReasoningKey
+    && aRunId === bRunId && aStepId === bStepId && aReasoningKey === bReasoningKey) {
+    return true
+  }
+  return a.timelineSeq > 0 && b.timelineSeq > 0 && a.timelineSeq === b.timelineSeq
 }
 
 function liveHasActiveRun(live: DesktopSessionRecord['live']): boolean {

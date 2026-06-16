@@ -36,9 +36,10 @@ async function withFetchStub(
       })
     }
 
-    if (url === '/v3/sessions/session-v3/messages' || url === '/v3/sessions/session-auto/messages') {
+    if (url === '/v3/sessions/session-v3/messages' || url === '/v3/sessions/session-auto/messages' || url === '/v3/sessions/session-v2/messages') {
       const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
-      const sessionId = url.includes('/session-auto/') ? 'session-auto' : 'session-v3'
+      const match = url.match(/^\/v3\/sessions\/([^/]+)\/messages$/)
+      const sessionId = match?.[1] ?? 'session-v3'
       return jsonResponse({
         ok: true,
         session: {
@@ -193,32 +194,39 @@ test('compactSessionV3 uses only the native Sessions V3 compact endpoint', async
   })
 })
 
-test('legacy non-V3 send keeps existing v2 message endpoint', async () => {
+test('default desktop send uses Sessions API v3 and rejects legacy endpoint fallback', async () => {
   const { sendSessionMessage } = await import('./chat-queries')
 
   await withFetchStub(async (calls) => {
     await sendSessionMessage('session-v2', 'user', 'hello legacy')
 
-    assert.deepEqual(calls.map((entry) => String(entry.input)), ['/v2/sessions/session-v2/messages'])
-    assert.deepEqual(requestBody(calls[0]), { role: 'user', content: 'hello legacy' })
+    assert.deepEqual(calls.map((entry) => String(entry.input)), ['/v3/sessions/session-v2/messages'])
+    assertNoV1OrV2SessionCalls(calls)
+    const body = requestBody(calls[0])
+    assert.equal(body.role, 'user')
+    assert.equal(body.content, 'hello legacy')
+    assert.equal(typeof body.client_request_id, 'string')
   })
 })
 
-test('desktop store V3 submit path posts commands without local canonical mutation', async () => {
+test('desktop store V3 submit path applies committed V3 messages through canonical runtime', async () => {
   const source = await readFile(new URL('../../state/desktop-ui-store.ts', import.meta.url), 'utf8')
 
   assert.match(source, /clientRequestId = providedClientRequestId\?\.trim\(\) \|\| `desktop-v3-message:\$\{targetSessionId\}:\$\{submitStartedAt\}`/)
   assert.match(source, /sendSessionMessage\(targetSessionId, 'user', trimmedPrompt, route, \{ sessionApi: 'v3', clientRequestId \}\)/)
   const panelSource = await readFile(new URL('../components/desktop-chat-panel.tsx', import.meta.url), 'utf8')
   assert.match(panelSource, /const clientRequestId = `desktop-v3-message:\$\{targetSession\.id\}:\$\{Date\.now\(\)\}`/)
-  assert.match(source, /const effectiveSessionApi = compact \? 'v3'/)
+  assert.match(source, /const effectiveSessionApi = 'v3'/)
   assert.match(source, /effectiveSessionApi === 'v3' && compact/)
   assert.match(source, /compactSessionV3\(targetSessionId, \{ note: trimmedPrompt, agentName, clientRequestId \}\)/)
   assert.match(source, /requestScopedSessionWorkset\(targetSessionId, \{ force: true \}\)/)
   assert.match(source, /set\(\{ realtimeDesired: true \}\)/)
   assert.match(source, /await get\(\)\.connect\(\)/)
-  assert.doesNotMatch(source, /applyV3MessageCommitResult/)
-  assert.doesNotMatch(source, /requireV3RealtimeController/)
+  assert.match(source, /applyV3MessageCommitResult/)
+  assert.match(source, /updateMessagesCache\(message\.sessionId \|\| normalizedSessionId, message\)/)
+  assert.match(source, /createV3EventEnvelope\(\{[\s\S]*type: 'desktop\/message\/upsert'/)
+  assert.match(source, /applyV3RuntimeEnvelope\(createV3EventEnvelope/)
+  assert.match(source, /requireV3RealtimeController\(\)\.setEndpointCursor\(cursor\)/)
   assert.doesNotMatch(source, /requireRunStreamController\(\)\.ensure\(targetSessionId, committedRunId\)/)
   const panelSourceAfterCompactFix = await readFile(new URL('../components/desktop-chat-panel.tsx', import.meta.url), 'utf8')
   assert.match(panelSourceAfterCompactFix, /compact: true/)

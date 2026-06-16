@@ -5,6 +5,7 @@ import { queryClient } from '../../../app/query-client'
 import { getDesktopSnapshot, mergeDesktopSnapshot } from './desktop-state-store'
 import type { DesktopSessionRecord, DesktopStoreState } from '../types/realtime'
 import { applyEnvelope, useDesktopStore } from './use-desktop-store'
+import { applyV3RuntimeEnvelope, createV3SnapshotEnvelope } from '../v3-runtime'
 import type { RunStreamEventMessage } from './run-stream-controller'
 import type { DesktopChatRoute } from '../chat/services/chat-routing'
 import { permissionRequiresApproval } from '../permissions/services/permission-payload'
@@ -174,6 +175,11 @@ afterEach(async () => {
     realtimeDesired: false,
     connectionState: 'idle',
   })
+  applyV3RuntimeEnvelope(createV3SnapshotEnvelope({ rev: getDesktopSnapshot().rev + 1 }, {
+    id: `test-reset:${Date.now()}:${Math.random()}`,
+    mode: 'replace',
+    receivedAt: Date.now(),
+  }))
   queryClient.clear()
   await new Promise((resolve) => setImmediate(resolve))
 })
@@ -446,6 +452,41 @@ test('V3 stream maps reasoning events into live thinking state', () => {
   assert.equal(updated.live.toolOutput, '')
   assert.deepEqual(updated.live.toolHistory, [])
   assert.equal(updated.live.lastEventType, 'session.reasoning.completed')
+})
+
+test('V3 stream preserves completed reasoning history when a follow-up assistant turn starts', () => {
+  const session = makeSession({ id: 'session-v3', sessionApi: 'v3', lastEventSeq: 1, projectionHighWatermarkSeq: 1 })
+  useDesktopStore.setState(makeState(session), true)
+
+  const apply = (seq: number, eventType: string, payload: Record<string, unknown>) => {
+    useDesktopStore.getState().__testApplyRunStreamFrame?.('session-v3', {
+      type: 'event',
+      ok: true,
+      session_id: 'session-v3',
+      last_seq: seq,
+      event: {
+        id: `v3evt_session-v3_${String(seq).padStart(20, '0')}`,
+        session_id: 'session-v3',
+        seq,
+        event_type: eventType,
+        ts_unix_ms: 30 + seq,
+        payload: { session_id: 'session-v3', run_id: 'run-v3', ...payload },
+      },
+    }, 30 + seq)
+  }
+
+  apply(2, 'session.reasoning.started', { step: 1, step_id: 'step-1', reasoning_id: 'reasoning-1', reasoning_key: 'summary-1' })
+  apply(3, 'session.reasoning.delta', { step: 1, step_id: 'step-1', reasoning_id: 'reasoning-1', reasoning_key: 'summary-1', delta: 'Thinking one' })
+  apply(4, 'session.reasoning.completed', { step: 1, step_id: 'step-1', reasoning_id: 'reasoning-1', reasoning_key: 'summary-1', summary: 'Thinking one' })
+  apply(5, 'session.assistant.started', { status: 'running' })
+
+  const updated = useDesktopStore.getState().sessions['session-v3']
+  assert.equal(updated.live.reasoningText, '')
+  assert.equal(updated.live.reasoningSummary, '')
+  assert.equal(updated.live.reasoningState, 'idle')
+  assert.deepEqual(buildLiveReasoningItems(updated, []).map((item) => [item.id, item.text, item.state, item.timelineSeq]), [
+    ['live-reasoning:run-v3:step-1:reasoning-1', 'Thinking one', 'done', 2],
+  ])
 })
 
 test('V3 stream parses thinking events as timeline tool objects', () => {
@@ -1618,6 +1659,11 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
   }) as typeof fetch
 
   try {
+    applyV3RuntimeEnvelope(createV3SnapshotEnvelope({ rev: getDesktopSnapshot().rev + 1 }, {
+      id: 'test-reset:v3-submit-commit-cache',
+      mode: 'replace',
+      receivedAt: Date.now(),
+    }))
     const session = makeSession({ id: 'session-v3', sessionApi: 'v3' })
     useDesktopStore.setState(makeState(session), true)
 
@@ -1647,6 +1693,9 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
     assert.equal(updated.sessionApi, 'v3')
     assert.equal(updated.lastEventSeq, 3)
     assert.equal(updated.projectionHighWatermarkSeq, 3)
+    assert.deepEqual(getDesktopSnapshot().messagesBySessionId['session-v3']?.map((message) => message.id), ['msg-v3-submit'])
+    assert.equal(getDesktopSnapshot().messagesBySessionId['session-v3']?.[0]?.content, 'hello primary')
+    assert.equal(getDesktopSnapshot().messagesBySessionId['session-v3']?.[0]?.role, 'user')
     assert.equal(updated.live.runId, 'v3run-session-v3-2')
     assert.equal(updated.live.status, 'starting')
     assert.equal(updated.live.startedAt, 20)

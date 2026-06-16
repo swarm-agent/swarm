@@ -297,6 +297,48 @@ test('V3 runtime assistant deltas update canonical live draft without mutating m
   ], ['user m-user-1', 'hello world'])
 })
 
+test('V3 runtime committed user message survives later durable replay without duplicates', () => {
+  const runtime = createV3RuntimeController()
+  runtime.applyEnvelope(createV3SnapshotEnvelope({
+    rev: 1,
+    sessionsById: { s1: session('s1', 1) },
+    sessionOrder: ['s1'],
+    messagesBySessionId: { s1: [] },
+  }, { receivedAt: 1 }))
+
+  runtime.applyEnvelope(createV3EventEnvelope({
+    type: 'desktop/message/upsert',
+    rev: 2,
+    prevRev: 1,
+    payload: { message: userMessage('s1', 'm-user-2', 2) },
+  }, {
+    id: 'http.message.commit:s1:m-user-2:2',
+    receivedAt: 2,
+    source: { kind: 'http', transport: 'http', name: 'v3-message-commit' },
+  }))
+  runtime.applyEnvelope(createV3EventEnvelope({
+    type: 'session.message.appended',
+    rev: 3,
+    prevRev: 2,
+    stream: 'v3/session:s1',
+    entityId: 's1',
+    payload: {
+      message: {
+        id: 'm-user-2',
+        session_id: 's1',
+        global_seq: 2,
+        role: 'user',
+        content: 'user m-user-2',
+        created_at: 2,
+      },
+    },
+  }, { id: 'replay:s1:m-user-2', receivedAt: 3 }))
+
+  const messages = selectV3Messages(runtime.getSnapshot(), 's1')
+  assert.deepEqual(messages.map((item) => item.id), ['m-user-2'])
+  assert.equal(messages.filter((item) => item.id === 'm-user-2').length, 1)
+})
+
 test('V3 runtime completion merges final assistant message and clears live draft without duplicates', () => {
   const runtime = createV3RuntimeController()
   runtime.applyEnvelope(createV3SnapshotEnvelope({

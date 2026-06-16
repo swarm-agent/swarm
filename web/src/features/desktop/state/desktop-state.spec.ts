@@ -162,6 +162,54 @@ test('scoped snapshot reconciliation removes stale persisted sessions missing fr
   assert.equal(reconciled.sessionsById[otherWorkspaceSession.id]?.id, otherWorkspaceSession.id)
 })
 
+test('durable session assistant reset preserves completed reasoning history', () => {
+  const existingSession = session('reasoning-session', 10)
+  existingSession.live.reasoningHistory = [{
+    key: 'run-1:step-1:reasoning-1',
+    runId: 'run-1',
+    step: 1,
+    stepId: 'step-1',
+    reasoningId: 'reasoning-1',
+    reasoningKey: 'summary-1',
+    text: 'Thinking one',
+    summary: 'Thinking one',
+    state: 'done',
+    startedAt: 10,
+    completedAt: 12,
+    timelineSeq: 11,
+    updatedSeq: 12,
+  }]
+  existingSession.live.reasoningText = 'Thinking one'
+  existingSession.live.reasoningSummary = 'Thinking one'
+  existingSession.live.reasoningState = 'done'
+  existingSession.live.reasoningStartedAt = 10
+  existingSession.live.reasoningCompletedAt = 12
+  existingSession.live.reasoningTimelineSeq = 11
+
+  const state = replaceSnapshot(createEmptyDesktopState(), {
+    rev: 1,
+    sessionsById: { [existingSession.id]: existingSession },
+    sessionOrder: [existingSession.id],
+  })
+
+  const next = applyEvent(state, {
+    rev: 2,
+    prevRev: 1,
+    type: 'session.assistant.started',
+    entityId: existingSession.id,
+    sourceSeq: 13,
+    tsUnixMs: 13,
+    payload: { session_id: existingSession.id, run_id: 'run-2', source_seq: 13, ts_unix_ms: 13 },
+  })
+
+  assert.equal(next.sessionsById[existingSession.id]?.live.reasoningText, '')
+  assert.equal(next.sessionsById[existingSession.id]?.live.reasoningSummary, '')
+  assert.equal(next.sessionsById[existingSession.id]?.live.reasoningState, 'idle')
+  assert.deepEqual(next.sessionsById[existingSession.id]?.live.reasoningHistory?.map((record) => [record.key, record.text, record.state]), [
+    ['run-1:step-1:reasoning-1', 'Thinking one', 'done'],
+  ])
+})
+
 test('metadata-only snapshot merge preserves existing messages when backend omits history resources', () => {
   const activeSession = session('active', 20)
   const existing = replaceSnapshot(createEmptyDesktopState(), {

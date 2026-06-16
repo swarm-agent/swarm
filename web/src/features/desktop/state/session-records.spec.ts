@@ -1,8 +1,27 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import type { DesktopSessionRecord } from '../types/realtime'
+import type { DesktopLiveReasoningRecord, DesktopSessionRecord } from '../types/realtime'
 import { mergeSessionRecords } from './session-records'
+
+function reasoningRecord(overrides: Partial<DesktopLiveReasoningRecord> = {}): DesktopLiveReasoningRecord {
+  return {
+    key: 'run-1:step-1:reasoning-1',
+    runId: 'run-1',
+    step: 1,
+    stepId: 'step-1',
+    reasoningId: 'reasoning-1',
+    reasoningKey: 'summary-1',
+    text: 'Thinking one',
+    summary: 'Thinking one',
+    state: 'done',
+    startedAt: 10,
+    completedAt: 12,
+    timelineSeq: 11,
+    updatedSeq: 12,
+    ...overrides,
+  }
+}
 
 function makeSession(overrides: Partial<DesktopSessionRecord> = {}): DesktopSessionRecord {
   return {
@@ -158,6 +177,75 @@ test('merge preserves client-only live history when incoming hydration has empty
   assert.deepEqual(merged.live.toolHistory?.map((item) => [item.callId, item.seq]), [
     ['call-1', 5],
   ])
+})
+
+test('merge unions reasoning history and dedupes by stable identity', () => {
+  const existing = makeSession({
+    live: {
+      ...makeSession().live,
+      reasoningHistory: [
+        reasoningRecord({
+          key: 'run-1:step-1:reasoning-1',
+          text: 'old duplicate text',
+          summary: 'old duplicate text',
+          updatedSeq: 12,
+        }),
+      ],
+    },
+  })
+  const incoming = makeSession({
+    live: {
+      ...makeSession().live,
+      reasoningHistory: [
+        reasoningRecord({
+          key: 'run-1:step-1:reasoning-1',
+          text: 'updated duplicate text',
+          summary: 'updated duplicate text',
+          updatedSeq: 14,
+        }),
+        reasoningRecord({
+          key: 'run-2:step-1:reasoning-2',
+          runId: 'run-2',
+          reasoningId: 'reasoning-2',
+          reasoningKey: 'summary-2',
+          text: 'Thinking two',
+          summary: 'Thinking two',
+          startedAt: 20,
+          completedAt: 22,
+          timelineSeq: 21,
+          updatedSeq: 22,
+        }),
+      ],
+    },
+  })
+
+  const merged = mergeSessionRecords(existing, incoming)
+
+  assert.deepEqual(merged.live.reasoningHistory?.map((record) => [record.key, record.text, record.updatedSeq]), [
+    ['run-2:step-1:reasoning-2', 'Thinking two', 22],
+    ['run-1:step-1:reasoning-1', 'updated duplicate text', 14],
+  ])
+})
+
+test('merge preserves existing reasoning history when incoming history is empty', () => {
+  const existingHistory = [reasoningRecord({ key: 'run-1:step-1:reasoning-1' })]
+  const existing = makeSession({
+    live: {
+      ...makeSession().live,
+      reasoningHistory: existingHistory,
+    },
+  })
+  const incoming = makeSession({
+    updatedAt: 5,
+    live: {
+      ...makeSession().live,
+      reasoningHistory: [],
+    },
+  })
+
+  const merged = mergeSessionRecords(existing, incoming)
+
+  assert.deepEqual(merged.live.reasoningHistory, existingHistory)
 })
 
 test('merge preserves live tool details when scoped hydration only carries run status', () => {

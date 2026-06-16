@@ -1519,10 +1519,10 @@ function resetLiveReasoning(live: DesktopSessionRecord['live']): void {
   live.reasoningSummary = ''
   live.reasoningText = ''
   live.reasoningState = 'idle'
+  live.reasoningSegment = 0
   live.reasoningStartedAt = null
   live.reasoningCompletedAt = null
   live.reasoningTimelineSeq = 0
-  live.reasoningHistory = []
 }
 
 function completeLiveReasoning(live: DesktopSessionRecord['live'], ts: number, seq: number, state: 'done' | 'error' = 'done'): void {
