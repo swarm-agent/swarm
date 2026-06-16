@@ -169,49 +169,77 @@ test('session.assistant.delta appends assistantDraft from V3 realtime frame', ()
   assert.equal(live?.lastEventType, 'session.assistant.delta')
 })
 
-test('session.assistant.completed appends assistant message, clears draft, idles live state, and clears run intent', () => {
+test('session.assistant.completed appends assistant message, clears draft, updates projection fields, idles live state, and clears run intent', () => {
   let state = createSessionV3ReducerInitialState()
 
   state = applyFrame(state, v3EventFrame({
-    rev: 1,
+    rev: 51921,
     prevRev: 0,
-    seq: 7,
+    seq: 40,
     eventType: 'session.assistant.started',
     payload: {
       run_id: 'run-v3',
-      run_intent: { session_id: 'session-v3', run_id: 'run-v3', status: 'running', event_seq: 7 },
+      run_intent: { session_id: 'session-v3', run_id: 'run-v3', status: 'running', event_seq: 40 },
     },
   }))
-  state = applyFrame(state, v3EventFrame({ rev: 2, prevRev: 1, seq: 106, eventType: 'session.assistant.delta', payload: { run_id: 'run-v3', delta: 'Final text' } }))
-  state = applyFrame(state, v3EventFrame({
-    rev: 3,
-    prevRev: 2,
-    seq: 163,
-    eventType: 'session.assistant.completed',
-    payload: {
-      run_id: 'run-v3',
-      status: 'completed',
-      message: {
-        id: 'msg-assistant-final',
-        session_id: 'session-v3',
-        global_seq: 163,
-        role: 'assistant',
-        content: 'Final text',
-        created_at: 1163,
-      },
-      run_intent: {
-        session_id: 'session-v3',
-        run_id: 'run-v3',
+  state = applyFrame(state, v3EventFrame({ rev: 51922, prevRev: 51921, seq: 41, eventType: 'session.assistant.delta', payload: { run_id: 'run-v3', delta: 'Final text' } }))
+  state = applyFrame(state, {
+    ...v3EventFrame({
+      rev: 51923,
+      prevRev: 51922,
+      seq: 42,
+      eventType: 'session.assistant.completed',
+      payload: {
         status: 'completed',
-        updated_at: 1163,
-        event_seq: 163,
+        session: {
+          id: 'session-v3',
+          title: 'User initiated conversation with hey',
+          workspace_path: '/repo',
+          workspace_name: 'repo',
+          session_api: 'v3',
+          message_count: 12,
+          updated_at: 519230,
+          last_message_at: 519230,
+          last_event_seq: 42,
+          projection_high_watermark_seq: 42,
+        },
+        message: {
+          id: 'msg-assistant-final',
+          session_id: 'session-v3',
+          global_seq: 42,
+          role: 'assistant',
+          content: 'Final text',
+          created_at: 519230,
+        },
+        run_intent: {
+          session_id: 'session-v3',
+          run_id: 'run-v3',
+          status: 'completed',
+          updated_at: 519230,
+          event_seq: 42,
+        },
       },
+    }),
+    endpoint_cursor: 'v3c1-completed',
+    last_seq: 42,
+    high_watermark_seq: 42,
+    projection: {
+      session_id: 'session-v3',
+      last_event_seq: 42,
+      projection_high_watermark_seq: 42,
+      updated_at: 519230,
     },
-  }))
+  })
 
   const session = state.desktop.sessionsById['session-v3']
   assert.ok(session)
-  assert.equal(state.desktop.rev, 3)
+  assert.equal(state.desktop.rev, 51923)
+  assert.equal(state.endpointCursor, 'v3c1-completed')
+  assert.equal(session.title, 'User initiated conversation with hey')
+  assert.equal(session.messageCount, 12)
+  assert.equal(session.updatedAt, 519230)
+  assert.equal(session.lastEventSeq, 42)
+  assert.equal(session.projectionHighWatermarkSeq, 42)
   assert.equal(session.runIntent, null)
   assert.equal(state.desktop.runIntentsBySessionId['session-v3'], undefined)
   assert.equal(session.live.assistantDraft, '')

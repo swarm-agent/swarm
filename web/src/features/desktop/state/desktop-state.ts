@@ -903,7 +903,10 @@ function emptyLiveState(): DesktopSessionRecord['live'] {
 
 function durableSessionPatch(existing: DesktopSessionRecord, eventType: string, payload: Record<string, unknown>, sessionId: string): DesktopSessionRecord {
   const ts = payloadNumber(payload, 'ts_unix_ms') || Date.now()
-  const eventSeq = payloadNumber(payload, 'source_seq') || payloadNumber(payload, 'global_seq')
+  const projection = payloadRecord(payload, 'projection')
+  const projectionLastEventSeq = payloadNumber(projection, 'last_event_seq')
+  const projectionHighWatermarkSeq = payloadNumber(projection, 'projection_high_watermark_seq')
+  const eventSeq = payloadNumber(payload, 'source_seq') || payloadNumber(payload, 'global_seq') || projectionLastEventSeq
   const session: DesktopSessionRecord = {
     ...existing,
     live: { ...existing.live },
@@ -926,8 +929,14 @@ function durableSessionPatch(existing: DesktopSessionRecord, eventType: string, 
     session.sessionApi = payloadString(sessionSource, 'session_api') || session.sessionApi || 'v3'
     session.messageCount = Math.max(session.messageCount, payloadNumber(sessionSource, 'message_count'))
     session.createdAt = payloadNumber(sessionSource, 'created_at') || session.createdAt || ts
+    session.updatedAt = Math.max(session.updatedAt, payloadNumber(sessionSource, 'updated_at'))
     session.lastEventSeq = Math.max(session.lastEventSeq ?? 0, payloadNumber(sessionSource, 'last_event_seq'))
     session.projectionHighWatermarkSeq = Math.max(session.projectionHighWatermarkSeq ?? 0, payloadNumber(sessionSource, 'projection_high_watermark_seq'))
+  }
+  if (projection) {
+    session.lastEventSeq = Math.max(session.lastEventSeq ?? 0, projectionLastEventSeq)
+    session.projectionHighWatermarkSeq = Math.max(session.projectionHighWatermarkSeq ?? 0, projectionHighWatermarkSeq)
+    session.updatedAt = Math.max(session.updatedAt, payloadNumber(projection, 'updated_at'))
   }
   const lifecycle = durableLifecycle(payload, sessionId)
   if (lifecycle) {
@@ -1085,7 +1094,9 @@ function durableSessionPatch(existing: DesktopSessionRecord, eventType: string, 
       const shouldUnlock = session.sessionApi?.trim().toLowerCase() === 'v3' ? durableTerminalStatus === 'completed' : terminalStatus === 'completed'
       if (eventType === 'session.assistant.completed' && durableMessageFromWire(payload.message, sessionId)) {
         resetLiveAssistant(session.live)
-        session.messageCount += 1
+        if (!payloadNumber(sessionSource, 'message_count')) {
+          session.messageCount += 1
+        }
       }
       if (shouldUnlock) {
         session.runIntent = null

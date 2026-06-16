@@ -77,7 +77,13 @@ export function selectV3ActiveRun(runtime: V3RuntimeState, sessionId: string | n
   if (!normalizedSessionId) {
     return null
   }
-  const runIntent = runtime.desktop.runIntentsBySessionId[normalizedSessionId] ?? null
+  const session = runtime.desktop.sessionsById[normalizedSessionId] ?? null
+  if (session && v3SessionLiveTerminal(session)) {
+    return null
+  }
+  const runIntent = runtime.desktop.runIntentsBySessionId[normalizedSessionId]
+    ?? session?.runIntent
+    ?? null
   return runIntent && v3RunIntentStatusActive(runIntent.status) ? runIntent : null
 }
 
@@ -115,7 +121,8 @@ function selectDesktopSession(state: DesktopState, sessionId: string): DesktopSe
     return null
   }
   const usage = state.usageBySessionId[sessionId] as DesktopSessionUsageRecord | undefined
-  const runIntent = state.runIntentsBySessionId[sessionId] ?? null
+  const liveTerminal = v3SessionLiveTerminal(session)
+  const runIntent = liveTerminal ? null : state.runIntentsBySessionId[sessionId] ?? null
   const activeRunIntent = runIntent && v3RunIntentStatusActive(runIntent.status) ? runIntent : null
   const projectedLive = activeRunIntent
     ? {
@@ -144,6 +151,22 @@ function selectDesktopSession(state: DesktopState, sessionId: string): DesktopSe
 function v3RunIntentStatusActive(status: string): boolean {
   const normalized = status.trim().toLowerCase()
   return normalized === 'pending_executor' || normalized === 'running'
+}
+
+function v3SessionLiveTerminal(session: DesktopSessionRecord): boolean {
+  const eventType = session.live.lastEventType?.trim() ?? ''
+  return (session.live.status === 'idle' || session.live.status === 'error')
+    && (
+      eventType === 'session.assistant.completed'
+      || eventType === 'session.run.completed'
+      || eventType === 'session.run.failed'
+      || eventType === 'session.run.cancelled'
+      || eventType === 'session.run.expired'
+      || eventType === 'session.run.interrupted'
+      || eventType === 'session.assistant.failed'
+      || eventType === 'session.run_intent.recorded'
+      || eventType === 'session.lifecycle.updated'
+    )
 }
 
 function v3WorkspaceScopeKey(workspaceScope: V3WorkspaceScope): string {

@@ -1252,17 +1252,39 @@ test('desktop V3 realtime controller consumes backend stream frames and renders 
     assert.equal(live.assistantDraft.includes('DIAGNOSTIC-SHOULD-NOT-RENDER'), false)
     assert.equal(live.status, 'running')
 
-    v3Socket.serverMessage(eventFrame('cursor-31005', 6, 'session.assistant.completed', {
-      status: 'completed',
-      message: { id: 'msg-v3-live-stream-assistant', session_id: sessionId, global_seq: 6, role: 'assistant', content: 'hello world', created_at: 2006 },
-      run_intent: { session_id: sessionId, run_id: runId, status: 'completed', created_at: 2003, updated_at: 2006, event_seq: 6 },
-    }))
+    v3Socket.serverMessage({
+      ...eventFrame('cursor-31005', 6, 'session.assistant.completed', {
+        status: 'completed',
+        session: {
+          id: sessionId,
+          title: 'User initiated conversation with hey',
+          workspace_path: '/repo',
+          workspace_name: 'repo',
+          session_api: 'v3',
+          message_count: 12,
+          updated_at: 2006,
+          last_event_seq: 6,
+          projection_high_watermark_seq: 6,
+        },
+        message: { id: 'msg-v3-live-stream-assistant', session_id: sessionId, global_seq: 6, role: 'assistant', content: 'hello world', created_at: 2006 },
+        run_intent: { session_id: sessionId, run_id: runId, status: 'completed', created_at: 2003, updated_at: 2006, event_seq: 6 },
+      }),
+      projection: { session_id: sessionId, last_event_seq: 6, projection_high_watermark_seq: 6, updated_at: 2006 },
+    })
 
-    live = useDesktopStore.getState().sessions[sessionId].live
+    const visibleSession = useDesktopStore.getState().sessions[sessionId]
+    live = visibleSession.live
+    assert.equal(visibleSession.title, 'User initiated conversation with hey')
+    assert.equal(visibleSession.messageCount, 12)
+    assert.equal(visibleSession.updatedAt, 2006)
+    assert.equal(visibleSession.lastEventSeq, 6)
+    assert.equal(visibleSession.projectionHighWatermarkSeq, 6)
+    assert.equal(visibleSession.runIntent, null)
     assert.equal(live.assistantDraft, '')
     assert.equal(live.status, 'idle')
     assert.equal(live.runId, null)
-    assert.equal(useDesktopStore.getState().sessions[sessionId].lastEventSeq, 6)
+    assert.equal(getDesktopSnapshot().runIntentsBySessionId[sessionId]?.status, 'running')
+    assert.equal(getDesktopSnapshot().sessionsById[sessionId]?.runIntent, null)
 
     const canonicalMessages = getDesktopSnapshot().messagesBySessionId[sessionId] ?? []
     assert.equal(canonicalMessages.filter((message) => message.role === 'assistant' && message.content === 'hello world').length, 1)
@@ -1697,7 +1719,10 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
     assert.deepEqual(urls, ['/v3/sessions/session-v3/messages', '/v3/sessions:reconnect', '/v1/auth/desktop/session'].sort())
     assert.equal(urls.some((url) => url.startsWith('/v1/swarm/managed-hosts/sessions')), false)
     assert.equal(urls.some((url) => url.startsWith('/v2/sessions')), false)
-    assert.deepEqual(websocketURLs, ['ws://127.0.0.1:7777/v3/realtime/stream?endpoint_cursor=cursor-4'])
+    assert.equal(websocketURLs.length, 1)
+    assert.equal(websocketURLs[0]?.includes('/v3/realtime/stream?endpoint_cursor='), true)
+    assert.equal(websocketURLs.some((url) => /\/ws(?:\?|$)/.test(url)), false)
+    assert.equal(websocketURLs.some((url) => /\/v3\/sessions\/[^/]+\/stream/.test(url)), false)
     const resumeMessages = sent.filter((entry) => entry.url.includes('/v3/realtime/stream')).map((entry) => entry.message)
     assert.equal(resumeMessages.some((message) => message.kind === 'resume' && Array.isArray(message.worksets)), true)
     assert.equal(resumeMessages.some((message) => message.kind === 'resume' && Array.isArray(message.subscriptions)), true)
@@ -2338,7 +2363,19 @@ test('V3 workset discovery delivers session.created over the existing realtime s
     }
     if (url === '/v3/sessions:reconnect') {
       reconnectCalls += 1
-      return new Response(JSON.stringify(makeEmptyReconnectResponse('cursor-100')), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      return new Response(JSON.stringify({
+        ...makeEmptyReconnectResponse('cursor-100'),
+        worksets: [{
+          protocol: 'v3.realtime',
+          protocol_version: 1,
+          kind: 'subscribe.workset',
+          workset_id: 'desktop-v3-runtime:global',
+          subscription_id: 'desktop-v3-runtime:global',
+          selector: { kind: 'global', global: true },
+          resources: ['messages', 'events', 'run_intents'],
+          auto_subscribe_sessions: true,
+        }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
     throw new Error(`unexpected fetch: ${url}`)
   }) as typeof fetch
@@ -2407,7 +2444,14 @@ test('V3 workset discovery delivers session.created over the existing realtime s
     await new Promise((resolve) => setImmediate(resolve))
 
     assert.equal(reconnectCalls, 1)
+    assert.equal(sockets.length, 1)
+    assert.equal(sockets[0]?.url.includes('/v3/realtime/stream'), true)
+    assert.equal(sockets.some((socket) => /\/ws(?:\?|$)/.test(socket.url)), false)
+    assert.equal(sockets.some((socket) => /\/v3\/sessions\/[^/]+\/stream/.test(socket.url)), false)
+    assert.equal(sockets.some((socket) => /run-stream|\/v2\//.test(socket.url)), false)
     assert.equal(useDesktopStore.getState().sessions['phone-session']?.title, 'Phone created session')
+    assert.equal(getDesktopSnapshot().sessionOrder.includes('phone-session'), true)
+    assert.equal(getDesktopSnapshot().sessionsById['phone-session']?.title, 'Phone created session')
     assert.equal(useDesktopStore.getState().lastGlobalSeq >= 1, true)
   } finally {
     useDesktopStore.getState().disconnect()
@@ -2502,7 +2546,10 @@ test('V3 ensureRunStream boots through DesktopSessionV3Runtime without opening l
     await useDesktopStore.getState().ensureRunStream('session-v3-a')
     await new Promise((resolve) => setImmediate(resolve))
 
-    assert.deepEqual(websocketURLs, ['ws://127.0.0.1:7777/v3/realtime/stream?endpoint_cursor=cursor-4'])
+    assert.equal(websocketURLs.length, 1)
+    assert.equal(websocketURLs[0]?.includes('/v3/realtime/stream?endpoint_cursor='), true)
+    assert.equal(websocketURLs.some((url) => /\/ws(?:\?|$)/.test(url)), false)
+    assert.equal(websocketURLs.some((url) => /\/v3\/sessions\/[^/]+\/stream/.test(url)), false)
     assert.equal(sent.some((message) => message.type === 'subscribe' && message.channel === 'session:*'), false)
     assert.equal(sent.some((message) => message.kind === 'resume' && Array.isArray(message.worksets)), true)
     assert.equal(sent.some((message) => message.kind === 'resume' && Array.isArray(message.subscriptions)), true)

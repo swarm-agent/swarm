@@ -543,7 +543,10 @@ function materializeRealtimeEvent(frame: SessionV3RealtimeFrameWire, currentRev:
   const eventType = normalizeOptionalString(frame.event_type)
     || normalizeOptionalString(event.event_type)
     || (isDirectDurableRealtimeEventKind(kind) ? kind : 'event')
-  const sourceSeq = positiveInteger(frame.source_seq) ?? positiveInteger(event.seq)
+  const sourceSeq = positiveInteger(frame.source_seq)
+    ?? positiveInteger(event.seq)
+    ?? positiveInteger(frame.last_seq)
+    ?? positiveInteger(frame.projection?.last_event_seq)
   const globalSeq = positiveInteger(frame.global_seq) ?? sourceSeq
   const payload = normalizeRealtimeEventPayload(frame, eventType, { globalSeq, sourceSeq })
   return {
@@ -570,6 +573,7 @@ function normalizeRealtimeEventPayload(
     ...payload,
     session_id: payload.session_id ?? event.session_id ?? frame.session_id,
     event_type: stringValue(payload.event_type) || eventType,
+    projection: payload.projection ?? frame.projection ?? undefined,
     global_seq: payload.global_seq ?? sequence.globalSeq,
     source_seq: payload.source_seq ?? sequence.sourceSeq,
     ts_unix_ms: payload.ts_unix_ms ?? event.ts_unix_ms ?? frame.ts_unix_ms,

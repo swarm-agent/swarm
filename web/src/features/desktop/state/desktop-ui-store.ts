@@ -448,7 +448,6 @@ function applyDesktopSessionV3RuntimeState(state: SessionV3ReducerState, result:
   const endpointCursor = state.endpointCursor.trim()
   if (endpointCursor) {
     desktopV3RealtimeEndpointCursor = endpointCursor
-    desktopV3RealtimeController?.setEndpointCursor(endpointCursor)
   }
   if (!result || result.desktopChanged) {
     applyV3RuntimeEnvelope(createV3SnapshotEnvelope(state.desktop, {
@@ -572,13 +571,11 @@ if (typeof window !== 'undefined') {
       return
     }
     desktopV3RealtimeEndpointCursor = cursor
-    requireV3RealtimeController().setEndpointCursor(cursor)
     if (desktopSessionV3Runtime) {
       void desktopSessionV3Runtime.refresh({ reason: 'external snapshot cursor' }).catch((error) => {
         console.error('[desktop-store] session v3 runtime cursor refresh failed', error)
       })
     }
-    useDesktopUiStore.getState().syncV3RealtimeSessions()
   })
 }
 
@@ -3595,7 +3592,6 @@ function persistDesktopV3EndpointCursor(payload: RunStreamEventMessage): void {
   const cursor = String((payload as DesktopV3RealtimeFrame).endpoint_cursor ?? '').trim()
   if (cursor) {
     desktopV3RealtimeEndpointCursor = cursor
-    requireV3RealtimeController().setEndpointCursor(cursor)
   }
 }
 
@@ -4198,7 +4194,8 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
     socket?.close()
     requireRunStreamController().closeAll()
     requireV3RealtimeController().closeAll()
-    desktopSessionV3Runtime?.stop('desktop disconnected')
+    desktopSessionV3Runtime?.shutdown()
+    desktopSessionV3Runtime = null
   },
   createSession: async (input) => {
     const target = getDesktopSessionCreateTarget(input.route)
