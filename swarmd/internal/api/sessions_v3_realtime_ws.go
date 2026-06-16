@@ -59,8 +59,9 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 	}
 	defer s.v3RealtimeOutbox.unsubscribe(sub)
 
-	scope := v3SyncCursorScopeForRealtime(principal, r.URL.Query().Get("surface"))
-	endpointCursor, _, cursorErr := s.parseV3SyncEndpointCursor(r.URL.Query().Get("endpoint_cursor"), scope)
+	surface := r.URL.Query().Get("surface")
+	scope := v3SyncCursorScopeForRealtime(principal, surface)
+	endpointCursor, _, cursorErr := s.parseV3RealtimeEndpointCursor(r.URL.Query().Get("endpoint_cursor"), principal, surface)
 	if cursorErr != nil {
 		_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", v3RealtimeCursorErrorCode(cursorErr), cursorErr.Error(), 0, 0))
 		return
@@ -147,7 +148,7 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 			case V3RealtimeKindSubscribe:
 				endpointSeq := lastEndpointSeq
 				if strings.TrimSpace(message.EndpointCursor) != "" {
-					parsed, _, err := s.parseV3SyncEndpointCursor(message.EndpointCursor, scope)
+					parsed, _, err := s.parseV3RealtimeEndpointCursor(message.EndpointCursor, principal, surface)
 					if err != nil {
 						_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(message.SessionID, v3RealtimeCursorErrorCode(err), err.Error(), lastEndpointSeq, 0))
 						return
@@ -191,7 +192,7 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 					}
 				}
 			case V3RealtimeKindResume:
-				resumeSeq, _, err := s.parseV3SyncEndpointCursor(message.EndpointCursor, scope)
+				resumeSeq, _, err := s.parseV3RealtimeEndpointCursor(message.EndpointCursor, principal, surface)
 				if err != nil {
 					_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", v3RealtimeCursorErrorCode(err), err.Error(), lastEndpointSeq, 0))
 					return
@@ -206,7 +207,7 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 				for _, requestedSub := range message.Subscriptions {
 					subCursor := resumeSeq
 					if strings.TrimSpace(requestedSub.EndpointCursor) != "" {
-						parsed, _, err := s.parseV3SyncEndpointCursor(requestedSub.EndpointCursor, scope)
+						parsed, _, err := s.parseV3RealtimeEndpointCursor(requestedSub.EndpointCursor, principal, surface)
 						if err != nil {
 							_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(requestedSub.SessionID, v3RealtimeCursorErrorCode(err), err.Error(), lastEndpointSeq, 0))
 							return

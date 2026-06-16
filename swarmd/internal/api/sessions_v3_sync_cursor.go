@@ -267,6 +267,29 @@ func (s *Server) parseV3SyncEndpointCursor(raw string, expected v3SyncCursorScop
 	return payload.AfterEndpointSeq, false, nil
 }
 
+func (s *Server) parseV3RealtimeEndpointCursor(raw string, principal identity.Principal, surface string) (uint64, bool, error) {
+	realtimeScope := v3SyncCursorScopeForRealtime(principal, surface)
+	seq, legacy, err := s.parseV3SyncEndpointCursor(raw, realtimeScope)
+	if err == nil {
+		return seq, legacy, nil
+	}
+	var cursorErr *v3SyncCursorError
+	if !errors.As(err, &cursorErr) || cursorErr.Code != "endpoint_cursor_scope_mismatch" {
+		return 0, false, err
+	}
+	payload, verifyErr := s.verifyV3SyncCursor(strings.TrimSpace(raw))
+	if verifyErr != nil {
+		return 0, false, err
+	}
+	if payload.Kind != v3SyncCursorKindEndpoint {
+		return 0, false, newV3SyncCursorError("endpoint_cursor_unsupported_kind", fmt.Errorf("unsupported sync cursor kind %q", payload.Kind))
+	}
+	if err := validateV3RealtimeSnapshotHandoffCursorScope(payload, realtimeScope); err != nil {
+		return 0, false, err
+	}
+	return payload.AfterEndpointSeq, false, nil
+}
+
 func (s *Server) verifyV3SyncCursor(raw string) (v3SyncCursorPayload, error) {
 	if !strings.HasPrefix(raw, v3SyncCursorPrefix) {
 		return v3SyncCursorPayload{}, newV3SyncCursorError("endpoint_cursor_malformed", fmt.Errorf("malformed endpoint_cursor %q", raw))
@@ -330,6 +353,33 @@ func validateV3SyncCursorScope(payload v3SyncCursorPayload, expected v3SyncCurso
 		if strings.TrimSpace(check.got) != strings.TrimSpace(check.want) {
 			return newV3SyncCursorError("endpoint_cursor_scope_mismatch", fmt.Errorf("sync cursor scope mismatch for %s", check.name))
 		}
+	}
+	return nil
+}
+
+func validateV3RealtimeSnapshotHandoffCursorScope(payload v3SyncCursorPayload, realtimeScope v3SyncCursorScope) error {
+	checks := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"account", payload.Account, realtimeScope.AccountScopeID},
+		{"principal", payload.Principal, realtimeScope.PrincipalUserID},
+		{"surface", payload.Surface, realtimeScope.Surface},
+	}
+	for _, check := range checks {
+		if strings.TrimSpace(check.got) != strings.TrimSpace(check.want) {
+			return newV3SyncCursorError("endpoint_cursor_scope_mismatch", fmt.Errorf("sync cursor scope mismatch for %s", check.name))
+		}
+	}
+	if strings.TrimSpace(payload.StreamKind) != "v3.sync.snapshot" {
+		return newV3SyncCursorError("endpoint_cursor_scope_mismatch", fmt.Errorf("sync cursor scope mismatch for stream_kind"))
+	}
+	if strings.TrimSpace(payload.SelectorFilterHash) == "" {
+		return newV3SyncCursorError("endpoint_cursor_scope_mismatch", fmt.Errorf("sync cursor scope mismatch for selector_filter_hash"))
+	}
+	if strings.TrimSpace(payload.ResourceSet) == "" {
+		return newV3SyncCursorError("endpoint_cursor_scope_mismatch", fmt.Errorf("sync cursor scope mismatch for resource_set"))
 	}
 	return nil
 }

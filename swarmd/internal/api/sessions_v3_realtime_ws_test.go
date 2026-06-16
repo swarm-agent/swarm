@@ -143,6 +143,35 @@ func TestV3RealtimeHydrationSnapshotEndpointCursorHandoffReplaysOnlyRowsAfterCur
 	}
 }
 
+func TestV3RealtimeSubscribeAcceptsCanonicalSyncSnapshotCursorHandoff(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-sync-snapshot-handoff", "create-realtime-sync-snapshot-handoff")
+	if created.RealtimeOutbox == nil {
+		t.Fatalf("created mutation missing realtime outbox: %+v", created)
+	}
+	snapshotCursor := hydrateV3SyncSnapshotEndpointCursor(t, server, created.SessionID)
+	if _, _, err := server.parseV3SyncEndpointCursor(snapshotCursor, v3SyncCursorScopeForRealtime(testPrincipal(), "desktop")); err == nil || !strings.Contains(err.Error(), "stream_kind") {
+		t.Fatalf("test setup expected canonical sync snapshot cursor to mismatch strict realtime scope, err=%v", err)
+	}
+	firstMissed := appendV3RealtimeTestMessage(t, server, created.SessionID, "message-realtime-sync-snapshot-handoff-1", "snapshot handoff one")
+	secondMissed := appendV3RealtimeTestMessage(t, server, created.SessionID, "message-realtime-sync-snapshot-handoff-2", "snapshot handoff two")
+
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: created.SessionID, SubscriptionID: "sub-sync-snapshot-handoff", EndpointCursor: snapshotCursor})
+	started := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, started, V3RealtimeKindReplayStart, created.SessionID, 0)
+	first := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, first, V3RealtimeKindEvent, created.SessionID, firstMissed.Event.Seq)
+	second := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, second, V3RealtimeKindEvent, created.SessionID, secondMissed.Event.Seq)
+	completed := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, completed, V3RealtimeKindReplayDone, created.SessionID, secondMissed.Event.Seq)
+	assertV3RealtimeSignedCursorSeq(t, server, completed.EndpointCursor, secondMissed.RealtimeOutbox.EndpointSeq)
+}
+
 func TestV3RealtimeReconnectWithEndpointCursorReplaysMissedRowsInEndpointOrder(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-endpoint-reconnect", "create-realtime-endpoint-reconnect")
@@ -1163,6 +1192,27 @@ func hydrateV3RealtimeSnapshotEndpointCursor(t *testing.T, server *Server, sessi
 	cursor, _ := payload["snapshot_endpoint_cursor"].(string)
 	if strings.TrimSpace(cursor) == "" {
 		t.Fatalf("hydrate response missing snapshot_endpoint_cursor: %+v", payload)
+	}
+	return cursor
+}
+
+func hydrateV3SyncSnapshotEndpointCursor(t *testing.T, server *Server, sessionID string) string {
+	t.Helper()
+	body := `{"surface":"desktop","selector":{"kind":"session_ids","session_ids":["` + sessionID + `"]},"session_ids":["` + sessionID + `"],"history":{"mode":"none"},"resources":{"events":true}}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, V3SyncHydratePath, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("sync hydrate status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode sync hydrate response: %v", err)
+	}
+	cursor, _ := payload["snapshot_endpoint_cursor"].(string)
+	if strings.TrimSpace(cursor) == "" {
+		t.Fatalf("sync hydrate response missing snapshot_endpoint_cursor: %+v", payload)
 	}
 	return cursor
 }
