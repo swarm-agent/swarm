@@ -1458,7 +1458,8 @@ function requestScopedSessionWorkset(sessionId: string, options: { force?: boole
     void fetchDesktopStateSnapshot({
       sessionIds: [normalizedSessionId],
       history: { mode: 'none', maxEventsPerSession: 200, manifestPolicy: 'manifest', includeEvents: true },
-      resources: { events: true },
+      resources: { events: true, runIntents: true },
+      includeActive: true,
     })
       .then((snapshot) => {
         applyV3RuntimeEnvelope(createV3SnapshotEnvelope(snapshot, { mode: 'merge', receivedAt: Date.now() }))
@@ -4124,7 +4125,14 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
     const session = get().sessions[normalizedSessionId]
     const resolvedRunId = resolveStopRunId(session, runId)
     const sessionApi = session?.sessionApi?.trim().toLowerCase() || 'v3'
-    await requireRunStreamController().stop({ sessionId: normalizedSessionId, runId: resolvedRunId, route, sessionApi })
+    try {
+      await requireRunStreamController().stop({ sessionId: normalizedSessionId, runId: resolvedRunId, route, sessionApi })
+    } catch (error) {
+      if (sessionApi === 'v3') {
+        requestScopedSessionWorkset(normalizedSessionId, { force: true })
+      }
+      throw error
+    }
   },
   submitPrompt: async ({ sessionId, route = null, sessionApi = null, clientRequestId: providedClientRequestId = null, workspacePath, prompt, agentName, compact = false, targetKind = '', targetName = '' }: {
     sessionId: string | null

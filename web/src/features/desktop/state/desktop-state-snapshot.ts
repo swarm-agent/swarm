@@ -246,6 +246,7 @@ export function normalizeDesktopStateSnapshot(response: DesktopStateSyncResponse
   return {
     rev: response.rev,
     snapshotEndpointCursor,
+    runIntentReconcileSessionIds: Object.keys(sessionsById),
     sessionsById,
     sessionOrder,
     messagesBySessionId: mapMessagesBySession(response.messages_by_session),
@@ -423,7 +424,7 @@ function mapSession(session: SessionWire, fallbackId = '', topLevelRunIntent: De
   const mode = String(session.mode ?? 'auto').trim() || 'auto'
   const baseLive = emptyLiveState()
   const mappedRunIntent = session.run_intent ? mapRunIntent(session.run_intent) : topLevelRunIntent ?? overviewActiveRun
-  const runIntent = mappedRunIntent
+  const runIntent = mappedRunIntent && snapshotRunIntentStatusActive(mappedRunIntent.status) ? mappedRunIntent : null
   const sessionStatus = normalizeSessionStatus(String(session.session_status ?? ''))
   if (sessionStatus !== 'idle') {
     baseLive.status = sessionStatus
@@ -485,9 +486,15 @@ export function snapshotRunIntentStatusActive(status: string): boolean {
 
 function activeRunIntentsForNonTerminalSessions(
   source: Record<string, DesktopRunIntentRecord>,
-  _sessionsById: Record<string, DesktopSessionRecord>,
+  sessionsById: Record<string, DesktopSessionRecord>,
 ): Record<string, DesktopRunIntentRecord> {
   const next: Record<string, DesktopRunIntentRecord> = {}
+  for (const [sessionId, session] of Object.entries(sessionsById)) {
+    const sessionRunIntent = session.runIntent
+    if (sessionRunIntent && snapshotRunIntentStatusActive(sessionRunIntent.status)) {
+      next[sessionId] = sessionRunIntent
+    }
+  }
   for (const [sessionId, runIntent] of Object.entries(source)) {
     if (snapshotRunIntentStatusActive(runIntent.status)) {
       next[sessionId] = runIntent

@@ -487,3 +487,47 @@ test('V3 terminal canonical run intent clears active selector despite stale live
   assert.equal(selectV3Session(snapshot, 's1')?.runIntent, null)
   assert.equal(selectV3Session(snapshot, 's1')?.live.status, 'idle')
 })
+
+test('V3 hydrate snapshot reconciles away stale active run when backend has no active run intent', () => {
+  const runtime = createV3RuntimeController()
+  const staleActive = session('s1', 400)
+  staleActive.lastEventSeq = 400
+  staleActive.projectionHighWatermarkSeq = 400
+  staleActive.live.status = 'running'
+  staleActive.live.runId = 'run-stale'
+  staleActive.live.startedAt = 390
+  staleActive.live.seq = 400
+
+  runtime.applyEnvelope(createV3SnapshotEnvelope({
+    rev: 400,
+    sessionsById: { s1: staleActive },
+    sessionOrder: ['s1'],
+    runIntentsBySessionId: {
+      s1: { sessionId: 's1', runId: 'run-stale', status: 'running', blockedReason: '', createdAt: 390, updatedAt: 400, eventSeq: 400 },
+    },
+  }, { receivedAt: 400 }))
+
+  const canonicalComplete = session('s1', 426)
+  canonicalComplete.lastEventSeq = 426
+  canonicalComplete.projectionHighWatermarkSeq = 426
+  canonicalComplete.live.status = 'idle'
+  canonicalComplete.live.runId = null
+  canonicalComplete.live.startedAt = null
+  canonicalComplete.live.seq = 426
+  canonicalComplete.live.lastEventType = 'session.assistant.completed'
+
+  runtime.applyEnvelope(createV3SnapshotEnvelope({
+    rev: 426,
+    sessionsById: { s1: canonicalComplete },
+    sessionOrder: ['s1'],
+    runIntentsBySessionId: {},
+    runIntentReconcileSessionIds: ['s1'],
+  }, { mode: 'merge', receivedAt: 426 }))
+
+  const snapshot = runtime.getSnapshot()
+  const reconciled = selectV3Session(snapshot, 's1')
+  assert.equal(selectV3ActiveRun(snapshot, 's1'), null)
+  assert.equal(reconciled?.runIntent, null)
+  assert.equal(reconciled?.live.status, 'idle')
+  assert.equal(reconciled?.live.runId, null)
+})

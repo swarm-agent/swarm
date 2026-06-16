@@ -70,6 +70,7 @@ export interface DesktopDaemonSnapshot {
   rev: number
   snapshotEndpointCursor?: string
   reconcileSessionScope?: DesktopSnapshotReconcileScope
+  runIntentReconcileSessionIds?: string[]
   sessionsById?: Record<string, DesktopSessionRecord>
   sessionOrder?: string[]
   messagesBySessionId?: Record<string, ChatMessageRecord[]>
@@ -209,7 +210,15 @@ function mergeFromSnapshot(state: DesktopState, snapshot: DesktopDaemonSnapshot)
       return !existing || sessionSequence(existing) <= sessionSequence(incomingSession)
     })
     .map(([sessionId]) => sessionId)
-  const runIntentsBySessionId = mergeRunIntentRecord(state.runIntentsBySessionId, snapshot.runIntentsBySessionId, runIntentScopedSessionIds)
+  const runIntentReconcileSessionIds = (snapshot.runIntentReconcileSessionIds ?? [])
+    .map((sessionId) => sessionId.trim())
+    .filter(Boolean)
+  const runIntentsBySessionId = mergeRunIntentRecord(
+    state.runIntentsBySessionId,
+    snapshot.runIntentsBySessionId,
+    runIntentScopedSessionIds,
+    runIntentReconcileSessionIds,
+  )
 
   return {
     ...state,
@@ -1916,11 +1925,13 @@ function mergeRunIntentRecord(
   current: Record<string, DesktopRunIntentRecord>,
   incoming: Record<string, DesktopRunIntentRecord> | undefined,
   scopedSessionIds: string[],
+  reconcileSessionIds: string[] = [],
 ): Record<string, DesktopRunIntentRecord> {
   const incomingRecords = cloneRecord(incoming)
   const next = { ...current }
+  const reconcileSet = new Set(reconcileSessionIds)
   for (const sessionId of scopedSessionIds) {
-    if (incomingRecords[sessionId] || !runIntentStatusActive(next[sessionId]?.status ?? '')) {
+    if (incomingRecords[sessionId] || reconcileSet.has(sessionId) || !runIntentStatusActive(next[sessionId]?.status ?? '')) {
       delete next[sessionId]
     }
   }
