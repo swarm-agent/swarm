@@ -330,7 +330,6 @@ interface DesktopChatPanelProps {
   hostSwarmName: string
   workspacePath: string
   workspaceName: string
-  workspaceWorktreeEnabled: boolean
   workspaceTopologyRoutes: WorkspaceOverviewTopologyRoute[]
   localWorkspaceBindingId?: string
   hostSwarmId?: string | null
@@ -341,7 +340,13 @@ interface DesktopChatPanelProps {
     agentName?: string
     preference: ResolvedSessionPreference['preference']
     metadata?: Record<string, unknown>
+    worktreeMode?: string
+    worktreeUseCurrentBranch?: boolean
+    worktreeBaseBranch?: string
+    worktreeBranchName?: string
   }) => Promise<DesktopSessionRecord>
+  pendingWorktreeBranchName?: string
+  onClearPendingWorktreeBranch?: () => void
   onSessionCreated: (session: DesktopSessionRecord) => void
   lockedAgentName?: string
   lockedAgentLabel?: string
@@ -1256,7 +1261,6 @@ export function DesktopChatPanel({
   hostSwarmName,
   workspacePath,
   workspaceName,
-  workspaceWorktreeEnabled,
   workspaceTopologyRoutes,
   localWorkspaceBindingId,
   hostSwarmId,
@@ -1270,6 +1274,8 @@ export function DesktopChatPanel({
   onStartNewSession,
   onToast,
   sessionCreateOverride,
+  pendingWorktreeBranchName,
+  onClearPendingWorktreeBranch,
   lockedAgentName,
   lockedAgentLabel,
   hideModeSelector = false,
@@ -1282,6 +1288,7 @@ export function DesktopChatPanel({
 }: DesktopChatPanelProps) {
   const queryClient = useQueryClient()
   const sessionId = session?.id ?? null
+  const pendingWorktreeBranch = sessionId ? '' : (pendingWorktreeBranchName?.trim() ?? '')
   const ensureRunStream = useDesktopUiStore((state) => state.ensureRunStream)
   const submitPrompt = useDesktopUiStore((state) => state.submitPrompt)
   const stopRun = useDesktopUiStore((state) => state.stopRun)
@@ -2645,11 +2652,19 @@ export function DesktopChatPanel({
         throw new Error('Select an authenticated model and thinking level before sending')
       }
       if (!targetSession) {
+        const worktreeCreateFields = pendingWorktreeBranch
+          ? {
+            worktreeMode: 'on',
+            worktreeUseCurrentBranch: true,
+            worktreeBranchName: pendingWorktreeBranch,
+          }
+          : {}
         targetSession = sessionCreateOverride
           ? await sessionCreateOverride({
             mode: effectiveSessionMode,
             agentName: resolvedLockedAgentName || currentSessionAgent,
             preference: activePreferenceRecord.preference,
+            ...worktreeCreateFields,
           })
           : await createSession({
             workspacePath,
@@ -2658,10 +2673,12 @@ export function DesktopChatPanel({
             agentName: resolvedLockedAgentName || currentSessionAgent,
             preference: activePreferenceRecord.preference,
             route: activeChatRoute,
-            worktreeMode: activeChatRoute.swarmId && workspaceWorktreeEnabled ? 'on' : 'off',
-            worktreeUseCurrentBranch: activeChatRoute.swarmId && workspaceWorktreeEnabled ? true : undefined,
+            ...worktreeCreateFields,
           })
         onSessionCreated(targetSession)
+        if (pendingWorktreeBranch) {
+          onClearPendingWorktreeBranch?.()
+        }
       }
 
       const clientRequestId = `desktop-v3-message:${targetSession.id}:${Date.now()}`
@@ -2680,7 +2697,7 @@ export function DesktopChatPanel({
     } catch (error) {
       setPanelError(error instanceof Error ? error.message : 'Failed to send prompt')
     }
-  }, [activeChatRoute, activePreferenceRecord, canSendWithSelectedPreference, commitDictationDraft, composer, currentSessionAgent, effectiveSessionMode, mentionSubagents, messages, onSessionCreated, resolvedLockedAgentName, session, sessionCreateOverride, sessionId, stopDictation, submitPrompt, submitting, workspaceName, workspacePath, workspaceWorktreeEnabled])
+  }, [activeChatRoute, activePreferenceRecord, canSendWithSelectedPreference, commitDictationDraft, composer, currentSessionAgent, effectiveSessionMode, mentionSubagents, onClearPendingWorktreeBranch, onSessionCreated, pendingWorktreeBranch, resolvedLockedAgentName, session, sessionCreateOverride, stopDictation, submitPrompt, submitting, workspaceName, workspacePath])
 
   const handleStop = useCallback(async () => {
     if (!sessionId) {
@@ -3430,6 +3447,20 @@ export function DesktopChatPanel({
           {terminalUserStopSummary ? (
             <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-sm text-[var(--app-warning-text)]">
               {terminalUserStopSummary}
+            </div>
+          ) : null}
+          {pendingWorktreeBranch ? (
+            <div className="flex items-center justify-between gap-3 rounded-xl border border-[var(--app-border-accent)] bg-[var(--app-bg-alt)] px-3 py-2 text-xs text-[var(--app-text-muted)]">
+              <span className="min-w-0 truncate">
+                New session will use worktree branch <span className="font-mono text-[var(--app-text)]">{pendingWorktreeBranch}</span>.
+              </span>
+              <button
+                type="button"
+                className="shrink-0 rounded-lg px-2 py-1 font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                onClick={onClearPendingWorktreeBranch}
+              >
+                Clear
+              </button>
             </div>
           ) : null}
           {mentionPaletteIsActive ? (

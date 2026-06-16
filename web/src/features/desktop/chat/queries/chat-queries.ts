@@ -1740,6 +1740,10 @@ function sessionCreateV3RequestBody(input: {
   agentName?: string;
   metadata?: Record<string, unknown>;
   preference: ResolvedSessionPreference["preference"];
+  worktreeMode?: string;
+  worktreeUseCurrentBranch?: boolean;
+  worktreeBaseBranch?: string;
+  worktreeBranchName?: string;
 }): Record<string, unknown> {
   const preference = sessionCreatePreferenceBody(input.preference)
   const title = optionalString(input.title)
@@ -1754,6 +1758,10 @@ function sessionCreateV3RequestBody(input: {
     agent_name: input.agentName?.trim() || undefined,
     preference: Object.keys(preference).length > 0 ? preference : undefined,
     metadata: sanitizeSessionCreateMetadata(input.metadata),
+    worktree_mode: optionalString(input.worktreeMode) || undefined,
+    worktree_use_current_branch: typeof input.worktreeUseCurrentBranch === "boolean" ? input.worktreeUseCurrentBranch : undefined,
+    worktree_base_branch: optionalString(input.worktreeBaseBranch) || undefined,
+    worktree_branch_name: optionalString(input.worktreeBranchName) || undefined,
   })
 }
 
@@ -1784,6 +1792,10 @@ export async function createSession(input: {
     agentName: input.agentName,
     metadata: input.metadata,
     preference: input.preference,
+    worktreeMode: input.worktreeMode,
+    worktreeUseCurrentBranch: input.worktreeUseCurrentBranch,
+    worktreeBaseBranch: input.worktreeBaseBranch,
+    worktreeBranchName: input.worktreeBranchName,
   })
   const response = await requestJson<V3HydratedSessionResponseWire & { session_execution?: Record<string, unknown> }>(
     target.endpoint,

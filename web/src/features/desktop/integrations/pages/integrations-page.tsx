@@ -455,7 +455,6 @@ export function IntegrationsPage() {
                   hostSwarmName={swarmName}
                   workspacePath={selectedSession?.workspacePath || INTEGRATION_BUILDER_WORKSPACE_PATH}
                   workspaceName={selectedSession?.workspaceName || INTEGRATION_BUILDER_WORKSPACE_NAME}
-                  workspaceWorktreeEnabled={false}
                   workspaceTopologyRoutes={[]}
                   localWorkspaceBindingId=""
                   hostSwarmId={null}

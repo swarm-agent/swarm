@@ -884,27 +884,16 @@ function sessionStatusTooltip(session: DesktopSessionRecord): string {
   return lines.join('\n')
 }
 
-function workspaceWorktreeTitle(enabled: boolean, busy: boolean): string {
-  if (busy) {
-    return 'Updating worktree setting…'
-  }
-  return enabled
-    ? 'Worktrees on for new sessions. Click to turn them off.'
-    : 'Worktrees off for new sessions. Click to turn them on.'
-}
-
 function renderWorkspaceGitBar(args: {
   workspace: WorkspaceEntry
-  worktreeBusy: boolean
   gitSnapshot: GitSnapshot | null
   gitLoading: boolean
   gitError: string | null
   onOpenGit: () => void
-  onToggle: () => void
+  onBrancher: () => void
 }): JSX.Element {
-  const { workspace, worktreeBusy, gitSnapshot, gitLoading, gitError, onOpenGit, onToggle } = args
-  const enabled = workspace.worktreeEnabled
-  const title = workspaceWorktreeTitle(enabled, worktreeBusy)
+  const { workspace, gitSnapshot, gitLoading, gitError, onOpenGit, onBrancher } = args
+  const title = 'Create a new worktree session with a feature branch.'
   const branch = gitSnapshot?.branch?.trim() || workspace.gitBranch?.trim() || 'git'
   const ahead = Math.max(0, Number(gitSnapshot?.ahead_count ?? workspace.gitAheadCount ?? 0))
   const behind = Math.max(0, Number(gitSnapshot?.behind_count ?? workspace.gitBehindCount ?? 0))
@@ -943,16 +932,12 @@ function renderWorkspaceGitBar(args: {
           className={cn(
             SIDEBAR_ACTION_BUTTON_CLASS,
             'text-[10px]',
-            enabled ? 'text-[var(--app-selection)]' : 'text-[var(--app-text-muted)] opacity-45 hover:opacity-85',
-            worktreeBusy && 'cursor-progress opacity-70',
+            'text-[var(--app-text-muted)] opacity-80 hover:opacity-100',
           )}
-          onClick={onToggle}
-          aria-busy={worktreeBusy}
-          aria-disabled={worktreeBusy}
-          aria-pressed={enabled}
+          onClick={onBrancher}
           title={title}
         >
-          wt
+          +wt
         </button>
       </SidebarActionRail>
     </div>
@@ -1479,7 +1464,7 @@ export function DesktopAppPage() {
   const routeWorkspaceSlug = (workspaceFlowDetailMatch ? workspaceFlowDetailMatch.workspaceSlug : workspaceFlowMatch ? workspaceFlowMatch.workspaceSlug : workspaceSessionMatch ? workspaceSessionMatch.workspaceSlug : workspaceMatch ? workspaceMatch.workspaceSlug : '').trim()
   const routeSessionId = (!isFlowRoute && workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
   const pwaDebugEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has(PWA_DEBUG_QUERY_PARAM)
-  const { workspaces, selectingPath, savingPath, saveWorkspace, setWorktreeEnabled, loading: launcherWorkspacesLoading } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
+  const { workspaces, selectingPath, saveWorkspace, loading: launcherWorkspacesLoading } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
   const connectionState = useDesktopUiStore((state) => state.connectionState)
   const refreshNotifications = useDesktopUiStore((state) => state.refreshNotifications)
   const notificationCenter = useDesktopUiStore((state) => state.notificationCenter)
@@ -1513,6 +1498,7 @@ export function DesktopAppPage() {
   const [updateError, setUpdateError] = useState<string | null>(null)
   const [updateProgress, setUpdateProgress] = useState<DesktopUpdateProgressState>({ open: false, job: null, startedAt: null })
   const [desktopToast, setDesktopToast] = useState<DesktopToastState | null>(() => loadPendingDesktopToast())
+  const [pendingWorktreeBranchByWorkspace, setPendingWorktreeBranchByWorkspace] = useState<Record<string, string>>({})
   const [uiSettings, setUISettings] = useState<UISettingsWire | null>(null)
   const [localContainerUpdateConfirm, setLocalContainerUpdateConfirm] = useState<LocalContainerUpdateConfirmState | null>(null)
   const [todoSavingWorkspacePath, setTodoSavingWorkspacePath] = useState<string | null>(null)
@@ -3245,7 +3231,6 @@ export function DesktopAppPage() {
                 const flattenedSessionNodes = flattenVisibleSidebarSessionNodes(sessionNodes, expandedAgentSessions, selectedSession?.id)
                 const layout = workspaceLayout[workspace.path]
                 const collapsed = layout?.collapsed ?? true
-                const worktreeBusy = savingPath === workspace.path
                 const workspaceGitSnapshot = gitSnapshotByPath.get(workspace.path) ?? (workspace.path === selectedGitWorkspacePath ? gitSnapshot : null)
                 const workspaceGitLoading = workspace.path === selectedGitWorkspacePath && gitStatusQuery.isFetching
                 const workspaceGitError = gitRealtimeErrors[workspace.path] ?? (workspace.path === selectedGitWorkspacePath && gitStatusQuery.error instanceof Error ? gitStatusQuery.error.message : null)
@@ -3257,11 +3242,16 @@ export function DesktopAppPage() {
                   workspaceName: workspace.workspaceName,
                   topologyRoutes: workspace.topologyRoutes,
                 })
-                const handleToggleWorkspaceWorktree = () => {
-                  if (worktreeBusy) {
+                const handleStartWorktreeBrancher = () => {
+                  const currentBranch = workspaceGitSnapshot?.branch?.trim() || workspace.gitBranch?.trim() || ''
+                  const suggestedBranch = currentBranch && currentBranch !== 'git' ? `agent/${currentBranch}` : 'agent/'
+                  const branchName = window.prompt('Feature branch for the new worktree session', suggestedBranch)?.trim() ?? ''
+                  if (!branchName) {
                     return
                   }
-                  void setWorktreeEnabled(workspace.path, !workspace.worktreeEnabled)
+                  setPendingWorktreeBranchByWorkspace((current) => ({ ...current, [workspace.path]: branchName }))
+                  handleStartNewSessionInWorkspace(workspace.path, workspace.workspaceName)
+                  setDesktopToast({ message: `Worktree branch ready for next session: ${branchName}`, tone: 'info' })
                 }
                 return (
                   <Fragment key={workspace.path}>
@@ -3309,12 +3299,11 @@ export function DesktopAppPage() {
                       </div>
                       {!collapsed && renderWorkspaceGitBar({
                         workspace,
-                        worktreeBusy,
                         gitSnapshot: workspaceGitSnapshot,
                         gitLoading: workspaceGitLoading,
                         gitError: workspaceGitError,
                         onOpenGit: () => openGitPanel(workspace.path, workspace.workspaceName),
-                        onToggle: handleToggleWorkspaceWorktree,
+                        onBrancher: handleStartWorktreeBrancher,
                       })}
                       {!collapsed && (
                         <div className="scrollbar-hidden grid min-h-0 flex-1 content-start gap-0.5 overflow-y-auto">
@@ -3459,11 +3448,24 @@ export function DesktopAppPage() {
             hostSwarmName={swarmName}
             workspacePath={chatWorkspacePath}
             workspaceName={chatWorkspaceName}
-            workspaceWorktreeEnabled={selectedWorkspace?.worktreeEnabled ?? false}
             workspaceTopologyRoutes={selectedWorkspace?.topologyRoutes ?? []}
             localWorkspaceBindingId={selectedWorkspace?.localWorkspaceBindingId}
             hostSwarmId={currentSwarmTarget?.swarm_id ?? null}
             session={selectedSession}
+            pendingWorktreeBranchName={chatWorkspacePath ? pendingWorktreeBranchByWorkspace[chatWorkspacePath] : undefined}
+            onClearPendingWorktreeBranch={() => {
+              if (!chatWorkspacePath) {
+                return
+              }
+              setPendingWorktreeBranchByWorkspace((current) => {
+                if (!(chatWorkspacePath in current)) {
+                  return current
+                }
+                const next = { ...current }
+                delete next[chatWorkspacePath]
+                return next
+              })
+            }}
             onSessionCreated={handleSessionCreated}
             onOpenSettingsTab={handleOpenSettingsTab}
             onOpenQuickSettings={handleOpenQuickSettings}

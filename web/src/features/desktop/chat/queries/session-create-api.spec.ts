@@ -133,10 +133,10 @@ test('primary/self host route creates via Sessions API v3 primary endpoint', asy
     assert.equal(body.title, 'Primary')
     assert.equal(body.mode, 'auto')
     assert.equal(body.agent_name, 'swarm')
-    assert.equal(Object.hasOwn(body, 'worktree_mode'), false)
-    assert.equal(Object.hasOwn(body, 'worktree_use_current_branch'), false)
-    assert.equal(Object.hasOwn(body, 'worktree_base_branch'), false)
-    assert.equal(Object.hasOwn(body, 'worktree_branch_name'), false)
+    assert.equal(body.worktree_mode, 'on')
+    assert.equal(body.worktree_use_current_branch, false)
+    assert.equal(body.worktree_base_branch, 'dev')
+    assert.equal(body.worktree_branch_name, 'agent/session-v2')
     assert.deepEqual(body.preference, {
       provider: 'codex',
       model: 'gpt-5.4',
@@ -159,28 +159,24 @@ test('primary/self host route creates via Sessions API v3 primary endpoint', asy
   })
 })
 
-test('local-container child route creates via Sessions API v2 local-containers endpoint', async () => {
+test('local-container child route is rejected without fallback create request', async () => {
   const { createSession } = await import('./chat-queries')
 
   await withFetchStub(async (calls) => {
-    await createSession({
-      title: 'Local container',
-      workspacePath: '/frontend/device/path/swarm-go',
-      workspaceName: 'swarm-go',
-      mode: 'auto',
-      agentName: 'swarm',
-      preference: { provider: 'codex', model: 'gpt-5.4', thinking: 'medium', serviceTier: '', contextMode: '' },
-      route: localContainerRoute,
-      worktreeMode: 'off',
-    })
-
-    assert.equal(String(calls[0]?.input), '/v2/sessions/local-containers')
-    const body = requestBody(calls[0])
-    assert.equal(body.swarm_id, 'child-swarm')
-    assert.equal(body.workspace_binding_id, 'binding-child')
-    assert.equal(body.worktree_mode, 'off')
-    assert.equal(Object.hasOwn(body, 'worktree_use_current_branch'), false)
-    assertNoV2CreateAuthorityFields(String(calls[0]?.input), body)
+    await assert.rejects(
+      createSession({
+        title: 'Local container',
+        workspacePath: '/frontend/device/path/swarm-go',
+        workspaceName: 'swarm-go',
+        mode: 'auto',
+        agentName: 'swarm',
+        preference: { provider: 'codex', model: 'gpt-5.4', thinking: 'medium', serviceTier: '', contextMode: '' },
+        route: localContainerRoute,
+        worktreeMode: 'off',
+      }),
+      /primary self V3 target/,
+    )
+    assert.equal(calls.length, 0)
   })
 })
 
@@ -204,37 +200,6 @@ test('missing workspaceBindingId fails closed without v1 fallback or workspace_p
   })
 })
 
-test('route path and workspace-name fields are not sent in v2 create body', async () => {
-  const { createSession } = await import('./chat-queries')
-
-  await withFetchStub(async (calls) => {
-    await createSession({
-      title: 'Path fields ignored',
-      workspacePath: '/frontend/device/path/swarm-go',
-      workspaceName: 'frontend-name',
-      mode: 'auto',
-      agentName: 'swarm',
-      preference: { provider: 'codex', model: 'gpt-5.4', thinking: 'medium', serviceTier: '', contextMode: '' },
-      route: {
-        ...localContainerRoute,
-        hostWorkspacePath: '/must/not/be/sent/host',
-        runtimeWorkspacePath: '/must/not/be/sent/runtime',
-        hostWorkspaceName: 'must-not-be-sent-host-name',
-        workspaceName: 'must-not-be-sent-workspace-name',
-      },
-    })
-
-    const body = requestBody(calls[0])
-    assertNoV2CreateAuthorityFields(String(calls[0]?.input), body)
-    assert.equal(body.worktree_mode, 'off')
-    assert.equal(Object.hasOwn(body, 'worktree_use_current_branch'), false)
-    assert.equal(Object.hasOwn(body, 'worktree_base_branch'), false)
-    assert.equal(Object.hasOwn(body, 'worktree_branch_name'), false)
-    assert.equal(JSON.stringify(body).includes('must-not-be-sent'), false)
-    assert.equal(JSON.stringify(body).includes('/must/not/be/sent'), false)
-  })
-})
-
 test('metadata sanitization preserves annotations and removes route authority keys', async () => {
   const { createSession } = await import('./chat-queries')
 
@@ -246,7 +211,7 @@ test('metadata sanitization preserves annotations and removes route authority ke
       mode: 'auto',
       agentName: 'swarm',
       preference: { provider: 'codex', model: 'gpt-5.4', thinking: 'medium', serviceTier: '', contextMode: '' },
-      route: localContainerRoute,
+      route: primaryRoute,
       metadata: {
         safe_annotation: 'kept',
         launch_source: 'test',
@@ -290,14 +255,14 @@ test('create response accepts session_execution as returned server state only', 
       mode: 'auto',
       agentName: 'swarm',
       preference: { provider: 'codex', model: 'gpt-5.4', thinking: 'medium', serviceTier: '', contextMode: '' },
-      route: localContainerRoute,
+      route: primaryRoute,
     })
 
-    assert.equal(session.id, 'local-session')
+    assert.equal(session.id, 'primary-session')
     assert.equal(calls.length, 1)
     const body = requestBody(calls[0])
     assert.equal(Object.hasOwn(body, 'session_execution'), false)
-    assert.equal(body.swarm_id, 'child-swarm')
-    assert.equal(body.workspace_binding_id, 'binding-child')
+    assert.equal(body.swarm_id, 'primary-swarm')
+    assert.equal(body.workspace_binding_id, 'binding-primary')
   })
 })
