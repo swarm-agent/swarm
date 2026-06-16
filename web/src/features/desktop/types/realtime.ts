@@ -1,5 +1,6 @@
 import type { VaultImportResult } from '../vault/types'
 import type { DesktopChatRoute } from '../chat/services/chat-routing'
+import type { ResolvedSessionPreference } from '../chat/types/chat'
 
 export interface DesktopSessionUsageRecord {
   sessionId: string
@@ -297,6 +298,20 @@ export interface DesktopStoreState {
   reconnectIfStale: (reason: string) => Promise<void>
   syncV3RealtimeSessions: (options?: { force?: boolean }) => void
   disconnect: () => void
+  createSession: (input: {
+    title?: string
+    workspacePath: string
+    workspaceName: string
+    mode: string
+    agentName?: string
+    metadata?: Record<string, unknown>
+    preference: ResolvedSessionPreference['preference']
+    route?: DesktopChatRoute | null
+    worktreeMode?: string
+    worktreeUseCurrentBranch?: boolean
+    worktreeBaseBranch?: string
+    worktreeBranchName?: string
+  }) => Promise<DesktopSessionRecord>
   submitPrompt: (input: {
     sessionId: string | null
     route?: DesktopChatRoute | null

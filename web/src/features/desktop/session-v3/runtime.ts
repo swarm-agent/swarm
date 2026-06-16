@@ -3,6 +3,8 @@ import {
   reconnectSessionV3,
   sendSessionV3Message,
   stopSessionV3Run,
+  compactSessionV3,
+  type SessionV3CompactOptions,
   type SessionV3CreateSessionInput,
   type SessionV3MessageOptions,
   type SessionV3ReconnectOptions,
@@ -26,6 +28,8 @@ import {
   SESSION_V3_REALTIME_PROTOCOL,
   SESSION_V3_REALTIME_PROTOCOL_VERSION,
   type SessionV3HydratedSessionResponseWire,
+  type SessionV3CompactResponseWire,
+  type SessionV3MessageCommitResponseWire,
   type SessionV3MessageRole,
   type SessionV3RealtimeSubscriptionRequestWire,
   type SessionV3ReconnectSnapshot,
@@ -44,6 +48,7 @@ export type SessionV3RuntimeApi = {
   createSessionV3: typeof createSessionV3
   sendSessionV3Message: typeof sendSessionV3Message
   stopSessionV3Run: typeof stopSessionV3Run
+  compactSessionV3: typeof compactSessionV3
 }
 
 export type DesktopSessionV3RuntimeListener = (
@@ -84,6 +89,10 @@ export interface DesktopSessionV3RuntimeStopRunInput extends SessionV3RequestOpt
   sessionId: string
 }
 
+export interface DesktopSessionV3RuntimeCompactSessionInput extends SessionV3CompactOptions {
+  sessionId: string
+}
+
 export interface DesktopSessionV3RuntimeSetWantedSessionsOptions {
   replace?: boolean
   subscribe?: boolean
@@ -117,6 +126,7 @@ export class DesktopSessionV3Runtime {
       createSessionV3: options.api?.createSessionV3 ?? createSessionV3,
       sendSessionV3Message: options.api?.sendSessionV3Message ?? sendSessionV3Message,
       stopSessionV3Run: options.api?.stopSessionV3Run ?? stopSessionV3Run,
+      compactSessionV3: options.api?.compactSessionV3 ?? compactSessionV3,
     }
     const transportFactory = options.transportFactory ?? ((transportOptions: DesktopV3RealtimeTransportOptions) => new DesktopV3RealtimeTransport(transportOptions))
     this.transport = options.transport ?? transportFactory({
@@ -180,7 +190,7 @@ export class DesktopSessionV3Runtime {
     return response
   }
 
-  async sendMessage(input: DesktopSessionV3RuntimeSendMessageInput): Promise<SessionV3HydratedSessionResponseWire> {
+  async sendMessage(input: DesktopSessionV3RuntimeSendMessageInput): Promise<SessionV3MessageCommitResponseWire> {
     const sessionId = normalizeString(input.sessionId)
     if (!sessionId) {
       throw new Error('Desktop session V3 runtime sendMessage requires sessionId.')
@@ -206,9 +216,19 @@ export class DesktopSessionV3Runtime {
       return
     }
     this.setWantedSessions([sessionId])
-    if (!input.signal?.aborted) {
+    if (!input.signal?.aborted && typeof window !== 'undefined') {
       void this.transport.start()
     }
+  }
+
+  async compactSession(input: DesktopSessionV3RuntimeCompactSessionInput): Promise<SessionV3CompactResponseWire> {
+    const sessionId = normalizeString(input.sessionId)
+    if (!sessionId) {
+      throw new Error('Desktop session V3 runtime compactSession requires sessionId.')
+    }
+    const response = await this.api.compactSessionV3(sessionId, input)
+    this.applyMutation(response, sessionId, input.signal)
+    return response
   }
 
   closeSession(sessionId: string): void {
@@ -240,9 +260,14 @@ export class DesktopSessionV3Runtime {
     }
   }
 
-  shutdown(): void {
+  stop(reason = 'runtime stopped'): void {
     this.shutdownRequested = true
     this.bootInFlight = null
+    this.transport.stop(reason)
+  }
+
+  shutdown(): void {
+    this.stop('runtime shutdown')
     this.transport.dispose()
     this.listeners.clear()
   }
@@ -305,7 +330,7 @@ export class DesktopSessionV3Runtime {
     if (sessionId) {
       this.setWantedSessions([sessionId])
     }
-    if (!signal?.aborted) {
+    if (!signal?.aborted && typeof window !== 'undefined') {
       void this.transport.start()
     }
   }

@@ -16,7 +16,6 @@ import {
   uiSettingsQueryOptions,
 } from '../../../queries/query-options'
 import {
-  createSession,
   resolveSessionPermission,
   startSessionRun,
   updateDraftModelPreference,
@@ -428,11 +427,18 @@ function v3ReconnectDecisionSummary(maintenance: ReturnType<typeof getDesktopRea
   if (maintenance?.shouldMaintainDesktopRealtime === false) {
     reasons.push('store.will-not-maintain-realtime')
   }
-  const realtimeBlocker = String(realtime?.connectBlockedReason ?? '').trim()
+  const realtimeBlocker = realtime && 'connectBlockedReason' in realtime
+    ? String(realtime.connectBlockedReason ?? '').trim()
+    : ''
   if (realtimeBlocker) {
     reasons.push(realtimeBlocker)
   }
-  if (realtime && realtime.subscriptions.length === 0) {
+  const subscriptionCount = realtime
+    ? 'subscriptions' in realtime
+      ? realtime.subscriptions.length
+      : realtime.sessionSubscriptionCount
+    : 0
+  if (realtime && subscriptionCount === 0) {
     reasons.push('session.not-subscribed')
   }
   if (maintenance?.sessionPresent === false) {
@@ -1338,6 +1344,7 @@ export function DesktopChatPanel({
   const sessionId = session?.id ?? null
   const pendingWorktreeBranch = sessionId ? '' : (pendingWorktreeBranchName?.trim() ?? '')
   const ensureRunStream = useDesktopUiStore((state) => state.ensureRunStream)
+  const createSession = useDesktopUiStore((state) => state.createSession)
   const submitPrompt = useDesktopUiStore((state) => state.submitPrompt)
   const stopRun = useDesktopUiStore((state) => state.stopRun)
   const setSessionDraft = useDesktopUiStore((state) => state.setSessionDraft)
@@ -1835,7 +1842,7 @@ export function DesktopChatPanel({
     existingSessionStreamProbeRef.current = null
     const completionDiagnostics = getDesktopV3RealtimeDiagnostics(probe.sessionId)
     const completionMaintenanceDiagnostics = getDesktopRealtimeMaintenanceDiagnostics(probe.sessionId)
-    const subscription = completionDiagnostics?.subscriptions[0] ?? null
+    const subscription = completionDiagnostics && 'subscriptions' in completionDiagnostics ? completionDiagnostics.subscriptions[0] ?? null : null
     console.info('[existing-session-stream-complete]', {
       sessionId: probe.sessionId,
       clientRequestId: probe.clientRequestId,
@@ -2830,7 +2837,7 @@ export function DesktopChatPanel({
     } catch (error) {
       setPanelError(error instanceof Error ? error.message : 'Failed to send prompt')
     }
-  }, [activeChatRoute, activePreferenceRecord, canSendWithSelectedPreference, commitDictationDraft, composer, currentSessionAgent, displayedMessages, effectiveSessionMode, liveAssistantDraft, liveRunId, liveSession?.lastEventSeq, mentionSubagents, onClearPendingWorktreeBranch, onSessionCreated, pendingWorktreeBranch, resolvedLockedAgentName, retainedAssistantSegments, session, sessionCreateOverride, stopDictation, submitPrompt, submitting, workspaceName, workspacePath])
+  }, [activeChatRoute, activePreferenceRecord, canSendWithSelectedPreference, commitDictationDraft, composer, createSession, currentSessionAgent, displayedMessages, effectiveSessionMode, liveAssistantDraft, liveRunId, liveSession?.lastEventSeq, mentionSubagents, onClearPendingWorktreeBranch, onSessionCreated, pendingWorktreeBranch, resolvedLockedAgentName, retainedAssistantSegments, session, sessionCreateOverride, stopDictation, submitPrompt, submitting, workspaceName, workspacePath])
 
   const handleStop = useCallback(async () => {
     if (!sessionId) {
@@ -2913,7 +2920,7 @@ export function DesktopChatPanel({
         error: error instanceof Error ? error.message : 'Failed to save current plan',
       }))
     }
-  }, [planModal.plan, queryClient, sessionId])
+  }, [planModal.plan, sessionId])
 
   const handleCommitModeChange = useCallback((mode: CommitMode) => {
     setCommitModal((current) => ({
@@ -3041,7 +3048,7 @@ export function DesktopChatPanel({
         error: error instanceof Error ? error.message : 'Failed to start save run.',
       }))
     }
-  }, [activeChatRoute, activePreferenceRecord.preference, commitModal.instructions, commitModal.mode, onToast, selectedPrimaryAgent, session, workspaceName])
+  }, [activeChatRoute, activePreferenceRecord.preference, commitModal.instructions, commitModal.mode, createSession, onToast, selectedPrimaryAgent, session, submitPrompt, workspaceName, workspacePath])
 
 
   const handleModeChange = useCallback(async (nextMode: 'plan' | 'auto') => {

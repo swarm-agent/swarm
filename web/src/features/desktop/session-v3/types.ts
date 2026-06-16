@@ -354,6 +354,7 @@ export interface SessionV3HydratedSessionResponseWire {
   ok?: boolean
   session?: SessionV3SessionWire
   projection?: SessionV3ProjectionWire
+  message?: SessionV3MessageWire
   messages?: SessionV3MessageWire[]
   events?: SessionV3EventWire[]
   pending_permissions?: unknown[]
@@ -371,9 +372,7 @@ export interface SessionV3MessageCommitRequestWire {
   metadata?: SessionV3JsonRecord
 }
 
-export interface SessionV3MessageCommitResponseWire extends SessionV3HydratedSessionResponseWire {
-  message?: SessionV3MessageWire
-}
+export interface SessionV3MessageCommitResponseWire extends SessionV3HydratedSessionResponseWire {}
 
 export interface SessionV3CompactRequestWire {
   client_request_id?: string

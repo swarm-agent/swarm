@@ -430,9 +430,6 @@ export async function stopSessionV3Run(
 ): Promise<SessionV3RunStopResponseWire | null> {
   const normalizedSessionId = assertSessionV3SessionId(sessionId)
   const normalizedRunId = input.runId.trim()
-  if (!normalizedRunId) {
-    throw new Error('Sessions API v3 run stop requires a run id.')
-  }
   const body: SessionV3RunStopRequestWire = {
     type: 'run.stop',
     run_id: normalizedRunId,

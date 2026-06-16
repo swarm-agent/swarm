@@ -578,7 +578,7 @@ function mutationSnapshot(
   if (session?.id) {
     sessionsById[session.id] = session
   }
-  const messages = normalizeMessages(response.messages, normalizedSessionId)
+  const messages = normalizeMessages(response.messages && response.messages.length > 0 ? response.messages : response.message ? [response.message] : undefined, normalizedSessionId)
   const permissions = normalizePermissions(response.pending_permissions, normalizedSessionId)
   const usage = usageFromWire(response.usage_summary, normalizedSessionId)
   const runIntent = runIntentFromWire(response.active_run_intent ?? response.run_intent, normalizedSessionId)
@@ -599,6 +599,7 @@ function mutationSnapshot(
     permissionsById: Object.keys(permissions).length > 0 ? permissions : undefined,
     usageBySessionId: usage ? { [usage.sessionId || sessionId]: usage } : undefined,
     runIntentsBySessionId: runIntent ? { [runIntent.sessionId]: runIntent } : undefined,
+    runIntentReconcileSessionIds: runIntent ? [runIntent.sessionId] : undefined,
   }
 }
 

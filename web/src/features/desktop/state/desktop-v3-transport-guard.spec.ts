@@ -183,6 +183,44 @@ test('Desktop V3 forbidden transport symbols remain confined to the known mixed-
   )
 })
 
+test('desktop-ui-store owns exactly one DesktopSessionV3Runtime instance for CP-5.1', () => {
+  const source = readText(path.join(desktopRoot, 'state/desktop-ui-store.ts'))
+  assert.equal(
+    countPattern(source, /\bnew\s+DesktopSessionV3Runtime\b/g),
+    1,
+    'desktop-ui-store.ts must construct exactly one store-owned DesktopSessionV3Runtime instance',
+  )
+  assert.equal(
+    countPattern(source, /\bcreateDesktopSessionV3Runtime\b/g),
+    0,
+    'desktop-ui-store.ts must not hide extra runtime construction behind the factory helper',
+  )
+  assert.match(
+    source,
+    /let\s+desktopSessionV3Runtime:\s*DesktopSessionV3Runtime\s*\|\s*null\s*=\s*null/,
+    'desktop-ui-store.ts must keep the runtime as a module singleton owned by the store',
+  )
+  assert.match(
+    source,
+    /function\s+ensureDesktopSessionV3Runtime\(\):\s*DesktopSessionV3Runtime/,
+    'desktop-ui-store.ts must expose one narrow internal ensure function for the store-owned runtime',
+  )
+})
+
+test('desktop-ui-store connect boots through DesktopSessionV3Runtime for CP-5.2', () => {
+  const source = readText(path.join(desktopRoot, 'state/desktop-ui-store.ts'))
+  assert.match(
+    source,
+    /await\s+ensureDesktopSession\(true\)[\s\S]+const\s+runtime\s*=\s*ensureDesktopSessionV3Runtime\(\)[\s\S]+await\s+runtime\.boot\(\)/,
+    'desktop connect must use ensureDesktopSession(true) for cookie/auth gating, then runtime.boot() for snapshot plus realtime startup',
+  )
+  assert.doesNotMatch(
+    source,
+    /openDesktopWebSocket|fetchAndApplyDesktopV3Reconnect|syncV3RealtimeSessionsFromReconnect/,
+    'desktop connect must not use legacy /ws or legacy V3 controller reconnect helpers',
+  )
+})
+
 test('Desktop V3 transport migration has an explicit inventory of old mixed-shape tests to replace', () => {
   const missing = legacyMixedTransportTestsToReplace.flatMap(({ file, marker, replacement }) => {
     const filePath = path.join(desktopRoot, file)
