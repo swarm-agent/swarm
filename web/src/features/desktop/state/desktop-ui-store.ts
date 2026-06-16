@@ -170,6 +170,104 @@ let pendingDesktopV3GlobalDiscovery: Promise<DesktopDaemonSnapshot> | null = nul
 let pendingDesktopV3Reconnect: Promise<DesktopV3ReconnectSnapshot> | null = null
 let runStreamController: DesktopRunStreamController | null = null
 
+type DesktopV3FollowUpTraceStep = {
+  name: string
+  at: number
+  elapsedMs: number
+  details?: Record<string, unknown>
+}
+
+type DesktopV3FollowUpTrace = {
+  sessionId: string
+  startedAt: number
+  steps: DesktopV3FollowUpTraceStep[]
+}
+
+function pushDesktopV3FollowUpTraceStep(
+  trace: DesktopV3FollowUpTrace,
+  name: string,
+  details: Record<string, unknown> = {},
+): void {
+  const at = Date.now()
+  trace.steps.push({
+    name,
+    at,
+    elapsedMs: at - trace.startedAt,
+    details,
+  })
+}
+
+function summarizeDesktopV3RealtimeDiagnostics(diagnostics: DesktopV3RealtimeDiagnostics | null): Record<string, unknown> | null {
+  if (!diagnostics) {
+    return null
+  }
+  return {
+    desired: diagnostics.desired,
+    socketState: diagnostics.socketState,
+    generation: diagnostics.generation,
+    endpointCursorPresent: diagnostics.endpointCursorPresent,
+    reconnectAttempt: diagnostics.reconnectAttempt,
+    lastActivityAt: diagnostics.lastActivityAt,
+    subscriptionCount: diagnostics.subscriptionCount,
+    connectBlockedReason: diagnostics.connectBlockedReason,
+    subscriptions: diagnostics.subscriptions.map((subscription) => ({
+      sessionId: subscription.sessionId,
+      subscriptionId: subscription.subscriptionId,
+      endpointCursorPresent: subscription.endpointCursorPresent,
+      subscribeSentAt: subscription.subscribeSentAt,
+      subscribeSentCount: subscription.subscribeSentCount,
+      lastFrameKind: subscription.lastFrameKind,
+      lastEventType: subscription.lastEventType,
+      lastFrameAt: subscription.lastFrameAt,
+      lastReplayStartedAt: subscription.lastReplayStartedAt,
+      lastReplayCompleteAt: subscription.lastReplayCompleteAt,
+      lastEventAt: subscription.lastEventAt,
+      lastEndpointCursorPresent: subscription.lastEndpointCursorPresent,
+    })),
+  }
+}
+
+function desktopV3FollowUpConclusion(diagnostics: DesktopV3RealtimeDiagnostics | null): Record<string, unknown> {
+  const subscription = diagnostics?.subscriptions[0]
+  const connected = diagnostics?.socketState === 'open'
+  const subscribed = Boolean(subscription && subscription.subscribeSentCount > 0)
+  const streamed = Boolean(subscription && (subscription.lastEventAt > 0 || subscription.lastFrameAt > 0))
+  let outcome = 'unknown'
+  if (!diagnostics) {
+    outcome = 'no-controller-diagnostics'
+  } else if (!diagnostics.desired) {
+    outcome = 'not-desired'
+  } else if (diagnostics.subscriptionCount === 0) {
+    outcome = 'subscription-missing-or-clobbered'
+  } else if (!connected) {
+    outcome = `socket-${diagnostics.socketState}`
+  } else if (!subscribed) {
+    outcome = 'socket-open-subscribe-not-sent'
+  } else if (!streamed) {
+    outcome = 'subscribed-no-stream-frame-observed-yet'
+  } else {
+    outcome = 'stream-frame-observed'
+  }
+  return {
+    outcome,
+    connected,
+    subscribed,
+    streamFrameObserved: streamed,
+  }
+}
+
+function reportDesktopV3FollowUpTrace(trace: DesktopV3FollowUpTrace): void {
+  const finalDiagnostics = getDesktopV3RealtimeDiagnostics(trace.sessionId)
+  console.info('[desktop-v3-follow-up] submit/reconnect/stream report', {
+    sessionId: trace.sessionId,
+    durationMs: Date.now() - trace.startedAt,
+    steps: trace.steps,
+    reconnectSync: desktopV3ReconnectSyncDiagnostics,
+    finalRealtime: summarizeDesktopV3RealtimeDiagnostics(finalDiagnostics),
+    conclusion: desktopV3FollowUpConclusion(finalDiagnostics),
+  })
+}
+
 function requireRunStreamController(): DesktopRunStreamController {
   if (!runStreamController) {
     throw new Error('run stream controller is not initialized')
@@ -4267,21 +4365,65 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
 
       if (effectiveSessionApi === 'v3') {
         const clientRequestId = providedClientRequestId?.trim() || `desktop-v3-message:${targetSessionId}:${submitStartedAt}`
-        const result = await sendSessionMessage(targetSessionId, 'user', trimmedPrompt, route, { sessionApi: 'v3', clientRequestId })
-        set((state: DesktopStoreState) => applyV3MessageCommitResult(state, targetSessionId, result, Date.now()))
-        let mutationEndpointCursor = ''
-        if (result && typeof result === 'object' && 'realtimeOutbox' in result) {
-          const cursor = (result as { realtimeOutbox?: { endpointCursor?: string } | null }).realtimeOutbox?.endpointCursor?.trim() ?? ''
-          if (cursor) {
-            mutationEndpointCursor = cursor
-            desktopV3RealtimeEndpointCursor = cursor
-            requireV3RealtimeController().setEndpointCursor(cursor)
-          }
+        const trace: DesktopV3FollowUpTrace = {
+          sessionId: targetSessionId,
+          startedAt: submitStartedAt,
+          steps: [],
         }
-        set({ realtimeDesired: true })
-        await subscribeDesktopV3SessionRealtime(targetSessionId, mutationEndpointCursor)
-        await get().connect()
-        await syncV3RealtimeSessionsFromReconnect({ force: true })
+        pushDesktopV3FollowUpTraceStep(trace, 'submit-start', {
+          clientRequestId,
+          promptLength: trimmedPrompt.length,
+          beforeRealtime: summarizeDesktopV3RealtimeDiagnostics(getDesktopV3RealtimeDiagnostics(targetSessionId)),
+        })
+        try {
+          const result = await sendSessionMessage(targetSessionId, 'user', trimmedPrompt, route, { sessionApi: 'v3', clientRequestId })
+          pushDesktopV3FollowUpTraceStep(trace, 'message-post-returned', {
+            ok: result.ok,
+            messageId: result.message?.id ?? '',
+            runIntentPresent: Boolean(result.runIntent),
+            realtimeOutboxPresent: Boolean(result.realtimeOutbox),
+            realtimeOutboxSessionId: result.realtimeOutbox?.sessionId ?? '',
+            endpointSeq: result.realtimeOutbox?.endpointSeq ?? 0,
+            endpointCursorPresent: Boolean(result.realtimeOutbox?.endpointCursor?.trim()),
+          })
+          set((state: DesktopStoreState) => applyV3MessageCommitResult(state, targetSessionId, result, Date.now()))
+          let mutationEndpointCursor = ''
+          if (result && typeof result === 'object' && 'realtimeOutbox' in result) {
+            const cursor = (result as { realtimeOutbox?: { endpointCursor?: string } | null }).realtimeOutbox?.endpointCursor?.trim() ?? ''
+            if (cursor) {
+              mutationEndpointCursor = cursor
+              desktopV3RealtimeEndpointCursor = cursor
+              requireV3RealtimeController().setEndpointCursor(cursor)
+            }
+          }
+          pushDesktopV3FollowUpTraceStep(trace, 'message-commit-applied', {
+            mutationEndpointCursorPresent: Boolean(mutationEndpointCursor),
+            afterCommitRealtime: summarizeDesktopV3RealtimeDiagnostics(getDesktopV3RealtimeDiagnostics(targetSessionId)),
+          })
+          set({ realtimeDesired: true })
+          await subscribeDesktopV3SessionRealtime(targetSessionId, mutationEndpointCursor)
+          pushDesktopV3FollowUpTraceStep(trace, 'manual-session-subscribe-finished', {
+            afterSubscribeRealtime: summarizeDesktopV3RealtimeDiagnostics(getDesktopV3RealtimeDiagnostics(targetSessionId)),
+          })
+          await get().connect()
+          pushDesktopV3FollowUpTraceStep(trace, 'store-connect-finished', {
+            storeConnectionState: get().connectionState,
+            afterStoreConnectRealtime: summarizeDesktopV3RealtimeDiagnostics(getDesktopV3RealtimeDiagnostics(targetSessionId)),
+          })
+          await syncV3RealtimeSessionsFromReconnect({ force: true })
+          pushDesktopV3FollowUpTraceStep(trace, 'reconnect-sync-finished', {
+            reconnectSync: desktopV3ReconnectSyncDiagnostics,
+            afterReconnectSyncRealtime: summarizeDesktopV3RealtimeDiagnostics(getDesktopV3RealtimeDiagnostics(targetSessionId)),
+          })
+          window.setTimeout(() => reportDesktopV3FollowUpTrace(trace), 3000)
+        } catch (error) {
+          pushDesktopV3FollowUpTraceStep(trace, 'failed', {
+            error: error instanceof Error ? error.message : String(error),
+            realtime: summarizeDesktopV3RealtimeDiagnostics(getDesktopV3RealtimeDiagnostics(targetSessionId)),
+          })
+          reportDesktopV3FollowUpTrace(trace)
+          throw error
+        }
         return
       }
 
