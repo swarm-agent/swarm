@@ -40,9 +40,27 @@ export type DesktopV3RealtimeSubscriptionDiagnostics = {
   lastEndpointCursorPresent: boolean
 }
 
+export type DesktopV3RealtimeSocketState = 'none' | 'connecting' | 'open' | 'closing' | 'closed'
+
+export type DesktopV3RealtimeTraceEvent = {
+  ts: number
+  event: string
+  generation: number
+  desired: boolean
+  socketState: DesktopV3RealtimeSocketState
+  subscriptionCount: number
+  connectBlockedReason: string
+  sessionId?: string
+  targetSessionId?: string
+  traceId?: string
+  source?: string
+  reason?: string
+  [key: string]: unknown
+}
+
 export type DesktopV3RealtimeDiagnostics = {
   desired: boolean
-  socketState: 'none' | 'connecting' | 'open' | 'closing' | 'closed'
+  socketState: DesktopV3RealtimeSocketState
   generation: number
   endpointCursorPresent: boolean
   reconnectAttempt: number
@@ -50,7 +68,19 @@ export type DesktopV3RealtimeDiagnostics = {
   subscriptionCount: number
   connectBlockedReason: string
   subscriptions: DesktopV3RealtimeSubscriptionDiagnostics[]
+  recentEvents: DesktopV3RealtimeTraceEvent[]
 }
+
+export type DesktopV3RealtimeTraceContext = {
+  source?: string
+  traceId?: string
+  targetSessionId?: string
+}
+
+export type DesktopV3RealtimeSyncOptions = {
+  resubscribe?: boolean
+  replace?: boolean
+} & DesktopV3RealtimeTraceContext
 
 type DesktopV3RealtimeControllerOptions = {
   getEndpointCursor: () => string
@@ -163,6 +193,7 @@ function subscriptionDiagnostics(sub: SubscriptionEntry): DesktopV3RealtimeSubsc
 
 export class DesktopV3RealtimeController {
   private readonly subscriptions = new Map<string, SubscriptionEntry>()
+  private readonly recentEvents: DesktopV3RealtimeTraceEvent[] = []
   private socket: WebSocket | null = null
   private connecting: Promise<void> | null = null
   private reconnectTimer: number | null = null
@@ -177,9 +208,10 @@ export class DesktopV3RealtimeController {
     this.endpointCursor = options.getEndpointCursor().trim()
   }
 
-  subscribeSession(sessionId: string, endpointCursor?: string | null, subscriptionId?: string | null): Promise<void> {
+  subscribeSession(sessionId: string, endpointCursor?: string | null, subscriptionId?: string | null, context: DesktopV3RealtimeTraceContext = {}): Promise<void> {
     const normalizedSessionId = sessionId.trim()
     if (!normalizedSessionId) {
+      this.trace('subscribeSession.skipped', { ...context, reason: 'empty-session-id' })
       return Promise.resolve()
     }
     const existing = this.subscriptions.get(normalizedSessionId)
@@ -202,17 +234,26 @@ export class DesktopV3RealtimeController {
       lastEndpointCursorPresent: existing?.lastEndpointCursorPresent ?? false,
     })
     this.desired = true
+    this.trace('subscribeSession.upserted', {
+      ...context,
+      sessionId: normalizedSessionId,
+      subscriptionId: normalizedSubscriptionId,
+      hadExistingSubscription: Boolean(existing),
+      endpointCursorPresent: cursor.trim() !== '',
+    })
     if (existing && this.socket?.readyState === WebSocket.OPEN) {
+      this.trace('subscribeSession.no_send_existing_socket_open', { ...context, sessionId: normalizedSessionId })
       return Promise.resolve()
     }
     if (this.socket?.readyState === WebSocket.OPEN) {
-      this.sendSubscribe(this.socket, this.subscriptions.get(normalizedSessionId)!)
+      this.sendSubscribe(this.socket, this.subscriptions.get(normalizedSessionId)!, context)
       return Promise.resolve()
     }
-    return this.connect()
+    this.trace('subscribeSession.connect_requested', { ...context, sessionId: normalizedSessionId })
+    return this.connect(context)
   }
 
-  syncSessions(subscriptions: DesktopV3RealtimeSubscription[], options: { resubscribe?: boolean; replace?: boolean } = {}): void {
+  syncSessions(subscriptions: DesktopV3RealtimeSubscription[], options: DesktopV3RealtimeSyncOptions = {}): void {
     const normalized = subscriptions
       .map((sub) => ({
         sessionId: sub.sessionId.trim(),
@@ -220,32 +261,56 @@ export class DesktopV3RealtimeController {
         endpointCursor: sub.endpointCursor,
       }))
       .filter((sub) => sub.sessionId)
+    this.trace('syncSessions.start', {
+      ...options,
+      replace: Boolean(options.replace),
+      resubscribe: Boolean(options.resubscribe),
+      incomingSessionIds: normalized.map((sub) => sub.sessionId),
+      existingSessionIds: Array.from(this.subscriptions.keys()),
+      targetPresentInIncoming: options.targetSessionId ? normalized.some((sub) => sub.sessionId === options.targetSessionId) : undefined,
+    })
+    const removedSessionIds: string[] = []
     if (options.replace) {
       const keep = new Set(normalized.map((sub) => sub.sessionId))
       for (const sessionId of Array.from(this.subscriptions.keys())) {
         if (!keep.has(sessionId)) {
           this.subscriptions.delete(sessionId)
+          removedSessionIds.push(sessionId)
         }
+      }
+      if (removedSessionIds.length > 0) {
+        this.trace('syncSessions.removed_missing_subscriptions', {
+          ...options,
+          removedSessionIds,
+          targetRemoved: options.targetSessionId ? removedSessionIds.includes(options.targetSessionId) : undefined,
+          reason: 'replace=true target missing from incoming reconnect subscriptions',
+        })
       }
     }
     for (const sub of normalized) {
-      this.subscribeSession(sub.sessionId, sub.endpointCursor, sub.subscriptionId)
+      this.subscribeSession(sub.sessionId, sub.endpointCursor, sub.subscriptionId, options)
     }
     if (this.subscriptions.size === 0) {
       this.desired = false
+      this.trace('syncSessions.desired_false_no_subscriptions', {
+        ...options,
+        removedSessionIds,
+        reason: 'subscriptions.size=0 after syncSessions',
+      })
       return
     }
     if (normalized.length > 0 && options.resubscribe && this.socket?.readyState === WebSocket.OPEN) {
       for (const sub of normalized) {
         const entry = this.subscriptions.get(sub.sessionId)
         if (entry) {
-          this.sendSubscribe(this.socket, entry)
+          this.sendSubscribe(this.socket, entry, options)
         }
       }
       return
     }
     if (normalized.length > 0 && this.desired && (!this.socket || this.socket.readyState === WebSocket.CLOSED)) {
-      void this.connect()
+      this.trace('syncSessions.connect_requested', options)
+      void this.connect(options)
     }
   }
 
@@ -280,10 +345,12 @@ export class DesktopV3RealtimeController {
       subscriptionCount: allSubscriptions.length,
       connectBlockedReason,
       subscriptions: subscriptions.map(subscriptionDiagnostics),
+      recentEvents: this.recentEvents.slice(-40),
     }
   }
 
-  closeAll(): void {
+  closeAll(context: DesktopV3RealtimeTraceContext = {}): void {
+    this.trace('closeAll.start', context)
     this.desired = false
     this.subscriptions.clear()
     this.clearReconnect()
@@ -294,10 +361,12 @@ export class DesktopV3RealtimeController {
     this.lastActivityAt = 0
     this.generation += 1
     socket?.close()
+    this.trace('closeAll.complete', context)
   }
 
-  reconnectIfStale(reason: string): void {
+  reconnectIfStale(reason: string, context: DesktopV3RealtimeTraceContext = {}): void {
     if (!this.desired || this.subscriptions.size === 0) {
+      this.trace('reconnectIfStale.skipped', { ...context, reason })
       return
     }
     const socketState = this.socket?.readyState ?? WebSocket.CLOSED
@@ -305,20 +374,27 @@ export class DesktopV3RealtimeController {
     if (this.reconnectTimer === null && socketState === WebSocket.OPEN && !activityStale) {
       return
     }
-    this.forceReconnect(reason)
+    this.forceReconnect(reason, context)
   }
 
-  async connect(): Promise<void> {
+  async connect(context: DesktopV3RealtimeTraceContext = {}): Promise<void> {
     if (!this.desired || this.subscriptions.size === 0) {
+      this.trace('connect.skipped', {
+        ...context,
+        reason: !this.desired ? 'controller.desired=false' : 'controller.subscriptions=0',
+      })
       return
     }
     if (this.socket && (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING)) {
+      this.trace('connect.skipped', { ...context, reason: `socket=${socketStateName(this.socket)}` })
       return
     }
     if (this.connecting) {
+      this.trace('connect.await_existing', context)
       return this.connecting
     }
-    this.connecting = this.openConnection()
+    this.trace('connect.start', context)
+    this.connecting = this.openConnection(context)
     try {
       await this.connecting
     } finally {
@@ -326,42 +402,56 @@ export class DesktopV3RealtimeController {
     }
   }
 
-  private async openConnection(): Promise<void> {
+  private async openConnection(context: DesktopV3RealtimeTraceContext = {}): Promise<void> {
     this.clearReconnect()
     this.generation += 1
     const generation = this.generation
+    this.trace('openConnection.start', { ...context, generation })
     try {
       const socket = await openDesktopV3RealtimeStream({ endpointCursor: this.endpointCursor || this.options.getEndpointCursor() })
       if (generation !== this.generation || !this.desired) {
+        this.trace('openConnection.close_stale_or_undesired', {
+          ...context,
+          generation,
+          reason: generation !== this.generation ? 'generation-changed' : 'controller.desired=false',
+        })
         socket.close()
         return
       }
       this.socket = socket
-      this.attachSocket(socket, generation)
+      this.attachSocket(socket, generation, context)
       this.noteActivity(generation)
+      this.trace('openConnection.attached', { ...context, generation })
     } catch (error) {
       if (generation !== this.generation) {
         return
       }
       const message = error instanceof Error ? error.message : 'Failed to open V3 realtime stream'
+      this.trace('openConnection.failed', { ...context, generation, reason: message })
       this.options.onReconnectPending?.(message, Date.now())
-      this.scheduleReconnect(message)
+      this.scheduleReconnect(message, context)
     }
   }
 
-  private attachSocket(socket: WebSocket, generation: number): void {
+  private attachSocket(socket: WebSocket, generation: number, context: DesktopV3RealtimeTraceContext = {}): void {
     let subscriptionsSent = false
     const handleOpen = () => {
       if (generation !== this.generation || this.socket !== socket || !this.desired) {
+        this.trace('socket.open.close_stale_or_undesired', {
+          ...context,
+          generation,
+          reason: generation !== this.generation || this.socket !== socket ? 'generation-or-socket-changed' : 'controller.desired=false',
+        })
         socket.close()
         return
       }
       this.reconnectAttempt = 0
       this.clearReconnect()
       this.noteActivity(generation)
+      this.trace('socket.open', { ...context, generation })
       if (!subscriptionsSent) {
         subscriptionsSent = true
-        this.sendAllSubscriptions(socket)
+        this.sendAllSubscriptions(socket, context)
       }
     }
 
@@ -378,10 +468,12 @@ export class DesktopV3RealtimeController {
       try {
         const frame = normalizedFrame(JSON.parse(String(event.data)))
         if (!frame) {
+          this.trace('socket.message.ignored', { ...context, generation, reason: 'missing-kind' })
           return
         }
         const kind = String(frame.kind ?? frame.type ?? '').trim()
         const sessionId = frameSessionId(frame)
+        const eventType = String(frame.event?.event_type ?? frame.event_type ?? '').trim()
         let applied = false
         if (shouldDeliverFrame(kind)) {
           const ts = Date.now()
@@ -391,12 +483,22 @@ export class DesktopV3RealtimeController {
           }
         }
         const cursor = frameEndpointCursor(frame)
-        this.noteSubscriptionFrame(sessionId, kind, String(frame.event?.event_type ?? frame.event_type ?? '').trim(), cursor, Date.now())
+        this.trace('socket.message', {
+          ...context,
+          generation,
+          sessionId,
+          kind,
+          eventType,
+          applied,
+          endpointCursorPresent: cursor !== '',
+          matchingSubscriptionPresent: sessionId ? this.subscriptions.has(sessionId) : false,
+        })
+        this.noteSubscriptionFrame(sessionId, kind, eventType, cursor, Date.now(), context)
         if (cursor && (applied || shouldAdvanceCursorForControlFrame(kind))) {
           this.advanceEndpointCursor(cursor)
         }
         if (kind === 'slow_consumer.reconnect_required') {
-          this.forceReconnect('slow consumer')
+          this.forceReconnect('slow consumer', context)
         }
       } catch (error) {
         console.error('[desktop-v3-realtime] frame parse failed', error)
@@ -405,48 +507,74 @@ export class DesktopV3RealtimeController {
 
     socket.addEventListener('error', () => {
       if (generation !== this.generation || this.socket !== socket || !this.desired) {
+        this.trace('socket.error.ignored', { ...context, generation, reason: 'stale-socket-or-undesired' })
         return
       }
+      this.trace('socket.error', { ...context, generation, reason: 'WebSocket error event' })
       this.options.onReconnectPending?.('V3 realtime socket error', Date.now())
-      this.forceReconnect('socket error')
+      this.forceReconnect('socket error', context)
     })
 
     socket.addEventListener('close', () => {
       this.clearLiveness()
       if (generation !== this.generation || this.socket !== socket) {
+        this.trace('socket.close.ignored', { ...context, generation, reason: 'stale-socket' })
         return
       }
       this.socket = null
+      this.trace('socket.close', { ...context, generation })
       if (!this.desired || this.subscriptions.size === 0) {
+        this.trace('socket.close.no_reconnect', {
+          ...context,
+          generation,
+          reason: !this.desired ? 'controller.desired=false' : 'controller.subscriptions=0',
+        })
         return
       }
       this.options.onReconnectPending?.('V3 realtime socket closed', Date.now())
-      this.scheduleReconnect('socket closed')
+      this.scheduleReconnect('socket closed', context)
     })
   }
 
-  private sendAllSubscriptions(socket: WebSocket): void {
+  private sendAllSubscriptions(socket: WebSocket, context: DesktopV3RealtimeTraceContext = {}): void {
+    this.trace('sendAllSubscriptions.start', { ...context, sessionIds: Array.from(this.subscriptions.keys()) })
     for (const sub of this.subscriptions.values()) {
-      this.sendSubscribe(socket, sub)
+      this.sendSubscribe(socket, sub, context)
     }
   }
 
-  private sendSubscribe(socket: WebSocket, sub: SubscriptionEntry): void {
+  private sendSubscribe(socket: WebSocket, sub: SubscriptionEntry, context: DesktopV3RealtimeTraceContext = {}): void {
     sub.subscribeSentAt = Date.now()
     sub.subscribeSentCount += 1
+    const endpointCursor = sub.endpointCursor || this.endpointCursor || this.options.getEndpointCursor()
+    this.trace('subscribe.frame_sent', {
+      ...context,
+      sessionId: sub.sessionId,
+      subscriptionId: sub.subscriptionId,
+      endpointCursorPresent: endpointCursor.trim() !== '',
+      subscribeSentCount: sub.subscribeSentCount,
+    })
     socket.send(JSON.stringify({
       protocol: 'v3.realtime',
       protocol_version: 1,
       kind: 'subscribe.session',
       session_id: sub.sessionId,
       subscription_id: sub.subscriptionId,
-      endpoint_cursor: sub.endpointCursor || this.endpointCursor || this.options.getEndpointCursor(),
+      endpoint_cursor: endpointCursor,
     }))
   }
 
-  private noteSubscriptionFrame(sessionId: string, kind: string, eventType: string, endpointCursor: string, ts: number): void {
+  private noteSubscriptionFrame(sessionId: string, kind: string, eventType: string, endpointCursor: string, ts: number, context: DesktopV3RealtimeTraceContext = {}): void {
     const sub = this.subscriptions.get(sessionId)
     if (!sub) {
+      this.trace('frame.no_matching_subscription', {
+        ...context,
+        sessionId,
+        kind,
+        eventType,
+        endpointCursorPresent: endpointCursor.trim() !== '',
+        reason: sessionId ? 'session-not-in-subscription-map' : 'frame-has-no-session-id',
+      })
       return
     }
     sub.lastFrameKind = kind
@@ -473,7 +601,8 @@ export class DesktopV3RealtimeController {
     }
   }
 
-  private forceReconnect(reason: string): void {
+  private forceReconnect(reason: string, context: DesktopV3RealtimeTraceContext = {}): void {
+    this.trace('forceReconnect.start', { ...context, reason })
     this.clearReconnect()
     this.clearLiveness()
     const socket = this.socket
@@ -482,19 +611,29 @@ export class DesktopV3RealtimeController {
     this.lastActivityAt = 0
     this.generation += 1
     socket?.close()
-    this.scheduleReconnect(reason)
+    this.scheduleReconnect(reason, context)
   }
 
-  private scheduleReconnect(reason: string): void {
+  private scheduleReconnect(reason: string, context: DesktopV3RealtimeTraceContext = {}): void {
     if (!this.desired || this.subscriptions.size === 0 || this.reconnectTimer !== null) {
+      this.trace('scheduleReconnect.skipped', {
+        ...context,
+        reason,
+        skipReason: !this.desired
+          ? 'controller.desired=false'
+          : this.subscriptions.size === 0
+            ? 'controller.subscriptions=0'
+            : 'reconnect-timer-active',
+      })
       return
     }
     const attempt = this.reconnectAttempt
     const delay = reconnectDelayMs(attempt)
     this.reconnectAttempt += 1
+    this.trace('scheduleReconnect.scheduled', { ...context, reason, attempt, delay })
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null
-      void this.connect()
+      void this.connect(context)
     }, delay)
     console.warn(`[desktop-v3-realtime] scheduled reconnect after ${reason}`)
   }
@@ -516,6 +655,40 @@ export class DesktopV3RealtimeController {
       this.options.onReconnectPending?.('V3 realtime inactivity timeout', Date.now())
       this.forceReconnect('stream inactivity timeout')
     }, LIVENESS_TIMEOUT_MS)
+  }
+
+  private trace(event: string, details: Record<string, unknown> = {}): void {
+    const snapshot = this.diagnosticsSnapshot()
+    const record: DesktopV3RealtimeTraceEvent = {
+      ts: Date.now(),
+      event,
+      generation: this.generation,
+      desired: this.desired,
+      socketState: socketStateName(this.socket),
+      subscriptionCount: this.subscriptions.size,
+      connectBlockedReason: snapshot.connectBlockedReason,
+      ...details,
+    }
+    this.recentEvents.push(record)
+    if (this.recentEvents.length > 80) {
+      this.recentEvents.splice(0, this.recentEvents.length - 80)
+    }
+    if (typeof console !== 'undefined') {
+      console.info('[desktop-v3-realtime-trace]', record)
+    }
+  }
+
+  private diagnosticsSnapshot(): Pick<DesktopV3RealtimeDiagnostics, 'socketState' | 'connectBlockedReason'> {
+    const allSubscriptions = Array.from(this.subscriptions.values())
+    const socketState = socketStateName(this.socket)
+    const connectBlockedReason = !this.desired
+      ? 'controller.desired=false'
+      : allSubscriptions.length === 0
+        ? 'controller.subscriptions=0'
+        : socketState === 'open' || socketState === 'connecting'
+          ? `controller.socket=${socketState}`
+          : 'controller.ready-to-connect'
+    return { socketState, connectBlockedReason }
   }
 
   private clearReconnect(): void {

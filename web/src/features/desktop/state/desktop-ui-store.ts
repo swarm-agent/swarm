@@ -14,7 +14,7 @@ import {
 } from '../../workspaces/launcher/services/workspace-overview-cache'
 import { setWorkspaceThemeCustomOptions } from '../../workspaces/launcher/services/workspace-theme'
 import { openDesktopWebSocket } from '../realtime/client'
-import { DesktopV3RealtimeController, type DesktopV3RealtimeDiagnostics, type DesktopV3RealtimeFrame } from '../realtime/v3-realtime-controller'
+import { DesktopV3RealtimeController, type DesktopV3RealtimeDiagnostics, type DesktopV3RealtimeFrame, type DesktopV3RealtimeTraceContext } from '../realtime/v3-realtime-controller'
 import { disableVault, enableVault, exportVaultBundle, fetchVaultStatus, importVaultBundle, lockVault, unlockVault } from '../vault/api'
 import {
   compactSessionV3,
@@ -188,9 +188,20 @@ export function getDesktopV3RealtimeDiagnostics(sessionId?: string | null): Desk
   return desktopV3RealtimeController?.diagnostics(sessionId) ?? null
 }
 
-async function subscribeDesktopV3SessionRealtime(sessionId: string, endpointCursor?: string | null): Promise<void> {
+function logDesktopV3SubmitTrace(step: string, details: Record<string, unknown>): void {
+  if (typeof console !== 'undefined') {
+    console.info('[desktop-v3-submit-trace]', {
+      ts: Date.now(),
+      step,
+      ...details,
+    })
+  }
+}
+
+async function subscribeDesktopV3SessionRealtime(sessionId: string, endpointCursor?: string | null, context: DesktopV3RealtimeTraceContext = {}): Promise<void> {
   const normalizedSessionId = sessionId.trim()
   if (!normalizedSessionId) {
+    logDesktopV3SubmitTrace('subscribe.skipped', { ...context, reason: 'empty-session-id' })
     return
   }
   const cursor = endpointCursor?.trim() ?? ''
@@ -199,11 +210,23 @@ async function subscribeDesktopV3SessionRealtime(sessionId: string, endpointCurs
     requireV3RealtimeController().setEndpointCursor(cursor)
   }
   useDesktopUiStore.setState({ realtimeDesired: true })
+  logDesktopV3SubmitTrace('subscribe.before', {
+    ...context,
+    sessionId: normalizedSessionId,
+    endpointCursorPresent: Boolean(cursor || desktopV3RealtimeEndpointCursor),
+    controllerBefore: requireV3RealtimeController().diagnostics(normalizedSessionId),
+  })
   await requireV3RealtimeController().subscribeSession(
     normalizedSessionId,
     cursor || desktopV3RealtimeEndpointCursor,
     `desktop:${normalizedSessionId}`,
+    context,
   )
+  logDesktopV3SubmitTrace('subscribe.after', {
+    ...context,
+    sessionId: normalizedSessionId,
+    controllerAfter: requireV3RealtimeController().diagnostics(normalizedSessionId),
+  })
 }
 
 function desktopSocketStateName(socket: WebSocket | null): 'none' | 'connecting' | 'open' | 'closing' | 'closed' {
@@ -3432,9 +3455,21 @@ function applyDesktopV3ReconnectSnapshotToStore(snapshot: DesktopDaemonSnapshot)
   })
 }
 
-async function syncV3RealtimeSessionsFromReconnect(options: { force?: boolean } = {}): Promise<void> {
+async function syncV3RealtimeSessionsFromReconnect(options: ({ force?: boolean } & DesktopV3RealtimeTraceContext) = {}): Promise<void> {
   const startedAt = Date.now()
   const canFetch = canFetchRelativeDesktopAPI()
+  const targetSessionId = options.targetSessionId?.trim() ?? ''
+  const traceContext: DesktopV3RealtimeTraceContext = {
+    source: options.source ?? 'syncV3RealtimeSessionsFromReconnect',
+    traceId: options.traceId,
+    targetSessionId: targetSessionId || undefined,
+  }
+  logDesktopV3SubmitTrace('reconnect-sync.start', {
+    ...traceContext,
+    force: Boolean(options.force),
+    pendingRequestAlreadyActive: Boolean(pendingDesktopV3Reconnect),
+    controllerBefore: requireV3RealtimeController().diagnostics(targetSessionId),
+  })
   if (!canFetch) {
     desktopV3ReconnectSyncDiagnostics = {
       status: 'skipped',
@@ -3442,10 +3477,16 @@ async function syncV3RealtimeSessionsFromReconnect(options: { force?: boolean } 
       force: Boolean(options.force),
       startedAt,
       completedAt: Date.now(),
+      targetSessionId,
     }
+    logDesktopV3SubmitTrace('reconnect-sync.skipped', {
+      ...traceContext,
+      reason: 'relative-api-unavailable',
+    })
     return
   }
   if (!pendingDesktopV3Reconnect) {
+    logDesktopV3SubmitTrace('reconnect-sync.fetch.start', traceContext)
     pendingDesktopV3Reconnect = fetchAndApplyDesktopV3Reconnect()
       .then((result) => {
         const cursor = result.snapshot.snapshotEndpointCursor?.trim() ?? ''
@@ -3459,6 +3500,8 @@ async function syncV3RealtimeSessionsFromReconnect(options: { force?: boolean } 
       .finally(() => {
         pendingDesktopV3Reconnect = null
       })
+  } else {
+    logDesktopV3SubmitTrace('reconnect-sync.fetch.reuse-pending', traceContext)
   }
   try {
     const result = await pendingDesktopV3Reconnect
@@ -3468,24 +3511,62 @@ async function syncV3RealtimeSessionsFromReconnect(options: { force?: boolean } 
       endpointCursor: subscription.endpoint_cursor,
     }))
     const controller = requireV3RealtimeController()
-    controller.syncSessions(subscriptions, { resubscribe: Boolean(options.force), replace: true })
+    const incomingSessionIds = subscriptions.map((subscription) => subscription.sessionId)
+    logDesktopV3SubmitTrace('reconnect-sync.apply.before', {
+      ...traceContext,
+      force: Boolean(options.force),
+      incomingSessionIds,
+      targetPresentInReconnectResponse: targetSessionId ? incomingSessionIds.includes(targetSessionId) : undefined,
+      snapshotEndpointCursorPresent: Boolean(result.snapshot.snapshotEndpointCursor?.trim()),
+      controllerBefore: controller.diagnostics(targetSessionId),
+    })
+    controller.syncSessions(subscriptions, {
+      resubscribe: Boolean(options.force),
+      replace: true,
+      ...traceContext,
+    })
+    const controllerAfterSync = controller.diagnostics(targetSessionId)
     desktopV3ReconnectSyncDiagnostics = {
       status: 'applied',
       force: Boolean(options.force),
       startedAt,
       completedAt: Date.now(),
+      targetSessionId,
+      targetPresentInReconnectResponse: targetSessionId ? incomingSessionIds.includes(targetSessionId) : undefined,
       subscriptionCount: subscriptions.length,
-      sessionIds: subscriptions.map((subscription) => subscription.sessionId),
+      sessionIds: incomingSessionIds,
       snapshotEndpointCursorPresent: Boolean(result.snapshot.snapshotEndpointCursor?.trim()),
-      controller: controller.diagnostics(),
+      controller: controllerAfterSync,
     }
+    logDesktopV3SubmitTrace('reconnect-sync.apply.after', {
+      ...traceContext,
+      force: Boolean(options.force),
+      incomingSessionIds,
+      targetPresentInReconnectResponse: targetSessionId ? incomingSessionIds.includes(targetSessionId) : undefined,
+      targetStillSubscribed: targetSessionId ? controllerAfterSync.subscriptions.some((subscription) => subscription.sessionId === targetSessionId) : undefined,
+      controllerAfter: controllerAfterSync,
+    })
     if (subscriptions.length > 0) {
-      await controller.connect()
+      logDesktopV3SubmitTrace('reconnect-sync.connect.before', {
+        ...traceContext,
+        controllerBeforeConnect: controller.diagnostics(targetSessionId),
+      })
+      await controller.connect(traceContext)
       desktopV3ReconnectSyncDiagnostics = {
         ...desktopV3ReconnectSyncDiagnostics,
         connectedAt: Date.now(),
-        controllerAfterConnect: controller.diagnostics(),
+        controllerAfterConnect: controller.diagnostics(targetSessionId),
       }
+      logDesktopV3SubmitTrace('reconnect-sync.connect.after', {
+        ...traceContext,
+        controllerAfterConnect: controller.diagnostics(targetSessionId),
+      })
+    } else {
+      logDesktopV3SubmitTrace('reconnect-sync.connect.skipped', {
+        ...traceContext,
+        reason: 'reconnect-response-subscriptions=0',
+        controllerAfter: controller.diagnostics(targetSessionId),
+      })
     }
   } catch (error) {
     desktopV3ReconnectSyncDiagnostics = {
@@ -3493,8 +3574,14 @@ async function syncV3RealtimeSessionsFromReconnect(options: { force?: boolean } 
       force: Boolean(options.force),
       startedAt,
       completedAt: Date.now(),
+      targetSessionId,
       error: error instanceof Error ? error.message : String(error),
     }
+    logDesktopV3SubmitTrace('reconnect-sync.failed', {
+      ...traceContext,
+      error: error instanceof Error ? error.message : String(error),
+      controllerAfterFailure: requireV3RealtimeController().diagnostics(targetSessionId),
+    })
     throw error
   }
 }
@@ -4267,8 +4354,36 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
 
       if (effectiveSessionApi === 'v3') {
         const clientRequestId = providedClientRequestId?.trim() || `desktop-v3-message:${targetSessionId}:${submitStartedAt}`
+        const traceContext: DesktopV3RealtimeTraceContext = {
+          source: 'submitPrompt.message',
+          traceId: clientRequestId,
+          targetSessionId,
+        }
+        logDesktopV3SubmitTrace('submit.start', {
+          ...traceContext,
+          activeSessionId: get().activeSessionId,
+          sessionPresent: Boolean(get().sessions[targetSessionId]),
+          sessionLastEventSeq: get().sessions[targetSessionId]?.lastEventSeq ?? 0,
+          sessionLiveRunId: get().sessions[targetSessionId]?.live.runId ?? '',
+          sessionLiveStatus: get().sessions[targetSessionId]?.live.status ?? '',
+          controllerBefore: requireV3RealtimeController().diagnostics(targetSessionId),
+          maintenanceBefore: getDesktopRealtimeMaintenanceDiagnostics(targetSessionId),
+        })
+        logDesktopV3SubmitTrace('send-message.before', traceContext)
         const result = await sendSessionMessage(targetSessionId, 'user', trimmedPrompt, route, { sessionApi: 'v3', clientRequestId })
+        logDesktopV3SubmitTrace('send-message.after', {
+          ...traceContext,
+          resultHasRealtimeOutbox: Boolean((result as { realtimeOutbox?: unknown } | null)?.realtimeOutbox),
+          realtimeEndpointCursorPresent: Boolean((result as { realtimeOutbox?: { endpointCursor?: string } | null }).realtimeOutbox?.endpointCursor?.trim()),
+          controllerAfterSendBeforeApply: requireV3RealtimeController().diagnostics(targetSessionId),
+        })
         set((state: DesktopStoreState) => applyV3MessageCommitResult(state, targetSessionId, result, Date.now()))
+        logDesktopV3SubmitTrace('message-commit.applied', {
+          ...traceContext,
+          sessionLastEventSeq: get().sessions[targetSessionId]?.lastEventSeq ?? 0,
+          sessionLiveRunId: get().sessions[targetSessionId]?.live.runId ?? '',
+          sessionLiveStatus: get().sessions[targetSessionId]?.live.status ?? '',
+        })
         let mutationEndpointCursor = ''
         if (result && typeof result === 'object' && 'realtimeOutbox' in result) {
           const cursor = (result as { realtimeOutbox?: { endpointCursor?: string } | null }).realtimeOutbox?.endpointCursor?.trim() ?? ''
@@ -4276,12 +4391,39 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
             mutationEndpointCursor = cursor
             desktopV3RealtimeEndpointCursor = cursor
             requireV3RealtimeController().setEndpointCursor(cursor)
+            logDesktopV3SubmitTrace('endpoint-cursor.updated-from-send-result', {
+              ...traceContext,
+              endpointCursorPresent: true,
+            })
+          } else {
+            logDesktopV3SubmitTrace('endpoint-cursor.missing-from-send-result', traceContext)
           }
+        } else {
+          logDesktopV3SubmitTrace('endpoint-cursor.no-realtime-outbox-in-send-result', traceContext)
         }
         set({ realtimeDesired: true })
-        await subscribeDesktopV3SessionRealtime(targetSessionId, mutationEndpointCursor)
+        logDesktopV3SubmitTrace('store.realtimeDesired.true', {
+          ...traceContext,
+          maintenanceAfterSetDesired: getDesktopRealtimeMaintenanceDiagnostics(targetSessionId),
+        })
+        await subscribeDesktopV3SessionRealtime(targetSessionId, mutationEndpointCursor, traceContext)
+        logDesktopV3SubmitTrace('global-connect.before', {
+          ...traceContext,
+          maintenanceBeforeConnect: getDesktopRealtimeMaintenanceDiagnostics(targetSessionId),
+          controllerBeforeConnect: requireV3RealtimeController().diagnostics(targetSessionId),
+        })
         await get().connect()
-        await syncV3RealtimeSessionsFromReconnect({ force: true })
+        logDesktopV3SubmitTrace('global-connect.after', {
+          ...traceContext,
+          maintenanceAfterConnect: getDesktopRealtimeMaintenanceDiagnostics(targetSessionId),
+          controllerAfterConnect: requireV3RealtimeController().diagnostics(targetSessionId),
+        })
+        await syncV3RealtimeSessionsFromReconnect({ force: true, ...traceContext })
+        logDesktopV3SubmitTrace('submit.complete', {
+          ...traceContext,
+          maintenanceFinal: getDesktopRealtimeMaintenanceDiagnostics(targetSessionId),
+          controllerFinal: requireV3RealtimeController().diagnostics(targetSessionId),
+        })
         return
       }
 
