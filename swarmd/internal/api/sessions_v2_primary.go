@@ -1007,6 +1007,9 @@ func validateSessionsV2WorktreeRequest(req sessionruntime.SessionsV2CreateReques
 		}
 		return nil
 	case "on":
+		if strings.TrimSpace(req.WorktreeBranchName) == "" {
+			return sessionV2BadRequest("worktree_branch_name is required when worktree_mode is on")
+		}
 		if req.WorktreeUseCurrentBranch != nil {
 			useCurrentBranch := *req.WorktreeUseCurrentBranch
 			if useCurrentBranch && strings.TrimSpace(req.WorktreeBaseBranch) != "" {

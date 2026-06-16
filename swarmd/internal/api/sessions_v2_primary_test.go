@@ -158,7 +158,7 @@ func TestSessionsV2PrimaryWorktreeOnRequiresWorktreeService(t *testing.T) {
 	server, _, _, routeStore, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
 	seedSessionsV2PrimaryAuthority(t, server, swarmStore, "host-swarm-id", "binding-primary-v2", "/host/swarm-go")
 
-	rec := postSessionsV2Primary(t, server, `{"swarm_id":"host-swarm-id","workspace_binding_id":"binding-primary-v2","title":"primary v2 wt","mode":"auto","agent_name":"swarm","worktree_mode":"on","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`)
+	rec := postSessionsV2Primary(t, server, `{"swarm_id":"host-swarm-id","workspace_binding_id":"binding-primary-v2","title":"primary v2 wt","mode":"auto","agent_name":"swarm","worktree_mode":"on","worktree_branch_name":"agent/session-primary-v2","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
@@ -173,7 +173,7 @@ func TestSessionsV2PrimaryWorktreeOnRejectsAllocationFailure(t *testing.T) {
 	seedSessionsV2PrimaryAuthority(t, server, swarmStore, "host-swarm-id", "binding-primary-v2", "/host/swarm-go")
 	server.SetWorktreeService(&fakeWorktreeService{allocationErr: errors.New("boom")})
 
-	rec := postSessionsV2Primary(t, server, `{"swarm_id":"host-swarm-id","workspace_binding_id":"binding-primary-v2","title":"primary v2 wt","mode":"auto","agent_name":"swarm","worktree_mode":"on","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`)
+	rec := postSessionsV2Primary(t, server, `{"swarm_id":"host-swarm-id","workspace_binding_id":"binding-primary-v2","title":"primary v2 wt","mode":"auto","agent_name":"swarm","worktree_mode":"on","worktree_branch_name":"agent/session-primary-v2","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}

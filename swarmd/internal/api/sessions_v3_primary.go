@@ -16,6 +16,7 @@ import (
 	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
 const (
@@ -31,22 +32,26 @@ const (
 // V3 primary write handlers delegate through the ApplySessionMutation boundary.
 
 type sessionsV3CreateRequest struct {
-	SessionID            string                      `json:"session_id,omitempty"`
-	ClientRequestID      string                      `json:"client_request_id,omitempty"`
-	IdempotencyKey       string                      `json:"idempotency_key,omitempty"`
-	Title                string                      `json:"title,omitempty"`
-	WorkspacePath        string                      `json:"workspace_path"`
-	WorkspaceName        string                      `json:"workspace_name,omitempty"`
-	WorkspaceBindingID   string                      `json:"workspace_binding_id,omitempty"`
-	SwarmID              string                      `json:"swarm_id,omitempty"`
-	TargetKind           string                      `json:"target_kind,omitempty"`
-	TargetRelationship   string                      `json:"target_relationship,omitempty"`
-	HostWorkspacePath    string                      `json:"host_workspace_path,omitempty"`
-	RuntimeWorkspacePath string                      `json:"runtime_workspace_path,omitempty"`
-	Mode                 string                      `json:"mode,omitempty"`
-	AgentName            string                      `json:"agent_name,omitempty"`
-	Preference           pebblestore.ModelPreference `json:"preference,omitempty"`
-	Metadata             map[string]any              `json:"metadata,omitempty"`
+	SessionID                string                      `json:"session_id,omitempty"`
+	ClientRequestID          string                      `json:"client_request_id,omitempty"`
+	IdempotencyKey           string                      `json:"idempotency_key,omitempty"`
+	Title                    string                      `json:"title,omitempty"`
+	WorkspacePath            string                      `json:"workspace_path"`
+	WorkspaceName            string                      `json:"workspace_name,omitempty"`
+	WorkspaceBindingID       string                      `json:"workspace_binding_id,omitempty"`
+	SwarmID                  string                      `json:"swarm_id,omitempty"`
+	TargetKind               string                      `json:"target_kind,omitempty"`
+	TargetRelationship       string                      `json:"target_relationship,omitempty"`
+	HostWorkspacePath        string                      `json:"host_workspace_path,omitempty"`
+	RuntimeWorkspacePath     string                      `json:"runtime_workspace_path,omitempty"`
+	Mode                     string                      `json:"mode,omitempty"`
+	AgentName                string                      `json:"agent_name,omitempty"`
+	Preference               pebblestore.ModelPreference `json:"preference,omitempty"`
+	WorktreeMode             string                      `json:"worktree_mode,omitempty"`
+	WorktreeUseCurrentBranch *bool                       `json:"worktree_use_current_branch,omitempty"`
+	WorktreeBaseBranch       string                      `json:"worktree_base_branch,omitempty"`
+	WorktreeBranchName       string                      `json:"worktree_branch_name,omitempty"`
+	Metadata                 map[string]any              `json:"metadata,omitempty"`
 }
 
 type sessionsV3MessageRequest struct {
@@ -261,6 +266,11 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	requestedWorktreeMode, err := validateSessionsV3CreateWorktreeRequest(req.WorktreeMode, req.WorktreeUseCurrentBranch, req.WorktreeBaseBranch, req.WorktreeBranchName)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	binding, err := s.resolveSessionsV3PrimaryBinding(principal, req)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -301,6 +311,26 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
+	}
+	if s.handleSessionsV3CreateReplay(w, principal, sessionID, clientRequestID, payloadHash, session) {
+		return
+	}
+	if requestedWorktreeMode == runruntime.RunWorktreeModeOn {
+		allocation, err := s.allocateSessionsV3CreateWorktree(principal, workspacePath, sessionID, req.WorktreeUseCurrentBranch, req.WorktreeBaseBranch, req.WorktreeBranchName)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		session.WorkspacePath = strings.TrimSpace(allocation.WorkspacePath)
+		session.WorktreeEnabled = true
+		session.WorktreeRootPath = strings.TrimSpace(allocation.WorkspacePath)
+		session.WorktreeBaseBranch = strings.TrimSpace(allocation.BaseBranch)
+		session.WorktreeBranch = strings.TrimSpace(allocation.BranchName)
+		if session.Metadata == nil {
+			session.Metadata = make(map[string]any, 4)
+		}
+		session.Metadata["workspace_id"] = strings.TrimSpace(allocation.WorkspaceID)
+		session.Metadata["swarm_v3_runtime_workspace_path"] = strings.TrimSpace(allocation.WorkspacePath)
 	}
 	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       sessionID,
@@ -1853,31 +1883,136 @@ func (s *Server) resolveSessionsV3PrimaryBinding(principal identity.Principal, r
 	}, nil
 }
 
+func validateSessionsV3CreateWorktreeRequest(rawMode string, useCurrentBranch *bool, baseBranch, branchName string) (string, error) {
+	mode := runruntime.NormalizeRunWorktreeMode(rawMode)
+	if strings.TrimSpace(rawMode) != "" && mode == "" {
+		return "", fmt.Errorf("unsupported worktree_mode %q", strings.TrimSpace(rawMode))
+	}
+	switch mode {
+	case "", runruntime.RunWorktreeModeInherit, runruntime.RunWorktreeModeOff:
+		if useCurrentBranch != nil || strings.TrimSpace(baseBranch) != "" || strings.TrimSpace(branchName) != "" {
+			return "", errors.New("worktree fields are only allowed when worktree_mode is on")
+		}
+		return mode, nil
+	case runruntime.RunWorktreeModeOn:
+		if strings.TrimSpace(branchName) == "" {
+			return "", errors.New("worktree_branch_name is required when worktree_mode is on")
+		}
+		if useCurrentBranch != nil {
+			if *useCurrentBranch && strings.TrimSpace(baseBranch) != "" {
+				return "", errors.New("worktree_use_current_branch cannot be true when worktree_base_branch is set")
+			}
+			if !*useCurrentBranch && strings.TrimSpace(baseBranch) == "" {
+				return "", errors.New("worktree_base_branch is required when worktree_use_current_branch is false")
+			}
+		}
+		return mode, nil
+	default:
+		return "", fmt.Errorf("unsupported worktree_mode %q", strings.TrimSpace(rawMode))
+	}
+}
+
+func (s *Server) handleSessionsV3CreateReplay(w http.ResponseWriter, principal identity.Principal, sessionID, clientRequestID, payloadHash string, session pebblestore.SessionSnapshot) bool {
+	if s == nil || s.sessions == nil || s.sessions.Store() == nil {
+		return false
+	}
+	if _, ok, err := s.sessions.Store().GetV3SessionOperationIdempotencyRecord(principal.AccountScopeID, sessionID, sessionruntime.SessionMutationCreateSession, clientRequestID); err != nil || !ok {
+		return false
+	}
+	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       sessionID,
+		UserID:          principal.UserID,
+		AccountScopeID:  principal.AccountScopeID,
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationCreateSession,
+		Session:         &session,
+		NowUnixMs:       time.Now().UnixMilli(),
+	})
+	if err != nil {
+		if errors.Is(err, sessionruntime.ErrSessionIdempotencyConflict) {
+			writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": err.Error(), "conflict": result.Conflict, "result": result})
+			return true
+		}
+		writeError(w, http.StatusBadRequest, err)
+		return true
+	}
+	hydrated, found, err := s.hydrateSessionsV3Primary(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return true
+	}
+	if !found {
+		writeError(w, http.StatusInternalServerError, errors.New("replayed sessions v3 projection was not found"))
+		return true
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":         true,
+		"session":    hydrated.Session,
+		"projection": hydrated.Projection,
+		"messages":   hydrated.Messages,
+		"events":     hydrated.Events,
+		"mutation":   result,
+	})
+	return true
+}
+
+func (s *Server) allocateSessionsV3CreateWorktree(principal identity.Principal, workspacePath, sessionID string, requestedUseCurrentBranch *bool, requestedBaseBranch, requestedBranchName string) (worktreeruntime.Allocation, error) {
+	if s == nil || s.worktrees == nil {
+		return worktreeruntime.Allocation{}, errors.New("worktree_mode on requires worktree service")
+	}
+	baseBranch := strings.TrimSpace(requestedBaseBranch)
+	if requestedUseCurrentBranch != nil && *requestedUseCurrentBranch {
+		baseBranch = ""
+	}
+	allocation, err := s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(principal, workspacePath, sessionID, baseBranch, strings.TrimSpace(requestedBranchName))
+	if err != nil {
+		return worktreeruntime.Allocation{}, fmt.Errorf("realize sessions v3 worktree: %w", err)
+	}
+	if strings.TrimSpace(allocation.WorkspacePath) == "" || strings.TrimSpace(allocation.BaseBranch) == "" || strings.TrimSpace(allocation.BranchName) == "" || strings.TrimSpace(allocation.WorkspaceID) == "" {
+		return worktreeruntime.Allocation{}, errors.New("worktree_mode on did not allocate complete worktree facts")
+	}
+	if workspaceID := strings.TrimSpace(allocation.WorkspaceID); workspaceID != worktreeruntime.WorkspaceIdentityForSession(sessionID) {
+		return worktreeruntime.Allocation{}, errors.New("worktree_mode on allocation workspace identity mismatch")
+	}
+	return allocation, nil
+}
+
 func sessionsV3CreatePayloadHash(sessionID string, req sessionsV3CreateRequest, workspacePath, workspaceName, title string, metadata map[string]any) (string, error) {
 	canonical := struct {
-		Operation          string                      `json:"operation"`
-		SessionID          string                      `json:"session_id"`
-		Title              string                      `json:"title"`
-		WorkspacePath      string                      `json:"workspace_path"`
-		WorkspaceName      string                      `json:"workspace_name"`
-		WorkspaceBindingID string                      `json:"workspace_binding_id"`
-		SwarmID            string                      `json:"swarm_id"`
-		Mode               string                      `json:"mode"`
-		AgentName          string                      `json:"agent_name,omitempty"`
-		Preference         pebblestore.ModelPreference `json:"preference"`
-		Metadata           map[string]any              `json:"metadata,omitempty"`
+		Operation                string                      `json:"operation"`
+		SessionID                string                      `json:"session_id"`
+		Title                    string                      `json:"title"`
+		WorkspacePath            string                      `json:"workspace_path"`
+		WorkspaceName            string                      `json:"workspace_name"`
+		WorkspaceBindingID       string                      `json:"workspace_binding_id"`
+		SwarmID                  string                      `json:"swarm_id"`
+		Mode                     string                      `json:"mode"`
+		AgentName                string                      `json:"agent_name,omitempty"`
+		Preference               pebblestore.ModelPreference `json:"preference"`
+		WorktreeMode             string                      `json:"worktree_mode,omitempty"`
+		WorktreeUseCurrentBranch *bool                       `json:"worktree_use_current_branch,omitempty"`
+		WorktreeBaseBranch       string                      `json:"worktree_base_branch,omitempty"`
+		WorktreeBranchName       string                      `json:"worktree_branch_name,omitempty"`
+		Metadata                 map[string]any              `json:"metadata,omitempty"`
 	}{
-		Operation:          sessionruntime.SessionMutationCreateSession,
-		SessionID:          strings.TrimSpace(sessionID),
-		Title:              title,
-		WorkspacePath:      strings.TrimSpace(workspacePath),
-		WorkspaceName:      workspaceName,
-		WorkspaceBindingID: strings.TrimSpace(req.WorkspaceBindingID),
-		SwarmID:            strings.TrimSpace(req.SwarmID),
-		Mode:               sessionruntime.NormalizeMode(req.Mode),
-		AgentName:          strings.TrimSpace(req.AgentName),
-		Preference:         normalizeSessionsV3ModelPreference(req.Preference),
-		Metadata:           cloneSessionsV3Metadata(metadata),
+		Operation:                sessionruntime.SessionMutationCreateSession,
+		SessionID:                strings.TrimSpace(sessionID),
+		Title:                    title,
+		WorkspacePath:            strings.TrimSpace(workspacePath),
+		WorkspaceName:            workspaceName,
+		WorkspaceBindingID:       strings.TrimSpace(req.WorkspaceBindingID),
+		SwarmID:                  strings.TrimSpace(req.SwarmID),
+		Mode:                     sessionruntime.NormalizeMode(req.Mode),
+		AgentName:                strings.TrimSpace(req.AgentName),
+		Preference:               normalizeSessionsV3ModelPreference(req.Preference),
+		WorktreeMode:             runruntime.NormalizeRunWorktreeMode(req.WorktreeMode),
+		WorktreeUseCurrentBranch: req.WorktreeUseCurrentBranch,
+		WorktreeBaseBranch:       strings.TrimSpace(req.WorktreeBaseBranch),
+		WorktreeBranchName:       strings.TrimSpace(req.WorktreeBranchName),
+		Metadata:                 cloneSessionsV3Metadata(metadata),
 	}
 	raw, err := json.Marshal(canonical)
 	if err != nil {

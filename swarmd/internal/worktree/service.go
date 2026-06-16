@@ -207,10 +207,14 @@ func (s *Service) AllocateDetachedWorkspaceRequestedForPrincipal(principal ident
 		return Allocation{}, err
 	}
 	useCurrentBranch := strings.TrimSpace(baseBranch) == ""
-	return s.allocateSessionWorkspace(canonical, useCurrentBranch, baseBranch, branchName, nameSeed)
+	return s.allocateSessionWorkspaceWithBranchMode(canonical, useCurrentBranch, baseBranch, branchName, nameSeed, true)
 }
 
 func (s *Service) allocateSessionWorkspace(workspacePath string, useCurrentBranch bool, baseBranch, configuredBranchName, sessionID string) (Allocation, error) {
+	return s.allocateSessionWorkspaceWithBranchMode(workspacePath, useCurrentBranch, baseBranch, configuredBranchName, sessionID, false)
+}
+
+func (s *Service) allocateSessionWorkspaceWithBranchMode(workspacePath string, useCurrentBranch bool, baseBranch, configuredBranchName, sessionID string, exactBranchName bool) (Allocation, error) {
 	workspacePath = strings.TrimSpace(workspacePath)
 	sessionID = strings.TrimSpace(sessionID)
 	if workspacePath == "" {
@@ -233,7 +237,13 @@ func (s *Service) allocateSessionWorkspace(workspacePath string, useCurrentBranc
 	defer s.mu.Unlock()
 
 	workspaceID := sessionWorkspaceID(sessionID)
-	branchName := effectiveWorktreeBranchName(configuredBranchName, sessionID)
+	branchName := strings.TrimSpace(configuredBranchName)
+	if !exactBranchName {
+		branchName = effectiveWorktreeBranchName(configuredBranchName, sessionID)
+	}
+	if branchName == "" {
+		return Allocation{}, errors.New("worktree branch name is required")
+	}
 	worktreePath, err := deterministicSessionWorktreePath(repoRoot, workspaceID)
 	if err != nil {
 		return Allocation{}, err
@@ -658,7 +668,7 @@ func ensureWorktreeParent(repoRoot string) error {
 }
 
 func worktreeCacheRoot(repoRoot string) (string, error) {
-	return appstorage.WorkspaceCacheDir(repoRoot, "worktrees")
+	return appstorage.WorktreeDataDir(repoRoot)
 }
 
 func deterministicSessionWorktreePath(repoRoot, workspaceID string) (string, error) {

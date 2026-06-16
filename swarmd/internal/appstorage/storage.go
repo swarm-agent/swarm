@@ -73,6 +73,17 @@ func WorkspaceDataDir(workspacePath string, parts ...string) (string, error) {
 	return DataDir(append([]string{WorkspacesDir, bucket}, parts...)...)
 }
 
+// WorktreeDataDir returns the persistent app-owned directory for git worktrees
+// associated with a repository/workspace path. Worktrees contain user code
+// changes, so they are stored under the canonical data root rather than cache.
+func WorktreeDataDir(repoRoot string, parts ...string) (string, error) {
+	bucket, err := WorkspaceBucketName(repoRoot)
+	if err != nil {
+		return "", err
+	}
+	return DataDir(append([]string{"worktrees", bucket}, parts...)...)
+}
+
 // TempDir returns a private disposable directory under the canonical daemon cache root.
 func TempDir(pattern string, parts ...string) (string, error) {
 	base, err := CacheDir(append([]string{"tmp"}, parts...)...)

@@ -1579,7 +1579,7 @@ func (s *Server) allocateSessionCreateDetachedWorkspace(createOptions *sessionru
 	flowRouteDiagLog("session_create_worktree_allocation", "session_id", sessionID, "input_workspace_path", createOptions.WorkspacePath, "allocation_workspace_path", allocation.WorkspacePath, "allocation_repo_root", allocation.RepoRoot, "allocation_base_branch", allocation.BaseBranch, "allocation_branch_name", allocation.BranchName, "allocation_workspace_id", allocation.WorkspaceID)
 	createOptions.WorkspacePath = allocation.WorkspacePath
 	createOptions.Worktree = &sessionruntime.CreateSessionWorktree{
-		RootPath:    allocation.RepoRoot,
+		RootPath:    allocation.WorkspacePath,
 		BaseBranch:  allocation.BaseBranch,
 		BranchName:  allocation.BranchName,
 		WorkspaceID: allocation.WorkspaceID,

@@ -3099,6 +3099,7 @@ func (c *API) CreateSessionV3WithOptions(ctx context.Context, options SessionCre
 	if runtimeWorkspacePath := strings.TrimSpace(options.RuntimeWorkspacePath); runtimeWorkspacePath != "" {
 		req["runtime_workspace_path"] = runtimeWorkspacePath
 	}
+	appendSessionV3WorktreeCreateOptions(req, options)
 	if len(options.Metadata) > 0 {
 		req["metadata"] = options.Metadata
 	}
@@ -3108,6 +3109,24 @@ func (c *API) CreateSessionV3WithOptions(ctx context.Context, options SessionCre
 	}
 	resp.Session = markSessionV3(resp.Session, resp.Projection)
 	return resp, nil
+}
+
+func appendSessionV3WorktreeCreateOptions(req map[string]any, options SessionCreateOptions) {
+	if req == nil {
+		return
+	}
+	if mode := strings.ToLower(strings.TrimSpace(options.WorktreeMode)); mode != "" {
+		req["worktree_mode"] = mode
+	}
+	if options.WorktreeUseCurrentBranch != nil {
+		req["worktree_use_current_branch"] = *options.WorktreeUseCurrentBranch
+	}
+	if baseBranch := strings.TrimSpace(options.WorktreeBaseBranch); baseBranch != "" {
+		req["worktree_base_branch"] = baseBranch
+	}
+	if branchName := strings.TrimSpace(options.WorktreeBranchName); branchName != "" {
+		req["worktree_branch_name"] = branchName
+	}
 }
 
 func (c *API) CreateSessionV3TUIWithOptions(ctx context.Context, options SessionCreateOptions) (SessionV3Hydrated, error) {
@@ -3136,6 +3155,7 @@ func (c *API) CreateSessionV3TUIWithOptions(ctx context.Context, options Session
 			"context_mode": strings.TrimSpace(options.Preference.ContextMode),
 		},
 	}
+	appendSessionV3WorktreeCreateOptions(req, options)
 	if len(options.Metadata) > 0 {
 		req["metadata"] = options.Metadata
 	}

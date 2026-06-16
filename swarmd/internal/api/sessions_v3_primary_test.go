@@ -32,6 +32,7 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
 	"swarm/packages/swarmd/internal/tool"
+	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
 func TestSessionsV3PrimaryHandlersDoNotUseRuntimeDispatchOrRoutes(t *testing.T) {
@@ -48,6 +49,69 @@ func TestSessionsV3PrimaryHandlersDoNotUseRuntimeDispatchOrRoutes(t *testing.T) 
 		if strings.Contains(string(body), forbidden) {
 			t.Fatalf("sessions_v3_primary.go contains forbidden runtime/route/legacy write symbol %q", forbidden)
 		}
+	}
+}
+
+func TestSessionsV3PrimaryWorktreeOnRequiresExplicitBranch(t *testing.T) {
+	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV2PrimaryAuthority(t, server, swarmStore, "host-swarm-id", "binding-v3-worktree", "/host/swarm-go")
+
+	body := `{"client_request_id":"v3-wt-missing-branch","swarm_id":"host-swarm-id","workspace_binding_id":"binding-v3-worktree","title":"v3 wt","mode":"auto","agent_name":"swarm","worktree_mode":"on","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "worktree_branch_name is required") {
+		t.Fatalf("body missing branch requirement: %s", rec.Body.String())
+	}
+}
+
+func TestSessionsV3PrimaryWorktreeOnCreatesRequestedBranchSession(t *testing.T) {
+	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV2PrimaryAuthority(t, server, swarmStore, "host-swarm-id", "binding-v3-worktree", "/host/swarm-go")
+	fake := &fakeWorktreeService{allocation: worktreeruntime.Allocation{WorkspacePath: "/data/swarm/worktrees/swarm-go/ws_v3wtcreate", RepoRoot: "/host/swarm-go", BaseBranch: "main", BranchName: "agent/v3-requested", WorkspaceID: "ws_v3wtcreate"}}
+	server.SetWorktreeService(fake)
+
+	body := `{"session_id":"v3-wt-create","client_request_id":"v3-wt-create","swarm_id":"host-swarm-id","workspace_binding_id":"binding-v3-worktree","title":"v3 wt","mode":"auto","agent_name":"swarm","worktree_mode":"on","worktree_base_branch":"dev","worktree_branch_name":"agent/v3-requested","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if fake.lastWorkspace != "/host/swarm-go" || fake.lastNameSeed != "v3-wt-create" || fake.lastBaseBranch != "dev" || fake.lastBranchName != "agent/v3-requested" {
+		t.Fatalf("allocation request workspace=%q seed=%q base=%q branch=%q", fake.lastWorkspace, fake.lastNameSeed, fake.lastBaseBranch, fake.lastBranchName)
+	}
+	if !payload.Session.WorktreeEnabled || payload.Session.WorkspacePath != "/data/swarm/worktrees/swarm-go/ws_v3wtcreate" || payload.Session.WorktreeRootPath != payload.Session.WorkspacePath || payload.Session.WorktreeBaseBranch != "dev" || payload.Session.WorktreeBranch != "agent/v3-requested" {
+		t.Fatalf("session worktree facts = %+v", payload.Session)
+	}
+}
+
+func TestSessionsV3PrimaryWorktreeCreateReplayDoesNotReallocate(t *testing.T) {
+	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV2PrimaryAuthority(t, server, swarmStore, "host-swarm-id", "binding-v3-worktree", "/host/swarm-go")
+	fake := &fakeWorktreeService{allocation: worktreeruntime.Allocation{WorkspacePath: "/data/swarm/worktrees/swarm-go/ws_v3wtreplay", RepoRoot: "/host/swarm-go", BaseBranch: "main", BranchName: "agent/v3-replay", WorkspaceID: "ws_v3wtreplay"}}
+	server.SetWorktreeService(fake)
+	body := `{"session_id":"v3-wt-replay","client_request_id":"v3-wt-replay","swarm_id":"host-swarm-id","workspace_binding_id":"binding-v3-worktree","title":"v3 wt","mode":"auto","agent_name":"swarm","worktree_mode":"on","worktree_branch_name":"agent/v3-replay","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/v3/sessions", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("attempt %d status = %d, want %d, body=%s", i+1, rec.Code, http.StatusOK, rec.Body.String())
+		}
+	}
+	if fake.lastNameSeed != "v3-wt-replay" || fake.lastBranchName != "agent/v3-replay" {
+		t.Fatalf("unexpected allocation tracking seed=%q branch=%q", fake.lastNameSeed, fake.lastBranchName)
 	}
 }
 

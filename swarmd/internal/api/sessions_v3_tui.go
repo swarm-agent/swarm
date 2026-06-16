@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
+	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -19,15 +20,19 @@ import (
 const sessionsV3TUIPrefix = "/v3/tui/sessions/"
 
 type sessionsV3TUICreateRequest struct {
-	SessionID       string                      `json:"session_id,omitempty"`
-	ClientRequestID string                      `json:"client_request_id,omitempty"`
-	IdempotencyKey  string                      `json:"idempotency_key,omitempty"`
-	CWDPath         string                      `json:"cwd_path"`
-	Title           string                      `json:"title,omitempty"`
-	Mode            string                      `json:"mode,omitempty"`
-	AgentName       string                      `json:"agent_name,omitempty"`
-	Preference      pebblestore.ModelPreference `json:"preference,omitempty"`
-	Metadata        map[string]any              `json:"metadata,omitempty"`
+	SessionID                string                      `json:"session_id,omitempty"`
+	ClientRequestID          string                      `json:"client_request_id,omitempty"`
+	IdempotencyKey           string                      `json:"idempotency_key,omitempty"`
+	CWDPath                  string                      `json:"cwd_path"`
+	Title                    string                      `json:"title,omitempty"`
+	Mode                     string                      `json:"mode,omitempty"`
+	AgentName                string                      `json:"agent_name,omitempty"`
+	Preference               pebblestore.ModelPreference `json:"preference,omitempty"`
+	WorktreeMode             string                      `json:"worktree_mode,omitempty"`
+	WorktreeUseCurrentBranch *bool                       `json:"worktree_use_current_branch,omitempty"`
+	WorktreeBaseBranch       string                      `json:"worktree_base_branch,omitempty"`
+	WorktreeBranchName       string                      `json:"worktree_branch_name,omitempty"`
+	Metadata                 map[string]any              `json:"metadata,omitempty"`
 }
 
 type sessionsV3TUIRebindRequest struct {
@@ -112,6 +117,11 @@ func (s *Server) handleSessionsV3TUICreate(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	requestedWorktreeMode, err := validateSessionsV3CreateWorktreeRequest(req.WorktreeMode, req.WorktreeUseCurrentBranch, req.WorktreeBaseBranch, req.WorktreeBranchName)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	localNode, localOK, err := s.swarmLocalNode()
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -158,6 +168,26 @@ func (s *Server) handleSessionsV3TUICreate(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
+	}
+	if s.handleSessionsV3CreateReplay(w, principal, sessionID, clientRequestID, payloadHash, session) {
+		return
+	}
+	if requestedWorktreeMode == runruntime.RunWorktreeModeOn {
+		allocation, err := s.allocateSessionsV3CreateWorktree(principal, cwdPath, sessionID, req.WorktreeUseCurrentBranch, req.WorktreeBaseBranch, req.WorktreeBranchName)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		session.WorkspacePath = strings.TrimSpace(allocation.WorkspacePath)
+		session.WorktreeEnabled = true
+		session.WorktreeRootPath = strings.TrimSpace(allocation.WorkspacePath)
+		session.WorktreeBaseBranch = strings.TrimSpace(allocation.BaseBranch)
+		session.WorktreeBranch = strings.TrimSpace(allocation.BranchName)
+		if session.Metadata == nil {
+			session.Metadata = make(map[string]any, 4)
+		}
+		session.Metadata["workspace_id"] = strings.TrimSpace(allocation.WorkspaceID)
+		session.Metadata["swarm_v3_tui_worktree_path"] = strings.TrimSpace(allocation.WorkspacePath)
 	}
 	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       sessionID,
@@ -435,23 +465,31 @@ func sessionsV3ResolvedAgentIdentityFromMetadata(metadata map[string]any) (sessi
 
 func sessionsV3TUICreatePayloadHash(sessionID string, req sessionsV3TUICreateRequest, cwdPath, title string, metadata map[string]any) (string, error) {
 	canonical := struct {
-		Operation  string                      `json:"operation"`
-		SessionID  string                      `json:"session_id"`
-		Title      string                      `json:"title"`
-		CWDPath    string                      `json:"cwd_path"`
-		Mode       string                      `json:"mode"`
-		AgentName  string                      `json:"agent_name,omitempty"`
-		Preference pebblestore.ModelPreference `json:"preference"`
-		Metadata   map[string]any              `json:"metadata,omitempty"`
+		Operation                string                      `json:"operation"`
+		SessionID                string                      `json:"session_id"`
+		Title                    string                      `json:"title"`
+		CWDPath                  string                      `json:"cwd_path"`
+		Mode                     string                      `json:"mode"`
+		AgentName                string                      `json:"agent_name,omitempty"`
+		Preference               pebblestore.ModelPreference `json:"preference"`
+		WorktreeMode             string                      `json:"worktree_mode,omitempty"`
+		WorktreeUseCurrentBranch *bool                       `json:"worktree_use_current_branch,omitempty"`
+		WorktreeBaseBranch       string                      `json:"worktree_base_branch,omitempty"`
+		WorktreeBranchName       string                      `json:"worktree_branch_name,omitempty"`
+		Metadata                 map[string]any              `json:"metadata,omitempty"`
 	}{
-		Operation:  sessionruntime.SessionMutationCreateSession,
-		SessionID:  strings.TrimSpace(sessionID),
-		Title:      strings.TrimSpace(title),
-		CWDPath:    strings.TrimSpace(cwdPath),
-		Mode:       sessionruntime.NormalizeMode(req.Mode),
-		AgentName:  strings.TrimSpace(req.AgentName),
-		Preference: normalizeSessionsV3ModelPreference(req.Preference),
-		Metadata:   cloneSessionsV3Metadata(metadata),
+		Operation:                sessionruntime.SessionMutationCreateSession,
+		SessionID:                strings.TrimSpace(sessionID),
+		Title:                    strings.TrimSpace(title),
+		CWDPath:                  strings.TrimSpace(cwdPath),
+		Mode:                     sessionruntime.NormalizeMode(req.Mode),
+		AgentName:                strings.TrimSpace(req.AgentName),
+		Preference:               normalizeSessionsV3ModelPreference(req.Preference),
+		WorktreeMode:             runruntime.NormalizeRunWorktreeMode(req.WorktreeMode),
+		WorktreeUseCurrentBranch: req.WorktreeUseCurrentBranch,
+		WorktreeBaseBranch:       strings.TrimSpace(req.WorktreeBaseBranch),
+		WorktreeBranchName:       strings.TrimSpace(req.WorktreeBranchName),
+		Metadata:                 cloneSessionsV3Metadata(metadata),
 	}
 	raw, err := json.Marshal(canonical)
 	if err != nil {
@@ -465,13 +503,20 @@ func sessionsV3TUISessionVisibleForPaths(session pebblestore.SessionSnapshot, pr
 	if strings.TrimSpace(session.AccountScopeID) == "" || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
 		return false
 	}
-	sessionPath := strings.TrimSpace(session.WorkspacePath)
-	if sessionPath == "" {
-		return false
+	candidates := []string{
+		strings.TrimSpace(session.WorkspacePath),
+		strings.TrimSpace(session.WorktreeRootPath),
+		sessionsV3MetadataString(session.Metadata, "swarm_v3_tui_cwd_path"),
+		sessionsV3MetadataString(session.Metadata, "swarm_v3_tui_worktree_path"),
 	}
-	for _, path := range paths {
-		if filepath.Clean(sessionPath) == filepath.Clean(path) {
-			return true
+	for _, candidate := range candidates {
+		if strings.TrimSpace(candidate) == "" {
+			continue
+		}
+		for _, path := range paths {
+			if strings.TrimSpace(path) != "" && filepath.Clean(candidate) == filepath.Clean(path) {
+				return true
+			}
 		}
 	}
 	return false

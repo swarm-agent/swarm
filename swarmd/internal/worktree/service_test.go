@@ -12,7 +12,7 @@ import (
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 )
 
-func TestDeterministicSessionWorktreePathUsesPrivateWorkspaceCache(t *testing.T) {
+func TestDeterministicSessionWorktreePathUsesPrivateWorktreeDataDir(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "cache"))
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(t.TempDir(), "state"))
@@ -26,9 +26,9 @@ func TestDeterministicSessionWorktreePathUsesPrivateWorkspaceCache(t *testing.T)
 	if err != nil {
 		t.Fatalf("deterministicSessionWorktreePath: %v", err)
 	}
-	wantRoot, err := appstorage.WorkspaceCacheDir(repoRoot, "worktrees")
+	wantRoot, err := appstorage.WorktreeDataDir(repoRoot)
 	if err != nil {
-		t.Fatalf("WorkspaceCacheDir: %v", err)
+		t.Fatalf("WorktreeDataDir: %v", err)
 	}
 	want := filepath.Join(wantRoot, "ws_abc123")
 	if got != want {
@@ -39,10 +39,10 @@ func TestDeterministicSessionWorktreePathUsesPrivateWorkspaceCache(t *testing.T)
 	}
 	info, err := os.Stat(wantRoot)
 	if err != nil {
-		t.Fatalf("stat cache root: %v", err)
+		t.Fatalf("stat worktree data root: %v", err)
 	}
 	if gotPerm := info.Mode().Perm(); gotPerm != appstorage.PrivateDirPerm {
-		t.Fatalf("cache root permissions = %#o, want %#o", gotPerm, appstorage.PrivateDirPerm)
+		t.Fatalf("worktree data root permissions = %#o, want %#o", gotPerm, appstorage.PrivateDirPerm)
 	}
 }
 
@@ -87,6 +87,7 @@ func TestParseWorktreeListAndManagedPathFilter(t *testing.T) {
 
 func TestEnsureWorktreeParentUsesPrivatePermissions(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "cache"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
 	repoRoot := filepath.Join(t.TempDir(), "repo")
 
 	if err := ensureWorktreeParent(repoRoot); err != nil {
