@@ -24,6 +24,15 @@ type v3RealtimeSubscription struct {
 	LastSeq        uint64
 }
 
+type v3RealtimeWorksetSubscription struct {
+	WorksetID             string
+	SubscriptionID        string
+	Surface               string
+	Selector              V3RealtimeWorksetSelector
+	Resources             []string
+	AutoSubscribeSessions bool
+}
+
 func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
@@ -72,6 +81,8 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	subs := map[string]v3RealtimeSubscription{}
+	worksets := map[string]v3RealtimeWorksetSubscription{}
+	_ = worksets
 	lastEndpointSeq := endpointCursor
 	lastKeepaliveSeq := endpointCursor
 
@@ -202,8 +213,13 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 						return
 					}
 				}
-				combined := cloneV3RealtimeSubscriptions(subs)
-				catchUpFrom := lastEndpointSeq
+				requestedWorksets, ok := s.v3RealtimeValidateResumeWorksets(conn, principal, message.Worksets)
+				if !ok {
+					return
+				}
+				requestedSubs := map[string]v3RealtimeSubscription{}
+				requestedSubCursors := map[string]uint64{}
+				catchUpFrom := resumeSeq
 				for _, requestedSub := range message.Subscriptions {
 					subCursor := resumeSeq
 					if strings.TrimSpace(requestedSub.EndpointCursor) != "" {
@@ -224,23 +240,26 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 						return
 					}
 					newSub := v3RealtimeSubscription{SessionID: requestedSub.SessionID, SubscriptionID: requestedSub.SubscriptionID, LastSeq: last}
-					if !s.v3RealtimeSendReplayStartForSubscriptions(conn, map[string]v3RealtimeSubscription{requestedSub.SessionID: newSub}, subCursor, scope) {
-						return
-					}
-					combined[requestedSub.SessionID] = newSub
+					requestedSubs[requestedSub.SessionID] = newSub
+					requestedSubCursors[requestedSub.SessionID] = subCursor
 					if subCursor < catchUpFrom {
 						catchUpFrom = subCursor
 					}
 				}
-				advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, scope, catchUpFrom, resumeSeq, combined, false)
+				for sessionID, requestedSub := range requestedSubs {
+					if !s.v3RealtimeSendReplayStartForSubscriptions(conn, map[string]v3RealtimeSubscription{sessionID: requestedSub}, requestedSubCursors[sessionID], scope) {
+						return
+					}
+				}
+				advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, scope, catchUpFrom, resumeSeq, requestedSubs, len(requestedSubs) == 0)
 				if !ok {
 					return
 				}
-				if len(message.Subscriptions) > 0 {
-					doneSubs := make(map[string]v3RealtimeSubscription, len(message.Subscriptions))
-					for _, requestedSub := range message.Subscriptions {
-						if sub, ok := advanced.Subscriptions[requestedSub.SessionID]; ok {
-							doneSubs[requestedSub.SessionID] = sub
+				if len(requestedSubs) > 0 {
+					doneSubs := make(map[string]v3RealtimeSubscription, len(requestedSubs))
+					for sessionID := range requestedSubs {
+						if sub, ok := advanced.Subscriptions[sessionID]; ok {
+							doneSubs[sessionID] = sub
 						}
 					}
 					if !s.v3RealtimeSendReplayDoneForSubscriptions(conn, doneSubs, advanced.EndpointSeq, scope) {
@@ -248,6 +267,7 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 					}
 				}
 				subs = advanced.Subscriptions
+				worksets = requestedWorksets
 				lastEndpointSeq = advanced.EndpointSeq
 				lastKeepaliveSeq = advanced.EndpointSeq
 			}
@@ -286,6 +306,47 @@ type v3RealtimeAdvanceResult struct {
 	LastSentEndpointSeq uint64
 	Subscriptions       map[string]v3RealtimeSubscription
 	DeliveredEvents     int
+}
+
+func (s *Server) v3RealtimeValidateResumeWorksets(conn *transportws.Conn, principal identity.Principal, requested []V3RealtimeWorksetSubscriptionRequest) (map[string]v3RealtimeWorksetSubscription, bool) {
+	out := make(map[string]v3RealtimeWorksetSubscription, len(requested))
+	for _, workset := range requested {
+		worksetID := strings.TrimSpace(workset.WorksetID)
+		subscriptionID := strings.TrimSpace(workset.SubscriptionID)
+		if worksetID == "" || subscriptionID == "" {
+			_ = s.sendV3RealtimeMessage(conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindAuthDenied, ErrorCode: "invalid_workset_subscription", Error: "resume workset requires workset_id and subscription_id"})
+			return nil, false
+		}
+		worksetReq := sessionsV3WorksetRequest{
+			SessionIDs: workset.Selector.SessionIDs,
+			Global:     workset.Selector.Global,
+			Workspace:  sessionsV3WorksetWorkspace{WorkspacePath: workset.Selector.WorkspacePath, WorkspacePaths: workset.Selector.WorkspacePaths},
+			Recent:     workset.Selector.Recent,
+		}
+		if strings.TrimSpace(workset.Selector.Kind) == "global" {
+			worksetReq.Global = true
+		}
+		options, err := sessionsV3WorksetOptionsFromRequest(principal, worksetReq)
+		if err != nil {
+			_ = s.sendV3RealtimeMessage(conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindAuthDenied, ErrorCode: "invalid_workset_selector", Error: err.Error()})
+			return nil, false
+		}
+		options.Principal = principal
+		options.Surface = normalizeV3SyncSurface(workset.Surface)
+		if _, err := s.sessions.BuildSessionWorkset(options.Store); err != nil {
+			_ = s.sendV3RealtimeMessage(conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindAuthDenied, ErrorCode: "invalid_workset_selector", Error: err.Error()})
+			return nil, false
+		}
+		out[worksetID] = v3RealtimeWorksetSubscription{
+			WorksetID:             worksetID,
+			SubscriptionID:        subscriptionID,
+			Surface:               normalizeV3SyncSurface(workset.Surface),
+			Selector:              workset.Selector,
+			Resources:             append([]string(nil), workset.Resources...),
+			AutoSubscribeSessions: workset.AutoSubscribeSessions,
+		}
+	}
+	return out, true
 }
 
 func (s *Server) v3RealtimeValidateEndpointCursor(conn *transportws.Conn, requestedEndpointSeq uint64) bool {

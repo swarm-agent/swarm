@@ -563,7 +563,7 @@ func TestV3RealtimeReplayAfterReconnectCarriesDurableTerminalRunIntent(t *testin
 	}
 }
 
-func TestV3RealtimeEndpointResumeDeliversAuthorizedSubscribedEventsAndSkipsOnlyServerFilteredRows(t *testing.T) {
+func TestV3RealtimeEndpointResumeAtomicallyReplacesSubscriptions(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	aResult := createV3RealtimeTestSessionResult(t, server, "session-realtime-resume-a", "create-realtime-resume-a")
 	a := *aResult.Session
@@ -584,10 +584,8 @@ func TestV3RealtimeEndpointResumeDeliversAuthorizedSubscribedEventsAndSkipsOnlyS
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, b.ID, bAppend.Event.Seq)
 
 	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: aSecondAppend.RealtimeOutbox.EndpointCursor})
-	appendAfterResume := appendV3RealtimeTestMessage(t, server, b.ID, "message-realtime-resume-b-2", "b-two")
-	live := readV3RealtimeFrame(t, conn)
-	assertV3RealtimeFrame(t, live, V3RealtimeKindEvent, b.ID, appendAfterResume.Event.Seq)
-	assertV3RealtimeSignedCursorSeq(t, server, live.EndpointCursor, appendAfterResume.RealtimeOutbox.EndpointSeq)
+	appendV3RealtimeTestMessage(t, server, b.ID, "message-realtime-resume-b-2", "b-two")
+	assertNoV3RealtimeEventFrame(t, conn, 150*time.Millisecond)
 }
 
 func TestV3RealtimeSessionGapDirtiesOnlyAffectedSession(t *testing.T) {

@@ -34,30 +34,49 @@ type V3RealtimeSubscriptionRequest struct {
 	EndpointCursor string `json:"endpoint_cursor,omitempty"`
 }
 
+type V3RealtimeWorksetSubscriptionRequest struct {
+	WorksetID             string                    `json:"workset_id"`
+	SubscriptionID        string                    `json:"subscription_id"`
+	Surface               string                    `json:"surface,omitempty"`
+	Selector              V3RealtimeWorksetSelector `json:"selector"`
+	Resources             []string                  `json:"resources,omitempty"`
+	AutoSubscribeSessions bool                      `json:"auto_subscribe_sessions"`
+}
+
+type V3RealtimeWorksetSelector struct {
+	Kind           string                  `json:"kind,omitempty"`
+	Global         bool                    `json:"global,omitempty"`
+	WorkspacePath  string                  `json:"workspace_path,omitempty"`
+	WorkspacePaths []string                `json:"workspace_paths,omitempty"`
+	SessionIDs     []string                `json:"session_ids,omitempty"`
+	Recent         sessionsV3WorksetRecent `json:"recent,omitempty"`
+}
+
 type V3RealtimeMessage struct {
-	Protocol                   string                            `json:"protocol"`
-	ProtocolVersion            int                               `json:"protocol_version"`
-	Kind                       string                            `json:"kind"`
-	SessionID                  string                            `json:"session_id,omitempty"`
-	SubscriptionID             string                            `json:"subscription_id,omitempty"`
-	AfterSeq                   uint64                            `json:"after_seq,omitempty"`
-	AfterRev                   uint64                            `json:"afterRev,omitempty"`
-	LastSeq                    uint64                            `json:"last_seq,omitempty"`
-	NextSeq                    uint64                            `json:"next_seq,omitempty"`
-	HighWatermarkSeq           uint64                            `json:"high_watermark_seq,omitempty"`
-	EndpointCursor             string                            `json:"endpoint_cursor,omitempty"`
-	Subscriptions              []V3RealtimeSubscriptionRequest   `json:"subscriptions,omitempty"`
-	Rev                        uint64                            `json:"rev,omitempty"`
-	PrevRev                    uint64                            `json:"prevRev"`
-	EventType                  string                            `json:"event_type,omitempty"`
-	Event                      *sessionruntime.SessionEvent      `json:"event,omitempty"`
-	Projection                 *sessionruntime.SessionProjection `json:"projection,omitempty"`
-	ErrorCode                  string                            `json:"error_code,omitempty"`
-	Error                      string                            `json:"error,omitempty"`
-	Reason                     string                            `json:"reason,omitempty"`
-	BootstrapRequired          bool                              `json:"bootstrap_required,omitempty"`
-	OldestAvailableEndpointSeq uint64                            `json:"oldest_available_endpoint_seq,omitempty"`
-	LatestEndpointSeq          uint64                            `json:"latest_endpoint_seq,omitempty"`
+	Protocol                   string                                 `json:"protocol"`
+	ProtocolVersion            int                                    `json:"protocol_version"`
+	Kind                       string                                 `json:"kind"`
+	SessionID                  string                                 `json:"session_id,omitempty"`
+	SubscriptionID             string                                 `json:"subscription_id,omitempty"`
+	AfterSeq                   uint64                                 `json:"after_seq,omitempty"`
+	AfterRev                   uint64                                 `json:"afterRev,omitempty"`
+	LastSeq                    uint64                                 `json:"last_seq,omitempty"`
+	NextSeq                    uint64                                 `json:"next_seq,omitempty"`
+	HighWatermarkSeq           uint64                                 `json:"high_watermark_seq,omitempty"`
+	EndpointCursor             string                                 `json:"endpoint_cursor,omitempty"`
+	Subscriptions              []V3RealtimeSubscriptionRequest        `json:"subscriptions,omitempty"`
+	Worksets                   []V3RealtimeWorksetSubscriptionRequest `json:"worksets,omitempty"`
+	Rev                        uint64                                 `json:"rev,omitempty"`
+	PrevRev                    uint64                                 `json:"prevRev"`
+	EventType                  string                                 `json:"event_type,omitempty"`
+	Event                      *sessionruntime.SessionEvent           `json:"event,omitempty"`
+	Projection                 *sessionruntime.SessionProjection      `json:"projection,omitempty"`
+	ErrorCode                  string                                 `json:"error_code,omitempty"`
+	Error                      string                                 `json:"error,omitempty"`
+	Reason                     string                                 `json:"reason,omitempty"`
+	BootstrapRequired          bool                                   `json:"bootstrap_required,omitempty"`
+	OldestAvailableEndpointSeq uint64                                 `json:"oldest_available_endpoint_seq,omitempty"`
+	LatestEndpointSeq          uint64                                 `json:"latest_endpoint_seq,omitempty"`
 }
 
 func NewV3RealtimeMessage(kind string) V3RealtimeMessage {
@@ -122,7 +141,10 @@ func ValidateV3RealtimeMessage(message V3RealtimeMessage) error {
 		if strings.TrimSpace(message.EndpointCursor) == "" {
 			return errors.New("v3 realtime resume requires endpoint_cursor")
 		}
-		return validateV3RealtimeSubscriptionRequests(message.Subscriptions)
+		if err := validateV3RealtimeSubscriptionRequests(message.Subscriptions); err != nil {
+			return err
+		}
+		return validateV3RealtimeWorksetSubscriptionRequests(message.Worksets)
 	default:
 		return fmt.Errorf("unsupported v3 realtime kind %q", kind)
 	}
@@ -151,6 +173,25 @@ func validateV3RealtimeSubscriptionRequests(subscriptions []V3RealtimeSubscripti
 		}
 		if strings.TrimSpace(sub.SubscriptionID) == "" {
 			return errors.New("v3 realtime resume subscription requires subscription_id")
+		}
+	}
+	return nil
+}
+
+func validateV3RealtimeWorksetSubscriptionRequests(worksets []V3RealtimeWorksetSubscriptionRequest) error {
+	for _, workset := range worksets {
+		if strings.TrimSpace(workset.WorksetID) == "" {
+			return errors.New("v3 realtime resume workset requires workset_id")
+		}
+		if strings.TrimSpace(workset.SubscriptionID) == "" {
+			return errors.New("v3 realtime resume workset requires subscription_id")
+		}
+		selector := workset.Selector
+		if strings.TrimSpace(selector.Kind) == "" {
+			return errors.New("v3 realtime resume workset requires selector.kind")
+		}
+		if strings.TrimSpace(selector.Kind) != "global" && !selector.Global && len(selector.SessionIDs) == 0 && strings.TrimSpace(selector.WorkspacePath) == "" && len(selector.WorkspacePaths) == 0 && selector.Recent.Limit <= 0 {
+			return errors.New("v3 realtime resume workset requires a concrete selector")
 		}
 	}
 	return nil

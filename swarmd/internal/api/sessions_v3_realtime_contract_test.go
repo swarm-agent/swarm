@@ -83,8 +83,8 @@ func TestV3RealtimeContractRoundTripsEveryMessageType(t *testing.T) {
 	}
 }
 
-func TestV3RealtimeContractResumeCarriesEndpointCursorAndSubscriptions(t *testing.T) {
-	raw := []byte(`{"protocol":"v3.realtime","protocol_version":1,"kind":"resume","endpoint_cursor":"cursor-42","subscriptions":[{"session_id":"session-a","subscription_id":"sub-a"}]}`)
+func TestV3RealtimeContractResumeCarriesEndpointCursorSubscriptionsAndWorksets(t *testing.T) {
+	raw := []byte(`{"protocol":"v3.realtime","protocol_version":1,"kind":"resume","endpoint_cursor":"cursor-42","subscriptions":[{"session_id":"session-a","subscription_id":"sub-a"}],"worksets":[{"workset_id":"desktop:global","subscription_id":"desktop-client:desktop:global","surface":"desktop","selector":{"kind":"global","global":true,"recent":{"limit":25}},"resources":["sessions","events","run_intents"],"auto_subscribe_sessions":true}]}`)
 	var decoded V3RealtimeMessage
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		t.Fatalf("decode canonical resume message: %v", err)
@@ -97,8 +97,10 @@ func TestV3RealtimeContractResumeCarriesEndpointCursorAndSubscriptions(t *testin
 		t.Fatalf("marshal canonical resume message: %v", err)
 	}
 	encodedText := string(encoded)
-	if !strings.Contains(encodedText, `"endpoint_cursor":"cursor-42"`) || !strings.Contains(encodedText, `"subscriptions"`) {
-		t.Fatalf("canonical resume must preserve endpoint_cursor and subscriptions, got %s", encodedText)
+	for _, required := range []string{`"endpoint_cursor":"cursor-42"`, `"subscriptions"`, `"worksets"`, `"workset_id":"desktop:global"`, `"auto_subscribe_sessions":true`} {
+		if !strings.Contains(encodedText, required) {
+			t.Fatalf("canonical resume must preserve %s, got %s", required, encodedText)
+		}
 	}
 	for _, forbidden := range []string{`"after_seq"`, `"afterRev"`} {
 		if strings.Contains(encodedText, forbidden) {

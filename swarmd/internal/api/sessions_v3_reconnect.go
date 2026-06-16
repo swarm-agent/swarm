@@ -16,7 +16,24 @@ import (
 
 const sessionsV3ReconnectRunIntentListLimit = 100000
 
-type sessionsV3ReconnectRequest struct{}
+type sessionsV3ReconnectRequest struct {
+	Surface  string                            `json:"surface,omitempty"`
+	ClientID string                            `json:"client_id,omitempty"`
+	Workset  sessionsV3ReconnectWorksetRequest `json:"workset,omitempty"`
+}
+
+type sessionsV3ReconnectWorksetRequest struct {
+	WorksetID             string                     `json:"workset_id,omitempty"`
+	Selector              V3RealtimeWorksetSelector  `json:"selector,omitempty"`
+	SessionIDs            []string                   `json:"session_ids,omitempty"`
+	Global                bool                       `json:"global,omitempty"`
+	Workspace             sessionsV3WorksetWorkspace `json:"workspace,omitempty"`
+	Recent                sessionsV3WorksetRecent    `json:"recent,omitempty"`
+	History               sessionsV3WorksetHistory   `json:"history,omitempty"`
+	Resources             sessionsV3WorksetResources `json:"resources,omitempty"`
+	IncludeActive         bool                       `json:"include_active,omitempty"`
+	AutoSubscribeSessions bool                       `json:"auto_subscribe_sessions,omitempty"`
+}
 
 type sessionsV3ReconnectSubscription struct {
 	Protocol        string `json:"protocol"`
@@ -44,11 +61,14 @@ func (s *Server) handleSessionsV3Reconnect(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	_ = req
+	if sessionsV3ReconnectHasWorkset(req) && strings.TrimSpace(req.ClientID) == "" {
+		writeError(w, http.StatusBadRequest, errors.New("v3 reconnect with workset requires client_id"))
+		return
+	}
 
-	response, err := s.sessionsV3ReconnectResponse(principal)
+	response, err := s.sessionsV3ReconnectResponse(principal, req)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+		writeError(w, sessionsV3ReconnectErrorStatus(err), err)
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
@@ -87,7 +107,10 @@ func decodeOptionalSessionsV3ReconnectRequest(r *http.Request, out *sessionsV3Re
 	return decodeJSONObject(decoder, out)
 }
 
-func (s *Server) sessionsV3ReconnectResponse(principal identity.Principal) (map[string]any, error) {
+func (s *Server) sessionsV3ReconnectResponse(principal identity.Principal, req sessionsV3ReconnectRequest) (map[string]any, error) {
+	if sessionsV3ReconnectHasWorkset(req) {
+		return s.sessionsV3ReconnectWorksetResponse(principal, req)
+	}
 	activeIntents, err := s.sessionsV3ReconnectActiveRunIntents(principal)
 	if err != nil {
 		return nil, err
@@ -172,18 +195,282 @@ func (s *Server) sessionsV3ReconnectResponse(principal identity.Principal) (map[
 		})
 	}
 
-	return map[string]any{
-		"ok":                            true,
-		"rev":                           rev,
-		"snapshot_endpoint_cursor":      signedSnapshotEndpointCursor,
-		"sessions_by_id":                sessionsByID,
-		"projections_by_session":        projectionsBySession,
-		"run_intents_by_session":        runIntentsBySession,
-		"current_run_intent_by_session": currentRunIntentBySession,
-		"subscriptions":                 subscriptions,
-		"session_order":                 sessionOrder,
-		"diagnostics_by_session":        diagnosticsBySession,
-	}, nil
+	return sessionsV3ReconnectResponseMap(sessionsV3ReconnectResponseInput{
+		Rev:                       rev,
+		SnapshotEndpointCursor:    signedSnapshotEndpointCursor,
+		SessionsByID:              sessionsByID,
+		ProjectionsBySession:      projectionsBySession,
+		RunIntentsBySession:       runIntentsBySession,
+		CurrentRunIntentBySession: currentRunIntentBySession,
+		Subscriptions:             subscriptions,
+		SessionOrder:              sessionOrder,
+		DiagnosticsBySession:      diagnosticsBySession,
+	}), nil
+}
+
+type sessionsV3ReconnectResponseInput struct {
+	Rev                       uint64
+	ClientID                  string
+	Surface                   string
+	WorksetID                 string
+	SnapshotEndpointCursor    string
+	SessionsByID              any
+	ProjectionsBySession      any
+	MessagesBySession         any
+	EventsBySession           any
+	PlansBySession            any
+	PlanRevisionsBySession    any
+	PermissionsBySession      any
+	UsageBySession            any
+	PreferencesBySession      any
+	AgentModelPolicyBySession any
+	RunIntentsBySession       any
+	CurrentRunIntentBySession any
+	HistoryManifestsBySession any
+	HistoryChunksByID         any
+	Omissions                 any
+	Pagination                any
+	Watermarks                any
+	Subscriptions             []sessionsV3ReconnectSubscription
+	Worksets                  []V3RealtimeWorksetSubscriptionRequest
+	SessionOrder              []string
+	DiagnosticsBySession      map[string][]sessionsV3ReconnectDiagnostic
+}
+
+func (s *Server) sessionsV3ReconnectWorksetResponse(principal identity.Principal, req sessionsV3ReconnectRequest) (map[string]any, error) {
+	surface := normalizeV3SyncSurface(req.Surface)
+	worksetReq, selector := sessionsV3ReconnectWorksetRequestForOptions(req.Workset)
+	options, err := sessionsV3WorksetOptionsFromRequest(principal, worksetReq)
+	if err != nil {
+		return nil, err
+	}
+	options.Principal = principal
+	options.Surface = surface
+	workset, err := s.sessions.BuildSessionWorkset(options.Store)
+	if err != nil {
+		return nil, err
+	}
+	snapshotEndpointCursor, err := s.sessions.CurrentRealtimeOutboxCursor()
+	if err != nil {
+		return nil, err
+	}
+	signedSnapshotEndpointCursor, err := s.signV3SyncEndpointCursorFromLegacy(v3SyncCursorScopeForRealtime(principal, surface), snapshotEndpointCursor)
+	if err != nil {
+		return nil, err
+	}
+	response, err := s.sessionsV3WorksetResponseForResult(options, workset, signedSnapshotEndpointCursor)
+	if err != nil {
+		return nil, err
+	}
+	worksetID := strings.TrimSpace(req.Workset.WorksetID)
+	if worksetID == "" {
+		worksetID = "workset:" + v3SyncDeterministicSelectorHash(v3SyncCanonicalSelector(selector))
+	}
+	clientID := strings.TrimSpace(req.ClientID)
+	subscriptions := sessionsV3ReconnectSubscriptions(clientID, workset.SessionOrder, signedSnapshotEndpointCursor)
+	worksets := []V3RealtimeWorksetSubscriptionRequest{{
+		WorksetID:             worksetID,
+		SubscriptionID:        sessionsV3ReconnectWorksetSubscriptionID(clientID, worksetID),
+		Surface:               surface,
+		Selector:              selector,
+		Resources:             sessionsV3SyncResourceSet(worksetReq.Resources, worksetReq.History, worksetReq.IncludeActive),
+		AutoSubscribeSessions: req.Workset.AutoSubscribeSessions,
+	}}
+	return sessionsV3ReconnectResponseMap(sessionsV3ReconnectResponseInput{
+		Rev:                       workset.Rev,
+		ClientID:                  clientID,
+		Surface:                   surface,
+		WorksetID:                 worksetID,
+		SnapshotEndpointCursor:    signedSnapshotEndpointCursor,
+		SessionsByID:              response["sessions_by_id"],
+		ProjectionsBySession:      response["projections_by_session"],
+		MessagesBySession:         response["messages_by_session"],
+		EventsBySession:           response["events_by_session"],
+		PlansBySession:            response["plans_by_session"],
+		PlanRevisionsBySession:    response["plan_revisions_by_session"],
+		PermissionsBySession:      response["permissions_by_session"],
+		UsageBySession:            response["usage_by_session"],
+		PreferencesBySession:      response["preferences_by_session"],
+		AgentModelPolicyBySession: response["agent_model_policy_by_session"],
+		RunIntentsBySession:       response["run_intents_by_session"],
+		HistoryManifestsBySession: response["history_manifests_by_session"],
+		HistoryChunksByID:         response["history_chunks_by_id"],
+		Omissions:                 response["omissions"],
+		Pagination:                response["pagination"],
+		Watermarks:                response["watermarks"],
+		Subscriptions:             subscriptions,
+		Worksets:                  worksets,
+		SessionOrder:              workset.SessionOrder,
+		DiagnosticsBySession:      map[string][]sessionsV3ReconnectDiagnostic{},
+	}), nil
+}
+
+func sessionsV3ReconnectResponseMap(input sessionsV3ReconnectResponseInput) map[string]any {
+	response := map[string]any{
+		"ok":                       true,
+		"rev":                      input.Rev,
+		"snapshot_endpoint_cursor": input.SnapshotEndpointCursor,
+		"sessions_by_id":           input.SessionsByID,
+		"projections_by_session":   input.ProjectionsBySession,
+		"run_intents_by_session":   input.RunIntentsBySession,
+		"subscriptions":            input.Subscriptions,
+		"session_order":            input.SessionOrder,
+		"diagnostics_by_session":   input.DiagnosticsBySession,
+	}
+	if input.CurrentRunIntentBySession != nil {
+		response["current_run_intent_by_session"] = input.CurrentRunIntentBySession
+	}
+	optional := map[string]any{
+		"client_id":                     input.ClientID,
+		"surface":                       input.Surface,
+		"workset_id":                    input.WorksetID,
+		"messages_by_session":           input.MessagesBySession,
+		"events_by_session":             input.EventsBySession,
+		"plans_by_session":              input.PlansBySession,
+		"plan_revisions_by_session":     input.PlanRevisionsBySession,
+		"permissions_by_session":        input.PermissionsBySession,
+		"usage_by_session":              input.UsageBySession,
+		"preferences_by_session":        input.PreferencesBySession,
+		"agent_model_policy_by_session": input.AgentModelPolicyBySession,
+		"history_manifests_by_session":  input.HistoryManifestsBySession,
+		"history_chunks_by_id":          input.HistoryChunksByID,
+		"omissions":                     input.Omissions,
+		"pagination":                    input.Pagination,
+		"watermarks":                    input.Watermarks,
+		"worksets":                      input.Worksets,
+	}
+	for key, value := range optional {
+		if !sessionsV3ReconnectEmptyValue(value) {
+			response[key] = value
+		}
+	}
+	if len(input.Worksets) > 0 {
+		response["realtime"] = map[string]any{
+			"stream_path": V3RealtimeStreamPath,
+			"resume": V3RealtimeMessage{
+				Protocol:        V3RealtimeProtocol,
+				ProtocolVersion: V3RealtimeProtocolVersion,
+				Kind:            V3RealtimeKindResume,
+				EndpointCursor:  input.SnapshotEndpointCursor,
+				Subscriptions:   reconnectSubscriptionsToV3Realtime(input.Subscriptions),
+				Worksets:        input.Worksets,
+			},
+		}
+	}
+	return response
+}
+
+func sessionsV3ReconnectWorksetRequestForOptions(req sessionsV3ReconnectWorksetRequest) (sessionsV3WorksetRequest, V3RealtimeWorksetSelector) {
+	selector := req.Selector
+	if len(selector.SessionIDs) == 0 {
+		selector.SessionIDs = req.SessionIDs
+	}
+	if !selector.Global {
+		selector.Global = req.Global
+	}
+	if selector.WorkspacePath == "" && len(selector.WorkspacePaths) == 0 {
+		selector.WorkspacePath = req.Workspace.WorkspacePath
+		selector.WorkspacePaths = req.Workspace.WorkspacePaths
+	}
+	if selector.Recent.Limit == 0 && req.Recent.Limit != 0 {
+		selector.Recent = req.Recent
+	}
+	if strings.TrimSpace(selector.Kind) == "global" {
+		selector.Global = true
+	}
+	if strings.TrimSpace(selector.Kind) == "" {
+		switch {
+		case selector.Global:
+			selector.Kind = "global"
+		case len(selector.SessionIDs) > 0:
+			selector.Kind = "session_ids"
+		case selector.Recent.Limit > 0:
+			selector.Kind = "recent"
+		case strings.TrimSpace(selector.WorkspacePath) != "" || len(selector.WorkspacePaths) > 0:
+			selector.Kind = "workspace"
+		}
+	}
+	return sessionsV3WorksetRequest{
+		SessionIDs:    selector.SessionIDs,
+		Global:        selector.Global,
+		Workspace:     sessionsV3WorksetWorkspace{WorkspacePath: selector.WorkspacePath, WorkspacePaths: selector.WorkspacePaths},
+		Recent:        selector.Recent,
+		History:       req.History,
+		Resources:     req.Resources,
+		IncludeActive: req.IncludeActive,
+	}, selector
+}
+
+func sessionsV3ReconnectSubscriptions(clientID string, sessionOrder []string, endpointCursor string) []sessionsV3ReconnectSubscription {
+	subscriptions := make([]sessionsV3ReconnectSubscription, 0, len(sessionOrder))
+	for _, sessionID := range sessionOrder {
+		sessionID = strings.TrimSpace(sessionID)
+		if sessionID == "" {
+			continue
+		}
+		subscriptions = append(subscriptions, sessionsV3ReconnectSubscription{
+			Protocol:        V3RealtimeProtocol,
+			ProtocolVersion: V3RealtimeProtocolVersion,
+			Kind:            V3RealtimeKindSubscribe,
+			SessionID:       sessionID,
+			SubscriptionID:  sessionsV3ReconnectSessionSubscriptionID(clientID, sessionID),
+			EndpointCursor:  endpointCursor,
+		})
+	}
+	return subscriptions
+}
+
+func reconnectSubscriptionsToV3Realtime(subscriptions []sessionsV3ReconnectSubscription) []V3RealtimeSubscriptionRequest {
+	out := make([]V3RealtimeSubscriptionRequest, 0, len(subscriptions))
+	for _, sub := range subscriptions {
+		out = append(out, V3RealtimeSubscriptionRequest{SessionID: sub.SessionID, SubscriptionID: sub.SubscriptionID, EndpointCursor: sub.EndpointCursor})
+	}
+	return out
+}
+
+func sessionsV3ReconnectSessionSubscriptionID(clientID, sessionID string) string {
+	clientID = strings.TrimSpace(clientID)
+	if clientID == "" {
+		return "reconnect:" + sessionID
+	}
+	return clientID + ":session:" + sessionID
+}
+
+func sessionsV3ReconnectWorksetSubscriptionID(clientID, worksetID string) string {
+	clientID = strings.TrimSpace(clientID)
+	if clientID == "" {
+		return "reconnect:" + worksetID
+	}
+	return clientID + ":" + worksetID
+}
+
+func sessionsV3ReconnectHasWorkset(req sessionsV3ReconnectRequest) bool {
+	workset := req.Workset
+	return strings.TrimSpace(workset.WorksetID) != "" || workset.AutoSubscribeSessions || workset.IncludeActive || workset.Global || len(workset.SessionIDs) > 0 || strings.TrimSpace(workset.Workspace.WorkspacePath) != "" || len(workset.Workspace.WorkspacePaths) > 0 || workset.Recent.Limit > 0 || strings.TrimSpace(workset.Selector.Kind) != "" || workset.Selector.Global || len(workset.Selector.SessionIDs) > 0 || strings.TrimSpace(workset.Selector.WorkspacePath) != "" || len(workset.Selector.WorkspacePaths) > 0 || workset.Selector.Recent.Limit > 0
+}
+
+func sessionsV3ReconnectEmptyValue(value any) bool {
+	switch typed := value.(type) {
+	case nil:
+		return true
+	case string:
+		return strings.TrimSpace(typed) == ""
+	case []V3RealtimeWorksetSubscriptionRequest:
+		return len(typed) == 0
+	default:
+		return false
+	}
+}
+
+func sessionsV3ReconnectErrorStatus(err error) int {
+	if err == nil {
+		return http.StatusInternalServerError
+	}
+	text := err.Error()
+	if strings.Contains(text, "workset") || strings.Contains(text, "requires") || strings.Contains(text, "selector") || strings.Contains(text, "canonical") || strings.Contains(text, "cannot be combined") || strings.Contains(text, "at least one") {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
 }
 
 func (s *Server) sessionsV3ReconnectActiveRunIntents(principal identity.Principal) ([]sessionruntime.SessionRunIntent, error) {
