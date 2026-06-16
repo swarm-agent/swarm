@@ -177,11 +177,28 @@ type DesktopV3FollowUpTraceStep = {
   details?: Record<string, unknown>
 }
 
+type DesktopV3FollowUpAssistantEvent = {
+  at: number
+  elapsedMs: number
+  kind: string
+  eventType: string
+  seq: number
+  deltaLength: number
+  messageContentLength: number
+  delta: string
+  messageContent: string
+}
+
 type DesktopV3FollowUpTrace = {
   sessionId: string
   startedAt: number
   steps: DesktopV3FollowUpTraceStep[]
+  assistantEvents: DesktopV3FollowUpAssistantEvent[]
+  receivedAssistantText: string
+  completedAssistantText: string
 }
+
+const activeDesktopV3FollowUpTraces = new Map<string, DesktopV3FollowUpTrace>()
 
 function pushDesktopV3FollowUpTraceStep(
   trace: DesktopV3FollowUpTrace,
@@ -227,11 +244,12 @@ function summarizeDesktopV3RealtimeDiagnostics(diagnostics: DesktopV3RealtimeDia
   }
 }
 
-function desktopV3FollowUpConclusion(diagnostics: DesktopV3RealtimeDiagnostics | null): Record<string, unknown> {
+function desktopV3FollowUpConclusion(trace: DesktopV3FollowUpTrace, diagnostics: DesktopV3RealtimeDiagnostics | null): Record<string, unknown> {
   const subscription = diagnostics?.subscriptions[0]
   const connected = diagnostics?.socketState === 'open'
   const subscribed = Boolean(subscription && subscription.subscribeSentCount > 0)
-  const streamed = Boolean(subscription && (subscription.lastEventAt > 0 || subscription.lastFrameAt > 0))
+  const streamFrameObserved = Boolean(subscription && (subscription.lastEventAt > 0 || subscription.lastFrameAt > 0))
+  const receivedAssistantText = trace.receivedAssistantText.length > 0 || trace.completedAssistantText.length > 0
   let outcome = 'unknown'
   if (!diagnostics) {
     outcome = 'no-controller-diagnostics'
@@ -243,28 +261,83 @@ function desktopV3FollowUpConclusion(diagnostics: DesktopV3RealtimeDiagnostics |
     outcome = `socket-${diagnostics.socketState}`
   } else if (!subscribed) {
     outcome = 'socket-open-subscribe-not-sent'
-  } else if (!streamed) {
+  } else if (!streamFrameObserved) {
     outcome = 'subscribed-no-stream-frame-observed-yet'
+  } else if (!receivedAssistantText) {
+    outcome = 'stream-frames-arrived-but-no-assistant-text-received'
   } else {
-    outcome = 'stream-frame-observed'
+    outcome = 'assistant-text-received-from-realtime'
   }
   return {
     outcome,
     connected,
     subscribed,
-    streamFrameObserved: streamed,
+    streamFrameObserved,
+    receivedAssistantText,
+    assistantDeltaEventCount: trace.assistantEvents.filter((event) => event.eventType === 'session.assistant.delta').length,
+    assistantCompletedEventCount: trace.assistantEvents.filter((event) => event.eventType === 'session.assistant.completed').length,
   }
 }
 
+function truncateDesktopV3FollowUpText(value: string): string {
+  const limit = 4000
+  return value.length > limit ? `${value.slice(0, limit)}…[truncated ${value.length - limit} chars]` : value
+}
+
+function recordDesktopV3FollowUpAssistantFrame(sessionId: string, payload: DesktopV3RealtimeFrame, ts: number): void {
+  const trace = activeDesktopV3FollowUpTraces.get(sessionId)
+  if (!trace) {
+    return
+  }
+  const eventType = String(payload.event?.event_type ?? payload.event_type ?? payload.kind ?? payload.type ?? '').trim()
+  if (eventType !== 'session.assistant.delta' && eventType !== 'session.assistant.completed') {
+    return
+  }
+  const eventPayload = payload.event?.payload && typeof payload.event.payload === 'object'
+    ? payload.event.payload as Record<string, unknown>
+    : payload as Record<string, unknown>
+  const delta = typeof eventPayload.delta === 'string' ? eventPayload.delta : ''
+  const message = eventPayload.message && typeof eventPayload.message === 'object'
+    ? eventPayload.message as Record<string, unknown>
+    : null
+  const messageContent = typeof message?.content === 'string' ? message.content : ''
+  if (delta) {
+    trace.receivedAssistantText += delta
+  }
+  if (messageContent) {
+    trace.completedAssistantText = messageContent
+  }
+  trace.assistantEvents.push({
+    at: ts,
+    elapsedMs: ts - trace.startedAt,
+    kind: String(payload.kind ?? payload.type ?? '').trim(),
+    eventType,
+    seq: typeof payload.event?.seq === 'number' ? payload.event.seq : 0,
+    deltaLength: delta.length,
+    messageContentLength: messageContent.length,
+    delta: truncateDesktopV3FollowUpText(delta),
+    messageContent: truncateDesktopV3FollowUpText(messageContent),
+  })
+}
+
 function reportDesktopV3FollowUpTrace(trace: DesktopV3FollowUpTrace): void {
+  activeDesktopV3FollowUpTraces.delete(trace.sessionId)
   const finalDiagnostics = getDesktopV3RealtimeDiagnostics(trace.sessionId)
   console.info('[desktop-v3-follow-up] submit/reconnect/stream report', {
     sessionId: trace.sessionId,
     durationMs: Date.now() - trace.startedAt,
     steps: trace.steps,
+    assistantRealtime: {
+      receivedAssistantText: trace.receivedAssistantText.length > 0 || trace.completedAssistantText.length > 0,
+      deltaTextLength: trace.receivedAssistantText.length,
+      completedTextLength: trace.completedAssistantText.length,
+      deltaText: truncateDesktopV3FollowUpText(trace.receivedAssistantText),
+      completedText: truncateDesktopV3FollowUpText(trace.completedAssistantText),
+      events: trace.assistantEvents,
+    },
     reconnectSync: desktopV3ReconnectSyncDiagnostics,
     finalRealtime: summarizeDesktopV3RealtimeDiagnostics(finalDiagnostics),
-    conclusion: desktopV3FollowUpConclusion(finalDiagnostics),
+    conclusion: desktopV3FollowUpConclusion(trace, finalDiagnostics),
   })
 }
 
@@ -3622,6 +3695,9 @@ function applyDesktopV3RealtimeFrame(sessionId: string, payload: DesktopV3Realti
     return false
   }
   const eventType = String(payload.event?.event_type ?? payload.event_type ?? frameKind).trim()
+  if (frameSessionId) {
+    recordDesktopV3FollowUpAssistantFrame(frameSessionId, payload, ts)
+  }
   const normalizedEnvelope = normalizeV3RealtimeFrame(payload, { receivedAt: ts, sessionId: frameSessionId || undefined })
   const runtimeOutcome = applyV3RuntimeEnvelope(normalizedEnvelope)
   if (eventType.startsWith('session.diagnostic.')) {
@@ -4369,7 +4445,11 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
           sessionId: targetSessionId,
           startedAt: submitStartedAt,
           steps: [],
+          assistantEvents: [],
+          receivedAssistantText: '',
+          completedAssistantText: '',
         }
+        activeDesktopV3FollowUpTraces.set(targetSessionId, trace)
         pushDesktopV3FollowUpTraceStep(trace, 'submit-start', {
           clientRequestId,
           promptLength: trimmedPrompt.length,
