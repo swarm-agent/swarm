@@ -1,5 +1,4 @@
-import { debugLog } from '../../../lib/debug-log'
-import type { DesktopLiveReasoningRecord, DesktopSessionRecord } from '../types/realtime'
+import type { DesktopSessionRecord } from '../types/realtime'
 
 function metadataString(metadata: Record<string, unknown> | undefined, key: string): string {
   const value = metadata?.[key]
@@ -15,16 +14,6 @@ function isFlowSessionMetadata(metadata: Record<string, unknown> | undefined): b
 function isPlaceholderSessionTitle(title: string): boolean {
   const normalized = title.trim().toLowerCase()
   return normalized === 'new session' || normalized === 'new conversation'
-}
-
-
-function summarizeReasoningHistory(history: DesktopLiveReasoningRecord[]): Record<string, unknown> {
-  return {
-    count: history.length,
-    keys: history.slice(0, 8).map((record) => record.key),
-    states: history.slice(0, 8).map((record) => record.state),
-    seqs: history.slice(0, 8).map((record) => ({ timelineSeq: record.timelineSeq, updatedSeq: record.updatedSeq })),
-  }
 }
 
 function mergeSessionTitle(existing: DesktopSessionRecord, incoming: DesktopSessionRecord): string {
@@ -61,27 +50,6 @@ function mergeSessionLiveState(
   const incomingClearsAssistantDetails = liveClearsAssistantDetails(incoming)
   const incomingTerminalStatus = incoming.status === 'idle' || incoming.status === 'error'
   const preserveActiveExistingLive = liveHasActiveRun(existing) && !liveHasActiveRun(incoming) && !incomingClearsAssistantDetails && !incomingTerminalStatus
-  const selectedReasoningHistory = incomingReasoningHistory.length > 0
-    ? incomingReasoningHistory
-    : existingReasoningHistory
-  if (incomingReasoningHistory.length > 0 || existingReasoningHistory.length > 0) {
-    const incomingKeys = new Set(incomingReasoningHistory.map((record) => record.key))
-    debugLog('desktop-reasoning', 'mergeSessionLiveState', {
-      existing: summarizeReasoningHistory(existingReasoningHistory),
-      incoming: summarizeReasoningHistory(incomingReasoningHistory),
-      selected: summarizeReasoningHistory(selectedReasoningHistory),
-      incomingReplacesExisting: incomingReasoningHistory.length > 0,
-      existingKeysDroppedByReplacement: incomingReasoningHistory.length > 0
-        ? existingReasoningHistory.filter((record) => !incomingKeys.has(record.key)).slice(0, 8).map((record) => record.key)
-        : [],
-      existingStatus: existing.status,
-      incomingStatus: incoming.status,
-      existingRunId: existing.runId,
-      incomingRunId: incoming.runId,
-      existingLastEventType: existing.lastEventType,
-      incomingLastEventType: incoming.lastEventType,
-    })
-  }
 
   return {
     ...incoming,
@@ -121,7 +89,9 @@ function mergeSessionLiveState(
     reasoningTimelineSeq: (incoming.reasoningTimelineSeq ?? 0) > 0
       ? incoming.reasoningTimelineSeq
       : existing.reasoningTimelineSeq ?? 0,
-    reasoningHistory: selectedReasoningHistory,
+    reasoningHistory: incomingReasoningHistory.length > 0
+      ? incomingReasoningHistory
+      : existingReasoningHistory,
     toolHistory: incomingToolHistory.length > 0
       ? incomingToolHistory
       : existingToolHistory,

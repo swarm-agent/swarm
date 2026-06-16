@@ -76,29 +76,6 @@ type DraftFlushState = {
   toolOutput?: string
 }
 
-function summarizeLiveReasoning(live: DesktopSessionRecord['live'] | null | undefined): Record<string, unknown> {
-  const history = live?.reasoningHistory ?? []
-  return {
-    runId: live?.runId ?? null,
-    status: live?.status ?? null,
-    lastEventType: live?.lastEventType ?? null,
-    seq: live?.seq ?? 0,
-    reasoningState: live?.reasoningState ?? 'idle',
-    reasoningTextLength: live?.reasoningText?.length ?? 0,
-    reasoningSummaryLength: live?.reasoningSummary?.length ?? 0,
-    reasoningTimelineSeq: live?.reasoningTimelineSeq ?? 0,
-    reasoningHistoryCount: history.length,
-    reasoningHistory: history.slice(0, 8).map((record) => ({
-      key: record.key,
-      runId: record.runId,
-      state: record.state,
-      textLength: record.text.length,
-      summaryLength: record.summary.length,
-      timelineSeq: record.timelineSeq,
-      updatedSeq: record.updatedSeq,
-    })),
-  }
-}
 
 type DesktopUiStateCreator<T extends object> = (
   set: (partial: Partial<T> | ((state: T) => Partial<T> | T)) => void,
@@ -805,7 +782,6 @@ function resetLiveAssistantState(live: DesktopSessionRecord['live']): void {
 }
 
 function resetLiveReasoningState(live: DesktopSessionRecord['live']): void {
-  const before = summarizeLiveReasoning(live)
   live.reasoningSummary = ''
   live.reasoningText = ''
   live.reasoningState = 'idle'
@@ -813,10 +789,6 @@ function resetLiveReasoningState(live: DesktopSessionRecord['live']): void {
   live.reasoningCompletedAt = null
   live.reasoningTimelineSeq = 0
   live.reasoningHistory = []
-  debugLog('desktop-reasoning', 'resetLiveReasoningState', {
-    before,
-    after: summarizeLiveReasoning(live),
-  })
 }
 
 function completeLiveReasoningState(live: DesktopSessionRecord['live'], ts: number, seq: number, state: 'done' | 'error' = 'done'): void {
@@ -834,7 +806,6 @@ function applyLiveReasoningSnapshot(session: DesktopSessionRecord, payload: Reco
   if (eventRevivesTerminalRun(session, payload)) {
     return
   }
-  const before = summarizeLiveReasoning(session.live)
   const next = applyCanonicalReasoningEventToLiveHistory(session.live, payload, eventType, ts, envelopeSeq)
   if (!next) {
     session.live.seq = Math.max(session.live.seq, envelopeSeq)
@@ -862,18 +833,6 @@ function applyLiveReasoningSnapshot(session: DesktopSessionRecord, payload: Reco
   session.live.seq = Math.max(session.live.seq, envelopeSeq)
   session.live.lastEventType = eventType
   session.live.lastEventAt = ts
-  debugLog('desktop-reasoning', 'applyLiveReasoningSnapshot', {
-    sessionId: session.id,
-    eventType,
-    envelopeSeq,
-    payloadRunId: typeof payload.run_id === 'string' ? payload.run_id : '',
-    payloadReasoningId: typeof payload.reasoning_id === 'string' ? payload.reasoning_id : '',
-    payloadReasoningKey: typeof payload.reasoning_key === 'string' ? payload.reasoning_key : '',
-    deltaLength: typeof payload.delta === 'string' ? payload.delta.length : 0,
-    summaryLength: typeof payload.summary === 'string' ? payload.summary.length : 0,
-    before,
-    after: summarizeLiveReasoning(session.live),
-  })
 }
 
 function appendLiveToolOutput(current: string, chunk: string): string {
@@ -1452,14 +1411,7 @@ function applyDesktopGlobalDiscoverySnapshotToStore(snapshot: DesktopDaemonSnaps
       if (!session?.id) {
         continue
       }
-      const existing = sessions[session.id] ?? null
-      const merged = mergeExternalSessionRecord(existing, session)
-      debugLog('desktop-reasoning', 'reconnect-snapshot:merge-session', {
-        sessionId: session.id,
-        before: summarizeLiveReasoning(existing?.live),
-        incoming: summarizeLiveReasoning(session.live),
-        after: summarizeLiveReasoning(merged.live),
-      })
+      const merged = mergeExternalSessionRecord(sessions[session.id] ?? null, session)
       sessions[session.id] = merged
       syncBlockedSessionToWorkspaceOverview(queryClient, merged)
     }
@@ -2003,18 +1955,6 @@ function ensureChildStreamSession(
 function applyV3SessionStreamFrame(state: DesktopStoreState, sessionId: string, payload: RunStreamEventMessage, ts: number): Partial<DesktopStoreState> | null {
   const type = String(payload.type ?? '').trim()
   const targetSessionId = v3StreamTargetSessionId(sessionId, payload)
-  const rawEventType = String(payload.event?.event_type ?? type).trim()
-  if (rawEventType.includes('reasoning') || rawEventType.includes('assistant') || rawEventType.includes('run.turn')) {
-    debugLog('desktop-reasoning', 'stream-frame:before', {
-      sessionId,
-      targetSessionId,
-      type,
-      eventType: rawEventType,
-      eventSeq: typeof payload.event?.seq === 'number' ? payload.event.seq : null,
-      lastSeq: typeof payload.last_seq === 'number' ? payload.last_seq : null,
-      before: summarizeLiveReasoning(state.sessions[targetSessionId]?.live),
-    })
-  }
   if (type === 'run.stop.accepted') {
     const existing = state.sessions[targetSessionId]
     if (!existing) {
@@ -3342,15 +3282,6 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
     session.live.seq = Math.max(session.live.seq, envelopeSeq)
   }
   let merged = mergeSessionRecords(state.sessions[sessionId] ?? null, session)
-  if (eventType.includes('reasoning') || eventType.includes('assistant') || eventType.includes('run.turn')) {
-    debugLog('desktop-reasoning', 'applyEnvelope:after-merge', {
-      sessionId,
-      eventType,
-      envelopeSeq,
-      before: summarizeLiveReasoning(state.sessions[sessionId]?.live),
-      after: summarizeLiveReasoning(merged.live),
-    })
-  }
   if (eventType === 'session.run_intent.recorded' && v3RunIntentStatusTerminal(v3PayloadString(v3RunIntentPayload(payloadRecord), 'status'))) {
     merged = { ...merged, lifecycle: null }
   }
@@ -3385,14 +3316,7 @@ function applyDesktopV3ReconnectSnapshotToStore(snapshot: DesktopDaemonSnapshot)
       if (!session?.id) {
         continue
       }
-      const existing = sessions[session.id] ?? null
-      const merged = mergeExternalSessionRecord(existing, session)
-      debugLog('desktop-reasoning', 'reconnect-snapshot:merge-session', {
-        sessionId: session.id,
-        before: summarizeLiveReasoning(existing?.live),
-        incoming: summarizeLiveReasoning(session.live),
-        after: summarizeLiveReasoning(merged.live),
-      })
+      const merged = mergeExternalSessionRecord(sessions[session.id] ?? null, session)
       sessions[session.id] = merged
       syncBlockedSessionToWorkspaceOverview(queryClient, merged)
     }
@@ -4267,28 +4191,8 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
 
       if (effectiveSessionApi === 'v3') {
         const clientRequestId = providedClientRequestId?.trim() || `desktop-v3-message:${targetSessionId}:${submitStartedAt}`
-        debugLog('desktop-reasoning', 'submitPrompt:before-send', {
-          sessionId: targetSessionId,
-          clientRequestId,
-          promptLength: trimmedPrompt.length,
-          before: summarizeLiveReasoning(get().sessions[targetSessionId]?.live),
-        })
         const result = await sendSessionMessage(targetSessionId, 'user', trimmedPrompt, route, { sessionApi: 'v3', clientRequestId })
-        debugLog('desktop-reasoning', 'submitPrompt:send-result', {
-          sessionId: targetSessionId,
-          clientRequestId,
-          messageId: result.message?.id ?? null,
-          resultMessageCount: result.messages?.length ?? 0,
-          resultRoles: result.messages?.slice(0, 12).map((message) => ({ role: message.role, globalSeq: message.globalSeq })) ?? [],
-          responseSession: summarizeLiveReasoning(result.session?.live),
-          beforeCommit: summarizeLiveReasoning(get().sessions[targetSessionId]?.live),
-        })
         set((state: DesktopStoreState) => applyV3MessageCommitResult(state, targetSessionId, result, Date.now()))
-        debugLog('desktop-reasoning', 'submitPrompt:after-commit', {
-          sessionId: targetSessionId,
-          clientRequestId,
-          afterCommit: summarizeLiveReasoning(get().sessions[targetSessionId]?.live),
-        })
         if (result && typeof result === 'object' && 'realtimeOutbox' in result) {
           const cursor = (result as { realtimeOutbox?: { endpointCursor?: string } | null }).realtimeOutbox?.endpointCursor?.trim() ?? ''
           if (cursor) {
@@ -4298,17 +4202,7 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
         }
         set({ realtimeDesired: true })
         await get().connect()
-        debugLog('desktop-reasoning', 'submitPrompt:before-reconnect-sync', {
-          sessionId: targetSessionId,
-          clientRequestId,
-          beforeReconnect: summarizeLiveReasoning(get().sessions[targetSessionId]?.live),
-        })
         await syncV3RealtimeSessionsFromReconnect({ force: true })
-        debugLog('desktop-reasoning', 'submitPrompt:after-reconnect-sync', {
-          sessionId: targetSessionId,
-          clientRequestId,
-          afterReconnect: summarizeLiveReasoning(get().sessions[targetSessionId]?.live),
-        })
         return
       }
 
