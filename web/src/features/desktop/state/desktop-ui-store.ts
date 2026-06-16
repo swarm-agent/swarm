@@ -165,6 +165,7 @@ let desktopRealtimeLastActivityAt = 0
 let desktopRealtimeConnectingStartedAt = 0
 let desktopV3RealtimeController: DesktopV3RealtimeController | null = null
 let desktopV3RealtimeEndpointCursor = ''
+let desktopV3ReconnectSyncDiagnostics: Record<string, unknown> = { status: 'never-run' }
 let pendingDesktopV3GlobalDiscovery: Promise<DesktopDaemonSnapshot> | null = null
 let pendingDesktopV3Reconnect: Promise<DesktopV3ReconnectSnapshot> | null = null
 let runStreamController: DesktopRunStreamController | null = null
@@ -185,6 +186,69 @@ function requireV3RealtimeController(): DesktopV3RealtimeController {
 
 export function getDesktopV3RealtimeDiagnostics(sessionId?: string | null): DesktopV3RealtimeDiagnostics | null {
   return desktopV3RealtimeController?.diagnostics(sessionId) ?? null
+}
+
+function desktopSocketStateName(socket: WebSocket | null): 'none' | 'connecting' | 'open' | 'closing' | 'closed' {
+  switch (socket?.readyState) {
+    case WebSocket.CONNECTING:
+      return 'connecting'
+    case WebSocket.OPEN:
+      return 'open'
+    case WebSocket.CLOSING:
+      return 'closing'
+    case WebSocket.CLOSED:
+      return 'closed'
+    default:
+      return 'none'
+  }
+}
+
+export function getDesktopRealtimeMaintenanceDiagnostics(sessionId?: string | null): Record<string, unknown> {
+  const state = useDesktopUiStore.getState()
+  const normalizedSessionId = sessionId?.trim() ?? ''
+  const session = normalizedSessionId ? state.sessions[normalizedSessionId] ?? null : null
+  const vaultAllowsRealtime = !state.vault.enabled || state.vault.unlocked
+  const canFetch = canFetchRelativeDesktopAPI()
+  const shouldMaintain = shouldMaintainDesktopRealtime(state)
+  const v3Realtime = getDesktopV3RealtimeDiagnostics(normalizedSessionId)
+  return {
+    canFetchRelativeDesktopAPI: canFetch,
+    shouldMaintainDesktopRealtime: shouldMaintain,
+    shouldMaintainBlocker: !state.realtimeDesired
+      ? 'store.realtimeDesired=false'
+      : !vaultAllowsRealtime
+        ? 'store.vault-locked'
+        : !canFetch
+          ? 'store.relative-api-unavailable'
+          : '',
+    connectionState: state.connectionState,
+    realtimeDesired: state.realtimeDesired,
+    hydrated: state.hydrated,
+    hydrating: state.hydrating,
+    vaultEnabled: state.vault.enabled,
+    vaultUnlocked: state.vault.unlocked,
+    connectionGeneration: state.connectionGeneration,
+    reconnectAttempt: state.reconnectAttempt,
+    reconnectTimerActive: state.reconnectTimer !== null,
+    heartbeatTimerActive: state.heartbeatTimer !== null,
+    livenessTimerActive: state.livenessTimer !== null,
+    globalSocketState: desktopSocketStateName(desktopRealtimeSocket),
+    globalLastActivityAt: desktopRealtimeLastActivityAt,
+    globalConnectingStartedAt: desktopRealtimeConnectingStartedAt,
+    activeSessionId: state.activeSessionId,
+    targetSessionId: normalizedSessionId,
+    sessionPresent: session !== null,
+    sessionApi: session?.sessionApi ?? '',
+    sessionLastEventSeq: session?.lastEventSeq ?? 0,
+    sessionLiveRunId: session?.live.runId ?? '',
+    sessionLiveStatus: session?.live.status ?? '',
+    sessionLiveAwaitingAck: session?.live.awaitingAck ?? false,
+    sessionLifecyclePhase: session?.lifecycle?.phase ?? '',
+    sessionLifecycleStopReason: session?.lifecycle?.stopReason ?? '',
+    endpointCursorPresent: desktopV3RealtimeEndpointCursor.trim() !== '',
+    lastV3ReconnectSync: desktopV3ReconnectSyncDiagnostics,
+    v3Realtime,
+  }
 }
 
 if (typeof window !== 'undefined') {
@@ -3351,7 +3415,16 @@ function applyDesktopV3ReconnectSnapshotToStore(snapshot: DesktopDaemonSnapshot)
 }
 
 async function syncV3RealtimeSessionsFromReconnect(options: { force?: boolean } = {}): Promise<void> {
-  if (!canFetchRelativeDesktopAPI()) {
+  const startedAt = Date.now()
+  const canFetch = canFetchRelativeDesktopAPI()
+  if (!canFetch) {
+    desktopV3ReconnectSyncDiagnostics = {
+      status: 'skipped',
+      reason: 'relative-api-unavailable',
+      force: Boolean(options.force),
+      startedAt,
+      completedAt: Date.now(),
+    }
     return
   }
   if (!pendingDesktopV3Reconnect) {
@@ -3369,16 +3442,42 @@ async function syncV3RealtimeSessionsFromReconnect(options: { force?: boolean } 
         pendingDesktopV3Reconnect = null
       })
   }
-  const result = await pendingDesktopV3Reconnect
-  const subscriptions = result.subscriptions.map((subscription) => ({
-    sessionId: subscription.session_id,
-    subscriptionId: subscription.subscription_id,
-    endpointCursor: subscription.endpoint_cursor,
-  }))
-  const controller = requireV3RealtimeController()
-  controller.syncSessions(subscriptions, { resubscribe: Boolean(options.force), replace: true })
-  if (subscriptions.length > 0) {
-    await controller.connect()
+  try {
+    const result = await pendingDesktopV3Reconnect
+    const subscriptions = result.subscriptions.map((subscription) => ({
+      sessionId: subscription.session_id,
+      subscriptionId: subscription.subscription_id,
+      endpointCursor: subscription.endpoint_cursor,
+    }))
+    const controller = requireV3RealtimeController()
+    controller.syncSessions(subscriptions, { resubscribe: Boolean(options.force), replace: true })
+    desktopV3ReconnectSyncDiagnostics = {
+      status: 'applied',
+      force: Boolean(options.force),
+      startedAt,
+      completedAt: Date.now(),
+      subscriptionCount: subscriptions.length,
+      sessionIds: subscriptions.map((subscription) => subscription.sessionId),
+      snapshotEndpointCursorPresent: Boolean(result.snapshot.snapshotEndpointCursor?.trim()),
+      controller: controller.diagnostics(),
+    }
+    if (subscriptions.length > 0) {
+      await controller.connect()
+      desktopV3ReconnectSyncDiagnostics = {
+        ...desktopV3ReconnectSyncDiagnostics,
+        connectedAt: Date.now(),
+        controllerAfterConnect: controller.diagnostics(),
+      }
+    }
+  } catch (error) {
+    desktopV3ReconnectSyncDiagnostics = {
+      status: 'failed',
+      force: Boolean(options.force),
+      startedAt,
+      completedAt: Date.now(),
+      error: error instanceof Error ? error.message : String(error),
+    }
+    throw error
   }
 }
 
@@ -4008,6 +4107,20 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
     const current = get()
     const force = Boolean(options.force)
     if (!force && !shouldMaintainDesktopRealtime(current)) {
+      desktopV3ReconnectSyncDiagnostics = {
+        status: 'skipped',
+        reason: !current.realtimeDesired
+          ? 'store.realtimeDesired=false'
+          : current.vault.enabled && !current.vault.unlocked
+            ? 'store.vault-locked'
+            : 'store.should-maintain=false',
+        force,
+        requestedAt: Date.now(),
+        connectionState: current.connectionState,
+        realtimeDesired: current.realtimeDesired,
+        vaultEnabled: current.vault.enabled,
+        vaultUnlocked: current.vault.unlocked,
+      }
       return
     }
     if (force && !current.realtimeDesired) {

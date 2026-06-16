@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronDown, Clock3, Home, ListChecks, LoaderCircle, MessageSquareText, Mic, Minimize2, Plus, Save, Send, Settings2, ShieldAlert, Sparkles, Square, X } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
-import { getDesktopV3RealtimeDiagnostics, useDesktopUiStore } from '../../state/desktop-ui-store'
+import { getDesktopRealtimeMaintenanceDiagnostics, getDesktopV3RealtimeDiagnostics, useDesktopUiStore } from '../../state/desktop-ui-store'
 import {
   agentStateQueryOptions,
   draftModelQueryOptions,
@@ -399,6 +399,7 @@ type ExistingSessionStreamProbe = {
   baselineLastEventSeq: number
   baselineRunId: string
   submitDiagnostics: ReturnType<typeof getDesktopV3RealtimeDiagnostics>
+  submitMaintenanceDiagnostics: ReturnType<typeof getDesktopRealtimeMaintenanceDiagnostics>
   emitted: boolean
 }
 
@@ -416,6 +417,28 @@ function assistantScreenText(messages: ChatMessageRecord[], liveDraft: string, r
 
 function newAssistantMessages(messages: ChatMessageRecord[], baselineIds: Set<string>): ChatMessageRecord[] {
   return messages.filter((message) => message.role === 'assistant' && !baselineIds.has(message.id))
+}
+
+function v3ReconnectDecisionSummary(maintenance: ReturnType<typeof getDesktopRealtimeMaintenanceDiagnostics>, realtime: ReturnType<typeof getDesktopV3RealtimeDiagnostics>): string[] {
+  const reasons: string[] = []
+  const maintenanceBlocker = String(maintenance?.shouldMaintainBlocker ?? '').trim()
+  if (maintenanceBlocker) {
+    reasons.push(maintenanceBlocker)
+  }
+  if (maintenance?.shouldMaintainDesktopRealtime === false) {
+    reasons.push('store.will-not-maintain-realtime')
+  }
+  const realtimeBlocker = String(realtime?.connectBlockedReason ?? '').trim()
+  if (realtimeBlocker) {
+    reasons.push(realtimeBlocker)
+  }
+  if (realtime && realtime.subscriptions.length === 0) {
+    reasons.push('session.not-subscribed')
+  }
+  if (maintenance?.sessionPresent === false) {
+    reasons.push('session.not-in-store')
+  }
+  return Array.from(new Set(reasons))
 }
 
 export function dedupeMessages(messages: ChatMessageRecord[]): ChatMessageRecord[] {
@@ -1811,6 +1834,7 @@ export function DesktopChatPanel({
     probe.emitted = true
     existingSessionStreamProbeRef.current = null
     const completionDiagnostics = getDesktopV3RealtimeDiagnostics(probe.sessionId)
+    const completionMaintenanceDiagnostics = getDesktopRealtimeMaintenanceDiagnostics(probe.sessionId)
     const subscription = completionDiagnostics?.subscriptions[0] ?? null
     console.info('[existing-session-stream-complete]', {
       sessionId: probe.sessionId,
@@ -1818,8 +1842,11 @@ export function DesktopChatPanel({
       submittedAt: probe.submittedAt,
       completedAt: Date.now(),
       reconnect: {
+        decisionReasons: v3ReconnectDecisionSummary(completionMaintenanceDiagnostics, completionDiagnostics),
         submit: probe.submitDiagnostics,
+        submitMaintenance: probe.submitMaintenanceDiagnostics,
         completion: completionDiagnostics,
+        completionMaintenance: completionMaintenanceDiagnostics,
         socketState: completionDiagnostics?.socketState ?? 'none',
         subscribed: Boolean(subscription && subscription.subscribeSentAt >= probe.submittedAt),
         subscribeSentAt: subscription?.subscribeSentAt ?? 0,
@@ -2784,6 +2811,7 @@ export function DesktopChatPanel({
           baselineLastEventSeq: liveSession?.lastEventSeq ?? 0,
           baselineRunId: liveRunId,
           submitDiagnostics: getDesktopV3RealtimeDiagnostics(existingSessionId),
+          submitMaintenanceDiagnostics: getDesktopRealtimeMaintenanceDiagnostics(existingSessionId),
           emitted: false,
         }
       }

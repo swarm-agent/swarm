@@ -47,6 +47,8 @@ export type DesktopV3RealtimeDiagnostics = {
   endpointCursorPresent: boolean
   reconnectAttempt: number
   lastActivityAt: number
+  subscriptionCount: number
+  connectBlockedReason: string
   subscriptions: DesktopV3RealtimeSubscriptionDiagnostics[]
 }
 
@@ -256,16 +258,27 @@ export class DesktopV3RealtimeController {
 
   diagnostics(sessionId?: string | null): DesktopV3RealtimeDiagnostics {
     const normalizedSessionId = sessionId?.trim() ?? ''
+    const allSubscriptions = Array.from(this.subscriptions.values())
     const subscriptions = normalizedSessionId
-      ? Array.from(this.subscriptions.values()).filter((sub) => sub.sessionId === normalizedSessionId)
-      : Array.from(this.subscriptions.values())
+      ? allSubscriptions.filter((sub) => sub.sessionId === normalizedSessionId)
+      : allSubscriptions
+    const socketState = socketStateName(this.socket)
+    const connectBlockedReason = !this.desired
+      ? 'controller.desired=false'
+      : allSubscriptions.length === 0
+        ? 'controller.subscriptions=0'
+        : socketState === 'open' || socketState === 'connecting'
+          ? `controller.socket=${socketState}`
+          : 'controller.ready-to-connect'
     return {
       desired: this.desired,
-      socketState: socketStateName(this.socket),
+      socketState,
       generation: this.generation,
       endpointCursorPresent: this.endpointCursor.trim() !== '',
       reconnectAttempt: this.reconnectAttempt,
       lastActivityAt: this.lastActivityAt,
+      subscriptionCount: allSubscriptions.length,
+      connectBlockedReason,
       subscriptions: subscriptions.map(subscriptionDiagnostics),
     }
   }
