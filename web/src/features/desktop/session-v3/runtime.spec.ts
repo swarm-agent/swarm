@@ -183,7 +183,7 @@ test('runtime boot opens one V3 realtime stream and sends one resume for workset
     api: {
       bootstrapSessionV3Sync: async (options = {}) => {
         syncRequests.push(options)
-        return makeSyncSnapshot('cursor-boot')
+        return makeRuntimeTestSnapshot('cursor-boot', ['session-1'])
       },
     },
     transportOptions: {
@@ -260,7 +260,7 @@ test('stopRun applies mutation outbox without reconnecting or opening another V3
     api: {
       bootstrapSessionV3Sync: async () => {
         syncSnapshotCalls += 1
-        return makeSyncSnapshot('cursor-1')
+        return makeRuntimeTestSnapshot('cursor-1', ['session-1'])
       },
       stopSessionV3Run: async (sessionId, input) => {
         stopCalls += 1
@@ -308,7 +308,7 @@ test('refresh resets the V3 socket and reopens once from the latest snapshot end
   installTransportGlobals()
   const sockets: MockRealtimeSocket[] = []
   const openEndpointCursors: string[] = []
-  const snapshots = [makeSyncSnapshot('cursor-1'), makeSyncSnapshot('cursor-2')]
+  const snapshots = [makeRuntimeTestSnapshot('cursor-1', ['session-1']), makeRuntimeTestSnapshot('cursor-2', ['session-1'])]
 
   const runtime = new DesktopSessionV3Runtime({
     wantedSessionIds: ['session-1'],
@@ -362,14 +362,7 @@ test('runtime constructs resume workset from runtime config while adding known s
   const runtime = new DesktopSessionV3Runtime({
     wantedSessionIds: ['session-1'],
     api: {
-      bootstrapSessionV3Sync: async () => ({
-        snapshot: {
-          rev: 10,
-          snapshotEndpointCursor: 'cursor-10',
-        },
-        endpointCursor: 'cursor-10',
-        wire: { ok: true, rev: 10, snapshot_endpoint_cursor: 'cursor-10' },
-      }),
+      bootstrapSessionV3Sync: async () => makeRuntimeTestSnapshot('cursor-10', ['session-1']),
     },
     transportOptions: {
       livenessTimeoutMs: 60_000,
@@ -438,6 +431,202 @@ test('runtime uses one canonical workspace recent scope for bootstrap and realti
     assert.equal(resume.worksets?.[0]?.selector.kind, 'workspace')
     assert.equal(resume.worksets?.[0]?.selector.workspace_path, '/repo/a')
     assert.equal(resume.worksets?.[0]?.selector.recent?.limit, 50)
+  } finally {
+    runtime.shutdown()
+  }
+})
+
+
+test('runtime hydrates missing wanted session before authoritative bootstrap replace', async () => {
+  installTransportGlobals()
+  const sockets: MockRealtimeSocket[] = []
+  const bootstrapRequests: SessionV3StateSnapshotRequest[] = []
+  const hydrateRequests: SessionV3StateSnapshotRequest[] = []
+  const emittedSessionIds: string[][] = []
+  const runtime = new DesktopSessionV3Runtime({
+    wantedSessionIds: ['s-active'],
+    initialDesktopState: {
+      rev: 1,
+      status: 'ready',
+      staleReason: null,
+      resyncRequested: false,
+      lastError: null,
+      sessionsById: {
+        's-active': runtimeTestSession('s-active', 'Active session'),
+      },
+      sessionOrder: ['s-active'],
+      messagesBySessionId: {
+        's-active': [runtimeTestMessage('s-active', 'm-1', 'still visible')],
+      },
+      permissionsById: {},
+      plansBySessionId: {},
+      planRevisionsBySessionId: {},
+      usageBySessionId: {},
+      runIntentsBySessionId: {},
+      workspacesByPath: {},
+      notificationsById: {},
+      notificationSummary: { swarmID: '', totalCount: 0, unreadCount: 0, activeCount: 0, updatedAt: 0 },
+      preferencesBySessionId: {},
+      agentModelPolicyBySessionId: {},
+      routeReadinessBySessionId: {},
+    },
+    api: {
+      bootstrapSessionV3Sync: async (request = {}) => {
+        bootstrapRequests.push(request)
+        return makeSyncSnapshot('cursor-bootstrap')
+      },
+      hydrateSessionV3Sync: async (request) => {
+        hydrateRequests.push(request)
+        return makeRuntimeTestSnapshot('cursor-hydrate', ['s-active'])
+      },
+    },
+    transportOptions: {
+      livenessTimeoutMs: 60_000,
+      openSocket: ({ endpointCursor }) => {
+        const socket = new MockRealtimeSocket(`ws://localhost/v3/realtime/stream?endpoint_cursor=${endpointCursor}`)
+        sockets.push(socket)
+        return socket as unknown as WebSocket
+      },
+    },
+  })
+
+  runtime.subscribe((state, result) => {
+    if (result) {
+      emittedSessionIds.push(Object.keys(state.desktop.sessionsById))
+    }
+  })
+
+  try {
+    await runtime.refresh({ reason: 'forced refresh' })
+
+    assert.equal(bootstrapRequests.length, 1)
+    assert.equal(hydrateRequests.length, 1)
+    assert.deepEqual(hydrateRequests[0].sessionIds, ['s-active'])
+    assert.equal(hydrateRequests[0].global, false)
+    assert.equal(runtime.getState().desktop.sessionsById['s-active']?.id, 's-active')
+    assert.equal(runtime.getState().desktop.messagesBySessionId['s-active']?.[0]?.content, 'hydrated s-active')
+    assert.deepEqual(emittedSessionIds, [['s-active']])
+    assert.equal(sockets.length, 1)
+    sockets[0].open()
+    const resume = parseResume(sockets[0])
+    assert.equal(resume.endpoint_cursor, 'cursor-bootstrap')
+    assert.deepEqual(resume.subscriptions?.map((subscription) => subscription.session_id), ['s-active'])
+    assert.equal(resume.subscriptions?.[0]?.endpoint_cursor, 'cursor-hydrate')
+    assert.deepEqual(resume.worksets?.map((workset) => workset.workset_id), ['desktop-v3-runtime:global'])
+  } finally {
+    runtime.shutdown()
+  }
+})
+
+test('runtime does not hydrate wanted session already included in bootstrap', async () => {
+  installTransportGlobals()
+  const sockets: MockRealtimeSocket[] = []
+  const bootstrapRequests: SessionV3StateSnapshotRequest[] = []
+  const hydrateRequests: SessionV3StateSnapshotRequest[] = []
+  const runtime = new DesktopSessionV3Runtime({
+    wantedSessionIds: ['s-active'],
+    api: {
+      bootstrapSessionV3Sync: async (request = {}) => {
+        bootstrapRequests.push(request)
+        return makeRuntimeTestSnapshot('cursor-bootstrap', ['s-active'])
+      },
+      hydrateSessionV3Sync: async (request) => {
+        hydrateRequests.push(request)
+        return makeRuntimeTestSnapshot('cursor-hydrate', ['s-active'])
+      },
+    },
+    transportOptions: {
+      livenessTimeoutMs: 60_000,
+      openSocket: ({ endpointCursor }) => {
+        const socket = new MockRealtimeSocket(`ws://localhost/v3/realtime/stream?endpoint_cursor=${endpointCursor}`)
+        sockets.push(socket)
+        return socket as unknown as WebSocket
+      },
+    },
+  })
+
+  try {
+    await runtime.boot()
+
+    assert.equal(bootstrapRequests.length, 1)
+    assert.equal(hydrateRequests.length, 0)
+    assert.equal(runtime.getState().desktop.sessionsById['s-active']?.id, 's-active')
+    assert.equal(sockets.length, 1)
+    sockets[0].open()
+    const resume = parseResume(sockets[0])
+    assert.equal(resume.endpoint_cursor, 'cursor-bootstrap')
+    assert.deepEqual(resume.subscriptions?.map((subscription) => subscription.session_id), ['s-active'])
+    assert.equal(resume.subscriptions?.[0]?.endpoint_cursor, 'cursor-bootstrap')
+  } finally {
+    runtime.shutdown()
+  }
+})
+
+test('runtime permits clear when hydrate returns tombstone for missing wanted session', async () => {
+  installTransportGlobals()
+  const sockets: MockRealtimeSocket[] = []
+  const hydrateRequests: SessionV3StateSnapshotRequest[] = []
+  const runtime = new DesktopSessionV3Runtime({
+    wantedSessionIds: ['s-active'],
+    initialDesktopState: {
+      rev: 1,
+      status: 'ready',
+      staleReason: null,
+      resyncRequested: false,
+      lastError: null,
+      sessionsById: {
+        's-active': runtimeTestSession('s-active', 'Active session'),
+      },
+      sessionOrder: ['s-active'],
+      messagesBySessionId: {
+        's-active': [runtimeTestMessage('s-active', 'm-1', 'still visible')],
+      },
+      permissionsById: {},
+      plansBySessionId: {},
+      planRevisionsBySessionId: {},
+      usageBySessionId: {},
+      runIntentsBySessionId: {},
+      workspacesByPath: {},
+      notificationsById: {},
+      notificationSummary: { swarmID: '', totalCount: 0, unreadCount: 0, activeCount: 0, updatedAt: 0 },
+      preferencesBySessionId: {},
+      agentModelPolicyBySessionId: {},
+      routeReadinessBySessionId: {},
+    },
+    api: {
+      bootstrapSessionV3Sync: async () => makeSyncSnapshot('cursor-bootstrap'),
+      hydrateSessionV3Sync: async (request) => {
+        hydrateRequests.push(request)
+        return {
+          ...makeSyncSnapshot('cursor-hydrate'),
+          tombstonesBySession: { 's-active': { session_id: 's-active', deleted: true } },
+          wire: { ok: true, rev: 2, snapshot_endpoint_cursor: 'cursor-hydrate', tombstones_by_session: { 's-active': { session_id: 's-active', deleted: true } } },
+        }
+      },
+    },
+    transportOptions: {
+      livenessTimeoutMs: 60_000,
+      openSocket: ({ endpointCursor }) => {
+        const socket = new MockRealtimeSocket(`ws://localhost/v3/realtime/stream?endpoint_cursor=${endpointCursor}`)
+        sockets.push(socket)
+        return socket as unknown as WebSocket
+      },
+    },
+  })
+
+  try {
+    await runtime.refresh({ reason: 'forced refresh' })
+
+    assert.equal(hydrateRequests.length, 1)
+    assert.deepEqual(hydrateRequests[0].sessionIds, ['s-active'])
+    assert.equal(runtime.getState().desktop.sessionsById['s-active'], undefined)
+    assert.equal(runtime.getState().desktop.messagesBySessionId['s-active'], undefined)
+    assert.equal(runtime.getState().subscriptionsBySessionId['s-active'], undefined)
+    assert.equal(sockets.length, 1)
+    sockets[0].open()
+    const resume = parseResume(sockets[0])
+    assert.equal(resume.endpoint_cursor, 'cursor-bootstrap')
+    assert.deepEqual(resume.subscriptions ?? [], [])
   } finally {
     runtime.shutdown()
   }
@@ -656,3 +845,88 @@ test('runtime targeted hydrate uses sync hydrate and updates existing realtime r
     runtime.shutdown()
   }
 })
+
+function runtimeTestSession(id: string, title: string) {
+  return {
+    id,
+    title,
+    workspacePath: '/repo',
+    workspaceName: 'repo',
+    mode: 'auto',
+    sessionApi: 'v3',
+    lastEventSeq: 1,
+    projectionHighWatermarkSeq: 1,
+    messageCount: 1,
+    updatedAt: 1,
+    createdAt: 1,
+    permissionsHydrated: false,
+    lifecycle: null,
+    runIntent: null,
+    live: {
+      runId: null,
+      agentName: null,
+      startedAt: null,
+      status: 'idle',
+      step: 0,
+      toolName: null,
+      sidebarToolName: null,
+      toolCallId: null,
+      toolArguments: null,
+      toolOutput: '',
+      retainedToolName: null,
+      retainedToolCallId: null,
+      retainedToolArguments: null,
+      retainedToolOutput: '',
+      retainedToolState: null,
+      summary: null,
+      lastEventType: null,
+      lastEventAt: null,
+      error: null,
+      seq: 0,
+      assistantDraft: '',
+      retainedAssistantSegments: [],
+      reasoningSummary: '',
+      reasoningText: '',
+      reasoningState: 'idle',
+      reasoningSegment: 0,
+      reasoningStartedAt: null,
+    },
+    pendingPermissions: [],
+    pendingPermissionCount: 0,
+    usage: null,
+  }
+}
+
+function runtimeTestMessage(sessionId: string, id: string, content: string) {
+  return {
+    id,
+    sessionId,
+    globalSeq: 1,
+    role: 'user',
+    content,
+    createdAt: 1,
+  }
+}
+
+function makeRuntimeTestSnapshot(endpointCursor: string, sessionIds: string[]): SessionV3SyncSnapshot {
+  const sessionsById = Object.fromEntries(sessionIds.map((sessionId) => [sessionId, runtimeTestSession(sessionId, `Session ${sessionId}`)]))
+  const messagesBySessionId = Object.fromEntries(sessionIds.map((sessionId) => [sessionId, [runtimeTestMessage(sessionId, `${sessionId}-message`, `hydrated ${sessionId}`)]]))
+  return {
+    ...makeSyncSnapshot(endpointCursor),
+    snapshot: {
+      rev: Number(endpointCursor.replace(/\D/g, '')) || 1,
+      snapshotEndpointCursor: endpointCursor,
+      sessionsById,
+      sessionOrder: sessionIds,
+      messagesBySessionId,
+    },
+    wire: {
+      ok: true,
+      rev: Number(endpointCursor.replace(/\D/g, '')) || 1,
+      snapshot_endpoint_cursor: endpointCursor,
+      sessions_by_id: {},
+      messages_by_session: {},
+      session_order: sessionIds,
+    },
+  }
+}

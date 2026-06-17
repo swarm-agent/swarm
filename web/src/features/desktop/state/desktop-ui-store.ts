@@ -3285,8 +3285,10 @@ function ensureDesktopSessionV3Runtime(): DesktopSessionV3Runtime {
   if (desktopSessionV3Runtime) {
     return desktopSessionV3Runtime
   }
+  const activeSessionId = useDesktopUiStore.getState().activeSessionId?.trim() || ''
   desktopSessionV3Runtime = new DesktopSessionV3Runtime({
     initialDesktopState: getV3RuntimeDesktopSnapshot(),
+    wantedSessionIds: activeSessionId ? [activeSessionId] : [],
   })
   let initialEmission = true
   desktopSessionV3Runtime.subscribe((state, result) => {
@@ -3424,6 +3426,9 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
       const nextActiveWorkspacePath = resolveWorkspacePathForActiveSession(state, nextActiveSessionId)
       saveDesktopActiveSessionId(nextActiveSessionId)
       saveDesktopActiveWorkspacePath(nextActiveWorkspacePath)
+      if (nextActiveSessionId) {
+        ensureDesktopSessionV3Runtime().setWantedSessions([nextActiveSessionId])
+      }
       return {
         activeSessionId: nextActiveSessionId,
         activeWorkspacePath: nextActiveWorkspacePath,

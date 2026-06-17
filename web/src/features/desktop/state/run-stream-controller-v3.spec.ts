@@ -2705,6 +2705,12 @@ test('V3 runtime reconnect workset membership replaces stale sidebar sessions an
         }],
       }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
+    if (url === '/v3/sync/hydrate') {
+      return new Response(JSON.stringify({
+        ...makeEmptyReconnectResponse('cursor-hydrate'),
+        tombstones_by_session: { 'stale-session': { session_id: 'stale-session', deleted: true } },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
     throw new Error(`unexpected fetch: ${url}`)
   }) as typeof fetch
 

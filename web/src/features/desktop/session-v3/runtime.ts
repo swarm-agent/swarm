@@ -147,6 +147,10 @@ interface DesktopSessionV3RuntimeSyncLoad extends DesktopSessionV3RuntimeResumeS
   result: SessionV3SyncSnapshot
 }
 
+interface DesktopSessionV3RuntimePreparedSyncLoad extends DesktopSessionV3RuntimeSyncLoad {
+  transportResult: SessionV3SyncSnapshot
+}
+
 export type DesktopSessionV3RuntimeCreateSessionInput = SessionV3CreateSessionInput
 
 export class DesktopSessionV3Runtime {
@@ -387,26 +391,71 @@ export class DesktopSessionV3Runtime {
     receivedAt = this.now(),
   ): Promise<DesktopSessionV3RuntimeSyncLoad> {
     const request = this.syncOptions(options)
-    const result: SessionV3SyncSnapshot = (request.sessionIds ?? []).length > 0
+    const targetedHydrate = (request.sessionIds ?? []).length > 0
+    const result: SessionV3SyncSnapshot = targetedHydrate
       ? await this.api.hydrateSessionV3Sync(request, { signal: options.signal })
       : await this.api.bootstrapSessionV3Sync(request, { signal: options.signal })
-    const resumeState = this.resumeStateForSyncSnapshot(result, options)
-    const syncLoad = { result, ...resumeState }
+    const syncLoad = targetedHydrate
+      ? this.prepareTargetedHydrateSyncLoad(result, options)
+      : await this.prepareBootstrapSyncLoad(result, request, options)
     if (this.shutdownRequested) return syncLoad
     this.dispatch({
       type: 'sync-snapshot',
-      result,
-      endpointCursor: resumeState.endpointCursor,
-      subscriptions: resumeState.subscriptions,
-      worksets: resumeState.worksets,
+      result: syncLoad.result,
+      endpointCursor: syncLoad.endpointCursor,
+      subscriptions: syncLoad.subscriptions,
+      worksets: syncLoad.worksets,
       mode: options.mode ?? 'merge',
       receivedAt,
     })
     if (applyTransport) {
-      this.transport.applySyncSnapshot(result, resumeState)
+      this.transport.applySyncSnapshot(syncLoad.transportResult, syncLoad)
       this.syncWantedSessionsToTransport()
     }
     return syncLoad
+  }
+
+  private prepareTargetedHydrateSyncLoad(
+    result: SessionV3SyncSnapshot,
+    options: DesktopSessionV3RuntimeRefreshOptions,
+  ): DesktopSessionV3RuntimePreparedSyncLoad {
+    const resumeState = this.resumeStateForSyncSnapshot(result, options)
+    return { result, transportResult: result, ...resumeState }
+  }
+
+  private async prepareBootstrapSyncLoad(
+    result: SessionV3SyncSnapshot,
+    request: SessionV3StateSnapshotRequest,
+    options: DesktopSessionV3RuntimeRefreshOptions,
+  ): Promise<DesktopSessionV3RuntimePreparedSyncLoad> {
+    const bootstrapResumeState = this.resumeStateForSyncSnapshot(result, options)
+    const missingSessionIds = missingSubscribedSessionIds(result, bootstrapResumeState.subscriptions)
+    if (missingSessionIds.length === 0) {
+      return { result, transportResult: result, ...bootstrapResumeState }
+    }
+
+    const hydrateRequest: SessionV3StateSnapshotRequest = {
+      ...request,
+      sessionIds: missingSessionIds,
+      global: false,
+      workspacePath: undefined,
+      workspacePaths: undefined,
+      recent: undefined,
+    }
+    const hydrateResult = await this.api.hydrateSessionV3Sync(hydrateRequest, { signal: options.signal })
+    const mergedResult = mergeSyncSnapshotResults(result, hydrateResult)
+    const hydratedSessionIds = new Set(Object.keys(hydrateResult.snapshot.sessionsById ?? {}))
+    const hydrateTombstoneSessionIds = new Set(Object.keys(hydrateResult.tombstonesBySession ?? {}).map((sessionId) => normalizeString(sessionId)).filter(Boolean))
+    const subscriptions = bootstrapResumeState.subscriptions
+      .filter((subscription) => !hydrateTombstoneSessionIds.has(subscription.session_id))
+      .map((subscription) => hydratedSessionIds.has(subscription.session_id)
+        ? { ...subscription, endpoint_cursor: hydrateResult.endpointCursor || hydrateResult.snapshot.snapshotEndpointCursor || subscription.endpoint_cursor }
+        : subscription)
+    const resumeState = {
+      ...bootstrapResumeState,
+      subscriptions,
+    }
+    return { result: mergedResult, transportResult: result, ...resumeState }
   }
 
   private resumeStateForSyncSnapshot(
@@ -753,6 +802,108 @@ function mergeSubscriptions(
       output.push(subscription)
     } else {
       output[index] = { ...output[index], ...subscription }
+    }
+  }
+  return output
+}
+
+function missingSubscribedSessionIds(
+  result: SessionV3SnapshotResult,
+  subscriptions: SessionV3SyncSubscriptionWire[],
+): string[] {
+  const presentSessionIds = new Set(Object.keys(result.snapshot.sessionsById ?? {}).map((sessionId) => normalizeString(sessionId)).filter(Boolean))
+  const tombstoneSessionIds = new Set(Object.keys(result.tombstonesBySession ?? {}).map((sessionId) => normalizeString(sessionId)).filter(Boolean))
+  const missing: string[] = []
+  for (const subscription of subscriptions) {
+    const sessionId = normalizeString(subscription.session_id)
+    if (!sessionId || presentSessionIds.has(sessionId) || tombstoneSessionIds.has(sessionId) || missing.includes(sessionId)) {
+      continue
+    }
+    missing.push(sessionId)
+  }
+  return missing
+}
+
+function mergeSyncSnapshotResults(
+  base: SessionV3SyncSnapshot,
+  hydrate: SessionV3SnapshotResult,
+): SessionV3SyncSnapshot {
+  const baseSnapshot = base.snapshot
+  const hydrateSnapshot = hydrate.snapshot
+  const sessionsById = {
+    ...(baseSnapshot.sessionsById ?? {}),
+    ...(hydrateSnapshot.sessionsById ?? {}),
+  }
+  const sessionOrder = mergeSessionIdOrder(baseSnapshot.sessionOrder, hydrateSnapshot.sessionOrder, Object.keys(sessionsById))
+  return {
+    ...base,
+    snapshot: {
+      ...baseSnapshot,
+      rev: Math.max(baseSnapshot.rev, hydrateSnapshot.rev),
+      sessionsById,
+      sessionOrder,
+      messagesBySessionId: {
+        ...(baseSnapshot.messagesBySessionId ?? {}),
+        ...(hydrateSnapshot.messagesBySessionId ?? {}),
+      },
+      permissionsById: {
+        ...(baseSnapshot.permissionsById ?? {}),
+        ...(hydrateSnapshot.permissionsById ?? {}),
+      },
+      plansBySessionId: {
+        ...(baseSnapshot.plansBySessionId ?? {}),
+        ...(hydrateSnapshot.plansBySessionId ?? {}),
+      },
+      planRevisionsBySessionId: {
+        ...(baseSnapshot.planRevisionsBySessionId ?? {}),
+        ...(hydrateSnapshot.planRevisionsBySessionId ?? {}),
+      },
+      usageBySessionId: {
+        ...(baseSnapshot.usageBySessionId ?? {}),
+        ...(hydrateSnapshot.usageBySessionId ?? {}),
+      },
+      runIntentsBySessionId: {
+        ...(baseSnapshot.runIntentsBySessionId ?? {}),
+        ...(hydrateSnapshot.runIntentsBySessionId ?? {}),
+      },
+      workspacesByPath: {
+        ...(baseSnapshot.workspacesByPath ?? {}),
+        ...(hydrateSnapshot.workspacesByPath ?? {}),
+      },
+      notificationsById: {
+        ...(baseSnapshot.notificationsById ?? {}),
+        ...(hydrateSnapshot.notificationsById ?? {}),
+      },
+      preferencesBySessionId: {
+        ...(baseSnapshot.preferencesBySessionId ?? {}),
+        ...(hydrateSnapshot.preferencesBySessionId ?? {}),
+      },
+      agentModelPolicyBySessionId: {
+        ...(baseSnapshot.agentModelPolicyBySessionId ?? {}),
+        ...(hydrateSnapshot.agentModelPolicyBySessionId ?? {}),
+      },
+      routeReadinessBySessionId: {
+        ...(baseSnapshot.routeReadinessBySessionId ?? {}),
+        ...(hydrateSnapshot.routeReadinessBySessionId ?? {}),
+      },
+      runIntentReconcileSessionIds: mergeSessionIdOrder(baseSnapshot.runIntentReconcileSessionIds, hydrateSnapshot.runIntentReconcileSessionIds),
+    },
+    tombstonesBySession: {
+      ...(base.tombstonesBySession ?? {}),
+      ...(hydrate.tombstonesBySession ?? {}),
+    },
+  }
+}
+
+function mergeSessionIdOrder(...orders: Array<readonly string[] | undefined>): string[] {
+  const seen = new Set<string>()
+  const output: string[] = []
+  for (const order of orders) {
+    for (const sessionId of order ?? []) {
+      const normalizedSessionId = normalizeString(sessionId)
+      if (!normalizedSessionId || seen.has(normalizedSessionId)) continue
+      seen.add(normalizedSessionId)
+      output.push(normalizedSessionId)
     }
   }
   return output
