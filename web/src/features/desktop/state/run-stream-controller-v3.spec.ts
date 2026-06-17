@@ -1165,20 +1165,8 @@ test('desktop V3 realtime controller consumes backend stream frames and renders 
         headers: { 'Content-Type': 'application/json' },
       })
     }
-    if (url === '/v3/sessions:reconnect') {
-      return new Response(JSON.stringify(makeReconnectResponse('session-v3-live-stream', { runId: 'run-v3-live-stream', cursor: 'cursor-31005' })), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    }
     if (url === '/v3/sync/bootstrap') {
-      return new Response(JSON.stringify({
-        rev: getDesktopSnapshot().rev + 1,
-        snapshot_endpoint_cursor: 'cursor-31005',
-        sessions_by_id: {},
-        messages_by_session: {},
-        session_order: [],
-      }), {
+      return new Response(JSON.stringify(makeReconnectResponse('session-v3-live-stream', { runId: 'run-v3-live-stream', cursor: 'cursor-31005' })), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })
@@ -1357,14 +1345,8 @@ test('desktop V3 realtime subscribes from active top-level snapshot run intent w
     if (url === '/v1/auth/desktop/session') {
       return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
-    if (url === '/v3/sessions:reconnect') {
-      return new Response(JSON.stringify(makeReconnectResponse('session-top-level-intent-subscribe', { runId: 'run-top-level-intent-subscribe', cursor: 'cursor-500' })), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    }
     if (url === '/v3/sync/bootstrap') {
-      return new Response(JSON.stringify({ rev: getDesktopSnapshot().rev + 1, sessions_by_id: {}, session_order: [] }), {
+      return new Response(JSON.stringify(makeReconnectResponse('session-top-level-intent-subscribe', { runId: 'run-top-level-intent-subscribe', cursor: 'cursor-500' })), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })
@@ -1468,16 +1450,8 @@ test('desktop V3 realtime ignores persisted localStorage subscription intent aut
     if (url === '/v1/auth/desktop/session') {
       return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
-    if (url === '/v3/sessions:reconnect') {
-      return new Response(JSON.stringify(makeReconnectResponse('session-refresh-resync', { runId: 'run-refresh-resync', cursor: 'cursor-31005' })), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    }
     if (url === '/v3/sync/bootstrap') {
-      return new Response(JSON.stringify({
-        rev: getDesktopSnapshot().rev + 1,
-        snapshot_endpoint_cursor: 'cursor-31005',
-        sessions_by_id: {},
-        session_order: [],
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      return new Response(JSON.stringify(makeReconnectResponse('session-refresh-resync', { runId: 'run-refresh-resync', cursor: 'cursor-31005' })), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
     throw new Error(`unexpected fetch: ${url}`)
   }) as typeof fetch
@@ -1621,25 +1595,30 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
         headers: { 'Content-Type': 'application/json' },
       })
     }
-    if (url === '/v3/sessions:reconnect') {
-      return new Response(JSON.stringify(makeEmptyReconnectResponse('cursor-4')), {
+    if (url === '/v3/sync/bootstrap') {
+      return new Response(JSON.stringify({
+        ...makeEmptyReconnectResponse('cursor-4'),
+        sessions_by_id: {
+          'session-v3': {
+            id: 'session-v3',
+            title: 'V3 session',
+            workspace_path: '/repo',
+            workspace_name: 'repo',
+            mode: 'auto',
+            session_api: 'v3',
+            message_count: 0,
+            updated_at: 10,
+            created_at: 1,
+          },
+        },
+        session_order: ['session-v3'],
+      }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })
     }
     if (url === '/v3/sessions/session-v3/run/stop') {
       return new Response(JSON.stringify({ ok: true }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    }
-    if (url === '/v3/sync/bootstrap') {
-      return new Response(JSON.stringify({
-        rev: getDesktopSnapshot().rev + 1,
-        snapshot_endpoint_cursor: 'cursor-4',
-        sessions_by_id: {},
-        session_order: [],
-      }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })
@@ -1706,7 +1685,7 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
     useDesktopStore.setState({ realtimeDesired: true })
     await useDesktopStore.getState().connect()
     assert.equal(websocketURLs.length, 1)
-    assert.equal(calls.filter((entry) => String(entry.input) === '/v3/sessions:reconnect').length, 1)
+    assert.equal(calls.filter((entry) => String(entry.input) === '/v3/sync/bootstrap').length, 1)
     calls.length = 0
     sent.length = 0
 
@@ -1759,7 +1738,7 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
     assert.equal(updated.live.status, 'starting')
     assert.equal(updated.live.runId, 'v3run-session-v3-2')
     assert.equal(websocketCloseCount, 0)
-    assert.equal(calls.filter((entry) => String(entry.input) === '/v3/sessions:reconnect').length, 0)
+    assert.equal(calls.filter((entry) => String(entry.input) === '/v3/sync/bootstrap').length, 0)
   } finally {
     useDesktopStore.getState().disconnect()
     globalThis.fetch = originalFetch
@@ -2390,7 +2369,7 @@ test("Client B discovers Client A's newly created V3 session through the existin
     if (url === '/v1/auth/desktop/session') {
       return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
-    if (url === '/v3/sessions:reconnect') {
+    if (url === '/v3/sync/bootstrap') {
       reconnectCalls += 1
       return new Response(JSON.stringify({
         ...makeEmptyReconnectResponse('cursor-b-snapshot'),
@@ -2429,7 +2408,7 @@ test("Client B discovers Client A's newly created V3 session through the existin
     assert.ok(v3Socket.url.includes('/v3/realtime/stream?endpoint_cursor=cursor-b-snapshot'))
     assertNoForbiddenTransport()
     assert.equal(reconnectCalls, 1)
-    assert.equal(fetchUrls.filter((url) => url === '/v3/sessions:reconnect').length, 1)
+    assert.equal(fetchUrls.filter((url) => url === '/v3/sync/bootstrap').length, 1)
     assert.equal(sent.length, 1)
     assert.equal(sent[0]?.kind, 'resume')
     assert.equal(Array.isArray(sent[0]?.worksets), true)
@@ -2501,7 +2480,7 @@ test("Client B discovers Client A's newly created V3 session through the existin
     assert.equal(selectV3WorkspaceSessions(getV3RuntimeSnapshot(), { workspacePaths: ['/repo'] }).some((session) => session.id === 'session-y'), true)
     assert.equal(useDesktopStore.getState().activeSessionId, initialActiveSessionId)
     assert.equal(reconnectCalls, 1)
-    assert.equal(fetchUrls.filter((url) => url === '/v3/sessions:reconnect').length, 1)
+    assert.equal(fetchUrls.filter((url) => url === '/v3/sync/bootstrap').length, 1)
     assert.equal(sockets.length, 1)
     assert.equal(sent.length, 1)
     assertNoForbiddenTransport()
@@ -2574,7 +2553,7 @@ test("Client B discovers Client A's newly created V3 session through the existin
     assert.equal(getDesktopSnapshot().sessionsById['session-y'], undefined)
     assert.equal(getDesktopSnapshot().sessionOrder.includes('session-y'), false)
     assert.equal(reconnectCalls, 1)
-    assert.equal(fetchUrls.filter((url) => url === '/v3/sessions:reconnect').length, 1)
+    assert.equal(fetchUrls.filter((url) => url === '/v3/sync/bootstrap').length, 1)
     assert.equal(sockets.length, 1)
     assertNoForbiddenTransport()
   } finally {
@@ -2636,7 +2615,7 @@ test('V3 runtime reconnect workset membership replaces stale sidebar sessions an
     if (url === '/v1/auth/desktop/session') {
       return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
-    if (url === '/v3/sessions:reconnect') {
+    if (url === '/v3/sync/bootstrap') {
       return new Response(JSON.stringify({
         ...makeEmptyReconnectResponse('cursor-authoritative'),
         sessions_by_id: {
@@ -2781,19 +2760,8 @@ test('V3 ensureRunStream boots through DesktopSessionV3Runtime without opening l
         headers: { 'Content-Type': 'application/json' },
       })
     }
-    if (url === '/v3/sessions:reconnect') {
-      return new Response(JSON.stringify(makeReconnectResponse('session-v3-a', { runId: 'run-session-v3-a', cursor: 'cursor-4' })), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    }
     if (url === '/v3/sync/bootstrap') {
-      return new Response(JSON.stringify({
-        rev: getDesktopSnapshot().rev + 1,
-        snapshot_endpoint_cursor: 'cursor-4',
-        sessions_by_id: {},
-        session_order: [],
-      }), {
+      return new Response(JSON.stringify(makeReconnectResponse('session-v3-a', { runId: 'run-session-v3-a', cursor: 'cursor-4' })), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })

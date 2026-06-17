@@ -2,6 +2,7 @@ import {
   createSessionV3,
   bootstrapSessionV3Sync,
   hydrateSessionV3Sync,
+  streamSessionV3Sync,
   sendSessionV3Message,
   stopSessionV3Run,
   compactSessionV3,
@@ -49,6 +50,7 @@ const RUNTIME_CLIENT_ID_PREFIX = 'desktop-v3-runtime:'
 export type SessionV3RuntimeApi = {
   bootstrapSessionV3Sync: typeof bootstrapSessionV3Sync
   hydrateSessionV3Sync: typeof hydrateSessionV3Sync
+  streamSessionV3Sync: typeof streamSessionV3Sync
   createSessionV3: typeof createSessionV3
   sendSessionV3Message: typeof sendSessionV3Message
   stopSessionV3Run: typeof stopSessionV3Run
@@ -73,7 +75,7 @@ export interface DesktopSessionV3RuntimeOptions {
   now?: () => number
 }
 
-export interface DesktopSessionV3RuntimeBootOptions extends SessionV3RequestOptions {
+export interface DesktopSessionV3RuntimeBootOptions extends SessionV3RequestOptions, SessionV3StateSnapshotRequest {
   clientId?: string
   workset?: SessionV3WorksetRequestWire | null
   mode?: SessionV3ReducerSnapshotMode
@@ -104,6 +106,10 @@ export interface DesktopSessionV3RuntimeSetWantedSessionsOptions {
 
 export interface DesktopSessionV3RuntimeSetWorksetOptions extends SessionV3RequestOptions {
   refresh?: boolean
+}
+
+export interface DesktopSessionV3RuntimeHydrateOptions extends DesktopSessionV3RuntimeBootOptions {
+  replaceWanted?: boolean
 }
 
 interface DesktopSessionV3RuntimeResumeState {
@@ -140,6 +146,7 @@ export class DesktopSessionV3Runtime {
     this.api = {
       bootstrapSessionV3Sync: options.api?.bootstrapSessionV3Sync ?? bootstrapSessionV3Sync,
       hydrateSessionV3Sync: options.api?.hydrateSessionV3Sync ?? hydrateSessionV3Sync,
+      streamSessionV3Sync: options.api?.streamSessionV3Sync ?? streamSessionV3Sync,
       createSessionV3: options.api?.createSessionV3 ?? createSessionV3,
       sendSessionV3Message: options.api?.sendSessionV3Message ?? sendSessionV3Message,
       stopSessionV3Run: options.api?.stopSessionV3Run ?? stopSessionV3Run,
@@ -162,7 +169,10 @@ export class DesktopSessionV3Runtime {
         }
       },
     })
-    this.setWantedSessions(options.wantedSessionIds ?? [], { replace: true, subscribe: false })
+    this.setWantedSessions([
+      ...activeRuntimeSessionIds(this.state.desktop, options.initialDesktopState),
+      ...(options.wantedSessionIds ?? []),
+    ], { replace: true, subscribe: false })
   }
 
   getState(): SessionV3ReducerState {
@@ -200,7 +210,20 @@ export class DesktopSessionV3Runtime {
   async refresh(options: DesktopSessionV3RuntimeRefreshOptions = {}): Promise<SessionV3ReducerState> {
     this.shutdownRequested = false
     this.transport.resetForSyncSnapshot(options.reason ?? 'refresh')
-    const syncLoad = await this.loadSyncSnapshot({ ...options, mode: options.mode ?? 'merge' }, false)
+    const syncLoad = await this.loadSyncSnapshot({ ...options, mode: options.mode ?? 'replace' }, false)
+    if (this.shutdownRequested) return this.state
+    this.transport.applySyncSnapshot(syncLoad.result, syncLoad)
+    this.syncWantedSessionsToTransport()
+    await this.transport.start()
+    return this.state
+  }
+
+  async hydrateSessions(sessionIds: string[], options: DesktopSessionV3RuntimeHydrateOptions = {}): Promise<SessionV3ReducerState> {
+    const normalizedSessionIds = normalizeSessionIds(sessionIds)
+    if (normalizedSessionIds.length === 0) return this.state
+    this.shutdownRequested = false
+    this.setWantedSessions(normalizedSessionIds, { replace: options.replaceWanted, subscribe: false })
+    const syncLoad = await this.loadSyncSnapshot({ ...options, sessionIds: normalizedSessionIds, mode: options.mode ?? 'merge' }, false)
     if (this.shutdownRequested) return this.state
     this.transport.applySyncSnapshot(syncLoad.result, syncLoad)
     this.syncWantedSessionsToTransport()
@@ -348,7 +371,7 @@ export class DesktopSessionV3Runtime {
     if (options.clientId?.trim()) {
       writeRuntimeClientId(options.clientId.trim())
     }
-    return syncRequestFromWorkset(workset)
+    return mergeSyncRequests(syncRequestFromWorkset(workset), options)
   }
 
   private applyMutation(response: SessionV3HydratedSessionResponseWire | SessionV3CompactResponseWire, fallbackSessionId: string, signal?: AbortSignal): void {
@@ -426,43 +449,97 @@ function defaultRuntimeWorkset(): SessionV3WorksetRequestWire {
 
 function syncRequestFromWorkset(workset: SessionV3WorksetRequestWire | null): SessionV3StateSnapshotRequest {
   const selector = workset?.selector ?? {}
+  const workspacePaths = normalizeStringArray(workset?.workspace?.workspace_paths ?? selector.workspace_paths)
+  const workspacePath = normalizeString(workset?.workspace?.workspace_path ?? selector.workspace_path)
+  const sessionIds = normalizeSessionIds(workset?.session_ids ?? selector.session_ids)
+  const recent = normalizeRecentRequest(workset?.recent ?? selector.recent)
+  const selectorKind = normalizeString(selector.kind)
+  const isWorkspaceSelector = selectorKind === 'workspace' || Boolean(workspacePath || workspacePaths.length > 0)
+  const isExplicitSessionSelector = sessionIds.length > 0
+  const isRecentSelector = !isExplicitSessionSelector && !isWorkspaceSelector && (selectorKind === 'recent' || Boolean(recent?.limit))
+  const history = normalizeHistoryRequest(workset?.history)
+  const resources = normalizeResourcesRequest(workset?.resources)
+  if (isExplicitSessionSelector) {
+    return {
+      sessionIds,
+      global: false,
+      history,
+      resources,
+      includeActive: workset?.include_active,
+    }
+  }
   return {
-    sessionIds: workset?.session_ids ?? selector.session_ids,
-    global: workset?.global || selector.global || selector.kind === 'global',
-    workspacePath: workset?.workspace?.workspace_path ?? selector.workspace_path,
-    workspacePaths: workset?.workspace?.workspace_paths ?? selector.workspace_paths,
-    recent: workset?.recent
-      ? {
-          limit: workset.recent.limit,
-          beforeUpdatedAt: workset.recent.before_updated_at,
-          beforeSessionId: workset.recent.before_session_id,
-        }
-      : selector.recent
-        ? {
-            limit: selector.recent.limit,
-            beforeUpdatedAt: selector.recent.before_updated_at,
-            beforeSessionId: selector.recent.before_session_id,
-          }
-        : undefined,
-    history: workset?.history
-      ? {
-          mode: workset.history.mode === 'tail' || workset.history.mode === 'full' ? workset.history.mode : 'none',
-          maxMessagesPerSession: workset.history.max_messages_per_session,
-          maxEventsPerSession: workset.history.max_events_per_session,
-          manifestPolicy: workset.history.manifest_policy === 'error' || workset.history.manifest_policy === 'omit' ? workset.history.manifest_policy : 'manifest',
-          includeEvents: workset.history.include_events,
-        }
-      : undefined,
-    resources: workset?.resources
-      ? {
-          messages: workset.resources.messages,
-          events: workset.resources.events,
-          runIntents: workset.resources.run_intents,
-          activePlan: workset.resources.active_plan,
-          planRevisions: workset.resources.plan_revisions,
-        }
-      : undefined,
+    sessionIds,
+    global: !isWorkspaceSelector && (workset?.global || selector.global || selectorKind === 'global' || !isRecentSelector),
+    workspacePath: workspacePath || undefined,
+    workspacePaths: workspacePaths.length > 0 ? workspacePaths : undefined,
+    recent,
+    history,
+    resources,
     includeActive: workset?.include_active,
+  }
+}
+
+function mergeSyncRequests(base: SessionV3StateSnapshotRequest, options: DesktopSessionV3RuntimeBootOptions): SessionV3StateSnapshotRequest {
+  const sessionIds = normalizeSessionIds(options.sessionIds ?? base.sessionIds)
+  const history = options.history ?? base.history
+  const resources = options.resources ?? base.resources
+  const includeActive = options.includeActive ?? base.includeActive
+  const knownSessions = options.knownSessions ?? base.knownSessions
+  if (sessionIds.length > 0) {
+    return {
+      sessionIds,
+      global: false,
+      history,
+      resources,
+      includeActive,
+      knownSessions,
+    }
+  }
+  const workspacePaths = normalizeStringArray(options.workspacePaths ?? base.workspacePaths)
+  const workspacePath = normalizeString(options.workspacePath ?? base.workspacePath)
+  return {
+    ...base,
+    sessionIds,
+    global: options.global ?? base.global,
+    workspacePath: workspacePath || undefined,
+    workspacePaths: workspacePaths.length > 0 ? workspacePaths : undefined,
+    recent: options.recent ?? base.recent,
+    history,
+    resources,
+    includeActive,
+    knownSessions,
+  }
+}
+
+function normalizeRecentRequest(recent: SessionV3WorksetRequestWire['recent'] | NonNullable<SessionV3WorksetRequestWire['selector']>['recent'] | undefined): SessionV3StateSnapshotRequest['recent'] {
+  if (!recent) return undefined
+  return {
+    limit: recent.limit,
+    beforeUpdatedAt: recent.before_updated_at,
+    beforeSessionId: recent.before_session_id,
+  }
+}
+
+function normalizeHistoryRequest(history: SessionV3WorksetRequestWire['history'] | undefined): SessionV3StateSnapshotRequest['history'] {
+  if (!history) return undefined
+  return {
+    mode: history.mode === 'tail' || history.mode === 'full' ? history.mode : 'none',
+    maxMessagesPerSession: history.max_messages_per_session,
+    maxEventsPerSession: history.max_events_per_session,
+    manifestPolicy: history.manifest_policy === 'error' || history.manifest_policy === 'omit' ? history.manifest_policy : 'manifest',
+    includeEvents: history.include_events,
+  }
+}
+
+function normalizeResourcesRequest(resources: SessionV3WorksetRequestWire['resources'] | undefined): SessionV3StateSnapshotRequest['resources'] {
+  if (!resources) return undefined
+  return {
+    messages: resources.messages,
+    events: resources.events,
+    runIntents: resources.run_intents,
+    activePlan: resources.active_plan,
+    planRevisions: resources.plan_revisions,
   }
 }
 
@@ -501,6 +578,51 @@ function worksetSubscriptionFromWorkset(workset: SessionV3WorksetRequestWire | n
       : undefined,
     auto_subscribe_sessions: workset.auto_subscribe_sessions !== false,
   }
+}
+
+function activeRuntimeSessionIds(...desktops: Array<DesktopState | null | undefined>): string[] {
+  const sessionIds = new Set<string>()
+  for (const desktop of desktops) {
+    if (!desktop) continue
+    for (const [sessionId, runIntent] of Object.entries(desktop.runIntentsBySessionId)) {
+      const normalizedSessionId = normalizeString(sessionId)
+      const status = normalizeString(runIntent?.status).toLowerCase()
+      if (normalizedSessionId && status !== 'completed' && status !== 'failed' && status !== 'cancelled' && status !== 'expired') {
+        sessionIds.add(normalizedSessionId)
+      }
+    }
+    for (const session of Object.values(desktop.sessionsById)) {
+      const sessionId = normalizeString(session.id)
+      if (!sessionId) continue
+      const runIntent = desktop.runIntentsBySessionId[sessionId] ?? session.runIntent ?? null
+      const status = normalizeString(runIntent?.status).toLowerCase()
+      const liveStatus = normalizeString(session.live.status).toLowerCase()
+      if ((runIntent && status !== 'completed' && status !== 'failed' && status !== 'cancelled' && status !== 'expired') || (liveStatus && liveStatus !== 'idle')) {
+        sessionIds.add(sessionId)
+      }
+    }
+  }
+  return Array.from(sessionIds)
+}
+
+function normalizeSessionIds(sessionIds: readonly string[] | null | undefined): string[] {
+  return uniqueStrings(sessionIds ?? [])
+}
+
+function normalizeStringArray(values: readonly string[] | null | undefined): string[] {
+  return uniqueStrings(values ?? [])
+}
+
+function uniqueStrings(values: readonly string[]): string[] {
+  const seen = new Set<string>()
+  const output: string[] = []
+  for (const value of values) {
+    const normalized = normalizeString(value)
+    if (!normalized || seen.has(normalized)) continue
+    seen.add(normalized)
+    output.push(normalized)
+  }
+  return output
 }
 
 function mergeSubscriptions(

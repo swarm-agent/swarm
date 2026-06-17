@@ -235,7 +235,7 @@ test('stopRun applies mutation outbox without reconnecting or opening another V3
   installTransportGlobals()
   const sockets: MockRealtimeSocket[] = []
   const openEndpointCursors: string[] = []
-  let reconnectCalls = 0
+  let syncSnapshotCalls = 0
   let stopCalls = 0
   const stopResponse: SessionV3RunStopResponseWire = {
     ok: true,
@@ -255,7 +255,7 @@ test('stopRun applies mutation outbox without reconnecting or opening another V3
     wantedSessionIds: ['session-1'],
     api: {
       bootstrapSessionV3Sync: async () => {
-        reconnectCalls += 1
+        syncSnapshotCalls += 1
         return makeSyncSnapshot('cursor-1')
       },
       stopSessionV3Run: async (sessionId, input) => {
@@ -277,7 +277,7 @@ test('stopRun applies mutation outbox without reconnecting or opening another V3
   })
 
   await runtime.boot()
-  assert.equal(reconnectCalls, 1)
+  assert.equal(syncSnapshotCalls, 1)
   assert.deepEqual(openEndpointCursors, ['cursor-1'])
   assert.equal(sockets.length, 1)
   sockets[0].open()
@@ -286,7 +286,7 @@ test('stopRun applies mutation outbox without reconnecting or opening another V3
   await runtime.stopRun({ sessionId: 'session-1', runId: 'run-1', targetSwarmId: 'host-swarm-id' })
 
   assert.equal(stopCalls, 1)
-  assert.equal(reconnectCalls, 1)
+  assert.equal(syncSnapshotCalls, 1)
   assert.deepEqual(openEndpointCursors, ['cursor-1'])
   assert.equal(sockets.length, 1)
   assert.equal(sockets[0].closed, false)
@@ -300,7 +300,7 @@ test('stopRun applies mutation outbox without reconnecting or opening another V3
   runtime.shutdown()
 })
 
-test('refresh resets the V3 socket and reconnects once from the latest snapshot endpoint cursor', async () => {
+test('refresh resets the V3 socket and reopens once from the latest snapshot endpoint cursor', async () => {
   installTransportGlobals()
   const sockets: MockRealtimeSocket[] = []
   const openEndpointCursors: string[] = []
@@ -386,5 +386,56 @@ test('runtime constructs resume workset from runtime config while adding known s
     runtime.shutdown()
     MockRealtimeSocket.collect = null
     restoreWebSocket()
+  }
+})
+
+test('runtime targeted hydrate uses sync hydrate and updates existing realtime resume without opening a second socket', async () => {
+  installTransportGlobals()
+  const sockets: MockRealtimeSocket[] = []
+  const bootstrapRequests: SessionV3StateSnapshotRequest[] = []
+  const hydrateRequests: SessionV3StateSnapshotRequest[] = []
+  const runtime = new DesktopSessionV3Runtime({
+    api: {
+      bootstrapSessionV3Sync: async (request = {}) => {
+        bootstrapRequests.push(request)
+        return makeSyncSnapshot('cursor-1')
+      },
+      hydrateSessionV3Sync: async (request) => {
+        hydrateRequests.push(request)
+        return makeSyncSnapshot('cursor-2')
+      },
+    },
+    transportOptions: {
+      livenessTimeoutMs: 60_000,
+      openSocket: ({ endpointCursor }) => {
+        const socket = new MockRealtimeSocket(`ws://localhost/v3/realtime/stream?endpoint_cursor=${endpointCursor}`)
+        sockets.push(socket)
+        return socket as unknown as WebSocket
+      },
+    },
+  })
+
+  try {
+    await runtime.boot()
+    assert.deepEqual(bootstrapRequests.map((request) => request.global), [true])
+    assert.equal(hydrateRequests.length, 0)
+    assert.equal(sockets.length, 1)
+    sockets[0].open()
+    assert.equal(parseResume(sockets[0]).endpoint_cursor, 'cursor-1')
+
+    await runtime.hydrateSessions([' session-2 ', 'session-2'])
+
+    assert.equal(bootstrapRequests.length, 1)
+    assert.equal(hydrateRequests.length, 1)
+    assert.deepEqual(hydrateRequests[0].sessionIds, ['session-2'])
+    assert.equal(hydrateRequests[0].global, false)
+    assert.equal(sockets.length, 1)
+    assert.equal(sockets[0].closed, false)
+    const latestResume = JSON.parse(sockets[0].sent[sockets[0].sent.length - 1] ?? '') as SessionV3RealtimeResumeWire
+    assert.equal(latestResume.endpoint_cursor, 'cursor-2')
+    assert.deepEqual(latestResume.subscriptions?.map((subscription) => subscription.session_id), ['session-2'])
+    assert.deepEqual(latestResume.worksets?.map((workset) => workset.workset_id), ['desktop-v3-runtime:global'])
+  } finally {
+    runtime.shutdown()
   }
 })
