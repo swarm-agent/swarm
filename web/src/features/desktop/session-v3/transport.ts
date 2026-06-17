@@ -661,7 +661,7 @@ function normalizeSessionSubscription(subscription: SessionV3RealtimeSubscriptio
   const sessionId = normalizeString(subscription.session_id)
   const subscriptionId = normalizeString(subscription.subscription_id)
   if (!sessionId || !subscriptionId) return null
-  const endpointCursor = normalizeString(subscription.endpoint_cursor) || fallbackEndpointCursor
+  const endpointCursor = fallbackEndpointCursor
   return {
     session_id: sessionId,
     subscription_id: subscriptionId,

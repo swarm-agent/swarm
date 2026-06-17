@@ -63,7 +63,7 @@ export async function startDesktopStateStream(options: DesktopStateStreamOptions
   const queueLimit = normalizeQueueLimit(options.queueLimit)
   const openSocket = options.openSocket
   if (!openSocket) {
-    throw new Error('Desktop state stream requires an explicit V3 realtime socket. The desktop app uses the global /ws stream.')
+    throw new Error('Desktop state stream requires an explicit V3 realtime socket. The desktop app uses the global /v3/realtime/stream transport.')
   }
   const fetchSnapshot = options.fetchSnapshot ?? fetchDesktopStateSnapshot
   const snapshotRequest = options.snapshotRequest ?? {}

@@ -6,7 +6,6 @@ import { getDesktopSnapshot, mergeDesktopSnapshot } from './desktop-state-store'
 import type { DesktopSessionRecord, DesktopStoreState } from '../types/realtime'
 import { applyEnvelope, useDesktopStore } from './use-desktop-store'
 import { applyV3RuntimeEnvelope, createV3SnapshotEnvelope, getV3RuntimeSnapshot, selectV3ActiveRun, selectV3WorkspaceSessions } from '../v3-runtime'
-import type { RunStreamEventMessage } from './run-stream-controller'
 import type { DesktopChatRoute } from '../chat/services/chat-routing'
 import { permissionRequiresApproval } from '../permissions/services/permission-payload'
 import { buildStructuredToolMessage } from '../chat/services/tool-message'
@@ -843,7 +842,7 @@ test('parent V3 stream child relation frames update canonical child session live
     parent_session_id: 'parent-v3',
     relation: 'child',
     lineage_kind: 'delegated_subagent',
-    after_seq: 1,
+    endpoint_cursor: 'cursor-child-1',
     last_seq: 1,
     event: {
       id: 'v3evt_child-v3_00000000000000000001',
@@ -934,7 +933,7 @@ test('parent V3 task stream card remains renderable while child relation tool fr
     parent_session_id: 'parent-v3',
     relation: 'child',
     lineage_kind: 'delegated_subagent',
-    after_seq: 2,
+    endpoint_cursor: 'cursor-child-2',
     last_seq: 2,
     event: {
       id: 'v3evt_child-v3_00000000000000000001',
@@ -1007,7 +1006,7 @@ test('parent V3 stream child cursor errors do not refetch or poison parent sessi
       session_id: 'child-v3',
       parent_session_id: 'parent-v3',
       relation: 'child',
-      after_seq: 7,
+      endpoint_cursor: 'cursor-child-error',
       next_seq: 5,
       error: 'child event sequence gap at 5, want 3; child refetch required',
     }, 50)
@@ -1541,15 +1540,15 @@ test('desktop V3 realtime ignores persisted localStorage subscription intent aut
 
 test('desktop V3 canonical session updates use /v3/realtime/stream and leave run stream compatibility off', async () => {
   const { readFile } = await import('node:fs/promises')
-  const controllerSource = await readFile(new URL('./run-stream-controller.ts', import.meta.url), 'utf8')
   const querySource = await readFile(new URL('../chat/queries/chat-queries.ts', import.meta.url), 'utf8')
   const panelSource = await readFile(new URL('../chat/components/desktop-chat-panel.tsx', import.meta.url), 'utf8')
   const storeSource = await readFile(new URL('./desktop-ui-store.ts', import.meta.url), 'utf8')
 
-  assert.match(querySource, /\/v3\/sessions\/\$\{encodeURIComponent\(normalizedSessionId\)\}\/stream/)
-  assert.match(storeSource, /DesktopV3RealtimeController/)
-  assert.match(storeSource, /requireV3RealtimeController/)
-  assert.match(storeSource, /applyDesktopV3RealtimeFrame/)
+  assert.doesNotMatch(querySource, /\/v3\/sessions\/\$\{encodeURIComponent\([^}]+\)\}\/stream/)
+  assert.doesNotMatch(storeSource, /DesktopV3RealtimeController/)
+  assert.doesNotMatch(storeSource, /requireV3RealtimeController/)
+  assert.doesNotMatch(storeSource, /applyDesktopV3RealtimeFrame/)
+  assert.doesNotMatch(storeSource, /DesktopRunStreamController|requireRunStreamController|runStreamController/)
   assert.match(storeSource, /DesktopSessionV3Runtime/)
   assert.match(storeSource, /ensureDesktopSession\(true\)/)
   assert.match(storeSource, /await runtime\.boot\(\)/)
@@ -1557,7 +1556,7 @@ test('desktop V3 canonical session updates use /v3/realtime/stream and leave run
   assert.match(panelSource, /session\.tool\.started/)
   assert.match(panelSource, /session\.tool\.delta/)
   assert.match(panelSource, /session\.tool\.completed/)
-  assert.doesNotMatch(controllerSource, /\/v3\/sessions\/[^`]+\/stream/)
+  assert.doesNotMatch(querySource, /\/v3\/sessions\/[^`]+\/stream/)
   assert.doesNotMatch(querySource, /\/v3\/sessions\/[^`]+\/run\/stream/)
 })
 

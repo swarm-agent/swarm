@@ -17,7 +17,6 @@ import {
 } from '../../../queries/query-options'
 import {
   resolveSessionPermission,
-  startSessionRun,
   updateDraftModelPreference,
 } from '../queries/chat-queries'
 import { fetchAndApplyDesktopV3PlanSnapshot, fetchAndApplyDesktopV3SessionMessagesTail, saveDesktopV3SessionPlan, updateDesktopV3SessionAgent, updateDesktopV3SessionMetadata, updateDesktopV3SessionMode, updateDesktopV3SessionPreference } from '../../state/desktop-v3-session-api'
@@ -433,11 +432,7 @@ function v3ReconnectDecisionSummary(maintenance: ReturnType<typeof getDesktopRea
   if (realtimeBlocker) {
     reasons.push(realtimeBlocker)
   }
-  const subscriptionCount = realtime
-    ? 'subscriptions' in realtime
-      ? realtime.subscriptions.length
-      : realtime.sessionSubscriptionCount
-    : 0
+  const subscriptionCount = realtime?.sessionSubscriptionCount ?? 0
   if (realtime && subscriptionCount === 0) {
     reasons.push('session.not-subscribed')
   }
@@ -1246,7 +1241,7 @@ function buildCommitAgentInstructions(userInstructions: string): string {
 }
 
 
-function commitExecutionContext(session: DesktopSessionRecord): NonNullable<Parameters<typeof startSessionRun>[0]['executionContext']> {
+function commitExecutionContext(session: DesktopSessionRecord): Record<string, string> {
   const metadata = session.metadata && typeof session.metadata === 'object' ? session.metadata : null
   const executionContext = metadata && typeof metadata.execution_context === 'object'
     ? metadata.execution_context as Record<string, unknown>
@@ -1842,7 +1837,7 @@ export function DesktopChatPanel({
     existingSessionStreamProbeRef.current = null
     const completionDiagnostics = getDesktopV3RealtimeDiagnostics(probe.sessionId)
     const completionMaintenanceDiagnostics = getDesktopRealtimeMaintenanceDiagnostics(probe.sessionId)
-    const subscription = completionDiagnostics && 'subscriptions' in completionDiagnostics ? completionDiagnostics.subscriptions[0] ?? null : null
+    const subscription = completionDiagnostics?.sessions.find((entry) => entry.session_id === probe.sessionId) ?? null
     console.info('[existing-session-stream-complete]', {
       sessionId: probe.sessionId,
       clientRequestId: probe.clientRequestId,
@@ -1855,16 +1850,13 @@ export function DesktopChatPanel({
         completion: completionDiagnostics,
         completionMaintenance: completionMaintenanceDiagnostics,
         socketState: completionDiagnostics?.socketState ?? 'none',
-        subscribed: Boolean(subscription && subscription.subscribeSentAt >= probe.submittedAt),
-        subscribeSentAt: subscription?.subscribeSentAt ?? 0,
-        subscribeSentCount: subscription?.subscribeSentCount ?? 0,
-        lastFrameKind: subscription?.lastFrameKind ?? '',
-        lastEventType: subscription?.lastEventType ?? '',
-        lastEventAt: subscription?.lastEventAt ?? 0,
-        replayStartedAt: subscription?.lastReplayStartedAt ?? 0,
-        replayCompleteAt: subscription?.lastReplayCompleteAt ?? 0,
-        endpointCursorPresent: subscription?.endpointCursorPresent ?? false,
-        lastEndpointCursorPresent: subscription?.lastEndpointCursorPresent ?? false,
+        subscribed: Boolean(subscription),
+        subscriptionId: subscription?.subscription_id ?? '',
+        autoDiscovered: subscription?.autoDiscovered ?? false,
+        subscriptionUpdatedAt: subscription?.updatedAt ?? 0,
+        endpointCursorPresent: Boolean(subscription?.endpoint_cursor),
+        worksetSubscriptionCount: completionDiagnostics?.worksetSubscriptionCount ?? 0,
+        transportEndpointCursorPresent: completionDiagnostics?.endpointCursorPresent ?? false,
       },
       streamedAssistantText: finalAssistantText,
       screenAssistantText: assistantScreenText(displayedMessages, liveAssistantDraft, retainedAssistantSegments),
@@ -3020,16 +3012,17 @@ export function DesktopChatPanel({
         return
       }
 
-      await startSessionRun({
+      await submitPrompt({
         sessionId: targetSession.id,
-        prompt,
+        route: activeChatRoute,
+        sessionApi: 'v3',
+        workspacePath,
+        workspaceName,
+        prompt: runInstructions ? `${prompt}\n\n${runInstructions}` : prompt,
         agentName,
-        instructions: runInstructions,
-        background: true,
         compact: false,
         targetKind,
         targetName,
-        executionContext,
       })
 
       if (commitModal.mode === 'agent') {

@@ -1,140 +1,131 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { DesktopV3RealtimeController } from './v3-realtime-controller'
+import { DesktopV3RealtimeTransport } from '../session-v3/transport'
+import type { SessionV3RealtimeResumeWire } from '../session-v3/types'
 
-const OPAQUE_CURSOR_1 = 'v3c1.test_payload_1.test_signature_1'
-const OPAQUE_CURSOR_2 = 'v3c1.test_payload_2.test_signature_2'
-const OPAQUE_CURSOR_3 = 'v3c1.test_payload_3.test_signature_3'
+if (typeof window === 'undefined') {
+  Object.defineProperty(globalThis, 'window', {
+    value: {
+      setTimeout: globalThis.setTimeout.bind(globalThis),
+      clearTimeout: globalThis.clearTimeout.bind(globalThis),
+    },
+    configurable: true,
+  })
+}
 
-async function withMockRealtime(run: (ctx: { sockets: Array<{ sent: unknown[]; emit: (payload: unknown) => void }> }) => Promise<void>): Promise<void> {
-  const originalFetch = globalThis.fetch
-  const originalWindow = globalThis.window
-  const originalWebSocket = globalThis.WebSocket
-  const sockets: FakeWebSocket[] = []
+class FakeWebSocket extends EventTarget {
+  static CONNECTING = 0
+  static OPEN = 1
+  static CLOSING = 2
+  static CLOSED = 3
 
-  class FakeWebSocket extends EventTarget {
-    static CONNECTING = 0
-    static OPEN = 1
-    static CLOSING = 2
-    static CLOSED = 3
+  readyState = FakeWebSocket.CONNECTING
+  sent: unknown[] = []
+  closed = false
 
-    readyState = FakeWebSocket.OPEN
-    sent: unknown[] = []
-
-    constructor(readonly url: string | URL) {
-      super()
-      sockets.push(this)
-    }
-
-    send(payload: string): void {
-      this.sent.push(JSON.parse(payload))
-    }
-
-    close(): void {
-      if (this.readyState === FakeWebSocket.CLOSED) return
-      this.readyState = FakeWebSocket.CLOSED
-      this.dispatchEvent(new Event('close'))
-    }
-
-    emit(payload: unknown): void {
-      const event = new Event('message') as MessageEvent
-      Object.defineProperty(event, 'data', { value: JSON.stringify(payload) })
-      this.dispatchEvent(event)
-    }
+  send(payload: string): void {
+    this.sent.push(JSON.parse(payload))
   }
 
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
-    if (String(input) === '/v1/auth/desktop/session') {
-      return new Response(JSON.stringify({ ok: true }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    }
-    throw new Error(`unexpected fetch: ${String(input)}`)
-  }) as typeof fetch
-  globalThis.window = {
-    location: { protocol: 'http:', host: '127.0.0.1:5555' },
-    setTimeout: globalThis.setTimeout.bind(globalThis),
-    clearTimeout: globalThis.clearTimeout.bind(globalThis),
-  } as unknown as Window & typeof globalThis
-  globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket
+  close(): void {
+    if (this.readyState === FakeWebSocket.CLOSED) return
+    this.closed = true
+    this.readyState = FakeWebSocket.CLOSED
+    this.dispatchEvent(new Event('close'))
+  }
 
-  try {
-    await run({ sockets })
-  } finally {
-    globalThis.fetch = originalFetch
-    globalThis.window = originalWindow
-    globalThis.WebSocket = originalWebSocket
+  open(): void {
+    this.readyState = FakeWebSocket.OPEN
+    this.dispatchEvent(new Event('open'))
+  }
+
+  emit(payload: unknown): void {
+    const event = new Event('message') as MessageEvent
+    Object.defineProperty(event, 'data', { value: JSON.stringify(payload) })
+    this.dispatchEvent(event)
   }
 }
 
-test('V3 realtime controller persists endpoint.watermark cursor without application mutation', async () => {
-  await withMockRealtime(async ({ sockets }) => {
-    const delivered: string[] = []
-    const controller = new DesktopV3RealtimeController({
-      getEndpointCursor: () => OPAQUE_CURSOR_1,
-      onFrame: (_sessionId, frame) => {
-        delivered.push(String(frame.kind ?? frame.type ?? ''))
-        return false
-      },
-    })
-
-    await controller.subscribeSession('session-a', OPAQUE_CURSOR_1, 'sub-a')
-    await new Promise((resolve) => queueMicrotask(resolve))
-    assert.equal(sockets.length, 1)
-    assert.deepEqual(sockets[0].sent.at(-1), {
-      protocol: 'v3.realtime',
-      protocol_version: 1,
-      kind: 'subscribe.session',
-      session_id: 'session-a',
-      subscription_id: 'sub-a',
-      endpoint_cursor: OPAQUE_CURSOR_1,
-    })
-
-    sockets[0].emit({
-      protocol: 'v3.realtime',
-      protocol_version: 1,
-      kind: 'endpoint.watermark',
-      endpoint_cursor: OPAQUE_CURSOR_2,
-      high_watermark_seq: 2,
-      rev: 2,
-      prevRev: 1,
-    })
-    assert.deepEqual(delivered, ['endpoint.watermark'])
-
-    controller.syncSessions([{ sessionId: 'session-a', endpointCursor: OPAQUE_CURSOR_1, subscriptionId: 'sub-a' }], { resubscribe: true })
-    assert.deepEqual(sockets[0].sent.at(-1), {
-      protocol: 'v3.realtime',
-      protocol_version: 1,
-      kind: 'subscribe.session',
-      session_id: 'session-a',
-      subscription_id: 'sub-a',
-      endpoint_cursor: OPAQUE_CURSOR_2,
-    })
+test('Desktop V3 realtime transport persists endpoint.watermark cursor without application mutation', async () => {
+  const delivered: string[] = []
+  const resumes: SessionV3RealtimeResumeWire[] = []
+  const socket = new FakeWebSocket()
+  const transport = new DesktopV3RealtimeTransport({
+    getEndpointCursor: () => 'v3c1.test_payload_1.test_signature_1',
+    openSocket: () => socket as unknown as WebSocket,
+    onFrame: ({ frame }) => delivered.push(String(frame.kind ?? frame.type ?? '')),
+    onResumeSent: (resume) => resumes.push(resume),
+    livenessTimeoutMs: 60_000,
   })
+  transport.registerWorkset({
+    workset_id: 'desktop-workset',
+    subscription_id: 'desktop-workset-subscription',
+    selector: { kind: 'global', global: true },
+    auto_subscribe_sessions: true,
+  })
+
+  await transport.start()
+  socket.open()
+  assert.equal(resumes.length, 1)
+  assert.equal(resumes[0].endpoint_cursor, 'v3c1.test_payload_1.test_signature_1')
+  assert.equal(resumes[0].worksets?.[0]?.workset_id, 'desktop-workset')
+  assert.equal(resumes[0].worksets?.[0]?.auto_subscribe_sessions, true)
+
+  socket.emit({
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'endpoint.watermark',
+    endpoint_cursor: 'v3c1.test_payload_2.test_signature_2',
+    high_watermark_seq: 2,
+    rev: 2,
+    prevRev: 1,
+  })
+  assert.deepEqual(delivered, ['endpoint.watermark'])
+
+  transport.registerSession({
+    session_id: 'session-a',
+    subscription_id: 'sub-a',
+    endpoint_cursor: 'stale-session-cursor',
+  })
+
+  const latestResume = resumes[resumes.length - 1]
+  assert.equal(latestResume.endpoint_cursor, 'v3c1.test_payload_2.test_signature_2')
+  assert.equal(latestResume.subscriptions?.[0]?.endpoint_cursor, 'v3c1.test_payload_2.test_signature_2')
+  assert.equal('after_seq' in (latestResume.subscriptions?.[0] ?? {}), false)
+  assert.equal('after_rev' in (latestResume.subscriptions?.[0] ?? {}), false)
+  transport.stop()
 })
 
-test('V3 realtime controller keeps bootstrap cursor ahead of stale subscription cursor for durable reconnect repair', async () => {
-  await withMockRealtime(async ({ sockets }) => {
-    const controller = new DesktopV3RealtimeController({
-      getEndpointCursor: () => OPAQUE_CURSOR_1,
-      onFrame: () => true,
-    })
-
-    await controller.subscribeSession('session-a', OPAQUE_CURSOR_1, 'sub-a')
-    await new Promise((resolve) => queueMicrotask(resolve))
-
-    controller.setEndpointCursor(OPAQUE_CURSOR_3)
-    controller.syncSessions([{ sessionId: 'session-a', endpointCursor: OPAQUE_CURSOR_1, subscriptionId: 'sub-a' }], { resubscribe: true })
-
-    assert.deepEqual(sockets[0].sent.at(-1), {
-      protocol: 'v3.realtime',
-      protocol_version: 1,
-      kind: 'subscribe.session',
-      session_id: 'session-a',
-      subscription_id: 'sub-a',
-      endpoint_cursor: OPAQUE_CURSOR_3,
-    })
+test('Desktop V3 realtime transport sends one resume containing workset and known sessions', async () => {
+  const resumes: SessionV3RealtimeResumeWire[] = []
+  const socket = new FakeWebSocket()
+  const transport = new DesktopV3RealtimeTransport({
+    getEndpointCursor: () => 'v3c1.bootstrap_payload.bootstrap_signature',
+    openSocket: () => socket as unknown as WebSocket,
+    onResumeSent: (resume) => resumes.push(resume),
+    livenessTimeoutMs: 60_000,
   })
+  transport.registerWorkset({
+    workset_id: 'desktop-workset',
+    subscription_id: 'desktop-workset-subscription',
+    selector: { kind: 'global', global: true },
+    auto_subscribe_sessions: true,
+  })
+  transport.registerSession({
+    session_id: 'session-a',
+    subscription_id: 'sub-a',
+    endpoint_cursor: 'session-cursor-a',
+  })
+
+  await transport.start()
+  socket.open()
+
+  assert.equal(resumes.length, 1)
+  assert.equal(resumes[0].kind, 'resume')
+  assert.equal(resumes[0].endpoint_cursor, 'v3c1.bootstrap_payload.bootstrap_signature')
+  assert.deepEqual(resumes[0].subscriptions?.map((subscription) => subscription.session_id), ['session-a'])
+  assert.deepEqual(resumes[0].worksets?.map((workset) => workset.workset_id), ['desktop-workset'])
+  assert.equal('after_seq' in resumes[0], false)
+  transport.stop()
 })

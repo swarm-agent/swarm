@@ -1,7 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-test('desktop websocket clients bootstrap the local session cookie and do not send token query params', async () => {
+import { openDesktopV3RealtimeTransportSocket } from '../session-v3/transport'
+
+test('Desktop V3 realtime transport bootstraps the local session cookie and uses only endpoint_cursor query params', async () => {
   const fetchCalls: string[] = []
   const websocketURLs: string[] = []
   const originalFetch = globalThis.fetch
@@ -17,11 +19,8 @@ test('desktop websocket clients bootstrap the local session cookie and do not se
     }
 
     addEventListener() {}
-
     removeEventListener() {}
-
     send() {}
-
     close() {}
   }
 
@@ -45,24 +44,20 @@ test('desktop websocket clients bootstrap the local session cookie and do not se
   globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket
 
   try {
-    const { openDesktopWebSocket } = await import('./client')
-    const { openRunStream } = await import('../chat/queries/chat-queries')
+    const { ensureDesktopSession } = await import('../../../app/api')
 
-    await openDesktopWebSocket()
-    await openRunStream('session-local-auth')
-    await assert.rejects(
-      () => openRunStream('session-zero', { sessionApi: 'v3', afterSeq: 0 }),
-      /global \/ws session:\* connection/,
-    )
+    await ensureDesktopSession(true)
+    openDesktopV3RealtimeTransportSocket({ endpointCursor: 'cursor-local-auth' })
 
-    assert.deepEqual(fetchCalls, ['/v1/auth/desktop/session', '/v1/auth/desktop/session'])
+    assert.deepEqual(fetchCalls, ['/v1/auth/desktop/session'])
     assert.deepEqual(websocketURLs, [
-      'ws://127.0.0.1:5555/ws',
-      'ws://127.0.0.1:5555/v2/sessions/session-local-auth/run/stream',
+      'ws://127.0.0.1:5555/v3/realtime/stream?endpoint_cursor=cursor-local-auth',
     ])
-    for (const url of websocketURLs) {
-      assert.equal(new URL(url).searchParams.get('token'), null)
-    }
+    const url = new URL(websocketURLs[0])
+    assert.equal(url.pathname, '/v3/realtime/stream')
+    assert.deepEqual(Array.from(url.searchParams.keys()), ['endpoint_cursor'])
+    assert.equal(url.searchParams.get('token'), null)
+    assert.equal(url.searchParams.get('after_seq'), null)
   } finally {
     globalThis.fetch = originalFetch
     globalThis.window = originalWindow

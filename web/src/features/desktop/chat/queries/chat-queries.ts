@@ -1,9 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query";
 import {
   requestJson,
-  apiFetch,
-  readErrorMessage,
-  ensureDesktopSession,
 } from "../../../../app/api";
 import type {
   DesktopPermissionRecord,
@@ -29,7 +26,6 @@ import {
   applyDesktopChatRouteToSession,
   desktopChatRouteFromSessionMetadata,
   getDesktopSessionCreateTarget,
-  getDesktopSessionStopTarget,
   type DesktopChatRoute,
 } from "../services/chat-routing";
 import {
@@ -1869,165 +1865,6 @@ export async function sendSessionMessage(
     },
   );
   return mapV3MessageCommitResponse(response);
-}
-
-export interface DesktopBackgroundRunStartOptions {
-  sessionId: string;
-  route?: DesktopChatRoute | null;
-  stream?: boolean;
-  prompt: string;
-  agentName?: string;
-  instructions?: string;
-  compact?: boolean;
-  background?: boolean;
-  targetKind?: string;
-  targetName?: string;
-  toolScope?: {
-    preset?: string;
-    allow_tools?: string[];
-    deny_tools?: string[];
-    bash_prefixes?: string[];
-    inherit_policy?: boolean;
-  };
-  executionContext?: {
-    workspace_path?: string;
-    cwd?: string;
-    worktree_mode?: string;
-    worktree_root_path?: string;
-    worktree_branch?: string;
-    worktree_base_branch?: string;
-  };
-}
-
-export interface DesktopRunAccepted {
-  ok?: boolean;
-  session_id?: string;
-  run_id?: string;
-  status?: string;
-  background?: boolean;
-  target_kind?: string;
-  target_name?: string;
-  owner_transport?: string;
-}
-
-export async function startSessionRun(
-  options: DesktopBackgroundRunStartOptions,
-): Promise<DesktopRunAccepted> {
-  const sessionId = options.sessionId.trim();
-  if (!sessionId) {
-    throw new Error("session id is required");
-  }
-  const prompt = options.prompt.trim();
-  if (!prompt && !options.compact) {
-    throw new Error("prompt is required");
-  }
-  void options.route;
-  void options.stream;
-  void options.toolScope;
-  void options.executionContext;
-
-  if (options.compact) {
-    const result = await compactSessionV3(sessionId, {
-      note: prompt,
-      agentName: options.agentName,
-      instructions: options.instructions,
-      clientRequestId: `desktop-v3-compact:${sessionId}:${crypto.randomUUID()}`,
-    });
-    return {
-      ok: result.ok,
-      session_id: sessionId,
-      run_id: "",
-      status: "completed",
-      background: Boolean(options.background),
-      target_kind: options.targetKind?.trim() ?? "",
-      target_name: options.targetName?.trim() ?? "",
-    };
-  }
-
-  const instructions = options.instructions?.trim() ?? "";
-  const content = instructions ? `${prompt}\n\n${instructions}` : prompt;
-  const response = await requestJson<V3MessageCommitResponseWire>(
-    `/v3/sessions/${encodeURIComponent(sessionId)}/messages`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        client_request_id: `desktop-v3-message:${sessionId}:${crypto.randomUUID()}`,
-        role: "user",
-        content,
-        metadata: sanitizeSessionCreateMetadata({
-          background: Boolean(options.background),
-          agent_name: options.agentName?.trim() || undefined,
-          target_kind: options.targetKind?.trim() || undefined,
-          target_name: options.targetName?.trim() || undefined,
-        }),
-      }),
-    },
-  );
-  const runIntent = mapV3RunIntent(response.run_intent);
-  return {
-    ok: response.ok,
-    session_id: sessionId,
-    run_id: runIntent?.runId ?? "",
-    status: runIntent?.status ?? "",
-    background: Boolean(options.background),
-    target_kind: options.targetKind?.trim() ?? "",
-    target_name: options.targetName?.trim() ?? "",
-  };
-}
-
-export async function openRunStream(
-  sessionId: string,
-  options: { sessionApi?: string | null; afterSeq?: number } = {},
-): Promise<WebSocket> {
-  const normalizedSessionId = sessionId.trim();
-  resolveSessionApiForSession(normalizedSessionId, options);
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  await ensureDesktopSession(true);
-  const url = new URL(
-    `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/stream`,
-    `${protocol}//${window.location.host}`,
-  );
-  url.searchParams.set("after_seq", String(Math.max(0, options.afterSeq ?? 0)));
-  return new WebSocket(url);
-}
-
-
-export async function stopSessionRun(
-  sessionId: string,
-  runId: string,
-  route?: DesktopChatRoute | null,
-  options: SessionDataRequestOptions = {},
-): Promise<void> {
-  const normalizedSessionId = sessionId.trim();
-  const normalizedRunId = runId.trim();
-  void options;
-  if (!normalizedSessionId) {
-    throw new Error("session id is required");
-  }
-  const target = getDesktopSessionStopTarget(route);
-  const targetSwarmId = target.sessionApi === "v3"
-    ? target.targetSwarmId
-    : route?.swarmId?.trim() ?? "";
-  const response = await apiFetch(
-    `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/run/stop`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        type: "run.stop",
-        run_id: normalizedRunId,
-        target_swarm_id: targetSwarmId,
-      }),
-    },
-  );
-  if (!response.ok) {
-    throw new Error(await readErrorMessage(response));
-  }
 }
 
 export async function resolveSessionPermission(
