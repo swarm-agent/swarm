@@ -5,7 +5,7 @@ import { queryClient } from '../../../app/query-client'
 import { getDesktopSnapshot, mergeDesktopSnapshot } from './desktop-state-store'
 import type { DesktopSessionRecord, DesktopStoreState } from '../types/realtime'
 import { applyEnvelope, useDesktopStore } from './use-desktop-store'
-import { applyV3RuntimeEnvelope, createV3SnapshotEnvelope, getV3RuntimeSnapshot, selectV3ActiveRun } from '../v3-runtime'
+import { applyV3RuntimeEnvelope, createV3SnapshotEnvelope, getV3RuntimeSnapshot, selectV3ActiveRun, selectV3WorkspaceSessions } from '../v3-runtime'
 import type { RunStreamEventMessage } from './run-stream-controller'
 import type { DesktopChatRoute } from '../chat/services/chat-routing'
 import { permissionRequiresApproval } from '../permissions/services/permission-payload'
@@ -2308,12 +2308,14 @@ test('V3 session.created payload nesting maps through applyEnvelope', () => {
   assert.equal(patch.sessions?.['session-created']?.workspacePath, '/repo')
 })
 
-test('V3 workset discovery delivers session.created over the existing realtime socket without legacy /ws or polling', async () => {
+test("Client B discovers Client A's newly created V3 session through the existing realtime socket", async () => {
   const sent: Array<Record<string, unknown>> = []
   const sockets: FakeGlobalSocket[] = []
+  const fetchUrls: string[] = []
   const originalFetch = globalThis.fetch
   const originalWindow = globalThis.window
   const originalWebSocket = globalThis.WebSocket
+  const initialActiveSessionId = useDesktopStore.getState().activeSessionId
   let reconnectCalls = 0
 
   class FakeGlobalSocket extends EventTarget {
@@ -2330,14 +2332,8 @@ test('V3 workset discovery delivers session.created over the existing realtime s
       sockets.push(this)
     }
 
-    addEventListener(type: string, callback: EventListenerOrEventListenerObject) {
-      super.addEventListener(type, callback)
-      if (type === 'open') {
-        queueMicrotask(() => this.dispatchEvent(new Event('open')))
-      }
-    }
-
     close() {
+      if (this.readyState === FakeGlobalSocket.CLOSED) return
       this.readyState = FakeGlobalSocket.CLOSED
       this.dispatchEvent(new Event('close'))
     }
@@ -2353,6 +2349,32 @@ test('V3 workset discovery delivers session.created over the existing realtime s
     }
   }
 
+  const worksetResume = {
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'subscribe.workset',
+    workset_id: 'desktop-v3-runtime:global',
+    subscription_id: 'desktop-v3-runtime:global',
+    selector: { kind: 'global', global: true },
+    resources: ['messages', 'events', 'run_intents'],
+    auto_subscribe_sessions: true,
+  }
+
+  const waitForRuntime = async () => {
+    await new Promise((resolve) => setImmediate(resolve))
+    await new Promise((resolve) => setImmediate(resolve))
+  }
+
+  const assertNoForbiddenTransport = () => {
+    assert.equal(sockets.filter((socket) => socket.url.includes('/v3/realtime/stream')).length, 1)
+    assert.equal(sockets.some((socket) => /\/ws(?:\?|$)/.test(socket.url)), false)
+    assert.equal(sockets.some((socket) => /\/v3\/sessions\/[^/]+\/stream/.test(socket.url)), false)
+    assert.equal(sockets.some((socket) => /run-stream|\/v2\//.test(socket.url)), false)
+    assert.equal(fetchUrls.some((url) => /\/ws(?:\?|$)/.test(url)), false)
+    assert.equal(fetchUrls.some((url) => /\/v3\/sessions\/[^/]+\/stream/.test(url)), false)
+    assert.equal(fetchUrls.some((url) => /run-stream|\/v2\//.test(url)), false)
+  }
+
   globalThis.window = {
     location: { protocol: 'http:', host: '127.0.0.1:7777' },
     addEventListener() {},
@@ -2365,23 +2387,25 @@ test('V3 workset discovery delivers session.created over the existing realtime s
   globalThis.WebSocket = FakeGlobalSocket as unknown as typeof WebSocket
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input)
+    fetchUrls.push(url)
     if (url === '/v1/auth/desktop/session') {
       return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
     if (url === '/v3/sessions:reconnect') {
       reconnectCalls += 1
       return new Response(JSON.stringify({
-        ...makeEmptyReconnectResponse('cursor-100'),
-        worksets: [{
-          protocol: 'v3.realtime',
-          protocol_version: 1,
-          kind: 'subscribe.workset',
-          workset_id: 'desktop-v3-runtime:global',
-          subscription_id: 'desktop-v3-runtime:global',
-          selector: { kind: 'global', global: true },
-          resources: ['messages', 'events', 'run_intents'],
-          auto_subscribe_sessions: true,
-        }],
+        ...makeEmptyReconnectResponse('cursor-b-snapshot'),
+        worksets: [worksetResume],
+        realtime: {
+          resume: {
+            protocol: 'v3.realtime',
+            protocol_version: 1,
+            kind: 'resume',
+            endpoint_cursor: 'cursor-b-snapshot',
+            subscriptions: [],
+            worksets: [worksetResume],
+          },
+        },
       }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
     throw new Error(`unexpected fetch: ${url}`)
@@ -2390,6 +2414,7 @@ test('V3 workset discovery delivers session.created over the existing realtime s
   try {
     useDesktopStore.setState({
       ...useDesktopStore.getState(),
+      activeSessionId: null,
       sessions: {},
       lastGlobalSeq: 0,
       realtimeDesired: true,
@@ -2397,88 +2422,162 @@ test('V3 workset discovery delivers session.created over the existing realtime s
     }, true)
 
     await useDesktopStore.getState().connect()
-    await new Promise((resolve) => setImmediate(resolve))
-    await new Promise((resolve) => setImmediate(resolve))
-    const v3Socket = sockets.find((socket) => socket.url.includes('/v3/realtime/stream'))
-    assert.ok(v3Socket)
-    assert.equal(sockets.some((socket) => socket.url.endsWith('/ws')), false)
-    assert.equal(sent.some((message) => message.type === 'subscribe' && message.channel === 'session:*'), false)
-    assert.equal(sent.some((message) => message.kind === 'resume' && Array.isArray(message.worksets)), true)
-    assert.equal(useDesktopStore.getState().sessions['phone-session'], undefined)
+    await waitForRuntime()
 
+    const v3Sockets = sockets.filter((socket) => socket.url.includes('/v3/realtime/stream'))
+    assert.equal(v3Sockets.length, 1)
+    const v3Socket = v3Sockets[0]
+    assert.ok(v3Socket.url.includes('/v3/realtime/stream?endpoint_cursor=cursor-b-snapshot'))
+    assertNoForbiddenTransport()
+    assert.equal(reconnectCalls, 1)
+    assert.equal(fetchUrls.filter((url) => url === '/v3/sessions:reconnect').length, 1)
+    assert.equal(sent.length, 1)
+    assert.equal(sent[0]?.kind, 'resume')
+    assert.equal(Array.isArray(sent[0]?.worksets), true)
+    assert.equal((sent[0]?.worksets as unknown[]).length, 1)
+    assert.equal((sent[0]?.worksets as Array<Record<string, unknown>>)[0]?.auto_subscribe_sessions, true)
+    assert.equal(sent.some((message) => message.kind === 'subscribe.session'), false)
+    assert.equal(sent.some((message) => message.type === 'subscribe' && message.channel === 'session:*'), false)
+    assert.equal(useDesktopStore.getState().sessions['session-y'], undefined)
+    assert.equal(getDesktopSnapshot().sessionsById['session-y'], undefined)
+
+    // Frontend-only acceptance variant: the server emits discovery caused by another client's POST /v3/sessions.
     v3Socket.serverMessage({
       protocol: 'v3.realtime',
       protocol_version: 1,
       kind: 'workset.session.discovered',
-      session_id: 'phone-session',
-      subscription_id: 'auto:phone-session',
+      session_id: 'session-y',
+      subscription_id: 'auto:session-y',
       workset_id: 'desktop-v3-runtime:global',
       workset_subscription_id: 'desktop-v3-runtime:global',
       auto_subscribed: true,
-      endpoint_cursor: 'cursor-101',
+      endpoint_cursor: 'cursor-y-discovered',
       event_type: 'session.created',
     })
+    const createdPrevRev = getDesktopSnapshot().rev
     v3Socket.serverMessage({
       protocol: 'v3.realtime',
       protocol_version: 1,
       kind: 'event',
-      type: 'event',
-      session_id: 'phone-session',
-      endpoint_cursor: 'cursor-102',
+      session_id: 'session-y',
       event_type: 'session.created',
+      rev: createdPrevRev + 1,
+      prevRev: createdPrevRev,
+      endpoint_cursor: 'cursor-y-created',
       event: {
-        id: 'v3evt_phone-session_00000000000000000001',
-        session_id: 'phone-session',
+        id: 'v3evt_session_y_1',
+        session_id: 'session-y',
         seq: 1,
         event_type: 'session.created',
-        ts_unix_ms: 200,
         payload: {
-          session_id: 'phone-session',
+          session_id: 'session-y',
+          kind: 'session.record',
           session: {
-            id: 'phone-session',
-            title: 'Phone created session',
+            id: 'session-y',
+            title: 'Client A created session',
             workspace_path: '/repo',
             workspace_name: 'repo',
             mode: 'auto',
             session_api: 'v3',
-            created_at: 200,
-            updated_at: 200,
+            message_count: 0,
+            created_at: 100,
+            updated_at: 100,
           },
+          ts_unix_ms: 100,
         },
+        ts_unix_ms: 100,
+      },
+      projection: {
+        session_id: 'session-y',
+        last_event_seq: 1,
+        projection_high_watermark_seq: 1,
+        updated_at: 100,
       },
     })
-    await new Promise((resolve) => setImmediate(resolve))
-    await new Promise((resolve) => setImmediate(resolve))
+    await waitForRuntime()
 
+    assert.equal(useDesktopStore.getState().sessions['session-y']?.title, 'Client A created session')
+    assert.equal(getDesktopSnapshot().sessionsById['session-y']?.title, 'Client A created session')
+    assert.equal(getDesktopSnapshot().sessionOrder.includes('session-y'), true)
+    assert.equal(selectV3WorkspaceSessions(getV3RuntimeSnapshot(), { workspacePaths: ['/repo'] }).some((session) => session.id === 'session-y'), true)
+    assert.equal(useDesktopStore.getState().activeSessionId, initialActiveSessionId)
+    assert.equal(reconnectCalls, 1)
+    assert.equal(fetchUrls.filter((url) => url === '/v3/sessions:reconnect').length, 1)
+    assert.equal(sockets.length, 1)
+    assert.equal(sent.length, 1)
+    assertNoForbiddenTransport()
+
+    const sentAfterDiscovery = sent.length
+    const updatedPrevRev = getDesktopSnapshot().rev
+    v3Socket.serverMessage({
+      protocol: 'v3.realtime',
+      protocol_version: 1,
+      kind: 'event',
+      session_id: 'session-y',
+      event_type: 'session.updated',
+      rev: updatedPrevRev + 1,
+      prevRev: updatedPrevRev,
+      endpoint_cursor: 'cursor-y-updated',
+      event: {
+        id: 'v3evt_session_y_2',
+        session_id: 'session-y',
+        seq: 2,
+        event_type: 'session.updated',
+        payload: {
+          session_id: 'session-y',
+          session: {
+            id: 'session-y',
+            title: 'Client A created session',
+            workspace_path: '/repo',
+            workspace_name: 'repo',
+            mode: 'auto',
+            session_api: 'v3',
+            message_count: 1,
+            created_at: 100,
+            updated_at: 120,
+          },
+          ts_unix_ms: 120,
+        },
+        ts_unix_ms: 120,
+      },
+      projection: {
+        session_id: 'session-y',
+        last_event_seq: 2,
+        projection_high_watermark_seq: 2,
+        updated_at: 120,
+      },
+    })
+    await waitForRuntime()
+
+    assert.equal(useDesktopStore.getState().sessions['session-y']?.messageCount, 1)
+    assert.equal(getDesktopSnapshot().sessionsById['session-y']?.messageCount, 1)
+    assert.equal(sent.length, sentAfterDiscovery)
+    assert.equal(sent.some((message) => message.kind === 'subscribe.session'), false)
     assert.equal(reconnectCalls, 1)
     assert.equal(sockets.length, 1)
-    assert.equal(sockets[0]?.url.includes('/v3/realtime/stream'), true)
-    assert.equal(sockets.some((socket) => /\/ws(?:\?|$)/.test(socket.url)), false)
-    assert.equal(sockets.some((socket) => /\/v3\/sessions\/[^/]+\/stream/.test(socket.url)), false)
-    assert.equal(sockets.some((socket) => /run-stream|\/v2\//.test(socket.url)), false)
-    assert.equal(useDesktopStore.getState().sessions['phone-session']?.title, 'Phone created session')
-    assert.equal(getDesktopSnapshot().sessionOrder.includes('phone-session'), true)
-    assert.equal(getDesktopSnapshot().sessionsById['phone-session']?.title, 'Phone created session')
+    assertNoForbiddenTransport()
 
     v3Socket.serverMessage({
       protocol: 'v3.realtime',
       protocol_version: 1,
       kind: 'workset.session.removed',
-      session_id: 'phone-session',
-      subscription_id: 'auto:phone-session',
+      session_id: 'session-y',
+      subscription_id: 'auto:session-y',
       workset_id: 'desktop-v3-runtime:global',
       workset_subscription_id: 'desktop-v3-runtime:global',
       auto_subscribed: true,
-      endpoint_cursor: 'cursor-103',
+      endpoint_cursor: 'cursor-y-removed',
       event_type: 'session.archived',
     })
-    await new Promise((resolve) => setImmediate(resolve))
-    await new Promise((resolve) => setImmediate(resolve))
+    await waitForRuntime()
 
-    assert.equal(useDesktopStore.getState().sessions['phone-session'], undefined)
-    assert.equal(getDesktopSnapshot().sessionsById['phone-session'], undefined)
-    assert.equal(getDesktopSnapshot().sessionOrder.includes('phone-session'), false)
-    assert.equal(useDesktopStore.getState().lastGlobalSeq >= 1, true)
+    assert.equal(useDesktopStore.getState().sessions['session-y'], undefined)
+    assert.equal(getDesktopSnapshot().sessionsById['session-y'], undefined)
+    assert.equal(getDesktopSnapshot().sessionOrder.includes('session-y'), false)
+    assert.equal(reconnectCalls, 1)
+    assert.equal(fetchUrls.filter((url) => url === '/v3/sessions:reconnect').length, 1)
+    assert.equal(sockets.length, 1)
+    assertNoForbiddenTransport()
   } finally {
     useDesktopStore.getState().disconnect()
     globalThis.fetch = originalFetch
