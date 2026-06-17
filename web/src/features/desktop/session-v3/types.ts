@@ -45,11 +45,8 @@ export interface SessionV3WorksetResourcesWire {
   messages?: boolean
   events?: boolean
   run_intents?: boolean
-  plans?: boolean
-  permissions?: boolean
-  usage?: boolean
-  preferences?: boolean
-  agent_model_policy?: boolean
+  active_plan?: boolean
+  plan_revisions?: boolean
 }
 
 export interface SessionV3WorksetWorkspaceWire {

@@ -394,7 +394,7 @@ function defaultRuntimeWorkset(): SessionV3WorksetRequestWire {
     selector: { kind: 'global', global: true },
     recent: { limit: DEFAULT_WORKSET_RECENT_LIMIT },
     history: { mode: 'none', max_events_per_session: 0, manifest_policy: 'manifest', include_events: false },
-    resources: { messages: true, events: true, run_intents: true, plans: true, permissions: true, usage: true, preferences: true, agent_model_policy: true },
+    resources: { messages: true, events: true, run_intents: true, active_plan: true, plan_revisions: true },
     include_active: true,
     auto_subscribe_sessions: true,
   }

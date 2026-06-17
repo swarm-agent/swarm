@@ -230,6 +230,18 @@ test('runtime boot opens one V3 realtime stream and sends one resume for workset
     assert.equal(reconnectOptions.length, 1)
     assert.equal(reconnectOptions[0]?.clientId, 'client-boot')
     assert.ok(reconnectOptions[0]?.workset)
+    assert.deepEqual(reconnectOptions[0]?.workset?.resources, {
+      messages: true,
+      events: true,
+      run_intents: true,
+      active_plan: true,
+      plan_revisions: true,
+    })
+    assert.equal(Object.prototype.hasOwnProperty.call(reconnectOptions[0]?.workset?.resources ?? {}, 'plans'), false)
+    assert.equal(Object.prototype.hasOwnProperty.call(reconnectOptions[0]?.workset?.resources ?? {}, 'permissions'), false)
+    assert.equal(Object.prototype.hasOwnProperty.call(reconnectOptions[0]?.workset?.resources ?? {}, 'usage'), false)
+    assert.equal(Object.prototype.hasOwnProperty.call(reconnectOptions[0]?.workset?.resources ?? {}, 'preferences'), false)
+    assert.equal(Object.prototype.hasOwnProperty.call(reconnectOptions[0]?.workset?.resources ?? {}, 'agent_model_policy'), false)
     assert.equal(sockets.length, 1)
     const socketUrl = new URL(sockets[0].url)
     assert.equal(socketUrl.pathname, '/v3/realtime/stream')
