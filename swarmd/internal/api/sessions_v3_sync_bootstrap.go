@@ -123,26 +123,9 @@ func (s *Server) sessionsV3SyncPrincipal(w http.ResponseWriter, r *http.Request,
 }
 
 func sessionsV3SyncBootstrapOptions(principal identity.Principal, req sessionsV3SyncBootstrapRequest) (sessionsV3ResolvedSyncOptions, any, []string, error) {
-	selector := normalizeSessionsV3SyncSelector(req.SelectorKind, req.Selector, req.SessionIDs, req.Global, req.Workspace, req.Recent)
-
-	// Resolve workspace paths natively
-	workspacePaths, err := canonicalSessionsV3WorksetWorkspacePaths(req.Workspace)
+	selector, workspacePaths, err := canonicalSessionsV3SyncBootstrapSelector(req)
 	if err != nil {
 		return sessionsV3ResolvedSyncOptions{}, nil, nil, err
-	}
-	if req.Global && len(workspacePaths) > 0 {
-		return sessionsV3ResolvedSyncOptions{}, nil, nil, errors.New("workset global selector cannot be combined with workspace_path or workspace_paths")
-	}
-	if req.Recent.Limit > 0 && len(workspacePaths) == 0 && !req.Global {
-		return sessionsV3ResolvedSyncOptions{}, nil, nil, errors.New("workset recent selector requires explicit workspace_path, workspace_paths, or global=true")
-	}
-
-	if strings.TrimSpace(selector.CWDPath) != "" {
-		paths, err := canonicalSessionsV3TUIWorksetPaths(sessionsV3TUIWorksetScope{WorkspacePath: selector.WorkspacePath, WorkspacePaths: selector.WorkspacePaths, CWDPath: selector.CWDPath})
-		if err != nil {
-			return sessionsV3ResolvedSyncOptions{}, nil, nil, err
-		}
-		workspacePaths = paths
 	}
 
 	history, err := sessionsV3SyncHistoryOptionsFromRequest(req.History, req.Resources)
@@ -226,8 +209,46 @@ func canonicalV3SyncSessionIDs(sessionIDs []string) []string {
 	return ids
 }
 
+func canonicalSessionsV3SyncBootstrapSelector(req sessionsV3SyncBootstrapRequest) (sessionsV3SyncSelector, []string, error) {
+	selector := normalizeSessionsV3SyncSelector(req.SelectorKind, req.Selector, req.SessionIDs, req.Global, req.Workspace, req.Recent)
+	selector.Kind = strings.TrimSpace(selector.Kind)
+	selector.SessionIDs = canonicalV3SyncSessionIDs(selector.SessionIDs)
+	selector.Recent.BeforeSessionID = strings.TrimSpace(selector.Recent.BeforeSessionID)
+
+	var (
+		workspacePaths []string
+		err            error
+	)
+	if strings.TrimSpace(selector.CWDPath) != "" || selector.Kind == "tui" {
+		workspacePaths, err = canonicalSessionsV3TUIWorksetPaths(sessionsV3TUIWorksetScope{WorkspacePath: selector.WorkspacePath, WorkspacePaths: selector.WorkspacePaths, CWDPath: selector.CWDPath})
+	} else {
+		workspacePaths, err = canonicalSessionsV3WorksetWorkspacePaths(sessionsV3WorksetWorkspace{WorkspacePath: selector.WorkspacePath, WorkspacePaths: selector.WorkspacePaths})
+	}
+	if err != nil {
+		return sessionsV3SyncSelector{}, nil, err
+	}
+	selector.WorkspacePath = ""
+	selector.WorkspacePaths = nil
+	if len(workspacePaths) == 1 {
+		selector.WorkspacePath = workspacePaths[0]
+	} else if len(workspacePaths) > 1 {
+		selector.WorkspacePaths = workspacePaths
+	}
+
+	global := selector.Global || selector.Kind == "global"
+	selector.Global = global
+	if global && len(workspacePaths) > 0 {
+		return sessionsV3SyncSelector{}, nil, errors.New("workset global selector cannot be combined with workspace_path or workspace_paths")
+	}
+	if selector.Recent.Limit > 0 && len(workspacePaths) == 0 && !global {
+		return sessionsV3SyncSelector{}, nil, errors.New("workset recent selector requires explicit workspace_path, workspace_paths, or global=true")
+	}
+	return selector, workspacePaths, nil
+}
+
 func normalizeSessionsV3SyncSelector(kind string, selector sessionsV3SyncSelector, sessionIDs []string, global bool, workspace sessionsV3WorksetWorkspace, recent sessionsV3WorksetRecent) sessionsV3SyncSelector {
-	if strings.TrimSpace(selector.Kind) == "" {
+	selector.Kind = strings.TrimSpace(selector.Kind)
+	if selector.Kind == "" {
 		selector.Kind = strings.TrimSpace(kind)
 	}
 	if len(selector.SessionIDs) == 0 {
@@ -241,10 +262,10 @@ func normalizeSessionsV3SyncSelector(kind string, selector sessionsV3SyncSelecto
 		selector.Recent = recent
 	}
 	selector.Global = selector.Global || global
-	if strings.TrimSpace(selector.Kind) == "global" {
+	if selector.Kind == "global" {
 		selector.Global = true
 	}
-	if strings.TrimSpace(selector.Kind) == "" {
+	if selector.Kind == "" {
 		switch {
 		case selector.Global:
 			selector.Kind = "global"

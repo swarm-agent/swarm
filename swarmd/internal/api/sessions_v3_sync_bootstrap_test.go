@@ -105,6 +105,79 @@ func TestSessionsV3SyncBootstrapGlobalSelectorWithoutRecentUsesNativeAccountSnap
 	}
 }
 
+func TestSessionsV3SyncBootstrapUsesCanonicalSelectorForSnapshotOptions(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	selectorSession := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-bootstrap-selector", "Sync Bootstrap Selector", "/workspace/bootstrap-selector")
+	rawWorkspaceSession := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-bootstrap-raw", "Sync Bootstrap Raw", "/workspace/bootstrap-raw")
+	expectedSelector := sessionsV3SyncSelector{Kind: "workspace", WorkspacePath: "/workspace/bootstrap-selector", Recent: sessionsV3WorksetRecent{Limit: 10}}
+	expectedSelectorHash := v3SyncDeterministicSelectorHash(v3SyncCanonicalSelector(expectedSelector))
+
+	body, err := json.Marshal(map[string]any{
+		"surface": "desktop",
+		"selector": map[string]any{
+			"kind":           "workspace",
+			"workspace_path": "/workspace/bootstrap-selector",
+			"recent":         map[string]any{"limit": 10},
+		},
+		"workspace": map[string]any{"workspace_path": "/workspace/bootstrap-raw"},
+		"recent":    map[string]any{"limit": 10},
+		"history":   map[string]any{"mode": "none"},
+	})
+	if err != nil {
+		t.Fatalf("marshal bootstrap body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, V3SyncBootstrapPath, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bootstrap status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		SnapshotEndpointCursor string                                 `json:"snapshot_endpoint_cursor"`
+		SessionsByID           map[string]pebblestore.SessionSnapshot `json:"sessions_by_id"`
+		Selector               sessionsV3SyncSelector                 `json:"selector"`
+		SyncScope              map[string]string                      `json:"sync_scope"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode bootstrap response: %v", err)
+	}
+	if payload.Selector.Kind != expectedSelector.Kind || payload.Selector.WorkspacePath != expectedSelector.WorkspacePath || payload.Selector.Recent.Limit != expectedSelector.Recent.Limit {
+		t.Fatalf("bootstrap selector = %+v, want %+v", payload.Selector, expectedSelector)
+	}
+	if payload.SessionsByID[selectorSession.ID].ID != selectorSession.ID {
+		t.Fatalf("bootstrap did not read from canonical selector workspace: %+v", payload.SessionsByID)
+	}
+	if payload.SessionsByID[rawWorkspaceSession.ID].ID != "" {
+		t.Fatalf("bootstrap read from conflicting raw workspace field: %+v", payload.SessionsByID[rawWorkspaceSession.ID])
+	}
+	if payload.SyncScope["selector_filter_hash"] != expectedSelectorHash {
+		t.Fatalf("selector hash = %q, want %q", payload.SyncScope["selector_filter_hash"], expectedSelectorHash)
+	}
+	cursorPayload, err := server.verifyV3SyncCursor(payload.SnapshotEndpointCursor)
+	if err != nil {
+		t.Fatalf("verify bootstrap cursor: %v", err)
+	}
+	if cursorPayload.SelectorFilterHash != expectedSelectorHash {
+		t.Fatalf("cursor selector hash = %q, want %q", cursorPayload.SelectorFilterHash, expectedSelectorHash)
+	}
+}
+
+func TestSessionsV3SyncBootstrapRejectsGlobalSelectorWithConflictingRawWorkspace(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	body := `{"surface":"desktop","selector":{"kind":"global","global":true},"workspace":{"workspace_path":"/workspace/bootstrap-raw"},"history":{"mode":"none"}}`
+	req := httptest.NewRequest(http.MethodPost, V3SyncBootstrapPath, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bootstrap status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "global selector cannot be combined") {
+		t.Fatalf("bootstrap error did not report selector conflict: %s", rec.Body.String())
+	}
+}
+
 func TestSessionsV3SyncBootstrapUsesNativeSnapshotBuilderNotLegacyWorkset(t *testing.T) {
 	source, err := os.ReadFile("sessions_v3_sync_bootstrap.go")
 	if err != nil {
