@@ -72,6 +72,39 @@ func TestSessionsV3SyncBootstrapReturnsCanonicalSnapshotScopeAndReplayInstructio
 	}
 }
 
+func TestSessionsV3SyncBootstrapGlobalSelectorWithoutRecentUsesNativeAccountSnapshot(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	createdA := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-global-a", "Sync Global A", "/workspace/global-a")
+	createdB := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-global-b", "Sync Global B", "/workspace/global-b")
+
+	body := `{"surface":"desktop","selector":{"kind":"global","global":true},"history":{"mode":"none"}}`
+	req := httptest.NewRequest(http.MethodPost, V3SyncBootstrapPath, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("global bootstrap status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		SnapshotEndpointCursor string                                 `json:"snapshot_endpoint_cursor"`
+		SessionsByID           map[string]pebblestore.SessionSnapshot `json:"sessions_by_id"`
+		SessionOrder           []string                               `json:"session_order"`
+		Selector               sessionsV3SyncSelector                 `json:"selector"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode global bootstrap response: %v", err)
+	}
+	if payload.Selector.Kind != "global" || !payload.Selector.Global {
+		t.Fatalf("global bootstrap selector = %+v", payload.Selector)
+	}
+	if !strings.HasPrefix(payload.SnapshotEndpointCursor, "v3c1.") {
+		t.Fatalf("global bootstrap missing signed cursor: %+v", payload)
+	}
+	if payload.SessionsByID[createdA.ID].ID != createdA.ID || payload.SessionsByID[createdB.ID].ID != createdB.ID {
+		t.Fatalf("global bootstrap missing account sessions: order=%+v sessions=%+v", payload.SessionOrder, payload.SessionsByID)
+	}
+}
+
 func TestSessionsV3SyncBootstrapUsesNativeSnapshotBuilderNotLegacyWorkset(t *testing.T) {
 	source, err := os.ReadFile("sessions_v3_sync_bootstrap.go")
 	if err != nil {

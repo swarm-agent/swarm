@@ -78,3 +78,55 @@ func TestBuildV3SyncSnapshotKeepsExtraResourcesPointInTime(t *testing.T) {
 		t.Fatalf("snapshot plan revisions = %+v, want only pre-hook revision", revisions)
 	}
 }
+
+func TestBuildV3SyncSnapshotGlobalSelectorWithoutRecentIncludesAccountSessions(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3WorksetSessionForTest(t, sessions, "session-global-a", "/workspace/global-a", 1000)
+	createV3WorksetSessionForTest(t, sessions, "session-global-b", "/workspace/global-b", 2000)
+	createV3SyncSnapshotSessionForAccountTest(t, sessions, "session-global-other", "account-other", "/workspace/global-other", 3000)
+
+	snapshot, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
+		AccountScopeID: "account-1",
+		Global:         true,
+		History:        V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone},
+	})
+	if err != nil {
+		t.Fatalf("build global sync snapshot: %v", err)
+	}
+	if snapshot.SessionsByID["session-global-a"].ID != "session-global-a" || snapshot.SessionsByID["session-global-b"].ID != "session-global-b" {
+		t.Fatalf("global snapshot missing account sessions: order=%+v sessions=%+v", snapshot.SessionOrder, snapshot.SessionsByID)
+	}
+	if _, ok := snapshot.SessionsByID["session-global-other"]; ok {
+		t.Fatalf("global snapshot leaked other account session: %+v", snapshot.SessionsByID["session-global-other"])
+	}
+	if len(snapshot.SessionOrder) != 2 || snapshot.SessionOrder[0] != "session-global-b" || snapshot.SessionOrder[1] != "session-global-a" {
+		t.Fatalf("global snapshot order = %+v, want updated_at desc", snapshot.SessionOrder)
+	}
+}
+
+func createV3SyncSnapshotSessionForAccountTest(t *testing.T, sessions *SessionStore, sessionID, accountScopeID, workspacePath string, updatedAt int64) {
+	t.Helper()
+	_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:      sessionID,
+		UserID:         "user-1",
+		AccountScopeID: accountScopeID,
+		IdempotencyKey: "create-" + sessionID,
+		PayloadHash:    "hash-create-" + sessionID,
+		Kind:           V3SessionMutationCreateSession,
+		Session: &SessionSnapshot{
+			ID:             sessionID,
+			UserID:         "user-1",
+			AccountScopeID: accountScopeID,
+			WorkspacePath:  workspacePath,
+			WorkspaceName:  "workspace",
+			Title:          sessionID,
+			CreatedAt:      updatedAt,
+			UpdatedAt:      updatedAt,
+		},
+		NowUnixMs: updatedAt,
+	})
+	if err != nil {
+		t.Fatalf("create sync snapshot session %s: %v", sessionID, err)
+	}
+}

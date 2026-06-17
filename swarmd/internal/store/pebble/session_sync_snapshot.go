@@ -53,6 +53,7 @@ func runV3SyncSnapshotAfterSnapshotHook() {
 
 type V3SyncSnapshotOptions struct {
 	AccountScopeID                     string
+	Global                             bool
 	SessionIDs                         []string
 	WorkspacePath                      string
 	WorkspacePaths                     []string
@@ -125,7 +126,7 @@ func (s *SessionStore) BuildV3SyncSnapshot(options V3SyncSnapshotOptions) (resul
 			return V3SyncSnapshotResult{}, err
 		}
 	}
-	if len(options.SessionIDs) == 0 && options.RecentLimit <= 0 && strings.TrimSpace(options.WorkspacePath) == "" && len(options.WorkspacePaths) == 0 {
+	if !options.Global && len(options.SessionIDs) == 0 && options.RecentLimit <= 0 && strings.TrimSpace(options.WorkspacePath) == "" && len(options.WorkspacePaths) == 0 {
 		return V3SyncSnapshotResult{}, errors.New("at least one sync snapshot selector is required")
 	}
 	snapshot := s.store.db.NewSnapshot()
@@ -280,6 +281,15 @@ func (s *SessionStore) selectV3SyncSnapshotSessions(reader pebble.Reader, option
 		}
 		appendSession(session)
 	}
+	if options.Global {
+		global, err := s.selectV3GlobalSyncSnapshotSessions(reader, options)
+		if err != nil {
+			return nil, V3SyncSnapshotPagination{}, err
+		}
+		for _, session := range global {
+			appendSession(session)
+		}
+	}
 	pagination := V3SyncSnapshotPagination{}
 	if options.RecentLimit > 0 {
 		recent, page, err := s.selectV3RecentSyncSnapshotSessions(reader, options)
@@ -305,6 +315,50 @@ func (s *SessionStore) selectV3SyncSnapshotSessions(reader pebble.Reader, option
 		selected = append(selected, byID[id])
 	}
 	return selected, pagination, nil
+}
+
+func (s *SessionStore) selectV3GlobalSyncSnapshotSessions(reader pebble.Reader, options V3SyncSnapshotOptions) ([]SessionSnapshot, error) {
+	prefix := SessionByAccountPrefix(options.AccountScopeID)
+	if strings.TrimSpace(options.AccountScopeID) == "" {
+		prefix = SessionPrefix()
+	}
+	sessions := make([]SessionSnapshot, 0)
+	err := iteratePrefixFromReader(reader, prefix, int(^uint(0)>>1), func(_ string, value []byte) error {
+		sessionID := strings.TrimSpace(string(value))
+		if strings.TrimSpace(options.AccountScopeID) == "" {
+			var session SessionSnapshot
+			if err := json.Unmarshal(value, &session); err != nil {
+				return err
+			}
+			if !v3SyncSnapshotSessionVisibleForWorkspaces(session, options.AccountScopeID, options.WorkspacePath, options.WorkspacePaths) {
+				return nil
+			}
+			sessions = append(sessions, session)
+			return nil
+		}
+		if sessionID == "" {
+			return nil
+		}
+		session, ok, err := s.getSessionFromReader(reader, sessionID)
+		if err != nil {
+			return err
+		}
+		if !ok || !v3SyncSnapshotSessionVisibleForWorkspaces(session, options.AccountScopeID, options.WorkspacePath, options.WorkspacePaths) {
+			return nil
+		}
+		sessions = append(sessions, session)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(sessions, func(i, j int) bool {
+		if sessions[i].UpdatedAt == sessions[j].UpdatedAt {
+			return sessions[i].ID < sessions[j].ID
+		}
+		return sessions[i].UpdatedAt > sessions[j].UpdatedAt
+	})
+	return sessions, nil
 }
 
 func (s *SessionStore) selectV3RecentSyncSnapshotSessions(reader pebble.Reader, options V3SyncSnapshotOptions) ([]SessionSnapshot, V3SyncSnapshotPagination, error) {

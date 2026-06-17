@@ -152,6 +152,7 @@ func sessionsV3SyncBootstrapOptions(principal identity.Principal, req sessionsV3
 	options := sessionsV3ResolvedSyncOptions{
 		Snapshot: pebblestore.V3SyncSnapshotOptions{
 			AccountScopeID:        principal.AccountScopeID,
+			Global:                selector.Global || strings.TrimSpace(selector.Kind) == "global",
 			SessionIDs:            selector.SessionIDs,
 			WorkspacePaths:        workspacePaths,
 			RecentLimit:           selector.Recent.Limit,
@@ -219,6 +220,9 @@ func normalizeSessionsV3SyncSelector(kind string, selector sessionsV3SyncSelecto
 		selector.Recent = recent
 	}
 	selector.Global = selector.Global || global
+	if strings.TrimSpace(selector.Kind) == "global" {
+		selector.Global = true
+	}
 	if strings.TrimSpace(selector.Kind) == "" {
 		switch {
 		case selector.Global:
