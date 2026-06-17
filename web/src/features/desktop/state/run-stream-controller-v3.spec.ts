@@ -167,10 +167,10 @@ afterEach(async () => {
     sessions: {},
     notifications: [],
     lastGlobalSeq: 0,
-    reconnectTimer: null,
+    realtimeRetryTimer: null,
     heartbeatTimer: null,
     livenessTimer: null,
-    reconnectAttempt: 0,
+    realtimeRetryAttempt: 0,
     realtimeDesired: false,
     connectionState: 'idle',
   })

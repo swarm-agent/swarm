@@ -261,10 +261,10 @@ export interface DesktopStoreState {
     loading: boolean
     hydrated: boolean
   }
-  reconnectTimer: number | null
+  realtimeRetryTimer: number | null
   heartbeatTimer: number | null
   livenessTimer: number | null
-  reconnectAttempt: number
+  realtimeRetryAttempt: number
   connectionGeneration: number
   realtimeDesired: boolean
   lastGlobalSeq: number
@@ -295,7 +295,7 @@ export interface DesktopStoreState {
   clearOnboardingFlow: () => void
   hydrate: () => Promise<void>
   connect: () => Promise<void>
-  reconnectIfStale: (reason: string) => Promise<void>
+  refreshRealtimeIfStale: (reason: string) => Promise<void>
   syncV3RealtimeSessions: (options?: { force?: boolean }) => void
   disconnect: () => void
   createSession: (input: {

@@ -27,7 +27,6 @@ import { gitStatusQueryKey } from '../git/api'
 import { agentStateQueryOptions, uiSettingsQueryKey } from '../../queries/query-options'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { applyV3RuntimeEnvelope, createV3EventEnvelope, createV3SnapshotEnvelope, getV3RuntimeDesktopSnapshot, installV3RuntimePersistence, normalizeV3RealtimeFrame, restoreV3RuntimeFromPersistence } from '../v3-runtime'
-import { fetchDesktopStateSnapshot } from './desktop-state-snapshot'
 import { fetchAndApplyDesktopV3SessionPermissions } from './desktop-v3-session-api'
 import type { DesktopState } from './desktop-state'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
@@ -192,9 +191,9 @@ const EMPTY_NOTIFICATION_SUMMARY: DesktopNotificationSummary = {
   activeCount: 0,
   updatedAt: 0,
 }
-const RECONNECT_BASE_DELAY_MS = 1500
-const RECONNECT_MAX_DELAY_MS = 15_000
-const RECONNECT_JITTER_RATIO = 0.2
+const REALTIME_RETRY_BASE_DELAY_MS = 1500
+const REALTIME_RETRY_MAX_DELAY_MS = 15_000
+const REALTIME_RETRY_JITTER_RATIO = 0.2
 const NEW_SESSION_DRAFT_KEY_PREFIX = '__workspace__:'
 const MAX_LIVE_TOOL_OUTPUT_CHARS = 4000
 const MAX_LIVE_TOOL_HISTORY = 20
@@ -218,10 +217,10 @@ function isTaskToolPayload(record: Record<string, unknown> | null): boolean {
 }
 const draftFlushTimers = new Map<string, number>()
 const pendingDraftFlush = new Map<string, DraftFlushState>()
-const pendingSessionWorksetHydrations = new Set<string>()
+const pendingRuntimeSessionHydrations = new Set<string>()
 let desktopSessionV3Runtime: DesktopSessionV3Runtime | null = null
 let desktopV3RealtimeEndpointCursor = ''
-let desktopV3ReconnectSyncDiagnostics: Record<string, unknown> = { status: 'never-run' }
+let desktopV3RuntimeSyncDiagnostics: Record<string, unknown> = { status: 'never-run' }
 
 function disposeDesktopSessionV3Runtime(): void {
   const runtime = desktopSessionV3Runtime
@@ -352,7 +351,7 @@ function recordDesktopV3FollowUpAssistantFrame(sessionId: string, payload: Deskt
 function reportDesktopV3FollowUpTrace(trace: DesktopV3FollowUpTrace): void {
   activeDesktopV3FollowUpTraces.delete(trace.sessionId)
   const finalDiagnostics = getDesktopV3RealtimeDiagnostics(trace.sessionId)
-  console.info('[desktop-v3-follow-up] submit/reconnect/stream report', {
+  console.info('[desktop-v3-follow-up] submit/realtime/stream report', {
     sessionId: trace.sessionId,
     durationMs: Date.now() - trace.startedAt,
     steps: trace.steps,
@@ -364,7 +363,7 @@ function reportDesktopV3FollowUpTrace(trace: DesktopV3FollowUpTrace): void {
       completedText: truncateDesktopV3FollowUpText(trace.completedAssistantText),
       events: trace.assistantEvents,
     },
-    reconnectSync: desktopV3ReconnectSyncDiagnostics,
+    runtimeSync: desktopV3RuntimeSyncDiagnostics,
     finalRealtime: summarizeDesktopV3RealtimeDiagnostics(finalDiagnostics),
   })
 }
@@ -540,13 +539,13 @@ function applyDesktopSessionV3RuntimeState(state: SessionV3ReducerState, result:
   if (runtimeAction === 'status') {
     if (state.status === 'ready') {
       const current = useDesktopUiStore.getState()
-      clearReconnectTimer(current)
+      clearRealtimeRetryTimer(current)
       clearHeartbeatTimer(current)
       clearLivenessTimer(current)
       useDesktopUiStore.setState({
         connectionState: 'open',
-        reconnectAttempt: 0,
-        reconnectTimer: null,
+        realtimeRetryAttempt: 0,
+        realtimeRetryTimer: null,
         heartbeatTimer: null,
         livenessTimer: null,
       })
@@ -555,8 +554,8 @@ function applyDesktopSessionV3RuntimeState(state: SessionV3ReducerState, result:
     }
   }
   if (result?.stale) {
-    desktopV3ReconnectSyncDiagnostics = {
-      ...desktopV3ReconnectSyncDiagnostics,
+    desktopV3RuntimeSyncDiagnostics = {
+      ...desktopV3RuntimeSyncDiagnostics,
       status: 'stale',
       reason: result.reason,
       updatedAt: Date.now(),
@@ -590,8 +589,8 @@ export function getDesktopRealtimeMaintenanceDiagnostics(sessionId?: string | nu
     vaultEnabled: state.vault.enabled,
     vaultUnlocked: state.vault.unlocked,
     connectionGeneration: state.connectionGeneration,
-    reconnectAttempt: state.reconnectAttempt,
-    reconnectTimerActive: state.reconnectTimer !== null,
+    realtimeRetryAttempt: state.realtimeRetryAttempt,
+    realtimeRetryTimerActive: state.realtimeRetryTimer !== null,
     heartbeatTimerActive: state.heartbeatTimer !== null,
     livenessTimerActive: state.livenessTimer !== null,
     globalSocketState: v3Realtime?.socketState ?? 'none',
@@ -608,7 +607,7 @@ export function getDesktopRealtimeMaintenanceDiagnostics(sessionId?: string | nu
     sessionLifecyclePhase: session?.lifecycle?.phase ?? '',
     sessionLifecycleStopReason: session?.lifecycle?.stopReason ?? '',
     endpointCursorPresent: desktopV3RealtimeEndpointCursor.trim() !== '' || Boolean(desktopSessionV3Runtime?.getState().endpointCursor.trim()),
-    lastV3ReconnectSync: desktopV3ReconnectSyncDiagnostics,
+    lastV3RuntimeSync: desktopV3RuntimeSyncDiagnostics,
     v3RuntimeOwned: desktopSessionV3Runtime !== null,
     v3RuntimeState: desktopSessionV3Runtime
       ? {
@@ -632,7 +631,7 @@ if (typeof window !== 'undefined') {
       return
     }
     desktopV3RealtimeEndpointCursor = cursor
-    // Do not refresh/reconnect the session-v3 runtime from this legacy cursor event.
+    // Do not refresh/reopen the session-v3 runtime from this legacy cursor event.
     // The V3 runtime transport owns cursor advancement from realtime frames and
     // explicit lifecycle rehydrates; snapshot cursor notifications are diagnostic only.
   })
@@ -857,8 +856,8 @@ function applyVaultStatus(vault: DesktopStoreState['vault'], status: VaultStatus
 }
 
 function clearDesktopRuntimeState(state: DesktopStoreState): Partial<DesktopStoreState> {
-  if (state.reconnectTimer !== null) {
-    window.clearTimeout(state.reconnectTimer)
+  if (state.realtimeRetryTimer !== null) {
+    window.clearTimeout(state.realtimeRetryTimer)
   }
   clearHeartbeatTimer(state)
   clearLivenessTimer(state)
@@ -876,10 +875,10 @@ function clearDesktopRuntimeState(state: DesktopStoreState): Partial<DesktopStor
     },
     activeSessionId: null,
     activeWorkspacePath: null,
-    reconnectTimer: null,
+    realtimeRetryTimer: null,
     heartbeatTimer: null,
     livenessTimer: null,
-    reconnectAttempt: 0,
+    realtimeRetryAttempt: 0,
     connectionGeneration: state.connectionGeneration + 1,
     realtimeDesired: false,
     connectionState: 'idle',
@@ -890,12 +889,12 @@ function shouldMaintainDesktopRealtime(state: DesktopStoreState): boolean {
   return state.realtimeDesired && (!state.vault.enabled || state.vault.unlocked)
 }
 
-function reconnectDelayMs(attempt: number): number {
+function realtimeRetryDelayMs(attempt: number): number {
   const exponent = Math.max(0, attempt)
-  const baseDelay = Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_BASE_DELAY_MS * (2 ** exponent))
-  const jitterWindow = Math.max(1, Math.floor(baseDelay * RECONNECT_JITTER_RATIO))
+  const baseDelay = Math.min(REALTIME_RETRY_MAX_DELAY_MS, REALTIME_RETRY_BASE_DELAY_MS * (2 ** exponent))
+  const jitterWindow = Math.max(1, Math.floor(baseDelay * REALTIME_RETRY_JITTER_RATIO))
   const jitterOffset = Math.floor((Math.random() * (jitterWindow * 2 + 1)) - jitterWindow)
-  return Math.max(RECONNECT_BASE_DELAY_MS, baseDelay + jitterOffset)
+  return Math.max(REALTIME_RETRY_BASE_DELAY_MS, baseDelay + jitterOffset)
 }
 
 function themeCustomOptionsSignature(settings?: UISettingsWire | null): string {
@@ -907,9 +906,9 @@ function themeCustomOptionsChanged(previous?: UISettingsWire | null, next?: UISe
 }
 
 
-function clearReconnectTimer(state: DesktopStoreState): void {
-  if (state.reconnectTimer !== null) {
-    window.clearTimeout(state.reconnectTimer)
+function clearRealtimeRetryTimer(state: DesktopStoreState): void {
+  if (state.realtimeRetryTimer !== null) {
+    window.clearTimeout(state.realtimeRetryTimer)
   }
 }
 
@@ -925,36 +924,36 @@ function clearLivenessTimer(state: DesktopStoreState): void {
   }
 }
 
-function scheduleReconnect(reason: string): void {
+function scheduleRealtimeRetry(reason: string): void {
   const current = useDesktopUiStore.getState()
   if (!shouldMaintainDesktopRealtime(current)) {
     setConnectionClosed(current.connectionGeneration)
     return
   }
-  clearReconnectTimer(current)
+  clearRealtimeRetryTimer(current)
   clearHeartbeatTimer(current)
   clearLivenessTimer(current)
-  desktopSessionV3Runtime?.stop(`desktop store reconnect after ${reason}`)
-  const attempt = current.reconnectAttempt
+  desktopSessionV3Runtime?.stop(`desktop store realtime retry after ${reason}`)
+  const attempt = current.realtimeRetryAttempt
   const timer = window.setTimeout(() => {
     const state = useDesktopUiStore.getState()
-    if (state.reconnectTimer !== timer) {
+    if (state.realtimeRetryTimer !== timer) {
       return
     }
-    useDesktopUiStore.setState({ reconnectTimer: null, connectionState: 'closed' })
+    useDesktopUiStore.setState({ realtimeRetryTimer: null, connectionState: 'closed' })
     if (!shouldMaintainDesktopRealtime(useDesktopUiStore.getState())) {
       return
     }
     void useDesktopUiStore.getState().connect()
-  }, reconnectDelayMs(attempt))
+  }, realtimeRetryDelayMs(attempt))
   useDesktopUiStore.setState({
-    reconnectTimer: timer,
+    realtimeRetryTimer: timer,
     heartbeatTimer: null,
     livenessTimer: null,
-    reconnectAttempt: attempt + 1,
+    realtimeRetryAttempt: attempt + 1,
     connectionState: 'closed',
   })
-  console.warn(`[desktop-store] scheduled reconnect after ${reason}`)
+  console.warn(`[desktop-store] scheduled realtime retry after ${reason}`)
 }
 
 function setConnectionClosed(generation: number): void {
@@ -962,14 +961,14 @@ function setConnectionClosed(generation: number): void {
   if (state.connectionGeneration !== generation) {
     return
   }
-  clearReconnectTimer(state)
+  clearRealtimeRetryTimer(state)
   clearHeartbeatTimer(state)
   clearLivenessTimer(state)
   useDesktopUiStore.setState({
-    reconnectTimer: null,
+    realtimeRetryTimer: null,
     heartbeatTimer: null,
     livenessTimer: null,
-    reconnectAttempt: 0,
+    realtimeRetryAttempt: 0,
     connectionState: state.realtimeDesired ? 'closed' : 'idle',
   })
 }
@@ -1654,29 +1653,27 @@ function canFetchRelativeDesktopAPI(): boolean {
     && window.location.host.trim() !== ''
 }
 
-function requestScopedSessionWorkset(sessionId: string, options: { force?: boolean } = {}): void {
+function requestRuntimeSessionHydrate(sessionId: string, options: { force?: boolean } = {}): void {
   const normalizedSessionId = sessionId.trim()
-  if (!normalizedSessionId || !canFetchRelativeDesktopAPI() || (pendingSessionWorksetHydrations.has(normalizedSessionId) && !options.force)) {
+  if (!normalizedSessionId || !canFetchRelativeDesktopAPI() || (pendingRuntimeSessionHydrations.has(normalizedSessionId) && !options.force)) {
     return
   }
 
-  pendingSessionWorksetHydrations.add(normalizedSessionId)
+  pendingRuntimeSessionHydrations.add(normalizedSessionId)
   const setTimeoutFn = typeof window !== 'undefined' ? window.setTimeout.bind(window) : setTimeout
   setTimeoutFn(() => {
-    void fetchDesktopStateSnapshot({
-      sessionIds: [normalizedSessionId],
+    const runtime = ensureDesktopSessionV3Runtime()
+    runtime.setWantedSessions([normalizedSessionId])
+    void runtime.hydrateSessions([normalizedSessionId], {
       history: { mode: 'none', maxEventsPerSession: 200, manifestPolicy: 'manifest', includeEvents: true },
       resources: { events: true, runIntents: true },
       includeActive: true,
     })
-      .then((snapshot) => {
-        applyV3RuntimeEnvelope(createV3SnapshotEnvelope(snapshot, { mode: 'merge', receivedAt: Date.now() }))
-      })
       .catch((error) => {
-        console.error('[desktop-store] scoped desktop v3 state hydration failed', error)
+        console.error('[desktop-store] scoped desktop v3 runtime hydrate failed', error)
       })
       .finally(() => {
-        pendingSessionWorksetHydrations.delete(normalizedSessionId)
+        pendingRuntimeSessionHydrations.delete(normalizedSessionId)
       })
   }, 0)
 }
@@ -2244,7 +2241,7 @@ function applyV3SessionStreamFrame(state: DesktopStoreState, sessionId: string, 
   if (type === 'cursor.error') {
     const existing = state.sessions[targetSessionId]
     if (existing && !isV3ChildSessionStreamFrame(payload)) {
-      requestScopedSessionWorkset(targetSessionId)
+      requestRuntimeSessionHydrate(targetSessionId)
     }
     return {}
   }
@@ -2676,7 +2673,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
     }
     case 'session.mode.updated':
       session.mode = typeof payloadRecord.mode === 'string' ? payloadRecord.mode : session.mode
-      requestScopedSessionWorkset(sessionId, { force: true })
+      requestRuntimeSessionHydrate(sessionId, { force: true })
       notifications.unshift(makeNotification(sessionId, session.live.runId, eventType, 'Mode updated', session.mode, 'info', ts))
       break
     case 'session.preference.updated':
@@ -3229,7 +3226,7 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
   sessions[sessionId] = merged
   syncBlockedSessionToWorkspaceOverview(queryClient, merged)
   if (sessionRequiresSnapshotHydration(merged, eventType)) {
-    requestScopedSessionWorkset(sessionId)
+    requestRuntimeSessionHydrate(sessionId)
   }
 
   const nextActiveWorkspacePath = state.activeSessionId === merged.id
@@ -3271,7 +3268,7 @@ async function syncV3RuntimeSessions(options: { force?: boolean } = {}): Promise
   const startedAt = Date.now()
   const canFetch = canFetchRelativeDesktopAPI()
   if (!canFetch) {
-    desktopV3ReconnectSyncDiagnostics = {
+    desktopV3RuntimeSyncDiagnostics = {
       status: 'skipped',
       owner: 'desktop-session-v3-runtime',
       reason: 'relative-api-unavailable',
@@ -3287,7 +3284,7 @@ async function syncV3RuntimeSessions(options: { force?: boolean } = {}): Promise
     const state = shouldBoot || options.force
       ? await runtime.boot()
       : await runtime.refresh({ reason: 'store sync' })
-    desktopV3ReconnectSyncDiagnostics = {
+    desktopV3RuntimeSyncDiagnostics = {
       status: 'applied',
       owner: 'desktop-session-v3-runtime',
       force: Boolean(options.force),
@@ -3300,7 +3297,7 @@ async function syncV3RuntimeSessions(options: { force?: boolean } = {}): Promise
       diagnostics: runtime.diagnostics(),
     }
   } catch (error) {
-    desktopV3ReconnectSyncDiagnostics = {
+    desktopV3RuntimeSyncDiagnostics = {
       status: 'failed',
       owner: 'desktop-session-v3-runtime',
       force: Boolean(options.force),
@@ -3374,10 +3371,10 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
     loading: false,
     hydrated: false,
   },
-  reconnectTimer: null,
+  realtimeRetryTimer: null,
   heartbeatTimer: null,
   livenessTimer: null,
-  reconnectAttempt: 0,
+  realtimeRetryAttempt: 0,
   connectionGeneration: 0,
   realtimeDesired: false,
   lastGlobalSeq: 0,
@@ -3752,7 +3749,7 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
     if (current.connectionState === 'connecting') {
       return
     }
-    clearReconnectTimer(current)
+    clearRealtimeRetryTimer(current)
     clearHeartbeatTimer(current)
     clearLivenessTimer(current)
     desktopSessionV3Runtime?.stop('desktop connect restart')
@@ -3761,7 +3758,7 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
     set({
       connectionGeneration: generation,
       connectionState: 'connecting',
-      reconnectTimer: null,
+      realtimeRetryTimer: null,
       heartbeatTimer: null,
       livenessTimer: null,
     })
@@ -3776,7 +3773,7 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
         runtime.stop('desktop connect no longer desired')
         return
       }
-      desktopV3ReconnectSyncDiagnostics = {
+      desktopV3RuntimeSyncDiagnostics = {
         status: 'applied',
         owner: 'desktop-session-v3-runtime',
         operation: 'boot',
@@ -3792,8 +3789,8 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
       const diagnostics = runtime.diagnostics()
       set({
         connectionState: get().connectionState === 'open' || diagnostics.status === 'open' ? 'open' : 'connecting',
-        reconnectAttempt: 0,
-        reconnectTimer: null,
+        realtimeRetryAttempt: 0,
+        realtimeRetryTimer: null,
       })
       deferDesktopCacheMutation('workspace overview refresh on V3 runtime connect', () => {
         void queryClient.invalidateQueries({ queryKey: ['workspace-overview'] })
@@ -3805,10 +3802,10 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
         return
       }
       set({ connectionState: 'error' })
-      scheduleReconnect('connect failure')
+      scheduleRealtimeRetry('connect failure')
     }
   },
-  reconnectIfStale: async (reason) => {
+  refreshRealtimeIfStale: async (reason) => {
     const current = get()
     const runtime = ensureDesktopSessionV3Runtime()
     const diagnostics = runtime.diagnostics()
@@ -3822,18 +3819,18 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
       get().syncV3RealtimeSessions()
       return
     }
-    clearReconnectTimer(current)
+    clearRealtimeRetryTimer(current)
     clearHeartbeatTimer(current)
     clearLivenessTimer(current)
     runtime.stop(staleReason)
     set({
-      reconnectTimer: null,
+      realtimeRetryTimer: null,
       heartbeatTimer: null,
       livenessTimer: null,
       connectionGeneration: current.connectionGeneration + 1,
       connectionState: 'closed',
     })
-    console.warn(`[desktop-store] forcing realtime reconnect: ${staleReason}`)
+    console.warn(`[desktop-store] forcing realtime refresh: ${staleReason}`)
     await get().connect()
     get().syncV3RealtimeSessions()
   },
@@ -3841,7 +3838,7 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
     const current = get()
     const force = Boolean(options.force)
     if (!force && !shouldMaintainDesktopRealtime(current)) {
-      desktopV3ReconnectSyncDiagnostics = {
+      desktopV3RuntimeSyncDiagnostics = {
         status: 'skipped',
         reason: !current.realtimeDesired
           ? 'store.realtimeDesired=false'
@@ -3866,15 +3863,15 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
   },
   disconnect: () => {
     const current = get()
-    clearReconnectTimer(current)
+    clearRealtimeRetryTimer(current)
     clearHeartbeatTimer(current)
     clearLivenessTimer(current)
     const nextGeneration = current.connectionGeneration + 1
     set({
-      reconnectTimer: null,
+      realtimeRetryTimer: null,
       heartbeatTimer: null,
       livenessTimer: null,
-      reconnectAttempt: 0,
+      realtimeRetryAttempt: 0,
       connectionGeneration: nextGeneration,
       realtimeDesired: false,
       connectionState: 'idle',

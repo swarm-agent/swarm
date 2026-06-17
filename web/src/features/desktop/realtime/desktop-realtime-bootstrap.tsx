@@ -5,7 +5,7 @@ import { useDesktopUiStore } from '../state/desktop-ui-store'
 export function DesktopRealtimeBootstrap() {
   const hydrate = useDesktopUiStore((state) => state.hydrate)
   const disconnect = useDesktopUiStore((state) => state.disconnect)
-  const reconnectIfStale = useDesktopUiStore((state) => state.reconnectIfStale)
+  const refreshRealtimeIfStale = useDesktopUiStore((state) => state.refreshRealtimeIfStale)
   const vault = useDesktopUiStore((state) => state.vault)
   const refreshNotifications = useDesktopUiStore((state) => state.refreshNotifications)
   const matchRoute = useMatchRoute()
@@ -30,7 +30,7 @@ export function DesktopRealtimeBootstrap() {
       return
     }
     const refreshRealtime = (reason: string) => {
-      void reconnectIfStale(reason)
+      void refreshRealtimeIfStale(reason)
     }
     const handleOnline = () => {
       refreshRealtime('browser online')
@@ -57,7 +57,7 @@ export function DesktopRealtimeBootstrap() {
       window.removeEventListener('pageshow', handlePageShow)
       document.removeEventListener('visibilitychange', handleVisible)
     }
-  }, [inDesktopApp, reconnectIfStale, vault.enabled, vault.unlocked])
+  }, [inDesktopApp, refreshRealtimeIfStale, vault.enabled, vault.unlocked])
 
   return null
 }

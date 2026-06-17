@@ -168,6 +168,18 @@ test('desktop-ui-store connect boots through DesktopSessionV3Runtime', () => {
   )
 })
 
+test('desktop-ui-store uses runtime-owned realtime retry and sync names', () => {
+  const source = readText(path.join(desktopRoot, 'state/desktop-ui-store.ts'))
+  assert.doesNotMatch(
+    source,
+    /desktopV3ReconnectSyncDiagnostics|lastV3ReconnectSync|reconnectSync|reconnectIfStale|reconnectTimer|reconnectAttempt|clearReconnectTimer|scheduleReconnect|RECONNECT_/,
+    'desktop-ui-store must not expose legacy reconnect diagnostics or retry ownership names',
+  )
+  assert.match(source, /desktopV3RuntimeSyncDiagnostics/)
+  assert.match(source, /refreshRealtimeIfStale/)
+  assert.match(source, /realtimeRetryTimer/)
+})
+
 test('external snapshot cursor does not reanimate stopped desktop V3 runtime', () => {
   const source = readText(path.join(desktopRoot, 'state/desktop-ui-store.ts'))
   assert.match(
