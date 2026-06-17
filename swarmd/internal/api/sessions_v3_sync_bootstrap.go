@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"sort"
 	"strings"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -176,12 +177,14 @@ func sessionsV3SyncBootstrapOptions(principal identity.Principal, req sessionsV3
 }
 
 func sessionsV3SyncHydrateOptions(principal identity.Principal, req sessionsV3SyncHydrateRequest) (sessionsV3ResolvedSyncOptions, any, []string, error) {
-	if len(req.SessionIDs) == 0 {
+	ids := canonicalV3SyncSessionIDs(req.SessionIDs)
+	if len(ids) == 0 {
 		return sessionsV3ResolvedSyncOptions{}, nil, nil, errors.New("sync hydrate requires session_ids")
 	}
-	selector := normalizeSessionsV3SyncSelector(req.SelectorKind, req.Selector, req.SessionIDs, false, sessionsV3WorksetWorkspace{}, sessionsV3WorksetRecent{})
-	selector.Kind = "session_ids"
-	selector.SessionIDs = req.SessionIDs
+	selector := sessionsV3SyncSelector{
+		Kind:       "session_ids",
+		SessionIDs: ids,
+	}
 
 	history, err := sessionsV3SyncHistoryOptionsFromRequest(req.History, req.Resources)
 	if err != nil {
@@ -191,7 +194,7 @@ func sessionsV3SyncHydrateOptions(principal identity.Principal, req sessionsV3Sy
 	options := sessionsV3ResolvedSyncOptions{
 		Snapshot: pebblestore.V3SyncSnapshotOptions{
 			AccountScopeID:        principal.AccountScopeID,
-			SessionIDs:            req.SessionIDs,
+			SessionIDs:            ids,
 			History:               history,
 			IncludeRunIntents:     req.Resources.RunIntents || req.IncludeActive,
 			IncludeActiveSessions: req.IncludeActive,
@@ -203,6 +206,24 @@ func sessionsV3SyncHydrateOptions(principal identity.Principal, req sessionsV3Sy
 	}
 
 	return options, selector, sessionsV3SyncResourceSet(req.Resources, req.History, req.IncludeActive), nil
+}
+
+func canonicalV3SyncSessionIDs(sessionIDs []string) []string {
+	seen := map[string]struct{}{}
+	ids := make([]string, 0, len(sessionIDs))
+	for _, id := range sessionIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func normalizeSessionsV3SyncSelector(kind string, selector sessionsV3SyncSelector, sessionIDs []string, global bool, workspace sessionsV3WorksetWorkspace, recent sessionsV3WorksetRecent) sessionsV3SyncSelector {

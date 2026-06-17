@@ -153,6 +153,112 @@ func TestSessionsV3SyncHydrateTargetsSessionIDs(t *testing.T) {
 	}
 }
 
+func TestSessionsV3SyncHydrateCanonicalizesSessionIDSelectorForCursorScope(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	createdA := createSessionsV3PrimaryTestSession(t, server, "sync-hydrate-canonical-a", "Sync Hydrate Canonical A")
+	createdB := createSessionsV3PrimaryTestSession(t, server, "sync-hydrate-canonical-b", "Sync Hydrate Canonical B")
+	expectedIDs := canonicalV3SyncSessionIDs([]string{createdA.ID, createdB.ID})
+	expectedSelectorHash := v3SyncDeterministicSelectorHash(v3SyncCanonicalSelector(sessionsV3SyncSelector{Kind: "session_ids", SessionIDs: expectedIDs}))
+
+	var firstSelectorHash string
+	for _, tc := range []struct {
+		name       string
+		sessionIDs []string
+	}{
+		{name: "ordered", sessionIDs: []string{createdA.ID, createdB.ID}},
+		{name: "reversed", sessionIDs: []string{createdB.ID, createdA.ID}},
+		{name: "duplicate and empty", sessionIDs: []string{createdA.ID, "", createdB.ID, createdA.ID}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{"surface": "desktop", "session_ids": tc.sessionIDs})
+			if err != nil {
+				t.Fatalf("marshal hydrate body: %v", err)
+			}
+			req := httptest.NewRequest(http.MethodPost, V3SyncHydratePath, bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("hydrate status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			var payload struct {
+				SnapshotEndpointCursor string                 `json:"snapshot_endpoint_cursor"`
+				Selector               sessionsV3SyncSelector `json:"selector"`
+				SyncScope              map[string]string      `json:"sync_scope"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("decode hydrate response: %v", err)
+			}
+			if payload.Selector.Kind != "session_ids" || strings.Join(payload.Selector.SessionIDs, ",") != strings.Join(expectedIDs, ",") {
+				t.Fatalf("hydrate selector = %+v, want canonical ids %+v", payload.Selector, expectedIDs)
+			}
+			if payload.SyncScope["selector_filter_hash"] != expectedSelectorHash {
+				t.Fatalf("selector hash = %q, want %q", payload.SyncScope["selector_filter_hash"], expectedSelectorHash)
+			}
+			cursorPayload, err := server.verifyV3SyncCursor(payload.SnapshotEndpointCursor)
+			if err != nil {
+				t.Fatalf("verify hydrate cursor: %v", err)
+			}
+			if cursorPayload.SelectorFilterHash != payload.SyncScope["selector_filter_hash"] {
+				t.Fatalf("cursor selector hash = %q, response hash = %q", cursorPayload.SelectorFilterHash, payload.SyncScope["selector_filter_hash"])
+			}
+			if firstSelectorHash == "" {
+				firstSelectorHash = payload.SyncScope["selector_filter_hash"]
+			} else if payload.SyncScope["selector_filter_hash"] != firstSelectorHash {
+				t.Fatalf("selector hash = %q, want stable hash %q", payload.SyncScope["selector_filter_hash"], firstSelectorHash)
+			}
+		})
+	}
+}
+
+func TestSessionsV3SyncHydrateIgnoresConflictingSelectorFieldsForCursorScope(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "sync-hydrate-conflict", "Sync Hydrate Conflict")
+	expectedSelector := sessionsV3SyncSelector{Kind: "session_ids", SessionIDs: []string{created.ID}}
+	expectedSelectorHash := v3SyncDeterministicSelectorHash(v3SyncCanonicalSelector(expectedSelector))
+
+	body, err := json.Marshal(map[string]any{
+		"surface":     "desktop",
+		"session_ids": []string{created.ID},
+		"selector": map[string]any{
+			"kind":           "workspace",
+			"workspace_path": "/x",
+			"recent":         map[string]any{"limit": 50},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal hydrate body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, V3SyncHydratePath, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("hydrate status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		SnapshotEndpointCursor string                 `json:"snapshot_endpoint_cursor"`
+		Selector               sessionsV3SyncSelector `json:"selector"`
+		SyncScope              map[string]string      `json:"sync_scope"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode hydrate response: %v", err)
+	}
+	if payload.Selector.Kind != "session_ids" || strings.Join(payload.Selector.SessionIDs, ",") != created.ID || payload.Selector.WorkspacePath != "" || payload.Selector.Recent.Limit != 0 {
+		t.Fatalf("hydrate did not discard conflicting selector fields: %+v", payload.Selector)
+	}
+	if payload.SyncScope["selector_filter_hash"] != expectedSelectorHash {
+		t.Fatalf("selector hash = %q, want %q", payload.SyncScope["selector_filter_hash"], expectedSelectorHash)
+	}
+	cursorPayload, err := server.verifyV3SyncCursor(payload.SnapshotEndpointCursor)
+	if err != nil {
+		t.Fatalf("verify hydrate cursor: %v", err)
+	}
+	if cursorPayload.SelectorFilterHash != expectedSelectorHash {
+		t.Fatalf("cursor selector hash = %q, want %q", cursorPayload.SelectorFilterHash, expectedSelectorHash)
+	}
+}
+
 func TestSessionsV3SyncBootstrapSnapshotCursorCoversConcurrentMutationReplay(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-race-a", "Sync Race A", "/workspace/cp5-race")
