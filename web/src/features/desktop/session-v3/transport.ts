@@ -47,7 +47,7 @@ export interface DesktopV3RealtimeTransportOpenSocketOptions {
 
 export type DesktopV3RealtimeTransportOpenSocket = (options: DesktopV3RealtimeTransportOpenSocketOptions) => Promise<WebSocket> | WebSocket
 
-export type DesktopV3RealtimeTransportRehydrateResult = SessionV3RealtimeResumeWire | {
+export interface DesktopV3RealtimeTransportRehydrateResult {
   endpointCursor?: string | null
   snapshotEndpointCursor?: string | null
   subscriptions?: SessionV3RealtimeSubscriptionRequestWire[]
@@ -227,19 +227,6 @@ export class DesktopV3RealtimeTransport {
       this.worksets.set(workset.workset_id, { ...workset, updatedAt: this.now() })
     }
     this.syncOpenSocketResume('worksets updated')
-  }
-
-  applyRealtimeResume(resume: SessionV3RealtimeResumeWire, options: { replace?: boolean } = { replace: true }): boolean {
-    const normalized = normalizeRealtimeResume(resume)
-    if (!normalized) return false
-    this.advanceEndpointCursor(normalized.endpoint_cursor, 'resume')
-    this.replaceRegistries({
-      subscriptions: normalized.subscriptions ?? [],
-      worksets: normalized.worksets ?? [],
-      replace: options.replace,
-    })
-    this.syncOpenSocketResume('realtime resume applied')
-    return true
   }
 
   applySyncSnapshot(
@@ -541,20 +528,10 @@ export class DesktopV3RealtimeTransport {
   }
 
   private applyRehydrateResult(result: DesktopV3RealtimeTransportRehydrateResult): void {
-    if (isRealtimeResume(result)) {
-      this.applyRealtimeResume(result, { replace: true })
-      return
-    }
-    const syncSnapshot = result as {
-      endpointCursor?: string | null
-      snapshotEndpointCursor?: string | null
-      subscriptions?: SessionV3RealtimeSubscriptionRequestWire[]
-      worksets?: SessionV3RealtimeWorksetSubscriptionRequestWire[]
-    }
-    this.advanceEndpointCursor(syncSnapshot.endpointCursor, 'snapshot')
+    this.advanceEndpointCursor(result.endpointCursor, 'snapshot')
     this.replaceRegistries({
-      subscriptions: normalizeRehydrateSubscriptions(syncSnapshot.subscriptions ?? [], syncSnapshot.snapshotEndpointCursor ?? syncSnapshot.endpointCursor),
-      worksets: syncSnapshot.worksets ?? [],
+      subscriptions: normalizeRehydrateSubscriptions(result.subscriptions ?? [], result.snapshotEndpointCursor ?? result.endpointCursor),
+      worksets: result.worksets ?? [],
       replace: true,
     })
     this.syncOpenSocketResume('rehydrate result applied')
@@ -640,19 +617,6 @@ export class DesktopV3RealtimeTransport {
   private now(): number {
     return this.options.now?.() ?? Date.now()
   }
-}
-
-function normalizeRealtimeResume(source: SessionV3RealtimeResumeWire | null | undefined): SessionV3RealtimeResumeWire | null {
-  if (!source || source.protocol !== SESSION_V3_REALTIME_PROTOCOL || source.protocol_version !== SESSION_V3_REALTIME_PROTOCOL_VERSION || source.kind !== SESSION_V3_REALTIME_RESUME_KIND) {
-    return null
-  }
-  const endpointCursor = normalizeString(source.endpoint_cursor)
-  if (!endpointCursor) return null
-  return buildDesktopV3RealtimeResume({
-    endpointCursor,
-    subscriptions: source.subscriptions ?? [],
-    worksets: source.worksets ?? [],
-  })
 }
 
 function normalizeSessionSubscriptions(subscriptions: SessionV3RealtimeSubscriptionRequestWire[], fallbackEndpointCursor: string): SessionV3RealtimeSubscriptionRequestWire[] {
@@ -754,10 +718,6 @@ function socketStateName(socket: WebSocket | null): DesktopV3RealtimeTransportSo
     default:
       return 'none'
   }
-}
-
-function isRealtimeResume(value: DesktopV3RealtimeTransportRehydrateResult): value is SessionV3RealtimeResumeWire {
-  return Boolean(value && typeof value === 'object' && (value as SessionV3RealtimeResumeWire).kind === SESSION_V3_REALTIME_RESUME_KIND && (value as SessionV3RealtimeResumeWire).protocol === SESSION_V3_REALTIME_PROTOCOL)
 }
 
 function normalizeString(value: unknown): string {

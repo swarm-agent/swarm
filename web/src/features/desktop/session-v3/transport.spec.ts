@@ -174,8 +174,12 @@ test('transport cursor errors recover only through rehydrate result', async () =
   assert.equal(sockets.length, 2)
   assert.equal(transport.diagnostics().reopenTimerActive, false)
   sockets[1].open()
+  assert.equal(latestResume(resumes).protocol, 'v3.realtime')
+  assert.equal(latestResume(resumes).kind, 'resume')
   assert.equal(latestResume(resumes).endpoint_cursor, 'cursor-rehydrated')
   assert.deepEqual(latestResume(resumes).subscriptions?.map((subscription) => subscription.session_id), ['session-1'])
+  assert.equal(latestResume(resumes).subscriptions?.[0]?.endpoint_cursor, 'cursor-rehydrated')
+  assert.deepEqual(latestResume(resumes).worksets, [])
   transport.stop()
 })
 
