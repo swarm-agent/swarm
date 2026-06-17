@@ -194,9 +194,6 @@ func (s *Server) signV3SyncEndpointCursorFromLegacy(scope v3SyncCursorScope, leg
 }
 
 func (s *Server) signV3SyncEndpointCursor(scope v3SyncCursorScope, endpointSeq uint64) (string, error) {
-	if endpointSeq == 0 {
-		return "", nil
-	}
 	keyring := s.v3SyncCursorKeyring()
 	if keyring.Err != nil {
 		return "", keyring.Err

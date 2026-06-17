@@ -52,6 +52,14 @@ type sessionsV3KnownState struct {
 	EndpointCursor string `json:"endpoint_cursor,omitempty"`
 }
 
+type sessionsV3ResolvedSyncOptions struct {
+	Store                pebblestore.V3SessionWorksetOptions
+	Principal            identity.Principal
+	Surface              string
+	IncludeActivePlan    bool
+	IncludePlanRevisions bool
+}
+
 func (s *Server) handleSessionsV3SyncBootstrap(w http.ResponseWriter, r *http.Request) {
 	principal, ok := s.sessionsV3SyncPrincipal(w, r, http.MethodPost)
 	if !ok {
@@ -115,54 +123,86 @@ func (s *Server) sessionsV3SyncPrincipal(w http.ResponseWriter, r *http.Request,
 	return principal, true
 }
 
-func sessionsV3SyncBootstrapOptions(principal identity.Principal, req sessionsV3SyncBootstrapRequest) (sessionsV3ResolvedWorksetOptions, any, []string, error) {
+func sessionsV3SyncBootstrapOptions(principal identity.Principal, req sessionsV3SyncBootstrapRequest) (sessionsV3ResolvedSyncOptions, any, []string, error) {
 	selector := normalizeSessionsV3SyncSelector(req.SelectorKind, req.Selector, req.SessionIDs, req.Global, req.Workspace, req.Recent)
-	worksetReq := sessionsV3WorksetRequest{
-		SessionIDs:    selector.SessionIDs,
-		Global:        selector.Global,
-		Workspace:     sessionsV3WorksetWorkspace{WorkspacePath: selector.WorkspacePath, WorkspacePaths: selector.WorkspacePaths},
-		Recent:        selector.Recent,
-		History:       req.History,
-		Resources:     req.Resources,
-		IncludeActive: req.IncludeActive,
+
+	// Resolve workspace paths natively
+	workspacePaths, err := canonicalSessionsV3WorksetWorkspacePaths(req.Workspace)
+	if err != nil {
+		return sessionsV3ResolvedSyncOptions{}, nil, nil, err
 	}
+	if req.Global && len(workspacePaths) > 0 {
+		return sessionsV3ResolvedSyncOptions{}, nil, nil, errors.New("workset global selector cannot be combined with workspace_path or workspace_paths")
+	}
+	if req.Recent.Limit > 0 && len(workspacePaths) == 0 && !req.Global {
+		return sessionsV3ResolvedSyncOptions{}, nil, nil, errors.New("workset recent selector requires explicit workspace_path, workspace_paths, or global=true")
+	}
+
 	if strings.TrimSpace(selector.CWDPath) != "" {
 		paths, err := canonicalSessionsV3TUIWorksetPaths(sessionsV3TUIWorksetScope{WorkspacePath: selector.WorkspacePath, WorkspacePaths: selector.WorkspacePaths, CWDPath: selector.CWDPath})
 		if err != nil {
-			return sessionsV3ResolvedWorksetOptions{}, nil, nil, err
+			return sessionsV3ResolvedSyncOptions{}, nil, nil, err
 		}
-		worksetReq.Workspace = sessionsV3WorksetWorkspace{WorkspacePaths: paths}
+		workspacePaths = paths
 	}
-	options, err := sessionsV3WorksetOptionsFromRequest(principal, worksetReq)
+
+	history, err := sessionsV3SyncHistoryOptionsFromRequest(req.History, req.Resources)
 	if err != nil {
-		return sessionsV3ResolvedWorksetOptions{}, nil, nil, err
+		return sessionsV3ResolvedSyncOptions{}, nil, nil, err
 	}
-	options.Principal = principal
-	options.Surface = normalizeV3SyncSurface(req.Surface)
+
+	options := sessionsV3ResolvedSyncOptions{
+		Store: pebblestore.V3SessionWorksetOptions{
+			AccountScopeID:        principal.AccountScopeID,
+			SessionIDs:            selector.SessionIDs,
+			WorkspacePaths:        workspacePaths,
+			RecentLimit:           selector.Recent.Limit,
+			RecentBeforeUpdatedAt: selector.Recent.BeforeUpdatedAt,
+			RecentBeforeSessionID: strings.TrimSpace(selector.Recent.BeforeSessionID),
+			History:               history,
+			IncludeRunIntents:     req.Resources.RunIntents || req.IncludeActive,
+			IncludeActiveSessions: req.IncludeActive,
+		},
+		Principal:            principal,
+		Surface:              normalizeV3SyncSurface(req.Surface),
+		IncludeActivePlan:    req.Resources.ActivePlan,
+		IncludePlanRevisions: req.Resources.PlanRevisions,
+	}
+
 	if strings.TrimSpace(selector.CWDPath) != "" || strings.TrimSpace(selector.Kind) == "tui" {
 		options.Store.RestrictSessionIDsToWorkspacePaths = true
 	}
+
 	return options, selector, sessionsV3SyncResourceSet(req.Resources, req.History, req.IncludeActive), nil
 }
 
-func sessionsV3SyncHydrateOptions(principal identity.Principal, req sessionsV3SyncHydrateRequest) (sessionsV3ResolvedWorksetOptions, any, []string, error) {
+func sessionsV3SyncHydrateOptions(principal identity.Principal, req sessionsV3SyncHydrateRequest) (sessionsV3ResolvedSyncOptions, any, []string, error) {
 	if len(req.SessionIDs) == 0 {
-		return sessionsV3ResolvedWorksetOptions{}, nil, nil, errors.New("sync hydrate requires session_ids")
+		return sessionsV3ResolvedSyncOptions{}, nil, nil, errors.New("sync hydrate requires session_ids")
 	}
 	selector := normalizeSessionsV3SyncSelector(req.SelectorKind, req.Selector, req.SessionIDs, false, sessionsV3WorksetWorkspace{}, sessionsV3WorksetRecent{})
 	selector.Kind = "session_ids"
 	selector.SessionIDs = req.SessionIDs
-	options, err := sessionsV3WorksetOptionsFromRequest(principal, sessionsV3WorksetRequest{
-		SessionIDs:    req.SessionIDs,
-		History:       req.History,
-		Resources:     req.Resources,
-		IncludeActive: req.IncludeActive,
-	})
+
+	history, err := sessionsV3SyncHistoryOptionsFromRequest(req.History, req.Resources)
 	if err != nil {
-		return sessionsV3ResolvedWorksetOptions{}, nil, nil, err
+		return sessionsV3ResolvedSyncOptions{}, nil, nil, err
 	}
-	options.Principal = principal
-	options.Surface = normalizeV3SyncSurface(req.Surface)
+
+	options := sessionsV3ResolvedSyncOptions{
+		Store: pebblestore.V3SessionWorksetOptions{
+			AccountScopeID:        principal.AccountScopeID,
+			SessionIDs:            req.SessionIDs,
+			History:               history,
+			IncludeRunIntents:     req.Resources.RunIntents || req.IncludeActive,
+			IncludeActiveSessions: req.IncludeActive,
+		},
+		Principal:            principal,
+		Surface:              normalizeV3SyncSurface(req.Surface),
+		IncludeActivePlan:    req.Resources.ActivePlan,
+		IncludePlanRevisions: req.Resources.PlanRevisions,
+	}
+
 	return options, selector, sessionsV3SyncResourceSet(req.Resources, req.History, req.IncludeActive), nil
 }
 
@@ -198,7 +238,7 @@ func normalizeSessionsV3SyncSelector(kind string, selector sessionsV3SyncSelecto
 	return selector
 }
 
-func (s *Server) sessionsV3SyncSnapshotResponse(options sessionsV3ResolvedWorksetOptions, selector any, resources []string, known map[string]sessionsV3KnownState) (map[string]any, error) {
+func (s *Server) sessionsV3SyncSnapshotResponse(options sessionsV3ResolvedSyncOptions, selector any, resources []string, known map[string]sessionsV3KnownState) (map[string]any, error) {
 	workset, err := s.sessions.BuildSessionWorkset(options.Store)
 	if err != nil {
 		return nil, err
@@ -211,10 +251,87 @@ func (s *Server) sessionsV3SyncSnapshotResponse(options sessionsV3ResolvedWorkse
 	if err != nil {
 		return nil, err
 	}
-	response, err := s.sessionsV3WorksetResponseForResult(options, workset, snapshotEndpointCursor)
+
+	permissionsBySession := map[string]any{}
+	if s.perm != nil {
+		for sessionID := range workset.SessionsByID {
+			permissions, err := s.perm.ListPending(sessionID, 200)
+			if err != nil {
+				return nil, err
+			}
+			permissionsBySession[sessionID] = permissions
+		}
+	}
+
+	usageBySession := map[string]any{}
+	if s.sessions != nil {
+		for sessionID := range workset.SessionsByID {
+			summary, ok, err := s.sessions.GetUsageSummary(sessionID)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				usageBySession[sessionID] = summary
+			}
+		}
+	}
+
+	preferencesBySession := map[string]any{}
+	agentModelPolicyBySession := map[string]any{}
+	for sessionID, session := range workset.SessionsByID {
+		session.Preference = normalizeSessionsV3ModelPreference(session.Preference)
+		preference := session.Preference
+		contextWindow := 0
+		maxOutputTokens := 0
+		if s.model != nil {
+			if resolved, err := s.model.ResolvePreference(session.Preference); err == nil {
+				preference = normalizeSessionsV3ModelPreference(resolved.Preference)
+				contextWindow = resolved.ContextWindow
+				maxOutputTokens = resolved.MaxOutputTokens
+			}
+		}
+		agentModelPolicy := s.sessionsV3AgentModelPolicy(session, preference, contextWindow, maxOutputTokens)
+		if agentModelPolicy.Locked {
+			preference = agentModelPolicy.Preference
+			contextWindow = agentModelPolicy.ContextWindow
+			maxOutputTokens = agentModelPolicy.MaxOutputTokens
+		}
+		preferencesBySession[sessionID] = map[string]any{
+			"preference":        preference,
+			"context_window":    contextWindow,
+			"max_output_tokens": maxOutputTokens,
+		}
+		agentModelPolicyBySession[sessionID] = agentModelPolicy
+	}
+
+	plansBySession, planRevisionsBySession, err := s.sessionsV3SyncPlans(options, workset)
 	if err != nil {
 		return nil, err
 	}
+
+	response := map[string]any{
+		"ok":                            true,
+		"rev":                           workset.Rev,
+		"snapshot_endpoint_cursor":      snapshotEndpointCursor,
+		"sessions_by_id":                workset.SessionsByID,
+		"projections_by_session":        workset.ProjectionsBySession,
+		"messages_by_session":           workset.MessagesBySession,
+		"events_by_session":             workset.EventsBySession,
+		"plans_by_session":              plansBySession,
+		"plan_revisions_by_session":     planRevisionsBySession,
+		"permissions_by_session":        permissionsBySession,
+		"usage_by_session":              usageBySession,
+		"preferences_by_session":        preferencesBySession,
+		"agent_model_policy_by_session": agentModelPolicyBySession,
+		"run_intents_by_session":        workset.RunIntentsBySession,
+		"history_manifests_by_session":  workset.HistoryManifestsBySession,
+		"history_chunks_by_id":          workset.HistoryChunksByID,
+		"omissions":                     workset.Omissions,
+		"pagination":                    workset.Pagination,
+		"watermarks":                    workset.Watermarks,
+		"session_order":                 workset.SessionOrder,
+	}
+
 	response["sync_scope"] = map[string]any{
 		"surface":              scope.Surface,
 		"stream_kind":          scope.StreamKind,
@@ -329,6 +446,85 @@ func sessionsV3SyncResourceSet(resources sessionsV3WorksetResources, history ses
 		out = append(out, "plan_revisions")
 	}
 	return out
+}
+
+func sessionsV3SyncHistoryOptionsFromRequest(req sessionsV3WorksetHistory, resources sessionsV3WorksetResources) (pebblestore.V3SessionWorksetHistoryOptions, error) {
+	mode := strings.TrimSpace(strings.ToLower(req.Mode))
+	if mode == "" && resources.Messages {
+		mode = pebblestore.V3SessionWorksetHistoryModeTail
+	}
+	maxMessages := req.MaxMessagesPerSession
+	if mode == "" {
+		mode = pebblestore.V3SessionWorksetHistoryModeNone
+	}
+	switch mode {
+	case pebblestore.V3SessionWorksetHistoryModeNone:
+		maxMessages = 0
+	case pebblestore.V3SessionWorksetHistoryModeTail:
+		if maxMessages <= 0 {
+			maxMessages = sessionsV3WorksetMaxResourcePageSize
+		}
+	case pebblestore.V3SessionWorksetHistoryModeFull:
+		if maxMessages <= 0 {
+			return pebblestore.V3SessionWorksetHistoryOptions{}, errors.New("workset history.mode=full requires max_messages_per_session")
+		}
+	default:
+		return pebblestore.V3SessionWorksetHistoryOptions{}, errors.New("unsupported workset history mode " + mode)
+	}
+	if maxMessages > sessionsV3WorksetMaxResourcePageSize {
+		return pebblestore.V3SessionWorksetHistoryOptions{}, errors.New("workset max_messages_per_session cannot exceed 200")
+	}
+	includeEvents := req.IncludeEvents || resources.Events
+	maxEvents := req.MaxEventsPerSession
+	if includeEvents && maxEvents <= 0 {
+		if resources.Events {
+			maxEvents = sessionsV3WorksetMaxResourcePageSize
+		} else {
+			return pebblestore.V3SessionWorksetHistoryOptions{}, errors.New("workset include_events requires max_events_per_session")
+		}
+	}
+	if maxEvents > sessionsV3WorksetMaxResourcePageSize {
+		return pebblestore.V3SessionWorksetHistoryOptions{}, errors.New("workset max_events_per_session cannot exceed 200")
+	}
+	return pebblestore.V3SessionWorksetHistoryOptions{
+		Mode:                  mode,
+		MaxMessagesPerSession: maxMessages,
+		MaxEventsPerSession:   maxEvents,
+		ManifestPolicy:        req.ManifestPolicy,
+		IncludeMessages:       mode == pebblestore.V3SessionWorksetHistoryModeTail || mode == pebblestore.V3SessionWorksetHistoryModeFull,
+		IncludeEvents:         includeEvents,
+	}, nil
+}
+
+func (s *Server) sessionsV3SyncPlans(options sessionsV3ResolvedSyncOptions, workset pebblestore.V3SessionWorksetResult) (map[string]any, map[string]any, error) {
+	plansBySession := map[string]any{}
+	planRevisionsBySession := map[string]any{}
+	if !options.IncludeActivePlan && !options.IncludePlanRevisions {
+		return plansBySession, planRevisionsBySession, nil
+	}
+	if s == nil || s.sessions == nil {
+		return plansBySession, planRevisionsBySession, nil
+	}
+	for sessionID := range workset.SessionsByID {
+		plan, ok, err := s.sessions.GetActivePlan(sessionID)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !ok {
+			continue
+		}
+		if options.IncludeActivePlan {
+			plansBySession[sessionID] = plan
+		}
+		if options.IncludePlanRevisions {
+			revisions, err := s.sessions.ListPlanRevisions(sessionID, plan.ID, 100)
+			if err != nil {
+				return nil, nil, err
+			}
+			planRevisionsBySession[sessionID] = revisions
+		}
+	}
+	return plansBySession, planRevisionsBySession, nil
 }
 
 var _ = pebblestore.V3SessionWorksetOptions{}
