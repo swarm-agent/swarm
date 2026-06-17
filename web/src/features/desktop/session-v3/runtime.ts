@@ -359,7 +359,7 @@ export class DesktopSessionV3Runtime {
       .map((sessionId) => wantedSessionSubscription(sessionId, endpointCursor))
       .filter((subscription): subscription is SessionV3SyncSubscriptionWire => Boolean(subscription))
     const workset = options.workset === null ? null : options.workset ?? this.workset
-    const worksetSubscription = worksetSubscriptionFromWorkset(workset)
+    const worksetSubscription = worksetSubscriptionFromSyncRequest(workset, request)
     return {
       subscriptions: mergeSubscriptions(requestedSubscriptions, wantedSubscriptions),
       worksets: worksetSubscription ? [worksetSubscription] : [],
@@ -557,27 +557,67 @@ function wantedSessionSubscription(sessionId: string, endpointCursor: string): S
   }
 }
 
-function worksetSubscriptionFromWorkset(workset: SessionV3WorksetRequestWire | null): SessionV3RealtimeWorksetSubscriptionRequestWire | null {
+function worksetSubscriptionFromSyncRequest(
+  workset: SessionV3WorksetRequestWire | null,
+  request: SessionV3StateSnapshotRequest,
+): SessionV3RealtimeWorksetSubscriptionRequestWire | null {
   if (!workset) return null
   const worksetId = normalizeString(workset.workset_id) || DEFAULT_WORKSET_ID
-  const selector = workset.selector ?? { kind: workset.global ? 'global' : 'recent', global: workset.global || undefined }
+  const selector = selectorFromSyncRequest(request)
   const selectorKind = normalizeString(selector.kind)
   if (!worksetId || !selectorKind) return null
   return {
     workset_id: worksetId,
     subscription_id: `desktop-v3-runtime:workset:${worksetId}`,
     surface: 'desktop',
-    selector: {
-      ...selector,
-      kind: selectorKind,
-    },
-    resources: workset.resources
-      ? Object.entries(workset.resources)
-          .filter(([, enabled]) => Boolean(enabled))
-          .map(([resource]) => resource)
-      : undefined,
+    selector,
+    resources: resourcesFromSyncRequest(request.resources),
     auto_subscribe_sessions: workset.auto_subscribe_sessions !== false,
   }
+}
+
+function selectorFromSyncRequest(request: SessionV3StateSnapshotRequest): NonNullable<SessionV3WorksetRequestWire['selector']> {
+  const sessionIds = normalizeSessionIds(request.sessionIds)
+  const workspacePath = normalizeString(request.workspacePath)
+  const workspacePaths = normalizeStringArray(request.workspacePaths)
+  const kind = sessionIds.length > 0
+    ? 'session_ids'
+    : request.global
+      ? 'global'
+      : workspacePath || workspacePaths.length > 0
+        ? 'workspace'
+        : request.recent?.limit
+          ? 'recent'
+          : 'global'
+  return {
+    kind,
+    global: request.global || undefined,
+    session_ids: sessionIds.length > 0 ? sessionIds : undefined,
+    workspace_path: workspacePath || undefined,
+    workspace_paths: workspacePaths.length > 0 ? workspacePaths : undefined,
+    recent: request.recent
+      ? {
+          limit: request.recent.limit,
+          before_updated_at: request.recent.beforeUpdatedAt ?? null,
+          before_session_id: normalizeString(request.recent.beforeSessionId) || undefined,
+        }
+      : undefined,
+  }
+}
+
+function resourcesFromSyncRequest(resources: SessionV3StateSnapshotRequest['resources']): string[] | undefined {
+  if (!resources) return undefined
+  const entries: Array<[keyof NonNullable<SessionV3StateSnapshotRequest['resources']>, string]> = [
+    ['messages', 'messages'],
+    ['events', 'events'],
+    ['runIntents', 'run_intents'],
+    ['activePlan', 'active_plan'],
+    ['planRevisions', 'plan_revisions'],
+  ]
+  const enabled = entries
+    .filter(([key]) => Boolean(resources[key]))
+    .map(([, wireName]) => wireName)
+  return enabled.length > 0 ? enabled : undefined
 }
 
 function activeRuntimeSessionIds(...desktops: Array<DesktopState | null | undefined>): string[] {

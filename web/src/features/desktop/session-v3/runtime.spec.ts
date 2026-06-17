@@ -196,6 +196,7 @@ test('runtime boot opens one V3 realtime stream and sends one resume for workset
 
     assert.equal(syncRequests.length, 1)
     assert.equal(syncRequests[0]?.global, true)
+    assert.equal(syncRequests[0]?.recent?.limit, 50)
     assert.deepEqual(syncRequests[0]?.resources, {
       messages: true,
       events: true,
@@ -223,6 +224,9 @@ test('runtime boot opens one V3 realtime stream and sends one resume for workset
     assert.deepEqual(resume.subscriptions?.map((subscription) => subscription.session_id), ['session-1'])
     assert.deepEqual(resume.worksets?.map((workset) => workset.workset_id), ['desktop-v3-runtime:global'])
     assert.equal(resume.worksets?.[0]?.auto_subscribe_sessions, true)
+    assert.equal(resume.worksets?.[0]?.selector.kind, 'global')
+    assert.equal(resume.worksets?.[0]?.selector.global, true)
+    assert.equal(resume.worksets?.[0]?.selector.recent?.limit, 50)
     assert.equal(runtime.diagnostics().socketState, 'open')
   } finally {
     runtime.shutdown()
@@ -386,6 +390,56 @@ test('runtime constructs resume workset from runtime config while adding known s
     runtime.shutdown()
     MockRealtimeSocket.collect = null
     restoreWebSocket()
+  }
+})
+
+test('runtime uses one canonical workspace recent scope for bootstrap and realtime resume', async () => {
+  installTransportGlobals()
+  const sockets: MockRealtimeSocket[] = []
+  const bootstrapRequests: SessionV3StateSnapshotRequest[] = []
+  const runtime = new DesktopSessionV3Runtime({
+    workset: {
+      workset_id: 'w1',
+      selector: { kind: 'workspace' },
+      workspace: { workspace_path: '/repo/a' },
+      recent: { limit: 50 },
+      auto_subscribe_sessions: true,
+    },
+    api: {
+      bootstrapSessionV3Sync: async (request = {}) => {
+        bootstrapRequests.push(request)
+        return makeSyncSnapshot('cursor-workspace')
+      },
+    },
+    transportOptions: {
+      livenessTimeoutMs: 60_000,
+      openSocket: ({ endpointCursor }) => {
+        const socket = new MockRealtimeSocket(`ws://localhost/v3/realtime/stream?endpoint_cursor=${endpointCursor}`)
+        sockets.push(socket)
+        return socket as unknown as WebSocket
+      },
+    },
+  })
+
+  try {
+    await runtime.boot()
+
+    assert.equal(bootstrapRequests.length, 1)
+    assert.equal(bootstrapRequests[0]?.global, false)
+    assert.equal(bootstrapRequests[0]?.workspacePath, '/repo/a')
+    assert.equal(bootstrapRequests[0]?.recent?.limit, 50)
+    assert.equal(sockets.length, 1)
+    sockets[0].open()
+
+    const resume = parseResume(sockets[0])
+    assert.equal(resume.endpoint_cursor, 'cursor-workspace')
+    assert.equal(resume.worksets?.[0]?.workset_id, 'w1')
+    assert.equal(resume.worksets?.[0]?.auto_subscribe_sessions, true)
+    assert.equal(resume.worksets?.[0]?.selector.kind, 'workspace')
+    assert.equal(resume.worksets?.[0]?.selector.workspace_path, '/repo/a')
+    assert.equal(resume.worksets?.[0]?.selector.recent?.limit, 50)
+  } finally {
+    runtime.shutdown()
   }
 })
 
