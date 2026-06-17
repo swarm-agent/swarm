@@ -443,6 +443,52 @@ test('runtime uses one canonical workspace recent scope for bootstrap and realti
   }
 })
 
+test('runtime targeted session boot does not pair session cursor with global workset resume', async () => {
+  installTransportGlobals()
+  const sockets: MockRealtimeSocket[] = []
+  const bootstrapRequests: SessionV3StateSnapshotRequest[] = []
+  const hydrateRequests: SessionV3StateSnapshotRequest[] = []
+  const runtime = new DesktopSessionV3Runtime({
+    api: {
+      bootstrapSessionV3Sync: async (request = {}) => {
+        bootstrapRequests.push(request)
+        return makeSyncSnapshot('cursor-bootstrap')
+      },
+      hydrateSessionV3Sync: async (request) => {
+        hydrateRequests.push(request)
+        return makeSyncSnapshot('cursor-session')
+      },
+    },
+    transportOptions: {
+      livenessTimeoutMs: 60_000,
+      openSocket: ({ endpointCursor }) => {
+        const socket = new MockRealtimeSocket(`ws://localhost/v3/realtime/stream?endpoint_cursor=${endpointCursor}`)
+        sockets.push(socket)
+        return socket as unknown as WebSocket
+      },
+    },
+  })
+
+  try {
+    await runtime.boot({ sessionIds: [' session-2 ', 'session-2'] })
+
+    assert.equal(bootstrapRequests.length, 0)
+    assert.equal(hydrateRequests.length, 1)
+    assert.deepEqual(hydrateRequests[0].sessionIds, ['session-2'])
+    assert.equal(hydrateRequests[0].global, false)
+    assert.equal(sockets.length, 1)
+    sockets[0].open()
+
+    const resume = parseResume(sockets[0])
+    assert.equal(resume.endpoint_cursor, 'cursor-session')
+    assert.deepEqual(resume.subscriptions?.map((subscription) => subscription.session_id), ['session-2'])
+    assert.equal(resume.subscriptions?.[0]?.endpoint_cursor, 'cursor-session')
+    assert.deepEqual(resume.worksets ?? [], [])
+  } finally {
+    runtime.shutdown()
+  }
+})
+
 test('runtime targeted hydrate preserves workspace recent workset scope while adding session subscription', async () => {
   installTransportGlobals()
   const sockets: MockRealtimeSocket[] = []

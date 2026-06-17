@@ -366,9 +366,12 @@ export class DesktopSessionV3Runtime {
       .filter((sessionId) => !targetedHydrate || !requestedSessionIdSet.has(sessionId))
       .map((sessionId) => wantedSessionSubscription(sessionId, endpointCursor))
       .filter((subscription): subscription is SessionV3SyncSubscriptionWire => Boolean(subscription))
+    const hasExistingEndpointCursor = Boolean(this.state.endpointCursor)
     const workset = options.workset === null ? null : options.workset ?? this.workset
     const worksetRequest = targetedHydrate ? syncRequestFromWorkset(workset) : request
-    const worksetSubscription = worksetSubscriptionFromSyncRequest(workset, worksetRequest)
+    const worksetSubscription = targetedHydrate && !hasExistingEndpointCursor
+      ? null
+      : worksetSubscriptionFromSyncRequest(workset, worksetRequest)
     return {
       endpointCursor,
       subscriptions: mergeSubscriptions(requestedSubscriptions, wantedSubscriptions),
