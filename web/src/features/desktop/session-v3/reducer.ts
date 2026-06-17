@@ -81,7 +81,7 @@ export interface SessionV3ReducerState {
 export type SessionV3ReducerAction =
   | { type: 'snapshot'; snapshot: DesktopDaemonSnapshot; mode?: SessionV3ReducerSnapshotMode; endpointCursor?: string | null; receivedAt?: number }
   | { type: 'snapshot-result'; result: SessionV3SnapshotResult; mode?: SessionV3ReducerSnapshotMode; receivedAt?: number }
-  | { type: 'sync-snapshot'; result: SessionV3SyncSnapshot; subscriptions?: SessionV3RealtimeSubscriptionRequestWire[]; worksets?: SessionV3RealtimeWorksetSubscriptionRequestWire[]; mode?: SessionV3ReducerSnapshotMode; receivedAt?: number }
+  | { type: 'sync-snapshot'; result: SessionV3SyncSnapshot; endpointCursor?: string | null; subscriptions?: SessionV3RealtimeSubscriptionRequestWire[]; worksets?: SessionV3RealtimeWorksetSubscriptionRequestWire[]; mode?: SessionV3ReducerSnapshotMode; receivedAt?: number }
   | { type: 'frame'; frame: SessionV3RealtimeFrameWire; receivedAt?: number }
   | { type: 'mutation'; response: SessionV3HydratedSessionResponseWire | SessionV3CompactResponseWire; sessionId?: string | null; receivedAt?: number }
   | { type: 'status'; status: DesktopStateStatus; error?: string | null; receivedAt?: number }
@@ -190,7 +190,7 @@ export function applySessionV3SyncSnapshot(
   const snapshotResult = applySessionV3Snapshot(state, result.snapshot, {
     type: 'snapshot',
     mode: action.mode ?? 'merge',
-    endpointCursor: result.endpointCursor,
+    endpointCursor: action.endpointCursor ?? result.endpointCursor,
     receivedAt: action.receivedAt,
   })
   const receivedAt = normalizeReceivedAt(action.receivedAt)

@@ -49,6 +49,7 @@ export type DesktopV3RealtimeTransportOpenSocket = (options: DesktopV3RealtimeTr
 
 export type DesktopV3RealtimeTransportRehydrateResult = SessionV3RealtimeResumeWire | {
   endpointCursor?: string | null
+  snapshotEndpointCursor?: string | null
   subscriptions?: SessionV3RealtimeSubscriptionRequestWire[]
   worksets?: SessionV3RealtimeWorksetSubscriptionRequestWire[]
 }
@@ -244,15 +245,17 @@ export class DesktopV3RealtimeTransport {
   applySyncSnapshot(
     result: SessionV3SyncSnapshot,
     resumeState: {
+      endpointCursor?: string | null
       subscriptions?: SessionV3RealtimeSubscriptionRequestWire[]
       worksets?: SessionV3RealtimeWorksetSubscriptionRequestWire[]
     } = {},
   ): void {
-    this.advanceEndpointCursor(result.endpointCursor || result.snapshot.snapshotEndpointCursor, 'snapshot')
+    this.advanceEndpointCursor((resumeState.endpointCursor ?? result.endpointCursor) || result.snapshot.snapshotEndpointCursor, 'snapshot')
     this.replaceRegistries({
       subscriptions: resumeState.subscriptions ?? [],
       worksets: resumeState.worksets ?? [],
       replace: true,
+      subscriptionFallbackEndpointCursor: result.endpointCursor || result.snapshot.snapshotEndpointCursor,
     })
     this.syncOpenSocketResume('sync snapshot applied')
   }
@@ -419,13 +422,15 @@ export class DesktopV3RealtimeTransport {
     subscriptions: SessionV3RealtimeSubscriptionRequestWire[]
     worksets: SessionV3RealtimeWorksetSubscriptionRequestWire[]
     replace?: boolean
+    subscriptionFallbackEndpointCursor?: string | null
   }): void {
     if (input.replace) {
       this.sessions.clear()
       this.worksets.clear()
     }
     const endpointCursor = this.currentEndpointCursor()
-    for (const subscription of normalizeSessionSubscriptions(input.subscriptions, endpointCursor)) {
+    const subscriptionFallbackEndpointCursor = normalizeString(input.subscriptionFallbackEndpointCursor) || endpointCursor
+    for (const subscription of normalizeSessionSubscriptions(input.subscriptions, subscriptionFallbackEndpointCursor)) {
       this.sessions.set(subscription.session_id, {
         ...subscription,
         autoDiscovered: this.sessions.get(subscription.session_id)?.autoDiscovered ?? false,
@@ -542,12 +547,13 @@ export class DesktopV3RealtimeTransport {
     }
     const syncSnapshot = result as {
       endpointCursor?: string | null
+      snapshotEndpointCursor?: string | null
       subscriptions?: SessionV3RealtimeSubscriptionRequestWire[]
       worksets?: SessionV3RealtimeWorksetSubscriptionRequestWire[]
     }
     this.advanceEndpointCursor(syncSnapshot.endpointCursor, 'snapshot')
     this.replaceRegistries({
-      subscriptions: syncSnapshot.subscriptions ?? [],
+      subscriptions: normalizeRehydrateSubscriptions(syncSnapshot.subscriptions ?? [], syncSnapshot.snapshotEndpointCursor ?? syncSnapshot.endpointCursor),
       worksets: syncSnapshot.worksets ?? [],
       replace: true,
     })
@@ -655,11 +661,20 @@ function normalizeSessionSubscriptions(subscriptions: SessionV3RealtimeSubscript
     .filter((subscription): subscription is SessionV3RealtimeSubscriptionRequestWire => Boolean(subscription))
 }
 
-function normalizeSessionSubscription(subscription: SessionV3RealtimeSubscriptionRequestWire, fallbackEndpointCursor: string): SessionV3RealtimeSubscriptionRequestWire | null {
+function normalizeRehydrateSubscriptions(subscriptions: SessionV3RealtimeSubscriptionRequestWire[], fallbackEndpointCursor: string | null | undefined): SessionV3RealtimeSubscriptionRequestWire[] {
+  const fallback = normalizeString(fallbackEndpointCursor)
+  return subscriptions
+    .map((subscription) => normalizeSessionSubscription(subscription, fallback, true))
+    .filter((subscription): subscription is SessionV3RealtimeSubscriptionRequestWire => Boolean(subscription))
+}
+
+function normalizeSessionSubscription(subscription: SessionV3RealtimeSubscriptionRequestWire, fallbackEndpointCursor: string, preserveEndpointCursor = true): SessionV3RealtimeSubscriptionRequestWire | null {
   const sessionId = normalizeString(subscription.session_id)
   const subscriptionId = normalizeString(subscription.subscription_id)
   if (!sessionId || !subscriptionId) return null
-  const endpointCursor = fallbackEndpointCursor
+  const endpointCursor = preserveEndpointCursor
+    ? normalizeString(subscription.endpoint_cursor) || fallbackEndpointCursor
+    : fallbackEndpointCursor
   return {
     session_id: sessionId,
     subscription_id: subscriptionId,

@@ -113,6 +113,7 @@ export interface DesktopSessionV3RuntimeHydrateOptions extends DesktopSessionV3R
 }
 
 interface DesktopSessionV3RuntimeResumeState {
+  endpointCursor: string
   subscriptions: SessionV3SyncSubscriptionWire[]
   worksets: SessionV3RealtimeWorksetSubscriptionRequestWire[]
 }
@@ -163,7 +164,8 @@ export class DesktopSessionV3Runtime {
       onRehydrateRequested: async (reason, _frame, meta) => {
         const syncLoad = await this.loadSyncSnapshot({ reason, mode: 'merge' }, false, meta.at)
         return {
-          endpointCursor: syncLoad.result.endpointCursor,
+          endpointCursor: syncLoad.endpointCursor,
+          snapshotEndpointCursor: syncLoad.result.endpointCursor,
           subscriptions: syncLoad.subscriptions,
           worksets: syncLoad.worksets,
         }
@@ -213,7 +215,6 @@ export class DesktopSessionV3Runtime {
     const syncLoad = await this.loadSyncSnapshot({ ...options, mode: options.mode ?? 'replace' }, false)
     if (this.shutdownRequested) return this.state
     this.transport.applySyncSnapshot(syncLoad.result, syncLoad)
-    this.syncWantedSessionsToTransport()
     await this.transport.start()
     return this.state
   }
@@ -226,7 +227,6 @@ export class DesktopSessionV3Runtime {
     const syncLoad = await this.loadSyncSnapshot({ ...options, sessionIds: normalizedSessionIds, mode: options.mode ?? 'merge' }, false)
     if (this.shutdownRequested) return this.state
     this.transport.applySyncSnapshot(syncLoad.result, syncLoad)
-    this.syncWantedSessionsToTransport()
     await this.transport.start()
     return this.state
   }
@@ -334,6 +334,7 @@ export class DesktopSessionV3Runtime {
     this.dispatch({
       type: 'sync-snapshot',
       result,
+      endpointCursor: resumeState.endpointCursor,
       subscriptions: resumeState.subscriptions,
       worksets: resumeState.worksets,
       mode: options.mode ?? 'merge',
@@ -350,19 +351,26 @@ export class DesktopSessionV3Runtime {
     result: SessionV3SnapshotResult,
     options: DesktopSessionV3RuntimeBootOptions,
   ): DesktopSessionV3RuntimeResumeState {
-    const endpointCursor = result.endpointCursor || result.snapshot.snapshotEndpointCursor || this.state.endpointCursor
+    const snapshotEndpointCursor = result.endpointCursor || result.snapshot.snapshotEndpointCursor || this.state.endpointCursor
     const request = this.syncOptions(options)
-    const requestedSubscriptions = (request.sessionIds ?? [])
-      .map((sessionId) => wantedSessionSubscription(sessionId, endpointCursor))
+    const requestedSessionIds = normalizeSessionIds(request.sessionIds)
+    const targetedHydrate = normalizeSessionIds(options.sessionIds).length > 0
+    const endpointCursor = targetedHydrate
+      ? this.state.endpointCursor || snapshotEndpointCursor
+      : snapshotEndpointCursor
+    const requestedSessionIdSet = new Set(requestedSessionIds)
+    const requestedSubscriptions = requestedSessionIds
+      .map((sessionId) => wantedSessionSubscription(sessionId, snapshotEndpointCursor))
       .filter((subscription): subscription is SessionV3SyncSubscriptionWire => Boolean(subscription))
     const wantedSubscriptions = Array.from(this.wantedSessionIds)
+      .filter((sessionId) => !targetedHydrate || !requestedSessionIdSet.has(sessionId))
       .map((sessionId) => wantedSessionSubscription(sessionId, endpointCursor))
       .filter((subscription): subscription is SessionV3SyncSubscriptionWire => Boolean(subscription))
     const workset = options.workset === null ? null : options.workset ?? this.workset
-    const targetedHydrate = normalizeSessionIds(options.sessionIds).length > 0
     const worksetRequest = targetedHydrate ? syncRequestFromWorkset(workset) : request
     const worksetSubscription = worksetSubscriptionFromSyncRequest(workset, worksetRequest)
     return {
+      endpointCursor,
       subscriptions: mergeSubscriptions(requestedSubscriptions, wantedSubscriptions),
       worksets: worksetSubscription ? [worksetSubscription] : [],
     }

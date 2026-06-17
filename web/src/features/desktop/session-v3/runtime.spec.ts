@@ -484,8 +484,9 @@ test('runtime targeted hydrate preserves workspace recent workset scope while ad
     assert.deepEqual(hydrateRequests[0].sessionIds, ['session-2'])
     assert.equal(sockets.length, 1)
     const latestResume = JSON.parse(sockets[0].sent[sockets[0].sent.length - 1] ?? '') as SessionV3RealtimeResumeWire
-    assert.equal(latestResume.endpoint_cursor, 'cursor-2')
+    assert.equal(latestResume.endpoint_cursor, 'cursor-1')
     assert.deepEqual(latestResume.subscriptions?.map((subscription) => subscription.session_id), ['session-2'])
+    assert.equal(latestResume.subscriptions?.[0]?.endpoint_cursor, 'cursor-2')
     assert.equal(latestResume.worksets?.[0]?.workset_id, 'w1')
     assert.equal(latestResume.worksets?.[0]?.selector.kind, 'workspace')
     assert.equal(latestResume.worksets?.[0]?.selector.workspace_path, '/repo/a')
@@ -538,8 +539,9 @@ test('runtime targeted hydrate uses sync hydrate and updates existing realtime r
     assert.equal(sockets.length, 1)
     assert.equal(sockets[0].closed, false)
     const latestResume = JSON.parse(sockets[0].sent[sockets[0].sent.length - 1] ?? '') as SessionV3RealtimeResumeWire
-    assert.equal(latestResume.endpoint_cursor, 'cursor-2')
+    assert.equal(latestResume.endpoint_cursor, 'cursor-1')
     assert.deepEqual(latestResume.subscriptions?.map((subscription) => subscription.session_id), ['session-2'])
+    assert.equal(latestResume.subscriptions?.[0]?.endpoint_cursor, 'cursor-2')
     assert.deepEqual(latestResume.worksets?.map((workset) => workset.workset_id), ['desktop-v3-runtime:global'])
     assert.equal(latestResume.worksets?.[0]?.selector.kind, 'global')
     assert.equal(latestResume.worksets?.[0]?.selector.global, true)
