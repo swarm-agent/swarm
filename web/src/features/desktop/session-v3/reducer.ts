@@ -10,6 +10,7 @@ import {
 import type { ChatMessageRecord } from '../chat/types/chat'
 import type { DesktopPermissionRecord, DesktopRunIntentRecord, DesktopSessionRecord, DesktopSessionUsageRecord } from '../types/realtime'
 import type {
+  SessionV3CompactResponseWire,
   SessionV3HydratedSessionResponseWire,
   SessionV3MessageWire,
   SessionV3ProjectionWire,
@@ -80,7 +81,7 @@ export type SessionV3ReducerAction =
   | { type: 'snapshot-result'; result: SessionV3SnapshotResult; mode?: SessionV3ReducerSnapshotMode; receivedAt?: number }
   | { type: 'reconnect'; result: SessionV3ReconnectSnapshot; mode?: SessionV3ReducerSnapshotMode; receivedAt?: number }
   | { type: 'frame'; frame: SessionV3RealtimeFrameWire; receivedAt?: number }
-  | { type: 'mutation'; response: SessionV3HydratedSessionResponseWire; sessionId?: string | null; receivedAt?: number }
+  | { type: 'mutation'; response: SessionV3HydratedSessionResponseWire | SessionV3CompactResponseWire; sessionId?: string | null; receivedAt?: number }
   | { type: 'status'; status: DesktopStateStatus; error?: string | null; receivedAt?: number }
   | { type: 'stale'; reason: string; receivedAt?: number }
 
@@ -585,10 +586,11 @@ function normalizeRealtimeEventPayload(
 
 function mutationSnapshot(
   currentRev: number,
-  response: SessionV3HydratedSessionResponseWire,
+  response: SessionV3HydratedSessionResponseWire | SessionV3CompactResponseWire,
   fallbackSessionId: string | null | undefined,
 ): DesktopDaemonSnapshot | null {
   const normalizedSessionId = normalizeOptionalString(fallbackSessionId)
+    || normalizeOptionalString(response.session_id)
     || normalizeOptionalString(response.session?.id)
     || normalizeOptionalString(response.projection?.session_id)
     || normalizeOptionalString(response.active_run_intent?.session_id)

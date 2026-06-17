@@ -19,6 +19,23 @@ import (
 
 const sessionV3ManualCompactOwnerTransport = "manual_compact"
 
+func sessionV3CompactMutationResponse(sessionID string, runIntent pebblestore.V3SessionRunIntent, mutation *sessionruntime.SessionMutationResult) map[string]any {
+	var mutationPayload any
+	var realtimeOutbox any
+	if mutation != nil {
+		mutationPayload = sessionV3MutationResultResponse(*mutation)
+		realtimeOutbox = mutation.RealtimeOutbox
+	}
+	return map[string]any{
+		"ok":              true,
+		"session_id":      sessionID,
+		"run_intent":      runIntent,
+		"compaction":      map[string]any{"run_id": runIntent.RunID, "status": "accepted", "owner_transport": sessionV3ManualCompactOwnerTransport},
+		"mutation":        mutationPayload,
+		"realtime_outbox": realtimeOutbox,
+	}
+}
+
 func (s *Server) handleSessionV3PrimaryCompact(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -46,7 +63,7 @@ func (s *Server) handleSessionV3PrimaryCompact(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, errors.New("client_request_id is required"))
 		return
 	}
-	if _, found, err := s.hydrateSessionsV3Primary(principal, sessionID); err != nil {
+	if _, found, err := s.requireSessionV3Access(principal, sessionID); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	} else if !found {
@@ -65,14 +82,7 @@ func (s *Server) handleSessionV3PrimaryCompact(w http.ResponseWriter, r *http.Re
 			writeError(w, http.StatusConflict, runruntime.ErrSessionAlreadyActive)
 			return
 		}
-		writeJSON(w, http.StatusAccepted, map[string]any{
-			"ok":              true,
-			"session_id":      sessionID,
-			"run_id":          runID,
-			"status":          "accepted",
-			"owner_transport": sessionV3ManualCompactOwnerTransport,
-			"run_intent":      active,
-		})
+		writeJSON(w, http.StatusAccepted, sessionV3CompactMutationResponse(sessionID, active, nil))
 		return
 	}
 
@@ -122,15 +132,11 @@ func (s *Server) handleSessionV3PrimaryCompact(w http.ResponseWriter, r *http.Re
 		s.startSessionV3ManualCompactExecution(sessionID, runID, req, principal)
 	}
 
-	writeJSON(w, http.StatusAccepted, map[string]any{
-		"ok":              true,
-		"session_id":      sessionID,
-		"run_id":          runID,
-		"status":          "accepted",
-		"owner_transport": sessionV3ManualCompactOwnerTransport,
-		"run_intent":      accepted.RunIntent,
-		"realtime_outbox": accepted.RealtimeOutbox,
-	})
+	runIntent := pebblestore.V3SessionRunIntent{SessionID: sessionID, RunID: runID, Status: sessionruntime.RunIntentPendingExecutor}
+	if accepted.RunIntent != nil {
+		runIntent = *accepted.RunIntent
+	}
+	writeJSON(w, http.StatusAccepted, sessionV3CompactMutationResponse(sessionID, runIntent, &accepted))
 }
 
 type sessionV3ManualCompactRunEventInput struct {

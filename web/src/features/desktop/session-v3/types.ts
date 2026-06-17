@@ -345,12 +345,24 @@ export interface SessionV3RealtimeOutboxWire {
 
 export interface SessionV3MutationWire {
   realtime_outbox?: SessionV3RealtimeOutboxWire | null
+  session?: never
+  messages?: never
+  events?: never
+  workset_id?: never
+  worksets?: never
+  subscriptions?: never
 }
 
-export interface SessionV3HydratedSessionResponseWire {
+export interface SessionV3CreateSessionResponseWire {
   ok?: boolean
+  session_id?: string
   session?: SessionV3SessionWire
   projection?: SessionV3ProjectionWire
+  realtime_outbox?: SessionV3RealtimeOutboxWire | null
+  mutation?: SessionV3MutationWire | null
+}
+
+export interface SessionV3HydratedSessionResponseWire extends SessionV3CreateSessionResponseWire {
   message?: SessionV3MessageWire
   messages?: SessionV3MessageWire[]
   events?: SessionV3EventWire[]
@@ -358,8 +370,6 @@ export interface SessionV3HydratedSessionResponseWire {
   usage_summary?: unknown | null
   active_run_intent?: SessionV3RunIntentWire | null
   run_intent?: SessionV3RunIntentWire | null
-  realtime_outbox?: SessionV3RealtimeOutboxWire | null
-  mutation?: SessionV3MutationWire | null
 }
 
 export interface SessionV3MessageCommitRequestWire {
@@ -371,6 +381,23 @@ export interface SessionV3MessageCommitRequestWire {
 
 export interface SessionV3MessageCommitResponseWire extends SessionV3HydratedSessionResponseWire {}
 
+export interface SessionV3ModeMutationResponseWire {
+  ok?: boolean
+  session_id?: string
+  mode?: string
+  mutation?: SessionV3MutationWire | null
+  realtime_outbox?: SessionV3RealtimeOutboxWire | null
+}
+
+export interface SessionV3AgentMutationResponseWire {
+  ok?: boolean
+  session_id?: string
+  agent?: SessionV3JsonRecord
+  agent_model_policy?: unknown
+  mutation?: SessionV3MutationWire | null
+  realtime_outbox?: SessionV3RealtimeOutboxWire | null
+}
+
 export interface SessionV3CompactRequestWire {
   client_request_id?: string
   note?: string
@@ -379,14 +406,16 @@ export interface SessionV3CompactRequestWire {
 }
 
 export interface SessionV3CompactResponseWire extends SessionV3HydratedSessionResponseWire {
+  ok?: boolean
   session_id?: string
-  run_id?: string
-  status?: string
-  owner_transport?: string
-  result?: {
-    usage_summary?: unknown | null
-    assistant_message?: SessionV3MessageWire
+  run_intent?: SessionV3RunIntentWire | null
+  compaction?: {
+    run_id?: string
+    status?: string
+    owner_transport?: string
   }
+  mutation?: SessionV3MutationWire | null
+  realtime_outbox?: SessionV3RealtimeOutboxWire | null
 }
 
 export interface SessionV3RunStopResponseWire extends SessionV3HydratedSessionResponseWire {
@@ -406,9 +435,13 @@ export interface SessionV3PreferenceWire {
 }
 
 export interface SessionV3PreferenceResponseWire {
+  ok?: boolean
+  session_id?: string
   preference?: SessionV3PreferenceWire
   context_window?: number
   max_output_tokens?: number
+  mutation?: SessionV3MutationWire | null
+  realtime_outbox?: SessionV3RealtimeOutboxWire | null
 }
 
 export interface SessionV3UsageResponseWire {

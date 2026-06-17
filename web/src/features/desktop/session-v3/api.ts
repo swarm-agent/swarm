@@ -7,13 +7,16 @@ import type { DesktopPermissionRecord, DesktopSessionUsageRecord } from '../type
 import type { ResolvedSessionPreference } from '../chat/types/chat'
 import type {
   SessionV3ActivePlanResponseWire,
+  SessionV3AgentMutationResponseWire,
   SessionV3CompactRequestWire,
   SessionV3CompactResponseWire,
+  SessionV3CreateSessionResponseWire,
   SessionV3HydratedSessionResponseWire,
   SessionV3JsonRecord,
   SessionV3MessageCommitRequestWire,
   SessionV3MessageCommitResponseWire,
   SessionV3MessageRole,
+  SessionV3ModeMutationResponseWire,
   SessionV3PermissionResolveRequestWire,
   SessionV3PermissionResolveResponseWire,
   SessionV3PermissionsResolveAllResponseWire,
@@ -174,9 +177,9 @@ export async function fetchSessionV3SessionSnapshot(
   return sessionV3SessionSnapshotFromDaemonSnapshot(snapshot, normalizedSessionId)
 }
 
-export async function createSessionV3(input: SessionV3CreateSessionInput): Promise<SessionV3HydratedSessionResponseWire> {
+export async function createSessionV3(input: SessionV3CreateSessionInput): Promise<SessionV3CreateSessionResponseWire> {
   const body = toSessionV3CreateRequestWire(input)
-  return requestJson<SessionV3HydratedSessionResponseWire>('/v3/sessions', {
+  return requestJson<SessionV3CreateSessionResponseWire>('/v3/sessions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -228,30 +231,28 @@ export async function updateSessionV3Mode(
   sessionId: string,
   mode: string,
   options: SessionV3RequestOptions = {},
-): Promise<SessionV3SessionSnapshot | null> {
+): Promise<SessionV3ModeMutationResponseWire> {
   const normalizedSessionId = assertSessionV3SessionId(sessionId)
-  await requestJson<unknown>(`/v3/sessions/${encodeURIComponent(normalizedSessionId)}/mode`, {
+  return requestJson<SessionV3ModeMutationResponseWire>(`/v3/sessions/${encodeURIComponent(normalizedSessionId)}/mode`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ mode }),
     signal: options.signal,
   })
-  return fetchSessionV3SessionSnapshot(normalizedSessionId, options)
 }
 
 export async function updateSessionV3Agent(
   sessionId: string,
   agentName: string,
   options: SessionV3RequestOptions = {},
-): Promise<SessionV3SessionSnapshot | null> {
+): Promise<SessionV3AgentMutationResponseWire> {
   const normalizedSessionId = assertSessionV3SessionId(sessionId)
-  await requestJson<unknown>(`/v3/sessions/${encodeURIComponent(normalizedSessionId)}/agent`, {
+  return requestJson<SessionV3AgentMutationResponseWire>(`/v3/sessions/${encodeURIComponent(normalizedSessionId)}/agent`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ agent_name: agentName.trim() }),
     signal: options.signal,
   })
-  return fetchSessionV3SessionSnapshot(normalizedSessionId, options)
 }
 
 export async function updateSessionV3Metadata(

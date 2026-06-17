@@ -91,7 +91,15 @@ func (s *Server) handleSessionV3PrimaryStream(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
 		return
 	}
-	if _, found, err := s.hydrateSessionsV3Primary(principal, sessionID); err != nil {
+	if sessionV3PrimaryStreamDesktopSurface(r) {
+		writeError(w, http.StatusGone, errors.New("desktop V3 must use /v3/sync/bootstrap, /v3/sync/hydrate, and /v3/realtime/stream; /v3/sessions/{id}/stream is not a Desktop V3 transport"))
+		return
+	}
+	if sessionV3PrimaryStreamStrictMode(r) && sessionV3PrimaryStreamHasLegacyResumeInput(r) {
+		writeError(w, http.StatusBadRequest, errors.New("v3 strict mode requires endpoint_cursor; legacy after_seq, afterSeq, afterRev, and lastEventSeq resume inputs are not accepted"))
+		return
+	}
+	if _, found, err := s.requireSessionV3Access(principal, sessionID); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	} else if !found {
@@ -99,6 +107,7 @@ func (s *Server) handleSessionV3PrimaryStream(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	strictResume := sessionV3PrimaryStreamStrictMode(r)
 	conn, err := transportws.Accept(w, r)
 	if err != nil {
 		if errors.Is(err, transportws.ErrUpgradeRequired) {
@@ -125,6 +134,10 @@ func (s *Server) handleSessionV3PrimaryStream(w http.ResponseWriter, r *http.Req
 			s.sendSessionV3StreamFrame(conn, sessionV3StreamFrame{Type: "error", OK: false, SessionID: sessionID, Error: err.Error()})
 			return
 		}
+		if strictResume && sessionV3PrimaryStreamHelloHasLegacyResumeInput(raw) {
+			s.sendSessionV3StreamFrame(conn, sessionV3StreamFrame{Type: "error", OK: false, SessionID: sessionID, Error: "v3 strict mode requires endpoint_cursor; legacy after_seq, afterSeq, afterRev, and lastEventSeq resume inputs are not accepted"})
+			return
+		}
 		afterSeq = hello.AfterSeq
 		if strings.TrimSpace(hello.EndpointCursor) != "" {
 			parsed, err := parseV3RealtimeEndpointCursorStrict(hello.EndpointCursor)
@@ -136,6 +149,71 @@ func (s *Server) handleSessionV3PrimaryStream(w http.ResponseWriter, r *http.Req
 		}
 	}
 	s.streamSessionV3PrimaryEvents(conn, sessionID, afterSeq, endpointSeq)
+}
+
+func sessionV3PrimaryStreamDesktopSurface(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	for _, raw := range []string{
+		r.URL.Query().Get("surface"),
+		r.URL.Query().Get("client"),
+		r.URL.Query().Get("surface_kind"),
+		r.Header.Get("X-Swarm-Surface"),
+		r.Header.Get("X-Swarm-Client"),
+	} {
+		if strings.EqualFold(strings.TrimSpace(raw), "desktop") {
+			return true
+		}
+	}
+	return false
+}
+
+func sessionV3PrimaryStreamStrictMode(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	if sessionV3PrimaryStreamDesktopSurface(r) {
+		return true
+	}
+	for _, raw := range []string{
+		r.URL.Query().Get("v3_strict"),
+		r.URL.Query().Get("strict_v3"),
+		r.URL.Query().Get("strict"),
+		r.Header.Get("X-Swarm-V3-Strict"),
+	} {
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case "1", "true", "yes", "on", "strict":
+			return true
+		}
+	}
+	return false
+}
+
+func sessionV3PrimaryStreamHasLegacyResumeInput(r *http.Request) bool {
+	if r == nil || r.URL == nil {
+		return false
+	}
+	query := r.URL.Query()
+	for _, key := range []string{"after_seq", "afterSeq", "afterRev", "lastEventSeq"} {
+		if strings.TrimSpace(query.Get(key)) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func sessionV3PrimaryStreamHelloHasLegacyResumeInput(raw []byte) bool {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return false
+	}
+	for _, key := range []string{"after_seq", "afterSeq", "afterRev", "lastEventSeq"} {
+		if value, ok := payload[key]; ok && strings.TrimSpace(string(value)) != "" && strings.TrimSpace(string(value)) != "null" {
+			return true
+		}
+	}
+	return false
 }
 
 func parseSessionV3StreamResume(r *http.Request) (uint64, uint64, bool, error) {

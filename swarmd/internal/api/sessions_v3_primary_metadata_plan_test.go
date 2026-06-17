@@ -23,20 +23,33 @@ func TestSessionsV3PrimaryMetadataUpdateUsesV3Mutation(t *testing.T) {
 	}
 
 	var payload struct {
-		Session  pebblestore.SessionSnapshot         `json:"session"`
-		Mutation pebblestore.V3SessionMutationResult `json:"mutation"`
+		Session        *pebblestore.SessionSnapshot        `json:"session"`
+		Metadata       map[string]any                      `json:"metadata"`
+		Mutation       pebblestore.V3SessionMutationResult `json:"mutation"`
+		RealtimeOutbox any                                 `json:"realtime_outbox"`
+		Messages       []pebblestore.MessageSnapshot       `json:"messages"`
+		Events         []pebblestore.V3SessionEvent        `json:"events"`
+		WorksetID      string                              `json:"workset_id"`
+		Worksets       []any                               `json:"worksets"`
+		Subscriptions  []any                               `json:"subscriptions"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode metadata response: %v", err)
 	}
-	if payload.Session.Metadata["subagent"] != "clone" {
-		t.Fatalf("metadata = %+v", payload.Session.Metadata)
+	if payload.Metadata["subagent"] != "clone" {
+		t.Fatalf("metadata = %+v", payload.Metadata)
 	}
-	if payload.Session.Metadata["agent_name"] != "swarm" {
-		t.Fatalf("protected metadata overwritten: %+v", payload.Session.Metadata)
+	if payload.Metadata["agent_name"] != "swarm" {
+		t.Fatalf("protected metadata overwritten: %+v", payload.Metadata)
 	}
 	if payload.Mutation.Event.EventType != "session.metadata.updated" {
 		t.Fatalf("mutation event type = %q", payload.Mutation.Event.EventType)
+	}
+	if payload.RealtimeOutbox == nil {
+		t.Fatalf("metadata mutation response missing realtime_outbox: %s", rec.Body.String())
+	}
+	if payload.Session != nil || payload.Messages != nil || payload.Events != nil || payload.WorksetID != "" || payload.Worksets != nil || payload.Subscriptions != nil {
+		t.Fatalf("metadata mutation should return metadata delta only, got body=%s", rec.Body.String())
 	}
 }
 

@@ -24,9 +24,11 @@ const forbiddenDesktopV3TransportPatterns: Array<{ label: string; pattern: RegEx
   { label: 'legacy V3 realtime frame applier', pattern: /\bapplyDesktopV3RealtimeFrame\b/g },
   { label: 'legacy reconnect helper', pattern: /\bfetchAndApplyDesktopV3Reconnect\b|\bsyncV3RealtimeSessionsFromReconnect\b/g },
   { label: 'per-session V3 stream endpoint', pattern: /\/v3\/sessions\/(?:\$\{[^}]+\}|\{id\}|[^/`'"\s]+)\/stream/g },
+  { label: 'legacy per-session full hydrate endpoint', pattern: /`\/v3\/sessions\/\$\{[^}]+\}`/g },
   { label: 'after_seq transport resume query', pattern: /url\.searchParams\.set\(['"]after_seq['"]/g },
   { label: 'afterSeq transport resume input', pattern: /\bafterSeq\b/g },
   { label: 'afterRev realtime transport resume input', pattern: /\bafterRev\b/g },
+  { label: 'lastEventSeq transport resume query', pattern: /url\.searchParams\.set\(['"]lastEventSeq['"]/g },
   { label: 'legacy desktop realtime socket owner', pattern: /\bdesktopRealtimeSocket\b/g },
   { label: 'V3 primary stream helper', pattern: /\bprimaryStream\b|primary-stream/g },
   { label: 'sessionV3StreamFrame helper', pattern: /\bsessionV3StreamFrame\b/g },
@@ -107,7 +109,7 @@ test('session-v3 production runtime has no legacy desktop transports or resume i
   assert.deepEqual(
     offenders,
     [],
-    `session-v3 production code must stay endpoint_cursor-only and must not use /ws, per-session streams, after_seq/afterSeq/afterRev, or legacy realtime/run-stream imports.${formatOffenders(offenders)}`,
+    `session-v3 production code must stay endpoint_cursor-only and must not use /ws, per-session streams, after_seq/afterSeq/afterRev/lastEventSeq, or legacy realtime/run-stream imports.${formatOffenders(offenders)}`,
   )
 })
 
@@ -117,7 +119,7 @@ test('active Desktop V3 session transport path has no legacy transport allowlist
   assert.deepEqual(
     offenders,
     [],
-    `Desktop V3 session transport must be owned only by DesktopSessionV3Runtime and /v3/realtime/stream; no legacy /ws, run-stream, DesktopV3RealtimeController, per-session stream, or after_seq/afterRev transport owners remain.${formatOffenders(offenders)}`,
+    `Desktop V3 session transport must be owned only by DesktopSessionV3Runtime and /v3/realtime/stream; no legacy /ws, run-stream, DesktopV3RealtimeController, per-session stream, or after_seq/afterRev/lastEventSeq transport owners remain.${formatOffenders(offenders)}`,
   )
 })
 
@@ -182,5 +184,5 @@ test('Desktop V3 realtime transport opens only /v3/realtime/stream with endpoint
   const source = readText(path.join(desktopRoot, 'session-v3/transport.ts'))
   assert.match(source, /SESSION_V3_REALTIME_STREAM_PATH/)
   assert.match(source, /url\.searchParams\.set\('endpoint_cursor',\s*endpointCursor\)/)
-  assert.doesNotMatch(source, /after_seq|afterSeq|after_rev|afterRev|\/ws|\/v3\/sessions\/[^`'"\s]+\/stream/)
+  assert.doesNotMatch(source, /after_seq|afterSeq|after_rev|afterRev|lastEventSeq|\/ws|\/v3\/sessions\/[^`'"\s]+\/stream/)
 })

@@ -176,6 +176,12 @@ interface V3RealtimeOutboxWire {
 
 interface V3MutationWire {
   realtime_outbox?: V3RealtimeOutboxWire | null;
+  session?: never;
+  messages?: never;
+  events?: never;
+  workset_id?: never;
+  worksets?: never;
+  subscriptions?: never;
 }
 
 interface V3MessageCommitResponseWire extends V3HydratedSessionResponseWire {
@@ -189,18 +195,14 @@ interface V3MessageCommitResponseWire extends V3HydratedSessionResponseWire {
 interface V3CompactResponseWire {
   ok?: boolean;
   session_id?: string;
-  run_id?: string;
-  status?: string;
-  owner_transport?: string;
-  session?: SessionWire;
-  projection?: SessionProjectionWire;
   run_intent?: V3RunIntentWire | null;
-  realtime_outbox?: V3RealtimeOutboxWire | null;
-  result?: {
-    usage_summary?: SessionUsageSummaryWire | null;
-    assistant_message?: MessageWire;
+  compaction?: {
+    run_id?: string;
+    status?: string;
+    owner_transport?: string;
   };
-  events?: unknown[];
+  mutation?: V3MutationWire | null;
+  realtime_outbox?: V3RealtimeOutboxWire | null;
 }
 
 export type V3RunIntentRecord = DesktopRunIntentRecord;
@@ -797,22 +799,17 @@ function mapV3MessageCommitResponse(response: V3MessageCommitResponseWire): Send
 }
 
 function mapV3CompactResponse(response: V3CompactResponseWire): CompactSessionV3Result {
-  const mappedSession = mapSession(mapSessionProjectionToSession(response.session ?? {}, response.projection));
-  const session = mappedSession.id
-    ? { ...applySessionProjectionCursor(mappedSession, response.projection), sessionApi: "v3" }
-    : undefined;
   return {
     ok: response.ok,
     sessionId: String(response.session_id ?? '').trim(),
-    runId: String(response.run_id ?? '').trim(),
-    status: String(response.status ?? '').trim(),
-    ownerTransport: String(response.owner_transport ?? '').trim(),
-    session,
+    runId: String(response.compaction?.run_id ?? response.run_intent?.run_id ?? '').trim(),
+    status: String(response.compaction?.status ?? response.run_intent?.status ?? '').trim(),
+    ownerTransport: String(response.compaction?.owner_transport ?? '').trim(),
     runIntent: mapV3RunIntent(response.run_intent),
-    realtimeOutbox: mapV3RealtimeOutbox(response.realtime_outbox),
-    assistantMessage: response.result?.assistant_message ? mapChatMessage(response.result.assistant_message) : null,
-    usageSummary: mapDesktopSessionUsageSummary(response.result?.usage_summary ?? null),
-    events: Array.isArray(response.events) ? response.events : [],
+    realtimeOutbox: mapV3RealtimeOutbox(response.realtime_outbox ?? response.mutation?.realtime_outbox),
+    assistantMessage: null,
+    usageSummary: null,
+    events: [],
   };
 }
 

@@ -27,6 +27,7 @@ import {
 import {
   SESSION_V3_REALTIME_PROTOCOL,
   SESSION_V3_REALTIME_PROTOCOL_VERSION,
+  type SessionV3CreateSessionResponseWire,
   type SessionV3HydratedSessionResponseWire,
   type SessionV3CompactResponseWire,
   type SessionV3MessageCommitResponseWire,
@@ -185,7 +186,7 @@ export class DesktopSessionV3Runtime {
     return this.state
   }
 
-  async createSession(input: DesktopSessionV3RuntimeCreateSessionInput): Promise<SessionV3HydratedSessionResponseWire> {
+  async createSession(input: DesktopSessionV3RuntimeCreateSessionInput): Promise<SessionV3CreateSessionResponseWire> {
     const response = await this.api.createSessionV3(input)
     this.applyMutation(response, responseSessionId(response), input.signal)
     return response
@@ -327,7 +328,7 @@ export class DesktopSessionV3Runtime {
     }
   }
 
-  private applyMutation(response: SessionV3HydratedSessionResponseWire, fallbackSessionId: string, signal?: AbortSignal): void {
+  private applyMutation(response: SessionV3HydratedSessionResponseWire | SessionV3CompactResponseWire, fallbackSessionId: string, signal?: AbortSignal): void {
     const sessionId = responseSessionId(response) || fallbackSessionId
     const result = this.dispatch({ type: 'mutation', response, sessionId, receivedAt: this.now() })
     const cursor = result.state.endpointCursor
@@ -476,8 +477,9 @@ function mergeWorksets(
   return output
 }
 
-function responseSessionId(response: SessionV3HydratedSessionResponseWire): string {
-  return normalizeString(response.session?.id)
+function responseSessionId(response: SessionV3CreateSessionResponseWire | SessionV3HydratedSessionResponseWire): string {
+  return normalizeString(response.session_id)
+    || normalizeString(response.session?.id)
     || normalizeString(response.projection?.session_id)
     || normalizeString(response.active_run_intent?.session_id)
     || normalizeString(response.run_intent?.session_id)
