@@ -205,6 +205,9 @@ export function applySessionV3Reconnect(
       updatedAt: receivedAt,
     }
   }
+  const snapshotSessionIds = snapshotResult.state.desktop.sessionOrder.length > 0
+    ? snapshotResult.state.desktop.sessionOrder.filter((sessionId) => Boolean(snapshotResult.state.desktop.sessionsById[sessionId]))
+    : Object.keys(snapshotResult.state.desktop.sessionsById)
   const worksetsById = { ...snapshotResult.state.worksetsById }
   for (const workset of result.worksets) {
     const worksetId = normalizeOptionalString(workset.workset_id)
@@ -213,8 +216,8 @@ export function applySessionV3Reconnect(
     worksetsById[worksetId] = {
       worksetId,
       subscriptionId,
-      sessionIds: worksetsById[worksetId]?.sessionIds ?? [],
-      removedSessionIds: worksetsById[worksetId]?.removedSessionIds ?? [],
+      sessionIds: snapshotSessionIds,
+      removedSessionIds: [],
       autoSubscribeSessions: Boolean(workset.auto_subscribe_sessions),
       updatedAt: receivedAt,
     }

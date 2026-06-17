@@ -81,6 +81,110 @@ test('explicit subscribe frame makes a session manual so workset removal preserv
   assert.deepEqual(state.worksetsById['workset-1']?.removedSessionIds, ['session-manual'])
 })
 
+test('reconnect snapshot seeds authoritative workset membership from canonical session order', () => {
+  const initial = createSessionV3ReducerInitialState()
+  const result = sessionV3Reducer(initial, {
+    type: 'reconnect',
+    result: {
+      snapshot: {
+        rev: 10,
+        snapshotEndpointCursor: 'cursor-10',
+        sessionsById: {
+          'session-b': {
+            id: 'session-b',
+            title: 'B',
+            workspacePath: '/repo',
+            workspaceName: 'repo',
+            mode: 'auto',
+            sessionApi: 'v3',
+            messageCount: 0,
+            updatedAt: 20,
+            createdAt: 10,
+            permissionsHydrated: false,
+            lifecycle: null,
+            live: emptyLiveState(),
+            pendingPermissions: [],
+            pendingPermissionCount: 0,
+            usage: null,
+          },
+          'session-a': {
+            id: 'session-a',
+            title: 'A',
+            workspacePath: '/repo',
+            workspaceName: 'repo',
+            mode: 'auto',
+            sessionApi: 'v3',
+            messageCount: 0,
+            updatedAt: 30,
+            createdAt: 10,
+            permissionsHydrated: false,
+            lifecycle: null,
+            live: emptyLiveState(),
+            pendingPermissions: [],
+            pendingPermissionCount: 0,
+            usage: null,
+          },
+        },
+        sessionOrder: ['session-a', 'session-b'],
+      },
+      endpointCursor: 'cursor-10',
+      clientId: 'client-1',
+      surface: 'desktop',
+      worksetId: 'workset-1',
+      subscriptions: [],
+      worksets: [{
+        workset_id: 'workset-1',
+        subscription_id: 'workset-subscription-1',
+        selector: { kind: 'global', global: true },
+        auto_subscribe_sessions: true,
+      }],
+      realtimeResume: null,
+      diagnosticsBySession: {},
+      wire: { ok: true, rev: 10 },
+    },
+  })
+
+  assert.deepEqual(result.state.worksetsById['workset-1']?.sessionIds, ['session-a', 'session-b'])
+  assert.deepEqual(result.state.worksetsById['workset-1']?.removedSessionIds, [])
+})
+
+function emptyLiveState() {
+  return {
+    runId: null,
+    agentName: null,
+    startedAt: null,
+    status: 'idle' as const,
+    step: 0,
+    toolName: null,
+    sidebarToolName: null,
+    toolCallId: null,
+    toolArguments: null,
+    toolOutput: '',
+    retainedToolName: null,
+    retainedToolCallId: null,
+    retainedToolArguments: null,
+    retainedToolOutput: '',
+    retainedToolState: null,
+    toolHistory: [],
+    summary: null,
+    lastEventType: null,
+    lastEventAt: null,
+    error: null,
+    seq: 0,
+    assistantDraft: '',
+    retainedAssistantSegments: [],
+    reasoningSummary: '',
+    reasoningText: '',
+    reasoningState: 'idle' as const,
+    reasoningSegment: 0,
+    reasoningStartedAt: null,
+    reasoningCompletedAt: null,
+    reasoningTimelineSeq: 0,
+    reasoningHistory: [],
+    awaitingAck: false,
+  }
+}
+
 function v3EventFrame(input: {
   sessionId?: string
   endpointCursor?: string

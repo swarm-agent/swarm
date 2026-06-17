@@ -761,6 +761,12 @@ function applyDurableSessionPayload(state: DesktopState, event: DesktopDaemonEve
       if (!lifecycleRunId || lifecycleRunId === existingIntentRunId) {
         next = { ...next, runIntentsBySessionId: omitKey(next.runIntentsBySessionId, sessionId) }
       }
+    } else if (terminalStatusFromEventType(eventType)) {
+      const terminalRunId = payloadString(payload, 'run_id')
+      const existingIntentRunId = next.runIntentsBySessionId[sessionId]?.runId.trim() ?? ''
+      if (!terminalRunId || terminalRunId === existingIntentRunId) {
+        next = { ...next, runIntentsBySessionId: omitKey(next.runIntentsBySessionId, sessionId) }
+      }
     }
   }
   return next
@@ -1091,7 +1097,7 @@ function durableSessionPatch(existing: DesktopSessionRecord, eventType: string, 
     case 'session.assistant.completed': {
       const durableTerminalStatus = runTerminalStatusFromEvent(eventType, payload, sessionId)
       const terminalStatus = durableTerminalStatus || terminalStatusFromEventType(eventType)
-      const shouldUnlock = session.sessionApi?.trim().toLowerCase() === 'v3' ? durableTerminalStatus === 'completed' : terminalStatus === 'completed'
+      const shouldUnlock = terminalStatus === 'completed'
       if (eventType === 'session.assistant.completed' && durableMessageFromWire(payload.message, sessionId)) {
         resetLiveAssistant(session.live)
         if (!payloadNumber(sessionSource, 'message_count')) {

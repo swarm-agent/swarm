@@ -5,12 +5,12 @@ import { queryClient } from '../../../app/query-client'
 import { getDesktopSnapshot, mergeDesktopSnapshot } from './desktop-state-store'
 import type { DesktopSessionRecord, DesktopStoreState } from '../types/realtime'
 import { applyEnvelope, useDesktopStore } from './use-desktop-store'
-import { applyV3RuntimeEnvelope, createV3SnapshotEnvelope } from '../v3-runtime'
+import { applyV3RuntimeEnvelope, createV3SnapshotEnvelope, getV3RuntimeSnapshot, selectV3ActiveRun } from '../v3-runtime'
 import type { RunStreamEventMessage } from './run-stream-controller'
 import type { DesktopChatRoute } from '../chat/services/chat-routing'
 import { permissionRequiresApproval } from '../permissions/services/permission-payload'
 import { buildStructuredToolMessage } from '../chat/services/tool-message'
-import { buildLiveReasoningItems, buildLiveToolMessages, orderDesktopTimelineItems } from '../chat/components/desktop-chat-panel'
+import { buildLiveReasoningItems, buildLiveToolMessages, deriveDesktopChatRunControls, orderDesktopTimelineItems } from '../chat/components/desktop-chat-panel'
 
 function emptyLiveState(): DesktopSessionRecord['live'] {
   return {
@@ -1283,7 +1283,7 @@ test('desktop V3 realtime controller consumes backend stream frames and renders 
     assert.equal(live.assistantDraft, '')
     assert.equal(live.status, 'idle')
     assert.equal(live.runId, null)
-    assert.equal(getDesktopSnapshot().runIntentsBySessionId[sessionId]?.status, 'running')
+    assert.equal(getDesktopSnapshot().runIntentsBySessionId[sessionId], undefined)
     assert.equal(getDesktopSnapshot().sessionsById[sessionId]?.runIntent, null)
 
     const canonicalMessages = getDesktopSnapshot().messagesBySessionId[sessionId] ?? []
@@ -1704,6 +1704,12 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
     }))
     const session = makeSession({ id: 'session-v3', sessionApi: 'v3' })
     useDesktopStore.setState(makeState(session), true)
+    useDesktopStore.setState({ realtimeDesired: true })
+    await useDesktopStore.getState().connect()
+    assert.equal(websocketURLs.length, 1)
+    assert.equal(calls.filter((entry) => String(entry.input) === '/v3/sessions:reconnect').length, 1)
+    calls.length = 0
+    sent.length = 0
 
     await useDesktopStore.getState().submitPrompt({
       sessionId: 'session-v3',
@@ -1716,7 +1722,7 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
     })
 
     const urls = calls.map((entry) => String(entry.input)).sort()
-    assert.deepEqual(urls, ['/v3/sessions/session-v3/messages', '/v3/sessions:reconnect', '/v1/auth/desktop/session'].sort())
+    assert.deepEqual(urls, ['/v3/sessions/session-v3/messages'].sort())
     assert.equal(urls.some((url) => url.startsWith('/v1/swarm/managed-hosts/sessions')), false)
     assert.equal(urls.some((url) => url.startsWith('/v2/sessions')), false)
     assert.equal(websocketURLs.length, 1)
@@ -1754,6 +1760,7 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
     assert.equal(updated.live.status, 'starting')
     assert.equal(updated.live.runId, 'v3run-session-v3-2')
     assert.equal(websocketCloseCount, 0)
+    assert.equal(calls.filter((entry) => String(entry.input) === '/v3/sessions:reconnect').length, 0)
   } finally {
     useDesktopStore.getState().disconnect()
     globalThis.fetch = originalFetch
@@ -2452,7 +2459,163 @@ test('V3 workset discovery delivers session.created over the existing realtime s
     assert.equal(useDesktopStore.getState().sessions['phone-session']?.title, 'Phone created session')
     assert.equal(getDesktopSnapshot().sessionOrder.includes('phone-session'), true)
     assert.equal(getDesktopSnapshot().sessionsById['phone-session']?.title, 'Phone created session')
+
+    v3Socket.serverMessage({
+      protocol: 'v3.realtime',
+      protocol_version: 1,
+      kind: 'workset.session.removed',
+      session_id: 'phone-session',
+      subscription_id: 'auto:phone-session',
+      workset_id: 'desktop-v3-runtime:global',
+      workset_subscription_id: 'desktop-v3-runtime:global',
+      auto_subscribed: true,
+      endpoint_cursor: 'cursor-103',
+      event_type: 'session.archived',
+    })
+    await new Promise((resolve) => setImmediate(resolve))
+    await new Promise((resolve) => setImmediate(resolve))
+
+    assert.equal(useDesktopStore.getState().sessions['phone-session'], undefined)
+    assert.equal(getDesktopSnapshot().sessionsById['phone-session'], undefined)
+    assert.equal(getDesktopSnapshot().sessionOrder.includes('phone-session'), false)
     assert.equal(useDesktopStore.getState().lastGlobalSeq >= 1, true)
+  } finally {
+    useDesktopStore.getState().disconnect()
+    globalThis.fetch = originalFetch
+    globalThis.window = originalWindow
+    globalThis.WebSocket = originalWebSocket
+  }
+})
+
+test('V3 runtime reconnect workset membership replaces stale sidebar sessions and preserves canonical order', async () => {
+  const originalFetch = globalThis.fetch
+  const originalWindow = globalThis.window
+  const originalWebSocket = globalThis.WebSocket
+  const staleSession = makeSession({ id: 'stale-session', title: 'stale', updatedAt: 999 })
+  const sessionA = makeSession({ id: 'session-a', title: 'A', updatedAt: 20 })
+  const sessionB = makeSession({ id: 'session-b', title: 'B', updatedAt: 10 })
+
+  class FakeGlobalSocket extends EventTarget {
+    static CONNECTING = 0
+    static OPEN = 1
+    static CLOSING = 2
+    static CLOSED = 3
+    readyState = FakeGlobalSocket.OPEN
+    url: string
+
+    constructor(input: string | URL) {
+      super()
+      this.url = String(input)
+    }
+
+    addEventListener(type: string, callback: EventListenerOrEventListenerObject) {
+      super.addEventListener(type, callback)
+      if (type === 'open') {
+        queueMicrotask(() => this.dispatchEvent(new Event('open')))
+      }
+    }
+
+    close() {
+      this.readyState = FakeGlobalSocket.CLOSED
+      this.dispatchEvent(new Event('close'))
+    }
+
+    send() {}
+  }
+
+  globalThis.window = {
+    location: { protocol: 'http:', host: '127.0.0.1:7777' },
+    addEventListener() {},
+    dispatchEvent: (() => true) as typeof window.dispatchEvent,
+    setTimeout: ((callback: TimerHandler, timeout?: number) => setTimeout(callback, timeout)) as typeof window.setTimeout,
+    clearTimeout: ((timer?: number) => clearTimeout(timer)) as typeof window.clearTimeout,
+    setInterval: ((callback: TimerHandler, timeout?: number) => setInterval(callback, timeout)) as typeof window.setInterval,
+    clearInterval: ((timer?: number) => clearInterval(timer)) as typeof window.clearInterval,
+  } as unknown as Window & typeof globalThis
+  globalThis.WebSocket = FakeGlobalSocket as unknown as typeof WebSocket
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input)
+    if (url === '/v1/auth/desktop/session') {
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    if (url === '/v3/sessions:reconnect') {
+      return new Response(JSON.stringify({
+        ...makeEmptyReconnectResponse('cursor-authoritative'),
+        sessions_by_id: {
+          'session-b': {
+            id: 'session-b',
+            title: 'B',
+            workspace_path: '/repo',
+            workspace_name: 'repo',
+            mode: 'auto',
+            session_api: 'v3',
+            message_count: 0,
+            updated_at: 10,
+            created_at: 1,
+          },
+          'session-a': {
+            id: 'session-a',
+            title: 'A',
+            workspace_path: '/repo',
+            workspace_name: 'repo',
+            mode: 'auto',
+            session_api: 'v3',
+            message_count: 0,
+            updated_at: 20,
+            created_at: 1,
+          },
+        },
+        session_order: ['session-b', 'session-a'],
+        worksets: [{
+          protocol: 'v3.realtime',
+          protocol_version: 1,
+          kind: 'subscribe.workset',
+          workset_id: 'desktop-v3-runtime:global',
+          subscription_id: 'desktop-v3-runtime:global',
+          selector: { kind: 'global', global: true },
+          resources: ['messages', 'events', 'run_intents'],
+          auto_subscribe_sessions: true,
+        }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    throw new Error(`unexpected fetch: ${url}`)
+  }) as typeof fetch
+
+  try {
+    useDesktopStore.setState({
+      ...useDesktopStore.getState(),
+      activeSessionId: 'stale-session',
+      sessions: {
+        [staleSession.id]: staleSession,
+        [sessionA.id]: sessionA,
+        [sessionB.id]: sessionB,
+      },
+      lastGlobalSeq: 0,
+      realtimeDesired: true,
+      connectionState: 'idle',
+    }, true)
+    applyV3RuntimeEnvelope(createV3SnapshotEnvelope({
+      rev: getDesktopSnapshot().rev + 1,
+      sessionsById: {
+        [staleSession.id]: staleSession,
+        [sessionA.id]: sessionA,
+        [sessionB.id]: sessionB,
+      },
+      sessionOrder: [staleSession.id, sessionA.id, sessionB.id],
+    }, {
+      id: `test-stale-workset:${Date.now()}:${Math.random()}`,
+      mode: 'replace',
+      receivedAt: Date.now(),
+    }))
+
+    await useDesktopStore.getState().connect()
+    await new Promise((resolve) => setImmediate(resolve))
+    await new Promise((resolve) => setImmediate(resolve))
+
+    assert.deepEqual(Object.keys(useDesktopStore.getState().sessions), ['session-b', 'session-a'])
+    assert.equal(useDesktopStore.getState().activeSessionId, null)
+    assert.deepEqual(getDesktopSnapshot().sessionOrder, ['session-b', 'session-a'])
+    assert.equal(getDesktopSnapshot().sessionsById['stale-session'], undefined)
   } finally {
     useDesktopStore.getState().disconnect()
     globalThis.fetch = originalFetch
@@ -2563,7 +2726,7 @@ test('V3 ensureRunStream boots through DesktopSessionV3Runtime without opening l
 })
 
 
-test('V3 assistant completed without durable run intent does not unlock Desktop live state', async () => {
+test('V3 assistant completed without durable run intent clears every active-run UI path', async () => {
   const session = makeSession({
     id: 'session-v3',
     sessionApi: 'v3',
@@ -2598,11 +2761,23 @@ test('V3 assistant completed without durable run intent does not unlock Desktop 
   }, 200)
 
   const updated = useDesktopStore.getState().sessions['session-v3']
-  assert.equal(updated.live.status, 'running')
-  assert.equal(updated.live.runId, 'run-v3')
-  assert.equal(updated.live.startedAt, 100)
+  assert.equal(updated.runIntent, null)
+  assert.equal(updated.live.status, 'idle')
+  assert.equal(updated.live.runId, null)
+  assert.equal(updated.live.startedAt, null)
   assert.equal(updated.live.lastEventType, 'session.assistant.completed')
   assert.equal(updated.messageCount, 1)
+  assert.equal(getDesktopSnapshot().runIntentsBySessionId['session-v3'], undefined)
+  assert.equal(selectV3ActiveRun(getV3RuntimeSnapshot(), 'session-v3'), null)
+  const controls = deriveDesktopChatRunControls(selectV3ActiveRun(getV3RuntimeSnapshot(), 'session-v3'), {
+    liveSummary: updated.live.summary,
+    timerNow: 500,
+  })
+  assert.equal(controls.activeRunIntent, null)
+  assert.equal(controls.durableRunActive, false)
+  assert.equal(controls.canStop, false)
+  assert.equal(controls.composerDisabled, false)
+  assert.equal(controls.runActive, false)
   await new Promise((resolve) => setImmediate(resolve))
 })
 

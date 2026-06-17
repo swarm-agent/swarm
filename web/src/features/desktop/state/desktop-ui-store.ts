@@ -411,8 +411,105 @@ function runtimeSessionWithActiveRunIntent(session: DesktopSessionRecord, runInt
   return next
 }
 
-function desktopStoreSnapshotFromRuntimeDesktop(desktop: DesktopState): Partial<DesktopStoreState> {
-  const sessions = { ...useDesktopUiStore.getState().sessions }
+function runtimeWorksetSessionIds(state: SessionV3ReducerState): Set<string> | null {
+  const worksets = Object.values(state.worksetsById)
+  if (worksets.length === 0) {
+    return null
+  }
+  const removed = new Set(state.removedSessionIds)
+  for (const workset of worksets) {
+    for (const sessionId of workset.removedSessionIds) {
+      removed.add(sessionId)
+    }
+  }
+  const ids = new Set<string>()
+  for (const workset of worksets) {
+    for (const sessionId of workset.sessionIds) {
+      if (sessionId && !removed.has(sessionId)) {
+        ids.add(sessionId)
+      }
+    }
+  }
+  return ids
+}
+
+function desktopWithRuntimeWorksetMembership(state: SessionV3ReducerState): DesktopState {
+  const membership = runtimeWorksetSessionIds(state)
+  const desktop = state.desktop
+  if (!membership) {
+    return desktop
+  }
+
+  const sessionsById: DesktopState['sessionsById'] = {}
+  const sessionOrder: string[] = []
+  const appendSession = (sessionId: string) => {
+    if (!membership.has(sessionId) || sessionOrder.includes(sessionId)) {
+      return
+    }
+    const session = desktop.sessionsById[sessionId]
+    if (!session?.id) {
+      return
+    }
+    sessionsById[sessionId] = session
+    sessionOrder.push(sessionId)
+  }
+
+  for (const sessionId of desktop.sessionOrder) {
+    appendSession(sessionId)
+  }
+  for (const sessionId of Array.from(membership)) {
+    appendSession(sessionId)
+  }
+
+  const unchanged = desktop.sessionOrder.length === sessionOrder.length
+    && desktop.sessionOrder.every((sessionId, index) => sessionId === sessionOrder[index])
+    && Object.keys(desktop.sessionsById).length === Object.keys(sessionsById).length
+  if (unchanged) {
+    return desktop
+  }
+
+  return {
+    ...desktop,
+    sessionsById,
+    sessionOrder,
+  }
+}
+
+function runtimeTerminalRunIntentReconcileSessionIds(desktop: DesktopState): string[] {
+  const terminalEventTypes = new Set([
+    'session.assistant.completed',
+    'session.assistant.failed',
+    'session.run.completed',
+    'session.run.failed',
+    'session.run.cancelled',
+    'session.run.expired',
+    'session.run.interrupted',
+    'session.lifecycle.updated',
+    'session.run_intent.recorded',
+  ])
+  return Object.values(desktop.sessionsById)
+    .filter((session) => {
+      const liveStatus = session.live.status.trim().toLowerCase()
+      const lastEventType = session.live.lastEventType?.trim() ?? ''
+      return !desktop.runIntentsBySessionId[session.id]
+        && !session.runIntent
+        && (liveStatus === 'idle' || liveStatus === 'error')
+        && terminalEventTypes.has(lastEventType)
+    })
+    .map((session) => session.id)
+}
+
+function runtimeDesktopSnapshotForEnvelope(desktop: DesktopState): DesktopState & { runIntentReconcileSessionIds?: string[] } {
+  const runIntentReconcileSessionIds = runtimeTerminalRunIntentReconcileSessionIds(desktop)
+  return runIntentReconcileSessionIds.length > 0
+    ? { ...desktop, runIntentReconcileSessionIds }
+    : desktop
+}
+
+function desktopStoreSnapshotFromRuntimeDesktop(state: SessionV3ReducerState, options: { authoritativeMembership?: boolean } = {}): Partial<DesktopStoreState> {
+  const desktop = desktopWithRuntimeWorksetMembership(state)
+  const current = useDesktopUiStore.getState()
+  const sessions = options.authoritativeMembership ? {} : { ...current.sessions }
   for (const sessionId of desktop.sessionOrder.length > 0 ? desktop.sessionOrder : Object.keys(desktop.sessionsById)) {
     const session = desktop.sessionsById[sessionId]
     if (!session?.id) {
@@ -423,7 +520,7 @@ function desktopStoreSnapshotFromRuntimeDesktop(desktop: DesktopState): Partial<
     sessions[session.id] = merged
     syncBlockedSessionToWorkspaceOverview(queryClient, merged)
   }
-  const current = useDesktopUiStore.getState()
+  const activeSessionId = current.activeSessionId && sessions[current.activeSessionId] ? current.activeSessionId : null
   const runtimeNotifications = Object.values(desktop.notificationsById)
   const notificationCenter = runtimeNotifications.length > 0 || desktop.notificationSummary.updatedAt > 0
     ? {
@@ -438,9 +535,10 @@ function desktopStoreSnapshotFromRuntimeDesktop(desktop: DesktopState): Partial<
     : current.notificationCenter
   return {
     sessions,
+    activeSessionId,
     notificationCenter,
     lastGlobalSeq: Math.max(current.lastGlobalSeq, desktop.rev),
-    activeWorkspacePath: resolveWorkspacePathForActiveSession({ ...current, sessions }, current.activeSessionId),
+    activeWorkspacePath: resolveWorkspacePathForActiveSession({ ...current, sessions, activeSessionId }, activeSessionId),
   }
 }
 
@@ -449,16 +547,20 @@ function applyDesktopSessionV3RuntimeState(state: SessionV3ReducerState, result:
   if (endpointCursor) {
     desktopV3RealtimeEndpointCursor = endpointCursor
   }
-  if (!result || result.desktopChanged) {
-    applyV3RuntimeEnvelope(createV3SnapshotEnvelope(state.desktop, {
-      mode: 'merge',
+  const runtimeFrameKind = result?.state.lastApply?.frameKind ?? null
+  const worksetMembershipChanged = runtimeFrameKind === 'workset.session.discovered' || runtimeFrameKind === 'workset.session.removed'
+  const runtimeAction = result?.state.lastApply?.action ?? null
+  const authoritativeMembership = !result || runtimeAction === 'reconnect' || worksetMembershipChanged
+  if (!result || result.desktopChanged || authoritativeMembership) {
+    const desktop = desktopWithRuntimeWorksetMembership(state)
+    applyV3RuntimeEnvelope(createV3SnapshotEnvelope(runtimeDesktopSnapshotForEnvelope(desktop), {
+      mode: authoritativeMembership ? 'replace' : 'merge',
       receivedAt: Date.now(),
-      id: `desktop-session-v3-runtime:${state.mutationSeq}`,
+      id: `desktop-session-v3-runtime:${state.mutationSeq}:${desktop.rev}:${endpointCursor || 'no-cursor'}`,
       source: { kind: 'runtime', transport: 'memory', name: 'desktop-session-v3-runtime' },
     }))
-    useDesktopUiStore.setState(desktopStoreSnapshotFromRuntimeDesktop(state.desktop))
+    useDesktopUiStore.setState(desktopStoreSnapshotFromRuntimeDesktop(state, { authoritativeMembership }))
   }
-  const runtimeAction = result?.state.lastApply?.action ?? null
   if (runtimeAction === 'status') {
     if (state.status === 'ready') {
       const current = useDesktopUiStore.getState()
@@ -3234,11 +3336,9 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
         resetLiveAssistantState(session.live)
         session.messageCount += 1
       }
-      if (!sessionUsesV3Api(session) || terminalRunIntent?.status === 'completed') {
-        if (terminalRunIntent) {
-          session.runIntent = null
-        }
-        markTerminalRun(session.live, terminalRunIntent?.runId || session.live.runId, envelopeSeq)
+      if (!sessionUsesV3Api(session) || terminalRunIntent?.status === 'completed' || eventType === 'session.assistant.completed') {
+        session.runIntent = null
+        markTerminalRun(session.live, terminalRunIntent?.runId || (typeof payloadRecord.run_id === 'string' ? payloadRecord.run_id.trim() : '') || session.live.runId, envelopeSeq)
         session.live.status = 'idle'
         session.live.runId = null
         session.live.startedAt = null
@@ -3501,6 +3601,8 @@ export function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope)
   let merged = mergeSessionRecords(state.sessions[sessionId] ?? null, session)
   if (eventType === 'session.run_intent.recorded' && v3RunIntentStatusTerminal(v3PayloadString(v3RunIntentPayload(payloadRecord), 'status'))) {
     merged = { ...merged, lifecycle: null }
+  } else if (eventType === 'session.assistant.completed') {
+    merged = { ...merged, runIntent: null, lifecycle: null }
   }
   sessions[sessionId] = merged
   syncBlockedSessionToWorkspaceOverview(queryClient, merged)
@@ -4320,7 +4422,6 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
     void targetKind
     void targetName
 
-    get().closeRunStream(targetSessionId)
     set((state: DesktopStoreState) => {
       cancelDraftFlush(targetSessionId)
       const nextSessionDrafts = { ...state.sessionDrafts }
@@ -4340,8 +4441,6 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
         runtime.setWantedSessions([targetSessionId])
         await runtime.compactSession({ sessionId: targetSessionId, note: trimmedPrompt, agentName, clientRequestId })
         set({ realtimeDesired: true })
-        runtime.setWantedSessions([targetSessionId])
-        await get().connect()
         return
       }
 
@@ -4378,20 +4477,11 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
             endpointCursorPresent: Boolean(realtimeOutbox?.endpoint_cursor?.trim()),
           })
           const mutationEndpointCursor = realtimeOutbox?.endpoint_cursor?.trim() ?? ''
-          if (mutationEndpointCursor) {
-            desktopV3RealtimeEndpointCursor = mutationEndpointCursor
-          }
           pushDesktopV3FollowUpTraceStep(trace, 'message-commit-applied', {
             mutationEndpointCursorPresent: Boolean(mutationEndpointCursor),
             afterCommitRealtime: summarizeDesktopV3RealtimeDiagnostics(getDesktopV3RealtimeDiagnostics(targetSessionId)),
           })
           set({ realtimeDesired: true })
-          runtime.setWantedSessions([targetSessionId])
-          await get().connect()
-          pushDesktopV3FollowUpTraceStep(trace, 'store-connect-finished', {
-            storeConnectionState: get().connectionState,
-            afterStoreConnectRealtime: summarizeDesktopV3RealtimeDiagnostics(getDesktopV3RealtimeDiagnostics(targetSessionId)),
-          })
           window.setTimeout(() => reportDesktopV3FollowUpTrace(trace), 3000)
         } catch (error) {
           pushDesktopV3FollowUpTraceStep(trace, 'failed', {
