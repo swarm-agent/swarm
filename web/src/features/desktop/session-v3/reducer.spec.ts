@@ -81,10 +81,10 @@ test('explicit subscribe frame makes a session manual so workset removal preserv
   assert.deepEqual(state.worksetsById['workset-1']?.removedSessionIds, ['session-manual'])
 })
 
-test('reconnect snapshot seeds authoritative workset membership from canonical session order', () => {
+test('sync snapshot seeds authoritative workset membership from canonical session order', () => {
   const initial = createSessionV3ReducerInitialState()
   const result = sessionV3Reducer(initial, {
-    type: 'reconnect',
+    type: 'sync-snapshot',
     result: {
       snapshot: {
         rev: 10,
@@ -128,20 +128,15 @@ test('reconnect snapshot seeds authoritative workset membership from canonical s
         sessionOrder: ['session-a', 'session-b'],
       },
       endpointCursor: 'cursor-10',
-      clientId: 'client-1',
-      surface: 'desktop',
-      worksetId: 'workset-1',
-      subscriptions: [],
-      worksets: [{
+      wire: { ok: true, rev: 10 },
+    },
+    subscriptions: [],
+    worksets: [{
         workset_id: 'workset-1',
         subscription_id: 'workset-subscription-1',
         selector: { kind: 'global', global: true },
         auto_subscribe_sessions: true,
-      }],
-      realtimeResume: null,
-      diagnosticsBySession: {},
-      wire: { ok: true, rev: 10 },
-    },
+    }],
   })
 
   assert.deepEqual(result.state.worksetsById['workset-1']?.sessionIds, ['session-a', 'session-b'])

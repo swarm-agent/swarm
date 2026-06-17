@@ -3,9 +3,6 @@ import test from 'node:test'
 
 import { DesktopSessionV3Runtime, runtimeClientId } from './runtime'
 import {
-  SESSION_V3_REALTIME_PROTOCOL,
-  SESSION_V3_REALTIME_PROTOCOL_VERSION,
-  SESSION_V3_REALTIME_RESUME_KIND,
   type SessionV3RealtimeResumeWire,
   type SessionV3StateSnapshotRequest,
   type SessionV3SyncSnapshot,
@@ -105,41 +102,13 @@ function installMemoryLocalStorage(initial: Record<string, string> = {}): () => 
   }
 }
 
-function makeResume(endpointCursor: string): SessionV3RealtimeResumeWire {
-  return {
-    protocol: SESSION_V3_REALTIME_PROTOCOL,
-    protocol_version: SESSION_V3_REALTIME_PROTOCOL_VERSION,
-    kind: SESSION_V3_REALTIME_RESUME_KIND,
-    endpoint_cursor: endpointCursor,
-    subscriptions: [],
-    worksets: [
-      {
-        workset_id: 'workset-1',
-        subscription_id: 'workset-sub-1',
-        selector: { kind: 'global', global: true },
-        auto_subscribe_sessions: true,
-      },
-    ],
-  }
-}
-
-function makeReconnectSnapshot(endpointCursor: string): SessionV3SyncSnapshot {
+function makeSyncSnapshot(endpointCursor: string): SessionV3SyncSnapshot {
   return {
     snapshot: {
       rev: Number(endpointCursor.replace(/\D/g, '')) || 1,
       snapshotEndpointCursor: endpointCursor,
     },
     endpointCursor,
-    subscriptions: [],
-    worksets: [
-      {
-        workset_id: 'workset-1',
-        subscription_id: 'workset-sub-1',
-        selector: { kind: 'global', global: true },
-        auto_subscribe_sessions: true,
-      },
-    ],
-    realtimeResume: makeResume(endpointCursor),
     wire: { ok: true, rev: 1, snapshot_endpoint_cursor: endpointCursor },
   }
 }
@@ -171,7 +140,7 @@ test('runtime boot uses bootstrap sync API and preserves explicit client id loca
       api: {
         bootstrapSessionV3Sync: async (input = {}) => {
           capturedRequests.push(input)
-          return makeReconnectSnapshot(`cursor-${capturedRequests.length}`)
+          return makeSyncSnapshot(`cursor-${capturedRequests.length}`)
         },
       },
       transportOptions: {
@@ -214,7 +183,7 @@ test('runtime boot opens one V3 realtime stream and sends one resume for workset
     api: {
       bootstrapSessionV3Sync: async (options = {}) => {
         syncRequests.push(options)
-        return makeReconnectSnapshot('cursor-boot')
+        return makeSyncSnapshot('cursor-boot')
       },
     },
     transportOptions: {
@@ -252,7 +221,7 @@ test('runtime boot opens one V3 realtime stream and sends one resume for workset
     const resume = parseResume(sockets[0])
     assert.equal(resume.endpoint_cursor, 'cursor-boot')
     assert.deepEqual(resume.subscriptions?.map((subscription) => subscription.session_id), ['session-1'])
-    assert.deepEqual(resume.worksets?.map((workset) => workset.workset_id), ['workset-1'])
+    assert.deepEqual(resume.worksets?.map((workset) => workset.workset_id), ['desktop-v3-runtime:global'])
     assert.equal(resume.worksets?.[0]?.auto_subscribe_sessions, true)
     assert.equal(runtime.diagnostics().socketState, 'open')
   } finally {
@@ -287,7 +256,7 @@ test('stopRun applies mutation outbox without reconnecting or opening another V3
     api: {
       bootstrapSessionV3Sync: async () => {
         reconnectCalls += 1
-        return makeReconnectSnapshot('cursor-1')
+        return makeSyncSnapshot('cursor-1')
       },
       stopSessionV3Run: async (sessionId, input) => {
         stopCalls += 1
@@ -335,7 +304,7 @@ test('refresh resets the V3 socket and reconnects once from the latest snapshot 
   installTransportGlobals()
   const sockets: MockRealtimeSocket[] = []
   const openEndpointCursors: string[] = []
-  const snapshots = [makeReconnectSnapshot('cursor-1'), makeReconnectSnapshot('cursor-2')]
+  const snapshots = [makeSyncSnapshot('cursor-1'), makeSyncSnapshot('cursor-2')]
 
   const runtime = new DesktopSessionV3Runtime({
     wantedSessionIds: ['session-1'],
@@ -376,12 +345,12 @@ test('refresh resets the V3 socket and reconnects once from the latest snapshot 
   const resume = parseResume(sockets[1])
   assert.equal(resume.endpoint_cursor, 'cursor-2')
   assert.deepEqual(resume.subscriptions?.map((subscription) => subscription.session_id), ['session-1'])
-  assert.deepEqual(resume.worksets?.map((workset) => workset.workset_id), ['workset-1'])
+  assert.deepEqual(resume.worksets?.map((workset) => workset.workset_id), ['desktop-v3-runtime:global'])
   assert.equal(runtime.diagnostics().socketState, 'open')
   runtime.shutdown()
 })
 
-test('runtime resume preserves backend worksets while adding known session subscriptions', async () => {
+test('runtime constructs resume workset from runtime config while adding known session subscriptions', async () => {
   installTransportGlobals()
   const sockets: MockRealtimeSocket[] = []
   MockRealtimeSocket.collect = sockets
@@ -395,24 +364,7 @@ test('runtime resume preserves backend worksets while adding known session subsc
           snapshotEndpointCursor: 'cursor-10',
         },
         endpointCursor: 'cursor-10',
-        subscriptions: [],
-        worksets: [],
-        realtimeResume: {
-          protocol: SESSION_V3_REALTIME_PROTOCOL,
-          protocol_version: SESSION_V3_REALTIME_PROTOCOL_VERSION,
-          kind: SESSION_V3_REALTIME_RESUME_KIND,
-          endpoint_cursor: 'cursor-10',
-          subscriptions: [],
-          worksets: [
-            {
-              workset_id: 'workset-1',
-              subscription_id: 'workset-sub-1',
-              selector: { kind: 'global', global: true },
-              auto_subscribe_sessions: true,
-            },
-          ],
-        },
-            wire: { ok: true, rev: 10, snapshot_endpoint_cursor: 'cursor-10' },
+        wire: { ok: true, rev: 10, snapshot_endpoint_cursor: 'cursor-10' },
       }),
     },
     transportOptions: {
@@ -427,7 +379,7 @@ test('runtime resume preserves backend worksets while adding known session subsc
 
     const resume = parseResume(sockets[0])
     assert.equal(resume.endpoint_cursor, 'cursor-10')
-    assert.deepEqual(resume.worksets?.map((workset) => workset.workset_id), ['workset-1'])
+    assert.deepEqual(resume.worksets?.map((workset) => workset.workset_id), ['desktop-v3-runtime:global'])
     assert.equal(resume.worksets?.[0]?.auto_subscribe_sessions, true)
     assert.deepEqual(resume.subscriptions?.map((subscription) => subscription.session_id), ['session-1'])
   } finally {

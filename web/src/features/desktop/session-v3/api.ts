@@ -15,6 +15,7 @@ import type {
   SessionV3MessageCommitRequestWire,
   SessionV3MessageCommitResponseWire,
   SessionV3MessageRole,
+  SessionV3MetadataMutationResponseWire,
   SessionV3ModeMutationResponseWire,
   SessionV3PermissionResolveRequestWire,
   SessionV3PermissionResolveResponseWire,
@@ -254,15 +255,14 @@ export async function updateSessionV3Metadata(
   sessionId: string,
   metadata: SessionV3JsonRecord,
   options: SessionV3RequestOptions = {},
-): Promise<SessionV3SessionSnapshot | null> {
+): Promise<SessionV3MetadataMutationResponseWire> {
   const normalizedSessionId = assertSessionV3SessionId(sessionId)
-  await requestJson<unknown>(`/v3/sessions/${encodeURIComponent(normalizedSessionId)}/metadata`, {
+  return requestJson<SessionV3MetadataMutationResponseWire>(`/v3/sessions/${encodeURIComponent(normalizedSessionId)}/metadata`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ metadata }),
     signal: options.signal,
   })
-  return fetchSessionV3SessionSnapshot(normalizedSessionId, options)
 }
 
 export async function fetchSessionV3Preference(

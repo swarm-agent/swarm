@@ -16,6 +16,8 @@ import type {
   SessionV3ProjectionWire,
   SessionV3RealtimeFrameWire,
   SessionV3RealtimeOutboxWire,
+  SessionV3RealtimeSubscriptionRequestWire,
+  SessionV3RealtimeWorksetSubscriptionRequestWire,
   SessionV3SyncSnapshot,
   SessionV3RunIntentWire,
   SessionV3SessionWire,
@@ -79,7 +81,7 @@ export interface SessionV3ReducerState {
 export type SessionV3ReducerAction =
   | { type: 'snapshot'; snapshot: DesktopDaemonSnapshot; mode?: SessionV3ReducerSnapshotMode; endpointCursor?: string | null; receivedAt?: number }
   | { type: 'snapshot-result'; result: SessionV3SnapshotResult; mode?: SessionV3ReducerSnapshotMode; receivedAt?: number }
-  | { type: 'reconnect'; result: SessionV3SyncSnapshot; mode?: SessionV3ReducerSnapshotMode; receivedAt?: number }
+  | { type: 'sync-snapshot'; result: SessionV3SyncSnapshot; subscriptions?: SessionV3RealtimeSubscriptionRequestWire[]; worksets?: SessionV3RealtimeWorksetSubscriptionRequestWire[]; mode?: SessionV3ReducerSnapshotMode; receivedAt?: number }
   | { type: 'frame'; frame: SessionV3RealtimeFrameWire; receivedAt?: number }
   | { type: 'mutation'; response: SessionV3HydratedSessionResponseWire | SessionV3CompactResponseWire; sessionId?: string | null; receivedAt?: number }
   | { type: 'status'; status: DesktopStateStatus; error?: string | null; receivedAt?: number }
@@ -141,8 +143,8 @@ export function sessionV3Reducer(state: SessionV3ReducerState, action: SessionV3
         ...action,
         endpointCursor: action.result.endpointCursor,
       })
-    case 'reconnect':
-      return applySessionV3Reconnect(state, action.result, action)
+    case 'sync-snapshot':
+      return applySessionV3SyncSnapshot(state, action.result, action)
     case 'frame':
       return applySessionV3RealtimeFrame(state, action.frame, action)
     case 'mutation':
@@ -180,10 +182,10 @@ export function applySessionV3Snapshot(
   })
 }
 
-export function applySessionV3Reconnect(
+export function applySessionV3SyncSnapshot(
   state: SessionV3ReducerState,
   result: SessionV3SyncSnapshot,
-  action: Extract<SessionV3ReducerAction, { type: 'reconnect' }>,
+  action: Extract<SessionV3ReducerAction, { type: 'sync-snapshot' }>,
 ): SessionV3ReducerResult {
   const snapshotResult = applySessionV3Snapshot(state, result.snapshot, {
     type: 'snapshot',
@@ -193,7 +195,7 @@ export function applySessionV3Reconnect(
   })
   const receivedAt = normalizeReceivedAt(action.receivedAt)
   const subscriptionsBySessionId = { ...snapshotResult.state.subscriptionsBySessionId }
-  for (const subscription of result.subscriptions) {
+  for (const subscription of action.subscriptions ?? []) {
     const sessionId = normalizeOptionalString(subscription.session_id)
     const subscriptionId = normalizeOptionalString(subscription.subscription_id)
     if (!sessionId || !subscriptionId) continue
@@ -210,7 +212,7 @@ export function applySessionV3Reconnect(
     ? snapshotResult.state.desktop.sessionOrder.filter((sessionId) => Boolean(snapshotResult.state.desktop.sessionsById[sessionId]))
     : Object.keys(snapshotResult.state.desktop.sessionsById)
   const worksetsById = { ...snapshotResult.state.worksetsById }
-  for (const workset of result.worksets) {
+  for (const workset of action.worksets ?? []) {
     const worksetId = normalizeOptionalString(workset.workset_id)
     const subscriptionId = normalizeOptionalString(workset.subscription_id)
     if (!worksetId || !subscriptionId) continue

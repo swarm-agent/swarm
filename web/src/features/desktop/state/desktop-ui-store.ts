@@ -526,7 +526,7 @@ function applyDesktopSessionV3RuntimeState(state: SessionV3ReducerState, result:
   const runtimeFrameKind = result?.state.lastApply?.frameKind ?? null
   const worksetMembershipChanged = runtimeFrameKind === 'workset.session.discovered' || runtimeFrameKind === 'workset.session.removed'
   const runtimeAction = result?.state.lastApply?.action ?? null
-  const authoritativeMembership = !result || runtimeAction === 'reconnect' || worksetMembershipChanged
+  const authoritativeMembership = !result || runtimeAction === 'sync-snapshot' || worksetMembershipChanged
   if (!result || result.desktopChanged || authoritativeMembership) {
     const desktop = desktopWithRuntimeWorksetMembership(state)
     applyV3RuntimeEnvelope(createV3SnapshotEnvelope(runtimeDesktopSnapshotForEnvelope(desktop), {

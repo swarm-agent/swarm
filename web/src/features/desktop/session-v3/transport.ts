@@ -47,11 +47,10 @@ export interface DesktopV3RealtimeTransportOpenSocketOptions {
 
 export type DesktopV3RealtimeTransportOpenSocket = (options: DesktopV3RealtimeTransportOpenSocketOptions) => Promise<WebSocket> | WebSocket
 
-export type DesktopV3RealtimeTransportRehydrateResult = SessionV3SyncSnapshot | SessionV3RealtimeResumeWire | {
+export type DesktopV3RealtimeTransportRehydrateResult = SessionV3RealtimeResumeWire | {
   endpointCursor?: string | null
   subscriptions?: SessionV3RealtimeSubscriptionRequestWire[]
   worksets?: SessionV3RealtimeWorksetSubscriptionRequestWire[]
-  realtimeResume?: SessionV3RealtimeResumeWire | null
 }
 
 export interface DesktopV3RealtimeTransportOptions {
@@ -242,14 +241,17 @@ export class DesktopV3RealtimeTransport {
     return true
   }
 
-  applySyncSnapshot(result: SessionV3SyncSnapshot): void {
-    if (result.realtimeResume && this.applyRealtimeResume(result.realtimeResume, { replace: true })) {
-      return
-    }
+  applySyncSnapshot(
+    result: SessionV3SyncSnapshot,
+    resumeState: {
+      subscriptions?: SessionV3RealtimeSubscriptionRequestWire[]
+      worksets?: SessionV3RealtimeWorksetSubscriptionRequestWire[]
+    } = {},
+  ): void {
     this.advanceEndpointCursor(result.endpointCursor || result.snapshot.snapshotEndpointCursor, 'snapshot')
     this.replaceRegistries({
-      subscriptions: result.subscriptions,
-      worksets: result.worksets,
+      subscriptions: resumeState.subscriptions ?? [],
+      worksets: resumeState.worksets ?? [],
       replace: true,
     })
     this.syncOpenSocketResume('sync snapshot applied')
@@ -538,22 +540,18 @@ export class DesktopV3RealtimeTransport {
       this.applyRealtimeResume(result, { replace: true })
       return
     }
-    const syncSnapshot = result as Partial<SessionV3SyncSnapshot> & {
+    const syncSnapshot = result as {
       endpointCursor?: string | null
-      realtimeResume?: SessionV3RealtimeResumeWire | null
       subscriptions?: SessionV3RealtimeSubscriptionRequestWire[]
       worksets?: SessionV3RealtimeWorksetSubscriptionRequestWire[]
     }
-    if (syncSnapshot.realtimeResume && this.applyRealtimeResume(syncSnapshot.realtimeResume, { replace: true })) {
-      return
-    }
     this.advanceEndpointCursor(syncSnapshot.endpointCursor, 'snapshot')
-    if (syncSnapshot.subscriptions) {
-      this.setSessions(syncSnapshot.subscriptions, { replace: true })
-    }
-    if (syncSnapshot.worksets) {
-      this.setWorksets(syncSnapshot.worksets, { replace: true })
-    }
+    this.replaceRegistries({
+      subscriptions: syncSnapshot.subscriptions ?? [],
+      worksets: syncSnapshot.worksets ?? [],
+      replace: true,
+    })
+    this.syncOpenSocketResume('rehydrate result applied')
   }
 
   private forceReconnect(reason: string): void {
