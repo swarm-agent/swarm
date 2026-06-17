@@ -443,6 +443,58 @@ test('runtime uses one canonical workspace recent scope for bootstrap and realti
   }
 })
 
+test('runtime targeted hydrate preserves workspace recent workset scope while adding session subscription', async () => {
+  installTransportGlobals()
+  const sockets: MockRealtimeSocket[] = []
+  const hydrateRequests: SessionV3StateSnapshotRequest[] = []
+  const runtime = new DesktopSessionV3Runtime({
+    workset: {
+      workset_id: 'w1',
+      selector: { kind: 'workspace' },
+      workspace: { workspace_path: '/repo/a' },
+      recent: { limit: 50 },
+      auto_subscribe_sessions: true,
+    },
+    api: {
+      bootstrapSessionV3Sync: async () => makeSyncSnapshot('cursor-1'),
+      hydrateSessionV3Sync: async (request) => {
+        hydrateRequests.push(request)
+        return makeSyncSnapshot('cursor-2')
+      },
+    },
+    transportOptions: {
+      livenessTimeoutMs: 60_000,
+      openSocket: ({ endpointCursor }) => {
+        const socket = new MockRealtimeSocket(`ws://localhost/v3/realtime/stream?endpoint_cursor=${endpointCursor}`)
+        sockets.push(socket)
+        return socket as unknown as WebSocket
+      },
+    },
+  })
+
+  try {
+    await runtime.boot()
+    assert.equal(sockets.length, 1)
+    sockets[0].open()
+    assert.equal(parseResume(sockets[0]).worksets?.[0]?.selector.kind, 'workspace')
+
+    await runtime.hydrateSessions(['session-2'])
+
+    assert.equal(hydrateRequests.length, 1)
+    assert.deepEqual(hydrateRequests[0].sessionIds, ['session-2'])
+    assert.equal(sockets.length, 1)
+    const latestResume = JSON.parse(sockets[0].sent[sockets[0].sent.length - 1] ?? '') as SessionV3RealtimeResumeWire
+    assert.equal(latestResume.endpoint_cursor, 'cursor-2')
+    assert.deepEqual(latestResume.subscriptions?.map((subscription) => subscription.session_id), ['session-2'])
+    assert.equal(latestResume.worksets?.[0]?.workset_id, 'w1')
+    assert.equal(latestResume.worksets?.[0]?.selector.kind, 'workspace')
+    assert.equal(latestResume.worksets?.[0]?.selector.workspace_path, '/repo/a')
+    assert.equal(latestResume.worksets?.[0]?.selector.recent?.limit, 50)
+  } finally {
+    runtime.shutdown()
+  }
+})
+
 test('runtime targeted hydrate uses sync hydrate and updates existing realtime resume without opening a second socket', async () => {
   installTransportGlobals()
   const sockets: MockRealtimeSocket[] = []
@@ -489,6 +541,9 @@ test('runtime targeted hydrate uses sync hydrate and updates existing realtime r
     assert.equal(latestResume.endpoint_cursor, 'cursor-2')
     assert.deepEqual(latestResume.subscriptions?.map((subscription) => subscription.session_id), ['session-2'])
     assert.deepEqual(latestResume.worksets?.map((workset) => workset.workset_id), ['desktop-v3-runtime:global'])
+    assert.equal(latestResume.worksets?.[0]?.selector.kind, 'global')
+    assert.equal(latestResume.worksets?.[0]?.selector.global, true)
+    assert.equal(latestResume.worksets?.[0]?.selector.recent?.limit, 50)
   } finally {
     runtime.shutdown()
   }
