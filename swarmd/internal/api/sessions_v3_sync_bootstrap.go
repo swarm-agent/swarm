@@ -243,7 +243,7 @@ func canonicalSessionsV3SyncBootstrapSelector(req sessionsV3SyncBootstrapRequest
 	if global && len(workspacePaths) > 0 {
 		return sessionsV3SyncSelector{}, nil, errors.New("workset global selector cannot be combined with workspace_path or workspace_paths")
 	}
-	if selector.Recent.Limit > 0 && len(workspacePaths) == 0 && !global {
+	if (selector.Kind == "recent" || selector.Recent.Limit > 0) && len(workspacePaths) == 0 && !global {
 		return sessionsV3SyncSelector{}, nil, errors.New("workset recent selector requires explicit workspace_path, workspace_paths, or global=true")
 	}
 	return selector, workspacePaths, nil

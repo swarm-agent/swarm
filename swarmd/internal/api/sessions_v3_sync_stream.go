@@ -137,8 +137,13 @@ func (s *Server) writeV3SyncStreamWebsocketUnsupported(w http.ResponseWriter, r 
 func (s *Server) sessionsV3SyncOutboxRecordMatchesSelector(accountScopeID string, record sessionruntime.RealtimeOutboxRecord, selector sessionsV3SyncSelector) (bool, error) {
 	kind := strings.TrimSpace(selector.Kind)
 	switch kind {
-	case "", "global", "recent":
+	case "", "global":
 		return true, nil
+	case "recent":
+		if selector.Global {
+			return true, nil
+		}
+		return sessionsV3SyncOutboxRecordMatchesWorkspacePaths(accountScopeID, record, selector)
 	case "session_ids":
 		for _, id := range selector.SessionIDs {
 			if strings.TrimSpace(id) == record.SessionID {
@@ -147,27 +152,31 @@ func (s *Server) sessionsV3SyncOutboxRecordMatchesSelector(accountScopeID string
 		}
 		return false, nil
 	case "workspace", "tui":
-		paths, err := canonicalSessionsV3TUIWorksetPaths(sessionsV3TUIWorksetScope{WorkspacePath: selector.WorkspacePath, WorkspacePaths: selector.WorkspacePaths, CWDPath: selector.CWDPath})
-		if err != nil {
-			paths, err = canonicalSessionsV3WorksetWorkspacePaths(sessionsV3WorksetWorkspace{WorkspacePath: selector.WorkspacePath, WorkspacePaths: selector.WorkspacePaths})
-			if err != nil {
-				return false, err
-			}
-		}
-		if len(paths) == 0 {
-			return true, nil
-		}
-		session, ok := v3RealtimeSessionSnapshotFromRecord(record)
-		if !ok {
-			// Workspace/TUI replay filtering must not consult mutable current session
-			// state. If the durable outbox row lacks event-state membership, fail closed
-			// instead of leaking it broadly.
-			return false, nil
-		}
-		return sessionsV3TUISessionVisibleForPaths(session, identity.Principal{AccountScopeID: accountScopeID}, paths), nil
+		return sessionsV3SyncOutboxRecordMatchesWorkspacePaths(accountScopeID, record, selector)
 	default:
 		return false, errors.New("unsupported sync selector kind " + kind)
 	}
+}
+
+func sessionsV3SyncOutboxRecordMatchesWorkspacePaths(accountScopeID string, record sessionruntime.RealtimeOutboxRecord, selector sessionsV3SyncSelector) (bool, error) {
+	paths, err := canonicalSessionsV3TUIWorksetPaths(sessionsV3TUIWorksetScope{WorkspacePath: selector.WorkspacePath, WorkspacePaths: selector.WorkspacePaths, CWDPath: selector.CWDPath})
+	if err != nil {
+		paths, err = canonicalSessionsV3WorksetWorkspacePaths(sessionsV3WorksetWorkspace{WorkspacePath: selector.WorkspacePath, WorkspacePaths: selector.WorkspacePaths})
+		if err != nil {
+			return false, err
+		}
+	}
+	if len(paths) == 0 {
+		return true, nil
+	}
+	session, ok := v3RealtimeSessionSnapshotFromRecord(record)
+	if !ok {
+		// Workspace/recent/TUI replay filtering must not consult mutable current session
+		// state. If the durable outbox row lacks event-state membership, fail closed
+		// instead of leaking it broadly.
+		return false, nil
+	}
+	return sessionsV3TUISessionVisibleForPaths(session, identity.Principal{AccountScopeID: accountScopeID}, paths), nil
 }
 
 func writeV3SyncCursorHTTPError(w http.ResponseWriter, err error) {
