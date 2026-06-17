@@ -386,17 +386,24 @@ function runtimeSessionWithActiveRunIntent(session: DesktopSessionRecord, runInt
   return next
 }
 
+function runtimeWorksetRemovedSessionIds(state: SessionV3ReducerState): Set<string> {
+  const removed = new Set(state.removedSessionIds)
+  for (const workset of Object.values(state.worksetsById)) {
+    for (const sessionId of workset.removedSessionIds) {
+      if (sessionId) {
+        removed.add(sessionId)
+      }
+    }
+  }
+  return removed
+}
+
 function runtimeWorksetSessionIds(state: SessionV3ReducerState): Set<string> | null {
   const worksets = Object.values(state.worksetsById)
   if (worksets.length === 0) {
     return null
   }
-  const removed = new Set(state.removedSessionIds)
-  for (const workset of worksets) {
-    for (const sessionId of workset.removedSessionIds) {
-      removed.add(sessionId)
-    }
-  }
+  const removed = runtimeWorksetRemovedSessionIds(state)
   const ids = new Set<string>()
   for (const workset of worksets) {
     for (const sessionId of workset.sessionIds) {
@@ -408,11 +415,41 @@ function runtimeWorksetSessionIds(state: SessionV3ReducerState): Set<string> | n
   return ids
 }
 
+function omitRuntimeRemovedSessions(desktop: DesktopState, removed: Set<string>): DesktopState {
+  if (removed.size === 0) {
+    return desktop
+  }
+  const sessionsById = Object.fromEntries(Object.entries(desktop.sessionsById).filter(([sessionId]) => !removed.has(sessionId)))
+  const sessionOrder = desktop.sessionOrder.filter((sessionId) => !removed.has(sessionId))
+  const unchanged = desktop.sessionOrder.length === sessionOrder.length
+    && Object.keys(desktop.sessionsById).length === Object.keys(sessionsById).length
+  if (unchanged) {
+    return desktop
+  }
+  return {
+    ...desktop,
+    sessionsById,
+    sessionOrder,
+    messagesBySessionId: Object.fromEntries(Object.entries(desktop.messagesBySessionId).filter(([sessionId]) => !removed.has(sessionId))),
+    permissionsById: Object.fromEntries(Object.entries(desktop.permissionsById).filter(([, permission]) => !removed.has(permission.sessionId))),
+    plansBySessionId: Object.fromEntries(Object.entries(desktop.plansBySessionId).filter(([sessionId]) => !removed.has(sessionId))),
+    planRevisionsBySessionId: Object.fromEntries(Object.entries(desktop.planRevisionsBySessionId).filter(([sessionId]) => !removed.has(sessionId))),
+    usageBySessionId: Object.fromEntries(Object.entries(desktop.usageBySessionId).filter(([sessionId]) => !removed.has(sessionId))),
+    runIntentsBySessionId: Object.fromEntries(Object.entries(desktop.runIntentsBySessionId).filter(([sessionId]) => !removed.has(sessionId))),
+    preferencesBySessionId: Object.fromEntries(Object.entries(desktop.preferencesBySessionId).filter(([sessionId]) => !removed.has(sessionId))),
+    agentModelPolicyBySessionId: Object.fromEntries(Object.entries(desktop.agentModelPolicyBySessionId).filter(([sessionId]) => !removed.has(sessionId))),
+    routeReadinessBySessionId: Object.fromEntries(Object.entries(desktop.routeReadinessBySessionId).filter(([sessionId]) => !removed.has(sessionId))),
+  }
+}
+
 function desktopWithRuntimeWorksetMembership(state: SessionV3ReducerState): DesktopState {
   const membership = runtimeWorksetSessionIds(state)
   const desktop = state.desktop
   if (!membership) {
     return desktop
+  }
+  if (membership.size === 0) {
+    return omitRuntimeRemovedSessions(desktop, runtimeWorksetRemovedSessionIds(state))
   }
 
   const sessionsById: DesktopState['sessionsById'] = {}

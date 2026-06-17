@@ -1,4 +1,5 @@
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
+import { mergeMessageIntoCache } from '../chat/services/message-cache'
 import { normalizeDesktopSessionPlan, normalizeDesktopSessionPlanRevisions, type DesktopSessionPlanWire } from '../chat/services/session-plan-record'
 import {
   createEmptyDesktopState,
@@ -399,14 +400,17 @@ export function applySessionV3MutationResult(
   const snapshotRev = Math.max(state.desktop.rev, committedRev ?? state.desktop.rev)
   const snapshot = mutationSnapshot(snapshotRev, response, action.sessionId)
     ?? (committedRev !== undefined && committedRev > state.desktop.rev ? { rev: committedRev } : null)
-  if (!snapshot) {
-    return applyReducerDraft(state, action, { endpointCursor })
-  }
+  const snapshotDesktop = snapshot
+    ? desktopReducer(state.desktop, { type: 'snapshot/merge', snapshot })
+    : state.desktop
   const desktop = applyMutationDesktopReconciliation(
-    desktopReducer(state.desktop, { type: 'snapshot/merge', snapshot }),
+    snapshotDesktop,
     response,
     action.sessionId,
   )
+  if (!snapshot && desktop === state.desktop) {
+    return applyReducerDraft(state, action, { endpointCursor })
+  }
   return applyReducerDraft(state, action, {
     desktop,
     endpointCursor,
@@ -443,6 +447,17 @@ function applyMutationDesktopReconciliation(
         }
       : next.sessionsById
     next = { ...next, runIntentsBySessionId, sessionsById }
+  }
+
+  const message = mutationMessageFromWire(response, sessionId)
+  if (message) {
+    next = {
+      ...next,
+      messagesBySessionId: {
+        ...next.messagesBySessionId,
+        [message.sessionId]: mergeMessageIntoCache(next.messagesBySessionId[message.sessionId], message),
+      },
+    }
   }
 
   const permissions = permissionsFromMutation(response, sessionId)
@@ -817,7 +832,6 @@ function mutationSnapshot(
   if (session?.id) {
     sessionsById[session.id] = session
   }
-  const messages = normalizeMessages(response.message ? [response.message] : undefined, normalizedSessionId)
   const usage = usageFromWire(hasOwnProperty(response, 'usage_summary') ? response.usage_summary : undefined, normalizedSessionId)
   const runIntent = mutationRunIntentFromWire(response, normalizedSessionId)
   const preference = preferenceFromWire(response, normalizedSessionId)
@@ -826,7 +840,6 @@ function mutationSnapshot(
   const planRevisions = planRevisionsFromWire(response)
   const pendingPermissions = pendingPermissionsFromMutation(response, normalizedSessionId)
   const hasSnapshot = Object.keys(sessionsById).length > 0
-    || messages.length > 0
     || Object.keys(pendingPermissions).length > 0
     || Boolean(usage)
     || Boolean(runIntent)
@@ -842,7 +855,6 @@ function mutationSnapshot(
     rev: Math.max(0, currentRev),
     sessionsById: Object.keys(sessionsById).length > 0 ? sessionsById : undefined,
     sessionOrder: Object.keys(sessionsById).length > 0 ? Object.keys(sessionsById) : undefined,
-    messagesBySessionId: sessionId && messages.length > 0 ? { [sessionId]: messages } : undefined,
     permissionsById: Object.keys(pendingPermissions).length > 0 ? pendingPermissions : undefined,
     plansBySessionId: plan && sessionId ? { [sessionId]: plan } : undefined,
     planRevisionsBySessionId: planRevisions && sessionId ? { [sessionId]: planRevisions } : undefined,
@@ -852,6 +864,12 @@ function mutationSnapshot(
     agentModelPolicyBySessionId: agentModelPolicy ? { [agentModelPolicy.sessionId]: agentModelPolicy.value } : undefined,
     runIntentReconcileSessionIds: runIntent ? [runIntent.value.sessionId] : undefined,
   }
+}
+
+function mutationMessageFromWire(response: SessionV3ReducerMutationResponse, fallbackSessionId: string): ChatMessageRecord | null {
+  const source = response.message
+    ?? (isRecord(response.mutation?.message) ? response.mutation.message as SessionV3MessageWire : undefined)
+  return source ? messageFromWire(source, fallbackSessionId) : null
 }
 
 function minimalSessionWireFromMutation(response: SessionV3ReducerMutationResponse, fallbackSessionId: string): SessionV3SessionWire | null {
@@ -1112,12 +1130,6 @@ function emptyLiveState(
     reasoningHistory: [],
     awaitingAck: false,
   }
-}
-
-function normalizeMessages(messages: SessionV3MessageWire[] | undefined, fallbackSessionId: string): ChatMessageRecord[] {
-  return (messages ?? [])
-    .map((message) => messageFromWire(message, fallbackSessionId))
-    .filter((message): message is ChatMessageRecord => Boolean(message && message.id && message.sessionId))
 }
 
 function messageFromWire(message: SessionV3MessageWire, fallbackSessionId: string): ChatMessageRecord | null {

@@ -362,6 +362,7 @@ export interface SessionV3RealtimeOutboxWire {
 
 export interface SessionV3MutationWire {
   realtime_outbox?: SessionV3RealtimeOutboxWire | null
+  message?: SessionV3MessageWire | null
   session?: never
   messages?: never
   events?: never

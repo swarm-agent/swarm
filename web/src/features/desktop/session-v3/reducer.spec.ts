@@ -357,13 +357,15 @@ test('sendMessage mutation advances desktop rev before next realtime prevRev', (
     sessionId: 'session-v3',
     response: {
       ok: true,
-      message: {
-        id: 'msg-user-1',
-        session_id: 'session-v3',
-        global_seq: 5,
-        role: 'user',
-        content: 'hello',
-        created_at: 1000,
+      mutation: {
+        message: {
+          id: 'msg-user-1',
+          session_id: 'session-v3',
+          global_seq: 5,
+          role: 'user',
+          content: 'hello',
+          created_at: 1000,
+        },
       },
       run_intent: {
         session_id: 'session-v3',
@@ -406,6 +408,85 @@ test('sendMessage mutation advances desktop rev before next realtime prevRev', (
   assert.equal(next.state.desktop.staleReason, null)
   assert.equal(next.state.desktop.rev, 2)
   assert.equal(next.state.endpointCursor, 'cursor-2')
+})
+
+test('minimal message mutation upserts committed message without full hydrate arrays', () => {
+  let state = createSessionV3ReducerInitialState()
+  state = sessionV3Reducer(state, {
+    type: 'snapshot',
+    snapshot: {
+      rev: 1,
+      sessionsById: {
+        'session-v3': { id: 'session-v3', title: 'Existing', workspacePath: '/repo', workspaceName: 'repo', mode: 'auto', sessionApi: 'v3', messageCount: 1, updatedAt: 1, createdAt: 1, permissionsHydrated: false, lifecycle: null, live: emptyLiveState(), pendingPermissions: [], pendingPermissionCount: 0, usage: null },
+      },
+      sessionOrder: ['session-v3'],
+      messagesBySessionId: {
+        'session-v3': [{ id: 'msg-existing', sessionId: 'session-v3', globalSeq: 1, role: 'user', content: 'existing', createdAt: 1 }],
+      },
+    },
+  }).state
+
+  state = sessionV3Reducer(state, {
+    type: 'mutation',
+    sessionId: 'session-v3',
+    response: {
+      ok: true,
+      session_id: 'session-v3',
+      mutation: {
+        message: {
+          id: 'msg-committed',
+          session_id: 'session-v3',
+          global_seq: 2,
+          role: 'user',
+          content: 'hello minimal',
+          created_at: 2,
+        },
+        realtime_outbox: { endpoint_seq: 2, endpoint_cursor: 'cursor-2', session_id: 'session-v3' },
+      },
+      realtime_outbox: { endpoint_seq: 2, endpoint_cursor: 'cursor-2', session_id: 'session-v3' },
+    },
+  }).state
+
+  assert.equal(state.desktop.rev, 2)
+  assert.equal(state.endpointCursor, 'cursor-2')
+  assert.deepEqual(state.desktop.messagesBySessionId['session-v3']?.map((message) => message.id), ['msg-existing', 'msg-committed'])
+  assert.equal(state.desktop.messagesBySessionId['session-v3']?.[1]?.content, 'hello minimal')
+  assert.equal(state.desktop.sessionsById['session-v3']?.title, 'Existing')
+  assert.deepEqual(state.desktop.sessionOrder, ['session-v3'])
+})
+
+test('message mutation without committed message preserves existing local messages and session', () => {
+  let state = createSessionV3ReducerInitialState()
+  state = sessionV3Reducer(state, {
+    type: 'snapshot',
+    snapshot: {
+      rev: 1,
+      sessionsById: {
+        'session-v3': { id: 'session-v3', title: 'Existing', workspacePath: '/repo', workspaceName: 'repo', mode: 'auto', sessionApi: 'v3', messageCount: 1, updatedAt: 1, createdAt: 1, permissionsHydrated: false, lifecycle: null, live: emptyLiveState(), pendingPermissions: [], pendingPermissionCount: 0, usage: null },
+      },
+      sessionOrder: ['session-v3'],
+      messagesBySessionId: {
+        'session-v3': [
+          { id: 'msg-existing', sessionId: 'session-v3', globalSeq: 1, role: 'user', content: 'existing', createdAt: 1 },
+          { id: 'pending-user:session-v3:2', sessionId: 'session-v3', globalSeq: 2, role: 'user', content: 'hello pending', createdAt: 2, metadata: { client_request_id: 'desktop-v3-message:session-v3:test' } },
+        ],
+      },
+    },
+  }).state
+
+  state = sessionV3Reducer(state, {
+    type: 'mutation',
+    sessionId: 'session-v3',
+    response: {
+      ok: true,
+      session_id: 'session-v3',
+      realtime_outbox: { endpoint_seq: 2, endpoint_cursor: 'cursor-2', session_id: 'session-v3' },
+    },
+  }).state
+
+  assert.deepEqual(state.desktop.messagesBySessionId['session-v3']?.map((message) => message.id), ['msg-existing', 'pending-user:session-v3:2'])
+  assert.equal(state.desktop.sessionsById['session-v3']?.id, 'session-v3')
+  assert.deepEqual(state.desktop.sessionOrder, ['session-v3'])
 })
 
 test('minimal mutation responses advance only from realtime outbox cursor and apply preferences', () => {

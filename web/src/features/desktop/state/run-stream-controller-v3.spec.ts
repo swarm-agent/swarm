@@ -164,6 +164,7 @@ const primaryRoute: DesktopChatRoute = {
 afterEach(async () => {
   useDesktopStore.getState().disconnect()
   useDesktopStore.setState({
+    activeSessionId: null,
     sessions: {},
     notifications: [],
     lastGlobalSeq: 0,
@@ -1612,6 +1613,9 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
           },
         },
         session_order: ['session-v3'],
+        messages_by_session: {
+          'session-v3': [{ id: 'msg-existing', session_id: 'session-v3', global_seq: 1, role: 'user', content: 'existing chat', created_at: 10 }],
+        },
       }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -1645,13 +1649,15 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
         projection_high_watermark_seq: 3,
         updated_at: 20,
       },
-      message: {
-        id: 'msg-v3-submit',
-        session_id: 'session-v3',
-        global_seq: 2,
-        role: 'user',
-        content: 'hello primary',
-        created_at: 19,
+      mutation: {
+        message: {
+          id: 'msg-v3-submit',
+          session_id: 'session-v3',
+          global_seq: 2,
+          role: 'user',
+          content: 'hello primary',
+          created_at: 19,
+        },
       },
       run_intent: {
         session_id: 'session-v3',
@@ -1682,7 +1688,7 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
     }))
     const session = makeSession({ id: 'session-v3', sessionApi: 'v3' })
     useDesktopStore.setState(makeState(session), true)
-    useDesktopStore.setState({ realtimeDesired: true })
+    useDesktopStore.setState({ activeSessionId: 'session-v3', realtimeDesired: true })
     await useDesktopStore.getState().connect()
     assert.equal(websocketURLs.length, 1)
     assert.equal(calls.filter((entry) => String(entry.input) === '/v3/sync/bootstrap').length, 1)
@@ -1701,6 +1707,9 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
 
     const urls = calls.map((entry) => String(entry.input)).sort()
     assert.deepEqual(urls, ['/v3/sessions/session-v3/messages'].sort())
+    assert.equal(urls.some((url) => url === '/v3/sessions:reconnect'), false)
+    assert.equal(urls.some((url) => url === '/v3/sessions:workset'), false)
+    assert.equal(urls.some((url) => /^\/v3\/sessions\/[^/]+$/.test(url)), false)
     assert.equal(urls.some((url) => url.startsWith('/v1/swarm/managed-hosts/sessions')), false)
     assert.equal(urls.some((url) => url.startsWith('/v2/sessions')), false)
     assert.equal(websocketURLs.length, 1)
@@ -1722,9 +1731,13 @@ test('desktop store submitPrompt for V3 primary sessions commits through Session
     assert.equal(updated.sessionApi, 'v3')
     assert.equal(updated.lastEventSeq, 3)
     assert.equal(updated.projectionHighWatermarkSeq, 3)
-    assert.deepEqual(getDesktopSnapshot().messagesBySessionId['session-v3']?.map((message) => message.id), ['msg-v3-submit'])
-    assert.equal(getDesktopSnapshot().messagesBySessionId['session-v3']?.[0]?.content, 'hello primary')
-    assert.equal(getDesktopSnapshot().messagesBySessionId['session-v3']?.[0]?.role, 'user')
+    assert.equal(useDesktopStore.getState().activeSessionId, 'session-v3')
+    assert.equal(useDesktopStore.getState().sessions['session-v3']?.id, 'session-v3')
+    assert.deepEqual(getDesktopSnapshot().sessionOrder, ['session-v3'])
+    assert.deepEqual(getDesktopSnapshot().messagesBySessionId['session-v3']?.map((message) => message.id), ['msg-existing', 'msg-v3-submit'])
+    assert.equal(getDesktopSnapshot().messagesBySessionId['session-v3']?.[0]?.content, 'existing chat')
+    assert.equal(getDesktopSnapshot().messagesBySessionId['session-v3']?.[1]?.content, 'hello primary')
+    assert.equal(getDesktopSnapshot().messagesBySessionId['session-v3']?.[1]?.role, 'user')
     assert.equal(updated.live.runId, 'v3run-session-v3-2')
     assert.equal(updated.live.status, 'starting')
     assert.equal(updated.live.startedAt, 20)
@@ -2562,6 +2575,43 @@ test("Client B discovers Client A's newly created V3 session through the existin
     globalThis.window = originalWindow
     globalThis.WebSocket = originalWebSocket
   }
+})
+
+test('V3 runtime empty workset membership does not clear bootstrapped sessions', async () => {
+  const session = makeSession({ id: 'session-v3', title: 'Existing', updatedAt: 10 })
+  useDesktopStore.setState({
+    ...useDesktopStore.getState(),
+    activeSessionId: 'session-v3',
+    sessions: { [session.id]: session },
+    lastGlobalSeq: 0,
+  }, true)
+
+  applyV3RuntimeEnvelope(createV3SnapshotEnvelope({
+    rev: getDesktopSnapshot().rev + 1,
+    sessionsById: { [session.id]: session },
+    sessionOrder: [session.id],
+    messagesBySessionId: {
+      [session.id]: [{ id: 'msg-existing', sessionId: session.id, globalSeq: 1, role: 'user', content: 'existing chat', createdAt: 1 }],
+    },
+  }, {
+    id: `test-empty-workset:${Date.now()}:${Math.random()}`,
+    mode: 'replace',
+    receivedAt: Date.now(),
+  }))
+
+  useDesktopStore.getState().__testApplyV3RealtimeFrame?.('', {
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'subscribe.workset',
+    workset_id: 'desktop-v3-runtime:global',
+    workset_subscription_id: 'desktop-v3-runtime:global',
+    endpoint_cursor: 'cursor-workset-empty',
+  }, Date.now())
+
+  assert.equal(useDesktopStore.getState().sessions['session-v3']?.id, 'session-v3')
+  assert.equal(useDesktopStore.getState().activeSessionId, 'session-v3')
+  assert.deepEqual(getDesktopSnapshot().sessionOrder, ['session-v3'])
+  assert.deepEqual(getDesktopSnapshot().messagesBySessionId['session-v3']?.map((message) => message.id), ['msg-existing'])
 })
 
 test('V3 runtime reconnect workset membership replaces stale sidebar sessions and preserves canonical order', async () => {
