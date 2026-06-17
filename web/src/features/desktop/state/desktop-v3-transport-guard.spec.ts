@@ -23,10 +23,17 @@ const forbiddenDesktopV3TransportPatterns: Array<{ label: string; pattern: RegEx
   { label: 'legacy V3 realtime owner factory', pattern: /\brequireV3RealtimeController\b/g },
   { label: 'legacy V3 realtime frame applier', pattern: /\bapplyDesktopV3RealtimeFrame\b/g },
   { label: 'legacy reconnect helper', pattern: /\bfetchAndApplyDesktopV3Reconnect\b|\bsyncV3RealtimeSessionsFromReconnect\b/g },
+  { label: 'legacy reconnect API helper', pattern: /\breconnectSessionV3\b/g },
+  { label: 'legacy reconnect endpoint', pattern: /['"`]\/v3\/sessions:reconnect['"`]/g },
+  { label: 'legacy sessions workset endpoint', pattern: /['"`]\/v3\/sessions:workset['"`]/g },
+  { label: 'legacy TUI sessions workset endpoint', pattern: /['"`]\/v3\/tui\/sessions:workset['"`]/g },
   { label: 'per-session V3 stream endpoint', pattern: /\/v3\/sessions\/(?:\$\{[^}]+\}|\{id\}|[^/`'"\s]+)\/stream/g },
   { label: 'legacy per-session full hydrate endpoint', pattern: /`\/v3\/sessions\/\$\{[^}]+\}`/g },
+  { label: 'legacy run-stream endpoint', pattern: /\/run-stream\b|run-stream/g },
+  { label: 'legacy V2 runtime/session stream endpoint', pattern: /\/v2\/[^`'"\s]*(?:runtime|sessions?|session)[^`'"\s]*\/stream|\/v2\/[^`'"\s]*(?:run-stream|stream)/g },
   { label: 'after_seq transport resume query', pattern: /url\.searchParams\.set\(['"]after_seq['"]/g },
   { label: 'afterSeq transport resume input', pattern: /\bafterSeq\b/g },
+  { label: 'after_rev realtime transport resume input', pattern: /\bafter_rev\b/g },
   { label: 'afterRev realtime transport resume input', pattern: /\bafterRev\b/g },
   { label: 'lastEventSeq transport resume query', pattern: /url\.searchParams\.set\(['"]lastEventSeq['"]/g },
   { label: 'legacy desktop realtime socket owner', pattern: /\bdesktopRealtimeSocket\b/g },
@@ -109,7 +116,7 @@ test('session-v3 production runtime has no legacy desktop transports or resume i
   assert.deepEqual(
     offenders,
     [],
-    `session-v3 production code must stay endpoint_cursor-only and must not use /ws, per-session streams, after_seq/afterSeq/afterRev/lastEventSeq, or legacy realtime/run-stream imports.${formatOffenders(offenders)}`,
+    `session-v3 production code must stay endpoint_cursor-only and must not use legacy reconnect/workset APIs, /ws, per-session streams, V2 streams, run-stream endpoints, or event-seq transport resume inputs.${formatOffenders(offenders)}`,
   )
 })
 
@@ -119,7 +126,7 @@ test('active Desktop V3 session transport path has no legacy transport allowlist
   assert.deepEqual(
     offenders,
     [],
-    `Desktop V3 session transport must be owned only by DesktopSessionV3Runtime and /v3/realtime/stream; no legacy /ws, run-stream, DesktopV3RealtimeController, per-session stream, or after_seq/afterRev/lastEventSeq transport owners remain.${formatOffenders(offenders)}`,
+    `Desktop V3 session transport must be owned only by DesktopSessionV3Runtime and /v3/realtime/stream; no legacy reconnect/workset APIs, /ws, run-stream, DesktopV3RealtimeController, per-session stream, V2 stream, or event-seq transport inputs remain.${formatOffenders(offenders)}`,
   )
 })
 
