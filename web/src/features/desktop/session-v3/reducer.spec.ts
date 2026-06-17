@@ -447,6 +447,165 @@ test('minimal mutation responses advance only from realtime outbox cursor and ap
   assert.equal(state.desktop.preferencesBySessionId['session-v3']?.preference.model, 'gpt-4.1')
 })
 
+test('minimal mode metadata and agent mutation responses update local session state', () => {
+  let state = createSessionV3ReducerInitialState()
+  state = sessionV3Reducer(state, {
+    type: 'snapshot',
+    snapshot: {
+      rev: 1,
+      sessionsById: {
+        'session-v3': { id: 'session-v3', title: 'Existing', workspacePath: '/repo', workspaceName: 'repo', mode: 'auto', metadata: { old: true }, sessionApi: 'v3', messageCount: 0, updatedAt: 1, createdAt: 1, permissionsHydrated: false, lifecycle: null, live: emptyLiveState(), pendingPermissions: [], pendingPermissionCount: 0, usage: null },
+      },
+      sessionOrder: ['session-v3'],
+      snapshotEndpointCursor: 'cursor-1',
+    },
+  }).state
+
+  state = sessionV3Reducer(state, {
+    type: 'mutation',
+    sessionId: 'session-v3',
+    response: {
+      ok: true,
+      session_id: 'session-v3',
+      mode: 'manual',
+      metadata: { next: true },
+      realtime_outbox: { endpoint_seq: 2, endpoint_cursor: 'cursor-2', session_id: 'session-v3' },
+    },
+  }).state
+
+  assert.equal(state.desktop.sessionsById['session-v3']?.mode, 'manual')
+  assert.deepEqual(state.desktop.sessionsById['session-v3']?.metadata, { next: true })
+  assert.equal(state.desktop.sessionsById['session-v3']?.title, 'Existing')
+
+  state = sessionV3Reducer(state, {
+    type: 'mutation',
+    sessionId: 'session-v3',
+    response: {
+      ok: true,
+      session_id: 'session-v3',
+      agent_model_policy: {
+        agent_name: 'explorer',
+        resolved_agent_name: 'explorer',
+        source: 'agent',
+        locked: true,
+        reason: 'agent selected',
+        preference: { provider: 'codex', model: 'gpt-5.4', thinking: 'medium', service_tier: 'flex', context_mode: 'large', updated_at: 3 },
+        context_window: 1000,
+        max_output_tokens: 8192,
+      },
+      realtime_outbox: { endpoint_seq: 3, endpoint_cursor: 'cursor-3', session_id: 'session-v3' },
+    },
+  }).state
+
+  assert.equal(state.endpointCursor, 'cursor-3')
+  assert.equal(state.desktop.agentModelPolicyBySessionId['session-v3']?.resolvedAgentName, 'explorer')
+  assert.equal(state.desktop.agentModelPolicyBySessionId['session-v3']?.preference.model, 'gpt-5.4')
+})
+
+test('minimal compact and stop mutation responses reconcile run intent state', () => {
+  let state = createSessionV3ReducerInitialState()
+
+  state = sessionV3Reducer(state, {
+    type: 'mutation',
+    sessionId: 'session-v3',
+    response: {
+      ok: true,
+      session_id: 'session-v3',
+      compaction: { run_id: 'run-compact', status: 'running', owner_transport: 'desktop' },
+      realtime_outbox: { endpoint_seq: 1, endpoint_cursor: 'cursor-1', session_id: 'session-v3' },
+    },
+  }).state
+
+  assert.equal(state.desktop.runIntentsBySessionId['session-v3']?.runId, 'run-compact')
+  assert.equal(state.desktop.runIntentsBySessionId['session-v3']?.status, 'running')
+
+  state = sessionV3Reducer(state, {
+    type: 'snapshot',
+    snapshot: {
+      rev: 2,
+      sessionsById: {
+        'session-v3': { id: 'session-v3', title: 'Existing', workspacePath: '/repo', workspaceName: 'repo', mode: 'auto', sessionApi: 'v3', messageCount: 0, updatedAt: 2, createdAt: 1, permissionsHydrated: false, lifecycle: null, runIntent: state.desktop.runIntentsBySessionId['session-v3'], live: { ...emptyLiveState(), runId: 'run-compact', status: 'running' }, pendingPermissions: [], pendingPermissionCount: 0, usage: null },
+      },
+      sessionOrder: ['session-v3'],
+      runIntentsBySessionId: state.desktop.runIntentsBySessionId,
+    },
+    mode: 'merge',
+  }).state
+
+  state = sessionV3Reducer(state, {
+    type: 'mutation',
+    sessionId: 'session-v3',
+    response: {
+      ok: true,
+      session_id: 'session-v3',
+      run_id: 'run-compact',
+      status: 'cancelled',
+      realtime_outbox: { endpoint_seq: 3, endpoint_cursor: 'cursor-3', session_id: 'session-v3' },
+    },
+  }).state
+
+  assert.equal(state.desktop.runIntentsBySessionId['session-v3'], undefined)
+  assert.equal(state.desktop.sessionsById['session-v3']?.runIntent, null)
+  assert.equal(state.desktop.sessionsById['session-v3']?.live.status, 'idle')
+})
+
+test('minimal plan and permission mutation responses update local state without hydrate fields', () => {
+  let state = createSessionV3ReducerInitialState()
+  state = sessionV3Reducer(state, {
+    type: 'snapshot',
+    snapshot: {
+      rev: 1,
+      sessionsById: {
+        'session-v3': { id: 'session-v3', title: 'Existing', workspacePath: '/repo', workspaceName: 'repo', mode: 'auto', sessionApi: 'v3', messageCount: 0, updatedAt: 1, createdAt: 1, permissionsHydrated: false, lifecycle: null, live: emptyLiveState(), pendingPermissions: [], pendingPermissionCount: 0, usage: null },
+      },
+      sessionOrder: ['session-v3'],
+    },
+  }).state
+
+  state = sessionV3Reducer(state, {
+    type: 'mutation',
+    sessionId: 'session-v3',
+    response: {
+      ok: true,
+      session_id: 'session-v3',
+      plan: { id: 'plan-1', title: 'Plan', plan: 'Do it', status: 'active', approval_state: 'approved', updated_at: 2 },
+      plan_revisions: [{ id: 'plan-1', title: 'Plan', plan: 'Do it', status: 'active', version: 1, created_at: 2 }],
+      realtime_outbox: { endpoint_seq: 2, endpoint_cursor: 'cursor-2', session_id: 'session-v3' },
+    },
+  }).state
+
+  assert.equal(state.desktop.plansBySessionId['session-v3']?.id, 'plan-1')
+  assert.equal(state.desktop.planRevisionsBySessionId['session-v3']?.length, 1)
+
+  state = sessionV3Reducer(state, {
+    type: 'mutation',
+    sessionId: 'session-v3',
+    response: {
+      ok: true,
+      session_id: 'session-v3',
+      permission: { id: 'perm-1', session_id: 'session-v3', run_id: 'run-1', call_id: 'call-1', tool_name: 'bash', tool_arguments: '{}', status: 'pending', requirement: 'approval', mode: 'auto', created_at: 3, updated_at: 3 },
+      realtime_outbox: { endpoint_seq: 3, endpoint_cursor: 'cursor-3', session_id: 'session-v3' },
+    },
+  }).state
+
+  assert.equal(state.desktop.permissionsById['perm-1']?.status, 'pending')
+  assert.equal(state.desktop.sessionsById['session-v3']?.pendingPermissionCount, 1)
+
+  state = sessionV3Reducer(state, {
+    type: 'mutation',
+    sessionId: 'session-v3',
+    response: {
+      ok: true,
+      session_id: 'session-v3',
+      permission: { id: 'perm-1', session_id: 'session-v3', run_id: 'run-1', call_id: 'call-1', tool_name: 'bash', tool_arguments: '{}', status: 'approved', decision: 'approve', requirement: 'approval', mode: 'auto', created_at: 3, updated_at: 4, resolved_at: 4 },
+      realtime_outbox: { endpoint_seq: 4, endpoint_cursor: 'cursor-4', session_id: 'session-v3' },
+    },
+  }).state
+
+  assert.equal(state.desktop.permissionsById['perm-1'], undefined)
+  assert.equal(state.desktop.sessionsById['session-v3']?.pendingPermissionCount, 0)
+})
+
 test('sync stream replay is idempotent and advances cursor only from stream cursor', () => {
   let state = createSessionV3ReducerInitialState()
   state = sessionV3Reducer(state, {

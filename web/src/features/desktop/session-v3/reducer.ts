@@ -1,4 +1,5 @@
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
+import { normalizeDesktopSessionPlan, normalizeDesktopSessionPlanRevisions, type DesktopSessionPlanWire } from '../chat/services/session-plan-record'
 import {
   createEmptyDesktopState,
   desktopReducer,
@@ -12,10 +13,17 @@ import type { DesktopPermissionRecord, DesktopRunIntentRecord, DesktopSessionRec
 import {
   SESSION_V3_REALTIME_PROTOCOL,
   SESSION_V3_REALTIME_PROTOCOL_VERSION,
+  type SessionV3AgentMutationResponseWire,
   type SessionV3CompactResponseWire,
-  type SessionV3HydratedSessionResponseWire,
+  type SessionV3CreateSessionResponseWire,
+  type SessionV3JsonRecord,
+  type SessionV3MessageCommitResponseWire,
   type SessionV3MessageWire,
-  type SessionV3MutationResponseWire,
+  type SessionV3MetadataMutationResponseWire,
+  type SessionV3ModeMutationResponseWire,
+  type SessionV3PermissionResolveResponseWire,
+  type SessionV3PermissionsResolveAllResponseWire,
+  type SessionV3PlanResponseWire,
   type SessionV3PreferenceResponseWire,
   type SessionV3ProjectionWire,
   type SessionV3RealtimeFrameWire,
@@ -25,6 +33,7 @@ import {
   type SessionV3SyncSnapshot,
   type SessionV3SyncStreamResponseWire,
   type SessionV3RunIntentWire,
+  type SessionV3RunStopResponseWire,
   type SessionV3SessionWire,
   type SessionV3SnapshotResult,
 } from './types'
@@ -83,7 +92,18 @@ export interface SessionV3ReducerState {
   lastApply: SessionV3ReducerApplySummary | null
 }
 
-export type SessionV3ReducerMutationResponse = SessionV3MutationResponseWire | SessionV3HydratedSessionResponseWire | SessionV3CompactResponseWire | SessionV3PreferenceResponseWire
+export type SessionV3ReducerMutationResponse =
+  | SessionV3CreateSessionResponseWire
+  | SessionV3MessageCommitResponseWire
+  | SessionV3RunStopResponseWire
+  | SessionV3CompactResponseWire
+  | SessionV3ModeMutationResponseWire
+  | SessionV3AgentMutationResponseWire
+  | SessionV3PreferenceResponseWire
+  | SessionV3MetadataMutationResponseWire
+  | SessionV3PlanResponseWire
+  | SessionV3PermissionResolveResponseWire
+  | SessionV3PermissionsResolveAllResponseWire
 
 export type SessionV3ReducerAction =
   | { type: 'snapshot'; snapshot: DesktopDaemonSnapshot; mode?: SessionV3ReducerSnapshotMode; endpointCursor?: string | null; receivedAt?: number }
@@ -382,13 +402,76 @@ export function applySessionV3MutationResult(
   if (!snapshot) {
     return applyReducerDraft(state, action, { endpointCursor })
   }
-  const desktop = desktopReducer(state.desktop, { type: 'snapshot/merge', snapshot })
+  const desktop = applyMutationDesktopReconciliation(
+    desktopReducer(state.desktop, { type: 'snapshot/merge', snapshot }),
+    response,
+    action.sessionId,
+  )
   return applyReducerDraft(state, action, {
     desktop,
     endpointCursor,
     status: desktop.status === 'stale' ? 'stale' : 'ready',
     staleReason: desktop.status === 'stale' ? desktop.staleReason : null,
   })
+}
+
+function applyMutationDesktopReconciliation(
+  desktop: DesktopState,
+  response: SessionV3ReducerMutationResponse,
+  fallbackSessionId: string | null | undefined,
+): DesktopState {
+  let next = desktop
+  const sessionId = normalizeOptionalString(fallbackSessionId)
+    || normalizeOptionalString(response.session_id)
+    || normalizeOptionalString(response.session?.id)
+    || normalizeOptionalString(response.projection?.session_id)
+  const runIntent = mutationRunIntentFromWire(response, sessionId)
+  if (sessionId && runIntent && !runIntent.active) {
+    const runIntentsBySessionId = { ...next.runIntentsBySessionId }
+    delete runIntentsBySessionId[sessionId]
+    const existing = next.sessionsById[sessionId]
+    const sessionsById = existing
+      ? {
+          ...next.sessionsById,
+          [sessionId]: {
+            ...existing,
+            runIntent: null,
+            live: existing.live.runId && existing.live.runId === runIntent.value.runId
+              ? { ...existing.live, runId: null, status: 'idle' as const, lastEventType: 'session.run_intent.updated', lastEventAt: runIntent.value.updatedAt || existing.live.lastEventAt }
+              : existing.live,
+          },
+        }
+      : next.sessionsById
+    next = { ...next, runIntentsBySessionId, sessionsById }
+  }
+
+  const permissions = permissionsFromMutation(response, sessionId)
+  if (permissions.length > 0) {
+    const permissionsById = { ...next.permissionsById }
+    const sessionsById = { ...next.sessionsById }
+    for (const permission of permissions) {
+      if (permission.status.trim().toLowerCase() === 'pending') {
+        permissionsById[permission.id] = permission
+      } else {
+        delete permissionsById[permission.id]
+      }
+      const targetSessionId = permission.sessionId || sessionId
+      const existing = targetSessionId ? sessionsById[targetSessionId] : null
+      if (!existing) continue
+      const pendingPermissions = existing.pendingPermissions.filter((item) => item.id !== permission.id)
+      if (permission.status.trim().toLowerCase() === 'pending') {
+        pendingPermissions.unshift(permission)
+      }
+      sessionsById[targetSessionId] = {
+        ...existing,
+        permissionsHydrated: true,
+        pendingPermissions,
+        pendingPermissionCount: countPendingPermissions(pendingPermissions),
+      }
+    }
+    next = { ...next, permissionsById, sessionsById }
+  }
+  return next
 }
 
 function applyRealtimeEventFrame(
@@ -729,21 +812,28 @@ function mutationSnapshot(
     || normalizeOptionalString(response.active_run_intent?.session_id)
     || normalizeOptionalString(response.run_intent?.session_id)
   const sessionsById: Record<string, DesktopSessionRecord> = {}
-  const session = response.session ? sessionFromWire(response.session, response.projection) : null
+  const sessionWire = minimalSessionWireFromMutation(response, normalizedSessionId)
+  const session = sessionWire ? sessionFromWire(sessionWire, response.projection) : null
   if (session?.id) {
     sessionsById[session.id] = session
   }
-  const messages = normalizeMessages(hasArrayProperty<SessionV3MessageWire, 'messages'>(response, 'messages') && response.messages.length > 0 ? response.messages : response.message ? [response.message] : undefined, normalizedSessionId)
-  const permissions = normalizePermissions(hasArrayProperty<unknown, 'pending_permissions'>(response, 'pending_permissions') ? response.pending_permissions : undefined, normalizedSessionId)
+  const messages = normalizeMessages(response.message ? [response.message] : undefined, normalizedSessionId)
   const usage = usageFromWire(hasOwnProperty(response, 'usage_summary') ? response.usage_summary : undefined, normalizedSessionId)
-  const runIntent = runIntentFromWire(response.active_run_intent ?? response.run_intent, normalizedSessionId)
+  const runIntent = mutationRunIntentFromWire(response, normalizedSessionId)
   const preference = preferenceFromWire(response, normalizedSessionId)
+  const agentModelPolicy = agentModelPolicyFromWire(response, normalizedSessionId)
+  const plan = planFromWire(response, normalizedSessionId)
+  const planRevisions = planRevisionsFromWire(response)
+  const pendingPermissions = pendingPermissionsFromMutation(response, normalizedSessionId)
   const hasSnapshot = Object.keys(sessionsById).length > 0
     || messages.length > 0
-    || Object.keys(permissions).length > 0
+    || Object.keys(pendingPermissions).length > 0
     || Boolean(usage)
     || Boolean(runIntent)
     || Boolean(preference)
+    || Boolean(agentModelPolicy)
+    || Boolean(plan)
+    || Boolean(planRevisions)
   if (!hasSnapshot) {
     return null
   }
@@ -753,12 +843,139 @@ function mutationSnapshot(
     sessionsById: Object.keys(sessionsById).length > 0 ? sessionsById : undefined,
     sessionOrder: Object.keys(sessionsById).length > 0 ? Object.keys(sessionsById) : undefined,
     messagesBySessionId: sessionId && messages.length > 0 ? { [sessionId]: messages } : undefined,
-    permissionsById: Object.keys(permissions).length > 0 ? permissions : undefined,
+    permissionsById: Object.keys(pendingPermissions).length > 0 ? pendingPermissions : undefined,
+    plansBySessionId: plan && sessionId ? { [sessionId]: plan } : undefined,
+    planRevisionsBySessionId: planRevisions && sessionId ? { [sessionId]: planRevisions } : undefined,
     usageBySessionId: usage ? { [usage.sessionId || sessionId]: usage } : undefined,
-    runIntentsBySessionId: runIntent ? { [runIntent.sessionId]: runIntent } : undefined,
+    runIntentsBySessionId: runIntent?.active ? { [runIntent.value.sessionId]: runIntent.value } : undefined,
     preferencesBySessionId: preference ? { [preference.sessionId]: preference.value } : undefined,
-    runIntentReconcileSessionIds: runIntent ? [runIntent.sessionId] : undefined,
+    agentModelPolicyBySessionId: agentModelPolicy ? { [agentModelPolicy.sessionId]: agentModelPolicy.value } : undefined,
+    runIntentReconcileSessionIds: runIntent ? [runIntent.value.sessionId] : undefined,
   }
+}
+
+function minimalSessionWireFromMutation(response: SessionV3ReducerMutationResponse, fallbackSessionId: string): SessionV3SessionWire | null {
+  const explicit = response.session ?? null
+  const sessionId = normalizeOptionalString(explicit?.id) || normalizeOptionalString(response.session_id) || fallbackSessionId
+  if (!sessionId) return null
+  const mode = hasOwnProperty(response, 'mode') ? normalizeOptionalString(response.mode) : ''
+  const metadata = hasOwnProperty(response, 'metadata') && isRecord(response.metadata) ? response.metadata as SessionV3JsonRecord : null
+  if (!explicit && !mode && !metadata) return null
+  return {
+    ...(explicit ?? {}),
+    id: sessionId,
+    mode: mode || explicit?.mode,
+    metadata: metadata ?? explicit?.metadata,
+  }
+}
+
+function mutationRunIntentFromWire(
+  response: SessionV3ReducerMutationResponse,
+  fallbackSessionId: string,
+): { value: DesktopRunIntentRecord; active: boolean } | null {
+  const source = response.active_run_intent ?? response.run_intent ?? compactRunIntentWire(response, fallbackSessionId) ?? stopRunIntentWire(response, fallbackSessionId)
+  const runIntent = runIntentFromWire(source, fallbackSessionId)
+  if (!runIntent) return null
+  return { value: runIntent, active: runIntentStatusActive(runIntent.status) }
+}
+
+function compactRunIntentWire(response: SessionV3ReducerMutationResponse, fallbackSessionId: string): SessionV3RunIntentWire | null {
+  if (!hasOwnProperty(response, 'compaction') || !isRecord(response.compaction)) return null
+  const runId = normalizeOptionalString(response.compaction.run_id)
+  const status = normalizeOptionalString(response.compaction.status)
+  const sessionId = normalizeOptionalString(response.session_id) || fallbackSessionId
+  if (!sessionId || !runId || !status) return null
+  return {
+    session_id: sessionId,
+    run_id: runId,
+    status,
+    updated_at: numberValue(response.compaction.updated_at),
+  }
+}
+
+function stopRunIntentWire(response: SessionV3ReducerMutationResponse, fallbackSessionId: string): SessionV3RunIntentWire | null {
+  if (!hasOwnProperty(response, 'run_id') || !hasOwnProperty(response, 'status')) return null
+  const runId = normalizeOptionalString(response.run_id)
+  const status = normalizeOptionalString(response.status)
+  const sessionId = normalizeOptionalString(response.session_id) || fallbackSessionId
+  if (!sessionId || !runId || !status) return null
+  return {
+    session_id: sessionId,
+    run_id: runId,
+    status,
+  }
+}
+
+function runIntentStatusActive(status: string): boolean {
+  const normalized = status.trim().toLowerCase()
+  return normalized === 'pending_executor' || normalized === 'running'
+}
+
+function countPendingPermissions(permissions: DesktopPermissionRecord[]): number {
+  return permissions.filter((permission) => permission.status.trim().toLowerCase() === 'pending').length
+}
+
+function pendingPermissionsFromMutation(response: SessionV3ReducerMutationResponse, fallbackSessionId: string): Record<string, DesktopPermissionRecord> {
+  const output: Record<string, DesktopPermissionRecord> = {}
+  for (const permission of permissionsFromMutation(response, fallbackSessionId)) {
+    if (!permission.id || permission.status.trim().toLowerCase() !== 'pending') continue
+    if (fallbackSessionId && permission.sessionId !== fallbackSessionId) continue
+    output[permission.id] = permission
+  }
+  return output
+}
+
+function permissionsFromMutation(response: SessionV3ReducerMutationResponse, fallbackSessionId: string): DesktopPermissionRecord[] {
+  const values: unknown[] = []
+  if (hasOwnProperty(response, 'permission')) values.push(response.permission)
+  if (hasOwnProperty(response, 'resolved') && Array.isArray(response.resolved)) values.push(...response.resolved)
+  return values
+    .map((value) => permissionFromWireWithFallback(value, fallbackSessionId))
+    .filter((permission) => Boolean(permission.id && permission.sessionId))
+}
+
+function agentModelPolicyFromWire(response: SessionV3ReducerMutationResponse, fallbackSessionId: string): { sessionId: string; value: NonNullable<DesktopState['agentModelPolicyBySessionId'][string]> } | null {
+  const source = hasOwnProperty(response, 'agent_model_policy') && isRecord(response.agent_model_policy)
+    ? response.agent_model_policy
+    : hasOwnProperty(response, 'agent') && isRecord(response.agent)
+      ? response.agent
+      : null
+  if (!source) return null
+  const sessionId = normalizeOptionalString(response.session_id) || fallbackSessionId
+  if (!sessionId) return null
+  const preference = isRecord(source.preference) ? source.preference : {}
+  const agentName = normalizeOptionalString(source.agent_name) || normalizeOptionalString(source.name) || normalizeOptionalString(source.resolved_agent_name)
+  return {
+    sessionId,
+    value: {
+      agentName,
+      resolvedAgentName: normalizeOptionalString(source.resolved_agent_name) || agentName,
+      source: normalizeOptionalString(source.source),
+      locked: Boolean(source.locked),
+      reason: normalizeOptionalString(source.reason),
+      preference: {
+        provider: normalizeOptionalString(preference.provider),
+        model: normalizeOptionalString(preference.model),
+        thinking: normalizeOptionalString(preference.thinking),
+        serviceTier: normalizeOptionalString(preference.service_tier),
+        contextMode: normalizeOptionalString(preference.context_mode),
+        updatedAt: numberValue(preference.updated_at),
+      },
+      contextWindow: numberValue(source.context_window),
+      maxOutputTokens: numberValue(source.max_output_tokens),
+    },
+  }
+}
+
+function planFromWire(response: SessionV3ReducerMutationResponse, fallbackSessionId: string): NonNullable<DesktopState['plansBySessionId'][string]> | null {
+  if (!hasOwnProperty(response, 'plan') || !isRecord(response.plan)) return null
+  if (!normalizeOptionalString((response as { session_id?: unknown }).session_id) && !fallbackSessionId) return null
+  return normalizeDesktopSessionPlan(response.plan as DesktopSessionPlanWire)
+}
+
+function planRevisionsFromWire(response: SessionV3ReducerMutationResponse): NonNullable<DesktopState['planRevisionsBySessionId'][string]> | null {
+  if (!hasOwnProperty(response, 'plan_revisions') || !Array.isArray(response.plan_revisions)) return null
+  return normalizeDesktopSessionPlanRevisions(response.plan_revisions as DesktopSessionPlanWire[])
 }
 
 function preferenceFromWire(response: SessionV3ReducerMutationResponse, fallbackSessionId: string): { sessionId: string; value: NonNullable<DesktopState['preferencesBySessionId'][string]> } | null {
@@ -942,22 +1159,11 @@ function usageFromWire(source: unknown, fallbackSessionId: string): DesktopSessi
   }
 }
 
-function normalizePermissions(permissions: unknown[] | undefined, fallbackSessionId: string): Record<string, DesktopPermissionRecord> {
-  const output: Record<string, DesktopPermissionRecord> = {}
-  for (const source of permissions ?? []) {
-    const permission = permissionFromWire(source)
-    if (!permission.id || permission.status.trim().toLowerCase() !== 'pending') continue
-    if (fallbackSessionId && permission.sessionId !== fallbackSessionId) continue
-    output[permission.id] = permission
-  }
-  return output
-}
-
-function permissionFromWire(source: unknown): DesktopPermissionRecord {
+function permissionFromWireWithFallback(source: unknown, fallbackSessionId = ''): DesktopPermissionRecord {
   const permission = isRecord(source) ? source : {}
   return {
     id: normalizeOptionalString(permission.id),
-    sessionId: normalizeOptionalString(permission.session_id),
+    sessionId: normalizeOptionalString(permission.session_id) || fallbackSessionId,
     runId: normalizeOptionalString(permission.run_id),
     callId: normalizeOptionalString(permission.call_id),
     toolName: normalizeOptionalString(permission.tool_name),
@@ -1178,10 +1384,6 @@ function mergeUnique(values: string[], additions: string[]): string[] {
 
 function hasOwnProperty<T extends string>(value: object, key: T): value is object & Record<T, unknown> {
   return Object.prototype.hasOwnProperty.call(value, key)
-}
-
-function hasArrayProperty<T, K extends string>(value: object, key: K): value is object & Record<K, T[]> {
-  return hasOwnProperty(value, key) && Array.isArray(value[key])
 }
 
 function addUnique(values: string[], value: string): string[] {

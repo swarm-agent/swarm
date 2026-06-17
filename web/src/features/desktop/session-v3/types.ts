@@ -419,7 +419,7 @@ export interface SessionV3CompactRequestWire {
   instructions?: string
 }
 
-export interface SessionV3CompactResponseWire extends SessionV3HydratedSessionResponseWire {
+export interface SessionV3CompactResponseWire extends SessionV3MutationResponseWire {
   ok?: boolean
   session_id?: string
   run_intent?: SessionV3RunIntentWire | null
@@ -462,8 +462,9 @@ export interface SessionV3PermissionsResponseWire {
   permissions?: unknown[]
 }
 
-export interface SessionV3PlanResponseWire {
+export interface SessionV3PlanResponseWire extends SessionV3MutationResponseWire {
   plan?: unknown | null
+  plan_revisions?: unknown[]
 }
 
 export interface SessionV3ActivePlanResponseWire {
@@ -481,12 +482,12 @@ export interface SessionV3PermissionResolveRequestWire {
   approved_arguments?: SessionV3JsonRecord
 }
 
-export interface SessionV3PermissionResolveResponseWire {
+export interface SessionV3PermissionResolveResponseWire extends SessionV3MutationResponseWire {
   permission?: unknown
   saved_rule?: unknown
 }
 
-export interface SessionV3PermissionsResolveAllResponseWire {
+export interface SessionV3PermissionsResolveAllResponseWire extends SessionV3MutationResponseWire {
   resolved?: unknown[]
 }
 
