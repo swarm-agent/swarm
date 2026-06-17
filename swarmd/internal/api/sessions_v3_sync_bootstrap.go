@@ -53,11 +53,9 @@ type sessionsV3KnownState struct {
 }
 
 type sessionsV3ResolvedSyncOptions struct {
-	Store                pebblestore.V3SessionWorksetOptions
-	Principal            identity.Principal
-	Surface              string
-	IncludeActivePlan    bool
-	IncludePlanRevisions bool
+	Snapshot  pebblestore.V3SyncSnapshotOptions
+	Principal identity.Principal
+	Surface   string
 }
 
 func (s *Server) handleSessionsV3SyncBootstrap(w http.ResponseWriter, r *http.Request) {
@@ -152,7 +150,7 @@ func sessionsV3SyncBootstrapOptions(principal identity.Principal, req sessionsV3
 	}
 
 	options := sessionsV3ResolvedSyncOptions{
-		Store: pebblestore.V3SessionWorksetOptions{
+		Snapshot: pebblestore.V3SyncSnapshotOptions{
 			AccountScopeID:        principal.AccountScopeID,
 			SessionIDs:            selector.SessionIDs,
 			WorkspacePaths:        workspacePaths,
@@ -162,15 +160,15 @@ func sessionsV3SyncBootstrapOptions(principal identity.Principal, req sessionsV3
 			History:               history,
 			IncludeRunIntents:     req.Resources.RunIntents || req.IncludeActive,
 			IncludeActiveSessions: req.IncludeActive,
+			IncludeActivePlan:     req.Resources.ActivePlan,
+			IncludePlanRevisions:  req.Resources.PlanRevisions,
 		},
-		Principal:            principal,
-		Surface:              normalizeV3SyncSurface(req.Surface),
-		IncludeActivePlan:    req.Resources.ActivePlan,
-		IncludePlanRevisions: req.Resources.PlanRevisions,
+		Principal: principal,
+		Surface:   normalizeV3SyncSurface(req.Surface),
 	}
 
 	if strings.TrimSpace(selector.CWDPath) != "" || strings.TrimSpace(selector.Kind) == "tui" {
-		options.Store.RestrictSessionIDsToWorkspacePaths = true
+		options.Snapshot.RestrictSessionIDsToWorkspacePaths = true
 	}
 
 	return options, selector, sessionsV3SyncResourceSet(req.Resources, req.History, req.IncludeActive), nil
@@ -190,17 +188,17 @@ func sessionsV3SyncHydrateOptions(principal identity.Principal, req sessionsV3Sy
 	}
 
 	options := sessionsV3ResolvedSyncOptions{
-		Store: pebblestore.V3SessionWorksetOptions{
+		Snapshot: pebblestore.V3SyncSnapshotOptions{
 			AccountScopeID:        principal.AccountScopeID,
 			SessionIDs:            req.SessionIDs,
 			History:               history,
 			IncludeRunIntents:     req.Resources.RunIntents || req.IncludeActive,
 			IncludeActiveSessions: req.IncludeActive,
+			IncludeActivePlan:     req.Resources.ActivePlan,
+			IncludePlanRevisions:  req.Resources.PlanRevisions,
 		},
-		Principal:            principal,
-		Surface:              normalizeV3SyncSurface(req.Surface),
-		IncludeActivePlan:    req.Resources.ActivePlan,
-		IncludePlanRevisions: req.Resources.PlanRevisions,
+		Principal: principal,
+		Surface:   normalizeV3SyncSurface(req.Surface),
 	}
 
 	return options, selector, sessionsV3SyncResourceSet(req.Resources, req.History, req.IncludeActive), nil
@@ -239,7 +237,7 @@ func normalizeSessionsV3SyncSelector(kind string, selector sessionsV3SyncSelecto
 }
 
 func (s *Server) sessionsV3SyncSnapshotResponse(options sessionsV3ResolvedSyncOptions, selector any, resources []string, known map[string]sessionsV3KnownState) (map[string]any, error) {
-	workset, err := s.sessions.BuildSessionWorkset(options.Store)
+	snapshot, err := s.sessions.BuildSyncSnapshot(options.Snapshot)
 	if err != nil {
 		return nil, err
 	}
@@ -247,38 +245,24 @@ func (s *Server) sessionsV3SyncSnapshotResponse(options sessionsV3ResolvedSyncOp
 	if err := s.validateSessionsV3KnownEndpointCursors(scope, known); err != nil {
 		return nil, err
 	}
-	snapshotEndpointCursor, err := s.signV3SyncEndpointCursor(scope, workset.Rev)
+	snapshotEndpointCursor, err := s.signV3SyncEndpointCursor(scope, snapshot.Rev)
 	if err != nil {
 		return nil, err
 	}
 
 	permissionsBySession := map[string]any{}
-	if s.perm != nil {
-		for sessionID := range workset.SessionsByID {
-			permissions, err := s.perm.ListPending(sessionID, 200)
-			if err != nil {
-				return nil, err
-			}
-			permissionsBySession[sessionID] = permissions
-		}
+	for sessionID, permissions := range snapshot.PermissionsBySession {
+		permissionsBySession[sessionID] = permissions
 	}
 
 	usageBySession := map[string]any{}
-	if s.sessions != nil {
-		for sessionID := range workset.SessionsByID {
-			summary, ok, err := s.sessions.GetUsageSummary(sessionID)
-			if err != nil {
-				return nil, err
-			}
-			if ok {
-				usageBySession[sessionID] = summary
-			}
-		}
+	for sessionID, summary := range snapshot.UsageBySession {
+		usageBySession[sessionID] = summary
 	}
 
 	preferencesBySession := map[string]any{}
 	agentModelPolicyBySession := map[string]any{}
-	for sessionID, session := range workset.SessionsByID {
+	for sessionID, session := range snapshot.SessionsByID {
 		session.Preference = normalizeSessionsV3ModelPreference(session.Preference)
 		preference := session.Preference
 		contextWindow := 0
@@ -304,32 +288,36 @@ func (s *Server) sessionsV3SyncSnapshotResponse(options sessionsV3ResolvedSyncOp
 		agentModelPolicyBySession[sessionID] = agentModelPolicy
 	}
 
-	plansBySession, planRevisionsBySession, err := s.sessionsV3SyncPlans(options, workset)
-	if err != nil {
-		return nil, err
+	plansBySession := map[string]any{}
+	for sessionID, plan := range snapshot.PlansBySession {
+		plansBySession[sessionID] = plan
+	}
+	planRevisionsBySession := map[string]any{}
+	for sessionID, revisions := range snapshot.PlanRevisionsBySession {
+		planRevisionsBySession[sessionID] = revisions
 	}
 
 	response := map[string]any{
 		"ok":                            true,
-		"rev":                           workset.Rev,
+		"rev":                           snapshot.Rev,
 		"snapshot_endpoint_cursor":      snapshotEndpointCursor,
-		"sessions_by_id":                workset.SessionsByID,
-		"projections_by_session":        workset.ProjectionsBySession,
-		"messages_by_session":           workset.MessagesBySession,
-		"events_by_session":             workset.EventsBySession,
+		"sessions_by_id":                snapshot.SessionsByID,
+		"projections_by_session":        snapshot.ProjectionsBySession,
+		"messages_by_session":           snapshot.MessagesBySession,
+		"events_by_session":             snapshot.EventsBySession,
 		"plans_by_session":              plansBySession,
 		"plan_revisions_by_session":     planRevisionsBySession,
 		"permissions_by_session":        permissionsBySession,
 		"usage_by_session":              usageBySession,
 		"preferences_by_session":        preferencesBySession,
 		"agent_model_policy_by_session": agentModelPolicyBySession,
-		"run_intents_by_session":        workset.RunIntentsBySession,
-		"history_manifests_by_session":  workset.HistoryManifestsBySession,
-		"history_chunks_by_id":          workset.HistoryChunksByID,
-		"omissions":                     workset.Omissions,
-		"pagination":                    workset.Pagination,
-		"watermarks":                    workset.Watermarks,
-		"session_order":                 workset.SessionOrder,
+		"run_intents_by_session":        snapshot.RunIntentsBySession,
+		"history_manifests_by_session":  snapshot.HistoryManifestsBySession,
+		"history_chunks_by_id":          snapshot.HistoryChunksByID,
+		"omissions":                     snapshot.Omissions,
+		"pagination":                    snapshot.Pagination,
+		"watermarks":                    snapshot.Watermarks,
+		"session_order":                 snapshot.SessionOrder,
 	}
 
 	response["sync_scope"] = map[string]any{
@@ -339,9 +327,12 @@ func (s *Server) sessionsV3SyncSnapshotResponse(options sessionsV3ResolvedSyncOp
 		"resource_set":         scope.ResourceSet,
 	}
 	response["scope_id"] = scope.SelectorFilterHash + ":" + scope.ResourceSet
-	tombstones, err := s.sessionsV3SyncTombstonesBySession(options.Principal.AccountScopeID, selector)
-	if err != nil {
-		return nil, err
+	tombstones := map[string]any{}
+	for sessionID, tombstone := range snapshot.TombstonesBySession {
+		if !sessionsV3SyncTombstoneMatchesSelector(tombstone, selector.(sessionsV3SyncSelector)) {
+			continue
+		}
+		tombstones[sessionID] = tombstone
 	}
 	response["selector"] = selector
 	response["known_sessions"] = known
@@ -353,25 +344,6 @@ func (s *Server) sessionsV3SyncSnapshotResponse(options sessionsV3ResolvedSyncOp
 		"bootstrap_required_on_cursor_error": true,
 	}
 	return response, nil
-}
-
-func (s *Server) sessionsV3SyncTombstonesBySession(accountScopeID string, selector any) (map[string]any, error) {
-	out := map[string]any{}
-	if s == nil || s.sessions == nil {
-		return out, nil
-	}
-	tombstones, err := s.sessions.ListSessionTombstonesForAccount(accountScopeID, 1000)
-	if err != nil {
-		return nil, err
-	}
-	resolvedSelector, _ := selector.(sessionsV3SyncSelector)
-	for _, tombstone := range tombstones {
-		if !sessionsV3SyncTombstoneMatchesSelector(tombstone, resolvedSelector) {
-			continue
-		}
-		out[tombstone.SessionID] = tombstone
-	}
-	return out, nil
 }
 
 func sessionsV3SyncTombstoneMatchesSelector(tombstone pebblestore.V3SessionTombstone, selector sessionsV3SyncSelector) bool {
@@ -430,7 +402,7 @@ func normalizeV3SyncSurface(surface string) string {
 func sessionsV3SyncResourceSet(resources sessionsV3WorksetResources, history sessionsV3WorksetHistory, includeActive bool) []string {
 	out := []string{"sessions", "projections", "membership", "tombstones"}
 	historyMode := strings.TrimSpace(strings.ToLower(history.Mode))
-	if resources.Messages || historyMode == pebblestore.V3SessionWorksetHistoryModeTail || historyMode == pebblestore.V3SessionWorksetHistoryModeFull {
+	if resources.Messages || historyMode == pebblestore.V3SyncSnapshotHistoryModeTail || historyMode == pebblestore.V3SyncSnapshotHistoryModeFull {
 		out = append(out, "messages")
 	}
 	if resources.Events || history.IncludeEvents {
@@ -448,31 +420,31 @@ func sessionsV3SyncResourceSet(resources sessionsV3WorksetResources, history ses
 	return out
 }
 
-func sessionsV3SyncHistoryOptionsFromRequest(req sessionsV3WorksetHistory, resources sessionsV3WorksetResources) (pebblestore.V3SessionWorksetHistoryOptions, error) {
+func sessionsV3SyncHistoryOptionsFromRequest(req sessionsV3WorksetHistory, resources sessionsV3WorksetResources) (pebblestore.V3SyncSnapshotHistoryOptions, error) {
 	mode := strings.TrimSpace(strings.ToLower(req.Mode))
 	if mode == "" && resources.Messages {
-		mode = pebblestore.V3SessionWorksetHistoryModeTail
+		mode = pebblestore.V3SyncSnapshotHistoryModeTail
 	}
 	maxMessages := req.MaxMessagesPerSession
 	if mode == "" {
-		mode = pebblestore.V3SessionWorksetHistoryModeNone
+		mode = pebblestore.V3SyncSnapshotHistoryModeNone
 	}
 	switch mode {
-	case pebblestore.V3SessionWorksetHistoryModeNone:
+	case pebblestore.V3SyncSnapshotHistoryModeNone:
 		maxMessages = 0
-	case pebblestore.V3SessionWorksetHistoryModeTail:
+	case pebblestore.V3SyncSnapshotHistoryModeTail:
 		if maxMessages <= 0 {
 			maxMessages = sessionsV3WorksetMaxResourcePageSize
 		}
-	case pebblestore.V3SessionWorksetHistoryModeFull:
+	case pebblestore.V3SyncSnapshotHistoryModeFull:
 		if maxMessages <= 0 {
-			return pebblestore.V3SessionWorksetHistoryOptions{}, errors.New("workset history.mode=full requires max_messages_per_session")
+			return pebblestore.V3SyncSnapshotHistoryOptions{}, errors.New("sync snapshot history.mode=full requires max_messages_per_session")
 		}
 	default:
-		return pebblestore.V3SessionWorksetHistoryOptions{}, errors.New("unsupported workset history mode " + mode)
+		return pebblestore.V3SyncSnapshotHistoryOptions{}, errors.New("unsupported sync snapshot history mode " + mode)
 	}
 	if maxMessages > sessionsV3WorksetMaxResourcePageSize {
-		return pebblestore.V3SessionWorksetHistoryOptions{}, errors.New("workset max_messages_per_session cannot exceed 200")
+		return pebblestore.V3SyncSnapshotHistoryOptions{}, errors.New("sync snapshot max_messages_per_session cannot exceed 200")
 	}
 	includeEvents := req.IncludeEvents || resources.Events
 	maxEvents := req.MaxEventsPerSession
@@ -480,51 +452,18 @@ func sessionsV3SyncHistoryOptionsFromRequest(req sessionsV3WorksetHistory, resou
 		if resources.Events {
 			maxEvents = sessionsV3WorksetMaxResourcePageSize
 		} else {
-			return pebblestore.V3SessionWorksetHistoryOptions{}, errors.New("workset include_events requires max_events_per_session")
+			return pebblestore.V3SyncSnapshotHistoryOptions{}, errors.New("sync snapshot include_events requires max_events_per_session")
 		}
 	}
 	if maxEvents > sessionsV3WorksetMaxResourcePageSize {
-		return pebblestore.V3SessionWorksetHistoryOptions{}, errors.New("workset max_events_per_session cannot exceed 200")
+		return pebblestore.V3SyncSnapshotHistoryOptions{}, errors.New("sync snapshot max_events_per_session cannot exceed 200")
 	}
-	return pebblestore.V3SessionWorksetHistoryOptions{
+	return pebblestore.V3SyncSnapshotHistoryOptions{
 		Mode:                  mode,
 		MaxMessagesPerSession: maxMessages,
 		MaxEventsPerSession:   maxEvents,
 		ManifestPolicy:        req.ManifestPolicy,
-		IncludeMessages:       mode == pebblestore.V3SessionWorksetHistoryModeTail || mode == pebblestore.V3SessionWorksetHistoryModeFull,
+		IncludeMessages:       mode == pebblestore.V3SyncSnapshotHistoryModeTail || mode == pebblestore.V3SyncSnapshotHistoryModeFull,
 		IncludeEvents:         includeEvents,
 	}, nil
 }
-
-func (s *Server) sessionsV3SyncPlans(options sessionsV3ResolvedSyncOptions, workset pebblestore.V3SessionWorksetResult) (map[string]any, map[string]any, error) {
-	plansBySession := map[string]any{}
-	planRevisionsBySession := map[string]any{}
-	if !options.IncludeActivePlan && !options.IncludePlanRevisions {
-		return plansBySession, planRevisionsBySession, nil
-	}
-	if s == nil || s.sessions == nil {
-		return plansBySession, planRevisionsBySession, nil
-	}
-	for sessionID := range workset.SessionsByID {
-		plan, ok, err := s.sessions.GetActivePlan(sessionID)
-		if err != nil {
-			return nil, nil, err
-		}
-		if !ok {
-			continue
-		}
-		if options.IncludeActivePlan {
-			plansBySession[sessionID] = plan
-		}
-		if options.IncludePlanRevisions {
-			revisions, err := s.sessions.ListPlanRevisions(sessionID, plan.ID, 100)
-			if err != nil {
-				return nil, nil, err
-			}
-			planRevisionsBySession[sessionID] = revisions
-		}
-	}
-	return plansBySession, planRevisionsBySession, nil
-}
-
-var _ = pebblestore.V3SessionWorksetOptions{}

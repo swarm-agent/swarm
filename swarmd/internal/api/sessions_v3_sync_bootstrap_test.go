@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
+
+	"swarm/packages/swarmd/internal/permission"
 	"testing"
 	"time"
 
@@ -66,6 +69,19 @@ func TestSessionsV3SyncBootstrapReturnsCanonicalSnapshotScopeAndReplayInstructio
 	}
 	if len(payload.SessionOrder) != 1 || payload.SessionOrder[0] != created.ID {
 		t.Fatalf("session_order = %+v", payload.SessionOrder)
+	}
+}
+
+func TestSessionsV3SyncBootstrapUsesNativeSnapshotBuilderNotLegacyWorkset(t *testing.T) {
+	source, err := os.ReadFile("sessions_v3_sync_bootstrap.go")
+	if err != nil {
+		t.Fatalf("read sync bootstrap source: %v", err)
+	}
+	body := string(source)
+	for _, forbidden := range []string{"BuildSessionWorkset", "V3SessionWorksetOptions", "V3SessionWorksetResult", "sessionsV3SyncPlans", "sessionsV3SyncTombstonesBySession", "ListPending(", "GetUsageSummary(", "GetActivePlan(", "ListPlanRevisions(", "ListSessionTombstonesForAccount("} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("sync bootstrap must not use legacy/out-of-snapshot path %q", forbidden)
+		}
 	}
 }
 
@@ -212,6 +228,58 @@ func TestSessionsV3SyncBootstrapRejectsKnownSessionLegacyEndpointCursor(t *testi
 	}
 	if !strings.Contains(rec.Body.String(), "endpoint_cursor_legacy_unsupported") {
 		t.Fatalf("bootstrap legacy known cursor error missing code: %s", rec.Body.String())
+	}
+}
+
+func TestSessionsV3SyncBootstrapIncludesExtraResourcesFromSnapshot(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-extra-resources", "Sync Extra Resources", "/workspace/cp5-extra")
+	if err := server.sessions.Store().PutUsageSummary(pebblestore.SessionUsageSummary{SessionID: created.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, Provider: "test-provider", Model: "test-model", InputTokens: 3, OutputTokens: 4}); err != nil {
+		t.Fatalf("put usage summary: %v", err)
+	}
+	if _, _, err := server.sessions.SavePlan(created.ID, "sync-plan", "Sync Plan", "# Sync Plan", "draft", "draft", true); err != nil {
+		t.Fatalf("save plan: %v", err)
+	}
+	permissionRecord, err := server.perm.CreatePending(permission.CreateInput{SessionID: created.ID, RunID: "run-sync-extra", CallID: "call-sync-extra", ToolName: "bash", ToolArguments: "{}", Requirement: "approval", Mode: "auto"})
+	if err != nil {
+		t.Fatalf("create pending permission: %v", err)
+	}
+
+	body := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"/workspace/cp5-extra","recent":{"limit":10}},"history":{"mode":"none"},"resources":{"active_plan":true,"plan_revisions":true}}`
+	req := httptest.NewRequest(http.MethodPost, V3SyncBootstrapPath, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bootstrap status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		PermissionsBySession      map[string][]pebblestore.PermissionRecord    `json:"permissions_by_session"`
+		UsageBySession            map[string]pebblestore.SessionUsageSummary   `json:"usage_by_session"`
+		PlansBySession            map[string]pebblestore.SessionPlanSnapshot   `json:"plans_by_session"`
+		PlanRevisionsBySession    map[string][]pebblestore.SessionPlanSnapshot `json:"plan_revisions_by_session"`
+		TombstonesBySession       map[string]pebblestore.V3SessionTombstone    `json:"tombstones_by_session"`
+		SnapshotEndpointCursor    string                                       `json:"snapshot_endpoint_cursor"`
+		ReplayInstructions        map[string]any                               `json:"replay_instructions"`
+		AgentModelPolicyBySession map[string]any                               `json:"agent_model_policy_by_session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+	if got := payload.PermissionsBySession[created.ID]; len(got) != 1 || got[0].ID != permissionRecord.ID {
+		t.Fatalf("permissions_by_session missing pending permission: %+v", got)
+	}
+	if payload.UsageBySession[created.ID].InputTokens != 3 || payload.UsageBySession[created.ID].OutputTokens != 4 {
+		t.Fatalf("usage_by_session missing summary: %+v", payload.UsageBySession[created.ID])
+	}
+	if payload.PlansBySession[created.ID].ID != "sync-plan" || !payload.PlansBySession[created.ID].Active {
+		t.Fatalf("plans_by_session missing active plan: %+v", payload.PlansBySession[created.ID])
+	}
+	if got := payload.PlanRevisionsBySession[created.ID]; len(got) == 0 || got[0].ID != "sync-plan" {
+		t.Fatalf("plan_revisions_by_session missing revisions: %+v", got)
+	}
+	if payload.TombstonesBySession == nil || payload.SnapshotEndpointCursor == "" || payload.ReplayInstructions["after_endpoint_cursor"] != payload.SnapshotEndpointCursor || payload.AgentModelPolicyBySession == nil {
+		t.Fatalf("bootstrap response missing durable sync fields: %+v", payload)
 	}
 }
 
