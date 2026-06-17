@@ -133,10 +133,11 @@ func sessionsV3SyncBootstrapOptions(principal identity.Principal, req sessionsV3
 		return sessionsV3ResolvedSyncOptions{}, nil, nil, err
 	}
 
+	global := selector.Global || strings.TrimSpace(selector.Kind) == "global"
 	options := sessionsV3ResolvedSyncOptions{
 		Snapshot: pebblestore.V3SyncSnapshotOptions{
 			AccountScopeID:        principal.AccountScopeID,
-			Global:                selector.Global || strings.TrimSpace(selector.Kind) == "global",
+			Global:                global && selector.Recent.Limit <= 0,
 			SessionIDs:            selector.SessionIDs,
 			WorkspacePaths:        workspacePaths,
 			RecentLimit:           selector.Recent.Limit,

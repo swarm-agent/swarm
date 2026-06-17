@@ -105,6 +105,44 @@ func TestSessionsV3SyncBootstrapGlobalSelectorWithoutRecentUsesNativeAccountSnap
 	}
 }
 
+func TestSessionsV3SyncBootstrapGlobalRecentDoesNotSelectAllAccountSessions(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	createdA := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-global-recent-a", "Sync Global Recent A", "/workspace/global-recent-a")
+	createdB := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-global-recent-b", "Sync Global Recent B", "/workspace/global-recent-b")
+	createdC := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-global-recent-c", "Sync Global Recent C", "/workspace/global-recent-c")
+
+	body := `{"surface":"desktop","selector":{"kind":"recent","global":true,"recent":{"limit":1}},"history":{"mode":"none"}}`
+	req := httptest.NewRequest(http.MethodPost, V3SyncBootstrapPath, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("global recent bootstrap status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		SessionsByID map[string]pebblestore.SessionSnapshot `json:"sessions_by_id"`
+		SessionOrder []string                               `json:"session_order"`
+		Selector     sessionsV3SyncSelector                 `json:"selector"`
+		Pagination   pebblestore.V3SyncSnapshotPagination   `json:"pagination"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode global recent bootstrap response: %v", err)
+	}
+	if payload.Selector.Kind != "recent" || !payload.Selector.Global || payload.Selector.Recent.Limit != 1 {
+		t.Fatalf("global recent bootstrap selector = %+v", payload.Selector)
+	}
+	if len(payload.SessionOrder) != 1 || len(payload.SessionsByID) != 1 {
+		t.Fatalf("global recent bootstrap selected all sessions: order=%+v sessions=%+v", payload.SessionOrder, payload.SessionsByID)
+	}
+	selectedID := payload.SessionOrder[0]
+	if selectedID != createdA.ID && selectedID != createdB.ID && selectedID != createdC.ID {
+		t.Fatalf("global recent bootstrap selected unexpected session %q from %+v", selectedID, payload.SessionOrder)
+	}
+	if !payload.Pagination.HasMore {
+		t.Fatalf("global recent bootstrap did not report remaining recent page: %+v", payload.Pagination)
+	}
+}
+
 func TestSessionsV3SyncBootstrapUsesCanonicalSelectorForSnapshotOptions(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	selectorSession := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-bootstrap-selector", "Sync Bootstrap Selector", "/workspace/bootstrap-selector")
