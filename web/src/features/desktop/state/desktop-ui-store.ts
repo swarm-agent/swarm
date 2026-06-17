@@ -1667,7 +1667,6 @@ function requestRuntimeSessionHydrate(sessionId: string, options: { force?: bool
     void runtime.hydrateSessions([normalizedSessionId], {
       history: { mode: 'none', maxEventsPerSession: 200, manifestPolicy: 'manifest', includeEvents: true },
       resources: { events: true, runIntents: true },
-      includeActive: true,
     })
       .catch((error) => {
         console.error('[desktop-store] scoped desktop v3 runtime hydrate failed', error)
@@ -3517,6 +3516,40 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
         [key]: mode,
       },
     }))
+  },
+  applySessionMode: async (sessionId, mode) => {
+    const normalizedSessionId = sessionId.trim()
+    if (!normalizedSessionId) {
+      return
+    }
+    const runtime = ensureDesktopSessionV3Runtime()
+    runtime.setWantedSessions([normalizedSessionId])
+    await runtime.updateMode({ sessionId: normalizedSessionId, mode })
+  },
+  applySessionAgent: async (sessionId, agentName) => {
+    const normalizedSessionId = sessionId.trim()
+    if (!normalizedSessionId) {
+      throw new Error('Desktop session V3 agent update requires a session id.')
+    }
+    const runtime = ensureDesktopSessionV3Runtime()
+    runtime.setWantedSessions([normalizedSessionId])
+    await runtime.updateAgent({ sessionId: normalizedSessionId, agentName })
+    const runtimeSession = runtime.getState().desktop.sessionsById[normalizedSessionId]
+      ?? getV3RuntimeDesktopSnapshot().sessionsById[normalizedSessionId]
+      ?? get().sessions[normalizedSessionId]
+    if (!runtimeSession?.id) {
+      throw new Error('Desktop session V3 agent update did not return a session mutation result.')
+    }
+    return runtimeSession
+  },
+  applySessionMetadata: async (sessionId, metadata) => {
+    const normalizedSessionId = sessionId.trim()
+    if (!normalizedSessionId) {
+      return
+    }
+    const runtime = ensureDesktopSessionV3Runtime()
+    runtime.setWantedSessions([normalizedSessionId])
+    await runtime.updateMetadata({ sessionId: normalizedSessionId, metadata })
   },
   getSessionDraft: (sessionId, workspacePath) => {
     return get().sessionDrafts[draftKeyForSession(sessionId, workspacePath)] ?? ''

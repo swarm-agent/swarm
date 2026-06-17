@@ -6,6 +6,9 @@ import {
   sendSessionV3Message,
   stopSessionV3Run,
   compactSessionV3,
+  updateSessionV3Agent,
+  updateSessionV3Metadata,
+  updateSessionV3Mode,
   type SessionV3CompactOptions,
   type SessionV3CreateSessionInput,
   type SessionV3MessageOptions,
@@ -31,8 +34,12 @@ import {
   SESSION_V3_REALTIME_PROTOCOL_VERSION,
   type SessionV3CreateSessionResponseWire,
   type SessionV3CompactResponseWire,
+  type SessionV3AgentMutationResponseWire,
+  type SessionV3JsonRecord,
   type SessionV3MessageCommitResponseWire,
   type SessionV3MessageRole,
+  type SessionV3MetadataMutationResponseWire,
+  type SessionV3ModeMutationResponseWire,
   type SessionV3RealtimeWorksetSubscriptionRequestWire,
   type SessionV3SnapshotResult,
   type SessionV3StateSnapshotRequest,
@@ -55,6 +62,9 @@ export type SessionV3RuntimeApi = {
   sendSessionV3Message: typeof sendSessionV3Message
   stopSessionV3Run: typeof stopSessionV3Run
   compactSessionV3: typeof compactSessionV3
+  updateSessionV3Mode: typeof updateSessionV3Mode
+  updateSessionV3Agent: typeof updateSessionV3Agent
+  updateSessionV3Metadata: typeof updateSessionV3Metadata
 }
 
 export type DesktopSessionV3RuntimeListener = (
@@ -97,6 +107,21 @@ export interface DesktopSessionV3RuntimeStopRunInput extends SessionV3RequestOpt
 
 export interface DesktopSessionV3RuntimeCompactSessionInput extends SessionV3CompactOptions {
   sessionId: string
+}
+
+export interface DesktopSessionV3RuntimeUpdateModeInput extends SessionV3RequestOptions {
+  sessionId: string
+  mode: string
+}
+
+export interface DesktopSessionV3RuntimeUpdateAgentInput extends SessionV3RequestOptions {
+  sessionId: string
+  agentName: string
+}
+
+export interface DesktopSessionV3RuntimeUpdateMetadataInput extends SessionV3RequestOptions {
+  sessionId: string
+  metadata: SessionV3JsonRecord
 }
 
 export interface DesktopSessionV3RuntimeSetWantedSessionsOptions {
@@ -152,6 +177,9 @@ export class DesktopSessionV3Runtime {
       sendSessionV3Message: options.api?.sendSessionV3Message ?? sendSessionV3Message,
       stopSessionV3Run: options.api?.stopSessionV3Run ?? stopSessionV3Run,
       compactSessionV3: options.api?.compactSessionV3 ?? compactSessionV3,
+      updateSessionV3Mode: options.api?.updateSessionV3Mode ?? updateSessionV3Mode,
+      updateSessionV3Agent: options.api?.updateSessionV3Agent ?? updateSessionV3Agent,
+      updateSessionV3Metadata: options.api?.updateSessionV3Metadata ?? updateSessionV3Metadata,
     }
     const transportFactory = options.transportFactory ?? ((transportOptions: DesktopV3RealtimeTransportOptions) => new DesktopV3RealtimeTransport(transportOptions))
     this.transport = options.transport ?? transportFactory({
@@ -278,6 +306,36 @@ export class DesktopSessionV3Runtime {
       throw new Error('Desktop session V3 runtime compactSession requires sessionId.')
     }
     const response = await this.api.compactSessionV3(sessionId, input)
+    this.applyMutation(response, sessionId, input.signal)
+    return response
+  }
+
+  async updateMode(input: DesktopSessionV3RuntimeUpdateModeInput): Promise<SessionV3ModeMutationResponseWire> {
+    const sessionId = normalizeString(input.sessionId)
+    if (!sessionId) {
+      throw new Error('Desktop session V3 runtime updateMode requires sessionId.')
+    }
+    const response = await this.api.updateSessionV3Mode(sessionId, input.mode, input)
+    this.applyMutation(response, sessionId, input.signal)
+    return response
+  }
+
+  async updateAgent(input: DesktopSessionV3RuntimeUpdateAgentInput): Promise<SessionV3AgentMutationResponseWire> {
+    const sessionId = normalizeString(input.sessionId)
+    if (!sessionId) {
+      throw new Error('Desktop session V3 runtime updateAgent requires sessionId.')
+    }
+    const response = await this.api.updateSessionV3Agent(sessionId, input.agentName, input)
+    this.applyMutation(response, sessionId, input.signal)
+    return response
+  }
+
+  async updateMetadata(input: DesktopSessionV3RuntimeUpdateMetadataInput): Promise<SessionV3MetadataMutationResponseWire> {
+    const sessionId = normalizeString(input.sessionId)
+    if (!sessionId) {
+      throw new Error('Desktop session V3 runtime updateMetadata requires sessionId.')
+    }
+    const response = await this.api.updateSessionV3Metadata(sessionId, input.metadata, input)
     this.applyMutation(response, sessionId, input.signal)
     return response
   }

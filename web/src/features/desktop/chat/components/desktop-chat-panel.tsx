@@ -19,7 +19,7 @@ import {
   resolveSessionPermission,
   updateDraftModelPreference,
 } from '../queries/chat-queries'
-import { fetchAndApplyDesktopV3PlanSnapshot, fetchAndApplyDesktopV3SessionMessagesTail, saveDesktopV3SessionPlan, updateDesktopV3SessionAgent, updateDesktopV3SessionMetadata, updateDesktopV3SessionMode, updateDesktopV3SessionPreference } from '../../state/desktop-v3-session-api'
+import { fetchAndApplyDesktopV3PlanSnapshot, fetchAndApplyDesktopV3SessionMessagesTail, saveDesktopV3SessionPlan, updateDesktopV3SessionPreference } from '../../state/desktop-v3-session-api'
 import type { AgentModelPolicyRecord, AgentProfileRecord, AgentStateRecord, ChatMessageRecord, ModelOptionRecord, ResolvedSessionPreference, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
 import type { DesktopLiveAssistantSegment, DesktopLiveReasoningRecord, DesktopLiveToolRecord, DesktopRunIntentRecord, DesktopSessionRecord } from '../../types/realtime'
 import { Card } from '../../../../components/ui/card'
@@ -1344,6 +1344,9 @@ export function DesktopChatPanel({
   const stopRun = useDesktopUiStore((state) => state.stopRun)
   const setSessionDraft = useDesktopUiStore((state) => state.setSessionDraft)
   const setSessionDraftMode = useDesktopUiStore((state) => state.setSessionDraftMode)
+  const applySessionMode = useDesktopUiStore((state) => state.applySessionMode)
+  const applySessionAgent = useDesktopUiStore((state) => state.applySessionAgent)
+  const applySessionMetadata = useDesktopUiStore((state) => state.applySessionMetadata)
   const [panelError, setPanelError] = useState<string | null>(null)
   const [messagesLoading, setMessagesLoading] = useState(false)
   const lastLoadedMessageTailSessionRef = useRef('')
@@ -2259,13 +2262,13 @@ export function DesktopChatPanel({
       return
     }
     lastAutoModeSyncRef.current = syncKey
-    void updateDesktopV3SessionMode(sessionId, nextMode).then(() => {
+    void applySessionMode(sessionId, nextMode).then(() => {
       lastAutoModeSyncRef.current = ''
     }).catch((error) => {
       lastAutoModeSyncRef.current = ''
       setPanelError(error instanceof Error ? error.message : 'Failed to update session mode')
     })
-  }, [activeModeSourceProfile, draftSessionMode, isFlowSession, liveSession?.mode, queryClient, session?.mode, sessionId])
+  }, [activeModeSourceProfile, draftSessionMode, isFlowSession, liveSession?.mode, session?.mode, sessionId, applySessionMode])
 
   const handleAgentSelect = useCallback(async (value: string) => {
     if (isFlowSession || resolvedLockedAgentName) {
@@ -2282,8 +2285,8 @@ export function DesktopChatPanel({
     }
     setSelectedPrimaryAgent(nextAgent)
     try {
-      const snapshot = await updateDesktopV3SessionAgent(sessionId, nextAgent)
-      const serverAgent = resolveSessionEffectiveAgentName(snapshot.session, agentState.activePrimary)
+      const updatedSession = await applySessionAgent(sessionId, nextAgent)
+      const serverAgent = resolveSessionEffectiveAgentName(updatedSession, agentState.activePrimary)
       setSelectedPrimaryAgent(serverAgent)
       setCurrentSessionAgent(serverAgent)
     } catch (error) {
@@ -2291,7 +2294,7 @@ export function DesktopChatPanel({
       setCurrentSessionAgent(previousAgent)
       setPanelError(error instanceof Error ? error.message : 'Failed to update session agent')
     }
-  }, [agentState.activePrimary, currentSessionAgent, isFlowSession, queryClient, resolvedLockedAgentName, selectedPrimaryAgent, sessionId])
+  }, [agentState.activePrimary, currentSessionAgent, isFlowSession, resolvedLockedAgentName, selectedPrimaryAgent, sessionId, applySessionAgent])
 
   useEffect(() => {
     setPanelError(null)
@@ -2501,7 +2504,7 @@ export function DesktopChatPanel({
         } else {
           delete currentMetadata[COMPACT_THRESHOLD_METADATA_KEY]
         }
-        await updateDesktopV3SessionMetadata(sessionId, currentMetadata)
+        await applySessionMetadata(sessionId, currentMetadata)
       }
       await submitPrompt({
         sessionId,
@@ -2515,7 +2518,7 @@ export function DesktopChatPanel({
     } catch (error) {
       setPanelError(error instanceof Error ? error.message : 'Failed to compact context')
     }
-  }, [canStop, currentSessionAgent, liveSession?.metadata, queryClient, resolvedLockedAgentName, sessionId, submitPrompt, submitting, workspaceName, workspacePath])
+  }, [canStop, currentSessionAgent, liveSession?.metadata, resolvedLockedAgentName, sessionId, submitPrompt, submitting, applySessionMetadata, workspaceName, workspacePath])
 
   const openCommitModal = useCallback(() => {
     setCommitModal((current) => ({
@@ -3054,11 +3057,11 @@ export function DesktopChatPanel({
       return
     }
     try {
-      await updateDesktopV3SessionMode(sessionId, nextMode)
+      await applySessionMode(sessionId, nextMode)
     } catch (error) {
       setPanelError(error instanceof Error ? error.message : 'Failed to update session mode')
     }
-  }, [draftSessionKey, queryClient, selectedPrimaryAgentProfile?.exitPlanModeEnabled, sessionId, sessionMode, setSessionDraftMode])
+  }, [draftSessionKey, selectedPrimaryAgentProfile?.exitPlanModeEnabled, sessionId, setSessionDraftMode, applySessionMode])
 
   const handleResolvePermission = useCallback(async (
     action: 'approve' | 'deny' | 'approve_always' | 'always_allow' | 'always_deny',

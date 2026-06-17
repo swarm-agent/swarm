@@ -1,6 +1,7 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { fetchAgentState, fetchAgentToolContract, fetchDraftModelPreference, fetchModelOptions } from '../desktop/chat/queries/chat-queries'
-import { fetchAndApplyDesktopV3SessionMessagesTail, fetchAndApplyDesktopV3SessionPermissions, fetchAndApplyDesktopV3SessionPreference, fetchAndApplyDesktopV3SessionSnapshot, fetchAndApplyDesktopV3SessionUsage } from '../desktop/state/desktop-v3-session-api'
+import { fetchAndApplyDesktopV3SessionMessagesTail, fetchAndApplyDesktopV3SessionPermissions, fetchAndApplyDesktopV3SessionPreference, fetchAndApplyDesktopV3SessionUsage } from '../desktop/state/desktop-v3-session-api'
+import { hydrateSessionV3Sync } from '../desktop/session-v3/api'
 import { getUISettings } from '../desktop/settings/swarm/queries/get-ui-settings'
 import { fetchWorkspaceOverview } from '../workspaces/launcher/queries/fetch-workspace-overview'
 
@@ -149,7 +150,7 @@ export function ensureSessionRuntimeData(queryClient: QueryClient, sessionId: st
   }
 
   void queryClient
-  return fetchAndApplyDesktopV3SessionSnapshot(normalizedSessionId)
+  return hydrateSessionV3Sync({ sessionIds: [normalizedSessionId] })
     .then(() => fetchAndApplyDesktopV3SessionMessagesTail(normalizedSessionId))
     .then(() => undefined)
 }
@@ -161,7 +162,7 @@ export function prefetchSessionRuntimeData(queryClient: QueryClient, sessionId: 
   }
 
   void queryClient
-  return fetchAndApplyDesktopV3SessionSnapshot(normalizedSessionId)
+  return hydrateSessionV3Sync({ sessionIds: [normalizedSessionId] })
     .then(() => fetchAndApplyDesktopV3SessionMessagesTail(normalizedSessionId))
     .then(() => undefined)
 }

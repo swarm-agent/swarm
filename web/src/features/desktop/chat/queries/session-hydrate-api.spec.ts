@@ -291,6 +291,9 @@ function v3WorksetPayload(sessionIds: string[], options: { includeMessages?: boo
     messages_by_session: messagesBySession,
     events_by_session: eventsBySession,
     run_intents_by_session: runIntentsBySession,
+    current_run_intent_by_session: Object.fromEntries(Object.entries(runIntentsBySession).flatMap(([sessionId, intents]) => intents[0] ? [[sessionId, intents[0]]] : [])),
+    permissions_by_session: Object.fromEntries(sessionIds.map((sessionId) => [sessionId, v3HydratedSessionPayload(sessionId).pending_permissions])),
+    usage_by_session: Object.fromEntries(sessionIds.map((sessionId) => [sessionId, v3HydratedSessionPayload(sessionId).usage_summary])),
     history_manifests_by_session: historyManifestsBySession,
     history_chunks_by_id: {},
     omissions: [],
@@ -351,12 +354,12 @@ test('fetchSession uses raw canonical IDs with explicit Sessions API v3', async 
     assert.equal(session?.pendingPermissionCount, 1)
     assert.equal(session?.pendingPermissions[0]?.id, 'session-v3-perm-1')
     assert.equal(session?.usage?.remainingTokens, 958)
-    assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-v3'])
+    assert.deepEqual(requestUrls(calls), ['/v3/sync/hydrate'])
     assertNoV1OrV2SessionDataCalls(calls)
   })
 })
 
-test('Desktop V3 bootstrap fetches raw route session IDs from /v3/sessions only', async () => {
+test('Desktop V3 bootstrap fetches raw route session IDs from /v3/sync/hydrate only', async () => {
   const { fetchSession } = await import('./chat-queries')
 
   await withFetchStub(async (calls) => {
@@ -364,7 +367,7 @@ test('Desktop V3 bootstrap fetches raw route session IDs from /v3/sessions only'
 
     assert.equal(session?.id, 'session-raw')
     assert.equal(session?.sessionApi, 'v3')
-    assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-raw'])
+    assert.deepEqual(requestUrls(calls), ['/v3/sync/hydrate'])
     assertNoV1OrV2SessionDataCalls(calls)
   })
 })
@@ -517,11 +520,11 @@ test('DesktopChatPanel uses V3-native preference and mode paths', async () => {
   assert.match(source, /fetchAndApplyDesktopV3SessionMessagesTail\(sessionId, \{ signal: controller\.signal \}\)/)
   assert.match(source, /fetchAndApplyDesktopV3PlanSnapshot\(sessionId\)/)
   assert.match(source, /const loadingMessages = messagesLoading/)
-  assert.match(source, /updateDesktopV3SessionMode\(sessionId, nextMode\)/)
+  assert.match(source, /applySessionMode\(sessionId, nextMode\)/)
   assert.match(source, /updateDesktopV3SessionPreference\(sessionId, normalizedNext\)/)
-  assert.match(source, /updateDesktopV3SessionAgent\(sessionId, nextAgent\)/)
+  assert.match(source, /applySessionAgent\(sessionId, nextAgent\)/)
   assert.doesNotMatch(source, /currentMetadata\.subagent\s*=/)
-  assert.match(source, /updateDesktopV3SessionMetadata\(sessionId, currentMetadata\)/)
+  assert.match(source, /applySessionMetadata\(sessionId, currentMetadata\)/)
   assert.match(source, /saveDesktopV3SessionPlan\(sessionId,/)
   assert.doesNotMatch(source, /const snapshot = await fetchAndApplyDesktopV3SessionSnapshot\(sessionId\)/)
   assert.match(source, /from '\.\.\/\.\.\/state\/desktop-state-store'/)
@@ -597,8 +600,8 @@ test('Desktop realtime applies durable session events into the external Desktop 
   const source = await readFile(new URL('../../state/desktop-ui-store.ts', import.meta.url), 'utf8')
 
   assert.match(source, /applyV3RuntimeEnvelope\(normalizedEnvelope\)/)
-  assert.match(source, /const backendDerivedDesktopEvent = eventType\.startsWith\('session\.'\) \|\| eventType\.startsWith\('permission\.'\)/)
-  assert.match(source, /if \(backendDerivedDesktopEvent\) \{\n\s+set\(\(state(?:: DesktopStoreState)?\) => \(\{ lastGlobalSeq:/)
+  assert.match(source, /const runtimeOutcome = applyV3RuntimeEnvelope\(normalizedEnvelope\)/)
+  assert.match(source, /if \(runtimeOutcome\.applied\) \{[\s\S]*applyV3SessionStreamFrame\(state, frameSessionId, payload as DesktopV3RealtimeFrame, ts\)/)
   assert.doesNotMatch(source, /applyDurableEventToDesktopDB/)
   assert.doesNotMatch(source, /mergeDesktopDBDurablePatch/)
   assert.doesNotMatch(source, /applyRunIntentToDesktopDB/)
@@ -725,11 +728,11 @@ test('Desktop routine sync hydration callers are metadata-only and never request
   assert.match(snapshotSource, /apiFetch\(desktopSyncSnapshotEndpoint\(input\)/, 'Desktop snapshot fetches must route through canonical sync endpoint selection')
   assert.match(snapshotSource, /'\/v3\/sync\/bootstrap'/, 'Desktop bootstrap sync endpoint must be canonical')
   assert.match(snapshotSource, /'\/v3\/sync\/hydrate'/, 'Desktop hydrate sync endpoint must be canonical')
-  assert.doesNotMatch(allSource, /runIntents:\s*true|run_intents:\s*true|includeActive:\s*true/, 'routine Desktop sync callers must not request run intents or include_active')
+  assert.doesNotMatch(allSource, /includeActive:\s*true/, 'routine Desktop sync callers must not request include_active')
   assert.doesNotMatch(snapshotSource, /\/v3\/sessions:workset|\/v3\/sessions:discover/, 'Desktop snapshot transport must not call legacy workset/discovery endpoints')
 
   const mutationSource = sources.find((entry) => entry.file.endsWith('desktop-v3-session-api.ts'))?.source ?? ''
-  assert.match(mutationSource, /mergeDesktopStateSnapshot\(\{\s*sessionIds: \[normalizedSessionId\],\s*history: \{ mode: 'none'/s, 'mutation refresh sync snapshots must explicitly request metadata-only history')
+  assert.doesNotMatch(mutationSource, /refreshSessionAfterMutation|fetchAndApplyDesktopV3SessionSnapshot|mergeDesktopStateSnapshot/, 'Desktop V3 mutation helpers must not hydrate after mutation as repair')
 })
 
 function findUnboundedFullHistoryWorksetRequests(source: string): string[] {

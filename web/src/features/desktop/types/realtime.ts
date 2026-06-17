@@ -280,6 +280,9 @@ export interface DesktopStoreState {
   updateNotificationRecord: (id: string, patch: { read?: boolean; acked?: boolean; muted?: boolean; status?: string }) => Promise<void>
   setSessionDraft: (sessionId: string, draft: string) => void
   setSessionDraftMode: (sessionId: string, mode: 'plan' | 'auto' | 'read' | 'readwrite') => void
+  applySessionMode: (sessionId: string, mode: string) => Promise<void>
+  applySessionAgent: (sessionId: string, agentName: string) => Promise<DesktopSessionRecord>
+  applySessionMetadata: (sessionId: string, metadata: Record<string, unknown>) => Promise<void>
   getSessionDraft: (sessionId: string | null, workspacePath?: string | null) => string
   getSessionDraftMode: (sessionId: string | null, workspacePath?: string | null) => 'plan' | 'auto' | 'read' | 'readwrite'
   bootstrapVault: () => Promise<void>

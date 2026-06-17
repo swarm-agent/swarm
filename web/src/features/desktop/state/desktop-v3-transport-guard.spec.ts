@@ -7,6 +7,11 @@ const repoRoot = path.resolve(new URL('../../../../../', import.meta.url).pathna
 const desktopRoot = path.join(repoRoot, 'web/src/features/desktop')
 const sessionV3Root = path.join(desktopRoot, 'session-v3')
 
+const allowedLegacyProductionFiles = new Set([
+  'state/desktop-state-stream.ts',
+  'state/run-stream-controller.ts',
+])
+
 const forbiddenDesktopV3TransportPatterns: Array<{ label: string; pattern: RegExp }> = [
   { label: 'legacy /ws socket helper', pattern: /\bopenDesktopWebSocket\b/g },
   { label: 'legacy /ws endpoint', pattern: /['"]\/ws['"]/g },
@@ -39,7 +44,17 @@ const forbiddenDesktopV3TransportPatterns: Array<{ label: string; pattern: RegEx
   { label: 'legacy desktop realtime socket owner', pattern: /\bdesktopRealtimeSocket\b/g },
   { label: 'V3 primary stream helper', pattern: /\bprimaryStream\b|primary-stream/g },
   { label: 'sessionV3StreamFrame helper', pattern: /\bsessionV3StreamFrame\b/g },
+  { label: 'legacy mutation repair helper', pattern: /\brefreshSessionAfterMutation\b/g },
+  { label: 'legacy session snapshot repair helper', pattern: /\bfetchAndApplyDesktopV3SessionSnapshot\b/g },
+  { label: 'legacy mutation repair mode helper', pattern: /\bupdateDesktopV3SessionMode\b/g },
+  { label: 'legacy mutation repair agent helper', pattern: /\bupdateDesktopV3SessionAgent\b/g },
+  { label: 'legacy mutation repair metadata helper', pattern: /\bupdateDesktopV3SessionMetadata\b/g },
+  { label: 'legacy mutation repair snapshot merge', pattern: /\bmergeDesktopStateSnapshot\(\{\s*sessionIds:\s*\[/g },
 ]
+
+const forbiddenDesktopProductionPatterns = forbiddenDesktopV3TransportPatterns.filter(({ label }) => {
+  return !/afterSeq|after_rev|afterRev|lastEventSeq/.test(label)
+})
 
 type Offender = {
   file: string
@@ -80,6 +95,13 @@ function productionSessionV3Files(): string[] {
   return walkFiles(sessionV3Root).filter((filePath) => !isTestFile(filePath))
 }
 
+function productionDesktopFiles(): string[] {
+  return walkFiles(desktopRoot).filter((filePath) => {
+    if (isTestFile(filePath)) return false
+    return !allowedLegacyProductionFiles.has(desktopRelative(filePath))
+  })
+}
+
 function activeDesktopV3TransportFiles(): string[] {
   return [
     'state/desktop-ui-store.ts',
@@ -99,11 +121,11 @@ function formatOffenders(offenders: Offender[]): string {
     : `\n${offenders.map((offender) => `- ${offender.file}: ${offender.label} (${offender.count})`).join('\n')}`
 }
 
-function forbiddenOffenders(files: string[]): Offender[] {
+function forbiddenOffenders(files: string[], patterns = forbiddenDesktopV3TransportPatterns): Offender[] {
   return files.flatMap((filePath) => {
     const source = readText(filePath)
     const relative = desktopRelative(filePath)
-    return forbiddenDesktopV3TransportPatterns.flatMap(({ label, pattern }) => {
+    return patterns.flatMap(({ label, pattern }) => {
       const count = countPattern(source, pattern)
       return count === 0 ? [] : [{ file: relative, label, count }]
     })
@@ -126,7 +148,17 @@ test('active Desktop V3 session transport path has no legacy transport allowlist
   assert.deepEqual(
     offenders,
     [],
-    `Desktop V3 session transport must be owned only by DesktopSessionV3Runtime and /v3/realtime/stream; no legacy reconnect/workset APIs, /ws, run-stream, DesktopV3RealtimeController, per-session stream, V2 stream, or event-seq transport inputs remain.${formatOffenders(offenders)}`,
+    `Desktop V3 session transport must be owned only by DesktopSessionV3Runtime and /v3/realtime/stream; no legacy reconnect/workset APIs, /ws, run-stream, DesktopV3RealtimeController, per-session stream, V2 stream, event-seq transport inputs, or mutation-repair helpers remain.${formatOffenders(offenders)}`,
+  )
+})
+
+test('all Desktop production code has no forbidden Desktop V3 transport or mutation-repair callers', () => {
+  const offenders = forbiddenOffenders(productionDesktopFiles(), forbiddenDesktopProductionPatterns)
+
+  assert.deepEqual(
+    offenders,
+    [],
+    `Desktop production code must not contain active forbidden V3 transport endpoints/controllers/resume inputs or hydrate-after-mutation repair helpers.${formatOffenders(offenders)}`,
   )
 })
 

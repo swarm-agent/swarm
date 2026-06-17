@@ -40,6 +40,7 @@ import {
 } from "../services/model-options";
 import { parseStructuredToolMessage } from "../services/tool-message";
 import { countApprovalRequiredPermissions } from "../../permissions/services/permission-payload";
+import { hydrateSessionV3Sync } from "../../session-v3/api";
 
 interface SessionWire {
   id?: string;
@@ -1018,22 +1019,28 @@ export async function fetchSession(
   }
 
   resolveSessionApiForSession(normalizedSessionId, options);
-  const response = await requestJson<V3HydratedSessionResponseWire>(
-    `/v3/sessions/${encodeURIComponent(normalizedSessionId)}`,
-  );
-  const mappedSession = applyActiveRunIntent(
-    mapSession(mapSessionProjectionToSession(response.session ?? {}, response.projection)),
-    mapV3RunIntent(response.active_run_intent),
-  );
+  const result = await hydrateSessionV3Sync({
+    sessionIds: [normalizedSessionId],
+    history: { mode: 'none', maxEventsPerSession: 0, manifestPolicy: 'manifest', includeEvents: false },
+    resources: { runIntents: true },
+  });
+  const session = result.snapshot.sessionsById?.[normalizedSessionId];
+  if (!session?.id) {
+    return null;
+  }
   const mapped = applyDesktopChatRouteToSession(
-    mappedSession,
-    routeFromSessionMetadata(mappedSession),
+    session,
+    routeFromSessionMetadata(session),
   );
   mapped.permissionsHydrated = true;
-  mapped.pendingPermissions = mapDesktopV3PendingPermissions(response.pending_permissions);
+  mapped.pendingPermissions = mapDesktopV3PendingPermissions((result.wire.permissions_by_session ?? {})[normalizedSessionId] as ResolvePermissionResponseWire['permission'][] | undefined)
+    .filter((permission) => permission.sessionId === normalizedSessionId);
   mapped.pendingPermissionCount = countApprovalRequiredPermissions(mapped.pendingPermissions, mapped.mode);
-  mapped.usage = mapSessionUsageSummary(response.usage_summary);
-  return mapped.id ? applySessionProjectionCursor(mapped, response.projection) : null;
+  mapped.usage = mapSessionUsageSummary((result.wire.usage_by_session ?? {})[normalizedSessionId] as Parameters<typeof mapSessionUsageSummary>[0]);
+  const runIntent = result.snapshot.runIntentsBySessionId?.[normalizedSessionId] ?? session.runIntent ?? null;
+  mapped.runIntent = runIntent;
+  mapped.live = applyActiveRunIntent(mapped, runIntent).live;
+  return mapped;
 }
 
 function mapDesktopV3PendingPermissions(permissions: ResolvePermissionResponseWire["permission"][] | undefined): DesktopPermissionRecord[] {
