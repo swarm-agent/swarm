@@ -159,6 +159,25 @@ test('desktop-ui-store connect boots through DesktopSessionV3Runtime', () => {
   )
 })
 
+test('external snapshot cursor does not reanimate stopped desktop V3 runtime', () => {
+  const source = readText(path.join(desktopRoot, 'state/desktop-ui-store.ts'))
+  assert.match(
+    source,
+    /function\s+disposeDesktopSessionV3Runtime\(\):\s*void\s*{[\s\S]*desktopSessionV3Runtime\s*=\s*null[\s\S]*runtime\?\.shutdown\(\)/,
+    'desktop-ui-store must null and shutdown the store-owned runtime when disposing it',
+  )
+  assert.match(
+    source,
+    /function\s+clearDesktopRuntimeState\([^)]*\)[\s\S]*disposeDesktopSessionV3Runtime\(\)/,
+    'clearing desktop runtime state must dispose/null the session-v3 runtime instead of leaving a stopped object alive',
+  )
+  assert.doesNotMatch(
+    source,
+    /refresh\(\{\s*reason:\s*['"]external snapshot cursor['"]\s*\}\)/,
+    'desktop:v3-realtime-snapshot-cursor must not refresh/reconnect the session-v3 runtime',
+  )
+})
+
 test('Desktop V3 realtime transport opens only /v3/realtime/stream with endpoint_cursor', () => {
   const source = readText(path.join(desktopRoot, 'session-v3/transport.ts'))
   assert.match(source, /SESSION_V3_REALTIME_STREAM_PATH/)

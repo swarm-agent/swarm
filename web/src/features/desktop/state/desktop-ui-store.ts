@@ -223,6 +223,12 @@ let desktopSessionV3Runtime: DesktopSessionV3Runtime | null = null
 let desktopV3RealtimeEndpointCursor = ''
 let desktopV3ReconnectSyncDiagnostics: Record<string, unknown> = { status: 'never-run' }
 
+function disposeDesktopSessionV3Runtime(): void {
+  const runtime = desktopSessionV3Runtime
+  desktopSessionV3Runtime = null
+  runtime?.shutdown()
+}
+
 type DesktopV3FollowUpTraceStep = {
   name: string
   at: number
@@ -626,11 +632,9 @@ if (typeof window !== 'undefined') {
       return
     }
     desktopV3RealtimeEndpointCursor = cursor
-    if (desktopSessionV3Runtime) {
-      void desktopSessionV3Runtime.refresh({ reason: 'external snapshot cursor' }).catch((error) => {
-        console.error('[desktop-store] session v3 runtime cursor refresh failed', error)
-      })
-    }
+    // Do not refresh/reconnect the session-v3 runtime from this legacy cursor event.
+    // The V3 runtime transport owns cursor advancement from realtime frames and
+    // explicit lifecycle rehydrates; snapshot cursor notifications are diagnostic only.
   })
 }
 
@@ -858,7 +862,7 @@ function clearDesktopRuntimeState(state: DesktopStoreState): Partial<DesktopStor
   }
   clearHeartbeatTimer(state)
   clearLivenessTimer(state)
-  desktopSessionV3Runtime?.stop('desktop runtime state cleared')
+  disposeDesktopSessionV3Runtime()
   saveDesktopActiveSessionId(null)
   saveDesktopActiveWorkspacePath(null)
   return {
@@ -3875,8 +3879,7 @@ export const useDesktopUiStore = createDesktopUiStore<DesktopStoreState>((set, g
       realtimeDesired: false,
       connectionState: 'idle',
     })
-    desktopSessionV3Runtime?.shutdown()
-    desktopSessionV3Runtime = null
+    disposeDesktopSessionV3Runtime()
   },
   createSession: async (input) => {
     const target = getDesktopSessionCreateTarget(input.route)
