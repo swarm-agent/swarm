@@ -407,3 +407,134 @@ test('sendMessage mutation advances desktop rev before next realtime prevRev', (
   assert.equal(next.state.desktop.rev, 2)
   assert.equal(next.state.endpointCursor, 'cursor-2')
 })
+
+test('minimal mutation responses advance only from realtime outbox cursor and apply preferences', () => {
+  let state = createSessionV3ReducerInitialState()
+
+  const modeOnly = sessionV3Reducer(state, {
+    type: 'mutation',
+    sessionId: 'session-v3',
+    response: {
+      ok: true,
+      session_id: 'session-v3',
+      realtime_outbox: {
+        endpoint_seq: 3,
+        endpoint_cursor: 'cursor-3',
+        session_id: 'session-v3',
+      },
+    },
+  })
+  state = modeOnly.state
+
+  assert.equal(state.desktop.rev, 3)
+  assert.equal(state.endpointCursor, 'cursor-3')
+  assert.equal(state.desktop.sessionsById['session-v3'], undefined)
+
+  const preference = sessionV3Reducer(state, {
+    type: 'mutation',
+    sessionId: 'session-v3',
+    response: {
+      ok: true,
+      session_id: 'session-v3',
+      preference: { provider: 'openai', model: 'gpt-4.1', thinking: 'medium', service_tier: 'auto', context_mode: 'full', updated_at: 42 },
+      mutation: { realtime_outbox: { endpoint_seq: 4, endpoint_cursor: 'cursor-4', session_id: 'session-v3' } },
+    },
+  })
+  state = preference.state
+
+  assert.equal(state.desktop.rev, 4)
+  assert.equal(state.endpointCursor, 'cursor-4')
+  assert.equal(state.desktop.preferencesBySessionId['session-v3']?.preference.model, 'gpt-4.1')
+})
+
+test('sync stream replay is idempotent and advances cursor only from stream cursor', () => {
+  let state = createSessionV3ReducerInitialState()
+  state = sessionV3Reducer(state, {
+    type: 'snapshot',
+    snapshot: { rev: 1, snapshotEndpointCursor: 'cursor-1' },
+    endpointCursor: 'cursor-1',
+  }).state
+
+  const response = {
+    ok: true,
+    endpoint_cursor: 'cursor-stream-3',
+    after_endpoint_seq: 1,
+    high_watermark_seq: 3,
+    has_more: false,
+    replay_instructions: { after_endpoint_cursor: 'cursor-stream-3' },
+    events: [
+      {
+        endpoint_seq: 3,
+        endpoint_cursor: 'cursor-event-ignored',
+        session_id: 'session-v3',
+        event: {
+          id: 'event-3',
+          session_id: 'session-v3',
+          seq: 9,
+          event_type: 'session.assistant.started',
+          ts_unix_ms: 1009,
+          payload: {
+            run_id: 'run-v3',
+            run_intent: { session_id: 'session-v3', run_id: 'run-v3', status: 'running', event_seq: 9 },
+          },
+        },
+        projection: { session_id: 'session-v3', last_event_seq: 9, projection_high_watermark_seq: 9, updated_at: 1009 },
+        created_at: 1009,
+      },
+    ],
+  }
+
+  const first = sessionV3Reducer(state, { type: 'sync-stream-result', response })
+  assert.equal(first.state.endpointCursor, 'cursor-stream-3')
+  assert.equal(first.state.desktop.rev, 3)
+  assert.equal(first.state.desktop.sessionsById['session-v3']?.runIntent?.status, 'running')
+
+  const duplicate = sessionV3Reducer(first.state, { type: 'sync-stream-result', response })
+  assert.equal(duplicate.state.endpointCursor, 'cursor-stream-3')
+  assert.equal(duplicate.state.desktop.rev, 3)
+  assert.equal(duplicate.duplicate, true)
+})
+
+test('sync snapshot tombstones remove sessions and subscriptions', () => {
+  let state = createSessionV3ReducerInitialState()
+  state = sessionV3Reducer(state, {
+    type: 'sync-snapshot',
+    result: {
+      snapshot: {
+        rev: 1,
+        snapshotEndpointCursor: 'cursor-1',
+        sessionsById: {
+          'session-remove': { id: 'session-remove', title: 'Remove me', workspacePath: '/repo', workspaceName: 'repo', mode: 'auto', sessionApi: 'v3', messageCount: 0, updatedAt: 1, createdAt: 1, permissionsHydrated: false, lifecycle: null, live: emptyLiveState(), pendingPermissions: [], pendingPermissionCount: 0, usage: null },
+        },
+        sessionOrder: ['session-remove'],
+      },
+      endpointCursor: 'cursor-1',
+      tombstonesBySession: {},
+      replayInstructions: null,
+      syncScope: null,
+      scopeId: '',
+      selector: null,
+      wire: { ok: true, rev: 1, snapshot_endpoint_cursor: 'cursor-1' },
+    },
+    subscriptions: [{ session_id: 'session-remove', subscription_id: 'sub-remove', endpoint_cursor: 'cursor-1' }],
+  }).state
+
+  state = sessionV3Reducer(state, {
+    type: 'sync-snapshot',
+    result: {
+      snapshot: { rev: 2, snapshotEndpointCursor: 'cursor-2', sessionsById: {}, sessionOrder: [] },
+      endpointCursor: 'cursor-2',
+      tombstonesBySession: { 'session-remove': { session_id: 'session-remove', deleted: true } },
+      replayInstructions: null,
+      syncScope: null,
+      scopeId: '',
+      selector: null,
+      wire: { ok: true, rev: 2, snapshot_endpoint_cursor: 'cursor-2', tombstones_by_session: { 'session-remove': { session_id: 'session-remove', deleted: true } } },
+    },
+    subscriptions: [{ session_id: 'session-remove', subscription_id: 'sub-remove', endpoint_cursor: 'cursor-2' }],
+  }).state
+
+  assert.equal(state.desktop.sessionsById['session-remove'], undefined)
+  assert.equal(state.subscriptionsBySessionId['session-remove'], undefined)
+  assert.deepEqual(state.removedSessionIds, ['session-remove'])
+})

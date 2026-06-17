@@ -9,19 +9,24 @@ import {
 } from '../state/desktop-state'
 import type { ChatMessageRecord } from '../chat/types/chat'
 import type { DesktopPermissionRecord, DesktopRunIntentRecord, DesktopSessionRecord, DesktopSessionUsageRecord } from '../types/realtime'
-import type {
-  SessionV3CompactResponseWire,
-  SessionV3HydratedSessionResponseWire,
-  SessionV3MessageWire,
-  SessionV3ProjectionWire,
-  SessionV3RealtimeFrameWire,
-  SessionV3RealtimeOutboxWire,
-  SessionV3RealtimeSubscriptionRequestWire,
-  SessionV3RealtimeWorksetSubscriptionRequestWire,
-  SessionV3SyncSnapshot,
-  SessionV3RunIntentWire,
-  SessionV3SessionWire,
-  SessionV3SnapshotResult,
+import {
+  SESSION_V3_REALTIME_PROTOCOL,
+  SESSION_V3_REALTIME_PROTOCOL_VERSION,
+  type SessionV3CompactResponseWire,
+  type SessionV3HydratedSessionResponseWire,
+  type SessionV3MessageWire,
+  type SessionV3MutationResponseWire,
+  type SessionV3PreferenceResponseWire,
+  type SessionV3ProjectionWire,
+  type SessionV3RealtimeFrameWire,
+  type SessionV3RealtimeOutboxWire,
+  type SessionV3RealtimeSubscriptionRequestWire,
+  type SessionV3RealtimeWorksetSubscriptionRequestWire,
+  type SessionV3SyncSnapshot,
+  type SessionV3SyncStreamResponseWire,
+  type SessionV3RunIntentWire,
+  type SessionV3SessionWire,
+  type SessionV3SnapshotResult,
 } from './types'
 
 const MAX_APPLIED_FRAME_IDS = 2048
@@ -78,12 +83,15 @@ export interface SessionV3ReducerState {
   lastApply: SessionV3ReducerApplySummary | null
 }
 
+export type SessionV3ReducerMutationResponse = SessionV3MutationResponseWire | SessionV3HydratedSessionResponseWire | SessionV3CompactResponseWire | SessionV3PreferenceResponseWire
+
 export type SessionV3ReducerAction =
   | { type: 'snapshot'; snapshot: DesktopDaemonSnapshot; mode?: SessionV3ReducerSnapshotMode; endpointCursor?: string | null; receivedAt?: number }
   | { type: 'snapshot-result'; result: SessionV3SnapshotResult; mode?: SessionV3ReducerSnapshotMode; receivedAt?: number }
   | { type: 'sync-snapshot'; result: SessionV3SyncSnapshot; endpointCursor?: string | null; subscriptions?: SessionV3RealtimeSubscriptionRequestWire[]; worksets?: SessionV3RealtimeWorksetSubscriptionRequestWire[]; mode?: SessionV3ReducerSnapshotMode; receivedAt?: number }
+  | { type: 'sync-stream-result'; response: SessionV3SyncStreamResponseWire; receivedAt?: number }
   | { type: 'frame'; frame: SessionV3RealtimeFrameWire; receivedAt?: number }
-  | { type: 'mutation'; response: SessionV3HydratedSessionResponseWire | SessionV3CompactResponseWire; sessionId?: string | null; receivedAt?: number }
+  | { type: 'mutation'; response: SessionV3ReducerMutationResponse; sessionId?: string | null; receivedAt?: number }
   | { type: 'status'; status: DesktopStateStatus; error?: string | null; receivedAt?: number }
   | { type: 'stale'; reason: string; receivedAt?: number }
 
@@ -115,6 +123,7 @@ interface ReducerDraft {
   discoveredSessionIds?: string[]
   removedSessionIds?: string[]
   rememberFrameId?: string
+  rememberFrameIds?: string[]
 }
 
 export function createSessionV3ReducerInitialState(desktop: DesktopState = createEmptyDesktopState()): SessionV3ReducerState {
@@ -145,6 +154,8 @@ export function sessionV3Reducer(state: SessionV3ReducerState, action: SessionV3
       })
     case 'sync-snapshot':
       return applySessionV3SyncSnapshot(state, action.result, action)
+    case 'sync-stream-result':
+      return applySessionV3SyncStreamResult(state, action.response, action)
     case 'frame':
       return applySessionV3RealtimeFrame(state, action.frame, action)
     case 'mutation':
@@ -194,24 +205,35 @@ export function applySessionV3SyncSnapshot(
     receivedAt: action.receivedAt,
   })
   const receivedAt = normalizeReceivedAt(action.receivedAt)
-  const subscriptionsBySessionId = { ...snapshotResult.state.subscriptionsBySessionId }
+  const tombstoneSessionIds = tombstonedSessionIds(result.tombstonesBySession)
+  const baseState = tombstoneSessionIds.length > 0
+    ? {
+        ...snapshotResult.state,
+        desktop: removeSessionsFromDesktop(snapshotResult.state.desktop, tombstoneSessionIds),
+        removedSessionIds: mergeUnique(snapshotResult.state.removedSessionIds, tombstoneSessionIds),
+      }
+    : snapshotResult.state
+  const subscriptionsBySessionId = { ...baseState.subscriptionsBySessionId }
+  for (const sessionId of tombstoneSessionIds) {
+    delete subscriptionsBySessionId[sessionId]
+  }
   for (const subscription of action.subscriptions ?? []) {
     const sessionId = normalizeOptionalString(subscription.session_id)
     const subscriptionId = normalizeOptionalString(subscription.subscription_id)
-    if (!sessionId || !subscriptionId) continue
+    if (!sessionId || !subscriptionId || tombstoneSessionIds.includes(sessionId)) continue
     subscriptionsBySessionId[sessionId] = {
       sessionId,
       subscriptionId,
-      endpointCursor: normalizeOptionalString(subscription.endpoint_cursor) || result.endpointCursor || snapshotResult.state.endpointCursor,
+      endpointCursor: normalizeOptionalString(subscription.endpoint_cursor) || result.endpointCursor || baseState.endpointCursor,
       worksetIds: subscriptionsBySessionId[sessionId]?.worksetIds ?? [],
       autoSubscribed: subscriptionsBySessionId[sessionId]?.autoSubscribed ?? false,
       updatedAt: receivedAt,
     }
   }
-  const snapshotSessionIds = snapshotResult.state.desktop.sessionOrder.length > 0
-    ? snapshotResult.state.desktop.sessionOrder.filter((sessionId) => Boolean(snapshotResult.state.desktop.sessionsById[sessionId]))
-    : Object.keys(snapshotResult.state.desktop.sessionsById)
-  const worksetsById = { ...snapshotResult.state.worksetsById }
+  const snapshotSessionIds = baseState.desktop.sessionOrder.length > 0
+    ? baseState.desktop.sessionOrder.filter((sessionId) => Boolean(baseState.desktop.sessionsById[sessionId]))
+    : Object.keys(baseState.desktop.sessionsById)
+  const worksetsById = removeSessionsFromWorksets(baseState.worksetsById, tombstoneSessionIds)
   for (const workset of action.worksets ?? []) {
     const worksetId = normalizeOptionalString(workset.workset_id)
     const subscriptionId = normalizeOptionalString(workset.subscription_id)
@@ -225,7 +247,69 @@ export function applySessionV3SyncSnapshot(
       updatedAt: receivedAt,
     }
   }
-  return applyReducerDraft(snapshotResult.state, action, { subscriptionsBySessionId, worksetsById })
+  return applyReducerDraft(baseState, action, { subscriptionsBySessionId, worksetsById })
+}
+
+export function applySessionV3SyncStreamResult(
+  state: SessionV3ReducerState,
+  response: SessionV3SyncStreamResponseWire,
+  action: Extract<SessionV3ReducerAction, { type: 'sync-stream-result' }>,
+): SessionV3ReducerResult {
+  if (response.ok === false || response.bootstrap_required) {
+    return staleReducerResult(state, action, normalizeOptionalString(response.error) || normalizeOptionalString(response.error_code) || 'V3 sync stream requires bootstrap')
+  }
+
+  let desktop = state.desktop
+  const rememberFrameIds: string[] = []
+  let duplicate = false
+  for (const raw of response.events ?? []) {
+    const frame = syncStreamFrameFromOutboxRecord(raw, desktop.rev)
+    if (!frame) continue
+    const frameId = realtimeFrameIdentity(frame)
+    if (state.appliedFrameIds[frameId] || rememberFrameIds.includes(frameId)) {
+      duplicate = true
+      continue
+    }
+    const event = materializeRealtimeEvent(frame, desktop.rev)
+    if (event.rev <= desktop.rev) {
+      duplicate = true
+      rememberFrameIds.push(frameId)
+      continue
+    }
+    const nextDesktop = desktopReducer(desktop, { type: 'daemon/event', event })
+    rememberFrameIds.push(frameId)
+    desktop = nextDesktop
+    if (desktop.status === 'stale') {
+      return applyReducerDraft(state, action, {
+        desktop,
+        status: 'stale',
+        staleReason: desktop.staleReason ?? 'V3 sync stream replay failed',
+        rememberFrameIds,
+      })
+    }
+  }
+
+  const endpointCursor = syncStreamEndpointCursor(response) || state.endpointCursor
+  const nextStatus: SessionV3ReducerStatus = desktop.status === 'stale'
+    ? 'stale'
+    : (state.status === 'idle' || state.status === 'stale') && endpointCursor
+      ? 'ready'
+      : state.status
+  const result = applyReducerDraft(state, action, {
+    desktop,
+    endpointCursor,
+    status: nextStatus,
+    staleReason: desktop.status === 'stale' ? desktop.staleReason : nextStatus === 'ready' ? null : undefined,
+    rememberFrameIds,
+  })
+  if (result.state === state && duplicate) {
+    return {
+      ...result,
+      duplicate: true,
+      reason: 'duplicate V3 sync stream replay event',
+    }
+  }
+  return result
 }
 
 export function applySessionV3RealtimeFrame(
@@ -284,7 +368,7 @@ export function applySessionV3RealtimeFrame(
 
 export function applySessionV3MutationResult(
   state: SessionV3ReducerState,
-  response: SessionV3HydratedSessionResponseWire,
+  response: SessionV3ReducerMutationResponse,
   action: Extract<SessionV3ReducerAction, { type: 'mutation' }>,
 ): SessionV3ReducerResult {
   const committedRev = mutationCommittedRevision(response)
@@ -318,11 +402,12 @@ function applyRealtimeEventFrame(
     ? state.desktop
     : desktopReducer(state.desktop, { type: 'daemon/event', event })
   const endpointCursor = frameEndpointCursor(frame) || state.endpointCursor
+  const nextStatus: SessionV3ReducerStatus = desktop.status === 'stale' ? 'stale' : 'ready'
   return applyReducerDraft(state, action, {
     desktop,
     endpointCursor,
     subscriptionsBySessionId: upsertSubscription(state.subscriptionsBySessionId, frame, action.receivedAt),
-    status: desktop.status === 'stale' ? 'stale' : 'ready',
+    status: nextStatus,
     staleReason: desktop.status === 'stale' ? desktop.staleReason : null,
     rememberFrameId: frameId,
   })
@@ -377,7 +462,7 @@ function applyReducerDraft(state: SessionV3ReducerState, action: SessionV3Reduce
   const endpointCursor = draft.endpointCursor ?? state.endpointCursor
   const status = draft.status ?? (desktop.status === 'stale' ? 'stale' : state.status)
   const staleReason = draft.staleReason ?? (status === 'stale' ? desktop.staleReason ?? state.staleReason : null)
-  const remembered = draft.rememberFrameId ? rememberFrame(state, draft.rememberFrameId) : null
+  const remembered = rememberFrames(state, [...(draft.rememberFrameIds ?? []), ...(draft.rememberFrameId ? [draft.rememberFrameId] : [])])
   const nextStateBase: SessionV3ReducerState = {
     ...state,
     desktop,
@@ -388,8 +473,8 @@ function applyReducerDraft(state: SessionV3ReducerState, action: SessionV3Reduce
     worksetsById: draft.worksetsById ?? state.worksetsById,
     discoveredSessionIds: draft.discoveredSessionIds ?? state.discoveredSessionIds,
     removedSessionIds: draft.removedSessionIds ?? state.removedSessionIds,
-    appliedFrameIds: remembered?.appliedFrameIds ?? state.appliedFrameIds,
-    appliedFrameOrder: remembered?.appliedFrameOrder ?? state.appliedFrameOrder,
+    appliedFrameIds: remembered.appliedFrameIds,
+    appliedFrameOrder: remembered.appliedFrameOrder,
   }
   const desktopChanged = !Object.is(desktop, state.desktop)
   const cursorAdvanced = endpointCursor !== state.endpointCursor
@@ -401,7 +486,7 @@ function applyReducerDraft(state: SessionV3ReducerState, action: SessionV3Reduce
     || !Object.is(nextStateBase.worksetsById, state.worksetsById)
     || !Object.is(nextStateBase.discoveredSessionIds, state.discoveredSessionIds)
     || !Object.is(nextStateBase.removedSessionIds, state.removedSessionIds)
-    || Boolean(remembered)
+    || remembered.appliedFrameOrder !== state.appliedFrameOrder
   if (!changed) {
     return unchangedResult(state)
   }
@@ -513,13 +598,20 @@ function applySummary(
   }
 }
 
-function rememberFrame(state: SessionV3ReducerState, frameId: string): Pick<SessionV3ReducerState, 'appliedFrameIds' | 'appliedFrameOrder'> {
-  const normalizedFrameId = frameId.trim()
-  if (!normalizedFrameId) {
+function rememberFrames(state: SessionV3ReducerState, frameIds: string[]): Pick<SessionV3ReducerState, 'appliedFrameIds' | 'appliedFrameOrder'> {
+  const normalizedFrameIds = frameIds
+    .map((frameId) => frameId.trim())
+    .filter((frameId) => frameId && !state.appliedFrameIds[frameId])
+  if (normalizedFrameIds.length === 0) {
     return { appliedFrameIds: state.appliedFrameIds, appliedFrameOrder: state.appliedFrameOrder }
   }
-  const order = [...state.appliedFrameOrder, normalizedFrameId]
-  const ids: Record<string, true> = { ...state.appliedFrameIds, [normalizedFrameId]: true }
+  const order = [...state.appliedFrameOrder]
+  const ids: Record<string, true> = { ...state.appliedFrameIds }
+  for (const frameId of normalizedFrameIds) {
+    if (ids[frameId]) continue
+    order.push(frameId)
+    ids[frameId] = true
+  }
   while (order.length > MAX_APPLIED_FRAME_IDS) {
     const evicted = order.shift()
     if (evicted) delete ids[evicted]
@@ -586,9 +678,48 @@ function normalizeRealtimeEventPayload(
   }
 }
 
+function syncStreamFrameFromOutboxRecord(raw: unknown, currentRev: number): SessionV3RealtimeFrameWire | null {
+  if (!isRecord(raw)) return null
+  const event = isRecord(raw.event) ? raw.event : {}
+  const projection = isRecord(raw.projection) ? raw.projection : null
+  const endpointSeq = positiveInteger(raw.endpoint_seq)
+  const sessionId = normalizeOptionalString(raw.session_id) || normalizeOptionalString(event.session_id) || normalizeOptionalString(projection?.session_id)
+  const eventType = normalizeOptionalString(event.event_type)
+  if (!sessionId || !eventType) return null
+  const endpointCursor = normalizeOptionalString(raw.endpoint_cursor)
+  return {
+    protocol: SESSION_V3_REALTIME_PROTOCOL,
+    protocol_version: SESSION_V3_REALTIME_PROTOCOL_VERSION,
+    kind: 'event',
+    session_id: sessionId,
+    endpoint_cursor: endpointCursor,
+    last_seq: positiveInteger(event.seq),
+    high_watermark_seq: positiveInteger(projection?.projection_high_watermark_seq),
+    rev: endpointSeq !== undefined && endpointSeq > currentRev ? endpointSeq : currentRev + 1,
+    prevRev: currentRev,
+    event_type: eventType,
+    event: {
+      id: normalizeOptionalString(event.id),
+      session_id: sessionId,
+      event_type: eventType,
+      seq: positiveInteger(event.seq),
+      ts_unix_ms: nonNegativeInteger(event.ts_unix_ms),
+      payload: isRecord(event.payload) ? event.payload : undefined,
+    },
+    projection: projection as SessionV3ProjectionWire | null,
+    stream: normalizeOptionalString(raw.stream) || `v3/session:${sessionId}`,
+    entity_id: normalizeOptionalString(raw.entity_id) || sessionId,
+    ts_unix_ms: nonNegativeInteger(raw.created_at) ?? nonNegativeInteger(event.ts_unix_ms),
+  }
+}
+
+function syncStreamEndpointCursor(response: SessionV3SyncStreamResponseWire): string {
+  return normalizeOptionalString(response.endpoint_cursor) || normalizeOptionalString(response.replay_instructions?.after_endpoint_cursor)
+}
+
 function mutationSnapshot(
   currentRev: number,
-  response: SessionV3HydratedSessionResponseWire | SessionV3CompactResponseWire,
+  response: SessionV3ReducerMutationResponse,
   fallbackSessionId: string | null | undefined,
 ): DesktopDaemonSnapshot | null {
   const normalizedSessionId = normalizeOptionalString(fallbackSessionId)
@@ -602,15 +733,17 @@ function mutationSnapshot(
   if (session?.id) {
     sessionsById[session.id] = session
   }
-  const messages = normalizeMessages(response.messages && response.messages.length > 0 ? response.messages : response.message ? [response.message] : undefined, normalizedSessionId)
-  const permissions = normalizePermissions(response.pending_permissions, normalizedSessionId)
-  const usage = usageFromWire(response.usage_summary, normalizedSessionId)
+  const messages = normalizeMessages(hasArrayProperty<SessionV3MessageWire, 'messages'>(response, 'messages') && response.messages.length > 0 ? response.messages : response.message ? [response.message] : undefined, normalizedSessionId)
+  const permissions = normalizePermissions(hasArrayProperty<unknown, 'pending_permissions'>(response, 'pending_permissions') ? response.pending_permissions : undefined, normalizedSessionId)
+  const usage = usageFromWire(hasOwnProperty(response, 'usage_summary') ? response.usage_summary : undefined, normalizedSessionId)
   const runIntent = runIntentFromWire(response.active_run_intent ?? response.run_intent, normalizedSessionId)
+  const preference = preferenceFromWire(response, normalizedSessionId)
   const hasSnapshot = Object.keys(sessionsById).length > 0
     || messages.length > 0
     || Object.keys(permissions).length > 0
     || Boolean(usage)
     || Boolean(runIntent)
+    || Boolean(preference)
   if (!hasSnapshot) {
     return null
   }
@@ -623,7 +756,31 @@ function mutationSnapshot(
     permissionsById: Object.keys(permissions).length > 0 ? permissions : undefined,
     usageBySessionId: usage ? { [usage.sessionId || sessionId]: usage } : undefined,
     runIntentsBySessionId: runIntent ? { [runIntent.sessionId]: runIntent } : undefined,
+    preferencesBySessionId: preference ? { [preference.sessionId]: preference.value } : undefined,
     runIntentReconcileSessionIds: runIntent ? [runIntent.sessionId] : undefined,
+  }
+}
+
+function preferenceFromWire(response: SessionV3ReducerMutationResponse, fallbackSessionId: string): { sessionId: string; value: NonNullable<DesktopState['preferencesBySessionId'][string]> } | null {
+  if (!hasOwnProperty(response, 'preference') || !isRecord(response.preference)) return null
+  const sessionId = normalizeOptionalString(response.session_id) || fallbackSessionId
+  if (!sessionId) return null
+  const source = response as SessionV3PreferenceResponseWire
+  const preference = response.preference
+  return {
+    sessionId,
+    value: {
+      preference: {
+        provider: normalizeOptionalString(preference.provider),
+        model: normalizeOptionalString(preference.model),
+        thinking: normalizeOptionalString(preference.thinking),
+        serviceTier: normalizeOptionalString(preference.service_tier),
+        contextMode: normalizeOptionalString(preference.context_mode),
+        updatedAt: numberValue(preference.updated_at),
+      },
+      contextWindow: numberValue(source.context_window),
+      maxOutputTokens: numberValue(source.max_output_tokens),
+    },
   }
 }
 
@@ -835,11 +992,11 @@ function runIntentFromWire(source: SessionV3RunIntentWire | null | undefined, fa
   }
 }
 
-function mutationEndpointCursor(response: SessionV3HydratedSessionResponseWire): string {
+function mutationEndpointCursor(response: SessionV3ReducerMutationResponse): string {
   return realtimeOutboxCursor(response.realtime_outbox) || realtimeOutboxCursor(response.mutation?.realtime_outbox)
 }
 
-function mutationCommittedRevision(response: SessionV3HydratedSessionResponseWire): number | undefined {
+function mutationCommittedRevision(response: SessionV3ReducerMutationResponse): number | undefined {
   return realtimeOutboxRevision(response.realtime_outbox) ?? realtimeOutboxRevision(response.mutation?.realtime_outbox)
 }
 
@@ -956,6 +1113,75 @@ function frameSessionId(frame: SessionV3RealtimeFrameWire): string {
 
 function frameEndpointCursor(frame: SessionV3RealtimeFrameWire): string {
   return normalizeOptionalString(frame.endpoint_cursor)
+}
+
+function tombstonedSessionIds(tombstonesBySession: Record<string, unknown> | undefined): string[] {
+  const output: string[] = []
+  for (const [key, value] of Object.entries(tombstonesBySession ?? {})) {
+    const tombstone = isRecord(value) ? value : {}
+    const sessionId = normalizeOptionalString(tombstone.session_id) || normalizeOptionalString(key)
+    if (!sessionId) continue
+    if (Boolean(tombstone.deleted) || Boolean(tombstone.archived) || Boolean(tombstone.hidden) || normalizeOptionalString(tombstone.kind)) {
+      output.push(sessionId)
+    }
+  }
+  return Array.from(new Set(output))
+}
+
+function removeSessionsFromDesktop(desktop: DesktopState, sessionIds: string[]): DesktopState {
+  if (sessionIds.length === 0) return desktop
+  const removed = new Set(sessionIds)
+  return {
+    ...desktop,
+    sessionsById: omitRecordKeys(desktop.sessionsById, removed),
+    sessionOrder: desktop.sessionOrder.filter((sessionId) => !removed.has(sessionId)),
+    messagesBySessionId: omitRecordKeys(desktop.messagesBySessionId, removed),
+    permissionsById: Object.fromEntries(Object.entries(desktop.permissionsById).filter(([, permission]) => !removed.has(permission.sessionId))),
+    plansBySessionId: omitRecordKeys(desktop.plansBySessionId, removed),
+    planRevisionsBySessionId: omitRecordKeys(desktop.planRevisionsBySessionId, removed),
+    usageBySessionId: omitRecordKeys(desktop.usageBySessionId, removed),
+    runIntentsBySessionId: omitRecordKeys(desktop.runIntentsBySessionId, removed),
+    preferencesBySessionId: omitRecordKeys(desktop.preferencesBySessionId, removed),
+    agentModelPolicyBySessionId: omitRecordKeys(desktop.agentModelPolicyBySessionId, removed),
+    routeReadinessBySessionId: omitRecordKeys(desktop.routeReadinessBySessionId, removed),
+    workspacesByPath: Object.fromEntries(Object.entries(desktop.workspacesByPath).map(([path, workspace]) => [path, {
+      ...workspace,
+      sessionIds: workspace.sessionIds.filter((sessionId) => !removed.has(sessionId)),
+    }])),
+  }
+}
+
+function removeSessionsFromWorksets(
+  worksetsById: Record<string, SessionV3ReducerWorksetState>,
+  sessionIds: string[],
+): Record<string, SessionV3ReducerWorksetState> {
+  if (sessionIds.length === 0) return { ...worksetsById }
+  const removed = new Set(sessionIds)
+  return Object.fromEntries(Object.entries(worksetsById).map(([worksetId, workset]) => [worksetId, {
+    ...workset,
+    sessionIds: workset.sessionIds.filter((sessionId) => !removed.has(sessionId)),
+    removedSessionIds: mergeUnique(workset.removedSessionIds, sessionIds),
+  }]))
+}
+
+function omitRecordKeys<T>(record: Record<string, T>, keys: Set<string>): Record<string, T> {
+  return Object.fromEntries(Object.entries(record).filter(([key]) => !keys.has(key)))
+}
+
+function mergeUnique(values: string[], additions: string[]): string[] {
+  let next = values
+  for (const addition of additions) {
+    next = addUnique(next, addition)
+  }
+  return next
+}
+
+function hasOwnProperty<T extends string>(value: object, key: T): value is object & Record<T, unknown> {
+  return Object.prototype.hasOwnProperty.call(value, key)
+}
+
+function hasArrayProperty<T, K extends string>(value: object, key: K): value is object & Record<K, T[]> {
+  return hasOwnProperty(value, key) && Array.isArray(value[key])
 }
 
 function addUnique(values: string[], value: string): string[] {

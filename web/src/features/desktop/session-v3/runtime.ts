@@ -18,6 +18,7 @@ import {
   type SessionV3ReducerAction,
   type SessionV3ReducerResult,
   type SessionV3ReducerSnapshotMode,
+  type SessionV3ReducerMutationResponse,
   type SessionV3ReducerState,
 } from './reducer'
 import {
@@ -29,7 +30,6 @@ import {
   SESSION_V3_REALTIME_PROTOCOL,
   SESSION_V3_REALTIME_PROTOCOL_VERSION,
   type SessionV3CreateSessionResponseWire,
-  type SessionV3HydratedSessionResponseWire,
   type SessionV3CompactResponseWire,
   type SessionV3MessageCommitResponseWire,
   type SessionV3MessageRole,
@@ -391,7 +391,7 @@ export class DesktopSessionV3Runtime {
     return mergeSyncRequests(syncRequestFromWorkset(workset), options)
   }
 
-  private applyMutation(response: SessionV3HydratedSessionResponseWire | SessionV3CompactResponseWire, fallbackSessionId: string, signal?: AbortSignal): void {
+  private applyMutation(response: SessionV3ReducerMutationResponse | SessionV3CompactResponseWire, fallbackSessionId: string, signal?: AbortSignal): void {
     const sessionId = responseSessionId(response) || fallbackSessionId
     const result = this.dispatch({ type: 'mutation', response, sessionId, receivedAt: this.now() })
     const cursor = result.state.endpointCursor
@@ -700,13 +700,12 @@ function mergeSubscriptions(
   return output
 }
 
-function responseSessionId(response: SessionV3CreateSessionResponseWire | SessionV3HydratedSessionResponseWire): string {
-  const hydrated = response as SessionV3HydratedSessionResponseWire
+function responseSessionId(response: SessionV3ReducerMutationResponse): string {
   return normalizeString(response.session_id)
     || normalizeString(response.session?.id)
     || normalizeString(response.projection?.session_id)
-    || normalizeString(hydrated.active_run_intent?.session_id)
-    || normalizeString(hydrated.run_intent?.session_id)
+    || normalizeString(response.active_run_intent?.session_id)
+    || normalizeString(response.run_intent?.session_id)
 }
 
 export function runtimeClientId(): string {

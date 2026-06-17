@@ -448,14 +448,10 @@ export interface SessionV3PreferenceWire {
   updated_at?: number
 }
 
-export interface SessionV3PreferenceResponseWire {
-  ok?: boolean
-  session_id?: string
+export interface SessionV3PreferenceResponseWire extends SessionV3MutationResponseWire {
   preference?: SessionV3PreferenceWire
   context_window?: number
   max_output_tokens?: number
-  mutation?: SessionV3MutationWire | null
-  realtime_outbox?: SessionV3RealtimeOutboxWire | null
 }
 
 export interface SessionV3UsageResponseWire {
