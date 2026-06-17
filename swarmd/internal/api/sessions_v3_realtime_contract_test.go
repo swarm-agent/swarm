@@ -139,6 +139,13 @@ func TestV3RealtimeContractRejectsInvalidMessages(t *testing.T) {
 		"missing event seq":            func(m V3RealtimeMessage) V3RealtimeMessage { m.Event.Seq = 0; return m },
 		"conflicting session identity": func(m V3RealtimeMessage) V3RealtimeMessage { m.Event.SessionID = "session-b"; return m },
 		"unsupported kind":             func(m V3RealtimeMessage) V3RealtimeMessage { m.Kind = "sessionV3StreamFrame"; return m },
+		"unsupported workset selector": func(m V3RealtimeMessage) V3RealtimeMessage {
+			m.Kind = V3RealtimeKindResume
+			m.EndpointCursor = "cursor-3"
+			m.Event = nil
+			m.Worksets = []V3RealtimeWorksetSubscriptionRequest{{WorksetID: "desktop:bad", SubscriptionID: "desktop-client:bad", Selector: V3RealtimeWorksetSelector{Kind: "mystery"}}}
+			return m
+		},
 		"missing tool identity": func(m V3RealtimeMessage) V3RealtimeMessage {
 			m.Event.EventType = "session.tool.delta"
 			m.EventType = "session.tool.delta"
@@ -168,7 +175,7 @@ func TestV3RealtimeSourceGuardRejectsOldTransportDependencies(t *testing.T) {
 				}
 			}
 		}
-		for _, forbidden := range []string{"EventEnvelope", "sessionV3StreamFrame", "SessionV3StreamFrame", "runStreamManager", "handleRunStream", "handleSessionV3PrimaryStream", "streamSessionV3PrimaryEvents"} {
+		for _, forbidden := range []string{"EventEnvelope", "sessionV3StreamFrame", "SessionV3StreamFrame", "runStreamManager", "handleRunStream", "handleSessionV3PrimaryStream", "streamSessionV3PrimaryEvents", "BuildSessionWorkset", "sessionsV3WorksetRequest"} {
 			if strings.Contains(source, forbidden) {
 				t.Fatalf("%s contains forbidden old realtime dependency %q", file, forbidden)
 			}

@@ -88,18 +88,9 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 	lastEndpointSeq := endpointCursor
 	lastKeepaliveSeq := endpointCursor
 
-	if rawSessions := strings.TrimSpace(r.URL.Query().Get("sessions")); rawSessions != "" {
-		for _, sessionID := range strings.Split(rawSessions, ",") {
-			sessionID = strings.TrimSpace(sessionID)
-			if sessionID == "" {
-				continue
-			}
-			subID := "sub-" + sessionID
-			last, ok := s.v3RealtimePrimeSubscriptionAtEndpointCursor(conn, principal, subID, sessionID, endpointCursor)
-			if ok {
-				subs[sessionID] = v3RealtimeSubscription{SessionID: sessionID, SubscriptionID: subID, LastSeq: last}
-			}
-		}
+	if strings.TrimSpace(r.URL.Query().Get("sessions")) != "" || strings.TrimSpace(r.URL.Query().Get("session")) != "" || strings.TrimSpace(r.URL.Query().Get("session_id")) != "" {
+		_ = s.sendV3RealtimeMessage(conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindAuthDenied, ErrorCode: "query_session_subscriptions_unsupported", Error: "desktop V3 realtime does not accept query-string session subscriptions; send subscribe.session or resume frames"})
+		return
 	}
 	helloCursor, err := s.signV3SyncEndpointCursor(scope, endpointCursor)
 	if err != nil {
@@ -141,7 +132,12 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 				return
 			}
 			if err := ValidateV3RealtimeMessage(message); err != nil {
-				readErr <- err
+				message.Protocol = V3RealtimeProtocol
+				message.ProtocolVersion = V3RealtimeProtocolVersion
+				message.Kind = V3RealtimeKindAuthDenied
+				message.ErrorCode = "invalid_message"
+				message.Error = err.Error()
+				readMessages <- message
 				return
 			}
 			readMessages <- message
@@ -157,6 +153,10 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 				return
 			}
 		case message := <-readMessages:
+			if message.Kind == V3RealtimeKindAuthDenied {
+				_ = s.sendV3RealtimeMessage(conn, message)
+				return
+			}
 			switch message.Kind {
 			case V3RealtimeKindSubscribe:
 				endpointSeq := lastEndpointSeq
@@ -320,32 +320,22 @@ func (s *Server) v3RealtimeValidateResumeWorksets(conn *transportws.Conn, princi
 			_ = s.sendV3RealtimeMessage(conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindAuthDenied, ErrorCode: "invalid_workset_subscription", Error: "resume workset requires workset_id and subscription_id"})
 			return nil, false
 		}
-		worksetReq := sessionsV3WorksetRequest{
-			SessionIDs: workset.Selector.SessionIDs,
-			Global:     workset.Selector.Global,
-			Workspace:  sessionsV3WorksetWorkspace{WorkspacePath: workset.Selector.WorkspacePath, WorkspacePaths: workset.Selector.WorkspacePaths},
-			Recent:     workset.Selector.Recent,
-		}
-		if strings.TrimSpace(workset.Selector.Kind) == "global" {
-			worksetReq.Global = true
-		}
-		options, err := sessionsV3WorksetOptionsFromRequest(principal, worksetReq)
+		selector, err := canonicalV3RealtimeWorksetSelector(workset.Selector)
 		if err != nil {
 			_ = s.sendV3RealtimeMessage(conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindAuthDenied, ErrorCode: "invalid_workset_selector", Error: err.Error()})
 			return nil, false
 		}
-		options.Principal = principal
-		options.Surface = normalizeV3SyncSurface(workset.Surface)
-		if _, err := s.sessions.BuildSessionWorkset(options.Store); err != nil {
-			_ = s.sendV3RealtimeMessage(conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindAuthDenied, ErrorCode: "invalid_workset_selector", Error: err.Error()})
+		resources, err := canonicalV3RealtimeWorksetResources(workset.Resources)
+		if err != nil {
+			_ = s.sendV3RealtimeMessage(conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindAuthDenied, ErrorCode: "invalid_workset_resources", Error: err.Error()})
 			return nil, false
 		}
 		out[worksetID] = v3RealtimeWorksetSubscription{
 			WorksetID:             worksetID,
 			SubscriptionID:        subscriptionID,
 			Surface:               normalizeV3SyncSurface(workset.Surface),
-			Selector:              workset.Selector,
-			Resources:             append([]string(nil), workset.Resources...),
+			Selector:              selector,
+			Resources:             resources,
 			AutoSubscribeSessions: workset.AutoSubscribeSessions,
 		}
 	}
@@ -609,6 +599,10 @@ func (s *Server) v3RealtimeMatchRecordWorkset(principal identity.Principal, reco
 }
 
 func (s *Server) v3RealtimeSessionSnapshotForRecord(record sessionruntime.RealtimeOutboxRecord) (pebblestore.SessionSnapshot, bool) {
+	return v3RealtimeSessionSnapshotFromRecord(record)
+}
+
+func v3RealtimeSessionSnapshotFromRecord(record sessionruntime.RealtimeOutboxRecord) (pebblestore.SessionSnapshot, bool) {
 	var payload struct {
 		Session *pebblestore.SessionSnapshot `json:"session,omitempty"`
 	}
@@ -618,11 +612,103 @@ func (s *Server) v3RealtimeSessionSnapshotForRecord(record sessionruntime.Realti
 			return session, true
 		}
 	}
-	session, ok, err := s.sessions.GetSession(record.SessionID)
-	if err != nil || !ok {
-		return pebblestore.SessionSnapshot{}, false
+	return pebblestore.SessionSnapshot{}, false
+}
+
+func canonicalV3RealtimeWorksetSelector(selector V3RealtimeWorksetSelector) (V3RealtimeWorksetSelector, error) {
+	selector.Kind = strings.TrimSpace(selector.Kind)
+	if !sessionsV3SyncSelectorKindAllowed(selector.Kind) {
+		return V3RealtimeWorksetSelector{}, fmt.Errorf("unsupported v3 realtime selector.kind %q", selector.Kind)
 	}
-	return session, true
+	selector.SessionIDs = canonicalV3SyncSessionIDs(selector.SessionIDs)
+	selector.Recent.BeforeSessionID = strings.TrimSpace(selector.Recent.BeforeSessionID)
+	workspacePaths, err := canonicalSessionsV3WorksetWorkspacePaths(sessionsV3WorksetWorkspace{WorkspacePath: selector.WorkspacePath, WorkspacePaths: selector.WorkspacePaths})
+	if err != nil {
+		return V3RealtimeWorksetSelector{}, err
+	}
+	selector.WorkspacePath = ""
+	selector.WorkspacePaths = nil
+	if len(workspacePaths) == 1 {
+		selector.WorkspacePath = workspacePaths[0]
+	} else if len(workspacePaths) > 1 {
+		selector.WorkspacePaths = workspacePaths
+	}
+	if selector.Kind == "" {
+		return V3RealtimeWorksetSelector{}, errors.New("v3 realtime resume workset requires selector.kind")
+	}
+	switch selector.Kind {
+	case "global":
+		selector.Global = true
+		selector.Recent = sessionsV3WorksetRecent{}
+		if len(selector.SessionIDs) > 0 || len(workspacePaths) > 0 {
+			return V3RealtimeWorksetSelector{}, errors.New("v3 realtime global selector cannot be combined with session_ids, workspace_path, or workspace_paths")
+		}
+	case "session_ids":
+		if selector.Global || len(workspacePaths) > 0 || selector.Recent.Limit > 0 {
+			return V3RealtimeWorksetSelector{}, errors.New("v3 realtime session_ids selector cannot be combined with global, workspace, or recent filters")
+		}
+		if len(selector.SessionIDs) == 0 {
+			return V3RealtimeWorksetSelector{}, errors.New("v3 realtime session_ids selector requires session_ids")
+		}
+	case "workspace":
+		if selector.Global || len(selector.SessionIDs) > 0 {
+			return V3RealtimeWorksetSelector{}, errors.New("v3 realtime workspace selector cannot be combined with global or session_ids")
+		}
+		if len(workspacePaths) == 0 {
+			return V3RealtimeWorksetSelector{}, errors.New("v3 realtime workspace selector requires workspace_path or workspace_paths")
+		}
+	case "recent":
+		if len(selector.SessionIDs) > 0 {
+			return V3RealtimeWorksetSelector{}, errors.New("v3 realtime recent selector cannot be combined with session_ids")
+		}
+		if selector.Recent.Limit <= 0 {
+			return V3RealtimeWorksetSelector{}, errors.New("v3 realtime recent selector requires recent.limit")
+		}
+		if selector.Global && len(workspacePaths) > 0 {
+			return V3RealtimeWorksetSelector{}, errors.New("v3 realtime recent global selector cannot be combined with workspace_path or workspace_paths")
+		}
+		if !selector.Global && len(workspacePaths) == 0 {
+			return V3RealtimeWorksetSelector{}, errors.New("v3 realtime recent selector requires workspace_path, workspace_paths, or global=true")
+		}
+	default:
+		return V3RealtimeWorksetSelector{}, fmt.Errorf("unsupported v3 realtime selector.kind %q", selector.Kind)
+	}
+	return selector, nil
+}
+
+func canonicalV3RealtimeWorksetResources(resources []string) ([]string, error) {
+	if len(resources) == 0 {
+		return nil, nil
+	}
+	allowed := map[string]struct{}{
+		"sessions":       {},
+		"projections":    {},
+		"events":         {},
+		"messages":       {},
+		"run_intents":    {},
+		"active_plan":    {},
+		"plan_revisions": {},
+		"membership":     {},
+		"tombstones":     {},
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(resources))
+	for _, resource := range resources {
+		resource = strings.TrimSpace(resource)
+		if resource == "" {
+			continue
+		}
+		if _, ok := allowed[resource]; !ok {
+			return nil, fmt.Errorf("unsupported v3 realtime workset resource %q", resource)
+		}
+		if _, ok := seen[resource]; ok {
+			continue
+		}
+		seen[resource] = struct{}{}
+		out = append(out, resource)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 func v3RealtimeSessionMatchesWorksetSelector(principal identity.Principal, session pebblestore.SessionSnapshot, selector V3RealtimeWorksetSelector) bool {

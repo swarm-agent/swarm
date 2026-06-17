@@ -268,7 +268,10 @@ func (s *Server) parseV3RealtimeEndpointCursor(raw string, principal identity.Pr
 	realtimeScope := v3SyncCursorScopeForRealtime(principal, surface)
 	seq, legacy, err := s.parseV3SyncEndpointCursor(raw, realtimeScope)
 	if err == nil {
-		return seq, legacy, nil
+		if legacy {
+			return 0, false, newV3SyncCursorError("endpoint_cursor_legacy_unsupported", errors.New("v3 realtime requires a signed scoped endpoint_cursor"))
+		}
+		return seq, false, nil
 	}
 	var cursorErr *v3SyncCursorError
 	if !errors.As(err, &cursorErr) || cursorErr.Code != "endpoint_cursor_scope_mismatch" {

@@ -194,10 +194,16 @@ func validateV3RealtimeWorksetSubscriptionRequests(worksets []V3RealtimeWorksetS
 			return errors.New("v3 realtime resume workset requires subscription_id")
 		}
 		selector := workset.Selector
-		if strings.TrimSpace(selector.Kind) == "" {
+		kind := strings.TrimSpace(selector.Kind)
+		if kind == "" {
 			return errors.New("v3 realtime resume workset requires selector.kind")
 		}
-		if strings.TrimSpace(selector.Kind) != "global" && !selector.Global && len(selector.SessionIDs) == 0 && strings.TrimSpace(selector.WorkspacePath) == "" && len(selector.WorkspacePaths) == 0 && selector.Recent.Limit <= 0 {
+		switch kind {
+		case "global", "session_ids", "workspace", "recent":
+		default:
+			return fmt.Errorf("unsupported v3 realtime selector.kind %q", kind)
+		}
+		if kind != "global" && !selector.Global && len(selector.SessionIDs) == 0 && strings.TrimSpace(selector.WorkspacePath) == "" && len(selector.WorkspacePaths) == 0 && selector.Recent.Limit <= 0 {
 			return errors.New("v3 realtime resume workset requires a concrete selector")
 		}
 	}

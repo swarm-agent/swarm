@@ -212,6 +212,9 @@ func canonicalV3SyncSessionIDs(sessionIDs []string) []string {
 func canonicalSessionsV3SyncBootstrapSelector(req sessionsV3SyncBootstrapRequest) (sessionsV3SyncSelector, []string, error) {
 	selector := normalizeSessionsV3SyncSelector(req.SelectorKind, req.Selector, req.SessionIDs, req.Global, req.Workspace, req.Recent)
 	selector.Kind = strings.TrimSpace(selector.Kind)
+	if !sessionsV3SyncSelectorKindAllowed(selector.Kind) {
+		return sessionsV3SyncSelector{}, nil, errors.New("unsupported sync selector kind " + selector.Kind)
+	}
 	selector.SessionIDs = canonicalV3SyncSessionIDs(selector.SessionIDs)
 	selector.Recent.BeforeSessionID = strings.TrimSpace(selector.Recent.BeforeSessionID)
 
@@ -244,6 +247,15 @@ func canonicalSessionsV3SyncBootstrapSelector(req sessionsV3SyncBootstrapRequest
 		return sessionsV3SyncSelector{}, nil, errors.New("workset recent selector requires explicit workspace_path, workspace_paths, or global=true")
 	}
 	return selector, workspacePaths, nil
+}
+
+func sessionsV3SyncSelectorKindAllowed(kind string) bool {
+	switch strings.TrimSpace(kind) {
+	case "", "global", "recent", "session_ids", "workspace", "tui":
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizeSessionsV3SyncSelector(kind string, selector sessionsV3SyncSelector, sessionIDs []string, global bool, workspace sessionsV3WorksetWorkspace, recent sessionsV3WorksetRecent) sessionsV3SyncSelector {

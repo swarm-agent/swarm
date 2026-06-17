@@ -15,6 +15,10 @@ type sessionsV3SyncStreamRequest struct {
 	Surface        string                     `json:"surface,omitempty"`
 	SelectorKind   string                     `json:"selector_kind,omitempty"`
 	Selector       sessionsV3SyncSelector     `json:"selector,omitempty"`
+	SessionIDs     []string                   `json:"session_ids,omitempty"`
+	Global         bool                       `json:"global,omitempty"`
+	Workspace      sessionsV3WorksetWorkspace `json:"workspace,omitempty"`
+	Recent         sessionsV3WorksetRecent    `json:"recent,omitempty"`
 	History        sessionsV3WorksetHistory   `json:"history,omitempty"`
 	Resources      sessionsV3WorksetResources `json:"resources,omitempty"`
 	IncludeActive  bool                       `json:"include_active,omitempty"`
@@ -36,12 +40,33 @@ func (s *Server) handleSessionsV3SyncStream(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	selector := normalizeSessionsV3SyncSelector(req.SelectorKind, req.Selector, nil, false, sessionsV3WorksetWorkspace{}, sessionsV3WorksetRecent{})
+	selector, _, err := canonicalSessionsV3SyncBootstrapSelector(sessionsV3SyncBootstrapRequest{
+		SelectorKind: req.SelectorKind,
+		Selector:     req.Selector,
+		SessionIDs:   req.SessionIDs,
+		Global:       req.Global,
+		Workspace:    req.Workspace,
+		Recent:       req.Recent,
+		History:      req.History,
+		Resources:    req.Resources,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	resources := sessionsV3SyncResourceSet(req.Resources, req.History, req.IncludeActive)
 	scope := v3SyncCursorScopeForSnapshot(principal, normalizeV3SyncSurface(req.Surface), "v3.sync.snapshot", selector, resources)
-	afterEndpointSeq, _, err := s.parseV3SyncEndpointCursor(req.EndpointCursor, scope)
+	afterEndpointSeq, legacy, err := s.parseV3SyncEndpointCursor(req.EndpointCursor, scope)
 	if err != nil {
 		writeV3SyncCursorHTTPError(w, err)
+		return
+	}
+	if strings.TrimSpace(req.EndpointCursor) == "" {
+		writeV3SyncCursorHTTPError(w, newV3SyncCursorError("endpoint_cursor_required", errors.New("sync stream requires endpoint_cursor from bootstrap or hydrate")))
+		return
+	}
+	if legacy {
+		writeV3SyncCursorHTTPError(w, newV3SyncCursorError("endpoint_cursor_legacy_unsupported", errors.New("sync stream requires a signed scoped endpoint_cursor from bootstrap or hydrate")))
 		return
 	}
 	limit := req.Limit
@@ -122,19 +147,6 @@ func (s *Server) sessionsV3SyncOutboxRecordMatchesSelector(accountScopeID string
 		}
 		return false, nil
 	case "workspace", "tui":
-		if strings.TrimSpace(selector.WorkspacePath) == "" && len(selector.WorkspacePaths) == 0 && strings.TrimSpace(selector.CWDPath) == "" {
-			return true, nil
-		}
-		session, found, err := s.sessions.GetSession(record.SessionID)
-		if err != nil {
-			return false, err
-		}
-		if !found {
-			// A missing current session may be a durable leave/delete transition. Keep
-			// the outbox row visible so clients can converge from the tombstone event
-			// instead of losing selector membership because current state disappeared.
-			return true, nil
-		}
 		paths, err := canonicalSessionsV3TUIWorksetPaths(sessionsV3TUIWorksetScope{WorkspacePath: selector.WorkspacePath, WorkspacePaths: selector.WorkspacePaths, CWDPath: selector.CWDPath})
 		if err != nil {
 			paths, err = canonicalSessionsV3WorksetWorkspacePaths(sessionsV3WorksetWorkspace{WorkspacePath: selector.WorkspacePath, WorkspacePaths: selector.WorkspacePaths})
@@ -142,9 +154,19 @@ func (s *Server) sessionsV3SyncOutboxRecordMatchesSelector(accountScopeID string
 				return false, err
 			}
 		}
+		if len(paths) == 0 {
+			return true, nil
+		}
+		session, ok := v3RealtimeSessionSnapshotFromRecord(record)
+		if !ok {
+			// Workspace/TUI replay filtering must not consult mutable current session
+			// state. If the durable outbox row lacks event-state membership, fail closed
+			// instead of leaking it broadly.
+			return false, nil
+		}
 		return sessionsV3TUISessionVisibleForPaths(session, identity.Principal{AccountScopeID: accountScopeID}, paths), nil
 	default:
-		return true, nil
+		return false, errors.New("unsupported sync selector kind " + kind)
 	}
 }
 
