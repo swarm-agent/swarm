@@ -489,6 +489,66 @@ test('runtime targeted session boot does not pair session cursor with global wor
   }
 })
 
+test('runtime targeted hydrate after session-only boot does not attach a global workset to session cursor', async () => {
+  installTransportGlobals()
+  const sockets: MockRealtimeSocket[] = []
+  const bootstrapRequests: SessionV3StateSnapshotRequest[] = []
+  const hydrateRequests: SessionV3StateSnapshotRequest[] = []
+  const hydrateCursors = ['cursor-session-2', 'cursor-session-3']
+  const runtime = new DesktopSessionV3Runtime({
+    api: {
+      bootstrapSessionV3Sync: async (request = {}) => {
+        bootstrapRequests.push(request)
+        return makeSyncSnapshot('cursor-bootstrap')
+      },
+      hydrateSessionV3Sync: async (request) => {
+        hydrateRequests.push(request)
+        const cursor = hydrateCursors.shift()
+        assert.ok(cursor)
+        return makeSyncSnapshot(cursor)
+      },
+    },
+    transportOptions: {
+      livenessTimeoutMs: 60_000,
+      openSocket: ({ endpointCursor }) => {
+        const socket = new MockRealtimeSocket(`ws://localhost/v3/realtime/stream?endpoint_cursor=${endpointCursor}`)
+        sockets.push(socket)
+        return socket as unknown as WebSocket
+      },
+    },
+  })
+
+  try {
+    await runtime.boot({ sessionIds: ['session-2'] })
+
+    assert.equal(bootstrapRequests.length, 0)
+    assert.equal(hydrateRequests.length, 1)
+    assert.equal(sockets.length, 1)
+    sockets[0].open()
+
+    const firstResume = parseResume(sockets[0])
+    assert.equal(firstResume.endpoint_cursor, 'cursor-session-2')
+    assert.deepEqual(firstResume.subscriptions?.map((subscription) => subscription.session_id), ['session-2'])
+    assert.equal(firstResume.subscriptions?.[0]?.endpoint_cursor, 'cursor-session-2')
+    assert.deepEqual(firstResume.worksets ?? [], [])
+
+    await runtime.hydrateSessions(['session-3'])
+
+    assert.equal(bootstrapRequests.length, 0)
+    assert.equal(hydrateRequests.length, 2)
+    assert.deepEqual(hydrateRequests[1].sessionIds, ['session-3'])
+    assert.equal(sockets.length, 1)
+    const latestResume = JSON.parse(sockets[0].sent[sockets[0].sent.length - 1] ?? '') as SessionV3RealtimeResumeWire
+    assert.equal(latestResume.endpoint_cursor, 'cursor-session-2')
+    assert.deepEqual(latestResume.subscriptions?.map((subscription) => subscription.session_id).sort(), ['session-2', 'session-3'])
+    assert.equal(latestResume.subscriptions?.find((subscription) => subscription.session_id === 'session-3')?.endpoint_cursor, 'cursor-session-3')
+    assert.deepEqual(latestResume.worksets ?? [], [])
+    assert.equal(runtime.diagnostics().worksetSubscriptionCount, 0)
+  } finally {
+    runtime.shutdown()
+  }
+})
+
 test('runtime targeted hydrate preserves workspace recent workset scope while adding session subscription', async () => {
   installTransportGlobals()
   const sockets: MockRealtimeSocket[] = []

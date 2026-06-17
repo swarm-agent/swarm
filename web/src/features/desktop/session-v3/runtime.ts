@@ -195,6 +195,10 @@ export class DesktopSessionV3Runtime {
 
   async boot(options: DesktopSessionV3RuntimeBootOptions = {}): Promise<SessionV3ReducerState> {
     if (this.bootInFlight) return this.bootInFlight
+    const bootSessionIds = normalizeSessionIds(options.sessionIds)
+    if (bootSessionIds.length > 0) {
+      this.setWantedSessions(bootSessionIds, { subscribe: false })
+    }
     this.shutdownRequested = false
     this.bootInFlight = this.loadSyncSnapshot({ ...options, mode: options.mode ?? 'replace' }, true)
       .then(async () => {
@@ -366,10 +370,10 @@ export class DesktopSessionV3Runtime {
       .filter((sessionId) => !targetedHydrate || !requestedSessionIdSet.has(sessionId))
       .map((sessionId) => wantedSessionSubscription(sessionId, endpointCursor))
       .filter((subscription): subscription is SessionV3SyncSubscriptionWire => Boolean(subscription))
-    const hasExistingEndpointCursor = Boolean(this.state.endpointCursor)
+    const hasExistingWorksetResume = Object.keys(this.state.worksetsById).length > 0
     const workset = options.workset === null ? null : options.workset ?? this.workset
     const worksetRequest = targetedHydrate ? syncRequestFromWorkset(workset) : request
-    const worksetSubscription = targetedHydrate && !hasExistingEndpointCursor
+    const worksetSubscription = targetedHydrate && !hasExistingWorksetResume
       ? null
       : worksetSubscriptionFromSyncRequest(workset, worksetRequest)
     return {
