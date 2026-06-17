@@ -1,13 +1,12 @@
 import {
   createSessionV3,
-  reconnectSessionV3,
+  bootstrapSessionV3Sync,
   sendSessionV3Message,
   stopSessionV3Run,
   compactSessionV3,
   type SessionV3CompactOptions,
   type SessionV3CreateSessionInput,
   type SessionV3MessageOptions,
-  type SessionV3ReconnectOptions,
   type SessionV3RequestOptions,
   type SessionV3StopRunInput,
 } from './api'
@@ -34,8 +33,10 @@ import {
   type SessionV3MessageRole,
   type SessionV3RealtimeSubscriptionRequestWire,
   type SessionV3RealtimeWorksetSubscriptionRequestWire,
-  type SessionV3ReconnectSnapshot,
-  type SessionV3ReconnectSubscriptionWire,
+  type SessionV3SnapshotResult,
+  type SessionV3StateSnapshotRequest,
+  type SessionV3SyncSnapshot,
+  type SessionV3SyncSubscriptionWire,
   type SessionV3WorksetRequestWire,
 } from './types'
 import type { DesktopState } from '../state/desktop-state'
@@ -46,7 +47,7 @@ const RUNTIME_CLIENT_ID_STORAGE_KEY = 'swarm.desktop.session-v3.client-id'
 const RUNTIME_CLIENT_ID_PREFIX = 'desktop-v3-runtime:'
 
 export type SessionV3RuntimeApi = {
-  reconnectSessionV3: typeof reconnectSessionV3
+  bootstrapSessionV3Sync: typeof bootstrapSessionV3Sync
   createSessionV3: typeof createSessionV3
   sendSessionV3Message: typeof sendSessionV3Message
   stopSessionV3Run: typeof stopSessionV3Run
@@ -113,7 +114,6 @@ export class DesktopSessionV3Runtime {
   private readonly transport: DesktopV3RealtimeTransport
   private readonly now: () => number
   private wantedSessionIds = new Set<string>()
-  private clientId: string
   private workset: SessionV3WorksetRequestWire | null
   private bootInFlight: Promise<SessionV3ReducerState> | null = null
   private shutdownRequested = false
@@ -121,10 +121,14 @@ export class DesktopSessionV3Runtime {
   constructor(options: DesktopSessionV3RuntimeOptions = {}) {
     this.now = options.now ?? (() => Date.now())
     this.state = options.initialState ?? createSessionV3ReducerInitialState(options.initialDesktopState)
-    this.clientId = options.clientId?.trim() || runtimeClientId()
+    if (options.clientId?.trim()) {
+      writeRuntimeClientId(options.clientId.trim())
+    } else {
+      runtimeClientId()
+    }
     this.workset = options.workset === null ? null : options.workset ?? defaultRuntimeWorkset()
     this.api = {
-      reconnectSessionV3: options.api?.reconnectSessionV3 ?? reconnectSessionV3,
+      bootstrapSessionV3Sync: options.api?.bootstrapSessionV3Sync ?? bootstrapSessionV3Sync,
       createSessionV3: options.api?.createSessionV3 ?? createSessionV3,
       sendSessionV3Message: options.api?.sendSessionV3Message ?? sendSessionV3Message,
       stopSessionV3Run: options.api?.stopSessionV3Run ?? stopSessionV3Run,
@@ -177,10 +181,10 @@ export class DesktopSessionV3Runtime {
 
   async refresh(options: DesktopSessionV3RuntimeRefreshOptions = {}): Promise<SessionV3ReducerState> {
     this.shutdownRequested = false
-    this.transport.resetForReconnectSnapshot(options.reason ?? 'refresh')
+    this.transport.resetForSyncSnapshot(options.reason ?? 'refresh')
     const result = await this.loadReconnect({ ...options, mode: options.mode ?? 'merge' }, false)
     if (this.shutdownRequested) return this.state
-    this.transport.applyReconnectSnapshot(result)
+    this.transport.applySyncSnapshot(result)
     this.syncWantedSessionsToTransport()
     await this.transport.start()
     return this.state
@@ -278,54 +282,51 @@ export class DesktopSessionV3Runtime {
     options: DesktopSessionV3RuntimeRefreshOptions,
     applyTransport: boolean,
     receivedAt = this.now(),
-  ): Promise<SessionV3ReconnectSnapshot> {
-    const result = this.augmentReconnectSnapshot(await this.api.reconnectSessionV3(this.reconnectOptions(options)))
+  ): Promise<SessionV3SyncSnapshot> {
+    const result = this.augmentSyncSnapshot(await this.api.bootstrapSessionV3Sync(this.syncOptions(options), { signal: options.signal }))
     if (this.shutdownRequested) return result
     this.dispatch({ type: 'reconnect', result, mode: options.mode ?? 'merge', receivedAt })
     if (applyTransport) {
-      this.transport.applyReconnectSnapshot(result)
+      this.transport.applySyncSnapshot(result)
       this.syncWantedSessionsToTransport()
     }
     return result
   }
 
-  private augmentReconnectSnapshot(result: SessionV3ReconnectSnapshot): SessionV3ReconnectSnapshot {
-    const endpointCursor = result.endpointCursor || result.realtimeResume?.endpoint_cursor || this.state.endpointCursor
+  private augmentSyncSnapshot(result: SessionV3SnapshotResult): SessionV3SyncSnapshot {
+    const existingResume = (result as Partial<SessionV3SyncSnapshot>).realtimeResume ?? null
+    const endpointCursor = result.endpointCursor || existingResume?.endpoint_cursor || this.state.endpointCursor
     const wantedSubscriptions = Array.from(this.wantedSessionIds)
       .map((sessionId) => wantedSessionSubscription(sessionId, endpointCursor))
-      .filter((subscription): subscription is SessionV3ReconnectSubscriptionWire => Boolean(subscription))
-    const resumeSubscriptions = (result.realtimeResume?.subscriptions ?? [])
+      .filter((subscription): subscription is SessionV3SyncSubscriptionWire => Boolean(subscription))
+    const resumeSubscriptions = (existingResume?.subscriptions ?? [])
       .map((subscription) => reconnectSubscriptionFromResume(subscription, endpointCursor))
-      .filter((subscription): subscription is SessionV3ReconnectSubscriptionWire => Boolean(subscription))
+      .filter((subscription): subscription is SessionV3SyncSubscriptionWire => Boolean(subscription))
     const subscriptions = mergeSubscriptions(
-      mergeSubscriptions(result.subscriptions, resumeSubscriptions),
+      mergeSubscriptions((result as Partial<SessionV3SyncSnapshot>).subscriptions ?? [], resumeSubscriptions),
       wantedSubscriptions,
     )
-    const worksets = mergeWorksets(result.worksets, result.realtimeResume?.worksets ?? [])
+    const worksets = mergeWorksets((result as Partial<SessionV3SyncSnapshot>).worksets ?? [], existingResume?.worksets ?? [])
     return {
       ...result,
       subscriptions,
       worksets,
-      realtimeResume: result.realtimeResume
+      realtimeResume: existingResume
         ? {
-            ...result.realtimeResume,
+            ...existingResume,
             subscriptions,
             worksets,
           }
-        : result.realtimeResume,
+        : null,
     }
   }
 
-  private reconnectOptions(options: DesktopSessionV3RuntimeBootOptions): SessionV3ReconnectOptions {
+  private syncOptions(options: DesktopSessionV3RuntimeBootOptions): SessionV3StateSnapshotRequest {
     const workset = options.workset === null ? null : options.workset ?? this.workset
     if (options.clientId?.trim()) {
-      this.clientId = options.clientId.trim()
+      writeRuntimeClientId(options.clientId.trim())
     }
-    return {
-      signal: options.signal,
-      clientId: workset ? this.clientId : undefined,
-      workset: workset ?? undefined,
-    }
+    return syncRequestFromWorkset(workset)
   }
 
   private applyMutation(response: SessionV3HydratedSessionResponseWire | SessionV3CompactResponseWire, fallbackSessionId: string, signal?: AbortSignal): void {
@@ -347,7 +348,7 @@ export class DesktopSessionV3Runtime {
     const endpointCursor = this.state.endpointCursor
     const subscriptions = Array.from(this.wantedSessionIds)
       .map((sessionId) => wantedSessionSubscription(sessionId, endpointCursor))
-      .filter((subscription): subscription is SessionV3ReconnectSubscriptionWire => Boolean(subscription))
+      .filter((subscription): subscription is SessionV3SyncSubscriptionWire => Boolean(subscription))
     if (subscriptions.length > 0) {
       this.transport.setSessions(subscriptions, { replace: false })
     }
@@ -401,7 +402,49 @@ function defaultRuntimeWorkset(): SessionV3WorksetRequestWire {
   }
 }
 
-function wantedSessionSubscription(sessionId: string, endpointCursor: string): SessionV3ReconnectSubscriptionWire | null {
+function syncRequestFromWorkset(workset: SessionV3WorksetRequestWire | null): SessionV3StateSnapshotRequest {
+  const selector = workset?.selector ?? {}
+  return {
+    sessionIds: workset?.session_ids ?? selector.session_ids,
+    global: workset?.global || selector.global || selector.kind === 'global',
+    workspacePath: workset?.workspace?.workspace_path ?? selector.workspace_path,
+    workspacePaths: workset?.workspace?.workspace_paths ?? selector.workspace_paths,
+    recent: workset?.recent
+      ? {
+          limit: workset.recent.limit,
+          beforeUpdatedAt: workset.recent.before_updated_at,
+          beforeSessionId: workset.recent.before_session_id,
+        }
+      : selector.recent
+        ? {
+            limit: selector.recent.limit,
+            beforeUpdatedAt: selector.recent.before_updated_at,
+            beforeSessionId: selector.recent.before_session_id,
+          }
+        : undefined,
+    history: workset?.history
+      ? {
+          mode: workset.history.mode === 'tail' || workset.history.mode === 'full' ? workset.history.mode : 'none',
+          maxMessagesPerSession: workset.history.max_messages_per_session,
+          maxEventsPerSession: workset.history.max_events_per_session,
+          manifestPolicy: workset.history.manifest_policy === 'error' || workset.history.manifest_policy === 'omit' ? workset.history.manifest_policy : 'manifest',
+          includeEvents: workset.history.include_events,
+        }
+      : undefined,
+    resources: workset?.resources
+      ? {
+          messages: workset.resources.messages,
+          events: workset.resources.events,
+          runIntents: workset.resources.run_intents,
+          activePlan: workset.resources.active_plan,
+          planRevisions: workset.resources.plan_revisions,
+        }
+      : undefined,
+    includeActive: workset?.include_active,
+  }
+}
+
+function wantedSessionSubscription(sessionId: string, endpointCursor: string): SessionV3SyncSubscriptionWire | null {
   const normalizedSessionId = normalizeString(sessionId)
   const normalizedEndpointCursor = normalizeString(endpointCursor)
   if (!normalizedSessionId || !normalizedEndpointCursor) return null
@@ -418,7 +461,7 @@ function wantedSessionSubscription(sessionId: string, endpointCursor: string): S
 function reconnectSubscriptionFromResume(
   subscription: SessionV3RealtimeSubscriptionRequestWire,
   endpointCursor: string,
-): SessionV3ReconnectSubscriptionWire | null {
+): SessionV3SyncSubscriptionWire | null {
   const normalizedSessionId = normalizeString(subscription.session_id)
   const normalizedSubscriptionId = normalizeString(subscription.subscription_id)
   const normalizedEndpointCursor = normalizeString(subscription.endpoint_cursor) || normalizeString(endpointCursor)
@@ -434,9 +477,9 @@ function reconnectSubscriptionFromResume(
 }
 
 function mergeSubscriptions(
-  base: SessionV3ReconnectSubscriptionWire[],
-  extra: SessionV3ReconnectSubscriptionWire[],
-): SessionV3ReconnectSubscriptionWire[]
+  base: SessionV3SyncSubscriptionWire[],
+  extra: SessionV3SyncSubscriptionWire[],
+): SessionV3SyncSubscriptionWire[]
 function mergeSubscriptions(
   base: SessionV3RealtimeSubscriptionRequestWire[],
   extra: SessionV3RealtimeSubscriptionRequestWire[],
@@ -478,11 +521,12 @@ function mergeWorksets(
 }
 
 function responseSessionId(response: SessionV3CreateSessionResponseWire | SessionV3HydratedSessionResponseWire): string {
+  const hydrated = response as SessionV3HydratedSessionResponseWire
   return normalizeString(response.session_id)
     || normalizeString(response.session?.id)
     || normalizeString(response.projection?.session_id)
-    || normalizeString(response.active_run_intent?.session_id)
-    || normalizeString(response.run_intent?.session_id)
+    || normalizeString(hydrated.active_run_intent?.session_id)
+    || normalizeString(hydrated.run_intent?.session_id)
 }
 
 export function runtimeClientId(): string {

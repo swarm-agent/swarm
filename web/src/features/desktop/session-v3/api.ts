@@ -11,7 +11,6 @@ import type {
   SessionV3CompactRequestWire,
   SessionV3CompactResponseWire,
   SessionV3CreateSessionResponseWire,
-  SessionV3HydratedSessionResponseWire,
   SessionV3JsonRecord,
   SessionV3MessageCommitRequestWire,
   SessionV3MessageCommitResponseWire,
@@ -25,29 +24,19 @@ import type {
   SessionV3PlanResponseWire,
   SessionV3PlanSaveRequestWire,
   SessionV3PreferenceResponseWire,
-  SessionV3ReconnectRequestWire,
-  SessionV3ReconnectResponseWire,
-  SessionV3ReconnectSnapshot,
-  SessionV3ReconnectSubscriptionWire,
-  SessionV3RealtimeResumeWire,
-  SessionV3RealtimeWorksetSubscriptionRequestWire,
   SessionV3RunStopRequestWire,
   SessionV3RunStopResponseWire,
   SessionV3SessionSnapshot,
   SessionV3SnapshotResult,
+  SessionV3SyncStreamRequestWire,
+  SessionV3SyncStreamResponseWire,
   SessionV3StateSnapshotRequest,
   SessionV3StateSnapshotRequestWire,
   SessionV3StateSnapshotResponseWire,
-  SessionV3Surface,
   SessionV3UsageResponseWire,
   SessionV3WorksetSelectorWire,
 } from './types'
-import {
-  SESSION_V3_REALTIME_PROTOCOL,
-  SESSION_V3_REALTIME_PROTOCOL_VERSION,
-  SESSION_V3_REALTIME_RESUME_KIND,
-  SESSION_V3_SURFACE,
-} from './types'
+import { SESSION_V3_SURFACE } from './types'
 
 const DEFAULT_SNAPSHOT_HISTORY = {
   mode: 'none' as const,
@@ -58,12 +47,6 @@ const DEFAULT_SNAPSHOT_HISTORY = {
 
 export interface SessionV3RequestOptions {
   signal?: AbortSignal
-}
-
-export interface SessionV3ReconnectOptions extends SessionV3RequestOptions {
-  clientId?: string
-  surface?: SessionV3Surface
-  workset?: SessionV3ReconnectRequestWire['workset']
 }
 
 export interface SessionV3MessageOptions extends SessionV3RequestOptions {
@@ -123,45 +106,57 @@ export function assertSessionV3SessionId(sessionId: string): string {
   return normalizedSessionId
 }
 
-export async function fetchSessionV3StateSnapshot(
-  input: SessionV3StateSnapshotRequest,
+export async function bootstrapSessionV3Sync(
+  input: SessionV3StateSnapshotRequest = {},
   options: SessionV3RequestOptions = {},
 ): Promise<SessionV3SnapshotResult> {
-  const wire = await requestJson<SessionV3StateSnapshotResponseWire>(sessionV3SnapshotEndpoint(input), {
+  const wire = await requestJson<SessionV3StateSnapshotResponseWire>('/v3/sync/bootstrap', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(toSessionV3SnapshotRequestWire(input)),
     signal: options.signal,
   })
-  const snapshot = normalizeDesktopStateSnapshot(wire)
-  return {
-    snapshot,
-    endpointCursor: snapshot.snapshotEndpointCursor ?? '',
-    wire,
-  }
+  return normalizeSessionV3SnapshotResult(wire)
 }
 
-export async function reconnectSessionV3(options: SessionV3ReconnectOptions = {}): Promise<SessionV3ReconnectSnapshot> {
-  const body = toSessionV3ReconnectRequestWire(options)
-  const wire = await requestJson<SessionV3ReconnectResponseWire>('/v3/sessions:reconnect', {
+export async function hydrateSessionV3Sync(
+  input: SessionV3StateSnapshotRequest,
+  options: SessionV3RequestOptions = {},
+): Promise<SessionV3SnapshotResult> {
+  const body = toSessionV3SnapshotRequestWire(input)
+  if (!body.session_ids?.length) {
+    throw new Error('Sessions API v3 sync hydrate requires at least one session id.')
+  }
+  const wire = await requestJson<SessionV3StateSnapshotResponseWire>('/v3/sync/hydrate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
     signal: options.signal,
   })
-  const snapshot = normalizeDesktopStateSnapshot(wire)
-  return {
-    snapshot,
-    endpointCursor: snapshot.snapshotEndpointCursor ?? '',
-    clientId: String(wire.client_id ?? body.client_id ?? '').trim(),
-    surface: String(wire.surface ?? body.surface ?? SESSION_V3_SURFACE).trim(),
-    worksetId: String(wire.workset_id ?? body.workset?.workset_id ?? '').trim(),
-    subscriptions: normalizeSessionV3ReconnectSubscriptions(wire.subscriptions),
-    worksets: normalizeSessionV3ReconnectWorksets(wire.worksets),
-    realtimeResume: normalizeSessionV3RealtimeResume(wire.realtime?.resume),
-    diagnosticsBySession: wire.diagnostics_by_session ?? {},
-    wire,
-  }
+  return normalizeSessionV3SnapshotResult(wire)
+}
+
+export async function streamSessionV3Sync(
+  input: SessionV3StateSnapshotRequest & { endpointCursor: string; limit?: number },
+  options: SessionV3RequestOptions = {},
+): Promise<SessionV3SyncStreamResponseWire> {
+  const body = toSessionV3StreamRequestWire(input)
+  return requestJson<SessionV3SyncStreamResponseWire>('/v3/sync/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: options.signal,
+  })
+}
+
+export async function fetchSessionV3StateSnapshot(
+  input: SessionV3StateSnapshotRequest,
+  options: SessionV3RequestOptions = {},
+): Promise<SessionV3SnapshotResult> {
+  const sessionIds = (input.sessionIds ?? []).map((sessionId) => sessionId.trim()).filter(Boolean)
+  return sessionIds.length > 0
+    ? hydrateSessionV3Sync({ ...input, sessionIds }, options)
+    : bootstrapSessionV3Sync({ ...input, sessionIds: [] }, options)
 }
 
 export async function fetchSessionV3SessionSnapshot(
@@ -455,6 +450,20 @@ export async function stopSessionV3Run(
   return JSON.parse(text) as SessionV3RunStopResponseWire
 }
 
+function normalizeSessionV3SnapshotResult(wire: SessionV3StateSnapshotResponseWire): SessionV3SnapshotResult {
+  const snapshot = normalizeDesktopStateSnapshot(wire)
+  return {
+    snapshot,
+    endpointCursor: snapshot.snapshotEndpointCursor ?? '',
+    replayInstructions: wire.replay_instructions ?? null,
+    syncScope: wire.sync_scope ?? null,
+    scopeId: String(wire.scope_id ?? '').trim(),
+    selector: wire.selector ?? null,
+    tombstonesBySession: wire.tombstones_by_session ?? {},
+    wire,
+  }
+}
+
 export function sessionV3SessionSnapshotFromDaemonSnapshot(
   snapshot: DesktopDaemonSnapshot,
   sessionId: string,
@@ -487,19 +496,6 @@ export function sessionV3SessionSnapshotFromDaemonSnapshot(
     appliedSeq,
     highWatermark,
     hydratedAt: Date.now(),
-  }
-}
-
-function toSessionV3ReconnectRequestWire(options: SessionV3ReconnectOptions): SessionV3ReconnectRequestWire {
-  const workset = options.workset
-  const clientId = options.clientId?.trim() ?? ''
-  if (workset && !clientId) {
-    throw new Error('Sessions API v3 reconnect with a workset requires clientId.')
-  }
-  return {
-    surface: options.surface ?? SESSION_V3_SURFACE,
-    client_id: clientId || undefined,
-    workset,
   }
 }
 
@@ -547,11 +543,6 @@ function stripUndefinedFields<T extends SessionV3JsonRecord>(value: T): T | unde
   return Object.keys(value).length > 0 ? value : undefined
 }
 
-function sessionV3SnapshotEndpoint(input: SessionV3StateSnapshotRequest): '/v3/sync/bootstrap' | '/v3/sync/hydrate' {
-  const sessionIds = (input.sessionIds ?? []).map((sessionId) => sessionId.trim()).filter(Boolean)
-  return sessionIds.length > 0 ? '/v3/sync/hydrate' : '/v3/sync/bootstrap'
-}
-
 function toSessionV3SnapshotRequestWire(input: SessionV3StateSnapshotRequest): SessionV3StateSnapshotRequestWire {
   const sessionIds = (input.sessionIds ?? []).map((sessionId) => sessionId.trim()).filter(Boolean)
   const history = { ...DEFAULT_SNAPSHOT_HISTORY, ...(input.history ?? {}) }
@@ -572,10 +563,27 @@ function toSessionV3SnapshotRequestWire(input: SessionV3StateSnapshotRequest): S
       messages: resources.messages || undefined,
       events: resources.events || undefined,
       run_intents: resources.runIntents || undefined,
+      active_plan: resources.activePlan || undefined,
+      plan_revisions: resources.planRevisions || undefined,
     },
     include_active: input.includeActive || undefined,
+    known_sessions: input.knownSessions,
   }
 }
+
+function toSessionV3StreamRequestWire(input: SessionV3StateSnapshotRequest & { endpointCursor: string; limit?: number }): SessionV3SyncStreamRequestWire {
+  const endpointCursor = input.endpointCursor.trim()
+  if (!endpointCursor) {
+    throw new Error('Sessions API v3 sync stream requires endpointCursor.')
+  }
+  const body = toSessionV3SnapshotRequestWire(input) as SessionV3SyncStreamRequestWire
+  body.endpoint_cursor = endpointCursor
+  if (typeof input.limit === 'number' && Number.isFinite(input.limit) && input.limit > 0) {
+    body.limit = Math.floor(input.limit)
+  }
+  return body
+}
+
 
 function sessionV3SelectorKind(input: SessionV3StateSnapshotRequest): string {
   const sessionIds = (input.sessionIds ?? []).map((sessionId) => sessionId.trim()).filter(Boolean)
@@ -605,55 +613,6 @@ function sessionV3SelectorWire(input: SessionV3StateSnapshotRequest): SessionV3W
           before_session_id: input.recent.beforeSessionId?.trim() || undefined,
         }
       : undefined,
-  }
-}
-
-function normalizeSessionV3ReconnectSubscriptions(source: SessionV3ReconnectSubscriptionWire[] | undefined): SessionV3ReconnectSubscriptionWire[] {
-  return (source ?? [])
-    .map((subscription) => ({
-      protocol: subscription.protocol,
-      protocol_version: subscription.protocol_version,
-      kind: subscription.kind,
-      session_id: String(subscription.session_id ?? '').trim(),
-      subscription_id: String(subscription.subscription_id ?? '').trim(),
-      endpoint_cursor: String(subscription.endpoint_cursor ?? '').trim(),
-    }))
-    .filter((subscription): subscription is SessionV3ReconnectSubscriptionWire => subscription.protocol === SESSION_V3_REALTIME_PROTOCOL
-      && subscription.protocol_version === SESSION_V3_REALTIME_PROTOCOL_VERSION
-      && subscription.kind === 'subscribe.session'
-      && Boolean(subscription.session_id)
-      && Boolean(subscription.subscription_id)
-      && Boolean(subscription.endpoint_cursor))
-}
-
-function normalizeSessionV3ReconnectWorksets(source: SessionV3RealtimeWorksetSubscriptionRequestWire[] | undefined): SessionV3RealtimeWorksetSubscriptionRequestWire[] {
-  return (source ?? [])
-    .map((workset) => ({
-      workset_id: String(workset.workset_id ?? '').trim(),
-      subscription_id: String(workset.subscription_id ?? '').trim(),
-      surface: String(workset.surface ?? SESSION_V3_SURFACE).trim(),
-      selector: workset.selector,
-      resources: Array.isArray(workset.resources) ? workset.resources.map((resource) => String(resource).trim()).filter(Boolean) : undefined,
-      auto_subscribe_sessions: Boolean(workset.auto_subscribe_sessions),
-    }))
-    .filter((workset) => workset.workset_id && workset.subscription_id && workset.selector?.kind)
-}
-
-function normalizeSessionV3RealtimeResume(source: SessionV3RealtimeResumeWire | undefined): SessionV3RealtimeResumeWire | null {
-  if (!source || source.protocol !== SESSION_V3_REALTIME_PROTOCOL || source.protocol_version !== SESSION_V3_REALTIME_PROTOCOL_VERSION || source.kind !== SESSION_V3_REALTIME_RESUME_KIND) {
-    return null
-  }
-  const endpointCursor = String(source.endpoint_cursor ?? '').trim()
-  if (!endpointCursor) {
-    return null
-  }
-  return {
-    protocol: SESSION_V3_REALTIME_PROTOCOL,
-    protocol_version: SESSION_V3_REALTIME_PROTOCOL_VERSION,
-    kind: SESSION_V3_REALTIME_RESUME_KIND,
-    endpoint_cursor: endpointCursor,
-    subscriptions: source.subscriptions,
-    worksets: source.worksets,
   }
 }
 

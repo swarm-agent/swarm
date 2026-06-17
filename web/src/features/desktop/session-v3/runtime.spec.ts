@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import type { SessionV3ReconnectOptions } from './api'
 import { DesktopSessionV3Runtime, runtimeClientId } from './runtime'
 import {
   SESSION_V3_REALTIME_PROTOCOL,
   SESSION_V3_REALTIME_PROTOCOL_VERSION,
   SESSION_V3_REALTIME_RESUME_KIND,
   type SessionV3RealtimeResumeWire,
-  type SessionV3ReconnectSnapshot,
+  type SessionV3StateSnapshotRequest,
+  type SessionV3SyncSnapshot,
   type SessionV3RunStopResponseWire,
 } from './types'
 
@@ -123,16 +123,13 @@ function makeResume(endpointCursor: string): SessionV3RealtimeResumeWire {
   }
 }
 
-function makeReconnectSnapshot(endpointCursor: string): SessionV3ReconnectSnapshot {
+function makeReconnectSnapshot(endpointCursor: string): SessionV3SyncSnapshot {
   return {
     snapshot: {
       rev: Number(endpointCursor.replace(/\D/g, '')) || 1,
       snapshotEndpointCursor: endpointCursor,
     },
     endpointCursor,
-    clientId: 'client-1',
-    surface: 'desktop',
-    worksetId: 'workset-1',
     subscriptions: [],
     worksets: [
       {
@@ -143,7 +140,6 @@ function makeReconnectSnapshot(endpointCursor: string): SessionV3ReconnectSnapsh
       },
     ],
     realtimeResume: makeResume(endpointCursor),
-    diagnosticsBySession: {},
     wire: { ok: true, rev: 1, snapshot_endpoint_cursor: endpointCursor },
   }
 }
@@ -165,17 +161,17 @@ test('runtimeClientId persists a stable desktop V3 client id', () => {
   }
 })
 
-test('runtime boot reuses persisted client id and respects explicit clientId', async () => {
+test('runtime boot uses bootstrap sync API and preserves explicit client id locally', async () => {
   installTransportGlobals()
   const restore = installMemoryLocalStorage()
   try {
-    const capturedClientIds: Array<string | undefined> = []
+    const capturedRequests: SessionV3StateSnapshotRequest[] = []
     const makeRuntime = (explicitClientId?: string) => new DesktopSessionV3Runtime({
       clientId: explicitClientId,
       api: {
-        reconnectSessionV3: async (options = {}) => {
-          capturedClientIds.push(options.clientId)
-          return makeReconnectSnapshot(`cursor-${capturedClientIds.length}`)
+        bootstrapSessionV3Sync: async (input = {}) => {
+          capturedRequests.push(input)
+          return makeReconnectSnapshot(`cursor-${capturedRequests.length}`)
         },
       },
       transportOptions: {
@@ -192,13 +188,15 @@ test('runtime boot reuses persisted client id and respects explicit clientId', a
     await second.boot()
     second.shutdown()
 
-    const explicit = makeRuntime(' explicit-client ')
+    const explicit = makeRuntime(' desktop-v3-runtime:explicit-client ')
     await explicit.boot()
     explicit.shutdown()
 
-    assert.ok(capturedClientIds[0]?.startsWith('desktop-v3-runtime:'))
-    assert.equal(capturedClientIds[1], capturedClientIds[0])
-    assert.equal(capturedClientIds[2], 'explicit-client')
+    assert.equal(capturedRequests.length, 3)
+    assert.equal(capturedRequests[0]?.global, true)
+    assert.equal(capturedRequests[1]?.global, true)
+    assert.equal(capturedRequests[2]?.global, true)
+    assert.equal(runtimeClientId(), 'desktop-v3-runtime:explicit-client')
   } finally {
     restore()
   }
@@ -209,13 +207,13 @@ test('runtime boot opens one V3 realtime stream and sends one resume for workset
   const sockets: MockRealtimeSocket[] = []
   MockRealtimeSocket.collect = sockets
   const restoreWebSocket = installMockRealtimeSocketConstructor()
-  const reconnectOptions: SessionV3ReconnectOptions[] = []
+  const syncRequests: SessionV3StateSnapshotRequest[] = []
   const runtime = new DesktopSessionV3Runtime({
     clientId: 'client-boot',
     wantedSessionIds: ['session-1'],
     api: {
-      reconnectSessionV3: async (options = {}) => {
-        reconnectOptions.push(options)
+      bootstrapSessionV3Sync: async (options = {}) => {
+        syncRequests.push(options)
         return makeReconnectSnapshot('cursor-boot')
       },
     },
@@ -227,21 +225,20 @@ test('runtime boot opens one V3 realtime stream and sends one resume for workset
   try {
     await runtime.boot()
 
-    assert.equal(reconnectOptions.length, 1)
-    assert.equal(reconnectOptions[0]?.clientId, 'client-boot')
-    assert.ok(reconnectOptions[0]?.workset)
-    assert.deepEqual(reconnectOptions[0]?.workset?.resources, {
+    assert.equal(syncRequests.length, 1)
+    assert.equal(syncRequests[0]?.global, true)
+    assert.deepEqual(syncRequests[0]?.resources, {
       messages: true,
       events: true,
-      run_intents: true,
-      active_plan: true,
-      plan_revisions: true,
+      runIntents: true,
+      activePlan: true,
+      planRevisions: true,
     })
-    assert.equal(Object.prototype.hasOwnProperty.call(reconnectOptions[0]?.workset?.resources ?? {}, 'plans'), false)
-    assert.equal(Object.prototype.hasOwnProperty.call(reconnectOptions[0]?.workset?.resources ?? {}, 'permissions'), false)
-    assert.equal(Object.prototype.hasOwnProperty.call(reconnectOptions[0]?.workset?.resources ?? {}, 'usage'), false)
-    assert.equal(Object.prototype.hasOwnProperty.call(reconnectOptions[0]?.workset?.resources ?? {}, 'preferences'), false)
-    assert.equal(Object.prototype.hasOwnProperty.call(reconnectOptions[0]?.workset?.resources ?? {}, 'agent_model_policy'), false)
+    assert.equal(Object.prototype.hasOwnProperty.call(syncRequests[0]?.resources ?? {}, 'plans'), false)
+    assert.equal(Object.prototype.hasOwnProperty.call(syncRequests[0]?.resources ?? {}, 'permissions'), false)
+    assert.equal(Object.prototype.hasOwnProperty.call(syncRequests[0]?.resources ?? {}, 'usage'), false)
+    assert.equal(Object.prototype.hasOwnProperty.call(syncRequests[0]?.resources ?? {}, 'preferences'), false)
+    assert.equal(Object.prototype.hasOwnProperty.call(syncRequests[0]?.resources ?? {}, 'agentModelPolicy'), false)
     assert.equal(sockets.length, 1)
     const socketUrl = new URL(sockets[0].url)
     assert.equal(socketUrl.pathname, '/v3/realtime/stream')
@@ -288,7 +285,7 @@ test('stopRun applies mutation outbox without reconnecting or opening another V3
   const runtime = new DesktopSessionV3Runtime({
     wantedSessionIds: ['session-1'],
     api: {
-      reconnectSessionV3: async () => {
+      bootstrapSessionV3Sync: async () => {
         reconnectCalls += 1
         return makeReconnectSnapshot('cursor-1')
       },
@@ -343,7 +340,7 @@ test('refresh resets the V3 socket and reconnects once from the latest snapshot 
   const runtime = new DesktopSessionV3Runtime({
     wantedSessionIds: ['session-1'],
     api: {
-      reconnectSessionV3: async () => {
+      bootstrapSessionV3Sync: async () => {
         const snapshot = snapshots.shift()
         assert.ok(snapshot)
         return snapshot
@@ -392,15 +389,12 @@ test('runtime resume preserves backend worksets while adding known session subsc
   const runtime = new DesktopSessionV3Runtime({
     wantedSessionIds: ['session-1'],
     api: {
-      reconnectSessionV3: async () => ({
+      bootstrapSessionV3Sync: async () => ({
         snapshot: {
           rev: 10,
           snapshotEndpointCursor: 'cursor-10',
         },
         endpointCursor: 'cursor-10',
-        clientId: 'client-1',
-        surface: 'desktop',
-        worksetId: 'workset-1',
         subscriptions: [],
         worksets: [],
         realtimeResume: {
@@ -418,8 +412,7 @@ test('runtime resume preserves backend worksets while adding known session subsc
             },
           ],
         },
-        diagnosticsBySession: {},
-        wire: { ok: true, rev: 10, snapshot_endpoint_cursor: 'cursor-10' },
+            wire: { ok: true, rev: 10, snapshot_endpoint_cursor: 'cursor-10' },
       }),
     },
     transportOptions: {

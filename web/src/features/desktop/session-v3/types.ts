@@ -76,10 +76,10 @@ export interface SessionV3WorksetRequestWire {
   auto_subscribe_sessions?: boolean
 }
 
-export interface SessionV3ReconnectRequestWire {
-  surface?: SessionV3Surface | string
-  client_id?: string
-  workset?: SessionV3WorksetRequestWire
+export interface SessionV3KnownStateWire {
+  applied_seq?: number
+  high_watermark?: number
+  endpoint_cursor?: string
 }
 
 export interface SessionV3StateSnapshotRequest {
@@ -103,8 +103,11 @@ export interface SessionV3StateSnapshotRequest {
     messages?: boolean
     events?: boolean
     runIntents?: boolean
+    activePlan?: boolean
+    planRevisions?: boolean
   }
   includeActive?: boolean
+  knownSessions?: Record<string, SessionV3KnownStateWire>
 }
 
 export interface SessionV3StateSnapshotRequestWire {
@@ -115,6 +118,7 @@ export interface SessionV3StateSnapshotRequestWire {
   history?: SessionV3WorksetHistoryWire
   resources?: SessionV3WorksetResourcesWire
   include_active?: boolean
+  known_sessions?: Record<string, SessionV3KnownStateWire>
 }
 
 export interface SessionV3LifecycleWire {
@@ -205,6 +209,20 @@ export interface SessionV3EventWire {
   payload?: Record<string, unknown>
 }
 
+export interface SessionV3SyncScopeWire {
+  surface?: string
+  stream_kind?: string
+  selector_filter_hash?: string
+  resource_set?: string
+}
+
+export interface SessionV3SyncReplayInstructionsWire {
+  stream_path?: string
+  transport?: string
+  after_endpoint_cursor?: string
+  bootstrap_required_on_cursor_error?: boolean
+}
+
 export interface SessionV3StateSnapshotResponseWire {
   ok?: boolean
   rev?: number
@@ -227,6 +245,33 @@ export interface SessionV3StateSnapshotResponseWire {
   omissions?: Record<string, unknown>
   pagination?: Record<string, unknown>
   watermarks?: Record<string, unknown>
+  sync_scope?: SessionV3SyncScopeWire
+  scope_id?: string
+  selector?: SessionV3WorksetSelectorWire
+  known_sessions?: Record<string, SessionV3KnownStateWire>
+  tombstones_by_session?: Record<string, unknown>
+  replay_instructions?: SessionV3SyncReplayInstructionsWire
+}
+
+export interface SessionV3SyncStreamRequestWire extends SessionV3StateSnapshotRequestWire {
+  endpoint_cursor: string
+  limit?: number
+}
+
+export interface SessionV3SyncStreamResponseWire {
+  ok?: boolean
+  endpoint_cursor?: string
+  after_endpoint_seq?: number
+  high_watermark_seq?: number
+  events?: unknown[]
+  has_more?: boolean
+  selector?: SessionV3WorksetSelectorWire
+  replay_instructions?: SessionV3SyncReplayInstructionsWire
+  error?: string
+  error_code?: string
+  bootstrap_required?: boolean
+  oldest_available?: number
+  latest?: number
 }
 
 export interface SessionV3RealtimeSubscriptionRequestWire {
@@ -244,6 +289,13 @@ export interface SessionV3RealtimeWorksetSubscriptionRequestWire {
   auto_subscribe_sessions: boolean
 }
 
+export interface SessionV3SyncSubscriptionWire extends SessionV3RealtimeSubscriptionRequestWire {
+  protocol: SessionV3RealtimeProtocol
+  protocol_version: SessionV3RealtimeProtocolVersion
+  kind: 'subscribe.session'
+  endpoint_cursor: string
+}
+
 export interface SessionV3RealtimeResumeWire {
   protocol: SessionV3RealtimeProtocol
   protocol_version: SessionV3RealtimeProtocolVersion
@@ -253,52 +305,21 @@ export interface SessionV3RealtimeResumeWire {
   worksets?: SessionV3RealtimeWorksetSubscriptionRequestWire[]
 }
 
-export interface SessionV3ReconnectSubscriptionWire {
-  protocol: SessionV3RealtimeProtocol
-  protocol_version: SessionV3RealtimeProtocolVersion
-  kind: 'subscribe.session'
-  session_id: string
-  subscription_id: string
-  endpoint_cursor: string
-}
-
-export interface SessionV3ReconnectRealtimeWire {
-  stream_path: typeof SESSION_V3_REALTIME_STREAM_PATH | string
-  resume: SessionV3RealtimeResumeWire
-}
-
-export interface SessionV3ReconnectDiagnosticWire {
-  code?: string
-  message?: string
-  run_ids?: string[]
-  statuses?: string[]
-}
-
-export interface SessionV3ReconnectResponseWire extends SessionV3StateSnapshotResponseWire {
-  client_id?: string
-  surface?: SessionV3Surface | string
-  workset_id?: string
-  subscriptions?: SessionV3ReconnectSubscriptionWire[]
-  worksets?: SessionV3RealtimeWorksetSubscriptionRequestWire[]
-  realtime?: SessionV3ReconnectRealtimeWire
-  diagnostics_by_session?: Record<string, SessionV3ReconnectDiagnosticWire[]>
-}
-
 export interface SessionV3SnapshotResult {
   snapshot: DesktopDaemonSnapshot
   endpointCursor: string
+  replayInstructions: SessionV3SyncReplayInstructionsWire | null
+  syncScope: SessionV3SyncScopeWire | null
+  scopeId: string
+  selector: SessionV3WorksetSelectorWire | null
+  tombstonesBySession: Record<string, unknown>
   wire: SessionV3StateSnapshotResponseWire
 }
 
-export interface SessionV3ReconnectSnapshot extends SessionV3SnapshotResult {
-  clientId: string
-  surface: string
-  worksetId: string
-  subscriptions: SessionV3ReconnectSubscriptionWire[]
+export interface SessionV3SyncSnapshot extends SessionV3SnapshotResult {
+  subscriptions: SessionV3SyncSubscriptionWire[]
   worksets: SessionV3RealtimeWorksetSubscriptionRequestWire[]
   realtimeResume: SessionV3RealtimeResumeWire | null
-  diagnosticsBySession: Record<string, SessionV3ReconnectDiagnosticWire[]>
-  wire: SessionV3ReconnectResponseWire
 }
 
 export interface SessionV3RealtimeFrameWire {

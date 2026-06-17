@@ -16,7 +16,7 @@ import type {
   SessionV3ProjectionWire,
   SessionV3RealtimeFrameWire,
   SessionV3RealtimeOutboxWire,
-  SessionV3ReconnectSnapshot,
+  SessionV3SyncSnapshot,
   SessionV3RunIntentWire,
   SessionV3SessionWire,
   SessionV3SnapshotResult,
@@ -79,7 +79,7 @@ export interface SessionV3ReducerState {
 export type SessionV3ReducerAction =
   | { type: 'snapshot'; snapshot: DesktopDaemonSnapshot; mode?: SessionV3ReducerSnapshotMode; endpointCursor?: string | null; receivedAt?: number }
   | { type: 'snapshot-result'; result: SessionV3SnapshotResult; mode?: SessionV3ReducerSnapshotMode; receivedAt?: number }
-  | { type: 'reconnect'; result: SessionV3ReconnectSnapshot; mode?: SessionV3ReducerSnapshotMode; receivedAt?: number }
+  | { type: 'reconnect'; result: SessionV3SyncSnapshot; mode?: SessionV3ReducerSnapshotMode; receivedAt?: number }
   | { type: 'frame'; frame: SessionV3RealtimeFrameWire; receivedAt?: number }
   | { type: 'mutation'; response: SessionV3HydratedSessionResponseWire | SessionV3CompactResponseWire; sessionId?: string | null; receivedAt?: number }
   | { type: 'status'; status: DesktopStateStatus; error?: string | null; receivedAt?: number }
@@ -182,7 +182,7 @@ export function applySessionV3Snapshot(
 
 export function applySessionV3Reconnect(
   state: SessionV3ReducerState,
-  result: SessionV3ReconnectSnapshot,
+  result: SessionV3SyncSnapshot,
   action: Extract<SessionV3ReducerAction, { type: 'reconnect' }>,
 ): SessionV3ReducerResult {
   const snapshotResult = applySessionV3Snapshot(state, result.snapshot, {

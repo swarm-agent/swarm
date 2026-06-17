@@ -7,7 +7,7 @@ import {
   type SessionV3RealtimeResumeWire,
   type SessionV3RealtimeSubscriptionRequestWire,
   type SessionV3RealtimeWorksetSubscriptionRequestWire,
-  type SessionV3ReconnectSnapshot,
+  type SessionV3SyncSnapshot,
 } from './types'
 
 const RECONNECT_BASE_DELAY_MS = 1_500
@@ -47,7 +47,7 @@ export interface DesktopV3RealtimeTransportOpenSocketOptions {
 
 export type DesktopV3RealtimeTransportOpenSocket = (options: DesktopV3RealtimeTransportOpenSocketOptions) => Promise<WebSocket> | WebSocket
 
-export type DesktopV3RealtimeTransportRehydrateResult = SessionV3ReconnectSnapshot | SessionV3RealtimeResumeWire | {
+export type DesktopV3RealtimeTransportRehydrateResult = SessionV3SyncSnapshot | SessionV3RealtimeResumeWire | {
   endpointCursor?: string | null
   subscriptions?: SessionV3RealtimeSubscriptionRequestWire[]
   worksets?: SessionV3RealtimeWorksetSubscriptionRequestWire[]
@@ -242,7 +242,7 @@ export class DesktopV3RealtimeTransport {
     return true
   }
 
-  applyReconnectSnapshot(result: SessionV3ReconnectSnapshot): void {
+  applySyncSnapshot(result: SessionV3SyncSnapshot): void {
     if (result.realtimeResume && this.applyRealtimeResume(result.realtimeResume, { replace: true })) {
       return
     }
@@ -252,10 +252,10 @@ export class DesktopV3RealtimeTransport {
       worksets: result.worksets,
       replace: true,
     })
-    this.syncOpenSocketResume('reconnect snapshot applied')
+    this.syncOpenSocketResume('sync snapshot applied')
   }
 
-  resetForReconnectSnapshot(_reason = 'reconnect snapshot reset'): void {
+  resetForSyncSnapshot(_reason = 'sync snapshot reset'): void {
     this.desired = false
     this.clearReconnect()
     this.clearLiveness()
@@ -263,9 +263,9 @@ export class DesktopV3RealtimeTransport {
     this.reconnectAttempt = 0
   }
 
-  resetFromReconnectSnapshot(result: SessionV3ReconnectSnapshot): void {
-    this.resetForReconnectSnapshot('reconnect snapshot applied')
-    this.applyReconnectSnapshot(result)
+  resetFromSyncSnapshot(result: SessionV3SyncSnapshot): void {
+    this.resetForSyncSnapshot('sync snapshot applied')
+    this.applySyncSnapshot(result)
   }
 
   reconnect(reason = 'manual reconnect'): void {
@@ -538,21 +538,21 @@ export class DesktopV3RealtimeTransport {
       this.applyRealtimeResume(result, { replace: true })
       return
     }
-    const reconnect = result as Partial<SessionV3ReconnectSnapshot> & {
+    const syncSnapshot = result as Partial<SessionV3SyncSnapshot> & {
       endpointCursor?: string | null
       realtimeResume?: SessionV3RealtimeResumeWire | null
       subscriptions?: SessionV3RealtimeSubscriptionRequestWire[]
       worksets?: SessionV3RealtimeWorksetSubscriptionRequestWire[]
     }
-    if (reconnect.realtimeResume && this.applyRealtimeResume(reconnect.realtimeResume, { replace: true })) {
+    if (syncSnapshot.realtimeResume && this.applyRealtimeResume(syncSnapshot.realtimeResume, { replace: true })) {
       return
     }
-    this.advanceEndpointCursor(reconnect.endpointCursor, 'snapshot')
-    if (reconnect.subscriptions) {
-      this.setSessions(reconnect.subscriptions, { replace: true })
+    this.advanceEndpointCursor(syncSnapshot.endpointCursor, 'snapshot')
+    if (syncSnapshot.subscriptions) {
+      this.setSessions(syncSnapshot.subscriptions, { replace: true })
     }
-    if (reconnect.worksets) {
-      this.setWorksets(reconnect.worksets, { replace: true })
+    if (syncSnapshot.worksets) {
+      this.setWorksets(syncSnapshot.worksets, { replace: true })
     }
   }
 
