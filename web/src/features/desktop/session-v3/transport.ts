@@ -10,13 +10,13 @@ import {
   type SessionV3SyncSnapshot,
 } from './types'
 
-const RECONNECT_BASE_DELAY_MS = 1_500
-const RECONNECT_MAX_DELAY_MS = 15_000
-const RECONNECT_JITTER_RATIO = 0.2
+const REOPEN_BASE_DELAY_MS = 1_500
+const REOPEN_MAX_DELAY_MS = 15_000
+const REOPEN_JITTER_RATIO = 0.2
 const LIVENESS_TIMEOUT_MS = 45_000
 
 export type DesktopV3RealtimeTransportSocketState = 'none' | 'connecting' | 'open' | 'closing' | 'closed'
-export type DesktopV3RealtimeTransportStatus = 'stopped' | 'connecting' | 'open' | 'reconnecting' | 'rehydrating' | 'stale' | 'closed' | 'error'
+export type DesktopV3RealtimeTransportStatus = 'stopped' | 'connecting' | 'open' | 'reopening' | 'rehydrating' | 'stale' | 'closed' | 'error'
 
 export interface DesktopV3RealtimeTransportMeta {
   generation: number
@@ -63,8 +63,8 @@ export interface DesktopV3RealtimeTransportOptions {
   onResumeSent?: (resume: SessionV3RealtimeResumeWire, meta: DesktopV3RealtimeTransportMeta) => void
   onRehydrateRequested?: (reason: string, frame: SessionV3RealtimeFrameWire | null, meta: DesktopV3RealtimeTransportMeta) => Promise<DesktopV3RealtimeTransportRehydrateResult | void> | DesktopV3RealtimeTransportRehydrateResult | void
   now?: () => number
-  reconnectBaseDelayMs?: number
-  reconnectMaxDelayMs?: number
+  reopenBaseDelayMs?: number
+  reopenMaxDelayMs?: number
   livenessTimeoutMs?: number
 }
 
@@ -84,8 +84,8 @@ export interface DesktopV3RealtimeTransportDiagnostics {
   generation: number
   streamPath: typeof SESSION_V3_REALTIME_STREAM_PATH
   endpointCursorPresent: boolean
-  reconnectAttempt: number
-  reconnectTimerActive: boolean
+  reopenAttempt: number
+  reopenTimerActive: boolean
   rehydrateInFlight: boolean
   lastActivityAt: number
   sessionSubscriptionCount: number
@@ -133,13 +133,13 @@ export class DesktopV3RealtimeTransport {
   private readonly worksets = new Map<string, WorksetRegistryEntry>()
   private socket: WebSocket | null = null
   private connecting: Promise<void> | null = null
-  private reconnectTimer: number | null = null
+  private reopenTimer: number | null = null
   private livenessTimer: number | null = null
   private rehydrateInFlight: Promise<void> | null = null
   private endpointCursor = ''
   private desired = false
   private generation = 0
-  private reconnectAttempt = 0
+  private reopenAttempt = 0
   private lastActivityAt = 0
   private status: DesktopV3RealtimeTransportStatus = 'stopped'
 
@@ -154,10 +154,10 @@ export class DesktopV3RealtimeTransport {
 
   stop(reason = 'transport stopped'): void {
     this.desired = false
-    this.clearReconnect()
+    this.clearScheduledReopen()
     this.clearLiveness()
     this.closeOwnedSocket()
-    this.reconnectAttempt = 0
+    this.reopenAttempt = 0
     this.lastActivityAt = 0
     this.emitStatus('stopped', reason)
   }
@@ -262,10 +262,10 @@ export class DesktopV3RealtimeTransport {
 
   resetForSyncSnapshot(_reason = 'sync snapshot reset'): void {
     this.desired = false
-    this.clearReconnect()
+    this.clearScheduledReopen()
     this.clearLiveness()
     this.closeOwnedSocket()
-    this.reconnectAttempt = 0
+    this.reopenAttempt = 0
   }
 
   resetFromSyncSnapshot(result: SessionV3SyncSnapshot): void {
@@ -273,11 +273,11 @@ export class DesktopV3RealtimeTransport {
     this.applySyncSnapshot(result)
   }
 
-  reconnect(reason = 'manual reconnect'): void {
+  reopen(reason = 'manual reopen'): void {
     if (!this.desired) {
       this.desired = true
     }
-    this.forceReconnect(reason)
+    this.forceReopen(reason)
   }
 
   diagnostics(): DesktopV3RealtimeTransportDiagnostics {
@@ -288,8 +288,8 @@ export class DesktopV3RealtimeTransport {
       generation: this.generation,
       streamPath: SESSION_V3_REALTIME_STREAM_PATH,
       endpointCursorPresent: this.currentEndpointCursor() !== '',
-      reconnectAttempt: this.reconnectAttempt,
-      reconnectTimerActive: this.reconnectTimer !== null,
+      reopenAttempt: this.reopenAttempt,
+      reopenTimerActive: this.reopenTimer !== null,
       rehydrateInFlight: this.rehydrateInFlight !== null,
       lastActivityAt: this.lastActivityAt,
       sessionSubscriptionCount: this.sessions.size,
@@ -317,7 +317,7 @@ export class DesktopV3RealtimeTransport {
   }
 
   private async openConnection(endpointCursor: string): Promise<void> {
-    this.clearReconnect()
+    this.clearScheduledReopen()
     this.generation += 1
     const generation = this.generation
     this.emitStatus('connecting', 'opening V3 realtime transport')
@@ -333,7 +333,7 @@ export class DesktopV3RealtimeTransport {
     } catch (error) {
       if (generation !== this.generation) return
       this.emitStatus('error', errorMessage(error, 'failed to open V3 realtime transport'))
-      this.scheduleReconnect('socket open failed')
+      this.scheduleReopen('socket open failed')
     }
   }
 
@@ -343,8 +343,8 @@ export class DesktopV3RealtimeTransport {
         socket.close()
         return
       }
-      this.reconnectAttempt = 0
-      this.clearReconnect()
+      this.reopenAttempt = 0
+      this.clearScheduledReopen()
       this.noteActivity(generation)
       this.emitStatus('open', 'V3 realtime transport open')
       this.sendResume(socket)
@@ -364,7 +364,7 @@ export class DesktopV3RealtimeTransport {
     socket.addEventListener('error', () => {
       if (generation !== this.generation || this.socket !== socket || !this.desired) return
       this.emitStatus('error', 'V3 realtime socket error')
-      this.forceReconnect('socket error')
+      this.forceReopen('socket error')
     })
 
     socket.addEventListener('close', () => {
@@ -375,8 +375,8 @@ export class DesktopV3RealtimeTransport {
         this.emitStatus('closed', 'V3 realtime transport closed')
         return
       }
-      this.emitStatus('reconnecting', 'V3 realtime socket closed')
-      this.scheduleReconnect('socket closed')
+      this.emitStatus('reopening', 'V3 realtime socket closed')
+      this.scheduleReopen('socket closed')
     })
   }
 
@@ -510,7 +510,7 @@ export class DesktopV3RealtimeTransport {
 
   private async requestRehydrate(reason: string, frame: SessionV3RealtimeFrameWire | null): Promise<void> {
     if (this.rehydrateInFlight) return this.rehydrateInFlight
-    this.clearReconnect()
+    this.clearScheduledReopen()
     this.clearLiveness()
     this.closeOwnedSocket()
     const rehydrate = this.options.onRehydrateRequested
@@ -560,29 +560,29 @@ export class DesktopV3RealtimeTransport {
     this.syncOpenSocketResume('rehydrate result applied')
   }
 
-  private forceReconnect(reason: string): void {
+  private forceReopen(reason: string): void {
     if (!this.desired) return
-    this.clearReconnect()
+    this.clearScheduledReopen()
     this.clearLiveness()
     this.closeOwnedSocket()
-    this.emitStatus('reconnecting', reason)
-    this.scheduleReconnect(reason)
+    this.emitStatus('reopening', reason)
+    this.scheduleReopen(reason)
   }
 
-  private scheduleReconnect(reason: string): void {
-    if (!this.desired || this.reconnectTimer !== null || this.rehydrateInFlight) return
-    const attempt = this.reconnectAttempt
-    const delay = reconnectDelayMs(attempt, this.options.reconnectBaseDelayMs, this.options.reconnectMaxDelayMs)
-    this.reconnectAttempt += 1
-    this.reconnectTimer = window.setTimeout(() => {
-      this.reconnectTimer = null
+  private scheduleReopen(reason: string): void {
+    if (!this.desired || this.reopenTimer !== null || this.rehydrateInFlight) return
+    const attempt = this.reopenAttempt
+    const delay = reopenDelayMs(attempt, this.options.reopenBaseDelayMs, this.options.reopenMaxDelayMs)
+    this.reopenAttempt += 1
+    this.reopenTimer = window.setTimeout(() => {
+      this.reopenTimer = null
       void this.connect()
     }, delay)
-    this.emitStatus('reconnecting', reason)
+    this.emitStatus('reopening', reason)
   }
 
   private markStale(reason: string): void {
-    this.clearReconnect()
+    this.clearScheduledReopen()
     this.clearLiveness()
     this.closeOwnedSocket()
     this.desired = false
@@ -614,10 +614,10 @@ export class DesktopV3RealtimeTransport {
     }, timeout)
   }
 
-  private clearReconnect(): void {
-    if (this.reconnectTimer !== null) {
-      window.clearTimeout(this.reconnectTimer)
-      this.reconnectTimer = null
+  private clearScheduledReopen(): void {
+    if (this.reopenTimer !== null) {
+      window.clearTimeout(this.reopenTimer)
+      this.reopenTimer = null
     }
   }
 
@@ -732,11 +732,11 @@ function frameEndpointCursor(frame: SessionV3RealtimeFrameWire): string {
   return normalizeString(frame.endpoint_cursor)
 }
 
-function reconnectDelayMs(attempt: number, baseOverride?: number, maxOverride?: number): number {
-  const base = positiveNumber(baseOverride) ?? RECONNECT_BASE_DELAY_MS
-  const max = positiveNumber(maxOverride) ?? RECONNECT_MAX_DELAY_MS
+function reopenDelayMs(attempt: number, baseOverride?: number, maxOverride?: number): number {
+  const base = positiveNumber(baseOverride) ?? REOPEN_BASE_DELAY_MS
+  const max = positiveNumber(maxOverride) ?? REOPEN_MAX_DELAY_MS
   const baseDelay = Math.min(max, base * (2 ** Math.max(0, attempt)))
-  const jitterWindow = Math.max(1, Math.floor(baseDelay * RECONNECT_JITTER_RATIO))
+  const jitterWindow = Math.max(1, Math.floor(baseDelay * REOPEN_JITTER_RATIO))
   const jitterOffset = Math.floor((Math.random() * (jitterWindow * 2 + 1)) - jitterWindow)
   return Math.max(base, baseDelay + jitterOffset)
 }

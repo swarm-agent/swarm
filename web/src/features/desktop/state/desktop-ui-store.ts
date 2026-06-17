@@ -284,7 +284,7 @@ function summarizeDesktopSessionV3RuntimeDiagnostics(diagnostics: DesktopV3Realt
     socketState: diagnostics.socketState,
     generation: diagnostics.generation,
     endpointCursorPresent: diagnostics.endpointCursorPresent,
-    reconnectAttempt: diagnostics.reconnectAttempt,
+    reopenAttempt: diagnostics.reopenAttempt,
     lastActivityAt: diagnostics.lastActivityAt,
     sessionSubscriptionCount: diagnostics.sessionSubscriptionCount,
     worksetSubscriptionCount: diagnostics.worksetSubscriptionCount,
