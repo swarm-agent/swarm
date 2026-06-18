@@ -397,12 +397,12 @@ func normalizeSessionsV3SyncSelector(kind string, selector sessionsV3SyncSelecto
 }
 
 func (s *Server) sessionsV3SyncSnapshotResponse(options sessionsV3ResolvedSyncOptions, selector any, resources []string, known map[string]sessionsV3KnownState) (map[string]any, error) {
-	snapshot, err := s.sessions.BuildSyncSnapshot(options.Snapshot)
-	if err != nil {
+	scope := v3SyncCursorScopeForSnapshot(options.Principal, options.Surface, "v3.sync.snapshot", selector, resources)
+	if err := s.validateSessionsV3KnownState(scope, known); err != nil {
 		return nil, err
 	}
-	scope := v3SyncCursorScopeForSnapshot(options.Principal, options.Surface, "v3.sync.snapshot", selector, resources)
-	if err := s.validateSessionsV3KnownEndpointCursors(scope, known); err != nil {
+	snapshot, err := s.sessions.BuildSyncSnapshot(options.Snapshot)
+	if err != nil {
 		return nil, err
 	}
 	snapshotEndpointCursor, err := s.signV3SyncEndpointCursor(scope, snapshot.Rev)
@@ -537,8 +537,11 @@ func sessionsV3SyncTombstoneMatchesSelector(tombstone pebblestore.V3SessionTombs
 	}
 }
 
-func (s *Server) validateSessionsV3KnownEndpointCursors(scope v3SyncCursorScope, known map[string]sessionsV3KnownState) error {
+func (s *Server) validateSessionsV3KnownState(scope v3SyncCursorScope, known map[string]sessionsV3KnownState) error {
 	for _, state := range known {
+		if state.AppliedSeq != 0 || state.HighWatermark != 0 {
+			return newV3SyncCursorError("known_sessions_sequence_state_unsupported", errors.New("known_sessions.applied_seq and known_sessions.high_watermark are not supported; omit them or send zero values"))
+		}
 		if strings.TrimSpace(state.EndpointCursor) == "" {
 			continue
 		}

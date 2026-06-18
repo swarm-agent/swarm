@@ -631,6 +631,96 @@ func TestSessionsV3SyncBootstrapRejectsKnownSessionLegacyEndpointCursor(t *testi
 	}
 }
 
+func TestSessionsV3SyncRejectsKnownSessionSequenceState(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "sync-known-seq", "Sync Known Seq")
+
+	for _, tc := range []struct {
+		name       string
+		path       string
+		body       map[string]any
+		statusCode int
+	}{
+		{
+			name: "bootstrap rejects applied_seq",
+			path: V3SyncBootstrapPath,
+			body: map[string]any{
+				"surface":        "desktop",
+				"selector":       map[string]any{"kind": "session_ids", "session_ids": []string{created.ID}},
+				"known_sessions": map[string]any{created.ID: map[string]any{"applied_seq": 1}},
+			},
+			statusCode: http.StatusBadRequest,
+		},
+		{
+			name: "bootstrap rejects high_watermark",
+			path: V3SyncBootstrapPath,
+			body: map[string]any{
+				"surface":        "desktop",
+				"selector":       map[string]any{"kind": "session_ids", "session_ids": []string{created.ID}},
+				"known_sessions": map[string]any{created.ID: map[string]any{"high_watermark": 1}},
+			},
+			statusCode: http.StatusBadRequest,
+		},
+		{
+			name: "hydrate rejects applied_seq",
+			path: V3SyncHydratePath,
+			body: map[string]any{
+				"surface":        "desktop",
+				"session_ids":    []string{created.ID},
+				"known_sessions": map[string]any{created.ID: map[string]any{"applied_seq": 1}},
+			},
+			statusCode: http.StatusBadRequest,
+		},
+		{
+			name: "hydrate rejects high_watermark",
+			path: V3SyncHydratePath,
+			body: map[string]any{
+				"surface":        "desktop",
+				"session_ids":    []string{created.ID},
+				"known_sessions": map[string]any{created.ID: map[string]any{"high_watermark": 1}},
+			},
+			statusCode: http.StatusBadRequest,
+		},
+		{
+			name: "bootstrap accepts zero sequence state",
+			path: V3SyncBootstrapPath,
+			body: map[string]any{
+				"surface":        "desktop",
+				"selector":       map[string]any{"kind": "session_ids", "session_ids": []string{created.ID}},
+				"known_sessions": map[string]any{created.ID: map[string]any{"applied_seq": 0, "high_watermark": 0}},
+			},
+			statusCode: http.StatusOK,
+		},
+		{
+			name: "hydrate accepts zero sequence state",
+			path: V3SyncHydratePath,
+			body: map[string]any{
+				"surface":        "desktop",
+				"session_ids":    []string{created.ID},
+				"known_sessions": map[string]any{created.ID: map[string]any{"applied_seq": 0, "high_watermark": 0}},
+			},
+			statusCode: http.StatusOK,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := json.Marshal(tc.body)
+			if err != nil {
+				t.Fatalf("marshal body: %v", err)
+			}
+			req := httptest.NewRequest(http.MethodPost, tc.path, bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+			if rec.Code != tc.statusCode {
+				t.Fatalf("status = %d, want %d, body=%s", rec.Code, tc.statusCode, rec.Body.String())
+			}
+			if tc.statusCode == http.StatusBadRequest && !strings.Contains(rec.Body.String(), "known_sessions_sequence_state_unsupported") {
+				t.Fatalf("sequence state error missing code: %s", rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestSessionsV3SyncBootstrapIncludesExtraResourcesFromSnapshot(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-extra-resources", "Sync Extra Resources", "/workspace/cp5-extra")
