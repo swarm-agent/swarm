@@ -1,13 +1,6 @@
 import { requestJson } from '../../../app/api'
 
-import type {
-  MessageMutationConflictResponse,
-  SessionMessageMutationResponse,
-  SyncHistory,
-  SyncResources,
-  SyncSelector,
-  SyncSnapshotResponse,
-} from './desktop-v3-cache-types'
+import type { SyncHistory, SyncResources, SyncSelector, SyncSnapshotResponse } from './desktop-v3-cache-types'
 
 export interface DesktopV3BootstrapInput {
   surface: 'desktop' | string
@@ -23,12 +16,6 @@ export interface DesktopV3HydrateInput {
   history: SyncHistory
   resources: SyncResources
   include_active: boolean
-}
-
-export interface DesktopV3SessionMessageInput {
-  clientRequestId: string
-  role: 'user'
-  content: string
 }
 
 export const DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT: DesktopV3BootstrapInput = {
@@ -102,29 +89,4 @@ export async function postDesktopV3SyncHydrate(
     },
     body: JSON.stringify(input),
   })
-}
-
-export async function postDesktopV3SessionMessage(
-  sessionId: string,
-  input: DesktopV3SessionMessageInput,
-): Promise<SessionMessageMutationResponse | MessageMutationConflictResponse> {
-  const normalizedSessionId = sessionId.trim()
-  if (!normalizedSessionId) {
-    throw new Error('session id is required')
-  }
-
-  return requestJson<SessionMessageMutationResponse | MessageMutationConflictResponse>(
-    `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/messages`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        client_request_id: input.clientRequestId,
-        role: input.role,
-        content: input.content,
-      }),
-    },
-  )
 }
