@@ -22,6 +22,8 @@ import {
   messageA2,
   messageB1,
   messageMutationFixture,
+  projectionA,
+  projectionB,
   reconnectFixture,
   realtimeFrameFixture,
   sessionA,
@@ -155,6 +157,46 @@ test('hydrate rejects optional resource maps for non-requested sessions', () => 
   )
 })
 
+test('hydrate rejects projections for non-requested sessions', () => {
+  const state = bootstrappedState()
+  const raw = hydrateSnapshotFixture({
+    sessions_by_id: { [sessionA.id]: sessionA },
+    projections_by_session: { [sessionB.id]: projectionB },
+    messages_by_session: { [sessionA.id]: [messageA1] },
+    events_by_session: {},
+    run_intents_by_session: {},
+    session_order: [sessionA.id],
+    selector: { kind: 'session_ids', session_ids: [sessionA.id] },
+  })
+
+  assert.throws(
+    () => desktopV3CacheReducer(state, hydrateResponseToAction(raw, [sessionA.id])),
+    /hydrate projections_by_session includes non-requested session session-b/,
+  )
+})
+
+test('hydrate rejects tombstones for non-requested sessions before mutating sidebar', () => {
+  const state = bootstrappedState()
+  const originalOrder = [...state.sessionOrderByScope['selector-hash:messages,run_intents']]
+  const raw = hydrateSnapshotFixture({
+    sessions_by_id: { [sessionA.id]: sessionA },
+    projections_by_session: { [sessionA.id]: projectionA },
+    messages_by_session: { [sessionA.id]: [messageA1] },
+    events_by_session: {},
+    run_intents_by_session: {},
+    session_order: [sessionA.id],
+    selector: { kind: 'session_ids', session_ids: [sessionA.id] },
+    tombstones_by_session: { [sessionB.id]: tombstoneB },
+  })
+
+  assert.throws(
+    () => desktopV3CacheReducer(state, hydrateResponseToAction(raw, [sessionA.id])),
+    /hydrate tombstones_by_session included non-requested session session-b/,
+  )
+
+  assert.deepEqual(state.sessionOrderByScope['selector-hash:messages,run_intents'], originalOrder)
+})
+
 test('sync stream applies events in order and updates cursor even for empty event batches', () => {
   const state = bootstrappedState()
   const stream = syncStreamFixture()
@@ -210,6 +252,17 @@ test('realtime control frames update cursors/status without mutating transcripts
   applyRealtimeFrame(state, { frame: realtimeFrameFixture({ kind: 'cursor.error', bootstrap_required: true, error_code: 'too_old', event: undefined }) })
   assert.equal(state.realtime.needsBootstrap, true)
   assert.equal(state.messagesBySession[sessionA.id].items.length, 2)
+})
+
+test('realtimeFrameToActions event advances the realtime endpoint cursor', () => {
+  const state = createEmptyDesktopV3CacheState()
+  const frame = deltaFrame('session.assistant.delta', { delta: 'hello' }, 2, 'v3c1.after-event')
+
+  for (const action of realtimeFrameToActions(frame)) {
+    desktopV3CacheReducer(state, action)
+  }
+
+  assert.equal(state.realtime.endpointCursor, 'v3c1.after-event')
 })
 
 test('realtime assistant and message deltas append assistant draft without committing messages', () => {

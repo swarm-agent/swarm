@@ -71,7 +71,7 @@ export function reconnectResponseToActions(raw: SessionsReconnectResponse): Desk
 export function realtimeFrameToActions(frame: RealtimeMessage): DesktopV3CacheAction[] {
   switch (frame.kind) {
     case 'event':
-      return [{ type: 'realtime.applyEvent', event: normalizeRealtimeEventFrame(frame) }]
+      return [{ type: 'realtime.applyEvent', event: normalizeRealtimeEventFrame(frame), endpointCursor: frame.endpoint_cursor }]
 
     case 'workset.session.discovered':
       return [{ type: 'realtime.worksetSessionDiscovered', frame }]

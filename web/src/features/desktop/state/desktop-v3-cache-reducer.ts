@@ -77,7 +77,11 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
       state.realtime.endpointCursor = action.resume.endpoint_cursor
       return state
     case 'realtime.applyEvent':
-      return applyCacheEvent(state, action.event)
+      applyCacheEvent(state, action.event)
+      if (action.endpointCursor) {
+        state.realtime.endpointCursor = action.endpointCursor
+      }
+      return state
     case 'realtime.worksetSessionDiscovered':
       applyWorksetSessionDiscovered(state, action.frame)
       return state
@@ -153,16 +157,17 @@ export function applyHydrate(
   }
 
   const requested = new Set(action.requestedSessionIds)
-  const tombstoned = new Set(Object.keys(snapshot.tombstones_by_session ?? {}))
   for (const sessionId of snapshot.session_order ?? []) {
-    if (!requested.has(sessionId) && !tombstoned.has(sessionId)) {
+    if (!requested.has(sessionId)) {
       throw new Error(`protocol invalid: hydrate session_order includes non-requested session ${sessionId}`)
     }
   }
   assertMapSubset(snapshot.sessions_by_id, requested, 'sessions_by_id')
+  assertMapSubset(snapshot.projections_by_session, requested, 'projections_by_session')
   assertMapSubset(snapshot.messages_by_session, requested, 'messages_by_session')
   assertMapSubset(snapshot.events_by_session, requested, 'events_by_session')
   assertMapSubset(snapshot.run_intents_by_session, requested, 'run_intents_by_session')
+  assertObjectKeysSubset('tombstones_by_session', snapshot.tombstones_by_session, requested)
   assertObjectKeysSubset('plans_by_session', snapshot.plans_by_session, requested)
   assertObjectKeysSubset('plan_revisions_by_session', snapshot.plan_revisions_by_session, requested)
   assertObjectKeysSubset('permissions_by_session', snapshot.permissions_by_session, requested)
