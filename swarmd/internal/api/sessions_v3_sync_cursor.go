@@ -59,11 +59,12 @@ type v3SyncCursorKeyring struct {
 }
 
 type v3SyncCursorError struct {
-	Code              string
-	BootstrapRequired bool
-	OldestAvailable   uint64
-	Latest            uint64
-	Err               error
+	Code               string
+	BootstrapRequired  bool
+	OldestAvailable    uint64
+	Latest             uint64
+	MissingEndpointSeq uint64
+	Err                error
 }
 
 func (e *v3SyncCursorError) Error() string {

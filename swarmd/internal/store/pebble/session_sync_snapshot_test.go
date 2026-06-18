@@ -1,8 +1,12 @@
 package pebblestore
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
+
+	"github.com/cockroachdb/pebble"
 )
 
 func TestBuildV3SyncSnapshotKeepsExtraResourcesPointInTime(t *testing.T) {
@@ -228,16 +232,10 @@ func TestBuildV3SyncSnapshotGlobalRecentTombstonesExcludeOldUnrelatedHistory(t *
 	sessions := NewSessionStore(store)
 	for i := 0; i < 5; i++ {
 		sessionID := fmt.Sprintf("session-global-recent-old-tombstone-%02d", i)
-		createV3SyncSnapshotSessionForUserTest(t, sessions, sessionID, "user-1", "account-1", "/workspace/old-tombstones", int64(1000+i))
-		if err := sessions.DeleteSession(sessionID); err != nil {
-			t.Fatalf("delete old tombstone %s: %v", sessionID, err)
-		}
+		seedLegacyV3SessionTombstoneForTest(t, sessions, V3SessionTombstone{SessionID: sessionID, UserID: "user-1", AccountScopeID: "account-1", WorkspacePath: "/workspace/old-tombstones", Kind: "deleted", Deleted: true, UpdatedAt: int64(1000 + i)})
 	}
 	createV3SyncSnapshotSessionForUserTest(t, sessions, "session-global-recent-live", "user-1", "account-1", "/workspace/live", 5000)
-	createV3SyncSnapshotSessionForUserTest(t, sessions, "session-global-recent-current-tombstone", "user-1", "account-1", "/workspace/live", 6000)
-	if err := sessions.DeleteSession("session-global-recent-current-tombstone"); err != nil {
-		t.Fatalf("delete current tombstone: %v", err)
-	}
+	seedLegacyV3SessionTombstoneForTest(t, sessions, V3SessionTombstone{SessionID: "session-global-recent-current-tombstone", UserID: "user-1", AccountScopeID: "account-1", WorkspacePath: "/workspace/live", Kind: "deleted", Deleted: true, UpdatedAt: 6000})
 
 	snapshot, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
 		AccountScopeID: "account-1",
@@ -328,7 +326,7 @@ func TestBuildV3SyncSnapshotRecentTombstoneSecondPageUsesBeforeCursor(t *testing
 	}
 }
 
-func TestBuildV3SyncSnapshotLargeAccountTombstonesRemainBounded(t *testing.T) {
+func TestBuildV3SyncSnapshotLargeAccountTombstonesFailClosedWithoutRecentPagination(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
 	for i := 0; i < 1005; i++ {
@@ -339,20 +337,91 @@ func TestBuildV3SyncSnapshotLargeAccountTombstonesRemainBounded(t *testing.T) {
 		}
 	}
 
-	snapshot, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
+	_, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
+		AccountScopeID: "account-1",
+		UserID:         "user-1",
+		Global:         true,
+		History:        V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone},
+	})
+	if err == nil || !strings.Contains(err.Error(), "retry with recent.limit and pagination") {
+		t.Fatalf("large account snapshot error=%v, want fail-closed pagination error", err)
+	}
+}
+
+func TestBuildV3SyncSnapshotBackfillsLegacyTombstoneScopeIndexes(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	legacy := V3SessionTombstone{SessionID: "session-legacy-tombstone-backfill", UserID: "user-1", AccountScopeID: "account-1", WorkspacePath: "/workspace/legacy-tombstone", Kind: "deleted", Deleted: true, UpdatedAt: 7000}
+	seedLegacyV3SessionTombstoneForTest(t, sessions, legacy)
+
+	global, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
 		AccountScopeID: "account-1",
 		UserID:         "user-1",
 		Global:         true,
 		History:        V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone},
 	})
 	if err != nil {
-		t.Fatalf("build large account snapshot: %v", err)
+		t.Fatalf("build global legacy tombstone snapshot: %v", err)
 	}
-	if len(snapshot.TombstonesBySession) > 1000 {
-		t.Fatalf("large account snapshot loaded unbounded tombstones: %d", len(snapshot.TombstonesBySession))
+	if global.TombstonesBySession[legacy.SessionID].SessionID != legacy.SessionID {
+		t.Fatalf("global snapshot missed legacy tombstone after backfill: %+v", global.TombstonesBySession)
 	}
-	if len(snapshot.Omissions) == 0 {
-		t.Fatalf("large account bounded tombstone scan did not report deterministic omission metadata")
+
+	workspace, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
+		AccountScopeID: "account-1",
+		UserID:         "user-1",
+		WorkspacePath:  "/workspace/legacy-tombstone",
+		History:        V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone},
+	})
+	if err != nil {
+		t.Fatalf("build workspace legacy tombstone snapshot: %v", err)
+	}
+	if workspace.TombstonesBySession[legacy.SessionID].SessionID != legacy.SessionID {
+		t.Fatalf("workspace snapshot missed legacy tombstone after backfill: %+v", workspace.TombstonesBySession)
+	}
+
+	recent, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
+		AccountScopeID: "account-1",
+		UserID:         "user-1",
+		RecentLimit:    10,
+		History:        V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone},
+	})
+	if err != nil {
+		t.Fatalf("build recent legacy tombstone snapshot: %v", err)
+	}
+	if recent.TombstonesBySession[legacy.SessionID].SessionID != legacy.SessionID {
+		t.Fatalf("recent snapshot missed legacy tombstone after backfill: %+v", recent.TombstonesBySession)
+	}
+	if ok, err := store.GetJSON(KeyV3SessionTombstoneByAccountUser(legacy.AccountScopeID, legacy.UserID, legacy.UpdatedAt, legacy.SessionID), &V3SessionTombstone{}); err != nil || !ok {
+		t.Fatalf("backfilled account+user index ok=%v err=%v", ok, err)
+	}
+	if ok, err := store.GetJSON(KeyV3SessionTombstoneByAccountUserWorkspace(legacy.AccountScopeID, legacy.UserID, legacy.WorkspacePath, legacy.UpdatedAt, legacy.SessionID), &V3SessionTombstone{}); err != nil || !ok {
+		t.Fatalf("backfilled account+user+workspace index ok=%v err=%v", ok, err)
+	}
+}
+
+func seedLegacyV3SessionTombstoneForTest(t *testing.T, sessions *SessionStore, tombstone V3SessionTombstone) {
+	t.Helper()
+	if sessions == nil || sessions.store == nil {
+		t.Fatalf("session store is nil")
+	}
+	tombstone = normalizeV3SessionTombstone(tombstone)
+	payload, err := json.Marshal(tombstone)
+	if err != nil {
+		t.Fatalf("marshal legacy tombstone: %v", err)
+	}
+	batch := sessions.store.NewBatch()
+	defer batch.Close()
+	if err := batch.Set([]byte(KeyV3SessionTombstone(tombstone.SessionID)), payload, nil); err != nil {
+		t.Fatalf("seed direct legacy tombstone: %v", err)
+	}
+	if tombstone.AccountScopeID != "" {
+		if err := batch.Set([]byte(KeyV3SessionTombstoneByAccount(tombstone.AccountScopeID, tombstone.SessionID)), payload, nil); err != nil {
+			t.Fatalf("seed old account legacy tombstone index: %v", err)
+		}
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		t.Fatalf("commit legacy tombstone seed: %v", err)
 	}
 }
 

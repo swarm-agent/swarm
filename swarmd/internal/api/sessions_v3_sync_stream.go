@@ -86,7 +86,7 @@ func (s *Server) handleSessionsV3SyncStream(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if oldestAvailable > 0 && afterEndpointSeq < oldestAvailable {
+	if oldestAvailable > 0 && afterEndpointSeq+1 < oldestAvailable {
 		cursorErr := newV3SyncCursorError("endpoint_cursor_too_old", errors.New("endpoint cursor is no longer available; bootstrap required"))
 		cursorErr.BootstrapRequired = true
 		cursorErr.OldestAvailable = oldestAvailable
@@ -106,7 +106,7 @@ func (s *Server) handleSessionsV3SyncStream(w http.ResponseWriter, r *http.Reque
 	visible := make([]sessionruntime.RealtimeOutboxRecord, 0, len(records))
 	advanced := afterEndpointSeq
 	if len(records) == 0 && afterEndpointSeq < currentHead {
-		writeV3SyncStreamGapError(w, afterEndpointSeq, afterEndpointSeq+1, currentHead)
+		writeV3SyncStreamGapError(w, afterEndpointSeq+1, oldestAvailable, currentHead)
 		return
 	}
 	expectedEndpointSeq := afterEndpointSeq + 1
@@ -115,7 +115,7 @@ func (s *Server) handleSessionsV3SyncStream(w http.ResponseWriter, r *http.Reque
 	}
 	for _, record := range records {
 		if record.EndpointSeq != expectedEndpointSeq {
-			writeV3SyncStreamGapError(w, afterEndpointSeq, expectedEndpointSeq, currentHead)
+			writeV3SyncStreamGapError(w, expectedEndpointSeq, oldestAvailable, currentHead)
 			return
 		}
 		advanced = record.EndpointSeq
@@ -131,6 +131,10 @@ func (s *Server) handleSessionsV3SyncStream(w http.ResponseWriter, r *http.Reque
 		if matches {
 			visible = append(visible, record)
 		}
+	}
+	if len(records) < limit && advanced < currentHead {
+		writeV3SyncStreamGapError(w, advanced+1, oldestAvailable, currentHead)
+		return
 	}
 	nextCursor, err := s.signV3SyncEndpointCursor(scope, advanced)
 	if err != nil {
@@ -226,10 +230,11 @@ func (s *Server) listV3SyncStreamRealtimeOutboxAfter(afterEndpointSeq uint64, li
 	return v3SyncStreamListRealtimeOutboxAfter(s, afterEndpointSeq, limit)
 }
 
-func writeV3SyncStreamGapError(w http.ResponseWriter, afterEndpointSeq, expectedEndpointSeq, latest uint64) {
+func writeV3SyncStreamGapError(w http.ResponseWriter, missingEndpointSeq, oldestAvailable, latest uint64) {
 	cursorErr := newV3SyncCursorError("endpoint_cursor_gap", errors.New("endpoint cursor cannot be replayed continuously from durable realtime outbox; bootstrap required"))
 	cursorErr.BootstrapRequired = true
-	cursorErr.OldestAvailable = expectedEndpointSeq
+	cursorErr.OldestAvailable = oldestAvailable
+	cursorErr.MissingEndpointSeq = missingEndpointSeq
 	cursorErr.Latest = latest
 	writeV3SyncCursorHTTPError(w, cursorErr)
 }
@@ -241,7 +246,11 @@ func writeV3SyncCursorHTTPError(w http.ResponseWriter, err error) {
 		if cursorErr.BootstrapRequired {
 			status = http.StatusGone
 		}
-		writeJSON(w, status, map[string]any{"ok": false, "error": cursorErr.Error(), "error_code": cursorErr.Code, "bootstrap_required": cursorErr.BootstrapRequired, "oldest_available": cursorErr.OldestAvailable, "latest": cursorErr.Latest})
+		body := map[string]any{"ok": false, "error": cursorErr.Error(), "error_code": cursorErr.Code, "bootstrap_required": cursorErr.BootstrapRequired, "oldest_available": cursorErr.OldestAvailable, "latest": cursorErr.Latest}
+		if cursorErr.MissingEndpointSeq > 0 {
+			body["missing_endpoint_seq"] = cursorErr.MissingEndpointSeq
+		}
+		writeJSON(w, status, body)
 		return
 	}
 	writeError(w, http.StatusBadRequest, err)

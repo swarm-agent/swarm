@@ -155,6 +155,7 @@ const (
 const (
 	KeyV3SessionTombstoneByAccountUserPrefix          = "v3/session_tombstone_by_account_user/"
 	KeyV3SessionTombstoneByAccountUserWorkspacePrefix = "v3/session_tombstone_by_account_user_workspace/"
+	KeyV3SessionTombstoneScopeIndexMetaPrefix         = "v3/session_tombstone_scope_index_meta/"
 )
 
 func EventKey(sequence uint64) string {
@@ -371,6 +372,14 @@ func V3SessionTombstoneByAccountPrefix(accountScopeID string) string {
 
 func KeyV3SessionTombstoneByAccountUser(accountScopeID, userID string, updatedAt int64, sessionID string) string {
 	return V3SessionTombstoneByAccountUserPrefix(accountScopeID, userID) + sessionRecentIndexOrderPart(updatedAt, sessionID)
+}
+
+func KeyV3SessionTombstoneScopeIndexMeta(accountScopeID string) string {
+	part := keyPart(accountScopeID)
+	if part == "" {
+		return KeyV3SessionTombstoneScopeIndexMetaPrefix
+	}
+	return KeyV3SessionTombstoneScopeIndexMetaPrefix + part
 }
 
 func V3SessionTombstoneByAccountUserPrefix(accountScopeID, userID string) string {

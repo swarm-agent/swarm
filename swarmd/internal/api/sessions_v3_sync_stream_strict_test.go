@@ -299,8 +299,50 @@ func TestSessionsV3SyncStreamRejectsGlobalOutboxGap(t *testing.T) {
 	}
 }
 
+func TestSessionsV3SyncStreamRejectsMissingTailFromGlobalOutbox(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-stream-tail-gap", "Sync Stream Tail Gap", "/workspace/stream-tail-gap")
+	bootstrapBody := `{"surface":"desktop","selector":{"kind":"global","global":true},"history":{"mode":"none"}}`
+	bootstrapReq := httptest.NewRequest(http.MethodPost, V3SyncBootstrapPath, bytes.NewBufferString(bootstrapBody))
+	bootstrapReq.Header.Set("Content-Type", "application/json")
+	bootstrapRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(bootstrapRec, withTestPrincipal(bootstrapReq))
+	if bootstrapRec.Code != http.StatusOK {
+		t.Fatalf("bootstrap status=%d body=%s", bootstrapRec.Code, bootstrapRec.Body.String())
+	}
+	var bootstrap struct {
+		SnapshotEndpointCursor string `json:"snapshot_endpoint_cursor"`
+	}
+	if err := json.Unmarshal(bootstrapRec.Body.Bytes(), &bootstrap); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+
+	appendSessionsV3PrimaryMessageForPrincipalTest(t, sessionSvc, testPrincipal(), created.ID, "tail first")
+	appendSessionsV3PrimaryMessageForPrincipalTest(t, sessionSvc, testPrincipal(), created.ID, "tail second missing")
+	appendSessionsV3PrimaryMessageForPrincipalTest(t, sessionSvc, testPrincipal(), created.ID, "tail third missing")
+	previousListOutbox := v3SyncStreamListRealtimeOutboxAfter
+	v3SyncStreamListRealtimeOutboxAfter = func(_ *Server, afterEndpointSeq uint64, limit int) ([]sessionruntime.RealtimeOutboxRecord, error) {
+		records, err := sessionSvc.ListRealtimeOutboxAfter(afterEndpointSeq, limit)
+		if err != nil || len(records) <= 1 {
+			return records, err
+		}
+		return records[:1], nil
+	}
+	t.Cleanup(func() { v3SyncStreamListRealtimeOutboxAfter = previousListOutbox })
+
+	streamBody := `{"surface":"desktop","selector":{"kind":"global","global":true},"endpoint_cursor":"` + bootstrap.SnapshotEndpointCursor + `","limit":500}`
+	streamReq := httptest.NewRequest(http.MethodPost, V3SyncStreamPath, bytes.NewBufferString(streamBody))
+	streamReq.Header.Set("Content-Type", "application/json")
+	streamRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(streamRec, withTestPrincipal(streamReq))
+	if streamRec.Code != http.StatusGone || !strings.Contains(streamRec.Body.String(), "endpoint_cursor_gap") || !strings.Contains(streamRec.Body.String(), `"missing_endpoint_seq"`) {
+		t.Fatalf("tail gap response status=%d body=%s", streamRec.Code, streamRec.Body.String())
+	}
+}
+
 func TestSessionsV3SyncStreamRejectsAheadAndTooOldCursors(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-stream-retention", "Sync Stream Retention", "/workspace/stream-retention")
 	principal := testPrincipal()
 	selector := sessionsV3SyncSelector{Kind: "global", Global: true}
 	resources := sessionsV3SyncResourceSet(sessionsV3WorksetResources{}, sessionsV3WorksetHistory{Mode: "none"}, false)
@@ -325,6 +367,19 @@ func TestSessionsV3SyncStreamRejectsAheadAndTooOldCursors(t *testing.T) {
 
 	retentionBoundary := currentHead + 1
 	server.v3RealtimeRetentionBoundary = func() (uint64, error) { return retentionBoundary, nil }
+	boundaryCursor, err := server.signV3SyncEndpointCursor(scope, currentHead)
+	if err != nil {
+		t.Fatalf("sign boundary cursor: %v", err)
+	}
+	boundaryBody := `{"surface":"desktop","selector":{"kind":"global","global":true},"endpoint_cursor":"` + boundaryCursor + `"}`
+	boundaryReq := httptest.NewRequest(http.MethodPost, V3SyncStreamPath, bytes.NewBufferString(boundaryBody))
+	boundaryReq.Header.Set("Content-Type", "application/json")
+	boundaryRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(boundaryRec, withTestPrincipal(boundaryReq))
+	if boundaryRec.Code != http.StatusOK {
+		t.Fatalf("boundary cursor response status=%d body=%s, want replayable cursor oldest_available-1", boundaryRec.Code, boundaryRec.Body.String())
+	}
+	server.v3RealtimeRetentionBoundary = func() (uint64, error) { return currentHead + 2, nil }
 	tooOldCursor, err := server.signV3SyncEndpointCursor(scope, currentHead)
 	if err != nil {
 		t.Fatalf("sign too-old cursor: %v", err)

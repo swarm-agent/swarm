@@ -13,6 +13,8 @@ import (
 )
 
 const (
+	v3SessionTombstoneScopeIndexVersion = 1
+
 	V3SyncSnapshotHistoryModeNone = "none"
 	V3SyncSnapshotHistoryModeTail = "tail"
 	V3SyncSnapshotHistoryModeFull = "full"
@@ -49,6 +51,11 @@ func runV3SyncSnapshotAfterSnapshotHook() {
 	if fn != nil {
 		fn()
 	}
+}
+
+type v3SessionTombstoneScopeIndexMeta struct {
+	Version   int   `json:"version"`
+	IndexedAt int64 `json:"indexed_at"`
 }
 
 type V3SyncSnapshotOptions struct {
@@ -126,6 +133,9 @@ func (s *SessionStore) BuildV3SyncSnapshot(options V3SyncSnapshotOptions) (resul
 		if err := s.ensureSessionRecentIndex(); err != nil {
 			return V3SyncSnapshotResult{}, err
 		}
+	}
+	if err := s.ensureV3SessionTombstoneScopeIndexes(options.AccountScopeID); err != nil {
+		return V3SyncSnapshotResult{}, err
 	}
 	if !options.Global && len(options.SessionIDs) == 0 && options.RecentLimit <= 0 && strings.TrimSpace(options.WorkspacePath) == "" && len(options.WorkspacePaths) == 0 {
 		return V3SyncSnapshotResult{}, errors.New("at least one sync snapshot selector is required")
@@ -467,6 +477,51 @@ func normalizeV3SyncSnapshotWorkspacePaths(workspacePath string, workspacePaths 
 	return out
 }
 
+func (s *SessionStore) ensureV3SessionTombstoneScopeIndexes(accountScopeID string) error {
+	if s == nil || s.store == nil {
+		return errors.New("session store is not configured")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	metaKey := KeyV3SessionTombstoneScopeIndexMeta(accountScopeID)
+	var meta v3SessionTombstoneScopeIndexMeta
+	if ok, err := s.store.GetJSON(metaKey, &meta); err != nil {
+		return fmt.Errorf("read v3 session tombstone scope index metadata: %w", err)
+	} else if ok && meta.Version == v3SessionTombstoneScopeIndexVersion {
+		return nil
+	}
+
+	prefix := V3SessionTombstonePrefix()
+	if accountScopeID != "" {
+		prefix = V3SessionTombstoneByAccountPrefix(accountScopeID)
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if err := iteratePrefixFromReader(s.store.db, prefix, sessionRecentIndexScanLimit(), func(_ string, value []byte) error {
+		var tombstone V3SessionTombstone
+		if err := json.Unmarshal(value, &tombstone); err != nil {
+			return fmt.Errorf("decode v3 tombstone for scope index backfill: %w", err)
+		}
+		tombstone = normalizeV3SessionTombstone(tombstone)
+		if tombstone.SessionID == "" {
+			return nil
+		}
+		if accountScopeID != "" && tombstone.AccountScopeID != accountScopeID {
+			return nil
+		}
+		return setV3SessionTombstoneInBatch(batch, tombstone)
+	}); err != nil {
+		return err
+	}
+	payload, err := json.Marshal(v3SessionTombstoneScopeIndexMeta{Version: v3SessionTombstoneScopeIndexVersion, IndexedAt: time.Now().UnixMilli()})
+	if err != nil {
+		return fmt.Errorf("marshal v3 session tombstone scope index metadata: %w", err)
+	}
+	if err := batch.Set([]byte(metaKey), payload, nil); err != nil {
+		return fmt.Errorf("write v3 session tombstone scope index metadata: %w", err)
+	}
+	return batch.Commit(pebble.Sync)
+}
+
 func (s *SessionStore) addV3SyncSnapshotTombstones(reader pebble.Reader, options V3SyncSnapshotOptions, result *V3SyncSnapshotResult) error {
 	selectedIDs := make(map[string]struct{}, len(result.SessionsByID)+len(options.SessionIDs))
 	for sessionID := range result.SessionsByID {
@@ -566,7 +621,7 @@ func (s *SessionStore) addV3SyncSnapshotBoundedSelectorTombstones(reader pebble.
 		result.TombstonesBySession[tombstone.SessionID] = tombstone
 	}
 	if capped {
-		result.Omissions = append(result.Omissions, V3SyncSnapshotOmission{Resource: "tombstones", Reason: V3SyncSnapshotOmissionPageBoundary, NextCursor: "recent.before_updated_at/before_session_id"})
+		return errors.New("sync snapshot tombstones exceeded bounded selector limit; retry with recent.limit and pagination")
 	}
 	return nil
 }

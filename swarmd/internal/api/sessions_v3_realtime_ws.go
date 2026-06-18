@@ -362,7 +362,7 @@ func (s *Server) v3RealtimeValidateEndpointCursor(conn *transportws.Conn, reques
 		_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", "endpoint_resume_failed", err.Error(), 0, requestedEndpointSeq))
 		return false
 	}
-	if oldestAvailableEndpointSeq > 0 && requestedEndpointSeq < oldestAvailableEndpointSeq {
+	if oldestAvailableEndpointSeq > 0 && requestedEndpointSeq+1 < oldestAvailableEndpointSeq {
 		msg := NewV3RealtimeCursorError("", "endpoint_cursor_too_old", fmt.Sprintf("endpoint cursor %d is no longer available; bootstrap required", requestedEndpointSeq), 0, requestedEndpointSeq)
 		msg.BootstrapRequired = true
 		msg.OldestAvailableEndpointSeq = oldestAvailableEndpointSeq

@@ -229,14 +229,19 @@ func TestV3RealtimeEndpointCursorTooOldRequiresBootstrap(t *testing.T) {
 	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-too-old", "create-realtime-too-old")
 	currentHead := created.RealtimeOutbox.EndpointSeq
 	scope := v3SyncCursorScopeForRealtime(testPrincipal(), "desktop")
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+
+	server.v3RealtimeRetentionBoundary = func() (uint64, error) { return currentHead + 1, nil }
+	if !server.v3RealtimeValidateEndpointCursor(nil, currentHead) {
+		t.Fatalf("boundary cursor oldest_available-1 should be replayable")
+	}
+
+	retentionBoundary := currentHead + 2
+	server.v3RealtimeRetentionBoundary = func() (uint64, error) { return retentionBoundary, nil }
 	oldCursor, err := server.signV3SyncEndpointCursor(scope, currentHead)
 	if err != nil {
 		t.Fatalf("sign old cursor: %v", err)
 	}
-	retentionBoundary := currentHead + 1
-	server.v3RealtimeRetentionBoundary = func() (uint64, error) { return retentionBoundary, nil }
-
-	httpServer := newV3RealtimeHTTPTestServer(t, server)
 	conn := dialV3RealtimeStreamWithQuery(t, httpServer.URL, "endpoint_cursor="+url.QueryEscape(oldCursor))
 	defer conn.Close()
 
