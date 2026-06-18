@@ -163,6 +163,13 @@ export function applyHydrate(
   assertMapSubset(snapshot.messages_by_session, requested, 'messages_by_session')
   assertMapSubset(snapshot.events_by_session, requested, 'events_by_session')
   assertMapSubset(snapshot.run_intents_by_session, requested, 'run_intents_by_session')
+  assertObjectKeysSubset('plans_by_session', snapshot.plans_by_session, requested)
+  assertObjectKeysSubset('plan_revisions_by_session', snapshot.plan_revisions_by_session, requested)
+  assertObjectKeysSubset('permissions_by_session', snapshot.permissions_by_session, requested)
+  assertObjectKeysSubset('usage_by_session', snapshot.usage_by_session, requested)
+  assertObjectKeysSubset('preferences_by_session', snapshot.preferences_by_session, requested)
+  assertObjectKeysSubset('agent_model_policy_by_session', snapshot.agent_model_policy_by_session, requested)
+  assertObjectKeysSubset('history_manifests_by_session', snapshot.history_manifests_by_session, requested)
 
   requireProtocol(snapshot.scope_id, 'snapshot.scope_id')
   requireProtocol(snapshot.sync_scope, 'snapshot.sync_scope')
@@ -196,17 +203,23 @@ export function applySyncStreamBatch(
     replayInstructions: { stream_path: string; transport: string; after_endpoint_cursor?: string }
   },
 ): DesktopV3CacheState {
+  const scope = state.syncScopesById[action.scopeId]
+
+  requireProtocol(
+    scope,
+    `sync stream scope ${action.scopeId} is not bootstrapped`,
+  )
+
   for (const event of action.events) {
     applyCacheEvent(state, event)
   }
 
-  const scope = state.syncScopesById[action.scopeId]
-  if (scope) {
-    scope.endpointCursor = action.endpointCursor
-    scope.replayPath = '/v3/sync/stream'
-    scope.replayTransport = 'http_post'
-    scope.needsBootstrap = false
-  }
+  scope.endpointCursor = action.endpointCursor
+  scope.replayPath = action.replayInstructions?.stream_path ?? '/v3/sync/stream'
+  scope.replayTransport = action.replayInstructions?.transport ?? 'http_post'
+  scope.needsBootstrap = false
+  scope.lastError = undefined
+  scope.lastErrorCode = undefined
 
   return state
 }
@@ -424,6 +437,7 @@ export function applyCacheEvent(state: DesktopV3CacheState, event: CacheEvent): 
   }
 
   applyScalarSessionPatchIfPresent(state, sessionId, payload, eventType)
+  applyLiveRunOverlayFromEvent(state, event)
 
   return state
 }
@@ -753,6 +767,111 @@ function createLiveRunOverlay(sessionId: string, runId: string): LiveRunOverlay 
   }
 }
 
+function applyLiveRunOverlayFromEvent(
+  state: DesktopV3CacheState,
+  event: CacheEvent,
+): void {
+  const payload = event.payload ?? {}
+  const sessionId = event.sessionId
+  const eventSeq = event.sessionEvent?.seq ?? event.projection?.last_event_seq ?? 0
+  const updatedAt = Number(
+    payload.recorded_at ??
+      payload.updated_at ??
+      event.sessionEvent?.ts_unix_ms ??
+      Date.now(),
+  )
+
+  const runIntent = recordValue(payload.runIntent) ?? recordValue(payload.run_intent)
+  const runId = stringValue(payload.run_id) || stringValue(runIntent?.run_id)
+  if (!runId) {
+    return
+  }
+
+  const liveRun = ensureLiveRunOverlay(state, sessionId, runId)
+  liveRun.lastEventSeqSeen = Math.max(liveRun.lastEventSeqSeen ?? 0, eventSeq)
+
+  switch (event.eventType) {
+    case 'session.assistant.delta':
+    case 'session.message.delta': {
+      const delta =
+        stringValue(payload.delta) ||
+        stringValue(payload.text_delta) ||
+        stringValue(payload.content_delta) ||
+        ''
+
+      if (!delta) {
+        return
+      }
+
+      liveRun.status = liveRun.status === 'pending_executor' ? 'running' : liveRun.status
+      liveRun.assistantDraft = {
+        content: `${liveRun.assistantDraft?.content ?? ''}${delta}`,
+        updatedAt,
+      }
+      return
+    }
+
+    case 'session.tool.delta': {
+      const callId = stringValue(payload.call_id)
+      if (!callId) {
+        return
+      }
+
+      const tool = liveRun.toolCallsByCallId[callId] ?? {
+        callId,
+        updatedAt,
+      }
+
+      tool.stepId = stringValue(payload.step_id) || tool.stepId
+      tool.toolInstanceId =
+        stringValue(payload.tool_instance_id) || tool.toolInstanceId
+      tool.toolName = stringValue(payload.tool_name) || tool.toolName
+
+      const argsDelta =
+        stringValue(payload.arguments_delta) ||
+        stringValue(payload.arguments) ||
+        ''
+      const outputDelta =
+        stringValue(payload.output_delta) ||
+        stringValue(payload.delta) ||
+        stringValue(payload.output) ||
+        ''
+
+      if (argsDelta) {
+        tool.argumentsText = `${tool.argumentsText ?? ''}${argsDelta}`
+      }
+
+      if (outputDelta) {
+        tool.outputText = `${tool.outputText ?? ''}${outputDelta}`
+      }
+
+      tool.status = stringValue(payload.status) || tool.status || 'running'
+      tool.updatedAt = updatedAt
+
+      liveRun.toolCallsByCallId[callId] = tool
+      return
+    }
+
+    default:
+      return
+  }
+}
+
+function ensureLiveRunOverlay(
+  state: DesktopV3CacheState,
+  sessionId: string,
+  runId: string,
+): LiveRunOverlay {
+  state.liveRunsBySession[sessionId] ??= {}
+  state.liveRunsBySession[sessionId][runId] ??= {
+    sessionId,
+    runId,
+    status: 'running',
+    toolCallsByCallId: {},
+  }
+  return state.liveRunsBySession[sessionId][runId]
+}
+
 function normalizeLiveRunStatus(status: string): LiveRunOverlay['status'] {
   switch (status) {
     case 'pending_executor':
@@ -793,7 +912,7 @@ function removeTombstonedIds(state: DesktopV3CacheState, ids: string[]): string[
   return ids.filter((id) => !state.tombstonesBySession[id])
 }
 
-function requireProtocol(value: unknown, name: string): void {
+function requireProtocol<T>(value: T, name: string): asserts value is NonNullable<T> {
   if (!value) throw new Error(`protocol invalid: missing ${name}`)
 }
 
@@ -803,6 +922,23 @@ function assertMapSubset<T>(map: Record<string, T> | undefined, allowed: Set<str
     if (!allowed.has(sessionId)) {
       throw new Error(`protocol invalid: hydrate ${label} includes non-requested session ${sessionId}`)
     }
+  }
+}
+
+function assertObjectKeysSubset(
+  name: string,
+  value: Record<string, unknown> | undefined,
+  allowed: Set<string>,
+): void {
+  if (!value) {
+    return
+  }
+
+  for (const key of Object.keys(value)) {
+    requireProtocol(
+      allowed.has(key),
+      `hydrate ${name} included non-requested session ${key}`,
+    )
   }
 }
 
@@ -836,6 +972,14 @@ function appendUnique(values: string[], value: string): string[] {
 
 function stringField(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value : undefined
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' ? value : ''
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
 }
 
 function stringFromMetadata(metadata: Record<string, unknown> | undefined, key: string): string | undefined {

@@ -25,7 +25,23 @@ export function selectPendingUserMessages(state: DesktopV3CacheState, sessionId:
 }
 
 export function selectLiveRuns(state: DesktopV3CacheState, sessionId: string): LiveRunOverlay[] {
-  return Object.values(state.liveRunsBySession[sessionId] ?? {})
+  return Object.values(state.liveRunsBySession[sessionId] ?? {}).sort((a, b) => {
+    const aSeq = a.lastEventSeqSeen ?? 0
+    const bSeq = b.lastEventSeqSeen ?? 0
+
+    if (aSeq !== bSeq) {
+      return aSeq - bSeq
+    }
+
+    const aUpdated = a.assistantDraft?.updatedAt ?? 0
+    const bUpdated = b.assistantDraft?.updatedAt ?? 0
+
+    if (aUpdated !== bUpdated) {
+      return aUpdated - bUpdated
+    }
+
+    return a.runId.localeCompare(b.runId)
+  })
 }
 
 export function selectRenderedSessionMessages(state: DesktopV3CacheState, sessionId: string): RenderedSessionMessages {

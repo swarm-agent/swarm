@@ -341,8 +341,8 @@ export interface SyncScopeCache {
   resourceSet: string
   selector: SyncSelector
   endpointCursor: string
-  replayPath: '/v3/sync/stream'
-  replayTransport: 'http_post'
+  replayPath: '/v3/sync/stream' | string
+  replayTransport: 'http_post' | string
   needsBootstrap: boolean
   lastErrorCode?: string
   lastError?: string

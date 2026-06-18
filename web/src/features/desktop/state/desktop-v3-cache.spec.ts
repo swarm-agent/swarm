@@ -19,6 +19,7 @@ import {
 import {
   hydrateSnapshotFixture,
   messageA1,
+  messageA2,
   messageB1,
   messageMutationFixture,
   reconnectFixture,
@@ -29,10 +30,47 @@ import {
   syncStreamFixture,
   tombstoneB,
 } from './desktop-v3-cache.backend-fixtures'
-import type { DesktopV3CacheState } from './desktop-v3-cache-types'
+import { selectLiveRuns } from './desktop-v3-cache-selectors'
+import type { DesktopV3CacheState, MessageSnapshot, V3SessionEvent } from './desktop-v3-cache-types'
 
 function bootstrappedState(): DesktopV3CacheState {
   return applyBootstrapSnapshot(createEmptyDesktopV3CacheState(), snapshotFixture())
+}
+
+function deltaFrame(
+  eventType: string,
+  payload: Record<string, unknown>,
+  seq: number,
+  endpointCursor: string,
+) {
+  return eventFrame(eventType, {
+    id: `evt-${eventType}-${seq}`,
+    session_id: sessionA.id,
+    seq,
+    event_type: eventType,
+    payload: {
+      run_id: 'run-live',
+      recorded_at: 1_000 + seq,
+      ...payload,
+    },
+    ts_unix_ms: 2_000 + seq,
+  }, endpointCursor)
+}
+
+function eventFrame(eventType: string, event: V3SessionEvent, endpointCursor: string) {
+  return realtimeFrameFixture({
+    kind: 'event',
+    session_id: event.session_id,
+    event_type: eventType,
+    event,
+    projection: {
+      session_id: event.session_id,
+      last_event_seq: event.seq,
+      projection_high_watermark_seq: event.seq,
+      updated_at: event.ts_unix_ms,
+    },
+    endpoint_cursor: endpointCursor,
+  })
 }
 
 test('bootstrap stores scoped cursor, scope metadata, orders, run intents, and only present message keys', () => {
@@ -102,6 +140,21 @@ test('hydrate rejects non-requested payload membership', () => {
   )
 })
 
+test('hydrate rejects optional resource maps for non-requested sessions', () => {
+  const state = bootstrappedState()
+  const raw = hydrateSnapshotFixture({
+    plans_by_session: {
+      [sessionB.id]: { id: 'plan-b' },
+      [sessionA.id]: { id: 'plan-a' },
+    },
+  })
+
+  assert.throws(
+    () => desktopV3CacheReducer(state, hydrateResponseToAction(raw, [sessionB.id])),
+    /plans_by_session included non-requested session session-a/,
+  )
+})
+
 test('sync stream applies events in order and updates cursor even for empty event batches', () => {
   const state = bootstrappedState()
   const stream = syncStreamFixture()
@@ -118,6 +171,19 @@ test('sync stream applies events in order and updates cursor even for empty even
   })
   assert.equal(state.messagesBySession[sessionB.id].items[0].id, messageB1.id)
   assert.equal(state.syncScopesById['selector-hash:messages,run_intents'].endpointCursor, 'cursor-stream-3')
+})
+
+test('sync stream rejects unknown scope before mutating cache', () => {
+  const state = bootstrappedState()
+  const originalMessages = structuredClone(state.messagesBySession)
+  const action = syncStreamResponseToAction(syncStreamFixture(), 'missing-scope')
+
+  assert.throws(
+    () => desktopV3CacheReducer(state, action),
+    /not bootstrapped/,
+  )
+
+  assert.deepEqual(state.messagesBySession, originalMessages)
 })
 
 test('reconnect feeds same cache and stores resume frame exactly', () => {
@@ -144,6 +210,81 @@ test('realtime control frames update cursors/status without mutating transcripts
   applyRealtimeFrame(state, { frame: realtimeFrameFixture({ kind: 'cursor.error', bootstrap_required: true, error_code: 'too_old', event: undefined }) })
   assert.equal(state.realtime.needsBootstrap, true)
   assert.equal(state.messagesBySession[sessionA.id].items.length, 2)
+})
+
+test('realtime assistant and message deltas append assistant draft without committing messages', () => {
+  const state = bootstrappedState()
+  const beforeCommittedCount = state.messagesBySession[sessionA.id].items.length
+
+  applyRealtimeFrame(state, { frame: deltaFrame('session.assistant.delta', { delta: 'hel' }, 3, 'cursor-delta-1') })
+  applyRealtimeFrame(state, { frame: deltaFrame('session.message.delta', { text_delta: 'lo' }, 4, 'cursor-delta-2') })
+
+  const liveRun = state.liveRunsBySession[sessionA.id]['run-live']
+  assert.equal(liveRun.assistantDraft?.content, 'hello')
+  assert.equal(liveRun.lastEventSeqSeen, 4)
+  assert.equal(state.messagesBySession[sessionA.id].items.length, beforeCommittedCount)
+})
+
+test('realtime session.tool.delta creates live run tool overlay', () => {
+  const state = bootstrappedState()
+
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.tool.delta', {
+      call_id: 'call-1',
+      step_id: 'step-1',
+      tool_instance_id: 'tool-instance-1',
+      tool_name: 'search',
+      arguments_delta: '{"query":"a"',
+      output_delta: 'result-1',
+      status: 'running',
+    }, 5, 'cursor-tool-1'),
+  })
+
+  const tool = state.liveRunsBySession[sessionA.id]['run-live'].toolCallsByCallId['call-1']
+  assert.equal(tool.stepId, 'step-1')
+  assert.equal(tool.toolInstanceId, 'tool-instance-1')
+  assert.equal(tool.toolName, 'search')
+  assert.equal(tool.argumentsText, '{"query":"a"')
+  assert.equal(tool.outputText, 'result-1')
+  assert.equal(tool.status, 'running')
+})
+
+test('committed assistant final message clears matching live assistant draft', () => {
+  const state = bootstrappedState()
+  applyRealtimeFrame(state, { frame: deltaFrame('session.assistant.delta', { delta: 'draft' }, 3, 'cursor-draft') })
+
+  const finalMessage: MessageSnapshot = {
+    ...messageA2,
+    id: 'msg-final-live',
+    global_seq: 3,
+    content: 'draft',
+    metadata: { run_id: 'run-live' },
+    created_at: 30,
+  }
+  applyRealtimeFrame(state, {
+    frame: eventFrame('message.stored', {
+      id: 'evt-final-live',
+      session_id: sessionA.id,
+      seq: 4,
+      event_type: 'message.stored',
+      payload: { message: finalMessage },
+      ts_unix_ms: 31,
+    }, 'cursor-final'),
+  })
+
+  assert.equal(state.messagesBySession[sessionA.id].items.some((message) => message.id === 'msg-final-live'), true)
+  assert.equal(state.liveRunsBySession[sessionA.id]['run-live'].assistantDraft, undefined)
+})
+
+test('live run selector returns stable sequence/update/run id ordering', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.liveRunsBySession[sessionA.id] = {
+    'run-c': { sessionId: sessionA.id, runId: 'run-c', status: 'running', toolCallsByCallId: {}, lastEventSeqSeen: 2 },
+    'run-b': { sessionId: sessionA.id, runId: 'run-b', status: 'running', toolCallsByCallId: {}, lastEventSeqSeen: 1, assistantDraft: { content: 'b', updatedAt: 20 } },
+    'run-a': { sessionId: sessionA.id, runId: 'run-a', status: 'running', toolCallsByCallId: {}, lastEventSeqSeen: 1, assistantDraft: { content: 'a', updatedAt: 10 } },
+  }
+
+  assert.deepEqual(selectLiveRuns(state, sessionA.id).map((run) => run.runId), ['run-a', 'run-b', 'run-c'])
 })
 
 test('realtime workset discovered creates sidebar stub before event arrives and removed preserves transcript', () => {
