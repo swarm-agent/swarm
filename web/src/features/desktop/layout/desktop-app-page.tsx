@@ -53,10 +53,10 @@ import {
 } from './sidebar-session-lineage'
 import { bootstrapDesktopV3Sidebar } from '../state/desktop-v3-bootstrap-controller'
 import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
-import { selectDesktopSidebarRows } from '../state/desktop-v3-cache-selectors'
+import { selectDesktopSidebarRows, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { selectSession } from '../state/desktop-v3-cache-wire'
-import type { DesktopV3SidebarRow } from '../state/desktop-v3-cache-selectors'
-import type { V3SessionRunIntent } from '../state/desktop-v3-cache-types'
+import type { DesktopV3SidebarRow, RenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
+import type { MessageSnapshot, V3SessionRunIntent } from '../state/desktop-v3-cache-types'
 
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
 const DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY = 'swarm.web.desktop.pending_update_toast'
@@ -91,6 +91,78 @@ function SidebarActionRail({ children, className }: { children: ReactNode; class
 
 function SidebarActionRailSpacer() {
   return <span aria-hidden="true" className={SIDEBAR_ACTION_BOX_CLASS} />
+}
+
+function DesktopV3ChatPane({
+  selectedSessionId,
+  initialHydrateStatus,
+  renderedMessages,
+  messagesLoaded,
+}: {
+  selectedSessionId?: string
+  initialHydrateStatus: 'idle' | 'loading' | 'ready' | 'error'
+  renderedMessages: RenderedSessionMessages
+  messagesLoaded: boolean
+}) {
+  if (!selectedSessionId) {
+    return <DesktopV3ChatStateCard title="Select a session" description="Choose a session from the sidebar to view its cached conversation." />
+  }
+
+  if (initialHydrateStatus === 'error' && !messagesLoaded && renderedMessages.pendingUser.length === 0 && renderedMessages.liveRuns.length === 0) {
+    return <DesktopV3ChatStateCard title="Conversation unavailable" description="Initial message hydrate failed. The sidebar and any previously cached messages remain available." />
+  }
+
+  if (initialHydrateStatus === 'loading' && !messagesLoaded) {
+    return <DesktopV3ChatStateCard title="Loading conversation…" description="Hydrating cached message tails for the initial sidebar sessions." />
+  }
+
+  const hasMessages = renderedMessages.committed.length > 0 || renderedMessages.pendingUser.length > 0 || renderedMessages.liveRuns.length > 0
+  if (!hasMessages) {
+    return <DesktopV3ChatStateCard title="Empty conversation" description="No cached messages were returned for this session." />
+  }
+
+  return (
+    <div className="min-h-0 flex-1 overflow-y-auto bg-[var(--app-bg)] px-4 py-6 sm:px-8">
+      <div className="mx-auto flex w-full max-w-3xl flex-col gap-3">
+        {renderedMessages.committed.map((message) => (
+          <DesktopV3CommittedMessage key={message.id} message={message} />
+        ))}
+        {renderedMessages.pendingUser.map((message) => (
+          <div key={message.clientRequestId} className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-sm opacity-80">
+            <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--app-text-muted)]">user · {message.status}</div>
+            <div className="whitespace-pre-wrap text-[var(--app-text)]">{message.content}</div>
+          </div>
+        ))}
+        {renderedMessages.liveRuns.map((run) => run.assistantDraft?.content ? (
+          <div key={run.runId} className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-sm">
+            <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--app-text-muted)]">assistant · {run.status}</div>
+            <div className="whitespace-pre-wrap text-[var(--app-text)]">{run.assistantDraft.content}</div>
+          </div>
+        ) : null)}
+      </div>
+    </div>
+  )
+}
+
+function DesktopV3CommittedMessage({ message }: { message: MessageSnapshot }) {
+  const role = message.role || 'message'
+  return (
+    <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-sm">
+      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--app-text-muted)]">{role}</div>
+      <div className="whitespace-pre-wrap text-[var(--app-text)]">{message.content}</div>
+    </div>
+  )
+}
+
+function DesktopV3ChatStateCard({ title, description }: { title: string; description: string }) {
+  return (
+    <div className="flex h-full flex-1 items-center justify-center px-6">
+      <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">
+        <div className="text-lg font-semibold">{title}</div>
+        <p className="mt-2 text-sm text-[var(--app-text-muted)]">{description}</p>
+      </Card>
+    </div>
+  )
 }
 
 function PwaLayoutDebugOverlay() {
@@ -2016,6 +2088,16 @@ export function DesktopAppPage() {
   }, [workspaceLayout])
 
   const desktopSidebarBootstrap = useDesktopV3CacheSelector((state) => state.desktopSidebarBootstrap)
+  const desktopInitialHydrate = useDesktopV3CacheSelector((state) => state.desktopInitialHydrate)
+  const selectedDesktopV3SessionId = useDesktopV3CacheSelector((state) => state.selectedSessionId)
+  const selectedDesktopV3Messages = useDesktopV3CacheSelector((state) => {
+    const sessionId = state.selectedSessionId ?? routeSessionId
+    return sessionId ? selectRenderedSessionMessages(state, sessionId) : { committed: [], pendingUser: [], liveRuns: [] }
+  })
+  const selectedDesktopV3MessagesLoaded = useDesktopV3CacheSelector((state) => {
+    const sessionId = state.selectedSessionId ?? routeSessionId
+    return sessionId ? Boolean(state.messagesBySession[sessionId]) : false
+  })
   const desktopSidebarRows = useDesktopV3CacheSelector(selectDesktopSidebarRows)
   const desktopStateSessions = useMemo<DesktopSessionRecord[]>(
     () => desktopSidebarRows.map(desktopSessionRecordFromV3SidebarRow),
@@ -2072,8 +2154,8 @@ export function DesktopAppPage() {
     return buildWorkspaceRouteSlugMap(routeWorkspaces)
   }, [desktopStateSessions, mergedSidebarWorkspaceEntries])
 
-  const routeReadinessStatus = routeSessionId ? 'missing' : 'idle'
-  const routeSessionUnavailable = Boolean(routeSessionId)
+  const routeReadinessStatus = 'idle'
+  const routeSessionUnavailable = false
 
   useEffect(() => {
     if (!selectedWorkspacePath) {
@@ -3330,14 +3412,12 @@ export function DesktopAppPage() {
             </Card>
           </div>
         ) : routeSessionId ? (
-          <div className="flex h-full flex-1 items-center justify-center px-6">
-            <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">
-              <div className="text-lg font-semibold">{'Loading session…'}</div>
-              <p className="mt-2 text-sm text-[var(--app-text-muted)]">
-                Waiting for TanStack DB route readiness.
-              </p>
-            </Card>
-          </div>
+          <DesktopV3ChatPane
+            selectedSessionId={selectedDesktopV3SessionId || routeSessionId}
+            initialHydrateStatus={desktopInitialHydrate.status}
+            renderedMessages={selectedDesktopV3Messages}
+            messagesLoaded={selectedDesktopV3MessagesLoaded}
+          />
         ) : isFlowRoute ? (
           <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-[var(--app-bg)] px-3 pb-[calc(var(--app-safe-area-bottom)_+_1.25rem)] pt-[calc(var(--app-safe-area-top)_+_1rem)] sm:px-6 sm:py-8">
             <div className="mx-auto min-h-full w-full max-w-6xl min-w-0">
@@ -3353,6 +3433,13 @@ export function DesktopAppPage() {
               </p>
             </Card>
           </div>
+        ) : desktopSidebarBootstrap.scopeId ? (
+          <DesktopV3ChatPane
+            selectedSessionId={selectedDesktopV3SessionId}
+            initialHydrateStatus={desktopInitialHydrate.status}
+            renderedMessages={selectedDesktopV3Messages}
+            messagesLoaded={selectedDesktopV3MessagesLoaded}
+          />
         ) : (
           <div className="flex h-full flex-1 items-center justify-center px-6">
             <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { bootstrapDesktopV3Sidebar, resetDesktopV3BootstrapControllerForTests } from './desktop-v3-bootstrap-controller'
 import { createEmptyDesktopV3CacheState } from './desktop-v3-cache-reducer'
 import type { DesktopV3CacheAction } from './desktop-v3-cache-types'
-import { snapshotFixture, sessionA } from './desktop-v3-cache.backend-fixtures'
+import { messageA1, projectionA, snapshotFixture, sessionA } from './desktop-v3-cache.backend-fixtures'
 import { desktopV3CacheReducer } from './desktop-v3-cache-reducer'
 
 test('bootstrap controller dispatches bootstrapResponseToAction and stores scope id', async () => {
@@ -34,6 +34,24 @@ test('bootstrap controller dispatches bootstrapResponseToAction and stores scope
 
   await bootstrapDesktopV3Sidebar({
     postBootstrap: async () => response,
+    postHydrate: async () => snapshotFixture({
+      scope_id: 'hydrate-scope-a',
+      snapshot_endpoint_cursor: 'v3c1.hydrate-a',
+      selector: { kind: 'session_ids', session_ids: [sessionA.id] },
+      sessions_by_id: { [sessionA.id]: sessionA },
+      projections_by_session: { [sessionA.id]: projectionA },
+      session_order: [sessionA.id],
+      messages_by_session: { [sessionA.id]: [messageA1] },
+      run_intents_by_session: {},
+      tombstones_by_session: {},
+      plans_by_session: {},
+      plan_revisions_by_session: {},
+      permissions_by_session: {},
+      usage_by_session: {},
+      preferences_by_session: {},
+      agent_model_policy_by_session: {},
+      history_manifests_by_session: {},
+    }),
     dispatch: (action: DesktopV3CacheAction) => {
       state = desktopV3CacheReducer(state, action)
     },
@@ -44,6 +62,8 @@ test('bootstrap controller dispatches bootstrapResponseToAction and stores scope
   assert.equal(state.syncScopesById['scope-a'].endpointCursor, 'v3c1.cursor-a')
   assert.deepEqual(state.sessionOrderByScope['scope-a'], [sessionA.id])
   assert.equal(state.sessionsById[sessionA.id]?.kind, 'full')
+  assert.equal(state.desktopInitialHydrate.status, 'ready')
+  assert.equal(state.messagesBySession[sessionA.id].items[0].id, messageA1.id)
 })
 
 test('bootstrap controller coalesces concurrent in-flight bootstrap calls only', async () => {
@@ -61,6 +81,15 @@ test('bootstrap controller coalesces concurrent in-flight bootstrap calls only',
       calls += 1
       return pending
     },
+    postHydrate: async () => snapshotFixture({
+      scope_id: 'hydrate-empty',
+      selector: { kind: 'session_ids', session_ids: [] },
+      sessions_by_id: {},
+      projections_by_session: {},
+      session_order: [],
+      messages_by_session: {},
+      run_intents_by_session: {},
+    }),
     dispatch: () => {},
   })
 
@@ -69,6 +98,15 @@ test('bootstrap controller coalesces concurrent in-flight bootstrap calls only',
       calls += 1
       return snapshotFixture({ scope_id: 'scope-b', messages_by_session: {} })
     },
+    postHydrate: async () => snapshotFixture({
+      scope_id: 'hydrate-empty',
+      selector: { kind: 'session_ids', session_ids: [] },
+      sessions_by_id: {},
+      projections_by_session: {},
+      session_order: [],
+      messages_by_session: {},
+      run_intents_by_session: {},
+    }),
     dispatch: () => {},
   })
 
@@ -83,6 +121,15 @@ test('bootstrap controller coalesces concurrent in-flight bootstrap calls only',
       calls += 1
       return snapshotFixture({ scope_id: 'scope-c', messages_by_session: {} })
     },
+    postHydrate: async () => snapshotFixture({
+      scope_id: 'hydrate-empty',
+      selector: { kind: 'session_ids', session_ids: [] },
+      sessions_by_id: {},
+      projections_by_session: {},
+      session_order: [],
+      messages_by_session: {},
+      run_intents_by_session: {},
+    }),
     dispatch: () => {},
   })
 

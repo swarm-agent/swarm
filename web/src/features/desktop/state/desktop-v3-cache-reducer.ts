@@ -38,6 +38,11 @@ export function createEmptyDesktopV3CacheState(surface = 'desktop'): DesktopV3Ca
     desktopSidebarBootstrap: {
       status: 'idle',
     },
+    desktopInitialHydrate: {
+      status: 'idle',
+      requestedSessionIds: [],
+      hydratedSessionIds: [],
+    },
     sessionsById: {},
     projectionsBySession: {},
     sessionOrderByScope: {},
@@ -69,6 +74,12 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
     case 'desktopSidebarBootstrap.update':
       state.desktopSidebarBootstrap = {
         ...state.desktopSidebarBootstrap,
+        ...action.patch,
+      }
+      return state
+    case 'desktopInitialHydrate.update':
+      state.desktopInitialHydrate = {
+        ...state.desktopInitialHydrate,
         ...action.patch,
       }
       return state

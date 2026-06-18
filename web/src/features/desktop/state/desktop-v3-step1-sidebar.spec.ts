@@ -5,7 +5,8 @@ import { createEmptyDesktopV3CacheState, desktopV3CacheReducer } from './desktop
 import { buildSidebarSessionTree, desktopSessionRecordFromV3SidebarRow } from '../layout/desktop-app-page'
 import { selectDesktopSidebarRows } from './desktop-v3-cache-selectors'
 import { selectSession } from './desktop-v3-cache-wire'
-import { sessionA, sessionB } from './desktop-v3-cache.backend-fixtures'
+import { hydrateResponseToAction } from './desktop-v3-cache-wire'
+import { messageA1, messageB1, projectionA, projectionB, sessionA, sessionB, snapshotFixture } from './desktop-v3-cache.backend-fixtures'
 
 test('sidebar selector uses scope order', () => {
   const state = createEmptyDesktopV3CacheState()
@@ -58,6 +59,30 @@ test('Desktop V3 sidebar render includes bootstrapped session outside launcher w
   assert.equal(launcherWorkspacePaths.includes(renderedNodes[0].session.workspacePath), false)
 })
 
+test('metadata-only bootstrap after hydrate preserves messages', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.messagesBySession[sessionA.id] = {
+    items: [messageA1],
+    byMessageId: { [messageA1.id]: 0 },
+    byGlobalSeq: { [`${sessionA.id}:${messageA1.global_seq}`]: 0 },
+  }
+
+  desktopV3CacheReducer(state, {
+    type: 'snapshot.apply',
+    source: 'bootstrap',
+    scopeId: 'bootstrap-scope',
+    snapshot: snapshotFixture({
+      scope_id: 'bootstrap-scope',
+      sessions_by_id: { [sessionA.id]: sessionA },
+      projections_by_session: { [sessionA.id]: projectionA },
+      session_order: [sessionA.id],
+      messages_by_session: {},
+    }),
+  })
+
+  assert.equal(state.messagesBySession[sessionA.id].items[0].id, messageA1.id)
+})
+
 test('clicking sidebar session only selects and leaves messages unchanged', () => {
   const state = createEmptyDesktopV3CacheState()
   state.messagesBySession[sessionA.id] = {
@@ -70,4 +95,21 @@ test('clicking sidebar session only selects and leaves messages unchanged', () =
 
   assert.equal(state.selectedSessionId, sessionA.id)
   assert.equal(state.messagesBySession[sessionA.id].items[0].content, 'hello')
+})
+
+test('click does not hydrate after initial load', () => {
+  let state = createEmptyDesktopV3CacheState()
+  state = desktopV3CacheReducer(state, hydrateResponseToAction(snapshotFixture({
+    selector: { kind: 'session_ids', session_ids: [sessionA.id, sessionB.id] },
+    sessions_by_id: { [sessionA.id]: sessionA, [sessionB.id]: sessionB },
+    projections_by_session: { [sessionA.id]: projectionA, [sessionB.id]: projectionB },
+    session_order: [sessionA.id, sessionB.id],
+    messages_by_session: { [sessionA.id]: [messageA1], [sessionB.id]: [messageB1] },
+  }), [sessionA.id, sessionB.id]))
+  const beforeMessages = structuredClone(state.messagesBySession)
+
+  state = desktopV3CacheReducer(state, selectSession(sessionA.id))
+
+  assert.equal(state.selectedSessionId, sessionA.id)
+  assert.deepEqual(state.messagesBySession, beforeMessages)
 })

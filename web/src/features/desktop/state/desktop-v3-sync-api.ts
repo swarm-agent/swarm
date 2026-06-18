@@ -10,6 +10,14 @@ export interface DesktopV3BootstrapInput {
   include_active: boolean
 }
 
+export interface DesktopV3HydrateInput {
+  surface: 'desktop' | string
+  session_ids: string[]
+  history: SyncHistory
+  resources: SyncResources
+  include_active: boolean
+}
+
 export const DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT: DesktopV3BootstrapInput = {
   surface: 'desktop',
   selector: {
@@ -30,6 +38,27 @@ export const DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT: DesktopV3BootstrapInput = {
   include_active: true,
 }
 
+export const DESKTOP_V3_INITIAL_HYDRATE_DEFAULT_RESOURCES: SyncResources = {
+  messages: true,
+  events: false,
+  run_intents: true,
+  active_plan: true,
+  plan_revisions: false,
+}
+
+export function buildDesktopV3InitialHydrateInput(sessionIds: string[]): DesktopV3HydrateInput {
+  return {
+    surface: 'desktop',
+    session_ids: sessionIds,
+    history: {
+      mode: 'tail',
+      max_messages_per_session: 200,
+    },
+    resources: DESKTOP_V3_INITIAL_HYDRATE_DEFAULT_RESOURCES,
+    include_active: true,
+  }
+}
+
 export async function postDesktopV3SyncBootstrap(
   input: Partial<DesktopV3BootstrapInput> = {},
 ): Promise<SyncSnapshotResponse> {
@@ -47,5 +76,17 @@ export async function postDesktopV3SyncBootstrap(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
+  })
+}
+
+export async function postDesktopV3SyncHydrate(
+  input: DesktopV3HydrateInput,
+): Promise<SyncSnapshotResponse> {
+  return requestJson<SyncSnapshotResponse>('/v3/sync/hydrate', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(input),
   })
 }

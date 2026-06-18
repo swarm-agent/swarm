@@ -1,10 +1,12 @@
 import { bootstrapResponseToAction } from './desktop-v3-cache-wire'
 import { dispatchDesktopV3Cache } from './desktop-v3-cache-store'
-import { postDesktopV3SyncBootstrap } from './desktop-v3-sync-api'
+import { hydrateDesktopV3InitialSessions, resetDesktopV3InitialHydrateControllerForTests } from './desktop-v3-initial-hydrate-controller'
+import { postDesktopV3SyncBootstrap, postDesktopV3SyncHydrate, type DesktopV3HydrateInput } from './desktop-v3-sync-api'
 import type { DesktopV3CacheAction, SyncSnapshotResponse } from './desktop-v3-cache-types'
 
 interface BootstrapDesktopV3SidebarDeps {
   postBootstrap?: () => Promise<SyncSnapshotResponse>
+  postHydrate?: (input: DesktopV3HydrateInput) => Promise<SyncSnapshotResponse>
   dispatch?: (action: DesktopV3CacheAction) => void
 }
 
@@ -17,6 +19,7 @@ export function bootstrapDesktopV3Sidebar(deps: BootstrapDesktopV3SidebarDeps = 
 
   const dispatch = deps.dispatch ?? dispatchDesktopV3Cache
   const postBootstrap = deps.postBootstrap ?? postDesktopV3SyncBootstrap
+  const postHydrate = deps.postHydrate ?? postDesktopV3SyncHydrate
 
   dispatch({
     type: 'desktopSidebarBootstrap.update',
@@ -27,7 +30,7 @@ export function bootstrapDesktopV3Sidebar(deps: BootstrapDesktopV3SidebarDeps = 
   })
 
   bootstrapInFlight = postBootstrap()
-    .then((response) => {
+    .then(async (response) => {
       dispatch(bootstrapResponseToAction(response))
       dispatch({
         type: 'desktopSidebarBootstrap.update',
@@ -36,6 +39,11 @@ export function bootstrapDesktopV3Sidebar(deps: BootstrapDesktopV3SidebarDeps = 
           scopeId: response.scope_id,
           error: undefined,
         },
+      })
+      await hydrateDesktopV3InitialSessions({
+        sessionIds: response.session_order ?? [],
+        postHydrate,
+        dispatch,
       })
     })
     .catch((error: unknown) => {
@@ -56,4 +64,5 @@ export function bootstrapDesktopV3Sidebar(deps: BootstrapDesktopV3SidebarDeps = 
 
 export function resetDesktopV3BootstrapControllerForTests(): void {
   bootstrapInFlight = null
+  resetDesktopV3InitialHydrateControllerForTests()
 }

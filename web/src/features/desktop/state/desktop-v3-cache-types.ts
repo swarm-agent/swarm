@@ -456,11 +456,20 @@ export interface DesktopSidebarBootstrapState {
   error?: string
 }
 
+export interface DesktopInitialHydrateState {
+  status: 'idle' | 'loading' | 'ready' | 'error'
+  requestedSessionIds: string[]
+  hydratedSessionIds: string[]
+  scopeId?: string
+  error?: string
+}
+
 export interface DesktopV3CacheState {
   version: 1
   syncScopesById: Record<string, SyncScopeCache>
   realtime: RealtimeCache
   desktopSidebarBootstrap: DesktopSidebarBootstrapState
+  desktopInitialHydrate: DesktopInitialHydrateState
   sessionsById: Record<string, SessionCacheRecord>
   projectionsBySession: Record<string, V3SessionProjection>
   sessionOrderByScope: Record<string, string[]>
@@ -498,6 +507,7 @@ export interface CacheEvent {
 
 export type DesktopV3CacheAction =
   | { type: 'desktopSidebarBootstrap.update'; patch: Partial<DesktopSidebarBootstrapState> }
+  | { type: 'desktopInitialHydrate.update'; patch: Partial<DesktopInitialHydrateState> }
   | { type: 'session.select'; sessionId?: string }
   | { type: 'snapshot.apply'; source: 'bootstrap'; scopeId: string; snapshot: SyncSnapshotResponse }
   | { type: 'hydrate.apply'; source: 'hydrate'; scopeId: string; requestedSessionIds: string[]; snapshot: SyncSnapshotResponse }
