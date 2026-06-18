@@ -43,11 +43,45 @@ type sessionsV3SyncStreamEvent struct {
 }
 
 func newSessionsV3SyncStreamEvent(record sessionruntime.RealtimeOutboxRecord) sessionsV3SyncStreamEvent {
+	event := record.Event
+	event.Payload = sanitizeV3SyncStreamEventPayload(event.Payload)
 	return sessionsV3SyncStreamEvent{
 		SessionID:  record.SessionID,
 		EventType:  record.Event.EventType,
-		Event:      record.Event,
+		Event:      event,
 		Projection: record.Projection,
+	}
+}
+
+func sanitizeV3SyncStreamEventPayload(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return append(json.RawMessage(nil), raw...)
+	}
+	sanitizeV3SyncStreamValue(value)
+	out, err := json.Marshal(value)
+	if err != nil {
+		return append(json.RawMessage(nil), raw...)
+	}
+	return out
+}
+
+func sanitizeV3SyncStreamValue(value any) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, key := range []string{"endpoint_seq", "endpoint_cursor", "user_id", "account_scope_id", "created_at"} {
+			delete(typed, key)
+		}
+		for _, child := range typed {
+			sanitizeV3SyncStreamValue(child)
+		}
+	case []any:
+		for _, child := range typed {
+			sanitizeV3SyncStreamValue(child)
+		}
 	}
 }
 
@@ -159,7 +193,7 @@ func (s *Server) handleSessionsV3SyncStream(w http.ResponseWriter, r *http.Reque
 		}
 		matches, err := s.sessionsV3SyncOutboxRecordMatchesSelector(principal, record, selector)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err)
+			writeV3SyncCursorHTTPError(w, err)
 			return
 		}
 		if matches {
@@ -239,22 +273,24 @@ func (s *Server) sessionsV3SyncOutboxRecordMatchesSelector(principal identity.Pr
 }
 
 func sessionsV3SyncOutboxRecordMatchesWorkspacePaths(principal identity.Principal, record sessionruntime.RealtimeOutboxRecord, selector sessionsV3SyncSelector) (bool, error) {
-	paths, err := canonicalSessionsV3TUIWorksetPaths(sessionsV3TUIWorksetScope{WorkspacePath: selector.WorkspacePath, WorkspacePaths: selector.WorkspacePaths, CWDPath: selector.CWDPath})
-	if err != nil {
+	var (
+		paths []string
+		err   error
+	)
+	if strings.TrimSpace(selector.CWDPath) != "" || strings.TrimSpace(selector.Kind) == "tui" {
+		paths, err = canonicalSessionsV3TUIWorksetPaths(sessionsV3TUIWorksetScope{WorkspacePath: selector.WorkspacePath, WorkspacePaths: selector.WorkspacePaths, CWDPath: selector.CWDPath})
+	} else {
 		paths, err = canonicalSessionsV3WorksetWorkspacePaths(sessionsV3WorksetWorkspace{WorkspacePath: selector.WorkspacePath, WorkspacePaths: selector.WorkspacePaths})
-		if err != nil {
-			return false, err
-		}
+	}
+	if err != nil {
+		return false, err
 	}
 	if len(paths) == 0 {
 		return true, nil
 	}
 	session, ok := v3RealtimeSessionSnapshotFromRecord(record)
 	if !ok {
-		// Workspace/recent/TUI replay filtering must not consult mutable current session
-		// state. If the durable outbox row lacks event-state membership, fail closed
-		// instead of leaking it broadly.
-		return false, nil
+		return false, newV3SyncMembershipUnavailableError(record.EndpointSeq)
 	}
 	return v3RealtimeSessionMatchesWorksetSelector(principal, session, V3RealtimeWorksetSelector{Kind: "workspace", WorkspacePaths: paths}), nil
 }
@@ -274,6 +310,13 @@ func writeV3SyncStreamGapError(w http.ResponseWriter, missingEndpointSeq, oldest
 	cursorErr.MissingEndpointSeq = missingEndpointSeq
 	cursorErr.Latest = latest
 	writeV3SyncCursorHTTPError(w, cursorErr)
+}
+
+func newV3SyncMembershipUnavailableError(endpointSeq uint64) *v3SyncCursorError {
+	cursorErr := newV3SyncCursorError("endpoint_membership_unavailable", errors.New("endpoint membership unavailable for scoped replay; bootstrap required"))
+	cursorErr.BootstrapRequired = true
+	cursorErr.MissingEndpointSeq = endpointSeq
+	return cursorErr
 }
 
 func writeV3SyncCursorHTTPError(w http.ResponseWriter, err error) {

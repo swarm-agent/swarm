@@ -188,6 +188,10 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 	}
 	switch subpath {
 	case "":
+		if r.Method == http.MethodDelete {
+			s.handleSessionV3PrimaryDelete(w, r, principal, sessionID)
+			return
+		}
 		// Legacy/debug/compat full-hydrate endpoint only. Desktop V3
 		// canonical boot, hydrate, replay, and realtime must use
 		// /v3/sync/bootstrap, /v3/sync/hydrate, /v3/sync/stream, and
@@ -390,6 +394,45 @@ func (s *Server) handleSessionsV3PrimaryList(w http.ResponseWriter, r *http.Requ
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "sessions": items})
+}
+
+func (s *Server) handleSessionV3PrimaryDelete(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
+	session, found, err := s.requireSessionV3Access(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !found {
+		writeSessionNotFound(w)
+		return
+	}
+	event, err := s.sessions.DeleteSessionWithEvent(session.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if head, headErr := s.sessions.CurrentRealtimeOutboxRevision(); headErr == nil && head > 0 {
+		if record, ok, recordErr := s.sessions.LastRealtimeOutboxForSessionAtOrBeforeEndpoint(session.ID, head); recordErr == nil && ok && record.Event.EventType == "session.deleted" {
+			if publishErr := s.publishCommittedV3RealtimeOutbox(record); publishErr != nil {
+				// Durable commit succeeded; realtime wake is an accelerator only.
+				_ = publishErr
+			}
+		}
+	}
+	if event != nil && s.hub != nil {
+		s.hub.Publish(*event)
+	}
+	response := map[string]any{
+		"ok":         true,
+		"session_id": session.ID,
+		"deleted":    true,
+		"tombstone": map[string]any{
+			"session_id":     session.ID,
+			"deleted":        true,
+			"workspace_path": session.WorkspacePath,
+		},
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
@@ -1269,6 +1312,9 @@ func (s *Server) requireSessionV3Access(principal identity.Principal, sessionID 
 		return pebblestore.SessionSnapshot{}, ok, err
 	}
 	if strings.TrimSpace(session.AccountScopeID) == "" || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		return pebblestore.SessionSnapshot{}, false, nil
+	}
+	if strings.TrimSpace(session.UserID) == "" || strings.TrimSpace(session.UserID) != strings.TrimSpace(principal.UserID) {
 		return pebblestore.SessionSnapshot{}, false, nil
 	}
 	return session, true, nil

@@ -377,7 +377,7 @@ func (s *SessionStore) DeleteSession(sessionID string) error {
 		if err != nil {
 			return fmt.Errorf("marshal v3 session delete projection %q: %w", sessionID, err)
 		}
-		realtimeOutbox := V3RealtimeOutboxRecord{EndpointSeq: endpointSeq, EndpointCursor: V3RealtimeOutboxCursor(endpointSeq), SessionID: sessionID, UserID: existing.UserID, AccountScopeID: existing.AccountScopeID, Event: event, Projection: projection, CreatedAt: now}
+		realtimeOutbox := V3RealtimeOutboxRecord{EndpointSeq: endpointSeq, EndpointCursor: V3RealtimeOutboxCursor(endpointSeq), SessionID: sessionID, UserID: existing.UserID, AccountScopeID: existing.AccountScopeID, Membership: newV3RealtimeOutboxMembershipFromTombstone(tombstone, now), Event: event, Projection: projection, CreatedAt: now}
 		realtimeOutboxPayload, err := json.Marshal(realtimeOutbox)
 		if err != nil {
 			return fmt.Errorf("marshal v3 session delete outbox %q: %w", sessionID, err)

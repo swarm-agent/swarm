@@ -626,6 +626,9 @@ func (s *Server) v3RealtimeSessionSnapshotForRecord(record sessionruntime.Realti
 }
 
 func v3RealtimeSessionSnapshotFromRecord(record sessionruntime.RealtimeOutboxRecord) (pebblestore.SessionSnapshot, bool) {
+	if record.Membership != nil && strings.TrimSpace(record.Membership.SessionID) != "" {
+		return v3RealtimeSessionSnapshotFromMembership(*record.Membership), true
+	}
 	var payload struct {
 		Session *pebblestore.SessionSnapshot `json:"session,omitempty"`
 	}
@@ -636,6 +639,19 @@ func v3RealtimeSessionSnapshotFromRecord(record sessionruntime.RealtimeOutboxRec
 		}
 	}
 	return pebblestore.SessionSnapshot{}, false
+}
+
+func v3RealtimeSessionSnapshotFromMembership(membership pebblestore.V3RealtimeOutboxMembership) pebblestore.SessionSnapshot {
+	return pebblestore.SessionSnapshot{
+		ID:                      strings.TrimSpace(membership.SessionID),
+		UserID:                  strings.TrimSpace(membership.UserID),
+		AccountScopeID:          strings.TrimSpace(membership.AccountScopeID),
+		WorkspacePath:           strings.TrimSpace(membership.WorkspacePath),
+		WorkspaceName:           strings.TrimSpace(membership.WorkspaceName),
+		WorktreeRootPath:        strings.TrimSpace(membership.WorktreeRootPath),
+		TemporaryWorkspaceRoots: append([]string(nil), membership.TemporaryWorkspaceRoots...),
+		Metadata:                cloneSessionsV3Metadata(membership.Metadata),
+	}
 }
 
 func canonicalV3RealtimeWorksetSelector(selector V3RealtimeWorksetSelector) (V3RealtimeWorksetSelector, error) {

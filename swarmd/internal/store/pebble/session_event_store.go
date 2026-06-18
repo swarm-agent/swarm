@@ -157,14 +157,65 @@ type V3SessionProjection struct {
 }
 
 type V3RealtimeOutboxRecord struct {
-	EndpointSeq    uint64              `json:"endpoint_seq"`
-	EndpointCursor string              `json:"endpoint_cursor"`
-	SessionID      string              `json:"session_id"`
-	UserID         string              `json:"user_id,omitempty"`
-	AccountScopeID string              `json:"account_scope_id,omitempty"`
-	Event          V3SessionEvent      `json:"event"`
-	Projection     V3SessionProjection `json:"projection"`
-	CreatedAt      int64               `json:"created_at"`
+	EndpointSeq    uint64                      `json:"endpoint_seq"`
+	EndpointCursor string                      `json:"endpoint_cursor"`
+	SessionID      string                      `json:"session_id"`
+	UserID         string                      `json:"user_id,omitempty"`
+	AccountScopeID string                      `json:"account_scope_id,omitempty"`
+	Membership     *V3RealtimeOutboxMembership `json:"membership,omitempty"`
+	Event          V3SessionEvent              `json:"event"`
+	Projection     V3SessionProjection         `json:"projection"`
+	CreatedAt      int64                       `json:"created_at"`
+}
+
+type V3RealtimeOutboxMembership struct {
+	SessionID               string         `json:"session_id"`
+	UserID                  string         `json:"user_id,omitempty"`
+	AccountScopeID          string         `json:"account_scope_id,omitempty"`
+	WorkspacePath           string         `json:"workspace_path,omitempty"`
+	WorkspaceName           string         `json:"workspace_name,omitempty"`
+	WorktreeRootPath        string         `json:"worktree_root_path,omitempty"`
+	TemporaryWorkspaceRoots []string       `json:"temporary_workspace_roots,omitempty"`
+	Metadata                map[string]any `json:"metadata,omitempty"`
+	Deleted                 bool           `json:"deleted,omitempty"`
+	TombstoneKind           string         `json:"tombstone_kind,omitempty"`
+	CapturedAt              int64          `json:"captured_at"`
+}
+
+func newV3RealtimeOutboxMembershipFromSession(session SessionSnapshot, now int64) *V3RealtimeOutboxMembership {
+	if strings.TrimSpace(session.ID) == "" {
+		return nil
+	}
+	return &V3RealtimeOutboxMembership{
+		SessionID:               strings.TrimSpace(session.ID),
+		UserID:                  strings.TrimSpace(session.UserID),
+		AccountScopeID:          strings.TrimSpace(session.AccountScopeID),
+		WorkspacePath:           strings.TrimSpace(session.WorkspacePath),
+		WorkspaceName:           strings.TrimSpace(session.WorkspaceName),
+		WorktreeRootPath:        strings.TrimSpace(session.WorktreeRootPath),
+		TemporaryWorkspaceRoots: append([]string(nil), session.TemporaryWorkspaceRoots...),
+		Metadata:                cloneSessionMetadataMap(session.Metadata),
+		CapturedAt:              now,
+	}
+}
+
+func newV3RealtimeOutboxMembershipFromTombstone(tombstone V3SessionTombstone, now int64) *V3RealtimeOutboxMembership {
+	membership := newV3RealtimeOutboxMembershipFromSession(tombstone.Session, now)
+	if membership == nil {
+		membership = &V3RealtimeOutboxMembership{SessionID: strings.TrimSpace(tombstone.SessionID), CapturedAt: now}
+	}
+	if membership.UserID == "" {
+		membership.UserID = strings.TrimSpace(tombstone.UserID)
+	}
+	if membership.AccountScopeID == "" {
+		membership.AccountScopeID = strings.TrimSpace(tombstone.AccountScopeID)
+	}
+	if membership.WorkspacePath == "" {
+		membership.WorkspacePath = strings.TrimSpace(tombstone.WorkspacePath)
+	}
+	membership.Deleted = tombstone.Deleted
+	membership.TombstoneKind = strings.TrimSpace(tombstone.Kind)
+	return membership
 }
 
 type V3SessionRunIntent struct {
@@ -424,6 +475,17 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
+	membershipSession := session
+	if strings.TrimSpace(membershipSession.ID) == "" {
+		current, ok, err := s.GetSession(input.SessionID)
+		if err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		if ok {
+			membershipSession = current
+		}
+	}
+	membership := newV3RealtimeOutboxMembershipFromSession(membershipSession, now)
 	event := V3SessionEvent{
 		ID:            strings.TrimSpace(input.EventID),
 		SessionID:     input.SessionID,
@@ -486,6 +548,7 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		SessionID:      input.SessionID,
 		UserID:         input.UserID,
 		AccountScopeID: input.AccountScopeID,
+		Membership:     membership,
 		Event:          event,
 		Projection:     projection,
 		CreatedAt:      now,

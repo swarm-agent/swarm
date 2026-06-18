@@ -217,6 +217,241 @@ func TestSessionsV3SyncStreamRecentWorkspaceSelectorFiltersReplay(t *testing.T) 
 	}
 }
 
+func TestSessionsV3SyncStreamWorkspaceCursorAdvancesAcrossAThenBExactlyOnce(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := "/workspace/stream-ab-exact"
+	createdA := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-stream-ab-a", "Sync Stream AB A", workspace)
+	createdB := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-stream-ab-b", "Sync Stream AB B", workspace)
+
+	bootstrapBody := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"` + workspace + `","recent":{"limit":20}},"history":{"mode":"none"}}`
+	bootstrapReq := httptest.NewRequest(http.MethodPost, V3SyncBootstrapPath, bytes.NewBufferString(bootstrapBody))
+	bootstrapReq.Header.Set("Content-Type", "application/json")
+	bootstrapRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(bootstrapRec, withTestPrincipal(bootstrapReq))
+	if bootstrapRec.Code != http.StatusOK {
+		t.Fatalf("bootstrap status=%d body=%s", bootstrapRec.Code, bootstrapRec.Body.String())
+	}
+	var bootstrap struct {
+		SnapshotEndpointCursor string `json:"snapshot_endpoint_cursor"`
+	}
+	if err := json.Unmarshal(bootstrapRec.Body.Bytes(), &bootstrap); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+
+	appendSessionsV3PrimaryMessageForWorksetTest(t, server, createdA.ID, "A after bootstrap")
+	streamBodyA := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"` + workspace + `","recent":{"limit":20}},"endpoint_cursor":"` + bootstrap.SnapshotEndpointCursor + `"}`
+	streamReqA := httptest.NewRequest(http.MethodPost, V3SyncStreamPath, bytes.NewBufferString(streamBodyA))
+	streamReqA.Header.Set("Content-Type", "application/json")
+	streamRecA := httptest.NewRecorder()
+	server.Handler().ServeHTTP(streamRecA, withTestPrincipal(streamReqA))
+	if streamRecA.Code != http.StatusOK {
+		t.Fatalf("stream A status=%d body=%s", streamRecA.Code, streamRecA.Body.String())
+	}
+	var streamA struct {
+		EndpointCursor string `json:"endpoint_cursor"`
+		Events         []struct {
+			SessionID string `json:"session_id"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(streamRecA.Body.Bytes(), &streamA); err != nil {
+		t.Fatalf("decode stream A: %v", err)
+	}
+	if countSessionV3StreamEvents(streamA.Events, createdA.ID) != 1 || countSessionV3StreamEvents(streamA.Events, createdB.ID) != 0 {
+		t.Fatalf("stream A events mismatch: %+v body=%s", streamA.Events, streamRecA.Body.String())
+	}
+
+	appendSessionsV3PrimaryMessageForWorksetTest(t, server, createdB.ID, "B after A cursor")
+	streamBodyB := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"` + workspace + `","recent":{"limit":20}},"endpoint_cursor":"` + streamA.EndpointCursor + `"}`
+	streamReqB := httptest.NewRequest(http.MethodPost, V3SyncStreamPath, bytes.NewBufferString(streamBodyB))
+	streamReqB.Header.Set("Content-Type", "application/json")
+	streamRecB := httptest.NewRecorder()
+	server.Handler().ServeHTTP(streamRecB, withTestPrincipal(streamReqB))
+	if streamRecB.Code != http.StatusOK {
+		t.Fatalf("stream B status=%d body=%s", streamRecB.Code, streamRecB.Body.String())
+	}
+	var streamB struct {
+		Events []struct {
+			SessionID string `json:"session_id"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(streamRecB.Body.Bytes(), &streamB); err != nil {
+		t.Fatalf("decode stream B: %v", err)
+	}
+	if countSessionV3StreamEvents(streamB.Events, createdB.ID) != 1 || countSessionV3StreamEvents(streamB.Events, createdA.ID) != 0 {
+		t.Fatalf("stream B events mismatch: %+v body=%s", streamB.Events, streamRecB.Body.String())
+	}
+}
+
+func TestSessionsV3PrimaryDeleteRouteStreamsWorkspaceTombstone(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := "/workspace/stream-delete-tombstone"
+	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-stream-delete-tombstone", "Sync Stream Delete Tombstone", workspace)
+	bootstrapBody := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"` + workspace + `","recent":{"limit":20}},"history":{"mode":"none"}}`
+	bootstrapReq := httptest.NewRequest(http.MethodPost, V3SyncBootstrapPath, bytes.NewBufferString(bootstrapBody))
+	bootstrapReq.Header.Set("Content-Type", "application/json")
+	bootstrapRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(bootstrapRec, withTestPrincipal(bootstrapReq))
+	if bootstrapRec.Code != http.StatusOK {
+		t.Fatalf("bootstrap status=%d body=%s", bootstrapRec.Code, bootstrapRec.Body.String())
+	}
+	var bootstrap struct {
+		SnapshotEndpointCursor string `json:"snapshot_endpoint_cursor"`
+	}
+	if err := json.Unmarshal(bootstrapRec.Body.Bytes(), &bootstrap); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/v3/sessions/"+created.ID, nil)
+	deleteRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(deleteRec, withTestPrincipal(deleteReq))
+	if deleteRec.Code != http.StatusOK || !strings.Contains(deleteRec.Body.String(), `"ok":true`) || !strings.Contains(deleteRec.Body.String(), `"deleted":true`) {
+		t.Fatalf("delete response status=%d body=%s", deleteRec.Code, deleteRec.Body.String())
+	}
+	if _, ok, err := server.sessions.GetSession(created.ID); err != nil || ok {
+		t.Fatalf("deleted session still visible ok=%v err=%v", ok, err)
+	}
+
+	streamBody := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"` + workspace + `","recent":{"limit":20}},"endpoint_cursor":"` + bootstrap.SnapshotEndpointCursor + `"}`
+	streamReq := httptest.NewRequest(http.MethodPost, V3SyncStreamPath, bytes.NewBufferString(streamBody))
+	streamReq.Header.Set("Content-Type", "application/json")
+	streamRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(streamRec, withTestPrincipal(streamReq))
+	if streamRec.Code != http.StatusOK {
+		t.Fatalf("stream status=%d body=%s", streamRec.Code, streamRec.Body.String())
+	}
+	var stream struct {
+		Events []struct {
+			SessionID string `json:"session_id"`
+			EventType string `json:"event_type"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(streamRec.Body.Bytes(), &stream); err != nil {
+		t.Fatalf("decode stream: %v", err)
+	}
+	for _, event := range stream.Events {
+		if event.SessionID == created.ID && event.EventType == "session.deleted" {
+			return
+		}
+	}
+	t.Fatalf("workspace stream missed delete tombstone event for %s: %+v body=%s", created.ID, stream.Events, streamRec.Body.String())
+}
+
+func TestSessionsV3PrimaryDeleteRouteRejectsOtherPrincipal(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-stream-delete-other", "Sync Stream Delete Other", "/workspace/stream-delete-other")
+	other := testPrincipal()
+	other.UserID = "delete-route-other-user"
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/v3/sessions/"+created.ID, nil)
+	deleteRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(deleteRec, requestWithTestPrincipalForAccount(deleteReq, other.UserID, other.AccountScopeID))
+	if deleteRec.Code != http.StatusNotFound {
+		t.Fatalf("other principal delete status=%d body=%s", deleteRec.Code, deleteRec.Body.String())
+	}
+	if _, ok, err := server.sessions.GetSession(created.ID); err != nil || !ok {
+		t.Fatalf("other principal delete removed session ok=%v err=%v", ok, err)
+	}
+}
+
+func TestSessionsV3SyncStreamWorkspaceUsesDurableMembershipForRunIntentRecord(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	principal := testPrincipal()
+	workspace := "/workspace/stream-run-intent-membership"
+	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-stream-run-intent-membership", "Sync Stream Run Intent Membership", workspace)
+	bootstrapBody := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"` + workspace + `","recent":{"limit":20}},"history":{"mode":"none"}}`
+	bootstrapReq := httptest.NewRequest(http.MethodPost, V3SyncBootstrapPath, bytes.NewBufferString(bootstrapBody))
+	bootstrapReq.Header.Set("Content-Type", "application/json")
+	bootstrapRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(bootstrapRec, withTestPrincipal(bootstrapReq))
+	if bootstrapRec.Code != http.StatusOK {
+		t.Fatalf("bootstrap status=%d body=%s", bootstrapRec.Code, bootstrapRec.Body.String())
+	}
+	var bootstrap struct {
+		SnapshotEndpointCursor string `json:"snapshot_endpoint_cursor"`
+	}
+	if err := json.Unmarshal(bootstrapRec.Body.Bytes(), &bootstrap); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	_, err := sessionSvc.ApplySessionMutation(sessionruntime.SessionMutationInput{
+		SessionID:       created.ID,
+		UserID:          principal.UserID,
+		AccountScopeID:  principal.AccountScopeID,
+		ClientRequestID: "run-intent-membership",
+		IdempotencyKey:  "run-intent-membership",
+		PayloadHash:     "hash-run-intent-membership",
+		RequestHash:     "hash-run-intent-membership",
+		Kind:            sessionruntime.SessionMutationRecordRunIntent,
+		RunIntent:       &pebblestore.V3SessionRunIntent{SessionID: created.ID, RunID: "run-intent-membership", Status: sessionruntime.RunIntentPendingExecutor, CreatedAt: now, UpdatedAt: now},
+		NowUnixMs:       now,
+	})
+	if err != nil {
+		t.Fatalf("record run intent: %v", err)
+	}
+	streamBody := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"` + workspace + `","recent":{"limit":20}},"endpoint_cursor":"` + bootstrap.SnapshotEndpointCursor + `"}`
+	streamReq := httptest.NewRequest(http.MethodPost, V3SyncStreamPath, bytes.NewBufferString(streamBody))
+	streamReq.Header.Set("Content-Type", "application/json")
+	streamRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(streamRec, withTestPrincipal(streamReq))
+	if streamRec.Code != http.StatusOK {
+		t.Fatalf("stream status=%d body=%s", streamRec.Code, streamRec.Body.String())
+	}
+	var stream struct {
+		Events []struct {
+			SessionID string `json:"session_id"`
+			EventType string `json:"event_type"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(streamRec.Body.Bytes(), &stream); err != nil {
+		t.Fatalf("decode stream: %v", err)
+	}
+	for _, event := range stream.Events {
+		if event.SessionID == created.ID && event.EventType == "session.run_intent.recorded" {
+			return
+		}
+	}
+	t.Fatalf("workspace stream missed run_intent record for %s: %+v", created.ID, stream.Events)
+}
+
+func TestSessionsV3SyncStreamWorkspaceFailsClosedWhenMembershipUnavailable(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-stream-missing-membership", "Sync Stream Missing Membership", "/workspace/stream-missing-membership")
+	bootstrapBody := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"/workspace/stream-missing-membership","recent":{"limit":20}},"history":{"mode":"none"}}`
+	bootstrapReq := httptest.NewRequest(http.MethodPost, V3SyncBootstrapPath, bytes.NewBufferString(bootstrapBody))
+	bootstrapReq.Header.Set("Content-Type", "application/json")
+	bootstrapRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(bootstrapRec, withTestPrincipal(bootstrapReq))
+	if bootstrapRec.Code != http.StatusOK {
+		t.Fatalf("bootstrap status=%d body=%s", bootstrapRec.Code, bootstrapRec.Body.String())
+	}
+	var bootstrap struct {
+		SnapshotEndpointCursor string `json:"snapshot_endpoint_cursor"`
+	}
+	if err := json.Unmarshal(bootstrapRec.Body.Bytes(), &bootstrap); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+	appendSessionsV3PrimaryMessageForWorksetTest(t, server, created.ID, "membership unavailable")
+	previousListOutbox := v3SyncStreamListRealtimeOutboxAfter
+	v3SyncStreamListRealtimeOutboxAfter = func(_ *Server, afterEndpointSeq uint64, limit int) ([]sessionruntime.RealtimeOutboxRecord, error) {
+		records, err := sessionSvc.ListRealtimeOutboxAfter(afterEndpointSeq, limit)
+		if err != nil || len(records) == 0 {
+			return records, err
+		}
+		records[0].Membership = nil
+		records[0].Event.Payload = []byte(`{"session_id":"` + records[0].SessionID + `","seq":2,"kind":"message.append"}`)
+		return records, nil
+	}
+	t.Cleanup(func() { v3SyncStreamListRealtimeOutboxAfter = previousListOutbox })
+
+	streamBody := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"/workspace/stream-missing-membership","recent":{"limit":20}},"endpoint_cursor":"` + bootstrap.SnapshotEndpointCursor + `"}`
+	streamReq := httptest.NewRequest(http.MethodPost, V3SyncStreamPath, bytes.NewBufferString(streamBody))
+	streamReq.Header.Set("Content-Type", "application/json")
+	streamRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(streamRec, withTestPrincipal(streamReq))
+	if streamRec.Code != http.StatusGone || !strings.Contains(streamRec.Body.String(), "endpoint_membership_unavailable") || !strings.Contains(streamRec.Body.String(), `"ok":false`) {
+		t.Fatalf("missing membership response status=%d body=%s", streamRec.Code, streamRec.Body.String())
+	}
+}
+
 func TestSessionsV3SyncStreamReplaysPastOtherUserRowsFromGlobalOutbox(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	userA := testPrincipal()
@@ -461,6 +696,18 @@ func TestSessionsV3SyncStreamRejectsAheadAndTooOldCursors(t *testing.T) {
 	if tooOldRec.Code != http.StatusGone || !strings.Contains(tooOldRec.Body.String(), "endpoint_cursor_too_old") || !strings.Contains(tooOldRec.Body.String(), "oldest_available") {
 		t.Fatalf("too-old cursor response status=%d body=%s", tooOldRec.Code, tooOldRec.Body.String())
 	}
+}
+
+func countSessionV3StreamEvents(events []struct {
+	SessionID string `json:"session_id"`
+}, sessionID string) int {
+	count := 0
+	for _, event := range events {
+		if event.SessionID == sessionID {
+			count++
+		}
+	}
+	return count
 }
 
 func createSessionForPrincipalWithWorkspace(t *testing.T, sessionSvc *sessionruntime.Service, principal identity.Principal, sessionID, workspacePath string) pebblestore.SessionSnapshot {
