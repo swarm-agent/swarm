@@ -354,6 +354,82 @@ func TestSessionsV3SyncHydrateCanonicalizesSessionIDSelectorForCursorScope(t *te
 	}
 }
 
+func TestSessionsV3SyncHydrateIncludeActiveDoesNotWidenSessionIDs(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	createdA := createSessionsV3PrimaryTestSession(t, server, "sync-hydrate-active-a", "Sync Hydrate Active A")
+	createdB := createSessionsV3PrimaryTestSession(t, server, "sync-hydrate-active-b", "Sync Hydrate Active B")
+	now := time.Now().UnixMilli()
+	runID := "run-sync-hydrate-active-b"
+	if _, err := sessionSvc.ApplySessionMutation(sessionruntime.SessionMutationInput{
+		SessionID:       createdB.ID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "sync-hydrate-active-b-running",
+		IdempotencyKey:  "sync-hydrate-active-b-running",
+		PayloadHash:     "hash-sync-hydrate-active-b-running",
+		RequestHash:     "hash-sync-hydrate-active-b-running",
+		Kind:            sessionruntime.SessionMutationRecordRunIntent,
+		EventType:       "session.run.queued",
+		RunIntent:       &pebblestore.V3SessionRunIntent{RunID: runID, Status: sessionruntime.RunIntentPendingExecutor, CreatedAt: now, UpdatedAt: now},
+		NowUnixMs:       now,
+	}); err != nil {
+		t.Fatalf("mark session B active: %v", err)
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"surface":        "desktop",
+		"session_ids":    []string{createdA.ID},
+		"include_active": true,
+	})
+	if err != nil {
+		t.Fatalf("marshal hydrate body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, V3SyncHydratePath, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("hydrate status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		SnapshotEndpointCursor string                                      `json:"snapshot_endpoint_cursor"`
+		Selector               sessionsV3SyncSelector                      `json:"selector"`
+		SyncScope              map[string]string                           `json:"sync_scope"`
+		SessionsByID           map[string]pebblestore.SessionSnapshot      `json:"sessions_by_id"`
+		SessionOrder           []string                                    `json:"session_order"`
+		RunIntentsBySession    map[string][]pebblestore.V3SessionRunIntent `json:"run_intents_by_session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode hydrate response: %v", err)
+	}
+	if payload.SessionsByID[createdA.ID].ID != createdA.ID {
+		t.Fatalf("hydrate missing requested session A: %+v", payload.SessionsByID)
+	}
+	if _, leaked := payload.SessionsByID[createdB.ID]; leaked {
+		t.Fatalf("hydrate include_active widened to active session B: %+v", payload.SessionsByID)
+	}
+	if len(payload.SessionOrder) != 1 || payload.SessionOrder[0] != createdA.ID {
+		t.Fatalf("hydrate session_order = %+v, want only %s", payload.SessionOrder, createdA.ID)
+	}
+	if _, leaked := payload.RunIntentsBySession[createdB.ID]; leaked {
+		t.Fatalf("hydrate include_active leaked active run intents for session B: %+v", payload.RunIntentsBySession)
+	}
+	expectedSelectorHash := v3SyncDeterministicSelectorHash(v3SyncCanonicalSelector(sessionsV3SyncSelector{Kind: "session_ids", SessionIDs: []string{createdA.ID}}))
+	if payload.Selector.Kind != "session_ids" || len(payload.Selector.SessionIDs) != 1 || payload.Selector.SessionIDs[0] != createdA.ID {
+		t.Fatalf("hydrate selector = %+v, want only %s", payload.Selector, createdA.ID)
+	}
+	if payload.SyncScope["selector_filter_hash"] != expectedSelectorHash {
+		t.Fatalf("selector hash = %q, want %q", payload.SyncScope["selector_filter_hash"], expectedSelectorHash)
+	}
+	cursorPayload, err := server.verifyV3SyncCursor(payload.SnapshotEndpointCursor)
+	if err != nil {
+		t.Fatalf("verify hydrate cursor: %v", err)
+	}
+	if cursorPayload.SelectorFilterHash != expectedSelectorHash {
+		t.Fatalf("cursor selector hash = %q, want %q", cursorPayload.SelectorFilterHash, expectedSelectorHash)
+	}
+}
+
 func TestSessionsV3SyncHydrateRejectsConflictingSelectorFields(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSession(t, server, "sync-hydrate-conflict", "Sync Hydrate Conflict")

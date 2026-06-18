@@ -181,12 +181,15 @@ func sessionsV3SyncHydrateOptions(principal identity.Principal, req sessionsV3Sy
 
 	options := sessionsV3ResolvedSyncOptions{
 		Snapshot: pebblestore.V3SyncSnapshotOptions{
-			AccountScopeID:        principal.AccountScopeID,
-			UserID:                principal.UserID,
-			SessionIDs:            ids,
-			History:               history,
-			IncludeRunIntents:     req.Resources.RunIntents || req.IncludeActive,
-			IncludeActiveSessions: req.IncludeActive,
+			AccountScopeID:    principal.AccountScopeID,
+			UserID:            principal.UserID,
+			SessionIDs:        ids,
+			History:           history,
+			IncludeRunIntents: req.Resources.RunIntents || req.IncludeActive,
+			// Hydrate is session_ids-targeted. include_active may request active
+			// run-intent resources for requested sessions, but must never widen
+			// membership beyond the explicit session_ids selector.
+			IncludeActiveSessions: false,
 			IncludeActivePlan:     req.Resources.ActivePlan,
 			IncludePlanRevisions:  req.Resources.PlanRevisions,
 		},
