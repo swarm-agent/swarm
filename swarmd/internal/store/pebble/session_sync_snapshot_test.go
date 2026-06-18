@@ -130,3 +130,92 @@ func createV3SyncSnapshotSessionForAccountTest(t *testing.T, sessions *SessionSt
 		t.Fatalf("create sync snapshot session %s: %v", sessionID, err)
 	}
 }
+
+func TestBuildV3SyncSnapshotHydrateReturnsRequestedDeletedTombstoneBeyondAccountPage(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	for i := 0; i < 1005; i++ {
+		sessionID := "session-tombstone-page-filler-" + string(rune('a'+(i%26))) + "-" + string(rune('a'+((i/26)%26))) + "-" + string(rune('a'+((i/676)%26)))
+		createV3WorksetSessionForTest(t, sessions, sessionID, "/workspace/tombstone-other", int64(1000+i))
+		if err := sessions.DeleteSession(sessionID); err != nil {
+			t.Fatalf("delete filler session %s: %v", sessionID, err)
+		}
+	}
+	createV3WorksetSessionForTest(t, sessions, "zzzz-session-tombstone-target", "/workspace/tombstone-target", 5000)
+	if err := sessions.DeleteSession("zzzz-session-tombstone-target"); err != nil {
+		t.Fatalf("delete target session: %v", err)
+	}
+
+	snapshot, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
+		AccountScopeID: "account-1",
+		UserID:         "user-1",
+		SessionIDs:     []string{"zzzz-session-tombstone-target"},
+		History:        V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone},
+	})
+	if err != nil {
+		t.Fatalf("build hydrate tombstone snapshot: %v", err)
+	}
+	tombstone := snapshot.TombstonesBySession["zzzz-session-tombstone-target"]
+	if tombstone.SessionID != "zzzz-session-tombstone-target" || !tombstone.Deleted {
+		t.Fatalf("hydrate snapshot missed requested deleted target tombstone beyond account page: %+v", snapshot.TombstonesBySession)
+	}
+}
+
+func TestBuildV3SyncSnapshotTombstonesArePrincipalAndWorkspaceScoped(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SyncSnapshotSessionForUserTest(t, sessions, "session-tombstone-workspace-a", "user-1", "account-1", "/workspace/tombstone-a", 1000)
+	createV3SyncSnapshotSessionForUserTest(t, sessions, "session-tombstone-workspace-b", "user-1", "account-1", "/workspace/tombstone-b", 1001)
+	createV3SyncSnapshotSessionForUserTest(t, sessions, "session-tombstone-other-user", "user-2", "account-1", "/workspace/tombstone-a", 1002)
+	createV3SyncSnapshotSessionForUserTest(t, sessions, "session-tombstone-legacy-empty-user", "", "account-1", "/workspace/tombstone-a", 1003)
+	for _, sessionID := range []string{"session-tombstone-workspace-a", "session-tombstone-workspace-b", "session-tombstone-other-user", "session-tombstone-legacy-empty-user"} {
+		if err := sessions.DeleteSession(sessionID); err != nil {
+			t.Fatalf("delete %s: %v", sessionID, err)
+		}
+	}
+
+	snapshot, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
+		AccountScopeID: "account-1",
+		UserID:         "user-1",
+		WorkspacePath:  "/workspace/tombstone-a",
+		RecentLimit:    10,
+		History:        V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone},
+	})
+	if err != nil {
+		t.Fatalf("build workspace tombstone snapshot: %v", err)
+	}
+	if snapshot.TombstonesBySession["session-tombstone-workspace-a"].SessionID != "session-tombstone-workspace-a" {
+		t.Fatalf("workspace snapshot missing same-user same-workspace tombstone: %+v", snapshot.TombstonesBySession)
+	}
+	for _, leaked := range []string{"session-tombstone-workspace-b", "session-tombstone-other-user", "session-tombstone-legacy-empty-user"} {
+		if _, ok := snapshot.TombstonesBySession[leaked]; ok {
+			t.Fatalf("workspace tombstone snapshot leaked %s: %+v", leaked, snapshot.TombstonesBySession)
+		}
+	}
+}
+
+func createV3SyncSnapshotSessionForUserTest(t *testing.T, sessions *SessionStore, sessionID, userID, accountScopeID, workspacePath string, updatedAt int64) {
+	t.Helper()
+	_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:      sessionID,
+		UserID:         userID,
+		AccountScopeID: accountScopeID,
+		IdempotencyKey: "create-" + sessionID,
+		PayloadHash:    "hash-create-" + sessionID,
+		Kind:           V3SessionMutationCreateSession,
+		Session: &SessionSnapshot{
+			ID:             sessionID,
+			UserID:         userID,
+			AccountScopeID: accountScopeID,
+			WorkspacePath:  workspacePath,
+			WorkspaceName:  "workspace",
+			Title:          sessionID,
+			CreatedAt:      updatedAt,
+			UpdatedAt:      updatedAt,
+		},
+		NowUnixMs: updatedAt,
+	})
+	if err != nil {
+		t.Fatalf("create sync snapshot session %s: %v", sessionID, err)
+	}
+}

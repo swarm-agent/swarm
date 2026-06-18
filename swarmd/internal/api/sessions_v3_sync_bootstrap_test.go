@@ -428,6 +428,65 @@ func TestSessionsV3SyncHydrateIncludeActiveDoesNotWidenSessionIDs(t *testing.T) 
 	if cursorPayload.SelectorFilterHash != expectedSelectorHash {
 		t.Fatalf("cursor selector hash = %q, want %q", cursorPayload.SelectorFilterHash, expectedSelectorHash)
 	}
+
+	appendSessionsV3PrimaryMessageForWorksetTest(t, server, createdA.ID, "hydrate stream handoff A")
+	mutatedAt := time.Now().UnixMilli()
+	if _, err := sessionSvc.ApplySessionMutation(sessionruntime.SessionMutationInput{
+		SessionID:       createdB.ID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "sync-hydrate-active-b-running-after-cursor",
+		IdempotencyKey:  "sync-hydrate-active-b-running-after-cursor",
+		PayloadHash:     "hash-sync-hydrate-active-b-running-after-cursor",
+		RequestHash:     "hash-sync-hydrate-active-b-running-after-cursor",
+		Kind:            sessionruntime.SessionMutationRecordRunIntent,
+		EventType:       "session.assistant.started",
+		RunIntent:       &pebblestore.V3SessionRunIntent{RunID: runID, Status: sessionruntime.RunIntentRunning, CreatedAt: now, UpdatedAt: mutatedAt},
+		NowUnixMs:       mutatedAt,
+	}); err != nil {
+		t.Fatalf("mutate session B after hydrate: %v", err)
+	}
+
+	streamBody, err := json.Marshal(map[string]any{
+		"surface":         "desktop",
+		"session_ids":     []string{createdA.ID},
+		"include_active":  true,
+		"endpoint_cursor": payload.SnapshotEndpointCursor,
+	})
+	if err != nil {
+		t.Fatalf("marshal stream body: %v", err)
+	}
+	streamReq := httptest.NewRequest(http.MethodPost, V3SyncStreamPath, bytes.NewReader(streamBody))
+	streamReq.Header.Set("Content-Type", "application/json")
+	streamRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(streamRec, withTestPrincipal(streamReq))
+	if streamRec.Code != http.StatusOK {
+		t.Fatalf("stream status = %d, want %d, body=%s", streamRec.Code, http.StatusOK, streamRec.Body.String())
+	}
+	var streamPayload struct {
+		EndpointCursor string `json:"endpoint_cursor"`
+		Events         []struct {
+			SessionID string `json:"session_id"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(streamRec.Body.Bytes(), &streamPayload); err != nil {
+		t.Fatalf("decode stream response: %v", err)
+	}
+	if !strings.HasPrefix(streamPayload.EndpointCursor, v3SyncCursorPrefix) || strings.HasPrefix(streamPayload.EndpointCursor, "cursor-") {
+		t.Fatalf("stream endpoint_cursor is not signed/opaque: %q", streamPayload.EndpointCursor)
+	}
+	foundA := false
+	for _, event := range streamPayload.Events {
+		switch event.SessionID {
+		case createdA.ID:
+			foundA = true
+		case createdB.ID:
+			t.Fatalf("stream using hydrate cursor leaked active session B mutation: %+v", streamPayload.Events)
+		}
+	}
+	if !foundA {
+		t.Fatalf("stream using hydrate cursor missed requested session A mutation: %+v", streamPayload.Events)
+	}
 }
 
 func TestSessionsV3SyncHydrateRejectsConflictingSelectorFields(t *testing.T) {
@@ -618,6 +677,44 @@ func TestSessionsV3SyncBootstrapIncludesExtraResourcesFromSnapshot(t *testing.T)
 	}
 	if payload.TombstonesBySession == nil || payload.SnapshotEndpointCursor == "" || payload.ReplayInstructions["after_endpoint_cursor"] != payload.SnapshotEndpointCursor || payload.AgentModelPolicyBySession == nil {
 		t.Fatalf("bootstrap response missing durable sync fields: %+v", payload)
+	}
+}
+
+func TestSessionsV3SyncHydrateReturnsDeletedRequestedSessionTombstone(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-hydrate-tombstone", "Sync Hydrate Tombstone", "/workspace/cp4-hydrate-tombstone")
+	if err := server.sessions.DeleteSession(created.ID); err != nil {
+		t.Fatalf("delete session: %v", err)
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"surface":     "desktop",
+		"session_ids": []string{created.ID},
+		"history":     map[string]any{"mode": "none"},
+	})
+	if err != nil {
+		t.Fatalf("marshal hydrate body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, V3SyncHydratePath, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("hydrate status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		SessionsByID        map[string]pebblestore.SessionSnapshot    `json:"sessions_by_id"`
+		TombstonesBySession map[string]pebblestore.V3SessionTombstone `json:"tombstones_by_session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode hydrate: %v", err)
+	}
+	if _, ok := payload.SessionsByID[created.ID]; ok {
+		t.Fatalf("deleted session still present in sessions_by_id: %+v", payload.SessionsByID[created.ID])
+	}
+	tombstone := payload.TombstonesBySession[created.ID]
+	if !tombstone.Deleted || tombstone.Kind != "deleted" || tombstone.Session.ID != created.ID || tombstone.WorkspacePath != "/workspace/cp4-hydrate-tombstone" {
+		t.Fatalf("hydrate deleted tombstone invalid: %+v", tombstone)
 	}
 }
 

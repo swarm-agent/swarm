@@ -246,15 +246,8 @@ func (s *SessionStore) buildV3SyncSnapshotFromReader(reader pebble.Reader, optio
 			return V3SyncSnapshotResult{}, err
 		}
 	}
-	tombstones, err := listV3SyncSnapshotTombstonesFromReader(reader, options.AccountScopeID, 1000)
-	if err != nil {
+	if err := s.addV3SyncSnapshotTombstones(reader, options, &result); err != nil {
 		return V3SyncSnapshotResult{}, err
-	}
-	for _, tombstone := range tombstones {
-		if !v3SyncSnapshotTombstoneVisible(tombstone, options.AccountScopeID, options.UserID) {
-			continue
-		}
-		result.TombstonesBySession[tombstone.SessionID] = tombstone
 	}
 	return result, nil
 }
@@ -474,6 +467,53 @@ func normalizeV3SyncSnapshotWorkspacePaths(workspacePath string, workspacePaths 
 	return out
 }
 
+func (s *SessionStore) addV3SyncSnapshotTombstones(reader pebble.Reader, options V3SyncSnapshotOptions, result *V3SyncSnapshotResult) error {
+	selectedIDs := make(map[string]struct{}, len(result.SessionsByID)+len(options.SessionIDs))
+	for sessionID := range result.SessionsByID {
+		selectedIDs[sessionID] = struct{}{}
+	}
+	for _, sessionID := range options.SessionIDs {
+		sessionID = strings.TrimSpace(sessionID)
+		if sessionID == "" {
+			continue
+		}
+		selectedIDs[sessionID] = struct{}{}
+	}
+	for sessionID := range selectedIDs {
+		var tombstone V3SessionTombstone
+		ok, err := getJSONFromReader(reader, KeyV3SessionTombstone(sessionID), &tombstone)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			continue
+		}
+		tombstone = normalizeV3SessionTombstone(tombstone)
+		if !v3SyncSnapshotTombstoneVisibleForSelector(tombstone, options) {
+			continue
+		}
+		result.TombstonesBySession[tombstone.SessionID] = tombstone
+	}
+
+	if len(options.SessionIDs) > 0 {
+		return nil
+	}
+	accountTombstones, err := listV3SyncSnapshotTombstonesFromReader(reader, options.AccountScopeID, 0)
+	if err != nil {
+		return err
+	}
+	for _, tombstone := range accountTombstones {
+		if _, already := result.TombstonesBySession[tombstone.SessionID]; already {
+			continue
+		}
+		if !v3SyncSnapshotTombstoneVisibleForSelector(tombstone, options) {
+			continue
+		}
+		result.TombstonesBySession[tombstone.SessionID] = tombstone
+	}
+	return nil
+}
+
 func v3SyncSnapshotTombstoneVisible(tombstone V3SessionTombstone, accountScopeID, userID string) bool {
 	if strings.TrimSpace(tombstone.SessionID) == "" {
 		return false
@@ -489,6 +529,41 @@ func v3SyncSnapshotTombstoneVisible(tombstone V3SessionTombstone, accountScopeID
 		}
 	}
 	return true
+}
+
+func v3SyncSnapshotTombstoneVisibleForSelector(tombstone V3SessionTombstone, options V3SyncSnapshotOptions) bool {
+	if !v3SyncSnapshotTombstoneVisible(tombstone, options.AccountScopeID, options.UserID) {
+		return false
+	}
+	if len(options.SessionIDs) > 0 {
+		for _, sessionID := range options.SessionIDs {
+			if strings.TrimSpace(sessionID) == tombstone.SessionID {
+				return true
+			}
+		}
+		return false
+	}
+	return v3SyncSnapshotTombstoneVisibleForWorkspaces(tombstone, options.WorkspacePath, options.WorkspacePaths)
+}
+
+func v3SyncSnapshotTombstoneVisibleForWorkspaces(tombstone V3SessionTombstone, workspacePath string, workspacePaths []string) bool {
+	paths := workspacePaths
+	if len(paths) == 0 {
+		paths = normalizeV3SyncSnapshotWorkspacePaths(workspacePath, nil)
+	}
+	if len(paths) == 0 {
+		return true
+	}
+	normalizedTombstonePath, err := normalizeSessionPath(tombstone.WorkspacePath)
+	if err != nil {
+		return false
+	}
+	for _, path := range paths {
+		if normalizedTombstonePath == path {
+			return true
+		}
+	}
+	return false
 }
 
 func v3SyncSnapshotSessionVisibleForWorkspaces(session SessionSnapshot, accountScopeID, userID, workspacePath string, workspacePaths []string) bool {
@@ -869,7 +944,7 @@ func listPlanRevisionsFromReader(reader pebble.Reader, sessionID, planID string,
 
 func listV3SyncSnapshotTombstonesFromReader(reader pebble.Reader, accountScopeID string, limit int) ([]V3SessionTombstone, error) {
 	if limit <= 0 {
-		limit = 1000
+		limit = int(^uint(0) >> 1)
 	}
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	prefix := V3SessionTombstonePrefix()
