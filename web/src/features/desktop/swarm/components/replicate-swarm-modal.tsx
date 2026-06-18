@@ -12,7 +12,6 @@ import { hydrateReplicationWorkspaces, replicateSwarm, ReplicateSwarmLaunchError
 import { fetchSwarmTargets, type SwarmTarget } from '../api/swarm-targets'
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
 import type { DesktopOnboardingStatus } from '../../onboarding/types'
-import { useDesktopUiStore } from '../../state/desktop-ui-store'
 
 type ReplicateTargetMode = 'local' | 'remote'
 
@@ -110,13 +109,12 @@ export function ReplicateSwarmModal({
   const [syncVaultPassword, setSyncVaultPassword] = useState('')
   const [bypassPermissions, setBypassPermissions] = useState(false)
 
-  const vault = useDesktopUiStore((state) => state.vault)
   const suggestedName = useMemo(() => suggestedReplicatedSwarmName(onboardingStatus), [onboardingStatus])
   const selectedCount = useMemo(
     () => workspaceDrafts.filter((item) => item.selected && (targetMode !== 'remote' || item.defaultReplicationMode === 'bundle')).length,
     [workspaceDrafts, targetMode],
   )
-  const hostVaultEnabled = Boolean(vault.enabled)
+  const hostVaultEnabled = false
   const runtimeChoice = useMemo(
     () => (selectedRuntime && runtimeStatus.available.includes(selectedRuntime) ? selectedRuntime : runtimeStatus.recommended || ''),
     [runtimeStatus, selectedRuntime],

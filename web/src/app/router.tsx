@@ -1,6 +1,4 @@
 import { createRootRoute, createRoute, createRouter, lazyRouteComponent } from '@tanstack/react-router'
-import { queryClient } from './query-client'
-import { prefetchSessionRuntimeData } from '../features/queries/query-options'
 import { DesktopVaultShell } from '../features/desktop/vault/components/desktop-vault-shell'
 
 const WorkspaceHomePage = lazyRouteComponent(() => import('../features/workspaces/pages/workspace-home-page'), 'WorkspaceHomePage')
@@ -32,7 +30,6 @@ if (typeof window !== 'undefined') {
   const route = currentWorkspaceSessionRoute(window.location.pathname)
   if (route) {
     void importDesktopAppPage()
-    void prefetchSessionRuntimeData(queryClient, route.sessionId)
   }
 }
 
@@ -163,7 +160,6 @@ const workspaceSessionRoute = createRoute({
     if (!sessionId) {
       return null
     }
-    void prefetchSessionRuntimeData(queryClient, sessionId)
     return { sessionId }
   },
   component: DesktopAppPage,

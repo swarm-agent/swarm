@@ -13,7 +13,6 @@ import { WorktreeSettingsPage } from '../worktrees/components/worktree-settings-
 import { DesktopSwarmDashboard } from '../../swarm/desktop-swarm-dashboard'
 import { cn } from '../../../../lib/cn'
 import { normalizeSettingsTabID, type SettingsTabID } from '../types/settings-tabs'
-import { useDesktopUiStore } from '../../state/desktop-ui-store'
 
 const settingsTabs: Array<{ id: SettingsTabID; label: string; icon: LucideIcon }> = [
   { id: 'account', label: 'Account', icon: UserRound },
@@ -38,7 +37,6 @@ export function DesktopSettingsPage() {
   const settingsRouteMatch = matchRoute({ to: '/settings', fuzzy: false })
   const workspaceSettingsMatch = matchRoute({ to: '/$workspaceSlug/settings', fuzzy: false })
   const routeWorkspaceSlug = workspaceSettingsMatch ? workspaceSettingsMatch.workspaceSlug.trim() : ''
-  const activeSessionId = useDesktopUiStore((state) => state.activeSessionId)
   const search = useSearch({ strict: false }) as SettingsSearchParams
   const [activeTab, setActiveTab] = useState<SettingsTabID>(() => normalizeSettingsTabID(search.tab))
 
@@ -50,11 +48,6 @@ export function DesktopSettingsPage() {
 
   const handleBack = useMemo(() => {
     if (routeWorkspaceSlug) {
-      if (activeSessionId) {
-        return () => {
-          void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug: routeWorkspaceSlug, sessionId: activeSessionId } })
-        }
-      }
       return () => {
         void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
       }
@@ -67,7 +60,7 @@ export function DesktopSettingsPage() {
     return () => {
       void navigate({ to: '/' })
     }
-  }, [activeSessionId, navigate, routeWorkspaceSlug, settingsRouteMatch])
+  }, [navigate, routeWorkspaceSlug, settingsRouteMatch])
 
   const handleTabChange = (tab: SettingsTabID) => {
     setActiveTab(tab)
@@ -83,7 +76,7 @@ export function DesktopSettingsPage() {
       <aside className="hidden w-[240px] shrink-0 flex-col border-r border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-5 md:flex">
         <Button variant="outline" className="h-11 justify-start rounded-xl" onClick={handleBack}>
           <Home size={16} />
-          {routeWorkspaceSlug ? (activeSessionId ? 'Back to chat' : 'Back to workspace') : 'Back to launcher'}
+          {routeWorkspaceSlug ? 'Back to workspace' : 'Back to launcher'}
         </Button>
 
         <div className="mt-6 px-2">

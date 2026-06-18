@@ -1,9 +1,10 @@
-import { useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
 import { Lock, Unlock, Key, Shield, Download, Upload, AlertCircle, CheckCircle2 } from "lucide-react";
 import { Button } from "../../../../../components/ui/button";
 import { Dialog, DialogBackdrop, DialogPanel } from "../../../../../components/ui/dialog";
 import { Input } from "../../../../../components/ui/input";
-import { useDesktopUiStore } from "../../../state/desktop-ui-store";
+import { disableVault, enableVault, exportVaultBundle, fetchVaultStatus, importVaultBundle, lockVault, unlockVault } from "../../../vault/api";
+import type { VaultStatus } from "../../../vault/types";
 
 function downloadBundle(bundle: Uint8Array, filename: string) {
   const blob = new Blob([Uint8Array.from(bundle)], {
@@ -35,13 +36,9 @@ function timestampedBundleName() {
 }
 
 export function VaultSettingsPage() {
-  const vault = useDesktopUiStore((state) => state.vault);
-  const enableVault = useDesktopUiStore((state) => state.enableVault);
-  const unlockVault = useDesktopUiStore((state) => state.unlockVault);
-  const exportBundle = useDesktopUiStore((state) => state.exportVaultBundle);
-  const importBundle = useDesktopUiStore((state) => state.importVaultBundle);
-  const lockVault = useDesktopUiStore((state) => state.lockVault);
-  const disableVault = useDesktopUiStore((state) => state.disableVault);
+  const [vault, setVault] = useState<VaultStatus>({ enabled: false, unlocked: false, unlockRequired: false, storageMode: "", warning: "" });
+  const [vaultLoading, setVaultLoading] = useState(true);
+  const [vaultError, setVaultError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -56,6 +53,25 @@ export function VaultSettingsPage() {
   const [importPassword, setImportPassword] = useState("");
   const [pendingImportBundle, setPendingImportBundle] = useState<Uint8Array | null>(null);
 
+  useEffect(() => {
+    let cancelled = false;
+    setVaultLoading(true);
+    setVaultError(null);
+    void fetchVaultStatus()
+      .then((next) => {
+        if (!cancelled) setVault(next);
+      })
+      .catch((err) => {
+        if (!cancelled) setVaultError(err instanceof Error ? err.message : "Failed to load vault status");
+      })
+      .finally(() => {
+        if (!cancelled) setVaultLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const closeExportDialog = () => {
     if (transferBusy) {
       return;
@@ -65,7 +81,7 @@ export function VaultSettingsPage() {
   };
 
   const closeDisableDialog = () => {
-    if (vault.loading) {
+    if (vaultLoading) {
       return;
     }
     setDisableDialogOpen(false);
@@ -92,12 +108,15 @@ export function VaultSettingsPage() {
     }
     setError(null);
     try {
-      await enableVault(password);
+      setVaultLoading(true);
+      setVault(await enableVault(password));
       setPassword("");
       setConfirm("");
       setStatus("Vault enabled.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to enable vault");
+    } finally {
+      setVaultLoading(false);
     }
   };
 
@@ -108,11 +127,14 @@ export function VaultSettingsPage() {
     }
     setError(null);
     try {
-      await unlockVault(password);
+      setVaultLoading(true);
+      setVault(await unlockVault(password));
       setPassword("");
       setStatus("Vault unlocked.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to unlock vault");
+    } finally {
+      setVaultLoading(false);
     }
   };
 
@@ -124,7 +146,7 @@ export function VaultSettingsPage() {
     setTransferBusy(true);
     setError(null);
     try {
-      const result = await exportBundle(exportPassword);
+      const result = await exportVaultBundle(exportPassword);
       const filename = timestampedBundleName();
       downloadBundle(result.bundle, filename);
       setExportPassword("");
@@ -148,17 +170,20 @@ export function VaultSettingsPage() {
     }
     setError(null);
     try {
-      await disableVault(disablePassword);
+      setVaultLoading(true);
+      setVault(await disableVault(disablePassword));
       setDisablePassword("");
       setDisableDialogOpen(false);
       setStatus("Vault disabled.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to disable vault");
+    } finally {
+      setVaultLoading(false);
     }
   };
 
   const onPickImportFile = () => {
-    if (transferBusy || vault.loading) {
+    if (transferBusy || vaultLoading) {
       return;
     }
     fileInputRef.current?.click();
@@ -196,7 +221,8 @@ export function VaultSettingsPage() {
     setTransferBusy(true);
     setError(null);
     try {
-      const result = await importBundle(importPassword, pendingImportBundle);
+      const result = await importVaultBundle(importPassword, pendingImportBundle);
+      setVault(result.vault);
       setImportPassword("");
       setPendingImportBundle(null);
       setImportDialogOpen(false);
@@ -243,7 +269,7 @@ export function VaultSettingsPage() {
       </div>
 
       <div className="space-y-6">
-        {vault.warning || status || error || vault.error ? (
+        {vault.warning || status || error || vaultError ? (
           <div className="space-y-2">
             {vault.warning ? (
               <div className="flex items-center gap-2 rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-4 py-3 text-xs text-[var(--app-warning)]">
@@ -257,10 +283,10 @@ export function VaultSettingsPage() {
                 {status}
               </div>
             ) : null}
-            {error || vault.error ? (
+            {error || vaultError ? (
               <div className="flex items-center gap-2 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-4 py-3 text-xs text-[var(--app-danger)]">
                 <AlertCircle className="h-4 w-4 shrink-0" />
-                {error || vault.error}
+                {error || vaultError}
               </div>
             ) : null}
           </div>
@@ -295,14 +321,14 @@ export function VaultSettingsPage() {
                   variant="outline"
                   className="h-8 rounded-md px-3 text-xs transition-colors hover:bg-[var(--app-surface-subtle)]"
                   onClick={() =>
-                    void lockVault().catch((err: unknown) =>
+                    void lockVault().then(setVault).catch((err: unknown) =>
                       setError(err instanceof Error ? err.message : "Failed to lock vault"),
                     )
                   }
-                  disabled={vault.loading}
+                  disabled={vaultLoading}
                 >
                   <Lock className="mr-1.5 h-3 w-3" />
-                  {vault.loading ? "Locking…" : "Lock"}
+                  {vaultLoading ? "Locking…" : "Lock"}
                 </Button>
                 <Button
                   variant="outline"
@@ -312,10 +338,10 @@ export function VaultSettingsPage() {
                     setDisablePassword("");
                     setDisableDialogOpen(true);
                   }}
-                  disabled={vault.loading}
+                  disabled={vaultLoading}
                 >
                   <Shield className="mr-1.5 h-3 w-3" />
-                  {vault.loading ? "Disabling…" : "Disable"}
+                  {vaultLoading ? "Disabling…" : "Disable"}
                 </Button>
               </div>
             ) : null}
@@ -342,9 +368,9 @@ export function VaultSettingsPage() {
                 <Button
                   className="h-10 rounded-md border border-[var(--app-primary)] bg-transparent px-6 text-[var(--app-primary)] hover:bg-[var(--app-surface-subtle)]"
                   onClick={() => void submitEnable()}
-                  disabled={vault.loading}
+                  disabled={vaultLoading}
                 >
-                  {vault.loading ? "Enabling…" : "Enable"}
+                  {vaultLoading ? "Enabling…" : "Enable"}
                 </Button>
               </div>
             </div>
@@ -364,9 +390,9 @@ export function VaultSettingsPage() {
                 <Button
                   className="h-10 rounded-md border border-[var(--app-primary)] bg-transparent px-8 text-[var(--app-primary)] hover:bg-[var(--app-surface-subtle)]"
                   onClick={() => void submitUnlock()}
-                  disabled={vault.loading}
+                  disabled={vaultLoading}
                 >
-                  {vault.loading ? "Unlocking…" : "Unlock"}
+                  {vaultLoading ? "Unlocking…" : "Unlock"}
                 </Button>
               </div>
             </div>
@@ -387,7 +413,7 @@ export function VaultSettingsPage() {
                   setExportPassword("");
                   setExportDialogOpen(true);
                 }}
-                disabled={transferBusy || vault.loading || (vault.enabled && !vault.unlocked)}
+                disabled={transferBusy || vaultLoading || (vault.enabled && !vault.unlocked)}
               >
                 <Download className="mr-1.5 h-3 w-3" />
                 {transferBusy ? "Working…" : "Export"}
@@ -396,7 +422,7 @@ export function VaultSettingsPage() {
                 variant="outline"
                 className="h-8 rounded-md px-3 text-xs border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-subtle)] text-[var(--app-text)] transition-colors"
                 onClick={onPickImportFile}
-                disabled={transferBusy || vault.loading}
+                disabled={transferBusy || vaultLoading}
               >
                 <Upload className="mr-1.5 h-3 w-3" />
                 {transferBusy ? "Working…" : "Import"}
@@ -492,16 +518,16 @@ export function VaultSettingsPage() {
                 type="button"
                 className="h-12 w-full rounded-xl border border-[var(--app-danger-border)] bg-transparent text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)]"
                 onClick={() => void submitDisable()}
-                disabled={vault.loading}
+                disabled={vaultLoading}
               >
-                {vault.loading ? "Disabling…" : "Confirm Disable"}
+                {vaultLoading ? "Disabling…" : "Confirm Disable"}
               </Button>
               <Button
                 type="button"
                 variant="ghost"
                 className="h-10 w-full rounded-xl text-[var(--app-text)]"
                 onClick={closeDisableDialog}
-                disabled={vault.loading}
+                disabled={vaultLoading}
               >
                 Cancel
               </Button>

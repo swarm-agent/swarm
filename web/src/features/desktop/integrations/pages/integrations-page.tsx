@@ -6,12 +6,9 @@ import { Button } from '../../../../components/ui/button'
 import { Card } from '../../../../components/ui/card'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { Input } from '../../../../components/ui/input'
-import { DesktopChatPanel } from '../../chat/components/desktop-chat-panel'
-import { fetchDraftModelPreference, fetchSession } from '../../chat/queries/chat-queries'
+import { fetchDraftModelPreference } from '../../chat/queries/chat-queries'
 import type { DesktopSessionRecord } from '../../types/realtime'
-import { useDesktopUiStore } from '../../state/desktop-ui-store'
 import { uiSettingsQueryOptions } from '../../../queries/query-options'
-import { getSwarmSettings } from '../../settings/swarm/queries/get-swarm-settings'
 import { normalizeGlobalThemeSettings } from '../../settings/swarm/types/swarm-settings'
 import { createWorkspaceThemeStyle } from '../../../workspaces/launcher/services/workspace-theme'
 import { SwarmToolSidebar } from '../../tools/components/swarm-tool-sidebar'
@@ -19,10 +16,6 @@ import {
   createIntegrationWorkspaceChildSession,
   fetchIntegrationWorkspace,
   fetchIntegrationWorkspaces,
-  INTEGRATION_BUILDER_AGENT_ID,
-  INTEGRATION_BUILDER_WORKSPACE_NAME,
-  INTEGRATION_BUILDER_WORKSPACE_PATH,
-  isIntegrationBuilderSession,
   openIntegrationWorkspace,
   switchIntegrationWorkspaceSession,
   type IntegrationWorkspaceRecord,
@@ -33,18 +26,6 @@ import {
 function workspaceStatus(workspace: IntegrationWorkspaceRecord): string {
   if (workspace.latestChildSessionId) return 'Drafting'
   return 'Ready to start'
-}
-
-function metadataString(metadata: Record<string, unknown> | null | undefined, key: string): string {
-  const value = metadata?.[key]
-  return typeof value === 'string' ? value.trim() : ''
-}
-
-function workspaceIdFromSession(session: DesktopSessionRecord | null | undefined): string {
-  const metadata = session?.metadata && typeof session.metadata === 'object' && !Array.isArray(session.metadata)
-    ? session.metadata as Record<string, unknown>
-    : null
-  return metadataString(metadata, 'integration_workspace_id')
 }
 
 function sortWorkspaces(workspaces: IntegrationWorkspaceRecord[]): IntegrationWorkspaceRecord[] {
@@ -61,10 +42,6 @@ export function IntegrationsPage() {
   const queryClient = useQueryClient()
   const routeSessionMatch = matchRoute({ to: '/integrations/$sessionId', fuzzy: false })
   const routeSessionId = routeSessionMatch ? routeSessionMatch.sessionId.trim() : ''
-  const setActiveSession = useDesktopUiStore((state) => state.setActiveSession)
-  const setActiveWorkspacePath = useDesktopUiStore((state) => state.setActiveWorkspacePath)
-  const upsertSession = useDesktopUiStore((state) => state.upsertSession)
-
   const [newIntegrationName, setNewIntegrationName] = useState('')
   const [creatingIntegration, setCreatingIntegration] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
@@ -78,32 +55,18 @@ export function IntegrationsPage() {
     queryFn: () => fetchIntegrationWorkspaces(200),
     staleTime: 15_000,
   })
-  const routeSessionQuery = useQuery({
-    queryKey: ['integration-builder-session', routeSessionId],
-    queryFn: () => fetchSession(routeSessionId),
-    enabled: routeSessionId !== '',
-    staleTime: 15_000,
-  })
   const draftModelQuery = useQuery({
     queryKey: ['draft-model'],
     queryFn: () => fetchDraftModelPreference(),
     staleTime: 60_000,
   })
   const uiSettingsQuery = useQuery(uiSettingsQueryOptions())
-  const swarmSettingsQuery = useQuery({
-    queryKey: ['swarm-settings'],
-    queryFn: getSwarmSettings,
-    staleTime: 30_000,
-  })
 
   const workspaces = useMemo(() => sortWorkspaces(workspacesQuery.data ?? []), [workspacesQuery.data])
-  const routeSession = routeSessionQuery.data && isIntegrationBuilderSession(routeSessionQuery.data) ? routeSessionQuery.data : null
   const inferredWorkspaceId = useMemo(() => {
-    const fromSession = workspaceIdFromSession(routeSession)
-    if (fromSession) return fromSession
     const fromLatest = workspaces.find((workspace) => workspace.latestChildSessionId === routeSessionId)?.workspaceId ?? ''
     return fromLatest
-  }, [routeSession, routeSessionId, workspaces])
+  }, [routeSessionId, workspaces])
   const selectedWorkspaceId = selectedWorkspaceIdState || inferredWorkspaceId || workspaces[0]?.workspaceId || ''
 
   useEffect(() => {
@@ -122,22 +85,10 @@ export function IntegrationsPage() {
   const selectedWorkspace = snapshotQuery.data?.workspace
     ?? workspaces.find((workspace) => workspace.workspaceId === selectedWorkspaceId)
     ?? null
-  const selectedSession = useMemo(() => {
-    if (routeSession && workspaceIdFromSession(routeSession) === selectedWorkspaceId) return routeSession
-    const snapshotSession = snapshotQuery.data?.session ?? null
-    if (snapshotSession?.id) return snapshotSession
-    return null
-  }, [routeSession, selectedWorkspaceId, snapshotQuery.data?.session])
+  const selectedSession = snapshotQuery.data?.session ?? null
   const childSessions = snapshotQuery.data?.sessions ?? []
-  const swarmName = swarmSettingsQuery.data?.name?.trim() || 'Local'
   const userThemeId = normalizeGlobalThemeSettings(uiSettingsQuery.data).activeId
   const darkOverrideButtonStyle = useMemo(() => createWorkspaceThemeStyle(userThemeId, '--integration-builder-theme'), [userThemeId])
-
-  const setSessionActive = useCallback((session: DesktopSessionRecord | null) => {
-    setActiveSession(session?.id ?? null)
-    setActiveWorkspacePath(session?.workspacePath || null)
-    if (session) upsertSession(session)
-  }, [setActiveSession, setActiveWorkspacePath, upsertSession])
 
   const requirePreference = useCallback(() => {
     const preference = draftModelQuery.data?.preference
@@ -156,9 +107,7 @@ export function IntegrationsPage() {
         return sortWorkspaces([nextWorkspace, ...without])
       })
     }
-    for (const child of snapshot.sessions) upsertSession(child.session)
-    if (snapshot.session) upsertSession(snapshot.session)
-  }, [queryClient, upsertSession])
+  }, [queryClient])
 
   const handleOpenWorkspace = useCallback(async (workspace: IntegrationWorkspaceRecord, newChild = false) => {
     setCreateError(null)
@@ -177,13 +126,12 @@ export function IntegrationsPage() {
     cacheWorkspaceSnapshot(workspace.workspaceId, snapshot)
     setSelectedWorkspaceIdState(workspace.workspaceId)
     setAiSidebarOpen(true)
-    setSessionActive(snapshot.session)
     if (snapshot.session?.id) {
       void navigate({ to: '/integrations/$sessionId', params: { sessionId: snapshot.session.id } })
     } else {
       void navigate({ to: '/integrations' })
     }
-  }, [cacheWorkspaceSnapshot, navigate, requirePreference, setSessionActive])
+  }, [cacheWorkspaceSnapshot, navigate, requirePreference])
 
   const handleCreateIntegration = useCallback(async () => {
     const name = newIntegrationName.trim()
@@ -209,8 +157,7 @@ export function IntegrationsPage() {
       })
       cacheWorkspaceSnapshot(workspaceId, snapshot)
       setSelectedWorkspaceIdState(workspaceId)
-      setSessionActive(snapshot.session)
-      setNewIntegrationName('')
+        setNewIntegrationName('')
       setCreateDialogOpen(false)
       setAiSidebarOpen(true)
       await queryClient.invalidateQueries({ queryKey: ['integration-workspaces'] })
@@ -220,7 +167,7 @@ export function IntegrationsPage() {
     } finally {
       setCreatingIntegration(false)
     }
-  }, [cacheWorkspaceSnapshot, navigate, newIntegrationName, queryClient, requirePreference, setSessionActive])
+  }, [cacheWorkspaceSnapshot, navigate, newIntegrationName, queryClient, requirePreference])
 
   const handleCreateChildSession = useCallback(async (): Promise<DesktopSessionRecord> => {
     if (!selectedWorkspace) throw new Error('Select an integration first.')
@@ -232,20 +179,18 @@ export function IntegrationsPage() {
       metadata: { source: 'integrations_page_new_chat' },
       preference,
     })
-    setSessionActive(session)
     await queryClient.invalidateQueries({ queryKey: ['integration-workspace', selectedWorkspace.workspaceId] })
     await queryClient.invalidateQueries({ queryKey: ['integration-workspaces'] })
     void navigate({ to: '/integrations/$sessionId', params: { sessionId: session.id } })
     return session
-  }, [navigate, queryClient, requirePreference, selectedWorkspace, setSessionActive])
+  }, [navigate, queryClient, requirePreference, selectedWorkspace])
 
   const handleSwitchChildSession = useCallback(async (sessionId: string) => {
     if (!selectedWorkspace) return
     const session = await switchIntegrationWorkspaceSession(selectedWorkspace.workspaceId, sessionId)
-    setSessionActive(session)
     setAiSidebarOpen(true)
     void navigate({ to: '/integrations/$sessionId', params: { sessionId: session.id } })
-  }, [navigate, selectedWorkspace, setSessionActive])
+  }, [navigate, selectedWorkspace])
 
   const sidebarWorkspaces = workspaces.map((workspace) => ({
     id: workspace.workspaceId,
@@ -451,35 +396,9 @@ export function IntegrationsPage() {
                     ))}
                   </div>
                 </div>
-                <DesktopChatPanel
-                  hostSwarmName={swarmName}
-                  workspacePath={selectedSession?.workspacePath || INTEGRATION_BUILDER_WORKSPACE_PATH}
-                  workspaceName={selectedSession?.workspaceName || INTEGRATION_BUILDER_WORKSPACE_NAME}
-                  workspaceTopologyRoutes={[]}
-                  localWorkspaceBindingId=""
-                  hostSwarmId={null}
-                  session={selectedSession}
-                  sessionCreateOverride={handleCreateChildSession}
-                  onSessionCreated={(session) => {
-                    setSessionActive(session)
-                    void queryClient.invalidateQueries({ queryKey: ['integration-workspace', selectedWorkspace.workspaceId] })
-                  }}
-                  onOpenSettingsTab={(tab) => void navigate({ to: '/settings', search: { tab } })}
-                  onOpenQuickSettings={(tab) => void navigate({ to: '/settings', search: { tab } })}
-                  onOpenPermissions={() => void navigate({ to: '/settings', search: { tab: 'permissions' } })}
-                  onOpenWorkspaceLauncher={() => void navigate({ to: '/' })}
-                  onOpenSidebarMenu={() => {}}
-                  onStartNewSession={() => { void handleCreateChildSession() }}
-                  lockedAgentName={INTEGRATION_BUILDER_AGENT_ID}
-                  lockedAgentLabel="Integration Builder"
-                  hideModeSelector
-                  hideRouteSelector
-                  hideWorkspaceActions
-                  compactControls
-                  newSessionLabel="New Chat"
-                  compactHeader
-                  emptyStateMessage="Paste API docs, endpoint examples, auth notes, CLI help, or links. I’ll draft scoped tools and permission review notes for this integration."
-                />
+                <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 text-sm leading-6 text-[var(--app-text-muted)]">
+                  The old Desktop chat runtime has been removed from the integrations sidebar. Builder chat UI will be reintroduced through the new integration path in a later checkpoint.
+                </div>
               </div>
             ) : (
               <button type="button" className="flex h-full w-full items-start justify-center pt-4 text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]" onClick={() => setAiSidebarOpen(true)} aria-label="Expand AI builder">

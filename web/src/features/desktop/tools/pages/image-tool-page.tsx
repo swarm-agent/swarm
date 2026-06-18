@@ -7,7 +7,6 @@ import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/d
 import { Select } from '../../../../components/ui/select'
 import { Textarea } from '../../../../components/ui/textarea'
 import { apiFetch, requestJson } from '../../../../app/api'
-import { useDesktopUiStore } from '../../state/desktop-ui-store'
 import { listWorkspaces } from '../../../workspaces/launcher/queries/list-workspaces'
 import { uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
 import { normalizeGlobalThemeSettings, normalizeImageDefaultModel, type UISettingsWire } from '../../settings/swarm/types/swarm-settings'
@@ -295,9 +294,6 @@ export function ImageToolPage() {
   const rootImageToolSessionMatch = matchRoute({ to: '/tools/image/$imageSessionId', fuzzy: false })
   const routeWorkspaceSlug = workspaceImageToolSessionMatch ? workspaceImageToolSessionMatch.workspaceSlug.trim() : workspaceImageToolMatch ? workspaceImageToolMatch.workspaceSlug.trim() : ''
   const routeImageSessionId = workspaceImageToolSessionMatch ? workspaceImageToolSessionMatch.imageSessionId.trim() : rootImageToolSessionMatch ? rootImageToolSessionMatch.imageSessionId.trim() : ''
-  const activeSessionId = useDesktopUiStore((state) => state.activeSessionId)
-  const activeWorkspacePath = useDesktopUiStore((state) => state.activeWorkspacePath)
-
   const [createError, setCreateError] = useState<string | null>(null)
   const [generationError, setGenerationError] = useState<string | null>(null)
   const [revealingStorage, setRevealingStorage] = useState(false)
@@ -360,11 +356,8 @@ export function ImageToolPage() {
     if (routeWorkspaceSlug) {
       return resolveWorkspaceBySlug(workspaces, routeWorkspaceSlug)
     }
-    if (activeWorkspacePath) {
-      return workspaces.find((workspace) => workspace.path === activeWorkspacePath) ?? null
-    }
     return workspaces[0] ?? null
-  }, [activeWorkspacePath, routeWorkspaceSlug, workspaces])
+  }, [routeWorkspaceSlug, workspaces])
 
   const workspaceSlugByPath = useMemo(() => buildWorkspaceRouteSlugMap(workspaces), [workspaces])
   const selectedWorkspacePath = selectedWorkspace?.path ?? ''
@@ -625,11 +618,6 @@ export function ImageToolPage() {
 
   const handleBackToLauncher = useMemo(() => {
     if (routeWorkspaceSlug) {
-      if (activeSessionId) {
-        return () => {
-          void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug: routeWorkspaceSlug, sessionId: activeSessionId } })
-        }
-      }
       return () => {
         void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
       }
@@ -637,7 +625,7 @@ export function ImageToolPage() {
     return () => {
       void navigate({ to: '/' })
     }
-  }, [activeSessionId, navigate, routeWorkspaceSlug])
+  }, [navigate, routeWorkspaceSlug])
 
   const handleCreateSession = useCallback(async () => {
     if (!selectedWorkspacePath || !selectedWorkspaceName) {
@@ -1038,7 +1026,7 @@ export function ImageToolPage() {
           <SwarmToolSidebar
             backLabel="Tools"
             onBack={handleBackToTools}
-            topSecondaryLabel={routeWorkspaceSlug ? (activeSessionId ? 'Chat' : 'Launcher') : 'Launcher'}
+            topSecondaryLabel={routeWorkspaceSlug ? 'Workspace' : 'Launcher'}
             onTopSecondary={handleBackToLauncher}
             darkModeEnabled={blackModeEnabled}
             onToggleDarkMode={() => setBlackModeEnabled((enabled) => !enabled)}
@@ -1165,7 +1153,7 @@ export function ImageToolPage() {
             <div className="mb-3 flex shrink-0 items-center justify-between gap-2 max-[400px]:mb-1.5 lg:hidden">
               <div className="flex min-w-0 items-center gap-2">
                 <Button variant="ghost" className="h-9 rounded-xl px-3 text-[var(--app-text-muted)] max-[400px]:h-7 max-[400px]:px-2" onClick={handleBackToTools}><ArrowLeft size={15} />Tools</Button>
-                <Button variant="ghost" className="h-9 rounded-xl px-3 text-[var(--app-text-subtle)] max-[400px]:h-7 max-[400px]:px-2" onClick={handleBackToLauncher}>{routeWorkspaceSlug ? (activeSessionId ? 'Chat' : 'Launcher') : 'Launcher'}</Button>
+                <Button variant="ghost" className="h-9 rounded-xl px-3 text-[var(--app-text-subtle)] max-[400px]:h-7 max-[400px]:px-2" onClick={handleBackToLauncher}>{routeWorkspaceSlug ? 'Workspace' : 'Launcher'}</Button>
               </div>
               <Button variant="outline" style={darkOverrideButtonStyle} className={`h-11 w-11 rounded-2xl px-0 max-[400px]:h-9 max-[400px]:w-9 ${blackModeEnabled ? 'border-[var(--image-tool-user-theme-accent)] bg-[var(--image-tool-user-theme-surface)] text-[var(--image-tool-user-theme-text)] hover:bg-[var(--image-tool-user-theme-surface-hover)]' : ''}`} onClick={() => setBlackModeEnabled((enabled) => !enabled)} aria-label="Toggle dark mode override for this page" aria-pressed={blackModeEnabled} title="Toggle dark mode override for this page"><Moon aria-hidden="true" strokeWidth={2.2} className="shrink-0" style={{ width: 22, height: 22, minWidth: 22, minHeight: 22 }} /></Button>
             </div>

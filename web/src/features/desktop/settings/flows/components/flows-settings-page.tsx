@@ -27,7 +27,6 @@ import {
   type FlowWorkspaceEntry,
 } from '../api'
 import { agentStateQueryOptions } from '../../../../queries/query-options'
-import { useDesktopUiStore } from '../../../state/desktop-ui-store'
 
 type FlowStatus = 'active' | 'paused' | 'draft' | 'needs_review' | 'failed'
 type FlowMode = 'Scheduled background job' | 'Manual one-shot'
@@ -1595,7 +1594,6 @@ export function FlowsSettingsPage() {
   const workspaceFlowDetailMatch = matchRoute({ to: '/$workspaceSlug/flow/$flowId', fuzzy: false })
   const routeWorkspaceSlug = (workspaceFlowDetailMatch ? workspaceFlowDetailMatch.workspaceSlug : workspaceFlowMatch ? workspaceFlowMatch.workspaceSlug : '').trim()
   const routeFlowID = (workspaceFlowDetailMatch ? workspaceFlowDetailMatch.flowId : globalFlowMatch ? globalFlowMatch.flowId : '').trim()
-  const activeSessionId = useDesktopUiStore((state) => state.activeSessionId)
   const flowsQuery = useQuery({ queryKey: flowsQueryKey, queryFn: ({ signal }) => fetchFlows(signal) })
   const swarmTargetsQuery = useQuery({ queryKey: flowSwarmTargetsQueryKey, queryFn: fetchFlowSwarmTargets })
   const agentStateQuery = useQuery(agentStateQueryOptions())
@@ -1682,16 +1680,12 @@ export function FlowsSettingsPage() {
   }, [agentFilter, flows, query, statusFilter, workspaceFilter])
 
   const handleBackToChat = useCallback(() => {
-    if (routeWorkspaceSlug && activeSessionId) {
-      void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug: routeWorkspaceSlug, sessionId: activeSessionId } })
-      return
-    }
     if (routeWorkspaceSlug) {
       void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
       return
     }
     void navigate({ to: '/' })
-  }, [activeSessionId, navigate, routeWorkspaceSlug])
+  }, [navigate, routeWorkspaceSlug])
 
   const setSelectedFlowID = useCallback((id: string | null) => {
     setSelectedFlowIDState(id)

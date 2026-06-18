@@ -1,7 +1,4 @@
-import type { QueryClient } from '@tanstack/react-query'
 import { fetchAgentState, fetchAgentToolContract, fetchDraftModelPreference, fetchModelOptions } from '../desktop/chat/queries/chat-queries'
-import { fetchAndApplyDesktopV3SessionMessagesTail, fetchAndApplyDesktopV3SessionPermissions, fetchAndApplyDesktopV3SessionPreference, fetchAndApplyDesktopV3SessionUsage } from '../desktop/state/desktop-v3-session-api'
-import { hydrateSessionV3Sync } from '../desktop/session-v3/api'
 import { getUISettings } from '../desktop/settings/swarm/queries/get-ui-settings'
 import { fetchWorkspaceOverview } from '../workspaces/launcher/queries/fetch-workspace-overview'
 
@@ -33,75 +30,6 @@ export function uiSettingsQueryOptions() {
     queryKey: uiSettingsQueryKey(),
     queryFn: () => getUISettings(),
     staleTime: 30_000,
-  }
-}
-
-export function sessionMessagesQueryKey(sessionId: string) {
-  return ['session-messages', sessionId] as const
-}
-
-export function sessionMessagesQueryOptions(sessionId: string, queryClient?: QueryClient) {
-  const normalizedSessionId = sessionId.trim()
-  return {
-    queryKey: sessionMessagesQueryKey(normalizedSessionId),
-    queryFn: async () => {
-      void queryClient
-      const page = await fetchAndApplyDesktopV3SessionMessagesTail(normalizedSessionId)
-      return page.messages
-    },
-    staleTime: 60_000,
-    enabled: normalizedSessionId !== '',
-  }
-}
-
-export function sessionPreferenceQueryKey(sessionId: string) {
-  return ['session-preference', sessionId] as const
-}
-
-export function sessionPreferenceQueryOptions(sessionId: string, queryClient?: QueryClient) {
-  const normalizedSessionId = sessionId.trim()
-  return {
-    queryKey: sessionPreferenceQueryKey(normalizedSessionId),
-    queryFn: async () => {
-      void queryClient
-      return fetchAndApplyDesktopV3SessionPreference(normalizedSessionId)
-    },
-    staleTime: 60_000,
-    enabled: normalizedSessionId !== '',
-  }
-}
-
-export function sessionUsageQueryKey(sessionId: string) {
-  return ['session-usage', sessionId] as const
-}
-
-export function sessionPermissionsQueryKey(sessionId: string) {
-  return ['session-permissions', sessionId] as const
-}
-
-export function sessionPermissionsQueryOptions(sessionId: string, queryClient?: QueryClient) {
-  const normalizedSessionId = sessionId.trim()
-  return {
-    queryKey: sessionPermissionsQueryKey(normalizedSessionId),
-    queryFn: async () => {
-      void queryClient
-      return fetchAndApplyDesktopV3SessionPermissions(normalizedSessionId)
-    },
-    staleTime: 10_000,
-    enabled: normalizedSessionId !== '',
-  }
-}
-
-export function sessionUsageQueryOptions(sessionId: string, queryClient?: QueryClient) {
-  const normalizedSessionId = sessionId.trim()
-  return {
-    queryKey: sessionUsageQueryKey(normalizedSessionId),
-    queryFn: async () => {
-      void queryClient
-      return fetchAndApplyDesktopV3SessionUsage(normalizedSessionId)
-    },
-    staleTime: 30_000,
-    enabled: normalizedSessionId !== '',
   }
 }
 
@@ -141,28 +69,4 @@ export function modelOptionsQueryOptions() {
     queryFn: ({ signal }: { signal?: AbortSignal }) => fetchModelOptions(signal),
     staleTime: 5 * 60_000,
   }
-}
-
-export function ensureSessionRuntimeData(queryClient: QueryClient, sessionId: string) {
-  const normalizedSessionId = sessionId.trim()
-  if (!normalizedSessionId) {
-    return Promise.resolve()
-  }
-
-  void queryClient
-  return hydrateSessionV3Sync({ sessionIds: [normalizedSessionId] })
-    .then(() => fetchAndApplyDesktopV3SessionMessagesTail(normalizedSessionId))
-    .then(() => undefined)
-}
-
-export function prefetchSessionRuntimeData(queryClient: QueryClient, sessionId: string) {
-  const normalizedSessionId = sessionId.trim()
-  if (!normalizedSessionId) {
-    return Promise.resolve()
-  }
-
-  void queryClient
-  return hydrateSessionV3Sync({ sessionIds: [normalizedSessionId] })
-    .then(() => fetchAndApplyDesktopV3SessionMessagesTail(normalizedSessionId))
-    .then(() => undefined)
 }

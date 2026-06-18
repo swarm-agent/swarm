@@ -6,20 +6,14 @@ import { Bell, Bot, Box, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronR
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
-import { DesktopNotificationsModal } from '../notifications/components/desktop-notifications-modal'
 import { cn } from '../../../lib/cn'
-import { useDesktopUiStore } from '../state/desktop-ui-store'
 import { useWorkspaceLauncher } from '../../workspaces/launcher/state/use-workspace-launcher'
 import { applyDesktopRouteTheme } from './desktop-theme-controller'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
-import { agentStateQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
-import { fetchDesktopSessionDiscovery, fetchDesktopStateSnapshot } from '../state/desktop-state-snapshot'
-import { useDesktopRouteReadiness, useDesktopSession, useDesktopWorkspaceSessions } from '../state/desktop-state-store'
-import { applyV3RuntimeEnvelope, createV3SnapshotEnvelope, getV3RuntimeDesktopSnapshot } from '../v3-runtime'
+import { uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
 import type { DesktopSessionRecord } from '../types/realtime'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
 import { DesktopQuickSettingsModal, type QuickSettingsTabID } from '../settings/components/desktop-quick-settings-modal'
-import { DesktopChatPanel } from '../chat/components/desktop-chat-panel'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import { buildWorkspaceRouteSlugMap, resolveWorkspaceBySlug, workspaceRouteSlugBase } from '../../workspaces/launcher/services/workspace-route'
 import type { WorkspaceEntry } from '../../workspaces/launcher/types/workspace'
@@ -244,34 +238,6 @@ function GitDetailsOverlay({ state, snapshot, loading, error, onRefresh, onClose
   )
 }
 
-function DesktopNotificationsOverlay({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
-  const connectionState = useDesktopUiStore((state) => state.connectionState)
-  const notificationCenter = useDesktopUiStore((state) => state.notificationCenter)
-  const updateNotificationRecord = useDesktopUiStore((state) => state.updateNotificationRecord)
-  return (
-    <DesktopNotificationsModal
-      open={open}
-      onOpenChange={onOpenChange}
-      notifications={notificationCenter.items}
-      summary={notificationCenter.summary}
-      loading={notificationCenter.loading}
-      connectionState={connectionState}
-      onMarkRead={async (record) => {
-        await updateNotificationRecord(record.id, { read: true })
-      }}
-      onAcknowledge={async (record) => {
-        await updateNotificationRecord(record.id, { acked: true, status: 'resolved' })
-      }}
-      onMute={async (record) => {
-        await updateNotificationRecord(record.id, { muted: true })
-      }}
-      onClearAll={async () => {
-        await useDesktopUiStore.getState().clearNotifications()
-      }}
-    />
-  )
-}
-
 function normalizeWorkspaceTodoSummary(summary: WorkspaceTodoSummary): WorkspaceTodoSummary {
   return {
     ...summary,
@@ -369,19 +335,6 @@ function buildTemporaryWorkspaceEntry(path: string, workspaceName: string): Work
     gitCommittedFileCount: 0,
     gitCommittedAdditions: 0,
     gitCommittedDeletions: 0,
-  }
-}
-
-function connectionTone(connectionState: 'idle' | 'connecting' | 'open' | 'closed' | 'error'): 'muted' | 'success' | 'warning' | 'danger' {
-  switch (connectionState) {
-    case 'open':
-      return 'success'
-    case 'connecting':
-      return 'warning'
-    case 'error':
-      return 'danger'
-    default:
-      return 'muted'
   }
 }
 
@@ -533,19 +486,6 @@ function loadSidebarWorkspaceLayout(): Record<string, SidebarWorkspaceLayout> {
     )
   } catch {
     return {}
-  }
-}
-
-function connectionDotClass(connectionState: 'idle' | 'connecting' | 'open' | 'closed' | 'error'): string {
-  switch (connectionTone(connectionState)) {
-    case 'success':
-      return 'bg-emerald-500'
-    case 'warning':
-      return 'bg-amber-400'
-    case 'danger':
-      return 'bg-rose-500'
-    default:
-      return 'bg-[var(--app-border-strong)]'
   }
 }
 
@@ -1301,8 +1241,7 @@ interface SessionRowProps {
 }
 
 function SessionRow({ active, now, session: initialSession, fallbackSwarmName, routeOptions, workspaceSlug, depth = 0, childLabel = null, childAssignmentLabel = null, childKind = 'root', agentSummary, agentsExpanded, onSelect, onPrefetch, onToggleAgents }: SessionRowProps) {
-  const dbSession = useDesktopSession(initialSession.id)
-  const session = dbSession ?? initialSession
+  const session = initialSession
   const activeSession = sessionIsActive(session)
   const originLabel = sessionOriginLabel(session, routeOptions, fallbackSwarmName)
   const backgroundInfo = sessionBackgroundInfo(session, originLabel)
@@ -1463,13 +1402,9 @@ export function DesktopAppPage() {
   const routeSessionId = (!isFlowRoute && workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
   const pwaDebugEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has(PWA_DEBUG_QUERY_PARAM)
   const { workspaces, selectingPath, saveWorkspace, loading: launcherWorkspacesLoading } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
-  const connectionState = useDesktopUiStore((state) => state.connectionState)
-  const refreshNotifications = useDesktopUiStore((state) => state.refreshNotifications)
-  const notificationCenter = useDesktopUiStore((state) => state.notificationCenter)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [expandedAgentSessions, setExpandedAgentSessions] = useState<Record<string, boolean>>({})
-  const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [pairingRequestsOpen, setPairingRequestsOpen] = useState(false)
   const [pendingPairingRequests, setPendingPairingRequests] = useState<RemoteSwarmPendingPairing[]>([])
   const [pairingDecisionBusyID, setPairingDecisionBusyID] = useState<string | null>(null)
@@ -1496,7 +1431,7 @@ export function DesktopAppPage() {
   const [updateError, setUpdateError] = useState<string | null>(null)
   const [updateProgress, setUpdateProgress] = useState<DesktopUpdateProgressState>({ open: false, job: null, startedAt: null })
   const [desktopToast, setDesktopToast] = useState<DesktopToastState | null>(() => loadPendingDesktopToast())
-  const [pendingWorktreeBranchByWorkspace, setPendingWorktreeBranchByWorkspace] = useState<Record<string, string>>({})
+  const [, setPendingWorktreeBranchByWorkspace] = useState<Record<string, string>>({})
   const [uiSettings, setUISettings] = useState<UISettingsWire | null>(null)
   const [localContainerUpdateConfirm, setLocalContainerUpdateConfirm] = useState<LocalContainerUpdateConfirmState | null>(null)
   const [todoSavingWorkspacePath, setTodoSavingWorkspacePath] = useState<string | null>(null)
@@ -1505,7 +1440,6 @@ export function DesktopAppPage() {
   const sidebarBodyRef = useRef<HTMLDivElement | null>(null)
   const mobileSidebarSwipeRef = useRef<MobileSidebarSwipeState | null>(null)
   const resizeStateRef = useRef<SidebarResizeState | null>(null)
-  const desktopV3WorksetBootstrapEpochRef = useRef(0)
   const workspaceByPath = useMemo<Map<string, WorkspaceEntry>>(
     () => new Map(workspaces.map((workspace) => [workspace.path, workspace] as const)),
     [workspaces],
@@ -1528,19 +1462,7 @@ export function DesktopAppPage() {
     }
     return null
   }, [routeSessionId, routeWorkspace, routeWorkspaceSlug])
-  const dbRouteSession = useDesktopSession(routeSessionId)
-  const cachedRouteSession = useMemo<DesktopSessionRecord | null>(() => {
-    if (!routeSessionId) {
-      return null
-    }
-    return dbRouteSession
-      ?? null
-  }, [dbRouteSession, routeSessionId])
-
   const selectedWorkspacePath = useMemo<string | null>(() => {
-    if (cachedRouteSession?.workspacePath) {
-      return cachedRouteSession.workspacePath
-    }
     if (routeWorkspace?.path) {
       return routeWorkspace.path
     }
@@ -1548,7 +1470,7 @@ export function DesktopAppPage() {
       return temporaryRouteWorkspace.path
     }
     return null
-  }, [cachedRouteSession?.workspacePath, routeWorkspace?.path, temporaryRouteWorkspace])
+  }, [routeWorkspace?.path, temporaryRouteWorkspace])
   const savedSelectedWorkspace = selectedWorkspacePath ? workspaceByPath.get(selectedWorkspacePath) ?? null : null
   const selectedWorkspace = savedSelectedWorkspace ?? (temporaryRouteWorkspace?.path === selectedWorkspacePath ? temporaryRouteWorkspace : null)
   const sidebarWorkspaceEntries = useMemo<WorkspaceEntry[]>(() => {
@@ -1754,9 +1676,6 @@ export function DesktopAppPage() {
       setSidebarSwarmNameDraft(swarmName)
     }
   }, [editingSidebarSwarmName, swarmName])
-
-  useEffect(() => {
-  }, [connectionState, routeSessionId, routeWorkspaceSlug, selectedWorkspacePath, workspacesLoading])
 
   useEffect(() => {
   }, [overviewQuery.data?.workspaces, overviewQuery.fetchStatus, overviewQuery.status])
@@ -1996,8 +1915,7 @@ export function DesktopAppPage() {
     saveStoredValue(DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY, JSON.stringify(workspaceLayout))
   }, [workspaceLayout])
 
-  const syncV3RealtimeSessions = useDesktopUiStore((state) => state.syncV3RealtimeSessions)
-  const desktopStateSessions = useDesktopWorkspaceSessions({ workspacePaths: mergedSidebarWorkspaceEntries.map((workspace) => workspace.path) })
+  const desktopStateSessions = useMemo<DesktopSessionRecord[]>(() => [], [])
 
   const sessionsByWorkspace = useMemo<Map<string, DesktopSessionRecord[]>>(() => {
     const grouped = new Map<string, DesktopSessionRecord[]>()
@@ -2005,19 +1923,9 @@ export function DesktopAppPage() {
     for (const workspace of mergedSidebarWorkspaceEntries) {
       grouped.set(workspace.path, [])
     }
-    for (const session of desktopStateSessions) {
-      const workspacePath = session.workspacePath?.trim()
-      if (!workspacePath || !grouped.has(workspacePath)) {
-        continue
-      }
-      grouped.set(workspacePath, [...(grouped.get(workspacePath) ?? []), session])
-    }
-    for (const [workspacePath, sessions] of grouped.entries()) {
-      grouped.set(workspacePath, [...sessions].sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id)))
-    }
 
     return grouped
-  }, [desktopStateSessions, mergedSidebarWorkspaceEntries])
+  }, [mergedSidebarWorkspaceEntries])
 
   const sessionById = useMemo<Map<string, DesktopSessionRecord>>(
     () => new Map(desktopStateSessions.map((session) => [session.id, session] as const)),
@@ -2026,96 +1934,15 @@ export function DesktopAppPage() {
 
   const workspaceSlugByPath = useMemo(() => buildWorkspaceRouteSlugMap(mergedSidebarWorkspaceEntries), [mergedSidebarWorkspaceEntries])
 
-  const desktopV3WorksetScopeKey = useMemo(() => {
-    const workspacePaths = mergedSidebarWorkspaceEntries.map((workspace) => workspace.path).sort()
-    return workspacePaths.join('\u0000')
-  }, [mergedSidebarWorkspaceEntries])
-
-  useEffect(() => {
-    const epoch = desktopV3WorksetBootstrapEpochRef.current + 1
-    desktopV3WorksetBootstrapEpochRef.current = epoch
-    let cancelled = false
-    const isCurrentEpoch = () => !cancelled && desktopV3WorksetBootstrapEpochRef.current === epoch
-    const abortController = new AbortController()
-    const workspacePaths = mergedSidebarWorkspaceEntries.map((workspace) => workspace.path).filter((path) => path.trim() !== '')
-
-
-    const bootstrapTasks: Promise<void>[] = [
-      queryClient.ensureQueryData(agentStateQueryOptions()).then(() => undefined),
-    ]
-    if (workspacePaths.length > 0) {
-      bootstrapTasks.push((async () => {
-        const request = {
-          workspacePaths,
-          recent: { limit: 50 },
-        }
-        const snapshot = await fetchDesktopSessionDiscovery(request, abortController.signal)
-        if (!isCurrentEpoch()) {
-          return
-        }
-        applyV3RuntimeEnvelope(createV3SnapshotEnvelope({
-          ...snapshot,
-          reconcileSessionScope: { workspacePaths },
-        }, { mode: 'reconcile', receivedAt: Date.now() }))
-        syncV3RealtimeSessions({ force: true })
-      })())
-    }
-
-    void Promise.allSettled(bootstrapTasks).then((results) => {
-      if (!isCurrentEpoch()) {
-        return
-      }
-      const rejected = results.filter((result) => result.status === 'rejected')
-      if (rejected.length > 0) {
-        console.error('[desktop-app] failed to hydrate desktop v3 discovery bootstrap data', rejected.map((result) => result.reason))
-      }
-    })
-
-    return () => {
-      cancelled = true
-      abortController.abort()
-    }
-  }, [desktopV3WorksetScopeKey, queryClient, syncV3RealtimeSessions])
-
-  const routeReadiness = useDesktopRouteReadiness({ workspacePath: selectedWorkspacePath }, routeSessionId)
-
-  useEffect(() => {
-    const routeCriticalSessionId = routeSessionId.trim()
-    if (!routeCriticalSessionId || routeReadiness?.ready || dbRouteSession) {
-      return
-    }
-    const abortController = new AbortController()
-    void fetchDesktopStateSnapshot({
-      sessionIds: [routeCriticalSessionId],
-      workspacePaths: desktopV3WorksetScopeKey ? desktopV3WorksetScopeKey.split('\u0000') : [],
-      recent: { limit: 50 },
-      history: { mode: 'none', maxEventsPerSession: 0, manifestPolicy: 'manifest', includeEvents: false },
-    }, abortController.signal)
-      .then((snapshot) => {
-        if (!abortController.signal.aborted) {
-          applyV3RuntimeEnvelope(createV3SnapshotEnvelope(snapshot, { mode: 'merge', receivedAt: Date.now() }))
-        syncV3RealtimeSessions({ force: true })
-        }
-      })
-      .catch((error) => {
-        if (!abortController.signal.aborted) {
-          console.error('[desktop-app] failed to reconcile route session readiness', error)
-        }
-      })
-    return () => abortController.abort()
-  }, [dbRouteSession, desktopV3WorksetScopeKey, routeReadiness?.ready, routeSessionId, syncV3RealtimeSessions])
-
-  const routeSession = routeSessionId && routeReadiness?.ready ? dbRouteSession : null
-  const selectedSession = routeSessionId ? routeSession : null
-  const routeReadinessStatus = routeSessionId ? routeReadiness?.status ?? 'loading' : 'idle'
-  const routeSessionUnavailable = Boolean(routeSessionId && !selectedSession && (routeReadinessStatus === 'missing' || routeReadinessStatus === 'omitted' || routeReadinessStatus === 'error'))
+  const routeReadinessStatus = routeSessionId ? 'missing' : 'idle'
+  const routeSessionUnavailable = Boolean(routeSessionId)
 
   useEffect(() => {
     if (!selectedWorkspacePath) {
       return
     }
 
-    if (routeSessionId || selectedSession?.id) {
+    if (routeSessionId || routeSessionId) {
       setWorkspaceLayout((current) => {
         const currentEntry = current[selectedWorkspacePath]
         if (currentEntry && currentEntry.collapsed === false && currentEntry.hidden !== true) {
@@ -2131,7 +1958,7 @@ export function DesktopAppPage() {
         }
       })
     }
-  }, [routeSessionId, selectedSession?.id, selectedWorkspacePath])
+  }, [routeSessionId, routeSessionId, selectedWorkspacePath])
 
   const stopResize = useCallback(() => {
     resizeStateRef.current = null
@@ -2233,23 +2060,7 @@ export function DesktopAppPage() {
     })
   }, [navigate, routeSessionId, routeWorkspace?.path, routeWorkspaceSlug, workspaceSlugByPath])
 
-  useEffect(() => {
-    if (!routeSession?.id || !routeSession.workspacePath) {
-      return
-    }
-    const canonicalWorkspaceSlug = workspaceSlugByPath.get(routeSession.workspacePath)
-    if (!canonicalWorkspaceSlug || (canonicalWorkspaceSlug === routeWorkspaceSlug && routeSession.id === routeSessionId)) {
-      return
-    }
-    void navigate({
-      to: '/$workspaceSlug/$sessionId',
-      params: {
-        workspaceSlug: canonicalWorkspaceSlug,
-        sessionId: routeSession.id,
-      },
-      replace: true,
-    })
-  }, [navigate, routeSession?.id, routeSession?.workspacePath, routeSessionId, routeWorkspaceSlug, workspaceSlugByPath])
+
 
   const handleSelectSession = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()
@@ -2270,43 +2081,9 @@ export function DesktopAppPage() {
     })
   }, [navigate, sessionById, workspaceSlugByPath])
 
-  const handleSessionCreated = useCallback((session: DesktopSessionRecord) => {
-    if (!session.workspacePath) {
-      return
-    }
-    const sessionId = session.id.trim()
-    if (sessionId) {
-      const now = Date.now()
-      applyV3RuntimeEnvelope(createV3SnapshotEnvelope({
-        rev: getV3RuntimeDesktopSnapshot().rev + 1,
-        sessionsById: { [sessionId]: session },
-        sessionOrder: [sessionId],
-        routeReadinessBySessionId: {
-          [sessionId]: {
-            sessionId,
-            status: 'ready',
-            ready: true,
-            missingResources: [],
-            omittedResources: [],
-            error: null,
-            updatedAt: now,
-          },
-        },
-      }, { mode: 'merge', receivedAt: now }))
-    }
-    const workspaceSlug = workspaceSlugByPath.get(session.workspacePath)
-      ?? workspaceRouteSlugBase({ path: session.workspacePath, workspaceName: session.workspaceName })
-    void navigate({
-      to: '/$workspaceSlug/$sessionId',
-      params: {
-        workspaceSlug,
-        sessionId: session.id,
-      },
-    })
-  }, [navigate, workspaceSlugByPath])
 
-  const chatWorkspacePath = selectedSession?.workspacePath || selectedWorkspace?.path || ''
-  const chatWorkspaceName = selectedSession?.workspaceName || selectedWorkspace?.workspaceName || ''
+
+  const chatWorkspacePath = selectedWorkspace?.path || ''
 
   const handleStartNewSessionInWorkspace = useCallback((wsPath: string, wsName: string) => {
     setMobileSidebarOpen(false)
@@ -2383,24 +2160,11 @@ export function DesktopAppPage() {
     }
   }, [flowBusyID, queryClient])
 
-  const handleOpenQuickSettings = useCallback((tab: QuickSettingsTabID) => {
-    setQuickSettingsTab(tab)
-  }, [])
 
-  const handleOpenPermissions = useCallback(() => {
-    handleOpenQuickSettings('permissions')
-  }, [handleOpenQuickSettings])
 
   const handleOpenSwarmDashboard = useCallback(() => {
     handleOpenSettingsTab('swarm')
   }, [handleOpenSettingsTab])
-
-  useEffect(() => {
-    if (!updateAvailable) {
-      return
-    }
-    void refreshNotifications()
-  }, [refreshNotifications, updateAvailable, updateLatestVersion])
 
   const runDesktopUpdate = useCallback(async () => {
     setUpdateRunning(true)
@@ -2408,7 +2172,6 @@ export function DesktopAppPage() {
     try {
       const initialJob = await startDesktopUpdate()
       setUpdateProgress((current) => ({ ...current, job: initialJob }))
-      await refreshNotifications()
       const startedAt = Date.now()
       let sawBackendDrop = false
       while (Date.now() - startedAt < 30 * 60_000) {
@@ -2449,11 +2212,10 @@ export function DesktopAppPage() {
           error: message,
         },
       }))
-      await refreshNotifications()
     } finally {
       setUpdateRunning(false)
     }
-  }, [refreshNotifications, updateDevMode])
+  }, [updateDevMode])
 
   const handleDesktopUpdate = useCallback(async () => {
     if (updateRunning || localContainerUpdateConfirm) {
@@ -2552,11 +2314,6 @@ export function DesktopAppPage() {
   const handleToggleLocalContainerUpdateDismissal = useCallback((checked: boolean) => {
     setLocalContainerUpdateConfirm((current) => current ? { ...current, pendingDismiss: checked } : current)
   }, [])
-
-  const handleOpenWorkspaceLauncher = useCallback(() => {
-    setMobileSidebarOpen(false)
-    void navigate({ to: '/' })
-  }, [navigate])
 
   const handleOpenMobileSidebar = useCallback(() => {
     setSidebarCollapsed(false)
@@ -2684,9 +2441,6 @@ export function DesktopAppPage() {
               {updateActionEnabled ? <span aria-hidden="true" className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-[var(--app-primary)] shadow-[0_0_10px_var(--app-primary)]" /> : null}
             </Button>
           ) : null}
-          <div className="mt-2 flex flex-col items-center">
-            <span className={cn('h-2.5 w-2.5 rounded-full', connectionDotClass(connectionState))} />
-          </div>
         </div>
       ) : (
         <div className="flex h-full flex-col min-h-0">
@@ -2763,19 +2517,6 @@ export function DesktopAppPage() {
                         <span aria-hidden="true" className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-[var(--app-warning)] shadow-[0_0_8px_var(--app-warning)]" />
                       </button>
                     ) : null}
-                    <button
-                      type="button"
-                      className={cn(
-                        SIDEBAR_ACTION_BUTTON_CLASS,
-                        'text-[var(--app-text-subtle)]',
-                        notificationCenter.summary.unreadCount > 0 && 'text-[color-mix(in_srgb,var(--app-warning)_82%,var(--app-text-muted))] hover:bg-[var(--app-warning-bg)] hover:text-[var(--app-primary-hover)]',
-                      )}
-                      onClick={() => setNotificationsOpen(true)}
-                      aria-label="Open notifications"
-                      title={notificationCenter.summary.unreadCount > 0 ? `${notificationCenter.summary.unreadCount} unread notifications` : 'Notifications'}
-                    >
-                      <Bell size={14} strokeWidth={1.8} className="shrink-0" />
-                    </button>
                     {updateAttentionVisible ? (
                       <button
                         type="button"
@@ -3199,7 +2940,7 @@ export function DesktopAppPage() {
               ) : visibleSidebarWorkspaceEntries.map((workspace, index) => {
                 const workspaceSessions = sessionsByWorkspace.get(workspace.path) ?? []
                 const sessionNodes = buildSidebarSessionTree(workspaceSessions, sidebarNow)
-                const flattenedSessionNodes = flattenVisibleSidebarSessionNodes(sessionNodes, expandedAgentSessions, selectedSession?.id)
+                const flattenedSessionNodes = flattenVisibleSidebarSessionNodes(sessionNodes, expandedAgentSessions, routeSessionId)
                 const layout = workspaceLayout[workspace.path]
                 const collapsed = layout?.collapsed ?? true
                 const workspaceGitSnapshot = gitSnapshotByPath.get(workspace.path) ?? (workspace.path === selectedGitWorkspacePath ? gitSnapshot : null)
@@ -3281,7 +3022,7 @@ export function DesktopAppPage() {
                           {flattenedSessionNodes.length === 0 ? null : flattenedSessionNodes.map((node) => (
                             <SessionRow
                               key={node.session.id}
-                              active={selectedSession?.id === node.session.id}
+                              active={routeSessionId === node.session.id}
                               now={sidebarNow}
                               session={node.session}
                               fallbackSwarmName={swarmName}
@@ -3292,7 +3033,7 @@ export function DesktopAppPage() {
                               childAssignmentLabel={node.assignmentLabel}
                               childKind={node.kind}
                               agentSummary={summarizeSubagentDescendants(node)}
-                              agentsExpanded={Boolean(expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, selectedSession?.id)}
+                              agentsExpanded={Boolean(expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, routeSessionId || undefined)}
                               onSelect={handleSelectSession}
                               onPrefetch={handlePrefetchSession}
                               onToggleAgents={handleToggleAgentSessions}
@@ -3390,7 +3131,7 @@ export function DesktopAppPage() {
               </p>
             </Card>
           </div>
-        ) : routeSessionId && !selectedSession ? (
+        ) : routeSessionId ? (
           <div className="flex h-full flex-1 items-center justify-center px-6">
             <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">
               <div className="text-lg font-semibold">{'Loading session…'}</div>
@@ -3414,37 +3155,6 @@ export function DesktopAppPage() {
               </p>
             </Card>
           </div>
-        ) : chatWorkspacePath ? (
-          <DesktopChatPanel
-            hostSwarmName={swarmName}
-            workspacePath={chatWorkspacePath}
-            workspaceName={chatWorkspaceName}
-            workspaceTopologyRoutes={selectedWorkspace?.topologyRoutes ?? []}
-            localWorkspaceBindingId={selectedWorkspace?.localWorkspaceBindingId}
-            hostSwarmId={currentSwarmTarget?.swarm_id ?? null}
-            session={selectedSession}
-            pendingWorktreeBranchName={chatWorkspacePath ? pendingWorktreeBranchByWorkspace[chatWorkspacePath] : undefined}
-            onClearPendingWorktreeBranch={() => {
-              if (!chatWorkspacePath) {
-                return
-              }
-              setPendingWorktreeBranchByWorkspace((current) => {
-                if (!(chatWorkspacePath in current)) {
-                  return current
-                }
-                const next = { ...current }
-                delete next[chatWorkspacePath]
-                return next
-              })
-            }}
-            onSessionCreated={handleSessionCreated}
-            onOpenSettingsTab={handleOpenSettingsTab}
-            onOpenQuickSettings={handleOpenQuickSettings}
-            onOpenPermissions={handleOpenPermissions}
-            onOpenWorkspaceLauncher={handleOpenWorkspaceLauncher}
-            onOpenSidebarMenu={handleOpenMobileSidebar}
-            onStartNewSession={handleStartNewSessionInWorkspace}
-          />
         ) : (
           <div className="flex h-full flex-1 items-center justify-center px-6">
             <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">
@@ -3744,7 +3454,6 @@ export function DesktopAppPage() {
           setPairingRequestStatus(message)
         }}
       />
-      <DesktopNotificationsOverlay open={notificationsOpen} onOpenChange={setNotificationsOpen} />
       {pwaDebugEnabled ? <PwaLayoutDebugOverlay /> : null}
 
     </div>

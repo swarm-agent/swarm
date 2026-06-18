@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Outlet } from '@tanstack/react-router'
 import { requestJson } from '../../../../app/api'
-import { useDesktopUiStore } from '../../state/desktop-ui-store'
-import { DesktopRealtimeBootstrap } from '../../realtime/desktop-realtime-bootstrap'
 import { DesktopVaultGate } from './desktop-vault-gate'
 import { DesktopOnboardingGate } from '../../onboarding/components/desktop-onboarding-gate'
 import type {
@@ -184,9 +182,7 @@ function mapOnboardingBootstrapStatus(onboarding: DesktopOnboardingStatusWire): 
 }
 
 export function DesktopVaultShell() {
-  const vault = useDesktopUiStore((state) => state.vault)
-  const onboardingFlowRequested = useDesktopUiStore((state) => state.onboardingFlowRequested)
-  const clearOnboardingFlow = useDesktopUiStore((state) => state.clearOnboardingFlow)
+  const onboardingFlowRequested = false
   const [onboardingStatus, setOnboardingStatus] = useState<DesktopOnboardingStatus | null>(null)
   const [onboardingLoading, setOnboardingLoading] = useState(true)
   const [onboardingError, setOnboardingError] = useState<string | null>(null)
@@ -225,7 +221,7 @@ export function DesktopVaultShell() {
     return () => {
       cancelled = true
     }
-  }, [directLANDesktopWarning, onboardingFlowRequested])
+  }, [directLANDesktopWarning])
 
   if (directLANDesktopWarning) {
     return <DirectLANDesktopWarningScreen warning={directLANDesktopWarning} />
@@ -257,19 +253,17 @@ export function DesktopVaultShell() {
         onReload={async () => mapOnboardingBootstrapStatus(await requestJson<DesktopOnboardingStatusWire>('/v1/onboarding', undefined, false))}
         onComplete={(next) => {
           setOnboardingStatus(next)
-          clearOnboardingFlow()
         }}
       />
     )
   }
 
-  if (vault.enabled && !vault.unlocked) {
+  if (onboardingStatus?.vault.enabled && !onboardingStatus.vault.unlocked) {
     return <DesktopVaultGate />
   }
 
   return (
     <>
-      <DesktopRealtimeBootstrap />
       <Outlet />
     </>
   )

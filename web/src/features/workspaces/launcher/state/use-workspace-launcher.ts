@@ -16,7 +16,6 @@ import { sortDiscoveredWorkspaces, dedupeDiscoveredAgainstWorkspaces } from '../
 import { syncWorkspaceOverviewWorktreeState } from '../services/workspace-overview-cache'
 import { browseWorkspacePath } from '../queries/browse-workspace-path'
 import { uiSettingsQueryKey, uiSettingsQueryOptions, workspaceOverviewQueryKey, workspaceOverviewQueryOptions } from '../../../queries/query-options'
-import { useDesktopStore } from '../../../desktop/state/use-desktop-store'
 import type {
   WorkspaceBrowseResult,
   WorkspaceDiscoverEntry,
@@ -77,13 +76,6 @@ interface UseWorkspaceLauncherState {
   setDraggingWorkspacePath: (path: string | null) => void
   refresh: (roots?: string[]) => Promise<void>
   browsePath: (path: string) => Promise<void>
-}
-
-const VAULT_LOCKED_ERROR_PREFIX = 'vault is locked'
-
-function isVaultLockedError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
-  return message.trim().toLowerCase().includes(VAULT_LOCKED_ERROR_PREFIX)
 }
 
 function sortWorkspaces<T extends WorkspaceEntry>(workspaces: T[]): T[] {
@@ -249,7 +241,6 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
   const applyDocumentTheme = options.applyDocumentTheme ?? true
   const autoRefresh = options.autoRefresh ?? true
   const browseDuringRefresh = options.browseDuringRefresh ?? true
-  const refreshVaultStatus = useDesktopStore((state) => state.refreshVaultStatus)
   const [workspaces, setWorkspaces] = useState<WorkspaceEntry[]>([])
   const [discovered, setDiscovered] = useState<WorkspaceDiscoverEntry[]>([])
   const [currentWorkspacePath, setCurrentWorkspacePath] = useState<string | null>(null)
@@ -335,23 +326,12 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
         }
       }
     } catch (err) {
-      if (isVaultLockedError(err)) {
-        try {
-          await refreshVaultStatus()
-          const { vault } = useDesktopStore.getState()
-          if (vault.enabled && !vault.unlocked) {
-            return
-          }
-        } catch {
-          // Fall back to the launcher error below when vault status refresh fails.
-        }
-      }
       setLoadError(err instanceof Error ? err.message : 'Failed to load workspaces')
     } finally {
       setLoading(false)
       setRefreshing(false)
     }
-  }, [applyDocumentTheme, browser, browseDuringRefresh, browsePath, globalThemeId, queryClient, refreshVaultStatus])
+  }, [applyDocumentTheme, browser, browseDuringRefresh, browsePath, globalThemeId, queryClient])
 
   useEffect(() => {
     if (!autoRefresh) {
@@ -459,7 +439,6 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
       }
       applyCurrentResolution(resolution)
       setCurrentWorkspacePath(browserResult.resolvedPath)
-      useDesktopStore.getState().setActiveWorkspacePath(browserResult.resolvedPath)
       return resolution
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to open folder')
@@ -529,7 +508,6 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
         if (applyDocumentTheme) {
           applyWorkspaceTheme(globalThemeId)
         }
-        useDesktopStore.getState().setActiveWorkspacePath(null)
       }
       await refresh()
       await browsePath(deleted.resolvedPath)
