@@ -88,6 +88,76 @@ func TestSessionsV3SyncStreamUsesCanonicalBootstrapSelectorScope(t *testing.T) {
 	t.Fatalf("stream using canonical selector missed appended event for %s: %+v", created.ID, stream.Events)
 }
 
+func TestSessionsV3SyncStreamResponseUsesStablePublicDTO(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-stream-public-dto", "Sync Stream Public DTO", "/workspace/stream-public-dto")
+	bootstrapBody := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"/workspace/stream-public-dto","recent":{"limit":10}},"history":{"mode":"none"}}`
+	bootstrapReq := httptest.NewRequest(http.MethodPost, V3SyncBootstrapPath, bytes.NewBufferString(bootstrapBody))
+	bootstrapReq.Header.Set("Content-Type", "application/json")
+	bootstrapRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(bootstrapRec, withTestPrincipal(bootstrapReq))
+	if bootstrapRec.Code != http.StatusOK {
+		t.Fatalf("bootstrap status=%d body=%s", bootstrapRec.Code, bootstrapRec.Body.String())
+	}
+	var bootstrap struct {
+		SnapshotEndpointCursor string `json:"snapshot_endpoint_cursor"`
+	}
+	if err := json.Unmarshal(bootstrapRec.Body.Bytes(), &bootstrap); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+	if bootstrap.SnapshotEndpointCursor == "" {
+		t.Fatalf("bootstrap returned empty cursor")
+	}
+	appendSessionsV3PrimaryMessageForWorksetTest(t, server, created.ID, "public dto replay")
+
+	streamBody := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"/workspace/stream-public-dto","recent":{"limit":10}},"endpoint_cursor":"` + bootstrap.SnapshotEndpointCursor + `"}`
+	streamReq := httptest.NewRequest(http.MethodPost, V3SyncStreamPath, bytes.NewBufferString(streamBody))
+	streamReq.Header.Set("Content-Type", "application/json")
+	streamRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(streamRec, withTestPrincipal(streamReq))
+	if streamRec.Code != http.StatusOK {
+		t.Fatalf("stream status=%d body=%s", streamRec.Code, streamRec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(streamRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode stream: %v", err)
+	}
+	for _, forbidden := range []string{"after_endpoint_seq", "high_watermark_seq", "endpoint_seq"} {
+		if _, ok := payload[forbidden]; ok {
+			t.Fatalf("stream response leaked internal top-level field %q: %s", forbidden, streamRec.Body.String())
+		}
+	}
+	endpointCursor, _ := payload["endpoint_cursor"].(string)
+	if payload["ok"] != true || strings.TrimSpace(endpointCursor) == "" || strings.HasPrefix(endpointCursor, "cursor-") || !strings.HasPrefix(endpointCursor, "v3c1.") {
+		t.Fatalf("stream response missing signed opaque public cursor fields: %s", streamRec.Body.String())
+	}
+	events, ok := payload["events"].([]any)
+	if !ok || len(events) == 0 {
+		t.Fatalf("stream response missing public events: %s", streamRec.Body.String())
+	}
+	found := false
+	for _, raw := range events {
+		event, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("stream event is not object: %#v", raw)
+		}
+		for _, forbidden := range []string{"endpoint_seq", "endpoint_cursor", "user_id", "account_scope_id", "created_at"} {
+			if _, ok := event[forbidden]; ok {
+				t.Fatalf("stream event leaked raw outbox field %q: %#v", forbidden, event)
+			}
+		}
+		if event["session_id"] == created.ID {
+			found = true
+			if strings.TrimSpace(event["event_type"].(string)) == "" || event["event"] == nil || event["projection"] == nil {
+				t.Fatalf("stream event missing public event/projection fields: %#v", event)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("stream response missed replay event for %s: %s", created.ID, streamRec.Body.String())
+	}
+}
+
 func TestSessionsV3SyncStreamRecentWorkspaceSelectorFiltersReplay(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	workspaceA := "/workspace/stream-recent-a"
@@ -183,9 +253,8 @@ func TestSessionsV3SyncStreamReplaysPastOtherUserRowsFromGlobalOutbox(t *testing
 		t.Fatalf("stream status=%d body=%s", streamRec.Code, streamRec.Body.String())
 	}
 	var first struct {
-		EndpointCursor   string `json:"endpoint_cursor"`
-		HighWatermarkSeq uint64 `json:"high_watermark_seq"`
-		Events           []struct {
+		EndpointCursor string `json:"endpoint_cursor"`
+		Events         []struct {
 			SessionID string `json:"session_id"`
 		} `json:"events"`
 		HasMore bool `json:"has_more"`

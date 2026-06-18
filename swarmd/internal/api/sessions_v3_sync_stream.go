@@ -26,6 +26,31 @@ type sessionsV3SyncStreamRequest struct {
 	Limit          int                        `json:"limit,omitempty"`
 }
 
+type sessionsV3SyncStreamResponse struct {
+	OK                 bool                        `json:"ok"`
+	EndpointCursor     string                      `json:"endpoint_cursor"`
+	Events             []sessionsV3SyncStreamEvent `json:"events"`
+	HasMore            bool                        `json:"has_more"`
+	Selector           sessionsV3SyncSelector      `json:"selector"`
+	ReplayInstructions map[string]any              `json:"replay_instructions"`
+}
+
+type sessionsV3SyncStreamEvent struct {
+	SessionID  string                           `json:"session_id"`
+	EventType  string                           `json:"event_type"`
+	Event      sessionruntime.SessionEvent      `json:"event"`
+	Projection sessionruntime.SessionProjection `json:"projection"`
+}
+
+func newSessionsV3SyncStreamEvent(record sessionruntime.RealtimeOutboxRecord) sessionsV3SyncStreamEvent {
+	return sessionsV3SyncStreamEvent{
+		SessionID:  record.SessionID,
+		EventType:  record.Event.EventType,
+		Event:      record.Event,
+		Projection: record.Projection,
+	}
+}
+
 func (s *Server) handleSessionsV3SyncStream(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet && strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
 		s.writeV3SyncStreamWebsocketUnsupported(w, r)
@@ -103,7 +128,7 @@ func (s *Server) handleSessionsV3SyncStream(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	visible := make([]sessionruntime.RealtimeOutboxRecord, 0, len(records))
+	visible := make([]sessionsV3SyncStreamEvent, 0, len(records))
 	advanced := afterEndpointSeq
 	if len(records) == 0 && afterEndpointSeq < currentHead {
 		writeV3SyncStreamGapError(w, afterEndpointSeq+1, oldestAvailable, currentHead)
@@ -129,7 +154,7 @@ func (s *Server) handleSessionsV3SyncStream(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		if matches {
-			visible = append(visible, record)
+			visible = append(visible, newSessionsV3SyncStreamEvent(record))
 		}
 	}
 	if len(records) < limit && advanced < currentHead {
@@ -141,15 +166,18 @@ func (s *Server) handleSessionsV3SyncStream(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":                  true,
-		"endpoint_cursor":     nextCursor,
-		"after_endpoint_seq":  afterEndpointSeq,
-		"high_watermark_seq":  advanced,
-		"events":              visible,
-		"has_more":            len(records) == limit,
-		"selector":            selector,
-		"replay_instructions": map[string]any{"stream_path": V3SyncStreamPath, "transport": "http_post", "after_endpoint_cursor": nextCursor, "bootstrap_required_on_cursor_error": true},
+	writeJSON(w, http.StatusOK, sessionsV3SyncStreamResponse{
+		OK:             true,
+		EndpointCursor: nextCursor,
+		Events:         visible,
+		HasMore:        len(records) == limit,
+		Selector:       selector,
+		ReplayInstructions: map[string]any{
+			"stream_path":                        V3SyncStreamPath,
+			"transport":                          "http_post",
+			"after_endpoint_cursor":              nextCursor,
+			"bootstrap_required_on_cursor_error": true,
+		},
 	})
 }
 

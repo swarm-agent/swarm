@@ -566,17 +566,20 @@ func TestSessionsV3SyncBootstrapSnapshotCursorCoversConcurrentMutationReplay(t *
 		t.Fatalf("stream status = %d, want %d, body=%s", streamRec.Code, http.StatusOK, streamRec.Body.String())
 	}
 	var stream struct {
-		EndpointCursor   string `json:"endpoint_cursor"`
-		HighWatermarkSeq uint64 `json:"high_watermark_seq"`
-		Events           []struct {
+		EndpointCursor string `json:"endpoint_cursor"`
+		Events         []struct {
 			SessionID string `json:"session_id"`
 		} `json:"events"`
 	}
 	if err := json.Unmarshal(streamRec.Body.Bytes(), &stream); err != nil {
 		t.Fatalf("decode stream response: %v", err)
 	}
-	if stream.EndpointCursor == "" || stream.HighWatermarkSeq <= afterSeq {
-		t.Fatalf("stream did not advance past bootstrap cursor: %+v after=%d", stream, afterSeq)
+	advancedSeq, _, err := server.parseV3SyncEndpointCursor(stream.EndpointCursor, scope)
+	if err != nil {
+		t.Fatalf("parse stream cursor: %v", err)
+	}
+	if stream.EndpointCursor == "" || advancedSeq <= afterSeq {
+		t.Fatalf("stream did not advance past bootstrap cursor: %+v after=%d advanced=%d", stream, afterSeq, advancedSeq)
 	}
 	found := false
 	for _, event := range stream.Events {
