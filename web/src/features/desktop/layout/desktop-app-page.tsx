@@ -2,10 +2,11 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, Link } from '@tanstack/react-router'
-import { Bell, Bot, Box, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, LayoutGrid, Link2, ListChecks, LoaderCircle, Menu, Pause, Play, Plus, RefreshCcw, Settings, Workflow, X, XCircle } from 'lucide-react'
+import { Bell, Bot, Box, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, LayoutGrid, Link2, ListChecks, LoaderCircle, Menu, Pause, Play, Plus, RefreshCcw, SendHorizontal, Settings, Workflow, X, XCircle } from 'lucide-react'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
+import { Textarea } from '../../../components/ui/textarea'
 import { cn } from '../../../lib/cn'
 import { useWorkspaceLauncher } from '../../workspaces/launcher/state/use-workspace-launcher'
 import { applyDesktopRouteTheme } from './desktop-theme-controller'
@@ -52,9 +53,10 @@ import {
   type SidebarSessionNodeKind,
 } from './sidebar-session-lineage'
 import { bootstrapDesktopV3Sidebar } from '../state/desktop-v3-bootstrap-controller'
+import { postDesktopV3SessionMessage } from '../state/desktop-v3-sync-api'
 import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
 import { selectDesktopSidebarRows, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
-import { selectSession } from '../state/desktop-v3-cache-wire'
+import { messageMutationResponseToAction, selectSession } from '../state/desktop-v3-cache-wire'
 import type { DesktopV3SidebarRow, RenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import type { MessageSnapshot, V3SessionRunIntent } from '../state/desktop-v3-cache-types'
 
@@ -104,42 +106,137 @@ function DesktopV3ChatPane({
   renderedMessages: RenderedSessionMessages
   messagesLoaded: boolean
 }) {
+  const [composer, setComposer] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
+  const scrollEndRef = useRef<HTMLDivElement | null>(null)
+
+  const hasMessages = renderedMessages.committed.length > 0 || renderedMessages.pendingUser.length > 0 || renderedMessages.liveRuns.length > 0
+  const trimmedComposer = composer.trim()
+  const canSend = Boolean(selectedSessionId?.trim() && trimmedComposer && !submitting)
+
+  useEffect(() => {
+    scrollEndRef.current?.scrollIntoView({ block: 'end' })
+  }, [renderedMessages.committed.length, renderedMessages.pendingUser.length, renderedMessages.liveRuns.length, selectedSessionId])
+
+  const submitMessage = useCallback(async () => {
+    const sessionId = selectedSessionId?.trim() ?? ''
+    const content = composer.trim()
+    if (!sessionId || !content || submitting) {
+      return
+    }
+
+    const submitStartedAt = Date.now()
+    const clientRequestId = `desktop-v3-message:${sessionId}:${submitStartedAt}`
+    const messageId = `pending:${clientRequestId}`
+
+    setComposer('')
+    setSubmitError(null)
+    setSubmitting(true)
+    dispatchDesktopV3Cache({
+      type: 'pendingUser.upsert',
+      input: {
+        sessionId,
+        clientRequestId,
+        messageId,
+        content,
+        createdAt: submitStartedAt,
+      },
+    })
+
+    try {
+      const raw = await postDesktopV3SessionMessage(sessionId, {
+        clientRequestId,
+        role: 'user',
+        content,
+      })
+      dispatchDesktopV3Cache(messageMutationResponseToAction(raw, clientRequestId, messageId))
+      if (raw.ok === false) {
+        setSubmitError(raw.error || raw.error_code || 'Message send failed')
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Message send failed'
+      dispatchDesktopV3Cache(messageMutationResponseToAction({ ok: false, error: message, error_code: 'request_failed' }, clientRequestId, messageId))
+      setSubmitError(message)
+    } finally {
+      setSubmitting(false)
+    }
+  }, [composer, selectedSessionId, submitting])
+
   if (!selectedSessionId) {
     return <DesktopV3ChatStateCard title="Select a session" description="Choose a session from the sidebar to view its cached conversation." />
   }
 
-  if (initialHydrateStatus === 'error' && !messagesLoaded && renderedMessages.pendingUser.length === 0 && renderedMessages.liveRuns.length === 0) {
-    return <DesktopV3ChatStateCard title="Conversation unavailable" description="Initial message hydrate failed. The sidebar and any previously cached messages remain available." />
-  }
-
-  if (initialHydrateStatus === 'loading' && !messagesLoaded) {
-    return <DesktopV3ChatStateCard title="Loading conversation…" description="Hydrating cached message tails for the initial sidebar sessions." />
-  }
-
-  const hasMessages = renderedMessages.committed.length > 0 || renderedMessages.pendingUser.length > 0 || renderedMessages.liveRuns.length > 0
-  if (!hasMessages) {
-    return <DesktopV3ChatStateCard title="Empty conversation" description="No cached messages were returned for this session." />
+  let stateCard: JSX.Element | null = null
+  if (initialHydrateStatus === 'error' && !messagesLoaded && !hasMessages) {
+    stateCard = <DesktopV3ChatStateCard title="Conversation unavailable" description="Initial message hydrate failed. The composer remains available for this selected session." />
+  } else if (initialHydrateStatus === 'loading' && !messagesLoaded) {
+    stateCard = <DesktopV3ChatStateCard title="Loading conversation…" description="Hydrating cached message tails for the initial sidebar sessions." />
+  } else if (!hasMessages) {
+    stateCard = <DesktopV3ChatStateCard title="Empty conversation" description="No cached messages were returned for this session yet." />
   }
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto bg-[var(--app-bg)] px-4 py-6 sm:px-8">
-      <div className="mx-auto flex w-full max-w-3xl flex-col gap-3">
-        {renderedMessages.committed.map((message) => (
-          <DesktopV3CommittedMessage key={message.id} message={message} />
-        ))}
-        {renderedMessages.pendingUser.map((message) => (
-          <div key={message.clientRequestId} className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-sm opacity-80">
-            <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--app-text-muted)]">user · {message.status}</div>
-            <div className="whitespace-pre-wrap text-[var(--app-text)]">{message.content}</div>
-          </div>
-        ))}
-        {renderedMessages.liveRuns.map((run) => run.assistantDraft?.content ? (
-          <div key={run.runId} className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-sm">
-            <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--app-text-muted)]">assistant · {run.status}</div>
-            <div className="whitespace-pre-wrap text-[var(--app-text)]">{run.assistantDraft.content}</div>
-          </div>
-        ) : null)}
+    <div className="flex h-full min-h-0 flex-1 flex-col bg-[var(--app-bg)]" data-testid="desktop-v3-chat-pane">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-8">
+        <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col gap-3">
+          {stateCard ? <div className="flex min-h-[240px] flex-1 items-center justify-center">{stateCard}</div> : null}
+          {renderedMessages.committed.map((message) => (
+            <DesktopV3CommittedMessage key={message.id} message={message} />
+          ))}
+          {renderedMessages.pendingUser.map((message) => (
+            <div key={message.clientRequestId} className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-sm opacity-80">
+              <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--app-text-muted)]">user · {message.status}</div>
+              <div className="whitespace-pre-wrap text-[var(--app-text)]">{message.content}</div>
+              {message.error ? <div className="mt-2 text-xs text-[var(--app-error)]">{message.error}</div> : null}
+            </div>
+          ))}
+          {renderedMessages.liveRuns.map((run) => run.assistantDraft?.content ? (
+            <div key={run.runId} className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-sm">
+              <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--app-text-muted)]">assistant · {run.status}</div>
+              <div className="whitespace-pre-wrap text-[var(--app-text)]">{run.assistantDraft.content}</div>
+            </div>
+          ) : null)}
+          <div ref={scrollEndRef} />
+        </div>
       </div>
+
+      <form
+        className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 pb-[calc(var(--app-safe-area-bottom)_+_0.75rem)] pt-3 sm:px-6"
+        data-testid="desktop-v3-chat-composer"
+        onSubmit={(event) => {
+          event.preventDefault()
+          void submitMessage()
+        }}
+      >
+        <div className="mx-auto flex w-full max-w-3xl items-end gap-2">
+          <Textarea
+            aria-label="Message input"
+            className="min-h-[44px] flex-1 resize-none rounded-2xl bg-[var(--app-bg)] py-3 text-sm"
+            data-testid="desktop-v3-chat-input"
+            disabled={!selectedSessionId}
+            onChange={(event) => setComposer(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault()
+                void submitMessage()
+              }
+            }}
+            placeholder="Message Swarm…"
+            rows={1}
+            value={composer}
+          />
+          <Button
+            type="submit"
+            className="h-11 w-11 shrink-0 rounded-full p-0"
+            disabled={!canSend}
+            aria-label={submitting ? 'Sending message' : 'Send message'}
+          >
+            {submitting ? <LoaderCircle size={18} className="animate-spin" /> : <SendHorizontal size={18} />}
+          </Button>
+        </div>
+        {submitError ? <div className="mx-auto mt-2 w-full max-w-3xl text-xs text-[var(--app-error)]">{submitError}</div> : null}
+      </form>
     </div>
   )
 }

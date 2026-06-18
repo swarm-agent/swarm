@@ -1,12 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 
 import { createEmptyDesktopV3CacheState, desktopV3CacheReducer } from './desktop-v3-cache-reducer'
 import { buildSidebarSessionTree, desktopSessionRecordFromV3SidebarRow } from '../layout/desktop-app-page'
 import { selectDesktopSidebarRows } from './desktop-v3-cache-selectors'
 import { selectSession } from './desktop-v3-cache-wire'
 import { hydrateResponseToAction } from './desktop-v3-cache-wire'
-import { messageA1, messageB1, projectionA, projectionB, sessionA, sessionB, snapshotFixture } from './desktop-v3-cache.backend-fixtures'
+import { messageA1, messageB1, projectionA, projectionB, runIntentA, sessionA, sessionB, snapshotFixture } from './desktop-v3-cache.backend-fixtures'
 
 test('sidebar selector uses scope order', () => {
   const state = createEmptyDesktopV3CacheState()
@@ -112,4 +113,67 @@ test('click does not hydrate after initial load', () => {
 
   assert.equal(state.selectedSessionId, sessionA.id)
   assert.deepEqual(state.messagesBySession, beforeMessages)
+})
+
+
+test('Desktop V3 selected chat keeps a composer and uses canonical cache mutation path', async () => {
+  const source = await readFile(new URL('../layout/desktop-app-page.tsx', import.meta.url), 'utf8')
+  const paneSource = source.slice(source.indexOf('function DesktopV3ChatPane({'), source.indexOf('function DesktopV3CommittedMessage'))
+
+  assert.match(paneSource, /data-testid="desktop-v3-chat-pane"/)
+  assert.match(paneSource, /data-testid="desktop-v3-chat-composer"/)
+  assert.match(paneSource, /data-testid="desktop-v3-chat-input"/)
+  assert.match(paneSource, /postDesktopV3SessionMessage\(sessionId/)
+  assert.match(paneSource, /type: 'pendingUser\.upsert'/)
+  assert.match(paneSource, /messageMutationResponseToAction\(raw, clientRequestId, messageId\)/)
+  assert.doesNotMatch(source, /DesktopChatPanel/)
+  assert.doesNotMatch(source, /useDesktopUiStore|useDesktopStore|desktop-ui-store|desktop-state-store/)
+})
+
+test('Desktop V3 message API helper posts only to canonical Sessions V3 endpoint', async () => {
+  const source = await readFile(new URL('./desktop-v3-sync-api.ts', import.meta.url), 'utf8')
+  const helperSource = source.slice(source.indexOf('export async function postDesktopV3SessionMessage'))
+
+  assert.match(helperSource, /`\/v3\/sessions\/\$\{encodeURIComponent\(normalizedSessionId\)\}\/messages`/)
+  assert.match(helperSource, /client_request_id: input\.clientRequestId/)
+  assert.match(helperSource, /role: input\.role/)
+  assert.match(helperSource, /content: input\.content/)
+  assert.doesNotMatch(helperSource, /\/v1\/sessions|\/v2\/sessions|target_swarm_id|session_id:/)
+})
+
+test('Desktop V3 mutation action resolves pending user through reducer cache path', () => {
+  const state = createEmptyDesktopV3CacheState()
+  const clientRequestId = `desktop-v3-message:${sessionA.id}:test`
+  const messageId = `pending:${clientRequestId}`
+
+  let next = desktopV3CacheReducer(state, {
+    type: 'pendingUser.upsert',
+    input: {
+      sessionId: sessionA.id,
+      clientRequestId,
+      messageId,
+      content: 'hello from restored composer',
+      createdAt: 10,
+    },
+  })
+
+  assert.equal(next.pendingUserByClientRequestId[clientRequestId]?.content, 'hello from restored composer')
+
+  next = desktopV3CacheReducer(next, {
+    type: 'mutation.messageResult',
+    clientRequestId,
+    messageId,
+    raw: {
+      ok: true,
+      session_id: sessionA.id,
+      message: { ...messageA1, id: 'committed-from-send', content: 'hello from restored composer', global_seq: 5 },
+      run_intent: runIntentA,
+      mutation: {},
+      realtime_outbox: null,
+    },
+  })
+
+  assert.equal(next.pendingUserByClientRequestId[clientRequestId], undefined)
+  assert.equal(next.messagesBySession[sessionA.id].items.at(-1)?.id, 'committed-from-send')
+  assert.equal(next.runIntentsBySession[sessionA.id]?.[runIntentA.run_id]?.status, runIntentA.status)
 })
