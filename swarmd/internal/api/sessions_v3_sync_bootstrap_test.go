@@ -894,18 +894,40 @@ func TestSessionsV3SyncWorkspaceStreamDoesNotDropDeletedMembershipEvent(t *testi
 	t.Fatalf("workspace stream missed durable delete membership event for %s: %+v", created.ID, stream.Events)
 }
 
-func TestSessionsV3SyncStreamWebsocketIsExplicitlyUnsupportedForSnapshotCursor(t *testing.T) {
+func TestSessionsV3SyncStreamWebsocketRejectsUnauthenticatedBeforeUpgrade(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	httpServer := httptest.NewServer(server.Handler())
 	t.Cleanup(httpServer.Close)
 
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + V3SyncStreamPath
 	conn, resp, err := gorillaws.DefaultDialer.Dial(wsURL, nil)
+	if err == nil {
+		conn.Close()
+		t.Fatalf("unauthenticated sync stream websocket unexpectedly upgraded")
+	}
+	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		t.Fatalf("unauthenticated sync stream websocket status=%d err=%v, want 401", status, err)
+	}
+}
+
+func TestSessionsV3SyncStreamWebsocketIsExplicitlyUnsupportedForAuthenticatedSnapshotCursor(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, withTestPrincipal(r))
+	}))
+	t.Cleanup(httpServer.Close)
+
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + V3SyncStreamPath
+	conn, resp, err := gorillaws.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		if resp != nil {
-			t.Fatalf("dial sync stream websocket: %v status=%d", err, resp.StatusCode)
+			t.Fatalf("dial authenticated sync stream websocket: %v status=%d", err, resp.StatusCode)
 		}
-		t.Fatalf("dial sync stream websocket: %v", err)
+		t.Fatalf("dial authenticated sync stream websocket: %v", err)
 	}
 	defer conn.Close()
 	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {

@@ -19,6 +19,10 @@ const v3RealtimeReplayLimit = 500
 
 var v3RealtimeKeepaliveInterval = 15 * time.Second
 
+var v3RealtimeListRealtimeOutboxAfter = func(s *Server, afterEndpointSeq uint64, limit int) ([]sessionruntime.RealtimeOutboxRecord, error) {
+	return s.sessions.ListRealtimeOutboxAfter(afterEndpointSeq, limit)
+}
+
 type v3RealtimeSubscription struct {
 	SessionID      string
 	SubscriptionID string
@@ -138,12 +142,7 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 				return
 			}
 			if err := ValidateV3RealtimeInboundClientMessage(message); err != nil {
-				message.Protocol = V3RealtimeProtocol
-				message.ProtocolVersion = V3RealtimeProtocolVersion
-				message.Kind = V3RealtimeKindAuthDenied
-				message.ErrorCode = "invalid_message"
-				message.Error = err.Error()
-				readMessages <- message
+				readMessages <- V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindAuthDenied, ErrorCode: "invalid_message", Error: err.Error()}
 				return
 			}
 			readMessages <- message
@@ -384,17 +383,31 @@ func (s *Server) v3RealtimeCatchUpEndpointCursor(conn *transportws.Conn, princip
 	initialEndpointSeq := currentEndpointSeq
 	current := currentEndpointSeq
 	advanced := v3RealtimeAdvanceResult{EndpointSeq: current, LastSentEndpointSeq: current, Subscriptions: cloneV3RealtimeSubscriptions(subs)}
+	currentHead, err := s.sessions.CurrentRealtimeOutboxRevision()
+	if err != nil {
+		_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", "endpoint_resume_failed", err.Error(), current, requestedEndpointSeq))
+		return advanced, false
+	}
+	oldestAvailableEndpointSeq, err := s.v3RealtimeOldestAvailableEndpointSeq()
+	if err != nil {
+		_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", "endpoint_resume_failed", err.Error(), current, requestedEndpointSeq))
+		return advanced, false
+	}
+	if requestedEndpointSeq > currentHead {
+		msg := NewV3RealtimeCursorError("", "endpoint_cursor_ahead", "endpoint cursor is ahead of committed realtime outbox; reconnect required", currentHead, requestedEndpointSeq)
+		msg.LatestEndpointSeq = currentHead
+		_ = s.sendV3RealtimeMessage(conn, msg)
+		return advanced, false
+	}
 	for {
-		records, err := s.sessions.ListRealtimeOutboxAfter(current, v3RealtimeReplayLimit)
+		records, err := v3RealtimeListRealtimeOutboxAfter(s, current, v3RealtimeReplayLimit)
 		if err != nil {
 			_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", "endpoint_resume_failed", err.Error(), current, requestedEndpointSeq))
 			return advanced, false
 		}
 		if len(records) == 0 {
-			if requestedEndpointSeq > current {
-				msg := NewV3RealtimeCursorError("", "endpoint_cursor_ahead", "endpoint cursor is ahead of committed realtime outbox; reconnect required", current, requestedEndpointSeq)
-				msg.LatestEndpointSeq = current
-				_ = s.sendV3RealtimeMessage(conn, msg)
+			if current < currentHead {
+				_ = s.sendV3RealtimeEndpointCursorGap(conn, current+1, oldestAvailableEndpointSeq, currentHead)
 				return advanced, false
 			}
 			if emitZeroEventWatermark && !s.v3RealtimeSendEndpointWatermarkIfAdvanced(conn, scope, initialEndpointSeq, advanced) {
@@ -403,7 +416,7 @@ func (s *Server) v3RealtimeCatchUpEndpointCursor(conn *transportws.Conn, princip
 			return advanced, true
 		}
 		for _, record := range records {
-			next, ok, delivered := s.v3RealtimeProcessOutboxRecord(conn, principal, scope, record, current, advanced.Subscriptions, worksets)
+			next, ok, delivered := s.v3RealtimeProcessOutboxRecord(conn, principal, scope, record, current, advanced.Subscriptions, worksets, oldestAvailableEndpointSeq, currentHead)
 			if !ok {
 				return advanced, false
 			}
@@ -417,12 +430,25 @@ func (s *Server) v3RealtimeCatchUpEndpointCursor(conn *transportws.Conn, princip
 			current = next.EndpointSeq
 		}
 		if len(records) < v3RealtimeReplayLimit {
+			if advanced.EndpointSeq < currentHead {
+				_ = s.sendV3RealtimeEndpointCursorGap(conn, advanced.EndpointSeq+1, oldestAvailableEndpointSeq, currentHead)
+				return advanced, false
+			}
 			if emitZeroEventWatermark && !s.v3RealtimeSendEndpointWatermarkIfAdvanced(conn, scope, initialEndpointSeq, advanced) {
 				return advanced, false
 			}
 			return advanced, true
 		}
 	}
+}
+
+func (s *Server) sendV3RealtimeEndpointCursorGap(conn *transportws.Conn, missingEndpointSeq, oldestAvailableEndpointSeq, latestEndpointSeq uint64) error {
+	msg := NewV3RealtimeCursorError("", "endpoint_cursor_gap", fmt.Sprintf("endpoint cursor cannot be replayed continuously from durable realtime outbox at %d; bootstrap required", missingEndpointSeq), 0, missingEndpointSeq)
+	msg.BootstrapRequired = true
+	msg.OldestAvailableEndpointSeq = oldestAvailableEndpointSeq
+	msg.LatestEndpointSeq = latestEndpointSeq
+	msg.MissingEndpointSeq = missingEndpointSeq
+	return s.sendV3RealtimeMessage(conn, msg)
 }
 
 func (s *Server) v3RealtimeSendEndpointWatermarkIfAdvanced(conn *transportws.Conn, scope v3SyncCursorScope, initialEndpointSeq uint64, advanced v3RealtimeAdvanceResult) bool {
@@ -445,13 +471,13 @@ func (s *Server) v3RealtimeSendEndpointWatermarkIfAdvanced(conn *transportws.Con
 	}) == nil
 }
 
-func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal identity.Principal, scope v3SyncCursorScope, record sessionruntime.RealtimeOutboxRecord, lastEndpointSeq uint64, subs map[string]v3RealtimeSubscription, worksets map[string]v3RealtimeWorksetSubscription) (v3RealtimeAdvanceResult, bool, bool) {
+func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal identity.Principal, scope v3SyncCursorScope, record sessionruntime.RealtimeOutboxRecord, lastEndpointSeq uint64, subs map[string]v3RealtimeSubscription, worksets map[string]v3RealtimeWorksetSubscription, oldestAvailableEndpointSeq, latestEndpointSeq uint64) (v3RealtimeAdvanceResult, bool, bool) {
 	advanced := v3RealtimeAdvanceResult{EndpointSeq: lastEndpointSeq, LastSentEndpointSeq: lastEndpointSeq, Subscriptions: cloneV3RealtimeSubscriptions(subs)}
 	if record.EndpointSeq <= lastEndpointSeq {
 		return advanced, true, false
 	}
 	if record.EndpointSeq != lastEndpointSeq+1 && lastEndpointSeq != 0 {
-		_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", "endpoint_cursor_gap", fmt.Sprintf("endpoint sequence gap at %d, want %d; reconnect required", record.EndpointSeq, lastEndpointSeq+1), lastEndpointSeq, record.EndpointSeq))
+		_ = s.sendV3RealtimeEndpointCursorGap(conn, lastEndpointSeq+1, oldestAvailableEndpointSeq, latestEndpointSeq)
 		return advanced, false, false
 	}
 	advanced.EndpointSeq = record.EndpointSeq

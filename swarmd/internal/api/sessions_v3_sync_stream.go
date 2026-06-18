@@ -53,6 +53,15 @@ func newSessionsV3SyncStreamEvent(record sessionruntime.RealtimeOutboxRecord) se
 
 func (s *Server) handleSessionsV3SyncStream(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet && strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		if s == nil || s.sessions == nil {
+			writeError(w, http.StatusInternalServerError, errors.New("sessions v3 service is not configured"))
+			return
+		}
+		principal, principalOK := PrincipalFromRequest(r)
+		if !principalOK || !principal.Valid() {
+			writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+			return
+		}
 		s.writeV3SyncStreamWebsocketUnsupported(w, r)
 		return
 	}

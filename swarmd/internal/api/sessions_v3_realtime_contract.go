@@ -82,6 +82,7 @@ type V3RealtimeMessage struct {
 	BootstrapRequired          bool                                   `json:"bootstrap_required,omitempty"`
 	OldestAvailableEndpointSeq uint64                                 `json:"oldest_available_endpoint_seq,omitempty"`
 	LatestEndpointSeq          uint64                                 `json:"latest_endpoint_seq,omitempty"`
+	MissingEndpointSeq         uint64                                 `json:"missing_endpoint_seq,omitempty"`
 }
 
 func NewV3RealtimeMessage(kind string) V3RealtimeMessage {

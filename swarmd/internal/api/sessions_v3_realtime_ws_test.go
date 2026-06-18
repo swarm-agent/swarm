@@ -203,6 +203,60 @@ func TestV3RealtimeReconnectWithEndpointCursorReplaysMissedRowsInEndpointOrder(t
 	assertV3RealtimeSignedCursorSeq(t, server, completed.EndpointCursor, secondMissed.RealtimeOutbox.EndpointSeq)
 }
 
+func TestV3RealtimeCatchUpRejectsMissingDurableTailPrefix(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-tail-prefix", "create-realtime-tail-prefix")
+	first := appendV3RealtimeTestMessage(t, server, created.SessionID, "message-realtime-tail-prefix-1", "one")
+	second := appendV3RealtimeTestMessage(t, server, created.SessionID, "message-realtime-tail-prefix-2", "two")
+	third := appendV3RealtimeTestMessage(t, server, created.SessionID, "message-realtime-tail-prefix-3", "three")
+	previousListOutbox := v3RealtimeListRealtimeOutboxAfter
+	v3RealtimeListRealtimeOutboxAfter = func(s *Server, afterEndpointSeq uint64, limit int) ([]sessionruntime.RealtimeOutboxRecord, error) {
+		records, err := sessionSvc.ListRealtimeOutboxAfter(afterEndpointSeq, limit)
+		if err != nil || len(records) <= 1 {
+			return records, err
+		}
+		return records[:1], nil
+	}
+	t.Cleanup(func() { v3RealtimeListRealtimeOutboxAfter = previousListOutbox })
+
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStreamWithQuery(t, httpServer.URL, "endpoint_cursor="+url.QueryEscape(signedV3RealtimeCursorForTest(t, server, created.RealtimeOutbox.EndpointSeq))+"&sessions="+created.SessionID)
+	defer conn.Close()
+
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, created.SessionID, 0)
+	replayed := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, replayed, V3RealtimeKindEvent, created.SessionID, first.Event.Seq)
+	frame := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeCursorError(t, frame, "endpoint_cursor_gap")
+	if !frame.BootstrapRequired || frame.LatestEndpointSeq != third.RealtimeOutbox.EndpointSeq || frame.MissingEndpointSeq != second.RealtimeOutbox.EndpointSeq || frame.OldestAvailableEndpointSeq != 0 {
+		t.Fatalf("missing tail prefix cursor error = %+v", frame)
+	}
+}
+
+func TestV3RealtimeCatchUpRejectsEmptyScanBeforeDurableHead(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-tail-empty", "create-realtime-tail-empty")
+	first := appendV3RealtimeTestMessage(t, server, created.SessionID, "message-realtime-tail-empty-1", "one")
+	second := appendV3RealtimeTestMessage(t, server, created.SessionID, "message-realtime-tail-empty-2", "two")
+	third := appendV3RealtimeTestMessage(t, server, created.SessionID, "message-realtime-tail-empty-3", "three")
+	previousListOutbox := v3RealtimeListRealtimeOutboxAfter
+	v3RealtimeListRealtimeOutboxAfter = func(_ *Server, _ uint64, _ int) ([]sessionruntime.RealtimeOutboxRecord, error) {
+		return nil, nil
+	}
+	t.Cleanup(func() { v3RealtimeListRealtimeOutboxAfter = previousListOutbox })
+
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStreamWithQuery(t, httpServer.URL, "endpoint_cursor="+url.QueryEscape(signedV3RealtimeCursorForTest(t, server, created.RealtimeOutbox.EndpointSeq))+"&sessions="+created.SessionID)
+	defer conn.Close()
+
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, created.SessionID, 0)
+	frame := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeCursorError(t, frame, "endpoint_cursor_gap")
+	if !frame.BootstrapRequired || frame.LatestEndpointSeq != third.RealtimeOutbox.EndpointSeq || frame.MissingEndpointSeq != first.RealtimeOutbox.EndpointSeq || frame.OldestAvailableEndpointSeq != 0 {
+		t.Fatalf("empty scan cursor error = %+v first=%d second=%d", frame, first.RealtimeOutbox.EndpointSeq, second.RealtimeOutbox.EndpointSeq)
+	}
+}
+
 func TestV3RealtimeEndpointCursorAheadFailsClosed(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-ahead", "create-realtime-ahead")
@@ -228,6 +282,7 @@ func TestV3RealtimeNoCursorHelloStartsAtCurrentDurableHead(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-hello-head", "create-realtime-hello-head")
 	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	server.v3RealtimeRetentionBoundary = func() (uint64, error) { return created.RealtimeOutbox.EndpointSeq + 10, nil }
 
 	conn := dialV3RealtimeStream(t, httpServer.URL)
 	defer conn.Close()
@@ -246,11 +301,14 @@ func TestV3RealtimeRejectsInboundServerOnlyFrame(t *testing.T) {
 	conn := dialV3RealtimeStream(t, httpServer.URL)
 	defer conn.Close()
 
-	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindHello, EndpointCursor: signedV3RealtimeCursorForTest(t, server, created.RealtimeOutbox.EndpointSeq)})
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindHello, EndpointCursor: signedV3RealtimeCursorForTest(t, server, created.RealtimeOutbox.EndpointSeq), SessionID: created.SessionID, SubscriptionID: "echo-me-not", Event: &created.Event, Projection: &created.Projection})
 	frame := readV3RealtimeFrame(t, conn)
 	assertV3RealtimeFrame(t, frame, V3RealtimeKindAuthDenied, "", 0)
 	if frame.ErrorCode != "invalid_message" || !strings.Contains(frame.Error, "not allowed") {
 		t.Fatalf("server-only inbound frame = %+v", frame)
+	}
+	if frame.EndpointCursor != "" || frame.Event != nil || frame.Projection != nil || frame.SubscriptionID != "" || frame.WorksetID != "" || len(frame.Subscriptions) != 0 || len(frame.Worksets) != 0 {
+		t.Fatalf("auth.denied echoed client-supplied fields: %+v", frame)
 	}
 }
 
