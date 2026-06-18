@@ -4,15 +4,25 @@ set -euo pipefail
 SSH_HOST="${1:-${SWARM_PRIMARY_SSH:-testbench}}"
 API_URL="${SWARM_PRIMARY_API_URL:-http://127.0.0.1:7781}"
 SERVICE_UNIT="${SWARM_SERVICE_UNIT:-swarm.service}"
-REMOTE_REPO="${SWARM_REMOTE_REPO:-/home/installer/swarm-go}"
+REMOTE_REPO="${SWARM_REMOTE_REPO:-}"
+if [[ -z "${REMOTE_REPO}" ]]; then
+  echo "SWARM_REMOTE_REPO must point to the candidate repository on ${SSH_HOST}" >&2
+  exit 2
+fi
 MODEL="${SWARM_LIVE_STREAM_MODEL:-accounts/fireworks/models/kimi-k2p6}"
 PROVIDER="${SWARM_LIVE_STREAM_PROVIDER:-fireworks}"
 E2E_ID="${E2E_ID:-v3sync-fireworks-$(date +%Y%m%d-%H%M%S)-$RANDOM}"
-REMOTE_DIR="/tmp/swarm-v3-e2e/${E2E_ID}"
-LOCAL_DIR="/tmp/swarm-v3-e2e/${E2E_ID}"
+if [[ ! "${E2E_ID}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "E2E_ID may only contain letters, numbers, dots, underscores, and dashes" >&2
+  exit 2
+fi
+LOCAL_DIR="$(mktemp -d -t "${E2E_ID}.local.XXXXXX")"
+REMOTE_DIR="${SWARM_E2E_REMOTE_DIR:-}"
+if [[ -z "${REMOTE_DIR}" ]]; then
+  REMOTE_DIR="$(ssh "${SSH_HOST}" "mktemp -d -t '${E2E_ID}.remote.XXXXXX'")"
+fi
+WORKSPACE_DIR="${SWARM_E2E_WORKSPACE_DIR:-${REMOTE_DIR}/workspace}"
 RUNNER_LOCAL="${LOCAL_DIR}/runner.mjs"
-
-mkdir -p "${LOCAL_DIR}"
 cat >"${RUNNER_LOCAL}" <<'NODE'
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -32,7 +42,7 @@ const wsLog = `${artifactDir}/websocket.ndjson`;
 const summaryPath = `${artifactDir}/summary.json`;
 fs.writeFileSync(httpLog, ''); fs.writeFileSync(wsLog, '');
 
-const result = {result:'NOT_DONE', e2e_id:cfg.e2eID, workspace:`/tmp/${cfg.e2eID}`, started_at:startedISO, candidate:{}, principals:{}, ids:{}, gates:{}, artifacts:{http:httpLog, websocket:wsLog, summary:summaryPath}, failures:[]};
+const result = {result:'NOT_DONE', e2e_id:cfg.e2eID, workspace:cfg.workspaceDir, started_at:startedISO, candidate:{}, principals:{}, ids:{}, gates:{}, artifacts:{http:httpLog, websocket:wsLog, summary:summaryPath}, failures:[]};
 function run(cmd,args){ const p=spawnSync(cmd,args,{encoding:'utf8'}); return {cmd:[cmd,...args].join(' '), status:p.status, stdout:p.stdout, stderr:p.stderr}; }
 function save(){ fs.writeFileSync(summaryPath, JSON.stringify(result,null,2)); }
 function die(msg){ result.failures.push(msg); save(); throw new Error(msg); }
@@ -55,13 +65,20 @@ async function api(method, route, token, body, label=route, allowError=false){
   if(!allowError && !res.ok) die(`${label} ${method} ${route} status=${res.status} body=${text.slice(0,1200)}`);
   return {status:res.status, ok:res.ok, body:json, text};
 }
-async function authPrimary(){ const r=await api('GET','/v1/auth/desktop/session','',undefined,'auth.primary'); const token=String(r.body?.token||''); assert(token,'primary auth returned no token'); return {token, user_id:r.body.user_id, account_scope_id:r.body.account_scope_id, username:r.body.username}; }
-async function authSecondaryOptional(){
-  const token=String(cfg.secondaryToken||'').trim();
-  if(!token) return {available:false, reason:'SWARM_SECONDARY_TOKEN was not provided; no existing product path was found to mint a second principal from the live daemon'};
-  const r=await api('GET','/me',token,undefined,'auth.secondary.me',true);
-  if(!r.ok) return {available:false, reason:`provided SWARM_SECONDARY_TOKEN was not accepted by /me: status=${r.status}`};
-  return {available:true, token, user_id:String(r.body?.userID||r.body?.user_id||''), account_scope_id:String(r.body?.accountScopeID||r.body?.account_scope_id||''), username:String(r.body?.username||r.body?.userID||r.body?.user_id||'secondary')};
+async function authDesktop(label){
+  const r=await api('GET','/v1/auth/desktop/session','',undefined,label);
+  const token=String(r.body?.token||'');
+  assert(token,`${label} returned no token`);
+  const me=await api('GET','/me',token,undefined,`${label}.me`);
+  return {available:true, token, user_id:String(me.body?.userID||r.body.user_id||''), account_scope_id:String(me.body?.accountScopeID||r.body.account_scope_id||''), username:String(me.body?.username||r.body.username||'')};
+}
+async function authPrimary(){ return authDesktop('auth.primary'); }
+async function authSecondary(){
+  const provided=String(cfg.secondaryToken||'').trim();
+  if(!provided) return authDesktop('auth.secondary');
+  const r=await api('GET','/me',provided,undefined,'auth.secondary.me',true);
+  if(!r.ok) die(`provided SWARM_SECONDARY_TOKEN was not accepted by /me: status=${r.status}`);
+  return {available:true, token:provided, user_id:String(r.body?.userID||r.body?.user_id||''), account_scope_id:String(r.body?.accountScopeID||r.body?.account_scope_id||''), username:String(r.body?.username||r.body?.userID||r.body?.user_id||'secondary')};
 }
 function wsHeader(route, token){ const key=crypto.randomBytes(16).toString('base64'); return [`GET ${route} HTTP/1.1`,`Host: ${host}:${port}`,'Upgrade: websocket','Connection: Upgrade',`Sec-WebSocket-Key: ${key}`,'Sec-WebSocket-Version: 13',`Origin: ${cfg.apiURL}`,'Sec-Fetch-Site: same-origin',`X-Swarm-Token: ${token}`,`Cookie: swarm_desktop_session=${token}`,'',''].join('\r\n'); }
 function sendWS(socket,obj){ const payload=Buffer.from(JSON.stringify(obj)); const h=payload.length<126?Buffer.from([0x81,payload.length|0x80]):Buffer.from([0x81,126|0x80,(payload.length>>8)&255,payload.length&255]); const mask=crypto.randomBytes(4); const masked=Buffer.from(payload.map((v,i)=>v^mask[i%4])); append(wsLog,{direction:'client',frame:obj}); socket.write(Buffer.concat([h,mask,masked])); }
@@ -85,7 +102,7 @@ async function mutate(token,id,key){ return (await api('POST',`/v3/sessions/${en
 async function main(){
   result.candidate.hostname=run('hostname',[]).stdout.trim(); result.candidate.repo_path=cfg.repo; result.candidate.commit=run('git',['-C',cfg.repo,'rev-parse','HEAD']).stdout.trim(); result.candidate.git_status=run('git',['-C',cfg.repo,'status','--short']).stdout; result.candidate.service_status=run('bash',['-lc',`(systemctl --user --no-pager status ${cfg.serviceUnit} || sudo -n systemctl --no-pager status ${cfg.serviceUnit} || true) | sed -n '1,30p'`]).stdout; result.candidate.process=run('bash',['-lc','ps -eo pid,lstart,cmd | grep -E "[s]warm(d| )" || true']).stdout;
   assert(result.candidate.commit, 'missing remote git commit'); assert(result.candidate.git_status.trim()==='', `remote git status not clean: ${result.candidate.git_status}`); result.gates.candidate=true;
-  const p1=await authPrimary(); const p2=await authSecondaryOptional(); result.principals.p1={user_id:p1.user_id, account_scope_id:p1.account_scope_id, username:p1.username}; if(p2.available){ result.principals.p2={user_id:p2.user_id, account_scope_id:p2.account_scope_id, username:p2.username}; if(p1.user_id && p2.user_id && p1.user_id!==p2.user_id){ result.gates.two_principals=true; } else { result.gates.two_principals=false; result.failures.push('provided secondary token did not prove a distinct user principal'); } } else { result.gates.two_principals=false; result.secondary_principal={available:false, reason:p2.reason}; result.failures.push(`principal isolation NOT_DONE: ${p2.reason}`); }
+  const p1=await authPrimary(); const p2=await authSecondary(); result.principals.p1={user_id:p1.user_id, account_scope_id:p1.account_scope_id, username:p1.username}; result.principals.p2={user_id:p2.user_id, account_scope_id:p2.account_scope_id, username:p2.username, source:cfg.secondaryToken?'provided':'desktop_session_api'}; result.gates.two_authenticated_tokens=Boolean(p1.token && p2.token && p1.token!==p2.token && p1.user_id && p2.user_id && p1.account_scope_id && p2.account_scope_id); assert(result.gates.two_authenticated_tokens,'desktop session API did not mint a second usable token'); result.principals.same_user=p1.user_id===p2.user_id; result.principals.same_account=p1.account_scope_id===p2.account_scope_id;
   fs.mkdirSync(result.workspace,{recursive:true}); const topo=(await api('GET','/v1/swarm/topology',p1.token,undefined,'topology')).body; const runtime=(topo.runtimes||[]).find(r=>r.relationship==='self')||(topo.runtimes||[])[0]; assert(runtime?.swarm_id,'missing self runtime'); const w=(await api('POST','/v1/workspace/add',p1.token,{path:result.workspace,name:cfg.e2eID,make_current:false},'workspace.add')).body; const binding=w.local_workspace_binding_id; assert(binding,'workspace add missing binding'); result.ids.workspace_binding_id=binding; result.ids.runtime_swarm_id=runtime.swarm_id;
   const A=await createSession(p1.token,'A',binding,runtime.swarm_id); const B=await createSession(p1.token,'B',binding,runtime.swarm_id); result.ids.A=A; result.ids.B=B; const selectorWS={kind:'workspace',workspace_path:result.workspace,recent:{limit:20}};
   const boot=(await api('POST','/v3/sync/bootstrap',p1.token,{surface:'desktop',selector:selectorWS},'bootstrap.workspace')).body; const bootCursor=boot.snapshot_endpoint_cursor; assert(boot.ok===true && isCursor(bootCursor),'bootstrap missing ok/signed cursor'); assert(boot.sessions_by_id?.[A] && boot.sessions_by_id?.[B],'bootstrap missing A/B'); assert(boot.tombstones_by_session && typeof boot.tombstones_by_session==='object','bootstrap missing tombstones map');
@@ -96,7 +113,7 @@ async function main(){
   const unbounded=await api('POST','/v3/sync/bootstrap',p1.token,{surface:'desktop',selector:{kind:'workspace',workspace_path:result.workspace}},'selector.unbounded',true); assert(!unbounded.ok && unbounded.body?.ok!==true,'unbounded workspace did not fail'); result.gates.invalid_cursors_fail=true;
   const hyd=(await api('POST','/v3/sync/hydrate',p1.token,{surface:'desktop',session_ids:[A],include_active:true,resources:{run_intents:true}},'hydrate.A')).body; assert(hyd.sessions_by_id?.[A] && !hyd.sessions_by_id?.[B] && !(hyd.session_order||[]).includes(B),'hydrate widened beyond A'); await mutate(p1.token,A,'hydrate_A'); await mutate(p1.token,B,'hydrate_B'); const hs=(await api('POST','/v3/sync/stream',p1.token,{surface:'desktop',selector:{kind:'session_ids',session_ids:[A]},include_active:true,resources:{run_intents:true},endpoint_cursor:hyd.snapshot_endpoint_cursor,limit:100},'stream.hydrate')).body; assert(countEvent(hs.events,A,'hydrate_A')===1 && countEvent(hs.events,B,'hydrate_B')===0,'hydrate stream widened/leaked'); result.gates.hydrate_no_widening=true;
   const C=await createSession(p1.token,'C',binding,runtime.swarm_id); result.ids.C=C; const preDel=(await api('POST','/v3/sync/bootstrap',p1.token,{surface:'desktop',selector:selectorWS},'bootstrap.pre_delete')).body; const del=(await api('DELETE',`/v3/sessions/${encodeURIComponent(C)}`,p1.token,undefined,'delete.C')).body; assert(del.ok===true && del.deleted===true,'delete route failed'); const ds=(await api('POST','/v3/sync/stream',p1.token,{surface:'desktop',selector:selectorWS,endpoint_cursor:preDel.snapshot_endpoint_cursor,limit:100},'stream.delete')).body; assert(countEvent(ds.events,C,'session.deleted')===1 || countEvent(ds.events,C,'deleted')===1,'delete/tombstone event missing in stream'); const postDel=(await api('POST','/v3/sync/bootstrap',p1.token,{surface:'desktop',selector:selectorWS},'bootstrap.post_delete')).body; assert(!postDel.sessions_by_id?.[C] && postDel.tombstones_by_session?.[C],'post-delete bootstrap missing tombstone or still has session'); result.gates.tombstone_delete=true;
-  if(p2.available && result.gates.two_principals){ const D=await createSession(p2.token,'D',binding,runtime.swarm_id); result.ids.D=D; const p2hyd=(await api('POST','/v3/sync/hydrate',p2.token,{surface:'desktop',session_ids:[D]},'p2.hydrate.D')).body; assert(p2hyd.sessions_by_id?.[D],'p2 cannot see own D'); const p1hydD=(await api('POST','/v3/sync/hydrate',p1.token,{surface:'desktop',session_ids:[D]},'p1.hydrate.D')).body; assert(!p1hydD.sessions_by_id?.[D], 'p1 can hydrate p2 D'); const isoBoot=(await api('POST','/v3/sync/bootstrap',p1.token,{surface:'desktop',selector:{kind:'global',global:true,recent:{limit:50}}},'p1.bootstrap.iso')).body; await mutate(p2.token,D,'p2_secret_mutation'); const isoStream=(await api('POST','/v3/sync/stream',p1.token,{surface:'desktop',selector:{kind:'global',global:true,recent:{limit:50}},endpoint_cursor:isoBoot.snapshot_endpoint_cursor,limit:100},'p1.stream.iso')).body; assert(countEvent(isoStream.events,D,'p2_secret_mutation')===0,'p1 stream saw p2 mutation'); result.gates.principal_isolation=true; } else { result.gates.principal_isolation=false; }
+  const D=await createSession(p2.token,'D',binding,runtime.swarm_id); result.ids.D=D; const p2hyd=(await api('POST','/v3/sync/hydrate',p2.token,{surface:'desktop',session_ids:[D]},'p2.hydrate.D')).body; assert(p2hyd.sessions_by_id?.[D],'secondary token cannot see own D'); const p1hydD=(await api('POST','/v3/sync/hydrate',p1.token,{surface:'desktop',session_ids:[D]},'p1.hydrate.D')).body; if(p1.user_id===p2.user_id && p1.account_scope_id===p2.account_scope_id){ assert(p1hydD.sessions_by_id?.[D], 'primary token cannot hydrate same-principal secondary-token D'); const crossBoot=(await api('POST','/v3/sync/bootstrap',p1.token,{surface:'desktop',selector:{kind:'global',global:true,recent:{limit:50}}},'p1.bootstrap.cross_token')).body; await mutate(p2.token,D,'p2_cross_token_mutation'); const crossStream=(await api('POST','/v3/sync/stream',p1.token,{surface:'desktop',selector:{kind:'global',global:true,recent:{limit:50}},endpoint_cursor:crossBoot.snapshot_endpoint_cursor,limit:100},'p1.stream.cross_token')).body; assert(countEvent(crossStream.events,D,'p2_cross_token_mutation')===1,'primary token did not see same-principal secondary-token mutation exactly once'); result.gates.same_principal_cross_token_visibility=true; } else { assert(!p1hydD.sessions_by_id?.[D], 'primary token can hydrate distinct-principal D'); const isoBoot=(await api('POST','/v3/sync/bootstrap',p1.token,{surface:'desktop',selector:{kind:'global',global:true,recent:{limit:50}}},'p1.bootstrap.iso')).body; await mutate(p2.token,D,'p2_secret_mutation'); const isoStream=(await api('POST','/v3/sync/stream',p1.token,{surface:'desktop',selector:{kind:'global',global:true,recent:{limit:50}},endpoint_cursor:isoBoot.snapshot_endpoint_cursor,limit:100},'p1.stream.iso')).body; assert(countEvent(isoStream.events,D,'p2_secret_mutation')===0,'primary token saw distinct-principal mutation'); result.gates.distinct_principal_isolation=true; }
   let ws=await openWS('/v3/realtime/stream',p1.token); const hello=await wait(ws.frames,f=>f.kind==='hello',5000,'ws hello'); assert(isCursor(hello.endpoint_cursor),'ws hello cursor not signed'); ws.send({protocol:'v3.realtime',protocol_version:1,kind:'hello',endpoint_cursor:'cursor-evil',event:{bad:true},subscription_id:'evil'}); const denied=await wait(ws.frames,f=>f.kind==='auth.denied'||f.kind==='cursor.error',5000,'invalid inbound rejection'); assert(denied.kind==='auth.denied' && !JSON.stringify(denied).includes('cursor-evil'),'invalid inbound not cleanly rejected'); ws.close(); await new Promise(r=>setTimeout(r,200));
   ws=await openWS('/v3/realtime/stream',p1.token); const h2=await wait(ws.frames,f=>f.kind==='hello',5000,'ws hello2'); ws.send({protocol:'v3.realtime',protocol_version:1,kind:'subscribe.session',session_id:A,subscription_id:`sub-${cfg.e2eID}`,endpoint_cursor:h2.endpoint_cursor}); await wait(ws.frames,f=>f.kind==='replay.started'&&f.session_id===A,5000,'replay started'); await mutate(p1.token,A,'ws_live'); const live=await wait(ws.frames,f=>f.kind==='event'&&f.event?.session_id===A&&JSON.stringify(f).includes('ws_live'),10000,'ws live'); assert(isCursor(live.endpoint_cursor),'ws live cursor not signed'); const oldCursor=live.endpoint_cursor; ws.close(); await new Promise(r=>setTimeout(r,250)); await mutate(p1.token,A,'missed_1'); await mutate(p1.token,A,'missed_2'); const ws2=await openWS(`/v3/realtime/stream?endpoint_cursor=${encodeURIComponent(oldCursor)}`,p1.token); await wait(ws2.frames,f=>f.kind==='hello',5000,'resume hello'); ws2.send({protocol:'v3.realtime',protocol_version:1,kind:'subscribe.session',session_id:A,subscription_id:`resume-${cfg.e2eID}`}); await wait(ws2.frames,f=>f.kind==='event'&&f.event?.session_id===A&&JSON.stringify(f).includes('missed_1'),10000,'missed 1'); await wait(ws2.frames,f=>f.kind==='event'&&f.event?.session_id===A&&JSON.stringify(f).includes('missed_2'),10000,'missed 2'); const beforeB=ws2.frames.length; await mutate(p1.token,B,'filtered_B'); await new Promise(r=>setTimeout(r,1500)); assert(!ws2.frames.slice(beforeB).some(f=>f.kind==='event'&&f.event?.session_id===B),'B delivered to A-only ws'); result.gates.websocket_live_and_repair=true;
   const fire=(await api('POST',`/v3/sessions/${encodeURIComponent(A)}/messages`,p1.token,{client_request_id:`${cfg.e2eID}:fireworks`,role:'user',content:`Fireworks A-Z ${cfg.e2eID}. Reply exactly V3_FIREWORKS_ACCEPTANCE_OK and do not call tools.`,metadata:{e2e_id:cfg.e2eID}},'fireworks.message')).body; result.ids.fireworks_run_id=fire.run_intent?.run_id||fire.run_id||''; const term=await wait(ws2.frames,f=>['session.assistant.completed','session.assistant.failed','session.run.failed','session.run.completed','session.run.cancelled','session.run.expired','session.run.interrupted'].includes(f.event?.event_type||f.event_type),240000,'Fireworks terminal'); const tail=(await api('GET',`/v3/sessions/${encodeURIComponent(A)}/messages?tail=true&limit=200`,p1.token,undefined,'fireworks.tail')).body; const assistants=(tail.messages||[]).filter(m=>m.role==='assistant'); assert((term.event?.event_type||term.event_type)==='session.assistant.completed' && assistants.length>0,'Fireworks did not complete with assistant output'); result.fireworks={provider:cfg.provider,model:cfg.model,run_id:result.ids.fireworks_run_id,terminal_event:term.event?.event_type||term.event_type,assistant_output:assistants.at(-1)?.content||''}; result.gates.fireworks=true; ws2.close();
@@ -108,7 +125,7 @@ NODE
 
 CONFIG_LOCAL="${LOCAL_DIR}/config.json"
 cat >"${CONFIG_LOCAL}" <<JSON
-{"apiURL":"${API_URL}","serviceUnit":"${SERVICE_UNIT}","repo":"${REMOTE_REPO}","provider":"${PROVIDER}","model":"${MODEL}","e2eID":"${E2E_ID}","artifactDir":"${REMOTE_DIR}","secondaryToken":"${SWARM_SECONDARY_TOKEN:-}"}
+{"apiURL":"${API_URL}","serviceUnit":"${SERVICE_UNIT}","repo":"${REMOTE_REPO}","provider":"${PROVIDER}","model":"${MODEL}","e2eID":"${E2E_ID}","artifactDir":"${REMOTE_DIR}","workspaceDir":"${WORKSPACE_DIR}","secondaryToken":"${SWARM_SECONDARY_TOKEN:-}"}
 JSON
 
 ssh "${SSH_HOST}" "mkdir -p '${REMOTE_DIR}'"
