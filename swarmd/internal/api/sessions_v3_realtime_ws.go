@@ -73,15 +73,21 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 
 	surface := r.URL.Query().Get("surface")
 	scope := v3SyncCursorScopeForRealtime(principal, surface)
-	endpointCursor, _, cursorErr := s.parseV3RealtimeEndpointCursor(r.URL.Query().Get("endpoint_cursor"), principal, surface)
+	rawEndpointCursor := strings.TrimSpace(r.URL.Query().Get("endpoint_cursor"))
+	endpointCursor, _, cursorErr := s.parseV3RealtimeEndpointCursor(rawEndpointCursor, principal, surface)
 	if cursorErr != nil {
 		_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", v3RealtimeCursorErrorCode(cursorErr), cursorErr.Error(), 0, 0))
 		return
 	}
-	if endpointCursor > 0 {
-		if ok := s.v3RealtimeValidateEndpointCursor(conn, endpointCursor); !ok {
+	if rawEndpointCursor == "" {
+		currentHead, err := s.sessions.CurrentRealtimeOutboxRevision()
+		if err != nil {
+			_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", "endpoint_resume_failed", err.Error(), 0, 0))
 			return
 		}
+		endpointCursor = currentHead
+	} else if ok := s.v3RealtimeValidateEndpointCursor(conn, endpointCursor); !ok {
+		return
 	}
 	subs := map[string]v3RealtimeSubscription{}
 	worksets := map[string]v3RealtimeWorksetSubscription{}
@@ -131,7 +137,7 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 				readErr <- fmt.Errorf("decode v3 realtime message: %w", err)
 				return
 			}
-			if err := ValidateV3RealtimeMessage(message); err != nil {
+			if err := ValidateV3RealtimeInboundClientMessage(message); err != nil {
 				message.Protocol = V3RealtimeProtocol
 				message.ProtocolVersion = V3RealtimeProtocolVersion
 				message.Kind = V3RealtimeKindAuthDenied
@@ -166,10 +172,8 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 						_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(message.SessionID, v3RealtimeCursorErrorCode(err), err.Error(), lastEndpointSeq, 0))
 						return
 					}
-					if parsed > 0 {
-						if ok := s.v3RealtimeValidateEndpointCursor(conn, parsed); !ok {
-							return
-						}
+					if ok := s.v3RealtimeValidateEndpointCursor(conn, parsed); !ok {
+						return
 					}
 					endpointSeq = parsed
 				}
@@ -210,10 +214,8 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 					_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", v3RealtimeCursorErrorCode(err), err.Error(), lastEndpointSeq, 0))
 					return
 				}
-				if resumeSeq > 0 {
-					if ok := s.v3RealtimeValidateEndpointCursor(conn, resumeSeq); !ok {
-						return
-					}
+				if ok := s.v3RealtimeValidateEndpointCursor(conn, resumeSeq); !ok {
+					return
 				}
 				requestedWorksets, ok := s.v3RealtimeValidateResumeWorksets(conn, principal, message.Worksets)
 				if !ok {
@@ -230,10 +232,8 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 							_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(requestedSub.SessionID, v3RealtimeCursorErrorCode(err), err.Error(), lastEndpointSeq, 0))
 							return
 						}
-						if parsed > 0 {
-							if ok := s.v3RealtimeValidateEndpointCursor(conn, parsed); !ok {
-								return
-							}
+						if ok := s.v3RealtimeValidateEndpointCursor(conn, parsed); !ok {
+							return
 						}
 						subCursor = parsed
 					}
@@ -343,9 +343,6 @@ func (s *Server) v3RealtimeValidateResumeWorksets(conn *transportws.Conn, princi
 }
 
 func (s *Server) v3RealtimeValidateEndpointCursor(conn *transportws.Conn, requestedEndpointSeq uint64) bool {
-	if requestedEndpointSeq == 0 {
-		return true
-	}
 	currentHead, err := s.sessions.CurrentRealtimeOutboxRevision()
 	if err != nil {
 		_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", "endpoint_resume_failed", err.Error(), 0, requestedEndpointSeq))
@@ -935,6 +932,9 @@ func (s *Server) sendV3RealtimeOutboxEvent(conn *transportws.Conn, record sessio
 }
 
 func (s *Server) sendV3RealtimeMessage(conn *transportws.Conn, message V3RealtimeMessage) error {
+	if err := ValidateV3RealtimeOutboundServerMessage(message); err != nil {
+		return err
+	}
 	raw, err := json.Marshal(message)
 	if err != nil {
 		return err

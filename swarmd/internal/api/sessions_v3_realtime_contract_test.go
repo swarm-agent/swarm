@@ -111,7 +111,7 @@ func TestV3RealtimeContractResumeCarriesEndpointCursorSubscriptionsAndWorksets(t
 
 func TestV3RealtimeContractRejectsLegacySessionResumeCursors(t *testing.T) {
 	canonical := V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: "cursor-42", Subscriptions: []V3RealtimeSubscriptionRequest{{SessionID: "session-a", SubscriptionID: "sub-a"}}}
-	if err := ValidateV3RealtimeMessage(canonical); err != nil {
+	if err := ValidateV3RealtimeInboundClientMessage(canonical); err != nil {
 		t.Fatalf("canonical endpoint_cursor resume rejected: %v", err)
 	}
 
@@ -124,6 +124,45 @@ func TestV3RealtimeContractRejectsLegacySessionResumeCursors(t *testing.T) {
 	for name, msg := range tests {
 		if err := ValidateV3RealtimeMessage(msg); err == nil {
 			t.Fatalf("%s: legacy cursor validation succeeded unexpectedly: %+v", name, msg)
+		}
+	}
+}
+
+func TestV3RealtimeContractSeparatesInboundAndOutboundKinds(t *testing.T) {
+	inboundAllowed := []V3RealtimeMessage{
+		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: "session-a", SubscriptionID: "sub-a"},
+		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindUnsubscribe, SessionID: "session-a"},
+		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: "cursor-42"},
+	}
+	for _, msg := range inboundAllowed {
+		if err := ValidateV3RealtimeInboundClientMessage(msg); err != nil {
+			t.Fatalf("inbound %s rejected: %v", msg.Kind, err)
+		}
+		if err := ValidateV3RealtimeOutboundServerMessage(msg); err == nil {
+			t.Fatalf("client-only kind %s passed outbound validation", msg.Kind)
+		}
+	}
+
+	serverOnly := []V3RealtimeMessage{
+		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindHello, EndpointCursor: "cursor-42"},
+		validV3RealtimeEventMessage(t),
+		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindReplayStart, SessionID: "session-a", EndpointCursor: "cursor-42"},
+		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindReplayDone, SessionID: "session-a", EndpointCursor: "cursor-42"},
+		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindCursorError, ErrorCode: "bad_cursor"},
+		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindKeepalive},
+		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindEndpointWatermark, EndpointCursor: "cursor-42"},
+		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindHighWater, SessionID: "session-a", EndpointCursor: "cursor-42"},
+		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindWorksetSessionDiscovered, WorksetID: "workset-a", WorksetSubscriptionID: "workset-sub-a", SessionID: "session-a", EndpointCursor: "cursor-42", Rev: 42, PrevRev: 41, EventType: "session.created"},
+		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindWorksetSessionRemoved, WorksetID: "workset-a", WorksetSubscriptionID: "workset-sub-a", SessionID: "session-a", EndpointCursor: "cursor-42", Rev: 42, PrevRev: 41, EventType: "session.deleted"},
+		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindAuthDenied, ErrorCode: "auth_denied"},
+		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSlowConsumer, ErrorCode: "slow_consumer"},
+	}
+	for _, msg := range serverOnly {
+		if err := ValidateV3RealtimeOutboundServerMessage(msg); err != nil {
+			t.Fatalf("outbound %s rejected: %v", msg.Kind, err)
+		}
+		if err := ValidateV3RealtimeInboundClientMessage(msg); err == nil {
+			t.Fatalf("server-only kind %s passed inbound validation", msg.Kind)
 		}
 	}
 }

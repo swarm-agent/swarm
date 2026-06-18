@@ -224,6 +224,44 @@ func TestV3RealtimeEndpointCursorAheadFailsClosed(t *testing.T) {
 	}
 }
 
+func TestV3RealtimeNoCursorHelloStartsAtCurrentDurableHead(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-hello-head", "create-realtime-hello-head")
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+
+	hello := readV3RealtimeFrameIncludingHello(t, conn)
+	assertV3RealtimeFrame(t, hello, V3RealtimeKindHello, "", 0)
+	assertV3RealtimeSignedCursorSeq(t, server, hello.EndpointCursor, created.RealtimeOutbox.EndpointSeq)
+	assertNoV3RealtimeFrame(t, conn, 50*time.Millisecond)
+}
+
+func TestV3RealtimeRejectsInboundServerOnlyFrame(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-server-only-inbound", "create-realtime-server-only-inbound")
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindHello, EndpointCursor: signedV3RealtimeCursorForTest(t, server, created.RealtimeOutbox.EndpointSeq)})
+	frame := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, frame, V3RealtimeKindAuthDenied, "", 0)
+	if frame.ErrorCode != "invalid_message" || !strings.Contains(frame.Error, "not allowed") {
+		t.Fatalf("server-only inbound frame = %+v", frame)
+	}
+}
+
+func TestV3RealtimeSendMessageRejectsOutboundClientOnlyFrame(t *testing.T) {
+	server := &Server{}
+	err := server.sendV3RealtimeMessage(nil, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: "session-a", SubscriptionID: "sub-a"})
+	if err == nil || !strings.Contains(err.Error(), "not allowed") {
+		t.Fatalf("sendV3RealtimeMessage client-only outbound err = %v", err)
+	}
+}
+
 func TestV3RealtimeEndpointCursorTooOldRequiresBootstrap(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-too-old", "create-realtime-too-old")
@@ -249,6 +287,18 @@ func TestV3RealtimeEndpointCursorTooOldRequiresBootstrap(t *testing.T) {
 	assertV3RealtimeCursorError(t, frame, "endpoint_cursor_too_old")
 	if !frame.BootstrapRequired || frame.OldestAvailableEndpointSeq != retentionBoundary || frame.LatestEndpointSeq != currentHead {
 		t.Fatalf("too-old cursor frame = %+v, want bootstrap boundary=%d head=%d", frame, retentionBoundary, currentHead)
+	}
+
+	zeroCursor, err := server.signV3SyncEndpointCursor(scope, 0)
+	if err != nil {
+		t.Fatalf("sign zero cursor: %v", err)
+	}
+	zeroConn := dialV3RealtimeStreamWithQuery(t, httpServer.URL, "endpoint_cursor="+url.QueryEscape(zeroCursor))
+	defer zeroConn.Close()
+	zeroFrame := readV3RealtimeFrame(t, zeroConn)
+	assertV3RealtimeCursorError(t, zeroFrame, "endpoint_cursor_too_old")
+	if !zeroFrame.BootstrapRequired || zeroFrame.OldestAvailableEndpointSeq != retentionBoundary || zeroFrame.LatestEndpointSeq != currentHead {
+		t.Fatalf("signed zero cursor frame = %+v, want bootstrap boundary=%d head=%d", zeroFrame, retentionBoundary, currentHead)
 	}
 }
 
@@ -1364,25 +1414,31 @@ func writeV3RealtimeMessage(t *testing.T, conn *gorillaws.Conn, message V3Realti
 func readV3RealtimeFrame(t *testing.T, conn *gorillaws.Conn) V3RealtimeMessage {
 	t.Helper()
 	for {
-		if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-			t.Fatalf("set v3 realtime read deadline: %v", err)
-		}
-		_, raw, err := conn.ReadMessage()
-		if err != nil {
-			t.Fatalf("read v3 realtime frame: %v", err)
-		}
-		var frame V3RealtimeMessage
-		if err := json.Unmarshal(raw, &frame); err != nil {
-			t.Fatalf("decode v3 realtime frame %s: %v", string(raw), err)
-		}
-		if err := ValidateV3RealtimeMessage(frame); err != nil {
-			t.Fatalf("invalid v3 realtime frame %s: %v", string(raw), err)
-		}
+		frame := readV3RealtimeFrameIncludingHello(t, conn)
 		if frame.Kind == V3RealtimeKindHello {
 			continue
 		}
 		return frame
 	}
+}
+
+func readV3RealtimeFrameIncludingHello(t *testing.T, conn *gorillaws.Conn) V3RealtimeMessage {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set v3 realtime read deadline: %v", err)
+	}
+	_, raw, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read v3 realtime frame: %v", err)
+	}
+	var frame V3RealtimeMessage
+	if err := json.Unmarshal(raw, &frame); err != nil {
+		t.Fatalf("decode v3 realtime frame %s: %v", string(raw), err)
+	}
+	if err := ValidateV3RealtimeOutboundServerMessage(frame); err != nil {
+		t.Fatalf("invalid v3 realtime frame %s: %v", string(raw), err)
+	}
+	return frame
 }
 
 func closeV3RealtimeConnBeforeFatal(conn *gorillaws.Conn) {

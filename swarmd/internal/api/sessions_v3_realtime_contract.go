@@ -89,6 +89,10 @@ func NewV3RealtimeMessage(kind string) V3RealtimeMessage {
 }
 
 func ValidateV3RealtimeMessage(message V3RealtimeMessage) error {
+	return ValidateV3RealtimeSchemaMessage(message)
+}
+
+func ValidateV3RealtimeSchemaMessage(message V3RealtimeMessage) error {
 	if message.Protocol != V3RealtimeProtocol {
 		return fmt.Errorf("v3 realtime protocol must be %q", V3RealtimeProtocol)
 	}
@@ -110,6 +114,9 @@ func ValidateV3RealtimeMessage(message V3RealtimeMessage) error {
 	}
 	switch kind {
 	case V3RealtimeKindHello:
+		if strings.TrimSpace(message.EndpointCursor) == "" {
+			return errors.New("v3 realtime hello requires endpoint_cursor")
+		}
 		return nil
 	case V3RealtimeKindEvent:
 		return validateV3RealtimeEventMessage(message)
@@ -157,6 +164,43 @@ func ValidateV3RealtimeMessage(message V3RealtimeMessage) error {
 	}
 }
 
+func ValidateV3RealtimeInboundClientMessage(message V3RealtimeMessage) error {
+	if err := ValidateV3RealtimeSchemaMessage(message); err != nil {
+		return err
+	}
+	kind := strings.TrimSpace(message.Kind)
+	switch kind {
+	case V3RealtimeKindSubscribe, V3RealtimeKindUnsubscribe, V3RealtimeKindResume:
+		return nil
+	default:
+		return fmt.Errorf("v3 realtime client message kind %q is not allowed", kind)
+	}
+}
+
+func ValidateV3RealtimeOutboundServerMessage(message V3RealtimeMessage) error {
+	if err := ValidateV3RealtimeSchemaMessage(message); err != nil {
+		return err
+	}
+	kind := strings.TrimSpace(message.Kind)
+	switch kind {
+	case V3RealtimeKindHello,
+		V3RealtimeKindEvent,
+		V3RealtimeKindReplayStart,
+		V3RealtimeKindReplayDone,
+		V3RealtimeKindCursorError,
+		V3RealtimeKindKeepalive,
+		V3RealtimeKindEndpointWatermark,
+		V3RealtimeKindHighWater,
+		V3RealtimeKindWorksetSessionDiscovered,
+		V3RealtimeKindWorksetSessionRemoved,
+		V3RealtimeKindAuthDenied,
+		V3RealtimeKindSlowConsumer:
+		return nil
+	default:
+		return fmt.Errorf("v3 realtime server message kind %q is not allowed", kind)
+	}
+}
+
 func v3RealtimeKindAllowed(kind string) bool {
 	switch kind {
 	case V3RealtimeKindHello, V3RealtimeKindEvent, V3RealtimeKindReplayStart, V3RealtimeKindReplayDone, V3RealtimeKindCursorError, V3RealtimeKindKeepalive, V3RealtimeKindEndpointWatermark, V3RealtimeKindHighWater, V3RealtimeKindSubscribe, V3RealtimeKindUnsubscribe, V3RealtimeKindResume, V3RealtimeKindWorksetSessionDiscovered, V3RealtimeKindWorksetSessionRemoved, V3RealtimeKindAuthDenied, V3RealtimeKindSlowConsumer:
@@ -169,6 +213,9 @@ func v3RealtimeKindAllowed(kind string) bool {
 func validateV3RealtimeSessionCursorMessage(message V3RealtimeMessage) error {
 	if strings.TrimSpace(message.SessionID) == "" {
 		return fmt.Errorf("v3 realtime %s requires session_id", message.Kind)
+	}
+	if strings.TrimSpace(message.EndpointCursor) == "" {
+		return fmt.Errorf("v3 realtime %s requires endpoint_cursor", message.Kind)
 	}
 	return nil
 }
