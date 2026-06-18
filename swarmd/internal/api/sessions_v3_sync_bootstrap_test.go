@@ -9,10 +9,12 @@ import (
 	"strings"
 
 	"swarm/packages/swarmd/internal/permission"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	"testing"
 	"time"
 
 	gorillaws "github.com/gorilla/websocket"
+	"swarm/packages/swarmd/internal/identity"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -157,7 +159,7 @@ func TestSessionsV3SyncBootstrapUsesCanonicalSelectorForSnapshotOptions(t *testi
 			"workspace_path": "/workspace/bootstrap-selector",
 			"recent":         map[string]any{"limit": 10},
 		},
-		"workspace": map[string]any{"workspace_path": "/workspace/bootstrap-raw"},
+		"workspace": map[string]any{"workspace_path": "/workspace/bootstrap-selector"},
 		"recent":    map[string]any{"limit": 10},
 		"history":   map[string]any{"mode": "none"},
 	})
@@ -213,6 +215,36 @@ func TestSessionsV3SyncBootstrapRejectsGlobalSelectorWithConflictingRawWorkspace
 	}
 	if !strings.Contains(rec.Body.String(), "global selector cannot be combined") {
 		t.Fatalf("bootstrap error did not report selector conflict: %s", rec.Body.String())
+	}
+}
+
+func TestSessionsV3SyncBootstrapRejectsConflictingRawWorkspaceSelector(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	body := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"/workspace/selector","recent":{"limit":10}},"workspace":{"workspace_path":"/workspace/raw"},"history":{"mode":"none"}}`
+	req := httptest.NewRequest(http.MethodPost, V3SyncBootstrapPath, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bootstrap status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "sync selector conflicts with top-level workspace") {
+		t.Fatalf("bootstrap error did not report workspace selector conflict: %s", rec.Body.String())
+	}
+}
+
+func TestSessionsV3SyncBootstrapRejectsUnboundedWorkspaceSelector(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	body := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"/workspace/unbounded"},"history":{"mode":"none"}}`
+	req := httptest.NewRequest(http.MethodPost, V3SyncBootstrapPath, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bootstrap status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "workspace selector requires recent.limit") {
+		t.Fatalf("bootstrap error did not report bounded workspace requirement: %s", rec.Body.String())
 	}
 }
 
@@ -322,11 +354,9 @@ func TestSessionsV3SyncHydrateCanonicalizesSessionIDSelectorForCursorScope(t *te
 	}
 }
 
-func TestSessionsV3SyncHydrateIgnoresConflictingSelectorFieldsForCursorScope(t *testing.T) {
+func TestSessionsV3SyncHydrateRejectsConflictingSelectorFields(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSession(t, server, "sync-hydrate-conflict", "Sync Hydrate Conflict")
-	expectedSelector := sessionsV3SyncSelector{Kind: "session_ids", SessionIDs: []string{created.ID}}
-	expectedSelectorHash := v3SyncDeterministicSelectorHash(v3SyncCanonicalSelector(expectedSelector))
 
 	body, err := json.Marshal(map[string]any{
 		"surface":     "desktop",
@@ -344,29 +374,11 @@ func TestSessionsV3SyncHydrateIgnoresConflictingSelectorFieldsForCursorScope(t *
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("hydrate status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("hydrate status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-	var payload struct {
-		SnapshotEndpointCursor string                 `json:"snapshot_endpoint_cursor"`
-		Selector               sessionsV3SyncSelector `json:"selector"`
-		SyncScope              map[string]string      `json:"sync_scope"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode hydrate response: %v", err)
-	}
-	if payload.Selector.Kind != "session_ids" || strings.Join(payload.Selector.SessionIDs, ",") != created.ID || payload.Selector.WorkspacePath != "" || payload.Selector.Recent.Limit != 0 {
-		t.Fatalf("hydrate did not discard conflicting selector fields: %+v", payload.Selector)
-	}
-	if payload.SyncScope["selector_filter_hash"] != expectedSelectorHash {
-		t.Fatalf("selector hash = %q, want %q", payload.SyncScope["selector_filter_hash"], expectedSelectorHash)
-	}
-	cursorPayload, err := server.verifyV3SyncCursor(payload.SnapshotEndpointCursor)
-	if err != nil {
-		t.Fatalf("verify hydrate cursor: %v", err)
-	}
-	if cursorPayload.SelectorFilterHash != expectedSelectorHash {
-		t.Fatalf("cursor selector hash = %q, want %q", cursorPayload.SelectorFilterHash, expectedSelectorHash)
+	if !strings.Contains(rec.Body.String(), "sync hydrate selector conflicts") {
+		t.Fatalf("hydrate error did not report selector conflict: %s", rec.Body.String())
 	}
 }
 
@@ -686,6 +698,126 @@ func TestSessionsV3SyncAuthSeparationForHydrateAndStream(t *testing.T) {
 	}
 	if !strings.Contains(streamRec.Body.String(), "endpoint_cursor_scope_mismatch") {
 		t.Fatalf("cross-account stream did not fail closed on cursor scope: %s", streamRec.Body.String())
+	}
+}
+
+func TestSessionsV3SyncCanonicalScopeIsAccountAndUser(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	userA := testPrincipal()
+	userB := testPrincipal()
+	userB.UserID = "test-user-b"
+
+	createForPrincipal := func(principal identity.Principal, sessionID, workspace string) pebblestore.SessionSnapshot {
+		t.Helper()
+		result, err := sessionSvc.ApplySessionMutation(sessionruntime.SessionMutationInput{
+			SessionID:       sessionID,
+			UserID:          principal.UserID,
+			AccountScopeID:  principal.AccountScopeID,
+			ClientRequestID: "create-" + sessionID,
+			IdempotencyKey:  "create-" + sessionID,
+			PayloadHash:     "hash-create-" + sessionID,
+			Kind:            sessionruntime.SessionMutationCreateSession,
+			Session: &pebblestore.SessionSnapshot{
+				ID:             sessionID,
+				UserID:         principal.UserID,
+				AccountScopeID: principal.AccountScopeID,
+				WorkspacePath:  workspace,
+				WorkspaceName:  strings.Trim(workspace, "/"),
+				Title:          sessionID,
+			},
+			NowUnixMs: time.Now().UnixMilli(),
+		})
+		if err != nil {
+			t.Fatalf("create session %s: %v", sessionID, err)
+		}
+		if result.Session == nil {
+			t.Fatalf("create session %s returned no session", sessionID)
+		}
+		return *result.Session
+	}
+
+	createdA := createForPrincipal(userA, "sync-scope-user-a", "/workspace/sync-scope")
+	createdB := createForPrincipal(userB, "sync-scope-user-b", "/workspace/sync-scope")
+	legacy := createdA
+	legacy.ID = "sync-scope-legacy-empty-user"
+	legacy.UserID = ""
+	legacy.Title = "legacy empty user"
+	legacy.UpdatedAt = time.Now().UnixMilli()
+	if err := sessionSvc.Store().CreateSession(legacy); err != nil {
+		t.Fatalf("create legacy empty-user session: %v", err)
+	}
+
+	body := `{"surface":"desktop","selector":{"kind":"global","global":true},"history":{"mode":"none"}}`
+	req := httptest.NewRequest(http.MethodPost, V3SyncBootstrapPath, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, requestWithTestPrincipalForAccount(req, userA.UserID, userA.AccountScopeID))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bootstrap status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var bootstrap struct {
+		SnapshotEndpointCursor string                                 `json:"snapshot_endpoint_cursor"`
+		SessionsByID           map[string]pebblestore.SessionSnapshot `json:"sessions_by_id"`
+		SessionOrder           []string                               `json:"session_order"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &bootstrap); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+	if bootstrap.SessionsByID[createdA.ID].ID != createdA.ID {
+		t.Fatalf("bootstrap missing user A session: %+v", bootstrap.SessionsByID)
+	}
+	if bootstrap.SessionsByID[createdB.ID].ID != "" || bootstrap.SessionsByID[legacy.ID].ID != "" {
+		t.Fatalf("bootstrap leaked other user or empty user session: %+v", bootstrap.SessionsByID)
+	}
+
+	hydrateBody := `{"surface":"desktop","session_ids":["` + createdA.ID + `","` + createdB.ID + `","` + legacy.ID + `"]}`
+	hydrateReq := httptest.NewRequest(http.MethodPost, V3SyncHydratePath, bytes.NewBufferString(hydrateBody))
+	hydrateReq.Header.Set("Content-Type", "application/json")
+	hydrateRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(hydrateRec, requestWithTestPrincipalForAccount(hydrateReq, userA.UserID, userA.AccountScopeID))
+	if hydrateRec.Code != http.StatusOK {
+		t.Fatalf("hydrate status=%d body=%s", hydrateRec.Code, hydrateRec.Body.String())
+	}
+	var hydrate struct {
+		SessionsByID map[string]pebblestore.SessionSnapshot `json:"sessions_by_id"`
+	}
+	if err := json.Unmarshal(hydrateRec.Body.Bytes(), &hydrate); err != nil {
+		t.Fatalf("decode hydrate: %v", err)
+	}
+	if hydrate.SessionsByID[createdA.ID].ID != createdA.ID {
+		t.Fatalf("hydrate missing user A session: %+v", hydrate.SessionsByID)
+	}
+	if hydrate.SessionsByID[createdB.ID].ID != "" || hydrate.SessionsByID[legacy.ID].ID != "" {
+		t.Fatalf("hydrate leaked other user or empty user session: %+v", hydrate.SessionsByID)
+	}
+
+	if bootstrap.SnapshotEndpointCursor == "" {
+		t.Fatalf("bootstrap missing cursor")
+	}
+	message := pebblestore.MessageSnapshot{ID: "sync-scope-user-b-message", SessionID: createdB.ID, UserID: userB.UserID, AccountScopeID: userB.AccountScopeID, Role: "user", Content: "should not leak", CreatedAt: time.Now().UnixMilli()}
+	if _, err := sessionSvc.ApplySessionMutation(sessionruntime.SessionMutationInput{SessionID: createdB.ID, UserID: userB.UserID, AccountScopeID: userB.AccountScopeID, ClientRequestID: "sync-scope-user-b-message", IdempotencyKey: "sync-scope-user-b-message", PayloadHash: "hash-sync-scope-user-b-message", Kind: sessionruntime.SessionMutationAppendMessage, Message: &message, NowUnixMs: time.Now().UnixMilli()}); err != nil {
+		t.Fatalf("append user B message: %v", err)
+	}
+	streamBody := `{"surface":"desktop","selector":{"kind":"global","global":true},"endpoint_cursor":"` + bootstrap.SnapshotEndpointCursor + `"}`
+	streamReq := httptest.NewRequest(http.MethodPost, V3SyncStreamPath, bytes.NewBufferString(streamBody))
+	streamReq.Header.Set("Content-Type", "application/json")
+	streamRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(streamRec, requestWithTestPrincipalForAccount(streamReq, userA.UserID, userA.AccountScopeID))
+	if streamRec.Code != http.StatusOK {
+		t.Fatalf("stream status=%d body=%s", streamRec.Code, streamRec.Body.String())
+	}
+	var stream struct {
+		Events []struct {
+			SessionID string `json:"session_id"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(streamRec.Body.Bytes(), &stream); err != nil {
+		t.Fatalf("decode stream: %v", err)
+	}
+	for _, event := range stream.Events {
+		if event.SessionID == createdB.ID || event.SessionID == legacy.ID {
+			t.Fatalf("stream leaked other user or empty user event: %+v", stream.Events)
+		}
 	}
 }
 

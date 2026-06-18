@@ -1330,14 +1330,10 @@ func (s *SessionStore) ListV3RealtimeOutboxForAuthScopeAfter(accountScopeID, use
 		accountScopeID string
 		userID         string
 	}
-	scopes := []authScope{{accountScopeID: "", userID: ""}}
-	if accountScopeID != "" {
-		scopes = append(scopes, authScope{accountScopeID: accountScopeID, userID: ""})
-	}
-	if userID != "" {
-		scopes = append(scopes, authScope{accountScopeID: "", userID: userID})
-	}
-	if accountScopeID != "" || userID != "" {
+	// Canonical V3 visibility is account + principal/user. Legacy outbox rows
+	// indexed only by account, only by user, or by neither fail closed here.
+	scopes := []authScope{}
+	if accountScopeID != "" && userID != "" {
 		scopes = append(scopes, authScope{accountScopeID: accountScopeID, userID: userID})
 	}
 	seenScopes := map[string]bool{}

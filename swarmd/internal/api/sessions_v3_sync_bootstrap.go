@@ -137,6 +137,7 @@ func sessionsV3SyncBootstrapOptions(principal identity.Principal, req sessionsV3
 	options := sessionsV3ResolvedSyncOptions{
 		Snapshot: pebblestore.V3SyncSnapshotOptions{
 			AccountScopeID:        principal.AccountScopeID,
+			UserID:                principal.UserID,
 			Global:                global && selector.Recent.Limit <= 0,
 			SessionIDs:            selector.SessionIDs,
 			WorkspacePaths:        workspacePaths,
@@ -165,6 +166,9 @@ func sessionsV3SyncHydrateOptions(principal identity.Principal, req sessionsV3Sy
 	if len(ids) == 0 {
 		return sessionsV3ResolvedSyncOptions{}, nil, nil, errors.New("sync hydrate requires session_ids")
 	}
+	if err := validateSessionsV3SyncHydrateSelector(req, ids); err != nil {
+		return sessionsV3ResolvedSyncOptions{}, nil, nil, err
+	}
 	selector := sessionsV3SyncSelector{
 		Kind:       "session_ids",
 		SessionIDs: ids,
@@ -178,6 +182,7 @@ func sessionsV3SyncHydrateOptions(principal identity.Principal, req sessionsV3Sy
 	options := sessionsV3ResolvedSyncOptions{
 		Snapshot: pebblestore.V3SyncSnapshotOptions{
 			AccountScopeID:        principal.AccountScopeID,
+			UserID:                principal.UserID,
 			SessionIDs:            ids,
 			History:               history,
 			IncludeRunIntents:     req.Resources.RunIntents || req.IncludeActive,
@@ -212,6 +217,9 @@ func canonicalV3SyncSessionIDs(sessionIDs []string) []string {
 
 func canonicalSessionsV3SyncBootstrapSelector(req sessionsV3SyncBootstrapRequest) (sessionsV3SyncSelector, []string, error) {
 	selector := normalizeSessionsV3SyncSelector(req.SelectorKind, req.Selector, req.SessionIDs, req.Global, req.Workspace, req.Recent)
+	if err := validateSessionsV3SyncBootstrapSelectorConflicts(req, selector); err != nil {
+		return sessionsV3SyncSelector{}, nil, err
+	}
 	selector.Kind = strings.TrimSpace(selector.Kind)
 	if !sessionsV3SyncSelectorKindAllowed(selector.Kind) {
 		return sessionsV3SyncSelector{}, nil, errors.New("unsupported sync selector kind " + selector.Kind)
@@ -244,6 +252,9 @@ func canonicalSessionsV3SyncBootstrapSelector(req sessionsV3SyncBootstrapRequest
 	if global && len(workspacePaths) > 0 {
 		return sessionsV3SyncSelector{}, nil, errors.New("workset global selector cannot be combined with workspace_path or workspace_paths")
 	}
+	if selector.Kind == "workspace" && selector.Recent.Limit <= 0 {
+		return sessionsV3SyncSelector{}, nil, errors.New("workset workspace selector requires recent.limit for bounded deterministic selection")
+	}
 	if (selector.Kind == "recent" || selector.Recent.Limit > 0) && len(workspacePaths) == 0 && !global {
 		return sessionsV3SyncSelector{}, nil, errors.New("workset recent selector requires explicit workspace_path, workspace_paths, or global=true")
 	}
@@ -257,6 +268,93 @@ func sessionsV3SyncSelectorKindAllowed(kind string) bool {
 	default:
 		return false
 	}
+}
+
+func validateSessionsV3SyncBootstrapSelectorConflicts(req sessionsV3SyncBootstrapRequest, canonical sessionsV3SyncSelector) error {
+	selectorProvided := sessionsV3SyncSelectorHasAnyField(req.Selector)
+	if selectorProvided {
+		if strings.TrimSpace(req.SelectorKind) != "" && strings.TrimSpace(req.SelectorKind) != strings.TrimSpace(canonical.Kind) {
+			return errors.New("sync selector_kind conflicts with selector.kind")
+		}
+		if len(req.SessionIDs) > 0 && !sameV3SyncSessionIDs(canonicalV3SyncSessionIDs(req.SessionIDs), canonical.SessionIDs) {
+			return errors.New("sync selector conflicts with top-level session_ids")
+		}
+		if req.Global && !canonical.Global {
+			return errors.New("sync selector conflicts with top-level global")
+		}
+		if sessionsV3WorksetWorkspaceHasAnyField(req.Workspace) {
+			selectorPaths, selectorErr := canonicalSessionsV3WorksetWorkspacePaths(sessionsV3WorksetWorkspace{WorkspacePath: canonical.WorkspacePath, WorkspacePaths: canonical.WorkspacePaths})
+			topPaths, topErr := canonicalSessionsV3WorksetWorkspacePaths(req.Workspace)
+			if selectorErr != nil || topErr != nil || !sameV3SyncStrings(selectorPaths, topPaths) {
+				return errors.New("sync selector conflicts with top-level workspace")
+			}
+		}
+		if sessionsV3WorksetRecentHasAnyField(req.Recent) && !sameV3SyncRecent(req.Recent, canonical.Recent) {
+			return errors.New("sync selector conflicts with top-level recent")
+		}
+	}
+	return nil
+}
+
+func validateSessionsV3SyncHydrateSelector(req sessionsV3SyncHydrateRequest, ids []string) error {
+	if strings.TrimSpace(req.SelectorKind) != "" && strings.TrimSpace(req.SelectorKind) != "session_ids" {
+		return errors.New("sync hydrate selector_kind conflicts with session_ids selector")
+	}
+	if sessionsV3SyncSelectorHasAnyField(req.Selector) {
+		selector := req.Selector
+		selector.SessionIDs = canonicalV3SyncSessionIDs(selector.SessionIDs)
+		if strings.TrimSpace(selector.Kind) != "" && strings.TrimSpace(selector.Kind) != "session_ids" {
+			return errors.New("sync hydrate selector conflicts with session_ids selector")
+		}
+		if selector.Global || strings.TrimSpace(selector.WorkspacePath) != "" || len(selector.WorkspacePaths) > 0 || strings.TrimSpace(selector.CWDPath) != "" || sessionsV3WorksetRecentHasAnyField(selector.Recent) {
+			return errors.New("sync hydrate selector conflicts with session_ids selector")
+		}
+		if len(selector.SessionIDs) > 0 && !sameV3SyncSessionIDs(selector.SessionIDs, ids) {
+			return errors.New("sync hydrate selector conflicts with top-level session_ids")
+		}
+	}
+	return nil
+}
+
+func sessionsV3SyncSelectorHasAnyField(selector sessionsV3SyncSelector) bool {
+	return strings.TrimSpace(selector.Kind) != "" || selector.Global || strings.TrimSpace(selector.WorkspacePath) != "" || len(selector.WorkspacePaths) > 0 || strings.TrimSpace(selector.CWDPath) != "" || len(selector.SessionIDs) > 0 || sessionsV3WorksetRecentHasAnyField(selector.Recent)
+}
+
+func sessionsV3WorksetWorkspaceHasAnyField(workspace sessionsV3WorksetWorkspace) bool {
+	return strings.TrimSpace(workspace.WorkspacePath) != "" || len(workspace.WorkspacePaths) > 0
+}
+
+func sessionsV3WorksetRecentHasAnyField(recent sessionsV3WorksetRecent) bool {
+	return recent.Limit != 0 || recent.BeforeUpdatedAt != nil || strings.TrimSpace(recent.BeforeSessionID) != ""
+}
+
+func sameV3SyncSessionIDs(a, b []string) bool {
+	return sameV3SyncStrings(canonicalV3SyncSessionIDs(a), canonicalV3SyncSessionIDs(b))
+}
+
+func sameV3SyncStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if strings.TrimSpace(a[i]) != strings.TrimSpace(b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameV3SyncRecent(a, b sessionsV3WorksetRecent) bool {
+	if a.Limit != b.Limit || strings.TrimSpace(a.BeforeSessionID) != strings.TrimSpace(b.BeforeSessionID) {
+		return false
+	}
+	if (a.BeforeUpdatedAt == nil) != (b.BeforeUpdatedAt == nil) {
+		return false
+	}
+	if a.BeforeUpdatedAt != nil && b.BeforeUpdatedAt != nil && *a.BeforeUpdatedAt != *b.BeforeUpdatedAt {
+		return false
+	}
+	return true
 }
 
 func normalizeSessionsV3SyncSelector(kind string, selector sessionsV3SyncSelector, sessionIDs []string, global bool, workspace sessionsV3WorksetWorkspace, recent sessionsV3WorksetRecent) sessionsV3SyncSelector {

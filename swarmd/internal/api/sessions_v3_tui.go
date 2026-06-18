@@ -503,6 +503,9 @@ func sessionsV3TUISessionVisibleForPaths(session pebblestore.SessionSnapshot, pr
 	if strings.TrimSpace(session.AccountScopeID) == "" || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
 		return false
 	}
+	if strings.TrimSpace(session.UserID) == "" || strings.TrimSpace(session.UserID) != strings.TrimSpace(principal.UserID) {
+		return false
+	}
 	candidates := []string{
 		strings.TrimSpace(session.WorkspacePath),
 		strings.TrimSpace(session.WorktreeRootPath),

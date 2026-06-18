@@ -53,6 +53,7 @@ func runV3SyncSnapshotAfterSnapshotHook() {
 
 type V3SyncSnapshotOptions struct {
 	AccountScopeID                     string
+	UserID                             string
 	Global                             bool
 	SessionIDs                         []string
 	WorkspacePath                      string
@@ -141,6 +142,7 @@ func (s *SessionStore) BuildV3SyncSnapshot(options V3SyncSnapshotOptions) (resul
 
 func normalizeV3SyncSnapshotOptions(options V3SyncSnapshotOptions) V3SyncSnapshotOptions {
 	options.AccountScopeID = strings.TrimSpace(options.AccountScopeID)
+	options.UserID = strings.TrimSpace(options.UserID)
 	options.WorkspacePath = strings.TrimSpace(options.WorkspacePath)
 	options.WorkspacePaths = normalizeV3SyncSnapshotWorkspacePaths(options.WorkspacePath, options.WorkspacePaths)
 	options.RecentBeforeSessionID = strings.TrimSpace(options.RecentBeforeSessionID)
@@ -249,6 +251,9 @@ func (s *SessionStore) buildV3SyncSnapshotFromReader(reader pebble.Reader, optio
 		return V3SyncSnapshotResult{}, err
 	}
 	for _, tombstone := range tombstones {
+		if !v3SyncSnapshotTombstoneVisible(tombstone, options.AccountScopeID, options.UserID) {
+			continue
+		}
 		result.TombstonesBySession[tombstone.SessionID] = tombstone
 	}
 	return result, nil
@@ -273,10 +278,10 @@ func (s *SessionStore) selectV3SyncSnapshotSessions(reader pebble.Reader, option
 		if err != nil {
 			return nil, V3SyncSnapshotPagination{}, err
 		}
-		if !ok || !v3SyncSnapshotSessionVisible(session, options.AccountScopeID, "") {
+		if !ok || !v3SyncSnapshotSessionVisible(session, options.AccountScopeID, options.UserID, "") {
 			continue
 		}
-		if options.RestrictSessionIDsToWorkspacePaths && !v3SyncSnapshotSessionVisibleForWorkspaces(session, options.AccountScopeID, options.WorkspacePath, options.WorkspacePaths) {
+		if options.RestrictSessionIDsToWorkspacePaths && !v3SyncSnapshotSessionVisibleForWorkspaces(session, options.AccountScopeID, options.UserID, options.WorkspacePath, options.WorkspacePaths) {
 			continue
 		}
 		appendSession(session)
@@ -330,7 +335,7 @@ func (s *SessionStore) selectV3GlobalSyncSnapshotSessions(reader pebble.Reader, 
 			if err := json.Unmarshal(value, &session); err != nil {
 				return err
 			}
-			if !v3SyncSnapshotSessionVisibleForWorkspaces(session, options.AccountScopeID, options.WorkspacePath, options.WorkspacePaths) {
+			if !v3SyncSnapshotSessionVisibleForWorkspaces(session, options.AccountScopeID, options.UserID, options.WorkspacePath, options.WorkspacePaths) {
 				return nil
 			}
 			sessions = append(sessions, session)
@@ -343,7 +348,7 @@ func (s *SessionStore) selectV3GlobalSyncSnapshotSessions(reader pebble.Reader, 
 		if err != nil {
 			return err
 		}
-		if !ok || !v3SyncSnapshotSessionVisibleForWorkspaces(session, options.AccountScopeID, options.WorkspacePath, options.WorkspacePaths) {
+		if !ok || !v3SyncSnapshotSessionVisibleForWorkspaces(session, options.AccountScopeID, options.UserID, options.WorkspacePath, options.WorkspacePaths) {
 			return nil
 		}
 		sessions = append(sessions, session)
@@ -386,7 +391,7 @@ func (s *SessionStore) selectV3RecentSyncSnapshotSessions(reader pebble.Reader, 
 		if !ok {
 			return true, nil
 		}
-		if !v3SyncSnapshotSessionVisibleForWorkspaces(session, options.AccountScopeID, options.WorkspacePath, options.WorkspacePaths) {
+		if !v3SyncSnapshotSessionVisibleForWorkspaces(session, options.AccountScopeID, options.UserID, options.WorkspacePath, options.WorkspacePaths) {
 			return true, nil
 		}
 		sessions = append(sessions, session)
@@ -436,7 +441,7 @@ func (s *SessionStore) selectV3ActiveSyncSnapshotSessions(reader pebble.Reader, 
 		if err != nil {
 			return nil, err
 		}
-		if !ok || !v3SyncSnapshotSessionVisibleForWorkspaces(session, options.AccountScopeID, options.WorkspacePath, options.WorkspacePaths) {
+		if !ok || !v3SyncSnapshotSessionVisibleForWorkspaces(session, options.AccountScopeID, options.UserID, options.WorkspacePath, options.WorkspacePaths) {
 			continue
 		}
 		out = append(out, session)
@@ -469,8 +474,25 @@ func normalizeV3SyncSnapshotWorkspacePaths(workspacePath string, workspacePaths 
 	return out
 }
 
-func v3SyncSnapshotSessionVisibleForWorkspaces(session SessionSnapshot, accountScopeID, workspacePath string, workspacePaths []string) bool {
-	if !v3SyncSnapshotSessionVisible(session, accountScopeID, "") {
+func v3SyncSnapshotTombstoneVisible(tombstone V3SessionTombstone, accountScopeID, userID string) bool {
+	if strings.TrimSpace(tombstone.SessionID) == "" {
+		return false
+	}
+	if strings.TrimSpace(accountScopeID) != "" {
+		if strings.TrimSpace(tombstone.AccountScopeID) == "" || strings.TrimSpace(tombstone.AccountScopeID) != strings.TrimSpace(accountScopeID) {
+			return false
+		}
+	}
+	if strings.TrimSpace(userID) != "" {
+		if strings.TrimSpace(tombstone.UserID) == "" || strings.TrimSpace(tombstone.UserID) != strings.TrimSpace(userID) {
+			return false
+		}
+	}
+	return true
+}
+
+func v3SyncSnapshotSessionVisibleForWorkspaces(session SessionSnapshot, accountScopeID, userID, workspacePath string, workspacePaths []string) bool {
+	if !v3SyncSnapshotSessionVisible(session, accountScopeID, userID, "") {
 		return false
 	}
 	paths := workspacePaths
@@ -492,9 +514,16 @@ func v3SyncSnapshotSessionVisibleForWorkspaces(session SessionSnapshot, accountS
 	return false
 }
 
-func v3SyncSnapshotSessionVisible(session SessionSnapshot, accountScopeID, workspacePath string) bool {
-	if strings.TrimSpace(accountScopeID) != "" && strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(accountScopeID) {
-		return false
+func v3SyncSnapshotSessionVisible(session SessionSnapshot, accountScopeID, userID, workspacePath string) bool {
+	if strings.TrimSpace(accountScopeID) != "" {
+		if strings.TrimSpace(session.AccountScopeID) == "" || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(accountScopeID) {
+			return false
+		}
+	}
+	if strings.TrimSpace(userID) != "" {
+		if strings.TrimSpace(session.UserID) == "" || strings.TrimSpace(session.UserID) != strings.TrimSpace(userID) {
+			return false
+		}
 	}
 	workspacePath = strings.TrimSpace(workspacePath)
 	if workspacePath == "" {

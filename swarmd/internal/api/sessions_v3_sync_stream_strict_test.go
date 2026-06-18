@@ -39,7 +39,7 @@ func TestSessionsV3SyncStreamRejectsMissingLegacyAndUnknownSelector(t *testing.T
 func TestSessionsV3SyncStreamUsesCanonicalBootstrapSelectorScope(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-stream-canonical", "Sync Stream Canonical", "/workspace/stream-canonical")
-	bootstrapBody := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"/workspace/stream-canonical","recent":{"limit":10}},"workspace":{"workspace_path":"/workspace/other"},"history":{"mode":"none"}}`
+	bootstrapBody := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"/workspace/stream-canonical","recent":{"limit":10}},"workspace":{"workspace_path":"/workspace/stream-canonical"},"history":{"mode":"none"}}`
 	bootstrapReq := httptest.NewRequest(http.MethodPost, V3SyncBootstrapPath, bytes.NewBufferString(bootstrapBody))
 	bootstrapReq.Header.Set("Content-Type", "application/json")
 	bootstrapRec := httptest.NewRecorder()
@@ -59,7 +59,7 @@ func TestSessionsV3SyncStreamUsesCanonicalBootstrapSelectorScope(t *testing.T) {
 	}
 	appendSessionsV3PrimaryMessageForWorksetTest(t, server, created.ID, "stream canonical replay")
 
-	streamBody := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"/workspace/stream-canonical","recent":{"limit":10}},"workspace":{"workspace_path":"/workspace/other"},"endpoint_cursor":"` + bootstrap.SnapshotEndpointCursor + `"}`
+	streamBody := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"/workspace/stream-canonical","recent":{"limit":10}},"workspace":{"workspace_path":"/workspace/stream-canonical"},"endpoint_cursor":"` + bootstrap.SnapshotEndpointCursor + `"}`
 	streamReq := httptest.NewRequest(http.MethodPost, V3SyncStreamPath, bytes.NewBufferString(streamBody))
 	streamReq.Header.Set("Content-Type", "application/json")
 	streamRec := httptest.NewRecorder()

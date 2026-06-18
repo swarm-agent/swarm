@@ -571,18 +571,18 @@ func TestV3RealtimeOutboxAuthScopeIndexReturnsOnlyAuthorizedRowsInEndpointOrder(
 	sessions := NewSessionStore(store)
 	createV3SessionForStoreTest(t, sessions, "session-auth-a", "user-a", "account-a")
 	createV3SessionForStoreTest(t, sessions, "session-auth-b", "user-b", "account-b")
-	createV3SessionForStoreTest(t, sessions, "session-auth-shared", "", "account-a")
+	createV3SessionForStoreTest(t, sessions, "session-auth-empty-legacy", "", "account-a")
 
 	a1 := appendV3SessionMessageForStoreTest(t, sessions, "session-auth-a", "auth-a-1", "a one", "user-a", "account-a")
 	b1 := appendV3SessionMessageForStoreTest(t, sessions, "session-auth-b", "auth-b-1", "b one", "user-b", "account-b")
-	shared := appendV3SessionMessageForStoreTest(t, sessions, "session-auth-shared", "auth-shared-1", "shared", "", "account-a")
+	legacy := appendV3SessionMessageForStoreTest(t, sessions, "session-auth-empty-legacy", "auth-empty-legacy-1", "legacy", "", "account-a")
 	a2 := appendV3SessionMessageForStoreTest(t, sessions, "session-auth-a", "auth-a-2", "a two", "user-a", "account-a")
 
 	records, err := sessions.ListV3RealtimeOutboxForAuthScopeAfter("account-a", "user-a", a1.RealtimeOutbox.EndpointSeq-1, 10)
 	if err != nil {
 		t.Fatalf("list auth-scoped outbox: %v", err)
 	}
-	wantIDs := []string{a1.Event.ID, shared.Event.ID, a2.Event.ID}
+	wantIDs := []string{a1.Event.ID, a2.Event.ID}
 	if len(records) != len(wantIDs) {
 		t.Fatalf("auth-scoped rows = %d %+v, want %d", len(records), records, len(wantIDs))
 	}
@@ -590,8 +590,8 @@ func TestV3RealtimeOutboxAuthScopeIndexReturnsOnlyAuthorizedRowsInEndpointOrder(
 		if record.Event.ID != wantIDs[i] {
 			t.Fatalf("auth-scoped row[%d] = event %q session %q, want event %q; all=%+v", i, record.Event.ID, record.SessionID, wantIDs[i], records)
 		}
-		if record.Event.ID == b1.Event.ID || record.AccountScopeID == "account-b" || record.UserID == "user-b" {
-			t.Fatalf("auth-scoped replay leaked unauthorized row: %+v", record)
+		if record.Event.ID == b1.Event.ID || record.Event.ID == legacy.Event.ID || record.AccountScopeID == "account-b" || record.UserID == "user-b" || record.UserID == "" {
+			t.Fatalf("auth-scoped replay leaked unauthorized or legacy row: %+v", record)
 		}
 	}
 	if records[len(records)-1].EndpointSeq != a2.RealtimeOutbox.EndpointSeq {

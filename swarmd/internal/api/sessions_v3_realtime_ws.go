@@ -715,6 +715,9 @@ func v3RealtimeSessionMatchesWorksetSelector(principal identity.Principal, sessi
 	if strings.TrimSpace(session.AccountScopeID) == "" || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
 		return false
 	}
+	if strings.TrimSpace(session.UserID) == "" || strings.TrimSpace(session.UserID) != strings.TrimSpace(principal.UserID) {
+		return false
+	}
 	for _, sessionID := range selector.SessionIDs {
 		if strings.TrimSpace(sessionID) == session.ID {
 			return true
@@ -730,9 +733,20 @@ func v3RealtimeSessionMatchesWorksetSelector(principal identity.Principal, sessi
 	if len(paths) == 0 && selector.Recent.Limit > 0 {
 		return true
 	}
-	for _, path := range paths {
-		if strings.TrimSpace(path) == strings.TrimSpace(session.WorkspacePath) {
-			return true
+	candidates := []string{
+		strings.TrimSpace(session.WorkspacePath),
+		strings.TrimSpace(session.WorktreeRootPath),
+		sessionsV3MetadataString(session.Metadata, "swarm_v3_tui_cwd_path"),
+		sessionsV3MetadataString(session.Metadata, "swarm_v3_tui_worktree_path"),
+	}
+	for _, candidate := range candidates {
+		if strings.TrimSpace(candidate) == "" {
+			continue
+		}
+		for _, path := range paths {
+			if strings.TrimSpace(path) != "" && strings.TrimSpace(path) == strings.TrimSpace(candidate) {
+				return true
+			}
 		}
 	}
 	return false
@@ -880,17 +894,21 @@ func (s *Server) v3RealtimePrimeSubscriptionAtEndpointCursor(conn *transportws.C
 	return lastSeq, true
 }
 
-func (s *Server) v3RealtimePrincipalCanSee(principal identity.Principal, record sessionruntime.RealtimeOutboxRecord) bool {
+func v3RealtimeRecordVisibleToPrincipal(principal identity.Principal, record sessionruntime.RealtimeOutboxRecord) bool {
 	if !principal.Valid() || record.Event.Seq == 0 {
 		return false
 	}
-	if record.UserID != "" && principal.UserID != record.UserID {
+	if strings.TrimSpace(record.AccountScopeID) == "" || strings.TrimSpace(record.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
 		return false
 	}
-	if record.AccountScopeID != "" && principal.AccountScopeID != record.AccountScopeID {
+	if strings.TrimSpace(record.UserID) == "" || strings.TrimSpace(record.UserID) != strings.TrimSpace(principal.UserID) {
 		return false
 	}
 	return true
+}
+
+func (s *Server) v3RealtimePrincipalCanSee(principal identity.Principal, record sessionruntime.RealtimeOutboxRecord) bool {
+	return v3RealtimeRecordVisibleToPrincipal(principal, record)
 }
 
 func (s *Server) sendV3RealtimeOutboxEvent(conn *transportws.Conn, record sessionruntime.RealtimeOutboxRecord, scope v3SyncCursorScope) bool {

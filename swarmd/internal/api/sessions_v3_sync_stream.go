@@ -84,7 +84,10 @@ func (s *Server) handleSessionsV3SyncStream(w http.ResponseWriter, r *http.Reque
 		if record.EndpointSeq > advanced {
 			advanced = record.EndpointSeq
 		}
-		matches, err := s.sessionsV3SyncOutboxRecordMatchesSelector(principal.AccountScopeID, record, selector)
+		if !v3RealtimeRecordVisibleToPrincipal(principal, record) {
+			continue
+		}
+		matches, err := s.sessionsV3SyncOutboxRecordMatchesSelector(principal, record, selector)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -134,7 +137,7 @@ func (s *Server) writeV3SyncStreamWebsocketUnsupported(w http.ResponseWriter, r 
 	}
 }
 
-func (s *Server) sessionsV3SyncOutboxRecordMatchesSelector(accountScopeID string, record sessionruntime.RealtimeOutboxRecord, selector sessionsV3SyncSelector) (bool, error) {
+func (s *Server) sessionsV3SyncOutboxRecordMatchesSelector(principal identity.Principal, record sessionruntime.RealtimeOutboxRecord, selector sessionsV3SyncSelector) (bool, error) {
 	kind := strings.TrimSpace(selector.Kind)
 	switch kind {
 	case "", "global":
@@ -143,7 +146,7 @@ func (s *Server) sessionsV3SyncOutboxRecordMatchesSelector(accountScopeID string
 		if selector.Global {
 			return true, nil
 		}
-		return sessionsV3SyncOutboxRecordMatchesWorkspacePaths(accountScopeID, record, selector)
+		return sessionsV3SyncOutboxRecordMatchesWorkspacePaths(principal, record, selector)
 	case "session_ids":
 		for _, id := range selector.SessionIDs {
 			if strings.TrimSpace(id) == record.SessionID {
@@ -152,13 +155,13 @@ func (s *Server) sessionsV3SyncOutboxRecordMatchesSelector(accountScopeID string
 		}
 		return false, nil
 	case "workspace", "tui":
-		return sessionsV3SyncOutboxRecordMatchesWorkspacePaths(accountScopeID, record, selector)
+		return sessionsV3SyncOutboxRecordMatchesWorkspacePaths(principal, record, selector)
 	default:
 		return false, errors.New("unsupported sync selector kind " + kind)
 	}
 }
 
-func sessionsV3SyncOutboxRecordMatchesWorkspacePaths(accountScopeID string, record sessionruntime.RealtimeOutboxRecord, selector sessionsV3SyncSelector) (bool, error) {
+func sessionsV3SyncOutboxRecordMatchesWorkspacePaths(principal identity.Principal, record sessionruntime.RealtimeOutboxRecord, selector sessionsV3SyncSelector) (bool, error) {
 	paths, err := canonicalSessionsV3TUIWorksetPaths(sessionsV3TUIWorksetScope{WorkspacePath: selector.WorkspacePath, WorkspacePaths: selector.WorkspacePaths, CWDPath: selector.CWDPath})
 	if err != nil {
 		paths, err = canonicalSessionsV3WorksetWorkspacePaths(sessionsV3WorksetWorkspace{WorkspacePath: selector.WorkspacePath, WorkspacePaths: selector.WorkspacePaths})
@@ -176,7 +179,7 @@ func sessionsV3SyncOutboxRecordMatchesWorkspacePaths(accountScopeID string, reco
 		// instead of leaking it broadly.
 		return false, nil
 	}
-	return sessionsV3TUISessionVisibleForPaths(session, identity.Principal{AccountScopeID: accountScopeID}, paths), nil
+	return v3RealtimeSessionMatchesWorksetSelector(principal, session, V3RealtimeWorksetSelector{Kind: "workspace", WorkspacePaths: paths}), nil
 }
 
 func writeV3SyncCursorHTTPError(w http.ResponseWriter, err error) {
