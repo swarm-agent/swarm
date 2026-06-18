@@ -46,18 +46,25 @@ test('bootstrap controller dispatches bootstrapResponseToAction and stores scope
   assert.equal(state.sessionsById[sessionA.id]?.kind, 'full')
 })
 
-test('bootstrap controller no-ops after successful bootstrap', async () => {
+test('bootstrap controller coalesces concurrent in-flight bootstrap calls only', async () => {
   resetDesktopV3BootstrapControllerForTests()
-  let calls = 0
 
-  await bootstrapDesktopV3Sidebar({
+  let calls = 0
+  let resolveBootstrap!: (response: ReturnType<typeof snapshotFixture>) => void
+
+  const pending = new Promise<ReturnType<typeof snapshotFixture>>((resolve) => {
+    resolveBootstrap = resolve
+  })
+
+  const first = bootstrapDesktopV3Sidebar({
     postBootstrap: async () => {
       calls += 1
-      return snapshotFixture({ scope_id: 'scope-a', messages_by_session: {} })
+      return pending
     },
     dispatch: () => {},
   })
-  await bootstrapDesktopV3Sidebar({
+
+  const second = bootstrapDesktopV3Sidebar({
     postBootstrap: async () => {
       calls += 1
       return snapshotFixture({ scope_id: 'scope-b', messages_by_session: {} })
@@ -66,6 +73,20 @@ test('bootstrap controller no-ops after successful bootstrap', async () => {
   })
 
   assert.equal(calls, 1)
+
+  resolveBootstrap(snapshotFixture({ scope_id: 'scope-a', messages_by_session: {} }))
+
+  await Promise.all([first, second])
+
+  await bootstrapDesktopV3Sidebar({
+    postBootstrap: async () => {
+      calls += 1
+      return snapshotFixture({ scope_id: 'scope-c', messages_by_session: {} })
+    },
+    dispatch: () => {},
+  })
+
+  assert.equal(calls, 2)
 })
 
 test('bootstrap error preserves existing cache', async () => {

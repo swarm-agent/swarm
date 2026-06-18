@@ -9,14 +9,10 @@ interface BootstrapDesktopV3SidebarDeps {
 }
 
 let bootstrapInFlight: Promise<void> | null = null
-let bootstrapCompleted = false
 
 export function bootstrapDesktopV3Sidebar(deps: BootstrapDesktopV3SidebarDeps = {}): Promise<void> {
   if (bootstrapInFlight) {
     return bootstrapInFlight
-  }
-  if (bootstrapCompleted) {
-    return Promise.resolve()
   }
 
   const dispatch = deps.dispatch ?? dispatchDesktopV3Cache
@@ -33,7 +29,6 @@ export function bootstrapDesktopV3Sidebar(deps: BootstrapDesktopV3SidebarDeps = 
   bootstrapInFlight = postBootstrap()
     .then((response) => {
       dispatch(bootstrapResponseToAction(response))
-      bootstrapCompleted = true
       dispatch({
         type: 'desktopSidebarBootstrap.update',
         patch: {
@@ -61,5 +56,4 @@ export function bootstrapDesktopV3Sidebar(deps: BootstrapDesktopV3SidebarDeps = 
 
 export function resetDesktopV3BootstrapControllerForTests(): void {
   bootstrapInFlight = null
-  bootstrapCompleted = false
 }
