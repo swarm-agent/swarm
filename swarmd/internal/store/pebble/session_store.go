@@ -488,6 +488,20 @@ func setV3SessionTombstoneInBatch(batch *pebble.Batch, tombstone V3SessionTombst
 			return err
 		}
 	}
+	if tombstone.AccountScopeID != "" && tombstone.UserID != "" {
+		if err := batch.Set([]byte(KeyV3SessionTombstoneByAccountUser(tombstone.AccountScopeID, tombstone.UserID, tombstone.UpdatedAt, tombstone.SessionID)), payload, nil); err != nil {
+			return err
+		}
+		if tombstone.WorkspacePath != "" {
+			workspacePath := tombstone.WorkspacePath
+			if normalized, err := normalizeSessionPath(workspacePath); err == nil {
+				workspacePath = normalized
+			}
+			if err := batch.Set([]byte(KeyV3SessionTombstoneByAccountUserWorkspace(tombstone.AccountScopeID, tombstone.UserID, workspacePath, tombstone.UpdatedAt, tombstone.SessionID)), payload, nil); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 

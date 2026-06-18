@@ -152,6 +152,11 @@ const (
 	keyGlobalSequenceCounter                       = "meta/global_seq"
 )
 
+const (
+	KeyV3SessionTombstoneByAccountUserPrefix          = "v3/session_tombstone_by_account_user/"
+	KeyV3SessionTombstoneByAccountUserWorkspacePrefix = "v3/session_tombstone_by_account_user_workspace/"
+)
+
 func EventKey(sequence uint64) string {
 	return fmt.Sprintf("evt/%020d", sequence)
 }
@@ -362,6 +367,39 @@ func V3SessionTombstoneByAccountPrefix(accountScopeID string) string {
 		return KeyV3SessionTombstoneByAccountPrefix
 	}
 	return fmt.Sprintf("%s%s/", KeyV3SessionTombstoneByAccountPrefix, part)
+}
+
+func KeyV3SessionTombstoneByAccountUser(accountScopeID, userID string, updatedAt int64, sessionID string) string {
+	return V3SessionTombstoneByAccountUserPrefix(accountScopeID, userID) + sessionRecentIndexOrderPart(updatedAt, sessionID)
+}
+
+func V3SessionTombstoneByAccountUserPrefix(accountScopeID, userID string) string {
+	accountPart := keyPart(accountScopeID)
+	userPart := keyPart(userID)
+	if accountPart == "" {
+		return KeyV3SessionTombstoneByAccountUserPrefix
+	}
+	if userPart == "" {
+		return fmt.Sprintf("%s%s/", KeyV3SessionTombstoneByAccountUserPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyV3SessionTombstoneByAccountUserPrefix, accountPart, userPart)
+}
+
+func KeyV3SessionTombstoneByAccountUserWorkspace(accountScopeID, userID, workspacePath string, updatedAt int64, sessionID string) string {
+	return V3SessionTombstoneByAccountUserWorkspacePrefix(accountScopeID, userID, workspacePath) + sessionRecentIndexOrderPart(updatedAt, sessionID)
+}
+
+func V3SessionTombstoneByAccountUserWorkspacePrefix(accountScopeID, userID, workspacePath string) string {
+	accountPart := keyPart(accountScopeID)
+	userPart := keyPart(userID)
+	workspacePart := keyPart(workspacePath)
+	if accountPart == "" || userPart == "" {
+		return V3SessionTombstoneByAccountUserPrefix(accountScopeID, userID)
+	}
+	if workspacePart == "" {
+		return fmt.Sprintf("%s%s/%s/", KeyV3SessionTombstoneByAccountUserWorkspacePrefix, accountPart, userPart)
+	}
+	return fmt.Sprintf("%s%s/%s/%s/", KeyV3SessionTombstoneByAccountUserWorkspacePrefix, accountPart, userPart, workspacePart)
 }
 
 func KeySessionRecentIndexMeta() string {

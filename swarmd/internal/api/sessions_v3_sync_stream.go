@@ -69,21 +69,57 @@ func (s *Server) handleSessionsV3SyncStream(w http.ResponseWriter, r *http.Reque
 		writeV3SyncCursorHTTPError(w, newV3SyncCursorError("endpoint_cursor_legacy_unsupported", errors.New("sync stream requires a signed scoped endpoint_cursor from bootstrap or hydrate")))
 		return
 	}
+	currentHead, err := s.sessions.CurrentRealtimeOutboxRevision()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if afterEndpointSeq > currentHead {
+		cursorErr := newV3SyncCursorError("endpoint_cursor_ahead", errors.New("endpoint cursor is ahead of committed realtime outbox; bootstrap required"))
+		cursorErr.BootstrapRequired = true
+		cursorErr.Latest = currentHead
+		writeV3SyncCursorHTTPError(w, cursorErr)
+		return
+	}
+	oldestAvailable, err := s.v3RealtimeOldestAvailableEndpointSeq()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if oldestAvailable > 0 && afterEndpointSeq < oldestAvailable {
+		cursorErr := newV3SyncCursorError("endpoint_cursor_too_old", errors.New("endpoint cursor is no longer available; bootstrap required"))
+		cursorErr.BootstrapRequired = true
+		cursorErr.OldestAvailable = oldestAvailable
+		cursorErr.Latest = currentHead
+		writeV3SyncCursorHTTPError(w, cursorErr)
+		return
+	}
 	limit := req.Limit
 	if limit <= 0 || limit > v3RealtimeReplayLimit {
 		limit = v3RealtimeReplayLimit
 	}
-	records, err := s.sessions.ListRealtimeOutboxForAuthScopeAfter(principal.AccountScopeID, principal.UserID, afterEndpointSeq, limit)
+	records, err := s.listV3SyncStreamRealtimeOutboxAfter(afterEndpointSeq, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	visible := make([]sessionruntime.RealtimeOutboxRecord, 0, len(records))
 	advanced := afterEndpointSeq
+	if len(records) == 0 && afterEndpointSeq < currentHead {
+		writeV3SyncStreamGapError(w, afterEndpointSeq, afterEndpointSeq+1, currentHead)
+		return
+	}
+	expectedEndpointSeq := afterEndpointSeq + 1
+	if afterEndpointSeq == ^uint64(0) {
+		expectedEndpointSeq = afterEndpointSeq
+	}
 	for _, record := range records {
-		if record.EndpointSeq > advanced {
-			advanced = record.EndpointSeq
+		if record.EndpointSeq != expectedEndpointSeq {
+			writeV3SyncStreamGapError(w, afterEndpointSeq, expectedEndpointSeq, currentHead)
+			return
 		}
+		advanced = record.EndpointSeq
+		expectedEndpointSeq = record.EndpointSeq + 1
 		if !v3RealtimeRecordVisibleToPrincipal(principal, record) {
 			continue
 		}
@@ -180,6 +216,22 @@ func sessionsV3SyncOutboxRecordMatchesWorkspacePaths(principal identity.Principa
 		return false, nil
 	}
 	return v3RealtimeSessionMatchesWorksetSelector(principal, session, V3RealtimeWorksetSelector{Kind: "workspace", WorkspacePaths: paths}), nil
+}
+
+var v3SyncStreamListRealtimeOutboxAfter = func(s *Server, afterEndpointSeq uint64, limit int) ([]sessionruntime.RealtimeOutboxRecord, error) {
+	return s.sessions.ListRealtimeOutboxAfter(afterEndpointSeq, limit)
+}
+
+func (s *Server) listV3SyncStreamRealtimeOutboxAfter(afterEndpointSeq uint64, limit int) ([]sessionruntime.RealtimeOutboxRecord, error) {
+	return v3SyncStreamListRealtimeOutboxAfter(s, afterEndpointSeq, limit)
+}
+
+func writeV3SyncStreamGapError(w http.ResponseWriter, afterEndpointSeq, expectedEndpointSeq, latest uint64) {
+	cursorErr := newV3SyncCursorError("endpoint_cursor_gap", errors.New("endpoint cursor cannot be replayed continuously from durable realtime outbox; bootstrap required"))
+	cursorErr.BootstrapRequired = true
+	cursorErr.OldestAvailable = expectedEndpointSeq
+	cursorErr.Latest = latest
+	writeV3SyncCursorHTTPError(w, cursorErr)
 }
 
 func writeV3SyncCursorHTTPError(w http.ResponseWriter, err error) {

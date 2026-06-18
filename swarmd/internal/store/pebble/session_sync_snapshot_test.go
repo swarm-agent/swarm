@@ -1,6 +1,9 @@
 package pebblestore
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestBuildV3SyncSnapshotKeepsExtraResourcesPointInTime(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
@@ -217,5 +220,163 @@ func createV3SyncSnapshotSessionForUserTest(t *testing.T, sessions *SessionStore
 	})
 	if err != nil {
 		t.Fatalf("create sync snapshot session %s: %v", sessionID, err)
+	}
+}
+
+func TestBuildV3SyncSnapshotGlobalRecentTombstonesExcludeOldUnrelatedHistory(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	for i := 0; i < 5; i++ {
+		sessionID := fmt.Sprintf("session-global-recent-old-tombstone-%02d", i)
+		createV3SyncSnapshotSessionForUserTest(t, sessions, sessionID, "user-1", "account-1", "/workspace/old-tombstones", int64(1000+i))
+		if err := sessions.DeleteSession(sessionID); err != nil {
+			t.Fatalf("delete old tombstone %s: %v", sessionID, err)
+		}
+	}
+	createV3SyncSnapshotSessionForUserTest(t, sessions, "session-global-recent-live", "user-1", "account-1", "/workspace/live", 5000)
+	createV3SyncSnapshotSessionForUserTest(t, sessions, "session-global-recent-current-tombstone", "user-1", "account-1", "/workspace/live", 6000)
+	if err := sessions.DeleteSession("session-global-recent-current-tombstone"); err != nil {
+		t.Fatalf("delete current tombstone: %v", err)
+	}
+
+	snapshot, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
+		AccountScopeID: "account-1",
+		UserID:         "user-1",
+		RecentLimit:    1,
+		History:        V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone},
+	})
+	if err != nil {
+		t.Fatalf("build global recent snapshot: %v", err)
+	}
+	if len(snapshot.TombstonesBySession) > 1 {
+		t.Fatalf("global recent returned historical account tombstones: %+v", snapshot.TombstonesBySession)
+	}
+}
+
+func TestBuildV3SyncSnapshotWorkspaceRecentTombstonesAreLimitBounded(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	for i := 0; i < 5; i++ {
+		sessionID := fmt.Sprintf("session-workspace-recent-tombstone-%02d", i)
+		createV3SyncSnapshotSessionForUserTest(t, sessions, sessionID, "user-1", "account-1", "/workspace/recent-tombstones", int64(2000+i))
+		if err := sessions.DeleteSession(sessionID); err != nil {
+			t.Fatalf("delete workspace tombstone %s: %v", sessionID, err)
+		}
+	}
+
+	snapshot, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
+		AccountScopeID: "account-1",
+		UserID:         "user-1",
+		WorkspacePath:  "/workspace/recent-tombstones",
+		RecentLimit:    2,
+		History:        V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone},
+	})
+	if err != nil {
+		t.Fatalf("build workspace recent tombstone snapshot: %v", err)
+	}
+	if len(snapshot.TombstonesBySession) != 2 {
+		t.Fatalf("workspace recent tombstones len=%d, want 2: %+v", len(snapshot.TombstonesBySession), snapshot.TombstonesBySession)
+	}
+	if !snapshot.Pagination.HasMore || snapshot.Pagination.NextBeforeUpdatedAt == nil || snapshot.Pagination.NextBeforeSessionID == "" {
+		t.Fatalf("workspace recent tombstones missing deterministic pagination: %+v", snapshot.Pagination)
+	}
+}
+
+func TestBuildV3SyncSnapshotRecentTombstoneSecondPageUsesBeforeCursor(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	for i := 0; i < 4; i++ {
+		sessionID := fmt.Sprintf("session-recent-tombstone-page-%02d", i)
+		createV3SyncSnapshotSessionForUserTest(t, sessions, sessionID, "user-1", "account-1", "/workspace/tombstone-pages", int64(3000+i))
+		if err := sessions.DeleteSession(sessionID); err != nil {
+			t.Fatalf("delete tombstone page %s: %v", sessionID, err)
+		}
+	}
+
+	first, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
+		AccountScopeID: "account-1",
+		UserID:         "user-1",
+		WorkspacePath:  "/workspace/tombstone-pages",
+		RecentLimit:    2,
+		History:        V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone},
+	})
+	if err != nil {
+		t.Fatalf("build first tombstone page: %v", err)
+	}
+	if !first.Pagination.HasMore || first.Pagination.NextBeforeUpdatedAt == nil {
+		t.Fatalf("first page missing pagination: %+v", first.Pagination)
+	}
+	second, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
+		AccountScopeID:        "account-1",
+		UserID:                "user-1",
+		WorkspacePath:         "/workspace/tombstone-pages",
+		RecentLimit:           2,
+		RecentBeforeUpdatedAt: first.Pagination.NextBeforeUpdatedAt,
+		RecentBeforeSessionID: first.Pagination.NextBeforeSessionID,
+		History:               V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone},
+	})
+	if err != nil {
+		t.Fatalf("build second tombstone page: %v", err)
+	}
+	if len(second.TombstonesBySession) != 2 {
+		t.Fatalf("second page tombstones len=%d, want 2: %+v", len(second.TombstonesBySession), second.TombstonesBySession)
+	}
+	for sessionID := range second.TombstonesBySession {
+		if _, duplicated := first.TombstonesBySession[sessionID]; duplicated {
+			t.Fatalf("second tombstone page duplicated first page session %s: first=%+v second=%+v", sessionID, first.TombstonesBySession, second.TombstonesBySession)
+		}
+	}
+}
+
+func TestBuildV3SyncSnapshotLargeAccountTombstonesRemainBounded(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	for i := 0; i < 1005; i++ {
+		sessionID := fmt.Sprintf("session-large-account-tombstone-%04d", i)
+		createV3SyncSnapshotSessionForUserTest(t, sessions, sessionID, "user-1", "account-1", "/workspace/large-account", int64(4000+i))
+		if err := sessions.DeleteSession(sessionID); err != nil {
+			t.Fatalf("delete large account tombstone %s: %v", sessionID, err)
+		}
+	}
+
+	snapshot, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
+		AccountScopeID: "account-1",
+		UserID:         "user-1",
+		Global:         true,
+		History:        V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone},
+	})
+	if err != nil {
+		t.Fatalf("build large account snapshot: %v", err)
+	}
+	if len(snapshot.TombstonesBySession) > 1000 {
+		t.Fatalf("large account snapshot loaded unbounded tombstones: %d", len(snapshot.TombstonesBySession))
+	}
+	if len(snapshot.Omissions) == 0 {
+		t.Fatalf("large account bounded tombstone scan did not report deterministic omission metadata")
+	}
+}
+
+func TestBuildV3SyncSnapshotTargetedEmptyUserTombstoneReturnsOmission(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SyncSnapshotSessionForUserTest(t, sessions, "session-targeted-empty-user-tombstone", "", "account-1", "/workspace/legacy", 5000)
+	if err := sessions.DeleteSession("session-targeted-empty-user-tombstone"); err != nil {
+		t.Fatalf("delete empty-user tombstone: %v", err)
+	}
+
+	snapshot, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
+		AccountScopeID: "account-1",
+		UserID:         "user-1",
+		SessionIDs:     []string{"session-targeted-empty-user-tombstone"},
+		History:        V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone},
+	})
+	if err != nil {
+		t.Fatalf("build targeted empty-user tombstone snapshot: %v", err)
+	}
+	if len(snapshot.TombstonesBySession) != 0 {
+		t.Fatalf("empty-user tombstone leaked: %+v", snapshot.TombstonesBySession)
+	}
+	if len(snapshot.Omissions) != 1 || snapshot.Omissions[0].SessionID != "session-targeted-empty-user-tombstone" || snapshot.Omissions[0].Resource != "tombstones" || snapshot.Omissions[0].Reason != "bootstrap_required" {
+		t.Fatalf("empty-user tombstone omission = %+v, want bootstrap_required tombstone omission", snapshot.Omissions)
 	}
 }

@@ -490,6 +490,9 @@ func (s *SessionStore) addV3SyncSnapshotTombstones(reader pebble.Reader, options
 		}
 		tombstone = normalizeV3SessionTombstone(tombstone)
 		if !v3SyncSnapshotTombstoneVisibleForSelector(tombstone, options) {
+			if len(options.SessionIDs) > 0 && v3SyncSnapshotTombstoneFailsClosedForRequestedAccount(tombstone, options) {
+				result.Omissions = append(result.Omissions, V3SyncSnapshotOmission{SessionID: sessionID, Resource: "tombstones", Reason: "bootstrap_required"})
+			}
 			continue
 		}
 		result.TombstonesBySession[tombstone.SessionID] = tombstone
@@ -498,11 +501,39 @@ func (s *SessionStore) addV3SyncSnapshotTombstones(reader pebble.Reader, options
 	if len(options.SessionIDs) > 0 {
 		return nil
 	}
-	accountTombstones, err := listV3SyncSnapshotTombstonesFromReader(reader, options.AccountScopeID, 0)
+	if options.RecentLimit > 0 {
+		return s.addV3SyncSnapshotRecentTombstones(reader, options, result)
+	}
+	return s.addV3SyncSnapshotBoundedSelectorTombstones(reader, options, result)
+}
+
+func v3SyncSnapshotTombstoneFailsClosedForRequestedAccount(tombstone V3SessionTombstone, options V3SyncSnapshotOptions) bool {
+	if strings.TrimSpace(tombstone.SessionID) == "" {
+		return false
+	}
+	if strings.TrimSpace(options.AccountScopeID) == "" || strings.TrimSpace(tombstone.AccountScopeID) != strings.TrimSpace(options.AccountScopeID) {
+		return false
+	}
+	return strings.TrimSpace(options.UserID) != "" && strings.TrimSpace(tombstone.UserID) == ""
+}
+
+func v3SyncSnapshotTombstonePageCursor(page V3SyncSnapshotPagination) string {
+	if page.NextBeforeUpdatedAt == nil || strings.TrimSpace(page.NextBeforeSessionID) == "" {
+		return "recent.before_updated_at/before_session_id"
+	}
+	return fmt.Sprintf("recent.before_updated_at=%d&before_session_id=%s", *page.NextBeforeUpdatedAt, page.NextBeforeSessionID)
+}
+
+func (s *SessionStore) addV3SyncSnapshotRecentTombstones(reader pebble.Reader, options V3SyncSnapshotOptions, result *V3SyncSnapshotResult) error {
+	limit := options.RecentLimit
+	if limit <= 0 {
+		return nil
+	}
+	tombstones, page, err := listV3SyncSnapshotRecentTombstonesFromReader(reader, options, limit)
 	if err != nil {
 		return err
 	}
-	for _, tombstone := range accountTombstones {
+	for _, tombstone := range tombstones {
 		if _, already := result.TombstonesBySession[tombstone.SessionID]; already {
 			continue
 		}
@@ -510,6 +541,32 @@ func (s *SessionStore) addV3SyncSnapshotTombstones(reader pebble.Reader, options
 			continue
 		}
 		result.TombstonesBySession[tombstone.SessionID] = tombstone
+	}
+	if page.HasMore && !result.Pagination.HasMore {
+		result.Pagination = page
+	} else if page.HasMore {
+		result.Omissions = append(result.Omissions, V3SyncSnapshotOmission{Resource: "tombstones", Reason: V3SyncSnapshotOmissionPageBoundary, NextCursor: v3SyncSnapshotTombstonePageCursor(page)})
+	}
+	return nil
+}
+
+func (s *SessionStore) addV3SyncSnapshotBoundedSelectorTombstones(reader pebble.Reader, options V3SyncSnapshotOptions, result *V3SyncSnapshotResult) error {
+	const limit = 1000
+	tombstones, capped, err := listV3SyncSnapshotBoundedTombstonesFromReader(reader, options, limit)
+	if err != nil {
+		return err
+	}
+	for _, tombstone := range tombstones {
+		if _, already := result.TombstonesBySession[tombstone.SessionID]; already {
+			continue
+		}
+		if !v3SyncSnapshotTombstoneVisibleForSelector(tombstone, options) {
+			continue
+		}
+		result.TombstonesBySession[tombstone.SessionID] = tombstone
+	}
+	if capped {
+		result.Omissions = append(result.Omissions, V3SyncSnapshotOmission{Resource: "tombstones", Reason: V3SyncSnapshotOmissionPageBoundary, NextCursor: "recent.before_updated_at/before_session_id"})
 	}
 	return nil
 }
@@ -942,39 +999,126 @@ func listPlanRevisionsFromReader(reader pebble.Reader, sessionID, planID string,
 	return out, nil
 }
 
-func listV3SyncSnapshotTombstonesFromReader(reader pebble.Reader, accountScopeID string, limit int) ([]V3SessionTombstone, error) {
+func listV3SyncSnapshotRecentTombstonesFromReader(reader pebble.Reader, options V3SyncSnapshotOptions, limit int) ([]V3SessionTombstone, V3SyncSnapshotPagination, error) {
 	if limit <= 0 {
-		limit = int(^uint(0) >> 1)
+		return nil, V3SyncSnapshotPagination{}, nil
 	}
-	accountScopeID = strings.TrimSpace(accountScopeID)
-	prefix := V3SessionTombstonePrefix()
-	if accountScopeID != "" {
-		prefix = V3SessionTombstoneByAccountPrefix(accountScopeID)
+	prefixes := v3SyncSnapshotTombstoneRecentPrefixes(options)
+	if len(prefixes) == 0 {
+		return nil, V3SyncSnapshotPagination{}, nil
 	}
-	out := make([]V3SessionTombstone, 0)
-	err := iteratePrefixFromReader(reader, prefix, limit, func(_ string, value []byte) error {
-		var tombstone V3SessionTombstone
-		if err := json.Unmarshal(value, &tombstone); err != nil {
-			return err
+	candidates := make([]V3SessionTombstone, 0, limit+len(prefixes))
+	seen := map[string]struct{}{}
+	for _, prefix := range prefixes {
+		startKey := sessionRecentIndexStartAfter(prefix, options.RecentBeforeUpdatedAt, options.RecentBeforeSessionID)
+		err := scanRangeFromReader(reader, scanRangeOptions{Prefix: prefix, StartKey: startKey, Limit: limit + 1}, func(_ string, value []byte) (bool, error) {
+			var tombstone V3SessionTombstone
+			if err := json.Unmarshal(value, &tombstone); err != nil {
+				return false, err
+			}
+			tombstone = normalizeV3SessionTombstone(tombstone)
+			if tombstone.SessionID == "" {
+				return true, nil
+			}
+			if _, ok := seen[tombstone.SessionID]; ok {
+				return true, nil
+			}
+			seen[tombstone.SessionID] = struct{}{}
+			if !v3SyncSnapshotTombstoneVisibleForSelector(tombstone, options) {
+				return true, nil
+			}
+			candidates = append(candidates, tombstone)
+			return true, nil
+		})
+		if err != nil {
+			return nil, V3SyncSnapshotPagination{}, err
 		}
-		tombstone = normalizeV3SessionTombstone(tombstone)
-		if accountScopeID != "" && strings.TrimSpace(tombstone.AccountScopeID) != accountScopeID {
-			return nil
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].UpdatedAt == candidates[j].UpdatedAt {
+			return candidates[i].SessionID > candidates[j].SessionID
 		}
-		out = append(out, tombstone)
-		return nil
+		return candidates[i].UpdatedAt > candidates[j].UpdatedAt
 	})
-	if err != nil {
-		return nil, err
+	pagination := V3SyncSnapshotPagination{}
+	if len(candidates) > limit {
+		last := candidates[limit-1]
+		updatedAt := last.UpdatedAt
+		pagination.HasMore = true
+		pagination.NextBeforeUpdatedAt = &updatedAt
+		pagination.NextBeforeSessionID = last.SessionID
+		candidates = candidates[:limit]
+	}
+	return candidates, pagination, nil
+}
+
+func v3SyncSnapshotTombstoneRecentPrefixes(options V3SyncSnapshotOptions) []string {
+	accountScopeID := strings.TrimSpace(options.AccountScopeID)
+	userID := strings.TrimSpace(options.UserID)
+	if accountScopeID == "" || userID == "" {
+		return nil
+	}
+	paths := options.WorkspacePaths
+	if len(paths) == 0 {
+		paths = normalizeV3SyncSnapshotWorkspacePaths(options.WorkspacePath, nil)
+	}
+	if len(paths) > 0 {
+		prefixes := make([]string, 0, len(paths))
+		for _, path := range paths {
+			prefixes = append(prefixes, V3SessionTombstoneByAccountUserWorkspacePrefix(accountScopeID, userID, path))
+		}
+		return prefixes
+	}
+	return []string{V3SessionTombstoneByAccountUserPrefix(accountScopeID, userID)}
+}
+
+func listV3SyncSnapshotBoundedTombstonesFromReader(reader pebble.Reader, options V3SyncSnapshotOptions, limit int) ([]V3SessionTombstone, bool, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	prefixes := v3SyncSnapshotTombstoneRecentPrefixes(options)
+	if len(prefixes) == 0 {
+		return nil, false, nil
+	}
+	out := make([]V3SessionTombstone, 0, limit)
+	seen := map[string]struct{}{}
+	capped := false
+	for _, prefix := range prefixes {
+		err := scanRangeFromReader(reader, scanRangeOptions{Prefix: prefix, Limit: limit + 1}, func(_ string, value []byte) (bool, error) {
+			var tombstone V3SessionTombstone
+			if err := json.Unmarshal(value, &tombstone); err != nil {
+				return false, err
+			}
+			tombstone = normalizeV3SessionTombstone(tombstone)
+			if tombstone.SessionID == "" {
+				return true, nil
+			}
+			if _, ok := seen[tombstone.SessionID]; ok {
+				return true, nil
+			}
+			seen[tombstone.SessionID] = struct{}{}
+			if !v3SyncSnapshotTombstoneVisibleForSelector(tombstone, options) {
+				return true, nil
+			}
+			if len(out) >= limit {
+				capped = true
+				return false, nil
+			}
+			out = append(out, tombstone)
+			return true, nil
+		})
+		if err != nil {
+			return nil, false, err
+		}
+		if capped {
+			break
+		}
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].UpdatedAt == out[j].UpdatedAt {
-			return out[i].SessionID < out[j].SessionID
+			return out[i].SessionID > out[j].SessionID
 		}
 		return out[i].UpdatedAt > out[j].UpdatedAt
 	})
-	if len(out) > limit {
-		out = out[:limit]
-	}
-	return out, nil
+	return out, capped, nil
 }

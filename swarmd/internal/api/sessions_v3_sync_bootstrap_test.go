@@ -1031,3 +1031,50 @@ func TestSessionsV3SyncTUIAndPhoneEquivalentBootstrapScopes(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionsV3SyncHydrateEmptyUserLegacyTombstoneReturnsOmission(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	legacy := pebblestore.SessionSnapshot{
+		ID:             "sync-hydrate-empty-user-tombstone",
+		UserID:         "",
+		AccountScopeID: testPrincipal().AccountScopeID,
+		WorkspacePath:  "/workspace/legacy-tombstone",
+		WorkspaceName:  "legacy-tombstone",
+		Title:          "Legacy Tombstone",
+		CreatedAt:      time.Now().UnixMilli(),
+		UpdatedAt:      time.Now().UnixMilli(),
+	}
+	if err := sessionSvc.Store().CreateSession(legacy); err != nil {
+		t.Fatalf("create legacy empty-user session: %v", err)
+	}
+	if err := server.sessions.DeleteSession(legacy.ID); err != nil {
+		t.Fatalf("delete legacy empty-user session: %v", err)
+	}
+
+	body := `{"surface":"desktop","session_ids":["` + legacy.ID + `"],"history":{"mode":"none"}}`
+	req := httptest.NewRequest(http.MethodPost, V3SyncHydratePath, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("hydrate status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		OK                  bool                                      `json:"ok"`
+		SessionsByID        map[string]pebblestore.SessionSnapshot    `json:"sessions_by_id"`
+		TombstonesBySession map[string]pebblestore.V3SessionTombstone `json:"tombstones_by_session"`
+		Omissions           []pebblestore.V3SyncSnapshotOmission      `json:"omissions"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode hydrate: %v", err)
+	}
+	if !payload.OK {
+		t.Fatalf("hydrate ok=false, want omission response: %s", rec.Body.String())
+	}
+	if len(payload.SessionsByID) != 0 || len(payload.TombstonesBySession) != 0 {
+		t.Fatalf("legacy empty-user tombstone leaked session/tombstone: sessions=%+v tombstones=%+v", payload.SessionsByID, payload.TombstonesBySession)
+	}
+	if len(payload.Omissions) != 1 || payload.Omissions[0].SessionID != legacy.ID || payload.Omissions[0].Resource != "tombstones" || payload.Omissions[0].Reason != "bootstrap_required" {
+		t.Fatalf("legacy empty-user tombstone returned silent absence; omissions=%+v", payload.Omissions)
+	}
+}
