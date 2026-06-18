@@ -1,9 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  bootstrapResponseToAction,
   hydrateResponseToAction,
   reconnectResponseToActions,
   realtimeFrameToActions,
+  selectSession,
   syncStreamResponseToAction,
 } from './desktop-v3-cache-wire'
 import {
@@ -32,7 +34,7 @@ import {
   syncStreamFixture,
   tombstoneB,
 } from './desktop-v3-cache.backend-fixtures'
-import { selectLiveRuns } from './desktop-v3-cache-selectors'
+import { selectDesktopSidebarRows, selectLiveRuns } from './desktop-v3-cache-selectors'
 import type { DesktopV3CacheState, MessageSnapshot, V3SessionEvent } from './desktop-v3-cache-types'
 
 function bootstrappedState(): DesktopV3CacheState {
@@ -94,6 +96,20 @@ test('metadata-only bootstrap preserves existing transcripts when messages_by_se
     messages_by_session: {},
     session_order: [sessionA.id],
   }))
+
+  assert.equal(state.syncScopesById['selector-hash:messages,run_intents'].endpointCursor, 'cursor-bootstrap-2')
+  assert.deepEqual(state.messagesBySession[sessionA.id].items.map((message) => message.id), ['msg-a-1', 'msg-a-2'])
+})
+
+test('metadata-only bootstrap preserves existing transcripts when messages_by_session is omitted', () => {
+  const state = bootstrappedState()
+  const response = snapshotFixture({
+    snapshot_endpoint_cursor: 'cursor-bootstrap-2',
+    session_order: [sessionA.id],
+  })
+  delete response.messages_by_session
+
+  desktopV3CacheReducer(state, bootstrapResponseToAction(response))
 
   assert.equal(state.syncScopesById['selector-hash:messages,run_intents'].endpointCursor, 'cursor-bootstrap-2')
   assert.deepEqual(state.messagesBySession[sessionA.id].items.map((message) => message.id), ['msg-a-1', 'msg-a-2'])

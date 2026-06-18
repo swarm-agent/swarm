@@ -135,20 +135,20 @@ export interface SyncSnapshotResponse {
   snapshot_endpoint_cursor: string
   sessions_by_id: Record<string, SessionSnapshot>
   projections_by_session: Record<string, V3SessionProjection>
-  messages_by_session: Record<string, MessageSnapshot[]>
-  events_by_session: Record<string, V3SessionEvent[]>
-  plans_by_session: Record<string, unknown>
-  plan_revisions_by_session: Record<string, unknown[]>
-  permissions_by_session: Record<string, unknown>
-  usage_by_session: Record<string, unknown>
-  preferences_by_session: Record<string, unknown>
-  agent_model_policy_by_session: Record<string, unknown>
-  run_intents_by_session: Record<string, V3SessionRunIntent[]>
-  history_manifests_by_session: Record<string, unknown>
-  history_chunks_by_id: Record<string, unknown>
-  omissions: unknown[]
-  pagination: unknown
-  watermarks: unknown
+  messages_by_session?: Record<string, MessageSnapshot[]>
+  events_by_session?: Record<string, V3SessionEvent[]>
+  plans_by_session?: Record<string, unknown>
+  plan_revisions_by_session?: Record<string, unknown[]>
+  permissions_by_session?: Record<string, unknown>
+  usage_by_session?: Record<string, unknown>
+  preferences_by_session?: Record<string, unknown>
+  agent_model_policy_by_session?: Record<string, unknown>
+  run_intents_by_session?: Record<string, V3SessionRunIntent[]>
+  history_manifests_by_session?: Record<string, unknown>
+  history_chunks_by_id?: Record<string, unknown>
+  omissions?: unknown[]
+  pagination?: unknown
+  watermarks?: unknown
   session_order: string[]
   sync_scope: SyncScopeWire
   scope_id: string
@@ -450,10 +450,17 @@ export interface WorksetCache extends Record<string, unknown> {
   inactiveSessionIds?: string[]
 }
 
+export interface DesktopSidebarBootstrapState {
+  status: 'idle' | 'loading' | 'ready' | 'error'
+  scopeId?: string
+  error?: string
+}
+
 export interface DesktopV3CacheState {
   version: 1
   syncScopesById: Record<string, SyncScopeCache>
   realtime: RealtimeCache
+  desktopSidebarBootstrap: DesktopSidebarBootstrapState
   sessionsById: Record<string, SessionCacheRecord>
   projectionsBySession: Record<string, V3SessionProjection>
   sessionOrderByScope: Record<string, string[]>
@@ -490,6 +497,8 @@ export interface CacheEvent {
 }
 
 export type DesktopV3CacheAction =
+  | { type: 'desktopSidebarBootstrap.update'; patch: Partial<DesktopSidebarBootstrapState> }
+  | { type: 'session.select'; sessionId?: string }
   | { type: 'snapshot.apply'; source: 'bootstrap'; scopeId: string; snapshot: SyncSnapshotResponse }
   | { type: 'hydrate.apply'; source: 'hydrate'; scopeId: string; requestedSessionIds: string[]; snapshot: SyncSnapshotResponse }
   | { type: 'syncStream.applyBatch'; scopeId: string; endpointCursor: string; events: CacheEvent[]; hasMore: boolean; replayInstructions: SyncReplayInstructions }

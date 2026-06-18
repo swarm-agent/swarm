@@ -35,6 +35,9 @@ export function createEmptyDesktopV3CacheState(surface = 'desktop'): DesktopV3Ca
       needsReconnect: false,
       needsBootstrap: false,
     },
+    desktopSidebarBootstrap: {
+      status: 'idle',
+    },
     sessionsById: {},
     projectionsBySession: {},
     sessionOrderByScope: {},
@@ -63,6 +66,15 @@ export function createEmptyDesktopV3CacheState(surface = 'desktop'): DesktopV3Ca
 
 export function desktopV3CacheReducer(state: DesktopV3CacheState, action: DesktopV3CacheAction): DesktopV3CacheState {
   switch (action.type) {
+    case 'desktopSidebarBootstrap.update':
+      state.desktopSidebarBootstrap = {
+        ...state.desktopSidebarBootstrap,
+        ...action.patch,
+      }
+      return state
+    case 'session.select':
+      state.selectedSessionId = action.sessionId?.trim() || undefined
+      return state
     case 'snapshot.apply':
       return applyBootstrapSnapshot(state, action.snapshot)
     case 'hydrate.apply':

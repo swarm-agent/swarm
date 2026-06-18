@@ -22,6 +22,13 @@ export function bootstrapResponseToAction(raw: SyncSnapshotResponse): DesktopV3C
   }
 }
 
+export function selectSession(sessionId: string): DesktopV3CacheAction {
+  return {
+    type: 'session.select',
+    sessionId,
+  }
+}
+
 export function hydrateResponseToAction(
   raw: SyncSnapshotResponse,
   requestedSessionIds: string[],

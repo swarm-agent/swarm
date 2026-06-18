@@ -51,6 +51,12 @@ import {
   sessionParentSessionID,
   type SidebarSessionNodeKind,
 } from './sidebar-session-lineage'
+import { bootstrapDesktopV3Sidebar } from '../state/desktop-v3-bootstrap-controller'
+import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
+import { selectDesktopSidebarRows } from '../state/desktop-v3-cache-selectors'
+import { selectSession } from '../state/desktop-v3-cache-wire'
+import type { DesktopV3SidebarRow } from '../state/desktop-v3-cache-selectors'
+import type { V3SessionRunIntent } from '../state/desktop-v3-cache-types'
 
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
 const DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY = 'swarm.web.desktop.pending_update_toast'
@@ -188,6 +194,96 @@ interface SidebarFlowRow {
   status: SidebarFlowStatus
   detail: string
   raw: FlowSummaryRecord
+}
+
+function desktopRunIntentFromV3(runIntent: V3SessionRunIntent | undefined) {
+  if (!runIntent) return null
+  return {
+    sessionId: runIntent.session_id,
+    runId: runIntent.run_id,
+    status: runIntent.status,
+    blockedReason: runIntent.blocked_reason ?? '',
+    createdAt: runIntent.created_at,
+    updatedAt: runIntent.updated_at,
+    eventSeq: runIntent.event_seq,
+  }
+}
+
+function desktopSessionRecordFromV3SidebarRow(row: DesktopV3SidebarRow): DesktopSessionRecord {
+  const record = row.record
+  const session = record.kind === 'full'
+    ? record.session
+    : {
+        id: record.id,
+        title: record.id,
+        workspace_path: '',
+        workspace_name: 'Unknown workspace',
+        mode: 'auto',
+        created_at: record.discoveredAt ?? 0,
+        updated_at: record.discoveredAt ?? 0,
+        message_count: 0,
+        last_message_at: record.discoveredAt ?? 0,
+      }
+  const runIntent = desktopRunIntentFromV3(row.currentRunIntent ?? Object.values(row.runIntents)[0])
+  const runIntentActive = runIntent ? ['pending_executor', 'running', 'dispatch_blocked'].includes(runIntent.status) : false
+  const runIntentBlocked = runIntent?.status === 'dispatch_blocked'
+  const liveStatus = runIntentBlocked ? 'blocked' : runIntentActive ? 'running' : 'idle'
+  const updatedAt = row.projection?.updated_at ?? session.updated_at ?? session.last_message_at ?? session.created_at ?? 0
+
+  return {
+    id: session.id,
+    title: record.kind === 'stub' ? `${session.id} · needs hydrate` : session.title || session.id,
+    workspacePath: session.workspace_path || '',
+    workspaceName: session.workspace_name || 'Unknown workspace',
+    mode: session.mode || 'auto',
+    metadata: session.metadata,
+    lastEventSeq: row.projection?.last_event_seq,
+    projectionHighWatermarkSeq: row.projection?.projection_high_watermark_seq,
+    messageCount: session.message_count ?? 0,
+    updatedAt,
+    createdAt: session.created_at ?? updatedAt,
+    permissionsHydrated: false,
+    worktreeEnabled: session.worktree_enabled,
+    worktreeRootPath: session.worktree_root_path,
+    worktreeBaseBranch: session.worktree_base_branch,
+    worktreeBranch: session.worktree_branch,
+    lifecycle: null,
+    runIntent,
+    live: {
+      runId: runIntentActive ? runIntent?.runId ?? null : null,
+      agentName: null,
+      startedAt: runIntentActive ? runIntent?.createdAt ?? null : null,
+      status: liveStatus,
+      step: 0,
+      toolName: null,
+      sidebarToolName: null,
+      toolCallId: null,
+      toolArguments: null,
+      toolOutput: '',
+      retainedToolName: null,
+      retainedToolCallId: null,
+      retainedToolArguments: null,
+      retainedToolOutput: '',
+      retainedToolState: null,
+      toolHistory: [],
+      summary: record.kind === 'stub' ? 'Session not hydrated yet' : null,
+      lastEventType: null,
+      lastEventAt: runIntent?.updatedAt ?? null,
+      error: null,
+      seq: row.projection?.last_event_seq ?? 0,
+      assistantDraft: '',
+      retainedAssistantSegments: [],
+      reasoningSummary: '',
+      reasoningText: '',
+      reasoningState: 'idle',
+      reasoningSegment: 0,
+      reasoningStartedAt: null,
+      awaitingAck: false,
+    },
+    pendingPermissions: [],
+    pendingPermissionCount: 0,
+    usage: null,
+  }
 }
 
 function GitDetailsOverlay({ state, snapshot, loading, error, onRefresh, onClose }: { state: GitPanelState | null; snapshot: GitSnapshot | null; loading: boolean; error: string | null; onRefresh: () => void; onClose: () => void }) {
@@ -1078,10 +1174,12 @@ interface SidebarSessionNode {
   assignmentLabel: string | null
 }
 
-function buildSidebarSessionTree(sessions: DesktopSessionRecord[], now: number): SidebarSessionNode[] {
-  const sortedSessions = sessions.length > 1
-    ? [...sessions].sort((left, right) => compareSidebarSessions(left, right, now))
-    : sessions
+function buildSidebarSessionTree(sessions: DesktopSessionRecord[], now: number, preserveInputOrder = false): SidebarSessionNode[] {
+  const sortedSessions = preserveInputOrder
+    ? sessions
+    : sessions.length > 1
+      ? [...sessions].sort((left, right) => compareSidebarSessions(left, right, now))
+      : sessions
   const byID = new Map<string, SidebarSessionNode>()
   for (const session of sortedSessions) {
     const descriptor = sessionChildDescriptor(session)
@@ -1138,7 +1236,9 @@ function buildSidebarSessionTree(sessions: DesktopSessionRecord[], now: number):
       }
     }
   }
-  sortNodes(uniqueRoots)
+  if (!preserveInputOrder) {
+    sortNodes(uniqueRoots)
+  }
   return uniqueRoots
 }
 
@@ -1915,7 +2015,16 @@ export function DesktopAppPage() {
     saveStoredValue(DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY, JSON.stringify(workspaceLayout))
   }, [workspaceLayout])
 
-  const desktopStateSessions = useMemo<DesktopSessionRecord[]>(() => [], [])
+  const desktopSidebarBootstrap = useDesktopV3CacheSelector((state) => state.desktopSidebarBootstrap)
+  const desktopSidebarRows = useDesktopV3CacheSelector(selectDesktopSidebarRows)
+  const desktopStateSessions = useMemo<DesktopSessionRecord[]>(
+    () => desktopSidebarRows.map(desktopSessionRecordFromV3SidebarRow),
+    [desktopSidebarRows],
+  )
+
+  useEffect(() => {
+    void bootstrapDesktopV3Sidebar()
+  }, [])
 
   const sessionsByWorkspace = useMemo<Map<string, DesktopSessionRecord[]>>(() => {
     const grouped = new Map<string, DesktopSessionRecord[]>()
@@ -1924,8 +2033,16 @@ export function DesktopAppPage() {
       grouped.set(workspace.path, [])
     }
 
+    for (const session of desktopStateSessions) {
+      const workspacePath = session.workspacePath || selectedWorkspacePath || visibleWorkspacePaths[0] || ''
+      if (!workspacePath) continue
+      const sessions = grouped.get(workspacePath) ?? []
+      sessions.push(session)
+      grouped.set(workspacePath, sessions)
+    }
+
     return grouped
-  }, [mergedSidebarWorkspaceEntries])
+  }, [desktopStateSessions, mergedSidebarWorkspaceEntries, selectedWorkspacePath, visibleWorkspacePaths])
 
   const sessionById = useMemo<Map<string, DesktopSessionRecord>>(
     () => new Map(desktopStateSessions.map((session) => [session.id, session] as const)),
@@ -2064,6 +2181,7 @@ export function DesktopAppPage() {
 
   const handleSelectSession = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()
+    dispatchDesktopV3Cache(selectSession(normalizedSessionId))
     const session = sessionById.get(normalizedSessionId)
     if (!session?.workspacePath) {
       return
@@ -2939,7 +3057,7 @@ export function DesktopAppPage() {
                 </div>
               ) : visibleSidebarWorkspaceEntries.map((workspace, index) => {
                 const workspaceSessions = sessionsByWorkspace.get(workspace.path) ?? []
-                const sessionNodes = buildSidebarSessionTree(workspaceSessions, sidebarNow)
+                const sessionNodes = buildSidebarSessionTree(workspaceSessions, sidebarNow, Boolean(desktopSidebarBootstrap.scopeId))
                 const flattenedSessionNodes = flattenVisibleSidebarSessionNodes(sessionNodes, expandedAgentSessions, routeSessionId)
                 const layout = workspaceLayout[workspace.path]
                 const collapsed = layout?.collapsed ?? true

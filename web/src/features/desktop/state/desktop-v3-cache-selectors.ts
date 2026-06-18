@@ -1,4 +1,13 @@
-import type { DesktopV3CacheState, LiveRunOverlay, MessageSnapshot, PendingUserMessage } from './desktop-v3-cache-types'
+import type { DesktopV3CacheState, LiveRunOverlay, MessageSnapshot, PendingUserMessage, SessionCacheRecord, V3SessionProjection, V3SessionRunIntent, V3SessionTombstone } from './desktop-v3-cache-types'
+
+export interface DesktopV3SidebarRow {
+  sessionId: string
+  record: SessionCacheRecord
+  projection?: V3SessionProjection
+  tombstone?: V3SessionTombstone
+  runIntents: Record<string, V3SessionRunIntent>
+  currentRunIntent?: V3SessionRunIntent
+}
 
 export interface RenderedSessionMessages {
   committed: MessageSnapshot[]
@@ -12,6 +21,29 @@ export function selectScopeEndpointCursor(state: DesktopV3CacheState, scopeId: s
 
 export function selectSessionOrder(state: DesktopV3CacheState, scopeId: string): string[] {
   return state.sessionOrderByScope[scopeId] ?? []
+}
+
+export function selectDesktopSidebarScopeId(state: DesktopV3CacheState): string | undefined {
+  return state.desktopSidebarBootstrap.scopeId
+}
+
+export function selectDesktopSidebarRows(state: DesktopV3CacheState, scopeId = state.desktopSidebarBootstrap.scopeId): DesktopV3SidebarRow[] {
+  const resolvedScopeId = scopeId ?? Object.keys(state.sessionOrderByScope)[0]
+  if (!resolvedScopeId) return []
+  const rows: DesktopV3SidebarRow[] = []
+  for (const sessionId of selectSessionOrder(state, resolvedScopeId)) {
+    const record = state.sessionsById[sessionId]
+    if (!record) continue
+    rows.push({
+      sessionId,
+      record,
+      projection: state.projectionsBySession[sessionId],
+      tombstone: state.tombstonesBySession[sessionId],
+      runIntents: state.runIntentsBySession[sessionId] ?? {},
+      currentRunIntent: state.currentRunIntentBySession[sessionId],
+    })
+  }
+  return rows
 }
 
 export function selectCommittedMessages(state: DesktopV3CacheState, sessionId: string): MessageSnapshot[] {
