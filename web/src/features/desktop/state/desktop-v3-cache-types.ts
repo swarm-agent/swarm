@@ -424,7 +424,10 @@ export interface LiveRunOverlay {
       toolName?: string
       argumentsText?: string
       outputText?: string
+      errorText?: string
+      durationMs?: number
       status?: string
+      createdAt?: number
       updatedAt: number
     }
   >

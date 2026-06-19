@@ -839,14 +839,25 @@ function applyLiveRunOverlayFromEvent(
       return
     }
 
-    case 'session.tool.delta': {
+    case 'session.tool.started':
+    case 'session.tool.delta':
+    case 'session.tool.completed':
+    case 'session.tool.failed':
+    case 'session.tool.cancelled':
+    case 'session.tool.canceled': {
       const callId = stringValue(payload.call_id)
       if (!callId) {
         return
       }
 
+      const isStarted = event.eventType === 'session.tool.started'
+      const isDelta = event.eventType === 'session.tool.delta'
+      const isFailed = event.eventType === 'session.tool.failed'
+      const isCancelled = event.eventType === 'session.tool.cancelled' || event.eventType === 'session.tool.canceled'
+      const isTerminal = event.eventType === 'session.tool.completed' || isFailed || isCancelled
       const tool = liveRun.toolCallsByCallId[callId] ?? {
         callId,
+        createdAt: updatedAt,
         updatedAt,
       }
 
@@ -855,25 +866,35 @@ function applyLiveRunOverlayFromEvent(
         stringValue(payload.tool_instance_id) || tool.toolInstanceId
       tool.toolName = stringValue(payload.tool_name) || tool.toolName
 
-      const argsDelta =
-        stringValue(payload.arguments_delta) ||
-        stringValue(payload.arguments) ||
-        ''
-      const outputDelta =
-        stringValue(payload.output_delta) ||
-        stringValue(payload.delta) ||
-        stringValue(payload.output) ||
-        ''
+      const argumentsText = stringValue(payload.arguments)
+      const argumentsDelta = stringValue(payload.arguments_delta)
+      const outputText = stringValue(payload.output)
+      const outputDelta = stringValue(payload.output_delta) || stringValue(payload.delta)
+      const rawOutput = stringValue(payload.raw_output)
+      const completedOutput = stringValue(payload.completed_output)
+      const errorText = stringValue(payload.error)
 
-      if (argsDelta) {
-        tool.argumentsText = `${tool.argumentsText ?? ''}${argsDelta}`
+      if (isStarted && argumentsText) {
+        tool.argumentsText = argumentsText
+      } else if (argumentsDelta) {
+        tool.argumentsText = `${tool.argumentsText ?? ''}${argumentsDelta}`
+      } else if (!isDelta && argumentsText) {
+        tool.argumentsText = argumentsText
       }
 
-      if (outputDelta) {
-        tool.outputText = `${tool.outputText ?? ''}${outputDelta}`
+      if (rawOutput || completedOutput) {
+        tool.outputText = rawOutput || completedOutput
+      } else if (isTerminal && outputText) {
+        tool.outputText = outputText
+      } else if (outputDelta || (isDelta && outputText)) {
+        tool.outputText = `${tool.outputText ?? ''}${outputDelta || outputText}`
+      } else if (isStarted && outputText) {
+        tool.outputText = outputText
       }
 
-      tool.status = stringValue(payload.status) || tool.status || 'running'
+      tool.errorText = errorText || tool.errorText
+      tool.durationMs = numberValue(payload.duration_ms) || tool.durationMs
+      tool.status = stringValue(payload.status) || (isFailed ? 'failed' : isCancelled ? 'cancelled' : isTerminal ? 'completed' : 'running')
       tool.updatedAt = updatedAt
 
       liveRun.toolCallsByCallId[callId] = tool
@@ -1004,6 +1025,10 @@ function stringField(value: unknown): string | undefined {
 
 function stringValue(value: unknown): string {
   return typeof value === 'string' ? value : ''
+}
+
+function numberValue(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 
 function recordValue(value: unknown): Record<string, unknown> | undefined {

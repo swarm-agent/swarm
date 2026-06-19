@@ -294,28 +294,62 @@ test('realtime assistant and message deltas append assistant draft without commi
   assert.equal(state.messagesBySession[sessionA.id].items.length, beforeCommittedCount)
 })
 
-test('realtime session.tool.delta creates live run tool overlay', () => {
+test('realtime session.tool.started creates live tool overlay before output deltas arrive', () => {
   const state = bootstrappedState()
 
   applyRealtimeFrame(state, {
-    frame: deltaFrame('session.tool.delta', {
+    frame: deltaFrame('session.tool.started', {
       call_id: 'call-1',
       step_id: 'step-1',
       tool_instance_id: 'tool-instance-1',
       tool_name: 'search',
-      arguments_delta: '{"query":"a"',
-      output_delta: 'result-1',
-      status: 'running',
-    }, 5, 'cursor-tool-1'),
+      arguments: '{"query":"a"}',
+      status: 'started',
+    }, 5, 'cursor-tool-start'),
   })
 
   const tool = state.liveRunsBySession[sessionA.id]['run-live'].toolCallsByCallId['call-1']
   assert.equal(tool.stepId, 'step-1')
   assert.equal(tool.toolInstanceId, 'tool-instance-1')
   assert.equal(tool.toolName, 'search')
-  assert.equal(tool.argumentsText, '{"query":"a"')
-  assert.equal(tool.outputText, 'result-1')
-  assert.equal(tool.status, 'running')
+  assert.equal(tool.argumentsText, '{"query":"a"}')
+  assert.equal(tool.outputText, undefined)
+  assert.equal(tool.status, 'started')
+})
+
+test('realtime session.tool.delta appends output and terminal event replaces final output', () => {
+  const state = bootstrappedState()
+
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.tool.started', {
+      call_id: 'call-1',
+      step_id: 'step-1',
+      tool_instance_id: 'tool-instance-1',
+      tool_name: 'search',
+      arguments: '{"query":"a"}',
+    }, 5, 'cursor-tool-start'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.tool.delta', {
+      call_id: 'call-1',
+      output_delta: 'result-',
+    }, 6, 'cursor-tool-delta'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.tool.completed', {
+      call_id: 'call-1',
+      tool_name: 'search',
+      output: '{"summary":"done"}',
+      duration_ms: 42,
+      status: 'completed',
+    }, 7, 'cursor-tool-complete'),
+  })
+
+  const tool = state.liveRunsBySession[sessionA.id]['run-live'].toolCallsByCallId['call-1']
+  assert.equal(tool.argumentsText, '{"query":"a"}')
+  assert.equal(tool.outputText, '{"summary":"done"}')
+  assert.equal(tool.status, 'completed')
+  assert.equal(tool.durationMs, 42)
 })
 
 test('committed assistant final message clears matching live assistant draft', () => {

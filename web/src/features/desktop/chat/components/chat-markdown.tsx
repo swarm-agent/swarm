@@ -772,6 +772,7 @@ export function ToolMessageView({
   const shellPreview = false;
   const plainPreview = shouldRenderPreviewAsPlain(toolMessage.tool);
   const showPreview = toolMessage.tool.trim().toLowerCase() !== 'thinking' || thinkingTagsEnabled;
+  const isWindup = state === "running" && !toolMessage.output.trim() && !toolMessage.error.trim();
 
   return (
     <div className={isGroupItem ? "py-2" : "mb-2 min-w-0 py-2"}>
@@ -786,6 +787,12 @@ export function ToolMessageView({
         {summary ? (
           <span className="min-w-0 flex-1 truncate font-medium text-[var(--app-text)]">
             {summary}
+          </span>
+        ) : null}
+        {isWindup ? (
+          <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-[var(--app-text-subtle)]">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full" style={{ backgroundColor: toolTheme.color }} />
+            starting…
           </span>
         ) : null}
         {toolMessage.durationMs > 0 ? (
