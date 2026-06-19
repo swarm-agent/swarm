@@ -250,11 +250,10 @@ func (s *Server) sessionsV3ReconnectWorksetResponse(principal identity.Principal
 	if err != nil {
 		return nil, err
 	}
-	snapshotEndpointCursor, err := s.sessions.CurrentRealtimeOutboxCursor()
-	if err != nil {
-		return nil, err
-	}
-	signedSnapshotEndpointCursor, err := s.signV3SyncEndpointCursorFromLegacy(v3SyncCursorScopeForRealtime(principal, surface), snapshotEndpointCursor)
+	signedSnapshotEndpointCursor, err := s.signV3SyncEndpointCursor(
+		v3SyncCursorScopeForRealtime(principal, surface),
+		workset.Rev,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -262,6 +261,38 @@ func (s *Server) sessionsV3ReconnectWorksetResponse(principal identity.Principal
 	if err != nil {
 		return nil, err
 	}
+	var messagesBySession any
+	if options.Store.History.IncludeMessages {
+		messagesBySession = response["messages_by_session"]
+	}
+
+	var eventsBySession any
+	if options.Store.History.IncludeEvents {
+		eventsBySession = response["events_by_session"]
+	}
+
+	var runIntentsBySession any
+	if options.Store.IncludeRunIntents {
+		runIntentsBySession = response["run_intents_by_session"]
+	}
+
+	var plansBySession any
+	if options.IncludeActivePlan {
+		plansBySession = response["plans_by_session"]
+	}
+
+	var planRevisionsBySession any
+	if options.IncludePlanRevisions {
+		planRevisionsBySession = response["plan_revisions_by_session"]
+	}
+
+	var historyManifestsBySession any
+	var historyChunksByID any
+	if options.Store.History.IncludeMessages || options.Store.History.IncludeEvents {
+		historyManifestsBySession = response["history_manifests_by_session"]
+		historyChunksByID = response["history_chunks_by_id"]
+	}
+
 	worksetID := strings.TrimSpace(req.Workset.WorksetID)
 	if worksetID == "" {
 		worksetID = "workset:" + v3SyncDeterministicSelectorHash(v3SyncCanonicalSelector(selector))
@@ -284,17 +315,17 @@ func (s *Server) sessionsV3ReconnectWorksetResponse(principal identity.Principal
 		SnapshotEndpointCursor:    signedSnapshotEndpointCursor,
 		SessionsByID:              response["sessions_by_id"],
 		ProjectionsBySession:      response["projections_by_session"],
-		MessagesBySession:         response["messages_by_session"],
-		EventsBySession:           response["events_by_session"],
-		PlansBySession:            response["plans_by_session"],
-		PlanRevisionsBySession:    response["plan_revisions_by_session"],
+		MessagesBySession:         messagesBySession,
+		EventsBySession:           eventsBySession,
+		PlansBySession:            plansBySession,
+		PlanRevisionsBySession:    planRevisionsBySession,
 		PermissionsBySession:      response["permissions_by_session"],
 		UsageBySession:            response["usage_by_session"],
 		PreferencesBySession:      response["preferences_by_session"],
 		AgentModelPolicyBySession: response["agent_model_policy_by_session"],
-		RunIntentsBySession:       response["run_intents_by_session"],
-		HistoryManifestsBySession: response["history_manifests_by_session"],
-		HistoryChunksByID:         response["history_chunks_by_id"],
+		RunIntentsBySession:       runIntentsBySession,
+		HistoryManifestsBySession: historyManifestsBySession,
+		HistoryChunksByID:         historyChunksByID,
 		Omissions:                 response["omissions"],
 		Pagination:                response["pagination"],
 		Watermarks:                response["watermarks"],
@@ -312,7 +343,6 @@ func sessionsV3ReconnectResponseMap(input sessionsV3ReconnectResponseInput) map[
 		"snapshot_endpoint_cursor": input.SnapshotEndpointCursor,
 		"sessions_by_id":           input.SessionsByID,
 		"projections_by_session":   input.ProjectionsBySession,
-		"run_intents_by_session":   input.RunIntentsBySession,
 		"subscriptions":            input.Subscriptions,
 		"session_order":            input.SessionOrder,
 		"diagnostics_by_session":   input.DiagnosticsBySession,
@@ -321,6 +351,7 @@ func sessionsV3ReconnectResponseMap(input sessionsV3ReconnectResponseInput) map[
 		response["current_run_intent_by_session"] = input.CurrentRunIntentBySession
 	}
 	optional := map[string]any{
+		"run_intents_by_session":        input.RunIntentsBySession,
 		"client_id":                     input.ClientID,
 		"surface":                       input.Surface,
 		"workset_id":                    input.WorksetID,

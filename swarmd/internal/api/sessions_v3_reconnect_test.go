@@ -25,6 +25,10 @@ type sessionsV3ReconnectTestPayload struct {
 	Worksets                  []V3RealtimeWorksetSubscriptionRequest         `json:"worksets"`
 	SessionOrder              []string                                       `json:"session_order"`
 	DiagnosticsBySession      map[string][]sessionsV3ReconnectDiagnostic     `json:"diagnostics_by_session"`
+	MessagesBySession         map[string]any                                 `json:"messages_by_session"`
+	EventsBySession           map[string]any                                 `json:"events_by_session"`
+	PlansBySession            map[string]any                                 `json:"plans_by_session"`
+	PlanRevisionsBySession    map[string]any                                 `json:"plan_revisions_by_session"`
 	ClientID                  string                                         `json:"client_id"`
 	Surface                   string                                         `json:"surface"`
 	WorksetID                 string                                         `json:"workset_id"`
@@ -185,12 +189,156 @@ func TestSessionsV3ReconnectWorksetRequiresClientID(t *testing.T) {
 	}
 }
 
+func TestSessionsV3ReconnectWorksetCursorEqualsWorksetSnapshotRevision(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	seed := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "reconnect-snapshot-seed", "Reconnect Snapshot Seed", "/workspace/reconnect-snapshot")
+
+	var racing sessionruntime.SessionMutationResult
+	cleanup := pebblestore.SetV3SessionWorksetAfterSnapshotHookForTest(func() {
+		racing = appendV3RealtimeTestMessage(t, server, seed.ID, "message-reconnect-racing", "racing mutation")
+	})
+	defer cleanup()
+
+	payload := postSessionsV3ReconnectBody(t, server, `{
+		"surface":"desktop",
+		"client_id":"desktop-client-cursor",
+		"workset":{
+			"workset_id":"desktop:workspace:cursor",
+			"selector":{"kind":"workspace","workspace_path":"/workspace/reconnect-snapshot"},
+			"resources":{"run_intents":true},
+			"include_active":true,
+			"auto_subscribe_sessions":true
+		}
+	}`)
+	if racing.RealtimeOutbox == nil {
+		t.Fatalf("test setup did not create racing outbox")
+	}
+	if payload.Rev >= racing.RealtimeOutbox.EndpointSeq {
+		t.Fatalf("test setup failed: payload rev=%d racing endpoint=%d", payload.Rev, racing.RealtimeOutbox.EndpointSeq)
+	}
+	assertV3RealtimeSignedCursorSeq(t, server, payload.SnapshotEndpointCursor, payload.Rev)
+	if payload.Realtime.Resume.EndpointCursor != payload.SnapshotEndpointCursor {
+		t.Fatalf("resume cursor = %q, want snapshot %q", payload.Realtime.Resume.EndpointCursor, payload.SnapshotEndpointCursor)
+	}
+	for _, sub := range payload.Subscriptions {
+		if sub.EndpointCursor != payload.SnapshotEndpointCursor {
+			t.Fatalf("subscription cursor = %q, want %q", sub.EndpointCursor, payload.SnapshotEndpointCursor)
+		}
+	}
+	for _, sub := range payload.Realtime.Resume.Subscriptions {
+		if sub.EndpointCursor != payload.SnapshotEndpointCursor {
+			t.Fatalf("resume subscription cursor = %q, want %q", sub.EndpointCursor, payload.SnapshotEndpointCursor)
+		}
+	}
+
+	payload.Realtime.Resume.Worksets[0].Resources = []string{"sessions", "projections", "run_intents"}
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+	writeV3RealtimeMessage(t, conn, payload.Realtime.Resume)
+	var replayed bool
+	for i := 0; i < 4; i++ {
+		frame := readV3RealtimeFrame(t, conn)
+		if frame.Kind == V3RealtimeKindEvent && frame.Event != nil && frame.Event.ID == racing.Event.ID {
+			replayed = true
+			break
+		}
+	}
+	if !replayed {
+		t.Fatalf("racing mutation was not replayed after snapshot cursor")
+	}
+}
+
+func TestSessionsV3ReconnectMetadataOnlyOmitsUnrequestedResourceMaps(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "reconnect-metadata-only", "Reconnect Metadata Only", "/workspace/reconnect-metadata")
+
+	raw := postSessionsV3ReconnectRawMap(t, server, `{
+		"surface":"desktop",
+		"client_id":"desktop-client-metadata",
+		"workset":{
+			"workset_id":"desktop:metadata",
+			"selector":{"kind":"workspace","workspace_path":"/workspace/reconnect-metadata"},
+			"history":{"mode":"none"},
+			"resources":{"messages":false,"events":false,"run_intents":false,"active_plan":false,"plan_revisions":false},
+			"include_active":false,
+			"auto_subscribe_sessions":true
+		}
+	}`)
+	for _, key := range []string{"messages_by_session", "events_by_session", "run_intents_by_session", "plans_by_session", "plan_revisions_by_session"} {
+		if _, ok := raw[key]; ok {
+			t.Fatalf("metadata-only reconnect included %s: %+v", key, raw[key])
+		}
+	}
+}
+
+func TestSessionsV3ReconnectRequestedEmptyResourcesRemainAuthoritative(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "reconnect-empty-authoritative", "Reconnect Empty Authoritative", "/workspace/reconnect-empty")
+
+	raw := postSessionsV3ReconnectRawMap(t, server, fmt.Sprintf(`{
+		"surface":"desktop",
+		"client_id":"desktop-client-empty",
+		"workset":{
+			"workset_id":"desktop:empty",
+			"selector":{"kind":"session_ids","session_ids":[%q]},
+			"history":{"mode":"none"},
+			"resources":{"run_intents":true,"active_plan":true},
+			"auto_subscribe_sessions":true
+		}
+	}`, created.ID))
+	sessionsByID, ok := raw["sessions_by_id"].(map[string]any)
+	if !ok || sessionsByID[created.ID] == nil {
+		t.Fatalf("sessions_by_id missing created session %s: %+v", created.ID, raw["sessions_by_id"])
+	}
+	runIntents, ok := raw["run_intents_by_session"].(map[string]any)
+	if !ok {
+		t.Fatalf("run_intents_by_session missing or wrong type: %+v", raw["run_intents_by_session"])
+	}
+	if entries, ok := runIntents[created.ID].([]any); !ok || len(entries) != 0 {
+		t.Fatalf("run_intents_by_session[%s] = %+v, want authoritative empty array (all=%+v)", created.ID, runIntents[created.ID], runIntents)
+	}
+	plans, ok := raw["plans_by_session"].(map[string]any)
+	if !ok {
+		t.Fatalf("plans_by_session missing or wrong type: %+v", raw["plans_by_session"])
+	}
+	if _, exists := plans[created.ID]; exists {
+		t.Fatalf("plans_by_session should be present but empty when no active plan exists: %+v", plans)
+	}
+	if _, ok := raw["messages_by_session"]; ok {
+		t.Fatalf("messages_by_session should remain omitted when unrequested")
+	}
+	if _, ok := raw["events_by_session"]; ok {
+		t.Fatalf("events_by_session should remain omitted when unrequested")
+	}
+}
+
 func postSessionsV3Reconnect(t *testing.T, server *Server) sessionsV3ReconnectTestPayload {
 	t.Helper()
 	return postSessionsV3ReconnectBody(t, server, `{}`)
 }
 
 func postSessionsV3ReconnectBody(t *testing.T, server *Server, body string) sessionsV3ReconnectTestPayload {
+	t.Helper()
+	raw := postSessionsV3ReconnectRawBytes(t, server, body)
+	var payload sessionsV3ReconnectTestPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("decode reconnect response: %v", err)
+	}
+	return payload
+}
+
+func postSessionsV3ReconnectRawMap(t *testing.T, server *Server, body string) map[string]any {
+	t.Helper()
+	raw := postSessionsV3ReconnectRawBytes(t, server, body)
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("decode reconnect raw response: %v", err)
+	}
+	return payload
+}
+
+func postSessionsV3ReconnectRawBytes(t *testing.T, server *Server, body string) []byte {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/v3/sessions:reconnect", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -199,11 +347,7 @@ func postSessionsV3ReconnectBody(t *testing.T, server *Server, body string) sess
 	if rec.Code != http.StatusOK {
 		t.Fatalf("reconnect status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	var payload sessionsV3ReconnectTestPayload
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode reconnect response: %v", err)
-	}
-	return payload
+	return rec.Body.Bytes()
 }
 
 func recordSessionsV3ReconnectRunIntent(t *testing.T, server *Server, sessionID, runID, status string, updatedAt int64) {

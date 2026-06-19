@@ -31,7 +31,7 @@ var v3SessionWorksetAfterSnapshotHookForTest struct {
 	fn func()
 }
 
-func setV3SessionWorksetAfterSnapshotHookForTest(fn func()) func() {
+func SetV3SessionWorksetAfterSnapshotHookForTest(fn func()) func() {
 	v3SessionWorksetAfterSnapshotHookForTest.mu.Lock()
 	previous := v3SessionWorksetAfterSnapshotHookForTest.fn
 	v3SessionWorksetAfterSnapshotHookForTest.fn = fn
@@ -41,6 +41,10 @@ func setV3SessionWorksetAfterSnapshotHookForTest(fn func()) func() {
 		v3SessionWorksetAfterSnapshotHookForTest.fn = previous
 		v3SessionWorksetAfterSnapshotHookForTest.mu.Unlock()
 	}
+}
+
+func setV3SessionWorksetAfterSnapshotHookForTest(fn func()) func() {
+	return SetV3SessionWorksetAfterSnapshotHookForTest(fn)
 }
 
 func runV3SessionWorksetAfterSnapshotHook() {
