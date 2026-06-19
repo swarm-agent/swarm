@@ -88,6 +88,10 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
       return state
     case 'desktopV3Cache.restore':
       return applyPersistedRestore(state, action.owner, action.selectedMessageTail, action.preferredSessionId)
+    case 'desktopV3Cache.restoreMessageTails':
+      return restorePersistedMessageTails(state, action.tails)
+    case 'desktopV3Cache.applyHydrationPlan':
+      return applyHydrationPlan(state, action.reusedSessionIds, action.hydrateSessionIds)
     case 'snapshot.apply':
       return applyBootstrapSnapshot(state, action.snapshot)
     case 'hydrate.apply':
@@ -242,6 +246,52 @@ export function applyPersistedRestore(
   return state
 }
 
+export function restorePersistedMessageTails(
+  state: DesktopV3CacheState,
+  tails: Array<{
+    sessionId: string
+    messages: MessageSnapshot[]
+    sourceMessageCount?: number
+    sourceLastMessageAt?: number
+    sourceProjectionHighWatermarkSeq?: number
+    hydratedAt?: number
+  }>,
+): DesktopV3CacheState {
+  const membership = new Set(Object.values(state.sessionOrderByScope).flat())
+  for (const tail of tails) {
+    const sessionId = tail.sessionId.trim()
+    if (!sessionId || !membership.has(sessionId)) continue
+    if (state.tombstonesBySession[sessionId]) continue
+    const existing = state.messagesBySession[sessionId]
+    if (existing?.source === 'network') continue
+    if (existing && isMessageListNewerThanTail(existing, tail)) continue
+    state.messagesBySession[sessionId] = buildMessageListCache(tail.messages, {
+      sourceMessageCount: tail.sourceMessageCount,
+      sourceLastMessageAt: tail.sourceLastMessageAt,
+      sourceProjectionHighWatermarkSeq: tail.sourceProjectionHighWatermarkSeq,
+      hydratedAt: tail.hydratedAt,
+      source: 'persisted',
+    })
+  }
+  return state
+}
+
+export function applyHydrationPlan(
+  state: DesktopV3CacheState,
+  reusedSessionIds: string[],
+  hydrateSessionIds: string[],
+): DesktopV3CacheState {
+  for (const sessionId of reusedSessionIds) {
+    const record = state.sessionsById[sessionId]
+    if (record?.kind === 'full') record.needsHydrate = false
+  }
+  for (const sessionId of hydrateSessionIds) {
+    const record = state.sessionsById[sessionId]
+    if (record) record.needsHydrate = true
+  }
+  return state
+}
+
 export function applySnapshot(
   state: DesktopV3CacheState,
   action: { source: 'bootstrap'; scopeId: string; snapshot: SyncSnapshotResponse },
@@ -336,7 +386,7 @@ export function applyHydrate(
 
   for (const sessionId of requested) {
     const record = state.sessionsById[sessionId]
-    if (record?.kind === 'full') {
+    if (record?.kind === 'full' && hydrateResponseCompletesSession(snapshot, sessionId)) {
       record.needsHydrate = false
     }
   }
@@ -837,6 +887,26 @@ export function syncResourceSetContains(resourceSet: string | undefined, resourc
   return resourceSet.split(',').some((part) => part.trim() === wanted)
 }
 
+function hydrateResponseCompletesSession(snapshot: SyncSnapshotResponse, sessionId: string): boolean {
+  return Object.prototype.hasOwnProperty.call(snapshot.messages_by_session ?? {}, sessionId)
+    || Object.prototype.hasOwnProperty.call(snapshot.tombstones_by_session ?? {}, sessionId)
+}
+
+function isMessageListNewerThanTail(
+  existing: MessageListCache,
+  tail: {
+    sourceMessageCount?: number
+    sourceLastMessageAt?: number
+    sourceProjectionHighWatermarkSeq?: number
+    hydratedAt?: number
+  },
+): boolean {
+  return (existing.hydratedAt ?? 0) > (tail.hydratedAt ?? 0)
+    || (existing.sourceProjectionHighWatermarkSeq ?? 0) > (tail.sourceProjectionHighWatermarkSeq ?? 0)
+    || (existing.sourceLastMessageAt ?? 0) > (tail.sourceLastMessageAt ?? 0)
+    || (existing.sourceMessageCount ?? 0) > (tail.sourceMessageCount ?? 0)
+}
+
 function writeSyncScope(state: DesktopV3CacheState, snapshot: SyncSnapshotResponse): void {
   const scopeId = snapshot.scope_id
   const syncScope = snapshot.sync_scope
@@ -907,7 +977,12 @@ function mergeOptionalResources(
 function upsertSessions(state: DesktopV3CacheState, sessionsById: Record<string, SessionSnapshot> | undefined): void {
   if (!sessionsById) return
   for (const [sessionId, session] of Object.entries(sessionsById)) {
-    state.sessionsById[sessionId] = { kind: 'full', session, needsHydrate: false }
+    const existing = state.sessionsById[sessionId]
+    state.sessionsById[sessionId] = {
+      kind: 'full',
+      session,
+      needsHydrate: existing?.needsHydrate ?? true,
+    }
   }
 }
 

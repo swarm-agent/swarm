@@ -76,31 +76,40 @@ export async function readAllDesktopV3MessageTails(ownerKey: string): Promise<Pe
   if (normalizedOwnerKey === undefined) return []
 
   return runDesktopV3DBOperation([], async (db) => {
-    const tailKeys = await db.getAllKeysFromIndex(
-      DESKTOP_V3_CACHE_MESSAGE_TAILS_STORE,
-      DESKTOP_V3_CACHE_BY_OWNER_INDEX,
-      normalizedOwnerKey,
-    )
-    const tails: PersistedDesktopV3MessageTailV1[] = []
-    const invalidKeys: string[] = []
-
-    for (const tailKey of tailKeys) {
-      if (typeof tailKey !== 'string') continue
-      const raw = await db.get(DESKTOP_V3_CACHE_MESSAGE_TAILS_STORE, tailKey)
-      if (raw === undefined) continue
-      const result = validatePersistedDesktopV3MessageTailV1(raw, normalizedOwnerKey)
-      if (result.ok) {
-        tails.push(result.value)
-      } else {
-        invalidKeys.push(tailKey)
-      }
+    const tx = db.transaction(DESKTOP_V3_CACHE_MESSAGE_TAILS_STORE, 'readonly')
+    const index = tx.store.index(DESKTOP_V3_CACHE_BY_OWNER_INDEX)
+    const rawTails: Array<{ key: string; raw: unknown; expectedSessionId?: string }> = []
+    for (let cursor = await index.openCursor(normalizedOwnerKey); cursor; cursor = await cursor.continue()) {
+      if (typeof cursor.primaryKey === 'string') rawTails.push({ key: cursor.primaryKey, raw: cursor.value })
     }
-
-    if (invalidKeys.length > 0) {
-      await deleteDesktopV3MessageTailsByKeys(invalidKeys)
-    }
-
+    await tx.done
+    const { tails, invalidKeys } = validateMessageTailRecords(rawTails, normalizedOwnerKey)
+    if (invalidKeys.length > 0) await deleteDesktopV3MessageTailsByKeys(invalidKeys)
     return tails.sort((left, right) => left.sessionId.localeCompare(right.sessionId))
+  })
+}
+
+export async function readDesktopV3MessageTails(
+  ownerKey: string,
+  sessionIds: string[],
+): Promise<PersistedDesktopV3MessageTailV1[]> {
+  const normalizedOwnerKey = normalizeOwnerKey(ownerKey)
+  if (normalizedOwnerKey === undefined) return []
+  const keysBySessionId = new Map<string, string>()
+  for (const rawSessionId of sessionIds) {
+    const key = normalizeMessageTailKey(normalizedOwnerKey, rawSessionId)
+    if (key) keysBySessionId.set(key.sessionId, key.key)
+  }
+  if (keysBySessionId.size === 0) return []
+
+  return runDesktopV3DBOperation([], async (db) => {
+    const tx = db.transaction(DESKTOP_V3_CACHE_MESSAGE_TAILS_STORE, 'readonly')
+    const rawTails = await Promise.all([...keysBySessionId.entries()].map(async ([expectedSessionId, key]) => ({ key, raw: await tx.store.get(key), expectedSessionId })))
+    await tx.done
+    const { tails, invalidKeys } = validateMessageTailRecords(rawTails, normalizedOwnerKey, new Set(keysBySessionId.keys()))
+    if (invalidKeys.length > 0) await deleteDesktopV3MessageTailsByKeys(invalidKeys)
+    const order = new Map([...keysBySessionId.keys()].map((sessionId, index) => [sessionId, index]))
+    return tails.sort((left, right) => (order.get(left.sessionId) ?? 0) - (order.get(right.sessionId) ?? 0))
   })
 }
 
@@ -173,6 +182,28 @@ export async function resetDesktopV3CacheDBForTests(): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+function validateMessageTailRecords(
+  rawTails: Array<{ key: string; raw: unknown; expectedSessionId?: string }>,
+  ownerKey: string,
+  expectedSessionIds?: Set<string>,
+): { tails: PersistedDesktopV3MessageTailV1[]; invalidKeys: string[] } {
+  const tails: PersistedDesktopV3MessageTailV1[] = []
+  const invalidKeys: string[] = []
+  for (const { key, raw, expectedSessionId } of rawTails) {
+    if (raw === undefined) continue
+    const rawSessionId = typeof raw === 'object' && raw !== null && typeof (raw as { sessionId?: unknown }).sessionId === 'string'
+      ? (raw as { sessionId: string }).sessionId.trim()
+      : undefined
+    const result = validatePersistedDesktopV3MessageTailV1(raw, ownerKey, expectedSessionId ?? rawSessionId)
+    if (result.ok && (expectedSessionIds === undefined || expectedSessionIds.has(result.value.sessionId))) {
+      tails.push(result.value)
+    } else {
+      invalidKeys.push(key)
+    }
+  }
+  return { tails, invalidKeys }
 }
 
 async function deleteDesktopV3MessageTailByKey(key: string): Promise<void> {

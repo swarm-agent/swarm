@@ -13,6 +13,7 @@ import {
   deleteDesktopV3OwnerCache,
   readAllDesktopV3MessageTails,
   readDesktopV3MessageTail,
+  readDesktopV3MessageTails,
   readDesktopV3Owner,
   resetDesktopV3CacheDBForTests,
   writeDesktopV3OwnerAndTails,
@@ -222,5 +223,32 @@ test('Desktop V3 IndexedDB adapter returns fallback when open is blocked by pend
   }
 
   await new Promise((resolve) => setTimeout(resolve, 0))
+  await resetDB()
+})
+
+
+test('Desktop V3 IndexedDB targeted tail read deduplicates, owner-validates, and prunes only malformed records', async () => {
+  await resetDB()
+  const ownerRecordA = ownerRecordFixture(ownerA, sessionA, projectionA)
+  const ownerRecordB = ownerRecordFixture(ownerB, sessionB, projectionB)
+  const tailA = messageTailFixture(ownerA, sessionA, projectionA, [messageA1, messageA2])
+  const tailB = messageTailFixture(ownerA, sessionB, projectionB, [messageB1])
+  const foreignTail = messageTailFixture(ownerB, sessionB, projectionB, [messageB1])
+
+  assert.equal(await writeDesktopV3OwnerAndTails(ownerRecordA, [tailA, tailB]), true)
+  assert.equal(await writeDesktopV3OwnerAndTails(ownerRecordB, [foreignTail]), true)
+
+  const db = await openDB(DESKTOP_V3_CACHE_DB_NAME, DESKTOP_V3_CACHE_DB_VERSION)
+  try {
+    await db.put(DESKTOP_V3_CACHE_MESSAGE_TAILS_STORE, { ...tailB, key: tailB.key, sessionId: sessionA.id })
+  } finally {
+    db.close()
+  }
+
+  const targeted = await readDesktopV3MessageTails(ownerA.key, [sessionA.id, sessionA.id, sessionB.id])
+  assert.deepEqual(targeted.map((tail) => tail.sessionId), [sessionA.id])
+  assert.deepEqual((await readAllDesktopV3MessageTails(ownerA.key)).map((tail) => tail.sessionId), [sessionA.id])
+  assert.deepEqual((await readAllDesktopV3MessageTails(ownerB.key)).map((tail) => tail.sessionId), [sessionB.id])
+
   await resetDB()
 })

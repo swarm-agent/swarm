@@ -401,6 +401,8 @@ export function classifyDesktopV3PersistenceAction(
         immediate: false,
       }
     case 'desktopV3Cache.restore':
+    case 'desktopV3Cache.restoreMessageTails':
+    case 'desktopV3Cache.applyHydrationPlan':
     case 'desktopSidebarBootstrap.update':
     case 'desktopInitialHydrate.update':
     case 'pendingUser.upsert':
