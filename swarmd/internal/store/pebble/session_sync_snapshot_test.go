@@ -142,6 +142,76 @@ func TestBuildV3SyncSnapshotRequestedZeroMessageHistoryReturnsAuthoritativeEmpty
 	}
 }
 
+func TestBuildV3SyncSnapshotRunIntentsResourceAuthority(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "session-sync-run-intents")
+	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:      "session-sync-run-intents",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		IdempotencyKey: "run-intent-sync-1",
+		PayloadHash:    "hash-run-intent-sync-1",
+		Kind:           V3SessionMutationAppendMessage,
+		Message:        &MessageSnapshot{Role: "user", Content: "run intent"},
+		RunIntent:      &V3SessionRunIntent{RunID: "run-sync", Status: V3RunIntentPendingExecutor},
+		NowUnixMs:      2000,
+	}); err != nil {
+		t.Fatalf("create run intent: %v", err)
+	}
+
+	metadataOnly, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
+		AccountScopeID: "account-1",
+		UserID:         "user-1",
+		SessionIDs:     []string{"session-sync-run-intents"},
+		History:        V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone},
+	})
+	if err != nil {
+		t.Fatalf("build metadata-only sync snapshot: %v", err)
+	}
+	if _, ok := metadataOnly.RunIntentsBySession["session-sync-run-intents"]; ok {
+		t.Fatalf("metadata-only snapshot emitted run intents key: %+v", metadataOnly.RunIntentsBySession)
+	}
+
+	withIntents, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
+		AccountScopeID:    "account-1",
+		UserID:            "user-1",
+		SessionIDs:        []string{"session-sync-run-intents"},
+		History:           V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone},
+		IncludeRunIntents: true,
+	})
+	if err != nil {
+		t.Fatalf("build run-intents sync snapshot: %v", err)
+	}
+	if got := withIntents.RunIntentsBySession["session-sync-run-intents"]; len(got) != 1 || got[0].RunID != "run-sync" {
+		t.Fatalf("requested run intents = %+v", got)
+	}
+}
+
+func TestBuildV3SyncSnapshotRequestedZeroRunIntentsReturnsAuthoritativeEmptyKey(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "session-sync-zero-run-intents")
+
+	snapshot, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
+		AccountScopeID:    "account-1",
+		UserID:            "user-1",
+		SessionIDs:        []string{"session-sync-zero-run-intents"},
+		History:           V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone},
+		IncludeRunIntents: true,
+	})
+	if err != nil {
+		t.Fatalf("build requested zero-run-intents sync snapshot: %v", err)
+	}
+	intents, ok := snapshot.RunIntentsBySession["session-sync-zero-run-intents"]
+	if !ok {
+		t.Fatalf("requested run intents omitted authoritative empty key: %+v", snapshot.RunIntentsBySession)
+	}
+	if len(intents) != 0 {
+		t.Fatalf("requested zero-run-intents = %+v, want empty slice", intents)
+	}
+}
+
 func TestBuildV3SyncSnapshotGlobalSelectorWithoutRecentIncludesAccountSessions(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)

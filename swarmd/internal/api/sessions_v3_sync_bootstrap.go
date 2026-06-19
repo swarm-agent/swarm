@@ -672,7 +672,7 @@ func normalizeV3SyncSurface(surface string) string {
 }
 
 func sessionsV3SyncResourceSet(resources sessionsV3WorksetResources, history sessionsV3WorksetHistory, includeActive bool) []string {
-	out := []string{"sessions", "projections", "membership", "tombstones"}
+	out := []string{"sessions", "projections", "membership", "tombstones", "permissions", "usage", "preferences", "agent_model_policy"}
 	historyMode := strings.TrimSpace(strings.ToLower(history.Mode))
 	if resources.Messages || historyMode == pebblestore.V3SyncSnapshotHistoryModeTail || historyMode == pebblestore.V3SyncSnapshotHistoryModeFull {
 		out = append(out, "messages")

@@ -149,7 +149,9 @@ export function applySnapshot(
   mergeRecord(state.projectionsBySession, snapshot.projections_by_session)
   state.sessionOrderByScope[snapshot.scope_id] = removeTombstonedIds(state, snapshot.session_order ?? [])
   applyTombstonesBySession(state, snapshot.tombstones_by_session)
-  mergeRunIntentsBySession(state, snapshot.run_intents_by_session)
+  if (syncResourceSetContains(snapshot.sync_scope.resource_set, 'run_intents')) {
+    replaceRunIntentsBySession(state, snapshot.run_intents_by_session)
+  }
   mergeSnapshotResources(state, snapshot, snapshot.scope_id)
   if (syncResourceSetContains(snapshot.sync_scope.resource_set, 'messages')) {
     applyMessagesBySessionFromSnapshot(state, snapshot.messages_by_session)
@@ -210,7 +212,9 @@ export function applyHydrate(
   upsertSessions(state, snapshot.sessions_by_id)
   mergeRecord(state.projectionsBySession, onlyRequested(snapshot.projections_by_session, requested))
   applyTombstonesBySession(state, snapshot.tombstones_by_session)
-  mergeRunIntentsBySession(state, snapshot.run_intents_by_session)
+  if (syncResourceSetContains(snapshot.sync_scope.resource_set, 'run_intents')) {
+    replaceRunIntentsBySession(state, snapshot.run_intents_by_session)
+  }
   mergeSnapshotResources(state, snapshot, snapshot.scope_id, requested)
   if (syncResourceSetContains(snapshot.sync_scope.resource_set, 'messages')) {
     applyMessagesBySessionFromSnapshot(state, snapshot.messages_by_session)
@@ -696,7 +700,30 @@ function mergeSnapshotResources(
   scopeId: string,
   requested?: Set<string>,
 ): void {
-  mergeOptionalResources(state, snapshot, requested)
+  const resourceSet = snapshot.sync_scope.resource_set
+  const authoritativeSessionIds = requested ?? new Set(Object.keys(snapshot.sessions_by_id ?? {}))
+  if (syncResourceSetContains(resourceSet, 'active_plan')) {
+    replaceRecordBySession(state.plansBySession, snapshot.plans_by_session, authoritativeSessionIds)
+  }
+  if (syncResourceSetContains(resourceSet, 'plan_revisions')) {
+    replaceRecordBySession(state.planRevisionsBySession, snapshot.plan_revisions_by_session, authoritativeSessionIds)
+  }
+  if (syncResourceSetContains(resourceSet, 'permissions')) {
+    replaceRecordBySession(state.permissionsBySession, snapshot.permissions_by_session, authoritativeSessionIds)
+  }
+  if (syncResourceSetContains(resourceSet, 'usage')) {
+    replaceRecordBySession(state.usageBySession, snapshot.usage_by_session, authoritativeSessionIds)
+  }
+  if (syncResourceSetContains(resourceSet, 'preferences')) {
+    replaceRecordBySession(state.preferencesBySession, snapshot.preferences_by_session, authoritativeSessionIds)
+  }
+  if (syncResourceSetContains(resourceSet, 'agent_model_policy')) {
+    replaceRecordBySession(state.agentModelPolicyBySession, snapshot.agent_model_policy_by_session, authoritativeSessionIds)
+  }
+  if (syncResourceSetContains(resourceSet, 'messages') || syncResourceSetContains(resourceSet, 'events')) {
+    replaceRecordBySession(state.historyManifestsBySession, snapshot.history_manifests_by_session, authoritativeSessionIds)
+    mergeRecord(state.historyChunksById, snapshot.history_chunks_by_id)
+  }
   if (snapshot.omissions !== undefined) state.omissionsByScope[scopeId] = snapshot.omissions
   if (snapshot.pagination !== undefined) state.paginationByScope[scopeId] = snapshot.pagination
   if (snapshot.watermarks !== undefined) state.watermarksByScope[scopeId] = snapshot.watermarks
@@ -727,6 +754,17 @@ function upsertSessions(state: DesktopV3CacheState, sessionsById: Record<string,
 function mergeRunIntentsBySession(state: DesktopV3CacheState, runIntentsBySession: Record<string, V3SessionRunIntent[]> | undefined): void {
   if (!runIntentsBySession) return
   for (const [sessionId, runIntents] of Object.entries(runIntentsBySession)) {
+    for (const runIntent of runIntents) {
+      upsertRunIntent(state, sessionId, runIntent)
+    }
+  }
+}
+
+function replaceRunIntentsBySession(state: DesktopV3CacheState, runIntentsBySession: Record<string, V3SessionRunIntent[]> | undefined): void {
+  if (!runIntentsBySession) return
+  for (const [sessionId, runIntents] of Object.entries(runIntentsBySession)) {
+    delete state.runIntentsBySession[sessionId]
+    delete state.currentRunIntentBySession[sessionId]
     for (const runIntent of runIntents) {
       upsertRunIntent(state, sessionId, runIntent)
     }
@@ -1024,6 +1062,13 @@ function mergeRecord<T>(target: Record<string, T>, source: Record<string, T | un
   for (const [key, value] of Object.entries(source)) {
     target[key] = value as T
   }
+}
+
+function replaceRecordBySession<T>(target: Record<string, T>, source: Record<string, T | undefined> | undefined, sessionIds: Set<string>): void {
+  for (const sessionId of sessionIds) {
+    delete target[sessionId]
+  }
+  mergeRecord(target, onlyRequested(source, sessionIds))
 }
 
 function messageGlobalSeqKey(message: MessageSnapshot): string {

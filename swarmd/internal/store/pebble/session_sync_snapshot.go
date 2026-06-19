@@ -273,7 +273,6 @@ func (s *SessionStore) buildV3SyncSessionBundle(reader pebble.Reader, options V3
 	bundle.Watermarks.MaxUpdatedAt = session.UpdatedAt
 	bundle.SessionsByID[session.ID] = session
 	bundle.ProjectionsBySession[session.ID] = projection
-	bundle.RunIntentsBySession[session.ID] = []V3SessionRunIntent{}
 	bundle.PermissionsBySession[session.ID] = []PermissionRecord{}
 	bundle.SessionOrder = append(bundle.SessionOrder, session.ID)
 	if err := s.addV3SyncSnapshotHistory(reader, options, session, projection, &bundle); err != nil {

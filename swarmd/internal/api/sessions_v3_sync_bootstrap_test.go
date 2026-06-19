@@ -92,6 +92,7 @@ func TestSessionsV3SyncBootstrapMetadataOnlyDoesNotEmitPerSessionMessageKeys(t *
 		SessionsByID              map[string]pebblestore.SessionSnapshot                   `json:"sessions_by_id"`
 		MessagesBySession         map[string][]pebblestore.MessageSnapshot                 `json:"messages_by_session"`
 		EventsBySession           map[string][]pebblestore.V3SessionEvent                  `json:"events_by_session"`
+		RunIntentsBySession       map[string][]pebblestore.V3SessionRunIntent              `json:"run_intents_by_session"`
 		HistoryManifestsBySession map[string][]pebblestore.V3SessionHistoryChunkDescriptor `json:"history_manifests_by_session"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
@@ -100,11 +101,11 @@ func TestSessionsV3SyncBootstrapMetadataOnlyDoesNotEmitPerSessionMessageKeys(t *
 	if payload.SessionsByID[created.ID].ID != created.ID {
 		t.Fatalf("metadata-only bootstrap missing session metadata: %+v", payload.SessionsByID)
 	}
-	if strings.Contains(payload.SyncScope["resource_set"], "messages") || strings.Contains(payload.SyncScope["resource_set"], "events") {
-		t.Fatalf("metadata-only resource_set should not include message/event resources: %+v", payload.SyncScope)
+	if strings.Contains(payload.SyncScope["resource_set"], "messages") || strings.Contains(payload.SyncScope["resource_set"], "events") || strings.Contains(payload.SyncScope["resource_set"], "run_intents") {
+		t.Fatalf("metadata-only resource_set should not include message/event/run-intent resources: %+v", payload.SyncScope)
 	}
-	if payload.MessagesBySession == nil || payload.EventsBySession == nil || payload.HistoryManifestsBySession == nil {
-		t.Fatalf("metadata-only bootstrap must keep top-level maps non-nil: messages=%v events=%v manifests=%v", payload.MessagesBySession, payload.EventsBySession, payload.HistoryManifestsBySession)
+	if payload.MessagesBySession == nil || payload.EventsBySession == nil || payload.RunIntentsBySession == nil || payload.HistoryManifestsBySession == nil {
+		t.Fatalf("metadata-only bootstrap must keep top-level maps non-nil: messages=%v events=%v runIntents=%v manifests=%v", payload.MessagesBySession, payload.EventsBySession, payload.RunIntentsBySession, payload.HistoryManifestsBySession)
 	}
 	if _, ok := payload.MessagesBySession[created.ID]; ok {
 		t.Fatalf("metadata-only bootstrap emitted per-session messages key: %+v", payload.MessagesBySession)
@@ -112,8 +113,73 @@ func TestSessionsV3SyncBootstrapMetadataOnlyDoesNotEmitPerSessionMessageKeys(t *
 	if _, ok := payload.EventsBySession[created.ID]; ok {
 		t.Fatalf("metadata-only bootstrap emitted per-session events key: %+v", payload.EventsBySession)
 	}
+	if _, ok := payload.RunIntentsBySession[created.ID]; ok {
+		t.Fatalf("metadata-only bootstrap emitted per-session run intents key: %+v", payload.RunIntentsBySession)
+	}
 	if _, ok := payload.HistoryManifestsBySession[created.ID]; ok {
 		t.Fatalf("metadata-only bootstrap emitted per-session history manifest key: %+v", payload.HistoryManifestsBySession)
+	}
+}
+
+func TestSessionsV3SyncBootstrapRunIntentsRequestedNoHistoryEmitsAuthoritativeEmptyKey(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-bootstrap-zero-run-intents", "Sync Bootstrap Zero Run Intents", "/workspace/zero-run-intents")
+
+	body := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"/workspace/zero-run-intents","recent":{"limit":10}},"history":{"mode":"none"},"resources":{"run_intents":true}}`
+	req := httptest.NewRequest(http.MethodPost, V3SyncBootstrapPath, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bootstrap status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		SyncScope           map[string]string                           `json:"sync_scope"`
+		RunIntentsBySession map[string][]pebblestore.V3SessionRunIntent `json:"run_intents_by_session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode bootstrap response: %v", err)
+	}
+	if !strings.Contains(payload.SyncScope["resource_set"], "run_intents") {
+		t.Fatalf("run_intents resource missing from scope: %+v", payload.SyncScope)
+	}
+	intents, ok := payload.RunIntentsBySession[created.ID]
+	if !ok {
+		t.Fatalf("requested run_intents omitted authoritative empty key: %+v", payload.RunIntentsBySession)
+	}
+	if len(intents) != 0 {
+		t.Fatalf("requested zero run_intents = %+v, want empty array", intents)
+	}
+}
+
+func TestSessionsV3SyncHydrateRunIntentsRequestedNoHistoryEmitsAuthoritativeEmptyKey(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-hydrate-zero-run-intents", "Sync Hydrate Zero Run Intents", "/workspace/hydrate-zero-run-intents")
+
+	body := `{"surface":"desktop","session_ids":["` + created.ID + `"],"history":{"mode":"none"},"resources":{"run_intents":true}}`
+	req := httptest.NewRequest(http.MethodPost, V3SyncHydratePath, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("hydrate status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		SyncScope           map[string]string                           `json:"sync_scope"`
+		RunIntentsBySession map[string][]pebblestore.V3SessionRunIntent `json:"run_intents_by_session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode hydrate response: %v", err)
+	}
+	if !strings.Contains(payload.SyncScope["resource_set"], "run_intents") {
+		t.Fatalf("run_intents resource missing from scope: %+v", payload.SyncScope)
+	}
+	intents, ok := payload.RunIntentsBySession[created.ID]
+	if !ok {
+		t.Fatalf("requested hydrate run_intents omitted authoritative empty key: %+v", payload.RunIntentsBySession)
+	}
+	if len(intents) != 0 {
+		t.Fatalf("requested hydrate zero run_intents = %+v, want empty array", intents)
 	}
 }
 
@@ -585,7 +651,7 @@ func TestSessionsV3SyncBootstrapSnapshotCursorCoversConcurrentMutationReplay(t *
 	if bootstrap.SessionsByID[createdAfter.ID].ID != "" {
 		t.Fatalf("test setup expected mutation after snapshot cursor, but bootstrap included %s", createdAfter.ID)
 	}
-	scope := v3SyncCursorScopeForSnapshot(testPrincipal(), "desktop", "v3.sync.snapshot", sessionsV3SyncSelector{Kind: "workspace", WorkspacePath: "/workspace/cp5-race", Recent: sessionsV3WorksetRecent{Limit: 10}}, []string{"sessions", "projections", "membership", "tombstones"})
+	scope := v3SyncCursorScopeForSnapshot(testPrincipal(), "desktop", "v3.sync.snapshot", sessionsV3SyncSelector{Kind: "workspace", WorkspacePath: "/workspace/cp5-race", Recent: sessionsV3WorksetRecent{Limit: 10}}, sessionsV3SyncResourceSet(sessionsV3WorksetResources{}, sessionsV3WorksetHistory{Mode: "none"}, false))
 	afterSeq, _, err := server.parseV3SyncEndpointCursor(bootstrap.SnapshotEndpointCursor, scope)
 	if err != nil {
 		t.Fatalf("parse bootstrap cursor: %v", err)

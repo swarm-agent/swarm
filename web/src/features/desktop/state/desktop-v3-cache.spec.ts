@@ -150,6 +150,74 @@ test('metadata-only bootstrap ignores message and event payloads when resources 
   assert.deepEqual(state.eventsBySession[sessionA.id].map((event) => event.id), ['evt-a-existing'])
 })
 
+test('metadata-only bootstrap ignores run intent payloads when run intents are out of scope', () => {
+  const state = bootstrappedState()
+  applyBootstrapSnapshot(state, snapshotFixture({
+    run_intents_by_session: { [sessionA.id]: [] },
+    sync_scope: {
+      surface: 'desktop',
+      stream_kind: 'v3.sync.snapshot',
+      selector_filter_hash: 'selector-hash',
+      resource_set: 'messages',
+    },
+    scope_id: 'selector-hash:messages',
+  }))
+
+  assert.equal(state.runIntentsBySession[sessionA.id]['run-a'].status, 'running')
+  assert.equal(state.currentRunIntentBySession[sessionA.id]?.run_id, 'run-a')
+})
+
+test('in-scope empty bootstrap run intents clear stale run and current intent', () => {
+  const state = bootstrappedState()
+  applyBootstrapSnapshot(state, snapshotFixture({
+    run_intents_by_session: { [sessionA.id]: [] },
+    sync_scope: {
+      surface: 'desktop',
+      stream_kind: 'v3.sync.snapshot',
+      selector_filter_hash: 'selector-hash',
+      resource_set: 'run_intents',
+    },
+    scope_id: 'selector-hash:run_intents',
+  }))
+
+  assert.equal(state.runIntentsBySession[sessionA.id], undefined)
+  assert.equal(state.currentRunIntentBySession[sessionA.id], undefined)
+})
+
+test('snapshot optional resources are governed by resource set authority', () => {
+  const state = bootstrappedState()
+  state.plansBySession[sessionA.id] = { id: 'stale-plan' }
+  state.planRevisionsBySession[sessionA.id] = [{ id: 'stale-revision' }]
+  applyBootstrapSnapshot(state, snapshotFixture({
+    plans_by_session: {},
+    plan_revisions_by_session: { [sessionA.id]: [] },
+    sync_scope: {
+      surface: 'desktop',
+      stream_kind: 'v3.sync.snapshot',
+      selector_filter_hash: 'selector-hash',
+      resource_set: 'active_plan,plan_revisions',
+    },
+    scope_id: 'selector-hash:active_plan,plan_revisions',
+  }))
+
+  assert.equal(state.plansBySession[sessionA.id], undefined)
+  assert.deepEqual(state.planRevisionsBySession[sessionA.id], [])
+
+  state.plansBySession[sessionA.id] = { id: 'restored-stale-plan' }
+  applyBootstrapSnapshot(state, snapshotFixture({
+    plans_by_session: {},
+    sync_scope: {
+      surface: 'desktop',
+      stream_kind: 'v3.sync.snapshot',
+      selector_filter_hash: 'selector-hash',
+      resource_set: 'messages',
+    },
+    scope_id: 'selector-hash:messages',
+  }))
+
+  assert.deepEqual(state.plansBySession[sessionA.id], { id: 'restored-stale-plan' })
+})
+
 test('bootstrap tombstones remove ids from every sidebar order without deleting transcript', () => {
   const state = bootstrappedState()
   state.messagesBySession[sessionB.id] = {
@@ -202,6 +270,66 @@ test('metadata-only hydrate validates subset but ignores empty message payload w
   }), [sessionB.id])
 
   assert.deepEqual(state.messagesBySession[sessionB.id].items.map((message) => message.id), ['msg-b-1'])
+})
+
+test('hydrate run intents obey resource set authority', () => {
+  const state = bootstrappedState()
+  applyHydrateSnapshot(state, hydrateSnapshotFixture({
+    sessions_by_id: { [sessionA.id]: sessionA },
+    projections_by_session: { [sessionA.id]: projectionA },
+    messages_by_session: {},
+    run_intents_by_session: { [sessionA.id]: [] },
+    session_order: [sessionA.id],
+    selector: { kind: 'session_ids', session_ids: [sessionA.id] },
+    sync_scope: {
+      surface: 'desktop',
+      stream_kind: 'v3.sync.snapshot',
+      selector_filter_hash: 'session-a-hash',
+      resource_set: 'messages',
+    },
+    scope_id: 'session-a-hash:messages',
+  }), [sessionA.id])
+  assert.equal(state.runIntentsBySession[sessionA.id]['run-a'].status, 'running')
+  assert.equal(state.currentRunIntentBySession[sessionA.id]?.run_id, 'run-a')
+
+  applyHydrateSnapshot(state, hydrateSnapshotFixture({
+    sessions_by_id: { [sessionA.id]: sessionA },
+    projections_by_session: { [sessionA.id]: projectionA },
+    messages_by_session: {},
+    run_intents_by_session: { [sessionA.id]: [] },
+    session_order: [sessionA.id],
+    selector: { kind: 'session_ids', session_ids: [sessionA.id] },
+    sync_scope: {
+      surface: 'desktop',
+      stream_kind: 'v3.sync.snapshot',
+      selector_filter_hash: 'session-a-hash',
+      resource_set: 'run_intents',
+    },
+    scope_id: 'session-a-hash:run_intents',
+  }), [sessionA.id])
+  assert.equal(state.runIntentsBySession[sessionA.id], undefined)
+  assert.equal(state.currentRunIntentBySession[sessionA.id], undefined)
+})
+
+test('hydrate optional plan resources clear stale restored plans only when in scope', () => {
+  const state = bootstrappedState()
+  state.plansBySession[sessionB.id] = { id: 'stale-plan-b' }
+  state.planRevisionsBySession[sessionB.id] = [{ id: 'stale-revision-b' }]
+
+  applyHydrateSnapshot(state, hydrateSnapshotFixture({
+    plans_by_session: {},
+    plan_revisions_by_session: { [sessionB.id]: [] },
+    sync_scope: {
+      surface: 'desktop',
+      stream_kind: 'v3.sync.snapshot',
+      selector_filter_hash: 'session-b-hash',
+      resource_set: 'active_plan,plan_revisions',
+    },
+    scope_id: 'session-b-hash:active_plan,plan_revisions',
+  }), [sessionB.id])
+
+  assert.equal(state.plansBySession[sessionB.id], undefined)
+  assert.deepEqual(state.planRevisionsBySession[sessionB.id], [])
 })
 
 test('hydrate rejects non-requested payload membership', () => {
