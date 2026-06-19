@@ -11,7 +11,7 @@ test('DesktopAppPage bootstraps from the initial route only while route selector
   assert.match(source, /const initialDesktopV3RouteSessionId = useRef\(routeSessionId\)/)
   assert.match(
     source,
-    /useEffect\(\(\) => \{\s*void bootstrapDesktopV3Sidebar\(\{ preferredSessionId: initialDesktopV3RouteSessionId\.current \}\)\s*\}, \[\]\)/,
+    /useEffect\(\(\) => \{\s*(?:const stopPersistence = startDesktopV3PersistenceController\(\)\s*)?void bootstrapDesktopV3Sidebar\(\{ preferredSessionId: initialDesktopV3RouteSessionId\.current \}\)\s*(?:return stopPersistence\s*)?\}, \[\]\)/,
   )
   assert.doesNotMatch(
     source,

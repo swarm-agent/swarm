@@ -56,6 +56,7 @@ import {
   type SidebarSessionNodeKind,
 } from './sidebar-session-lineage'
 import { bootstrapDesktopV3Sidebar } from '../state/desktop-v3-bootstrap-controller'
+import { startDesktopV3PersistenceController } from '../state/desktop-v3-persistence-controller'
 import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
 import { selectDesktopSidebarRows, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { selectSession } from '../state/desktop-v3-cache-wire'
@@ -2303,7 +2304,9 @@ export function DesktopAppPage() {
   )
 
   useEffect(() => {
+    const stopPersistence = startDesktopV3PersistenceController()
     void bootstrapDesktopV3Sidebar({ preferredSessionId: initialDesktopV3RouteSessionId.current })
+    return stopPersistence
   }, [])
 
   const sessionsByWorkspace = useMemo<Map<string, DesktopSessionRecord[]>>(() => {
