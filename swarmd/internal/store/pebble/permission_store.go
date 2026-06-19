@@ -124,15 +124,19 @@ func (s *PermissionStore) PutPermission(record PermissionRecord, previous *Permi
 			return fmt.Errorf("delete stale pending index: %w", err)
 		}
 	case prevPendingKey == "" && nextPendingKey != "":
-		if err := batch.Set([]byte(nextPendingKey), []byte(recordKey), nil); err != nil {
+		if err := batch.Set([]byte(nextPendingKey), serialized, nil); err != nil {
 			return fmt.Errorf("set pending index: %w", err)
 		}
 	case prevPendingKey != "" && nextPendingKey != "" && prevPendingKey != nextPendingKey:
 		if err := batch.Delete([]byte(prevPendingKey), nil); err != nil {
 			return fmt.Errorf("delete stale pending index: %w", err)
 		}
-		if err := batch.Set([]byte(nextPendingKey), []byte(recordKey), nil); err != nil {
+		if err := batch.Set([]byte(nextPendingKey), serialized, nil); err != nil {
 			return fmt.Errorf("set pending index: %w", err)
+		}
+	case prevPendingKey != "" && nextPendingKey != "":
+		if err := batch.Set([]byte(nextPendingKey), serialized, nil); err != nil {
+			return fmt.Errorf("update pending index: %w", err)
 		}
 	}
 
@@ -184,19 +188,11 @@ func (s *PermissionStore) ListPendingPermissions(sessionID string, limit int) ([
 	}
 	out := make([]PermissionRecord, 0, limit)
 	err := s.store.IteratePrefix(PermissionPendingPrefix(sessionID), limit, func(_ string, value []byte) error {
-		recordKey := strings.TrimSpace(string(value))
-		if recordKey == "" {
-			return nil
-		}
-		var record PermissionRecord
-		ok, err := s.store.GetJSON(recordKey, &record)
+		record, ok, err := decodePendingPermissionIndexValue(s.store.db, value)
 		if err != nil {
 			return err
 		}
 		if !ok {
-			return nil
-		}
-		if !strings.EqualFold(strings.TrimSpace(record.Status), PermissionStatusPending) {
 			return nil
 		}
 		out = append(out, record)
@@ -217,24 +213,44 @@ func (s *PermissionStore) ListPendingPermissions(sessionID string, limit int) ([
 	return out, nil
 }
 
+func decodePendingPermissionIndexValue(reader pebble.Reader, value []byte) (PermissionRecord, bool, error) {
+	raw := strings.TrimSpace(string(value))
+	if raw == "" {
+		return PermissionRecord{}, false, nil
+	}
+	var record PermissionRecord
+	if strings.HasPrefix(raw, "{") {
+		if err := json.Unmarshal([]byte(raw), &record); err != nil {
+			return PermissionRecord{}, false, err
+		}
+	} else {
+		ok, err := getJSONFromReader(reader, raw, &record)
+		if err != nil {
+			return PermissionRecord{}, false, err
+		}
+		if !ok {
+			return PermissionRecord{}, false, nil
+		}
+	}
+	if !strings.EqualFold(strings.TrimSpace(record.Status), PermissionStatusPending) {
+		return PermissionRecord{}, false, nil
+	}
+	if strings.TrimSpace(record.ID) == "" || strings.TrimSpace(record.SessionID) == "" {
+		return PermissionRecord{}, false, nil
+	}
+	return record, true, nil
+}
+
 func (s *PermissionStore) CountPendingPermissions(sessionID string) (int, int64, int64, error) {
 	count := 0
 	oldest := int64(0)
 	newest := int64(0)
 	err := s.store.IteratePrefix(PermissionPendingPrefix(sessionID), 1000000, func(_ string, value []byte) error {
-		recordKey := strings.TrimSpace(string(value))
-		if recordKey == "" {
-			return nil
-		}
-		var record PermissionRecord
-		ok, err := s.store.GetJSON(recordKey, &record)
+		record, ok, err := decodePendingPermissionIndexValue(s.store.db, value)
 		if err != nil {
 			return err
 		}
 		if !ok {
-			return nil
-		}
-		if !strings.EqualFold(strings.TrimSpace(record.Status), PermissionStatusPending) {
 			return nil
 		}
 		count++

@@ -1,6 +1,7 @@
 package pebblestore
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,10 +11,13 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
-	v3SessionTombstoneScopeIndexVersion = 1
+	v3SessionTombstoneScopeIndexVersion    = 1
+	v3SyncSnapshotSessionBundleConcurrency = 8
+	v3SyncSnapshotRunIntentScanLimit       = int(^uint(0) >> 1)
 
 	V3SyncSnapshotHistoryModeNone = "none"
 	V3SyncSnapshotHistoryModeTail = "tail"
@@ -59,6 +63,7 @@ type v3SessionTombstoneScopeIndexMeta struct {
 }
 
 type V3SyncSnapshotOptions struct {
+	Context                            context.Context
 	AccountScopeID                     string
 	UserID                             string
 	Global                             bool
@@ -125,16 +130,22 @@ type V3SyncSnapshotOmission struct {
 }
 
 func (s *SessionStore) BuildV3SyncSnapshot(options V3SyncSnapshotOptions) (result V3SyncSnapshotResult, err error) {
+	return s.BuildV3SyncSnapshotWithContext(options.Context, options)
+}
+
+func (s *SessionStore) BuildV3SyncSnapshotWithContext(ctx context.Context, options V3SyncSnapshotOptions) (result V3SyncSnapshotResult, err error) {
 	if s == nil || s.store == nil {
 		return V3SyncSnapshotResult{}, errors.New("session store is not configured")
 	}
 	options = normalizeV3SyncSnapshotOptions(options)
-	if options.RecentLimit > 0 {
-		if err := s.ensureSessionRecentIndex(); err != nil {
-			return V3SyncSnapshotResult{}, err
-		}
+	if ctx == nil {
+		ctx = options.Context
 	}
-	if err := s.ensureV3SessionTombstoneScopeIndexes(options.AccountScopeID); err != nil {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	options.Context = ctx
+	if err := contextError(ctx); err != nil {
 		return V3SyncSnapshotResult{}, err
 	}
 	if !options.Global && len(options.SessionIDs) == 0 && options.RecentLimit <= 0 && strings.TrimSpace(options.WorkspacePath) == "" && len(options.WorkspacePaths) == 0 {
@@ -193,73 +204,150 @@ func (s *SessionStore) buildV3SyncSnapshotFromReader(reader pebble.Reader, optio
 	if err != nil {
 		return V3SyncSnapshotResult{}, err
 	}
-	result := V3SyncSnapshotResult{
-		Rev:                       rev,
-		SessionsByID:              map[string]SessionSnapshot{},
-		ProjectionsBySession:      map[string]V3SessionProjection{},
-		MessagesBySession:         map[string][]MessageSnapshot{},
-		EventsBySession:           map[string][]V3SessionEvent{},
-		RunIntentsBySession:       map[string][]V3SessionRunIntent{},
-		HistoryManifestsBySession: map[string][]V3SessionHistoryChunkDescriptor{},
-		HistoryChunksByID:         map[string]V3SessionHistoryChunk{},
-		Omissions:                 []V3SyncSnapshotOmission{},
-		Pagination:                pagination,
-		Watermarks:                V3SyncSnapshotWatermarks{LoadedAt: time.Now().UnixMilli()},
-		SessionOrder:              make([]string, 0, len(selected)),
-		PermissionsBySession:      map[string][]PermissionRecord{},
-		UsageBySession:            map[string]SessionUsageSummary{},
-		PlansBySession:            map[string]SessionPlanSnapshot{},
-		PlanRevisionsBySession:    map[string][]SessionPlanSnapshot{},
-		TombstonesBySession:       map[string]V3SessionTombstone{},
-	}
-	for _, session := range selected {
-		if strings.TrimSpace(session.ID) == "" {
-			continue
-		}
-		projection, ok, err := getV3SessionProjectionFromReader(reader, session.ID)
-		if err != nil {
-			return V3SyncSnapshotResult{}, err
-		}
-		if !ok {
-			projection = V3SessionProjection{SessionID: session.ID}
-		}
-		if result.Watermarks.MaxUpdatedAt == 0 || session.UpdatedAt > result.Watermarks.MaxUpdatedAt {
-			result.Watermarks.MaxUpdatedAt = session.UpdatedAt
-		}
-		result.SessionsByID[session.ID] = session
-		result.ProjectionsBySession[session.ID] = projection
-		result.MessagesBySession[session.ID] = []MessageSnapshot{}
-		result.EventsBySession[session.ID] = []V3SessionEvent{}
-		result.RunIntentsBySession[session.ID] = []V3SessionRunIntent{}
-		result.HistoryManifestsBySession[session.ID] = []V3SessionHistoryChunkDescriptor{}
-		result.PermissionsBySession[session.ID] = []PermissionRecord{}
-		result.SessionOrder = append(result.SessionOrder, session.ID)
-		if err := s.addV3SyncSnapshotHistory(reader, options, session, projection, &result); err != nil {
-			return V3SyncSnapshotResult{}, err
-		}
-		if options.IncludeRunIntents {
-			if err := s.addV3SyncSnapshotRunIntents(reader, options, session, projection, &result); err != nil {
-				return V3SyncSnapshotResult{}, err
+	result := newV3SyncSnapshotResultMaps(len(selected))
+	result.Rev = rev
+	result.Pagination = pagination
+	result.Watermarks = V3SyncSnapshotWatermarks{LoadedAt: time.Now().UnixMilli()}
+
+	bundles := make([]V3SyncSnapshotResult, len(selected))
+	group, ctx := errgroup.WithContext(options.Context)
+	options.Context = ctx
+	group.SetLimit(v3SyncSnapshotSessionBundleConcurrency)
+	for i := range selected {
+		i := i
+		group.Go(func() error {
+			bundle, err := s.buildV3SyncSessionBundle(reader, options, selected[i])
+			if err != nil {
+				return err
 			}
-		}
-		permissions, err := listPendingPermissionsFromReader(reader, session.ID, 200)
-		if err != nil {
-			return V3SyncSnapshotResult{}, err
-		}
-		result.PermissionsBySession[session.ID] = permissions
-		if usage, ok, err := getUsageSummaryFromReader(reader, session.ID); err != nil {
-			return V3SyncSnapshotResult{}, err
-		} else if ok {
-			result.UsageBySession[session.ID] = usage
-		}
-		if err := s.addV3SyncSnapshotPlans(reader, options, session.ID, &result); err != nil {
-			return V3SyncSnapshotResult{}, err
-		}
+			bundles[i] = bundle
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return V3SyncSnapshotResult{}, err
+	}
+	for i := range bundles {
+		mergeV3SyncSessionBundle(&result, bundles[i])
 	}
 	if err := s.addV3SyncSnapshotTombstones(reader, options, &result); err != nil {
 		return V3SyncSnapshotResult{}, err
 	}
 	return result, nil
+}
+
+func newV3SyncSnapshotResultMaps(sessionCapacity int) V3SyncSnapshotResult {
+	return V3SyncSnapshotResult{
+		SessionsByID:              make(map[string]SessionSnapshot, sessionCapacity),
+		ProjectionsBySession:      make(map[string]V3SessionProjection, sessionCapacity),
+		MessagesBySession:         make(map[string][]MessageSnapshot, sessionCapacity),
+		EventsBySession:           make(map[string][]V3SessionEvent, sessionCapacity),
+		RunIntentsBySession:       make(map[string][]V3SessionRunIntent, sessionCapacity),
+		HistoryManifestsBySession: make(map[string][]V3SessionHistoryChunkDescriptor, sessionCapacity),
+		HistoryChunksByID:         map[string]V3SessionHistoryChunk{},
+		Omissions:                 []V3SyncSnapshotOmission{},
+		SessionOrder:              make([]string, 0, sessionCapacity),
+		PermissionsBySession:      make(map[string][]PermissionRecord, sessionCapacity),
+		UsageBySession:            make(map[string]SessionUsageSummary, sessionCapacity),
+		PlansBySession:            make(map[string]SessionPlanSnapshot, sessionCapacity),
+		PlanRevisionsBySession:    make(map[string][]SessionPlanSnapshot, sessionCapacity),
+		TombstonesBySession:       map[string]V3SessionTombstone{},
+	}
+}
+
+func (s *SessionStore) buildV3SyncSessionBundle(reader pebble.Reader, options V3SyncSnapshotOptions, session SessionSnapshot) (V3SyncSnapshotResult, error) {
+	bundle := newV3SyncSnapshotResultMaps(1)
+	if err := contextError(options.Context); err != nil {
+		return V3SyncSnapshotResult{}, err
+	}
+	if strings.TrimSpace(session.ID) == "" {
+		return bundle, nil
+	}
+	projection, ok, err := getV3SessionProjectionFromReader(reader, session.ID)
+	if err != nil {
+		return V3SyncSnapshotResult{}, err
+	}
+	if !ok {
+		projection = V3SessionProjection{SessionID: session.ID}
+	}
+	bundle.Watermarks.MaxUpdatedAt = session.UpdatedAt
+	bundle.SessionsByID[session.ID] = session
+	bundle.ProjectionsBySession[session.ID] = projection
+	bundle.MessagesBySession[session.ID] = []MessageSnapshot{}
+	bundle.EventsBySession[session.ID] = []V3SessionEvent{}
+	bundle.RunIntentsBySession[session.ID] = []V3SessionRunIntent{}
+	bundle.HistoryManifestsBySession[session.ID] = []V3SessionHistoryChunkDescriptor{}
+	bundle.PermissionsBySession[session.ID] = []PermissionRecord{}
+	bundle.SessionOrder = append(bundle.SessionOrder, session.ID)
+	if err := s.addV3SyncSnapshotHistory(reader, options, session, projection, &bundle); err != nil {
+		return V3SyncSnapshotResult{}, err
+	}
+	if options.IncludeRunIntents {
+		if err := s.addV3SyncSnapshotRunIntents(reader, options, session, projection, &bundle); err != nil {
+			return V3SyncSnapshotResult{}, err
+		}
+	}
+	permissions, err := listPendingPermissionsFromReader(options.Context, reader, session.ID, 200)
+	if err != nil {
+		return V3SyncSnapshotResult{}, err
+	}
+	bundle.PermissionsBySession[session.ID] = permissions
+	if usage, ok, err := getUsageSummaryFromReader(reader, session.ID); err != nil {
+		return V3SyncSnapshotResult{}, err
+	} else if ok {
+		bundle.UsageBySession[session.ID] = usage
+	}
+	if err := s.addV3SyncSnapshotPlans(reader, options, session.ID, &bundle); err != nil {
+		return V3SyncSnapshotResult{}, err
+	}
+	return bundle, nil
+}
+
+func mergeV3SyncSessionBundle(result *V3SyncSnapshotResult, bundle V3SyncSnapshotResult) {
+	if result == nil {
+		return
+	}
+	for sessionID, session := range bundle.SessionsByID {
+		result.SessionsByID[sessionID] = session
+	}
+	for sessionID, projection := range bundle.ProjectionsBySession {
+		result.ProjectionsBySession[sessionID] = projection
+	}
+	for sessionID, messages := range bundle.MessagesBySession {
+		result.MessagesBySession[sessionID] = messages
+	}
+	for sessionID, events := range bundle.EventsBySession {
+		result.EventsBySession[sessionID] = events
+	}
+	for sessionID, intents := range bundle.RunIntentsBySession {
+		result.RunIntentsBySession[sessionID] = intents
+	}
+	for sessionID, manifests := range bundle.HistoryManifestsBySession {
+		result.HistoryManifestsBySession[sessionID] = manifests
+	}
+	for chunkID, chunk := range bundle.HistoryChunksByID {
+		result.HistoryChunksByID[chunkID] = chunk
+	}
+	result.Omissions = append(result.Omissions, bundle.Omissions...)
+	result.SessionOrder = append(result.SessionOrder, bundle.SessionOrder...)
+	for sessionID, permissions := range bundle.PermissionsBySession {
+		result.PermissionsBySession[sessionID] = permissions
+	}
+	for sessionID, usage := range bundle.UsageBySession {
+		result.UsageBySession[sessionID] = usage
+	}
+	for sessionID, plan := range bundle.PlansBySession {
+		result.PlansBySession[sessionID] = plan
+	}
+	for sessionID, revisions := range bundle.PlanRevisionsBySession {
+		result.PlanRevisionsBySession[sessionID] = revisions
+	}
+	for sessionID, tombstone := range bundle.TombstonesBySession {
+		result.TombstonesBySession[sessionID] = tombstone
+	}
+	if result.Watermarks.MaxUpdatedAt == 0 || bundle.Watermarks.MaxUpdatedAt > result.Watermarks.MaxUpdatedAt {
+		result.Watermarks.MaxUpdatedAt = bundle.Watermarks.MaxUpdatedAt
+	}
 }
 
 func (s *SessionStore) selectV3SyncSnapshotSessions(reader pebble.Reader, options V3SyncSnapshotOptions) ([]SessionSnapshot, V3SyncSnapshotPagination, error) {
@@ -378,7 +466,7 @@ func (s *SessionStore) selectV3RecentSyncSnapshotSessions(reader pebble.Reader, 
 	startKey := sessionRecentIndexStartAfter(prefix, options.RecentBeforeUpdatedAt, options.RecentBeforeSessionID)
 	sessions := make([]SessionSnapshot, 0, limit+1)
 	seen := map[string]struct{}{}
-	err := scanRangeFromReader(reader, scanRangeOptions{Prefix: prefix, StartKey: startKey, Limit: sessionRecentIndexScanLimit()}, func(_ string, value []byte) (bool, error) {
+	err := scanRangeFromReader(reader, scanRangeOptions{Context: options.Context, Prefix: prefix, StartKey: startKey, Limit: sessionRecentIndexScanLimit()}, func(_ string, value []byte) (bool, error) {
 		sessionID := strings.TrimSpace(string(value))
 		if sessionID == "" {
 			return true, nil
@@ -785,7 +873,7 @@ func (s *SessionStore) addV3SyncSnapshotEvents(reader pebble.Reader, options V3S
 	if limit <= 0 {
 		return s.handleV3SyncSnapshotResourceOmission(options, session.ID, "events", V3SyncSnapshotOmissionRequiresManifest, fmt.Sprintf("%s:events:1", session.ID), nil, result)
 	}
-	events, capped, err := listV3SyncSnapshotEventsFromReader(reader, session.ID, 0, limit)
+	events, capped, err := listV3SyncSnapshotEventsFromReader(options.Context, reader, session.ID, 0, limit)
 	if err != nil {
 		return err
 	}
@@ -799,7 +887,7 @@ func (s *SessionStore) addV3SyncSnapshotEvents(reader pebble.Reader, options V3S
 	return nil
 }
 
-func listV3SyncSnapshotEventsFromReader(reader pebble.Reader, sessionID string, afterSeq uint64, limit int) ([]V3SessionEvent, bool, error) {
+func listV3SyncSnapshotEventsFromReader(ctx context.Context, reader pebble.Reader, sessionID string, afterSeq uint64, limit int) ([]V3SessionEvent, bool, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return nil, false, errors.New("session id is required")
@@ -810,7 +898,7 @@ func listV3SyncSnapshotEventsFromReader(reader pebble.Reader, sessionID string, 
 	out := make([]V3SessionEvent, 0, limit)
 	capped := false
 	prefix := V3SessionEventPrefix(sessionID)
-	err := scanRangeFromReader(reader, scanRangeOptions{Prefix: prefix, StartKey: KeyV3SessionEvent(sessionID, afterSeq+1), Limit: int(^uint(0) >> 1)}, func(_ string, value []byte) (bool, error) {
+	err := scanRangeFromReader(reader, scanRangeOptions{Context: ctx, Prefix: prefix, StartKey: KeyV3SessionEvent(sessionID, afterSeq+1), Limit: int(^uint(0) >> 1)}, func(_ string, value []byte) (bool, error) {
 		var event V3SessionEvent
 		if err := json.Unmarshal(value, &event); err != nil {
 			return false, err
@@ -836,14 +924,11 @@ func v3SyncSnapshotEventOmitted(event V3SessionEvent) bool {
 }
 
 func (s *SessionStore) addV3SyncSnapshotRunIntents(reader pebble.Reader, options V3SyncSnapshotOptions, session SessionSnapshot, projection V3SessionProjection, result *V3SyncSnapshotResult) error {
-	if projection.LastEventSeq == 0 {
-		return nil
+	if err := contextError(options.Context); err != nil {
+		return err
 	}
-	limit := int(projection.LastEventSeq)
-	if options.History.MaxEventsPerSession > 0 && options.History.MaxEventsPerSession < limit {
-		limit = options.History.MaxEventsPerSession
-	}
-	intents, err := listV3SessionRunIntentsFromReader(reader, session.ID, 0, limit)
+	_ = projection
+	intents, err := listV3SessionRunIntentsFromReaderWithContext(options.Context, reader, session.ID, 0, v3SyncSnapshotRunIntentScanLimit)
 	if err != nil {
 		return err
 	}
@@ -932,26 +1017,20 @@ func v3SyncSnapshotEventsNextCursor(sessionID string, events []V3SessionEvent) s
 	return fmt.Sprintf("%s:events:%d", sessionID, events[len(events)-1].Seq+1)
 }
 
-func listPendingPermissionsFromReader(reader pebble.Reader, sessionID string, limit int) ([]PermissionRecord, error) {
+func listPendingPermissionsFromReader(ctx context.Context, reader pebble.Reader, sessionID string, limit int) ([]PermissionRecord, error) {
 	if limit <= 0 {
 		limit = 200
 	}
 	out := make([]PermissionRecord, 0, limit)
-	err := iteratePrefixFromReader(reader, PermissionPendingPrefix(sessionID), limit, func(_ string, value []byte) error {
-		recordKey := strings.TrimSpace(string(value))
-		if recordKey == "" {
-			return nil
-		}
-		var record PermissionRecord
-		ok, err := getJSONFromReader(reader, recordKey, &record)
+	err := scanRangeFromReader(reader, scanRangeOptions{Context: ctx, Prefix: PermissionPendingPrefix(sessionID), Limit: limit}, func(_ string, value []byte) (bool, error) {
+		record, ok, err := decodePendingPermissionIndexValue(reader, value)
 		if err != nil {
-			return err
+			return false, err
 		}
-		if !ok || !strings.EqualFold(strings.TrimSpace(record.Status), PermissionStatusPending) {
-			return nil
+		if ok {
+			out = append(out, record)
 		}
-		out = append(out, record)
-		return nil
+		return len(out) < limit, nil
 	})
 	if err != nil {
 		return nil, err

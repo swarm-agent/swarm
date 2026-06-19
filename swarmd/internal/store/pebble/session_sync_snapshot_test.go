@@ -348,7 +348,7 @@ func TestBuildV3SyncSnapshotLargeAccountTombstonesFailClosedWithoutRecentPaginat
 	}
 }
 
-func TestBuildV3SyncSnapshotBackfillsLegacyTombstoneScopeIndexes(t *testing.T) {
+func TestBuildV3SyncSnapshotDoesNotBackfillLegacyTombstoneScopeIndexes(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
 	legacy := V3SessionTombstone{SessionID: "session-legacy-tombstone-backfill", UserID: "user-1", AccountScopeID: "account-1", WorkspacePath: "/workspace/legacy-tombstone", Kind: "deleted", Deleted: true, UpdatedAt: 7000}
@@ -363,21 +363,8 @@ func TestBuildV3SyncSnapshotBackfillsLegacyTombstoneScopeIndexes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build global legacy tombstone snapshot: %v", err)
 	}
-	if global.TombstonesBySession[legacy.SessionID].SessionID != legacy.SessionID {
-		t.Fatalf("global snapshot missed legacy tombstone after backfill: %+v", global.TombstonesBySession)
-	}
-
-	workspace, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
-		AccountScopeID: "account-1",
-		UserID:         "user-1",
-		WorkspacePath:  "/workspace/legacy-tombstone",
-		History:        V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone},
-	})
-	if err != nil {
-		t.Fatalf("build workspace legacy tombstone snapshot: %v", err)
-	}
-	if workspace.TombstonesBySession[legacy.SessionID].SessionID != legacy.SessionID {
-		t.Fatalf("workspace snapshot missed legacy tombstone after backfill: %+v", workspace.TombstonesBySession)
+	if len(global.TombstonesBySession) != 0 {
+		t.Fatalf("global snapshot returned legacy tombstone from request-path backfill: %+v", global.TombstonesBySession)
 	}
 
 	recent, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
@@ -389,14 +376,14 @@ func TestBuildV3SyncSnapshotBackfillsLegacyTombstoneScopeIndexes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build recent legacy tombstone snapshot: %v", err)
 	}
-	if recent.TombstonesBySession[legacy.SessionID].SessionID != legacy.SessionID {
-		t.Fatalf("recent snapshot missed legacy tombstone after backfill: %+v", recent.TombstonesBySession)
+	if len(recent.TombstonesBySession) != 0 {
+		t.Fatalf("recent snapshot returned legacy tombstone from request-path backfill: %+v", recent.TombstonesBySession)
 	}
-	if ok, err := store.GetJSON(KeyV3SessionTombstoneByAccountUser(legacy.AccountScopeID, legacy.UserID, legacy.UpdatedAt, legacy.SessionID), &V3SessionTombstone{}); err != nil || !ok {
-		t.Fatalf("backfilled account+user index ok=%v err=%v", ok, err)
+	if ok, err := store.GetJSON(KeyV3SessionTombstoneByAccountUser(legacy.AccountScopeID, legacy.UserID, legacy.UpdatedAt, legacy.SessionID), &V3SessionTombstone{}); err != nil || ok {
+		t.Fatalf("request path backfilled account+user index ok=%v err=%v", ok, err)
 	}
-	if ok, err := store.GetJSON(KeyV3SessionTombstoneByAccountUserWorkspace(legacy.AccountScopeID, legacy.UserID, legacy.WorkspacePath, legacy.UpdatedAt, legacy.SessionID), &V3SessionTombstone{}); err != nil || !ok {
-		t.Fatalf("backfilled account+user+workspace index ok=%v err=%v", ok, err)
+	if ok, err := store.GetJSON(KeyV3SessionTombstoneByAccountUserWorkspace(legacy.AccountScopeID, legacy.UserID, legacy.WorkspacePath, legacy.UpdatedAt, legacy.SessionID), &V3SessionTombstone{}); err != nil || ok {
+		t.Fatalf("request path backfilled account+user+workspace index ok=%v err=%v", ok, err)
 	}
 }
 

@@ -1,6 +1,7 @@
 package pebblestore
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -616,6 +617,10 @@ func v3WorksetEventsNextCursor(sessionID string, events []V3SessionEvent) string
 }
 
 func listV3SessionRunIntentsFromReader(reader pebble.Reader, sessionID string, afterSeq uint64, limit int) ([]V3SessionRunIntent, error) {
+	return listV3SessionRunIntentsFromReaderWithContext(nil, reader, sessionID, afterSeq, limit)
+}
+
+func listV3SessionRunIntentsFromReaderWithContext(ctx context.Context, reader pebble.Reader, sessionID string, afterSeq uint64, limit int) ([]V3SessionRunIntent, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return nil, errors.New("session id is required")
@@ -623,8 +628,12 @@ func listV3SessionRunIntentsFromReader(reader pebble.Reader, sessionID string, a
 	if limit <= 0 {
 		return []V3SessionRunIntent{}, nil
 	}
-	out := make([]V3SessionRunIntent, 0, limit)
-	err := scanRangeFromReader(reader, scanRangeOptions{Prefix: V3SessionRunIntentPrefix(sessionID), Limit: int(^uint(0) >> 1)}, func(_ string, value []byte) (bool, error) {
+	capacity := limit
+	if capacity > 1000 {
+		capacity = 1000
+	}
+	out := make([]V3SessionRunIntent, 0, capacity)
+	err := scanRangeFromReader(reader, scanRangeOptions{Context: ctx, Prefix: V3SessionRunIntentPrefix(sessionID), Limit: limit}, func(_ string, value []byte) (bool, error) {
 		var intent V3SessionRunIntent
 		if err := json.Unmarshal(value, &intent); err != nil {
 			return false, err

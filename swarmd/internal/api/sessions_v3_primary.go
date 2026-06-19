@@ -1492,47 +1492,11 @@ func (s *Server) hydrateSessionsV3PrimaryWithLimits(principal identity.Principal
 }
 
 func (s *Server) sessionsV3AgentModelPolicy(session pebblestore.SessionSnapshot, defaultPreference pebblestore.ModelPreference, defaultContextWindow, defaultMaxOutputTokens int) sessionsV3AgentModelPolicy {
-	policy := sessionsV3AgentModelPolicy{
-		AgentName:       sessionsV3MetadataString(session.Metadata, "agent_name"),
-		ResolvedAgent:   sessionsV3MetadataString(session.Metadata, "resolved_agent_name"),
-		Source:          "default",
-		Locked:          false,
-		Preference:      normalizeSessionsV3ModelPreference(defaultPreference),
-		ContextWindow:   defaultContextWindow,
-		MaxOutputTokens: defaultMaxOutputTokens,
+	resolvedPreferenceCache := make(map[sessionsV3SyncPreferenceCacheKey]sessionsV3SyncResolvedPreference, 2)
+	resolvePreference := func(preference pebblestore.ModelPreference) sessionsV3SyncResolvedPreference {
+		return s.resolveSessionsV3SyncPreference(preference, resolvedPreferenceCache)
 	}
-	if policy.AgentName == "" {
-		policy.AgentName = policy.ResolvedAgent
-	}
-	if policy.ResolvedAgent == "" {
-		policy.ResolvedAgent = policy.AgentName
-	}
-	profile, err := sessionV3AgentProfileFromMetadata(session.Metadata)
-	if err != nil {
-		return policy
-	}
-	if strings.TrimSpace(profile.Name) != "" {
-		policy.AgentName = strings.TrimSpace(profile.Name)
-		policy.ResolvedAgent = strings.TrimSpace(profile.Name)
-	}
-	agentPref := sessionsV3AgentPresetPreference(profile)
-	if strings.TrimSpace(agentPref.Provider) == "" || strings.TrimSpace(agentPref.Model) == "" {
-		return policy
-	}
-	policy.Source = "agent_preset"
-	policy.Locked = true
-	policy.Reason = "Agent model is set in agent settings; set the agent model to Default to choose a different model."
-	policy.Preference = normalizeSessionsV3ModelPreference(agentPref)
-	policy.ContextWindow = 0
-	policy.MaxOutputTokens = 0
-	if s != nil && s.model != nil {
-		if resolved, err := s.model.ResolvePreference(policy.Preference); err == nil {
-			policy.Preference = normalizeSessionsV3ModelPreference(resolved.Preference)
-			policy.ContextWindow = resolved.ContextWindow
-			policy.MaxOutputTokens = resolved.MaxOutputTokens
-		}
-	}
-	return policy
+	return s.sessionsV3AgentModelPolicyWithResolver(session, defaultPreference, defaultContextWindow, defaultMaxOutputTokens, resolvePreference)
 }
 
 func sessionsV3AgentPresetPreference(profile pebblestore.AgentProfile) pebblestore.ModelPreference {

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"sort"
@@ -74,7 +75,7 @@ func (s *Server) handleSessionsV3SyncBootstrap(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	response, err := s.sessionsV3SyncSnapshotResponse(options, selector, resources, req.KnownSessions)
+	response, err := s.sessionsV3SyncSnapshotResponse(r.Context(), options, selector, resources, req.KnownSessions)
 	if err != nil {
 		writeV3SyncCursorHTTPError(w, err)
 		return
@@ -97,7 +98,7 @@ func (s *Server) handleSessionsV3SyncHydrate(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	response, err := s.sessionsV3SyncSnapshotResponse(options, selector, resources, req.KnownSessions)
+	response, err := s.sessionsV3SyncSnapshotResponse(r.Context(), options, selector, resources, req.KnownSessions)
 	if err != nil {
 		writeV3SyncCursorHTTPError(w, err)
 		return
@@ -396,114 +397,222 @@ func normalizeSessionsV3SyncSelector(kind string, selector sessionsV3SyncSelecto
 	return selector
 }
 
-func (s *Server) sessionsV3SyncSnapshotResponse(options sessionsV3ResolvedSyncOptions, selector any, resources []string, known map[string]sessionsV3KnownState) (map[string]any, error) {
+type sessionsV3SyncSnapshotResponseBody struct {
+	OK                        bool                                                     `json:"ok"`
+	Rev                       uint64                                                   `json:"rev"`
+	SnapshotEndpointCursor    string                                                   `json:"snapshot_endpoint_cursor"`
+	SessionsByID              map[string]pebblestore.SessionSnapshot                   `json:"sessions_by_id"`
+	ProjectionsBySession      map[string]pebblestore.V3SessionProjection               `json:"projections_by_session"`
+	MessagesBySession         map[string][]pebblestore.MessageSnapshot                 `json:"messages_by_session"`
+	EventsBySession           map[string][]pebblestore.V3SessionEvent                  `json:"events_by_session"`
+	PlansBySession            map[string]pebblestore.SessionPlanSnapshot               `json:"plans_by_session"`
+	PlanRevisionsBySession    map[string][]pebblestore.SessionPlanSnapshot             `json:"plan_revisions_by_session"`
+	PermissionsBySession      map[string][]pebblestore.PermissionRecord                `json:"permissions_by_session"`
+	UsageBySession            map[string]pebblestore.SessionUsageSummary               `json:"usage_by_session"`
+	PreferencesBySession      map[string]sessionsV3SyncPreferenceResponse              `json:"preferences_by_session"`
+	AgentModelPolicyBySession map[string]sessionsV3AgentModelPolicy                    `json:"agent_model_policy_by_session"`
+	RunIntentsBySession       map[string][]pebblestore.V3SessionRunIntent              `json:"run_intents_by_session"`
+	HistoryManifestsBySession map[string][]pebblestore.V3SessionHistoryChunkDescriptor `json:"history_manifests_by_session"`
+	HistoryChunksByID         map[string]pebblestore.V3SessionHistoryChunk             `json:"history_chunks_by_id"`
+	Omissions                 []pebblestore.V3SyncSnapshotOmission                     `json:"omissions"`
+	Pagination                pebblestore.V3SyncSnapshotPagination                     `json:"pagination"`
+	Watermarks                pebblestore.V3SyncSnapshotWatermarks                     `json:"watermarks"`
+	SessionOrder              []string                                                 `json:"session_order"`
+	SyncScope                 sessionsV3SyncScopeResponse                              `json:"sync_scope"`
+	ScopeID                   string                                                   `json:"scope_id"`
+	Selector                  any                                                      `json:"selector"`
+	KnownSessions             map[string]sessionsV3KnownState                          `json:"known_sessions"`
+	TombstonesBySession       map[string]pebblestore.V3SessionTombstone                `json:"tombstones_by_session"`
+	ReplayInstructions        sessionsV3SyncReplayInstructionsResponse                 `json:"replay_instructions"`
+}
+
+type sessionsV3SyncScopeResponse struct {
+	Surface            string `json:"surface"`
+	StreamKind         string `json:"stream_kind"`
+	SelectorFilterHash string `json:"selector_filter_hash"`
+	ResourceSet        string `json:"resource_set"`
+}
+
+type sessionsV3SyncReplayInstructionsResponse struct {
+	StreamPath                     string `json:"stream_path"`
+	Transport                      string `json:"transport"`
+	AfterEndpointCursor            string `json:"after_endpoint_cursor"`
+	BootstrapRequiredOnCursorError bool   `json:"bootstrap_required_on_cursor_error"`
+}
+
+type sessionsV3SyncPreferenceResponse struct {
+	Preference      pebblestore.ModelPreference `json:"preference"`
+	ContextWindow   int                         `json:"context_window"`
+	MaxOutputTokens int                         `json:"max_output_tokens"`
+}
+
+type sessionsV3SyncResolvedPreference struct {
+	Preference      pebblestore.ModelPreference
+	ContextWindow   int
+	MaxOutputTokens int
+}
+
+type sessionsV3SyncPreferenceCacheKey struct {
+	Provider    string
+	Model       string
+	Thinking    string
+	ServiceTier string
+	ContextMode string
+}
+
+func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options sessionsV3ResolvedSyncOptions, selector any, resources []string, known map[string]sessionsV3KnownState) (sessionsV3SyncSnapshotResponseBody, error) {
 	scope := v3SyncCursorScopeForSnapshot(options.Principal, options.Surface, "v3.sync.snapshot", selector, resources)
 	if err := s.validateSessionsV3KnownState(scope, known); err != nil {
-		return nil, err
+		return sessionsV3SyncSnapshotResponseBody{}, err
 	}
-	snapshot, err := s.sessions.BuildSyncSnapshot(options.Snapshot)
+	snapshot, err := s.sessions.BuildSyncSnapshotWithContext(ctx, options.Snapshot)
 	if err != nil {
-		return nil, err
+		return sessionsV3SyncSnapshotResponseBody{}, err
 	}
 	snapshotEndpointCursor, err := s.signV3SyncEndpointCursor(scope, snapshot.Rev)
 	if err != nil {
-		return nil, err
+		return sessionsV3SyncSnapshotResponseBody{}, err
 	}
 
-	permissionsBySession := map[string]any{}
-	for sessionID, permissions := range snapshot.PermissionsBySession {
-		permissionsBySession[sessionID] = permissions
+	preferencesBySession := make(map[string]sessionsV3SyncPreferenceResponse, len(snapshot.SessionsByID))
+	agentModelPolicyBySession := make(map[string]sessionsV3AgentModelPolicy, len(snapshot.SessionsByID))
+	resolvedPreferenceCache := make(map[sessionsV3SyncPreferenceCacheKey]sessionsV3SyncResolvedPreference, len(snapshot.SessionsByID))
+	resolvePreference := func(preference pebblestore.ModelPreference) sessionsV3SyncResolvedPreference {
+		return s.resolveSessionsV3SyncPreference(preference, resolvedPreferenceCache)
 	}
-
-	usageBySession := map[string]any{}
-	for sessionID, summary := range snapshot.UsageBySession {
-		usageBySession[sessionID] = summary
-	}
-
-	preferencesBySession := map[string]any{}
-	agentModelPolicyBySession := map[string]any{}
 	for sessionID, session := range snapshot.SessionsByID {
-		session.Preference = normalizeSessionsV3ModelPreference(session.Preference)
-		preference := session.Preference
-		contextWindow := 0
-		maxOutputTokens := 0
-		if s.model != nil {
-			if resolved, err := s.model.ResolvePreference(session.Preference); err == nil {
-				preference = normalizeSessionsV3ModelPreference(resolved.Preference)
-				contextWindow = resolved.ContextWindow
-				maxOutputTokens = resolved.MaxOutputTokens
-			}
-		}
-		agentModelPolicy := s.sessionsV3AgentModelPolicy(session, preference, contextWindow, maxOutputTokens)
+		resolved := resolvePreference(session.Preference)
+		preference := resolved.Preference
+		contextWindow := resolved.ContextWindow
+		maxOutputTokens := resolved.MaxOutputTokens
+		agentModelPolicy := s.sessionsV3AgentModelPolicyWithResolver(session, preference, contextWindow, maxOutputTokens, resolvePreference)
 		if agentModelPolicy.Locked {
 			preference = agentModelPolicy.Preference
 			contextWindow = agentModelPolicy.ContextWindow
 			maxOutputTokens = agentModelPolicy.MaxOutputTokens
 		}
-		preferencesBySession[sessionID] = map[string]any{
-			"preference":        preference,
-			"context_window":    contextWindow,
-			"max_output_tokens": maxOutputTokens,
+		preferencesBySession[sessionID] = sessionsV3SyncPreferenceResponse{
+			Preference:      preference,
+			ContextWindow:   contextWindow,
+			MaxOutputTokens: maxOutputTokens,
 		}
 		agentModelPolicyBySession[sessionID] = agentModelPolicy
 	}
 
-	plansBySession := map[string]any{}
-	for sessionID, plan := range snapshot.PlansBySession {
-		plansBySession[sessionID] = plan
-	}
-	planRevisionsBySession := map[string]any{}
-	for sessionID, revisions := range snapshot.PlanRevisionsBySession {
-		planRevisionsBySession[sessionID] = revisions
-	}
-
-	response := map[string]any{
-		"ok":                            true,
-		"rev":                           snapshot.Rev,
-		"snapshot_endpoint_cursor":      snapshotEndpointCursor,
-		"sessions_by_id":                snapshot.SessionsByID,
-		"projections_by_session":        snapshot.ProjectionsBySession,
-		"messages_by_session":           snapshot.MessagesBySession,
-		"events_by_session":             snapshot.EventsBySession,
-		"plans_by_session":              plansBySession,
-		"plan_revisions_by_session":     planRevisionsBySession,
-		"permissions_by_session":        permissionsBySession,
-		"usage_by_session":              usageBySession,
-		"preferences_by_session":        preferencesBySession,
-		"agent_model_policy_by_session": agentModelPolicyBySession,
-		"run_intents_by_session":        snapshot.RunIntentsBySession,
-		"history_manifests_by_session":  snapshot.HistoryManifestsBySession,
-		"history_chunks_by_id":          snapshot.HistoryChunksByID,
-		"omissions":                     snapshot.Omissions,
-		"pagination":                    snapshot.Pagination,
-		"watermarks":                    snapshot.Watermarks,
-		"session_order":                 snapshot.SessionOrder,
-	}
-
-	response["sync_scope"] = map[string]any{
-		"surface":              scope.Surface,
-		"stream_kind":          scope.StreamKind,
-		"selector_filter_hash": scope.SelectorFilterHash,
-		"resource_set":         scope.ResourceSet,
-	}
-	response["scope_id"] = scope.SelectorFilterHash + ":" + scope.ResourceSet
-	tombstones := map[string]any{}
+	tombstones := make(map[string]pebblestore.V3SessionTombstone, len(snapshot.TombstonesBySession))
+	selectorValue, _ := selector.(sessionsV3SyncSelector)
 	for sessionID, tombstone := range snapshot.TombstonesBySession {
-		if !sessionsV3SyncTombstoneMatchesSelector(tombstone, selector.(sessionsV3SyncSelector)) {
+		if !sessionsV3SyncTombstoneMatchesSelector(tombstone, selectorValue) {
 			continue
 		}
 		tombstones[sessionID] = tombstone
 	}
-	response["selector"] = selector
-	response["known_sessions"] = known
-	response["tombstones_by_session"] = tombstones
-	response["replay_instructions"] = map[string]any{
-		"stream_path":                        V3SyncStreamPath,
-		"transport":                          "http_post",
-		"after_endpoint_cursor":              snapshotEndpointCursor,
-		"bootstrap_required_on_cursor_error": true,
+
+	return sessionsV3SyncSnapshotResponseBody{
+		OK:                        true,
+		Rev:                       snapshot.Rev,
+		SnapshotEndpointCursor:    snapshotEndpointCursor,
+		SessionsByID:              snapshot.SessionsByID,
+		ProjectionsBySession:      snapshot.ProjectionsBySession,
+		MessagesBySession:         snapshot.MessagesBySession,
+		EventsBySession:           snapshot.EventsBySession,
+		PlansBySession:            snapshot.PlansBySession,
+		PlanRevisionsBySession:    snapshot.PlanRevisionsBySession,
+		PermissionsBySession:      snapshot.PermissionsBySession,
+		UsageBySession:            snapshot.UsageBySession,
+		PreferencesBySession:      preferencesBySession,
+		AgentModelPolicyBySession: agentModelPolicyBySession,
+		RunIntentsBySession:       snapshot.RunIntentsBySession,
+		HistoryManifestsBySession: snapshot.HistoryManifestsBySession,
+		HistoryChunksByID:         snapshot.HistoryChunksByID,
+		Omissions:                 snapshot.Omissions,
+		Pagination:                snapshot.Pagination,
+		Watermarks:                snapshot.Watermarks,
+		SessionOrder:              snapshot.SessionOrder,
+		SyncScope: sessionsV3SyncScopeResponse{
+			Surface:            scope.Surface,
+			StreamKind:         scope.StreamKind,
+			SelectorFilterHash: scope.SelectorFilterHash,
+			ResourceSet:        scope.ResourceSet,
+		},
+		ScopeID:             scope.SelectorFilterHash + ":" + scope.ResourceSet,
+		Selector:            selector,
+		KnownSessions:       known,
+		TombstonesBySession: tombstones,
+		ReplayInstructions: sessionsV3SyncReplayInstructionsResponse{
+			StreamPath:                     V3SyncStreamPath,
+			Transport:                      "http_post",
+			AfterEndpointCursor:            snapshotEndpointCursor,
+			BootstrapRequiredOnCursorError: true,
+		},
+	}, nil
+}
+
+func (s *Server) resolveSessionsV3SyncPreference(preference pebblestore.ModelPreference, cache map[sessionsV3SyncPreferenceCacheKey]sessionsV3SyncResolvedPreference) sessionsV3SyncResolvedPreference {
+	preference = normalizeSessionsV3ModelPreference(preference)
+	cacheKey := sessionsV3SyncPreferenceCacheKey{
+		Provider:    preference.Provider,
+		Model:       preference.Model,
+		Thinking:    preference.Thinking,
+		ServiceTier: preference.ServiceTier,
+		ContextMode: preference.ContextMode,
 	}
-	return response, nil
+	if cached, ok := cache[cacheKey]; ok {
+		return cached
+	}
+	resolvedPreference := sessionsV3SyncResolvedPreference{Preference: preference}
+	if s != nil && s.model != nil {
+		if resolved, err := s.model.ResolvePreference(preference); err == nil {
+			resolvedPreference.Preference = normalizeSessionsV3ModelPreference(resolved.Preference)
+			resolvedPreference.ContextWindow = resolved.ContextWindow
+			resolvedPreference.MaxOutputTokens = resolved.MaxOutputTokens
+		}
+	}
+	cache[cacheKey] = resolvedPreference
+	return resolvedPreference
+}
+
+func (s *Server) sessionsV3AgentModelPolicyWithResolver(session pebblestore.SessionSnapshot, defaultPreference pebblestore.ModelPreference, defaultContextWindow, defaultMaxOutputTokens int, resolvePreference func(pebblestore.ModelPreference) sessionsV3SyncResolvedPreference) sessionsV3AgentModelPolicy {
+	policy := sessionsV3AgentModelPolicy{
+		AgentName:       sessionsV3MetadataString(session.Metadata, "agent_name"),
+		ResolvedAgent:   sessionsV3MetadataString(session.Metadata, "resolved_agent_name"),
+		Source:          "default",
+		Locked:          false,
+		Preference:      normalizeSessionsV3ModelPreference(defaultPreference),
+		ContextWindow:   defaultContextWindow,
+		MaxOutputTokens: defaultMaxOutputTokens,
+	}
+	if policy.AgentName == "" {
+		policy.AgentName = policy.ResolvedAgent
+	}
+	if policy.ResolvedAgent == "" {
+		policy.ResolvedAgent = policy.AgentName
+	}
+	profile, err := sessionV3AgentProfileFromMetadata(session.Metadata)
+	if err != nil {
+		return policy
+	}
+	if strings.TrimSpace(profile.Name) != "" {
+		policy.AgentName = strings.TrimSpace(profile.Name)
+		policy.ResolvedAgent = strings.TrimSpace(profile.Name)
+	}
+	agentPref := sessionsV3AgentPresetPreference(profile)
+	if strings.TrimSpace(agentPref.Provider) == "" || strings.TrimSpace(agentPref.Model) == "" {
+		return policy
+	}
+	policy.Source = "agent_preset"
+	policy.Locked = true
+	policy.Reason = "Agent model is set in agent settings; set the agent model to Default to choose a different model."
+	policy.Preference = normalizeSessionsV3ModelPreference(agentPref)
+	policy.ContextWindow = 0
+	policy.MaxOutputTokens = 0
+	if resolvePreference != nil {
+		resolved := resolvePreference(policy.Preference)
+		policy.Preference = resolved.Preference
+		policy.ContextWindow = resolved.ContextWindow
+		policy.MaxOutputTokens = resolved.MaxOutputTokens
+	}
+	return policy
 }
 
 func sessionsV3SyncTombstoneMatchesSelector(tombstone pebblestore.V3SessionTombstone, selector sessionsV3SyncSelector) bool {

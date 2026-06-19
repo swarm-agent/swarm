@@ -1,6 +1,7 @@
 package pebblestore
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -133,6 +134,7 @@ func getJSONFromReader(reader pebble.Reader, key string, out any) (bool, error) 
 }
 
 type scanRangeOptions struct {
+	Context    context.Context
 	Prefix     string
 	StartKey   string
 	LowerBound string
@@ -148,6 +150,9 @@ func iteratePrefixFromReader(reader pebble.Reader, prefix string, limit int, vis
 }
 
 func scanRangeFromReader(reader pebble.Reader, opts scanRangeOptions, visit func(key string, value []byte) (bool, error)) error {
+	if err := contextError(opts.Context); err != nil {
+		return err
+	}
 	prefix := strings.TrimSpace(opts.Prefix)
 	lower := strings.TrimSpace(opts.LowerBound)
 	upper := strings.TrimSpace(opts.UpperBound)
@@ -194,6 +199,9 @@ func scanRangeFromReader(reader pebble.Reader, opts scanRangeOptions, visit func
 
 	count := 0
 	for ; valid; count++ {
+		if err := contextError(opts.Context); err != nil {
+			return err
+		}
 		if count >= limit {
 			break
 		}
@@ -216,4 +224,16 @@ func scanRangeFromReader(reader pebble.Reader, opts scanRangeOptions, visit func
 		return fmt.Errorf("scan range %q..%q: %w", lower, upper, err)
 	}
 	return nil
+}
+
+func contextError(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return nil
+	}
 }
