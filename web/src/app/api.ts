@@ -1,15 +1,6 @@
 
-export interface DesktopSessionAuthIdentity {
-  ok: true
-  token?: string
-  user_id: string
-  username?: string
-  account_scope_id: string
-  expires_at?: string
-}
-
-let desktopSessionIdentity: DesktopSessionAuthIdentity | null = null
-let desktopSessionPromise: Promise<DesktopSessionAuthIdentity> | null = null
+let desktopSessionReady = false
+let desktopSessionPromise: Promise<void> | null = null
 
 async function readErrorMessage(response: Response): Promise<string> {
   const text = (await response.text()).trim()
@@ -29,7 +20,7 @@ async function readErrorMessage(response: Response): Promise<string> {
   return text
 }
 
-async function bootstrapDesktopSession(): Promise<DesktopSessionAuthIdentity> {
+async function bootstrapDesktopSession(): Promise<void> {
   const response = await fetch('/v1/auth/desktop/session', {
     cache: 'no-store',
     credentials: 'same-origin',
@@ -41,25 +32,19 @@ async function bootstrapDesktopSession(): Promise<DesktopSessionAuthIdentity> {
   if (!response.ok) {
     throw new Error(await readErrorMessage(response))
   }
-  const identity = await response.json() as DesktopSessionAuthIdentity
-  if (identity.ok !== true || typeof identity.user_id !== 'string' || identity.user_id.trim() === ''
-    || typeof identity.account_scope_id !== 'string' || identity.account_scope_id.trim() === '') {
-    throw new Error('desktop session identity response is missing user_id or account_scope_id')
-  }
-  desktopSessionIdentity = identity
-  return identity
+  desktopSessionReady = true
 }
 
 function clearDesktopSession() {
-  desktopSessionIdentity = null
+  desktopSessionReady = false
 }
 
-export async function ensureDesktopSession(forceRefresh = false): Promise<DesktopSessionAuthIdentity> {
+export async function ensureDesktopSession(forceRefresh = false): Promise<void> {
   if (forceRefresh) {
     clearDesktopSession()
   }
-  if (desktopSessionIdentity) {
-    return desktopSessionIdentity
+  if (desktopSessionReady) {
+    return
   }
   if (!desktopSessionPromise) {
     desktopSessionPromise = bootstrapDesktopSession().finally(() => {

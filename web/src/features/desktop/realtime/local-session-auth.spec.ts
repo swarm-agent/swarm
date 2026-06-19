@@ -28,7 +28,7 @@ test('Desktop V3 realtime transport bootstraps the local session cookie and uses
     const url = String(input)
     fetchCalls.push(url)
     if (url === '/v1/auth/desktop/session') {
-      return new Response(JSON.stringify({ ok: true, user_id: 'user-a', account_scope_id: 'acct-a' }), {
+      return new Response(JSON.stringify({ ok: true }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })

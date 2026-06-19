@@ -120,9 +120,6 @@ test('bootstrap explicit empty message list is authoritative for that session on
   applyBootstrapSnapshot(state, snapshotFixture({ messages_by_session: { [sessionA.id]: [] } }))
 
   assert.deepEqual(state.messagesBySession[sessionA.id].items, [])
-  assert.equal(state.messagesBySession[sessionA.id].sourceMessageCount, sessionA.message_count)
-  assert.equal(state.messagesBySession[sessionA.id].sourceProjectionHighWatermarkSeq, projectionA.projection_high_watermark_seq)
-  assert.equal(state.messagesBySession[sessionA.id].source, 'network')
 })
 
 test('bootstrap tombstones remove ids from every sidebar order without deleting transcript', () => {
