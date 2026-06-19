@@ -150,7 +150,11 @@ export function applySnapshot(
   state.sessionOrderByScope[snapshot.scope_id] = removeTombstonedIds(state, snapshot.session_order ?? [])
   applyTombstonesBySession(state, snapshot.tombstones_by_session)
   if (syncResourceSetContains(snapshot.sync_scope.resource_set, 'run_intents')) {
-    replaceRunIntentsBySession(state, snapshot.run_intents_by_session)
+    const authoritativeRunIntentSessionIds = new Set([
+      ...Object.keys(snapshot.sessions_by_id ?? {}),
+      ...Object.keys(snapshot.tombstones_by_session ?? {}),
+    ])
+    replaceRunIntentsBySession(state, snapshot.run_intents_by_session, authoritativeRunIntentSessionIds)
   }
   mergeSnapshotResources(state, snapshot, snapshot.scope_id)
   if (syncResourceSetContains(snapshot.sync_scope.resource_set, 'messages')) {
@@ -213,7 +217,7 @@ export function applyHydrate(
   mergeRecord(state.projectionsBySession, onlyRequested(snapshot.projections_by_session, requested))
   applyTombstonesBySession(state, snapshot.tombstones_by_session)
   if (syncResourceSetContains(snapshot.sync_scope.resource_set, 'run_intents')) {
-    replaceRunIntentsBySession(state, snapshot.run_intents_by_session)
+    replaceRunIntentsBySession(state, snapshot.run_intents_by_session, requested)
   }
   mergeSnapshotResources(state, snapshot, snapshot.scope_id, requested)
   if (syncResourceSetContains(snapshot.sync_scope.resource_set, 'messages')) {
@@ -760,15 +764,32 @@ function mergeRunIntentsBySession(state: DesktopV3CacheState, runIntentsBySessio
   }
 }
 
-function replaceRunIntentsBySession(state: DesktopV3CacheState, runIntentsBySession: Record<string, V3SessionRunIntent[]> | undefined): void {
-  if (!runIntentsBySession) return
-  for (const [sessionId, runIntents] of Object.entries(runIntentsBySession)) {
+function replaceRunIntentsBySession(
+  state: DesktopV3CacheState,
+  runIntentsBySession: Record<string, V3SessionRunIntent[]> | undefined,
+  authoritativeSessionIds: Set<string>,
+): void {
+  const scopedRunIntentsBySession = onlyRequested(runIntentsBySession, authoritativeSessionIds)
+
+  for (const sessionId of authoritativeSessionIds) {
     delete state.runIntentsBySession[sessionId]
     delete state.currentRunIntentBySession[sessionId]
-    for (const runIntent of runIntents) {
-      upsertRunIntent(state, sessionId, runIntent)
+
+    const incomingRunIds = new Set((scopedRunIntentsBySession?.[sessionId] ?? []).map((intent) => intent.run_id))
+    const liveRuns = state.liveRunsBySession[sessionId]
+    if (liveRuns) {
+      for (const runId of Object.keys(liveRuns)) {
+        if (!incomingRunIds.has(runId)) {
+          delete liveRuns[runId]
+        }
+      }
+      if (Object.keys(liveRuns).length === 0) {
+        delete state.liveRunsBySession[sessionId]
+      }
     }
   }
+
+  mergeRunIntentsBySession(state, scopedRunIntentsBySession)
 }
 
 function applyTombstonesBySession(state: DesktopV3CacheState, tombstonesBySession: Record<string, V3SessionTombstone> | undefined): void {

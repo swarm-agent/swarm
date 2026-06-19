@@ -34,7 +34,7 @@ import {
   syncStreamFixture,
   tombstoneB,
 } from './desktop-v3-cache.backend-fixtures'
-import { selectDesktopSidebarRows, selectLiveRuns } from './desktop-v3-cache-selectors'
+import { selectDesktopSidebarRows, selectLiveRuns, selectRenderedSessionMessages } from './desktop-v3-cache-selectors'
 import type { DesktopV3CacheState, MessageSnapshot, V3SessionEvent } from './desktop-v3-cache-types'
 
 function bootstrappedState(): DesktopV3CacheState {
@@ -184,6 +184,52 @@ test('in-scope empty bootstrap run intents clear stale run and current intent', 
   assert.equal(state.currentRunIntentBySession[sessionA.id], undefined)
 })
 
+test('authoritative empty run intents clear rendered live overlay', () => {
+  const state = bootstrappedState()
+  assert.deepEqual(selectRenderedSessionMessages(state, sessionA.id).liveRuns.map((run) => run.runId), ['run-a'])
+
+  applyBootstrapSnapshot(state, snapshotFixture({
+    run_intents_by_session: { [sessionA.id]: [] },
+    sync_scope: {
+      surface: 'desktop',
+      stream_kind: 'v3.sync.snapshot',
+      selector_filter_hash: 'selector-hash',
+      resource_set: 'run_intents',
+    },
+    scope_id: 'selector-hash:run_intents',
+  }))
+
+  assert.deepEqual(selectRenderedSessionMessages(state, sessionA.id).liveRuns, [])
+})
+
+test('bootstrap tombstone clears stale run state without run-intent key', () => {
+  const state = bootstrappedState()
+  assert.equal(state.currentRunIntentBySession[sessionA.id]?.run_id, 'run-a')
+  assert.deepEqual(Object.keys(state.liveRunsBySession[sessionA.id] ?? {}), ['run-a'])
+
+  applyBootstrapSnapshot(state, snapshotFixture({
+    sessions_by_id: {},
+    projections_by_session: {},
+    messages_by_session: {},
+    run_intents_by_session: {},
+    tombstones_by_session: {
+      [sessionA.id]: { ...tombstoneB, session_id: sessionA.id },
+    },
+    session_order: [],
+    sync_scope: {
+      surface: 'desktop',
+      stream_kind: 'v3.sync.snapshot',
+      selector_filter_hash: 'selector-hash',
+      resource_set: 'run_intents',
+    },
+    scope_id: 'selector-hash:run_intents',
+  }))
+
+  assert.equal(state.runIntentsBySession[sessionA.id], undefined)
+  assert.equal(state.currentRunIntentBySession[sessionA.id], undefined)
+  assert.equal(state.liveRunsBySession[sessionA.id], undefined)
+})
+
 test('snapshot optional resources are governed by resource set authority', () => {
   const state = bootstrappedState()
   state.plansBySession[sessionA.id] = { id: 'stale-plan' }
@@ -309,6 +355,35 @@ test('hydrate run intents obey resource set authority', () => {
   }), [sessionA.id])
   assert.equal(state.runIntentsBySession[sessionA.id], undefined)
   assert.equal(state.currentRunIntentBySession[sessionA.id], undefined)
+})
+
+test('hydrate requested tombstone without run-intent key clears stale run state', () => {
+  const state = bootstrappedState()
+  assert.equal(state.currentRunIntentBySession[sessionA.id]?.run_id, 'run-a')
+  assert.deepEqual(Object.keys(state.liveRunsBySession[sessionA.id] ?? {}), ['run-a'])
+
+  applyHydrateSnapshot(state, hydrateSnapshotFixture({
+    sessions_by_id: {},
+    projections_by_session: {},
+    messages_by_session: {},
+    run_intents_by_session: {},
+    tombstones_by_session: {
+      [sessionA.id]: { ...tombstoneB, session_id: sessionA.id },
+    },
+    session_order: [],
+    selector: { kind: 'session_ids', session_ids: [sessionA.id] },
+    sync_scope: {
+      surface: 'desktop',
+      stream_kind: 'v3.sync.snapshot',
+      selector_filter_hash: 'session-a-hash',
+      resource_set: 'run_intents',
+    },
+    scope_id: 'session-a-hash:run_intents',
+  }), [sessionA.id])
+
+  assert.equal(state.runIntentsBySession[sessionA.id], undefined)
+  assert.equal(state.currentRunIntentBySession[sessionA.id], undefined)
+  assert.equal(state.liveRunsBySession[sessionA.id], undefined)
 })
 
 test('hydrate optional plan resources clear stale restored plans only when in scope', () => {
