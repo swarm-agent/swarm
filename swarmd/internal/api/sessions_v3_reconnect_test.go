@@ -178,6 +178,54 @@ func TestSessionsV3ReconnectWorksetContractIncludesRealtimeResume(t *testing.T) 
 	}
 }
 
+func TestSessionsV3ReconnectGlobalWorksetMatchesBootstrapPrincipalScope(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	store := server.sessions.Store()
+	seedSessionsV3ReconnectStoreSession(t, store, "reconnect-global-old", testPrincipal().UserID, testPrincipal().AccountScopeID, "/workspace/reconnect-global-old", 1000)
+	seedSessionsV3ReconnectStoreSession(t, store, "reconnect-global-new", testPrincipal().UserID, testPrincipal().AccountScopeID, "/workspace/reconnect-global-new", 3000)
+	seedSessionsV3ReconnectStoreSession(t, store, "reconnect-global-mid", testPrincipal().UserID, testPrincipal().AccountScopeID, "/workspace/reconnect-global-mid", 2000)
+	seedSessionsV3ReconnectStoreSession(t, store, "reconnect-global-other-user", "other-user", testPrincipal().AccountScopeID, "/workspace/reconnect-global-other-user", 4000)
+	seedSessionsV3ReconnectStoreSession(t, store, "reconnect-global-blank-user", "", testPrincipal().AccountScopeID, "/workspace/reconnect-global-blank-user", 5000)
+	seedSessionsV3ReconnectStoreSession(t, store, "reconnect-global-other-account", testPrincipal().UserID, "other-account", "/workspace/reconnect-global-other-account", 6000)
+
+	bootstrapRaw := postSessionsV3SyncBootstrapRawBytes(t, server, `{"surface":"desktop","selector":{"kind":"global","global":true},"history":{"mode":"none"},"resources":{"run_intents":true},"include_active":true}`)
+	var bootstrap struct {
+		SessionOrder []string `json:"session_order"`
+	}
+	if err := json.Unmarshal(bootstrapRaw, &bootstrap); err != nil {
+		t.Fatalf("decode bootstrap response: %v", err)
+	}
+
+	reconnect := postSessionsV3ReconnectBody(t, server, `{
+		"surface":"desktop",
+		"client_id":"desktop-client-global",
+		"workset":{
+			"workset_id":"desktop:global",
+			"selector":{"kind":"global","global":true},
+			"history":{"mode":"none"},
+			"resources":{"run_intents":true},
+			"include_active":true,
+			"auto_subscribe_sessions":true
+		}
+	}`)
+
+	want := []string{"reconnect-global-new", "reconnect-global-mid", "reconnect-global-old"}
+	if !stringSlicesEqual(reconnect.SessionOrder, want) {
+		t.Fatalf("global reconnect order = %+v, want %+v", reconnect.SessionOrder, want)
+	}
+	if !stringSlicesEqual(reconnect.SessionOrder, bootstrap.SessionOrder) {
+		t.Fatalf("global reconnect order = %+v, bootstrap order = %+v", reconnect.SessionOrder, bootstrap.SessionOrder)
+	}
+	for _, leaked := range []string{"reconnect-global-other-user", "reconnect-global-blank-user", "reconnect-global-other-account"} {
+		if _, ok := reconnect.SessionsByID[leaked]; ok {
+			t.Fatalf("global reconnect leaked %s: %+v", leaked, reconnect.SessionOrder)
+		}
+	}
+	if len(reconnect.Subscriptions) != len(want) {
+		t.Fatalf("global reconnect subscriptions = %+v, want one per principal session", reconnect.Subscriptions)
+	}
+}
+
 func TestSessionsV3ReconnectWorksetRequiresClientID(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	req := httptest.NewRequest(http.MethodPost, "/v3/sessions:reconnect", bytes.NewBufferString(`{"workset":{"selector":{"kind":"global","global":true,"recent":{"limit":10}},"auto_subscribe_sessions":true}}`))
@@ -348,6 +396,46 @@ func postSessionsV3ReconnectRawBytes(t *testing.T, server *Server, body string) 
 		t.Fatalf("reconnect status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	return rec.Body.Bytes()
+}
+
+func postSessionsV3SyncBootstrapRawBytes(t *testing.T, server *Server, body string) []byte {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, V3SyncBootstrapPath, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("sync bootstrap status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	return rec.Body.Bytes()
+}
+
+func stringSlicesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func seedSessionsV3ReconnectStoreSession(t *testing.T, store *pebblestore.SessionStore, sessionID, userID, accountScopeID, workspacePath string, updatedAt int64) {
+	t.Helper()
+	if err := store.CreateSession(pebblestore.SessionSnapshot{
+		ID:             sessionID,
+		UserID:         userID,
+		AccountScopeID: accountScopeID,
+		WorkspacePath:  workspacePath,
+		WorkspaceName:  "workspace",
+		Title:          sessionID,
+		CreatedAt:      updatedAt,
+		UpdatedAt:      updatedAt,
+	}); err != nil {
+		t.Fatalf("seed reconnect store session %s: %v", sessionID, err)
+	}
 }
 
 func recordSessionsV3ReconnectRunIntent(t *testing.T, server *Server, sessionID, runID, status string, updatedAt int64) {

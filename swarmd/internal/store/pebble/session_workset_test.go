@@ -283,6 +283,84 @@ func TestBuildV3SessionWorksetIncludesNonDiagnosticEventsWhenRequested(t *testin
 	}
 }
 
+func TestBuildV3SessionWorksetGlobalNoRecentReturnsPrincipalSessionsDeterministically(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SyncSnapshotSessionForUserTest(t, sessions, "session-global-workset-old", "user-1", "account-1", "/workspace/global-old", 1000)
+	createV3SyncSnapshotSessionForUserTest(t, sessions, "session-global-workset-new", "user-1", "account-1", "/workspace/global-new", 3000)
+	createV3SyncSnapshotSessionForUserTest(t, sessions, "session-global-workset-mid", "user-1", "account-1", "/workspace/global-mid", 2000)
+	createV3SyncSnapshotSessionForUserTest(t, sessions, "session-global-workset-other-user", "user-2", "account-1", "/workspace/global-other-user", 4000)
+	createV3SyncSnapshotSessionForUserTest(t, sessions, "session-global-workset-blank-user", "", "account-1", "/workspace/global-blank-user", 5000)
+	createV3SyncSnapshotSessionForUserTest(t, sessions, "session-global-workset-other-account", "user-1", "account-2", "/workspace/global-other-account", 6000)
+
+	workset, err := sessions.BuildV3SessionWorkset(V3SessionWorksetOptions{
+		AccountScopeID: "account-1",
+		UserID:         "user-1",
+		Global:         true,
+		History:        V3SessionWorksetHistoryOptions{Mode: V3SessionWorksetHistoryModeNone},
+	})
+	if err != nil {
+		t.Fatalf("build principal-global workset: %v", err)
+	}
+	want := []string{"session-global-workset-new", "session-global-workset-mid", "session-global-workset-old"}
+	if !stringSlicesEqual(workset.SessionOrder, want) {
+		t.Fatalf("principal-global workset order = %+v, want %+v", workset.SessionOrder, want)
+	}
+	for _, leaked := range []string{"session-global-workset-other-user", "session-global-workset-blank-user", "session-global-workset-other-account"} {
+		if _, ok := workset.SessionsByID[leaked]; ok {
+			t.Fatalf("principal-global workset leaked %s: %+v", leaked, workset.SessionOrder)
+		}
+	}
+}
+
+func TestBuildV3SessionWorksetGlobalMatchesBootstrapAndKeepsInactiveWithIncludeActive(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SyncSnapshotSessionForUserTest(t, sessions, "session-global-parity-a", "user-1", "account-1", "/workspace/global-parity-a", 1000)
+	createV3SyncSnapshotSessionForUserTest(t, sessions, "session-global-parity-b", "user-1", "account-1", "/workspace/global-parity-b", 3000)
+	createV3SyncSnapshotSessionForUserTest(t, sessions, "session-global-parity-c", "user-1", "account-1", "/workspace/global-parity-c", 2000)
+
+	bootstrap, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
+		AccountScopeID:        "account-1",
+		UserID:                "user-1",
+		Global:                true,
+		History:               V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone},
+		IncludeActiveSessions: true,
+	})
+	if err != nil {
+		t.Fatalf("build principal-global bootstrap snapshot: %v", err)
+	}
+	workset, err := sessions.BuildV3SessionWorkset(V3SessionWorksetOptions{
+		AccountScopeID:        "account-1",
+		UserID:                "user-1",
+		Global:                true,
+		History:               V3SessionWorksetHistoryOptions{Mode: V3SessionWorksetHistoryModeNone},
+		IncludeActiveSessions: true,
+	})
+	if err != nil {
+		t.Fatalf("build principal-global reconnect workset: %v", err)
+	}
+	if !stringSlicesEqual(workset.SessionOrder, bootstrap.SessionOrder) {
+		t.Fatalf("reconnect global order = %+v, bootstrap order = %+v", workset.SessionOrder, bootstrap.SessionOrder)
+	}
+	want := []string{"session-global-parity-b", "session-global-parity-c", "session-global-parity-a"}
+	if !stringSlicesEqual(workset.SessionOrder, want) {
+		t.Fatalf("principal-global workset reduced or reordered inactive sessions: got %+v want %+v", workset.SessionOrder, want)
+	}
+}
+
+func stringSlicesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func createV3WorksetSessionForTest(t *testing.T, sessions *SessionStore, sessionID, workspacePath string, updatedAt int64) {
 	t.Helper()
 	_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{

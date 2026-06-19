@@ -58,6 +58,8 @@ func runV3SessionWorksetAfterSnapshotHook() {
 
 type V3SessionWorksetOptions struct {
 	AccountScopeID                     string
+	UserID                             string
+	Global                             bool
 	SessionIDs                         []string
 	WorkspacePath                      string
 	WorkspacePaths                     []string
@@ -140,7 +142,12 @@ func (s *SessionStore) BuildV3SessionWorkset(options V3SessionWorksetOptions) (r
 			return V3SessionWorksetResult{}, err
 		}
 	}
-	if len(options.SessionIDs) == 0 && options.RecentLimit <= 0 && strings.TrimSpace(options.WorkspacePath) == "" && len(options.WorkspacePaths) == 0 {
+	if !options.Global &&
+		len(options.SessionIDs) == 0 &&
+		options.RecentLimit <= 0 &&
+		strings.TrimSpace(options.WorkspacePath) == "" &&
+		len(options.WorkspacePaths) == 0 &&
+		!options.IncludeActiveSessions {
 		return V3SessionWorksetResult{}, errors.New("at least one workset selector is required")
 	}
 	snapshot := s.store.db.NewSnapshot()
@@ -155,6 +162,7 @@ func (s *SessionStore) BuildV3SessionWorkset(options V3SessionWorksetOptions) (r
 
 func normalizeV3SessionWorksetOptions(options V3SessionWorksetOptions) V3SessionWorksetOptions {
 	options.AccountScopeID = strings.TrimSpace(options.AccountScopeID)
+	options.UserID = strings.TrimSpace(options.UserID)
 	options.WorkspacePath = strings.TrimSpace(options.WorkspacePath)
 	options.WorkspacePaths = normalizeV3SessionWorksetWorkspacePaths(options.WorkspacePath, options.WorkspacePaths)
 	options.RecentBeforeSessionID = strings.TrimSpace(options.RecentBeforeSessionID)
@@ -273,13 +281,22 @@ func (s *SessionStore) selectV3SessionWorksetSessions(reader pebble.Reader, opti
 		if err != nil {
 			return nil, V3SessionWorksetPagination{}, err
 		}
-		if !ok || !v3SessionWorksetSessionVisible(session, options.AccountScopeID, "") {
+		if !ok || !v3SessionWorksetSessionVisible(session, options.AccountScopeID, options.UserID, "") {
 			continue
 		}
-		if options.RestrictSessionIDsToWorkspacePaths && !v3SessionWorksetSessionVisibleForWorkspaces(session, options.AccountScopeID, options.WorkspacePath, options.WorkspacePaths) {
+		if options.RestrictSessionIDsToWorkspacePaths && !v3SessionWorksetSessionVisibleForWorkspaces(session, options.AccountScopeID, options.UserID, options.WorkspacePath, options.WorkspacePaths) {
 			continue
 		}
 		appendSession(session)
+	}
+	if options.Global {
+		global, err := s.selectV3GlobalWorksetSessions(reader, options)
+		if err != nil {
+			return nil, V3SessionWorksetPagination{}, err
+		}
+		for _, session := range global {
+			appendSession(session)
+		}
 	}
 	pagination := V3SessionWorksetPagination{}
 	if options.RecentLimit > 0 {
@@ -308,6 +325,68 @@ func (s *SessionStore) selectV3SessionWorksetSessions(reader pebble.Reader, opti
 	return selected, pagination, nil
 }
 
+func (s *SessionStore) selectV3GlobalWorksetSessions(
+	reader pebble.Reader,
+	options V3SessionWorksetOptions,
+) ([]SessionSnapshot, error) {
+	prefix := SessionByAccountPrefix(options.AccountScopeID)
+	if strings.TrimSpace(options.AccountScopeID) == "" {
+		prefix = SessionPrefix()
+	}
+
+	sessions := make([]SessionSnapshot, 0)
+	err := iteratePrefixFromReader(reader, prefix, int(^uint(0)>>1), func(_ string, value []byte) error {
+		sessionID := strings.TrimSpace(string(value))
+		if strings.TrimSpace(options.AccountScopeID) == "" {
+			var session SessionSnapshot
+			if err := json.Unmarshal(value, &session); err != nil {
+				return err
+			}
+			if !v3SessionWorksetSessionVisibleForWorkspaces(
+				session,
+				options.AccountScopeID,
+				options.UserID,
+				options.WorkspacePath,
+				options.WorkspacePaths,
+			) {
+				return nil
+			}
+			sessions = append(sessions, session)
+			return nil
+		}
+
+		if sessionID == "" {
+			return nil
+		}
+		session, ok, err := s.getSessionFromReader(reader, sessionID)
+		if err != nil {
+			return err
+		}
+		if !ok || !v3SessionWorksetSessionVisibleForWorkspaces(
+			session,
+			options.AccountScopeID,
+			options.UserID,
+			options.WorkspacePath,
+			options.WorkspacePaths,
+		) {
+			return nil
+		}
+		sessions = append(sessions, session)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	sort.Slice(sessions, func(i, j int) bool {
+		if sessions[i].UpdatedAt == sessions[j].UpdatedAt {
+			return sessions[i].ID < sessions[j].ID
+		}
+		return sessions[i].UpdatedAt > sessions[j].UpdatedAt
+	})
+	return sessions, nil
+}
+
 func (s *SessionStore) selectV3RecentWorksetSessions(reader pebble.Reader, options V3SessionWorksetOptions) ([]SessionSnapshot, V3SessionWorksetPagination, error) {
 	return s.selectV3RecentWorksetSessionsFromIndex(reader, options)
 }
@@ -323,7 +402,7 @@ func (s *SessionStore) selectV3ActiveWorksetSessions(reader pebble.Reader, optio
 		if err != nil {
 			return nil, err
 		}
-		if !ok || !v3SessionWorksetSessionVisibleForWorkspaces(session, options.AccountScopeID, options.WorkspacePath, options.WorkspacePaths) {
+		if !ok || !v3SessionWorksetSessionVisibleForWorkspaces(session, options.AccountScopeID, options.UserID, options.WorkspacePath, options.WorkspacePaths) {
 			continue
 		}
 		out = append(out, session)
@@ -356,8 +435,14 @@ func normalizeV3SessionWorksetWorkspacePaths(workspacePath string, workspacePath
 	return out
 }
 
-func v3SessionWorksetSessionVisibleForWorkspaces(session SessionSnapshot, accountScopeID, workspacePath string, workspacePaths []string) bool {
-	if !v3SessionWorksetSessionVisible(session, accountScopeID, "") {
+func v3SessionWorksetSessionVisibleForWorkspaces(
+	session SessionSnapshot,
+	accountScopeID string,
+	userID string,
+	workspacePath string,
+	workspacePaths []string,
+) bool {
+	if !v3SessionWorksetSessionVisible(session, accountScopeID, userID, "") {
 		return false
 	}
 	paths := workspacePaths
@@ -379,9 +464,16 @@ func v3SessionWorksetSessionVisibleForWorkspaces(session SessionSnapshot, accoun
 	return false
 }
 
-func v3SessionWorksetSessionVisible(session SessionSnapshot, accountScopeID, workspacePath string) bool {
-	if strings.TrimSpace(accountScopeID) != "" && strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(accountScopeID) {
-		return false
+func v3SessionWorksetSessionVisible(session SessionSnapshot, accountScopeID string, userID string, workspacePath string) bool {
+	if strings.TrimSpace(accountScopeID) != "" {
+		if strings.TrimSpace(session.AccountScopeID) == "" || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(accountScopeID) {
+			return false
+		}
+	}
+	if strings.TrimSpace(userID) != "" {
+		if strings.TrimSpace(session.UserID) == "" || strings.TrimSpace(session.UserID) != strings.TrimSpace(userID) {
+			return false
+		}
 	}
 	workspacePath = strings.TrimSpace(workspacePath)
 	if workspacePath == "" {

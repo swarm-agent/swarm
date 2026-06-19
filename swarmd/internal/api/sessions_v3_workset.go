@@ -162,6 +162,8 @@ func sessionsV3WorksetOptionsFromRequest(principal identity.Principal, req sessi
 	options := sessionsV3ResolvedWorksetOptions{
 		Store: pebblestore.V3SessionWorksetOptions{
 			AccountScopeID:        principal.AccountScopeID,
+			UserID:                principal.UserID,
+			Global:                req.Global && req.Recent.Limit <= 0,
 			SessionIDs:            req.SessionIDs,
 			WorkspacePaths:        workspacePaths,
 			RecentLimit:           req.Recent.Limit,
