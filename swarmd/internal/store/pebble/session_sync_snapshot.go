@@ -273,10 +273,7 @@ func (s *SessionStore) buildV3SyncSessionBundle(reader pebble.Reader, options V3
 	bundle.Watermarks.MaxUpdatedAt = session.UpdatedAt
 	bundle.SessionsByID[session.ID] = session
 	bundle.ProjectionsBySession[session.ID] = projection
-	bundle.MessagesBySession[session.ID] = []MessageSnapshot{}
-	bundle.EventsBySession[session.ID] = []V3SessionEvent{}
 	bundle.RunIntentsBySession[session.ID] = []V3SessionRunIntent{}
-	bundle.HistoryManifestsBySession[session.ID] = []V3SessionHistoryChunkDescriptor{}
 	bundle.PermissionsBySession[session.ID] = []PermissionRecord{}
 	bundle.SessionOrder = append(bundle.SessionOrder, session.ID)
 	if err := s.addV3SyncSnapshotHistory(reader, options, session, projection, &bundle); err != nil {
@@ -864,6 +861,7 @@ func (s *SessionStore) addV3SyncSnapshotMessages(reader pebble.Reader, options V
 
 func (s *SessionStore) addV3SyncSnapshotEvents(reader pebble.Reader, options V3SyncSnapshotOptions, session SessionSnapshot, projection V3SessionProjection, result *V3SyncSnapshotResult) error {
 	if projection.LastEventSeq == 0 {
+		result.EventsBySession[session.ID] = []V3SessionEvent{}
 		return nil
 	}
 	limit := options.History.MaxEventsPerSession

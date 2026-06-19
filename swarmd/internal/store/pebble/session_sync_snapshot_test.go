@@ -86,6 +86,62 @@ func TestBuildV3SyncSnapshotKeepsExtraResourcesPointInTime(t *testing.T) {
 	}
 }
 
+func TestBuildV3SyncSnapshotHistoryNoneOmitsPerSessionMessageAndEventKeys(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "session-sync-metadata-only")
+	appendV3SessionMessageForStoreTest(t, sessions, "session-sync-metadata-only", "message-sync-metadata-only", "hello metadata", "user-1", "account-1")
+
+	snapshot, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
+		AccountScopeID: "account-1",
+		UserID:         "user-1",
+		SessionIDs:     []string{"session-sync-metadata-only"},
+		History:        V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone},
+	})
+	if err != nil {
+		t.Fatalf("build metadata-only sync snapshot: %v", err)
+	}
+	if snapshot.MessagesBySession == nil || snapshot.EventsBySession == nil || snapshot.HistoryManifestsBySession == nil {
+		t.Fatalf("top-level history maps must be non-nil: messages=%v events=%v manifests=%v", snapshot.MessagesBySession, snapshot.EventsBySession, snapshot.HistoryManifestsBySession)
+	}
+	if _, ok := snapshot.MessagesBySession["session-sync-metadata-only"]; ok {
+		t.Fatalf("history none manufactured messages key: %+v", snapshot.MessagesBySession)
+	}
+	if _, ok := snapshot.EventsBySession["session-sync-metadata-only"]; ok {
+		t.Fatalf("history none manufactured events key: %+v", snapshot.EventsBySession)
+	}
+	if _, ok := snapshot.HistoryManifestsBySession["session-sync-metadata-only"]; ok {
+		t.Fatalf("history none manufactured history manifest key: %+v", snapshot.HistoryManifestsBySession)
+	}
+}
+
+func TestBuildV3SyncSnapshotRequestedZeroMessageHistoryReturnsAuthoritativeEmptyKey(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "session-sync-zero-messages")
+
+	snapshot, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
+		AccountScopeID: "account-1",
+		UserID:         "user-1",
+		SessionIDs:     []string{"session-sync-zero-messages"},
+		History: V3SyncSnapshotHistoryOptions{
+			Mode:                  V3SyncSnapshotHistoryModeTail,
+			IncludeMessages:       true,
+			MaxMessagesPerSession: 10,
+		},
+	})
+	if err != nil {
+		t.Fatalf("build requested zero-message sync snapshot: %v", err)
+	}
+	messages, ok := snapshot.MessagesBySession["session-sync-zero-messages"]
+	if !ok {
+		t.Fatalf("requested message history omitted authoritative empty key: %+v", snapshot.MessagesBySession)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("requested zero-message history = %+v, want empty slice", messages)
+	}
+}
+
 func TestBuildV3SyncSnapshotGlobalSelectorWithoutRecentIncludesAccountSessions(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)

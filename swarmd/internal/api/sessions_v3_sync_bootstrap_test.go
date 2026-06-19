@@ -74,6 +74,49 @@ func TestSessionsV3SyncBootstrapReturnsCanonicalSnapshotScopeAndReplayInstructio
 	}
 }
 
+func TestSessionsV3SyncBootstrapMetadataOnlyDoesNotEmitPerSessionMessageKeys(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-bootstrap-metadata-only", "Sync Bootstrap Metadata Only", "/workspace/metadata-only")
+	appendSessionsV3PrimaryMessageForWorksetTest(t, server, created.ID, "hello metadata only")
+
+	body := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"/workspace/metadata-only","recent":{"limit":10}},"history":{"mode":"none"}}`
+	req := httptest.NewRequest(http.MethodPost, V3SyncBootstrapPath, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bootstrap status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		SyncScope                 map[string]string                                        `json:"sync_scope"`
+		SessionsByID              map[string]pebblestore.SessionSnapshot                   `json:"sessions_by_id"`
+		MessagesBySession         map[string][]pebblestore.MessageSnapshot                 `json:"messages_by_session"`
+		EventsBySession           map[string][]pebblestore.V3SessionEvent                  `json:"events_by_session"`
+		HistoryManifestsBySession map[string][]pebblestore.V3SessionHistoryChunkDescriptor `json:"history_manifests_by_session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode bootstrap response: %v", err)
+	}
+	if payload.SessionsByID[created.ID].ID != created.ID {
+		t.Fatalf("metadata-only bootstrap missing session metadata: %+v", payload.SessionsByID)
+	}
+	if strings.Contains(payload.SyncScope["resource_set"], "messages") || strings.Contains(payload.SyncScope["resource_set"], "events") {
+		t.Fatalf("metadata-only resource_set should not include message/event resources: %+v", payload.SyncScope)
+	}
+	if payload.MessagesBySession == nil || payload.EventsBySession == nil || payload.HistoryManifestsBySession == nil {
+		t.Fatalf("metadata-only bootstrap must keep top-level maps non-nil: messages=%v events=%v manifests=%v", payload.MessagesBySession, payload.EventsBySession, payload.HistoryManifestsBySession)
+	}
+	if _, ok := payload.MessagesBySession[created.ID]; ok {
+		t.Fatalf("metadata-only bootstrap emitted per-session messages key: %+v", payload.MessagesBySession)
+	}
+	if _, ok := payload.EventsBySession[created.ID]; ok {
+		t.Fatalf("metadata-only bootstrap emitted per-session events key: %+v", payload.EventsBySession)
+	}
+	if _, ok := payload.HistoryManifestsBySession[created.ID]; ok {
+		t.Fatalf("metadata-only bootstrap emitted per-session history manifest key: %+v", payload.HistoryManifestsBySession)
+	}
+}
+
 func TestSessionsV3SyncBootstrapGlobalSelectorWithoutRecentUsesNativeAccountSnapshot(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	createdA := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-global-a", "Sync Global A", "/workspace/global-a")

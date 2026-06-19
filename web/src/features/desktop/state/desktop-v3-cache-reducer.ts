@@ -151,8 +151,12 @@ export function applySnapshot(
   applyTombstonesBySession(state, snapshot.tombstones_by_session)
   mergeRunIntentsBySession(state, snapshot.run_intents_by_session)
   mergeSnapshotResources(state, snapshot, snapshot.scope_id)
-  applyMessagesBySessionFromSnapshot(state, snapshot.messages_by_session)
-  applyEventsBySessionFromSnapshot(state, snapshot.events_by_session)
+  if (syncResourceSetContains(snapshot.sync_scope.resource_set, 'messages')) {
+    applyMessagesBySessionFromSnapshot(state, snapshot.messages_by_session)
+  }
+  if (syncResourceSetContains(snapshot.sync_scope.resource_set, 'events')) {
+    applyEventsBySessionFromSnapshot(state, snapshot.events_by_session)
+  }
 
   return state
 }
@@ -208,8 +212,12 @@ export function applyHydrate(
   applyTombstonesBySession(state, snapshot.tombstones_by_session)
   mergeRunIntentsBySession(state, snapshot.run_intents_by_session)
   mergeSnapshotResources(state, snapshot, snapshot.scope_id, requested)
-  applyMessagesBySessionFromSnapshot(state, snapshot.messages_by_session)
-  applyEventsBySessionFromSnapshot(state, snapshot.events_by_session)
+  if (syncResourceSetContains(snapshot.sync_scope.resource_set, 'messages')) {
+    applyMessagesBySessionFromSnapshot(state, snapshot.messages_by_session)
+  }
+  if (syncResourceSetContains(snapshot.sync_scope.resource_set, 'events')) {
+    applyEventsBySessionFromSnapshot(state, snapshot.events_by_session)
+  }
 
   for (const sessionId of requested) {
     const record = state.sessionsById[sessionId]
@@ -656,6 +664,13 @@ export function buildMessageListCache(messages: MessageSnapshot[]): MessageListC
     byGlobalSeq[messageGlobalSeqKey(message)] = index
   })
   return { items, byMessageId, byGlobalSeq }
+}
+
+export function syncResourceSetContains(resourceSet: string | undefined, resource: string): boolean {
+  if (!resourceSet) return false
+  const wanted = resource.trim()
+  if (!wanted) return false
+  return resourceSet.split(',').some((part) => part.trim() === wanted)
 }
 
 function writeSyncScope(state: DesktopV3CacheState, snapshot: SyncSnapshotResponse): void {

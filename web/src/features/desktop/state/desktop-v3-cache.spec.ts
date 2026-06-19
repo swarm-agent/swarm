@@ -115,11 +115,39 @@ test('metadata-only bootstrap preserves existing transcripts when messages_by_se
   assert.deepEqual(state.messagesBySession[sessionA.id].items.map((message) => message.id), ['msg-a-1', 'msg-a-2'])
 })
 
-test('bootstrap explicit empty message list is authoritative for that session only', () => {
+test('bootstrap explicit empty message list is authoritative for that session only when messages are in scope', () => {
   const state = bootstrappedState()
   applyBootstrapSnapshot(state, snapshotFixture({ messages_by_session: { [sessionA.id]: [] } }))
 
   assert.deepEqual(state.messagesBySession[sessionA.id].items, [])
+})
+
+test('metadata-only bootstrap ignores message and event payloads when resources are out of scope', () => {
+  const state = bootstrappedState()
+  state.eventsBySession[sessionA.id] = [{
+    id: 'evt-a-existing',
+    session_id: sessionA.id,
+    seq: 1,
+    event_type: 'message.stored',
+    payload: { message: messageA1 },
+    ts_unix_ms: 3,
+  }]
+
+  applyBootstrapSnapshot(state, snapshotFixture({
+    snapshot_endpoint_cursor: 'cursor-bootstrap-metadata-only',
+    messages_by_session: { [sessionA.id]: [] },
+    events_by_session: { [sessionA.id]: [] },
+    sync_scope: {
+      surface: 'desktop',
+      stream_kind: 'v3.sync.snapshot',
+      selector_filter_hash: 'selector-hash',
+      resource_set: 'run_intents',
+    },
+    scope_id: 'selector-hash:run_intents',
+  }))
+
+  assert.deepEqual(state.messagesBySession[sessionA.id].items.map((message) => message.id), ['msg-a-1', 'msg-a-2'])
+  assert.deepEqual(state.eventsBySession[sessionA.id].map((event) => event.id), ['evt-a-existing'])
 })
 
 test('bootstrap tombstones remove ids from every sidebar order without deleting transcript', () => {
@@ -148,6 +176,32 @@ test('hydrate is scoped to requested sessions and preserves unrelated messages a
   assert.deepEqual(state.messagesBySession[sessionA.id].items.map((message) => message.id), ['msg-a-1', 'msg-a-2'])
   assert.deepEqual(state.messagesBySession[sessionB.id].items.map((message) => message.id), ['msg-b-1'])
   assert.deepEqual(state.sessionOrderByScope['selector-hash:messages,run_intents'], [sessionA.id, sessionB.id])
+})
+
+test('hydrate explicit empty message list is authoritative when messages are in scope', () => {
+  const state = bootstrappedState()
+  applyHydrateSnapshot(state, hydrateSnapshotFixture(), [sessionB.id])
+  applyHydrateSnapshot(state, hydrateSnapshotFixture({ messages_by_session: { [sessionB.id]: [] } }), [sessionB.id])
+
+  assert.deepEqual(state.messagesBySession[sessionB.id].items, [])
+})
+
+test('metadata-only hydrate validates subset but ignores empty message payload when messages are out of scope', () => {
+  const state = bootstrappedState()
+  applyHydrateSnapshot(state, hydrateSnapshotFixture(), [sessionB.id])
+  applyHydrateSnapshot(state, hydrateSnapshotFixture({
+    messages_by_session: { [sessionB.id]: [] },
+    events_by_session: { [sessionB.id]: [] },
+    sync_scope: {
+      surface: 'desktop',
+      stream_kind: 'v3.sync.snapshot',
+      selector_filter_hash: 'session-b-hash',
+      resource_set: 'projections',
+    },
+    scope_id: 'session-b-hash:projections',
+  }), [sessionB.id])
+
+  assert.deepEqual(state.messagesBySession[sessionB.id].items.map((message) => message.id), ['msg-b-1'])
 })
 
 test('hydrate rejects non-requested payload membership', () => {
