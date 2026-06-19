@@ -35,6 +35,8 @@ export function hydrateDesktopV3InitialSessions(input: HydrateDesktopV3InitialSe
         hydratedSessionIds: [],
         scopeId: undefined,
         error: undefined,
+        stale: false,
+        source: 'network',
       },
     })
     return Promise.resolve()
@@ -47,6 +49,8 @@ export function hydrateDesktopV3InitialSessions(input: HydrateDesktopV3InitialSe
       requestedSessionIds: sessionIds,
       hydratedSessionIds: [],
       error: undefined,
+      stale: undefined,
+      source: undefined,
     },
   })
 
@@ -61,6 +65,8 @@ export function hydrateDesktopV3InitialSessions(input: HydrateDesktopV3InitialSe
           hydratedSessionIds: Object.keys(response.messages_by_session ?? {}),
           scopeId: response.scope_id,
           error: undefined,
+          stale: false,
+          source: 'network',
         },
       })
     })

@@ -30,6 +30,7 @@ import {
   projectionB,
   reconnectFixture,
   realtimeFrameFixture,
+  runIntentA,
   sessionA,
   sessionB,
   snapshotFixture,
@@ -37,11 +38,20 @@ import {
   tombstoneB,
 } from './desktop-v3-cache.backend-fixtures'
 import { selectDesktopSidebarRows, selectLiveRuns, selectRenderedSessionMessages } from './desktop-v3-cache-selectors'
+import { createDesktopV3CacheOwner } from './desktop-v3-cache-owner'
+import { buildPersistedDesktopV3MessageTailV1, DESKTOP_V3_CACHE_SCHEMA_VERSION } from './desktop-v3-cache-persisted-types'
 import type { DesktopV3CacheState, MessageSnapshot, V3SessionEvent } from './desktop-v3-cache-types'
 
 function bootstrappedState(): DesktopV3CacheState {
   return applyBootstrapSnapshot(createEmptyDesktopV3CacheState(), snapshotFixture())
 }
+
+const persistedOwner = createDesktopV3CacheOwner({
+  origin: 'https://desktop.example.test',
+  accountScopeId: 'acct-a',
+  userId: 'user-a',
+  surface: 'desktop',
+})
 
 function deltaFrame(
   eventType: string,
@@ -78,6 +88,82 @@ function eventFrame(eventType: string, event: V3SessionEvent, endpointCursor: st
     endpoint_cursor: endpointCursor,
   })
 }
+
+test('desktopV3Cache.restore rebuilds cached sidebar, selected transcript indexes, cursors, and stale status', () => {
+  let state = bootstrappedState()
+  state.messagesBySession[sessionB.id] = buildMessageListCache([messageB1], { source: 'network' })
+  state.pendingUserByClientRequestId['pending-1'] = {
+    clientRequestId: 'pending-1',
+    messageId: 'pending-msg',
+    sessionId: sessionB.id,
+    role: 'user',
+    content: 'pending',
+    createdAt: 1,
+    status: 'pending',
+  }
+
+  const scopeId = 'persisted-scope'
+  const selectedMessageTail = buildPersistedDesktopV3MessageTailV1({
+    ownerKey: persistedOwner.key,
+    sessionId: sessionA.id,
+    persistedAt: 2_000,
+    messages: [messageA2, messageA1],
+    sourceMessageCount: sessionA.message_count,
+    sourceLastMessageAt: sessionA.last_message_at,
+    sourceProjectionHighWatermarkSeq: projectionA.projection_high_watermark_seq,
+    hydratedAt: 2_001,
+  })
+
+  state = desktopV3CacheReducer(state, {
+    type: 'desktopV3Cache.restore',
+    owner: {
+      schemaVersion: DESKTOP_V3_CACHE_SCHEMA_VERSION,
+      ownerKey: persistedOwner.key,
+      owner: persistedOwner,
+      persistedAt: 1_000,
+      selectedSessionId: sessionA.id,
+      syncScopesById: {
+        [scopeId]: {
+          scopeId,
+          surface: 'desktop',
+          streamKind: 'v3.sync.snapshot',
+          selectorFilterHash: 'persisted-selector',
+          resourceSet: 'messages,run_intents',
+          selector: { kind: 'workspace', workspace_path: '/repo' },
+          endpointCursor: 'cursor-persisted',
+          replayPath: '/v3/sync/stream',
+          replayTransport: 'http_post',
+          needsBootstrap: false,
+        },
+      },
+      sessionOrderByScope: { [scopeId]: [sessionA.id, sessionB.id] },
+      sidebarSessionsById: {
+        [sessionA.id]: { session: sessionA, projection: projectionA, runIntents: [runIntentA] },
+        [sessionB.id]: { session: sessionB, projection: projectionB },
+      },
+    },
+    selectedMessageTail,
+  })
+
+  assert.equal(state.desktopSidebarBootstrap.status, 'cached')
+  assert.equal(state.desktopSidebarBootstrap.stale, true)
+  assert.equal(state.desktopInitialHydrate.status, 'cached')
+  assert.equal(state.realtime.needsBootstrap, true)
+  assert.equal(state.syncScopesById[scopeId].endpointCursor, 'cursor-persisted')
+  assert.equal(state.syncScopesById[scopeId].needsBootstrap, true)
+  assert.deepEqual(state.sessionOrderByScope[scopeId], [sessionA.id, sessionB.id])
+  assert.equal(state.selectedSessionId, sessionA.id)
+  assert.equal(state.sessionsById[sessionA.id]?.kind, 'full')
+  assert.equal(state.sessionsById[sessionA.id]?.needsHydrate, true)
+  assert.equal(state.projectionsBySession[sessionA.id].projection_high_watermark_seq, projectionA.projection_high_watermark_seq)
+  assert.equal(state.currentRunIntentBySession[sessionA.id]?.run_id, runIntentA.run_id)
+  assert.deepEqual(state.messagesBySession[sessionA.id].items.map((message) => message.id), [messageA1.id, messageA2.id])
+  assert.deepEqual(state.messagesBySession[sessionA.id].byMessageId, { [messageA1.id]: 0, [messageA2.id]: 1 })
+  assert.deepEqual(state.messagesBySession[sessionA.id].byGlobalSeq, { [`${sessionA.id}:1`]: 0, [`${sessionA.id}:2`]: 1 })
+  assert.equal(state.messagesBySession[sessionA.id].source, 'persisted')
+  assert.equal(state.messagesBySession[sessionB.id], undefined)
+  assert.equal(state.pendingUserByClientRequestId['pending-1']?.content, 'pending')
+})
 
 test('bootstrap stores scoped cursor, scope metadata, orders, message source metadata, run intents, and only present message keys', () => {
   const state = bootstrappedState()

@@ -4,8 +4,146 @@ import assert from 'node:assert/strict'
 import { bootstrapDesktopV3Sidebar, resetDesktopV3BootstrapControllerForTests } from './desktop-v3-bootstrap-controller'
 import { createEmptyDesktopV3CacheState } from './desktop-v3-cache-reducer'
 import type { DesktopV3CacheAction } from './desktop-v3-cache-types'
-import { messageA1, projectionA, snapshotFixture, sessionA } from './desktop-v3-cache.backend-fixtures'
+import { messageA1, messageA2, projectionA, projectionB, snapshotFixture, sessionA, sessionB } from './desktop-v3-cache.backend-fixtures'
+import { createDesktopV3CacheOwner } from './desktop-v3-cache-owner'
+import { buildPersistedDesktopV3MessageTailV1, DESKTOP_V3_CACHE_SCHEMA_VERSION, type PersistedDesktopV3OwnerV1 } from './desktop-v3-cache-persisted-types'
 import { desktopV3CacheReducer } from './desktop-v3-cache-reducer'
+
+const persistedOwner = createDesktopV3CacheOwner({
+  origin: 'https://desktop.example.test',
+  accountScopeId: 'acct-a',
+  userId: 'user-a',
+  surface: 'desktop',
+})
+
+function persistedOwnerRecordFixture(): PersistedDesktopV3OwnerV1 {
+  return {
+    schemaVersion: DESKTOP_V3_CACHE_SCHEMA_VERSION,
+    ownerKey: persistedOwner.key,
+    owner: persistedOwner,
+    persistedAt: 1_000,
+    selectedSessionId: sessionA.id,
+    syncScopesById: {
+      'persisted-scope': {
+        scopeId: 'persisted-scope',
+        surface: 'desktop',
+        streamKind: 'v3.sync.snapshot',
+        selectorFilterHash: 'persisted-selector',
+        resourceSet: 'messages,run_intents',
+        selector: { kind: 'workspace', workspace_path: '/repo' },
+        endpointCursor: 'cursor-persisted',
+        replayPath: '/v3/sync/stream',
+        replayTransport: 'http_post',
+        needsBootstrap: false,
+      },
+    },
+    sessionOrderByScope: { 'persisted-scope': [sessionA.id, sessionB.id] },
+    sidebarSessionsById: {
+      [sessionA.id]: { session: sessionA, projection: projectionA },
+      [sessionB.id]: { session: sessionB, projection: projectionB },
+    },
+  }
+}
+
+test('bootstrap controller restores selected persisted owner and tail before network bootstrap', async () => {
+  resetDesktopV3BootstrapControllerForTests()
+  let state = createEmptyDesktopV3CacheState()
+  const order: string[] = []
+  const readTailSessionIds: string[] = []
+  const persistedTail = buildPersistedDesktopV3MessageTailV1({
+    ownerKey: persistedOwner.key,
+    sessionId: sessionA.id,
+    persistedAt: 2_000,
+    messages: [messageA2, messageA1],
+    sourceMessageCount: sessionA.message_count,
+    sourceLastMessageAt: sessionA.last_message_at,
+    sourceProjectionHighWatermarkSeq: projectionA.projection_high_watermark_seq,
+    hydratedAt: 2_001,
+  })
+
+  await bootstrapDesktopV3Sidebar({
+    loadActiveOwnerKey: () => {
+      order.push('load-active-owner')
+      return persistedOwner.key
+    },
+    readOwner: async () => {
+      order.push('read-owner')
+      return persistedOwnerRecordFixture()
+    },
+    readMessageTail: async (_ownerKey, sessionId) => {
+      order.push('read-message-tail')
+      readTailSessionIds.push(sessionId)
+      return persistedTail
+    },
+    postBootstrap: async () => {
+      order.push('post-bootstrap')
+      assert.equal(state.desktopSidebarBootstrap.status, 'cached')
+      assert.equal(state.desktopInitialHydrate.status, 'cached')
+      assert.equal(state.messagesBySession[sessionA.id].source, 'persisted')
+      assert.deepEqual(state.messagesBySession[sessionA.id].items.map((message) => message.id), [messageA1.id, messageA2.id])
+      return snapshotFixture({
+        scope_id: 'scope-network',
+        sessions_by_id: {},
+        projections_by_session: {},
+        session_order: [],
+        messages_by_session: {},
+        run_intents_by_session: {},
+      })
+    },
+    postHydrate: async () => {
+      throw new Error('hydrate should not run for empty network session order')
+    },
+    dispatch: (action: DesktopV3CacheAction) => {
+      order.push(`dispatch:${action.type}`)
+      state = desktopV3CacheReducer(state, action)
+    },
+  })
+
+  assert.deepEqual(readTailSessionIds, [sessionA.id])
+  assert.equal(order.indexOf('dispatch:desktopV3Cache.restore') < order.indexOf('post-bootstrap'), true)
+  assert.equal(state.desktopSidebarBootstrap.status, 'ready')
+  assert.equal(state.desktopSidebarBootstrap.stale, false)
+})
+
+test('bootstrap controller cold-misses to normal network path when persisted owner is unavailable', async () => {
+  resetDesktopV3BootstrapControllerForTests()
+  let state = createEmptyDesktopV3CacheState()
+  const actions: DesktopV3CacheAction[] = []
+  let postBootstrapCalled = false
+
+  await bootstrapDesktopV3Sidebar({
+    loadActiveOwnerKey: () => persistedOwner.key,
+    readOwner: async () => undefined,
+    readMessageTail: async () => {
+      throw new Error('message tail should not be read without owner')
+    },
+    postBootstrap: async () => {
+      postBootstrapCalled = true
+      return snapshotFixture({
+        scope_id: 'cold-scope',
+        sessions_by_id: {},
+        projections_by_session: {},
+        session_order: [],
+        messages_by_session: {},
+        run_intents_by_session: {},
+      })
+    },
+    postHydrate: async () => {
+      throw new Error('hydrate should not run for empty network session order')
+    },
+    dispatch: (action: DesktopV3CacheAction) => {
+      actions.push(action)
+      state = desktopV3CacheReducer(state, action)
+    },
+  })
+
+  assert.equal(postBootstrapCalled, true)
+  assert.equal(actions.some((action) => action.type === 'desktopV3Cache.restore'), false)
+  assert.equal(actions[0].type, 'desktopSidebarBootstrap.update')
+  assert.equal(actions[0].type === 'desktopSidebarBootstrap.update' ? actions[0].patch.status : '', 'loading')
+  assert.equal(state.desktopSidebarBootstrap.status, 'ready')
+  assert.equal(state.desktopSidebarBootstrap.scopeId, 'cold-scope')
+})
 
 test('bootstrap controller dispatches bootstrapResponseToAction and stores scope id', async () => {
   resetDesktopV3BootstrapControllerForTests()
@@ -110,6 +248,7 @@ test('bootstrap controller coalesces concurrent in-flight bootstrap calls only',
     dispatch: () => {},
   })
 
+  await Promise.resolve()
   assert.equal(calls, 1)
 
   resolveBootstrap(snapshotFixture({ scope_id: 'scope-a', messages_by_session: {} }))

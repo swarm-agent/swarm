@@ -86,6 +86,8 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
     case 'session.select':
       state.selectedSessionId = action.sessionId?.trim() || undefined
       return state
+    case 'desktopV3Cache.restore':
+      return applyPersistedRestore(state, action.owner, action.selectedMessageTail)
     case 'snapshot.apply':
       return applyBootstrapSnapshot(state, action.snapshot)
     case 'hydrate.apply':
@@ -133,6 +135,109 @@ export function applyBootstrapSnapshot(
   raw: SyncSnapshotResponse,
 ): DesktopV3CacheState {
   return applySnapshot(state, { source: 'bootstrap', scopeId: raw.scope_id, snapshot: raw })
+}
+
+export function applyPersistedRestore(
+  state: DesktopV3CacheState,
+  owner: {
+    selectedSessionId?: string
+    syncScopesById: DesktopV3CacheState['syncScopesById']
+    sessionOrderByScope: DesktopV3CacheState['sessionOrderByScope']
+    sidebarSessionsById: Record<string, {
+      session: SessionSnapshot
+      projection?: DesktopV3CacheState['projectionsBySession'][string]
+      tombstone?: DesktopV3CacheState['tombstonesBySession'][string]
+      runIntents?: V3SessionRunIntent[]
+    }>
+  },
+  selectedMessageTail?: {
+    sessionId: string
+    messages: MessageSnapshot[]
+    sourceMessageCount?: number
+    sourceLastMessageAt?: number
+    sourceProjectionHighWatermarkSeq?: number
+    hydratedAt?: number
+  },
+): DesktopV3CacheState {
+  state.syncScopesById = {}
+  for (const [scopeId, scope] of Object.entries(owner.syncScopesById)) {
+    state.syncScopesById[scopeId] = {
+      ...scope,
+      needsBootstrap: true,
+      lastErrorCode: undefined,
+      lastError: undefined,
+    }
+  }
+
+  state.sessionOrderByScope = {}
+  for (const [scopeId, order] of Object.entries(owner.sessionOrderByScope)) {
+    state.sessionOrderByScope[scopeId] = [...order]
+  }
+
+  state.sessionsById = {}
+  state.projectionsBySession = {}
+  state.tombstonesBySession = {}
+  state.messagesBySession = {}
+  state.eventsBySession = {}
+  state.runIntentsBySession = {}
+  state.currentRunIntentBySession = {}
+  state.liveRunsBySession = {}
+  state.plansBySession = {}
+  state.planRevisionsBySession = {}
+  state.permissionsBySession = {}
+  state.usageBySession = {}
+  state.preferencesBySession = {}
+  state.agentModelPolicyBySession = {}
+  state.historyManifestsBySession = {}
+  state.historyChunksById = {}
+  state.omissionsByScope = {}
+  state.paginationByScope = {}
+  state.watermarksByScope = {}
+
+  for (const [sessionId, entry] of Object.entries(owner.sidebarSessionsById)) {
+    state.sessionsById[sessionId] = {
+      kind: 'full',
+      session: entry.session,
+      needsHydrate: true,
+    }
+    if (entry.projection) state.projectionsBySession[sessionId] = entry.projection
+    if (entry.tombstone) state.tombstonesBySession[sessionId] = entry.tombstone
+    for (const runIntent of entry.runIntents ?? []) {
+      upsertRunIntent(state, sessionId, runIntent)
+    }
+  }
+
+  state.selectedSessionId = owner.selectedSessionId
+  if (selectedMessageTail !== undefined) {
+    state.messagesBySession[selectedMessageTail.sessionId] = buildMessageListCache(selectedMessageTail.messages, {
+      sourceMessageCount: selectedMessageTail.sourceMessageCount,
+      sourceLastMessageAt: selectedMessageTail.sourceLastMessageAt,
+      sourceProjectionHighWatermarkSeq: selectedMessageTail.sourceProjectionHighWatermarkSeq,
+      hydratedAt: selectedMessageTail.hydratedAt,
+      source: 'persisted',
+    })
+  }
+
+  const firstScopeId = Object.keys(state.syncScopesById)[0]
+  state.desktopSidebarBootstrap = {
+    status: 'cached',
+    scopeId: firstScopeId,
+    error: undefined,
+    stale: true,
+    source: 'persisted',
+  }
+  state.desktopInitialHydrate = {
+    status: selectedMessageTail === undefined ? 'idle' : 'cached',
+    requestedSessionIds: selectedMessageTail === undefined ? [] : [selectedMessageTail.sessionId],
+    hydratedSessionIds: selectedMessageTail === undefined ? [] : [selectedMessageTail.sessionId],
+    scopeId: firstScopeId,
+    error: undefined,
+    stale: true,
+    source: selectedMessageTail === undefined ? undefined : 'persisted',
+  }
+  state.realtime.needsBootstrap = true
+
+  return state
 }
 
 export function applySnapshot(

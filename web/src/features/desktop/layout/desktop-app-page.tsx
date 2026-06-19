@@ -104,7 +104,7 @@ function DesktopV3ChatPane({
   messagesLoaded,
 }: {
   selectedSessionId?: string
-  initialHydrateStatus: 'idle' | 'loading' | 'ready' | 'error'
+  initialHydrateStatus: 'idle' | 'loading' | 'cached' | 'ready' | 'error'
   renderedMessages: RenderedSessionMessages
   messagesLoaded: boolean
 }) {
