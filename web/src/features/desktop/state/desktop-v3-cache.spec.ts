@@ -433,6 +433,7 @@ test('hydrate explicit empty message list is authoritative when messages are in 
 test('metadata-only hydrate validates subset but ignores empty message payload when messages are out of scope', () => {
   const state = bootstrappedState()
   applyHydrateSnapshot(state, hydrateSnapshotFixture(), [sessionB.id])
+  state.sessionsById[sessionB.id].needsHydrate = true
   applyHydrateSnapshot(state, hydrateSnapshotFixture({
     messages_by_session: { [sessionB.id]: [] },
     events_by_session: { [sessionB.id]: [] },
@@ -446,6 +447,30 @@ test('metadata-only hydrate validates subset but ignores empty message payload w
   }), [sessionB.id])
 
   assert.deepEqual(state.messagesBySession[sessionB.id].items.map((message) => message.id), ['msg-b-1'])
+  assert.equal(state.sessionsById[sessionB.id]?.needsHydrate, true)
+})
+
+test('hydrate completion accepts authoritative messages and tombstones only', () => {
+  const state = bootstrappedState()
+  state.sessionsById[sessionB.id].needsHydrate = true
+  applyHydrateSnapshot(state, hydrateSnapshotFixture({ messages_by_session: { [sessionB.id]: [] } }), [sessionB.id])
+  assert.deepEqual(state.messagesBySession[sessionB.id].items, [])
+  assert.equal(state.sessionsById[sessionB.id]?.needsHydrate, false)
+
+  state.sessionsById[sessionB.id].needsHydrate = true
+  applyHydrateSnapshot(state, hydrateSnapshotFixture({
+    messages_by_session: {},
+    tombstones_by_session: { [sessionB.id]: tombstoneB },
+    sync_scope: {
+      surface: 'desktop',
+      stream_kind: 'v3.sync.snapshot',
+      selector_filter_hash: 'session-b-hash',
+      resource_set: 'run_intents',
+    },
+    scope_id: 'session-b-hash:run_intents',
+  }), [sessionB.id])
+  assert.equal(state.sessionsById[sessionB.id]?.needsHydrate, false)
+  assert.deepEqual(state.sessionOrderByScope['selector-hash:messages,run_intents'], [sessionA.id])
 })
 
 test('hydrate run intents obey resource set authority', () => {

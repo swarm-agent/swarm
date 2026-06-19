@@ -16,6 +16,7 @@ import {
   sessionA,
   sessionB,
   snapshotFixture,
+  tombstoneB,
 } from './desktop-v3-cache.backend-fixtures'
 import { createDesktopV3CacheOwner } from './desktop-v3-cache-owner'
 import { buildPersistedDesktopV3MessageTailV1, DESKTOP_V3_CACHE_SCHEMA_VERSION, type PersistedDesktopV3MessageTailV1, type PersistedDesktopV3OwnerV1 } from './desktop-v3-cache-persisted-types'
@@ -180,6 +181,89 @@ test('hydrate response populates message cache for all initial sessions', async 
   assert.equal(state.desktopInitialHydrate.status, 'ready')
   assert.deepEqual(new Set(state.desktopInitialHydrate.hydratedSessionIds), new Set([sessionA.id, sessionB.id]))
   assert.equal(state.syncScopesById['hydrate-scope'].endpointCursor, 'v3c1.hydrate')
+})
+
+test('initial hydrate reports completion only for authoritative messages or tombstones', async () => {
+  resetDesktopV3InitialHydrateControllerForTests()
+  let state = createEmptyDesktopV3CacheState()
+
+  await hydrateDesktopV3InitialSessions({
+    sessionIds: [sessionA.id],
+    postHydrate: async () => hydrateSnapshotFixture({
+      scope_id: 'hydrate-projections-only',
+      selector: { kind: 'session_ids', session_ids: [sessionA.id] },
+      sessions_by_id: { [sessionA.id]: sessionA },
+      projections_by_session: { [sessionA.id]: projectionA },
+      session_order: [sessionA.id],
+      messages_by_session: { [sessionA.id]: [messageA1] },
+      sync_scope: {
+        surface: 'desktop',
+        stream_kind: 'v3.sync.snapshot',
+        selector_filter_hash: 'session-a-hash',
+        resource_set: 'run_intents',
+      },
+    }),
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+  })
+
+  assert.equal(state.messagesBySession[sessionA.id], undefined)
+  assert.equal(state.sessionsById[sessionA.id]?.needsHydrate, true)
+  assert.deepEqual(state.desktopInitialHydrate.hydratedSessionIds, [])
+
+  await hydrateDesktopV3InitialSessions({
+    sessionIds: [sessionA.id],
+    postHydrate: async () => hydrateSnapshotFixture({
+      scope_id: 'hydrate-messages',
+      selector: { kind: 'session_ids', session_ids: [sessionA.id] },
+      sessions_by_id: { [sessionA.id]: sessionA },
+      projections_by_session: { [sessionA.id]: projectionA },
+      session_order: [sessionA.id],
+      messages_by_session: { [sessionA.id]: [messageA1] },
+      sync_scope: {
+        surface: 'desktop',
+        stream_kind: 'v3.sync.snapshot',
+        selector_filter_hash: 'session-a-hash',
+        resource_set: 'messages',
+      },
+    }),
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+  })
+
+  assert.equal(state.messagesBySession[sessionA.id].items[0].id, messageA1.id)
+  assert.equal(state.sessionsById[sessionA.id]?.needsHydrate, false)
+  assert.deepEqual(state.desktopInitialHydrate.hydratedSessionIds, [sessionA.id])
+
+  state.sessionOrderByScope['scope-a'] = [sessionA.id]
+  state.sessionsById[sessionA.id].needsHydrate = true
+  await hydrateDesktopV3InitialSessions({
+    sessionIds: [sessionA.id],
+    postHydrate: async () => hydrateSnapshotFixture({
+      scope_id: 'hydrate-tombstone',
+      selector: { kind: 'session_ids', session_ids: [sessionA.id] },
+      sessions_by_id: {},
+      projections_by_session: {},
+      session_order: [],
+      messages_by_session: {},
+      tombstones_by_session: { [sessionA.id]: { ...tombstoneB, session_id: sessionA.id } },
+      sync_scope: {
+        surface: 'desktop',
+        stream_kind: 'v3.sync.snapshot',
+        selector_filter_hash: 'session-a-hash',
+        resource_set: 'run_intents',
+      },
+    }),
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+  })
+
+  assert.equal(state.sessionsById[sessionA.id]?.needsHydrate, false)
+  assert.deepEqual(state.desktopInitialHydrate.hydratedSessionIds, [sessionA.id])
+  assert.deepEqual(state.sessionOrderByScope['scope-a'], [])
 })
 
 test('hydrate failure preserves existing cache', async () => {

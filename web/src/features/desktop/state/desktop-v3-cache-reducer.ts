@@ -887,9 +887,11 @@ export function syncResourceSetContains(resourceSet: string | undefined, resourc
   return resourceSet.split(',').some((part) => part.trim() === wanted)
 }
 
-function hydrateResponseCompletesSession(snapshot: SyncSnapshotResponse, sessionId: string): boolean {
-  return Object.prototype.hasOwnProperty.call(snapshot.messages_by_session ?? {}, sessionId)
-    || Object.prototype.hasOwnProperty.call(snapshot.tombstones_by_session ?? {}, sessionId)
+export function hydrateResponseCompletesSession(snapshot: SyncSnapshotResponse, sessionId: string): boolean {
+  const hasAuthoritativeMessages = syncResourceSetContains(snapshot.sync_scope?.resource_set, 'messages')
+    && Object.prototype.hasOwnProperty.call(snapshot.messages_by_session ?? {}, sessionId)
+  const hasAuthoritativeTombstone = Object.prototype.hasOwnProperty.call(snapshot.tombstones_by_session ?? {}, sessionId)
+  return hasAuthoritativeMessages || hasAuthoritativeTombstone
 }
 
 function isMessageListNewerThanTail(

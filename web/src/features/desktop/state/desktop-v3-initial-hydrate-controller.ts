@@ -1,5 +1,6 @@
 import { hydrateResponseToAction } from './desktop-v3-cache-wire'
 import { dispatchDesktopV3Cache } from './desktop-v3-cache-store'
+import { hydrateResponseCompletesSession } from './desktop-v3-cache-reducer'
 import {
   buildDesktopV3InitialHydrateInput,
   postDesktopV3SyncHydrate,
@@ -242,15 +243,8 @@ async function hydrateBatch(input: {
 }
 
 function completedHydrateSessionIds(response: SyncSnapshotResponse, requestedSessionIds: string[]): string[] {
-  const requested = new Set(requestedSessionIds)
-  const completed = new Set<string>()
-  for (const sessionId of Object.keys(response.messages_by_session ?? {})) {
-    if (requested.has(sessionId)) completed.add(sessionId)
-  }
-  for (const sessionId of Object.keys(response.tombstones_by_session ?? {})) {
-    if (requested.has(sessionId)) completed.add(sessionId)
-  }
-  return [...completed]
+  return normalizeOrderedSessionIds(requestedSessionIds)
+    .filter((sessionId) => hydrateResponseCompletesSession(response, sessionId))
 }
 
 function dispatchInitialHydrateReady(
