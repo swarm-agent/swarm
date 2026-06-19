@@ -13,6 +13,7 @@ import {
   buildPersistedDesktopV3MessageTailV1FromState,
   buildPersistedDesktopV3OwnerV1FromState,
   createDesktopV3PersistenceController,
+  startDesktopV3PersistenceController,
   stopDesktopV3PersistenceControllerForTests,
 } from './desktop-v3-persistence-controller'
 import { bootstrapResponseToAction, hydrateResponseToAction, selectSession } from './desktop-v3-cache-wire'
@@ -187,6 +188,113 @@ test('rapid mutations are coalesced into one debounced write', async () => {
   assert.equal(writes, 1)
 
   controller.stop()
+  await resetHarness()
+})
+
+test('shared controller restarts after cleanup and writes one changed owner/tail', async () => {
+  await resetHarness()
+  const writes: Array<{ ownerKey: string; tailIds: string[] }> = []
+  const startShared = () => startDesktopV3PersistenceController({
+    resolveOwner: () => ownerA,
+    writeOwnerAndTails: async (owner, tails) => {
+      writes.push({ ownerKey: owner.ownerKey, tailIds: tails.map((tail) => tail.sessionId) })
+      return true
+    },
+    saveActiveOwnerKey: () => true,
+  })
+
+  const firstCleanup = startShared()
+  firstCleanup()
+  const secondCleanup = startShared()
+
+  dispatchDesktopV3Cache(hydrateResponseToAction(hydrateSnapshotFixture({
+    sessions_by_id: { [sessionA.id]: sessionA },
+    projections_by_session: { [sessionA.id]: projectionA },
+    messages_by_session: { [sessionA.id]: [messageA1] },
+    session_order: [sessionA.id],
+    selector: { kind: 'session_ids', session_ids: [sessionA.id] },
+  }), [sessionA.id]))
+  await Promise.resolve()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  assert.deepEqual(writes, [{ ownerKey: ownerA.key, tailIds: [sessionA.id] }])
+  secondCleanup()
+  await resetHarness()
+})
+
+test('StrictMode-shaped setup cleanup setup leaves the second shared controller subscribed', async () => {
+  await resetHarness()
+  const writes: Array<{ ownerKey: string; tailIds: string[] }> = []
+
+  const setup = () => startDesktopV3PersistenceController({
+    resolveOwner: () => ownerA,
+    writeOwnerAndTails: async (owner, tails) => {
+      writes.push({ ownerKey: owner.ownerKey, tailIds: tails.map((tail) => tail.sessionId) })
+      return true
+    },
+    saveActiveOwnerKey: () => true,
+  })
+
+  const cleanup = setup()
+  cleanup()
+  const realCleanup = setup()
+
+  dispatchDesktopV3Cache(hydrateResponseToAction(hydrateSnapshotFixture({
+    sessions_by_id: { [sessionA.id]: sessionA },
+    projections_by_session: { [sessionA.id]: projectionA },
+    messages_by_session: { [sessionA.id]: [messageA2] },
+    session_order: [sessionA.id],
+    selector: { kind: 'session_ids', session_ids: [sessionA.id] },
+  }), [sessionA.id]))
+  await Promise.resolve()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  assert.deepEqual(writes, [{ ownerKey: ownerA.key, tailIds: [sessionA.id] }])
+  realCleanup()
+  await resetHarness()
+})
+
+test('stopping controller flushes already scheduled dirty transcript state', async () => {
+  await resetHarness()
+  const timers: Array<() => void> = []
+  const writes: Array<{ ownerKey: string; tailIds: string[] }> = []
+  const controller = createDesktopV3PersistenceController({
+    resolveOwner: () => ownerA,
+    writeOwnerAndTails: async (owner, tails) => {
+      writes.push({ ownerKey: owner.ownerKey, tailIds: tails.map((tail) => tail.sessionId) })
+      return true
+    },
+    scheduler: {
+      setTimeout(callback) {
+        timers.push(callback)
+        return callback
+      },
+      clearTimeout(timer) {
+        const index = timers.indexOf(timer as () => void)
+        if (index >= 0) timers.splice(index, 1)
+      },
+    },
+  })
+  resetDesktopV3CacheForTests(apply([
+    bootstrapResponseToAction(snapshotFixture({ messages_by_session: {}, events_by_session: {} })),
+    hydrateResponseToAction(hydrateSnapshotFixture({
+      sessions_by_id: { [sessionB.id]: sessionB },
+      projections_by_session: { [sessionB.id]: projectionB },
+      messages_by_session: { [sessionB.id]: [messageB1] },
+      session_order: [sessionB.id],
+    }), [sessionB.id]),
+  ]))
+  controller.start()
+
+  dispatchDesktopV3Cache({ type: 'mutation.messageResult', raw: { ok: true, session_id: sessionB.id, message: { ...messageB1, id: 'msg-b-stop', global_seq: 4 }, run_intent: null, mutation: {}, realtime_outbox: null }, clientRequestId: 'client-stop', messageId: 'pending-stop' })
+  await Promise.resolve()
+  assert.equal(timers.length, 1)
+
+  controller.stop()
+  await controller.flushNow()
+
+  assert.deepEqual(writes, [{ ownerKey: ownerA.key, tailIds: [sessionB.id] }])
+  assert.equal(timers.length, 0)
   await resetHarness()
 })
 

@@ -41,13 +41,30 @@ let sharedStop: (() => void) | undefined
 
 export function startDesktopV3PersistenceController(deps: DesktopV3PersistenceControllerDeps = {}): () => void {
   if (sharedStop) return sharedStop
-  sharedController = createDesktopV3PersistenceController(deps)
-  sharedStop = sharedController.start()
-  return sharedStop
+
+  const controller = createDesktopV3PersistenceController(deps)
+  const stopController = controller.start()
+  let released = false
+
+  const release = () => {
+    if (released) return
+    released = true
+
+    stopController()
+
+    if (sharedController === controller) {
+      sharedController = undefined
+      sharedStop = undefined
+    }
+  }
+
+  sharedController = controller
+  sharedStop = release
+  return release
 }
 
 export function stopDesktopV3PersistenceControllerForTests(): void {
-  sharedController?.stop()
+  sharedStop?.()
   sharedController = undefined
   sharedStop = undefined
 }
@@ -66,6 +83,8 @@ export function createDesktopV3PersistenceController(
 
   let unsubscribe: (() => void) | undefined
   let stopped = false
+  let stopping = false
+  let lifecycleVersion = 0
   let pendingTimer: unknown
   let revision = 0
   let ownerDirtyVersion = 0
@@ -104,6 +123,10 @@ export function createDesktopV3PersistenceController(
 
   const scheduleFlush = (immediate: boolean) => {
     if (stopped) return
+    if (stopping) {
+      flushAgain = true
+      return
+    }
     if (immediate) {
       clearPendingTimer()
       void flushNow()
@@ -242,16 +265,27 @@ export function createDesktopV3PersistenceController(
   }
 
   const stop = () => {
-    stopped = true
+    if ((stopped || stopping) && !unsubscribe) return
+    const stopVersion = ++lifecycleVersion
+    stopping = true
     clearPendingTimer()
     unsubscribe?.()
     unsubscribe = undefined
+    void flushNow()
+      .catch(() => undefined)
+      .finally(() => {
+        if (lifecycleVersion !== stopVersion) return
+        stopped = true
+        stopping = false
+      })
   }
 
   return {
     start() {
       if (unsubscribe) return stop
+      lifecycleVersion += 1
       stopped = false
+      stopping = false
       unsubscribe = subscribe(handleMutation)
       return stop
     },
