@@ -97,6 +97,75 @@ test('Desktop V3 realtime transport persists endpoint.watermark cursor without a
   transport.stop()
 })
 
+test('Desktop V3 realtime transport does not advance cursor for auto-discovery before durable event', async () => {
+  const resumes: SessionV3RealtimeResumeWire[] = []
+  const sockets: FakeWebSocket[] = []
+  const transport = new DesktopV3RealtimeTransport({
+    getEndpointCursor: () => 'C0',
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+    onResumeSent: (resume) => resumes.push(resume),
+    livenessTimeoutMs: 60_000,
+  })
+
+  transport.registerWorkset({
+    workset_id: 'desktop-workset',
+    subscription_id: 'desktop-workset-subscription',
+    selector: { kind: 'global', global: true },
+    auto_subscribe_sessions: true,
+  })
+
+  await transport.start()
+  sockets[0].open()
+  assert.equal(resumes[0].endpoint_cursor, 'C0')
+
+  sockets[0].emit({
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'workset.session.discovered',
+    workset_id: 'desktop-workset',
+    session_id: 'session-new',
+    subscription_id: 'sub-session-new',
+    auto_subscribed: true,
+    endpoint_cursor: 'C1',
+  })
+
+  sockets[0].close()
+  transport.stop('simulate disconnect before durable event')
+  await transport.start()
+  sockets[1].open()
+
+  assert.equal(resumes[1].endpoint_cursor, 'C0')
+  assert.equal(resumes[1].subscriptions?.[0]?.session_id, 'session-new')
+  assert.equal(resumes[1].subscriptions?.[0]?.endpoint_cursor, 'C0')
+
+  sockets[1].emit({
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'event',
+    session_id: 'session-new',
+    endpoint_cursor: 'C1',
+    event: {
+      id: 'event-session-created',
+      session_id: 'session-new',
+      event_type: 'session.created',
+      seq: 1,
+      payload: {},
+    },
+  })
+
+  transport.stop('simulate reconnect after durable event')
+  await transport.start()
+  sockets[2].open()
+
+  assert.equal(resumes[2].endpoint_cursor, 'C1')
+  assert.equal(resumes[2].subscriptions?.[0]?.endpoint_cursor, 'C1')
+  transport.stop()
+})
+
 test('Desktop V3 realtime transport sends one resume containing workset and known sessions', async () => {
   const resumes: SessionV3RealtimeResumeWire[] = []
   const socket = new FakeWebSocket()
