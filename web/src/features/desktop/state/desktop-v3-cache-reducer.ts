@@ -505,7 +505,18 @@ export function upsertCommittedMessage(
     nextItems.push(message)
   }
 
-  state.messagesBySession[sessionId] = buildMessageListCache(nextItems)
+  state.messagesBySession[sessionId] = buildMessageListCache(nextItems, {
+    knownTail: list.knownTail,
+    knownFull: list.knownFull,
+    sourceMessageCount: Math.max(list.sourceMessageCount ?? 0, nextItems.length),
+    sourceLastMessageAt: Math.max(list.sourceLastMessageAt ?? 0, message.created_at),
+    sourceProjectionHighWatermarkSeq: Math.max(
+      list.sourceProjectionHighWatermarkSeq ?? 0,
+      state.projectionsBySession[sessionId]?.projection_high_watermark_seq ?? 0,
+    ),
+    hydratedAt: Date.now(),
+    source: 'network',
+  })
   removeCommittedPendingForSession(state, sessionId, [message])
   maybeClearLiveAssistantOverlay(state, sessionId, message)
 }
@@ -634,14 +645,32 @@ export function applyMessagesBySessionFromSnapshot(
   if (!messagesBySession) return state
 
   for (const [sessionId, messages] of Object.entries(messagesBySession)) {
-    state.messagesBySession[sessionId] = buildMessageListCache(messages)
+    const sessionRecord = state.sessionsById[sessionId]
+    const session = sessionRecord?.kind === 'full' ? sessionRecord.session : undefined
+    state.messagesBySession[sessionId] = buildMessageListCache(messages, {
+      sourceMessageCount: session?.message_count,
+      sourceLastMessageAt: session?.last_message_at,
+      sourceProjectionHighWatermarkSeq: state.projectionsBySession[sessionId]?.projection_high_watermark_seq,
+      hydratedAt: Date.now(),
+      source: 'network',
+    })
     removeCommittedPendingForSession(state, sessionId, messages)
   }
 
   return state
 }
 
-export function buildMessageListCache(messages: MessageSnapshot[]): MessageListCache {
+interface BuildMessageListCacheOptions {
+  knownTail?: MessageListCache['knownTail']
+  knownFull?: boolean
+  sourceMessageCount?: number
+  sourceLastMessageAt?: number
+  sourceProjectionHighWatermarkSeq?: number
+  hydratedAt?: number
+  source?: MessageListCache['source']
+}
+
+export function buildMessageListCache(messages: MessageSnapshot[], options: BuildMessageListCacheOptions = {}): MessageListCache {
   const deduped: MessageSnapshot[] = []
   const indexById: Record<string, number> = {}
   const indexBySeq: Record<string, number> = {}
@@ -671,7 +700,18 @@ export function buildMessageListCache(messages: MessageSnapshot[]): MessageListC
     byMessageId[message.id] = index
     byGlobalSeq[messageGlobalSeqKey(message)] = index
   })
-  return { items, byMessageId, byGlobalSeq }
+  return {
+    items,
+    byMessageId,
+    byGlobalSeq,
+    knownTail: options.knownTail,
+    knownFull: options.knownFull,
+    sourceMessageCount: options.sourceMessageCount,
+    sourceLastMessageAt: options.sourceLastMessageAt,
+    sourceProjectionHighWatermarkSeq: options.sourceProjectionHighWatermarkSeq,
+    hydratedAt: options.hydratedAt,
+    source: options.source,
+  }
 }
 
 export function syncResourceSetContains(resourceSet: string | undefined, resource: string): boolean {

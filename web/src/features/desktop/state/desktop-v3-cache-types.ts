@@ -376,6 +376,8 @@ export type SessionCacheRecord =
       discoveredAt?: number
     }
 
+export type MessageListCacheSource = 'persisted' | 'network'
+
 export interface MessageListCache {
   items: MessageSnapshot[]
   byMessageId: Record<string, number>
@@ -385,6 +387,11 @@ export interface MessageListCache {
     cursor: string
   }
   knownFull?: boolean
+  sourceMessageCount?: number
+  sourceLastMessageAt?: number
+  sourceProjectionHighWatermarkSeq?: number
+  hydratedAt?: number
+  source?: MessageListCacheSource
 }
 
 export interface PendingUserMessage {

@@ -111,7 +111,7 @@ async function startMockBackend(): Promise<{ server: Server; port: number; setMe
     const path = url.pathname
 
     if (path === '/v1/auth/desktop/session') {
-      writeJson(res, 200, { ok: true })
+      writeJson(res, 200, { ok: true, user_id: 'user-playwright', account_scope_id: 'acct-playwright' })
       return
     }
     if (path === '/v1/vault') {

@@ -60,15 +60,16 @@ func TestDesktopSessionBootstrapIssuesJWTAndProtectedAPIAcceptsAfterRestart(t *t
 		}
 	}
 	var response struct {
-		OK       bool   `json:"ok"`
-		Token    string `json:"token"`
-		UserID   string `json:"user_id"`
-		Username string `json:"username"`
+		OK             bool   `json:"ok"`
+		Token          string `json:"token"`
+		UserID         string `json:"user_id"`
+		AccountScopeID string `json:"account_scope_id"`
+		Username       string `json:"username"`
 	}
 	if err := json.Unmarshal(bootstrapRec.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode bootstrap response: %v", err)
 	}
-	if !response.OK || response.Token != cookie.Value || response.UserID != "user_desktop_jwt_test" || response.Username != "desktop-jwt-user" {
+	if !response.OK || response.Token != cookie.Value || response.UserID != "user_desktop_jwt_test" || response.AccountScopeID != "acct_desktop_jwt_test" || response.Username != "desktop-jwt-user" {
 		t.Fatalf("bootstrap response = %+v", response)
 	}
 
@@ -100,15 +101,16 @@ func TestLocalTransportSessionBootstrapReturnsTokenForTUI(t *testing.T) {
 		t.Fatalf("local transport session status=%d want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	var response struct {
-		OK       bool   `json:"ok"`
-		Token    string `json:"token"`
-		UserID   string `json:"user_id"`
-		Username string `json:"username"`
+		OK             bool   `json:"ok"`
+		Token          string `json:"token"`
+		UserID         string `json:"user_id"`
+		AccountScopeID string `json:"account_scope_id"`
+		Username       string `json:"username"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode local transport session response: %v", err)
 	}
-	if !response.OK || strings.TrimSpace(response.Token) == "" || response.UserID != "user_desktop_jwt_test" || response.Username != "desktop-jwt-user" {
+	if !response.OK || strings.TrimSpace(response.Token) == "" || response.UserID != "user_desktop_jwt_test" || response.AccountScopeID != "acct_desktop_jwt_test" || response.Username != "desktop-jwt-user" {
 		t.Fatalf("local transport session response = %+v", response)
 	}
 

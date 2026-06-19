@@ -124,7 +124,7 @@ async function startMockBackend(): Promise<{ server: Server; port: number; reque
       return writeJson(res, 500, { error: `legacy desktop sync route forbidden in browser runtime test: ${path}` })
     }
 
-    if (path === '/v1/auth/desktop/session') return writeJson(res, 200, { ok: true })
+    if (path === '/v1/auth/desktop/session') return writeJson(res, 200, { ok: true, user_id: 'user-playwright', account_scope_id: 'acct-playwright' })
     if (path === '/v1/vault') return writeJson(res, 200, { enabled: false, unlocked: true, unlock_required: false, storage_mode: 'memory' })
     if (path === '/v1/onboarding') {
       return writeJson(res, 200, {

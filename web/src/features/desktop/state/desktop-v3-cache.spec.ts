@@ -77,7 +77,7 @@ function eventFrame(eventType: string, event: V3SessionEvent, endpointCursor: st
   })
 }
 
-test('bootstrap stores scoped cursor, scope metadata, orders, run intents, and only present message keys', () => {
+test('bootstrap stores scoped cursor, scope metadata, orders, message source metadata, run intents, and only present message keys', () => {
   const state = bootstrappedState()
   const scopeId = 'selector-hash:messages,run_intents'
 
@@ -85,6 +85,11 @@ test('bootstrap stores scoped cursor, scope metadata, orders, run intents, and o
   assert.equal(state.syncScopesById[scopeId].selector.workspace_path, '/repo')
   assert.deepEqual(state.sessionOrderByScope[scopeId], [sessionA.id, sessionB.id])
   assert.equal(state.messagesBySession[sessionA.id].items.length, 2)
+  assert.equal(state.messagesBySession[sessionA.id].sourceMessageCount, sessionA.message_count)
+  assert.equal(state.messagesBySession[sessionA.id].sourceLastMessageAt, sessionA.last_message_at)
+  assert.equal(state.messagesBySession[sessionA.id].sourceProjectionHighWatermarkSeq, projectionA.projection_high_watermark_seq)
+  assert.equal(state.messagesBySession[sessionA.id].source, 'network')
+  assert.equal(typeof state.messagesBySession[sessionA.id].hydratedAt, 'number')
   assert.equal(state.messagesBySession[sessionB.id], undefined)
   assert.equal(state.runIntentsBySession[sessionA.id]['run-a'].status, 'running')
 })
