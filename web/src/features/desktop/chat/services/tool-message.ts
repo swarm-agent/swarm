@@ -103,11 +103,6 @@ function firstNonEmpty(...values: string[]): string {
   return "";
 }
 
-function clamp(text: string, max: number): string {
-  if (text.length <= max) return text;
-  return text.slice(0, max - 1) + "…";
-}
-
 function resolveToolTarget(
   argumentsJson: Record<string, unknown> | null,
 ): string | null {
@@ -319,7 +314,7 @@ function summarizeToolOutput(
       if (count > 0 || hasJsonKey(effective, "count"))
         notes.push(countLabel(count, "record", "records"));
       if (successCount > 0) notes.push(`${successCount} ok`);
-      if (url) return summaryWithNotes(`webfetch ${clamp(url, 80)}`, notes);
+      if (url) return summaryWithNotes(`webfetch ${url}`, notes);
       return summaryWithNotes("webfetch", notes);
     }
     case "task": {
@@ -383,7 +378,7 @@ function summarizeToolOutput(
           : null;
       const text = item ? jsonStr(item, "text") : "";
       const id = item ? jsonStr(item, "id") : jsonStr(effective, "id");
-      if (text) return `${summary} · ${[clamp(text, 80), ...notes].join(" · ")}`;
+      if (text) return `${summary} · ${[text, ...notes].join(" · ")}`;
       if (id) return `${summary} · ${[id, ...notes].join(" · ")}`;
       if (notes.length) return `${summary} (${notes.join(", ")})`;
       return summary;
@@ -391,7 +386,7 @@ function summarizeToolOutput(
     case "ask-user":
     case "ask_user": {
       const question = jsonStr(effective, "question");
-      if (question) return "ask-user " + clamp(question, 80);
+      if (question) return "ask-user " + question;
       return "ask-user";
     }
     case "exit-plan-mode":
@@ -404,7 +399,7 @@ function summarizeToolOutput(
       );
       if (exitPlanSummary) return exitPlanSummary;
       const title = jsonStr(effective, "title");
-      if (title) return "plan " + clamp(title, 80);
+      if (title) return "plan " + title;
       return tool === "permission" ? "permission" : "plan";
     }
     default:
@@ -476,7 +471,7 @@ function summarizePlanManageToolOutput(payload: Record<string, unknown>): string
   if (action) summary += ` ${planManageActionDisplay(action)}`;
 
   const notes: string[] = [];
-  if (title) notes.push(clamp(title, 80));
+  if (title) notes.push(title);
   else if (planId && action !== "list" && action !== "history") notes.push(planId);
 
   if (action === "list") {
@@ -495,7 +490,7 @@ function summarizePlanManageToolOutput(payload: Record<string, unknown>): string
 
   if (notes.length) return `${summary} (${notes.join(", ")})`;
   const fallback = jsonStr(payload, "summary");
-  return fallback ? `plan · ${clamp(fallback, 120)}` : summary;
+  return fallback ? `plan · ${fallback}` : summary;
 }
 
 function planListPreviewLine(plan: Record<string, unknown>): string {
@@ -527,7 +522,7 @@ function buildPlanManagePreviewLines(
   payload: Record<string, unknown> | null,
   maxLines: number,
 ): string[] {
-  if (!payload || maxLines <= 0) return [];
+  if (!payload) return [];
   const out: string[] = [];
   const action = normalizePlanManageAction(jsonStr(payload, "action"));
   if (action) pushPreviewLine(out, `action: ${planManageActionDisplay(action)}`, maxLines);
@@ -622,8 +617,8 @@ function formatDurationCompact(ms: number): string {
   return `${(ms / 60_000).toFixed(1)}m`;
 }
 
-function quotedSummary(value: string, max: number): string {
-  return JSON.stringify(clamp(value, max));
+function quotedSummary(value: string, _max: number): string {
+  return JSON.stringify(value);
 }
 
 function listModeLabel(mode: string): string {
@@ -691,16 +686,14 @@ function extractEditDiff(
   };
 }
 
-function previewTextLines(value: string, maxLines: number): string[] {
+function previewTextLines(value: string): string[] {
   if (!value) return [];
   return value
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
     .split("\n")
     .map((line) => line.trimEnd())
-    .filter((line) => line.trim() !== "")
-    .slice(0, maxLines)
-    .map((line) => clamp(line, 200));
+    .filter((line) => line.trim() !== "");
 }
 
 function taskPreviewText(payload: Record<string, unknown> | null): string {
@@ -816,14 +809,10 @@ function buildTaskToolRows(
 function pushPreviewLine(
   lines: string[],
   value: string,
-  maxLines: number,
+  _maxLines: number,
 ): void {
-  const trimmed = value.trim();
-  if (!trimmed || lines.length >= maxLines) {
-    return;
-  }
-  const next = clamp(trimmed, 200);
-  if (lines.includes(next)) {
+  const next = value.trim();
+  if (!next || lines.includes(next)) {
     return;
   }
   lines.push(next);
@@ -955,19 +944,16 @@ function buildSearchContentFileGroups(
   }
 
   return Array.from(fileMap.values()).map((fileGroup) => {
-    const displayedQueryKeys = fileGroup.queryOrder.slice(0, 3);
+    const displayedQueryKeys = fileGroup.queryOrder;
     const queryGroups: SearchToolLineGroup[] = displayedQueryKeys.map(
       (queryKey) => {
         const queryGroup = fileGroup.queryMap.get(queryKey);
         const allLines = queryGroup?.lines ?? [];
         return {
           query: queryGroup?.query ?? "",
-          lines: allLines.slice(0, 6),
-          matches: (queryGroup?.matches ?? []).slice(0, 6),
-          extraLineCount: Math.max(
-            0,
-            Math.max(allLines.length, queryGroup?.matches.length ?? 0) - 6,
-          ),
+          lines: allLines,
+          matches: queryGroup?.matches ?? [],
+          extraLineCount: 0,
         };
       },
     );
@@ -979,10 +965,7 @@ function buildSearchContentFileGroups(
       path: fileGroup.path,
       matchCount,
       queryGroups,
-      extraQueryCount: Math.max(
-        0,
-        fileGroup.queryOrder.length - displayedQueryKeys.length,
-      ),
+      extraQueryCount: 0,
     };
   });
 }
@@ -995,7 +978,7 @@ function extractPreviewLines(
 ): string[] {
   const tool = toolName.toLowerCase();
   if (tool === "thinking") {
-    return previewTextLines(outputText, 6);
+    return previewTextLines(outputText);
   }
   const effective = outputJson ?? argumentsJson;
   if (!effective) return [];
@@ -1003,7 +986,7 @@ function extractPreviewLines(
   switch (tool) {
     case "compact": {
       const lines: string[] = [];
-      for (const line of previewTextLines(outputText, 6)) {
+      for (const line of previewTextLines(outputText)) {
         pushPreviewLine(lines, line, 6);
       }
       return lines;
@@ -1015,7 +998,7 @@ function extractPreviewLines(
         jsonStr(outputJson, "stdout") ||
         jsonStr(outputJson, "output_text") ||
         (outputJson ? "" : outputText);
-      for (const line of previewTextLines(stdout, 5)) {
+      for (const line of previewTextLines(stdout)) {
         pushPreviewLine(lines, line, 6);
       }
       return lines;
@@ -1026,7 +1009,7 @@ function extractPreviewLines(
       const out: string[] = [];
       const matches = outputJson?.matches;
       if (!Array.isArray(matches) || matches.length === 0) return out;
-      for (let i = 0; i < matches.length && out.length < 6; i++) {
+      for (let i = 0; i < matches.length; i++) {
         const m = matches[i] as Record<string, unknown> | null;
         if (!m || typeof m !== "object") continue;
         const path = typeof m["path"] === "string" ? m["path"] : "";
@@ -1034,9 +1017,9 @@ function extractPreviewLines(
         const text =
           typeof m["text"] === "string" ? (m["text"] as string).trim() : "";
         if (path && line > 0 && text) {
-          out.push(clamp(`${path}:${line}: ${text}`, 200));
+          out.push(`${path}:${line}: ${text}`);
         } else if (text) {
-          out.push(clamp(text, 200));
+          out.push(text);
         }
       }
       return out;
@@ -1049,7 +1032,7 @@ function extractPreviewLines(
       const queryResults = outputJson?.results;
       if (!Array.isArray(queryResults)) return out;
       const multiQuery = queryResults.length > 1;
-      for (let i = 0; i < queryResults.length && out.length < 6; i++) {
+      for (let i = 0; i < queryResults.length; i++) {
         const item = queryResults[i] as Record<string, unknown> | null;
         if (!item || typeof item !== "object") continue;
         const query =
@@ -1065,11 +1048,11 @@ function extractPreviewLines(
         }
         const hits = item["results"];
         if (!Array.isArray(hits)) continue;
-        for (let j = 0; j < hits.length && out.length < 6; j++) {
+        for (let j = 0; j < hits.length; j++) {
           const hit = hits[j] as Record<string, unknown> | null;
           if (!hit || typeof hit !== "object") continue;
           pushPreviewLine(out, webHitLabel(hit), 6);
-          if (!multiQuery && out.length >= 3) break;
+
         }
       }
       return out;
@@ -1078,7 +1061,7 @@ function extractPreviewLines(
       const out: string[] = [];
       const results = outputJson?.results;
       if (!Array.isArray(results)) return out;
-      for (let i = 0; i < results.length && out.length < 6; i++) {
+      for (let i = 0; i < results.length; i++) {
         const item = results[i] as Record<string, unknown> | null;
         if (!item || typeof item !== "object") continue;
         pushPreviewLine(out, webHitLabel(item), 6);
@@ -1090,7 +1073,7 @@ function extractPreviewLines(
     }
     case "task": {
       const out: string[] = [];
-      for (const row of buildTaskToolRows(effective).slice(0, 6)) {
+      for (const row of buildTaskToolRows(effective)) {
         const status = row.status ? `[${row.status}]` : "";
         const tool = row.tool && row.tool !== "-" ? ` · ${row.tool}` : "";
         const time = row.time ? ` · ${row.time}` : "";
@@ -1113,7 +1096,7 @@ function extractPreviewLines(
       if (openUrl) pushPreviewLine(out, `open: ${openUrl}`, 6);
       if (provider || model) pushPreviewLine(out, `model: ${[provider, model].filter(Boolean).join(" / ")}`, 6);
       if (savedCount > 0 || requestedCount > 0) pushPreviewLine(out, `saved: ${savedCount} / ${requestedCount || savedCount}`, 6);
-      for (const asset of jsonObjectSlice(effective, "assets").slice(0, 2)) {
+      for (const asset of jsonObjectSlice(effective, "assets")) {
         const assetId = jsonStr(asset, "asset_id");
         const url = jsonStr(asset, "url");
         pushPreviewLine(out, `asset: ${[assetId, url].filter(Boolean).join(" · ")}`, 6);
@@ -1141,9 +1124,9 @@ function extractPreviewLines(
 
 function buildManageTodosPreviewLines(
   payload: Record<string, unknown> | null,
-  maxLines: number,
+  _maxLines: number,
 ): string[] {
-  if (!payload || maxLines <= 0) return [];
+  if (!payload) return [];
   const out: string[] = [];
   const action = jsonStr(payload, "action").toLowerCase();
   const summary =
@@ -1153,20 +1136,17 @@ function buildManageTodosPreviewLines(
       ? (payload.summary as Record<string, unknown>)
       : null;
   if (summary && shouldShowManageTodosSummaryLines(action)) {
-    for (const line of buildManageTodosSummaryLines(summary, maxLines - out.length)) {
-      pushPreviewLine(out, line, maxLines);
-      if (out.length >= maxLines) return out;
+    for (const line of buildManageTodosSummaryLines(summary)) {
+      pushPreviewLine(out, line, _maxLines);
     }
   }
   for (const item of prioritizeManageTodosPreviewItems(payload)) {
     for (const line of manageTodosItemPreviewLines(item)) {
-      pushPreviewLine(out, line, maxLines);
-      if (out.length >= maxLines) return out;
+      pushPreviewLine(out, line, _maxLines);
     }
   }
-  for (const line of manageTodosStatusPreviewLines(payload, maxLines - out.length)) {
-    pushPreviewLine(out, line, maxLines);
-    if (out.length >= maxLines) return out;
+  for (const line of manageTodosStatusPreviewLines(payload)) {
+    pushPreviewLine(out, line, _maxLines);
   }
   if (out.length > 0) return out;
   const emptyLine = manageTodosEmptyPreviewLine(payload);
@@ -1265,25 +1245,22 @@ function manageTodosListPreviewItems(
   return filtered.length > 0 ? filtered : [];
 }
 
-function manageTodosStatusPreviewLines(
-  payload: Record<string, unknown>,
-  maxLines: number,
-): string[] {
-  if (maxLines <= 0) return [];
+function manageTodosStatusPreviewLines(payload: Record<string, unknown>): string[] {
+
   const action = jsonStr(payload, "action").toLowerCase();
   switch (action) {
     case "delete": {
       const id = jsonStr(payload, "id");
-      return [id ? `Deleted ${id}.` : "Deleted todo."].slice(0, maxLines);
+      return [id ? `Deleted ${id}.` : "Deleted todo."];
     }
     case "delete_done":
-      return ["Deleted completed todos."].slice(0, maxLines);
+      return ["Deleted completed todos."];
     case "delete_all":
-      return ["Deleted todos."].slice(0, maxLines);
+      return ["Deleted todos."];
     case "reorder":
-      return ["Reordered todos."].slice(0, maxLines);
+      return ["Reordered todos."];
     case "batch":
-      return manageTodosBatchStatusPreviewLines(payload).slice(0, maxLines);
+      return manageTodosBatchStatusPreviewLines(payload);
     default:
       return [];
   }
@@ -1362,21 +1339,18 @@ function manageTodosItemPreviewLines(
   const priority = jsonStr(item, "priority");
   if (priority) body += ` · ${priority}`;
   const lines: string[] = [];
-  if (metadata.length > 0) lines.push(clamp(metadata.join(" · "), 200));
-  lines.push(clamp(body, 200));
+  if (metadata.length > 0) lines.push(metadata.join(" · "));
+  lines.push(body);
   return lines;
 }
 
-function buildManageTodosSummaryLines(
-  summary: Record<string, unknown>,
-  maxLines: number,
-): string[] {
+function buildManageTodosSummaryLines(summary: Record<string, unknown>): string[] {
   const lines: string[] = [];
   const appendSummary = (
     label: string,
     value: Record<string, unknown> | null,
   ) => {
-    if (!value || lines.length >= maxLines) return;
+    if (!value) return;
     const total = jsonNum(value, "task_count");
     const open = jsonNum(value, "open_count");
     const inProgress = jsonNum(value, "in_progress_count");
@@ -1401,7 +1375,7 @@ function buildManageTodosSummaryLines(
       ? (summary.agent as Record<string, unknown>)
       : null,
   );
-  return lines.slice(0, maxLines).map((line) => clamp(line, 200));
+  return lines;
 }
 
 function webHitLabel(item: Record<string, unknown>): string {
@@ -1415,7 +1389,7 @@ function webHitLabel(item: Record<string, unknown>): string {
   const headline = title || host || url;
   const parts = [headline];
   if (host && host !== headline) parts.push(host);
-  if (published) parts.push(published.slice(0, 10));
+  if (published) parts.push(published);
   return parts.filter(Boolean).join(" · ");
 }
 
@@ -1607,7 +1581,7 @@ function summarizeExitPlanToolOutput(
   const details = extractExitPlanDetails(toolName, outputJson, argumentsJson);
   if (!details) return "";
   const action = details.action || "updated";
-  if (details.title) return `plan ${action} · ${clamp(details.title, 80)}`;
+  if (details.title) return `plan ${action} · ${details.title}`;
   return `plan ${action}`;
 }
 

@@ -98,18 +98,7 @@ function EditDiffView({ toolMessage }: { toolMessage: StructuredToolMessage }) {
   );
 }
 
-const PREVIEW_LIMIT = 8;
 const TASK_SWARM_THRESHOLD = 10;
-const TASK_SWARM_TITLE_MAX = 72;
-const TASK_SWARM_AGENT_MAX = 30;
-const TASK_SWARM_TOOL_MAX = 34;
-
-function truncateMiddle(text: string, maxLength: number): string {
-  const trimmed = text.trim();
-  if (trimmed.length <= maxLength) return trimmed;
-  if (maxLength <= 1) return "…";
-  return `${trimmed.slice(0, maxLength - 1)}…`;
-}
 
 function PreviewLinesView({
   lines,
@@ -128,10 +117,6 @@ function PreviewLinesView({
 }) {
   if (lines.length === 0 && !commandText) return null;
 
-  const isLarge = lines.length > PREVIEW_LIMIT;
-  const [expanded, setExpanded] = useState(false);
-  const display = isLarge && !expanded ? lines.slice(0, PREVIEW_LIMIT) : lines;
-
   return (
     <div className={compact
       ? "mt-1 min-w-0 py-0.5 font-mono text-[11px] leading-[18px] text-[var(--app-text-muted)]"
@@ -143,7 +128,7 @@ function PreviewLinesView({
           <ToolSyntaxLine text={commandText} language="bash" className="whitespace-pre-wrap break-words font-mono [overflow-wrap:anywhere]" />
         </div>
       ) : null}
-      {display.map((line, i) => (
+      {lines.map((line, i) => (
         <div
           key={i}
           className={compact
@@ -153,16 +138,6 @@ function PreviewLinesView({
           <ToolSyntaxLine text={line} language={language} shell={shell} plain={plain} />
         </div>
       ))}
-      {isLarge ? (
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className="mt-1 text-[11px] text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:underline block"
-        >
-          {expanded
-            ? "collapse"
-            : `... show ${lines.length - PREVIEW_LIMIT} more lines`}
-        </button>
-      ) : null}
     </div>
   );
 }
@@ -187,7 +162,7 @@ function taskStatusLabel(row: TaskToolRow): string {
     case "":
       return "WAIT";
     default:
-      return status.slice(0, 4).toUpperCase();
+      return status.toUpperCase();
   }
 }
 
@@ -336,16 +311,16 @@ function TaskAgentListRow({
           {statusLabel}
         </div>
         <div className="col-start-2 row-start-1 min-w-0 sm:col-start-3">
-          <div className="min-w-0 truncate text-[12px] font-semibold text-[var(--app-text)]" title={primaryLabel}>
+          <div className="min-w-0 break-words text-[12px] font-semibold text-[var(--app-text)] [overflow-wrap:anywhere]" title={primaryLabel}>
             {primaryLabel}
           </div>
           {secondaryLabel ? (
-            <div className="mt-0.5 min-w-0 truncate text-[10px] text-[var(--app-text-subtle)]" title={secondaryLabel}>
+            <div className="mt-0.5 min-w-0 break-words text-[10px] text-[var(--app-text-subtle)] [overflow-wrap:anywhere]" title={secondaryLabel}>
               {secondaryLabel}
             </div>
           ) : null}
         </div>
-        <div className="col-start-2 col-span-2 row-start-2 min-w-0 truncate font-mono text-[11px] text-[var(--app-text-muted)] sm:col-start-4 sm:col-span-1 sm:row-start-1" title={toolLabel}>
+        <div className="col-start-2 col-span-2 row-start-2 min-w-0 break-words font-mono text-[11px] text-[var(--app-text-muted)] [overflow-wrap:anywhere] sm:col-start-4 sm:col-span-1 sm:row-start-1" title={toolLabel}>
           {toolLabel}
         </div>
         <div className={cn("col-start-3 row-start-1 min-w-[4.75rem] text-right font-mono text-[11px] tabular-nums sm:col-start-5", taskStatusTextClass(kind))}>
@@ -356,7 +331,7 @@ function TaskAgentListRow({
         <div className="grid min-w-0 grid-cols-[3.25rem_minmax(0,1fr)] gap-x-2 px-3 pb-2 sm:grid-cols-[2.5rem_3.75rem_minmax(0,1fr)] sm:gap-x-3">
           <div />
           <div className="hidden sm:block" />
-          <div className="col-start-2 min-w-0 truncate border-l border-[var(--app-border)] pl-2 text-[11px] leading-4 text-[var(--app-text-subtle)] sm:col-start-3">
+          <div className="col-start-2 min-w-0 break-words border-l border-[var(--app-border)] pl-2 text-[11px] leading-4 text-[var(--app-text-subtle)] [overflow-wrap:anywhere] sm:col-start-3">
             <span className="mr-1 font-mono uppercase tracking-[0.08em] text-[9px]">
               {taskPreviewLabel(row)}:
             </span>
@@ -396,7 +371,7 @@ function TaskRowsHeader({
         <LoaderCircle size={14} className={counts.running > 0 ? "animate-spin text-[var(--app-primary)]" : "text-[var(--app-text-subtle)]"} />
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
-            <span className="truncate text-xs font-bold uppercase tracking-[0.12em] text-[var(--app-text)]">
+            <span className="break-words text-xs font-bold uppercase tracking-[0.12em] text-[var(--app-text)] [overflow-wrap:anywhere]">
               {swarm ? "Swarm mode" : "Subagent stream"}
             </span>
           </div>
@@ -425,12 +400,10 @@ function TaskSwarmCompactRow({
   const kind = taskStatusKind(row);
   const statusLabel = taskStatusLabel(row);
   const rowNumber = row.launchIndex || index + 1;
-  const agent = truncateMiddle(row.agent || 'subagent', TASK_SWARM_AGENT_MAX);
+  const agent = row.agent || 'subagent';
   const agentLabel = agent.startsWith('@') ? agent : `@${agent}`;
-  const toolLabel = truncateMiddle(row.tool && row.tool !== '-' ? row.tool : taskStatusText(kind), TASK_SWARM_TOOL_MAX);
-  const title = row.assignmentLabel && row.assignmentLabel !== row.agent
-    ? truncateMiddle(row.assignmentLabel, TASK_SWARM_TITLE_MAX)
-    : '';
+  const toolLabel = row.tool && row.tool !== '-' ? row.tool : taskStatusText(kind);
+  const title = row.assignmentLabel && row.assignmentLabel !== row.agent ? row.assignmentLabel : '';
 
   return (
     <div className={cn(
@@ -445,10 +418,10 @@ function TaskSwarmCompactRow({
           <span className={cn("h-1.5 w-1.5 rounded-full bg-current", kind === "running" ? "animate-pulse" : "opacity-70")} />
           {statusLabel}
         </span>
-        <span className="min-w-0 truncate text-[11px] font-semibold text-[var(--app-text)]">
+        <span className="min-w-0 break-words text-[11px] font-semibold text-[var(--app-text)] [overflow-wrap:anywhere]">
           {agentLabel}
         </span>
-        <span className="min-w-0 truncate font-mono text-[10px] text-[var(--app-text-muted)]">
+        <span className="min-w-0 break-words font-mono text-[10px] text-[var(--app-text-muted)] [overflow-wrap:anywhere]">
           {toolLabel}
         </span>
         <span className={cn("ml-auto min-w-[4.25rem] shrink-0 text-right font-mono text-[10px] tabular-nums", taskStatusTextClass(kind))}>
@@ -456,7 +429,7 @@ function TaskSwarmCompactRow({
         </span>
       </div>
       {title ? (
-        <div className="mt-1 min-w-0 truncate pl-[4.8rem] text-[10px] leading-4 text-[var(--app-text-subtle)] sm:pl-[5.25rem]">
+        <div className="mt-1 min-w-0 break-words pl-[4.8rem] text-[10px] leading-4 text-[var(--app-text-subtle)] [overflow-wrap:anywhere] sm:pl-[5.25rem]">
           {title}
         </div>
       ) : null}
@@ -546,21 +519,17 @@ function SearchSummaryLine({
 }
 
 function SearchLineList({ group }: { group: SearchToolLineGroup }) {
-  const [expanded, setExpanded] = useState(false);
   const displayMatches = group.matches.length > 0;
   const items = displayMatches ? group.matches : group.lines.map((line) => ({ line, text: "" }));
-  const visibleItems = expanded ? items : items.slice(0, 3);
-  const hiddenCount = Math.max(0, items.length - visibleItems.length + (expanded ? 0 : group.extraLineCount));
-  const showExpand = items.length > 3 || group.extraLineCount > 0;
 
   return (
     <div className="mt-2 min-w-0 text-[12px] leading-5 text-[var(--app-text-muted)]">
       <div className="mb-1 font-sans text-[11px] font-medium text-[var(--app-text-subtle)]">
         {group.query || "match"}
       </div>
-      {visibleItems.length > 0 ? (
+      {items.length > 0 ? (
         <div className="space-y-1">
-          {visibleItems.map((item, index) => (
+          {items.map((item, index) => (
             <div key={`${item.line}:${index}`} className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-2">
               {item.line > 0 ? (
                 <span className="select-none font-mono text-[11px] text-[var(--app-text-subtle)]">
@@ -578,17 +547,6 @@ function SearchLineList({ group }: { group: SearchToolLineGroup }) {
       ) : (
         <div className="font-mono text-[var(--app-text-subtle)]">file match</div>
       )}
-      {showExpand ? (
-        <button
-          type="button"
-          onClick={() => setExpanded((value) => !value)}
-          className="mt-1 text-[11px] text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:underline"
-        >
-          {expanded
-            ? "collapse matches"
-            : `show ${hiddenCount > 0 ? hiddenCount : "more"} more`}
-        </button>
-      ) : null}
     </div>
   );
 }
@@ -600,18 +558,6 @@ function SearchFileSection({
   file: SearchToolFileGroup;
   mode: string;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const visibleGroups = expanded
-    ? file.queryGroups
-    : file.queryGroups.slice(0, 2);
-  const hiddenGroupCount = Math.max(
-    0,
-    file.queryGroups.length -
-      visibleGroups.length +
-      (expanded ? 0 : file.extraQueryCount),
-  );
-  const showExpand = file.queryGroups.length > 2 || file.extraQueryCount > 0;
-
   return (
     <div className="min-w-0 border-t border-[var(--app-border)] py-2 first:border-t-0 first:pt-0 last:pb-0">
       <div className="grid min-w-0 gap-1 text-[12px] sm:flex sm:items-baseline sm:gap-2">
@@ -625,24 +571,13 @@ function SearchFileSection({
         </span>
       </div>
       <div className="mt-1.5 space-y-1">
-        {visibleGroups.map((group, index) => (
+        {file.queryGroups.map((group, index) => (
           <SearchLineList
             key={`${file.path}:${group.query}:${index}`}
             group={group}
           />
         ))}
       </div>
-      {showExpand ? (
-        <button
-          type="button"
-          onClick={() => setExpanded((value) => !value)}
-          className="mt-1.5 text-[11px] text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:underline"
-        >
-          {expanded
-            ? "collapse queries"
-            : `show more queries${hiddenGroupCount > 0 ? ` (${hiddenGroupCount})` : ""}`}
-        </button>
-      ) : null}
     </div>
   );
 }
@@ -706,13 +641,9 @@ function SearchToolView({
   toolMessage: StructuredToolMessage;
 }) {
   const data = toolMessage.searchData;
-  const [expanded, setExpanded] = useState(false);
   if (!data) return null;
 
-  const visibleFiles = expanded ? data.files : data.files.slice(0, 6);
-  const hiddenFileCount = Math.max(0, data.files.length - visibleFiles.length);
-  const showExpand = data.files.length > 6;
-  const sections = useMemo(() => visibleFiles, [visibleFiles]);
+  const sections = useMemo(() => data.files, [data.files]);
 
   return (
     <div className="mt-2 min-w-0">
@@ -727,17 +658,6 @@ function SearchToolView({
             />
           ))}
         </div>
-      ) : null}
-      {showExpand ? (
-        <button
-          type="button"
-          onClick={() => setExpanded((value) => !value)}
-          className="mt-2 text-[11px] text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:underline"
-        >
-          {expanded
-            ? "collapse results"
-            : `show more files (${hiddenFileCount})`}
-        </button>
       ) : null}
     </div>
   );
@@ -785,7 +705,7 @@ export function ToolMessageView({
           {label}
         </span>
         {summary ? (
-          <span className="min-w-0 flex-1 truncate font-medium text-[var(--app-text)]">
+          <span className="min-w-0 flex-1 break-words font-medium text-[var(--app-text)] [overflow-wrap:anywhere]">
             {summary}
           </span>
         ) : null}
@@ -860,11 +780,9 @@ export function ToolGroupView({
   toolName: string;
   messages: StructuredToolMessage[];
 }) {
-  const [expanded, setExpanded] = useState(false);
   const toolTheme = getToolTheme(toolName);
   const ToolIcon = toolTheme.icon;
   const hasErrors = messages.some((m) => m.error);
-  const displayedMessages = expanded ? messages : messages.slice(0, 3);
   const accentWash = toolAccentWash(toolTheme.color, 14);
 
   return (
@@ -887,23 +805,13 @@ export function ToolGroupView({
         ) : null}
       </div>
       <div className="grid gap-0">
-        {displayedMessages.map((msg, i) => (
+        {messages.map((msg, i) => (
           <ToolMessageView
             key={msg.toolInstanceId || msg.callId || i}
             toolMessage={msg}
             isGroupItem={true}
           />
         ))}
-        {messages.length > 3 ? (
-          <button
-            onClick={() => setExpanded(!expanded)}
-            className="text-left text-[11px] text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:underline pt-1 mt-1 block"
-          >
-            {expanded
-              ? "collapse group"
-              : `+ ${messages.length - 3} more calls`}
-          </button>
-        ) : null}
       </div>
     </div>
   );

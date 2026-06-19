@@ -288,7 +288,7 @@ function DesktopV3AssistantMessage({ content, role }: { content: string; role: s
 function DesktopV3ToolMessage({ content, toolMessage }: { content: string; toolMessage: StructuredToolMessage | null }) {
   return (
     <div className="flex justify-start">
-      <div className="min-w-0 max-w-[82%] rounded-xl border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_72%,transparent)] px-3 py-2" data-testid="desktop-v3-tool-card">
+      <div className="min-w-0 max-w-[82%]">
         <ChatMarkdown content={content} toolMessage={toolMessage ?? undefined} />
       </div>
     </div>
