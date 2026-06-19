@@ -496,6 +496,7 @@ export function upsertCommittedMessage(
   const seqKey = messageGlobalSeqKey(message)
   const seqIndex = list.byGlobalSeq[seqKey]
   const nextItems = [...list.items]
+  const inserted = idIndex === undefined && seqIndex === undefined
 
   if (idIndex !== undefined) {
     nextItems[idIndex] = message
@@ -505,16 +506,24 @@ export function upsertCommittedMessage(
     nextItems.push(message)
   }
 
+  const sessionRecord = state.sessionsById[sessionId]
+  const session = sessionRecord?.kind === 'full' ? sessionRecord.session : undefined
+  const priorSourceMessageCount = list.sourceMessageCount ?? list.items.length
+  const observedSourceMessageCount = Math.max(inserted ? priorSourceMessageCount + 1 : priorSourceMessageCount, nextItems.length)
+  const sessionMessageCount = Number.isSafeInteger(session?.message_count) ? session?.message_count : undefined
+  const observedLastMessageAt = Math.max(list.sourceLastMessageAt ?? 0, message.created_at)
+  const sessionLastMessageAt = Number.isSafeInteger(session?.last_message_at) ? session?.last_message_at : undefined
+
   state.messagesBySession[sessionId] = buildMessageListCache(nextItems, {
     knownTail: list.knownTail,
     knownFull: list.knownFull,
-    sourceMessageCount: Math.max(list.sourceMessageCount ?? 0, nextItems.length),
-    sourceLastMessageAt: Math.max(list.sourceLastMessageAt ?? 0, message.created_at),
+    sourceMessageCount: Math.max(sessionMessageCount ?? 0, observedSourceMessageCount),
+    sourceLastMessageAt: Math.max(sessionLastMessageAt ?? 0, observedLastMessageAt),
     sourceProjectionHighWatermarkSeq: Math.max(
       list.sourceProjectionHighWatermarkSeq ?? 0,
       state.projectionsBySession[sessionId]?.projection_high_watermark_seq ?? 0,
     ),
-    hydratedAt: Date.now(),
+    hydratedAt: list.hydratedAt,
     source: 'network',
   })
   removeCommittedPendingForSession(state, sessionId, [message])

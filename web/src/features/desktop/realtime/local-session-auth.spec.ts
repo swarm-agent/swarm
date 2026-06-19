@@ -1,6 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
+import { buildDesktopV3RealtimeTransportSocketURL } from './client'
+
 test('Desktop local session bootstrap exposes canonical account/user identity without a second request', async () => {
   const fetchCalls: string[] = []
   const originalFetch = globalThis.fetch
@@ -42,4 +44,22 @@ test('Desktop local session bootstrap exposes canonical account/user identity wi
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+
+test('Desktop V3 realtime transport URL contains only opaque endpoint cursor', () => {
+  const url = buildDesktopV3RealtimeTransportSocketURL({
+    endpointCursor: 'v3c1.payload with spaces.signature/opaque',
+    protocol: 'ws:',
+    host: '127.0.0.1:5555',
+  })
+
+  assert.equal(url.toString(), 'ws://127.0.0.1:5555/v3/realtime/stream?endpoint_cursor=v3c1.payload+with+spaces.signature%2Fopaque')
+  assert.equal(url.pathname, '/v3/realtime/stream')
+  assert.deepEqual(Array.from(url.searchParams.keys()), ['endpoint_cursor'])
+  assert.equal(url.searchParams.get('endpoint_cursor'), 'v3c1.payload with spaces.signature/opaque')
+  assert.equal(url.searchParams.get('token'), null)
+  assert.equal(url.searchParams.get('auth_token'), null)
+  assert.equal(url.searchParams.get('after_seq'), null)
+  assert.equal(url.searchParams.get('after_rev'), null)
 })

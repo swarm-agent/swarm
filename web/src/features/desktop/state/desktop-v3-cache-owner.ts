@@ -58,6 +58,30 @@ export function createDesktopV3CacheOwnerKey(input: Omit<DesktopV3CacheOwnerInpu
   ].join(':')
 }
 
+export function parseDesktopV3CacheOwnerKey(ownerKey: string): DesktopV3CacheOwner {
+  const normalizedOwnerKey = normalizeRequiredString(ownerKey, 'ownerKey')
+  const prefix = `${DESKTOP_V3_CACHE_OWNER_KEY_PREFIX}:`
+  if (!normalizedOwnerKey.startsWith(prefix)) {
+    throw new Error('desktop v3 cache owner key has unsupported prefix')
+  }
+
+  const parts = normalizedOwnerKey.slice(prefix.length).split(':')
+  if (parts.length !== 4) {
+    throw new Error('desktop v3 cache owner key must include origin, account scope, user, and surface')
+  }
+
+  const owner = createDesktopV3CacheOwner({
+    origin: decodeOwnerKeyPart(parts[0], 'origin'),
+    accountScopeId: decodeOwnerKeyPart(parts[1], 'accountScopeId'),
+    userId: decodeOwnerKeyPart(parts[2], 'userId'),
+    surface: decodeOwnerKeyPart(parts[3], 'surface'),
+  })
+  if (owner.key !== normalizedOwnerKey) {
+    throw new Error('desktop v3 cache owner key is not canonical')
+  }
+  return owner
+}
+
 export function isDesktopV3CacheOwnerForKey(owner: DesktopV3CacheOwner, ownerKey: string): boolean {
   return owner.key === ownerKey && createDesktopV3CacheOwnerKey(owner) === ownerKey
 }
@@ -94,4 +118,12 @@ function normalizeRequiredString(value: string, name: string): string {
 
 function encodeOwnerKeyPart(value: string): string {
   return encodeURIComponent(value)
+}
+
+function decodeOwnerKeyPart(value: string, label: string): string {
+  try {
+    return decodeURIComponent(value)
+  } catch (error) {
+    throw new Error(`desktop v3 cache owner key ${label} is not valid percent encoding: ${String(error instanceof Error ? error.message : error)}`)
+  }
 }

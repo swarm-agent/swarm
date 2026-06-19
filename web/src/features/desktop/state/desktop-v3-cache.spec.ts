@@ -14,8 +14,10 @@ import {
   applyMessageMutationResult,
   applyRealtimeFrame,
   applySyncStreamBatch,
+  buildMessageListCache,
   createEmptyDesktopV3CacheState,
   desktopV3CacheReducer,
+  upsertCommittedMessage,
   upsertPendingUserMessage,
 } from './desktop-v3-cache-reducer'
 import {
@@ -104,6 +106,40 @@ test('metadata-only bootstrap preserves existing transcripts when messages_by_se
 
   assert.equal(state.syncScopesById['selector-hash:messages,run_intents'].endpointCursor, 'cursor-bootstrap-2')
   assert.deepEqual(state.messagesBySession[sessionA.id].items.map((message) => message.id), ['msg-a-1', 'msg-a-2'])
+})
+
+test('message event upsert increments stale source count once and preserves hydration timestamp', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.sessionsById[sessionA.id] = {
+    kind: 'full',
+    session: { ...sessionA, message_count: 1_000, last_message_at: 1_000 },
+    needsHydrate: false,
+  }
+  state.messagesBySession[sessionA.id] = buildMessageListCache([messageA1, messageA2], {
+    sourceMessageCount: 1_000,
+    sourceLastMessageAt: 1_000,
+    sourceProjectionHighWatermarkSeq: 2,
+    hydratedAt: 777,
+    source: 'network',
+  })
+
+  const newMessage: MessageSnapshot = {
+    id: 'msg-a-3',
+    session_id: sessionA.id,
+    global_seq: 3,
+    role: 'assistant',
+    content: 'new message',
+    created_at: 1_001,
+  }
+  upsertCommittedMessage(state, sessionA.id, newMessage)
+
+  assert.equal(state.messagesBySession[sessionA.id].sourceMessageCount, 1_001)
+  assert.equal(state.messagesBySession[sessionA.id].sourceLastMessageAt, 1_001)
+  assert.equal(state.messagesBySession[sessionA.id].hydratedAt, 777)
+
+  upsertCommittedMessage(state, sessionA.id, { ...newMessage, content: 'edited' })
+  assert.equal(state.messagesBySession[sessionA.id].sourceMessageCount, 1_001)
+  assert.equal(state.messagesBySession[sessionA.id].hydratedAt, 777)
 })
 
 test('metadata-only bootstrap preserves existing transcripts when messages_by_session is omitted', () => {

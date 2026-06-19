@@ -6,7 +6,7 @@ import type {
   V3SessionRunIntent,
   V3SessionTombstone,
 } from './desktop-v3-cache-types'
-import { createDesktopV3CacheOwner, type DesktopV3CacheOwner } from './desktop-v3-cache-owner'
+import { createDesktopV3CacheOwner, parseDesktopV3CacheOwnerKey, type DesktopV3CacheOwner } from './desktop-v3-cache-owner'
 
 export const DESKTOP_V3_CACHE_SCHEMA_VERSION = 1
 
@@ -48,6 +48,7 @@ export type DesktopV3PersistedValidationResult<T> =
 export function createPersistedDesktopV3MessageTailKey(ownerKey: string, sessionId: string): string {
   const normalizedOwnerKey = requiredString(ownerKey, 'ownerKey')
   const normalizedSessionId = requiredString(sessionId, 'sessionId')
+  parseDesktopV3CacheOwnerKey(normalizedOwnerKey)
   return `${normalizedOwnerKey}:message-tail:${encodeURIComponent(normalizedSessionId)}`
 }
 
@@ -63,6 +64,7 @@ export function validatePersistedDesktopV3OwnerV1(
       throw new Error('ownerKey mismatch')
     }
 
+    const parsedOwner = parseDesktopV3CacheOwnerKey(ownerKey)
     const ownerRecord = recordValue(record.owner, 'owner')
     const owner = createDesktopV3CacheOwner({
       origin: requiredString(ownerRecord.origin, 'owner.origin'),
@@ -73,19 +75,27 @@ export function validatePersistedDesktopV3OwnerV1(
     if (owner.key !== ownerKey) {
       throw new Error('owner key does not match owner fields')
     }
+    if (!sameOwnerIdentity(owner, parsedOwner)) {
+      throw new Error('owner key does not match encoded owner identity')
+    }
 
     const selectedSessionId = optionalString(record.selectedSessionId, 'selectedSessionId')
+    const syncScopesById = validateSyncScopesById(record.syncScopesById)
+    const sessionOrderByScope = validateSessionOrderByScope(record.sessionOrderByScope)
+    const sidebarSessionsById = validateSidebarSessionsById(record.sidebarSessionsById, owner)
+    validateOwnerReferences({ selectedSessionId, syncScopesById, sessionOrderByScope, sidebarSessionsById })
+
     return {
       ok: true,
       value: {
         schemaVersion: DESKTOP_V3_CACHE_SCHEMA_VERSION,
         ownerKey,
         owner,
-        persistedAt: finiteNumber(record.persistedAt, 'persistedAt'),
+        persistedAt: nonNegativeSafeInteger(record.persistedAt, 'persistedAt'),
         selectedSessionId,
-        syncScopesById: validateSyncScopesById(record.syncScopesById),
-        sessionOrderByScope: validateSessionOrderByScope(record.sessionOrderByScope),
-        sidebarSessionsById: validateSidebarSessionsById(record.sidebarSessionsById),
+        syncScopesById,
+        sessionOrderByScope,
+        sidebarSessionsById,
       },
     }
   } catch (error) {
@@ -110,6 +120,7 @@ export function validatePersistedDesktopV3MessageTailV1(
     const record = recordValue(raw, 'message tail record')
     validateSchemaVersion(record.schemaVersion)
     const ownerKey = requiredString(record.ownerKey, 'ownerKey')
+    parseDesktopV3CacheOwnerKey(ownerKey)
     const sessionId = requiredString(record.sessionId, 'sessionId')
     if (expectedOwnerKey !== undefined && ownerKey !== expectedOwnerKey) {
       throw new Error('ownerKey mismatch')
@@ -131,12 +142,12 @@ export function validatePersistedDesktopV3MessageTailV1(
         key,
         ownerKey,
         sessionId,
-        persistedAt: finiteNumber(record.persistedAt, 'persistedAt'),
-        messages: validateMessages(record.messages, sessionId),
-        sourceMessageCount: optionalFiniteNumber(record.sourceMessageCount, 'sourceMessageCount'),
-        sourceLastMessageAt: optionalFiniteNumber(record.sourceLastMessageAt, 'sourceLastMessageAt'),
-        sourceProjectionHighWatermarkSeq: optionalFiniteNumber(record.sourceProjectionHighWatermarkSeq, 'sourceProjectionHighWatermarkSeq'),
-        hydratedAt: optionalFiniteNumber(record.hydratedAt, 'hydratedAt'),
+        persistedAt: nonNegativeSafeInteger(record.persistedAt, 'persistedAt'),
+        messages: validateMessages(record.messages, sessionId, ownerKey),
+        sourceMessageCount: optionalNonNegativeSafeInteger(record.sourceMessageCount, 'sourceMessageCount'),
+        sourceLastMessageAt: optionalNonNegativeSafeInteger(record.sourceLastMessageAt, 'sourceLastMessageAt'),
+        sourceProjectionHighWatermarkSeq: optionalNonNegativeSafeInteger(record.sourceProjectionHighWatermarkSeq, 'sourceProjectionHighWatermarkSeq'),
+        hydratedAt: optionalNonNegativeSafeInteger(record.hydratedAt, 'hydratedAt'),
       },
     }
   } catch (error) {
@@ -164,18 +175,19 @@ export function buildPersistedDesktopV3MessageTailV1(input: {
   hydratedAt?: number
 }): PersistedDesktopV3MessageTailV1 {
   const ownerKey = requiredString(input.ownerKey, 'ownerKey')
+  parseDesktopV3CacheOwnerKey(ownerKey)
   const sessionId = requiredString(input.sessionId, 'sessionId')
   return {
     schemaVersion: DESKTOP_V3_CACHE_SCHEMA_VERSION,
     key: createPersistedDesktopV3MessageTailKey(ownerKey, sessionId),
     ownerKey,
     sessionId,
-    persistedAt: finiteNumber(input.persistedAt, 'persistedAt'),
-    messages: validateMessages(input.messages, sessionId),
-    sourceMessageCount: input.sourceMessageCount,
-    sourceLastMessageAt: input.sourceLastMessageAt,
-    sourceProjectionHighWatermarkSeq: input.sourceProjectionHighWatermarkSeq,
-    hydratedAt: input.hydratedAt,
+    persistedAt: nonNegativeSafeInteger(input.persistedAt, 'persistedAt'),
+    messages: validateMessages(input.messages, sessionId, ownerKey),
+    sourceMessageCount: optionalNonNegativeSafeInteger(input.sourceMessageCount, 'sourceMessageCount'),
+    sourceLastMessageAt: optionalNonNegativeSafeInteger(input.sourceLastMessageAt, 'sourceLastMessageAt'),
+    sourceProjectionHighWatermarkSeq: optionalNonNegativeSafeInteger(input.sourceProjectionHighWatermarkSeq, 'sourceProjectionHighWatermarkSeq'),
+    hydratedAt: optionalNonNegativeSafeInteger(input.hydratedAt, 'hydratedAt'),
   }
 }
 
@@ -188,21 +200,26 @@ function validateSchemaVersion(value: unknown): void {
 function validateSyncScopesById(value: unknown): Record<string, SyncScopeCache> {
   const input = recordValue(value, 'syncScopesById')
   const output: Record<string, SyncScopeCache> = {}
-  for (const [scopeId, rawScope] of Object.entries(input)) {
-    const scope = recordValue(rawScope, `syncScopesById.${scopeId}`)
-    output[scopeId] = {
-      scopeId: requiredString(scope.scopeId, `syncScopesById.${scopeId}.scopeId`),
-      surface: requiredString(scope.surface, `syncScopesById.${scopeId}.surface`),
-      streamKind: 'v3.sync.snapshot',
-      selectorFilterHash: requiredString(scope.selectorFilterHash, `syncScopesById.${scopeId}.selectorFilterHash`),
-      resourceSet: requiredString(scope.resourceSet, `syncScopesById.${scopeId}.resourceSet`),
-      selector: recordValue(scope.selector, `syncScopesById.${scopeId}.selector`),
-      endpointCursor: requiredString(scope.endpointCursor, `syncScopesById.${scopeId}.endpointCursor`),
-      replayPath: requiredString(scope.replayPath, `syncScopesById.${scopeId}.replayPath`),
-      replayTransport: requiredString(scope.replayTransport, `syncScopesById.${scopeId}.replayTransport`),
-      needsBootstrap: Boolean(scope.needsBootstrap),
-      lastErrorCode: optionalString(scope.lastErrorCode, `syncScopesById.${scopeId}.lastErrorCode`),
-      lastError: optionalString(scope.lastError, `syncScopesById.${scopeId}.lastError`),
+  for (const [mapScopeId, rawScope] of Object.entries(input)) {
+    const scope = recordValue(rawScope, `syncScopesById.${mapScopeId}`)
+    const scopeId = requiredString(scope.scopeId, `syncScopesById.${mapScopeId}.scopeId`)
+    if (scopeId !== mapScopeId) {
+      throw new Error('persisted sync scope key mismatch')
+    }
+
+    output[mapScopeId] = {
+      scopeId,
+      surface: requiredString(scope.surface, `syncScopesById.${mapScopeId}.surface`),
+      streamKind: exactString(scope.streamKind, 'v3.sync.snapshot', `syncScopesById.${mapScopeId}.streamKind`, 'unsupported persisted sync stream kind'),
+      selectorFilterHash: requiredString(scope.selectorFilterHash, `syncScopesById.${mapScopeId}.selectorFilterHash`),
+      resourceSet: requiredString(scope.resourceSet, `syncScopesById.${mapScopeId}.resourceSet`),
+      selector: recordValue(scope.selector, `syncScopesById.${mapScopeId}.selector`),
+      endpointCursor: requiredString(scope.endpointCursor, `syncScopesById.${mapScopeId}.endpointCursor`),
+      replayPath: exactString(scope.replayPath, '/v3/sync/stream', `syncScopesById.${mapScopeId}.replayPath`),
+      replayTransport: exactString(scope.replayTransport, 'http_post', `syncScopesById.${mapScopeId}.replayTransport`),
+      needsBootstrap: requiredBoolean(scope.needsBootstrap, `syncScopesById.${mapScopeId}.needsBootstrap`),
+      lastErrorCode: optionalString(scope.lastErrorCode, `syncScopesById.${mapScopeId}.lastErrorCode`),
+      lastError: optionalString(scope.lastError, `syncScopesById.${mapScopeId}.lastError`),
     }
   }
   return output
@@ -211,47 +228,85 @@ function validateSyncScopesById(value: unknown): Record<string, SyncScopeCache> 
 function validateSessionOrderByScope(value: unknown): Record<string, string[]> {
   const input = recordValue(value, 'sessionOrderByScope')
   const output: Record<string, string[]> = {}
-  for (const [scopeId, order] of Object.entries(input)) {
+  for (const [rawScopeId, order] of Object.entries(input)) {
+    const scopeId = requiredString(rawScopeId, 'sessionOrderByScope key')
     if (!Array.isArray(order)) {
       throw new Error(`sessionOrderByScope.${scopeId} must be an array`)
     }
-    output[scopeId] = order.map((sessionId, index) => requiredString(sessionId, `sessionOrderByScope.${scopeId}.${index}`))
+    const seen = new Set<string>()
+    output[scopeId] = order.map((sessionId, index) => {
+      const normalizedSessionId = requiredString(sessionId, `sessionOrderByScope.${scopeId}.${index}`)
+      if (seen.has(normalizedSessionId)) {
+        throw new Error(`sessionOrderByScope.${scopeId} contains duplicate session ${normalizedSessionId}`)
+      }
+      seen.add(normalizedSessionId)
+      return normalizedSessionId
+    })
   }
   return output
 }
 
-function validateSidebarSessionsById(value: unknown): Record<string, PersistedDesktopV3SidebarSessionV1> {
+function validateSidebarSessionsById(
+  value: unknown,
+  owner: DesktopV3CacheOwner,
+): Record<string, PersistedDesktopV3SidebarSessionV1> {
   const input = recordValue(value, 'sidebarSessionsById')
   const output: Record<string, PersistedDesktopV3SidebarSessionV1> = {}
   for (const [sessionId, rawSidebar] of Object.entries(input)) {
     const sidebar = recordValue(rawSidebar, `sidebarSessionsById.${sessionId}`)
-    const session = validateSession(sidebar.session, `sidebarSessionsById.${sessionId}.session`)
+    const session = validateSession(sidebar.session, `sidebarSessionsById.${sessionId}.session`, owner)
     if (session.id !== sessionId) {
       throw new Error(`sidebar session key mismatch for ${sessionId}`)
     }
     output[sessionId] = {
       session,
       projection: sidebar.projection === undefined ? undefined : validateProjection(sidebar.projection, sessionId, `sidebarSessionsById.${sessionId}.projection`),
-      tombstone: sidebar.tombstone === undefined ? undefined : validateTombstone(sidebar.tombstone, sessionId, `sidebarSessionsById.${sessionId}.tombstone`),
-      runIntents: sidebar.runIntents === undefined ? undefined : validateRunIntents(sidebar.runIntents, sessionId, `sidebarSessionsById.${sessionId}.runIntents`),
+      tombstone: sidebar.tombstone === undefined ? undefined : validateTombstone(sidebar.tombstone, sessionId, `sidebarSessionsById.${sessionId}.tombstone`, owner),
+      runIntents: sidebar.runIntents === undefined ? undefined : validateRunIntents(sidebar.runIntents, sessionId, `sidebarSessionsById.${sessionId}.runIntents`, owner),
     }
   }
   return output
 }
 
-function validateMessages(value: unknown, sessionId: string): MessageSnapshot[] {
+function validateOwnerReferences(input: {
+  selectedSessionId?: string
+  syncScopesById: Record<string, SyncScopeCache>
+  sessionOrderByScope: Record<string, string[]>
+  sidebarSessionsById: Record<string, PersistedDesktopV3SidebarSessionV1>
+}): void {
+  if (input.selectedSessionId !== undefined && !input.sidebarSessionsById[input.selectedSessionId]) {
+    throw new Error('persisted selectedSessionId does not resolve to a sidebar session')
+  }
+
+  for (const [scopeId, sessionOrder] of Object.entries(input.sessionOrderByScope)) {
+    if (!input.syncScopesById[scopeId]) {
+      throw new Error(`sessionOrderByScope.${scopeId} does not resolve to a persisted sync scope`)
+    }
+    for (const sessionId of sessionOrder) {
+      if (!input.sidebarSessionsById[sessionId]) {
+        throw new Error(`sessionOrderByScope.${scopeId} references missing sidebar session ${sessionId}`)
+      }
+    }
+  }
+}
+
+function validateMessages(value: unknown, sessionId: string, ownerKey: string): MessageSnapshot[] {
   if (!Array.isArray(value)) {
     throw new Error('messages must be an array')
   }
-  return value.map((message, index) => validateMessage(message, sessionId, `messages.${index}`))
+  const owner = parseDesktopV3CacheOwnerKey(ownerKey)
+  return value.map((message, index) => validateMessage(message, sessionId, `messages.${index}`, owner))
 }
 
-function validateSession(value: unknown, label: string): SessionSnapshot {
+function validateSession(value: unknown, label: string, owner: DesktopV3CacheOwner): SessionSnapshot {
   const record = recordValue(value, label)
+  const userId = optionalString(record.user_id, `${label}.user_id`)
+  const accountScopeId = optionalString(record.account_scope_id, `${label}.account_scope_id`)
+  validateOptionalOwnerIdentity(userId, accountScopeId, owner, label)
   return {
     id: requiredString(record.id, `${label}.id`),
-    user_id: optionalString(record.user_id, `${label}.user_id`),
-    account_scope_id: optionalString(record.account_scope_id, `${label}.account_scope_id`),
+    user_id: userId,
+    account_scope_id: accountScopeId,
     workspace_path: requiredString(record.workspace_path, `${label}.workspace_path`),
     workspace_name: requiredString(record.workspace_name, `${label}.workspace_name`),
     temporary_workspace_roots: optionalStringArray(record.temporary_workspace_roots, `${label}.temporary_workspace_roots`),
@@ -263,30 +318,33 @@ function validateSession(value: unknown, label: string): SessionSnapshot {
     worktree_base_branch: optionalString(record.worktree_base_branch, `${label}.worktree_base_branch`),
     worktree_branch: optionalString(record.worktree_branch, `${label}.worktree_branch`),
     metadata: optionalRecord(record.metadata, `${label}.metadata`),
-    created_at: finiteNumber(record.created_at, `${label}.created_at`),
-    updated_at: finiteNumber(record.updated_at, `${label}.updated_at`),
-    message_count: finiteNumber(record.message_count, `${label}.message_count`),
-    last_message_at: finiteNumber(record.last_message_at, `${label}.last_message_at`),
+    created_at: nonNegativeSafeInteger(record.created_at, `${label}.created_at`),
+    updated_at: nonNegativeSafeInteger(record.updated_at, `${label}.updated_at`),
+    message_count: nonNegativeSafeInteger(record.message_count, `${label}.message_count`),
+    last_message_at: nonNegativeSafeInteger(record.last_message_at, `${label}.last_message_at`),
     lifecycle: record.lifecycle,
   }
 }
 
-function validateMessage(value: unknown, sessionId: string, label: string): MessageSnapshot {
+function validateMessage(value: unknown, sessionId: string, label: string, owner: DesktopV3CacheOwner): MessageSnapshot {
   const record = recordValue(value, label)
   const messageSessionId = requiredString(record.session_id, `${label}.session_id`)
   if (messageSessionId !== sessionId) {
     throw new Error(`${label}.session_id mismatch`)
   }
+  const userId = optionalString(record.user_id, `${label}.user_id`)
+  const accountScopeId = optionalString(record.account_scope_id, `${label}.account_scope_id`)
+  validateOptionalOwnerIdentity(userId, accountScopeId, owner, label)
   return {
     id: requiredString(record.id, `${label}.id`),
     session_id: messageSessionId,
-    user_id: optionalString(record.user_id, `${label}.user_id`),
-    account_scope_id: optionalString(record.account_scope_id, `${label}.account_scope_id`),
-    global_seq: finiteNumber(record.global_seq, `${label}.global_seq`),
+    user_id: userId,
+    account_scope_id: accountScopeId,
+    global_seq: nonNegativeSafeInteger(record.global_seq, `${label}.global_seq`),
     role: requiredString(record.role, `${label}.role`),
-    content: requiredString(record.content, `${label}.content`),
+    content: requiredContent(record.content, `${label}.content`),
     metadata: optionalRecord(record.metadata, `${label}.metadata`),
-    created_at: finiteNumber(record.created_at, `${label}.created_at`),
+    created_at: nonNegativeSafeInteger(record.created_at, `${label}.created_at`),
   }
 }
 
@@ -298,58 +356,86 @@ function validateProjection(value: unknown, sessionId: string, label: string): V
   }
   return {
     session_id: projectionSessionId,
-    last_event_seq: finiteNumber(record.last_event_seq, `${label}.last_event_seq`),
-    projection_high_watermark_seq: finiteNumber(record.projection_high_watermark_seq, `${label}.projection_high_watermark_seq`),
-    updated_at: finiteNumber(record.updated_at, `${label}.updated_at`),
+    last_event_seq: nonNegativeSafeInteger(record.last_event_seq, `${label}.last_event_seq`),
+    projection_high_watermark_seq: nonNegativeSafeInteger(record.projection_high_watermark_seq, `${label}.projection_high_watermark_seq`),
+    updated_at: nonNegativeSafeInteger(record.updated_at, `${label}.updated_at`),
   }
 }
 
-function validateTombstone(value: unknown, sessionId: string, label: string): V3SessionTombstone {
+function validateTombstone(value: unknown, sessionId: string, label: string, owner: DesktopV3CacheOwner): V3SessionTombstone {
   const record = recordValue(value, label)
   const tombstoneSessionId = requiredString(record.session_id, `${label}.session_id`)
   if (tombstoneSessionId !== sessionId) {
     throw new Error(`${label}.session_id mismatch`)
   }
+  const userId = optionalString(record.user_id, `${label}.user_id`)
+  const accountScopeId = optionalString(record.account_scope_id, `${label}.account_scope_id`)
+  validateOptionalOwnerIdentity(userId, accountScopeId, owner, label)
   return {
     session_id: tombstoneSessionId,
-    user_id: optionalString(record.user_id, `${label}.user_id`),
-    account_scope_id: optionalString(record.account_scope_id, `${label}.account_scope_id`),
+    user_id: userId,
+    account_scope_id: accountScopeId,
     workspace_path: optionalString(record.workspace_path, `${label}.workspace_path`),
     kind: optionalString(record.kind, `${label}.kind`),
     deleted: optionalBoolean(record.deleted, `${label}.deleted`),
     archived: optionalBoolean(record.archived, `${label}.archived`),
     hidden: optionalBoolean(record.hidden, `${label}.hidden`),
-    endpoint_seq: optionalFiniteNumber(record.endpoint_seq, `${label}.endpoint_seq`),
-    event_seq: optionalFiniteNumber(record.event_seq, `${label}.event_seq`),
-    updated_at: optionalFiniteNumber(record.updated_at, `${label}.updated_at`),
-    session: record.session === undefined ? undefined : validateSession(record.session, `${label}.session`),
+    endpoint_seq: optionalNonNegativeSafeInteger(record.endpoint_seq, `${label}.endpoint_seq`),
+    event_seq: optionalNonNegativeSafeInteger(record.event_seq, `${label}.event_seq`),
+    updated_at: optionalNonNegativeSafeInteger(record.updated_at, `${label}.updated_at`),
+    session: record.session === undefined ? undefined : validateSession(record.session, `${label}.session`, owner),
   }
 }
 
-function validateRunIntents(value: unknown, sessionId: string, label: string): V3SessionRunIntent[] {
+function validateRunIntents(value: unknown, sessionId: string, label: string, owner: DesktopV3CacheOwner): V3SessionRunIntent[] {
   if (!Array.isArray(value)) {
     throw new Error(`${label} must be an array`)
   }
-  return value.map((rawIntent, index) => validateRunIntent(rawIntent, sessionId, `${label}.${index}`))
+  return value.map((rawIntent, index) => validateRunIntent(rawIntent, sessionId, `${label}.${index}`, owner))
 }
 
-function validateRunIntent(value: unknown, sessionId: string, label: string): V3SessionRunIntent {
+function validateRunIntent(value: unknown, sessionId: string, label: string, owner: DesktopV3CacheOwner): V3SessionRunIntent {
   const record = recordValue(value, label)
   const intentSessionId = requiredString(record.session_id, `${label}.session_id`)
   if (intentSessionId !== sessionId) {
     throw new Error(`${label}.session_id mismatch`)
   }
+  const userId = optionalString(record.user_id, `${label}.user_id`)
+  const accountScopeId = optionalString(record.account_scope_id, `${label}.account_scope_id`)
+  validateOptionalOwnerIdentity(userId, accountScopeId, owner, label)
   return {
     session_id: intentSessionId,
-    user_id: optionalString(record.user_id, `${label}.user_id`),
-    account_scope_id: optionalString(record.account_scope_id, `${label}.account_scope_id`),
+    user_id: userId,
+    account_scope_id: accountScopeId,
     run_id: requiredString(record.run_id, `${label}.run_id`),
     status: requiredString(record.status, `${label}.status`),
     blocked_reason: optionalString(record.blocked_reason, `${label}.blocked_reason`),
-    created_at: finiteNumber(record.created_at, `${label}.created_at`),
-    updated_at: finiteNumber(record.updated_at, `${label}.updated_at`),
-    event_seq: finiteNumber(record.event_seq, `${label}.event_seq`),
+    created_at: nonNegativeSafeInteger(record.created_at, `${label}.created_at`),
+    updated_at: nonNegativeSafeInteger(record.updated_at, `${label}.updated_at`),
+    event_seq: nonNegativeSafeInteger(record.event_seq, `${label}.event_seq`),
   }
+}
+
+function validateOptionalOwnerIdentity(
+  userId: string | undefined,
+  accountScopeId: string | undefined,
+  owner: DesktopV3CacheOwner,
+  label: string,
+): void {
+  if (userId !== undefined && userId !== owner.userId) {
+    throw new Error(`${label}.user_id conflicts with persisted owner`)
+  }
+  if (accountScopeId !== undefined && accountScopeId !== owner.accountScopeId) {
+    throw new Error(`${label}.account_scope_id conflicts with persisted owner`)
+  }
+}
+
+function sameOwnerIdentity(left: DesktopV3CacheOwner, right: DesktopV3CacheOwner): boolean {
+  return left.key === right.key
+    && left.origin === right.origin
+    && left.accountScopeId === right.accountScopeId
+    && left.userId === right.userId
+    && left.surface === right.surface
 }
 
 function recordValue(value: unknown, label: string): Record<string, unknown> {
@@ -371,6 +457,13 @@ function requiredString(value: unknown, label: string): string {
   return value.trim()
 }
 
+function requiredContent(value: unknown, label: string): string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`${label} must be a non-empty string`)
+  }
+  return value
+}
+
 function optionalString(value: unknown, label: string): string | undefined {
   if (value === undefined) return undefined
   return requiredString(value, label)
@@ -384,24 +477,35 @@ function optionalStringArray(value: unknown, label: string): string[] | undefine
   return value.map((entry, index) => requiredString(entry, `${label}.${index}`))
 }
 
-function finiteNumber(value: unknown, label: string): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    throw new Error(`${label} must be finite`)
+function exactString<T extends string>(value: unknown, expected: T, label: string, errorMessage?: string): T {
+  if (typeof value !== 'string' || value !== expected) {
+    throw new Error(errorMessage ?? `${label} must be ${expected}`)
+  }
+  return expected
+}
+
+function nonNegativeSafeInteger(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative safe integer`)
   }
   return value
 }
 
-function optionalFiniteNumber(value: unknown, label: string): number | undefined {
+function optionalNonNegativeSafeInteger(value: unknown, label: string): number | undefined {
   if (value === undefined) return undefined
-  return finiteNumber(value, label)
+  return nonNegativeSafeInteger(value, label)
 }
 
-function optionalBoolean(value: unknown, label: string): boolean | undefined {
-  if (value === undefined) return undefined
+function requiredBoolean(value: unknown, label: string): boolean {
   if (typeof value !== 'boolean') {
     throw new Error(`${label} must be boolean`)
   }
   return value
+}
+
+function optionalBoolean(value: unknown, label: string): boolean | undefined {
+  if (value === undefined) return undefined
+  return requiredBoolean(value, label)
 }
 
 function coldMiss(error: unknown): DesktopV3PersistedValidationResult<never> {
