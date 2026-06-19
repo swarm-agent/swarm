@@ -1,4 +1,5 @@
 import { createRootRoute, createRoute, createRouter, lazyRouteComponent } from '@tanstack/react-router'
+import { startDesktopV3Refresh } from '../features/desktop/state/desktop-v3-startup'
 import { DesktopVaultShell } from '../features/desktop/vault/components/desktop-vault-shell'
 
 const WorkspaceHomePage = lazyRouteComponent(() => import('../features/workspaces/pages/workspace-home-page'), 'WorkspaceHomePage')
@@ -148,6 +149,9 @@ const workspaceRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/$workspaceSlug',
   parseParams: validateWorkspaceParams,
+  loader: () => {
+    return startDesktopV3Refresh({ shouldStart: true })
+  },
   component: DesktopAppPage,
 })
 
@@ -160,7 +164,8 @@ const workspaceSessionRoute = createRoute({
     if (!sessionId) {
       return null
     }
-    return { sessionId }
+    const startup = startDesktopV3Refresh({ shouldStart: true, selectedSessionId: sessionId })
+    return { sessionId, startup }
   },
   component: DesktopAppPage,
 })
@@ -177,6 +182,9 @@ const workspaceFlowRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/$workspaceSlug/flow',
   parseParams: validateWorkspaceParams,
+  loader: () => {
+    return startDesktopV3Refresh({ shouldStart: true })
+  },
   component: DesktopAppPage,
 })
 
@@ -184,6 +192,9 @@ const workspaceFlowDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/$workspaceSlug/flow/$flowId',
   parseParams: validateWorkspaceFlowParams,
+  loader: () => {
+    return startDesktopV3Refresh({ shouldStart: true })
+  },
   component: DesktopAppPage,
 })
 

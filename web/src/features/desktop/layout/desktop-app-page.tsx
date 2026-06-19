@@ -55,7 +55,6 @@ import {
   sessionParentSessionID,
   type SidebarSessionNodeKind,
 } from './sidebar-session-lineage'
-import { bootstrapDesktopV3Sidebar } from '../state/desktop-v3-bootstrap-controller'
 import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
 import { selectDesktopSidebarRows, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { selectSession } from '../state/desktop-v3-cache-wire'
@@ -2300,10 +2299,6 @@ export function DesktopAppPage() {
     () => flattenVisibleSidebarSessionNodes(desktopV3SessionNodes, expandedAgentSessions, routeSessionId),
     [desktopV3SessionNodes, expandedAgentSessions, routeSessionId],
   )
-
-  useEffect(() => {
-    void bootstrapDesktopV3Sidebar()
-  }, [])
 
   const sessionsByWorkspace = useMemo<Map<string, DesktopSessionRecord[]>>(() => {
     const grouped = new Map<string, DesktopSessionRecord[]>()
