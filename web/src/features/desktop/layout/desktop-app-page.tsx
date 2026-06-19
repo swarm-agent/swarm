@@ -1761,6 +1761,7 @@ export function DesktopAppPage() {
   const isFlowRoute = Boolean(workspaceFlowDetailMatch || workspaceFlowMatch)
   const routeWorkspaceSlug = (workspaceFlowDetailMatch ? workspaceFlowDetailMatch.workspaceSlug : workspaceFlowMatch ? workspaceFlowMatch.workspaceSlug : workspaceSessionMatch ? workspaceSessionMatch.workspaceSlug : workspaceMatch ? workspaceMatch.workspaceSlug : '').trim()
   const routeSessionId = (!isFlowRoute && workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
+  const initialDesktopV3RouteSessionId = useRef(routeSessionId)
   const pwaDebugEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has(PWA_DEBUG_QUERY_PARAM)
   const { workspaces, selectingPath, saveWorkspace, loading: launcherWorkspacesLoading } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -2302,8 +2303,8 @@ export function DesktopAppPage() {
   )
 
   useEffect(() => {
-    void bootstrapDesktopV3Sidebar({ preferredSessionId: routeSessionId })
-  }, [routeSessionId])
+    void bootstrapDesktopV3Sidebar({ preferredSessionId: initialDesktopV3RouteSessionId.current })
+  }, [])
 
   const sessionsByWorkspace = useMemo<Map<string, DesktopSessionRecord[]>>(() => {
     const grouped = new Map<string, DesktopSessionRecord[]>()
