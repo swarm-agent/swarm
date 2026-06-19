@@ -190,6 +190,26 @@ test('persisted owner validation rejects broken session references', () => {
   assert.equal(validatePersistedDesktopV3OwnerV1({ ...base, sessionOrderByScope: { [scopeId]: [sessionA.id, sessionA.id] } }, owner.key).ok, false)
   assert.equal(validatePersistedDesktopV3OwnerV1({ ...base, sessionOrderByScope: { [scopeId]: [sessionA.id, 'missing-session'] } }, owner.key).ok, false)
   assert.equal(validatePersistedDesktopV3OwnerV1({ ...base, sessionOrderByScope: { ['missing-scope']: [sessionA.id] } }, owner.key).ok, false)
+
+  const whitespaceScope = validatePersistedDesktopV3OwnerV1({ ...base, sessionOrderByScope: { [` ${scopeId}`]: [sessionA.id] } }, owner.key)
+  assert.equal(whitespaceScope.ok, false)
+  assert.equal(whitespaceScope.ok ? '' : whitespaceScope.reason, 'sessionOrderByScope key must not include leading or trailing whitespace')
+
+  const tombstoneEmbeddedMismatch = validatePersistedDesktopV3OwnerV1({
+    ...base,
+    sidebarSessionsById: {
+      [sessionA.id]: {
+        ...base.sidebarSessionsById[sessionA.id],
+        tombstone: {
+          ...tombstoneB,
+          session_id: sessionA.id,
+          session: { ...sessionA, id: 'other-session' },
+        },
+      },
+    },
+  }, owner.key)
+  assert.equal(tombstoneEmbeddedMismatch.ok, false)
+  assert.equal(tombstoneEmbeddedMismatch.ok ? '' : tombstoneEmbeddedMismatch.reason, `sidebarSessionsById.${sessionA.id}.tombstone.session.id mismatch`)
 })
 
 test('persisted validators reject nested owner identity conflicts', () => {

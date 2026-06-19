@@ -229,7 +229,7 @@ function validateSessionOrderByScope(value: unknown): Record<string, string[]> {
   const input = recordValue(value, 'sessionOrderByScope')
   const output: Record<string, string[]> = {}
   for (const [rawScopeId, order] of Object.entries(input)) {
-    const scopeId = requiredString(rawScopeId, 'sessionOrderByScope key')
+    const scopeId = requiredMapKey(rawScopeId, 'sessionOrderByScope key')
     if (!Array.isArray(order)) {
       throw new Error(`sessionOrderByScope.${scopeId} must be an array`)
     }
@@ -368,6 +368,10 @@ function validateTombstone(value: unknown, sessionId: string, label: string, own
   if (tombstoneSessionId !== sessionId) {
     throw new Error(`${label}.session_id mismatch`)
   }
+  const embeddedSession = record.session === undefined ? undefined : validateSession(record.session, `${label}.session`, owner)
+  if (embeddedSession !== undefined && embeddedSession.id !== tombstoneSessionId) {
+    throw new Error(`${label}.session.id mismatch`)
+  }
   const userId = optionalString(record.user_id, `${label}.user_id`)
   const accountScopeId = optionalString(record.account_scope_id, `${label}.account_scope_id`)
   validateOptionalOwnerIdentity(userId, accountScopeId, owner, label)
@@ -383,7 +387,7 @@ function validateTombstone(value: unknown, sessionId: string, label: string, own
     endpoint_seq: optionalNonNegativeSafeInteger(record.endpoint_seq, `${label}.endpoint_seq`),
     event_seq: optionalNonNegativeSafeInteger(record.event_seq, `${label}.event_seq`),
     updated_at: optionalNonNegativeSafeInteger(record.updated_at, `${label}.updated_at`),
-    session: record.session === undefined ? undefined : validateSession(record.session, `${label}.session`, owner),
+    session: embeddedSession,
   }
 }
 
@@ -460,6 +464,16 @@ function requiredString(value: unknown, label: string): string {
 function requiredContent(value: unknown, label: string): string {
   if (typeof value !== 'string' || value.length === 0) {
     throw new Error(`${label} must be a non-empty string`)
+  }
+  return value
+}
+
+function requiredMapKey(value: string, label: string): string {
+  if (value.trim() === '') {
+    throw new Error(`${label} is required`)
+  }
+  if (value !== value.trim()) {
+    throw new Error(`${label} must not include leading or trailing whitespace`)
   }
   return value
 }
