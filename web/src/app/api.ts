@@ -1,6 +1,15 @@
 
-let desktopSessionReady = false
-let desktopSessionPromise: Promise<void> | null = null
+export interface DesktopSessionAuthIdentity {
+  ok: true
+  token?: string
+  user_id: string
+  username?: string
+  account_scope_id: string
+  expires_at?: string
+}
+
+let desktopSessionIdentity: DesktopSessionAuthIdentity | null = null
+let desktopSessionPromise: Promise<DesktopSessionAuthIdentity> | null = null
 
 async function readErrorMessage(response: Response): Promise<string> {
   const text = (await response.text()).trim()
@@ -20,7 +29,7 @@ async function readErrorMessage(response: Response): Promise<string> {
   return text
 }
 
-async function bootstrapDesktopSession(): Promise<void> {
+async function bootstrapDesktopSession(): Promise<DesktopSessionAuthIdentity> {
   const response = await fetch('/v1/auth/desktop/session', {
     cache: 'no-store',
     credentials: 'same-origin',
@@ -32,19 +41,25 @@ async function bootstrapDesktopSession(): Promise<void> {
   if (!response.ok) {
     throw new Error(await readErrorMessage(response))
   }
-  desktopSessionReady = true
+  const identity = await response.json() as DesktopSessionAuthIdentity
+  if (identity.ok !== true || typeof identity.user_id !== 'string' || identity.user_id.trim() === ''
+    || typeof identity.account_scope_id !== 'string' || identity.account_scope_id.trim() === '') {
+    throw new Error('desktop session identity response is missing user_id or account_scope_id')
+  }
+  desktopSessionIdentity = identity
+  return identity
 }
 
 function clearDesktopSession() {
-  desktopSessionReady = false
+  desktopSessionIdentity = null
 }
 
-export async function ensureDesktopSession(forceRefresh = false): Promise<void> {
+export async function ensureDesktopSession(forceRefresh = false): Promise<DesktopSessionAuthIdentity> {
   if (forceRefresh) {
     clearDesktopSession()
   }
-  if (desktopSessionReady) {
-    return
+  if (desktopSessionIdentity) {
+    return desktopSessionIdentity
   }
   if (!desktopSessionPromise) {
     desktopSessionPromise = bootstrapDesktopSession().finally(() => {

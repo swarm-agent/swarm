@@ -385,6 +385,11 @@ export interface MessageListCache {
     cursor: string
   }
   knownFull?: boolean
+  sourceMessageCount?: number
+  sourceLastMessageAt?: number
+  sourceProjectionHighWatermarkSeq?: number
+  hydratedAt?: number
+  source?: 'network' | 'persisted'
 }
 
 export interface PendingUserMessage {

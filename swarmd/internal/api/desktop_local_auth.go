@@ -203,11 +203,12 @@ func (s *Server) handleDesktopLocalSessionBootstrap(w http.ResponseWriter, r *ht
 	}
 	actor, _ := productActorFromRequest(r)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":         true,
-		"token":      desktopLocalSessionTokenFromRequest(r),
-		"user_id":    actor.UserID,
-		"username":   actor.User.Username,
-		"expires_at": actor.TokenExpires,
+		"ok":               true,
+		"token":            desktopLocalSessionTokenFromRequest(r),
+		"user_id":          actor.UserID,
+		"username":         actor.User.Username,
+		"account_scope_id": actor.AccountScopeID,
+		"expires_at":       actor.TokenExpires,
 	})
 }
 

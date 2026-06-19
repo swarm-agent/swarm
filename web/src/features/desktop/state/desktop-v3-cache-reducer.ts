@@ -618,14 +618,20 @@ export function applyMessagesBySessionFromSnapshot(
   if (!messagesBySession) return state
 
   for (const [sessionId, messages] of Object.entries(messagesBySession)) {
-    state.messagesBySession[sessionId] = buildMessageListCache(messages)
+    state.messagesBySession[sessionId] = buildMessageListCache(messages, messageListMetadataForSession(state, sessionId, 'network'))
     removeCommittedPendingForSession(state, sessionId, messages)
   }
 
   return state
 }
 
-export function buildMessageListCache(messages: MessageSnapshot[]): MessageListCache {
+export function buildMessageListCache(messages: MessageSnapshot[], metadata: Partial<Pick<MessageListCache,
+  'sourceMessageCount'
+  | 'sourceLastMessageAt'
+  | 'sourceProjectionHighWatermarkSeq'
+  | 'hydratedAt'
+  | 'source'
+>> = {}): MessageListCache {
   const deduped: MessageSnapshot[] = []
   const indexById: Record<string, number> = {}
   const indexBySeq: Record<string, number> = {}
@@ -655,7 +661,59 @@ export function buildMessageListCache(messages: MessageSnapshot[]): MessageListC
     byMessageId[message.id] = index
     byGlobalSeq[messageGlobalSeqKey(message)] = index
   })
-  return { items, byMessageId, byGlobalSeq }
+  return { items, byMessageId, byGlobalSeq, ...definedMessageListMetadata(metadata) }
+}
+
+function messageListMetadataForSession(
+  state: DesktopV3CacheState,
+  sessionId: string,
+  source: 'network' | 'persisted',
+): Partial<Pick<MessageListCache,
+  'sourceMessageCount'
+  | 'sourceLastMessageAt'
+  | 'sourceProjectionHighWatermarkSeq'
+  | 'hydratedAt'
+  | 'source'
+>> {
+  const sessionRecord = state.sessionsById[sessionId]
+  const projection = state.projectionsBySession[sessionId]
+  return definedMessageListMetadata({
+    sourceMessageCount: sessionRecord?.kind === 'full' ? sessionRecord.session.message_count : undefined,
+    sourceLastMessageAt: sessionRecord?.kind === 'full' ? sessionRecord.session.last_message_at : undefined,
+    sourceProjectionHighWatermarkSeq: projection?.projection_high_watermark_seq,
+    hydratedAt: Date.now(),
+    source,
+  })
+}
+
+function definedMessageListMetadata(metadata: Partial<Pick<MessageListCache,
+  'sourceMessageCount'
+  | 'sourceLastMessageAt'
+  | 'sourceProjectionHighWatermarkSeq'
+  | 'hydratedAt'
+  | 'source'
+>>): Partial<Pick<MessageListCache,
+  'sourceMessageCount'
+  | 'sourceLastMessageAt'
+  | 'sourceProjectionHighWatermarkSeq'
+  | 'hydratedAt'
+  | 'source'
+>> {
+  const next: Partial<Pick<MessageListCache,
+    'sourceMessageCount'
+    | 'sourceLastMessageAt'
+    | 'sourceProjectionHighWatermarkSeq'
+    | 'hydratedAt'
+    | 'source'
+  >> = {}
+  if (metadata.sourceMessageCount !== undefined) next.sourceMessageCount = metadata.sourceMessageCount
+  if (metadata.sourceLastMessageAt !== undefined) next.sourceLastMessageAt = metadata.sourceLastMessageAt
+  if (metadata.sourceProjectionHighWatermarkSeq !== undefined) {
+    next.sourceProjectionHighWatermarkSeq = metadata.sourceProjectionHighWatermarkSeq
+  }
+  if (metadata.hydratedAt !== undefined) next.hydratedAt = metadata.hydratedAt
+  if (metadata.source !== undefined) next.source = metadata.source
+  return next
 }
 
 function writeSyncScope(state: DesktopV3CacheState, snapshot: SyncSnapshotResponse): void {
