@@ -23,6 +23,7 @@ export interface PersistedDesktopV3OwnerV1 {
   owner: DesktopV3CacheOwner
   persistedAt: number
   selectedSessionId?: string
+  sidebarScopeId: string
   syncScopesById: Record<string, SyncScopeCache>
   sessionOrderByScope: Record<string, string[]>
   sidebarSessionsById: Record<string, PersistedDesktopV3SidebarSessionV1>
@@ -80,10 +81,11 @@ export function validatePersistedDesktopV3OwnerV1(
     }
 
     const selectedSessionId = optionalString(record.selectedSessionId, 'selectedSessionId')
+    const sidebarScopeId = requiredString(record.sidebarScopeId, 'sidebarScopeId')
     const syncScopesById = validateSyncScopesById(record.syncScopesById)
     const sessionOrderByScope = validateSessionOrderByScope(record.sessionOrderByScope)
     const sidebarSessionsById = validateSidebarSessionsById(record.sidebarSessionsById, owner)
-    validateOwnerReferences({ selectedSessionId, syncScopesById, sessionOrderByScope, sidebarSessionsById })
+    validateOwnerReferences({ selectedSessionId, sidebarScopeId, syncScopesById, sessionOrderByScope, sidebarSessionsById })
 
     return {
       ok: true,
@@ -93,6 +95,7 @@ export function validatePersistedDesktopV3OwnerV1(
         owner,
         persistedAt: nonNegativeSafeInteger(record.persistedAt, 'persistedAt'),
         selectedSessionId,
+        sidebarScopeId,
         syncScopesById,
         sessionOrderByScope,
         sidebarSessionsById,
@@ -270,12 +273,19 @@ function validateSidebarSessionsById(
 
 function validateOwnerReferences(input: {
   selectedSessionId?: string
+  sidebarScopeId: string
   syncScopesById: Record<string, SyncScopeCache>
   sessionOrderByScope: Record<string, string[]>
   sidebarSessionsById: Record<string, PersistedDesktopV3SidebarSessionV1>
 }): void {
   if (input.selectedSessionId !== undefined && !input.sidebarSessionsById[input.selectedSessionId]) {
     throw new Error('persisted selectedSessionId does not resolve to a sidebar session')
+  }
+  if (!input.syncScopesById[input.sidebarScopeId]) {
+    throw new Error('persisted sidebarScopeId does not resolve to a persisted sync scope')
+  }
+  if (!input.sessionOrderByScope[input.sidebarScopeId]) {
+    throw new Error('persisted sidebarScopeId does not resolve to a persisted session order')
   }
 
   for (const [scopeId, sessionOrder] of Object.entries(input.sessionOrderByScope)) {

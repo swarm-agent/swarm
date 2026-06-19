@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { bootstrapDesktopV3Sidebar, resetDesktopV3BootstrapControllerForTests } from './desktop-v3-bootstrap-controller'
 import { createEmptyDesktopV3CacheState } from './desktop-v3-cache-reducer'
 import type { DesktopV3CacheAction } from './desktop-v3-cache-types'
-import { messageA1, messageA2, projectionA, projectionB, snapshotFixture, sessionA, sessionB } from './desktop-v3-cache.backend-fixtures'
+import { messageA1, messageA2, messageB1, projectionA, projectionB, snapshotFixture, sessionA, sessionB } from './desktop-v3-cache.backend-fixtures'
 import { createDesktopV3CacheOwner } from './desktop-v3-cache-owner'
 import { buildPersistedDesktopV3MessageTailV1, DESKTOP_V3_CACHE_SCHEMA_VERSION, type PersistedDesktopV3OwnerV1 } from './desktop-v3-cache-persisted-types'
 import { desktopV3CacheReducer } from './desktop-v3-cache-reducer'
@@ -17,15 +17,17 @@ const persistedOwner = createDesktopV3CacheOwner({
 })
 
 function persistedOwnerRecordFixture(): PersistedDesktopV3OwnerV1 {
+  const scopeId = 'persisted-scope'
   return {
     schemaVersion: DESKTOP_V3_CACHE_SCHEMA_VERSION,
     ownerKey: persistedOwner.key,
     owner: persistedOwner,
     persistedAt: 1_000,
     selectedSessionId: sessionA.id,
+    sidebarScopeId: scopeId,
     syncScopesById: {
-      'persisted-scope': {
-        scopeId: 'persisted-scope',
+      [scopeId]: {
+        scopeId,
         surface: 'desktop',
         streamKind: 'v3.sync.snapshot',
         selectorFilterHash: 'persisted-selector',
@@ -37,7 +39,7 @@ function persistedOwnerRecordFixture(): PersistedDesktopV3OwnerV1 {
         needsBootstrap: false,
       },
     },
-    sessionOrderByScope: { 'persisted-scope': [sessionA.id, sessionB.id] },
+    sessionOrderByScope: { [scopeId]: [sessionA.id, sessionB.id] },
     sidebarSessionsById: {
       [sessionA.id]: { session: sessionA, projection: projectionA },
       [sessionB.id]: { session: sessionB, projection: projectionB },
@@ -103,6 +105,127 @@ test('bootstrap controller restores selected persisted owner and tail before net
   assert.equal(order.indexOf('dispatch:desktopV3Cache.restore') < order.indexOf('post-bootstrap'), true)
   assert.equal(state.desktopSidebarBootstrap.status, 'ready')
   assert.equal(state.desktopSidebarBootstrap.stale, false)
+})
+
+test('bootstrap controller restores route-preferred session tail before network bootstrap', async () => {
+  resetDesktopV3BootstrapControllerForTests()
+  let state = createEmptyDesktopV3CacheState()
+  const readTailSessionIds: string[] = []
+  const tailA = buildPersistedDesktopV3MessageTailV1({
+    ownerKey: persistedOwner.key,
+    sessionId: sessionA.id,
+    persistedAt: 2_000,
+    messages: [messageA1],
+  })
+  const tailB = buildPersistedDesktopV3MessageTailV1({
+    ownerKey: persistedOwner.key,
+    sessionId: sessionB.id,
+    persistedAt: 2_001,
+    messages: [messageB1],
+  })
+
+  await bootstrapDesktopV3Sidebar({
+    preferredSessionId: sessionB.id,
+    loadActiveOwnerKey: () => persistedOwner.key,
+    readOwner: async () => persistedOwnerRecordFixture(),
+    readMessageTail: async (_ownerKey, sessionId) => {
+      readTailSessionIds.push(sessionId)
+      return sessionId === sessionB.id ? tailB : tailA
+    },
+    postBootstrap: async () => {
+      assert.equal(state.selectedSessionId, sessionB.id)
+      assert.equal(state.messagesBySession[sessionA.id], undefined)
+      assert.deepEqual(state.messagesBySession[sessionB.id].items.map((message) => message.id), [messageB1.id])
+      return snapshotFixture({
+        scope_id: 'scope-network',
+        sessions_by_id: {},
+        projections_by_session: {},
+        session_order: [],
+        messages_by_session: {},
+        run_intents_by_session: {},
+      })
+    },
+    postHydrate: async () => {
+      throw new Error('hydrate should not run for empty network session order')
+    },
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+  })
+
+  assert.deepEqual(readTailSessionIds, [sessionB.id])
+})
+
+test('bootstrap controller restores route-preferred selection without falling back to persisted selected tail on route miss', async () => {
+  resetDesktopV3BootstrapControllerForTests()
+  let state = createEmptyDesktopV3CacheState()
+  const readTailSessionIds: string[] = []
+
+  await bootstrapDesktopV3Sidebar({
+    preferredSessionId: sessionB.id,
+    loadActiveOwnerKey: () => persistedOwner.key,
+    readOwner: async () => persistedOwnerRecordFixture(),
+    readMessageTail: async (_ownerKey, sessionId) => {
+      readTailSessionIds.push(sessionId)
+      return undefined
+    },
+    postBootstrap: async () => {
+      assert.equal(state.selectedSessionId, sessionB.id)
+      assert.equal(state.messagesBySession[sessionA.id], undefined)
+      assert.equal(state.messagesBySession[sessionB.id], undefined)
+      assert.equal(state.desktopInitialHydrate.status, 'idle')
+      return snapshotFixture({
+        scope_id: 'scope-network',
+        sessions_by_id: {},
+        projections_by_session: {},
+        session_order: [],
+        messages_by_session: {},
+        run_intents_by_session: {},
+      })
+    },
+    postHydrate: async () => {
+      throw new Error('hydrate should not run for empty network session order')
+    },
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+  })
+
+  assert.deepEqual(readTailSessionIds, [sessionB.id])
+})
+
+test('bootstrap controller preserves restored cached state when network bootstrap fails', async () => {
+  resetDesktopV3BootstrapControllerForTests()
+  let state = createEmptyDesktopV3CacheState()
+  const persistedTail = buildPersistedDesktopV3MessageTailV1({
+    ownerKey: persistedOwner.key,
+    sessionId: sessionA.id,
+    persistedAt: 2_000,
+    messages: [messageA1],
+  })
+
+  await bootstrapDesktopV3Sidebar({
+    loadActiveOwnerKey: () => persistedOwner.key,
+    readOwner: async () => persistedOwnerRecordFixture(),
+    readMessageTail: async () => persistedTail,
+    postBootstrap: async () => {
+      throw new Error('offline')
+    },
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+  })
+
+  assert.equal(state.desktopSidebarBootstrap.status, 'error')
+  assert.equal(state.desktopSidebarBootstrap.error, 'offline')
+  assert.equal(state.desktopSidebarBootstrap.source, 'persisted')
+  assert.equal(state.desktopSidebarBootstrap.stale, true)
+  assert.equal(state.desktopInitialHydrate.status, 'cached')
+  assert.equal(state.desktopInitialHydrate.source, 'persisted')
+  assert.equal(state.desktopInitialHydrate.stale, true)
+  assert.deepEqual(state.sessionOrderByScope['persisted-scope'], [sessionA.id, sessionB.id])
+  assert.equal(state.selectedSessionId, sessionA.id)
+  assert.deepEqual(state.messagesBySession[sessionA.id].items.map((message) => message.id), [messageA1.id])
 })
 
 test('bootstrap controller cold-misses to normal network path when persisted owner is unavailable', async () => {

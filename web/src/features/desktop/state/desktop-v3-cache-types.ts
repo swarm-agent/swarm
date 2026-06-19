@@ -522,7 +522,7 @@ export interface CacheEvent {
 }
 
 export type DesktopV3CacheAction =
-  | { type: 'desktopV3Cache.restore'; owner: PersistedDesktopV3OwnerV1; selectedMessageTail?: PersistedDesktopV3MessageTailV1 }
+  | { type: 'desktopV3Cache.restore'; owner: PersistedDesktopV3OwnerV1; selectedMessageTail?: PersistedDesktopV3MessageTailV1; preferredSessionId?: string }
   | { type: 'desktopSidebarBootstrap.update'; patch: Partial<DesktopSidebarBootstrapState> }
   | { type: 'desktopInitialHydrate.update'; patch: Partial<DesktopInitialHydrateState> }
   | { type: 'session.select'; sessionId?: string }

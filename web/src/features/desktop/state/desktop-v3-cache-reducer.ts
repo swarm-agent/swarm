@@ -87,7 +87,7 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
       state.selectedSessionId = action.sessionId?.trim() || undefined
       return state
     case 'desktopV3Cache.restore':
-      return applyPersistedRestore(state, action.owner, action.selectedMessageTail)
+      return applyPersistedRestore(state, action.owner, action.selectedMessageTail, action.preferredSessionId)
     case 'snapshot.apply':
       return applyBootstrapSnapshot(state, action.snapshot)
     case 'hydrate.apply':
@@ -141,6 +141,7 @@ export function applyPersistedRestore(
   state: DesktopV3CacheState,
   owner: {
     selectedSessionId?: string
+    sidebarScopeId: string
     syncScopesById: DesktopV3CacheState['syncScopesById']
     sessionOrderByScope: DesktopV3CacheState['sessionOrderByScope']
     sidebarSessionsById: Record<string, {
@@ -158,6 +159,7 @@ export function applyPersistedRestore(
     sourceProjectionHighWatermarkSeq?: number
     hydratedAt?: number
   },
+  preferredSessionId?: string,
 ): DesktopV3CacheState {
   state.syncScopesById = {}
   for (const [scopeId, scope] of Object.entries(owner.syncScopesById)) {
@@ -207,7 +209,8 @@ export function applyPersistedRestore(
     }
   }
 
-  state.selectedSessionId = owner.selectedSessionId
+  const effectiveSessionId = preferredSessionId?.trim() || owner.selectedSessionId
+  state.selectedSessionId = effectiveSessionId
   if (selectedMessageTail !== undefined) {
     state.messagesBySession[selectedMessageTail.sessionId] = buildMessageListCache(selectedMessageTail.messages, {
       sourceMessageCount: selectedMessageTail.sourceMessageCount,
@@ -218,10 +221,9 @@ export function applyPersistedRestore(
     })
   }
 
-  const firstScopeId = Object.keys(state.syncScopesById)[0]
   state.desktopSidebarBootstrap = {
     status: 'cached',
-    scopeId: firstScopeId,
+    scopeId: owner.sidebarScopeId,
     error: undefined,
     stale: true,
     source: 'persisted',
@@ -230,7 +232,7 @@ export function applyPersistedRestore(
     status: selectedMessageTail === undefined ? 'idle' : 'cached',
     requestedSessionIds: selectedMessageTail === undefined ? [] : [selectedMessageTail.sessionId],
     hydratedSessionIds: selectedMessageTail === undefined ? [] : [selectedMessageTail.sessionId],
-    scopeId: firstScopeId,
+    scopeId: owner.sidebarScopeId,
     error: undefined,
     stale: true,
     source: selectedMessageTail === undefined ? undefined : 'persisted',

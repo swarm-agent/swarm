@@ -2280,11 +2280,11 @@ export function DesktopAppPage() {
   const desktopInitialHydrate = useDesktopV3CacheSelector((state) => state.desktopInitialHydrate)
   const selectedDesktopV3SessionId = useDesktopV3CacheSelector((state) => state.selectedSessionId)
   const selectedDesktopV3Messages = useDesktopV3CacheSelector((state) => {
-    const sessionId = state.selectedSessionId ?? routeSessionId
+    const sessionId = routeSessionId || state.selectedSessionId
     return sessionId ? selectRenderedSessionMessages(state, sessionId) : { committed: [], pendingUser: [], liveRuns: [] }
   })
   const selectedDesktopV3MessagesLoaded = useDesktopV3CacheSelector((state) => {
-    const sessionId = state.selectedSessionId ?? routeSessionId
+    const sessionId = routeSessionId || state.selectedSessionId
     return sessionId ? Boolean(state.messagesBySession[sessionId]) : false
   })
   const desktopSidebarRows = useDesktopV3CacheSelector(selectDesktopSidebarRows)
@@ -2302,8 +2302,8 @@ export function DesktopAppPage() {
   )
 
   useEffect(() => {
-    void bootstrapDesktopV3Sidebar()
-  }, [])
+    void bootstrapDesktopV3Sidebar({ preferredSessionId: routeSessionId })
+  }, [routeSessionId])
 
   const sessionsByWorkspace = useMemo<Map<string, DesktopSessionRecord[]>>(() => {
     const grouped = new Map<string, DesktopSessionRecord[]>()
@@ -3602,7 +3602,7 @@ export function DesktopAppPage() {
           </div>
         ) : routeSessionId ? (
           <DesktopV3ChatPane
-            selectedSessionId={selectedDesktopV3SessionId || routeSessionId}
+            selectedSessionId={routeSessionId || selectedDesktopV3SessionId}
             initialHydrateStatus={desktopInitialHydrate.status}
             renderedMessages={selectedDesktopV3Messages}
             messagesLoaded={selectedDesktopV3MessagesLoaded}

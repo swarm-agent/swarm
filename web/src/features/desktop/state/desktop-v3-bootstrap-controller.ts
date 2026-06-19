@@ -8,6 +8,7 @@ import type { DesktopV3CacheAction, SyncSnapshotResponse } from './desktop-v3-ca
 import type { PersistedDesktopV3MessageTailV1, PersistedDesktopV3OwnerV1 } from './desktop-v3-cache-persisted-types'
 
 interface BootstrapDesktopV3SidebarDeps {
+  preferredSessionId?: string
   postBootstrap?: () => Promise<SyncSnapshotResponse>
   postHydrate?: (input: DesktopV3HydrateInput) => Promise<SyncSnapshotResponse>
   dispatch?: (action: DesktopV3CacheAction) => void
@@ -31,6 +32,7 @@ export function bootstrapDesktopV3Sidebar(deps: BootstrapDesktopV3SidebarDeps = 
   const readMessageTail = deps.readMessageTail ?? readDesktopV3MessageTail
 
   bootstrapInFlight = restoreDesktopV3CacheFromActiveOwner({
+    preferredSessionId: deps.preferredSessionId,
     dispatch,
     loadActiveOwnerKey,
     readOwner,
@@ -85,6 +87,7 @@ export function bootstrapDesktopV3Sidebar(deps: BootstrapDesktopV3SidebarDeps = 
 }
 
 export async function restoreDesktopV3CacheFromActiveOwner(input: {
+  preferredSessionId?: string
   dispatch: (action: DesktopV3CacheAction) => void
   loadActiveOwnerKey?: () => string | undefined
   readOwner?: (ownerKey: string) => Promise<PersistedDesktopV3OwnerV1 | undefined>
@@ -97,15 +100,16 @@ export async function restoreDesktopV3CacheFromActiveOwner(input: {
     const owner = await (input.readOwner ?? readDesktopV3Owner)(ownerKey)
     if (!owner) return false
 
-    const selectedSessionId = owner.selectedSessionId
-    const selectedMessageTail = selectedSessionId
-      ? await (input.readMessageTail ?? readDesktopV3MessageTail)(owner.ownerKey, selectedSessionId)
+    const effectiveSessionId = input.preferredSessionId?.trim() || owner.selectedSessionId
+    const selectedMessageTail = effectiveSessionId
+      ? await (input.readMessageTail ?? readDesktopV3MessageTail)(owner.ownerKey, effectiveSessionId)
       : undefined
 
     input.dispatch({
       type: 'desktopV3Cache.restore',
       owner,
       selectedMessageTail,
+      preferredSessionId: input.preferredSessionId,
     })
     return true
   } catch {

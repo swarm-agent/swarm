@@ -22,15 +22,17 @@ const owner = createDesktopV3CacheOwner({
 
 function ownerRecordFixture(overrides: Partial<PersistedDesktopV3OwnerV1> = {}): PersistedDesktopV3OwnerV1 {
   const snapshot = snapshotFixture()
+  const scopeId = snapshot.scope_id
   return {
     schemaVersion: DESKTOP_V3_CACHE_SCHEMA_VERSION,
     ownerKey: owner.key,
     owner,
     persistedAt: 123,
     selectedSessionId: sessionA.id,
+    sidebarScopeId: scopeId,
     syncScopesById: {
-      [snapshot.scope_id]: {
-        scopeId: snapshot.scope_id,
+      [scopeId]: {
+        scopeId,
         surface: 'desktop',
         streamKind: 'v3.sync.snapshot',
         selectorFilterHash: 'selector-hash',
@@ -43,7 +45,7 @@ function ownerRecordFixture(overrides: Partial<PersistedDesktopV3OwnerV1> = {}):
       },
     },
     sessionOrderByScope: {
-      [snapshot.scope_id]: [sessionA.id],
+      [scopeId]: [sessionA.id],
     },
     sidebarSessionsById: {
       [sessionA.id]: {
@@ -187,6 +189,12 @@ test('persisted owner validation rejects broken session references', () => {
   const scopeId = Object.keys(base.sessionOrderByScope)[0]
 
   assert.equal(validatePersistedDesktopV3OwnerV1({ ...base, selectedSessionId: 'missing-session' }, owner.key).ok, false)
+  const missingSyncScope = validatePersistedDesktopV3OwnerV1({ ...base, sidebarScopeId: 'missing-scope' }, owner.key)
+  assert.equal(missingSyncScope.ok, false)
+  assert.equal(missingSyncScope.ok ? '' : missingSyncScope.reason, 'persisted sidebarScopeId does not resolve to a persisted sync scope')
+  const missingSessionOrder = validatePersistedDesktopV3OwnerV1({ ...base, sessionOrderByScope: {}, sidebarScopeId: scopeId }, owner.key)
+  assert.equal(missingSessionOrder.ok, false)
+  assert.equal(missingSessionOrder.ok ? '' : missingSessionOrder.reason, 'persisted sidebarScopeId does not resolve to a persisted session order')
   assert.equal(validatePersistedDesktopV3OwnerV1({ ...base, sessionOrderByScope: { [scopeId]: [sessionA.id, sessionA.id] } }, owner.key).ok, false)
   assert.equal(validatePersistedDesktopV3OwnerV1({ ...base, sessionOrderByScope: { [scopeId]: [sessionA.id, 'missing-session'] } }, owner.key).ok, false)
   assert.equal(validatePersistedDesktopV3OwnerV1({ ...base, sessionOrderByScope: { ['missing-scope']: [sessionA.id] } }, owner.key).ok, false)

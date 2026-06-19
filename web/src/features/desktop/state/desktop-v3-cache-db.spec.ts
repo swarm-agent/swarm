@@ -55,6 +55,7 @@ function ownerRecordFixture(
     owner,
     persistedAt,
     selectedSessionId: session.id,
+    sidebarScopeId: scopeId,
     syncScopesById: {
       [scopeId]: {
         scopeId,

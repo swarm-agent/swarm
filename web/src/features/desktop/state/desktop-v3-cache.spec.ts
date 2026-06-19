@@ -122,6 +122,7 @@ test('desktopV3Cache.restore rebuilds cached sidebar, selected transcript indexe
       owner: persistedOwner,
       persistedAt: 1_000,
       selectedSessionId: sessionA.id,
+      sidebarScopeId: scopeId,
       syncScopesById: {
         [scopeId]: {
           scopeId,
@@ -146,8 +147,10 @@ test('desktopV3Cache.restore rebuilds cached sidebar, selected transcript indexe
   })
 
   assert.equal(state.desktopSidebarBootstrap.status, 'cached')
+  assert.equal(state.desktopSidebarBootstrap.scopeId, scopeId)
   assert.equal(state.desktopSidebarBootstrap.stale, true)
   assert.equal(state.desktopInitialHydrate.status, 'cached')
+  assert.equal(state.desktopInitialHydrate.scopeId, scopeId)
   assert.equal(state.realtime.needsBootstrap, true)
   assert.equal(state.syncScopesById[scopeId].endpointCursor, 'cursor-persisted')
   assert.equal(state.syncScopesById[scopeId].needsBootstrap, true)
