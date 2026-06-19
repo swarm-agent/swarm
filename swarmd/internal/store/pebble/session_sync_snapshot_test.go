@@ -221,6 +221,7 @@ func TestBuildV3SyncSnapshotGlobalSelectorWithoutRecentIncludesAccountSessions(t
 
 	snapshot, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
 		AccountScopeID: "account-1",
+		UserID:         "user-1",
 		Global:         true,
 		History:        V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone},
 	})
@@ -452,25 +453,69 @@ func TestBuildV3SyncSnapshotRecentTombstoneSecondPageUsesBeforeCursor(t *testing
 	}
 }
 
-func TestBuildV3SyncSnapshotLargeAccountTombstonesFailClosedWithoutRecentPagination(t *testing.T) {
+func TestBuildV3SyncSnapshotGlobalPrincipalReturnsAllTombstonesBeyondLegacyBound(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
 	for i := 0; i < 1005; i++ {
-		sessionID := fmt.Sprintf("session-large-account-tombstone-%04d", i)
-		createV3SyncSnapshotSessionForUserTest(t, sessions, sessionID, "user-1", "account-1", "/workspace/large-account", int64(4000+i))
+		sessionID := fmt.Sprintf("session-large-principal-tombstone-%04d", i)
+		createV3SyncSnapshotSessionForUserTest(t, sessions, sessionID, "user-1", "account-1", "/workspace/large-principal", int64(4000+i))
 		if err := sessions.DeleteSession(sessionID); err != nil {
-			t.Fatalf("delete large account tombstone %s: %v", sessionID, err)
+			t.Fatalf("delete principal tombstone %s: %v", sessionID, err)
+		}
+	}
+	createV3SyncSnapshotSessionForUserTest(t, sessions, "session-large-principal-other-user", "user-2", "account-1", "/workspace/large-principal", 7000)
+	if err := sessions.DeleteSession("session-large-principal-other-user"); err != nil {
+		t.Fatalf("delete other-user tombstone: %v", err)
+	}
+	createV3SyncSnapshotSessionForUserTest(t, sessions, "session-large-principal-blank-user", "", "account-1", "/workspace/large-principal", 7001)
+	if err := sessions.DeleteSession("session-large-principal-blank-user"); err != nil {
+		t.Fatalf("delete blank-user tombstone: %v", err)
+	}
+
+	snapshot, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
+		AccountScopeID: "account-1",
+		UserID:         "user-1",
+		Global:         true,
+		History:        V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone},
+	})
+	if err != nil {
+		t.Fatalf("build global principal tombstone snapshot: %v", err)
+	}
+	if len(snapshot.TombstonesBySession) != 1005 {
+		t.Fatalf("global principal tombstones len=%d, want 1005", len(snapshot.TombstonesBySession))
+	}
+	for i := 0; i < 1005; i++ {
+		sessionID := fmt.Sprintf("session-large-principal-tombstone-%04d", i)
+		if tombstone := snapshot.TombstonesBySession[sessionID]; tombstone.SessionID != sessionID || !tombstone.Deleted {
+			t.Fatalf("global principal snapshot missed %s: %+v", sessionID, tombstone)
+		}
+	}
+	for _, leaked := range []string{"session-large-principal-other-user", "session-large-principal-blank-user"} {
+		if _, ok := snapshot.TombstonesBySession[leaked]; ok {
+			t.Fatalf("global principal snapshot leaked %s", leaked)
+		}
+	}
+}
+
+func TestBuildV3SyncSnapshotNonGlobalBoundedSelectorTombstonesStillFailClosed(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	for i := 0; i < 1005; i++ {
+		sessionID := fmt.Sprintf("session-large-workspace-tombstone-%04d", i)
+		createV3SyncSnapshotSessionForUserTest(t, sessions, sessionID, "user-1", "account-1", "/workspace/large-workspace", int64(5000+i))
+		if err := sessions.DeleteSession(sessionID); err != nil {
+			t.Fatalf("delete workspace tombstone %s: %v", sessionID, err)
 		}
 	}
 
 	_, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
 		AccountScopeID: "account-1",
 		UserID:         "user-1",
-		Global:         true,
+		WorkspacePath:  "/workspace/large-workspace",
 		History:        V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone},
 	})
 	if err == nil || !strings.Contains(err.Error(), "retry with recent.limit and pagination") {
-		t.Fatalf("large account snapshot error=%v, want fail-closed pagination error", err)
+		t.Fatalf("large non-global snapshot error=%v, want fail-closed pagination error", err)
 	}
 }
 
