@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, FormEvent, JSX, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
+import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, Link } from '@tanstack/react-router'
 import { Bell, Bot, Box, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, LayoutGrid, Link2, ListChecks, LoaderCircle, Menu, Pause, Play, Plus, RefreshCcw, Settings, Workflow, X, XCircle } from 'lucide-react'
@@ -39,10 +39,9 @@ import { fetchSwarmTargets, selectSwarmTarget, type SwarmTarget } from '../swarm
 import { fetchRemoteDeploySessions, type RemoteDeploySession } from '../swarm/api/deploy-container'
 import { approveRemoteSwarmPairing, fetchPendingRemoteSwarmPairings, type RemoteSwarmPendingPairing } from '../onboarding/api'
 import { ManagedHostLinkRequestModal, activePendingPairings, managedHostTargetFromPairingResult } from '../swarm/components/managed-host-link-request-modal'
-import { ChatMarkdown } from '../chat/components/chat-markdown'
+import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
+import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-session-pane'
 import { buildDesktopChatRouteOptions, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../chat/services/chat-routing'
-import { buildStructuredToolMessage, parseStructuredToolMessage } from '../chat/services/tool-message'
-import type { StructuredToolMessage, ToolMessageState } from '../chat/types/chat'
 import { fetchGitStatus, gitStatusQueryKey, startGitRealtime } from '../git/api'
 import type { GitFileStatus, GitSnapshot } from '../git/types'
 import { fetchDesktopUpdateJob, fetchDesktopUpdateStatus, fetchLocalContainerUpdatePlan, startDesktopUpdate, type DesktopUpdateJob, type LocalContainerUpdatePlan } from '../update/api'
@@ -61,9 +60,8 @@ import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, useDesktopV3CacheSel
 import { selectDesktopSidebarRows, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { selectSession } from '../state/desktop-v3-cache-wire'
 import { requireDesktopV3RealtimeControllerReady, retainDesktopV3RealtimeController } from '../realtime/v3-realtime-controller'
-import { postDesktopV3AppendMessage } from '../session-v3/write-api'
-import type { DesktopV3SidebarRow, RenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
-import type { LiveRunOverlay, MessageMutationConflictResponse, MessageSnapshot, PendingUserMessage, SessionMessageMutationResponse, V3SessionRunIntent } from '../state/desktop-v3-cache-types'
+import type { DesktopV3SidebarRow } from '../state/desktop-v3-cache-selectors'
+import type { V3SessionRunIntent } from '../state/desktop-v3-cache-types'
 
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
 const DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY = 'swarm.web.desktop.pending_update_toast'
@@ -98,268 +96,6 @@ function SidebarActionRail({ children, className }: { children: ReactNode; class
 
 function SidebarActionRailSpacer() {
   return <span aria-hidden="true" className={SIDEBAR_ACTION_BOX_CLASS} />
-}
-
-function DesktopV3ChatPane({
-  selectedSessionId,
-  initialHydrateStatus,
-  renderedMessages,
-  messagesLoaded,
-}: {
-  selectedSessionId?: string
-  initialHydrateStatus: 'idle' | 'loading' | 'cached' | 'ready' | 'error'
-  renderedMessages: RenderedSessionMessages
-  messagesLoaded: boolean
-}) {
-  const [draft, setDraft] = useState('')
-  const [sendError, setSendError] = useState<string | null>(null)
-  const [sending, setSending] = useState(false)
-  const scrollTailRef = useRef<HTMLDivElement | null>(null)
-
-  const hasMessages = renderedMessages.committed.length > 0 || renderedMessages.pendingUser.length > 0 || renderedMessages.liveRuns.length > 0
-  const canSend = Boolean(selectedSessionId && draft.trim() && !sending)
-
-  useEffect(() => {
-    scrollTailRef.current?.scrollIntoView({ block: 'end' })
-  }, [selectedSessionId, renderedMessages.committed.length, renderedMessages.pendingUser.length, renderedMessages.liveRuns.length])
-
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    const content = draft.trim()
-    if (!selectedSessionId || !content || sending) return
-
-    const operationId = crypto.randomUUID()
-    const clientRequestId = `desktop-v3-existing-message:${selectedSessionId}:${operationId}`
-    const messageId = `desktop-v3-message:${operationId}`
-    const runId = `desktop-v3-run:${operationId}`
-    setDraft('')
-    setSendError(null)
-    setSending(true)
-    dispatchDesktopV3Cache({
-      type: 'pendingUser.upsert',
-      input: {
-        clientRequestId,
-        messageId,
-        sessionId: selectedSessionId,
-        content,
-        createdAt: Date.now(),
-      },
-    })
-
-    try {
-      const response = await commitDesktopV3Message(selectedSessionId, clientRequestId, messageId, runId, content)
-      dispatchDesktopV3Cache({ type: 'mutation.messageResult', raw: response, clientRequestId, messageId })
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
-      setSendError(errorMessage)
-      dispatchDesktopV3Cache({
-        type: 'mutation.messageResult',
-        raw: { ok: false, error: errorMessage },
-        clientRequestId,
-        messageId,
-      })
-    } finally {
-      setSending(false)
-    }
-  }
-
-  if (!selectedSessionId) {
-    return <DesktopV3ChatStateCard title="Select a session" description="Choose a session from the sidebar to view its conversation." />
-  }
-
-  return (
-    <div className="flex min-h-0 flex-1 flex-col bg-[var(--app-bg)]" data-testid="desktop-v3-chat-pane">
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-8">
-        <div className="mx-auto flex w-full max-w-3xl flex-col gap-5">
-          {initialHydrateStatus === 'loading' && !messagesLoaded ? (
-            <DesktopV3ChatInlineState title="Loading conversation…" description="Hydrating cached message tails." />
-          ) : null}
-          {initialHydrateStatus === 'error' && !messagesLoaded && !hasMessages ? (
-            <DesktopV3ChatInlineState title="Conversation unavailable" description="Initial message hydrate failed. You can still send from this session while cached state recovers." tone="error" />
-          ) : null}
-          {!hasMessages && initialHydrateStatus !== 'loading' && initialHydrateStatus !== 'error' ? (
-            <DesktopV3ChatInlineState title="Empty conversation" description="Send a message to continue this session." />
-          ) : null}
-          {renderedMessages.committed.map((message) => (
-            <DesktopV3CommittedMessage key={message.id} message={message} />
-          ))}
-          {renderedMessages.pendingUser.map((message) => (
-            <DesktopV3PendingUserMessage key={message.clientRequestId} message={message} />
-          ))}
-          {renderedMessages.liveRuns.map((run) => (
-            <DesktopV3LiveRun key={run.runId} run={run} />
-          ))}
-          <div ref={scrollTailRef} />
-        </div>
-      </div>
-      <form onSubmit={handleSubmit} className="border-t border-[var(--app-border)] bg-[var(--app-bg)] px-4 pb-[calc(var(--app-safe-area-bottom)_+_1rem)] pt-3 sm:px-8" data-testid="desktop-v3-chat-composer">
-        <div className="mx-auto flex w-full max-w-3xl items-end gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 shadow-sm focus-within:border-[var(--app-border-strong)]">
-          <textarea
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault()
-                event.currentTarget.form?.requestSubmit()
-              }
-            }}
-            rows={1}
-            placeholder="Message Swarm…"
-            aria-label="Message Swarm"
-            data-testid="desktop-v3-chat-input"
-            className="max-h-40 min-h-10 flex-1 resize-none bg-transparent py-2 text-sm leading-5 text-[var(--app-text)] outline-none placeholder:text-[var(--app-text-subtle)]"
-          />
-          <Button type="submit" disabled={!canSend} className="h-10 rounded-xl px-4" data-testid="desktop-v3-chat-send">
-            {sending ? <LoaderCircle size={16} className="animate-spin" /> : 'Send'}
-          </Button>
-        </div>
-        {sendError ? (
-          <div className="mx-auto mt-2 w-full max-w-3xl text-xs text-[var(--app-danger)]" role="alert">
-            {sendError}
-          </div>
-        ) : null}
-      </form>
-    </div>
-  )
-}
-
-async function commitDesktopV3Message(
-  sessionId: string,
-  clientRequestId: string,
-  messageId: string,
-  runId: string,
-  content: string,
-): Promise<SessionMessageMutationResponse | MessageMutationConflictResponse> {
-  return postDesktopV3AppendMessage(sessionId, {
-    client_request_id: clientRequestId,
-    message_id: messageId,
-    run_id: runId,
-    role: 'user',
-    content,
-  })
-}
-
-function DesktopV3CommittedMessage({ message }: { message: MessageSnapshot }) {
-  const role = message.role || 'message'
-  const toolMessage = parseStructuredToolMessage(message.content)
-  if (toolMessage || role === 'tool') {
-    return <DesktopV3ToolMessage content={message.content} toolMessage={toolMessage} />
-  }
-  if (role === 'user') {
-    return <DesktopV3UserMessage content={message.content} />
-  }
-  if (role === 'assistant' || role === 'reasoning') {
-    return <DesktopV3AssistantMessage content={message.content} role={role} />
-  }
-  return (
-    <div className="flex justify-start">
-      <div className="max-w-[78%] rounded-2xl border border-[var(--app-border)] px-4 py-3 text-sm text-[var(--app-text)]">
-        <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">{role}</div>
-        <ChatMarkdown content={message.content} />
-      </div>
-    </div>
-  )
-}
-
-function DesktopV3UserMessage({ content, pendingLabel }: { content: string; pendingLabel?: string }) {
-  return (
-    <div className="flex justify-end">
-      <div className="max-w-[78%] rounded-3xl bg-[var(--app-primary)] px-4 py-3 text-sm leading-6 text-[var(--app-primary-text)] shadow-sm">
-        <div className="whitespace-pre-wrap break-words">{content}</div>
-        {pendingLabel ? <div className="mt-1 text-right text-[10px] uppercase tracking-[0.12em] opacity-70">{pendingLabel}</div> : null}
-      </div>
-    </div>
-  )
-}
-
-function DesktopV3PendingUserMessage({ message }: { message: PendingUserMessage }) {
-  return <DesktopV3UserMessage content={message.content} pendingLabel={message.status === 'failed' ? message.error || 'failed' : 'sending'} />
-}
-
-function DesktopV3AssistantMessage({ content, role }: { content: string; role: string }) {
-  return (
-    <div className="flex justify-start">
-      <div className="min-w-0 max-w-[82%] text-sm leading-6 text-[var(--app-text)]">
-        {role === 'reasoning' ? <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">reasoning</div> : null}
-        <ChatMarkdown content={content} />
-      </div>
-    </div>
-  )
-}
-
-function DesktopV3ToolMessage({ content, toolMessage }: { content: string; toolMessage: StructuredToolMessage | null }) {
-  return (
-    <div className="flex justify-start">
-      <div className="min-w-0 max-w-[82%]">
-        <ChatMarkdown content={content} toolMessage={toolMessage ?? undefined} />
-      </div>
-    </div>
-  )
-}
-
-function DesktopV3LiveRun({ run }: { run: LiveRunOverlay }) {
-  const toolCalls = Object.values(run.toolCallsByCallId).sort((left, right) => left.updatedAt - right.updatedAt || left.callId.localeCompare(right.callId))
-  const reasoningContent = [run.reasoning?.summary, run.reasoning?.text]
-    .filter((value): value is string => Boolean(value?.trim()))
-    .join('\n\n')
-  return (
-    <div className="flex flex-col gap-3">
-      {reasoningContent ? (
-        <DesktopV3AssistantMessage content={reasoningContent} role="reasoning" />
-      ) : null}
-      {toolCalls.map((tool) => (
-        <DesktopV3LiveToolCall key={tool.callId} tool={tool} />
-      ))}
-      {run.assistantDraft?.content ? (
-        <DesktopV3AssistantMessage content={run.assistantDraft.content} role="assistant" />
-      ) : run.status === 'running' || run.status === 'pending_executor' ? (
-        <div className="flex justify-start text-xs text-[var(--app-text-subtle)]">
-          <span className="inline-flex items-center gap-2">
-            <LoaderCircle size={13} className="animate-spin" /> assistant is working
-          </span>
-        </div>
-      ) : null}
-    </div>
-  )
-}
-
-function DesktopV3LiveToolCall({ tool }: { tool: LiveRunOverlay['toolCallsByCallId'][string] }) {
-  const state: ToolMessageState = tool.status === 'failed' || tool.status === 'error' ? 'error' : tool.status === 'completed' || tool.status === 'done' || tool.status === 'cancelled' || tool.status === 'canceled' ? 'done' : 'running'
-  const output = tool.outputText?.trim() ?? ''
-  const args = tool.argumentsText?.trim() ?? ''
-  const error = tool.errorText?.trim() || (state === 'error' ? output : '')
-  const parsed = buildStructuredToolMessage({
-    pathId: 'run.v3.provider-tool-result.v1',
-    tool: tool.toolName || 'tool',
-    callId: tool.callId,
-    toolInstanceId: tool.toolInstanceId,
-    argumentsText: args,
-    outputText: output,
-    error,
-    durationMs: tool.durationMs,
-    state,
-  })
-  return <DesktopV3ToolMessage content="" toolMessage={parsed} />
-}
-
-function DesktopV3ChatInlineState({ title, description, tone = 'muted' }: { title: string; description: string; tone?: 'muted' | 'error' }) {
-  return (
-    <div className={cn('py-16 text-center', tone === 'error' ? 'text-[var(--app-danger)]' : 'text-[var(--app-text-muted)]')}>
-      <div className="text-sm font-semibold text-[var(--app-text)]">{title}</div>
-      <p className="mt-2 text-sm">{description}</p>
-    </div>
-  )
-}
-
-function DesktopV3ChatStateCard({ title, description }: { title: string; description: string }) {
-  return (
-    <div className="flex h-full flex-1 items-center justify-center px-6 text-center">
-      <div className="max-w-lg">
-        <div className="text-lg font-semibold">{title}</div>
-        <p className="mt-2 text-sm text-[var(--app-text-muted)]">{description}</p>
-      </div>
-    </div>
-  )
 }
 
 function PwaLayoutDebugOverlay() {
@@ -1801,7 +1537,7 @@ export function DesktopAppPage() {
   const [updateError, setUpdateError] = useState<string | null>(null)
   const [updateProgress, setUpdateProgress] = useState<DesktopUpdateProgressState>({ open: false, job: null, startedAt: null })
   const [desktopToast, setDesktopToast] = useState<DesktopToastState | null>(() => loadPendingDesktopToast())
-  const [, setPendingWorktreeBranchByWorkspace] = useState<Record<string, string>>({})
+  const [pendingWorktreeBranchByWorkspace, setPendingWorktreeBranchByWorkspace] = useState<Record<string, string>>({})
   const [uiSettings, setUISettings] = useState<UISettingsWire | null>(null)
   const [localContainerUpdateConfirm, setLocalContainerUpdateConfirm] = useState<LocalContainerUpdateConfirmState | null>(null)
   const [todoSavingWorkspacePath, setTodoSavingWorkspacePath] = useState<string | null>(null)
@@ -2287,15 +2023,12 @@ export function DesktopAppPage() {
 
   const desktopSidebarBootstrap = useDesktopV3CacheSelector((state) => state.desktopSidebarBootstrap)
   const desktopInitialHydrate = useDesktopV3CacheSelector((state) => state.desktopInitialHydrate)
-  const selectedDesktopV3SessionId = useDesktopV3CacheSelector((state) => state.selectedSessionId)
-  const selectedDesktopV3Messages = useDesktopV3CacheSelector((state) => {
-    const sessionId = routeSessionId || state.selectedSessionId
-    return sessionId ? selectRenderedSessionMessages(state, sessionId) : { committed: [], pendingUser: [], liveRuns: [] }
-  })
-  const selectedDesktopV3MessagesLoaded = useDesktopV3CacheSelector((state) => {
-    const sessionId = routeSessionId || state.selectedSessionId
-    return sessionId ? Boolean(state.messagesBySession[sessionId]) : false
-  })
+  const selectedDesktopV3Messages = useDesktopV3CacheSelector((state) => (
+    routeSessionId ? selectRenderedSessionMessages(state, routeSessionId) : { committed: [], pendingUser: [], liveRuns: [] }
+  ))
+  const selectedDesktopV3MessagesLoaded = useDesktopV3CacheSelector((state) => (
+    routeSessionId ? Boolean(state.messagesBySession[routeSessionId]) : false
+  ))
   const desktopSidebarRows = useDesktopV3CacheSelector(selectDesktopSidebarRows)
   const desktopStateSessions = useMemo<DesktopSessionRecord[]>(
     () => desktopSidebarRows.map(desktopSessionRecordFromV3SidebarRow),
@@ -3674,8 +3407,8 @@ export function DesktopAppPage() {
             </Card>
           </div>
         ) : routeSessionId ? (
-          <DesktopV3ChatPane
-            selectedSessionId={routeSessionId || selectedDesktopV3SessionId}
+          <DesktopV3ExistingConversationPane
+            sessionId={routeSessionId}
             initialHydrateStatus={desktopInitialHydrate.status}
             renderedMessages={selectedDesktopV3Messages}
             messagesLoaded={selectedDesktopV3MessagesLoaded}
@@ -3695,12 +3428,18 @@ export function DesktopAppPage() {
               </p>
             </Card>
           </div>
-        ) : desktopSidebarBootstrap.scopeId ? (
-          <DesktopV3ChatPane
-            selectedSessionId={selectedDesktopV3SessionId}
-            initialHydrateStatus={desktopInitialHydrate.status}
-            renderedMessages={selectedDesktopV3Messages}
-            messagesLoaded={selectedDesktopV3MessagesLoaded}
+        ) : routeWorkspace?.path ? (
+          <DesktopV3NewSessionPane
+            workspace={routeWorkspace}
+            workspaceSlug={routeWorkspaceSlug}
+            routeOptions={buildDesktopChatRouteOptions({
+              hostSwarmName: swarmName,
+              workspacePath: routeWorkspace.path,
+              workspaceName: routeWorkspace.workspaceName,
+              topologyRoutes: routeWorkspace.topologyRoutes,
+            })}
+            pendingWorktreeBranch={pendingWorktreeBranchByWorkspace[routeWorkspace.path]}
+            agentName="swarm"
           />
         ) : (
           <div className="flex h-full flex-1 items-center justify-center px-6">
