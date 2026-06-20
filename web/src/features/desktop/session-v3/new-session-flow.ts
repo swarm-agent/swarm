@@ -159,6 +159,19 @@ function readStoredDesktopV3NewSessionOperation(
     if (value.createRequest?.session_id !== value.sessionId) return null
     if (value.createRequest?.workspace_path !== normalizedWorkspacePath) return null
     if (!value.createRequest?.client_request_id?.trim()) return null
+    const agentName = value.createRequest.agent_name?.trim() ?? ''
+    const worktreeMode = value.createRequest.worktree_mode?.trim() ?? ''
+    const worktreeBranch = value.createRequest.worktree_branch_name?.trim() ?? ''
+    const invalidWorktree = (worktreeMode !== ''
+      && worktreeMode !== 'on'
+      && worktreeMode !== 'off'
+      && worktreeMode !== 'inherit')
+      || (worktreeMode === 'on' && !worktreeBranch)
+      || (worktreeMode !== 'on' && Boolean(worktreeBranch))
+    if (!agentName || invalidWorktree) {
+      window.sessionStorage.removeItem(newSessionOperationKey(normalizedWorkspacePath))
+      return null
+    }
     if (!value.firstMessageRequest?.client_request_id?.trim()) return null
     if (!value.firstMessageRequest?.message_id?.trim()) return null
     if (!value.firstMessageRequest?.run_id?.trim()) return null

@@ -85,7 +85,7 @@ function makeMessageResponse(operation: DesktopV3NewSessionOperation): SessionMe
   }
 }
 
-function withSessionStorage(run: () => void): void {
+function withSessionStorage(run: (storage: Map<string, string>) => void): void {
   const previousWindow = globalThis.window
   const storage = new Map<string, string>()
   globalThis.window = {
@@ -96,7 +96,7 @@ function withSessionStorage(run: () => void): void {
     },
   } as Window & typeof globalThis
   try {
-    run()
+    run(storage)
   } finally {
     globalThis.window = previousWindow
   }
@@ -193,6 +193,55 @@ test('Path A operation persists exact retry payload in sessionStorage', () => wi
   const loaded = loadDesktopV3NewSessionOperation('/workspace')
   assert.equal(loaded?.operationId, operation.operationId)
   assert.equal(loaded?.sessionId, operation.sessionId)
+  assert.deepEqual(loaded?.createRequest, JSON.parse(JSON.stringify(operation.createRequest)))
+  assert.deepEqual(loaded?.firstMessageRequest, JSON.parse(JSON.stringify(operation.firstMessageRequest)))
+}))
+
+test('Path A discards retained operations missing agent_name', () => withSessionStorage((storage) => {
+  const operation = createDesktopV3NewSessionOperation({
+    workspacePath: '/workspace',
+    workspaceName: 'workspace',
+    route,
+    prompt: 'retry me',
+    agentName: 'swarm',
+  })
+  const retained = JSON.parse(JSON.stringify(operation)) as DesktopV3NewSessionOperation
+  retained.createRequest.agent_name = ''
+  persistDesktopV3NewSessionOperation(retained)
+
+  assert.equal(loadDesktopV3NewSessionOperation('/workspace'), null)
+  assert.equal(storage.size, 0)
+}))
+
+test('Path A discards retained operations with legacy branch worktree mode', () => withSessionStorage((storage) => {
+  const operation = createDesktopV3NewSessionOperation({
+    workspacePath: '/workspace',
+    workspaceName: 'workspace',
+    route,
+    prompt: 'retry me',
+    agentName: 'swarm',
+    worktree: { mode: 'on', branchName: 'agent/stage-4' },
+  })
+  const retained = JSON.parse(JSON.stringify(operation)) as DesktopV3NewSessionOperation
+  retained.createRequest.worktree_mode = 'branch'
+  persistDesktopV3NewSessionOperation(retained)
+
+  assert.equal(loadDesktopV3NewSessionOperation('/workspace'), null)
+  assert.equal(storage.size, 0)
+}))
+
+test('Path A retries valid retained operation unchanged', () => withSessionStorage(() => {
+  const operation = createDesktopV3NewSessionOperation({
+    workspacePath: '/workspace',
+    workspaceName: 'workspace',
+    route,
+    prompt: 'retry me',
+    agentName: 'swarm',
+    worktree: { mode: 'on', branchName: 'agent/stage-4' },
+  })
+  persistDesktopV3NewSessionOperation(operation)
+
+  const loaded = loadDesktopV3NewSessionOperation('/workspace')
   assert.deepEqual(loaded?.createRequest, JSON.parse(JSON.stringify(operation.createRequest)))
   assert.deepEqual(loaded?.firstMessageRequest, JSON.parse(JSON.stringify(operation.firstMessageRequest)))
 }))

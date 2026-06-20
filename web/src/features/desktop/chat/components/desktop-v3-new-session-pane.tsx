@@ -97,29 +97,31 @@ export function DesktopV3NewSessionPane({
     setStartError(null)
     try {
       const existingOperation = operationRef.current
-      const agentName = agentNameProp.trim()
-      if (!agentName) {
-        throw new Error('New Desktop V3 session requires agent_name')
-      }
-      const operation = existingOperation ?? createDesktopV3NewSessionOperation({
-        workspacePath: workspace.path,
-        workspaceName: workspace.workspaceName,
-        route: selectedRoute,
-        prompt: draft,
-        mode: 'auto',
-        agentName,
-        preference,
-        sessionMetadata: {
-          source: 'desktop-v3',
-          workspace_path: workspace.path,
-        },
-        messageMetadata: {
-          source: 'desktop-v3',
-        },
-        worktree: pendingWorktreeBranch
-          ? { mode: 'on', branchName: pendingWorktreeBranch }
-          : undefined,
-      })
+      const operation = existingOperation ?? (() => {
+        const agentName = agentNameProp.trim()
+        if (!agentName) {
+          throw new Error('New Desktop V3 session requires agent_name')
+        }
+        return createDesktopV3NewSessionOperation({
+          workspacePath: workspace.path,
+          workspaceName: workspace.workspaceName,
+          route: selectedRoute,
+          prompt: draft,
+          mode: 'auto',
+          agentName,
+          preference,
+          sessionMetadata: {
+            source: 'desktop-v3',
+            workspace_path: workspace.path,
+          },
+          messageMetadata: {
+            source: 'desktop-v3',
+          },
+          worktree: pendingWorktreeBranch
+            ? { mode: 'on', branchName: pendingWorktreeBranch }
+            : undefined,
+        })
+      })()
       operationRef.current = operation
       setDraft(operation.firstMessageRequest.content)
       persistDesktopV3NewSessionOperation(operation)
