@@ -28,6 +28,18 @@ test('postDesktopV3SyncBootstrap posts exact Step 1 payload to bootstrap endpoin
 })
 
 
+test('buildDesktopV3InitialHydrateInput requests a manifest when the initial message tail may be partial', () => {
+  assert.deepEqual(
+    buildDesktopV3InitialHydrateInput(['session-a']).history,
+    {
+      mode: 'tail',
+      max_messages_per_session: 200,
+      manifest_policy: 'manifest',
+    },
+  )
+})
+
+
 test('postDesktopV3SyncHydrate posts exact Step 2 payload to hydrate endpoint', async () => {
   const originalFetch = globalThis.fetch
   const calls: Array<{ url: string; init: RequestInit }> = []
@@ -54,6 +66,7 @@ test('postDesktopV3SyncHydrate posts exact Step 2 payload to hydrate endpoint', 
     history: {
       mode: 'tail',
       max_messages_per_session: 200,
+      manifest_policy: 'manifest',
     },
     resources: {
       messages: true,

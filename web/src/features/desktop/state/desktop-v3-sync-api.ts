@@ -50,6 +50,7 @@ export function buildDesktopV3InitialHydrateInput(sessionIds: string[]): Desktop
     history: {
       mode: 'tail',
       max_messages_per_session: 200,
+      manifest_policy: 'manifest',
     },
     resources: DESKTOP_V3_INITIAL_HYDRATE_DEFAULT_RESOURCES,
     include_active: true,
