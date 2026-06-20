@@ -308,6 +308,74 @@ test('startNewDesktopV3Session performs create, subscribe/select, then first mes
   }
 })
 
+test('startNewDesktopV3Session skips selection when delayed create resolves after route unmount', async () => {
+  const operation = createDesktopV3NewSessionOperation({
+    workspacePath: '/workspace',
+    workspaceName: 'workspace',
+    route,
+    prompt: 'start',
+    agentName: 'swarm',
+  })
+  const state: DesktopV3CacheState = createEmptyDesktopV3CacheState()
+  state.desktopSidebarBootstrap.scopeId = 'scope-global'
+  state.selectedSessionId = 'session-b'
+  const calls: string[] = []
+  const actions: DesktopV3CacheAction[] = []
+  const restore = setDesktopV3NewSessionFlowDepsForTests({
+    getSnapshot: () => state,
+    requireControllerReady: async () => ({
+      ensureSessionSubscription: (sessionId: string) => calls.push(`subscribe:${sessionId}`),
+      ensureSessionHistory: async () => undefined,
+      start: async () => undefined,
+      stop: () => undefined,
+    }),
+    dispatch: (action) => {
+      actions.push(action)
+      calls.push(`dispatch:${action.type}`)
+      if (action.type === 'session.select') {
+        state.selectedSessionId = action.sessionId
+      }
+    },
+    postCreateSession: async (request) => {
+      calls.push(`create:${request.session_id}`)
+      return makeCreateResponse(operation)
+    },
+    postAppendMessage: async (sessionId, request) => {
+      calls.push(`message:${sessionId}:${request.message_id}`)
+      return makeMessageResponse(operation)
+    },
+  })
+
+  try {
+    let mounted = false
+    let navigated = false
+    const result = await startNewDesktopV3Session({
+      operation,
+      shouldSelectSession: () => mounted,
+      onSessionStarted: () => {
+        if (mounted) {
+          navigated = true
+        }
+      },
+    })
+
+    assert.equal(result.sessionId, operation.sessionId)
+    assert.deepEqual(calls, [
+      `create:${operation.sessionId}`,
+      'dispatch:mutation.sessionCreateResult',
+      `subscribe:${operation.sessionId}`,
+      'dispatch:pendingUser.upsert',
+      `message:${operation.sessionId}:${operation.firstMessageRequest.message_id}`,
+      'dispatch:mutation.messageResult',
+    ])
+    assert.equal(actions.some((action) => action.type === 'session.select'), false)
+    assert.equal(state.selectedSessionId, 'session-b')
+    assert.equal(navigated, false)
+  } finally {
+    restore()
+  }
+})
+
 test('startNewDesktopV3Session keeps operation unresolved when first message fails', async () => {
   const operation = createDesktopV3NewSessionOperation({
     workspacePath: '/workspace',

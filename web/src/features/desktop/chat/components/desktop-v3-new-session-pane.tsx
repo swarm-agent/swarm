@@ -149,6 +149,7 @@ export function DesktopV3NewSessionPane({
 
       await startNewDesktopV3Session({
         operation,
+        shouldSelectSession: () => mountedRef.current,
         onSessionStarted: () => {
           completeDesktopV3NewSessionStarted({
             workspacePath: workspace.path,

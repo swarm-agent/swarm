@@ -246,6 +246,7 @@ export function setDesktopV3NewSessionFlowDepsForTests(
 
 export async function startNewDesktopV3Session(input: {
   operation: DesktopV3NewSessionOperation
+  shouldSelectSession?: () => boolean
   onSessionStarted?: (sessionId: string) => void
 }): Promise<StartNewDesktopV3SessionResult> {
   const operation = input.operation
@@ -271,9 +272,11 @@ export async function startNewDesktopV3Session(input: {
 
   flowDeps.dispatch(sessionCreateResponseToAction(rawCreate, sidebarScopeId))
 
-  // Create is durable. Subscribe and select locally, but do not route/unmount yet.
+  // Create is durable. Subscribe locally, and select only if the owning route is still current.
   controller.ensureSessionSubscription(operation.sessionId)
-  flowDeps.dispatch(selectSession(operation.sessionId))
+  if (input.shouldSelectSession?.() ?? true) {
+    flowDeps.dispatch(selectSession(operation.sessionId))
+  }
 
   flowDeps.dispatch({
     type: 'pendingUser.upsert',
