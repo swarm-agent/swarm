@@ -349,17 +349,19 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
 
       const ordered = [...page.events].sort((a, b) => a.seq - b.seq)
       for (const event of ordered) {
+        const cacheEvent: CacheEvent = {
+          source: 'sync-stream',
+          sessionId,
+          eventType: event.event_type,
+          sessionEvent: event,
+          projection: page.projection,
+          payload: decodeSessionEventPayload(event),
+        }
+
         this.dispatch({
           type: 'realtime.applyEvent',
-          deferLiveOverlay: true,
-          event: {
-            source: 'sync-stream',
-            sessionId,
-            eventType: event.event_type,
-            sessionEvent: event,
-            projection: page.projection,
-            payload: decodeSessionEventPayload(event),
-          },
+          event: cacheEvent,
+          deferLiveOverlay: cacheEventRunId(cacheEvent) === expectedRunId,
         })
       }
 

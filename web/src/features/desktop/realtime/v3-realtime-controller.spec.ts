@@ -754,6 +754,189 @@ test('Desktop V3 active-run repair defers only events for the repaired run', asy
   controller.stop()
 })
 
+test('Desktop V3 active-run repair applies replacement-run overlays from HTTP page', async () => {
+  let state: DesktopV3CacheState = createEmptyDesktopV3CacheState()
+  state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'global-scope' }
+  state.syncScopesById['global-scope'] = {
+    scopeId: 'global-scope',
+    surface: 'desktop',
+    streamKind: 'v3.sync.snapshot',
+    selectorFilterHash: 'global-hash',
+    resourceSet: 'run_intents',
+    selector: { kind: 'global', global: true },
+    endpointCursor: 'cursor-bootstrap',
+    replayPath: '/v3/sync/stream',
+    replayTransport: 'http_post',
+    needsBootstrap: false,
+  }
+
+  const sockets: FakeWebSocket[] = []
+  const runA = {
+    ...runIntentA,
+    status: 'running',
+    updated_at: 30,
+    event_seq: 3,
+  }
+  const terminalRunA = {
+    ...runA,
+    status: 'completed',
+    updated_at: 50,
+    event_seq: 5,
+  }
+  const runB = {
+    ...runIntentA,
+    run_id: 'run-b',
+    status: 'running',
+    created_at: 60,
+    updated_at: 60,
+    event_seq: 6,
+  }
+  const terminalRunAEvent: V3SessionEvent = {
+    id: 'evt-terminal-5',
+    session_id: sessionA.id,
+    seq: 5,
+    event_type: 'session.run.completed',
+    payload: {
+      run_id: runA.run_id,
+      status: 'completed',
+      lifecycle: { status: 'completed' },
+      run_intent: terminalRunA,
+    },
+    ts_unix_ms: 5,
+  }
+  const runningRunBEvent: V3SessionEvent = {
+    id: 'evt-run-b-running-6',
+    session_id: sessionA.id,
+    seq: 6,
+    event_type: 'session.run.running',
+    payload: {
+      run_id: runB.run_id,
+      status: 'running',
+      lifecycle: { status: 'running' },
+      run_intent: runB,
+    },
+    ts_unix_ms: 6,
+  }
+  const runBDeltaEvent: V3SessionEvent = {
+    id: 'evt-run-b-delta-7',
+    session_id: sessionA.id,
+    seq: 7,
+    event_type: 'session.assistant.delta',
+    payload: { run_id: runB.run_id, delta: 'run-b-delta' },
+    ts_unix_ms: 7,
+  }
+  const readRequests: Array<{ sessionId: string; afterSeq: number; limit?: number }> = []
+
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    reconnect: async () => reconnectFixture({
+      snapshot_endpoint_cursor: 'cursor-reconnect',
+      sessions_by_id: { [sessionA.id]: sessionA },
+      projections_by_session: { [sessionA.id]: projectionA },
+      run_intents_by_session: { [sessionA.id]: [runA] },
+      current_run_intent_by_session: { [sessionA.id]: runA },
+      session_order: [sessionA.id],
+      workset_id: 'global-scope',
+      realtime: {
+        stream_path: '/v3/realtime/stream',
+        resume: {
+          protocol: 'v3.realtime',
+          protocol_version: 1,
+          kind: 'resume',
+          endpoint_cursor: 'cursor-reconnect',
+          subscriptions: [{ subscription_id: 'sub-a', session_id: sessionA.id }],
+          worksets: [{
+            workset_id: 'global-scope',
+            subscription_id: 'workset-sub',
+            selector: { kind: 'global', global: true },
+            resources: ['run_intents'],
+            auto_subscribe_sessions: true,
+          }],
+        },
+      },
+    }),
+    readEventsPage: async (input) => {
+      readRequests.push(input)
+      return {
+        ok: true,
+        session_id: input.sessionId,
+        events: [terminalRunAEvent, runningRunBEvent, runBDeltaEvent],
+        projection: { ...projectionA, last_event_seq: 7, projection_high_watermark_seq: 7 },
+        high_watermark_seq: 7,
+        next_seq: 7,
+        applied_seq: 7,
+      }
+    },
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  await controller.start()
+  sockets[0].open()
+  await waitFor(() => readRequests.length === 1)
+  await waitFor(() => state.currentRunIntentBySession[sessionA.id]?.run_id === runB.run_id)
+
+  assert.equal(
+    state.currentRunIntentBySession[sessionA.id]?.run_id,
+    runB.run_id,
+  )
+  assert.equal(
+    state.liveRunsBySession[sessionA.id]?.[runB.run_id]?.assistantDraft?.content,
+    'run-b-delta',
+  )
+  assert.equal(
+    state.liveRunsBySession[sessionA.id]?.[runA.run_id]?.status,
+    'completed',
+  )
+
+  sockets[0].emit({
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'event',
+    session_id: sessionA.id,
+    event_type: runningRunBEvent.event_type,
+    event: runningRunBEvent,
+    projection: { ...projectionA, last_event_seq: 6, projection_high_watermark_seq: 6 },
+    endpoint_cursor: 'cursor-run-b-6',
+  })
+  sockets[0].emit({
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'event',
+    session_id: sessionA.id,
+    event_type: runBDeltaEvent.event_type,
+    event: runBDeltaEvent,
+    projection: { ...projectionA, last_event_seq: 7, projection_high_watermark_seq: 7 },
+    endpoint_cursor: 'cursor-run-b-7',
+  })
+
+  assert.equal(
+    state.currentRunIntentBySession[sessionA.id]?.run_id,
+    runB.run_id,
+  )
+  assert.equal(
+    state.liveRunsBySession[sessionA.id]?.[runB.run_id]?.assistantDraft?.content,
+    'run-b-delta',
+  )
+  assert.equal(
+    state.liveRunsBySession[sessionA.id]?.[runA.run_id]?.status,
+    'completed',
+  )
+  assert.equal(
+    state.realtime.endpointCursor,
+    'cursor-run-b-7',
+  )
+  controller.stop()
+})
+
 test('Desktop V3 transport status maps to cache status', () => {
   assert.equal(mapTransportStatus('stopped'), 'closed')
   assert.equal(mapTransportStatus('closed'), 'closed')
