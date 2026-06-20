@@ -28,6 +28,14 @@ export interface DesktopV3NewSessionOperation {
   createdAt: number
 }
 
+export interface DesktopV3NewSessionPreference {
+  provider?: string
+  model?: string
+  thinking?: string
+  serviceTier?: string
+  contextMode?: string
+}
+
 export interface CreateDesktopV3NewSessionOperationInput {
   workspacePath: string
   workspaceName: string
@@ -35,14 +43,8 @@ export interface CreateDesktopV3NewSessionOperationInput {
   prompt: string
   title?: string
   mode?: 'auto' | 'plan'
-  agentName?: string
-  preference?: {
-    provider?: string
-    model?: string
-    thinking?: string
-    serviceTier?: string
-    contextMode?: string
-  }
+  agentName: string
+  preference?: DesktopV3NewSessionPreference
   sessionMetadata?: Record<string, unknown>
   messageMetadata?: Record<string, unknown>
   worktree?: {
@@ -58,8 +60,10 @@ export function createDesktopV3NewSessionOperation(
 ): DesktopV3NewSessionOperation {
   const prompt = input.prompt.trim()
   const workspacePath = input.workspacePath.trim()
+  const agentName = input.agentName.trim()
   if (!prompt) throw new Error('New Desktop V3 session requires a first prompt')
   if (!workspacePath) throw new Error('New Desktop V3 session requires workspacePath')
+  if (!agentName) throw new Error('New Desktop V3 session requires agent_name')
 
   const target = getDesktopSessionCreateTarget(input.route)
   if (target.endpoint !== '/v3/sessions') {
@@ -106,7 +110,7 @@ export function createDesktopV3NewSessionOperation(
       host_workspace_path: input.route.hostWorkspacePath?.trim() || undefined,
       runtime_workspace_path: input.route.runtimeWorkspacePath?.trim() || undefined,
       mode: input.mode,
-      agent_name: input.agentName?.trim() || undefined,
+      agent_name: agentName,
       metadata: input.sessionMetadata,
       preference: input.preference
         ? {

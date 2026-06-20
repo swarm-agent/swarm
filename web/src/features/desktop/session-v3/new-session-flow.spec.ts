@@ -9,6 +9,7 @@ import {
   startNewDesktopV3Session,
   type DesktopV3NewSessionOperation,
 } from './new-session-flow'
+import { postDesktopV3CreateSession } from './write-api'
 import { createEmptyDesktopV3CacheState } from '../state/desktop-v3-cache-reducer'
 import type {
   DesktopV3CacheAction,
@@ -108,6 +109,7 @@ test('Path A operation contains stable create and first-message wire payloads', 
     route,
     prompt: ' hello ',
     mode: 'auto',
+    agentName: 'swarm',
   })
 
   assert.equal(operation.version, 1)
@@ -115,6 +117,7 @@ test('Path A operation contains stable create and first-message wire payloads', 
   assert.equal(operation.createRequest.client_request_id, `desktop-v3-create:${operation.operationId}`)
   assert.equal(operation.createRequest.swarm_id, 'swarm-self')
   assert.equal(operation.createRequest.workspace_binding_id, 'binding-self')
+  assert.equal(operation.createRequest.agent_name, 'swarm')
   assert.equal(operation.firstMessageRequest.client_request_id, `desktop-v3-first-message:${operation.operationId}`)
   assert.equal(operation.firstMessageRequest.message_id, `desktop-v3-message:${operation.operationId}`)
   assert.equal(operation.firstMessageRequest.run_id, `desktop-v3-run:${operation.operationId}`)
@@ -127,7 +130,54 @@ test('Path A operation rejects missing writable create authority before HTTP', (
     workspaceName: 'workspace',
     route: { ...route, workspaceBindingId: '' },
     prompt: 'hello',
+    agentName: 'swarm',
   }), /workspace_binding_id/)
+})
+
+test('Path A operation rejects missing agent_name before HTTP', () => {
+  assert.throws(() => createDesktopV3NewSessionOperation({
+    workspacePath: '/workspace',
+    workspaceName: 'workspace',
+    route,
+    prompt: 'hello',
+    agentName: '  ',
+  }), /agent_name/)
+})
+
+test('Path A create HTTP POST body includes selected agent_name', async () => {
+  const operation = createDesktopV3NewSessionOperation({
+    workspacePath: '/workspace',
+    workspaceName: 'workspace',
+    route,
+    prompt: 'hello',
+    agentName: 'selected-agent',
+  })
+  const originalFetch = globalThis.fetch
+  let capturedUrl = ''
+  let capturedInit: RequestInit | undefined
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedInit = init
+    return new Response(JSON.stringify(makeCreateResponse(operation)), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  try {
+    await postDesktopV3CreateSession(operation.createRequest)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  const body = JSON.parse(String(capturedInit?.body))
+  assert.equal(capturedUrl, '/v3/sessions')
+  assert.equal(capturedInit?.method, 'POST')
+  assert.equal(body.session_id, operation.sessionId)
+  assert.equal(body.client_request_id, operation.createRequest.client_request_id)
+  assert.equal(body.workspace_binding_id, 'binding-self')
+  assert.equal(body.swarm_id, 'swarm-self')
+  assert.equal(body.agent_name, 'selected-agent')
 })
 
 test('Path A operation persists exact retry payload in sessionStorage', () => withSessionStorage(() => {
@@ -136,6 +186,7 @@ test('Path A operation persists exact retry payload in sessionStorage', () => wi
     workspaceName: 'workspace',
     route,
     prompt: 'retry me',
+    agentName: 'swarm',
   })
   persistDesktopV3NewSessionOperation(operation)
 
@@ -152,6 +203,7 @@ test('startNewDesktopV3Session performs create, subscribe/select, then first mes
     workspaceName: 'workspace',
     route,
     prompt: 'start',
+    agentName: 'swarm',
   })
   const state: DesktopV3CacheState = createEmptyDesktopV3CacheState()
   state.desktopSidebarBootstrap.scopeId = 'scope-global'
@@ -213,6 +265,7 @@ test('startNewDesktopV3Session keeps operation unresolved when first message fai
     workspaceName: 'workspace',
     route,
     prompt: 'start',
+    agentName: 'swarm',
   })
   const state = createEmptyDesktopV3CacheState()
   state.desktopSidebarBootstrap.scopeId = 'scope-global'

@@ -14,6 +14,8 @@ import {
   applyHydrateSnapshot,
   applyMessageMutationResult,
   applyRealtimeFrame,
+  applyReconnectSnapshot,
+  applySessionCreateMutationResult,
   applySyncStreamBatch,
   buildMessageListCache,
   createEmptyDesktopV3CacheState,
@@ -41,7 +43,7 @@ import {
 import { selectDesktopSidebarRows, selectLiveRuns, selectRenderedSessionMessages } from './desktop-v3-cache-selectors'
 import { createDesktopV3CacheOwner } from './desktop-v3-cache-owner'
 import { buildPersistedDesktopV3MessageTailV1, DESKTOP_V3_CACHE_SCHEMA_VERSION } from './desktop-v3-cache-persisted-types'
-import type { DesktopV3CacheState, MessageSnapshot, V3SessionEvent } from './desktop-v3-cache-types'
+import type { DesktopV3CacheState, MessageSnapshot, SessionCreateMutationResponse, V3SessionEvent } from './desktop-v3-cache-types'
 
 function bootstrappedState(): DesktopV3CacheState {
   return applyBootstrapSnapshot(createEmptyDesktopV3CacheState(), snapshotFixture())
@@ -1001,4 +1003,136 @@ test('wire adapters normalize frame/event boundaries', () => {
   if (actions[0].type === 'realtime.applyEvent') {
     assert.equal(actions[0].event.payload.message?.id, messageB1.id)
   }
+})
+
+test('session create replay does not regress fresher reconnect state or duplicate first message/run', () => {
+  const sessionId = 'session-new'
+  const firstMessage: MessageSnapshot = {
+    id: 'desktop-v3-message:op-1',
+    session_id: sessionId,
+    global_seq: 2,
+    role: 'user',
+    content: 'start',
+    created_at: 2,
+  }
+  const firstRun = {
+    session_id: sessionId,
+    run_id: 'desktop-v3-run:op-1',
+    status: 'running',
+    created_at: 3,
+    updated_at: 7,
+    event_seq: 7,
+  }
+  const freshSession = {
+    id: sessionId,
+    workspace_path: '/repo',
+    workspace_name: 'repo',
+    title: 'Fresh session',
+    mode: 'auto',
+    created_at: 1,
+    updated_at: 7,
+    message_count: 1,
+    last_message_at: 2,
+  }
+  const staleSession = {
+    ...freshSession,
+    title: 'Stale create replay',
+    updated_at: 1,
+    message_count: 0,
+    last_message_at: 0,
+  }
+  const freshProjection = {
+    session_id: sessionId,
+    last_event_seq: 7,
+    projection_high_watermark_seq: 7,
+    updated_at: 7,
+  }
+  const staleProjection = {
+    session_id: sessionId,
+    last_event_seq: 1,
+    projection_high_watermark_seq: 1,
+    updated_at: 1,
+  }
+  const createReplay: SessionCreateMutationResponse = {
+    ok: true,
+    session_id: sessionId,
+    session: staleSession,
+    projection: staleProjection,
+    mutation: {},
+    realtime_outbox: {
+      endpoint_seq: 1,
+      endpoint_cursor: 'cursor-create-1',
+      session_id: sessionId,
+      event: {
+        id: 'evt-session-created',
+        session_id: sessionId,
+        seq: 1,
+        event_type: 'session.created',
+        payload: { session: staleSession },
+        ts_unix_ms: 1,
+      },
+      projection: staleProjection,
+    },
+  }
+
+  const state = createEmptyDesktopV3CacheState()
+  state.desktopSidebarBootstrap.scopeId = 'scope-global'
+  state.syncScopesById['scope-global'] = {
+    scopeId: 'scope-global',
+    surface: 'desktop',
+    streamKind: 'v3.sync.snapshot',
+    selectorFilterHash: 'selector-global',
+    resourceSet: 'messages,run_intents',
+    selector: { kind: 'global', global: true },
+    endpointCursor: 'cursor-0',
+    replayPath: '/v3/sync/stream',
+    replayTransport: 'http_post',
+    needsBootstrap: false,
+  }
+  state.tombstonesBySession[sessionId] = { session_id: sessionId, deleted: true }
+
+  applyReconnectSnapshot(state, reconnectFixture({
+    snapshot_endpoint_cursor: 'cursor-reconnect-7',
+    sessions_by_id: { [sessionId]: freshSession },
+    projections_by_session: { [sessionId]: freshProjection },
+    messages_by_session: { [sessionId]: [firstMessage] },
+    run_intents_by_session: { [sessionId]: [firstRun] },
+    current_run_intent_by_session: { [sessionId]: firstRun },
+    session_order: [sessionId],
+    subscriptions: [{ subscription_id: 'sub-new', session_id: sessionId, status: 'active' }],
+  }))
+
+  applySessionCreateMutationResult(state, createReplay, 'scope-global')
+  const messageReplay = messageMutationFixture({
+    session_id: sessionId,
+    message: firstMessage,
+    run_intent: firstRun,
+    realtime_outbox: {
+      endpoint_seq: 2,
+      endpoint_cursor: 'cursor-message-2',
+      session_id: sessionId,
+      event: {
+        id: 'evt-first-message',
+        session_id: sessionId,
+        seq: 2,
+        event_type: 'message.stored',
+        payload: { message: firstMessage },
+        ts_unix_ms: 2,
+      },
+      projection: { session_id: sessionId, last_event_seq: 2, projection_high_watermark_seq: 2, updated_at: 2 },
+    },
+  })
+  applyMessageMutationResult(state, messageReplay, 'desktop-v3-first-message:op-1', firstMessage.id)
+
+  assert.equal(state.projectionsBySession[sessionId].last_event_seq, 7)
+  assert.equal(state.projectionsBySession[sessionId].projection_high_watermark_seq, 7)
+  assert.equal(state.sessionsById[sessionId]?.kind, 'full')
+  assert.equal(state.sessionsById[sessionId]?.kind === 'full' ? state.sessionsById[sessionId].session.title : '', 'Fresh session')
+  assert.deepEqual(state.sessionOrderByScope['scope-global'], [sessionId])
+  assert.equal(state.tombstonesBySession[sessionId], undefined)
+  assert.deepEqual(state.messagesBySession[sessionId].items.map((message) => message.id), [firstMessage.id])
+  assert.equal(Object.keys(state.runIntentsBySession[sessionId]).length, 1)
+  assert.equal(state.currentRunIntentBySession[sessionId]?.run_id, firstRun.run_id)
+  assert.equal(state.realtime.endpointCursor, 'cursor-reconnect-7')
+  assert.equal(state.syncScopesById['scope-global'].endpointCursor, 'cursor-0')
 })

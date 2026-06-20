@@ -12,6 +12,7 @@ import {
   persistDesktopV3NewSessionOperation,
   startNewDesktopV3Session,
   type DesktopV3NewSessionOperation,
+  type DesktopV3NewSessionPreference,
 } from '../../session-v3/new-session-flow'
 
 export interface DesktopV3NewSessionPaneProps {
@@ -19,6 +20,8 @@ export interface DesktopV3NewSessionPaneProps {
   workspaceSlug: string
   routeOptions: DesktopChatRoute[]
   pendingWorktreeBranch?: string | null
+  agentName: string
+  preference?: DesktopV3NewSessionPreference
 }
 
 export function DesktopV3NewSessionPane({
@@ -26,6 +29,8 @@ export function DesktopV3NewSessionPane({
   workspaceSlug,
   routeOptions,
   pendingWorktreeBranch,
+  agentName: agentNameProp,
+  preference,
 }: DesktopV3NewSessionPaneProps) {
   const navigate = useNavigate()
   const storedOperation = useMemo(
@@ -92,12 +97,18 @@ export function DesktopV3NewSessionPane({
     setStartError(null)
     try {
       const existingOperation = operationRef.current
+      const agentName = agentNameProp.trim()
+      if (!agentName) {
+        throw new Error('New Desktop V3 session requires agent_name')
+      }
       const operation = existingOperation ?? createDesktopV3NewSessionOperation({
         workspacePath: workspace.path,
         workspaceName: workspace.workspaceName,
         route: selectedRoute,
         prompt: draft,
         mode: 'auto',
+        agentName,
+        preference,
         sessionMetadata: {
           source: 'desktop-v3',
           workspace_path: workspace.path,
@@ -106,7 +117,7 @@ export function DesktopV3NewSessionPane({
           source: 'desktop-v3',
         },
         worktree: pendingWorktreeBranch
-          ? { mode: 'branch', branchName: pendingWorktreeBranch }
+          ? { mode: 'on', branchName: pendingWorktreeBranch }
           : undefined,
       })
       operationRef.current = operation

@@ -677,12 +677,15 @@ export function applySessionCreateMutationResult(
     throw new Error('Desktop V3 create response has inconsistent session identity')
   }
 
-  state.sessionsById[sessionId] = {
-    kind: 'full',
-    session: raw.session,
-    needsHydrate: false,
+  const existingProjection = state.projectionsBySession[sessionId]
+  if (!existingProjection || projectionSeq(raw.projection) >= projectionSeq(existingProjection)) {
+    state.sessionsById[sessionId] = {
+      kind: 'full',
+      session: raw.session,
+      needsHydrate: false,
+    }
+    state.projectionsBySession[sessionId] = raw.projection
   }
-  state.projectionsBySession[sessionId] = raw.projection
   delete state.tombstonesBySession[sessionId]
 
   state.sessionOrderByScope[sidebarScopeId] = prependUnique(
@@ -771,7 +774,8 @@ export function applyCacheEvent(
 ): DesktopV3CacheState {
   const { sessionId, projection, payload, eventType } = event
   const existingProjection = state.projectionsBySession[sessionId]
-  if (projectionSeq(projection) >= projectionSeq(existingProjection)) {
+  const incomingProjectionIsFresh = projectionSeq(projection) >= projectionSeq(existingProjection)
+  if (incomingProjectionIsFresh) {
     if (projection) state.projectionsBySession[sessionId] = projection
   }
 
@@ -789,7 +793,7 @@ export function applyCacheEvent(
       .sort((left, right) => left.seq - right.seq)
   }
 
-  if (payload.session) {
+  if (payload.session && incomingProjectionIsFresh) {
     state.sessionsById[sessionId] = {
       kind: 'full',
       session: payload.session,
